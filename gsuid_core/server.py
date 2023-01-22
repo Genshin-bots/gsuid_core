@@ -5,7 +5,6 @@ import importlib
 from pathlib import Path
 from typing import Set, Union
 
-from trigger import TL
 import websockets.client
 import websockets.server
 from model import MessageReceive
@@ -37,17 +36,14 @@ class GsServer:
         print(f'{ws.remote_address}已断开！')
 
     async def recv_msg(self, ws: websockets.server.WebSocketServerProtocol):
+        from gsuid_core.sv import handle_event
+
         async for message in ws:
             msg: MessageReceive = parse_obj_as(
                 MessageReceive, json.loads(message)
             )
             print(msg)
-            for trigger in TL.lst:
-                if trigger.check_command(msg):
-                    await trigger.func(ws, msg)
-                    break
-            else:
-                await ws.send('已收到消息...')
+            await handle_event(ws, msg)
 
     async def send_msg(self, ws: websockets.server.WebSocketServerProtocol):
         while True:

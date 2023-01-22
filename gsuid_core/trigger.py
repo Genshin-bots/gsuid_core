@@ -1,4 +1,4 @@
-from typing import List, Literal, Callable
+from typing import Literal, Callable
 
 from model import MessageReceive
 
@@ -37,15 +37,3 @@ class Trigger:
         if msg == keyword:
             return True
         return False
-
-
-class TriggerList:
-    def __init__(self):
-        self.lst: List[Trigger] = []
-
-    @property
-    def get_lst(self):
-        return self.lst
-
-
-TL = TriggerList()
