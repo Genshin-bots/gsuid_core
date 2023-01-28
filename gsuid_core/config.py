@@ -7,11 +7,12 @@ CONFIG_PATH = Path(__file__).parent / 'config.json'
 CONIFG_DEFAULT = {
     'HOST': 'localhost',
     'PORT': '8765',
+    'masters': [],
     'superusers': [],
     'sv': {},
 }
 STR_CONFIG = Literal['HOST', 'PORT']
-LIST_CONFIG = Literal['superusers']
+LIST_CONFIG = Literal['superusers', 'masters']
 DICT_CONFIG = Literal['sv']
 
 

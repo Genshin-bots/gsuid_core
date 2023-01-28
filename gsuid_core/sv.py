@@ -5,7 +5,7 @@ from bot import Bot
 import websockets.server
 from trigger import Trigger
 from config import core_config
-from model import MessageReceive
+from model import MessageContent, MessageReceive
 
 
 class SVList:
@@ -19,6 +19,8 @@ class SVList:
 
 SL = SVList()
 config_sv = core_config.get_config('sv')
+config_masters = core_config.get_config('masters')
+config_superusers = core_config.get_config('superusers')
 
 
 class SV:
@@ -36,6 +38,7 @@ class SV:
     def __init__(
         self,
         name: str,
+        permission: int = 3,
         priority: int = 5,
         enabled: bool = True,
     ):
@@ -50,13 +53,18 @@ class SV:
             if name in config_sv:
                 self.priority = config_sv[name]['priority']
                 self.enabled = config_sv[name]['enabled']
+                self.permission = config_sv[name]['permission']
             else:
                 # sv优先级
                 self.priority: int = priority
                 # sv是否开启
                 self.enabled: bool = enabled
+                # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通
+                self.permission: int = permission
                 # 写入
-                self.set(priority=priority, enabled=enabled)
+                self.set(
+                    priority=priority, enabled=enabled, permission=permission
+                )
 
     def set(self, **kwargs):
         for var in kwargs:
@@ -75,7 +83,7 @@ class SV:
     def _on(
         self,
         type: Literal['prefix', 'suffix', 'keyword', 'fullmatch'],
-        keyword: Union[str, Tuple[str]],
+        keyword: Union[str, Tuple[str, ...]],
     ):
         def deco(func: Callable) -> Callable:
             keyword_list = keyword
@@ -94,27 +102,55 @@ class SV:
 
         return deco
 
-    def on_fullmatch(self, keyword: Union[str, Tuple[str]]) -> Callable:
+    def on_fullmatch(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
         return self._on('fullmatch', keyword)
 
-    def on_prefix(self, keyword: Union[str, Tuple[str]]) -> Callable:
+    def on_prefix(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
         return self._on('keyword', keyword)
 
-    def on_suffix(self, keyword: Union[str, Tuple[str]]) -> Callable:
+    def on_suffix(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
         return self._on('suffix', keyword)
 
-    def on_keyword(self, keyword: Union[str, Tuple[str]]) -> Callable:
+    def on_keyword(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
         return self._on('keyword', keyword)
+
+
+async def get_user_pml(msg: MessageReceive) -> int:
+    if msg.user_id in config_masters:
+        return 0
+    elif msg.user_id in config_superusers:
+        return 1
+    else:
+        return msg.user_pm
+
+
+async def msg_process(msg: MessageReceive) -> MessageContent:
+    message = MessageContent(raw=msg)
+    for _msg in msg.content:
+        if _msg.type == 'text':
+            message.raw_text = _msg.data  # type:ignore
+        elif _msg.type == 'at':
+            message.at = _msg.data
+            message.at_list.append(_msg.data)
+        elif _msg.type == 'image':
+            message.image = _msg.data
+            message.image_list.append(_msg.data)
+    return message
 
 
 async def handle_event(
     ws: websockets.server.WebSocketServerProtocol, msg: MessageReceive
 ):
+    # 获取用户权限，越小越高
+    user_pm = await get_user_pml(msg)
+    message = await msg_process(msg)
     for sv in SL.lst:
-        if SL.lst[sv].enabled:
+        # 服务启动且权限等级超过服务权限
+        if SL.lst[sv].enabled and user_pm <= SL.lst[sv].permission:
             for trigger in SL.lst[sv].TL:
-                if trigger.check_command(msg):
-                    await trigger.func(ws, msg)
+                if trigger.check_command(message):
+                    message = await trigger.get_command(message)
+                    await trigger.func(ws, message)
                     break
             else:
                 await ws.send('已收到消息...')

@@ -1,6 +1,6 @@
 from typing import Literal, Callable
 
-from model import MessageReceive
+from model import MessageContent
 
 
 class Trigger:
@@ -14,8 +14,8 @@ class Trigger:
         self.keyword = keyword
         self.func = func
 
-    def check_command(self, raw_msg: MessageReceive) -> bool:
-        msg = raw_msg.content[0].data
+    def check_command(self, raw_msg: MessageContent) -> bool:
+        msg = raw_msg.raw_text
         return getattr(self, f'_check_{self.type}')(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
@@ -37,3 +37,8 @@ class Trigger:
         if msg == keyword:
             return True
         return False
+    
+    async def get_command(self, msg: MessageContent) -> MessageContent:
+        msg.command = self.keyword
+        msg.text = msg.raw_text.replace(self.keyword, '')
+        return msg

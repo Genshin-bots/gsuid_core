@@ -13,7 +13,19 @@ class MessageReceive(BaseModel):
     user_type: Optional[str] = None
     group_id: Optional[str] = None
     user_id: Optional[str] = None
+    user_pm: int = 3
     content: List[Message] = []
+
+
+class MessageContent(BaseModel):
+    raw: Optional[MessageReceive] = None
+    raw_text: str = ''
+    command: Optional[str] = None
+    text: Optional[str] = None
+    image: Optional[str] = None
+    at: Optional[str] = None
+    image_list: List[Any] = []
+    at_list: List[Any] = []
 
 
 class MessageSend(BaseModel):
