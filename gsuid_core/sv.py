@@ -4,6 +4,7 @@ from typing import Dict, List, Self, Tuple, Union, Literal, Callable, Optional
 from bot import Bot
 import websockets.server
 from trigger import Trigger
+from config import core_config
 from model import MessageReceive
 
 
@@ -17,12 +18,14 @@ class SVList:
 
 
 SL = SVList()
+config_sv = core_config.get_config('sv')
 
 
 class SV:
     is_initialized = False
 
     def __new__(cls: type[Self], *args):
+        # 判断sv是否已经被初始化
         if args[0] in SL.lst:
             return SL.lst[args[0]]
         else:
@@ -30,19 +33,44 @@ class SV:
             SL.lst[args[0]] = _sv
             return _sv
 
-    def __init__(self, name: str):
+    def __init__(
+        self,
+        name: str,
+        priority: int = 5,
+        enabled: bool = True,
+    ):
         if not self.is_initialized:
+            # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
-            self.priority: int = 5
-            self.enabled: bool = True
+            # sv内包含的触发器
             self.TL: List[Trigger] = []
             self.is_initialized = True
 
+            # 判断sv是否已持久化
+            if name in config_sv:
+                self.priority = config_sv[name]['priority']
+                self.enabled = config_sv[name]['enabled']
+            else:
+                # sv优先级
+                self.priority: int = priority
+                # sv是否开启
+                self.enabled: bool = enabled
+                # 写入
+                self.set(priority=priority, enabled=enabled)
+
+    def set(self, **kwargs):
+        for var in kwargs:
+            setattr(self, var, kwargs[var])
+            if self.name not in config_sv:
+                config_sv[self.name] = {}
+            config_sv[self.name][var] = kwargs[var]
+            core_config.set_config('sv', config_sv)
+
     def enable(self):
-        self.enabled = True
+        self.set(enabled=True)
 
     def disable(self):
-        self.enabled = False
+        self.set(enabled=False)
 
     def _on(
         self,

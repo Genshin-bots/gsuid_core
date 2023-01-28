@@ -1,0 +1,15 @@
+{
+    "HOST": "localhost",
+    "PORT": "8765",
+    "superusers": [],
+    "sv": {
+        "开关": {
+            "priority": 5,
+            "enabled": true
+        },
+        "测试": {
+            "priority": 5,
+            "enabled": false
+        }
+    }
+}
