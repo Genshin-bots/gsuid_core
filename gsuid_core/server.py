@@ -1,69 +1,49 @@
 import sys
-import json
-import asyncio
 import importlib
+from typing import Dict
 from pathlib import Path
-from typing import Set, Union
 
-import websockets.client
-import websockets.server
-from model import MessageReceive
-from pydantic import parse_obj_as
+from fastapi import WebSocket
+
+
+class Bot:
+    def __init__(self, _id: str):
+        self.bot_id = _id
+        self.bot = gss.active_bot[_id]
+
+    async def send(self, message):
+        await self.bot.send_text(message)
 
 
 class GsServer:
-    def __init__(self, IP: str = 'localhost', PORT: Union[str, int] = '8765'):
-        print('核心启动中...')
-        self.ws = f'ws://{IP}:{PORT}'
-        print(f'WS服务器地址为:{self.ws},等待客户端连接中...')
+    def __init__(self):
+        self.active_bot: Dict[str, WebSocket] = {}
         self.load_plugins()
-        self.clients: Set[websockets.server.WebSocketServerProtocol] = set()
 
     def load_plugins(self):
         sys.path.append(str(Path(__file__).parents[1]))
         plug_path = Path(__file__).parent / 'plugins'
         for plugin in plug_path.iterdir():
             if plugin.suffix == '.py':
-                print(f'插件【{plugin.name}】加载成功！')
                 importlib.import_module(f'plugins.{plugin.name[:-3]}')
+                print(f'插件【{plugin.name}】加载成功！')
 
-    async def register(self, ws: websockets.server.WebSocketServerProtocol):
-        self.clients.add(ws)
-        print(f'{ws.remote_address}已连接！')
+    async def connect(self, websocket: WebSocket, bot_id: str) -> Bot:
+        await websocket.accept()
+        self.active_bot[bot_id] = websocket
+        print(f'{bot_id}已连接！')
+        return Bot(bot_id)
 
-    async def unregister(self, ws: websockets.server.WebSocketServerProtocol):
-        self.clients.remove(ws)
-        print(f'{ws.remote_address}已断开！')
+    def disconnect(self, bot_id: str):
+        del self.active_bot[bot_id]
+        print(f'{bot_id}已中断！')
 
-    async def recv_msg(self, ws: websockets.server.WebSocketServerProtocol):
-        from gsuid_core.sv import handle_event
+    async def send(self, message: str, bot_id: str):
+        await self.active_bot[bot_id].send_text(message)
 
-        async for message in ws:
-            msg: MessageReceive = parse_obj_as(
-                MessageReceive, json.loads(message)
-            )
-            print(msg)
-            await handle_event(ws, msg)
-
-    async def send_msg(self, ws: websockets.server.WebSocketServerProtocol):
-        while True:
-            await ws.send('122')
-
-    async def handler(self, ws: websockets.server.WebSocketServerProtocol):
-        await self.register(ws)
-        try:
-            # send_task = asyncio.create_task(self.send_msg(ws))
-            recv_task = asyncio.create_task(self.recv_msg(ws))
-            await asyncio.gather(recv_task)
-        finally:
-            await self.unregister(ws)
-
-    async def start(self):
-        async with websockets.server.serve(
-            self.handler, "localhost", 8766, ping_interval=None
-        ):
-            await asyncio.Future()
+    async def broadcast(self, message: str):
+        for bot_id in self.active_bot:
+            await self.send(message, bot_id)
 
 
 gss = GsServer()
-asyncio.run(gss.start())

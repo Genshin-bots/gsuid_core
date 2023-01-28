@@ -3,23 +3,27 @@ from typing import Union
 
 import websockets.client
 from model import Message, MessageReceive
+from websockets.exceptions import ConnectionClosedError
 
 
 class GsClient:
     @classmethod
     async def async_connect(
-        cls, IP: str = 'localhost', PORT: Union[str, int] = '8766'
+        cls, IP: str = 'localhost', PORT: Union[str, int] = '8765'
     ):
         self = GsClient()
-        cls.ws_url = f'ws://{IP}:{PORT}'
+        cls.ws_url = f'ws://{IP}:{PORT}/ws/Nonebot'
         print(f'连接至WS链接{self.ws_url}...')
         cls.ws = await websockets.client.connect(cls.ws_url)
         print('已成功链接！')
         return self
 
     async def recv_msg(self):
-        async for message in self.ws:
-            print(message)
+        try:
+            async for message in self.ws:
+                print(message)
+        except ConnectionClosedError:
+            print('断开链接...')
 
     async def _input(self):
         return await asyncio.get_event_loop().run_in_executor(
@@ -29,7 +33,9 @@ class GsClient:
     async def send_msg(self):
         while True:
             intent = await self._input()
-            msg = MessageReceive(content=[Message(type='text', data=intent)])
+            msg = MessageReceive(
+                bot='Nonebot', content=[Message(type='text', data=intent)]
+            )
             await self.ws.send(MessageReceive.parse_obj(msg).json())
 
     async def start(self):

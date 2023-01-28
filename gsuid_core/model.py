@@ -9,7 +9,7 @@ class Message(BaseModel):
 
 
 class MessageReceive(BaseModel):
-    bot: Optional[str] = None
+    bot: str = 'Bot'
     user_type: Optional[str] = None
     group_id: Optional[str] = None
     user_id: Optional[str] = None

@@ -1,7 +1,7 @@
 import asyncio
 
-from gsuid_core.bot import Bot
 from gsuid_core.sv import SL, SV
+from gsuid_core.server import Bot
 from gsuid_core.model import MessageContent
 
 
