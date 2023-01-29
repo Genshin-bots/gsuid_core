@@ -36,6 +36,7 @@ class SV:
         permission: int = 3,
         priority: int = 5,
         enabled: bool = True,
+        black_list: List = [],
     ):
         if not self.is_initialized:
             # sv名称，重复的sv名称将被并入一个sv里
@@ -49,16 +50,22 @@ class SV:
                 self.priority = config_sv[name]['priority']
                 self.enabled = config_sv[name]['enabled']
                 self.permission = config_sv[name]['permission']
+                self.black_list = config_sv[name]['black_list']
             else:
                 # sv优先级
                 self.priority: int = priority
                 # sv是否开启
                 self.enabled: bool = enabled
+                # 黑名单群
+                self.black_list: List = black_list
                 # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通
                 self.permission: int = permission
                 # 写入
                 self.set(
-                    priority=priority, enabled=enabled, permission=permission
+                    priority=priority,
+                    enabled=enabled,
+                    permission=permission,
+                    black_list=black_list,
                 )
 
     def set(self, **kwargs):

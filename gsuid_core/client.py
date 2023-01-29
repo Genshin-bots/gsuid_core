@@ -34,7 +34,7 @@ class GsClient:
         while True:
             intent = await self._input()
             msg = MessageReceive(
-                bot='Nonebot', content=[Message(type='text', data=intent)]
+                bot_id='Nonebot', content=[Message(type='text', data=intent)]
             )
             await self.ws.send(MessageReceive.parse_obj(msg).json())
 

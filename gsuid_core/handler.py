@@ -36,9 +36,14 @@ async def handle_event(ws: Bot, msg: MessageReceive):
     user_pm = await get_user_pml(msg)
     message = await msg_process(msg)
     for sv in SL.lst:
+        _sv = SL.lst[sv]
         # 服务启动且权限等级超过服务权限
-        if SL.lst[sv].enabled and user_pm <= SL.lst[sv].permission:
-            for trigger in SL.lst[sv].TL:
+        if (
+            _sv.enabled
+            and user_pm <= _sv.permission
+            and msg.group_id not in _sv.black_list
+        ):
+            for trigger in _sv.TL:
                 if trigger.check_command(message):
                     message = await trigger.get_command(message)
                     await trigger.func(ws, message)
