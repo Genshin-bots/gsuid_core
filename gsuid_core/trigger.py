@@ -37,7 +37,7 @@ class Trigger:
         if msg == keyword:
             return True
         return False
-    
+
     async def get_command(self, msg: MessageContent) -> MessageContent:
         msg.command = self.keyword
         msg.text = msg.raw_text.replace(self.keyword, '')
