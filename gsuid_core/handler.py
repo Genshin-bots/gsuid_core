@@ -1,4 +1,7 @@
+import asyncio
+
 from server import Bot
+from trigger import Trigger
 from config import core_config
 from model import MessageContent, MessageReceive
 
@@ -35,18 +38,24 @@ async def handle_event(ws: Bot, msg: MessageReceive):
     # 获取用户权限，越小越高
     user_pm = await get_user_pml(msg)
     message = await msg_process(msg)
-    for sv in SL.lst:
-        _sv = SL.lst[sv]
-        # 服务启动且权限等级超过服务权限
+    ws.user_id = msg.user_id
+    ws.group_id = msg.group_id
+    ws.user_type = msg.user_type
+    await ws.send(f'[收到消息] {msg}')
+    pending = [
+        _check_command(ws, tr, message)
+        for sv in SL.lst
+        for tr in SL.lst[sv].TL
         if (
-            _sv.enabled
-            and user_pm <= _sv.permission
-            and msg.group_id not in _sv.black_list
-        ):
-            for trigger in _sv.TL:
-                if trigger.check_command(message):
-                    message = await trigger.get_command(message)
-                    await trigger.func(ws, message)
-                    break
-            else:
-                await ws.send('已收到消息...')
+            SL.lst[sv].enabled
+            and user_pm <= SL.lst[sv].permission
+            and msg.group_id not in SL.lst[sv].black_list
+        )
+    ]
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def _check_command(ws: Bot, trigger: Trigger, message: MessageContent):
+    if trigger.check_command(message):
+        message = await trigger.get_command(message)
+        ws.queue.put_nowait(trigger.func(ws, message))

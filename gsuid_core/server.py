@@ -1,18 +1,44 @@
 import sys
+import asyncio
 import importlib
-from typing import Dict
 from pathlib import Path
+from typing import Dict, List, Union, Optional
 
 from fastapi import WebSocket
+from segment import MessageSegment
+from msgspec import json as msgjson
+from model import Message, MessageSend
 
 
 class Bot:
     def __init__(self, _id: str):
         self.bot_id = _id
         self.bot = gss.active_bot[_id]
+        self.queue = asyncio.queues.Queue()
+        self.background_tasks = set()
+        self.user_id: Optional[str] = None
+        self.group_id: Optional[str] = None
+        self.user_type: Optional[str] = None
 
-    async def send(self, message):
-        await self.bot.send_text(message)
+    async def send(self, message: Union[Message, List[Message], str]):
+        if isinstance(message, Message):
+            message = [message]
+        elif isinstance(message, str):
+            if message.startswith('base64://'):
+                message = [MessageSegment.image(message)]
+            else:
+                message = [MessageSegment.text(message)]
+        send = MessageSend(content=message, bot_id=self.bot_id)
+        await self.bot.send_bytes(msgjson.encode(send))
+
+    async def _process(self):
+        while True:
+            data = await self.queue.get()
+            task = asyncio.create_task(data)
+            self.background_tasks.add(task)
+            task.add_done_callback(
+                lambda _: self.background_tasks.discard(task)
+            )
 
 
 class GsServer:
@@ -24,6 +50,14 @@ class GsServer:
         sys.path.append(str(Path(__file__).parents[1]))
         plug_path = Path(__file__).parent / 'plugins'
         for plugin in plug_path.iterdir():
+            if plugin.is_dir():
+                plugin_path = plugin / '__init__.py'
+                if plugin_path.exists():
+                    sys.path.append(str(plugin_path.parents))
+                    print(sys.path)
+                    print(f'plugins.{plugin.name}.__init__')
+                    importlib.import_module(f'plugins.{plugin.name}.__init__')
+                    print(f'插件【{plugin.name}】加载成功！')
             if plugin.suffix == '.py':
                 importlib.import_module(f'plugins.{plugin.name[:-3]}')
                 print(f'插件【{plugin.name}】加载成功！')

@@ -1,11 +1,11 @@
-import json
+import asyncio
 
 import uvicorn
 from server import gss
 from config import core_config
 from handler import handle_event
 from model import MessageReceive
-from pydantic import parse_obj_as
+from msgspec import json as msgjson
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
@@ -17,14 +17,19 @@ PORT = int(core_config.get_config('PORT'))
 async def websocket_endpoint(websocket: WebSocket, bot_id: str):
     bot = await gss.connect(websocket, bot_id)
 
-    try:
-        while True:
-            data = await websocket.receive_text()
-            msg = parse_obj_as(MessageReceive, json.loads(data))
-            print(msg)
-            await handle_event(bot, msg)
-    except WebSocketDisconnect:
-        gss.disconnect(bot_id)
+    async def start():
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                msg = msgjson.decode(data, type=MessageReceive)
+                await handle_event(bot, msg)
+        except WebSocketDisconnect:
+            gss.disconnect(bot_id)
+
+    async def process():
+        await bot._process()
+
+    await asyncio.gather(process(), start())
 
 
 if __name__ == "__main__":

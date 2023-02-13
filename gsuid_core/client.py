@@ -1,8 +1,10 @@
+import random
 import asyncio
 from typing import Union
 
 import websockets.client
-from model import Message, MessageReceive
+from msgspec import json as msgjson
+from model import Message, MessageSend, MessageReceive
 from websockets.exceptions import ConnectionClosedError
 
 
@@ -21,7 +23,7 @@ class GsClient:
     async def recv_msg(self):
         try:
             async for message in self.ws:
-                print(message)
+                print(msgjson.decode(message, type=MessageSend))
         except ConnectionClosedError:
             print('断开链接...')
 
@@ -34,9 +36,14 @@ class GsClient:
         while True:
             intent = await self._input()
             msg = MessageReceive(
-                bot_id='Nonebot', content=[Message(type='text', data=intent)]
+                bot_id='Nonebot',
+                user_type='group',
+                group_id='123456789',
+                user_id='5253123',
+                content=[Message(type='text', data=intent)],
             )
-            await self.ws.send(MessageReceive.parse_obj(msg).json())
+            msg_send = msgjson.encode(msg)
+            await self.ws.send(msg_send)
 
     async def start(self):
         recv_task = asyncio.create_task(self.recv_msg())

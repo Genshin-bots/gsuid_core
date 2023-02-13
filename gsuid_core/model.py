@@ -1,14 +1,14 @@
 from typing import Any, List, Optional
 
-from pydantic import BaseModel
+from msgspec import Struct
 
 
-class Message(BaseModel):
+class Message(Struct):
     type: Optional[str] = None
     data: Optional[Any] = None
 
 
-class MessageReceive(BaseModel):
+class MessageReceive(Struct):
     bot_id: str = 'Bot'
     user_type: Optional[str] = None
     group_id: Optional[str] = None
@@ -17,7 +17,7 @@ class MessageReceive(BaseModel):
     content: List[Message] = []
 
 
-class MessageContent(BaseModel):
+class MessageContent(Struct):
     raw: Optional[MessageReceive] = None
     raw_text: str = ''
     command: Optional[str] = None
@@ -28,7 +28,7 @@ class MessageContent(BaseModel):
     at_list: List[Any] = []
 
 
-class MessageSend(BaseModel):
+class MessageSend(Struct):
     bot_id: str = 'Bot'
     target_type: Optional[str] = None
     target_id: Optional[str] = None
