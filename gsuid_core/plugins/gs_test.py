@@ -2,7 +2,7 @@ import asyncio
 
 from gsuid_core.sv import SL, SV
 from gsuid_core.server import Bot
-from gsuid_core.model import MessageContent
+from gsuid_core.models import MessageContent
 
 
 @SV('开关').on_prefix(('关闭', '开启'))

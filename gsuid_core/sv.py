@@ -42,7 +42,7 @@ class SV:
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器
-            self.TL: List[Trigger] = []
+            self.TL: Dict[str, Trigger] = {}
             self.is_initialized = True
 
             # 判断sv是否已持久化
@@ -91,8 +91,8 @@ class SV:
             keyword_list = keyword
             if isinstance(keyword, str):
                 keyword_list = (keyword,)
-            trigger = [Trigger(type, _k, func) for _k in keyword_list]
-            self.TL.extend(trigger)
+            trigger = {_k: Trigger(type, _k, func) for _k in keyword_list}
+            self.TL.update(trigger)
 
             @wraps(func)
             async def wrapper(bot, msg) -> Optional[Callable]:

@@ -4,9 +4,10 @@ import uvicorn
 from server import gss
 from config import core_config
 from handler import handle_event
-from model import MessageReceive
 from msgspec import json as msgjson
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+from gsuid_core.models import MessageReceive
 
 app = FastAPI()
 HOST = core_config.get_config('HOST')

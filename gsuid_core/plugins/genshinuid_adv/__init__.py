@@ -1,6 +1,6 @@
 from gsuid_core.sv import SV
 from gsuid_core.server import Bot
-from gsuid_core.model import MessageContent
+from gsuid_core.models import MessageContent
 
 from .get_adv import char_adv, weapon_adv
 

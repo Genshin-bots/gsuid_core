@@ -3,9 +3,9 @@ import asyncio
 from server import Bot
 from trigger import Trigger
 from config import core_config
-from model import MessageContent, MessageReceive
 
 from gsuid_core.sv import SL
+from gsuid_core.models import MessageContent, MessageReceive
 
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
@@ -41,9 +41,9 @@ async def handle_event(ws: Bot, msg: MessageReceive):
     ws.user_id = msg.user_id
     ws.group_id = msg.group_id
     ws.user_type = msg.user_type
-    await ws.send(f'[收到消息] {msg}')
+    print(f'[收到消息] {msg}')
     pending = [
-        _check_command(ws, tr, message)
+        _check_command(ws, SL.lst[sv].TL[tr], message)
         for sv in SL.lst
         for tr in SL.lst[sv].TL
         if (

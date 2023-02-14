@@ -1,11 +1,11 @@
-import random
 import asyncio
 from typing import Union
 
 import websockets.client
 from msgspec import json as msgjson
-from model import Message, MessageSend, MessageReceive
 from websockets.exceptions import ConnectionClosedError
+
+from gsuid_core.models import Message, MessageSend, MessageReceive
 
 
 class GsClient:

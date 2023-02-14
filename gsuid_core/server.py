@@ -7,7 +7,8 @@ from typing import Dict, List, Union, Optional
 from fastapi import WebSocket
 from segment import MessageSegment
 from msgspec import json as msgjson
-from model import Message, MessageSend
+
+from gsuid_core.models import Message, MessageSend
 
 
 class Bot:
@@ -54,8 +55,6 @@ class GsServer:
                 plugin_path = plugin / '__init__.py'
                 if plugin_path.exists():
                     sys.path.append(str(plugin_path.parents))
-                    print(sys.path)
-                    print(f'plugins.{plugin.name}.__init__')
                     importlib.import_module(f'plugins.{plugin.name}.__init__')
                     print(f'插件【{plugin.name}】加载成功！')
             if plugin.suffix == '.py':

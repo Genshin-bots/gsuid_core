@@ -1,6 +1,6 @@
 from typing import Literal, Callable
 
-from model import MessageContent
+from gsuid_core.models import MessageContent
 
 
 class Trigger:

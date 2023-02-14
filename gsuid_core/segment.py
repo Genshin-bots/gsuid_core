@@ -3,7 +3,8 @@ from base64 import b64encode
 from typing import List, Union
 
 from PIL import Image
-from model import Message
+
+from gsuid_core.models import Message
 
 
 class MessageSegment:
