@@ -29,7 +29,13 @@ class Bot:
                 message = [MessageSegment.image(message)]
             else:
                 message = [MessageSegment.text(message)]
-        send = MessageSend(content=message, bot_id=self.bot_id)
+        send = MessageSend(
+            content=message,
+            bot_id=self.bot_id,
+            target_type=self.user_type,
+            target_id=self.group_id if self.group_id else self.user_id,
+        )
+        print(f'[发送消息] {send}')
         await self.bot.send_bytes(msgjson.encode(send))
 
     async def _process(self):

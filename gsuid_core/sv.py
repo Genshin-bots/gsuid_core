@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from functools import wraps
-from typing import Dict, List, Self, Tuple, Union, Literal, Callable, Optional
+from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
 from trigger import Trigger
 from config import core_config
@@ -21,7 +23,7 @@ config_sv = core_config.get_config('sv')
 class SV:
     is_initialized = False
 
-    def __new__(cls: type[Self], *args):
+    def __new__(cls, *args):
         # 判断sv是否已经被初始化
         if args[0] in SL.lst:
             return SL.lst[args[0]]
@@ -112,4 +114,7 @@ class SV:
         return self._on('suffix', keyword)
 
     def on_keyword(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
+        return self._on('keyword', keyword)
+        return self._on('keyword', keyword)
+        return self._on('keyword', keyword)
         return self._on('keyword', keyword)
