@@ -21,7 +21,7 @@ class MessageContent(Struct):
     raw: Optional[MessageReceive] = None
     raw_text: str = ''
     command: Optional[str] = None
-    text: Optional[str] = None
+    text: str = ''
     image: Optional[str] = None
     at: Optional[str] = None
     image_list: List[Any] = []

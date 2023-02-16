@@ -1,10 +1,9 @@
 from io import BytesIO
 from base64 import b64encode
-from typing import List, Union
+from typing import List, Union, Literal
 
 from PIL import Image
-
-from gsuid_core.models import Message
+from models import Message
 
 
 class MessageSegment:
@@ -40,4 +39,10 @@ class MessageSegment:
 
     @staticmethod
     def record(content: str) -> Message:
-        return Message(type='recor', data=content)
+        return Message(type='record', data=content)
+
+    @staticmethod
+    def log(
+        type: Literal['INFO', 'WARNING', 'ERROR', 'SUCCESS'], content: str
+    ) -> Message:
+        return Message(type=f'log_{type}', data=content)

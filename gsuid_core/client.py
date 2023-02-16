@@ -3,9 +3,8 @@ from typing import Union
 
 import websockets.client
 from msgspec import json as msgjson
+from models import Message, MessageSend, MessageReceive
 from websockets.exceptions import ConnectionClosedError
-
-from gsuid_core.models import Message, MessageSend, MessageReceive
 
 
 class GsClient:

@@ -41,6 +41,7 @@ class SV:
         black_list: List = [],
     ):
         if not self.is_initialized:
+            print(f'【{name}】模块初始化中...')
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器
@@ -93,8 +94,10 @@ class SV:
             keyword_list = keyword
             if isinstance(keyword, str):
                 keyword_list = (keyword,)
-            trigger = {_k: Trigger(type, _k, func) for _k in keyword_list}
-            self.TL.update(trigger)
+            for _k in keyword_list:
+                if _k not in self.TL:
+                    print(f'载入{type}触发器【{_k}】!')
+                    self.TL[_k] = Trigger(type, _k, func)
 
             @wraps(func)
             async def wrapper(bot, msg) -> Optional[Callable]:
@@ -108,13 +111,10 @@ class SV:
         return self._on('fullmatch', keyword)
 
     def on_prefix(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
-        return self._on('keyword', keyword)
+        return self._on('prefix', keyword)
 
     def on_suffix(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
         return self._on('suffix', keyword)
 
     def on_keyword(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
-        return self._on('keyword', keyword)
-        return self._on('keyword', keyword)
-        return self._on('keyword', keyword)
         return self._on('keyword', keyword)

@@ -1,6 +1,6 @@
 from typing import Literal, Callable
 
-from gsuid_core.models import MessageContent
+from models import MessageContent
 
 
 class Trigger:
@@ -19,12 +19,12 @@ class Trigger:
         return getattr(self, f'_check_{self.type}')(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
-        if msg.startswith(prefix):
+        if msg.startswith(prefix) and not self._check_fullmatch(prefix, msg):
             return True
         return False
 
     def _check_suffix(self, suffix: str, msg: str) -> bool:
-        if msg.endswith(suffix):
+        if msg.endswith(suffix) and not self._check_fullmatch(suffix, msg):
             return True
         return False
 
