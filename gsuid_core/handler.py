@@ -1,6 +1,6 @@
 import asyncio
 
-from server import Bot
+from bot import Bot
 from trigger import Trigger
 from config import core_config
 from models import MessageContent, MessageReceive
@@ -50,6 +50,11 @@ async def handle_event(ws: Bot, msg: MessageReceive):
             SL.lst[sv].enabled
             and user_pm <= SL.lst[sv].permission
             and msg.group_id not in SL.lst[sv].black_list
+            and True
+            if SL.lst[sv].area == 'ALL'
+            or (msg.group_id and SL.lst[sv].area == 'GROUP')
+            or (not msg.group_id and SL.lst[sv].area == 'DIRECT')
+            else False
         )
     ]
     await asyncio.gather(*pending, return_exceptions=True)

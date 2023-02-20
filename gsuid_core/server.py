@@ -2,94 +2,31 @@ import sys
 import asyncio
 import importlib
 from pathlib import Path
-from typing import Dict, List, Union, Literal, Optional
+from typing import Dict, Callable
 
+from bot import Bot
+from logger import logger
 from fastapi import WebSocket
-from segment import MessageSegment
-from msgspec import json as msgjson
-from models import Message, MessageSend
 
 sys.path.append(str(Path(__file__).parents[1]))
 
 
-class Bot:
-    def __init__(self, _id: str):
-        self.bot_id = _id
-        self.bot = gss.active_bot[_id]
-        self.logger = GsLogger(self.bot_id)
-        self.queue = asyncio.queues.Queue()
-        self.background_tasks = set()
-        self.user_id: Optional[str] = None
-        self.group_id: Optional[str] = None
-        self.user_type: Optional[str] = None
-
-    async def send(self, message: Union[Message, List[Message], str]):
-        if isinstance(message, Message):
-            message = [message]
-        elif isinstance(message, str):
-            if message.startswith('base64://'):
-                message = [MessageSegment.image(message)]
-            else:
-                message = [MessageSegment.text(message)]
-        send = MessageSend(
-            content=message,
-            bot_id=self.bot_id,
-            target_type=self.user_type,
-            target_id=self.group_id if self.group_id else self.user_id,
-        )
-        print(f'[发送消息] {send}')
-        await self.bot.send_bytes(msgjson.encode(send))
-
-    async def _process(self):
-        while True:
-            data = await self.queue.get()
-            task = asyncio.create_task(data)
-            self.background_tasks.add(task)
-            task.add_done_callback(
-                lambda _: self.background_tasks.discard(task)
-            )
-
-
-class GsLogger:
-    def __init__(self, bot_id: str):
-        self.bot_id = bot_id
-        self.bot = gss.active_bot[bot_id]
-
-    def get_msg_send(
-        self, type: Literal['INFO', 'WARNING', 'ERROR', 'SUCCESS'], msg: str
-    ):
-        return MessageSend(
-            content=[MessageSegment.log(type, msg)],
-            bot_id=self.bot_id,
-            target_type=None,
-            target_id=None,
-        )
-
-    async def info(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('INFO', msg))
-        )
-
-    async def warning(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('WARNING', msg))
-        )
-
-    async def error(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('ERROR', msg))
-        )
-
-    async def success(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('SUCCESS', msg))
-        )
-
-
 class GsServer:
+    _instance = None
+    is_initialized = False
+    is_load = False
+    bot_connect_def = set()
+
+    def __new__(cls, *args, **kwargs):
+        # 判断sv是否已经被初始化
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.active_bot: Dict[str, WebSocket] = {}
-        self.load_plugins()
+        if not self.is_initialized:
+            self.active_bot: Dict[str, WebSocket] = {}
+            self.is_initialized = True
 
     def load_plugins(self):
         sys.path.append(str(Path(__file__).parents[1]))
@@ -121,12 +58,14 @@ class GsServer:
     async def connect(self, websocket: WebSocket, bot_id: str) -> Bot:
         await websocket.accept()
         self.active_bot[bot_id] = websocket
-        print(f'{bot_id}已连接！')
-        return Bot(bot_id)
+        logger.info(f'{bot_id}已连接！')
+        _task = [_def() for _def in self.bot_connect_def]
+        asyncio.gather(*_task)
+        return Bot(bot_id, websocket)
 
     def disconnect(self, bot_id: str):
         del self.active_bot[bot_id]
-        print(f'{bot_id}已中断！')
+        logger.warning(f'{bot_id}已中断！')
 
     async def send(self, message: str, bot_id: str):
         await self.active_bot[bot_id].send_text(message)
@@ -135,5 +74,7 @@ class GsServer:
         for bot_id in self.active_bot:
             await self.send(message, bot_id)
 
-
-gss = GsServer()
+    @classmethod
+    def on_bot_connect(cls, func: Callable):
+        cls.bot_connect_def.add(func)
+        return func

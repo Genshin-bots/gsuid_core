@@ -41,7 +41,7 @@ poetry run python core.py
 import asyncio
 
 from gsuid_core.sv import SL, SV
-from gsuid_core.server import Bot
+from gsuid_core.bot import Bot
 from gsuid_core.models import MessageContent
 
 
@@ -52,7 +52,7 @@ async def get_switch_msg(bot: Bot, msg: MessageContent):
     im = await process(name)  # 自己的业务逻辑
     await bot.logger.info('正在进行[关闭/开启开关]')  # 发送loger
     await bot.send(im)   # 发送消息
-    
+
 sv=SV(
     name='复杂的服务',  # 定义一组服务`开关`,
     permission=3, # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通

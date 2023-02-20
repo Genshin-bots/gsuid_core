@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import wraps
 from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
+from logger import logger
 from trigger import Trigger
 from config import core_config
 
@@ -23,7 +24,7 @@ config_sv = core_config.get_config('sv')
 class SV:
     is_initialized = False
 
-    def __new__(cls, *args):
+    def __new__(cls, *args, **kwargs):
         # 判断sv是否已经被初始化
         if args[0] in SL.lst:
             return SL.lst[args[0]]
@@ -34,14 +35,15 @@ class SV:
 
     def __init__(
         self,
-        name: str,
+        name: str = '',
         permission: int = 3,
         priority: int = 5,
         enabled: bool = True,
+        area: Literal['GROUP', 'DIRECT', 'ALL'] = 'ALL',
         black_list: List = [],
     ):
         if not self.is_initialized:
-            print(f'【{name}】模块初始化中...')
+            logger.info(f'【{name}】模块初始化中...')
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器
@@ -54,21 +56,25 @@ class SV:
                 self.enabled = config_sv[name]['enabled']
                 self.permission = config_sv[name]['permission']
                 self.black_list = config_sv[name]['black_list']
+                self.area = config_sv[name]['area']
             else:
                 # sv优先级
-                self.priority: int = priority
+                self.priority = priority
                 # sv是否开启
-                self.enabled: bool = enabled
+                self.enabled = enabled
                 # 黑名单群
-                self.black_list: List = black_list
+                self.black_list = black_list
                 # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通
-                self.permission: int = permission
+                self.permission = permission
+                # 作用范围
+                self.area = area
                 # 写入
                 self.set(
                     priority=priority,
                     enabled=enabled,
                     permission=permission,
                     black_list=black_list,
+                    area=area,
                 )
 
     def set(self, **kwargs):
@@ -96,7 +102,7 @@ class SV:
                 keyword_list = (keyword,)
             for _k in keyword_list:
                 if _k not in self.TL:
-                    print(f'载入{type}触发器【{_k}】!')
+                    logger.info(f'载入{type}触发器【{_k}】!')
                     self.TL[_k] = Trigger(type, _k, func)
 
             @wraps(func)

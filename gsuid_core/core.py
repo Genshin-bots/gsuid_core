@@ -1,7 +1,7 @@
 import asyncio
 
 import uvicorn
-from server import gss
+from gss import gss
 from config import core_config
 from handler import handle_event
 from models import MessageReceive

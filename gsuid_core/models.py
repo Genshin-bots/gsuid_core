@@ -8,19 +8,19 @@ class Message(Struct):
     data: Optional[Any] = None
 
 
-class MessageReceive(Struct):
+class MessageReceive(Struct, frozen=True):
     bot_id: str = 'Bot'
     user_type: Optional[str] = None
     group_id: Optional[str] = None
-    user_id: Optional[str] = None
+    user_id: str = ''
     user_pm: int = 3
     content: List[Message] = []
 
 
 class MessageContent(Struct):
-    raw: Optional[MessageReceive] = None
+    raw: MessageReceive = MessageReceive()
     raw_text: str = ''
-    command: Optional[str] = None
+    command: str = ''
     text: str = ''
     image: Optional[str] = None
     at: Optional[str] = None
