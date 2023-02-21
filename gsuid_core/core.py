@@ -1,12 +1,17 @@
+import sys
 import asyncio
+from pathlib import Path
 
 import uvicorn
-from gss import gss
-from config import core_config
-from handler import handle_event
-from models import MessageReceive
 from msgspec import json as msgjson
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+sys.path.append(str(Path(__file__).parents[1]))
+from gsuid_core.gss import gss  # noqa: E402
+from gsuid_core.config import core_config  # noqa: E402
+from gsuid_core.handler import handle_event  # noqa: E402
+from gsuid_core.models import MessageReceive  # noqa: E402
+from gsuid_core.aps import start_scheduler, shutdown_scheduler  # noqa: E402
 
 app = FastAPI()
 HOST = core_config.get_config('HOST')
@@ -30,6 +35,16 @@ async def websocket_endpoint(websocket: WebSocket, bot_id: str):
         await bot._process()
 
     await asyncio.gather(process(), start())
+
+
+@app.on_event('startup')
+async def startup_event():
+    await start_scheduler()
+
+
+@app.on_event('shutdown')
+async def shutdown_event():
+    await shutdown_scheduler()
 
 
 if __name__ == "__main__":

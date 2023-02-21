@@ -1,9 +1,10 @@
 from typing import Literal
 
 from fastapi import WebSocket
-from models import MessageSend
-from segment import MessageSegment
 from msgspec import json as msgjson
+
+from gsuid_core.models import MessageSend
+from gsuid_core.segment import MessageSegment
 
 
 class GsLogger:

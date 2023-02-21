@@ -1,11 +1,10 @@
 import asyncio
 
-from bot import Bot
-from trigger import Trigger
-from config import core_config
-from models import MessageContent, MessageReceive
-
 from gsuid_core.sv import SL
+from gsuid_core.bot import Bot
+from gsuid_core.trigger import Trigger
+from gsuid_core.config import core_config
+from gsuid_core.models import MessageContent, MessageReceive
 
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')

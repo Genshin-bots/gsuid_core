@@ -36,7 +36,7 @@ class GsClient:
             intent = await self._input()
             msg = MessageReceive(
                 bot_id='Nonebot',
-                user_type='DIRECT',
+                user_type='direct',
                 user_pm=2,
                 group_id=None,
                 user_id='5253123',

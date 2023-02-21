@@ -3,9 +3,9 @@ from __future__ import annotations
 from functools import wraps
 from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
-from logger import logger
-from trigger import Trigger
-from config import core_config
+from gsuid_core.logger import logger
+from gsuid_core.trigger import Trigger
+from gsuid_core.config import core_config
 
 
 class SVList:

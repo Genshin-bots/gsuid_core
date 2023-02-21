@@ -4,11 +4,10 @@ import importlib
 from pathlib import Path
 from typing import Dict, Callable
 
-from bot import Bot
-from logger import logger
 from fastapi import WebSocket
 
-sys.path.append(str(Path(__file__).parents[1]))
+from gsuid_core.bot import Bot
+from gsuid_core.logger import logger
 
 
 class GsServer:
@@ -25,10 +24,12 @@ class GsServer:
 
     def __init__(self):
         if not self.is_initialized:
-            self.active_bot: Dict[str, WebSocket] = {}
+            self.active_ws: Dict[str, WebSocket] = {}
+            self.active_bot: Dict[str, Bot] = {}
             self.is_initialized = True
 
     def load_plugins(self):
+        logger.info('开始导入插件...')
         sys.path.append(str(Path(__file__).parents[1]))
         plug_path = Path(__file__).parent / 'plugins'
         # 遍历插件文件夹内所有文件
@@ -57,21 +58,23 @@ class GsServer:
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> Bot:
         await websocket.accept()
-        self.active_bot[bot_id] = websocket
+        self.active_ws[bot_id] = websocket
+        self.active_bot[bot_id] = bot = Bot(bot_id, websocket)
         logger.info(f'{bot_id}已连接！')
         _task = [_def() for _def in self.bot_connect_def]
         asyncio.gather(*_task)
-        return Bot(bot_id, websocket)
+        return bot
 
     def disconnect(self, bot_id: str):
+        del self.active_ws[bot_id]
         del self.active_bot[bot_id]
         logger.warning(f'{bot_id}已中断！')
 
     async def send(self, message: str, bot_id: str):
-        await self.active_bot[bot_id].send_text(message)
+        await self.active_ws[bot_id].send_text(message)
 
     async def broadcast(self, message: str):
-        for bot_id in self.active_bot:
+        for bot_id in self.active_ws:
             await self.send(message, bot_id)
 
     @classmethod

@@ -1,12 +1,13 @@
 import asyncio
-from typing import List, Union, Optional
+from typing import List, Union, Literal, Optional
 
-from logger import logger
 from fastapi import WebSocket
-from gs_logger import GsLogger
-from segment import MessageSegment
 from msgspec import json as msgjson
-from models import Message, MessageSend
+
+from gsuid_core.logger import logger
+from gsuid_core.gs_logger import GsLogger
+from gsuid_core.segment import MessageSegment
+from gsuid_core.models import Message, MessageSend
 
 
 class Bot:
@@ -21,6 +22,18 @@ class Bot:
         self.user_type: Optional[str] = None
 
     async def send(self, message: Union[Message, List[Message], str, bytes]):
+        await self.target_send(
+            message,
+            self.user_type,  # type:ignore
+            self.group_id if self.group_id else self.user_id,
+        )
+
+    async def target_send(
+        self,
+        message: Union[Message, List[Message], str, bytes],
+        target_type: Literal['group', 'driect', 'channel', 'sub_channel'],
+        target_id: Optional[str],
+    ):
         if isinstance(message, Message):
             message = [message]
         elif isinstance(message, str):
@@ -33,8 +46,8 @@ class Bot:
         send = MessageSend(
             content=message,
             bot_id=self.bot_id,
-            target_type=self.user_type,
-            target_id=self.group_id if self.group_id else self.user_id,
+            target_type=target_type,
+            target_id=target_id,
         )
         logger.info(f'[发送消息] {send}')
         await self.bot.send_bytes(msgjson.encode(send))
