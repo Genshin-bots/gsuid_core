@@ -34,12 +34,16 @@ class GsClient:
     async def send_msg(self):
         while True:
             intent = await self._input()
+            if intent == '全匹配测试':
+                user_id = '55551111'
+            else:
+                user_id = '51'
             msg = MessageReceive(
                 bot_id='Nonebot',
                 user_type='direct',
                 user_pm=2,
                 group_id=None,
-                user_id='5253123',
+                user_id=user_id,
                 content=[Message(type='text', data=intent)],
             )
             msg_send = msgjson.encode(msg)

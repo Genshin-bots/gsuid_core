@@ -7,31 +7,21 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.segment import MessageSegment
-from gsuid_core.models import Message, MessageSend
+from gsuid_core.models import Event, Message, MessageSend
 
 
-class Bot:
+class _Bot:
     def __init__(self, _id: str, ws: WebSocket):
         self.bot_id = _id
         self.bot = ws
         self.logger = GsLogger(self.bot_id, ws)
         self.queue = asyncio.queues.Queue()
         self.background_tasks = set()
-        self.user_id: Optional[str] = None
-        self.group_id: Optional[str] = None
-        self.user_type: Optional[str] = None
-
-    async def send(self, message: Union[Message, List[Message], str, bytes]):
-        await self.target_send(
-            message,
-            self.user_type,  # type:ignore
-            self.group_id if self.group_id else self.user_id,
-        )
 
     async def target_send(
         self,
         message: Union[Message, List[Message], str, bytes],
-        target_type: Literal['group', 'driect', 'channel', 'sub_channel'],
+        target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
     ):
         if isinstance(message, Message):
@@ -60,3 +50,26 @@ class Bot:
             task.add_done_callback(
                 lambda _: self.background_tasks.discard(task)
             )
+
+
+class Bot:
+    def __init__(self, bot: _Bot, ev: Event):
+        self.bot = bot
+        self.ev = ev
+        self.logger = self.bot.logger
+        self.bot_id = self.bot.bot_id
+
+    async def send(self, message: Union[Message, List[Message], str, bytes]):
+        return await self.bot.target_send(
+            message,
+            self.ev.user_type,
+            self.ev.group_id if self.ev.group_id else self.ev.user_id,
+        )
+
+    async def target_send(
+        self,
+        message: Union[Message, List[Message], str, bytes],
+        target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
+        target_id: Optional[str],
+    ):
+        return await self.bot.target_send(message, target_type, target_id)

@@ -6,7 +6,7 @@ from typing import Dict, Callable
 
 from fastapi import WebSocket
 
-from gsuid_core.bot import Bot
+from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
 
 
@@ -25,7 +25,7 @@ class GsServer:
     def __init__(self):
         if not self.is_initialized:
             self.active_ws: Dict[str, WebSocket] = {}
-            self.active_bot: Dict[str, Bot] = {}
+            self.active_bot: Dict[str, _Bot] = {}
             self.is_initialized = True
 
     def load_plugins(self):
@@ -56,10 +56,10 @@ class GsServer:
             if plugin.suffix == '.py':
                 importlib.import_module(f'plugins.{plugin.name[:-3]}')
 
-    async def connect(self, websocket: WebSocket, bot_id: str) -> Bot:
+    async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
         self.active_ws[bot_id] = websocket
-        self.active_bot[bot_id] = bot = Bot(bot_id, websocket)
+        self.active_bot[bot_id] = bot = _Bot(bot_id, websocket)
         logger.info(f'{bot_id}已连接！')
         _task = [_def() for _def in self.bot_connect_def]
         asyncio.gather(*_task)

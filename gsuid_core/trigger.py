@@ -1,12 +1,12 @@
 from typing import Literal, Callable
 
-from gsuid_core.models import MessageContent
+from gsuid_core.models import Event
 
 
 class Trigger:
     def __init__(
         self,
-        type: Literal['prefix', 'suffix', 'keyword', 'fullmatch'],
+        type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
         keyword: str,
         func: Callable,
     ):
@@ -14,12 +14,17 @@ class Trigger:
         self.keyword = keyword
         self.func = func
 
-    def check_command(self, raw_msg: MessageContent) -> bool:
+    def check_command(self, raw_msg: Event) -> bool:
         msg = raw_msg.raw_text
         return getattr(self, f'_check_{self.type}')(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
         if msg.startswith(prefix) and not self._check_fullmatch(prefix, msg):
+            return True
+        return False
+
+    def _check_command(self, command: str, msg: str) -> bool:
+        if msg.startswith(command):
             return True
         return False
 
@@ -38,7 +43,7 @@ class Trigger:
             return True
         return False
 
-    async def get_command(self, msg: MessageContent) -> MessageContent:
+    async def get_command(self, msg: Event) -> Event:
         msg.command = self.keyword
         msg.text = msg.raw_text.replace(self.keyword, '')
         return msg

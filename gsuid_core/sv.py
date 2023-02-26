@@ -36,7 +36,7 @@ class SV:
     def __init__(
         self,
         name: str = '',
-        permission: int = 3,
+        pm: int = 3,
         priority: int = 5,
         enabled: bool = True,
         area: Literal['GROUP', 'DIRECT', 'ALL'] = 'ALL',
@@ -54,7 +54,7 @@ class SV:
             if name in config_sv:
                 self.priority = config_sv[name]['priority']
                 self.enabled = config_sv[name]['enabled']
-                self.permission = config_sv[name]['permission']
+                self.pm = config_sv[name]['pm']
                 self.black_list = config_sv[name]['black_list']
                 self.area = config_sv[name]['area']
             else:
@@ -65,14 +65,14 @@ class SV:
                 # 黑名单群
                 self.black_list = black_list
                 # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通
-                self.permission = permission
+                self.pm = pm
                 # 作用范围
                 self.area = area
                 # 写入
                 self.set(
                     priority=priority,
                     enabled=enabled,
-                    permission=permission,
+                    pm=pm,
                     black_list=black_list,
                     area=area,
                 )
@@ -93,7 +93,7 @@ class SV:
 
     def _on(
         self,
-        type: Literal['prefix', 'suffix', 'keyword', 'fullmatch'],
+        type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
         keyword: Union[str, Tuple[str, ...]],
     ):
         def deco(func: Callable) -> Callable:
@@ -124,3 +124,6 @@ class SV:
 
     def on_keyword(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
         return self._on('keyword', keyword)
+
+    def on_command(self, keyword: Union[str, Tuple[str, ...]]) -> Callable:
+        return self._on('command', keyword)
