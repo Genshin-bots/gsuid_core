@@ -15,7 +15,7 @@ class GsClient:
         self = GsClient()
         cls.ws_url = f'ws://{IP}:{PORT}/ws/Nonebot'
         print(f'连接至WS链接{self.ws_url}...')
-        cls.ws = await websockets.client.connect(cls.ws_url)
+        cls.ws = await websockets.client.connect(cls.ws_url, max_size=2**25)
         print('已成功链接！')
         return self
 

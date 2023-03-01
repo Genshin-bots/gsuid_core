@@ -35,26 +35,36 @@ class GsServer:
         # 遍历插件文件夹内所有文件
         for plugin in plug_path.iterdir():
             # 如果发现文件夹，则视为插件包
-            if plugin.is_dir():
-                plugin_path = plugin / '__init__.py'
-                plugins_path = plugin / '__full__.py'
-                # 如果文件夹内有__full_.py，则视为插件包合集
-                sys.path.append(str(plugin_path.parents))
-                if plugins_path.exists():
-                    importlib.import_module(f'plugins.{plugin.name}.__full__')
-                    for sub_plugin in plugin.iterdir():
-                        if sub_plugin.is_dir():
-                            plugin_path = sub_plugin / '__init__.py'
-                            if plugin_path.exists():
-                                sys.path.append(str(plugin_path.parents))
-                                _p = f'plugins.{plugin.name}.{sub_plugin.name}'
-                                importlib.import_module(f'{_p}.__init__')
-                # 如果文件夹内有__init_.py，则视为单个插件包
-                elif plugin_path.exists():
-                    importlib.import_module(f'plugins.{plugin.name}.__init__')
-            # 如果发现单文件，则视为单文件插件
-            if plugin.suffix == '.py':
-                importlib.import_module(f'plugins.{plugin.name[:-3]}')
+            try:
+                if plugin.is_dir():
+                    plugin_path = plugin / '__init__.py'
+                    plugins_path = plugin / '__full__.py'
+                    # 如果文件夹内有__full_.py，则视为插件包合集
+                    sys.path.append(str(plugin_path.parents))
+                    if plugins_path.exists():
+                        importlib.import_module(
+                            f'plugins.{plugin.name}.__full__'
+                        )
+                        for sub_plugin in plugin.iterdir():
+                            if sub_plugin.is_dir():
+                                plugin_path = sub_plugin / '__init__.py'
+                                if plugin_path.exists():
+                                    sys.path.append(str(plugin_path.parents))
+                                    _p = (
+                                        f'plugins.{plugin.name}.'
+                                        f'{sub_plugin.name}'
+                                    )
+                                    importlib.import_module(f'{_p}.__init__')
+                    # 如果文件夹内有__init_.py，则视为单个插件包
+                    elif plugin_path.exists():
+                        importlib.import_module(
+                            f'plugins.{plugin.name}.__init__'
+                        )
+                # 如果发现单文件，则视为单文件插件
+                if plugin.suffix == '.py':
+                    importlib.import_module(f'plugins.{plugin.name[:-3]}')
+            except:  # noqa
+                logger.warning(f'插件{plugin.name}加载失败')
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
