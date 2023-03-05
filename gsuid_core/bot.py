@@ -48,7 +48,10 @@ class _Bot:
             data = await self.queue.get()
             task = asyncio.create_task(data)
             self.bg_tasks.add(task)
-            task.add_done_callback(lambda _: self.bg_tasks.discard(task))
+            try:
+                task.add_done_callback(lambda _: self.bg_tasks.discard(task))
+            except Exception as e:
+                logger.error(e)
 
 
 class Bot:

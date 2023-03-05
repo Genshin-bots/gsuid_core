@@ -44,10 +44,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     # 获取用户权限，越小越高
     user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
-    bot = Bot(ws, event)
     print(f'[收到消息] {msg}')
     pending = [
-        _check_command(ws, bot, SL.lst[sv].TL[tr], event)
+        _check_command(ws, event, SL.lst[sv].TL[tr], event)
         for sv in SL.lst
         for tr in SL.lst[sv].TL
         if (
@@ -64,7 +63,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def _check_command(ws: _Bot, Bot: Bot, trigger: Trigger, message: Event):
+async def _check_command(
+    ws: _Bot, ev: Event, trigger: Trigger, message: Event
+):
     if trigger.check_command(message):
+        bot = Bot(ws, ev)
         message = await trigger.get_command(message)
-        ws.queue.put_nowait(trigger.func(Bot, message))
+        ws.queue.put_nowait(trigger.func(bot, message))
