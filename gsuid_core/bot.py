@@ -16,13 +16,14 @@ class _Bot:
         self.bot = ws
         self.logger = GsLogger(self.bot_id, ws)
         self.queue = asyncio.queues.Queue()
-        self.background_tasks = set()
+        self.bg_tasks = set()
 
     async def target_send(
         self,
         message: Union[Message, List[Message], str, bytes],
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
+        bot_id: str,
     ):
         if isinstance(message, Message):
             message = [message]
@@ -35,21 +36,19 @@ class _Bot:
             message = [MessageSegment.image(message)]
         send = MessageSend(
             content=message,
-            bot_id=self.bot_id,
+            bot_id=bot_id,
             target_type=target_type,
             target_id=target_id,
         )
-        logger.info(f'[发送消息] {send}')
+        logger.info(f'[发送消息to] {target_id}')
         await self.bot.send_bytes(msgjson.encode(send))
 
     async def _process(self):
         while True:
             data = await self.queue.get()
             task = asyncio.create_task(data)
-            self.background_tasks.add(task)
-            task.add_done_callback(
-                lambda _: self.background_tasks.discard(task)
-            )
+            self.bg_tasks.add(task)
+            task.add_done_callback(lambda _: self.bg_tasks.discard(task))
 
 
 class Bot:
@@ -64,6 +63,7 @@ class Bot:
             message,
             self.ev.user_type,
             self.ev.group_id if self.ev.group_id else self.ev.user_id,
+            self.ev.bot_id,
         )
 
     async def target_send(
@@ -72,4 +72,6 @@ class Bot:
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
     ):
-        return await self.bot.target_send(message, target_type, target_id)
+        return await self.bot.target_send(
+            message, target_type, target_id, self.ev.bot_id
+        )
