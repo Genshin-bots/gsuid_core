@@ -17,19 +17,34 @@
 git clone https://ghproxy.com/https://github.com/Genshin-bots/gsuid-core.git --depth=1 --single-branch
 ```
 
-2. 安装所需依赖
+2. 安装poetry
+
+```shell
+pip install poetry
+```
+
+3. 安装所需依赖
 
 ```shell
 poetry install
 ```
 
-3. 启动gsuid-core
+4. 安装所需插件
 
 ```shell
+# 安装v4 GenshinUID
+cd plugins
+git clone -b v4 https://ghproxy.com/https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
+```
+
+5. 启动gsuid-core
+
+```shell
+# 在gsuid_core/genshin_core文件夹内
 poetry run python core.py
 ```
 
-4. 链接其他适配端
+6. 链接其他适配端
 
 + 默认core将运行在`localhost:8765`端口上，如有需要可至`config.json`修改。
 + 在支持的Bot上（例如NoneBot2、HoshinoBot），安装相应适配插件，启动Bot（如果有修改端口，则需要在启动Bot前修改适配插件相应端口），即可自动连接Core端。
