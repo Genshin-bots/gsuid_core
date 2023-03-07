@@ -1,7 +1,9 @@
 import asyncio
+from typing import Dict
 
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
+from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, MessageReceive
@@ -44,9 +46,15 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     # 获取用户权限，越小越高
     user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
-    print(f'[收到消息] {msg}')
+    logger.info(f'[收到消息] {msg}')
+    valid_event: Dict[Trigger, int] = {}
     pending = [
-        _check_command(ws, event, SL.lst[sv].TL[tr], event)
+        _check_command(
+            SL.lst[sv].TL[tr],
+            SL.lst[sv].priority,
+            event,
+            valid_event,
+        )
         for sv in SL.lst
         for tr in SL.lst[sv].TL
         if (
@@ -61,12 +69,26 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         )
     ]
     await asyncio.gather(*pending, return_exceptions=True)
+    if len(valid_event) >= 1:
+        sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
+        for trigger, _ in sorted_event:
+            bot = Bot(ws, event)
+            message = await trigger.get_command(event)
+            logger.info(
+                f'↪ 消息 「{event.raw_text}」 触发'
+                f' 「{trigger.type}」 类型触发器, 关键词:'
+                f' 「{trigger.keyword}」 '
+            )
+            ws.queue.put_nowait(trigger.func(bot, message))
+            if trigger.block:
+                break
 
 
 async def _check_command(
-    ws: _Bot, ev: Event, trigger: Trigger, message: Event
+    trigger: Trigger,
+    priority: int,
+    message: Event,
+    valid_event: Dict[Trigger, int],
 ):
     if trigger.check_command(message):
-        bot = Bot(ws, ev)
-        message = await trigger.get_command(message)
-        ws.queue.put_nowait(trigger.func(bot, message))
+        valid_event[trigger] = priority

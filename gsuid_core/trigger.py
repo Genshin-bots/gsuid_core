@@ -9,10 +9,12 @@ class Trigger:
         type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
         keyword: str,
         func: Callable,
+        block: bool = False,
     ):
         self.type = type
         self.keyword = keyword
         self.func = func
+        self.block = block
 
     def check_command(self, raw_msg: Event) -> bool:
         msg = raw_msg.raw_text

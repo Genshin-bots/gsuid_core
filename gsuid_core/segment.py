@@ -21,6 +21,8 @@ class MessageSegment:
         elif isinstance(img, bytes):
             pass
         else:
+            if img.startswith('base64://'):
+                return Message(type='image', data=img)
             with open(img, 'rb') as fp:
                 img = fp.read()
         msg = Message(type='image', data=f'base64://{b64encode(img).decode()}')
