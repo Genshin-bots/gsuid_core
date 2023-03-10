@@ -1,22 +1,11 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import (
-    Dict,
-    List,
-    Tuple,
-    Union,
-    Literal,
-    Callable,
-    Optional,
-    TypeAlias,
-)
+from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
-
-KWType: TypeAlias = Union[str, Tuple[str, ...]]
 
 
 class SVList:
@@ -105,7 +94,7 @@ class SV:
     def _on(
         self,
         type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
-        keyword: KWType,
+        keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
     ):
         def deco(func: Callable) -> Callable:
@@ -125,17 +114,27 @@ class SV:
 
         return deco
 
-    def on_fullmatch(self, keyword: KWType, block: bool = False) -> Callable:
+    def on_fullmatch(
+        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+    ) -> Callable:
         return self._on('fullmatch', keyword, block)
 
-    def on_prefix(self, keyword: KWType, block: bool = False) -> Callable:
+    def on_prefix(
+        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+    ) -> Callable:
         return self._on('prefix', keyword, block)
 
-    def on_suffix(self, keyword: KWType, block: bool = False) -> Callable:
+    def on_suffix(
+        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+    ) -> Callable:
         return self._on('suffix', keyword, block)
 
-    def on_keyword(self, keyword: KWType, block: bool = False) -> Callable:
+    def on_keyword(
+        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+    ) -> Callable:
         return self._on('keyword', keyword, block)
 
-    def on_command(self, keyword: KWType, block: bool = False) -> Callable:
+    def on_command(
+        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+    ) -> Callable:
         return self._on('command', keyword, block)
