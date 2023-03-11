@@ -40,7 +40,7 @@ class _Bot:
             target_type=target_type,
             target_id=target_id,
         )
-        logger.info(f'[发送消息to] {target_id}')
+        logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
         await self.bot.send_bytes(msgjson.encode(send))
 
     async def _process(self):
@@ -59,7 +59,7 @@ class Bot:
         self.bot = bot
         self.ev = ev
         self.logger = self.bot.logger
-        self.bot_id = self.bot.bot_id
+        self.bot_id = ev.bot_id
 
     async def send(self, message: Union[Message, List[Message], str, bytes]):
         return await self.bot.target_send(
