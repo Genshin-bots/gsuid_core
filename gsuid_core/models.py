@@ -10,6 +10,7 @@ class Message(Struct):
 
 class MessageReceive(Struct):
     bot_id: str = 'Bot'
+    msg_id: str = ''
     user_type: Literal['group', 'direct', 'channel', 'sub_channel'] = 'group'
     group_id: Optional[str] = None
     user_id: str = ''
@@ -29,6 +30,7 @@ class Event(MessageReceive):
 
 class MessageSend(Struct):
     bot_id: str = 'Bot'
+    msg_id: str = ''
     target_type: Optional[str] = None
     target_id: Optional[str] = None
     content: Optional[List[Message]] = None

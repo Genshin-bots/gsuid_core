@@ -24,6 +24,7 @@ class _Bot:
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
         bot_id: str,
+        msg_id: str,
     ):
         if isinstance(message, Message):
             message = [message]
@@ -39,6 +40,7 @@ class _Bot:
             bot_id=bot_id,
             target_type=target_type,
             target_id=target_id,
+            msg_id=msg_id,
         )
         logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
         await self.bot.send_bytes(msgjson.encode(send))
@@ -67,6 +69,7 @@ class Bot:
             self.ev.user_type,
             self.ev.group_id if self.ev.group_id else self.ev.user_id,
             self.ev.bot_id,
+            self.ev.msg_id,
         )
 
     async def target_send(
@@ -76,5 +79,9 @@ class Bot:
         target_id: Optional[str],
     ):
         return await self.bot.target_send(
-            message, target_type, target_id, self.ev.bot_id
+            message,
+            target_type,
+            target_id,
+            self.ev.bot_id,
+            self.ev.msg_id,
         )

@@ -24,6 +24,7 @@ async def get_user_pml(msg: MessageReceive) -> int:
 async def msg_process(msg: MessageReceive) -> Event:
     event = Event(
         msg.bot_id,
+        msg.msg_id,
         msg.user_type,
         msg.group_id,
         msg.user_id,
