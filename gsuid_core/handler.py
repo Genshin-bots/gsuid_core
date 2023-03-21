@@ -61,7 +61,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         if (
             SL.lst[sv].enabled
             and user_pm <= SL.lst[sv].pm
-            and msg.group_id not in SL.lst[sv].black_list
+            and (
+                msg.group_id not in SL.lst[sv].black_list
+                or msg.user_id not in SL.lst[sv].black_list
+            )
             and True
             if SL.lst[sv].area == 'ALL'
             or (msg.group_id and SL.lst[sv].area == 'GROUP')
