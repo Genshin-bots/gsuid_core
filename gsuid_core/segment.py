@@ -73,7 +73,7 @@ class MessageSegment:
                 file = fp.read()
         return Message(
             type='file',
-            data=f'{file_name}|base64://{b64encode(file).decode()}',
+            data=f'{file_name}|{b64encode(file).decode()}',
         )
 
     @staticmethod
