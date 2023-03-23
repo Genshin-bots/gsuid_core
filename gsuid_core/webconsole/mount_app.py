@@ -9,6 +9,7 @@ from fastapi_amis_admin import amis, admin
 from fastapi_user_auth.app import UserAuthApp
 from sqlalchemy_database import AsyncDatabase
 from fastapi_amis_admin.crud import BaseApiOut
+from sqlalchemy.ext.asyncio import AsyncEngine
 from fastapi_user_auth.site import AuthAdminSite
 from fastapi_amis_admin.models.fields import Field
 from fastapi_amis_admin.admin.site import APIDocsApp
@@ -16,7 +17,6 @@ from fastapi_amis_admin.admin.settings import Settings
 from fastapi_user_auth.auth.models import UserRoleLink
 from fastapi_amis_admin.utils.translation import i18n as _
 from fastapi import Depends, FastAPI, Request, HTTPException
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from fastapi_amis_admin.amis.constants import LevelEnum, DisplayModeEnum
 from fastapi_user_auth.admin import (
     FormAdmin,
@@ -37,7 +37,6 @@ from fastapi_amis_admin.amis.components import (
     ButtonToolbar,
 )
 
-from gsuid_core.data_store import get_res_path
 from gsuid_core.webconsole.models import WebUser
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.webconsole.create_sv_panel import get_sv_page

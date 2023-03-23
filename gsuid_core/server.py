@@ -78,13 +78,18 @@ class GsServer:
         self.active_ws[bot_id] = websocket
         self.active_bot[bot_id] = bot = _Bot(bot_id, websocket)
         logger.info(f'{bot_id}已连接！')
-        _task = [_def() for _def in self.bot_connect_def]
-        asyncio.gather(*_task)
+        try:
+            _task = [_def() for _def in self.bot_connect_def]
+            asyncio.gather(*_task)
+        except Exception as e:
+            logger.exception(e)
         return bot
 
     def disconnect(self, bot_id: str):
-        del self.active_ws[bot_id]
-        del self.active_bot[bot_id]
+        if bot_id in self.active_ws:
+            del self.active_ws[bot_id]
+        if bot_id in self.active_bot:
+            del self.active_bot[bot_id]
         logger.warning(f'{bot_id}已中断！')
 
     async def send(self, message: str, bot_id: str):
