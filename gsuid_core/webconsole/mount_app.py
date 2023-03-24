@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from fastapi_user_auth.auth import Auth
 from fastapi_amis_admin import amis, admin
 from fastapi_user_auth.app import UserAuthApp
-from sqlalchemy_database import AsyncDatabase
 from fastapi_amis_admin.crud import BaseApiOut
 from sqlalchemy.ext.asyncio import AsyncEngine
 from fastapi_user_auth.site import AuthAdminSite
@@ -40,6 +39,7 @@ from fastapi_amis_admin.amis.components import (
 from gsuid_core.webconsole.models import WebUser
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
+from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.plugins.GenshinUID.GenshinUID.utils.database import db_url
 from gsuid_core.plugins.GenshinUID.GenshinUID.version import GenshinUID_version
 from gsuid_core.plugins.GenshinUID.GenshinUID.genshinuid_user.add_ck import (
@@ -373,13 +373,37 @@ class MyHomeAdmin(admin.HomeAdmin):
 @site.register_admin
 class SVManagePage(admin.PageAdmin):
     page_schema = PageSchema(
-        label=('修改配置'),
+        label=('功能配置'),
         icon='fa fa-sliders',
-        url='/SVmanage',
+        url='/SvManage',
         isDefaultPage=True,
         sort=100,
     )
     page = Page.parse_obj(get_sv_page())
+
+    async def has_page_permission(
+        self,
+        request: Request,
+        obj: Optional[admin.ModelAdmin] = None,
+        action: Optional[str] = None,
+    ) -> bool:
+        return await super().has_page_permission(
+            request
+        ) and await request.auth.requires(roles='admin', response=False)(
+            request
+        )
+
+
+@site.register_admin
+class ConfigManagePage(admin.PageAdmin):
+    page_schema = PageSchema(
+        label=('修改设定'),
+        icon='fa fa-sliders',
+        url='/ConfigManage',
+        isDefaultPage=True,
+        sort=100,
+    )
+    page = Page.parse_obj(get_config_page())
 
     async def has_page_permission(
         self,

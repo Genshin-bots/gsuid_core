@@ -11,7 +11,7 @@ def get_sv_panel(
     area: Literal['GROUP', 'DIRECT', 'ALL'] = 'ALL',
     black_list: List = [],
 ):
-    api = f'/setSV/{name}'
+    api = f'/genshinuid/setSV/{name}'
     card = {
         "type": "service",
         "body": {

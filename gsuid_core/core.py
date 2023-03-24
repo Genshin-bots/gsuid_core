@@ -8,7 +8,7 @@ from msgspec import json as msgjson
 from starlette.requests import Request
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-sys.path.append(str(Path(__file__).parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from gsuid_core.sv import SL  # noqa: E402
 from gsuid_core.gss import gss  # noqa: E402
 from gsuid_core.logger import logger  # noqa: E402
@@ -60,8 +60,12 @@ async def shutdown_event():
 if __name__ == "__main__":
     try:
         from gsuid_core.webconsole.mount_app import site
+        from gsuid_core.webconsole.create_config_panel import (
+            GsListStrConfig,
+            gsconfig,
+        )
 
-        @app.post('/setSV/{name}')
+        @app.post('/genshinuid/setSV/{name}')
         @site.auth.requires('admin')
         async def _set_SV(request: Request, data: Dict, name: str):
             if name in SL.lst:
@@ -69,6 +73,19 @@ if __name__ == "__main__":
                 data['pm'] = int(data['pm'])
                 data['black_list'] = data['black_list'].split(';')
                 sv.set(**data)
+
+        @app.post('/genshinuid/setGsConfig')
+        @site.auth.requires('admin')
+        async def _set_Config(request: Request, data: Dict):
+            for name in data:
+                if name == 'params':
+                    continue
+                config = gsconfig[name]
+                if isinstance(config, GsListStrConfig):
+                    value = data[name].split(':')
+                else:
+                    value = data[name]
+                gsconfig.set_config(name, value)
 
         site.mount_app(app)
     except ImportError:
