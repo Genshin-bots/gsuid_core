@@ -24,6 +24,7 @@ class _Bot:
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
         bot_id: str,
+        bot_self_id: str,
         msg_id: str,
     ):
         if isinstance(message, Message):
@@ -38,6 +39,7 @@ class _Bot:
         send = MessageSend(
             content=message,
             bot_id=bot_id,
+            bot_self_id=bot_self_id,
             target_type=target_type,
             target_id=target_id,
             msg_id=msg_id,
@@ -62,6 +64,7 @@ class Bot:
         self.ev = ev
         self.logger = self.bot.logger
         self.bot_id = ev.bot_id
+        self.bot_self_id = ev.bot_self_id
 
     async def send(self, message: Union[Message, List[Message], str, bytes]):
         return await self.bot.target_send(
@@ -69,6 +72,7 @@ class Bot:
             self.ev.user_type,
             self.ev.group_id if self.ev.group_id else self.ev.user_id,
             self.ev.bot_id,
+            self.bot_self_id,
             self.ev.msg_id,
         )
 
@@ -83,5 +87,6 @@ class Bot:
             target_type,
             target_id,
             self.ev.bot_id,
+            self.ev.bot_self_id,
             self.ev.msg_id,
         )
