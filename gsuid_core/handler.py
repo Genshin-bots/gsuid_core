@@ -34,7 +34,7 @@ async def msg_process(msg: MessageReceive) -> Event:
     )
     for _msg in msg.content:
         if _msg.type == 'text':
-            event.raw_text = _msg.data  # type:ignore
+            event.raw_text += _msg.data  # type:ignore
         elif _msg.type == 'at':
             event.at = _msg.data
             event.at_list.append(_msg.data)
