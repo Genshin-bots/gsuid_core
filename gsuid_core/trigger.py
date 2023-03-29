@@ -10,14 +10,21 @@ class Trigger:
         keyword: str,
         func: Callable,
         block: bool = False,
+        to_me: bool = False,
     ):
         self.type = type
         self.keyword = keyword
         self.func = func
         self.block = block
+        self.to_me = to_me
 
     def check_command(self, raw_msg: Event) -> bool:
         msg = raw_msg.raw_text
+        if self.to_me:
+            if raw_msg.at_list and raw_msg.bot_self_id in raw_msg.at_list:
+                pass
+            else:
+                return False
         return getattr(self, f'_check_{self.type}')(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
