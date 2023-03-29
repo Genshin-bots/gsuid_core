@@ -6,7 +6,7 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
-from gsuid_core.models import Event, MessageReceive
+from gsuid_core.models import Event, Message, MessageReceive
 
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
@@ -77,8 +77,16 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     if len(valid_event) >= 1:
         sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
         for trigger, _ in sorted_event:
-            bot = Bot(ws, event)
             message = await trigger.get_command(event)
+            if event.bot_self_id in event.at_list:
+                event.at_list.remove(event.bot_self_id)
+                if event.bot_self_id == event.at:
+                    if len(event.at_list) >= 1:
+                        event.at = event.at_list[0]
+                    else:
+                        event.at = None
+                event.content.remove(Message('at', event.bot_self_id))
+            bot = Bot(ws, event)
             logger.info(
                 f'↪ 消息 「{event.raw_text}」 触发'
                 f' 「{trigger.type}」 类型触发器, 关键词:'
