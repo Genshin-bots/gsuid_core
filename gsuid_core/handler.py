@@ -6,7 +6,7 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
-from gsuid_core.models import Event, Message, MessageReceive
+from gsuid_core.models import Event, MessageReceive
 
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
@@ -85,7 +85,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
                         event.at = event.at_list[0]
                     else:
                         event.at = None
-                event.content.remove(Message('at', event.bot_self_id))
+                _content = []
+                for _c in event.content:
+                    if _c.type == 'at' and _c.data == event.bot_self_id:
+                        pass
+                    else:
+                        _content.append(_c)
+                event.content = _content
             bot = Bot(ws, event)
             logger.info(
                 f'↪ 消息 「{event.raw_text}」 触发'
