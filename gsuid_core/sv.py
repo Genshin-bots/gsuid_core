@@ -116,26 +116,41 @@ class SV:
         return deco
 
     def on_fullmatch(
-        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+        self,
+        keyword: Union[str, Tuple[str, ...]],
+        block: bool = False,
+        to_me: bool = False,
     ) -> Callable:
-        return self._on('fullmatch', keyword, block)
+        return self._on('fullmatch', keyword, block, to_me)
 
     def on_prefix(
-        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+        self,
+        keyword: Union[str, Tuple[str, ...]],
+        block: bool = False,
+        to_me: bool = False,
     ) -> Callable:
-        return self._on('prefix', keyword, block)
+        return self._on('prefix', keyword, block, to_me)
 
     def on_suffix(
-        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+        self,
+        keyword: Union[str, Tuple[str, ...]],
+        block: bool = False,
+        to_me: bool = False,
     ) -> Callable:
-        return self._on('suffix', keyword, block)
+        return self._on('suffix', keyword, block, to_me)
 
     def on_keyword(
-        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+        self,
+        keyword: Union[str, Tuple[str, ...]],
+        block: bool = False,
+        to_me: bool = False,
     ) -> Callable:
-        return self._on('keyword', keyword, block)
+        return self._on('keyword', keyword, block, to_me)
 
     def on_command(
-        self, keyword: Union[str, Tuple[str, ...]], block: bool = False
+        self,
+        keyword: Union[str, Tuple[str, ...]],
+        block: bool = False,
+        to_me: bool = False,
     ) -> Callable:
-        return self._on('command', keyword, block)
+        return self._on('command', keyword, block, to_me)

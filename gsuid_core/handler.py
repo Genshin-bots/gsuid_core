@@ -54,7 +54,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     # 获取用户权限，越小越高
     user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
-    logger.info(f'[收到消息] {msg}')
+    logger.info(f'[收到事件] {event}')
     valid_event: Dict[Trigger, int] = {}
     pending = [
         _check_command(
