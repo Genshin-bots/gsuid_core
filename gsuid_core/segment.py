@@ -58,8 +58,18 @@ class MessageSegment:
         return Message(type='node', data=msg_list)
 
     @staticmethod
-    def record(content: str) -> Message:
-        return Message(type='record', data=content)
+    def record(content: Union[str, bytes, Path]) -> Message:
+        if isinstance(content, bytes):
+            pass
+        elif isinstance(content, Path):
+            with open(str(content), 'rb') as fp:
+                content = fp.read()
+        else:
+            if content.startswith('base64://'):
+                return Message(type='image', data=content)
+            with open(content, 'rb') as fp:
+                content = fp.read()
+        return Message(type='record', data=f'base64://{content}')
 
     @staticmethod
     def file(content: Union[Path, str, bytes], file_name: str) -> Message:

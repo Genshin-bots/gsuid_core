@@ -25,8 +25,9 @@ class _Bot:
         target_id: Optional[str],
         bot_id: str,
         bot_self_id: str,
-        msg_id: str,
+        msg_id: str = '',
         at_sender: bool = False,
+        sender_id: str = '',
     ):
         if isinstance(message, Message):
             message = [message]
@@ -38,8 +39,8 @@ class _Bot:
         elif isinstance(message, bytes):
             message = [MessageSegment.image(message)]
 
-        if at_sender and target_id:
-            message.append(MessageSegment.at(target_id))
+        if at_sender and sender_id:
+            message.append(MessageSegment.at(sender_id))
 
         send = MessageSend(
             content=message,
@@ -84,6 +85,7 @@ class Bot:
             self.bot_self_id,
             self.ev.msg_id,
             at_sender,
+            self.ev.user_id,
         )
 
     async def target_send(
@@ -92,6 +94,7 @@ class Bot:
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
         at_sender: bool = False,
+        sender_id: str = '',
     ):
         return await self.bot.target_send(
             message,
@@ -101,4 +104,5 @@ class Bot:
             self.ev.bot_self_id,
             self.ev.msg_id,
             at_sender,
+            sender_id,
         )
