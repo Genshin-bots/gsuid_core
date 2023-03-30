@@ -28,6 +28,7 @@ class Event(MessageReceive):
     image_list: List[Any] = []
     at_list: List[Any] = []
     is_tome: bool = False
+    reply: Optional[str] = None
 
 
 class MessageSend(Struct):

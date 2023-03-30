@@ -45,6 +45,8 @@ async def msg_process(msg: MessageReceive) -> Event:
         elif _msg.type == 'image':
             event.image = _msg.data
             event.image_list.append(_msg.data)
+        elif _msg.type == 'reply':
+            event.reply = _msg.data
         _content.append(_msg)
     event.content = _content
     return event
