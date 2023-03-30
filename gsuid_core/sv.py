@@ -96,6 +96,7 @@ class SV:
         type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
+        to_me: bool = False,
     ):
         def deco(func: Callable) -> Callable:
             keyword_list = keyword
@@ -104,7 +105,7 @@ class SV:
             for _k in keyword_list:
                 if _k not in self.TL:
                     logger.info(f'载入{type}触发器【{_k}】!')
-                    self.TL[_k] = Trigger(type, _k, func, block)
+                    self.TL[_k] = Trigger(type, _k, func, block, to_me)
 
             @wraps(func)
             async def wrapper(bot, msg) -> Optional[Callable]:

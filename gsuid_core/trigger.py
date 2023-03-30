@@ -21,7 +21,7 @@ class Trigger:
     def check_command(self, raw_msg: Event) -> bool:
         msg = raw_msg.raw_text
         if self.to_me:
-            if raw_msg.at_list and raw_msg.bot_self_id in raw_msg.at_list:
+            if raw_msg.is_tome:
                 pass
             else:
                 return False

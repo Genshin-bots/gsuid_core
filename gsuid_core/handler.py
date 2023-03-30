@@ -1,12 +1,12 @@
 import asyncio
-from typing import Dict
+from typing import Dict, List
 
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
-from gsuid_core.models import Event, MessageReceive
+from gsuid_core.models import Event, Message, MessageReceive
 
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
@@ -30,17 +30,23 @@ async def msg_process(msg: MessageReceive) -> Event:
         msg.group_id,
         msg.user_id,
         msg.user_pm,
-        msg.content,
     )
+    _content: List[Message] = []
     for _msg in msg.content:
         if _msg.type == 'text':
-            event.raw_text += _msg.data  # type:ignore
+            event.raw_text += _msg.data.strip()  # type:ignore
         elif _msg.type == 'at':
-            event.at = _msg.data
-            event.at_list.append(_msg.data)
+            if event.bot_self_id == _msg.data:
+                event.is_tome = True
+                continue
+            else:
+                event.at = _msg.data
+                event.at_list.append(_msg.data)
         elif _msg.type == 'image':
             event.image = _msg.data
             event.image_list.append(_msg.data)
+        _content.append(_msg)
+    event.content = _content
     return event
 
 
@@ -78,20 +84,6 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
         for trigger, _ in sorted_event:
             message = await trigger.get_command(event)
-            if event.bot_self_id in event.at_list:
-                event.at_list.remove(event.bot_self_id)
-                if event.bot_self_id == event.at:
-                    if len(event.at_list) >= 1:
-                        event.at = event.at_list[0]
-                    else:
-                        event.at = None
-                _content = []
-                for _c in event.content:
-                    if _c.type == 'at' and _c.data == event.bot_self_id:
-                        pass
-                    else:
-                        _content.append(_c)
-                event.content = _content
             bot = Bot(ws, event)
             logger.info(
                 f'↪ 消息 「{event.raw_text}」 触发'
