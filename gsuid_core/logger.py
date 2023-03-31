@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 import loguru
 
+from gsuid_core.config import core_config
+
 if TYPE_CHECKING:
     # avoid sphinx autodoc resolve annotation failed
     # because loguru module do not have `Logger` class actually
@@ -39,15 +41,15 @@ FORMAT = (
     "{message}"
 )
 
+LEVEL: str = core_config.get_config("log").get("level", "INFO")
+
 logger.remove()
-logger_id = logger.add(
-    sys.stdout, level=20, diagnose=False, format=FORMAT  # INFO
-)
+logger_id = logger.add(sys.stdout, level=LEVEL, diagnose=False, format=FORMAT)
 
 logger.add(
     "logs/{time:YYYY-MM-DD}.log",
     rotation=datetime.time(),
-    level=20,
+    level=LEVEL,
     diagnose=False,
     format=FORMAT,
 )

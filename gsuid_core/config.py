@@ -4,23 +4,27 @@ from typing import Dict, List, Union, Literal, overload
 
 CONFIG_PATH = Path(__file__).parent / 'config.json'
 
-CONIFG_DEFAULT = {
+CONFIG_DEFAULT = {
     'HOST': 'localhost',
     'PORT': '8765',
     'masters': [],
     'superusers': [],
     'sv': {},
+    'log': {
+        'level': 'INFO',
+        # ...
+    },
 }
 STR_CONFIG = Literal['HOST', 'PORT']
 LIST_CONFIG = Literal['superusers', 'masters']
-DICT_CONFIG = Literal['sv']
+DICT_CONFIG = Literal['sv', 'log']
 
 
 class CoreConfig:
     def __init__(self) -> None:
         if not CONFIG_PATH.exists():
             with open(CONFIG_PATH, 'w', encoding='UTF-8') as file:
-                json.dump(CONIFG_DEFAULT, file, indent=4, ensure_ascii=False)
+                json.dump(CONFIG_DEFAULT, file, indent=4, ensure_ascii=False)
 
         self.update_config()
 
@@ -33,9 +37,9 @@ class CoreConfig:
         with open(CONFIG_PATH, 'r', encoding='UTF-8') as f:
             self.config = json.load(f)
         # 对没有的值，添加默认值
-        for key in CONIFG_DEFAULT:
+        for key in CONFIG_DEFAULT:
             if key not in self.config:
-                self.config[key] = CONIFG_DEFAULT[key]
+                self.config[key] = CONFIG_DEFAULT[key]
 
         # 重新写回
         self.write_config()
@@ -55,7 +59,7 @@ class CoreConfig:
     def get_config(self, key: str) -> Union[str, Dict, List]:
         if key in self.config:
             return self.config[key]
-        elif key in CONIFG_DEFAULT:
+        elif key in CONFIG_DEFAULT:
             self.update_config()
             return self.config[key]
         else:
@@ -74,7 +78,7 @@ class CoreConfig:
         ...
 
     def set_config(self, key: str, value: Union[str, List, Dict]) -> bool:
-        if key in CONIFG_DEFAULT:
+        if key in CONFIG_DEFAULT:
             # 设置值
             self.config[key] = value
             # 重新写回
