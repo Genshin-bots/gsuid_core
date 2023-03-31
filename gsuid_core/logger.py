@@ -1,5 +1,6 @@
 import sys
 import logging
+import datetime
 from typing import TYPE_CHECKING
 
 import loguru
@@ -41,4 +42,12 @@ FORMAT = (
 logger.remove()
 logger_id = logger.add(
     sys.stdout, level=20, diagnose=False, format=FORMAT  # INFO
+)
+
+logger.add(
+    "logs/{time:YYYY-MM-DD}.log",
+    rotation=datetime.time(),
+    level=20,
+    diagnose=False,
+    format=FORMAT,
 )
