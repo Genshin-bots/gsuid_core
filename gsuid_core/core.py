@@ -57,7 +57,7 @@ async def shutdown_event():
     await shutdown_scheduler()
 
 
-if __name__ == "__main__":
+def main():
     try:
         from gsuid_core.webconsole.mount_app import site
         from gsuid_core.webconsole.create_config_panel import (
@@ -91,4 +91,28 @@ if __name__ == "__main__":
     except ImportError:
         logger.warning('未加载GenshinUID...网页控制台启动失败...')
 
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(
+        app,
+        host=HOST,
+        port=PORT,
+        log_config={
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": {
+                "default": {
+                    "class": "gsuid_core.logger.LoguruHandler",
+                },
+            },
+            "loggers": {
+                "uvicorn.error": {"handlers": ["default"], "level": "INFO"},
+                "uvicorn.access": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                },
+            },
+        },
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,22 +1,44 @@
+import sys
 import logging
+from typing import TYPE_CHECKING
 
-import rollbar
-from rollbar.logger import RollbarHandler
+import loguru
 
-# Initialize Rollbar SDK with your server-side access token
-rollbar.init(
-    'ACCESS_TOKEN',
-    environment='staging',
-    handler='async',
+if TYPE_CHECKING:
+    # avoid sphinx autodoc resolve annotation failed
+    # because loguru module do not have `Logger` class actually
+    from loguru import Logger
+
+logger: "Logger" = loguru.logger
+
+
+# https://loguru.readthedocs.io/en/stable/overview.html#entirely-compatible-with-standard-logging
+class LoguruHandler(logging.Handler):  # pragma: no cover
+    def emit(self, record: logging.LogRecord):
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
+
+
+FORMAT = (
+    "<g>{time:MM-DD HH:mm:ss}</g> "
+    "[<lvl>{level}</lvl>] "
+    "<c><u>{name}</u></c> | "
+    # "<c>{function}:{line}</c>| "
+    "{message}"
 )
 
-# Set root logger to log DEBUG and above
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Report ERROR and above to Rollbar
-rollbar_handler = RollbarHandler()
-rollbar_handler.setLevel(logging.ERROR)
-
-# Attach Rollbar handler to the root logger
-logger.addHandler(rollbar_handler)
+logger.remove()
+logger_id = logger.add(
+    sys.stdout, level=20, diagnose=False, format=FORMAT  # INFO
+)

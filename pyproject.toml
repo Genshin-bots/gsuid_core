@@ -30,8 +30,8 @@ fastapi-user-auth = ">=0.5.0"
 qrcode = {extras = ["pil"], version = "^7.3.1"}
 msgspec = ">= 0.13.1"
 uvicorn = ">=0.20.0"
-rollbar = "^0.16.3"
 websockets = "^10.4"
+loguru = "^0.6.0"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"
