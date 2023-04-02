@@ -26,17 +26,25 @@ class SV:
 
     def __new__(cls, *args, **kwargs):
         # 判断sv是否已经被初始化
-        if args[0] in SL.lst:
-            return SL.lst[args[0]]
+        if len(args) >= 1:
+            name = args[0]
+        else:
+            name = kwargs.get('name')
+
+        if name is None:
+            raise ValueError('SV.name is None!')
+
+        if name in SL.lst:
+            return SL.lst[name]
         else:
             _sv = super().__new__(cls)
-            SL.lst[args[0]] = _sv
+            SL.lst[name] = _sv
             return _sv
 
     def __init__(
         self,
         name: str = '',
-        pm: int = 3,
+        pm: int = 6,
         priority: int = 5,
         enabled: bool = True,
         area: Literal['GROUP', 'DIRECT', 'ALL'] = 'ALL',
