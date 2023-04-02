@@ -288,6 +288,20 @@ class GsAdminModel(admin.ModelAdmin):
         )
 
 
+class GsAdminPage(admin.PageAdmin):
+    async def has_page_permission(
+        self,
+        request: Request,
+        obj: Optional[admin.ModelAdmin] = None,
+        action: Optional[str] = None,
+    ) -> bool:
+        return await super().has_page_permission(
+            request
+        ) and await request.auth.requires(roles='admin', response=False)(
+            request
+        )
+
+
 @site.register_admin
 class UserAuth(GsAdminModel):
     pk_name = 'user_id'
@@ -371,7 +385,7 @@ class MyHomeAdmin(admin.HomeAdmin):
 
 
 @site.register_admin
-class SVManagePage(admin.PageAdmin):
+class SVManagePage(GsAdminPage):
     page_schema = PageSchema(
         label=('功能配置'),
         icon='fa fa-sliders',
@@ -381,21 +395,9 @@ class SVManagePage(admin.PageAdmin):
     )
     page = Page.parse_obj(get_sv_page())
 
-    async def has_page_permission(
-        self,
-        request: Request,
-        obj: Optional[admin.ModelAdmin] = None,
-        action: Optional[str] = None,
-    ) -> bool:
-        return await super().has_page_permission(
-            request
-        ) and await request.auth.requires(roles='admin', response=False)(
-            request
-        )
-
 
 @site.register_admin
-class ConfigManagePage(admin.PageAdmin):
+class ConfigManagePage(GsAdminPage):
     page_schema = PageSchema(
         label=('修改设定'),
         icon='fa fa-sliders',
@@ -404,18 +406,6 @@ class ConfigManagePage(admin.PageAdmin):
         sort=100,
     )
     page = Page.parse_obj(get_config_page())
-
-    async def has_page_permission(
-        self,
-        request: Request,
-        obj: Optional[admin.ModelAdmin] = None,
-        action: Optional[str] = None,
-    ) -> bool:
-        return await super().has_page_permission(
-            request
-        ) and await request.auth.requires(roles='admin', response=False)(
-            request
-        )
 
 
 # 取消注册默认管理类

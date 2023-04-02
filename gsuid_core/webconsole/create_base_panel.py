@@ -1,6 +1,23 @@
 from typing import Dict, List
 
 
+def get_input_image_panel(label: str, name: str):
+    return {
+        'type': 'input-image',
+        'label': label,
+        'name': name,
+        'autoUpload': True,
+        'proxy': True,
+        'uploadType': 'fileReceptor',
+        'imageClassName': 'r w-full',
+        'id': 'u:1a381f9ccb8c',
+        'accept': '.jpeg, .jpg, .png, .gif',
+        'multiple': False,
+        'hideUploadButton': False,
+        'fixedSize': False,
+    }
+
+
 def get_switch_panel(label: str, name: str, value: bool):
     return {
         'type': 'switch',
