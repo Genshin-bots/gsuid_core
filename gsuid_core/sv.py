@@ -101,7 +101,9 @@ class SV:
 
     def _on(
         self,
-        type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
+        type: Literal[
+            'prefix', 'suffix', 'keyword', 'fullmatch', 'command', 'file'
+        ],
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
@@ -162,3 +164,11 @@ class SV:
         to_me: bool = False,
     ) -> Callable:
         return self._on('command', keyword, block, to_me)
+
+    def on_file(
+        self,
+        file_type: str,
+        block: bool = False,
+        to_me: bool = False,
+    ) -> Callable:
+        return self._on('file', file_type, block, to_me)

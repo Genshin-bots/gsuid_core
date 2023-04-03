@@ -29,6 +29,8 @@ class Event(MessageReceive):
     at_list: List[Any] = []
     is_tome: bool = False
     reply: Optional[str] = None
+    file_name: Optional[str] = None
+    file: Optional[str] = None
 
 
 class MessageSend(Struct):

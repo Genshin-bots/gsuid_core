@@ -6,7 +6,9 @@ from gsuid_core.models import Event
 class Trigger:
     def __init__(
         self,
-        type: Literal['prefix', 'suffix', 'keyword', 'fullmatch', 'command'],
+        type: Literal[
+            'prefix', 'suffix', 'keyword', 'fullmatch', 'command', 'file'
+        ],
         keyword: str,
         func: Callable,
         block: bool = False,
@@ -18,13 +20,15 @@ class Trigger:
         self.block = block
         self.to_me = to_me
 
-    def check_command(self, raw_msg: Event) -> bool:
-        msg = raw_msg.raw_text
+    def check_command(self, ev: Event) -> bool:
+        msg = ev.raw_text
         if self.to_me:
-            if raw_msg.is_tome:
+            if ev.is_tome:
                 pass
             else:
                 return False
+        if self.type == 'file':
+            return self._check_file(self.keyword, ev)
         return getattr(self, f'_check_{self.type}')(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
@@ -50,6 +54,12 @@ class Trigger:
     def _check_fullmatch(self, keyword: str, msg: str) -> bool:
         if msg == keyword:
             return True
+        return False
+
+    def _check_file(self, file_type: str, ev: Event) -> bool:
+        if ev.file:
+            if ev.file_name and ev.file_name.split('.')[-1] == file_type:
+                return True
         return False
 
     async def get_command(self, msg: Event) -> Event:
