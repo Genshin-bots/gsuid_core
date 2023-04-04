@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from typing import Dict, List
 
 from gsuid_core.sv import SL
@@ -89,10 +90,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     if len(valid_event) >= 1:
         sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
         for trigger, _ in sorted_event:
-            message = await trigger.get_command(event)
-            bot = Bot(ws, event)
+            _event = deepcopy(event)
+            message = await trigger.get_command(_event)
+            bot = Bot(ws, _event)
             logger.info(
-                f'↪ 消息 「{event.raw_text}」 触发'
+                f'↪ 消息 「_{event.raw_text}」 触发'
                 f' 「{trigger.type}」 类型触发器, 关键词:'
                 f' 「{trigger.keyword}」 '
             )
