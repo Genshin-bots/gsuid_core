@@ -94,7 +94,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
             message = await trigger.get_command(_event)
             bot = Bot(ws, _event)
             logger.info(
-                f'↪ 消息 「_{event.raw_text}」 触发'
+                f'↪ 消息 「{_event.raw_text}」 触发'
                 f' 「{trigger.type}」 类型触发器, 关键词:'
                 f' 「{trigger.keyword}」 '
             )
