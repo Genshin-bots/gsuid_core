@@ -31,6 +31,7 @@ class Event(MessageReceive):
     reply: Optional[str] = None
     file_name: Optional[str] = None
     file: Optional[str] = None
+    file_type: Optional[Literal['url', 'base64']] = None
 
 
 class MessageSend(Struct):

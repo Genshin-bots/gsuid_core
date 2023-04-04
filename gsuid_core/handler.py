@@ -52,6 +52,10 @@ async def msg_process(msg: MessageReceive) -> Event:
             data = _msg.data.split('|')
             event.file_name = data[0]
             event.file = data[1]
+            if str(data[0]).startswith(('http', 'https')):
+                event.file_type = 'url'
+            else:
+                event.file_type = 'base64'
         _content.append(_msg)
     event.content = _content
     return event
