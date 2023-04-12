@@ -9,14 +9,15 @@ CONFIG_DEFAULT = {
     'PORT': '8765',
     'masters': [],
     'superusers': [],
-    'sv': {},
     'log': {
         'level': 'INFO',
         # ...
     },
+    'command_start': [],
+    'sv': {},
 }
 STR_CONFIG = Literal['HOST', 'PORT']
-LIST_CONFIG = Literal['superusers', 'masters']
+LIST_CONFIG = Literal['superusers', 'masters', 'command_start']
 DICT_CONFIG = Literal['sv', 'log']
 
 

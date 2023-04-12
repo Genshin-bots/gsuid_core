@@ -9,6 +9,7 @@ from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message, MessageReceive
 
+command_start = core_config.get_config('command_start')
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
 
@@ -66,6 +67,15 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     logger.info('[收到事件]', event=event)
+
+    if command_start and event.raw_text:
+        for start in command_start:
+            if event.raw_text.strip().startswith(start):
+                event.raw_text = event.raw_text.replace(start, '')
+                break
+        else:
+            return
+
     valid_event: Dict[Trigger, int] = {}
     pending = [
         _check_command(
@@ -79,10 +89,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         if (
             SL.lst[sv].enabled
             and user_pm <= SL.lst[sv].pm
-            and (
-                msg.group_id not in SL.lst[sv].black_list
-                or msg.user_id not in SL.lst[sv].black_list
-            )
+            and msg.group_id not in SL.lst[sv].black_list
+            and msg.user_id not in SL.lst[sv].black_list
             and True
             if SL.lst[sv].area == 'ALL'
             or (msg.group_id and SL.lst[sv].area == 'GROUP')
