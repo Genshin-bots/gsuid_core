@@ -9,6 +9,7 @@ CONFIG_DEFAULT = {
     'PORT': '8765',
     'masters': [],
     'superusers': [],
+    'misfire_grace_time': 90,
     'log': {
         'level': 'INFO',
         # ...
@@ -17,6 +18,7 @@ CONFIG_DEFAULT = {
     'sv': {},
 }
 STR_CONFIG = Literal['HOST', 'PORT']
+INT_CONFIG = Literal['misfire_grace_time']
 LIST_CONFIG = Literal['superusers', 'masters', 'command_start']
 DICT_CONFIG = Literal['sv', 'log']
 
@@ -57,7 +59,11 @@ class CoreConfig:
     def get_config(self, key: LIST_CONFIG) -> List:
         ...
 
-    def get_config(self, key: str) -> Union[str, Dict, List]:
+    @overload
+    def get_config(self, key: INT_CONFIG) -> int:
+        ...
+
+    def get_config(self, key: str) -> Union[str, Dict, List, int]:
         if key in self.config:
             return self.config[key]
         elif key in CONFIG_DEFAULT:
