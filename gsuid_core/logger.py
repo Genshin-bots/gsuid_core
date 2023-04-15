@@ -68,12 +68,14 @@ def format_event(record):
             f'user_pm={event.user_pm}, '
             f'content={content}, '
         )
+        message = message.replace('{', '{{').replace('}', '}}')
     else:
         message = '{message}'
 
+    def_name: str = record['name']
     time = '<g>{time:MM-DD HH:mm:ss}</g>'
     level = '[<lvl>{level}</lvl>]'
-    def_name = '<c><u>{name}</u></c>'
+    def_name = f'<c><u>{".".join(def_name.split(".")[-5:])}</u></c>'
     return f'{time} {level} {def_name} | {message} \n'
 
 

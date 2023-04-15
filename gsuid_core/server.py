@@ -19,7 +19,7 @@ class GsServer:
     def __new__(cls, *args, **kwargs):
         # 判断sv是否已经被初始化
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            cls._instance = super(GsServer, cls).__new__(cls, *args, **kwargs)
         return cls._instance
 
     def __init__(self):
@@ -54,7 +54,7 @@ class GsServer:
                             f'plugins.{plugin.name}.__init__'
                         )
                 # 如果发现单文件，则视为单文件插件
-                if plugin.suffix == '.py':
+                elif plugin.suffix == '.py':
                     importlib.import_module(f'plugins.{plugin.name[:-3]}')
             except Exception as e:  # noqa
                 logger.exception(e)
