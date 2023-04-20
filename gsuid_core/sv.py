@@ -85,6 +85,10 @@ class SV:
                     area=area,
                 )
 
+            if name == '测试开关':
+                self.pm = 1
+                self.enabled = False
+
     def set(self, **kwargs):
         for var in kwargs:
             setattr(self, var, kwargs[var])
