@@ -85,11 +85,9 @@ class SV:
                     area=area,
                 )
 
-            '''
             if name == '测试开关':
                 self.pm = 0
                 self.enabled = False
-            '''
 
     def set(self, **kwargs):
         for var in kwargs:

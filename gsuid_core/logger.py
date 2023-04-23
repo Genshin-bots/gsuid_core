@@ -36,38 +36,56 @@ class LoguruHandler(logging.Handler):  # pragma: no cover
 
 
 def format_event(record):
-    if 'event' in record['extra']:
-        event: Event = record['extra']['event']
+    if 'trigger' in record['extra']:
+        _tg = record['extra']['trigger']
+        message = (
+            f'<m><b>[Trigger]</b></m> 消息 「{_tg[0]}」 触发'
+            f' 「{_tg[1]}」 类型触发器, 关键词:'
+            f' 「{_tg[2]}」 '
+        )
+        message = message.replace('{', '{{').replace('}', '}}')
+    elif record['extra']:
+        event: Event = (
+            record['extra']['event']
+            if 'event' in record['extra']
+            else record['extra']['command']
+        )
         if event.file and event.file_type != 'url':
             file = f'{event.file[:20]}...(base64)'
             content = [Message('file', f'{event.file_name}|{file}')]
         else:
             file = event.file
             content = event.content
-        message = (
-            f'<m><b>[Event]</b></m> '
-            f'raw_text={event.raw_text}, '
-            f'command={event.command}, '
-            f'text={event.text}, '
-            f'image={event.image}, '
-            f'at={event.at}, '
-            f'image_list={event.image}, '
-            f'at_list={event.at_list}, '
-            f'is_tome={event.is_tome}, '
-            f'reply={event.reply}, '
-            f'file_name={event.file_name}, '
-            f'file_type={event.file_type}, '
-            f'file={file}'
-            f' | <m><b>[Receive]</b></m> '
-            f'bot_id={event.bot_id}, '
-            f'bot_self_id={event.bot_self_id}, '
-            f'msg_id={event.msg_id}, '
-            f'user_type={event.user_type}, '
-            f'group_id={event.group_id}, '
-            f'user_id={event.user_id}, '
-            f'user_pm={event.user_pm}, '
-            f'content={content}, '
-        )
+
+        if 'event' in record['extra']:
+            message = (
+                f'<c><b>[Raw]</b></c> '
+                f'raw_text={event.raw_text}, '
+                f'image={event.image}, '
+                f'at={event.at}, '
+                f'image_list={event.image}, '
+                f'at_list={event.at_list}, '
+                f'is_tome={event.is_tome}, '
+                f'reply={event.reply}, '
+                f'file_name={event.file_name}, '
+                f'file_type={event.file_type}, '
+                f'file={file}'
+                f' | <m><b>[Receive]</b></m> '
+                f'bot_id={event.bot_id}, '
+                f'bot_self_id={event.bot_self_id}, '
+                f'msg_id={event.msg_id}, '
+                f'user_type={event.user_type}, '
+                f'group_id={event.group_id}, '
+                f'user_id={event.user_id}, '
+                f'user_pm={event.user_pm}, '
+                f'content={content}, '
+            )
+        else:
+            message = (
+                f'<m><b>[Command]</b></m> '
+                f'command={event.command}, '
+                f'text={event.text}'
+            )
         message = message.replace('{', '{{').replace('}', '}}')
     else:
         message = '{message}'

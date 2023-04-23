@@ -106,10 +106,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
             message = await trigger.get_command(_event)
             bot = Bot(ws, _event)
             logger.info(
-                f'↪ 消息 「{_event.raw_text}」 触发'
-                f' 「{trigger.type}」 类型触发器, 关键词:'
-                f' 「{trigger.keyword}」 '
+                '[命令触发]',
+                trigger=[_event.raw_text, trigger.type, trigger.keyword],
             )
+            logger.info('[命令触发]', command=message)
             ws.queue.put_nowait(trigger.func(bot, message))
             if trigger.block:
                 break

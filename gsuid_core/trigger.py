@@ -1,5 +1,5 @@
 import re
-from typing import Union, Literal, Pattern, Callable
+from typing import Literal, Callable
 
 from gsuid_core.models import Event
 
