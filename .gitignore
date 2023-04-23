@@ -667,5 +667,7 @@ res_data
 GsData.db
 GenshinUID
 data
-plugins
+plugins/*
+!plugins/core_user/
+!plugins/gs_test.py
 logs

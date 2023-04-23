@@ -1,4 +1,5 @@
-from typing import Literal, Callable
+import re
+from typing import Union, Literal, Pattern, Callable
 
 from gsuid_core.models import Event
 
@@ -7,7 +8,13 @@ class Trigger:
     def __init__(
         self,
         type: Literal[
-            'prefix', 'suffix', 'keyword', 'fullmatch', 'command', 'file'
+            'prefix',
+            'suffix',
+            'keyword',
+            'fullmatch',
+            'command',
+            'file',
+            'regex',
         ],
         keyword: str,
         func: Callable,
@@ -62,7 +69,19 @@ class Trigger:
                 return True
         return False
 
+    def _check_regex(self, pattern: str, msg: str) -> bool:
+        command_list = re.findall(pattern, msg)
+        if command_list:
+            return True
+        return False
+
     async def get_command(self, msg: Event) -> Event:
-        msg.command = self.keyword
-        msg.text = msg.raw_text.replace(self.keyword, '')
+        if self.type != 'regex':
+            msg.command = self.keyword
+            msg.text = msg.raw_text.replace(self.keyword, '')
+        else:
+            command_list = re.findall(self.keyword, msg.raw_text)
+            msg.command = '|'.join(command_list)
+            text_list = re.split(self.keyword, msg.raw_text)
+            msg.text = '|'.join(text_list)
         return msg

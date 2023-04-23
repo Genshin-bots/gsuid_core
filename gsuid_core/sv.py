@@ -85,9 +85,11 @@ class SV:
                     area=area,
                 )
 
+            '''
             if name == '测试开关':
-                self.pm = 1
+                self.pm = 0
                 self.enabled = False
+            '''
 
     def set(self, **kwargs):
         for var in kwargs:
@@ -106,16 +108,24 @@ class SV:
     def _on(
         self,
         type: Literal[
-            'prefix', 'suffix', 'keyword', 'fullmatch', 'command', 'file'
+            'prefix',
+            'suffix',
+            'keyword',
+            'fullmatch',
+            'command',
+            'file',
+            'regex',
         ],
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
     ):
         def deco(func: Callable) -> Callable:
-            keyword_list = keyword
             if isinstance(keyword, str):
                 keyword_list = (keyword,)
+            else:
+                keyword_list = keyword
+
             for _k in keyword_list:
                 if _k not in self.TL:
                     logger.info(f'载入{type}触发器【{_k}】!')
@@ -176,3 +186,11 @@ class SV:
         to_me: bool = False,
     ) -> Callable:
         return self._on('file', file_type, block, to_me)
+
+    def on_regex(
+        self,
+        keyword: Union[str, Tuple[str, ...]],
+        block: bool = False,
+        to_me: bool = False,
+    ) -> Callable:
+        return self._on('regex', keyword, block, to_me)
