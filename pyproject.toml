@@ -32,6 +32,7 @@ msgspec = ">= 0.13.1"
 uvicorn = ">=0.20.0"
 websockets = "^10.4"
 loguru = "^0.6.0"
+requests-toolbelt = "^0.10.1"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"

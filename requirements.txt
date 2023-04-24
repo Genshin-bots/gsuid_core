@@ -58,3 +58,4 @@ uvicorn==0.21.1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.
 websockets==10.4 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 win32-setctime==1.1.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0" and sys_platform == "win32"
 yarl==1.9.1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
+requests-toolbelt==0.10.1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
