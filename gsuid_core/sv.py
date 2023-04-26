@@ -49,6 +49,7 @@ class SV:
         enabled: bool = True,
         area: Literal['GROUP', 'DIRECT', 'ALL'] = 'ALL',
         black_list: List = [],
+        white_list: List = [],
     ):
         if not self.is_initialized:
             logger.info(f'【{name}】模块初始化中...')
@@ -65,6 +66,11 @@ class SV:
                 self.pm = config_sv[name]['pm']
                 self.black_list = config_sv[name]['black_list']
                 self.area = config_sv[name]['area']
+                if 'white_list' not in config_sv[name]:
+                    self.white_list = white_list
+                    self.set(white_list=white_list)
+                else:
+                    self.white_list = config_sv[name]['white_list']
             else:
                 # sv优先级
                 self.priority = priority
@@ -76,6 +82,7 @@ class SV:
                 self.pm = pm
                 # 作用范围
                 self.area = area
+                self.white_list = white_list
                 # 写入
                 self.set(
                     priority=priority,
@@ -83,6 +90,7 @@ class SV:
                     pm=pm,
                     black_list=black_list,
                     area=area,
+                    white_list=white_list,
                 )
 
             if name == '测试开关':

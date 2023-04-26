@@ -10,6 +10,7 @@ def get_sv_panel(
     enabled: bool = True,
     area: Literal['GROUP', 'DIRECT', 'ALL'] = 'ALL',
     black_list: List = [],
+    white_list: List = [],
 ):
     api = f'/genshinuid/setSV/{name}'
     card = {
@@ -230,6 +231,33 @@ def get_sv_panel(
                     'id': 'u:a7b2f1bbc0a8',
                     'label': '',
                 },
+                {
+                    'type': 'flex',
+                    'className': 'p-1',
+                    'items': [
+                        {
+                            'type': 'container',
+                            'size': 'xs',
+                            'body': [
+                                {
+                                    'type': 'input-text',
+                                    'label': '白名单（以;为分割）',
+                                    'name': 'white_list',
+                                    'id': 'u:ab168d425936',
+                                    'value': ';'.join(white_list),
+                                }
+                            ],
+                            'wrapperBody': False,
+                            'style': {'flex': '0 0 auto', 'display': 'block'},
+                            'id': 'u:48c938f71548',
+                        }
+                    ],
+                    'direction': 'column',
+                    'justify': 'center',
+                    'alignItems': 'stretch',
+                    'id': 'u:a7b2f1bbc0a8',
+                    'label': '',
+                },
             ],
             'actions': [
                 {
@@ -282,6 +310,7 @@ def get_sv_page():
             sv.enabled,
             sv.area,  # type:ignore
             sv.black_list,
+            sv.white_list,
         )
         page['body'].append(panel)
 

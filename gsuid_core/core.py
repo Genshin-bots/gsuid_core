@@ -71,7 +71,15 @@ def main():
             if name in SL.lst:
                 sv = SL.lst[name]
                 data['pm'] = int(data['pm'])
+                data['black_list'] = data['black_list'].replace('；', ';')
+                data['white_list'] = data['white_list'].replace('；', ';')
+
                 data['black_list'] = data['black_list'].split(';')
+                data['white_list'] = data['white_list'].split(';')
+                if data['black_list'] == ['']:
+                    data['black_list'] = []
+                if data['white_list'] == ['']:
+                    data['white_list'] = []
                 sv.set(**data)
 
         @app.post('/genshinuid/setGsConfig')
