@@ -41,6 +41,7 @@ class SQLA:
         exec_list = [
             'ALTER TABLE GsBind ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_uid TEXT',
+            'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
             'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
         ]
         with contextlib.suppress(Exception):
