@@ -41,6 +41,7 @@ from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
 from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.plugins.GenshinUID.GenshinUID.utils.database import db_url
+from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
 from gsuid_core.plugins.GenshinUID.GenshinUID.version import GenshinUID_version
 from gsuid_core.plugins.GenshinUID.GenshinUID.genshinuid_user.add_ck import (
     _deal_ck,
@@ -49,12 +50,6 @@ from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
     amis_admin,
     user_auth_admin,
-)
-from gsuid_core.plugins.GenshinUID.GenshinUID.gsuid_utils.database.models import (
-    GsBind,
-    GsPush,
-    GsUser,
-    GsCache,
 )
 
 
