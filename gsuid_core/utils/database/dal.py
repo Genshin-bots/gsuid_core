@@ -11,13 +11,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql.expression import func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from .utils import SERVER
+from .utils import SERVER, SR_SERVER
 from .models import GsBind, GsPush, GsUser, GsCache
 
 
 class SQLA:
-    def __init__(self, url: str, bot_id: str):
+    def __init__(self, url: str, bot_id: str, is_sr: bool = False):
         self.bot_id = bot_id
+        self.is_sr = is_sr
         self.url = f'sqlite+aiosqlite:///{url}'
         self.engine = create_async_engine(self.url, pool_recycle=1500)
         self.async_session = sessionmaker(
@@ -160,7 +161,12 @@ class SQLA:
     async def switch_uid(
         self, user_id: str, uid: Optional[str] = None
     ) -> Optional[List]:
-        uid_list = await self.get_bind_uid_list(user_id)
+        uid_list = (
+            await self.get_bind_sruid_list(user_id)
+            if self.is_sr
+            else await self.get_bind_uid_list(user_id)
+        )
+        id_type = 'sr_uid' if self.is_sr else 'uid'
         if uid_list and len(uid_list) >= 1:
             if uid and uid not in uid_list:
                 return None
@@ -170,7 +176,7 @@ class SQLA:
                 uid = uid_list[1]
             uid_list.remove(uid)
             uid_list.insert(0, uid)
-            await self.update_bind_data(user_id, {'uid': '_'.join(uid_list)})
+            await self.update_bind_data(user_id, {id_type: '_'.join(uid_list)})
             return uid_list
         else:
             return None
@@ -182,21 +188,22 @@ class SQLA:
     async def select_user_data(self, uid: str) -> Optional[GsUser]:
         async with self.async_session() as session:
             async with session.begin():
-                sql = select(GsUser).where(GsUser.uid == uid)
-                result = await session.execute(sql)
-                return data[0] if (data := result.scalars().all()) else None
-
-    async def select_sr_user_data(self, sr_uid: str) -> Optional[GsUser]:
-        async with self.async_session() as session:
-            async with session.begin():
-                sql = select(GsUser).where(GsUser.sr_uid == sr_uid)
+                sql = (
+                    select(GsUser).where(GsUser.sr_uid == uid)
+                    if self.is_sr
+                    else select(GsUser).where(GsUser.uid == uid)
+                )
                 result = await session.execute(sql)
                 return data[0] if (data := result.scalars().all()) else None
 
     async def select_cache_cookie(self, uid: str) -> Optional[str]:
         async with self.async_session() as session:
             async with session.begin():
-                sql = select(GsCache).where(GsCache.uid == uid)
+                sql = (
+                    select(GsCache).where(GsCache.sr_uid == uid)
+                    if self.is_sr
+                    else select(GsCache).where(GsCache.uid == uid)
+                )
                 result = await session.execute(sql)
                 data: List[GsCache] = result.scalars().all()
                 return data[0].cookie if len(data) >= 1 else None
@@ -229,9 +236,9 @@ class SQLA:
     async def insert_user_data(
         self,
         user_id: str,
-        uid: Optional[str],
-        sr_uid: Optional[str],
-        cookie: str,
+        uid: Optional[str] = None,
+        sr_uid: Optional[str] = None,
+        cookie: Optional[str] = None,
         stoken: Optional[str] = None,
     ) -> bool:
         async with self.async_session() as session:
@@ -246,10 +253,11 @@ class SQLA:
                             stoken=stoken,
                             bot_id=self.bot_id,
                             user_id=user_id,
+                            sr_uid=sr_uid,
                         )
                     )
                     await session.execute(sql)
-                elif sr_uid and await self.sr_user_exists(sr_uid):
+                elif sr_uid and await self.user_exists(sr_uid):
                     sql = (
                         update(GsUser)
                         .where(GsUser.sr_uid == sr_uid)
@@ -259,10 +267,14 @@ class SQLA:
                             stoken=stoken,
                             bot_id=self.bot_id,
                             user_id=user_id,
+                            uid=uid,
                         )
                     )
                     await session.execute(sql)
                 else:
+                    if cookie is None:
+                        return False
+
                     account_id = re.search(r'account_id=(\d*)', cookie)
                     assert account_id is not None
                     account_id = str(account_id.group(1))
@@ -279,7 +291,9 @@ class SQLA:
                         push_switch='off',
                         bbs_switch='off',
                         region=SERVER.get(uid[0], 'cn_gf01') if uid else None,
-                        sr_region=None,
+                        sr_region=SR_SERVER.get(sr_uid[0], None)
+                        if sr_uid
+                        else None,
                     )
                     session.add(user_data)
                 await session.commit()
@@ -288,8 +302,14 @@ class SQLA:
     async def update_user_data(self, uid: str, data: Optional[Dict]):
         async with self.async_session() as session:
             async with session.begin():
-                sql = update(GsUser).where(
-                    GsUser.uid == uid, GsUser.bot_id == self.bot_id
+                sql = (
+                    update(GsUser).where(
+                        GsUser.sr_uid == uid, GsUser.bot_id == self.bot_id
+                    )
+                    if self.is_sr
+                    else update(GsUser).where(
+                        GsUser.uid == uid, GsUser.bot_id == self.bot_id
+                    )
                 )
                 if data is not None:
                     query = sql.values(**data)
@@ -301,7 +321,11 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 if await self.user_exists(uid):
-                    sql = delete(GsUser).where(GsUser.uid == uid)
+                    sql = (
+                        delete(GsUser).where(GsUser.sr_uid == uid)
+                        if self.is_sr
+                        else delete(GsUser).where(GsUser.uid == uid)
+                    )
                     await session.execute(sql)
                     await session.commit()
                     return True
@@ -335,10 +359,6 @@ class SQLA:
         data = await self.select_user_data(uid)
         return True if data else False
 
-    async def sr_user_exists(self, sr_uid: str) -> bool:
-        data = await self.select_sr_user_data(sr_uid)
-        return True if data else False
-
     async def update_user_stoken(
         self, uid: str, stoken: Optional[str]
     ) -> bool:
@@ -346,9 +366,17 @@ class SQLA:
             async with session.begin():
                 if await self.user_exists(uid):
                     sql = (
-                        update(GsUser)
-                        .where(GsUser.uid == uid)
-                        .values(stoken=stoken)
+                        (
+                            update(GsUser)
+                            .where(GsUser.sr_uid == uid)
+                            .values(stoken=stoken)
+                        )
+                        if self.is_sr
+                        else (
+                            update(GsUser)
+                            .where(GsUser.uid == uid)
+                            .values(stoken=stoken)
+                        )
                     )
                     await session.execute(sql)
                     await session.commit()
@@ -362,9 +390,17 @@ class SQLA:
             async with session.begin():
                 if await self.user_exists(uid):
                     sql = (
-                        update(GsUser)
-                        .where(GsUser.uid == uid)
-                        .values(cookie=cookie)
+                        (
+                            update(GsUser)
+                            .where(GsUser.sr_uid == uid)
+                            .values(cookie=cookie)
+                        )
+                        if self.is_sr
+                        else (
+                            update(GsUser)
+                            .where(GsUser.uid == uid)
+                            .values(cookie=cookie)
+                        )
                     )
                     await session.execute(sql)
                     await session.commit()
@@ -376,7 +412,17 @@ class SQLA:
             async with session.begin():
                 if await self.user_exists(uid):
                     sql = (
-                        update(GsUser).where(GsUser.uid == uid).values(**data)
+                        (
+                            update(GsUser)
+                            .where(GsUser.sr_uid == uid)
+                            .values(**data)
+                        )
+                        if self.is_sr
+                        else (
+                            update(GsUser)
+                            .where(GsUser.uid == uid)
+                            .values(**data)
+                        )
                     )
                     await session.execute(sql)
                     await session.commit()
@@ -458,7 +504,13 @@ class SQLA:
                 user_list: List[GsUser] = data.scalars().all()
                 for user in user_list:
                     if not user.status and user.cookie:
-                        await self.insert_cache_data(user.cookie, uid)  # 进入缓存
+                        # 进入缓存
+                        if self.is_sr:
+                            await self.insert_cache_data(
+                                user.cookie, sr_uid=uid
+                            )
+                        else:
+                            await self.insert_cache_data(user.cookie, uid)
                         return user.cookie
                     continue
                 else:
@@ -551,7 +603,11 @@ class SQLA:
     async def refresh_cache(self, uid: str):
         async with self.async_session() as session:
             async with session.begin():
-                sql = delete(GsCache).where(GsCache.uid == uid)
+                sql = (
+                    delete(GsCache).where(GsCache.sr_uid == uid)
+                    if self.is_sr
+                    else delete(GsCache).where(GsCache.uid == uid)
+                )
                 await session.execute(sql)
                 return True
 

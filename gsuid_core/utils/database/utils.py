@@ -7,3 +7,8 @@ SERVER = {
     '8': 'os_asia',
     '9': 'os_cht',
 }
+
+SR_SERVER = {
+    '1': 'prod_gf_cn',
+    '2': 'prod_gf_cn',
+}

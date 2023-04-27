@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Union, Literal, Optional, cast
 
 from aiohttp import ClientSession, ContentTypeError
 
+from gsuid_core.logger import logger
+
 from .api import _API
 from .tools import (
     random_hex,
@@ -61,7 +63,7 @@ RECOGNIZE_SERVER = {
 }
 
 
-class MysApi:
+class BaseMysApi:
     proxy_url: Optional[str] = None
     mysVersion = '2.44.1'
     _HEADER = {
@@ -98,6 +100,120 @@ class MysApi:
     async def get_stoken(self, uid: str) -> Optional[str]:
         ...
 
+    async def simple_mys_req(
+        self,
+        URL: str,
+        uid: Union[str, bool],
+        params: Dict = {},
+        header: Dict = {},
+        cookie: Optional[str] = None,
+    ) -> Union[Dict, int]:
+        if isinstance(uid, bool):
+            is_os = uid
+            server_id = 'cn_qd01' if is_os else 'cn_gf01'
+        else:
+            server_id = RECOGNIZE_SERVER.get(uid[0])
+            is_os = False if int(uid[0]) < 6 else True
+        ex_params = '&'.join([f'{k}={v}' for k, v in params.items()])
+        if is_os:
+            _URL = _API[f'{URL}_OS']
+            HEADER = copy.deepcopy(self._HEADER_OS)
+            HEADER['DS'] = generate_os_ds()
+        else:
+            _URL = _API[URL]
+            HEADER = copy.deepcopy(self._HEADER)
+            HEADER['DS'] = get_ds_token(
+                ex_params if ex_params else f'role_id={uid}&server={server_id}'
+            )
+        HEADER.update(header)
+        if cookie is not None:
+            HEADER['Cookie'] = cookie
+        elif 'Cookie' not in HEADER and isinstance(uid, str):
+            ck = await self.get_ck(uid)
+            if ck is None:
+                return -51
+            HEADER['Cookie'] = ck
+        data = await self._mys_request(
+            url=_URL,
+            method='GET',
+            header=HEADER,
+            params=params if params else {'server': server_id, 'role_id': uid},
+            use_proxy=True if is_os else False,
+        )
+        return data
+
+    async def _mys_req_get(
+        self,
+        url: str,
+        is_os: bool,
+        params: Dict,
+        header: Optional[Dict] = None,
+    ) -> Union[Dict, int]:
+        if is_os:
+            _URL = _API[f'{url}_OS']
+            HEADER = copy.deepcopy(self._HEADER_OS)
+            use_proxy = True
+        else:
+            _URL = _API[url]
+            HEADER = copy.deepcopy(self._HEADER)
+            use_proxy = False
+        if header:
+            HEADER.update(header)
+
+        if 'Cookie' not in HEADER and 'uid' in params:
+            ck = await self.get_ck(params['uid'])
+            if ck is None:
+                return -51
+            HEADER['Cookie'] = ck
+        data = await self._mys_request(
+            url=_URL,
+            method='GET',
+            header=HEADER,
+            params=params,
+            use_proxy=use_proxy,
+        )
+        return data
+
+    async def _mys_request(
+        self,
+        url: str,
+        method: Literal['GET', 'POST'] = 'GET',
+        header: Dict[str, Any] = _HEADER,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        use_proxy: Optional[bool] = False,
+    ) -> Union[Dict, int]:
+        async with ClientSession() as client:
+            async with client.request(
+                method,
+                url=url,
+                headers=header,
+                params=params,
+                json=data,
+                proxy=self.proxy_url if use_proxy else None,
+                timeout=300,
+            ) as resp:
+                try:
+                    raw_data = await resp.json()
+                except ContentTypeError:
+                    _raw_data = await resp.text()
+                    raw_data = {'retcode': -999, 'data': _raw_data}
+                logger.debug(raw_data)
+                if 'retcode' in raw_data:
+                    retcode: int = raw_data['retcode']
+                elif 'code' in raw_data:
+                    retcode: int = raw_data['code']
+                else:
+                    retcode = 0
+                if retcode == 1034:
+                    await self._upass(header)
+                    return retcode
+                elif retcode != 0:
+                    return retcode
+                return raw_data
+
+
+class MysApi(BaseMysApi):
     async def get_upass_link(self, header: Dict) -> Union[int, Dict]:
         header['DS'] = get_ds_token('is_high=false')
         return await self._mys_request(
@@ -828,115 +944,3 @@ class MysApi:
         if isinstance(resp, int):
             return resp
         return cast(MysOrderCheck, resp['data'])
-
-    async def simple_mys_req(
-        self,
-        URL: str,
-        uid: Union[str, bool],
-        params: Dict = {},
-        header: Dict = {},
-        cookie: Optional[str] = None,
-    ) -> Union[Dict, int]:
-        if isinstance(uid, bool):
-            is_os = uid
-            server_id = 'cn_qd01' if is_os else 'cn_gf01'
-        else:
-            server_id = RECOGNIZE_SERVER.get(uid[0])
-            is_os = False if int(uid[0]) < 6 else True
-        ex_params = '&'.join([f'{k}={v}' for k, v in params.items()])
-        if is_os:
-            _URL = _API[f'{URL}_OS']
-            HEADER = copy.deepcopy(self._HEADER_OS)
-            HEADER['DS'] = generate_os_ds()
-        else:
-            _URL = _API[URL]
-            HEADER = copy.deepcopy(self._HEADER)
-            HEADER['DS'] = get_ds_token(
-                ex_params if ex_params else f'role_id={uid}&server={server_id}'
-            )
-        HEADER.update(header)
-        if cookie is not None:
-            HEADER['Cookie'] = cookie
-        elif 'Cookie' not in HEADER and isinstance(uid, str):
-            ck = await self.get_ck(uid)
-            if ck is None:
-                return -51
-            HEADER['Cookie'] = ck
-        data = await self._mys_request(
-            url=_URL,
-            method='GET',
-            header=HEADER,
-            params=params if params else {'server': server_id, 'role_id': uid},
-            use_proxy=True if is_os else False,
-        )
-        return data
-
-    async def _mys_req_get(
-        self,
-        url: str,
-        is_os: bool,
-        params: Dict,
-        header: Optional[Dict] = None,
-    ) -> Union[Dict, int]:
-        if is_os:
-            _URL = _API[f'{url}_OS']
-            HEADER = copy.deepcopy(self._HEADER_OS)
-            use_proxy = True
-        else:
-            _URL = _API[url]
-            HEADER = copy.deepcopy(self._HEADER)
-            use_proxy = False
-        if header:
-            HEADER.update(header)
-
-        if 'Cookie' not in HEADER and 'uid' in params:
-            ck = await self.get_ck(params['uid'])
-            if ck is None:
-                return -51
-            HEADER['Cookie'] = ck
-        data = await self._mys_request(
-            url=_URL,
-            method='GET',
-            header=HEADER,
-            params=params,
-            use_proxy=use_proxy,
-        )
-        return data
-
-    async def _mys_request(
-        self,
-        url: str,
-        method: Literal['GET', 'POST'] = 'GET',
-        header: Dict[str, Any] = _HEADER,
-        params: Optional[Dict[str, Any]] = None,
-        data: Optional[Dict[str, Any]] = None,
-        use_proxy: Optional[bool] = False,
-    ) -> Union[Dict, int]:
-        async with ClientSession() as client:
-            async with client.request(
-                method,
-                url=url,
-                headers=header,
-                params=params,
-                json=data,
-                proxy=self.proxy_url if use_proxy else None,
-                timeout=300,
-            ) as resp:
-                try:
-                    raw_data = await resp.json()
-                except ContentTypeError:
-                    _raw_data = await resp.text()
-                    raw_data = {'retcode': -999, 'data': _raw_data}
-                print(raw_data)
-                if 'retcode' in raw_data:
-                    retcode: int = raw_data['retcode']
-                elif 'code' in raw_data:
-                    retcode: int = raw_data['code']
-                else:
-                    retcode = 0
-                if retcode == 1034:
-                    await self._upass(header)
-                    return retcode
-                elif retcode != 0:
-                    return retcode
-                return raw_data
