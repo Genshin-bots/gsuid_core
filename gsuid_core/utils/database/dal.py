@@ -74,7 +74,7 @@ class SQLA:
                 new_sr_uid = new_sr_uid.strip()
                 if len(new_uid) != 9 and len(new_sr_uid) != 9:
                     return -1
-                elif not new_uid.isdigit() and new_sr_uid.isdigit():
+                elif not new_uid.isdigit() and not new_sr_uid.isdigit():
                     return -3
                 if new_uid and await self.bind_exists(user_id):
                     uid_list = await self.get_bind_uid_list(user_id)
