@@ -46,7 +46,7 @@ class GsClient:
             msg = MessageReceive(
                 bot_id='Nonebot222',
                 user_type='direct',
-                user_pm=2,
+                user_pm=1,
                 group_id=None,
                 user_id='511',
                 content=content,

@@ -104,13 +104,24 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 _uid = data['uid'] if 'uid' in data else ''
-                if await self.bind_exists(user_id):
+                _sr_uid = data['sr_uid'] if 'sr_uid' in data else ''
+                if _uid and await self.bind_exists(user_id):
                     uid_list = await self.get_bind_uid_list(user_id)
                     if uid_list and _uid in uid_list:
                         uid_list.remove(_uid)
                     else:
                         return -1
                     data['uid'] = '_'.join(uid_list)
+                    await self.update_bind_data(user_id, data)
+                    await session.commit()
+                    return 0
+                elif _sr_uid and await self.bind_exists(user_id):
+                    uid_list = await self.get_bind_sruid_list(user_id)
+                    if uid_list and _sr_uid in uid_list:
+                        uid_list.remove(_sr_uid)
+                    else:
+                        return -1
+                    data['sr_uid'] = '_'.join(uid_list)
                     await self.update_bind_data(user_id, data)
                     await session.commit()
                     return 0
