@@ -20,7 +20,7 @@ class _Bot:
 
     async def target_send(
         self,
-        message: Union[Message, List[Message], str, bytes],
+        message: Union[Message, List[Message], List[str], str, bytes],
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
         bot_id: str,
@@ -38,6 +38,8 @@ class _Bot:
                 message = [MessageSegment.text(message)]
         elif isinstance(message, bytes):
             message = [MessageSegment.image(message)]
+        elif isinstance(message, List):
+            message = [MessageSegment.node(message)]
 
         if at_sender and sender_id:
             message.append(MessageSegment.at(sender_id))
@@ -70,7 +72,7 @@ class Bot:
 
     async def send(
         self,
-        message: Union[Message, List[Message], str, bytes],
+        message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
     ):
         return await self.bot.target_send(
@@ -86,7 +88,7 @@ class Bot:
 
     async def target_send(
         self,
-        message: Union[Message, List[Message], str, bytes],
+        message: Union[Message, List[Message], str, bytes, List[str]],
         target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
         target_id: Optional[str],
         at_sender: bool = False,
