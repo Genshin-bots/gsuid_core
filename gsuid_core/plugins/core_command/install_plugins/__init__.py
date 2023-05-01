@@ -14,10 +14,8 @@ async def send_plugins_install(bot: Bot, ev: Event):
         return await bot.send('不存在该插件...可以使用[core刷新插件列表]获取最新列表!')
 
     await bot.send('开始安装...请稍等一段时间...')
-    if install_plugins(plugins_url):
-        await bot.send('安装成功!使用[gs重启]以应用...')
-    else:
-        await bot.send('安装失败...请查看控制台!')
+    im = install_plugins(plugins_url)
+    await bot.send(im)
 
 
 @sv_core_install_plugins.on_prefix(('core刷新插件列表'))

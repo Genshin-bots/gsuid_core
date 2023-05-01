@@ -57,7 +57,10 @@ class GsServer:
                 elif plugin.suffix == '.py':
                     importlib.import_module(f'plugins.{plugin.name[:-3]}')
             except Exception as e:  # noqa
-                logger.exception(e)
+                exception = sys.exc_info()
+                logger.opt(exception=exception).warning(
+                    'Warning encountered in function:'
+                )
                 logger.warning(f'插件{plugin.name}加载失败')
 
     def load_dir_plugins(self, plugin: Path, nest: bool = False):

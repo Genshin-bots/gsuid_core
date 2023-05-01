@@ -1,6 +1,7 @@
 import sys
 import logging
 import datetime
+import traceback
 from typing import TYPE_CHECKING
 
 import loguru
@@ -36,6 +37,9 @@ class LoguruHandler(logging.Handler):  # pragma: no cover
 
 
 def format_event(record):
+    if record['exception']:
+        return f'{traceback.print_tb(record["exception"].traceback)} \n'
+
     if 'trigger' in record['extra']:
         _tg = record['extra']['trigger']
         message = (
@@ -109,5 +113,6 @@ logger.add(
     format=format_event,
     rotation=datetime.time(),
     level=LEVEL,
-    diagnose=False,
+    # diagnose=False,
+    # backtrace=False,
 )

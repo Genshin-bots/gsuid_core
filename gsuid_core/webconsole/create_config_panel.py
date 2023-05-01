@@ -1,18 +1,14 @@
-from gsuid_core.plugins.GenshinUID.GenshinUID.genshinuid_config import (
-    gs_config,
+from gsuid_core.utils.plugins_config.gs_config import all_config_list
+from gsuid_core.utils.plugins_config.models import (
+    GsStrConfig,
+    GsBoolConfig,
+    GsListStrConfig,
 )
 from gsuid_core.webconsole.create_base_panel import (
     get_text_panel,
     get_switch_panel,
     get_container_panel,
 )
-from gsuid_core.plugins.GenshinUID.GenshinUID.genshinuid_config.models import (
-    GsStrConfig,
-    GsBoolConfig,
-    GsListStrConfig,
-)
-
-gsconfig = gs_config.gsconfig
 
 
 def get_config_page():
@@ -57,19 +53,21 @@ def get_config_page():
     }
     body = []
     solo_body = []
-    for config in gsconfig:
-        gsc = gsconfig[config]
-        if isinstance(gsc, GsStrConfig):
-            solo_body.append(get_text_panel(gsc.title, config, gsc.data))
-        elif isinstance(gsc, GsBoolConfig):
-            solo_body.append(get_switch_panel(gsc.title, config, gsc.data))
-        elif isinstance(gsc, GsListStrConfig):
-            solo_body.append(
-                get_text_panel(gsc.title, config, ':'.join(gsc.data))
-            )
-        if len(solo_body) == 3:
-            body.append(get_container_panel(solo_body))
-            solo_body = []
+    for config_name in all_config_list:
+        _config = all_config_list[config_name]
+        for config in _config:
+            gsc = _config[config]
+            if isinstance(gsc, GsStrConfig):
+                solo_body.append(get_text_panel(gsc.title, config, gsc.data))
+            elif isinstance(gsc, GsBoolConfig):
+                solo_body.append(get_switch_panel(gsc.title, config, gsc.data))
+            elif isinstance(gsc, GsListStrConfig):
+                solo_body.append(
+                    get_text_panel(gsc.title, config, ':'.join(gsc.data))
+                )
+            if len(solo_body) == 3:
+                body.append(get_container_panel(solo_body))
+                solo_body = []
     body.append(get_container_panel(solo_body))
     card['body'] = body
     page['body'].append(card)

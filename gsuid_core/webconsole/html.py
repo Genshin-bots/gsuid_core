@@ -1,6 +1,6 @@
 import fastapi_amis_admin
 
-from gsuid_core.plugins.GenshinUID.GenshinUID.version import GenshinUID_version
+from gsuid_core.version import __version__ as GenshinUID_version
 
 login_html = '''
 <p align='center'>

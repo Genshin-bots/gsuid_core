@@ -55,7 +55,7 @@ typing-extensions==4.5.0 ; python_full_version >= "3.8.1" and python_full_versio
 tzdata==2023.3 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 tzlocal==4.3 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 urllib3==1.26.15 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
-uvicorn==0.21.1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
+uvicorn==0.22.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 websockets==10.4 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 win32-setctime==1.1.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0" and sys_platform == "win32"
 yarl==1.9.2 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"

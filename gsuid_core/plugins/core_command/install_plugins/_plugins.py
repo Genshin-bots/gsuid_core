@@ -43,11 +43,12 @@ async def get_plugins_url(name: str) -> Optional[str]:
             return None
 
 
-def install_plugins(url: str) -> bool:
+def install_plugins(url: str) -> str:
     plugin_name = url.split('/')[-1]
     git_path = f'{proxy_url}{url}.git'
     logger.info(f'稍等...开始安装插件, 地址: {git_path}')
-    Repo.clone_from(
-        git_path, PLUGINS_PATH / plugin_name, single_branch=True, depth=1
-    )
-    return True
+    path = PLUGINS_PATH / plugin_name
+    if path.exists():
+        return '该插件已经安装过了!'
+    Repo.clone_from(git_path, path, single_branch=True, depth=1)
+    return f'插件{plugin_name}安装成功!发送[gs重启]以应用!'

@@ -36,16 +36,15 @@ from fastapi_amis_admin.amis.components import (
     ButtonToolbar,
 )
 
+from gsuid_core.logger import logger
+from gsuid_core.utils.database.api import db_url
 from gsuid_core.webconsole.models import WebUser
+from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
+from gsuid_core.version import __version__ as GenshinUID_version
 from gsuid_core.webconsole.create_config_panel import get_config_page
-from gsuid_core.plugins.GenshinUID.GenshinUID.utils.database import db_url
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
-from gsuid_core.plugins.GenshinUID.GenshinUID.version import GenshinUID_version
-from gsuid_core.plugins.GenshinUID.GenshinUID.genshinuid_user.add_ck import (
-    _deal_ck,
-)
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
     amis_admin,
@@ -260,8 +259,9 @@ class UserBindFormAdmin(admin.FormAdmin):
     ) -> BaseApiOut[Any]:
         try:
             im = await _deal_ck(data.bot_id, data.cookie, data.user_id)
-        except Exception:
-            return BaseApiOut(status=-1, msg='你输入的CK可能已经失效,请按照[入门使用]进行操作!')
+        except Exception as e:
+            logger.warning(e)
+            return BaseApiOut(status=-1, msg='你输入的CK可能已经失效/或者该用户ID未绑定UID')
         ok_num = im.count('成功')
         if ok_num < 1:
             return BaseApiOut(status=-1, msg=im)

@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict
 
 from sqlalchemy import event
@@ -17,7 +18,9 @@ class DBSqla:
         self.is_sr = is_sr
 
     def get_sqla(self, bot_id) -> SQLA:
-        return self._get_sqla(bot_id, self.is_sr)
+        sqla = self._get_sqla(bot_id, self.is_sr)
+        asyncio.create_task(sqla.sr_adapter())
+        return sqla
 
     def _get_sqla(self, bot_id, is_sr: bool = False) -> SQLA:
         sqla_list = active_sr_sqla if is_sr else active_sqla
