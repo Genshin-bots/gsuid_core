@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
 from msgspec import json as msgjson
 
@@ -78,31 +78,36 @@ class StringConfig:
         # 重新写回
         self.write_config()
 
-    def get_config(self, key: str) -> GSC:
+    def get_config(self, key: str) -> Any:
         if key in self.config:
             return self.config[key]
         elif key in self.config_list:
-            logger.info(f'[配置] 配置项 {key} 不存在, 但是默认配置存在, 已更新...')
+            logger.info(
+                f'[配置][{self.config_name}] 配置项 {key} 不存在, 但是默认配置存在, 已更新...'
+            )
             self.update_config()
             return self.config[key]
         else:
-            logger.warning(f'[配置] 配置项 {key} 不存在也没有配置, 返回默认参数...')
+            logger.warning(
+                f'[配置][{self.config_name}] 配置项 {key} 不存在也没有配置, 返回默认参数...'
+            )
             return GsBoolConfig('缺省值', '获取错误的配置项', False)
 
     def set_config(
         self, key: str, value: Union[str, List, bool, Dict]
     ) -> bool:
         if key in self.config_list:
-            temp = self.config[key]
+            temp = self.config[key].data
             if type(value) == type(temp):
-                temp.data = value  # type:ignore
                 # 设置值
-                self.config[key] = temp
+                self.config[key].data = value  # type: ignore
                 # 重新写回
                 self.write_config()
                 return True
             else:
-                logger.warning(f'[配置] 配置项 {key} 写入类型不正确, 停止写入...')
+                logger.warning(
+                    f'[配置][{self.config_name}] 配置项 {key} 写入类型不正确, 停止写入...'
+                )
                 return False
         else:
             return False
@@ -111,5 +116,5 @@ class StringConfig:
 all_config_list: Dict[str, StringConfig] = {}
 
 core_plugins_config = StringConfig(
-    'core', get_res_path() / 'core_config.json', CONIFG_DEFAULT
+    'Core', get_res_path() / 'core_config.json', CONIFG_DEFAULT
 )

@@ -11,6 +11,46 @@ from gsuid_core.webconsole.create_base_panel import (
 )
 
 
+def get_card_page(card_name: str):
+    return {
+        'type': 'service',
+        'body': {
+            'type': 'card',
+            'header': {'title': card_name, 'subTitle': ''},
+            'body': [],
+            'actions': [
+                {
+                    'type': 'button',
+                    'label': '确认修改',
+                    'id': 'u:5784cfaa5c0a',
+                    'actionType': 'ajax',
+                    'api': f'/genshinuid/setGsConfig/{card_name}',
+                    'onEvent': {
+                        'click': {
+                            'weight': 0,
+                            'actions': [
+                                {
+                                    'args': {
+                                        'msgType': 'success',
+                                        'position': 'top-center',
+                                        'closeButton': True,
+                                        'showIcon': True,
+                                        'msg': '成功设置！',
+                                        'timeout': 100,
+                                    },
+                                    'actionType': 'toast',
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+            'id': 'u:69b06813bfbe',
+        },
+        'id': 'u:4c2981f6a055',
+    }
+
+
 def get_config_page():
     page = {
         'type': 'page',
@@ -18,42 +58,10 @@ def get_config_page():
         'body': [],
         'id': 'u:a9be7e0dc626',
     }
-    card = {
-        'type': 'card',
-        'header': {'title': '', 'subTitle': ''},
-        'body': [],
-        'actions': [
-            {
-                'type': 'button',
-                'label': '确认修改',
-                'id': 'u:5784cfaa5c0a',
-                'actionType': 'ajax',
-                'api': '/genshinuid/setGsConfig',
-                'onEvent': {
-                    'click': {
-                        'weight': 0,
-                        'actions': [
-                            {
-                                'args': {
-                                    'msgType': 'success',
-                                    'position': 'top-center',
-                                    'closeButton': True,
-                                    'showIcon': True,
-                                    'msg': '成功设置！',
-                                    'timeout': 100,
-                                },
-                                'actionType': 'toast',
-                            }
-                        ],
-                    }
-                },
-            }
-        ],
-        'id': 'u:69b06813bfbe',
-    }
     body = []
     solo_body = []
     for config_name in all_config_list:
+        card = get_card_page(config_name)
         _config = all_config_list[config_name]
         for config in _config:
             gsc = _config[config]
@@ -68,7 +76,9 @@ def get_config_page():
             if len(solo_body) == 3:
                 body.append(get_container_panel(solo_body))
                 solo_body = []
-    body.append(get_container_panel(solo_body))
-    card['body'] = body
-    page['body'].append(card)
+        body.append(get_container_panel(solo_body))
+        card['body']['body'] = body
+        page['body'].append(card)
+        body = []
+        solo_body = []
     return page

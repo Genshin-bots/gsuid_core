@@ -17,6 +17,12 @@ from gsuid_core.handler import handle_event  # noqa: E402
 from gsuid_core.models import MessageReceive  # noqa: E402
 from gsuid_core.webconsole.mount_app import site  # noqa: E402
 from gsuid_core.aps import start_scheduler, shutdown_scheduler  # noqa: E402
+from gsuid_core.utils.plugins_config.models import (  # noqa: E402
+    GsListStrConfig,
+)
+from gsuid_core.utils.plugins_config.gs_config import (  # noqa: E402
+    all_config_list,
+)
 
 app = FastAPI()
 HOST = core_config.get_config('HOST')
@@ -76,20 +82,19 @@ def main():
                 data['white_list'] = []
             sv.set(**data)
 
-    '''
-    @app.post('/genshinuid/setGsConfig')
+    @app.post('/genshinuid/setGsConfig/{config_name}')
     @site.auth.requires('admin')
-    async def _set_Config(request: Request, data: Dict):
+    async def _set_Config(request: Request, data: Dict, config_name: str):
         for name in data:
             if name == 'params':
                 continue
-            config = gsconfig[name]
+            config = all_config_list[config_name][name]
             if isinstance(config, GsListStrConfig):
                 value = data[name].split(':')
             else:
                 value = data[name]
-            gsconfig.set_config(name, value)
-    '''
+            all_config_list[config_name].set_config(name, value)
+
     site.mount_app(app)
 
     uvicorn.run(
