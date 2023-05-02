@@ -666,6 +666,7 @@ config.json
 res_data
 GsData.db
 GenshinUID
+StarRailUID
 data
 plugins/*
 !plugins/core_command

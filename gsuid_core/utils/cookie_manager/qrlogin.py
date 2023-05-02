@@ -118,32 +118,40 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         ck = ck['cookie_token']
         cookie_check = f'account_id={account_id};cookie_token={ck}'
         get_uid = await mys_api.get_mihoyo_bbs_info(account_id, cookie_check)
-        # 剔除除了原神之外的其他游戏
+        # 剔除除了原神/星铁之外的其他游戏
         im = None
+        uid_check = sruid_check = None
         if isinstance(get_uid, List):
             for i in get_uid:
                 if i['game_id'] == 2:
                     uid_check = i['game_role_id']
-                    break
+                elif i['game_id'] == 6:
+                    sruid_check = i['game_role_id']
             else:
-                im = f'你的米游社账号{account_id}尚未绑定原神账号，请前往米游社操作！'
-                return await send_msg(im)
+                if uid_check or sruid_check:
+                    pass
+                else:
+                    im = f'你的米游社账号{account_id}尚未绑定原神账号，请前往米游社操作！'
+                    return await send_msg(im)
         else:
             im = '请求失败, 请稍后再试...'
             return await send_msg(im)
 
-        uid_bind = await sqla.get_bind_uid(
-            user_id
-        ) or await sqla.get_bind_sruid(user_id)
+        uid_bind = await sqla.get_bind_uid(user_id)
+        sruid_bind = await sqla.get_bind_sruid(user_id)
         # 没有在gsuid绑定uid的情况
-        if not uid_bind:
+        if not (uid_bind or sruid_bind):
             logger.warning('game_token获取失败')
             im = '你还没有绑定uid, 请输入[绑定uid123456]绑定你的uid, 再发送[扫码登录]进行绑定'
             return await send_msg(im)
         if isinstance(cookie_token, int):
             return await send_msg('获取CK失败...')
         # 比对gsuid数据库和扫码登陆获取到的uid
-        if str(uid_bind) == uid_check or str(uid_bind) == account_id:
+        if (
+            str(uid_bind) == uid_check
+            or str(sruid_bind) == str(sruid_check)
+            or str(uid_bind) == account_id
+        ):
             return SimpleCookie(
                 {
                     'stoken_v2': stoken_data['token']['token'],
