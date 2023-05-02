@@ -27,3 +27,5 @@ async def start_check():
     await site.auth.create_role_user('admin')
 
     logger.info(('WebConsole挂载成功:' f'http://{HOST}:{PORT}/genshinuid'))
+    if HOST == 'localhost' or HOST == '127.0.0.1':
+        logger.info('WebConsole挂载于本地, 如想外网访问请修改config.json中host为0.0.0.0!')
