@@ -10,6 +10,11 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '自定义使用gs重启时触发的控制台命令(看不懂勿改)',
         'poetry run python',
     ),
+    'MhySSLVerify': GsBoolConfig(
+        'ssl校验',
+        '开启或关闭米游社请求验证是否使用ssl校验',
+        True,
+    ),
     'CaptchaPass': GsBoolConfig(
         '失效项',
         '该选项已经无效且可能有一定危险性...',

@@ -11,7 +11,7 @@ from abc import abstractmethod
 from string import digits, ascii_letters
 from typing import Any, Dict, List, Union, Literal, Optional, cast
 
-from aiohttp import ClientSession, ContentTypeError
+from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
@@ -64,6 +64,7 @@ RECOGNIZE_SERVER = {
 }
 
 proxy_url = core_plugins_config.get_config('proxy').data
+ssl_verify = core_plugins_config.get_config('MhySSLVerify').data
 
 
 class BaseMysApi:
@@ -186,7 +187,9 @@ class BaseMysApi:
         data: Optional[Dict[str, Any]] = None,
         use_proxy: Optional[bool] = False,
     ) -> Union[Dict, int]:
-        async with ClientSession() as client:
+        async with ClientSession(
+            connector=TCPConnector(verify_ssl=ssl_verify)
+        ) as client:
             async with client.request(
                 method,
                 url=url,
