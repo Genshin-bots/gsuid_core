@@ -44,5 +44,9 @@ def get_error(retcode: Union[int, str]) -> str:
         return '[MINIGG]暂未找到此内容...'
     elif retcode == -400:
         return '请输入更详细的名称...'
+    elif retcode == 1008:
+        return '该API需要CK, 查询的用户/UID未绑定CK...'
+    elif retcode == 10104:
+        return 'CK与用户信息不符, 请检查代码实现...'
     else:
         return f'API报错, 错误码为{retcode}!'

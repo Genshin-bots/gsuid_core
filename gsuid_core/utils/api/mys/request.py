@@ -53,6 +53,8 @@ from .models import (
     LoginTicketInfo,
 )
 
+proxy_url = core_plugins_config.get_config('proxy').data
+ssl_verify = core_plugins_config.get_config('MhySSLVerify').data
 RECOGNIZE_SERVER = {
     '1': 'cn_gf01',
     '2': 'cn_gf01',
@@ -62,9 +64,6 @@ RECOGNIZE_SERVER = {
     '8': 'os_asia',
     '9': 'os_cht',
 }
-
-proxy_url = core_plugins_config.get_config('proxy').data
-ssl_verify = core_plugins_config.get_config('MhySSLVerify').data
 
 
 class BaseMysApi:
@@ -85,6 +84,9 @@ class BaseMysApi:
         'x-rpc-client_type': '4',
         'x-rpc-language': 'zh-cn',
     }
+    MAPI = _API
+    is_sr = False
+    RECOGNIZE_SERVER = RECOGNIZE_SERVER
 
     @abstractmethod
     async def _upass(self, header: Dict):
@@ -114,17 +116,21 @@ class BaseMysApi:
     ) -> Union[Dict, int]:
         if isinstance(uid, bool):
             is_os = uid
-            server_id = 'cn_qd01' if is_os else 'cn_gf01'
+            server_id = (
+                ('cn_qd01' if is_os else 'cn_gf01')
+                if not self.is_sr
+                else ('prod_gf_cn' if is_os else 'prod_gf_cn')
+            )
         else:
-            server_id = RECOGNIZE_SERVER.get(uid[0])
+            server_id = self.RECOGNIZE_SERVER.get(uid[0])
             is_os = False if int(uid[0]) < 6 else True
         ex_params = '&'.join([f'{k}={v}' for k, v in params.items()])
         if is_os:
-            _URL = _API[f'{URL}_OS']
+            _URL = self.MAPI[f'{URL}_OS']
             HEADER = copy.deepcopy(self._HEADER_OS)
             HEADER['DS'] = generate_os_ds()
         else:
-            _URL = _API[URL]
+            _URL = self.MAPI[URL]
             HEADER = copy.deepcopy(self._HEADER)
             HEADER['DS'] = get_ds_token(
                 ex_params if ex_params else f'role_id={uid}&server={server_id}'
@@ -154,11 +160,11 @@ class BaseMysApi:
         header: Optional[Dict] = None,
     ) -> Union[Dict, int]:
         if is_os:
-            _URL = _API[f'{url}_OS']
+            _URL = self.MAPI[f'{url}_OS']
             HEADER = copy.deepcopy(self._HEADER_OS)
             use_proxy = True
         else:
-            _URL = _API[url]
+            _URL = self.MAPI[url]
             HEADER = copy.deepcopy(self._HEADER)
             use_proxy = False
         if header:
@@ -261,7 +267,7 @@ class MysApi(BaseMysApi):
     async def get_upass_link(self, header: Dict) -> Union[int, Dict]:
         header['DS'] = get_ds_token('is_high=false')
         return await self._mys_request(
-            url=_API['VERIFICATION_URL'],
+            url=self.MAPI['VERIFICATION_URL'],
             method='GET',
             header=header,
         )
@@ -269,7 +275,7 @@ class MysApi(BaseMysApi):
     async def get_bbs_upass_link(self, header: Dict) -> Union[int, Dict]:
         header['DS'] = get_ds_token('is_high=false')
         return await self._mys_request(
-            url=_API['BBS_VERIFICATION_URL'],
+            url=self.MAPI['BBS_VERIFICATION_URL'],
             method='GET',
             header=header,
         )
@@ -284,7 +290,7 @@ class MysApi(BaseMysApi):
             },
         )
         _ = await self._mys_request(
-            url=_API['VERIFY_URL'],
+            url=self.MAPI['VERIFY_URL'],
             method='POST',
             header=header,
             data={
@@ -325,7 +331,7 @@ class MysApi(BaseMysApi):
         self, token: str, uid: str
     ) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
-            _API['GET_COOKIE_TOKEN_BY_GAME_TOKEN'],
+            self.MAPI['GET_COOKIE_TOKEN_BY_GAME_TOKEN'],
             'GET',
             params={
                 'game_token': token,
@@ -351,7 +357,7 @@ class MysApi(BaseMysApi):
         return data
 
     async def get_sign_info(self, uid) -> Union[SignInfo, int]:
-        server_id = RECOGNIZE_SERVER.get(str(uid)[0])
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         is_os = self.check_os(uid)
         if is_os:
             params = {
@@ -378,7 +384,7 @@ class MysApi(BaseMysApi):
     async def mys_sign(
         self, uid, header={}, server_id='cn_gf01'
     ) -> Union[MysSign, int]:
-        server_id = RECOGNIZE_SERVER.get(str(uid)[0])
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         ck = await self.get_ck(uid, 'OWNER')
         if ck is None:
             return -51
@@ -397,7 +403,7 @@ class MysApi(BaseMysApi):
             )
             HEADER.update(header)
             data = await self._mys_request(
-                url=_API['SIGN_URL'],
+                url=self.MAPI['SIGN_URL'],
                 method='POST',
                 header=HEADER,
                 data={
@@ -412,7 +418,7 @@ class MysApi(BaseMysApi):
             HEADER['DS'] = generate_os_ds()
             HEADER.update(header)
             data = await self._mys_request(
-                url=_API['SIGN_URL_OS'],
+                url=self.MAPI['SIGN_URL_OS'],
                 method='POST',
                 header=HEADER,
                 data={
@@ -428,7 +434,7 @@ class MysApi(BaseMysApi):
         return data
 
     async def get_award(self, uid) -> Union[MonthlyAward, int]:
-        server_id = RECOGNIZE_SERVER.get(str(uid)[0])
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         ck = await self.get_ck(uid, 'OWNER')
         if ck is None:
             return -51
@@ -438,7 +444,7 @@ class MysApi(BaseMysApi):
             HEADER['DS'] = get_web_ds_token(True)
             HEADER['x-rpc-device_id'] = random_hex(32)
             data = await self._mys_request(
-                url=_API['MONTHLY_AWARD_URL'],
+                url=self.MAPI['MONTHLY_AWARD_URL'],
                 method='GET',
                 header=HEADER,
                 params={
@@ -459,7 +465,7 @@ class MysApi(BaseMysApi):
             HEADER['x-rpc-device_id'] = random_hex(32)
             HEADER['DS'] = generate_os_ds()
             data = await self._mys_request(
-                url=_API['MONTHLY_AWARD_URL_OS'],
+                url=self.MAPI['MONTHLY_AWARD_URL_OS'],
                 method='GET',
                 header=HEADER,
                 params={
@@ -475,7 +481,7 @@ class MysApi(BaseMysApi):
         return data
 
     async def get_draw_calendar(self, uid: str) -> Union[int, RolesCalendar]:
-        server_id = RECOGNIZE_SERVER.get(uid[0])
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
         ck = await self.get_ck(uid, 'OWNER')
         if ck is None:
             return -51
@@ -491,14 +497,14 @@ class MysApi(BaseMysApi):
             'year': 2023,
         }
         data = await self._mys_request(
-            _API['CALENDAR_URL'], 'GET', header, params
+            self.MAPI['CALENDAR_URL'], 'GET', header, params
         )
         if isinstance(data, Dict):
             return cast(RolesCalendar, data['data'])
         return data
 
     async def get_bs_index(self, uid: str) -> Union[int, BsIndex]:
-        server_id = RECOGNIZE_SERVER.get(uid[0])
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
         ck = await self.get_ck(uid, 'OWNER')
         if ck is None:
             return -51
@@ -506,7 +512,7 @@ class MysApi(BaseMysApi):
         header = {}
         header['Cookie'] = f'{ck};{hk4e_token}'
         data = await self._mys_request(
-            _API['BS_INDEX_URL'],
+            self.MAPI['BS_INDEX_URL'],
             'GET',
             header,
             {
@@ -522,7 +528,7 @@ class MysApi(BaseMysApi):
         return data
 
     async def post_draw(self, uid: str, role_id: int) -> Union[int, Dict]:
-        server_id = RECOGNIZE_SERVER.get(uid[0])
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
         ck = await self.get_ck(uid, 'OWNER')
         if ck is None:
             return -51
@@ -530,7 +536,7 @@ class MysApi(BaseMysApi):
         header = {}
         header['Cookie'] = f'{ck};{hk4e_token}'
         data = await self._mys_request(
-            _API['RECEIVE_URL'],
+            self.MAPI['RECEIVE_URL'],
             'POST',
             header,
             {
@@ -552,7 +558,7 @@ class MysApi(BaseMysApi):
     async def get_spiral_abyss_info(
         self, uid: str, schedule_type='1', ck: Optional[str] = None
     ) -> Union[AbyssData, int]:
-        server_id = RECOGNIZE_SERVER.get(uid[0])
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
         data = await self.simple_mys_req(
             'PLAYER_ABYSS_INFO_URL',
             uid,
@@ -570,7 +576,7 @@ class MysApi(BaseMysApi):
     async def get_character(
         self, uid, character_ids, ck
     ) -> Union[CharDetailData, int]:
-        server_id = RECOGNIZE_SERVER.get(str(uid)[0])
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         if int(str(uid)[0]) < 6:
             HEADER = copy.deepcopy(self._HEADER)
             HEADER['Cookie'] = ck
@@ -583,7 +589,7 @@ class MysApi(BaseMysApi):
                 },
             )
             data = await self._mys_request(
-                _API['PLAYER_DETAIL_INFO_URL'],
+                self.MAPI['PLAYER_DETAIL_INFO_URL'],
                 'POST',
                 HEADER,
                 data={
@@ -597,7 +603,7 @@ class MysApi(BaseMysApi):
             HEADER['Cookie'] = ck
             HEADER['DS'] = generate_os_ds()
             data = await self._mys_request(
-                _API['PLAYER_DETAIL_INFO_URL_OS'],
+                self.MAPI['PLAYER_DETAIL_INFO_URL_OS'],
                 'POST',
                 HEADER,
                 data={
@@ -614,7 +620,7 @@ class MysApi(BaseMysApi):
     async def get_calculate_info(
         self, uid, char_id: int
     ) -> Union[CalculateInfo, int]:
-        server_id = RECOGNIZE_SERVER.get(str(uid)[0])
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         data = await self.simple_mys_req(
             'CALCULATE_INFO_URL',
             uid,
@@ -646,7 +652,7 @@ class MysApi(BaseMysApi):
         device_id: str = ''.join(random.choices(ascii_letters + digits, k=64))
         app_id: str = '8'
         data = await self._mys_request(
-            _API['CREATE_QRCODE'],
+            self.MAPI['CREATE_QRCODE'],
             'POST',
             header={},
             data={'app_id': app_id, 'device': device_id},
@@ -666,7 +672,7 @@ class MysApi(BaseMysApi):
         self, app_id: str, ticket: str, device: str
     ) -> Union[QrCodeStatus, int]:
         data = await self._mys_request(
-            _API['CHECK_QRCODE'],
+            self.MAPI['CHECK_QRCODE'],
             'POST',
             data={
                 'app_id': app_id,
@@ -691,7 +697,7 @@ class MysApi(BaseMysApi):
             return authkey_rawdata
         authkey = authkey_rawdata['authkey']
         data = await self._mys_request(
-            url=_API['GET_GACHA_LOG_URL'],
+            url=self.MAPI['GET_GACHA_LOG_URL'],
             method='GET',
             header=self._HEADER,
             params={
@@ -721,7 +727,7 @@ class MysApi(BaseMysApi):
         self, token: str, uid: str
     ) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
-            _API['GET_COOKIE_TOKEN_BY_GAME_TOKEN'],
+            self.MAPI['GET_COOKIE_TOKEN_BY_GAME_TOKEN'],
             'GET',
             params={
                 'game_token': token,
@@ -741,7 +747,7 @@ class MysApi(BaseMysApi):
         else:
             HEADER['Cookie'] = f'stuid={mys_id};stoken={stoken}'
         data = await self._mys_request(
-            url=_API['GET_COOKIE_TOKEN_URL'],
+            url=self.MAPI['GET_COOKIE_TOKEN_URL'],
             method='GET',
             header=HEADER,
             params={
@@ -757,7 +763,7 @@ class MysApi(BaseMysApi):
         self, lt: str, mys_id: str
     ) -> Union[LoginTicketInfo, int]:
         data = await self._mys_request(
-            url=_API['GET_STOKEN_URL'],
+            url=self.MAPI['GET_STOKEN_URL'],
             method='GET',
             header=self._HEADER,
             params={
@@ -778,7 +784,7 @@ class MysApi(BaseMysApi):
             'game_token': game_token,
         }
         data = await self._mys_request(
-            _API['GET_STOKEN'],
+            self.MAPI['GET_STOKEN'],
             'POST',
             {
                 'x-rpc-app_version': '2.41.0',
@@ -805,7 +811,7 @@ class MysApi(BaseMysApi):
         return data
 
     async def get_authkey_by_cookie(self, uid: str) -> Union[AuthKeyInfo, int]:
-        server_id = RECOGNIZE_SERVER.get(str(uid)[0])
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         HEADER = copy.deepcopy(self._HEADER)
         stoken = await self.get_stoken(uid)
         if stoken is None:
@@ -823,7 +829,7 @@ class MysApi(BaseMysApi):
         HEADER['Referer'] = 'https://app.mihoyo.com'
         HEADER['Host'] = 'api-takumi.mihoyo.com'
         data = await self._mys_request(
-            url=_API['GET_AUTHKEY_URL'],
+            url=self.MAPI['GET_AUTHKEY_URL'],
             method='POST',
             header=HEADER,
             data={
@@ -839,7 +845,7 @@ class MysApi(BaseMysApi):
 
     async def get_hk4e_token(self, uid: str):
         # 获取e_hk4e_token
-        server_id = RECOGNIZE_SERVER.get(uid[0])
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
         header = {
             'Cookie': await self.get_ck(uid, 'OWNER'),
             'Content-Type': 'application/json;charset=UTF-8',
@@ -854,9 +860,9 @@ class MysApi(BaseMysApi):
             'region': f'{server_id}',
         }
         if int(str(uid)[0]) < 6:
-            url = _API['HK4E_LOGIN_URL']
+            url = self.MAPI['HK4E_LOGIN_URL']
         else:
-            url = _API['HK4E_LOGIN_URL_OS']
+            url = self.MAPI['HK4E_LOGIN_URL_OS']
             data['game_biz'] = 'hk4e_global'
             use_proxy = True
 
@@ -885,7 +891,7 @@ class MysApi(BaseMysApi):
             'game_biz': 'hk4e_cn',
             'lang': 'zh-cn',
             'badge_uid': uid,
-            'badge_region': RECOGNIZE_SERVER.get(uid[0]),
+            'badge_region': self.RECOGNIZE_SERVER.get(uid[0]),
         }
         data = await self.simple_mys_req(
             'REG_TIME',
@@ -909,7 +915,7 @@ class MysApi(BaseMysApi):
             'account': '1',
         }
         resp = await self._mys_request(
-            url=_API['fetchGoodsurl'],
+            url=self.MAPI['fetchGoodsurl'],
             method='POST',
             data=data,
         )
@@ -956,7 +962,7 @@ class MysApi(BaseMysApi):
         HEADER['x-rpc-device_id'] = device_id
         HEADER['x-rpc-client_type'] = '4'
         resp = await self._mys_request(
-            url=_API['CreateOrderurl'],
+            url=self.MAPI['CreateOrderurl'],
             method='POST',
             header=HEADER,
             data=data,
@@ -980,7 +986,7 @@ class MysApi(BaseMysApi):
             'uid': uid,
         }
         resp = await self._mys_request(
-            url=_API['CheckOrderurl'],
+            url=self.MAPI['CheckOrderurl'],
             method='GET',
             header=HEADER,
             params=data,
