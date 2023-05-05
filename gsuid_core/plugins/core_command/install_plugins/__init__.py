@@ -1,8 +1,7 @@
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
-
-from ._plugins import (
+from gsuid_core.utils.plugins_update._plugins import (
     refresh_list,
     update_plugins,
     get_plugins_url,

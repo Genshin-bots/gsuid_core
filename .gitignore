@@ -665,10 +665,8 @@ FodyWeavers.xsd
 config.json
 res_data
 GsData.db
-GenshinUID
-StarRailUID
 data
-plugins/*
-!plugins/core_command
-!plugins/gs_test.py
+gsuid_core/plugins/*
+!gsuid_core/plugins/core_command
+!gsuid_core/plugins/gs_test.py
 logs

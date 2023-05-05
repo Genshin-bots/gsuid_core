@@ -2,7 +2,7 @@ from typing import Dict, List, Union, Optional
 
 import aiohttp
 from git.repo import Repo
-from git.exc import GitCommandError
+from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from gsuid_core.logger import logger
 
@@ -25,6 +25,12 @@ async def refresh_list() -> List[str]:
                     logger.info(f'[刷新插件列表] 列表新增插件 {i}')
                 plugins_list[i.lower()] = _plugins_list['plugins'][i]
     return refresh_list
+
+
+async def get_plugins_list() -> Dict[str, Dict[str, str]]:
+    if not plugins_list:
+        await refresh_list()
+    return plugins_list
 
 
 async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
@@ -50,7 +56,52 @@ def install_plugins(plugins: Dict[str, str]) -> str:
     if path.exists():
         return '该插件已经安装过了!'
     Repo.clone_from(git_path, path, single_branch=True, depth=1)
+    logger.info(f'插件{plugin_name}安装成功!')
     return f'插件{plugin_name}安装成功!发送[gs重启]以应用!'
+
+
+async def install_plugin(plugin_name: str) -> int:
+    url = await get_plugins_url(plugin_name)
+    if url is None:
+        return -1
+    install_plugins(url)
+    return 0
+
+
+def check_plugins(plugin_name: str) -> Optional[Repo]:
+    path = PLUGINS_PATH / plugin_name
+    if path.exists():
+        try:
+            repo = Repo(path)
+        except InvalidGitRepositoryError:
+            return None
+        return repo
+    else:
+        return None
+
+
+def check_can_update(repo: Repo) -> bool:
+    try:
+        remote = repo.remote()  # 获取远程仓库
+        remote.fetch()  # 从远程获取最新版本
+    except GitCommandError as e:
+        logger.error(f'发生Git命令错误{e}!')
+        return False
+    local_commit = repo.commit()  # 获取本地最新提交
+    remote_commit = remote.fetch()[0].commit  # 获取远程最新提交
+    if local_commit.hexsha == remote_commit.hexsha:  # 比较本地和远程的提交哈希值
+        return False
+    return True
+
+
+def check_status(plugin_name: str) -> int:
+    repo = check_plugins(plugin_name)
+    if repo is None:
+        return 3
+    if check_can_update(repo):
+        return 1
+    else:
+        return 4
 
 
 def update_plugins(
@@ -66,10 +117,9 @@ def update_plugins(
             plugin_name = _name
             break
 
-    path = PLUGINS_PATH / plugin_name
-    if not path.exists():
+    repo = check_plugins(plugin_name)
+    if not repo:
         return '更新失败, 不存在该插件!'
-    repo = Repo(path)  # type: ignore
     o = repo.remotes.origin
 
     if level >= 2:

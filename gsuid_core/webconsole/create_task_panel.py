@@ -1,0 +1,20 @@
+def get_tasks_panel():
+    return {
+        'type': 'tasks',
+        'name': 'tasks',
+        'items': [{'label': '加载中, 请稍等...', 'key': 'wait', 'status': 2}],
+        'id': 'u:571849ba0356',
+        'initialStatusCode': 0,
+        'readyStatusCode': 1,
+        'loadingStatusCode': 2,
+        'errorStatusCode': 3,
+        'finishStatusCode': 4,
+        'canRetryStatusCode': 5,
+        'statusTextMap': ['未开始', '可更新', '安装中', '未安装', '已最新', '出错'],
+        'taskNameLabel': '插件列表',
+        'operationLabel': '操作',
+        'remarkLabel': '备注说明',
+        'btnText': '安装/更新',
+        'submitApi': 'post:/genshinuid/api/updatePlugins',
+        'checkApi': 'get:/genshinuid/api/getPlugins',
+    }

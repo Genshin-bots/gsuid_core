@@ -231,6 +231,10 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
 
     if is_add_stoken:
         im_list.append(f'添加Stoken成功,stuid={account_id},stoken={stoken}')
+
+    if uid is None:
+        uid = '0'
+
     await sqla.insert_user_data(
         user_id, uid, sr_uid, account_cookie, app_cookie
     )

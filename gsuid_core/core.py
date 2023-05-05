@@ -23,6 +23,14 @@ from gsuid_core.utils.plugins_config.models import (  # noqa: E402
 from gsuid_core.utils.plugins_config.gs_config import (  # noqa: E402
     all_config_list,
 )
+from gsuid_core.utils.plugins_update._plugins import (  # noqa: E402
+    check_status,
+    check_plugins,
+    install_plugin,
+    update_plugins,
+    check_can_update,
+    get_plugins_list,
+)
 
 app = FastAPI()
 HOST = core_config.get_config('HOST')
@@ -95,6 +103,47 @@ def main():
                 value = data[name]
             all_config_list[config_name].set_config(name, value)
 
+    @app.get('/genshinuid/api/getPlugins')
+    @site.auth.requires('admin')
+    async def _get_plugins(request: Request):
+        tasks = []
+        plugins_list = await get_plugins_list()
+        for name in plugins_list:
+            plugin = plugins_list[name]
+            link = plugin['link']
+            plugin_name = link.split('/')[-1]
+            # git_path = f'{proxy_url}{link}.git'
+            sample = {
+                'label': plugin_name,
+                'key': name,
+                'status': check_status(plugin_name),
+                'remark': plugin['info'],
+            }
+            tasks.append(sample)
+
+        return tasks
+
+    @app.post('/genshinuid/api/updatePlugins')
+    @site.auth.requires('admin')
+    async def _update_plugins(request: Request, data: Dict):
+        repo = check_plugins(data['label'])
+        if repo:
+            if check_can_update(repo):
+                try:
+                    update_plugins(data['label'])
+                    retcode = 0
+                except:  # noqa:E722
+                    retcode = -1
+            else:
+                retcode = 0
+        else:
+            try:
+                retcode = await install_plugin(data['key'])
+                retcode = 0
+            except:  # noqa:E722
+                retcode = -1
+        return {'status': retcode, 'msg': '', 'data': {}}
+
     site.mount_app(app)
 
     uvicorn.run(
@@ -102,23 +151,23 @@ def main():
         host=HOST,
         port=PORT,
         log_config={
-            "version": 1,
-            "disable_existing_loggers": False,
-            "handlers": {
-                "default": {
-                    "class": "gsuid_core.logger.LoguruHandler",
+            'version': 1,
+            'disable_existing_loggers': False,
+            'handlers': {
+                'default': {
+                    'class': 'gsuid_core.logger.LoguruHandler',
                 },
             },
-            "loggers": {
-                "uvicorn.error": {"handlers": ["default"], "level": "INFO"},
-                "uvicorn.access": {
-                    "handlers": ["default"],
-                    "level": "INFO",
+            'loggers': {
+                'uvicorn.error': {'handlers': ['default'], 'level': 'INFO'},
+                'uvicorn.access': {
+                    'handlers': ['default'],
+                    'level': 'INFO',
                 },
             },
         },
     )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

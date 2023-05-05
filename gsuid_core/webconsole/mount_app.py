@@ -43,6 +43,7 @@ from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
 from gsuid_core.version import __version__ as GenshinUID_version
+from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
@@ -395,12 +396,24 @@ class SVManagePage(GsAdminPage):
 class ConfigManagePage(GsAdminPage):
     page_schema = PageSchema(
         label=('修改设定'),
-        icon='fa fa-sliders',
+        icon='fa fa-cogs',
         url='/ConfigManage',
         isDefaultPage=True,
         sort=100,
     )
     page = Page.parse_obj(get_config_page())
+
+
+@site.register_admin
+class PluginsManagePage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('插件管理'),
+        icon='fa fa-puzzle-piece',
+        url='/ConfigManage',
+        isDefaultPage=True,
+        sort=100,
+    )
+    page = Page.parse_obj(get_tasks_panel())
 
 
 # 取消注册默认管理类
