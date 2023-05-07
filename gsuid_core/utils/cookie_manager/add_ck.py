@@ -119,6 +119,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     simp_dict = SimpleCookie(mes)
     uid = await sqla.get_bind_uid(user_id)
     sr_uid = await sqla.get_bind_sruid(user_id)
+    uid_bind = sr_uid_bind = None
 
     if uid is None and sr_uid is None:
         if uid is None:
@@ -213,9 +214,9 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
         if isinstance(mys_data, List):
             for i in mys_data:
                 if i['game_id'] == 2:
-                    uid = i['game_role_id']
+                    uid_bind = i['game_role_id']
                 elif i['game_id'] == 6:
-                    sr_uid = i['game_role_id']
+                    sr_uid_bind = i['game_role_id']
                 if uid and sr_uid:
                     break
             else:
@@ -224,10 +225,10 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     except Exception:
         pass
 
-    if uid:
-        await sqla.refresh_cache(uid)
-    if sr_uid:
-        await sqla.refresh_cache(sr_uid)
+    if uid_bind:
+        await sqla.refresh_cache(uid_bind)
+    if sr_uid_bind:
+        await sqla.refresh_cache(sr_uid_bind)
 
     if is_add_stoken:
         im_list.append(f'添加Stoken成功,stuid={account_id},stoken={stoken}')
@@ -236,7 +237,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
         uid = '0'
 
     await sqla.insert_user_data(
-        user_id, uid, sr_uid, account_cookie, app_cookie
+        user_id, uid_bind, sr_uid_bind, account_cookie, app_cookie
     )
 
     im_list.append(
