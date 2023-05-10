@@ -4,7 +4,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsBoolConfig,
     GsListStrConfig,
 )
-from gsuid_core.webconsole.create_base_panel import (
+from gsuid_core.webconsole.create_base_panel import (  # get_grid_panel,
     get_text_panel,
     get_switch_panel,
     get_container_panel,

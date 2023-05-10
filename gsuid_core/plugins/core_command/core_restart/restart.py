@@ -24,7 +24,7 @@ async def get_restart_sh() -> str:
 
 
 async def restart_genshinuid(
-    bot_id: str, send_type: str, send_id: str
+    bot_id: str, send_type: str, send_id: str, is_send: bool = True
 ) -> None:
     pid = os.getpid()
     restart_sh = await get_restart_sh()
@@ -34,16 +34,17 @@ async def restart_genshinuid(
         os.system(f'chmod +x {str(restart_sh_path)}')
         os.system(f'chmod +x {str(bot_start)}')
     now_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
-    update_log = {
-        'type': 'restart',
-        'msg': '重启完成!',
-        'bot_id': bot_id,
-        'send_type': send_type,
-        'send_to': send_id,
-        'time': now_time,
-    }
-    with open(str(update_log_path), 'w', encoding='utf-8') as f:
-        json.dump(update_log, f)
+    if is_send:
+        update_log = {
+            'type': 'restart',
+            'msg': '重启完成!',
+            'bot_id': bot_id,
+            'send_type': send_type,
+            'send_to': send_id,
+            'time': now_time,
+        }
+        with open(str(update_log_path), 'w', encoding='utf-8') as f:
+            json.dump(update_log, f)
     if platform.system() == 'Linux':
         subprocess.Popen(
             f'kill -9 {pid} & {restart_command} {bot_start}',

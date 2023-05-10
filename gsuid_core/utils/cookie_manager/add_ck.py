@@ -220,7 +220,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                 if uid and sr_uid:
                     break
             else:
-                if not (uid or sr_uid):
+                if not (uid_bind or sr_uid_bind):
                     return f'你的米游社账号{account_id}尚未绑定原神/星铁账号,请前往米游社操作！'
     except Exception:
         pass

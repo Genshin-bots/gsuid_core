@@ -1,12 +1,14 @@
+import time
+from pathlib import Path
 from typing import Dict, List, Union, Optional
 
 import aiohttp
 from git.repo import Repo
-from git.exc import GitCommandError, InvalidGitRepositoryError
+from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
 
 from gsuid_core.logger import logger
 
-from .api import PLUGINS_PATH, proxy_url, plugins_lib
+from .api import CORE_PATH, PLUGINS_PATH, proxy_url, plugins_lib
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
@@ -104,6 +106,70 @@ def check_status(plugin_name: str) -> int:
         return 4
 
 
+def update_from_git(
+    level: int = 0,
+    repo_like: Union[str, Path, None] = None,
+    log_key: List[str] = [],
+    log_limit: int = 5,
+) -> List[str]:
+    try:
+        if repo_like is None:
+            repo = Repo(CORE_PATH)
+            plugin_name = '早柚核心'
+        elif isinstance(repo_like, Path):
+            repo = Repo(repo_like)
+            plugin_name = repo_like.name
+        else:
+            repo = check_plugins(repo_like)
+            plugin_name = repo_like
+    except InvalidGitRepositoryError:
+        logger.warning('[更新] 更新失败, 非有效Repo路径!')
+        return ['更新失败, 该路径并不是一个有效的GitRepo路径, 请使用`git clone`安装插件...']
+    except NoSuchPathError:
+        logger.warning('[更新] 更新失败, 该路径不存在!')
+        return ['更新失败, 路径/插件不存在!']
+
+    if not repo:
+        logger.warning('[更新] 更新失败, 该插件不存在!')
+        return ['更新失败, 不存在该插件!']
+
+    o = repo.remotes.origin
+
+    if level >= 2:
+        logger.warning(f'[更新][{plugin_name}] 正在执行 git clean --xdf')
+        logger.warning('[更新] 你有 2 秒钟的时间中断该操作...')
+        time.sleep(2)
+        repo.git.clean('-xdf')
+    # 还原上次更改
+    if level >= 1:
+        logger.warning(f'[更新][{plugin_name}] 正在执行 git reset --hard')
+        repo.git.reset('--hard')
+
+    try:
+        pull_log = o.pull()
+        logger.info(f'[更新][{plugin_name}] {pull_log}')
+        logger.info(f'[更新][{repo.head.commit.hexsha[:7]}] 获取远程最新版本')
+    except GitCommandError as e:
+        logger.warning(f'[更新] 更新失败...{e}!')
+        return ['更新失败, 请检查控制台...']
+
+    commits = list(repo.iter_commits(max_count=40))
+    log_list = [f'更新插件 {plugin_name} 中...']
+    for commit in commits:
+        if isinstance(commit.message, str):
+            if log_key:
+                for key in log_key:
+                    if key in commit.message:
+                        log_list.append(commit.message.replace('\n', ''))
+                        if len(log_list) >= log_limit:
+                            break
+            else:
+                log_list.append(commit.message.replace('\n', ''))
+                if len(log_list) >= log_limit:
+                    break
+    return log_list
+
+
 def update_plugins(
     plugin_name: str,
     level: int = 0,
@@ -117,38 +183,5 @@ def update_plugins(
             plugin_name = _name
             break
 
-    repo = check_plugins(plugin_name)
-    if not repo:
-        return '更新失败, 不存在该插件!'
-    o = repo.remotes.origin
-
-    if level >= 2:
-        logger.warning(f'[更新][{plugin_name}] 正在执行 git clean --xdf')
-        repo.git.clean('-xdf')
-    # 还原上次更改
-    if level >= 1:
-        logger.warning(f'[更新][{plugin_name}] 正在执行 git reset --hard')
-        repo.git.reset('--hard')
-
-    try:
-        pull_log = o.pull()
-        logger.info(f'[更新][{plugin_name}] {pull_log}')
-    except GitCommandError as e:
-        logger.warning(e)
-        return '更新失败, 请检查控制台...'
-
-    commits = list(repo.iter_commits(max_count=40))
-    log_list = []
-    for commit in commits:
-        if isinstance(commit.message, str):
-            if log_key:
-                for key in log_key:
-                    if key in commit.message:
-                        log_list.append(commit.message.replace('\n', ''))
-                        if len(log_list) >= log_limit:
-                            break
-            else:
-                log_list.append(commit.message.replace('\n', ''))
-                if len(log_list) >= log_limit:
-                    break
+    log_list = update_from_git(level, plugin_name, log_key, log_limit)
     return log_list

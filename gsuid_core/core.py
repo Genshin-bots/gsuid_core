@@ -98,6 +98,7 @@ def main():
                 continue
             config = all_config_list[config_name][name]
             if isinstance(config, GsListStrConfig):
+                data[name] = data[name].replace('：', ':')
                 value = data[name].split(':')
             else:
                 value = data[name]
