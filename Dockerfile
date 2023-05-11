@@ -14,7 +14,7 @@ RUN mv /etc/apt/sources.list /etc/apt/sources.list.bak \
     && echo "deb-src http://ftp.cn.debian.org/debian/ bullseye-updates main non-free contrib" >>/etc/apt/sources.list \
     && echo "deb-src http://ftp.cn.debian.org/debian/ bullseye-backports main non-free contrib" >>/etc/apt/sources.list \
     && echo "deb http://mirrors.ustc.edu.cn/debian-security/ stable-security main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb-src http://mirrors.ustc.edu.cn/debian-security/ stable-security main non-free contrib" >>/etc/apt/sources.list \ 
+    && echo "deb-src http://mirrors.ustc.edu.cn/debian-security/ stable-security main non-free contrib" >>/etc/apt/sources.list \
     && rm -rf /var/lib/apt/lists/* && apt-get update
 
 RUN apt install curl git -y

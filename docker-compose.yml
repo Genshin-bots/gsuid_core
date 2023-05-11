@@ -4,7 +4,7 @@ services:
     container_name: gsuidcore
     restart: always
     environment:
-      - TZ=Asia/Shanghai    
+      - TZ=Asia/Shanghai
     dns:
       - 114.114.114.114
       - 114.114.115.115
