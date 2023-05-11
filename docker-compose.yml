@@ -1,0 +1,14 @@
+services:
+  gsuid-core:
+    build: .
+    container_name: gsuidcore
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai
+    dns:
+      - 114.114.114.114
+      - 114.114.115.115
+    ports:
+      - 8765:8765
+    volumes:
+      - ${PWD}:/app

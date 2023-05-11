@@ -49,6 +49,27 @@ poetry run python core.py
 + 默认core将运行在`localhost:8765`端口上，如有需要可至`config.json`修改。
 + 在支持的Bot上（例如NoneBot2、HoshinoBot），安装相应适配插件，启动Bot（如果有修改端口，则需要在启动Bot前修改适配插件相应端口），即可自动连接Core端。
 
+## Docker部署Core（可选）
+
+`请先安装好Docker与Docker Compose`
+
+1. git clone gsuid-core本体
+
+```shell
+git clone https://ghproxy.com/https://github.com/Genshin-bots/gsuid-core.git --depth=1 --single-branch
+```
+
+2. Docker Compose启动
+
+```shell
+cd gsuid-core
+docker-compose up -d
+```
+
+- Docker Compose启动前，最好先安装需要的插件，如[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID)，这样容器在部署时可以一起安装依赖，节省时间
+- 默认core将运行在`localhost:8765`端口上，Docker部署必须修改`config.json`，如`0.0.0.0:8765`
+- 如果Bot（例如NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，可能需要将Core和Bot的容器都重启才生效
+
 ## 编写插件
 
 
