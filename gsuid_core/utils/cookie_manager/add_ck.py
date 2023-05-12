@@ -217,7 +217,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                     uid_bind = i['game_role_id']
                 elif i['game_id'] == 6:
                     sr_uid_bind = i['game_role_id']
-                if uid and sr_uid:
+                if uid_bind and sr_uid_bind:
                     break
             else:
                 if not (uid_bind or sr_uid_bind):
