@@ -207,14 +207,21 @@ class SQLA:
                 result = await session.execute(sql)
                 return data[0] if (data := result.scalars().all()) else None
 
-    async def select_user_data_by_user_id(
+    async def select_user_all_data_by_user_id(
         self, user_id: str
-    ) -> Optional[GsUser]:
+    ) -> Optional[List[GsUser]]:
         async with self.async_session() as session:
             async with session.begin():
                 sql = select(GsUser).where(GsUser.user_id == user_id)
                 result = await session.execute(sql)
-                return data[0] if (data := result.scalars().all()) else None
+                data = result.scalars().all()
+                return data if data else None
+
+    async def select_user_data_by_user_id(
+        self, user_id: str
+    ) -> Optional[GsUser]:
+        data = await self.select_user_all_data_by_user_id(user_id)
+        return data[0] if data else None
 
     async def select_cache_cookie(self, uid: str) -> Optional[str]:
         async with self.async_session() as session:
