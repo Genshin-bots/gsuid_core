@@ -20,7 +20,7 @@ async def get_user_pml(msg: MessageReceive) -> int:
     elif msg.user_id in config_superusers:
         return 1
     else:
-        return msg.user_pm
+        return msg.user_pm if msg.user_pm >= 1 else 2
 
 
 async def msg_process(msg: MessageReceive) -> Event:

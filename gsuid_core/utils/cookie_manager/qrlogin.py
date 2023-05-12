@@ -137,10 +137,10 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             im = '请求失败, 请稍后再试...'
             return await send_msg(im)
 
-        uid_bind = await sqla.get_bind_uid(user_id)
-        sruid_bind = await sqla.get_bind_sruid(user_id)
+        uid_bind_list = await sqla.get_bind_uid_list(user_id)
+        sruid_bind_list = await sqla.get_bind_sruid_list(user_id)
         # 没有在gsuid绑定uid的情况
-        if not (uid_bind or sruid_bind):
+        if not (uid_bind_list or sruid_bind_list):
             logger.warning('game_token获取失败')
             im = '你还没有绑定uid, 请输入[绑定uid123456]绑定你的uid, 再发送[扫码登录]进行绑定'
             return await send_msg(im)
@@ -148,9 +148,9 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             return await send_msg('获取CK失败...')
         # 比对gsuid数据库和扫码登陆获取到的uid
         if (
-            str(uid_bind) == uid_check
-            or str(sruid_bind) == str(sruid_check)
-            or str(uid_bind) == account_id
+            uid_check in uid_bind_list
+            or sruid_check in sruid_bind_list
+            or account_id in uid_bind_list
         ):
             return SimpleCookie(
                 {
@@ -163,7 +163,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         else:
             logger.warning('game_token获取失败')
             im = (
-                f'检测到扫码登录UID{uid_check}与绑定UID{uid_bind}不同, '
+                f'检测到扫码登录UID{uid_check}与绑定UID不同, '
                 'gametoken获取失败, 请重新发送[扫码登录]进行登录！'
             )
     else:

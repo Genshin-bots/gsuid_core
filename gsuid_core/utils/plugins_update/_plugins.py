@@ -13,6 +13,13 @@ from .api import CORE_PATH, PLUGINS_PATH, proxy_url, plugins_lib
 plugins_list: Dict[str, Dict[str, str]] = {}
 
 
+async def update_all_plugins() -> List[str]:
+    log_list = []
+    for plugin in PLUGINS_PATH.iterdir():
+        log_list.extend(update_from_git(0, plugin))
+    return log_list
+
+
 async def refresh_list() -> List[str]:
     refresh_list = []
     async with aiohttp.ClientSession() as session:

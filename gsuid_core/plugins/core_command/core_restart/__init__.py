@@ -52,7 +52,7 @@ async def send_restart_msg(bot: Bot, ev: Event):
     else:
         send_id = ev.user_id
         send_type = 'direct'
-    await bot.send('正在执行[gs重启]...')
+    await bot.send('正在执行[core重启]...')
     await restart_genshinuid(bot.bot_id, send_type, str(send_id))
 
 
