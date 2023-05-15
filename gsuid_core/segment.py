@@ -25,6 +25,8 @@ class MessageSegment:
             with open(str(img), 'rb') as fp:
                 img = fp.read()
         else:
+            if img.startswith('http'):
+                return Message(type='image', data=f'link://{img}')
             if img.startswith('base64://'):
                 return Message(type='image', data=img)
             with open(img, 'rb') as fp:
@@ -41,9 +43,7 @@ class MessageSegment:
         return Message(type='at', data=user)
 
     @staticmethod
-    def node(
-        content_list: Union[List[Message], List[str], List[bytes]]
-    ) -> Message:
+    def node(content_list: Union[List[Message], List[str], List[bytes]]) -> Message:
         msg_list: List[Message] = []
         for msg in content_list:
             if isinstance(msg, Message):
@@ -53,6 +53,8 @@ class MessageSegment:
             else:
                 if msg.startswith('base64://'):
                     msg_list.append(Message(type='image', data=msg))
+                elif img.startswith('http'):
+                    msg_list.append(Message(type='image', data=f'link://{img}'))
                 else:
                     msg_list.append(MessageSegment.text(msg))
         return Message(type='node', data=msg_list)
@@ -79,8 +81,15 @@ class MessageSegment:
         elif isinstance(content, bytes):
             file = content
         else:
-            with open(content, 'rb') as fp:
-                file = fp.read()
+            if content.startswith('http'):
+                link = content
+                return Message(
+                    type='file',
+                    data=f'{file_name}|link://{link}',
+                )
+            else:
+                with open(content, 'rb') as fp:
+                    file = fp.read()
         return Message(
             type='file',
             data=f'{file_name}|{b64encode(file).decode()}',
