@@ -43,7 +43,9 @@ class MessageSegment:
         return Message(type='at', data=user)
 
     @staticmethod
-    def node(content_list: Union[List[Message], List[str], List[bytes]]) -> Message:
+    def node(
+        content_list: Union[List[Message], List[str], List[bytes]]
+    ) -> Message:
         msg_list: List[Message] = []
         for msg in content_list:
             if isinstance(msg, Message):
@@ -54,7 +56,9 @@ class MessageSegment:
                 if msg.startswith('base64://'):
                     msg_list.append(Message(type='image', data=msg))
                 elif msg.startswith('http'):
-                    msg_list.append(Message(type='image', data=f'link://{msg}'))
+                    msg_list.append(
+                        Message(type='image', data=f'link://{msg}')
+                    )
                 else:
                     msg_list.append(MessageSegment.text(msg))
         return Message(type='node', data=msg_list)
