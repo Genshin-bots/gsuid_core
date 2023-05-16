@@ -666,6 +666,7 @@ config.json
 res_data
 GsData.db
 data
+core_help.jpg
 gsuid_core/plugins/*
 !gsuid_core/plugins/core_command
 !gsuid_core/plugins/gs_test.py

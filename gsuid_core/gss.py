@@ -1,13 +1,16 @@
+import asyncio
 import inspect
 
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
 from gsuid_core.server import GsServer
+from gsuid_core.help.draw_help import get_help_img
 
 gss = GsServer()
 if not gss.is_load:
     gss.is_load = True
     gss.load_plugins()
+    asyncio.run(get_help_img())
 
     repeat_jobs = {}
     for i in scheduler.get_jobs():

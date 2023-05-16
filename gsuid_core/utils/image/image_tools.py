@@ -8,7 +8,10 @@ import httpx
 from httpx import get
 from PIL import Image, ImageDraw, ImageFont
 
+from gsuid_core.data_store import get_res_path
+
 TEXT_PATH = Path(__file__).parent / 'texture2d'
+BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
 async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
@@ -174,12 +177,32 @@ def crop_center_img(
     return crop_img
 
 
+async def get_color_bg(
+    based_w: int,
+    based_h: int,
+    bg_path: Optional[Path] = None,
+    without_mask: bool = False,
+) -> Image.Image:
+    if bg_path is None:
+        bg_path = get_res_path(['GsCore', 'bg'])
+    CI_img = CustomizeImage(bg_path)
+    img = CI_img.get_image(None, based_w, based_h)
+    color = CI_img.get_bg_color(img)
+    if not without_mask:
+        color_mask = Image.new('RGBA', (based_w, based_h), color)
+        enka_mask = Image.open(TEXT_PATH / 'bg_mask.png').resize(
+            (based_w, based_h)
+        )
+        img.paste(color_mask, (0, 0), enka_mask)
+    return img
+
+
 class CustomizeImage:
     def __init__(self, bg_path: Path) -> None:
         self.bg_path = bg_path
 
     def get_image(
-        self, image: Union[str, Image.Image], based_w: int, based_h: int
+        self, image: Union[str, Image.Image, None], based_w: int, based_h: int
     ) -> Image.Image:
         # 获取背景图片
         if isinstance(image, Image.Image):
@@ -187,7 +210,11 @@ class CustomizeImage:
         elif image:
             edit_bg = Image.open(BytesIO(get(image).content)).convert('RGBA')
         else:
-            path = random.choice(list(self.bg_path.iterdir()))
+            _lst = list(self.bg_path.iterdir())
+            if _lst:
+                path = random.choice(list(self.bg_path.iterdir()))
+            else:
+                path = random.choice(list(BG_PATH.iterdir()))
             edit_bg = Image.open(path).convert('RGBA')
 
         # 确定图片的长宽

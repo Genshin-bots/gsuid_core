@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+from pathlib import Path
 from functools import wraps
 from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
@@ -11,6 +13,7 @@ from gsuid_core.config import core_config
 class SVList:
     def __init__(self):
         self.lst: Dict[str, SV] = {}
+        self.detail_lst: Dict[str, List[SV]] = {}
 
     @property
     def get_lst(self):
@@ -58,6 +61,16 @@ class SV:
             # sv内包含的触发器
             self.TL: Dict[str, Trigger] = {}
             self.is_initialized = True
+            stack = traceback.extract_stack()
+            file = stack[-2].filename
+            path = Path(file)
+            parts = path.parts
+            i = parts.index('plugins')
+            plugins_name = parts[i + 1]
+            if plugins_name not in SL.detail_lst:
+                SL.detail_lst[plugins_name] = [self]
+            else:
+                SL.detail_lst[plugins_name].append(self)
 
             # 判断sv是否已持久化
             if name in config_sv:
