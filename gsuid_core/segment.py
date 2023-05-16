@@ -25,6 +25,8 @@ class MessageSegment:
             with open(str(img), 'rb') as fp:
                 img = fp.read()
         else:
+            if img.startswith('http'):
+                return Message(type='image', data=f'link://{img}')
             if img.startswith('base64://'):
                 return Message(type='image', data=img)
             with open(img, 'rb') as fp:
@@ -53,6 +55,10 @@ class MessageSegment:
             else:
                 if msg.startswith('base64://'):
                     msg_list.append(Message(type='image', data=msg))
+                elif msg.startswith('http'):
+                    msg_list.append(
+                        Message(type='image', data=f'link://{msg}')
+                    )
                 else:
                     msg_list.append(MessageSegment.text(msg))
         return Message(type='node', data=msg_list)
@@ -79,8 +85,15 @@ class MessageSegment:
         elif isinstance(content, bytes):
             file = content
         else:
-            with open(content, 'rb') as fp:
-                file = fp.read()
+            if content.startswith('http'):
+                link = content
+                return Message(
+                    type='file',
+                    data=f'{file_name}|link://{link}',
+                )
+            else:
+                with open(content, 'rb') as fp:
+                    file = fp.read()
         return Message(
             type='file',
             data=f'{file_name}|{b64encode(file).decode()}',
