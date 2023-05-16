@@ -53,8 +53,8 @@ class MessageSegment:
             else:
                 if msg.startswith('base64://'):
                     msg_list.append(Message(type='image', data=msg))
-                elif img.startswith('http'):
-                    msg_list.append(Message(type='image', data=f'link://{img}'))
+                elif msg.startswith('http'):
+                    msg_list.append(Message(type='image', data=f'link://{msg}'))
                 else:
                     msg_list.append(MessageSegment.text(msg))
         return Message(type='node', data=msg_list)
