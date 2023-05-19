@@ -240,9 +240,7 @@ class BaseMysApi:
                         caller_args3 = {
                             k: caller_args.get(k, None) for k in caller_args2
                         }
-                        print(caller_args2)
                         if caller_name != "_mys_req_get":
-                            print(caller_name, caller_args)
                             return await types.FunctionType(
                                 calframe.f_code, globals()
                             )(**caller_args3)
