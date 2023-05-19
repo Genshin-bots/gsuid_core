@@ -6,7 +6,10 @@ from __future__ import annotations
 import copy
 import time
 import uuid
+import types
 import random
+import inspect
+import traceback
 from abc import abstractmethod
 from string import digits, ascii_letters
 from typing import Any, Dict, List, Union, Literal, Optional, cast
@@ -87,6 +90,7 @@ class BaseMysApi:
     MAPI = _API
     is_sr = False
     RECOGNIZE_SERVER = RECOGNIZE_SERVER
+    chs = {}
 
     @abstractmethod
     async def _upass(self, header: Dict):
@@ -196,6 +200,9 @@ class BaseMysApi:
         async with ClientSession(
             connector=TCPConnector(verify_ssl=ssl_verify)
         ) as client:
+            if "Cookie" in header:
+                if header["Cookie"] in self.chs:
+                    header["x-rpc-challenge"] = self.chs.pop(header["Cookie"])
             async with client.request(
                 method,
                 url=url,
@@ -207,6 +214,7 @@ class BaseMysApi:
             ) as resp:
                 try:
                     raw_data = await resp.json()
+                    print(raw_data)
                 except ContentTypeError:
                     _raw_data = await resp.text()
                     raw_data = {'retcode': -999, 'data': _raw_data}
@@ -218,8 +226,44 @@ class BaseMysApi:
                 else:
                     retcode = 0
                 if retcode == 1034:
-                    await self._upass(header)
-                    return retcode
+                    try:
+                        ch = await self._upass(header)
+                        if "Cookie" in header:
+                            self.chs[header["Cookie"]] = ch
+                        curframe = inspect.currentframe()
+                        assert curframe
+                        calframe = curframe.f_back
+                        assert calframe
+                        caller_name = calframe.f_code.co_name
+                        caller_args = inspect.getargvalues(calframe).locals
+                        caller_args2 = inspect.getargvalues(calframe).args
+                        caller_args3 = {
+                            k: caller_args.get(k, None) for k in caller_args2
+                        }
+                        print(caller_args2)
+                        if caller_name != "_mys_req_get":
+                            print(caller_name, caller_args)
+                            return await types.FunctionType(
+                                calframe.f_code, globals()
+                            )(**caller_args3)
+                        else:
+                            curframe = calframe
+                            calframe = curframe.f_back
+                            assert calframe
+                            caller_name = calframe.f_code.co_name
+                            caller_args = inspect.getargvalues(calframe).locals
+                            caller_args2 = inspect.getargvalues(calframe).args
+                            caller_args3 = {
+                                k: caller_args.get(k, None)
+                                for k in caller_args2
+                            }
+                            return await types.FunctionType(
+                                calframe.f_code, globals()
+                            )(**caller_args3)
+                    except Exception as e:
+                        logger.error(e)
+                        traceback.print_exc()
+                        return -999
                 elif retcode != 0:
                     return retcode
                 return raw_data
@@ -261,8 +305,9 @@ class MysApi(BaseMysApi):
 
         if vl:
             await self.get_header_and_vl(header, ch, vl)
+            return ch
         else:
-            return True
+            return await self._upass(header, is_bbs)
 
     async def get_upass_link(self, header: Dict) -> Union[int, Dict]:
         header['DS'] = get_ds_token('is_high=false')
