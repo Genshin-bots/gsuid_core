@@ -203,9 +203,15 @@ class BaseMysApi:
             for _ in range(2):
                 if 'Cookie' in header and header['Cookie'] in self.chs:
                     if self.is_sr:
-                        header['x-rpc-challenge']=self.chs.pop(header['Cookie'])
+                        header['x-rpc-challenge'] = self.chs.pop(
+                            header['Cookie']
+                        )
                         if isinstance(params, Dict):
-                            header['DS'] = get_ds_token('&'.join([f'{k}={v}' for k, v in params.items()]))
+                            header['DS'] = get_ds_token(
+                                '&'.join(
+                                    [f'{k}={v}' for k, v in params.items()]
+                                )
+                            )
                     header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
                     header['x-rpc-page'] = (
                         '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
