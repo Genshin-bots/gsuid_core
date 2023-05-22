@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Tuple, Union, Literal, Optional, cast
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
+from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import _API
@@ -88,6 +89,7 @@ class BaseMysApi:
     is_sr = False
     RECOGNIZE_SERVER = RECOGNIZE_SERVER
     chs = {}
+    dbsqla: DBSqla = DBSqla()
 
     @abstractmethod
     async def _upass(self, header: Dict) -> str:
@@ -108,6 +110,59 @@ class BaseMysApi:
     @abstractmethod
     async def get_stoken(self, uid: str) -> Optional[str]:
         ...
+
+    @abstractmethod
+    async def get_user_fp(self, uid: str) -> Optional[str]:
+        ...
+
+    @abstractmethod
+    async def get_user_device_id(self, uid: str) -> Optional[str]:
+        ...
+
+    def get_device_id(self) -> str:
+        device_id = uuid.uuid4().hex
+        return device_id
+
+    def generate_seed(self, length: int):
+        characters = '0123456789abcdef'
+        result = ''.join(random.choices(characters, k=length))
+        return result
+
+    async def generate_fp_by_uid(self, uid: str) -> str:
+        seed_id = self.generate_seed(16)
+        seed_time = str(int(time.time() * 1000))
+        ext_fields = f'{{"userAgent":"{self._HEADER["User-Agent"]}",\
+"browserScreenSize":281520,"maxTouchPoints":5,\
+"isTouchSupported":true,"browserLanguage":"zh-CN","browserPlat":"iPhone",\
+"browserTimeZone":"Asia/Shanghai","webGlRender":"Apple GPU",\
+"webGlVendor":"Apple Inc.",\
+"numOfPlugins":0,"listOfPlugins":"unknown","screenRatio":3,"deviceMemory":"unknown",\
+"hardwareConcurrency":"4","cpuClass":"unknown","ifNotTrack":"unknown","ifAdBlock":0,\
+"hasLiedResolution":1,"hasLiedOs":0,"hasLiedBrowser":0}}'
+        body = {
+            'seed_id': seed_id,
+            'device_id': await self.get_user_device_id(uid),
+            'platform': '5',
+            'seed_time': seed_time,
+            'ext_fields': ext_fields,
+            'app_name': 'account_cn',
+            'device_fp': '38d7ee834d1e9',
+        }
+        HEADER = copy.deepcopy(self._HEADER)
+        res = await self._mys_request(
+            url=self.MAPI['GET_FP_URL'],
+            method='POST',
+            header=HEADER,
+            data=body,
+        )
+        if not isinstance(res, Dict):
+            logger.error(f"获取fp连接失败{res}")
+            return random_hex(13).lower()
+        elif res["data"]["code"] != 200:
+            logger.error(f"获取fp参数不正确{res['data']['msg']}")
+            return random_hex(13).lower()
+        else:
+            return res["data"]["device_fp"]
 
     async def simple_mys_req(
         self,
@@ -200,8 +255,15 @@ class BaseMysApi:
             connector=TCPConnector(verify_ssl=ssl_verify)
         ) as client:
             raw_data = {}
+            uid = None
+            if params and 'role_id' in params:
+                uid = params['role_id']
+                header['x-rpc-device_id'] = await self.get_user_device_id(uid)
+                header['x-rpc-device_fp'] = await self.get_user_fp(uid)
+
             for _ in range(2):
                 if 'Cookie' in header and header['Cookie'] in self.chs:
+                    # header['x-rpc-challenge']=self.chs.pop(header['Cookie'])
                     if self.is_sr:
                         header['x-rpc-challenge'] = self.chs.pop(
                             header['Cookie']
@@ -216,6 +278,7 @@ class BaseMysApi:
                     header['x-rpc-page'] = (
                         '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
                     )
+
                 async with client.request(
                     method,
                     url=url,
@@ -244,6 +307,11 @@ class BaseMysApi:
                     if retcode == 1034:
                         ch = await self._upass(header)
                         self.chs[header['Cookie']] = ch
+                    elif retcode == -10001 and uid:
+                        sqla = self.dbsqla.get_sqla('TEMP')
+                        new_fp = await self.generate_fp_by_uid(uid)
+                        await sqla.update_user_data(uid, {'fp': new_fp})
+                        header['x-rpc-device_fp'] = new_fp
                     elif retcode != 0:
                         return retcode
                     else:

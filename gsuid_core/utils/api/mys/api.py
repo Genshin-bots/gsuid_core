@@ -134,4 +134,6 @@ CALENDAR_URL = f'{DRAW_BASE_URL}/calendar'
 RECEIVE_URL = f'{DRAW_BASE_URL}/post_my_draw'
 BS_INDEX_URL = f'{DRAW_BASE_URL}/index'
 
+GET_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp'
+
 _API = locals()

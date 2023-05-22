@@ -29,6 +29,8 @@ class GsUser(SQLModel, table=True):
     sign_switch: str = Field(title='自动签到')
     bbs_switch: str = Field(title='自动米游币')
     status: Optional[str] = Field(default=None, title='状态')
+    fp: Optional[str] = Field(default=None, title='Fingerprint')
+    device_id: Optional[str] = Field(default=None, title='设备ID')
 
 
 class GsCache(SQLModel, table=True):

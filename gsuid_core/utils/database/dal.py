@@ -1,6 +1,5 @@
 import re
 import asyncio
-import contextlib
 from typing import Dict, List, Literal, Optional
 
 from sqlmodel import SQLModel
@@ -43,13 +42,17 @@ class SQLA:
             'ALTER TABLE GsBind ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
+            'ALTER TABLE GsUser ADD COLUMN fp TEXT',
+            'ALTER TABLE GsUser ADD COLUMN device_id TEXT',
             'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
         ]
-        with contextlib.suppress(Exception):
-            async with self.async_session() as session:
-                for _t in exec_list:
+        async with self.async_session() as session:
+            for _t in exec_list:
+                try:
                     await session.execute(text(_t))
-                await session.commit()
+                    await session.commit()
+                except:  # noqa: E722
+                    pass
 
     #####################
     # GsBind 部分 #
@@ -244,6 +247,14 @@ class SQLA:
                     await session.execute(sql)
                 return True
 
+    async def get_user_fp(self, uid: str) -> Optional[str]:
+        data = await self.select_user_data(uid)
+        return data.fp if data else None
+
+    async def get_user_device_id(self, uid: str) -> Optional[str]:
+        data = await self.select_user_data(uid)
+        return data.device_id if data else None
+
     async def insert_cache_data(
         self,
         cookie: str,
@@ -267,6 +278,8 @@ class SQLA:
         sr_uid: Optional[str] = None,
         cookie: Optional[str] = None,
         stoken: Optional[str] = None,
+        fp: Optional[str] = None,
+        device_id: Optional[str] = None,
     ) -> bool:
         async with self.async_session() as session:
             async with session.begin():
@@ -281,6 +294,7 @@ class SQLA:
                             bot_id=self.bot_id,
                             user_id=user_id,
                             sr_uid=sr_uid,
+                            fp=fp,
                         )
                     )
                     await session.execute(sql)
@@ -295,6 +309,7 @@ class SQLA:
                             bot_id=self.bot_id,
                             user_id=user_id,
                             uid=uid,
+                            fp=fp,
                         )
                     )
                     await session.execute(sql)
@@ -321,6 +336,8 @@ class SQLA:
                         sr_region=SR_SERVER.get(sr_uid[0], None)
                         if sr_uid
                         else None,
+                        fp=fp,
+                        device_id=device_id,
                     )
                     session.add(user_data)
                 await session.commit()
@@ -330,13 +347,9 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 sql = (
-                    update(GsUser).where(
-                        GsUser.sr_uid == uid, GsUser.bot_id == self.bot_id
-                    )
+                    update(GsUser).where(GsUser.sr_uid == uid)
                     if self.is_sr
-                    else update(GsUser).where(
-                        GsUser.uid == uid, GsUser.bot_id == self.bot_id
-                    )
+                    else update(GsUser).where(GsUser.uid == uid)
                 )
                 if data is not None:
                     query = sql.values(**data)
