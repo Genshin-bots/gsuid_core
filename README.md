@@ -89,27 +89,29 @@ docker-compose up -d
 
 **（注意json不支持`#`，所以不要复制下面的配置到自己的文件中）**
 
-> {
->     "HOST": "localhost", # 如需挂载公网修改为`0.0.0.0`
->     "PORT": "8765", # core端口
->     "masters": ["444835641", "111"], # Bot主人，pm为0
->     "superusers": ["123456789"], # 超管，pm为1
->     "sv": {
->         "Core管理": {
->             "priority": 5, # 某个服务的优先级
->             "enabled": true, # 某个服务是否启动
->             "pm": 1, # 某个服务要求的权限等级
->             "black_list": [], # 某个服务的黑名单
->             "area": "ALL",  # 某个服务的触发范围
->             "white_list": [] # 某个服务的白名单
->         },
->     },
->     "log": {
->         "level": "DEBUG" # log等级
->     },
->     "command_start": ["/", "*"], # core内所有插件的要求前缀
->     "misfire_grace_time": 90
-> }
+```json
+{
+ "HOST": "localhost", # 如需挂载公网修改为`0.0.0.0`
+ "PORT": "8765", # core端口
+ "masters": ["444835641", "111"], # Bot主人，pm为0
+ "superusers": ["123456789"], # 超管，pm为1
+ "sv": {
+     "Core管理": {
+         "priority": 5, # 某个服务的优先级
+         "enabled": true, # 某个服务是否启动
+         "pm": 1, # 某个服务要求的权限等级
+         "black_list": [], # 某个服务的黑名单
+         "area": "ALL",  # 某个服务的触发范围
+         "white_list": [] # 某个服务的白名单
+     },
+ },
+ "log": {
+     "level": "DEBUG" # log等级
+ },
+ "command_start": ["/", "*"], # core内所有插件的要求前缀
+ "misfire_grace_time": 90
+}
+```
 
 > 黑名单一旦设置，黑名单中的用户ID将无法访问该服务
 >
