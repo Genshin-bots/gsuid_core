@@ -625,9 +625,7 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 await self.push_exists(uid)
-                sql = select(GsPush).where(
-                    GsPush.uid == uid, GsPush.bot_id == self.bot_id
-                )
+                sql = select(GsPush).where(GsPush.uid == uid)
                 result = await session.execute(sql)
                 data = result.scalars().all()
                 return data[0] if len(data) >= 1 else None
