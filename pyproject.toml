@@ -43,6 +43,10 @@ pre-commit = "^2.21.0"
 pycln = "^2.1.2"
 
 
+[tool.poetry.scripts]
+core = 'gsuid_core.core:main'
+
+
 [[tool.poetry.source]]
 name = "mirrors"
 url = "https://mirrors.bfsu.edu.cn/pypi/web/simple/"
