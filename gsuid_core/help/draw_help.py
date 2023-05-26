@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 from gsuid_core.sv import SV
 
 # from gsuid_core.utils.image.image_tools import get_color_bg
-from gsuid_core.utils.smile_fonts.smile_fonts import smile_font
+from gsuid_core.utils.fonts.fonts import core_font
 
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 CORE_HELP_IMG = Path(__file__).parent / 'core_help.jpg'
@@ -56,7 +56,7 @@ def get_tag(tag_type: str) -> Image.Image:
     tag = Image.new('RGBA', (60, 40))
     tag_draw = ImageDraw.Draw(tag)
     tag_draw.rounded_rectangle((7, 5, 53, 35), 10, tag_color[tag_type])
-    tag_draw.text((30, 20), text, (62, 62, 62), smile_font(22), 'mm')
+    tag_draw.text((30, 20), text, (62, 62, 62), core_font(22), 'mm')
     tags[tag_type] = tag
     return tag
 
@@ -65,7 +65,7 @@ def get_command_bg(command: str, tag_type: str):
     img = Image.new('RGBA', (220, 40))
     img_draw = ImageDraw.Draw(img)
     img_draw.rounded_rectangle((6, 5, 160, 35), 10, (230, 202, 167))
-    img_draw.text((83, 20), command, (62, 62, 62), smile_font(20), 'mm')
+    img_draw.text((83, 20), command, (62, 62, 62), core_font(20), 'mm')
     tag = get_tag(tag_type)
     img.paste(tag, (160, 0), tag)
     return img
@@ -126,20 +126,20 @@ def get_plugin_bg(plugin_name: str, sv_list: List[SV]):
             )
 
         sv_img_draw.rounded_rectangle((15, 19, 25, 50), 10, (62, 62, 62))
-        sv_img_draw.text((45, 31), sv.name, (62, 62, 62), smile_font(36), 'lm')
+        sv_img_draw.text((45, 31), sv.name, (62, 62, 62), core_font(36), 'lm')
 
         sv_img_draw.rounded_rectangle((710, 15, 760, 50), 10, _c(sv.enabled))
         sv_img_draw.rounded_rectangle((770, 15, 820, 50), 10, _c(sv.pm))
         sv_img_draw.rounded_rectangle((830, 15, 880, 50), 10, _c(sv.area))
 
         sv_img_draw.text(
-            (735, 32), _t(sv.enabled), (62, 62, 62), smile_font(22), 'mm'
+            (735, 32), _t(sv.enabled), (62, 62, 62), core_font(22), 'mm'
         )
         sv_img_draw.text(
-            (795, 32), _t(sv.pm), (62, 62, 62), smile_font(22), 'mm'
+            (795, 32), _t(sv.pm), (62, 62, 62), core_font(22), 'mm'
         )
         sv_img_draw.text(
-            (855, 32), _t(sv.area), (62, 62, 62), smile_font(22), 'mm'
+            (855, 32), _t(sv.area), (62, 62, 62), core_font(22), 'mm'
         )
         img_list.append(sv_img)
 
@@ -152,7 +152,7 @@ def get_plugin_bg(plugin_name: str, sv_list: List[SV]):
     )
     img_draw = ImageDraw.Draw(img)
     img_draw.rounded_rectangle((10, 26, 890, 76), 10, (230, 202, 167))
-    img_draw.text((450, 51), plugin_name, (62, 62, 62), smile_font(42), 'mm')
+    img_draw.text((450, 51), plugin_name, (62, 62, 62), core_font(42), 'mm')
 
     temp = 0
     for _img in img_list:

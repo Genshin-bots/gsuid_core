@@ -44,6 +44,8 @@ class SQLA:
             'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
             'ALTER TABLE GsUser ADD COLUMN fp TEXT',
             'ALTER TABLE GsUser ADD COLUMN device_id TEXT',
+            'ALTER TABLE GsUser ADD COLUMN sr_sign_switch TEXT DEFAULT "off"',
+            'ALTER TABLE GsUser ADD COLUMN sr_push_switch TEXT DEFAULT "off"',
             'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
         ]
         async with self.async_session() as session:
@@ -338,6 +340,8 @@ class SQLA:
                         else None,
                         fp=fp,
                         device_id=device_id,
+                        sr_push_switch='off',
+                        sr_sign_switch='off',
                     )
                     session.add(user_data)
                 await session.commit()
@@ -565,7 +569,7 @@ class SQLA:
                     return None
 
     async def get_switch_status_list(
-        self, switch: Literal['push', 'sign', 'bbs']
+        self, switch: Literal['push', 'sign', 'bbs', 'sr_push', 'sr_sign']
     ) -> List[GsUser]:
         async with self.async_session() as session:
             async with session.begin():
