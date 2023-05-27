@@ -114,7 +114,7 @@ async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
         paste_switch(user_card, sr_sign, (241, b + 5 * y))
         paste_switch(user_card, sr_push, (241 + x, b + 5 * y))
 
-        img.paste(user_card, (0, 500 + index * 690), user_card)
+        img.paste(user_card, (0, 500 + index * 870), user_card)
 
     img = easy_alpha_composite(img_mask, img, (0, 0))
     return await convert_img(img)
