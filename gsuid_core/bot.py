@@ -39,13 +39,16 @@ class _Bot:
         elif isinstance(message, bytes):
             message = [MessageSegment.image(message)]
         elif isinstance(message, List):
-            message = [MessageSegment.node(message)]
+            if all(isinstance(x, str) for x in message):
+                message = [MessageSegment.node(message)]
+
+        _message: List[Message] = message  # type: ignore
 
         if at_sender and sender_id:
-            message.append(MessageSegment.at(sender_id))
+            _message.append(MessageSegment.at(sender_id))
 
         send = MessageSend(
-            content=message,
+            content=_message,
             bot_id=bot_id,
             bot_self_id=bot_self_id,
             target_type=target_type,
