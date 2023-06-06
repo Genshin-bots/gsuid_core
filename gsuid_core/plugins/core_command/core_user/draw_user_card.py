@@ -102,7 +102,7 @@ async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
             )
             if getattr(user_push_data, f'{mode}_push') != 'off':
                 user_draw.text(
-                    (268 + _index % 2 * x, 168 + (_index // 2 + 3) * y),
+                    (268 + _index % 2 * x, 168 + 47 + (_index // 2 + 3) * y),
                     f'{getattr(user_push_data, f"{mode}_value")}',
                     (35, 35, 35),
                     font=core_font(15),

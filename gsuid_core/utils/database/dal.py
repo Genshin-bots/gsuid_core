@@ -608,11 +608,7 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 await self.push_exists(uid)
-                sql = (
-                    update(GsPush)
-                    .where(GsPush.uid == uid, GsPush.bot_id == self.bot_id)
-                    .values(**data)
-                )
+                sql = update(GsPush).where(GsPush.uid == uid).values(**data)
                 await session.execute(sql)
                 await session.commit()
                 return True
@@ -637,9 +633,7 @@ class SQLA:
     async def push_exists(self, uid: str) -> bool:
         async with self.async_session() as session:
             async with session.begin():
-                sql = select(GsPush).where(
-                    GsPush.uid == uid, GsPush.bot_id == self.bot_id
-                )
+                sql = select(GsPush).where(GsPush.uid == uid)
                 result = await session.execute(sql)
                 data = result.scalars().all()
                 if not data:
