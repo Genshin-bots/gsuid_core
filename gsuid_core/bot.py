@@ -1,3 +1,4 @@
+import random
 import asyncio
 from typing import List, Union, Literal, Optional
 
@@ -8,6 +9,10 @@ from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.segment import MessageSegment
 from gsuid_core.models import Event, Message, MessageSend
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+
+R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
+R_text = core_plugins_config.get_config('RandomText').data
 
 
 class _Bot:
@@ -46,6 +51,13 @@ class _Bot:
 
         if at_sender and sender_id:
             _message.append(MessageSegment.at(sender_id))
+
+        if R_enabled:
+            result = ''.join(
+                random.choice(R_text)
+                for _ in range(random.randint(1, len(R_text)))
+            )
+            _message.append(MessageSegment.text(result))
 
         send = MessageSend(
             content=_message,

@@ -49,4 +49,8 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'AutoRestartCoreTime': GsListStrConfig(
         '自动重启Core时间设置', '每晚自动重启Core时间设置(时, 分)', ['4', '40']
     ),
+    'AutoAddRandomText': GsBoolConfig('自动加入随机字符串', '自动加入随机字符串', False),
+    'RandomText': GsStrConfig(
+        '随机字符串列表', '随机字符串列表', 'abcdefghijklmnopqrstuvwxyz'
+    ),
 }
