@@ -8,11 +8,14 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.segment import MessageSegment
+from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.models import Event, Message, MessageSend
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
 R_text = core_plugins_config.get_config('RandomText').data
+is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
+text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 
 
 class _Bot:
@@ -58,6 +61,16 @@ class _Bot:
                 for _ in range(random.randint(1, len(R_text)))
             )
             _message.append(MessageSegment.text(result))
+
+        if is_text2pic:
+            if (
+                len(_message) == 1
+                and _message[0].type == 'text'
+                and isinstance(_message[0].data, str)
+                and len(_message[0].data) >= int(text2pic_limit)
+            ):
+                img = await text2pic(_message[0].data)
+                _message = [MessageSegment.image(img)]
 
         send = MessageSend(
             content=_message,

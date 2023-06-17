@@ -54,4 +54,6 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '随机字符串列表', '随机字符串列表', 'abcdefghijklmnopqrstuvwxyz'
     ),
     'ChangeErrorToPic': GsBoolConfig('错误提示转换为图片', '将一部分报错提示转换为图片', True),
+    'AutoTextToPic': GsBoolConfig('自动文字转图', '将所有发送的文字转图', True),
+    'TextToPicThreshold': GsStrConfig('文转图阈值', '开启自动转图后超过该阈值的文字会转成图片', '20'),
 }

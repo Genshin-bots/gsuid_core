@@ -38,12 +38,14 @@ def draw_center_text_by_line(
     font: ImageFont.FreeTypeFont,
     fill: Union[Tuple[int, int, int, int], str],
     max_length: float,
-):
-    pun = "，。！？；：,.!?"
+    not_center: bool = False,
+) -> float:
+    pun = "。！？；!?"
     x, y = pos
     _, h = font.getsize('X')
     line = ''
     lenth = 0
+    anchor = 'la' if not_center else 'mm'
     for char in text:
         size, _ = font.getsize(char)  # 获取当前字符的宽度
         lenth += size
@@ -51,11 +53,12 @@ def draw_center_text_by_line(
         if lenth < max_length and char not in pun and char != '\n':
             pass
         else:
-            img.text((x, y), line, fill, font, 'mm')
+            img.text((x, y), line, fill, font, anchor)
             line, lenth = '', 0
             y += h * 1.55
     else:
-        img.text((x, y), line, fill, font, 'mm')
+        img.text((x, y), line, fill, font, anchor)
+    return y
 
 
 def draw_text_by_line(
@@ -67,7 +70,7 @@ def draw_text_by_line(
     max_length: float,
     center=False,
     line_space: Optional[float] = None,
-):
+) -> float:
     """
     在图片上写长段文字, 自动换行
     max_length单行最大长度, 单位像素
@@ -101,6 +104,7 @@ def draw_text_by_line(
             font_size = font.getsize(row)
             x = math.ceil((img.size[0] - font_size[0]) / 2)
         draw.text((x, y), row, font=font, fill=fill)
+    return y
 
 
 def easy_paste(
