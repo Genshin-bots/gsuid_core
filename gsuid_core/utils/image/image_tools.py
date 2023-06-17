@@ -31,6 +31,33 @@ async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
         return pic
 
 
+def draw_center_text_by_line(
+    img: ImageDraw.ImageDraw,
+    pos: Tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: Union[Tuple[int, int, int, int], str],
+    max_length: float,
+):
+    pun = "，。！？；：,.!?"
+    x, y = pos
+    _, h = font.getsize('X')
+    line = ''
+    lenth = 0
+    for char in text:
+        size, _ = font.getsize(char)  # 获取当前字符的宽度
+        lenth += size
+        line += char
+        if lenth < max_length and char not in pun and char != '\n':
+            pass
+        else:
+            img.text((x, y), line, fill, font, 'mm')
+            line, lenth = '', 0
+            y += h * 1.55
+    else:
+        img.text((x, y), line, fill, font, 'mm')
+
+
 def draw_text_by_line(
     img: Image.Image,
     pos: Tuple[int, int],
@@ -66,7 +93,7 @@ def draw_text_by_line(
                 font_size = font.getsize(row)
                 x = math.ceil((img.size[0] - font_size[0]) / 2)
             draw.text((x, y), row, font=font, fill=fill)
-            row = ""
+            row = ''
             length = 0
             y += y_add
     if row != "":
@@ -182,13 +209,23 @@ async def get_color_bg(
     based_h: int,
     bg_path: Optional[Path] = None,
     without_mask: bool = False,
+    is_full: bool = False,
+    color: Optional[Tuple[int, int, int]] = None,
+    full_opacity: int = 200,
 ) -> Image.Image:
     if bg_path is None:
         bg_path = get_res_path(['GsCore', 'bg'])
     CI_img = CustomizeImage(bg_path)
     img = CI_img.get_image(None, based_w, based_h)
-    color = CI_img.get_bg_color(img)
-    if not without_mask:
+    if color is None:
+        color = CI_img.get_bg_color(img)
+    if is_full:
+        color_img = Image.new('RGBA', (based_w, based_h), color)
+        mask = Image.new(
+            'RGBA', (based_w, based_h), (255, 255, 255, full_opacity)
+        )
+        img.paste(color_img, (0, 0), mask)
+    elif not without_mask:
         color_mask = Image.new('RGBA', (based_w, based_h), color)
         enka_mask = Image.open(TEXT_PATH / 'bg_mask.png').resize(
             (based_w, based_h)

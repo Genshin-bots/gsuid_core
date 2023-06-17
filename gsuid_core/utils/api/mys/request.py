@@ -279,6 +279,7 @@ class BaseMysApi:
                         '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
                     )
 
+                print(header)
                 async with client.request(
                     method,
                     url=url,
