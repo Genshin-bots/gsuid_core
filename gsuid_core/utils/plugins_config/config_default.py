@@ -53,4 +53,5 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'RandomText': GsStrConfig(
         '随机字符串列表', '随机字符串列表', 'abcdefghijklmnopqrstuvwxyz'
     ),
+    'ChangeErrorToPic': GsBoolConfig('错误提示转换为图片', '将一部分报错提示转换为图片', True),
 }

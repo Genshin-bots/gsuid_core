@@ -5,6 +5,7 @@ from PIL import Image, ImageDraw
 
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.image.image_tools import (
     get_color_bg,
     draw_center_text_by_line,
@@ -27,6 +28,7 @@ UPDATE_HINT = '''更新失败!更多错误信息请查看控制台...
 >> [gs强行强制更新](超级危险)!'''
 
 TEXT_PATH = Path(__file__).parent / 'image' / 'texture2d'
+is_pic_error = core_plugins_config.get_config('ChangeErrorToPic').data
 
 
 def get_error(retcode: Union[int, str]) -> str:
@@ -76,10 +78,13 @@ def get_error_type(retcode: Union[int, str]) -> str:
         return 'Api错误'
 
 
-async def get_error_img(retcode: Union[int, str]) -> bytes:
+async def get_error_img(retcode: Union[int, str]) -> Union[bytes, str]:
     error_message = get_error(retcode)
-    error_type = get_error_type(retcode)
-    return await draw_error_img(retcode, error_message, error_type)
+    if is_pic_error:
+        error_type = get_error_type(retcode)
+        return await draw_error_img(retcode, error_message, error_type)
+    else:
+        return error_message
 
 
 async def draw_error_img(
