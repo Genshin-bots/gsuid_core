@@ -64,6 +64,10 @@ def get_error(retcode: Union[int, str]) -> str:
         return 'CK与用户信息不符, 请检查代码实现...'
     elif retcode == -999:
         return VERIFY_HINT
+    elif retcode == 125:
+        return '该充值方式暂时不可用!'
+    elif retcode == 126:
+        return '该充值方式不正确!'
     else:
         return f'未知错误, 错误码为{retcode}!'
 

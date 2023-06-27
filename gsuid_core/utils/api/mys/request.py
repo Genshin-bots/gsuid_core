@@ -1168,7 +1168,11 @@ class MysApi(BaseMysApi):
             'currency': 'CNY',
             'pay_plat': method,
         }
-        data = {'order': order, 'sign': gen_payment_sign(order)}
+        data = {
+            'order': order,
+            'special_info': 'topup_center',
+            'sign': gen_payment_sign(order),
+        }
         HEADER['x-rpc-device_id'] = device_id
         HEADER['x-rpc-client_type'] = '4'
         resp = await self._mys_request(
