@@ -113,12 +113,15 @@ def get_height(content: str, size: int) -> int:
 
 
 async def text2pic(text: str, max_size: int = 600, font_size: int = 24):
+    if text.endswith('\n'):
+        text = text[:-1]
+
     img = Image.new(
         'RGB', (max_size, len(text) * font_size // 5), (228, 222, 210)
     )
     img_draw = ImageDraw.ImageDraw(img)
     y = draw_center_text_by_line(
-        img_draw, (0, 0), text, core_font(font_size), 'black', 600, True
+        img_draw, (50, 0), text, core_font(font_size), 'black', 500, True
     )
     img = img.crop((0, 0, 600, int(y + 30)))
     return await convert_img(img)

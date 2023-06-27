@@ -274,10 +274,19 @@ class BaseMysApi:
                                     [f'{k}={v}' for k, v in params.items()]
                                 )
                             )
+
                     header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
                     header['x-rpc-page'] = (
                         '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
                     )
+
+                    if (
+                        'x-rpc-challenge' in header
+                        and not header['x-rpc-challenge']
+                    ):
+                        del header['x-rpc-challenge']
+                        del header['x-rpc-page']
+                        del header['x-rpc-challenge_game']
 
                 print(header)
                 async with client.request(
