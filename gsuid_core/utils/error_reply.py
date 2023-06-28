@@ -112,5 +112,4 @@ async def draw_error_img(
     draw_center_text_by_line(
         img_draw, (350, 750), error_message, core_font(30), 'black', 440
     )
-    img.show()
     return await convert_img(img)
