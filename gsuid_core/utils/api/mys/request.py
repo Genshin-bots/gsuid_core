@@ -120,7 +120,7 @@ class BaseMysApi:
         ...
 
     def get_device_id(self) -> str:
-        device_id = uuid.uuid4().hex
+        device_id = str(uuid.uuid4()).upper()
         return device_id
 
     def generate_seed(self, length: int):
