@@ -46,6 +46,7 @@ class SQLA:
             'ALTER TABLE GsUser ADD COLUMN device_id TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_sign_switch TEXT DEFAULT "off"',
             'ALTER TABLE GsUser ADD COLUMN sr_push_switch TEXT DEFAULT "off"',
+            'ALTER TABLE GsUser ADD COLUMN draw_switch TEXT DEFAULT "off"',
             'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
         ]
         async with self.async_session() as session:
@@ -334,6 +335,7 @@ class SQLA:
                         sign_switch='off',
                         push_switch='off',
                         bbs_switch='off',
+                        draw_switch='off',
                         region=SERVER.get(uid[0], 'cn_gf01') if uid else None,
                         sr_region=SR_SERVER.get(sr_uid[0], None)
                         if sr_uid

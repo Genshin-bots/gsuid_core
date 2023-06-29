@@ -761,20 +761,24 @@ class RoleCalendar(TypedDict):
     is_subscribe: bool
 
 
+class RoleCalendarList(TypedDict):
+    calendar_role: List[RoleCalendar]
+
+
 MonthlyRoleCalendar = TypedDict(
     'MonthlyRoleCalendar',
     {
-        '1': List[RoleCalendar],
-        '2': List[RoleCalendar],
-        '3': List[RoleCalendar],
-        '4': List[RoleCalendar],
-        '5': List[RoleCalendar],
-        '6': List[RoleCalendar],
-        '7': List[RoleCalendar],
-        '8': List[RoleCalendar],
-        '9': List[RoleCalendar],
-        '10': List[RoleCalendar],
-        '11': List[RoleCalendar],
-        '12': List[RoleCalendar],
+        '1': RoleCalendarList,
+        '2': RoleCalendarList,
+        '3': RoleCalendarList,
+        '4': RoleCalendarList,
+        '5': RoleCalendarList,
+        '6': RoleCalendarList,
+        '7': RoleCalendarList,
+        '8': RoleCalendarList,
+        '9': RoleCalendarList,
+        '10': RoleCalendarList,
+        '11': RoleCalendarList,
+        '12': RoleCalendarList,
     },
 )

@@ -28,6 +28,7 @@ class GsUser(SQLModel, table=True):
     push_switch: str = Field(title='全局推送开关')
     sign_switch: str = Field(title='自动签到')
     bbs_switch: str = Field(title='自动米游币')
+    draw_switch: str = Field(title='自动留影叙佳期')
     sr_push_switch: str = Field(title='星铁全局推送开关')
     sr_sign_switch: str = Field(title='星铁自动签到')
     status: Optional[str] = Field(default=None, title='状态')
