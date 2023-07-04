@@ -35,7 +35,7 @@ async def get_qrcode_base64(url: str, path: Path) -> bytes:
     )
     qr.add_data(url)
     qr.make(fit=True)
-    img = qr.make_image(fill_color='black', back_color='white')
+    img = qr.make_image(fill_color=(255, 134, 36), back_color='white')
     assert isinstance(img, PilImage)
 
     img = img.resize((700, 700))  # type: ignore
