@@ -1,11 +1,12 @@
-import io
 import json
-import base64
 import asyncio
+from pathlib import Path
 from http.cookies import SimpleCookie
 from typing import Any, List, Tuple, Union, Literal
 
 import qrcode
+import aiofiles
+from qrcode.image.pil import PilImage
 from qrcode.constants import ERROR_CORRECT_L
 
 from gsuid_core.bot import Bot
@@ -25,7 +26,7 @@ disnote = '''免责声明:您将通过扫码完成获取米游社sk以及ck。
 get_sqla = DBSqla().get_sqla
 
 
-def get_qrcode_base64(url):
+async def get_qrcode_base64(url: str, path: Path) -> bytes:
     qr = qrcode.QRCode(
         version=1,
         error_correction=ERROR_CORRECT_L,
@@ -35,10 +36,21 @@ def get_qrcode_base64(url):
     qr.add_data(url)
     qr.make(fit=True)
     img = qr.make_image(fill_color='black', back_color='white')
-    img_byte = io.BytesIO()
-    img.save(img_byte, format='PNG')  # type: ignore
-    img_byte = img_byte.getvalue()
-    return base64.b64encode(img_byte).decode()
+    assert isinstance(img, PilImage)
+
+    img = img.resize((700, 700))  # type: ignore
+    img.save(  # type: ignore
+        path,
+        format='PNG',
+        save_all=True,
+        append_images=[img],
+        duration=100,
+        loop=0,
+    )
+    async with aiofiles.open(path, 'rb') as fp:
+        img = await fp.read()
+
+    return img
 
 
 async def refresh(
@@ -74,27 +86,28 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
     code_data = await mys_api.create_qrcode_url()
     if isinstance(code_data, int):
         return await send_msg('链接创建失败...')
-    try:
-        im = []
-        im.append(MessageSegment.text('请使用米游社扫描下方二维码登录：'))
-        im.append(
-            MessageSegment.image(
-                f'base64://{get_qrcode_base64(code_data["url"])}'
-            )
+
+    path = Path(__file__).parent / f'{user_id}.gif'
+
+    im = []
+    im.append(MessageSegment.text('请使用米游社扫描下方二维码登录：'))
+    im.append(
+        MessageSegment.image(await get_qrcode_base64(code_data['url'], path))
+    )
+    im.append(
+        MessageSegment.text(
+            '免责声明:您将通过扫码完成获取米游社sk以及ck。\n'
+            '本Bot将不会保存您的登录状态。\n'
+            '我方仅提供米游社查询及相关游戏内容服务,\n'
+            '若您的账号封禁、被盗等处罚与我方无关。\n'
+            '害怕风险请勿扫码~'
         )
-        im.append(
-            MessageSegment.text(
-                '免责声明:您将通过扫码完成获取米游社sk以及ck。\n'
-                '本Bot将不会保存您的登录状态。\n'
-                '我方仅提供米游社查询及相关游戏内容服务,\n'
-                '若您的账号封禁、被盗等处罚与我方无关。\n'
-                '害怕风险请勿扫码~'
-            )
-        )
-        await bot.send(MessageSegment.node(im))
-    except Exception as e:
-        logger.error(e)
-        logger.warning(f'[扫码登录] {user_id} 图片发送失败')
+    )
+    await bot.send(im)
+
+    if path.exists():
+        path.unlink()
+
     status, game_token_data = await refresh(code_data)
     if status:
         assert game_token_data is not None  # 骗过 pyright
