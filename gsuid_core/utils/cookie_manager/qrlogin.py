@@ -1,3 +1,4 @@
+import io
 import json
 import asyncio
 from pathlib import Path
@@ -26,7 +27,7 @@ disnote = '''免责声明:您将通过扫码完成获取米游社sk以及ck。
 get_sqla = DBSqla().get_sqla
 
 
-async def get_qrcode_base64(url: str, path: Path) -> bytes:
+async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
     qr = qrcode.QRCode(
         version=1,
         error_correction=ERROR_CORRECT_L,
@@ -38,17 +39,22 @@ async def get_qrcode_base64(url: str, path: Path) -> bytes:
     img = qr.make_image(fill_color=(255, 134, 36), back_color='white')
     assert isinstance(img, PilImage)
 
-    img = img.resize((700, 700))  # type: ignore
-    img.save(  # type: ignore
-        path,
-        format='PNG',
-        save_all=True,
-        append_images=[img],
-        duration=100,
-        loop=0,
-    )
-    async with aiofiles.open(path, 'rb') as fp:
-        img = await fp.read()
+    if bot_id == 'onebot':
+        img = img.resize((700, 700))  # type: ignore
+        img.save(  # type: ignore
+            path,
+            format='PNG',
+            save_all=True,
+            append_images=[img],
+            duration=100,
+            loop=0,
+        )
+        async with aiofiles.open(path, 'rb') as fp:
+            img = await fp.read()
+    else:
+        img_byte = io.BytesIO()
+        img.save(img_byte, format='PNG')  # type: ignore
+        img = img_byte.read()
 
     return img
 
@@ -92,7 +98,9 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
     im = []
     im.append(MessageSegment.text('请使用米游社扫描下方二维码登录：'))
     im.append(
-        MessageSegment.image(await get_qrcode_base64(code_data['url'], path))
+        MessageSegment.image(
+            await get_qrcode_base64(code_data['url'], path, ev.bot_id)
+        )
     )
     im.append(
         MessageSegment.text(
