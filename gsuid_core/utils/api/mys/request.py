@@ -261,7 +261,7 @@ class BaseMysApi:
                 header['x-rpc-device_id'] = await self.get_user_device_id(uid)
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
 
-            for _ in range(2):
+            for _ in range(3):
                 if 'Cookie' in header and header['Cookie'] in self.chs:
                     # header['x-rpc-challenge']=self.chs.pop(header['Cookie'])
                     if self.is_sr:
@@ -315,8 +315,20 @@ class BaseMysApi:
 
                     # 针对1034做特殊处理
                     if retcode == 1034:
-                        ch = await self._upass(header)
-                        self.chs[header['Cookie']] = ch
+                        if uid and self.is_sr and _ == 0:
+                            sqla = self.dbsqla.get_sqla('TEMP')
+                            new_fp = await self.generate_fp_by_uid(uid)
+                            await sqla.update_user_data(uid, {'fp': new_fp})
+                            header['x-rpc-device_fp'] = new_fp
+                            if isinstance(params, Dict):
+                                header['DS'] = get_ds_token(
+                                    '&'.join(
+                                        [f'{k}={v}' for k, v in params.items()]
+                                    )
+                                )
+                        else:
+                            ch = await self._upass(header)
+                            self.chs[header['Cookie']] = ch
                     elif retcode == -10001 and uid:
                         sqla = self.dbsqla.get_sqla('TEMP')
                         new_fp = await self.generate_fp_by_uid(uid)
