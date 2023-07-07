@@ -315,8 +315,20 @@ class BaseMysApi:
 
                     # 针对1034做特殊处理
                     if retcode == 1034:
-                        ch = await self._upass(header)
-                        self.chs[header['Cookie']] = ch
+                        if uid and self.is_sr:
+                            sqla = self.dbsqla.get_sqla('TEMP')
+                            new_fp = await self.generate_fp_by_uid(uid)
+                            await sqla.update_user_data(uid, {'fp': new_fp})
+                            header['x-rpc-device_fp'] = new_fp
+                            if isinstance(params, Dict):
+                                header['DS'] = get_ds_token(
+                                    '&'.join(
+                                        [f'{k}={v}' for k, v in params.items()]
+                                    )
+                                )
+                        else:
+                            ch = await self._upass(header)
+                            self.chs[header['Cookie']] = ch
                     elif retcode == -10001 and uid:
                         sqla = self.dbsqla.get_sqla('TEMP')
                         new_fp = await self.generate_fp_by_uid(uid)
