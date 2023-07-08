@@ -16,7 +16,8 @@ plugins_list: Dict[str, Dict[str, str]] = {}
 async def update_all_plugins() -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
-        log_list.extend(update_from_git(0, plugin))
+        if plugin.is_dir():
+            log_list.extend(update_from_git(0, plugin))
     return log_list
 
 
@@ -64,7 +65,12 @@ def install_plugins(plugins: Dict[str, str]) -> str:
     path = PLUGINS_PATH / plugin_name
     if path.exists():
         return '该插件已经安装过了!'
-    Repo.clone_from(git_path, path, single_branch=True, depth=1)
+    config = {'single_branch': True, 'depth': 1}
+
+    if plugins['branch'] != 'main':
+        config['branch'] = plugins['branch']
+
+    Repo.clone_from(git_path, path, **config)
     logger.info(f'插件{plugin_name}安装成功!')
     return f'插件{plugin_name}安装成功!发送[gs重启]以应用!'
 
