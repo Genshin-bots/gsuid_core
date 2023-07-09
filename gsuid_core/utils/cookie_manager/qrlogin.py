@@ -45,7 +45,7 @@ async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
         )
         async with aiofiles.open(path, 'rb') as fp:
             img = await fp.read()
-    if bot_id == 'onebot_v12':
+    elif bot_id == 'onebot_v12':
         img_byte = io.BytesIO()
         img.save(img_byte, format='PNG')  # type: ignore
         img_byte = img_byte.getvalue()
