@@ -1,3 +1,4 @@
+import base64
 from io import BytesIO
 from pathlib import Path
 from base64 import b64encode
@@ -20,7 +21,7 @@ class MessageSegment:
             img.save(result_buffer, format='PNG', quality=80, subsampling=0)
             img = result_buffer.getvalue()
         elif isinstance(img, bytes):
-            pass
+            return Message(type='image', data=f'base64://{base64.b64encode(img).decode()}')
         elif isinstance(img, Path):
             with open(str(img), 'rb') as fp:
                 img = fp.read()
