@@ -52,14 +52,10 @@ async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
         img = f'base64://{base64.b64encode(img_byte).decode()}'
         return img  # type: ignore
     else:
-        # img_byte = io.BytesIO()
-        # img.save(img_byte, format='PNG')  # type: ignore
-        # img = img_byte.read()
         img_byte = io.BytesIO()
         img.save(img_byte, format='PNG')  # type: ignore
-        img_byte = img_byte.getvalue()
-        img = f'base64://{base64.b64encode(img_byte).decode()}'
-        return img
+        img = img_byte.getvalue()
+        return img  # type: ignore
 
 
 async def refresh(
