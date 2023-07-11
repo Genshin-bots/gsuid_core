@@ -6,25 +6,17 @@ ENV PATH="${PATH}:/root/.local/bin"
 
 ADD ./ /app/
 
-RUN mv /etc/apt/sources.list /etc/apt/sources.list.bak \
-	&& echo "deb http://ftp.cn.debian.org/debian/ bullseye main non-free contrib" >/etc/apt/sources.list \
-    && echo "deb http://ftp.cn.debian.org/debian/ bullseye-updates main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb http://ftp.cn.debian.org/debian/ bullseye-backports main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb-src http://ftp.cn.debian.org/debian/ bullseye main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb-src http://ftp.cn.debian.org/debian/ bullseye-updates main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb-src http://ftp.cn.debian.org/debian/ bullseye-backports main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb http://mirrors.ustc.edu.cn/debian-security/ stable-security main non-free contrib" >>/etc/apt/sources.list \
-    && echo "deb-src http://mirrors.ustc.edu.cn/debian-security/ stable-security main non-free contrib" >>/etc/apt/sources.list \
-    && rm -rf /var/lib/apt/lists/* && apt-get update
-
-RUN apt install curl git -y
-
-RUN /usr/local/bin/python -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-
-RUN /usr/local/bin/python -m pip install  --no-cache-dir --upgrade --quiet pip
-
-RUN /usr/local/bin/python -m pip install poetry
-
-RUN poetry install && rm -rf /app/*
+RUN sed -i 's/http:\/\/deb.debian.org/http:\/\/ftp.cn.debian.org/g' /etc/apt/sources.list \
+    && sed -i 's/http:\/\/security.debian.org/http:\/\/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
+    && apt-get update -y \
+    && apt-get upgrade -y \
+    && apt install curl git -y \
+    && apt-get autoremove \
+    && apt-get clean \
+    && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
+    && pip install poetry -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
+    && poetry install && \
+    && rm -rf /app/*
 
 CMD poetry run python3 core.py
