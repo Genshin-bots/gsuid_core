@@ -73,6 +73,14 @@ cd plugins
 git clone -b v4 https://ghproxy.com/https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
 ```
 
+2. 安装所需插件
+
+```shell
+# 安装v4 GenshinUID
+cd plugins
+git clone -b v4 https://ghproxy.com/https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
+```
+
 2. Docker Compose启动
 
 ```shell
