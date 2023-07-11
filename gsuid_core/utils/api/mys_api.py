@@ -1,55 +1,14 @@
-from typing import Dict, Literal, Optional
+from typing import Literal, Optional
 
 from gsuid_core.utils.api.mys import MysApi
-from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 gsconfig = core_plugins_config
 
 
 class _MysApi(MysApi):
-    dbsqla: DBSqla = DBSqla()
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-    async def _pass(self, gt: str, ch: str, header: Dict):
-        # 警告：使用该服务（例如某RR等）需要注意风险问题
-        # 本项目不以任何形式提供相关接口
-        # 代码来源：GITHUB项目MIT开源
-        _pass_api = gsconfig.get_config('_pass_API').data
-        if _pass_api:
-            data = await self._mys_request(
-                url=f'{_pass_api}&gt={gt}&challenge={ch}',
-                method='GET',
-                header=header,
-            )
-            if isinstance(data, int):
-                return None, None
-            else:
-                validate = data['data']['validate']
-                ch = data['data']['challenge']
-        else:
-            validate = None
-
-        return validate, ch
-
-    async def _upass(self, header: Dict, is_bbs: bool = False):
-        if is_bbs:
-            raw_data = await self.get_bbs_upass_link(header)
-        else:
-            raw_data = await self.get_upass_link(header)
-        if isinstance(raw_data, int):
-            return False
-        gt = raw_data['data']['gt']
-        ch = raw_data['data']['challenge']
-
-        vl, ch = await self._pass(gt, ch, header)
-
-        if vl:
-            await self.get_header_and_vl(header, ch, vl)
-        else:
-            return True
 
     async def get_ck(
         self, uid: str, mode: Literal['OWNER', 'RANDOM'] = 'RANDOM'
@@ -61,6 +20,24 @@ class _MysApi(MysApi):
 
     async def get_stoken(self, uid: str) -> Optional[str]:
         return await self.dbsqla.get_sqla('TEMP').get_user_stoken(uid)
+
+    async def get_user_fp(self, uid: str) -> Optional[str]:
+        data = await self.dbsqla.get_sqla('TEMP').get_user_fp(uid)
+        if data is None:
+            data = await self.generate_fp_by_uid(uid)
+            await self.dbsqla.get_sqla('TEMP').update_user_data(
+                uid, {'fp': data}
+            )
+        return data
+
+    async def get_user_device_id(self, uid: str) -> Optional[str]:
+        data = await self.dbsqla.get_sqla('TEMP').get_user_device_id(uid)
+        if data is None:
+            data = self.get_device_id()
+            await self.dbsqla.get_sqla('TEMP').update_user_data(
+                uid, {'device_id': data}
+            )
+        return data
 
 
 mys_api = _MysApi()

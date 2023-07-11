@@ -1,6 +1,5 @@
 import re
 import asyncio
-import contextlib
 from typing import Dict, List, Literal, Optional
 
 from sqlmodel import SQLModel
@@ -43,13 +42,20 @@ class SQLA:
             'ALTER TABLE GsBind ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
+            'ALTER TABLE GsUser ADD COLUMN fp TEXT',
+            'ALTER TABLE GsUser ADD COLUMN device_id TEXT',
+            'ALTER TABLE GsUser ADD COLUMN sr_sign_switch TEXT DEFAULT "off"',
+            'ALTER TABLE GsUser ADD COLUMN sr_push_switch TEXT DEFAULT "off"',
+            'ALTER TABLE GsUser ADD COLUMN draw_switch TEXT DEFAULT "off"',
             'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
         ]
-        with contextlib.suppress(Exception):
-            async with self.async_session() as session:
-                for _t in exec_list:
+        async with self.async_session() as session:
+            for _t in exec_list:
+                try:
                     await session.execute(text(_t))
-                await session.commit()
+                    await session.commit()
+                except:  # noqa: E722
+                    pass
 
     #####################
     # GsBind 部分 #
@@ -207,6 +213,22 @@ class SQLA:
                 result = await session.execute(sql)
                 return data[0] if (data := result.scalars().all()) else None
 
+    async def select_user_all_data_by_user_id(
+        self, user_id: str
+    ) -> Optional[List[GsUser]]:
+        async with self.async_session() as session:
+            async with session.begin():
+                sql = select(GsUser).where(GsUser.user_id == user_id)
+                result = await session.execute(sql)
+                data = result.scalars().all()
+                return data if data else None
+
+    async def select_user_data_by_user_id(
+        self, user_id: str
+    ) -> Optional[GsUser]:
+        data = await self.select_user_all_data_by_user_id(user_id)
+        return data[0] if data else None
+
     async def select_cache_cookie(self, uid: str) -> Optional[str]:
         async with self.async_session() as session:
             async with session.begin():
@@ -227,6 +249,14 @@ class SQLA:
                     sql = delete(GsCache).where(GsCache.cookie == cookie)
                     await session.execute(sql)
                 return True
+
+    async def get_user_fp(self, uid: str) -> Optional[str]:
+        data = await self.select_user_data(uid)
+        return data.fp if data else None
+
+    async def get_user_device_id(self, uid: str) -> Optional[str]:
+        data = await self.select_user_data(uid)
+        return data.device_id if data else None
 
     async def insert_cache_data(
         self,
@@ -251,6 +281,8 @@ class SQLA:
         sr_uid: Optional[str] = None,
         cookie: Optional[str] = None,
         stoken: Optional[str] = None,
+        fp: Optional[str] = None,
+        device_id: Optional[str] = None,
     ) -> bool:
         async with self.async_session() as session:
             async with session.begin():
@@ -265,6 +297,7 @@ class SQLA:
                             bot_id=self.bot_id,
                             user_id=user_id,
                             sr_uid=sr_uid,
+                            fp=fp,
                         )
                     )
                     await session.execute(sql)
@@ -279,6 +312,7 @@ class SQLA:
                             bot_id=self.bot_id,
                             user_id=user_id,
                             uid=uid,
+                            fp=fp,
                         )
                     )
                     await session.execute(sql)
@@ -301,10 +335,15 @@ class SQLA:
                         sign_switch='off',
                         push_switch='off',
                         bbs_switch='off',
+                        draw_switch='off',
                         region=SERVER.get(uid[0], 'cn_gf01') if uid else None,
                         sr_region=SR_SERVER.get(sr_uid[0], None)
                         if sr_uid
                         else None,
+                        fp=fp,
+                        device_id=device_id,
+                        sr_push_switch='off',
+                        sr_sign_switch='off',
                     )
                     session.add(user_data)
                 await session.commit()
@@ -314,13 +353,9 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 sql = (
-                    update(GsUser).where(
-                        GsUser.sr_uid == uid, GsUser.bot_id == self.bot_id
-                    )
+                    update(GsUser).where(GsUser.sr_uid == uid)
                     if self.is_sr
-                    else update(GsUser).where(
-                        GsUser.uid == uid, GsUser.bot_id == self.bot_id
-                    )
+                    else update(GsUser).where(GsUser.uid == uid)
                 )
                 if data is not None:
                     query = sql.values(**data)
@@ -456,9 +491,17 @@ class SQLA:
         data = await self.select_user_data(uid)
         return data.cookie if data else None
 
+    async def get_user_cookie_by_user_id(self, user_id: str) -> Optional[str]:
+        data = await self.select_user_data_by_user_id(user_id)
+        return data.cookie if data else None
+
     async def cookie_validate(self, uid: str) -> bool:
         data = await self.select_user_data(uid)
         return True if data and data.status is None else False
+
+    async def get_user_stoken_by_user_id(self, user_id: str) -> Optional[str]:
+        data = await self.select_user_data_by_user_id(user_id)
+        return data.stoken if data and data.stoken else None
 
     async def get_user_stoken(self, uid: str) -> Optional[str]:
         data = await self.select_user_data(uid)
@@ -528,7 +571,7 @@ class SQLA:
                     return None
 
     async def get_switch_status_list(
-        self, switch: Literal['push', 'sign', 'bbs']
+        self, switch: Literal['push', 'sign', 'bbs', 'sr_push', 'sr_sign']
     ) -> List[GsUser]:
         async with self.async_session() as session:
             async with session.begin():
@@ -567,11 +610,7 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 await self.push_exists(uid)
-                sql = (
-                    update(GsPush)
-                    .where(GsPush.uid == uid, GsPush.bot_id == self.bot_id)
-                    .values(**data)
-                )
+                sql = update(GsPush).where(GsPush.uid == uid).values(**data)
                 await session.execute(sql)
                 await session.commit()
                 return True
@@ -588,9 +627,7 @@ class SQLA:
         async with self.async_session() as session:
             async with session.begin():
                 await self.push_exists(uid)
-                sql = select(GsPush).where(
-                    GsPush.uid == uid, GsPush.bot_id == self.bot_id
-                )
+                sql = select(GsPush).where(GsPush.uid == uid)
                 result = await session.execute(sql)
                 data = result.scalars().all()
                 return data[0] if len(data) >= 1 else None
@@ -598,9 +635,7 @@ class SQLA:
     async def push_exists(self, uid: str) -> bool:
         async with self.async_session() as session:
             async with session.begin():
-                sql = select(GsPush).where(
-                    GsPush.uid == uid, GsPush.bot_id == self.bot_id
-                )
+                sql = select(GsPush).where(GsPush.uid == uid)
                 result = await session.execute(sql)
                 data = result.scalars().all()
                 if not data:

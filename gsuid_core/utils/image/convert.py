@@ -4,7 +4,10 @@ from base64 import b64encode
 from typing import Union, overload
 
 import aiofiles
-from PIL import Image, ImageFont
+from PIL import Image, ImageDraw, ImageFont
+
+from gsuid_core.utils.fonts.fonts import core_font
+from gsuid_core.utils.image.image_tools import draw_center_text_by_line
 
 
 @overload
@@ -107,3 +110,18 @@ def get_str_size(
 def get_height(content: str, size: int) -> int:
     line_count = content.count('\n')
     return (line_count + 1) * size
+
+
+async def text2pic(text: str, max_size: int = 600, font_size: int = 24):
+    if text.endswith('\n'):
+        text = text[:-1]
+
+    img = Image.new(
+        'RGB', (max_size, len(text) * font_size // 5), (228, 222, 210)
+    )
+    img_draw = ImageDraw.ImageDraw(img)
+    y = draw_center_text_by_line(
+        img_draw, (50, 0), text, core_font(font_size), 'black', 500, True
+    )
+    img = img.crop((0, 0, 600, int(y + 30)))
+    return await convert_img(img)

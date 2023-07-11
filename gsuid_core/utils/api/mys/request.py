@@ -9,11 +9,12 @@ import uuid
 import random
 from abc import abstractmethod
 from string import digits, ascii_letters
-from typing import Any, Dict, List, Union, Literal, Optional, cast
+from typing import Any, Dict, List, Tuple, Union, Literal, Optional, cast
 
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
+from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import _API
@@ -87,13 +88,17 @@ class BaseMysApi:
     MAPI = _API
     is_sr = False
     RECOGNIZE_SERVER = RECOGNIZE_SERVER
+    chs = {}
+    dbsqla: DBSqla = DBSqla()
 
     @abstractmethod
-    async def _upass(self, header: Dict):
+    async def _upass(self, header: Dict) -> str:
         ...
 
     @abstractmethod
-    async def _pass(self, gt: str, ch: str, header: Dict):
+    async def _pass(
+        self, gt: str, ch: str, header: Dict
+    ) -> Tuple[Optional[str], Optional[str]]:
         ...
 
     @abstractmethod
@@ -105,6 +110,59 @@ class BaseMysApi:
     @abstractmethod
     async def get_stoken(self, uid: str) -> Optional[str]:
         ...
+
+    @abstractmethod
+    async def get_user_fp(self, uid: str) -> Optional[str]:
+        ...
+
+    @abstractmethod
+    async def get_user_device_id(self, uid: str) -> Optional[str]:
+        ...
+
+    def get_device_id(self) -> str:
+        device_id = str(uuid.uuid4()).upper()
+        return device_id
+
+    def generate_seed(self, length: int):
+        characters = '0123456789abcdef'
+        result = ''.join(random.choices(characters, k=length))
+        return result
+
+    async def generate_fp_by_uid(self, uid: str) -> str:
+        seed_id = self.generate_seed(16)
+        seed_time = str(int(time.time() * 1000))
+        ext_fields = f'{{"userAgent":"{self._HEADER["User-Agent"]}",\
+"browserScreenSize":281520,"maxTouchPoints":5,\
+"isTouchSupported":true,"browserLanguage":"zh-CN","browserPlat":"iPhone",\
+"browserTimeZone":"Asia/Shanghai","webGlRender":"Apple GPU",\
+"webGlVendor":"Apple Inc.",\
+"numOfPlugins":0,"listOfPlugins":"unknown","screenRatio":3,"deviceMemory":"unknown",\
+"hardwareConcurrency":"4","cpuClass":"unknown","ifNotTrack":"unknown","ifAdBlock":0,\
+"hasLiedResolution":1,"hasLiedOs":0,"hasLiedBrowser":0}}'
+        body = {
+            'seed_id': seed_id,
+            'device_id': await self.get_user_device_id(uid),
+            'platform': '5',
+            'seed_time': seed_time,
+            'ext_fields': ext_fields,
+            'app_name': 'account_cn',
+            'device_fp': '38d7ee834d1e9',
+        }
+        HEADER = copy.deepcopy(self._HEADER)
+        res = await self._mys_request(
+            url=self.MAPI['GET_FP_URL'],
+            method='POST',
+            header=HEADER,
+            data=body,
+        )
+        if not isinstance(res, Dict):
+            logger.error(f"获取fp连接失败{res}")
+            return random_hex(13).lower()
+        elif res["data"]["code"] != 200:
+            logger.error(f"获取fp参数不正确{res['data']['msg']}")
+            return random_hex(13).lower()
+        else:
+            return res["data"]["device_fp"]
 
     async def simple_mys_req(
         self,
@@ -196,6 +254,113 @@ class BaseMysApi:
         async with ClientSession(
             connector=TCPConnector(verify_ssl=ssl_verify)
         ) as client:
+            raw_data = {}
+            uid = None
+            if params and 'role_id' in params:
+                uid = params['role_id']
+                header['x-rpc-device_id'] = await self.get_user_device_id(uid)
+                header['x-rpc-device_fp'] = await self.get_user_fp(uid)
+
+            for _ in range(3):
+                if 'Cookie' in header and header['Cookie'] in self.chs:
+                    # header['x-rpc-challenge']=self.chs.pop(header['Cookie'])
+                    if self.is_sr:
+                        header['x-rpc-challenge'] = self.chs.pop(
+                            header['Cookie']
+                        )
+                        if isinstance(params, Dict):
+                            header['DS'] = get_ds_token(
+                                '&'.join(
+                                    [f'{k}={v}' for k, v in params.items()]
+                                )
+                            )
+
+                    header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
+                    header['x-rpc-page'] = (
+                        '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
+                    )
+
+                    if (
+                        'x-rpc-challenge' in header
+                        and not header['x-rpc-challenge']
+                    ):
+                        del header['x-rpc-challenge']
+                        del header['x-rpc-page']
+                        del header['x-rpc-challenge_game']
+
+                print(header)
+                async with client.request(
+                    method,
+                    url=url,
+                    headers=header,
+                    params=params,
+                    json=data,
+                    proxy=self.proxy_url if use_proxy else None,
+                    timeout=300,
+                ) as resp:
+                    try:
+                        raw_data = await resp.json()
+                    except ContentTypeError:
+                        _raw_data = await resp.text()
+                        raw_data = {'retcode': -999, 'data': _raw_data}
+                    logger.debug(raw_data)
+
+                    # 判断retcode
+                    if 'retcode' in raw_data:
+                        retcode: int = raw_data['retcode']
+                    elif 'code' in raw_data:
+                        retcode: int = raw_data['code']
+                    else:
+                        retcode = 0
+
+                    # 针对1034做特殊处理
+                    if retcode == 1034:
+                        if uid and self.is_sr and _ == 0:
+                            sqla = self.dbsqla.get_sqla('TEMP')
+                            new_fp = await self.generate_fp_by_uid(uid)
+                            await sqla.update_user_data(uid, {'fp': new_fp})
+                            header['x-rpc-device_fp'] = new_fp
+                            if isinstance(params, Dict):
+                                header['DS'] = get_ds_token(
+                                    '&'.join(
+                                        [f'{k}={v}' for k, v in params.items()]
+                                    )
+                                )
+                        else:
+                            ch = await self._upass(header)
+                            self.chs[header['Cookie']] = ch
+                    elif retcode == -10001 and uid:
+                        sqla = self.dbsqla.get_sqla('TEMP')
+                        new_fp = await self.generate_fp_by_uid(uid)
+                        await sqla.update_user_data(uid, {'fp': new_fp})
+                        header['x-rpc-device_fp'] = new_fp
+                    elif retcode != 0:
+                        return retcode
+                    else:
+                        return raw_data
+            else:
+                return -999
+
+    '''
+    async def _mys_request(
+        self,
+        url: str,
+        method: Literal['GET', 'POST'] = 'GET',
+        header: Dict[str, Any] = _HEADER,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        use_proxy: Optional[bool] = False,
+    ) -> Union[Dict, int]:
+        import types
+        import inspect
+
+        async with ClientSession(
+            connector=TCPConnector(verify_ssl=ssl_verify)
+        ) as client:
+            if 'Cookie' in header:
+                if header['Cookie'] in self.chs:
+                    header['x-rpc-challenge'] = self.chs.pop(header["Cookie"])
+
             async with client.request(
                 method,
                 url=url,
@@ -211,22 +376,73 @@ class BaseMysApi:
                     _raw_data = await resp.text()
                     raw_data = {'retcode': -999, 'data': _raw_data}
                 logger.debug(raw_data)
+
+                # 判断retcode
                 if 'retcode' in raw_data:
                     retcode: int = raw_data['retcode']
                 elif 'code' in raw_data:
                     retcode: int = raw_data['code']
                 else:
                     retcode = 0
+
+                # 针对1034做特殊处理
                 if retcode == 1034:
-                    await self._upass(header)
-                    return retcode
+                    try:
+                        # 获取ch
+                        ch = await self._upass(header)
+                        # 记录ck -> ch的对照表
+                        if "Cookie" in header:
+                            self.chs[header["Cookie"]] = ch
+                        # 获取当前的栈帧
+                        curframe = inspect.currentframe()
+                        # 确保栈帧存在
+                        assert curframe
+                        # 获取调用者的栈帧
+                        calframe = curframe.f_back
+                        # 确保调用者的栈帧存在
+                        assert calframe
+                        # 获取调用者的函数名
+                        caller_name = calframe.f_code.co_name
+                        # 获取调用者函数的局部变量字典
+                        caller_args = inspect.getargvalues(calframe).locals
+                        # 获取调用者的参数列表
+                        caller_args2 = inspect.getargvalues(calframe).args
+                        # # 生成一个字典，键为调用者的参数名，值为对应的局部变量值，如果不存在则为None
+                        caller_args3 = {
+                            k: caller_args.get(k, None) for k in caller_args2
+                        }
+                        if caller_name != '_mys_req_get':
+                            return await types.FunctionType(
+                                calframe.f_code, globals()
+                            )(**caller_args3)
+                        else:
+                            curframe = calframe
+                            calframe = curframe.f_back
+                            assert calframe
+                            caller_name = calframe.f_code.co_name
+                            caller_args = inspect.getargvalues(calframe).locals
+                            caller_args2 = inspect.getargvalues(calframe).args
+                            caller_args3 = {
+                                k: caller_args.get(k, None)
+                                for k in caller_args2
+                            }
+                            return await types.FunctionType(
+                                calframe.f_code, globals()
+                            )(**caller_args3)
+                    except Exception as e:
+                        logger.error(e)
+                        traceback.print_exc()
+                        return -999
                 elif retcode != 0:
                     return retcode
                 return raw_data
+    '''
 
 
 class MysApi(BaseMysApi):
-    async def _pass(self, gt: str, ch: str, header: Dict):
+    async def _pass(
+        self, gt: str, ch: str, header: Dict
+    ) -> Tuple[Optional[str], Optional[str]]:
         # 警告：使用该服务（例如某RR等）需要注意风险问题
         # 本项目不以任何形式提供相关接口
         # 代码来源：GITHUB项目MIT开源
@@ -247,13 +463,14 @@ class MysApi(BaseMysApi):
 
         return validate, ch
 
-    async def _upass(self, header: Dict, is_bbs: bool = False):
+    async def _upass(self, header: Dict, is_bbs: bool = False) -> str:
+        logger.info('[upass] 进入处理...')
         if is_bbs:
             raw_data = await self.get_bbs_upass_link(header)
         else:
             raw_data = await self.get_upass_link(header)
         if isinstance(raw_data, int):
-            return False
+            return ''
         gt = raw_data['data']['gt']
         ch = raw_data['data']['challenge']
 
@@ -261,8 +478,13 @@ class MysApi(BaseMysApi):
 
         if vl:
             await self.get_header_and_vl(header, ch, vl)
+            if ch:
+                logger.info(f'[upass] 获取ch -> {ch}')
+                return ch
+            else:
+                return ''
         else:
-            return True
+            return ''
 
     async def get_upass_link(self, header: Dict) -> Union[int, Dict]:
         header['DS'] = get_ds_token('is_high=false')
@@ -958,7 +1180,11 @@ class MysApi(BaseMysApi):
             'currency': 'CNY',
             'pay_plat': method,
         }
-        data = {'order': order, 'sign': gen_payment_sign(order)}
+        data = {
+            'order': order,
+            'special_info': 'topup_center',
+            'sign': gen_payment_sign(order),
+        }
         HEADER['x-rpc-device_id'] = device_id
         HEADER['x-rpc-client_type'] = '4'
         resp = await self._mys_request(

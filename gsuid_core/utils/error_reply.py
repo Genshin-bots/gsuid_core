@@ -1,4 +1,15 @@
-from typing import Union
+from pathlib import Path
+from typing import Union, Optional
+
+from PIL import Image, ImageDraw
+
+from gsuid_core.utils.fonts.fonts import core_font
+from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.image.image_tools import (
+    get_color_bg,
+    draw_center_text_by_line,
+)
 
 UID_HINT = '你还没有绑定过uid哦!\n请使用[绑定uid123456]命令绑定!'
 MYS_HINT = '你还没有绑定过mysid哦!\n请使用[绑定mys1234]命令绑定!'
@@ -15,6 +26,9 @@ UPDATE_HINT = '''更新失败!更多错误信息请查看控制台...
 >> 可以尝试使用
 >> [gs强制更新](危险)
 >> [gs强行强制更新](超级危险)!'''
+
+TEXT_PATH = Path(__file__).parent / 'image' / 'texture2d'
+is_pic_error = core_plugins_config.get_config('ChangeErrorToPic').data
 
 
 def get_error(retcode: Union[int, str]) -> str:
@@ -48,5 +62,54 @@ def get_error(retcode: Union[int, str]) -> str:
         return '该API需要CK, 查询的用户/UID未绑定CK...'
     elif retcode == 10104:
         return 'CK与用户信息不符, 请检查代码实现...'
+    elif retcode == -999:
+        return VERIFY_HINT
+    elif retcode == 125:
+        return '该充值方式暂时不可用!'
+    elif retcode == 126:
+        return '该充值方式不正确!'
     else:
-        return f'API报错, 错误码为{retcode}!'
+        return f'未知错误, 错误码为{retcode}!'
+
+
+def get_error_type(retcode: Union[int, str]) -> str:
+    retcode = int(retcode)
+    if retcode in [-51, 10104]:
+        return '绑定信息错误'
+    elif retcode in [-400, 400]:
+        return 'MGGApi错误'
+    else:
+        return 'Api错误'
+
+
+async def get_error_img(retcode: Union[int, str]) -> Union[bytes, str]:
+    error_message = get_error(retcode)
+    if is_pic_error:
+        error_type = get_error_type(retcode)
+        return await draw_error_img(retcode, error_message, error_type)
+    else:
+        return error_message
+
+
+async def draw_error_img(
+    retcode: Union[int, str] = 51233,
+    error_message: Optional[str] = None,
+    error_type: Optional[str] = None,
+) -> bytes:
+    if error_type is None:
+        error_type = 'API报错'
+    if error_message is None:
+        error_message = '未知错误, 请检查控制台输出...'
+
+    error_img = Image.open(TEXT_PATH / 'error_img.png')
+    img = await get_color_bg(
+        *error_img.size, is_full=True, color=(228, 222, 210)
+    )
+    img.paste(error_img, (0, 0), error_img)
+    img_draw = ImageDraw.Draw(img)
+    img_draw.text((350, 646), error_type, 'white', core_font(26), 'mm')
+    img_draw.text((350, 695), f'错误码 {retcode}', 'white', core_font(36), 'mm')
+    draw_center_text_by_line(
+        img_draw, (350, 750), error_message, core_font(30), 'black', 440
+    )
+    return await convert_img(img)

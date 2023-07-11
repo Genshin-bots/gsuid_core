@@ -1,3 +1,4 @@
+import random
 import asyncio
 from typing import List, Union, Literal, Optional
 
@@ -7,7 +8,14 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.segment import MessageSegment
+from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.models import Event, Message, MessageSend
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+
+R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
+R_text = core_plugins_config.get_config('RandomText').data
+is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
+text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 
 
 class _Bot:
@@ -39,13 +47,33 @@ class _Bot:
         elif isinstance(message, bytes):
             message = [MessageSegment.image(message)]
         elif isinstance(message, List):
-            message = [MessageSegment.node(message)]
+            if all(isinstance(x, str) for x in message):
+                message = [MessageSegment.node(message)]
+
+        _message: List[Message] = message  # type: ignore
 
         if at_sender and sender_id:
-            message.append(MessageSegment.at(sender_id))
+            _message.append(MessageSegment.at(sender_id))
+
+        if R_enabled:
+            result = ''.join(
+                random.choice(R_text)
+                for _ in range(random.randint(1, len(R_text)))
+            )
+            _message.append(MessageSegment.text(result))
+
+        if is_text2pic:
+            if (
+                len(_message) == 1
+                and _message[0].type == 'text'
+                and isinstance(_message[0].data, str)
+                and len(_message[0].data) >= int(text2pic_limit)
+            ):
+                img = await text2pic(_message[0].data)
+                _message = [MessageSegment.image(img)]
 
         send = MessageSend(
-            content=message,
+            content=_message,
             bot_id=bot_id,
             bot_self_id=bot_self_id,
             target_type=target_type,

@@ -217,7 +217,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                     uid_bind = i['game_role_id']
                 elif i['game_id'] == 6:
                     sr_uid_bind = i['game_role_id']
-                if uid and sr_uid:
+                if uid_bind and sr_uid_bind:
                     break
             else:
                 if not (uid_bind or sr_uid_bind):
@@ -236,8 +236,16 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     if uid is None:
         uid = '0'
 
+    device_id = mys_api.get_device_id()
+    fp = await mys_api.generate_fp_by_uid(uid)
     await sqla.insert_user_data(
-        user_id, uid_bind, sr_uid_bind, account_cookie, app_cookie
+        user_id,
+        uid_bind,
+        sr_uid_bind,
+        account_cookie,
+        app_cookie,
+        fp,
+        device_id,
     )
 
     im_list.append(

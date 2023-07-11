@@ -8,7 +8,10 @@ import httpx
 from httpx import get
 from PIL import Image, ImageDraw, ImageFont
 
+from gsuid_core.data_store import get_res_path
+
 TEXT_PATH = Path(__file__).parent / 'texture2d'
+BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
 async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
@@ -28,6 +31,36 @@ async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
         return pic
 
 
+def draw_center_text_by_line(
+    img: ImageDraw.ImageDraw,
+    pos: Tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: Union[Tuple[int, int, int, int], str],
+    max_length: float,
+    not_center: bool = False,
+) -> float:
+    pun = "。！？；!?"
+    x, y = pos
+    _, h = font.getsize('X')
+    line = ''
+    lenth = 0
+    anchor = 'la' if not_center else 'mm'
+    for char in text:
+        size, _ = font.getsize(char)  # 获取当前字符的宽度
+        lenth += size
+        line += char
+        if lenth < max_length and char not in pun and char != '\n':
+            pass
+        else:
+            img.text((x, y), line, fill, font, anchor)
+            line, lenth = '', 0
+            y += h * 1.55
+    else:
+        img.text((x, y), line, fill, font, anchor)
+    return y
+
+
 def draw_text_by_line(
     img: Image.Image,
     pos: Tuple[int, int],
@@ -37,7 +70,7 @@ def draw_text_by_line(
     max_length: float,
     center=False,
     line_space: Optional[float] = None,
-):
+) -> float:
     """
     在图片上写长段文字, 自动换行
     max_length单行最大长度, 单位像素
@@ -63,7 +96,7 @@ def draw_text_by_line(
                 font_size = font.getsize(row)
                 x = math.ceil((img.size[0] - font_size[0]) / 2)
             draw.text((x, y), row, font=font, fill=fill)
-            row = ""
+            row = ''
             length = 0
             y += y_add
     if row != "":
@@ -71,6 +104,7 @@ def draw_text_by_line(
             font_size = font.getsize(row)
             x = math.ceil((img.size[0] - font_size[0]) / 2)
         draw.text((x, y), row, font=font, fill=fill)
+    return y
 
 
 def easy_paste(
@@ -174,12 +208,42 @@ def crop_center_img(
     return crop_img
 
 
+async def get_color_bg(
+    based_w: int,
+    based_h: int,
+    bg_path: Optional[Path] = None,
+    without_mask: bool = False,
+    is_full: bool = False,
+    color: Optional[Tuple[int, int, int]] = None,
+    full_opacity: int = 200,
+) -> Image.Image:
+    if bg_path is None:
+        bg_path = get_res_path(['GsCore', 'bg'])
+    CI_img = CustomizeImage(bg_path)
+    img = CI_img.get_image(None, based_w, based_h)
+    if color is None:
+        color = CI_img.get_bg_color(img)
+    if is_full:
+        color_img = Image.new('RGBA', (based_w, based_h), color)
+        mask = Image.new(
+            'RGBA', (based_w, based_h), (255, 255, 255, full_opacity)
+        )
+        img.paste(color_img, (0, 0), mask)
+    elif not without_mask:
+        color_mask = Image.new('RGBA', (based_w, based_h), color)
+        enka_mask = Image.open(TEXT_PATH / 'bg_mask.png').resize(
+            (based_w, based_h)
+        )
+        img.paste(color_mask, (0, 0), enka_mask)
+    return img
+
+
 class CustomizeImage:
     def __init__(self, bg_path: Path) -> None:
         self.bg_path = bg_path
 
     def get_image(
-        self, image: Union[str, Image.Image], based_w: int, based_h: int
+        self, image: Union[str, Image.Image, None], based_w: int, based_h: int
     ) -> Image.Image:
         # 获取背景图片
         if isinstance(image, Image.Image):
@@ -187,7 +251,11 @@ class CustomizeImage:
         elif image:
             edit_bg = Image.open(BytesIO(get(image).content)).convert('RGBA')
         else:
-            path = random.choice(list(self.bg_path.iterdir()))
+            _lst = list(self.bg_path.iterdir())
+            if _lst:
+                path = random.choice(list(self.bg_path.iterdir()))
+            else:
+                path = random.choice(list(BG_PATH.iterdir()))
             edit_bg = Image.open(path).convert('RGBA')
 
         # 确定图片的长宽

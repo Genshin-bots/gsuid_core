@@ -1,8 +1,9 @@
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
+from gsuid_core.utils.plugins_update._plugins import update_all_plugins
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
-from .auto_task import update_core, restart_core, update_all_plugins
+from .auto_task import update_core, restart_core
 
 config = core_plugins_config
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
-bot_start = Path(__file__).parents[4] / 'core.py'
+bot_start = Path(__file__).parents[3] / 'core.py'
 restart_sh_path = Path().cwd() / 'gs_restart.sh'
 update_log_path = Path(__file__).parent / 'update_log.json'
 

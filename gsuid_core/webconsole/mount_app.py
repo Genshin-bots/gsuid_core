@@ -11,11 +11,11 @@ from fastapi_amis_admin.crud import BaseApiOut
 from sqlalchemy.ext.asyncio import AsyncEngine
 from fastapi_user_auth.site import AuthAdminSite
 from fastapi_amis_admin.models.fields import Field
-from fastapi_amis_admin.admin.site import APIDocsApp
 from fastapi_amis_admin.admin.settings import Settings
 from fastapi_user_auth.auth.models import UserRoleLink
 from fastapi_amis_admin.utils.translation import i18n as _
 from fastapi import Depends, FastAPI, Request, HTTPException
+from fastapi_amis_admin.admin.site import FileAdmin, APIDocsApp
 from fastapi_amis_admin.amis.constants import LevelEnum, DisplayModeEnum
 from fastapi_user_auth.admin import (
     FormAdmin,
@@ -417,4 +417,4 @@ class PluginsManagePage(GsAdminPage):
 
 
 # 取消注册默认管理类
-site.unregister_admin(admin.HomeAdmin, APIDocsApp)
+site.unregister_admin(admin.HomeAdmin, APIDocsApp, FileAdmin)
