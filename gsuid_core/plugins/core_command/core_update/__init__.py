@@ -3,7 +3,9 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_update._plugins import (
+    check_retcode,
     update_from_git,
+    run_poetry_install,
     update_all_plugins,
 )
 
@@ -15,6 +17,14 @@ async def send_core_update_msg(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 早柚核心')
     log_list = update_from_git()
     await bot.send(log_list)
+
+
+@sv_core_config.on_fullmatch(('core更新依赖'))
+async def send_core_poetry_install(bot: Bot, ev: Event):
+    logger.info('开始执行[更新] 早柚核心依赖')
+    retcode = await run_poetry_install()
+    im = check_retcode(retcode)
+    await bot.send(im)
 
 
 @sv_core_config.on_fullmatch(('core全部更新'))

@@ -1,4 +1,6 @@
+import os
 import time
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Union, Optional
 
@@ -11,6 +13,57 @@ from gsuid_core.logger import logger
 from .api import CORE_PATH, PLUGINS_PATH, proxy_url, plugins_lib
 
 plugins_list: Dict[str, Dict[str, str]] = {}
+
+
+# 传入一个path对象
+async def run_poetry_install(path: Optional[Path] = None) -> int:
+    if path is None:
+        path = CORE_PATH
+    # 检测path是否是一个目录
+    if not path.is_dir():
+        raise ValueError(f"{path} is not a directory")
+    # 检测path下是否存在poetry.lock文件
+    lock_file = path / "poetry.lock"
+    if not lock_file.is_file():
+        raise FileNotFoundError(f"{lock_file} does not exist")
+    # 异步执行poetry install命令，并返回返回码
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf8"
+
+    proc = await asyncio.create_subprocess_shell(
+        'poetry install',
+        cwd=path,
+        stdout=asyncio.subprocess.PIPE,
+        shell=True,
+        env=env,
+    )
+    # stdout, stderr = await proc.communicate()
+
+    output = ''
+    if proc.stdout:
+        while True:
+            data = await proc.stdout.readline()
+            if not data:
+                break
+            line = data.decode()
+            await proc.wait()
+            output += line
+
+    logger.info(output)
+
+    retcode = -1 if proc.returncode is None else proc.returncode
+    if 'No dependencies to install or update' in output:
+        retcode = 200
+    return retcode
+
+
+def check_retcode(retcode: int) -> str:
+    if retcode == 200:
+        return '无需更新依赖！'
+    elif retcode == 0:
+        return '新增/更新依赖成功!'
+    else:
+        return f'更新失败, 错误码{retcode}'
 
 
 async def update_all_plugins() -> List[str]:
@@ -129,6 +182,7 @@ def update_from_git(
         if repo_like is None:
             repo = Repo(CORE_PATH)
             plugin_name = '早柚核心'
+            asyncio.create_task(run_poetry_install(CORE_PATH))
         elif isinstance(repo_like, Path):
             repo = Repo(repo_like)
             plugin_name = repo_like.name
@@ -197,4 +251,5 @@ def update_plugins(
             break
 
     log_list = update_from_git(level, plugin_name, log_key, log_limit)
+    return log_list
     return log_list
