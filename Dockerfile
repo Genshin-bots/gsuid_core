@@ -16,7 +16,7 @@ RUN sed -i 's/http:\/\/deb.debian.org/http:\/\/ftp.cn.debian.org/g' /etc/apt/sou
     && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
     && pip install poetry -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-    && poetry install && \
+    && poetry install \
     && rm -rf /app/*
 
 CMD poetry run python3 core.py
