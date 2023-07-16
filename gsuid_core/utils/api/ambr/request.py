@@ -121,8 +121,8 @@ async def get_ambr_icon(type: str, icon_name: str, path: Path) -> Image.Image:
     file_path = path / f'{icon_name}.png'
 
     if file_path.exists():
-        async with aiofiles.open(path, 'rb') as f:
-            return Image.open(await f.read())
+        async with aiofiles.open(file_path, 'rb') as f:
+            return Image.open(BytesIO(await f.read()))
 
     async with AsyncClient(timeout=None) as client:
         req = await client.get(
