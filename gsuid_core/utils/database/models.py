@@ -8,6 +8,7 @@ class GsBind(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True, title='序号')
     bot_id: str = Field(title='平台')
     user_id: str = Field(title='账号')
+    group_id: str = Field(title='群号')
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')

@@ -3,8 +3,12 @@
 '''
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
 from typing import Dict, Union, Literal, Optional, cast
 
+import aiofiles
+from PIL import Image
 from httpx import AsyncClient
 
 from ..types import AnyDict
@@ -23,6 +27,7 @@ from .models import (
 from .api import (
     AMBR_BOOK_URL,
     AMBR_CHAR_URL,
+    AMBR_ICON_URL,
     AMBR_EVENT_URL,
     AMBR_GCG_DETAIL,
     AMBR_WEAPON_URL,
@@ -110,6 +115,27 @@ async def get_story_data(story_id: Union[int, str]) -> Optional[str]:
     if isinstance(data, Dict) and data['response'] == 200:
         return data['data']
     return None
+
+
+async def get_ambr_icon(type: str, icon_name: str, path: Path) -> Image.Image:
+    file_path = path / f'{icon_name}.png'
+
+    if file_path.exists():
+        async with aiofiles.open(path, 'rb') as f:
+            return Image.open(await f.read())
+
+    async with AsyncClient(timeout=None) as client:
+        req = await client.get(
+            f'{AMBR_ICON_URL}/{type}/{icon_name}.png',
+            headers=_HEADER,
+        )
+        if req.status_code == 200:
+            content = req.read()
+            async with aiofiles.open(file_path, 'wb') as f:
+                await f.write(content)
+            return Image.open(BytesIO(content))
+        else:
+            return Image.new('RGBA', (256, 256), (0, 0, 0))
 
 
 async def _ambr_request(

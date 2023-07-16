@@ -39,6 +39,7 @@ class SQLA:
 
     async def sr_adapter(self):
         exec_list = [
+            'ALTER TABLE GsBind ADD COLUMN group_id TEXT',
             'ALTER TABLE GsBind ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_uid TEXT',
             'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
