@@ -2,8 +2,8 @@ import re
 import asyncio
 from typing import Dict, List, Literal, Optional
 
-from sqlmodel import SQLModel
 from sqlalchemy.sql import text
+from sqlmodel import SQLModel, col
 from sqlalchemy.future import select
 from sqlalchemy import delete, update
 from sqlalchemy.orm import sessionmaker
@@ -159,6 +159,25 @@ class SQLA:
                 for item in data:
                     uid_list.extend(item.uid.split("_") if item.uid else [])
                 return uid_list
+
+    async def get_bind_group_list(self, user_id: str) -> List[str]:
+        data = await self.select_bind_data(user_id)
+        return data.group_id.split("_") if data and data.group_id else []
+
+    async def get_bind_group(self, user_id: str) -> Optional[str]:
+        data = await self.get_bind_group_list(user_id)
+        return data[0] if data else None
+
+    async def get_group_all_uid(self, group_id: str):
+        async with self.async_session() as session:
+            async with session.begin():
+                result = await session.scalars(
+                    select(GsBind).where(
+                        col(GsBind.group_id).contains(group_id)
+                    )
+                )
+                data = result.all()
+                return data[0] if data else None
 
     async def get_bind_uid_list(self, user_id: str) -> List[str]:
         data = await self.select_bind_data(user_id)
