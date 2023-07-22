@@ -56,4 +56,6 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'ChangeErrorToPic': GsBoolConfig('错误提示转换为图片', '将一部分报错提示转换为图片', True),
     'AutoTextToPic': GsBoolConfig('自动文字转图', '将所有发送的文字转图', True),
     'TextToPicThreshold': GsStrConfig('文转图阈值', '开启自动转图后超过该阈值的文字会转成图片', '20'),
+    'EnableSpecificMsgId': GsBoolConfig('启用回复特殊ID', '如不知道请勿开启', False),
+    'SpecificMsgId': GsStrConfig('特殊返回消息ID', '如不知道请勿填写', ''),
 }

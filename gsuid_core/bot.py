@@ -16,6 +16,8 @@ R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
 R_text = core_plugins_config.get_config('RandomText').data
 is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
 text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
+is_specific_msg_id = core_plugins_config.get_config('EnableSpecificMsgId').data
+specific_msg_id = core_plugins_config.get_config('SpecificMsgId').data
 
 
 class _Bot:
@@ -71,6 +73,9 @@ class _Bot:
             ):
                 img = await text2pic(_message[0].data)
                 _message = [MessageSegment.image(img)]
+
+        if is_specific_msg_id:
+            msg_id = specific_msg_id
 
         send = MessageSend(
             content=_message,
