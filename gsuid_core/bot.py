@@ -74,7 +74,7 @@ class _Bot:
                 img = await text2pic(_message[0].data)
                 _message = [MessageSegment.image(img)]
 
-        if is_specific_msg_id:
+        if is_specific_msg_id and not msg_id:
             msg_id = specific_msg_id
 
         send = MessageSend(
