@@ -1,54 +1,43 @@
 from typing import Optional
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
+
+from .base_models import Bind, Push, User, Cache
 
 
-class GsBind(SQLModel, table=True):
-    __table_args__ = {'keep_existing': True}
-    id: Optional[int] = Field(default=None, primary_key=True, title='序号')
-    bot_id: str = Field(title='平台')
-    user_id: str = Field(title='账号')
-    group_id: Optional[str] = Field(title='群号')
+class GsBind(Bind, table=True):
+    __table_args__ = {'extend_existing': True}
+
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')
 
 
-class GsUser(SQLModel, table=True):
-    __table_args__ = {'keep_existing': True}
-    id: Optional[int] = Field(default=None, primary_key=True, title='序号')
-    bot_id: str = Field(title='平台')
+class GsUser(User, table=True):
+    __table_args__ = {'extend_existing': True}
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')
     region: Optional[str] = Field(default=None, title='原神地区')
     sr_region: Optional[str] = Field(default=None, title='星铁地区')
-    cookie: Optional[str] = Field(default=None, title='Cookie')
-    stoken: Optional[str] = Field(default=None, title='Stoken')
-    user_id: str = Field(title='账号')
-    push_switch: str = Field(default='off', title='全局推送开关')
-    sign_switch: str = Field(default='off', title='自动签到')
     bbs_switch: str = Field(default='off', title='自动米游币')
     draw_switch: str = Field(default='off', title='自动留影叙佳期')
     sr_push_switch: str = Field(default='off', title='星铁全局推送开关')
     sr_sign_switch: str = Field(default='off', title='星铁自动签到')
-    status: Optional[str] = Field(default=None, title='状态')
     fp: Optional[str] = Field(default=None, title='Fingerprint')
     device_id: Optional[str] = Field(default=None, title='设备ID')
 
 
-class GsCache(SQLModel, table=True):
-    __table_args__ = {'keep_existing': True}
-    id: Optional[int] = Field(default=None, primary_key=True, title='序号')
+class GsCache(Cache, table=True):
+    __table_args__ = {'extend_existing': True}
     cookie: str = Field(default=None, title='Cookie')
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')
 
 
-class GsPush(SQLModel, table=True):
-    __table_args__ = {'keep_existing': True}
-    id: Optional[int] = Field(default=None, primary_key=True, title='序号')
+class GsPush(Push, table=True):
+    __table_args__ = {'extend_existing': True}
     bot_id: str = Field(title='平台')
     uid: str = Field(default=None, title='原神UID')
     coin_push: Optional[str] = Field(title='洞天宝钱推送', default='off')
