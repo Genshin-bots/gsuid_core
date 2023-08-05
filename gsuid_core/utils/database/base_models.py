@@ -351,7 +351,7 @@ class Bind(BaseModel):
         await cls.update_data(
             user_id,
             bot_id,
-            **{cls.get_gameid_name(game_name): uid_list},
+            **{cls.get_gameid_name(game_name): '_'.join(uid_list)},
         )
         return 0
 
