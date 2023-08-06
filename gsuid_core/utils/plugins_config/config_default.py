@@ -58,4 +58,5 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'TextToPicThreshold': GsStrConfig('文转图阈值', '开启自动转图后超过该阈值的文字会转成图片', '20'),
     'EnableSpecificMsgId': GsBoolConfig('启用回复特殊ID', '如不知道请勿开启', False),
     'SpecificMsgId': GsStrConfig('特殊返回消息ID', '如不知道请勿填写', ''),
+    'AutoUpdateDep': GsBoolConfig('自动更新依赖', '更新插件时将会自动更新依赖', False),
 }

@@ -64,7 +64,11 @@ async def get_help(
         bc = deepcopy(banner)
         bc_draw = ImageDraw.Draw(bc)
         bc_draw.text((30, 25), sv_name, text_color, font(35), 'lm')
-        size, _ = font(35).getsize(sv_name)
+        if hasattr(font, 'getsize'):
+            size, _ = font(35).getsize(sv_name)
+        else:
+            bbox = font(35).getbbox(sv_name)
+            size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
         bc_draw.text((42 + size, 30), sv_desc, sub_color, font(20), 'lm')
         sv_img = easy_alpha_composite(sv_img, bc, (0, 10))
         # sv_img.paste(bc, (0, 10), bc)

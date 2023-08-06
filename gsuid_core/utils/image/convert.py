@@ -98,7 +98,13 @@ def get_str_size(
             continue
 
         line += i
-        size, _ = font.getsize(line)
+
+        if hasattr(font, 'getsize'):
+            size, _ = font.getsize(line)
+        else:
+            bbox = font.getbbox(line)
+            size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
         if size >= limit:
             result += f'{line}\n'
             line = ''

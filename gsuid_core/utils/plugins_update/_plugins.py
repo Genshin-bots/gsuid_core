@@ -9,10 +9,13 @@ from git.repo import Repo
 from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
 
 from gsuid_core.logger import logger
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import CORE_PATH, PLUGINS_PATH, proxy_url, plugins_lib
 
 plugins_list: Dict[str, Dict[str, str]] = {}
+
+is_update_dep = core_plugins_config.get_config('AutoUpdateDep').data
 
 
 # 传入一个path对象
@@ -182,7 +185,8 @@ def update_from_git(
         if repo_like is None:
             repo = Repo(CORE_PATH)
             plugin_name = '早柚核心'
-            asyncio.create_task(run_poetry_install(CORE_PATH))
+            if is_update_dep:
+                asyncio.create_task(run_poetry_install(CORE_PATH))
         elif isinstance(repo_like, Path):
             repo = Repo(repo_like)
             plugin_name = repo_like.name
