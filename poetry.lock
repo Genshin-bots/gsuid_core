@@ -720,22 +720,21 @@ reference = "mirrors"
 
 [[package]]
 name = "fastapi"
-version = "0.100.1"
+version = "0.97.0"
 description = "FastAPI framework, high performance, easy to learn, fast to code, ready for production"
 optional = false
 python-versions = ">=3.7"
 files = [
-    {file = "fastapi-0.100.1-py3-none-any.whl", hash = "sha256:ec6dd52bfc4eff3063cfcd0713b43c87640fefb2687bbbe3d8a08d94049cdf32"},
-    {file = "fastapi-0.100.1.tar.gz", hash = "sha256:522700d7a469e4a973d92321ab93312448fbe20fca9c8da97effc7e7bc56df23"},
+    {file = "fastapi-0.97.0-py3-none-any.whl", hash = "sha256:95d757511c596409930bd20673358d4a4d709004edb85c5d24d6ffc48fabcbf2"},
+    {file = "fastapi-0.97.0.tar.gz", hash = "sha256:b53248ee45f64f19bb7600953696e3edf94b0f7de94df1e5433fc5c6136fa986"},
 ]
 
 [package.dependencies]
-pydantic = ">=1.7.4,<1.8 || >1.8,<1.8.1 || >1.8.1,<2.0.0 || >2.0.0,<2.0.1 || >2.0.1,<3.0.0"
+pydantic = ">=1.7.4,<1.8 || >1.8,<1.8.1 || >1.8.1,<2.0.0"
 starlette = ">=0.27.0,<0.28.0"
-typing-extensions = ">=4.5.0"
 
 [package.extras]
-all = ["email-validator (>=2.0.0)", "httpx (>=0.23.0)", "itsdangerous (>=1.1.0)", "jinja2 (>=2.11.2)", "orjson (>=3.2.1)", "pydantic-extra-types (>=2.0.0)", "pydantic-settings (>=2.0.0)", "python-multipart (>=0.0.5)", "pyyaml (>=5.3.1)", "ujson (>=4.0.1,!=4.0.2,!=4.1.0,!=4.2.0,!=4.3.0,!=5.0.0,!=5.1.0)", "uvicorn[standard] (>=0.12.0)"]
+all = ["email-validator (>=1.1.1)", "httpx (>=0.23.0)", "itsdangerous (>=1.1.0)", "jinja2 (>=2.11.2)", "orjson (>=3.2.1)", "python-multipart (>=0.0.5)", "pyyaml (>=5.3.1)", "ujson (>=4.0.1,!=4.0.2,!=4.1.0,!=4.2.0,!=4.3.0,!=5.0.0,!=5.1.0)", "uvicorn[standard] (>=0.12.0)"]
 
 [package.source]
 type = "legacy"
@@ -1736,13 +1735,13 @@ reference = "mirrors"
 
 [[package]]
 name = "pycln"
-version = "2.2.0"
+version = "2.2.1"
 description = "A formatter for finding and removing unused import statements."
 optional = false
 python-versions = ">=3.6.2,<4"
 files = [
-    {file = "pycln-2.2.0-py3-none-any.whl", hash = "sha256:8f2d8be5781de0114cf37d2327c52268093f9ee87712a7fbabc982a17e03cce2"},
-    {file = "pycln-2.2.0.tar.gz", hash = "sha256:e1962987979a7365e113ac0728978c36e0d1f6d4c17b3d26a6d33bc2320efb7f"},
+    {file = "pycln-2.2.1-py3-none-any.whl", hash = "sha256:686f55b511d11d7f114dcbe0c7d1512443441e1dd00a74ee9ba6b6c1b775c9e2"},
+    {file = "pycln-2.2.1.tar.gz", hash = "sha256:560ed5dec5e44d3250ed1cd6b080080c4022c24dfd2840902113b42d31775bd0"},
 ]
 
 [package.dependencies]
@@ -2710,4 +2709,4 @@ reference = "mirrors"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.8.1"
-content-hash = "8eb6445cb47c9cf1a7fe12e8e722e60dd40b44d93ababf4cf88af6074bc42796"
+content-hash = "0bfa67219932831808c09c3fdc6d7ff5f924f810a67552ab77bf64819b9a960d"
