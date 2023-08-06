@@ -122,7 +122,7 @@ class SQLA:
         return await GsBind.get_uid_list_by_game(user_id, self.bot_id, 'sr')
 
     async def get_bind_sruid(self, user_id: str) -> Optional[str]:
-        return await GsBind.get_uid_by_game(user_id, self.bot_id)
+        return await GsBind.get_uid_by_game(user_id, self.bot_id, 'sr')
 
     async def switch_uid(
         self, user_id: str, uid: Optional[str] = None

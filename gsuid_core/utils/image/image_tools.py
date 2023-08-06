@@ -42,12 +42,22 @@ def draw_center_text_by_line(
 ) -> float:
     pun = "。！？；!?"
     x, y = pos
-    _, h = font.getsize('X')
+
+    if hasattr(font, 'getsize'):
+        _, h = font.getsize('X')
+    else:
+        bbox = font.getbbox('X')
+        _, h = 0, bbox[3] - bbox[1]
+
     line = ''
     lenth = 0
     anchor = 'la' if not_center else 'mm'
     for char in text:
-        size, _ = font.getsize(char)  # 获取当前字符的宽度
+        if hasattr(font, 'getsize'):
+            size, _ = font.getsize(char)  # 获取当前字符的宽度
+        else:
+            bbox = font.getbbox(char)
+            size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
         lenth += size
         line += char
         if lenth < max_length and char not in pun and char != '\n':
@@ -77,7 +87,13 @@ def draw_text_by_line(
     line_space  行间距, 单位像素, 默认是字体高度的0.3倍
     """
     x, y = pos
-    _, h = font.getsize('X')
+
+    if hasattr(font, 'getsize'):
+        _, h = font.getsize('X')
+    else:
+        bbox = font.getbbox('X')
+        _, h = 0, bbox[3] - bbox[1]
+
     if line_space is None:
         y_add = math.ceil(1.3 * h)
     else:
@@ -86,14 +102,23 @@ def draw_text_by_line(
     row = ""  # 存储本行文字
     length = 0  # 记录本行长度
     for character in text:
-        w, h = font.getsize(character)  # 获取当前字符的宽度
+        if hasattr(font, 'getsize'):
+            w, h = font.getsize(character)  # 获取当前字符的宽度
+        else:
+            bbox = font.getbbox('X')
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
         if length + w * 2 <= max_length:
             row += character
             length += w
         else:
             row += character
             if center:
-                font_size = font.getsize(row)
+                if hasattr(font, 'getsize'):
+                    font_size = font.getsize(row)
+                else:
+                    bbox = font.getbbox(character)
+                    font_size = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 x = math.ceil((img.size[0] - font_size[0]) / 2)
             draw.text((x, y), row, font=font, fill=fill)
             row = ''
@@ -101,7 +126,11 @@ def draw_text_by_line(
             y += y_add
     if row != "":
         if center:
-            font_size = font.getsize(row)
+            if hasattr(font, 'getsize'):
+                font_size = font.getsize(row)
+            else:
+                bbox = font.getbbox(row)
+                font_size = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = math.ceil((img.size[0] - font_size[0]) / 2)
         draw.text((x, y), row, font=font, fill=fill)
     return y
@@ -154,6 +183,7 @@ async def draw_pic_with_ring(
     pic: Image.Image,
     size: int,
     bg_color: Optional[Tuple[int, int, int]] = None,
+    is_ring: bool = True,
 ):
     '''
     :说明:
@@ -171,7 +201,6 @@ async def draw_pic_with_ring(
     mask_pic = Image.open(TEXT_PATH / 'mask.png')
     img = Image.new('RGBA', (size, size))
     mask = mask_pic.resize((size, size))
-    ring = ring_pic.resize((size, size))
     resize_pic = crop_center_img(pic, size, size)
     if bg_color:
         img_color = Image.new('RGBA', (size, size), bg_color)
@@ -179,7 +208,11 @@ async def draw_pic_with_ring(
         img.paste(img_color, (0, 0), mask)
     else:
         img.paste(resize_pic, (0, 0), mask)
-    img.paste(ring, (0, 0), ring)
+
+    if is_ring:
+        ring = ring_pic.resize((size, size))
+        img.paste(ring, (0, 0), ring)
+
     return img
 
 
@@ -193,13 +226,13 @@ def crop_center_img(
     new_w = math.ceil(based_h * float(scale_f))
     new_h = math.ceil(based_w / float(scale_f))
     if scale_f > based_scale:
-        resize_img = img.resize((new_w, based_h), Image.ANTIALIAS)
+        resize_img = img.resize((new_w, based_h), Image.Resampling.LANCZOS)
         x1 = int(new_w / 2 - based_w / 2)
         y1 = 0
         x2 = int(new_w / 2 + based_w / 2)
         y2 = based_h
     else:
-        resize_img = img.resize((based_w, new_h), Image.ANTIALIAS)
+        resize_img = img.resize((based_w, new_h), Image.Resampling.LANCZOS)
         x1 = 0
         y1 = int(new_h / 2 - based_h / 2)
         x2 = based_w
