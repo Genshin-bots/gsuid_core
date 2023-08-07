@@ -336,7 +336,7 @@ class Bind(BaseModel):
             return -1
         elif len(uid_list) <= 1:
             return -3
-        elif uid is None:
+        elif uid is None or not uid:
             uid = uid_list[1]
             old_uid = uid_list[0]
             uid_list.remove(uid)
