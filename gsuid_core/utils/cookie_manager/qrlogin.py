@@ -157,8 +157,8 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             im = '[登录]请求失败, 请稍后再试...'
             return await send_msg(im)
 
-        uid_bind_list = await sqla.get_bind_uid_list(user_id)
-        sruid_bind_list = await sqla.get_bind_sruid_list(user_id)
+        uid_bind_list = await sqla.get_bind_uid_list(user_id) or []
+        sruid_bind_list = await sqla.get_bind_sruid_list(user_id) or []
         # 没有在gsuid绑定uid的情况
         if not (uid_bind_list or sruid_bind_list):
             logger.warning('[登录]game_token获取失败')
