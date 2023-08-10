@@ -229,7 +229,7 @@ class Bind(BaseModel):
         '''
         为数据库增加绑定UID
 
-        如果有传`lenth_limit`, 当uid位数不等于的时候, 返回`-1`
+        如果有传`lenth_limit`, 当uid位数不等或uid位数为0的时候, 返回`-1`
 
         如果该UID已绑定, 则返回`-2`
 
@@ -246,6 +246,8 @@ class Bind(BaseModel):
         if is_digit is not None:
             if not uid.isdigit():
                 return -3
+        if not uid:
+            return -1
 
         if result is None and not await cls.bind_exists(user_id, bot_id):
             return await cls.insert_data(
