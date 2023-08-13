@@ -47,7 +47,7 @@ class GsClient:
                 bot_id='Nonebot222',
                 user_type='direct',
                 user_pm=1,
-                group_id='12345678888',
+                group_id=None,
                 user_id='444835641',
                 content=content,
             )

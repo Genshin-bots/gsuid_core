@@ -370,7 +370,7 @@ class SQLA:
 
     async def update_push_data(self, uid: str, data: dict) -> bool:
         retcode = -1
-        if await GsPush.data_exist(GsPush, uid=uid):
+        if await GsPush.data_exist(uid=uid):
             retcode = await GsPush.update_data_by_uid(
                 uid, self.bot_id, 'sr' if self.is_sr else None, **data
             )
@@ -385,10 +385,10 @@ class SQLA:
         await self.update_push_data(uid, {f'{mode}_is_push': status})
 
     async def select_push_data(self, uid: str) -> Optional[GsPush]:
-        return await GsPush.base_select_data(GsPush, uid=uid)
+        return await GsPush.base_select_data(uid=uid)
 
     async def push_exists(self, uid: str) -> bool:
-        return await GsPush.data_exist(GsPush, uid=uid)
+        return await GsPush.data_exist(uid=uid)
 
     #####################
     # 杂项部分 #

@@ -43,7 +43,9 @@ async def get_ck_by_all_stoken(bot_id: str):
 
 async def get_ck_by_stoken(bot_id: str, user_id: str):
     sqla = get_sqla(bot_id)
-    uid_list: List = await sqla.get_bind_uid_list(user_id)
+    uid_list = await sqla.get_bind_uid_list(user_id)
+    if uid_list is None:
+        return UID_HINT
     uid_dict = {uid: user_id for uid in uid_list}
     im = await refresh_ck_by_uid_list(bot_id, uid_dict)
     return im

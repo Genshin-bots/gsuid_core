@@ -66,6 +66,9 @@ async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
         if user_data.uid is not None and user_data.uid != '0':
             uid_text = f'原神UID {user_data.uid}'
             user_push_data = await sqla.select_push_data(user_data.uid)
+            if user_push_data is None:
+                await sqla.insert_push_data(user_data.uid)
+                user_push_data = await sqla.select_push_data(user_data.uid)
         else:
             uid_text = '未发现原神UID'
             user_push_data = GsPush(bot_id='TEMP')

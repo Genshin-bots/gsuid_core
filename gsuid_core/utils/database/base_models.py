@@ -12,10 +12,10 @@ from typing import (
 )
 
 from sqlalchemy.future import select
+from sqlalchemy import delete, update
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Field, SQLModel, col
 from sqlalchemy.sql.expression import func
-from sqlalchemy import and_, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from gsuid_core.data_store import get_res_path
@@ -65,20 +65,18 @@ class BaseIDModel(SQLModel):
     @classmethod
     @with_session
     async def base_select_data(
-        cls, session: AsyncSession, model: Type[T_BaseIDModel], **data
+        cls: type[T_BaseIDModel], session: AsyncSession, **data
     ) -> Optional[T_BaseIDModel]:
-        conditions = []
-        for key, value in data.items():
-            conditions.append(getattr(model, key) == value)
-        where_clause = and_(*conditions)
-        sql = select(model).where(where_clause)
-        result = await session.execute(sql)
+        stmt = select(cls)
+        for k, v in data.items():
+            stmt = stmt.where(getattr(cls, k) == v)
+        result = await session.execute(stmt)
         data = result.scalars().all()
         return data[0] if data else None
 
     @classmethod
-    async def data_exist(cls, model: Type[T_BaseIDModel], **data) -> bool:
-        return bool(await cls.base_select_data(model, **data))
+    async def data_exist(cls, **data) -> bool:
+        return bool(await cls.base_select_data(**data))
 
 
 class BaseBotIDModel(BaseIDModel):
@@ -102,6 +100,7 @@ class BaseBotIDModel(BaseIDModel):
             query = sql.values(**data)
             query.execution_options(synchronize_session='fetch')
             await session.execute(query)
+            await session.commit()
             return 0
         return -1
 
