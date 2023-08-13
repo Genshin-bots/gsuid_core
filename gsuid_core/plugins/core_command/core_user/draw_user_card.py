@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Tuple, Union, Optional
+from typing import Tuple, Union, Optional
 
 from PIL import Image, ImageDraw
 
@@ -25,14 +25,20 @@ EN_MAP = {'coin': '宝钱', 'resin': '体力', 'go': '派遣', 'transform': '质
 async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
     get_sqla = DBSqla().get_sqla
     sqla = get_sqla(bot_id)
-    uid_list: List = await sqla.get_bind_uid_list(user_id)
+    uid_list = await sqla.get_bind_uid_list(user_id)
     sr_uid_list = await sqla.get_bind_sruid_list(user_id)
     user_list = await sqla.select_user_all_data_by_user_id(user_id)
 
     if user_list is None:
-        return '你还没有绑定过UID或者CK!'
+        return '你还没有绑定过UID和CK!\n(该功能须同时绑定CK和UID才能使用)'
 
-    w, h = 750, len(max(uid_list, sr_uid_list)) * 900 + 470
+    if uid_list is None:
+        uid_list = []
+    if sr_uid_list is None:
+        sr_uid_list = []
+
+    max_len = max(uid_list, sr_uid_list)
+    w, h = 750, len(max_len) * 900 + 470
 
     # 获取背景图片各项参数
     _id = str(user_id)
