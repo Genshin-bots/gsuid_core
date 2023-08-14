@@ -65,7 +65,7 @@ class BaseIDModel(SQLModel):
     @classmethod
     @with_session
     async def base_select_data(
-        cls: type[T_BaseIDModel], session: AsyncSession, **data
+        cls: Type[T_BaseIDModel], session: AsyncSession, **data
     ) -> Optional[T_BaseIDModel]:
         stmt = select(cls)
         for k, v in data.items():
