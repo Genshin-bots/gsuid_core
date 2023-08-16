@@ -55,10 +55,8 @@ class BaseIDModel(SQLModel):
 
     @classmethod
     @with_session
-    async def full_insert_data(
-        cls, session: AsyncSession, model: Type["BaseIDModel"], **data
-    ) -> int:
-        session.add(model(**data))
+    async def full_insert_data(cls, session: AsyncSession, **data) -> int:
+        session.add(cls(**data))
         await session.commit()
         return 0
 

@@ -351,7 +351,6 @@ class SQLA:
     #####################
     async def insert_push_data(self, uid: str):
         await GsPush.full_insert_data(
-            GsPush,
             bot_id=self.bot_id,
             uid=uid,
             coin_push='off',
@@ -403,4 +402,7 @@ class SQLA:
                 await session.close()
 
     async def insert_new_bind(self, **kwargs):
-        await GsBind.full_insert_data(GsBind, **kwargs)
+        await GsBind.full_insert_data(**kwargs)
+
+    async def insert_new_user(self, **kwargs):
+        await GsUser.full_insert_data(**kwargs)
