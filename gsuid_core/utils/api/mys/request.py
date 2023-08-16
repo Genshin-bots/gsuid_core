@@ -525,7 +525,9 @@ class MysApi(BaseMysApi):
     def check_os(self, uid: str) -> bool:
         return False if int(str(uid)[0]) < 6 else True
 
-    async def get_info(self, uid, ck: Optional[str]) -> Union[IndexData, int]:
+    async def get_info(
+        self, uid, ck: Optional[str] = None
+    ) -> Union[IndexData, int]:
         data = await self.simple_mys_req('PLAYER_INFO_URL', uid, cookie=ck)
         if isinstance(data, Dict):
             data = cast(IndexData, data['data'])
@@ -796,9 +798,15 @@ class MysApi(BaseMysApi):
         return data
 
     async def get_character(
-        self, uid, character_ids, ck
+        self, uid: str, character_ids: List[int], ck: Union[str, None] = None
     ) -> Union[CharDetailData, int]:
         server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
+
+        if ck is None:
+            ck = await self.get_ck(uid)
+            if ck is None:
+                return -51
+
         if int(str(uid)[0]) < 6:
             HEADER = copy.deepcopy(self._HEADER)
             HEADER['Cookie'] = ck

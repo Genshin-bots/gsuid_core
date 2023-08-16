@@ -244,7 +244,19 @@ class WorldExploration(TypedDict):
     strategy_url: str
     background_image: str
     inner_icon: str
+    area_exploration_list: List[Area]
+    boss_list: List[BossKill]
     cover: str
+
+
+class Area(TypedDict):
+    name: str
+    exploration_percentage: int
+
+
+class BossKill(TypedDict):
+    name: str
+    kill_num: int
 
 
 class Home(TypedDict):
