@@ -44,7 +44,7 @@ def draw_center_text_by_line(
     x, y = pos
 
     if hasattr(font, 'getsize'):
-        _, h = font.getsize('X')
+        _, h = font.getsize('X')  # type: ignore
     else:
         bbox = font.getbbox('X')
         _, h = 0, bbox[3] - bbox[1]
@@ -54,7 +54,8 @@ def draw_center_text_by_line(
     anchor = 'la' if not_center else 'mm'
     for char in text:
         if hasattr(font, 'getsize'):
-            size, _ = font.getsize(char)  # 获取当前字符的宽度
+            # 获取当前字符的宽度
+            size, _ = font.getsize(char)  # type: ignore
         else:
             bbox = font.getbbox(char)
             size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -89,7 +90,7 @@ def draw_text_by_line(
     x, y = pos
 
     if hasattr(font, 'getsize'):
-        _, h = font.getsize('X')
+        _, h = font.getsize('X')  # type: ignore
     else:
         bbox = font.getbbox('X')
         _, h = 0, bbox[3] - bbox[1]
@@ -102,8 +103,9 @@ def draw_text_by_line(
     row = ""  # 存储本行文字
     length = 0  # 记录本行长度
     for character in text:
+        # 获取当前字符的宽度
         if hasattr(font, 'getsize'):
-            w, h = font.getsize(character)  # 获取当前字符的宽度
+            w, h = font.getsize(character)  # type: ignore
         else:
             bbox = font.getbbox('X')
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -115,7 +117,7 @@ def draw_text_by_line(
             row += character
             if center:
                 if hasattr(font, 'getsize'):
-                    font_size = font.getsize(row)
+                    font_size = font.getsize(row)  # type: ignore
                 else:
                     bbox = font.getbbox(character)
                     font_size = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -127,7 +129,7 @@ def draw_text_by_line(
     if row != "":
         if center:
             if hasattr(font, 'getsize'):
-                font_size = font.getsize(row)
+                font_size = font.getsize(row)  # type: ignore
             else:
                 bbox = font.getbbox(row)
                 font_size = bbox[2] - bbox[0], bbox[3] - bbox[1]

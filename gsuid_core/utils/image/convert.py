@@ -100,7 +100,7 @@ def get_str_size(
         line += i
 
         if hasattr(font, 'getsize'):
-            size, _ = font.getsize(line)
+            size, _ = font.getsize(line)  # type: ignore
         else:
             bbox = font.getbbox(line)
             size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
