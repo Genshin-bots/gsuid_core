@@ -264,3 +264,32 @@ class AmbrGCGDetail(AmbrGCGCard):
 class AmbrMonsterList(TypedDict):
     types: Dict[str, str]
     items: Dict[str, AmbrMonsterSimple]
+
+
+class AmbrDungeon(TypedDict):
+    id: int
+    name: str
+    reward: List[int]
+    city: int
+
+
+class AmbrDaily(TypedDict):
+    monday: List[AmbrDungeon]
+    tuesday: List[AmbrDungeon]
+    tuesday: List[AmbrDungeon]
+    thursday: List[AmbrDungeon]
+    friday: List[AmbrDungeon]
+    saturday: List[AmbrDungeon]
+    sunday: List[AmbrDungeon]
+
+
+class AmbrUpgradeOne(TypedDict):
+    name: str
+    rank: int
+    icon: str
+    items: Dict[str, int]
+
+
+class AmbrUpgradeItem(TypedDict):
+    avatar: Dict[str, AmbrUpgradeOne]
+    weapon: Dict[str, AmbrUpgradeOne]

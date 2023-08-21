@@ -15,6 +15,7 @@ from ..types import AnyDict
 from ..utils import _HEADER
 from .models import (
     AmbrBook,
+    AmbrDaily,
     AmbrEvent,
     AmbrWeapon,
     AmbrGCGList,
@@ -23,15 +24,18 @@ from .models import (
     AmbrGCGDetail,
     AmbrBookDetail,
     AmbrMonsterList,
+    AmbrUpgradeItem,
 )
 from .api import (
     AMBR_BOOK_URL,
     AMBR_CHAR_URL,
     AMBR_ICON_URL,
+    AMBR_DAILY_URL,
     AMBR_EVENT_URL,
     AMBR_GCG_DETAIL,
     AMBR_WEAPON_URL,
     AMBR_MONSTER_URL,
+    AMBR_UPGRADE_URL,
     AMBR_GCG_LIST_URL,
     AMBR_MONSTER_LIST,
     AMBR_BOOK_DATA_URL,
@@ -94,6 +98,25 @@ async def get_ambr_weapon_data(id: Union[int, str]) -> Optional[AmbrWeapon]:
     return None
 
 
+async def get_ambr_daily_data() -> Optional[AmbrDaily]:
+    data = await _ambr_request(url=AMBR_DAILY_URL)
+    if isinstance(data, Dict) and data['response'] == 200:
+        data = data['data']
+        insert = {}
+        for day in data:
+            insert[day] = [value for value in data[day].values()]
+        return cast(AmbrDaily, insert)
+    return None
+
+
+async def get_all_upgrade() -> Optional[AmbrUpgradeItem]:
+    data = await _ambr_request(url=AMBR_UPGRADE_URL)
+    if isinstance(data, Dict) and data['response'] == 200:
+        data = data['data']
+        return cast(AmbrUpgradeItem, data)
+    return None
+
+
 async def get_all_book_id() -> Optional[Dict[str, AmbrBook]]:
     data = await _ambr_request(url=AMBR_BOOK_URL)
     if isinstance(data, Dict) and data['response'] == 200:
@@ -117,8 +140,32 @@ async def get_story_data(story_id: Union[int, str]) -> Optional[str]:
     return None
 
 
-async def get_ambr_icon(type: str, icon_name: str, path: Path) -> Image.Image:
-    file_path = path / f'{icon_name}.png'
+async def get_ambr_icon(
+    type: str,
+    icon_name: str,
+    path: Path,
+    ui_name: str,
+    save_name: Optional[str] = None,
+) -> Image.Image:
+    '''
+    获取ItemIcon:
+        await get_ambr_icon('UI', '114004', path, 'ItemIcon')
+        https://api.ambr.top/assets/UI/UI_ItemIcon_114004.png
+    获取其他:
+        await get_ambr_icon('UI', 'Chongyun', path, 'AvatarIcon')
+        https://api.ambr.top/assets/UI/UI_AvatarIcon_Chongyun.png
+    '''
+    if ui_name:
+        item_icon = f'UI_{ui_name}_{icon_name}.png'
+        url = f'{AMBR_ICON_URL}/{item_icon}'
+    else:
+        item_icon = f'{icon_name}.png'
+        url = f'{AMBR_ICON_URL}/{type}/{item_icon}'
+
+    if save_name:
+        item_icon = f'{save_name}.png'
+
+    file_path = path / item_icon
 
     if file_path.exists():
         async with aiofiles.open(file_path, 'rb') as f:
@@ -126,7 +173,7 @@ async def get_ambr_icon(type: str, icon_name: str, path: Path) -> Image.Image:
 
     async with AsyncClient(timeout=None) as client:
         req = await client.get(
-            f'{AMBR_ICON_URL}/{type}/{icon_name}.png',
+            url,
             headers=_HEADER,
         )
         if req.status_code == 200:
