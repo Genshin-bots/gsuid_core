@@ -66,6 +66,7 @@ async def get_help(
     gaussian_blur: int = 20,
     is_icon: bool = True,
     ICON_PATH: Optional[Path] = None,
+    extra_message: Optional[List[str]] = None,
 ) -> bytes:
     help_path = get_res_path('help') / f'{name}.jpg'
 
@@ -82,18 +83,34 @@ async def get_help(
     elif op_color is None and not is_dark:
         op_color = tuple(x + 90 for x in text_color if x < 160)
 
-    w, h = 50 + 260 * column, 630
+    _h = 600
+
+    if extra_message:
+        _h += 100
+
+    w, h = 50 + 260 * column, _h + 30
     button_x = 260
     button_y = 103  # 80
 
-    title = Image.new('RGBA', (w, 600))
+    title = Image.new('RGBA', (w, _h))
     icon = icon.resize((300, 300))
 
     title.paste(icon, (cx(w, 300), 89), icon)
     title.paste(badge, (cx(w, 900), 390), badge)
     badge_s = badge.resize((720, 80))
     title.paste(badge_s, (cx(w, 720), 480), badge_s)
+
     title_draw = ImageDraw.Draw(title)
+
+    if extra_message:
+        all_lenth = 300 * (len(extra_message) - 1) + 720
+        first_x = (w - all_lenth) / 2
+        for _i, message in enumerate(extra_message):
+            _x = int(first_x + _i * 300)
+            title.paste(badge_s, (_x, 556), badge_s)
+            title_draw.text(
+                (_x + 360, 596), message, sub_color, font(26), 'mm'
+            )
 
     title_draw.text((cx(w, 0), 440), f'{name} 帮助', text_color, font(36), 'mm')
     title_draw.text((cx(w, 0), 520), sub_text, sub_color, font(26), 'mm')
@@ -144,7 +161,7 @@ async def get_help(
             if is_icon:
                 f = 38
                 icon = get_icon(tr['name'], ICON_PATH)
-                bt.paste(icon_mask, (13, 17), icon)
+                bt.paste(icon_mask, (14, 20), icon)
             else:
                 f = 0
 
@@ -168,7 +185,7 @@ async def get_help(
     img.paste(title, (0, 0), title)
     temp = 0
     for _sm in sv_img_list:
-        img.paste(_sm, (0, 600 + temp), _sm)
+        img.paste(_sm, (0, _h + temp), _sm)
         temp += _sm.size[1]
 
     img = img.convert('RGBA')
