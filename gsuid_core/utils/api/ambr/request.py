@@ -144,7 +144,7 @@ async def get_ambr_icon(
     type: str,
     icon_name: str,
     path: Path,
-    ui_name: str,
+    ui_name: Optional[str] = None,
     save_name: Optional[str] = None,
 ) -> Image.Image:
     '''
