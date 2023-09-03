@@ -61,6 +61,8 @@ class SQLA:
         new_uid = new_uid.strip()
         new_sr_uid: str = data['sr_uid'] if 'sr_uid' in data else ''
         new_sr_uid = new_sr_uid.strip()
+        if not new_sr_uid and not new_uid:
+            return -3
         if new_uid:
             retcode = await GsBind.insert_uid(
                 user_id, self.bot_id, new_uid, group_id, 9, True

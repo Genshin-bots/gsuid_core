@@ -67,10 +67,11 @@ async def get_help(
     is_icon: bool = True,
     ICON_PATH: Optional[Path] = None,
     extra_message: Optional[List[str]] = None,
+    enable_cache: bool = True,
 ) -> bytes:
     help_path = get_res_path('help') / f'{name}.jpg'
 
-    if help_path.exists() and name in cache and cache[name]:
+    if help_path.exists() and name in cache and cache[name] and enable_cache:
         return await convert_img(Image.open(help_path))
 
     if sub_color is None and is_dark:
@@ -194,12 +195,13 @@ async def get_help(
 
     img = img.convert('RGB')
     help_path = get_res_path('help') / f'{name}.jpg'
-    img.save(
-        help_path,
-        'JPEG',
-        quality=89,
-        subsampling=0,
-    )
-    cache[name] = 1
+    if enable_cache:
+        img.save(
+            help_path,
+            'JPEG',
+            quality=89,
+            subsampling=0,
+        )
+        cache[name] = 1
 
     return await convert_img(img)
