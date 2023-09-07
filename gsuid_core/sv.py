@@ -5,6 +5,8 @@ from pathlib import Path
 from functools import wraps
 from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
+from gsuid_core.bot import Bot
+from gsuid_core.models import Event
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
@@ -22,6 +24,18 @@ class SVList:
 
 SL = SVList()
 config_sv = core_config.get_config('sv')
+
+
+def modify_func(func):
+    @wraps(func)
+    async def wrapper(bot: Bot, event: Event):
+        result = await func(bot, event)
+        instancess = Bot.get_instances()
+        if bot.uuid in instancess:
+            instancess.pop(bot.uuid)
+        return result
+
+    return wrapper
 
 
 class SV:
@@ -148,11 +162,14 @@ class SV:
             for _k in keyword_list:
                 if _k not in self.TL:
                     logger.info(f'载入{type}触发器【{_k}】!')
-                    self.TL[_k] = Trigger(type, _k, func, block, to_me)
+                    self.TL[_k] = Trigger(
+                        type, _k, modify_func(func), block, to_me
+                    )
 
             @wraps(func)
-            async def wrapper(bot, msg) -> Optional[Callable]:
-                return await func(bot, msg)
+            async def wrapper(bot: Bot, msg) -> Optional[Callable]:
+                result = await func(bot, msg)
+                return result
 
             return wrapper
 

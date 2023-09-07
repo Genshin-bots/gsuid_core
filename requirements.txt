@@ -42,7 +42,7 @@ pycparser==2.21 ; python_full_version >= "3.8.1" and os_name == "nt" and impleme
 pydantic==1.10.12 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pypng==0.20220715.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 python-multipart==0.0.6 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
-pytz==2023.3 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
+pytz==2023.3.post1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 qrcode[pil]==7.4.2 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 six==1.16.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 smmap==5.0.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"

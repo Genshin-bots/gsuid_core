@@ -1,6 +1,6 @@
 import random
 import asyncio
-from typing import List, Union, Literal, Optional
+from typing import Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -96,12 +96,37 @@ class _Bot:
 
 
 class Bot:
+    instances: Dict[str, "Bot"] = {}
+
     def __init__(self, bot: _Bot, ev: Event):
+        gid = ev.group_id if ev.group_id else 0
+        uid = ev.user_id if ev.user_id else 0
+        self.uuid = f'{uid}{gid}'
+        self.instances[self.uuid] = self
+
         self.bot = bot
         self.ev = ev
         self.logger = self.bot.logger
         self.bot_id = ev.bot_id
         self.bot_self_id = ev.bot_self_id
+        self.event = asyncio.Event()
+        self.resp: List[Event] = []
+
+    @classmethod
+    def get_instances(cls):
+        return cls.instances
+
+    async def wait_for_key(self, timeout: float) -> Optional[Event]:
+        await asyncio.wait_for(self.event.wait(), timeout=timeout)
+
+        if self.resp:
+            return self.resp[-1]
+
+    def set_event(self):
+        self.event.set()
+
+    async def receive_resp(self, timeout: float = 60) -> Optional[Event]:
+        return await self.wait_for_key(timeout)
 
     async def send(
         self,

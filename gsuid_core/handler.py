@@ -37,6 +37,7 @@ async def msg_process(msg: MessageReceive) -> Event:
     for _msg in msg.content:
         if _msg.type == 'text':
             event.raw_text += _msg.data.strip()  # type:ignore
+            event.text += _msg.data.strip()  # type:ignore
         elif _msg.type == 'at':
             if event.bot_self_id == _msg.data:
                 event.is_tome = True
@@ -67,6 +68,15 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     logger.info('[收到事件]', event=event)
+
+    gid = event.group_id if event.group_id else 0
+    uid = event.user_id if event.user_id else 0
+    uuid = f'{uid}{gid}'
+    instances = Bot.get_instances()
+    if uuid in instances:
+        instances[uuid].resp.append(event)
+        instances[uuid].set_event()
+        return
 
     if command_start and event.raw_text:
         for start in command_start:

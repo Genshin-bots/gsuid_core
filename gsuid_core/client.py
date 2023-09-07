@@ -48,7 +48,7 @@ class GsClient:
                 user_type='direct',
                 user_pm=1,
                 group_id=None,
-                user_id='444835641',
+                user_id='444836641',
                 content=content,
             )
             msg_send = msgjson.encode(msg)

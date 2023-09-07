@@ -31,6 +31,10 @@ async def get_fullmatch_msg(bot: Bot, ev: Event):
     await bot.send('正在进行[全匹配测试]')
     await asyncio.sleep(2)
     await bot.send('[全匹配测试]校验成功！')
+    await bot.send('请输入一个数字')
+    resp = await bot.receive_resp()
+    if resp is not None:
+        await bot.send(f'你输入的是{resp.text}')
 
 
 @sv_switch.on_prefix('前缀测试')
@@ -57,7 +61,5 @@ async def get_keyword_msg(bot: Bot, ev: Event):
 @sv_switch.on_regex(r'\d+')
 async def get_regex_msg(bot: Bot, ev: Event):
     await bot.send('正在进行[正则测试]')
-    print(ev.text)
-    print(ev.command)
     await asyncio.sleep(2)
     await bot.send('[正则测试]校验成功！')
