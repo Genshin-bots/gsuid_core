@@ -1,18 +1,22 @@
 import sys
 import asyncio
+from io import BytesIO
 from typing import Dict
 from pathlib import Path
 
 import uvicorn
+from PIL import Image
 from msgspec import json as msgjson
 from starlette.requests import Request
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, WebSocket, BackgroundTasks, WebSocketDisconnect
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from gsuid_core.sv import SL  # noqa: E402
 from gsuid_core.gss import gss  # noqa: E402
 from gsuid_core.logger import logger  # noqa: E402
 from gsuid_core.config import core_config  # noqa: E402
+from gsuid_core.data_store import image_res  # noqa: E402
 from gsuid_core.handler import handle_event  # noqa: E402
 from gsuid_core.models import MessageReceive  # noqa: E402
 from gsuid_core.webconsole.mount_app import site  # noqa: E402
@@ -144,6 +148,20 @@ def main():
             except:  # noqa:E722
                 retcode = -1
         return {'status': retcode, 'msg': '', 'data': {}}
+
+    def delete_image(image_path: Path):
+        image_path.unlink()
+
+    @app.get('/genshinuid/image/{image_id}.jpg')
+    async def get_image(image_id: str, background_tasks: BackgroundTasks):
+        path = image_res / f'{image_id}.jpg'
+        image = Image.open(path)
+        image_bytes = BytesIO()
+        image.save(image_bytes, format='JPEG')
+        image_bytes.seek(0)
+        response = StreamingResponse(image_bytes, media_type='image/png')
+        background_tasks.add_task(delete_image, path)
+        return response
 
     site.mount_app(app)
 

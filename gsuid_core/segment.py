@@ -1,3 +1,4 @@
+import uuid
 from io import BytesIO
 from pathlib import Path
 from base64 import b64encode
@@ -6,6 +7,14 @@ from typing import List, Union, Literal
 from PIL import Image
 
 from gsuid_core.models import Message
+from gsuid_core.config import core_config
+from gsuid_core.data_store import image_res
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+
+pic_srv = core_plugins_config.get_config('EnablePicSrv').data
+HOST = core_config.get_config('HOST')
+PORT = int(core_config.get_config('PORT'))
+_HOST = '127.0.0.1' if HOST == 'localhost' else HOST
 
 
 class MessageSegment:
@@ -31,7 +40,16 @@ class MessageSegment:
                 return Message(type='image', data=img)
             with open(img, 'rb') as fp:
                 img = fp.read()
-        msg = Message(type='image', data=f'base64://{b64encode(img).decode()}')
+
+        if pic_srv:
+            name = f'{uuid.uuid1()}.jpg'
+            path = image_res / name
+            path.write_bytes(img)
+            data = f'{_HOST}:{PORT}/genshinuid/image/{name}'
+        else:
+            data = f'base64://{b64encode(img).decode()}'
+
+        msg = Message(type='image', data=data)
         return msg
 
     @staticmethod

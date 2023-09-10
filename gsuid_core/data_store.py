@@ -17,3 +17,6 @@ def get_res_path(_path: Optional[Union[str, List]] = None) -> Path:
         path.mkdir(parents=True)
 
     return path
+
+
+image_res = get_res_path('IMAGE_TEMP')
