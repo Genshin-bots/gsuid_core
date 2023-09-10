@@ -941,13 +941,13 @@ reference = "mirrors"
 
 [[package]]
 name = "gitpython"
-version = "3.1.34"
+version = "3.1.35"
 description = "GitPython is a Python library used to interact with Git repositories"
 optional = false
 python-versions = ">=3.7"
 files = [
-    {file = "GitPython-3.1.34-py3-none-any.whl", hash = "sha256:5d3802b98a3bae1c2b8ae0e1ff2e4aa16bcdf02c145da34d092324f599f01395"},
-    {file = "GitPython-3.1.34.tar.gz", hash = "sha256:85f7d365d1f6bf677ae51039c1ef67ca59091c7ebd5a3509aa399d4eda02d6dd"},
+    {file = "GitPython-3.1.35-py3-none-any.whl", hash = "sha256:c19b4292d7a1d3c0f653858db273ff8a6614100d1eb1528b014ec97286193c09"},
+    {file = "GitPython-3.1.35.tar.gz", hash = "sha256:9cbefbd1789a5fe9bcf621bb34d3f441f3a90c8461d377f84eda73e721d9b06b"},
 ]
 
 [package.dependencies]
@@ -2193,18 +2193,17 @@ reference = "mirrors"
 
 [[package]]
 name = "sqlalchemy-database"
-version = "0.1.0"
+version = "0.1.1"
 description = "SQLAlchemy-Database provides shortcut functions to common database operations for SQLAlchemy ORM."
 optional = false
 python-versions = ">=3.7"
 files = [
-    {file = "sqlalchemy_database-0.1.0-py3-none-any.whl", hash = "sha256:f12b06f7d4ff6bfbb4272f7f271b7f63ccdc3e6a5c1709ea297de5d54d9aca67"},
-    {file = "sqlalchemy_database-0.1.0.tar.gz", hash = "sha256:629d1f0d04979a147075b8136854e50a15a83aad754bdd8ad61b320da13f3f7a"},
+    {file = "sqlalchemy_database-0.1.1-py3-none-any.whl", hash = "sha256:e6e801af5affa9a0f5e6fdd4fc9626b9f78a040105107fd12588dee21fbe5574"},
+    {file = "sqlalchemy_database-0.1.1.tar.gz", hash = "sha256:c4a6bdc9812a42e9a246dfd7c336e2685969f1163cf2777c88127615b65c6539"},
 ]
 
 [package.dependencies]
 sqlalchemy = "*"
-sqlalchemy2-stubs = ">=0.0.2a29"
 
 [package.extras]
 docs = ["mkdocs-material (>=8.3.8)", "mkdocstrings[python] (>=0.19.0)"]
@@ -2505,13 +2504,13 @@ reference = "mirrors"
 
 [[package]]
 name = "virtualenv"
-version = "20.24.4"
+version = "20.24.5"
 description = "Virtual Python Environment builder"
 optional = false
 python-versions = ">=3.7"
 files = [
-    {file = "virtualenv-20.24.4-py3-none-any.whl", hash = "sha256:29c70bb9b88510f6414ac3e55c8b413a1f96239b6b789ca123437d5e892190cb"},
-    {file = "virtualenv-20.24.4.tar.gz", hash = "sha256:772b05bfda7ed3b8ecd16021ca9716273ad9f4467c801f27e83ac73430246dca"},
+    {file = "virtualenv-20.24.5-py3-none-any.whl", hash = "sha256:b80039f280f4919c77b30f1c23294ae357c4c8701042086e3fc005963e4e537b"},
+    {file = "virtualenv-20.24.5.tar.gz", hash = "sha256:e8361967f6da6fbdf1426483bfe9fca8287c242ac0bc30429905721cefbff752"},
 ]
 
 [package.dependencies]

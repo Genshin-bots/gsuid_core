@@ -51,6 +51,8 @@ class _Bot:
         elif isinstance(message, List):
             if all(isinstance(x, str) for x in message):
                 message = [MessageSegment.node(message)]
+        else:
+            message = [message]
 
         _message: List[Message] = message  # type: ignore
 
