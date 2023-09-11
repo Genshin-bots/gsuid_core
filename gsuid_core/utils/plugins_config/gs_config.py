@@ -118,3 +118,5 @@ all_config_list: Dict[str, StringConfig] = {}
 core_plugins_config = StringConfig(
     'Core', get_res_path() / 'core_config.json', CONIFG_DEFAULT
 )
+
+core_plugins_config.set_config('EnablePicSrv', False)
