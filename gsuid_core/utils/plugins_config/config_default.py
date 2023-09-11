@@ -59,5 +59,5 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'EnableSpecificMsgId': GsBoolConfig('启用回复特殊ID', '如不知道请勿开启', False),
     'SpecificMsgId': GsStrConfig('特殊返回消息ID', '如不知道请勿填写', ''),
     'AutoUpdateDep': GsBoolConfig('自动更新依赖', '更新插件时将会自动更新依赖', False),
-    'EnablePicSrv': GsBoolConfig('将图片转链接发送(需公网)', '发送图片转链接', True),
+    'EnablePicSrv': GsBoolConfig('将图片转链接发送(需公网)', '发送图片转链接', False),
 }
