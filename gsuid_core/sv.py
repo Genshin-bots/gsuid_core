@@ -29,10 +29,12 @@ config_sv = core_config.get_config('sv')
 def modify_func(func):
     @wraps(func)
     async def wrapper(bot: Bot, event: Event):
-        result = await func(bot, event)
-        instancess = Bot.get_instances()
-        if bot.uuid in instancess:
-            instancess.pop(bot.uuid)
+        try:
+            result = await func(bot, event)
+        finally:
+            instancess = Bot.get_instances()
+            if bot.uuid in instancess:
+                instancess.pop(bot.uuid)
         return result
 
     return wrapper

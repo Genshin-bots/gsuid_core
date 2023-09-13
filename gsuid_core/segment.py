@@ -7,14 +7,11 @@ from typing import List, Union, Literal
 from PIL import Image
 
 from gsuid_core.models import Message
-from gsuid_core.config import core_config
 from gsuid_core.data_store import image_res
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
-pic_srv = core_plugins_config.get_config('EnablePicSrv').data
-HOST = core_config.get_config('HOST')
-PORT = int(core_config.get_config('PORT'))
-_HOST = '127.0.0.1' if HOST == 'localhost' else HOST
+enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
+pic_srv = core_plugins_config.get_config('PicSrv').data
 
 
 class MessageSegment:
@@ -41,11 +38,11 @@ class MessageSegment:
             with open(img, 'rb') as fp:
                 img = fp.read()
 
-        if pic_srv:
+        if enable_pic_srv:
             name = f'{uuid.uuid1()}.jpg'
             path = image_res / name
             path.write_bytes(img)
-            data = f'{_HOST}:{PORT}/genshinuid/image/{name}'
+            data = f'{pic_srv}/genshinuid/image/{name}'
         else:
             data = f'base64://{b64encode(img).decode()}'
 
