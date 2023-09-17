@@ -381,7 +381,8 @@ class SQLA:
             retcode = await GsPush.full_insert_data(
                 uid=uid, bot_id=bot_id, **data
             )
-        return bool(retcode)
+        status = True if retcode == 0 else False
+        return status
 
     async def change_push_status(
         self,
