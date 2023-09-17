@@ -369,21 +369,28 @@ class SQLA:
             transform_is_push='off',
         )
 
-    async def update_push_data(self, uid: str, data: dict) -> bool:
+    async def update_push_data(
+        self, uid: str, bot_id: str, data: dict
+    ) -> bool:
         retcode = -1
         if await GsPush.data_exist(uid=uid):
             retcode = await GsPush.update_data_by_uid(
                 uid, self.bot_id, 'sr' if self.is_sr else None, **data
             )
-        return not bool(retcode)
+        else:
+            retcode = await GsPush.full_insert_data(
+                uid=uid, bot_id=bot_id, **data
+            )
+        return bool(retcode)
 
     async def change_push_status(
         self,
         mode: Literal['coin', 'resin', 'go', 'transform'],
         uid: str,
+        bot_id: str,
         status: str,
     ):
-        await self.update_push_data(uid, {f'{mode}_is_push': status})
+        await self.update_push_data(uid, bot_id, {f'{mode}_is_push': status})
 
     async def select_push_data(self, uid: str) -> Optional[GsPush]:
         return await GsPush.base_select_data(uid=uid)

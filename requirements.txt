@@ -37,7 +37,7 @@ msgspec==0.18.2 ; python_full_version >= "3.8.1" and python_full_version < "4.0.
 multidict==6.0.4 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 outcome==1.2.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 passlib==1.7.4 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
-pillow==10.0.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
+pillow==10.0.1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pycparser==2.21 ; python_full_version >= "3.8.1" and os_name == "nt" and implementation_name != "pypy" and python_full_version < "4.0.0"
 pydantic==1.10.12 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pypng==0.20220715.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
