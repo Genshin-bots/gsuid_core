@@ -3,10 +3,9 @@ from typing import Tuple, Union, Optional
 
 from PIL import Image, ImageDraw
 
-from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.fonts.fonts import core_font
-from gsuid_core.utils.database.models import GsPush
 from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.utils.database.models import GsBind, GsPush, GsUser
 from gsuid_core.utils.image.image_tools import (
     get_color_bg,
     get_qq_avatar,
@@ -23,11 +22,9 @@ EN_MAP = {'coin': '宝钱', 'resin': '体力', 'go': '派遣', 'transform': '质
 
 
 async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
-    get_sqla = DBSqla().get_sqla
-    sqla = get_sqla(bot_id)
-    uid_list = await sqla.get_bind_uid_list(user_id)
-    sr_uid_list = await sqla.get_bind_sruid_list(user_id)
-    user_list = await sqla.select_user_all_data_by_user_id(user_id)
+    uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id)
+    sr_uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id, 'sr')
+    user_list = await GsUser.get_user_all_data_by_user_id(user_id)
 
     if user_list is None:
         return '你还没有绑定过UID和CK!\n(该功能须同时绑定CK和UID才能使用)'
@@ -65,10 +62,25 @@ async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
 
         if user_data.uid is not None and user_data.uid != '0':
             uid_text = f'原神UID {user_data.uid}'
-            user_push_data = await sqla.select_push_data(user_data.uid)
+            user_push_data = await GsPush.select_data_by_uid(user_data.uid)
             if user_push_data is None:
-                await sqla.insert_push_data(user_data.uid)
-                user_push_data = await sqla.select_push_data(user_data.uid)
+                await GsPush.full_insert_data(
+                    bot_id=bot_id,
+                    uid=user_data.uid,
+                    coin_push='off',
+                    coin_value=2100,
+                    coin_is_push='off',
+                    resin_push='on',
+                    resin_value=140,
+                    resin_is_push='off',
+                    go_push='off',
+                    go_value=120,
+                    go_is_push='off',
+                    transform_push='off',
+                    transform_value=140,
+                    transform_is_push='off',
+                )
+                user_push_data = await GsPush.select_data_by_uid(user_data.uid)
         else:
             uid_text = '未发现原神UID'
             user_push_data = GsPush(bot_id='TEMP')

@@ -1,6 +1,7 @@
 from typing import Literal, Optional
 
 from gsuid_core.utils.api.mys import MysApi
+from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 gsconfig = core_plugins_config
@@ -14,29 +15,25 @@ class _MysApi(MysApi):
         self, uid: str, mode: Literal['OWNER', 'RANDOM'] = 'RANDOM'
     ) -> Optional[str]:
         if mode == 'RANDOM':
-            return await self.dbsqla.get_sqla('TEMP').get_random_cookie(uid)
+            return await GsUser.get_random_cookie(uid)
         else:
-            return await self.dbsqla.get_sqla('TEMP').get_user_cookie(uid)
+            return await GsUser.get_user_cookie_by_uid(uid)
 
     async def get_stoken(self, uid: str) -> Optional[str]:
-        return await self.dbsqla.get_sqla('TEMP').get_user_stoken(uid)
+        return await GsUser.get_user_stoken_by_uid(uid)
 
     async def get_user_fp(self, uid: str) -> Optional[str]:
-        data = await self.dbsqla.get_sqla('TEMP').get_user_fp(uid)
+        data = await GsUser.get_user_attr_by_uid(uid, 'fp')
         if data is None:
             data = await self.generate_fp_by_uid(uid)
-            await self.dbsqla.get_sqla('TEMP').update_user_data(
-                uid, {'fp': data}
-            )
+            await GsUser.update_data_by_uid_without_bot_id(uid, fp=data)
         return data
 
     async def get_user_device_id(self, uid: str) -> Optional[str]:
-        data = await self.dbsqla.get_sqla('TEMP').get_user_device_id(uid)
+        data = await GsUser.get_user_attr_by_uid(uid, 'device_id')
         if data is None:
             data = self.get_device_id()
-            await self.dbsqla.get_sqla('TEMP').update_user_data(
-                uid, {'device_id': data}
-            )
+            await GsUser.update_data_by_uid_without_bot_id(uid, device_id=data)
         return data
 
 

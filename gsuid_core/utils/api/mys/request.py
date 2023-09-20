@@ -15,6 +15,7 @@ from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
+from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import _API
@@ -316,9 +317,10 @@ class BaseMysApi:
                     # 针对1034做特殊处理
                     if retcode == 1034:
                         if uid and self.is_sr and _ == 0:
-                            sqla = self.dbsqla.get_sqla('TEMP')
                             new_fp = await self.generate_fp_by_uid(uid)
-                            await sqla.update_user_data(uid, {'fp': new_fp})
+                            await GsUser.update_data_by_uid_without_bot_id(
+                                uid, fp=new_fp
+                            )
                             header['x-rpc-device_fp'] = new_fp
                             if isinstance(params, Dict):
                                 header['DS'] = get_ds_token(
@@ -330,9 +332,10 @@ class BaseMysApi:
                             ch = await self._upass(header)
                             self.chs[header['Cookie']] = ch
                     elif retcode == -10001 and uid:
-                        sqla = self.dbsqla.get_sqla('TEMP')
                         new_fp = await self.generate_fp_by_uid(uid)
-                        await sqla.update_user_data(uid, {'fp': new_fp})
+                        await GsUser.update_data_by_uid_without_bot_id(
+                            uid, fp=new_fp
+                        )
                         header['x-rpc-device_fp'] = new_fp
                     elif retcode != 0:
                         return retcode

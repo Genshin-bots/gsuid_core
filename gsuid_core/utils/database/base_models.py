@@ -23,6 +23,7 @@ from gsuid_core.data_store import get_res_path
 T_BaseModel = TypeVar('T_BaseModel', bound='BaseModel')
 T_BaseIDModel = TypeVar('T_BaseIDModel', bound='BaseIDModel')
 T_User = TypeVar('T_User', bound='User')
+T_Push = TypeVar('T_Push', bound='Push')
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -79,6 +80,26 @@ class BaseIDModel(SQLModel):
 
 class BaseBotIDModel(BaseIDModel):
     bot_id: str = Field(title='平台')
+
+    @classmethod
+    @with_session
+    async def update_data_by_uid_without_bot_id(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        game_name: Optional[str] = None,
+        **data,
+    ) -> int:
+        sql = update(cls).where(
+            getattr(cls, cls.get_gameid_name(game_name)) == uid,
+        )
+        if data is not None:
+            query = sql.values(**data)
+            query.execution_options(synchronize_session='fetch')
+            await session.execute(query)
+            await session.commit()
+            return 0
+        return -1
 
     @classmethod
     @with_session
@@ -660,4 +681,18 @@ class Cache(BaseIDModel):
 
 
 class Push(BaseBotIDModel):
-    pass
+    @classmethod
+    @with_session
+    async def select_data_by_uid(
+        cls: Type[T_Push],
+        session: AsyncSession,
+        uid: str,
+        game_name: Optional[str] = None,
+    ) -> Optional[T_Push]:
+        result = await session.execute(
+            select(cls).where(
+                getattr(cls, cls.get_gameid_name(game_name)) == uid,
+            )
+        )
+        data = result.scalars().all()
+        return data[0] if data else None

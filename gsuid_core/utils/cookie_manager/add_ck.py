@@ -3,8 +3,8 @@ from typing import Dict, List
 from http.cookies import SimpleCookie
 
 from gsuid_core.utils.api.mys_api import mys_api
-from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.error_reply import UID_HINT
+from gsuid_core.utils.database.models import GsBind, GsUser, GsCache
 
 pic_path = Path(__file__).parent / 'pic'
 id_list = [
@@ -26,15 +26,12 @@ sk_list = ['stoken', 'stoken_v2']
 ck_list = ['cookie_token', 'cookie_token_v2']
 lt_list = ['login_ticket', 'login_ticket_v2']
 
-get_sqla = DBSqla().get_sqla
-
 
 async def get_ck_by_all_stoken(bot_id: str):
-    sqla = get_sqla(bot_id)
-    uid_list: List = await sqla.get_all_uid_list()
+    uid_list: List = await GsBind.get_all_uid_list_by_game(bot_id)
     uid_dict = {}
     for uid in uid_list:
-        user_data = await sqla.select_user_data(uid)
+        user_data = await GsUser.select_data_by_uid(uid)
         if user_data:
             uid_dict[uid] = user_data.user_id
     im = await refresh_ck_by_uid_list(bot_id, uid_dict)
@@ -42,8 +39,7 @@ async def get_ck_by_all_stoken(bot_id: str):
 
 
 async def get_ck_by_stoken(bot_id: str, user_id: str):
-    sqla = get_sqla(bot_id)
-    uid_list = await sqla.get_bind_uid_list(user_id)
+    uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id)
     if uid_list is None:
         return UID_HINT
     uid_dict = {uid: user_id for uid in uid_list}
@@ -52,7 +48,6 @@ async def get_ck_by_stoken(bot_id: str, user_id: str):
 
 
 async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
-    sqla = get_sqla(bot_id)
     uid_num = len(uid_dict)
     if uid_num == 0:
         return '请先绑定一个UID噢~'
@@ -60,7 +55,7 @@ async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
     skip_num = 0
     error_num = 0
     for uid in uid_dict:
-        stoken = await sqla.get_user_stoken(uid)
+        stoken = await GsUser.get_user_stoken_by_uid(uid)
         if stoken is None:
             skip_num += 1
             error_num += 1
@@ -117,10 +112,9 @@ async def get_account_id(simp_dict: SimpleCookie) -> str:
 
 
 async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
-    sqla = get_sqla(bot_id)
     simp_dict = SimpleCookie(mes)
-    uid = await sqla.get_bind_uid(user_id)
-    sr_uid = await sqla.get_bind_sruid(user_id)
+    uid = await GsBind.get_uid_by_game(user_id, bot_id)
+    sr_uid = await GsBind.get_uid_by_game(user_id, bot_id, 'sr')
     uid_bind = sr_uid_bind = None
 
     if uid is None and sr_uid is None:
@@ -228,9 +222,9 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
         pass
 
     if uid_bind:
-        await sqla.refresh_cache(uid_bind)
+        await GsCache.refresh_cache(uid_bind)
     if sr_uid_bind:
-        await sqla.refresh_cache(sr_uid_bind)
+        await GsCache.refresh_cache(sr_uid_bind, 'sr')
 
     if is_add_stoken:
         im_list.append(f'添加Stoken成功,stuid={account_id},stoken={stoken}')
@@ -240,14 +234,15 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
 
     device_id = mys_api.get_device_id()
     fp = await mys_api.generate_fp_by_uid(uid)
-    await sqla.insert_user_data(
+    await GsUser.insert_data(
         user_id,
-        uid_bind,
-        sr_uid_bind,
-        account_cookie,
-        app_cookie,
-        fp,
-        device_id,
+        bot_id,
+        uid=uid_bind,
+        sr_uid=sr_uid_bind,
+        cookie=cookie_token,
+        stoken=app_cookie,
+        fp=fp,
+        device_id=device_id,
     )
 
     im_list.append(

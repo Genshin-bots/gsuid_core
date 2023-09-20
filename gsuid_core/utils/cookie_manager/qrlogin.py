@@ -16,13 +16,11 @@ from gsuid_core.models import Event
 from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.api.mys_api import mys_api
-from gsuid_core.utils.database.api import DBSqla
-
-get_sqla = DBSqla().get_sqla
+from gsuid_core.utils.database.models import GsBind
 
 
 async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
-    qr = qrcode.QRCode(
+    qr = qrcode.QRCode(  # type: ignore
         version=1,
         error_correction=ERROR_CORRECT_L,
         box_size=10,
@@ -83,8 +81,6 @@ async def refresh(
 
 
 async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
-    sqla = get_sqla(ev.bot_id)
-
     async def send_msg(msg: str):
         await bot.send(msg)
         return ''
@@ -157,8 +153,12 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             im = '[登录]请求失败, 请稍后再试...'
             return await send_msg(im)
 
-        uid_bind_list = await sqla.get_bind_uid_list(user_id) or []
-        sruid_bind_list = await sqla.get_bind_sruid_list(user_id) or []
+        uid_bind_list = (
+            await GsBind.get_uid_list_by_game(user_id, ev.bot_id) or []
+        )
+        sruid_bind_list = (
+            await GsBind.get_uid_list_by_game(user_id, ev.bot_id, 'sr') or []
+        )
         # 没有在gsuid绑定uid的情况
         if not (uid_bind_list or sruid_bind_list):
             logger.warning('[登录]game_token获取失败')
