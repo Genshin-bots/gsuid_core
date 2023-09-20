@@ -239,7 +239,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
         bot_id,
         uid=uid_bind,
         sr_uid=sr_uid_bind,
-        cookie=cookie_token,
+        cookie=account_cookie,
         stoken=app_cookie,
         fp=fp,
         device_id=device_id,
