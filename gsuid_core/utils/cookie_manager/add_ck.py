@@ -4,6 +4,7 @@ from http.cookies import SimpleCookie
 
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import UID_HINT
+from gsuid_core.utils.database.utils import SERVER, SR_SERVER
 from gsuid_core.utils.database.models import GsBind, GsUser, GsCache
 
 pic_path = Path(__file__).parent / 'pic'
@@ -234,16 +235,49 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
 
     device_id = mys_api.get_device_id()
     fp = await mys_api.generate_fp_by_uid(uid)
-    await GsUser.insert_data(
-        user_id,
-        bot_id,
-        uid=uid_bind,
-        sr_uid=sr_uid_bind,
-        cookie=account_cookie,
-        stoken=app_cookie,
-        fp=fp,
-        device_id=device_id,
-    )
+
+    # 往数据库添加内容
+    if uid and await GsUser.user_exists(uid):
+        await GsUser.update_data_by_uid(
+            uid,
+            bot_id,
+            cookie=account_cookie,
+            status=None,
+            stoken=app_cookie,
+            sr_uid=sr_uid,
+            fp=fp,
+        )
+    elif sr_uid and await GsUser.user_exists(sr_uid, 'sr'):
+        await GsUser.update_data_by_uid(
+            sr_uid,
+            bot_id,
+            'sr',
+            cookie=account_cookie,
+            status=None,
+            stoken=app_cookie,
+            sr_uid=sr_uid,
+            fp=fp,
+        )
+    else:
+        await GsUser.insert_data(
+            user_id=user_id,
+            bot_id=bot_id,
+            uid=uid,
+            sr_uid=sr_uid,
+            mys_id=account_id,
+            cookie=account_cookie,
+            stoken=app_cookie if app_cookie else None,
+            sign_switch='off',
+            push_switch='off',
+            bbs_switch='off',
+            draw_switch='off',
+            region=SERVER.get(uid[0], 'cn_gf01') if uid else None,
+            sr_region=SR_SERVER.get(sr_uid[0], None) if sr_uid else None,
+            fp=fp,
+            device_id=device_id,
+            sr_push_switch='off',
+            sr_sign_switch='off',
+        )
 
     im_list.append(
         f'添加Cookies成功,account_id={account_id},cookie_token={cookie_token}'
