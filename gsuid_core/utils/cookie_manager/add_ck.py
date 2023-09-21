@@ -237,33 +237,32 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     fp = await mys_api.generate_fp_by_uid(uid)
 
     # 往数据库添加内容
-    if uid and await GsUser.user_exists(uid):
+    if uid_bind and await GsUser.user_exists(uid_bind):
         await GsUser.update_data_by_uid(
-            uid,
+            uid_bind,
             bot_id,
             cookie=account_cookie,
             status=None,
             stoken=app_cookie,
-            sr_uid=sr_uid,
+            sr_uid=sr_uid_bind,
             fp=fp,
         )
-    elif sr_uid and await GsUser.user_exists(sr_uid, 'sr'):
+    elif sr_uid_bind and await GsUser.user_exists(sr_uid_bind, 'sr'):
         await GsUser.update_data_by_uid(
-            sr_uid,
+            sr_uid_bind,
             bot_id,
             'sr',
             cookie=account_cookie,
             status=None,
             stoken=app_cookie,
-            sr_uid=sr_uid,
             fp=fp,
         )
     else:
         await GsUser.insert_data(
             user_id=user_id,
             bot_id=bot_id,
-            uid=uid,
-            sr_uid=sr_uid,
+            uid=uid_bind,
+            sr_uid=sr_uid_bind,
             mys_id=account_id,
             cookie=account_cookie,
             stoken=app_cookie if app_cookie else None,
@@ -271,8 +270,10 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             push_switch='off',
             bbs_switch='off',
             draw_switch='off',
-            region=SERVER.get(uid[0], 'cn_gf01') if uid else None,
-            sr_region=SR_SERVER.get(sr_uid[0], None) if sr_uid else None,
+            region=SERVER.get(uid_bind[0], 'cn_gf01') if uid_bind else None,
+            sr_region=SR_SERVER.get(sr_uid_bind[0], None)
+            if sr_uid_bind
+            else None,
             fp=fp,
             device_id=device_id,
             sr_push_switch='off',

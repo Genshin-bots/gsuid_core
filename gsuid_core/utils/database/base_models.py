@@ -111,11 +111,13 @@ class BaseBotIDModel(BaseIDModel):
         game_name: Optional[str] = None,
         **data,
     ) -> int:
-        if not await cls.data_exist(uid=uid):
-            return await cls.full_insert_data(uid=uid, bot_id=bot_id, **data)
+        uid_name = cls.get_gameid_name(game_name)
+        if not await cls.data_exist(**{uid_name: uid}):
+            data[uid_name] = uid
+            return await cls.full_insert_data(bot_id=bot_id, **data)
 
         sql = update(cls).where(
-            getattr(cls, cls.get_gameid_name(game_name)) == uid,
+            getattr(cls, uid_name) == uid,
             cls.bot_id == bot_id,
         )
         if data is not None:
