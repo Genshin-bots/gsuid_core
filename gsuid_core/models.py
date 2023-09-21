@@ -20,6 +20,7 @@ class MessageReceive(Struct):
 
 
 class Event(MessageReceive):
+    real_bot_id: str = ''
     raw_text: str = ''
     command: str = ''
     text: str = ''

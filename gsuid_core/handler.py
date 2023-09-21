@@ -24,14 +24,20 @@ async def get_user_pml(msg: MessageReceive) -> int:
 
 
 async def msg_process(msg: MessageReceive) -> Event:
+    if ':' in msg.bot_id:
+        bot_id = msg.bot_id.split(':')[0]
+    else:
+        bot_id = msg.bot_id
+
     event = Event(
-        msg.bot_id,
+        bot_id,
         msg.bot_self_id,
         msg.msg_id,
         msg.user_type,
         msg.group_id,
         msg.user_id,
         msg.user_pm,
+        real_bot_id=msg.bot_id,
     )
     _content: List[Message] = []
     for _msg in msg.content:
