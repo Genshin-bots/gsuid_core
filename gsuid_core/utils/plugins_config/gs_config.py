@@ -98,7 +98,7 @@ class StringConfig:
     ) -> bool:
         if key in self.config_list:
             temp = self.config[key].data
-            if type(value) == type(temp):
+            if type(value) == type(temp):  # noqa: E721
                 # 设置值
                 self.config[key].data = value  # type: ignore
                 # 重新写回
