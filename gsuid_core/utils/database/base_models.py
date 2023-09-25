@@ -523,7 +523,7 @@ class User(BaseModel):
     ) -> List[T_User]:
         sql = select(cls).where(cls.cookie is not None, cls.cookie != '')
         result = await session.execute(sql)
-        data: List[T_User] = result.scalars().all()
+        data = result.scalars().all()
         return data
 
     @classmethod

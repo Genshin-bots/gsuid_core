@@ -19,7 +19,9 @@ from gsuid_core.config import core_config  # noqa: E402
 from gsuid_core.data_store import image_res  # noqa: E402
 from gsuid_core.handler import handle_event  # noqa: E402
 from gsuid_core.models import MessageReceive  # noqa: E402
+from gsuid_core.server import core_start_def  # noqa: E402
 from gsuid_core.webconsole.mount_app import site  # noqa: E402
+from gsuid_core.utils.database.startup import exec_list  # noqa: E402
 from gsuid_core.aps import start_scheduler, shutdown_scheduler  # noqa: E402
 from gsuid_core.utils.plugins_config.models import (  # noqa: E402
     GsListStrConfig,
@@ -39,6 +41,21 @@ from gsuid_core.utils.plugins_update._plugins import (  # noqa: E402
 app = FastAPI()
 HOST = core_config.get_config('HOST')
 PORT = int(core_config.get_config('PORT'))
+
+exec_list.extend(
+    [
+        'ALTER TABLE GsBind ADD COLUMN group_id TEXT',
+        'ALTER TABLE GsBind ADD COLUMN sr_uid TEXT',
+        'ALTER TABLE GsUser ADD COLUMN sr_uid TEXT',
+        'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
+        'ALTER TABLE GsUser ADD COLUMN fp TEXT',
+        'ALTER TABLE GsUser ADD COLUMN device_id TEXT',
+        'ALTER TABLE GsUser ADD COLUMN sr_sign_switch TEXT DEFAULT "off"',
+        'ALTER TABLE GsUser ADD COLUMN sr_push_switch TEXT DEFAULT "off"',
+        'ALTER TABLE GsUser ADD COLUMN draw_switch TEXT DEFAULT "off"',
+        'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
+    ]
+)
 
 
 @app.websocket('/ws/{bot_id}')
@@ -66,6 +83,12 @@ async def startup_event():
         from gsuid_core.webconsole.__init__ import start_check
 
         await start_check()
+        try:
+            _task = [_def() for _def in core_start_def]
+            asyncio.gather(*_task)
+        except Exception as e:
+            logger.exception(e)
+
     except ImportError:
         logger.warning('未加载GenshinUID...网页控制台启动失败...')
     await start_scheduler()

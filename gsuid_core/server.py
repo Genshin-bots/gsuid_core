@@ -9,6 +9,14 @@ from fastapi import WebSocket
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
 
+core_start_def = set()
+
+
+def on_core_start(func: Callable):
+    if func not in core_start_def:
+        core_start_def.add(func)
+    return func
+
 
 class GsServer:
     _instance = None
