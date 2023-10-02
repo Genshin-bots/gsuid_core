@@ -1,8 +1,9 @@
 import uuid
+import random
 from io import BytesIO
 from pathlib import Path
 from base64 import b64encode
-from typing import List, Union, Literal
+from typing import List, Tuple, Union, Literal, Optional
 
 import msgspec
 from PIL import Image
@@ -10,8 +11,13 @@ from PIL import Image
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
 from gsuid_core.message_models import Button
+from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
+R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
+R_text = core_plugins_config.get_config('RandomText').data
+is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
+text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
 
@@ -56,11 +62,20 @@ class MessageSegment:
         return Message(type='text', data=content)
 
     @staticmethod
-    def markdown(content: str, buttons: List[Button]) -> List[Message]:
-        return [
-            Message(type='markdown', data=content),
-            Message(type='buttons', data=msgspec.to_builtins(buttons)),
-        ]
+    def markdown(
+        content: str, buttons: Optional[List[Button]] = None
+    ) -> List[Message]:
+        data = [Message(type='markdown', data=content)]
+        if buttons:
+            data.append(
+                Message(type='buttons', data=msgspec.to_builtins(buttons))
+            )
+
+        return data
+
+    @staticmethod
+    def image_size(size: Tuple[int, int]) -> Message:
+        return Message(type='image_size', data=size)
 
     @staticmethod
     def at(user: str) -> Message:
@@ -128,3 +143,70 @@ class MessageSegment:
         type: Literal['INFO', 'WARNING', 'ERROR', 'SUCCESS'], content: str
     ) -> Message:
         return Message(type=f'log_{type}', data=content)
+
+
+async def convert_message(
+    message: Union[Message, List[Message], List[str], str, bytes]
+) -> List[Message]:
+    if isinstance(message, Message):
+        message = [message]
+    elif isinstance(message, str):
+        if message.startswith('base64://'):
+            img = Image.open(message)
+            message = [
+                MessageSegment.image(message),
+                MessageSegment.image_size(img.size),
+            ]
+        else:
+            message = [MessageSegment.text(message)]
+    elif isinstance(message, bytes):
+        img = Image.open(message)
+        message = [
+            MessageSegment.image(message),
+            MessageSegment.image_size(img.size),
+        ]
+    elif isinstance(message, List):
+        if all(isinstance(x, str) for x in message):
+            message = [MessageSegment.node(message)]
+    else:
+        message = [message]
+
+    _message: List[Message] = message  # type: ignore
+
+    if R_enabled:
+        result = ''.join(
+            random.choice(R_text)
+            for _ in range(random.randint(1, len(R_text)))
+        )
+        _message.append(MessageSegment.text(result))
+
+    if is_text2pic:
+        if (
+            len(_message) == 1
+            and _message[0].type == 'text'
+            and isinstance(_message[0].data, str)
+            and len(_message[0].data) >= int(text2pic_limit)
+        ):
+            img = await text2pic(_message[0].data)
+            _message = [MessageSegment.image(img)]
+
+    return _message
+
+
+async def to_markdown(message: List[Message]) -> str:
+    _markdown_list = []
+    url = None
+    size = None
+    for m in message:
+        if m.type == 'image':
+            url = m.data
+        elif m.type == 'image_size':
+            size = m.data
+        elif m.type == 'text':
+            _markdown_list.append(m.data)
+
+    if url is not None and size is not None:
+        _markdown_list.append(f'![test #{size[0]}px #{size[1]}px]({url})')
+
+    _markdown = '\n'.join(_markdown_list)
+    return _markdown

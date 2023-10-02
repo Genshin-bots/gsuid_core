@@ -1,4 +1,3 @@
-import random
 import asyncio
 from typing import Dict, List, Union, Literal, Optional
 
@@ -8,15 +7,10 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.message_models import Button
-from gsuid_core.segment import MessageSegment
-from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.models import Event, Message, MessageSend
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.segment import MessageSegment, to_markdown, convert_message
 
-R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
-R_text = core_plugins_config.get_config('RandomText').data
-is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
-text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 is_specific_msg_id = core_plugins_config.get_config('EnableSpecificMsgId').data
 specific_msg_id = core_plugins_config.get_config('SpecificMsgId').data
 
@@ -40,42 +34,10 @@ class _Bot:
         at_sender: bool = False,
         sender_id: str = '',
     ):
-        if isinstance(message, Message):
-            message = [message]
-        elif isinstance(message, str):
-            if message.startswith('base64://'):
-                message = [MessageSegment.image(message)]
-            else:
-                message = [MessageSegment.text(message)]
-        elif isinstance(message, bytes):
-            message = [MessageSegment.image(message)]
-        elif isinstance(message, List):
-            if all(isinstance(x, str) for x in message):
-                message = [MessageSegment.node(message)]
-        else:
-            message = [message]
-
-        _message: List[Message] = message  # type: ignore
+        _message = await convert_message(message)
 
         if at_sender and sender_id:
             _message.append(MessageSegment.at(sender_id))
-
-        if R_enabled:
-            result = ''.join(
-                random.choice(R_text)
-                for _ in range(random.randint(1, len(R_text)))
-            )
-            _message.append(MessageSegment.text(result))
-
-        if is_text2pic:
-            if (
-                len(_message) == 1
-                and _message[0].type == 'text'
-                and isinstance(_message[0].data, str)
-                and len(_message[0].data) >= int(text2pic_limit)
-            ):
-                img = await text2pic(_message[0].data)
-                _message = [MessageSegment.image(img)]
 
         if is_specific_msg_id and not msg_id:
             msg_id = specific_msg_id
@@ -130,22 +92,29 @@ class Bot:
 
     async def receive_resp(
         self,
-        reply_text: Optional[str] = None,
+        reply: Optional[
+            Union[Message, List[Message], List[str], str, bytes]
+        ] = None,
         option_list: Optional[List[Union[str, Button]]] = None,
         timeout: float = 60,
     ) -> Optional[Event]:
         if option_list:
-            if reply_text is None:
-                reply_text = '请在60秒内做出选择...'
+            if reply is None:
+                reply = f'请在{timeout}秒内做出选择...'
+
+            _reply = await convert_message(reply)
 
             if self.ev.real_bot_id in ['qqguild', 'qqgroup']:
+                _reply_str = await to_markdown(_reply)
                 _buttons: List[Button] = []
                 for option in option_list:
                     if isinstance(option, Button):
                         _buttons.append(option)
                     else:
                         _buttons.append(Button(option, option, option))
-                await self.send(MessageSegment.markdown(reply_text, _buttons))
+                logger.info(_reply_str)
+                logger.info(_buttons)
+                await self.send(MessageSegment.markdown(_reply_str, _buttons))
             else:
                 _options: List[str] = []
                 for option in option_list:
@@ -154,11 +123,11 @@ class Bot:
                     else:
                         _options.append(option)
 
-                reply_text += '/'.join(_options)
-                await self.send(reply_text)
+                _reply.append(MessageSegment.text('/'.join(_options)))
+                await self.send(_reply)
 
-        elif reply_text:
-            await self.send(reply_text)
+        elif reply:
+            await self.send(reply)
 
         return await self.wait_for_key(timeout)
 

@@ -183,7 +183,7 @@ def main():
         image.save(image_bytes, format='JPEG')
         image_bytes.seek(0)
         response = StreamingResponse(image_bytes, media_type='image/png')
-        background_tasks.add_task(delete_image, path)
+        # background_tasks.add_task(delete_image, path)
         return response
 
     site.mount_app(app)
