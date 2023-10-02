@@ -160,7 +160,7 @@ async def convert_message(
         else:
             message = [MessageSegment.text(message)]
     elif isinstance(message, bytes):
-        img = Image.open(message)
+        img = Image.open(BytesIO(message))
         message = [
             MessageSegment.image(message),
             MessageSegment.image_size(img.size),

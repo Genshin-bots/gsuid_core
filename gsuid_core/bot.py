@@ -39,11 +39,16 @@ class _Bot:
         if at_sender and sender_id:
             _message.append(MessageSegment.at(sender_id))
 
+        send_message = []
+        for _m in _message:
+            if _m.type not in ['image_size']:
+                send_message.append(_m)
+
         if is_specific_msg_id and not msg_id:
             msg_id = specific_msg_id
 
         send = MessageSend(
-            content=_message,
+            content=send_message,
             bot_id=bot_id,
             bot_self_id=bot_self_id,
             target_type=target_type,
@@ -90,12 +95,26 @@ class Bot:
     def set_event(self):
         self.event.set()
 
+    async def send_option(
+        self,
+        reply: Optional[
+            Union[Message, List[Message], List[str], str, bytes]
+        ] = None,
+        option_list: Optional[List[Union[str, Button]]] = None,
+        unsuported_platform: bool = False,
+    ):
+        return await self.receive_resp(
+            reply, option_list, unsuported_platform, False
+        )
+
     async def receive_resp(
         self,
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]
         ] = None,
         option_list: Optional[List[Union[str, Button]]] = None,
+        unsuported_platform: bool = False,
+        is_recive: bool = True,
         timeout: float = 60,
     ) -> Optional[Event]:
         if option_list:
@@ -112,24 +131,26 @@ class Bot:
                         _buttons.append(option)
                     else:
                         _buttons.append(Button(option, option, option))
-                logger.info(_reply_str)
-                logger.info(_buttons)
+                logger.debug(_reply_str)
+                logger.debug(_buttons)
                 await self.send(MessageSegment.markdown(_reply_str, _buttons))
             else:
-                _options: List[str] = []
-                for option in option_list:
-                    if isinstance(option, Button):
-                        _options.append(option.text)
-                    else:
-                        _options.append(option)
+                if unsuported_platform:
+                    _options: List[str] = []
+                    for option in option_list:
+                        if isinstance(option, Button):
+                            _options.append(option.text)
+                        else:
+                            _options.append(option)
 
-                _reply.append(MessageSegment.text('/'.join(_options)))
+                    _reply.append(MessageSegment.text('/'.join(_options)))
                 await self.send(_reply)
 
         elif reply:
             await self.send(reply)
 
-        return await self.wait_for_key(timeout)
+        if is_recive:
+            return await self.wait_for_key(timeout)
 
     async def send(
         self,
