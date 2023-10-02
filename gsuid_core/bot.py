@@ -7,6 +7,7 @@ from msgspec import json as msgjson
 
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
+from gsuid_core.message_models import Button
 from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.models import Event, Message, MessageSend
@@ -127,7 +128,38 @@ class Bot:
     def set_event(self):
         self.event.set()
 
-    async def receive_resp(self, timeout: float = 60) -> Optional[Event]:
+    async def receive_resp(
+        self,
+        reply_text: Optional[str] = None,
+        option_list: Optional[List[Union[str, Button]]] = None,
+        timeout: float = 60,
+    ) -> Optional[Event]:
+        if option_list:
+            if reply_text is None:
+                reply_text = '请在60秒内做出选择...'
+
+            if self.ev.real_bot_id in ['qqguild', 'qqgroup']:
+                _buttons: List[Button] = []
+                for option in option_list:
+                    if isinstance(option, Button):
+                        _buttons.append(option)
+                    else:
+                        _buttons.append(Button(option, option, option))
+                await self.send(MessageSegment.markdown(reply_text, _buttons))
+            else:
+                _options: List[str] = []
+                for option in option_list:
+                    if isinstance(option, Button):
+                        _options.append(option.text)
+                    else:
+                        _options.append(option)
+
+                reply_text += '/'.join(_options)
+                await self.send(reply_text)
+
+        elif reply_text:
+            await self.send(reply_text)
+
         return await self.wait_for_key(timeout)
 
     async def send(

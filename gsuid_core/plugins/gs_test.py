@@ -31,8 +31,17 @@ async def get_fullmatch_msg(bot: Bot, ev: Event):
     await bot.send('正在进行[全匹配测试]')
     await asyncio.sleep(2)
     await bot.send('[全匹配测试]校验成功！')
-    await bot.send('请输入一个数字')
-    resp = await bot.receive_resp()
+
+
+@sv_switch.on_fullmatch('开始游戏')
+async def get_resp_msg(bot: Bot, ev: Event):
+    await bot.send('正在进行[开始游戏测试]')
+    await asyncio.sleep(2)
+    await bot.send('[开始游戏测试]校验成功！')
+    resp = await bot.receive_resp(
+        '请选择一个选项!',
+        ['🎨可爱的丛林', '🚀遥远的星空', '📝不如在家写作业', '✨或者看星星', '🚧这里是维护选项'],
+    )
     if resp is not None:
         await bot.send(f'你输入的是{resp.text}')
 

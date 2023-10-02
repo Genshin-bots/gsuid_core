@@ -4,10 +4,12 @@ from pathlib import Path
 from base64 import b64encode
 from typing import List, Union, Literal
 
+import msgspec
 from PIL import Image
 
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
+from gsuid_core.message_models import Button
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
@@ -52,6 +54,13 @@ class MessageSegment:
     @staticmethod
     def text(content: str) -> Message:
         return Message(type='text', data=content)
+
+    @staticmethod
+    def markdown(content: str, buttons: List[Button]) -> List[Message]:
+        return [
+            Message(type='markdown', data=content),
+            Message(type='buttons', data=msgspec.to_builtins(buttons)),
+        ]
 
     @staticmethod
     def at(user: str) -> Message:
