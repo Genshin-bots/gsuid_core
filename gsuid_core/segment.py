@@ -2,7 +2,7 @@ import uuid
 import random
 from io import BytesIO
 from pathlib import Path
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from typing import List, Tuple, Union, Literal, Optional
 
 import msgspec
@@ -152,7 +152,7 @@ async def convert_message(
         message = [message]
     elif isinstance(message, str):
         if message.startswith('base64://'):
-            img = Image.open(message)
+            img = Image.open(BytesIO(b64decode(message[9:])))
             message = [
                 MessageSegment.image(message),
                 MessageSegment.image_size(img.size),

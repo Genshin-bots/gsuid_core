@@ -123,7 +123,7 @@ class Bot:
 
             _reply = await convert_message(reply)
 
-            if self.ev.real_bot_id in ['qqguild', 'qqgroup']:
+            if self.ev.real_bot_id in ['qqgroup']:
                 _reply_str = await to_markdown(_reply)
                 _buttons: List[Button] = []
                 for option in option_list:
