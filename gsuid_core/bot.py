@@ -90,7 +90,10 @@ class Bot:
         await asyncio.wait_for(self.event.wait(), timeout=timeout)
 
         if self.resp:
-            return self.resp[-1]
+            reply = self.resp[-1]
+            self.resp.clear()
+            self.event = asyncio.Event()
+            return reply
 
     def set_event(self):
         self.event.set()
@@ -143,7 +146,11 @@ class Bot:
                         else:
                             _options.append(option)
 
-                    _reply.append(MessageSegment.text('/'.join(_options)))
+                    _reply.append(
+                        MessageSegment.text(
+                            '\n请输入以下命令之一:\n' + ' / '.join(_options)
+                        )
+                    )
                 await self.send(_reply)
 
         elif reply:
