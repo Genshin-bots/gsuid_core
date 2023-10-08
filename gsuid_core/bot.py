@@ -142,7 +142,7 @@ class Bot:
                     _options: List[str] = []
                     for option in option_list:
                         if isinstance(option, Button):
-                            _options.append(option.text)
+                            _options.append(option.data)
                         else:
                             _options.append(option)
 

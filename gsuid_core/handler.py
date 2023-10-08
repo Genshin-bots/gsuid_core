@@ -71,7 +71,7 @@ async def msg_process(msg: MessageReceive) -> Event:
 
 async def handle_event(ws: _Bot, msg: MessageReceive):
     # 获取用户权限，越小越高
-    user_pm = await get_user_pml(msg)
+    msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     logger.info('[收到事件]', event=event)
 
