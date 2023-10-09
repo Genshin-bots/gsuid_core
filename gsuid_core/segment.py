@@ -203,7 +203,8 @@ async def to_markdown(message: List[Message]) -> str:
         elif m.type == 'image_size':
             size = m.data
         elif m.type == 'text':
-            _markdown_list.append(m.data)
+            assert isinstance(m.data, str)
+            _markdown_list.append(m.data.replace('\n', '\n\n'))
 
     if url is not None and size is not None:
         _markdown_list.append(f'![test #{size[0]}px #{size[1]}px]({url})')
