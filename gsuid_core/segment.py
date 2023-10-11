@@ -63,7 +63,8 @@ class MessageSegment:
 
     @staticmethod
     def markdown(
-        content: str, buttons: Optional[List[Button]] = None
+        content: str,
+        buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
     ) -> List[Message]:
         data = [Message(type='markdown', data=content)]
         if buttons:

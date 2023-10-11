@@ -103,7 +103,9 @@ class Bot:
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]
         ] = None,
-        option_list: Optional[List[Union[str, Button]]] = None,
+        option_list: Optional[
+            Union[List[str], List[Button], List[List[str]], List[List[Button]]]
+        ] = None,
         unsuported_platform: bool = False,
     ):
         return await self.receive_resp(
@@ -115,7 +117,9 @@ class Bot:
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]
         ] = None,
-        option_list: Optional[List[Union[str, Button]]] = None,
+        option_list: Optional[
+            Union[List[str], List[Button], List[List[str]], List[List[Button]]]
+        ] = None,
         unsuported_platform: bool = False,
         is_recive: bool = True,
         timeout: float = 60,
@@ -128,20 +132,33 @@ class Bot:
 
             if self.ev.real_bot_id in ['qqgroup']:
                 _reply_str = await to_markdown(_reply)
-                _buttons: List[Button] = []
+                _buttons = []
                 for option in option_list:
-                    if isinstance(option, Button):
+                    if isinstance(option, List):
+                        _button_row: List[Button] = []
+                        for op in option:
+                            if isinstance(op, Button):
+                                _button_row.append(op)
+                            else:
+                                _button_row.append(Button(op, op, op))
+                        _buttons.append(_button_row)
+                    elif isinstance(option, Button):
                         _buttons.append(option)
                     else:
                         _buttons.append(Button(option, option, option))
-                logger.debug(_reply_str)
-                logger.debug(_buttons)
+
                 await self.send(MessageSegment.markdown(_reply_str, _buttons))
             else:
                 if unsuported_platform:
                     _options: List[str] = []
                     for option in option_list:
-                        if isinstance(option, Button):
+                        if isinstance(option, List):
+                            for op in option:
+                                if isinstance(op, Button):
+                                    _options.append(op.data)
+                                else:
+                                    _options.append(op)
+                        elif isinstance(option, Button):
                             _options.append(option.data)
                         else:
                             _options.append(option)

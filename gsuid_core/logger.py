@@ -113,6 +113,6 @@ logger.add(
     format=format_event,
     rotation=datetime.time(),
     level=LEVEL,
-    # diagnose=False,
+    diagnose=False,
     # backtrace=False,
 )
