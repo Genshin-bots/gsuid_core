@@ -3,7 +3,7 @@ from pathlib import Path
 # raw_url = 'https://raw.githubusercontent.com'
 # repo_title = 'Genshin-bots/GenshinUID-docs/master/docs'
 # plugins_lib = f'{raw_url}/{repo_title}/PluginsList.md'
-plugins_lib = 'https://docs.gsuid.gbots.work/plugin_list.json'
+plugins_lib = 'https://docs.sayu-bot.com/plugin_list.json'
 
 proxy_url = 'https://ghproxy.com/'
 
