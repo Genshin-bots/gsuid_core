@@ -6,7 +6,7 @@ import string
 import hashlib
 from typing import Any, Dict, Optional
 
-mys_version="2.60.1"
+mys_version = "2.60.1"
 _S = {
     '2.60.1': {
         "K2": "AcpNVhfh0oedCobdCyFV8EE1jMOVDy9q",
@@ -71,7 +71,9 @@ def get_ds_token(
 
 
 def get_web_ds_token(web=False):
-    return _random_str_ds(_S[mys_version]['LK2'] if web else _S[mys_version]['K2'])
+    return _random_str_ds(
+        _S[mys_version]['LK2'] if web else _S[mys_version]['K2']
+    )
 
 
 def generate_os_ds(salt: str = '') -> str:

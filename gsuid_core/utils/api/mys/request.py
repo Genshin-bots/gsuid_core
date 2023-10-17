@@ -299,7 +299,9 @@ class BaseMysApi:
                                 header['x-rpc-device_fp'] = new_fp
                             return retcode
                         else:
-                            header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
+                            header['x-rpc-challenge_game'] = (
+                                '6' if self.is_sr else '2'
+                            )
                             header['x-rpc-page'] = (
                                 '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
                             )
