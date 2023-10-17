@@ -21,6 +21,7 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from .api import _API
 from .tools import (
     random_hex,
+    mys_version,
     random_text,
     get_ds_token,
     generate_os_ds,
@@ -70,7 +71,7 @@ RECOGNIZE_SERVER = {
 
 class BaseMysApi:
     proxy_url: Optional[str] = proxy_url if proxy_url else None
-    mysVersion = '2.44.1'
+    mysVersion = mys_version
     _HEADER = {
         'x-rpc-app_version': mysVersion,
         'User-Agent': (
@@ -619,7 +620,7 @@ class MysApi(BaseMysApi):
             HEADER = copy.deepcopy(self._HEADER)
             HEADER['Cookie'] = ck
             HEADER['x-rpc-device_id'] = random_hex(32)
-            HEADER['x-rpc-app_version'] = '2.44.1'
+            HEADER['x-rpc-app_version'] = mys_version
             HEADER['x-rpc-client_type'] = '5'
             HEADER['X_Requested_With'] = 'com.mihoyo.hyperion'
             HEADER['DS'] = get_web_ds_token(True)
@@ -1052,7 +1053,7 @@ class MysApi(BaseMysApi):
         HEADER['Cookie'] = stoken
         HEADER['DS'] = get_web_ds_token(True)
         HEADER['User-Agent'] = 'okhttp/4.8.0'
-        HEADER['x-rpc-app_version'] = '2.44.1'
+        HEADER['x-rpc-app_version'] = mys_version
         HEADER['x-rpc-sys_version'] = '12'
         HEADER['x-rpc-client_type'] = '5'
         HEADER['x-rpc-channel'] = 'mihoyo'

@@ -6,10 +6,11 @@ import string
 import hashlib
 from typing import Any, Dict, Optional
 
+mys_version="2.60.1"
 _S = {
-    '2.44.1': {
-        'LK2': 'IEIZiKYaput2OCKQprNuGsog1NZc1FkS',
-        'K2': 'dZAwGk4e9aC0MXXItkwnHamjA1x30IYw',
+    '2.60.1': {
+        "K2": "AcpNVhfh0oedCobdCyFV8EE1jMOVDy9q",
+        "LK2": "1OJyMNCqFlstEQqqMOv0rKCIdTOoJhNt",
         '22': 't0qEgfub6cvueAPgR5m9aQWWVciEer7v',
         '25': 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs',
     },
@@ -65,12 +66,12 @@ def get_ds_token(
     b: Optional[Dict[str, Any]] = None,
     salt_id: str = '25',
 ):
-    salt = _S['2.44.1'][salt_id]
+    salt = _S[mys_version][salt_id]
     return _random_int_ds(salt, q, b)
 
 
 def get_web_ds_token(web=False):
-    return _random_str_ds(_S['2.44.1']['LK2'] if web else _S['2.44.1']['K2'])
+    return _random_str_ds(_S[mys_version]['LK2'] if web else _S[mys_version]['K2'])
 
 
 def generate_os_ds(salt: str = '') -> str:
