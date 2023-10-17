@@ -263,33 +263,7 @@ class BaseMysApi:
                 header['x-rpc-device_id'] = await self.get_user_device_id(uid)
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
 
-            for _ in range(3):
-                if 'Cookie' in header and header['Cookie'] in self.chs:
-                    # header['x-rpc-challenge']=self.chs.pop(header['Cookie'])
-                    if self.is_sr:
-                        header['x-rpc-challenge'] = self.chs.pop(
-                            header['Cookie']
-                        )
-                        if isinstance(params, Dict):
-                            header['DS'] = get_ds_token(
-                                '&'.join(
-                                    [f'{k}={v}' for k, v in params.items()]
-                                )
-                            )
-
-                    header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
-                    header['x-rpc-page'] = (
-                        '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
-                    )
-
-                    if (
-                        'x-rpc-challenge' in header
-                        and not header['x-rpc-challenge']
-                    ):
-                        del header['x-rpc-challenge']
-                        del header['x-rpc-page']
-                        del header['x-rpc-challenge_game']
-
+            for _ in range(2):
                 print(header)
                 async with client.request(
                     method,
@@ -306,7 +280,6 @@ class BaseMysApi:
                         _raw_data = await resp.text()
                         raw_data = {'retcode': -999, 'data': _raw_data}
                     logger.debug(raw_data)
-
                     # 判断retcode
                     if 'retcode' in raw_data:
                         retcode: int = raw_data['retcode']
@@ -317,27 +290,28 @@ class BaseMysApi:
 
                     # 针对1034做特殊处理
                     if retcode == 1034:
-                        if uid and self.is_sr and _ == 0:
-                            new_fp = await self.generate_fp_by_uid(uid)
-                            await GsUser.update_data_by_uid_without_bot_id(
-                                uid, fp=new_fp
+                        if _ == 1:
+                            if uid and self.is_sr:
+                                new_fp = await self.generate_fp_by_uid(uid)
+                                await GsUser.update_data_by_uid_without_bot_id(
+                                    uid, fp=new_fp
+                                )
+                                header['x-rpc-device_fp'] = new_fp
+                            return retcode
+                        else:
+                            header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
+                            header['x-rpc-page'] = (
+                                '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
                             )
-                            header['x-rpc-device_fp'] = new_fp
+                            pass_header = copy.deepcopy(header)
+                            ch = await self._upass(pass_header)
+                            header['x-rpc-challenge'] = ch
                             if isinstance(params, Dict):
                                 header['DS'] = get_ds_token(
                                     '&'.join(
                                         [f'{k}={v}' for k, v in params.items()]
                                     )
                                 )
-                        else:
-                            ch = await self._upass(header)
-                            self.chs[header['Cookie']] = ch
-                    elif retcode == -10001 and uid:
-                        new_fp = await self.generate_fp_by_uid(uid)
-                        await GsUser.update_data_by_uid_without_bot_id(
-                            uid, fp=new_fp
-                        )
-                        header['x-rpc-device_fp'] = new_fp
                     elif retcode != 0:
                         return retcode
                     else:
