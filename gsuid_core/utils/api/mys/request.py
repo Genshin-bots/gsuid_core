@@ -434,7 +434,6 @@ class MysApi(BaseMysApi):
                 async with client.request(
                     url=f'{_pass_api}&gt={gt}&challenge={ch}',
                     method='GET',
-                    header=header,
                 )as data:
                     try:
                         data = await data.json()
