@@ -264,23 +264,6 @@ class BaseMysApi:
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
 
             for _ in range(2):
-                print(header)
-                if isinstance(params, Dict):
-                    header['DS'] = get_ds_token(
-                        '&'.join(
-                            [
-                                f'{k}={v}'
-                                for k, v in sorted(
-                                    params.items(), key=lambda x: x[0]
-                                )
-                            ]
-                        )
-                    )
-                if isinstance(data, Dict):
-                    header['DS'] = get_ds_token(
-                        '',
-                        data,
-                    )
                 async with client.request(
                     method,
                     url=url,
@@ -327,6 +310,20 @@ class BaseMysApi:
                                 return 114514
                             else:
                                 header['x-rpc-challenge'] = ch
+                            if 'DS' in header:
+                                if isinstance(params, Dict):
+                                    q = '&'.join(
+                                        [
+                                            f'{k}={v}'
+                                            for k, v in sorted(
+                                                params.items(),
+                                                key=lambda x: x[0],
+                                            )
+                                        ]
+                                    )
+                                else:
+                                    q = ''
+                                header['DS'] = get_ds_token(q, data)
                     elif retcode != 0:
                         return retcode
                     else:
