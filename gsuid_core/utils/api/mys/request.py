@@ -457,7 +457,7 @@ class MysApi(BaseMysApi):
         vl, ch = await self._pass(gt, ch, header)
 
         if vl:
-            await self.get_header_and_vl(header, ch, vl)
+            await self.get_header_and_vl(header, ch, vl, is_bbs)
             if ch:
                 logger.info(f'[upass] 获取ch -> {ch}')
                 return ch
@@ -482,7 +482,7 @@ class MysApi(BaseMysApi):
             header=header,
         )
 
-    async def get_header_and_vl(self, header: Dict, ch, vl):
+    async def get_header_and_vl(self, header: Dict, ch, vl, is_bbs: bool = False):
         header['DS'] = get_ds_token(
             '',
             {
@@ -492,7 +492,7 @@ class MysApi(BaseMysApi):
             },
         )
         _ = await self._mys_request(
-            url=self.MAPI['VERIFY_URL'],
+            url=self.MAPI['VERIFY_URL'] if not is_bbs else self.MAPI['BBS_VERIFY_URL'],
             method='POST',
             header=header,
             data={

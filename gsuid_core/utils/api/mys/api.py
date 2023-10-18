@@ -37,6 +37,7 @@ BBS_VERIFICATION_URL = (
     f'{NEW_BBS_URL}/misc/api/createVerification?is_high=true'
 )
 VERIFY_URL = f'{NEW_URL}/game_record/app/card/wapi/verifyVerification'
+BBS_VERIFY_URL = f'{NEW_BBS_URL}/misc/api/verifyVerification'
 
 '''账号相关'''
 # 通过LoginTicket获取Stoken
