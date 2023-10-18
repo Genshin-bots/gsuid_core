@@ -264,8 +264,6 @@ class BaseMysApi:
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
 
             for _ in range(2):
-                print(header)
-
                 async with client.request(
                     method,
                     url=url,
