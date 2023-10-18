@@ -207,7 +207,7 @@ class BaseMysApi:
             url=_URL,
             method='GET',
             header=HEADER,
-            params=params if params else {'server': server_id, 'role_id': uid},
+            params=params if params else {'role_id': uid, 'server': server_id},
             use_proxy=True if is_os else False,
         )
         return data
@@ -265,6 +265,22 @@ class BaseMysApi:
 
             for _ in range(2):
                 print(header)
+                if isinstance(params, Dict):
+                    header['DS'] = get_ds_token(
+                        '&'.join(
+                            [
+                                f'{k}={v}'
+                                for k, v in sorted(
+                                    params.items(), key=lambda x: x[0]
+                                )
+                            ]
+                        )
+                    )
+                if isinstance(data, Dict):
+                    header['DS'] = get_ds_token(
+                        '',
+                        data,
+                    )
                 async with client.request(
                     method,
                     url=url,
@@ -307,13 +323,10 @@ class BaseMysApi:
                             )
                             pass_header = copy.deepcopy(header)
                             ch = await self._upass(pass_header)
-                            header['x-rpc-challenge'] = ch
-                            if isinstance(params, Dict):
-                                header['DS'] = get_ds_token(
-                                    '&'.join(
-                                        [f'{k}={v}' for k, v in params.items()]
-                                    )
-                                )
+                            if ch == '':
+                                return 114514
+                            else:
+                                header['x-rpc-challenge'] = ch
                     elif retcode != 0:
                         return retcode
                     else:
@@ -434,7 +447,7 @@ class MysApi(BaseMysApi):
                 async with client.request(
                     url=f'{_pass_api}&gt={gt}&challenge={ch}',
                     method='GET',
-                )as data:
+                ) as data:
                     try:
                         data = await data.json()
                     except ContentTypeError:
@@ -489,7 +502,9 @@ class MysApi(BaseMysApi):
             header=header,
         )
 
-    async def get_header_and_vl(self, header: Dict, ch, vl, is_bbs: bool = False):
+    async def get_header_and_vl(
+        self, header: Dict, ch, vl, is_bbs: bool = False
+    ):
         header['DS'] = get_ds_token(
             '',
             {
@@ -499,7 +514,9 @@ class MysApi(BaseMysApi):
             },
         )
         _ = await self._mys_request(
-            url=self.MAPI['VERIFY_URL'] if not is_bbs else self.MAPI['BBS_VERIFY_URL'],
+            url=self.MAPI['VERIFY_URL']
+            if not is_bbs
+            else self.MAPI['BBS_VERIFY_URL'],
             method='POST',
             header=header,
             data={
