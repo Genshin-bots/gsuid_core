@@ -262,17 +262,20 @@ class BaseMysApi:
                 uid = params['role_id']
                 header['x-rpc-device_id'] = await self.get_user_device_id(uid)
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
-                
+
             for _ in range(2):
                 print(header)
                 if isinstance(params, Dict):
                     header['DS'] = get_ds_token(
                         '&'.join(
-                            [f'{k}={v}' for k, v in sorted(
-                                params.items(), key=lambda x: x[0]
-                                )]
-                            )
+                            [
+                                f'{k}={v}'
+                                for k, v in sorted(
+                                    params.items(), key=lambda x: x[0]
+                                )
+                            ]
                         )
+                    )
                 if isinstance(data, Dict):
                     header['DS'] = get_ds_token(
                         '',
@@ -312,7 +315,9 @@ class BaseMysApi:
                                 header['x-rpc-device_fp'] = new_fp
                             return retcode
                         else:
-                            header['x-rpc-challenge_game'] = '6' if self.is_sr else '2'
+                            header['x-rpc-challenge_game'] = (
+                                '6' if self.is_sr else '2'
+                            )
                             header['x-rpc-page'] = (
                                 '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
                             )
@@ -442,7 +447,7 @@ class MysApi(BaseMysApi):
                 async with client.request(
                     url=f'{_pass_api}&gt={gt}&challenge={ch}',
                     method='GET',
-                )as data:
+                ) as data:
                     try:
                         data = await data.json()
                     except ContentTypeError:
@@ -497,7 +502,9 @@ class MysApi(BaseMysApi):
             header=header,
         )
 
-    async def get_header_and_vl(self, header: Dict, ch, vl, is_bbs: bool = False):
+    async def get_header_and_vl(
+        self, header: Dict, ch, vl, is_bbs: bool = False
+    ):
         header['DS'] = get_ds_token(
             '',
             {
@@ -507,7 +514,9 @@ class MysApi(BaseMysApi):
             },
         )
         _ = await self._mys_request(
-            url=self.MAPI['VERIFY_URL'] if not is_bbs else self.MAPI['BBS_VERIFY_URL'],
+            url=self.MAPI['VERIFY_URL']
+            if not is_bbs
+            else self.MAPI['BBS_VERIFY_URL'],
             method='POST',
             header=header,
             data={
