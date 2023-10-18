@@ -428,16 +428,24 @@ class MysApi(BaseMysApi):
         # 代码来源：GITHUB项目MIT开源
         _pass_api = core_plugins_config.get_config('_pass_API').data
         if _pass_api:
-            data = await self._mys_request(
-                url=f'{_pass_api}&gt={gt}&challenge={ch}',
-                method='GET',
-                header=header,
-            )
-            if isinstance(data, int):
-                return None, None
-            else:
-                validate = data['data']['validate']
-                ch = data['data']['challenge']
+            async with ClientSession(
+                connector=TCPConnector(verify_ssl=ssl_verify)
+            ) as client:
+                async with client.request(
+                    url=f'{_pass_api}&gt={gt}&challenge={ch}',
+                    method='GET',
+                    header=header,
+                )as data:
+                    try:
+                        data = await data.json()
+                    except ContentTypeError:
+                        data = await data.text()
+                        return None, None
+                    if isinstance(data, int):
+                        return None, None
+                    else:
+                        validate = data['data']['validate']
+                        ch = data['data']['challenge']
         else:
             validate = None
 
