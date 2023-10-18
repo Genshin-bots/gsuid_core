@@ -475,7 +475,7 @@ class MysApi(BaseMysApi):
         )
 
     async def get_bbs_upass_link(self, header: Dict) -> Union[int, Dict]:
-        header['DS'] = get_ds_token('is_high=false')
+        header['DS'] = get_ds_token('is_high=true')
         return await self._mys_request(
             url=self.MAPI['BBS_VERIFICATION_URL'],
             method='GET',

@@ -34,7 +34,7 @@ VERIFICATION_URL = (
     f'{NEW_URL}/game_record/app/card/wapi/createVerification?is_high=false'
 )
 BBS_VERIFICATION_URL = (
-    f'{NEW_BBS_URL}/game_record/app/card/wapi/createVerification?is_high=false'
+    f'{NEW_BBS_URL}/misc/api/createVerification?is_high=true'
 )
 VERIFY_URL = f'{NEW_URL}/game_record/app/card/wapi/verifyVerification'
 
