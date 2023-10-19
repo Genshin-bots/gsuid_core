@@ -289,7 +289,10 @@ class BaseMysApi:
 
                     # 针对1034做特殊处理
                     if retcode == 1034:
-                        if not core_plugins_config.get_config('MysPass').data or _ == 1 :
+                        if (
+                            not core_plugins_config.get_config('MysPass').data
+                            or _ == 1
+                        ):
                             if uid and self.is_sr:
                                 new_fp = await self.generate_fp_by_uid(uid)
                                 await GsUser.update_data_by_uid_without_bot_id(
