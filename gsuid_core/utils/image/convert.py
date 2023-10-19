@@ -45,7 +45,7 @@ async def convert_img(
     if isinstance(img, Image.Image):
         img = img.convert('RGB')
         result_buffer = BytesIO()
-        img.save(result_buffer, format='JPEG', quality=85)
+        img.save(result_buffer, format='JPEG', quality=90)
         res = result_buffer.getvalue()
         if is_base64:
             res = 'base64://' + b64encode(res).decode()

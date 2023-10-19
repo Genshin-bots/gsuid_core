@@ -7,7 +7,7 @@
 
 [KimigaiiWuyi/GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) 的核心部分，平台无关，支持 HTTP/WS 形式调用，便于移植到其他平台以及框架。
 
-**🎉[详细文档](https://docs.gsuid.gbots.work/#/)**
+**🎉[详细文档](https://docs.sayu-bot.com)**
 
 ## 安装Core
 
