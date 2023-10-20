@@ -159,8 +159,11 @@ class BaseModel(BaseBotIDModel):
     async def insert_data(
         cls, session: AsyncSession, user_id: str, bot_id: str, **data
     ) -> int:
-        session.add(cls(user_id=user_id, bot_id=bot_id, **data))
-        await session.commit()
+        if await cls.data_exist(user_id=user_id, bot_id=bot_id):
+            await cls.update_data(user_id, bot_id, **data)
+        else:
+            session.add(cls(user_id=user_id, bot_id=bot_id, **data))
+            await session.commit()
         return 0
 
     @classmethod
