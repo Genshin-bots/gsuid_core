@@ -107,8 +107,7 @@ async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
         return plugins_list[name]
     else:
         for _n in plugins_list:
-            sim = len(set(_n) & set(name))
-            if sim >= 0.5 * len(_n):
+            if name.lower() in _n:
                 return plugins_list[_n]
         else:
             return None
