@@ -45,9 +45,9 @@ class GsClient:
                 content = [Message(type='text', data=intent)]
             msg = MessageReceive(
                 bot_id='Nonebot222',
-                user_type='direct',
+                user_type='group',
                 user_pm=1,
-                group_id=None,
+                group_id='9999',
                 user_id='511',
                 content=content,
             )

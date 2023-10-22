@@ -33,8 +33,11 @@ def modify_func(func):
             result = await func(bot, event)
         finally:
             instancess = Bot.get_instances()
+            mutiply_instances = Bot.get_mutiply_instances()
             if bot.uuid in instancess:
                 instancess.pop(bot.uuid)
+            if bot.uuid in mutiply_instances and bot.mutiply_tag:
+                mutiply_instances.pop(bot.uuid)
         return result
 
     return wrapper

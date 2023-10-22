@@ -75,10 +75,19 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     event = await msg_process(msg)
     logger.info('[收到事件]', event=event)
 
-    gid = event.group_id if event.group_id else 0
-    uid = event.user_id if event.user_id else 0
-    uuid = f'{uid}{gid}'
+    gid = event.group_id if event.group_id else '0'
+    uid = event.user_id if event.user_id else '0'
+    uuid = f'{gid}{uid}'
     instances = Bot.get_instances()
+    mutiply_instances = Bot.get_mutiply_instances()
+    mutiply_map = Bot.get_mutiply_map()
+
+    if gid in mutiply_map and mutiply_map[gid] in mutiply_instances:
+        mutiply_instances[mutiply_map[gid]].mutiply_resp.append(event)
+        mutiply_instances[mutiply_map[gid]].set_mutiply_event()
+        if uuid == mutiply_instances[mutiply_map[gid]].uuid:
+            return
+
     if uuid in instances:
         instances[uuid].resp.append(event)
         instances[uuid].set_event()

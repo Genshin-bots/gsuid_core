@@ -67,24 +67,34 @@ class _Bot:
 
 class Bot:
     instances: Dict[str, "Bot"] = {}
+    mutiply_instances: Dict[str, "Bot"] = {}
+    mutiply_map: Dict[str, str] = {}
 
     def __init__(self, bot: _Bot, ev: Event):
-        gid = ev.group_id if ev.group_id else 0
-        uid = ev.user_id if ev.user_id else 0
-        self.uuid = f'{uid}{gid}'
-        self.instances[self.uuid] = self
+        self.gid = ev.group_id if ev.group_id else '0'
+        self.uid = ev.user_id if ev.user_id else '0'
+        self.uuid = f'{self.gid}{self.uid}'
 
         self.bot = bot
         self.ev = ev
         self.logger = self.bot.logger
         self.bot_id = ev.bot_id
         self.bot_self_id = ev.bot_self_id
-        self.event = asyncio.Event()
         self.resp: List[Event] = []
+        self.mutiply_tag = False
+        self.mutiply_resp: List[Event] = []
 
     @classmethod
     def get_instances(cls):
         return cls.instances
+
+    @classmethod
+    def get_mutiply_instances(cls):
+        return cls.mutiply_instances
+
+    @classmethod
+    def get_mutiply_map(cls):
+        return cls.mutiply_map
 
     async def wait_for_key(self, timeout: float) -> Optional[Event]:
         await asyncio.wait_for(self.event.wait(), timeout=timeout)
@@ -98,6 +108,24 @@ class Bot:
     def set_event(self):
         self.event.set()
 
+    def set_mutiply_event(self):
+        self.mutiply_event.set()
+
+    async def receive_mutiply_resp(
+        self,
+        reply: Optional[
+            Union[Message, List[Message], List[str], str, bytes]
+        ] = None,
+        option_list: Optional[
+            Union[List[str], List[Button], List[List[str]], List[List[Button]]]
+        ] = None,
+        unsuported_platform: bool = False,
+        timeout: float = 60,
+    ):
+        return await self.receive_resp(
+            reply, option_list, unsuported_platform, True, True, timeout
+        )
+
     async def send_option(
         self,
         reply: Optional[
@@ -109,7 +137,7 @@ class Bot:
         unsuported_platform: bool = False,
     ):
         return await self.receive_resp(
-            reply, option_list, unsuported_platform, False
+            reply, option_list, unsuported_platform, False, False
         )
 
     async def receive_resp(
@@ -121,6 +149,7 @@ class Bot:
             Union[List[str], List[Button], List[List[str]], List[List[Button]]]
         ] = None,
         unsuported_platform: bool = False,
+        is_mutiply: bool = False,
         is_recive: bool = True,
         timeout: float = 60,
     ) -> Optional[Event]:
@@ -173,7 +202,22 @@ class Bot:
         elif reply:
             await self.send(reply)
 
-        if is_recive:
+        if is_mutiply:
+            if self.uuid not in self.mutiply_instances:
+                self.mutiply_instances[self.uuid] = self
+                if self.gid not in self.mutiply_map:
+                    self.mutiply_map[self.gid] = self.uuid
+                self.mutiply_tag = True
+                self.mutiply_event = asyncio.Event()
+
+            while self.mutiply_resp == []:
+                await asyncio.wait_for(self.mutiply_event.wait(), timeout)
+
+            self.mutiply_event.clear()
+            return self.mutiply_resp.pop(0)
+        elif is_recive:
+            self.instances[self.uuid] = self
+            self.event = asyncio.Event()
             return await self.wait_for_key(timeout)
 
     async def send(
