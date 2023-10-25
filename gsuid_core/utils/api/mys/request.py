@@ -15,7 +15,6 @@ from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
-from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import _API
@@ -75,12 +74,14 @@ class BaseMysApi:
     _HEADER = {
         'x-rpc-app_version': mysVersion,
         'User-Agent': (
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) '
-            f'AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/{mysVersion}'
+            'Mozilla/5.0 (Linux; Android 13; PHK110 Build/SKQ1.221119.001; wv)'
+            'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/'
+            f'118.0.0.0 Mobile Safari/537.36 miHoYoBBS/{mysVersion}'
         ),
         'x-rpc-client_type': '5',
         'Referer': 'https://webstatic.mihoyo.com/',
-        'Origin': 'https://webstatic.mihoyo.com',
+        # 'Origin': 'https://webstatic.mihoyo.com/',
+        # 'X-Requested-With': 'com.mihoyo.hyperion',
     }
     _HEADER_OS = {
         'x-rpc-app_version': '1.5.0',
@@ -122,34 +123,45 @@ class BaseMysApi:
         ...
 
     def get_device_id(self) -> str:
-        device_id = str(uuid.uuid4()).upper()
+        device_id = str(uuid.uuid4())
         return device_id
+
+    def generate_fp(self, length: int = 13) -> str:
+        char = digits + "abcdef"
+        return ''.join(random.choices(char, k=length))
 
     def generate_seed(self, length: int):
         characters = '0123456789abcdef'
         result = ''.join(random.choices(characters, k=length))
         return result
 
-    async def generate_fp_by_uid(self, uid: str) -> str:
-        seed_id = self.generate_seed(16)
-        seed_time = str(int(time.time() * 1000))
-        ext_fields = f'{{"userAgent":"{self._HEADER["User-Agent"]}",\
-"browserScreenSize":281520,"maxTouchPoints":5,\
-"isTouchSupported":true,"browserLanguage":"zh-CN","browserPlat":"iPhone",\
-"browserTimeZone":"Asia/Shanghai","webGlRender":"Apple GPU",\
-"webGlVendor":"Apple Inc.",\
-"numOfPlugins":0,"listOfPlugins":"unknown","screenRatio":3,"deviceMemory":"unknown",\
-"hardwareConcurrency":"4","cpuClass":"unknown","ifNotTrack":"unknown","ifAdBlock":0,\
-"hasLiedResolution":1,"hasLiedOs":0,"hasLiedBrowser":0}}'
+    def generate_ID(self, length: int = 64):
+        characters = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        result = ''.join(random.choices(characters, k=length))
+        return result
+
+    def generate_model_name(self):
+        return self.generate_ID(6)
+
+    def get_seed(self):
+        return self.get_device_id(), str(int(time.time() * 1000))
+
+    async def generate_fp_by_uid(
+        self, uid: str, seed_id: str, seed_time: str, model_name: str
+    ) -> str:
+        device_id = await self.get_user_device_id(uid)
+        ext_fields = f'''{{\"cpuType\":\"arm64-v8a\",\"romCapacity\":\"512\",\"productName\":\"{model_name}\",\"romRemain\":\"422\",\"manufacturer\":\"XiaoMi\",\"appMemory\":\"512\",\"hostname\":\"dg02-pool03-kvm87\",\"screenSize\":\"1240x2662\",\"osVersion\":\"13\",\"aaid\":\"{self.generate_ID()}\",\"vendor\":\"中国联通\",\"accelerometer\":\"1.4883357x7.1712894x6.2847486\",\"buildTags\":\"release-keys\",\"model\":\"{model_name}\",\"brand\":\"XiaoMi\",\"oaid\":\"6C47BC55BBC443F49B603129AFCD621E6f70bfc8a663a364e224fe59c248b471\",\"hardware\":\"qcom\",\"deviceType\":\"OP5913L1\",\"devId\":\"REL\",\"serialNumber\":\"unknown\",\"buildTime\":\"1687848011000\",\"buildUser\":\"root\",\"ramCapacity\":\"469679\",\"magnetometer\":\"20.081251x-27.487501x2.1937501\",\"display\":\"{model_name}_13.1.0.181(CN01)\",\"ramRemain\":\"215344\",\"deviceInfo\":\"XiaoMi\\\/{model_name}\\\/OP5913L1:13\\\/SKQ1.221119.001\\\/T.118e6c7-5aa23-73911:user\\\/release-keys\",\"gyroscope\":\"0.030226856x0.014647375x0.010652636\",\"vaid\":\"{self.generate_ID()}\",\"buildType\":\"user\",\"sdkVersion\":\"33\",\"board\":\"taro\"}}'''  # noqa
         body = {
-            'seed_id': seed_id,
-            'device_id': await self.get_user_device_id(uid),
-            'platform': '5',
+            'device_id': self.generate_seed(16),
+            'seed_id': seed_id,  # uuid4
+            'platform': '2',
             'seed_time': seed_time,
             'ext_fields': ext_fields,
-            'app_name': 'account_cn',
-            'device_fp': '38d7ee834d1e9',
+            'app_name': 'bbs_cn',
+            'bbs_device_id': device_id,
+            'device_fp': self.generate_fp(),
         }
+        print(body)
         HEADER = copy.deepcopy(self._HEADER)
         res = await self._mys_request(
             url=self.MAPI['GET_FP_URL'],
@@ -165,6 +177,40 @@ class BaseMysApi:
             return random_hex(13).lower()
         else:
             return res["data"]["device_fp"]
+
+    async def device_login_and_save(
+        self, device_id: str, device_fp: str, model_name: str, cookie: str
+    ):
+        body = {
+            "app_version": self.mysVersion,
+            "device_id": device_id,
+            "device_name": f"XiaoMi{model_name}",
+            "os_version": "33",
+            "platform": "Android",
+            "registration_id": self.generate_seed(19),
+        }
+
+        HEADER = copy.deepcopy(self._HEADER)
+        HEADER['x-rpc-device_id'] = device_id
+        HEADER['x-rpc-device_fp'] = device_fp
+        HEADER['x-rpc-device_name'] = f"XiaoMi{model_name}"
+        HEADER['x-rpc-device_model'] = model_name
+        HEADER['DS'] = generate_passport_ds('', body)
+        HEADER['cookie'] = cookie
+
+        await self._mys_request(
+            url=self.MAPI['DEVICE_LOGIN'],
+            method='POST',
+            header=HEADER,
+            data=body,
+        )
+
+        await self._mys_request(
+            url=self.MAPI['SAVE_DEVICE'],
+            method='POST',
+            header=HEADER,
+            data=body,
+        )
 
     async def simple_mys_req(
         self,
@@ -260,9 +306,12 @@ class BaseMysApi:
             uid = None
             if params and 'role_id' in params:
                 uid = params['role_id']
-                header['x-rpc-device_id'] = await self.get_user_device_id(uid)
+                device_id = await self.get_user_device_id(uid)
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
+                if device_id is not None:
+                    header['x-rpc-device_id'] = device_id
 
+            print(header)
             for _ in range(2):
                 async with client.request(
                     method,
@@ -278,7 +327,9 @@ class BaseMysApi:
                     except ContentTypeError:
                         _raw_data = await resp.text()
                         raw_data = {'retcode': -999, 'data': _raw_data}
+
                     logger.debug(raw_data)
+
                     # 判断retcode
                     if 'retcode' in raw_data:
                         retcode: int = raw_data['retcode']
@@ -289,147 +340,61 @@ class BaseMysApi:
 
                     # 针对1034做特殊处理
                     if retcode == 1034:
-                        if (
-                            not core_plugins_config.get_config('MysPass').data
-                            or _ == 1
-                        ):
-                            if uid and self.is_sr:
-                                new_fp = await self.generate_fp_by_uid(uid)
-                                await GsUser.update_data_by_uid_without_bot_id(
-                                    uid, fp=new_fp
+                        if uid:
+                            '''
+                            ck = header['Cookie']
+                            if 'DEVICEFP_SEED_ID' not in ck:
+                                header['Cookie'] = (
+                                    'mi18nLang=zh-cn;_MHYUUID='
+                                    'b6261233-05a8-45fc-b7a1-55e152b52ae4'
+                                    f'DEVICEFP_SEED_ID={seed_id};'
+                                    f'DEVICEFP_SEED_TIME={seed_time};'
+                                    f'{ck};DEVICE_FP={new_fp}'
                                 )
-                                header['x-rpc-device_fp'] = new_fp
-                            return retcode
-                        else:
+                            '''
+
                             header['x-rpc-challenge_game'] = (
                                 '6' if self.is_sr else '2'
                             )
                             header['x-rpc-page'] = (
-                                '3.1.3_#/rpg' if self.is_sr else '3.1.3_#/ys'
+                                'v1.4.1-rpg_#/rpg'
+                                if self.is_sr
+                                else 'v4.1.5-ys_#ys'
                             )
+                            header['x-rpc-tool-verison'] = (
+                                'v1.4.1-rpg' if self.is_sr else 'v4.1.5-ys'
+                            )
+
+                        if core_plugins_config.get_config('MysPass').data:
                             pass_header = copy.deepcopy(header)
                             ch = await self._upass(pass_header)
                             if ch == '':
                                 return 114514
                             else:
                                 header['x-rpc-challenge'] = ch
-                            if 'DS' in header:
-                                if isinstance(params, Dict):
-                                    q = '&'.join(
-                                        [
-                                            f'{k}={v}'
-                                            for k, v in sorted(
-                                                params.items(),
-                                                key=lambda x: x[0],
-                                            )
-                                        ]
-                                    )
-                                else:
-                                    q = ''
-                                header['DS'] = get_ds_token(q, data)
+
+                        if 'DS' in header:
+                            if isinstance(params, Dict):
+                                q = '&'.join(
+                                    [
+                                        f'{k}={v}'
+                                        for k, v in sorted(
+                                            params.items(),
+                                            key=lambda x: x[0],
+                                        )
+                                    ]
+                                )
+                            else:
+                                q = ''
+                            header['DS'] = get_ds_token(q, data)
+
+                        logger.debug(header)
                     elif retcode != 0:
                         return retcode
                     else:
                         return raw_data
             else:
                 return -999
-
-    '''
-    async def _mys_request(
-        self,
-        url: str,
-        method: Literal['GET', 'POST'] = 'GET',
-        header: Dict[str, Any] = _HEADER,
-        params: Optional[Dict[str, Any]] = None,
-        data: Optional[Dict[str, Any]] = None,
-        use_proxy: Optional[bool] = False,
-    ) -> Union[Dict, int]:
-        import types
-        import inspect
-
-        async with ClientSession(
-            connector=TCPConnector(verify_ssl=ssl_verify)
-        ) as client:
-            if 'Cookie' in header:
-                if header['Cookie'] in self.chs:
-                    header['x-rpc-challenge'] = self.chs.pop(header["Cookie"])
-
-            async with client.request(
-                method,
-                url=url,
-                headers=header,
-                params=params,
-                json=data,
-                proxy=self.proxy_url if use_proxy else None,
-                timeout=300,
-            ) as resp:
-                try:
-                    raw_data = await resp.json()
-                except ContentTypeError:
-                    _raw_data = await resp.text()
-                    raw_data = {'retcode': -999, 'data': _raw_data}
-                logger.debug(raw_data)
-
-                # 判断retcode
-                if 'retcode' in raw_data:
-                    retcode: int = raw_data['retcode']
-                elif 'code' in raw_data:
-                    retcode: int = raw_data['code']
-                else:
-                    retcode = 0
-
-                # 针对1034做特殊处理
-                if retcode == 1034:
-                    try:
-                        # 获取ch
-                        ch = await self._upass(header)
-                        # 记录ck -> ch的对照表
-                        if "Cookie" in header:
-                            self.chs[header["Cookie"]] = ch
-                        # 获取当前的栈帧
-                        curframe = inspect.currentframe()
-                        # 确保栈帧存在
-                        assert curframe
-                        # 获取调用者的栈帧
-                        calframe = curframe.f_back
-                        # 确保调用者的栈帧存在
-                        assert calframe
-                        # 获取调用者的函数名
-                        caller_name = calframe.f_code.co_name
-                        # 获取调用者函数的局部变量字典
-                        caller_args = inspect.getargvalues(calframe).locals
-                        # 获取调用者的参数列表
-                        caller_args2 = inspect.getargvalues(calframe).args
-                        # # 生成一个字典，键为调用者的参数名，值为对应的局部变量值，如果不存在则为None
-                        caller_args3 = {
-                            k: caller_args.get(k, None) for k in caller_args2
-                        }
-                        if caller_name != '_mys_req_get':
-                            return await types.FunctionType(
-                                calframe.f_code, globals()
-                            )(**caller_args3)
-                        else:
-                            curframe = calframe
-                            calframe = curframe.f_back
-                            assert calframe
-                            caller_name = calframe.f_code.co_name
-                            caller_args = inspect.getargvalues(calframe).locals
-                            caller_args2 = inspect.getargvalues(calframe).args
-                            caller_args3 = {
-                                k: caller_args.get(k, None)
-                                for k in caller_args2
-                            }
-                            return await types.FunctionType(
-                                calframe.f_code, globals()
-                            )(**caller_args3)
-                    except Exception as e:
-                        logger.error(e)
-                        traceback.print_exc()
-                        return -999
-                elif retcode != 0:
-                    return retcode
-                return raw_data
-    '''
 
 
 class MysApi(BaseMysApi):
