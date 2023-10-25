@@ -15,7 +15,9 @@ class GsClient:
         self = GsClient()
         cls.ws_url = f'ws://{IP}:{PORT}/ws/Nonebot'
         print(f'连接至WS链接{self.ws_url}...')
-        cls.ws = await websockets.client.connect(cls.ws_url, max_size=2**25)
+        cls.ws = await websockets.client.connect(
+            cls.ws_url, max_size=2**25, open_timeout=30
+        )
         print('已成功链接！')
         return self
 
@@ -24,7 +26,10 @@ class GsClient:
             async for message in self.ws:
                 print(msgjson.decode(message, type=MessageSend))
         except ConnectionClosedError:
-            print('断开链接...')
+            print('断开连接...等待5秒，尝试重连中...')
+            await asyncio.sleep(5)
+            client = await self.async_connect()
+            await client.start()
 
     async def _input(self):
         return await asyncio.get_event_loop().run_in_executor(
@@ -45,9 +50,9 @@ class GsClient:
                 content = [Message(type='text', data=intent)]
             msg = MessageReceive(
                 bot_id='Nonebot222',
-                user_type='group',
+                user_type='direct',
                 user_pm=1,
-                group_id='9999',
+                group_id=None,
                 user_id='511',
                 content=content,
             )

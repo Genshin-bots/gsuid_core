@@ -136,5 +136,7 @@ RECEIVE_URL = f'{DRAW_BASE_URL}/post_my_draw'
 BS_INDEX_URL = f'{DRAW_BASE_URL}/index'
 
 GET_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp'
+DEVICE_LOGIN = f'{NEW_BBS_URL}/apihub/api/deviceLogin'
+SAVE_DEVICE = f'{NEW_BBS_URL}/apihub/api/saveDevice'
 
 _API = locals()

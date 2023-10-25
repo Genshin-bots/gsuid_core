@@ -234,7 +234,10 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
         uid = '0'
 
     device_id = mys_api.get_device_id()
-    fp = await mys_api.generate_fp_by_uid(uid)
+    seed_id, seed_time = mys_api.get_seed()
+    model_name = mys_api.generate_model_name()
+    fp = await mys_api.generate_fp_by_uid(uid, seed_id, seed_time, model_name)
+    await mys_api.device_login_and_save(device_id, fp, model_name, app_cookie)
 
     # 往数据库添加内容
     if uid_bind and await GsUser.user_exists(uid_bind):
