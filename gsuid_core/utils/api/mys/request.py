@@ -80,7 +80,7 @@ class BaseMysApi:
         ),
         'x-rpc-client_type': '5',
         'Referer': 'https://webstatic.mihoyo.com/',
-        # 'Origin': 'https://webstatic.mihoyo.com/',
+        'Origin': 'https://webstatic.mihoyo.com/',
         # 'X-Requested-With': 'com.mihoyo.hyperion',
     }
     _HEADER_OS = {
