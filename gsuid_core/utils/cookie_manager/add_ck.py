@@ -233,11 +233,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     if uid is None:
         uid = '0'
 
-    device_id = mys_api.get_device_id()
-    seed_id, seed_time = mys_api.get_seed()
-    model_name = mys_api.generate_model_name()
-    fp = await mys_api.generate_fp_by_uid(uid, seed_id, seed_time, model_name)
-    await mys_api.device_login_and_save(device_id, fp, model_name, app_cookie)
+    nd = await mys_api.ck_in_new_device(uid, app_cookie)
 
     # 往数据库添加内容
     if uid_bind and await GsUser.user_exists(uid_bind):
@@ -248,7 +244,8 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             status=None,
             stoken=app_cookie,
             sr_uid=sr_uid_bind,
-            fp=fp,
+            fp=nd[0],
+            device_id=nd[1],
         )
     elif sr_uid_bind and await GsUser.user_exists(sr_uid_bind, 'sr'):
         await GsUser.update_data_by_uid(
@@ -258,7 +255,8 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             cookie=account_cookie,
             status=None,
             stoken=app_cookie,
-            fp=fp,
+            fp=nd[0],
+            device_id=nd[1],
         )
     else:
         await GsUser.insert_data(
@@ -277,8 +275,8 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             sr_region=SR_SERVER.get(sr_uid_bind[0], None)
             if sr_uid_bind
             else None,
-            fp=fp,
-            device_id=device_id,
+            fp=nd[0],
+            device_id=nd[1],
             sr_push_switch='off',
             sr_sign_switch='off',
         )

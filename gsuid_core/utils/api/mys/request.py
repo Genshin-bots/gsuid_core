@@ -9,7 +9,17 @@ import uuid
 import random
 from abc import abstractmethod
 from string import digits, ascii_letters
-from typing import Any, Dict, List, Tuple, Union, Literal, Optional, cast
+from typing import (
+    Any,
+    Dict,
+    List,
+    Tuple,
+    Union,
+    Literal,
+    Optional,
+    cast,
+    overload,
+)
 
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
@@ -123,7 +133,7 @@ class BaseMysApi:
         ...
 
     def get_device_id(self) -> str:
-        device_id = str(uuid.uuid4())
+        device_id = str(uuid.uuid4()).lower()
         return device_id
 
     def generate_fp(self, length: int = 13) -> str:
@@ -161,7 +171,7 @@ class BaseMysApi:
             'bbs_device_id': device_id,
             'device_fp': self.generate_fp(),
         }
-        print(body)
+
         HEADER = copy.deepcopy(self._HEADER)
         res = await self._mys_request(
             url=self.MAPI['GET_FP_URL'],
@@ -290,6 +300,32 @@ class BaseMysApi:
         )
         return data
 
+    @overload
+    async def ck_in_new_device(
+        self, uid: str, app_cookie: str
+    ) -> Tuple[str, str, str, str]:
+        ...
+
+    @overload
+    async def ck_in_new_device(
+        self, uid: str, app_cookie: Optional[str] = None
+    ) -> Optional[Tuple[str, str, str, str]]:
+        ...
+
+    async def ck_in_new_device(
+        self, uid: str, app_cookie: Optional[str] = None
+    ):
+        device_id = self.get_device_id()
+        seed_id, seed_time = self.get_seed()
+        model_name = self.generate_model_name()
+        fp = await self.generate_fp_by_uid(uid, seed_id, seed_time, model_name)
+        if app_cookie is None:
+            app_cookie = await self.get_stoken(uid)
+            if app_cookie is None:
+                return logger.warning('设备登录流程错误...')
+        await self.device_login_and_save(device_id, fp, model_name, app_cookie)
+        return fp, device_id, seed_id, seed_time
+
     async def _mys_request(
         self,
         url: str,
@@ -311,7 +347,7 @@ class BaseMysApi:
                 if device_id is not None:
                     header['x-rpc-device_id'] = device_id
 
-            print(header)
+            logger.debug(header)
             for _ in range(2):
                 async with client.request(
                     method,
@@ -339,19 +375,16 @@ class BaseMysApi:
                         retcode = 0
 
                     # 针对1034做特殊处理
-                    if retcode == 1034:
+                    if retcode == 1034 or retcode == 5003:
                         if uid:
-                            '''
+                            nd = await self.ck_in_new_device(uid)
                             ck = header['Cookie']
-                            if 'DEVICEFP_SEED_ID' not in ck:
+                            if 'DEVICEFP_SEED_ID' not in ck and nd:
                                 header['Cookie'] = (
-                                    'mi18nLang=zh-cn;_MHYUUID='
-                                    'b6261233-05a8-45fc-b7a1-55e152b52ae4'
-                                    f'DEVICEFP_SEED_ID={seed_id};'
-                                    f'DEVICEFP_SEED_TIME={seed_time};'
-                                    f'{ck};DEVICE_FP={new_fp}'
+                                    f'DEVICEFP_SEED_ID={nd[2]};'
+                                    f'DEVICEFP_SEED_TIME={nd[3]};'
+                                    f'{ck};DEVICE_FP={nd[0]}'
                                 )
-                            '''
 
                             header['x-rpc-challenge_game'] = (
                                 '6' if self.is_sr else '2'
