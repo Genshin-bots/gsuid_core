@@ -15,7 +15,7 @@ from sqlalchemy.future import select
 from sqlalchemy import delete, update
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Field, SQLModel, col
-from sqlalchemy.sql.expression import func
+from sqlalchemy.sql.expression import func, null
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from gsuid_core.data_store import get_res_path
@@ -522,9 +522,14 @@ class User(BaseModel):
     @classmethod
     @with_session
     async def get_all_user(
-        cls: Type[T_User], session: AsyncSession
+        cls: Type[T_User], session: AsyncSession, without_error: bool = True
     ) -> List[T_User]:
-        sql = select(cls).where(cls.cookie is not None, cls.cookie != '')
+        if without_error:
+            sql = select(cls).where(
+                cls.status == null(), cls.cookie != null(), cls.cookie != ''
+            )
+        else:
+            sql = select(cls).where(cls.cookie != null(), cls.cookie != '')
         result = await session.execute(sql)
         data = result.scalars().all()
         return data

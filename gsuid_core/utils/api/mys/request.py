@@ -25,6 +25,7 @@ from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
+from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import _API
@@ -324,6 +325,10 @@ class BaseMysApi:
             if app_cookie is None:
                 return logger.warning('设备登录流程错误...')
         await self.device_login_and_save(device_id, fp, model_name, app_cookie)
+        if await GsUser.user_exists(uid, 'sr' if self.is_sr else None):
+            await GsUser.update_data_by_uid_without_bot_id(
+                uid, 'sr' if self.is_sr else None, fp=fp, device_id=device_id
+            )
         return fp, device_id, seed_id, seed_time
 
     async def _mys_request(
@@ -451,9 +456,17 @@ class MysApi(BaseMysApi):
                     except ContentTypeError:
                         data = await data.text()
                         return None, None
+                    logger.debug(data)
                     if isinstance(data, int):
                         return None, None
                     else:
+                        if 'code' in data and data['code'] != 0:
+                            if 'info' in data:
+                                msg = data["info"]
+                            else:
+                                msg = f'错误码{data["code"]}, 请检查API是否配置正确'
+                            logger.info(f'[upass] {msg}')
+                            return None, None
                         validate = data['data']['validate']
                         ch = data['data']['challenge']
         else:
@@ -617,8 +630,9 @@ class MysApi(BaseMysApi):
         if int(str(uid)[0]) < 6:
             HEADER = copy.deepcopy(self._HEADER)
             HEADER['Cookie'] = ck
-            HEADER['x-rpc-device_id'] = random_hex(32)
             HEADER['x-rpc-app_version'] = mys_version
+            header['x-rpc-device_id'] = await self.get_user_device_id(uid)
+            header['x-rpc-device_fp'] = await self.get_user_fp(uid)
             HEADER['x-rpc-client_type'] = '5'
             HEADER['X_Requested_With'] = 'com.mihoyo.hyperion'
             HEADER['DS'] = get_web_ds_token(True)
