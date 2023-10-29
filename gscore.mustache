@@ -1,0 +1,45 @@
+{{! Google Docstring Template }}
+📝简单介绍:
+
+    {{summaryPlaceholder}}
+    {{extendedSummaryPlaceholder}}
+{{#parametersExist}}
+🌱参数:
+{{#args}}
+
+    🔹{{var}} (`{{typePlaceholder}}`):
+            {{descriptionPlaceholder}}
+{{/args}}
+{{#kwargs}}
+
+    🔹{{var}} (`{{typePlaceholder}}`, 默认是 `{{&default}}`):
+            {{descriptionPlaceholder}}
+{{/kwargs}}
+{{/parametersExist}}
+
+🚀使用范例:
+
+    `{{descriptionPlaceholder}}`
+{{#exceptionsExist}}
+
+💩异常:
+{{#exceptions}}
+
+    ❗`{{type}}`: {{descriptionPlaceholder}}
+{{/exceptions}}
+{{/exceptionsExist}}
+{{#returnsExist}}
+
+✅返回值:
+{{#returns}}
+
+    🔸`{{typePlaceholder}}`: {{descriptionPlaceholder}}
+{{/returns}}
+{{/returnsExist}}
+{{#yieldsExist}}
+
+Yields:
+{{#yields}}
+    {{typePlaceholder}}: {{descriptionPlaceholder}}
+{{/yields}}
+{{/yieldsExist}}
