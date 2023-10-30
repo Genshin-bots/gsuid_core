@@ -12,7 +12,10 @@ from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
 from gsuid_core.message_models import Button
 from gsuid_core.utils.image.convert import text2pic
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import (
+    pic_upload_config,
+    core_plugins_config,
+)
 
 R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
 R_text = core_plugins_config.get_config('RandomText').data
@@ -20,6 +23,18 @@ is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
 text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
+SERVER = pic_upload_config.get_config('PicUploadServer').data
+
+if SERVER == 'smms':
+    from gsuid_core.utils.upload.smms import SMMS
+
+    pclient = SMMS()
+elif SERVER == 's3':
+    from gsuid_core.utils.upload.s3 import S3
+
+    pclient = S3()
+else:
+    pclient = None
 
 
 class MessageSegment:
@@ -153,17 +168,29 @@ async def convert_message(
         message = [message]
     elif isinstance(message, str):
         if message.startswith('base64://'):
-            img = Image.open(BytesIO(b64decode(message[9:])))
+            bio = BytesIO(b64decode(message[9:]))
+            img = Image.open(bio)
+
+            img_url = None
+            if pclient is not None:
+                img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
+
             message = [
-                MessageSegment.image(message),
+                MessageSegment.image(img_url if img_url else message),
                 MessageSegment.image_size(img.size),
             ]
         else:
             message = [MessageSegment.text(message)]
     elif isinstance(message, bytes):
-        img = Image.open(BytesIO(message))
+        bio = BytesIO(message)
+        img = Image.open(bio)
+
+        img_url = None
+        if pclient is not None:
+            img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
+
         message = [
-            MessageSegment.image(message),
+            MessageSegment.image(img_url if img_url else message),
             MessageSegment.image_size(img.size),
         ]
     elif isinstance(message, List):

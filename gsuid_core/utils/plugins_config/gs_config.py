@@ -8,6 +8,7 @@ from gsuid_core.data_store import get_res_path
 
 from .models import GSC, GsBoolConfig
 from .config_default import CONIFG_DEFAULT
+from .pic_server_config import PIC_UPLOAD_CONIFG
 
 
 class StringConfig:
@@ -117,4 +118,8 @@ all_config_list: Dict[str, StringConfig] = {}
 
 core_plugins_config = StringConfig(
     'Core', get_res_path() / 'core_config.json', CONIFG_DEFAULT
+)
+
+pic_upload_config = StringConfig(
+    'Core_Pic', get_res_path() / 'pic_upload_config.json', PIC_UPLOAD_CONIFG
 )
