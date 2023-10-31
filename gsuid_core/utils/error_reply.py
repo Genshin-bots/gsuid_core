@@ -27,49 +27,33 @@ UPDATE_HINT = '''更新失败!更多错误信息请查看控制台...
 >> [gs强制更新](危险)
 >> [gs强行强制更新](超级危险)!'''
 
+error_dict = {
+    -51: CK_HINT,
+    -100: '您的cookie已经失效, 请重新获取!',
+    -503: CK_HINT,
+    10001: '您的cookie已经失效, 请重新获取!',
+    10101: '当前查询CK已超过每日30次上限!',
+    10102: '当前查询id已经设置了隐私, 无法查询!',
+    1034: VERIFY_HINT,
+    -10001: '请求体出错, 请检查具体实现代码...',
+    -512009: '[留影叙佳期]已经获取过该内容~!',
+    -201: '你的账号可能已被封禁, 请联系米游社客服...',
+    -501101: '当前角色冒险等阶未达到10级, 暂时无法参加此活动...',
+    400: '[MINIGG]暂未找到此内容...',
+    -400: '请输入更详细的名称...',
+    1008: '该API需要CK, 查询的用户/UID未绑定CK...',
+    10104: 'CK与用户信息不符, 请检查代码实现...',
+    -999: VERIFY_HINT,
+    125: '该充值方式暂时不可用!',
+    126: '该充值方式不正确!',
+}
+
 TEXT_PATH = Path(__file__).parent / 'image' / 'texture2d'
 is_pic_error = core_plugins_config.get_config('ChangeErrorToPic').data
 
 
 def get_error(retcode: Union[int, str]) -> str:
-    if retcode == -51:
-        return CK_HINT
-    elif retcode == -100:
-        return '您的cookie已经失效, 请重新获取!'
-    elif retcode == 10001:
-        return '您的cookie已经失效, 请重新获取!'
-    elif retcode == 10101:
-        return '当前查询CK已超过每日30次上限!'
-    elif retcode == 10102:
-        return '当前查询id已经设置了隐私, 无法查询!'
-    elif retcode == 1034:
-        return VERIFY_HINT
-    elif retcode == -10001:
-        return '请求体出错, 请检查具体实现代码...'
-    elif retcode == 10104:
-        return CK_HINT
-    elif retcode == -512009:
-        return '[留影叙佳期]已经获取过该内容~!'
-    elif retcode == -201:
-        return '你的账号可能已被封禁, 请联系米游社客服...'
-    elif retcode == -501101:
-        return '当前角色冒险等阶未达到10级, 暂时无法参加此活动...'
-    elif retcode == 400:
-        return '[MINIGG]暂未找到此内容...'
-    elif retcode == -400:
-        return '请输入更详细的名称...'
-    elif retcode == 1008:
-        return '该API需要CK, 查询的用户/UID未绑定CK...'
-    elif retcode == 10104:
-        return 'CK与用户信息不符, 请检查代码实现...'
-    elif retcode == -999:
-        return VERIFY_HINT
-    elif retcode == 125:
-        return '该充值方式暂时不可用!'
-    elif retcode == 126:
-        return '该充值方式不正确!'
-    else:
-        return f'未知错误, 错误码为{retcode}!'
+    return error_dict.get(int(retcode), f'未知错误, 错误码为{retcode}!')
 
 
 def get_error_type(retcode: Union[int, str]) -> str:
