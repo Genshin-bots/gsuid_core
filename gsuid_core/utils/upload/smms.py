@@ -46,3 +46,5 @@ class SMMS:
                     data = raw_data['data']
                     asyncio.create_task(self.delete(data['hash']))
                     return data['url']
+                else:
+                    logger.info('[sm.ms / upload] 上传失败!')

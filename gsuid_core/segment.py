@@ -24,17 +24,19 @@ text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
 SERVER = pic_upload_config.get_config('PicUploadServer').data
+IS_UPLOAD = pic_upload_config.get_config('PicUpload').data
 
-if SERVER == 'smms':
-    from gsuid_core.utils.upload.smms import SMMS
 
-    pclient = SMMS()
-elif SERVER == 's3':
-    from gsuid_core.utils.upload.s3 import S3
+pclient = None
+if IS_UPLOAD:
+    if SERVER == 'smms':
+        from gsuid_core.utils.upload.smms import SMMS
 
-    pclient = S3()
-else:
-    pclient = None
+        pclient = SMMS()
+    elif SERVER == 's3':
+        from gsuid_core.utils.upload.s3 import S3
+
+        pclient = S3()
 
 
 class MessageSegment:
