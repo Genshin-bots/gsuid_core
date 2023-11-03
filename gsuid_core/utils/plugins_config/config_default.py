@@ -61,4 +61,5 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'AutoUpdateDep': GsBoolConfig('自动更新依赖', '更新插件时将会自动更新依赖', False),
     'EnablePicSrv': GsBoolConfig('将图片转链接发送(需公网)', '发送图片转链接', False),
     'PicSrv': GsStrConfig('将图片转链接发送(需公网)', '发送图片转链接', ''),
+    'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
 }

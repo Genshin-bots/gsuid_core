@@ -11,11 +11,12 @@ from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
-from .api import CORE_PATH, PLUGINS_PATH, proxy_url, plugins_lib
+from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
 is_update_dep = core_plugins_config.get_config('AutoUpdateDep').data
+proxy_url: str = core_plugins_config.get_config('ProxyURL').data
 
 
 # 传入一个path对象
@@ -115,7 +116,11 @@ async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
 
 def install_plugins(plugins: Dict[str, str]) -> str:
     plugin_name = plugins['link'].split('/')[-1]
-    git_path = f'{proxy_url}{plugins["link"]}.git'
+    if proxy_url and not proxy_url.endswith('/'):
+        _proxy_url = proxy_url + '/'
+    else:
+        _proxy_url = proxy_url
+    git_path = f'{_proxy_url}{plugins["link"]}.git'
     logger.info(f'稍等...开始安装插件, 地址: {git_path}')
     path = PLUGINS_PATH / plugin_name
     if path.exists():

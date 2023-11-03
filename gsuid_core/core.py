@@ -140,7 +140,6 @@ def main():
             plugin = plugins_list[name]
             link = plugin['link']
             plugin_name = link.split('/')[-1]
-            # git_path = f'{proxy_url}{link}.git'
             sample = {
                 'label': plugin_name,
                 'key': name,
