@@ -36,6 +36,7 @@ async def msg_process(msg: MessageReceive) -> Event:
         msg.user_type,
         msg.group_id,
         msg.user_id,
+        msg.sender,
         msg.user_pm,
         real_bot_id=msg.bot_id,
     )
