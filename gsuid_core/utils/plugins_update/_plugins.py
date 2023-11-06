@@ -1,6 +1,7 @@
 import os
 import time
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Union, Optional
 
@@ -75,6 +76,15 @@ async def update_all_plugins() -> List[str]:
     for plugin in PLUGINS_PATH.iterdir():
         if plugin.is_dir():
             log_list.extend(update_from_git(0, plugin))
+    return log_list
+
+
+async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
+    log_list = []
+    for plugin in PLUGINS_PATH.iterdir():
+        if plugin.is_dir():
+            log_list.append(await set_proxy(plugin, proxy))
+    log_list.append(await set_proxy(CORE_PATH, proxy))
     return log_list
 
 
@@ -179,6 +189,60 @@ def check_status(plugin_name: str) -> int:
         return 4
 
 
+async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
+    plugin_name = repo.name
+    try:
+        process = await asyncio.create_subprocess_shell(
+            'git remote get-url origin',
+            cwd=repo,
+            stdout=asyncio.subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning(f'[core插件设置代理] 失败, {plugin_name} 非有效Git路径')
+        logger.warning(f'[core插件设置代理] 错误信息: {e}')
+        return f'{plugin_name} 设置代理失败, 非有效Git路径'
+
+    stdout, _ = await process.communicate()
+    original_url: str = stdout.decode().strip()
+
+    if 'git@' in original_url:
+        logger.info(f'[core插件设置代理] {plugin_name} git地址为SSH, 无需设置代理')
+        return f'{plugin_name} 无需设置代理'
+
+    if original_url.count('https://') >= 2:
+        main_url = 'https://' + original_url.split('https://')[-1]
+    else:
+        main_url = original_url
+
+    if proxy is None:
+        _proxy_url = proxy_url
+    else:
+        _proxy_url = proxy
+
+    if _proxy_url and not _proxy_url.endswith('/'):
+        _proxy_url += '/'
+
+    # 设置git代理
+    new_url = f"{_proxy_url}{main_url}"
+
+    if new_url == original_url:
+        logger.info(f'[core插件设置代理] {plugin_name} 地址与代理地址相同，无需设置')
+        return f'{plugin_name} 已经设过该地址了...'
+
+    try:
+        process = await asyncio.create_subprocess_shell(
+            f'git remote set-url origin {new_url}',
+            cwd=repo,
+            stdout=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await process.communicate()
+    except subprocess.CalledProcessError as e:
+        logger.error(f'[core插件设置代理] 失败, 错误信息: {e}')
+        return f'{plugin_name} 设置代理失败'
+
+    return f'{plugin_name} 设置代理成功!'
+
+
 def update_from_git(
     level: int = 0,
     repo_like: Union[str, Path, None] = None,
@@ -259,5 +323,4 @@ def update_plugins(
             break
 
     log_list = update_from_git(level, plugin_name, log_key, log_limit)
-    return log_list
     return log_list
