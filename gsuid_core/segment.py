@@ -163,11 +163,21 @@ class MessageSegment:
         return Message(type=f'log_{type}', data=content)
 
 
-async def convert_message(
-    message: Union[Message, List[Message], List[str], str, bytes]
+async def _convert_message(
+    message: Union[Message, str, bytes]
 ) -> List[Message]:
     if isinstance(message, Message):
-        message = [message]
+        if message.type == 'image' and pclient is not None:
+            img_text: str = message.data  # type: ignore
+            bio = BytesIO(b64decode(img_text[9:]))
+            img = Image.open(bio)
+            img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
+            _message = [
+                MessageSegment.image(img_url if img_url else img_text),
+                MessageSegment.image_size(img.size),
+            ]
+        else:
+            _message = [message]
     elif isinstance(message, str):
         if message.startswith('base64://'):
             bio = BytesIO(b64decode(message[9:]))
@@ -177,12 +187,12 @@ async def convert_message(
             if pclient is not None:
                 img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
 
-            message = [
+            _message = [
                 MessageSegment.image(img_url if img_url else message),
                 MessageSegment.image_size(img.size),
             ]
         else:
-            message = [MessageSegment.text(message)]
+            _message = [MessageSegment.text(message)]
     elif isinstance(message, bytes):
         bio = BytesIO(message)
         img = Image.open(bio)
@@ -191,17 +201,27 @@ async def convert_message(
         if pclient is not None:
             img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
 
-        message = [
+        _message = [
             MessageSegment.image(img_url if img_url else message),
             MessageSegment.image_size(img.size),
         ]
-    elif isinstance(message, List):
-        if all(isinstance(x, str) for x in message):
-            message = [MessageSegment.node(message)]
     else:
-        message = [message]
+        _message = [message]
+    return _message
 
-    _message: List[Message] = message  # type: ignore
+
+async def convert_message(
+    message: Union[Message, List[Message], List[str], str, bytes]
+) -> List[Message]:
+    _message: List[Message] = []
+    if isinstance(message, List):
+        if all(isinstance(x, str) for x in message):
+            _message.extend([MessageSegment.node(message)])
+        else:
+            for i in message:
+                _message.extend(await _convert_message(i))
+    else:
+        _message = await _convert_message(message)
 
     if R_enabled:
         result = ''.join(
@@ -223,8 +243,12 @@ async def convert_message(
     return _message
 
 
-async def to_markdown(message: List[Message]) -> str:
+async def to_markdown(
+    message: List[Message],
+    buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
+) -> List[Message]:
     _markdown_list = []
+    _message = []
     url = None
     size = None
     for m in message:
@@ -235,9 +259,12 @@ async def to_markdown(message: List[Message]) -> str:
         elif m.type == 'text':
             assert isinstance(m.data, str)
             _markdown_list.append(m.data.replace('\n', '\n\n'))
+        else:
+            _message.append(m)
 
     if url is not None and size is not None:
         _markdown_list.append(f'![test #{size[0]}px #{size[1]}px]({url})')
 
     _markdown = '\n'.join(_markdown_list)
-    return _markdown
+    _message.extend(MessageSegment.markdown(_markdown, buttons))
+    return _message

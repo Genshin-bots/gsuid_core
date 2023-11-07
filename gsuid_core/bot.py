@@ -36,6 +36,9 @@ class _Bot:
     ):
         _message = await convert_message(message)
 
+        if bot_id in ['qqgroup']:
+            _message = await to_markdown(_message)
+
         if at_sender and sender_id:
             _message.append(MessageSegment.at(sender_id))
 
@@ -160,7 +163,6 @@ class Bot:
             _reply = await convert_message(reply)
 
             if self.ev.real_bot_id in ['qqgroup']:
-                _reply_str = await to_markdown(_reply)
                 _buttons = []
                 for option in option_list:
                     if isinstance(option, List):
@@ -176,7 +178,7 @@ class Bot:
                     else:
                         _buttons.append(Button(option, option, option))
 
-                await self.send(MessageSegment.markdown(_reply_str, _buttons))
+                await self.send(await to_markdown(_reply, _buttons))
             else:
                 if unsuported_platform:
                     _options: List[str] = []
