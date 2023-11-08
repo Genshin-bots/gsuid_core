@@ -74,15 +74,25 @@ def check_retcode(retcode: int) -> str:
 async def update_all_plugins() -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
-        if plugin.is_dir():
+        if _is_plugin(plugin):
             log_list.extend(update_from_git(0, plugin))
     return log_list
+
+
+def _is_plugin(plugin: Path) -> bool:
+    if (
+        plugin.is_dir()
+        and plugin.name != '__pycache__'
+        and plugin.name != 'core_command'
+    ):
+        return True
+    return False
 
 
 async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
-        if plugin.is_dir():
+        if _is_plugin(plugin):
             log_list.append(await set_proxy(plugin, proxy))
     log_list.append(await set_proxy(CORE_PATH, proxy))
     return log_list
