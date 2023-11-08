@@ -10,6 +10,10 @@ class GsBind(Bind, table=True):
 
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
+    bb_uid: Optional[str] = Field(default=None, title='崩坏二UID')
+    bbb_uid: Optional[str] = Field(default=None, title='崩坏三UID')
+    zzz_uid: Optional[str] = Field(default=None, title='绝区零UID')
+    wd_uid: Optional[str] = Field(default=None, title='未定UID')
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')
 
 
@@ -17,6 +21,10 @@ class GsUser(User, table=True):
     __table_args__ = {'extend_existing': True}
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
+    bb_uid: Optional[str] = Field(default=None, title='崩坏二UID')
+    bbb_uid: Optional[str] = Field(default=None, title='崩坏三UID')
+    zzz_uid: Optional[str] = Field(default=None, title='绝区零UID')
+    wd_uid: Optional[str] = Field(default=None, title='未定UID')
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')
     region: Optional[str] = Field(default=None, title='原神地区')
     sr_region: Optional[str] = Field(default=None, title='星铁地区')
@@ -26,6 +34,7 @@ class GsUser(User, table=True):
     sr_sign_switch: str = Field(default='off', title='星铁自动签到')
     fp: Optional[str] = Field(default=None, title='Fingerprint')
     device_id: Optional[str] = Field(default=None, title='设备ID')
+    OAID: Optional[str] = Field(default=None, title='设备匿名标识符')
 
 
 class GsCache(Cache, table=True):

@@ -4,7 +4,7 @@ import base64
 import asyncio
 from pathlib import Path
 from http.cookies import SimpleCookie
-from typing import Any, List, Tuple, Union, Literal
+from typing import Any, Tuple, Union, Literal
 
 import qrcode
 import aiofiles
@@ -16,7 +16,6 @@ from gsuid_core.models import Event
 from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.api.mys_api import mys_api
-from gsuid_core.utils.database.models import GsBind
 
 
 async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
@@ -132,61 +131,20 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         if isinstance(ck, int):
             return await send_msg('[登录]获取CK失败...')
         ck = ck['cookie_token']
-        cookie_check = f'account_id={account_id};cookie_token={ck}'
-        get_uid = await mys_api.get_mihoyo_bbs_info(account_id, cookie_check)
-        # 剔除除了原神/星铁之外的其他游戏
-        im = None
-        uid_check = sruid_check = None
-        if isinstance(get_uid, List):
-            for i in get_uid:
-                if i['game_id'] == 2:
-                    uid_check = i['game_role_id']
-                elif i['game_id'] == 6:
-                    sruid_check = i['game_role_id']
-            else:
-                if uid_check or sruid_check:
-                    pass
-                else:
-                    im = f'[登录]你的米游社账号{account_id}尚未绑定原神账号，请前往米游社操作！'
-                    return await send_msg(im)
-        else:
-            im = '[登录]请求失败, 请稍后再试...'
-            return await send_msg(im)
 
-        uid_bind_list = (
-            await GsBind.get_uid_list_by_game(user_id, ev.bot_id) or []
-        )
-        sruid_bind_list = (
-            await GsBind.get_uid_list_by_game(user_id, ev.bot_id, 'sr') or []
-        )
-        # 没有在gsuid绑定uid的情况
-        if not (uid_bind_list or sruid_bind_list):
-            logger.warning('[登录]game_token获取失败')
-            im = '你还没有绑定uid, 请输入[绑定uid123456]绑定你的uid, 再发送[扫码登录]进行绑定'
-            return await send_msg(im)
         if isinstance(cookie_token, int):
             return await send_msg('[登录]获取CK失败...')
-        # 比对gsuid数据库和扫码登陆获取到的uid
-        if (
-            uid_check in uid_bind_list
-            or sruid_check in sruid_bind_list
-            or account_id in uid_bind_list
-        ):
-            return SimpleCookie(
-                {
-                    'stoken_v2': stoken_data['token']['token'],
-                    'stuid': stoken_data['user_info']['aid'],
-                    'mid': stoken_data['user_info']['mid'],
-                    'cookie_token': cookie_token['cookie_token'],
-                }
-            ).output(header='', sep=';')
-        else:
-            logger.warning('[登录]game_token获取失败')
-            im = (
-                f'检测到扫码登录UID{uid_check}与绑定UID不同, '
-                'gametoken获取失败, 请重新发送[扫码登录]进行登录！'
-            )
+
+        return SimpleCookie(
+            {
+                'stoken_v2': stoken_data['token']['token'],
+                'stuid': stoken_data['user_info']['aid'],
+                'mid': stoken_data['user_info']['mid'],
+                'cookie_token': cookie_token['cookie_token'],
+            }
+        ).output(header='', sep=';')
     else:
         logger.warning('[登录]game_token获取失败')
         im = '[登录]game_token获取失败: 二维码已过期'
+
     return await send_msg(im)

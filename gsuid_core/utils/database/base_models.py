@@ -187,6 +187,45 @@ class BaseBotIDModel(BaseIDModel):
 
     @classmethod
     @with_session
+    async def update_data_by_xx(
+        cls,
+        session: AsyncSession,
+        by: Dict[str, Any],
+        **data,
+    ) -> int:
+        '''📝简单介绍:
+
+            基类方法，通过传入`by`和`**data`查找并更新数据
+
+        🌱参数:
+
+            🔹by (`Dict[str, Any]`)
+                    根据该入参寻找相应数据
+
+            🔹**data
+                    根据该入参修改数据
+
+        🚀使用范例:
+
+            `await GsUser.update_data_by_xx({'uid': '233'}, cookie=ck)`
+
+        ✅返回值:
+
+            🔸`int`: 成功为`0`, 失败为`-1`
+        '''
+        sql = update(cls)
+        for i in by:
+            sql = sql.where(getattr(cls, i) == by[i])
+        if data is not None:
+            query = sql.values(**data)
+            query.execution_options(synchronize_session='fetch')
+            await session.execute(query)
+            await session.commit()
+            return 0
+        return -1
+
+    @classmethod
+    @with_session
     async def update_data_by_uid(
         cls,
         session: AsyncSession,

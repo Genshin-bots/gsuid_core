@@ -116,7 +116,9 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     simp_dict = SimpleCookie(mes)
     uid = await GsBind.get_uid_by_game(user_id, bot_id)
     sr_uid = await GsBind.get_uid_by_game(user_id, bot_id, 'sr')
-    uid_bind = sr_uid_bind = None
+
+    uid_bind = sr_uid_bind = zzz_uid_bind = None
+    wd_uid_bind = bb_uid_bind = bbb_uid_bind = None
 
     if uid is None and sr_uid is None:
         if uid is None:
@@ -214,11 +216,24 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                     uid_bind = i['game_role_id']
                 elif i['game_id'] == 6:
                     sr_uid_bind = i['game_role_id']
-                if uid_bind and sr_uid_bind:
-                    break
+                elif i['game_id'] == 8:
+                    zzz_uid_bind = i['game_role_id']
+                elif i['game_id'] == 4:
+                    wd_uid_bind = i['game_role_id']
+                elif i['game_id'] == 3:
+                    bb_uid_bind = i['game_role_id']
+                elif i['game_id'] == 1:
+                    bbb_uid_bind = i['game_role_id']
             else:
-                if not (uid_bind or sr_uid_bind):
-                    return f'你的米游社账号{account_id}尚未绑定原神/星铁账号,请前往米游社操作！'
+                if not (
+                    uid_bind
+                    or sr_uid_bind
+                    or zzz_uid_bind
+                    or wd_uid_bind
+                    or bb_uid_bind
+                    or bbb_uid_bind
+                ):
+                    return f'你的米游社账号{account_id}尚未绑定游戏账号,请前往米游社操作！'
     except Exception:
         pass
 
@@ -235,28 +250,21 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
 
     nd = await mys_api.ck_in_new_device(uid, app_cookie)
 
-    # 往数据库添加内容
-    if uid_bind and await GsUser.user_exists(uid_bind):
-        await GsUser.update_data_by_uid(
-            uid_bind,
-            bot_id,
+    if await GsUser.data_exist(mys_id=account_id):
+        await GsUser.update_data_by_xx(
+            {'mys_id': account_id},
+            bot_id=bot_id,
             cookie=account_cookie,
             status=None,
             stoken=app_cookie,
             sr_uid=sr_uid_bind,
+            bb_uid=bb_uid_bind,
+            bbb_uid=bbb_uid_bind,
+            zzz_uid=zzz_uid_bind,
+            wd_uid=wd_uid_bind,
             fp=nd[0],
             device_id=nd[1],
-        )
-    elif sr_uid_bind and await GsUser.user_exists(sr_uid_bind, 'sr'):
-        await GsUser.update_data_by_uid(
-            sr_uid_bind,
-            bot_id,
-            'sr',
-            cookie=account_cookie,
-            status=None,
-            stoken=app_cookie,
-            fp=nd[0],
-            device_id=nd[1],
+            OAID=None,
         )
     else:
         await GsUser.insert_data(
@@ -264,6 +272,10 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             bot_id=bot_id,
             uid=uid_bind,
             sr_uid=sr_uid_bind,
+            bb_uid=bb_uid_bind,
+            bbb_uid=bbb_uid_bind,
+            zzz_uid=zzz_uid_bind,
+            wd_uid=wd_uid_bind,
             mys_id=account_id,
             cookie=account_cookie,
             stoken=app_cookie if app_cookie else None,
@@ -279,6 +291,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             device_id=nd[1],
             sr_push_switch='off',
             sr_sign_switch='off',
+            OAID=None,
         )
 
     im_list.append(
