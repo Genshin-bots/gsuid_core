@@ -26,10 +26,8 @@ class _MysApi(MysApi):
         data = await GsUser.get_user_attr_by_uid(uid, 'fp')
         if data is None:
             seed_id, seed_time = self.get_seed()
-            model_name = self.generate_model_name()
-            data = await self.generate_fp_by_uid(
-                uid, seed_id, seed_time, model_name
-            )
+            device_id = self.get_device_id()
+            data = await self.generate_fake_fp(device_id, seed_id, seed_time)
             await GsUser.update_data_by_uid_without_bot_id(uid, fp=data)
         return data
 

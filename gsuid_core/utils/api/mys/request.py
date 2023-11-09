@@ -137,7 +137,7 @@ class BaseMysApi:
         device_id = str(uuid.uuid4()).lower()
         return device_id
 
-    def generate_fp(self, length: int = 13) -> str:
+    def generate_random_fp(self, length: int = 13) -> str:
         char = digits + "abcdef"
         return ''.join(random.choices(char, k=length))
 
@@ -157,11 +157,32 @@ class BaseMysApi:
     def get_seed(self):
         return self.get_device_id(), str(int(time.time() * 1000))
 
-    async def generate_fp_by_uid(
-        self, uid: str, seed_id: str, seed_time: str, model_name: str
+    async def generate_fake_fp(
+        self, device_id: str, seed_id: str, seed_time: str
+    ):
+        return await self.generate_fp(
+            device_id,
+            'PHK110',
+            'PHK110',
+            '1f1971b188c472f0',
+            'OnePlus/PHK110/OP5913L1:13/'
+            'SKQ1.221119.001/T.1328291_b9_41:user/release-keys',
+            seed_id,
+            seed_time,
+        )
+
+    async def generate_fp(
+        self,
+        device_id: str,
+        model_name: str,
+        device: str,
+        oaid: str,
+        device_info: str,
+        seed_id: str,
+        seed_time: str,
     ) -> str:
-        device_id = await self.get_user_device_id(uid)
-        ext_fields = f'''{{\"cpuType\":\"arm64-v8a\",\"romCapacity\":\"512\",\"productName\":\"{model_name}\",\"romRemain\":\"422\",\"manufacturer\":\"XiaoMi\",\"appMemory\":\"512\",\"hostname\":\"dg02-pool03-kvm87\",\"screenSize\":\"1240x2662\",\"osVersion\":\"13\",\"aaid\":\"{self.generate_ID()}\",\"vendor\":\"中国联通\",\"accelerometer\":\"1.4883357x7.1712894x6.2847486\",\"buildTags\":\"release-keys\",\"model\":\"{model_name}\",\"brand\":\"XiaoMi\",\"oaid\":\"DD8D6ADFC74F4725BBD548BF23D708E46f70bfc8a663a364da14b74c490eb0c5\",\"hardware\":\"qcom\",\"deviceType\":\"OP5913L1\",\"devId\":\"REL\",\"serialNumber\":\"unknown\",\"buildTime\":\"1687848011000\",\"buildUser\":\"root\",\"ramCapacity\":\"469679\",\"magnetometer\":\"20.081251x-27.487501x2.1937501\",\"display\":\"{model_name}_13.1.0.181(CN01)\",\"ramRemain\":\"215344\",\"deviceInfo\":\"XiaoMi\\\/{model_name}\\\/OP5913L1:13\\\/SKQ1.221119.001\\\/T.118e6c7-5aa23-73911:user\\\/release-keys\",\"gyroscope\":\"0.030226856x0.014647375x0.010652636\",\"vaid\":\"{self.generate_ID()}\",\"buildType\":\"user\",\"sdkVersion\":\"33\",\"board\":\"taro\"}}'''  # noqa
+        ext_fields = f'''{{"cpuType":"arm64-v8a","romCapacity":"512","productName":"{device}","romRemain":"422","manufacturer":"XiaoMi","appMemory":"512","hostname":"dg02-pool03-kvm87","screenSize":"1240x2662","osVersion":"13","aaid":"{self.generate_ID()}","vendor":"中国联通","accelerometer":"1.4883357x7.1712894x6.2847486","buildTags":"release-keys","model":"{model_name}","brand":"XiaoMi","oaid":"{oaid}","hardware":"qcom","deviceType":"{model_name}","devId":"REL","serialNumber":"unknown","buildTime":"1687848011000","buildUser":"root","ramCapacity":"469679","magnetometer":"20.081251x-27.487501x2.1937501","display":"{model_name}_13.1.0.181(CN01)","ramRemain":"215344","deviceInfo":"{device_info}","gyroscope":"0.030226856x0.014647375x0.010652636","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"33","board":"{device}"}}'''  # noqa
+
         body = {
             'device_id': self.generate_seed(16),
             'seed_id': seed_id,  # uuid4
@@ -170,7 +191,7 @@ class BaseMysApi:
             'ext_fields': ext_fields,
             'app_name': 'bbs_cn',
             'bbs_device_id': device_id,
-            'device_fp': self.generate_fp(),
+            'device_fp': self.generate_random_fp(),
         }
 
         HEADER = copy.deepcopy(self._HEADER)
@@ -319,7 +340,7 @@ class BaseMysApi:
         device_id = self.get_device_id()
         seed_id, seed_time = self.get_seed()
         model_name = self.generate_model_name()
-        fp = await self.generate_fp_by_uid(uid, seed_id, seed_time, model_name)
+        fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
         if app_cookie is None:
             app_cookie = await self.get_stoken(uid)
             if app_cookie is None:
