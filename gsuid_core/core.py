@@ -58,7 +58,7 @@ exec_list.extend(
         'ALTER TABLE GsBind ADD COLUMN bbb_uid TEXT',
         'ALTER TABLE GsBind ADD COLUMN zzz_uid TEXT',
         'ALTER TABLE GsBind ADD COLUMN wd_uid TEXT',
-        'ALTER TABLE GsUser ADD COLUMN OAID TEXT',
+        'ALTER TABLE GsUser ADD COLUMN device_info TEXT',
         'ALTER TABLE GsUser ADD COLUMN sr_sign_switch TEXT DEFAULT "off"',
         'ALTER TABLE GsUser ADD COLUMN sr_push_switch TEXT DEFAULT "off"',
         'ALTER TABLE GsUser ADD COLUMN draw_switch TEXT DEFAULT "off"',

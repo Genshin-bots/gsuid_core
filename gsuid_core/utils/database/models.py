@@ -34,7 +34,7 @@ class GsUser(User, table=True):
     sr_sign_switch: str = Field(default='off', title='星铁自动签到')
     fp: Optional[str] = Field(default=None, title='Fingerprint')
     device_id: Optional[str] = Field(default=None, title='设备ID')
-    OAID: Optional[str] = Field(default=None, title='设备匿名标识符')
+    device_info: Optional[str] = Field(default=None, title='设备fp')
 
 
 class GsCache(Cache, table=True):

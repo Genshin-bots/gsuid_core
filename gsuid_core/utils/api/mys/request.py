@@ -220,7 +220,7 @@ class BaseMysApi:
         body = {
             "app_version": self.mysVersion,
             "device_id": device_id,
-            "device_name": f"XiaoMi{model_name}",
+            "device_name": f"{model_name}",
             "os_version": "33",
             "platform": "Android",
             "registration_id": self.generate_seed(19),
@@ -229,7 +229,7 @@ class BaseMysApi:
         HEADER = copy.deepcopy(self._HEADER)
         HEADER['x-rpc-device_id'] = device_id
         HEADER['x-rpc-device_fp'] = device_fp
-        HEADER['x-rpc-device_name'] = f"XiaoMi{model_name}"
+        HEADER['x-rpc-device_name'] = f"{model_name}"
         HEADER['x-rpc-device_model'] = model_name
         HEADER['DS'] = generate_passport_ds('', body)
         HEADER['cookie'] = cookie
@@ -372,10 +372,26 @@ class BaseMysApi:
             uid = None
             if params and 'role_id' in params:
                 uid = params['role_id']
+            elif data and 'role_id' in data:
+                uid = data['role_id']
+
+            if uid is not None:
                 device_id = await self.get_user_device_id(uid)
                 header['x-rpc-device_fp'] = await self.get_user_fp(uid)
                 if device_id is not None:
                     header['x-rpc-device_id'] = device_id
+
+                dfp: Optional[str] = await GsUser.get_user_attr_by_uid(
+                    uid, 'device_info', 'sr' if self.is_sr else None
+                )
+                if dfp is not None:
+                    df = dfp.split('/')
+                    header['User-Agent'] = (
+                        f"Mozilla/5.0 (Linux; Android 13; {df[1]} {df[3]}"
+                        "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Version/4.0 Chrome/104.0.5112.97"
+                        f"Mobile Safari/537.36 miHoYoBBS/2{mys_version}"
+                    )
 
             logger.debug(header)
             for _ in range(2):
@@ -407,15 +423,6 @@ class BaseMysApi:
                     # 针对1034做特殊处理
                     if retcode == 1034 or retcode == 5003:
                         if uid:
-                            nd = await self.ck_in_new_device(uid)
-                            ck = header['Cookie']
-                            if 'DEVICEFP_SEED_ID' not in ck and nd:
-                                header['Cookie'] = (
-                                    f'DEVICEFP_SEED_ID={nd[2]};'
-                                    f'DEVICEFP_SEED_TIME={nd[3]};'
-                                    f'{ck};DEVICE_FP={nd[0]}'
-                                )
-
                             header['x-rpc-challenge_game'] = (
                                 '6' if self.is_sr else '2'
                             )

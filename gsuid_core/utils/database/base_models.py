@@ -287,9 +287,45 @@ class BaseModel(BaseBotIDModel):
 
     @classmethod
     @with_session
-    async def select_data(
+    async def select_data_list(
         cls: Type[T_BaseModel],
         session: AsyncSession,
+        user_id: str,
+        bot_id: Optional[str] = None,
+    ) -> Optional[List[T_BaseModel]]:
+        '''📝简单介绍:
+
+            基类的数据选择方法
+
+        🌱参数:
+
+            🔹user_id (`str`):
+                    传入的用户id, 例如QQ号, 一般直接取`event.user_id`
+
+            🔹bot_id (`Optional[str]`, 默认是 `None`):
+                    传入的bot_id, 例如`onebot`, 一般直接取`event.bot_id`
+
+        🚀使用范例:
+
+            `await GsUser.select_data(user_id='444888', bot_id='onebot')`
+
+        ✅返回值:
+
+            🔸`Optional[List[T_BaseModel]]`: 选中符合条件的全部数据，不存在则为`None`
+        '''
+        if bot_id is None:
+            sql = select(cls).where(cls.user_id == user_id)
+        else:
+            sql = select(cls).where(
+                cls.user_id == user_id, cls.bot_id == bot_id
+            )
+        result = await session.execute(sql)
+        data = result.scalars().all()
+        return data if data else None
+
+    @classmethod
+    async def select_data(
+        cls: Type[T_BaseModel],
         user_id: str,
         bot_id: Optional[str] = None,
     ) -> Optional[T_BaseModel]:
@@ -313,14 +349,7 @@ class BaseModel(BaseBotIDModel):
 
             🔸`Optional[T_BaseModel]`: 选中符合条件的第一个数据，不存在则为`None`
         '''
-        if bot_id is None:
-            sql = select(cls).where(cls.user_id == user_id)
-        else:
-            sql = select(cls).where(
-                cls.user_id == user_id, cls.bot_id == bot_id
-            )
-        result = await session.execute(sql)
-        data = result.scalars().all()
+        data = await cls.select_data_list(user_id, bot_id)
         return data[0] if data else None
 
     @classmethod
