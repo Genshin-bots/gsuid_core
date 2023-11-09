@@ -49,26 +49,35 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
 
 @sv_core_user_addck.on_prefix(('mys设备登录'))
 async def send_add_device_msg(bot: Bot, ev: Event):
-    # ev.text = device $ model_name $ oaid $ device_info
-    # ev.text = diting $ 220812C $ 1f1971472fd $ OnePlus/PHK110/OP5913L1:13/
-    data = ev.text.split('$')
+    # ev.text = device + model_name + device_type + board + oaid + device_info
+    # ev.text = diting + 220812C + OP11 + taro + 1f12fd + One/PHK110/OP11:13/
+    data = ev.text.split('+')
     uid = await get_uid(bot, ev, GsBind)
-    if len(data) != 4 or uid is None:
+    if len(data) != 6 or uid is None:
         return await bot.send(
-            '登陆格式错误...\n请按照device $ model_name $ oaid $ device_info的方式输入'
+            '登陆格式错误...\n请按照device + model_name + '
+            'device_type + board + oaid + device_info的方式输入'
         )
     device_id = mys_api.get_device_id()
     seed_id, seed_time = mys_api.get_seed()
-    device, model_name, oaid, device_info = (
+    device, model_name, device_type, board, oaid, device_info = (
         data[0].strip(),
         data[1].strip(),
         data[2].strip(),
         data[3].strip(),
+        data[4].strip(),
+        data[5].strip(),
     )
     fp = await mys_api.generate_fp(
-        device_id, model_name, device, oaid, device_info, seed_id, seed_time
+        device_id,
+        model_name,
+        device,
+        device_type,
+        board,
+        oaid,
+        device_info,
+        seed_id,
+        seed_time,
     )
-    await GsUser.update_data_by_uid_without_bot_id(
-        uid, fp=fp, device_id=device_id
-    )
+    await GsUser.update_data_by_xx({'uid': uid}, fp=fp, device_id=device_id)
     await bot.send('设备绑定成功!')

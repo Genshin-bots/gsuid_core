@@ -164,6 +164,8 @@ class BaseMysApi:
             device_id,
             'PHK110',
             'PHK110',
+            'OP5913L1',
+            'taro',
             '1f1971b188c472f0',
             'OnePlus/PHK110/OP5913L1:13/'
             'SKQ1.221119.001/T.1328291_b9_41:user/release-keys',
@@ -176,12 +178,14 @@ class BaseMysApi:
         device_id: str,
         model_name: str,
         device: str,
+        device_type: str,
+        board: str,
         oaid: str,
         device_info: str,
         seed_id: str,
         seed_time: str,
     ) -> str:
-        ext_fields = f'''{{"cpuType":"arm64-v8a","romCapacity":"512","productName":"{device}","romRemain":"422","manufacturer":"XiaoMi","appMemory":"512","hostname":"dg02-pool03-kvm87","screenSize":"1240x2662","osVersion":"13","aaid":"{self.generate_ID()}","vendor":"中国联通","accelerometer":"1.4883357x7.1712894x6.2847486","buildTags":"release-keys","model":"{model_name}","brand":"XiaoMi","oaid":"{oaid}","hardware":"qcom","deviceType":"{model_name}","devId":"REL","serialNumber":"unknown","buildTime":"1687848011000","buildUser":"root","ramCapacity":"469679","magnetometer":"20.081251x-27.487501x2.1937501","display":"{model_name}_13.1.0.181(CN01)","ramRemain":"215344","deviceInfo":"{device_info}","gyroscope":"0.030226856x0.014647375x0.010652636","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"33","board":"{device}"}}'''  # noqa
+        ext_fields = f'''{{"cpuType":"arm64-v8a","romCapacity":"512","productName":"{device}","romRemain":"422","manufacturer":"XiaoMi","appMemory":"512","hostname":"dg02-pool03-kvm87","screenSize":"1240x2662","osVersion":"13","aaid":"{self.generate_ID()}","vendor":"中国联通","accelerometer":"1.4883357x7.1712894x6.2847486","buildTags":"release-keys","model":"{model_name}","brand":"XiaoMi","oaid":"{oaid}","hardware":"qcom","deviceType":"{device_type}","devId":"REL","serialNumber":"unknown","buildTime":"1687848011000","buildUser":"root","ramCapacity":"469679","magnetometer":"20.081251x-27.487501x2.1937501","display":"{model_name}_13.1.0.181(CN01)","ramRemain":"215344","deviceInfo":"{device_info}","gyroscope":"0.030226856x0.014647375x0.010652636","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"33","board":"{board}"}}'''  # noqa
 
         body = {
             'device_id': self.generate_seed(16),
