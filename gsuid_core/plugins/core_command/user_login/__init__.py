@@ -49,13 +49,13 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
 
 @sv_core_user_addck.on_prefix(('mys设备登录'))
 async def send_add_device_msg(bot: Bot, ev: Event):
-    # ev.text = device - model_name - oaid - device_info
-    # ev.text = diting - 220812C - 1f1971472fd - OnePlus/PHK110/OP5913L1:13/
-    data = ev.text.split('-')
+    # ev.text = device $ model_name $ oaid $ device_info
+    # ev.text = diting $ 220812C $ 1f1971472fd $ OnePlus/PHK110/OP5913L1:13/
+    data = ev.text.split('$')
     uid = await get_uid(bot, ev, GsBind)
     if len(data) != 4 or uid is None:
         return await bot.send(
-            '登陆格式错误...\n请按照device - model_name - oaid - device_info的方式输入'
+            '登陆格式错误...\n请按照device $ model_name $ oaid $ device_info的方式输入'
         )
     device_id = mys_api.get_device_id()
     seed_id, seed_time = mys_api.get_seed()
