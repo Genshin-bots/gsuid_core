@@ -33,6 +33,7 @@ class _Bot:
         msg_id: str = '',
         at_sender: bool = False,
         sender_id: str = '',
+        group_id: Optional[str] = None,
     ):
         _message = await convert_message(message)
 
@@ -42,16 +43,14 @@ class _Bot:
         if at_sender and sender_id:
             _message.append(MessageSegment.at(sender_id))
 
-        send_message = []
-        for _m in _message:
-            if _m.type not in ['image_size']:
-                send_message.append(_m)
+        if group_id:
+            _message.append(Message('group', group_id))
 
         if is_specific_msg_id and not msg_id:
             msg_id = specific_msg_id
 
         send = MessageSend(
-            content=send_message,
+            content=_message,
             bot_id=bot_id,
             bot_self_id=bot_self_id,
             target_type=target_type,
@@ -236,6 +235,7 @@ class Bot:
             self.ev.msg_id,
             at_sender,
             self.ev.user_id,
+            self.ev.group_id,
         )
 
     async def target_send(
@@ -245,6 +245,7 @@ class Bot:
         target_id: Optional[str],
         at_sender: bool = False,
         sender_id: str = '',
+        send_source_group: Optional[str] = None,
     ):
         return await self.bot.target_send(
             message,
@@ -255,4 +256,5 @@ class Bot:
             self.ev.msg_id,
             at_sender,
             sender_id,
+            send_source_group,
         )
