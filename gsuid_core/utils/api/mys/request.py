@@ -215,12 +215,14 @@ class BaseMysApi:
             return res["data"]["device_fp"]
 
     async def device_login_and_save(
-        self, device_id: str, device_fp: str, model_name: str, cookie: str
+        self, device_id: str, device_fp: str, device_info: str, cookie: str
     ):
+        info = device_info.split('/')
+        brand, model_name = info[0], info[1]
         body = {
             "app_version": self.mysVersion,
             "device_id": device_id,
-            "device_name": f"{model_name}",
+            "device_name": f"{brand}{model_name}",
             "os_version": "33",
             "platform": "Android",
             "registration_id": self.generate_seed(19),
@@ -229,10 +231,13 @@ class BaseMysApi:
         HEADER = copy.deepcopy(self._HEADER)
         HEADER['x-rpc-device_id'] = device_id
         HEADER['x-rpc-device_fp'] = device_fp
-        HEADER['x-rpc-device_name'] = f"{model_name}"
+        HEADER['x-rpc-device_name'] = f"{brand} {model_name}"
         HEADER['x-rpc-device_model'] = model_name
+        HEADER['x-rpc-csm_source'] = 'myself'
+        HEADER['Referer'] = 'https://app.mihoyo.com'
+        HEADER['Host'] = 'bbs-api.miyoushe.com'
         HEADER['DS'] = generate_passport_ds('', body)
-        HEADER['cookie'] = cookie
+        HEADER['Cookie'] = cookie
 
         await self._mys_request(
             url=self.MAPI['DEVICE_LOGIN'],
@@ -341,15 +346,22 @@ class BaseMysApi:
     async def ck_in_new_device(
         self, uid: str, app_cookie: Optional[str] = None
     ):
+        data = await GsUser.base_select_data(stoken=app_cookie)
         device_id = self.get_device_id()
         seed_id, seed_time = self.get_seed()
-        model_name = self.generate_model_name()
-        fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
+        if data and data.device_info:
+            fp = data.fp
+            device_info = data.device_info
+        else:
+            fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
+            device_info = 'OnePlus/PHK110/OP2020L1'
         if app_cookie is None:
             app_cookie = await self.get_stoken(uid)
             if app_cookie is None:
                 return logger.warning('设备登录流程错误...')
-        await self.device_login_and_save(device_id, fp, model_name, app_cookie)
+        await self.device_login_and_save(
+            device_id, fp, device_info, app_cookie
+        )
         if await GsUser.user_exists(uid, 'sr' if self.is_sr else None):
             await GsUser.update_data_by_uid_without_bot_id(
                 uid, 'sr' if self.is_sr else None, fp=fp, device_id=device_id

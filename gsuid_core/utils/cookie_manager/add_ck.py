@@ -57,6 +57,8 @@ async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
     error_num = 0
     for uid in uid_dict:
         stoken = await GsUser.get_user_stoken_by_uid(uid)
+        # account_id = await GsUser.get_user_attr_by_uid(uid, 'mys_id')
+        # _stoken = f'{stoken};account_id={account_id}'
         if stoken is None:
             skip_num += 1
             error_num += 1
@@ -264,7 +266,6 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             wd_uid=wd_uid_bind,
             fp=nd[0],
             device_id=nd[1],
-            OAID=None,
         )
     else:
         await GsUser.insert_data(
@@ -291,7 +292,6 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             device_id=nd[1],
             sr_push_switch='off',
             sr_sign_switch='off',
-            OAID=None,
         )
 
     im_list.append(

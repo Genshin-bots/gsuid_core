@@ -78,6 +78,6 @@ async def send_add_device_msg(bot: Bot, ev: Event):
         for user in user_list:
             if user.cookie:
                 await mys_api.device_login_and_save(
-                    device_id, fp, data['deviceModel'], user.cookie
+                    device_id, fp, data['deviceFingerprint'], user.cookie
                 )
     await bot.send('设备绑定成功!')
