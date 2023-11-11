@@ -229,7 +229,9 @@ class Bot:
         return await self.bot.target_send(
             message,
             self.ev.user_type,
-            self.ev.group_id if self.ev.group_id else self.ev.user_id,
+            self.ev.user_id
+            if self.ev.user_type == 'direct'
+            else self.ev.group_id,
             self.ev.real_bot_id,
             self.bot_self_id,
             self.ev.msg_id,
