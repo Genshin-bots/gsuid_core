@@ -51,27 +51,45 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
 
 @sv_core_user_addck.on_prefix(('mys设备登录'))
 async def send_add_device_msg(bot: Bot, ev: Event):
-    data: Dict[str, str] = json.loads(ev.text.strip())
+    try:
+        data: Dict[str, str] = json.loads(ev.text.strip())
+    except:  # noqa:E722
+        return await bot.send('绑定格式错误...')
 
-    device_id = mys_api.get_device_id()
-    seed_id, seed_time = mys_api.get_seed()
-    fp = await mys_api.generate_fp(
-        device_id,
-        data['deviceModel'],
-        data['deviceProduct'],
-        data['deviceName'],
-        data['deviceBoard'],
-        data['oaid'],
-        data['deviceFingerprint'],
-        seed_id,
-        seed_time,
-    )
+    if 'fp' in data and ('device_id' in data or 'deviceId' in data):
+        fp = data['fp']
+        if 'device_id' in data:
+            device_id = data['device_id']
+        else:
+            device_id = data['deviceId']
+
+        if 'device_info' in data:
+            device_info = data['device_info']
+        elif 'deviceInfo' in data:
+            device_info = data['deviceInfo']
+        else:
+            device_info = 'Unknown/Unknown/Unknown'
+    else:
+        device_id = mys_api.get_device_id()
+        seed_id, seed_time = mys_api.get_seed()
+        fp = await mys_api.generate_fp(
+            device_id,
+            data['deviceModel'],
+            data['deviceProduct'],
+            data['deviceName'],
+            data['deviceBoard'],
+            data['oaid'],
+            data['deviceFingerprint'],
+            seed_id,
+            seed_time,
+        )
+        device_info = data['deviceFingerprint']
     await GsUser.update_data(
         ev.user_id,
         ev.bot_id,
         fp=fp,
         device_id=device_id,
-        device_info=data['deviceFingerprint'],
+        device_info=device_info,
     )
     user_list = await GsUser.select_data_list(ev.user_id, ev.bot_id)
     if user_list:
