@@ -64,8 +64,9 @@ class MessageSegment:
                 return Message(type='image', data=img)
             elif img.startswith('base64://'):
                 img = b64decode(img.replace('base64://', ''))
-            with open(img, 'rb') as fp:
-                img = fp.read()
+            else:
+                with open(img, 'rb') as fp:
+                    img = fp.read()
 
         if enable_pic_srv:
             name = f'{uuid.uuid1()}.jpg'
@@ -173,19 +174,37 @@ class MessageSegment:
         return Message(type=f'log_{type}', data=content)
 
 
+async def _conver_image_to_url(message: Message) -> List[Message]:
+    if pclient is not None:
+        img_text: str = message.data  # type: ignore
+        bio = BytesIO(b64decode(img_text[9:]))
+        img = Image.open(bio)
+        img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
+        _message = [
+            MessageSegment.image(img_url if img_url else img_text),
+            MessageSegment.image_size(img.size),
+        ]
+        return _message
+    return [message]
+
+
 async def _convert_message(
     message: Union[Message, str, bytes]
 ) -> List[Message]:
     if isinstance(message, Message):
-        if message.type == 'image' and pclient is not None:
-            img_text: str = message.data  # type: ignore
-            bio = BytesIO(b64decode(img_text[9:]))
-            img = Image.open(bio)
-            img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
-            _message = [
-                MessageSegment.image(img_url if img_url else img_text),
-                MessageSegment.image_size(img.size),
-            ]
+        if message.data is None:
+            return [message]
+
+        if message.type == 'image':
+            _message = await _conver_image_to_url(message)
+        elif message.type == 'node':
+            _temp = []
+            for i in message.data:
+                if i.type == 'image':
+                    _temp.extend(await _conver_image_to_url(i))
+                else:
+                    _temp.append(i)
+            _message = [MessageSegment.node(_temp)]
         else:
             _message = [message]
     elif isinstance(message, str):
