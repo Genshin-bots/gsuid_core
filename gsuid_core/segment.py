@@ -60,8 +60,10 @@ class MessageSegment:
         else:
             if img.startswith('http'):
                 return Message(type='image', data=f'link://{img}')
-            if img.startswith('base64://'):
+            if img.startswith('base64://') and not enable_pic_srv:
                 return Message(type='image', data=img)
+            elif img.startswith('base64://'):
+                img = b64decode(img.replace('base64://', ''))
             with open(img, 'rb') as fp:
                 img = fp.read()
 
