@@ -2,8 +2,11 @@ from pathlib import Path
 from typing import Dict, List
 from http.cookies import SimpleCookie
 
+from PIL import Image
+
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import UID_HINT
+from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.database.utils import SERVER, SR_SERVER
 from gsuid_core.utils.database.models import GsBind, GsUser, GsCache
 
@@ -99,9 +102,8 @@ async def _deal_ck_to_pic(im: str) -> bytes:
         status_pic = pic_path / 'ck_ok.png'
     else:
         status_pic = pic_path / 'all_ok.png'
-    with open(status_pic, 'rb') as f:
-        img = f.read()
-    return img
+    img = Image.open(status_pic).convert('RGB')
+    return await convert_img(img)
 
 
 async def get_account_id(simp_dict: SimpleCookie) -> str:

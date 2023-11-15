@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from typing import List, Literal, Optional, TypedDict
+from typing import Dict, List, Literal, Optional, TypedDict
 
 # https://peps.python.org/pep-0655/#usage-in-python-3-11
 if sys.version_info >= (3, 11):
@@ -207,6 +207,11 @@ class DailyNoteData(TypedDict):
 # Response from https://api-takumi.mihoyo.com/game_record/app/genshin/api/index
 
 
+class ExtMap(TypedDict):
+    link: str
+    backup_link: str
+
+
 class Stats(TypedDict):
     active_day_number: int
     achievement_number: int
@@ -223,6 +228,10 @@ class Stats(TypedDict):
     electroculus_number: int
     magic_chest_number: int
     dendroculus_number: int
+    hydroculus_number: int
+    pyroculus_number: int
+    cryoculus_number: int
+    field_ext_map: Dict[str, ExtMap]
 
 
 class Offering(TypedDict):

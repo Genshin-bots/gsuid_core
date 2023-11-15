@@ -328,7 +328,7 @@ class CustomizeImage:
             if abs(light_value - based_light) < temp:  # noqa:E203
                 bg_color = bg
                 temp = abs(light_value - based_light)
-        return bg_color
+        return bg_color  # type:ignore
 
     @staticmethod
     def get_text_color(bg_color: Tuple[int, int, int]) -> Tuple[int, int, int]:
