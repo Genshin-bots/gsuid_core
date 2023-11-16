@@ -177,14 +177,15 @@ class MessageSegment:
 async def _conver_image_to_url(message: Message) -> List[Message]:
     if pclient is not None:
         img_text: str = message.data  # type: ignore
-        bio = BytesIO(b64decode(img_text[9:]))
-        img = Image.open(bio)
-        img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
-        _message = [
-            MessageSegment.image(img_url if img_url else img_text),
-            MessageSegment.image_size(img.size),
-        ]
-        return _message
+        if img_text.startswith('base64://'):
+            bio = BytesIO(b64decode(img_text[9:]))
+            img = Image.open(bio)
+            img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
+            _message = [
+                MessageSegment.image(img_url if img_url else img_text),
+                MessageSegment.image_size(img.size),
+            ]
+            return _message
     return [message]
 
 
