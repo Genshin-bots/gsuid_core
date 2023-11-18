@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.worksheet.worksheet import Worksheet
 
 sample = {
     'name': '',
@@ -20,6 +21,7 @@ OUTPUT_PATH = Path(__file__).parent / 'Help.json'
 
 wb = load_workbook(str(HELP_PATH))
 ws = wb.active
+assert isinstance(ws, Worksheet)
 
 module_name_str = ''
 for row in range(2, 999):

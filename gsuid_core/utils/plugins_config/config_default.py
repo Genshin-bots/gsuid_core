@@ -62,5 +62,8 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'EnablePicSrv': GsBoolConfig('启用将图片转链接发送(需公网)', '发送图片转链接', False),
     'PicSrv': GsStrConfig('图片转链接为(需公网)', '发送图片转链接', ''),
     'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
-    'SendMDPlatform': GsListStrConfig('发送MD的平台列表(用:连接)', '发送MD的平台列表', []),
+    'SendMDPlatform': GsListStrConfig('默认发送MD的平台列表(用:连接)', '发送MD的平台列表', []),
+    'SendButtonsPlatform': GsListStrConfig(
+        '默认发送按钮的平台列表(用:连接)', '发送按钮的平台列表', []
+    ),
 }

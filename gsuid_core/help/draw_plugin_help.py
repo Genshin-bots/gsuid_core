@@ -59,7 +59,7 @@ async def get_help(
     font: Callable[[int], ImageFont.FreeTypeFont],
     is_dark: bool = True,
     text_color: Tuple[int, int, int] = (250, 250, 250),
-    sub_color: Optional[Tuple[int, int, int]] = None,
+    sub_c: Optional[Tuple[int, int, int]] = None,
     op_color: Optional[Tuple[int, int, int]] = None,
     column: int = 5,
     is_gaussian: bool = False,
@@ -74,15 +74,15 @@ async def get_help(
     if help_path.exists() and name in cache and cache[name] and enable_cache:
         return await convert_img(Image.open(help_path))
 
-    if sub_color is None and is_dark:
-        sub_color = tuple(x - 50 for x in text_color if x > 50)
-    elif sub_color is None and not is_dark:
-        sub_color = tuple(x + 50 for x in text_color if x < 205)
+    if sub_c is None and is_dark:
+        sub_c = tuple(x - 50 for x in text_color if x > 50)  # type: ignore
+    elif sub_c is None and not is_dark:
+        sub_c = tuple(x + 50 for x in text_color if x < 205)  # type: ignore
 
     if op_color is None and is_dark:
-        op_color = tuple(x - 90 for x in text_color if x > 90)
+        op_color = tuple(x - 90 for x in text_color if x > 90)  # type: ignore
     elif op_color is None and not is_dark:
-        op_color = tuple(x + 90 for x in text_color if x < 160)
+        op_color = tuple(x + 90 for x in text_color if x < 160)  # type: ignore
 
     _h = 600
 
@@ -109,12 +109,10 @@ async def get_help(
         for _i, message in enumerate(extra_message):
             _x = int(first_x + _i * 300)
             title.paste(badge_s, (_x, 556), badge_s)
-            title_draw.text(
-                (_x + 360, 596), message, sub_color, font(26), 'mm'
-            )
+            title_draw.text((_x + 360, 596), message, sub_c, font(26), 'mm')
 
     title_draw.text((cx(w, 0), 440), f'{name} 帮助', text_color, font(36), 'mm')
-    title_draw.text((cx(w, 0), 520), sub_text, sub_color, font(26), 'mm')
+    title_draw.text((cx(w, 0), 520), sub_text, sub_c, font(26), 'mm')
 
     if is_dark:
         icon_mask = Image.new('RGBA', (36, 36), (255, 255, 255))
@@ -142,7 +140,7 @@ async def get_help(
             bbox = font(35).getbbox(sv_name)
             size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        bc_draw.text((42 + size, 30), sv_desc, sub_color, font(20), 'lm')
+        bc_draw.text((42 + size, 30), sv_desc, sub_c, font(20), 'lm')
         sv_img.paste(bc, (0, 10), bc)
         # sv_img = easy_alpha_composite(sv_img, bc, (0, 10))
 
@@ -169,7 +167,7 @@ async def get_help(
             # 标题
             bt_draw.text((20 + f, 28), tr_name, text_color, font(26), 'lm')
             # 使用范例
-            bt_draw.text((20 + f, 50), tr['eg'], sub_color, font(17), 'lm')
+            bt_draw.text((20 + f, 50), tr['eg'], sub_c, font(17), 'lm')
             # 简单介绍
             bt_draw.text((20, 78), tr['desc'], op_color, font(16), 'lm')
 

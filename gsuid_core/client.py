@@ -49,7 +49,7 @@ class GsClient:
             else:
                 content = [Message(type='text', data=intent)]
             msg = MessageReceive(
-                bot_id='Nonebot222',
+                bot_id='console',
                 user_type='direct',
                 user_pm=1,
                 group_id=None,

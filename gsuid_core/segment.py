@@ -13,6 +13,7 @@ from gsuid_core.data_store import image_res
 from gsuid_core.message_models import Button
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.plugins_config.gs_config import (
+    send_pic_config,
     pic_upload_config,
     core_plugins_config,
 )
@@ -68,13 +69,7 @@ class MessageSegment:
                 with open(img, 'rb') as fp:
                     img = fp.read()
 
-        if enable_pic_srv:
-            name = f'{uuid.uuid1()}.jpg'
-            path = image_res / name
-            path.write_bytes(img)
-            data = f'link://{pic_srv}/genshinuid/image/{name}'
-        else:
-            data = f'base64://{b64encode(img).decode()}'
+        data = f'base64://{b64encode(img).decode()}'
 
         msg = Message(type='image', data=data)
         return msg
@@ -174,35 +169,93 @@ class MessageSegment:
         return Message(type=f'log_{type}', data=content)
 
 
-async def _conver_image_to_url(message: Message) -> List[Message]:
+async def _conver_image_to_url(image: Union[bytes, str]) -> List[Message]:
     if pclient is not None:
-        img_text: str = message.data  # type: ignore
-        if img_text.startswith('base64://'):
-            bio = BytesIO(b64decode(img_text[9:]))
-            img = Image.open(bio)
-            img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
-            _message = [
-                MessageSegment.image(img_url if img_url else img_text),
-                MessageSegment.image_size(img.size),
-            ]
-            return _message
-    return [message]
+        if isinstance(image, str) and image.startswith('base64://'):
+            image_bytes = b64decode(image[9:])
+        else:
+            image_bytes = image
+        assert isinstance(image_bytes, bytes)
+
+        bio = BytesIO(image_bytes)
+        img = Image.open(bio)
+        img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
+        _message = [
+            MessageSegment.image(img_url if img_url else image_bytes),
+            MessageSegment.image_size(img.size),
+        ]
+        return _message
+
+    return []
+
+
+async def _convert_message_to_image(
+    message: Message, bot_id: str
+) -> List[Message]:
+    if message.data is None:
+        return []
+
+    image_b64 = None
+    if (
+        message.type == 'text'
+        and is_text2pic
+        and len(message.data) >= int(text2pic_limit)
+    ):
+        image_bytes = await text2pic(message.data)
+    elif message.type == 'image':
+        img: Union[bytes, str] = message.data
+        if isinstance(img, str) and img.startswith('base64://'):
+            image_b64 = img
+            image_bytes = b64decode(img[9:])
+        else:
+            image_bytes = img
+    else:
+        return [message]
+
+    assert isinstance(image_bytes, bytes)
+
+    send_type = send_pic_config.get_config(bot_id).data
+
+    if send_type == 'base64':
+        return (
+            [Message(type='image', data=image_b64)]
+            if image_b64
+            else [MessageSegment.image(image_bytes)]
+        )
+
+    if send_type == 'link_remote':
+        return await _conver_image_to_url(image_bytes)
+    elif (send_type == 'link_local') or enable_pic_srv:
+        bio = BytesIO(image_bytes)
+        image = Image.open(bio)
+        name = f'{uuid.uuid1()}.jpg'
+        path = image_res / name
+        path.write_bytes(image_bytes)
+        data = f'link://{pic_srv}/genshinuid/image/{name}'
+        return [
+            Message(type='image', data=data),
+            MessageSegment.image_size(image.size),
+        ]
+    elif pclient is not None:
+        return await _conver_image_to_url(image_bytes)
+    else:
+        return [message]
 
 
 async def _convert_message(
-    message: Union[Message, str, bytes]
+    message: Union[Message, str, bytes], bot_id: str
 ) -> List[Message]:
+    _message = [message]
     if isinstance(message, Message):
         if message.data is None:
             return [message]
-
         if message.type == 'image':
-            _message = await _conver_image_to_url(message)
+            _message = await _convert_message_to_image(message, bot_id)
         elif message.type == 'node':
             _temp = []
             for i in message.data:
                 if i.type == 'image':
-                    _temp.extend(await _conver_image_to_url(i))
+                    _temp.extend(await _convert_message_to_image(i, bot_id))
                 else:
                     _temp.append(i)
             _message = [MessageSegment.node(_temp)]
@@ -210,67 +263,41 @@ async def _convert_message(
             _message = [message]
     elif isinstance(message, str):
         if message.startswith('base64://'):
-            bio = BytesIO(b64decode(message[9:]))
-            img = Image.open(bio)
-
-            img_url = None
-            if pclient is not None:
-                img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
-
-            _message = [
-                MessageSegment.image(img_url if img_url else message),
-                MessageSegment.image_size(img.size),
-            ]
+            _str_message = Message(type='image', data=message)
         else:
-            _message = [MessageSegment.text(message)]
-    elif isinstance(message, bytes):
-        bio = BytesIO(message)
-        img = Image.open(bio)
-
-        img_url = None
-        if pclient is not None:
-            img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
-
-        _message = [
-            MessageSegment.image(img_url if img_url else message),
-            MessageSegment.image_size(img.size),
-        ]
-    elif isinstance(message, (bytearray, memoryview)):
-        _message = [MessageSegment.image(bytes(message))]
-    else:
-        _message = [message]
-    return _message  # type: ignore
+            _str_message = MessageSegment.text(message)
+        _message = await _convert_message_to_image(_str_message, bot_id)
+    elif isinstance(message, (bytes, bytearray, memoryview)):
+        message = bytes(message)
+        _bytes_message = Message(type='image', data=message)
+        _message = await _convert_message_to_image(_bytes_message, bot_id)
+    return _message
 
 
 async def convert_message(
-    message: Union[Message, List[Message], List[str], str, bytes]
+    message: Union[Message, List[Message], List[str], str, bytes], bot_id: str
 ) -> List[Message]:
+    # 转换消息类型为bot标准输出类型
     _message: List[Message] = []
+
     if isinstance(message, List):
+        # 如果要转换的消息类型为列表且全都是string，则作为合并转发消息发送
         if all(isinstance(x, str) for x in message):
             _message.extend([MessageSegment.node(message)])
         else:
+            # 如果不是，则针对每条消息都进行转换
             for i in message:
-                _message.extend(await _convert_message(i))
+                _message.extend(await _convert_message(i, bot_id))
     else:
-        _message = await _convert_message(message)
+        _message = await _convert_message(message, bot_id)
 
+    # 启用了随机字符的话，随机加入字符
     if R_enabled:
         result = ''.join(
             random.choice(R_text)
             for _ in range(random.randint(1, len(R_text)))
         )
         _message.append(MessageSegment.text(result))
-
-    if is_text2pic:
-        if (
-            len(_message) == 1
-            and _message[0].type == 'text'
-            and isinstance(_message[0].data, str)
-            and len(_message[0].data) >= int(text2pic_limit)
-        ):
-            img = await text2pic(_message[0].data)
-            _message = [MessageSegment.image(img)]
 
     return _message
 

@@ -8,6 +8,7 @@ from gsuid_core.data_store import get_res_path
 
 from .models import GSC, GsBoolConfig
 from .config_default import CONIFG_DEFAULT
+from .send_pic_config import SEND_PIC_CONIFG
 from .pic_server_config import PIC_UPLOAD_CONIFG
 
 
@@ -121,5 +122,9 @@ core_plugins_config = StringConfig(
 )
 
 pic_upload_config = StringConfig(
-    'Core_Pic', get_res_path() / 'pic_upload_config.json', PIC_UPLOAD_CONIFG
+    'GsCore图片上传', get_res_path() / 'pic_upload_config.json', PIC_UPLOAD_CONIFG
+)
+
+send_pic_config = StringConfig(
+    'GsCore发送图片', get_res_path() / 'send_pic_config.json', SEND_PIC_CONIFG
 )

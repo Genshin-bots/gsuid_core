@@ -11,9 +11,13 @@ from gsuid_core.models import Event, Message, MessageSend
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.segment import MessageSegment, to_markdown, convert_message
 
-is_sp_msg_id: str = core_plugins_config.get_config('EnableSpecificMsgId').data
 sp_msg_id: str = core_plugins_config.get_config('SpecificMsgId').data
-is_markdown: List = core_plugins_config.get_config('SendMDPlatform').data
+is_sp_msg_id: str = core_plugins_config.get_config('EnableSpecificMsgId').data
+ism: List = core_plugins_config.get_config('SendMDPlatform').data
+isb: List = core_plugins_config.get_config('SendButtonsPlatform').data
+
+enable_buttons_platform = isb
+enable_markdown_platform = ism
 
 
 class _Bot:
@@ -36,9 +40,9 @@ class _Bot:
         sender_id: str = '',
         group_id: Optional[str] = None,
     ):
-        _message = await convert_message(message)
+        _message = await convert_message(message, bot_id)
 
-        if bot_id in is_markdown:
+        if bot_id in enable_markdown_platform:
             _message = await to_markdown(_message)
 
         if at_sender and sender_id:
@@ -160,9 +164,9 @@ class Bot:
             if reply is None:
                 reply = f'请在{timeout}秒内做出选择...'
 
-            _reply = await convert_message(reply)
+            _reply = await convert_message(reply, self.bot_id)
 
-            if self.ev.real_bot_id in ['qqgroup']:
+            if self.ev.real_bot_id in enable_buttons_platform:
                 _buttons = []
                 for option in option_list:
                     if isinstance(option, List):
