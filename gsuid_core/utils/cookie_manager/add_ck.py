@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from http.cookies import SimpleCookie
 
 from PIL import Image
@@ -89,21 +89,26 @@ async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
 
 async def deal_ck(bot_id: str, mes: str, user_id: str, mode: str = 'PIC'):
     im = await _deal_ck(bot_id, mes, user_id)
+    img, status = await _deal_ck_to_pic(im)
     if mode == 'PIC':
-        im = await _deal_ck_to_pic(im)
-    return im
+        return img, status
+    else:
+        return im, status
 
 
-async def _deal_ck_to_pic(im: str) -> bytes:
+async def _deal_ck_to_pic(im: str) -> Tuple[bytes, bool]:
     ok_num = im.count('成功')
     if ok_num < 1:
         status_pic = pic_path / 'ck_no.png'
+        status = False
     elif ok_num < 2:
         status_pic = pic_path / 'ck_ok.png'
+        status = False
     else:
         status_pic = pic_path / 'all_ok.png'
+        status = True
     img = Image.open(status_pic).convert('RGB')
-    return await convert_img(img)
+    return await convert_img(img), status
 
 
 async def get_account_id(simp_dict: SimpleCookie) -> str:

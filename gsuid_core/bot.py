@@ -128,9 +128,16 @@ class Bot:
         ] = None,
         unsuported_platform: bool = False,
         timeout: float = 60,
+        sep: str = ' / ',
     ):
         return await self.receive_resp(
-            reply, option_list, unsuported_platform, True, True, timeout
+            reply,
+            option_list,
+            unsuported_platform,
+            True,
+            True,
+            timeout,
+            sep=sep,
         )
 
     async def send_option(
@@ -142,9 +149,10 @@ class Bot:
             Union[List[str], List[Button], List[List[str]], List[List[Button]]]
         ] = None,
         unsuported_platform: bool = False,
+        sep: str = ' / ',
     ):
         return await self.receive_resp(
-            reply, option_list, unsuported_platform, False, False
+            reply, option_list, unsuported_platform, False, False, sep=sep
         )
 
     async def receive_resp(
@@ -159,6 +167,7 @@ class Bot:
         is_mutiply: bool = False,
         is_recive: bool = True,
         timeout: float = 60,
+        sep: str = ' / ',
     ) -> Optional[Event]:
         if option_list:
             if reply is None:
@@ -200,7 +209,7 @@ class Bot:
 
                     _reply.append(
                         MessageSegment.text(
-                            '\n请输入以下命令之一:\n' + ' / '.join(_options)
+                            '\n请输入以下命令之一:\n' + sep.join(_options)
                         )
                     )
                 await self.send(_reply)

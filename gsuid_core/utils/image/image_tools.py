@@ -14,6 +14,24 @@ TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
+async def shift_image_hue(img: Image.Image, angle: float = 30) -> Image.Image:
+    alpha = img.getchannel('A')
+    img = img.convert('HSV')
+
+    pixels = img.load()
+    hue_shift = angle
+
+    for y in range(img.height):
+        for x in range(img.width):
+            h, s, v = pixels[x, y]
+            h = (h + hue_shift) % 360
+            pixels[x, y] = (h, s, v)
+
+    img = img.convert('RGBA')
+    img.putalpha(alpha)
+    return img
+
+
 async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
     """
     从网络获取图片, 格式化为RGBA格式的指定尺寸

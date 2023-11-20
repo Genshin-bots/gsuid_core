@@ -4,6 +4,7 @@ from typing import Dict
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
+from gsuid_core.message_models import Button
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.cookie_manager.qrlogin import qrcode_login
@@ -33,20 +34,46 @@ async def send_refresh_ck_msg(bot: Bot, ev: Event):
     await bot.send(im)
 
 
+async def _send_help(bot: Bot, im):
+    p = Button('🔍查询信息', '查询')
+    q = Button('💠查询探索度', '查询探索')
+    r = Button('💠查询收集度', '查询收集')
+    t = Button('🌌查询深渊', '查询深渊')
+    s = Button('✨查询体力', '每日')
+    u = Button('🆚查询七圣', '七圣召唤')
+    v = Button('✉原石札记', '原石札记')
+    x = Button('⏱注册时间', '原神注册时间')
+    y = Button('💗抽卡记录', '抽卡记录')
+    await bot.send_option(
+        im,
+        [
+            [p, q, r],
+            [t, s, u],
+            [v, x, y],
+        ],
+    )
+
+
 @sv_core_user_qrcode_login.on_fullmatch(('扫码登陆', '扫码登录'))
 async def send_qrcode_login(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[扫码登陆]')
     im = await qrcode_login(bot, ev, ev.user_id)
     if not im:
         return
-    im = await deal_ck(ev.bot_id, im, ev.user_id)
-    await bot.send(im)
+    im, status = await deal_ck(ev.bot_id, im, ev.user_id)
+    if status:
+        await _send_help(bot, im)
+    else:
+        await bot.send(im)
 
 
 @sv_core_user_addck.on_prefix(('添加'))
 async def send_add_ck_msg(bot: Bot, ev: Event):
-    im = await deal_ck(ev.bot_id, ev.text, ev.user_id)
-    await bot.send(im)
+    im, status = await deal_ck(ev.bot_id, ev.text, ev.user_id)
+    if status:
+        await _send_help(bot, im)
+    else:
+        await bot.send(im)
 
 
 @sv_core_user_addck.on_prefix(('mys设备登录'))

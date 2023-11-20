@@ -66,9 +66,11 @@ def get_error_type(retcode: Union[int, str]) -> str:
         return 'Api错误'
 
 
-async def get_error_img(retcode: Union[int, str]) -> Union[bytes, str]:
+async def get_error_img(
+    retcode: Union[int, str], force_image: bool = False
+) -> Union[bytes, str]:
     error_message = get_error(retcode)
-    if is_pic_error:
+    if is_pic_error or force_image:
         error_type = get_error_type(retcode)
         return await draw_error_img(retcode, error_message, error_type)
     else:
