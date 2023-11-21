@@ -42,7 +42,7 @@ async def find_fastest_url(urls: Dict[str, str]):
     fastest_time = float('inf')
 
     for result in results:
-        if isinstance(result, Exception):
+        if isinstance(result, (Exception, BaseException)):
             continue
         tag, url, elapsed_time = result
         if elapsed_time < fastest_time:

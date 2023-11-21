@@ -8,10 +8,32 @@ import httpx
 from httpx import get
 from PIL import Image, ImageDraw, ImageFont
 
+from gsuid_core.models import Event
+from gsuid_core.utils.image.utils import sget
 from gsuid_core.data_store import get_res_path
 
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
+
+
+async def get_event_avatar(ev: Event) -> Image.Image:
+    if 'avatar' in ev.sender and ev.sender['avatar']:
+        avatar_url = ev.sender['avatar']
+        content = (await sget(avatar_url)).content
+        return Image.open(BytesIO(content)).convert('RGBA')
+    else:
+        img = Image.open(TEXT_PATH / 'icon.jpg').convert('RGBA')
+        return img
+
+
+async def get_avatar_with_ring(
+    ev: Event,
+    size: int = 300,
+    bg_color: Tuple[int, int, int] | None = None,
+    is_ring: bool = True,
+) -> Image.Image:
+    avatar = await get_event_avatar(ev)
+    return await draw_pic_with_ring(avatar, size, bg_color, is_ring)
 
 
 async def shift_image_hue(img: Image.Image, angle: float = 30) -> Image.Image:
@@ -195,7 +217,9 @@ async def get_qq_avatar(
         avatar_url = f'http://q1.qlogo.cn/g?b=qq&nk={qid}&s=640'
     elif avatar_url is None:
         avatar_url = 'https://q1.qlogo.cn/g?b=qq&nk=3399214199&s=640'
-    char_pic = Image.open(BytesIO(get(avatar_url).content)).convert('RGBA')
+    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
+        'RGBA'
+    )
     return char_pic
 
 
