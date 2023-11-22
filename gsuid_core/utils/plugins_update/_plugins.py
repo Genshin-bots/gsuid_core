@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import asyncio
 import subprocess
@@ -17,7 +18,6 @@ from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
 plugins_list: Dict[str, Dict[str, str]] = {}
 
 is_update_dep = core_plugins_config.get_config('AutoUpdateDep').data
-proxy_url: str = core_plugins_config.get_config('ProxyURL').data
 
 
 # 传入一个path对象
@@ -135,6 +135,8 @@ async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
 
 
 def install_plugins(plugins: Dict[str, str]) -> str:
+    proxy_url: str = core_plugins_config.get_config('ProxyURL').data
+
     plugin_name = plugins['link'].split('/')[-1]
     if proxy_url and not proxy_url.endswith('/'):
         _proxy_url = proxy_url + '/'
@@ -201,6 +203,8 @@ def check_status(plugin_name: str) -> int:
 
 async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
     plugin_name = repo.name
+    proxy_url: str = core_plugins_config.get_config('ProxyURL').data
+
     try:
         process = await asyncio.create_subprocess_shell(
             'git remote get-url origin',
@@ -219,10 +223,14 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
         logger.info(f'[core插件设置代理] {plugin_name} git地址为SSH, 无需设置代理')
         return f'{plugin_name} 无需设置代理'
 
-    if original_url.count('https://') >= 2:
-        main_url = 'https://' + original_url.split('https://')[-1]
+    _main_url = re.search(r"https:\/\/github[\s\S]+?git", original_url)
+    if _main_url:
+        main_url = _main_url[0]
     else:
-        main_url = original_url
+        logger.info(f'[core插件设置代理] {plugin_name} 未发现有效git地址')
+        return f'{plugin_name} 未发现有效git地址'
+
+    # _proxy_url = re.search(r'^(https?:\/\/.+?)\/', original_url)
 
     if proxy is None:
         _proxy_url = proxy_url

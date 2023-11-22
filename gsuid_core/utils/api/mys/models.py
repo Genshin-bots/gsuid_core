@@ -16,6 +16,51 @@ else:
 # 玩家、武器、圣遗物、角色模型
 
 
+class PostDrawRole(TypedDict):
+    role_id: int
+    name: str
+    jump_type: str
+    jump_target: str
+    jump_start_time: str
+    jump_end_time: str
+    role_gender: int
+    take_picture: str
+    gal_xml: str
+    gal_resource: str
+    is_partake: bool
+    bgm: str
+
+
+class PostDrawTask(TypedDict):
+    task_id: int
+    status: str
+
+
+class _PostDraw(TypedDict):
+    nick_name: str
+    uid: int
+    region: str
+    role: List[PostDrawRole]
+    draw_notice: bool
+    CurrentTime: str
+    gender: int
+    is_show_remind: bool
+    is_compensate_num: str
+    current_compensate_num: int
+    guide_task: bool
+    guide_compensate: bool
+    guide_draw: bool
+    task_infos: List[PostDrawTask]
+    is_year_subscribe: bool
+    has_compensate_role: bool
+
+
+class PostDraw(TypedDict):
+    retcode: int
+    message: str
+    data: _PostDraw
+
+
 class MihoyoRole(TypedDict):
     AvatarUrl: str
     nickname: str
