@@ -29,7 +29,7 @@ async def get_event_avatar(ev: Event) -> Image.Image:
 async def get_avatar_with_ring(
     ev: Event,
     size: int = 300,
-    bg_color: Tuple[int, int, int] | None = None,
+    bg_color: Union[Tuple[int, int, int], None] = None,
     is_ring: bool = True,
 ) -> Image.Image:
     avatar = await get_event_avatar(ev)
