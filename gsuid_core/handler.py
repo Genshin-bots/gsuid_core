@@ -94,13 +94,15 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         instances[uuid].set_event()
         return
 
+    is_start = False
     if command_start and event.raw_text:
         for start in command_start:
             if event.raw_text.strip().startswith(start):
-                event.raw_text = event.raw_text.replace(start, '')
-                break
+                event.raw_text = event.raw_text.replace(start, '', 1)
+                is_start = True
         else:
-            return
+            if not is_start:
+                return
 
     valid_event: Dict[Trigger, int] = {}
     pending = [

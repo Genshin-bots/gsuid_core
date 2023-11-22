@@ -207,6 +207,8 @@ async def _convert_message_to_image(
         if isinstance(img, str) and img.startswith('base64://'):
             image_b64 = img
             image_bytes = b64decode(img[9:])
+        elif isinstance(img, str) and img.startswith('link://'):
+            return [Message(type='image', data=img)]
         else:
             image_bytes = img
     else:
