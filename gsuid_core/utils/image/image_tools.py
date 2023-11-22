@@ -16,23 +16,34 @@ TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
-async def get_event_avatar(ev: Event) -> Image.Image:
+async def get_event_avatar(
+    ev: Event, avatar_path: Optional[Path] = None
+) -> Image.Image:
+    img = None
     if 'avatar' in ev.sender and ev.sender['avatar']:
         avatar_url = ev.sender['avatar']
         content = (await sget(avatar_url)).content
         return Image.open(BytesIO(content)).convert('RGBA')
-    else:
+    elif avatar_path:
+        pic_path_list = list(avatar_path.iterdir())
+        if pic_path_list:
+            path = random.choice(pic_path_list)
+            img = Image.open(path).convert('RGBA')
+
+    if img is None:
         img = Image.open(TEXT_PATH / 'icon.jpg').convert('RGBA')
-        return img
+
+    return img
 
 
 async def get_avatar_with_ring(
     ev: Event,
     size: int = 300,
+    avatar_path: Optional[Path] = None,
     bg_color: Union[Tuple[int, int, int], None] = None,
     is_ring: bool = True,
 ) -> Image.Image:
-    avatar = await get_event_avatar(ev)
+    avatar = await get_event_avatar(ev, avatar_path)
     return await draw_pic_with_ring(avatar, size, bg_color, is_ring)
 
 
