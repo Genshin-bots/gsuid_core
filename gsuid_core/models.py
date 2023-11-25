@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Tuple, Literal, Optional
 
 from msgspec import Struct
 
@@ -34,6 +34,8 @@ class Event(MessageReceive):
     file_name: Optional[str] = None
     file: Optional[str] = None
     file_type: Optional[Literal['url', 'base64']] = None
+    regex_group: Tuple[str, ...] = ()
+    regex_dict: Dict[str, str] = {}
 
 
 class MessageSend(Struct):

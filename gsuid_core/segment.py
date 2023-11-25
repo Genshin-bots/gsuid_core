@@ -202,8 +202,10 @@ async def _convert_message_to_image(
         and len(message.data) >= int(text2pic_limit)
     ):
         image_bytes = await text2pic(message.data)
-    elif message.type == 'image':
-        img: Union[bytes, str] = message.data
+        message = Message(type='image', data=image_bytes)
+
+    if message.type == 'image':
+        img: Union[bytes, str] = message.data  # type: ignore
         if isinstance(img, str) and img.startswith('base64://'):
             image_b64 = img
             image_bytes = b64decode(img[9:])

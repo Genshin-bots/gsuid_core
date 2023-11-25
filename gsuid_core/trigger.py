@@ -80,8 +80,11 @@ class Trigger:
             msg.command = self.keyword
             msg.text = msg.raw_text.replace(self.keyword, '')
         else:
-            command_list = re.findall(self.keyword, msg.raw_text)
-            msg.command = '|'.join(command_list)
+            command_group = re.search(self.keyword, msg.raw_text)
+            if command_group:
+                msg.regex_dict = command_group.groupdict()
+                msg.regex_group = command_group.groups()
+                msg.command = '|'.join(list(msg.regex_group))
             text_list = re.split(self.keyword, msg.raw_text)
             msg.text = '|'.join(text_list)
         return msg

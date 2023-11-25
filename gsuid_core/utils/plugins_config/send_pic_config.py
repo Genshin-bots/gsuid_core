@@ -4,7 +4,7 @@ from .models import GSC, GsStrConfig
 
 SEND_PIC_CONIFG: Dict[str, GSC] = {
     'onebot': GsStrConfig('OneBot图片发送方式', '可选link或base64', 'base64'),
-    'onebotv12': GsStrConfig('OneBot V12图片发送方式', '可选link或base64', 'base64'),
+    'onebot_v12': GsStrConfig('OneBot V12图片发送方式', '可选link或base64', 'base64'),
     'qqguild': GsStrConfig('QQ Guild图片发送方式', '可选link或base64', 'base64'),
     'qqgroup': GsStrConfig('QQ Group图片发送方式', '可选link或base64', 'link'),
     'telegram': GsStrConfig('Telegram图片发送方式', '可选link或base64', 'base64'),

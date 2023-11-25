@@ -79,8 +79,10 @@ async def get_keyword_msg(bot: Bot, ev: Event):
     await bot.send('[关键词测试]校验成功！')
 
 
-@sv_switch.on_regex(r'\d+')
+@sv_switch.on_regex(r'这是一个(?P<name>正则|数字)测试！(?P<int>[\d]+)')
 async def get_regex_msg(bot: Bot, ev: Event):
     await bot.send('正在进行[正则测试]')
     await asyncio.sleep(2)
-    await bot.send('[正则测试]校验成功！')
+    await bot.send(
+        f'[正则测试]校验成功！{ev.regex_dict["name"]}你输入的是{ev.regex_dict["int"]}'
+    )
