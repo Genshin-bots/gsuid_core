@@ -66,4 +66,5 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'SendButtonsPlatform': GsListStrConfig(
         '默认发送按钮的平台列表(用:连接)', '发送按钮的平台列表', []
     ),
+    'ForceSendMD': GsBoolConfig('强制使用MD发送图文', '强制使用MD发送图文', False),
 }

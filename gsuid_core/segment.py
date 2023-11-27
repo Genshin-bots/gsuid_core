@@ -12,6 +12,7 @@ from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
 from gsuid_core.message_models import Button
 from gsuid_core.utils.image.convert import text2pic
+from gsuid_core.utils.image.image_tools import sget
 from gsuid_core.utils.plugins_config.gs_config import (
     send_pic_config,
     pic_upload_config,
@@ -23,6 +24,7 @@ R_text = core_plugins_config.get_config('RandomText').data
 is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
 text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
+force_send_md = core_plugins_config.get_config('ForceSendMD').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
 SERVER = pic_upload_config.get_config('PicUploadServer').data
 IS_UPLOAD = pic_upload_config.get_config('PicUpload').data
@@ -169,7 +171,7 @@ class MessageSegment:
         return Message(type=f'log_{type}', data=content)
 
 
-async def _conver_image_to_url(image: Union[bytes, str]) -> List[Message]:
+async def _image_to_remote_url(image: Union[bytes, str]) -> List[Message]:
     if pclient is not None:
         if isinstance(image, str) and image.startswith('base64://'):
             image_bytes = b64decode(image[9:])
@@ -189,13 +191,51 @@ async def _conver_image_to_url(image: Union[bytes, str]) -> List[Message]:
     return []
 
 
+async def _image_to_local_url(image: Union[bytes, str]) -> List[Message]:
+    if isinstance(image, str):
+        if image.startswith('base64://'):
+            image_bytes = b64decode(image[9:])
+        else:
+            return [Message(type='image', data=image.replace('link://', ''))]
+    elif isinstance(image, (memoryview, bytearray)):
+        image_bytes = bytes(image)
+    else:
+        image_bytes = image
+
+    bio = BytesIO(image_bytes)
+    _image = Image.open(bio)
+    name = f'{uuid.uuid1()}.jpg'
+    path = image_res / name
+    path.write_bytes(image_bytes)
+    data = f'link://{pic_srv}/genshinuid/image/{name}'
+    return [
+        Message(type='image', data=data),
+        MessageSegment.image_size(_image.size),
+    ]
+
+
+async def _image_to_url(
+    image: Union[str, bytes], send_type: str, message: Message
+):
+    if send_type == 'link_remote':
+        return await _image_to_remote_url(image)
+    elif (send_type == 'link_local') or enable_pic_srv:
+        return await _image_to_local_url(image)
+    elif pclient is not None:
+        return await _image_to_remote_url(image)
+    else:
+        return [message]
+
+
 async def _convert_message_to_image(
     message: Message, bot_id: str
 ) -> List[Message]:
     if message.data is None:
         return []
 
+    send_type = send_pic_config.get_config(bot_id).data
     image_b64 = None
+
     if (
         message.type == 'text'
         and is_text2pic
@@ -210,15 +250,18 @@ async def _convert_message_to_image(
             image_b64 = img
             image_bytes = b64decode(img[9:])
         elif isinstance(img, str) and img.startswith('link://'):
-            return [Message(type='image', data=img)]
+            if send_type == 'base64':
+                resp = await sget(img.replace('link://', ''))
+                image_b64 = b64encode(resp.content).decode('utf-8')
+                return [Message(type='image', data=image_b64)]
+            else:
+                return [Message(type='image', data=img)]
         else:
             image_bytes = img
     else:
         return [message]
 
     assert isinstance(image_bytes, bytes)
-
-    send_type = send_pic_config.get_config(bot_id).data
 
     if send_type == 'base64':
         return (
@@ -227,23 +270,7 @@ async def _convert_message_to_image(
             else [MessageSegment.image(image_bytes)]
         )
 
-    if send_type == 'link_remote':
-        return await _conver_image_to_url(image_bytes)
-    elif (send_type == 'link_local') or enable_pic_srv:
-        bio = BytesIO(image_bytes)
-        image = Image.open(bio)
-        name = f'{uuid.uuid1()}.jpg'
-        path = image_res / name
-        path.write_bytes(image_bytes)
-        data = f'link://{pic_srv}/genshinuid/image/{name}'
-        return [
-            Message(type='image', data=data),
-            MessageSegment.image_size(image.size),
-        ]
-    elif pclient is not None:
-        return await _conver_image_to_url(image_bytes)
-    else:
-        return [message]
+    return await _image_to_url(image_bytes, send_type, message)
 
 
 async def _convert_message(
@@ -309,14 +336,24 @@ async def convert_message(
 async def to_markdown(
     message: List[Message],
     buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
+    bot_id: str = 'onebot',
 ) -> List[Message]:
     _markdown_list = []
     _message = []
     url = None
     size = None
+    send_type = send_pic_config.get_config(bot_id).data
+
+    if buttons is None and not force_send_md:
+        return message
+
     for m in message:
         if m.type == 'image':
-            url = m.data
+            if isinstance(m.data, str):
+                if m.data.startswith('link://'):
+                    url = m.data.replace('link://', '')
+                elif m.data.startswith('base64://'):
+                    url = await _image_to_url(m.data, send_type, m)
         elif m.type == 'image_size':
             size = m.data
         elif m.type == 'text':

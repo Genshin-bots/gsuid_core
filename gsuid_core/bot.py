@@ -43,7 +43,7 @@ class _Bot:
         _message = await convert_message(message, bot_id)
 
         if bot_id in enable_markdown_platform:
-            _message = await to_markdown(_message)
+            _message = await to_markdown(_message, None, bot_id)
 
         if at_sender and sender_id:
             _message.append(MessageSegment.at(sender_id))
@@ -191,7 +191,9 @@ class Bot:
                     else:
                         _buttons.append(Button(option, option, option))
 
-                await self.send(await to_markdown(_reply, _buttons))
+                await self.send(
+                    await to_markdown(_reply, _buttons, self.bot_id)
+                )
             else:
                 if unsuported_platform:
                     _options: List[str] = []
