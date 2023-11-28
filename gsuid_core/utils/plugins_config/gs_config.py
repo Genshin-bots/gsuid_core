@@ -53,6 +53,13 @@ class StringConfig:
     def __getitem__(self, key) -> GSC:
         return self.config[key]
 
+    def sort_config(self):
+        _config = {}
+        for i in self.config_list:
+            _config[i] = self.config[i]
+        self.config = _config
+        self.write_config()
+
     def write_config(self):
         with open(self.CONFIG_PATH, 'wb') as file:
             file.write(msgjson.format(msgjson.encode(self.config), indent=4))
@@ -78,7 +85,7 @@ class StringConfig:
             self.config.pop(key)
 
         # 重新写回
-        self.write_config()
+        self.sort_config()
 
     def get_config(self, key: str) -> Any:
         if key in self.config:

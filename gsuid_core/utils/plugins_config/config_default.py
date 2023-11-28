@@ -3,7 +3,8 @@ from typing import Dict
 from .models import GSC, GsStrConfig, GsBoolConfig, GsListStrConfig
 
 CONIFG_DEFAULT: Dict[str, GSC] = {
-    'proxy': GsStrConfig('设置代理', '设置国际服的代理地址', ''),
+    'Gproxy': GsStrConfig('设置米游社国际代理', '设置国际服的代理地址', ''),
+    'Nproxy': GsStrConfig('设置米游社常规代理', '设置常规的代理地址', ''),
     '_pass_API': GsStrConfig('神奇API', '设置某种神奇的API', ''),
     'restart_command': GsStrConfig(
         '重启命令',
