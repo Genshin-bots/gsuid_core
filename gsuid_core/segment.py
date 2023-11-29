@@ -233,7 +233,7 @@ async def _convert_message_to_image(
     if message.data is None:
         return []
 
-    send_type = send_pic_config.get_config(bot_id).data
+    send_type = send_pic_config.get_config(bot_id, 'base64').data
     image_b64 = None
 
     if (
@@ -342,7 +342,7 @@ async def to_markdown(
     _message = []
     url = None
     size = None
-    send_type = send_pic_config.get_config(bot_id).data
+    send_type = send_pic_config.get_config(bot_id, 'base64').data
 
     if buttons is None and not force_send_md:
         return message

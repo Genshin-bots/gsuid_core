@@ -6,10 +6,16 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 
-from .models import GSC, GsBoolConfig
 from .config_default import CONIFG_DEFAULT
 from .send_pic_config import SEND_PIC_CONIFG
 from .pic_server_config import PIC_UPLOAD_CONIFG
+from .models import (
+    GSC,
+    GsStrConfig,
+    GsBoolConfig,
+    GsDictConfig,
+    GsListStrConfig,
+)
 
 
 class StringConfig:
@@ -87,7 +93,7 @@ class StringConfig:
         # 重新写回
         self.sort_config()
 
-    def get_config(self, key: str) -> Any:
+    def get_config(self, key: str, default_value: Any = None) -> Any:
         if key in self.config:
             return self.config[key]
         elif key in self.config_list:
@@ -100,7 +106,19 @@ class StringConfig:
             logger.warning(
                 f'[配置][{self.config_name}] 配置项 {key} 不存在也没有配置, 返回默认参数...'
             )
-            return GsBoolConfig('缺省值', '获取错误的配置项', False)
+            if default_value is None:
+                return GsBoolConfig('缺省值', '获取错误的配置项', False)
+
+            if isinstance(default_value, str):
+                return GsStrConfig('缺省值', '获取错误的配置项', default_value)
+            elif isinstance(default_value, bool):
+                return GsBoolConfig('缺省值', '获取错误的配置项', default_value)
+            elif isinstance(default_value, List):
+                return GsListStrConfig('缺省值', '获取错误的配置项', default_value)
+            elif isinstance(default_value, Dict):
+                return GsDictConfig('缺省值', '获取错误的配置项', default_value)
+            else:
+                return GsBoolConfig('缺省值', '获取错误的配置项', False)
 
     def set_config(
         self, key: str, value: Union[str, List, bool, Dict]
