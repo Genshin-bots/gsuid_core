@@ -642,9 +642,13 @@ class MysApi(BaseMysApi):
                 'act_id': 'e202102251931481',
                 'lang': 'zh-cn',
             }
+            header = {}
         else:
-            params = {'act_id': 'e202009291139501'}
-        data = await self._mys_req_get('SIGN_LIST_URL', is_os, params)
+            params = {'act_id': 'e202311201442471'}
+            header = {
+                'x-rpc-signgame': 'hk4e',
+            }
+        data = await self._mys_req_get('SIGN_LIST_URL', is_os, params, header)
         if isinstance(data, Dict):
             data = cast(SignList, data['data'])
         return data
@@ -664,11 +668,13 @@ class MysApi(BaseMysApi):
             }
         else:
             params = {
-                'act_id': 'e202009291139501',
+                'act_id': 'e202311201442471',
                 'region': server_id,
                 'uid': uid,
             }
-            header = {}
+            header = {
+                'x-rpc-signgame': 'hk4e',
+            }
         data = await self._mys_req_get('SIGN_INFO_URL', is_os, params, header)
         if isinstance(data, Dict):
             data = cast(SignInfo, data['data'])
@@ -695,13 +701,14 @@ class MysApi(BaseMysApi):
                 '?bbs_auth_required=true&act_id=e202009291139501'
                 '&utm_source=bbs&utm_medium=mys&utm_campaign=icon'
             )
+            header['x-rpc-signgame'] = 'hk4e'
             HEADER.update(header)
             data = await self._mys_request(
                 url=self.MAPI['SIGN_URL'],
                 method='POST',
                 header=HEADER,
                 data={
-                    'act_id': 'e202009291139501',
+                    'act_id': 'e202311201442471',
                     'uid': uid,
                     'region': server_id,
                 },
