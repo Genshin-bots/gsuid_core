@@ -81,15 +81,19 @@ class MessageSegment:
         return Message(type='text', data=content)
 
     @staticmethod
+    def buttons(
+        buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
+    ) -> Message:
+        return Message(type='buttons', data=msgspec.to_builtins(buttons))
+
+    @staticmethod
     def markdown(
         content: str,
         buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
     ) -> List[Message]:
         data = [Message(type='markdown', data=content)]
         if buttons:
-            data.append(
-                Message(type='buttons', data=msgspec.to_builtins(buttons))
-            )
+            data.append(MessageSegment.buttons(buttons))
 
         return data
 

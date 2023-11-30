@@ -190,10 +190,13 @@ class Bot:
                         _buttons.append(option)
                     else:
                         _buttons.append(Button(option, option, option))
-
-                await self.send(
-                    await to_markdown(_reply, _buttons, self.bot_id)
-                )
+                if self.ev.real_bot_id in enable_markdown_platform:
+                    await self.send(
+                        await to_markdown(_reply, _buttons, self.bot_id)
+                    )
+                else:
+                    _reply.append(MessageSegment.buttons(_buttons))
+                    await self.send(_reply)
             else:
                 if unsuported_platform:
                     _options: List[str] = []
