@@ -62,13 +62,13 @@ GET_COOKIE_TOKEN_BY_GAME_TOKEN = (
 
 '''米游社相关'''
 # 获取签到列表
-SIGN_LIST_URL = f'{OLD_URL}/event/bbs_sign_reward/home'
+SIGN_LIST_URL = f'{OLD_URL}/event/luna/home'
 SIGN_LIST_URL_OS = f'{SIGN_URL_OS}/event/sol/home'
 # 获取签到信息
-SIGN_INFO_URL = f'{OLD_URL}/event/bbs_sign_reward/info'
+SIGN_INFO_URL = f'{OLD_URL}/event/luna/info'
 SIGN_INFO_URL_OS = f'{SIGN_URL_OS}/event/sol/info'
 # 执行签到
-SIGN_URL = f'{OLD_URL}/event/bbs_sign_reward/sign'
+SIGN_URL = f'{OLD_URL}/event/luna/sign'
 SIGN_URL_OS += '/event/sol/sign'
 
 '''原神相关'''
