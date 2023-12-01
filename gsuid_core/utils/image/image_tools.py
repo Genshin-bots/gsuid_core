@@ -24,6 +24,10 @@ async def get_event_avatar(
         avatar_url = ev.sender['avatar']
         content = (await sget(avatar_url)).content
         return Image.open(BytesIO(content)).convert('RGBA')
+    elif ev.bot_id == 'onebot' and not ev.sender:
+        avatar_url = f'http://q1.qlogo.cn/g?b=qq&nk={ev.user_id}&s=640'
+        content = (await sget(avatar_url)).content
+        return Image.open(BytesIO(content)).convert('RGBA')
     elif avatar_path:
         pic_path_list = list(avatar_path.iterdir())
         if pic_path_list:

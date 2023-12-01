@@ -223,8 +223,10 @@ class Bot:
             await self.send(reply)
 
         if is_mutiply:
+            # 标注uuid
             if self.uuid not in self.mutiply_instances:
                 self.mutiply_instances[self.uuid] = self
+                # 标注群
                 if self.gid not in self.mutiply_map:
                     self.mutiply_map[self.gid] = self.uuid
                 self.mutiply_tag = True
@@ -233,7 +235,7 @@ class Bot:
             while self.mutiply_resp == []:
                 await asyncio.wait_for(self.mutiply_event.wait(), timeout)
 
-            self.mutiply_event.clear()
+            self.mutiply_event = asyncio.Event()
             return self.mutiply_resp.pop(0)
         elif is_recive:
             self.instances[self.uuid] = self
