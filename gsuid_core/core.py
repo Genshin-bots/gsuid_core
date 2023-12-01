@@ -180,18 +180,19 @@ def main():
                 retcode = -1
         return {'status': retcode, 'msg': '', 'data': {}}
 
-    def delete_image(image_path: Path):
+    async def delete_image(image_path: Path):
+        await asyncio.sleep(180)
         image_path.unlink()
 
     @app.get('/genshinuid/image/{image_id}.jpg')
     async def get_image(image_id: str, background_tasks: BackgroundTasks):
         path = image_res / f'{image_id}.jpg'
-        image = Image.open(path)
+        image = Image.open(path).convert('RGB')
         image_bytes = BytesIO()
         image.save(image_bytes, format='JPEG')
         image_bytes.seek(0)
         response = StreamingResponse(image_bytes, media_type='image/png')
-        # background_tasks.add_task(delete_image, path)
+        asyncio.create_task(delete_image(path))
         return response
 
     site.mount_app(app)
