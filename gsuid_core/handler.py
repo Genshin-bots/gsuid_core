@@ -83,7 +83,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     mutiply_instances = Bot.get_mutiply_instances()
     mutiply_map = Bot.get_mutiply_map()
 
-    if gid in mutiply_map and mutiply_map[gid] in mutiply_instances:
+    if (
+        gid in mutiply_map
+        and event.user_type != 'direct'
+        and mutiply_map[gid] in mutiply_instances
+    ):
         mutiply_instances[mutiply_map[gid]].mutiply_resp.append(event)
         mutiply_instances[mutiply_map[gid]].set_mutiply_event()
         if uuid == mutiply_instances[mutiply_map[gid]].uuid:

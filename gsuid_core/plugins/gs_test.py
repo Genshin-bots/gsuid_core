@@ -1,5 +1,7 @@
 import asyncio
 
+from async_timeout import timeout
+
 from gsuid_core.bot import Bot
 from gsuid_core.sv import SL, SV
 from gsuid_core.models import Event
@@ -33,16 +35,17 @@ async def get_fullmatch_msg(bot: Bot, ev: Event):
     await bot.send('[全匹配测试]校验成功！')
 
 
-@sv_switch.on_fullmatch('测试多人事件')
-async def get_event_msg(bot: Bot, ev: Event):
-    await bot.send('正在进行[测试多人事件]')
+@sv_switch.on_fullmatch('开始一场60秒的游戏')
+async def get_time_limit_resp_msg(bot: Bot, ev: Event):
+    await bot.send('接下来开始60秒的游戏！？')
     try:
-        while True:
-            resp = await bot.receive_mutiply_resp()
-            if resp is not None:
-                await bot.send(f'{resp.user_id}:发送了 - {resp.text}')
-    except TimeoutError:
-        await bot.send('超时了哦！')
+        async with timeout(60):  # 限制时长60秒
+            while True:
+                resp = await bot.receive_mutiply_resp()
+                if resp is not None:
+                    await bot.send(f'你说的是 {resp.text} 吧？')
+    except asyncio.TimeoutError:
+        await bot.send('时间到!!现在开始计算每个人的分数...')
 
 
 @sv_switch.on_fullmatch('开始游戏')

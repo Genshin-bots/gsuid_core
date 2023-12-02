@@ -34,10 +34,12 @@ def modify_func(func):
         finally:
             instancess = Bot.get_instances()
             mutiply_instances = Bot.get_mutiply_instances()
+            mutiply_map = Bot.get_mutiply_map()
             if bot.uuid in instancess:
                 instancess.pop(bot.uuid)
             if bot.uuid in mutiply_instances and bot.mutiply_tag:
                 mutiply_instances.pop(bot.uuid)
+                mutiply_map.pop(bot.gid)
         return result
 
     return wrapper
@@ -126,7 +128,7 @@ class SV:
                 )
 
             if name == '测试开关':
-                self.pm = 0
+                self.pm = 6
                 self.enabled = False
 
     def set(self, **kwargs):
