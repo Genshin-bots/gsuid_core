@@ -40,39 +40,18 @@ class GsClient:
     async def send_msg(self):
         while True:
             intent = await self._input()
-            for content in [
-                Message(type='text', data=intent),
-                Message(type='text', data='开始一场60秒的游戏'),
-                Message(type='text', data=intent),
-                Message(type='text', data='233'),
-                Message(type='text', data='233'),
-                Message(type='text', data='233'),
-                Message(type='text', data='233'),
-                Message(type='text', data='233'),
-                Message(type='text', data=intent),
-                Message(type='text', data=intent),
-                Message(type='text', data=intent),
-                Message(type='text', data=intent),
-                Message(type='text', data=intent),
-                Message(type='text', data=intent),
-                Message(type='text', data=intent),
-            ]:
-                user_type = random.choice(['direct', 'group'])
-                group_id = random.choice(['555', '666', '777'])
-                user_id = random.choice(['1', '2', '3', '4', '5'])
-                if content.data == '开始一场60秒的游戏':
-                    user_type = 'group'
-                    group_id = '555'
-                msg = MessageReceive(
-                    bot_id='console',
-                    user_type=user_type,  # type: ignore
-                    user_pm=1,
-                    group_id=group_id,
-                    user_id=user_id,
-                    content=[content],
-                )
-                msg_send = msgjson.encode(msg)
-                await self.ws.send(msg_send)
+            content = Message(type='text', data=intent)
+            group_id = random.choice(['555', '666', '777'])
+            msg = MessageReceive(
+                bot_id='console',
+                user_type='group',
+                user_pm=0,
+                group_id=group_id,
+                user_id='511',
+                content=[content],
+            )
+            msg_send = msgjson.encode(msg)
+            await self.ws.send(msg_send)
 
     async def start(self):
         recv_task = asyncio.create_task(self.recv_msg())
