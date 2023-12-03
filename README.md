@@ -14,7 +14,7 @@
 1. git clone gsuid-core本体
 
 ```shell
-git clone https://ghproxy.com/https://github.com/Genshin-bots/gsuid_core.git --depth=1 --single-branch
+git clone https://github.com/Genshin-bots/gsuid_core.git --depth=1 --single-branch
 ```
 
 2. 安装poetry
@@ -38,7 +38,7 @@ poetry install
 # cd进入插件文件夹内
 cd plugins
 # 安装v4 GenshinUID
-git clone -b v4 https://ghproxy.com/https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
+git clone -b v4 https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
 ```
 
 5. 启动gsuid_core（早柚核心）
@@ -62,7 +62,7 @@ poetry run core
 1. git clone gsuid-core本体
 
 ```shell
-git clone https://ghproxy.com/https://github.com/Genshin-bots/gsuid_core.git --depth=1 --single-branch
+git clone https://github.com/Genshin-bots/gsuid_core.git --depth=1 --single-branch
 ```
 
 2. 安装所需插件（可选）
@@ -71,7 +71,7 @@ git clone https://ghproxy.com/https://github.com/Genshin-bots/gsuid_core.git --d
 # cd进入插件文件夹内
 cd plugins
 # 安装v4 GenshinUID
-git clone -b v4 https://ghproxy.com/https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
+git clone -b v4 https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
 ```
 
 3. Docker Compose启动
