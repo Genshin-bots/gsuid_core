@@ -1,6 +1,6 @@
 from typing import Union
 
-from color import Color, check_if_color
+from .color import Color, check_if_color
 
 
 class BaseTextContainer(list):
