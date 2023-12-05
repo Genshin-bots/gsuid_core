@@ -375,7 +375,7 @@ async def to_markdown(
             _message.append(m)
 
     if url is not None and size is not None:
-        _markdown_list.append(f'![test #{size[0]}px #{size[1]}px]({url})')
+        _markdown_list.append(f'![图片 #{size[0]}px #{size[1]}px]({url})')
 
     _markdown = '\n'.join(_markdown_list)
     _message.extend(MessageSegment.markdown(_markdown, buttons))
