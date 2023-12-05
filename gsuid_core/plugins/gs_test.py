@@ -41,9 +41,10 @@ async def get_time_limit_resp_msg(bot: Bot, ev: Event):
     try:
         async with timeout(60):  # 限制时长60秒
             while True:
-                resp = await bot.receive_mutiply_resp()
+                resp = await bot.receive_mutiply_resp('输入文字！')
                 if resp is not None:
                     await bot.send(f'你说的是 {resp.text} 吧？')
+                    await asyncio.sleep(3)
     except asyncio.TimeoutError:
         await bot.send('时间到!!现在开始计算每个人的分数...')
 
@@ -53,12 +54,13 @@ async def get_resp_msg(bot: Bot, ev: Event):
     await bot.send('正在进行[开始游戏测试]')
     await asyncio.sleep(2)
     await bot.send('[开始游戏测试]校验成功！')
-    resp = await bot.receive_resp(
-        '请选择一个选项!',
-        ['🎨可爱的丛林', '🚀遥远的星空', '📝不如在家写作业', '✨或者看星星', '🚧这里是维护选项'],
-    )
-    if resp is not None:
-        await bot.send(f'你输入的是{resp.text}')
+    while True:
+        resp = await bot.receive_resp(
+            '请选择一个选项!',
+            ['🎨可爱的丛林', '🚀遥远的星空', '📝不如在家写作业', '✨或者看星星', '🚧这里是维护选项'],
+        )
+        if resp is not None:
+            await bot.send(f'你输入的是{resp.text}')
 
 
 @sv_switch.on_prefix('前缀测试')

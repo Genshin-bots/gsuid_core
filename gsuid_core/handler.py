@@ -83,20 +83,21 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     mutiply_instances = Bot.get_mutiply_instances()
     mutiply_map = Bot.get_mutiply_map()
 
+    if uuid in instances and instances[uuid].receive_tag:
+        instances[uuid].resp.append(event)
+        instances[uuid].set_event()
+        return
+
     if (
         gid in mutiply_map
         and event.user_type != 'direct'
         and mutiply_map[gid] in mutiply_instances
+        and mutiply_instances[mutiply_map[gid]].mutiply_tag
     ):
         mutiply_instances[mutiply_map[gid]].mutiply_resp.append(event)
         mutiply_instances[mutiply_map[gid]].set_mutiply_event()
         if uuid == mutiply_instances[mutiply_map[gid]].uuid:
             return
-
-    if uuid in instances:
-        instances[uuid].resp.append(event)
-        instances[uuid].set_event()
-        return
 
     is_start = False
     if command_start and event.raw_text:

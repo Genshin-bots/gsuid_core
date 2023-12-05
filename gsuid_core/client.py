@@ -42,12 +42,13 @@ class GsClient:
             intent = await self._input()
             content = Message(type='text', data=intent)
             group_id = random.choice(['555', '666', '777'])
+            user_id = random.choice(['1', '2'])
             msg = MessageReceive(
                 bot_id='console',
                 user_type='group',
                 user_pm=0,
                 group_id=group_id,
-                user_id='511',
+                user_id=user_id,
                 content=[content],
             )
             msg_send = msgjson.encode(msg)

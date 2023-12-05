@@ -42,6 +42,9 @@ if IS_UPLOAD:
         pclient = S3()
 
 
+URL_MAP = {}
+
+
 class MessageSegment:
     def __add__(self, other):
         return [self, other]
@@ -255,8 +258,13 @@ async def _convert_message_to_image(
             image_bytes = b64decode(img[9:])
         elif isinstance(img, str) and img.startswith('link://'):
             if send_type == 'base64':
-                resp = await sget(img.replace('link://', ''))
-                image_b64 = b64encode(resp.content).decode('utf-8')
+                url = img.replace('link://', '')
+                if url in URL_MAP:
+                    image_b64 = URL_MAP[url]
+                else:
+                    resp = await sget(url)
+                    image_b64 = b64encode(resp.content).decode('utf-8')
+                    URL_MAP[url] = image_b64
                 return [Message(type='image', data=image_b64)]
             else:
                 return [Message(type='image', data=img)]

@@ -184,6 +184,7 @@ def main():
         await asyncio.sleep(180)
         image_path.unlink()
 
+    @app.head('/genshinuid/image/{image_id}.jpg')
     @app.get('/genshinuid/image/{image_id}.jpg')
     async def get_image(image_id: str, background_tasks: BackgroundTasks):
         path = image_res / f'{image_id}.jpg'
