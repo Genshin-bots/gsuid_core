@@ -40,6 +40,10 @@ if IS_UPLOAD:
         from gsuid_core.utils.upload.s3 import S3
 
         pclient = S3()
+    elif SERVER == 'custom':
+        from gsuid_core.utils.upload.custom import CUSTOM
+
+        pclient = CUSTOM()
 
 
 URL_MAP = {}

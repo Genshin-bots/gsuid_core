@@ -41,7 +41,7 @@ class GsClient:
         while True:
             intent = await self._input()
             content = Message(type='text', data=intent)
-            group_id = random.choice(['555', '666', '777'])
+            group_id = random.choice(['555'])
             user_id = random.choice(['1', '2'])
             msg = MessageReceive(
                 bot_id='console',

@@ -236,7 +236,6 @@ class Bot:
             while self.mutiply_resp == []:
                 await asyncio.wait_for(self.mutiply_event.wait(), timeout)
 
-            self.mutiply_tag = False
             self.mutiply_event = asyncio.Event()
             return self.mutiply_resp.pop(0)
         elif is_recive:

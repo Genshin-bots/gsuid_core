@@ -6,6 +6,8 @@ from aiohttp.client import ClientSession
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
+from .utils import is_auto_delete
+
 SERVER = pic_upload_config.get_config('PicUploadServer').data
 TOKEN = pic_upload_config.get_config('smms_token').data
 
@@ -44,7 +46,8 @@ class SMMS:
                 logger.debug(f'[sm.ms / upload] {raw_data}')
                 if raw_data['success']:
                     data = raw_data['data']
-                    asyncio.create_task(self.delete(data['hash']))
+                    if is_auto_delete:
+                        asyncio.create_task(self.delete(data['hash']))
                     return data['url']
                 else:
                     logger.info('[sm.ms / upload] 上传失败!')

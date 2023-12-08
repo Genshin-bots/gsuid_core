@@ -6,6 +6,8 @@ import aioboto3
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
+from .utils import is_auto_delete
+
 SERVER = pic_upload_config.get_config('PicUploadServer').data
 END_POINT = pic_upload_config.get_config('s3_endpoint').data
 ACCESS_KEY = pic_upload_config.get_config('s3_access_key').data
@@ -32,7 +34,8 @@ class S3:
             logger.info('[S3 / upload] 开始上传...')
             await s3.upload_fileobj(files, self.bucket_id, key)
             logger.info('[S3 / upload] 上传成功！')
-            asyncio.create_task(self.delete(key))
+            if is_auto_delete:
+                asyncio.create_task(self.delete(key))
 
         return f'{END_POINT}/{self.bucket_id}/{key}'
 
