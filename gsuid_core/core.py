@@ -3,11 +3,13 @@ import asyncio
 from io import BytesIO
 from typing import Dict
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 import uvicorn
 from PIL import Image
 from msgspec import json as msgjson
 from starlette.requests import Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, WebSocket, BackgroundTasks, WebSocketDisconnect
 
@@ -67,50 +69,45 @@ exec_list.extend(
 )
 
 
-@app.websocket('/ws/{bot_id}')
-async def websocket_endpoint(websocket: WebSocket, bot_id: str):
-    bot = await gss.connect(websocket, bot_id)
-
-    async def start():
-        try:
-            while True:
-                data = await websocket.receive_bytes()
-                msg = msgjson.decode(data, type=MessageReceive)
-                await handle_event(bot, msg)
-        except WebSocketDisconnect:
-            gss.disconnect(bot_id)
-
-    async def process():
-        await bot._process()
-
-    await asyncio.gather(process(), start())
-
-
-@app.on_event('startup')
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     try:
-        from gsuid_core.webconsole.__init__ import start_check
+        _task = [_def() for _def in core_start_def]
+        await asyncio.gather(*_task)
+    except Exception as e:
+        logger.exception(e)
 
-        await start_check()
-        try:
-            _task = [_def() for _def in core_start_def]
-            asyncio.gather(*_task)
-        except Exception as e:
-            logger.exception(e)
+    from gsuid_core.webconsole.__init__ import start_check
 
-    except ImportError:
-        logger.warning('未加载GenshinUID...网页控制台启动失败...')
+    await start_check()
     await start_scheduler()
-
-
-@app.on_event('shutdown')
-async def shutdown_event():
+    yield
     await shutdown_scheduler()
 
 
 def main():
+    app = FastAPI(lifespan=lifespan)
+
+    @app.websocket('/ws/{bot_id}')
+    async def websocket_endpoint(websocket: WebSocket, bot_id: str):
+        bot = await gss.connect(websocket, bot_id)
+
+        async def start():
+            try:
+                while True:
+                    data = await websocket.receive_bytes()
+                    msg = msgjson.decode(data, type=MessageReceive)
+                    await handle_event(bot, msg)
+            except WebSocketDisconnect:
+                gss.disconnect(bot_id)
+
+        async def process():
+            await bot._process()
+
+        await asyncio.gather(process(), start())
+
     @app.post('/genshinuid/setSV/{name}')
-    @site.auth.requires('admin')
+    @site.auth.requires('root')
     async def _set_SV(request: Request, data: Dict, name: str):
         if name in SL.lst:
             sv = SL.lst[name]
@@ -127,7 +124,7 @@ def main():
             sv.set(**data)
 
     @app.post('/genshinuid/setGsConfig/{config_name}')
-    @site.auth.requires('admin')
+    @site.auth.requires('root')
     async def _set_Config(request: Request, data: Dict, config_name: str):
         for name in data:
             if name == 'params':
@@ -141,7 +138,7 @@ def main():
             all_config_list[config_name].set_config(name, value)
 
     @app.get('/genshinuid/api/getPlugins')
-    @site.auth.requires('admin')
+    @site.auth.requires('root')
     async def _get_plugins(request: Request):
         tasks = []
         plugins_list = await get_plugins_list()
@@ -152,7 +149,7 @@ def main():
             sample = {
                 'label': plugin_name,
                 'key': name,
-                'status': check_status(plugin_name),
+                'status': await check_status(plugin_name),
                 'remark': plugin['info'],
             }
             tasks.append(sample)
@@ -160,7 +157,7 @@ def main():
         return tasks
 
     @app.post('/genshinuid/api/updatePlugins')
-    @site.auth.requires('admin')
+    @site.auth.requires('root')
     async def _update_plugins(request: Request, data: Dict):
         repo = check_plugins(data['label'])
         if repo:
@@ -183,6 +180,12 @@ def main():
     async def delete_image(image_path: Path):
         await asyncio.sleep(180)
         image_path.unlink()
+
+    app.mount(
+        "/webstatic",
+        StaticFiles(directory=Path(__file__).parent / 'webstatic'),
+        name="static",
+    )
 
     @app.head('/genshinuid/image/{image_id}.jpg')
     @app.get('/genshinuid/image/{image_id}.jpg')

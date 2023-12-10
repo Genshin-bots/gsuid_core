@@ -1,23 +1,25 @@
 # flake8: noqa
 import platform
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from starlette import status
 from pydantic import BaseModel
+from starlette.requests import Request
 from fastapi_user_auth.auth import Auth
+from starlette.responses import Response
 from fastapi_amis_admin import amis, admin
-from fastapi_user_auth.app import UserAuthApp
 from fastapi_amis_admin.crud import BaseApiOut
-from sqlalchemy.ext.asyncio import AsyncEngine
-from fastapi_user_auth.site import AuthAdminSite
+from fastapi_user_auth.auth.models import User
 from fastapi_amis_admin.models.fields import Field
+from fastapi import Depends, Request, HTTPException
+from fastapi_user_auth.admin.app import UserAuthApp
 from fastapi_amis_admin.admin.settings import Settings
-from fastapi_user_auth.auth.models import UserRoleLink
+from fastapi_user_auth.admin.site import AuthAdminSite
 from fastapi_amis_admin.utils.translation import i18n as _
-from fastapi import Depends, FastAPI, Request, HTTPException
+from fastapi_amis_admin.admin import Settings, PageSchemaAdmin
 from fastapi_amis_admin.admin.site import FileAdmin, APIDocsApp
 from fastapi_amis_admin.amis.constants import LevelEnum, DisplayModeEnum
-from fastapi_user_auth.admin import (
+from fastapi_user_auth.admin.admin import (
     FormAdmin,
     UserRegFormAdmin,
     UserLoginFormAdmin,
@@ -37,7 +39,6 @@ from fastapi_amis_admin.amis.components import (
 )
 
 from gsuid_core.logger import logger
-from gsuid_core.webconsole.models import WebUser
 from gsuid_core.utils.database.base_models import db_url
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.webconsole.html import gsuid_webconsole_help
@@ -54,6 +55,8 @@ from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
 
 
 class GsLoginFormAdmin(UserLoginFormAdmin):
+    page = Page()
+
     @property
     def route_page(self) -> Callable:
         async def route(
@@ -73,12 +76,8 @@ class GsLoginFormAdmin(UserLoginFormAdmin):
         return route
 
     async def get_form(self, request: Request) -> Form:
-        form = await super(user_auth_admin.UserLoginFormAdmin, self).get_form(
-            request
-        )
-        form.body.sort(
-            key=lambda form_item: form_item.type, reverse=True  # type: ignore
-        )
+        form = await super().get_form(request)
+        form.redirect = request.query_params.get('redirect') or '/genshinuid'
         form.update_from_kwargs(
             title='',
             mode=DisplayModeEnum.horizontal,
@@ -90,11 +89,6 @@ class GsLoginFormAdmin(UserLoginFormAdmin):
             actions=[
                 ButtonToolbar(
                     buttons=[
-                        ActionType.Link(
-                            actionType='link',
-                            link=f'{self.router_path}/reg',
-                            label=_('Sign up'),
-                        ),
                         Action(
                             actionType='submit',
                             label=_('Sign in'),
@@ -104,18 +98,31 @@ class GsLoginFormAdmin(UserLoginFormAdmin):
                 )
             ],
         )
-        form.redirect = request.query_params.get('redirect') or '/genshinuid'
         return form
 
 
 class GsUserRegFormAdmin(UserRegFormAdmin):
+    @property
+    def route_submit(self):
+        async def route(
+            response: Response,
+            result: BaseApiOut = Depends(super().route_submit),
+        ):
+            if result.status == 0 and result.code == 0:  # 登录成功,设置用户信息
+                response.set_cookie(
+                    'Authorization', f'bearer {result.data.access_token}'  # type: ignore
+                )
+            return result
+
+        return route
+
     async def get_form(self, request: Request) -> Form:
         form = await super().get_form(request)
         form.redirect = request.query_params.get('redirect') or '/genshinuid'
         form.update_from_kwargs(
             title='',
             mode=DisplayModeEnum.horizontal,
-            submitText=_('注册'),
+            submitText=_('Sign up'),
             actionsClassName='no-border m-none p-none',
             panelClassName='',
             wrapWithPanel=True,
@@ -126,11 +133,11 @@ class GsUserRegFormAdmin(UserRegFormAdmin):
                         ActionType.Link(
                             actionType='link',
                             link=f'{self.router_path}/login',
-                            label=_('登陆'),
+                            label=_('Sign in'),
                         ),
                         Action(
                             actionType='submit',
-                            label=_('注册'),
+                            label=_('Sign up'),
                             level=LevelEnum.primary,
                         ),
                     ]
@@ -150,24 +157,6 @@ class GsAuthAdminSite(AuthAdminSite):
     UserAuthApp = GsUserAuthApp
 
 
-# 自定义后台管理站点
-class GsAdminSite(GsAuthAdminSite):
-    def __init__(
-        self,
-        settings: Settings,
-        fastapi: FastAPI = None,  # type: ignore
-        engine: AsyncEngine = None,  # type: ignore
-        auth: Auth = None,  # type: ignore
-    ):
-        super().__init__(settings, fastapi, engine, auth)
-
-    async def get_page(self, request: Request) -> App:
-        app = await super().get_page(request)
-        app.brandName = 'GsCore网页控制台'
-        app.logo = 'https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png'
-        return app
-
-
 settings = Settings(
     database_url_async=f'sqlite+aiosqlite:///{db_url}',
     database_url='',
@@ -178,26 +167,66 @@ settings = Settings(
     amis_theme='ang',
 )
 
+
+# 自定义后台管理站点
+class GsAdminSite(GsAuthAdminSite):
+    def __init__(
+        self,
+        settings: Settings,
+    ):
+        super().__init__(settings)
+        self.auth = self.auth or Auth(db=self.db)
+        self.register_admin(self.UserAuthApp)
+
+    async def get_page(self, request: Request) -> App:
+        app = await super().get_page(request)
+        app.brandName = 'GsCore网页控制台'
+        app.logo = 'https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png'
+        return app
+
+
 site = GsAdminSite(settings)
-site.auth.user_model = WebUser
+site.auth.user_model = User
+
+
+class GsNormalPage(admin.PageAdmin):
+    async def has_page_permission(
+        self,
+        request: Request,
+        obj: PageSchemaAdmin = None,  # type: ignore
+        action: str = None,  # type: ignore
+    ) -> bool:
+        return True
+
+
+class GsNormalForm(admin.FormAdmin):
+    async def has_page_permission(
+        self,
+        request: Request,
+        obj: PageSchemaAdmin = None,  # type: ignore
+        action: str = None,  # type: ignore
+    ) -> bool:
+        return True
 
 
 @site.register_admin
 class AmisPageAdmin(admin.PageAdmin):
     page_schema = '入门使用'
-    page = Page.parse_obj(
-        {
-            'type': 'page',
-            'body': {
-                'type': 'markdown',
-                'value': f'{gsuid_webconsole_help}',
-            },
-        }
-    )
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(
+            {
+                'type': 'page',
+                'body': {
+                    'type': 'markdown',
+                    'value': f'{gsuid_webconsole_help}',
+                },
+            }
+        )
 
 
 @site.register_admin
-class UserBindFormAdmin(admin.FormAdmin):
+class UserBindFormAdmin(GsNormalForm):
     page_schema = PageSchema(label='绑定CK或SK', icon='fa fa-link')  # type: ignore
 
     async def get_form(self, request: Request) -> Form:
@@ -274,12 +303,12 @@ class GsAdminModel(admin.ModelAdmin):
     async def has_page_permission(
         self,
         request: Request,
-        obj: Optional[admin.ModelAdmin] = None,
-        action: Optional[str] = None,
+        obj: PageSchemaAdmin = None,  # type: ignore
+        action: str = None,  # type: ignore
     ) -> bool:
         return await super().has_page_permission(
-            request
-        ) and await request.auth.requires(roles='admin', response=False)(
+            request, obj, action
+        ) and await request.auth.requires(roles='root', response=False)(
             request
         )
 
@@ -288,29 +317,20 @@ class GsAdminPage(admin.PageAdmin):
     async def has_page_permission(
         self,
         request: Request,
-        obj: Optional[admin.ModelAdmin] = None,
-        action: Optional[str] = None,
+        obj: PageSchemaAdmin = None,  # type: ignore
+        action: str = None,  # type: ignore
     ) -> bool:
         return await super().has_page_permission(
-            request
-        ) and await request.auth.requires(roles='admin', response=False)(
+            request, obj, action
+        ) and await request.auth.requires(roles='root', response=False)(
             request
         )
 
 
 @site.register_admin
-class UserAuth(GsAdminModel):
-    pk_name = 'user_id'
-    page_schema = PageSchema(label='用户授权', icon='fa fa-user-o')
-
-    # 配置管理模型
-    model = UserRoleLink
-
-
-@site.register_admin
 class CKadmin(GsAdminModel):
     pk_name = 'id'
-    page_schema = PageSchema(label='CK管理', icon='fa fa-database')
+    page_schema = PageSchema(label='CK管理', icon='fa fa-database')  # type: ignore
 
     # 配置管理模型
     model = GsUser
@@ -319,7 +339,7 @@ class CKadmin(GsAdminModel):
 @site.register_admin
 class pushadmin(GsAdminModel):
     pk_name = 'id'
-    page_schema = PageSchema(label='推送管理', icon='fa fa-bullhorn')
+    page_schema = PageSchema(label='推送管理', icon='fa fa-bullhorn')  # type: ignore
 
     # 配置管理模型
     model = GsPush
@@ -328,7 +348,7 @@ class pushadmin(GsAdminModel):
 @site.register_admin
 class cacheadmin(GsAdminModel):
     pk_name = 'id'
-    page_schema = PageSchema(label='缓存管理', icon='fa fa-recycle')
+    page_schema = PageSchema(label='缓存管理', icon='fa fa-recycle')  # type: ignore
 
     # 配置管理模型
     model = GsCache
@@ -337,7 +357,7 @@ class cacheadmin(GsAdminModel):
 @site.register_admin
 class bindadmin(GsAdminModel):
     pk_name = 'id'
-    page_schema = PageSchema(label='绑定管理', icon='fa fa-users')
+    page_schema = PageSchema(label='绑定管理', icon='fa fa-users')  # type: ignore
 
     # 配置管理模型
     model = GsBind
@@ -353,7 +373,7 @@ class MyHomeAdmin(admin.HomeAdmin):
         url='/home',
         isDefaultPage=True,
         sort=100,
-    )
+    )  # type: ignore
     page_path = '/home'
 
     async def get_page(self, request: Request) -> Page:
@@ -361,7 +381,7 @@ class MyHomeAdmin(admin.HomeAdmin):
         page.body = [
             Alert(
                 level='warning',
-                body=' 警告: 初始admin账号请务必前往「用户授权」➡「用户管理」处修改密码!',
+                body=' 警告: 初始root账号请务必前往「用户授权」➡「用户管理」处修改密码!',
             ),
             amis.Divider(),
             Property(
@@ -379,6 +399,14 @@ class MyHomeAdmin(admin.HomeAdmin):
         ]
         return page
 
+    async def has_page_permission(
+        self,
+        request: Request,
+        obj: PageSchemaAdmin = None,  # type: ignore
+        action: str = None,  # type: ignore
+    ) -> bool:
+        return True
+
 
 @site.register_admin
 class SVManagePage(GsAdminPage):
@@ -388,8 +416,10 @@ class SVManagePage(GsAdminPage):
         url='/SvManage',
         isDefaultPage=True,
         sort=100,
-    )
-    page = Page.parse_obj(get_sv_page())
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(get_sv_page())
 
 
 @site.register_admin
@@ -400,8 +430,10 @@ class ConfigManagePage(GsAdminPage):
         url='/ConfigManage',
         isDefaultPage=True,
         sort=100,
-    )
-    page = Page.parse_obj(get_config_page())
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(get_config_page())
 
 
 @site.register_admin
@@ -412,8 +444,10 @@ class PluginsManagePage(GsAdminPage):
         url='/ConfigManage',
         isDefaultPage=True,
         sort=100,
-    )
-    page = Page.parse_obj(get_tasks_panel())
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(get_tasks_panel())
 
 
 # 取消注册默认管理类

@@ -17,7 +17,7 @@ from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
-is_update_dep = core_plugins_config.get_config('AutoUpdateDep').data
+is_install_dep = core_plugins_config.get_config('AutoInstallDep').data
 
 
 # 传入一个path对象
@@ -191,14 +191,27 @@ def check_can_update(repo: Repo) -> bool:
     return True
 
 
-def check_status(plugin_name: str) -> int:
-    repo = check_plugins(plugin_name)
-    if repo is None:
-        return 3
-    if check_can_update(repo):
-        return 1
-    else:
-        return 4
+async def async_check_plugins(plugin_name: str):
+    path = PLUGINS_PATH / plugin_name
+    if path.exists():
+        cmd = 'git fetch && git status'
+        proc = await asyncio.create_subprocess_shell(
+            cmd, cwd=path, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise Exception(f'{cmd} 执行错误 {proc.returncode}: {stderr.decode()}')
+        if b'Your branch is up to date' in stdout:
+            return 4
+        elif b'not a git repository' in stdout:
+            return 3
+        else:
+            return 1
+    return 3
+
+
+async def check_status(plugin_name: str) -> int:
+    return await async_check_plugins(plugin_name)
 
 
 async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
@@ -271,7 +284,7 @@ def update_from_git(
         if repo_like is None:
             repo = Repo(CORE_PATH)
             plugin_name = '早柚核心'
-            if is_update_dep:
+            if is_install_dep:
                 asyncio.create_task(run_poetry_install(CORE_PATH))
         elif isinstance(repo_like, Path):
             repo = Repo(repo_like)

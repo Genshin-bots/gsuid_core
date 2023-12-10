@@ -1,10 +1,10 @@
 import contextlib
 
 from fastapi import Request
-from fastapi_user_auth.auth import AuthRouter
 from starlette.responses import RedirectResponse
-from fastapi_user_auth import admin as user_auth_admin
-from fastapi_amis_admin.admin import admin as amis_admin
+from fastapi_amis_admin import admin as amis_admin
+from fastapi_user_auth.auth.auth import AuthRouter
+from fastapi_user_auth.admin import admin as user_auth_admin
 from fastapi_amis_admin.amis.components import App, Tpl, Grid, Html, Page
 
 from gsuid_core.webconsole.utils import overrides

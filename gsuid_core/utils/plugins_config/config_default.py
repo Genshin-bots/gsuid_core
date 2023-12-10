@@ -3,6 +3,7 @@ from typing import Dict
 from .models import GSC, GsStrConfig, GsBoolConfig, GsListStrConfig
 
 CONIFG_DEFAULT: Dict[str, GSC] = {
+    'StartVENV': GsStrConfig('设置启动环境工具', '可选pdm, poetry, pip, auto', 'auto'),
     'Gproxy': GsStrConfig('设置米游社国际代理', '设置国际服的代理地址', ''),
     'Nproxy': GsStrConfig('设置米游社常规代理', '设置常规的代理地址', ''),
     '_pass_API': GsStrConfig('神奇API', '设置某种神奇的API', ''),
@@ -59,7 +60,7 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'TextToPicThreshold': GsStrConfig('文转图阈值', '开启自动转图后超过该阈值的文字会转成图片', '80'),
     'EnableSpecificMsgId': GsBoolConfig('启用回复特殊ID', '如不知道请勿开启', False),
     'SpecificMsgId': GsStrConfig('特殊返回消息ID', '如不知道请勿填写', ''),
-    'AutoUpdateDep': GsBoolConfig('自动更新依赖', '更新插件时将会自动更新依赖', False),
+    'AutoInstallDep': GsBoolConfig('自动安装/更新依赖', '更新/安装插件时将会自动更新/安装依赖', True),
     'EnablePicSrv': GsBoolConfig('启用将图片转链接发送(需公网)', '发送图片转链接', False),
     'PicSrv': GsStrConfig('图片转链接为(需公网)', '发送图片转链接', ''),
     'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),

@@ -17,14 +17,23 @@ async def start_check():
     user_auth_i18n.set_language('zh_CN')
 
     logger.info('尝试挂载WebConsole')
-    await site.auth.db.async_run_sync(
-        SQLModel.metadata.create_all, is_session=False  # type:ignore
-    )
     await site.db.async_run_sync(
         SQLModel.metadata.create_all, is_session=False  # type:ignore
     )  # type:ignore
     # 创建默认测试用户, 请及时修改密码!!!
-    await site.auth.create_role_user('admin')
+    auth = site.auth
+    await auth.create_role_user('root')
+    await auth.create_role_user('test')
+
+    await site.router.startup()
+
+    if not auth.enforcer.enforce("u:admin", site.unique_id, "page", "page"):
+        await auth.enforcer.add_policy(
+            "u:admin", site.unique_id, "page", "page", "allow"
+        )
+        await auth.enforcer.add_policy(
+            "u:test", site.unique_id, "page", "page", "allow"
+        )
 
     logger.info(('WebConsole挂载成功:' f'http://{HOST}:{PORT}/genshinuid'))
     if HOST == 'localhost' or HOST == '127.0.0.1':

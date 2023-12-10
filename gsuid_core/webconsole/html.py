@@ -2,32 +2,43 @@ import fastapi_amis_admin
 
 from gsuid_core.version import __version__ as GenshinUID_version
 
-login_html = '''
-<p align='center'>
-    <a href='https://github.com/KimigaiiWuyi/GenshinUID/'>
-        <img src='https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png'
-         width='256' height='256' alt='GenshinUID'>
-    </a>
+web_url = 'https://docs.sayu-bot.com'
+login_html = f'''
+<html>
+<head>
+<style>
+  div {{
+    background: rgba(255, 255, 255, 0.6) url('/webstatic/bg.jpg');
+    background-blend-mode: screen;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    background-size: cover;
+  }}
+</style>
+</head>
+<p>
+  <p align='center'>
+      <a href='{web_url}'>
+          <img src='https://s2.loli.net/2023/03/25/bareSdYcsmRPOyZ.png'
+          width='256' height='256' alt='GenshinUID'>
+      </a>
+  </p>
+  <h1 align='center'>GsCore 网页控制台</h1>
+  <div align='center'>
+      <a href='{web_url}/Started/InstallCore.html' target='_blank'>
+      安装文档</a> &nbsp; · &nbsp;
+      <a href='{web_url}/PluginsHelp/GenshinUID.html/'
+      target='_blank'>指令列表</a> &nbsp; · &nbsp;
+      <a href='{web_url}/FAQ/'>常见问题</a>
+  </div>
+  <h5 align='center'>
+    ✨支持连接HoshinoBot · NoneBot2 · Koishi · Yunzai · ZeroBot的多功能Bot插件核心✨
+  </h5>
+  <h5 align='center'>
+    ✨支持平台: QQ群/频道 · Onebot v11/v12 · WeChat · 飞书 · Tg · Kook/dodo · Dc · 米游社✨
+  </h5>
 </p>
-<h1 align='center'>GsCore WebConsole</h1>
-<h4 align='center'>
-    ✨基于
-    <a href='https://github.com/Ice-Cirno/HoshinoBot' target='_blank'>
-        HoshinoBot
-    </a>
-    /
-    <a href='https://github.com/nonebot/nonebot2' target='_blank'>NoneBot2</a>
-    /
-    <a href='https://bot.q.qq.com/wiki/#' target='_blank'>QQ官方频道Bot</a>
-    的原神多功能插件✨
-</h4>
-<div align='center'>
-    <a href='https://github.com/KimigaiiWuyi/GenshinUID/wiki' target='_blank'>
-    安装文档</a> &nbsp; · &nbsp;
-    <a href='https://github.com/KimigaiiWuyi/GenshinUID/wiki/File5-「指令列表」'
-     target='_blank'>指令列表</a> &nbsp; · &nbsp;
-    <a href='https://github.com/KimigaiiWuyi/GenshinUID/issues/226'>常见问题</a>
-</div>
+</html>
 '''
 
 footer_html = f'''

@@ -13,9 +13,9 @@ from typing import (
 
 from sqlalchemy.future import select
 from sqlalchemy import delete, update
-from sqlalchemy.orm import sessionmaker
 from sqlmodel import Field, SQLModel, col
 from sqlalchemy.sql.expression import func, null
+from sqlalchemy.orm import registry, sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from gsuid_core.data_store import get_res_path
@@ -44,7 +44,8 @@ def with_session(
     return wrapper  # type: ignore
 
 
-class BaseIDModel(SQLModel):
+# https://github.com/tiangolo/sqlmodel/issues/264
+class BaseIDModel(SQLModel, registry=registry()):
     id: Optional[int] = Field(default=None, primary_key=True, title='序号')
 
     @classmethod

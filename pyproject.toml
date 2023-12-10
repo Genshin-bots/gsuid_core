@@ -24,8 +24,8 @@ aiosqlite = ">=0.17.0"
 aiofiles = ">=0.8.0"
 sqlmodel = ">=0.0.8"
 gitpython = ">=3.1.27"
-fastapi-amis-admin = "^0.5.8"
-fastapi-user-auth = "^0.5.0"
+fastapi-amis-admin = ">=0.6.0"
+fastapi-user-auth = ">=0.5.1"
 qrcode = {extras = ["pil"], version = "^7.3.1"}
 msgspec = ">= 0.13.1"
 uvicorn = ">=0.20.0"
@@ -33,10 +33,16 @@ websockets = "^10.4"
 loguru = "^0.6.0"
 urllib3 = "^1.26.15"
 mpmath = "^1.3.0"
-fastapi = "^0.97.0"
-trio = "^0.22.0"
+fastapi = ">=0.104.1"
 apscheduler = "^3.10.1"
 aioboto3 = "^12.0.0"
+jinja2 = "^3.1.2"
+colorama = "^0.4.6"
+async-timeout = "^4.0.3"
+toml = "^0.10.2"
+bcrypt = "^4.0.1"
+motor = "^3.3.2"
+pymongo = "^4.6.1"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"
@@ -74,3 +80,54 @@ length_sort = true
 skip_gitignore = true
 force_sort_within_sections = true
 extra_standard_library = ["typing_extensions"]
+
+[project]
+authors = [
+    {name = "KimigaiiWuyi", email = "444835641@qq.com"},
+    {name = "MingxuanGame", email = "MingxuanGame@outlook.com"},
+]
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.8.1,<4.0"
+dependencies = [
+    "httpx>=0.23.0",
+    "beautifulsoup4>=4.11.1",
+    "lxml>=4.9.2",
+    "aiohttp>=3.8.1",
+    "sqlalchemy<2.0.0,>=1.4.39",
+    "pillow>=9.2.0",
+    "aiosqlite>=0.17.0",
+    "aiofiles>=0.8.0",
+    "sqlmodel>=0.0.8",
+    "gitpython>=3.1.27",
+    "fastapi-amis-admin>=0.5.8",
+    "fastapi-user-auth>=0.5.1",
+    "qrcode[pil]<8.0.0,>=7.3.1",
+    "msgspec>=0.13.1",
+    "uvicorn>=0.20.0",
+    "websockets<11.0,>=10.4",
+    "loguru<1.0.0,>=0.6.0",
+    "urllib3<2.0.0,>=1.26.15",
+    "mpmath<2.0.0,>=1.3.0",
+    "fastapi<1.0.0,>=0.97.0",
+    "apscheduler<4.0.0,>=3.10.1",
+    "aioboto3<13.0.0,>=12.0.0",
+    "jinja2<4.0.0,>=3.1.2",
+    "colorama<1.0.0,>=0.4.6",
+    "async-timeout>=4.0.3",
+    "toml>=0.10.2",
+    "bcrypt==4.0.1",
+    "pymongo>=4.6.1",
+    "motor>=3.3.2",
+]
+name = "gsuid-core"
+version = "0.1.0"
+description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
+readme = "README.md"
+
+[project.urls]
+"Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
+homepage = "https://github.com/Genshin-bots/gsuid-core"
+repository = "https://github.com/Genshin-bots/gsuid-core"
+
+[project.scripts]
+core = "gsuid_core.core:main"

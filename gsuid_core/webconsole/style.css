@@ -1,0 +1,6 @@
+body {
+    background-image: url('./bg.jpg');
+    background-repeat: no-repeat; /* 设置背景图片不重复 */
+    background-size: cover; /* 设置背景图片覆盖整个网页 */
+    background-position: center; /* 设置背景图片居中显示 */
+  }
