@@ -66,7 +66,9 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
     'SendMDPlatform': GsListStrConfig('默认发送MD的平台列表(用:连接)', '发送MD的平台列表', []),
     'SendButtonsPlatform': GsListStrConfig(
-        '默认发送按钮的平台列表(用:连接)', '发送按钮的平台列表', ["villa", "kaiheila", "dodo"]
+        '默认发送按钮的平台列表(用:连接)',
+        '发送按钮的平台列表',
+        ["villa", "kaiheila", "dodo", "discord", "telegram"],
     ),
     'ForceSendMD': GsBoolConfig('强制使用MD发送图文', '强制使用MD发送图文', False),
 }
