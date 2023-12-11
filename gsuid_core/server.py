@@ -1,21 +1,46 @@
+import re
 import sys
 import asyncio
 import importlib
+import subprocess
 from pathlib import Path
-from typing import Dict, Callable
+from typing import Dict, List, Callable
 
+import toml
+import pkg_resources
 from fastapi import WebSocket
 
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
+auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
+start_venv: str = core_plugins_config.get_config('StartVENV').data
 core_start_def = set()
+installed_dependencies = []
+ignore_dep = ['python', 'fastapi', 'pydantic']
 
 
 def on_core_start(func: Callable):
     if func not in core_start_def:
         core_start_def.add(func)
     return func
+
+
+def check_start_tool():
+    path = Path(__file__).parent.parent
+    pdm_python_path = path / '.pdm-python'
+    if start_venv == 'auto':
+        if pdm_python_path.exists():
+            return 'pdm run pip'
+        else:
+            return 'poetry run pip'
+    elif start_venv == 'pdm':
+        return 'pdm run pip'
+    elif start_venv == 'poetry':
+        return 'poetry run pip'
+    else:
+        return start_venv.strip()
 
 
 class GsServer:
@@ -38,11 +63,15 @@ class GsServer:
 
     def load_plugins(self):
         logger.info('开始导入插件...')
+        get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
         plug_path = Path(__file__).parent / 'plugins'
         # 遍历插件文件夹内所有文件
         for plugin in plug_path.iterdir():
             # 如果发现文件夹，则视为插件包
+            logger.info('===============')
+            logger.info(f'导入{plugin}中...')
+            logger.info('===============')
             try:
                 if plugin.is_dir():
                     plugin_path = plugin / '__init__.py'
@@ -54,6 +83,9 @@ class GsServer:
                         self.load_dir_plugins(plugin)
                     elif nest_path.exists():
                         path = nest_path.parent / plugin.name
+                        pyproject = plugin / 'pyproject.toml'
+                        if auto_install_dep and pyproject.exists:
+                            check_pyproject(pyproject)
                         if path.exists():
                             self.load_dir_plugins(path, True)
                     # 如果文件夹内有__init_.py，则视为单个插件包
@@ -115,3 +147,78 @@ class GsServer:
         if func not in cls.bot_connect_def:
             cls.bot_connect_def.add(func)
         return func
+
+
+def check_pyproject(pyproject: Path):
+    with open(pyproject, 'rb') as f:
+        file_content = f.read().decode('utf-8')
+        if "extend-exclude = '''" in file_content:
+            file_content = file_content.replace(
+                "extend-exclude = '''", ''
+            ).replace("'''", '', 1)
+        toml_data = toml.loads(file_content)
+    if 'project' in toml_data:
+        dependencies = toml_data['project'].get('dependencies')
+    elif 'tool' in toml_data and 'poetry' in toml_data['tool']:
+        dependencies = toml_data['tool']['poetry'].get('dependencies')
+    else:
+        dependencies = None
+
+    if isinstance(dependencies, List):
+        dependencies = parse_dependency(dependencies)
+
+    if dependencies:
+        install_dependencies(dependencies)
+
+
+def install_dependencies(dependencies: Dict):
+    global installed_dependencies
+    # 解析依赖项
+    for (
+        dependency,
+        version,
+    ) in dependencies.items():
+        if (
+            dependency not in installed_dependencies
+            and dependency not in ignore_dep
+        ):
+            logger.info(f'安装依赖 {dependency} 中...')
+            result = subprocess.run(
+                f'{check_start_tool()} install {dependency}',
+                capture_output=True,
+                text=True,
+            )
+            # 检查命令执行结果
+            if result.returncode == 0:
+                logger.success(f"依赖 {dependency} 安装成功！")
+            else:
+                logger.warning("依赖安装失败。错误信息：")
+                logger.warning(result.stderr)
+            installed_dependencies = get_installed_dependencies()
+
+
+def get_installed_dependencies():
+    global installed_dependencies
+    installed_packages = pkg_resources.working_set
+    installed_dependencies = [package.key for package in installed_packages]
+
+
+def parse_dependency(dependency: List):
+    dep = {}
+    for i in dependency:
+        dep.update(parse_dependency_string(i))
+    return dep
+
+
+def parse_dependency_string(dependency_string: str):
+    pattern = r'([\w\-_\.]+)([<>=!]+)([\w\-_\.]+)'
+    matches = re.findall(pattern, dependency_string)
+
+    dependencies = {}
+    for match in matches:
+        dependency = match[0]
+        operator = match[1]
+        version = match[2]
+        dependencies[dependency] = f"{operator}{version}"
+
+    return dependencies

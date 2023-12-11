@@ -168,7 +168,7 @@ class SV:
 
             for _k in keyword_list:
                 if _k not in self.TL:
-                    logger.info(f'载入{type}触发器【{_k}】!')
+                    logger.debug(f'载入{type}触发器【{_k}】!')
                     self.TL[_k] = Trigger(
                         type, _k, modify_func(func), block, to_me
                     )
