@@ -45,7 +45,7 @@ def with_session(
 
 
 # https://github.com/tiangolo/sqlmodel/issues/264
-class BaseIDModel(SQLModel, registry=registry()):
+class BaseIDModel(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True, title='序号')
 
     @classmethod
