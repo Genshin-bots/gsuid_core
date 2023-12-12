@@ -8,13 +8,21 @@ from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.message_models import Button
 from gsuid_core.models import Event, Message, MessageSend
+from gsuid_core.load_template import parse_button, button_templates
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
-from gsuid_core.segment import MessageSegment, to_markdown, convert_message
+from gsuid_core.segment import (
+    MessageSegment,
+    to_markdown,
+    convert_message,
+    check_same_buttons,
+    markdown_to_template_markdown,
+)
 
 sp_msg_id: str = core_plugins_config.get_config('SpecificMsgId').data
 is_sp_msg_id: str = core_plugins_config.get_config('EnableSpecificMsgId').data
 ism: List = core_plugins_config.get_config('SendMDPlatform').data
 isb: List = core_plugins_config.get_config('SendButtonsPlatform').data
+istry: List = core_plugins_config.get_config('TryTemplateForQQ').data
 
 enable_buttons_platform = isb
 enable_markdown_platform = ism
@@ -63,6 +71,7 @@ class _Bot:
             msg_id=msg_id,
         )
         logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
+        print(send)
         await self.bot.send_bytes(msgjson.encode(send))
 
     async def _process(self):
@@ -175,8 +184,9 @@ class Bot:
                 reply = f'请在{timeout}秒内做出选择...'
 
             _reply = await convert_message(reply, self.bot_id)
+            success = False
 
-            if self.ev.real_bot_id in enable_buttons_platform:
+            if self.ev.real_bot_id in enable_buttons_platform or istry:
                 _buttons = []
                 for option in option_list:
                     if isinstance(option, List):
@@ -191,34 +201,51 @@ class Bot:
                         _buttons.append(option)
                     else:
                         _buttons.append(Button(option, option, option))
+
+                md = await to_markdown(_reply, _buttons, self.bot_id)
+
                 if self.ev.real_bot_id in enable_markdown_platform:
-                    await self.send(
-                        await to_markdown(_reply, _buttons, self.bot_id)
-                    )
-                else:
+                    await self.send(md)
+                    success = True
+
+                if istry:
+                    md = await markdown_to_template_markdown(md)
+                    fake_buttons = parse_button(_buttons)
+                    for custom_template_id in button_templates:
+                        p = parse_button(button_templates[custom_template_id])
+                        if check_same_buttons(p, fake_buttons):
+                            md.append(
+                                MessageSegment.template_buttons(
+                                    custom_template_id
+                                )
+                            )
+                            success = True
+                            await self.send(md)
+                            break
+
+                if not success:
                     _reply.append(MessageSegment.buttons(_buttons))
                     await self.send(_reply)
-            else:
-                if unsuported_platform:
-                    _options: List[str] = []
-                    for option in option_list:
-                        if isinstance(option, List):
-                            for op in option:
-                                if isinstance(op, Button):
-                                    _options.append(op.data)
-                                else:
-                                    _options.append(op)
-                        elif isinstance(option, Button):
-                            _options.append(option.data)
-                        else:
-                            _options.append(option)
+                    success = True
 
-                    _reply.append(
-                        MessageSegment.text(
-                            '\n请输入以下命令之一:\n' + sep.join(_options)
-                        )
-                    )
-                await self.send(_reply)
+            if not success and unsuported_platform:
+                _options: List[str] = []
+                for option in option_list:
+                    if isinstance(option, List):
+                        for op in option:
+                            if isinstance(op, Button):
+                                _options.append(op.data)
+                            else:
+                                _options.append(op)
+                    elif isinstance(option, Button):
+                        _options.append(option.data)
+                    else:
+                        _options.append(option)
+
+                _reply.append(
+                    MessageSegment.text('\n请输入以下命令之一:\n' + sep.join(_options))
+                )
+            await self.send(_reply)
 
         elif reply:
             await self.send(reply)

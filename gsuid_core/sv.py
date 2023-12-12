@@ -129,7 +129,7 @@ class SV:
 
             if name == '测试开关':
                 self.pm = 6
-                self.enabled = False
+                self.enabled = True
 
     def set(self, **kwargs):
         for var in kwargs:

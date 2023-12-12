@@ -70,5 +70,6 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '发送按钮的平台列表',
         ["villa", "kaiheila", "dodo", "discord", "telegram"],
     ),
+    'TryTemplateForQQ': GsBoolConfig('启用后尝试读取模板文件并发送', '发送MD和按钮模板', True),
     'ForceSendMD': GsBoolConfig('强制使用MD发送图文', '强制使用MD发送图文', False),
 }

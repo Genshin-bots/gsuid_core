@@ -5,6 +5,7 @@ from async_timeout import timeout
 from gsuid_core.bot import Bot
 from gsuid_core.sv import SL, SV
 from gsuid_core.models import Event
+from gsuid_core.message_models import Button
 
 sv_switch = SV('测试开关')
 
@@ -91,3 +92,30 @@ async def get_regex_msg(bot: Bot, ev: Event):
     await bot.send(
         f'[正则测试]校验成功！{ev.regex_dict["name"]}你输入的是{ev.regex_dict["int"]}'
     )
+
+
+@sv_switch.on_fullmatch('按钮模板')
+async def send_temp_button_msg(bot: Bot, ev: Event):
+    a = '🏝️野外探索'
+    b = '🗺️查看地图'
+    c = '📖精灵状态'
+    d = '🕹️城镇打工'
+    e = '💎道具帮助'
+    f = '🚶更换地点'
+    g = '✨更新队伍'
+    h = '🥚精灵孵化'
+    i = '📋我的名片'
+    j = '🎀个体重置'
+
+    ab = Button(a, '野外探索')
+    bb = Button(b, '查看地图')
+    cb = Button(c, '精灵状态')
+    db = Button(d, '城镇打工')
+    eb = Button(e, '道具帮助')
+    fb = Button(f, '更换地点')
+    gb = Button(g, '更新队伍')
+    hb = Button(h, '精灵孵化')
+    ib = Button(i, '精灵状态')
+    jb = Button(j, '我的名片')
+
+    await bot.send_option('测试', [ab, bb, cb, db, eb, fb, gb, hb, ib, jb])

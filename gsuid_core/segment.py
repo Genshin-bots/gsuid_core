@@ -1,9 +1,10 @@
+import re
 import uuid
 import random
 from io import BytesIO
 from pathlib import Path
 from base64 import b64decode, b64encode
-from typing import List, Tuple, Union, Literal, Optional
+from typing import Dict, List, Tuple, Union, Literal, Optional
 
 import msgspec
 from PIL import Image
@@ -13,6 +14,7 @@ from gsuid_core.data_store import image_res
 from gsuid_core.message_models import Button
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.image.image_tools import sget
+from gsuid_core.load_template import markdown_templates
 from gsuid_core.utils.plugins_config.gs_config import (
     send_pic_config,
     pic_upload_config,
@@ -94,11 +96,34 @@ class MessageSegment:
         return Message(type='buttons', data=msgspec.to_builtins(buttons))
 
     @staticmethod
+    def template_buttons(
+        template_id: str,
+    ) -> Message:
+        return Message(type='template_buttons', data=template_id)
+
+    @staticmethod
     def markdown(
         content: str,
         buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
     ) -> List[Message]:
         data = [Message(type='markdown', data=content)]
+        if buttons:
+            data.append(MessageSegment.buttons(buttons))
+
+        return data
+
+    @staticmethod
+    def template_markdown(
+        template_id: str,
+        para: Dict[str, str],
+        buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
+    ) -> List[Message]:
+        data = [
+            Message(
+                type='template_markdown',
+                data={'template_id': template_id, 'para': para},
+            )
+        ]
         if buttons:
             data.append(MessageSegment.buttons(buttons))
 
@@ -349,6 +374,33 @@ async def convert_message(
     return _message
 
 
+async def markdown_to_template_markdown(
+    message: List[Message],
+) -> List[Message]:
+    _message = []
+    for m in message:
+        if m.type == 'markdown':
+            for mdt in markdown_templates:
+                match = re.fullmatch(mdt, str(m.data).strip())
+                if match:
+                    match_para = match.groups()
+                    para = markdown_templates[mdt]['para']
+                    _message.extend(
+                        MessageSegment.template_markdown(
+                            markdown_templates[mdt]['template_id'],
+                            {
+                                i: match_para[index]
+                                for index, i in enumerate(para)
+                            },
+                        )
+                    )
+                    break
+        else:
+            _message.append(m)
+
+    return _message
+
+
 async def to_markdown(
     message: List[Message],
     buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
@@ -384,3 +436,15 @@ async def to_markdown(
     _markdown = '\n'.join(_markdown_list)
     _message.extend(MessageSegment.markdown(_markdown, buttons))
     return _message
+
+
+async def check_same_buttons(a: List[Button], b: List[Button]) -> bool:
+    if len(a) != len(b):
+        return False
+    count = 0
+    for button in a:
+        if button in b:
+            count += 1
+    if count == len(b):
+        return True
+    return False
