@@ -15,7 +15,7 @@ from sqlalchemy.future import select
 from sqlalchemy import delete, update
 from sqlmodel import Field, SQLModel, col
 from sqlalchemy.sql.expression import func, null
-from sqlalchemy.orm import registry, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from gsuid_core.data_store import get_res_path
