@@ -139,7 +139,9 @@ class Bot:
         ] = None,
         unsuported_platform: bool = False,
         timeout: float = 60,
-        sep: str = ' / ',
+        sep: str = '\n',
+        command_tips: str = '请输入以下命令之一:',
+        command_start_text: str = '',
     ):
         return await self.receive_resp(
             reply,
@@ -149,6 +151,8 @@ class Bot:
             True,
             timeout,
             sep=sep,
+            command_tips=command_tips,
+            command_start_text=command_start_text,
         )
 
     async def send_option(
@@ -160,10 +164,19 @@ class Bot:
             Union[List[str], List[Button], List[List[str]], List[List[Button]]]
         ] = None,
         unsuported_platform: bool = False,
-        sep: str = ' / ',
+        sep: str = '\n',
+        command_tips: str = '请输入以下命令之一:',
+        command_start_text: str = '',
     ):
         return await self.receive_resp(
-            reply, option_list, unsuported_platform, False, False, sep=sep
+            reply,
+            option_list,
+            unsuported_platform,
+            False,
+            False,
+            sep=sep,
+            command_tips=command_tips,
+            command_start_text=command_start_text,
         )
 
     async def receive_resp(
@@ -178,7 +191,9 @@ class Bot:
         is_mutiply: bool = False,
         is_recive: bool = True,
         timeout: float = 60,
-        sep: str = ' / ',
+        sep: str = '\n',
+        command_tips: str = '请输入以下命令之一:',
+        command_start_text: str = '',
     ) -> Optional[Event]:
         if option_list:
             if reply is None:
@@ -249,7 +264,12 @@ class Bot:
                         _options.append(option)
 
                 _reply.append(
-                    MessageSegment.text('\n请输入以下命令之一:\n' + sep.join(_options))
+                    MessageSegment.text(
+                        f'\n{command_tips}\n'
+                        + sep.join(
+                            [f'{command_start_text}{op}' for op in _options]
+                        )
+                    )
                 )
             await self.send(_reply)
 
