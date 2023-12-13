@@ -71,7 +71,6 @@ class _Bot:
             msg_id=msg_id,
         )
         logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
-        print(send)
         await self.bot.send_bytes(msgjson.encode(send))
 
     async def _process(self):
