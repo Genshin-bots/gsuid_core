@@ -22,10 +22,12 @@ sp_msg_id: str = core_plugins_config.get_config('SpecificMsgId').data
 is_sp_msg_id: str = core_plugins_config.get_config('EnableSpecificMsgId').data
 ism: List = core_plugins_config.get_config('SendMDPlatform').data
 isb: List = core_plugins_config.get_config('SendButtonsPlatform').data
+isc: List = core_plugins_config.get_config('SendTemplatePlatform').data
 istry: List = core_plugins_config.get_config('TryTemplateForQQ').data
 
 enable_buttons_platform = isb
 enable_markdown_platform = ism
+enable_Template_platform = isc
 
 
 class _Bot:
@@ -185,7 +187,9 @@ class Bot:
             _reply = await convert_message(reply, self.bot_id)
             success = False
 
-            if self.ev.real_bot_id in enable_buttons_platform or istry:
+            if self.ev.real_bot_id in enable_buttons_platform or (
+                istry and self.ev.real_bot_id in enable_Template_platform
+            ):
                 _buttons = []
                 for option in option_list:
                     if isinstance(option, List):
@@ -207,7 +211,7 @@ class Bot:
                     await self.send(md)
                     success = True
 
-                if istry:
+                if istry and not success and self.ev.bot_id in isc:
                     md = await markdown_to_template_markdown(md)
                     fake_buttons = parse_button(_buttons)
                     for custom_template_id in button_templates:
@@ -222,7 +226,10 @@ class Bot:
                             await self.send(md)
                             break
 
-                if not success:
+                if (
+                    not success
+                    and self.ev.real_bot_id in enable_buttons_platform
+                ):
                     _reply.append(MessageSegment.buttons(_buttons))
                     await self.send(_reply)
                     success = True
