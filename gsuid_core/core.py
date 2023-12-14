@@ -200,7 +200,7 @@ def main():
 
     @app.head('/genshinuid/image/{image_id}.jpg')
     @app.get('/genshinuid/image/{image_id}.jpg')
-    def get_image(image_id: str, background_tasks: BackgroundTasks):
+    async def get_image(image_id: str, background_tasks: BackgroundTasks):
         path = image_res / f'{image_id}.jpg'
         image = Image.open(path).convert('RGB')
         image_bytes = BytesIO()
