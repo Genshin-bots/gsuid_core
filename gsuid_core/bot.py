@@ -6,6 +6,7 @@ from msgspec import json as msgjson
 
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
+from gsuid_core.global_val import global_val
 from gsuid_core.message_models import Button
 from gsuid_core.models import Event, Message, MessageSend
 from gsuid_core.load_template import parse_button, button_templates
@@ -72,6 +73,7 @@ class _Bot:
             target_id=target_id,
             msg_id=msg_id,
         )
+        global_val['send'] += 1
         logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
         await self.bot.send_bytes(msgjson.encode(send))
 

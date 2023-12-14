@@ -11,6 +11,7 @@ from git.repo import Repo
 from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
 
 from gsuid_core.logger import logger
+from gsuid_core.server import on_core_start
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
@@ -71,7 +72,7 @@ def check_retcode(retcode: int) -> str:
         return f'更新失败, 错误码{retcode}'
 
 
-async def update_all_plugins() -> List[str]:
+def update_all_plugins() -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
         if _is_plugin(plugin):
@@ -98,7 +99,9 @@ async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
     return log_list
 
 
+@on_core_start
 async def refresh_list() -> List[str]:
+    global plugins_list
     refresh_list = []
     async with aiohttp.ClientSession() as session:
         logger.info(f'稍等...开始刷新插件列表, 地址: {plugins_lib}')

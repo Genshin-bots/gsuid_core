@@ -17,6 +17,7 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
 start_venv: str = core_plugins_config.get_config('StartVENV').data
 core_start_def = set()
+core_shutdown_def = set()
 installed_dependencies = []
 ignore_dep = ['python', 'fastapi', 'pydantic']
 
@@ -24,6 +25,12 @@ ignore_dep = ['python', 'fastapi', 'pydantic']
 def on_core_start(func: Callable):
     if func not in core_start_def:
         core_start_def.add(func)
+    return func
+
+
+def on_core_shutdown(func: Callable):
+    if func not in core_shutdown_def:
+        core_shutdown_def.add(func)
     return func
 
 
@@ -128,7 +135,8 @@ class GsServer:
             logger.exception(e)
         return bot
 
-    def disconnect(self, bot_id: str):
+    async def disconnect(self, bot_id: str):
+        await self.active_ws[bot_id].close(code=1001)
         if bot_id in self.active_ws:
             del self.active_ws[bot_id]
         if bot_id in self.active_bot:

@@ -3,6 +3,7 @@ import asyncio
 from io import BytesIO
 from typing import Dict
 from pathlib import Path
+from asyncio import CancelledError
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -21,10 +22,10 @@ from gsuid_core.config import core_config  # noqa: E402
 from gsuid_core.data_store import image_res  # noqa: E402
 from gsuid_core.handler import handle_event  # noqa: E402
 from gsuid_core.models import MessageReceive  # noqa: E402
-from gsuid_core.server import core_start_def  # noqa: E402
 from gsuid_core.webconsole.mount_app import site  # noqa: E402
 from gsuid_core.utils.database.startup import exec_list  # noqa: E402
 from gsuid_core.aps import start_scheduler, shutdown_scheduler  # noqa: E402
+from gsuid_core.server import core_start_def, core_shutdown_def  # noqa: E402
 from gsuid_core.utils.plugins_config.models import (  # noqa: E402
     GsListStrConfig,
 )
@@ -83,6 +84,11 @@ async def lifespan(app: FastAPI):
     await start_scheduler()
     yield
     await shutdown_scheduler()
+    try:
+        _task = [_def() for _def in core_shutdown_def]
+        await asyncio.gather(*_task)
+    except Exception as e:
+        logger.exception(e)
 
 
 def main():
@@ -90,25 +96,30 @@ def main():
 
     @app.websocket('/ws/{bot_id}')
     async def websocket_endpoint(websocket: WebSocket, bot_id: str):
-        bot = await gss.connect(websocket, bot_id)
+        try:
+            bot = await gss.connect(websocket, bot_id)
 
-        async def start():
-            try:
-                while True:
-                    data = await websocket.receive_bytes()
-                    msg = msgjson.decode(data, type=MessageReceive)
-                    await handle_event(bot, msg)
-            except WebSocketDisconnect:
-                gss.disconnect(bot_id)
+            async def start():
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        msg = msgjson.decode(data, type=MessageReceive)
+                        await handle_event(bot, msg)
+                except WebSocketDisconnect:
+                    await gss.disconnect(bot_id)
 
-        async def process():
-            await bot._process()
+            async def process():
+                await bot._process()
 
-        await asyncio.gather(process(), start())
+            await asyncio.gather(process(), start())
+        except CancelledError:
+            await gss.disconnect(bot_id)
+        finally:
+            await gss.disconnect(bot_id)
 
     @app.post('/genshinuid/setSV/{name}')
     @site.auth.requires('root')
-    async def _set_SV(request: Request, data: Dict, name: str):
+    def _set_SV(request: Request, data: Dict, name: str):
         if name in SL.lst:
             sv = SL.lst[name]
             data['pm'] = int(data['pm'])
@@ -125,7 +136,7 @@ def main():
 
     @app.post('/genshinuid/setGsConfig/{config_name}')
     @site.auth.requires('root')
-    async def _set_Config(request: Request, data: Dict, config_name: str):
+    def _set_Config(request: Request, data: Dict, config_name: str):
         for name in data:
             if name == 'params':
                 continue
@@ -189,7 +200,7 @@ def main():
 
     @app.head('/genshinuid/image/{image_id}.jpg')
     @app.get('/genshinuid/image/{image_id}.jpg')
-    async def get_image(image_id: str, background_tasks: BackgroundTasks):
+    def get_image(image_id: str, background_tasks: BackgroundTasks):
         path = image_res / f'{image_id}.jpg'
         image = Image.open(path).convert('RGB')
         image_bytes = BytesIO()
