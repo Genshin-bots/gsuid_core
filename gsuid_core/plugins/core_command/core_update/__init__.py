@@ -55,5 +55,5 @@ async def send_core_poetry_install(bot: Bot, ev: Event):
 async def send_core_all_update_msg(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 全部更新')
     log_list = update_from_git()
-    log_list.extend(await update_all_plugins())
+    log_list.extend(update_all_plugins())
     await bot.send(log_list)
