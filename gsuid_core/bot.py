@@ -273,8 +273,7 @@ class Bot:
                         )
                     )
                 )
-            await self.send(_reply)
-
+                await self.send(_reply)
         elif reply:
             await self.send(reply)
 
