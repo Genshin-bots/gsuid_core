@@ -45,7 +45,7 @@ class GsClient:
             user_id = random.choice(['1', '2'])
             msg = MessageReceive(
                 bot_id='console',
-                user_type='group',
+                user_type='direct',
                 user_pm=0,
                 group_id=group_id,
                 user_id=user_id,

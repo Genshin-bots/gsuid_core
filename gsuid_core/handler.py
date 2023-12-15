@@ -130,7 +130,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
                 True
                 if SL.lst[sv].area == 'ALL'
                 or (msg.group_id and SL.lst[sv].area == 'GROUP')
-                or (not msg.group_id and SL.lst[sv].area == 'DIRECT')
+                or (
+                    event.user_type == 'direct' and SL.lst[sv].area == 'DIRECT'
+                )
                 else False
             )
             and (
