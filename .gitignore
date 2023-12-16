@@ -671,5 +671,6 @@ gs_restart.sh
 gsuid_core/plugins/*
 !gsuid_core/plugins/core_command
 !gsuid_core/plugins/gs_test.py
+!gsuid_core/utils/backup
 logs
 .pdm-python

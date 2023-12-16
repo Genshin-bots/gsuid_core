@@ -228,7 +228,7 @@ class Bot:
                     await self.send(md)
                     success = True
 
-                if istry and not success and self.ev.bot_id in isc:
+                if not success and istry and self.ev.bot_id in isc:
                     md = await markdown_to_template_markdown(md)
                     fake_buttons = parse_button(_buttons)
                     for custom_template_id in button_templates:
@@ -239,8 +239,8 @@ class Bot:
                                     custom_template_id
                                 )
                             )
-                            success = True
                             await self.send(md)
+                            success = True
                             break
 
                 if (
@@ -274,6 +274,11 @@ class Bot:
                     )
                 )
                 await self.send(_reply)
+                success = True
+
+            if not success:
+                await self.send(_reply)
+
         elif reply:
             await self.send(reply)
 
