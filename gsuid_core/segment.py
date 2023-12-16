@@ -383,15 +383,17 @@ async def markdown_to_template_markdown(
             for mdt in markdown_templates:
                 match = re.fullmatch(mdt, str(m.data).strip())
                 if match:
-                    match_para = match.groups()
-                    para = markdown_templates[mdt]['para']
+                    match_para = match.groupdict()
+
+                    _send_group = {}
+                    for i in match_para:
+                        if match_para[i]:
+                            _send_group[f'.{i}'] = match_para[i]
+
                     _message.extend(
                         MessageSegment.template_markdown(
                             markdown_templates[mdt]['template_id'],
-                            {
-                                i: match_para[index]
-                                for index, i in enumerate(para)
-                            },
+                            _send_group,
                         )
                     )
                     break

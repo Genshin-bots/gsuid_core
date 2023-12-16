@@ -7,10 +7,14 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.global_val import global_val
-from gsuid_core.message_models import Button
+from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.models import Event, Message, MessageSend
-from gsuid_core.load_template import parse_button, button_templates
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.load_template import (
+    parse_button,
+    custom_buttons,
+    button_templates,
+)
 from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
@@ -136,9 +140,7 @@ class Bot:
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]
         ] = None,
-        option_list: Optional[
-            Union[List[str], List[Button], List[List[str]], List[List[Button]]]
-        ] = None,
+        option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         timeout: float = 60,
         sep: str = '\n',
@@ -162,9 +164,7 @@ class Bot:
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]
         ] = None,
-        option_list: Optional[
-            Union[List[str], List[Button], List[List[str]], List[List[Button]]]
-        ] = None,
+        option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         sep: str = '\n',
         command_tips: str = '请输入以下命令之一:',
@@ -186,9 +186,7 @@ class Bot:
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]
         ] = None,
-        option_list: Optional[
-            Union[List[str], List[Button], List[List[str]], List[List[Button]]]
-        ] = None,
+        option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         is_mutiply: bool = False,
         is_recive: bool = True,
@@ -228,20 +226,28 @@ class Bot:
                     await self.send(md)
                     success = True
 
-                if not success and istry and self.ev.bot_id in isc:
+                if not success and istry:
                     md = await markdown_to_template_markdown(md)
-                    fake_buttons = parse_button(_buttons)
-                    for custom_template_id in button_templates:
-                        p = parse_button(button_templates[custom_template_id])
-                        if check_same_buttons(p, fake_buttons):
-                            md.append(
-                                MessageSegment.template_buttons(
-                                    custom_template_id
-                                )
+                    if custom_buttons and self.ev.command in custom_buttons:
+                        btn_msg = custom_buttons[self.ev.command]
+                        md.append(btn_msg)
+                        await self.send(md)
+                        success = True
+                    elif not success and istry and self.ev.bot_id in isc:
+                        fake_buttons = parse_button(_buttons)
+                        for custom_template_id in button_templates:
+                            p = parse_button(
+                                button_templates[custom_template_id]
                             )
-                            await self.send(md)
-                            success = True
-                            break
+                            if check_same_buttons(p, fake_buttons):
+                                md.append(
+                                    MessageSegment.template_buttons(
+                                        custom_template_id
+                                    )
+                                )
+                                await self.send(md)
+                                success = True
+                                break
 
                 if (
                     not success

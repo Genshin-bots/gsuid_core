@@ -118,4 +118,5 @@ async def send_temp_button_msg(bot: Bot, ev: Event):
     ib = Button(i, '精灵状态')
     jb = Button(j, '我的名片')
 
-    await bot.send_option('测试', [ab, bb, cb, db, eb, fb, gb, hb, ib, jb])
+    buttons = [ab, bb, cb, db, eb, fb, gb, hb, ib, jb]
+    await bot.send_option('测试', buttons)

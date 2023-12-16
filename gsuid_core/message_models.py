@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import List, Union, Literal, Optional
 
 from msgspec import Struct
 
@@ -13,3 +13,8 @@ class Button(Struct):
     specify_role_ids: List[str] = []  # 仅限频道可用
     specify_user_ids: List[str] = []  # 指定用户
     unsupport_tips: str = '您的客户端暂不支持该功能, 请升级后适配...'
+
+
+ButtonType = Union[
+    List[str], List[Button], List[List[str]], List[List[Button]]
+]
