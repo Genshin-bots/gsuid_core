@@ -119,11 +119,20 @@ def get_plugin_bg(plugin_name: str, sv_list: List[SV]):
             ),
         )
         sv_img_draw = ImageDraw.Draw(sv_img)
-        for index, trigger_name in enumerate(sv.TL):
-            tg_img = get_command_bg(trigger_name, sv.TL[trigger_name].type)
-            sv_img.paste(
-                tg_img, (6 + 220 * (index % 4), 67 + 40 * (index // 4)), tg_img
-            )
+
+        index = 0
+        for type in sv.TL:
+            for trigger_name in sv.TL[type]:
+                tg_img = get_command_bg(
+                    trigger_name, sv.TL[type][trigger_name].type
+                )
+                sv_img.paste(
+                    tg_img,
+                    (6 + 220 * (index % 4), 67 + 40 * (index // 4)),
+                    tg_img,
+                )
+                index += 1
+        index = 0
 
         sv_img_draw.rounded_rectangle((15, 19, 25, 50), 10, (62, 62, 62))
         sv_img_draw.text((45, 31), sv.name, (62, 62, 62), core_font(36), 'lm')

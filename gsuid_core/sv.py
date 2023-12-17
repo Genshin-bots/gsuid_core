@@ -80,7 +80,7 @@ class SV:
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器
-            self.TL: Dict[str, Trigger] = {}
+            self.TL: Dict[str, Dict[str, Trigger]] = {}
             self.is_initialized = True
             stack = traceback.extract_stack()
             file = stack[-2].filename
@@ -169,7 +169,10 @@ class SV:
             for _k in keyword_list:
                 if _k not in self.TL:
                     logger.debug(f'载入{type}触发器【{_k}】!')
-                    self.TL[_k] = Trigger(
+                    if type not in self.TL:
+                        self.TL[type] = {}
+
+                    self.TL[type][_k] = Trigger(
                         type, _k, modify_func(func), block, to_me
                     )
 

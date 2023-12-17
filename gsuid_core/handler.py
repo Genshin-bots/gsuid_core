@@ -114,13 +114,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     valid_event: Dict[Trigger, int] = {}
     pending = [
         _check_command(
-            SL.lst[sv].TL[tr],
+            SL.lst[sv].TL[_type][tr],
             SL.lst[sv].priority,
             event,
             valid_event,
         )
         for sv in SL.lst
-        for tr in SL.lst[sv].TL
+        for _type in SL.lst[sv].TL
+        for tr in SL.lst[sv].TL[_type]
         if (
             SL.lst[sv].enabled
             and user_pm <= SL.lst[sv].pm
