@@ -388,7 +388,7 @@ async def markdown_to_template_markdown(
                     _send_group = {}
                     for i in match_para:
                         if match_para[i]:
-                            _send_group[f'.{i}'] = match_para[i]
+                            _send_group[f'{i}'] = match_para[i]
 
                     _message.extend(
                         MessageSegment.template_markdown(

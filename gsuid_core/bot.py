@@ -228,7 +228,10 @@ class Bot:
 
                 if not success and istry:
                     md = await markdown_to_template_markdown(md)
-                    if custom_buttons and self.ev.command in custom_buttons:
+                    if self.ev.real_bot_id in enable_buttons_platform:
+                        await self.send(md)
+                        success = True
+                    elif custom_buttons and self.ev.command in custom_buttons:
                         btn_msg = custom_buttons[self.ev.command]
                         md.append(btn_msg)
                         await self.send(md)
