@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, WebSocket, BackgroundTasks, WebSocketDisconnect
 
+sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from gsuid_core.sv import SL  # noqa: E402
 from gsuid_core.gss import gss  # noqa: E402

@@ -53,8 +53,10 @@ pycln = "^2.1.2"
 
 
 [tool.poetry.scripts]
-core = 'gsuid_core.core:main'
+core = "gsuid_core.core:main"
 
+[tool.pdm.scripts]
+core = "gsuid_core/core.py"
 
 [[tool.poetry.source]]
 name = "mirrors"
