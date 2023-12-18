@@ -226,7 +226,7 @@ class Bot:
                     await self.send(md)
                     success = True
 
-                if not success and istry:
+                if not success and istry and self.ev.real_bot_id in isc:
                     md = await markdown_to_template_markdown(md)
                     if self.ev.real_bot_id in enable_buttons_platform:
                         await self.send(md)
@@ -236,7 +236,8 @@ class Bot:
                         md.append(btn_msg)
                         await self.send(md)
                         success = True
-                    elif not success and istry and self.ev.bot_id in isc:
+
+                    if not success:
                         fake_buttons = parse_button(_buttons)
                         for custom_template_id in button_templates:
                             p = parse_button(
