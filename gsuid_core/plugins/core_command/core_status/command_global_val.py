@@ -3,11 +3,8 @@ import datetime
 
 import aiofiles
 
-from gsuid_core.global_val import global_val
-from gsuid_core.data_store import get_res_path
+from gsuid_core.global_val import global_val, global_val_path
 from gsuid_core.server import on_core_start, on_core_shutdown
-
-global_val_path = get_res_path(['GsCore', 'global'])
 
 
 @on_core_start
@@ -28,4 +25,10 @@ async def save_global_val():
     async with aiofiles.open(
         global_val_path / f'global_val_{date_format}.json', 'w'
     ) as fp:
-        await fp.write(json.dumps(global_val))
+        await fp.write(
+            json.dumps(
+                global_val,
+                indent=4,
+                ensure_ascii=False,
+            )
+        )

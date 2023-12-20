@@ -3,7 +3,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
-from gsuid_core.global_val import global_val
+from gsuid_core.global_val import get_blobal_val
 
 from .command_global_val import save_global_val
 
@@ -31,13 +31,22 @@ async def scheduled_save_global_val():
     await save_global_val()
 
 
-@sv_core_status.on_fullmatch(('core状态', 'Core状态'))
+@sv_core_status.on_command(('core状态', 'Core状态'))
 async def send_core_status_msg(bot: Bot, ev: Event):
+    day = ev.text.strip()
+    if day and day.isdigit():
+        _day = int(day)
+    else:
+        _day = None
     logger.info('开始执行 早柚核心 [状态]')
-    await bot.send(
-        template.format(
-            global_val['receive'],
-            global_val['send'],
-            global_val['command'],
+    _global_val = await get_blobal_val(_day)
+    if _global_val is not None:
+        await bot.send(
+            template.format(
+                _global_val['receive'],
+                _global_val['send'],
+                _global_val['command'],
+            )
         )
-    )
+    else:
+        await bot.send('暂未存在当天的记录...')

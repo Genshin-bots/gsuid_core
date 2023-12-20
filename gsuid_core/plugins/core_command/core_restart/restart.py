@@ -6,6 +6,9 @@ import subprocess
 from pathlib import Path
 
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.plugins.core_command.core_status.command_global_val import (
+    save_global_val,
+)
 
 bot_start = Path(__file__).parents[3] / 'core.py'
 restart_sh_path = Path().cwd() / 'gs_restart.sh'
@@ -26,6 +29,7 @@ async def get_restart_sh() -> str:
 async def restart_genshinuid(
     bot_id: str, send_type: str, send_id: str, is_send: bool = True
 ) -> None:
+    await save_global_val()
     pid = os.getpid()
     restart_sh = await get_restart_sh()
     with open(restart_sh_path, "w", encoding="utf8") as f:
