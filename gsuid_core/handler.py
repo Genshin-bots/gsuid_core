@@ -7,7 +7,7 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
-from gsuid_core.global_val import global_val
+from gsuid_core.global_val import get_global_val
 from gsuid_core.models import Event, Message, MessageReceive
 
 command_start = core_config.get_config('command_start')
@@ -72,11 +72,13 @@ async def msg_process(msg: MessageReceive) -> Event:
 
 
 async def handle_event(ws: _Bot, msg: MessageReceive):
-    global_val['receive'] += 1
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     logger.info('[收到事件]', event=event)
+
+    local_val = await get_global_val(event.real_bot_id, event.bot_self_id)
+    local_val['receive'] += 1
 
     gid = event.group_id if event.group_id else '0'
     uid = event.user_id if event.user_id else '0'
@@ -167,15 +169,24 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
 
 
 async def count_data(event: Event, trigger: Trigger):
-    global_val['command'] += 1
+    local_val = await get_global_val(event.real_bot_id, event.bot_self_id)
+    local_val['command'] += 1
     if event.group_id:
-        if event.group_id not in global_val['group']:
-            global_val['group'][event.group_id] = {}
+        if event.group_id not in local_val['group']:
+            local_val['group'][event.group_id] = {}
 
-        if trigger.keyword not in global_val['group'][event.group_id]:
-            global_val['group'][event.group_id][trigger.keyword] = 0
+        if trigger.keyword not in local_val['group'][event.group_id]:
+            local_val['group'][event.group_id][trigger.keyword] = 1
         else:
-            global_val['group'][event.group_id][trigger.keyword] += 1
+            local_val['group'][event.group_id][trigger.keyword] += 1
+
+    if event.user_id:
+        if event.user_id not in local_val['user']:
+            local_val['user'][event.user_id] = {}
+        if trigger.keyword not in local_val['user'][event.user_id]:
+            local_val['user'][event.user_id][trigger.keyword] = 1
+        else:
+            local_val['user'][event.user_id][trigger.keyword] += 1
 
 
 async def _check_command(

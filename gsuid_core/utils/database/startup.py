@@ -8,6 +8,7 @@ from sqlalchemy.exc import NoSuchTableError
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start
 from gsuid_core.data_store import get_res_path
+from gsuid_core.global_val import global_val_path
 
 from .base_models import db_url, engine, async_maker
 
@@ -21,6 +22,10 @@ async def move_database():
         logger.warning('检测到主目录存在旧版数据库, 迁移中...该log只会看到一次...')
         move(old_path, db_url)
         logger.warning('迁移完成！')
+
+    for i in global_val_path.glob('*.json'):
+        i.unlink()
+        logger.warning('删除历史统计记录...')
 
 
 @on_core_start

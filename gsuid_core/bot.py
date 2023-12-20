@@ -6,7 +6,7 @@ from msgspec import json as msgjson
 
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
-from gsuid_core.global_val import global_val
+from gsuid_core.global_val import get_global_val
 from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.models import Event, Message, MessageSend
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
@@ -55,7 +55,7 @@ class _Bot:
         sender_id: str = '',
         group_id: Optional[str] = None,
     ):
-        _message = await convert_message(message, bot_id)
+        _message = await convert_message(message, bot_id, bot_self_id)
 
         if bot_id in enable_markdown_platform:
             _message = await to_markdown(_message, None, bot_id)
@@ -77,7 +77,11 @@ class _Bot:
             target_id=target_id,
             msg_id=msg_id,
         )
-        global_val['send'] += 1
+
+        local_val = await get_global_val(bot_id, bot_self_id)
+
+        local_val['send'] += 1
+
         logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
         await self.bot.send_bytes(msgjson.encode(send))
 
@@ -199,7 +203,11 @@ class Bot:
             if reply is None:
                 reply = f'请在{timeout}秒内做出选择...'
 
-            _reply = await convert_message(reply, self.bot_id)
+            _reply = await convert_message(
+                reply,
+                self.bot_id,
+                self.bot_self_id,
+            )
             success = False
 
             if self.ev.real_bot_id in enable_buttons_platform or (

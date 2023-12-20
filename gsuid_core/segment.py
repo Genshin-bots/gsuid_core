@@ -12,6 +12,7 @@ from PIL import Image
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
 from gsuid_core.message_models import Button
+from gsuid_core.global_val import get_global_val
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.image.image_tools import sget
 from gsuid_core.load_template import markdown_templates
@@ -28,9 +29,10 @@ text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
 force_send_md = core_plugins_config.get_config('ForceSendMD').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
+is_lf = core_plugins_config.get_config('UseCRLFReplaceLFForMD').data
+
 SERVER = pic_upload_config.get_config('PicUploadServer').data
 IS_UPLOAD = pic_upload_config.get_config('PicUpload').data
-
 
 pclient = None
 if IS_UPLOAD:
@@ -264,7 +266,7 @@ async def _image_to_url(
 
 
 async def _convert_message_to_image(
-    message: Message, bot_id: str
+    message: Message, bot_id: str, bot_self_id: str
 ) -> List[Message]:
     if message.data is None:
         return []
@@ -281,6 +283,8 @@ async def _convert_message_to_image(
         message = Message(type='image', data=image_bytes)
 
     if message.type == 'image':
+        local_val = await get_global_val(bot_id, bot_self_id)
+        local_val['image'] += 1
         img: Union[bytes, str] = message.data  # type: ignore
         if isinstance(img, str) and img.startswith('base64://'):
             image_b64 = img
@@ -315,19 +319,23 @@ async def _convert_message_to_image(
 
 
 async def _convert_message(
-    message: Union[Message, str, bytes], bot_id: str
+    message: Union[Message, str, bytes], bot_id: str, bot_self_id: str
 ) -> List[Message]:
     _message = [message]
     if isinstance(message, Message):
         if message.data is None:
             return [message]
         if message.type == 'image':
-            _message = await _convert_message_to_image(message, bot_id)
+            _message = await _convert_message_to_image(
+                message, bot_id, bot_self_id
+            )
         elif message.type == 'node':
             _temp = []
             for i in message.data:
                 if i.type == 'image':
-                    _temp.extend(await _convert_message_to_image(i, bot_id))
+                    _temp.extend(
+                        await _convert_message_to_image(i, bot_id, bot_self_id)
+                    )
                 else:
                     _temp.append(i)
             _message = [MessageSegment.node(_temp)]
@@ -338,16 +346,22 @@ async def _convert_message(
             _str_message = Message(type='image', data=message)
         else:
             _str_message = MessageSegment.text(message)
-        _message = await _convert_message_to_image(_str_message, bot_id)
+        _message = await _convert_message_to_image(
+            _str_message, bot_id, bot_self_id
+        )
     elif isinstance(message, (bytes, bytearray, memoryview)):
         message = bytes(message)
         _bytes_message = Message(type='image', data=message)
-        _message = await _convert_message_to_image(_bytes_message, bot_id)
+        _message = await _convert_message_to_image(
+            _bytes_message, bot_id, bot_self_id
+        )
     return _message
 
 
 async def convert_message(
-    message: Union[Message, List[Message], List[str], str, bytes], bot_id: str
+    message: Union[Message, List[Message], List[str], str, bytes],
+    bot_id: str,
+    bot_self_id: str,
 ) -> List[Message]:
     # 转换消息类型为bot标准输出类型
     _message: List[Message] = []
@@ -359,9 +373,9 @@ async def convert_message(
         else:
             # 如果不是，则针对每条消息都进行转换
             for i in message:
-                _message.extend(await _convert_message(i, bot_id))
+                _message.extend(await _convert_message(i, bot_id, bot_self_id))
     else:
-        _message = await _convert_message(message, bot_id)
+        _message = await _convert_message(message, bot_id, bot_self_id)
 
     # 启用了随机字符的话，随机加入字符
     if R_enabled:
@@ -428,7 +442,10 @@ async def to_markdown(
             size = m.data
         elif m.type == 'text':
             assert isinstance(m.data, str)
-            _markdown_list.append(m.data.replace('\n', '\n\n'))
+            data = m.data.replace('\n', '\n\n')
+            if is_lf:
+                data = data.replace('\n', '\r')
+            _markdown_list.append(data)
         else:
             _message.append(m)
 
