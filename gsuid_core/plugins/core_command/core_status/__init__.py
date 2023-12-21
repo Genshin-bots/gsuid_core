@@ -3,7 +3,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
-from gsuid_core.global_val import get_global_val
+from gsuid_core.global_val import bot_val, get_global_val
 
 from .command_global_val import save_global_val
 
@@ -13,24 +13,14 @@ template = '''收:{}
 发:{}
 命令调用:{}
 生成图片：{}
-当前会话调用：{}
-'''
+当前会话调用：{}'''
 
 
-@scheduler.scheduled_job('cron', hour='0', minute='0', second='1')
-async def reset_global_val():
-    global global_val
-    global_val = {
-        'receive': 0,
-        'send': 0,
-        'command': 0,
-        'group': {},
-    }
-
-
-@scheduler.scheduled_job('cron', hour='23', minute='59', second='59')
+@scheduler.scheduled_job('cron', hour='0', minute='0')
 async def scheduled_save_global_val():
+    global bot_val
     await save_global_val()
+    bot_val = {}
 
 
 @sv_core_status.on_command(('core状态', 'Core状态'))

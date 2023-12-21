@@ -10,7 +10,7 @@ from gsuid_core.server import on_core_start
 from gsuid_core.data_store import get_res_path
 from gsuid_core.global_val import global_val_path
 
-from .base_models import db_url, engine, async_maker
+from .base_models import DB_PATH, db_url, engine, async_maker
 
 exec_list = []
 
@@ -18,7 +18,7 @@ exec_list = []
 @on_core_start
 async def move_database():
     old_path = get_res_path().parent / 'GsData.db'
-    if old_path.exists():
+    if old_path.exists() and not DB_PATH.exists():
         logger.warning('检测到主目录存在旧版数据库, 迁移中...该log只会看到一次...')
         move(old_path, db_url)
         logger.warning('迁移完成！')
