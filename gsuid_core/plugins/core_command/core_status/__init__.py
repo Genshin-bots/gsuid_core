@@ -3,7 +3,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
-from gsuid_core.global_val import bot_val, get_global_val
+from gsuid_core.global_val import get_global_val
 
 from .command_global_val import save_global_val
 
