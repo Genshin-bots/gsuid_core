@@ -29,7 +29,7 @@ async def check_msg():
                     'group',
                     update_log['send_to'],
                     update_log['bot_id'],
-                    '',
+                    update_log['bot_self_id'],
                     '',
                 )
             else:
@@ -38,7 +38,7 @@ async def check_msg():
                     'direct',
                     update_log['send_to'],
                     update_log['bot_id'],
-                    '',
+                    update_log['bot_self_id'],
                     '',
                 )
         logger.info('遗留信息检查完毕!')
@@ -56,7 +56,9 @@ async def send_restart_msg(bot: Bot, ev: Event):
         send_id = ev.user_id
         send_type = 'direct'
     await bot.send('正在执行[core重启]...')
-    await restart_genshinuid(bot.bot_id, send_type, str(send_id))
+    await restart_genshinuid(
+        bot.bot_id, ev.bot_self_id, send_type, str(send_id)
+    )
 
 
 @sv_core_config.on_fullmatch(('core关闭', 'Core关闭'))

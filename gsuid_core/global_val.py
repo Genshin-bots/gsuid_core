@@ -52,15 +52,11 @@ async def load_all_global_val():
         if bot_id_path.stem not in bot_val:
             bot_val[bot_id_path.stem] = {}
         for self_id_path in bot_id_path.iterdir():
-            path = self_id_path / f'GlobalVal_{ date_format}.json'
-            if path.exists():
-                async with aiofiles.open(path, 'r') as fp:
+            path = self_id_path / f'GlobalVal_{date_format}.json'
+            if self_id_path.is_dir() and path.exists():
+                async with aiofiles.open(path, 'rb') as fp:
                     data = json.loads(await fp.read())
                     bot_val[bot_id_path.stem][self_id_path.stem] = data
-            else:
-                bot_val[bot_id_path.stem][self_id_path.stem] = deepcopy(
-                    platform_val
-                )
 
 
 async def save_all_global_val():
@@ -90,6 +86,9 @@ async def get_global_val(
 
 
 async def save_global_val(bot_id: str, bot_self_id: str):
+    if not bot_self_id:
+        return
+
     local_val = get_platform_val(bot_id, bot_self_id)
 
     today = datetime.date.today()
@@ -97,7 +96,7 @@ async def save_global_val(bot_id: str, bot_self_id: str):
 
     path = global_val_path / bot_id / bot_self_id
     if not path.exists():
-        path.mkdir()
+        path.mkdir(parents=True, exist_ok=True)
 
     async with aiofiles.open(
         path / f'GlobalVal_{date_format}.json', 'w', encoding='utf8'

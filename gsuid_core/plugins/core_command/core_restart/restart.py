@@ -27,7 +27,11 @@ async def get_restart_sh() -> str:
 
 
 async def restart_genshinuid(
-    bot_id: str, send_type: str, send_id: str, is_send: bool = True
+    bot_id: str,
+    bot_self_id: str,
+    send_type: str,
+    send_id: str,
+    is_send: bool = True,
 ) -> None:
     await save_global_val()
     pid = os.getpid()
@@ -43,6 +47,7 @@ async def restart_genshinuid(
             'type': 'restart',
             'msg': '重启完成!',
             'bot_id': bot_id,
+            'bot_self_id': bot_self_id,
             'send_type': send_type,
             'send_to': send_id,
             'time': now_time,
