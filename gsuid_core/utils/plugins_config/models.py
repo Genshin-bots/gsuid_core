@@ -10,6 +10,7 @@ class GsConfig(msgspec.Struct, tag=True):
 
 class GsStrConfig(GsConfig, tag=True):
     data: str
+    options: List[str] = []
 
 
 class GsBoolConfig(GsConfig, tag=True):
@@ -22,6 +23,7 @@ class GsDictConfig(GsConfig, tag=True):
 
 class GsListStrConfig(GsConfig, tag=True):
     data: List[str]
+    options: List[str] = []
 
 
 class GsListConfig(GsConfig, tag=True):

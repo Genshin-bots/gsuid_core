@@ -79,8 +79,14 @@ class StringConfig:
             )
         # 对没有的值，添加默认值
         for key in self.config_list:
+            _defalut = self.config_list[key]
             if key not in self.config:
-                self.config[key] = self.config_list[key]
+                self.config[key] = _defalut
+            else:
+                if isinstance(_defalut, GsStrConfig) or isinstance(
+                    _defalut, GsListStrConfig
+                ):
+                    self.config[key].options = _defalut.options  # type: ignore
 
         # 对默认值没有的值，直接删除
         delete_keys = []

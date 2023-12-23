@@ -4,7 +4,9 @@ from .models import GSC, GsStrConfig, GsBoolConfig
 
 PIC_UPLOAD_CONIFG: Dict[str, GSC] = {
     'PicUpload': GsBoolConfig('自动上传图片', '发送图片时将会自动上传', False),
-    'PicUploadServer': GsStrConfig('上传图片方式', '可选s3或smms或custom', 'smms'),
+    'PicUploadServer': GsStrConfig(
+        '上传图片方式', '可选s3或smms或custom', 'smms', ['smms', 's3', 'custom']
+    ),
     'AutoDelete': GsBoolConfig('上传完后自动删除', '是否自动删除图片', True),
     'smms_token': GsStrConfig('sm.ms_token', 'sm.ms的token', ''),
     's3_endpoint': GsStrConfig('s3_endpoint', '终结点url', ''),

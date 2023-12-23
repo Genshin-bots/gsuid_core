@@ -3,7 +3,12 @@ from typing import Dict
 from .models import GSC, GsStrConfig, GsBoolConfig, GsListStrConfig
 
 CONIFG_DEFAULT: Dict[str, GSC] = {
-    'StartVENV': GsStrConfig('设置启动环境工具', '可选pdm, poetry, pip, auto', 'auto'),
+    'StartVENV': GsStrConfig(
+        '设置启动环境工具',
+        '可选pdm, poetry, pip, auto',
+        'auto',
+        ['pdm', 'poetry', 'pip', 'auto'],
+    ),
     'Gproxy': GsStrConfig('设置米游社国际代理', '设置国际服的代理地址', ''),
     'Nproxy': GsStrConfig('设置米游社常规代理', '设置常规的代理地址', ''),
     '_pass_API': GsStrConfig('神奇API', '设置某种神奇的API', ''),
@@ -64,15 +69,38 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'EnablePicSrv': GsBoolConfig('启用将图片转链接发送(需公网)', '发送图片转链接', False),
     'PicSrv': GsStrConfig('图片转链接为(需公网)', '发送图片转链接', ''),
     'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
-    'SendMDPlatform': GsListStrConfig('默认发送MD的平台列表(用:连接)', '发送MD的平台列表', []),
+    'SendMDPlatform': GsListStrConfig(
+        '默认发送MD的平台列表',
+        '发送MD的平台列表',
+        [],
+        [
+            "villa",
+            "kaiheila",
+            "dodo",
+            "discord",
+            "telegram",
+            "qqgroup",
+            "qqguild",
+        ],
+    ),
     'SendButtonsPlatform': GsListStrConfig(
-        '默认发送按钮的平台列表(用:连接)',
+        '默认发送按钮的平台列表',
         '发送按钮的平台列表',
         ["villa", "kaiheila", "dodo", "discord", "telegram"],
+        [
+            "villa",
+            "kaiheila",
+            "dodo",
+            "discord",
+            "telegram",
+            "qqgroup",
+            "qqguild",
+        ],
     ),
     'SendTemplatePlatform': GsListStrConfig(
-        '默认发送模板按钮/MD的平台列表(用:连接)',
+        '默认发送模板按钮/MD的平台列表',
         '发送按钮的平台列表',
+        ["qqgroup", "qqguild"],
         ["qqgroup", "qqguild"],
     ),
     'TryTemplateForQQ': GsBoolConfig('启用后尝试读取模板文件并发送', '发送MD和按钮模板', True),
