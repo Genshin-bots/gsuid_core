@@ -27,12 +27,14 @@ class FandomUrl(TypedDict):
 
 
 class WeaponImage(TypedDict):
-    image: str
-    nameicon: str
-    namegacha: str
+    filename_icon: str
+    filename_awakenIcon: str
+    filename_gacha: str
     icon: str
     nameawakenicon: str
     awakenicon: str
+    mihoyo_icon: str
+    mihoyo_awakenIcon: str
 
 
 class AscendItem(TypedDict):
@@ -49,24 +51,31 @@ class Costs(TypedDict):
     ascend6: List[AscendItem]
 
 
+class WeaponR(TypedDict):
+    description: str
+    values: List[str]
+
+
 class Weapon(TypedDict):
     name: str
     description: str
-    weapontype: str
-    rarity: str
-    baseatk: int
-    substat: str
-    subvalue: str
-    effectname: str
-    effect: str
-    r1: R
-    r2: R
-    r3: R
-    r4: R
-    r5: R
-    weaponmaterialtype: str
+    descriptionRaw: str
+    weaponType: str
+    weaponText: str
+    rarity: int
+    story: str
+    baseAtkValue: int
+    mainStatType: str
+    mainStatText: str
+    baseStatText: str
+    effectName: str
+    effectTemplateRaw: str
+    r1: WeaponR
+    r2: WeaponR
+    r3: WeaponR
+    r4: WeaponR
+    r5: WeaponR
     images: WeaponImage
-    url: NotRequired[FandomUrl]
     version: str
     costs: Costs
 
@@ -79,16 +88,21 @@ class WeaponStats(TypedDict):
 
 
 class Character(TypedDict):
+    id: int
     name: str
     fullname: str
     title: str
     description: str
     rarity: str
-    element: str
-    weapontype: str
-    substat: str
+    elementType: str
+    elementText: str
+    weaponType: str
+    weaponText: str
+    substatType: str
+    substatText: str
     gender: Literal['男', '女']
-    body: str
+    qualityType: str
+    bodyType: str
     association: str
     region: Literal['蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔']
     affiliation: str
@@ -117,8 +131,8 @@ class CharacterImage(TypedDict):
     cover1: str
     cover2: str
     hoyolab_avatar: str
-    nameicon: str
-    nameiconcard: str
+    filename_icon: str
+    filename_iconcard: str
     namegachasplash: str
     namegachaslice: str
     namesideicon: str
@@ -147,16 +161,17 @@ class CharacterConstellations(TypedDict):
 
 class CharacterConstellation(TypedDict):
     name: str
-    effect: str
+    descriptionRaw: str
+    description: str
 
 
 class ConstellationsImage(TypedDict):
-    c1: str
-    c2: str
-    c3: str
-    c4: str
-    c5: str
-    c6: str
+    filename_c1: str
+    filename_c2: str
+    filename_c3: str
+    filename_c4: str
+    filename_c5: str
+    filename_c6: str
 
 
 class MiniGGError(TypedDict):
@@ -165,6 +180,7 @@ class MiniGGError(TypedDict):
 
 
 class CharacterTalents(TypedDict):
+    id: int
     name: str
     combat1: TalentCombat
     combat2: TalentCombat
@@ -201,14 +217,14 @@ class TalentsImages(TypedDict):
 
 class TalentCombat(TypedDict):
     name: str
-    info: str
-    description: NotRequired[str]
+    descriptionRaw: str
+    description: str
     attributes: TalentAttr
 
 
 class TalentPassive(TypedDict):
     name: str
-    info: str
+    description: str
 
 
 class TalentAttr(TypedDict):
@@ -217,19 +233,19 @@ class TalentAttr(TypedDict):
 
 
 class Food(TypedDict):
+    id: int
     name: str
     rarity: str
     foodtype: str
-    foodfilter: str
-    foodcategory: str
+    filterType: str
+    filterText: str
     effect: str
     description: str
     suspicious: FoodEffect
     normal: FoodEffect
     delicious: FoodEffect
     ingredients: List[AscendItem]
-    images: Image
-    url: FandomUrl
+    images: FoodImage
     version: str
 
 
@@ -239,17 +255,21 @@ class FoodEffect(TypedDict):
 
 
 class Image(TypedDict):
-    nameicon: str
+    filename_icon: str
+
+
+class FoodImage(Image):
+    filename_buff: str
 
 
 class Enemy(TypedDict):
     name: str
-    specialname: str
-    enemytype: str
+    specialName: str
+    enemyType: str
     category: str
     description: str
     investigation: EnemyInvest
-    rewardpreview: List[EnemyReward]
+    rewardPreview: List[EnemyReward]
     images: Image
     version: str
 
@@ -286,28 +306,30 @@ class Domain(TypedDict):
 
 class Piece(TypedDict):
     name: str
+    relicType: str
+    relicText: str
     description: str
     story: str
 
 
 class PieceFlower(Piece):
-    relictype: Literal['生之花']
+    relicText: Literal['生之花']
 
 
 class PiecePlume(Piece):
-    relictype: Literal['死之羽']
+    relicText: Literal['死之羽']
 
 
 class PieceSands(Piece):
-    relictype: Literal['时之沙']
+    relicText: Literal['时之沙']
 
 
 class PieceGoblet(Piece):
-    relictype: Literal['空之杯']
+    relicText: Literal['空之杯']
 
 
 class PieceCirclet(Piece):
-    relictype: Literal['理之冠']
+    relicText: Literal['理之冠']
 
 
 class PieceImages(TypedDict):
@@ -316,21 +338,27 @@ class PieceImages(TypedDict):
     sands: str
     goblet: str
     circlet: str
-    nameflower: str
-    nameplume: str
-    namesands: str
-    namegoblet: str
-    namecirclet: str
+    filename_flower: str
+    filename_plume: str
+    filename_sands: str
+    filename_goblet: str
+    filename_circlet: str
+    mihoyo_flower: str
+    mihoyo_plume: str
+    mihoyo_sands: str
+    mihoyo_goblet: str
+    mihoyo_circlet: str
 
 
 Artifact = TypedDict(
     'Artifact',
     {
+        'id': int,
         'name': str,
-        'rarity': List[str],
-        '1pc': str,
-        '2pc': str,
-        '4pc': str,
+        'rarityList': List[int],
+        'effect1Pc': str,
+        'effect2Pc': str,
+        'effect4Pc': str,
         'flower': PieceFlower,
         'plume': PiecePlume,
         'sands': PieceSands,
@@ -344,20 +372,22 @@ Artifact = TypedDict(
 
 
 class MaterialImage(TypedDict):
-    nameicon: str
+    filename_icon: str
     redirect: str
 
 
 class Material(TypedDict):
+    id: int
     name: str
     description: str
-    sortorder: int
-    rarity: str
+    sortRank: int
+    rarity: int
     category: str
-    materialtype: str
+    typeText: str
+    dropDomainId: int
+    dropDomainName: str
     source: List[str]
     images: MaterialImage
     version: str
     # 下面两个当且仅当materialtype是xx突破素材的情况才有
-    dropdomain: str
-    daysofweek: List[str]
+    daysOfWeek: List[str]
