@@ -1,5 +1,3 @@
-from typing import Dict, List
-
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
 from gsuid_core.utils.plugins_config.models import (
     GsStrConfig,
@@ -8,22 +6,17 @@ from gsuid_core.utils.plugins_config.models import (
 )
 from gsuid_core.webconsole.create_base_panel import (
     get_api,
+    get_tab,
+    get_tabs,
     get_button,
     get_divider,
+    get_service,
     get_input_tag,
     get_grid_panel,
     get_text_panel,
     get_select_panel,
     get_switch_panel,
 )
-
-
-def get_service(body: List[Dict]):
-    return {
-        'type': 'service',
-        'body': body,
-        'id': 'u:4c2981f6a055',
-    }
 
 
 def get_card_page(card_name: str):
@@ -65,18 +58,6 @@ def get_card_page(card_name: str):
         ]
     )
     return data
-
-
-def get_tab(title: str, bodys: List[Dict]):
-    return {'title': title, 'body': bodys}
-
-
-def get_tabs(tabs: List[Dict]):
-    return {
-        'type': 'tabs',
-        'swipeable': True,
-        'tabs': tabs,
-    }
 
 
 def get_config_page():

@@ -1,4 +1,12 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Union, Literal, Optional
+
+
+def get_service(body: List[Dict]):
+    return {
+        'type': 'service',
+        'body': body,
+        'id': 'u:4c2981f6a055',
+    }
 
 
 def get_input_image_panel(label: str, name: str):
@@ -108,6 +116,70 @@ def get_grid_panel(content: List[Dict]):
         'id': 'u:18d6cb8e78bb',
     }
     return data
+
+
+def get_property(items: Union[List[Dict], Dict[str, str]], column: int = 2):
+    if isinstance(items, dict):
+        _items = [{'label': item, 'content': items[item]} for item in items]
+    else:
+        _items = items
+
+    data = {
+        "type": "property",
+        "column": column,
+        "items": _items,
+    }
+    return data
+
+
+def get_tag(
+    label: str,
+    color: Literal[
+        "inactive", "processing", "success", "error", "active", "warning"
+    ] = "processing",
+    displaymode: Literal["normal", "rounded"] = "normal",
+):
+    return {
+        "type": "tag",
+        "label": label,
+        "displayMode": displaymode,
+        "color": color,
+    }
+
+
+def get_tpl(label: str = '', value: str = ''):
+    return {
+        "type": "tpl",
+        "tpl": value,
+        "inline": False,
+        "label": label,
+    }
+
+
+def get_card(title: str, content: List[Dict]):
+    data = get_service(
+        [
+            {
+                'type': 'card',
+                'header': {'title': title, 'subTitle': ''},
+                'body': content,
+                'id': 'u:69b06813bfbe',
+            }
+        ]
+    )
+    return data
+
+
+def get_tab(title: str, bodys: List[Dict]):
+    return {'title': title, 'body': bodys}
+
+
+def get_tabs(tabs: List[Dict]):
+    return {
+        'type': 'tabs',
+        'swipeable': True,
+        'tabs': tabs,
+    }
 
 
 def get_container_panel(content: List[Dict]):

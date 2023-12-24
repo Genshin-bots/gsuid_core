@@ -46,6 +46,7 @@ from gsuid_core.webconsole.create_sv_panel import get_sv_page
 from gsuid_core.version import __version__ as GenshinUID_version
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
+from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
@@ -406,6 +407,20 @@ class MyHomeAdmin(admin.HomeAdmin):
         action: str = None,  # type: ignore
     ) -> bool:
         return True
+
+
+@site.register_admin
+class AnalysisPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('数据统计'),
+        icon='fa fa-area-chart',
+        url='/Analysis',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(await get_analysis_page())
 
 
 @site.register_admin

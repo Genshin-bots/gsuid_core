@@ -14,6 +14,7 @@ from gsuid_core.sv import SL
 from gsuid_core.logger import logger
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
+from gsuid_core.global_val import bot_val, get_value_analysis
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.plugins_config.models import GsListStrConfig
@@ -38,7 +39,7 @@ async def lifespan(app: FastAPI):
 
     from gsuid_core.webconsole.__init__ import start_check
 
-    await start_check()
+    await start_check()  # type:ignore
     await start_scheduler()
     yield
     await shutdown_scheduler()
@@ -103,6 +104,120 @@ async def _get_plugins(request: Request):
         tasks.append(sample)
 
     return tasks
+
+
+@app.get('/genshinuid/api/getAnalysisData/{bot_id}/{bot_self_id}')
+@site.auth.requires('root')
+async def _get_data_analysis(
+    request: Request,
+    bot_id: str,
+    bot_self_id: str,
+):
+    if bot_id not in bot_val:
+        retcode, msg, data = -1, '不存在该bot_id!', {}
+    elif bot_self_id not in bot_val[bot_id]:
+        retcode, msg, data = -1, '不存在该bot_self_id!', {}
+    else:
+        retcode, msg = 0, 'ok'
+
+        xaxis = []
+        series = []
+
+        send_data = []
+        receive_data = []
+        command_data = []
+        image_gen_data = []
+
+        seven_data = await get_value_analysis(bot_id, bot_self_id)
+        for day in seven_data:
+            xaxis.append(day)
+            local_val = seven_data[day]
+            send_data.append(local_val['send'])
+            receive_data.append(local_val['receive'])
+            command_data.append(local_val['command'])
+            image_gen_data.append(local_val['image'])
+
+        series.append({'name': '发送', 'type': 'line', 'data': send_data})
+        series.append(
+            {
+                'name': '接收',
+                'type': 'line',
+                'data': receive_data,
+            }
+        )
+        series.append(
+            {
+                'name': '命令调用',
+                'type': 'line',
+                'data': command_data,
+            }
+        )
+        series.append(
+            {
+                'name': '图片生成',
+                'type': 'line',
+                'data': image_gen_data,
+            }
+        )
+
+        data = {
+            'title': {'text': ''},
+            'tooltip': {'trigger': 'axis'},
+            'legend': {'data': ['发送', '接收', '命令调用', '图片生成']},
+            'xAxis': {'type': 'category', 'boundaryGap': False, 'data': xaxis},
+            'yAxis': {'type': 'value'},
+            'series': series,
+        }
+
+    return {'status': retcode, 'msg': msg, 'data': data}
+
+
+@app.get('/genshinuid/api/getAnalysisUserGroup/{bot_id}/{bot_self_id}')
+@site.auth.requires('root')
+async def _get_usergroup_analysis(
+    request: Request,
+    bot_id: str,
+    bot_self_id: str,
+):
+    if bot_id not in bot_val:
+        retcode, msg, data = -1, '不存在该bot_id!', {}
+    elif bot_self_id not in bot_val[bot_id]:
+        retcode, msg, data = -1, '不存在该bot_self_id!', {}
+    else:
+        retcode, msg = 0, 'ok'
+
+        xaxis = []
+        series = []
+
+        group_data = []
+        user_data = []
+
+        seven_data = await get_value_analysis(bot_id, bot_self_id)
+        for day in seven_data:
+            xaxis.append(day)
+            local_val = seven_data[day]
+            group_data.append(len(local_val['group']))
+            user_data.append(len(local_val['user']))
+
+        series.append({'name': '用户', 'type': 'bar', 'data': user_data})
+        series.append(
+            {
+                'name': '群组',
+                'type': 'bar',
+                'data': group_data,
+            }
+        )
+
+        data = {
+            'title': {'text': ''},
+            'tooltip': {'trigger': 'axis'},
+            'legend': {'data': ['用户', '群组']},
+            'xAxis': {'type': 'category', 'boundaryGap': False, 'data': xaxis},
+            'yAxis': {'type': 'value'},
+            'series': series,
+        }
+
+    return {'status': retcode, 'msg': msg, 'data': data}
 
 
 @app.post('/genshinuid/api/updatePlugins')
