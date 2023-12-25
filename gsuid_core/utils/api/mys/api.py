@@ -5,6 +5,7 @@ BBS_URL = 'https://bbs-api.mihoyo.com'
 HK4_URL = 'https://hk4e-api.mihoyo.com'
 NEW_BBS_URL = 'https://bbs-api.miyoushe.com'
 
+ACCOUNT_URL_OS = 'https://api-account-os.hoyoverse.com'
 OLD_URL_OS = 'https://api-os-takumi.mihoyo.com'
 NEW_URL_OS = 'https://bbs-api-os.hoyolab.com'
 BBS_URL_OS = 'https://bbs-api-os.hoyolab.com'
@@ -42,6 +43,10 @@ BBS_VERIFY_URL = f'{NEW_BBS_URL}/misc/api/verifyVerification'
 '''账号相关'''
 # 通过LoginTicket获取Stoken
 GET_STOKEN_URL = f'{OLD_URL}/auth/api/getMultiTokenByLoginTicket'
+# 国际服
+GET_STOKEN_URL_OS = (
+    f'{ACCOUNT_URL_OS}/account/auth/api/getMultiTokenByLoginTicket'
+)
 # 通过Stoken获取Cookie_token
 GET_COOKIE_TOKEN_URL = f'{OLD_URL}/auth/api/getCookieAccountInfoBySToken'
 # 通过Stoken获取AuthKey

@@ -4,6 +4,7 @@ from http.cookies import SimpleCookie
 
 from PIL import Image
 
+from gsuid_core.logger import logger
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import UID_HINT
 from gsuid_core.utils.image.convert import convert_img
@@ -89,6 +90,7 @@ async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
 
 async def deal_ck(bot_id: str, mes: str, user_id: str, mode: str = 'PIC'):
     im = await _deal_ck(bot_id, mes, user_id)
+    logger.debug(f'[添加CK] {im}')
     img, status = await _deal_ck_to_pic(im)
     if mode == 'PIC':
         return img, status

@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import logging
 import datetime
 import traceback
@@ -9,6 +10,10 @@ import loguru
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message
 from gsuid_core.data_store import get_res_path
+
+is_clear: bool = False
+is_RL: bool = False
+log_history = []
 
 if TYPE_CHECKING:
     # avoid sphinx autodoc resolve annotation failed
@@ -98,14 +103,39 @@ def format_event(record):
     time = '<g>{time:MM-DD HH:mm:ss}</g>'
     level = '[<lvl>{level}</lvl>]'
     def_name = f'<c><u>{".".join(def_name.split(".")[-5:])}</u></c>'
-    return f'{time} {level} {def_name} | {message} \n'
+    _log = f'{time} {level} {def_name} | {message} \n'
+    return _log
+
+
+def std_format_event(record):
+    data = format_event(record)
+    if is_RL:
+        _data = data.format_map(record)
+        _data = (
+            _data.replace('<g>', '\033[37m')
+            .replace('</g>', '\033[0m')
+            .replace('<c><u>', '\033[34m')
+            .replace('</u></c>', '\033[0m')
+            .replace('<m><b>', '\033[35m')
+            .replace('</b></m>', '\033[0m')
+            .replace('<c><b>', '\033[32m')
+            .replace('</b></c>', '\033[0m')
+            .replace('<lvl>', '')
+            .replace('</lvl>', '')
+        )
+        log_history.append(_data.format_map(record))
+    return data
 
 
 LEVEL: str = core_config.get_config('log').get('level', 'INFO')
 
 logger.remove()
+
 logger_id = logger.add(
-    sys.stdout, level=LEVEL, diagnose=False, format=format_event
+    sys.stdout,
+    level=LEVEL,
+    diagnose=False,
+    format=std_format_event,
 )
 
 logger.add(
@@ -116,3 +146,29 @@ logger.add(
     diagnose=False,
     # backtrace=False,
 )
+
+
+async def read_log():
+    global log_history
+    global is_RL
+    is_RL = True
+    index = 0
+    while True:
+        if index <= len(log_history) - 1:
+            yield log_history[index]
+            index += 1
+        else:
+            await asyncio.sleep(1)
+
+
+async def clear_log():
+    global is_clear
+    global log_history
+
+    if is_clear:
+        return
+
+    is_clear = True
+    await asyncio.sleep(18000)
+    log_history = []
+    is_clear = False

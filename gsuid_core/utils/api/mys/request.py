@@ -1081,6 +1081,17 @@ class MysApi(BaseMysApi):
                 'uid': mys_id,
             },
         )
+        if isinstance(data, int):
+            data = await self._mys_request(
+                url=self.MAPI['GET_STOKEN_URL_OS'],
+                method='GET',
+                header=self._HEADER,
+                params={
+                    'login_ticket': lt,
+                    'token_types': '3',
+                    'uid': mys_id,
+                },
+            )
         if isinstance(data, Dict):
             data = cast(LoginTicketInfo, data['data'])
         return data

@@ -11,9 +11,9 @@ from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.sv import SL
-from gsuid_core.logger import logger
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
+from gsuid_core.logger import logger, read_log, clear_log
 from gsuid_core.global_val import bot_val, get_value_analysis
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
@@ -265,6 +265,12 @@ async def get_image(image_id: str, background_tasks: BackgroundTasks):
     response = StreamingResponse(image_bytes, media_type='image/png')
     asyncio.create_task(delete_image(path))
     return response
+
+
+@app.get("/corelogs")
+async def core_log():
+    asyncio.create_task(clear_log())
+    return StreamingResponse(read_log(), media_type='text/plain')
 
 
 site.mount_app(app)

@@ -44,6 +44,7 @@ from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
 from gsuid_core.version import __version__ as GenshinUID_version
+from gsuid_core.webconsole.create_log_panel import create_log_page
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
@@ -463,6 +464,20 @@ class PluginsManagePage(GsAdminPage):
 
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(get_tasks_panel())
+
+
+@site.register_admin
+class LogsPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('实时日志'),
+        icon='fa fa-columns',
+        url='/logs',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(create_log_page())
 
 
 # 取消注册默认管理类
