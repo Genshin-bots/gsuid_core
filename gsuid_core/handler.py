@@ -9,10 +9,13 @@ from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
 from gsuid_core.global_val import get_global_val
 from gsuid_core.models import Event, Message, MessageReceive
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 command_start = core_config.get_config('command_start')
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
+
+shield_list = core_plugins_config.get_config('ShieldQQBot').data
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
@@ -79,6 +82,12 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
 
     local_val = await get_global_val(event.real_bot_id, event.bot_self_id)
     local_val['receive'] += 1
+
+    if event.at:
+        for shield_id in shield_list:
+            if event.at.startswith(shield_id):
+                logger.warning('消息中疑似包含@机器人的消息, 停止响应本消息内容')
+                return
 
     gid = event.group_id if event.group_id else '0'
     uid = event.user_id if event.user_id else '0'

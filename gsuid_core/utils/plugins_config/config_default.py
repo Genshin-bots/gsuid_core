@@ -106,6 +106,12 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'TryTemplateForQQ': GsBoolConfig('启用后尝试读取模板文件并发送', '发送MD和按钮模板', True),
     'ForceSendMD': GsBoolConfig('强制使用MD发送图文', '强制使用MD发送图文', False),
     'UseCRLFReplaceLFForMD': GsBoolConfig(
-        '发送MD时使用CRLF替换LF', '发送MD时使用CRLF替换LF', True
+        '发送MD时使用CR替换LF', '发送MD时使用CR替换LF', True
+    ),
+    'ShieldQQBot': GsListStrConfig(
+        '含@该ID时消息禁止响应',
+        '当消息中包含@QQ机器人时禁止Core响应其他平台',
+        ['38890', '28541', '28542'],
+        ['38890', '28541', '28542'],
     ),
 }
