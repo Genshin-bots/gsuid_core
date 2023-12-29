@@ -122,7 +122,7 @@ class SV:
         white_list: List = [],
     ):
         if not self.is_initialized:
-            logger.info(f'【{name}】模块初始化中...')
+            logger.trace(f'【{name}】模块初始化中...')
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器

@@ -13,6 +13,8 @@ from gsuid_core.logger import logger
 
 from .download_file import download
 
+global_tag, global_url = '', ''
+
 
 async def check_url(tag: str, url: str):
     async with aiohttp.ClientSession() as session:
@@ -21,7 +23,7 @@ async def check_url(tag: str, url: str):
             async with session.get(url) as response:
                 elapsed_time = time.time() - start_time
                 if response.status == 200:
-                    logger.info(f'{tag} {url} 延时: {elapsed_time}')
+                    logger.debug(f'{tag} {url} 延时: {elapsed_time}')
                     return tag, url, elapsed_time
                 else:
                     logger.info(f'{tag} {url} 超时...')
@@ -56,6 +58,9 @@ async def find_fastest_url(urls: Dict[str, str]):
 async def check_speed():
     logger.info('[GsCore资源下载]测速中...')
 
+    global global_tag
+    global global_url
+
     URL_LIB = {
         '[JPFRP]': 'http://jp-2.lcf.icu:13643',
         '[HKFRP]': 'http://hk-1.5gbps-2.lcf.icu:10200',
@@ -64,6 +69,8 @@ async def check_speed():
     }
 
     TAG, BASE_URL = await find_fastest_url(URL_LIB)
+    global_tag, global_url = TAG, BASE_URL
+
     logger.info(f"最快资源站: {TAG} {BASE_URL}")
     return TAG, BASE_URL
 
@@ -79,9 +86,11 @@ async def download_all_file(
     URL: Optional[str] = None,
     TAG: Optional[str] = None,
 ):
-    if URL is None:
-        TAG, BASE_URL = await check_speed()
+    if global_url:
+        TAG, BASE_URL = global_tag, global_url
 
+    if not URL:
+        TAG, BASE_URL = await check_speed()
         PLUGIN_RES = f'{BASE_URL}/{plugin_name}'
     else:
         PLUGIN_RES = f'{URL}/{plugin_name}'
@@ -94,6 +103,7 @@ async def download_all_file(
         connector=TCPConnector(verify_ssl=False),
         timeout=ClientTimeout(total=None, sock_connect=20, sock_read=200),
     ) as sess:
+        n = 0
         for endpoint in EPATH_MAP:
             url = f'{PLUGIN_RES}/{endpoint}/'
             path = EPATH_MAP[endpoint]
@@ -106,7 +116,7 @@ async def download_all_file(
             pre_data = content_bs.find_all('pre')[0]
             data_list = pre_data.find_all('a')
             size_list = [i for i in content_bs.strings]
-            logger.info(f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!')
+            logger.trace(f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!')
 
             temp_num = 0
             size_temp = 0
@@ -144,8 +154,10 @@ async def download_all_file(
                 TASKS.clear()
 
             if temp_num == 0:
-                im = f'{TAG} 数据库 {endpoint} 无需下载!'
+                logger.trace(f'{TAG} 数据库 {endpoint} 无需下载!')
+                n += 1
             else:
-                im = f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!'
+                logger.success(f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!')
             temp_num = 0
-            logger.info(im)
+        if n == len(EPATH_MAP):
+            logger.success(f'插件 {plugin_name} 资源库已是最新!')

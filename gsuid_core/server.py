@@ -69,16 +69,18 @@ class GsServer:
             self.is_initialized = True
 
     def load_plugins(self):
-        logger.info('开始导入插件...')
+        logger.info('[GsCore] 开始加载插件...')
         get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
         plug_path = Path(__file__).parent / 'plugins'
         # 遍历插件文件夹内所有文件
         for plugin in plug_path.iterdir():
+            if plugin.stem == '__pycache__':
+                continue
             # 如果发现文件夹，则视为插件包
-            logger.info('===============')
-            logger.info(f'导入{plugin}中...')
-            logger.info('===============')
+            logger.trace('===============')
+            logger.debug(f'导入{plugin.stem}中...')
+            logger.trace('===============')
             try:
                 if plugin.is_dir():
                     plugin_path = plugin / '__init__.py'
@@ -103,6 +105,7 @@ class GsServer:
                 # 如果发现单文件，则视为单文件插件
                 elif plugin.suffix == '.py':
                     importlib.import_module(f'plugins.{plugin.name[:-3]}')
+                logger.success(f'插件{plugin.stem}导入成功!')
             except Exception as e:  # noqa
                 exception = sys.exc_info()
                 logger.opt(exception=exception).error(f'加载插件时发生错误: {e}')
@@ -119,7 +122,7 @@ class GsServer:
                         _p = f'plugins.{name}.{name}.{sub_plugin.name}'
                     else:
                         _p = f'plugins.{name}.{sub_plugin.name}'
-                    importlib.import_module(f'{_p}.__init__')
+                    importlib.import_module(f'{_p}')
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()

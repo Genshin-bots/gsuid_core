@@ -26,7 +26,7 @@ async def download(
             content = await res.read()
         async with aiofiles.open(path / name, "wb") as f:
             await f.write(content)
-        logger.info(f'{tag} {name} 下载完成！')
+        logger.success(f'{tag} {name} 下载完成！')
     except ClientConnectorError:
         logger.warning(f"{tag} {name} 下载失败！")
 

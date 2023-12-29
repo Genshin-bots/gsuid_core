@@ -104,7 +104,7 @@ async def refresh_list() -> List[str]:
     global plugins_list
     refresh_list = []
     async with aiohttp.ClientSession() as session:
-        logger.info(f'稍等...开始刷新插件列表, 地址: {plugins_lib}')
+        logger.trace(f'稍等...开始刷新插件列表, 地址: {plugins_lib}')
         async with session.get(plugins_lib) as resp:
             _plugins_list: Dict[
                 str, Dict[str, Dict[str, str]]
@@ -112,7 +112,7 @@ async def refresh_list() -> List[str]:
             for i in _plugins_list['plugins']:
                 if i.lower() not in plugins_list:
                     refresh_list.append(i)
-                    logger.info(f'[刷新插件列表] 列表新增插件 {i}')
+                    logger.debug(f'[刷新插件列表] 列表新增插件 {i}')
                 plugins_list[i.lower()] = _plugins_list['plugins'][i]
     return refresh_list
 
