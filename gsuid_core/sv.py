@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 from pathlib import Path
+from copy import deepcopy
 from functools import wraps
 from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 
@@ -9,13 +10,14 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
-from gsuid_core.config import core_config
+from gsuid_core.config import core_config, plugins_sample
 
 
 class SVList:
     def __init__(self):
         self.lst: Dict[str, SV] = {}
-        self.detail_lst: Dict[str, List[SV]] = {}
+        self.plugins: Dict[str, Plugins] = {}
+        self.detail_lst: Dict[Plugins, List[SV]] = {}
 
     @property
     def get_lst(self):
@@ -24,6 +26,7 @@ class SVList:
 
 SL = SVList()
 config_sv = core_config.get_config('sv')
+config_plugins = core_config.get_config('plugins')
 
 
 def modify_func(func):
@@ -43,6 +46,49 @@ def modify_func(func):
         return result
 
     return wrapper
+
+
+class Plugins:
+    is_initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        # 判断sv是否已经被初始化
+        if len(args) >= 1:
+            name = args[0]
+        else:
+            name = kwargs.get('name')
+
+        if name is None:
+            raise ValueError('Plugins.name is None!')
+
+        if name in SL.plugins:
+            return SL.plugins[name]
+        else:
+            _plugin = super().__new__(cls)
+            SL.plugins[name] = _plugin
+            return _plugin
+
+    def __hash__(self) -> int:
+        return hash(f'{self.name}{self.pm}{self.area}')
+
+    def __init__(
+        self,
+        name: str = '',
+        pm: int = 6,
+        priority: int = 5,
+        enabled: bool = True,
+        area: Literal['GROUP', 'DIRECT', 'ALL', 'SV'] = 'SV',
+        black_list: List = [],
+        white_list: List = [],
+        sv: Dict = {},
+    ):
+        self.name = name
+        self.priority = priority
+        self.enabled = enabled
+        self.pm = pm
+        self.black_list = black_list
+        self.area = area
+        self.white_list = white_list
 
 
 class SV:
@@ -87,24 +133,50 @@ class SV:
             path = Path(file)
             parts = path.parts
             i = parts.index('plugins')
-            plugins_name = parts[i + 1]
-            if plugins_name not in SL.detail_lst:
-                SL.detail_lst[plugins_name] = [self]
+            self.self_plugin_name = plugins_name = parts[i + 1]
+
+            # 初始化
+            if plugins_name not in config_plugins:
+                _plugins_config = deepcopy(plugins_sample)
+                _plugins_config['name'] = plugins_name
+                config_plugins[plugins_name] = _plugins_config
+                core_config.set_config('plugins', config_plugins)
+                plugins = Plugins(**_plugins_config)
             else:
-                SL.detail_lst[plugins_name].append(self)
+                plugins = Plugins(**config_plugins[plugins_name])
+
+            # SV指向唯一Plugins实例
+            self.plugins = plugins
+
+            # 将plugins实例添加到SL.plugins
+            if plugins_name not in SL.plugins:
+                SL.plugins[plugins_name] = plugins
+
+            if plugins not in SL.detail_lst:
+                SL.detail_lst[plugins] = [self]
+            else:
+                SL.detail_lst[plugins].append(self)
 
             # 判断sv是否已持久化
+            plugin_config = config_plugins[plugins_name]['sv']
+            need_write = False
             if name in config_sv:
                 self.priority = config_sv[name]['priority']
                 self.enabled = config_sv[name]['enabled']
                 self.pm = config_sv[name]['pm']
                 self.black_list = config_sv[name]['black_list']
                 self.area = config_sv[name]['area']
-                if 'white_list' not in config_sv[name]:
-                    self.white_list = white_list
-                    self.set(white_list=white_list)
-                else:
-                    self.white_list = config_sv[name]['white_list']
+                self.white_list = config_sv[name]['white_list']
+                del config_sv[name]
+                core_config.set_config('sv', config_sv)
+                need_write = True
+            elif name in plugin_config:
+                self.priority = plugin_config[name]['priority']
+                self.enabled = plugin_config[name]['enabled']
+                self.pm = plugin_config[name]['pm']
+                self.black_list = plugin_config[name]['black_list']
+                self.area = plugin_config[name]['area']
+                self.white_list = plugin_config[name]['white_list']
             else:
                 # sv优先级
                 self.priority = priority
@@ -117,14 +189,17 @@ class SV:
                 # 作用范围
                 self.area = area
                 self.white_list = white_list
+                need_write = True
+
+            if need_write:
                 # 写入
                 self.set(
-                    priority=priority,
-                    enabled=enabled,
-                    pm=pm,
-                    black_list=black_list,
-                    area=area,
-                    white_list=white_list,
+                    priority=self.priority,
+                    enabled=self.enabled,
+                    pm=self.pm,
+                    black_list=self.black_list,
+                    area=self.area,
+                    white_list=self.white_list,
                 )
 
             if name == '测试开关':
@@ -132,12 +207,13 @@ class SV:
                 self.enabled = False
 
     def set(self, **kwargs):
+        plugin_config = config_plugins[self.self_plugin_name]['sv']
         for var in kwargs:
             setattr(self, var, kwargs[var])
-            if self.name not in config_sv:
-                config_sv[self.name] = {}
-            config_sv[self.name][var] = kwargs[var]
-            core_config.set_config('sv', config_sv)
+            if self.name not in plugin_config:
+                plugin_config[self.name] = {}
+            plugin_config[self.name][var] = kwargs[var]
+        core_config.set_config('plugins', config_plugins)
 
     def enable(self):
         self.set(enabled=True)
@@ -168,7 +244,7 @@ class SV:
 
             for _k in keyword_list:
                 if _k not in self.TL:
-                    logger.debug(f'载入{type}触发器【{_k}】!')
+                    logger.trace(f'载入{type}触发器【{_k}】!')
                     if type not in self.TL:
                         self.TL[type] = {}
 

@@ -12,6 +12,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from gsuid_core.gss import gss  # noqa: E402
 from gsuid_core.web_app import app  # noqa: E402
+from gsuid_core.logger import logger  # noqa: E402
 from gsuid_core.config import core_config  # noqa: E402
 from gsuid_core.handler import handle_event  # noqa: E402
 from gsuid_core.models import MessageReceive  # noqa: E402
@@ -63,6 +64,7 @@ def main():
             async def process():
                 await bot._process()
 
+            logger.info('启动GsCore...')
             await asyncio.gather(process(), start())
         except CancelledError:
             await gss.disconnect(bot_id)

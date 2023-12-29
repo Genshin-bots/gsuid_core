@@ -98,6 +98,9 @@ async def download_all_file(
             url = f'{PLUGIN_RES}/{endpoint}/'
             path = EPATH_MAP[endpoint]
 
+            if not path.exists():
+                path.mkdir(parents=True)
+
             base_data = await _get_url(url, sess)
             content_bs = BeautifulSoup(base_data, 'lxml')
             pre_data = content_bs.find_all('pre')[0]

@@ -1,6 +1,13 @@
 from typing import List, Literal
 
 from gsuid_core.sv import SL
+from gsuid_core.webconsole.create_base_panel import (
+    get_tab,
+    get_tabs,
+    get_divider,
+    get_input_tag,
+    get_grid_panel,
+)
 
 
 def get_sv_panel(
@@ -212,13 +219,9 @@ def get_sv_panel(
                             'type': 'container',
                             'size': 'xs',
                             'body': [
-                                {
-                                    'type': 'input-text',
-                                    'label': '黑名单（以;为分割）',
-                                    'name': 'black_list',
-                                    'id': 'u:ab168d425936',
-                                    'value': ';'.join(black_list),
-                                }
+                                get_input_tag(
+                                    '黑名单', 'black_list', black_list, []
+                                )
                             ],
                             'wrapperBody': False,
                             'style': {'flex': '0 0 auto', 'display': 'block'},
@@ -239,13 +242,9 @@ def get_sv_panel(
                             'type': 'container',
                             'size': 'xs',
                             'body': [
-                                {
-                                    'type': 'input-text',
-                                    'label': '白名单（以;为分割）',
-                                    'name': 'white_list',
-                                    'id': 'u:ab168d425936',
-                                    'value': ';'.join(white_list),
-                                }
+                                get_input_tag(
+                                    '白名单', 'white_list', white_list, []
+                                )
                             ],
                             'wrapperBody': False,
                             'style': {'flex': '0 0 auto', 'display': 'block'},
@@ -297,21 +296,36 @@ def get_sv_panel(
 def get_sv_page():
     page = {
         'type': 'page',
-        'title': '功能管理',
+        'title': '功能服务配置',
         'body': [],
         'id': 'u:a9be7e0dc676',
     }
-    for sv_name in SL.lst:
-        sv = SL.lst[sv_name]
-        panel = get_sv_panel(
-            sv.name,
-            sv.pm,
-            sv.priority,
-            sv.enabled,
-            sv.area,  # type:ignore
-            sv.black_list,
-            sv.white_list,
-        )
-        page['body'].append(panel)
-
+    tabs = []
+    for plugins in SL.detail_lst:
+        sv_list = SL.detail_lst[plugins]
+        panels = []
+        grids = []
+        for sv in sv_list:
+            panel = get_sv_panel(
+                sv.name,
+                sv.pm,
+                sv.priority,
+                sv.enabled,
+                sv.area,  # type:ignore
+                sv.black_list,
+                sv.white_list,
+            )
+            panels.append(panel)
+            if len(panels) == 2:
+                grids.append(get_grid_panel(panels))
+                panels = []
+        else:
+            if panels != []:
+                grids.append(get_grid_panel(panels))
+                grids.append(get_divider())
+                panels = []
+        tabs.append(get_tab(plugins.name, grids))
+        grids = []
+    tabs = get_tabs(tabs)
+    page['body'].append(tabs)
     return page

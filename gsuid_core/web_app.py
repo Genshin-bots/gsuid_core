@@ -59,11 +59,11 @@ def _set_SV(request: Request, data: Dict, name: str):
     if name in SL.lst:
         sv = SL.lst[name]
         data['pm'] = int(data['pm'])
-        data['black_list'] = data['black_list'].replace('；', ';')
-        data['white_list'] = data['white_list'].replace('；', ';')
+        data['priority'] = int(data['priority'])
 
-        data['black_list'] = data['black_list'].split(';')
-        data['white_list'] = data['white_list'].split(';')
+        data['black_list'] = data['black_list'].split(',')
+        data['white_list'] = data['white_list'].split(',')
+
         if data['black_list'] == ['']:
             data['black_list'] = []
         if data['white_list'] == ['']:

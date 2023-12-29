@@ -105,9 +105,7 @@ class GsServer:
                     importlib.import_module(f'plugins.{plugin.name[:-3]}')
             except Exception as e:  # noqa
                 exception = sys.exc_info()
-                logger.opt(exception=exception).warning(
-                    'Warning encountered in function:'
-                )
+                logger.opt(exception=exception).error(f'加载插件时发生错误: {e}')
                 logger.warning(f'插件{plugin.name}加载失败')
 
     def load_dir_plugins(self, plugin: Path, nest: bool = False):

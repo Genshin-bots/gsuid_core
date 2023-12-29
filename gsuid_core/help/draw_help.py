@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple, Union, Optional
 
 from PIL import Image, ImageDraw
 
-from gsuid_core.sv import SV
+from gsuid_core.sv import SV, Plugins
 
 # from gsuid_core.utils.image.image_tools import get_color_bg
 from gsuid_core.utils.fonts.fonts import core_font
@@ -107,7 +107,8 @@ def _t(data: Union[int, str, bool]) -> str:
     return text
 
 
-def get_plugin_bg(plugin_name: str, sv_list: List[SV]):
+def get_plugin_bg(plugin: Plugins, sv_list: List[SV]):
+    plugin_name = plugin.name
     img_list: List[Image.Image] = []
 
     for sv in sv_list:
@@ -176,8 +177,8 @@ async def get_help_img() -> Image.Image:
 
     content = SL.detail_lst
     img_list: List[Image.Image] = []
-    for plugin_name in content:
-        plugin_img = get_plugin_bg(plugin_name, content[plugin_name])
+    for plugin in content:
+        plugin_img = get_plugin_bg(plugin, content[plugin])
         img_list.append(plugin_img)
 
     x = 900

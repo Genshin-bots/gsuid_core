@@ -134,17 +134,21 @@ logger.remove()
 logger_id = logger.add(
     sys.stdout,
     level=LEVEL,
-    diagnose=False,
+    diagnose=True,
+    backtrace=True,
+    filter=lambda record: record["level"].no < 40,
     format=std_format_event,
 )
+
+logger.add(sys.stderr, level="ERROR")
 
 logger.add(
     sink=get_res_path() / 'logs/{time:YYYY-MM-DD}.log',
     format=format_event,
     rotation=datetime.time(),
     level=LEVEL,
-    diagnose=False,
-    # backtrace=False,
+    diagnose=True,
+    backtrace=True,
 )
 
 

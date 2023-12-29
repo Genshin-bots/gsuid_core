@@ -16,11 +16,24 @@ CONFIG_DEFAULT = {
     },
     'command_start': [],
     'sv': {},
+    'plugins': {},
 }
+
 STR_CONFIG = Literal['HOST', 'PORT']
 INT_CONFIG = Literal['misfire_grace_time']
 LIST_CONFIG = Literal['superusers', 'masters', 'command_start']
-DICT_CONFIG = Literal['sv', 'log']
+DICT_CONFIG = Literal['sv', 'log', 'plugins']
+
+plugins_sample = {
+    'name': '',
+    'pm': 6,
+    'priority': 5,
+    'enabled': True,
+    'area': 'SV',
+    'black_list': [],
+    'white_list': [],
+    'sv': {},
+}
 
 
 class CoreConfig:

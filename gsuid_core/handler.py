@@ -125,14 +125,43 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         for _type in SL.lst[sv].TL
         for tr in SL.lst[sv].TL[_type]
         if (
-            SL.lst[sv].enabled
+            SL.lst[sv].plugins.enabled
+            and user_pm <= SL.lst[sv].plugins.pm
+            and msg.group_id not in SL.lst[sv].plugins.black_list
+            and msg.user_id not in SL.lst[sv].plugins.black_list
+            and (
+                True
+                if SL.lst[sv].plugins.area == 'SV'
+                or (
+                    event.user_type == 'group'
+                    and SL.lst[sv].plugins.area == 'GROUP'
+                )
+                or (
+                    event.user_type == 'direct'
+                    and SL.lst[sv].plugins.area == 'DIRECT'
+                )
+                else False
+            )
+            and (
+                True
+                if (
+                    not SL.lst[sv].plugins.white_list
+                    or SL.lst[sv].plugins.white_list == ['']
+                )
+                else (
+                    msg.user_id in SL.lst[sv].plugins.white_list
+                    or msg.group_id in SL.lst[sv].plugins.white_list
+                )
+            )
+            and SL.lst[sv].enabled
             and user_pm <= SL.lst[sv].pm
             and msg.group_id not in SL.lst[sv].black_list
             and msg.user_id not in SL.lst[sv].black_list
             and (
                 True
                 if SL.lst[sv].area == 'ALL'
-                or (msg.group_id and SL.lst[sv].area == 'GROUP')
+                or (SL.lst[sv].plugins.area == 'ALL')
+                or (event.user_type == 'group' and SL.lst[sv].area == 'GROUP')
                 or (
                     event.user_type == 'direct' and SL.lst[sv].area == 'DIRECT'
                 )

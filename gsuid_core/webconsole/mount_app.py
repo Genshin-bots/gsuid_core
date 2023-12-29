@@ -427,7 +427,7 @@ class AnalysisPage(GsAdminPage):
 @site.register_admin
 class SVManagePage(GsAdminPage):
     page_schema = PageSchema(
-        label=('功能配置'),
+        label=('功能服务配置'),
         icon='fa fa-sliders',
         url='/SvManage',
         isDefaultPage=True,
@@ -441,7 +441,7 @@ class SVManagePage(GsAdminPage):
 @site.register_admin
 class ConfigManagePage(GsAdminPage):
     page_schema = PageSchema(
-        label=('修改设定'),
+        label=('修改插件设定'),
         icon='fa fa-cogs',
         url='/ConfigManage',
         isDefaultPage=True,
