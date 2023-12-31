@@ -81,14 +81,19 @@ class Plugins:
         black_list: List = [],
         white_list: List = [],
         sv: Dict = {},
+        prefix: str = '',
     ):
-        self.name = name
-        self.priority = priority
-        self.enabled = enabled
-        self.pm = pm
-        self.black_list = black_list
-        self.area = area
-        self.white_list = white_list
+        if not self.is_initialized:
+            self.name = name
+            self.priority = priority
+            self.enabled = enabled
+            self.pm = pm
+            self.black_list = black_list
+            self.area = area
+            self.white_list = white_list
+            self.sv = {}
+            self.prefix = prefix
+            self.is_initialized = True
 
 
 class SV:
@@ -136,14 +141,30 @@ class SV:
             self.self_plugin_name = plugins_name = parts[i + 1]
 
             # 初始化
+            plugins = None
+
             if plugins_name not in config_plugins:
-                _plugins_config = deepcopy(plugins_sample)
-                _plugins_config['name'] = plugins_name
-                config_plugins[plugins_name] = _plugins_config
+                if plugins_name in SL.plugins:
+                    plugins = SL.plugins[plugins_name]
+                    data = {}
+                    for i in plugins_sample:
+                        if i in plugins.__dict__:
+                            data[i] = plugins.__dict__[i]
+                    config_plugins[plugins_name] = data
+
+                if not plugins:
+                    _plugins_config = deepcopy(plugins_sample)
+                    _plugins_config['name'] = plugins_name
+                    config_plugins[plugins_name] = _plugins_config
+                    plugins = Plugins(**_plugins_config)
+
                 core_config.set_config('plugins', config_plugins)
-                plugins = Plugins(**_plugins_config)
             else:
+                if 'prefix' not in config_plugins[plugins_name]:
+                    config_plugins[plugins_name]['prefix'] = ''
                 plugins = Plugins(**config_plugins[plugins_name])
+
+                core_config.set_config('plugins', config_plugins)
 
             # SV指向唯一Plugins实例
             self.plugins = plugins
@@ -159,7 +180,7 @@ class SV:
 
             # 判断sv是否已持久化
             plugin_config = config_plugins[plugins_name]['sv']
-            need_write = False
+
             if name in config_sv:
                 self.priority = config_sv[name]['priority']
                 self.enabled = config_sv[name]['enabled']
@@ -169,7 +190,6 @@ class SV:
                 self.white_list = config_sv[name]['white_list']
                 del config_sv[name]
                 core_config.set_config('sv', config_sv)
-                need_write = True
             elif name in plugin_config:
                 self.priority = plugin_config[name]['priority']
                 self.enabled = plugin_config[name]['enabled']
@@ -189,18 +209,16 @@ class SV:
                 # 作用范围
                 self.area = area
                 self.white_list = white_list
-                need_write = True
 
-            if need_write:
-                # 写入
-                self.set(
-                    priority=self.priority,
-                    enabled=self.enabled,
-                    pm=self.pm,
-                    black_list=self.black_list,
-                    area=self.area,
-                    white_list=self.white_list,
-                )
+            # 写入
+            self.set(
+                priority=self.priority,
+                enabled=self.enabled,
+                pm=self.pm,
+                black_list=self.black_list,
+                area=self.area,
+                white_list=self.white_list,
+            )
 
             if name == '测试开关':
                 self.pm = 6
@@ -208,10 +226,10 @@ class SV:
 
     def set(self, **kwargs):
         plugin_config = config_plugins[self.self_plugin_name]['sv']
+        if self.name not in plugin_config:
+            plugin_config[self.name] = {}
         for var in kwargs:
             setattr(self, var, kwargs[var])
-            if self.name not in plugin_config:
-                plugin_config[self.name] = {}
             plugin_config[self.name][var] = kwargs[var]
         core_config.set_config('plugins', config_plugins)
 
@@ -243,13 +261,14 @@ class SV:
                 keyword_list = keyword
 
             for _k in keyword_list:
-                if _k not in self.TL:
-                    logger.trace(f'载入{type}触发器【{_k}】!')
+                tr = f'{self.plugins.prefix}{_k}'
+                if tr not in self.TL:
+                    logger.trace(f'载入{type}触发器【{tr}】!')
                     if type not in self.TL:
                         self.TL[type] = {}
 
-                    self.TL[type][_k] = Trigger(
-                        type, _k, modify_func(func), block, to_me
+                    self.TL[type][tr] = Trigger(
+                        type, tr, modify_func(func), block, to_me
                     )
 
             @wraps(func)
@@ -315,4 +334,5 @@ class SV:
         block: bool = False,
         to_me: bool = False,
     ) -> Callable:
+        return self._on('regex', keyword, block, to_me)
         return self._on('regex', keyword, block, to_me)
