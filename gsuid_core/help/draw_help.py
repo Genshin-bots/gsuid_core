@@ -22,6 +22,7 @@ tag_color = {
     'fullmatch': (228, 124, 124),
     'regex': (225, 228, 124),
     'command': (228, 124, 124),
+    'message': (176, 150, 198),
     'other': (228, 190, 191),
 }
 
@@ -33,6 +34,7 @@ tag_text: Dict[str, str] = {
     'fullmatch': '完全',
     'regex': '正则',
     'command': '命令',
+    'message': '消息',
     'other': '其他',
 }
 
@@ -45,6 +47,7 @@ tags: Dict[str, Optional[Image.Image]] = {
     'regex': None,
     'command': None,
     'other': None,
+    'message': None,
 }
 
 

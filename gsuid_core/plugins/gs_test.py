@@ -120,3 +120,8 @@ async def send_temp_button_msg(bot: Bot, ev: Event):
 
     buttons = [ab, bb, cb, db, eb, fb, gb, hb, ib, jb]
     await bot.send_option('测试', buttons)
+
+
+@sv_switch.on_message()
+async def handle_any(bot: Bot, ev: Event):
+    await bot.send(f'收到消息啦 -> {ev.text}')

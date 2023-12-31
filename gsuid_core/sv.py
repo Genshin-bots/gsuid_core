@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 import traceback
 from pathlib import Path
 from copy import deepcopy
@@ -222,7 +223,7 @@ class SV:
 
             if name == '测试开关':
                 self.pm = 6
-                self.enabled = False
+                self.enabled = True
 
     def set(self, **kwargs):
         plugin_config = config_plugins[self.self_plugin_name]['sv']
@@ -249,10 +250,12 @@ class SV:
             'command',
             'file',
             'regex',
+            'message',
         ],
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ):
         def deco(func: Callable) -> Callable:
             if isinstance(keyword, str):
@@ -261,7 +264,11 @@ class SV:
                 keyword_list = keyword
 
             for _k in keyword_list:
-                tr = f'{self.plugins.prefix}{_k}'
+                if prefix:
+                    tr = f'{self.plugins.prefix}{_k}'
+                else:
+                    tr = _k
+
                 if tr not in self.TL:
                     logger.trace(f'载入{type}触发器【{tr}】!')
                     if type not in self.TL:
@@ -285,54 +292,71 @@ class SV:
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('fullmatch', keyword, block, to_me)
+        return self._on('fullmatch', keyword, block, to_me, prefix)
 
     def on_prefix(
         self,
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('prefix', keyword, block, to_me)
+        return self._on('prefix', keyword, block, to_me, prefix)
 
     def on_suffix(
         self,
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('suffix', keyword, block, to_me)
+        return self._on('suffix', keyword, block, to_me, prefix)
 
     def on_keyword(
         self,
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('keyword', keyword, block, to_me)
+        return self._on('keyword', keyword, block, to_me, prefix)
 
     def on_command(
         self,
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('command', keyword, block, to_me)
+        return self._on('command', keyword, block, to_me, prefix)
 
     def on_file(
         self,
         file_type: str,
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('file', file_type, block, to_me)
+        return self._on('file', file_type, block, to_me, prefix)
 
     def on_regex(
         self,
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
         to_me: bool = False,
+        prefix: bool = True,
     ) -> Callable:
-        return self._on('regex', keyword, block, to_me)
-        return self._on('regex', keyword, block, to_me)
+        return self._on('regex', keyword, block, to_me, prefix)
+
+    def on_message(
+        self,
+        unique_id: Optional[str] = None,
+        block: bool = False,
+        to_me: bool = False,
+        prefix: bool = True,
+    ) -> Callable:
+        if unique_id is None:
+            unique_id = str(uuid.uuid4())
+        return self._on('message', unique_id, block, to_me, prefix)

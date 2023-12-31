@@ -15,6 +15,7 @@ class Trigger:
             'command',
             'file',
             'regex',
+            'message',
         ],
         keyword: str,
         func: Callable,
@@ -74,6 +75,9 @@ class Trigger:
         if command_list:
             return True
         return False
+
+    def _check_message(self, keyword: str, msg: str):
+        return True
 
     async def get_command(self, msg: Event) -> Event:
         if self.type != 'regex':
