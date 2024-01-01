@@ -110,8 +110,8 @@ async def get_global_analysis(bot_id: str, bot_self_id: str):
         'DAG': '{0:.2f}'.format(sum(group_data) / len(group_data)),
         'NU': str(len(new_user)),
         'OU': '{0:.2f}%'.format((len(out_user) / len(_user_all_list)) * 100)
-         if len(_user_all_list) != 0
-         else "0.00%",
+        if len(_user_all_list) != 0
+        else "0.00%",
     }
     return data
 
