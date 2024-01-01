@@ -22,7 +22,7 @@ async def send_plugins_install(bot: Bot, ev: Event):
     await bot.send(im)
 
 
-@sv_core_install_plugins.on_prefix(('core刷新插件列表'))
+@sv_core_install_plugins.on_fullmatch(('core刷新插件列表'))
 async def refresh_plugins_list(bot: Bot, ev: Event):
     _list = await refresh_list()
     if len(_list) <= 3:

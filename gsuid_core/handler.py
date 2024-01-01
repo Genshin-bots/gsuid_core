@@ -54,8 +54,8 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.is_tome = True
                 continue
             else:
-                event.at = _msg.data
-                event.at_list.append(_msg.data)
+                event.at = str(_msg.data)
+                event.at_list.append(str(_msg.data))
         elif _msg.type == 'image':
             event.image = _msg.data
             event.image_list.append(_msg.data)
