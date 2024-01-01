@@ -31,7 +31,7 @@ async def get_analysis_page():
             data = await get_global_analysis(bot_id, bot_self_id)
             tabs.append(
                 get_tab(
-                    f'{bot_id}',
+                    f'{bot_id}({bot_self_id})',
                     [
                         get_card(
                             f'✨ {bot_self_id}',
