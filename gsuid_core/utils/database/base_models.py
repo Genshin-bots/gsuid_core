@@ -382,7 +382,12 @@ class BaseModel(BaseBotIDModel):
 
             🔸`int`: 恒为0
         '''
-        if await cls.data_exist(user_id=user_id, bot_id=bot_id):
+        cond = {'user_id': user_id, 'bot_id': bot_id}
+        if 'mys_id' in data:
+            cond['mys_id'] = data['mys_id']
+        elif 'uid' in data:
+            cond['uid'] = data['uid']
+        if await cls.data_exist(**cond):
             await cls.update_data(user_id, bot_id, **data)
         else:
             session.add(cls(user_id=user_id, bot_id=bot_id, **data))
