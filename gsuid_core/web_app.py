@@ -11,10 +11,10 @@ from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.sv import SL
+import gsuid_core.global_val as gv
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.logger import logger, read_log, clear_log
-from gsuid_core.global_val import bot_val, get_value_analysis
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.plugins_config.models import GsListStrConfig
@@ -113,9 +113,9 @@ async def _get_data_analysis(
     bot_id: str,
     bot_self_id: str,
 ):
-    if bot_id not in bot_val:
+    if bot_id not in gv.bot_val:
         retcode, msg, data = -1, '不存在该bot_id!', {}
-    elif bot_self_id not in bot_val[bot_id]:
+    elif bot_self_id not in gv.bot_val[bot_id]:
         retcode, msg, data = -1, '不存在该bot_self_id!', {}
     else:
         retcode, msg = 0, 'ok'
@@ -128,7 +128,7 @@ async def _get_data_analysis(
         command_data = []
         image_gen_data = []
 
-        seven_data = await get_value_analysis(bot_id, bot_self_id)
+        seven_data = await gv.get_value_analysis(bot_id, bot_self_id)
         for day in seven_data:
             xaxis.append(day)
             local_val = seven_data[day]
@@ -179,9 +179,9 @@ async def _get_usergroup_analysis(
     bot_id: str,
     bot_self_id: str,
 ):
-    if bot_id not in bot_val:
+    if bot_id not in gv.bot_val:
         retcode, msg, data = -1, '不存在该bot_id!', {}
-    elif bot_self_id not in bot_val[bot_id]:
+    elif bot_self_id not in gv.bot_val[bot_id]:
         retcode, msg, data = -1, '不存在该bot_self_id!', {}
     else:
         retcode, msg = 0, 'ok'
@@ -192,7 +192,7 @@ async def _get_usergroup_analysis(
         group_data = []
         user_data = []
 
-        seven_data = await get_value_analysis(bot_id, bot_self_id)
+        seven_data = await gv.get_value_analysis(bot_id, bot_self_id)
         for day in seven_data:
             xaxis.append(day)
             local_val = seven_data[day]

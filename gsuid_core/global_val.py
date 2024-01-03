@@ -35,6 +35,8 @@ bot_val: BotVal = {}
 
 
 def get_platform_val(bot_id: str, bot_self_id: str):
+    global bot_val
+
     if bot_id not in bot_val:
         bot_val[bot_id] = {}
     if bot_self_id not in bot_val[bot_id]:
