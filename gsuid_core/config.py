@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Union, Literal, overload
+from typing import Any, Dict, List, Union, Literal, overload
 
 CONFIG_PATH = Path(__file__).parent / 'config.json'
 
@@ -12,6 +12,7 @@ CONFIG_DEFAULT = {
     'misfire_grace_time': 90,
     'log': {
         'level': 'INFO',
+        'output': ['stdout', 'stderr', 'file'],
         # ...
     },
     'command_start': [],
@@ -52,11 +53,17 @@ class CoreConfig:
     def update_config(self):
         # 打开config.json
         with open(CONFIG_PATH, 'r', encoding='UTF-8') as f:
-            self.config = json.load(f)
+            self.config: Dict[str, Any] = json.load(f)
         # 对没有的值，添加默认值
         for key in CONFIG_DEFAULT:
             if key not in self.config:
                 self.config[key] = CONFIG_DEFAULT[key]
+            if isinstance(CONFIG_DEFAULT[key], Dict):
+                for sub_key in CONFIG_DEFAULT[key]:
+                    if sub_key not in self.config[key]:
+                        self.config[key][sub_key] = CONFIG_DEFAULT[key][
+                            sub_key
+                        ]
 
         # 重新写回
         self.write_config()

@@ -9,6 +9,18 @@ def get_service(body: List[Dict]):
     }
 
 
+def get_input_number(label: str, name: str, value: int):
+    return {
+        'type': 'input-number',
+        'label': label,
+        'name': name,
+        'keyboard': True,
+        'id': 'u:0b72c9b8086d',
+        'step': 1,
+        'value': value,
+    }
+
+
 def get_input_image_panel(label: str, name: str):
     return {
         'type': 'input-image',
@@ -77,6 +89,20 @@ def get_text_panel(label: str, name: str, value: str):
         'name': name,
         'id': 'u:2de3dcaddcc1',
         'value': value,
+    }
+
+
+def get_alert(
+    message: str,
+    level: Literal["success", "warning", "info", 'danger'] = 'info',
+):
+    return {
+        "type": "alert",
+        "body": message,
+        "level": level,
+        "showCloseButton": True,
+        "showIcon": True,
+        "className": "mb-2",
     }
 
 

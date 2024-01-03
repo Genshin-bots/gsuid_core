@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from gsuid_core.sv import SL
 import gsuid_core.global_val as gv
+from gsuid_core.config import core_config
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.logger import logger, read_log, clear_log
@@ -84,6 +85,30 @@ def _set_Config(request: Request, data: Dict, config_name: str):
         else:
             value = data[name]
         all_config_list[config_name].set_config(name, value)
+
+
+@app.post('/genshinuid/setCoreConfig')
+@site.auth.requires('root')
+def _set_Core_Config(request: Request, data: Dict):
+    result = {}
+    for i in data:
+        if isinstance(data[i], str) and ',' in data[i]:
+            v = data[i].split(',')
+        else:
+            v = data[i]
+
+        if i in ['log_level', 'log_output']:
+            g = i.split('_')
+            k = g[0]
+            if k not in result:
+                result[k] = {}
+            result[k][g[1]] = v
+            continue
+
+        core_config.set_config(i, v)
+
+    for r in result:
+        core_config.set_config(r, result[r])
 
 
 @app.get('/genshinuid/api/getPlugins')

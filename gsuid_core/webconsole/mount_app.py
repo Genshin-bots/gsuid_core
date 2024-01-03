@@ -49,6 +49,7 @@ from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
+from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
     amis_admin,
@@ -422,6 +423,20 @@ class AnalysisPage(GsAdminPage):
 
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(await get_analysis_page())
+
+
+@site.register_admin
+class CoreManagePage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('Core配置'),
+        icon='fa fa-sliders',
+        url='/CoreManage',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(get_core_config_page())
 
 
 @site.register_admin

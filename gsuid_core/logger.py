@@ -3,7 +3,7 @@ import asyncio
 import logging
 import datetime
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 import loguru
 
@@ -14,6 +14,7 @@ from gsuid_core.data_store import get_res_path
 is_clear: bool = False
 is_RL: bool = False
 log_history = []
+
 
 if TYPE_CHECKING:
     # avoid sphinx autodoc resolve annotation failed
@@ -128,28 +129,35 @@ def std_format_event(record):
 
 
 LEVEL: str = core_config.get_config('log').get('level', 'INFO')
+logger_list: List[str] = core_config.get_config('log').get(
+    'output',
+    ['stdout', 'stderr', 'file'],
+)
 
 logger.remove()
 
-logger_id = logger.add(
-    sys.stdout,
-    level=LEVEL,
-    diagnose=True,
-    backtrace=True,
-    filter=lambda record: record["level"].no < 40,
-    format=std_format_event,
-)
+if 'stdout' in logger_list:
+    logger_id = logger.add(
+        sys.stdout,
+        level=LEVEL,
+        diagnose=True,
+        backtrace=True,
+        filter=lambda record: record["level"].no < 40,
+        format=std_format_event,
+    )
 
-logger.add(sys.stderr, level="ERROR")
+if 'stderr' in logger_list:
+    logger.add(sys.stderr, level="ERROR")
 
-logger.add(
-    sink=get_res_path() / 'logs/{time:YYYY-MM-DD}.log',
-    format=format_event,
-    rotation=datetime.time(),
-    level=LEVEL,
-    diagnose=True,
-    backtrace=True,
-)
+if 'file' in logger_list:
+    logger.add(
+        sink=get_res_path() / 'logs/{time:YYYY-MM-DD}.log',
+        format=format_event,
+        rotation=datetime.time(),
+        level=LEVEL,
+        diagnose=True,
+        backtrace=True,
+    )
 
 
 async def read_log():
