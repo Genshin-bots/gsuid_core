@@ -14,6 +14,7 @@ from gsuid_core.data_store import get_res_path
 is_clear: bool = False
 is_RL: bool = False
 log_history = []
+LOG_PATH = get_res_path() / 'logs'
 
 
 if TYPE_CHECKING:
@@ -151,7 +152,7 @@ if 'stderr' in logger_list:
 
 if 'file' in logger_list:
     logger.add(
-        sink=get_res_path() / 'logs/{time:YYYY-MM-DD}.log',
+        sink=LOG_PATH / '{time:YYYY-MM-DD}.log',
         format=format_event,
         rotation=datetime.time(),
         level=LEVEL,

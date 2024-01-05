@@ -114,4 +114,9 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         ['38890', '28541', '28542'],
         ['38890', '28541', '28542'],
     ),
+    'ScheduledCleanLogDay': GsStrConfig(
+        '定时清理几天外的日志',
+        '定时清理几天外的日志',
+        '8',
+    ),
 }

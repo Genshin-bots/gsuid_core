@@ -3,7 +3,26 @@ import datetime
 from pathlib import Path
 from shutil import copyfile
 
-from gsuid_core.logger import logger
+from gsuid_core.logger import LOG_PATH, logger
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+
+CLEAN_DAY: str = core_plugins_config.get_config('ScheduledCleanLogDay').data
+
+
+def clean_log():
+    day = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 5
+    for i in LOG_PATH.glob('*.log'):
+        try:
+            if (
+                i.stat().st_mtime
+                < (
+                    datetime.datetime.now() - datetime.timedelta(days=day)
+                ).timestamp()
+            ):
+                logger.warning(f'清理日志文件 {i.name}')
+                i.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def clear_path_all_file(path: Path, pattern: str = '*'):
