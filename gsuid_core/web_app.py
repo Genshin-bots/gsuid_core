@@ -72,6 +72,24 @@ def _set_SV(request: Request, data: Dict, name: str):
         sv.set(**data)
 
 
+@app.post('/genshinuid/setPlugins/{name}')
+@site.auth.requires('root')
+def _set_Plugins(request: Request, data: Dict, name: str):
+    if name in SL.plugins:
+        plguin = SL.plugins[name]
+        data['pm'] = int(data['pm'])
+        data['priority'] = int(data['priority'])
+
+        data['black_list'] = data['black_list'].split(',')
+        data['white_list'] = data['white_list'].split(',')
+
+        if data['black_list'] == ['']:
+            data['black_list'] = []
+        if data['white_list'] == ['']:
+            data['white_list'] = []
+        plguin.set(**data)
+
+
 @app.post('/genshinuid/setGsConfig/{config_name}')
 @site.auth.requires('root')
 def _set_Config(request: Request, data: Dict, config_name: str):

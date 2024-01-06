@@ -12,10 +12,16 @@ from gsuid_core.models import Event, Message, MessageReceive
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 command_start = core_config.get_config('command_start')
+enable_empty = core_config.get_config('enable_empty_start')
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
 
 shield_list = core_plugins_config.get_config('ShieldQQBot').data
+
+if command_start and enable_empty:
+    _command_start: List[str] = [*command_start] + ['']
+else:
+    _command_start: List[str] = command_start
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
@@ -113,8 +119,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
             return
 
     is_start = False
-    if command_start and event.raw_text:
-        for start in command_start:
+    if _command_start and event.raw_text:
+        for start in _command_start:
             if event.raw_text.strip().startswith(start):
                 event.raw_text = event.raw_text.replace(start, '', 1)
                 is_start = True
@@ -141,6 +147,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
             and (
                 True
                 if SL.lst[sv].plugins.area == 'SV'
+                or SL.lst[sv].plugins.area == 'ALL'
                 or (
                     event.user_type == 'group'
                     and SL.lst[sv].plugins.area == 'GROUP'

@@ -96,6 +96,13 @@ class Plugins:
             self.prefix = prefix
             self.is_initialized = True
 
+    def set(self, **kwargs):
+        plugin_config = config_plugins[self.name]
+        for var in kwargs:
+            setattr(self, var, kwargs[var])
+            plugin_config[var] = kwargs[var]
+        core_config.set_config('plugins', config_plugins)
+
 
 class SV:
     is_initialized = False
@@ -180,7 +187,7 @@ class SV:
                 SL.detail_lst[plugins].append(self)
 
             # 判断sv是否已持久化
-            plugin_config = config_plugins[plugins_name]['sv']
+            plugin_sv_config = config_plugins[plugins_name]['sv']
 
             if name in config_sv:
                 self.priority = config_sv[name]['priority']
@@ -191,13 +198,13 @@ class SV:
                 self.white_list = config_sv[name]['white_list']
                 del config_sv[name]
                 core_config.set_config('sv', config_sv)
-            elif name in plugin_config:
-                self.priority = plugin_config[name]['priority']
-                self.enabled = plugin_config[name]['enabled']
-                self.pm = plugin_config[name]['pm']
-                self.black_list = plugin_config[name]['black_list']
-                self.area = plugin_config[name]['area']
-                self.white_list = plugin_config[name]['white_list']
+            elif name in plugin_sv_config:
+                self.priority = plugin_sv_config[name]['priority']
+                self.enabled = plugin_sv_config[name]['enabled']
+                self.pm = plugin_sv_config[name]['pm']
+                self.black_list = plugin_sv_config[name]['black_list']
+                self.area = plugin_sv_config[name]['area']
+                self.white_list = plugin_sv_config[name]['white_list']
             else:
                 # sv优先级
                 self.priority = priority
@@ -226,12 +233,12 @@ class SV:
                 self.enabled = False
 
     def set(self, **kwargs):
-        plugin_config = config_plugins[self.self_plugin_name]['sv']
-        if self.name not in plugin_config:
-            plugin_config[self.name] = {}
+        plugin_sv_config = config_plugins[self.self_plugin_name]['sv']
+        if self.name not in plugin_sv_config:
+            plugin_sv_config[self.name] = {}
         for var in kwargs:
             setattr(self, var, kwargs[var])
-            plugin_config[self.name][var] = kwargs[var]
+            plugin_sv_config[self.name][var] = kwargs[var]
         core_config.set_config('plugins', config_plugins)
 
     def enable(self):

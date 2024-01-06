@@ -15,6 +15,7 @@ CONFIG_DEFAULT = {
         'output': ['stdout', 'stderr', 'file'],
         # ...
     },
+    'enable_empty_start': True,
     'command_start': [],
     'sv': {},
     'plugins': {},
@@ -24,6 +25,7 @@ STR_CONFIG = Literal['HOST', 'PORT']
 INT_CONFIG = Literal['misfire_grace_time']
 LIST_CONFIG = Literal['superusers', 'masters', 'command_start']
 DICT_CONFIG = Literal['sv', 'log', 'plugins']
+BOOL_CONFIG = Literal['enable_empty_start']
 
 plugins_sample = {
     'name': '',
@@ -84,7 +86,11 @@ class CoreConfig:
     def get_config(self, key: INT_CONFIG) -> int:
         ...
 
-    def get_config(self, key: str) -> Union[str, Dict, List, int]:
+    @overload
+    def get_config(self, key: BOOL_CONFIG) -> bool:
+        ...
+
+    def get_config(self, key: str) -> Union[str, Dict, List, int, bool]:
         if key in self.config:
             return self.config[key]
         elif key in CONFIG_DEFAULT:
@@ -105,7 +111,17 @@ class CoreConfig:
     def set_config(self, key: DICT_CONFIG, value: Dict) -> bool:
         ...
 
-    def set_config(self, key: str, value: Union[str, List, Dict]) -> bool:
+    @overload
+    def set_config(self, key: INT_CONFIG, value: int) -> bool:
+        ...
+
+    @overload
+    def set_config(self, key: BOOL_CONFIG, value: bool) -> bool:
+        ...
+
+    def set_config(
+        self, key: str, value: Union[str, List, Dict, int, bool]
+    ) -> bool:
         if key in CONFIG_DEFAULT:
             # 设置值
             self.config[key] = value

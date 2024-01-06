@@ -4,14 +4,15 @@ from gsuid_core.config import CONFIG_DEFAULT, core_config
 from gsuid_core.webconsole.create_base_panel import (
     get_api,
     get_alert,
+    get_empty,
     get_button,
     get_divider,
-    get_service,
     get_input_tag,
     get_grid_panel,
     get_text_panel,
     get_input_number,
     get_select_panel,
+    get_switch_panel,
 )
 
 
@@ -34,6 +35,10 @@ def get_core_config_page():
         if isinstance(data, List):
             api_input.append(c)
             _data = get_input_tag(c, c, data, CONFIG_DEFAULT[c])
+            solo_body.append(_data)
+        elif isinstance(data, bool):
+            api_input.append(c)
+            _data = get_switch_panel(c, c, data)
             solo_body.append(_data)
         elif isinstance(data, int):
             api_input.append(c)
@@ -71,7 +76,7 @@ def get_core_config_page():
 
     if solo_body:
         while len(solo_body) < 3:
-            solo_body.append(get_service([]))
+            solo_body.append(get_empty())
         body.append(get_grid_panel(solo_body))
 
     body.append(get_divider())

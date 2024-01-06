@@ -134,8 +134,18 @@ def get_divider():
     return {'type': 'divider', 'id': 'u:65e1334b3abe'}
 
 
+def get_empty():
+    return {"body": [], "id": "u:d0bf1032034b"}
+
+
 def get_grid_panel(content: List[Dict]):
-    _data = [{'body': [i]} for i in content]
+    _data = []
+    for i in content:
+        if i == {"body": [], "id": "u:d0bf1032034b"} or i == {}:
+            _data.append({"body": [], "id": "u:d0bf1032034b"})
+        else:
+            _data.append({'body': [i]})
+
     data = {
         'type': 'grid',
         'columns': _data,
