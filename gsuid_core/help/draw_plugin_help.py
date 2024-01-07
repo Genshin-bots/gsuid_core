@@ -61,6 +61,8 @@ async def get_help(
     text_color: Tuple[int, int, int] = (250, 250, 250),
     sub_c: Optional[Tuple[int, int, int]] = None,
     op_color: Optional[Tuple[int, int, int]] = None,
+    title_color: Tuple[int, int, int] = (250, 250, 250),
+    sub_title_color: Tuple[int, int, int] = (235, 235, 235),
     column: int = 5,
     is_gaussian: bool = False,
     gaussian_blur: int = 20,
@@ -119,8 +121,8 @@ async def get_help(
             title.paste(badge_s, (_x, 556), badge_s)
             title_draw.text((_x + 360, 596), message, sub_c, font(26), 'mm')
 
-    title_draw.text((cx(w, 0), 440), f'{name} 帮助', text_color, font(36), 'mm')
-    title_draw.text((cx(w, 0), 520), sub_text, sub_c, font(26), 'mm')
+    title_draw.text((cx(w, 0), 440), f'{name} 帮助', title_color, font(36), 'mm')
+    title_draw.text((cx(w, 0), 520), sub_text, sub_title_color, font(26), 'mm')
 
     if is_dark:
         icon_mask = Image.new('RGBA', (36, 36), (255, 255, 255))
