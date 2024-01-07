@@ -168,6 +168,8 @@ settings = Settings(
     site_title='GsCore - 网页控制台',
     language='zh_CN',
     amis_theme='ang',
+    amis_cdn='https://npm.onmicrosoft.cn/',
+    amis_pkg="amis@6.0.0",
 )
 
 

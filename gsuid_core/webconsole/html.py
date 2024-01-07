@@ -19,7 +19,7 @@ login_html = f'''
 <p>
   <p align='center'>
       <a href='{web_url}'>
-          <img src='https://s2.loli.net/2023/03/25/bareSdYcsmRPOyZ.png'
+          <img src='/webstatic/ICON.png'
           width='256' height='256' alt='GenshinUID'>
       </a>
   </p>

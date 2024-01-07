@@ -75,14 +75,22 @@ async def get_help(
         return await convert_img(Image.open(help_path))
 
     if sub_c is None and is_dark:
-        sub_c = tuple(x - 50 for x in text_color if x > 50)  # type: ignore
+        sub_c = tuple(
+            x - 50 if x > 50 else x for x in text_color
+        )  # type: ignore
     elif sub_c is None and not is_dark:
-        sub_c = tuple(x + 50 for x in text_color if x < 205)  # type: ignore
+        sub_c = tuple(
+            x + 50 if x < 205 else x for x in text_color
+        )  # type: ignore
 
     if op_color is None and is_dark:
-        op_color = tuple(x - 90 for x in text_color if x > 90)  # type: ignore
+        op_color = tuple(
+            x - 90 if x > 90 else x for x in text_color
+        )  # type: ignore
     elif op_color is None and not is_dark:
-        op_color = tuple(x + 90 for x in text_color if x < 160)  # type: ignore
+        op_color = tuple(
+            x + 90 if x < 160 else x for x in text_color
+        )  # type: ignore
 
     _h = 600
 

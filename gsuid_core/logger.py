@@ -129,8 +129,7 @@ def std_format_event(record):
             log_history.append(_data.format_map(record))
         return data
     except:  # noqa: E722
-        logger.warning('[log] Unknown...')
-        return '[log] Unknown...'
+        return 'UnknowLog'
 
 
 LEVEL: str = core_config.get_config('log').get('level', 'INFO')
