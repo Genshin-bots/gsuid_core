@@ -63,6 +63,8 @@ async def get_help(
     op_color: Optional[Tuple[int, int, int]] = None,
     title_color: Tuple[int, int, int] = (250, 250, 250),
     sub_title_color: Tuple[int, int, int] = (235, 235, 235),
+    sv_color: Tuple[int, int, int] = (250, 250, 250),
+    sv_desc_color: Tuple[int, int, int] = (235, 235, 235),
     column: int = 5,
     is_gaussian: bool = False,
     gaussian_blur: int = 20,
@@ -142,7 +144,7 @@ async def get_help(
 
         bc = deepcopy(banner)
         bc_draw = ImageDraw.Draw(bc)
-        bc_draw.text((30, 25), sv_name, text_color, font(35), 'lm')
+        bc_draw.text((30, 25), sv_name, sv_color, font(35), 'lm')
 
         if hasattr(font, 'getsize'):
             size, _ = font(35).getsize(sv_name)  # type: ignore
@@ -150,7 +152,7 @@ async def get_help(
             bbox = font(35).getbbox(sv_name)
             size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        bc_draw.text((42 + size, 30), sv_desc, sub_c, font(20), 'lm')
+        bc_draw.text((42 + size, 30), sv_desc, sv_desc_color, font(20), 'lm')
         sv_img.paste(bc, (0, 10), bc)
         # sv_img = easy_alpha_composite(sv_img, bc, (0, 10))
 

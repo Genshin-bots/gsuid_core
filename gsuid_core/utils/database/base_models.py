@@ -612,6 +612,8 @@ class Bind(BaseModel):
         '''
         result = await cls.get_uid_list_by_game(user_id, bot_id, game_name)
 
+        result = [i for i in result if i] if result else []
+
         if lenth_limit:
             if len(uid) != lenth_limit:
                 return -1
@@ -686,7 +688,10 @@ class Bind(BaseModel):
             return -1
 
         result.remove(uid)
+
+        result = [i for i in result if i] if result else []
         new_uid = '_'.join(result)
+
         await cls.update_data(
             user_id,
             bot_id,
