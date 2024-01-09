@@ -612,7 +612,7 @@ class Bind(BaseModel):
         '''
         result = await cls.get_uid_list_by_game(user_id, bot_id, game_name)
 
-        result = [i for i in result if i] if result else []
+        result = [i for i in result if i] if result else None
 
         if lenth_limit:
             if len(uid) != lenth_limit:

@@ -188,7 +188,8 @@ def install_dependencies(dependencies: Dict):
         version,
     ) in dependencies.items():
         if (
-            dependency not in installed_dependencies
+            installed_dependencies
+            and dependency not in installed_dependencies
             and dependency not in ignore_dep
         ):
             logger.info(f'安装依赖 {dependency} 中...')
