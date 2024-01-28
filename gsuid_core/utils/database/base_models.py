@@ -618,7 +618,7 @@ class Bind(BaseModel):
             if len(uid) != lenth_limit:
                 return -1
 
-        if is_digit is not None:
+        if is_digit:
             if not uid.isdigit():
                 return -3
         if not uid:

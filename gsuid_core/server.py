@@ -75,7 +75,7 @@ class GsServer:
         plug_path = Path(__file__).parent / 'plugins'
         # 遍历插件文件夹内所有文件
         for plugin in plug_path.iterdir():
-            if plugin.stem == '__pycache__':
+            if plugin.stem.startswith('_'):
                 continue
             # 如果发现文件夹，则视为插件包
             logger.trace('===============')

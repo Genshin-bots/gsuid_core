@@ -42,7 +42,9 @@ async def start_check():
     else:
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get('https://api.ipify.org/?format=json')
+                r = await client.get(
+                    'https://api.ipify.org/?format=json', timeout=4
+                )
             _host = r.json()['ip']
         except:  # noqa:E722
             _host = HOST
