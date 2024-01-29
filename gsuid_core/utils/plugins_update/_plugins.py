@@ -11,7 +11,6 @@ from git.repo import Repo
 from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
@@ -99,7 +98,6 @@ async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
     return log_list
 
 
-@on_core_start
 async def refresh_list() -> List[str]:
     global plugins_list
     refresh_list = []
