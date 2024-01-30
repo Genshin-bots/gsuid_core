@@ -1,11 +1,11 @@
 import json
 import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Union, Optional
 
 import httpx
 import aiofiles
-from aiohttp.client_exceptions import ClientConnectorError
+from aiohttp.client import ClientSession
 
 from gsuid_core.logger import logger
 
@@ -14,19 +14,25 @@ async def download(
     url: str,
     path: Path,
     name: str,
-    sess: Optional[httpx.AsyncClient] = None,
+    sess: Union[ClientSession, httpx.AsyncClient, None] = None,
     tag: str = '',
 ):
     if sess is None:
         sess = httpx.AsyncClient()
 
     try:
-        res = await sess.get(url)
-        content = res.read()
+        if isinstance(sess, httpx.AsyncClient):
+            res = await sess.get(url)
+            content = res.read()
+        else:
+            async with sess.get(url) as resp:
+                content = await resp.read()
+
         async with aiofiles.open(path / name, "wb") as f:
             await f.write(content)
         logger.success(f'{tag} {name} 下载完成！')
-    except ClientConnectorError:
+    except Exception as e:
+        logger.error(e)
         logger.warning(f"{tag} {name} 下载失败！")
 
 
