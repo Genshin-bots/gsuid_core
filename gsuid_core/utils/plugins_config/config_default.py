@@ -68,6 +68,8 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'AutoInstallDep': GsBoolConfig('自动安装/更新依赖', '更新/安装插件时将会自动更新/安装依赖', True),
     'EnablePicSrv': GsBoolConfig('启用将图片转链接发送(需公网)', '发送图片转链接', False),
     'PicSrv': GsStrConfig('图片转链接为(需公网)', '发送图片转链接', ''),
+    'EnableCleanPicSrv': GsBoolConfig('是否定期清理本地图床', '定期清理图床开关', True),
+    'ScheduledCleanPicSrv': GsStrConfig('本地图床定期清理(秒)', '定期删除图片', '180'),
     'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
     'SendMDPlatform': GsListStrConfig(
         '默认发送MD的平台列表',

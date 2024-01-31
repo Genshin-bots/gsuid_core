@@ -19,7 +19,10 @@ from gsuid_core.logger import logger, read_log, clear_log
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.plugins_config.models import GsListStrConfig
-from gsuid_core.utils.plugins_config.gs_config import all_config_list
+from gsuid_core.utils.plugins_config.gs_config import (
+    all_config_list,
+    core_plugins_config,
+)
 from gsuid_core.utils.plugins_update._plugins import (
     check_status,
     check_plugins,
@@ -28,6 +31,9 @@ from gsuid_core.utils.plugins_update._plugins import (
     check_can_update,
     get_plugins_list,
 )
+
+is_clean_pic = core_plugins_config.get_config('EnableCleanPicSrv').data
+pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
 
 
 @asynccontextmanager
@@ -286,7 +292,7 @@ async def _update_plugins(request: Request, data: Dict):
 
 
 async def delete_image(image_path: Path):
-    await asyncio.sleep(180)
+    await asyncio.sleep(int(pic_expire_time))
     image_path.unlink()
 
 
@@ -306,7 +312,8 @@ async def get_image(image_id: str, background_tasks: BackgroundTasks):
     image.save(image_bytes, format='JPEG')
     image_bytes.seek(0)
     response = StreamingResponse(image_bytes, media_type='image/png')
-    asyncio.create_task(delete_image(path))
+    if is_clean_pic:
+        asyncio.create_task(delete_image(path))
     return response
 
 
