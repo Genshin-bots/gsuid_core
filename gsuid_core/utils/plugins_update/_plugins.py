@@ -264,6 +264,13 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
         logger.info(f'[core插件设置代理] {plugin_name} 地址与代理地址相同，无需设置')
         return f'{plugin_name} 已经设过该地址了...'
 
+    if not await async_change_plugin_url(repo, new_url):
+        return f'{plugin_name} 设置代理失败'
+
+    return f'{plugin_name} 设置代理成功!'
+
+
+async def async_change_plugin_url(repo: Path, new_url: str):
     try:
         process = await asyncio.create_subprocess_shell(
             f'git remote set-url origin {new_url}',
@@ -271,11 +278,47 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
             stdout=asyncio.subprocess.PIPE,
         )
         stdout, _ = await process.communicate()
+        return True
     except subprocess.CalledProcessError as e:
-        logger.error(f'[core插件设置代理] 失败, 错误信息: {e}')
-        return f'{plugin_name} 设置代理失败'
+        logger.error(f'[core插件设置远程地址] 失败, 错误信息: {e}')
+        return False
 
-    return f'{plugin_name} 设置代理成功!'
+
+def sync_change_plugin_url(repo: Path, new_url: str):
+    try:
+        command = f'git remote set-url origin {new_url}'
+        subprocess.run(
+            command,
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=True,
+            check=True,
+            text=True,
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f'[core插件设置远程地址] 失败, 错误信息: {e}')
+        return False
+
+
+def sync_get_plugin_url(repo: Path) -> Optional[str]:
+    try:
+        command = 'git remote get-url origin'
+        process = subprocess.run(
+            command,
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=True,
+            check=True,
+        )
+        stdout = process.stdout
+        original_url = stdout.decode().strip()
+        return original_url
+    except subprocess.CalledProcessError as e:
+        logger.error(f'[core插件设置远程地址] 失败, 错误信息: {e}')
+        return None
 
 
 def update_from_git(

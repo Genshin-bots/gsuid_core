@@ -13,6 +13,10 @@ from fastapi import WebSocket
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_update._plugins import (
+    sync_get_plugin_url,
+    sync_change_plugin_url,
+)
 
 auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
 start_venv: str = core_plugins_config.get_config('StartVENV').data
@@ -105,6 +109,22 @@ class GsServer:
                 # 如果发现单文件，则视为单文件插件
                 elif plugin.suffix == '.py':
                     importlib.import_module(f'plugins.{plugin.name[:-3]}')
+
+                '''trick'''
+                if plugin.stem in ['StarRailUID', 'ArknightsUID']:
+                    logger.info('[BAI] 检测是否存在失效仓库...')
+                    origin_url = sync_get_plugin_url(plugin)
+                    if (
+                        origin_url
+                        and 'baiqwerdvd' not in origin_url
+                        and 'qwerdvd' in origin_url
+                    ):
+                        logger.warning(f'[BAI] 检测到失效仓库: {origin_url}')
+                        new_url = origin_url.replace('qwerdvd', 'baiqwerdvd')
+                        logger.success(f'[BAI] 替换新仓库地址成功: {new_url}')
+                        sync_change_plugin_url(plugin, new_url)
+
+                '''导入成功'''
                 logger.success(f'插件{plugin.stem}导入成功!')
             except Exception as e:  # noqa
                 exception = sys.exc_info()
