@@ -38,7 +38,11 @@ async def send_core_update_proxy(bot: Bot, ev: Event):
     logger.info('开始执行[应用设置代理]')
     proxy = ev.text if ev.text else None
     if '无' in ev.text:
-        proxy = ''
+        proxy = None
+
+    if proxy and not proxy.startswith(('http', 'https')):
+        return '你可能输入了一个错误的git代理地址...'
+
     log_list = await set_proxy_all_plugins(proxy)
     await bot.send(log_list)
 

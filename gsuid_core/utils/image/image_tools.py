@@ -95,7 +95,8 @@ def draw_center_text_by_line(
     max_length: float,
     not_center: bool = False,
 ) -> float:
-    pun = "。！？；!?"
+    pun = "。！？；!?…"
+    gun = "。！？；!?」』"
     x, y = pos
 
     if hasattr(font, 'getsize'):
@@ -107,7 +108,7 @@ def draw_center_text_by_line(
     line = ''
     lenth = 0
     anchor = 'la' if not_center else 'mm'
-    for char in text:
+    for index, char in enumerate(text):
         if hasattr(font, 'getsize'):
             # 获取当前字符的宽度
             size, _ = font.getsize(char)  # type: ignore
@@ -119,9 +120,13 @@ def draw_center_text_by_line(
         if lenth < max_length and char not in pun and char != '\n':
             pass
         else:
-            img.text((x, y), line, fill, font, anchor)
-            line, lenth = '', 0
-            y += h * 1.55
+            if index + 1 < len(text) and text[index + 1] in gun:
+                pass
+            else:
+                line = line.replace('\n', '')
+                img.text((x, y), line, fill, font, anchor)
+                line, lenth = '', 0
+                y += h * 2.5
     else:
         img.text((x, y), line, fill, font, anchor)
     return y

@@ -251,6 +251,9 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
     else:
         _proxy_url = proxy
 
+    if not _proxy_url.startswith(('http', 'https')):
+        return '你可能输入了一个错误的git代理地址...'
+
     if _proxy_url and not _proxy_url.endswith('/'):
         _proxy_url += '/'
 
