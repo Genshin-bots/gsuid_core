@@ -64,8 +64,9 @@ async def check_speed():
     URL_LIB = {
         '[JPFRP]': 'http://jp-2.lcf.icu:13643',
         '[HKFRP]': 'http://hk-1.5gbps-2.lcf.icu:10200',
-        '[qianxu-jp]': 'https://jp.qxqx.me',
-        '[qianxu-kr]': 'https://kr-arm.qxqx.me',
+        '[Chuncheon]': 'https://kr.qxqx.cf',
+        '[Seoul]': 'https://kr-s.qxqx.cf',
+        '[Tokyo]': 'https://jp.qxqx.me',
     }
 
     TAG, BASE_URL = await find_fastest_url(URL_LIB)
