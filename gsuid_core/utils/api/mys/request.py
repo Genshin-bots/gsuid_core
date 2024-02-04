@@ -21,6 +21,7 @@ from typing import (
     overload,
 )
 
+import httpx
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
@@ -387,9 +388,7 @@ class BaseMysApi:
         else:
             proxy = None
 
-        async with ClientSession(
-            connector=TCPConnector(verify_ssl=ssl_verify)
-        ) as client:
+        async with httpx.AsyncClient(verify=ssl_verify, proxy=proxy) as client:
             raw_data = {}
             uid = None
             if params and 'role_id' in params:
@@ -417,74 +416,73 @@ class BaseMysApi:
 
             logger.debug(header)
             for _ in range(2):
-                async with client.request(
+                resp = await client.request(
                     method,
                     url=url,
                     headers=header,
                     params=params,
                     json=data,
-                    proxy=proxy,
                     timeout=300,
-                ) as resp:
-                    try:
-                        raw_data = await resp.json()
-                    except ContentTypeError:
-                        _raw_data = await resp.text()
-                        raw_data = {'retcode': -999, 'data': _raw_data}
+                )
+                try:
+                    raw_data = resp.json()
+                except ContentTypeError:
+                    _raw_data = resp.text
+                    raw_data = {'retcode': -999, 'data': _raw_data}
 
-                    logger.debug(raw_data)
+                logger.debug(raw_data)
 
-                    # 判断retcode
-                    if 'retcode' in raw_data:
-                        retcode: int = raw_data['retcode']
-                    elif 'code' in raw_data:
-                        retcode: int = raw_data['code']
-                    else:
-                        retcode = 0
+                # 判断retcode
+                if 'retcode' in raw_data:
+                    retcode: int = raw_data['retcode']
+                elif 'code' in raw_data:
+                    retcode: int = raw_data['code']
+                else:
+                    retcode = 0
 
-                    # 针对1034做特殊处理
-                    if retcode == 1034 or retcode == 5003:
-                        if uid:
-                            header['x-rpc-challenge_game'] = (
-                                '6' if self.is_sr else '2'
+                # 针对1034做特殊处理
+                if retcode == 1034 or retcode == 5003:
+                    if uid:
+                        header['x-rpc-challenge_game'] = (
+                            '6' if self.is_sr else '2'
+                        )
+                        header['x-rpc-page'] = (
+                            'v1.4.1-rpg_#/rpg'
+                            if self.is_sr
+                            else 'v4.1.5-ys_#ys'
+                        )
+                        header['x-rpc-tool-verison'] = (
+                            'v1.4.1-rpg' if self.is_sr else 'v4.1.5-ys'
+                        )
+
+                    if core_plugins_config.get_config('MysPass').data:
+                        pass_header = copy.deepcopy(header)
+                        ch = await self._upass(pass_header)
+                        if ch == '':
+                            return 114514
+                        else:
+                            header['x-rpc-challenge'] = ch
+
+                    if 'DS' in header:
+                        if isinstance(params, Dict):
+                            q = '&'.join(
+                                [
+                                    f'{k}={v}'
+                                    for k, v in sorted(
+                                        params.items(),
+                                        key=lambda x: x[0],
+                                    )
+                                ]
                             )
-                            header['x-rpc-page'] = (
-                                'v1.4.1-rpg_#/rpg'
-                                if self.is_sr
-                                else 'v4.1.5-ys_#ys'
-                            )
-                            header['x-rpc-tool-verison'] = (
-                                'v1.4.1-rpg' if self.is_sr else 'v4.1.5-ys'
-                            )
+                        else:
+                            q = ''
+                        header['DS'] = get_ds_token(q, data)
 
-                        if core_plugins_config.get_config('MysPass').data:
-                            pass_header = copy.deepcopy(header)
-                            ch = await self._upass(pass_header)
-                            if ch == '':
-                                return 114514
-                            else:
-                                header['x-rpc-challenge'] = ch
-
-                        if 'DS' in header:
-                            if isinstance(params, Dict):
-                                q = '&'.join(
-                                    [
-                                        f'{k}={v}'
-                                        for k, v in sorted(
-                                            params.items(),
-                                            key=lambda x: x[0],
-                                        )
-                                    ]
-                                )
-                            else:
-                                q = ''
-                            header['DS'] = get_ds_token(q, data)
-
-                        logger.debug(header)
-                    elif retcode != 0:
-                        return retcode
-                    else:
-                        return raw_data
+                    logger.debug(header)
+                elif retcode != 0:
+                    return retcode
+                else:
+                    return raw_data
             else:
                 return -999
 
