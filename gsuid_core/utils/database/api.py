@@ -53,8 +53,7 @@ async def get_uid(
     ev: Event,
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
-) -> Optional[str]:
-    ...
+) -> Optional[str]: ...
 
 
 @overload
@@ -64,8 +63,7 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: bool = True,
-) -> Tuple[Optional[str], str]:
-    ...
+) -> Tuple[Optional[str], str]: ...
 
 
 async def get_uid(

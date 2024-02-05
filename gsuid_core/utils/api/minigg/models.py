@@ -1,6 +1,7 @@
 """
 MiniGG API 响应模型。
 """
+
 # TODO: - @KimigaiiWuyi 补文档
 from __future__ import annotations
 
@@ -104,7 +105,9 @@ class Character(TypedDict):
     qualityType: str
     bodyType: str
     association: str
-    region: Literal['蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔']
+    region: Literal[
+        '蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔'
+    ]
     affiliation: str
     birthdaymmdd: str
     birthday: str
@@ -287,15 +290,27 @@ class EnemyInvest(TypedDict):
 
 class Domain(TypedDict):
     name: str
-    region: Literal['蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔']
+    region: Literal[
+        '蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔'
+    ]
     domainentrance: str
     domaintype: str
     description: str
     recommendedlevel: int
     recommendedelements: List[
-        Literal['冰元素', '火元素', '雷元素', '水元素', '草元素', '岩元素', '风元素']
+        Literal[
+            '冰元素',
+            '火元素',
+            '雷元素',
+            '水元素',
+            '草元素',
+            '岩元素',
+            '风元素',
+        ]
     ]
-    daysofweek: List[Literal['周日', '周一', '周二', '周三', '周四', '周五', '周六']]
+    daysofweek: List[
+        Literal['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    ]
     unlockrank: int
     rewardpreview: List[EnemyReward]
     disorder: List[str]

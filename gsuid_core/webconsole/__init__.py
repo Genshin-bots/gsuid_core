@@ -38,7 +38,9 @@ async def start_check():
 
     if HOST == 'localhost' or HOST == '127.0.0.1':
         _host = 'localhost'
-        logger.warning('WebConsole挂载于本地, 如想外网访问请修改config.json中host为0.0.0.0!')
+        logger.warning(
+            'WebConsole挂载于本地, 如想外网访问请修改config.json中host为0.0.0.0!'
+        )
     else:
         try:
             async with httpx.AsyncClient() as client:

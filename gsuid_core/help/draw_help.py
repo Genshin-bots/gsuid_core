@@ -83,9 +83,7 @@ def _c(data: Union[int, str, bool]) -> Tuple[int, int, int]:
         color = (
             tag_color['prefix']
             if data == 'ALL'
-            else tag_color['command']
-            if data == 'GROUP'
-            else tag_color['file']
+            else tag_color['command'] if data == 'GROUP' else tag_color['file']
         )
     else:
         colors = list(tag_color.values())
@@ -100,11 +98,33 @@ def _t(data: Union[int, str, bool]) -> str:
     if isinstance(data, bool):
         text = '开启' if data else '关闭'
     elif isinstance(data, str):
-        text = '不限' if data == 'ALL' else '群聊' if data == 'GROUP' else '私聊'
+        text = (
+            '不限' if data == 'ALL' else '群聊' if data == 'GROUP' else '私聊'
+        )
     else:
-        texts = ['主人', '超管', '群主', '管理', '频管', '子管', '正常', '低', '黑']
+        texts = [
+            '主人',
+            '超管',
+            '群主',
+            '管理',
+            '频管',
+            '子管',
+            '正常',
+            '低',
+            '黑',
+        ]
         if data <= len(texts) and data >= 0:
-            text = ['主人', '超管', '群主', '管理', '频管', '子管', '正常', '低', '黑'][data]
+            text = [
+                '主人',
+                '超管',
+                '群主',
+                '管理',
+                '频管',
+                '子管',
+                '正常',
+                '低',
+                '黑',
+            ][data]
         else:
             text = '最低'
     return text

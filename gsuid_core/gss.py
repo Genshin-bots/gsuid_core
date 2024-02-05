@@ -22,7 +22,9 @@ if not gss.is_load:
             if source_i == source_j:
                 scheduler.remove_job(i.id)
             else:
-                logger.warning(f'发现重复函数名定时任务{i.name}, 移除该任务...')
+                logger.warning(
+                    f'发现重复函数名定时任务{i.name}, 移除该任务...'
+                )
                 scheduler.remove_job(i.id)
 
     del repeat_jobs

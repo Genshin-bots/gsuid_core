@@ -1,6 +1,7 @@
 '''Enka Network 请求模块。
 MiniGG Enka 加速服务在此模块内。
 '''
+
 from __future__ import annotations
 
 from typing import Literal

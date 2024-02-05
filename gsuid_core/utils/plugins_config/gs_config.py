@@ -118,11 +118,17 @@ class StringConfig:
             if isinstance(default_value, str):
                 return GsStrConfig('缺省值', '获取错误的配置项', default_value)
             elif isinstance(default_value, bool):
-                return GsBoolConfig('缺省值', '获取错误的配置项', default_value)
+                return GsBoolConfig(
+                    '缺省值', '获取错误的配置项', default_value
+                )
             elif isinstance(default_value, List):
-                return GsListStrConfig('缺省值', '获取错误的配置项', default_value)
+                return GsListStrConfig(
+                    '缺省值', '获取错误的配置项', default_value
+                )
             elif isinstance(default_value, Dict):
-                return GsDictConfig('缺省值', '获取错误的配置项', default_value)
+                return GsDictConfig(
+                    '缺省值', '获取错误的配置项', default_value
+                )
             else:
                 return GsBoolConfig('缺省值', '获取错误的配置项', False)
 
@@ -153,7 +159,9 @@ core_plugins_config = StringConfig(
 )
 
 pic_upload_config = StringConfig(
-    'GsCore图片上传', get_res_path() / 'pic_upload_config.json', PIC_UPLOAD_CONIFG
+    'GsCore图片上传',
+    get_res_path() / 'pic_upload_config.json',
+    PIC_UPLOAD_CONIFG,
 )
 
 send_pic_config = StringConfig(

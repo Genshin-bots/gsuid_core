@@ -1,6 +1,7 @@
 '''
 安柏计划 API 请求模块。
 '''
+
 from __future__ import annotations
 
 from io import BytesIO

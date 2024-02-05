@@ -11,23 +11,19 @@ from gsuid_core.utils.image.image_tools import draw_center_text_by_line
 
 
 @overload
-async def convert_img(img: Image.Image, is_base64: bool = False) -> bytes:
-    ...
+async def convert_img(img: Image.Image, is_base64: bool = False) -> bytes: ...
 
 
 @overload
-async def convert_img(img: Image.Image, is_base64: bool = True) -> str:
-    ...
+async def convert_img(img: Image.Image, is_base64: bool = True) -> str: ...
 
 
 @overload
-async def convert_img(img: bytes, is_base64: bool = False) -> str:
-    ...
+async def convert_img(img: bytes, is_base64: bool = False) -> str: ...
 
 
 @overload
-async def convert_img(img: Path, is_base64: bool = False) -> str:
-    ...
+async def convert_img(img: Path, is_base64: bool = False) -> str: ...
 
 
 async def convert_img(

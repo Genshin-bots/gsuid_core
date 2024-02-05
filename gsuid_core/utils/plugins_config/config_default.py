@@ -51,25 +51,45 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '自动更新Core时间设置', '每晚自动更新Core时间设置(时, 分)', ['3', '40']
     ),
     'AutoUpdatePluginsTime': GsListStrConfig(
-        '自动更新Core内所有插件时间设置', '每晚自动更新Core内所有插件时间设置(时, 分)', ['4', '10']
+        '自动更新Core内所有插件时间设置',
+        '每晚自动更新Core内所有插件时间设置(时, 分)',
+        ['4', '10'],
     ),
     'AutoRestartCoreTime': GsListStrConfig(
         '自动重启Core时间设置', '每晚自动重启Core时间设置(时, 分)', ['4', '40']
     ),
-    'AutoAddRandomText': GsBoolConfig('自动加入随机字符串', '自动加入随机字符串', False),
+    'AutoAddRandomText': GsBoolConfig(
+        '自动加入随机字符串', '自动加入随机字符串', False
+    ),
     'RandomText': GsStrConfig(
         '随机字符串列表', '随机字符串列表', 'abcdefghijklmnopqrstuvwxyz'
     ),
-    'ChangeErrorToPic': GsBoolConfig('错误提示转换为图片', '将一部分报错提示转换为图片', True),
-    'AutoTextToPic': GsBoolConfig('自动文字转图', '将所有发送的文字转图', False),
-    'TextToPicThreshold': GsStrConfig('文转图阈值', '开启自动转图后超过该阈值的文字会转成图片', '80'),
-    'EnableSpecificMsgId': GsBoolConfig('启用回复特殊ID', '如不知道请勿开启', False),
+    'ChangeErrorToPic': GsBoolConfig(
+        '错误提示转换为图片', '将一部分报错提示转换为图片', True
+    ),
+    'AutoTextToPic': GsBoolConfig(
+        '自动文字转图', '将所有发送的文字转图', False
+    ),
+    'TextToPicThreshold': GsStrConfig(
+        '文转图阈值', '开启自动转图后超过该阈值的文字会转成图片', '80'
+    ),
+    'EnableSpecificMsgId': GsBoolConfig(
+        '启用回复特殊ID', '如不知道请勿开启', False
+    ),
     'SpecificMsgId': GsStrConfig('特殊返回消息ID', '如不知道请勿填写', ''),
-    'AutoInstallDep': GsBoolConfig('自动安装/更新依赖', '更新/安装插件时将会自动更新/安装依赖', True),
-    'EnablePicSrv': GsBoolConfig('启用将图片转链接发送(需公网)', '发送图片转链接', False),
+    'AutoInstallDep': GsBoolConfig(
+        '自动安装/更新依赖', '更新/安装插件时将会自动更新/安装依赖', True
+    ),
+    'EnablePicSrv': GsBoolConfig(
+        '启用将图片转链接发送(需公网)', '发送图片转链接', False
+    ),
     'PicSrv': GsStrConfig('图片转链接为(需公网)', '发送图片转链接', ''),
-    'EnableCleanPicSrv': GsBoolConfig('是否定期清理本地图床', '定期清理图床开关', True),
-    'ScheduledCleanPicSrv': GsStrConfig('本地图床定期清理(秒)', '定期删除图片', '180'),
+    'EnableCleanPicSrv': GsBoolConfig(
+        '是否定期清理本地图床', '定期清理图床开关', True
+    ),
+    'ScheduledCleanPicSrv': GsStrConfig(
+        '本地图床定期清理(秒)', '定期删除图片', '180'
+    ),
     'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
     'SendMDPlatform': GsListStrConfig(
         '默认发送MD的平台列表',
@@ -105,8 +125,12 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         ["qqgroup", "qqguild"],
         ["qqgroup", "qqguild"],
     ),
-    'TryTemplateForQQ': GsBoolConfig('启用后尝试读取模板文件并发送', '发送MD和按钮模板', True),
-    'ForceSendMD': GsBoolConfig('强制使用MD发送图文', '强制使用MD发送图文', False),
+    'TryTemplateForQQ': GsBoolConfig(
+        '启用后尝试读取模板文件并发送', '发送MD和按钮模板', True
+    ),
+    'ForceSendMD': GsBoolConfig(
+        '强制使用MD发送图文', '强制使用MD发送图文', False
+    ),
     'UseCRLFReplaceLFForMD': GsBoolConfig(
         '发送MD时使用CR替换LF', '发送MD时使用CR替换LF', True
     ),

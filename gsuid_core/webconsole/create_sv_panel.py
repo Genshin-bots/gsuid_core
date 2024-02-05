@@ -136,7 +136,10 @@ def get_sv_panel(
                                         {'label': '群主', 'value': '2'},
                                         {'label': '管理员', 'value': '3'},
                                         {'label': '频道管理员', 'value': '4'},
-                                        {'label': '子频道管理员', 'value': '5'},
+                                        {
+                                            'label': '子频道管理员',
+                                            'value': '5',
+                                        },
                                         {'label': '正常人', 'value': '6'},
                                         {'label': '权限极低', 'value': '7'},
                                         {'label': '黑名单', 'value': '8'},
@@ -313,7 +316,9 @@ def get_sv_page():
         sv_list = SL.detail_lst[plugins]
         panels = []
         grids = []
-        grids.append(get_alert('该设定卡片为总设定，以下服务的触发均需满足总设定条件'))
+        grids.append(
+            get_alert('该设定卡片为总设定，以下服务的触发均需满足总设定条件')
+        )
         grids.append(
             get_sv_panel(
                 '/genshinuid/setPlugins',
@@ -327,7 +332,9 @@ def get_sv_page():
             )
         )
         grids.append(get_divider())
-        grids.append(get_alert('以下设定卡片为服务设定，控制单个服务的触发条件'))
+        grids.append(
+            get_alert('以下设定卡片为服务设定，控制单个服务的触发条件')
+        )
         for sv in sv_list:
             panel = get_sv_panel(
                 '/genshinuid/setSV',

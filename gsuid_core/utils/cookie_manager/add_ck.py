@@ -294,9 +294,9 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             bbs_switch='off',
             draw_switch='off',
             region=SERVER.get(uid_bind[0], 'cn_gf01') if uid_bind else None,
-            sr_region=SR_SERVER.get(sr_uid_bind[0], None)
-            if sr_uid_bind
-            else None,
+            sr_region=(
+                SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None
+            ),
             fp=nd[0],
             device_id=nd[1],
             sr_push_switch='off',

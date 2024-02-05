@@ -51,7 +51,9 @@ class GsPush(Push, table=True):
     uid: str = Field(default=None, title='原神UID')
     coin_push: Optional[str] = Field(title='洞天宝钱推送', default='off')
     coin_value: Optional[int] = Field(title='洞天宝钱阈值', default=2100)
-    coin_is_push: Optional[str] = Field(title='洞天宝钱是否已推送', default='off')
+    coin_is_push: Optional[str] = Field(
+        title='洞天宝钱是否已推送', default='off'
+    )
     resin_push: Optional[str] = Field(title='体力推送', default='off')
     resin_value: Optional[int] = Field(title='体力阈值', default=140)
     resin_is_push: Optional[str] = Field(title='体力是否已推送', default='off')
@@ -60,4 +62,6 @@ class GsPush(Push, table=True):
     go_is_push: Optional[str] = Field(title='派遣是否已推送', default='off')
     transform_push: Optional[str] = Field(title='质变仪推送', default='off')
     transform_value: Optional[int] = Field(title='质变仪阈值', default=1000)
-    transform_is_push: Optional[str] = Field(title='质变仪是否已推送', default='off')
+    transform_is_push: Optional[str] = Field(
+        title='质变仪是否已推送', default='off'
+    )
