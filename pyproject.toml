@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gsuid-core"
-version = "0.1.0"
+version = "0.5.1"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 authors = ["KimigaiiWuyi <444835641@qq.com>", "MingxuanGame <MingxuanGame@outlook.com>"]
 license = "GPL-3.0-or-later"
@@ -43,6 +43,7 @@ toml = "^0.10.2"
 bcrypt = "^4.0.1"
 motor = "^3.3.2"
 pymongo = "^4.6.1"
+setuptools = ">=69.0.3"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"
@@ -120,9 +121,10 @@ dependencies = [
     "bcrypt==4.0.1",
     "pymongo>=4.6.1",
     "motor>=3.3.2",
+    "setuptools>=69.0.3",
 ]
 name = "gsuid-core"
-version = "0.1.0"
+version = "0.5.1"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 

@@ -202,6 +202,18 @@ def check_pyproject(pyproject: Path):
 
 def install_dependencies(dependencies: Dict):
     global installed_dependencies
+    start_tool = check_start_tool()
+    if start_tool == 'pdm':
+        result = subprocess.run(
+            'pdm run python -m ensurepip',
+            capture_output=True,
+            text=True,
+        )
+        # 检查命令执行结果
+        if result.returncode != 0:
+            logger.warning("PDM中pip环境检查失败。错误信息：")
+            logger.warning(result.stderr)
+            return
     # 解析依赖项
     for (
         dependency,
@@ -214,7 +226,7 @@ def install_dependencies(dependencies: Dict):
         ):
             logger.info(f'安装依赖 {dependency} 中...')
             result = subprocess.run(
-                f'{check_start_tool()} install {dependency}',
+                f'{start_tool} install {dependency}',
                 capture_output=True,
                 text=True,
             )
