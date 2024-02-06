@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 from pathlib import Path
+from urllib.parse import unquote
 from typing import Dict, Optional
 
 import aiohttp
@@ -117,7 +118,9 @@ async def download_all_file(
             pre_data = content_bs.find_all('pre')[0]
             data_list = pre_data.find_all('a')
             size_list = [i for i in content_bs.strings]
-            logger.trace(f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!')
+            logger.trace(
+                f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!'
+            )
 
             temp_num = 0
             size_temp = 0
@@ -125,7 +128,7 @@ async def download_all_file(
                 if data['href'] == '../':
                     continue
                 file_url = f'{url}{data["href"]}'
-                name: str = data.text
+                name: str = unquote(file_url.split('/')[-1])
                 size = size_list[index * 2 + 6].split(' ')[-1]
                 size = int(size.replace('\r\n', ''))
                 file_path = path / name
@@ -138,7 +141,9 @@ async def download_all_file(
                     or not os.stat(file_path).st_size
                     or not is_diff
                 ):
-                    logger.info(f'{TAG} {plugin_name} 开始下载 {endpoint}/{name}')
+                    logger.info(
+                        f'{TAG} {plugin_name} 开始下载 {endpoint}/{name}'
+                    )
                     temp_num += 1
                     size_temp += size
                     TASKS.append(
@@ -158,7 +163,9 @@ async def download_all_file(
                 logger.trace(f'{TAG} 数据库 {endpoint} 无需下载!')
                 n += 1
             else:
-                logger.success(f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!')
+                logger.success(
+                    f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!'
+                )
             temp_num = 0
         if n == len(EPATH_MAP):
             logger.success(f'插件 {plugin_name} 资源库已是最新!')
