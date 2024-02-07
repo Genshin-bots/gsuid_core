@@ -109,7 +109,7 @@ class GsUserRegFormAdmin(UserRegFormAdmin):
     def route_submit(self):
         async def route(
             response: Response,
-            result: BaseApiOut = Depends(super().route_submit),
+            result: BaseApiOut = Depends(super().route_submit),  # type: ignore
         ):
             if result.status == 0 and result.code == 0:  # 登录成功,设置用户信息
                 response.set_cookie(
@@ -162,7 +162,6 @@ class GsAuthAdminSite(AuthAdminSite):
 
 settings = Settings(
     database_url_async=f'sqlite+aiosqlite:///{db_url}',
-    database_url='',
     site_path='/genshinuid',
     site_icon='https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png',
     site_title='GsCore - 网页控制台',

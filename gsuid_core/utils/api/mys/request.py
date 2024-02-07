@@ -441,7 +441,7 @@ class BaseMysApi:
                     retcode = 0
 
                 # 针对1034做特殊处理
-                if retcode == 1034 or retcode == 5003:
+                if retcode == 1034 or retcode == 5003 or retcode == 10035:
                     if uid:
                         header['x-rpc-challenge_game'] = (
                             '6' if self.is_sr else '2'

@@ -18,6 +18,7 @@
     "--profile",
     "black"
   ],
+  "python.analysis.diagnosticMode": "workspace",
   "python.formatting.provider": "black",
   "python.linting.flake8Enabled": true,
   "python.linting.flake8CategorySeverity.W": "Warning",
