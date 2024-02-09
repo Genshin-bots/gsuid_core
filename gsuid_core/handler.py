@@ -92,7 +92,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     if event.at:
         for shield_id in shield_list:
             if event.at.startswith(shield_id):
-                logger.warning('消息中疑似包含@机器人的消息, 停止响应本消息内容')
+                logger.warning(
+                    '消息中疑似包含@机器人的消息, 停止响应本消息内容'
+                )
                 return
 
     gid = event.group_id if event.group_id else '0'

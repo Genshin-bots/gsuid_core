@@ -1,6 +1,7 @@
 '''
 内鬼网(hhw) API 请求模块。
 '''
+
 from __future__ import annotations
 
 from typing import Dict, Union, Optional
@@ -40,7 +41,9 @@ async def get_abyss_review(
             if temp:
                 abyss_list.append(temp)
 
-    for index, half in enumerate(['-1上', '-1下', '-2上', '-2下', '-3上', '-3下']):
+    for index, half in enumerate(
+        ['-1上', '-1下', '-2上', '-2下', '-3上', '-3下']
+    ):
         result[f'{floor}{half}'] = abyss_list[index]
 
     return result

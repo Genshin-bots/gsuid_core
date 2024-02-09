@@ -128,7 +128,9 @@ class GsServer:
                 logger.success(f'插件{plugin.stem}导入成功!')
             except Exception as e:  # noqa
                 exception = sys.exc_info()
-                logger.opt(exception=exception).error(f'加载插件时发生错误: {e}')
+                logger.opt(exception=exception).error(
+                    f'加载插件时发生错误: {e}'
+                )
                 logger.warning(f'插件{plugin.name}加载失败')
 
     def load_dir_plugins(self, plugin: Path, nest: bool = False):

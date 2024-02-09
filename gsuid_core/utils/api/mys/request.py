@@ -1,6 +1,7 @@
 '''
 米游社 API 请求模块。
 '''
+
 from __future__ import annotations
 
 import copy
@@ -110,32 +111,26 @@ class BaseMysApi:
     dbsqla: DBSqla = DBSqla()
 
     @abstractmethod
-    async def _upass(self, header: Dict) -> str:
-        ...
+    async def _upass(self, header: Dict) -> str: ...
 
     @abstractmethod
     async def _pass(
         self, gt: str, ch: str, header: Dict
-    ) -> Tuple[Optional[str], Optional[str]]:
-        ...
+    ) -> Tuple[Optional[str], Optional[str]]: ...
 
     @abstractmethod
     async def get_ck(
         self, uid: str, mode: Literal['OWNER', 'RANDOM'] = 'RANDOM'
-    ) -> Optional[str]:
-        ...
+    ) -> Optional[str]: ...
 
     @abstractmethod
-    async def get_stoken(self, uid: str) -> Optional[str]:
-        ...
+    async def get_stoken(self, uid: str) -> Optional[str]: ...
 
     @abstractmethod
-    async def get_user_fp(self, uid: str) -> Optional[str]:
-        ...
+    async def get_user_fp(self, uid: str) -> Optional[str]: ...
 
     @abstractmethod
-    async def get_user_device_id(self, uid: str) -> Optional[str]:
-        ...
+    async def get_user_device_id(self, uid: str) -> Optional[str]: ...
 
     def get_device_id(self) -> str:
         device_id = str(uuid.uuid4()).lower()
@@ -338,14 +333,12 @@ class BaseMysApi:
     @overload
     async def ck_in_new_device(
         self, uid: str, app_cookie: str
-    ) -> Tuple[str, str, str, str]:
-        ...
+    ) -> Tuple[str, str, str, str]: ...
 
     @overload
     async def ck_in_new_device(
         self, uid: str, app_cookie: Optional[str] = None
-    ) -> Optional[Tuple[str, str, str, str]]:
-        ...
+    ) -> Optional[Tuple[str, str, str, str]]: ...
 
     async def ck_in_new_device(
         self, uid: str, app_cookie: Optional[str] = None
@@ -577,9 +570,11 @@ class MysApi(BaseMysApi):
             },
         )
         _ = await self._mys_request(
-            url=self.MAPI['VERIFY_URL']
-            if not is_bbs
-            else self.MAPI['BBS_VERIFY_URL'],
+            url=(
+                self.MAPI['VERIFY_URL']
+                if not is_bbs
+                else self.MAPI['BBS_VERIFY_URL']
+            ),
             method='POST',
             header=header,
             data={
@@ -852,7 +847,11 @@ class MysApi(BaseMysApi):
         if isinstance(data, Dict):
             return data
         elif data == -512009:
-            return {'data': None, 'message': '这张画片已经被收录啦~', 'retcode': -512009}
+            return {
+                'data': None,
+                'message': '这张画片已经被收录啦~',
+                'retcode': -512009,
+            }
         else:
             return -999
 
@@ -1275,9 +1274,11 @@ class MysApi(BaseMysApi):
             # 'amount': 600,
             'goods_num': 1,
             'goods_id': goods['goods_id'],
-            'goods_title': f'{goods["goods_name"]}×{str(goods["goods_unit"])}'
-            if int(goods['goods_unit']) > 0
-            else goods['goods_name'],
+            'goods_title': (
+                f'{goods["goods_name"]}×{str(goods["goods_unit"])}'
+                if int(goods['goods_unit']) > 0
+                else goods['goods_name']
+            ),
             'price_tier': goods['tier_id'],
             # 'price_tier': 'Tier_1',
             'currency': 'CNY',

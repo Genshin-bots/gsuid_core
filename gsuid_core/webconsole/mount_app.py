@@ -111,7 +111,9 @@ class GsUserRegFormAdmin(UserRegFormAdmin):
             response: Response,
             result: BaseApiOut = Depends(super().route_submit),  # type: ignore
         ):
-            if result.status == 0 and result.code == 0:  # 登录成功,设置用户信息
+            if (
+                result.status == 0 and result.code == 0
+            ):  # 登录成功,设置用户信息
                 response.set_cookie(
                     'Authorization', f'bearer {result.data.access_token}'  # type: ignore
                 )
@@ -295,7 +297,9 @@ class UserBindFormAdmin(GsNormalForm):
             im = await _deal_ck(data.bot_id, data.cookie, data.user_id)
         except Exception as e:
             logger.warning(e)
-            return BaseApiOut(status=-1, msg='你输入的CK可能已经失效/或者该用户ID未绑定UID')
+            return BaseApiOut(
+                status=-1, msg='你输入的CK可能已经失效/或者该用户ID未绑定UID'
+            )
         ok_num = im.count('成功')
         if ok_num < 1:
             return BaseApiOut(status=-1, msg=im)

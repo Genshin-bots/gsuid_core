@@ -24,7 +24,10 @@ async def send_direct_msg(bot: Bot, ev: Event):
     logger.info('开始执行[给我发消息]')
     for bot_id in gss.active_bot:
         await gss.active_bot[bot_id].target_send(
-            [Message('text', '这是一条主动消息'), Message('group', ev.group_id)],
+            [
+                Message('text', '这是一条主动消息'),
+                Message('group', ev.group_id),
+            ],
             'direct',
             ev.user_id,
             ev.bot_id,

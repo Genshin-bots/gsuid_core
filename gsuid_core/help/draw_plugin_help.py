@@ -123,7 +123,9 @@ async def get_help(
             title.paste(badge_s, (_x, 556), badge_s)
             title_draw.text((_x + 360, 596), message, sub_c, font(26), 'mm')
 
-    title_draw.text((cx(w, 0), 440), f'{name} 帮助', title_color, font(36), 'mm')
+    title_draw.text(
+        (cx(w, 0), 440), f'{name} 帮助', title_color, font(36), 'mm'
+    )
     title_draw.text((cx(w, 0), 520), sub_text, sub_title_color, font(26), 'mm')
 
     if is_dark:

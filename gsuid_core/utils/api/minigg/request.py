@@ -3,6 +3,7 @@ MiniGG API v4/v5 请求模块。
 参考：https://blog.minigg.cn/g/18
 MiniGG Enka 加速服务不在此模块内。
 '''
+
 from __future__ import annotations
 
 import json
@@ -391,36 +392,31 @@ async def get_talent_info(
 @overload
 async def get_others_info(
     type: Literal['foods'], name: str
-) -> Union[Food, int]:
-    ...
+) -> Union[Food, int]: ...
 
 
 @overload
 async def get_others_info(
     type: Literal['enemies'], name: str
-) -> Union[Enemy, int]:
-    ...
+) -> Union[Enemy, int]: ...
 
 
 @overload
 async def get_others_info(
     type: Literal['domains'], name: str
-) -> Union[Domain, int]:
-    ...
+) -> Union[Domain, int]: ...
 
 
 @overload
 async def get_others_info(
     type: Literal['artifacts'], name: str
-) -> Union[Artifact, int]:
-    ...
+) -> Union[Artifact, int]: ...
 
 
 @overload
 async def get_others_info(
     type: Literal['materials'], name: str
-) -> Union[Material, int]:
-    ...
+) -> Union[Material, int]: ...
 
 
 async def get_others_info(

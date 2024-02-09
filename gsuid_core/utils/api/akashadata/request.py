@@ -1,6 +1,7 @@
 '''
 虚空数据库 API 请求模块。
 '''
+
 from __future__ import annotations
 
 import json

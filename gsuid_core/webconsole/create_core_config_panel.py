@@ -23,7 +23,11 @@ def get_core_config_page():
         'body': [],
         'id': 'u:a9be7e0dc626',
     }
-    body = [get_alert('如无法确定选项原意，切勿随意修改，修改需重启GsCore生效', 'warning')]
+    body = [
+        get_alert(
+            '如无法确定选项原意，切勿随意修改，修改需重启GsCore生效', 'warning'
+        )
+    ]
     solo_body = []
 
     api_input = []
