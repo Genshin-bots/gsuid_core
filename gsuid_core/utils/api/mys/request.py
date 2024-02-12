@@ -75,6 +75,7 @@ ssl_verify = core_plugins_config.get_config('MhySSLVerify').data
 RECOGNIZE_SERVER = {
     '1': 'cn_gf01',
     '2': 'cn_gf01',
+    '3': 'cn_gf01',
     '5': 'cn_qd01',
     '6': 'os_usa',
     '7': 'os_euro',
