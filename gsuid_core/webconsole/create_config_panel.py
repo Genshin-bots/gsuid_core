@@ -1,5 +1,6 @@
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
 from gsuid_core.utils.plugins_config.models import (
+    GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
     GsListStrConfig,
@@ -14,6 +15,7 @@ from gsuid_core.webconsole.create_base_panel import (
     get_input_tag,
     get_grid_panel,
     get_text_panel,
+    get_input_number,
     get_select_panel,
     get_switch_panel,
 )
@@ -83,6 +85,12 @@ def get_config_page():
                 else:
                     _data = get_text_panel(gsc.title, config, gsc.data)
                 solo_body.append(_data)
+            elif isinstance(gsc, GsIntConfig):
+                solo_body.append(
+                    get_input_number(
+                        gsc.title, config, gsc.data, gsc.max_value
+                    )
+                )
             elif isinstance(gsc, GsBoolConfig):
                 solo_body.append(get_switch_panel(gsc.title, config, gsc.data))
             elif isinstance(gsc, GsListStrConfig):

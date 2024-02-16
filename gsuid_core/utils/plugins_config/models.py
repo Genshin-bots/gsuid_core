@@ -1,4 +1,4 @@
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 
 import msgspec
 
@@ -30,6 +30,16 @@ class GsListConfig(GsConfig, tag=True):
     data: List[int]
 
 
+class GsIntConfig(GsConfig, tag=True):
+    data: int
+    max_value: Optional[int] = None
+
+
 GSC = Union[
-    GsDictConfig, GsBoolConfig, GsListConfig, GsListStrConfig, GsStrConfig
+    GsDictConfig,
+    GsBoolConfig,
+    GsListConfig,
+    GsListStrConfig,
+    GsStrConfig,
+    GsIntConfig,
 ]

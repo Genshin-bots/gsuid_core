@@ -109,6 +109,7 @@ def _set_Config(request: Request, data: Dict, config_name: str):
         else:
             value = data[name]
         all_config_list[config_name].set_config(name, value)
+    return {"status": 0, "msg": "成功！"}
 
 
 @app.post('/genshinuid/setCoreConfig')

@@ -7,7 +7,10 @@ import aiofiles
 from PIL import Image, ImageDraw, ImageFont
 
 from gsuid_core.utils.fonts.fonts import core_font
+from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 from gsuid_core.utils.image.image_tools import draw_center_text_by_line
+
+pic_quality: int = pic_gen_config.get_config('PicQuality').data
 
 
 @overload
@@ -41,7 +44,7 @@ async def convert_img(
     if isinstance(img, Image.Image):
         img = img.convert('RGB')
         result_buffer = BytesIO()
-        img.save(result_buffer, format='JPEG', quality=90)
+        img.save(result_buffer, format='JPEG', quality=pic_quality)
         res = result_buffer.getvalue()
         if is_base64:
             res = 'base64://' + b64encode(res).decode()

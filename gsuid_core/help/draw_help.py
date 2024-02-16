@@ -7,7 +7,9 @@ from gsuid_core.sv import SV, Plugins
 
 # from gsuid_core.utils.image.image_tools import get_color_bg
 from gsuid_core.utils.fonts.fonts import core_font
+from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 
+pic_quality: int = pic_gen_config.get_config('PicQuality').data
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 CORE_HELP_IMG = Path(__file__).parent / 'core_help.jpg'
 
@@ -223,7 +225,7 @@ async def get_help_img() -> Image.Image:
     img.save(
         CORE_HELP_IMG,
         format='JPEG',
-        quality=80,
+        quality=pic_quality,
         subsampling=0,
     )
 

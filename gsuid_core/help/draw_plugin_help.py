@@ -7,12 +7,14 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.image.image_tools import crop_center_img
+from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 
 from .model import PluginHelp
 
 cache: Dict[str, int] = {}
 MICON_PATH = Path(__file__).parent / 'icon'
 DEFAULT_ICON = MICON_PATH / '拼图.png'
+pic_quality: int = pic_gen_config.get_config('PicQuality').data
 
 
 def cx(w: int, x: int) -> int:
@@ -211,7 +213,7 @@ async def get_help(
         img.save(
             help_path,
             'JPEG',
-            quality=89,
+            quality=pic_quality,
             subsampling=0,
         )
         cache[name] = 1

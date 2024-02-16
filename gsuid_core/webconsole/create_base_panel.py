@@ -9,8 +9,10 @@ def get_service(body: List[Dict]):
     }
 
 
-def get_input_number(label: str, name: str, value: int):
-    return {
+def get_input_number(
+    label: str, name: str, value: int, max_value: Optional[int] = None
+):
+    data = {
         'type': 'input-number',
         'label': label,
         'name': name,
@@ -19,6 +21,9 @@ def get_input_number(label: str, name: str, value: int):
         'step': 1,
         'value': value,
     }
+    if max_value is not None:
+        data['max'] = max_value
+    return data
 
 
 def get_input_image_panel(label: str, name: str):
@@ -63,6 +68,10 @@ def get_button(title: str, api: Optional[Dict] = None):
         'onEvent': {'click': {'actions': []}},
         'id': 'u:2784abaa9455',
         'block': True,
+        'messages': {
+            'success': '成功！',
+            'failed': '失败...请检查后台...',
+        },
     }
     if api:
         data['onEvent']['click']['actions'].append(api)
@@ -94,15 +103,15 @@ def get_text_panel(label: str, name: str, value: str):
 
 def get_alert(
     message: str,
-    level: Literal["success", "warning", "info", 'danger'] = 'info',
+    level: Literal['success', 'warning', 'info', 'danger'] = 'info',
 ):
     return {
-        "type": "alert",
-        "body": message,
-        "level": level,
-        "showCloseButton": True,
-        "showIcon": True,
-        "className": "mb-2",
+        'type': 'alert',
+        'body': message,
+        'level': level,
+        'showCloseButton': True,
+        'showIcon': True,
+        'className': 'mb-2',
     }
 
 
@@ -119,14 +128,14 @@ def get_select_panel(label: str, name: str, value: str, options: List[str]):
 
 def get_input_tag(label: str, name: str, value: List[str], options: List[str]):
     return {
-        "type": "input-tag",
-        "label": label,
-        "name": name,
-        "options": [{'label': option, 'value': option} for option in options],
-        "id": "u:85ecb7894ccc",
-        "optionsTip": "最近您使用的标签",
-        "autoFill": {},
-        "value": ','.join(value),
+        'type': 'input-tag',
+        'label': label,
+        'name': name,
+        'options': [{'label': option, 'value': option} for option in options],
+        'id': 'u:85ecb7894ccc',
+        'optionsTip': '最近您使用的标签',
+        'autoFill': {},
+        'value': ','.join(value),
     }
 
 
@@ -135,14 +144,14 @@ def get_divider():
 
 
 def get_empty():
-    return {"body": [], "id": "u:d0bf1032034b"}
+    return {'body': [], 'id': 'u:d0bf1032034b'}
 
 
 def get_grid_panel(content: List[Dict]):
     _data = []
     for i in content:
-        if i == {"body": [], "id": "u:d0bf1032034b"} or i == {}:
-            _data.append({"body": [], "id": "u:d0bf1032034b"})
+        if i == {'body': [], 'id': 'u:d0bf1032034b'} or i == {}:
+            _data.append({'body': [], 'id': 'u:d0bf1032034b'})
         else:
             _data.append({'body': [i]})
 
@@ -161,9 +170,9 @@ def get_property(items: Union[List[Dict], Dict[str, str]], column: int = 2):
         _items = items
 
     data = {
-        "type": "property",
-        "column": column,
-        "items": _items,
+        'type': 'property',
+        'column': column,
+        'items': _items,
     }
     return data
 
@@ -171,24 +180,24 @@ def get_property(items: Union[List[Dict], Dict[str, str]], column: int = 2):
 def get_tag(
     label: str,
     color: Literal[
-        "inactive", "processing", "success", "error", "active", "warning"
-    ] = "processing",
-    displaymode: Literal["normal", "rounded"] = "normal",
+        'inactive', 'processing', 'success', 'error', 'active', 'warning'
+    ] = 'processing',
+    displaymode: Literal['normal', 'rounded'] = 'normal',
 ):
     return {
-        "type": "tag",
-        "label": label,
-        "displayMode": displaymode,
-        "color": color,
+        'type': 'tag',
+        'label': label,
+        'displayMode': displaymode,
+        'color': color,
     }
 
 
 def get_tpl(label: str = '', value: str = ''):
     return {
-        "type": "tpl",
-        "tpl": value,
-        "inline": False,
-        "label": label,
+        'type': 'tpl',
+        'tpl': value,
+        'inline': False,
+        'label': label,
     }
 
 

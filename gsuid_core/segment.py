@@ -17,6 +17,7 @@ from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.image.image_tools import sget
 from gsuid_core.load_template import markdown_templates
 from gsuid_core.utils.plugins_config.gs_config import (
+    pic_gen_config,
     send_pic_config,
     pic_upload_config,
     core_plugins_config,
@@ -33,6 +34,8 @@ is_lf = core_plugins_config.get_config('UseCRLFReplaceLFForMD').data
 
 SERVER = pic_upload_config.get_config('PicUploadServer').data
 IS_UPLOAD = pic_upload_config.get_config('PicUpload').data
+
+pic_quality: int = pic_gen_config.get_config('PicQuality').data
 
 pclient = None
 if IS_UPLOAD:
@@ -62,7 +65,9 @@ class MessageSegment:
         if isinstance(img, Image.Image):
             img = img.convert('RGB')
             result_buffer = BytesIO()
-            img.save(result_buffer, format='PNG', quality=80, subsampling=0)
+            img.save(
+                result_buffer, format='PNG', quality=pic_quality, subsampling=0
+            )
             img = result_buffer.getvalue()
         elif isinstance(img, bytes):
             pass
