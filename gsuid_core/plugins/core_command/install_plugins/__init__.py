@@ -34,8 +34,17 @@ async def refresh_plugins_list(bot: Bot, ev: Event):
     await bot.send(im)
 
 
-@sv_core_install_plugins.on_prefix(('core更新插件'))
+@sv_core_install_plugins.on_prefix(
+    ('core更新插件', 'core强制更新插件', 'core强行强制更新插件')
+)
 async def send_update_msg(bot: Bot, ev: Event):
     await bot.send('开始更新...请稍等一段时间...')
-    _list = update_plugins(ev.text)
+    if '强制' in ev.command:
+        if '强行' in ev.command:
+            level = 2
+        else:
+            level = 1
+    else:
+        level = 0
+    _list = update_plugins(ev.text, level)
     await bot.send(_list)

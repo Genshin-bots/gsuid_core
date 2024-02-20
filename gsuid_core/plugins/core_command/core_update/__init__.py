@@ -14,10 +14,14 @@ from gsuid_core.utils.plugins_update._plugins import (
 sv_core_config = SV('Core管理', pm=0)
 
 
-@sv_core_config.on_fullmatch(('core更新'))
+@sv_core_config.on_fullmatch(('core更新', 'core强制更新'))
 async def send_core_update_msg(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 早柚核心')
-    log_list = update_from_git()
+    if '强制' in ev.command:
+        level = 1
+    else:
+        level = 0
+    log_list = update_from_git(level)
     await bot.send(log_list)
 
 

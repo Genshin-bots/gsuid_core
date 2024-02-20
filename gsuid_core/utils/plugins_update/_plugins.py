@@ -365,6 +365,8 @@ def update_from_git(
     if level >= 2:
         logger.warning(f'[更新][{plugin_name}] 正在执行 git clean --xdf')
         logger.warning('[更新] 你有 2 秒钟的时间中断该操作...')
+        if plugin_name == '早柚核心':
+            return ['更新失败, 禁止强行强制更新核心...']
         time.sleep(2)
         repo.git.clean('-xdf')
     # 还原上次更改
@@ -403,10 +405,12 @@ def update_plugins(
     log_key: List[str] = [],
     log_limit: int = 10,
 ) -> Union[str, List]:
+    if not plugin_name:
+        return '请后跟有效的插件名称！\n例如：core更新插件genshinuid'
     for _n in PLUGINS_PATH.iterdir():
         _name = _n.name
         sim = len(set(_name.lower()) & set(plugin_name.lower()))
-        if sim >= 0.5 * len(_name):
+        if sim >= 0.85 * len(_name):
             plugin_name = _name
             break
 
