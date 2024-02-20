@@ -24,8 +24,12 @@ async def check_url(tag: str, url: str):
             async with session.get(url) as response:
                 elapsed_time = time.time() - start_time
                 if response.status == 200:
-                    logger.debug(f'{tag} {url} 延时: {elapsed_time}')
-                    return tag, url, elapsed_time
+                    if 'Index of /' in await response.text():
+                        logger.debug(f'{tag} {url} 延时: {elapsed_time}')
+                        return tag, url, elapsed_time
+                    else:
+                        logger.info(f'{tag} {url} 未超时但失效...')
+                        return tag, url, float('inf')
                 else:
                     logger.info(f'{tag} {url} 超时...')
                     return tag, url, float('inf')
