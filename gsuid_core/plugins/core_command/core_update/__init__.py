@@ -59,9 +59,25 @@ async def send_core_poetry_install(bot: Bot, ev: Event):
     await bot.send(im)
 
 
-@sv_core_config.on_fullmatch(('core全部更新'))
+@sv_core_config.on_fullmatch(
+    (
+        'core全部更新',
+        'core全部强制更新',
+        'core强制全部更新',
+        'core强行强制全部更新',
+        'core全部强行强制更新',
+    )
+)
 async def send_core_all_update_msg(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 全部更新')
-    log_list = update_from_git()
-    log_list.extend(update_all_plugins())
+
+    if '强制' in ev.command:
+        level = 1
+        if '强行' in ev.command:
+            level = 2
+    else:
+        level = 0
+
+    log_list = update_from_git(min(level, 1))
+    log_list.extend(update_all_plugins(level))
     await bot.send(log_list)

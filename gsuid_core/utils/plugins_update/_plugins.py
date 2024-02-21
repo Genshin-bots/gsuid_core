@@ -71,11 +71,11 @@ def check_retcode(retcode: int) -> str:
         return f'更新失败, 错误码{retcode}'
 
 
-def update_all_plugins() -> List[str]:
+def update_all_plugins(level: int = 0) -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
         if _is_plugin(plugin):
-            log_list.extend(update_from_git(0, plugin))
+            log_list.extend(update_from_git(level, plugin))
     return log_list
 
 
@@ -361,6 +361,8 @@ def update_from_git(
         return ['更新失败, 不存在该插件!']
 
     o = repo.remotes.origin
+
+    logger.info(f'[更新] 准备更新 [{plugin_name}], 更新等级为{level}')
 
     if level >= 2:
         logger.warning(f'[更新][{plugin_name}] 正在执行 git clean --xdf')
