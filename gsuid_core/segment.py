@@ -2,6 +2,7 @@ import re
 import uuid
 import random
 from io import BytesIO
+from venv import logger
 from pathlib import Path
 from base64 import b64decode, b64encode
 from typing import Dict, List, Tuple, Union, Literal, Optional
@@ -419,6 +420,10 @@ async def markdown_to_template_markdown(
                         ]
 
             t_values = list(_t.values())[-1]
+
+            logger.debug(f'[GsCore] MD模板发送使用模板{t_values[0]}')
+            logger.debug(t_values[1])
+
             _message.extend(
                 MessageSegment.template_markdown(
                     t_values[0],
