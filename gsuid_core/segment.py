@@ -351,7 +351,7 @@ async def _convert_message(
         if message.startswith('base64://'):
             _str_message = Message(type='image', data=message)
         else:
-            _str_message = MessageSegment.text(message)
+            _str_message = Message(type='text', data=message)
         _message = await _convert_message_to_image(
             _str_message, bot_id, bot_self_id
         )
@@ -409,7 +409,11 @@ async def markdown_to_template_markdown(
                     _send_group = {}
                     for i in match_para:
                         if match_para[i]:
-                            _send_group[f'{i}'] = match_para[i]
+                            if is_lf:
+                                send_data = match_para[i].replace('\n', '\r')
+                            else:
+                                send_data = match_para[i]
+                            _send_group[f'{i}'] = send_data
 
                     match_values = match.groupdict().values()
                     size = len([i for i in match_values if i is not None])

@@ -67,8 +67,8 @@ try:
                     .replace(')', r'\)')
                     .replace(']', r'\]')
                     .replace('[', r'\[')
-                    .replace('\n!', r')?\n?\!?(')
-                    .replace('\n', r')?\n?(')
+                    .replace('\n!', r')?\r?\!?(')
+                    .replace('\n', r')?\r?(')
                 )
                 + r')?'
             )
