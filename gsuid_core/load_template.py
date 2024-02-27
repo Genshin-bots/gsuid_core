@@ -67,6 +67,7 @@ try:
                     .replace(')', r'\)')
                     .replace(']', r'\]')
                     .replace('[', r'\[')
+                    .replace('\n!', r')?\n?\!?(')
                     .replace('\n', r')?\n?(')
                 )
                 + r')?'
@@ -81,6 +82,12 @@ try:
                 'template_id': markdown_template.stem,
                 'para': [i[1:] for i in para_list],
             }
+
+    markdown_templates = dict(
+        sorted(
+            markdown_templates.items(), key=lambda x: len(x[0]), reverse=True
+        )
+    )
 
     for custom_button in custom_buttons_template.iterdir():
         with open(custom_button, 'r', encoding='UTF-8') as f:

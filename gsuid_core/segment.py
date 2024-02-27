@@ -399,6 +399,7 @@ async def markdown_to_template_markdown(
     _message = []
     for m in message:
         if m.type == 'markdown':
+            _t = {}
             for mdt in markdown_templates:
                 match = re.fullmatch(mdt, str(m.data).strip())
                 if match:
@@ -409,13 +410,21 @@ async def markdown_to_template_markdown(
                         if match_para[i]:
                             _send_group[f'{i}'] = match_para[i]
 
-                    _message.extend(
-                        MessageSegment.template_markdown(
+                    match_values = match.groupdict().values()
+                    size = len([i for i in match_values if i is not None])
+                    if _t == {} or (_t and size >= list(_t.keys())[-1]):
+                        _t[size] = [
                             markdown_templates[mdt]['template_id'],
                             _send_group,
-                        )
-                    )
-                    break
+                        ]
+
+            t_values = list(_t.values())[-1]
+            _message.extend(
+                MessageSegment.template_markdown(
+                    t_values[0],
+                    t_values[1],
+                )
+            )
         else:
             _message.append(m)
 
