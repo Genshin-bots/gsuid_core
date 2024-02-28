@@ -76,7 +76,7 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
         await bot.send(im)
 
 
-@sv_core_user_addck.on_prefix(('mys设备登录'))
+@sv_core_user_addck.on_prefix(('mys设备登录', 'mys设备登陆'))
 async def send_add_device_msg(bot: Bot, ev: Event):
     try:
         data: Dict[str, str] = json.loads(ev.text.strip())
@@ -95,7 +95,7 @@ async def send_add_device_msg(bot: Bot, ev: Event):
         elif 'deviceInfo' in data:
             device_info = data['deviceInfo']
         else:
-            device_info = 'Unknown/Unknown/Unknown'
+            device_info = 'Unknown/Unknown/Unknown/Unknown'
     else:
         device_id = mys_api.get_device_id()
         seed_id, seed_time = mys_api.get_seed()
@@ -123,6 +123,6 @@ async def send_add_device_msg(bot: Bot, ev: Event):
         for user in user_list:
             if user.cookie:
                 await mys_api.device_login_and_save(
-                    device_id, fp, data['deviceFingerprint'], user.cookie
+                    device_id, fp, device_info, user.cookie
                 )
     await bot.send('设备绑定成功!')
