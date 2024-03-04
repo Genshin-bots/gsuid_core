@@ -131,6 +131,7 @@ class Bot:
             reply = self.resp[-1]
             self.resp.clear()
             self.event = asyncio.Event()
+            self.ev = reply
             return reply
 
     def set_event(self):
