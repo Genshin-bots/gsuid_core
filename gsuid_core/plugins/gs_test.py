@@ -6,6 +6,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.sv import SL, SV
 from gsuid_core.models import Event
 from gsuid_core.message_models import Button
+from gsuid_core.segment import MessageSegment
 
 sv_switch = SV('测试开关')
 
@@ -97,6 +98,18 @@ async def get_regex_msg(bot: Bot, ev: Event):
     await asyncio.sleep(2)
     await bot.send(
         f'[正则测试]校验成功！{ev.regex_dict["name"]}你输入的是{ev.regex_dict["int"]}'
+    )
+
+
+@sv_switch.on_fullmatch('图片MD')
+async def send_temp_md_msg(bot: Bot, ev: Event):
+    await bot.send_option(
+        [
+            MessageSegment.image('http://xxx.jpg'),
+            MessageSegment.image_size((950, 240)),
+            MessageSegment.text('大柴郡!'),
+        ],
+        ['测试'],
     )
 
 

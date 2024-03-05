@@ -455,14 +455,21 @@ async def to_markdown(
         return message
 
     for m in message:
+        if m.type == 'image_size':
+            size = m.data
+
+    for m in message:
         if m.type == 'image':
             if isinstance(m.data, str):
                 if m.data.startswith('link://'):
                     url = m.data.replace('link://', '')
                 elif m.data.startswith('base64://'):
                     url = await _image_to_url(m.data, send_type, m)
-        elif m.type == 'image_size':
-            size = m.data
+
+                if url and size:
+                    _markdown_list.append(
+                        f'![图片 #{size[0]}px #{size[1]}px]({url})'
+                    )
         elif m.type == 'text':
             assert isinstance(m.data, str)
             data = m.data.replace('\n', '\n\n')
@@ -471,9 +478,6 @@ async def to_markdown(
             _markdown_list.append(data)
         else:
             _message.append(m)
-
-    if url is not None and size is not None:
-        _markdown_list.append(f'![图片 #{size[0]}px #{size[1]}px]({url})')
 
     _markdown = '\n'.join(_markdown_list)
     _message.extend(MessageSegment.markdown(_markdown, buttons))
