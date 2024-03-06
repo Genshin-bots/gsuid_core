@@ -88,7 +88,11 @@ class Trigger:
             if command_group:
                 msg.regex_dict = command_group.groupdict()
                 msg.regex_group = command_group.groups()
-                msg.command = '|'.join(list(msg.regex_group))
+                msg.command = '|'.join(
+                    [i if i is not None else '' for i in list(msg.regex_group)]
+                )
             text_list = re.split(self.keyword, msg.raw_text)
-            msg.text = '|'.join(text_list)
+            msg.text = '|'.join(
+                [i if i is not None else '' for i in text_list]
+            )
         return msg
