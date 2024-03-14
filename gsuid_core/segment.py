@@ -401,39 +401,50 @@ async def markdown_to_template_markdown(
     for m in message:
         if m.type == 'markdown':
             _t = {}
-            for mdt in markdown_templates:
-                match = re.fullmatch(mdt, str(m.data).strip())
-                if match:
-                    match_para = match.groupdict()
+            if markdown_templates:
+                for mdt in markdown_templates:
+                    match = re.fullmatch(mdt, str(m.data).strip())
+                    if match:
+                        match_para = match.groupdict()
 
-                    _send_group = {}
-                    for i in match_para:
-                        if match_para[i]:
-                            if is_lf:
-                                send_data = match_para[i].replace('\n', '\r')
-                            else:
-                                send_data = match_para[i]
-                            _send_group[f'{i}'] = send_data
+                        _send_group = {}
+                        for i in match_para:
+                            if match_para[i]:
+                                if is_lf:
+                                    send_data = match_para[i].replace(
+                                        '\n', '\r'
+                                    )
+                                else:
+                                    send_data = match_para[i]
+                                _send_group[f'{i}'] = send_data
 
-                    match_values = match.groupdict().values()
-                    size = len([i for i in match_values if i is not None])
-                    if _t == {} or (_t and size >= list(_t.keys())[-1]):
-                        _t[size] = [
-                            markdown_templates[mdt]['template_id'],
-                            _send_group,
-                        ]
+                        match_values = match.groupdict().values()
+                        size = len([i for i in match_values if i is not None])
+                        if _t == {} or (_t and size >= list(_t.keys())[-1]):
+                            _t[size] = [
+                                markdown_templates[mdt]['template_id'],
+                                _send_group,
+                            ]
+                if _t:
+                    t_values = list(_t.values())[-1]
 
-            t_values = list(_t.values())[-1]
+                    logger.debug(f'[GsCore] MD模板发送使用模板{t_values[0]}')
+                    logger.debug(t_values[1])
 
-            logger.debug(f'[GsCore] MD模板发送使用模板{t_values[0]}')
-            logger.debug(t_values[1])
-
-            _message.extend(
-                MessageSegment.template_markdown(
-                    t_values[0],
-                    t_values[1],
-                )
-            )
+                    _message.extend(
+                        MessageSegment.template_markdown(
+                            t_values[0],
+                            t_values[1],
+                        )
+                    )
+                else:
+                    logger.warning(
+                        '[GsCore] MD模板无匹配！将以正常消息发送...'
+                    )
+                    _message.append(m)
+            else:
+                logger.warning('[GsCore] 未配置MD模板！将以正常消息发送...')
+                _message.append(m)
         else:
             _message.append(m)
 
