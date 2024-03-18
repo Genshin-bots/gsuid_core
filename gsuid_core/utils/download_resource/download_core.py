@@ -5,10 +5,9 @@ from pathlib import Path
 from urllib.parse import unquote
 from typing import Dict, Optional
 
+import httpx
 import aiohttp
 from bs4 import BeautifulSoup
-from aiohttp import TCPConnector
-from aiohttp.client import ClientSession, ClientTimeout
 
 from gsuid_core.logger import logger
 
@@ -18,21 +17,21 @@ global_tag, global_url = '', ''
 
 
 async def check_url(tag: str, url: str):
-    async with aiohttp.ClientSession() as session:
+    async with httpx.AsyncClient() as client:
         try:
             start_time = time.time()
-            async with session.get(url) as response:
-                elapsed_time = time.time() - start_time
-                if response.status == 200:
-                    if 'Index of /' in await response.text():
-                        logger.debug(f'{tag} {url} 延时: {elapsed_time}')
-                        return tag, url, elapsed_time
-                    else:
-                        logger.info(f'{tag} {url} 未超时但失效...')
-                        return tag, url, float('inf')
+            response = await client.get(url)
+            elapsed_time = time.time() - start_time
+            if response.status_code == 200:
+                if 'Index of /' in response.text:
+                    logger.debug(f'{tag} {url} 延时: {elapsed_time}')
+                    return tag, url, elapsed_time
                 else:
-                    logger.info(f'{tag} {url} 超时...')
+                    logger.info(f'{tag} {url} 未超时但失效...')
                     return tag, url, float('inf')
+            else:
+                logger.info(f'{tag} {url} 超时...')
+                return tag, url, float('inf')
         except aiohttp.ClientError:
             logger.info(f'{tag} {url} 超时...')
             return tag, url, float('inf')
@@ -69,6 +68,7 @@ async def check_speed():
     URL_LIB = {
         '[JPFRP]': 'http://jp-2.lcf.icu:13643',
         '[HKFRP]': 'http://hk-1.5gbps-2.lcf.icu:10200',
+        '[XiaoWu]': 'http://frp.xiaowuap.com:63481',
         '[Chuncheon]': 'https://kr.qxqx.cf',
         '[Seoul]': 'https://kr-s.qxqx.cf',
         '[Singapore]': 'https://sg.qxqx.cf',
@@ -81,9 +81,13 @@ async def check_speed():
     return TAG, BASE_URL
 
 
-async def _get_url(url: str, sess: ClientSession):
-    req = await sess.get(url=url)
-    return await req.read()
+async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
+    try:
+        response = await client.get(url)
+        return response.read()
+    except httpx.HTTPStatusError as exc:
+        print(f"HTTP error occurred while fetching {url}: {exc}")
+        return b""
 
 
 async def download_all_file(
@@ -92,23 +96,19 @@ async def download_all_file(
     URL: Optional[str] = None,
     TAG: Optional[str] = None,
 ):
-    if global_url:
-        TAG, BASE_URL = global_tag, global_url
+    global global_tag, global_url
 
-    if not URL:
+    if URL:
+        TAG, BASE_URL = TAG or '[Unknown]', URL
+    else:
         TAG, BASE_URL = await check_speed()
         PLUGIN_RES = f'{BASE_URL}/{plugin_name}'
-    else:
-        PLUGIN_RES = f'{URL}/{plugin_name}'
 
     if TAG is None:
         TAG = '[Unknown]'
 
     TASKS = []
-    async with ClientSession(
-        connector=TCPConnector(verify_ssl=False),
-        timeout=ClientTimeout(total=None, sock_connect=20, sock_read=200),
-    ) as sess:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(200.0)) as client:
         n = 0
         for endpoint in EPATH_MAP:
             url = f'{PLUGIN_RES}/{endpoint}/'
@@ -117,11 +117,12 @@ async def download_all_file(
             if not path.exists():
                 path.mkdir(parents=True)
 
-            base_data = await _get_url(url, sess)
+            base_data = await _get_url(url, client)
             content_bs = BeautifulSoup(base_data, 'lxml')
             pre_data = content_bs.find_all('pre')[0]
             data_list = pre_data.find_all('a')
             size_list = [i for i in content_bs.strings]
+
             logger.trace(
                 f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!'
             )
@@ -136,10 +137,12 @@ async def download_all_file(
                 size = size_list[index * 2 + 6].split(' ')[-1]
                 size = int(size.replace('\r\n', ''))
                 file_path = path / name
+
                 if file_path.exists():
                     is_diff = size == os.stat(file_path).st_size
                 else:
                     is_diff = True
+
                 if (
                     not file_path.exists()
                     or not os.stat(file_path).st_size
@@ -150,12 +153,10 @@ async def download_all_file(
                     )
                     temp_num += 1
                     size_temp += size
-                    TASKS.append(
-                        asyncio.wait_for(
-                            download(file_url, path, name, sess, TAG),
-                            timeout=600,
-                        )
+                    TASK = asyncio.create_task(
+                        download(file_url, path, name, client, TAG)
                     )
+                    TASKS.append(TASK)
                     if size_temp >= 1500000:
                         await asyncio.gather(*TASKS)
                         TASKS.clear()
@@ -171,5 +172,6 @@ async def download_all_file(
                     f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!'
                 )
             temp_num = 0
+
         if n == len(EPATH_MAP):
             logger.success(f'插件 {plugin_name} 资源库已是最新!')
