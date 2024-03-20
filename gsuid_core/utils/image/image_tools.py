@@ -6,7 +6,7 @@ from typing import Tuple, Union, Optional
 
 import httpx
 from httpx import get
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from gsuid_core.models import Event
 from gsuid_core.utils.image.utils import sget
@@ -14,6 +14,26 @@ from gsuid_core.data_store import get_res_path
 
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
+
+
+def get_status_icon(status: Union[int, bool]) -> Image.Image:
+    if status:
+        img = Image.open(TEXT_PATH / 'yes.png')
+    else:
+        img = Image.open(TEXT_PATH / 'no.png')
+    return img
+
+
+def get_v4_bg(w: int, h: int, is_dark: bool = False, is_blur: bool = False):
+    CI_img = CustomizeImage(BG_PATH)
+    img = CI_img.get_image(None, w, h)
+    if is_blur:
+        img = img.filter(ImageFilter.GaussianBlur(radius=15))
+    if is_dark:
+        black_img = Image.new('RGBA', (w, h), (0, 0, 0, 180))
+        img.paste(black_img, (0, 0), black_img)
+    img = img.convert('RGBA')
+    return img
 
 
 async def get_event_avatar(

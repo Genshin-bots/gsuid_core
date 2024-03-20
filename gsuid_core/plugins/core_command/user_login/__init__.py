@@ -10,6 +10,7 @@ from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.cookie_manager.qrlogin import qrcode_login
 from gsuid_core.utils.cookie_manager.add_ck import (
     deal_ck,
+    get_all_bind_uid,
     get_ck_by_stoken,
     get_ck_by_all_stoken,
 )
@@ -57,7 +58,14 @@ async def _send_help(bot: Bot, im):
 @sv_core_user_qrcode_login.on_fullmatch(('扫码登陆', '扫码登录'))
 async def send_qrcode_login(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[扫码登陆]')
-    im = await qrcode_login(bot, ev, ev.user_id)
+    uid_list = await get_all_bind_uid(ev.bot_id, ev.user_id)
+    if any(uid_list):
+        im = await qrcode_login(bot, ev, ev.user_id)
+    else:
+        return await bot.send(
+            '您还没有绑定原神/星铁UID！\n请先使用[绑定UID]或[sr绑定UID]...'
+        )
+
     if not im:
         return
     im, status = await deal_ck(ev.bot_id, im, ev.user_id)
@@ -111,17 +119,18 @@ async def send_add_device_msg(bot: Bot, ev: Event):
             seed_time,
         )
         device_info = data['deviceFingerprint']
-    await GsUser.update_data(
-        ev.user_id,
-        ev.bot_id,
-        fp=fp,
-        device_id=device_id,
-        device_info=device_info,
-    )
     user_list = await GsUser.select_data_list(ev.user_id, ev.bot_id)
     if user_list:
         for user in user_list:
             if user.cookie:
+                await GsUser.update_data_by_data(
+                    {'uid': user.uid},
+                    {
+                        'fp': fp,
+                        'device_id': device_id,
+                        'device_info': device_info,
+                    },
+                )
                 await mys_api.device_login_and_save(
                     device_id, fp, device_info, user.cookie
                 )

@@ -3,12 +3,13 @@ from typing import Tuple, Union, Optional
 
 from PIL import Image, ImageDraw
 
+from gsuid_core.models import Event
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser
 from gsuid_core.utils.image.image_tools import (
     get_color_bg,
-    get_qq_avatar,
+    get_event_avatar,
     draw_pic_with_ring,
     easy_alpha_composite,
 )
@@ -21,7 +22,8 @@ status_on = Image.open(TEXT_PATH / 'status_on.png')
 EN_MAP = {'coin': '宝钱', 'resin': '体力', 'go': '派遣', 'transform': '质变仪'}
 
 
-async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
+async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
+    user_id = ev.user_id
     uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id)
     sr_uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id, 'sr')
     user_list = await GsUser.get_user_all_data_by_user_id(user_id)
@@ -38,12 +40,7 @@ async def get_user_card(bot_id: str, user_id: str) -> Union[bytes, str]:
     w, h = 750, len(max_len) * 900 + 470
 
     # 获取背景图片各项参数
-    _id = str(user_id)
-    if _id.startswith('http'):
-        char_pic = await get_qq_avatar(avatar_url=_id)
-    else:
-        char_pic = await get_qq_avatar(qid=_id)
-    char_pic = await draw_pic_with_ring(char_pic, 290)
+    char_pic = await draw_pic_with_ring(await get_event_avatar(ev), 290)
 
     img = await get_color_bg(w, h)
     img_mask = Image.new('RGBA', img.size, (255, 255, 255))

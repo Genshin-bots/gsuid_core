@@ -437,6 +437,49 @@ class BaseModel(BaseBotIDModel):
 
     @classmethod
     @with_session
+    async def update_data_by_data(
+        cls: Type[T_BaseModel],
+        session: AsyncSession,
+        select_data: Dict,
+        update_data: Dict,
+    ) -> int:
+        '''📝简单介绍:
+
+            基类的数据更新方法
+
+        🌱参数:
+
+            🔹select_data (`Dict`):
+                    寻找数据条件, 例如`{"user_id": `event.bot_id`}`
+
+            🔹`update_data (`Dict`)`:
+                    要更新的数据
+
+        🚀使用范例:
+
+            `await GsUser.update_data_by_data(`
+                `select_data={"user_id": `event.bot_id`}, `
+                `update_data={"bot_id": 'onebot', "uid": '22'}`
+            `)`
+
+        ✅返回值:
+
+            🔸`int`: 成功为0, 失败为-1（未找到数据则无法更新）
+        '''
+        sql = update(cls)
+        for k, v in select_data.items():
+            sql = sql.where(getattr(cls, k) == v)
+
+        if update_data:
+            query = sql.values(**update_data)
+            query.execution_options(synchronize_session='fetch')
+            await session.execute(query)
+            await session.commit()
+            return 0
+        return -1
+
+    @classmethod
+    @with_session
     async def update_data(
         cls: Type[T_BaseModel],
         session: AsyncSession,

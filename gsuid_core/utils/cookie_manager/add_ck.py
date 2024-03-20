@@ -1,15 +1,17 @@
 from pathlib import Path
-from typing import Dict, List, Tuple
 from http.cookies import SimpleCookie
+from typing import Dict, List, Tuple, Union
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import UID_HINT
 from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.utils.fonts.fonts import core_font as cf
 from gsuid_core.utils.database.utils import SERVER, SR_SERVER
 from gsuid_core.utils.database.models import GsBind, GsUser, GsCache
+from gsuid_core.utils.image.image_tools import get_v4_bg, get_status_icon
 
 pic_path = Path(__file__).parent / 'pic'
 id_list = [
@@ -98,19 +100,52 @@ async def deal_ck(bot_id: str, mes: str, user_id: str, mode: str = 'PIC'):
         return im, status
 
 
-async def _deal_ck_to_pic(im: str) -> Tuple[bytes, bool]:
-    ok_num = im.count('成功')
-    if ok_num < 1:
-        status_pic = pic_path / 'ck_no.png'
-        status = False
-    elif ok_num < 2:
-        status_pic = pic_path / 'ck_ok.png'
-        status = False
-    else:
-        status_pic = pic_path / 'all_ok.png'
-        status = True
-    img = Image.open(status_pic).convert('RGB')
+async def _deal_ck_to_pic(im: str) -> Tuple[bytes, int]:
+    img, status = await draw_add_ck_pic(im)
     return await convert_img(img), status
+
+
+async def draw_add_ck_pic(msg: str) -> Tuple[Image.Image, int]:
+    bg = get_v4_bg(800, 260, is_blur=True)
+    ck_fg = Image.open(pic_path / 'ck_fg.png')
+    bg.paste(ck_fg, (0, 0), ck_fg)
+    bg_draw = ImageDraw.Draw(bg)
+
+    ok_num = msg.count('成功')
+    if ok_num >= 1:
+        icon = get_status_icon(True)
+        if ok_num >= 2:
+            main_text = '绑定Cookie、Stoken成功！'
+        else:
+            main_text = '绑定Cookies成功！Stoken失败...'
+    else:
+        icon = get_status_icon(False)
+        main_text = '绑定账号失败...'
+
+    bg.paste(icon, (47, 33), icon)
+
+    bg_draw.text((108, 58), main_text, (29, 29, 29), cf(40), 'lm')
+
+    if '\n' in msg:
+        hint1 = msg.split('\n')[0]
+        hint2 = msg.split('\n')[1]
+    else:
+        hint1 = msg
+        hint2 = '可以尝试退出米游社登陆重新登陆获取!'
+
+    if len(hint2) >= 27:
+        hint2 = hint2[:27] + '...'
+    if len(hint1) >= 27:
+        hint1 = hint1[:27] + '...'
+
+    if ok_num >= 1:
+        hint2 = '> 我们仍然推荐你进行 [绑定设备]'
+        hint1 += '可使用[绑定信息]查看账号状态！'
+
+    bg_draw.text((58, 122), f'> {hint1}', (72, 72, 72), cf(32), 'lm')
+    bg_draw.text((58, 174), f'> {hint2}', (72, 72, 72), cf(32), 'lm')
+
+    return bg, ok_num
 
 
 async def get_account_id(simp_dict: SimpleCookie) -> str:
@@ -123,10 +158,17 @@ async def get_account_id(simp_dict: SimpleCookie) -> str:
     return account_id
 
 
-async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
-    simp_dict = SimpleCookie(mes)
+async def get_all_bind_uid(
+    bot_id: str, user_id: str
+) -> Tuple[Union[str, None], ...]:
     uid = await GsBind.get_uid_by_game(user_id, bot_id)
     sr_uid = await GsBind.get_uid_by_game(user_id, bot_id, 'sr')
+    return uid, sr_uid
+
+
+async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
+    simp_dict = SimpleCookie(mes)
+    uid, sr_uid = await get_all_bind_uid(bot_id, user_id)
 
     uid_bind = sr_uid_bind = zzz_uid_bind = None
     wd_uid_bind = bb_uid_bind = bbb_uid_bind = None
@@ -204,10 +246,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                 status = False
                 break
     if status:
-        return (
-            '添加Cookies失败!Cookies中应该包含cookie_token或者login_ticket相关信息!'
-            '\n可以尝试退出米游社登陆重新登陆获取!'
-        )
+        return '添加Cookies失败!\ncookies中应该包含cookie_token或者login_ticket相关信息!'
 
     account_cookie = f'account_id={account_id};cookie_token={cookie_token}'
 
@@ -254,7 +293,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
         await GsCache.refresh_cache(sr_uid_bind, 'sr')
 
     if is_add_stoken:
-        im_list.append(f'添加Stoken成功,stuid={account_id},stoken={stoken}')
+        im_list.append(f'添加Stoken成功!\nstuid={account_id},stoken={stoken}')
 
     if uid is None:
         uid = '0'

@@ -47,7 +47,7 @@ class GsClient:
                 bot_id='console',
                 # bot_id='qqgroup',
                 bot_self_id='511love51',
-                user_type='group',
+                user_type='direct',
                 user_pm=0,
                 group_id=group_id,
                 user_id=user_id,
