@@ -1,151 +1,324 @@
 from pathlib import Path
-from typing import Tuple, Union, Optional
+from copy import deepcopy
+from typing import Any, Dict, Type, Union
 
 from PIL import Image, ImageDraw
 
 from gsuid_core.models import Event
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.convert import convert_img
-from gsuid_core.utils.database.models import GsBind, GsPush, GsUser
+from gsuid_core.utils.database.base_models import Bind, Push, User
 from gsuid_core.utils.image.image_tools import (
-    get_color_bg,
+    get_v4_bg,
+    get_v4_footer,
     get_event_avatar,
     draw_pic_with_ring,
-    easy_alpha_composite,
 )
 
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 
 status_off = Image.open(TEXT_PATH / 'status_off.png')
 status_on = Image.open(TEXT_PATH / 'status_on.png')
+BLACK = (10, 10, 10)
+GREY = (57, 57, 57)
 
 EN_MAP = {'coin': '宝钱', 'resin': '体力', 'go': '派遣', 'transform': '质变仪'}
 
+T_MODEL = Union[Type[User], Type[Bind], Type[Push]]
+
+
+def get_class_name(cls: T_MODEL):
+    module = cls.__module__
+    if 'plugins' in module:
+        module_name = module.split('.')[1]
+    else:
+        module_name = 'SayuCore'
+    return module_name
+
+
+def get_keys(model: T_MODEL):
+    keys = {}
+    fields = model.__fields__
+    # 获取模型全部的键，并判断哪些需要显示
+    for keyname in fields:
+        field = fields[keyname]
+        field_info = field.field_info
+        # 拿到键名
+        key_name = field.name
+        # 拿到键标题
+        title = field_info.title
+        desc = (
+            field_info.extra['hint']
+            if 'hint' in field_info.extra
+            else '未提供'
+        )
+        # 拿到键类型
+        # type_ = user_field.type_
+        title = title if title else key_name
+        if (
+            not key_name.endswith(('uid', '_value', '_is_push', 'region'))
+            and key_name != 'id'
+            and key_name != 'user_id'
+            and key_name != 'bot_id'
+            and key_name != 'status'
+            and key_name != 'fp'
+            and key_name != 'mys_id'
+            and key_name != 'device_id'
+        ):
+            keys[key_name] = {'title': title, 'desc': desc}
+    return keys
+
+
+def get_status_bool(data: Any):
+    if isinstance(data, bool):
+        return data
+    elif data is None:
+        return False
+    elif isinstance(data, str):
+        if data == 'off':
+            return False
+        else:
+            return True
+    else:
+        return bool(data)
+
 
 async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
+    module_h = 80
+    _line = 117
+    id_line = 90
+    ez = 20
+    w, h = 1200, 600 - 90
+
     user_id = ev.user_id
-    uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id)
-    sr_uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id, 'sr')
-    user_list = await GsUser.get_user_all_data_by_user_id(user_id)
 
-    if user_list is None:
-        return '你还没有绑定过UID和CK!\n(该功能须同时绑定CK和UID才能使用)'
+    all_bind_model = {get_class_name(i): i for i in Bind.__subclasses__()}
+    all_user_model = {get_class_name(i): i for i in User.__subclasses__()}
+    all_push_model = {get_class_name(i): i for i in Push.__subclasses__()}
 
-    if uid_list is None:
-        uid_list = []
-    if sr_uid_list is None:
-        sr_uid_list = []
+    all_plugin_data: Dict[
+        str, Dict[str, Dict[str, Dict[str, Dict[str, Any]]]]
+    ] = {}
 
-    max_len = max(uid_list, sr_uid_list)
-    w, h = 750, len(max_len) * 900 + 470
+    for name in all_bind_model:
+        user_keys: Dict[str, Dict[str, str]] = {}
+        push_keys: Dict[str, Dict[str, str]] = {}
 
-    # 获取背景图片各项参数
-    char_pic = await draw_pic_with_ring(await get_event_avatar(ev), 290)
+        bind_model = all_bind_model[name]
 
-    img = await get_color_bg(w, h)
-    img_mask = Image.new('RGBA', img.size, (255, 255, 255))
+        # 先判断该绑定模型是否存在相应用户模型
+        if name in all_user_model:
+            user_model = all_user_model[name]
+            user_keys = get_keys(user_model)
+        # 先判断该绑定模型是否存在相应推送模型
+        if name in all_push_model:
+            push_model = all_push_model[name]
+            push_keys = get_keys(push_model)
+
+        UD = {}
+
+        bind_fields = bind_model.__fields__
+        for keyname in bind_fields:
+            model_field = bind_fields[keyname]
+            field_info = model_field.field_info
+            UID_NAME = field_info.title
+            key_name = model_field.name
+            if key_name.endswith('uid'):
+                if key_name == 'uid':
+                    game_name = None
+                else:
+                    game_name = key_name.replace('_uid', '')
+
+                uid_list = await bind_model.get_uid_list_by_game(
+                    user_id,
+                    bot_id,
+                    game_name,
+                )
+
+                if uid_list:
+                    for uid in uid_list:
+                        all_data = {}
+                        union_id = -1
+
+                        if user_model:
+                            user_data = {}
+                            user = await user_model.select_data_by_uid(
+                                uid,
+                                game_name,
+                            )
+                            if user_keys:
+                                if not user:
+                                    user = user_model(
+                                        bot_id=bot_id,
+                                        user_id=user_id,
+                                    )
+                                union_id = user.id
+                                for _keyname in user_keys:
+                                    data = getattr(user, _keyname)
+                                    user_keyvalue = user_keys[_keyname]
+                                    user_data[user_keyvalue['title']] = {
+                                        'status': get_status_bool(data),
+                                        'data': data,
+                                        'hint': user_keyvalue['desc'],
+                                    }
+                            all_data.update(user_data)
+
+                        if push_model:
+                            push_data = {}
+                            try:
+                                push = await push_model.select_data_by_uid(
+                                    uid,
+                                    game_name,
+                                )
+                            except AttributeError:
+                                push = push_model(
+                                    bot_id=bot_id,
+                                )
+                            if push_keys:
+                                if not push:
+                                    push = push_model(
+                                        bot_id=bot_id,
+                                    )
+                                for _keyname in push_keys:
+                                    data = getattr(push, _keyname)
+                                    push_keyvalue = push_keys[_keyname]
+                                    push_data[push_keyvalue['title']] = {
+                                        'status': get_status_bool(data),
+                                        'data': data,
+                                        'hint': push_keyvalue['desc'],
+                                    }
+                            all_data.update(push_data)
+
+                        if union_id not in UD:
+                            h += (
+                                (((len(all_data) - 1) // 3) + 1) * (_line + ez)
+                                + id_line
+                                + ez
+                            )
+                            UD[union_id] = {f'{UID_NAME} {uid}': all_data}
+                        else:
+                            h += id_line
+                            UD[union_id][f'{UID_NAME} {uid}'] = all_data
+
+        all_plugin_data[name] = deepcopy(UD)
+
+    all_plugin: Dict[str, Dict[str, Dict[str, Dict[str, Dict[str, Any]]]]] = {}
+
+    # 遍历字典中的所有项
+    for key, value in all_plugin_data.items():
+        if value is not None and value != {}:
+            all_plugin[key] = value
+
+    h += len(all_plugin_data) * 80
+
+    # 开始绘图
+    img = get_v4_bg(w, h, is_blur=True)
+
+    char_pic = await draw_pic_with_ring(await get_event_avatar(ev), 377)
     title = Image.open(TEXT_PATH / 'user_title.png')
-    title.paste(char_pic, (241, 40), char_pic)
+    title.paste(char_pic, (411, 46), char_pic)
 
     title_draw = ImageDraw.Draw(title)
     title_draw.text(
-        (375, 444), f'{bot_id} - {user_id}', (29, 29, 29), core_font(30), 'mm'
+        (600, 486),
+        '绑定信息',
+        BLACK,
+        core_font(34),
+        'mm',
+    )
+
+    title_draw.text(
+        (600, 565),
+        f'{bot_id} - {user_id}',
+        BLACK,
+        core_font(34),
+        'mm',
     )
     img.paste(title, (0, 0), title)
 
-    for index, user_data in enumerate(user_list):
-        user_card = Image.open(TEXT_PATH / 'user_bg.png')
-        user_draw = ImageDraw.Draw(user_card)
-
-        if user_data.uid is not None and user_data.uid != '0':
-            uid_text = f'原神UID {user_data.uid}'
-            user_push_data = await GsPush.select_data_by_uid(user_data.uid)
-            if user_push_data is None:
-                await GsPush.full_insert_data(
-                    bot_id=bot_id,
-                    uid=user_data.uid,
-                    coin_push='off',
-                    coin_value=2100,
-                    coin_is_push='off',
-                    resin_push='on',
-                    resin_value=140,
-                    resin_is_push='off',
-                    go_push='off',
-                    go_value=120,
-                    go_is_push='off',
-                    transform_push='off',
-                    transform_value=140,
-                    transform_is_push='off',
-                )
-                user_push_data = await GsPush.select_data_by_uid(user_data.uid)
-        else:
-            uid_text = '未发现原神UID'
-            user_push_data = GsPush(bot_id='TEMP')
-
-        user_draw.text(
-            (375, 58),
-            uid_text,
-            (29, 29, 29),
-            font=core_font(36),
-            anchor='mm',
+    _h = 600
+    for pulgin_name in all_plugin:
+        plugin_data = all_plugin[pulgin_name]
+        bar = Image.open(TEXT_PATH / 'bar.png')
+        bar_draw = ImageDraw.Draw(bar)
+        bar_draw.text(
+            (121, 40),
+            pulgin_name,
+            (240, 240, 240),
+            core_font(50),
+            'lm',
         )
+        img.paste(bar, (0, _h), bar)
+        _h += module_h + ez
 
-        if user_data.sr_uid:
-            sruid_text = f'星铁UID {user_data.sr_uid}'
-        else:
-            sruid_text = '未发现星铁UID'
+        for _id in plugin_data:
+            _uid_list = plugin_data[_id]
+            _uid_len = len(_uid_list)
 
-        user_draw.text(
-            (375, 119),
-            sruid_text,
-            (29, 29, 29),
-            font=core_font(36),
-            anchor='mm',
-        )
-
-        x, y = 331, 112
-        b = 175
-        paste_switch(user_card, user_data.cookie, (241, b))
-        paste_switch(user_card, user_data.stoken, (241 + x, b))
-        paste_switch(user_card, user_data.sign_switch, (241, b + y))
-        paste_switch(user_card, user_data.bbs_switch, (241 + x, b + y))
-        paste_switch(user_card, user_data.push_switch, (241, b + 2 * y))
-        paste_switch(user_card, user_data.status, (241 + x, b + 2 * y), True)
-
-        for _index, mode in enumerate(['coin', 'resin', 'go', 'transform']):
-            paste_switch(
-                user_card,
-                getattr(user_push_data, f'{mode}_push'),
-                (241 + _index % 2 * x, b + (_index // 2 + 3) * y),
+            _id_data = list(_uid_list.values())[0]
+            _data_h = (
+                (((len(_id_data) - 1) // 3) + 1) * _line
+                + id_line * _uid_len
+                + 20
             )
-            if getattr(user_push_data, f'{mode}_push') != 'off':
-                user_draw.text(
-                    (268 + _index % 2 * x, 168 + 47 + (_index // 2 + 3) * y),
-                    f'{getattr(user_push_data, f"{mode}_value")}',
-                    (35, 35, 35),
-                    font=core_font(15),
-                    anchor='lm',
+
+            temp_img = Image.new('RGBA', img.size)
+            temp_draw = ImageDraw.Draw(temp_img)
+            temp_draw.rounded_rectangle(
+                (60, _h, 1140, _h + _data_h),
+                25,
+                (255, 255, 255, 60),
+            )
+
+            for uid_index, _uid in enumerate(_uid_list):
+                offset = uid_index * id_line - 60
+                f_o = 50
+                temp_draw.text(
+                    (134, _h + 68 + f_o + offset),
+                    _uid,
+                    BLACK,
+                    core_font(40),
+                    'lm',
+                )
+                temp_draw.rounded_rectangle(
+                    (102, _h + 48 + f_o + offset, 112, _h + 88 + f_o + offset),
+                    10,
+                    (106, 208, 71),
                 )
 
-        sr_sign = user_data.sr_sign_switch
-        sr_push = user_data.sr_push_switch
-        paste_switch(user_card, sr_sign, (241, b + 5 * y))
-        paste_switch(user_card, sr_push, (241 + x, b + 5 * y))
+            img.alpha_composite(temp_img)
 
-        img.paste(user_card, (0, 500 + index * 870), user_card)
+            for index, title in enumerate(_id_data):
+                data_dict = _id_data[title]
 
-    img = easy_alpha_composite(img_mask, img, (0, 0))
+                data_status = data_dict['status']
+                # data_data = data_dict['data']
+                data_hint = data_dict['hint']
+
+                status_pic = Image.open(TEXT_PATH / 'status.png')
+                status_draw = ImageDraw.Draw(status_pic)
+
+                status_draw.text((45, 71), title, BLACK, core_font(30), 'lm')
+                status_draw.text(
+                    (45, 103), data_hint, GREY, core_font(22), 'lm'
+                )
+
+                pic = status_on if data_status else status_off
+                status_pic.paste(pic, (212, 45), pic)
+                img.paste(
+                    status_pic,
+                    (
+                        78 + (index % 3) * 343,
+                        _h + _uid_len * id_line - 30 + _line * (index // 3),
+                    ),
+                    status_pic,
+                )
+
+            _h += _data_h + ez
+
+        _h += ez
+
+    footer = get_v4_footer()
+    img.paste(footer, (0, h - 50), footer)
+
     return await convert_img(img)
-
-
-def paste_switch(
-    card: Image.Image,
-    status: Optional[str],
-    pos: Tuple[int, int],
-    is_status: bool = False,
-):
-    if is_status:
-        pic = status_off if status else status_on
-    else:
-        pic = status_on if status != 'off' and status else status_off
-    card.paste(pic, pos, pic)

@@ -910,7 +910,7 @@ class User(BaseModel):
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> Optional[T_User]:
+    ) -> Optional[Type["User"]]:
         '''📝简单介绍:
 
             基础`User`类的数据选择方法
@@ -940,7 +940,7 @@ class User(BaseModel):
     @with_session
     async def get_user_all_data_by_user_id(
         cls: Type[T_User], session: AsyncSession, user_id: str
-    ) -> Optional[List[T_User]]:
+    ) -> Optional[List[Type["User"]]]:
         '''📝简单介绍:
 
             基础`User`类的数据选择方法, 获取该`user_id`绑定的全部数据实例
@@ -1100,7 +1100,7 @@ class User(BaseModel):
     @with_session
     async def get_switch_open_list(
         cls: Type[T_User], session: AsyncSession, switch_name: str
-    ) -> List[T_User]:
+    ) -> List[Type["User"]]:
         '''📝简单介绍:
 
             根据表定义的结构, 根据传入的`switch_name`, 寻找表数据中的该列
@@ -1127,14 +1127,14 @@ class User(BaseModel):
         _switch = getattr(cls, switch_name, cls.push_switch)
         sql = select(cls).filter(and_(_switch != 'off', true()))
         data = await session.execute(sql)
-        data_list: List[T_User] = data.scalars()._allrows()
+        data_list: List[Type["User"]] = data.scalars()._allrows()
         return [user for user in data_list]
 
     @classmethod
     @with_session
     async def get_all_user(
         cls: Type[T_User], session: AsyncSession, without_error: bool = True
-    ) -> List[T_User]:
+    ) -> List[Type["User"]]:
         '''📝简单介绍:
 
             基础`User`类的扩展方法, 获取到全部的数据列表
@@ -1186,7 +1186,7 @@ class User(BaseModel):
         return [_u.cookie for _u in data if _u.cookie and _u.status]
 
     @classmethod
-    async def get_all_push_user_list(cls: Type[T_User]) -> List[T_User]:
+    async def get_all_push_user_list(cls: Type[T_User]) -> List[Type["User"]]:
         '''获得表数据中全部的`push_switch != off`的数据列表'''
         data = await cls.get_all_user()
         return [user for user in data if user.push_switch != 'off']
@@ -1266,7 +1266,7 @@ class User(BaseModel):
                     .order_by(func.random())
                 )
                 data = await session.execute(sql)
-                user_list: List[T_User] = data.scalars()._allrows()
+                user_list: List[Type["User"]] = data.scalars()._allrows()
                 break
             else:
                 user_list = await cls.get_all_user()
@@ -1401,7 +1401,7 @@ class Push(BaseBotIDModel):
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> Optional[T_Push]:
+    ) -> Optional[Type["Push"]]:
         '''📝简单介绍:
 
             基础`Push`类的数据选择方法

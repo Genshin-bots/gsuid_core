@@ -24,11 +24,15 @@ def get_status_icon(status: Union[int, bool]) -> Image.Image:
     return img
 
 
+def get_v4_footer():
+    return Image.open(TEXT_PATH / 'footer.png')
+
+
 def get_v4_bg(w: int, h: int, is_dark: bool = False, is_blur: bool = False):
     CI_img = CustomizeImage(BG_PATH)
     img = CI_img.get_image(None, w, h)
     if is_blur:
-        img = img.filter(ImageFilter.GaussianBlur(radius=15))
+        img = img.filter(ImageFilter.GaussianBlur(radius=20))
     if is_dark:
         black_img = Image.new('RGBA', (w, h), (0, 0, 0, 180))
         img.paste(black_img, (0, 0), black_img)
