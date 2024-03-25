@@ -1,6 +1,6 @@
 import re
 import asyncio
-from typing import Dict, Type, Tuple, Union, Optional, overload
+from typing import Dict, Type, Tuple, Union, Literal, Optional, overload
 
 from sqlalchemy import event
 
@@ -53,7 +53,7 @@ async def get_uid(
     ev: Event,
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
-    get_user_id: bool = False,
+    get_user_id: Literal[False] = False,
     partten: str = r'\d+',
 ) -> Optional[str]: ...
 
@@ -64,7 +64,7 @@ async def get_uid(
     ev: Event,
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
-    get_user_id: bool = True,
+    get_user_id: Literal[True] = True,
     partten: str = r'\d+',
 ) -> Tuple[Optional[str], str]: ...
 
@@ -79,12 +79,14 @@ async def get_uid(
 ) -> Union[Optional[str], Tuple[Optional[str], str]]:
     uid_data = re.findall(partten, ev.text)
     user_id = ev.at if ev.at else ev.user_id
+
     if uid_data:
-        uid: Optional[str] = uid_data[0]
+        uid = uid_data[0]
         if uid:
             ev.text = ev.text.replace(uid, '')
     else:
         uid = await bind_model.get_uid_by_game(user_id, ev.bot_id, game_name)
+
     if get_user_id:
         return uid, user_id
     return uid
