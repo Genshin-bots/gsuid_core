@@ -53,6 +53,8 @@ async def get_uid(
     ev: Event,
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
+    get_user_id: bool = False,
+    partten: str = r'\d+',
 ) -> Optional[str]: ...
 
 
@@ -63,6 +65,7 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: bool = True,
+    partten: str = r'\d+',
 ) -> Tuple[Optional[str], str]: ...
 
 
@@ -72,8 +75,9 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: bool = False,
+    partten: str = r'\d+',
 ) -> Union[Optional[str], Tuple[Optional[str], str]]:
-    uid_data = re.findall(r'\d+', ev.text)
+    uid_data = re.findall(partten, ev.text)
     user_id = ev.at if ev.at else ev.user_id
     if uid_data:
         uid: Optional[str] = uid_data[0]
