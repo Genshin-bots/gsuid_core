@@ -1,9 +1,12 @@
+from typing import List, Type
+
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
+from gsuid_core.utils.database.models import CoreUser, CoreGroup
 
 from .command_global_val import save_global_val
 
@@ -16,11 +19,29 @@ template = '''收:{}
 当前会话调用：{}'''
 
 
+async def count_group_user():
+    user_list: List[Type[CoreUser]] = await CoreUser.get_all_data()
+    group_data = {}
+    for user in user_list:
+        if user.group_id and user.group_id not in group_data:
+            data = await CoreUser.select_rows(group_id=user.group_id)
+            if data:
+                group_data[user.group_id] = len(data)
+            else:
+                group_data[user.group_id] = 0
+
+    for g in group_data:
+        await CoreGroup.update_data_by_xx(
+            {'group_id': g}, group_count=group_data[g]
+        )
+
+
 @scheduler.scheduled_job('cron', hour='0', minute='0')
 async def scheduled_save_global_val():
     global bot_val
     await save_global_val()
     gv.bot_val = {}
+    await count_group_user()
 
 
 @sv_core_status.on_command(('core状态', 'Core状态'))

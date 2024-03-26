@@ -9,6 +9,7 @@ from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
 from gsuid_core.global_val import get_global_val
 from gsuid_core.models import Event, Message, MessageReceive
+from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 command_start = core_config.get_config('command_start')
@@ -24,62 +25,6 @@ else:
     _command_start: List[str] = command_start
 
 
-async def get_user_pml(msg: MessageReceive) -> int:
-    if msg.user_id in config_masters:
-        return 0
-    elif msg.user_id in config_superusers:
-        return 1
-    else:
-        return msg.user_pm if msg.user_pm >= 1 else 2
-
-
-async def msg_process(msg: MessageReceive) -> Event:
-    if ':' in msg.bot_id:
-        bot_id = msg.bot_id.split(':')[0]
-    else:
-        bot_id = msg.bot_id
-
-    event = Event(
-        bot_id,
-        msg.bot_self_id,
-        msg.msg_id,
-        msg.user_type,
-        msg.group_id,
-        msg.user_id,
-        msg.sender,
-        msg.user_pm,
-        real_bot_id=msg.bot_id,
-    )
-    _content: List[Message] = []
-    for _msg in msg.content:
-        if _msg.type == 'text':
-            event.raw_text += _msg.data.strip()  # type:ignore
-            event.text += _msg.data.strip()  # type:ignore
-        elif _msg.type == 'at':
-            if event.bot_self_id == _msg.data:
-                event.is_tome = True
-                continue
-            else:
-                event.at = str(_msg.data)
-                event.at_list.append(str(_msg.data))
-        elif _msg.type == 'image':
-            event.image = _msg.data
-            event.image_list.append(_msg.data)
-        elif _msg.type == 'reply':
-            event.reply = _msg.data
-        elif _msg.type == 'file' and _msg.data:
-            data = _msg.data.split('|')
-            event.file_name = data[0]
-            event.file = data[1]
-            if str(event.file).startswith(('http', 'https')):
-                event.file_type = 'url'
-            else:
-                event.file_type = 'base64'
-        _content.append(_msg)
-    event.content = _content
-    return event
-
-
 async def handle_event(ws: _Bot, msg: MessageReceive):
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
@@ -88,6 +33,12 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
 
     local_val = await get_global_val(event.real_bot_id, event.bot_self_id)
     local_val['receive'] += 1
+
+    await CoreUser.insert_user(
+        event.real_bot_id, event.user_id, event.group_id
+    )
+    if event.group_id:
+        await CoreGroup.insert_group(event.real_bot_id, event.group_id)
 
     if event.at:
         for shield_id in shield_list:
@@ -213,6 +164,62 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
             ws.queue.put_nowait(trigger.func(bot, message))
             if trigger.block:
                 break
+
+
+async def get_user_pml(msg: MessageReceive) -> int:
+    if msg.user_id in config_masters:
+        return 0
+    elif msg.user_id in config_superusers:
+        return 1
+    else:
+        return msg.user_pm if msg.user_pm >= 1 else 2
+
+
+async def msg_process(msg: MessageReceive) -> Event:
+    if ':' in msg.bot_id:
+        bot_id = msg.bot_id.split(':')[0]
+    else:
+        bot_id = msg.bot_id
+
+    event = Event(
+        bot_id,
+        msg.bot_self_id,
+        msg.msg_id,
+        msg.user_type,
+        msg.group_id,
+        msg.user_id,
+        msg.sender,
+        msg.user_pm,
+        real_bot_id=msg.bot_id,
+    )
+    _content: List[Message] = []
+    for _msg in msg.content:
+        if _msg.type == 'text':
+            event.raw_text += _msg.data.strip()  # type:ignore
+            event.text += _msg.data.strip()  # type:ignore
+        elif _msg.type == 'at':
+            if event.bot_self_id == _msg.data:
+                event.is_tome = True
+                continue
+            else:
+                event.at = str(_msg.data)
+                event.at_list.append(str(_msg.data))
+        elif _msg.type == 'image':
+            event.image = _msg.data
+            event.image_list.append(_msg.data)
+        elif _msg.type == 'reply':
+            event.reply = _msg.data
+        elif _msg.type == 'file' and _msg.data:
+            data = _msg.data.split('|')
+            event.file_name = data[0]
+            event.file = data[1]
+            if str(event.file).startswith(('http', 'https')):
+                event.file_type = 'url'
+            else:
+                event.file_type = 'base64'
+        _content.append(_msg)
+    event.content = _content
+    return event
 
 
 async def count_data(event: Event, trigger: Trigger):

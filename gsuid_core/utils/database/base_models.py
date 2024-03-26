@@ -105,6 +105,45 @@ class BaseIDModel(SQLModel):
 
     @classmethod
     @with_session
+    async def delete_row(
+        cls: Type[T_BaseIDModel],
+        session: AsyncSession,
+        **data,
+    ) -> int:
+        await session.delete(cls(**data))
+        return 1
+
+    @classmethod
+    @with_session
+    async def select_rows(
+        cls: Type[T_BaseIDModel], session: AsyncSession, **data
+    ) -> Optional[List[T_BaseIDModel]]:
+        '''📝简单介绍:
+
+            数据库基类基础选择数据方法
+
+        🌱参数:
+
+            🔹`**data`
+                    选择的数据, 入参列名等于数据即可
+
+        🚀使用范例:
+
+            `await GsUser.base_select_data(uid='100740568')`
+
+        ✅返回值:
+
+            🔸`Optional[List[T_BaseIDModel]]`: 选中全部符合条件的数据，或者为`None`
+        '''
+        stmt = select(cls)
+        for k, v in data.items():
+            stmt = stmt.where(getattr(cls, k) == v)
+        result = await session.execute(stmt)
+        data = result.scalars().all()
+        return data
+
+    @classmethod
+    @with_session
     async def base_select_data(
         cls: Type[T_BaseIDModel], session: AsyncSession, **data
     ) -> Optional[T_BaseIDModel]:
@@ -125,11 +164,7 @@ class BaseIDModel(SQLModel):
 
             🔸`Optional[T_BaseIDModel]`: 选中符合条件的第一个数据，或者为`None`
         '''
-        stmt = select(cls)
-        for k, v in data.items():
-            stmt = stmt.where(getattr(cls, k) == v)
-        result = await session.execute(stmt)
-        data = result.scalars().all()
+        data = await cls.select_rows(**data)
         return data[0] if data else None
 
     @classmethod
@@ -280,6 +315,16 @@ class BaseBotIDModel(BaseIDModel):
             await session.execute(query)
             return 0
         return -1
+
+    @classmethod
+    @with_session
+    async def get_all_data(
+        cls: Type[T_BaseIDModel],
+        session: AsyncSession,
+    ) -> List[Type[T_BaseIDModel]]:
+        rdata = await session.execute(select(cls))
+        data: List[Type[T_BaseIDModel]] = rdata.scalars().all()
+        return data
 
 
 class BaseModel(BaseBotIDModel):

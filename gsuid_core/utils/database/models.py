@@ -1,8 +1,136 @@
-from typing import Optional
+from typing import List, Type, Optional
 
 from sqlmodel import Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .base_models import Bind, Push, User, Cache
+from .base_models import (
+    Bind,
+    Push,
+    User,
+    Cache,
+    BaseIDModel,
+    BaseBotIDModel,
+    with_session,
+)
+
+
+class CoreTag(BaseIDModel, table=True):
+    tag_type: str = Field(default='DIRECT', title='类型')  # GROUP
+    tag_id: str = Field(default='1', title='群或用户ID')
+    tag_name: str = Field(default='默认用户', title='标记名称')
+
+    @classmethod
+    @with_session
+    async def insert_tag(
+        cls,
+        session: AsyncSession,
+        tag_type: str,
+        uid: str,
+        tag_name: Optional[str] = None,
+    ) -> int:
+        if not tag_name:
+            tag_name = '默认用户'
+        await cls.full_insert_data(
+            tag_type=tag_type,
+            tag_id=uid,
+            tag_name=tag_name,
+        )
+        return 1
+
+    @classmethod
+    @with_session
+    async def delete_tag(
+        cls,
+        session: AsyncSession,
+        tag_type: str,
+        uid: str,
+        tag_name: Optional[str],
+    ) -> int:
+        await cls.delete_row(tag_type=tag_type, uid=uid, tag_name=tag_name)
+        return 1
+
+
+class CoreUser(BaseBotIDModel, table=True):
+    __table_args__ = {'extend_existing': True}
+
+    user_id: str = Field(default='1', title='账号')
+    group_id: Optional[str] = Field(default='1', title='群号')
+    user_name: str = Field(default='1', title='用户名')
+    user_icon: str = Field(default='1', title='用户头像')
+
+    @classmethod
+    @with_session
+    async def get_group_all_user(
+        cls,
+        session: AsyncSession,
+        group_id: str,
+    ):
+        result: Optional[List[Type["CoreUser"]]] = await cls.select_rows(
+            group_id=group_id
+        )
+        return result
+
+    @classmethod
+    @with_session
+    async def get_group_all_user_count(
+        cls,
+        session: AsyncSession,
+        group_id: str,
+    ):
+        result = await cls.get_group_all_user(group_id)
+        return len(result) if result else 0
+
+    @classmethod
+    @with_session
+    async def insert_user(
+        cls,
+        session: AsyncSession,
+        bot_id: str,
+        user_id: str,
+        group_id: Optional[str],
+    ) -> int:
+        data: Optional[Type["CoreUser"]] = await cls.base_select_data(
+            bot_id=bot_id, user_id=user_id, group_id=group_id
+        )
+        if not data:
+            await cls.full_insert_data(
+                bot_id=bot_id,
+                user_id=user_id,
+                group_id=group_id,
+            )
+
+        if not await CoreTag.data_exist(
+            tag_type='DIRECT', tag_id=user_id, tag_name='默认用户'
+        ):
+            await CoreTag.insert_tag(tag_type='DIRECT', uid=user_id)
+        return 1
+
+
+class CoreGroup(BaseBotIDModel, table=True):
+    __table_args__ = {'extend_existing': True}
+
+    group_id: str = Field(default='1', title='群号')
+    group_count: int = Field(default=0, title='群活跃人数(每天更新)')
+    group_name: str = Field(default='1', title='群名')
+    group_icon: str = Field(default='1', title='群头像')
+
+    @classmethod
+    @with_session
+    async def insert_group(
+        cls,
+        session: AsyncSession,
+        bot_id: str,
+        group_id: str,
+    ) -> int:
+        data: Optional[Type["CoreGroup"]] = await cls.base_select_data(
+            bot_id=bot_id, group_id=group_id
+        )
+        if not data:
+            await cls.full_insert_data(
+                bot_id=bot_id,
+                group_id=group_id,
+            )
+        return 1
 
 
 class GsBind(Bind, table=True):
@@ -110,6 +238,9 @@ class GsPush(Push, table=True):
         schema_extra={'hint': 'gs开启质变仪'},
     )
     transform_value: Optional[int] = Field(title='质变仪阈值', default=1000)
+    transform_is_push: Optional[str] = Field(
+        title='质变仪是否已推送', default='off'
+    )
     transform_is_push: Optional[str] = Field(
         title='质变仪是否已推送', default='off'
     )
