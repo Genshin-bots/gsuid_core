@@ -99,10 +99,13 @@ class CoreUser(BaseBotIDModel, table=True):
                 group_id=group_id,
             )
 
+        '''
         if not await CoreTag.data_exist(
             tag_type='DIRECT', tag_id=user_id, tag_name='默认用户'
         ):
             await CoreTag.insert_tag(tag_type='DIRECT', uid=user_id)
+        '''
+
         return 1
 
 
