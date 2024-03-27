@@ -116,7 +116,10 @@ class BaseIDModel(SQLModel):
     @classmethod
     @with_session
     async def select_rows(
-        cls: Type[T_BaseIDModel], session: AsyncSession, **data
+        cls: Type[T_BaseIDModel],
+        session: AsyncSession,
+        distinct: bool = False,
+        **data,
     ) -> Optional[List[T_BaseIDModel]]:
         '''📝简单介绍:
 
@@ -138,6 +141,8 @@ class BaseIDModel(SQLModel):
         stmt = select(cls)
         for k, v in data.items():
             stmt = stmt.where(getattr(cls, k) == v)
+        if distinct:
+            stmt = stmt.distinct()
         result = await session.execute(stmt)
         data = result.scalars().all()
         return data

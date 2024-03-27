@@ -1,23 +1,27 @@
 import asyncio
 from io import BytesIO
-from typing import Dict
 from pathlib import Path
+from typing import Dict, List
 from contextlib import asynccontextmanager
 
 from PIL import Image
+from bs4 import Tag, BeautifulSoup
 from starlette.requests import Request
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.sv import SL
+from gsuid_core.gss import gss
 import gsuid_core.global_val as gv
 from gsuid_core.config import core_config
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
+from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.logger import logger, read_log, clear_log
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
+from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.plugins_config.models import GsListStrConfig
 from gsuid_core.utils.plugins_config.gs_config import (
     all_config_list,
@@ -290,6 +294,92 @@ async def _update_plugins(request: Request, data: Dict):
         except:  # noqa:E722
             retcode = -1
     return {'status': retcode, 'msg': '', 'data': {}}
+
+
+@app.post('/genshinuid/api/BatchPush')
+@site.auth.requires('root')
+async def _batch_push(request: Request, data: Dict):
+    send_msg = data['push_text']
+    soup = BeautifulSoup(send_msg, 'lxml')
+    stag = soup.p
+    msg: List[Message] = []
+    if stag:
+        text = stag.get_text(strip=True)
+        msg.append(MessageSegment.text(text))
+
+        img_tag: List[Tag] = list(soup.find_all('img'))
+        for img in img_tag:
+            src: str = img.get('src')  # type: ignore
+            width: str = img.get('width')  # type: ignore
+            height: str = img.get('height')  # type: ignore
+
+            base64_data = 'base64://' + src.split(',')[-1]
+
+            msg.append(MessageSegment.image(base64_data))
+            msg.append(MessageSegment.image_size((int(width), int(height))))
+
+    send_target: List[str] = data['push_tag'].split(',')
+    user_sends: Dict[str, List[str]] = {}
+    group_sends: Dict[str, List[str]] = {}
+
+    if 'ALLUSER' in send_target:
+        all_user = await CoreUser.get_all_user()
+        if all_user:
+            for user in all_user:
+                if user.bot_id not in user_sends:
+                    user_sends[user.bot_id] = [user.user_id]
+                else:
+                    if user.user_id not in user_sends[user.bot_id]:
+                        user_sends[user.bot_id].append(user.user_id)
+        send_target.remove('ALLUSER')
+
+    if 'ALLGROUP' in send_target:
+        all_group = await CoreGroup.get_all_group()
+        if all_group:
+            for group in all_group:
+                if group.bot_id not in group_sends:
+                    group_sends[group.bot_id] = [group.group_id]
+                else:
+                    if group.group_id not in group_sends[group.bot_id]:
+                        group_sends[group.bot_id].append(group.group_id)
+        send_target.remove('ALLGROUP')
+
+    for _target in send_target:
+        targets = _target.split('|')
+        target, bot_id = targets[0], targets[1]
+        if target.startswith('g:'):
+            group_id = target.split(':')[1]
+            if bot_id not in group_sends:
+                group_sends[bot_id] = [group_id]
+            else:
+                if group_id not in group_sends[bot_id]:
+                    group_sends[bot_id].append(group_id)
+        else:
+            user_id = target.split(':')[1]
+            if bot_id not in user_sends:
+                user_sends[bot_id] = [user_id]
+            else:
+                if user_id not in user_sends[bot_id]:
+                    user_sends[bot_id].append(user_id)
+
+    s = [group_sends, user_sends]
+    for BOT_ID in gss.active_bot:
+        for index, sends in enumerate(s):
+            send_type = 'group' if index == 0 else 'direct'
+            for bot_id in sends:
+                for uuid in sends[bot_id]:
+                    if index == 0:
+                        msg.append(Message('group', uuid))
+                    await gss.active_bot[BOT_ID].target_send(
+                        msg,
+                        send_type,
+                        uuid,
+                        bot_id,
+                        '',
+                        '',
+                    )
+
+    return {'status': 0, 'msg': '推送成功！', 'data': '推送成功！'}
 
 
 async def delete_image(image_path: Path):

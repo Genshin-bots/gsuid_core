@@ -60,6 +60,28 @@ class CoreUser(BaseBotIDModel, table=True):
 
     @classmethod
     @with_session
+    async def get_all_user(
+        cls,
+        session: AsyncSession,
+    ):
+        result: Optional[List[Type["CoreUser"]]] = await cls.select_rows(True)
+        return result
+
+    @classmethod
+    @with_session
+    async def get_all_user_list(
+        cls,
+        session: AsyncSession,
+    ):
+        data: List[str] = []
+        result = await cls.get_all_user()
+        if result:
+            data = [i.user_id for i in result]
+            data = list(set(data))
+        return data
+
+    @classmethod
+    @with_session
     async def get_group_all_user(
         cls,
         session: AsyncSession,
@@ -116,6 +138,28 @@ class CoreGroup(BaseBotIDModel, table=True):
     group_count: int = Field(default=0, title='群活跃人数(每天更新)')
     group_name: str = Field(default='1', title='群名')
     group_icon: str = Field(default='1', title='群头像')
+
+    @classmethod
+    @with_session
+    async def get_all_group(
+        cls,
+        session: AsyncSession,
+    ):
+        result: Optional[List[Type["CoreGroup"]]] = await cls.select_rows(True)
+        return result
+
+    @classmethod
+    @with_session
+    async def get_all_group_list(
+        cls,
+        session: AsyncSession,
+    ):
+        data: List[str] = []
+        result = await cls.get_all_group()
+        if result:
+            data = [i.group_id for i in result]
+            data = list(set(data))
+        return data
 
     @classmethod
     @with_session

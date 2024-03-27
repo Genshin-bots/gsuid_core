@@ -49,6 +49,7 @@ from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
+from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
 from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
@@ -498,6 +499,20 @@ class LogsPage(GsAdminPage):
 
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(create_log_page())
+
+
+@site.register_admin
+class PushPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('批量推送消息'),
+        icon='fa fa-columns',
+        url='/BatchPush',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(await get_batch_push_panel())
 
 
 # 取消注册默认管理类
