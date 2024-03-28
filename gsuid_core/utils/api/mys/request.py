@@ -83,6 +83,8 @@ RECOGNIZE_SERVER = {
     '9': 'os_cht',
 }
 
+_DEAD_CODE = [10035, 5003, 10041, 1034]
+
 
 class BaseMysApi:
     Gproxy: Optional[str] = Gproxy if Gproxy else None
@@ -435,8 +437,8 @@ class BaseMysApi:
                 else:
                     retcode = 0
 
-                # 针对1034做特殊处理
-                if retcode == 1034 or retcode == 5003 or retcode == 10035:
+                # 做特殊处理
+                if retcode in _DEAD_CODE:
                     if uid:
                         header['x-rpc-challenge_game'] = (
                             '6' if self.is_sr else '2'
