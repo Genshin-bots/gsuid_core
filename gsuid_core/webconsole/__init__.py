@@ -51,4 +51,6 @@ async def start_check():
         except:  # noqa:E722
             _host = HOST
 
-    logger.success(('WebConsole挂载成功:' f'http://{_host}:{PORT}/genshinuid'))
+    logger.success(
+        ('WebConsole挂载成功: ' f'http://{_host}:{PORT}/genshinuid')
+    )

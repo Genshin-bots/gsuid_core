@@ -1,3 +1,5 @@
+from gsuid_core.gss import gss
+from gsuid_core.webconsole.create_base_panel import get_alert
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
 
 PLUGINS = 'image,lists,preview,link,advlist,wordcount'
@@ -29,9 +31,54 @@ async def get_batch_push_panel():
         {"label": "私聊全部", "value": "ALLUSER"},
         {"label": "群聊全部", "value": "ALLGROUP"},
     ]
+    bots = [{"label": b, "value": b} for b in gss.active_bot]
+    is_disable = False if bots else True
 
     options.extend(_options_group)
     options.extend(_options_user)
+
+    if is_disable:
+        body = [
+            get_alert("请先连接Bot, 方可使用该功能!", "warning"),
+        ]
+    else:
+        body = []
+
+    body.extend(
+        [
+            {
+                "type": "input-tag",
+                "label": "推送Bot",
+                "name": "push_bot",
+                "options": bots,
+                "optionsTip": "最近您使用的标签",
+                "clearable": True,
+                "disabled": is_disable,
+            },
+            {
+                "type": "input-tag",
+                "label": "推送对象",
+                "name": "push_tag",
+                "options": options,
+                "optionsTip": "连接到的Bot",
+                "clearable": True,
+                "disabled": is_disable,
+            },
+            {
+                "type": "input-rich-text",
+                "name": "push_text",
+                "label": "推送文本",
+                "receiver": "",
+                "vendor": "tinymce",
+                "options": {
+                    "menubar": True,
+                    "plugins": PLUGINS,
+                    "toolbar": TOOLBAR,
+                },
+                "disabled": is_disable,
+            },
+        ]
+    )
 
     return {
         "type": "page",
@@ -39,30 +86,7 @@ async def get_batch_push_panel():
             {
                 "type": "form",
                 "api": "/genshinuid/api/BatchPush",
-                "body": [
-                    {
-                        "type": "input-tag",
-                        "label": "推送对象",
-                        "name": "push_tag",
-                        "options": options,
-                        "id": "u:1006b95ebebc",
-                        "optionsTip": "最近您使用的标签",
-                        "clearable": True,
-                    },
-                    {
-                        "type": "input-rich-text",
-                        "name": "push_text",
-                        "label": "推送文本",
-                        "receiver": "",
-                        "id": "u:36619f16e069",
-                        "vendor": "tinymce",
-                        "options": {
-                            "menubar": True,
-                            "plugins": PLUGINS,
-                            "toolbar": TOOLBAR,
-                        },
-                    },
-                ],
+                "body": body,
                 "id": "u:623947e12949",
                 "actions": [
                     {

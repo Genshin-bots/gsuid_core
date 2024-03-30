@@ -505,7 +505,7 @@ class LogsPage(GsAdminPage):
 class PushPage(GsAdminPage):
     page_schema = PageSchema(
         label=('批量推送消息'),
-        icon='fa fa-columns',
+        icon='fa fa-paper-plane',
         url='/BatchPush',
         isDefaultPage=True,
         sort=100,

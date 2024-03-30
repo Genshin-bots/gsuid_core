@@ -319,6 +319,7 @@ async def _batch_push(request: Request, data: Dict):
             msg.append(MessageSegment.image_size((int(width), int(height))))
 
     send_target: List[str] = data['push_tag'].split(',')
+    push_bots: List[str] = data['push_bot'].split(',')
     user_sends: Dict[str, List[str]] = {}
     group_sends: Dict[str, List[str]] = {}
 
@@ -345,6 +346,8 @@ async def _batch_push(request: Request, data: Dict):
         send_target.remove('ALLGROUP')
 
     for _target in send_target:
+        if '|' not in _target:
+            continue
         targets = _target.split('|')
         target, bot_id = targets[0], targets[1]
         if target.startswith('g:'):
@@ -364,6 +367,8 @@ async def _batch_push(request: Request, data: Dict):
 
     s = [group_sends, user_sends]
     for BOT_ID in gss.active_bot:
+        if BOT_ID not in push_bots:
+            continue
         for index, sends in enumerate(s):
             send_type = 'group' if index == 0 else 'direct'
             for bot_id in sends:
