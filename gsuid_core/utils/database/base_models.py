@@ -110,8 +110,16 @@ class BaseIDModel(SQLModel):
         session: AsyncSession,
         **data,
     ) -> int:
-        await session.delete(cls(**data))
-        return 1
+        '''
+        ✅返回值:
+
+            🔸`int`: 如为1则删除成功，否则删除失败(数据不存在)
+        '''
+        if cls.data_exist(**data):
+            await session.delete(cls(**data))
+            return 1
+        else:
+            return 0
 
     @classmethod
     @with_session
