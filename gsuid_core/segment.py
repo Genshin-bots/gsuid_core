@@ -22,12 +22,13 @@ from gsuid_core.utils.plugins_config.gs_config import (
     send_pic_config,
     pic_upload_config,
     core_plugins_config,
+    send_security_config,
 )
 
-R_enabled = core_plugins_config.get_config('AutoAddRandomText').data
-R_text = core_plugins_config.get_config('RandomText').data
-is_text2pic = core_plugins_config.get_config('AutoTextToPic').data
-text2pic_limit = core_plugins_config.get_config('TextToPicThreshold').data
+R_enabled = send_security_config.get_config('AutoAddRandomText').data
+R_text = send_security_config.get_config('RandomText').data
+is_text2pic = send_security_config.get_config('AutoTextToPic').data
+text2pic_limit = send_security_config.get_config('TextToPicThreshold').data
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
 force_send_md = core_plugins_config.get_config('ForceSendMD').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
@@ -37,6 +38,9 @@ SERVER = pic_upload_config.get_config('PicUploadServer').data
 IS_UPLOAD = pic_upload_config.get_config('PicUpload').data
 
 pic_quality: int = pic_gen_config.get_config('PicQuality').data
+
+enabled_banlist = send_security_config.get_config('EnableBanList').data
+banlist = send_security_config.get_config('BanList').data
 
 pclient = None
 if IS_UPLOAD:
@@ -310,6 +314,12 @@ async def _convert_message_to_image(
         else:
             image_bytes = img
     else:
+        if enabled_banlist and message.data:
+            d: str = message.data
+            for ban_word in banlist:
+                if ban_word in message.data:
+                    d = d.replace(ban_word, '*' * len(ban_word))
+            message = Message(type='text', data=d)
         return [message]
 
     assert isinstance(image_bytes, bytes)

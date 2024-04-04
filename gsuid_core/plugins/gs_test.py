@@ -92,6 +92,11 @@ async def get_keyword_msg(bot: Bot, ev: Event):
     await bot.send('[关键词测试]校验成功！')
 
 
+@sv_switch.on_fullmatch('违禁词测试')
+async def get_banword_msg(bot: Bot, ev: Event):
+    await bot.send('卧槽卧槽，哇！草！')
+
+
 @sv_switch.on_regex(r'这是一个(?P<name>正则|数字)测试！(?P<int>[\d]+)')
 async def get_regex_msg(bot: Bot, ev: Event):
     await bot.send('正在进行[正则测试]')

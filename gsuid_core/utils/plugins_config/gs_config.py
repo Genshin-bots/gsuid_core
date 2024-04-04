@@ -8,6 +8,7 @@ from gsuid_core.data_store import get_res_path
 
 from .config_default import CONIFG_DEFAULT
 from .pic_gen_config import PIC_GEN_CONIFG
+from .security_config import SECURITY_CONFIG
 from .send_pic_config import SEND_PIC_CONIFG
 from .pic_server_config import PIC_UPLOAD_CONIFG
 from .models import (
@@ -171,4 +172,10 @@ send_pic_config = StringConfig(
 
 pic_gen_config = StringConfig(
     'GsCore图片生成', get_res_path() / 'pic_gen_config.json', PIC_GEN_CONIFG
+)
+
+send_security_config = StringConfig(
+    'GsCore消息检查处理',
+    get_res_path() / 'send_security_config.json',
+    SECURITY_CONFIG,
 )

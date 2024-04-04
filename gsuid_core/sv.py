@@ -230,7 +230,7 @@ class SV:
 
             if name == '测试开关':
                 self.pm = 6
-                self.enabled = False
+                self.enabled = True
 
     def set(self, **kwargs):
         plugin_sv_config = config_plugins[self.self_plugin_name]['sv']
