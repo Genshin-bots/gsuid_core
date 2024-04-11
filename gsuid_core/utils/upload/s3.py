@@ -2,6 +2,7 @@ import asyncio
 from io import BytesIO
 
 import aioboto3
+import aioboto3.session
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
@@ -26,18 +27,37 @@ class S3:
         )
 
     async def upload(self, file_name: str, files: BytesIO):
-        key = f'{self.temp}/{file_name}'
+        key = f'{file_name}'
         async with self.session.client(
             's3',
             endpoint_url=END_POINT,
         ) as s3:  # type: ignore
             logger.info('[S3 / upload] 开始上传...')
-            await s3.upload_fileobj(files, self.bucket_id, key)
+
+            data = await s3.put_object(
+                Bucket=self.bucket_id,
+                Key=key,
+                Body=files,
+            )
+
+            url = await s3.generate_presigned_url(
+                ClientMethod='get_object',
+                Params={
+                    'Bucket': self.bucket_id,
+                    'Key': key,
+                },
+            )
+
+            logger.debug(data)
             logger.info('[S3 / upload] 上传成功！')
             if is_auto_delete:
                 asyncio.create_task(self.delete(key))
 
-        return f'{END_POINT}/{self.bucket_id}/{key}'
+        path = f'{END_POINT}/{self.bucket_id}/{key}'
+        logger.debug(f'[S3 / upload] PATH: {path}')
+        logger.debug(f'[S3 / upload] URL: {url}')
+
+        return url
 
     async def delete(self, file_key: str):
         await asyncio.sleep(30)
@@ -46,5 +66,6 @@ class S3:
             endpoint_url=END_POINT,
         ) as s3:  # type: ignore
             logger.info('[S3 / delete] 开始删除...')
-            await s3.delete_object(Bucket=self.bucket_id, Key=file_key)
+            data = await s3.delete_object(Bucket=self.bucket_id, Key=file_key)
+            logger.debug(data)
             logger.info('[S3 / delete] 删除成功！')

@@ -229,6 +229,7 @@ async def _image_to_remote_url(image: Union[bytes, str]) -> List[Message]:
 
         bio = BytesIO(image_bytes)
         img = Image.open(bio)
+        bio.seek(0)
         img_url = await pclient.upload(f'{uuid.uuid4()}.jpg', bio)
         _message = [
             MessageSegment.image(img_url if img_url else image_bytes),
