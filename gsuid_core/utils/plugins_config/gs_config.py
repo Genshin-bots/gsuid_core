@@ -6,6 +6,7 @@ from msgspec import json as msgjson
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 
+from .sp_config import SP_CONIFG
 from .config_default import CONIFG_DEFAULT
 from .pic_gen_config import PIC_GEN_CONIFG
 from .security_config import SECURITY_CONFIG
@@ -18,6 +19,8 @@ from .models import (
     GsDictConfig,
     GsListStrConfig,
 )
+
+RES = get_res_path()
 
 
 class StringConfig:
@@ -120,17 +123,11 @@ class StringConfig:
             if isinstance(default_value, str):
                 return GsStrConfig('缺省值', '获取错误的配置项', default_value)
             elif isinstance(default_value, bool):
-                return GsBoolConfig(
-                    '缺省值', '获取错误的配置项', default_value
-                )
+                return GsBoolConfig('缺省值', '获取错误的配置项', default_value)
             elif isinstance(default_value, List):
-                return GsListStrConfig(
-                    '缺省值', '获取错误的配置项', default_value
-                )
+                return GsListStrConfig('缺省值', '获取错误的配置项', default_value)
             elif isinstance(default_value, Dict):
-                return GsDictConfig(
-                    '缺省值', '获取错误的配置项', default_value
-                )
+                return GsDictConfig('缺省值', '获取错误的配置项', default_value)
             else:
                 return GsBoolConfig('缺省值', '获取错误的配置项', False)
 
@@ -157,25 +154,23 @@ class StringConfig:
 all_config_list: Dict[str, StringConfig] = {}
 
 core_plugins_config = StringConfig(
-    'Core', get_res_path() / 'core_config.json', CONIFG_DEFAULT
+    'Core', RES / 'core_config.json', CONIFG_DEFAULT
 )
 
 pic_upload_config = StringConfig(
-    'GsCore图片上传',
-    get_res_path() / 'pic_upload_config.json',
-    PIC_UPLOAD_CONIFG,
+    'GsCore图片上传', RES / 'pic_upload_config.json', PIC_UPLOAD_CONIFG
 )
 
 send_pic_config = StringConfig(
-    'GsCore发送图片', get_res_path() / 'send_pic_config.json', SEND_PIC_CONIFG
+    'GsCore发送图片', RES / 'send_pic_config.json', SEND_PIC_CONIFG
 )
 
 pic_gen_config = StringConfig(
-    'GsCore图片生成', get_res_path() / 'pic_gen_config.json', PIC_GEN_CONIFG
+    'GsCore图片生成', RES / 'pic_gen_config.json', PIC_GEN_CONIFG
 )
 
 send_security_config = StringConfig(
-    'GsCore消息检查处理',
-    get_res_path() / 'send_security_config.json',
-    SECURITY_CONFIG,
+    'GsCore消息检查处理', RES / 'send_security_config.json', SECURITY_CONFIG
 )
+
+sp_config = StringConfig('GsCore杂项配置', RES / 'sp_config.json', SP_CONIFG)

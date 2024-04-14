@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 from gsuid_core.handler import command_start
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.convert import convert_img
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import send_security_config
 from gsuid_core.utils.image.image_tools import (
     get_color_bg,
     draw_center_text_by_line,
@@ -66,7 +66,7 @@ error_dict = {
 }
 
 TEXT_PATH = Path(__file__).parent / 'image' / 'texture2d'
-is_pic_error = core_plugins_config.get_config('ChangeErrorToPic').data
+is_pic_error = send_security_config.get_config('ChangeErrorToPic').data
 
 
 def get_error(retcode: Union[int, str]) -> str:
@@ -111,9 +111,7 @@ async def draw_error_img(
     img.paste(error_img, (0, 0), error_img)
     img_draw = ImageDraw.Draw(img)
     img_draw.text((350, 646), error_type, 'white', core_font(26), 'mm')
-    img_draw.text(
-        (350, 695), f'错误码 {retcode}', 'white', core_font(36), 'mm'
-    )
+    img_draw.text((350, 695), f'错误码 {retcode}', 'white', core_font(36), 'mm')
     draw_center_text_by_line(
         img_draw, (350, 750), error_message, core_font(30), 'black', 440
     )

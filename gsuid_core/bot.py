@@ -15,6 +15,7 @@ from gsuid_core.load_template import (
     button_templates,
 )
 from gsuid_core.utils.plugins_config.gs_config import (
+    sp_config,
     core_plugins_config,
     send_security_config,
 )
@@ -25,6 +26,8 @@ from gsuid_core.segment import (
     check_same_buttons,
     markdown_to_template_markdown,
 )
+
+button_row_num: int = sp_config.get_config('ButtonRow').data
 
 sp_msg_id: str = send_security_config.get_config('SpecificMsgId').data
 is_sp_msg_id: str = send_security_config.get_config('EnableSpecificMsgId').data
@@ -228,10 +231,19 @@ class Bot:
                             else:
                                 _button_row.append(Button(op, op, op))
                         _buttons.append(_button_row)
-                    elif isinstance(option, Button):
-                        _buttons.append(option)
                     else:
-                        _buttons.append(Button(option, option, option))
+                        _cus_buttons = []
+                        if isinstance(option, Button):
+                            _cus_buttons.append(option)
+                        else:
+                            _cus_buttons.append(Button(option, option, option))
+
+                        _buttons = [
+                            _cus_buttons[i : i + button_row_num]  # noqa: E203
+                            for i in range(
+                                0, len(_cus_buttons), button_row_num
+                            )
+                        ]
 
                 md = await to_markdown(_reply, _buttons, self.bot_id)
 
