@@ -222,6 +222,7 @@ class Bot:
                 istry and self.ev.real_bot_id in enable_Template_platform
             ):
                 _buttons = []
+                _cus_buttons = []
                 for option in option_list:
                     if isinstance(option, List):
                         _button_row: List[Button] = []
@@ -232,18 +233,18 @@ class Bot:
                                 _button_row.append(Button(op, op, op))
                         _buttons.append(_button_row)
                     else:
-                        _cus_buttons = []
                         if isinstance(option, Button):
                             _cus_buttons.append(option)
                         else:
                             _cus_buttons.append(Button(option, option, option))
-
-                        _buttons = [
-                            _cus_buttons[i : i + button_row_num]  # noqa: E203
-                            for i in range(
-                                0, len(_cus_buttons), button_row_num
-                            )
-                        ]
+                            
+                if _cus_buttons:
+                    _buttons = [
+                        _cus_buttons[i : i + button_row_num]  # noqa: E203
+                        for i in range(
+                            0, len(_cus_buttons), button_row_num
+                        )
+                    ]
 
                 md = await to_markdown(_reply, _buttons, self.bot_id)
 
