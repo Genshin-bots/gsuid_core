@@ -237,13 +237,11 @@ class Bot:
                             _cus_buttons.append(option)
                         else:
                             _cus_buttons.append(Button(option, option, option))
-                            
+
                 if _cus_buttons:
                     _buttons = [
                         _cus_buttons[i : i + button_row_num]  # noqa: E203
-                        for i in range(
-                            0, len(_cus_buttons), button_row_num
-                        )
+                        for i in range(0, len(_cus_buttons), button_row_num)
                     ]
 
                 md = await to_markdown(_reply, _buttons, self.bot_id)

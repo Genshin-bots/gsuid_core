@@ -57,6 +57,13 @@ async def convert_img(
     return f'base64://{b64encode(img).decode()}'
 
 
+def convert_img_sync(img_path: Path):
+    with open(img_path, 'rb') as fp:
+        img = fp.read()
+
+    return f'base64://{b64encode(img).decode()}'
+
+
 async def str_lenth(r: str, size: int, limit: int = 540) -> str:
     result = ''
     temp = 0
