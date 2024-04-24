@@ -52,7 +52,9 @@ GET_COOKIE_TOKEN_URL = f'{OLD_URL}/auth/api/getCookieAccountInfoBySToken'
 # 通过Stoken获取AuthKey
 GET_AUTHKEY_URL = f'{OLD_URL}/binding/api/genAuthKey'
 # 通过AuthKey获取gachalogs
-GET_GACHA_LOG_URL = f'{HK4_URL}/event/gacha_info/api/getGachaLog'
+GET_GACHA_LOG_URL = (
+    'https://public-operation-hk4e.mihoyo.com/gacha_info/api/getGachaLog'
+)
 GET_GACHA_LOG_URL_OS = f'{HK4_URL_OS}/event/gacha_info/api/getGachaLog'
 # 通过GameToken获取Stoken
 GET_STOKEN = f'{PASSPORT_URL}/account/ma-cn-session/app/getTokenByGameToken'

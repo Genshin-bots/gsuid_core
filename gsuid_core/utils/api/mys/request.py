@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 import uuid
 import random
@@ -423,7 +424,7 @@ class BaseMysApi:
                 )
                 try:
                     raw_data = resp.json()
-                except ContentTypeError:
+                except (ContentTypeError, json.decoder.JSONDecodeError):
                     _raw_data = resp.text
                     raw_data = {'retcode': -999, 'data': _raw_data}
 
@@ -1006,15 +1007,16 @@ class MysApi(BaseMysApi):
         if isinstance(authkey_rawdata, int):
             return authkey_rawdata
         authkey = authkey_rawdata['authkey']
+        url = self.MAPI['GET_GACHA_LOG_URL']
         data = await self._mys_request(
-            url=self.MAPI['GET_GACHA_LOG_URL'],
+            url=url,
             method='GET',
             header=self._HEADER,
             params={
                 'authkey_ver': '1',
                 'sign_type': '2',
                 'auth_appid': 'webview_gacha',
-                'init_type': '200',
+                'init_type': gacha_type,
                 'gacha_id': 'fecafa7b6560db5f3182222395d88aaa6aaac1bc',
                 'timestamp': str(int(time.time())),
                 'lang': 'zh-cn',
