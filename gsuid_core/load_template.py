@@ -75,7 +75,7 @@ try:
 
             for para in para_list:
                 rep = rep.replace(
-                    '$$', rf'(?P<{para.replace(".","")}>[\s\S]+)', 1
+                    '$$', rf'(?P<{para.replace(".", "")}>[\s\S]+)', 1
                 )
 
             markdown_templates[rep] = {

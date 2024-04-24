@@ -55,7 +55,7 @@ GET_AUTHKEY_URL = f'{OLD_URL}/binding/api/genAuthKey'
 GET_GACHA_LOG_URL = (
     'https://public-operation-hk4e.mihoyo.com/gacha_info/api/getGachaLog'
 )
-GET_GACHA_LOG_URL_OS = f'{HK4_URL_OS}/event/gacha_info/api/getGachaLog'
+GET_GACHA_LOG_URL_OS = f'{HK4_URL_OS}/gacha_info/api/getGachaLog'
 # 通过GameToken获取Stoken
 GET_STOKEN = f'{PASSPORT_URL}/account/ma-cn-session/app/getTokenByGameToken'
 # 创建登录URL
