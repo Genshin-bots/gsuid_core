@@ -6,6 +6,7 @@ from typing import Union, overload
 import aiofiles
 from PIL import Image, ImageDraw, ImageFont
 
+from gsuid_core.logger import logger
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 from gsuid_core.utils.image.image_tools import draw_center_text_by_line
@@ -14,23 +15,36 @@ pic_quality: int = pic_gen_config.get_config('PicQuality').data
 
 
 @overload
-async def convert_img(img: Image.Image, is_base64: bool = False) -> bytes: ...
+async def convert_img(
+    img: Image.Image,
+    is_base64: bool = False,
+) -> bytes: ...
 
 
 @overload
-async def convert_img(img: Image.Image, is_base64: bool = True) -> str: ...
+async def convert_img(
+    img: Image.Image,
+    is_base64: bool = True,
+) -> str: ...
 
 
 @overload
-async def convert_img(img: bytes, is_base64: bool = False) -> str: ...
+async def convert_img(
+    img: bytes,
+    is_base64: bool = False,
+) -> str: ...
 
 
 @overload
-async def convert_img(img: Path, is_base64: bool = False) -> str: ...
+async def convert_img(
+    img: Path,
+    is_base64: bool = False,
+) -> str: ...
 
 
 async def convert_img(
-    img: Union[Image.Image, str, Path, bytes], is_base64: bool = False
+    img: Union[Image.Image, str, Path, bytes],
+    is_base64: bool = False,
 ):
     """
     :说明:
@@ -41,6 +55,8 @@ async def convert_img(
     :返回:
       * res: bytes对象或base64编码图片。
     """
+    logger.info('[GsCore] 处理图片中....')
+
     if isinstance(img, Image.Image):
         img = img.convert('RGB')
         result_buffer = BytesIO()
@@ -54,6 +70,9 @@ async def convert_img(
     else:
         async with aiofiles.open(img, 'rb') as fp:
             img = await fp.read()
+
+    logger.success('[GsCore] 图片处理完成！')
+
     return f'base64://{b64encode(img).decode()}'
 
 

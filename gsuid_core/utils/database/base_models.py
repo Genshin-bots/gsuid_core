@@ -12,12 +12,9 @@ from typing import (
 )
 
 from sqlalchemy.sql.expression import func, null, true
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
 from sqlmodel import Field, SQLModel, col, and_, delete, select, update
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
 
 from gsuid_core.data_store import get_res_path
 
@@ -965,7 +962,7 @@ class User(BaseModel):
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> Optional[Type["User"]]:
+    ) -> Optional[Type[T_User]]:
         '''📝简单介绍:
 
             基础`User`类的数据选择方法
@@ -995,7 +992,7 @@ class User(BaseModel):
     @with_session
     async def get_user_all_data_by_user_id(
         cls: Type[T_User], session: AsyncSession, user_id: str
-    ) -> Optional[List[Type["User"]]]:
+    ) -> Optional[List[T_User]]:
         '''📝简单介绍:
 
             基础`User`类的数据选择方法, 获取该`user_id`绑定的全部数据实例
@@ -1154,7 +1151,7 @@ class User(BaseModel):
     @with_session
     async def get_switch_open_list(
         cls: Type[T_User], session: AsyncSession, switch_name: str
-    ) -> List[Type["User"]]:
+    ) -> List[T_User]:
         '''📝简单介绍:
 
             根据表定义的结构, 根据传入的`switch_name`, 寻找表数据中的该列
@@ -1181,14 +1178,14 @@ class User(BaseModel):
         _switch = getattr(cls, switch_name, cls.push_switch)
         sql = select(cls).filter(and_(_switch != 'off', true()))
         data = await session.execute(sql)
-        data_list: List[Type["User"]] = data.scalars().all()
+        data_list: List[T_User] = data.scalars().all()
         return [user for user in data_list]
 
     @classmethod
     @with_session
     async def get_all_user(
         cls: Type[T_User], session: AsyncSession, without_error: bool = True
-    ) -> List[Type["User"]]:
+    ) -> List[T_User]:
         '''📝简单介绍:
 
             基础`User`类的扩展方法, 获取到全部的数据列表
@@ -1240,7 +1237,7 @@ class User(BaseModel):
         return [_u.cookie for _u in data if _u.cookie and _u.status]
 
     @classmethod
-    async def get_all_push_user_list(cls: Type[T_User]) -> List[Type["User"]]:
+    async def get_all_push_user_list(cls: Type[T_User]) -> List[T_User]:
         '''获得表数据中全部的`push_switch != off`的数据列表'''
         data = await cls.get_all_user()
         return [user for user in data if user.push_switch != 'off']
@@ -1452,7 +1449,7 @@ class Push(BaseBotIDModel):
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> Optional[Type["Push"]]:
+    ) -> Optional[T_Push]:
         '''📝简单介绍:
 
             基础`Push`类的数据选择方法

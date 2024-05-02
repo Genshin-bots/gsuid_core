@@ -16,6 +16,10 @@ TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
+def get_div():
+    return Image.open(TEXT_PATH / 'div.png')
+
+
 def get_status_icon(status: Union[int, bool]) -> Image.Image:
     if status:
         img = Image.open(TEXT_PATH / 'yes.png')

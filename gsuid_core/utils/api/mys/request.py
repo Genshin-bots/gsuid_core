@@ -218,6 +218,12 @@ class BaseMysApi:
         else:
             return res["data"]["device_fp"]
 
+    async def get_bbs_post_detail(self, post_id: str):
+        url: str = self.MAPI['BBS_DETAIL_URL'].format(post_id)
+        header = copy.deepcopy(self._HEADER)
+        header['DS'] = get_web_ds_token(web=True)
+        return await self._mys_request(url, 'GET', header)
+
     async def device_login_and_save(
         self, device_id: str, device_fp: str, device_info: str, cookie: str
     ):
