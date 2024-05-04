@@ -126,7 +126,10 @@ BBS_LIST_URL = (
     BBS_URL + '/post/api/getForumPostList?'
     'forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1'
 )
+
+BBS_COLLECTION_URL = BBS_URL + '/post/wapi/getPostFullInCollection'
 BBS_DETAIL_URL = BBS_URL + '/post/api/getPostFull?post_id={}'
+
 BBS_SHARE_URL = BBS_URL + '/apihub/api/getShareConf?entity_id={}&entity_type=1'
 BBS_LIKE_URL = f'{BBS_URL}/apihub/sapi/upvotePost'
 

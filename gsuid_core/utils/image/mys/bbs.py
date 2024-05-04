@@ -20,7 +20,7 @@ async def get_post_img(post_id: str) -> Union[str, bytes]:
     if isinstance(data, int):
         return get_error(data)
     logger.success('[GsCore] 获取米游社帖子成功!进入处理流程...')
-    post = data['data']['post']['post']['content']
+    post = data['post']['post']['content']
     soup = BeautifulSoup(post, 'lxml')
     img = await soup_to_img(soup)
     return img
@@ -34,7 +34,7 @@ async def process_tag(
     space = 15
     _type = _data = None
 
-    logger.debug(f'[GsCore] 正在处理TAG: {tag.name}')
+    logger.trace(f'[GsCore] 正在处理TAG: {tag.name}')
 
     if tag.name == 'img':
         img_url = tag.get('src')
@@ -123,7 +123,7 @@ async def soup_to_img(soup: BeautifulSoup):
                     fill=(0, 0, 0),
                 )
         elif i['type'] == 'div':
-            img.paste(div, (35, i['pos']))
+            img.paste(div, (0, i['pos']), div)
 
     logger.success('[GsCore] 图片处理完成!')
 
