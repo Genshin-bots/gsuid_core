@@ -91,7 +91,6 @@ async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
     w, h = 1200, 600 - 90
 
     user_id = ev.user_id
-
     all_bind_model = {get_class_name(i): i for i in Bind.__subclasses__()}
     all_user_model = {get_class_name(i): i for i in User.__subclasses__()}
     all_push_model = {get_class_name(i): i for i in Push.__subclasses__()}

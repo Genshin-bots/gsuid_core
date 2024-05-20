@@ -1,4 +1,6 @@
 import asyncio
+import inspect
+from uu import Error
 from typing import Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
@@ -378,3 +380,17 @@ class Bot:
             sender_id,
             send_source_group,
         )
+
+
+def call_bot():
+    frame = inspect.currentframe()
+
+    while frame:
+        args, _, _, values = inspect.getargvalues(frame)
+        for arg in args:
+            value = values[arg]
+            if isinstance(value, Bot):
+                return value
+        frame = frame.f_back
+
+    raise Error('[GsCore] 当前Session中未找到可用Bot实例...')

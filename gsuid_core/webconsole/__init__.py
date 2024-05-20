@@ -48,7 +48,7 @@ async def start_check():
                     'https://api.ipify.org/?format=json', timeout=4
                 )
             _host = r.json()['ip']
-        except:  # noqa:E722
+        except:  # noqa:E722, B001
             _host = HOST
 
     logger.success(

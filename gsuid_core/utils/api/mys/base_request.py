@@ -11,6 +11,7 @@ from typing import Any, Dict, Tuple, Union, Literal, Optional, overload
 
 import httpx
 
+from gsuid_core.bot import call_bot
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.database.models import GsUser
@@ -219,8 +220,8 @@ class BaseMysApi:
         self,
         URL: str,
         uid: Union[str, bool],
-        params: Dict = {},
-        header: Dict = {},
+        params: Dict = {},  # noqa: B006
+        header: Dict = {},  # noqa: B006
         cookie: Optional[str] = None,
     ) -> Union[Dict, int]:
         if isinstance(uid, bool):
@@ -372,14 +373,24 @@ class BaseMysApi:
 
             logger.debug(header)
             for _ in range(2):
-                resp = await client.request(
-                    method,
-                    url=url,
-                    headers=header,
-                    params=params,
-                    json=data,
-                    timeout=300,
-                )
+                try:
+                    resp = await client.request(
+                        method,
+                        url=url,
+                        headers=header,
+                        params=params,
+                        json=data,
+                        timeout=300,
+                    )
+                except httpx.ConnectError:
+                    await call_bot().send('[mys_request] 请求连接错误...')
+                    continue
+                except:  # noqa
+                    await call_bot().send(
+                        '[mys_request] 请求错误, 请联系Bot主人检查控制台!'
+                    )
+                    continue
+
                 try:
                     raw_data = resp.json()
                 except (
