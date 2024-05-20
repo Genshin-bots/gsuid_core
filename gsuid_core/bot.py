@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-from uu import Error
 from typing import Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
@@ -393,4 +392,4 @@ def call_bot():
                 return value
         frame = frame.f_back
 
-    raise Error('[GsCore] 当前Session中未找到可用Bot实例...')
+    raise ValueError('[GsCore] 当前Session中未找到可用Bot实例...')
