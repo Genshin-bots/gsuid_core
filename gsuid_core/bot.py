@@ -44,11 +44,12 @@ enable_Template_platform = isc
 
 
 class _Bot:
-    def __init__(self, _id: str, ws: WebSocket):
+    def __init__(self, _id: str, ws: Optional[WebSocket] = None):
         self.bot_id = _id
         self.bot = ws
         self.logger = GsLogger(self.bot_id, ws)
         self.queue = asyncio.queues.Queue()
+        self.send_dict = {}
         self.bg_tasks = set()
 
     async def target_send(
@@ -62,6 +63,8 @@ class _Bot:
         at_sender: bool = False,
         sender_id: str = '',
         group_id: Optional[str] = None,
+        task_id: str = '',
+        task_event: Optional[asyncio.Event] = None,
     ):
         _message = await convert_message(message, bot_id, bot_self_id)
 
@@ -91,7 +94,23 @@ class _Bot:
         local_val['send'] += 1
 
         logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
-        await self.bot.send_bytes(msgjson.encode(send))
+        if self.bot:
+            body = msgjson.encode(send)
+            await self.bot.send_bytes(body)
+        else:
+            self.send_dict[task_id] = send
+            if task_event:
+                task_event.set()
+
+    async def wait_task(
+        self,
+        task_id: str,
+        task_event: asyncio.Event,
+    ) -> Optional[MessageSend]:
+        await asyncio.wait_for(task_event.wait(), timeout=20)
+        result = self.send_dict[task_id]
+        del self.send_dict[task_id]
+        return result
 
     async def _process(self):
         while True:
@@ -108,7 +127,7 @@ class Bot:
     def __init__(self, bot: _Bot, ev: Event):
         self.gid = ev.group_id if ev.group_id else '0'
         self.uid = ev.user_id if ev.user_id else '0'
-        self.uuid = f'{self.gid}{self.uid}'
+        self.session_id = f'{self.gid}{self.uid}'
 
         self.bot = bot
         self.ev = ev
@@ -320,11 +339,11 @@ class Bot:
         if is_mutiply:
             # 标注uuid
             self.mutiply_tag = True
-            if self.uuid not in self.mutiply_instances:
-                self.mutiply_instances[self.uuid] = self
+            if self.session_id not in self.mutiply_instances:
+                self.mutiply_instances[self.session_id] = self
                 # 标注群
                 if self.gid not in self.mutiply_map:
-                    self.mutiply_map[self.gid] = self.uuid
+                    self.mutiply_map[self.gid] = self.session_id
                 self.mutiply_event = asyncio.Event()
 
             while self.mutiply_resp == []:
@@ -334,7 +353,7 @@ class Bot:
             return self.mutiply_resp.pop(0)
         elif is_recive:
             self.receive_tag = True
-            self.instances[self.uuid] = self
+            self.instances[self.session_id] = self
             self.event = asyncio.Event()
             return await self.wait_for_key(timeout)
 
@@ -357,6 +376,8 @@ class Bot:
             at_sender,
             self.ev.user_id,
             self.ev.group_id,
+            self.ev.task_id,
+            self.ev.task_event,
         )
 
     async def target_send(

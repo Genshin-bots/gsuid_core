@@ -2,6 +2,8 @@ import asyncio
 from copy import deepcopy
 from typing import Dict, List
 
+from fastapi_amis_admin.admin.site import uuid
+
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
@@ -25,7 +27,7 @@ else:
     _command_start: List[str] = command_start
 
 
-async def handle_event(ws: _Bot, msg: MessageReceive):
+async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
@@ -43,21 +45,19 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     if event.at:
         for shield_id in shield_list:
             if event.at.startswith(shield_id):
-                logger.warning(
-                    '消息中疑似包含@机器人的消息, 停止响应本消息内容'
-                )
+                logger.warning('消息中疑似包含@机器人的消息, 停止响应本消息内容')
                 return
 
     gid = event.group_id if event.group_id else '0'
     uid = event.user_id if event.user_id else '0'
-    uuid = f'{gid}{uid}'
+    session_id = f'{gid}{uid}'
     instances = Bot.get_instances()
     mutiply_instances = Bot.get_mutiply_instances()
     mutiply_map = Bot.get_mutiply_map()
 
-    if uuid in instances and instances[uuid].receive_tag:
-        instances[uuid].resp.append(event)
-        instances[uuid].set_event()
+    if session_id in instances and instances[session_id].receive_tag:
+        instances[session_id].resp.append(event)
+        instances[session_id].set_event()
         return
 
     if (
@@ -68,7 +68,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
     ):
         mutiply_instances[mutiply_map[gid]].mutiply_resp.append(event)
         mutiply_instances[mutiply_map[gid]].set_mutiply_event()
-        if uuid == mutiply_instances[mutiply_map[gid]].uuid:
+        if session_id == mutiply_instances[mutiply_map[gid]].session_id:
             return
 
     is_start = False
@@ -152,6 +152,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
         for trigger, _ in sorted_event:
             _event = deepcopy(event)
             message = await trigger.get_command(_event)
+            _event.task_id = str(uuid.uuid4())
+
+            if is_http:
+                _event.task_event = asyncio.Event()
+
             bot = Bot(ws, _event)
 
             await count_data(event, trigger)
@@ -161,7 +166,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive):
                 trigger=[_event.raw_text, trigger.type, trigger.keyword],
             )
             logger.info('[命令触发]', command=message)
+
             ws.queue.put_nowait(trigger.func(bot, message))
+            if _event.task_event:
+                return await ws.wait_task(_event.task_id, _event.task_event)
+
             if trigger.block:
                 break
 

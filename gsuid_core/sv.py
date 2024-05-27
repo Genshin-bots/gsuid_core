@@ -39,10 +39,10 @@ def modify_func(func):
             instancess = Bot.get_instances()
             mutiply_instances = Bot.get_mutiply_instances()
             mutiply_map = Bot.get_mutiply_map()
-            if bot.uuid in instancess:
-                instancess.pop(bot.uuid)
-            if bot.uuid in mutiply_instances and bot.mutiply_tag:
-                mutiply_instances.pop(bot.uuid)
+            if bot.session_id in instancess:
+                instancess.pop(bot.session_id)
+            if bot.session_id in mutiply_instances and bot.mutiply_tag:
+                mutiply_instances.pop(bot.session_id)
                 mutiply_map.pop(bot.gid)
         return result
 

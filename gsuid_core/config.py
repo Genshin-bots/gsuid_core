@@ -7,6 +7,7 @@ CONFIG_PATH = Path(__file__).parent / 'config.json'
 CONFIG_DEFAULT = {
     'HOST': 'localhost',
     'PORT': '8765',
+    'ENABLE_HTTP': False,
     'masters': [],
     'superusers': [],
     'misfire_grace_time': 90,
@@ -25,7 +26,7 @@ STR_CONFIG = Literal['HOST', 'PORT']
 INT_CONFIG = Literal['misfire_grace_time']
 LIST_CONFIG = Literal['superusers', 'masters', 'command_start']
 DICT_CONFIG = Literal['sv', 'log', 'plugins']
-BOOL_CONFIG = Literal['enable_empty_start']
+BOOL_CONFIG = Literal['enable_empty_start', 'ENABLE_HTTP']
 
 plugins_sample = {
     'name': '',
@@ -71,19 +72,24 @@ class CoreConfig:
         self.write_config()
 
     @overload
-    def get_config(self, key: STR_CONFIG) -> str: ...
+    def get_config(self, key: STR_CONFIG) -> str:
+        ...
 
     @overload
-    def get_config(self, key: DICT_CONFIG) -> Dict: ...
+    def get_config(self, key: DICT_CONFIG) -> Dict:
+        ...
 
     @overload
-    def get_config(self, key: LIST_CONFIG) -> List: ...
+    def get_config(self, key: LIST_CONFIG) -> List:
+        ...
 
     @overload
-    def get_config(self, key: INT_CONFIG) -> int: ...
+    def get_config(self, key: INT_CONFIG) -> int:
+        ...
 
     @overload
-    def get_config(self, key: BOOL_CONFIG) -> bool: ...
+    def get_config(self, key: BOOL_CONFIG) -> bool:
+        ...
 
     def get_config(self, key: str) -> Union[str, Dict, List, int, bool]:
         if key in self.config:
@@ -95,19 +101,24 @@ class CoreConfig:
             return {}
 
     @overload
-    def set_config(self, key: STR_CONFIG, value: str) -> bool: ...
+    def set_config(self, key: STR_CONFIG, value: str) -> bool:
+        ...
 
     @overload
-    def set_config(self, key: LIST_CONFIG, value: List) -> bool: ...
+    def set_config(self, key: LIST_CONFIG, value: List) -> bool:
+        ...
 
     @overload
-    def set_config(self, key: DICT_CONFIG, value: Dict) -> bool: ...
+    def set_config(self, key: DICT_CONFIG, value: Dict) -> bool:
+        ...
 
     @overload
-    def set_config(self, key: INT_CONFIG, value: int) -> bool: ...
+    def set_config(self, key: INT_CONFIG, value: int) -> bool:
+        ...
 
     @overload
-    def set_config(self, key: BOOL_CONFIG, value: bool) -> bool: ...
+    def set_config(self, key: BOOL_CONFIG, value: bool) -> bool:
+        ...
 
     def set_config(
         self, key: str, value: Union[str, List, Dict, int, bool]

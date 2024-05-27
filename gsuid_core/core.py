@@ -1,9 +1,11 @@
 import sys
 import asyncio
+from typing import Dict
 from pathlib import Path
 from asyncio import CancelledError
 
 import uvicorn
+from msgspec import to_builtins
 from msgspec import json as msgjson
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -11,6 +13,7 @@ sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from gsuid_core.gss import gss  # noqa: E402
+from gsuid_core.bot import _Bot  # noqa: E402
 from gsuid_core.web_app import app  # noqa: E402
 from gsuid_core.logger import logger  # noqa: E402
 from gsuid_core.config import core_config  # noqa: E402
@@ -20,6 +23,8 @@ from gsuid_core.utils.database.startup import exec_list  # noqa: E402
 
 HOST = core_config.get_config('HOST')
 PORT = int(core_config.get_config('PORT'))
+ENABLE_HTTP = core_config.get_config('ENABLE_HTTP')
+HTTP_SERVER_STATUS = False
 
 exec_list.extend(
     [
@@ -64,12 +69,30 @@ def main():
             async def process():
                 await bot._process()
 
-            logger.info('启动GsCore...')
+            logger.info('[GsCore] 启动WS服务中...')
             await asyncio.gather(process(), start())
         except CancelledError:
             await gss.disconnect(bot_id)
         finally:
             await gss.disconnect(bot_id)
+
+    if ENABLE_HTTP:
+        _bot = _Bot('HTTP')
+
+        @app.post('/api/send_msg')
+        async def sendMsg(msg: Dict):
+            global HTTP_SERVER_STATUS
+            if not HTTP_SERVER_STATUS:
+                asyncio.create_task(_bot._process())
+                HTTP_SERVER_STATUS = True
+
+            data = msgjson.encode(msg)
+            MR = msgjson.Decoder(MessageReceive).decode(data)
+            result = await handle_event(_bot, MR, True)
+            if result:
+                return {'status_code': 200, 'data': to_builtins(result)}
+            else:
+                return {'status_code': -100, 'data': None}
 
     uvicorn.run(
         app,

@@ -1,11 +1,17 @@
+import sys
 import random
 import asyncio
 from typing import Union
 
+import httpx
 import websockets.client
+from msgspec import to_builtins
 from msgspec import json as msgjson
 from models import Message, MessageSend, MessageReceive
 from websockets.exceptions import ConnectionClosedError
+
+sys.path.append('..')
+from segment import MessageSegment  # noqa: E402
 
 
 class GsClient:
@@ -67,7 +73,26 @@ class GsClient:
             task.cancel()
 
 
+async def http_test():
+    msg = to_builtins(
+        MessageReceive(
+            content=[
+                MessageSegment.text('强制刷新'),
+            ]
+        )
+    )
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            'http://127.0.0.1:8765/api/send_msg',
+            json=msg,
+        )
+        print(response.text)
+        print(response.status_code)
+
+
 async def main():
+    await http_test()
     client = await GsClient().async_connect()
     await client.start()
 

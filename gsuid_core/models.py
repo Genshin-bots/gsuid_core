@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Tuple, Literal, Optional
 
 from msgspec import Struct
@@ -21,6 +22,8 @@ class MessageReceive(Struct):
 
 
 class Event(MessageReceive):
+    task_id: str = ''
+    task_event: Optional[asyncio.Event] = None
     real_bot_id: str = ''
     raw_text: str = ''
     command: str = ''

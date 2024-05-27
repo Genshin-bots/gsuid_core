@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -8,7 +8,7 @@ from gsuid_core.segment import MessageSegment
 
 
 class GsLogger:
-    def __init__(self, bot_id: str, ws: WebSocket):
+    def __init__(self, bot_id: str, ws: Optional[WebSocket]):
         self.bot_id = bot_id
         self.bot = ws
 
@@ -22,22 +22,18 @@ class GsLogger:
             target_id=None,
         )
 
+    async def _send(self, b: bytes):
+        if self.bot:
+            await self.bot.send_bytes(b)
+
     async def info(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('INFO', msg))
-        )
+        await self._send(msgjson.encode(self.get_msg_send('INFO', msg)))
 
     async def warning(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('WARNING', msg))
-        )
+        await self._send(msgjson.encode(self.get_msg_send('WARNING', msg)))
 
     async def error(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('ERROR', msg))
-        )
+        await self._send(msgjson.encode(self.get_msg_send('ERROR', msg)))
 
     async def success(self, msg: str):
-        await self.bot.send_bytes(
-            msgjson.encode(self.get_msg_send('SUCCESS', msg))
-        )
+        await self._send(msgjson.encode(self.get_msg_send('SUCCESS', msg)))
