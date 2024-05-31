@@ -90,11 +90,12 @@ class GsServer:
                     plugin_path = plugin / '__init__.py'
                     plugins_path = plugin / '__full__.py'
                     nest_path = plugin / '__nest__.py'
+                    src_path = plugin / plugin.stem
                     # 如果文件夹内有__full_.py，则视为插件包合集
                     sys.path.append(str(plugin_path.parents))
                     if plugins_path.exists():
                         self.load_dir_plugins(plugin)
-                    elif nest_path.exists():
+                    elif nest_path.exists() or src_path.exists():
                         path = nest_path.parent / plugin.name
                         pyproject = plugin / 'pyproject.toml'
                         if auto_install_dep and pyproject.exists:
@@ -134,12 +135,19 @@ class GsServer:
                 logger.warning(f'插件{plugin.name}加载失败')
 
     def load_dir_plugins(self, plugin: Path, nest: bool = False):
+        init_path = plugin / '__init__.py'
+        name = plugin.name
+        if init_path.exists():
+            if str(init_path.parents) not in sys.path:
+                sys.path.append(str(init_path.parents))
+            importlib.import_module(f'plugins.{name}.{name}.__init__')
+
         for sub_plugin in plugin.iterdir():
             if sub_plugin.is_dir():
                 plugin_path = sub_plugin / '__init__.py'
                 if plugin_path.exists():
-                    sys.path.append(str(plugin_path.parents))
-                    name = plugin.name
+                    if str(plugin_path.parents) not in sys.path:
+                        sys.path.append(str(plugin_path.parents))
                     if nest:
                         _p = f'plugins.{name}.{name}.{sub_plugin.name}'
                     else:
