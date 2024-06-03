@@ -34,7 +34,7 @@ def get_restart_command():
 
 
 async def get_restart_sh() -> str:
-    args = f'{restart_command} {str(bot_start.absolute())}'
+    args = f'{get_restart_command()} {str(bot_start.absolute())}'
     return _restart_sh.format(str(bot_start.absolute()), args)
 
 
@@ -68,12 +68,12 @@ async def restart_genshinuid(
             json.dump(update_log, f)
     if platform.system() == 'Linux':
         subprocess.Popen(
-            f'kill -9 {pid} & {restart_command} {bot_start}',
+            f'kill -9 {pid} & {get_restart_command()} {bot_start}',
             shell=True,
         )
     else:
         subprocess.Popen(
-            f'taskkill /F /PID {pid} & {restart_command} {bot_start}',
+            f'taskkill /F /PID {pid} & {get_restart_command()} {bot_start}',
             shell=True,
         )
 
