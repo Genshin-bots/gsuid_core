@@ -12,8 +12,13 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'Gproxy': GsStrConfig('设置米游社国际代理', '设置国际服的代理地址', ''),
     'Nproxy': GsStrConfig('设置米游社常规代理', '设置常规的代理地址', ''),
     '_pass_API': GsStrConfig('神奇API', '设置某种神奇的API', ''),
+    'is_use_custom_restart_command': GsBoolConfig(
+        '使用自定义重启命令',
+        '是否使用下面的自定义重启命令, 否则自动判断环境',
+        False,
+    ),
     'restart_command': GsStrConfig(
-        '重启命令',
+        '自定义重启命令',
         '自定义使用gs重启时触发的控制台命令(看不懂勿改)',
         'poetry run python',
     ),

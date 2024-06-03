@@ -5,6 +5,7 @@ import platform
 import subprocess
 from pathlib import Path
 
+from gsuid_core.server import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.plugins.core_command.core_status.command_global_val import (
     save_global_val,
@@ -19,6 +20,17 @@ kill -9 {}
 {} &'''
 
 restart_command = core_plugins_config.get_config('restart_command').data
+
+
+def get_restart_command():
+    is_use_custom_restart_command = core_plugins_config.get_config(
+        'is_use_custom_restart_command'
+    ).data
+    if is_use_custom_restart_command:
+        return restart_command
+    else:
+        tool = check_start_tool()
+        return f'{tool} run python'
 
 
 async def get_restart_sh() -> str:

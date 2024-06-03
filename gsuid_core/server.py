@@ -38,20 +38,37 @@ def on_core_shutdown(func: Callable):
     return func
 
 
-def check_start_tool():
+def check_start_tool(is_pip: bool = False):
+    PDM = 'pdm'
+    POETRY = 'poetry'
+    OTHER = start_venv.strip()
+
+    if is_pip:
+        PIP = ' run python -m pip'
+        PDM += PIP
+        POETRY += PIP
+
+        if OTHER == 'python':
+            OTHER = 'python -m pip'
+        else:
+            OTHER += PIP
+
     path = Path(__file__).parent.parent
     pdm_python_path = path / '.pdm-python'
+
     if start_venv == 'auto':
         if pdm_python_path.exists():
-            return 'pdm run pip'
+            command = PDM
         else:
-            return 'poetry run pip'
+            command = POETRY
     elif start_venv == 'pdm':
-        return 'pdm run pip'
+        command = PDM
     elif start_venv == 'poetry':
-        return 'poetry run pip'
+        command = POETRY
     else:
-        return start_venv.strip()
+        command = start_venv.strip()
+
+    return command
 
 
 class GsServer:
@@ -212,7 +229,7 @@ def check_pyproject(pyproject: Path):
 
 def install_dependencies(dependencies: Dict):
     global installed_dependencies
-    start_tool = check_start_tool()
+    start_tool = check_start_tool(True)
     if start_tool == 'pdm':
         result = subprocess.run(
             'pdm run python -m ensurepip',
