@@ -7,7 +7,11 @@
 
 [KimigaiiWuyi/GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) 的核心部分，平台无关，支持 HTTP/WS 形式调用，便于移植到其他平台以及框架。
 
+本Readme的部分内容**可能已经失效**，请前往最新的详细文档查阅：
+
 **🎉[详细文档](https://docs.sayu-bot.com)**
+
+ 👉[插件编写指南](https://docs.sayu-bot.com/CodePlugins/CookBook.html)
 
 ## 安装Core
 
@@ -83,73 +87,3 @@ docker-compose up -d
 
 - 默认core将运行在`localhost:8765`端口上，Docker部署必须修改`config.json`，如`0.0.0.0:8765`
 - 如果Bot（例如NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，可能需要将Core和Bot的容器都重启才生效
-
-## 配置文件
-
-修改`gsuid_core/gsuid_core/config.json`，参考如下
-
-**（注意json不支持`#`，所以不要复制下面的配置到自己的文件中）**
-
-```json
-{
- "HOST": "localhost", # 如需挂载公网修改为`0.0.0.0`
- "PORT": "8765", # core端口
- "masters": ["444835641", "111"], # Bot主人，pm为0
- "superusers": ["123456789"], # 超管，pm为1
- "sv": {
-     "Core管理": {
-         "priority": 5, # 某个服务的优先级
-         "enabled": true, # 某个服务是否启动
-         "pm": 1, # 某个服务要求的权限等级
-         "black_list": [], # 某个服务的黑名单
-         "area": "ALL",  # 某个服务的触发范围
-         "white_list": [] # 某个服务的白名单
-     },
- },
- "log": {
-     "level": "DEBUG" # log等级
- },
- "command_start": ["/", "*"], # core内所有插件的要求前缀
- "misfire_grace_time": 90
-}
-```
-
-> 黑名单一旦设置，黑名单中的用户ID将无法访问该服务
->
-> 白名单一旦设置，只有白名单的用户ID能访问该服务
->
-> 服务配置可以通过[网页控制台](https://docs.gsuid.gbots.work/#/WebConsole)实时修改, 如果手动修改`config.json`需要**重启**
-
-## 编写插件
-
-
-```python
-import asyncio
-
-from gsuid_core.sv import SL, SV
-from gsuid_core.bot import Bot
-from gsuid_core.models import Event
-
-
-@SV('开关').on_prefix(('关闭', '开启')) # 定义一组服务`开关`，服务内有两个前缀触发器
-async def get_switch_msg(bot: Bot, ev: Event):
-    name = ev.text         # 获取消息除了命令之外的文字
-    command = ev.command   # 获取消息中的命令部分
-    im = await process(name)  # 自己的业务逻辑
-    await bot.logger.info('正在进行[关闭/开启开关]')  # 发送loger
-    await bot.send(im)   # 发送消息
-
-sv=SV(
-    name='复杂的服务',  # 定义一组服务`开关`,
-    pm=2, # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通
-    priority=5, # 整组服务的优先级
-    enabled=True, # 是否启用
-    area= 'ALL', # 群聊和私聊均可触发
-    black_list=[], # 黑名单
-    white_list=[], # 白名单
-)
-
-@sv.on_prefix('测试')
-async def get_msg(bot: Bot, ev: Event):
-    ...
-```

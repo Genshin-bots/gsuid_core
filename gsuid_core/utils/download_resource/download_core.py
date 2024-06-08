@@ -66,8 +66,9 @@ async def check_speed():
     global global_url
 
     URL_LIB = {
-        '[JPFRP]': 'http://jp-2.lcf.icu:13643',
-        '[HKFRP]': 'http://hk-1.5gbps-2.lcf.icu:10200',
+        '[JPFRP]': 'http://jp-3.lcf.1l1.icu:17217',
+        '[HKFRP]': 'http://hk-1.lcf.1l1.icu:10200',
+        '[USFRP]': 'http://us-6.lcf.1l1.icu:28596',
         '[XiaoWu]': 'http://frp.xiaowuap.com:63481',
         '[Chuncheon]': 'https://kr.qxqx.cf',
         '[Seoul]': 'https://kr-s.qxqx.cf',

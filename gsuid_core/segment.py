@@ -485,6 +485,11 @@ async def to_markdown(
             if isinstance(m.data, str):
                 if m.data.startswith('link://'):
                     url = m.data.replace('link://', '')
+                    if not size:
+                        logger.warning(
+                            '[to_markdown] 你传入了URL图片但并未规定图片大小，'
+                            '请在消息列表中额外传入MessageSegment.image_size()!'
+                        )
                 elif m.data.startswith('base64://'):
                     url = await _image_to_url(m.data, send_type, m)
 
@@ -492,6 +497,7 @@ async def to_markdown(
                     _markdown_list.append(
                         f'![图片 #{size[0]}px #{size[1]}px]({url})'
                     )
+
         elif m.type == 'text':
             assert isinstance(m.data, str)
             data = m.data.replace('\n', '\n\n')
