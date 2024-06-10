@@ -1,3 +1,7 @@
+'''
+米游社BBS相关操作 API 请求模块。
+'''
+
 from copy import deepcopy
 from typing import Dict, List, Union, cast
 

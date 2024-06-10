@@ -1,3 +1,7 @@
+'''
+米游社账号相关操作 API 请求模块。
+'''
+
 import uuid
 import random
 from copy import deepcopy

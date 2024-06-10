@@ -4,37 +4,28 @@
 
 from __future__ import annotations
 
-import copy
 import time
+from copy import deepcopy
 from typing import Dict, List, Union, Optional, cast
 
-from .bbs_request import BBSMysApi
-from .tools import (
-    random_hex,
-    mys_version,
-    get_ds_token,
-    generate_os_ds,
-    get_web_ds_token,
-)
+from .sign_request import SignMysApi
+from .tools import get_ds_token, generate_os_ds
 from .models import (
     BsIndex,
     GcgInfo,
     MysGame,
-    MysSign,
     GachaLog,
-    SignInfo,
-    SignList,
     AbyssData,
     IndexData,
+    ComputeData,
     GcgDeckInfo,
-    MonthlyAward,
     CalculateInfo,
     DailyNoteData,
     CharDetailData,
 )
 
 
-class MysApi(BBSMysApi):
+class MysApi(SignMysApi):
     async def get_info(
         self, uid, ck: Optional[str] = None
     ) -> Union[IndexData, int]:
@@ -59,152 +50,6 @@ class MysApi(BBSMysApi):
         data = await self.simple_mys_req('GCG_DECK_URL', uid)
         if isinstance(data, Dict):
             data = cast(GcgDeckInfo, data['data'])
-        return data
-
-    async def get_sign_list(self, uid) -> Union[SignList, int]:
-        is_os = self.check_os(uid)
-        if is_os:
-            params = {
-                'act_id': 'e202102251931481',
-                'lang': 'zh-cn',
-            }
-            header = {}
-        else:
-            params = {'act_id': 'e202311201442471'}
-            header = {
-                'x-rpc-signgame': 'hk4e',
-            }
-        data = await self._mys_req_get('SIGN_LIST_URL', is_os, params, header)
-        if isinstance(data, Dict):
-            data = cast(SignList, data['data'])
-        return data
-
-    async def get_sign_info(self, uid) -> Union[SignInfo, int]:
-        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
-        is_os = self.check_os(uid)
-        if is_os:
-            params = {
-                'act_id': 'e202102251931481',
-                'lang': 'zh-cn',
-                'region': server_id,
-                'uid': uid,
-            }
-            header = {
-                'DS': generate_os_ds(),
-            }
-        else:
-            params = {
-                'act_id': 'e202311201442471',
-                'region': server_id,
-                'uid': uid,
-            }
-            header = {
-                'x-rpc-signgame': 'hk4e',
-            }
-        data = await self._mys_req_get('SIGN_INFO_URL', is_os, params, header)
-        if isinstance(data, Dict):
-            data = cast(SignInfo, data['data'])
-        return data
-
-    async def mys_sign(
-        self, uid, header={}, server_id='cn_gf01'
-    ) -> Union[MysSign, int]:
-        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
-        ck = await self.get_ck(uid, 'OWNER')
-        if ck is None:
-            return -51
-        if int(str(uid)[0]) < 6:
-            HEADER = copy.deepcopy(self._HEADER)
-            HEADER['Cookie'] = ck
-            HEADER['x-rpc-app_version'] = mys_version
-            header['x-rpc-device_id'] = await self.get_user_device_id(uid)
-            header['x-rpc-device_fp'] = await self.get_user_fp(uid)
-            HEADER['x-rpc-client_type'] = '5'
-            HEADER['X_Requested_With'] = 'com.mihoyo.hyperion'
-            HEADER['DS'] = get_web_ds_token(True)
-            HEADER['Referer'] = (
-                'https://webstatic.mihoyo.com/bbs/event/signin-ys/index.html'
-                '?bbs_auth_required=true&act_id=e202009291139501'
-                '&utm_source=bbs&utm_medium=mys&utm_campaign=icon'
-            )
-            header['x-rpc-signgame'] = 'hk4e'
-            HEADER.update(header)
-            data = await self._mys_request(
-                url=self.MAPI['SIGN_URL'],
-                method='POST',
-                header=HEADER,
-                data={
-                    'act_id': 'e202311201442471',
-                    'uid': uid,
-                    'region': server_id,
-                },
-            )
-        else:
-            HEADER = copy.deepcopy(self._HEADER_OS)
-            HEADER['Cookie'] = ck
-            HEADER['DS'] = generate_os_ds()
-            HEADER.update(header)
-            data = await self._mys_request(
-                url=self.MAPI['SIGN_URL_OS'],
-                method='POST',
-                header=HEADER,
-                data={
-                    'act_id': 'e202102251931481',
-                    'lang': 'zh-cn',
-                    'uid': uid,
-                    'region': server_id,
-                },
-                use_proxy=True,
-            )
-        if isinstance(data, Dict):
-            data = cast(MysSign, data['data'])
-        return data
-
-    async def get_award(self, uid) -> Union[MonthlyAward, int]:
-        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
-        ck = await self.get_ck(uid, 'OWNER')
-        if ck is None:
-            return -51
-        if int(str(uid)[0]) < 6:
-            HEADER = copy.deepcopy(self._HEADER)
-            HEADER['Cookie'] = ck
-            HEADER['DS'] = get_web_ds_token(True)
-            HEADER['x-rpc-device_id'] = random_hex(32)
-            data = await self._mys_request(
-                url=self.MAPI['MONTHLY_AWARD_URL'],
-                method='GET',
-                header=HEADER,
-                params={
-                    'act_id': 'e202009291139501',
-                    'bind_region': server_id,
-                    'bind_uid': uid,
-                    'month': '0',
-                    'bbs_presentation_style': 'fullscreen',
-                    'bbs_auth_required': 'true',
-                    'utm_source': 'bbs',
-                    'utm_medium': 'mys',
-                    'utm_campaign': 'icon',
-                },
-            )
-        else:
-            HEADER = copy.deepcopy(self._HEADER_OS)
-            HEADER['Cookie'] = ck
-            HEADER['x-rpc-device_id'] = random_hex(32)
-            HEADER['DS'] = generate_os_ds()
-            data = await self._mys_request(
-                url=self.MAPI['MONTHLY_AWARD_URL_OS'],
-                method='GET',
-                header=HEADER,
-                params={
-                    'act_id': 'e202009291139501',
-                    'region': server_id,
-                    'uid': uid,
-                    'month': '0',
-                },
-                use_proxy=True,
-            )
-        if isinstance(data, Dict):
-            data = cast(MonthlyAward, data['data'])
         return data
 
     async def get_bs_index(self, uid: str) -> Union[int, BsIndex]:
@@ -260,7 +105,7 @@ class MysApi(BBSMysApi):
                 return -51
 
         if int(str(uid)[0]) < 6:
-            HEADER = copy.deepcopy(self._HEADER)
+            HEADER = deepcopy(self._HEADER)
             HEADER['Cookie'] = ck
             HEADER['DS'] = get_ds_token(
                 '',
@@ -281,7 +126,7 @@ class MysApi(BBSMysApi):
                 },
             )
         else:
-            HEADER = copy.deepcopy(self._HEADER_OS)
+            HEADER = deepcopy(self._HEADER_OS)
             HEADER['Cookie'] = ck
             HEADER['DS'] = generate_os_ds()
             data = await self._mys_request(
@@ -311,6 +156,33 @@ class MysApi(BBSMysApi):
         if isinstance(data, Dict):
             data = cast(CalculateInfo, data['data'])
         return data
+
+    async def get_batch_compute_info(
+        self, uid: str, items: Union[List[Dict], List[str], List[int]]
+    ) -> Union[ComputeData, int]:
+        if not items:
+            return -200
+        if isinstance(items[0], Dict):
+            pass
+
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
+        ck = await self.get_ck(uid, 'OWNER')
+        if ck is None:
+            return -51
+
+        header = deepcopy(self._HEADER)
+        header['Cookie'] = ck
+        data = {
+            'items': items,
+            'region': server_id,
+            'uid': uid,
+        }
+        raw_data = await self._mys_request(
+            self.MAPI['COMPUTE_URL'], 'POST', header, data=data
+        )
+        if isinstance(raw_data, Dict):
+            raw_data = cast(ComputeData, raw_data['data'])
+        return raw_data
 
     async def get_mihoyo_bbs_info(
         self,

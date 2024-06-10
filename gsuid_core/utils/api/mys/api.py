@@ -101,6 +101,10 @@ CALCULATE_INFO_URL = (
 CALCULATE_INFO_URL_OS = (
     'https://sg-public-api.hoyoverse.com/event/calculateos/sync/avatar/detail'
 )
+# 新版素材计算器
+COMPUTE_URL = f'{OLD_URL}/event/e20200928calculate/v3/batch_compute'
+
+
 # 获取米游社内的角色信息 mysid -> uid
 MIHOYO_BBS_PLAYER_INFO_URL = (
     f'{NEW_URL}/game_record/card/wapi/getGameRecordCard'
