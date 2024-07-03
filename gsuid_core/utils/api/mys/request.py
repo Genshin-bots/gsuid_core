@@ -22,6 +22,7 @@ from .models import (
     CalculateInfo,
     DailyNoteData,
     CharDetailData,
+    PoetryAbyssDatas,
 )
 
 
@@ -92,6 +93,33 @@ class MysApi(SignMysApi):
         )
         if isinstance(data, Dict):
             data = cast(AbyssData, data['data'])
+        return data
+
+    async def get_poetry_abyss_data(
+        self, uid: str
+    ) -> Union[PoetryAbyssDatas, int]:
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
+        HEADER = deepcopy(self._HEADER)
+        ck = await self.get_ck(uid, 'OWNER')
+        if ck is None:
+            return -51
+        HEADER['Cookie'] = ck
+        params = {
+            'server': server_id,
+            'role_id': uid,
+            'need_detail': True,
+        }
+        HEADER['DS'] = get_ds_token(
+            '&'.join([f'{k}={v}' for k, v in params.items()])
+        )
+        data = await self._mys_request(
+            self.MAPI['POETRY_ABYSS_URL'],
+            'GET',
+            HEADER,
+            params,
+        )
+        if isinstance(data, Dict):
+            data = cast(PoetryAbyssDatas, data['data'])
         return data
 
     async def get_character(

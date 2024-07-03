@@ -103,7 +103,7 @@ CALCULATE_INFO_URL_OS = (
 )
 # 新版素材计算器
 COMPUTE_URL = f'{OLD_URL}/event/e20200928calculate/v3/batch_compute'
-
+POETRY_ABYSS_URL = f'{NEW_URL}/game_record/app/genshin/api/role_combat'
 
 # 获取米游社内的角色信息 mysid -> uid
 MIHOYO_BBS_PLAYER_INFO_URL = (
