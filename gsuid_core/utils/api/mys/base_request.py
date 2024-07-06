@@ -49,15 +49,15 @@ class BaseMysApi:
     mysVersion = mys_version
     _HEADER = {
         'x-rpc-app_version': mysVersion,
+        'X-Requested-With': "com.mihoyo.hyperion",
         'User-Agent': (
             'Mozilla/5.0 (Linux; Android 13; PHK110 Build/SKQ1.221119.001; wv)'
             'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/'
-            f'118.0.0.0 Mobile Safari/537.36 miHoYoBBS/{mysVersion}'
+            f'126.0.6478.133 Mobile Safari/537.36 miHoYoBBS/{mysVersion}'
         ),
         'x-rpc-client_type': '5',
         'Referer': 'https://webstatic.mihoyo.com/',
         'Origin': 'https://webstatic.mihoyo.com/',
-        # 'X-Requested-With': 'com.mihoyo.hyperion',
     }
     _HEADER_OS = {
         'x-rpc-app_version': '1.5.0',

@@ -17,6 +17,8 @@ async def download(
     sess: Union[ClientSession, httpx.AsyncClient, None] = None,
     tag: str = '',
 ):
+    logger.info(f'{tag} 开始下载 {name} 图片...')
+    logger.info(f'{tag} URL: {url}')
     if sess is None:
         sess = httpx.AsyncClient()
 
