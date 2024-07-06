@@ -181,8 +181,11 @@ class AccountMysApi(PassMysApi):
             data = cast(GameTokenInfo, data['data'])
         return data
 
-    async def get_authkey_by_cookie(self, uid: str) -> Union[AuthKeyInfo, int]:
-        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
+    async def get_authkey_by_cookie(
+        self, uid: str, game_biz: str = 'hk4e_cn', server_id: str = ''
+    ) -> Union[AuthKeyInfo, int]:
+        if not server_id:
+            server_id = self.RECOGNIZE_SERVER.get(str(uid)[0], 'cn_gf01')
         HEADER = deepcopy(self._HEADER)
         stoken = await self.get_stoken(uid)
         if stoken is None:
@@ -205,7 +208,7 @@ class AccountMysApi(PassMysApi):
             header=HEADER,
             data={
                 'auth_appid': 'webview_gacha',
-                'game_biz': 'hk4e_cn',
+                'game_biz': game_biz,
                 'game_uid': uid,
                 'region': server_id,
             },
