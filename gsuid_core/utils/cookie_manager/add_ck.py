@@ -163,21 +163,24 @@ async def get_all_bind_uid(
 ) -> Tuple[Union[str, None], ...]:
     uid = await GsBind.get_uid_by_game(user_id, bot_id)
     sr_uid = await GsBind.get_uid_by_game(user_id, bot_id, 'sr')
-    return uid, sr_uid
+    zzz_uid = await GsBind.get_uid_by_game(user_id, bot_id, 'zzz')
+    return uid, sr_uid, zzz_uid
 
 
 async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     simp_dict = SimpleCookie(mes)
-    uid, sr_uid = await get_all_bind_uid(bot_id, user_id)
+    uid, sr_uid, zzz_uid = await get_all_bind_uid(bot_id, user_id)
 
     uid_bind = sr_uid_bind = zzz_uid_bind = None
     wd_uid_bind = bb_uid_bind = bbb_uid_bind = None
 
-    if uid is None and sr_uid is None:
+    if uid is None and sr_uid is None and zzz_uid is None:
         if uid is None:
             return UID_HINT
         elif sr_uid is None:
             return '请绑定星穹铁道UID...'
+        elif zzz_uid is None:
+            return '请绑定绝区零UID...'
 
     im_list = []
     is_add_stoken = False
@@ -251,7 +254,11 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     account_cookie = f'account_id={account_id};cookie_token={cookie_token}'
 
     try:
-        if sr_uid or (uid and int(uid[0]) < 6):
+        if (
+            sr_uid
+            or (uid and int(uid[0]) < 6)
+            or (zzz_uid and len(zzz_uid) < 10)
+        ):
             mys_data = await mys_api.get_mihoyo_bbs_info(
                 account_id, account_cookie
             )
