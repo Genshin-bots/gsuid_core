@@ -84,6 +84,7 @@ async def shift_image_hue(img: Image.Image, angle: float = 30) -> Image.Image:
     img = img.convert('HSV')
 
     pixels = img.load()
+    assert pixels is not None
     hue_shift = angle
 
     for y in range(img.height):
@@ -110,7 +111,7 @@ async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
         pic = Image.open(BytesIO(resp.read()))
         pic = pic.convert("RGBA")
         if size is not None:
-            pic = pic.resize(size, Image.LANCZOS)
+            pic = pic.resize(size)
         return pic
 
 
@@ -401,7 +402,7 @@ class CustomizeImage:
     ) -> Tuple[int, int, int]:
         # 获取背景主色
         color = 8
-        q = edit_bg.quantize(colors=color, method=2)
+        q = edit_bg.quantize(colors=color, method=Image.Quantize.FASTOCTREE)
         bg_color = (0, 0, 0)
         if is_light:
             based_light = 195

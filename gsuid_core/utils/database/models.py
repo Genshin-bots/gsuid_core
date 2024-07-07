@@ -214,6 +214,16 @@ class GsUser(User, table=True):
         title='自动签到',
         schema_extra={'hint': 'gs开启自动签到'},
     )
+    sr_sign_switch: str = Field(
+        default='off',
+        title='崩铁自动签到',
+        schema_extra={'hint': 'sr开启自动签到'},
+    )
+    zzz_sign_switch: str = Field(
+        default='off',
+        title='绝区零自动签到',
+        schema_extra={'hint': 'zzz开启自动签到'},
+    )
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
     bb_uid: Optional[str] = Field(default=None, title='崩坏二UID')
@@ -234,7 +244,7 @@ class GsUser(User, table=True):
         schema_extra={'hint': 'gs开启自动留影叙佳期'},
     )
     sr_push_switch: str = Field(default='off', title='星铁全局推送开关')
-    sr_sign_switch: str = Field(default='off', title='星铁自动签到')
+    zzz_push_switch: str = Field(default='off', title='星铁全局推送开关')
     fp: Optional[str] = Field(default=None, title='Fingerprint')
     device_id: Optional[str] = Field(default=None, title='设备ID')
     device_info: Optional[str] = Field(
