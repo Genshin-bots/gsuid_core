@@ -1,3 +1,4 @@
+from sys import exc_info
 from typing import Dict, List
 
 from gsuid_core.config import CONFIG_DEFAULT, core_config
@@ -25,7 +26,8 @@ def get_core_config_page():
     }
     body = [
         get_alert(
-            '如无法确定选项原意，切勿随意修改，修改需重启GsCore生效', 'warning'
+            '如无法确定选项原意，切勿随意修改，修改需重启GsCore生效',
+            'warning',
         )
     ]
     solo_body = []

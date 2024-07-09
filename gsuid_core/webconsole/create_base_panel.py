@@ -127,6 +127,13 @@ def get_select_panel(label: str, name: str, value: str, options: List[str]):
 
 
 def get_input_tag(label: str, name: str, value: List[str], options: List[str]):
+    values = []
+    for i in value:
+        if isinstance(i, int):
+            _data = str(i)
+        else:
+            _data = i
+        values.append(_data)
     return {
         'type': 'input-tag',
         'label': label,
@@ -135,7 +142,7 @@ def get_input_tag(label: str, name: str, value: List[str], options: List[str]):
         'id': 'u:85ecb7894ccc',
         'optionsTip': '最近您使用的标签',
         'autoFill': {},
-        'value': ','.join(value),
+        'value': ','.join(values),
     }
 
 
