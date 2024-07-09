@@ -1,4 +1,3 @@
-from sys import exc_info
 from typing import Dict, List
 
 from gsuid_core.config import CONFIG_DEFAULT, core_config
