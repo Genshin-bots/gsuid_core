@@ -14,10 +14,10 @@ from fastapi.responses import StreamingResponse
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
 import gsuid_core.global_val as gv
-from gsuid_core.config import core_config
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.segment import Message, MessageSegment
+from gsuid_core.config import CONFIG_DEFAULT, core_config
 from gsuid_core.logger import logger, read_log, clear_log
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
@@ -121,7 +121,9 @@ def _set_Config(request: Request, data: Dict, config_name: str):
 def _set_Core_Config(request: Request, data: Dict):
     result = {}
     for i in data:
-        if isinstance(data[i], str) and ',' in data[i]:
+        if (
+            i in CONFIG_DEFAULT and isinstance(CONFIG_DEFAULT[i], List)
+        ) or i in ['log_output']:
             v = data[i].split(',')
         else:
             v = data[i]
@@ -138,6 +140,8 @@ def _set_Core_Config(request: Request, data: Dict):
 
     for r in result:
         core_config.set_config(r, result[r])
+
+    return {"status": 0, "msg": "成功！"}
 
 
 @app.get('/genshinuid/api/getPlugins')
