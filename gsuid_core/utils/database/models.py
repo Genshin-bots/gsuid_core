@@ -233,6 +233,10 @@ class GsUser(User, table=True):
     mys_id: Optional[str] = Field(default=None, title='米游社通行证')
     region: Optional[str] = Field(default=None, title='原神地区')
     sr_region: Optional[str] = Field(default=None, title='星铁地区')
+    zzz_region: Optional[str] = Field(default=None, title='绝区零地区')
+    bb_region: Optional[str] = Field(default=None, title='崩坏二地区')
+    bbb_region: Optional[str] = Field(default=None, title='崩坏三地区')
+    wd_region: Optional[str] = Field(default=None, title='未定地区')
     bbs_switch: str = Field(
         default='off',
         title='自动米游币',

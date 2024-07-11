@@ -12,3 +12,10 @@ SR_SERVER = {
     '1': 'prod_gf_cn',
     '2': 'prod_gf_cn',
 }
+
+ZZZ_SERVER = {
+    '10': 'prod_gf_us',
+    '13': 'prod_gf_jp',
+    '15': 'prod_gf_eu',
+    '17': 'prod_gf_sg',
+}

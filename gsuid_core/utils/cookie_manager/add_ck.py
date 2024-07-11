@@ -9,8 +9,8 @@ from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import UID_HINT
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.fonts.fonts import core_font as cf
-from gsuid_core.utils.database.utils import SERVER, SR_SERVER
 from gsuid_core.utils.database.models import GsBind, GsUser, GsCache
+from gsuid_core.utils.database.utils import SERVER, SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.image.image_tools import get_v4_bg, get_status_icon
 
 pic_path = Path(__file__).parent / 'pic'
@@ -336,6 +336,13 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
 
     nd = await mys_api.ck_in_new_device(uid, app_cookie)
 
+    zzz_region = None
+    if zzz_uid_bind:
+        if len(zzz_uid_bind) < 10:
+            zzz_region = 'prod_gf_cn'
+        else:
+            zzz_region = ZZZ_SERVER.get(uid[:2], 'prod_gf_jp')
+
     if await GsUser.data_exist(mys_id=account_id):
         await GsUser.update_data_by_xx(
             {'mys_id': account_id},
@@ -348,8 +355,12 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             bbb_uid=bbb_uid_bind,
             zzz_uid=zzz_uid_bind,
             wd_uid=wd_uid_bind,
-            fp=nd[0],
             device_id=nd[1],
+            region=SERVER.get(uid_bind[0], 'cn_gf01') if uid_bind else None,
+            sr_region=(
+                SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None
+            ),
+            zzz_region=zzz_region,
         )
     else:
         await GsUser.insert_data(
@@ -372,6 +383,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             sr_region=(
                 SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None
             ),
+            zzz_region=zzz_region,
             fp=nd[0],
             device_id=nd[1],
             sr_push_switch='off',
