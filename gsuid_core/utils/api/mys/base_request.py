@@ -337,6 +337,7 @@ class BaseMysApi:
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         use_proxy: Optional[bool] = False,
+        base_url: str = '',
     ) -> Union[Dict, int]:
         if use_proxy and self.Gproxy:
             proxy = self.Gproxy
@@ -345,7 +346,11 @@ class BaseMysApi:
         else:
             proxy = None
 
-        async with httpx.AsyncClient(verify=ssl_verify, proxy=proxy) as client:
+        async with httpx.AsyncClient(
+            verify=ssl_verify,
+            proxies=proxy,
+            base_url=base_url,
+        ) as client:
             raw_data = {}
             uid = None
             if params and 'role_id' in params:
