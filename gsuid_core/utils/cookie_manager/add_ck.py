@@ -1,6 +1,6 @@
 from pathlib import Path
 from http.cookies import SimpleCookie
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Optional
 
 from PIL import Image, ImageDraw
 
@@ -35,26 +35,55 @@ lt_list = ['login_ticket', 'login_ticket_v2']
 
 
 async def get_ck_by_all_stoken(bot_id: str):
-    uid_list: List = await GsBind.get_all_uid_list_by_game(bot_id)
-    uid_dict = {}
-    for uid in uid_list:
-        user_data = await GsUser.select_data_by_uid(uid)
-        if user_data:
-            uid_dict[uid] = user_data.user_id
-    im = await refresh_ck_by_uid_list(bot_id, uid_dict)
-    return im
+    im_list = []
+    for _key in GsBind.__fields__:
+        if _key.endswith('uid'):
+            if _key == 'uid':
+                game_name = None
+            else:
+                game_name = _key.split('_')[0]
+            uid_list: List = await GsBind.get_all_uid_list_by_game(
+                bot_id,
+                game_name,
+            )
+            uid_dict = {}
+            for uid in uid_list:
+                user_data = await GsUser.select_data_by_uid(uid, game_name)
+                if user_data:
+                    uid_dict[uid] = user_data.user_id
+            im = await refresh_ck_by_uid_list(bot_id, uid_dict, game_name)
+            im_list.append(im)
+    if not im_list:
+        return UID_HINT
+    return '\n'.join(im_list)
 
 
 async def get_ck_by_stoken(bot_id: str, user_id: str):
-    uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id)
-    if uid_list is None:
+    im_list = []
+    for _key in GsBind.__fields__:
+        if _key.endswith('uid'):
+            if _key == 'uid':
+                game_name = None
+            else:
+                game_name = _key.split('_')[0]
+            uid_list = await GsBind.get_uid_list_by_game(
+                user_id, bot_id, game_name
+            )
+            if uid_list is None:
+                continue
+            uid_dict = {uid: user_id for uid in uid_list}
+            im = await refresh_ck_by_uid_list(bot_id, uid_dict, game_name)
+            im_list.append(im)
+    if not im_list:
         return UID_HINT
-    uid_dict = {uid: user_id for uid in uid_list}
-    im = await refresh_ck_by_uid_list(bot_id, uid_dict)
-    return im
+    return '\n'.join(im_list)
 
 
-async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
+async def refresh_ck_by_uid_list(
+    bot_id: str,
+    uid_dict: Dict,
+    game_name: Optional[str] = None,
+):
     uid_num = len(uid_dict)
     if uid_num == 0:
         return '请先绑定一个UID噢~'
@@ -62,7 +91,7 @@ async def refresh_ck_by_uid_list(bot_id: str, uid_dict: Dict):
     skip_num = 0
     error_num = 0
     for uid in uid_dict:
-        stoken = await GsUser.get_user_stoken_by_uid(uid)
+        stoken = await GsUser.get_user_stoken_by_uid(uid, game_name)
         # account_id = await GsUser.get_user_attr_by_uid(uid, 'mys_id')
         # _stoken = f'{stoken};account_id={account_id}'
         if stoken is None:
