@@ -60,26 +60,28 @@ async def find_fastest_url(urls: Dict[str, str]):
 
 
 async def check_speed():
-    logger.info('[GsCore资源下载]测速中...')
-
     global global_tag
     global global_url
 
-    URL_LIB = {
-        '[JPFRP]': 'http://jp-3.lcf.1l1.icu:17217',
-        '[HKFRP]': 'http://hk-1.lcf.1l1.icu:10200',
-        '[USFRP]': 'http://us-6.lcf.1l1.icu:28596',
-        '[XiaoWu]': 'http://frp.xiaowuap.com:63481',
-        '[Chuncheon]': 'https://kr.qxqx.cf',
-        '[Seoul]': 'https://kr-s.qxqx.cf',
-        '[Singapore]': 'https://sg.qxqx.cf',
-    }
+    if not global_tag or not global_url:
+        logger.info('[GsCore资源下载]测速中...')
 
-    TAG, BASE_URL = await find_fastest_url(URL_LIB)
-    global_tag, global_url = TAG, BASE_URL
+        URL_LIB = {
+            '[JPFRP]': 'http://jp-3.lcf.1l1.icu:17217',
+            '[HKFRP]': 'http://hk-1.lcf.1l1.icu:10200',
+            '[USFRP]': 'http://us-6.lcf.1l1.icu:28596',
+            '[XiaoWu]': 'http://frp.xiaowuap.com:63481',
+            '[Chuncheon]': 'https://kr.qxqx.cf',
+            '[Seoul]': 'https://kr-s.qxqx.cf',
+            '[Singapore]': 'https://sg.qxqx.cf',
+        }
 
-    logger.info(f"最快资源站: {TAG} {BASE_URL}")
-    return TAG, BASE_URL
+        TAG, BASE_URL = await find_fastest_url(URL_LIB)
+        global_tag, global_url = TAG, BASE_URL
+
+        logger.info(f"最快资源站: {TAG} {BASE_URL}")
+        return TAG, BASE_URL
+    return global_tag, global_url
 
 
 async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
