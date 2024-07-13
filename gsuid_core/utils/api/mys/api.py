@@ -1,7 +1,7 @@
 # flake8: noqa
-GS_BASE = 'https://api-takumi.mihoyo.com'
+OLD_URL = GS_BASE = 'https://api-takumi.mihoyo.com'
 ZZZ_BASE = 'https://act-nap-api.mihoyo.com'
-RECORD_BASE = 'https://api-takumi-record.mihoyo.com'
+NEW_URL = RECORD_BASE = 'https://api-takumi-record.mihoyo.com'
 BBS_URL = 'https://bbs-api.mihoyo.com'
 HK4_URL = 'https://hk4e-api.mihoyo.com'
 NEW_BBS_URL = 'https://bbs-api.miyoushe.com'
