@@ -221,7 +221,7 @@ class AccountMysApi(PassMysApi):
         # 获取e_hk4e_token
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
         header = {
-            'Cookie': await self.get_ck(uid, 'OWNER'),
+            'Cookie': await self.get_ck(uid, 'OWNER', None),
             'Content-Type': 'application/json;charset=UTF-8',
             'Referer': 'https://webstatic.mihoyo.com/',
             'Origin': 'https://webstatic.mihoyo.com',

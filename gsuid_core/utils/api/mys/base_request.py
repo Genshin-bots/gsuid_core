@@ -15,6 +15,8 @@ from gsuid_core.bot import call_bot
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.database.models import GsUser
+from gsuid_core.utils.database.utils import SR_SERVER, ZZZ_SERVER
+from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import _API
@@ -27,16 +29,7 @@ from .tools import (
 )
 
 _DEAD_CODE = [10035, 5003, 10041, 1034]
-RECOGNIZE_SERVER = {
-    '1': 'cn_gf01',
-    '2': 'cn_gf01',
-    '3': 'cn_gf01',
-    '5': 'cn_qd01',
-    '6': 'os_usa',
-    '7': 'os_euro',
-    '8': 'os_asia',
-    '9': 'os_cht',
-}
+
 
 Gproxy = core_plugins_config.get_config('Gproxy').data
 Nproxy = core_plugins_config.get_config('Nproxy').data
@@ -80,8 +73,43 @@ class BaseMysApi:
 
     @abstractmethod
     async def get_ck(
-        self, uid: str, mode: Literal['OWNER', 'RANDOM'] = 'RANDOM'
-    ) -> Optional[str]: ...
+        self,
+        uid: str,
+        mode: Literal['OWNER', 'RANDOM'] = 'RANDOM',
+        game_name: Optional[str] = None,
+    ) -> Optional[str]:
+        if game_name == 'gs':
+            game_name = None
+
+        if mode == 'RANDOM':
+            if game_name == 'zzz':
+                condition = (
+                    {
+                        'zzz_region': self.get_server_id(uid, 'zzz'),
+                    }
+                    if len(uid) >= 10
+                    else None
+                )
+            elif game_name == 'sr':
+                condition = {
+                    'sr_region': self.get_server_id(uid, 'sr'),
+                }
+            elif game_name == 'gs':
+                condition = {
+                    'region': self.get_server_id(uid, 'gs'),
+                }
+            else:
+                condition = None
+
+            return await GsUser.get_random_cookie(
+                uid,
+                game_name=game_name,
+                condition=condition,
+            )
+        else:
+            return await GsUser.get_user_cookie_by_uid(
+                uid, game_name=game_name
+            )
 
     @abstractmethod
     async def get_stoken(self, uid: str) -> Optional[str]: ...
@@ -92,8 +120,25 @@ class BaseMysApi:
     @abstractmethod
     async def get_user_device_id(self, uid: str) -> Optional[str]: ...
 
-    def check_os(self, uid: str) -> bool:
-        return False if int(str(uid)[0]) < 6 else True
+    def check_os(self, uid: str, game_name: str = 'gs') -> bool:
+        if game_name == 'gs' or game_name == 'sr':
+            is_os = False if int(str(uid)[0]) < 6 else True
+        elif game_name == 'zzz':
+            is_os = False if len(str(uid)) < 10 else True
+        return is_os
+
+    def get_server_id(self, uid: str, game_name: str = 'gs') -> str:
+        server_id = 'prod_gf_cn'
+        if game_name == 'gs':
+            server_id = self.RECOGNIZE_SERVER.get(str(uid)[0], 'cn_gf01')
+        elif game_name == 'sr':
+            server_id = SR_SERVER.get(str(uid)[0], 'prod_gf_cn')
+        elif game_name == 'zzz':
+            if len(uid) < 10:
+                server_id = 'prod_gf_cn'
+            else:
+                server_id = ZZZ_SERVER.get(uid[:2], 'prod_gf_jp')
+        return server_id
 
     def get_device_id(self) -> str:
         device_id = str(uuid.uuid4()).lower()

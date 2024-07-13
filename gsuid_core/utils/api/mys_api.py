@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Optional
 
 from gsuid_core.utils.api.mys import MysApi
 from gsuid_core.utils.database.models import GsUser
@@ -10,14 +10,6 @@ gsconfig = core_plugins_config
 class _MysApi(MysApi):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-    async def get_ck(
-        self, uid: str, mode: Literal['OWNER', 'RANDOM'] = 'RANDOM'
-    ) -> Optional[str]:
-        if mode == 'RANDOM':
-            return await GsUser.get_random_cookie(uid)
-        else:
-            return await GsUser.get_user_cookie_by_uid(uid)
 
     async def get_stoken(self, uid: str) -> Optional[str]:
         return await GsUser.get_user_stoken_by_uid(uid)
