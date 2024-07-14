@@ -302,6 +302,3 @@ class GsPush(Push, table=True):
     transform_is_push: Optional[str] = Field(
         title='质变仪是否已推送', default='off'
     )
-    transform_is_push: Optional[str] = Field(
-        title='质变仪是否已推送', default='off'
-    )
