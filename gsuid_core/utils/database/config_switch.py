@@ -35,4 +35,4 @@ async def set_database_value(
                     },
                 )
 
-                return f'✅[{game_name}] {title}已设置为{value}'
+                return f'✅{title}\n📝已设置为{value}'
