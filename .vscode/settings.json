@@ -9,11 +9,14 @@
     }
   },
   "python.autoComplete.extraPaths": [
-    "${workspaceFolder}/../../../../"
+    "${workspaceFolder}/gsuid_core"
   ],
   "isort.args": [
     "--profile",
     "black"
   ],
-  "basedpyright.analysis.typeCheckingMode": "basic"
+  "basedpyright.analysis.typeCheckingMode": "basic",
+  "basedpyright.analysis.extraPaths": [
+    "${workspaceFolder}/gsuid_core"
+  ]
 }
