@@ -10,6 +10,12 @@ from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.boardcast.models import BoardCastMsg, BoardCastMsgDict
 
+GAME_NAME_MAP = {
+    'gs': '原神',
+    'sr': '崩铁',
+    'zzz': '绝区零',
+}
+
 
 async def sign_error(uid: str, retcode: int, game_name: str = 'gs') -> str:
     sign_title = f'[{game_name}] [签到]'
@@ -27,7 +33,8 @@ async def sign_error(uid: str, retcode: int, game_name: str = 'gs') -> str:
 
 
 async def sign_in(uid: str, game_name: str = 'gs') -> str:
-    sign_title = f'[{game_name}] [签到]'
+    _gn = GAME_NAME_MAP.get(game_name, '未知游戏')
+    sign_title = f'[{_gn}] [签到]'
     logger.info(f'{sign_title} {uid} 开始执行签到')
     is_os = mys_api.check_os(uid, game_name)
     # 获得签到信息
@@ -53,7 +60,7 @@ async def sign_in(uid: str, game_name: str = 'gs') -> str:
             return await sign_error(uid, sign_data, game_name)
         if 'risk_code' in sign_data:
             # 出现校验码
-            if sign_data['risk_code'] == 375:
+            if sign_data['risk_code'] in [375, 5001]:
                 if core_plugins_config.get_config('CaptchaPass').data:
                     gt = sign_data['gt']
                     ch = sign_data['challenge']
@@ -250,7 +257,8 @@ async def daily_sign(game_name: str):
     for gid in group_msgs:
         success = group_msgs[gid]['success']
         faild = group_msgs[gid]['failed']
-        title = f'✅今日自动签到已完成！\n📝本群共签到成功{success}人，共签到失败{faild}人。'
+        _gn = GAME_NAME_MAP.get(game_name, '未知游戏')
+        title = f'✅{_gn}今日自动签到已完成！\n📝本群共签到成功{success}人，共签到失败{faild}人。'
         messages = [MessageSegment.text(title)]
         if group_msgs[gid]['push_message']:
             messages.append(MessageSegment.text('\n'))

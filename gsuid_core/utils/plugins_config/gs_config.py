@@ -52,7 +52,7 @@ class StringConfig:
 
         self.config_name = config_name
         self.CONFIG_PATH = CONFIG_PATH
-        self.config: Dict[str, GSC] = {}
+        self.config: Dict[str, GSC] = {}  # type: ignore
         self.update_config()
 
     def __len__(self):
