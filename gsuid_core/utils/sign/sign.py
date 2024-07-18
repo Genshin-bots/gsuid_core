@@ -95,7 +95,7 @@ async def sign_in(uid: str, game_name: str = 'gs') -> str:
                         f'{sign_title} [无感验证] {uid} 该用户重试 {index} 次验证成功!'
                     )
                 break
-        elif is_os and (sign_data['data']['code'] == 'ok'):
+        elif is_os and (sign_data['code'] == 'ok'):
             # 国际服签到无risk_code字段
             logger.info(f'[国际服签到] {uid} 签到成功!')
             break
