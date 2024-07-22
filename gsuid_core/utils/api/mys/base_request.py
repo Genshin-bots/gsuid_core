@@ -112,13 +112,19 @@ class BaseMysApi:
             )
 
     @abstractmethod
-    async def get_stoken(self, uid: str) -> Optional[str]: ...
+    async def get_stoken(
+        self, uid: str, game_name: Optional[str] = None
+    ) -> Optional[str]: ...
 
     @abstractmethod
-    async def get_user_fp(self, uid: str) -> Optional[str]: ...
+    async def get_user_fp(
+        self, uid: str, game_name: Optional[str] = None
+    ) -> Optional[str]: ...
 
     @abstractmethod
-    async def get_user_device_id(self, uid: str) -> Optional[str]: ...
+    async def get_user_device_id(
+        self, uid: str, game_name: Optional[str] = None
+    ) -> Optional[str]: ...
 
     def check_os(self, uid: str, game_name: str = 'gs') -> bool:
         if game_name == 'gs' or game_name == 'sr':
@@ -383,6 +389,7 @@ class BaseMysApi:
         data: Optional[Dict[str, Any]] = None,
         use_proxy: Optional[bool] = False,
         base_url: str = '',
+        game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
         if use_proxy and self.Gproxy:
             proxy = self.Gproxy
@@ -404,13 +411,19 @@ class BaseMysApi:
                 uid = data['role_id']
 
             if uid is not None:
-                device_id = await self.get_user_device_id(uid)
-                header['x-rpc-device_fp'] = await self.get_user_fp(uid)
+                device_id = await self.get_user_device_id(
+                    uid,
+                    game_name,
+                )
+                header['x-rpc-device_fp'] = await self.get_user_fp(
+                    uid,
+                    game_name,
+                )
                 if device_id is not None:
                     header['x-rpc-device_id'] = device_id
 
                 dfp: Optional[str] = await GsUser.get_user_attr_by_uid(
-                    uid, 'device_info', 'sr' if self.is_sr else None
+                    uid, 'device_info', 'sr' if self.is_sr else game_name
                 )
                 if dfp is not None:
                     df = dfp.split('/')
@@ -442,6 +455,7 @@ class BaseMysApi:
                     continue
 
                 try:
+                    print(resp.headers)
                     raw_data = resp.json()
                 except (
                     httpx.ConnectError,
@@ -455,9 +469,9 @@ class BaseMysApi:
 
                 # 判断retcode
                 if 'retcode' in raw_data:
-                    retcode: int = raw_data['retcode']
+                    retcode = raw_data['retcode']
                 elif 'code' in raw_data:
-                    retcode: int = raw_data['code']
+                    retcode = raw_data['code']
                 else:
                     retcode = 0
 
