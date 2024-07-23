@@ -1,9 +1,9 @@
 from typing import List, Type, Optional
 
-from sqlmodel import Field
 from sqlalchemy import or_
+from sqlmodel import Field, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import Field, select
+
 from .base_models import (
     Bind,
     Push,
@@ -315,16 +315,17 @@ class GsUID(BaseIDModel, table=True):
 
     @classmethod
     @with_session
-    async def get_main_uid(
+    async def _get_main_uid(
         cls,
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> str:
+    ) -> Optional["GsUID"]:
         stmt = (
             select(cls)
             .where(
                 or_(
+                    cls.main_uid == uid,
                     cls.uid_1 == uid,
                     cls.uid_2 == uid,
                     cls.uid_3 == uid,
@@ -333,8 +334,58 @@ class GsUID(BaseIDModel, table=True):
             )
             .where(cls.game_name == game_name)
         )
-        results = session.execute(stmt).scalars().all()
-        if results:
-            return results[0].uid
+        results = await session.execute(stmt)
+        data = results.scalars().all()
+        if data:
+            return data[0]
+        else:
+            return None
+
+    @classmethod
+    @with_session
+    async def get_main_uid(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        game_name: Optional[str] = None,
+    ) -> str:
+        data = await cls._get_main_uid(uid, game_name)
+        if data:
+            return data.main_uid
         else:
             return uid
+
+    @classmethod
+    @with_session
+    async def uid_exist(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        game_name: Optional[str] = None,
+    ) -> Optional[str]:
+        data = await cls._get_main_uid(uid, game_name)
+        if data:
+            return data.main_uid
+        else:
+            return None
+
+    @classmethod
+    @with_session
+    async def update_data(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        game_name: Optional[str] = None,
+        **data,
+    ):
+        sql = (
+            update(cls)
+            .where(cls.main_uid == uid)
+            .where(cls.game_name == game_name)
+        )
+        if data is not None:
+            query = sql.values(**data)
+            query.execution_options(synchronize_session='fetch')
+            await session.execute(query)
+            return 0
+        return -1

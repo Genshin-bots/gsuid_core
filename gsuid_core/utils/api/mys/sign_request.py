@@ -6,23 +6,23 @@ from copy import deepcopy
 from typing import Dict, Union, cast
 
 from .bbs_request import BBSMysApi
-from .api import (
-    GS_BASE,
-    ZZZ_BASE,
-    SIGN_BASE_OS,
-    SIGN_SR_BASE_OS,
-    SIGN_INFO_URL,
-    SIGN_INFO_URL_OS,
-    SIGN_URL_SR_OS,
-    SIGN_LIST_SR_OS,
-    SIGN_INFO_SR_OS,
-    SIGN_LIST_URL_OS,
-    SIGN_LIST_URL,
-    SIGN_URL,
-    SIGN_URL_OS,
-)
 from .models import MysSign, SignInfo, SignList, MonthlyAward
 from .tools import random_hex, generate_os_ds, get_web_ds_token
+from .api import (
+    GS_BASE,
+    SIGN_URL,
+    ZZZ_BASE,
+    SIGN_URL_OS,
+    SIGN_BASE_OS,
+    SIGN_INFO_URL,
+    SIGN_LIST_URL,
+    SIGN_URL_SR_OS,
+    SIGN_INFO_SR_OS,
+    SIGN_LIST_SR_OS,
+    SIGN_SR_BASE_OS,
+    SIGN_INFO_URL_OS,
+    SIGN_LIST_URL_OS,
+)
 
 _ACT_ID = {
     'gs': {
