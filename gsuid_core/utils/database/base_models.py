@@ -63,6 +63,7 @@ class BaseIDModel(SQLModel):
 
             🔹game_name (`Optional[str]`, 默认是 `None`):
                     假设传入`None`会返回`uid`，而传入`sr`会返回`sr_uid`
+                    特殊的, 传入`gs`也会返回`uid`!
 
         🚀使用范例:
 
@@ -72,6 +73,9 @@ class BaseIDModel(SQLModel):
 
             🔸`str`: 游戏uid对应列名，默认为`uid`
         '''
+        if game_name == 'gs':
+            game_name = None
+
         if game_name:
             return f'{game_name}_uid'
         else:

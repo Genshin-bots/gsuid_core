@@ -9,9 +9,9 @@ from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import UID_HINT
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.fonts.fonts import core_font as cf
-from gsuid_core.utils.database.models import GsBind, GsUser, GsCache
 from gsuid_core.utils.database.utils import SERVER, SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.image.image_tools import get_v4_bg, get_status_icon
+from gsuid_core.utils.database.models import GsUID, GsBind, GsUser, GsCache
 
 pic_path = Path(__file__).parent / 'pic'
 id_list = [
@@ -296,20 +296,61 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                 account_id, account_cookie, True
             )
         # 剔除除了原神之外的其他游戏
+        gs_uid_list: List[str] = []
+        sr_uid_list: List[str] = []
+        zzz_uid_list: List[str] = []
+        wd_uid_list: List[str] = []
+        bb_uid_list: List[str] = []
+        bbb_uid_list: List[str] = []
         if isinstance(mys_data, List):
             for i in mys_data:
                 if i['game_id'] == 2:
                     uid_bind = i['game_role_id']
+                    gs_uid_list.append(uid_bind)
                 elif i['game_id'] == 6:
                     sr_uid_bind = i['game_role_id']
+                    sr_uid_list.append(sr_uid_bind)
                 elif i['game_id'] == 8:
                     zzz_uid_bind = i['game_role_id']
+                    zzz_uid_list.append(zzz_uid_bind)
                 elif i['game_id'] == 4:
                     wd_uid_bind = i['game_role_id']
+                    wd_uid_list.append(wd_uid_bind)
                 elif i['game_id'] == 3:
                     bb_uid_bind = i['game_role_id']
+                    bb_uid_list.append(bb_uid_bind)
                 elif i['game_id'] == 1:
                     bbb_uid_bind = i['game_role_id']
+                    bbb_uid_list.append(bbb_uid_bind)
+
+            bind_dict = {
+                'gs': (uid_bind, gs_uid_list),
+                'sr': (sr_uid_bind, sr_uid_list),
+                'zzz': (zzz_uid_bind, zzz_uid_list),
+                'wd': (wd_uid_bind, wd_uid_list),
+                'bb': (bb_uid_bind, bb_uid_list),
+                'bbb': (bbb_uid_bind, bbb_uid_list),
+            }
+            for game_name in bind_dict:
+                _uid = bind_dict[game_name][0]
+                if _uid:
+                    bind_dict[game_name][1].pop()
+                    _uid_list = bind_dict[game_name][1][:4]
+
+                    insert_dict = {}
+                    for _i, _luid in enumerate(_uid_list):
+                        insert_dict[f'uid_{_i}'] = _luid
+
+                    _uid_exist = await GsUID.uid_exist(_uid, game_name)
+                    if _uid_exist:
+                        await GsUID.update_data(
+                            _uid_exist, game_name, **insert_dict
+                        )
+                    else:
+                        await GsUID.full_insert_data(
+                            main_uid=_uid, game_name=game_name, **insert_dict
+                        )
+
             else:
                 if not (
                     uid_bind

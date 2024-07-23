@@ -14,7 +14,7 @@ import httpx
 from gsuid_core.bot import call_bot
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
-from gsuid_core.utils.database.models import GsUser
+from gsuid_core.utils.database.models import GsUID, GsUser
 from gsuid_core.utils.database.utils import SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
@@ -71,6 +71,14 @@ class BaseMysApi:
         self, gt: str, ch: str, header: Dict
     ) -> Tuple[Optional[str], Optional[str]]: ...
 
+    async def get_uid(
+        self,
+        uid: str,
+        game_name: Optional[str] = None,
+    ):
+        uid = await GsUID.get_main_uid(uid, game_name)
+        return uid
+
     @abstractmethod
     async def get_ck(
         self,
@@ -78,8 +86,7 @@ class BaseMysApi:
         mode: Literal['OWNER', 'RANDOM'] = 'RANDOM',
         game_name: Optional[str] = None,
     ) -> Optional[str]:
-        if game_name == 'gs':
-            game_name = None
+        uid = await self.get_uid(uid, game_name)
 
         if mode == 'RANDOM':
             if game_name == 'zzz':
@@ -111,20 +118,49 @@ class BaseMysApi:
                 uid, game_name=game_name
             )
 
-    @abstractmethod
     async def get_stoken(
         self, uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]: ...
+    ) -> Optional[str]:
+        uid = await self.get_uid(uid, game_name)
+        return await GsUser.get_user_stoken_by_uid(uid, game_name)
 
-    @abstractmethod
     async def get_user_fp(
         self, uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]: ...
+    ) -> Optional[str]:
+        uid = await self.get_uid(uid, game_name)
+        data = await GsUser.get_user_attr_by_uid(
+            uid,
+            'fp',
+            game_name,
+        )
+        if data is None:
+            seed_id, seed_time = self.get_seed()
+            device_id = self.get_device_id()
+            data = await self.generate_fake_fp(device_id, seed_id, seed_time)
+            await GsUser.update_data_by_uid_without_bot_id(
+                uid,
+                game_name,
+                fp=data,
+            )
+        return data
 
-    @abstractmethod
     async def get_user_device_id(
         self, uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]: ...
+    ) -> Optional[str]:
+        uid = await self.get_uid(uid, game_name)
+        data = await GsUser.get_user_attr_by_uid(
+            uid,
+            'device_id',
+            game_name,
+        )
+        if data is None:
+            data = self.get_device_id()
+            await GsUser.update_data_by_uid_without_bot_id(
+                uid,
+                game_name,
+                device_id=data,
+            )
+        return data
 
     def check_os(self, uid: str, game_name: str = 'gs') -> bool:
         if game_name == 'gs' or game_name == 'sr':
