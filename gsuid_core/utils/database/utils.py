@@ -12,10 +12,10 @@ SR_SERVER = {
     '1': 'prod_gf_cn',
     '2': 'prod_gf_cn',
     '5': 'prod_qd_cn',
-    '6': 'prod_usa',
-    '7': 'prod_euro',
-    '8': 'prod_asia',
-    '9': 'prod_cht',
+    '6': 'prod_official_usa',
+    '7': 'prod_official_euro',
+    '8': 'prod_official_asia',
+    '9': 'prod_official_cht',
 }
 
 ZZZ_SERVER = {
