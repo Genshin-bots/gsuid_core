@@ -71,36 +71,51 @@ class _Bot:
         if bot_id in enable_markdown_platform:
             _message = await to_markdown(_message, None, bot_id)
 
-        if at_sender and sender_id:
-            _message.append(MessageSegment.at(sender_id))
+        _message_result = []
+        _t = []
+        for _m in _message:
+            if _m.type in [
+                'markdown',
+                'template_markdown',
+                'template_buttons',
+                'buttons',
+            ]:
+                _message_result.append([_m])
+            else:
+                _t.append(_m)
+        _message_result.append(_t)
 
-        if group_id:
-            _message.append(Message('group', group_id))
+        for mr in _message_result:
+            if at_sender and sender_id:
+                mr.append(MessageSegment.at(sender_id))
 
-        if is_sp_msg_id and not msg_id:
-            msg_id = sp_msg_id
+            if group_id:
+                mr.append(Message('group', group_id))
 
-        send = MessageSend(
-            content=_message,
-            bot_id=bot_id,
-            bot_self_id=bot_self_id,
-            target_type=target_type,
-            target_id=target_id,
-            msg_id=msg_id,
-        )
+            if is_sp_msg_id and not msg_id:
+                msg_id = sp_msg_id
 
-        local_val = await get_global_val(bot_id, bot_self_id)
+            send = MessageSend(
+                content=mr,
+                bot_id=bot_id,
+                bot_self_id=bot_self_id,
+                target_type=target_type,
+                target_id=target_id,
+                msg_id=msg_id,
+            )
 
-        local_val['send'] += 1
+            local_val = await get_global_val(bot_id, bot_self_id)
 
-        logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
-        if self.bot:
-            body = msgjson.encode(send)
-            await self.bot.send_bytes(body)
-        else:
-            self.send_dict[task_id] = send
-            if task_event:
-                task_event.set()
+            local_val['send'] += 1
+
+            logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
+            if self.bot:
+                body = msgjson.encode(send)
+                await self.bot.send_bytes(body)
+            else:
+                self.send_dict[task_id] = send
+                if task_event:
+                    task_event.set()
 
     async def wait_task(
         self,
@@ -287,7 +302,7 @@ class Bot:
                             p = parse_button(
                                 button_templates[custom_template_id]
                             )
-                            if check_same_buttons(p, fake_buttons):
+                            if await check_same_buttons(p, fake_buttons):
                                 md.append(
                                     MessageSegment.template_buttons(
                                         custom_template_id
