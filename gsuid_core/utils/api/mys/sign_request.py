@@ -6,7 +6,21 @@ from copy import deepcopy
 from typing import Dict, Union, cast
 
 from .bbs_request import BBSMysApi
-from .api import GS_BASE, ZZZ_BASE, SIGN_BASE_OS
+from .api import (
+    GS_BASE,
+    ZZZ_BASE,
+    SIGN_BASE_OS,
+    SIGN_SR_BASE_OS,
+    SIGN_INFO_URL,
+    SIGN_INFO_URL_OS,
+    SIGN_URL_SR_OS,
+    SIGN_LIST_SR_OS,
+    SIGN_INFO_SR_OS,
+    SIGN_LIST_URL_OS,
+    SIGN_LIST_URL,
+    SIGN_URL,
+    SIGN_URL_OS,
+)
 from .models import MysSign, SignInfo, SignList, MonthlyAward
 from .tools import random_hex, generate_os_ds, get_web_ds_token
 
@@ -29,9 +43,9 @@ _ACT_ID = {
     },
     'zzz': {
         'prod_gf_cn': 'e202406242138391',
-        'prod_gf_us': '',
-        'prod_gf_jp': '',
-        'prod_gf_sg': '',
+        'prod_gf_us': 'e202406031448091',
+        'prod_gf_jp': 'e202406031448091',
+        'prod_gf_sg': 'e202406031448091',
     },
 }
 
@@ -43,8 +57,26 @@ _GAME_NAME = {
 
 _BASE_URL = {
     'gs': {'os': SIGN_BASE_OS, 'cn': GS_BASE},
-    'sr': {'os': SIGN_BASE_OS, 'cn': GS_BASE},
+    'sr': {'os': SIGN_SR_BASE_OS, 'cn': GS_BASE},
     'zzz': {'os': '', 'cn': ZZZ_BASE},
+}
+
+_SIGN_END_POINT = {
+    'gs': {'os': SIGN_URL_OS, 'cn': SIGN_URL},
+    'sr': {'os': SIGN_URL_SR_OS, 'cn': SIGN_URL},
+    'zzz': {'os': SIGN_URL_OS, 'cn': SIGN_URL},
+}
+
+_SIGN_INFO_END_POINT = {
+    'gs': {'os': SIGN_INFO_URL_OS, 'cn': SIGN_INFO_URL},
+    'sr': {'os': SIGN_INFO_SR_OS, 'cn': SIGN_INFO_URL},
+    'zzz': {'os': SIGN_INFO_URL_OS, 'cn': SIGN_INFO_URL},
+}
+
+_SIGN_LIST_END_POINT = {
+    'gs': {'os': SIGN_LIST_URL_OS, 'cn': SIGN_LIST_URL},
+    'sr': {'os': SIGN_LIST_SR_OS, 'cn': SIGN_LIST_URL},
+    'zzz': {'os': SIGN_LIST_URL_OS, 'cn': SIGN_LIST_URL},
 }
 
 
@@ -57,7 +89,7 @@ class SignMysApi(BBSMysApi):
     ) -> Union[SignList, int]:
         is_os = self.check_os(uid, game_name)
         base_url = _BASE_URL[game_name]['os' if is_os else 'cn']
-        end_point = self.MAPI['SIGN_LIST_URL_OS' if is_os else 'SIGN_LIST_URL']
+        end_point = _SIGN_LIST_END_POINT[game_name]['os' if is_os else 'cn']
         server_id = self.get_server_id(uid, game_name)
         act_id = _ACT_ID[game_name][server_id]
         ck = await self.get_ck(uid, 'OWNER', game_name)
@@ -90,7 +122,7 @@ class SignMysApi(BBSMysApi):
         is_os = self.check_os(uid, game_name)
         server_id = self.get_server_id(uid, game_name)
         base_url = _BASE_URL[game_name]['os' if is_os else 'cn']
-        end_point = self.MAPI['SIGN_INFO_URL_OS' if is_os else 'SIGN_INFO_URL']
+        end_point = _SIGN_INFO_END_POINT[game_name]['os' if is_os else 'cn']
         ck = await self.get_ck(uid, 'OWNER', game_name)
         if ck is None:
             return -51
@@ -124,7 +156,7 @@ class SignMysApi(BBSMysApi):
         is_os = self.check_os(uid, game_name)
         server_id = self.get_server_id(uid, game_name)
         base_url = _BASE_URL[game_name]['os' if is_os else 'cn']
-        end_point = self.MAPI['SIGN_URL_OS' if is_os else 'SIGN_URL']
+        end_point = _SIGN_END_POINT[game_name]['os' if is_os else 'cn']
         data = {
             'act_id': _ACT_ID[game_name][server_id],
             'lang': 'zh-cn',

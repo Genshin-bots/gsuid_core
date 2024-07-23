@@ -12,6 +12,7 @@ RECORD_BASE_OS = 'https://bbs-api-os.hoyolab.com'
 BBS_URL_OS = 'https://bbs-api-os.hoyolab.com'
 HK4_URL_OS = 'https://hk4e-api-os.hoyoverse.com'
 SIGN_BASE_OS = 'https://sg-hk4e-api.hoyolab.com'
+SIGN_SR_BASE_OS = 'https://sg-public-api.hoyolab.com'
 ACT_URL_OS = 'https://sg-hk4e-api.hoyoverse.com'
 
 HK4E_LOGIN_URL = f'{GS_BASE}/common/badge/v1/login/account'
@@ -72,12 +73,15 @@ GET_COOKIE_TOKEN_BY_GAME_TOKEN = (
 # 获取签到列表
 SIGN_LIST_URL = '/event/luna/home'
 SIGN_LIST_URL_OS = '/event/sol/home'
+SIGN_LIST_SR_OS = '/event/luna/os/home'
 # 获取签到信息
 SIGN_INFO_URL = '/event/luna/info'
 SIGN_INFO_URL_OS = '/event/sol/info'
+SIGN_INFO_SR_OS = '/event/luna/os/info'
 # 执行签到
 SIGN_URL = '/event/luna/sign'
 SIGN_URL_OS = '/event/sol/sign'
+SIGN_URL_SR_OS = '/event/luna/os/sign'
 
 '''原神相关'''
 # 每日信息 树脂 派遣等

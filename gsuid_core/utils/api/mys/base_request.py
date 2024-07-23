@@ -457,7 +457,6 @@ class BaseMysApi:
                     continue
 
                 try:
-                    print(resp.headers)
                     raw_data = resp.json()
                 except (
                     httpx.ConnectError,
