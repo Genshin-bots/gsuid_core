@@ -112,13 +112,24 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         ["qqgroup", "qqguild"],
     ),
     'TryTemplateForQQ': GsBoolConfig(
-        '启用后尝试读取模板文件并发送', '发送MD和按钮模板', True
+        '启用后尝试读取模板文件并发送',
+        '发送MD和按钮模板',
+        True,
     ),
     'ForceSendMD': GsBoolConfig(
-        '强制使用MD发送图文', '强制使用MD发送图文', False
+        '强制使用MD发送图文',
+        '强制使用MD发送图文',
+        False,
     ),
     'UseCRLFReplaceLFForMD': GsBoolConfig(
-        '发送MD时使用CR替换LF', '发送MD时使用CR替换LF', True
+        '发送MD时使用CR替换LF',
+        '发送MD时使用CR替换LF',
+        True,
+    ),
+    'SplitMDAndButtons': GsBoolConfig(
+        '发送MD消息时将按钮分开发送',
+        '发送MD消息时将按钮分开发送',
+        False,
     ),
     'ShieldQQBot': GsListStrConfig(
         '含@该ID时消息禁止响应',

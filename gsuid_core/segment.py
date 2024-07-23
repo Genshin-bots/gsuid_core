@@ -29,10 +29,12 @@ R_enabled = send_security_config.get_config('AutoAddRandomText').data
 R_text = send_security_config.get_config('RandomText').data
 is_text2pic = send_security_config.get_config('AutoTextToPic').data
 text2pic_limit = send_security_config.get_config('TextToPicThreshold').data
+
 enable_pic_srv = core_plugins_config.get_config('EnablePicSrv').data
 force_send_md = core_plugins_config.get_config('ForceSendMD').data
 pic_srv = core_plugins_config.get_config('PicSrv').data
 is_lf = core_plugins_config.get_config('UseCRLFReplaceLFForMD').data
+is_split_button = core_plugins_config.get_config('SplitMDAndButtons').data
 
 SERVER = pic_upload_config.get_config('PicUploadServer').data
 IS_UPLOAD = pic_upload_config.get_config('PicUpload').data
@@ -468,13 +470,17 @@ async def to_markdown(
     bot_id: str = 'onebot',
 ) -> List[Message]:
     _markdown_list = []
-    _message = []
+    _message: List[Message] = []
     url = None
     size = None
     send_type = send_pic_config.get_config(bot_id, 'base64').data
 
     if buttons is None and not force_send_md:
         return message
+
+    if is_split_button:
+        _message.extend(message)
+        _message.extend(MessageSegment.markdown(' ', buttons))
 
     for m in message:
         if m.type == 'image_size':
