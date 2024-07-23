@@ -274,6 +274,7 @@ class BaseMysApi:
         params: Dict = {},  # noqa: B006
         header: Dict = {},  # noqa: B006
         cookie: Optional[str] = None,
+        game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
         if isinstance(uid, bool):
             is_os = uid
@@ -310,6 +311,7 @@ class BaseMysApi:
             header=HEADER,
             params=params if params else {'role_id': uid, 'server': server_id},
             use_proxy=True if is_os else False,
+            game_name=game_name,
         )
         return data
 
