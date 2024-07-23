@@ -1,8 +1,9 @@
 from typing import List, Type, Optional
 
 from sqlmodel import Field
+from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlmodel import Field, select
 from .base_models import (
     Bind,
     Push,
@@ -302,3 +303,38 @@ class GsPush(Push, table=True):
     transform_is_push: Optional[str] = Field(
         title='质变仪是否已推送', default='off'
     )
+
+
+class GsUID(BaseIDModel, table=True):
+    main_uid: str = Field(title='主UID')
+    game_name: Optional[str] = Field(title='游戏名称', default=None)
+    uid_1: Optional[str] = Field(title='UID1', default=None)
+    uid_2: Optional[str] = Field(title='UID2', default=None)
+    uid_3: Optional[str] = Field(title='UID3', default=None)
+    uid_4: Optional[str] = Field(title='UID4', default=None)
+
+    @classmethod
+    @with_session
+    async def get_main_uid(
+        cls,
+        session: AsyncSession,
+        uid: str,
+        game_name: Optional[str] = None,
+    ) -> str:
+        stmt = (
+            select(cls)
+            .where(
+                or_(
+                    cls.uid_1 == uid,
+                    cls.uid_2 == uid,
+                    cls.uid_3 == uid,
+                    cls.uid_4 == uid,
+                )
+            )
+            .where(cls.game_name == game_name)
+        )
+        results = session.execute(stmt).scalars().all()
+        if results:
+            return results[0].uid
+        else:
+            return uid
