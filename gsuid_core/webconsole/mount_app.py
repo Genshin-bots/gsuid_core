@@ -47,6 +47,7 @@ from gsuid_core.version import __version__ as GenshinUID_version
 from gsuid_core.webconsole.create_log_panel import create_log_page
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
+from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
@@ -56,6 +57,8 @@ from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     amis_admin,
     user_auth_admin,
 )
+
+WebConsoleCDN = core_plugins_config.get_config('WebConsoleCDN').data
 
 
 class GsLoginFormAdmin(UserLoginFormAdmin):
@@ -170,7 +173,7 @@ settings = Settings(
     site_title='GsCore - 网页控制台',
     language='zh_CN',
     amis_theme='ang',
-    amis_cdn='https://npm.onmicrosoft.cn/',
+    amis_cdn=WebConsoleCDN,
     amis_pkg="amis@6.0.0",
 )
 
