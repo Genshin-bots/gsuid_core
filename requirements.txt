@@ -52,6 +52,7 @@ orjson==3.10.6 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0
 passlib==1.7.4 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pillow==10.4.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pydantic-core==2.20.1 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
+pydantic-settings==2.3.4 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pydantic==2.8.2 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pygments==2.18.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 pymongo==4.8.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
