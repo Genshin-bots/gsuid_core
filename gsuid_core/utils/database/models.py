@@ -198,32 +198,32 @@ class GsUser(User, table=True):
     cookie: str = Field(
         default=None,
         title='Cookie',
-        schema_extra={'hint': '发送扫码登陆'},
+        schema_extra={'json_schema_extra': {'hint': '发送扫码登陆'}},
     )
     stoken: Optional[str] = Field(
         default=None,
         title='Stoken',
-        schema_extra={'hint': '发送扫码登陆'},
+        schema_extra={'json_schema_extra': {'hint': '发送扫码登陆'}},
     )
     push_switch: str = Field(
         default='off',
         title='全局推送开关',
-        schema_extra={'hint': 'gs开启推送'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启推送'}},
     )
     sign_switch: str = Field(
         default='off',
         title='自动签到',
-        schema_extra={'hint': 'gs开启自动签到'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启自动签到'}},
     )
     sr_sign_switch: str = Field(
         default='off',
         title='崩铁自动签到',
-        schema_extra={'hint': 'sr开启自动签到'},
+        schema_extra={'json_schema_extra': {'hint': 'sr开启自动签到'}},
     )
     zzz_sign_switch: str = Field(
         default='off',
         title='绝区零自动签到',
-        schema_extra={'hint': 'zzz开启自动签到'},
+        schema_extra={'json_schema_extra': {'hint': 'zzz开启自动签到'}},
     )
     uid: Optional[str] = Field(default=None, title='原神UID')
     sr_uid: Optional[str] = Field(default=None, title='星铁UID')
@@ -241,12 +241,12 @@ class GsUser(User, table=True):
     bbs_switch: str = Field(
         default='off',
         title='自动米游币',
-        schema_extra={'hint': 'gs开启自动米游币'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启自动米游币'}},
     )
     draw_switch: str = Field(
         default='off',
         title='自动留影叙佳期',
-        schema_extra={'hint': 'gs开启自动留影叙佳期'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启自动留影叙佳期'}},
     )
     sr_push_switch: str = Field(default='off', title='星铁全局推送开关')
     zzz_push_switch: str = Field(default='off', title='星铁全局推送开关')
@@ -255,7 +255,7 @@ class GsUser(User, table=True):
     device_info: Optional[str] = Field(
         default=None,
         title='设备fp',
-        schema_extra={'hint': '设备登陆'},
+        schema_extra={'json_schema_extra': {'hint': 'mys设备登陆'}},
     )
 
 
@@ -274,7 +274,7 @@ class GsPush(Push, table=True):
     coin_push: Optional[str] = Field(
         title='洞天宝钱推送',
         default='off',
-        schema_extra={'hint': 'gs开启宝钱'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启宝钱'}},
     )
     coin_value: Optional[int] = Field(title='洞天宝钱阈值', default=2100)
     coin_is_push: Optional[str] = Field(
@@ -283,21 +283,21 @@ class GsPush(Push, table=True):
     resin_push: Optional[str] = Field(
         title='体力推送',
         default='off',
-        schema_extra={'hint': 'gs开启体力'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启体力'}},
     )
     resin_value: Optional[int] = Field(title='体力阈值', default=140)
     resin_is_push: Optional[str] = Field(title='体力是否已推送', default='off')
     go_push: Optional[str] = Field(
         title='派遣推送',
         default='off',
-        schema_extra={'hint': 'gs开启派遣'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启派遣'}},
     )
     go_value: Optional[int] = Field(title='派遣阈值', default=300)
     go_is_push: Optional[str] = Field(title='派遣是否已推送', default='off')
     transform_push: Optional[str] = Field(
         title='质变仪推送',
         default='off',
-        schema_extra={'hint': 'gs开启质变仪'},
+        schema_extra={'json_schema_extra': {'hint': 'gs开启质变仪'}},
     )
     transform_value: Optional[int] = Field(title='质变仪阈值', default=1000)
     transform_is_push: Optional[str] = Field(

@@ -1,4 +1,4 @@
-from typing import Dict, Type, Union, Optional
+from typing import Type, Union, Optional
 
 from gsuid_core.utils.database.base_models import Bind, Push, User
 
@@ -17,13 +17,23 @@ async def set_database_value(
     fields = model.__fields__
     for keyname in fields:
         field = fields[keyname]
-        field_info = field.field_info  # type: ignore
-        key_name = field.name  # type: ignore
-        title: Optional[str] = field_info.title
-        extra: Dict[str, str] = field_info.extra
-        desc: Optional[str] = extra['hint'] if 'hint' in extra else None
-        title = title if title else key_name
+        if hasattr(field, 'field_info'):
+            field_info = field.field_info  # type: ignore
+            extra = (
+                field_info.extra['json_schema_extra']
+                if field_info.extra and 'json_schema_extra' in field_info.extra
+                else {}
+            )
+        else:
+            field_info = field
+            if hasattr(field_info, 'json_schema_extra'):
+                extra = field_info.json_schema_extra  # type: ignore
+            else:
+                extra = {}
 
+        desc = extra['hint'] if extra and 'hint' in extra else None
+        title: Optional[str] = field_info.title  # type: ignore
+        title = title if title else keyname
         if desc:
             if desc == f'{command_start}{command_value}':
                 await model.update_data_by_uid(

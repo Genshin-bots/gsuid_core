@@ -42,30 +42,38 @@ def get_keys(model: T_MODEL):
     # 获取模型全部的键，并判断哪些需要显示
     for keyname in fields:
         field = fields[keyname]
-        field_info = field.field_info
-        # 拿到键名
-        key_name = field.name
+        if hasattr(field, 'field_info'):
+            field_info = field.field_info  # type: ignore
+            extra = (
+                field_info.extra['json_schema_extra']
+                if field_info.extra and 'json_schema_extra' in field_info.extra
+                else {}
+            )
+
+        else:
+            field_info = field
+            if hasattr(field_info, 'json_schema_extra'):
+                extra = field_info.json_schema_extra  # type: ignore
+            else:
+                extra = {}
+
         # 拿到键标题
-        title = field_info.title
-        desc = (
-            field_info.extra['hint']
-            if 'hint' in field_info.extra
-            else '未提供'
-        )
+        title = field_info.title  # type: ignore
+        desc = extra['hint'] if extra and 'hint' in extra else '未提供'
         # 拿到键类型
         # type_ = user_field.type_
-        title = title if title else key_name
+        title = title if title else keyname
         if (
-            not key_name.endswith(('uid', '_value', '_is_push', 'region'))
-            and key_name != 'id'
-            and key_name != 'user_id'
-            and key_name != 'bot_id'
-            and key_name != 'status'
-            and key_name != 'fp'
-            and key_name != 'mys_id'
-            and key_name != 'device_id'
+            not keyname.endswith(('uid', '_value', '_is_push', 'region'))
+            and keyname != 'id'
+            and keyname != 'user_id'
+            and keyname != 'bot_id'
+            and keyname != 'status'
+            and keyname != 'fp'
+            and keyname != 'mys_id'
+            and keyname != 'device_id'
         ):
-            keys[key_name] = {'title': title, 'desc': desc}
+            keys[keyname] = {'title': title, 'desc': desc}
     return keys
 
 
@@ -119,14 +127,17 @@ async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
         bind_fields = bind_model.__fields__
         for keyname in bind_fields:
             model_field = bind_fields[keyname]
-            field_info = model_field.field_info
-            UID_NAME = field_info.title
-            key_name = model_field.name
-            if key_name.endswith('uid'):
-                if key_name == 'uid':
+            if hasattr(model_field, 'field_info'):
+                field_info = model_field.field_info  # type: ignore
+            else:
+                field_info = model_field
+
+            UID_NAME = field_info.title  # type: ignore
+            if keyname.endswith('uid'):
+                if keyname == 'uid':
                     game_name = None
                 else:
-                    game_name = key_name.replace('_uid', '')
+                    game_name = keyname.replace('_uid', '')
 
                 uid_list = await bind_model.get_uid_list_by_game(
                     user_id,
