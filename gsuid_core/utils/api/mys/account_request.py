@@ -49,7 +49,7 @@ class AccountMysApi(PassMysApi):
 
     async def create_qrcode_url(self) -> Union[Dict, int]:
         device_id: str = ''.join(random.choices(ascii_letters + digits, k=64))
-        app_id: str = '1'
+        app_id: str = '2'
         data = await self._mys_request(
             self.MAPI['CREATE_QRCODE'],
             'POST',
