@@ -93,6 +93,96 @@ async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
         return b""
 
 
+async def download_atag_file(
+    PLUGIN_RES: str,
+    endpoint: str,
+    EPATH_MAP: Dict[str, Path],
+    client: httpx.AsyncClient,
+    TAG: str,
+    plugin_name: str,
+):
+    TASKS = []
+    url = f'{PLUGIN_RES}/{endpoint}'
+    if not url.endswith('/'):
+        url += '/'
+
+    if endpoint not in EPATH_MAP:
+        if endpoint.endswith('/'):
+            _endpoint = endpoint[:-1]
+        _et = _endpoint.rsplit('/', 1)
+        _e = _et[0]
+        _t = _et[1]
+        if _e in EPATH_MAP:
+            path = EPATH_MAP[_e] / _t
+        else:
+            return
+    else:
+        path = EPATH_MAP[endpoint]
+
+    if not path.exists():
+        path.mkdir(parents=True)
+
+    base_data = await _get_url(url, client)
+    content_bs = BeautifulSoup(base_data, 'lxml')
+    pre_data = content_bs.find_all('pre')[0]
+    data_list = pre_data.find_all('a')
+    size_list = [i for i in content_bs.strings]
+
+    logger.trace(f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!')
+
+    temp_num = 0
+    size_temp = 0
+    for index, data in enumerate(data_list):
+        if data['href'] == '../':
+            continue
+        file_url = f'{url}{data["href"]}'
+        name: str = unquote(file_url.split('/')[-1])
+        size = size_list[index * 2 + 6].split(' ')[-1]
+        _size = size.replace('\r\n', '')
+        if _size == '-':
+            await download_atag_file(
+                PLUGIN_RES,
+                f"{endpoint}/{data['href']}",
+                EPATH_MAP,
+                client,
+                TAG,
+                plugin_name,
+            )
+            continue
+        size = int(_size)
+        file_path = path / name
+
+        if file_path.exists():
+            is_diff = size == os.stat(file_path).st_size
+        else:
+            is_diff = True
+
+        if (
+            not file_path.exists()
+            or not os.stat(file_path).st_size
+            or not is_diff
+        ):
+            logger.info(f'{TAG} {plugin_name} 开始下载 {endpoint}/{name}')
+            temp_num += 1
+            size_temp += size
+            TASK = asyncio.create_task(
+                download(file_url, path, name, client, TAG)
+            )
+            TASKS.append(TASK)
+            if size_temp >= 1500000:
+                await asyncio.gather(*TASKS)
+                TASKS.clear()
+    else:
+        await asyncio.gather(*TASKS)
+        TASKS.clear()
+
+    if temp_num == 0:
+        logger.trace(f'{TAG} 数据库 {endpoint} 无需下载!')
+    else:
+        logger.success(f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!')
+    temp_num = 0
+
+
 async def download_all_file(
     plugin_name: str,
     EPATH_MAP: Dict[str, Path],
@@ -110,71 +200,18 @@ async def download_all_file(
     if TAG is None:
         TAG = '[Unknown]'
 
-    TASKS = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(200.0)) as client:
         n = 0
         for endpoint in EPATH_MAP:
-            url = f'{PLUGIN_RES}/{endpoint}/'
-            path = EPATH_MAP[endpoint]
-
-            if not path.exists():
-                path.mkdir(parents=True)
-
-            base_data = await _get_url(url, client)
-            content_bs = BeautifulSoup(base_data, 'lxml')
-            pre_data = content_bs.find_all('pre')[0]
-            data_list = pre_data.find_all('a')
-            size_list = [i for i in content_bs.strings]
-
-            logger.trace(
-                f'{TAG} 数据库 {endpoint} 中存在 {len(data_list)} 个内容!'
+            await download_atag_file(
+                PLUGIN_RES,
+                endpoint,
+                EPATH_MAP,
+                client,
+                TAG,
+                plugin_name,
             )
-
-            temp_num = 0
-            size_temp = 0
-            for index, data in enumerate(data_list):
-                if data['href'] == '../':
-                    continue
-                file_url = f'{url}{data["href"]}'
-                name: str = unquote(file_url.split('/')[-1])
-                size = size_list[index * 2 + 6].split(' ')[-1]
-                size = int(size.replace('\r\n', ''))
-                file_path = path / name
-
-                if file_path.exists():
-                    is_diff = size == os.stat(file_path).st_size
-                else:
-                    is_diff = True
-
-                if (
-                    not file_path.exists()
-                    or not os.stat(file_path).st_size
-                    or not is_diff
-                ):
-                    logger.info(
-                        f'{TAG} {plugin_name} 开始下载 {endpoint}/{name}'
-                    )
-                    temp_num += 1
-                    size_temp += size
-                    TASK = asyncio.create_task(
-                        download(file_url, path, name, client, TAG)
-                    )
-                    TASKS.append(TASK)
-                    if size_temp >= 1500000:
-                        await asyncio.gather(*TASKS)
-                        TASKS.clear()
-            else:
-                await asyncio.gather(*TASKS)
-                TASKS.clear()
-
-            if temp_num == 0:
-                logger.trace(f'{TAG} 数据库 {endpoint} 无需下载!')
-                n += 1
-            else:
-                logger.success(
-                    f'{TAG}数据库 {endpoint} 已下载{temp_num}个内容!'
-                )
-            temp_num = 0
+            n += 1
 
         if n == len(EPATH_MAP):
             logger.success(f'插件 {plugin_name} 资源库已是最新!')
