@@ -24,6 +24,7 @@ from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
     convert_message,
+    is_split_button,
     check_same_buttons,
     markdown_to_template_markdown,
 )
@@ -66,20 +67,32 @@ class _Bot:
         task_id: str = '',
         task_event: Optional[asyncio.Event] = None,
     ):
-        _message = await convert_message(message, bot_id, bot_self_id)
+        _message = await convert_message(
+            message,
+            bot_id,
+            bot_self_id,
+        )
 
         if bot_id in enable_markdown_platform:
-            _message = await to_markdown(_message, None, bot_id)
+            _message = await to_markdown(
+                _message,
+                None,
+                bot_id,
+            )
 
         _message_result = []
         _t = []
         for _m in _message:
-            if _m.type in [
-                'markdown',
-                'template_markdown',
-                'template_buttons',
-                'buttons',
-            ]:
+            if (
+                _m.type
+                in [
+                    'markdown',
+                    'template_markdown',
+                ]
+                and is_split_button
+                and _m.data
+                and _m.data.strip()
+            ):
                 _message_result.append([_m])
             else:
                 _t.append(_m)

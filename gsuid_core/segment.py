@@ -478,10 +478,6 @@ async def to_markdown(
     if buttons is None and not force_send_md:
         return message
 
-    if is_split_button:
-        _message.extend(message)
-        _message.extend(MessageSegment.markdown(' ', buttons))
-
     for m in message:
         if m.type == 'image_size':
             size = m.data
@@ -514,7 +510,11 @@ async def to_markdown(
             _message.append(m)
 
     _markdown = '\n'.join(_markdown_list)
-    _message.extend(MessageSegment.markdown(_markdown, buttons))
+    if is_split_button:
+        _message.extend(MessageSegment.markdown(_markdown))
+        _message.extend(MessageSegment.markdown(' ', buttons))
+    else:
+        _message.extend(MessageSegment.markdown(_markdown, buttons))
     return _message
 
 
