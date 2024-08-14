@@ -26,13 +26,19 @@ async def download(
         if isinstance(sess, httpx.AsyncClient):
             res = await sess.get(url)
             content = res.read()
+            retcode = res.status_code
         else:
             async with sess.get(url) as resp:
                 content = await resp.read()
+                retcode = resp.status
 
-        async with aiofiles.open(path / name, "wb") as f:
-            await f.write(content)
-        logger.success(f'{tag} {name} 下载完成！')
+        if retcode == 200:
+            async with aiofiles.open(path / name, "wb") as f:
+                await f.write(content)
+            logger.success(f'{tag} {name} 下载完成！')
+        else:
+            logger.warning(f"{tag} {name} 下载失败！错误码{retcode}")
+        return retcode
     except Exception as e:
         logger.error(e)
         logger.warning(f"{tag} {name} 下载失败！")
