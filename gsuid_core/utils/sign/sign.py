@@ -48,7 +48,7 @@ async def sign_in(uid: str, game_name: str = 'gs') -> str:
         day_of_month = int(sign_info['today'].split('-')[-1])
         signed_count = int(sign_info['total_sign_day'])
         sign_missed = day_of_month - signed_count
-        return f'[{game_name}] UID{uid}今日已签到！本月漏签次数：{sign_missed}'
+        return f'✅[{_gn}] UID{uid}今日已签到！\n🚨本月漏签次数：{sign_missed}'
 
     # 实际进行签到
     Header = {}
@@ -102,10 +102,11 @@ async def sign_in(uid: str, game_name: str = 'gs') -> str:
         else:
             # 重试超过阈值
             logger.warning('{sign_title} 超过请求阈值...')
-            return '签到失败...出现验证码!\n请过段时间使用{sign_title}或由管理员[全部重签]或手动至米游社进行签到！'
+            vl_hint = '❌签到失败...出现验证码!'
+            return f'{vl_hint}'
     # 签到失败
     else:
-        im = '签到失败!'
+        im = '❌签到失败!'
         logger.warning(f'{sign_title} UID{uid} 签到失败, 结果: {im}')
         return im
     # 获取签到列表
@@ -119,17 +120,17 @@ async def sign_in(uid: str, game_name: str = 'gs') -> str:
 
     # 获取签到奖励物品，拿旧的总签到天数 + 1 为新的签到天数，再 -1 即为今日奖励物品的下标
     getitem = sign_list['awards'][int(sign_info['total_sign_day']) + 1 - 1]
-    get_im = f'本次签到获得{getitem["name"]}x{getitem["cnt"]}'
+    get_im = f'📝本次签到获得{getitem["name"]}x{getitem["cnt"]}'
     day_of_month = int(new_sign_info['today'].split('-')[-1])
     signed_count = int(new_sign_info['total_sign_day'])
     sign_missed = day_of_month - signed_count
     if new_sign_info['is_sign']:
-        mes_im = '签到成功'
+        mes_im = '✅签到成功'
     else:
-        mes_im = '签到失败...'
+        mes_im = '❌签到失败...'
         sign_missed -= 1
     sign_missed = sign_info.get('sign_cnt_missed') or sign_missed
-    im = f'{mes_im}!\n{get_im}\n本月漏签次数：{sign_missed}'
+    im = f'{mes_im}!\n{get_im}\n🚨本月漏签次数：{sign_missed}'
     logger.info(
         f'✅ {sign_title} UID{uid} 签到完成!\n📝结果: {mes_im}\n🚨漏签次数: {sign_missed}'
     )
