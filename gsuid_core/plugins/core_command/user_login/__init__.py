@@ -7,6 +7,7 @@ from gsuid_core.models import Event
 from gsuid_core.message_models import Button
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.database.models import GsUser
+from gsuid_core.utils.cookie_manager.add_fp import deal_fp
 from gsuid_core.utils.cookie_manager.qrlogin import qrcode_login
 from gsuid_core.utils.cookie_manager.add_ck import (
     deal_ck,
@@ -84,42 +85,25 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
         await bot.send(im)
 
 
-@sv_core_user_addck.on_prefix(('mys设备登录', 'mys设备登陆'))
+@sv_core_user_addck.on_prefix(
+    (
+        'mys设备登录',
+        'mys设备登陆',
+        'mys绑定设备',
+    )
+)
 async def send_add_device_msg(bot: Bot, ev: Event):
     try:
         data: Dict[str, str] = json.loads(ev.text.strip())
     except:  # noqa:E722
         return await bot.send('绑定格式错误...')
 
-    if 'fp' in data and ('device_id' in data or 'deviceId' in data):
-        fp = data['fp']
-        if 'device_id' in data:
-            device_id = data['device_id']
-        else:
-            device_id = data['deviceId']
+    fp, device_id, device_info = await deal_fp(data)
 
-        if 'device_info' in data:
-            device_info = data['device_info']
-        elif 'deviceInfo' in data:
-            device_info = data['deviceInfo']
-        else:
-            device_info = 'Unknown/Unknown/Unknown/Unknown'
-    else:
-        device_id = mys_api.get_device_id()
-        seed_id, seed_time = mys_api.get_seed()
-        fp = await mys_api.generate_fp(
-            device_id,
-            data['deviceModel'],
-            data['deviceProduct'],
-            data['deviceName'],
-            data['deviceBoard'],
-            data['oaid'],
-            data['deviceFingerprint'],
-            seed_id,
-            seed_time,
-        )
-        device_info = data['deviceFingerprint']
-    user_list = await GsUser.select_data_list(ev.user_id, ev.bot_id)
+    user_list = await GsUser.select_data_list(
+        ev.user_id,
+        ev.bot_id,
+    )
     if user_list:
         for user in user_list:
             if user.cookie:
@@ -132,6 +116,9 @@ async def send_add_device_msg(bot: Bot, ev: Event):
                     },
                 )
                 await mys_api.device_login_and_save(
-                    device_id, fp, device_info, user.cookie
+                    device_id,
+                    fp,
+                    device_info,
+                    user.cookie,
                 )
     await bot.send('设备绑定成功!')

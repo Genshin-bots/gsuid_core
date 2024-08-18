@@ -7,7 +7,12 @@ from httpx import AsyncClient
 from ..types import AnyDict
 from ..utils import _HEADER
 from .models import WeaponData, CharacterData
-from .api import HAKUSH_CHAR_URL, HAKUSH_WEAPON_URL
+from .api import (
+    HAKUSH_CHAR_URL,
+    HAKUSH_CHAR_DATA,
+    HAKUSH_WEAPON_URL,
+    HAKUSH_WEAPON_DATA,
+)
 
 
 async def get_hakush_char_data(
@@ -25,6 +30,20 @@ async def get_hakush_weapon_data(
     data = await _hakush_request(url=HAKUSH_WEAPON_URL.format(id))
     if isinstance(data, Dict):
         return cast(WeaponData, data)
+    return None
+
+
+async def get_hakush_char_list() -> Optional[Dict[str, Dict]]:
+    data = await _hakush_request(url=HAKUSH_CHAR_DATA)
+    if isinstance(data, Dict):
+        return cast(Dict[str, Dict], data)
+    return None
+
+
+async def get_hakush_weapon_list() -> Optional[Dict[str, Dict[str, str]]]:
+    data = await _hakush_request(url=HAKUSH_WEAPON_DATA)
+    if isinstance(data, Dict):
+        return cast(Dict[str, Dict[str, str]], data)
     return None
 
 

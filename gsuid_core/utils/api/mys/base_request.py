@@ -235,7 +235,11 @@ class BaseMysApi:
         seed_time: str,
     ) -> str:
         device_brand = device_info.split('/')[0]
-        ext_fields = f'''{{"cpuType":"arm64-v8a","romCapacity":"512","productName":"{device}","romRemain":"422","manufacturer":"{device_brand}","appMemory":"512","hostname":"dg02-pool03-kvm87","screenSize":"1264x2640","osVersion":"13","aaid":"{self.generate_ID()}","vendor":"中国联通","accelerometer":"0.44027936x7.256833x6.422336","buildTags":"release-keys","model":"{model_name}","brand":"XiaoMi","oaid":"{oaid}","hardware":"qcom","deviceType":"{device_type}","devId":"REL","serialNumber":"unknown","buildTime":"1687848011000","buildUser":"root","ramCapacity":"469679","magnetometer":"20.081251x-27.487501x2.1937501","display":"{model_name}_13.1.0.181(CN01)","ramRemain":"215344","deviceInfo":"{device_info}","gyroscope":"0.030226856x0.014647375x0.010652636","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"33","board":"{board}"}}'''  # noqa
+        random_data = random.randint(400000, 600000)
+        random_data2 = random.randint(150000, 300000)
+        time_diff = int(time.time() * 1000)
+
+        ext_fields = f'''{{"proxyStatus":0,"isRoot":1,"romCapacity":"512","deviceName":"私人手机","productName":"{device}","romRemain":"491","hostname":"dg02-pool06-kvm82","screenSize":"1264x2640","isTablet":0,"aaid":"{self.generate_ID()}","model":"{model_name}","brand":"{device_brand}","hardware":"qcom","deviceType":"{device_type}","devId":"REL","serialNumber":"unknown","sdCapacity":{random_data},"buildTime":"1717740969000","buildUser":"root","simState":5,"ramRemain":"{random_data2}","appUpdateTimeDiff":{time_diff},"deviceInfo":"{device_info}","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"34","ui_mode":"UI_MODE_TYPE_NORMAL","isMockLocation":0,"cpuType":"arm64-v8a","isAirMode":0,"ringMode":1,"chargeStatus":1,"manufacturer":"{device_brand}","emulatorStatus":0,"appMemory":"512","osVersion":"14","vendor":"中国联通","accelerometer":"-1.3004991x6.38764x7.19103","sdRemain":{random_data2},"buildTags":"release-keys","packageName":"com.mihoyo.hyperion","networkType":"WiFi","oaid":"{oaid}","debugStatus":1,"ramCapacity":"{random_data}","magnetometer":"27.1084x-48.5804x-24.8758","display":"{model_name}_14.0.0.810(CN01)","appInstallTimeDiff":"{time_diff}","packageVersion":"2.20.2","gyroscope":"-0.02543317x0.005725792x0.003195791","batteryStatus":50,"hasKeyboard":0,"board":"{board}"}}'''  # noqa
 
         body = {
             'device_id': self.generate_seed(16),
