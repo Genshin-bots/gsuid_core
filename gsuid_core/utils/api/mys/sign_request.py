@@ -11,7 +11,6 @@ from .tools import random_hex, generate_os_ds, get_web_ds_token
 from .api import (
     GS_BASE,
     SIGN_URL,
-    ZZZ_BASE,
     SIGN_URL_OS,
     SIGN_BASE_OS,
     SIGN_INFO_URL,
@@ -22,6 +21,7 @@ from .api import (
     SIGN_SR_BASE_OS,
     SIGN_INFO_URL_OS,
     SIGN_LIST_URL_OS,
+    SIGN_ZZZ_INFO_URL,
 )
 
 _ACT_ID = {
@@ -52,13 +52,13 @@ _ACT_ID = {
 _GAME_NAME = {
     'gs': 'hk4e',
     'sr': 'hkrpg',
-    'zzz': 'nap',
+    'zzz': 'zzz',
 }
 
 _BASE_URL = {
     'gs': {'os': SIGN_BASE_OS, 'cn': GS_BASE},
     'sr': {'os': SIGN_SR_BASE_OS, 'cn': GS_BASE},
-    'zzz': {'os': '', 'cn': ZZZ_BASE},
+    'zzz': {'os': SIGN_BASE_OS, 'cn': GS_BASE},
 }
 
 _SIGN_END_POINT = {
@@ -70,7 +70,7 @@ _SIGN_END_POINT = {
 _SIGN_INFO_END_POINT = {
     'gs': {'os': SIGN_INFO_URL_OS, 'cn': SIGN_INFO_URL},
     'sr': {'os': SIGN_INFO_SR_OS, 'cn': SIGN_INFO_URL},
-    'zzz': {'os': SIGN_INFO_URL_OS, 'cn': SIGN_INFO_URL},
+    'zzz': {'os': SIGN_INFO_URL_OS, 'cn': SIGN_ZZZ_INFO_URL},
 }
 
 _SIGN_LIST_END_POINT = {

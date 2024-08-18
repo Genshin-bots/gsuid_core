@@ -433,6 +433,11 @@ class BaseMysApi:
         base_url: str = '',
         game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
+        logger.debug(f'[米游社请求] BaseUrl: {base_url}')
+        logger.debug(f'[米游社请求] Url: {url}')
+        logger.debug(f'[米游社请求] Params: {params}')
+        logger.debug(f'[米游社请求] Data: {data}')
+
         if use_proxy and self.Gproxy:
             proxy = self.Gproxy
         elif self.Nproxy and not use_proxy:
@@ -554,7 +559,7 @@ class BaseMysApi:
                             q = ''
                         header['DS'] = get_ds_token(q, data)
 
-                    logger.debug(header)
+                    logger.debug(f'[米游社请求] Header: {header}')
                 elif retcode != 0:
                     return retcode
                 else:

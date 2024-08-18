@@ -76,6 +76,7 @@ SIGN_LIST_URL_OS = '/event/sol/home'
 SIGN_LIST_SR_OS = '/event/luna/os/home'
 # 获取签到信息
 SIGN_INFO_URL = '/event/luna/info'
+SIGN_ZZZ_INFO_URL = '/event/luna/zzz/info'
 SIGN_INFO_URL_OS = '/event/sol/info'
 SIGN_INFO_SR_OS = '/event/luna/os/info'
 # 执行签到
