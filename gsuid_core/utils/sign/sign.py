@@ -160,7 +160,7 @@ async def single_daily_sign(
                 'bot_id': bot_id,
                 'success': 0,
                 'failed': 0,
-                'push_message': '',
+                'push_message': [],
             }
         if im.startswith(('签到失败', '网络有点忙', 'OK', 'ok')):
             group_msgs[gid]['failed'] += 1
@@ -168,6 +168,7 @@ async def single_daily_sign(
                 [
                     MessageSegment.text('\n'),
                     MessageSegment.at(qid),
+                    MessageSegment.text('\n'),
                     MessageSegment.text(im),
                 ]
             )

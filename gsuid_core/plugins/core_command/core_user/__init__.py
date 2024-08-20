@@ -22,6 +22,15 @@ async def send_bind_card(bot: Bot, ev: Event):
 @core_user_msg.on_fullmatch(('给我发消息'))
 async def send_direct_msg(bot: Bot, ev: Event):
     logger.info('开始执行[给我发消息]')
+    messages = [
+        Message('at', ev.user_id),
+        Message('text', '这是一条被动消息！'),
+        Message('at', ev.user_id),
+        Message('text', '有一条AT消息在前面，有一条在后面。'),
+        Message('at', ev.user_id),
+        Message('group', ev.group_id),
+    ]
+    await bot.send(messages)
     for bot_id in gss.active_bot:
         await gss.active_bot[bot_id].target_send(
             [
