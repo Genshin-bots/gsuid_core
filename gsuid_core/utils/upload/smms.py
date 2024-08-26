@@ -49,5 +49,14 @@ class SMMS:
                     if is_auto_delete:
                         asyncio.create_task(self.delete(data['hash']))
                     return data['url']
+                elif (
+                    'code' in raw_data and raw_data['code'] == 'image_repeated'
+                ):
+                    logger.info('[sm.ms / upload] 图片已存在!')
+                    if 'images' in raw_data:
+                        return raw_data['images']
+                    if 'url' in raw_data:
+                        return raw_data['url']
+                    logger.info('[sm.ms / upload] 图片获取失败!')
                 else:
                     logger.info('[sm.ms / upload] 上传失败!')
