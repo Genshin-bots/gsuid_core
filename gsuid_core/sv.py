@@ -43,7 +43,7 @@ def modify_func(func):
                 instancess.pop(bot.session_id)
             if bot.session_id in mutiply_instances and bot.mutiply_tag:
                 mutiply_instances.pop(bot.session_id)
-                mutiply_map.pop(bot.gid)
+                mutiply_map.pop(bot.temp_gid)
         return result
 
     return wrapper

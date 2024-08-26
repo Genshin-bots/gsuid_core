@@ -153,9 +153,14 @@ class Bot:
     mutiply_map: Dict[str, str] = {}
 
     def __init__(self, bot: _Bot, ev: Event):
-        self.gid = ev.group_id if ev.group_id else '0'
         self.uid = ev.user_id if ev.user_id else '0'
-        self.session_id = f'{self.gid}{self.uid}'
+        if ev.user_type != 'direct':
+            self.temp_gid = ev.group_id if ev.group_id else '0'
+        else:
+            self.temp_gid = self.uid
+
+        self.bid = ev.bot_id if ev.bot_id else '0'
+        self.session_id = f'{self.bid}{self.temp_gid}{self.uid}'
 
         self.bot = bot
         self.ev = ev
@@ -369,9 +374,11 @@ class Bot:
             self.mutiply_tag = True
             if self.session_id not in self.mutiply_instances:
                 self.mutiply_instances[self.session_id] = self
-                # 标注群
-                if self.gid not in self.mutiply_map:
-                    self.mutiply_map[self.gid] = self.session_id
+                # 标注临时群ID
+                # 如果消息类型为群则为群号, 如消息类型为私聊则为QQ号
+                if self.temp_gid not in self.mutiply_map:
+                    self.mutiply_map[self.temp_gid] = self.session_id
+
                 self.mutiply_event = asyncio.Event()
 
             while self.mutiply_resp == []:

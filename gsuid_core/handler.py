@@ -21,10 +21,11 @@ config_superusers = core_config.get_config('superusers')
 
 shield_list = core_plugins_config.get_config('ShieldQQBot').data
 
+_command_start: List[str]
 if command_start and enable_empty:
-    _command_start: List[str] = [*command_start] + ['']
+    _command_start = [*command_start] + ['']
 else:
-    _command_start: List[str] = command_start
+    _command_start = command_start
 
 
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
@@ -50,9 +51,16 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 )
                 return
 
-    gid = event.group_id if event.group_id else '0'
+    bid = event.bot_id if event.group_id else '0'
     uid = event.user_id if event.user_id else '0'
-    session_id = f'{gid}{uid}'
+
+    if event.user_type != 'direct':
+        temp_gid = event.group_id if event.group_id else '0'
+    else:
+        temp_gid = uid
+
+    session_id = f'{bid}{temp_gid}{uid}'
+
     instances = Bot.get_instances()
     mutiply_instances = Bot.get_mutiply_instances()
     mutiply_map = Bot.get_mutiply_map()
@@ -63,14 +71,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         return
 
     if (
-        gid in mutiply_map
-        and event.user_type != 'direct'
-        and mutiply_map[gid] in mutiply_instances
-        and mutiply_instances[mutiply_map[gid]].mutiply_tag
+        temp_gid in mutiply_map
+        and mutiply_map[temp_gid] in mutiply_instances
+        and mutiply_instances[mutiply_map[temp_gid]].mutiply_tag
     ):
-        mutiply_instances[mutiply_map[gid]].mutiply_resp.append(event)
-        mutiply_instances[mutiply_map[gid]].set_mutiply_event()
-        if session_id == mutiply_instances[mutiply_map[gid]].session_id:
+        mutiply_instances[mutiply_map[temp_gid]].mutiply_resp.append(event)
+        mutiply_instances[mutiply_map[temp_gid]].set_mutiply_event()
+        if session_id == mutiply_instances[mutiply_map[temp_gid]].session_id:
             return
 
     is_start = False
