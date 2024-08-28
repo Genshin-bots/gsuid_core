@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Tuple, Optional
 
 import aiofiles
-from PIL import Image
 from aiohttp.client import ClientSession
+from PIL import Image, UnidentifiedImageError
 from aiohttp.client_exceptions import ClientConnectorError
 
 from gsuid_core.logger import logger
@@ -21,9 +21,15 @@ async def get_image(
 
     file_path = path / name
     if file_path.exists():
-        if size:
-            return Image.open(file_path).resize(size)
-        return Image.open(file_path)
+        try:
+            img = Image.open(file_path)
+            if size:
+                return img.resize(size)
+            return img
+        except UnidentifiedImageError:
+            logger.warning(
+                f"[GsCore]{name}已存在文件读取失败, 尝试重新下载..."
+            )
 
     async with ClientSession() as sess:
         try:
