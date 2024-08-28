@@ -29,8 +29,12 @@ async def get_image(
         try:
             logger.info(f'[GsCore]开始下载: {name} | 地址: {url}')
             async with sess.get(url) as res:
-                content = await res.read()
-                logger.info(f'[GsCore]下载成功: {name}')
+                if res.status == 200:
+                    content = await res.read()
+                    logger.info(f'[GsCore]下载成功: {name}')
+                else:
+                    logger.warning(f"[GsCore]{name}下载失败")
+                    return Image.new('RGBA', (256, 256))
         except ClientConnectorError:
             logger.warning(f"[GsCore]{name}下载失败")
             return Image.new('RGBA', (256, 256))
