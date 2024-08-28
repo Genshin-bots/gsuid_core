@@ -15,7 +15,7 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     'WebConsoleCDN': GsStrConfig(
         '网页控制台CDN',
         '网页控制台CDN地址',
-        'https://cdn.jsdelivr.net/npm/',
+        'https://unpkg.com/',
         options=[
             'https://unpkg.com/',
             'https://cdn.jsdelivr.net/npm/',
@@ -74,19 +74,35 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '自动重启Core时间设置', '每晚自动重启Core时间设置(时, 分)', ['4', '40']
     ),
     'AutoInstallDep': GsBoolConfig(
-        '自动安装/更新依赖', '更新/安装插件时将会自动更新/安装依赖', True
+        '自动安装/更新依赖',
+        '更新/安装插件时将会自动更新/安装依赖',
+        True,
     ),
     'EnablePicSrv': GsBoolConfig(
-        '启用将图片转链接发送(需公网)', '发送图片转链接', False
+        '启用将图片转链接发送(需公网)',
+        '发送图片转链接',
+        False,
     ),
-    'PicSrv': GsStrConfig('图片转链接为(需公网)', '发送图片转链接', ''),
+    'PicSrv': GsStrConfig(
+        '图片转链接为(需公网)',
+        '发送图片转链接',
+        '',
+    ),
     'EnableCleanPicSrv': GsBoolConfig(
-        '是否定期清理本地图床', '定期清理图床开关', True
+        '是否定期清理本地图床',
+        '定期清理图床开关',
+        True,
     ),
     'ScheduledCleanPicSrv': GsStrConfig(
-        '本地图床定期清理(秒)', '定期删除图片', '180'
+        '本地图床定期清理(秒)',
+        '定期删除图片',
+        '180',
     ),
-    'ProxyURL': GsStrConfig('安装插件时使用git代理地址', 'git代理地址', ''),
+    'ProxyURL': GsStrConfig(
+        '安装插件时使用git代理地址',
+        'git代理地址',
+        '',
+    ),
     'SendMDPlatform': GsListStrConfig(
         '默认发送MD的平台列表',
         '发送MD的平台列表',
@@ -151,5 +167,21 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '定时清理几天外的日志',
         '定时清理几天外的日志',
         '8',
+    ),
+    'EnableForwardMessage': GsStrConfig(
+        '是否允许发送合并转发',
+        '可选循环发送、合并消息、合并转发、禁止',
+        '允许',
+        [
+            "允许",
+            "禁止(不发送任何消息)",
+            "合并为一条消息",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "全部拆成单独消息",
+        ],
     ),
 }

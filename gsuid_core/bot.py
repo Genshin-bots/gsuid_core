@@ -39,6 +39,10 @@ isb: List = core_plugins_config.get_config('SendButtonsPlatform').data
 isc: List = core_plugins_config.get_config('SendTemplatePlatform').data
 istry: List = core_plugins_config.get_config('TryTemplateForQQ').data
 
+enable_forward: str = core_plugins_config.get_config(
+    'EnableForwardMessage'
+).data
+
 enable_buttons_platform = isb
 enable_markdown_platform = ism
 enable_Template_platform = isc
@@ -81,6 +85,7 @@ class _Bot:
             )
 
         _message_result = []
+        message_result = []
         _t = []
         for _m in _message:
             if (
@@ -99,14 +104,33 @@ class _Bot:
         _message_result.append(_t)
 
         for mr in _message_result:
+            for _m in mr:
+                if _m.type == 'node':
+                    if enable_forward == '禁止(不发送任何消息)':
+                        continue
+                    elif enable_forward == '允许':
+                        message_result.append(mr)
+                    elif enable_forward == '全部拆成单独消息':
+                        for forward_m in _m.data:
+                            message_result.append([forward_m])
+                    elif enable_forward == '合并为一条消息':
+                        message_result.append(_m.data)
+                    elif enable_forward.isdigit():
+                        for forward_m in _m.data[: int(enable_forward)]:
+                            message_result.append(forward_m)
+                else:
+                    message_result.append(mr)
+
+        if is_sp_msg_id and not msg_id:
+            msg_id = sp_msg_id
+
+        for mr in message_result:
+            logger.trace(f'[GsCore][即将发送消息] {mr}')
             if at_sender and sender_id:
                 mr.append(MessageSegment.at(sender_id))
 
             if group_id:
                 mr.append(Message('group', group_id))
-
-            if is_sp_msg_id and not msg_id:
-                msg_id = sp_msg_id
 
             send = MessageSend(
                 content=mr,
