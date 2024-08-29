@@ -104,22 +104,27 @@ class _Bot:
         _message_result.append(_t)
 
         for mr in _message_result:
+            _temp_mr = []
             for _m in mr:
                 if _m.type == 'node':
                     if enable_forward == '禁止(不发送任何消息)':
                         continue
                     elif enable_forward == '允许':
-                        message_result.append(mr)
+                        _temp_mr.append(_m)
                     elif enable_forward == '全部拆成单独消息':
                         for forward_m in _m.data:
-                            message_result.append([forward_m])
+                            if forward_m.type != 'image_size':
+                                message_result.append([forward_m])
                     elif enable_forward == '合并为一条消息':
-                        message_result.append(_m.data)
+                        _temp_mr.extend(_m.data)
                     elif enable_forward.isdigit():
                         for forward_m in _m.data[: int(enable_forward)]:
-                            message_result.append(forward_m)
+                            if forward_m.type != 'image_size':
+                                message_result.append([forward_m])
                 else:
-                    message_result.append(mr)
+                    _temp_mr.append(_m)
+            if _temp_mr:
+                message_result.append(_temp_mr)
 
         if is_sp_msg_id and not msg_id:
             msg_id = sp_msg_id
