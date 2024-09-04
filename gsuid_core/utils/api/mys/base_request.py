@@ -341,7 +341,7 @@ class BaseMysApi:
         if cookie is not None:
             HEADER['Cookie'] = cookie
         elif 'Cookie' not in HEADER and isinstance(uid, str):
-            ck = await self.get_ck(uid)
+            ck = await self.get_ck(uid, 'RANDOM', game_name)
             if ck is None:
                 return -51
             HEADER['Cookie'] = ck
