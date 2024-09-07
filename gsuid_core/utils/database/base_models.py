@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
 from sqlmodel import Field, SQLModel, col, and_, delete, select, update
 
 from gsuid_core.data_store import get_res_path
+from gsuid_core.utils.plugins_config.gs_config import database_config
 
 T_BaseModel = TypeVar('T_BaseModel', bound='BaseModel')
 T_BaseIDModel = TypeVar('T_BaseIDModel', bound='BaseIDModel')
@@ -27,13 +28,61 @@ T_Cache = TypeVar('T_Cache', bound='Cache')
 P = ParamSpec("P")
 R = TypeVar("R")
 
-DB_PATH = get_res_path() / 'GsData.db'
-db_url = str(DB_PATH)
-url = f'sqlite+aiosqlite:///{db_url}'
-engine = create_async_engine(url, pool_recycle=1500)
-async_maker = async_sessionmaker(
-    engine, expire_on_commit=False, class_=AsyncSession
-)
+
+db_host: str = database_config.get_config('db_host').data
+db_port: str = database_config.get_config('db_port').data
+db_user: str = database_config.get_config('db_user').data
+db_password: str = database_config.get_config('db_password').data
+db_name: str = database_config.get_config('db_name').data
+
+db_pool_size: Optional[int] = database_config.get_config('db_pool_size').data
+db_echo: bool = database_config.get_config('db_echo').data
+db_pool_recycle: int = database_config.get_config('db_pool_recycle').data
+
+db_custom_url = database_config.get_config('db_custom_url').data
+db_type: str = database_config.get_config('db_type').data
+
+_db_type = db_type.lower()
+db_config = {
+    'pool_recycle': db_pool_recycle,
+    'pool_size': db_pool_size,
+    'echo': db_echo,
+}
+
+if _db_type == 'sqlite':
+    base_url = 'sqlite+aiosqlite:///'
+    DB_PATH = get_res_path() / 'GsData.db'
+    db_url = str(DB_PATH)
+    del db_config['pool_size']
+elif _db_type == 'mysql':
+    base_url = 'mysql+aiomysql://'
+    db_hp = f'{db_host}:{db_port}' if db_port else db_host
+    db_url = f'{db_user}:{db_password}@{db_hp}/{db_name}'
+elif _db_type == 'postgresql':
+    base_url = 'postgresql+asyncpg://'
+    db_hp = f'{db_host}:{db_port}' if db_port else db_host
+    db_url = f'{db_user}:{db_password}@{db_hp}/{db_name}'
+elif _db_type == '自定义':
+    base_url = ''
+    db_url = db_custom_url
+else:
+    base_url = db_type
+    db_url = db_custom_url
+
+
+url = f'{base_url}{db_url}'
+
+try:
+    engine = create_async_engine(url, **db_config)
+    async_maker = async_sessionmaker(
+        engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+except:  # noqa: E722
+    raise ValueError(
+        f'[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!'
+    )
 
 
 def with_session(

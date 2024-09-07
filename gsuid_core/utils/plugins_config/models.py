@@ -33,6 +33,7 @@ class GsListConfig(GsConfig, tag=True):
 class GsIntConfig(GsConfig, tag=True):
     data: int
     max_value: Optional[int] = None
+    options: List[int] = []
 
 
 GSC = Union[
