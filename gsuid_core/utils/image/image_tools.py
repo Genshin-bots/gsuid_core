@@ -6,6 +6,7 @@ from typing import Tuple, Union, Optional
 
 import httpx
 from httpx import get
+from utils.fonts.fonts import core_font
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from gsuid_core.models import Event
@@ -18,6 +19,31 @@ BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 def get_div():
     return Image.open(TEXT_PATH / 'div.png')
+
+
+def draw_color_badge(
+    text: str,
+    color: Union[Tuple[int, int, int], str] = (252, 69, 69),
+    font: ImageFont.FreeTypeFont = core_font(30),
+    font_color: Tuple[int, int, int] = (255, 255, 255),
+):
+    x1, y1, x2, y2 = font.getbbox(text)
+    offset_x = int((x2 - x1) * 0.3)
+    offset_y = int((y2 - y1) * 0.5)
+    x3, y3, x4, y4 = x1 - offset_x, y1 - offset_y, x2 + offset_x, y2 + offset_y
+    w, h = int(x4 - x3), int(y4 - y3)
+    center_x, center_y = int(w // 2), int(h // 2)
+    img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((0, 0, w, h), fill=color, radius=20)
+    draw.text(
+        (center_x, center_y),
+        text,
+        font=font,
+        fill=font_color,
+        anchor='mm',
+    )
+    return img
 
 
 def get_status_icon(status: Union[int, bool]) -> Image.Image:
@@ -89,9 +115,9 @@ async def shift_image_hue(img: Image.Image, angle: float = 30) -> Image.Image:
 
     for y in range(img.height):
         for x in range(img.width):
-            h, s, v = pixels[x, y]
+            h, s, v = pixels[x, y]  # type: ignore
             h = (h + hue_shift) % 360
-            pixels[x, y] = (h, s, v)
+            pixels[x, y] = (h, s, v)  # type: ignore
 
     img = img.convert('RGBA')
     img.putalpha(alpha)
@@ -394,7 +420,16 @@ class CustomizeImage:
         img = img.convert("RGBA")
         img = img.resize((1, 1), resample=0)
         dominant_color = img.getpixel((0, 0))
-        return dominant_color
+        if isinstance(dominant_color, float):
+            _dominant_color = tuple(
+                [int(dominant_color * 255) for _ in range(3)]
+            )  # type: ignore
+        elif dominant_color is None or isinstance(dominant_color, int):
+            _dominant_color: Tuple[int, int, int] = (255, 255, 255)
+        else:
+            _dominant_color = dominant_color  # type: ignore
+
+        return _dominant_color
 
     @staticmethod
     def get_bg_color(
