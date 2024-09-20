@@ -151,10 +151,10 @@ async def get_ambr_icon(
     '''
     获取ItemIcon:
         await get_ambr_icon('UI', '114004', path, 'ItemIcon')
-        https://gi.yatta.top/assets/UI/UI_ItemIcon_114004.png
+        https://gi.yatta.moe/assets/UI/UI_ItemIcon_114004.png
     获取其他:
         await get_ambr_icon('UI', 'Chongyun', path, 'AvatarIcon')
-        https://gi.yatta.top/assets/UI/UI_AvatarIcon_Chongyun.png
+        https://gi.yatta.moe/assets/UI/UI_AvatarIcon_Chongyun.png
     '''
     if ui_name:
         item_icon = f'UI_{ui_name}_{icon_name}.png'
