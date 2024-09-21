@@ -1,0 +1,147 @@
+{
+    "管理插件": {
+      "desc": "安装/管理插件",
+      "data": [
+        {
+          "name": "刷新插件列表",
+          "desc": "可以同步最新的插件列表",
+          "eg": "刷新插件列表",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": true
+        },
+        {
+          "name": "安装插件",
+          "desc": "安装插件",
+          "eg": "安装插件Pokemon",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": true
+        },
+        {
+          "name": "卸载插件",
+          "desc": "卸载插件",
+          "eg": "卸载插件Pokemon",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": true
+        }
+      ]
+    },
+    "更新插件": {
+      "desc": "更新插件",
+      "data": [
+        {
+          "name": "更新插件",
+          "desc": "更新插件",
+          "eg": "更新插件Pokemon",
+          "need_ck": true,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "强制更新插件",
+          "desc": "强制reset之后更新插件",
+          "eg": "强制更新插件",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+            "name": "强行强制更新插件",
+            "desc": "强制reset+clean之后更新插件",
+            "eg": "强行强制更新插件",
+            "need_ck": false,
+            "need_sk": false,
+            "need_admin": false
+        }
+      ]
+    },
+    "核心管理": {
+      "desc": "启停核心",
+      "data": [
+        {
+          "name": "重启",
+          "desc": "重启核心",
+          "eg": "重启",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "关闭",
+          "desc": "警告：关闭后将无法通过命令调用",
+          "eg": "关闭",
+          "need_ck": true,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "状态",
+          "desc": "查看目前核心的状态",
+          "eg": "状态",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        }
+      ]
+    },
+    "MiHoMo核心": {
+      "desc": "管理用户",
+      "data": [
+        {
+          "name": "刷新全部CK",
+          "desc": "刷新全部用户的CK",
+          "eg": "刷新全部CK",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": true
+        },
+        {
+          "name": "校验全部CK",
+          "desc": "校验全部ck的状态",
+          "eg": "校验全部CK",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "校验全部SK",
+          "desc": "校验全部sk的状态",
+          "eg": "校验全部SK",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "清除无效用户",
+          "desc": "清理失效的用户",
+          "eg": "清除无效用户",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": true
+        }
+      ]
+    },
+    "杂项": {
+      "desc": "一些可能会有用的功能",
+      "data": [
+        {
+          "name": "重置网页控制台密码",
+          "desc": "重置网页控制台密码",
+          "eg": "重置网页控制台密码",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "给我发消息",
+          "desc": "给主人发送一条主动消息",
+          "eg": "给我发消息",
+          "need_ck": true,
+          "need_sk": false,
+          "need_admin": false
+        }
+      ]
+    }
+  }

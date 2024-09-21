@@ -20,6 +20,22 @@ plugins_list: Dict[str, Dict[str, str]] = {}
 is_install_dep = core_plugins_config.get_config('AutoInstallDep').data
 
 
+async def check_plugin_exist(name: str):
+    name = name.lower()
+    if name in ['core_command', 'gs_test']:
+        return '内置插件不可删除！'
+    for i in PLUGINS_PATH.iterdir():
+        if i.stem.lower() == name:
+            return i
+
+
+async def uninstall_plugin(path: Path):
+    if not path.exists():
+        return '该插件不存在!'
+    path.unlink()
+    return '删除成功!'
+
+
 # 传入一个path对象
 async def run_poetry_install(path: Optional[Path] = None) -> int:
     if path is None:

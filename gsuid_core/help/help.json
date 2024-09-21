@@ -1,0 +1,62 @@
+{
+    "Mihomo账户登陆": {
+      "desc": "在执行查询之前请绑定账号",
+      "data": [
+        {
+          "name": "扫码登陆",
+          "desc": "绑定自己的账户",
+          "eg": "扫码登陆",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "添加CK",
+          "desc": "手动添加CK, 仅限私聊",
+          "eg": "添加CK ltuid=xxx",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+      }
+      ]
+    },
+    "MiHoMo账户管理": {
+      "desc": "在执行查询之前请绑定账号",
+      "data": [
+        {
+          "name": "刷新CK",
+          "desc": "通过SK去刷新CK",
+          "eg": "刷新CK",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        }
+      ]
+    },
+    "设备绑定": {
+      "desc": "账户关联设备信息",
+      "data": [
+        {
+          "name": "绑定设备",
+          "desc": "仅限私聊绑定设备",
+          "eg": "mys绑定设备",
+          "need_ck": true,
+          "need_sk": false,
+          "need_admin": false
+        }
+      ]
+    },
+    "账户绑定检查": {
+      "desc": "账户关联设备信息",
+      "data": [
+        {
+          "name": "绑定信息",
+          "desc": "检查自己在所有插件下的绑定信息",
+          "eg": "绑定信息",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        }
+      ]
+    }
+  }
