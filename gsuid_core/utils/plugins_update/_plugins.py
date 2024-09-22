@@ -380,6 +380,15 @@ def update_from_git(
 
     logger.info(f'[更新] 准备更新 [{plugin_name}], 更新等级为{level}')
 
+    # 先执行git fetch
+    logger.info(f'[更新][{plugin_name}] 正在执行 git fetch')
+    o.fetch()
+
+    default_branch_ref = repo.git.symbolic_ref('refs/remotes/origin/HEAD')
+    default_branch = default_branch_ref.split('/')[-1]  # 提取主分支名称
+
+    commits_diff = list(repo.iter_commits(f'HEAD..origin/{default_branch}'))
+
     if level >= 2:
         logger.warning(f'[更新][{plugin_name}] 正在执行 git clean --xdf')
         logger.warning('[更新] 你有 2 秒钟的时间中断该操作...')
@@ -398,22 +407,30 @@ def update_from_git(
         logger.info(f'[更新][{repo.head.commit.hexsha[:7]}] 获取远程最新版本')
     except GitCommandError as e:
         logger.warning(f'[更新] 更新失败...{e}!')
-        return ['更新失败, 请检查控制台...']
+        return [f'更新插件 {plugin_name} 中...', '更新失败, 请检查控制台...']
 
-    commits = list(repo.iter_commits(max_count=40))
-    log_list = [f'更新插件 {plugin_name} 中...']
-    for commit in commits:
-        if isinstance(commit.message, str):
-            if log_key:
-                for key in log_key:
-                    if key in commit.message:
-                        log_list.append(commit.message.replace('\n', ''))
-                        if len(log_list) >= log_limit:
-                            break
-            else:
-                log_list.append(commit.message.replace('\n', ''))
-                if len(log_list) >= log_limit:
-                    break
+    # commits = list(repo.iter_commits(max_count=40))
+    if commits_diff:
+        commits = commits_diff
+    else:
+        commits = []
+    log_list = []
+    if commits:
+        log_list.append(f'✅本次插件 {plugin_name} , 更新内容如下：')
+        for commit in commits:
+            if isinstance(commit.message, str):
+                if log_key:
+                    for key in log_key:
+                        if key in commit.message:
+                            log_list.append(commit.message.replace('\n', ''))
+                            if len(log_list) >= log_limit:
+                                break
+                else:
+                    log_list.append(commit.message.replace('\n', ''))
+                    if len(log_list) >= log_limit:
+                        break
+    else:
+        log_list.append(f'✅插件 {plugin_name} 本次无更新内容！')
     return log_list
 
 
