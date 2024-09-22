@@ -122,20 +122,21 @@ async def get_new_help(
         sv_num = len(cag_data)
         h += (((sv_num - 1) // column) + 1) * 175
 
+    banner_h = banner_bg.size[1]
     # 绘制banner
-    banner_bg.paste(plugin_icon, (89, 88), plugin_icon)
+    banner_bg.paste(plugin_icon, (89, banner_h - 212), plugin_icon)
     banner_draw = ImageDraw.Draw(banner_bg)
 
     _banner_name = plugin_name + '帮助'
     banner_draw.text(
-        (262, 128),
+        (262, banner_h - 172),
         _banner_name,
         main_color,
         font=core_font(50),
         anchor='lm',
     )
     banner_draw.text(
-        (262, 183),
+        (262, banner_h - 117),
         banner_sub_text,
         sub_color,
         font=core_font(30),
@@ -155,19 +156,23 @@ async def get_new_help(
         )
         banner_bg.paste(
             badge,
-            (262 + plugin_name_len + 10, 128 - badge.height // 2),
+            (
+                262 + plugin_name_len + 10,
+                banner_h - 172 - badge.height // 2,
+            ),
             badge,
         )
 
         plugin_name_len += badge.width + 10
 
     bscale = w / banner_bg.size[0]
-    new_banner_h = int(banner_bg.size[1] * bscale)
+    new_banner_h = int(banner_h * bscale)
     new_cag_h = int(cag_bg.size[1] * bscale)
     banner_bg = banner_bg.resize((w, new_banner_h))
 
     h += new_banner_h
-    h += cag_num * new_cag_h
+    soft = 10
+    h += cag_num * (new_cag_h + soft)
 
     # 基准图
     img = crop_center_img(help_bg, w, h)
@@ -234,7 +239,7 @@ async def get_new_help(
 
         img.paste(
             cag_bar,
-            (0, int(new_banner_h + hs - 26 * bscale)),
+            (0, int(new_banner_h + hs - 14 * bscale)),
             cag_bar,
         )
 
@@ -283,11 +288,17 @@ async def get_new_help(
 
             x, y = (
                 45 + (i % column) * 490,
-                int(new_banner_h + 70 * bscale + (i // column) * 175 + hs),
+                int(
+                    new_banner_h
+                    + 70 * bscale
+                    + (i // column) * 175
+                    + hs
+                    + soft
+                ),
             )
             img.paste(command_bg, (x, y), command_bg)
 
-        hs += (((len(cag_data) - 1) // column) + 1) * 175 + new_cag_h
+        hs += (((len(cag_data) - 1) // column) + 1) * 175 + new_cag_h + soft
 
     img.paste(
         footer,
