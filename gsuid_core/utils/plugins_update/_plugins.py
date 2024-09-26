@@ -384,10 +384,16 @@ def update_from_git(
     logger.info(f'[更新][{plugin_name}] 正在执行 git fetch')
     o.fetch()
 
-    default_branch_ref = repo.git.symbolic_ref('refs/remotes/origin/HEAD')
-    default_branch = default_branch_ref.split('/')[-1]  # 提取主分支名称
+    try:
+        default_branch_ref = repo.git.symbolic_ref('refs/remotes/origin/HEAD')
+        default_branch = default_branch_ref.split('/')[-1]  # 提取主分支名称
 
-    commits_diff = list(repo.iter_commits(f'HEAD..origin/{default_branch}'))
+        commits_diff = list(
+            repo.iter_commits(f'HEAD..origin/{default_branch}')
+        )
+    except GitCommandError as e:
+        logger.warning(f'[更新] 查找默认分支失败...{e}!')
+        commits_diff = list(repo.iter_commits(max_count=40))
 
     if level >= 2:
         logger.warning(f'[更新][{plugin_name}] 正在执行 git clean --xdf')
