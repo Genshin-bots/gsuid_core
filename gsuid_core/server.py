@@ -14,12 +14,14 @@ from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.plugins_update._plugins import (
+    check_start_tool,
     sync_get_plugin_url,
     sync_change_plugin_url,
 )
 
 auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
-start_venv: str = core_plugins_config.get_config('StartVENV').data
+auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
+
 core_start_def = set()
 core_shutdown_def = set()
 installed_dependencies = []
@@ -36,39 +38,6 @@ def on_core_shutdown(func: Callable):
     if func not in core_shutdown_def:
         core_shutdown_def.add(func)
     return func
-
-
-def check_start_tool(is_pip: bool = False):
-    PDM = 'pdm'
-    POETRY = 'poetry'
-    OTHER = start_venv.strip()
-
-    if is_pip:
-        PIP = ' run python -m pip'
-        PDM += PIP
-        POETRY += PIP
-
-        if OTHER == 'python':
-            OTHER = 'python -m pip'
-        else:
-            OTHER += PIP
-
-    path = Path(__file__).parent.parent
-    pdm_python_path = path / '.pdm-python'
-
-    if start_venv == 'auto':
-        if pdm_python_path.exists():
-            command = PDM
-        else:
-            command = POETRY
-    elif start_venv == 'pdm':
-        command = PDM
-    elif start_venv == 'poetry':
-        command = POETRY
-    else:
-        command = start_venv.strip()
-
-    return command
 
 
 class GsServer:
@@ -115,7 +84,7 @@ class GsServer:
                     elif nest_path.exists() or src_path.exists():
                         path = nest_path.parent / plugin.name
                         pyproject = plugin / 'pyproject.toml'
-                        if auto_install_dep and pyproject.exists:
+                        if pyproject.exists:
                             check_pyproject(pyproject)
                         if path.exists():
                             self.load_dir_plugins(path, True)
@@ -213,23 +182,42 @@ def check_pyproject(pyproject: Path):
                 "extend-exclude = '''", ''
             ).replace("'''", '', 1)
         toml_data = toml.loads(file_content)
-    if 'project' in toml_data:
-        dependencies = toml_data['project'].get('dependencies')
-    elif 'tool' in toml_data and 'poetry' in toml_data['tool']:
-        dependencies = toml_data['tool']['poetry'].get('dependencies')
-    else:
-        dependencies = None
+
+    if auto_install_dep or auto_update_dep:
+        if 'project' in toml_data:
+            dependencies = toml_data['project'].get('dependencies')
+        elif 'tool' in toml_data and 'poetry' in toml_data['tool']:
+            dependencies = toml_data['tool']['poetry'].get('dependencies')
+        else:
+            dependencies = None
 
     if isinstance(dependencies, List):
         dependencies = parse_dependency(dependencies)
+    else:
+        dependencies = {}
+
+    if 'project' in toml_data:
+        sp_dep = toml_data['project'].get('gscore_auto_update_dep')
+        if sp_dep:
+            sp_dep = parse_dependency(sp_dep)
+            logger.debug('[安装/更新依赖] 特殊依赖列表如下：')
+            logger.debug(sp_dep)
+            logger.debug('========')
+            install_dependencies(sp_dep, True)
 
     if dependencies:
-        install_dependencies(dependencies)
+        if auto_update_dep:
+            install_dependencies(dependencies, True)
+        else:
+            install_dependencies(dependencies, False)
 
 
-def install_dependencies(dependencies: Dict):
+def install_dependencies(dependencies: Dict, need_update: bool = False):
     global installed_dependencies
     start_tool = check_start_tool(True)
+
+    logger.debug(f'[安装/更新依赖] 当前启动工具：{start_tool}')
+
     if start_tool == 'pdm':
         result = subprocess.run(
             'pdm run python -m ensurepip',
@@ -241,19 +229,44 @@ def install_dependencies(dependencies: Dict):
             logger.warning("PDM中pip环境检查失败。错误信息：")
             logger.warning(result.stderr)
             return
+
+    logger.trace(
+        f'[安装/更新依赖] 开始安装/更新依赖...模式是否为更新：{need_update}'
+    )
+
+    if need_update:
+        extra = '-U'
+    else:
+        extra = ''
+
+    logger.trace('[安装/更新依赖] 需检查依赖列表如下：')
+    logger.trace(dependencies)
+    logger.trace('========')
+
     # 解析依赖项
     for (
         dependency,
         version,
     ) in dependencies.items():
-        if (
-            installed_dependencies
-            and dependency not in installed_dependencies
-            and dependency not in ignore_dep
-        ):
-            logger.info(f'安装依赖 {dependency} 中...')
+        if need_update:
+            condi = dependency not in ignore_dep
+        else:
+            condi = (
+                installed_dependencies
+                and dependency not in installed_dependencies
+                and dependency not in ignore_dep
+            )
+        logger.trace(
+            f'[安装/更新依赖] 检测到依赖 {dependency}, 是否满足条件 {condi}'
+        )
+
+        if condi:
+            logger.info(f'[安装/更新依赖] {dependency} 中...')
+            CMD = f'{start_tool} install "{dependency}{version}" {extra}'
+
+            logger.info(f'[安装/更新依赖] 开始执行：{CMD}')
             result = subprocess.run(
-                f'{start_tool} install {dependency}',
+                CMD,
                 capture_output=True,
                 text=True,
             )

@@ -74,9 +74,14 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '自动重启Core时间设置', '每晚自动重启Core时间设置(时, 分)', ['4', '40']
     ),
     'AutoInstallDep': GsBoolConfig(
-        '自动安装/更新依赖',
-        '更新/安装插件时将会自动更新/安装依赖',
+        '自动安装依赖',
+        '安装插件时将会自动安装依赖',
         True,
+    ),
+    'AutoUpdateDep': GsBoolConfig(
+        '自动更新依赖',
+        '启动Core时将会自动更新插件依赖',
+        False,
     ),
     'EnablePicSrv': GsBoolConfig(
         '启用将图片转链接发送(需公网)',

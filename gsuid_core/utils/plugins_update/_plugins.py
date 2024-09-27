@@ -17,7 +17,41 @@ from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
+start_venv: str = core_plugins_config.get_config('StartVENV').data
 is_install_dep = core_plugins_config.get_config('AutoInstallDep').data
+
+
+def check_start_tool(is_pip: bool = False):
+    PDM = 'pdm'
+    POETRY = 'poetry'
+    OTHER = start_venv.strip()
+
+    if is_pip:
+        PIP = ' run python -m pip'
+        PDM += PIP
+        POETRY += ' run pip'
+
+        if OTHER == 'python':
+            OTHER = 'python -m pip'
+        else:
+            OTHER += PIP
+
+    path = Path(__file__).parent.parent.parent.parent
+    pdm_python_path = path / '.pdm-python'
+
+    if start_venv == 'auto':
+        if pdm_python_path.exists():
+            command = PDM
+        else:
+            command = POETRY
+    elif start_venv == 'pdm':
+        command = PDM
+    elif start_venv == 'poetry':
+        command = POETRY
+    else:
+        command = start_venv.strip()
+
+    return command
 
 
 async def check_plugin_exist(name: str):
@@ -37,22 +71,25 @@ async def uninstall_plugin(path: Path):
 
 
 # 传入一个path对象
-async def run_poetry_install(path: Optional[Path] = None) -> int:
+async def run_install(path: Optional[Path] = None) -> int:
+    tools = check_start_tool()
+    if tools == 'pip':
+        logger.warning('你使用的是PIP环境, 无需进行 PDM/Poetry install!')
+        return -200
+
     if path is None:
         path = CORE_PATH
+
     # 检测path是否是一个目录
     if not path.is_dir():
         raise ValueError(f"{path} is not a directory")
-    # 检测path下是否存在poetry.lock文件
-    lock_file = path / "poetry.lock"
-    if not lock_file.is_file():
-        raise FileNotFoundError(f"{lock_file} does not exist")
+
     # 异步执行poetry install命令，并返回返回码
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf8"
 
     proc = await asyncio.create_subprocess_shell(
-        'poetry install',
+        f'{tools} install',
         cwd=path,
         stdout=asyncio.subprocess.PIPE,
         shell=True,
@@ -356,7 +393,7 @@ def update_from_git(
             repo = Repo(CORE_PATH)
             plugin_name = '早柚核心'
             if is_install_dep:
-                asyncio.create_task(run_poetry_install(CORE_PATH))
+                asyncio.create_task(run_install(CORE_PATH))
         elif isinstance(repo_like, Path):
             repo = Repo(repo_like)
             plugin_name = repo_like.name
