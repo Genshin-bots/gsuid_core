@@ -218,7 +218,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
 
     logger.debug(f'[安装/更新依赖] 当前启动工具：{start_tool}')
 
-    if start_tool == 'pdm':
+    if start_tool.startswith('pdm'):
         result = subprocess.run(
             'pdm run python -m ensurepip',
             capture_output=True,
