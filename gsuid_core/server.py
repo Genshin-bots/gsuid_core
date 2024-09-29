@@ -218,7 +218,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
 
     logger.debug(f'[安装/更新依赖] 当前启动工具：{start_tool}')
 
-    if start_tool.startswith('pdm'):
+    if start_tool.startswith('pdm') and False:
         result = subprocess.run(
             'pdm run python -m ensurepip',
             capture_output=True,
@@ -264,18 +264,21 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
             logger.info(f'[安装/更新依赖] {dependency} 中...')
             CMD = f'{start_tool} install "{dependency}{version}" {extra}'
 
-            logger.info(f'[安装/更新依赖] 开始执行：{CMD}')
-            result = subprocess.run(
-                CMD,
-                capture_output=True,
-                text=True,
-            )
-            # 检查命令执行结果
-            if result.returncode == 0:
-                logger.success(f"依赖 {dependency} 安装成功！")
-            else:
-                logger.warning("依赖安装失败。错误信息：")
-                logger.warning(result.stderr)
+            try:
+                logger.info(f'[安装/更新依赖] 开始执行：{CMD}')
+                result = subprocess.run(
+                    CMD,
+                    capture_output=True,
+                    text=True,
+                )
+                # 检查命令执行结果
+                if result.returncode == 0:
+                    logger.success(f"依赖 {dependency} 安装成功！")
+                else:
+                    logger.warning("依赖安装失败。错误信息：")
+                    logger.warning(result.stderr)
+            except Exception as e:
+                logger.exception(f'[安装/更新依赖] 安装失败：{e}')
             installed_dependencies = get_installed_dependencies()
 
 
