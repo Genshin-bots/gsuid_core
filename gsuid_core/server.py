@@ -223,6 +223,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
             'pdm run python -m ensurepip',
             capture_output=True,
             text=True,
+            shell=True,
         )
         # 检查命令执行结果
         if result.returncode != 0:
@@ -270,6 +271,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
                     CMD,
                     capture_output=True,
                     text=True,
+                    shell=True,
                 )
                 # 检查命令执行结果
                 if result.returncode == 0:
