@@ -2,10 +2,10 @@ import sys
 import asyncio
 import logging
 import datetime
-import traceback
 from typing import TYPE_CHECKING, List
 
 import loguru
+from uvicorn.config import LOGGING_CONFIG
 
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message
@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from loguru import Logger
 
 logger: 'Logger' = loguru.logger
+logging.getLogger().handlers = []
+LOGGING_CONFIG["disable_existing_loggers"] = False
 
 
 # https://loguru.readthedocs.io/en/stable/overview.html#entirely-compatible-with-standard-logging
@@ -44,9 +46,6 @@ class LoguruHandler(logging.Handler):  # pragma: no cover
 
 
 def format_event(record):
-    if record['exception']:
-        return f'{traceback.print_tb(record["exception"].traceback)} \n'
-
     if 'trigger' in record['extra']:
         _tg = record['extra']['trigger']
         message = (
@@ -105,7 +104,7 @@ def format_event(record):
     time = '<g>{time:MM-DD HH:mm:ss}</g>'
     level = '[<lvl>{level}</lvl>]'
     def_name = f'<c><u>{".".join(def_name.split(".")[-5:])}</u></c>'
-    _log = f'{time} {level} {def_name} | {message} \n'
+    _log = f'{time} {level} {def_name} | {message} \n {{exception}}'
     return _log
 
 

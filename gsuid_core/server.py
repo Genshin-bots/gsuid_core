@@ -269,7 +269,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
             if retcode != 0:
                 logger.warning('[安装/更新依赖] 安装失败（将会重试一次）')
                 if ' python -m' in start_tool:
-                    start_tool = start_tool.replace('python -m', '')
+                    start_tool = start_tool.replace(' python -m', '')
                     CMD = (
                         f'{start_tool} install "{dependency}{version}" {extra}'
                     )
