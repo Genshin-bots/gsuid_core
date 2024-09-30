@@ -266,22 +266,38 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
             CMD = f'{start_tool} install "{dependency}{version}" {extra}'
 
             try:
-                logger.info(f'[安装/更新依赖] 开始执行：{CMD}')
-                result = subprocess.run(
-                    CMD,
-                    capture_output=True,
-                    text=True,
-                    shell=True,
+                execute_cmd(CMD)
+            except Exception as e1:
+                logger.exception(
+                    f'[安装/更新依赖] 安装失败（将会重试一次）：{e1}'
                 )
-                # 检查命令执行结果
-                if result.returncode == 0:
-                    logger.success(f"依赖 {dependency} 安装成功！")
-                else:
-                    logger.warning("依赖安装失败。错误信息：")
-                    logger.warning(result.stderr)
-            except Exception as e:
-                logger.exception(f'[安装/更新依赖] 安装失败：{e}')
+                if ' python -m' in start_tool:
+                    start_tool = start_tool.replace('python -m', '')
+                    CMD = (
+                        f'{start_tool} install "{dependency}{version}" {extra}'
+                    )
+                try:
+                    execute_cmd(CMD)
+                except Exception as e2:
+                    logger.exception(f'[安装/更新依赖] 安装失败：{e2}')
             installed_dependencies = get_installed_dependencies()
+
+
+def execute_cmd(CMD: str):
+    logger.info(f'[CMD执行] 开始执行：{CMD}')
+    result = subprocess.run(
+        CMD,
+        capture_output=True,
+        text=True,
+        shell=True,
+    )
+    # 检查命令执行结果
+    if result.returncode == 0:
+        logger.success(f"[CMD执行] {CMD} 成功执行!")
+    else:
+        logger.warning(f"[CMD执行] {CMD}执行失败。错误信息：")
+        logger.warning(result.stderr)
+    return result.returncode
 
 
 def get_installed_dependencies():
