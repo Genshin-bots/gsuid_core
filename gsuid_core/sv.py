@@ -367,3 +367,10 @@ class SV:
         if unique_id is None:
             unique_id = str(uuid.uuid4())
         return self._on('message', unique_id, block, to_me, prefix)
+
+
+def get_plugin_prefix(plugin_name: str) -> str:
+    plugin = SL.plugins.get(plugin_name)
+    if plugin is None:
+        raise ValueError(f'插件{plugin_name}不存在!')
+    return plugin.prefix
