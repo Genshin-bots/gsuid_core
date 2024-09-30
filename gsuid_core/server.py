@@ -265,21 +265,15 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
             logger.info(f'[安装/更新依赖] {dependency} 中...')
             CMD = f'{start_tool} install "{dependency}{version}" {extra}'
 
-            try:
-                execute_cmd(CMD)
-            except Exception as e1:
-                logger.exception(
-                    f'[安装/更新依赖] 安装失败（将会重试一次）：{e1}'
-                )
+            retcode = execute_cmd(CMD)
+            if retcode != 0:
+                logger.warning('[安装/更新依赖] 安装失败（将会重试一次）')
                 if ' python -m' in start_tool:
                     start_tool = start_tool.replace('python -m', '')
                     CMD = (
                         f'{start_tool} install "{dependency}{version}" {extra}'
                     )
-                try:
-                    execute_cmd(CMD)
-                except Exception as e2:
-                    logger.exception(f'[安装/更新依赖] 安装失败：{e2}')
+                execute_cmd(CMD)
             installed_dependencies = get_installed_dependencies()
 
 
@@ -296,7 +290,7 @@ def execute_cmd(CMD: str):
         logger.success(f"[CMD执行] {CMD} 成功执行!")
     else:
         logger.warning(f"[CMD执行] {CMD}执行失败。错误信息：")
-        logger.warning(result.stderr)
+        logger.exception(result.stderr)
     return result.returncode
 
 
