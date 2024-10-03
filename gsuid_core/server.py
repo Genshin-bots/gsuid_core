@@ -24,7 +24,7 @@ auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
 
 core_start_def = set()
 core_shutdown_def = set()
-installed_dependencies = []
+installed_dependencies: Dict[str, str] = {}
 ignore_dep = ['python', 'fastapi', 'pydantic']
 
 
@@ -214,8 +214,16 @@ def check_pyproject(pyproject: Path):
 
 def install_dependencies(dependencies: Dict, need_update: bool = False):
     global installed_dependencies
-    start_tool = check_start_tool(True)
+    to_update = find_dependencies_to_update(
+        installed_dependencies, dependencies
+    )
+    if not to_update:
+        logger.debug('[安装/更新依赖] 无需更新依赖！')
+        return
 
+    logger.debug(f'[安装/更新依赖] 需更新依赖列表如下：\n{to_update}')
+
+    start_tool = check_start_tool(True)
     logger.debug(f'[安装/更新依赖] 当前启动工具：{start_tool}')
 
     if start_tool.startswith('pdm') and False:
@@ -247,8 +255,8 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
     # 解析依赖项
     for (
         dependency,
-        version,
-    ) in dependencies.items():
+        _version,
+    ) in to_update.items():
         if need_update:
             condi = dependency not in ignore_dep
         else:
@@ -262,6 +270,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
         )
 
         if condi:
+            version: str = _version.get('required_version', '')
             logger.info(f'[安装/更新依赖] {dependency} 中...')
             CMD = f'{start_tool} install "{dependency}{version}" {extra}'
 
@@ -297,7 +306,10 @@ def execute_cmd(CMD: str):
 def get_installed_dependencies():
     global installed_dependencies
     installed_packages = pkg_resources.working_set
-    installed_dependencies = [package.key for package in installed_packages]
+    installed_dependencies = {
+        package.key: package.version for package in installed_packages
+    }
+    return installed_dependencies
 
 
 def parse_dependency(dependency: List):
@@ -319,3 +331,46 @@ def parse_dependency_string(dependency_string: str):
         dependencies[dependency] = f"{operator}{version}"
 
     return dependencies
+
+
+def extract_numeric_version(version):
+    # 提取版本中的数字和小数点部分
+    numeric_version = re.findall(r'\d+', version)
+    return tuple(map(int, numeric_version)) if numeric_version else (0,)
+
+
+def compare_versions(installed_version, required_version):
+    installed_tuple = extract_numeric_version(installed_version)
+    required_tuple = extract_numeric_version(
+        re.sub(r'[<>=]', '', required_version)
+    )
+
+    # 基于符号进行比较
+    if "<=" in required_version:
+        return installed_tuple <= required_tuple
+    elif ">=" in required_version:
+        return installed_tuple >= required_tuple
+    elif "==" in required_version:
+        return installed_tuple == required_tuple
+    elif "<" in required_version:
+        return installed_tuple < required_tuple
+    elif ">" in required_version:
+        return installed_tuple > required_tuple
+    return False
+
+
+def find_dependencies_to_update(
+    installed_deps, required_deps
+) -> Dict[str, Dict[str, str]]:
+    to_update = {}
+
+    for dep, installed_version in installed_deps.items():
+        if dep in required_deps:
+            required_version = required_deps[dep]
+            if not compare_versions(installed_version, required_version):
+                to_update[dep] = {
+                    "installed_version": installed_version,
+                    "required_version": required_version,
+                }
+
+    return to_update

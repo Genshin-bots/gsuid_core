@@ -36,7 +36,8 @@ plugins_sample = {
     'area': 'SV',
     'black_list': [],
     'white_list': [],
-    'prefix': '',
+    'prefix': [],
+    'allow_empty_prefix': True,
     'sv': {},
 }
 

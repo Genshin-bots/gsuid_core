@@ -62,7 +62,7 @@ class Plugins:
         if name is None:
             raise ValueError('Plugins.name is None!')
 
-        if name in SL.plugins:
+        if name in SL.plugins and not kwargs.get('force'):
             return SL.plugins[name]
         else:
             _plugin = super().__new__(cls)
@@ -82,9 +82,21 @@ class Plugins:
         black_list: List = [],
         white_list: List = [],
         sv: Dict = {},
-        prefix: str = '',
+        prefix: Union[List[str], str] = [],
+        allow_empty_prefix: Optional[bool] = None,
+        force: bool = False,
     ):
         if not self.is_initialized:
+            if isinstance(prefix, str):
+                prefix = [prefix]
+            if allow_empty_prefix is None:
+                if '' in prefix:
+                    prefix.remove('')
+                if prefix:
+                    allow_empty_prefix = False
+                else:
+                    allow_empty_prefix = True
+
             self.name = name
             self.priority = priority
             self.enabled = enabled
@@ -94,6 +106,7 @@ class Plugins:
             self.white_list = white_list
             self.sv = {}
             self.prefix = prefix
+            self.allow_empty_prefix = allow_empty_prefix
             self.is_initialized = True
 
     def set(self, **kwargs):
@@ -169,8 +182,34 @@ class SV:
                 core_config.set_config('plugins', config_plugins)
             else:
                 if 'prefix' not in config_plugins[plugins_name]:
-                    config_plugins[plugins_name]['prefix'] = ''
-                plugins = Plugins(**config_plugins[plugins_name])
+                    if plugins_name in SL.plugins:
+                        config_plugins[plugins_name]['prefix'] = SL.plugins[
+                            plugins_name
+                        ].prefix
+                    else:
+                        config_plugins[plugins_name]['prefix'] = []
+                elif isinstance(config_plugins[plugins_name]['prefix'], str):
+                    if config_plugins[plugins_name]['prefix'] != '':
+                        config_plugins[plugins_name]['prefix'] = [
+                            config_plugins[plugins_name]['prefix']
+                        ]
+                    else:
+                        config_plugins[plugins_name]['prefix'] = []
+
+                if 'allow_empty_prefix' not in config_plugins[plugins_name]:
+                    if plugins_name in SL.plugins:
+                        config_plugins[plugins_name]['allow_empty_prefix'] = (
+                            SL.plugins[plugins_name].allow_empty_prefix
+                        )
+                    else:
+                        config_plugins[plugins_name][
+                            'allow_empty_prefix'
+                        ] = None
+
+                plugins = Plugins(
+                    **config_plugins[plugins_name],
+                    force=True,
+                )
 
                 core_config.set_config('plugins', config_plugins)
 
@@ -270,12 +309,22 @@ class SV:
             else:
                 keyword_list = keyword
 
-            for _k in keyword_list:
-                if prefix:
-                    tr = f'{self.plugins.prefix}{_k}'
-                else:
-                    tr = _k
+            entry = []
+            _pp = deepcopy(self.plugins.prefix)
+            if "" in _pp:
+                _pp.remove("")
 
+            if self.plugins.allow_empty_prefix:
+                _pp.append("")
+
+            for _k in keyword_list:
+                if prefix and _pp:
+                    for _p in _pp:
+                        entry.append(f'{_p}{_k}')
+                else:
+                    entry.append(_k)
+
+            for tr in entry:
                 if tr not in self.TL:
                     logger.trace(f'载入{type}触发器【{tr}】!')
                     if type not in self.TL:
@@ -369,8 +418,12 @@ class SV:
         return self._on('message', unique_id, block, to_me, prefix)
 
 
-def get_plugin_prefix(plugin_name: str) -> str:
+def get_plugin_prefixs(plugin_name: str) -> List[str]:
     plugin = SL.plugins.get(plugin_name)
     if plugin is None:
         raise ValueError(f'插件{plugin_name}不存在!')
     return plugin.prefix
+
+
+def get_plugin_prefix(plugin_name: str) -> str:
+    return get_plugin_prefixs(plugin_name)[0]

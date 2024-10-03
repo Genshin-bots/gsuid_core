@@ -14,6 +14,7 @@ from gsuid_core.logger import logger
 from .download_file import download
 
 global_tag, global_url = '', ''
+NOW_SPEED_TEST = False
 
 
 async def check_url(tag: str, url: str):
@@ -62,8 +63,10 @@ async def find_fastest_url(urls: Dict[str, str]):
 async def check_speed():
     global global_tag
     global global_url
+    global NOW_SPEED_TEST
 
-    if not global_tag or not global_url:
+    if (not global_tag or not global_url) and not NOW_SPEED_TEST:
+        NOW_SPEED_TEST = True
         logger.info('[GsCore资源下载]测速中...')
 
         URL_LIB = {
@@ -80,7 +83,15 @@ async def check_speed():
         global_tag, global_url = TAG, BASE_URL
 
         logger.info(f"最快资源站: {TAG} {BASE_URL}")
+        NOW_SPEED_TEST = False
         return TAG, BASE_URL
+
+    if NOW_SPEED_TEST:
+        while True:
+            if not NOW_SPEED_TEST:
+                return global_tag, global_url
+            await asyncio.sleep(1)
+
     return global_tag, global_url
 
 
