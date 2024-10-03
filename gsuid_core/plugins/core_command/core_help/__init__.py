@@ -12,7 +12,8 @@ sv_core_help_img = SV('Core帮助')
         'core帮助',
         'Core帮助',
         '帮助',
-    )
+    ),
+    block=True,
 )
 async def send_core_help_msg(bot: Bot, ev: Event):
     logger.info('[早柚核心] 开始执行[帮助图]')
@@ -24,7 +25,8 @@ async def send_core_help_msg(bot: Bot, ev: Event):
         'core管理帮助',
         'Core管理帮助',
         '管理帮助',
-    )
+    ),
+    block=True,
 )
 async def send_core_master_help_msg(bot: Bot, ev: Event):
     logger.info('[早柚核心] 开始执行[管理帮助图]')

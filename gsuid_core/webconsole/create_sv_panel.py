@@ -22,10 +22,15 @@ def get_sv_panel(
     black_list: List = [],
     white_list: List = [],
     prefix: List = [],
+    force_prefix: List[str] = [],
     disable_force_prefix: bool = False,
     allow_empty_prefix: bool = False,
 ):
     api = f'{API}/{name}'
+    if force_prefix:
+        defalut_prefix = ','.join(force_prefix)
+    else:
+        defalut_prefix = '无自带前缀'
 
     area_options = [
         {'label': '全局', 'value': 'ALL'},
@@ -43,7 +48,7 @@ def get_sv_panel(
                 'type': 'container',
                 'body': [
                     get_input_tag(
-                        '自定义插件前缀(不影响插件默认前缀)',
+                        '自定义插件前缀(不影响插件自带前缀)',
                         'prefix',
                         prefix,
                         [],
@@ -67,7 +72,7 @@ def get_sv_panel(
                 'body': [
                     {
                         'type': 'switch',
-                        'label': '是否禁用插件自带前缀',
+                        'label': f'是否禁用插件自带前缀({defalut_prefix})',
                         'option': '开启/关闭功能',
                         'name': 'disable_force_prefix',
                         'falseValue': False,
@@ -426,6 +431,7 @@ def get_sv_page():
                 plugins.black_list,
                 plugins.white_list,
                 plugins.prefix,
+                plugins.force_prefix,
                 plugins.disable_force_prefix,
                 plugins.allow_empty_prefix,
             )
