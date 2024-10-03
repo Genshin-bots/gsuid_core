@@ -37,7 +37,9 @@ plugins_sample = {
     'black_list': [],
     'white_list': [],
     'prefix': [],
-    'allow_empty_prefix': True,
+    'force_prefix': [],
+    'disable_force_prefix': False,
+    'allow_empty_prefix': None,
     'sv': {},
 }
 

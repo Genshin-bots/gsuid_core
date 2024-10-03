@@ -89,6 +89,8 @@ def _set_Plugins(request: Request, data: Dict, name: str):
         plguin = SL.plugins[name]
         data['pm'] = int(data['pm'])
         data['priority'] = int(data['priority'])
+        if 'prefix' in data:
+            data['prefix'] = data['prefix'].split(',')
 
         data['black_list'] = data['black_list'].split(',')
         data['white_list'] = data['white_list'].split(',')

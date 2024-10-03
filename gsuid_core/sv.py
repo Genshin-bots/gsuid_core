@@ -70,7 +70,16 @@ class Plugins:
             return _plugin
 
     def __hash__(self) -> int:
-        return hash(f'{self.name}{self.pm}{self.area}')
+        return hash(f'{self.name}{self.priority}{self.pm}{self.area}')
+
+    def __eq__(self, other):
+        if isinstance(other, Plugins):
+            return (self.name, self.pm, self.priority) == (
+                other.name,
+                other.pm,
+                other.priority,
+            )
+        return False
 
     def __init__(
         self,
@@ -83,6 +92,8 @@ class Plugins:
         white_list: List = [],
         sv: Dict = {},
         prefix: Union[List[str], str] = [],
+        force_prefix: List[str] = [],
+        disable_force_prefix: bool = False,
         allow_empty_prefix: Optional[bool] = None,
         force: bool = False,
     ):
@@ -107,6 +118,8 @@ class Plugins:
             self.sv = {}
             self.prefix = prefix
             self.allow_empty_prefix = allow_empty_prefix
+            self.force_prefix = force_prefix
+            self.disable_force_prefix = disable_force_prefix
             self.is_initialized = True
 
     def set(self, **kwargs):
@@ -205,6 +218,16 @@ class SV:
                         config_plugins[plugins_name][
                             'allow_empty_prefix'
                         ] = None
+
+                if 'disable_force_prefix' not in config_plugins[plugins_name]:
+                    config_plugins[plugins_name][
+                        'disable_force_prefix'
+                    ] = False
+
+                if plugins_name in SL.plugins:
+                    config_plugins[plugins_name]['force_prefix'] = SL.plugins[
+                        plugins_name
+                    ].force_prefix
 
                 plugins = Plugins(
                     **config_plugins[plugins_name],
@@ -316,6 +339,10 @@ class SV:
 
             if self.plugins.allow_empty_prefix:
                 _pp.append("")
+
+            if not self.plugins.disable_force_prefix:
+                for _i in self.plugins.force_prefix:
+                    _pp.append(_i)
 
             for _k in keyword_list:
                 if prefix and _pp:
