@@ -42,7 +42,12 @@ def get_sv_panel(
             {
                 'type': 'container',
                 'body': [
-                    get_input_tag('自定义插件前缀', 'prefix', prefix, []),
+                    get_input_tag(
+                        '自定义插件前缀(不影响插件默认前缀)',
+                        'prefix',
+                        prefix,
+                        [],
+                    ),
                 ],
                 'size': 'xs',
                 'style': {
@@ -64,7 +69,7 @@ def get_sv_panel(
                         'type': 'switch',
                         'label': '是否禁用插件自带前缀',
                         'option': '开启/关闭功能',
-                        'name': 'allow_empty_prefix',
+                        'name': 'disable_force_prefix',
                         'falseValue': False,
                         'trueValue': True,
                         'id': 'u:d739bc85f366',
