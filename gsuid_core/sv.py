@@ -454,3 +454,28 @@ def get_plugin_prefixs(plugin_name: str) -> List[str]:
 
 def get_plugin_prefix(plugin_name: str) -> str:
     return get_plugin_prefixs(plugin_name)[0]
+
+
+def get_plugin_force_prefixs(plugin_name: str) -> List[str]:
+    plugin = SL.plugins.get(plugin_name)
+    if plugin is None:
+        raise ValueError(f'插件{plugin_name}不存在!')
+    return plugin.force_prefix
+
+
+def get_plugin_force_prefix(plugin_name: str) -> str:
+    return get_plugin_force_prefixs(plugin_name)[0]
+
+
+def get_plugin_available_prefix(plugin_name: str) -> str:
+    plugin = SL.plugins.get(plugin_name)
+    if plugin is None:
+        raise ValueError(f'插件{plugin_name}不存在!')
+    if not plugin.disable_force_prefix and plugin.force_prefix:
+        return plugin.force_prefix[0]
+    elif plugin.disable_force_prefix and plugin.prefix:
+        return plugin.prefix[0]
+    elif plugin.allow_empty_prefix:
+        return ''
+    else:
+        return ''
