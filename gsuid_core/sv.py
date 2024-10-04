@@ -344,6 +344,8 @@ class SV:
                 for _i in self.plugins.force_prefix:
                     _pp.append(_i)
 
+            # 去重
+            _pp = list(set(_pp))
             for _k in keyword_list:
                 if prefix and _pp:
                     for _p in _pp:

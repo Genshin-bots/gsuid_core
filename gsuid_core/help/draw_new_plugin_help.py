@@ -125,7 +125,7 @@ async def get_new_help(
     banner_h = banner_bg.size[1]
     # 绘制banner
     banner_bg.paste(plugin_icon, (89, banner_h - 212), plugin_icon)
-    banner_draw = ImageDraw.Draw(banner_bg)
+    banner_draw: ImageDraw.ImageDraw = ImageDraw.Draw(banner_bg)
 
     _banner_name = plugin_name + '帮助'
     banner_draw.text(
