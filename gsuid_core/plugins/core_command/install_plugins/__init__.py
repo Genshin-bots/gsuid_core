@@ -75,5 +75,5 @@ async def send_update_msg(bot: Bot, ev: Event):
             level = 1
     else:
         level = 0
-    _list = update_plugins(ev.text, level)
+    _list = await update_plugins(ev.text, level)
     await bot.send(_list)

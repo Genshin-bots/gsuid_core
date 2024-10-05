@@ -25,7 +25,7 @@ async def update_core_at_night():
 async def update_all_plugins_at_night():
     if config.get_config('AutoUpdatePlugins').data:
         logger.info('[Core自动任务] 开始更新 [插件目录]')
-        update_all_plugins()
+        await update_all_plugins()
 
 
 # 自动更新插件列表

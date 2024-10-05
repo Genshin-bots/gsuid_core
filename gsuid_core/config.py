@@ -39,7 +39,7 @@ plugins_sample = {
     'prefix': [],
     'force_prefix': [],
     'disable_force_prefix': False,
-    'allow_empty_prefix': None,
+    'allow_empty_prefix': False,
     'sv': {},
 }
 

@@ -287,7 +287,7 @@ async def _update_plugins(request: Request, data: Dict):
     if repo:
         if check_can_update(repo):
             try:
-                update_plugins(data['label'])
+                await update_plugins(data['label'])
                 retcode = 0
             except:  # noqa:E722
                 retcode = -1

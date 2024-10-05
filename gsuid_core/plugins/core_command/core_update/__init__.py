@@ -1,3 +1,5 @@
+import asyncio
+
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
@@ -6,9 +8,9 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.plugins_update._plugins import (
     run_install,
     check_retcode,
-    update_from_git,
     update_all_plugins,
     set_proxy_all_plugins,
+    update_from_git_in_tread,
 )
 
 sv_core_config = SV('Core管理', pm=0)
@@ -21,7 +23,7 @@ async def send_core_update_msg(bot: Bot, ev: Event):
         level = 1
     else:
         level = 0
-    log_list = update_from_git(level)
+    log_list = await update_from_git_in_tread(level)
     await bot.send(log_list)
 
 
@@ -54,7 +56,7 @@ async def send_core_update_proxy(bot: Bot, ev: Event):
 @sv_core_config.on_fullmatch(('core更新依赖'))
 async def send_core_poetry_install(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 早柚核心依赖')
-    retcode = await run_install()
+    retcode = await asyncio.to_thread(run_install)
     im = check_retcode(retcode)
     await bot.send(im)
 
@@ -78,6 +80,6 @@ async def send_core_all_update_msg(bot: Bot, ev: Event):
     else:
         level = 0
 
-    log_list = update_from_git(min(level, 1))
-    log_list.extend(update_all_plugins(level))
+    log_list = await update_from_git_in_tread(min(level, 1))
+    log_list.extend(await update_all_plugins(level))
     await bot.send(log_list)

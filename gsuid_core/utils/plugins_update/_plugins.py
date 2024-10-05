@@ -71,7 +71,7 @@ async def uninstall_plugin(path: Path):
 
 
 # 传入一个path对象
-async def run_install(path: Optional[Path] = None) -> int:
+def run_install(path: Optional[Path] = None) -> int:
     tools = check_start_tool()
     if tools == 'pip':
         logger.warning('你使用的是PIP环境, 无需进行 PDM/Poetry install!')
@@ -88,26 +88,23 @@ async def run_install(path: Optional[Path] = None) -> int:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf8"
 
-    proc = await asyncio.create_subprocess_shell(
+    proc = subprocess.run(
         f'{tools} install',
         cwd=path,
-        stdout=asyncio.subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         shell=True,
         env=env,
+        encoding='utf-8',
+        text=True,
     )
-    # stdout, stderr = await proc.communicate()
 
-    output = ''
-    if proc.stdout:
-        while True:
-            data = await proc.stdout.readline()
-            if not data:
-                break
-            line = data.decode()
-            await proc.wait()
-            output += line
+    output = proc.stdout  # 获取输出
+    error = proc.stderr  # 获取错误信息
 
     logger.info(output)
+    if error:
+        logger.error(error)
 
     retcode = -1 if proc.returncode is None else proc.returncode
     if 'No dependencies to install or update' in output:
@@ -124,11 +121,11 @@ def check_retcode(retcode: int) -> str:
         return f'更新失败, 错误码{retcode}'
 
 
-def update_all_plugins(level: int = 0) -> List[str]:
+async def update_all_plugins(level: int = 0) -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
         if _is_plugin(plugin):
-            log_list.extend(update_from_git(level, plugin))
+            log_list.extend(await update_from_git_in_tread(level, plugin))
     return log_list
 
 
@@ -382,6 +379,18 @@ def sync_get_plugin_url(repo: Path) -> Optional[str]:
         return None
 
 
+async def update_from_git_in_tread(
+    level: int = 0,
+    repo_like: Union[str, Path, None] = None,
+    log_key: List[str] = [],
+    log_limit: int = 5,
+):
+    result = await asyncio.to_thread(
+        update_from_git, level, repo_like, log_key, log_limit
+    )
+    return result
+
+
 def update_from_git(
     level: int = 0,
     repo_like: Union[str, Path, None] = None,
@@ -393,7 +402,7 @@ def update_from_git(
             repo = Repo(CORE_PATH)
             plugin_name = '早柚核心'
             if is_install_dep:
-                asyncio.create_task(run_install(CORE_PATH))
+                run_install(CORE_PATH)
         elif isinstance(repo_like, Path):
             repo = Repo(repo_like)
             plugin_name = repo_like.name
@@ -419,11 +428,18 @@ def update_from_git(
 
     # 先执行git fetch
     logger.info(f'[更新][{plugin_name}] 正在执行 git fetch')
-    o.fetch()
 
     try:
-        default_branch_ref = repo.git.symbolic_ref('refs/remotes/origin/HEAD')
-        default_branch = default_branch_ref.split('/')[-1]  # 提取主分支名称
+        o.fetch()
+    except GitCommandError as e:
+        logger.warning(f'[更新] 执行 git fetch 失败...{e}!')
+        return [
+            f'更新插件 {plugin_name} 中...',
+            '执行 git fetch 失败, 请检查控制台...',
+        ]
+
+    try:
+        default_branch = repo.git.branch('--show-current')
 
         commits_diff = list(
             repo.iter_commits(f'HEAD..origin/{default_branch}')
@@ -477,7 +493,7 @@ def update_from_git(
     return log_list
 
 
-def update_plugins(
+async def update_plugins(
     plugin_name: str,
     level: int = 0,
     log_key: List[str] = [],
@@ -492,5 +508,8 @@ def update_plugins(
             plugin_name = _name
             break
 
-    log_list = update_from_git(level, plugin_name, log_key, log_limit)
+    log_list = await update_from_git_in_tread(
+        level, plugin_name, log_key, log_limit
+    )
+    return log_list
     return log_list
