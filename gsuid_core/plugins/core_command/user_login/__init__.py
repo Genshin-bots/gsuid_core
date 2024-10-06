@@ -25,21 +25,21 @@ sv_core_user_addck = SV('添加CK', area='DIRECT')
 sv_data_manger = SV('用户数据管理', pm=0)
 
 
-@sv_core_user_config.on_fullmatch(('刷新全部CK', '刷新全部ck'))
+@sv_core_user_config.on_fullmatch(('刷新全部CK', '刷新全部ck'), block=True)
 async def send_refresh_all_ck_msg(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[刷新全部CK]')
     im = await get_ck_by_all_stoken(ev.bot_id)
     await bot.send(im)
 
 
-@sv_core_user_add.on_fullmatch(('刷新CK', '刷新ck'))
+@sv_core_user_add.on_fullmatch(('刷新CK', '刷新ck'), block=True)
 async def send_refresh_ck_msg(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[刷新CK]')
     im = await get_ck_by_stoken(ev.bot_id, ev.user_id)
     await bot.send(im)
 
 
-@sv_data_manger.on_fullmatch(('校验全部Cookies'))
+@sv_data_manger.on_fullmatch(('校验全部Cookies'), block=True)
 async def send_check_cookie(bot: Bot, ev: Event):
     user_list = await GsUser.get_all_user()
     invalid_user: List[GsUser] = []
@@ -93,7 +93,7 @@ async def send_check_cookie(bot: Bot, ev: Event):
         await asyncio.sleep(3 + random.randint(1, 3))
 
 
-@sv_data_manger.on_fullmatch(('校验全部Stoken'))
+@sv_data_manger.on_fullmatch(('校验全部Stoken'), block=True)
 async def send_check_stoken(bot: Bot, ev: Event):
     user_list = await GsUser.get_all_user()
     invalid_user: List[GsUser] = []
@@ -162,7 +162,7 @@ async def _send_help(bot: Bot, im):
     )
 
 
-@sv_core_user_qrcode_login.on_fullmatch(('扫码登陆', '扫码登录'))
+@sv_core_user_qrcode_login.on_fullmatch(('扫码登陆', '扫码登录'), block=True)
 async def send_qrcode_login(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[扫码登陆]')
     uid_list = await get_all_bind_uid(ev.bot_id, ev.user_id)
@@ -182,7 +182,7 @@ async def send_qrcode_login(bot: Bot, ev: Event):
         await bot.send(im)
 
 
-@sv_core_user_addck.on_prefix(('添加'))
+@sv_core_user_addck.on_prefix(('添加'), block=True)
 async def send_add_ck_msg(bot: Bot, ev: Event):
     im, status = await deal_ck(ev.bot_id, ev.text, ev.user_id)
     if status:
@@ -196,7 +196,8 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
         'mys设备登录',
         'mys设备登陆',
         'mys绑定设备',
-    )
+    ),
+    block=True,
 )
 async def send_add_device_msg(bot: Bot, ev: Event):
     try:

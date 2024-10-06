@@ -101,9 +101,10 @@ class Plugins:
             if isinstance(prefix, str):
                 prefix = [prefix]
             if allow_empty_prefix is None:
-                if '' in prefix:
-                    prefix.remove('')
-                if prefix:
+                _pf = prefix + force_prefix
+                if '' in _pf:
+                    _pf.remove('')
+                if _pf:
                     allow_empty_prefix = False
                 else:
                     allow_empty_prefix = True

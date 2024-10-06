@@ -11,7 +11,7 @@ core_user_info = SV('core用户信息')
 core_user_msg = SV('core信息确认')
 
 
-@core_user_info.on_fullmatch(('绑定信息'))
+@core_user_info.on_fullmatch(('绑定信息'), block=True)
 async def send_bind_card(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[查询用户绑定状态]')
     im = await get_user_card(ev.bot_id, ev)
@@ -19,7 +19,7 @@ async def send_bind_card(bot: Bot, ev: Event):
     await bot.send(im)
 
 
-@core_user_msg.on_fullmatch(('给我发消息'))
+@core_user_msg.on_fullmatch(('给我发消息'), block=True)
 async def send_direct_msg(bot: Bot, ev: Event):
     logger.info('开始执行[给我发消息]')
     messages = [

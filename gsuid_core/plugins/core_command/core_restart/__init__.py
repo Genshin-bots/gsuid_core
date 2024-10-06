@@ -46,7 +46,7 @@ async def check_msg():
         logger.warning('遗留信息检查失败!')
 
 
-@sv_core_config.on_fullmatch(('core重启', 'gs重启'))
+@sv_core_config.on_fullmatch(('core重启', 'gs重启'), block=True)
 async def send_restart_msg(bot: Bot, ev: Event):
     await bot.logger.warning('开始执行[重启]')
     if ev.group_id:
@@ -61,7 +61,7 @@ async def send_restart_msg(bot: Bot, ev: Event):
     )
 
 
-@sv_core_config.on_fullmatch(('core关闭', 'Core关闭'))
+@sv_core_config.on_fullmatch(('core关闭', 'Core关闭'), block=True)
 async def send_shutdown_msg(bot: Bot, ev: Event):
     await bot.logger.warning('开始执行[关闭]')
     await bot.send('正在执行[gs关闭Core]...')

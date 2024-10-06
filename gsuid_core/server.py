@@ -12,12 +12,8 @@ from fastapi import WebSocket
 
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
+from gsuid_core.utils.plugins_update._plugins import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
-from gsuid_core.utils.plugins_update._plugins import (
-    check_start_tool,
-    sync_get_plugin_url,
-    sync_change_plugin_url,
-)
 
 auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
 auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
@@ -63,8 +59,16 @@ class GsServer:
         get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
         plug_path = Path(__file__).parent / 'plugins'
+
+        # 优先加载core_command
+        plug_path_list = list(plug_path.iterdir())
+        core_command_path = plug_path / 'core_command'
+        if core_command_path in plug_path_list:
+            plug_path_list.remove(core_command_path)
+            plug_path_list.insert(0, core_command_path)
+
         # 遍历插件文件夹内所有文件
-        for plugin in plug_path.iterdir():
+        for plugin in plug_path_list:
             if plugin.stem.startswith('_'):
                 continue
             # 如果发现文件夹，则视为插件包
@@ -97,7 +101,8 @@ class GsServer:
                 elif plugin.suffix == '.py':
                     importlib.import_module(f'plugins.{plugin.name[:-3]}')
 
-                '''trick'''
+                '''trick 注释掉'''
+                '''
                 if plugin.stem in ['StarRailUID', 'ArknightsUID']:
                     logger.info('[BAI] 检测是否存在失效仓库...')
                     origin_url = sync_get_plugin_url(plugin)
@@ -110,6 +115,7 @@ class GsServer:
                         new_url = origin_url.replace('qwerdvd', 'baiqwerdvd')
                         logger.success(f'[BAI] 替换新仓库地址成功: {new_url}')
                         sync_change_plugin_url(plugin, new_url)
+                '''
 
                 '''导入成功'''
                 logger.success(f'插件{plugin.stem}导入成功!')

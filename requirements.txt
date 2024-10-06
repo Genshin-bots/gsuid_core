@@ -22,7 +22,7 @@ dnspython==2.7.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0
 email-validator==2.2.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 fastapi-amis-admin==0.7.2 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 fastapi-user-auth==0.7.3 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
-fastapi==0.113.0 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
+fastapi==0.112.2 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 frozenlist==1.4.1 ; python_full_version >= "3.8.1" and python_version < "4.0"
 gitdb==4.0.11 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"
 gitpython==3.1.43 ; python_full_version >= "3.8.1" and python_full_version < "4.0.0"

@@ -44,7 +44,7 @@ async def scheduled_save_global_val():
     await count_group_user()
 
 
-@sv_core_status.on_command(('core状态', 'Core状态'))
+@sv_core_status.on_command(('core状态', 'Core状态'), block=True)
 async def send_core_status_msg(bot: Bot, ev: Event):
     day = ev.text.strip()
     if day and day.isdigit():
