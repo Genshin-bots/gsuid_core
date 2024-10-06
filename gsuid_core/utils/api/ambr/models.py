@@ -276,7 +276,6 @@ class AmbrDungeon(TypedDict):
 class AmbrDaily(TypedDict):
     monday: List[AmbrDungeon]
     tuesday: List[AmbrDungeon]
-    tuesday: List[AmbrDungeon]
     thursday: List[AmbrDungeon]
     friday: List[AmbrDungeon]
     saturday: List[AmbrDungeon]

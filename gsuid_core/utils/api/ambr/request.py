@@ -13,7 +13,7 @@ from PIL import Image
 from httpx import AsyncClient
 
 from ..types import AnyDict
-from ..utils import _HEADER
+from ..utils import _HEADER, cache_data
 from .models import (
     AmbrBook,
     AmbrDaily,
@@ -51,7 +51,11 @@ async def get_ambr_event_info() -> Optional[Dict[str, AmbrEvent]]:
     return None
 
 
-async def get_ambr_char_data(id: Union[int, str]) -> Optional[AmbrCharacter]:
+@cache_data
+async def get_ambr_char_data(
+    id: Union[int, str],
+    cache_path: Optional[Path] = None,
+) -> Optional[AmbrCharacter]:
     data = await _ambr_request(url=AMBR_CHAR_URL.format(id))
     if isinstance(data, Dict) and data['response'] == 200:
         data = data['data']
@@ -59,7 +63,11 @@ async def get_ambr_char_data(id: Union[int, str]) -> Optional[AmbrCharacter]:
     return None
 
 
-async def get_ambr_monster_data(id: Union[int, str]) -> Optional[AmbrMonster]:
+@cache_data
+async def get_ambr_monster_data(
+    id: Union[int, str],
+    cache_path: Optional[Path] = None,
+) -> Optional[AmbrMonster]:
     data = await _ambr_request(url=AMBR_MONSTER_URL.format(id))
     if isinstance(data, Dict) and data['response'] == 200:
         data = data['data']
@@ -67,7 +75,11 @@ async def get_ambr_monster_data(id: Union[int, str]) -> Optional[AmbrMonster]:
     return None
 
 
-async def get_ambr_gcg_detail(id: Union[int, str]) -> Optional[AmbrGCGDetail]:
+@cache_data
+async def get_ambr_gcg_detail(
+    id: Union[int, str],
+    cache_path: Optional[Path] = None,
+) -> Optional[AmbrGCGDetail]:
     data = await _ambr_request(url=AMBR_GCG_DETAIL.format(id))
     if isinstance(data, Dict) and data['response'] == 200:
         data = data['data']
@@ -91,7 +103,11 @@ async def get_ambr_monster_list() -> Optional[AmbrMonsterList]:
     return None
 
 
-async def get_ambr_weapon_data(id: Union[int, str]) -> Optional[AmbrWeapon]:
+@cache_data
+async def get_ambr_weapon_data(
+    id: Union[int, str],
+    cache_path: Optional[Path] = None,
+) -> Optional[AmbrWeapon]:
     data = await _ambr_request(url=AMBR_WEAPON_URL.format(id))
     if isinstance(data, Dict) and data['response'] == 200:
         data = data['data']

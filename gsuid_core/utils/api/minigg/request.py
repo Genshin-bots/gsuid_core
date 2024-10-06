@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 import warnings
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Union, Literal, Optional, cast, overload
 
 from httpx import AsyncClient
 
 from ..types import AnyDict
+from ..utils import cache_data
 from .exception import MiniggNotFoundError
 from .models import (
     Food,
@@ -182,10 +184,12 @@ async def minigg_request(
         return data
 
 
+@cache_data
 async def get_weapon_info(
     name: str,
     query_languages: APILanguages = APILanguages.CHS,
     result_languages: APILanguages = APILanguages.CHS,
+    cache_path: Optional[Path] = None,
 ) -> Union[Weapon, List[str], int]:
     '''获取武器信息
 
@@ -284,10 +288,12 @@ async def get_weapon_stats(
     return data
 
 
+@cache_data
 async def get_character_info(
     name: str,
     query_languages: APILanguages = APILanguages.CHS,
     result_languages: APILanguages = APILanguages.CHS,
+    cache_path: Optional[Path] = None,
 ) -> Union[Character, List[str], int]:
     data = await minigg_request(
         '/characters',
@@ -302,10 +308,12 @@ async def get_character_info(
     return data
 
 
+@cache_data
 async def get_character_costs(
     name: str,
     query_languages: APILanguages = APILanguages.CHS,
     result_languages: APILanguages = APILanguages.CHS,
+    cache_path: Optional[Path] = None,
 ) -> Union[Costs, int]:
     data = await minigg_request(
         '/characters',
@@ -370,10 +378,12 @@ async def get_constellation_info(
         return -1
 
 
+@cache_data
 async def get_talent_info(
     name: str,
     query_languages: APILanguages = APILanguages.CHS,
     result_languages: APILanguages = APILanguages.CHS,
+    cache_path: Optional[Path] = None,
 ) -> Union[CharacterTalents, int]:
     data = await minigg_request(
         '/talents',
