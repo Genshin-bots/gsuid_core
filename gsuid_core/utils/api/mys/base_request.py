@@ -456,6 +456,8 @@ class BaseMysApi:
                 uid = params['role_id']
             elif data and 'role_id' in data:
                 uid = data['role_id']
+            elif params and 'uid' in params:
+                uid = params['uid']
 
             if uid is not None:
                 device_id = await self.get_user_device_id(

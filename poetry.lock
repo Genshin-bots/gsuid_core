@@ -1433,22 +1433,6 @@ url = "https://mirrors.bfsu.edu.cn/pypi/web/simple"
 reference = "mirrors"
 
 [[package]]
-name = "motor"
-version = "3.6.0"
-description = ""
-optional = false
-python-versions = "*"
-files = [
-    {file = "motor-3.6.0-py3-none-any.whl", hash = "sha256:9f07ed96f1754963d4386944e1b52d403a5350c687edc60da487d66f98dbf894"},
-    {file = "motor-3.6.0.tar.gz", hash = "sha256:0ef7f520213e852bf0eac306adf631aabe849227d8aec900a2612512fb9c5b8d"},
-]
-
-[package.source]
-type = "legacy"
-url = "https://mirrors.bfsu.edu.cn/pypi/web/simple"
-reference = "mirrors"
-
-[[package]]
 name = "mpmath"
 version = "1.3.0"
 description = "Python library for arbitrary-precision floating-point arithmetic"
@@ -1888,13 +1872,13 @@ reference = "mirrors"
 
 [[package]]
 name = "pydantic"
-version = "2.9.2"
+version = "2.8.2"
 description = ""
 optional = false
 python-versions = "*"
 files = [
-    {file = "pydantic-2.9.2-py3-none-any.whl", hash = "sha256:f048cec7b26778210e28a0459867920654d48e5e62db0958433636cde4254f12"},
-    {file = "pydantic-2.9.2.tar.gz", hash = "sha256:d155cef71265d1e9807ed1c32b4c8deec042a44a50a4188b25ac67ecd81a9c0f"},
+    {file = "pydantic-2.8.2-py3-none-any.whl", hash = "sha256:73ee9fddd406dc318b885c7a2eab8a6472b68b8fb5ba8150949fc3db939f23c8"},
+    {file = "pydantic-2.8.2.tar.gz", hash = "sha256:6f62c13d067b0755ad1c21a34bdd06c0c12625a22b0fc09c6b149816604f7c2a"},
 ]
 
 [package.source]
@@ -2932,4 +2916,4 @@ reference = "mirrors"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.8.1"
-content-hash = "addb4ffcd2919b28ca0f7b741a1bcb44e2c1de993cd684b1ccb3fef13fbad011"
+content-hash = "e48f3c6284580a1364de55d7c8e5825ccc72728ee20168e290c9d5da4344f3e6"

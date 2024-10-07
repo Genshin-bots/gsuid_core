@@ -54,7 +54,7 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: Literal[False] = False,
-    partten: str = r'\d+',
+    partten: Optional[str] = r'\d+',
 ) -> Optional[str]: ...
 
 
@@ -65,7 +65,7 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: Literal[True] = True,
-    partten: str = r'\d+',
+    partten: Optional[str] = r'\d+',
 ) -> Tuple[Optional[str], str]: ...
 
 

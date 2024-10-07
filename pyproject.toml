@@ -41,9 +41,8 @@ colorama = "^0.4.6"
 async-timeout = "^4.0.3"
 toml = "^0.10.2"
 bcrypt = "^4.0.1"
-motor = "^3.3.2"
 setuptools = ">=69.0.3"
-pydantic = ">=2.0.0"
+pydantic = ">=2.0.0, <=2.8.2"
 pydantic-settings = "^2.3.4"
 email-validator = "^2.2.0"
 
@@ -123,6 +122,7 @@ dependencies = [
     "bcrypt==4.0.1",
     "setuptools>=69.0.3",
     "email-validator>=2.2.0",
+    "pydantic<=2.8.2,>=2.0.0",
     "pydantic-settings>=2.3.4",
 ]
 name = "gsuid-core"
