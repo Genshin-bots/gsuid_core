@@ -70,6 +70,7 @@ class StringConfig:
         for i in self.config_list:
             _config[i] = self.config[i]
         self.config = _config
+
         self.write_config()
 
     def write_config(self):
@@ -83,6 +84,7 @@ class StringConfig:
                 f.read(),
                 type=Dict[str, GSC],
             )
+
         # 对没有的值，添加默认值
         for key in self.config_list:
             _defalut = self.config_list[key]

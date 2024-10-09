@@ -333,7 +333,6 @@ class SV:
             else:
                 keyword_list = keyword
 
-            entry = []
             _pp = deepcopy(self.plugins.prefix)
             if "" in _pp:
                 _pp.remove("")
@@ -347,22 +346,34 @@ class SV:
 
             # 去重
             _pp = list(set(_pp))
-            for _k in keyword_list:
-                if prefix and _pp:
-                    for _p in _pp:
-                        entry.append(f'{_p}{_k}')
-                else:
-                    entry.append(_k)
 
-            for tr in entry:
-                if tr not in self.TL:
-                    logger.trace(f'载入{type}触发器【{tr}】!')
+            for _k in keyword_list:
+                if _k not in self.TL:
                     if type not in self.TL:
                         self.TL[type] = {}
 
-                    self.TL[type][tr] = Trigger(
-                        type, tr, modify_func(func), block, to_me
-                    )
+                    if prefix and _pp:
+                        for _p in _pp:
+                            _pk = _p + _k
+                            self.TL[type][_pk] = Trigger(
+                                type,
+                                _k,
+                                modify_func(func),
+                                _p,
+                                block,
+                                to_me,
+                            )
+                            logger.trace(f'载入{type}触发器【{_pk}】!')
+                    else:
+                        self.TL[type][_k] = Trigger(
+                            type,
+                            _k,
+                            modify_func(func),
+                            "",
+                            block,
+                            to_me,
+                        )
+                        logger.trace(f'载入{type}触发器【{_k}】!')
 
             @wraps(func)
             async def wrapper(bot: Bot, msg) -> Optional[Callable]:
