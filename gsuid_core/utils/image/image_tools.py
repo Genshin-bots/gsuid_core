@@ -6,12 +6,12 @@ from typing import Tuple, Union, Optional
 
 import httpx
 from httpx import get
-from utils.fonts.fonts import core_font
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from gsuid_core.models import Event
 from gsuid_core.utils.image.utils import sget
 from gsuid_core.data_store import get_res_path
+from gsuid_core.utils.fonts.fonts import core_font
 
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
