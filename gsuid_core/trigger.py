@@ -68,7 +68,7 @@ class Trigger:
         return False
 
     def _check_fullmatch(self, keyword: str, msg: str) -> bool:
-        if msg == keyword and msg.startswith(self.prefix):
+        if msg == f'{keyword}{self.prefix}' and msg.startswith(self.prefix):
             return True
         return False
 
