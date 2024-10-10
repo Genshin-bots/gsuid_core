@@ -196,6 +196,8 @@ def check_pyproject(pyproject: Path):
             dependencies = toml_data['tool']['poetry'].get('dependencies')
         else:
             dependencies = None
+    else:
+        dependencies = None
 
     if isinstance(dependencies, List):
         dependencies = parse_dependency(dependencies)
