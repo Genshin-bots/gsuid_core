@@ -334,7 +334,7 @@ class BaseBotIDModel(BaseIDModel):
         cls,
         session: AsyncSession,
         uid: str,
-        bot_id: str,
+        bot_id: Optional[str] = None,
         game_name: Optional[str] = None,
         **data,
     ) -> int:
@@ -369,9 +369,11 @@ class BaseBotIDModel(BaseIDModel):
             data[uid_name] = uid
             return await cls.full_insert_data(bot_id=bot_id, **data)
 
-        sql = update(cls).where(
-            and_(getattr(cls, uid_name) == uid, cls.bot_id == bot_id)
-        )
+        sql = update(cls).where(and_(getattr(cls, uid_name) == uid))
+
+        if bot_id is not None:
+            sql = sql.where(cls.bot_id == bot_id)
+
         if data is not None:
             query = sql.values(**data)
             query.execution_options(synchronize_session='fetch')

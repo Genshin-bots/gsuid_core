@@ -11,7 +11,7 @@ async def set_database_value(
     command_start: str,
     command_value: str,
     uid: str,
-    bot_id: str,
+    bot_id: Optional[str],
     value: str,
 ):
     fields = model.__fields__
@@ -36,7 +36,7 @@ async def set_database_value(
         title = title if title else keyname
         if desc:
             if desc == f'{command_start}{command_value}':
-                await model.update_data_by_uid(
+                retcode = await model.update_data_by_uid(
                     uid,
                     bot_id,
                     game_name,
@@ -44,5 +44,7 @@ async def set_database_value(
                         f'{keyname}': value,
                     },
                 )
-
-                return f'✅{title}\n📝已设置为{value}'
+                if retcode == 0:
+                    return f'✅{title}\n📝已设置为{value}'
+                else:
+                    return f'❌{title}\n📝设置失败'
