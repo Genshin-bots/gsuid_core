@@ -53,8 +53,17 @@ class CoreConfig:
         self.update_config()
 
     def write_config(self):
-        with open(CONFIG_PATH, 'w', encoding='UTF-8') as file:
+        # 使用缓存文件避免强行关闭造成文件损坏
+        temp_file_path = CONFIG_PATH.parent / f'{CONFIG_PATH.name}.bak'
+
+        if temp_file_path.exists():
+            temp_file_path.unlink()
+
+        with open(temp_file_path, 'w', encoding='UTF-8') as file:
             json.dump(self.config, file, indent=4, ensure_ascii=False)
+
+        CONFIG_PATH.unlink()
+        temp_file_path.rename(CONFIG_PATH)
 
     def update_config(self):
         # 打开config.json

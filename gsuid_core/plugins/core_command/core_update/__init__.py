@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
@@ -56,7 +57,13 @@ async def send_core_update_proxy(bot: Bot, ev: Event):
 @sv_core_config.on_fullmatch(('core更新依赖'), block=True)
 async def send_core_poetry_install(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 早柚核心依赖')
-    retcode = await asyncio.to_thread(run_install)
+    if not hasattr(asyncio, 'to_thread'):
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            retcode = await loop.run_in_executor(executor, run_install)
+    else:
+        retcode = await asyncio.to_thread(run_install)
+
     im = check_retcode(retcode)
     await bot.send(im)
 

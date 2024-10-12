@@ -74,8 +74,19 @@ class StringConfig:
         self.write_config()
 
     def write_config(self):
-        with open(self.CONFIG_PATH, 'wb') as file:
+        # 使用缓存文件避免强行关闭造成文件损坏
+        temp_file_path = (
+            self.CONFIG_PATH.parent / f'{self.CONFIG_PATH.name}.bak'
+        )
+
+        if temp_file_path.exists():
+            temp_file_path.unlink()
+
+        with open(temp_file_path, 'wb') as file:
             file.write(msgjson.format(msgjson.encode(self.config), indent=4))
+
+        self.CONFIG_PATH.unlink()
+        temp_file_path.rename(self.CONFIG_PATH)
 
     def update_config(self):
         # 打开config.json

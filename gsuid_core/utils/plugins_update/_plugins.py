@@ -5,6 +5,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Union, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
 from git.repo import Repo
@@ -385,9 +386,16 @@ async def update_from_git_in_tread(
     log_key: List[str] = [],
     log_limit: int = 5,
 ):
-    result = await asyncio.to_thread(
-        update_from_git, level, repo_like, log_key, log_limit
-    )
+    if not hasattr(asyncio, 'to_thread'):
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            result = await loop.run_in_executor(
+                executor, update_from_git, level, repo_like, log_key, log_limit
+            )
+    else:
+        result = await asyncio.to_thread(
+            update_from_git, level, repo_like, log_key, log_limit
+        )
     return result
 
 

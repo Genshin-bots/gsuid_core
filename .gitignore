@@ -663,6 +663,8 @@ FodyWeavers.xsd
 # End of https://www.toptal.com/developers/gitignore/api/visualstudio,visualstudiocode,jetbrains+all,python,data
 
 config.json
+config.json.bak
+config.bak.json
 res_data
 GsData.db
 data

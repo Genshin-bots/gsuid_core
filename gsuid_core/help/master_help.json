@@ -57,6 +57,35 @@
         }
       ]
     },
+    "更新环境": {
+      "desc": "更新环境相关",
+      "data": [
+        {
+          "name": "更新依赖",
+          "desc": "更新依赖",
+          "eg": "更新依赖",
+          "need_ck": true,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "设置代理",
+          "desc": "强制reset之后更新插件",
+          "eg": "设置代理https://ghp.ci/",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+            "name": "应用设置代理",
+            "desc": "应用设置代理",
+            "eg": "应用设置代理",
+            "need_ck": false,
+            "need_sk": false,
+            "need_admin": false
+        }
+      ]
+    },
     "核心管理": {
       "desc": "启停核心",
       "data": [
