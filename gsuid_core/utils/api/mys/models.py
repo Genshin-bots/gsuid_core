@@ -363,7 +363,7 @@ class IndexData(TypedDict):
 
 
 class CharDetailData(TypedDict):
-    avatars: List[MihoyoAvatar]
+    list: List[MihoyoAvatar]
 
 
 ################

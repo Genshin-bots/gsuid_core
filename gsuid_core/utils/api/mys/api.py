@@ -102,7 +102,9 @@ PLAYER_ABYSS_INFO_URL_OS = (
     f'{RECORD_BASE_OS}/game_record/genshin/api/spiralAbyss'
 )
 # 获取详细角色信息
-PLAYER_DETAIL_INFO_URL = f'{RECORD_BASE}/game_record/app/genshin/api/character'
+PLAYER_DETAIL_INFO_URL = (
+    f'{RECORD_BASE}/game_record/app/genshin/api/character/list'
+)
 PLAYER_DETAIL_INFO_URL_OS = (
     f'{RECORD_BASE_OS}/game_record/genshin/api/character'
 )
