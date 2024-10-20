@@ -1214,3 +1214,12 @@ class PoetryAbyssDatas(TypedDict):
     data: List[PoetryAbyssData]
     is_unlock: bool
     links: PoetryAbyssLinks
+
+
+class AchievementData(TypedDict):
+    name: str
+    id: str
+    percentage: int
+    finish_num: int
+    show_percent: bool
+    icon: str

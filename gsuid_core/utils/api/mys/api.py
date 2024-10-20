@@ -118,6 +118,7 @@ CALCULATE_INFO_URL_OS = (
 # 新版素材计算器
 COMPUTE_URL = f'{GS_BASE}/event/e20200928calculate/v3/batch_compute'
 POETRY_ABYSS_URL = f'{RECORD_BASE}/game_record/app/genshin/api/role_combat'
+ACHI_URL = f'{RECORD_BASE}/game_record/app/genshin/api/achievement'
 
 # 获取米游社内的角色信息 mysid -> uid
 MIHOYO_BBS_PLAYER_INFO_URL = (

@@ -22,6 +22,7 @@ from .models import (
     CalculateInfo,
     DailyNoteData,
     CharDetailData,
+    AchievementData,
     PoetryAbyssDatas,
 )
 
@@ -75,6 +76,32 @@ class MysApi(SignMysApi):
         )
         if isinstance(data, Dict):
             return cast(BsIndex, data['data'])
+        return data
+
+    async def get_achievement_info(
+        self, uid: str
+    ) -> Union[List[AchievementData], int]:
+        server_id = self.RECOGNIZE_SERVER.get(uid[0])
+        HEADER = deepcopy(self._HEADER)
+        ck = await self.get_ck(uid, 'OWNER')
+        if ck is None:
+            return -51
+        HEADER['Cookie'] = ck
+
+        data = await self._mys_request(
+            self.MAPI['ACHI_URL'],
+            'POST',
+            HEADER,
+            data={'role_id': uid, 'server': server_id},
+        )
+        if isinstance(data, Dict):
+            if 'retcode' in data:
+                if data['retcode'] == 0:
+                    data = cast(List[AchievementData], data['data']['list'])
+                else:
+                    data = cast(int, data['retcode'])
+            else:
+                data = -999
         return data
 
     async def get_spiral_abyss_info(
