@@ -85,8 +85,6 @@ async def get_uid(
 
     if uid_data:
         uid = uid_data[0]
-        if uid:
-            ev.text = ev.text.replace(uid, '')
     else:
         uid = await bind_model.get_uid_by_game(user_id, ev.bot_id, game_name)
 
