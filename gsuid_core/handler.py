@@ -51,7 +51,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 )
                 return
 
-    bid = event.bot_id if event.group_id else '0'
+    bid = event.bot_id if event.bot_id else '0'
     uid = event.user_id if event.user_id else '0'
 
     if event.user_type != 'direct':
