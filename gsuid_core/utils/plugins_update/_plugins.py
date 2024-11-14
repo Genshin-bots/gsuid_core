@@ -509,15 +509,27 @@ async def update_plugins(
 ) -> Union[str, List]:
     if not plugin_name:
         return '请后跟有效的插件名称！\n例如：core更新插件genshinuid'
+
+    if not plugins_list:
+        await refresh_list()
+
+    pn = plugin_name.lower()
+    for _n in plugins_list:
+        plugin = plugins_list[_n]
+        if 'alias' in plugin:
+            for alias in plugin['alias']:
+                if pn == alias.lower():
+                    pn = _n.lower()
+                    break
+
     for _n in PLUGINS_PATH.iterdir():
         _name = _n.name
-        sim = len(set(_name.lower()) & set(plugin_name.lower()))
-        if sim >= 0.85 * len(_name):
+        sim = len(set(_name.lower()) & set(pn))
+        if sim >= 0.9 * len(_name):
             plugin_name = _name
             break
 
     log_list = await update_from_git_in_tread(
         level, plugin_name, log_key, log_limit
     )
-    return log_list
     return log_list
