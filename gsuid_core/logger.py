@@ -2,6 +2,7 @@ import sys
 import asyncio
 import logging
 import datetime
+from functools import wraps
 from typing import TYPE_CHECKING, List
 
 import loguru
@@ -11,8 +12,6 @@ from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message
 from gsuid_core.data_store import get_res_path
 
-is_clear: bool = False
-is_RL: bool = False
 log_history = []
 LOG_PATH = get_res_path() / 'logs'
 
@@ -111,21 +110,20 @@ def format_event(record):
 def std_format_event(record):
     try:
         data = format_event(record)
-        if is_RL:
-            _data = data.format_map(record)
-            _data = (
-                _data.replace('<g>', '\033[37m')
-                .replace('</g>', '\033[0m')
-                .replace('<c><u>', '\033[34m')
-                .replace('</u></c>', '\033[0m')
-                .replace('<m><b>', '\033[35m')
-                .replace('</b></m>', '\033[0m')
-                .replace('<c><b>', '\033[32m')
-                .replace('</b></c>', '\033[0m')
-                .replace('<lvl>', '')
-                .replace('</lvl>', '')
-            )
-            log_history.append(_data.format_map(record))
+        _data = (
+            data.replace('<g>', '\033[37m')
+            .replace('</g>', '\033[0m')
+            .replace('<c><u>', '\033[34m')
+            .replace('</u></c>', '\033[0m')
+            .replace('<m><b>', '\033[35m')
+            .replace('</b></m>', '\033[0m')
+            .replace('<c><b>', '\033[32m')
+            .replace('</b></c>', '\033[0m')
+            .replace('<lvl>', '')
+            .replace('</lvl>', '')
+        )
+        log = _data.format_map(record)
+        log_history.append(log[:-5])
         return data
     except:  # noqa: E722
         return 'UnknowLog'
@@ -165,25 +163,30 @@ if 'file' in logger_list:
 
 async def read_log():
     global log_history
-    global is_RL
-    is_RL = True
     index = 0
     while True:
         if index <= len(log_history) - 1:
-            yield log_history[index]
+            if log_history[index]:
+                yield log_history[index]
             index += 1
         else:
             await asyncio.sleep(1)
 
 
-async def clear_log():
-    global is_clear
+async def clean_log():
     global log_history
+    while True:
+        await asyncio.sleep(480)
+        log_history = []
 
-    if is_clear:
-        return
 
-    is_clear = True
-    await asyncio.sleep(18000)
-    log_history = []
-    is_clear = False
+def handle_exceptions(async_function):
+    @wraps(async_function)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await async_function(*args, **kwargs)
+        except Exception as e:
+            logger.exception("[错误发生] %s: %s", async_function.__name__, e)
+            return None
+
+    return wrapper

@@ -97,19 +97,26 @@ async def get_global_analysis(bot_id: str, bot_self_id: str):
 
     out_user = []
     new_user = []
-    for i in user_list[0]:
-        if i not in user_before_list:
-            out_user.append(i)
+    if user_list:
+        for i in user_list[0]:
+            if i not in user_before_list:
+                out_user.append(i)
 
-    for i in user_list[-1]:
-        if i not in user_after_list:
-            new_user.append(i)
+    if user_list:
+        for i in user_list[-1]:
+            if i not in user_after_list:
+                new_user.append(i)
 
     _user_all_list = list(set(user_all_list))
 
+    user_num = len(user_data)
+    group_num = len(group_data)
+
     data = {
-        'DAU': '{0:.2f}'.format(sum(user_data) / len(user_data)),
-        'DAG': '{0:.2f}'.format(sum(group_data) / len(group_data)),
+        'DAU': '{0:.2f}'.format(sum(user_data) / user_num) if user_num else 0,
+        'DAG': (
+            '{0:.2f}'.format(sum(group_data) / group_num) if group_num else 0
+        ),
         'NU': str(len(new_user)),
         'OU': (
             '{0:.2f}%'.format((len(out_user) / len(_user_all_list)) * 100)

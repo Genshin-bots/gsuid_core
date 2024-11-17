@@ -1,6 +1,6 @@
 import fastapi_amis_admin
 
-from gsuid_core.version import __version__ as GenshinUID_version
+from gsuid_core.version import __version__ as gscore_version
 
 web_url = 'https://docs.sayu-bot.com'
 login_html = f'''
@@ -43,9 +43,9 @@ login_html = f'''
 
 footer_html = f'''
 <p align='right'>
-    <div class='p-2 text-center bg-light'>Copyright © 2021 - 2022
+    <div class='p-2 text-center bg-light'>Copyright © 2021 - 2024
         <a href='https://github.com/KimigaiiWuyi/GenshinUID' target='_blank'
-         class='link-secondary'>GenshinUID {GenshinUID_version}
+         class='link-secondary'>GenshinUID {gscore_version}
         </a>
          X
         <a target='_blank'

@@ -523,10 +523,8 @@ async def update_plugins(
                     break
 
     for _n in PLUGINS_PATH.iterdir():
-        _name = _n.name
-        sim = len(set(_name.lower()) & set(pn))
-        if sim >= 0.9 * len(_name):
-            plugin_name = _name
+        if pn == _n.name.lower():
+            plugin_name = _n.name
             break
 
     log_list = await update_from_git_in_tread(

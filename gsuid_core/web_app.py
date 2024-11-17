@@ -18,7 +18,7 @@ from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.config import CONFIG_DEFAULT, core_config
-from gsuid_core.logger import logger, read_log, clear_log
+from gsuid_core.logger import logger, read_log, clean_log
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
 
     await start_check()  # type:ignore
     await start_scheduler()
+    asyncio.create_task(clean_log())
     yield
     await shutdown_scheduler()
     try:
@@ -421,7 +422,6 @@ async def get_image(image_id: str, background_tasks: BackgroundTasks):
 
 @app.get("/corelogs")
 async def core_log():
-    asyncio.create_task(clear_log())
     return StreamingResponse(read_log(), media_type='text/plain')
 
 

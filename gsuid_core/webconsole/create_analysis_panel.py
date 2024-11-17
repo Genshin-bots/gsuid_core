@@ -54,6 +54,5 @@ async def get_analysis_page():
                     ],
                 )
             )
-
     page['body'].append(get_tabs(tabs))
     return page
