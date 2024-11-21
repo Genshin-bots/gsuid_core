@@ -1,11 +1,14 @@
+import re
 import sys
 import asyncio
 import logging
 import datetime
+from pathlib import Path
 from functools import wraps
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Dict, List
 
 import loguru
+import aiofiles
 from uvicorn.config import LOGGING_CONFIG
 
 from gsuid_core.config import core_config
@@ -23,7 +26,7 @@ if TYPE_CHECKING:
 
 logger: 'Logger' = loguru.logger
 logging.getLogger().handlers = []
-LOGGING_CONFIG["disable_existing_loggers"] = False
+LOGGING_CONFIG['disable_existing_loggers'] = False
 
 
 # https://loguru.readthedocs.io/en/stable/overview.html#entirely-compatible-with-standard-logging
@@ -143,12 +146,12 @@ if 'stdout' in logger_list:
         level=LEVEL,
         diagnose=True,
         backtrace=True,
-        filter=lambda record: record["level"].no < 40,
+        filter=lambda record: record['level'].no < 40,
         format=std_format_event,
     )
 
 if 'stderr' in logger_list:
-    logger.add(sys.stderr, level="ERROR")
+    logger.add(sys.stderr, level='ERROR')
 
 if 'file' in logger_list:
     logger.add(
@@ -186,7 +189,60 @@ def handle_exceptions(async_function):
         try:
             return await async_function(*args, **kwargs)
         except Exception as e:
-            logger.exception("[错误发生] %s: %s", async_function.__name__, e)
+            logger.exception('[错误发生] %s: %s', async_function.__name__, e)
             return None
 
     return wrapper
+
+
+class HistoryLogData:
+    def __init__(self):
+        self.log_list: Dict[str, List[Dict]] = {}
+
+    async def get_parse_logs(self, log_file_path: Path):
+        if log_file_path.name in self.log_list:
+            return self.log_list[log_file_path.name]
+
+        log_entries: List[Dict] = []
+
+        log_entry_pattern = re.compile(
+            r'^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)] ([^\|]+) \| (.*)'
+        )
+
+        async with aiofiles.open(log_file_path, 'r', encoding='utf-8') as file:
+            lines = await file.readlines()
+
+        current_entry = None
+
+        _id = 1
+        for line in lines:
+            line = line.strip()
+            match = log_entry_pattern.match(line)
+
+            if match:
+                if current_entry:
+                    log_entries.append(current_entry)
+                current_entry = {
+                    'id': _id,
+                    '时间': match.group(1),
+                    '日志等级': match.group(2),
+                    '模块': match.group(3).strip(),
+                    '内容': match.group(4).strip(),
+                }
+                _id += 1
+            elif current_entry:
+                current_entry['内容'] += '\n' + line
+
+        if current_entry:
+            log_entries.append(current_entry)
+
+        self.log_list[log_file_path.name] = log_entries
+        return log_entries
+
+
+def get_all_log_path():
+    return [
+        file
+        for file in LOG_PATH.iterdir()
+        if file.is_file() and file.suffix == '.log'
+    ]

@@ -1,7 +1,8 @@
 import asyncio
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List
+from datetime import datetime
+from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 
 from PIL import Image
@@ -18,7 +19,6 @@ from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.config import CONFIG_DEFAULT, core_config
-from gsuid_core.logger import logger, read_log, clean_log
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
@@ -26,6 +26,13 @@ from gsuid_core.utils.plugins_config.models import GsListStrConfig
 from gsuid_core.utils.plugins_config.gs_config import (
     all_config_list,
     core_plugins_config,
+)
+from gsuid_core.logger import (
+    LOG_PATH,
+    HistoryLogData,
+    logger,
+    read_log,
+    clean_log,
 )
 from gsuid_core.utils.plugins_update._plugins import (
     check_status,
@@ -425,4 +432,38 @@ async def core_log():
     return StreamingResponse(read_log(), media_type='text/plain')
 
 
+@app.get('/genshinuid/api/historyLogs')
+@site.auth.requires('root')
+async def get_history_logs(
+    request: Request,
+    date: Optional[str] = None,
+    page: int = 0,
+    perPage: int = 0,
+):
+    if date is None:
+        date = datetime.now().strftime('%Y-%m-%d')
+
+    if date.endswith('.log'):
+        date = date.removesuffix('.log')
+
+    history_log_data = HistoryLogData()
+    log_files = await history_log_data.get_parse_logs(LOG_PATH / f'{date}.log')
+    total = len(log_files)
+    if page != 0 and perPage != 0:
+        start = (page - 1) * perPage
+        end = start + perPage
+        log_file = log_files[start:end]
+    else:
+        log_file = log_files
+    return {
+        'status': 0,
+        'msg': 'ok',
+        'data': {
+            'count': total,
+            'rows': log_file,
+        },
+    }
+
+
+site.mount_app(app)
 site.mount_app(app)
