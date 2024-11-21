@@ -181,6 +181,12 @@ async def minigg_request(
             return retcode
         if req.status_code == 404:
             raise MiniggNotFoundError(**data)
+        if req.status_code == 502:
+            raise Exception('Minigg API is unavailable.')
+        if req.status_code != 200:
+            raise Exception(
+                f'Minigg API is unavailable. (Error code: {req.status_code})'
+            )
         return data
 
 
