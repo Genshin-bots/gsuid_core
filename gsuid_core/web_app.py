@@ -315,22 +315,22 @@ async def _update_plugins(request: Request, data: Dict):
 async def _batch_push(request: Request, data: Dict):
     send_msg = data['push_text']
     soup = BeautifulSoup(send_msg, 'lxml')
-    stag = soup.p
+
     msg: List[Message] = []
-    if stag:
-        text = stag.get_text(strip=True)
-        msg.append(MessageSegment.text(text))
+    text_list: List[Tag] = list(soup.find_all('p'))
+    for text in text_list:
+        msg.append(MessageSegment.text(str(text)[3:-4]))
 
-        img_tag: List[Tag] = list(soup.find_all('img'))
-        for img in img_tag:
-            src: str = img.get('src')  # type: ignore
-            width: str = img.get('width')  # type: ignore
-            height: str = img.get('height')  # type: ignore
+    img_tag: List[Tag] = list(soup.find_all('img'))
+    for img in img_tag:
+        src: str = img.get('src')  # type: ignore
+        width: str = img.get('width')  # type: ignore
+        height: str = img.get('height')  # type: ignore
 
-            base64_data = 'base64://' + src.split(',')[-1]
+        base64_data = 'base64://' + src.split(',')[-1]
 
-            msg.append(MessageSegment.image(base64_data))
-            msg.append(MessageSegment.image_size((int(width), int(height))))
+        msg.append(MessageSegment.image(base64_data))
+        msg.append(MessageSegment.image_size((int(width), int(height))))
 
     send_target: List[str] = data['push_tag'].split(',')
     push_bots: List[str] = data['push_bot'].split(',')
