@@ -70,10 +70,10 @@ async def check_speed():
         logger.info('[GsCore资源下载]测速中...')
 
         URL_LIB = {
-            '[JPFRP]': 'http://jp-1.lcf.icu:17217',
-            '[HKFRP]': 'http://hk-2.lcf.icu:10200',
-            '[USFRP]': 'http://us-2.lcf.icu:28596',
-            '[HNFRP]': 'http://103.150.11.217:13214',
+            '[CNJS]': 'http://cn-js-nj-1.lcf.icu:13214',
+            '[TW]': 'http://tw-taipei-1.lcf.icu:20532',
+            '[SG]': 'http://sg-1.lcf.icu:12588',
+            '[US]': 'http://us-lax-2.lcf.icu:12588',
             '[Chuncheon]': 'https://kr.qxqx.cf',
             '[Seoul]': 'https://kr-s.qxqx.cf',
             '[Singapore]': 'https://sg.qxqx.cf',
@@ -100,7 +100,10 @@ async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
         response = await client.get(url)
         return response.read()
     except httpx.HTTPStatusError as exc:
-        print(f"HTTP error occurred while fetching {url}: {exc}")
+        logger.warning(f"HTTP error occurred while fetching {url}: {exc}")
+        return b""
+    except httpx.ConnectError as exc:
+        logger.warning(f"Connect error occurred while fetching {url}: {exc}")
         return b""
 
 
