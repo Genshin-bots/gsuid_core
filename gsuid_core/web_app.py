@@ -319,7 +319,7 @@ async def _batch_push(request: Request, data: Dict):
     msg: List[Message] = []
     text_list: List[Tag] = list(soup.find_all('p'))
     for text in text_list:
-        msg.append(MessageSegment.text(str(text)[3:-4]))
+        msg.append(MessageSegment.text(str(text)[3:-4] + '\n'))
 
     img_tag: List[Tag] = list(soup.find_all('img'))
     for img in img_tag:
