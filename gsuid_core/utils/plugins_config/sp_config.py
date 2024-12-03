@@ -15,4 +15,10 @@ SP_CONIFG: Dict[str, GSC] = {
         'dark',
         ['light', 'dark'],
     ),
+    'AtSenderPos': GsStrConfig(
+        '@发送者位置',
+        '消息@发送者的位置',
+        '消息最前',
+        ['消息最前', '消息最后'],
+    ),
 }

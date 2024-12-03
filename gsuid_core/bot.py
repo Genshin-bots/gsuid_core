@@ -30,6 +30,7 @@ from gsuid_core.segment import (
 )
 
 button_row_num: int = sp_config.get_config('ButtonRow').data
+at_sender_pos: str = sp_config.get_config('AtSenderPos').data
 
 sp_msg_id: str = send_security_config.get_config('SpecificMsgId').data
 is_sp_msg_id: str = send_security_config.get_config('EnableSpecificMsgId').data
@@ -132,7 +133,10 @@ class _Bot:
         for mr in message_result:
             logger.trace(f'[GsCore][即将发送消息] {mr}')
             if at_sender and sender_id:
-                mr.append(MessageSegment.at(sender_id))
+                if at_sender_pos == '消息最后':
+                    mr.append(MessageSegment.at(sender_id))
+                else:
+                    mr.insert(0, MessageSegment.at(sender_id))
 
             if group_id:
                 mr.append(Message('group', group_id))
