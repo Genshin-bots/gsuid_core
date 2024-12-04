@@ -1,9 +1,9 @@
+import json
 from pathlib import Path
 from typing import Dict, Literal
 
 import aiofiles
 from PIL import Image
-from msgspec import json as msgjson
 
 from gsuid_core.help.utils import ICON
 from gsuid_core.version import __version__
@@ -18,12 +18,12 @@ help_mode: Literal['light', 'dark'] = sp_config.get_config('HelpMode').data
 
 async def get_master_help_data() -> Dict[str, PluginHelp]:
     async with aiofiles.open(MASTER_HELP_DATA, 'rb') as file:
-        return msgjson.decode(await file.read(), type=Dict[str, PluginHelp])
+        return json.loads(await file.read())
 
 
 async def get_help_data() -> Dict[str, PluginHelp]:
     async with aiofiles.open(HELP_DATA, 'rb') as file:
-        return msgjson.decode(await file.read(), type=Dict[str, PluginHelp])
+        return json.loads(await file.read())
 
 
 async def draw_master_help():
@@ -47,7 +47,7 @@ async def draw_master_help():
     return img
 
 
-async def draw_core_help():
+async def draw_core_help(pm: int):
     from .utils import plugins_help
 
     help_data = await get_help_data()
@@ -69,6 +69,7 @@ async def draw_core_help():
         item_bg=item_bg,
         need_cover=need_cover,
         help_mode=help_mode,
+        pm=pm,
     )
 
     return img

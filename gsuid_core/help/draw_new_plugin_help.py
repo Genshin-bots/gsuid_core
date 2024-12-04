@@ -76,8 +76,9 @@ async def get_new_help(
     column: int = 3,
     need_cover: bool = False,
     enable_cache: bool = True,
+    pm: int = 6,
 ):
-    help_path = get_res_path('help') / f'{plugin_name}.jpg'
+    help_path = get_res_path('help') / f'{plugin_name}_{pm}.jpg'
 
     if (
         help_path.exists()
@@ -116,9 +117,14 @@ async def get_new_help(
     # 准备计算整体帮助图大小
     w, h = 120 + 475 * column, footer.height
 
-    cag_num = len(plugin_help)
+    cag_num = 0
     for cag in plugin_help:
         cag_data = plugin_help[cag]['data']
+        sv = plugin_help[cag]
+        if 'pm' in sv and isinstance(sv['pm'], int) and pm <= sv['pm']:
+            continue
+
+        cag_num += 1
         sv_num = len(cag_data)
         h += (((sv_num - 1) // column) + 1) * 175
 
@@ -214,6 +220,8 @@ async def get_new_help(
         sv = plugin_help[cag]
         cag_bar = deepcopy(cag_bg)
         cag_desc = sv['desc']
+        if 'pm' in sv and isinstance(sv['pm'], int) and pm <= sv['pm']:
+            continue
         cag_data = sv['data']
         cag_draw = ImageDraw.Draw(cag_bar)
 
