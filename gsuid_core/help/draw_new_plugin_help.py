@@ -121,7 +121,7 @@ async def get_new_help(
     for cag in plugin_help:
         cag_data = plugin_help[cag]['data']
         sv = plugin_help[cag]
-        if 'pm' in sv and isinstance(sv['pm'], int) and pm <= sv['pm']:
+        if 'pm' in sv and isinstance(sv['pm'], int) and pm > sv['pm']:
             continue
 
         cag_num += 1
@@ -220,7 +220,7 @@ async def get_new_help(
         sv = plugin_help[cag]
         cag_bar = deepcopy(cag_bg)
         cag_desc = sv['desc']
-        if 'pm' in sv and isinstance(sv['pm'], int) and pm <= sv['pm']:
+        if 'pm' in sv and isinstance(sv['pm'], int) and pm > sv['pm']:
             continue
         cag_data = sv['data']
         cag_draw = ImageDraw.Draw(cag_bar)
