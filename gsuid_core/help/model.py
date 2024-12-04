@@ -1,4 +1,4 @@
-from typing import List, TypedDict, NotRequired
+from typing import List, TypedDict
 
 
 class PluginSV(TypedDict):
@@ -12,5 +12,4 @@ class PluginSV(TypedDict):
 
 class PluginHelp(TypedDict):
     desc: str
-    pm: NotRequired[int]
     data: List[PluginSV]
