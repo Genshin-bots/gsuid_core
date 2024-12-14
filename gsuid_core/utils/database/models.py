@@ -28,7 +28,7 @@ class Subscribe(BaseModel, table=True):
     user_type: str = Field(title='发送类型', default=None)
     extra_message: Optional[str] = Field(title='额外消息', default=None)
 
-    async def send_msg(
+    async def send(
         self,
         reply: Optional[
             Union[Message, List[Message], List[str], str, bytes]

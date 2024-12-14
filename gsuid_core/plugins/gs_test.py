@@ -181,5 +181,5 @@ async def handle_get_subscribe(bot: Bot, ev: Event):
     datas = await gs_subscribe.get_subscribe('订阅测试')
     if datas:
         for subscribe in datas:
-            await subscribe.send_msg(f'[订阅] {subscribe.extra_message}')
+            await subscribe.send(f'[订阅] {subscribe.extra_message}')
     await bot.send('查看订阅成功！')
