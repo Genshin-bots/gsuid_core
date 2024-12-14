@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
 from sqlmodel import Field, SQLModel, col, and_, delete, select, update
 
+from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.plugins_config.gs_config import database_config
 
@@ -165,8 +166,11 @@ class BaseIDModel(SQLModel):
 
             🔸`int`: 如为1则删除成功，否则删除失败(数据不存在)
         '''
-        if cls.data_exist(**data):
-            await session.delete(cls(**data))
+        row_data = await cls.select_rows(**data)
+        logger.trace(f'[GsCore数据库] 即将删除{row_data}')
+        if row_data:
+            for row in row_data:
+                await session.delete(row)
             return 1
         else:
             return 0
@@ -203,6 +207,7 @@ class BaseIDModel(SQLModel):
             stmt = stmt.distinct()
         result = await session.execute(stmt)
         data = result.scalars().all()
+        logger.trace(f'[GsCore数据库] 选择 {data}')
         return data
 
     @classmethod

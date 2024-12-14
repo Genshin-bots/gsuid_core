@@ -105,6 +105,14 @@ async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
     except httpx.ConnectError as exc:
         logger.warning(f"Connect error occurred while fetching {url}: {exc}")
         return b""
+    except httpx.UnsupportedProtocol as exc:
+        logger.warning(
+            f"Unsupported protocol error occurred while fetching {url}: {exc}"
+        )
+        return b""
+    except httpx.RequestError as exc:
+        logger.warning(f"Request error occurred while fetching {url}: {exc}")
+        return b""
 
 
 async def download_atag_file(

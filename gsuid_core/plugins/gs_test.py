@@ -5,8 +5,10 @@ from async_timeout import timeout
 from gsuid_core.bot import Bot
 from gsuid_core.sv import SL, SV
 from gsuid_core.models import Event
+from gsuid_core.logger import logger
 from gsuid_core.message_models import Button
 from gsuid_core.segment import MessageSegment
+from gsuid_core.subscribe import gs_subscribe
 
 sv_switch = SV('测试开关')
 
@@ -146,6 +148,38 @@ async def send_temp_button_msg(bot: Bot, ev: Event):
     await bot.send_option('测试', buttons)
 
 
+'''
 @sv_switch.on_message()
 async def handle_any(bot: Bot, ev: Event):
     await bot.send(f'收到消息啦 -> {ev.text}')
+'''
+
+
+@sv_switch.on_fullmatch('订阅测试')
+async def handle_subscribe(bot: Bot, ev: Event):
+    await gs_subscribe.add_subscribe(
+        'single',
+        '订阅测试',
+        ev,
+        extra_message='测试',
+    )
+    data = await gs_subscribe.get_subscribe('订阅测试')
+    logger.info(data)
+    await bot.send('订阅成功！')
+
+
+@sv_switch.on_fullmatch('取消订阅测试')
+async def handle_unsubscribe(bot: Bot, ev: Event):
+    await gs_subscribe.delete_subscribe('single', '订阅测试', ev)
+    data = await gs_subscribe.get_subscribe('订阅测试')
+    logger.info(data)
+    await bot.send('取消订阅成功！')
+
+
+@sv_switch.on_fullmatch('查看订阅')
+async def handle_get_subscribe(bot: Bot, ev: Event):
+    datas = await gs_subscribe.get_subscribe('订阅测试')
+    if datas:
+        for subscribe in datas:
+            await subscribe.send_msg(f'[订阅] {subscribe.extra_message}')
+    await bot.send('查看订阅成功！')

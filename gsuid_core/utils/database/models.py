@@ -1,18 +1,61 @@
-from typing import List, Type, Optional
+from typing import List, Type, Union, Optional
 
 from sqlalchemy import or_
 from sqlmodel import Field, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from gsuid_core.bot import Bot
+from gsuid_core.gss import gss
+from gsuid_core.models import Event, Message
+from gsuid_core.message_models import ButtonType
 
 from .base_models import (
     Bind,
     Push,
     User,
     Cache,
+    BaseModel,
     BaseIDModel,
     BaseBotIDModel,
     with_session,
 )
+
+
+class Subscribe(BaseModel, table=True):
+    group_id: Optional[str] = Field(title='群ID', default=None)
+    task_name: str = Field(title='任务名称', default=None)
+    bot_self_id: str = Field(title='机器人自身ID', default=None)
+    user_type: str = Field(title='发送类型', default=None)
+    extra_message: Optional[str] = Field(title='额外消息', default=None)
+
+    async def send_msg(
+        self,
+        reply: Optional[
+            Union[Message, List[Message], List[str], str, bytes]
+        ] = None,
+        option_list: Optional[ButtonType] = None,
+        unsuported_platform: bool = False,
+        sep: str = '\n',
+        command_tips: str = '请输入以下命令之一:',
+        command_start_text: str = '',
+    ):
+        for bot_id in gss.active_bot:
+            BOT = gss.active_bot[bot_id]
+            ev = Event(
+                bot_id=self.bot_id,
+                user_id=self.user_id,
+                bot_self_id=self.bot_self_id,
+                user_type=self.user_type,  # type: ignore
+            )
+            bot = Bot(BOT, ev)
+            await bot.send_option(
+                reply,
+                option_list,
+                unsuported_platform,
+                sep,
+                command_tips,
+                command_start_text,
+            )
 
 
 class CoreTag(BaseIDModel, table=True):
