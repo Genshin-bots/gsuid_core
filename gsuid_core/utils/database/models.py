@@ -46,6 +46,8 @@ class Subscribe(BaseModel, table=True):
                 user_id=self.user_id,
                 bot_self_id=self.bot_self_id,
                 user_type=self.user_type,  # type: ignore
+                group_id=self.group_id,
+                real_bot_id=self.bot_id,
             )
             bot = Bot(BOT, ev)
             await bot.send_option(

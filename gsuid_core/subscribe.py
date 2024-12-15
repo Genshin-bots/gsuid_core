@@ -55,9 +55,9 @@ class GsCoreSubscribe:
             )
 
         if not condi:
-            await Subscribe.insert_data(
-                event.user_id,
-                event.bot_id,
+            await Subscribe.full_insert_data(
+                user_id=event.user_id,
+                bot_id=event.bot_id,
                 group_id=event.group_id,
                 task_name=task_name,
                 bot_self_id=event.bot_self_id,
