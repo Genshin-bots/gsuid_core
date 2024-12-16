@@ -41,11 +41,11 @@ class GsCoreSubscribe:
         opt = {
             'bot_id': event.bot_id,
             'task_name': task_name,
-            'user_type': event.user_type,
         }
         if subscribe_type == 'session' and event.user_type == 'group':
             condi = await Subscribe.data_exist(
                 group_id=event.group_id,
+                user_type=event.user_type,
                 **opt,
             )
         else:
