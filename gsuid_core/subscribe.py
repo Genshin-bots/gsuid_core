@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import Dict, List, Union, Literal, Optional
 
 from gsuid_core.models import Event
 from gsuid_core.utils.database.models import Subscribe
@@ -38,21 +38,19 @@ class GsCoreSubscribe:
 
             `await GsCoreSubscribe.add_subscribe('single', '签到', event)`
         '''
-        opt = {
+        opt: Dict[str, Union[str, int, None]] = {
             'bot_id': event.bot_id,
             'task_name': task_name,
         }
         if subscribe_type == 'session' and event.user_type == 'group':
-            condi = await Subscribe.data_exist(
-                group_id=event.group_id,
-                user_type=event.user_type,
-                **opt,
-            )
+            opt['group_id'] = event.group_id
+            opt['user_type'] = event.user_type
         else:
-            condi = await Subscribe.data_exist(
-                user_id=event.user_id,
-                **opt,
-            )
+            opt['user_id'] = event.user_id
+
+        condi = await Subscribe.data_exist(
+            **opt,
+        )
 
         if not condi:
             await Subscribe.full_insert_data(
@@ -65,14 +63,22 @@ class GsCoreSubscribe:
                 extra_message=extra_message,
             )
         else:
-            await Subscribe.update_data(
-                user_id=event.user_id,
-                bot_id=event.bot_id,
-                group_id=event.group_id,
-                task_name=task_name,
-                bot_self_id=event.bot_self_id,
-                user_type=event.user_type,
-                extra_message=extra_message,
+            upd = {}
+            for i in [
+                'user_id',
+                'bot_id',
+                'group_id',
+                'task_name',
+                'bot_self_id',
+                'user_type',
+                'extra_message',
+            ]:
+                if i not in opt:
+                    upd[i] = event.__getattribute__(i)
+
+            await Subscribe.update_data_by_data(
+                opt,
+                upd,
             )
 
     async def get_subscribe(self, task_name: str):
