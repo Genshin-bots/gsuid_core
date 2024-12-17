@@ -68,14 +68,13 @@ class GsCoreSubscribe:
                 'user_id',
                 'bot_id',
                 'group_id',
-                'task_name',
                 'bot_self_id',
                 'user_type',
-                'extra_message',
             ]:
                 if i not in opt:
                     upd[i] = event.__getattribute__(i)
 
+            upd['extra_message'] = extra_message
             await Subscribe.update_data_by_data(
                 opt,
                 upd,
