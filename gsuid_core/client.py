@@ -48,7 +48,7 @@ class GsClient:
             intent = await self._input()
             content = Message(type='text', data=intent)
             group_id = random.choice(['8888', '88888'])
-            user_id = random.choice(['99999', '74152'])
+            user_id = random.choice(['99999'])
             msg = MessageReceive(
                 bot_id='console',
                 # bot_id='qqgroup',

@@ -31,7 +31,13 @@ class Subscribe(BaseModel, table=True):
     async def send(
         self,
         reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
+            Union[
+                Message,
+                List[Message],
+                List[str],
+                str,
+                bytes,
+            ]
         ] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
@@ -157,8 +163,10 @@ class CoreUser(BaseBotIDModel, table=True):
         user_id: str,
         group_id: Optional[str],
     ) -> int:
-        data: Optional[Type["CoreUser"]] = await cls.base_select_data(
-            bot_id=bot_id, user_id=user_id, group_id=group_id
+        data: Optional["CoreUser"] = await cls.base_select_data(
+            bot_id=bot_id,
+            user_id=user_id,
+            group_id=group_id,
         )
         if not data:
             await cls.full_insert_data(
@@ -423,11 +431,8 @@ class GsUID(BaseIDModel, table=True):
         game_name: Optional[str] = None,
         **data,
     ):
-        sql = (
-            update(cls)
-            .where(cls.main_uid == uid)
-            .where(cls.game_name == game_name)
-        )
+        sql = update(cls).where(cls.main_uid == uid)
+        sql = sql.where(cls.game_name == game_name)
         if data is not None:
             query = sql.values(**data)
             query.execution_options(synchronize_session='fetch')

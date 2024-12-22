@@ -10,15 +10,20 @@ from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
 from gsuid_core.global_val import get_global_val
+from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.models import Event, Message, MessageReceive
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import (
+    sp_config,
+    core_plugins_config,
+)
 
 command_start = core_config.get_config('command_start')
 enable_empty = core_config.get_config('enable_empty_start')
 config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
 
+same_user_cd: int = sp_config.get_config('SameUserEventCD').data
 shield_list = core_plugins_config.get_config('ShieldQQBot').data
 
 _command_start: List[str]
@@ -29,6 +34,14 @@ else:
 
 
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
+    # 是否启用相同消息CD
+    if same_user_cd != 0 and cooldown_tracker.is_on_cooldown(
+        msg.user_id,
+        same_user_cd,
+    ):
+        logger.trace(f'[GsCore][触发相同消息CD] 忽略{msg.user_id}该消息!')
+        return
+
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
@@ -38,10 +51,15 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     local_val['receive'] += 1
 
     await CoreUser.insert_user(
-        event.real_bot_id, event.user_id, event.group_id
+        event.real_bot_id,
+        event.user_id,
+        event.group_id,
     )
     if event.group_id:
-        await CoreGroup.insert_group(event.real_bot_id, event.group_id)
+        await CoreGroup.insert_group(
+            event.real_bot_id,
+            event.group_id,
+        )
 
     if event.at:
         for shield_id in shield_list:
