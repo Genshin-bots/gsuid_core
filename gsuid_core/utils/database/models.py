@@ -105,10 +105,10 @@ class CoreTag(BaseIDModel, table=True):
 class CoreUser(BaseBotIDModel, table=True):
     __table_args__ = {'extend_existing': True}
 
-    user_id: str = Field(default='1', title='账号')
-    group_id: Optional[str] = Field(default='1', title='群号')
-    user_name: str = Field(default='1', title='用户名')
-    user_icon: str = Field(default='1', title='用户头像')
+    user_id: str = Field(default=None, title='账号')
+    group_id: Optional[str] = Field(default=None, title='群号')
+    user_name: str = Field(default=None, title='用户名')
+    user_icon: str = Field(default=None, title='用户头像')
 
     @classmethod
     @with_session
@@ -162,6 +162,8 @@ class CoreUser(BaseBotIDModel, table=True):
         bot_id: str,
         user_id: str,
         group_id: Optional[str],
+        user_name: Optional[str],
+        user_icon: Optional[str],
     ) -> int:
         data: Optional["CoreUser"] = await cls.base_select_data(
             bot_id=bot_id,
@@ -173,6 +175,18 @@ class CoreUser(BaseBotIDModel, table=True):
                 bot_id=bot_id,
                 user_id=user_id,
                 group_id=group_id,
+                user_name=user_name,
+                user_icon=user_icon,
+            )
+        else:
+            await cls.update_data_by_xx(
+                {
+                    'bot_id': bot_id,
+                    'user_id': user_id,
+                    'group_id': group_id,
+                },
+                user_name=user_name,
+                user_icon=user_icon,
             )
 
         '''

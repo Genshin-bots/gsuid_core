@@ -50,10 +50,19 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     local_val = await get_global_val(event.real_bot_id, event.bot_self_id)
     local_val['receive'] += 1
 
+    sender_nickname = None
+    sender_avater = None
+    if event.sender and 'nickname' in event.sender:
+        sender_nickname = event.sender['nickname']
+    if event.sender and 'avatar' in event.sender:
+        sender_avater = event.sender['avatar']
+
     await CoreUser.insert_user(
         event.real_bot_id,
         event.user_id,
         event.group_id,
+        sender_nickname,
+        sender_avater,
     )
     if event.group_id:
         await CoreGroup.insert_group(
