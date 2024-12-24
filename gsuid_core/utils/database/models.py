@@ -170,13 +170,19 @@ class CoreUser(BaseBotIDModel, table=True):
             user_id=user_id,
             group_id=group_id,
         )
+
+        opt = {}
+        if user_name is not None:
+            opt['user_name'] = user_name
+        if user_icon is not None:
+            opt['user_icon'] = user_icon
+
         if not data:
             await cls.full_insert_data(
                 bot_id=bot_id,
                 user_id=user_id,
                 group_id=group_id,
-                user_name=user_name,
-                user_icon=user_icon,
+                **opt,
             )
         else:
             await cls.update_data_by_xx(
@@ -185,8 +191,7 @@ class CoreUser(BaseBotIDModel, table=True):
                     'user_id': user_id,
                     'group_id': group_id,
                 },
-                user_name=user_name,
-                user_icon=user_icon,
+                **opt,
             )
 
         '''
