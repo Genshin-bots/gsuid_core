@@ -107,8 +107,8 @@ class CoreUser(BaseBotIDModel, table=True):
 
     user_id: str = Field(default=None, title='账号')
     group_id: Optional[str] = Field(default=None, title='群号')
-    user_name: str = Field(default=None, title='用户名')
-    user_icon: str = Field(default=None, title='用户头像')
+    user_name: Optional[str] = Field(default='1', title='用户名')
+    user_icon: Optional[str] = Field(default='1', title='用户头像')
 
     @classmethod
     @with_session
