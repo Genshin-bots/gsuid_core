@@ -174,8 +174,13 @@ class CoreUser(BaseBotIDModel, table=True):
         opt = {}
         if user_name is not None:
             opt['user_name'] = user_name
+        else:
+            opt['user_name'] = '1'
+
         if user_icon is not None:
             opt['user_icon'] = user_icon
+        else:
+            opt['user_icon'] = '1'
 
         if not data:
             await cls.full_insert_data(
