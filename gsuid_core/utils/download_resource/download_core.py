@@ -77,6 +77,7 @@ async def check_speed():
             '[Chuncheon]': 'https://kr.qxqx.cf',
             '[Seoul]': 'https://kr-s.qxqx.cf',
             '[Singapore]': 'https://sg.qxqx.cf',
+            '[MiniGG]': 'https://file.minigg.cn/sayu-bot',
         }
 
         TAG, BASE_URL = await find_fastest_url(URL_LIB)
