@@ -75,14 +75,21 @@ async def get_event_avatar(
 ) -> Image.Image:
     img = None
     if ev.bot_id == 'onebot' and ev.at:
-        return await get_qq_avatar(ev.at)
-    elif 'avatar' in ev.sender and ev.sender['avatar']:
-        avatar_url = ev.sender['avatar']
-        content = (await sget(avatar_url)).content
-        return Image.open(BytesIO(content)).convert('RGBA')
-    elif ev.bot_id == 'onebot' and not ev.sender:
-        return await get_qq_avatar(ev.user_id)
-    elif avatar_path:
+        img = await get_qq_avatar(ev.at)
+
+    if img is None and 'avatar' in ev.sender and ev.sender['avatar']:
+        avatar_url: str = ev.sender['avatar']
+        if avatar_url.startswith(('http', 'https')):
+            try:
+                content = (await sget(avatar_url)).content
+                img = Image.open(BytesIO(content)).convert('RGBA')
+            except Exception:
+                img = None
+
+    if img is None and ev.bot_id == 'onebot' and not ev.sender:
+        img = await get_qq_avatar(ev.user_id)
+
+    if img is None and avatar_path:
         pic_path_list = list(avatar_path.iterdir())
         if pic_path_list:
             path = random.choice(pic_path_list)
