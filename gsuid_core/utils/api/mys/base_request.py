@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import time
 import uuid
 import random
@@ -9,7 +8,7 @@ from string import digits
 from abc import abstractmethod
 from typing import Any, Dict, Tuple, Union, Literal, Optional, overload
 
-import httpx
+import aiohttp
 
 from gsuid_core.bot import call_bot
 from gsuid_core.logger import logger
@@ -430,7 +429,7 @@ class BaseMysApi:
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         use_proxy: Optional[bool] = False,
-        base_url: str = '',
+        base_url: Optional[str] = None,
         game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
         logger.debug(f'[米游社请求] BaseUrl: {base_url}')
@@ -445,11 +444,13 @@ class BaseMysApi:
         else:
             proxy = None
 
-        async with httpx.AsyncClient(
-            verify=ssl_verify,
-            proxies=proxy,
-            base_url=base_url,
-        ) as client:
+        if not base_url:
+            base_url = None
+
+        url = base_url + url if base_url else url
+        async with aiohttp.ClientSession(
+            base_url=None,
+        ) as session:
             raw_data = {}
             uid = None
             if params and 'role_id' in params:
@@ -477,41 +478,34 @@ class BaseMysApi:
                 if dfp is not None:
                     df = dfp.split('/')
                     header['User-Agent'] = (
-                        f"Mozilla/5.0 (Linux; Android 13; {df[1]} {df[3]}"
+                        f"Mozilla/5.0 (Linux; Android 13; {df[1]} {df[3]} "
                         "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Version/4.0 Chrome/104.0.5112.97"
                         f"Mobile Safari/537.36 miHoYoBBS/2{mys_version}"
                     )
 
             logger.debug(header)
+
             for _ in range(2):
                 try:
-                    resp = await client.request(
+                    async with session.request(
                         method,
-                        url=url,
+                        url,
                         headers=header,
                         params=params,
                         json=data,
-                        timeout=300,
-                    )
-                except httpx.ConnectError:
+                        timeout=aiohttp.ClientTimeout(total=300),
+                        proxy=proxy,
+                    ) as resp:
+                        raw_data = await resp.json()
+                except aiohttp.ClientConnectionError:
                     await call_bot().send('[mys_request] 请求连接错误...')
                     continue
-                except:  # noqa
+                except Exception as e:
                     await call_bot().send(
-                        '[mys_request] 请求错误, 请联系Bot主人检查控制台!'
+                        f'[mys_request] 请求错误, 请联系Bot主人检查控制台! 错误信息: {str(e)}'
                     )
                     continue
-
-                try:
-                    raw_data = resp.json()
-                except (
-                    httpx.ConnectError,
-                    httpx.RequestError,
-                    json.decoder.JSONDecodeError,
-                ):
-                    _raw_data = resp.text
-                    raw_data = {'retcode': -999, 'data': _raw_data}
 
                 logger.debug(raw_data)
 
