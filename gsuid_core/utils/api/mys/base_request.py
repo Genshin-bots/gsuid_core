@@ -432,6 +432,12 @@ class BaseMysApi:
         base_url: Optional[str] = None,
         game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
+        if params:
+            params = {
+                k: str(v).lower() if isinstance(v, bool) else v
+                for k, v in params.items()
+            }
+
         logger.debug(f'[米游社请求] BaseUrl: {base_url}')
         logger.debug(f'[米游社请求] Url: {url}')
         logger.debug(f'[米游社请求] Params: {params}')
