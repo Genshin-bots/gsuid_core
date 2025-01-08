@@ -1,4 +1,11 @@
-from gsuid_core.global_val import get_all_bot_dict, get_global_analysis
+import random
+import string
+
+from gsuid_core.global_val import (
+    global_val_path,
+    get_all_bot_dict,
+    get_global_analysis,
+)
 from gsuid_core.webconsole.create_base_panel import (
     get_tab,
     get_card,
@@ -13,6 +20,58 @@ def get_chart(api: str):
         "type": "chart",
         "api": api,
     }
+
+
+def get_detail_chart(bot_id: str, bot_self_id: str):
+    characters = string.ascii_lowercase + string.digits
+    random_string = ''.join(random.choice(characters) for _ in range(12))
+    _p = []
+    path = global_val_path / bot_id / bot_self_id
+    if path.exists():
+        op = [{"label": i.name, "value": i.name} for i in path.iterdir()]
+        _p.append(
+            {
+                "type": "select",
+                "label": "选择日期",
+                "name": "select",
+                "options": op,
+                "id": "u:4cb4efccc603",
+                "multiple": False,
+                "onEvent": {
+                    "change": {
+                        "weight": 0,
+                        "actions": [
+                            {
+                                "componentId": f"u:{random_string}",
+                                "ignoreError": False,
+                                "actionType": "reload",
+                                "data": {
+                                    "name": "${event.data.value}",
+                                },
+                                "dataMergeMode": "merge",
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+        _p.append(get_divider())
+    _p.append(
+        {
+            "id": f"u:{random_string}",
+            "type": "chart",
+            "replaceChartOption": True,
+            "api": {
+                "url": f'/genshinuid/api/loadData/{bot_id}/{bot_self_id}',
+                "method": "post",
+                "requestAdaptor": "",
+                "adaptor": "",
+                "messages": {},
+                "dataType": "json",
+            },
+        }
+    )
+    return _p
 
 
 async def get_analysis_page():
@@ -49,6 +108,8 @@ async def get_analysis_page():
                                 get_chart(f'{AAPI}/{bot_id}/{bot_self_id}'),
                                 get_divider(),
                                 get_chart(f'{BAPI}/{bot_id}/{bot_self_id}'),
+                                get_divider(),
+                                *get_detail_chart(bot_id, bot_self_id),
                             ],
                         ),
                     ],

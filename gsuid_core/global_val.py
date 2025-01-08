@@ -159,14 +159,20 @@ async def get_global_val(
         today = datetime.date.today()
         endday = today - datetime.timedelta(days=day)
         endday_format = endday.strftime("%Y_%d_%b")
-        _path = global_val_path / bot_id / bot_self_id
-        path = _path / f'GlobalVal_{endday_format}.json'
-        if path.exists():
-            async with aiofiles.open(path, 'rb') as fp:
-                data = json.loads(await fp.read())
-                return data
-        else:
-            return platform_val
+        return await get_sp_val(
+            bot_id,
+            bot_self_id,
+            f'GlobalVal_{endday_format}.json',
+        )
+
+
+async def get_sp_val(bot_id: str, bot_self_id: str, sp: str) -> PlatformVal:
+    path = global_val_path / bot_id / bot_self_id / sp
+    if not path.exists():
+        return platform_val
+    async with aiofiles.open(path, 'rb') as fp:
+        data = json.loads(await fp.read())
+        return data
 
 
 async def save_global_val(bot_id: str, bot_self_id: str):

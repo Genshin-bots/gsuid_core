@@ -432,6 +432,101 @@ async def core_log():
     return StreamingResponse(read_log(), media_type='text/plain')
 
 
+@app.post('/genshinuid/api/loadData/{bot_id}/{bot_self_id}')
+@site.auth.requires('root')
+async def get_history_data(
+    request: Request,
+    data: Dict,
+    bot_id: str,
+    bot_self_id: str,
+):
+    name = data.get('name', None)
+    a_pie_data = []
+    b_pie_data = []
+    if name is None:
+        seven_day = await gv.get_value_analysis(bot_id, bot_self_id)
+        local_val = seven_day[list(seven_day.keys())[0]]
+    else:
+        local_val = await gv.get_sp_val(bot_id, bot_self_id, name)
+
+    c_data = {}
+    for g in local_val['group']:
+        a_pie_data.append(
+            {"value": sum(list(local_val['group'][g].values())), "name": g}
+        )
+    for u in local_val['user']:
+        for c in local_val['user'][u]:
+            if c not in c_data:
+                c_data[c] = 0
+            c_data[c] += local_val['user'][u][c]
+
+    for c in c_data:
+        b_pie_data.append({"value": c_data[c], "name": c})
+        # l_data.append(c)
+
+    data = {
+        "series": [
+            {
+                "data": a_pie_data,
+                "type": "pie",
+                "name": "群组触发命令",
+                # "selectedMode": "single",
+                "radius": [0, "30%"],
+                "label": {"position": "inner", "fontSize": 14},
+                "labelLine": {"show": False},
+            },
+            {
+                "name": "命令调用次数",
+                "type": "pie",
+                "radius": ["45%", "60%"],
+                "labelLine": {"length": 30},
+                "label": {
+                    "formatter": "{a|{a}}{abg|}\n{hr|}\n  {b|{b}：}{c}  {per|{d}%}",  # noqa: E501
+                    "backgroundColor": "#F6F8FC",
+                    "borderColor": "#8C8D8E",
+                    "borderWidth": 1,
+                    "borderRadius": 4,
+                    "rich": {
+                        "a": {
+                            "color": "#6E7079",
+                            "lineHeight": 22,
+                            "align": "center",
+                        },
+                        "hr": {
+                            "borderColor": "#8C8D8E",
+                            "width": "100%",
+                            "borderWidth": 1,
+                            "height": 0,
+                        },
+                        "b": {
+                            "color": "#4C5058",
+                            "fontSize": 14,
+                            "fontWeight": "bold",
+                            "lineHeight": 33,
+                        },
+                        "per": {
+                            "color": "#fff",
+                            "backgroundColor": "#4C5058",
+                            "padding": [3, 4],
+                            "borderRadius": 4,
+                        },
+                    },
+                },
+                "data": b_pie_data,
+            },
+        ],
+        "tooltip": {
+            "trigger": "item",
+            "formatter": "{a} <br/>{b}: {c} ({d}%)",
+        },
+    }
+    return {
+        'status': 0,
+        'msg': 'ok',
+        'data': data,
+    }
+
+
 @app.get('/genshinuid/api/historyLogs')
 @site.auth.requires('root')
 async def get_history_logs(
