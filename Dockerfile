@@ -1,4 +1,4 @@
-FROM python:3.8.12-slim
+FROM python:3.10.16-slim-bullseye
 
 WORKDIR /app/gsuid_core
 

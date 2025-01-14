@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gsuid-core"
-version = "0.5.5"
+version = "0.7.0"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 authors = ["KimigaiiWuyi <444835641@qq.com>", "MingxuanGame <MingxuanGame@outlook.com>"]
 license = "GPL-3.0-or-later"
@@ -13,13 +13,13 @@ packages = [{include = "gsuid_core"}]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
 
 [tool.poetry.dependencies]
-python = "^3.8.1"
+python = ">=3.11,<=3.12"
 httpx = ">=0.23.0"
 beautifulsoup4 = ">=4.11.1"
 lxml = ">=4.9.2"
 aiohttp = ">=3.8.1"
 sqlalchemy = ">=2.0.0,<2.1.0"
-pillow = ">=9.2.0, <=10.2.0"
+pillow = ">=10.2.0"
 aiosqlite = ">=0.17.0"
 aiofiles = ">=0.8.0"
 sqlmodel = ">=0.0.14"
@@ -46,6 +46,10 @@ pydantic = ">=2.0.0, <=2.8.2"
 pydantic-settings = ">=2.3.4"
 email-validator = "^2.2.0"
 pydantic-core = ">=2.20.1"
+psutil = "^6.1.1"
+pytz = "^2024.2"
+pandas = "^2.2.3"
+betterproto = ">=2.0.0b7"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"
@@ -61,14 +65,25 @@ core = "gsuid_core.core:main"
 [tool.pdm.scripts]
 core = "gsuid_core/core.py"
 
+[tool.pdm.dev-dependencies]
+dev = [
+    "flake8<7.0.0,>=6.0.0",
+    "black<23.0.0,>=22.12.0",
+    "isort<6.0.0,>=5.11.4",
+    "pre-commit<3.0.0,>=2.21.0",
+    "pycln<3.0.0,>=2.1.2",
+]
+
+[tool.pdm.build]
+includes = ["gsuid_core"]
 [[tool.poetry.source]]
-name = "BFSU"
-url = "https://mirrors.bfsu.edu.cn/pypi/web/simple/"
+name = "TUNA"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 priority = "primary"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
 [tool.black]
 line-length = 79
@@ -92,14 +107,14 @@ authors = [
     {name = "MingxuanGame", email = "MingxuanGame@outlook.com"},
 ]
 license = {text = "GPL-3.0-or-later"}
-requires-python = ">=3.8.1,<4.0"
+requires-python = ">=3.11,<3.12.1"
 dependencies = [
     "httpx>=0.23.0",
     "beautifulsoup4>=4.11.1",
     "lxml>=4.9.2",
     "aiohttp>=3.8.1",
     "sqlalchemy<2.1.0,>=2.0.0",
-    "pillow>=9.2.0,<=10.2.0",
+    "pillow>=10.2.0",
     "aiosqlite>=0.17.0",
     "aiofiles>=0.8.0",
     "sqlmodel>=0.0.8",
@@ -113,7 +128,7 @@ dependencies = [
     "loguru<1.0.0,>=0.6.0",
     "urllib3<2.0.0,>=1.26.15",
     "mpmath<2.0.0,>=1.3.0",
-    "fastapi<0.112.3,>=0.97.0",
+    "fastapi>=0.97.0,<0.112.3",
     "apscheduler<4.0.0,>=3.10.1",
     "aioboto3<13.0.0,>=12.0.0",
     "jinja2<4.0.0,>=3.1.2",
@@ -127,9 +142,20 @@ dependencies = [
     "pydantic-settings>=2.3.4",
     "pydantic-core>=2.20.1",
     "annotated-types>=0.7.0",
+    "sqlmodel>=0.0.14",
+    "loguru>=0.6.0",
+    "fastapi<0.112.3",
+    "async-timeout<5.0.0,>=4.0.3",
+    "toml<1.0.0,>=0.10.2",
+    "bcrypt<5.0.0,>=4.0.1",
+    "email-validator<3.0.0,>=2.2.0",
+    "psutil>=6.1.1",
+    "pytz>=2024.2",
+    "pandas>=2.2.3",
+    "betterproto>=2.0.0b7",
 ]
 name = "gsuid-core"
-version = "0.5.5"
+version = "0.7.0"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
@@ -137,13 +163,13 @@ readme = "README.md"
 respect-source-order = true
 
 [[tool.pdm.source]]
-name = "BFSU"
-url = "https://mirrors.bfsu.edu.cn/pypi/web/simple/"
+name = "TUNA"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 
 [[tool.pdm.source]]
 name = "TUNA"
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
-
+verify_ssl = true
 [project.urls]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
 homepage = "https://github.com/Genshin-bots/gsuid-core"

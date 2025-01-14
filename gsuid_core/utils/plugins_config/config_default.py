@@ -5,9 +5,9 @@ from .models import GSC, GsStrConfig, GsBoolConfig, GsListStrConfig
 CONIFG_DEFAULT: Dict[str, GSC] = {
     'StartVENV': GsStrConfig(
         '设置启动环境工具',
-        '可选pdm, poetry, pip, auto',
+        '可选pdm, poetry, pip, auto, uv',
         'auto',
-        ['pdm', 'poetry', 'pip', 'auto'],
+        ['pdm', 'poetry', 'pip', 'uv', 'auto'],
     ),
     'Gproxy': GsStrConfig('设置米游社国际代理', '设置国际服的代理地址', ''),
     'Nproxy': GsStrConfig('设置米游社常规代理', '设置常规的代理地址', ''),

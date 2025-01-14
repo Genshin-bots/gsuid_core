@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Union, Optional
 from concurrent.futures import ThreadPoolExecutor
 
+import psutil
 import aiohttp
 from git.repo import Repo
 from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
@@ -22,33 +23,50 @@ start_venv: str = core_plugins_config.get_config('StartVENV').data
 is_install_dep = core_plugins_config.get_config('AutoInstallDep').data
 
 
+def get_command_chain() -> List[str]:
+    cmd_chain = []
+    process = psutil.Process()
+    while process:
+        cmd_chain.extend(process.cmdline())
+        process = process.parent()
+    return cmd_chain
+
+
 def check_start_tool(is_pip: bool = False):
+    command_chain = get_command_chain()
+    command_chain = [command.lower() for command in command_chain]
+
     PDM = 'pdm'
     POETRY = 'poetry'
+    UV = 'uv'
     OTHER = start_venv.strip()
 
     if is_pip:
         PIP = ' run python -m pip'
         PDM += PIP
         POETRY += ' run pip'
+        UV += PIP
 
         if OTHER == 'python':
             OTHER = 'python -m pip'
         else:
             OTHER += PIP
 
-    path = Path(__file__).parent.parent.parent.parent
-    pdm_python_path = path / '.pdm-python'
-
     if start_venv == 'auto':
-        if pdm_python_path.exists():
+        if 'pdm' in command_chain:
             command = PDM
-        else:
+        elif 'poetry' in command_chain:
             command = POETRY
+        elif 'uv' in command_chain:
+            command = UV
+        else:
+            command = OTHER
     elif start_venv == 'pdm':
         command = PDM
     elif start_venv == 'poetry':
         command = POETRY
+    elif start_venv == 'uv':
+        command = UV
     else:
         command = start_venv.strip()
 
