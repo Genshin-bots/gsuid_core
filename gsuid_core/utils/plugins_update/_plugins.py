@@ -27,14 +27,19 @@ def get_command_chain() -> List[str]:
     cmd_chain = []
     process = psutil.Process()
     while process:
-        cmd_chain.extend(process.cmdline())
-        process = process.parent()
+        try:
+            cmd_chain.extend(process.cmdline())
+            process = process.parent()
+        except Exception as e:
+            logger.warning(f'获取命令链失败...{e}')
+            break
     return cmd_chain
 
 
 def check_start_tool(is_pip: bool = False):
     command_chain = get_command_chain()
     command_chain = [command.lower() for command in command_chain]
+    command_chain_str = ' '.join(command_chain)
 
     PDM = 'pdm'
     POETRY = 'poetry'
@@ -53,11 +58,11 @@ def check_start_tool(is_pip: bool = False):
             OTHER += PIP
 
     if start_venv == 'auto':
-        if 'pdm' in command_chain:
+        if 'pdm' in command_chain_str:
             command = PDM
-        elif 'poetry' in command_chain:
+        elif 'poetry' in command_chain_str:
             command = POETRY
-        elif 'uv' in command_chain:
+        elif 'uv' in command_chain or 'uv.exe' in command_chain_str:
             command = UV
         else:
             command = OTHER
