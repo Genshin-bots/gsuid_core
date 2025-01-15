@@ -13,7 +13,7 @@ packages = [{include = "gsuid_core"}]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<=3.12"
+python = ">=3.11,<4.0"
 httpx = ">=0.23.0"
 beautifulsoup4 = ">=4.11.1"
 lxml = ">=4.9.2"
@@ -107,7 +107,7 @@ authors = [
     {name = "MingxuanGame", email = "MingxuanGame@outlook.com"},
 ]
 license = {text = "GPL-3.0-or-later"}
-requires-python = ">=3.11,<3.12.1"
+requires-python = ">=3.11,<4.0"
 dependencies = [
     "httpx>=0.23.0",
     "beautifulsoup4>=4.11.1",

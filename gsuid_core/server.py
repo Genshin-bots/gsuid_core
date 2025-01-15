@@ -231,6 +231,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
 
     logger.debug(f'[安装/更新依赖] 需更新依赖列表如下：\n{to_update}')
 
+    _tool = check_start_tool()
     start_tool = check_start_tool(True)
     logger.debug(f'[安装/更新依赖] 当前启动工具：{start_tool}')
 
@@ -274,7 +275,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
                 and dependency not in ignore_dep
             )
         logger.trace(
-            f'[安装/更新依赖] 检测到依赖 {dependency}, 是否满足条件 {condi}'
+            f'[安装/更新依赖] 检测到依赖 {dependency}, 是否满足安装/更新条件 {condi}'
         )
 
         if condi:
@@ -283,6 +284,14 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
             CMD = f'{start_tool} install "{dependency}{version}" {extra}'
 
             retcode = execute_cmd(CMD)
+            if retcode != 0:
+                logger.warning('[安装/更新依赖] 安装失败（将会重试两次）')
+                if _tool != 'python':
+                    CMD2 = f'{_tool} run python -m ensurepip'
+                    retcode = execute_cmd(CMD2)
+                    if retcode == 0:
+                        retcode = execute_cmd(CMD)
+
             if retcode != 0:
                 logger.warning('[安装/更新依赖] 安装失败（将会重试一次）')
                 if ' python -m' in start_tool:
@@ -368,7 +377,7 @@ def compare_versions(installed_version, required_version):
 
 
 def find_dependencies_to_update(
-    installed_deps, required_deps
+    installed_deps: Dict[str, str], required_deps: Dict[str, str]
 ) -> Dict[str, Dict[str, str]]:
     to_update = {}
 
@@ -380,5 +389,12 @@ def find_dependencies_to_update(
                     "installed_version": installed_version,
                     "required_version": required_version,
                 }
+
+    for dep, version in required_deps.items():
+        if dep not in installed_deps:
+            to_update[dep] = {
+                "installed_version": "not installed",
+                "required_version": version,
+            }
 
     return to_update
