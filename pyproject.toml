@@ -13,7 +13,7 @@ packages = [{include = "gsuid_core"}]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<4.0"
+python = ">=3.10,<4.0"
 httpx = ">=0.23.0"
 beautifulsoup4 = ">=4.11.1"
 lxml = ">=4.9.2"
@@ -76,9 +76,10 @@ dev = [
 
 [tool.pdm.build]
 includes = ["gsuid_core"]
+
 [[tool.poetry.source]]
-name = "TUNA"
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+name = "NJU"
+url = "https://mirror.nju.edu.cn/pypi/web/simple"
 priority = "primary"
 
 [build-system]
@@ -107,7 +108,7 @@ authors = [
     {name = "MingxuanGame", email = "MingxuanGame@outlook.com"},
 ]
 license = {text = "GPL-3.0-or-later"}
-requires-python = ">=3.11,<4.0"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "httpx>=0.23.0",
     "beautifulsoup4>=4.11.1",
@@ -163,13 +164,9 @@ readme = "README.md"
 respect-source-order = true
 
 [[tool.pdm.source]]
-name = "TUNA"
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+name = "NJU"
+url = "https://mirror.nju.edu.cn/pypi/web/simple"
 
-[[tool.pdm.source]]
-name = "TUNA"
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
-verify_ssl = true
 [project.urls]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
 homepage = "https://github.com/Genshin-bots/gsuid-core"
