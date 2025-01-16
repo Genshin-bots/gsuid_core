@@ -30,7 +30,9 @@ def get_restart_command():
         return restart_command
     else:
         tool = check_start_tool()
-        return f'{tool} run python'
+        if tool != 'python':
+            return f'{tool} run python'
+        return 'python -m'
 
 
 async def get_restart_sh() -> str:

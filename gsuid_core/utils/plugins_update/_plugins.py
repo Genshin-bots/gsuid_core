@@ -40,19 +40,24 @@ def check_start_tool(is_pip: bool = False):
     command_chain = get_command_chain()
     command_chain = [command.lower() for command in command_chain]
     command_chain_str = ' '.join(command_chain)
+    logger.debug(f'[检测启动工具] 命令链: {command_chain}')
 
     PDM = 'pdm'
     POETRY = 'poetry'
     UV = 'uv'
     OTHER = start_venv.strip()
+    PYTHON = 'python'
+    if OTHER == 'auto':
+        OTHER = PYTHON
 
     if is_pip:
         PIP = ' run python -m pip'
         PDM += PIP
         POETRY += ' run pip'
         UV += PIP
+        PYTHON += '-m pip'
 
-        if OTHER == 'python':
+        if OTHER == 'python' or OTHER == 'auto':
             OTHER = 'python -m pip'
         else:
             OTHER += PIP
@@ -65,7 +70,7 @@ def check_start_tool(is_pip: bool = False):
         elif 'uv' in command_chain or 'uv.exe' in command_chain_str:
             command = UV
         else:
-            command = OTHER
+            command = PYTHON
     elif start_venv == 'pdm':
         command = PDM
     elif start_venv == 'poetry':
@@ -73,7 +78,7 @@ def check_start_tool(is_pip: bool = False):
     elif start_venv == 'uv':
         command = UV
     else:
-        command = start_venv.strip()
+        command = OTHER
 
     return command
 
@@ -97,7 +102,7 @@ async def uninstall_plugin(path: Path):
 # 传入一个path对象
 def run_install(path: Optional[Path] = None) -> int:
     tools = check_start_tool()
-    if tools == 'pip':
+    if tools == 'python':
         logger.warning('你使用的是PIP环境, 无需进行 PDM/Poetry install!')
         return -200
 
@@ -553,4 +558,5 @@ async def update_plugins(
     log_list = await update_from_git_in_tread(
         level, plugin_name, log_key, log_limit
     )
+    return log_list
     return log_list
