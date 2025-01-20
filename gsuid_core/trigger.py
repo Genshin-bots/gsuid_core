@@ -92,9 +92,9 @@ class Trigger:
     async def get_command(self, msg: Event) -> Event:
         if self.type != 'regex':
             msg.command = self.keyword
-            msg.text = msg.raw_text.replace(self.keyword, '')
+            msg.text = msg.raw_text.replace(self.keyword, '', 1)
             if self.prefix:
-                msg.text = msg.text.replace(self.prefix, '')
+                msg.text = msg.text.replace(self.prefix, '', 1)
         else:
             command_group = re.search(self.keyword, msg.raw_text)
             if command_group:
