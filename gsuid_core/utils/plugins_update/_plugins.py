@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import asyncio
 import subprocess
@@ -298,6 +297,15 @@ async def check_status(plugin_name: str) -> int:
     return await async_check_plugins(plugin_name)
 
 
+def extract_last_url(text: str):
+    if '/http' in text:
+        parts = text.split("/http")
+        url = 'http' + parts[-1]
+        return url
+    else:
+        return None
+
+
 async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
     plugin_name = repo.name
     proxy_url: str = core_plugins_config.get_config('ProxyURL').data
@@ -322,14 +330,12 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
         )
         return f'{plugin_name} 无需设置代理'
 
-    _main_url = re.search(r"https:\/\/github[\s\S]+?git", original_url)
+    _main_url = extract_last_url(original_url)
     if _main_url:
-        main_url = _main_url[0]
+        main_url = _main_url
     else:
         logger.info(f'[core插件设置代理] {plugin_name} 未发现有效git地址')
         return f'{plugin_name} 未发现有效git地址'
-
-    # _proxy_url = re.search(r'^(https?:\/\/.+?)\/', original_url)
 
     if proxy is None:
         _proxy_url = proxy_url
