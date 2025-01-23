@@ -34,14 +34,6 @@ else:
 
 
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
-    # 是否启用相同消息CD
-    if same_user_cd != 0 and cooldown_tracker.is_on_cooldown(
-        msg.user_id,
-        same_user_cd,
-    ):
-        logger.trace(f'[GsCore][触发相同消息CD] 忽略{msg.user_id}该消息!')
-        return
-
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
@@ -106,6 +98,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         mutiply_instances[mutiply_map[temp_gid]].set_mutiply_event()
         if session_id == mutiply_instances[mutiply_map[temp_gid]].session_id:
             return
+
+    # 是否启用相同消息CD
+    if same_user_cd != 0 and cooldown_tracker.is_on_cooldown(
+        msg.user_id,
+        same_user_cd,
+    ):
+        logger.trace(f'[GsCore][触发相同消息CD] 忽略{msg.user_id}该消息!')
+        return
 
     is_start = False
     if _command_start and event.raw_text:

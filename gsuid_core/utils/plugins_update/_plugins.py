@@ -54,7 +54,7 @@ def check_start_tool(is_pip: bool = False):
         PDM += PIP
         POETRY += ' run pip'
         UV += PIP
-        PYTHON += '-m pip'
+        PYTHON += ' -m pip'
 
         if OTHER == 'python' or OTHER == 'auto':
             OTHER = 'python -m pip'
