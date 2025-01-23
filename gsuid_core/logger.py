@@ -5,7 +5,7 @@ import logging
 import datetime
 from pathlib import Path
 from functools import wraps
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import loguru
 import aiofiles
@@ -47,13 +47,22 @@ class LoguruHandler(logging.Handler):  # pragma: no cover
         )
 
 
+def replace_tag(text: Optional[str]):
+    if text is None:
+        return ''
+    return text.replace('<', '\<')  # type: ignore # noqa: W605
+
+
 def format_event(record):
     if 'trigger' in record['extra']:
         _tg = record['extra']['trigger']
+        _tg0 = replace_tag(_tg[0])
+        _tg1 = replace_tag(_tg[1])
+        _tg2 = replace_tag(_tg[2])
         message = (
-            f'<m><b>[Trigger]</b></m> 消息 「{_tg[0]}」 触发'
-            f' 「{_tg[1]}」 类型触发器, 关键词:'
-            f' 「{_tg[2]}」 '
+            f'<m><b>[Trigger]</b></m> 消息 「{_tg0}」 触发'
+            f' 「{_tg1}」 类型触发器, 关键词:'
+            f' 「{_tg2}」 '
         )
         message = message.replace('{', '{{').replace('}', '}}')
     elif record['extra']:
@@ -69,17 +78,24 @@ def format_event(record):
             file = event.file
             content = event.content
 
+        raw_text = replace_tag(event.raw_text)
+        file_name = replace_tag(event.file_name)
+        command = replace_tag(event.command)
+        text = replace_tag(event.text)
+        content = replace_tag(f'{content}')
+        regex_dict = replace_tag(f'{event.regex_dict}')
+
         if 'event' in record['extra']:
             message = (
                 f'<c><b>[Raw]</b></c> '
-                f'raw_text={event.raw_text}, '
+                f'raw_text={raw_text}, '
                 f'image={event.image}, '
                 f'at={event.at}, '
                 f'image_list={event.image}, '
                 f'at_list={event.at_list}, '
                 f'is_tome={event.is_tome}, '
                 f'reply={event.reply}, '
-                f'file_name={event.file_name}, '
+                f'file_name={file_name}, '
                 f'file_type={event.file_type}, '
                 f'file={file}'
                 f' | <m><b>[Receive]</b></m> '
@@ -95,8 +111,9 @@ def format_event(record):
         else:
             message = (
                 f'<m><b>[Command]</b></m> '
-                f'command={event.command}, '
-                f'text={event.text}'
+                f'command={command}, '
+                f'text={text}, '
+                f'regex_dict={regex_dict}'
             )
         message = message.replace('{', '{{').replace('}', '}}')
     else:
