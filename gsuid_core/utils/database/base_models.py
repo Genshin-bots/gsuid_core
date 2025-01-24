@@ -1303,6 +1303,42 @@ class User(BaseModel):
         return [user for user in data if user.push_switch != 'off']
 
     @classmethod
+    async def get_all_sign_user_list(cls: Type[T_User]) -> List[T_User]:
+        '''获得表数据中全部的`sign_switch!= off`的数据列表'''
+        data = await cls.get_all_user()
+        return [user for user in data if user.sign_switch != 'off']
+
+    @classmethod
+    async def get_push_user_list(
+        cls: Type[T_User],
+        push_title: Optional[str] = None,
+    ) -> List[T_User]:
+        '''获得表数据中全部的`{push_title}_push_switch!= off`的数据列表'''
+        if push_title is None:
+            return await cls.get_all_push_user_list()
+        data = await cls.get_all_user()
+        return [
+            user
+            for user in data
+            if getattr(user, f'{push_title}_push_switch') != 'off'
+        ]
+
+    @classmethod
+    async def get_sign_user_list(
+        cls: Type[T_User],
+        sign_title: Optional[str] = None,
+    ) -> List[T_User]:
+        '''获得表数据中全部的`{sign_title}_sign_switch!= off`的数据列表'''
+        if sign_title is None:
+            return await cls.get_all_sign_user_list()
+        data = await cls.get_all_user()
+        return [
+            user
+            for user in data
+            if getattr(user, f'{sign_title}_sign_switch') != 'off'
+        ]
+
+    @classmethod
     async def user_exists(
         cls, uid: str, game_name: Optional[str] = None
     ) -> bool:
