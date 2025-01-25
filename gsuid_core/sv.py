@@ -35,6 +35,9 @@ def modify_func(func):
     async def wrapper(bot: Bot, event: Event):
         try:
             result = await func(bot, event)
+        except Exception:
+            logger.error(f'[SV] {event.command} 执行时出现错误!')
+            logger.error(traceback.format_exc())
         finally:
             instancess = Bot.get_instances()
             mutiply_instances = Bot.get_mutiply_instances()
