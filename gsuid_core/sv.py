@@ -35,6 +35,7 @@ def modify_func(func):
     async def wrapper(bot: Bot, event: Event):
         try:
             result = await func(bot, event)
+            return result
         except Exception:
             logger.error(f'[SV] {event.command} 执行时出现错误!')
             logger.error(traceback.format_exc())
@@ -47,7 +48,6 @@ def modify_func(func):
             if bot.session_id in mutiply_instances and bot.mutiply_tag:
                 mutiply_instances.pop(bot.session_id)
                 mutiply_map.pop(bot.temp_gid)
-        return result
 
     return wrapper
 
