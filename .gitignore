@@ -676,3 +676,4 @@ gsuid_core/plugins/*
 !gsuid_core/utils/backup
 logs
 .pdm-python
+.pdm-build

@@ -94,7 +94,7 @@ def _set_SV(request: Request, data: Dict, name: str):
 @site.auth.requires('root')
 def _set_Plugins(request: Request, data: Dict, name: str):
     if name in SL.plugins:
-        plguin = SL.plugins[name]
+        plugin = SL.plugins[name]
         data['pm'] = int(data['pm'])
         data['priority'] = int(data['priority'])
         if 'prefix' in data:
@@ -107,7 +107,7 @@ def _set_Plugins(request: Request, data: Dict, name: str):
             data['black_list'] = []
         if data['white_list'] == ['']:
             data['white_list'] = []
-        plguin.set(**data)
+        plugin.set(**data)
 
 
 @app.post('/genshinuid/setGsConfig/{config_name}')

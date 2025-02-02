@@ -53,8 +53,6 @@ def modify_func(func):
 
 
 class Plugins:
-    is_initialized = False
-
     def __new__(cls, *args, **kwargs):
         # 判断sv是否已经被初始化
         if len(args) >= 1:
@@ -69,6 +67,7 @@ class Plugins:
             return SL.plugins[name]
         else:
             _plugin = super().__new__(cls)
+            _plugin.__init__(*args, **kwargs)
             SL.plugins[name] = _plugin
             return _plugin
 
@@ -100,31 +99,29 @@ class Plugins:
         allow_empty_prefix: Optional[bool] = None,
         force: bool = False,
     ):
-        if not self.is_initialized:
-            if isinstance(prefix, str):
-                prefix = [prefix]
-            if allow_empty_prefix is None:
-                _pf = prefix + force_prefix
-                if '' in _pf:
-                    _pf.remove('')
-                if _pf:
-                    allow_empty_prefix = False
-                else:
-                    allow_empty_prefix = True
+        if isinstance(prefix, str):
+            prefix = [prefix]
+        if allow_empty_prefix is None:
+            _pf = prefix + force_prefix
+            if '' in _pf:
+                _pf.remove('')
+            if _pf:
+                allow_empty_prefix = False
+            else:
+                allow_empty_prefix = True
 
-            self.name = name
-            self.priority = priority
-            self.enabled = enabled
-            self.pm = pm
-            self.black_list = black_list
-            self.area = area
-            self.white_list = white_list
-            self.sv = {}
-            self.prefix = prefix
-            self.allow_empty_prefix = allow_empty_prefix
-            self.force_prefix = force_prefix
-            self.disable_force_prefix = disable_force_prefix
-            self.is_initialized = True
+        self.name = name
+        self.priority = priority
+        self.enabled = enabled
+        self.pm = pm
+        self.black_list = black_list
+        self.area = area
+        self.white_list = white_list
+        self.sv = {}
+        self.prefix = prefix
+        self.allow_empty_prefix = allow_empty_prefix
+        self.force_prefix = force_prefix
+        self.disable_force_prefix = disable_force_prefix
 
     def set(self, **kwargs):
         plugin_config = config_plugins[self.name]
@@ -180,7 +177,6 @@ class SV:
 
             # 初始化
             plugins = None
-
             if plugins_name not in config_plugins:
                 if plugins_name in SL.plugins:
                     plugins = SL.plugins[plugins_name]
@@ -235,7 +231,6 @@ class SV:
 
                 plugins = Plugins(
                     **config_plugins[plugins_name],
-                    force=True,
                 )
 
                 core_config.set_config('plugins', config_plugins)
