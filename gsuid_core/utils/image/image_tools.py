@@ -490,7 +490,7 @@ class CustomizeImage:
 
     @staticmethod
     def get_char_high_color(
-        bg_color: Tuple[int, int, int]
+        bg_color: Tuple[int, int, int],
     ) -> Tuple[int, int, int]:
         r = 140
         d = 20
@@ -505,7 +505,7 @@ class CustomizeImage:
 
     @staticmethod
     def get_bg_detail_color(
-        bg_color: Tuple[int, int, int]
+        bg_color: Tuple[int, int, int],
     ) -> Tuple[int, int, int]:
         r = 140
         if max(*bg_color) > 255 - r:
@@ -519,7 +519,7 @@ class CustomizeImage:
 
     @staticmethod
     def get_highlight_color(
-        color: Tuple[int, int, int]
+        color: Tuple[int, int, int],
     ) -> Tuple[int, int, int]:
         red_color = color[0]
         green_color = color[1]

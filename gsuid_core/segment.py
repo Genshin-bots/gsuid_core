@@ -153,7 +153,7 @@ class MessageSegment:
 
     @staticmethod
     def node(
-        content_list: Union[List[Message], List[str], List[bytes]]
+        content_list: Union[List[Message], List[str], List[bytes]],
     ) -> Message:
         msg_list: List[Message] = []
         for msg in content_list:

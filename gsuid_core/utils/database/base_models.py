@@ -87,7 +87,7 @@ except:  # noqa: E722
 
 
 def with_session(
-    func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]]
+    func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
 ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
     @wraps(func)
     async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
