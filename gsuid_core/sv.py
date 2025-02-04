@@ -172,7 +172,10 @@ class SV:
             file = stack[-2].filename
             path = Path(file)
             parts = path.parts
-            i = parts.index('plugins')
+            if 'plugins' in parts:
+                i = parts.index('plugins')
+            else:
+                i = parts.index('buildin_plugins')
             self.self_plugin_name = plugins_name = parts[i + 1]
 
             # 初始化

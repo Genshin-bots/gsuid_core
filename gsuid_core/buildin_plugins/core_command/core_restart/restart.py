@@ -7,9 +7,8 @@ from pathlib import Path
 
 from gsuid_core.server import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
-from gsuid_core.plugins.core_command.core_status.command_global_val import (
-    save_global_val,
-)
+
+from ..core_status.command_global_val import save_global_val
 
 bot_start = Path(__file__).parents[3] / 'core.py'
 restart_sh_path = Path().cwd() / 'gs_restart.sh'

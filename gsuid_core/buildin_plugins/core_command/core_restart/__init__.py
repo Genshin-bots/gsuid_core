@@ -5,11 +5,9 @@ from gsuid_core.bot import Bot
 from gsuid_core.gss import gss
 from gsuid_core.models import Event
 from gsuid_core.logger import logger
-from gsuid_core.plugins.core_command.core_status.command_global_val import (
-    save_global_val,
-)
 
 from .restart import restart_message, restart_genshinuid
+from ..core_status.command_global_val import save_global_val
 
 sv_core_config = SV('Core管理', pm=0)
 

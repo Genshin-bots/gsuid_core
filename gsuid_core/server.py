@@ -23,6 +23,9 @@ core_shutdown_def = set()
 installed_dependencies: Dict[str, str] = {}
 ignore_dep = ['python', 'fastapi', 'pydantic']
 
+PLUGIN_PATH = Path(__file__).parent / 'plugins'
+BUILDIN_PLUGIN_PATH = Path(__file__).parent / 'buildin_plugins'
+
 
 def on_core_start(func: Callable):
     if func not in core_start_def:
@@ -58,17 +61,14 @@ class GsServer:
         logger.info('[GsCore] 开始加载插件...')
         get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
-        plug_path = Path(__file__).parent / 'plugins'
 
-        # 优先加载core_command
-        plug_path_list = list(plug_path.iterdir())
-        core_command_path = plug_path / 'core_command'
-        if core_command_path in plug_path_list:
-            plug_path_list.remove(core_command_path)
-            plug_path_list.insert(0, core_command_path)
+        plug_path_list = list(BUILDIN_PLUGIN_PATH.iterdir()) + list(
+            PLUGIN_PATH.iterdir()
+        )
 
         # 遍历插件文件夹内所有文件
         for plugin in plug_path_list:
+            plugin_parent = plugin.parent.name
             if plugin.stem.startswith('_'):
                 continue
             # 如果发现文件夹，则视为插件包
@@ -84,39 +84,24 @@ class GsServer:
                     # 如果文件夹内有__full_.py，则视为插件包合集
                     sys.path.append(str(plugin_path.parents))
                     if plugins_path.exists():
-                        self.load_dir_plugins(plugin)
+                        self.load_dir_plugins(plugin, plugin_parent)
                     elif nest_path.exists() or src_path.exists():
                         path = nest_path.parent / plugin.name
                         pyproject = plugin / 'pyproject.toml'
                         if pyproject.exists:
                             check_pyproject(pyproject)
                         if path.exists():
-                            self.load_dir_plugins(path, True)
+                            self.load_dir_plugins(path, plugin_parent, True)
                     # 如果文件夹内有__init_.py，则视为单个插件包
                     elif plugin_path.exists():
                         importlib.import_module(
-                            f'plugins.{plugin.name}.__init__'
+                            f'{plugin_parent}.{plugin.name}.__init__'
                         )
                 # 如果发现单文件，则视为单文件插件
                 elif plugin.suffix == '.py':
-                    importlib.import_module(f'plugins.{plugin.name[:-3]}')
-
-                '''trick 注释掉'''
-                '''
-                if plugin.stem in ['StarRailUID', 'ArknightsUID']:
-                    logger.info('[BAI] 检测是否存在失效仓库...')
-                    origin_url = sync_get_plugin_url(plugin)
-                    if (
-                        origin_url
-                        and 'baiqwerdvd' not in origin_url
-                        and 'qwerdvd' in origin_url
-                    ):
-                        logger.warning(f'[BAI] 检测到失效仓库: {origin_url}')
-                        new_url = origin_url.replace('qwerdvd', 'baiqwerdvd')
-                        logger.success(f'[BAI] 替换新仓库地址成功: {new_url}')
-                        sync_change_plugin_url(plugin, new_url)
-                '''
-
+                    importlib.import_module(
+                        f'{plugin_parent}.{plugin.name[:-3]}'
+                    )
                 '''导入成功'''
                 logger.success(f'插件{plugin.stem}导入成功!')
             except Exception as e:  # noqa
@@ -126,13 +111,15 @@ class GsServer:
                 )
                 logger.warning(f'插件{plugin.name}加载失败')
 
-    def load_dir_plugins(self, plugin: Path, nest: bool = False):
+    def load_dir_plugins(
+        self, plugin: Path, plugin_parent: str, nest: bool = False
+    ):
         init_path = plugin / '__init__.py'
         name = plugin.name
         if init_path.exists():
             if str(init_path.parents) not in sys.path:
                 sys.path.append(str(init_path.parents))
-            importlib.import_module(f'plugins.{name}.{name}.__init__')
+            importlib.import_module(f'{plugin_parent}.{name}.{name}.__init__')
 
         for sub_plugin in plugin.iterdir():
             if sub_plugin.is_dir():
@@ -141,9 +128,9 @@ class GsServer:
                     if str(plugin_path.parents) not in sys.path:
                         sys.path.append(str(plugin_path.parents))
                     if nest:
-                        _p = f'plugins.{name}.{name}.{sub_plugin.name}'
+                        _p = f'{plugin_parent}.{name}.{name}.{sub_plugin.name}'
                     else:
-                        _p = f'plugins.{name}.{sub_plugin.name}'
+                        _p = f'{plugin_parent}.{name}.{sub_plugin.name}'
                     importlib.import_module(f'{_p}')
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:

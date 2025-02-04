@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Union, Literal, overload
 
-CONFIG_PATH = Path(__file__).parent / 'config.json'
+from gsuid_core.data_store import get_res_path
+
+CONFIG_PATH = get_res_path() / 'config.json'
+OLD_CONFIG_PATH = Path(__file__).parent / 'config.json'
 
 CONFIG_DEFAULT = {
     'HOST': 'localhost',
@@ -46,6 +49,9 @@ plugins_sample = {
 
 class CoreConfig:
     def __init__(self) -> None:
+        if OLD_CONFIG_PATH.exists():
+            OLD_CONFIG_PATH.rename(CONFIG_PATH)
+
         if not CONFIG_PATH.exists():
             with open(CONFIG_PATH, 'w', encoding='UTF-8') as file:
                 json.dump(CONFIG_DEFAULT, file, indent=4, ensure_ascii=False)
