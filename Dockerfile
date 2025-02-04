@@ -1,4 +1,6 @@
-FROM python:3.10.16-slim-bullseye
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/python:3.10-slim-bullseye
+
+ENV TZ=Asia/Shanghai
 
 WORKDIR /app/gsuid_core
 
@@ -14,9 +16,9 @@ RUN sed -i 's/http:\/\/deb.debian.org/http:\/\/ftp.cn.debian.org/g' /etc/apt/sou
     && apt-get autoremove \
     && apt-get clean \
     && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    && pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-    && pip install poetry -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-    && poetry install \
+    && pip install --no-cache-dir --upgrade pip -i https://mirror.nju.edu.cn/pypi/web/simple/ \
+    && pip install uv -i https://mirror.nju.edu.cn/pypi/web/simple/ \
+    && uv sync \
     && rm -rf /app/*
 
-CMD poetry run python3 core.py
+CMD uv run core

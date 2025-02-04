@@ -1,4 +1,4 @@
-# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.7.0
+# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.7.1
 
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?&labelColor=ef8336)](https://pycqa.github.io/isort/)
@@ -7,57 +7,23 @@
 
 [KimigaiiWuyi/GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) 的核心部分，平台无关，支持 HTTP/WS 形式调用，便于移植到其他平台以及框架。
 
-本Readme的部分内容**可能已经失效**，请前往最新的详细文档查阅：
+本Readme的部分内容**已经失效**，请前往最新的详细文档查阅：
 
-**🎉[详细文档](https://docs.sayu-bot.com)**
+**🎉 [详细文档](https://docs.sayu-bot.com)** ( [快速开始(安装)](https://docs.sayu-bot.com/Started/InstallCore.html) | [链接Bot](https://docs.sayu-bot.com/LinkBots/AdapterList.html) | [插件市场](https://docs.sayu-bot.com/InstallPlugins/PluginsList.html) )
 
- 👉[插件编写指南](https://docs.sayu-bot.com/CodePlugins/CookBook.html)
+👉 [插件编写指南](https://docs.sayu-bot.com/CodePlugins/CookBook.html)
 
-## 安装Core
+## 感谢
 
-1. git clone gsuid-core本体
+- 本项目仅供学习使用，请勿用于商业用途
+- [爱发电](https://afdian.com/a/KimigaiiWuyi)
+- [GPL-3.0 License](https://github.com/Genshin-bots/gsuid_core/blob/master/LICENSE) ©[@KimigaiiWuyi](https://github.com/KimigaiiWuyi)
 
-```shell
-git clone https://github.com/Genshin-bots/gsuid_core.git --depth=1 --single-branch
-```
+---
 
-2. 安装poetry
-
-```shell
-pip install poetry
-```
-
-3. 安装所需依赖
-
-```shell
-# cd进入clone好的文件夹内
-cd gsuid_core
-# 安装依赖
-poetry install
-```
-
-4. 安装所需插件（可选）
-
-```shell
-# cd进入插件文件夹内
-cd plugins
-# 安装v4 GenshinUID
-git clone -b v4 https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
-```
-
-5. 启动gsuid_core（早柚核心）
-
-```shell
-# 在gsuid_core/genshin_core文件夹内
-poetry run python core.py
-# 或者（二选一即可）
-poetry run core
-```
-
-6. 链接其他适配端
-
-+ 默认core将运行在`localhost:8765`端口上，如有需要可至`config.json`修改。
-+ 在支持的Bot上（例如NoneBot2、HoshinoBot、ZeroBot、YunZaiBot等），安装相应适配插件，启动Bot（如果有修改端口，则需要在启动Bot前修改适配插件相应端口），即可自动连接Core端。
+> [!IMPORTANT]
+>
+> 以下内容未经验证。
 
 ## Docker部署Core（可选）
 

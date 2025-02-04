@@ -26,6 +26,9 @@ ignore_dep = ['python', 'fastapi', 'pydantic']
 PLUGIN_PATH = Path(__file__).parent / 'plugins'
 BUILDIN_PLUGIN_PATH = Path(__file__).parent / 'buildin_plugins'
 
+if not PLUGIN_PATH.exists():
+    PLUGIN_PATH.mkdir()
+
 
 def on_core_start(func: Callable):
     if func not in core_start_def:
