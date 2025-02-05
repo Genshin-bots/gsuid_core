@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Union, Literal, overload
 
@@ -50,7 +51,9 @@ plugins_sample = {
 class CoreConfig:
     def __init__(self) -> None:
         if OLD_CONFIG_PATH.exists():
-            OLD_CONFIG_PATH.rename(CONFIG_PATH)
+            if not CONFIG_PATH.exists():
+                shutil.copy2(OLD_CONFIG_PATH, CONFIG_PATH)
+            OLD_CONFIG_PATH.unlink()
 
         if not CONFIG_PATH.exists():
             with open(CONFIG_PATH, 'w', encoding='UTF-8') as file:
