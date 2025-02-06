@@ -5,6 +5,7 @@ from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.logger import logger
+from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.plugins_update._plugins import (
     run_install,
@@ -15,6 +16,15 @@ from gsuid_core.utils.plugins_update._plugins import (
 )
 
 sv_core_config = SV('Core管理', pm=0)
+
+
+@sv_core_config.on_prefix(('core手动重载插件'))
+async def send_core_reload_msg(bot: Bot, ev: Event):
+    plugin_name = ev.text.strip()
+    logger.info(f'🔔 开始执行 [重载] {plugin_name}')
+    await bot.send(f'🔔 正在尝试重载插件{plugin_name}...')
+    retcode = reload_plugin(plugin_name)
+    await bot.send(retcode)
 
 
 @sv_core_config.on_fullmatch(('core更新', 'core强制更新'), block=True)
