@@ -83,6 +83,11 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '启动Core时将会自动更新插件依赖',
         False,
     ),
+    'AutoReloadPlugins': GsBoolConfig(
+        '自动重载插件',
+        'Core内插件更新/安装时自动载入/重载',
+        True,
+    ),
     'EnablePicSrv': GsBoolConfig(
         '启用将图片转链接发送(需公网)',
         '发送图片转链接',

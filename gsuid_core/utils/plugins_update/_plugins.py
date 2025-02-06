@@ -10,6 +10,7 @@ import aiohttp
 from git.repo import Repo
 from git.exc import GitCommandError, NoSuchPathError, InvalidGitRepositoryError
 
+from gsuid_core.gss import gss
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -20,6 +21,7 @@ from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
 plugins_list: Dict[str, Dict[str, str]] = {}
 
 is_install_dep = core_plugins_config.get_config('AutoInstallDep').data
+is_reload: bool = core_plugins_config.get_config('AutoReloadPlugins').data
 
 
 async def check_plugin_exist(name: str):
@@ -173,7 +175,9 @@ def install_plugins(plugins: Dict[str, str]) -> str:
 
     Repo.clone_from(git_path, path, **config)
     logger.info(f'插件{plugin_name}安装成功!')
-    return f'插件{plugin_name}安装成功!发送[gs重启]以应用!'
+    if is_reload:
+        gss.load_plugin(path)
+    return f'插件{plugin_name}安装成功!发送[gs重启]以应用! (如已开启自动重载插件则无需重启)'
 
 
 async def install_plugin(plugin_name: str) -> int:
@@ -472,7 +476,7 @@ def update_from_git(
                         break
     else:
         log_list.append(f'✅插件 {plugin_name} 本次无更新内容！')
-    if plugin_name != '早柚核心':
+    if plugin_name != '早柚核心' and is_reload:
         reload_plugin(plugin_name)
     return log_list
 
