@@ -675,3 +675,4 @@ gsuid_core/plugins/*
 logs
 .pdm-python
 .pdm-build
+.VSCodeCounter

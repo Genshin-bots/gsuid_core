@@ -87,6 +87,7 @@ class GsServer:
                 sys.path.append(str(plugin_path.parents))
                 if plugins_path.exists():
                     module_list = self.load_dir_plugins(plugin, plugin_parent)
+                    return module_list
                 elif nest_path.exists() or src_path.exists():
                     path = nest_path.parent / plugin.name
                     pyproject = plugin / 'pyproject.toml'
@@ -96,6 +97,7 @@ class GsServer:
                         module_list = self.load_dir_plugins(
                             path, plugin_parent, True
                         )
+                        return module_list
                 # 如果文件夹内有__init_.py，则视为单个插件包
                 elif plugin_path.exists():
                     module_list = [
@@ -103,6 +105,7 @@ class GsServer:
                             f'{plugin_parent}.{plugin.name}.__init__'
                         )
                     ]
+                    return module_list
             # 如果发现单文件，则视为单文件插件
             elif plugin.suffix == '.py':
                 module_list = [
@@ -110,9 +113,9 @@ class GsServer:
                         f'{plugin_parent}.{plugin.name[:-3]}'
                     )
                 ]
+                return module_list
             '''导入成功'''
             logger.success(f'✅ 插件{plugin.stem}导入成功!')
-            return module_list
         except Exception as e:  # noqa
             exception = sys.exc_info()
             logger.opt(exception=exception).error(f'加载插件时发生错误: {e}')
