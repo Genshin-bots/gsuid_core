@@ -16,14 +16,14 @@ def register_help(
 ):
     if icon is None:
         icon = Image.open(ICON)
-    plugins_help['插件帮助一览']['data'].append(
-        {
-            "name": name,
-            "desc": f"{name}插件帮助功能",
-            "eg": f'发送 {help} 获得帮助',
-            "icon": icon,
-            "need_ck": False,
-            "need_sk": False,
-            "need_admin": False,
-        }
-    )
+    plugin_help = {
+        "name": name,
+        "desc": f"{name}插件帮助功能",
+        "eg": f'发送 {help} 获得帮助',
+        "icon": icon,
+        "need_ck": False,
+        "need_sk": False,
+        "need_admin": False,
+    }
+    if plugin_help not in plugins_help['插件帮助一览']['data']:
+        plugins_help['插件帮助一览']['data'].append(plugin_help)
