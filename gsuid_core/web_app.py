@@ -10,7 +10,7 @@ from bs4 import Tag, BeautifulSoup
 from starlette.requests import Request
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
@@ -413,10 +413,16 @@ app.mount(
 )
 
 
-@app.head('/genshinuid/image/{image_id}.jpg')
-@app.get('/genshinuid/image/{image_id}.jpg')
+@app.head('/genshinuid/image/{image_id}')
+@app.get('/genshinuid/image/{image_id}')
 async def get_image(image_id: str, background_tasks: BackgroundTasks):
-    path = image_res / f'{image_id}.jpg'
+    path = image_res / image_id
+    if not path.exists() and '.' not in image_id:
+        path = image_res / f'{image_id}.jpg'
+
+    if not path.exists():
+        return Response(status_code=404)
+
     image = Image.open(path).convert('RGB')
     image_bytes = BytesIO()
     image.save(image_bytes, format='JPEG')

@@ -58,9 +58,18 @@ async def convert_img(
     logger.info('[GsCore] 处理图片中....')
 
     if isinstance(img, Image.Image):
-        img = img.convert('RGB')
-        result_buffer = BytesIO()
-        img.save(result_buffer, format='JPEG', quality=pic_quality)
+        if img.format == 'GIF':
+            result_buffer = BytesIO()
+            img.save(result_buffer, format='GIF')
+        else:
+            img = img.convert('RGB')
+            result_buffer = BytesIO()
+            img.save(
+                result_buffer,
+                format='JPEG',
+                quality=pic_quality,
+            )
+
         res = result_buffer.getvalue()
         if is_base64:
             res = 'base64://' + b64encode(res).decode()
@@ -68,7 +77,7 @@ async def convert_img(
     elif isinstance(img, bytes):
         pass
     else:
-        async with aiofiles.open(img, 'rb') as fp:
+        async with aiofiles.open(Path(img), 'rb') as fp:
             img = await fp.read()
 
     logger.success('[GsCore] 图片处理完成！')

@@ -255,7 +255,11 @@ async def _image_to_local_url(image: Union[bytes, str]) -> List[Message]:
 
     bio = BytesIO(image_bytes)
     _image = Image.open(bio)
-    name = f'{uuid.uuid1()}.jpg'
+    if _image.format == 'GIF':
+        suffix = '.gif'
+    else:
+        suffix = '.jpg'
+    name = f'{uuid.uuid1()}.{suffix}'
     path = image_res / name
     path.write_bytes(image_bytes)
     data = f'link://{pic_srv}/genshinuid/image/{name}'
