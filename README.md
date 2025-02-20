@@ -58,12 +58,41 @@ cd plugins
 git clone -b v4 https://github.com/KimigaiiWuyi/GenshinUID.git --depth=1 --single-branch
 ```
 
-3. Docker Compose启动
+3. Docker Compose 启动
+
+> 注意：根据 docker 版本及插件安装情况，composer 命令可能为`docker-composer`或`docker composer`，若下面的语句执行提示指令出错，请换一个语句尝试（若两个语句都提示指令出错，则是`Docker Composer`没有安装
 
 ```shell
-# 进入项目根目录
+# 进入项目根目录（此目录下包含 Dockerfile 和 docker-compose.yaml 文件）
+
+# 初次安装，需要编译、安装依赖，需执行以下指令：
+docker-compose up -d --build
+
+# 之后的部署配置，仅修改 docker-compose.yaml 文件，需执行以下指令：
 docker-compose up -d
 ```
 
-- 默认core将运行在`localhost:8765`端口上，Docker部署必须修改`config.json`，如`0.0.0.0:8765`
-- 如果Bot（例如NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，可能需要将Core和Bot的容器都重启才生效
+4. Docker Compose 配置文件说明
+```yaml
+services:
+  gsuid-core:
+    build:
+      context: .
+    container_name: gsuidcore # 生成的容器名称（若名称被占用则会变为随机名称）
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai # 时区设置
+    ports:
+      - 18765:8765 # 端口映射：原插件的 8765 对应容器外部的 18765 端口
+    volumes:
+    # 仅映射需要外部访问的文件夹，如 data、plugins 文件夹
+	# 以下例子：将容器内插件的 data、plugins 文件夹，映射到 /opt/gscore_data 和 /opt/gscore_plugins 中
+      - /opt/gscore_data:/app/gsuid_core/data
+      - /opt/gscore_plugins:/app/gsuid_core/plugins
+```
+5. 容器部署的相关使用说明
+- 如需访问容器部署的 core 根目录，需要通过`docker exec -it <容器id> bash`进入，进入后默认的`/app/gsuid_core`对应文档中的 core 根目录`gsuid_core`
+- 默认 core 运行在`localhost:8765`端口上，Docker 部署后必须修改`config.json`文件（对应上面第 4 点中配置，在外部的地址为`/opt/gscore_data/config.json`，需将其中的`port`配置修改为`0.0.0.0:8765`
+- 关于端口配置，由于 docker 容器本身会对端口做转发（对应 yaml 文件中的`port`部分，因此建议使用 docker compose 的相关配置或 docker 指令来修改端口，而不用 core 本身的配置来修改，同时每次 docker 修改端口后都需要重新执行 docker compose 启动）
+- 如需增加插件，则需要进入容器项目根目录，按照官方教程使用命令安装或手动安装
+- 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，可能需要将Core和Bot的容器都重启才生效
