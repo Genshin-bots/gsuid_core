@@ -1,19 +1,25 @@
 services:
   gsuid-core:
-    # build:
-    #   context: .
-      # dockerfile: Dockerfile
-    image: registry.cn-hangzhou.aliyuncs.com/lilixxs-public/gsuid_core_docker:dev
+    build:
+      context: .
+      # 指定要使用的编译文件
+      # Dockerfile = 原软件源（连到国外服务器，国内下载较慢，适用 Github CI/CD 或 Docker Hub 等环境）
+      # Dockerfile.cn = 国内镜像源（使用国内镜像源，下载速度较快，可用于自己或国内服务器构建）
+      dockerfile: Dockerfile.cn
     container_name: gsuidcore
     privileged: true
     restart: unless-stopped
     environment:
+      # TZ = 时区设置，可选参数，默认为 Asia/Shanghai
+      # GSCORE_HOST = 服务监听地址 (0.0.0.0 = 监听全部地址，启动容器可直接进后台)
+      # 可选参数，默认 locaohost (只允许容器内本地访问)
       - TZ=Asia/Shanghai
+      - GSCORE_HOST=0.0.0.0
     ports:
       - 18765:8765
-    # volumes:
-      # 仅映射需要的文件夹，如果映射所有文件夹则容器内的文件会被覆盖
-      # 如需访问这种方式部署的项目根目录，需要通过 docker exec -it <容器id> bash 进入
-      # 进入后默认的 /app/ 即为插件根目录
-      # data
-      - /opt/gscore_data666:/app/data
+    volumes:
+      # 仅映射需要的文件夹，避免数据冲突
+      # 如需访问项目根目录，需要通过 docker exec -it <容器id> bash 进入容器内部
+      # 进入后默认的 /gsuid_core 即为插件根目录，路径与文档路径保持一致
+      - /opt/gscore_data:/gsuid_core/data
+      - /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins
