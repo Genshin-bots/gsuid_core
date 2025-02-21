@@ -79,6 +79,7 @@ async def check_speed():
             '[Singapore]': 'https://sg.qxqx.cf',
             '[MiniGG]': 'http://file.minigg.cn/sayu-bot',
             '[Lulu]': 'http://lulush.microgg.cn',
+            '[TakeyaYuki]': 'https://gscore.focalors.com',
         }
 
         TAG, BASE_URL = await find_fastest_url(URL_LIB)
