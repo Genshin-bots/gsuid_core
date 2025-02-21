@@ -9,7 +9,6 @@ ENV TZ=Asia/Shanghai
 
 # 调整层顺序，这些安装是固定的，单独分层
 RUN echo build start ---------------------------- \
-&& mv \
     && sed -i 's/http:\/\/deb.debian.org/http:\/\/ftp.cn.debian.org/g' /etc/apt/sources.list \
     && sed -i 's/http:\/\/security.debian.org/http:\/\/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
     && apt-get update -y \
