@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: gsuidcore
+    privileged: true
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
@@ -14,4 +15,4 @@ services:
       # 如需访问这种方式部署的项目根目录，需要通过 docker exec -it <容器id> bash 进入，进入后默认的 /app/gsuid_core 即为插件根目录
       # - /opt/gscore_data:/docker_mapping/data
       # - /opt/gscore_plugins:/docker_mapping/plugins
-      - /opt/gscore_data2:/app/data
+      - /opt/gscore_data666:/app/data
