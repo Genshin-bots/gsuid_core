@@ -73,6 +73,9 @@ docker-compose up -d --build
 docker-compose down
 # 再按照新的配置部署新的容器
 docker-compose up -d
+
+# 多次重复构建，会出现大量无用的镜像，使用以下指令清空未使用的镜像
+docker container prune -f
 ```
 
 4. Docker Compose 配置文件说明
@@ -81,34 +84,44 @@ services:
   gsuid-core:
     build:
       context: .
-    container_name: gsuidcore # 生成的容器名称（若名称被占用则会变为随机名称）
+      # 指定要使用的镜像构建文件
+      # Dockerfile = 原软件源（连到国外服务器，适用 Github CI/CD 或 Docker Hub 等外网环境）
+      # Dockerfile.cn = 国内镜像源（使用国内镜像源，适用于自己或国内服务器构建）
+      dockerfile: Dockerfile.cn
+    container_name: gsuidcore
+    privileged: true
     restart: unless-stopped
     environment:
-      - TZ=Asia/Shanghai # 时区设置
+      # TZ = 时区设置，可选参数，默认为 Asia/Shanghai
+      # GSCORE_HOST = 服务监听地址 (0.0.0.0 = 监听全部地址，启动容器可直接进后台) 可选参数，默认 locaohost (只允许容器内本地访问)
+      - TZ=Asia/Shanghai
+      - GSCORE_HOST=0.0.0.0
     ports:
-      - 18765:8765 # 端口映射：原插件的 8765 对应容器外部的 18765 端口
+      # 端口映射，可自由修改，以下为：容器（core 中配置）8765 对应外部的 18765 端口
+      - 18765:8765
     volumes:
-    # 仅映射需要外部访问的文件夹，如 data、plugins 文件夹
-	# 以下例子：将容器内 core 程序的 data、plugins 文件夹，映射到 /opt/gscore_data 和 /opt/gscore_plugins 中
-      - /opt/gscore_data:/app/gsuid_core/data
-      - /opt/gscore_plugins:/app/gsuid_core/plugins
+      # 仅映射需要的文件夹，避免数据冲突
+      # 如需访问项目根目录，需要通过 docker exec -it <容器id> bash 进入容器内部
+      # 进入后默认的 /gsuid_core 即为插件根目录，路径与文档路径保持一致
+      - /opt/gscore_data:/gsuid_core/data
+      - /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins
 ```
 5. 容器部署的相关使用说明
-- 如需访问容器部署的 core 的其他路径（上面 yaml 文件中没有映射的文件或路径）则需要通过`docker exec -it <容器id> bash`进入，进入后默认的`/app/gsuid_core`对应文档中的 core 根目录`gsuid_core`
+- 如需访问容器部署的 core 的其他路径（上面 yaml 文件中没有映射的文件或路径）则需要通过`docker exec -it <容器id> bash`进入，进入后默认的`/gsuid_core`即对应文档中的 core 根目录`gsuid_core`，其他文档路径与官方文档对应
 
-- 默认 core 运行在`localhost:8765`端口上，Docker 部署后无法连接
+- 若不设定环境变量`GSCORE_HOST`,则 core 默认监听在`localhost`地址，Docker 部署后无法直接连接
 
-  必须修改`config.json`文件中的`HOST`配置，参考 [https://docs.sayu-bot.com/Started/CoreConfig.html](https://docs.sayu-bot.com/Started/CoreConfig.html)
+  需要修改`config.json`文件中的`HOST`配置，参考 [https://docs.sayu-bot.com/Started/CoreConfig.html](https://docs.sayu-bot.com/Started/CoreConfig.html)
 
-  （以上面的 yaml 文件为例，配置文件在文档中的路径为`gsuid_core/data`，则对应在容器外部的地址为`/opt/gscore_data/config.json`，需将其中的`port`配置修改为`0.0.0.0:8765`
+  （以上面的 yaml 文件为例，配置文件在文档中的路径为`gsuid_core/data`，则对应在容器外部的地址为`/gscore_data/config.json`，需将其中的`host`配置修改为`0.0.0.0`
 
   然后执行`docker restart <容器id>`重启容器
 
 
 - 关于端口配置，由于 docker 容器本身会对端口做转发（对应 yaml 文件中的`port`部分，因此建议使用 docker compose 的相关配置或 docker 指令来修改端口，而不用 core 本身的配置来修改
 
-	同时每次 docker 修改端口后都需要先删除当前容器重新执行`docker compose up -d`指令重新部署
+  同时每次 docker 修改端口、监听地址后都需要先删除当前容器重新执行`docker compose up -d`指令重新部署
 
-- 如需增加插件，则需要进入容器项目根目录，按照官方教程使用命令安装或手动安装
+- 如需增加插件，建议使用命令进行安装，也可进入容器项目根目录手动安装
 
-- 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，可能需要将Core和Bot的容器都重启才生效
+- 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，建议将Core和Bot的容器都重启，保证修改生效
