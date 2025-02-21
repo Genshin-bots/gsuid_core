@@ -8,7 +8,7 @@ ENV PATH="${PATH}:/root/.local/bin"
 ENV TZ=Asia/Shanghai
 
 # 调整层顺序，这些安装是固定的，单独分层
-RUN echo "build start ---------------------------- \
+RUN echo build start ---------------------------- \
     && apt-get update -y \
     && apt install curl git -y \
     && apt-get autoremove \
