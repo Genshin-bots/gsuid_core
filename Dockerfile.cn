@@ -19,7 +19,7 @@ RUN echo build start ---------------------------- \
     && pip install uv -i https://mirror.nju.edu.cn/pypi/web/simple/
 
 # 下面的内容与项目代码相关，有可能变换，单独分层
-ADD ./ /app/
+ADD ./ /
 RUN uv sync \
     && echo build end ----------------------------
 # 不需要删除 WORKDIR 中的内容，这是主程序所在的文件夹
