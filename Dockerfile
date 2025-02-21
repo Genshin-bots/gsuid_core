@@ -25,5 +25,7 @@ RUN uv sync \
 
 # 使用传入的 TZ 环境变量设定时间和时区，默认为 Asia/Shanghai
 CMD cp /usr/share/zoneinfo/$TZ /etc/localtime; echo $TZ > /etc/timezone && \
-    cd /app/gsuid_core && \
+    cd /app/gsuid_core \
+    && echo service started, now create links for volume mapping \
+    && /app/docker-init.sh & \
     uv run core
