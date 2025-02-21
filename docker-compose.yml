@@ -2,6 +2,7 @@ services:
   gsuid-core:
     build:
       context: .
+      dockerfile: Dockerfile
     container_name: gsuidcore
     restart: unless-stopped
     environment:
@@ -9,7 +10,8 @@ services:
     ports:
       - 18765:8765
     volumes:
-    # 仅映射需要的文件夹，如果映射所有文件夹则容器内的文件会被覆盖
-    # 如需访问这种方式部署的项目根目录，需要通过 docker exec -it <容器id> bash 进入，进入后默认的 /app/gsuid_core 即为插件根目录
-      - /opt/gscore_data:/docker_mapping/data
-      - /opt/gscore_plugins:/docker_mapping/plugins
+      # 仅映射需要的文件夹，如果映射所有文件夹则容器内的文件会被覆盖
+      # 如需访问这种方式部署的项目根目录，需要通过 docker exec -it <容器id> bash 进入，进入后默认的 /app/gsuid_core 即为插件根目录
+      # - /opt/gscore_data:/docker_mapping/data
+      # - /opt/gscore_plugins:/docker_mapping/plugins
+      - /opt/gscore_data2:/app/data

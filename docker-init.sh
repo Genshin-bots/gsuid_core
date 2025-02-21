@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# 设定时区配置
+cp /usr/share/zoneinfo/$TZ /etc/localtime
+echo $TZ > /etc/timezone
+
+
 # 延时 10 秒
 sleep 10
 
@@ -7,8 +12,17 @@ sleep 10
 echo "service started, now create links for volume mapping"
 
 # 检查是否创建软链接，如果没有就创建软链接
-[ ! -L /docker_mapping/data ] && ln -s /app/gsuid_core/data /docker_mapping/data
-[ ! -L /docker_logs ] && ln -s /app/gsuid_core/logs /docker_logs
-[ ! -L /docker_plugins ] && ln -s /app/gsuid_core/plugins /docker_plugins
+# 检查是否创建软链接，如果没有就创建软链接
+# if [ ! -L /docker_mapping/data ]; then
+#     ln -s /app/data/ /docker_mapping/data/
+# fi
+
+# if [ ! -L /docker_logs ]; then
+#     ln -s /app/data/logs/ /docker_mapping/logs/
+# fi
+
+# if [ ! -L /docker_plugins ]; then
+#     ln -s /app/data/plugins/ /docker_mapping/plugins/
+# fi
 
 echo "mapping complete!!!"

@@ -23,9 +23,8 @@ RUN uv sync \
 # 不需要删除 WORKDIR 中的内容，这是主程序所在的文件夹
 # && rm -rf /app/*
 
-# 使用传入的 TZ 环境变量设定时间和时区，默认为 Asia/Shanghai
-CMD cp /usr/share/zoneinfo/$TZ /etc/localtime; echo $TZ > /etc/timezone && \
-    cd /app/gsuid_core \
-    && echo service started, now create links for volume mapping \
-    && /app/docker-init.sh & \
+# 启动后，执行初始化脚本
+# 初始化脚本的功能：
+# 1. 使用传入的 TZ 环境变量设定时间和时区，默认为 Asia/Shanghai
+CMD chmod a+x /app/docker-init.sh; /app/docker-init.sh & \
     uv run core
