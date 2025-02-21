@@ -1,7 +1,7 @@
 # 基准镜像更新版本至官方文档推荐版本：3.12
 FROM m.daocloud.io/docker.io/library/python:3.12-slim-bullseye
 
-WORKDIR /app/gsuid_core
+WORKDIR /gsuid_core
 # 暴露 8765 端口
 EXPOSE 8765
 ENV PATH="${PATH}:/root/.local/bin"
@@ -17,7 +17,7 @@ RUN echo build start ---------------------------- \
     && pip install uv
 
 # 下面的内容与项目代码相关，有可能变换，单独分层
-ADD ./ /app/
+ADD ./ /
 RUN uv sync \
     && echo build end ----------------------------
 # 不需要删除 WORKDIR 中的内容，这是主程序所在的文件夹
