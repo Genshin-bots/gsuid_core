@@ -22,7 +22,7 @@ RUN echo build start ---------------------------- \
 ADD ./ /gsuid_core/
 # 如果是海外用户，删除 uv.toml 中镜像加速相关设置，并更新 lock 文件中的包地址
 RUN sed -i '/\[\[index\]\]/,/default = true/d' uv.toml && \
-    uv lock && \
+    uv lock --default-index "https://pypi.org/simple" && \
     uv sync && \
     chmod +x /gsuid_core/docker-entrypoint.sh && \
     echo build end ----------------------------
