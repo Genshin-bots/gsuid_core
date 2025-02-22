@@ -22,7 +22,8 @@ RUN echo build start ---------------------------- \
 # 代码添加到根目录下，保证路径与文档一致
 ADD ./ /gsuid_core/
 # 如果是海外用户，删除 uv.toml 中镜像加速相关设置
-RUN sed -i $SEDEXP uv.toml && \
+RUN cat uv.toml && \
+    sed -i $SEDEXP uv.toml && \
     echo --------------- && \
     cat uv.toml && \
     echo --------------- && \
