@@ -192,4 +192,3 @@ services:
 - 如需增加插件，建议使用命令进行安装，也可进入容器项目根目录手动安装
 
 - 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，建议将Core和Bot的容器都重启，保证修改生效
-
