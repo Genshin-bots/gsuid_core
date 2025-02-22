@@ -1,5 +1,5 @@
 # 基准镜像更新版本至官方文档推荐版本：3.12
-FROM docker.io/library/python:3.12-slim-bullseye
+FROM m.daocloud.io/docker.io/library/python:3.12-slim-bullseye
 
 # 镜像工作路径保持与文档一致
 WORKDIR /gsuid_core
