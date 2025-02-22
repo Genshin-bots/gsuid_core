@@ -6,6 +6,7 @@ WORKDIR /gsuid_core
 # 暴露 8765 端口
 EXPOSE 8765
 ENV PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ARG SEDEXP="'/\[\[index\]\]/,/default = true/d'"
 # 可选参数配置见 entrypoint 脚本
 
 # 调整层顺序，这些安装是固定的，单独分层
@@ -21,8 +22,7 @@ RUN echo build start ---------------------------- \
 # 代码添加到根目录下，保证路径与文档一致
 ADD ./ /gsuid_core/
 # 如果是海外用户，删除 uv.toml 中镜像加速相关设置
-RUN sed -i '/\[\[index\]\]/,/default = true/d' && \
-    uv.toml && \
+RUN sed -i $SEDEXP uv.toml && \
     echo --------------- && \
     cat uv.toml && \
     echo --------------- && \
