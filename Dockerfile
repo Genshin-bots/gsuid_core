@@ -21,7 +21,7 @@ RUN echo build start ---------------------------- \
 # 代码添加到根目录下，保证路径与文档一致 | Add code to the root directory to ensure the path is consistent with the documentation
 ADD ./ /gsuid_core/
 # 如果是海外用户，删除 uv.toml 中镜像加速相关设置，并更新 lock 文件中的包地址 | If you are an overseas user, delete the mirror acceleration settings in uv.toml and update the package addresses in the lock file
-RUN uv sync -index "https://pypi.org/simple" && \
+RUN uv sync --index "https://pypi.org/simple" && \
     chmod +x /gsuid_core/docker-entrypoint.sh && \
     echo build end ----------------------------
 
