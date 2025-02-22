@@ -39,9 +39,76 @@
 >
 > 以下内容未经验证。
 
-## Docker部署Core（可选）
+## 使用 docker 镜像部署
 
-`请先安装好Docker与Docker Compose`
+> 此镜像使用下文的 Github Actions 自动构建，每 12 小时更新
+
+`请先安装好 Docker`
+
+
+- 镜像地址（docker hub）：https://hub.docker.com/repository/docker/lilixxs666/gsuid-core
+
+  docker hub 网站需要注册账号，并至少选择 Free Plan 才能访问
+
+- 镜像名称：`lilixxs666/gsuid-core:dev`
+
+- 免费用户有 1 小时 10 次拉取的限制😂
+
+---
+
+可通过如下指令拉取镜像并运行：
+```bash
+docker run -d \
+--name gsuidcore \
+-e TZ=Asia/Shanghai \
+-e GSCORE_HOST=0.0.0.0 \
+-p 18765:8765 \
+-v /opt/gscore_data:/gsuid_core/data \
+-v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins \
+lilixxs666/gsuid-core:dev
+```
+在本地按照以上指令容器运行后，可直接进入`localhost:18965/genshinuid`进入核心的后台管理界面
+相关文档见：
+
+**镜像参数说明：**
+
+| **参数**  | **功能**  |
+|--------------------------------------|----------------------------------------------------------|
+| `-d`                                                    | 服务后台运行                                                   |
+| `--name gsuidcore`                                      | 生成的容器名称，可选，这里指定为 gsuidcore，若不写则系统给随机名称         |
+| `-p 18765:8765`                                         | 端口映射，可选，默认不做映射，只有映射的端口才能被外部访问<br/>这里设置为容器内 8765 端口 → 外部 18765 端口                       |
+| `-e TZ=Asia/Shanghai`                                   | 时区，可选，默认值=Asia/Shanghai                                  |
+| `-e GSCORE_HOST=0.0.0.0`                                | 服务监听地址：可选，默认值=localhost                                  |
+| `-v /opt/gscore_data:/gsuid_core/data `                 | 文件映射，可选，只有映射的路径内的文件才能直接从外部读写：原软件的 data 文件夹<br/>可从外部的  /opt/gscore_data 位置访问      |
+| `-v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins` | 文件映射，可选，只有映射的路径内的文件才能直接从外部读写：原软件的 plugins 文件夹<br/>可从外部的 /opt/gscore_plugins 位置访问 &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; |
+
+**一些容器部署的常见问题**
+详见下文【5. 容器部署的相关使用说明】
+
+
+**镜像构建整体流程：**
+
+- 主分支同步（Github Actions 每 12 小时执行一次）：项目主分支（gsuid-core:master） --> fork 的分支 (gsuid-core-prci:master)
+
+- 镜像构建（Github Actions 每 12 小时执行一次）：fork 的分支 (gsuid-core-prci:master) --> 编译 --> 发布到 dockerhub
+
+
+**用于实现以上构建流程的 fork 库地址：**
+
+- 同步分支（master）：https://github.com/lilixxs/gsuid_core-prci/tree/master
+
+- Github Action 构建分支（docker-autobuild）：https://github.com/lilixxs/gsuid_core-prci/tree/docker-autobuild
+
+
+**Github Action 配置文件：**
+
+- master 分支自动同步：./github/workflows/master-autosync.yaml
+- docker 镜像自动构建：./github/workflows/docker-autobuild.yaml
+
+
+## 使用 Docker compose 从代码构建 docker 容器（可选）
+
+`请先安装好 Docker 与Docker Compose`
 
 1. git clone gsuid-core本体
 
@@ -73,6 +140,9 @@ docker-compose up -d --build
 docker-compose down
 # 再按照新的配置部署新的容器
 docker-compose up -d
+
+# 在同一机器上多次重复构建，会出现大量无用的镜像，可使用以下指令清空未使用的镜像
+docker container prune -f
 ```
 
 4. Docker Compose 配置文件说明
@@ -81,34 +151,44 @@ services:
   gsuid-core:
     build:
       context: .
-    container_name: gsuidcore # 生成的容器名称（若名称被占用则会变为随机名称）
+      # 指定要使用的镜像构建文件
+      # Dockerfile = 原软件源（连到国外服务器，适用 Github CI/CD 或 Docker Hub 等外网环境）
+      # Dockerfile.cn = 国内镜像源（使用国内镜像源，适用于自己或国内服务器构建）
+      dockerfile: Dockerfile.cn
+    container_name: gsuidcore
+    privileged: true
     restart: unless-stopped
     environment:
-      - TZ=Asia/Shanghai # 时区设置
+      # TZ = 时区设置，可选参数，默认为 Asia/Shanghai
+      # GSCORE_HOST = 服务监听地址 (0.0.0.0 = 监听全部地址，启动容器可直接进后台) 可选参数，默认 locaohost (只允许容器内本地访问)
+      - TZ=Asia/Shanghai
+      - GSCORE_HOST=0.0.0.0
     ports:
-      - 18765:8765 # 端口映射：原插件的 8765 对应容器外部的 18765 端口
+      # 端口映射，可自由修改，以下为：容器（core 中配置）8765 对应外部的 18765 端口
+      - 18765:8765
     volumes:
-    # 仅映射需要外部访问的文件夹，如 data、plugins 文件夹
-	# 以下例子：将容器内 core 程序的 data、plugins 文件夹，映射到 /opt/gscore_data 和 /opt/gscore_plugins 中
-      - /opt/gscore_data:/app/gsuid_core/data
-      - /opt/gscore_plugins:/app/gsuid_core/plugins
+      # 仅映射需要的文件夹，避免数据冲突
+      # 如需访问项目根目录，需要通过 docker exec -it <容器id> bash 进入容器内部
+      # 进入后默认的 /gsuid_core 即为插件根目录，路径与文档路径保持一致
+      - /opt/gscore_data:/gsuid_core/data
+      - /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins
 ```
 5. 容器部署的相关使用说明
-- 如需访问容器部署的 core 的其他路径（上面 yaml 文件中没有映射的文件或路径）则需要通过`docker exec -it <容器id> bash`进入，进入后默认的`/app/gsuid_core`对应文档中的 core 根目录`gsuid_core`
+- 如需访问容器部署的 core 的其他路径（上面 yaml 文件中没有映射的文件或路径）则需要通过`docker exec -it <容器id> bash`进入，进入后默认的`/gsuid_core`即对应文档中的 core 根目录`gsuid_core`，其他文档路径与官方文档对应
 
-- 默认 core 运行在`localhost:8765`端口上，Docker 部署后无法连接
+- 若不设定环境变量`GSCORE_HOST`,则 core 默认监听在`localhost`地址，Docker 部署后无法直接连接
 
-  必须修改`config.json`文件中的`HOST`配置，参考 [https://docs.sayu-bot.com/Started/CoreConfig.html](https://docs.sayu-bot.com/Started/CoreConfig.html)
+  需要修改`config.json`文件中的`HOST`配置，参考 [https://docs.sayu-bot.com/Started/CoreConfig.html](https://docs.sayu-bot.com/Started/CoreConfig.html)
 
-  （以上面的 yaml 文件为例，配置文件在文档中的路径为`gsuid_core/data`，则对应在容器外部的地址为`/opt/gscore_data/config.json`，需将其中的`port`配置修改为`0.0.0.0:8765`
+  （以上面的 yaml 文件为例，配置文件在文档中的路径为`gsuid_core/data`，则对应在容器外部的地址为`/gscore_data/config.json`，需将其中的`host`配置修改为`0.0.0.0`
 
   然后执行`docker restart <容器id>`重启容器
 
 
 - 关于端口配置，由于 docker 容器本身会对端口做转发（对应 yaml 文件中的`port`部分，因此建议使用 docker compose 的相关配置或 docker 指令来修改端口，而不用 core 本身的配置来修改
 
-	同时每次 docker 修改端口后都需要先删除当前容器重新执行`docker compose up -d`指令重新部署
+  同时每次 docker 修改端口、监听地址后都需要先删除当前容器重新执行`docker compose up -d`指令重新部署
 
-- 如需增加插件，则需要进入容器项目根目录，按照官方教程使用命令安装或手动安装
+- 如需增加插件，建议使用命令进行安装，也可进入容器项目根目录手动安装
 
-- 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，可能需要将Core和Bot的容器都重启才生效
+- 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，建议将Core和Bot的容器都重启，保证修改生效
