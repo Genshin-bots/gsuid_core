@@ -6,7 +6,7 @@ WORKDIR /gsuid_core
 # 暴露 8765 端口
 EXPOSE 8765
 ENV PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ARG SEDEXP="'/\[\[index\]\]/,/default = true/d'"
+ARG SEDEXP='/\[\[index\]\]/,/default = true/d'
 # 可选参数配置见 entrypoint 脚本
 
 # 调整层顺序，这些安装是固定的，单独分层
