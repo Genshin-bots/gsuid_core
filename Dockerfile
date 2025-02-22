@@ -20,7 +20,9 @@ RUN echo build start ---------------------------- \
 # 下面的内容与项目代码相关，有可能变换，单独分层
 # 代码添加到根目录下，保证路径与文档一致
 ADD ./ /gsuid_core/
-RUN uv sync \
+# 如果是海外用户，删除 uv.toml 中镜像加速相关设置
+RUN sed -i '/\[\[index\]\]/,/default = true/d' uv.toml && \
+    uv sync \
     && chmod +x /gsuid_core/docker-entrypoint.sh \
     && echo build end ----------------------------
 
