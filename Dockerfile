@@ -1,5 +1,5 @@
 # 基准镜像更新版本至官方文档推荐版本：3.12
-FROM docker.io/library/python:3.12-slim-bullseye
+FROM m.daocloud.io/docker.io/library/python:3.12-slim-bullseye
 
 # 镜像工作路径保持与文档一致
 WORKDIR /gsuid_core
@@ -20,11 +20,12 @@ RUN echo build start ---------------------------- \
 # 下面的内容与项目代码相关，有可能变换，单独分层
 # 代码添加到根目录下，保证路径与文档一致
 ADD ./ /gsuid_core/
-# 如果是海外用户，删除 uv.toml 中镜像加速相关设置
+# 如果是海外用户，删除 uv.toml 中镜像加速相关设置，并更新 lock 文件中的包地址
 RUN sed -i '/\[\[index\]\]/,/default = true/d' uv.toml && \
-    uv sync \
-    && chmod +x /gsuid_core/docker-entrypoint.sh \
-    && echo build end ----------------------------
+    uv lock --default-index "https://pypi.org/simple" && \
+    uv sync && \
+    chmod +x /gsuid_core/docker-entrypoint.sh && \
+    echo build end ----------------------------
 
 # 将需要初始化的一些代码放到 entrypoint 中
 ENTRYPOINT [ "/gsuid_core/docker-entrypoint.sh" ]

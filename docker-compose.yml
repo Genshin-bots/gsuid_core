@@ -5,7 +5,7 @@ services:
       # 指定要使用的编译文件
       # Dockerfile = 原软件源（连到国外服务器，国内下载较慢，适用 Github CI/CD 或 Docker Hub 等环境）
       # Dockerfile.cn = 国内镜像源（使用国内镜像源，下载速度较快，可用于自己或国内服务器构建）
-      dockerfile: Dockerfile.cn
+      dockerfile: Dockerfile
     container_name: gsuidcore
     privileged: true
     restart: unless-stopped
