@@ -21,10 +21,14 @@ RUN echo build start ---------------------------- \
 # 代码添加到根目录下，保证路径与文档一致
 ADD ./ /gsuid_core/
 # 如果是海外用户，删除 uv.toml 中镜像加速相关设置
-RUN sed -i '/\[\[index\]\]/,/default = true/d' uv.toml && \
-    uv sync \
-    && chmod +x /gsuid_core/docker-entrypoint.sh \
-    && echo build end ----------------------------
+RUN sed -i '/\[\[index\]\]/,/default = true/d' && \
+    uv.toml && \
+    echo --------------- && \
+    cat uv.toml && \
+    echo --------------- && \
+    uv sync && \
+    chmod +x /gsuid_core/docker-entrypoint.sh && \
+    echo build end ----------------------------
 
 # 将需要初始化的一些代码放到 entrypoint 中
 ENTRYPOINT [ "/gsuid_core/docker-entrypoint.sh" ]
