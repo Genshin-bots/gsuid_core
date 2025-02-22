@@ -20,13 +20,14 @@ RUN echo build start ---------------------------- \
 # 下面的内容与项目代码相关，有可能变换，单独分层
 # 代码添加到根目录下，保证路径与文档一致
 ADD ./ /gsuid_core/
-# 如果是海外用户，删除 uv.toml 中镜像加速相关设置，并更新 lock 文件中的包地址
-RUN sed -i '/\[\[index\]\]/,/default = true/d' uv.toml && \
-    uv lock --default-index "https://pypi.org/simple" && \
-    uv sync && \
+
+# 如果是海外用户，需要更新依赖管理文件内软件包的下载地址
+RUN uv sync --index "https://pypi.org/simple" && \
     chmod +x /gsuid_core/docker-entrypoint.sh && \
     echo build end ----------------------------
 
 # 将需要初始化的一些代码放到 entrypoint 中
 ENTRYPOINT [ "/gsuid_core/docker-entrypoint.sh" ]
+
+# 最后启动服务
 CMD ["uv", "run", "core"]

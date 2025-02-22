@@ -39,9 +39,76 @@
 >
 > 以下内容未经验证。
 
-## Docker部署Core（可选）
+## 使用 docker 镜像部署
 
-`请先安装好Docker与Docker Compose`
+> 此镜像使用下文的 Github Actions 自动构建，每 12 小时更新
+
+`请先安装好 Docker`
+
+
+- 镜像地址（docker hub）：https://hub.docker.com/repository/docker/lilixxs666/gsuid-core
+
+  docker hub 网站需要注册账号，并至少选择 Free Plan 才能访问
+
+- 镜像名称：`lilixxs666/gsuid-core:dev`
+
+- 免费用户有 1 小时 10 次拉取的限制😂
+
+---
+
+可通过如下指令拉取镜像并运行：
+```bash
+docker run -d \
+--name gsuidcore \
+-e TZ=Asia/Shanghai \
+-e GSCORE_HOST=0.0.0.0 \
+-p 18765:8765 \
+-v /opt/gscore_data:/gsuid_core/data \
+-v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins \
+lilixxs666/gsuid-core:dev
+```
+在本地按照以上指令容器运行后，可直接进入`localhost:18965/genshinuid`进入核心的后台管理界面
+相关文档见：
+
+**镜像参数说明：**
+
+| **参数**  | **功能**  |
+|--------------------------------------|----------------------------------------------------------|
+| `-d`                                                    | 服务后台运行                                                   |
+| `--name gsuidcore`                                      | 生成的容器名称，可选，这里指定为 gsuidcore，若不写则系统给随机名称         |
+| `-p 18765:8765`                                         | 端口映射，可选，默认不做映射，只有映射的端口才能被外部访问<br/>这里设置为容器内 8765 端口 → 外部 18765 端口                       |
+| `-e TZ=Asia/Shanghai`                                   | 时区，可选，默认值=Asia/Shanghai                                  |
+| `-e GSCORE_HOST=0.0.0.0`                                | 服务监听地址：可选，默认值=localhost                                  |
+| `-v /opt/gscore_data:/gsuid_core/data `                 | 文件映射，可选，只有映射的路径内的文件才能直接从外部读写：原软件的 data 文件夹<br/>可从外部的  /opt/gscore_data 位置访问      |
+| `-v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins` | 文件映射，可选，只有映射的路径内的文件才能直接从外部读写：原软件的 plugins 文件夹<br/>可从外部的 /opt/gscore_plugins 位置访问 &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; |
+
+**一些容器部署的常见问题**
+详见下文【5. 容器部署的相关使用说明】
+
+
+**镜像构建整体流程：**
+
+- 主分支同步（Github Actions 每 12 小时执行一次）：项目主分支（gsuid-core:master） --> fork 的分支 (gsuid-core-prci:master)
+
+- 镜像构建（Github Actions 每 12 小时执行一次）：fork 的分支 (gsuid-core-prci:master) --> 编译 --> 发布到 dockerhub
+
+
+**用于实现以上构建流程的 fork 库地址：**
+
+- 同步分支（master）：https://github.com/lilixxs/gsuid_core-prci/tree/master
+
+- Github Action 构建分支（docker-autobuild）：https://github.com/lilixxs/gsuid_core-prci/tree/docker-autobuild
+
+
+**Github Action 配置文件：**
+
+- master 分支自动同步：./github/workflows/master-autosync.yaml
+- docker 镜像自动构建：./github/workflows/docker-autobuild.yaml
+
+
+## 使用 Docker compose 从代码构建 docker 容器（可选）
+
+`请先安装好 Docker 与Docker Compose`
 
 1. git clone gsuid-core本体
 
@@ -74,7 +141,7 @@ docker-compose down
 # 再按照新的配置部署新的容器
 docker-compose up -d
 
-# 多次重复构建，会出现大量无用的镜像，使用以下指令清空未使用的镜像
+# 在同一机器上多次重复构建，会出现大量无用的镜像，可使用以下指令清空未使用的镜像
 docker container prune -f
 ```
 
@@ -125,3 +192,4 @@ services:
 - 如需增加插件，建议使用命令进行安装，也可进入容器项目根目录手动安装
 
 - 如果Bot（例如 NoneBot2、HoshinoBot）也是Docker部署的，Core或其插件更新后，建议将Core和Bot的容器都重启，保证修改生效
+
