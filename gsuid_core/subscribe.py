@@ -103,5 +103,33 @@ class GsCoreSubscribe:
                 task_name=task_name,
             )
 
+    async def update_subscribe_message(
+        self,
+        subscribe_type: Literal['session', 'single'],
+        task_name: str,
+        event: Event,
+        extra_message: str,
+    ):
+        sed = {}
+        upd = {}
+        for i in [
+            'bot_id',
+            'bot_self_id',
+            'user_type',
+        ]:
+            sed[i] = event.__getattribute__(i)
+
+        if subscribe_type == 'session' and event.user_type == 'group':
+            sed['group_id'] = event.group_id
+        else:
+            sed['user_id'] = event.user_id
+
+        sed['task_name'] = task_name
+        sed['subscribe_type'] = subscribe_type
+
+        upd['extra_message'] = extra_message
+
+        await Subscribe.update_data_by_data(sed, upd)
+
 
 gs_subscribe = GsCoreSubscribe()

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Optional
 
 from PIL import Image, ImageOps, ImageDraw
 
@@ -149,7 +149,7 @@ async def draw_bar(text1: str, text2: str):
 async def draw_badge(
     title: str,
     value: Union[str, int, float],
-    avg_value: int = 0,
+    avg_value: Optional[int] = None,
     color: Tuple[int, int, int] = THEME_COLOR,
 ):
     badge = Image.new('RGBA', (210, 150))
@@ -170,33 +170,39 @@ async def draw_badge(
     )
 
     if isinstance(value, int) or isinstance(value, float) or value.isdigit():
-        value = number_to_chinese(float(value))
+        value_str = number_to_chinese(float(value))
+    else:
+        value_str = value
 
-    if avg_value != 0 and (isinstance(value, int) or isinstance(value, float)):
-        if value > avg_value * 1.2:
+    if avg_value is not None and (
+        isinstance(value, int) or isinstance(value, float)
+    ):
+        if value >= avg_value * 1.2:
             arrow = Image.open(TEXT_PATH / 'up.png')
+            x = get_font_x(core_font(46), value_str)
             point = (92, 51)
             badge.paste(
                 arrow,
-                (154, 23),
+                (95 + x // 2, 26),
                 arrow,
             )
-        elif value < avg_value * 0.8:
+        elif value <= avg_value * 0.8:
             arrow = Image.open(TEXT_PATH / 'down.png')
+            x = get_font_x(core_font(46), value_str)
             point = (92, 51)
             badge.paste(
                 arrow,
-                (154, 23),
+                (95 + x // 2, 26),
                 arrow,
             )
         else:
-            point = (105, 63)
+            point = (105, 51)
     else:
-        point = (105, 63)
+        point = (105, 51)
 
     badge_draw.text(
         point,
-        value,
+        value_str,
         BLACK,
         core_font(46),
         'mm',
@@ -425,7 +431,7 @@ async def draw_curve(datas: Dict[Tuple[int, int, int], List[float]]):
     img = Image.new('RGBA', (1400, 550))
     img_draw = ImageDraw.Draw(img)
 
-    num = 20
+    num = 30
     rad = 5
     a_y = 375
     a_x = 1200
@@ -478,7 +484,7 @@ async def draw_curve_img(ev: Event):
     _data = await gv.get_value_analysis(
         ev.real_bot_id,
         ev.bot_self_id,
-        20,
+        30,
     )
 
     result: Dict[Tuple[int, int, int], List[float]] = {

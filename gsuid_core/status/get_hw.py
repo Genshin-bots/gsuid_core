@@ -53,8 +53,13 @@ def get_disk_info():
     else:
         name = f"{round(total_gb, 1)}GB"
 
+    # 转换为TB 显示
     used_gb = used_size / (1024**3)
-    used = f"{round(used_gb, 1)}GB"
+    if used_gb >= 1000:
+        used_tb = round(used_gb / 1024, 1)
+        used = f"{used_tb}TB"
+    else:
+        used = f"{round(used_gb, 1)}GB"
     name = f"{used} / {name}"
 
     # 使用根分区的使用率作为示例（可根据需求修改）
