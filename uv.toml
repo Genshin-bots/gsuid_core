@@ -1,3 +1,5 @@
 [[index]]
+url = "https://ssss/simple"
+
+[[index]]
 url = "https://mirror.nju.edu.cn/pypi/web/simple"
-default = true

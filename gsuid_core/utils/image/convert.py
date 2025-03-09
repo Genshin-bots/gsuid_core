@@ -1,3 +1,4 @@
+import math
 from io import BytesIO
 from pathlib import Path
 from base64 import b64encode
@@ -171,3 +172,22 @@ async def text2pic(text: str, max_size: int = 800, font_size: int = 24):
     )
     img = img.crop((0, 0, max_size, int(y + 80)))
     return await convert_img(img)
+
+
+def number_to_chinese(num):
+    units = [
+        {'threshold': 10**8, 'suffix': '亿'},  # 1e8 (100,000,000)
+        {'threshold': 10**7, 'suffix': '千万'},  # 1e7 (10,000,000)
+        {'threshold': 10**4, 'suffix': '万'},  # 1e4 (10,000)
+        {'threshold': 10**3, 'suffix': '千'},  # 1e3 (1,000)
+    ]
+    for unit in units:
+        if num >= unit['threshold']:
+            value = num / unit['threshold']
+            truncated = math.floor(value * 10) / 10  # 截断一位小数，不四舍五入
+            return f"{truncated:.1f}{unit['suffix']}"
+    # 处理小于1e3的情况
+    if isinstance(num, float) and num.is_integer():
+        return str(int(num))
+    else:
+        return str(num)

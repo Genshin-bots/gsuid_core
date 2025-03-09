@@ -17,6 +17,11 @@ TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
+def get_font_x(font: ImageFont.FreeTypeFont, text: str):
+    bbox = font.getbbox(text)
+    return int(bbox[2] - bbox[0])
+
+
 def get_div():
     return Image.open(TEXT_PATH / 'div.png')
 
@@ -56,6 +61,27 @@ def get_status_icon(status: Union[int, bool]) -> Image.Image:
 
 def get_v4_footer():
     return Image.open(TEXT_PATH / 'footer.png')
+
+
+def add_footer(
+    img: Image.Image,
+    w: int = 0,
+    footer: Optional[Image.Image] = None,
+) -> Image.Image:
+    if footer is None:
+        footer = get_v4_footer()
+
+    w = img.size[0] if not w else w
+    if w != footer.size[0]:
+        footer = footer.resize(
+            (w, int(footer.size[1] * w / footer.size[0])),
+        )
+    x, y = (
+        int((img.size[0] - footer.size[0]) / 2),
+        img.size[1] - footer.size[1] - 10,
+    )
+    img.paste(footer, (x, y), footer)
+    return img
 
 
 def get_v4_bg(w: int, h: int, is_dark: bool = False, is_blur: bool = False):

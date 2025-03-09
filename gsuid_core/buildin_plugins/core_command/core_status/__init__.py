@@ -6,6 +6,7 @@ import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
+from gsuid_core.status.draw_status import draw_status
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
 
 from .command_global_val import save_global_val
@@ -42,6 +43,19 @@ async def scheduled_save_global_val():
     await save_global_val()
     gv.bot_val = {}
     await count_group_user()
+
+
+@sv_core_status.on_fullmatch(
+    (
+        'core信息',
+        'Core信息',
+        'CoreStatus',
+        'corestatus',
+    )
+)
+async def send_core_info_msg(bot: Bot, ev: Event):
+    logger.info('开始执行 早柚核心 [信息]')
+    await bot.send(await draw_status(ev))
 
 
 @sv_core_status.on_command(('core状态', 'Core状态'), block=True)
