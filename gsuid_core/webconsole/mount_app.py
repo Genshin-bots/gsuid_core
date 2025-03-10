@@ -50,9 +50,15 @@ from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
-from gsuid_core.utils.database.models import GsBind, GsPush, GsUser, GsCache
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
 from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
+from gsuid_core.utils.database.models import (
+    GsBind,
+    GsPush,
+    GsUser,
+    GsCache,
+    Subscribe,
+)
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
     amis_admin,
@@ -339,7 +345,7 @@ class GsAdminPage(admin.PageAdmin):
 
 
 @site.register_admin
-class CKadmin(GsAdminModel):
+class CKAdmin(GsAdminModel):
     pk_name = 'id'
     page_schema = PageSchema(label='CK管理', icon='fa fa-database')  # type: ignore
 
@@ -348,7 +354,7 @@ class CKadmin(GsAdminModel):
 
 
 @site.register_admin
-class pushadmin(GsAdminModel):
+class PushAdmin(GsAdminModel):
     pk_name = 'id'
     page_schema = PageSchema(label='推送管理', icon='fa fa-bullhorn')  # type: ignore
 
@@ -357,7 +363,7 @@ class pushadmin(GsAdminModel):
 
 
 @site.register_admin
-class cacheadmin(GsAdminModel):
+class CacheAdmin(GsAdminModel):
     pk_name = 'id'
     page_schema = PageSchema(label='缓存管理', icon='fa fa-recycle')  # type: ignore
 
@@ -366,12 +372,21 @@ class cacheadmin(GsAdminModel):
 
 
 @site.register_admin
-class bindadmin(GsAdminModel):
+class BindAdmin(GsAdminModel):
     pk_name = 'id'
     page_schema = PageSchema(label='绑定管理', icon='fa fa-users')  # type: ignore
 
     # 配置管理模型
     model = GsBind
+
+
+@site.register_admin
+class SubscribeAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(label='订阅管理', icon='fa fa-rss')  # type: ignore
+
+    # 配置管理模型
+    model = Subscribe
 
 
 # 注册自定义首页
