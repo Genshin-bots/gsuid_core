@@ -16,7 +16,7 @@ def get_cpu_info():
 
     cores = psutil.cpu_count(logical=True)
     usage = psutil.cpu_percent(interval=1)
-    cpu_name = cpu_name.split()[0]
+    cpu_name = ' '.join(cpu_name.split()[:2])
     return {"name": f"{cpu_name} ({cores}核)", "value": usage}
 
 
@@ -62,8 +62,12 @@ def get_disk_info():
         used = f"{round(used_gb, 1)}GB"
     name = f"{used} / {name}"
 
-    # 使用根分区的使用率作为示例（可根据需求修改）
-    usage_percent = psutil.disk_usage('/').percent
+    # 使用总量百分比
+    if total_size == 0:
+        usage_percent = 0
+    else:
+        usage_percent = round(used_size / total_size * 100, 1)
+
     return {"name": name, "value": usage_percent}
 
 

@@ -59,6 +59,7 @@ def get_all_bot_dict():
 async def get_value_analysis(
     bot_id: str, bot_self_id: str, day: int = 7
 ) -> Dict[str, PlatformVal]:
+    '''顺序为最新的日期在前面'''
     result = {}
     for day in range(day):
         today = datetime.date.today()
@@ -71,7 +72,7 @@ async def get_value_analysis(
 
 
 async def get_global_analysis(bot_id: str, bot_self_id: str):
-    seven_data = await get_value_analysis(bot_id, bot_self_id)
+    seven_data = await get_value_analysis(bot_id, bot_self_id, 30)
 
     group_data = []
     user_data = []
@@ -92,18 +93,23 @@ async def get_global_analysis(bot_id: str, bot_self_id: str):
         group_data.append(len(local_val['group']))
         user_data.append(len(local_val['user']))
 
-    user_before_list = [user for users in user_list[:-1] for user in users]
+    # 七天内的用户
+    user_7_list = [user for users in user_list[:7] for user in users]
+
+    # 昨日到三十日之前的用户
     user_after_list = [user for users in user_list[1:] for user in users]
 
+    # 三十天内的用户没有在这七天出现过
     out_user = []
+    # 今天的用户从来没在这个月内出现过
     new_user = []
-    if user_list:
-        for i in user_list[0]:
-            if i not in user_before_list:
-                out_user.append(i)
+
+    for i in user_all_list:
+        if i not in user_7_list:
+            out_user.append(i)
 
     if user_list:
-        for i in user_list[-1]:
+        for i in user_list[0]:
             if i not in user_after_list:
                 new_user.append(i)
 

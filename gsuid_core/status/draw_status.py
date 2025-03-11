@@ -40,7 +40,7 @@ async def draw_title():
     S_TITLE = '祝你拥有美好的一天！'
 
     all_group = await CoreGroup.get_all_group()
-    all_user = await CoreUser.get_all_user()
+    all_user = await CoreUser.get_all_user_list()
 
     all_group_num = len(all_group) if all_group else 0
     all_user_num = len(all_user) if all_user else 0
@@ -87,7 +87,7 @@ async def draw_title():
     )
     title_draw.text(
         (983, 196),
-        '已加入群聊',
+        '已服务群聊',
         'White',
         core_font(24),
         'mm',
