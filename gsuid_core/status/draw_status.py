@@ -1,3 +1,4 @@
+import random
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
 
@@ -6,9 +7,11 @@ from PIL import Image, ImageOps, ImageDraw
 import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
+from gsuid_core.data_store import get_res_path
 from gsuid_core.help.draw_core_help import ICON
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
+from gsuid_core.utils.plugins_config.gs_config import status_config
 from gsuid_core.utils.image.convert import convert_img, number_to_chinese
 from gsuid_core.utils.image.image_tools import (
     add_footer,
@@ -22,7 +25,8 @@ from .get_hw import get_cpu_info, get_disk_info, get_swap_info, get_memory_info
 
 TEXT_PATH = Path(__file__).parent / 'texture2d'
 
-THEME_COLOR = (94, 79, 171)
+THEME_COLOR: str = status_config.get_config('CustomTheme').data
+# THEME_COLOR = (94, 79, 171)
 HINT_COLOR = (235, 54, 54)
 BLACK = (24, 24, 24)
 GREY = (101, 101, 101)
@@ -36,8 +40,8 @@ async def draw_title():
     icon = Image.open(ICON).resize((186, 186))
     title.paste(icon, (92, 77), icon)
 
-    MAIN_TITLE = '机器人小柚子'
-    S_TITLE = '祝你拥有美好的一天！'
+    MAIN_TITLE: str = status_config.get_config('CustomName').data
+    S_TITLE: str = status_config.get_config('CustomSubtitle').data
 
     all_group = await CoreGroup.get_all_group()
     all_user = await CoreUser.get_all_user_list()
@@ -102,14 +106,14 @@ async def draw_title():
 
     title_draw.text(
         (983, 147),
-        str(all_group_num),
+        number_to_chinese(all_group_num),
         BLACK,
         core_font(60),
         'mm',
     )
     title_draw.text(
         (1204, 147),
-        str(all_user_num),
+        number_to_chinese(all_user_num),
         BLACK,
         core_font(60),
         'mm',
@@ -137,7 +141,7 @@ async def draw_bar(text1: str, text2: str):
     )
     x = get_font_x(core_font(40), text1)
     bar_draw.text(
-        (117 + x, 54),
+        (122 + x, 54),
         text2,
         GREY,
         core_font(32),
@@ -150,19 +154,19 @@ async def draw_badge(
     title: str,
     value: Union[str, int, float],
     avg_value: Optional[int] = None,
-    color: Tuple[int, int, int] = THEME_COLOR,
+    color: Union[Tuple[int, int, int], str] = THEME_COLOR,
 ):
-    badge = Image.new('RGBA', (210, 150))
+    badge = Image.new('RGBA', (240, 150))
     badge_draw = ImageDraw.Draw(badge)
 
     badge_draw.rounded_rectangle(
-        (27, 93, 183, 125),
+        (42, 93, 198, 125),
         10,
         color,
     )
 
     badge_draw.text(
-        (105, 109),
+        (120, 109),
         title,
         'White',
         core_font(24),
@@ -180,25 +184,25 @@ async def draw_badge(
         if value >= avg_value * 1.2:
             arrow = Image.open(TEXT_PATH / 'up.png')
             x = get_font_x(core_font(46), value_str)
-            point = (92, 51)
+            point = (107, 51)
             badge.paste(
                 arrow,
-                (95 + x // 2, 26),
+                (110 + x // 2, 26),
                 arrow,
             )
         elif value <= avg_value * 0.8:
             arrow = Image.open(TEXT_PATH / 'down.png')
             x = get_font_x(core_font(46), value_str)
-            point = (92, 51)
+            point = (107, 51)
             badge.paste(
                 arrow,
-                (95 + x // 2, 26),
+                (110 + x // 2, 26),
                 arrow,
             )
         else:
-            point = (105, 51)
+            point = (120, 51)
     else:
-        point = (105, 51)
+        point = (120, 51)
 
     badge_draw.text(
         point,
@@ -427,7 +431,9 @@ async def draw_plugins_status():
     return img
 
 
-async def draw_curve(datas: Dict[Tuple[int, int, int], List[float]]):
+async def draw_curve(
+    datas: Dict[Union[Tuple[int, int, int], str], List[float]],
+):
     img = Image.new('RGBA', (1400, 550))
     img_draw = ImageDraw.Draw(img)
 
@@ -449,7 +455,7 @@ async def draw_curve(datas: Dict[Tuple[int, int, int], List[float]]):
             for yindex, y in enumerate(y_ticks):
                 img_draw.text(
                     (116, 460 - 75 * yindex),
-                    str(y),
+                    str(number_to_chinese(y)),
                     BLACK,
                     core_font(30),
                     'rm',
@@ -487,7 +493,7 @@ async def draw_curve_img(ev: Event):
         30,
     )
 
-    result: Dict[Tuple[int, int, int], List[float]] = {
+    result: Dict[Union[Tuple[int, int, int], str], List[float]] = {
         THEME_COLOR: [],
         HINT_COLOR: [],
     }
@@ -500,7 +506,15 @@ async def draw_curve_img(ev: Event):
 
 
 async def draw_bg(w: int, h: int):
-    bg = Image.open(TEXT_PATH / 'bg.jpg').convert('RGBA')
+    if status_config.get_config('CustomBg').data:
+        _lst = list(get_res_path(['GsCore', 'bg']).iterdir())
+        if _lst:
+            path = random.choice(_lst)
+        else:
+            path = TEXT_PATH / 'bg.jpg'
+        bg = Image.open(path).convert('RGBA')
+    else:
+        bg = Image.open(TEXT_PATH / 'bg.jpg').convert('RGBA')
     bg = crop_center_img(bg, w, h)
 
     mask = Image.open(TEXT_PATH / 'mask.png')

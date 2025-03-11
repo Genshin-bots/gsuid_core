@@ -7,6 +7,7 @@ from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 
 from .sp_config import SP_CONIFG
+from .status_config import STATUS_CONIFG
 from .config_default import CONIFG_DEFAULT
 from .pic_gen_config import PIC_GEN_CONIFG
 from .database_config import DATABASE_CONIFG
@@ -213,4 +214,10 @@ database_config = StringConfig(
     'GsCore数据库配置',
     RES / 'database_config.json',
     DATABASE_CONIFG,
+)
+
+status_config = StringConfig(
+    'GsCore状态配置',
+    RES / 'status_config.json',
+    STATUS_CONIFG,
 )
