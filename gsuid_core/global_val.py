@@ -150,11 +150,11 @@ async def load_all_global_val():
                     bot_val[bot_id_path.stem][self_id_path.stem] = data
 
 
-async def save_all_global_val():
+async def save_all_global_val(day: int = 0):
     global bot_val
     for bot_id in bot_val:
         for bot_self_id in bot_val[bot_id]:
-            await save_global_val(bot_id, bot_self_id)
+            await save_global_val(bot_id, bot_self_id, day)
 
 
 async def get_global_val(
@@ -182,13 +182,13 @@ async def get_sp_val(bot_id: str, bot_self_id: str, sp: str) -> PlatformVal:
         return data
 
 
-async def save_global_val(bot_id: str, bot_self_id: str):
+async def save_global_val(bot_id: str, bot_self_id: str, day: int = 0):
     if not bot_self_id:
         return
 
     local_val = get_platform_val(bot_id, bot_self_id)
 
-    today = datetime.date.today()
+    today = datetime.date.today() - datetime.timedelta(days=day)
     date_format = today.strftime("%Y_%d_%b")
 
     path = global_val_path / bot_id / bot_self_id

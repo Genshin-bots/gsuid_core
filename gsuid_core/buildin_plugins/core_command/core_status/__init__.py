@@ -6,10 +6,9 @@ import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
+from gsuid_core.global_val import save_all_global_val
 from gsuid_core.status.draw_status import draw_status
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
-
-from .command_global_val import save_global_val
 
 sv_core_status = SV('Core状态', pm=0)
 
@@ -40,9 +39,10 @@ async def count_group_user():
 @scheduler.scheduled_job('cron', hour='0', minute='0')
 async def scheduled_save_global_val():
     global bot_val
-    await save_global_val()
+    await save_all_global_val(1)
     gv.bot_val = {}
     await count_group_user()
+    logger.success('[早柚核心] 状态已保存!')
 
 
 @sv_core_status.on_fullmatch(
