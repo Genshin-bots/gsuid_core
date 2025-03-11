@@ -114,6 +114,7 @@ async def get_global_analysis(bot_id: str, bot_self_id: str):
                 new_user.append(i)
 
     _user_all_list = list(set(user_all_list))
+    out_user = list(set(out_user))
 
     user_num = len(user_data)
     group_num = len(group_data)

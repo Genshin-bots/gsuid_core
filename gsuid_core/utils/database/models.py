@@ -112,6 +112,38 @@ class CoreUser(BaseBotIDModel, table=True):
 
     @classmethod
     @with_session
+    async def clean_repeat_user(
+        cls,
+        session: AsyncSession,
+    ):
+        # 移除重复的rows
+        datas = await cls.get_all_data()
+        _lst = []
+        for data in datas:
+            if (
+                data.bot_id,
+                data.user_id,
+                data.group_id,
+                data.user_name,
+            ) in _lst or data.group_id == '1':
+                await cls.delete_row(
+                    bot_id=data.bot_id,
+                    user_id=data.user_id,
+                    group_id=data.group_id,
+                    user_name=data.user_name,
+                )
+            else:
+                _lst.append(
+                    (
+                        data.bot_id,
+                        data.user_id,
+                        data.group_id,
+                        data.user_name,
+                    )
+                )
+
+    @classmethod
+    @with_session
     async def get_all_user(
         cls,
         session: AsyncSession,
@@ -216,6 +248,32 @@ class CoreGroup(BaseBotIDModel, table=True):
     group_count: int = Field(default=0, title='群活跃人数(每天更新)')
     group_name: str = Field(default='1', title='群名')
     group_icon: str = Field(default='1', title='群头像')
+
+    @classmethod
+    @with_session
+    async def clean_repeat_group(
+        cls,
+        session: AsyncSession,
+    ):
+        # 移除重复的rows
+        datas = await cls.get_all_data()
+        _lst = []
+        for data in datas:
+            if (
+                data.bot_id,
+                data.group_id,
+            ) in _lst or data.group_id == '1':
+                await cls.delete_row(
+                    bot_id=data.bot_id,
+                    group_id=data.group_id,
+                )
+            else:
+                _lst.append(
+                    (
+                        data.bot_id,
+                        data.group_id,
+                    )
+                )
 
     @classmethod
     @with_session
