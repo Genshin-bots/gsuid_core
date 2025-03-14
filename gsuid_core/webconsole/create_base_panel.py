@@ -117,7 +117,7 @@ def get_alert(
 
 def get_select_panel(label: str, name: str, value: str, options: List[str]):
     return {
-        'type': 'select',
+        'type': 'input-text',
         'label': label,
         'name': name,
         'options': [{'label': option, 'value': option} for option in options],

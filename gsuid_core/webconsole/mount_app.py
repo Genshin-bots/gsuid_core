@@ -1,6 +1,6 @@
 # flake8: noqa
 import platform
-from typing import Any, Callable
+from typing import Any, Dict, List, Callable
 
 from starlette import status
 from pydantic import BaseModel
@@ -13,11 +13,13 @@ from fastapi_user_auth.auth.models import User
 from fastapi_amis_admin.models.fields import Field
 from fastapi import Depends, Request, HTTPException
 from fastapi_user_auth.admin.app import UserAuthApp
+from sqlalchemy.sql.elements import BinaryExpression
 from fastapi_amis_admin.admin.settings import Settings
 from fastapi_user_auth.admin.site import AuthAdminSite
 from fastapi_amis_admin.utils.translation import i18n as _
 from fastapi_amis_admin.admin import Settings, PageSchemaAdmin
 from fastapi_amis_admin.admin.site import FileAdmin, APIDocsApp
+from fastapi_amis_admin.crud.parser import get_python_type_parse
 from fastapi_amis_admin.amis.constants import LevelEnum, DisplayModeEnum
 from fastapi_user_auth.admin.admin import (
     FormAdmin,
@@ -328,6 +330,23 @@ class GsAdminModel(admin.ModelAdmin):
         ) and await request.auth.requires(roles='root', response=False)(
             request
         )
+
+    def calc_filter_clause(
+        self, data: Dict[str, Any]
+    ) -> List[BinaryExpression]:
+        lst = []
+        for k, v in data.items():
+            sqlfield = self._filter_entities.get(k)
+            v = '[~]' + v
+            if sqlfield is not None:
+                operator, val = self._parser_query_value(
+                    v,
+                    python_type_parse=get_python_type_parse(sqlfield),
+                )
+                if operator:
+                    sql = getattr(sqlfield, operator)(*val)
+                    lst.append(sql)
+        return lst
 
 
 class GsAdminPage(admin.PageAdmin):

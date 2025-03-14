@@ -419,7 +419,7 @@ async def draw_plugins_status():
                     (605 + 210 * indexj, 11),
                     badge,
                 )
-                if index >= 2:
+                if indexj >= 2:
                     break
 
             img.paste(
