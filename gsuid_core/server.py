@@ -13,6 +13,7 @@ from fastapi import WebSocket
 
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
+from gsuid_core.config import core_config
 from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -74,10 +75,10 @@ class GsServer:
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
         # 如果发现文件夹，则视为插件包
-        logger.trace('===============')
         logger.debug(f'🔹 导入{plugin.stem}中...')
         logger.trace('===============')
         try:
+            module_list = []
             if plugin.is_dir():
                 plugin_path = plugin / '__init__.py'
                 plugins_path = plugin / '__full__.py'
@@ -87,7 +88,6 @@ class GsServer:
                 sys.path.append(str(plugin_path.parents))
                 if plugins_path.exists():
                     module_list = self.load_dir_plugins(plugin, plugin_parent)
-                    return module_list
                 elif nest_path.exists() or src_path.exists():
                     path = nest_path.parent / plugin.name
                     pyproject = plugin / 'pyproject.toml'
@@ -97,7 +97,6 @@ class GsServer:
                         module_list = self.load_dir_plugins(
                             path, plugin_parent, True
                         )
-                        return module_list
                 # 如果文件夹内有__init_.py，则视为单个插件包
                 elif plugin_path.exists():
                     module_list = [
@@ -105,7 +104,6 @@ class GsServer:
                             f'{plugin_parent}.{plugin.name}.__init__'
                         )
                     ]
-                    return module_list
             # 如果发现单文件，则视为单文件插件
             elif plugin.suffix == '.py':
                 module_list = [
@@ -113,9 +111,9 @@ class GsServer:
                         f'{plugin_parent}.{plugin.name[:-3]}'
                     )
                 ]
-                return module_list
             '''导入成功'''
             logger.success(f'✅ 插件{plugin.stem}导入成功!')
+            return module_list
         except Exception as e:  # noqa
             exception = sys.exc_info()
             logger.opt(exception=exception).error(f'加载插件时发生错误: {e}')
@@ -134,7 +132,9 @@ class GsServer:
         # 遍历插件文件夹内所有文件
         for plugin in plug_path_list:
             self.load_plugin(plugin)
-        logger.info('[GsCore] 插件加载完成!')
+
+        core_config.lazy_write_config()
+        logger.success('[GsCore] 插件加载完成!')
 
     def load_dir_plugins(
         self, plugin: Path, plugin_parent: str, nest: bool = False

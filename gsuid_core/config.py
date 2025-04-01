@@ -50,6 +50,7 @@ plugins_sample = {
 
 class CoreConfig:
     def __init__(self) -> None:
+        self.lock = False
         if OLD_CONFIG_PATH.exists():
             if not CONFIG_PATH.exists():
                 shutil.copy2(OLD_CONFIG_PATH, CONFIG_PATH)
@@ -142,6 +143,16 @@ class CoreConfig:
             return True
         else:
             return False
+
+    def lazy_write_config(self):
+        self.write_config()
+
+    def lazy_set_config(
+        self, key: str, value: Union[str, List, Dict, int, bool]
+    ):
+        if key in CONFIG_DEFAULT:
+            # 设置值
+            self.config[key] = value
 
 
 core_config = CoreConfig()

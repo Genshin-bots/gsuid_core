@@ -195,7 +195,7 @@ class SV:
                     config_plugins[plugins_name] = _plugins_config
                     plugins = Plugins(**_plugins_config)
 
-                core_config.set_config('plugins', config_plugins)
+                core_config.lazy_set_config('plugins', config_plugins)
             else:
                 if 'prefix' not in config_plugins[plugins_name]:
                     if plugins_name in SL.plugins:
@@ -236,7 +236,7 @@ class SV:
                     **config_plugins[plugins_name],
                 )
 
-                core_config.set_config('plugins', config_plugins)
+                core_config.lazy_set_config('plugins', config_plugins)
 
             # SV指向唯一Plugins实例
             self.plugins = plugins
@@ -261,7 +261,7 @@ class SV:
                 self.area = config_sv[name]['area']
                 self.white_list = config_sv[name]['white_list']
                 del config_sv[name]
-                core_config.set_config('sv', config_sv)
+                core_config.lazy_set_config('sv', config_sv)
             elif name in plugin_sv_config:
                 self.priority = plugin_sv_config[name]['priority']
                 self.enabled = plugin_sv_config[name]['enabled']
@@ -303,7 +303,7 @@ class SV:
         for var in kwargs:
             setattr(self, var, kwargs[var])
             plugin_sv_config[self.name][var] = kwargs[var]
-        core_config.set_config('plugins', config_plugins)
+        core_config.lazy_set_config('plugins', config_plugins)
 
     def enable(self):
         self.set(enabled=True)
