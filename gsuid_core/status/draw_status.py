@@ -562,11 +562,9 @@ async def draw_bg(w: int, h: int):
     fg = crop_center_img(Image.open(TEXT_PATH / 'fg.png'), w, h)
 
     _fg.paste(fg, (0, 0), fg_temp)
-    _fg.save('fg.png')
 
     bg = Image.alpha_composite(bg, _fg)
     bg.paste(line, (0, 222), line)
-    bg.save('bg.png')
     return bg
 
 
