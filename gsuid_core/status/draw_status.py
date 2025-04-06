@@ -214,15 +214,18 @@ async def draw_badge(
     return badge
 
 
-async def draw_data_analysis1(ev: Event):
+async def draw_data_analysis1(
+    bot_id: str,
+    bot_self_id: Optional[str],
+):
     local_val = await gv.get_global_val(
-        ev.real_bot_id,
-        ev.bot_self_id,
+        bot_id,
+        bot_self_id,
     )
 
     yesterday = await gv.get_global_val(
-        ev.real_bot_id,
-        ev.bot_self_id,
+        bot_id,
+        bot_self_id,
         1,
     )
 
@@ -272,11 +275,15 @@ async def draw_data_analysis1(ev: Event):
     return data_bar
 
 
-async def draw_data_analysis2(ev: Event):
+async def draw_data_analysis2(
+    bot_id: str,
+    bot_self_id: Optional[str],
+):
     data = await gv.get_global_analysis(
-        ev.real_bot_id,
-        ev.bot_self_id,
+        bot_id,
+        bot_self_id,
     )
+
     badge1 = await draw_badge(
         'DAU',
         data['DAU'],
@@ -297,9 +304,20 @@ async def draw_data_analysis2(ev: Event):
         0,
         HINT_COLOR,
     )
+    badge5 = await draw_badge(
+        '群聊新增',
+        data['NG'],
+    )
+    badge6 = await draw_badge(
+        '群聊留存',
+        data['OG'],
+        0,
+    )
 
     data_bar = Image.new('RGBA', (1400, 200))
-    for index, i in enumerate([badge1, badge2, badge3, badge4]):
+    for index, i in enumerate(
+        [badge1, badge2, badge3, badge4, badge5, badge6]
+    ):
         data_bar.paste(i, (75 + index * 210, 25), i)
 
     return data_bar
@@ -493,14 +511,28 @@ async def draw_curve_img(ev: Event):
         30,
     )
 
+    _data_2 = await gv.get_value_analysis(
+        ev.real_bot_id,
+        None,
+        30,
+    )
+
     result: Dict[Union[Tuple[int, int, int], str], List[float]] = {
         THEME_COLOR: [],
         HINT_COLOR: [],
+        (182, 122, 210): [],
+        (27, 146, 210): [],
     }
     for day in _data:
         data = _data[day]
+        data2 = _data_2[day]
+
         result[THEME_COLOR].append(data['receive'])
         result[HINT_COLOR].append(data['send'])
+
+        result[(182, 122, 210)].append(data2['receive'])
+        result[(27, 146, 210)].append(data2['send'])
+
     curve_img = await draw_curve(result)
     return curve_img
 
@@ -541,31 +573,52 @@ async def draw_bg(w: int, h: int):
 async def draw_status(ev: Event):
     title = await draw_title()
     bar1 = await draw_bar('服务器基础信息', 'Base Info')
-    bar2 = await draw_bar('机器人数据统计', 'Data Analysis')
+    bar2_1 = await draw_bar('机器人数据统计(单)', 'Data Analysis')
+    bar2_2 = await draw_bar('机器人数据统计(多)', 'Data Analysis')
     bar3 = await draw_bar('日活曲线', 'Daily Activity Curve')
     bar4 = await draw_bar('插件额外信息', 'Extra Data')
 
     hw = draw_hw()
-    data_bar1 = await draw_data_analysis1(ev)
-    data_bar2 = await draw_data_analysis2(ev)
+    data_bar1_1 = await draw_data_analysis1(
+        ev.real_bot_id,
+        ev.bot_self_id,
+    )
+    data_bar2_1 = await draw_data_analysis2(
+        ev.real_bot_id,
+        ev.bot_self_id,
+    )
+    data_bar1_2 = await draw_data_analysis1(
+        ev.real_bot_id,
+        None,
+    )
+    data_bar2_2 = await draw_data_analysis2(
+        ev.real_bot_id,
+        None,
+    )
+
     plugin_status_img = await draw_plugins_status()
     curve_img = await draw_curve_img(ev)
 
     plugins_num = len(plugins_status)
     plugins_h = 100 + plugins_num * 180
 
-    img = await draw_bg(1400, 2267 + 150 + plugins_h)
+    img = await draw_bg(1400, 2778 + 150 + plugins_h)
 
     img.paste(title, (0, 0), title)
     img.paste(bar1, (0, 855), bar1)
     img.paste(hw, (0, 920), hw)
-    img.paste(bar2, (0, 1202), bar2)
-    img.paste(data_bar1, (0, 1289), data_bar1)
-    img.paste(data_bar2, (0, 1463), data_bar2)
-    img.paste(bar3, (0, 1686), bar3)
-    img.paste(curve_img, (0, 1755), curve_img)
-    img.paste(bar4, (0, 2267), bar4)
-    img.paste(plugin_status_img, (0, 2367), plugin_status_img)
+    img.paste(bar2_1, (0, 1202), bar2_1)
+    img.paste(data_bar1_1, (0, 1289), data_bar1_1)
+    img.paste(data_bar2_1, (0, 1463), data_bar2_1)
+
+    img.paste(bar2_2, (0, 1686), bar2_2)
+    img.paste(data_bar1_2, (0, 1773), data_bar1_2)
+    img.paste(data_bar2_2, (0, 1974), data_bar2_2)
+
+    img.paste(bar3, (0, 2197), bar3)
+    img.paste(curve_img, (0, 2266), curve_img)
+    img.paste(bar4, (0, 2778), bar4)
+    img.paste(plugin_status_img, (0, 2878), plugin_status_img)
 
     img = add_footer(img, footer=Image.open(TEXT_PATH / 'footer.png'))
     res = await convert_img(img)

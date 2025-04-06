@@ -41,7 +41,6 @@ def get_platform_val(bot_id: str, bot_self_id: str):
         bot_val[bot_id] = {}
     if bot_self_id not in bot_val[bot_id]:
         bot_val[bot_id][bot_self_id] = deepcopy(platform_val)
-
     return bot_val[bot_id][bot_self_id]
 
 
@@ -57,7 +56,7 @@ def get_all_bot_dict():
 
 
 async def get_value_analysis(
-    bot_id: str, bot_self_id: str, day: int = 7
+    bot_id: str, bot_self_id: Optional[str], day: int = 7
 ) -> Dict[str, PlatformVal]:
     '''顺序为最新的日期在前面'''
     result = {}
@@ -71,13 +70,18 @@ async def get_value_analysis(
     return result
 
 
-async def get_global_analysis(bot_id: str, bot_self_id: str):
+async def get_global_analysis(
+    bot_id: str,
+    bot_self_id: Optional[str],
+):
     seven_data = await get_value_analysis(bot_id, bot_self_id, 30)
 
     group_data = []
     user_data = []
 
     user_list: List[List[str]] = []
+    group_list: List[List[str]] = []
+    group_all_list: List[str] = []
     user_all_list: List[str] = []
 
     for day in seven_data:
@@ -86,23 +90,43 @@ async def get_global_analysis(bot_id: str, bot_self_id: str):
             continue
 
         _user_list = list(local_val['user'].keys())
+        _group_list = list(local_val['group'].keys())
 
         user_list.append(_user_list)
         user_all_list.extend(_user_list)
+        group_list.append(_group_list)
+        group_all_list.extend(_group_list)
 
         group_data.append(len(local_val['group']))
         user_data.append(len(local_val['user']))
 
     # 七天内的用户
     user_7_list = [user for users in user_list[:7] for user in users]
+    # 七天内的群组
+    group_7_list = [group for groups in group_list[:7] for group in groups]
 
     # 昨日到三十日之前的用户
     user_after_list = [user for users in user_list[1:] for user in users]
+    # 昨日到三十日之前的群组
+    group_after_list = [group for groups in group_list[1:] for group in groups]
 
     # 三十天内的用户没有在这七天出现过
     out_user = []
+    # 三十天内的群组没有在这七天出现过
+    out_group = []
     # 今天的用户从来没在这个月内出现过
     new_user = []
+    # 今天的群组从来没在这个月内出现过
+    new_group = []
+
+    for i in group_all_list:
+        if i not in group_7_list:
+            out_group.append(i)
+
+    if group_list:
+        for i in group_list[0]:
+            if i not in group_after_list:
+                new_group.append(i)
 
     for i in user_all_list:
         if i not in user_7_list:
@@ -128,6 +152,12 @@ async def get_global_analysis(bot_id: str, bot_self_id: str):
         'OU': (
             '{0:.2f}%'.format((len(out_user) / len(_user_all_list)) * 100)
             if len(_user_all_list) != 0
+            else "0.00%"
+        ),
+        'NG': str(len(new_group)),
+        'OG': (
+            '{0:.2f}%'.format((len(out_group) / len(group_all_list)) * 100)
+            if len(group_all_list) != 0
             else "0.00%"
         ),
     }
@@ -157,9 +187,57 @@ async def save_all_global_val(day: int = 0):
             await save_global_val(bot_id, bot_self_id, day)
 
 
+def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:
+    result = dict1.copy()
+
+    for key, value in dict2.items():
+        if key in result:
+            if isinstance(value, (int, float)) and isinstance(
+                result[key], (int, float)
+            ):
+                result[key] += value
+            elif isinstance(value, dict) and isinstance(result[key], dict):
+                result[key] = merge_dict(result[key], value)  # type: ignore
+            else:
+                result[key] = value
+        else:
+            result[key] = value
+
+    return result
+
+
 async def get_global_val(
-    bot_id: str, bot_self_id: str, day: Optional[int] = None
+    bot_id: str, bot_self_id: Optional[str], day: Optional[int] = None
 ) -> PlatformVal:
+    if bot_self_id is None:
+        all_bot_self_id: Dict[str, List[str]] = {}
+        for bot_id in bot_val:
+            all_bot_self_id[bot_id] = []
+            for bot_self_id in bot_val[bot_id]:
+                all_bot_self_id[bot_id].append(bot_self_id)
+
+        for bot_id_path in global_val_path.iterdir():
+            if bot_id_path.name not in all_bot_self_id:
+                all_bot_self_id[bot_id_path.name] = []
+            for bot_self_id_path in bot_id_path.iterdir():
+                if (
+                    bot_self_id_path.name
+                    not in all_bot_self_id[bot_id_path.name]
+                ):
+                    all_bot_self_id[bot_id_path.name].append(
+                        bot_self_id_path.name
+                    )
+
+        pv = deepcopy(platform_val)
+        for bot_id in all_bot_self_id:
+            for bot_self_id in all_bot_self_id[bot_id]:
+                pv = merge_dict(
+                    await get_global_val(bot_id, bot_self_id, day),
+                    pv,
+                )
+
+        return pv
+
     if day is None or day == 0:
         return get_platform_val(bot_id, bot_self_id)
     else:
