@@ -220,9 +220,13 @@ async def get_global_val(
                 all_bot_self_id[bot_id].append(bot_self_id)
 
         for bot_id_path in global_val_path.iterdir():
+            if not bot_id_path.is_dir():
+                continue
             if bot_id_path.name not in all_bot_self_id:
                 all_bot_self_id[bot_id_path.name] = []
             for bot_self_id_path in bot_id_path.iterdir():
+                if not bot_id_path.is_dir():
+                    continue
                 if (
                     bot_self_id_path.name
                     not in all_bot_self_id[bot_id_path.name]
