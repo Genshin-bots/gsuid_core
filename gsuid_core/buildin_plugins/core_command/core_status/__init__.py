@@ -37,10 +37,11 @@ async def count_group_user():
 
 
 @scheduler.scheduled_job('cron', hour='0', minute='0')
-async def scheduled_save_global_val():
+async def _u_scheduled_save_global_val_all():
     global bot_val
     await save_all_global_val(1)
     gv.bot_val = {}
+    logger.success('[早柚核心] 状态已清空!')
     await count_group_user()
     logger.success('[早柚核心] 状态已保存!')
 

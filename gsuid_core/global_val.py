@@ -138,16 +138,19 @@ async def get_global_analysis(
                 new_user.append(i)
 
     _user_all_list = list(set(user_all_list))
+    _group_sll_list = list(set(group_all_list))
     out_user = list(set(out_user))
+    out_group = list(set(out_group))
 
-    user_num = len(user_data)
-    group_num = len(group_data)
+    # user_num = len(user_data)
+    # group_num = len(group_data)
+
+    day7_user_num = len(user_7_list)
+    day7_group_num = len(group_7_list)
 
     data = {
-        'DAU': '{0:.2f}'.format(sum(user_data) / user_num) if user_num else 0,
-        'DAG': (
-            '{0:.2f}'.format(sum(group_data) / group_num) if group_num else 0
-        ),
+        'DAU': '{0:.2f}'.format(day7_user_num / 7) if day7_user_num else 0,
+        'DAG': ('{0:.2f}'.format(day7_group_num / 7) if day7_group_num else 0),
         'NU': str(len(new_user)),
         'OU': (
             '{0:.2f}%'.format((len(out_user) / len(_user_all_list)) * 100)
@@ -156,8 +159,8 @@ async def get_global_analysis(
         ),
         'NG': str(len(new_group)),
         'OG': (
-            '{0:.2f}%'.format((len(out_group) / len(group_all_list)) * 100)
-            if len(group_all_list) != 0
+            '{0:.2f}%'.format((len(out_group) / len(_group_sll_list)) * 100)
+            if len(_group_sll_list) != 0
             else "0.00%"
         ),
     }
