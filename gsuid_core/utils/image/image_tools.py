@@ -334,7 +334,9 @@ async def get_qq_avatar(
 
 
 async def get_qqgroup_avatar(
-    bot_id: Optional[Union[int, str]] = None, qid: Optional[Union[int, str]] = None, avatar_url: Optional[str] = None
+    bot_id: Optional[Union[int, str]] = None,
+    qid: Optional[Union[int, str]] = None,
+    avatar_url: Optional[str] = None,
 ) -> Image.Image:
     if not qid or not bot_id:
         return None
