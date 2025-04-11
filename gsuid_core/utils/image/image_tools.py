@@ -114,6 +114,8 @@ async def get_event_avatar(
 
     if img is None and ev.bot_id == 'onebot' and not ev.sender:
         img = await get_qq_avatar(ev.user_id)
+    elif img is None and ev.bot_id == 'qqgroup':
+        img = await get_qqgroup_avatar(ev.bot_self_id, ev.user_id)
 
     if img is None and avatar_path:
         pic_path_list = list(avatar_path.iterdir())
@@ -325,6 +327,20 @@ async def get_qq_avatar(
         avatar_url = f'http://q1.qlogo.cn/g?b=qq&nk={qid}&s=640'
     elif avatar_url is None:
         avatar_url = 'https://q1.qlogo.cn/g?b=qq&nk=3399214199&s=640'
+    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
+        'RGBA'
+    )
+    return char_pic
+
+
+async def get_qqgroup_avatar(
+    bot_id: Optional[Union[int, str]] = None,
+    qid: Optional[Union[int, str]] = None,
+    avatar_url: Optional[str] = None,
+) -> Image.Image:
+    if not qid or not bot_id:
+        return None
+    avatar_url = f'https://q.qlogo.cn/qqapp/{bot_id}/{qid}/100'
     char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
         'RGBA'
     )
