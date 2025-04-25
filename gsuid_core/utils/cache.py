@@ -18,8 +18,6 @@ CACHE: Dict[float, Dict[str, Union[Path, str]]] = {}
 
 
 def gs_cache(expire_time=3600):
-    global CACHE
-
     def wrapper(func):
 
         is_coroutine = inspect.iscoroutinefunction(func)

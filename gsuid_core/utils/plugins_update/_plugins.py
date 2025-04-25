@@ -119,7 +119,6 @@ async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
 
 
 async def refresh_list() -> List[str]:
-    global plugins_list
     refresh_list = []
     async with aiohttp.ClientSession() as session:
         logger.trace(f'稍等...开始刷新插件列表, 地址: {plugins_lib}')

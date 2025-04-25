@@ -35,8 +35,6 @@ bot_val: BotVal = {}
 
 
 def get_platform_val(bot_id: str, bot_self_id: str):
-    global bot_val
-
     if bot_id not in bot_val:
         bot_val[bot_id] = {}
     if bot_self_id not in bot_val[bot_id]:
@@ -168,7 +166,6 @@ async def get_global_analysis(
 
 
 async def load_all_global_val():
-    global bot_val
     today = datetime.date.today()
     date_format = today.strftime("%Y_%d_%b")
 
@@ -184,7 +181,6 @@ async def load_all_global_val():
 
 
 async def save_all_global_val(day: int = 0):
-    global bot_val
     for bot_id in bot_val:
         for bot_self_id in bot_val[bot_id]:
             await save_global_val(bot_id, bot_self_id, day)

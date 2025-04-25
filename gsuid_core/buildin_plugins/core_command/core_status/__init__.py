@@ -38,7 +38,6 @@ async def count_group_user():
 
 @scheduler.scheduled_job('cron', hour='0', minute='0')
 async def _u_scheduled_save_global_val_all():
-    global bot_val
     await save_all_global_val(1)
     gv.bot_val = {}
     logger.success('[早柚核心] 状态已清空!')
@@ -67,7 +66,11 @@ async def send_core_status_msg(bot: Bot, ev: Event):
     else:
         _day = None
     logger.info('开始执行 早柚核心 [状态]')
-    local_val = await gv.get_global_val(ev.real_bot_id, ev.bot_self_id, _day)
+    local_val = await gv.get_global_val(
+        ev.real_bot_id,
+        ev.bot_self_id,
+        _day,
+    )
 
     if ev.group_id:
         _command = sum(

@@ -52,7 +52,7 @@ pandas = "^2.2.3"
 betterproto = ">=2.0.0b7"
 
 [tool.poetry.group.dev.dependencies]
-flake8 = "^6.0.0"
+flake8 = "^7.0.0"
 black = "^22.12.0"
 isort = "^5.11.4"
 pre-commit = "^2.21.0"
@@ -67,9 +67,9 @@ core = "gsuid_core/core.py"
 
 [tool.pdm.dev-dependencies]
 dev = [
-    "flake8<7.0.0,>=6.0.0",
-    "black<23.0.0,>=22.12.0",
-    "isort<6.0.0,>=5.11.4",
+    "flake8<8.0.0,>=7.0.0",
+    "black<26.0.0,>=25.0.0",
+    "isort<7.0.0,>=6.0.0",
     "pre-commit<3.0.0,>=2.21.0",
     "pycln<3.0.0,>=2.1.2",
 ]

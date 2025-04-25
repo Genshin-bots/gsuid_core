@@ -182,7 +182,6 @@ if 'file' in logger_list:
 
 
 async def read_log():
-    global log_history
     index = 0
     while True:
         if index <= len(log_history) - 1:

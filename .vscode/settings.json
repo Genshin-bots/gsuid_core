@@ -11,6 +11,9 @@
   "python.autoComplete.extraPaths": [
     "${workspaceFolder}/gsuid_core"
   ],
+  "flake8.args": [
+    "--max-line-length=120"
+  ],
   "isort.args": [
     "--profile",
     "black"
@@ -18,5 +21,6 @@
   "basedpyright.analysis.typeCheckingMode": "basic",
   "basedpyright.analysis.extraPaths": [
     "${workspaceFolder}/gsuid_core"
-  ]
+  ],
+  "python.analysis.typeCheckingMode": "off"
 }

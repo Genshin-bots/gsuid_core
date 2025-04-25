@@ -214,8 +214,6 @@ async def download_all_file(
     URL: Optional[str] = None,
     TAG: Optional[str] = None,
 ):
-    global global_tag, global_url
-
     if URL:
         TAG, BASE_URL = TAG or '[Unknown]', URL
     else:
