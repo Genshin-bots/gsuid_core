@@ -5,18 +5,18 @@ from io import BytesIO
 from venv import logger
 from pathlib import Path
 from base64 import b64decode, b64encode
-from typing import Dict, List, Tuple, Union, Literal, Optional
+from typing import Dict, List, Tuple, Union, Literal, Optional, cast
 
 import msgspec
 from PIL import Image
 
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
-from gsuid_core.message_models import Button
 from gsuid_core.global_val import get_global_val
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.image.image_tools import sget
 from gsuid_core.load_template import markdown_templates
+from gsuid_core.message_models import Button, ButtonList
 from gsuid_core.utils.plugins_config.gs_config import (
     pic_gen_config,
     send_pic_config,
@@ -63,6 +63,41 @@ if IS_UPLOAD:
 URL_MAP = {}
 
 
+def process_buttons(buttons: ButtonList) -> ButtonList:
+    if not buttons:
+        return buttons
+
+    # 类型安全的嵌套检查
+    if _is_nested_list(buttons):
+        # 明确告知类型检查器这是 List[List[Button]]
+        nested_buttons = cast(List[List[Button]], buttons)
+        return [
+            [_process_button(btn) for btn in sublist]
+            for sublist in nested_buttons
+        ]
+    else:
+        # 明确告知类型检查器这是 List[Button]
+        flat_buttons = cast(List[Button], buttons)
+        return [_process_button(btn) for btn in flat_buttons]
+
+
+def _process_button(button: Button) -> Button:
+    if button.prefix and button._edited is False:
+        button.data = button.prefix + button.data
+        button._edited = True
+    return button
+
+
+def _is_nested_list(obj: ButtonList) -> bool:
+    if not obj:
+        return False
+
+    first = obj[0]
+    return isinstance(first, list) and (
+        not first or isinstance(first[0], Button)
+    )
+
+
 class MessageSegment:
     def __add__(self, other):
         return [self, other]
@@ -107,6 +142,10 @@ class MessageSegment:
     def buttons(
         buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
     ) -> Message:
+        print(msgspec.to_builtins(buttons))
+        if buttons:
+            buttons = process_buttons(buttons)
+        print(msgspec.to_builtins(buttons))
         return Message(type='buttons', data=msgspec.to_builtins(buttons))
 
     @staticmethod

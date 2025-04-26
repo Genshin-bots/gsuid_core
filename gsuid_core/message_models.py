@@ -17,8 +17,11 @@ class Button(Struct):
     specify_role_ids: List[str] = []  # 仅限频道可用
     specify_user_ids: List[str] = []  # 指定用户
     unsupport_tips: str = '您的客户端暂不支持该功能, 请升级后适配...'
+    prefix: str = ''  # 命令前缀, 使用时请直接继承该类重写该值, 避免重复定义
+    _edited: bool = False  # 是否编辑过
 
 
 ButtonType = Union[
     List[str], List[Button], List[List[str]], List[List[Button]]
 ]
+ButtonList = Union[List[Button], List[List[Button]]]
