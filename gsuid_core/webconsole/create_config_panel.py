@@ -3,6 +3,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
+    GsImageConfig,
     GsListStrConfig,
 )
 from gsuid_core.webconsole.create_base_panel import (
@@ -15,6 +16,7 @@ from gsuid_core.webconsole.create_base_panel import (
     get_input_tag,
     get_grid_panel,
     get_text_panel,
+    get_image_input,
     get_input_number,
     get_select_panel,
     get_switch_panel,
@@ -103,6 +105,14 @@ def get_config_page():
                         gsc.title, config, gsc.data, gsc.options
                     )
                 solo_body.append(_data)
+            elif isinstance(gsc, GsImageConfig):
+                solo_body.append(
+                    get_image_input(
+                        gsc.title,
+                        config,
+                        gsc.upload_to,
+                    )
+                )
             if len(solo_body) == 3:
                 body.append(get_grid_panel(solo_body))
                 body.append(get_divider())

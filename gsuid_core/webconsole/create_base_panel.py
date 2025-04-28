@@ -1,4 +1,33 @@
+from pathlib import Path
 from typing import Dict, List, Union, Literal, Optional
+
+
+def get_image_input(label: str, name: str, UPLOAD_PATH: Union[Path, str]):
+    return {
+        "type": "input-image",
+        "name": name,
+        "label": label,
+        "mode": "horizontal",
+        "labelAlign": "left",
+        "accept": "image/jpeg, image/jpg, image/png",
+        "receiver": f'/genshinuid/uploadImage/{UPLOAD_PATH}',
+        "multiple": False,
+        "autoUpload": False,
+        "joinValues": False,
+        "onEvent": {
+            "success": {
+                "actions": [
+                    {
+                        "actionType": "toast",
+                        "args": {
+                            "msgType": "info",
+                            "msg": "「${event.data.path}」上传成功",
+                        },
+                    }
+                ]
+            }
+        },
+    }
 
 
 def get_service(body: List[Dict]):

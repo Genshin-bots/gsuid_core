@@ -36,6 +36,11 @@ class GsIntConfig(GsConfig, tag=True):
     options: List[int] = []
 
 
+class GsImageConfig(GsConfig, tag=True):
+    data: str
+    upload_to: str
+
+
 GSC = Union[
     GsDictConfig,
     GsBoolConfig,
@@ -43,4 +48,5 @@ GSC = Union[
     GsListStrConfig,
     GsStrConfig,
     GsIntConfig,
+    GsImageConfig,
 ]

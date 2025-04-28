@@ -5,11 +5,12 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 
+import aiofiles
 from PIL import Image
 from bs4 import Tag, BeautifulSoup
 from starlette.requests import Request
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, UploadFile, BackgroundTasks
 from fastapi.responses import Response, StreamingResponse
 
 from gsuid_core.sv import SL
@@ -70,6 +71,29 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.post('/genshinuid/uploadImage/{UPLOAD_PATH:path}')
+@site.auth.requires('root')
+async def _upload_image(
+    request: Request,
+    UPLOAD_PATH: str,
+    file: UploadFile,
+):
+    path = Path(UPLOAD_PATH)
+    # 利用uuid保存图片
+    file_name = file.filename
+    if file_name:
+        file_name = file_name.split('.')[-1]
+        file_name = f'{datetime.now().strftime("%Y%m%d%H%M%S")}.{file_name}'
+    else:
+        file_name = 'image.jpg'
+    file_path = path / file_name
+    if not file_path.parent.exists():
+        file_path.parent.mkdir(parents=True)
+    async with aiofiles.open(file_path, 'wb') as f:
+        content = await file.read()
+        await f.write(content)
 
 
 @app.post('/genshinuid/setSV/{name}')

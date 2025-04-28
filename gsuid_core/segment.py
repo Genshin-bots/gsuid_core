@@ -142,10 +142,8 @@ class MessageSegment:
     def buttons(
         buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
     ) -> Message:
-        print(msgspec.to_builtins(buttons))
         if buttons:
             buttons = process_buttons(buttons)
-        print(msgspec.to_builtins(buttons))
         return Message(type='buttons', data=msgspec.to_builtins(buttons))
 
     @staticmethod

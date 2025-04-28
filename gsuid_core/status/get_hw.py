@@ -3,6 +3,8 @@ import platform
 
 import psutil
 
+from gsuid_core.logger import logger
+
 
 def get_cpu_info():
     try:
@@ -134,7 +136,7 @@ async def get_network_info():
             if output.isdigit():
                 speed_max = float(output) / 1e6  # 转换为 Mbps
     except Exception as e:
-        print(f"获取网络速度失败: {e}")
+        logger.exception(f"获取网络速度失败: {e}")
 
     usage_percent = min(round((speed_current / speed_max) * 100, 1), 100)
     return {"name": f"{speed_max:.0f}Mbps", "value": usage_percent}

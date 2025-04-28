@@ -1,12 +1,21 @@
 from typing import Dict
+from pathlib import Path
 
-from .models import GSC, GsStrConfig, GsBoolConfig
+from gsuid_core.data_store import get_res_path
+
+from .models import GSC, GsStrConfig, GsBoolConfig, GsImageConfig
 
 STATUS_CONIFG: Dict[str, GSC] = {
     'CustomBg': GsBoolConfig(
         '是否开启自定义背景',
         '开启路径位于GsCore/BG',
         False,
+    ),
+    'CustomBgPath': GsImageConfig(
+        '自定义背景',
+        '自定义背景图片',
+        str(Path(__file__).parents[2] / 'status' / 'texture2d' / 'bg.jpg'),
+        str(get_res_path(['GsCore', 'bg'])),
     ),
     'CustomTheme': GsStrConfig(
         '自定义主题色',
