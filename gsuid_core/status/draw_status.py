@@ -42,9 +42,11 @@ async def draw_title():
         if _icon_path.exists():
             icon_path = _icon_path
 
-    icon = Image.open(icon_path).resize((186, 186))
+    icon = Image.open(icon_path)
     if icon.mode == 'RGB':
         icon = await draw_pic_with_ring(icon, 186, (189, 72, 37))
+    else:
+        icon = icon.resize((186, 186))
 
     title.paste(icon, (92, 77), icon)
 
