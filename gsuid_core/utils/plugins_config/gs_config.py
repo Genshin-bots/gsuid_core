@@ -103,6 +103,8 @@ class StringConfig:
 
             for key in self.config_list:
                 defalut_dict = to_builtins(self.config_list[key])
+                if key not in temp_config:
+                    continue
                 if list(temp_config[key].keys()) == list(defalut_dict.keys()):
                     continue
                 else:
