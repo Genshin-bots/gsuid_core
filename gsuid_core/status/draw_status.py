@@ -15,6 +15,7 @@ from gsuid_core.utils.image.image_tools import (
     add_footer,
     get_font_x,
     crop_center_img,
+    draw_pic_with_ring,
 )
 
 from .utils import generate_y_ticks
@@ -41,7 +42,10 @@ async def draw_title():
         if _icon_path.exists():
             icon_path = _icon_path
 
-    icon = Image.open(icon_path).resize((186, 186)).convert('RGBA')
+    icon = Image.open(icon_path).resize((186, 186))
+    if icon.mode == 'RGB':
+        icon = await draw_pic_with_ring(icon, 186, (189, 72, 37))
+
     title.paste(icon, (92, 77), icon)
 
     MAIN_TITLE: str = status_config.get_config('CustomName').data
