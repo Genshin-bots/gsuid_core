@@ -112,6 +112,14 @@
           "need_ck": false,
           "need_sk": false,
           "need_admin": false
+        },
+        {
+          "name": "信息",
+          "desc": "查看目前核心的信息",
+          "eg": "状态",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
         }
       ]
     },

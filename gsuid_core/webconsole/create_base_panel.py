@@ -2,17 +2,25 @@ from pathlib import Path
 from typing import Dict, List, Union, Literal, Optional
 
 
-def get_image_input(label: str, name: str, UPLOAD_PATH: Union[Path, str]):
-    return {
+def get_image_input(
+    label: str,
+    name: str,
+    UPLOAD_PATH: Union[Path, str],
+    filename: Optional[str],
+    suffix: str = 'jpg',
+    is_show: bool = True,
+):
+    api = f'/genshinuid/uploadImage/{suffix}/{filename}/{UPLOAD_PATH}'
+    data = {
         "type": "input-image",
         "name": name,
         "label": label,
-        "mode": "horizontal",
+        "mode": "normal",
+        "autoUpload": True,
         "labelAlign": "left",
         "accept": "image/jpeg, image/jpg, image/png",
-        "receiver": f'/genshinuid/uploadImage/{UPLOAD_PATH}',
+        "receiver": api,
         "multiple": False,
-        "autoUpload": False,
         "joinValues": False,
         "onEvent": {
             "success": {
@@ -28,6 +36,11 @@ def get_image_input(label: str, name: str, UPLOAD_PATH: Union[Path, str]):
             }
         },
     }
+    if is_show:
+        data['frameImage'] = (
+            f'/genshinuid/getImage/{suffix}/{filename}/{UPLOAD_PATH}'
+        )
+    return data
 
 
 def get_service(body: List[Dict]):

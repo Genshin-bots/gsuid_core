@@ -39,6 +39,8 @@ class GsIntConfig(GsConfig, tag=True):
 class GsImageConfig(GsConfig, tag=True):
     data: str
     upload_to: str
+    filename: str
+    suffix: str = 'jpg'
 
 
 GSC = Union[

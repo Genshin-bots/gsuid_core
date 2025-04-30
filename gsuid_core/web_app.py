@@ -23,7 +23,10 @@ from gsuid_core.config import CONFIG_DEFAULT, core_config
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
-from gsuid_core.utils.plugins_config.models import GsListStrConfig
+from gsuid_core.utils.plugins_config.models import (
+    GsImageConfig,
+    GsListStrConfig,
+)
 from gsuid_core.utils.plugins_config.gs_config import (
     all_config_list,
     core_plugins_config,
@@ -73,27 +76,58 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.post('/genshinuid/uploadImage/{UPLOAD_PATH:path}')
-@site.auth.requires('root')
+@app.post('/genshinuid/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}')
+@site.auth.requires('root', response=Response(status_code=403))
 async def _upload_image(
     request: Request,
     UPLOAD_PATH: str,
     file: UploadFile,
+    filename: Optional[str],
+    suffix: Optional[str],
 ):
     path = Path(UPLOAD_PATH)
     # 利用uuid保存图片
     file_name = file.filename
-    if file_name:
-        file_name = file_name.split('.')[-1]
-        file_name = f'{datetime.now().strftime("%Y%m%d%H%M%S")}.{file_name}'
+    if not filename:
+        if file_name:
+            file_name = file_name.split('.')[-1]
+            file_name = (
+                f'{datetime.now().strftime("%Y%m%d%H%M%S")}.{file_name}'
+            )
+        else:
+            file_name = 'image.jpg'
     else:
-        file_name = 'image.jpg'
+        if suffix:
+            file_name = f'{filename}.{suffix}'
+        else:
+            file_name = f'{filename}.jpg'
+
     file_path = path / file_name
     if not file_path.parent.exists():
         file_path.parent.mkdir(parents=True)
     async with aiofiles.open(file_path, 'wb') as f:
         content = await file.read()
         await f.write(content)
+
+
+@app.get('/genshinuid/getImage/{suffix}/{filename}/{IMAGE_PATH:path}')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _get_image(
+    request: Request,
+    IMAGE_PATH: str,
+    filename: str,
+    suffix: str = 'str',
+):
+    path = Path(IMAGE_PATH)
+    file_path = path / f'{filename}.{suffix}'
+    if not file_path.exists():
+        return Response(status_code=404)
+
+    # 返回URL
+    return Response(
+        content=file_path.read_bytes(),
+        media_type='image/jpeg',
+    )
 
 
 @app.post('/genshinuid/setSV/{name}')
@@ -140,13 +174,16 @@ def _set_Config(request: Request, data: Dict, config_name: str):
     for name in data:
         if name == 'params':
             continue
-        config = all_config_list[config_name][name]
+        cc = all_config_list[config_name]
+        config = cc[name]
         if isinstance(config, GsListStrConfig):
             data[name] = data[name].replace('：', ':').replace(':', ',')
             value = data[name].split(',')
+        elif isinstance(config, GsImageConfig):
+            value: dict = cc.config_default[name].data  # type: ignore
         else:
             value = data[name]
-        all_config_list[config_name].set_config(name, value)
+        cc.set_config(name, value)
     return {"status": 0, "msg": "成功！"}
 
 

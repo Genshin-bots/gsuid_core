@@ -111,6 +111,8 @@ def get_config_page():
                         gsc.title,
                         config,
                         gsc.upload_to,
+                        gsc.filename,
+                        gsc.suffix,
                     )
                 )
             if len(solo_body) == 3:

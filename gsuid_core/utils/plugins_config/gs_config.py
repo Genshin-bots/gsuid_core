@@ -1,6 +1,9 @@
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
+from msgspec import to_builtins
+from msgspec import ValidationError
 from msgspec import json as msgjson
 
 from gsuid_core.logger import logger
@@ -47,6 +50,7 @@ class StringConfig:
         self, config_name: str, CONFIG_PATH: Path, config_list: Dict[str, GSC]
     ) -> None:
         self.config_list = config_list
+        self.config_default = config_list
 
         if not CONFIG_PATH.exists():
             with open(CONFIG_PATH, 'wb') as file:
@@ -89,13 +93,40 @@ class StringConfig:
         self.CONFIG_PATH.unlink()
         temp_file_path.rename(self.CONFIG_PATH)
 
+    def repair_config(self):
+        with open(self.CONFIG_PATH, 'r', encoding='UTF-8') as f:
+            logger.warning(
+                f'[配置][{self.config_name}] 配置文件格式有变动, 已重置...'
+            )
+            # 打开self.CONFIG_PATH，用json加载
+            temp_config: Dict[str, Dict[str, Any]] = json.load(f)
+
+            for key in self.config_list:
+                defalut_dict = to_builtins(self.config_list[key])
+                if list(temp_config[key].keys()) == list(defalut_dict.keys()):
+                    continue
+                else:
+                    temp_config[key] = defalut_dict
+
+        with open(self.CONFIG_PATH, 'w', encoding='UTF-8') as f:
+            json.dump(temp_config, f, indent=4, ensure_ascii=False)
+
     def update_config(self):
+        is_error = False
         # 打开config.json
         with open(self.CONFIG_PATH, 'r', encoding='UTF-8') as f:
-            self.config: Dict[str, GSC] = msgjson.decode(
-                f.read(),
-                type=Dict[str, GSC],
-            )
+            try:
+                self.config: Dict[str, GSC] = msgjson.decode(
+                    f.read(),
+                    type=Dict[str, GSC],
+                )
+            except ValidationError:
+                self.repair_config()
+                is_error = True
+
+        if is_error:
+            self.update_config()
+            return
 
         # 对没有的值，添加默认值
         for key in self.config_list:

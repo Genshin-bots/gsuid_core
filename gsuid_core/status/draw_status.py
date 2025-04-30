@@ -1,4 +1,3 @@
-import random
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
 
@@ -7,7 +6,6 @@ from PIL import Image, ImageOps, ImageDraw
 import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
-from gsuid_core.data_store import get_res_path
 from gsuid_core.help.draw_core_help import ICON
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
@@ -37,7 +35,13 @@ async def draw_title():
     title = Image.new('RGBA', (1400, 300))
     title_draw = ImageDraw.Draw(title)
 
-    icon = Image.open(ICON).resize((186, 186))
+    icon_path = ICON
+    if status_config.get_config('CustomIcon').data:
+        _icon_path = Path(status_config.get_config('CustomIconPath').data)
+        if _icon_path.exists():
+            icon_path = _icon_path
+
+    icon = Image.open(icon_path).resize((186, 186)).convert('RGBA')
     title.paste(icon, (92, 77), icon)
 
     MAIN_TITLE: str = status_config.get_config('CustomName').data
@@ -483,7 +487,10 @@ async def draw_curve(
         points = []
         for dataindex, data in enumerate(data):
             x1 = int(start_x + dataindex * step_x)
-            d_y = (data / y_ticks[-1]) * a_y
+            if y_ticks[-1]:
+                d_y = (data / y_ticks[-1]) * a_y
+            else:
+                d_y = 0
             y1 = 460 - d_y
 
             points.append((x1, y1))
@@ -538,15 +545,13 @@ async def draw_curve_img(ev: Event):
 
 
 async def draw_bg(w: int, h: int):
+    path = TEXT_PATH / 'bg.jpg'
     if status_config.get_config('CustomBg').data:
-        _lst = list(get_res_path(['GsCore', 'bg']).iterdir())
-        if _lst:
-            path = random.choice(_lst)
-        else:
-            path = TEXT_PATH / 'bg.jpg'
-        bg = Image.open(path).convert('RGBA')
-    else:
-        bg = Image.open(TEXT_PATH / 'bg.jpg').convert('RGBA')
+        bg_path = Path(status_config.get_config('CustomBgPath').data)
+        if bg_path.exists():
+            path = bg_path
+
+    bg = Image.open(path).convert('RGBA')
     bg = crop_center_img(bg, w, h)
 
     mask = Image.open(TEXT_PATH / 'mask.png')
