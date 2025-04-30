@@ -370,6 +370,7 @@ async def draw_pic_with_ring(
     img = Image.new('RGBA', (size, size))
     mask = mask_pic.resize((size, size))
     resize_pic = crop_center_img(pic, size, size)
+    resize_pic = resize_pic.convert('RGBA')
     if bg_color:
         img_color = Image.new('RGBA', (size, size), bg_color)
         img_color.paste(resize_pic, (0, 0), resize_pic)
