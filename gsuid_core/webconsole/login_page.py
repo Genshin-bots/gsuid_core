@@ -35,7 +35,7 @@ async def _get_page_as_app(self, request: Request) -> App:
         tpl='''
         <div class='flex justify-between'>
             <div>
-                <a href='https://github.com/KimigaiiWuyi/GenshinUID'
+                <a href='https://github.com/Genshin-bots/gsuid_core'
                 target='_blank' title='Copyright'>
                     <i class='fa fa-github fa-2x'></i>
                 </a>

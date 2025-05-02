@@ -231,96 +231,6 @@ class GsNormalForm(admin.FormAdmin):
         return True
 
 
-@site.register_admin
-class AmisPageAdmin(admin.PageAdmin):
-    page_schema = '入门使用'
-
-    async def get_page(self, request: Request) -> Page:
-        return Page.parse_obj(
-            {
-                'type': 'page',
-                'body': {
-                    'type': 'markdown',
-                    'value': f'{gsuid_webconsole_help}',
-                },
-            }
-        )
-
-
-@site.register_admin
-class UserBindFormAdmin(GsNormalForm):
-    page_schema = PageSchema(label='绑定CK或SK', icon='fa fa-link')  # type: ignore
-
-    async def get_form(self, request: Request) -> Form:
-        form = await super().get_form(request)
-        form.body.sort(key=lambda form_item: form_item.type, reverse=True)  # type: ignore
-        form.update_from_kwargs(
-            title='',
-            mode=DisplayModeEnum.horizontal,
-            submitText='绑定',
-            actionsClassName='no-border m-none p-none',
-            panelClassName='',
-            wrapWithPanel=True,
-            horizontal=Horizontal(left=3, right=9),
-            actions=[
-                ButtonToolbar(
-                    buttons=[
-                        Action(
-                            actionType='submit',
-                            label='绑定',
-                            level=LevelEnum.primary,
-                        )
-                    ]
-                )
-            ],
-        )
-        return form
-
-    async def get_page(self, request: Request) -> Page:
-        page = await super().get_page(request)
-        page.body = [
-            Alert(
-                level='warning',
-                body='CK获取可查看左侧栏 [入门使用] 相关细则!',
-            ),
-            amis.Divider(),
-            Grid(
-                columns=[
-                    {
-                        'body': [page.body],
-                        'lg': 10,
-                        'md': 10,
-                        'valign': 'middle',
-                    }
-                ],
-                align='center',
-                valign='middle',
-            ),
-        ]
-        return page
-
-    # 创建表单数据模型
-    class schema(BaseModel):
-        bot_id: str = Field(..., title='平台ID')  # type: ignore
-        user_id: str = Field(..., title='用户ID', min_length=3, max_length=30)  # type: ignore
-        cookie: str = Field(..., title='Cookie或者Login_ticket')  # type: ignore
-
-    # 处理表单提交数据
-    async def handle(
-        self, request: Request, data: schema, **kwargs
-    ) -> BaseApiOut[Any]:
-        try:
-            im = await _deal_ck(data.bot_id, data.cookie, data.user_id)
-        except Exception as e:
-            logger.warning(e)
-            return BaseApiOut(status=-1, msg='你输入的CK可能已经失效/或者该用户ID未绑定UID')  # type: ignore
-        ok_num = im.count('成功')
-        if ok_num < 1:
-            return BaseApiOut(status=-1, msg=im)  # type: ignore
-        else:
-            return BaseApiOut(msg=im)  # type: ignore
-
-
 class GsAdminModel(admin.ModelAdmin):
     async def has_page_permission(
         self,
@@ -364,51 +274,6 @@ class GsAdminPage(admin.PageAdmin):
         ) and await request.auth.requires(roles='root', response=False)(
             request
         )
-
-
-@site.register_admin
-class CKAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='CK管理', icon='fa fa-database')  # type: ignore
-
-    # 配置管理模型
-    model = GsUser
-
-
-@site.register_admin
-class PushAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='推送管理', icon='fa fa-bullhorn')  # type: ignore
-
-    # 配置管理模型
-    model = GsPush
-
-
-@site.register_admin
-class CacheAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='缓存管理', icon='fa fa-recycle')  # type: ignore
-
-    # 配置管理模型
-    model = GsCache
-
-
-@site.register_admin
-class BindAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='绑定管理', icon='fa fa-users')  # type: ignore
-
-    # 配置管理模型
-    model = GsBind
-
-
-@site.register_admin
-class SubscribeAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='订阅管理', icon='fa fa-rss')  # type: ignore
-
-    # 配置管理模型
-    model = Subscribe
 
 
 # 注册自定义首页
@@ -486,7 +351,6 @@ class CoreManagePage(GsAdminPage):
         return Page.parse_obj(get_core_config_page())
 
 
-@site.register_admin
 class SVManagePage(GsAdminPage):
     page_schema = PageSchema(
         label=('功能服务配置'),
@@ -501,7 +365,6 @@ class SVManagePage(GsAdminPage):
         return Page.parse_obj(get_sv_page())
 
 
-@site.register_admin
 class ConfigManagePage(GsAdminPage):
     page_schema = PageSchema(
         label=('修改插件设定'),
@@ -516,7 +379,6 @@ class ConfigManagePage(GsAdminPage):
         return Page.parse_obj(get_config_page())
 
 
-@site.register_admin
 class PluginsManagePage(GsAdminPage):
     page_schema = PageSchema(
         label=('插件管理'),
@@ -532,6 +394,18 @@ class PluginsManagePage(GsAdminPage):
 
 
 @site.register_admin
+class PluginsConfig(admin.AdminApp):
+    page_schema = PageSchema(label="插件管理", icon="fa fa-cogs")  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            SVManagePage,
+            ConfigManagePage,
+            PluginsManagePage,
+        )
+
+
 class LogsPage(GsAdminPage):
     page_schema = PageSchema(
         label=('实时日志'),
@@ -546,7 +420,6 @@ class LogsPage(GsAdminPage):
         return Page.parse_obj(create_log_page())
 
 
-@site.register_admin
 class HistoryLogsPage(GsAdminPage):
     page_schema = PageSchema(
         label=('历史日志'),
@@ -561,7 +434,6 @@ class HistoryLogsPage(GsAdminPage):
         return Page.parse_obj(get_history_logs_page())
 
 
-@site.register_admin
 class PushPage(GsAdminPage):
     page_schema = PageSchema(
         label=('批量推送消息'),
@@ -574,6 +446,174 @@ class PushPage(GsAdminPage):
     @handle_exceptions
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(await get_batch_push_panel())
+
+
+@site.register_admin
+class LogAndMessage(admin.AdminApp):
+    page_schema = PageSchema(label="日志和消息", icon="fa fa-comments-o")  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            LogsPage,
+            HistoryLogsPage,
+            PushPage,
+        )
+
+
+class CKAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(label='CK管理', icon='fa fa-database')  # type: ignore
+
+    # 配置管理模型
+    model = GsUser
+
+
+class PushAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(label='推送管理', icon='fa fa-bullhorn')  # type: ignore
+
+    # 配置管理模型
+    model = GsPush
+
+
+class CacheAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(label='缓存管理', icon='fa fa-recycle')  # type: ignore
+
+    # 配置管理模型
+    model = GsCache
+
+
+class BindAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(label='绑定管理', icon='fa fa-users')  # type: ignore
+
+    # 配置管理模型
+    model = GsBind
+
+
+@site.register_admin
+class MiHoYoDatabase(admin.AdminApp):
+    page_schema = PageSchema(label="米游数据库", icon="fa fa-database")  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            CKAdmin,
+            PushAdmin,
+            CacheAdmin,
+            BindAdmin,
+        )
+
+
+class AmisPageAdmin(admin.PageAdmin):
+    page_schema = '入门使用'
+
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(
+            {
+                'type': 'page',
+                'body': {
+                    'type': 'markdown',
+                    'value': f'{gsuid_webconsole_help}',
+                },
+            }
+        )
+
+
+class UserBindFormAdmin(GsNormalForm):
+    page_schema = PageSchema(label='绑定CK或SK', icon='fa fa-link')  # type: ignore
+
+    async def get_form(self, request: Request) -> Form:
+        form = await super().get_form(request)
+        form.body.sort(key=lambda form_item: form_item.type, reverse=True)  # type: ignore
+        form.update_from_kwargs(
+            title='',
+            mode=DisplayModeEnum.horizontal,
+            submitText='绑定',
+            actionsClassName='no-border m-none p-none',
+            panelClassName='',
+            wrapWithPanel=True,
+            horizontal=Horizontal(left=3, right=9),
+            actions=[
+                ButtonToolbar(
+                    buttons=[
+                        Action(
+                            actionType='submit',
+                            label='绑定',
+                            level=LevelEnum.primary,
+                        )
+                    ]
+                )
+            ],
+        )
+        return form
+
+    async def get_page(self, request: Request) -> Page:
+        page = await super().get_page(request)
+        page.body = [
+            Alert(
+                level='warning',
+                body='CK获取可查看左侧栏 [入门使用] 相关细则!',
+            ),
+            amis.Divider(),
+            Grid(
+                columns=[
+                    {
+                        'body': [page.body],
+                        'lg': 10,
+                        'md': 10,
+                        'valign': 'middle',
+                    }
+                ],
+                align='center',
+                valign='middle',
+            ),
+        ]
+        return page
+
+    # 创建表单数据模型
+    class schema(BaseModel):
+        bot_id: str = Field(..., title='平台ID')  # type: ignore
+        user_id: str = Field(..., title='用户ID', min_length=3, max_length=30)  # type: ignore
+        cookie: str = Field(..., title='Cookie或者Login_ticket')  # type: ignore
+
+    # 处理表单提交数据
+    async def handle(
+        self, request: Request, data: schema, **kwargs
+    ) -> BaseApiOut[Any]:
+        try:
+            im = await _deal_ck(data.bot_id, data.cookie, data.user_id)
+        except Exception as e:
+            logger.warning(e)
+            return BaseApiOut(status=-1, msg='你输入的CK可能已经失效/或者该用户ID未绑定UID')  # type: ignore
+        ok_num = im.count('成功')
+        if ok_num < 1:
+            return BaseApiOut(status=-1, msg=im)  # type: ignore
+        else:
+            return BaseApiOut(msg=im)  # type: ignore
+
+
+@site.register_admin
+class MiHoYoBind(admin.AdminApp):
+    page_schema = PageSchema(label="米游账户绑定", icon="fa fa-link")  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            UserBindFormAdmin,
+            AmisPageAdmin,
+        )
+
+
+@site.register_admin
+class SubscribeAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(label='订阅管理', icon='fa fa-rss')  # type: ignore
+
+    # 配置管理模型
+    model = Subscribe
 
 
 # 取消注册默认管理类
