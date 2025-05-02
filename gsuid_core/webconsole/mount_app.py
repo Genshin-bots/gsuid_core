@@ -1,5 +1,6 @@
 # flake8: noqa
 import platform
+from pathlib import Path
 from typing import Any, Dict, List, Callable
 
 from starlette import status
@@ -189,6 +190,8 @@ settings = Settings(
 
 # 自定义后台管理站点
 class GsAdminSite(GsAuthAdminSite):
+    template_name = str(Path(__file__).parent / 'page.html')
+
     def __init__(
         self,
         settings: Settings,
@@ -344,7 +347,7 @@ class GsAdminModel(admin.ModelAdmin):
                     python_type_parse=get_python_type_parse(sqlfield),
                 )
                 if operator:
-                    sql = getattr(sqlfield, operator)(*val)
+                    sql = getattr(sqlfield, operator)(*val)  # type: ignore
                     lst.append(sql)
         return lst
 
