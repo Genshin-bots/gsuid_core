@@ -1,7 +1,9 @@
 # flake8: noqa
+import os
+import inspect
 import platform
 from pathlib import Path
-from typing import Any, Dict, List, Callable
+from typing import Any, Dict, List, Type, Callable
 
 from starlette import status
 from pydantic import BaseModel
@@ -15,6 +17,7 @@ from fastapi_amis_admin.models.fields import Field
 from fastapi import Depends, Request, HTTPException
 from fastapi_user_auth.admin.app import UserAuthApp
 from sqlalchemy.sql.elements import BinaryExpression
+from fastapi_amis_admin.admin.admin import BaseAdminT
 from fastapi_amis_admin.admin.settings import Settings
 from fastapi_user_auth.admin.site import AuthAdminSite
 from fastapi_amis_admin.utils.translation import i18n as _
@@ -55,13 +58,6 @@ from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
 from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
-from gsuid_core.utils.database.models import (
-    GsBind,
-    GsPush,
-    GsUser,
-    GsCache,
-    Subscribe,
-)
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
     amis_admin,
@@ -188,6 +184,53 @@ settings = Settings(
 )
 
 
+def get_caller_plugin_name():
+    # 获取调用栈
+    stack = inspect.stack()
+
+    caller_frame = stack[2]
+
+    caller_file = caller_frame.filename
+    caller_path = os.path.abspath(caller_file)
+    caller_path = Path(caller_path)
+
+    parts = caller_path.parts
+    matches = []
+    for i in range(len(parts) - 1):
+        if parts[i] == "gsuid_core" and parts[i + 1] == "plugins":
+            matches.append(i)
+
+    # 如果没有匹配，返回 None
+    if not matches:
+        return None
+
+    # 取最后一个匹配（最深层）
+    last_match = matches[-1]
+
+    # 提取 plugins 下一级目录或文件名
+    if len(parts) > last_match + 2:  # 确保有下一级
+        return parts[last_match + 2]
+
+    return None
+
+
+def create_admin_class(class_name: str, label: str, admin_list: List):
+
+    def __init__(self, app: "admin.AdminApp"):
+        super(self.__class__, self).__init__(app)
+        self.register_admin(*admin_list)
+
+    # 构建类的属性字典
+    attrs = {
+        "page_schema": PageSchema(label=label, icon='fa fa-plus'),  # type: ignore
+        "__init__": __init__,
+    }
+
+    NewAdminClass = type(class_name, (admin.AdminApp,), attrs)
+
+    return NewAdminClass
+
+
 # 自定义后台管理站点
 class GsAdminSite(GsAuthAdminSite):
     template_name = str(Path(__file__).parent / 'page.html')
@@ -199,12 +242,38 @@ class GsAdminSite(GsAuthAdminSite):
         super().__init__(settings)
         self.auth = self.auth or Auth(db=self.db)
         self.register_admin(self.UserAuthApp)
+        self.plugins_page: Dict[str, List] = {}
+        self.is_start = False
 
     async def get_page(self, request: Request) -> App:
         app = await super().get_page(request)
         app.brandName = 'GsCore网页控制台'
         app.logo = 'https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png'
         return app
+
+    def register_admin(
+        self, *admin_cls: Type[BaseAdminT], _ADD: bool = False
+    ) -> Type[BaseAdminT]:
+        plugin_name = get_caller_plugin_name()
+        if plugin_name and not _ADD:
+            if plugin_name not in self.plugins_page:
+                self.plugins_page[plugin_name] = []
+            self.plugins_page[plugin_name].extend(admin_cls)
+        else:
+            [self._registered.update({cls: None}) for cls in admin_cls if cls]
+        return admin_cls[0]
+
+    def gen_plugin_page(self):
+        if not self.is_start:
+            self.is_start = True
+            for plugin_name, admin_cls in self.plugins_page.items():
+                cls = create_admin_class(
+                    f'{plugin_name}App',
+                    plugin_name.replace('UID', ''),
+                    admin_cls,
+                )
+                self.register_admin(cls, _ADD=True)
+                self.get_admin_or_create(cls)
 
 
 site = GsAdminSite(settings)
@@ -461,52 +530,6 @@ class LogAndMessage(admin.AdminApp):
         )
 
 
-class CKAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='CK管理', icon='fa fa-database')  # type: ignore
-
-    # 配置管理模型
-    model = GsUser
-
-
-class PushAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='推送管理', icon='fa fa-bullhorn')  # type: ignore
-
-    # 配置管理模型
-    model = GsPush
-
-
-class CacheAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='缓存管理', icon='fa fa-recycle')  # type: ignore
-
-    # 配置管理模型
-    model = GsCache
-
-
-class BindAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='绑定管理', icon='fa fa-users')  # type: ignore
-
-    # 配置管理模型
-    model = GsBind
-
-
-@site.register_admin
-class MiHoYoDatabase(admin.AdminApp):
-    page_schema = PageSchema(label="米游数据库", icon="fa fa-database")  # type: ignore
-
-    def __init__(self, app: "admin.AdminApp"):
-        super().__init__(app)
-        self.register_admin(
-            CKAdmin,
-            PushAdmin,
-            CacheAdmin,
-            BindAdmin,
-        )
-
-
 class AmisPageAdmin(admin.PageAdmin):
     page_schema = '入门使用'
 
@@ -605,15 +628,6 @@ class MiHoYoBind(admin.AdminApp):
             UserBindFormAdmin,
             AmisPageAdmin,
         )
-
-
-@site.register_admin
-class SubscribeAdmin(GsAdminModel):
-    pk_name = 'id'
-    page_schema = PageSchema(label='订阅管理', icon='fa fa-rss')  # type: ignore
-
-    # 配置管理模型
-    model = Subscribe
 
 
 # 取消注册默认管理类

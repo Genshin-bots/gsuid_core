@@ -625,7 +625,3 @@ async def get_history_logs(
             'rows': log_file,
         },
     }
-
-
-site.mount_app(app)
-site.mount_app(app)

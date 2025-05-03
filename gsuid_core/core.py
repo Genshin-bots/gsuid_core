@@ -14,8 +14,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from gsuid_core.gss import gss  # noqa: E402
 from gsuid_core.bot import _Bot  # noqa: E402
-from gsuid_core.web_app import app  # noqa: E402
 from gsuid_core.logger import logger  # noqa: E402
+from gsuid_core.web_app import app, site  # noqa: E402
 from gsuid_core.config import core_config  # noqa: E402
 from gsuid_core.handler import handle_event  # noqa: E402
 from gsuid_core.models import MessageReceive  # noqa: E402
@@ -99,6 +99,9 @@ def main():
                 return {'status_code': 200, 'data': to_builtins(result)}
             else:
                 return {'status_code': -100, 'data': None}
+
+    site.gen_plugin_page()
+    site.mount_app(app)
 
     uvicorn.run(
         app,

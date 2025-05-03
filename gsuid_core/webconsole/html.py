@@ -4,6 +4,7 @@ from gsuid_core.version import __version__ as gscore_version
 
 bots = 'HoshinoBot · NoneBot2 · Koishi · Yunzai · ZeroBot · AstrBot'
 sup = f'✨支持连接{bots}的多功能Bot插件核心✨'
+
 style = '''
 div {
   background: rgba(255, 255, 255, 0.6) url('/webstatic/bg.jpg');
@@ -79,6 +80,10 @@ rect {
     box-shadow: 1px 8px 3px 2px rgba(26, 25, 23, 0.3);
 }
 */
+
+.amis-scope .a-TextControl .InputText-clear {
+    background-color: #ffffff;
+}
 
 .amis-scope .a-Layout-brand, .amis-scope .a-Layout-brandBar, .amis-scope .a-Layout-aside {
     background-color: rgba(0, 0, 0, 0);
