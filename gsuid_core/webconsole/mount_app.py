@@ -58,6 +58,13 @@ from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
 from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
+from gsuid_core.utils.database.models import (
+    GsBind,
+    GsPush,
+    GsUser,
+    GsCache,
+    Subscribe,
+)
 from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
     AuthRouter,
     amis_admin,
@@ -261,6 +268,22 @@ class GsAdminSite(GsAuthAdminSite):
             self.plugins_page[plugin_name].extend(admin_cls)
         else:
             [self._registered.update({cls: None}) for cls in admin_cls if cls]
+            if hasattr(self, 'plugins_page'):
+                keys_to_move_last_set = set(
+                    self.plugins_page
+                )  # 转换为集合加速查找
+                front = {
+                    k: v
+                    for k, v in self._registered.items()
+                    if k not in keys_to_move_last_set
+                }
+                back = {
+                    k: v
+                    for k, v in self._registered.items()
+                    if k in keys_to_move_last_set
+                }
+                self._registered = {**front, **back}
+
         return admin_cls[0]
 
     def gen_plugin_page(self):
@@ -273,7 +296,6 @@ class GsAdminSite(GsAuthAdminSite):
                     admin_cls,
                 )
                 self.register_admin(cls, _ADD=True)
-                self.get_admin_or_create(cls)
 
 
 site = GsAdminSite(settings)
@@ -628,6 +650,79 @@ class MiHoYoBind(admin.AdminApp):
             UserBindFormAdmin,
             AmisPageAdmin,
         )
+
+
+class CKAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='CK管理',
+        icon='fa fa-database',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = GsUser
+
+
+class PushAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='推送管理',
+        icon='fa fa-bullhorn',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = GsPush
+
+
+class CacheAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='缓存管理',
+        icon='fa fa-recycle',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = GsCache
+
+
+class BindAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='绑定管理',
+        icon='fa fa-users',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = GsBind
+
+
+@site.register_admin
+class MiHoYoDatabase(admin.AdminApp):
+    page_schema = PageSchema(
+        label="米游数据库",
+        icon="fa fa-database",
+    )  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            CKAdmin,
+            PushAdmin,
+            CacheAdmin,
+            BindAdmin,
+        )
+
+
+@site.register_admin
+class SubscribeAdmin(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='订阅管理',
+        icon='fa fa-rss',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = Subscribe
 
 
 # 取消注册默认管理类
