@@ -45,10 +45,10 @@ from fastapi_amis_admin.amis.components import (
 )
 
 from gsuid_core.logger import logger, handle_exceptions
-from gsuid_core.utils.database.base_models import db_url
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.version import __version__ as gscore_version
 from gsuid_core.webconsole.html import gsuid_webconsole_help
+from gsuid_core.utils.database.base_models import finally_url
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
 from gsuid_core.webconsole.create_log_panel import create_log_page
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
@@ -180,7 +180,7 @@ class GsAuthAdminSite(AuthAdminSite):
 
 
 settings = Settings(
-    database_url_async=f'sqlite+aiosqlite:///{db_url}',
+    database_url_async=finally_url,
     site_path='/genshinuid',
     site_icon='https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png',
     site_title='GsCore - 网页控制台',

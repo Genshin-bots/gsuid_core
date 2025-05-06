@@ -30,7 +30,7 @@ async def move_database():
         logger.warning('删除历史统计记录...')
 
 
-@on_core_start
+# @on_core_start
 async def sr_adapter():
     async with engine.begin() as conn:
         metadata = MetaData()

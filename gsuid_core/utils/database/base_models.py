@@ -11,6 +11,8 @@ from typing import (
     Awaitable,
 )
 
+from sqlalchemy.pool import NullPool
+from sqlalchemy import text, create_engine
 from sqlalchemy.sql.expression import func, null, true
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
@@ -46,23 +48,28 @@ db_type: str = database_config.get_config('db_type').data
 _db_type = db_type.lower()
 db_config = {
     'pool_recycle': db_pool_recycle,
-    'pool_size': db_pool_size,
+    # 'pool_pre_ping': True,
+    # 'pool_size': db_pool_size,
     'echo': db_echo,
 }
 
 DB_PATH = get_res_path() / 'GsData.db'
+sync_url = ''
+
 if _db_type == 'sqlite':
     base_url = 'sqlite+aiosqlite:///'
     db_url = str(DB_PATH)
-    del db_config['pool_size']
+    # del db_config['pool_size']
 elif _db_type == 'mysql':
+    sync_url = 'mysql+pymysql://'
     base_url = 'mysql+aiomysql://'
     db_hp = f'{db_host}:{db_port}' if db_port else db_host
-    db_url = f'{db_user}:{db_password}@{db_hp}/{db_name}'
+    db_url = f'{db_user}:{db_password}@{db_hp}/'
 elif _db_type == 'postgresql':
+    sync_url = 'postgresql+psycopg2://'
     base_url = 'postgresql+asyncpg://'
     db_hp = f'{db_host}:{db_port}' if db_port else db_host
-    db_url = f'{db_user}:{db_password}@{db_hp}/{db_name}'
+    db_url = f'{db_user}:{db_password}@{db_hp}/'
 elif _db_type == '自定义':
     base_url = ''
     db_url = db_custom_url
@@ -70,11 +77,45 @@ else:
     base_url = db_type
     db_url = db_custom_url
 
-
-url = f'{base_url}{db_url}'
-
 try:
-    engine = create_async_engine(url, **db_config)
+    if _db_type == 'sqlite':
+        engine = create_async_engine(f'{base_url}{db_url}', **db_config)
+        finally_url = f'{base_url}{db_url}'
+    else:
+        server_engine = None
+        try:
+            if _db_type == 'mysql':
+                server_engine = create_engine(
+                    f'{sync_url}{db_url}', **db_config
+                )
+
+                with server_engine.connect() as conn:
+                    t1 = f"CREATE DATABASE IF NOT EXISTS {db_name} "
+                    t2 = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    conn.execute(text(t1 + t2))
+                    logger.success(
+                        f"[MySQL] 数据库 {db_name} 创建成功或已存在!"
+                    )
+            elif _db_type == 'postgresql':
+                server_engine = create_engine(
+                    f'{sync_url}{db_url}', **db_config
+                )
+                with server_engine.connect() as conn:
+                    t1 = f"CREATE DATABASE {db_name} WITH ENCODING 'UTF8' "
+                    t2 = "LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8'"
+                    conn.execute(text(t1 + t2))
+                logger.success(
+                    f"[PostgreSQL] 数据库 {db_name} 创建成功或已存在!"
+                )
+        finally:
+            if server_engine is not None:
+                server_engine.dispose()
+                logger.debug("[SQL] 同步数据库引擎已释放")
+
+        db_config['poolclass'] = NullPool
+        finally_url = f'{base_url}{db_url}{db_name}'
+        engine = create_async_engine(finally_url, **db_config)
+
     async_maker = async_sessionmaker(
         engine,
         expire_on_commit=False,
@@ -92,9 +133,13 @@ def with_session(
     @wraps(func)
     async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
         async with async_maker() as session:
-            data = await func(self, session, *args, **kwargs)
-            await session.commit()
-            return data
+            try:
+                data = await func(self, session, *args, **kwargs)
+                await session.commit()
+                return data
+            except Exception as e:
+                print(e)
+                raise e
 
     return wrapper  # type: ignore
 
@@ -211,9 +256,8 @@ class BaseIDModel(SQLModel):
         return data
 
     @classmethod
-    @with_session
     async def base_select_data(
-        cls: Type[T_BaseIDModel], session: AsyncSession, **data
+        cls: Type[T_BaseIDModel], **data
     ) -> Optional[T_BaseIDModel]:
         '''📝简单介绍:
 
