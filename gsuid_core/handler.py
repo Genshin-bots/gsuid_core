@@ -9,10 +9,11 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.trigger import Trigger
 from gsuid_core.config import core_config
+from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_global_val
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.models import Event, Message, MessageReceive
-from gsuid_core.utils.database.models import CoreUser, CoreGroup
+from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     core_plugins_config,
@@ -38,6 +39,18 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     logger.info('[收到事件]', event=event)
+
+    if event.user_pm == 0:
+        if not await Subscribe.data_exist(
+            user_id=event.user_id,
+            task_name='主人用户',
+            bot_id=event.bot_id,
+        ):
+            await gs_subscribe.add_subscribe(
+                'single',
+                '主人用户',
+                event,
+            )
 
     local_val = await get_global_val(event.real_bot_id, event.bot_self_id)
     local_val['receive'] += 1

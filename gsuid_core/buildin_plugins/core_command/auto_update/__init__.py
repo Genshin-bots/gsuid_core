@@ -1,5 +1,6 @@
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
+from gsuid_core.utils.message import send_msg_to_master
 from gsuid_core.utils.plugins_update._plugins import update_all_plugins
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -11,13 +12,17 @@ UCT = config.get_config('AutoUpdateCoreTime').data
 UPT = config.get_config('AutoUpdatePluginsTime').data
 RCT = config.get_config('AutoRestartCoreTime').data
 
+IS_NOTIFY = config.get_config('AutoUpdateNotify').data
+
 
 # 自动更新core
 @scheduler.scheduled_job('cron', hour=UCT[0], minute=UCT[1])
 async def update_core_at_night():
     if config.get_config('AutoUpdateCore').data:
         logger.info('[Core自动任务] 开始更新 [早柚核心]')
-        await update_core()
+        _log = await update_core()
+        if IS_NOTIFY:
+            await send_msg_to_master(_log)
 
 
 # 自动更新插件列表
@@ -25,7 +30,9 @@ async def update_core_at_night():
 async def update_all_plugins_at_night():
     if config.get_config('AutoUpdatePlugins').data:
         logger.info('[Core自动任务] 开始更新 [插件目录]')
-        await update_all_plugins()
+        _log = await update_all_plugins()
+        if IS_NOTIFY:
+            await send_msg_to_master(_log)
 
 
 # 自动更新插件列表

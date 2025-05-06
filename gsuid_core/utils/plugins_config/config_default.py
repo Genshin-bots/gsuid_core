@@ -70,6 +70,11 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         '每晚自动更新Core内所有插件时间设置(时, 分)',
         ['4', '10'],
     ),
+    'AutoUpdateNotify': GsBoolConfig(
+        '自动更新Core/插件时将内容通知主人',
+        '自动更新Core/插件时将内容通知主人',
+        True,
+    ),
     'AutoRestartCoreTime': GsListStrConfig(
         '自动重启Core时间设置', '每晚自动重启Core时间设置(时, 分)', ['4', '40']
     ),
