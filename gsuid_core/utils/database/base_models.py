@@ -50,9 +50,9 @@ db_config = {
     'echo': db_echo,
 }
 
+DB_PATH = get_res_path() / 'GsData.db'
 if _db_type == 'sqlite':
     base_url = 'sqlite+aiosqlite:///'
-    DB_PATH = get_res_path() / 'GsData.db'
     db_url = str(DB_PATH)
     del db_config['pool_size']
 elif _db_type == 'mysql':
