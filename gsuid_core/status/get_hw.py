@@ -7,18 +7,39 @@ from gsuid_core.logger import logger
 
 
 def get_cpu_info():
+    cpu_name = None  # 初始化变量
+
+    # 尝试从 /proc/cpuinfo 获取型号
     try:
         with open('/proc/cpuinfo', 'r') as f:
             for line in f:
                 if line.startswith('model name'):
                     cpu_name = line.split(': ')[1].strip()
-                    break
+                    break  # 找到后立即退出循环
     except FileNotFoundError:
-        cpu_name = platform.processor() or "Unknown CPU"
+        logger.warning("未找到 /proc/cpuinfo 文件，尝试其他方式获取CPU名称")
 
+    # 如果未从文件获取到名称，尝试其他方式
+    if cpu_name is None:
+        logger.debug("未从 /proc/cpuinfo 获取到CPU名称，尝试 platform.processor()")
+        try:
+            cpu_name = platform.processor() or "Unknown CPU"
+        except Exception as e:
+            logger.error(f"获取CPU名称失败: {e}")
+            cpu_name = "Unknown CPU"
+
+    # 找不到，干脆别找了，叫Unknown CPU也挺好，至少比后台报错前台半天没响应的好QAQ
+    
+    # 处理CPU名称格式
+    try:
+        cpu_name = ' '.join(cpu_name.split()[:2])
+    except Exception:
+        cpu_name = "Unknown CPU"
+
+    # 获取核心数和使用率
     cores = psutil.cpu_count(logical=True)
     usage = psutil.cpu_percent(interval=1)
-    cpu_name = ' '.join(cpu_name.split()[:2])
+    
     return {"name": f"{cpu_name} ({cores}核)", "value": usage}
 
 
