@@ -21,7 +21,9 @@ def get_cpu_info():
 
     # 如果未从文件获取到名称，尝试其他方式
     if cpu_name is None:
-        logger.debug("未从 /proc/cpuinfo 获取到CPU名称，尝试 platform.processor()")
+        logger.debug(
+            "未从 /proc/cpuinfo 获取到CPU名称，尝试 platform.processor()"
+        )
         try:
             cpu_name = platform.processor() or "Unknown CPU"
         except Exception as e:
@@ -29,7 +31,7 @@ def get_cpu_info():
             cpu_name = "Unknown CPU"
 
     # 找不到，干脆别找了，叫Unknown CPU也挺好，至少比后台报错前台半天没响应的好QAQ
-    
+
     # 处理CPU名称格式
     try:
         cpu_name = ' '.join(cpu_name.split()[:2])
@@ -39,7 +41,7 @@ def get_cpu_info():
     # 获取核心数和使用率
     cores = psutil.cpu_count(logical=True)
     usage = psutil.cpu_percent(interval=1)
-    
+
     return {"name": f"{cpu_name} ({cores}核)", "value": usage}
 
 
