@@ -44,17 +44,23 @@ class Subscribe(BaseModel, table=True):
         sep: str = '\n',
         command_tips: str = '请输入以下命令之一:',
         command_start_text: str = '',
+        force_direct: bool = False,
     ):
         for bot_id in gss.active_bot:
             BOT = gss.active_bot[bot_id]
+            if force_direct:
+                user_type = 'direct'
+            else:
+                user_type = self.user_type
             ev = Event(
                 bot_id=self.bot_id,
                 user_id=self.user_id,
                 bot_self_id=self.bot_self_id,
-                user_type=self.user_type,  # type: ignore
+                user_type=user_type,  # type: ignore
                 group_id=self.group_id,
                 real_bot_id=self.bot_id,
             )
+
             bot = Bot(BOT, ev)
             await bot.send_option(
                 reply,

@@ -24,4 +24,4 @@ async def send_msg_to_master(
     datas = await gs_subscribe.get_subscribe('主人用户')
     if datas:
         for subscribe in datas:
-            await subscribe.send(message)
+            await subscribe.send(message, force_direct=True)
