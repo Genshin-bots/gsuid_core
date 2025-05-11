@@ -20,8 +20,8 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
 auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
 
-core_start_def = set()
-core_shutdown_def = set()
+core_start_def: set[Callable] = set()
+core_shutdown_def: set[Callable] = set()
 installed_dependencies: Dict[str, str] = {}
 ignore_dep = ['python', 'fastapi', 'pydantic']
 

@@ -11,8 +11,8 @@ from typing import (
     Awaitable,
 )
 
-from sqlalchemy.pool import NullPool
-from sqlalchemy import text, create_engine
+# from sqlalchemy.pool import NullPool
+from sqlalchemy import exc, text, create_engine
 from sqlalchemy.sql.expression import func, null, true
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
@@ -45,28 +45,32 @@ db_pool_recycle: int = database_config.get_config('db_pool_recycle').data
 db_custom_url = database_config.get_config('db_custom_url').data
 db_type: str = database_config.get_config('db_type').data
 
+db_driver: str = database_config.get_config('db_driver').data
+
 _db_type = db_type.lower()
 db_config = {
     'pool_recycle': db_pool_recycle,
-    # 'pool_pre_ping': True,
-    # 'pool_size': db_pool_size,
     'echo': db_echo,
 }
 
 DB_PATH = get_res_path() / 'GsData.db'
-sync_url = ''
+
+sync_url, engine, finally_url = '', '', ''
+async_maker: async_sessionmaker[AsyncSession] = None  # type: ignore
+server_engine = None
 
 if _db_type == 'sqlite':
+    sync_url = 'sqlite:///'
     base_url = 'sqlite+aiosqlite:///'
     db_url = str(DB_PATH)
     # del db_config['pool_size']
 elif _db_type == 'mysql':
     sync_url = 'mysql+pymysql://'
-    base_url = 'mysql+aiomysql://'
+    base_url = f'mysql+{db_driver}://'
     db_hp = f'{db_host}:{db_port}' if db_port else db_host
     db_url = f'{db_user}:{db_password}@{db_hp}/'
 elif _db_type == 'postgresql':
-    sync_url = 'postgresql+psycopg2://'
+    sync_url = 'postgresql+psycopg://'
     base_url = 'postgresql+asyncpg://'
     db_hp = f'{db_host}:{db_port}' if db_port else db_host
     db_url = f'{db_user}:{db_password}@{db_hp}/'
@@ -77,54 +81,73 @@ else:
     base_url = db_type
     db_url = db_custom_url
 
-try:
-    if _db_type == 'sqlite':
-        engine = create_async_engine(f'{base_url}{db_url}', **db_config)
-        finally_url = f'{base_url}{db_url}'
-    else:
-        server_engine = None
-        try:
-            if _db_type == 'mysql':
-                server_engine = create_engine(
-                    f'{sync_url}{db_url}', **db_config
-                )
 
-                with server_engine.connect() as conn:
-                    t1 = f"CREATE DATABASE IF NOT EXISTS {db_name} "
-                    t2 = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                    conn.execute(text(t1 + t2))
-                    logger.success(
-                        f"[MySQL] 数据库 {db_name} 创建成功或已存在!"
+async def init_database():
+    global engine, finally_url, async_maker
+
+    try:
+        if _db_type == 'sqlite':
+            engine = create_async_engine(f'{base_url}{db_url}', **db_config)
+            finally_url = f'{base_url}{db_url}'
+        else:
+            db_config.update(
+                {
+                    'pool_size': db_pool_size,
+                    'max_overflow': 10,
+                    'pool_timeout': 30,
+                    'isolation_level': "AUTOCOMMIT",
+                }
+            )
+            try:
+                server_engine = None
+                if _db_type == 'mysql':
+                    server_engine = create_engine(
+                        f'{sync_url}{db_url}', **db_config
                     )
-            elif _db_type == 'postgresql':
-                server_engine = create_engine(
-                    f'{sync_url}{db_url}', **db_config
-                )
-                with server_engine.connect() as conn:
-                    t1 = f"CREATE DATABASE {db_name} WITH ENCODING 'UTF8' "
-                    t2 = "LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8'"
-                    conn.execute(text(t1 + t2))
-                logger.success(
-                    f"[PostgreSQL] 数据库 {db_name} 创建成功或已存在!"
-                )
-        finally:
-            if server_engine is not None:
-                server_engine.dispose()
-                logger.debug("[SQL] 同步数据库引擎已释放")
 
-        db_config['poolclass'] = NullPool
-        finally_url = f'{base_url}{db_url}{db_name}'
-        engine = create_async_engine(finally_url, **db_config)
+                    with server_engine.connect() as conn:
+                        t1 = f"CREATE DATABASE IF NOT EXISTS {db_name} "
+                        t2 = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                        conn.execute(text(t1 + t2))
+                        logger.success(
+                            f"[MySQL] 数据库 {db_name} 创建成功或已存在!"
+                        )
+                elif _db_type == 'postgresql':
+                    try:
+                        server_engine = create_engine(
+                            f'{sync_url}{db_url}', **db_config
+                        )
+                        with server_engine.connect() as conn:
+                            t = f"CREATE DATABASE {db_name} WITH ENCODING "
+                            t2 = "'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE "
+                            t3 = "'en_US.UTF-8' TEMPLATE template0"
+                            conn.execute(text(t + t2 + t3))
+                    except exc.ProgrammingError as e:
+                        if 'already exists' in str(e) or '已经存在' in str(e):
+                            pass
+                    logger.success(
+                        f"[PostgreSQL] 数据库 {db_name} 创建成功或已存在!"
+                    )
+            finally:
+                if server_engine:
+                    server_engine.dispose()
+                    logger.info('[数据库] 临时数据库连接已释放!')
 
-    async_maker = async_sessionmaker(
-        engine,
-        expire_on_commit=False,
-        class_=AsyncSession,
-    )
-except:  # noqa: E722
-    raise ValueError(
-        f'[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!'
-    )
+            # db_config['poolclass'] = NullPool
+            finally_url = f'{base_url}{db_url}{db_name}'
+            engine = create_async_engine(finally_url, **db_config)
+
+        async_maker = async_sessionmaker(
+            engine,
+            expire_on_commit=False,
+            close_resets_only=False,
+            class_=AsyncSession,
+        )
+    except Exception as e:  # noqa: E722
+        logger.exception(f'[GsCore] [数据库] 连接失败: {e}')
+        raise ValueError(
+            f'[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!'
+        )
 
 
 def with_session(
@@ -132,14 +155,16 @@ def with_session(
 ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
     @wraps(func)
     async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
-        async with async_maker() as session:
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                data = await func(self, session, *args, **kwargs)
-                await session.commit()
-                return data
+                async with async_maker() as session:
+                    data = await func(self, session, *args, **kwargs)
+                    await session.commit()
+                    return data
             except Exception as e:
-                print(e)
-                raise e
+                logger.exception(f"[数据库] 第 {attempt + 1} 次重试失败: {e}")
+                continue
 
     return wrapper  # type: ignore
 

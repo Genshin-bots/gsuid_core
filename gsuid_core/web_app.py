@@ -54,6 +54,10 @@ pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
+        logger.info(
+            '[GsCore] 执行启动Hook函数中！',
+            [_def.__name__ for _def in core_start_def],
+        )
         _task = [_def() for _def in core_start_def]
         await asyncio.gather(*_task)
     except Exception as e:
@@ -64,9 +68,16 @@ async def lifespan(app: FastAPI):
     await start_check()  # type:ignore
     await start_scheduler()
     asyncio.create_task(clean_log())
+
     yield
+
     await shutdown_scheduler()
+
     try:
+        logger.info(
+            '[GsCore] 执行关闭Hook函数中！',
+            [_def.__name__ for _def in core_shutdown_def],
+        )
         _task = [_def() for _def in core_shutdown_def]
         await asyncio.gather(*_task)
     except Exception as e:

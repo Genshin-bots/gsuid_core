@@ -31,7 +31,7 @@ async def move_database():
 
 
 # @on_core_start
-async def sr_adapter():
+async def trans_adapter():
     async with engine.begin() as conn:
         metadata = MetaData()
         try:

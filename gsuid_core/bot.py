@@ -117,7 +117,13 @@ class _Bot:
                             if forward_m.type != 'image_size':
                                 message_result.append([forward_m])
                     elif enable_forward == '合并为一条消息':
-                        _temp_mr.extend(_m.data)
+                        _add = []
+                        for index, forward_m in enumerate(_m.data):
+                            _add.append(forward_m)
+                            if index < len(_m.data) - 1:
+                                _add.append(MessageSegment.text('\n'))
+                        _temp_mr.extend(_add)
+
                     elif enable_forward.isdigit():
                         for forward_m in _m.data[: int(enable_forward)]:
                             if forward_m.type != 'image_size':

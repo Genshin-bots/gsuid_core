@@ -1,5 +1,4 @@
 import re
-import asyncio
 from typing import Dict, Type, Tuple, Union, Literal, Optional, overload
 
 from sqlalchemy import event
@@ -21,7 +20,6 @@ class DBSqla:
 
     def get_sqla(self, bot_id) -> SQLA:
         sqla = self._get_sqla(bot_id, self.is_sr)
-        asyncio.create_task(sqla.sr_adapter())
         return sqla
 
     def _get_sqla(self, bot_id, is_sr: bool = False) -> SQLA:
@@ -29,7 +27,6 @@ class DBSqla:
         if bot_id not in sqla_list:
             sqla = SQLA(bot_id, is_sr)
             sqla_list[bot_id] = sqla
-            sqla.create_all()
 
             @event.listens_for(engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):

@@ -9,6 +9,12 @@ DATABASE_CONIFG: Dict[str, GSC] = {
         'SQLite',
         ['SQLite', 'MySql', 'PostgreSQL', '自定义'],
     ),
+    'db_driver': GsStrConfig(
+        'MySQL驱动',
+        '设置喜欢的MySQL驱动',
+        'aiomysql',
+        ['aiomysql', 'asyncmy'],
+    ),
     'db_custom_url': GsStrConfig(
         '自定义数据库连接地址 (一般无需填写)',
         '设置自定义数据库连接',
@@ -31,7 +37,7 @@ DATABASE_CONIFG: Dict[str, GSC] = {
         '数据库用户名',
         '设置数据库用户名',
         'root',
-        ['root', 'admin'],
+        ['root', 'admin', 'postgres'],
     ),
     'db_password': GsStrConfig(
         '数据库密码',

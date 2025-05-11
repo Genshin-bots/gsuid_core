@@ -1,12 +1,8 @@
 import re
-import asyncio
 from typing import Dict, List, Literal, Optional
 
-from sqlmodel import SQLModel
-from sqlalchemy.sql import text
-
+from .base_models import async_maker
 from .utils import SERVER, SR_SERVER
-from .base_models import engine, async_maker
 from .models import GsBind, GsPush, GsUser, GsCache
 
 
@@ -14,40 +10,6 @@ class SQLA:
     def __init__(self, bot_id: str, is_sr: bool = False):
         self.bot_id = bot_id
         self.is_sr = is_sr
-
-    def create_all(self):
-        try:
-            asyncio.create_task(self._create_all())
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(self._create_all())
-            loop.close()
-
-    async def _create_all(self):
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-            await self.sr_adapter()
-
-    async def sr_adapter(self):
-        exec_list = [
-            'ALTER TABLE GsBind ADD COLUMN group_id TEXT',
-            'ALTER TABLE GsBind ADD COLUMN sr_uid TEXT',
-            'ALTER TABLE GsUser ADD COLUMN sr_uid TEXT',
-            'ALTER TABLE GsUser ADD COLUMN sr_region TEXT',
-            'ALTER TABLE GsUser ADD COLUMN fp TEXT',
-            'ALTER TABLE GsUser ADD COLUMN device_id TEXT',
-            'ALTER TABLE GsUser ADD COLUMN sr_sign_switch TEXT DEFAULT "off"',
-            'ALTER TABLE GsUser ADD COLUMN sr_push_switch TEXT DEFAULT "off"',
-            'ALTER TABLE GsUser ADD COLUMN draw_switch TEXT DEFAULT "off"',
-            'ALTER TABLE GsCache ADD COLUMN sr_uid TEXT',
-        ]
-        async with async_maker() as session:
-            for _t in exec_list:
-                try:
-                    await session.execute(text(_t))
-                    await session.commit()
-                except:  # noqa: E722
-                    pass
 
     #####################
     # GsBind 部分 #
@@ -415,4 +377,5 @@ class SQLA:
         await GsBind.full_insert_data(**kwargs)
 
     async def insert_new_user(self, **kwargs):
+        await GsUser.full_insert_data(**kwargs)
         await GsUser.full_insert_data(**kwargs)
