@@ -342,7 +342,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                         insert_dict[f'uid_{_i}'] = _luid
 
                     _uid_exist = await GsUID.uid_exist(_uid, game_name)
-                    if _uid_exist:
+                    if _uid_exist and insert_dict:
                         await GsUID.update_data(
                             _uid_exist, game_name, **insert_dict
                         )
