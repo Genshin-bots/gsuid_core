@@ -67,7 +67,7 @@ async def refresh_plugins_list(bot: Bot, ev: Event):
     ('core更新插件', 'core强制更新插件', 'core强行强制更新插件'), block=True
 )
 async def send_update_msg(bot: Bot, ev: Event):
-    await bot.send('开始更新...请稍等一段时间...')
+    await bot.send('🚀 开始更新...请稍等一段时间...')
     if '强制' in ev.command:
         if '强行' in ev.command:
             level = 2

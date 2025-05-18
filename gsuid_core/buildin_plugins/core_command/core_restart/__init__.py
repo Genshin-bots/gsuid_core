@@ -1,4 +1,5 @@
 import os
+import asyncio
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
@@ -15,7 +16,8 @@ sv_core_config = SV('Core管理', pm=0)
 @gss.on_bot_connect
 async def check_msg():
     try:
-        logger.info('检查遗留信息...')
+        await asyncio.sleep(3)
+        logger.info('📝 检查遗留信息...')
         update_log = await restart_message()
         if update_log == {}:
             return
@@ -39,9 +41,9 @@ async def check_msg():
                     update_log['bot_self_id'],
                     '',
                 )
-        logger.info('遗留信息检查完毕!')
+        logger.info('✅ 遗留信息检查完毕!')
     except Exception:
-        logger.warning('遗留信息检查失败!')
+        logger.warning('🚧 遗留信息检查失败!')
 
 
 @sv_core_config.on_fullmatch(('core重启', 'gs重启'), block=True)

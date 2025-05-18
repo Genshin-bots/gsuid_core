@@ -58,7 +58,7 @@ async def restart_genshinuid(
     if is_send:
         update_log = {
             'type': 'restart',
-            'msg': '重启完成!',
+            'msg': '🚀 重启完成!',
             'bot_id': bot_id,
             'bot_self_id': bot_self_id,
             'send_type': send_type,

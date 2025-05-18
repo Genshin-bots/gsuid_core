@@ -67,6 +67,42 @@ class GsServer:
             self.active_bot: Dict[str, _Bot] = {}
             self.is_initialized = True
 
+    def load_dir_plugins(
+        self, plugin: Path, plugin_parent: str, nest: bool = False
+    ) -> List[Tuple[str, Path, str]]:
+        module_list = []
+        init_path = plugin / '__init__.py'
+        name = plugin.name
+        if init_path.exists():
+            if str(init_path.parents) not in sys.path:
+                sys.path.append(str(init_path.parents))
+            module_list.append(
+                (
+                    f'{plugin_parent}.{name}.{name}.__init__',
+                    init_path,
+                    'plugin',
+                )
+            )
+
+        for sub_plugin in plugin.iterdir():
+            if sub_plugin.is_dir():
+                plugin_path = sub_plugin / '__init__.py'
+                if plugin_path.exists():
+                    if str(plugin_path.parents) not in sys.path:
+                        sys.path.append(str(plugin_path.parents))
+                    if nest:
+                        _p = f'{plugin_parent}.{name}.{name}.{sub_plugin.name}'
+                    else:
+                        _p = f'{plugin_parent}.{name}.{sub_plugin.name}'
+                    module_list.append(
+                        (
+                            f'{_p}',
+                            plugin_path,
+                            'module',
+                        )
+                    )
+        return module_list
+
     def load_plugin(self, plugin: Union[str, Path, str]):
         if isinstance(plugin, str):
             plugin = PLUGIN_PATH / plugin
@@ -100,7 +136,9 @@ class GsServer:
                         check_pyproject(pyproject)
                     if path.exists():
                         module_list = self.load_dir_plugins(
-                            path, plugin_parent, True
+                            path,
+                            plugin_parent,
+                            True,
                         )
                 # 如果文件夹内有__init_.py，则视为单个插件包
                 elif plugin_path.exists():
@@ -187,32 +225,6 @@ class GsServer:
 
         core_config.lazy_write_config()
         logger.success('[GsCore] 插件加载完成!')
-
-    def load_dir_plugins(
-        self, plugin: Path, plugin_parent: str, nest: bool = False
-    ) -> List[Tuple[str, Path, str]]:
-        module_list = []
-        init_path = plugin / '__init__.py'
-        name = plugin.name
-        if init_path.exists():
-            if str(init_path.parents) not in sys.path:
-                sys.path.append(str(init_path.parents))
-            module_list.append(
-                (f'{plugin_parent}.{name}.{name}.__init__', init_path, 'full')
-            )
-
-        for sub_plugin in plugin.iterdir():
-            if sub_plugin.is_dir():
-                plugin_path = sub_plugin / '__init__.py'
-                if plugin_path.exists():
-                    if str(plugin_path.parents) not in sys.path:
-                        sys.path.append(str(plugin_path.parents))
-                    if nest:
-                        _p = f'{plugin_parent}.{name}.{name}.{sub_plugin.name}'
-                    else:
-                        _p = f'{plugin_parent}.{name}.{sub_plugin.name}'
-                    module_list.append((f'{_p}', plugin_path, 'module'))
-        return module_list
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
