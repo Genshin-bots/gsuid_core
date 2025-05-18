@@ -9,18 +9,36 @@ from msgspec import to_builtins
 from msgspec import json as msgjson
 from fastapi import WebSocket, WebSocketDisconnect
 
+from gsuid_core.version import __version__
+
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 # from gsuid_core.utils.database.startup import exec_list  # noqa: E402
 
+ASCII_FONT = f'''
+.------..------..------..------..------..------..------.
+|G.--. ||S.--. ||-.--. ||C.--. ||O.--. ||R.--. ||E.--. |
+| :/\: || :/\: || (\/) || :/\: || :/\: || :(): || (\/) |
+| :\/: || :\/: || :\/: || :\/: || :\/: || ()() || :\/: |
+| '--'G|| '--'S|| '--'-|| '--'C|| '--'O|| '--'R|| '--'E|
+`------'`------'`------'`------'`------'`------'`------'
+
+          🌱 [早柚核心] 已启动! 版本 {__version__} ！
+'''  # noqa: W605
+
 
 async def main():
+    import time
+
+    start_time = time.time()
     from gsuid_core.utils.database.base_models import init_database
 
     await init_database()
 
-    from gsuid_core.gss import gss  # noqa: E402
+    from gsuid_core.gss import gss, load_gss  # noqa: E402
+
+    await load_gss()
     from gsuid_core.bot import _Bot  # noqa: E402
     from gsuid_core.logger import logger  # noqa: E402
     from gsuid_core.web_app import app, site  # noqa: E402
@@ -91,10 +109,16 @@ async def main():
                     'level': 'INFO',
                 },
             },
-        },  # 你的日志配置
+        },
         loop="asyncio",
     )
     server = uvicorn.Server(config)
+    end_time = time.time()
+    logger.success(ASCII_FONT)
+    duration = round(end_time - start_time, 2)
+    logger.success(
+        f'[GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}'
+    )
     await server.serve()
 
 

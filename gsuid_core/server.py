@@ -1,11 +1,15 @@
+import os
 import re
 import sys
+import time
 import asyncio
 import importlib
 import subprocess
+import importlib.util
 from pathlib import Path
 from types import ModuleType
-from typing import Dict, List, Union, Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Tuple, Union, Callable
 
 import toml
 import pkg_resources
@@ -23,6 +27,7 @@ auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
 core_start_def: set[Callable] = set()
 core_shutdown_def: set[Callable] = set()
 installed_dependencies: Dict[str, str] = {}
+_module_cache: Dict[str, ModuleType] = {}
 ignore_dep = ['python', 'fastapi', 'pydantic']
 
 PLUGIN_PATH = Path(__file__).parent / 'plugins'
@@ -62,7 +67,7 @@ class GsServer:
             self.active_bot: Dict[str, _Bot] = {}
             self.is_initialized = True
 
-    def load_plugin(self, plugin: Union[str, Path]):
+    def load_plugin(self, plugin: Union[str, Path, str]):
         if isinstance(plugin, str):
             plugin = PLUGIN_PATH / plugin
 
@@ -100,19 +105,18 @@ class GsServer:
                 # 如果文件夹内有__init_.py，则视为单个插件包
                 elif plugin_path.exists():
                     module_list = [
-                        importlib.import_module(
-                            f'{plugin_parent}.{plugin.name}.__init__'
+                        (
+                            f'{plugin_parent}.{plugin.name}.__init__',
+                            plugin_path,
+                            'plugin',
                         )
                     ]
             # 如果发现单文件，则视为单文件插件
             elif plugin.suffix == '.py':
                 module_list = [
-                    importlib.import_module(
-                        f'{plugin_parent}.{plugin.name[:-3]}'
-                    )
+                    (f'{plugin_parent}.{plugin.name[:-3]}', plugin, 'single'),
                 ]
             '''导入成功'''
-            logger.success(f'✅ 插件{plugin.stem}导入成功!')
             return module_list
         except Exception as e:  # noqa
             exception = sys.exc_info()
@@ -120,35 +124,82 @@ class GsServer:
             logger.warning(f'❌ 插件{plugin.name}加载失败')
             return f'❌ 插件{plugin.name}加载失败'
 
-    def load_plugins(self):
+    def cached_import(self, module_name: str, filepath: Path, _type: str):
+        if module_name in _module_cache:
+            return _module_cache[module_name]
+
+        start_time = time.time()
+        spec = importlib.util.spec_from_file_location(module_name, filepath)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load spec for {module_name}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        end_time = time.time()
+
+        duration = round(end_time - start_time, 2)
+
+        if _type == 'plugin':
+            logger.success(f'✅ 插件{filepath.parent.stem}导入成功!')
+        elif _type == 'full':
+            pass
+        elif _type == 'single':
+            logger.success(
+                f'✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒'
+            )
+        else:
+            logger.trace(
+                f'🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒'
+            )
+
+        _module_cache[module_name] = module
+        return module
+
+    async def load_plugins(self):
         logger.info('[GsCore] 开始加载插件...')
         get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
 
-        plug_path_list = list(BUILDIN_PLUGIN_PATH.iterdir()) + list(
-            PLUGIN_PATH.iterdir()
-        )
+        # 提前获取路径列表并过滤
+        plug_path_list = [
+            p
+            for p in list(BUILDIN_PLUGIN_PATH.iterdir())
+            + list(PLUGIN_PATH.iterdir())
+            if p.is_dir() or (p.is_file() and p.suffix == '.py')
+        ]
 
-        # 遍历插件文件夹内所有文件
+        all_plugins: List[Tuple[str, Path, str]] = []
         for plugin in plug_path_list:
-            self.load_plugin(plugin)
+            d = self.load_plugin(plugin)
+            if isinstance(d, str):
+                continue
+            all_plugins.extend(d)
+
+        max_workers = min(12, (os.cpu_count() or 1) * 2)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            _ = {
+                executor.submit(
+                    self.cached_import, module_name, filepath, _type
+                ): module_name
+                for module_name, filepath, _type in all_plugins
+            }
 
         core_config.lazy_write_config()
         logger.success('[GsCore] 插件加载完成!')
 
     def load_dir_plugins(
         self, plugin: Path, plugin_parent: str, nest: bool = False
-    ) -> List[ModuleType]:
+    ) -> List[Tuple[str, Path, str]]:
         module_list = []
         init_path = plugin / '__init__.py'
         name = plugin.name
         if init_path.exists():
             if str(init_path.parents) not in sys.path:
                 sys.path.append(str(init_path.parents))
-            module = importlib.import_module(
-                f'{plugin_parent}.{name}.{name}.__init__'
+            module_list.append(
+                (f'{plugin_parent}.{name}.{name}.__init__', init_path, 'full')
             )
-            module_list.append(module)
 
         for sub_plugin in plugin.iterdir():
             if sub_plugin.is_dir():
@@ -160,7 +211,7 @@ class GsServer:
                         _p = f'{plugin_parent}.{name}.{name}.{sub_plugin.name}'
                     else:
                         _p = f'{plugin_parent}.{name}.{sub_plugin.name}'
-                    module_list.append(importlib.import_module(f'{_p}'))
+                    module_list.append((f'{_p}', plugin_path, 'module'))
         return module_list
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:

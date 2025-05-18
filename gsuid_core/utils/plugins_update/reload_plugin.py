@@ -7,6 +7,8 @@ from gsuid_core.aps import remove_repeat_job
 
 
 def reload_plugin(plugin_name: str):
+    logger.warning('[重载插件] 该功能暂时被禁用...')
+    return '该功能暂时被禁用...'
     logger.info(f'🔔 正在重载插件{plugin_name}...')
 
     del_k = []

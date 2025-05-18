@@ -570,7 +570,7 @@ sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/79/b9/55936e462a592
 
 [[package]]
 name = "gsuid-core"
-version = "0.7.1"
+version = "0.7.2"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
@@ -606,6 +606,7 @@ dependencies = [
     { name = "setuptools" },
     { name = "sqlalchemy" },
     { name = "sqlmodel" },
+    { name = "structlog" },
     { name = "toml" },
     { name = "urllib3" },
     { name = "uvicorn" },
@@ -653,6 +654,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.0,<2.1.0" },
     { name = "sqlmodel", specifier = ">=0.0.8" },
     { name = "sqlmodel", specifier = ">=0.0.14" },
+    { name = "structlog", specifier = ">=25.3.0" },
     { name = "toml", specifier = ">=0.10.2" },
     { name = "toml", specifier = ">=0.10.2,<1.0.0" },
     { name = "urllib3", specifier = ">=1.26.15,<2.0.0" },
@@ -1609,6 +1611,18 @@ dependencies = [
 sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/42/b4/e25c3b688ef703d85e55017c6edd0cbf38e5770ab748234363d54ff0251a/starlette-0.38.6.tar.gz", hash = "sha256:863a1588f5574e70a821dadefb41e4881ea451a47a3cd1b4df359d4ffefe5ead" }
 wheels = [
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/b7/9c/93f7bc03ff03199074e81974cc148908ead60dcf189f68ba1761a0ee35cf/starlette-0.38.6-py3-none-any.whl", hash = "sha256:4517a1409e2e73ee4951214ba012052b9e16f60e90d73cfb06192c19203bbb05" },
+]
+
+[[package]]
+name = "structlog"
+version = "25.3.0"
+source = { registry = "https://mirror.nju.edu.cn/pypi/web/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/ff/6a/b0b6d440e429d2267076c4819300d9929563b1da959cf1f68afbcd69fe45/structlog-25.3.0.tar.gz", hash = "sha256:8dab497e6f6ca962abad0c283c46744185e0c9ba900db52a423cb6db99f7abeb" }
+wheels = [
+    { url = "https://mirror.nju.edu.cn/pypi/web/packages/f5/52/7a2c7a317b254af857464da3d60a0d3730c44f912f8c510c76a738a207fd/structlog-25.3.0-py3-none-any.whl", hash = "sha256:a341f5524004c158498c3127eecded091eb67d3a611e7a3093deca30db06e172" },
 ]
 
 [[package]]

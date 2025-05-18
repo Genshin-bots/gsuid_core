@@ -1,6 +1,8 @@
 # flake8: noqa
-import os
-import inspect
+import time
+
+starttime = time.time()
+import sys
 import platform
 from pathlib import Path
 from typing import Any, Dict, List, Type, Callable
@@ -44,6 +46,7 @@ from fastapi_amis_admin.amis.components import (
     ButtonToolbar,
 )
 
+print(f'[Ba] 加载完成，耗时{time.time() - starttime}秒')
 from gsuid_core.logger import logger, handle_exceptions
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.version import __version__ as gscore_version
@@ -192,33 +195,19 @@ settings = Settings(
 
 
 def get_caller_plugin_name():
-    # 获取调用栈
-    stack = inspect.stack()
+    try:
+        frame = sys._getframe(2)
+        parts = Path(frame.f_code.co_filename).resolve().parts
 
-    caller_frame = stack[2]
+        # 从后往前查找 gsuid_core/plugins
+        for i in range(len(parts) - 2, 0, -1):
+            if parts[i - 1] == "gsuid_core" and parts[i] == "plugins":
+                # 返回 plugins 的下一级目录名
+                return parts[i + 1] if i + 1 < len(parts) else None
 
-    caller_file = caller_frame.filename
-    caller_path = os.path.abspath(caller_file)
-    caller_path = Path(caller_path)
-
-    parts = caller_path.parts
-    matches = []
-    for i in range(len(parts) - 1):
-        if parts[i] == "gsuid_core" and parts[i + 1] == "plugins":
-            matches.append(i)
-
-    # 如果没有匹配，返回 None
-    if not matches:
+    except ValueError:
+        # 栈层级不够，getframe(2)失败
         return None
-
-    # 取最后一个匹配（最深层）
-    last_match = matches[-1]
-
-    # 提取 plugins 下一级目录或文件名
-    if len(parts) > last_match + 2:  # 确保有下一级
-        return parts[last_match + 2]
-
-    return None
 
 
 def create_admin_class(class_name: str, label: str, admin_list: List):

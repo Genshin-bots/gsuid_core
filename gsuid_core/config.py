@@ -90,8 +90,8 @@ class CoreConfig:
                             sub_key
                         ]
 
-        # 重新写回
-        self.write_config()
+        # 重新写回（必须懒加载）
+        # self.write_config()
 
     @overload
     def get_config(self, key: STR_CONFIG) -> str: ...
