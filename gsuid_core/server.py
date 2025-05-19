@@ -1,4 +1,3 @@
-import os
 import re
 import sys
 import time
@@ -8,7 +7,6 @@ import subprocess
 import importlib.util
 from pathlib import Path
 from types import ModuleType
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple, Union, Callable
 
 import toml
@@ -214,6 +212,16 @@ class GsServer:
                 continue
             all_plugins.extend(d)
 
+        for module_name, filepath, _type in all_plugins:
+            try:
+                self.cached_import(module_name, filepath, _type)
+            except Exception as e:
+                logger.exception(
+                    f'❌ 插件{filepath.stem}导入失败, 错误代码: {e}'
+                )
+                continue
+
+        '''
         max_workers = min(12, (os.cpu_count() or 1) * 2)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             _ = {
@@ -222,6 +230,7 @@ class GsServer:
                 ): module_name
                 for module_name, filepath, _type in all_plugins
             }
+        '''
 
         core_config.lazy_write_config()
         logger.success('[GsCore] 插件加载完成!')

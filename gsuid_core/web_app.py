@@ -58,14 +58,12 @@ async def lifespan(app: FastAPI):
             '[GsCore] 执行启动Hook函数中！',
             [_def.__name__ for _def in core_start_def],
         )
-        ctask = []
         for _def in core_start_def:
             if asyncio.iscoroutinefunction(_def):
                 asyncio.create_task(_def())
             else:
-                ctask.append(asyncio.to_thread(_def))
-        if ctask:
-            await asyncio.gather(*ctask)
+                asyncio.create_task(asyncio.to_thread(_def))
+
     except Exception as e:
         logger.exception(e)
 
