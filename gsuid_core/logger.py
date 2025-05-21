@@ -123,7 +123,7 @@ def format_event(record):
     time = '<g>{time:MM-DD HH:mm:ss}</g>'
     level = '[<lvl>{level}</lvl>]'
     def_name = f'<c><u>{".".join(def_name.split(".")[-5:])}</u></c>'
-    _log = f'{time} {level} {def_name} | {message} \n {{exception}}'
+    _log = f'{time} {level} {def_name} | {message} \n{{exception}}'
     return _log
 
 
