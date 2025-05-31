@@ -52,7 +52,12 @@ def get_service(body: List[Dict]):
 
 
 def get_input_number(
-    label: str, name: str, value: int, max_value: Optional[int] = None
+    label: str,
+    name: str,
+    value: int,
+    max_value: Optional[int] = None,
+    hint_title: Optional[str] = None,
+    hint_body: Optional[str] = None,
 ):
     data = {
         'type': 'input-number',
@@ -65,6 +70,9 @@ def get_input_number(
     }
     if max_value is not None:
         data['max'] = max_value
+    if hint_title is not None and hint_body is not None:
+        data['labelRemark'] = get_remark(hint_title, hint_body)
+
     return data
 
 
@@ -120,8 +128,14 @@ def get_button(title: str, api: Optional[Dict] = None):
     return data
 
 
-def get_switch_panel(label: str, name: str, value: bool):
-    return {
+def get_switch_panel(
+    label: str,
+    name: str,
+    value: bool,
+    hint_title: Optional[str] = None,
+    hint_body: Optional[str] = None,
+):
+    data = {
         'type': 'switch',
         'label': label,
         'option': '',
@@ -132,14 +146,41 @@ def get_switch_panel(label: str, name: str, value: bool):
         'value': value,
     }
 
+    if hint_title is not None and hint_body is not None:
+        data['labelRemark'] = get_remark(hint_title, hint_body)
 
-def get_text_panel(label: str, name: str, value: str):
-    return {
+    return data
+
+
+def get_text_panel(
+    label: str,
+    name: str,
+    value: str,
+    hint_title: Optional[str] = None,
+    hint_body: Optional[str] = None,
+):
+    data: dict = {
         'type': 'input-text',
         'label': label,
         'name': name,
         'id': 'u:2de3dcaddcc1',
         'value': value,
+    }
+
+    if hint_title is not None and hint_body is not None:
+        data['labelRemark'] = get_remark(hint_title, hint_body)
+
+    return data
+
+
+def get_remark(title: str, body: str):
+    return {
+        "icon": "fa fa-question-circle",
+        "trigger": ["hover"],
+        "className": "Remark--warning",
+        "placement": "top",
+        "title": title,
+        "content": body,
     }
 
 
@@ -157,8 +198,15 @@ def get_alert(
     }
 
 
-def get_select_panel(label: str, name: str, value: str, options: List[str]):
-    return {
+def get_select_panel(
+    label: str,
+    name: str,
+    value: str,
+    options: List[str],
+    hint_title: Optional[str] = None,
+    hint_body: Optional[str] = None,
+):
+    data = {
         'type': 'input-text',
         'label': label,
         'name': name,
@@ -166,9 +214,19 @@ def get_select_panel(label: str, name: str, value: str, options: List[str]):
         'id': 'u:8050095a7c1d',
         'value': value,
     }
+    if hint_title is not None and hint_body is not None:
+        data['labelRemark'] = get_remark(hint_title, hint_body)
+    return data
 
 
-def get_input_tag(label: str, name: str, value: List[str], options: List[str]):
+def get_input_tag(
+    label: str,
+    name: str,
+    value: List[str],
+    options: List[str],
+    hint_title: Optional[str] = None,
+    hint_body: Optional[str] = None,
+):
     values = []
     for i in value:
         if isinstance(i, int):
@@ -176,7 +234,7 @@ def get_input_tag(label: str, name: str, value: List[str], options: List[str]):
         else:
             _data = i
         values.append(_data)
-    return {
+    data = {
         'type': 'input-tag',
         'label': label,
         'name': name,
@@ -186,6 +244,10 @@ def get_input_tag(label: str, name: str, value: List[str], options: List[str]):
         'autoFill': {},
         'value': ','.join(values),
     }
+    if hint_title is not None and hint_body is not None:
+        data['labelRemark'] = get_remark(hint_title, hint_body)
+
+    return data
 
 
 def get_divider():

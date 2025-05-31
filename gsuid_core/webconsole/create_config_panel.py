@@ -82,27 +82,60 @@ def get_config_page():
             if isinstance(gsc, GsStrConfig):
                 if gsc.options:
                     _data = get_select_panel(
-                        gsc.title, config, gsc.data, gsc.options
+                        gsc.title,
+                        config,
+                        gsc.data,
+                        gsc.options,
+                        gsc.title,
+                        gsc.desc,
                     )
                 else:
-                    _data = get_text_panel(gsc.title, config, gsc.data)
+                    _data = get_text_panel(
+                        gsc.title,
+                        config,
+                        gsc.data,
+                        gsc.title,
+                        gsc.desc,
+                    )
                 solo_body.append(_data)
             elif isinstance(gsc, GsIntConfig):
                 solo_body.append(
                     get_input_number(
-                        gsc.title, config, gsc.data, gsc.max_value
+                        gsc.title,
+                        config,
+                        gsc.data,
+                        gsc.max_value,
+                        gsc.title,
+                        gsc.desc,
                     )
                 )
             elif isinstance(gsc, GsBoolConfig):
-                solo_body.append(get_switch_panel(gsc.title, config, gsc.data))
+                solo_body.append(
+                    get_switch_panel(
+                        gsc.title,
+                        config,
+                        gsc.data,
+                        gsc.title,
+                        gsc.desc,
+                    )
+                )
             elif isinstance(gsc, GsListStrConfig):
                 if not gsc.options:
                     _data = get_text_panel(
-                        gsc.title, config, ':'.join(gsc.data)
+                        gsc.title,
+                        config,
+                        ':'.join(gsc.data),
+                        gsc.title,
+                        gsc.desc,
                     )
                 else:
                     _data = get_input_tag(
-                        gsc.title, config, gsc.data, gsc.options
+                        gsc.title,
+                        config,
+                        gsc.data,
+                        gsc.options,
+                        gsc.title,
+                        gsc.desc,
                     )
                 solo_body.append(_data)
             elif isinstance(gsc, GsImageConfig):
