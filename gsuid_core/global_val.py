@@ -100,8 +100,10 @@ async def get_global_analysis(
 
     # 七天内的用户
     user_7_list = [user for users in user_list[:7] for user in users]
+    user_1_7_list = [user for users in user_list[1:8] for user in users]
     # 七天内的群组
     group_7_list = [group for groups in group_list[:7] for group in groups]
+    group_1_7_list = [group for groups in group_list[1:8] for group in groups]
 
     # 昨日到三十日之前的用户
     user_after_list = [user for users in user_list[1:] for user in users]
@@ -143,8 +145,8 @@ async def get_global_analysis(
     # user_num = len(user_data)
     # group_num = len(group_data)
 
-    day7_user_num = len(user_7_list)
-    day7_group_num = len(group_7_list)
+    day7_user_num = len(user_1_7_list)
+    day7_group_num = len(group_1_7_list)
 
     data = {
         'DAU': '{0:.2f}'.format(day7_user_num / 7) if day7_user_num else 0,

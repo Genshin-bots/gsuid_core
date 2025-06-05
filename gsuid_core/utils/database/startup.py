@@ -1,16 +1,13 @@
 from shutil import move
 
-from sqlalchemy import MetaData
 from sqlalchemy.sql import text
-from sqlalchemy.schema import DropTable
-from sqlalchemy.exc import NoSuchTableError
 
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start
 from gsuid_core.data_store import get_res_path
 from gsuid_core.global_val import global_val_path
 
-from .base_models import DB_PATH, db_url, engine, async_maker
+from .base_models import DB_PATH, db_url, async_maker
 
 exec_list = []
 
@@ -30,8 +27,9 @@ async def move_database():
         logger.warning('删除历史统计记录...')
 
 
-# @on_core_start
+@on_core_start
 async def trans_adapter():
+    '''
     async with engine.begin() as conn:
         metadata = MetaData()
         try:
@@ -69,6 +67,7 @@ async def trans_adapter():
                         logger.info('[迁移WebConsole数据表] 操作完成..')
         else:
             logger.info('[迁移WebConsole数据表] 无需操作...')
+    '''
 
     async with async_maker() as session:
         for _t in exec_list:

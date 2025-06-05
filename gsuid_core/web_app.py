@@ -160,7 +160,7 @@ def _set_SV(request: Request, data: Dict, name: str):
             data['black_list'] = []
         if data['white_list'] == ['']:
             data['white_list'] = []
-        sv.set(**data)
+        sv.set(False, **data)
 
 
 @app.post('/genshinuid/setPlugins/{name}')
@@ -180,7 +180,7 @@ def _set_Plugins(request: Request, data: Dict, name: str):
             data['black_list'] = []
         if data['white_list'] == ['']:
             data['white_list'] = []
-        plugin.set(**data)
+        plugin.set(False, **data)
 
 
 @app.post('/genshinuid/setGsConfig/{config_name}')

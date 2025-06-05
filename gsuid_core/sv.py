@@ -123,12 +123,15 @@ class Plugins:
         self.force_prefix = force_prefix
         self.disable_force_prefix = disable_force_prefix
 
-    def set(self, **kwargs):
+    def set(self, is_lazy: bool = True, **kwargs):
         plugin_config = config_plugins[self.name]
         for var in kwargs:
             setattr(self, var, kwargs[var])
             plugin_config[var] = kwargs[var]
-        core_config.set_config('plugins', config_plugins)
+        if is_lazy:
+            core_config.lazy_set_config('plugins', config_plugins)
+        else:
+            core_config.set_config('plugins', config_plugins)
 
 
 class SV:
@@ -296,14 +299,17 @@ class SV:
                 self.pm = 6
                 self.enabled = False
 
-    def set(self, **kwargs):
+    def set(self, is_lazy: bool = True, **kwargs):
         plugin_sv_config = config_plugins[self.self_plugin_name]['sv']
         if self.name not in plugin_sv_config:
             plugin_sv_config[self.name] = {}
         for var in kwargs:
             setattr(self, var, kwargs[var])
             plugin_sv_config[self.name][var] = kwargs[var]
-        core_config.lazy_set_config('plugins', config_plugins)
+        if is_lazy:
+            core_config.lazy_set_config('plugins', config_plugins)
+        else:
+            core_config.set_config('plugins', config_plugins)
 
     def enable(self):
         self.set(enabled=True)
