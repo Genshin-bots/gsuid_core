@@ -58,8 +58,13 @@ def run_install(path: Optional[Path] = None) -> int:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf8"
 
+    if tools == 'uv':
+        CMD = 'uv sync --inexact'
+    else:
+        CMD = f'{tools} install'
+
     proc = subprocess.run(
-        f'{tools} install',
+        CMD,
         cwd=path,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

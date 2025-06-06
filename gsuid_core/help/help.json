@@ -66,7 +66,7 @@
         {
           "name": "刷新插件列表",
           "desc": "可以同步最新的插件列表",
-          "eg": "刷新插件列表",
+          "eg": "core刷新插件列表",
           "need_ck": false,
           "need_sk": false,
           "need_admin": true
@@ -74,7 +74,7 @@
         {
           "name": "安装插件",
           "desc": "安装插件",
-          "eg": "安装插件Pokemon",
+          "eg": "core安装插件gsuid",
           "need_ck": false,
           "need_sk": false,
           "need_admin": true
@@ -82,7 +82,7 @@
         {
           "name": "卸载插件",
           "desc": "卸载插件",
-          "eg": "卸载插件Pokemon",
+          "eg": "core卸载插件Pokemon",
           "need_ck": false,
           "need_sk": false,
           "need_admin": true
@@ -126,7 +126,7 @@
         {
           "name": "更新依赖",
           "desc": "更新依赖",
-          "eg": "更新依赖",
+          "eg": "core更新依赖",
           "need_ck": true,
           "need_sk": false,
           "need_admin": false
@@ -156,7 +156,7 @@
         {
           "name": "重启",
           "desc": "重启核心",
-          "eg": "重启",
+          "eg": "core重启",
           "need_ck": false,
           "need_sk": false,
           "need_admin": false
@@ -164,7 +164,7 @@
         {
           "name": "关闭",
           "desc": "警告：关闭后将无法通过命令调用",
-          "eg": "关闭",
+          "eg": "core关闭",
           "need_ck": true,
           "need_sk": false,
           "need_admin": false
@@ -172,7 +172,16 @@
         {
           "name": "状态",
           "desc": "查看目前核心的状态",
-          "eg": "状态",
+          "eg": "core状态",
+          "need_ck": false,
+          "need_sk": false,
+          "need_admin": false
+        },
+        {
+          "name": "信息",
+          "desc": "查看目前核心的信息",
+          "eg": "core信息",
+          "highlight": 0,
           "need_ck": false,
           "need_sk": false,
           "need_admin": false
@@ -222,9 +231,10 @@
       "pm": 0,
       "data": [
         {
-          "name": "重置网页控制台密码",
+          "name": "重置Web密码",
           "desc": "重置网页控制台密码",
-          "eg": "重置网页控制台密码",
+          "eg": "core重置网页控制台密码",
+          "highlight": 4,
           "need_ck": false,
           "need_sk": false,
           "need_admin": false

@@ -311,7 +311,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         bot_id: str,
         group_id: str,
     ) -> int:
-        data: Optional[Type["CoreGroup"]] = await cls.base_select_data(
+        data: Optional["CoreGroup"] = await cls.base_select_data(
             bot_id=bot_id, group_id=group_id
         )
         if not data:
@@ -466,11 +466,11 @@ class GsUID(BaseIDModel, table=True):
             select(cls)
             .where(
                 or_(
-                    cls.main_uid == uid,
-                    cls.uid_1 == uid,
-                    cls.uid_2 == uid,
-                    cls.uid_3 == uid,
-                    cls.uid_4 == uid,
+                    cls.main_uid == uid,  # type: ignore
+                    cls.uid_1 == uid,  # type: ignore
+                    cls.uid_2 == uid,  # type: ignore
+                    cls.uid_3 == uid,  # type: ignore
+                    cls.uid_4 == uid,  # type: ignore
                 )
             )
             .where(cls.game_name == game_name)
@@ -519,8 +519,8 @@ class GsUID(BaseIDModel, table=True):
         game_name: Optional[str] = None,
         **data,
     ):
-        sql = update(cls).where(cls.main_uid == uid)
-        sql = sql.where(cls.game_name == game_name)
+        sql = update(cls).where(cls.main_uid == uid)  # type: ignore
+        sql = sql.where(cls.game_name == game_name)  # type: ignore
         if data is not None:
             query = sql.values(**data)
             query.execution_options(synchronize_session='fetch')

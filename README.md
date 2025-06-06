@@ -1,4 +1,4 @@
-# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.7.1
+# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.7.3
 
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?&labelColor=ef8336)](https://pycqa.github.io/isort/)
@@ -67,7 +67,7 @@ docker run -d \
 -v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins \
 lilixxs666/gsuid-core:dev
 ```
-在本地按照以上指令容器运行后，可直接进入`localhost:18965/genshinuid`进入核心的后台管理界面
+在本地按照以上指令容器运行后，可直接进入`localhost:18765/genshinuid`进入核心的后台管理界面
 相关文档见：
 
 **镜像参数说明：**

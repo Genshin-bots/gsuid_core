@@ -15,7 +15,12 @@ core_web = SV('core网页控制台管理', pm=0, area='DIRECT')
 
 
 @core_web.on_fullmatch(
-    ('core清除网页控制台密码', 'core重置网页控制台密码'), block=True
+    (
+        'core清除网页控制台密码',
+        'core重置网页控制台密码',
+        '重置网页控制台密码',
+    ),
+    block=True,
 )
 async def reset_web_password(bot: Bot, ev: Event):
     pw = generate_random_string()

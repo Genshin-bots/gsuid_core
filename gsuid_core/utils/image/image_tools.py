@@ -17,6 +17,31 @@ TEXT_PATH = Path(__file__).parent / 'texture2d'
 BG_PATH = Path(__file__).parents[1] / 'default_bg'
 
 
+def tint_image(input_image: Image.Image, color: Tuple[int, int, int]):
+    """
+    给PNG图像中的非完全透明部分上色，并保留原始的Alpha透明度。
+
+    :param input_image_path: 输入PNG图片的路径
+    :param output_image_path: 输出图片的保存路径
+    :param color: 目标颜色，一个RGB元组，例如红色为 (255, 0, 0)
+    """
+    _, _, _, alpha = input_image.convert('RGBA').split()
+    color_layer = Image.new('RGBA', input_image.size, color)
+
+    red_channel, green_channel, blue_channel, _ = color_layer.split()
+
+    tinted_img = Image.merge(
+        'RGBA',
+        (
+            red_channel,
+            green_channel,
+            blue_channel,
+            alpha,
+        ),
+    )
+    return tinted_img
+
+
 def get_font_x(font: ImageFont.FreeTypeFont, text: str):
     bbox = font.getbbox(text)
     return int(bbox[2] - bbox[0])
@@ -337,7 +362,7 @@ async def get_qqgroup_avatar(
     bot_id: Optional[Union[int, str]] = None,
     qid: Optional[Union[int, str]] = None,
     avatar_url: Optional[str] = None,
-) -> Image.Image:
+) -> Optional[Image.Image]:
     if not qid or not bot_id:
         return None
     avatar_url = f'https://q.qlogo.cn/qqapp/{bot_id}/{qid}/100'

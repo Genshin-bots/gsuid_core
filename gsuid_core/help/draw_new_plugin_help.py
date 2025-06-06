@@ -13,6 +13,7 @@ from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 from gsuid_core.utils.image.image_tools import (
     CustomizeImage,
+    tint_image,
     crop_center_img,
     draw_color_badge,
 )
@@ -77,6 +78,7 @@ async def get_new_help(
     need_cover: bool = False,
     enable_cache: bool = True,
     pm: int = 6,
+    highlight_bg: Optional[Image.Image] = None,
 ):
     help_path = get_res_path('help') / f'{plugin_name}_{pm}.jpg'
 
@@ -98,6 +100,8 @@ async def get_new_help(
         footer = Image.open(TEXT_PATH / f'footer_{help_mode}.png')
     if item_bg is None:
         item_bg = Image.open(TEXT_PATH / f'item_{help_mode}.png')
+    if highlight_bg is None:
+        highlight_bg = Image.open(TEXT_PATH / 'highlight.png')
 
     if help_mode == 'dark':
         main_color = (255, 255, 255)
@@ -111,6 +115,7 @@ async def get_new_help(
     cag_bg = cag_bg.convert('RGBA')
     item_bg = item_bg.convert('RGBA')
     footer = footer.convert('RGBA')
+    highlight_bg = highlight_bg.convert('RGBA')
 
     plugin_icon = plugin_icon.resize((128, 128))
 
@@ -222,6 +227,7 @@ async def get_new_help(
         cag_desc = sv['desc']
         if 'pm' in sv and isinstance(sv['pm'], int) and pm > sv['pm']:
             continue
+
         cag_data = sv['data']
         cag_draw = ImageDraw.Draw(cag_bar)
 
@@ -256,6 +262,28 @@ async def get_new_help(
             # command_desc = command['desc']
             command_eg = command['eg']
             command_bg = deepcopy(item_bg)
+            if 'highlight' in command:
+                highlight = command['highlight']
+            else:
+                highlight = 6
+
+            if highlight == 0:
+                hbg = tint_image(highlight_bg, (211, 67, 59))
+            elif highlight == 1:
+                hbg = tint_image(highlight_bg, (230, 126, 34))
+            elif highlight == 2:
+                hbg = tint_image(highlight_bg, (46, 204, 113))
+            elif highlight == 3:
+                hbg = tint_image(highlight_bg, (52, 152, 219))
+            elif highlight == 4:
+                hbg = tint_image(highlight_bg, (213, 129, 219))
+            elif highlight == 5:
+                hbg = tint_image(highlight_bg, (219, 215, 219))
+            else:
+                hbg = None
+
+            if hbg:
+                command_bg.paste(hbg, (0, 0), hbg)
 
             if 'icon' in command:
                 if isinstance(command['icon'], Image.Image):
@@ -323,4 +351,5 @@ async def get_new_help(
     )
     cache[plugin_name] = 1
 
+    return await convert_img(img)
     return await convert_img(img)
