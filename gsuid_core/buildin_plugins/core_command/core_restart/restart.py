@@ -29,9 +29,15 @@ def get_restart_command():
         return restart_command
     else:
         tool = check_start_tool()
-        if tool != 'python':
-            return f'{tool} run python'
-        return 'python'
+        if tool == 'uv':
+            return 'uv run core'
+        elif tool == 'pdm':
+            return 'pdm run core'
+        elif tool == 'poetry':
+            return 'poetry run core'
+        elif tool == 'python':
+            return 'python -m gsuid_core.core'
+        return 'python -m gsuid_core.core'
 
 
 async def get_restart_sh() -> str:
@@ -52,8 +58,10 @@ async def restart_genshinuid(
     with open(restart_sh_path, "w", encoding="utf8") as f:
         f.write(restart_sh)
     if platform.system() == 'Linux':
-        os.system(f'chmod +x {str(restart_sh_path)}')
-        os.system(f'chmod +x {str(bot_start)}')
+        # os.system(f'chmod +x {str(restart_sh_path)}')
+        # os.system(f'chmod +x {str(bot_start)}')
+        pass
+
     now_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
     if is_send:
         update_log = {
@@ -69,12 +77,12 @@ async def restart_genshinuid(
             json.dump(update_log, f)
     if platform.system() == 'Linux':
         subprocess.Popen(
-            f'kill -9 {pid} & {get_restart_command()} {bot_start}',
+            f'kill -9 {pid} & {get_restart_command()}',
             shell=True,
         )
     else:
         subprocess.Popen(
-            f'taskkill /F /PID {pid} & {get_restart_command()} {bot_start}',
+            f'taskkill /F /PID {pid} & {get_restart_command()}',
             shell=True,
         )
 
