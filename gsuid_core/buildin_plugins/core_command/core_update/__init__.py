@@ -10,6 +10,7 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.plugins_update._plugins import (
     run_install,
     check_retcode,
+    update_plugins,
     update_all_plugins,
     set_proxy_all_plugins,
     update_from_git_in_tread,
@@ -18,7 +19,7 @@ from gsuid_core.utils.plugins_update._plugins import (
 sv_core_config = SV('Core管理', pm=0)
 
 
-@sv_core_config.on_prefix(('core手动重载插件'))
+@sv_core_config.on_prefix(('手动重载插件'))
 async def send_core_reload_msg(bot: Bot, ev: Event):
     plugin_name = ev.text.strip()
     logger.info(f'🔔 开始执行 [重载] {plugin_name}')
@@ -27,18 +28,23 @@ async def send_core_reload_msg(bot: Bot, ev: Event):
     await bot.send(retcode)
 
 
-@sv_core_config.on_fullmatch(('core更新', 'core强制更新'), block=True)
+@sv_core_config.on_command(('更新', '强制更新'), block=True)
 async def send_core_update_msg(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 早柚核心')
     if '强制' in ev.command:
         level = 1
     else:
         level = 0
-    log_list = await update_from_git_in_tread(level)
+    txt = ev.text.strip() if ev.text else ''
+    if txt:
+        log_list = await update_plugins(txt, level)
+    else:
+        log_list = await update_from_git_in_tread(level)
+
     await bot.send(log_list)
 
 
-@sv_core_config.on_command(('core设置代理'), block=True)
+@sv_core_config.on_command(('设置代理'), block=True)
 async def send_core_set_proxy(bot: Bot, ev: Event):
     logger.info('开始执行[设置代理]')
     proxy_url = ev.text.strip() if ev.text else ''
@@ -50,7 +56,7 @@ async def send_core_set_proxy(bot: Bot, ev: Event):
     )
 
 
-@sv_core_config.on_command(('core应用设置代理'), block=True)
+@sv_core_config.on_command(('应用设置代理'), block=True)
 async def send_core_update_proxy(bot: Bot, ev: Event):
     logger.info('开始执行[应用设置代理]')
     proxy = ev.text if ev.text else None
@@ -64,7 +70,7 @@ async def send_core_update_proxy(bot: Bot, ev: Event):
     await bot.send(log_list)
 
 
-@sv_core_config.on_fullmatch(('core更新依赖'), block=True)
+@sv_core_config.on_fullmatch(('更新依赖'), block=True)
 async def send_core_poetry_install(bot: Bot, ev: Event):
     logger.info('开始执行[更新] 早柚核心依赖')
     if not hasattr(asyncio, 'to_thread'):
@@ -80,11 +86,11 @@ async def send_core_poetry_install(bot: Bot, ev: Event):
 
 @sv_core_config.on_fullmatch(
     (
-        'core全部更新',
-        'core全部强制更新',
-        'core强制全部更新',
-        'core强行强制全部更新',
-        'core全部强行强制更新',
+        '全部更新',
+        '全部强制更新',
+        '强制全部更新',
+        '强行强制全部更新',
+        '全部强行强制更新',
     ),
     block=True,
 )

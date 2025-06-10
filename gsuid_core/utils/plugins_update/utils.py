@@ -48,12 +48,12 @@ def check_start_tool(is_pip: bool = False):
             OTHER += PIP
 
     if start_venv == 'auto':
-        if 'pdm' in command_chain_str:
+        if 'uv' in command_chain or 'uv.exe' in command_chain_str:
+            command = UV
+        elif 'pdm' in command_chain_str:
             command = PDM
         elif 'poetry' in command_chain_str:
             command = POETRY
-        elif 'uv' in command_chain or 'uv.exe' in command_chain_str:
-            command = UV
         else:
             command = PYTHON
     elif start_venv == 'pdm':
@@ -65,4 +65,5 @@ def check_start_tool(is_pip: bool = False):
     else:
         command = OTHER
 
+    logger.debug(f'[检测启动工具] 最终命令: {command}')
     return command

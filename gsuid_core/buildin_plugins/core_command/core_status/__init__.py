@@ -47,10 +47,9 @@ async def _u_scheduled_save_global_val_all():
 
 @sv_core_status.on_fullmatch(
     (
-        'core信息',
-        'Core信息',
-        'CoreStatus',
-        'corestatus',
+        '信息',
+        'tatus',
+        'status',
     )
 )
 async def send_core_info_msg(bot: Bot, ev: Event):

@@ -48,7 +48,7 @@ def get_sv_panel(
                 'type': 'container',
                 'body': [
                     get_input_tag(
-                        '自定义插件前缀(不影响插件自带前缀)',
+                        '自定义插件前缀(不影响插件自带前缀, 修改需重启)',
                         'prefix',
                         prefix,
                         [],
@@ -72,7 +72,7 @@ def get_sv_panel(
                 'body': [
                     {
                         'type': 'switch',
-                        'label': f'是否禁用插件自带前缀({defalut_prefix})',
+                        'label': f'是否禁用插件自带前缀({defalut_prefix}) (修改需重启)',
                         'option': '开启/关闭功能',
                         'name': 'disable_force_prefix',
                         'falseValue': False,
@@ -99,7 +99,7 @@ def get_sv_panel(
                 'body': [
                     {
                         'type': 'switch',
-                        'label': '是否允许空前缀',
+                        'label': '是否允许空前缀 (修改需重启)',
                         'option': '开启/关闭功能',
                         'name': 'allow_empty_prefix',
                         'falseValue': False,

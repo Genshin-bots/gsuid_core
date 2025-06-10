@@ -40,7 +40,7 @@ async def send_plugins_uninstall(bot: Bot, ev: Event):
         await bot.send('已取消删除！')
 
 
-@sv_core_install_plugins.on_prefix(('core安装插件'), block=True)
+@sv_core_install_plugins.on_prefix(('安装插件'), block=True)
 async def send_plugins_install(bot: Bot, ev: Event):
     plugins = await get_plugins_url(ev.text.strip().lower())
     if not plugins:
@@ -53,7 +53,7 @@ async def send_plugins_install(bot: Bot, ev: Event):
     await bot.send(im)
 
 
-@sv_core_install_plugins.on_fullmatch(('core刷新插件列表'), block=True)
+@sv_core_install_plugins.on_fullmatch(('刷新插件列表'), block=True)
 async def refresh_plugins_list(bot: Bot, ev: Event):
     _list = await refresh_list()
     if len(_list) <= 3:
@@ -64,7 +64,7 @@ async def refresh_plugins_list(bot: Bot, ev: Event):
 
 
 @sv_core_install_plugins.on_prefix(
-    ('core更新插件', 'core强制更新插件', 'core强行强制更新插件'), block=True
+    ('更新插件', '强制更新插件', '强行强制更新插件'), block=True
 )
 async def send_update_msg(bot: Bot, ev: Event):
     await bot.send('🚀 开始更新...请稍等一段时间...')

@@ -8,11 +8,7 @@ sv_core_help_img = SV('Core帮助')
 
 
 @sv_core_help_img.on_fullmatch(
-    (
-        'core帮助',
-        'Core帮助',
-        '帮助',
-    ),
+    ('帮助',),
     block=True,
 )
 async def send_core_help_msg(bot: Bot, ev: Event):

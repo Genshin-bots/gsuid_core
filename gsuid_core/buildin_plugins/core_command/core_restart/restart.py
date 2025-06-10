@@ -5,6 +5,7 @@ import platform
 import subprocess
 from pathlib import Path
 
+from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -18,26 +19,31 @@ _restart_sh = '''#!/bin/bash
 kill -9 {}
 {} &'''
 
-restart_command = core_plugins_config.get_config('restart_command').data
-
 
 def get_restart_command():
     is_use_custom_restart_command = core_plugins_config.get_config(
         'is_use_custom_restart_command'
     ).data
     if is_use_custom_restart_command:
+        restart_command = core_plugins_config.get_config(
+            'restart_command'
+        ).data
+        logger.info(f'[Core重启] 使用自定义重启命令: {restart_command}')
         return restart_command
     else:
         tool = check_start_tool()
         if tool == 'uv':
-            return 'uv run core'
+            command = 'uv run core'
         elif tool == 'pdm':
-            return 'pdm run core'
+            command = 'pdm run core'
         elif tool == 'poetry':
-            return 'poetry run core'
+            command = 'poetry run core'
         elif tool == 'python':
-            return 'python -m gsuid_core.core'
-        return 'python -m gsuid_core.core'
+            command = 'python -m gsuid_core.core'
+        else:
+            command = 'python -m gsuid_core.core'
+        logger.info(f'[Core重启] 使用默认重启命令: {command}')
+        return command
 
 
 async def get_restart_sh() -> str:

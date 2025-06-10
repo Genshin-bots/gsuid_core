@@ -39,7 +39,7 @@ async def delete_core_user_group():
 
 
 @sv_core_clean.on_fullmatch(
-    ('core清除数据库', 'Core清除数据库'),
+    ('清除数据库', '清除数据库'),
     block=True,
 )
 async def send_core_master_help_msg(bot: Bot, ev: Event):

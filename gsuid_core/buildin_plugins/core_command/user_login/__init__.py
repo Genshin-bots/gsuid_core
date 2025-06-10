@@ -162,6 +162,9 @@ async def _send_help(bot: Bot, im):
     )
 
 
+@sv_core_user_qrcode_login.on_fullmatch(
+    ('扫码登陆', '扫码登录'), block=True, prefix=False
+)
 @sv_core_user_qrcode_login.on_fullmatch(('扫码登陆', '扫码登录'), block=True)
 async def send_qrcode_login(bot: Bot, ev: Event):
     await bot.logger.info('开始执行[扫码登陆]')
