@@ -315,7 +315,7 @@ def install_dependencies(dependencies: Dict, need_update: bool = False):
         installed_dependencies, dependencies
     )
     if not to_update:
-        logger.debug('[安装/更新依赖] 无需更新依赖！')
+        logger.debug('🚀 [安装/更新依赖] 无需更新依赖！')
         return
 
     logger.debug(f'[安装/更新依赖] 需更新依赖列表如下：\n{to_update}')

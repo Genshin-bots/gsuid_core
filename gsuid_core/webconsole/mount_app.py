@@ -43,13 +43,15 @@ from fastapi_amis_admin.amis.components import (
     ButtonToolbar,
 )
 
+from gsuid_core.webconsole.log import render_html
 from gsuid_core.logger import logger, handle_exceptions
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.version import __version__ as gscore_version
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.utils.database.base_models import finally_url
 from gsuid_core.webconsole.create_sv_panel import get_sv_page
-from gsuid_core.webconsole.create_log_panel import create_log_page
+
+# from gsuid_core.webconsole.create_log_panel import create_log_page
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_config_panel import get_config_page
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
@@ -493,7 +495,7 @@ class LogsPage(GsAdminPage):
 
     @handle_exceptions
     async def get_page(self, request: Request) -> Page:
-        return Page.parse_obj(create_log_page())
+        return Page.parse_obj(render_html())
 
 
 class HistoryLogsPage(GsAdminPage):

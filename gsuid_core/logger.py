@@ -1,5 +1,6 @@
 import re
 import sys
+import json
 import asyncio
 import logging
 import datetime
@@ -131,16 +132,16 @@ def std_format_event(record):
     try:
         data = format_event(record)
         _data = (
-            data.replace('<g>', '\033[37m')
-            .replace('</g>', '\033[0m')
-            .replace('<c><u>', '\033[34m')
-            .replace('</u></c>', '\033[0m')
-            .replace('<m><b>', '\033[35m')
-            .replace('</b></m>', '\033[0m')
-            .replace('<c><b>', '\033[32m')
-            .replace('</b></c>', '\033[0m')
-            .replace('<lvl>', '')
-            .replace('</lvl>', '')
+            data.replace("<g>", "<span class=\"log-keyword-success\">")
+            .replace("</g>", "</span>")
+            .replace("<c><u>", "<span class=\"log-keyword-id\">")
+            .replace("</u></c>", "</span>")
+            .replace("<m><b>", "<span>  class=\"log-keyword-blue\">")
+            .replace("</b></m>", "</span>")
+            .replace("<c><b>", "<span log-keyword-error>")
+            .replace("</b></c>", "</span>")
+            .replace("<lvl>", "")
+            .replace("</lvl>", "")
         )
         log = _data.format_map(record)
         log_history.append(log[:-5])
@@ -186,7 +187,13 @@ async def read_log():
     while True:
         if index <= len(log_history) - 1:
             if log_history[index]:
-                yield log_history[index]
+                log_data = {
+                    "level": "INFO",
+                    "message": log_history[index],
+                    "message_type": "html",
+                    "timestamp": datetime.datetime.now().isoformat(),
+                }
+                yield f"data: {json.dumps(log_data)}\n\n"
             index += 1
         else:
             await asyncio.sleep(1)
