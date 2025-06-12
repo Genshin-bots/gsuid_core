@@ -201,6 +201,15 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
         'mys绑定设备',
     ),
     block=True,
+    prefix=False,
+)
+@sv_core_user_addck.on_prefix(
+    (
+        '设备登录',
+        '设备登陆',
+        '绑定设备',
+    ),
+    block=True,
 )
 async def send_add_device_msg(bot: Bot, ev: Event):
     try:

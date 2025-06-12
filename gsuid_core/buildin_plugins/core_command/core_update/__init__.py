@@ -35,7 +35,7 @@ async def send_core_update_msg(bot: Bot, ev: Event):
         level = 1
     else:
         level = 0
-    txt = ev.text.strip() if ev.text else ''
+    txt = ev.text.replace('插件', '').strip() if ev.text else ''
     if txt:
         log_list = await update_plugins(txt, level)
     else:
