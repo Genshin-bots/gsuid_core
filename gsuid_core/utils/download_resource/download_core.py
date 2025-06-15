@@ -85,7 +85,7 @@ async def check_speed():
         TAG, BASE_URL = await find_fastest_url(URL_LIB)
         global_tag, global_url = TAG, BASE_URL
 
-        logger.info(f"最快资源站: {TAG} {BASE_URL}")
+        logger.info(f"🚀 最快资源站: {TAG} {BASE_URL}")
         NOW_SPEED_TEST = False
         return TAG, BASE_URL
 
@@ -237,4 +237,4 @@ async def download_all_file(
             n += 1
 
         if n == len(EPATH_MAP):
-            logger.success(f'插件 {plugin_name} 资源库已是最新!')
+            logger.success(f'🍱 [资源检查] 插件 {plugin_name} 资源库已是最新!')

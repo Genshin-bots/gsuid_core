@@ -114,7 +114,7 @@ class GsServer:
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
         # 如果发现文件夹，则视为插件包
-        logger.debug(f'🔹 导入{plugin.stem}中...')
+        logger.debug(f'🔜 导入{plugin.stem}中...')
         logger.trace('===============')
         try:
             module_list = []
@@ -155,9 +155,8 @@ class GsServer:
             '''导入成功'''
             return module_list
         except Exception as e:  # noqa
-            exception = sys.exc_info()
-            logger.opt(exception=exception).error(f'加载插件时发生错误: {e}')
-            logger.warning(f'❌ 插件{plugin.name}加载失败')
+            logger.error(f'❌ 插件{plugin.name}加载失败!: {e}')
+            # logger.warning(f'❌ 插件{plugin.name}加载失败!')
             return f'❌ 插件{plugin.name}加载失败'
 
     def cached_import(self, module_name: str, filepath: Path, _type: str):
@@ -193,7 +192,7 @@ class GsServer:
         return module
 
     async def load_plugins(self):
-        logger.info('[GsCore] 开始加载插件...')
+        logger.info('💖 [早柚核心]开始加载插件...')
         get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
 
@@ -233,7 +232,7 @@ class GsServer:
         '''
 
         core_config.lazy_write_config()
-        logger.success('[GsCore] 插件加载完成!')
+        logger.success('💖 [早柚核心] 插件加载完成!')
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
@@ -297,7 +296,7 @@ def check_pyproject(pyproject: Path):
         sp_dep = toml_data['project'].get('gscore_auto_update_dep')
         if sp_dep:
             sp_dep = parse_dependency(sp_dep)
-            logger.debug('[安装/更新依赖] 特殊依赖列表如下：')
+            logger.debug('📄 [安装/更新依赖] 特殊依赖列表如下：')
             logger.debug(sp_dep)
             logger.debug('========')
             install_dependencies(sp_dep, True)

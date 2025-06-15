@@ -22,13 +22,13 @@ scheduler.configure(options)
 async def start_scheduler():
     if not scheduler.running:
         scheduler.start()
-        logger.info('定时任务启动...')
+        logger.info('⏲ [定时器系统] 定时任务启动成功！')
 
 
 async def shutdown_scheduler():
     if scheduler.running:
         scheduler.shutdown()
-        logger.info('定时任务结束...')
+        logger.info('⌛ [定时器系统] 程序关闭！定时任务结束！')
 
 
 def remove_repeat_job():

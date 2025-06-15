@@ -36,9 +36,9 @@ def modify_func(func):
         try:
             result = await func(bot, event)
             return result
-        except Exception:
+        except Exception as e:
             logger.error(f'[SV] {event.command} 执行时出现错误!')
-            logger.error(traceback.format_exc())
+            logger.exception(e)
         finally:
             instancess = Bot.get_instances()
             mutiply_instances = Bot.get_mutiply_instances()

@@ -17,7 +17,7 @@ sv_core_config = SV('Core管理', pm=0)
 async def check_msg():
     try:
         await asyncio.sleep(3)
-        logger.info('📝 检查遗留信息...')
+        logger.info('[启动检查] 📝 检查遗留信息...')
         update_log = await restart_message()
         if update_log == {}:
             return

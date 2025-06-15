@@ -38,7 +38,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
-    logger.info('[收到事件]', event=event)
+    logger.info('[收到事件]', event_payload=event)
 
     if event.user_pm == 0:
         if not await Subscribe.data_exist(

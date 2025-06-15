@@ -72,8 +72,13 @@ HTML = """
         font-size: 12px; /* 可以比正文小一点 */
     }
     .log-level.INFO { background-color: #2196F3; }
+    .log-level.SUCCESS { background-color: #43A047; }
+    .log-level.DEBUG { background-color: #F39333; }
     .log-level.WARN { background-color: #FFC107; color: #333; }
+    .log-level.WARNING { background-color: #FFC107; color: #333; }
     .log-level.ERROR { background-color: #F44336; }
+    .log-level.CRITICAL { background-color: #F44336; }
+    .log-level.EXCEPTION { background-color: #F44336; }
 
     /* 日志内容样式 */
     .log-content {
@@ -101,6 +106,10 @@ HTML = """
     .log-keyword-success { color: #b9f6ca; font-weight: bold; }
     .log-keyword-blue { color: #407dff; font-weight: bold; }
     .log-keyword-id { color: #82aaff; background-color: #333a4f; padding: 1px 4px; border-radius: 3px; }
+    .log-keyword-purple {
+        color: #9c27b0; /* 深紫色，可根据需要调整色值 */
+        font-weight: bold;
+    }
 
     /* --- 页面头部样式，可以稍微紧凑一点 --- */
     .log-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--theme-color); padding-bottom: 8px; margin-bottom: 12px; }
@@ -153,6 +162,11 @@ ON_MOUNT_SSE = """
             // isJson 保持 false
         }
 
+        function highlightBrackets(text) {
+            // 匹配[]内的内容（非贪婪模式），替换为带紫色样式的span
+            return text.replace(/\[([^\]]+)\]/g, '<span class="log-keyword-purple">[$1]</span>');
+        }
+
         // ======================= 核心修改点在这里 =======================
         if (isJson) {
             // 1. 如果是JSON，优先高亮显示 (逻辑不变)
@@ -163,12 +177,14 @@ ON_MOUNT_SSE = """
         } else if (message_type === 'html') {
             // 2. 如果后端标记为HTML，我们信任它，直接使用 message
             //    不再进行HTML转义，这样<span>标签就能生效
-            messageHtml = `<code>${message}</code>`;
+            const processedHtml = highlightBrackets(message);
+            messageHtml = `<code>${processedHtml}</code>`;
 
         } else {
             // 3. 否则，就是未知来源的纯文本，为了安全必须进行转义
             const safeMessage = message.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            messageHtml = `<code>${safeMessage}</code>`;
+            const processedText = highlightBrackets(message);
+            messageHtml = `<code>${processedText}</code>`;
         }
         // ======================= 修改结束 =======================
 
@@ -213,4 +229,4 @@ ON_MOUNT_SSE = """
     }
 
     connectSSE();
-"""  # noqa:E501
+"""  # noqa: E501, W605

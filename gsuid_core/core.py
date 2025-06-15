@@ -94,22 +94,7 @@ async def main():
         app,
         host=HOST,
         port=PORT,
-        log_config={
-            'version': 1,
-            'disable_existing_loggers': False,
-            'handlers': {
-                'default': {
-                    'class': 'gsuid_core.logger.LoguruHandler',
-                },
-            },
-            'loggers': {
-                'uvicorn.error': {'handlers': ['default'], 'level': 'INFO'},
-                'uvicorn.access': {
-                    'handlers': ['default'],
-                    'level': 'INFO',
-                },
-            },
-        },
+        log_config=None,
         loop="asyncio",
     )
     server = uvicorn.Server(config)
@@ -117,7 +102,7 @@ async def main():
     logger.success(ASCII_FONT)
     duration = round(end_time - start_time, 2)
     logger.success(
-        f'[GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}'
+        f'🚀 [GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}'
     )
     await server.serve()
 

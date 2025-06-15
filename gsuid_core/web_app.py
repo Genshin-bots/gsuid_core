@@ -55,7 +55,7 @@ pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
 async def lifespan(app: FastAPI):
     try:
         logger.info(
-            '[GsCore] 执行启动Hook函数中！',
+            '♻ [GsCore] 执行启动Hook函数中！',
             [_def.__name__ for _def in core_start_def],
         )
         for _def in core_start_def:

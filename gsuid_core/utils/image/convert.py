@@ -56,7 +56,7 @@ async def convert_img(
     :返回:
       * res: bytes对象或base64编码图片。
     """
-    logger.info('[GsCore] 处理图片中....')
+    logger.info('🚀 [GsCore] 处理图片中....')
 
     if isinstance(img, Image.Image):
         if img.format == 'GIF':

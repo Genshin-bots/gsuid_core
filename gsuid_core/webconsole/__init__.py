@@ -17,7 +17,7 @@ async def start_check():
     admin_auth_i18n.set_language('zh_CN')
     user_auth_i18n.set_language('zh_CN')
 
-    logger.info('尝试挂载WebConsole')
+    logger.info('💻 [网页控制台] 尝试挂载WebConsole')
     await site.db.async_run_sync(
         SQLModel.metadata.create_all, is_session=False  # type:ignore
     )  # type:ignore
