@@ -16,9 +16,11 @@ from gsuid_core.models import Event, Message, MessageReceive
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
+    log_config,
     core_plugins_config,
 )
 
+show_receive: bool = log_config.get_config('ShowReceive').data
 command_start = core_config.get_config('command_start')
 enable_empty = core_config.get_config('enable_empty_start')
 config_masters = core_config.get_config('masters')
@@ -38,7 +40,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
-    logger.info('[收到事件]', event_payload=event)
+    if show_receive:
+        logger.info('[收到事件]', event_payload=event)
 
     if event.user_pm == 0:
         if not await Subscribe.data_exist(

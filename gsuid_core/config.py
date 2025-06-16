@@ -18,6 +18,7 @@ CONFIG_DEFAULT = {
     'log': {
         'level': 'INFO',
         'output': ['stdout', 'stderr', 'file'],
+        'module': False,
         # ...
     },
     'enable_empty_start': True,

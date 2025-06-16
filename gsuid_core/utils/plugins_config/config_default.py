@@ -178,11 +178,6 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         ['38890', '28541', '28542'],
         ['38890', '28541', '28542'],
     ),
-    'ScheduledCleanLogDay': GsStrConfig(
-        '定时清理几天外的日志',
-        '定时清理几天外的日志',
-        '8',
-    ),
     'EnableForwardMessage': GsStrConfig(
         '是否允许发送合并转发',
         '可选循环发送、合并消息、合并转发、禁止',

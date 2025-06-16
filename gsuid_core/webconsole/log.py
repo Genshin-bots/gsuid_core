@@ -77,6 +77,7 @@ HTML = """
     .log-level.WARN { background-color: #FFC107; color: #333; }
     .log-level.WARNING { background-color: #FFC107; color: #333; }
     .log-level.ERROR { background-color: #F44336; }
+    .log-level.TRACE { background-color: #673AB7; }
     .log-level.CRITICAL { background-color: #F44336; }
     .log-level.EXCEPTION { background-color: #F44336; }
 
@@ -188,15 +189,17 @@ ON_MOUNT_SSE = """
         }
         // ======================= 修改结束 =======================
 
+
         logEntry.innerHTML = `
             <span class="log-time">${time}</span>
             <span class="log-level ${level}">${level}</span>
             <span class="log-content">${messageHtml}</span>
         `;
 
+        const isScrolledToBottom = logContainer.scrollHeight - logContainer.clientHeight <= logContainer.scrollTop + 5;
+
         logContainer.appendChild(logEntry);
 
-        const isScrolledToBottom = logContainer.scrollHeight - logContainer.clientHeight <= logContainer.scrollTop + 5;
         if (isScrolledToBottom) {
             logContainer.scrollTop = logContainer.scrollHeight;
         }

@@ -137,7 +137,7 @@ class _Bot:
             msg_id = sp_msg_id
 
         for mr in message_result:
-            logger.trace(f'[GsCore][即将发送消息] {mr}')
+            logger.trace('[GsCore][即将发送消息]', messages=mr)
             if at_sender and sender_id:
                 if at_sender_pos == '消息最后':
                     mr.append(MessageSegment.at(sender_id))

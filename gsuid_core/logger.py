@@ -16,13 +16,13 @@ from colorama import Fore, Style, init
 from structlog.types import EventDict, Processor, WrappedLogger
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
-from gsuid_core.models import Event
 from gsuid_core.config import core_config
+from gsuid_core.models import Event, Message
 from gsuid_core.data_store import get_res_path
 
 log_history: List[EventDict] = []
 LOG_PATH = get_res_path() / 'logs'
-IS_DEBUG_LOG = False
+IS_DEBUG_LOG: bool = False
 
 
 class DailyNamedFileHandler(TimedRotatingFileHandler):
@@ -30,7 +30,7 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
     一个会自动使用 YYYY-MM-DD.log 作为文件名的日志处理器。
     """
 
-    def __init__(self, log_dir, backupCount=7, encoding='utf-8'):
+    def __init__(self, log_dir, backupCount=0, encoding='utf-8'):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -60,27 +60,10 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
 
         self.baseFilename = self._get_dated_filename()
 
-        self._cleanup_logs()
+        # self._cleanup_logs()
 
         if not self.delay:
             self.stream = self._open()
-
-    def _cleanup_logs(self):
-        """根据 backupCount 清理旧的日志文件。"""
-        if self.backupCount > 0:
-            # backupCount + 1 是因为当前日志文件也计算在内
-            log_files = sorted(
-                self.log_dir.glob("*.log"),
-                key=lambda f: f.stat().st_mtime,
-                reverse=True,
-            )
-
-            for f in log_files[self.backupCount :]:  # noqa: E203
-                try:
-                    f.unlink()
-                except OSError:
-                    # 在并发环境下，文件可能已被其他进程删除
-                    pass
 
 
 class TraceCapableLogger(Protocol):
@@ -127,6 +110,13 @@ def format_callsite_processor(
     return event_dict
 
 
+def reduce_message(messages: List[Message]):
+    for message in messages:
+        if message.data and len(message.data) >= 500:
+            message.data = message.data[:100]
+    return messages
+
+
 def format_event_for_console(
     logger: WrappedLogger, method_name: str, event_dict: EventDict
 ) -> EventDict:
@@ -142,9 +132,13 @@ def format_event_for_console(
             f'group_id={event.group_id}, '
             f'user_id={event.user_id}, '
             f'user_pm={event.user_pm}, '
-            f'content={event.content}, '
+            f'content={reduce_message(event.content)}, '
         )
         event_dict.pop("event_payload")
+
+    messages: Optional[List[Message]] = event_dict.get("messages")
+    if isinstance(messages, List):
+        event_dict['messages'] = reduce_message(messages)
 
     return event_dict
 
@@ -322,7 +316,7 @@ def setup_logging():
         # 关键：使用 TimedRotatingFileHandler 实现每日轮转
         file_handler = DailyNamedFileHandler(
             log_dir=LOG_PATH,
-            backupCount=7,
+            backupCount=0,
             encoding='utf-8',
         )
         file_handler.setLevel(LEVEL)

@@ -10,6 +10,7 @@ from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 
 from .sp_config import SP_CONIFG
+from .log_config import LOG_CONFIG
 from .status_config import STATUS_CONIFG
 from .config_default import CONIFG_DEFAULT
 from .pic_gen_config import PIC_GEN_CONIFG
@@ -223,6 +224,12 @@ send_pic_config = StringConfig(
     'GsCore发送图片',
     RES / 'send_pic_config.json',
     SEND_PIC_CONIFG,
+)
+
+log_config = StringConfig(
+    'GsCore日志配置',
+    RES / 'log_config.json',
+    LOG_CONFIG,
 )
 
 pic_gen_config = StringConfig(

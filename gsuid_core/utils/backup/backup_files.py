@@ -4,9 +4,9 @@ from pathlib import Path
 from shutil import copyfile
 
 from gsuid_core.logger import LOG_PATH, logger
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import log_config
 
-CLEAN_DAY: str = core_plugins_config.get_config('ScheduledCleanLogDay').data
+CLEAN_DAY: str = log_config.get_config('ScheduledCleanLogDay').data
 
 
 def clean_log():
