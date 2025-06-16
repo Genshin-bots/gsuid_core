@@ -79,7 +79,7 @@ includes = ["gsuid_core"]
 
 [[tool.poetry.source]]
 name = "NJU"
-url = "https://mirror.nju.edu.cn/pypi/web/simple"
+url = "https://mirrors.volces.com/pypi/simple/"
 priority = "primary"
 
 [build-system]
@@ -167,7 +167,7 @@ respect-source-order = true
 
 [[tool.pdm.source]]
 name = "NJU"
-url = "https://mirror.nju.edu.cn/pypi/web/simple"
+url = "https://mirrors.volces.com/pypi/simple/"
 
 [project.urls]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"

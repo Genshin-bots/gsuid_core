@@ -37,8 +37,10 @@ async def send_core_update_msg(bot: Bot, ev: Event):
         level = 0
     txt = ev.text.replace('插件', '').strip() if ev.text else ''
     if txt:
+        await bot.send(f'🔔 正在尝试更新插件{txt}, 请稍等...')
         log_list = await update_plugins(txt, level)
     else:
+        await bot.send('🔔 正在尝试更新早柚核心, 请稍等...')
         log_list = await update_from_git_in_tread(level)
 
     await bot.send(log_list)
