@@ -203,6 +203,17 @@ class CoreUser(BaseBotIDModel, table=True):
         user_name: Optional[str],
         user_icon: Optional[str],
     ) -> int:
+        data_full: Optional["CoreUser"] = await cls.base_select_data(
+            bot_id=bot_id,
+            user_id=user_id,
+            group_id=group_id,
+            user_name=user_name,
+            user_icon=user_icon,
+        )
+
+        if data_full:
+            return 1
+
         data: Optional["CoreUser"] = await cls.base_select_data(
             bot_id=bot_id,
             user_id=user_id,

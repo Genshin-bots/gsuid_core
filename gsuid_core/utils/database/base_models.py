@@ -1,3 +1,4 @@
+import sqlite3
 from functools import wraps
 from typing_extensions import ParamSpec, Concatenate
 from typing import (
@@ -12,7 +13,7 @@ from typing import (
 )
 
 # from sqlalchemy.pool import NullPool
-from sqlalchemy import exc, text, create_engine
+from sqlalchemy import exc, text, event, create_engine
 from sqlalchemy.sql.expression import func, null, true
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
@@ -89,6 +90,17 @@ async def init_database():
         if _db_type == 'sqlite':
             engine = create_async_engine(f'{base_url}{db_url}', **db_config)
             finally_url = f'{base_url}{db_url}'
+
+            @event.listens_for(engine.sync_engine, "connect")
+            def set_sqlite_pragma(
+                dbapi_connection: sqlite3.Connection, connection_record
+            ):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.close()
+                # logger.debug("PRAGMAs set for new connection.")
+
         else:
             db_config.update(
                 {
