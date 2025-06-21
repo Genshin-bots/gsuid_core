@@ -1,4 +1,7 @@
-from gsuid_core.utils.plugins_config.gs_config import all_config_list
+from gsuid_core.utils.plugins_config.gs_config import (
+    StringConfig,
+    all_config_list,
+)
 from gsuid_core.utils.plugins_config.models import (
     GsIntConfig,
     GsStrConfig,
@@ -64,6 +67,117 @@ def get_card_page(card_name: str):
     return data
 
 
+def get_sconfig_body(config_name: str, _config: StringConfig):
+    body = []
+    solo_body = []
+    for config in _config:
+        gsc = _config[config]
+        if isinstance(gsc, GsStrConfig):
+            if gsc.options:
+                _data = get_select_panel(
+                    gsc.title,
+                    config,
+                    gsc.data,
+                    gsc.options,
+                    gsc.title,
+                    gsc.desc,
+                )
+            else:
+                _data = get_text_panel(
+                    gsc.title,
+                    config,
+                    gsc.data,
+                    gsc.title,
+                    gsc.desc,
+                )
+            solo_body.append(_data)
+        elif isinstance(gsc, GsIntConfig):
+            solo_body.append(
+                get_input_number(
+                    gsc.title,
+                    config,
+                    gsc.data,
+                    gsc.max_value,
+                    gsc.title,
+                    gsc.desc,
+                )
+            )
+        elif isinstance(gsc, GsBoolConfig):
+            solo_body.append(
+                get_switch_panel(
+                    gsc.title,
+                    config,
+                    gsc.data,
+                    gsc.title,
+                    gsc.desc,
+                )
+            )
+        elif isinstance(gsc, GsListStrConfig):
+            if not gsc.options:
+                _data = get_text_panel(
+                    gsc.title,
+                    config,
+                    ':'.join(gsc.data),
+                    gsc.title,
+                    gsc.desc,
+                )
+            else:
+                _data = get_input_tag(
+                    gsc.title,
+                    config,
+                    gsc.data,
+                    gsc.options,
+                    gsc.title,
+                    gsc.desc,
+                )
+            solo_body.append(_data)
+        elif isinstance(gsc, GsImageConfig):
+            solo_body.append(
+                get_image_input(
+                    gsc.title,
+                    config,
+                    gsc.upload_to,
+                    gsc.filename,
+                    gsc.suffix,
+                )
+            )
+        if len(solo_body) == 3:
+            body.append(get_grid_panel(solo_body))
+            body.append(get_divider())
+            solo_body = []
+
+    if solo_body:
+        while len(solo_body) < 3:
+            solo_body.append(get_service([]))
+
+    body.append(get_grid_panel(solo_body))
+    body.append(get_divider())
+    body.append(
+        get_button(
+            '✅确认修改',
+            get_api(
+                f'/genshinuid/setGsConfig/{config_name}',
+                'post',
+                [config for config in _config],
+            ),
+        )
+    )
+    return body
+
+
+def get_sconfig_page(config_name: str, _config: StringConfig):
+    page = {
+        'type': 'page',
+        'title': '配置管理',
+        'body': [
+            get_divider(),
+            *get_sconfig_body(config_name, _config),
+        ],
+        'id': 'u:b9be7e0dc626',
+    }
+    return page
+
+
 def get_config_page():
     page = {
         'type': 'page',
@@ -71,107 +185,14 @@ def get_config_page():
         'body': [],
         'id': 'u:a9be7e0dc626',
     }
-    body = []
     tabs = []
-    solo_body = []
     for config_name in all_config_list:
-        body.append(get_divider())
         _config = all_config_list[config_name]
-        for config in _config:
-            gsc = _config[config]
-            if isinstance(gsc, GsStrConfig):
-                if gsc.options:
-                    _data = get_select_panel(
-                        gsc.title,
-                        config,
-                        gsc.data,
-                        gsc.options,
-                        gsc.title,
-                        gsc.desc,
-                    )
-                else:
-                    _data = get_text_panel(
-                        gsc.title,
-                        config,
-                        gsc.data,
-                        gsc.title,
-                        gsc.desc,
-                    )
-                solo_body.append(_data)
-            elif isinstance(gsc, GsIntConfig):
-                solo_body.append(
-                    get_input_number(
-                        gsc.title,
-                        config,
-                        gsc.data,
-                        gsc.max_value,
-                        gsc.title,
-                        gsc.desc,
-                    )
-                )
-            elif isinstance(gsc, GsBoolConfig):
-                solo_body.append(
-                    get_switch_panel(
-                        gsc.title,
-                        config,
-                        gsc.data,
-                        gsc.title,
-                        gsc.desc,
-                    )
-                )
-            elif isinstance(gsc, GsListStrConfig):
-                if not gsc.options:
-                    _data = get_text_panel(
-                        gsc.title,
-                        config,
-                        ':'.join(gsc.data),
-                        gsc.title,
-                        gsc.desc,
-                    )
-                else:
-                    _data = get_input_tag(
-                        gsc.title,
-                        config,
-                        gsc.data,
-                        gsc.options,
-                        gsc.title,
-                        gsc.desc,
-                    )
-                solo_body.append(_data)
-            elif isinstance(gsc, GsImageConfig):
-                solo_body.append(
-                    get_image_input(
-                        gsc.title,
-                        config,
-                        gsc.upload_to,
-                        gsc.filename,
-                        gsc.suffix,
-                    )
-                )
-            if len(solo_body) == 3:
-                body.append(get_grid_panel(solo_body))
-                body.append(get_divider())
-                solo_body = []
-
-        if solo_body:
-            while len(solo_body) < 3:
-                solo_body.append(get_service([]))
-
-        body.append(get_grid_panel(solo_body))
-        body.append(get_divider())
-        body.append(
-            get_button(
-                '✅确认修改',
-                get_api(
-                    f'/genshinuid/setGsConfig/{config_name}',
-                    'post',
-                    [config for config in _config],
-                ),
-            )
-        )
+        body = [
+            get_divider(),
+            *get_sconfig_body(config_name, _config),
+        ]
         tabs.append(get_tab(config_name, [get_service(body)]))
-        body = []
-        solo_body = []
 
     page['body'].append(get_tabs(tabs))
     return page
