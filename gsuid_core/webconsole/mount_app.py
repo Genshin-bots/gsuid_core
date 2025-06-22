@@ -43,22 +43,30 @@ from fastapi_amis_admin.amis.components import (
     ButtonToolbar,
 )
 
+from gsuid_core.sv import SL
+from gsuid_core.data_store import core_path
 from gsuid_core.webconsole.log import render_html
 from gsuid_core.logger import logger, handle_exceptions
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.version import __version__ as gscore_version
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.utils.database.base_models import finally_url
-from gsuid_core.webconsole.create_sv_panel import get_sv_page
 
 # from gsuid_core.webconsole.create_log_panel import create_log_page
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
-from gsuid_core.webconsole.create_config_panel import get_config_page
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
+from gsuid_core.webconsole.create_sv_panel import get_sv_page, get_ssv_page
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
 from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
+from gsuid_core.webconsole.create_config_panel import (
+    get_config_page,
+    get_sconfig_page,
+)
+from gsuid_core.utils.plugins_config.gs_config import (
+    all_config_list,
+    core_plugins_config,
+)
 from gsuid_core.utils.database.models import (
     GsBind,
     GsPush,
@@ -208,6 +216,35 @@ def get_caller_plugin_name():
         return None
 
 
+def create_dynamic_page_class(
+    class_name: str,
+    label: str,
+    url: str,
+    page_json: Dict,
+    icon: str = 'fa fa-columns',
+    sort: int = 100,
+) -> Type["GsAdminPage"]:
+
+    @handle_exceptions
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(page_json)
+
+    return type(
+        class_name,
+        (GsAdminPage,),
+        {
+            "page_schema": PageSchema(
+                label=label,
+                icon=icon,
+                url=url,
+                isDefaultPage=True,
+                sort=sort,
+            ),  # type: ignore
+            "get_page": get_page,
+        },
+    )
+
+
 def create_admin_class(class_name: str, label: str, admin_list: List):
 
     def __init__(self, app: "admin.AdminApp"):
@@ -277,6 +314,34 @@ class GsAdminSite(GsAuthAdminSite):
         if not self.is_start:
             self.is_start = True
             for plugin_name, admin_cls in self.plugins_page.items():
+                # icon_path = core_path / 'plugins' / plugin_name / 'ICON.png'
+                if plugin_name in all_config_list:
+                    admin_cls.append(
+                        create_dynamic_page_class(
+                            f'{plugin_name}Config',
+                            '配置管理',
+                            f'/{plugin_name}Config',
+                            get_sconfig_page(
+                                plugin_name, all_config_list[plugin_name]
+                            ),
+                            'fa fa-cogs',
+                        )
+                    )
+
+                if plugin_name in SL.plugins:
+                    plugin = SL.plugins[plugin_name]
+                    sv_list = SL.detail_lst[SL.plugins[plugin_name]]
+
+                    admin_cls.append(
+                        create_dynamic_page_class(
+                            f'{plugin_name}Sv',
+                            '功能服务管理',
+                            f'/{plugin_name}SvConfig',
+                            get_ssv_page(sv_list, plugin),
+                            'fa fa-sliders',
+                        )
+                    )
+
                 cls = create_admin_class(
                     f'{plugin_name}App',
                     plugin_name.replace('UID', ''),

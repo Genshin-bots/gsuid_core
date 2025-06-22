@@ -1,6 +1,6 @@
 from typing import List, Literal
 
-from gsuid_core.sv import SL
+from gsuid_core.sv import SL, SV, Plugins
 from gsuid_core.webconsole.create_base_panel import (
     get_tab,
     get_tabs,
@@ -405,6 +405,64 @@ def get_sv_panel(
     return card
 
 
+def get_sv_body(sv_list: List[SV], plugins: Plugins):
+    panels = []
+    grids = []
+    grids.append(
+        get_alert('该设定卡片为总设定，以下服务的触发均需满足总设定条件')
+    )
+    grids.append(
+        get_sv_panel(
+            '/genshinuid/setPlugins',
+            plugins.name,
+            plugins.pm,
+            plugins.priority,
+            plugins.enabled,
+            plugins.area,  # type:ignore
+            plugins.black_list,
+            plugins.white_list,
+            plugins.prefix,
+            plugins.force_prefix,
+            plugins.disable_force_prefix,
+            plugins.allow_empty_prefix,
+        )
+    )
+    grids.append(get_divider())
+    grids.append(get_alert('以下设定卡片为服务设定，控制单个服务的触发条件'))
+    for sv in sv_list:
+        panel = get_sv_panel(
+            '/genshinuid/setSV',
+            sv.name,
+            sv.pm,
+            sv.priority,
+            sv.enabled,
+            sv.area,  # type:ignore
+            sv.black_list,
+            sv.white_list,
+        )
+        panels.append(panel)
+        if len(panels) == 2:
+            grids.append(get_grid_panel(panels))
+            panels = []
+    else:
+        if panels != []:
+            panels.append(get_empty())
+            grids.append(get_grid_panel(panels))
+            panels = []
+
+    return grids
+
+
+def get_ssv_page(sv_list: List[SV], plugins: Plugins):
+    page = {
+        'type': 'page',
+        'title': '功能服务配置',
+        'body': get_sv_body(sv_list, plugins),
+        'id': 'u:a9be8e0dc67d',
+    }
+    return page
+
+
 def get_sv_page():
     page = {
         'type': 'page',
@@ -415,53 +473,9 @@ def get_sv_page():
     tabs = []
     for plugins in SL.detail_lst:
         sv_list = SL.detail_lst[plugins]
-        panels = []
-        grids = []
-        grids.append(
-            get_alert('该设定卡片为总设定，以下服务的触发均需满足总设定条件')
-        )
-        grids.append(
-            get_sv_panel(
-                '/genshinuid/setPlugins',
-                plugins.name,
-                plugins.pm,
-                plugins.priority,
-                plugins.enabled,
-                plugins.area,  # type:ignore
-                plugins.black_list,
-                plugins.white_list,
-                plugins.prefix,
-                plugins.force_prefix,
-                plugins.disable_force_prefix,
-                plugins.allow_empty_prefix,
-            )
-        )
-        grids.append(get_divider())
-        grids.append(
-            get_alert('以下设定卡片为服务设定，控制单个服务的触发条件')
-        )
-        for sv in sv_list:
-            panel = get_sv_panel(
-                '/genshinuid/setSV',
-                sv.name,
-                sv.pm,
-                sv.priority,
-                sv.enabled,
-                sv.area,  # type:ignore
-                sv.black_list,
-                sv.white_list,
-            )
-            panels.append(panel)
-            if len(panels) == 2:
-                grids.append(get_grid_panel(panels))
-                panels = []
-        else:
-            if panels != []:
-                panels.append(get_empty())
-                grids.append(get_grid_panel(panels))
-                panels = []
+        grids = get_sv_body(sv_list, plugins)
         tabs.append(get_tab(plugins.name, grids))
-        grids = []
+
     tabs = get_tabs(tabs)
     page['body'].append(tabs)
     return page

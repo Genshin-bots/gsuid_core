@@ -168,9 +168,8 @@ def get_sconfig_body(config_name: str, _config: StringConfig):
 def get_sconfig_page(config_name: str, _config: StringConfig):
     page = {
         'type': 'page',
-        'title': '配置管理',
+        'title': f'{config_name}配置管理',
         'body': [
-            get_divider(),
             *get_sconfig_body(config_name, _config),
         ],
         'id': 'u:b9be7e0dc626',

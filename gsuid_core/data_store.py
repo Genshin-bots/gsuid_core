@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List, Union, Optional
 
+core_path = Path(__file__).parent
 gs_data_path = Path(__file__).parents[1] / 'data'
 
 
