@@ -186,6 +186,98 @@ class BaseIDModel(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True, title='序号')
 
     @classmethod
+    @with_session
+    async def batch_insert_data(
+        cls,
+        session: AsyncSession,
+        datas: List["BaseIDModel"],
+    ):
+        session.add_all(datas)
+
+    @classmethod
+    @with_session
+    async def batch_insert_data_with_update(
+        cls,
+        session: AsyncSession,
+        datas: List["BaseIDModel"],
+        update_key: List[str],
+        index_elements: List[str],
+    ):
+        '''
+        MySQL需要预先定义约束条件！！
+        '''
+        values_to_insert = [data.model_dump() for data in datas]
+        if _db_type == 'sqlite':
+            from sqlalchemy.dialects.sqlite import insert
+
+            stmt = insert(cls)
+            update_stmt = stmt.on_conflict_do_update(
+                index_elements=index_elements,
+                set_={i: getattr(cls, i) for i in update_key},
+            )
+        elif _db_type == 'postgresql':
+            from sqlalchemy.dialects.postgresql import insert
+
+            stmt = insert(cls)
+            update_stmt = stmt.on_conflict_do_update(
+                index_elements=index_elements,
+                set_={i: getattr(cls, i) for i in update_key},
+            )
+        elif _db_type == 'mysql':
+            from sqlalchemy.dialects.mysql import insert
+
+            stmt = insert(cls)
+            update_stmt = stmt.on_duplicate_key_update(
+                set_={i: getattr(cls, i) for i in update_key},
+            )
+        else:
+            raise ValueError(f'[GsCore] [数据库] 不支持 {_db_type} 数据库!')
+
+        await session.execute(update_stmt, values_to_insert)
+
+    @classmethod
+    @with_session
+    async def update_data_by_data(
+        cls,
+        session: AsyncSession,
+        select_data: Dict,
+        update_data: Dict,
+    ) -> int:
+        '''📝简单介绍:
+
+            基类的数据更新方法
+
+        🌱参数:
+
+            🔹select_data (`Dict`):
+                    寻找数据条件, 例如`{"user_id": `event.bot_id`}`
+
+            🔹`update_data (`Dict`)`:
+                    要更新的数据
+
+        🚀使用范例:
+
+            `await GsUser.update_data_by_data(`
+                `select_data={"user_id": `event.bot_id`}, `
+                `update_data={"bot_id": 'onebot', "uid": '22'}`
+            `)`
+
+        ✅返回值:
+
+            🔸`int`: 成功为0, 失败为-1（未找到数据则无法更新）
+        '''
+        sql = update(cls)
+        for k, v in select_data.items():
+            sql = sql.where(getattr(cls, k) == v)
+
+        if update_data:
+            query = sql.values(**update_data)
+            query.execution_options(synchronize_session='fetch')
+            await session.execute(query)
+            return 0
+        return -1
+
+    @classmethod
     def get_gameid_name(cls, game_name: Optional[str] = None) -> str:
         '''📝简单介绍:
 
@@ -626,48 +718,6 @@ class BaseModel(BaseBotIDModel):
         '''
         await session.delete(cls(user_id=user_id, bot_id=bot_id, **data))
         return 0
-
-    @classmethod
-    @with_session
-    async def update_data_by_data(
-        cls: Type[T_BaseModel],
-        session: AsyncSession,
-        select_data: Dict,
-        update_data: Dict,
-    ) -> int:
-        '''📝简单介绍:
-
-            基类的数据更新方法
-
-        🌱参数:
-
-            🔹select_data (`Dict`):
-                    寻找数据条件, 例如`{"user_id": `event.bot_id`}`
-
-            🔹`update_data (`Dict`)`:
-                    要更新的数据
-
-        🚀使用范例:
-
-            `await GsUser.update_data_by_data(`
-                `select_data={"user_id": `event.bot_id`}, `
-                `update_data={"bot_id": 'onebot', "uid": '22'}`
-            `)`
-
-        ✅返回值:
-
-            🔸`int`: 成功为0, 失败为-1（未找到数据则无法更新）
-        '''
-        sql = update(cls)
-        for k, v in select_data.items():
-            sql = sql.where(getattr(cls, k) == v)
-
-        if update_data:
-            query = sql.values(**update_data)
-            query.execution_options(synchronize_session='fetch')
-            await session.execute(query)
-            return 0
-        return -1
 
     @classmethod
     @with_session
@@ -1650,4 +1700,5 @@ class Push(BaseBotIDModel):
             )
         )
         data = result.scalars().all()
+        return data[0] if data else None
         return data[0] if data else None
