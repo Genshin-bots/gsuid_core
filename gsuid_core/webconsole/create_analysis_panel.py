@@ -83,7 +83,7 @@ async def get_analysis_page():
         'body': [],
         'id': 'u:a9be7e0dc626',
     }
-    all_bot = get_all_bot_dict()
+    all_bot = await get_all_bot_dict()
     tabs = []
     for bot_id in all_bot:
         for bot_self_id in all_bot[bot_id]:

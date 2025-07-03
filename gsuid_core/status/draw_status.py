@@ -525,7 +525,7 @@ async def draw_curve_img(ev: Event):
     )
 
     _data_2 = await gv.get_value_analysis(
-        ev.real_bot_id,
+        None,
         None,
         30,
     )

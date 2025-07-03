@@ -67,11 +67,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.exception(e)
 
+    from gsuid_core.global_val import trans_global_val
     from gsuid_core.webconsole.__init__ import start_check
 
     await start_check()  # type:ignore
     await start_scheduler()
     asyncio.create_task(clean_log())
+    await trans_global_val()
 
     yield
 

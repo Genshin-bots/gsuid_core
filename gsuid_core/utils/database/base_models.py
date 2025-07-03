@@ -13,11 +13,13 @@ from typing import (
     Awaitable,
 )
 
-# from sqlalchemy.pool import NullPool
-# from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import exc, text, event, create_engine
 from sqlalchemy.sql.expression import func, null, true
+
+# from sqlalchemy.pool import NullPool
+# from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
 from sqlmodel import (
@@ -40,6 +42,7 @@ T_User = TypeVar('T_User', bound='User')
 T_Bind = TypeVar('T_Bind', bound='Bind')
 T_Push = TypeVar('T_Push', bound='Push')
 T_Cache = TypeVar('T_Cache', bound='Cache')
+T = TypeVar('T')
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -240,6 +243,17 @@ class BaseIDModel(SQLModel):
 
     @classmethod
     @with_session
+    async def get_distinct_list(
+        cls,
+        session: AsyncSession,
+        column: InstrumentedAttribute[T],
+    ):
+        result = await session.execute(select(column).distinct())
+        r = result.all()
+        return r
+
+    @classmethod
+    @with_session
     async def batch_insert_data(
         cls,
         session: AsyncSession,
@@ -259,6 +273,9 @@ class BaseIDModel(SQLModel):
         '''
         MySQL需要预先定义约束条件！！
         '''
+        if not datas:
+            return
+
         values_to_insert = [data.model_dump() for data in datas]
         if _db_type == 'sqlite':
             from sqlalchemy.dialects.sqlite import insert
@@ -1753,5 +1770,4 @@ class Push(BaseBotIDModel):
             )
         )
         data = result.scalars().all()
-        return data[0] if data else None
         return data[0] if data else None

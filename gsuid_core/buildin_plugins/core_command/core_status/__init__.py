@@ -57,7 +57,7 @@ async def send_core_info_msg(bot: Bot, ev: Event):
     await bot.send(await draw_status(ev))
 
 
-@sv_core_status.on_command(('core状态', 'Core状态'), block=True)
+@sv_core_status.on_command(('状态'), block=True)
 async def send_core_status_msg(bot: Bot, ev: Event):
     day = ev.text.strip()
     if day and day.isdigit():
