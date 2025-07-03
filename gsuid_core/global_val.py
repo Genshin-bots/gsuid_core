@@ -1,7 +1,7 @@
 import json
 import datetime
 from copy import deepcopy
-from typing import Dict, List, Optional, TypedDict
+from typing import Any, Set, Dict, List, Tuple, Optional, TypedDict
 
 import aiofiles
 
@@ -70,10 +70,16 @@ async def get_all_bot_dict():
 
 
 async def get_value_analysis(
-    bot_id: Optional[str], bot_self_id: Optional[str], day: int = 7
-) -> Dict[str, PlatformVal]:
+    bot_id: Optional[str],
+    bot_self_id: Optional[str],
+    day: int = 7,
+    need_all: bool = False,
+) -> Tuple[Dict[str, PlatformVal], Dict[str, PlatformVal]]:
     result = {}
+    result_all = {}
     result_temp = {}
+    result_temp_all = {}
+
     today = datetime.date.today()
     endday = today - datetime.timedelta(days=day)
     summary_datas: List[
@@ -87,125 +93,140 @@ async def get_value_analysis(
         endday,
     )  # type: ignore
     for row in summary_datas:
-        if bot_id and row.bot_id != bot_id:
-            continue
-        if bot_self_id and row.bot_self_id != bot_self_id:
+        if need_all:
+            day_key = row.date.strftime("%Y_%d_%b")
+            result_temp_all[day_key] = [row]
+        if (bot_id and row.bot_id != bot_id) or (
+            bot_self_id and row.bot_self_id != bot_self_id
+        ):
             continue
 
         day_key = row.date.strftime("%Y_%d_%b")
         result_temp[day_key] = [row]
 
     for row in detail_datas:
-        if bot_id and row.bot_id != bot_id:
-            continue
-        if bot_self_id and row.bot_self_id != bot_self_id:
+        if (bot_id and row.bot_id != bot_id) or (
+            bot_self_id and row.bot_self_id != bot_self_id
+        ):
+            if need_all:
+                day_key = row.date.strftime("%Y_%d_%b")
+                result_temp_all[day_key].append(row)
             continue
 
         day_key = row.date.strftime("%Y_%d_%b")
         result_temp[day_key].append(row)
 
     for i in result_temp:
-        result[i] = await trans_database_to_val(result[i][0], result[i][1:])
-    return result
+        result[i] = await trans_database_to_val(
+            result_temp[i][0], result_temp[i][1:]
+        )
+
+    for i in result_temp_all:
+        result_all[i] = await trans_database_to_val(
+            result_temp_all[i][0], result_temp_all[i][1:]
+        )
+
+    return result, result_all
 
 
 async def get_global_analysis(
-    bot_id: str,
-    bot_self_id: Optional[str],
-):
-    seven_data = await get_value_analysis(bot_id, bot_self_id, 30)
+    data: Dict[str, PlatformVal],
+) -> Dict[str, Any]:
 
-    group_data = []
-    user_data = []
+    # 1. 确保按日期排序（从新到旧），以保证逻辑正确性
+    # 假设 'data' 的键是 'YYYY-MM-DD' 格式的日期字符串
+    try:
+        sorted_days = sorted(data.keys(), reverse=True)
+        if not sorted_days:
+            return {
+                'DAU': 0,
+                'DAG': 0,
+                'NU': '0',
+                'OU': "0.00%",
+                'NG': '0',
+                'OG': "0.00%",
+            }
+    except (TypeError, ValueError):
+        # 如果key不是可比较的类型，则返回错误或默认值
+        # 这里选择返回默认值
+        return {
+            'DAU': 0,
+            'DAG': 0,
+            'NU': '0',
+            'OU': "0.00%",
+            'NG': '0',
+            'OG': "0.00%",
+        }
 
-    user_list: List[List[str]] = []
-    group_list: List[List[str]] = []
-    group_all_list: List[str] = []
-    user_all_list: List[str] = []
+    # 2. 一次遍历，直接构建每日的用户和群组集合
+    user_sets_by_day: List[Set[str]] = []
+    group_sets_by_day: List[Set[str]] = []
 
-    for day in seven_data:
-        local_val = seven_data[day]
-        if local_val['receive'] == 0 and local_val['send'] == 0:
+    for day in sorted_days:
+        local_val = data[day]
+        if local_val.get('receive', 0) == 0 and local_val.get('send', 0) == 0:
+            user_sets_by_day.append(set())
+            group_sets_by_day.append(set())
             continue
 
-        _user_list = list(local_val['user'].keys())
-        _group_list = list(local_val['group'].keys())
+        user_sets_by_day.append(set(local_val.get('user', {}).keys()))
+        group_sets_by_day.append(set(local_val.get('group', {}).keys()))
 
-        user_list.append(_user_list)
-        user_all_list.extend(_user_list)
-        group_list.append(_group_list)
-        group_all_list.extend(_group_list)
+    # 3. 使用集合运算高效计算各项指标
 
-        group_data.append(len(local_val['group']))
-        user_data.append(len(local_val['user']))
+    # --- 指标计算所需集合 ---
+    # 总用户/群组 (30天内所有不重复的用户/群组)
+    all_users = set().union(*user_sets_by_day)
+    all_groups = set().union(*group_sets_by_day)
 
-    # 七天内的用户
-    user_7_list = [user for users in user_list[:7] for user in users]
-    user_1_7_list = [user for users in user_list[1:8] for user in users]
-    # 七天内的群组
-    group_7_list = [group for groups in group_list[:7] for group in groups]
-    group_1_7_list = [group for groups in group_list[1:8] for group in groups]
+    # 今天（day 0）的用户/群组
+    todays_users = user_sets_by_day[0] if user_sets_by_day else set()
+    todays_groups = group_sets_by_day[0] if group_sets_by_day else set()
 
-    # 昨日到三十日之前的用户
-    user_after_list = [user for users in user_list[1:] for user in users]
-    # 昨日到三十日之前的群组
-    group_after_list = [group for groups in group_list[1:] for group in groups]
+    # 最近7天（day 0-6）的用户/群组
+    recent_7_days_users = set().union(*user_sets_by_day[:7])
+    recent_7_days_groups = set().union(*group_sets_by_day[:7])
 
-    # 三十天内的用户没有在这七天出现过
-    out_user = []
-    # 三十天内的群组没有在这七天出现过
-    out_group = []
-    # 今天的用户从来没在这个月内出现过
-    new_user = []
-    # 今天的群组从来没在这个月内出现过
-    new_group = []
+    # 过去的用户/群组（day 1-29）
+    past_users = set().union(*user_sets_by_day[1:])
+    past_groups = set().union(*group_sets_by_day[1:])
 
-    for i in group_all_list:
-        if i not in group_7_list:
-            out_group.append(i)
+    # 用于计算 DAU/DAG 的用户/群组 (day 1-7)
+    # 对应原代码的 user_list[1:8]
+    dau_users_list = [user for s in user_sets_by_day[1:8] for user in s]
+    dag_groups_list = [group for s in group_sets_by_day[1:8] for group in s]
 
-    if group_list:
-        for i in group_list[0]:
-            if i not in group_after_list:
-                new_group.append(i)
+    # --- 开始计算 ---
+    # 新用户/群组: 今天出现，但在过去29天未出现
+    new_users = todays_users - past_users
+    new_groups = todays_groups - past_groups
 
-    for i in user_all_list:
-        if i not in user_7_list:
-            out_user.append(i)
+    # 流失用户/群组: 30天内出现过，但在最近7天未出现
+    out_users = all_users - recent_7_days_users
+    out_groups = all_groups - recent_7_days_groups
 
-    if user_list:
-        for i in user_list[0]:
-            if i not in user_after_list:
-                new_user.append(i)
+    # DAU/DAG
+    day7_user_num = len(dau_users_list)
+    day7_group_num = len(dag_groups_list)
 
-    _user_all_list = list(set(user_all_list))
-    _group_sll_list = list(set(group_all_list))
-    out_user = list(set(out_user))
-    out_group = list(set(out_group))
+    dau = day7_user_num / 7 if day7_user_num else 0
+    dag = day7_group_num / 7 if day7_group_num else 0
 
-    # user_num = len(user_data)
-    # group_num = len(group_data)
+    # 流失率
+    out_user_rate = (len(out_users) / len(all_users)) * 100 if all_users else 0
+    out_group_rate = (
+        (len(out_groups) / len(all_groups)) * 100 if all_groups else 0
+    )
 
-    day7_user_num = len(user_1_7_list)
-    day7_group_num = len(group_1_7_list)
-
-    data = {
-        'DAU': '{0:.2f}'.format(day7_user_num / 7) if day7_user_num else 0,
-        'DAG': ('{0:.2f}'.format(day7_group_num / 7) if day7_group_num else 0),
-        'NU': str(len(new_user)),
-        'OU': (
-            '{0:.2f}%'.format((len(out_user) / len(_user_all_list)) * 100)
-            if len(_user_all_list) != 0
-            else "0.00%"
-        ),
-        'NG': str(len(new_group)),
-        'OG': (
-            '{0:.2f}%'.format((len(out_group) / len(_group_sll_list)) * 100)
-            if len(_group_sll_list) != 0
-            else "0.00%"
-        ),
+    result_data = {
+        'DAU': f'{dau:.2f}',
+        'DAG': f'{dag:.2f}',
+        'NU': str(len(new_users)),
+        'OU': f'{out_user_rate:.2f}%',
+        'NG': str(len(new_groups)),
+        'OG': f'{out_group_rate:.2f}%',
     }
-    return data
+    return result_data
 
 
 async def load_all_global_val():

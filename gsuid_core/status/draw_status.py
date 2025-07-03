@@ -1,3 +1,4 @@
+import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
 
@@ -227,16 +228,11 @@ async def draw_badge(
 async def draw_data_analysis1(
     bot_id: str,
     bot_self_id: Optional[str],
+    yesterday: gv.PlatformVal,
 ):
     local_val = await gv.get_global_val(
         bot_id,
         bot_self_id,
-    )
-
-    yesterday = await gv.get_global_val(
-        bot_id,
-        bot_self_id,
-        1,
     )
 
     data_bar = Image.new('RGBA', (1400, 200))
@@ -286,14 +282,8 @@ async def draw_data_analysis1(
 
 
 async def draw_data_analysis2(
-    bot_id: str,
-    bot_self_id: Optional[str],
+    data: Dict,
 ):
-    data = await gv.get_global_analysis(
-        bot_id,
-        bot_self_id,
-    )
-
     badge1 = await draw_badge(
         'DAU',
         data['DAU'],
@@ -517,19 +507,10 @@ async def draw_curve(
     return img
 
 
-async def draw_curve_img(ev: Event):
-    _data = await gv.get_value_analysis(
-        ev.real_bot_id,
-        ev.bot_self_id,
-        30,
-    )
-
-    _data_2 = await gv.get_value_analysis(
-        None,
-        None,
-        30,
-    )
-
+async def draw_curve_img(
+    _data: Dict[str, gv.PlatformVal],
+    _data_2: Dict[str, gv.PlatformVal],
+):
     result: Dict[Union[Tuple[int, int, int], str], List[float]] = {
         THEME_COLOR: [],
         HINT_COLOR: [],
@@ -580,6 +561,10 @@ async def draw_bg(w: int, h: int):
 
 
 async def draw_status(ev: Event):
+    import time
+
+    start_time = time.time()
+
     title = await draw_title()
     bar1 = await draw_bar('服务器基础信息', 'Base Info')
     bar2_1 = await draw_bar('机器人数据统计(单)', 'Data Analysis')
@@ -587,31 +572,51 @@ async def draw_status(ev: Event):
     bar3 = await draw_bar('日活曲线', 'Daily Activity Curve')
     bar4 = await draw_bar('插件额外信息', 'Extra Data')
 
+    yesterday_date = (
+        datetime.datetime.now() - datetime.timedelta(days=1)
+    ).strftime("%Y_%d_%b")
+
+    now_data, muti_data = await gv.get_value_analysis(
+        ev.real_bot_id,
+        ev.bot_self_id,
+        30,
+        True,
+    )
+
+    print(f'pp: {time.time() - start_time}')
+
     hw = draw_hw()
     data_bar1_1 = await draw_data_analysis1(
         ev.real_bot_id,
         ev.bot_self_id,
-    )
-    data_bar2_1 = await draw_data_analysis2(
-        ev.real_bot_id,
-        ev.bot_self_id,
+        now_data.get(yesterday_date, gv.platform_val),
     )
     data_bar1_2 = await draw_data_analysis1(
         ev.real_bot_id,
         None,
-    )
-    data_bar2_2 = await draw_data_analysis2(
-        ev.real_bot_id,
-        None,
+        muti_data.get(yesterday_date, gv.platform_val),
     )
 
+    print(f'gg: {time.time() - start_time}')
+    ndata = await gv.get_global_analysis(now_data)
+    mdata = await gv.get_global_analysis(muti_data)
+
+    print(f'bb: {time.time() - start_time}')
+
+    data_bar2_1 = await draw_data_analysis2(ndata)
+    data_bar2_2 = await draw_data_analysis2(mdata)
+
+    print(f'cc: {time.time() - start_time}')
+
     plugin_status_img = await draw_plugins_status()
-    curve_img = await draw_curve_img(ev)
+    curve_img = await draw_curve_img(now_data, muti_data)
 
     plugins_num = len(plugins_status)
     plugins_h = 100 + plugins_num * 180
 
     img = await draw_bg(1400, 2778 + 150 + plugins_h)
+
+    print(4)
 
     img.paste(title, (0, 0), title)
     img.paste(bar1, (0, 855), bar1)

@@ -4,6 +4,7 @@ import string
 from gsuid_core.global_val import (
     global_val_path,
     get_all_bot_dict,
+    get_value_analysis,
     get_global_analysis,
 )
 from gsuid_core.webconsole.create_base_panel import (
@@ -87,7 +88,12 @@ async def get_analysis_page():
     tabs = []
     for bot_id in all_bot:
         for bot_self_id in all_bot[bot_id]:
-            data = await get_global_analysis(bot_id, bot_self_id)
+            now_data, _ = await get_value_analysis(
+                bot_id,
+                bot_self_id,
+                30,
+            )
+            data = await get_global_analysis(now_data)
             tabs.append(
                 get_tab(
                     f'{bot_id}({bot_self_id})',

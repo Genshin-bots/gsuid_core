@@ -274,7 +274,7 @@ async def _get_data_analysis(
         command_data = []
         image_gen_data = []
 
-        seven_data = await gv.get_value_analysis(bot_id, bot_self_id)
+        seven_data, _ = await gv.get_value_analysis(bot_id, bot_self_id)
         for day in seven_data:
             xaxis.append(day)
             local_val = seven_data[day]
@@ -338,7 +338,7 @@ async def _get_usergroup_analysis(
         group_data = []
         user_data = []
 
-        seven_data = await gv.get_value_analysis(bot_id, bot_self_id)
+        seven_data, _ = await gv.get_value_analysis(bot_id, bot_self_id)
         for day in seven_data:
             xaxis.append(day)
             local_val = seven_data[day]
@@ -529,7 +529,7 @@ async def get_history_data(
     a_pie_data = []
     b_pie_data = []
     if name is None:
-        seven_day = await gv.get_value_analysis(bot_id, bot_self_id)
+        seven_day, _ = await gv.get_value_analysis(bot_id, bot_self_id)
         local_val = seven_day[list(seven_day.keys())[0]]
     else:
         local_val = await gv.get_sp_val(bot_id, bot_self_id, name)

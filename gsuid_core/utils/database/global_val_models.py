@@ -37,7 +37,7 @@ class CoreDataSummary(BaseIDModel, table=True):
             cls.date >= recently_day_ago,
         )
         r = await session.execute(result)
-        return r.all()
+        return r.scalars().all()
 
 
 class CoreDataAnalysis(BaseIDModel, table=True):
@@ -75,4 +75,4 @@ class CoreDataAnalysis(BaseIDModel, table=True):
             cls.date >= recently_day_ago,
         )
         r = await session.execute(result)
-        return r.all()
+        return r.scalars().all()
