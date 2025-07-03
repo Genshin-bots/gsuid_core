@@ -42,7 +42,11 @@ bot_val: BotVal = {}
 
 def get_platform_val(bot_id: Optional[str], bot_self_id: Optional[str]):
     if bot_id is None or bot_self_id is None:
-        return platform_val
+        md = deepcopy(platform_val)
+        for bot_id in bot_val:
+            for bot_self_id in bot_val[bot_id]:
+                md = merge_dict(bot_val[bot_id][bot_self_id], md)
+        return md
 
     if bot_id not in bot_val:
         bot_val[bot_id] = {}
@@ -92,10 +96,12 @@ async def get_value_analysis(
     ] = await CoreDataAnalysis.get_recently_data(
         endday,
     )  # type: ignore
+
     for row in summary_datas:
         if need_all:
             day_key = row.date.strftime("%Y_%d_%b")
             result_temp_all[day_key] = [row]
+
         if (bot_id and row.bot_id != bot_id) or (
             bot_self_id and row.bot_self_id != bot_self_id
         ):
@@ -105,12 +111,13 @@ async def get_value_analysis(
         result_temp[day_key] = [row]
 
     for row in detail_datas:
+        if need_all:
+            day_key = row.date.strftime("%Y_%d_%b")
+            result_temp_all[day_key].append(row)
+
         if (bot_id and row.bot_id != bot_id) or (
             bot_self_id and row.bot_self_id != bot_self_id
         ):
-            if need_all:
-                day_key = row.date.strftime("%Y_%d_%b")
-                result_temp_all[day_key].append(row)
             continue
 
         day_key = row.date.strftime("%Y_%d_%b")
@@ -126,15 +133,24 @@ async def get_value_analysis(
             result_temp_all[i][0], result_temp_all[i][1:]
         )
 
+    '''
+    result[today.strftime("%Y_%d_%b")] = get_platform_val(
+        bot_id,
+        bot_self_id,
+    )
+
+    result_all[today.strftime("%Y_%d_%b")] = get_platform_val(
+        None,
+        None,
+    )
+    '''
+
     return result, result_all
 
 
 async def get_global_analysis(
     data: Dict[str, PlatformVal],
 ) -> Dict[str, Any]:
-
-    # 1. 确保按日期排序（从新到旧），以保证逻辑正确性
-    # 假设 'data' 的键是 'YYYY-MM-DD' 格式的日期字符串
     try:
         sorted_days = sorted(data.keys(), reverse=True)
         if not sorted_days:

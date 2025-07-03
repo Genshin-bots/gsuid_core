@@ -226,14 +226,11 @@ async def draw_badge(
 
 
 async def draw_data_analysis1(
-    bot_id: str,
+    bot_id: Optional[str],
     bot_self_id: Optional[str],
     yesterday: gv.PlatformVal,
 ):
-    local_val = await gv.get_global_val(
-        bot_id,
-        bot_self_id,
-    )
+    local_val = gv.get_platform_val(bot_id, bot_self_id)
 
     data_bar = Image.new('RGBA', (1400, 200))
 
@@ -517,8 +514,8 @@ async def draw_curve_img(
         (182, 122, 210): [],
         (27, 146, 210): [],
     }
-    for day in _data:
-        data = _data[day]
+    for day in _data_2:
+        data = _data.get(day, gv.platform_val)
         data2 = _data_2[day]
 
         result[THEME_COLOR].append(data['receive'])
@@ -582,6 +579,8 @@ async def draw_status(ev: Event):
         30,
         True,
     )
+    print(now_data)
+    print(muti_data)
 
     print(f'pp: {time.time() - start_time}')
 
@@ -592,7 +591,7 @@ async def draw_status(ev: Event):
         now_data.get(yesterday_date, gv.platform_val),
     )
     data_bar1_2 = await draw_data_analysis1(
-        ev.real_bot_id,
+        None,
         None,
         muti_data.get(yesterday_date, gv.platform_val),
     )
