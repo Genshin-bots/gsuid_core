@@ -1,4 +1,4 @@
-from typing import List, Type, Union, Optional
+from typing import List, Type, Union, Optional, Sequence
 
 from sqlalchemy import or_
 from sqlmodel import Field, select, update
@@ -154,7 +154,9 @@ class CoreUser(BaseBotIDModel, table=True):
         cls,
         session: AsyncSession,
     ):
-        result: Optional[List[Type["CoreUser"]]] = await cls.select_rows(True)
+        result: Optional[Sequence[Type["CoreUser"]]] = await cls.select_rows(
+            True
+        )
         return result
 
     @classmethod
@@ -177,7 +179,7 @@ class CoreUser(BaseBotIDModel, table=True):
         session: AsyncSession,
         group_id: str,
     ):
-        result: Optional[List[Type["CoreUser"]]] = await cls.select_rows(
+        result: Optional[Sequence[Type["CoreUser"]]] = await cls.select_rows(
             group_id=group_id
         )
         return result
@@ -297,8 +299,10 @@ class CoreGroup(BaseBotIDModel, table=True):
     async def get_all_group(
         cls,
         session: AsyncSession,
-    ):
-        result: Optional[List[Type["CoreGroup"]]] = await cls.select_rows(True)
+    ) -> Sequence[Type["CoreGroup"]]:
+        result: Optional[Sequence[Type["CoreGroup"]]] = await cls.select_rows(
+            True
+        )
         return result
 
     @classmethod

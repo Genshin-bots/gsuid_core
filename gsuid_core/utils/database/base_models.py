@@ -620,7 +620,7 @@ class BaseBotIDModel(BaseIDModel):
         sql = update(cls).where(and_(getattr(cls, uid_name) == uid))
 
         if bot_id is not None:
-            sql = sql.where(col(cls.bot_id == bot_id))
+            sql = sql.where(and_(cls.bot_id == bot_id))
 
         if data is not None:
             query = sql.values(**data)
@@ -673,13 +673,13 @@ class BaseModel(BaseBotIDModel):
 
         ✅返回值:
 
-            🔸`Optional[List[T_BaseModel]]`: 选中符合条件的全部数据，不存在则为`None`
+            🔸`Optional[Sequence[T_BaseModel]]`: 选中符合条件的全部数据，不存在则为`None`
         '''
         if bot_id is None:
             sql = select(cls).where(cls.user_id == user_id)
         else:
             sql = select(cls).where(
-                cls.user_id == user_id, cls.bot_id == bot_id
+                and_(cls.user_id == user_id, cls.bot_id == bot_id)
             )
         result = await session.execute(sql)
         data = result.scalars().all()

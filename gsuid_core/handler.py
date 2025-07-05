@@ -294,6 +294,7 @@ async def count_data(event: Event, trigger: Trigger):
             local_val['group'][event.group_id][trigger.keyword] = 1
         else:
             local_val['group'][event.group_id][trigger.keyword] += 1
+        local_val['group_count'] = len(local_val['group'])
 
     if event.user_id:
         if event.user_id not in local_val['user']:
@@ -302,6 +303,8 @@ async def count_data(event: Event, trigger: Trigger):
             local_val['user'][event.user_id][trigger.keyword] = 1
         else:
             local_val['user'][event.user_id][trigger.keyword] += 1
+
+        local_val['user_count'] = len(local_val['user'])
 
 
 async def _check_command(
