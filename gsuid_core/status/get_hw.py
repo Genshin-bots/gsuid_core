@@ -5,102 +5,106 @@ import psutil
 
 from gsuid_core.logger import logger
 
+# --- 优化后的异步函数 ---
 
-def get_cpu_info():
-    cpu_name = None  # 初始化变量
 
-    # 尝试从 /proc/cpuinfo 获取型号
+async def get_cpu_info():
+    """异步获取CPU信息"""
+    # 耗时操作：在线程中运行 psutil.cpu_percent
+    # to_thread 会将阻塞函数放入线程池，避免阻塞事件循环
+    usage_task = asyncio.to_thread(psutil.cpu_percent, interval=1)
+
+    # 非耗时操作：可以同步执行
+    cpu_name = "Unknown CPU"
     try:
+        # 优先从 /proc/cpuinfo 获取 (Linux)
         with open('/proc/cpuinfo', 'r') as f:
             for line in f:
                 if line.startswith('model name'):
                     cpu_name = line.split(': ')[1].strip()
-                    break  # 找到后立即退出循环
-    except FileNotFoundError:
-        logger.warning("未找到 /proc/cpuinfo 文件，尝试其他方式获取CPU名称")
-
-    # 如果未从文件获取到名称，尝试其他方式
-    if cpu_name is None:
-        logger.debug(
-            "未从 /proc/cpuinfo 获取到CPU名称，尝试 platform.processor()"
-        )
+                    break
+    except (FileNotFoundError, IndexError):
+        # 如果失败，尝试 platform.processor()
         try:
             cpu_name = platform.processor() or "Unknown CPU"
         except Exception as e:
             logger.error(f"获取CPU名称失败: {e}")
             cpu_name = "Unknown CPU"
 
-    # 找不到，干脆别找了，叫Unknown CPU也挺好，至少比后台报错前台半天没响应的好QAQ
-
-    # 处理CPU名称格式
-    try:
-        cpu_name = ' '.join(cpu_name.split()[:2])
-    except Exception:
-        cpu_name = "Unknown CPU"
-
-    # 获取核心数和使用率
+    # 简化名称处理
+    cpu_name = ' '.join(cpu_name.split()[:2])
     cores = psutil.cpu_count(logical=True)
-    usage = psutil.cpu_percent(interval=1)
 
-    return {"name": f"{cpu_name} ({cores}核)", "value": usage}
+    # 等待耗时操作完成
+    usage = await usage_task
 
-
-def get_memory_info():
-    mem = psutil.virtual_memory()
-    total_gb = round(mem.total / (1024**3), 1)
-    used_mem_gb = round(mem.used / (1024**3), 1)
-
-    # 最大内存
-    usage_percent = mem.percent
-    return {"name": f"{used_mem_gb}GB / {total_gb}GB", "value": usage_percent}
+    return {"name": f"{cpu_name} ({cores}核)", "value": usage, "type": "CPU"}
 
 
-def get_disk_info():
-    # 获取所有物理硬盘信息（跨平台）
-    total_size = 0
-    used_size = 0
+async def get_memory_info():
+    """异步获取内存信息（实际是IO密集度低，可以不改，但为了统一性改为async）"""
+
+    # 这个函数本身非常快，但为了与其他异步函数统一，也包装一下
+    def _get_mem():
+        mem = psutil.virtual_memory()
+        total_gb = round(mem.total / (1024**3), 1)
+        used_mem_gb = round(mem.used / (1024**3), 1)
+        usage_percent = mem.percent
+        return {
+            "name": f"{used_mem_gb}GB / {total_gb}GB",
+            "value": usage_percent,
+            "type": "Memory",
+        }
+
+    return await asyncio.to_thread(_get_mem)
+
+
+def _get_disk_sync():
+    """磁盘扫描的同步逻辑（这是一个潜在的I/O密集操作）"""
+    total_size, used_size = 0, 0
     for part in psutil.disk_partitions(all=False):
-        if (
-            'fixed' in part.opts or part.fstype != ''
-        ):  # 过滤可移动磁盘和虚拟分区
+        # 过滤掉非物理或特殊文件系统
+        if 'fixed' in part.opts or part.fstype != '':
             try:
                 usage = psutil.disk_usage(part.mountpoint)
                 used_size += usage.used
                 total_size += usage.total
-            except PermissionError:
-                continue  # 跳过无权限访问的分区
+            except (PermissionError, FileNotFoundError):
+                continue
+    return total_size, used_size
 
-    # 转换为 TB/GB 显示
-    total_gb = total_size / (1024**3)
-    if total_gb >= 1000:
-        total_tb = round(total_gb / 1024, 1)
-        name = f"{total_tb}TB"
-    else:
-        name = f"{round(total_gb, 1)}GB"
 
-    # 转换为TB 显示
-    used_gb = used_size / (1024**3)
-    if used_gb >= 1000:
-        used_tb = round(used_gb / 1024, 1)
-        used = f"{used_tb}TB"
-    else:
-        used = f"{round(used_gb, 1)}GB"
-    name = f"{used} / {name}"
+async def get_disk_info():
+    """异步获取磁盘信息"""
+    total_size, used_size = await asyncio.to_thread(_get_disk_sync)
 
-    # 使用总量百分比
-    if total_size == 0:
-        usage_percent = 0
-    else:
-        usage_percent = round(used_size / total_size * 100, 1)
+    # 格式化显示
+    def format_size(size_bytes):
+        gb = size_bytes / (1024**3)
+        if gb >= 1000:
+            return f"{round(gb / 1024, 1)}TB"
+        return f"{round(gb, 1)}GB"
 
-    return {"name": name, "value": usage_percent}
+    total_str = format_size(total_size)
+    used_str = format_size(used_size)
+
+    usage_percent = (
+        round(used_size / total_size * 100, 1) if total_size > 0 else 0
+    )
+    return {
+        "name": f"{used_str} / {total_str}",
+        "value": usage_percent,
+        "type": "Disk",
+    }
 
 
 async def get_network_info():
+    """异步获取网络信息（逻辑基本不变，因为它已经是异步的了）"""
     # 异步获取两次流量统计
     before = psutil.net_io_counters()
-    await asyncio.sleep(1)
+    await asyncio.sleep(1)  # 这个sleep是并行的关键
     after = psutil.net_io_counters()
+
     speed_current = (
         (
             after.bytes_sent
@@ -112,11 +116,10 @@ async def get_network_info():
         / 1e6
     )  # Mbps
 
-    # 异步获取最大带宽
-    speed_max = 1000
+    speed_max = 1000.0  # 默认值
+    # 此部分获取最大带宽的逻辑已经是异步subprocess，无需大改
     try:
         if platform.system() == 'Linux':
-            # 异步执行命令：获取默认网络接口
             proc = await asyncio.create_subprocess_exec(
                 'ip',
                 'route',
@@ -131,22 +134,12 @@ async def get_network_info():
                 if 'dev' in stdout.decode()
                 else None
             )
-
             if default_interface:
-                # 异步读取 /sys/class/net/{interface}/speed
-                proc = await asyncio.create_subprocess_exec(
-                    'cat',
-                    f'/sys/class/net/{default_interface}/speed',
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, _ = await proc.communicate()
-                speed_str = stdout.decode().strip()
-                if speed_str.isdigit():
-                    speed_max = float(speed_str)
-
+                with open(
+                    f'/sys/class/net/{default_interface}/speed', 'r'
+                ) as f:
+                    speed_max = float(f.read().strip())
         elif platform.system() == 'Windows':
-            # 异步执行 PowerShell 命令
             proc = await asyncio.create_subprocess_exec(
                 'powershell',
                 '-Command',
@@ -155,32 +148,44 @@ async def get_network_info():
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await proc.communicate()
-            output = stdout.decode().strip()
-            if output.isdigit():
-                speed_max = float(output) / 1e6  # 转换为 Mbps
+            # Powershell可能返回多个值，取第一个有效的
+            for line in stdout.decode().strip().splitlines():
+                if line.isdigit():
+                    speed_max = float(line) / 1e6  # 转换为 Mbps
+                    break
     except Exception as e:
-        logger.exception(f"获取网络速度失败: {e}")
+        logger.exception(f"获取最大网络带宽失败: {e}")
 
-    usage_percent = min(round((speed_current / speed_max) * 100, 1), 100)
-    return {"name": f"{speed_max:.0f}Mbps", "value": usage_percent}
+    usage_percent = (
+        min(round((speed_current / speed_max) * 100, 1), 100)
+        if speed_max > 0
+        else 0
+    )
+    return {
+        "name": f"{speed_max:.0f}Mbps",
+        "value": usage_percent,
+        "type": "Network",
+    }
 
 
-def get_swap_info():
-    swap = psutil.swap_memory()
+async def get_swap_info():
+    """异步获取SWAP信息"""
 
-    # 总容量格式化（GB/TB）
-    total_gb = swap.total / (1024**3)
-    if total_gb >= 1000:
-        total_tb = round(total_gb / 1024, 1)
-        name = f"{total_tb}TB"
-    else:
-        name = f"{round(total_gb, 1)}GB"
+    def _get_swap():
+        swap = psutil.swap_memory()
+        total_gb = swap.total / (1024**3)
+        name_total = (
+            f"{round(total_gb / 1024, 1)}TB"
+            if total_gb >= 1000
+            else f"{round(total_gb, 1)}GB"
+        )
+        used_gb = swap.used / (1024**3)
+        name_used = f"{round(used_gb, 1)}GB"
 
-    # 已使用容量
-    used_gb = swap.used / (1024**3)
-    used = f"{round(used_gb, 1)}GB"
-    name = f"{used} / {name}"
+        return {
+            "name": f"{name_used} / {name_total}",
+            "value": swap.percent,
+            "type": "Swap",
+        }
 
-    # 使用率百分比（若无 SWAP 则显示 0）
-    usage = swap.percent if swap.total > 0 else 0.0
-    return {"name": name, "value": usage}
+    return await asyncio.to_thread(_get_swap)

@@ -426,7 +426,7 @@ class BaseIDModel(SQLModel):
         session: AsyncSession,
         distinct: bool = False,
         **data,
-    ) -> Optional[List[T_BaseIDModel]]:
+    ):
         '''📝简单介绍:
 
             数据库基类基础选择数据方法
@@ -620,7 +620,7 @@ class BaseBotIDModel(BaseIDModel):
         sql = update(cls).where(and_(getattr(cls, uid_name) == uid))
 
         if bot_id is not None:
-            sql = sql.where(cls.bot_id == bot_id)
+            sql = sql.where(col(cls.bot_id == bot_id))
 
         if data is not None:
             query = sql.values(**data)
@@ -634,9 +634,9 @@ class BaseBotIDModel(BaseIDModel):
     async def get_all_data(
         cls: Type[T_BaseIDModel],
         session: AsyncSession,
-    ) -> List[Type[T_BaseIDModel]]:
+    ):
         rdata = await session.execute(select(cls))
-        data: List[Type[T_BaseIDModel]] = rdata.scalars().all()
+        data = rdata.scalars().all()
         return data
 
 
@@ -654,7 +654,7 @@ class BaseModel(BaseBotIDModel):
         session: AsyncSession,
         user_id: str,
         bot_id: Optional[str] = None,
-    ) -> Optional[List[T_BaseModel]]:
+    ):
         '''📝简单介绍:
 
             基类的数据选择方法
@@ -1223,7 +1223,7 @@ class User(BaseModel):
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> Optional[Type[T_User]]:
+    ):
         '''📝简单介绍:
 
             基础`User`类的数据选择方法
@@ -1253,7 +1253,7 @@ class User(BaseModel):
     @with_session
     async def get_user_all_data_by_user_id(
         cls: Type[T_User], session: AsyncSession, user_id: str
-    ) -> Optional[List[T_User]]:
+    ):
         '''📝简单介绍:
 
             基础`User`类的数据选择方法, 获取该`user_id`绑定的全部数据实例
@@ -1439,14 +1439,14 @@ class User(BaseModel):
         _switch = getattr(cls, switch_name, cls.push_switch)
         sql = select(cls).filter(and_(_switch != 'off', true()))
         data = await session.execute(sql)
-        data_list: List[T_User] = data.scalars().all()
+        data_list = data.scalars().all()
         return [user for user in data_list]
 
     @classmethod
     @with_session
     async def get_all_user(
         cls: Type[T_User], session: AsyncSession, without_error: bool = True
-    ) -> List[T_User]:
+    ):
         '''📝简单介绍:
 
             基础`User`类的扩展方法, 获取到全部的数据列表
@@ -1614,7 +1614,7 @@ class User(BaseModel):
                     .order_by(func.random())
                 )
                 data = await session.execute(sql)
-                user_list: List[Type["User"]] = data.scalars().all()
+                user_list = data.scalars().all()
                 break
             else:
                 user_list = await cls.get_all_user()

@@ -50,9 +50,9 @@ class GsClient:
             group_id = random.choice(['8888', '88888'])
             user_id = random.choice(['99999'])
             msg = MessageReceive(
-                bot_id='console',
+                bot_id='onebot',
                 # bot_id='qqgroup',
-                bot_self_id='511love51',
+                bot_self_id='3399214199',
                 user_type='group',
                 user_pm=0,
                 group_id=group_id,

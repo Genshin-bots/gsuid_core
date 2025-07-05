@@ -1,7 +1,7 @@
 import json
 import datetime
 from copy import deepcopy
-from typing import Any, Set, Dict, List, Tuple, Optional, TypedDict
+from typing import Any, Set, Dict, List, Tuple, Optional, Sequence, TypedDict
 
 import aiofiles
 
@@ -21,6 +21,8 @@ class PlatformVal(TypedDict):
     send: int
     command: int
     image: int
+    user_count: int
+    group_count: int
     group: Dict[str, Dict[str, int]]
     user: Dict[str, Dict[str, int]]
 
@@ -33,11 +35,32 @@ platform_val: PlatformVal = {
     'send': 0,
     'command': 0,
     'image': 0,
+    'user_count': 0,
+    'group_count': 0,
     'group': {},
     'user': {},
 }
 
 bot_val: BotVal = {}
+
+
+def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:
+    result = dict1.copy()
+
+    for key, value in dict2.items():
+        if key in result:
+            if isinstance(value, (int, float)) and isinstance(
+                result[key], (int, float)
+            ):
+                result[key] += value
+            elif isinstance(value, dict) and isinstance(result[key], dict):
+                result[key] = merge_dict(result[key], value)  # type: ignore
+            else:
+                result[key] = value
+        else:
+            result[key] = value
+
+    return result
 
 
 def get_platform_val(bot_id: Optional[str], bot_self_id: Optional[str]):
@@ -60,7 +83,6 @@ async def get_all_bot_dict():
         CoreDataSummary.bot_id,  # type: ignore
     )
     bot_ids = [j for i in datas for j in i]
-    print(datas)
 
     result = {}
     for data in bot_ids:
@@ -86,6 +108,7 @@ async def get_value_analysis(
 
     today = datetime.date.today()
     endday = today - datetime.timedelta(days=day)
+
     summary_datas: List[
         CoreDataSummary
     ] = await CoreDataSummary.get_recently_data(
@@ -132,18 +155,6 @@ async def get_value_analysis(
         result_all[i] = await trans_database_to_val(
             result_temp_all[i][0], result_temp_all[i][1:]
         )
-
-    '''
-    result[today.strftime("%Y_%d_%b")] = get_platform_val(
-        bot_id,
-        bot_self_id,
-    )
-
-    result_all[today.strftime("%Y_%d_%b")] = get_platform_val(
-        None,
-        None,
-    )
-    '''
 
     return result, result_all
 
@@ -247,13 +258,13 @@ async def get_global_analysis(
 
 async def load_all_global_val():
     today = datetime.date.today()
-    summarys: Optional[List[CoreDataSummary]] = (
+    summarys: Optional[Sequence[CoreDataSummary]] = (
         await CoreDataSummary.select_rows(date=today)
     )
     if summarys:
         for summary in summarys:
             bot_val[summary.bot_id] = {}
-            datas: Optional[List[CoreDataAnalysis]] = (
+            datas: Optional[Sequence[CoreDataAnalysis]] = (
                 await CoreDataAnalysis.select_rows(
                     date=today,
                     bot_id=summary.bot_id,
@@ -271,133 +282,25 @@ async def save_all_global_val(day: int = 0):
             await save_global_val(bot_id, bot_self_id, day)
 
 
-def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:
-    result = dict1.copy()
-
-    for key, value in dict2.items():
-        if key in result:
-            if isinstance(value, (int, float)) and isinstance(
-                result[key], (int, float)
-            ):
-                result[key] += value
-            elif isinstance(value, dict) and isinstance(result[key], dict):
-                result[key] = merge_dict(result[key], value)  # type: ignore
-            else:
-                result[key] = value
-        else:
-            result[key] = value
-
-    return result
-
-
-async def get_global_val(
-    bot_id: Optional[str],
-    bot_self_id: Optional[str],
-    day: Optional[int] = None,
-) -> PlatformVal:
-    if bot_self_id is None or bot_id is None:
-        pv = deepcopy(platform_val)
-        today = datetime.date.today()
-        summarys: Optional[List[CoreDataSummary]] = []
-
-        if day:
-            date = today - datetime.timedelta(days=day)
-            _s = await CoreDataSummary.select_rows(date=date)
-            if _s:
-                summarys.extend(_s)
-        else:
-            summarys = await CoreDataSummary.select_rows(date=today)
-
-        if summarys:
-            for summary in summarys:
-                datas: Optional[List[CoreDataAnalysis]] = (
-                    await CoreDataAnalysis.select_rows(
-                        date=summary.date,
-                        bot_id=summary.bot_id,
-                        bot_self_id=summary.bot_self_id,
-                    )
-                )
-                if datas:
-                    vl = await trans_database_to_val(summary, datas)
-                    pv = merge_dict(
-                        vl,
-                        pv,
-                    )
-
-        return pv
-
-    if day is None or day == 0:
-        return get_platform_val(bot_id, bot_self_id)
-    else:
-        today = datetime.date.today()
-        endday = today - datetime.timedelta(days=day)
-        return await get_sp_val(
-            bot_id,
-            bot_self_id,
-            endday,
-        )
-
-
 async def trans_database_to_val(
-    summary: CoreDataSummary, datas: List[CoreDataAnalysis]
+    summary: CoreDataSummary, datas: Sequence[CoreDataAnalysis]
 ):
-    platform_val: PlatformVal = {
-        'user': {},
-        'group': {},
-        'command': 0,
-        'image': 0,
-        'receive': 0,
-        'send': 0,
-    }
+    pv: PlatformVal = deepcopy(platform_val)
 
-    platform_val['command'] = summary.command
-    platform_val['image'] = summary.image
-    platform_val['receive'] = summary.receive
-    platform_val['send'] = summary.send
+    pv['command'] = summary.command
+    pv['image'] = summary.image
+    pv['receive'] = summary.receive
+    pv['send'] = summary.send
     for data in datas:
         if data.data_type == 'user':
-            platform_val['user'][data.target_id] = {
+            pv['user'][data.target_id] = {
                 data.command_name: data.command_count
             }
         if data.data_type == 'group':
-            platform_val['group'][data.target_id] = {
+            pv['group'][data.target_id] = {
                 data.command_name: data.command_count
             }
-    return platform_val
-
-
-async def get_sp_val(
-    bot_id: Optional[str],
-    bot_self_id: Optional[str],
-    date: datetime.date,
-) -> PlatformVal:
-    platform_val: PlatformVal = {
-        'user': {},
-        'group': {},
-        'command': 0,
-        'image': 0,
-        'receive': 0,
-        'send': 0,
-    }
-    if bot_id is None and bot_self_id is None:
-        return platform_val
-
-    summary = await CoreDataSummary.base_select_data(
-        bot_id=bot_id,
-        bot_self_id=bot_self_id,
-        date=date,
-    )
-    if summary:
-        datas = await CoreDataAnalysis.select_rows(
-            bot_id=bot_id,
-            bot_self_id=bot_self_id,
-            date=date,
-        )
-
-        if datas:
-            platform_val = await trans_database_to_val(summary, datas)
-
-    return platform_val
+    return pv
 
 
 async def save_global_val(bot_id: str, bot_self_id: str, day: int = 0):
@@ -468,6 +371,8 @@ async def _save_global_val_to_database(
             send=local_val['send'],
             command=local_val['command'],
             image=local_val['image'],
+            user_count=len(local_val['user']),
+            group_count=len(local_val['group']),
             date=today_datetime,
             bot_id=bot_id,
             bot_self_id=bot_self_id,
@@ -531,3 +436,78 @@ async def trans_global_val():
             global_backup_path.unlink()
     global_val_path.rename(global_backup_path)
     logger.success('[数据迁移] 全局数据迁移完成！')
+
+
+async def get_global_val(
+    bot_id: Optional[str],
+    bot_self_id: Optional[str],
+    day: Optional[int] = None,
+) -> PlatformVal:
+    if bot_self_id is None or bot_id is None:
+        pv = deepcopy(platform_val)
+        today = datetime.date.today()
+        summarys: Optional[Sequence[CoreDataSummary]] = []
+
+        if day:
+            date = today - datetime.timedelta(days=day)
+            _s = await CoreDataSummary.select_rows(date=date)
+            if _s:
+                summarys.extend(_s)
+        else:
+            summarys = await CoreDataSummary.select_rows(date=today)
+
+        if summarys:
+            for summary in summarys:
+                datas: Optional[Sequence[CoreDataAnalysis]] = (
+                    await CoreDataAnalysis.select_rows(
+                        date=summary.date,
+                        bot_id=summary.bot_id,
+                        bot_self_id=summary.bot_self_id,
+                    )
+                )
+                if datas:
+                    vl = await trans_database_to_val(summary, datas)
+                    pv = merge_dict(
+                        vl,
+                        pv,
+                    )
+
+        return pv
+
+    if day is None or day == 0:
+        return get_platform_val(bot_id, bot_self_id)
+    else:
+        today = datetime.date.today()
+        endday = today - datetime.timedelta(days=day)
+        return await get_sp_val(
+            bot_id,
+            bot_self_id,
+            endday,
+        )
+
+
+async def get_sp_val(
+    bot_id: Optional[str],
+    bot_self_id: Optional[str],
+    date: datetime.date,
+) -> PlatformVal:
+    pv = deepcopy(platform_val)
+    if bot_id is None and bot_self_id is None:
+        return pv
+
+    summary = await CoreDataSummary.base_select_data(
+        bot_id=bot_id,
+        bot_self_id=bot_self_id,
+        date=date,
+    )
+    if summary:
+        datas = await CoreDataAnalysis.select_rows(
+            bot_id=bot_id,
+            bot_self_id=bot_self_id,
+            date=date,
+        )
+
+        if datas:
+            pv = await trans_database_to_val(summary, datas)
+
+    return pv

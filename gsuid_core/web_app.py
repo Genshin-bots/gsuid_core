@@ -395,11 +395,11 @@ async def _batch_push(request: Request, data: Dict):
     soup = BeautifulSoup(send_msg, 'lxml')
 
     msg: List[Message] = []
-    text_list: List[Tag] = list(soup.find_all('p'))
+    text_list: List[Tag] = list(soup.find_all('p'))  # type: ignore
     for text in text_list:
         msg.append(MessageSegment.text(str(text)[3:-4] + '\n'))
 
-    img_tag: List[Tag] = list(soup.find_all('img'))
+    img_tag: List[Tag] = list(soup.find_all('img'))  # type: ignore
     for img in img_tag:
         src: str = img.get('src')  # type: ignore
         width: str = img.get('width')  # type: ignore
