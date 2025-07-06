@@ -1,5 +1,7 @@
 import json
+import asyncio
 import datetime
+from pathlib import Path
 from copy import deepcopy
 from typing import Any, Set, Dict, List, Tuple, Optional, Sequence, TypedDict
 
@@ -8,6 +10,7 @@ import aiofiles
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.database.global_val_models import (
+    DataType,
     CoreDataSummary,
     CoreDataAnalysis,
 )
@@ -85,78 +88,16 @@ async def get_all_bot_dict():
     bot_ids = [j for i in datas for j in i]
 
     result = {}
-    for data in bot_ids:
-        result[data] = []
-        self_ids = await CoreDataSummary.select_rows(bot_id=data)
+    for bot_id in bot_ids:
+        result[bot_id] = []
+        self_ids: Sequence[CoreDataSummary] = (
+            await CoreDataSummary.select_rows(bot_id=bot_id)
+        )
         if self_ids:
-            self_ids = [i.bot_self_id for i in self_ids]
-            result[data] = list(set(self_ids))
+            ids = [i.bot_self_id for i in self_ids]
+            result[bot_id] = list(set(ids))
 
     return result
-
-
-async def get_value_analysis(
-    bot_id: Optional[str],
-    bot_self_id: Optional[str],
-    day: int = 7,
-    need_all: bool = False,
-) -> Tuple[Dict[str, PlatformVal], Dict[str, PlatformVal]]:
-    result = {}
-    result_all = {}
-    result_temp = {}
-    result_temp_all = {}
-
-    today = datetime.date.today()
-    endday = today - datetime.timedelta(days=day)
-
-    summary_datas: List[
-        CoreDataSummary
-    ] = await CoreDataSummary.get_recently_data(
-        endday,
-    )  # type: ignore
-    detail_datas: List[
-        CoreDataAnalysis
-    ] = await CoreDataAnalysis.get_recently_data(
-        endday,
-    )  # type: ignore
-
-    for row in summary_datas:
-        if need_all:
-            day_key = row.date.strftime("%Y_%d_%b")
-            result_temp_all[day_key] = [row]
-
-        if (bot_id and row.bot_id != bot_id) or (
-            bot_self_id and row.bot_self_id != bot_self_id
-        ):
-            continue
-
-        day_key = row.date.strftime("%Y_%d_%b")
-        result_temp[day_key] = [row]
-
-    for row in detail_datas:
-        if need_all:
-            day_key = row.date.strftime("%Y_%d_%b")
-            result_temp_all[day_key].append(row)
-
-        if (bot_id and row.bot_id != bot_id) or (
-            bot_self_id and row.bot_self_id != bot_self_id
-        ):
-            continue
-
-        day_key = row.date.strftime("%Y_%d_%b")
-        result_temp[day_key].append(row)
-
-    for i in result_temp:
-        result[i] = await trans_database_to_val(
-            result_temp[i][0], result_temp[i][1:]
-        )
-
-    for i in result_temp_all:
-        result_all[i] = await trans_database_to_val(
-            result_temp_all[i][0], result_temp_all[i][1:]
-        )
-
-    return result, result_all
 
 
 async def get_global_analysis(
@@ -292,11 +233,11 @@ async def trans_database_to_val(
     pv['receive'] = summary.receive
     pv['send'] = summary.send
     for data in datas:
-        if data.data_type == 'user':
+        if data.data_type == DataType.USER:
             pv['user'][data.target_id] = {
                 data.command_name: data.command_count
             }
-        if data.data_type == 'group':
+        if data.data_type == DataType.GROUP:
             pv['group'][data.target_id] = {
                 data.command_name: data.command_count
             }
@@ -326,7 +267,7 @@ async def _save_global_val_to_database(
             command_count = group_data[command_name]
             insert_datas.append(
                 CoreDataAnalysis(
-                    data_type='group',
+                    data_type=DataType.GROUP,
                     target_id=_g,
                     command_name=command_name,
                     command_count=command_count,
@@ -341,7 +282,7 @@ async def _save_global_val_to_database(
             command_count = user_data[command_name]
             insert_datas.append(
                 CoreDataAnalysis(
-                    data_type='user',
+                    data_type=DataType.USER,
                     target_id=_u,
                     command_name=command_name,
                     command_count=command_count,
@@ -385,41 +326,173 @@ async def _save_global_val_to_database(
     )
 
 
+def prepare_models_from_json(
+    local_val: PlatformVal,
+    bot_id: str,
+    bot_self_id: str,
+    date_object: datetime.date,
+) -> Tuple[List[CoreDataAnalysis], List[CoreDataSummary]]:
+    """
+    Replicates the logic of your original function but only PREPARES the model
+    objects without writing them. Returns a tuple containing two lists:
+    one for CoreDataAnalysis and one for CoreDataSummary.
+    """
+    analysis_models = []
+    # --- Prepare CoreDataAnalysis data ---
+    for group_id, group_data in local_val.get('group', {}).items():
+        for command_name, command_count in group_data.items():
+            analysis_models.append(
+                CoreDataAnalysis(
+                    data_type=DataType.GROUP,
+                    target_id=str(group_id),
+                    command_name=command_name,
+                    command_count=command_count,
+                    date=date_object,
+                    bot_id=bot_id,
+                    bot_self_id=bot_self_id,
+                )
+            )
+
+    for user_id, user_data in local_val.get('user', {}).items():
+        for command_name, command_count in user_data.items():
+            analysis_models.append(
+                CoreDataAnalysis(
+                    data_type=DataType.USER,
+                    target_id=str(user_id),
+                    command_name=command_name,
+                    command_count=command_count,
+                    date=date_object,
+                    bot_id=bot_id,
+                    bot_self_id=bot_self_id,
+                )
+            )
+
+    # --- Prepare CoreDataSummary data ---
+    summary_model = CoreDataSummary(
+        receive=local_val.get('receive', 0),
+        send=local_val.get('send', 0),
+        command=local_val.get('command', 0),
+        image=local_val.get('image', 0),
+        user_count=len(local_val.get('user', {})),
+        group_count=len(local_val.get('group', {})),
+        date=date_object,
+        bot_id=bot_id,
+        bot_self_id=bot_self_id,
+    )
+
+    return (analysis_models, [summary_model])
+
+
 async def trans_global_val():
-    if global_val_path.exists() and any(global_val_path.iterdir()):
-        logger.info('[数据迁移] 开始迁移全局数据！该LOG应该只会出现一次！')
-    else:
+    if not (global_val_path.exists() and any(global_val_path.iterdir())):
+        logger.info("[数据迁移] 无需迁移，路径为空或不存在。")
         return
 
-    for bot_id_path in global_val_path.iterdir():
-        if not bot_id_path.is_dir():
-            continue
-        for bot_self_id_path in bot_id_path.iterdir():
-            if not bot_id_path.is_dir():
-                continue
-            for json_data in bot_self_id_path.iterdir():
-                if json_data.suffix == '.json':
-                    date_string = json_data.stem[10:]
-                    format_code = "%Y_%d_%b"
+    logger.info('[数据迁移] 开始迁移全局数据！')
 
-                    datetime_object = datetime.datetime.strptime(
-                        date_string, format_code
-                    )
+    # --- 1. Fast file discovery ---
+    all_json_paths = [
+        json_data
+        for bot_id_path in global_val_path.iterdir()
+        if bot_id_path.is_dir()
+        for bot_self_id_path in bot_id_path.iterdir()
+        if bot_self_id_path.is_dir()
+        for json_data in bot_self_id_path.iterdir()
+        if json_data.suffix == '.json'
+    ]
 
-                    # 2. 从 datetime 对象中提取 date 部分
-                    date_object = datetime_object.date()
+    if not all_json_paths:
+        logger.info("[数据迁移] 未找到任何 .json 文件进行迁移。")
+        return
 
-                    async with aiofiles.open(
-                        json_data, 'r', encoding='utf-8'
-                    ) as f:
-                        json_str = await f.read()
-                    local_val = json.loads(json_str)
-                    await _save_global_val_to_database(
-                        local_val,
-                        bot_id_path.name,
-                        bot_self_id_path.name,
-                        date_object,
-                    )
+    total_files = len(all_json_paths)
+    logger.info(f"[数据迁移] 找到 {total_files} 个文件，开始并发处理...")
+
+    # --- 2. Concurrent processing and data preparation ---
+    all_analysis_models: List[CoreDataAnalysis] = []
+    all_summary_models: List[CoreDataSummary] = []
+
+    async def process_file(file_path: Path):
+        try:
+            bot_id = file_path.parent.parent.name
+            bot_self_id = file_path.parent.name
+            date_string = file_path.stem[10:]
+            format_code = "%Y_%d_%b"
+            date_object = datetime.datetime.strptime(
+                date_string, format_code
+            ).date()
+
+            async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+                json_str = await f.read()
+
+            local_val = await asyncio.to_thread(json.loads, json_str)
+            return prepare_models_from_json(
+                local_val, bot_id, bot_self_id, date_object
+            )
+        except Exception as e:
+            logger.error(f"[数据迁移] 处理文件 {file_path} 失败: {e}")
+            return ([], [])
+
+    tasks = [process_file(p) for p in all_json_paths]
+    list_of_results = await asyncio.gather(*tasks)
+
+    for analysis_list, summary_list in list_of_results:
+        all_analysis_models.extend(analysis_list)
+        all_summary_models.extend(summary_list)
+
+    logger.success(
+        "[数据迁移] 文件处理完成. 准备写入 "
+        f"{len(all_analysis_models)} 条分析数据和 {len(all_summary_models)} 条概要数据."
+    )
+
+    # --- 3. Batched database writing ---
+    BATCH_SIZE = 6000
+
+    # Write CoreDataAnalysis
+    logger.info("[数据迁移] 开始写入 CoreDataAnalysis 数据...")
+    analysis_update_key = ['command_count']
+    analysis_index = [
+        'data_type',
+        'target_id',
+        'date',
+        'command_name',
+        'bot_id',
+        'bot_self_id',
+    ]
+    for i in range(0, len(all_analysis_models), BATCH_SIZE):
+        batch = all_analysis_models[i : i + BATCH_SIZE]  # noqa
+        await CoreDataAnalysis.batch_insert_data_with_update(
+            datas=batch,  # type: ignore
+            update_key=analysis_update_key,
+            index_elements=analysis_index,
+        )
+        logger.success(
+            f"[数据迁移] 写入 {len(batch)} 条分析数据. 进度：{i}/{len(all_analysis_models)}"
+        )
+    logger.success("[数据迁移] CoreDataAnalysis 数据写入完成.")
+
+    # Write CoreDataSummary
+    logger.info("[数据迁移] 开始写入 CoreDataSummary 数据...")
+    summary_update_key = [
+        'receive',
+        'send',
+        'command',
+        'image',
+        'user_count',
+        'group_count',
+    ]
+    summary_index = ['date', 'bot_id', 'bot_self_id']
+    for i in range(0, len(all_summary_models), BATCH_SIZE):
+        batch = all_summary_models[i : i + BATCH_SIZE]  # noqa
+        await CoreDataSummary.batch_insert_data_with_update(
+            datas=batch,  # type: ignore
+            update_key=summary_update_key,
+            index_elements=summary_index,
+        )
+        logger.success(
+            f"[数据迁移] 写入 {len(batch)} 条概要数据. 进度：{i}/{len(all_summary_models)}"
+        )
+    logger.success("[数据迁移] CoreDataSummary 数据写入完成.")
 
     # 转移路径
     if global_backup_path.exists():

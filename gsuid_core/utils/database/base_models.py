@@ -297,9 +297,10 @@ class BaseIDModel(SQLModel):
             from sqlalchemy.dialects.mysql import insert
 
             stmt = insert(cls)
-            update_stmt = stmt.on_duplicate_key_update(
-                set_={i: getattr(cls, i) for i in update_key},
-            )
+            update_dict = {
+                col: getattr(stmt.inserted, col) for col in update_key
+            }
+            update_stmt = stmt.on_duplicate_key_update(**update_dict)
         else:
             raise ValueError(f'[GsCore] [数据库] 不支持 {_db_type} 数据库!')
 

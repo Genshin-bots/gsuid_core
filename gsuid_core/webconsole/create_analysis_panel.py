@@ -2,10 +2,11 @@ import random
 import string
 
 from gsuid_core.global_val import (
-    global_val_path,
     get_all_bot_dict,
-    get_value_analysis,
-    get_global_analysis,
+)
+from gsuid_core.utils.database.global_val_models import (
+    CoreDataSummary,
+    CoreDataAnalysis,
 )
 from gsuid_core.webconsole.create_base_panel import (
     get_tab,
@@ -23,13 +24,16 @@ def get_chart(api: str):
     }
 
 
-def get_detail_chart(bot_id: str, bot_self_id: str):
+async def get_detail_chart(bot_id: str, bot_self_id: str):
     characters = string.ascii_lowercase + string.digits
     random_string = ''.join(random.choice(characters) for _ in range(12))
     _p = []
-    path = global_val_path / bot_id / bot_self_id
-    if path.exists():
-        op = [{"label": i.name, "value": i.name} for i in path.iterdir()]
+    sum_data = await CoreDataSummary.get_distinct_date_data()
+    if sum_data:
+        op = [
+            {"label": i.strftime('%Y-%m-%d'), "value": i.strftime('%Y-%m-%d')}
+            for i in sum_data
+        ]
         _p.append(
             {
                 "type": "select",
@@ -88,12 +92,10 @@ async def get_analysis_page():
     tabs = []
     for bot_id in all_bot:
         for bot_self_id in all_bot[bot_id]:
-            now_data, _ = await get_value_analysis(
+            data = await CoreDataAnalysis.calculate_dashboard_metrics(
                 bot_id,
                 bot_self_id,
-                30,
             )
-            data = await get_global_analysis(now_data)
             tabs.append(
                 get_tab(
                     f'{bot_id}({bot_self_id})',
@@ -115,7 +117,7 @@ async def get_analysis_page():
                                 get_divider(),
                                 get_chart(f'{BAPI}/{bot_id}/{bot_self_id}'),
                                 get_divider(),
-                                *get_detail_chart(bot_id, bot_self_id),
+                                *(await get_detail_chart(bot_id, bot_self_id)),
                             ],
                         ),
                     ],

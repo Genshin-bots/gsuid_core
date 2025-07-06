@@ -2,8 +2,9 @@ import asyncio
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import date as dt_date
 from contextlib import asynccontextmanager
+from typing import Dict, List, Optional, Sequence
 
 import aiofiles
 from PIL import Image
@@ -15,7 +16,6 @@ from fastapi.responses import Response, StreamingResponse
 
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
-import gsuid_core.global_val as gv
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.segment import Message, MessageSegment
@@ -37,6 +37,11 @@ from gsuid_core.logger import (
     logger,
     read_log,
     clean_log,
+)
+from gsuid_core.utils.database.global_val_models import (
+    DataType,
+    CoreDataSummary,
+    CoreDataAnalysis,
 )
 from gsuid_core.utils.plugins_update._plugins import (
     check_status,
@@ -259,63 +264,55 @@ async def _get_data_analysis(
     bot_id: str,
     bot_self_id: str,
 ):
-    if bot_id not in gv.bot_val:
-        retcode, msg, data = -1, '不存在该bot_id!', {}
-    elif bot_self_id not in gv.bot_val[bot_id]:
-        retcode, msg, data = -1, '不存在该bot_self_id!', {}
-    else:
-        retcode, msg = 0, 'ok'
+    xaxis = []
+    series = []
 
-        xaxis = []
-        series = []
+    send_data = []
+    receive_data = []
+    command_data = []
+    image_gen_data = []
 
-        send_data = []
-        receive_data = []
-        command_data = []
-        image_gen_data = []
+    datas = await CoreDataSummary.get_day_trends(bot_id, bot_self_id)
+    for day in range(30):
+        xaxis.append(day)
+        send_data.append(datas['bot_send'][day])
+        receive_data.append(datas['bot_receive'][day])
+        command_data.append(datas['bot_command'][day])
+        image_gen_data.append(datas['bot_image'][day])
 
-        seven_data, _ = await gv.get_value_analysis(bot_id, bot_self_id)
-        for day in seven_data:
-            xaxis.append(day)
-            local_val = seven_data[day]
-            send_data.append(local_val['send'])
-            receive_data.append(local_val['receive'])
-            command_data.append(local_val['command'])
-            image_gen_data.append(local_val['image'])
-
-        series.append({'name': '发送', 'type': 'line', 'data': send_data})
-        series.append(
-            {
-                'name': '接收',
-                'type': 'line',
-                'data': receive_data,
-            }
-        )
-        series.append(
-            {
-                'name': '命令调用',
-                'type': 'line',
-                'data': command_data,
-            }
-        )
-        series.append(
-            {
-                'name': '图片生成',
-                'type': 'line',
-                'data': image_gen_data,
-            }
-        )
-
-        data = {
-            'title': {'text': ''},
-            'tooltip': {'trigger': 'axis'},
-            'legend': {'data': ['发送', '接收', '命令调用', '图片生成']},
-            'xAxis': {'type': 'category', 'boundaryGap': False, 'data': xaxis},
-            'yAxis': {'type': 'value'},
-            'series': series,
+    series.append({'name': '发送', 'type': 'line', 'data': send_data})
+    series.append(
+        {
+            'name': '接收',
+            'type': 'line',
+            'data': receive_data,
         }
+    )
+    series.append(
+        {
+            'name': '命令调用',
+            'type': 'line',
+            'data': command_data,
+        }
+    )
+    series.append(
+        {
+            'name': '图片生成',
+            'type': 'line',
+            'data': image_gen_data,
+        }
+    )
 
-    return {'status': retcode, 'msg': msg, 'data': data}
+    data = {
+        'title': {'text': ''},
+        'tooltip': {'trigger': 'axis'},
+        'legend': {'data': ['发送', '接收', '命令调用', '图片生成']},
+        'xAxis': {'type': 'category', 'boundaryGap': False, 'data': xaxis},
+        'yAxis': {'type': 'value'},
+        'series': series,
+    }
+
+    return {'status': 0, 'msg': '数据获取成功！', 'data': data}
 
 
 @app.get('/genshinuid/api/getAnalysisUserGroup/{bot_id}/{bot_self_id}')
@@ -325,45 +322,37 @@ async def _get_usergroup_analysis(
     bot_id: str,
     bot_self_id: str,
 ):
-    if bot_id not in gv.bot_val:
-        retcode, msg, data = -1, '不存在该bot_id!', {}
-    elif bot_self_id not in gv.bot_val[bot_id]:
-        retcode, msg, data = -1, '不存在该bot_self_id!', {}
-    else:
-        retcode, msg = 0, 'ok'
+    xaxis = []
+    series = []
 
-        xaxis = []
-        series = []
+    group_data = []
+    user_data = []
 
-        group_data = []
-        user_data = []
+    datas = await CoreDataSummary.get_day_trends(bot_id, bot_self_id)
+    for day in range(30):
+        xaxis.append(day)
+        group_data.append(datas['bot_group_count'][day])
+        user_data.append(datas['bot_user_count'][day])
 
-        seven_data, _ = await gv.get_value_analysis(bot_id, bot_self_id)
-        for day in seven_data:
-            xaxis.append(day)
-            local_val = seven_data[day]
-            group_data.append(len(local_val['group']))
-            user_data.append(len(local_val['user']))
-
-        series.append({'name': '用户', 'type': 'bar', 'data': user_data})
-        series.append(
-            {
-                'name': '群组',
-                'type': 'bar',
-                'data': group_data,
-            }
-        )
-
-        data = {
-            'title': {'text': ''},
-            'tooltip': {'trigger': 'axis'},
-            'legend': {'data': ['用户', '群组']},
-            'xAxis': {'type': 'category', 'boundaryGap': False, 'data': xaxis},
-            'yAxis': {'type': 'value'},
-            'series': series,
+    series.append({'name': '用户', 'type': 'bar', 'data': user_data})
+    series.append(
+        {
+            'name': '群组',
+            'type': 'bar',
+            'data': group_data,
         }
+    )
 
-    return {'status': retcode, 'msg': msg, 'data': data}
+    data = {
+        'title': {'text': ''},
+        'tooltip': {'trigger': 'axis'},
+        'legend': {'data': ['用户', '群组']},
+        'xAxis': {'type': 'category', 'boundaryGap': False, 'data': xaxis},
+        'yAxis': {'type': 'value'},
+        'series': series,
+    }
+
+    return {'status': 0, 'msg': '数据获取成功！', 'data': data}
 
 
 @app.post('/genshinuid/api/updatePlugins')
@@ -526,28 +515,38 @@ async def get_history_data(
     bot_self_id: str,
 ):
     name = data.get('name', None)
+
     a_pie_data = []
     b_pie_data = []
+
     if name is None:
-        seven_day, _ = await gv.get_value_analysis(bot_id, bot_self_id)
-        local_val = seven_day[list(seven_day.keys())[0]]
+        date = dt_date.today()
     else:
-        local_val = await gv.get_sp_val(bot_id, bot_self_id, name)
+        date = dt_date.fromisoformat(name)
+
+    datas: Sequence[CoreDataAnalysis] = await CoreDataAnalysis.get_sp_data(
+        date,
+        bot_id,
+        bot_self_id,
+    )
 
     c_data = {}
-    for g in local_val['group']:
-        a_pie_data.append(
-            {"value": sum(list(local_val['group'][g].values())), "name": g}
-        )
-    for u in local_val['user']:
-        for c in local_val['user'][u]:
-            if c not in c_data:
-                c_data[c] = 0
-            c_data[c] += local_val['user'][u][c]
+    group_count = {}
+    for d in datas:
+        if d.data_type == DataType.USER:
+            if d.command_name not in c_data:
+                c_data[d.command_name] = 0
+            c_data[d.command_name] += d.command_count
+        if d.data_type == DataType.GROUP:
+            if d.target_id not in group_count:
+                group_count[d.target_id] = 0
+            group_count[d.target_id] += d.command_count
+
+    for g in group_count:
+        a_pie_data.append({"value": group_count[g], "name": g})
 
     for c in c_data:
         b_pie_data.append({"value": c_data[c], "name": c})
-        # l_data.append(c)
 
     data = {
         "series": [

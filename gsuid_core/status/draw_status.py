@@ -138,7 +138,12 @@ async def draw_title():
     return title
 
 
-async def draw_bar(text1: str, text2: str):
+async def draw_bar(
+    text1: str,
+    text2: str,
+    sample: Optional[Dict[str, Union[Tuple[int, int, int], str]]] = None,
+):
+
     bar = Image.new('RGBA', (1400, 100))
     bar_draw = ImageDraw.Draw(bar)
 
@@ -163,6 +168,25 @@ async def draw_bar(text1: str, text2: str):
         core_font(32),
         'lm',
     )
+
+    if sample:
+        for index, key in enumerate(sample):
+            color = sample[key]
+            x1, y1 = 1150 - index * 175, 30
+            x2, y2 = x1 + 60, y1 + 30
+            bar_draw.rounded_rectangle(
+                (x1, y1, x2, y2),
+                12,
+                color,
+            )
+            bar_draw.text(
+                (x2 + 8, y1 + 15),
+                key,
+                BLACK,
+                core_font(24),
+                'lm',
+            )
+
     return bar
 
 
@@ -532,8 +556,8 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
 
     for day in range(30):
         result[THEME_COLOR].append(
-            trends['all_bots_receive'][day]
-            if day < len(trends['all_bots_receive'])
+            trends['all_bots_user_count'][day]
+            if day < len(trends['all_bots_user_count'])
             else 0
         )
         result[HINT_COLOR].append(
@@ -543,8 +567,8 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
         )
 
         result[(182, 122, 210)].append(
-            trends['bot_receive'][day]
-            if day < len(trends['bot_receive'])
+            trends['bot_user_count'][day]
+            if day < len(trends['bot_user_count'])
             else 0
         )
         result[(27, 146, 210)].append(
@@ -589,7 +613,16 @@ async def draw_status(ev: Event):
     bar1 = await draw_bar('服务器基础信息', 'Base Info')
     bar2_1 = await draw_bar('机器人数据统计(单)', 'Data Analysis')
     bar2_2 = await draw_bar('机器人数据统计(多)', 'Data Analysis')
-    bar3 = await draw_bar('日活曲线', 'Daily Activity Curve')
+    bar3 = await draw_bar(
+        '日活曲线',
+        'Daily Activity',
+        {
+            '全用户': THEME_COLOR,
+            '全发送': HINT_COLOR,
+            '使用用户': (182, 122, 210),
+            '发送数量': (27, 146, 210),
+        },
+    )
     bar4 = await draw_bar('插件额外信息', 'Extra Data')
 
     mdata = await CoreDataAnalysis.calculate_dashboard_metrics()
@@ -617,6 +650,7 @@ async def draw_status(ev: Event):
     )
 
     plugin_status_img = await draw_plugins_status()
+
     curve_img = await draw_curve_img(trends)
 
     plugins_num = len(plugins_status)

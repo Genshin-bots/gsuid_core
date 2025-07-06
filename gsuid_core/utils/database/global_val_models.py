@@ -1,15 +1,21 @@
+import enum
 from datetime import date as ymddate
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlmodel import Field, col, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import Field, Index, col, func, select
 from sqlalchemy import (
     UniqueConstraint,
     distinct,
 )
 
 from .base_models import BaseIDModel, with_session
+
+
+class DataType(enum.Enum):
+    GROUP = 'group'
+    USER = 'user'
 
 
 class CoreDataSummary(BaseIDModel, table=True):
@@ -23,15 +29,15 @@ class CoreDataSummary(BaseIDModel, table=True):
         {'extend_existing': True},
     )
 
-    receive: int = Field(title='接收次数', default=0, index=True)
-    send: int = Field(title='发送次数', default=0, index=True)
-    command: int = Field(title='指令调用次数', default=0, index=True)
-    image: int = Field(title='图片生成次数', default=0, index=True)
-    user_count: int = Field(title='用户数量', default=0, index=True)
-    group_count: int = Field(title='群聊数量', default=0, index=True)
-    bot_id: str = Field(title='机器人平台', index=True)
-    bot_self_id: str = Field(title='机器人自身ID', index=True)
-    date: ymddate = Field(title='日期', index=True)
+    receive: int = Field(title='接收次数', default=0)
+    send: int = Field(title='发送次数', default=0)
+    command: int = Field(title='指令调用次数', default=0)
+    image: int = Field(title='图片生成次数', default=0)
+    user_count: int = Field(title='用户数量', default=0)
+    group_count: int = Field(title='群聊数量', default=0)
+    bot_id: str = Field(title='机器人平台', max_length=64)
+    bot_self_id: str = Field(title='机器人自身ID', max_length=64)
+    date: ymddate = Field(title='日期')
 
     @classmethod
     @with_session
@@ -47,12 +53,13 @@ class CoreDataSummary(BaseIDModel, table=True):
         返回一个字典，包含四份数据列表：
         1. all_bots_receive: 全平台所有机器人的每日接收数汇总列表。
         2. all_bots_send: 全平台所有机器人的每日发送数汇总列表。
-        3. filtered_bot_receive: 指定机器人的每日接收数列表。
-        4. filtered_bot_send: 指定机器人的每日发送数列表。
+        3. bot_receive: 指定机器人的每日接收数列表。
+        4. bot_send: 指定机器人的每日发送数列表。
         """
         # 1. 定义时间范围
         today = datetime.now().date()
         thirty_days_ago = today - timedelta(days=30)
+        date_list = [thirty_days_ago + timedelta(days=i) for i in range(30)]
 
         # --- 2. 准备两次查询 ---
 
@@ -62,6 +69,7 @@ class CoreDataSummary(BaseIDModel, table=True):
                 col(cls.date),
                 func.sum(cls.receive).label("total_receive"),
                 func.sum(cls.send).label("total_send"),
+                func.sum(cls.user_count).label("total_user_count"),
             )
             .where(cls.date >= thirty_days_ago)
             .where(cls.date < today)  # 使用 < today 更精确
@@ -71,11 +79,7 @@ class CoreDataSummary(BaseIDModel, table=True):
 
         # 查询2: 指定机器人数据
         filtered_query = (
-            select(
-                col(cls.date),
-                col(cls.receive),
-                col(cls.send),
-            )
+            select(cls)
             .where(cls.date >= thirty_days_ago)
             .where(cls.date < today)
             .order_by(col(cls.date))
@@ -88,47 +92,57 @@ class CoreDataSummary(BaseIDModel, table=True):
                 cls.bot_self_id == bot_self_id
             )
 
-        # 3. 并发执行两次查询
-        agg_rows = await session.execute(agg_query)
-        filtered_rows = await session.execute(filtered_query)
+        agg_rows = (await session.execute(agg_query)).all()
+        filtered_rows = (await session.execute(filtered_query)).scalars().all()
 
-        # 4. 后处理数据，填充缺失的日期
+        # 处理全平台汇总数据，填充缺失日期为0
+        agg_map = {row[0]: row for row in agg_rows}
+        all_bots_receive = []
+        all_bots_send = []
+        all_bots_user_count = []
+        for d in date_list:
+            row = agg_map.get(d)
+            if row:
+                all_bots_receive.append(row[1] or 0)
+                all_bots_send.append(row[2] or 0)
+                all_bots_user_count.append(row[3] or 0)
+            else:
+                all_bots_receive.append(0)
+                all_bots_send.append(0)
+                all_bots_user_count.append(0)
 
-        # 创建一个完整的30天日期范围
-        date_range = [thirty_days_ago + timedelta(days=i) for i in range(30)]
+        # 处理指定机器人数据，填充缺失日期为0
+        filtered_map = {row.date: row for row in filtered_rows}
+        bot_receive = []
+        bot_send = []
+        bot_image = []
+        bot_command = []
+        bot_user_count = []
+        bot_group_count = []
+        for d in date_list:
+            row = filtered_map.get(d)
+            bot_receive.append(getattr(row, "receive", 0) if row else 0)
+            bot_send.append(getattr(row, "send", 0) if row else 0)
+            bot_image.append(getattr(row, "image", 0) if row else 0)
+            bot_command.append(getattr(row, "command", 0) if row else 0)
+            bot_user_count.append(getattr(row, "user_count", 0) if row else 0)
+            bot_group_count.append(
+                getattr(row, "group_count", 0) if row else 0
+            )
 
-        def _process_results(
-            rows, date_range: List[ymddate], receive_key: str, send_key: str
-        ) -> Tuple[List[int], List[int]]:
-            """辅助函数，将稀疏的数据库结果填充为完整的30天列表。"""
-            data_map = {row.date: row for row in rows}
-            receive_list = []
-            send_list = []
-            for day in date_range:
-                if day in data_map:
-                    receive_list.append(getattr(data_map[day], receive_key, 0))
-                    send_list.append(getattr(data_map[day], send_key, 0))
-                else:
-                    receive_list.append(0)
-                    send_list.append(0)
-            return receive_list, send_list
-
-        # 处理全平台汇总数据
-        all_bots_receive, all_bots_send = _process_results(
-            agg_rows, date_range, "total_receive", "total_send"
-        )
-
-        # 处理指定机器人数据
-        filtered_bot_receive, filtered_bot_send = _process_results(
-            filtered_rows, date_range, "receive", "send"
-        )
-
-        return {
+        result = {
             "all_bots_receive": all_bots_receive,
             "all_bots_send": all_bots_send,
-            "bot_receive": filtered_bot_receive,
-            "bot_send": filtered_bot_send,
+            "all_bots_user_count": all_bots_user_count,
+            "bot_receive": bot_receive,
+            "bot_send": bot_send,
+            "bot_image": bot_image,
+            "bot_command": bot_command,
+            "bot_user_count": bot_user_count,
+            "bot_group_count": bot_group_count,
         }
+
+        return result
 
     @classmethod
     @with_session
@@ -163,6 +177,18 @@ class CoreDataSummary(BaseIDModel, table=True):
         r = await session.execute(result)
         return r.scalars().one_or_none()
 
+    @classmethod
+    @with_session
+    async def get_distinct_date_data(
+        cls,
+        session: AsyncSession,
+    ):
+        result = (
+            select(col(cls.date)).distinct().order_by(col(cls.date).desc())
+        )
+        r = await session.execute(result)
+        return r.scalars().all()
+
 
 class CoreDataAnalysis(BaseIDModel, table=True):
     __table_args__ = (
@@ -175,18 +201,19 @@ class CoreDataAnalysis(BaseIDModel, table=True):
             'bot_self_id',
             name='record_analysis',
         ),
+        Index('ix_query_stats', 'data_type', 'bot_id', 'bot_self_id', 'date'),
         {'extend_existing': True},
     )
 
-    data_type: str = Field(
-        title='数据类型', default='unknown', index=True
+    data_type: DataType = Field(
+        title='数据类型', default=DataType.USER, index=True, max_length=64
     )  # user or group
-    target_id: str = Field(title='数据ID', index=True)
-    command_name: str = Field(title='指令名称', index=True)
-    command_count: int = Field(title='指令调用次数', default=0, index=True)
+    target_id: str = Field(title='数据ID', index=True, max_length=64)
+    command_name: str = Field(title='指令名称', max_length=100)
+    command_count: int = Field(title='指令调用次数', default=0)
     date: ymddate = Field(title='日期', index=True)
-    bot_id: str = Field(title='机器人平台', index=True)
-    bot_self_id: str = Field(title='机器人自身ID', index=True)
+    bot_id: str = Field(title='机器人平台', index=True, max_length=64)
+    bot_self_id: str = Field(title='机器人自身ID', index=True, max_length=64)
 
     @classmethod
     @with_session
@@ -203,10 +230,30 @@ class CoreDataAnalysis(BaseIDModel, table=True):
 
     @classmethod
     @with_session
+    async def get_sp_data(
+        cls,
+        session: AsyncSession,
+        recently_day_ago: ymddate,
+        bot_id: Optional[str] = None,
+        bot_self_id: Optional[str] = None,
+    ):
+        result = select(cls).where(
+            cls.date == recently_day_ago,
+        )
+        if bot_id:
+            result = result.where(cls.bot_id == bot_id)
+        if bot_self_id:
+            result = result.where(cls.bot_self_id == bot_self_id)
+
+        r = await session.execute(result)
+        return r.scalars().all()
+
+    @classmethod
+    @with_session
     async def _get_stats_for_type(
         cls,
         session: AsyncSession,
-        data_type: str,
+        data_type: DataType,
         today: ymddate,
         thirty_days_ago: ymddate,
         seven_days_ago: ymddate,
@@ -260,7 +307,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         ).where(
             cls.data_type == data_type,
             cls.date == today,
-            cls.target_id.not_in(past_targets_query),  # type: ignore
+            col(cls.target_id).not_in(past_targets_query),  # type: ignore
         )
         if bot_id:
             new_targets_query = new_targets_query.where(cls.bot_id == bot_id)
@@ -356,7 +403,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         seven_days_ago = today - timedelta(days=7)
 
         user_stats = await cls._get_stats_for_type(
-            'user',
+            DataType.USER,
             today,
             thirty_days_ago,
             seven_days_ago,
@@ -366,7 +413,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
 
         # 计算群组相关指标
         group_stats = await cls._get_stats_for_type(
-            'group',
+            DataType.GROUP,
             today,
             thirty_days_ago,
             seven_days_ago,
