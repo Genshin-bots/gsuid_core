@@ -1,4 +1,4 @@
-from typing import List, Type
+from typing import Sequence
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
@@ -20,7 +20,7 @@ template = '''收:{}
 
 
 async def count_group_user():
-    user_list: List[Type[CoreUser]] = await CoreUser.get_all_data()
+    user_list: Sequence[CoreUser] = await CoreUser.get_all_data()
     group_data = {}
     for user in user_list:
         if user.group_id and user.group_id not in group_data:
@@ -45,6 +45,13 @@ async def _u_scheduled_save_global_val_all():
     logger.success('[早柚核心] 状态已保存!')
 
 
+# 每隔半小时执行一次save_all_global_val，但凌晨0点不执行
+@scheduler.scheduled_job('cron', minute='*/30', hour='1-23')
+async def _scheduled_save_global_val_all():
+    await save_all_global_val(0)
+    logger.success('[早柚核心] 状态已同步!')
+
+
 @sv_core_status.on_fullmatch(
     (
         '信息',
@@ -57,7 +64,7 @@ async def send_core_info_msg(bot: Bot, ev: Event):
     await bot.send(await draw_status(ev))
 
 
-@sv_core_status.on_command(('core状态', 'Core状态'), block=True)
+@sv_core_status.on_command(('状态'), block=True)
 async def send_core_status_msg(bot: Bot, ev: Event):
     day = ev.text.strip()
     if day and day.isdigit():

@@ -13,11 +13,13 @@ from typing import (
     Awaitable,
 )
 
-# from sqlalchemy.pool import NullPool
-# from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import exc, text, event, create_engine
 from sqlalchemy.sql.expression import func, null, true
+
+# from sqlalchemy.pool import NullPool
+# from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
 from sqlmodel import (
@@ -40,6 +42,7 @@ T_User = TypeVar('T_User', bound='User')
 T_Bind = TypeVar('T_Bind', bound='Bind')
 T_Push = TypeVar('T_Push', bound='Push')
 T_Cache = TypeVar('T_Cache', bound='Cache')
+T = TypeVar('T')
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -240,6 +243,17 @@ class BaseIDModel(SQLModel):
 
     @classmethod
     @with_session
+    async def get_distinct_list(
+        cls,
+        session: AsyncSession,
+        column: InstrumentedAttribute[T],
+    ):
+        result = await session.execute(select(column).distinct())
+        r = result.all()
+        return r
+
+    @classmethod
+    @with_session
     async def batch_insert_data(
         cls,
         session: AsyncSession,
@@ -259,6 +273,9 @@ class BaseIDModel(SQLModel):
         '''
         MySQL需要预先定义约束条件！！
         '''
+        if not datas:
+            return
+
         values_to_insert = [data.model_dump() for data in datas]
         if _db_type == 'sqlite':
             from sqlalchemy.dialects.sqlite import insert
@@ -280,9 +297,10 @@ class BaseIDModel(SQLModel):
             from sqlalchemy.dialects.mysql import insert
 
             stmt = insert(cls)
-            update_stmt = stmt.on_duplicate_key_update(
-                set_={i: getattr(cls, i) for i in update_key},
-            )
+            update_dict = {
+                col: getattr(stmt.inserted, col) for col in update_key
+            }
+            update_stmt = stmt.on_duplicate_key_update(**update_dict)
         else:
             raise ValueError(f'[GsCore] [数据库] 不支持 {_db_type} 数据库!')
 
@@ -409,7 +427,7 @@ class BaseIDModel(SQLModel):
         session: AsyncSession,
         distinct: bool = False,
         **data,
-    ) -> Optional[List[T_BaseIDModel]]:
+    ):
         '''📝简单介绍:
 
             数据库基类基础选择数据方法
@@ -603,7 +621,7 @@ class BaseBotIDModel(BaseIDModel):
         sql = update(cls).where(and_(getattr(cls, uid_name) == uid))
 
         if bot_id is not None:
-            sql = sql.where(cls.bot_id == bot_id)
+            sql = sql.where(and_(cls.bot_id == bot_id))
 
         if data is not None:
             query = sql.values(**data)
@@ -617,9 +635,9 @@ class BaseBotIDModel(BaseIDModel):
     async def get_all_data(
         cls: Type[T_BaseIDModel],
         session: AsyncSession,
-    ) -> List[Type[T_BaseIDModel]]:
+    ):
         rdata = await session.execute(select(cls))
-        data: List[Type[T_BaseIDModel]] = rdata.scalars().all()
+        data = rdata.scalars().all()
         return data
 
 
@@ -637,7 +655,7 @@ class BaseModel(BaseBotIDModel):
         session: AsyncSession,
         user_id: str,
         bot_id: Optional[str] = None,
-    ) -> Optional[List[T_BaseModel]]:
+    ):
         '''📝简单介绍:
 
             基类的数据选择方法
@@ -656,13 +674,13 @@ class BaseModel(BaseBotIDModel):
 
         ✅返回值:
 
-            🔸`Optional[List[T_BaseModel]]`: 选中符合条件的全部数据，不存在则为`None`
+            🔸`Optional[Sequence[T_BaseModel]]`: 选中符合条件的全部数据，不存在则为`None`
         '''
         if bot_id is None:
             sql = select(cls).where(cls.user_id == user_id)
         else:
             sql = select(cls).where(
-                cls.user_id == user_id, cls.bot_id == bot_id
+                and_(cls.user_id == user_id, cls.bot_id == bot_id)
             )
         result = await session.execute(sql)
         data = result.scalars().all()
@@ -1206,7 +1224,7 @@ class User(BaseModel):
         session: AsyncSession,
         uid: str,
         game_name: Optional[str] = None,
-    ) -> Optional[Type[T_User]]:
+    ):
         '''📝简单介绍:
 
             基础`User`类的数据选择方法
@@ -1236,7 +1254,7 @@ class User(BaseModel):
     @with_session
     async def get_user_all_data_by_user_id(
         cls: Type[T_User], session: AsyncSession, user_id: str
-    ) -> Optional[List[T_User]]:
+    ):
         '''📝简单介绍:
 
             基础`User`类的数据选择方法, 获取该`user_id`绑定的全部数据实例
@@ -1422,14 +1440,14 @@ class User(BaseModel):
         _switch = getattr(cls, switch_name, cls.push_switch)
         sql = select(cls).filter(and_(_switch != 'off', true()))
         data = await session.execute(sql)
-        data_list: List[T_User] = data.scalars().all()
+        data_list = data.scalars().all()
         return [user for user in data_list]
 
     @classmethod
     @with_session
     async def get_all_user(
         cls: Type[T_User], session: AsyncSession, without_error: bool = True
-    ) -> List[T_User]:
+    ):
         '''📝简单介绍:
 
             基础`User`类的扩展方法, 获取到全部的数据列表
@@ -1597,7 +1615,7 @@ class User(BaseModel):
                     .order_by(func.random())
                 )
                 data = await session.execute(sql)
-                user_list: List[Type["User"]] = data.scalars().all()
+                user_list = data.scalars().all()
                 break
             else:
                 user_list = await cls.get_all_user()
@@ -1753,5 +1771,4 @@ class Push(BaseBotIDModel):
             )
         )
         data = result.scalars().all()
-        return data[0] if data else None
         return data[0] if data else None

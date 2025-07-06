@@ -1,3 +1,5 @@
+import asyncio
+import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
 
@@ -11,6 +13,10 @@ from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.plugins_config.gs_config import status_config
 from gsuid_core.utils.image.convert import convert_img, number_to_chinese
+from gsuid_core.utils.database.global_val_models import (
+    CoreDataSummary,
+    CoreDataAnalysis,
+)
 from gsuid_core.utils.image.image_tools import (
     add_footer,
     get_font_x,
@@ -132,7 +138,12 @@ async def draw_title():
     return title
 
 
-async def draw_bar(text1: str, text2: str):
+async def draw_bar(
+    text1: str,
+    text2: str,
+    sample: Optional[Dict[str, Union[Tuple[int, int, int], str]]] = None,
+):
+
     bar = Image.new('RGBA', (1400, 100))
     bar_draw = ImageDraw.Draw(bar)
 
@@ -157,6 +168,25 @@ async def draw_bar(text1: str, text2: str):
         core_font(32),
         'lm',
     )
+
+    if sample:
+        for index, key in enumerate(sample):
+            color = sample[key]
+            x1, y1 = 1150 - index * 175, 30
+            x2, y2 = x1 + 60, y1 + 30
+            bar_draw.rounded_rectangle(
+                (x1, y1, x2, y2),
+                12,
+                color,
+            )
+            bar_draw.text(
+                (x2 + 8, y1 + 15),
+                key,
+                BLACK,
+                core_font(24),
+                'lm',
+            )
+
     return bar
 
 
@@ -225,55 +255,56 @@ async def draw_badge(
 
 
 async def draw_data_analysis1(
-    bot_id: str,
+    bot_id: Optional[str],
     bot_self_id: Optional[str],
 ):
-    local_val = await gv.get_global_val(
-        bot_id,
-        bot_self_id,
-    )
-
-    yesterday = await gv.get_global_val(
-        bot_id,
-        bot_self_id,
-        1,
-    )
-
+    local_val = gv.get_platform_val(bot_id, bot_self_id)
     data_bar = Image.new('RGBA', (1400, 200))
+
+    yesterday: Optional[CoreDataSummary] = (
+        await CoreDataSummary.get_yesterday_data(
+            bot_id=bot_id,
+            bot_self_id=bot_self_id,
+        )
+    )
+    if not yesterday:
+        yesterday = CoreDataSummary(
+            bot_id='1', bot_self_id='2', date=datetime.datetime.now()
+        )
 
     badge1 = await draw_badge(
         '今日接收',
         local_val['receive'],
-        yesterday['receive'],
+        yesterday.receive,
         SE_COLOR,
     )
 
     badge2 = await draw_badge(
         '今日发送',
         local_val['send'],
-        yesterday['send'],
+        yesterday.send,
         HINT_COLOR,
     )
     badge3 = await draw_badge(
         '绘制图片',
         local_val['image'],
-        yesterday['image'],
+        yesterday.image,
     )
     badge4 = await draw_badge(
         '触发命令',
         local_val['command'],
-        yesterday['command'],
+        yesterday.command,
     )
     badge5 = await draw_badge(
         '使用群聊',
-        len(local_val['group']),
-        len(yesterday['group']),
+        local_val['group_count'],
+        yesterday.group_count,
         SE_COLOR,
     )
     badge6 = await draw_badge(
         '使用用户',
-        len(local_val['user']),
-        len(yesterday['user']),
+        local_val['user_count'],
+        yesterday.user_count,
         SE_COLOR,
     )
 
@@ -286,14 +317,8 @@ async def draw_data_analysis1(
 
 
 async def draw_data_analysis2(
-    bot_id: str,
-    bot_self_id: Optional[str],
+    data: Dict,
 ):
-    data = await gv.get_global_analysis(
-        bot_id,
-        bot_self_id,
-    )
-
     badge1 = await draw_badge(
         'DAU',
         data['DAU'],
@@ -377,13 +402,17 @@ def draw_hw_status_bar(title: str, value: float, msg: str):
     return img
 
 
-def draw_hw():
+async def draw_hw():
     img = Image.new('RGBA', (1400, 300))
 
-    cpu = get_cpu_info()
-    memory = get_memory_info()
-    disk = get_disk_info()
-    swap = get_swap_info()
+    cpu_task = asyncio.create_task(get_cpu_info())
+    memory_task = asyncio.create_task(get_memory_info())
+    disk_task = asyncio.create_task(get_disk_info())
+    swap_task = asyncio.create_task(get_swap_info())
+
+    cpu, memory, disk, swap = await asyncio.gather(
+        cpu_task, memory_task, disk_task, swap_task
+    )
 
     cpu_img = draw_hw_status_bar('CPU', cpu['value'], cpu['name'])
     memory_img = draw_hw_status_bar('内存', memory['value'], memory['name'])
@@ -517,34 +546,34 @@ async def draw_curve(
     return img
 
 
-async def draw_curve_img(ev: Event):
-    _data = await gv.get_value_analysis(
-        ev.real_bot_id,
-        ev.bot_self_id,
-        30,
-    )
-
-    _data_2 = await gv.get_value_analysis(
-        ev.real_bot_id,
-        None,
-        30,
-    )
-
+async def draw_curve_img(trends: Dict[str, List[int]]):
     result: Dict[Union[Tuple[int, int, int], str], List[float]] = {
         THEME_COLOR: [],
         HINT_COLOR: [],
         (182, 122, 210): [],
         (27, 146, 210): [],
     }
-    for day in _data:
-        data = _data[day]
-        data2 = _data_2[day]
 
-        result[THEME_COLOR].append(data['receive'])
-        result[HINT_COLOR].append(data['send'])
+    for day in range(30):
+        result[THEME_COLOR].append(
+            trends['all_bots_user_count'][day]
+            if day < len(trends['all_bots_user_count'])
+            else 0
+        )
+        result[HINT_COLOR].append(
+            trends['all_bots_send'][day]
+            if day < len(trends['all_bots_send'])
+            else 0
+        )
 
-        result[(182, 122, 210)].append(data2['receive'])
-        result[(27, 146, 210)].append(data2['send'])
+        result[(182, 122, 210)].append(
+            trends['bot_user_count'][day]
+            if day < len(trends['bot_user_count'])
+            else 0
+        )
+        result[(27, 146, 210)].append(
+            trends['bot_send'][day] if day < len(trends['bot_send']) else 0
+        )
 
     curve_img = await draw_curve(result)
     return curve_img
@@ -584,29 +613,45 @@ async def draw_status(ev: Event):
     bar1 = await draw_bar('服务器基础信息', 'Base Info')
     bar2_1 = await draw_bar('机器人数据统计(单)', 'Data Analysis')
     bar2_2 = await draw_bar('机器人数据统计(多)', 'Data Analysis')
-    bar3 = await draw_bar('日活曲线', 'Daily Activity Curve')
+    bar3 = await draw_bar(
+        '日活曲线',
+        'Daily Activity',
+        {
+            '全用户': THEME_COLOR,
+            '全发送': HINT_COLOR,
+            '使用用户': (182, 122, 210),
+            '发送数量': (27, 146, 210),
+        },
+    )
     bar4 = await draw_bar('插件额外信息', 'Extra Data')
 
-    hw = draw_hw()
+    mdata = await CoreDataAnalysis.calculate_dashboard_metrics()
+    ndata = await CoreDataAnalysis.calculate_dashboard_metrics(
+        ev.real_bot_id,
+        ev.bot_self_id,
+    )
+
+    hw = await draw_hw()
+
     data_bar1_1 = await draw_data_analysis1(
         ev.real_bot_id,
         ev.bot_self_id,
     )
-    data_bar2_1 = await draw_data_analysis2(
-        ev.real_bot_id,
-        ev.bot_self_id,
-    )
     data_bar1_2 = await draw_data_analysis1(
-        ev.real_bot_id,
         None,
-    )
-    data_bar2_2 = await draw_data_analysis2(
-        ev.real_bot_id,
         None,
     )
 
+    data_bar2_1 = await draw_data_analysis2(ndata)
+    data_bar2_2 = await draw_data_analysis2(mdata)
+    trends = await CoreDataSummary.get_day_trends(
+        ev.real_bot_id,
+        ev.bot_self_id,
+    )
+
     plugin_status_img = await draw_plugins_status()
-    curve_img = await draw_curve_img(ev)
+
+    curve_img = await draw_curve_img(trends)
 
     plugins_num = len(plugins_status)
     plugins_h = 100 + plugins_num * 180

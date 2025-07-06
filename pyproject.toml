@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gsuid-core"
-version = "0.7.6"
+version = "0.8.0"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 authors = ["KimigaiiWuyi <444835641@qq.com>", "MingxuanGame <MingxuanGame@outlook.com>"]
 license = "GPL-3.0-or-later"
@@ -52,6 +52,7 @@ pandas = "^2.2.3"
 betterproto = ">=2.0.0b7"
 structlog = ">=25.3.0"
 rich = ">=14.0.0"
+cryptography = ">=45.0.5"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^7.0.0"
@@ -103,6 +104,10 @@ length_sort = true
 skip_gitignore = true
 force_sort_within_sections = true
 extra_standard_library = ["typing_extensions"]
+
+[[tool.uv.index]]
+url = "https://mirrors.volces.com/pypi/simple/"
+default = true
 
 [project]
 authors = [
@@ -158,9 +163,10 @@ dependencies = [
     "betterproto>=2.0.0b7",
     "structlog>=25.3.0",
     "rich>=14.0.0",
+    "cryptography>=45.0.5",
 ]
 name = "gsuid-core"
-version = "0.7.6"
+version = "0.8.0"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
