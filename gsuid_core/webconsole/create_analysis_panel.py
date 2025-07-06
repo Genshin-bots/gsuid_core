@@ -1,5 +1,6 @@
 import random
 import string
+from typing import Optional
 
 from gsuid_core.global_val import (
     get_all_bot_dict,
@@ -24,7 +25,7 @@ def get_chart(api: str):
     }
 
 
-async def get_detail_chart(bot_id: str, bot_self_id: str):
+async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
     characters = string.ascii_lowercase + string.digits
     random_string = ''.join(random.choice(characters) for _ in range(12))
     _p = []
@@ -66,6 +67,7 @@ async def get_detail_chart(bot_id: str, bot_self_id: str):
             "id": f"u:{random_string}",
             "type": "chart",
             "replaceChartOption": True,
+            "height": "1000px",
             "api": {
                 "url": f'/genshinuid/api/loadData/{bot_id}/{bot_self_id}',
                 "method": "post",
@@ -88,13 +90,24 @@ async def get_analysis_page():
         'body': [],
         'id': 'u:a9be7e0dc626',
     }
-    all_bot = await get_all_bot_dict()
+    all_bot = {'汇总': ['汇总']}
+    all_bot.update(await get_all_bot_dict())
     tabs = []
     for bot_id in all_bot:
         for bot_self_id in all_bot[bot_id]:
+            if bot_id == '汇总':
+                _bot_id = None
+            else:
+                _bot_id = bot_id
+
+            if bot_self_id == '汇总':
+                _bot_self_id = None
+            else:
+                _bot_self_id = bot_self_id
+
             data = await CoreDataAnalysis.calculate_dashboard_metrics(
-                bot_id,
-                bot_self_id,
+                _bot_id,
+                _bot_self_id,
             )
             tabs.append(
                 get_tab(
@@ -113,11 +126,15 @@ async def get_analysis_page():
                                     2,
                                 ),
                                 get_divider(),
-                                get_chart(f'{AAPI}/{bot_id}/{bot_self_id}'),
+                                get_chart(f'{AAPI}/{_bot_id}/{_bot_self_id}'),
                                 get_divider(),
-                                get_chart(f'{BAPI}/{bot_id}/{bot_self_id}'),
+                                get_chart(f'{BAPI}/{_bot_id}/{_bot_self_id}'),
                                 get_divider(),
-                                *(await get_detail_chart(bot_id, bot_self_id)),
+                                *(
+                                    await get_detail_chart(
+                                        _bot_id, _bot_self_id
+                                    )
+                                ),
                             ],
                         ),
                     ],

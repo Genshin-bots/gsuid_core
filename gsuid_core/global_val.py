@@ -81,7 +81,7 @@ def get_platform_val(bot_id: Optional[str], bot_self_id: Optional[str]):
     return bot_val[bot_id][bot_self_id]
 
 
-async def get_all_bot_dict():
+async def get_all_bot_dict() -> Dict[str, List[str]]:
     datas = await CoreDataSummary.get_distinct_list(
         CoreDataSummary.bot_id,  # type: ignore
     )

@@ -261,9 +261,13 @@ async def _get_plugins(request: Request):
 @site.auth.requires('root')
 async def _get_data_analysis(
     request: Request,
-    bot_id: str,
-    bot_self_id: str,
+    bot_id: Optional[str],
+    bot_self_id: Optional[str],
 ):
+    if bot_id == 'None' or bot_self_id == 'None':
+        bot_id = None
+        bot_self_id = None
+
     xaxis = []
     series = []
 
@@ -273,12 +277,18 @@ async def _get_data_analysis(
     image_gen_data = []
 
     datas = await CoreDataSummary.get_day_trends(bot_id, bot_self_id)
+
+    if bot_id is None or bot_self_id is None:
+        key = 'all_bots'
+    else:
+        key = 'bot'
+
     for day in range(30):
         xaxis.append(day)
-        send_data.append(datas['bot_send'][day])
-        receive_data.append(datas['bot_receive'][day])
-        command_data.append(datas['bot_command'][day])
-        image_gen_data.append(datas['bot_image'][day])
+        send_data.append(datas[f'{key}_send'][day])
+        receive_data.append(datas[f'{key}_receive'][day])
+        command_data.append(datas[f'{key}_command'][day])
+        image_gen_data.append(datas[f'{key}_image'][day])
 
     series.append({'name': '发送', 'type': 'line', 'data': send_data})
     series.append(
@@ -319,9 +329,12 @@ async def _get_data_analysis(
 @site.auth.requires('root')
 async def _get_usergroup_analysis(
     request: Request,
-    bot_id: str,
-    bot_self_id: str,
+    bot_id: Optional[str],
+    bot_self_id: Optional[str],
 ):
+    if bot_id == 'None' or bot_self_id == 'None':
+        bot_id = None
+        bot_self_id = None
     xaxis = []
     series = []
 
@@ -329,10 +342,18 @@ async def _get_usergroup_analysis(
     user_data = []
 
     datas = await CoreDataSummary.get_day_trends(bot_id, bot_self_id)
+
+    if bot_id is None or bot_self_id is None:
+        group_key = 'all_bots_group_count'
+        user_key = 'all_bots_user_count'
+    else:
+        group_key = 'bot_group_count'
+        user_key = 'bot_user_count'
+
     for day in range(30):
         xaxis.append(day)
-        group_data.append(datas['bot_group_count'][day])
-        user_data.append(datas['bot_user_count'][day])
+        group_data.append(datas[group_key][day])
+        user_data.append(datas[user_key][day])
 
     series.append({'name': '用户', 'type': 'bar', 'data': user_data})
     series.append(
@@ -511,13 +532,14 @@ async def core_log(request: Request):
 async def get_history_data(
     request: Request,
     data: Dict,
-    bot_id: str,
-    bot_self_id: str,
+    bot_id: Optional[str],
+    bot_self_id: Optional[str],
 ):
-    name = data.get('name', None)
+    if bot_id == 'None' or bot_self_id == 'None':
+        bot_id = None
+        bot_self_id = None
 
-    a_pie_data = []
-    b_pie_data = []
+    name = data.get('name', None)
 
     if name is None:
         date = dt_date.today()
@@ -531,83 +553,107 @@ async def get_history_data(
     )
 
     c_data = {}
-    group_count = {}
+    g_data = {}
     for d in datas:
         if d.data_type == DataType.USER:
             if d.command_name not in c_data:
                 c_data[d.command_name] = 0
             c_data[d.command_name] += d.command_count
+
         if d.data_type == DataType.GROUP:
-            if d.target_id not in group_count:
-                group_count[d.target_id] = 0
-            group_count[d.target_id] += d.command_count
+            if d.target_id not in g_data:
+                g_data[d.target_id] = 0
+            g_data[d.target_id] += d.command_count
 
-    for g in group_count:
-        a_pie_data.append({"value": group_count[g], "name": g})
+    # 对c_data按值从大到小排序
+    sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
+    y_data = [k for k, v in sorted_items]
+    series_data = [v for k, v in sorted_items]
 
-    for c in c_data:
-        b_pie_data.append({"value": c_data[c], "name": c})
+    # 对g_data按值从大到小排序
+    gsorted_items = sorted(g_data.items(), key=lambda x: x[1], reverse=True)
+    gy_data = [k for k, v in gsorted_items]
+    gseries_data = [v for k, v in gsorted_items]
 
-    data = {
-        "series": [
-            {
-                "data": a_pie_data,
-                "type": "pie",
-                "name": "群组触发命令",
-                # "selectedMode": "single",
-                "radius": [0, "30%"],
-                "label": {"position": "inner", "fontSize": 14},
-                "labelLine": {"show": False},
-            },
-            {
-                "name": "命令调用次数",
-                "type": "pie",
-                "radius": ["45%", "60%"],
-                "labelLine": {"length": 30},
-                "label": {
-                    "formatter": "{a|{a}}{abg|}\n{hr|}\n  {b|{b}：}{c}  {per|{d}%}",  # noqa: E501
-                    "backgroundColor": "#F6F8FC",
-                    "borderColor": "#8C8D8E",
-                    "borderWidth": 1,
-                    "borderRadius": 4,
-                    "rich": {
-                        "a": {
-                            "color": "#6E7079",
-                            "lineHeight": 22,
-                            "align": "center",
-                        },
-                        "hr": {
-                            "borderColor": "#8C8D8E",
-                            "width": "100%",
-                            "borderWidth": 1,
-                            "height": 0,
-                        },
-                        "b": {
-                            "color": "#4C5058",
-                            "fontSize": 14,
-                            "fontWeight": "bold",
-                            "lineHeight": 33,
-                        },
-                        "per": {
-                            "color": "#fff",
-                            "backgroundColor": "#4C5058",
-                            "padding": [3, 4],
-                            "borderRadius": 4,
-                        },
-                    },
+    bar_height_px = 30  # 为每个条形分配30px高度，看起来会很舒展
+    top_margin = 80  # 给顶部标题、图例留出80px
+    middle_margin = 70  # 给两个图表中间的标题留出70px
+    bottom_margin = 20  # 给图表底部留出20px
+
+    chart1_height = len(y_data) * bar_height_px
+    chart2_height = len(gy_data) * bar_height_px
+    total_chart_height = (
+        top_margin
+        + chart1_height
+        + middle_margin
+        + chart2_height
+        + bottom_margin
+    )
+
+    logger.info(f"动态计算出的图表高度为: {total_chart_height}px")
+
+    echarts_option = {
+        "baseOption": {
+            "timeline": {"show": False},
+            "grid": [
+                {
+                    "left": "0%",
+                    "right": "5%",
+                    "top": "15%",
+                    "bottom": "55%",
+                    "containLabel": True,
                 },
-                "data": b_pie_data,
+                {
+                    "left": "0%",
+                    "right": "5%",
+                    "top": "55%",
+                    "bottom": "5%",
+                    "containLabel": True,
+                },
+            ],
+            "xAxis": [
+                {"type": "value", "boundaryGap": [0, 0.01], "gridIndex": 0},
+                {"type": "value", "boundaryGap": [0, 0.01], "gridIndex": 1},
+            ],
+            "yAxis": [
+                {"type": "category", "data": y_data, "gridIndex": 0},
+                {"type": "category", "data": gy_data, "gridIndex": 1},
+            ],
+            "series": [
+                {
+                    "name": "命令",
+                    "type": "bar",
+                    "data": series_data,
+                    "yAxisIndex": 0,
+                    "xAxisIndex": 0,
+                    "barWidth": "60%",
+                },
+                {
+                    "name": "群组",
+                    "type": "bar",
+                    "data": gseries_data,
+                    "yAxisIndex": 1,
+                    "xAxisIndex": 1,
+                    "barWidth": "60%",
+                },
+            ],
+            "title": [
+                {"text": "触发命令", "left": "center", "top": "1%"},
+                {"text": "群组调用次数", "top": "50%", "left": "center"},
+            ],
+            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+            "legend": {
+                "data": ["命令", "群组"],
+                "top": "8%",
+                "left": "center",
             },
-        ],
-        "tooltip": {
-            "trigger": "item",
-            "formatter": "{a} <br/>{b}: {c} ({d}%)",
-        },
+        }
     }
+
     return {
         'status': 0,
         'msg': 'ok',
-        'data': data,
+        "data": echarts_option,
     }
 
 

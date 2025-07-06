@@ -70,12 +70,57 @@ class CoreDataSummary(BaseIDModel, table=True):
                 func.sum(cls.receive).label("total_receive"),
                 func.sum(cls.send).label("total_send"),
                 func.sum(cls.user_count).label("total_user_count"),
+                func.sum(cls.group_count).label(
+                    "total_group_count",
+                ),  # type: ignore
+                func.sum(cls.image).label("total_image"),  # type: ignore
+                func.sum(cls.command).label("total_command"),  # type: ignore
             )
             .where(cls.date >= thirty_days_ago)
             .where(cls.date < today)  # 使用 < today 更精确
             .group_by(col(cls.date))
             .order_by(col(cls.date))
         )
+
+        agg_rows = (await session.execute(agg_query)).all()
+
+        # 处理全平台汇总数据，填充缺失日期为0
+        agg_map = {row[0]: row for row in agg_rows}
+        all_bots_receive = []
+        all_bots_send = []
+        all_bots_user_count = []
+        all_bots_group_count = []
+        all_bots_image = []
+        all_bots_command = []
+
+        for d in date_list:
+            row = agg_map.get(d)
+            if row:
+                all_bots_receive.append(row[1] or 0)
+                all_bots_send.append(row[2] or 0)
+                all_bots_user_count.append(row[3] or 0)
+                all_bots_group_count.append(row[4] or 0)
+                all_bots_image.append(row[5] or 0)
+                all_bots_command.append(row[6] or 0)
+            else:
+                all_bots_receive.append(0)
+                all_bots_send.append(0)
+                all_bots_user_count.append(0)
+                all_bots_group_count.append(0)
+                all_bots_image.append(0)
+                all_bots_command.append(0)
+
+        result = {
+            "all_bots_receive": all_bots_receive,
+            "all_bots_send": all_bots_send,
+            "all_bots_user_count": all_bots_user_count,
+            "all_bots_group_count": all_bots_group_count,
+            "all_bots_image": all_bots_image,
+            "all_bots_command": all_bots_command,
+        }
+
+        if bot_id is None and bot_self_id is None:
+            return result
 
         # 查询2: 指定机器人数据
         filtered_query = (
@@ -92,24 +137,7 @@ class CoreDataSummary(BaseIDModel, table=True):
                 cls.bot_self_id == bot_self_id
             )
 
-        agg_rows = (await session.execute(agg_query)).all()
         filtered_rows = (await session.execute(filtered_query)).scalars().all()
-
-        # 处理全平台汇总数据，填充缺失日期为0
-        agg_map = {row[0]: row for row in agg_rows}
-        all_bots_receive = []
-        all_bots_send = []
-        all_bots_user_count = []
-        for d in date_list:
-            row = agg_map.get(d)
-            if row:
-                all_bots_receive.append(row[1] or 0)
-                all_bots_send.append(row[2] or 0)
-                all_bots_user_count.append(row[3] or 0)
-            else:
-                all_bots_receive.append(0)
-                all_bots_send.append(0)
-                all_bots_user_count.append(0)
 
         # 处理指定机器人数据，填充缺失日期为0
         filtered_map = {row.date: row for row in filtered_rows}
@@ -130,17 +158,16 @@ class CoreDataSummary(BaseIDModel, table=True):
                 getattr(row, "group_count", 0) if row else 0
             )
 
-        result = {
-            "all_bots_receive": all_bots_receive,
-            "all_bots_send": all_bots_send,
-            "all_bots_user_count": all_bots_user_count,
-            "bot_receive": bot_receive,
-            "bot_send": bot_send,
-            "bot_image": bot_image,
-            "bot_command": bot_command,
-            "bot_user_count": bot_user_count,
-            "bot_group_count": bot_group_count,
-        }
+        result.update(
+            {
+                "bot_receive": bot_receive,
+                "bot_send": bot_send,
+                "bot_image": bot_image,
+                "bot_command": bot_command,
+                "bot_user_count": bot_user_count,
+                "bot_group_count": bot_group_count,
+            }
+        )
 
         return result
 
