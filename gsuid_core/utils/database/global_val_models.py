@@ -4,11 +4,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import UniqueConstraint, distinct
 from sqlmodel import Field, Index, col, func, select
-from sqlalchemy import (
-    UniqueConstraint,
-    distinct,
-)
 
 from .base_models import BaseIDModel, with_session
 

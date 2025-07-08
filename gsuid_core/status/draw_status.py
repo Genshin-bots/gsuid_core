@@ -504,7 +504,7 @@ async def draw_curve(
     is_text = False
 
     for color in datas:
-        data = datas[color][:num][::-1]
+        data = datas[color][:num]
         y_ticks = generate_y_ticks(data)
         y_ticks = [int(i) for i in y_ticks]
 

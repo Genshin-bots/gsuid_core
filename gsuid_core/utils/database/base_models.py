@@ -22,15 +22,7 @@ from sqlalchemy.sql.expression import func, null, true
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore
-from sqlmodel import (
-    Field,
-    SQLModel,
-    col,
-    and_,
-    delete,
-    select,
-    update,
-)
+from sqlmodel import Field, SQLModel, col, and_, delete, select, update
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
@@ -283,7 +275,7 @@ class BaseIDModel(SQLModel):
             stmt = insert(cls)
             update_stmt = stmt.on_conflict_do_update(
                 index_elements=index_elements,
-                set_={i: getattr(cls, i) for i in update_key},
+                set_={k: stmt.excluded[k] for k in update_key},
             )
         elif _db_type == 'postgresql':
             from sqlalchemy.dialects.postgresql import insert
@@ -291,7 +283,7 @@ class BaseIDModel(SQLModel):
             stmt = insert(cls)
             update_stmt = stmt.on_conflict_do_update(
                 index_elements=index_elements,
-                set_={i: getattr(cls, i) for i in update_key},
+                set_={k: stmt.excluded[k] for k in update_key},
             )
         elif _db_type == 'mysql':
             from sqlalchemy.dialects.mysql import insert
