@@ -55,7 +55,25 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
                                     "name": "${event.data.value}",
                                 },
                                 "dataMergeMode": "merge",
-                            }
+                            },
+                            {
+                                "componentId": f"u:{random_string}2",
+                                "ignoreError": False,
+                                "actionType": "reload",
+                                "data": {
+                                    "name": "${event.data.value}",
+                                },
+                                "dataMergeMode": "merge",
+                            },
+                            {
+                                "componentId": f"u:{random_string}3",
+                                "ignoreError": False,
+                                "actionType": "reload",
+                                "data": {
+                                    "name": "${event.data.value}",
+                                },
+                                "dataMergeMode": "merge",
+                            },
                         ],
                     }
                 },
@@ -69,7 +87,39 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
             "replaceChartOption": True,
             "height": "1000px",
             "api": {
-                "url": f'/genshinuid/api/loadData/{bot_id}/{bot_self_id}',
+                "url": f'/genshinuid/api/loadData1/{bot_id}/{bot_self_id}',
+                "method": "post",
+                "requestAdaptor": "",
+                "adaptor": "",
+                "messages": {},
+                "dataType": "json",
+            },
+        }
+    )
+    _p.append(
+        {
+            "id": f"u:{random_string}2",
+            "type": "chart",
+            "replaceChartOption": True,
+            "height": "1000px",
+            "api": {
+                "url": f'/genshinuid/api/loadData2/{bot_id}/{bot_self_id}',
+                "method": "post",
+                "requestAdaptor": "",
+                "adaptor": "",
+                "messages": {},
+                "dataType": "json",
+            },
+        }
+    )
+    _p.append(
+        {
+            "id": f"u:{random_string}3",
+            "type": "chart",
+            "replaceChartOption": True,
+            "height": "1000px",
+            "api": {
+                "url": f'/genshinuid/api/loadData3/{bot_id}/{bot_self_id}',
                 "method": "post",
                 "requestAdaptor": "",
                 "adaptor": "",

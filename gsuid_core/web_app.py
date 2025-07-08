@@ -1,8 +1,8 @@
 import asyncio
 from io import BytesIO
 from pathlib import Path
-from datetime import datetime
 from datetime import date as dt_date
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Sequence
 
@@ -54,6 +54,8 @@ from gsuid_core.utils.plugins_update._plugins import (
 
 is_clean_pic = core_plugins_config.get_config('EnableCleanPicSrv').data
 pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
+
+TEMP_DICT: Dict[str, Sequence[CoreDataAnalysis]] = {}
 
 
 @asynccontextmanager
@@ -284,7 +286,10 @@ async def _get_data_analysis(
         key = 'bot'
 
     for day in range(30):
-        xaxis.append(day)
+        daystr = (
+            datetime.now() - timedelta(days=30) + timedelta(days=day)
+        ).strftime('%m-%d')
+        xaxis.append(daystr)
         send_data.append(datas[f'{key}_send'][day])
         receive_data.append(datas[f'{key}_receive'][day])
         command_data.append(datas[f'{key}_command'][day])
@@ -351,7 +356,10 @@ async def _get_usergroup_analysis(
         user_key = 'bot_user_count'
 
     for day in range(30):
-        xaxis.append(day)
+        daystr = (
+            datetime.now() - timedelta(days=30) + timedelta(days=day)
+        ).strftime('%m-%d')
+        xaxis.append(daystr)
         group_data.append(datas[group_key][day])
         user_data.append(datas[user_key][day])
 
@@ -527,128 +535,202 @@ async def core_log(request: Request):
     return StreamingResponse(read_log(), media_type='text/event-stream')
 
 
-@app.post('/genshinuid/api/loadData/{bot_id}/{bot_self_id}')
+@app.post('/genshinuid/api/loadData{count}/{bot_id}/{bot_self_id}')
 @site.auth.requires('root')
 async def get_history_data(
     request: Request,
     data: Dict,
+    count: int,
     bot_id: Optional[str],
     bot_self_id: Optional[str],
 ):
-    if bot_id == 'None' or bot_self_id == 'None':
-        bot_id = None
-        bot_self_id = None
-
     name = data.get('name', None)
-
     if name is None:
         date = dt_date.today()
     else:
         date = dt_date.fromisoformat(name)
 
-    datas: Sequence[CoreDataAnalysis] = await CoreDataAnalysis.get_sp_data(
-        date,
-        bot_id,
-        bot_self_id,
-    )
+    date_format = date.strftime('%Y-%m-%d')
+
+    if count == 1:
+        if bot_id == 'None' or bot_self_id == 'None':
+            bot_id = None
+            bot_self_id = None
+
+        datas: Sequence[CoreDataAnalysis] = await CoreDataAnalysis.get_sp_data(
+            date,
+            bot_id,
+            bot_self_id,
+        )
+
+        TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}'] = datas
+    else:
+        while f'{bot_id}/{bot_self_id}/{date_format}' not in TEMP_DICT:
+            await asyncio.sleep(1)
+        datas = TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}']
 
     c_data = {}
-    g_data = {}
+    g_data: Dict[str, Dict[str, int]] = {}
+    u_data: Dict[str, Dict[str, int]] = {}
     for d in datas:
         if d.data_type == DataType.USER:
             if d.command_name not in c_data:
                 c_data[d.command_name] = 0
             c_data[d.command_name] += d.command_count
 
+            if d.target_id not in u_data:
+                u_data[d.target_id] = {}
+            if d.command_name not in u_data[d.target_id]:
+                u_data[d.target_id][d.command_name] = 0
+            u_data[d.target_id][d.command_name] += d.command_count
+
         if d.data_type == DataType.GROUP:
             if d.target_id not in g_data:
-                g_data[d.target_id] = 0
-            g_data[d.target_id] += d.command_count
+                g_data[d.target_id] = {}
+            if d.command_name not in g_data[d.target_id]:
+                g_data[d.target_id][d.command_name] = 0
+            g_data[d.target_id][d.command_name] += d.command_count
 
     # 对c_data按值从大到小排序
     sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
     y_data = [k for k, v in sorted_items]
     series_data = [v for k, v in sorted_items]
 
-    # 对g_data按值从大到小排序
-    gsorted_items = sorted(g_data.items(), key=lambda x: x[1], reverse=True)
-    gy_data = [k for k, v in gsorted_items]
-    gseries_data = [v for k, v in gsorted_items]
-
-    bar_height_px = 30  # 为每个条形分配30px高度，看起来会很舒展
-    top_margin = 80  # 给顶部标题、图例留出80px
-    middle_margin = 70  # 给两个图表中间的标题留出70px
-    bottom_margin = 20  # 给图表底部留出20px
-
-    chart1_height = len(y_data) * bar_height_px
-    chart2_height = len(gy_data) * bar_height_px
-    total_chart_height = (
-        top_margin
-        + chart1_height
-        + middle_margin
-        + chart2_height
-        + bottom_margin
-    )
-
-    logger.info(f"动态计算出的图表高度为: {total_chart_height}px")
-
-    echarts_option = {
-        "baseOption": {
-            "timeline": {"show": False},
-            "grid": [
-                {
-                    "left": "0%",
-                    "right": "5%",
-                    "top": "15%",
-                    "bottom": "55%",
-                    "containLabel": True,
-                },
-                {
-                    "left": "0%",
-                    "right": "5%",
-                    "top": "55%",
-                    "bottom": "5%",
-                    "containLabel": True,
-                },
-            ],
-            "xAxis": [
-                {"type": "value", "boundaryGap": [0, 0.01], "gridIndex": 0},
-                {"type": "value", "boundaryGap": [0, 0.01], "gridIndex": 1},
-            ],
-            "yAxis": [
-                {"type": "category", "data": y_data, "gridIndex": 0},
-                {"type": "category", "data": gy_data, "gridIndex": 1},
-            ],
+    if count == 1:
+        echarts_option = {
+            "title": {"text": "命令使用量"},
+            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+            "legend": {},
+            "grid": {
+                "left": "3%",
+                "right": "4%",
+                "bottom": "3%",
+                "containLabel": True,
+            },
+            "xAxis": {"type": "value", "boundaryGap": [0, 0.01]},
+            "yAxis": {
+                "type": "category",
+                "data": y_data,
+            },
             "series": [
                 {
                     "name": "命令",
                     "type": "bar",
                     "data": series_data,
-                    "yAxisIndex": 0,
-                    "xAxisIndex": 0,
-                    "barWidth": "60%",
-                },
-                {
-                    "name": "群组",
-                    "type": "bar",
-                    "data": gseries_data,
-                    "yAxisIndex": 1,
-                    "xAxisIndex": 1,
-                    "barWidth": "60%",
-                },
+                }
             ],
-            "title": [
-                {"text": "触发命令", "left": "center", "top": "1%"},
-                {"text": "群组调用次数", "top": "50%", "left": "center"},
-            ],
-            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-            "legend": {
-                "data": ["命令", "群组"],
-                "top": "8%",
-                "left": "center",
-            },
         }
-    }
+    elif count == 2:
+        # 对g_data进行筛选，仅保留命令数量总和前20的target_id，并按数量降序排序
+        # 计算每个target_id的命令总数
+        group_total = {gid: sum(cmds.values()) for gid, cmds in g_data.items()}
+        # 取前20个target_id
+        top_groups = sorted(
+            group_total.items(), key=lambda x: x[1], reverse=True
+        )[:20]
+        # 构建新的g_data，只保留前20
+        g_data = {gid: g_data[gid] for gid, _ in top_groups}
+
+        uall_series: List[str] = y_data[:5] + ['其他命令']
+        u_series = []
+        ufinnal_count: Dict[str, List[int]] = {c: [] for c in uall_series}
+        for g in g_data:
+            others = 0
+            for cg in g_data[g]:
+                if cg in ufinnal_count:
+                    ufinnal_count[cg].append(g_data[g][cg])
+                else:
+                    others += g_data[g][cg]
+            ufinnal_count['其他命令'].append(others)
+
+        for f in ufinnal_count:
+            u_series.append(
+                {
+                    "name": f,
+                    "type": "bar",
+                    "stack": "total",
+                    "label": {"show": True},
+                    "emphasis": {"focus": "series"},
+                    "data": ufinnal_count[f],
+                }
+            )
+
+        echarts_option = {
+            "title": {"text": "群组命令触发量"},
+            "tooltip": {
+                "trigger": "axis",
+                "axisPointer": {"type": "shadow"},
+            },
+            "legend": {},
+            "grid": {
+                "left": "3%",
+                "right": "4%",
+                "bottom": "3%",
+                "containLabel": True,
+            },
+            "xAxis": {"type": "value"},
+            "yAxis": {
+                "type": "category",
+                "data": list(g_data.keys()),
+            },
+            "series": u_series,
+        }
+
+    else:
+        # 对u_data进行筛选，仅保留命令数量总和前20的target_id，并按数量降序排序
+        # 计算每个target_id的命令总数
+        user_total = {gid: sum(cmds.values()) for gid, cmds in u_data.items()}
+        # 取前20个target_id
+        top_users = sorted(
+            user_total.items(), key=lambda x: x[1], reverse=True
+        )[:20]
+        # 构建新的u_data，只保留前20
+        u_data = {gid: u_data[gid] for gid, _ in top_users}
+
+        all_series: List[str] = y_data[:5] + ['其他命令']
+        u_series = []
+        finnal_count: Dict[str, List[int]] = {c: [] for c in all_series}
+        for g in u_data:
+            others = 0
+            for cg in u_data[g]:
+                if cg in finnal_count:
+                    finnal_count[cg].append(u_data[g][cg])
+                else:
+                    others += u_data[g][cg]
+            finnal_count['其他命令'].append(others)
+
+        for f in finnal_count:
+            u_series.append(
+                {
+                    "name": f,
+                    "type": "bar",
+                    "stack": "total",
+                    "label": {"show": True},
+                    "emphasis": {"focus": "series"},
+                    "data": finnal_count[f],
+                }
+            )
+
+        echarts_option = {
+            "title": {"text": "个人命令触发量"},
+            "tooltip": {
+                "trigger": "axis",
+                "axisPointer": {"type": "shadow"},
+            },
+            "legend": {},
+            "grid": {
+                "left": "3%",
+                "right": "4%",
+                "bottom": "3%",
+                "containLabel": True,
+            },
+            "xAxis": {"type": "value"},
+            "yAxis": {
+                "type": "category",
+                "data": list(u_data.keys()),
+            },
+            "series": u_series,
+        }
 
     return {
         'status': 0,
