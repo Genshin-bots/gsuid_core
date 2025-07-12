@@ -45,8 +45,8 @@ async def _u_scheduled_save_global_val_all():
     logger.success('[早柚核心] 状态已保存!')
 
 
-# 每隔半小时执行一次save_all_global_val，但凌晨0点不执行
-@scheduler.scheduled_job('cron', minute='*/30', hour='1-23')
+# 每隔10分钟执行一次save_all_global_val，但凌晨0点不执行
+@scheduler.scheduled_job('cron', minute='*/10', hour='1-23')
 async def _scheduled_save_global_val_all():
     await save_all_global_val(0)
     logger.success('[早柚核心] 状态已同步!')

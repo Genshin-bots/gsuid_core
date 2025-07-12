@@ -494,7 +494,7 @@ async def draw_curve(
     img = Image.new('RGBA', (1400, 550))
     img_draw = ImageDraw.Draw(img)
 
-    num = 30
+    num = 45
     rad = 5
     a_y = 375
     a_x = 1200
@@ -554,7 +554,7 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
         (27, 146, 210): [],
     }
 
-    for day in range(30):
+    for day in range(46):
         result[THEME_COLOR].append(
             trends['all_bots_user_count'][day]
             if day < len(trends['all_bots_user_count'])

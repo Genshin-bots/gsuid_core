@@ -1,7 +1,7 @@
 from typing import List, Type, Union, Optional, Sequence
 
-from sqlalchemy import or_
 from sqlmodel import Field, select, update
+from sqlalchemy import UniqueConstraint, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.bot import Bot
@@ -109,7 +109,15 @@ class CoreTag(BaseIDModel, table=True):
 
 
 class CoreUser(BaseBotIDModel, table=True):
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        UniqueConstraint(
+            'user_id',
+            'group_id',
+            'user_name',
+            name='record_coreuser',
+        ),
+        {'extend_existing': True},
+    )
 
     user_id: str = Field(default=None, title='账号')
     group_id: Optional[str] = Field(default=None, title='群号')
@@ -261,7 +269,14 @@ class CoreUser(BaseBotIDModel, table=True):
 
 
 class CoreGroup(BaseBotIDModel, table=True):
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        UniqueConstraint(
+            'group_id',
+            'group_name',
+            name='record_coregroup',
+        ),
+        {'extend_existing': True},
+    )
 
     group_id: str = Field(default='1', title='群号')
     group_count: int = Field(default=0, title='群活跃人数(每天更新)')

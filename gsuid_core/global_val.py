@@ -321,7 +321,7 @@ async def _save_global_val_to_database(
     )
     await CoreDataSummary.batch_insert_data_with_update(
         insert_summary,
-        ['receive', 'send', 'command', 'image'],
+        ['receive', 'send', 'command', 'image', 'user_count', 'group_count'],
         ['date', 'bot_id', 'bot_self_id'],
     )
 

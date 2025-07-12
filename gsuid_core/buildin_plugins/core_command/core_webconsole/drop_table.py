@@ -12,7 +12,6 @@ async def drop_web_table():
         metadata = MetaData()
         try:
             await conn.run_sync(metadata.reflect)
-            # print(metadata.tables)
         except NoSuchTableError:
             pass
         if 'auth_role' in metadata.tables:

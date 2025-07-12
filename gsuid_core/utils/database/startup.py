@@ -9,7 +9,13 @@ from gsuid_core.global_val import global_val_path
 
 from .base_models import DB_PATH, db_url, async_maker
 
-exec_list = []
+exec_list = [
+    'CREATE INDEX idx_user_id ON coreuser (user_id);',
+    'CREATE INDEX idx_group_id ON coreuser (group_id);',
+    'CREATE INDEX idx_user_name ON coreuser (user_name);',
+    'CREATE INDEX idx_group_name ON coregroup (group_name);',
+    'CREATE INDEX idx_group_id ON coregroup (group_id);',
+]
 
 
 @on_core_start

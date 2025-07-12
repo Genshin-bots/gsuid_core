@@ -55,8 +55,8 @@ class CoreDataSummary(BaseIDModel, table=True):
         """
         # 1. 定义时间范围
         today = datetime.now().date()
-        thirty_days_ago = today - timedelta(days=30)
-        date_list = [thirty_days_ago + timedelta(days=i) for i in range(30)]
+        thirty_days_ago = today - timedelta(days=45)
+        date_list = [thirty_days_ago + timedelta(days=i) for i in range(46)]
 
         # --- 2. 准备两次查询 ---
 
@@ -238,6 +238,69 @@ class CoreDataAnalysis(BaseIDModel, table=True):
     date: ymddate = Field(title='日期', index=True)
     bot_id: str = Field(title='机器人平台', index=True, max_length=64)
     bot_self_id: str = Field(title='机器人自身ID', index=True, max_length=64)
+
+    # 几个版本之后删除
+    @classmethod
+    @with_session
+    async def update_summary(
+        cls,
+        session: AsyncSession,
+    ):
+        # 查询最近6天内所有记录，统计唯一 target_id 数量
+        recent_days = ymddate.today() - timedelta(days=6)
+        result = (
+            select(
+                col(cls.date),
+                col(cls.bot_id),
+                col(cls.bot_self_id),
+                col(cls.data_type),
+                func.count(distinct(col(cls.target_id))).label("count"),
+            )  # type: ignore
+            .where(cls.date >= recent_days)
+            .group_by(
+                col(cls.date),
+                col(cls.bot_id),
+                col(cls.bot_self_id),
+                col(cls.data_type),
+            )
+        )
+        rows = (await session.execute(result)).all()
+
+        # 聚合数据，按(date, bot_id, bot_self_id)分组
+        summary_map = {}
+        for date, bot_id, bot_self_id, data_type, count in rows:
+            key = (date, bot_id, bot_self_id)
+            if key not in summary_map:
+                summary_map[key] = {
+                    "date": date,
+                    "bot_id": bot_id,
+                    "bot_self_id": bot_self_id,
+                    "user_count": 0,
+                    "group_count": 0,
+                }
+            if data_type == DataType.USER:
+                summary_map[key]["user_count"] = count
+            elif data_type == DataType.GROUP:
+                summary_map[key]["group_count"] = count
+
+        # 构造 CoreDataSummary 实例并批量更新
+        insert_summary = []
+        for v in summary_map.values():
+            insert_summary.append(
+                CoreDataSummary(
+                    date=v["date"],
+                    bot_id=v["bot_id"],
+                    bot_self_id=v["bot_self_id"],
+                    user_count=v["user_count"],
+                    group_count=v["group_count"],
+                )
+            )
+        if insert_summary:
+            await CoreDataSummary.batch_insert_data_with_update(
+                insert_summary,
+                ["user_count", "group_count"],
+                ["date", "bot_id", "bot_self_id"],
+            )
 
     @classmethod
     @with_session

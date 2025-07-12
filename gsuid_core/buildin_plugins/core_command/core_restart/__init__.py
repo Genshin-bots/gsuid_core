@@ -48,14 +48,14 @@ async def check_msg():
 
 @sv_core_config.on_fullmatch(('重启'), block=True)
 async def send_restart_msg(bot: Bot, ev: Event):
-    await bot.logger.warning('开始执行[重启]')
+    await bot.logger.warning('[早柚核心] 开始执行[重启]')
     if ev.group_id:
         send_id = ev.group_id
         send_type = 'group'
     else:
         send_id = ev.user_id
         send_type = 'direct'
-    await bot.send('正在执行[core重启]...')
+    await bot.send('🔔 正在执行[core重启]...')
     await restart_genshinuid(
         bot.bot_id,
         ev.bot_self_id,
@@ -66,7 +66,7 @@ async def send_restart_msg(bot: Bot, ev: Event):
 
 @sv_core_config.on_fullmatch(('关闭'), block=True)
 async def send_shutdown_msg(bot: Bot, ev: Event):
-    await bot.logger.warning('开始执行[关闭]')
-    await bot.send('正在执行[gs关闭Core]...')
+    await bot.logger.warning('[早柚核心] 开始执行[关闭]')
+    await bot.send('🔔 正在执行[gs关闭Core]...')
     await save_global_val()
     os._exit(0)

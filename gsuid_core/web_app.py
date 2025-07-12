@@ -55,7 +55,7 @@ from gsuid_core.utils.plugins_update._plugins import (
 is_clean_pic = core_plugins_config.get_config('EnableCleanPicSrv').data
 pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
 
-TEMP_DICT: Dict[str, Sequence[CoreDataAnalysis]] = {}
+TEMP_DICT: Dict[str, Dict] = {}
 
 
 @asynccontextmanager
@@ -81,6 +81,9 @@ async def lifespan(app: FastAPI):
     await start_scheduler()
     asyncio.create_task(clean_log())
     await trans_global_val()
+
+    # 将在几个版本后删除
+    await CoreDataAnalysis.update_summary()
 
     yield
 
@@ -285,9 +288,9 @@ async def _get_data_analysis(
     else:
         key = 'bot'
 
-    for day in range(30):
+    for day in range(46):
         daystr = (
-            datetime.now() - timedelta(days=30) + timedelta(days=day)
+            datetime.now() - timedelta(days=45) + timedelta(days=day)
         ).strftime('%m-%d')
         xaxis.append(daystr)
         send_data.append(datas[f'{key}_send'][day])
@@ -355,9 +358,9 @@ async def _get_usergroup_analysis(
         group_key = 'bot_group_count'
         user_key = 'bot_user_count'
 
-    for day in range(30):
+    for day in range(46):
         daystr = (
-            datetime.now() - timedelta(days=30) + timedelta(days=day)
+            datetime.now() - timedelta(days=45) + timedelta(days=day)
         ).strftime('%m-%d')
         xaxis.append(daystr)
         group_data.append(datas[group_key][day])
@@ -563,33 +566,39 @@ async def get_history_data(
             bot_self_id,
         )
 
-        TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}'] = datas
+        c_data: Dict[str, int] = {}
+        g_data: Dict[str, Dict[str, int]] = {}
+        u_data: Dict[str, Dict[str, int]] = {}
+        for d in datas:
+            if d.data_type == DataType.USER:
+                if d.command_name not in c_data:
+                    c_data[d.command_name] = 0
+                c_data[d.command_name] += d.command_count
+
+                if d.target_id not in u_data:
+                    u_data[d.target_id] = {}
+                if d.command_name not in u_data[d.target_id]:
+                    u_data[d.target_id][d.command_name] = 0
+                u_data[d.target_id][d.command_name] += d.command_count
+
+            if d.data_type == DataType.GROUP:
+                if d.target_id not in g_data:
+                    g_data[d.target_id] = {}
+                if d.command_name not in g_data[d.target_id]:
+                    g_data[d.target_id][d.command_name] = 0
+                g_data[d.target_id][d.command_name] += d.command_count
+
+        TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}'] = {
+            'c_data': c_data,
+            'g_data': g_data,
+            'u_data': u_data,
+        }
     else:
         while f'{bot_id}/{bot_self_id}/{date_format}' not in TEMP_DICT:
             await asyncio.sleep(1)
-        datas = TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}']
-
-    c_data = {}
-    g_data: Dict[str, Dict[str, int]] = {}
-    u_data: Dict[str, Dict[str, int]] = {}
-    for d in datas:
-        if d.data_type == DataType.USER:
-            if d.command_name not in c_data:
-                c_data[d.command_name] = 0
-            c_data[d.command_name] += d.command_count
-
-            if d.target_id not in u_data:
-                u_data[d.target_id] = {}
-            if d.command_name not in u_data[d.target_id]:
-                u_data[d.target_id][d.command_name] = 0
-            u_data[d.target_id][d.command_name] += d.command_count
-
-        if d.data_type == DataType.GROUP:
-            if d.target_id not in g_data:
-                g_data[d.target_id] = {}
-            if d.command_name not in g_data[d.target_id]:
-                g_data[d.target_id][d.command_name] = 0
-            g_data[d.target_id][d.command_name] += d.command_count
+        c_data = TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}']['c_data']
+        g_data = TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}']['g_data']
+        u_data = TEMP_DICT[f'{bot_id}/{bot_self_id}/{date_format}']['u_data']
 
     # 对c_data按值从大到小排序
     sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
@@ -631,16 +640,22 @@ async def get_history_data(
         # 构建新的g_data，只保留前20
         g_data = {gid: g_data[gid] for gid, _ in top_groups}
 
-        uall_series: List[str] = y_data[:5] + ['其他命令']
+        uall_series: List[str] = y_data[:8] + ['其他命令']
         u_series = []
         ufinnal_count: Dict[str, List[int]] = {c: [] for c in uall_series}
         for g in g_data:
             others = 0
-            for cg in g_data[g]:
-                if cg in ufinnal_count:
-                    ufinnal_count[cg].append(g_data[g][cg])
+            group_cmds = g_data[g]
+            for cmd in group_cmds:
+                if cmd in ufinnal_count:
+                    ufinnal_count[cmd].append(g_data[g][cmd])
                 else:
-                    others += g_data[g][cg]
+                    others += g_data[g][cmd]
+
+            for cmd in y_data[:8]:
+                if cmd not in group_cmds:
+                    ufinnal_count[cmd].append(0)
+
             ufinnal_count['其他命令'].append(others)
 
         for f in ufinnal_count:
@@ -677,26 +692,28 @@ async def get_history_data(
         }
 
     else:
-        # 对u_data进行筛选，仅保留命令数量总和前20的target_id，并按数量降序排序
-        # 计算每个target_id的命令总数
         user_total = {gid: sum(cmds.values()) for gid, cmds in u_data.items()}
-        # 取前20个target_id
         top_users = sorted(
             user_total.items(), key=lambda x: x[1], reverse=True
         )[:20]
-        # 构建新的u_data，只保留前20
         u_data = {gid: u_data[gid] for gid, _ in top_users}
 
-        all_series: List[str] = y_data[:5] + ['其他命令']
+        all_series: List[str] = y_data[:8] + ['其他命令']
         u_series = []
         finnal_count: Dict[str, List[int]] = {c: [] for c in all_series}
-        for g in u_data:
+        for gid in u_data:
             others = 0
-            for cg in u_data[g]:
-                if cg in finnal_count:
-                    finnal_count[cg].append(u_data[g][cg])
+            user_cmds = u_data[gid]
+            for cmd in user_cmds:
+                if cmd in finnal_count:
+                    finnal_count[cmd].append(user_cmds[cmd])
                 else:
-                    others += u_data[g][cg]
+                    others += user_cmds[cmd]
+
+            for cmd in y_data[:8]:
+                if cmd not in user_cmds:
+                    finnal_count[cmd].append(0)
+
             finnal_count['其他命令'].append(others)
 
         for f in finnal_count:
