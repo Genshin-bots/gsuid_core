@@ -8,6 +8,7 @@ from PIL import Image
 from gsuid_core.help.utils import ICON
 from gsuid_core.version import __version__
 from gsuid_core.help.model import PluginHelp
+from gsuid_core.sv import get_plugin_available_prefix
 from gsuid_core.utils.plugins_config.gs_config import sp_config
 from gsuid_core.help.draw_new_plugin_help import TEXT_PATH, get_new_help
 
@@ -43,7 +44,7 @@ async def draw_core_help(pm: int):
         plugin_info={f'v{__version__}': ''},
         plugin_icon=Image.open(ICON),
         plugin_help=help_data,
-        plugin_prefix='',
+        plugin_prefix=get_plugin_available_prefix('core_command'),
         item_bg=item_bg,
         need_cover=need_cover,
         help_mode=help_mode,

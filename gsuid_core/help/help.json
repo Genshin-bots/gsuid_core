@@ -39,7 +39,7 @@
         {
           "name": "绑定设备",
           "desc": "仅限私聊绑定设备",
-          "eg": "mys绑定设备",
+          "eg": "绑定设备",
           "need_ck": true,
           "need_sk": false,
           "need_admin": false
@@ -66,7 +66,7 @@
         {
           "name": "刷新插件列表",
           "desc": "可以同步最新的插件列表",
-          "eg": "core刷新插件列表",
+          "eg": "刷新插件列表",
           "need_ck": false,
           "need_sk": false,
           "need_admin": true
@@ -74,7 +74,7 @@
         {
           "name": "安装插件",
           "desc": "安装插件",
-          "eg": "core安装插件gsuid",
+          "eg": "安装插件gsuid",
           "need_ck": false,
           "need_sk": false,
           "need_admin": true
@@ -82,7 +82,7 @@
         {
           "name": "卸载插件",
           "desc": "卸载插件",
-          "eg": "core卸载插件Pokemon",
+          "eg": "卸载插件Pokemon",
           "need_ck": false,
           "need_sk": false,
           "need_admin": true
@@ -126,7 +126,7 @@
         {
           "name": "更新依赖",
           "desc": "更新依赖",
-          "eg": "core更新依赖",
+          "eg": "更新依赖",
           "need_ck": true,
           "need_sk": false,
           "need_admin": false
@@ -156,7 +156,7 @@
         {
           "name": "重启",
           "desc": "重启核心",
-          "eg": "core重启",
+          "eg": "重启",
           "need_ck": false,
           "need_sk": false,
           "need_admin": false
@@ -164,7 +164,7 @@
         {
           "name": "关闭",
           "desc": "警告：关闭后将无法通过命令调用",
-          "eg": "core关闭",
+          "eg": "关闭",
           "need_ck": true,
           "need_sk": false,
           "need_admin": false
@@ -172,7 +172,7 @@
         {
           "name": "状态",
           "desc": "查看目前核心的状态",
-          "eg": "core状态",
+          "eg": "状态",
           "need_ck": false,
           "need_sk": false,
           "need_admin": false
@@ -180,7 +180,7 @@
         {
           "name": "信息",
           "desc": "查看目前核心的信息",
-          "eg": "core信息",
+          "eg": "信息",
           "highlight": 0,
           "need_ck": false,
           "need_sk": false,
@@ -233,7 +233,7 @@
         {
           "name": "重置Web密码",
           "desc": "重置网页控制台密码",
-          "eg": "core重置网页控制台密码",
+          "eg": "重置网页控制台密码",
           "highlight": 4,
           "need_ck": false,
           "need_sk": false,

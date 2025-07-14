@@ -314,9 +314,14 @@ async def get_new_help(
                 anchor='lm',
             )
 
+            if cag == '插件帮助一览':
+                eg = command_eg
+            else:
+                eg = plugin_prefix + command_eg
+
             command_draw.text(
                 (156, 116),
-                plugin_prefix + command_eg,
+                eg,
                 sub_color,
                 font=core_font(26),
                 anchor='lm',
@@ -351,5 +356,4 @@ async def get_new_help(
     )
     cache[plugin_name] = 1
 
-    return await convert_img(img)
     return await convert_img(img)
