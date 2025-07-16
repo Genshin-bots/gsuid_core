@@ -475,33 +475,37 @@ class BaseMysApi:
 
             if uid is not None:
                 try:
-                    async with timeout(5):
-                        device_id = await self.get_user_device_id(
-                            uid,
-                            game_name,
-                        )
-                        header['x-rpc-device_fp'] = await self.get_user_fp(
-                            uid,
-                            game_name,
-                        )
-                        if device_id is not None:
-                            header['x-rpc-device_id'] = device_id
-
-                        dfp: Optional[str] = await GsUser.get_user_attr_by_uid(
-                            uid,
-                            'device_info',
-                            'sr' if self.is_sr else game_name,
-                        )
-                        if dfp is not None:
-                            df = dfp.split('/')
-                            header['User-Agent'] = (
-                                "Mozilla/5.0 (Linux; Android 13; "
-                                f"{df[1]} {df[3]} "
-                                "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Version/4.0 Chrome/104.0.5112.97"
-                                "Mobile Safari/537.36 miHoYoBBS/2"
-                                f"{mys_version}"
+                    if (
+                        'x-rpc-device_fp' not in header
+                        or 'x-rpc-device_id' not in header
+                    ):
+                        async with timeout(5):
+                            device_id = await self.get_user_device_id(
+                                uid,
+                                game_name,
                             )
+                            header['x-rpc-device_fp'] = await self.get_user_fp(
+                                uid,
+                                game_name,
+                            )
+                            if device_id is not None:
+                                header['x-rpc-device_id'] = device_id
+
+                    dfp: Optional[str] = await GsUser.get_user_attr_by_uid(
+                        uid,
+                        'device_info',
+                        'sr' if self.is_sr else game_name,
+                    )
+                    if dfp is not None:
+                        df = dfp.split('/')
+                        header['User-Agent'] = (
+                            "Mozilla/5.0 (Linux; Android 13; "
+                            f"{df[1]} {df[3]} "
+                            "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Version/4.0 Chrome/104.0.5112.97"
+                            "Mobile Safari/537.36 miHoYoBBS/2"
+                            f"{mys_version}"
+                        )
                 except asyncio.TimeoutError:
                     logger.warning('[mhy_request] 获取DFP超时, 未知原因...')
 
