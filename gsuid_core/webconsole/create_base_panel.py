@@ -111,13 +111,18 @@ def get_api(url: str, method: str, data: List[str]):
     }
 
 
-def get_button(title: str, api: Optional[Dict] = None):
+def get_button(
+    title: str,
+    api: Optional[Dict] = None,
+    reload_element: str = 'window',
+):
     data = {
         'type': 'button',
         'label': title,
         'onEvent': {'click': {'actions': []}},
         'id': 'u:2784abaa9455',
         'block': True,
+        'reload': reload_element,
         'messages': {
             'success': '成功！',
             'failed': '失败...请检查后台...',

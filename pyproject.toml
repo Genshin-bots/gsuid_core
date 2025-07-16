@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gsuid-core"
-version = "0.8.0"
+version = "0.8.1"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 authors = ["KimigaiiWuyi <444835641@qq.com>", "MingxuanGame <MingxuanGame@outlook.com>"]
 license = "GPL-3.0-or-later"
@@ -30,7 +30,6 @@ qrcode = {extras = ["pil"], version = "^7.3.1"}
 msgspec = ">= 0.13.1"
 uvicorn = ">=0.20.0"
 websockets = ">=13.1"
-loguru = ">=0.6.0"
 urllib3 = "^1.26.15"
 mpmath = "^1.3.0"
 fastapi = "<0.112.3"
@@ -133,7 +132,6 @@ dependencies = [
     "msgspec>=0.13.1",
     "uvicorn>=0.20.0",
     "websockets>=13.1",
-    "loguru<1.0.0,>=0.6.0",
     "urllib3<2.0.0,>=1.26.15",
     "mpmath<2.0.0,>=1.3.0",
     "fastapi>=0.97.0,<0.112.3",
@@ -151,7 +149,6 @@ dependencies = [
     "pydantic-core>=2.20.1",
     "annotated-types>=0.7.0",
     "sqlmodel>=0.0.14",
-    "loguru>=0.6.0",
     "fastapi<0.112.3",
     "async-timeout<5.0.0,>=4.0.3",
     "toml<1.0.0,>=0.10.2",
@@ -166,7 +163,7 @@ dependencies = [
     "cryptography>=45.0.5",
 ]
 name = "gsuid-core"
-version = "0.8.0"
+version = "0.8.1"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 

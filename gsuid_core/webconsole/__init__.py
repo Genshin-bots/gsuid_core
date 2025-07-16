@@ -1,4 +1,3 @@
-import httpx
 from sqlmodel import SQLModel
 
 from gsuid_core.logger import logger
@@ -39,18 +38,11 @@ async def start_check():
     if HOST == 'localhost' or HOST == '127.0.0.1':
         _host = 'localhost'
         logger.warning(
-            'WebConsole挂载于本地, 如想外网访问请修改config.json中host为0.0.0.0!'
+            '💻 WebConsole挂载于本地, 如想外网访问请修改config.json中host为0.0.0.0!'
         )
     else:
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(
-                    'https://api.ipify.org/?format=json', timeout=4
-                )
-            _host = r.json()['ip']
-        except:  # noqa:E722, B001
-            _host = HOST
+        _host = HOST
 
     logger.success(
-        ('WebConsole挂载成功: ' f'http://{_host}:{PORT}/genshinuid')
+        ('💻 WebConsole挂载成功: ' f'http://{_host}:{PORT}/genshinuid')
     )

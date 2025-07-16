@@ -170,9 +170,13 @@ def get_sconfig_page(config_name: str, _config: StringConfig):
         'type': 'page',
         'title': f'{config_name}配置管理',
         'body': [
-            *get_sconfig_body(config_name, _config),
+            get_service(
+                [
+                    *get_sconfig_body(config_name, _config),
+                ]
+            )
         ],
-        'id': 'u:b9be7e0dc626',
+        'id': f'u:{config_name}757',
     }
     return page
 

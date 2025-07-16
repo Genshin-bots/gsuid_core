@@ -102,7 +102,7 @@ async def init_database():
         if _db_initialized:
             return
 
-        logger.info("[数据库] 开始初始化...")
+        logger.info("📀 [数据库] 开始初始化...")
 
         try:
             if _db_type == 'sqlite':

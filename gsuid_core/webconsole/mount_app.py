@@ -2,7 +2,7 @@
 import sys
 import platform
 from pathlib import Path
-from typing import Any, Dict, List, Type, Callable
+from typing import Any, Dict, List, Type, Callable, Optional
 
 from starlette import status
 from pydantic import BaseModel
@@ -220,14 +220,16 @@ def create_dynamic_page_class(
     class_name: str,
     label: str,
     url: str,
-    page_json: Dict,
+    page_call: Callable,
+    args: Optional[List[Any]] = None,
     icon: str = 'fa fa-columns',
     sort: int = 100,
 ) -> Type["GsAdminPage"]:
-
     @handle_exceptions
     async def get_page(self, request: Request) -> Page:
-        return Page.parse_obj(page_json)
+        if args:
+            return Page.parse_obj(page_call(*args))
+        return Page.parse_obj(page_call())
 
     return type(
         class_name,
@@ -246,7 +248,6 @@ def create_dynamic_page_class(
 
 
 def create_admin_class(class_name: str, label: str, admin_list: List):
-
     def __init__(self, app: "admin.AdminApp"):
         super(self.__class__, self).__init__(app)
         self.register_admin(*admin_list)
@@ -320,10 +321,9 @@ class GsAdminSite(GsAuthAdminSite):
                         create_dynamic_page_class(
                             f'{plugin_name}Config',
                             '配置管理',
-                            f'/{plugin_name}Config',
-                            get_sconfig_page(
-                                plugin_name, all_config_list[plugin_name]
-                            ),
+                            f'/_{plugin_name}Config',
+                            get_sconfig_page,
+                            [plugin_name, all_config_list[plugin_name]],
                             'fa fa-cogs',
                         )
                     )
@@ -337,7 +337,8 @@ class GsAdminSite(GsAuthAdminSite):
                             f'{plugin_name}Sv',
                             '功能服务管理',
                             f'/{plugin_name}SvConfig',
-                            get_ssv_page(sv_list, plugin),
+                            get_ssv_page,
+                            [sv_list, plugin],
                             'fa fa-sliders',
                         )
                     )
