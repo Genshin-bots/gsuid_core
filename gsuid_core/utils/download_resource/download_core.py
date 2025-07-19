@@ -25,16 +25,16 @@ async def check_url(tag: str, url: str):
             elapsed_time = time.time() - start_time
             if response.status_code == 200:
                 if 'Index of /' in response.text:
-                    logger.debug(f'{tag} {url} 延时: {elapsed_time}')
+                    logger.debug(f'⌛ [测速] {tag} {url} 延时: {elapsed_time}')
                     return tag, url, elapsed_time
                 else:
-                    logger.info(f'{tag} {url} 未超时但失效...')
+                    logger.info(f'⚠  {tag} {url} 未超时但失效...')
                     return tag, url, float('inf')
             else:
-                logger.info(f'{tag} {url} 超时...')
+                logger.info(f'⚠  {tag} {url} 超时...')
                 return tag, url, float('inf')
         except aiohttp.ClientError:
-            logger.info(f'{tag} {url} 超时...')
+            logger.info(f'⚠  {tag} {url} 超时...')
             return tag, url, float('inf')
 
 
@@ -149,7 +149,16 @@ async def download_atag_file(
 
     base_data = await _get_url(url, client)
     content_bs = BeautifulSoup(base_data, 'lxml')
-    pre_data = content_bs.find_all('pre')[0]
+    pre_data_list = content_bs.find_all('pre')
+    if not pre_data_list:
+        logger.warning(f'{TAG} {endpoint} 页面中未找到 <pre> 标签!')
+        return
+    pre_data = pre_data_list[0]
+    from bs4 import Tag
+
+    if not isinstance(pre_data, Tag):
+        logger.warning(f'{TAG} {endpoint} <pre> 标签不是有效的 Tag 对象!')
+        return
     data_list = pre_data.find_all('a')
     size_list = [i for i in content_bs.strings]
 
@@ -158,23 +167,30 @@ async def download_atag_file(
     temp_num = 0
     size_temp = 0
     for index, data in enumerate(data_list):
-        if data['href'] == '../':
+        if data['href'] == '../':  # type: ignore
             continue
-        file_url = f'{url}{data["href"]}'
+        file_url = f'{url}{data["href"]}'  # type: ignore
         name: str = unquote(file_url.split('/')[-1])
         size = size_list[index * 2 + 6].split(' ')[-1]
-        _size = size.replace('\r\n', '')
-        if _size == '-':
+        _size: str = size.replace('\r', '')
+        _size = _size.replace('\n', '')
+
+        if _size == '-' or _size == '-\n':
             await download_atag_file(
                 PLUGIN_RES,
-                f"{endpoint}/{data['href']}",
+                f"{endpoint}/{data['href']}",  # type: ignore
                 EPATH_MAP,
                 client,
                 TAG,
                 plugin_name,
             )
             continue
-        size = int(_size)
+
+        if _size.isdigit():
+            size = int(_size)
+        else:
+            continue
+
         file_path = path / name
 
         if file_path.exists():

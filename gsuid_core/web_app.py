@@ -70,7 +70,6 @@ async def lifespan(app: FastAPI):
                 asyncio.create_task(_def())
             else:
                 asyncio.create_task(asyncio.to_thread(_def))
-
     except Exception as e:
         logger.exception(e)
 
