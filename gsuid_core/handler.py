@@ -27,6 +27,7 @@ config_masters = core_config.get_config('masters')
 config_superusers = core_config.get_config('superusers')
 
 same_user_cd: int = sp_config.get_config('SameUserEventCD').data
+black_list: List[str] = sp_config.get_config('BlackList').data
 shield_list = core_plugins_config.get_config('ShieldQQBot').data
 
 _command_start: List[str]
@@ -145,7 +146,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         for _type in SL.lst[sv].TL
         for tr in SL.lst[sv].TL[_type]
         if (
-            SL.lst[sv].plugins.enabled
+            msg.group_id not in black_list
+            and msg.user_id not in black_list
+            and SL.lst[sv].plugins.enabled
             and user_pm <= SL.lst[sv].plugins.pm
             and msg.group_id not in SL.lst[sv].plugins.black_list
             and msg.user_id not in SL.lst[sv].plugins.black_list

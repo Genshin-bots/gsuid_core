@@ -1,6 +1,6 @@
 from typing import Dict
 
-from .models import GSC, GsIntConfig, GsStrConfig
+from .models import GSC, GsIntConfig, GsStrConfig, GsListStrConfig
 
 SP_CONIFG: Dict[str, GSC] = {
     'ButtonRow': GsIntConfig(
@@ -27,5 +27,10 @@ SP_CONIFG: Dict[str, GSC] = {
         0,
         3600,
         [0, 1, 2, 3, 5, 10, 15, 30],
+    ),
+    'BlackList': GsListStrConfig(
+        '黑名单',
+        '黑名单用户/群, 不会触发任何命令',
+        [],
     ),
 }
