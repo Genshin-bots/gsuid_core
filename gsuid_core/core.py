@@ -46,9 +46,12 @@ async def main():
     from gsuid_core.handler import handle_event  # noqa: E402
     from gsuid_core.models import MessageReceive  # noqa: E402
 
-    HOST = core_config.get_config('HOST')
+    HOST = core_config.get_config('HOST').lower()
     PORT = int(core_config.get_config('PORT'))
     ENABLE_HTTP = core_config.get_config('ENABLE_HTTP')
+
+    if HOST == 'all' or HOST == 'none' or HOST == 'dual' or not HOST:
+        HOST = None
 
     @app.websocket('/ws/{bot_id}')
     async def websocket_endpoint(websocket: WebSocket, bot_id: str):
@@ -92,7 +95,7 @@ async def main():
 
     config = uvicorn.Config(
         app,
-        host=HOST,
+        host=HOST,  # type: ignore
         port=PORT,
         log_config=None,
         loop="asyncio",
