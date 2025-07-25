@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import UniqueConstraint, distinct
-from sqlmodel import Field, Index, col, func, select
+from sqlmodel import Field, Index, col, func, delete, select
 
 from .base_models import BaseIDModel, with_session
 
@@ -35,6 +35,22 @@ class CoreDataSummary(BaseIDModel, table=True):
     bot_id: str = Field(title='机器人平台', max_length=64)
     bot_self_id: str = Field(title='机器人自身ID', max_length=64)
     date: ymddate = Field(title='日期')
+
+    @classmethod
+    @with_session
+    async def delete_outdate(
+        cls,
+        session: AsyncSession,
+        days: int = 300,
+    ):
+        """
+        删除过期数据。
+        """
+        today = datetime.now().date()
+        days_ago = today - timedelta(days=days)
+        query = delete(cls).where(cls.date < days_ago)  # type: ignore
+        await session.execute(query)
+        await session.commit()
 
     @classmethod
     @with_session
@@ -239,6 +255,23 @@ class CoreDataAnalysis(BaseIDModel, table=True):
     bot_id: str = Field(title='机器人平台', index=True, max_length=64)
     bot_self_id: str = Field(title='机器人自身ID', index=True, max_length=64)
 
+    @classmethod
+    @with_session
+    async def delete_outdate(
+        cls,
+        session: AsyncSession,
+        days: int = 300,
+    ):
+        """
+        删除过期数据。
+        """
+        today = datetime.now().date()
+        days_ago = today - timedelta(days=days)
+        query = delete(cls).where(cls.date < days_ago)  # type: ignore
+        await session.execute(query)
+        await session.commit()
+
+    # TODO
     # 几个版本之后删除
     @classmethod
     @with_session

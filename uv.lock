@@ -674,7 +674,7 @@ sdist = { url = "https://mirrors.volces.com/pypi/packages/79/b9/55936e462a592519
 
 [[package]]
 name = "gsuid-core"
-version = "0.8.1"
+version = "0.8.2"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },

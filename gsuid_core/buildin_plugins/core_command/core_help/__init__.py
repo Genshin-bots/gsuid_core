@@ -12,5 +12,5 @@ sv_core_help_img = SV('Core帮助')
     block=True,
 )
 async def send_core_help_msg(bot: Bot, ev: Event):
-    logger.info('[早柚核心] 开始执行[帮助图]')
+    logger.info('📝 [早柚核心] 开始执行[帮助图]')
     await bot.send(await draw_core_help(ev.user_pm))

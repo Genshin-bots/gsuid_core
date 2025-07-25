@@ -199,9 +199,11 @@ async def get_global_analysis(
 
 async def load_all_global_val():
     today = datetime.date.today()
+    logger.info(f'🔒️ 开始加载全局变量! 今日: {today}')
     summarys: Optional[Sequence[CoreDataSummary]] = (
         await CoreDataSummary.select_rows(date=today)
     )
+    logger.debug(f'🔒️ summarys = {summarys}')
     if summarys:
         for summary in summarys:
             bot_val[summary.bot_id] = {}
@@ -215,12 +217,16 @@ async def load_all_global_val():
             if datas:
                 platform_val = await trans_database_to_val(summary, datas)
                 bot_val[summary.bot_id][summary.bot_self_id] = platform_val
+    logger.debug(f'🔒️ bot_val = {bot_val}')
+    logger.success('🔒️ 全局变量加载完成!')
 
 
 async def save_all_global_val(day: int = 0):
+    logger.info(f'🔒️ 开始保存全局变量, 参数day = {day}!')
     for bot_id in bot_val:
         for bot_self_id in bot_val[bot_id]:
             await save_global_val(bot_id, bot_self_id, day)
+    logger.success('🔒️ 全局变量保存完成!')
 
 
 async def trans_database_to_val(
@@ -246,9 +252,11 @@ async def trans_database_to_val(
 
 async def save_global_val(bot_id: str, bot_self_id: str, day: int = 0):
     if not bot_self_id:
+        logger.warning('🔒️ 全局变量保存失败, bot_self_id 为空!')
         return
 
     local_val = get_platform_val(bot_id, bot_self_id)
+    logger.debug(f'🔒️ local_val = {local_val}')
 
     today = datetime.date.today() - datetime.timedelta(days=day)
     await _save_global_val_to_database(local_val, bot_id, bot_self_id, today)

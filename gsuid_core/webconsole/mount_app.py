@@ -67,17 +67,19 @@ from gsuid_core.utils.plugins_config.gs_config import (
     all_config_list,
     core_plugins_config,
 )
+from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
+    AuthRouter,
+    amis_admin,
+    user_auth_admin,
+)
 from gsuid_core.utils.database.models import (
     GsBind,
     GsPush,
     GsUser,
     GsCache,
+    CoreUser,
+    CoreGroup,
     Subscribe,
-)
-from gsuid_core.webconsole.login_page import (  # noqa  # 不要删
-    AuthRouter,
-    amis_admin,
-    user_auth_admin,
 )
 
 WebConsoleCDN = core_plugins_config.get_config('WebConsoleCDN').data
@@ -547,6 +549,40 @@ class PluginsConfig(admin.AdminApp):
             SVManagePage,
             ConfigManagePage,
             PluginsManagePage,
+        )
+
+
+class UserDatabase(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='用户数据库',
+        icon='fa fa-user',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = CoreUser
+
+
+class GroupDatabase(GsAdminModel):
+    pk_name = 'id'
+    page_schema = PageSchema(
+        label='群组数据库',
+        icon='fa fa-group',
+    )  # type: ignore
+
+    # 配置管理模型
+    model = CoreGroup
+
+
+@site.register_admin
+class UserConfig(admin.AdminApp):
+    page_schema = PageSchema(label="用户管理", icon="fa fa-user")  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            UserDatabase,
+            GroupDatabase,
         )
 
 
