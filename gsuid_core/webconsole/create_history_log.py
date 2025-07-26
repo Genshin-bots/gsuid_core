@@ -308,6 +308,7 @@ def get_history_logs_page():
                                             "total",
                                             "perPage",
                                             "pager",
+                                            "go",
                                         ],
                                         "perPage": 10,
                                         "perPageAvailable": [10, 20, 50, 100],
