@@ -206,7 +206,8 @@ async def load_all_global_val():
     logger.debug(f'🔒️ summarys = {summarys}')
     if summarys:
         for summary in summarys:
-            bot_val[summary.bot_id] = {}
+            if summary.bot_id not in bot_val:
+                bot_val[summary.bot_id] = {}
             datas: Optional[Sequence[CoreDataAnalysis]] = (
                 await CoreDataAnalysis.select_rows(
                     date=today,
@@ -231,7 +232,7 @@ async def save_all_global_val(day: int = 0):
 
 async def trans_database_to_val(
     summary: CoreDataSummary, datas: Sequence[CoreDataAnalysis]
-):
+) -> PlatformVal:
     pv: PlatformVal = deepcopy(platform_val)
 
     pv['command'] = summary.command

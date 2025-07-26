@@ -51,8 +51,6 @@ from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.version import __version__ as gscore_version
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.utils.database.base_models import finally_url
-
-# from gsuid_core.webconsole.create_log_panel import create_log_page
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
