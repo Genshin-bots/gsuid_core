@@ -64,6 +64,20 @@ async def backup_file(file_path: Path, backup_path: Path, backup_day: int = 5):
 
     if os.path.exists(end_day_backup):
         os.remove(end_day_backup)
-        logger.warning(f'[备份核心] 已删除失效备份 {end_day_backup}')
+        logger.warning(f'♻️ [备份核心] 已删除失效备份 {end_day_backup}')
 
-    logger.success(f'[备份核心] 已成功备份 {backup}')
+    logger.success(f'✅ [备份核心] 已成功备份 {backup}')
+
+
+def clear_path_all_file(path: Path, pattern: str = '*'):
+    try:
+        for f in path.glob(pattern):
+            try:
+                f.unlink()
+            except OSError as e:
+                logger.warning(f'💥 [备份核心] 删除文件 {f} 失败！')
+                logger.error(e.strerror)
+        logger.success(f'🚧 [备份核心] 清空路径 {path} 成功！')
+    except Exception as e:
+        logger.warning(f'💥 [备份核心] 清空路径 {path} 失败！')
+        logger.error(e)
