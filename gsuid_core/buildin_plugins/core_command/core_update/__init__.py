@@ -53,8 +53,10 @@ async def send_core_set_proxy(bot: Bot, ev: Event):
     core_plugins_config.set_config('ProxyURL', proxy_url)
     await bot.send(
         f'设置成功!\n当前插件安装代理为{core_plugins_config.get_config("ProxyURL").data}'
-        '\n之后新安装的插件均会应用此代理'
-        '\n你也可以输入命令[core应用设置代理]以应用代理到现有全部插件。'
+        '\n之后【新安装】的插件均会应用此代理(当前你的插件【不会改变安装代理地址】！！)'
+        '\n你也可以输入命令[应用设置代理]以应用代理到现有全部插件。'
+        '\n注意: 代理地址必须以http或https开头。'
+        '\n注意: 你也可以输入[设置代理空]来清除当前代理。'
     )
 
 
@@ -66,7 +68,11 @@ async def send_core_update_proxy(bot: Bot, ev: Event):
         proxy = None
 
     if proxy and not proxy.startswith(('http', 'https')):
-        return '你可能输入了一个错误的git代理地址...'
+        return (
+            '你可能输入了一个错误的git代理地址...'
+            '\n注意: 代理地址必须以http或https开头。'
+            '\n注意: 你也可以输入[应用设置代理空]来清除当前代理。'
+        )
 
     log_list = await set_proxy_all_plugins(proxy)
     await bot.send(log_list)

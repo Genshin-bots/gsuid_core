@@ -285,19 +285,23 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
         logger.info(f'[core插件设置代理] {plugin_name} 未发现有效git地址')
         return f'{plugin_name} 未发现有效git地址'
 
-    if proxy is None:
-        _proxy_url = proxy_url
-    else:
-        _proxy_url = proxy
+    # 处理代理地址
+    _proxy_url = proxy if proxy is not None else proxy_url
 
-    if not _proxy_url.startswith(('http', 'https')):
+    if _proxy_url in ('无', '', '空'):
+        _proxy_url = None
+
+    if _proxy_url is not None and not _proxy_url.startswith(('http', 'https')):
         return '你可能输入了一个错误的git代理地址...'
 
     if _proxy_url and not _proxy_url.endswith('/'):
         _proxy_url += '/'
 
     # 设置git代理
-    new_url = f"{_proxy_url}{main_url}"
+    if _proxy_url is None:
+        new_url = main_url
+    else:
+        new_url = f"{_proxy_url}{main_url}"
 
     if new_url == original_url:
         logger.info(
