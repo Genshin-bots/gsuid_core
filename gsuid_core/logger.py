@@ -306,9 +306,12 @@ def setup_logging():
         console_processors.insert(-1, format_callsite_processor)
 
     # --- 配置 logging ---
-    root_logger = logging.getLogger('GsCore')
+    root_logger = logging.getLogger()
     root_logger.handlers = []  # 等效于 loguru.logger.remove()
-    root_logger.setLevel(LEVEL)  # 设置根级别
+    root_logger.setLevel(logging.INFO)  # 设置根级别
+
+    my_app_logger = logging.getLogger("GsCore")
+    my_app_logger.setLevel(LEVEL)
 
     # a. 配置 stdout handler (低于 ERROR)
     if 'stdout' in logger_list:
@@ -347,6 +350,24 @@ def setup_logging():
 
     sys.excepthook = handle_exception
 
+    '''
+    logging.getLogger("websockets").setLevel(logging.INFO)
+    logging.getLogger("PIL").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    '''
+
+    for logger_name in [
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+    ]:
+        uvicorn_sub_logger = logging.getLogger(logger_name)
+        uvicorn_sub_logger.handlers.clear()
+        uvicorn_sub_logger.propagate = True
+
+    '''
     uvicorn_logger = logging.getLogger("uvicorn")
     uvicorn_logger.setLevel(LEVEL)
 
@@ -354,6 +375,7 @@ def setup_logging():
         uvicorn_logger.addHandler(handler)
     # 防止日志重复记录（如果父日志器已处理）
     uvicorn_logger.propagate = False
+    '''
 
 
 setup_logging()
