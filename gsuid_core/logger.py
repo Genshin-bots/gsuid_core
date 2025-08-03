@@ -350,13 +350,15 @@ def setup_logging():
 
     sys.excepthook = handle_exception
 
-    '''
     logging.getLogger("websockets").setLevel(logging.INFO)
     logging.getLogger("PIL").setLevel(logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-    '''
+
+    logging.getLogger("nonebot").setLevel(logging.INFO)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
+    logging.getLogger("casbin").setLevel(logging.WARNING)
 
     for logger_name in [
         "uvicorn",

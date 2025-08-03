@@ -250,6 +250,8 @@ def extract_last_url(text: str):
         parts = text.split("/http")
         url = 'http' + parts[-1]
         return url
+    elif text.startswith('https://github.com/'):
+        return text
     else:
         return None
 
