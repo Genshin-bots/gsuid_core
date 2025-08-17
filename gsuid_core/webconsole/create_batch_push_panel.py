@@ -56,12 +56,14 @@ async def get_batch_push_panel():
                 "disabled": is_disable,
             },
             {
-                "type": "input-tag",
+                "type": "select",
                 "label": "推送对象",
                 "name": "push_tag",
                 "options": options,
                 "optionsTip": "连接到的Bot",
+                "multiple": True,
                 "clearable": True,
+                "searchable": True,
                 "disabled": is_disable,
             },
             {

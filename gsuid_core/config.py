@@ -156,4 +156,4 @@ class CoreConfig:
             self.config[key] = value
 
 
-core_config = CoreConfig()
+core_config: CoreConfig = CoreConfig()

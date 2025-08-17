@@ -20,15 +20,8 @@ from gsuid_core.utils.plugins_config.gs_config import (
     core_plugins_config,
 )
 
-show_receive: bool = log_config.get_config('ShowReceive').data
 command_start = core_config.get_config('command_start')
 enable_empty = core_config.get_config('enable_empty_start')
-config_masters = core_config.get_config('masters')
-config_superusers = core_config.get_config('superusers')
-
-same_user_cd: int = sp_config.get_config('SameUserEventCD').data
-black_list: List[str] = sp_config.get_config('BlackList').data
-shield_list = core_plugins_config.get_config('ShieldQQBot').data
 
 _command_start: List[str]
 if command_start and enable_empty:
@@ -38,6 +31,11 @@ else:
 
 
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
+    black_list: List[str] = sp_config.get_config('BlackList').data
+    shield_list = core_plugins_config.get_config('ShieldQQBot').data
+    show_receive: bool = log_config.get_config('ShowReceive').data
+    same_user_cd: int = sp_config.get_config('SameUserEventCD').data
+
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
@@ -231,6 +229,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
+    config_masters: List[str] = core_config.get_config('masters')
+    config_superusers = core_config.get_config('superusers')
+
     if msg.user_id in config_masters:
         return 0
     elif msg.user_id in config_superusers:
