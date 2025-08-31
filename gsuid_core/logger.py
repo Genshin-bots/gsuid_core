@@ -112,14 +112,15 @@ def format_callsite_processor(
 
 
 def reduce_message(messages: List[Message]):
-    for message in messages:
+    mes = deepcopy(messages)
+    for message in mes:
         dd = str(message.data)
         if message.data and len(dd) >= 500:
             try:
                 message.data = dd[:100]
             except Exception:
                 pass
-    return messages
+    return mes
 
 
 def format_event_for_console(
