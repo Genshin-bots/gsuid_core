@@ -130,12 +130,20 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
             "telegram",
             "qqgroup",
             "qqguild",
+            "web",
         ],
     ),
     'SendButtonsPlatform': GsListStrConfig(
         '默认发送按钮的平台列表',
         '发送按钮的平台列表',
-        ["villa", "kaiheila", "dodo", "discord", "telegram"],
+        [
+            "villa",
+            "kaiheila",
+            "dodo",
+            "discord",
+            "telegram",
+            "web",
+        ],
         [
             "villa",
             "kaiheila",
@@ -144,13 +152,18 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
             "telegram",
             "qqgroup",
             "qqguild",
+            "web",
         ],
     ),
     'SendTemplatePlatform': GsListStrConfig(
         '默认发送模板按钮/MD的平台列表',
         '发送按钮的平台列表',
         ["qqgroup", "qqguild"],
-        ["qqgroup", "qqguild"],
+        [
+            "qqgroup",
+            "qqguild",
+            "web",
+        ],
     ),
     'TryTemplateForQQ': GsBoolConfig(
         '启用后尝试读取模板文件并发送',
