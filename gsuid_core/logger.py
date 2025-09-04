@@ -299,7 +299,9 @@ def setup_logging():
         structlog.dev.ConsoleRenderer(
             colors=True,
             level_styles=final_level_styles,
-            exception_formatter=structlog.dev.rich_traceback,
+            exception_formatter=structlog.dev.RichTracebackFormatter(
+                show_locals=False,
+            ),
         ),
     ]
 
