@@ -191,7 +191,7 @@ class GsServer:
         _module_cache[module_name] = module
         return module
 
-    async def load_plugins(self):
+    async def load_plugins(self, dev_mode: bool = False):
         logger.info('💖 [早柚核心]开始加载插件...')
         get_installed_dependencies()
         sys.path.append(str(Path(__file__).parents[1]))
@@ -206,6 +206,9 @@ class GsServer:
 
         all_plugins: List[Tuple[str, Path, str]] = []
         for plugin in plug_path_list:
+            if dev_mode and not plugin.name.endswith('-dev'):
+                continue
+
             d = self.load_plugin(plugin)
             if isinstance(d, str):
                 continue
@@ -219,17 +222,6 @@ class GsServer:
                     f'❌ 插件{filepath.stem}导入失败, 错误代码: {e}'
                 )
                 continue
-
-        '''
-        max_workers = min(12, (os.cpu_count() or 1) * 2)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            _ = {
-                executor.submit(
-                    self.cached_import, module_name, filepath, _type
-                ): module_name
-                for module_name, filepath, _type in all_plugins
-            }
-        '''
 
         core_config.lazy_write_config()
         logger.success('💖 [早柚核心] 插件加载完成!')

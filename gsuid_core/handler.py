@@ -1,8 +1,7 @@
 import asyncio
+from uuid import uuid4
 from copy import deepcopy
 from typing import Dict, List
-
-from fastapi_amis_admin.admin.site import uuid
 
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
@@ -205,7 +204,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         for trigger, _ in sorted_event:
             _event = deepcopy(event)
             message = await trigger.get_command(_event)
-            _event.task_id = str(uuid.uuid4())
+            _event.task_id = str(uuid4())
 
             if is_http:
                 _event.task_event = asyncio.Event()

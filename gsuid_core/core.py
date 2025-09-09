@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import argparse
 from typing import Dict
 from pathlib import Path
 from asyncio import CancelledError
@@ -38,13 +39,22 @@ async def main():
 
     from gsuid_core.gss import gss, load_gss  # noqa: E402
 
-    await load_gss()
-    from gsuid_core.bot import _Bot  # noqa: E402
-    from gsuid_core.logger import logger  # noqa: E402
-    from gsuid_core.web_app import app, site  # noqa: E402
-    from gsuid_core.config import core_config  # noqa: E402
-    from gsuid_core.handler import handle_event  # noqa: E402
-    from gsuid_core.models import MessageReceive  # noqa: E402
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--dev",
+        default=False,
+        action='store_true',
+        help="启用开发模式",
+    )
+    args = parser.parse_args()
+    await load_gss(args.dev)
+
+    from gsuid_core.bot import _Bot
+    from gsuid_core.logger import logger
+    from gsuid_core.config import core_config
+    from gsuid_core.handler import handle_event
+    from gsuid_core.models import MessageReceive
 
     HOST = core_config.get_config('HOST').lower()
     PORT = int(core_config.get_config('PORT'))
@@ -52,6 +62,13 @@ async def main():
 
     if HOST == 'all' or HOST == 'none' or HOST == 'dual' or not HOST:
         HOST = None
+
+    if args.dev:
+        from fastapi import FastAPI
+
+        app = FastAPI()
+    else:
+        from gsuid_core.web_app import app, site
 
     @app.websocket('/ws/{bot_id}')
     async def websocket_endpoint(websocket: WebSocket, bot_id: str):
@@ -90,8 +107,9 @@ async def main():
             else:
                 return {'status_code': -100, 'data': None}
 
-    site.gen_plugin_page()
-    site.mount_app(app)
+    if not args.dev:
+        site.gen_plugin_page()
+        site.mount_app(app)
 
     config = uvicorn.Config(
         app,
@@ -110,4 +128,5 @@ async def main():
     await server.serve()
 
 
+asyncio.run(main())
 asyncio.run(main())
