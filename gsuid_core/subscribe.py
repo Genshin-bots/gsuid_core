@@ -66,6 +66,7 @@ class GsCoreSubscribe:
                 bot_self_id=event.bot_self_id,
                 user_type=event.user_type,
                 extra_message=extra_message,
+                WS_BOT_ID=event.WS_BOT_ID,
                 uid=uid,
             )
         else:
@@ -76,6 +77,7 @@ class GsCoreSubscribe:
                 'group_id',
                 'bot_self_id',
                 'user_type',
+                'WS_BOT_ID',
             ]:
                 if i not in opt:
                     upd[i] = event.__getattribute__(i)
@@ -93,6 +95,7 @@ class GsCoreSubscribe:
         bot_id: Optional[str] = None,
         user_type: Optional[str] = None,
         uid: Optional[str] = None,
+        WS_BOT_ID: Optional[str] = None,
     ):
         params = {
             'task_name': task_name,
@@ -106,6 +109,9 @@ class GsCoreSubscribe:
         if uid:
             params['uid'] = uid
 
+        if WS_BOT_ID:
+            params['WS_BOT_ID'] = WS_BOT_ID
+
         all_data: Optional[Sequence[Subscribe]] = await Subscribe.select_rows(
             distinct=False, **params
         )
@@ -117,12 +123,16 @@ class GsCoreSubscribe:
         task_name: str,
         event: Event,
         uid: Optional[str] = None,
+        WS_BOT_ID: Optional[str] = None,
     ):
         params = {
             'task_name': task_name,
         }
         if uid:
             params['uid'] = uid
+
+        if WS_BOT_ID:
+            params['WS_BOT_ID'] = WS_BOT_ID
 
         if subscribe_type == 'session' and event.user_type == 'group':
             await Subscribe.delete_row(group_id=event.group_id, **params)
@@ -144,6 +154,7 @@ class GsCoreSubscribe:
             'bot_id',
             'bot_self_id',
             'user_type',
+            'WS_BOT_ID',
         ]:
             sed[i] = event.__getattribute__(i)
 

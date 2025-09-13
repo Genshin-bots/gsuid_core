@@ -38,6 +38,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
+    event.WS_BOT_ID = ws.bot_id
     if show_receive:
         logger.info('[收到事件]', event_payload=event)
 

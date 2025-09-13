@@ -22,6 +22,7 @@ class MessageReceive(Struct):
 
 
 class Event(MessageReceive):
+    WS_BOT_ID: Optional[str] = None
     task_id: str = ''
     task_event: Optional[asyncio.Event] = None
     real_bot_id: str = ''
