@@ -1,8 +1,8 @@
 from typing import List, Type, Union, Optional, Sequence
 
-from sqlmodel import Field, select, update
 from sqlalchemy import UniqueConstraint, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import Field, Index, select, update
 
 from gsuid_core.bot import Bot
 from gsuid_core.gss import gss
@@ -23,13 +23,22 @@ from .base_models import (
 
 
 class Subscribe(BaseModel, table=True):
+    __table_args__ = (
+        Index(
+            'ix_subscribe_task_name_uid',
+            'task_name',
+            'uid',
+        ),
+        {'extend_existing': True},
+    )
+
     WS_BOT_ID: Optional[str] = Field(title='WS机器人ID', default=None)
-    group_id: Optional[str] = Field(title='群ID', default=None)
-    task_name: str = Field(title='任务名称', default=None)
+    group_id: Optional[str] = Field(title='群ID', default=None, index=True)
+    task_name: str = Field(title='任务名称', default=None, index=True)
     bot_self_id: str = Field(title='机器人自身ID', default=None)
     user_type: str = Field(title='发送类型', default=None)
     extra_message: Optional[str] = Field(title='额外消息', default=None)
-    uid: str = Field(title='账户ID', default=None)
+    uid: str = Field(title='账户ID', default=None, index=True)
 
     async def send(
         self,

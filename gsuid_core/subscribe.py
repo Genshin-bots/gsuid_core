@@ -1,4 +1,14 @@
-from typing import Dict, Union, Literal, Optional, Sequence
+from typing import (
+    Dict,
+    List,
+    Union,
+    Literal,
+    Callable,
+    Optional,
+    Sequence,
+    Awaitable,
+    TypedDict,
+)
 
 from gsuid_core.models import Event
 from gsuid_core.utils.database.models import Subscribe
@@ -170,6 +180,50 @@ class GsCoreSubscribe:
         upd['extra_message'] = extra_message
 
         await Subscribe.update_data_by_data(sed, upd)
+
+    async def muti_task(
+        self,
+        datas: Sequence[Subscribe],
+        func: Callable[..., Awaitable[str]],
+        attr: str = 'uid',
+    ):
+        priv_result: Dict[str, PrivTask] = {}
+        group_result: Dict[str, GroupTask] = {}
+        for data in datas:
+            if data.__getattribute__(attr):
+                im = await func(data.__getattribute__(attr))
+                if data.user_type == 'group':
+                    sid = f'{data.WS_BOT_ID}_{data.group_id}'
+                    if sid not in group_result:
+                        group_result[sid] = {
+                            'success': 0,
+                            'fail': 0,
+                            'event': data,
+                        }
+                    if '失败' in im:
+                        group_result[sid]['fail'] += 1
+                    else:
+                        group_result[sid]['success'] += 1
+                else:
+                    sid = f'{data.WS_BOT_ID}_{data.user_id}'
+                    if sid not in priv_result:
+                        priv_result[sid] = {
+                            'im': [],
+                            'event': data,
+                        }
+                    priv_result[sid]['im'].append(im)
+        return priv_result, group_result
+
+
+class GroupTask(TypedDict):
+    success: int
+    fail: int
+    event: Subscribe
+
+
+class PrivTask(TypedDict):
+    im: List[str]
+    event: Subscribe
 
 
 gs_subscribe = GsCoreSubscribe()

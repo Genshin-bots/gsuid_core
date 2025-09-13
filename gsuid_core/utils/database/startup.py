@@ -17,6 +17,9 @@ exec_list = [
     'CREATE INDEX idx_group_id ON coregroup (group_id);',
     "ALTER TABLE Subscribe ADD COLUMN uid STRING DEFAULT NULL;",
     "ALTER TABLE Subscribe ADD COLUMN WS_BOT_ID STRING DEFAULT NULL;",
+    'CREATE INDEX ix_subscribe_task_name ON Subscribe (task_name);',
+    'CREATE INDEX ix_subscribe_uid ON Subscribe (uid);',
+    'CREATE INDEX ix_subscribe_task_name_uid ON Subscribe (task_name, uid);',
 ]
 
 
