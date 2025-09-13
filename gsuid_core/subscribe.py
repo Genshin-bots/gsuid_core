@@ -156,8 +156,6 @@ class GsCoreSubscribe:
             sed['uid'] = uid
 
         sed['task_name'] = task_name
-        sed['subscribe_type'] = subscribe_type
-
         upd['extra_message'] = extra_message
 
         await Subscribe.update_data_by_data(sed, upd)
