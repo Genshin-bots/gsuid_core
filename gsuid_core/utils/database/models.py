@@ -27,6 +27,7 @@ class Subscribe(BaseModel, table=True):
     bot_self_id: str = Field(title='机器人自身ID', default=None)
     user_type: str = Field(title='发送类型', default=None)
     extra_message: Optional[str] = Field(title='额外消息', default=None)
+    uid: str = Field(title='账户ID', default=None)
 
     async def send(
         self,

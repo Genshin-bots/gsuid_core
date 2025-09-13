@@ -1,4 +1,4 @@
-from typing import Dict, List, Union, Literal, Optional
+from typing import Dict, Union, Literal, Optional, Sequence
 
 from gsuid_core.models import Event
 from gsuid_core.utils.database.models import Subscribe
@@ -11,12 +11,16 @@ class GsCoreSubscribe:
         task_name: str,
         event: Event,
         extra_message: Optional[str] = None,
+        uid: Optional[str] = None,
     ):
         '''📝简单介绍:
 
             该方法允许向数据库添加一个订阅信息的持久化保存
+
             注意`subscribe_type`参数必须为`session`或`single`
+
             `session`模式下, 订阅都将在每个有效的session(group或direct)内独立存在 (公告推送)
+
             `single`模式下, 同个session(group)可能同时存在多个订阅 (签到任务)
 
         🌱参数:
@@ -41,6 +45,7 @@ class GsCoreSubscribe:
         opt: Dict[str, Union[str, int, None]] = {
             'bot_id': event.bot_id,
             'task_name': task_name,
+            'uid': uid,
         }
         if subscribe_type == 'session' and event.user_type == 'group':
             opt['group_id'] = event.group_id
@@ -61,6 +66,7 @@ class GsCoreSubscribe:
                 bot_self_id=event.bot_self_id,
                 user_type=event.user_type,
                 extra_message=extra_message,
+                uid=uid,
             )
         else:
             upd = {}
@@ -80,9 +86,28 @@ class GsCoreSubscribe:
                 upd,
             )
 
-    async def get_subscribe(self, task_name: str):
-        all_data: Optional[List[Subscribe]] = await Subscribe.select_rows(
-            task_name=task_name
+    async def get_subscribe(
+        self,
+        task_name: str,
+        user_id: Optional[str] = None,
+        bot_id: Optional[str] = None,
+        user_type: Optional[str] = None,
+        uid: Optional[str] = None,
+    ):
+        params = {
+            'task_name': task_name,
+        }
+
+        if user_id and bot_id and user_type:
+            params['user_id'] = user_id
+            params['bot_id'] = bot_id
+            params['user_type'] = user_type
+
+        if uid:
+            params['uid'] = uid
+
+        all_data: Optional[Sequence[Subscribe]] = await Subscribe.select_rows(
+            distinct=False, **params
         )
         return all_data
 
@@ -91,17 +116,18 @@ class GsCoreSubscribe:
         subscribe_type: Literal['session', 'single'],
         task_name: str,
         event: Event,
+        uid: Optional[str] = None,
     ):
+        params = {
+            'task_name': task_name,
+        }
+        if uid:
+            params['uid'] = uid
+
         if subscribe_type == 'session' and event.user_type == 'group':
-            await Subscribe.delete_row(
-                group_id=event.group_id,
-                task_name=task_name,
-            )
+            await Subscribe.delete_row(group_id=event.group_id, **params)
         else:
-            await Subscribe.delete_row(
-                user_id=event.user_id,
-                task_name=task_name,
-            )
+            await Subscribe.delete_row(user_id=event.user_id, **params)
 
     async def update_subscribe_message(
         self,
@@ -109,9 +135,11 @@ class GsCoreSubscribe:
         task_name: str,
         event: Event,
         extra_message: str,
+        uid: Optional[str] = None,
     ):
         sed = {}
         upd = {}
+
         for i in [
             'bot_id',
             'bot_self_id',
@@ -123,6 +151,9 @@ class GsCoreSubscribe:
             sed['group_id'] = event.group_id
         else:
             sed['user_id'] = event.user_id
+
+        if uid:
+            sed['uid'] = uid
 
         sed['task_name'] = task_name
         sed['subscribe_type'] = subscribe_type

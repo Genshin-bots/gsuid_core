@@ -15,6 +15,7 @@ exec_list = [
     'CREATE INDEX idx_user_name ON coreuser (user_name);',
     'CREATE INDEX idx_group_name ON coregroup (group_name);',
     'CREATE INDEX idx_group_id ON coregroup (group_id);',
+    "ALTER TABLE Subscribe ADD COLUMN uid STRING DEFAULT 'None';",
 ]
 
 

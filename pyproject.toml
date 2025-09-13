@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gsuid-core"
-version = "0.8.2"
+version = "0.8.3"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 authors = ["KimigaiiWuyi <444835641@qq.com>", "MingxuanGame <MingxuanGame@outlook.com>"]
 license = "GPL-3.0-or-later"
@@ -163,7 +163,7 @@ dependencies = [
     "cryptography>=45.0.5",
 ]
 name = "gsuid-core"
-version = "0.8.2"
+version = "0.8.3"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
