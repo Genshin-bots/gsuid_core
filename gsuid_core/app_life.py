@@ -16,7 +16,6 @@ async def lifespan(app: FastAPI):
             '♻ [GsCore] 执行启动Hook函数中！',
             [_def.__name__ for _def in core_start_def],
         )
-        logger.trace(core_start_def)
         for _def in core_start_def:
             if asyncio.iscoroutinefunction(_def):
                 asyncio.create_task(_def())

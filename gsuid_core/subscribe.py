@@ -190,8 +190,9 @@ class GsCoreSubscribe:
         priv_result: Dict[str, PrivTask] = {}
         group_result: Dict[str, GroupTask] = {}
         for data in datas:
-            if data.__getattribute__(attr):
-                im = await func(data.__getattribute__(attr))
+            attr_data = data.__getattribute__(attr)
+            if attr_data:
+                im = await func(attr_data)
                 if data.user_type == 'group':
                     sid = f'{data.WS_BOT_ID}_{data.group_id}'
                     if sid not in group_result:
@@ -213,6 +214,16 @@ class GsCoreSubscribe:
                         }
                     priv_result[sid]['im'].append(im)
         return priv_result, group_result
+
+    async def _to_dict(
+        self, data: Sequence[Subscribe]
+    ) -> Dict[str, List[Subscribe]]:
+        result: Dict[str, List[Subscribe]] = {}
+        for item in data:
+            if str(item.uid) not in result:
+                result[str(item.uid)] = []
+            result[str(item.uid)].append(item)
+        return result
 
 
 class GroupTask(TypedDict):
