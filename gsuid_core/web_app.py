@@ -3,7 +3,6 @@ from io import BytesIO
 from pathlib import Path
 from datetime import date as dt_date
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Sequence
 
 import aiofiles
@@ -11,7 +10,7 @@ from PIL import Image
 from bs4 import Tag, BeautifulSoup
 from starlette.requests import Request
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, UploadFile, BackgroundTasks
+from fastapi import UploadFile, BackgroundTasks
 from fastapi.responses import Response, StreamingResponse
 
 from gsuid_core.sv import SL
@@ -20,8 +19,7 @@ from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.config import CONFIG_DEFAULT, core_config
-from gsuid_core.aps import start_scheduler, shutdown_scheduler
-from gsuid_core.server import core_start_def, core_shutdown_def
+from gsuid_core.logger import LOG_PATH, HistoryLogData, read_log
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.plugins_config.models import (
     GsImageConfig,
@@ -30,13 +28,6 @@ from gsuid_core.utils.plugins_config.models import (
 from gsuid_core.utils.plugins_config.gs_config import (
     all_config_list,
     core_plugins_config,
-)
-from gsuid_core.logger import (
-    LOG_PATH,
-    HistoryLogData,
-    logger,
-    read_log,
-    clean_log,
 )
 from gsuid_core.utils.database.global_val_models import (
     DataType,
@@ -52,54 +43,12 @@ from gsuid_core.utils.plugins_update._plugins import (
     get_plugins_list,
 )
 
+from .app_life import app
+
 is_clean_pic = core_plugins_config.get_config('EnableCleanPicSrv').data
 pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
 
 TEMP_DICT: Dict[str, Dict] = {}
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    try:
-        logger.info(
-            '♻ [GsCore] 执行启动Hook函数中！',
-            [_def.__name__ for _def in core_start_def],
-        )
-        for _def in core_start_def:
-            if asyncio.iscoroutinefunction(_def):
-                asyncio.create_task(_def())
-            else:
-                asyncio.create_task(asyncio.to_thread(_def))
-    except Exception as e:
-        logger.exception(e)
-
-    from gsuid_core.global_val import trans_global_val
-    from gsuid_core.webconsole.__init__ import start_check
-
-    await start_check()  # type:ignore
-    await start_scheduler()
-    asyncio.create_task(clean_log())
-    await trans_global_val()
-
-    # 将在几个版本后删除
-    await CoreDataAnalysis.update_summary()
-
-    yield
-
-    await shutdown_scheduler()
-
-    try:
-        logger.info(
-            '[GsCore] 执行关闭Hook函数中！',
-            [_def.__name__ for _def in core_shutdown_def],
-        )
-        _task = [_def() for _def in core_shutdown_def]
-        await asyncio.gather(*_task)
-    except Exception as e:
-        logger.exception(e)
-
-
-app = FastAPI(lifespan=lifespan)
 
 
 @app.post('/genshinuid/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}')

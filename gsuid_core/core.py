@@ -55,6 +55,9 @@ async def main():
     from gsuid_core.config import core_config
     from gsuid_core.handler import handle_event
     from gsuid_core.models import MessageReceive
+    from gsuid_core.utils.database.startup import (  # noqa: F401
+        trans_adapter as ta,
+    )
 
     HOST = core_config.get_config('HOST').lower()
     PORT = int(core_config.get_config('PORT'))
@@ -64,9 +67,7 @@ async def main():
         HOST = None
 
     if args.dev:
-        from fastapi import FastAPI
-
-        app = FastAPI()
+        from .app_life import app
     else:
         from gsuid_core.web_app import app, site
 
