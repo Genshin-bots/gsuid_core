@@ -11,8 +11,9 @@ from typing import (
 )
 
 from gsuid_core.models import Event
-from gsuid_core.utils.database.models import Subscribe
 from gsuid_core.segment import MessageSegment
+from gsuid_core.utils.database.models import Subscribe
+
 
 class GsCoreSubscribe:
     async def add_subscribe(
