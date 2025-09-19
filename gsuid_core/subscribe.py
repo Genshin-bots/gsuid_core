@@ -11,6 +11,7 @@ from typing import (
 )
 
 from gsuid_core.models import Event
+from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.database.models import Subscribe
 
 
@@ -200,9 +201,19 @@ class GsCoreSubscribe:
                             'success': 0,
                             'fail': 0,
                             'event': data,
+                            'push_message': [],
                         }
                     if '失败' in im:
                         group_result[sid]['fail'] += 1
+                        qid = attr_data = data.__getattribute__("user_id")
+                        group_result[sid]['push_message'].extend(
+                            [
+                                MessageSegment.text('\n'),
+                                MessageSegment.at(qid),
+                                MessageSegment.text('\n'),
+                                MessageSegment.text(im),
+                            ]
+                        )
                     else:
                         group_result[sid]['success'] += 1
                 else:
