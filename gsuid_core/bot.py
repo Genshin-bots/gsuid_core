@@ -224,7 +224,14 @@ class Bot:
         return cls.mutiply_map
 
     async def wait_for_key(self, timeout: float) -> Optional[Event]:
-        await asyncio.wait_for(self.event.wait(), timeout=timeout)
+        try:
+            await asyncio.wait_for(self.event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f'[等待回复超时] 等待回复{self.event}超时, 超时时间: {timeout}s'
+            )
+            return None
+
         self.receive_tag = False
         if self.resp:
             reply = self.resp[-1]

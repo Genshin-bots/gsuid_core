@@ -10,7 +10,7 @@ from typing import (
     TypedDict,
 )
 
-from gsuid_core.models import Event
+from gsuid_core.models import Event, Message
 from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.database.models import Subscribe
 
@@ -222,6 +222,7 @@ class GsCoreSubscribe:
                         priv_result[sid] = {
                             'im': [],
                             'event': data,
+                            'push_message': [],
                         }
                     priv_result[sid]['im'].append(im)
         return priv_result, group_result
@@ -241,11 +242,13 @@ class GroupTask(TypedDict):
     success: int
     fail: int
     event: Subscribe
+    push_message: List[Message]
 
 
 class PrivTask(TypedDict):
     im: List[str]
     event: Subscribe
+    push_message: List[Message]
 
 
 gs_subscribe = GsCoreSubscribe()

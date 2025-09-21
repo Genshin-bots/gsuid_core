@@ -6,6 +6,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
+    GsTimeConfig,
     GsImageConfig,
     GsListStrConfig,
 )
@@ -20,6 +21,7 @@ from gsuid_core.webconsole.create_base_panel import (
     get_grid_panel,
     get_text_panel,
     get_image_input,
+    get_time_select,
     get_input_number,
     get_select_panel,
     get_switch_panel,
@@ -113,6 +115,7 @@ def get_sconfig_body(config_name: str, _config: StringConfig):
                 )
             )
         elif isinstance(gsc, GsListStrConfig):
+            '''
             if not gsc.options:
                 _data = get_text_panel(
                     gsc.title,
@@ -122,15 +125,24 @@ def get_sconfig_body(config_name: str, _config: StringConfig):
                     gsc.desc,
                 )
             else:
-                _data = get_input_tag(
+            '''
+            _data = get_input_tag(
+                gsc.title,
+                config,
+                gsc.data,
+                gsc.options,
+                gsc.title,
+                gsc.desc,
+            )
+            solo_body.append(_data)
+        elif isinstance(gsc, GsTimeConfig):
+            solo_body.append(
+                get_time_select(
                     gsc.title,
                     config,
                     gsc.data,
-                    gsc.options,
-                    gsc.title,
-                    gsc.desc,
                 )
-            solo_body.append(_data)
+            )
         elif isinstance(gsc, GsImageConfig):
             solo_body.append(
                 get_image_input(

@@ -255,6 +255,17 @@ def get_input_tag(
     return data
 
 
+def get_time_select(label: str, name: str, value: str):
+    return {
+        "type": "input-time",
+        "name": name,
+        "label": label,
+        "valueFormat": "HH:mm",
+        'optionsTip': '请输入时间, 格式为 HH:mm',
+        'value': value,
+    }
+
+
 def get_divider():
     return {'type': 'divider', 'id': 'u:65e1334b3abe'}
 

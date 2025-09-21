@@ -98,6 +98,7 @@ class Plugins:
         disable_force_prefix: bool = False,
         allow_empty_prefix: Optional[bool] = None,
         force: bool = False,
+        alias: List[str] = [],
     ):
         if isinstance(prefix, str):
             prefix = [prefix]
@@ -122,6 +123,7 @@ class Plugins:
         self.allow_empty_prefix = allow_empty_prefix
         self.force_prefix = force_prefix
         self.disable_force_prefix = disable_force_prefix
+        self.alias = alias
 
     def set(self, is_lazy: bool = True, **kwargs):
         plugin_config = config_plugins[self.name]
@@ -234,6 +236,9 @@ class SV:
                     config_plugins[plugins_name]['force_prefix'] = SL.plugins[
                         plugins_name
                     ].force_prefix
+                    config_plugins[plugins_name]['alias'] = SL.plugins[
+                        plugins_name
+                    ].alias
 
                 plugins = Plugins(
                     **config_plugins[plugins_name],

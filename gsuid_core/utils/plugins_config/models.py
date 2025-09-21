@@ -43,6 +43,10 @@ class GsImageConfig(GsConfig, tag=True):
     suffix: str = 'jpg'
 
 
+class GsTimeConfig(GsConfig, tag=True):
+    data: str
+
+
 GSC = Union[
     GsDictConfig,
     GsBoolConfig,
@@ -51,4 +55,5 @@ GSC = Union[
     GsStrConfig,
     GsIntConfig,
     GsImageConfig,
+    GsTimeConfig,
 ]
