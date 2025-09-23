@@ -12,6 +12,8 @@ import aiofiles
 from PIL import Image
 from httpx import AsyncClient
 
+from gsuid_core.logger import logger
+
 from ..types import AnyDict
 from ..utils import _HEADER, cache_data
 from .models import (
@@ -209,6 +211,7 @@ async def _ambr_request(
     params: Optional[AnyDict] = None,
     data: Optional[AnyDict] = None,
 ) -> Optional[AnyDict]:
+    logger.debug(f'[AmbrRequest] {url} {method} {params} {data}')
     async with AsyncClient(timeout=None) as client:
         req = await client.request(
             method, url=url, headers=header, params=params, json=data

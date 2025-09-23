@@ -13,7 +13,7 @@ from gsuid_core.utils.plugins_update._plugins import (
 sv_core_install_plugins = SV('core管理插件', pm=0)
 
 
-@sv_core_install_plugins.on_prefix(('core卸载插件'), block=True)
+@sv_core_install_plugins.on_prefix(('卸载插件'), block=True)
 async def send_plugins_uninstall(bot: Bot, ev: Event):
     if not ev.text:
         return await bot.send(
