@@ -47,7 +47,7 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
         block_list.append(ev.group_id or ev.user_id)
 
     if ev.at_list:
-        if ev.group_id in block_list:
+        if ev.group_id in block_list and ev.group_id not in params:
             block_list.remove(ev.group_id)
 
         block_list.extend(ev.at_list)
