@@ -33,6 +33,9 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
         for alias in SL.plugins[plugin].alias
     }
 
+    if ev.at_list:
+        params.extend(ev.at_list)
+
     if not params:
         params = [ev.group_id or ev.user_id]
 
@@ -45,12 +48,6 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
 
     if not block_list:
         block_list.append(ev.group_id or ev.user_id)
-
-    if ev.at_list:
-        if ev.group_id in block_list and ev.group_id not in params:
-            block_list.remove(ev.group_id)
-
-        block_list.extend(ev.at_list)
 
     logger.info(
         f'[Core权限管理] {ev.command} {plugin.name if plugin else "全局"} '
