@@ -46,7 +46,11 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
     if not block_list:
         block_list.append(ev.group_id or ev.user_id)
 
-    block_list.extend(ev.at_list)
+    if ev.at_list:
+        if ev.group_id in block_list:
+            block_list.remove(ev.group_id)
+
+        block_list.extend(ev.at_list)
 
     logger.info(
         f'[Core权限管理] {ev.command} {plugin.name if plugin else "全局"} '
