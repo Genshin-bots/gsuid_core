@@ -1,6 +1,6 @@
 from typing import Dict, List, Literal
 
-from gsuid_core.sv import SL, SV, Plugins
+from gsuid_core.sv import SL, SV, Plugins, Trigger
 from gsuid_core.webconsole.create_base_panel import (
     get_tab,
     get_tabs,
@@ -25,7 +25,7 @@ def get_sv_panel(
     force_prefix: List[str] = [],
     disable_force_prefix: bool = False,
     allow_empty_prefix: bool = False,
-    tl: Dict = {},
+    tl: Dict[str, Dict[str, Trigger]] = {},
 ):
     api = f'{API}/{name}'
     if force_prefix:
@@ -133,18 +133,37 @@ def get_sv_panel(
 
     if tl:
         value = []
+        maps = {}
         for a in tl:
             tg = tl[a]
             for t in tg:
-                value.append(t)
+                tr = tg[t]
+                if tr.keyword not in value:
+                    if tr.type == 'fullmatch':
+                        _class = 'label label-warning'
+                    elif tr.type == 'keyword':
+                        _class = 'label label-success'
+                    elif tr.type == 'prefix':
+                        _class = 'label label-primary'
+                    elif tr.type == 'suffix':
+                        _class = 'label label-default'
+                    elif tr.type == 'command':
+                        _class = 'label label-danger'
+                    elif tr.type == 'regex':
+                        _class = 'label label-default'
+                    else:
+                        _class = 'label label-info'
+
+                    value.append(tr.keyword)
+                    maps[tr.keyword] = (
+                        f"<span class='{_class}' style='font-size: 12px;'"
+                        f">{tr.keyword}</span>"
+                    )
 
         mapping = {
             "type": "mapping",
             "value": value,
-            "map": {
-                a: f"<span class='label label-warning'>{a}</span>"
-                for a in value
-            },
+            "map": maps,
         }
     else:
         mapping = {}
@@ -417,7 +436,9 @@ def get_sv_panel(
     }
 
     if API == '/genshinuid/setPlugins':
-        card['body']['body'].extend([switch, ol, extra, black, white])
+        card['body']['body'].extend(
+            [mapping, get_divider(), switch, ol, extra, black, white]
+        )
     else:
         card['body']['body'].extend(
             [mapping, get_divider(), switch, ol, black, white]
@@ -432,6 +453,13 @@ def get_sv_body(sv_list: List[SV], plugins: Plugins):
     grids.append(
         get_alert('该设定卡片为总设定，以下服务的触发均需满足总设定条件')
     )
+    tl: Dict[str, Dict[str, Trigger]] = {}
+    for sv in sv_list:
+        for tt in sv.TL:
+            if tt not in tl:
+                tl[tt] = {}
+            tl[tt].update(sv.TL[tt])
+
     grids.append(
         get_sv_panel(
             '/genshinuid/setPlugins',
@@ -446,6 +474,7 @@ def get_sv_body(sv_list: List[SV], plugins: Plugins):
             plugins.force_prefix,
             plugins.disable_force_prefix,
             plugins.allow_empty_prefix,
+            tl=tl,
         )
     )
     grids.append(get_divider())

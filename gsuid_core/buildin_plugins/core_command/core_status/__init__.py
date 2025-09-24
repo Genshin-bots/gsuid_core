@@ -55,7 +55,6 @@ async def _scheduled_save_global_val_all():
 @sv_core_status.on_fullmatch(
     (
         '信息',
-        'tatus',
         'status',
     )
 )
