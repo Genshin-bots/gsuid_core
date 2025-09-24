@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import Dict, List, Literal
 
 from gsuid_core.sv import SL, SV, Plugins
 from gsuid_core.webconsole.create_base_panel import (
@@ -25,6 +25,7 @@ def get_sv_panel(
     force_prefix: List[str] = [],
     disable_force_prefix: bool = False,
     allow_empty_prefix: bool = False,
+    tl: Dict = {},
 ):
     api = f'{API}/{name}'
     if force_prefix:
@@ -129,6 +130,24 @@ def get_sv_panel(
         'id': 'u:2a2b198f141b',
         'label': '',
     }
+
+    if tl:
+        value = []
+        for a in tl:
+            tg = tl[a]
+            for t in tg:
+                value.append(t)
+
+        mapping = {
+            "type": "mapping",
+            "value": value,
+            "map": {
+                a: f"<span class='label label-warning'>{a}</span>"
+                for a in value
+            },
+        }
+    else:
+        mapping = {}
 
     switch = {
         'type': 'flex',
@@ -400,7 +419,9 @@ def get_sv_panel(
     if API == '/genshinuid/setPlugins':
         card['body']['body'].extend([switch, ol, extra, black, white])
     else:
-        card['body']['body'].extend([switch, ol, black, white])
+        card['body']['body'].extend(
+            [mapping, get_divider(), switch, ol, black, white]
+        )
 
     return card
 
@@ -439,6 +460,7 @@ def get_sv_body(sv_list: List[SV], plugins: Plugins):
             sv.area,  # type:ignore
             sv.black_list,
             sv.white_list,
+            tl=sv.TL,
         )
         panels.append(panel)
         if len(panels) == 2:
