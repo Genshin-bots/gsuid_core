@@ -177,10 +177,34 @@ def colorize_brackets_processor(
     return event_dict
 
 
+def safe_deepcopy_eventdict(event_dict: EventDict) -> EventDict:
+    sanitized_dict: EventDict = {}
+
+    for key, value in event_dict.items():
+        try:
+            sanitized_dict[key] = deepcopy(value)
+        except TypeError:
+            try:
+                sanitized_dict[key] = str(value)
+            except Exception as e:
+                sanitized_dict[key] = (
+                    "<Unstringable object of type "
+                    f"{type(value).__name__}, error: {e}>"
+                )
+
+    return sanitized_dict
+
+
 def log_to_history(
-    logger: WrappedLogger, method_name: str, event_dict: EventDict
+    logger: WrappedLogger,
+    method_name: str,
+    event_dict: EventDict,
 ) -> EventDict:
-    _event_dict = deepcopy(event_dict)
+    try:
+        _event_dict = deepcopy(event_dict)
+    except Exception:
+        _event_dict = safe_deepcopy_eventdict(event_dict)
+
     s = ''
     for g in _event_dict:
         if g not in ['event', 'timestamp', 'level']:
