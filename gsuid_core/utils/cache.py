@@ -1,3 +1,4 @@
+import json
 import time
 import base64
 import inspect
@@ -32,8 +33,12 @@ def gs_cache(expire_time=3600):
                 for arg in all_args:
                     if isinstance(arg, (str, int, float, bool, Tuple, Path)):
                         file_key += '_' + repr(arg)
-                    elif isinstance(arg, (Dict, List)):
-                        file_key += '_' + str(hash(arg))
+                    elif isinstance(arg, Dict):
+                        file_key += '_' + str(
+                            hash(json.dumps(arg, sort_keys=True))
+                        )
+                    elif isinstance(arg, List):
+                        file_key += '_' + str(hash(json.dumps(arg)))
                     else:
                         continue
 
@@ -106,8 +111,12 @@ def gs_cache(expire_time=3600):
                 for arg in all_args:
                     if isinstance(arg, (str, int, float, bool, Tuple, Path)):
                         file_key += '_' + repr(arg)
-                    elif isinstance(arg, (Dict, List)):
-                        file_key += '_' + str(hash(arg))
+                    elif isinstance(arg, Dict):
+                        file_key += '_' + str(
+                            hash(json.dumps(arg, sort_keys=True))
+                        )
+                    elif isinstance(arg, List):
+                        file_key += '_' + str(hash(json.dumps(arg)))
                     else:
                         continue
 
