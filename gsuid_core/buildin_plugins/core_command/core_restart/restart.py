@@ -1,11 +1,14 @@
 import os
-import json
 import time
 import platform
 import subprocess
 from pathlib import Path
+from typing import Optional
 
+from gsuid_core.models import Event
 from gsuid_core.logger import logger
+from gsuid_core.subscribe import gs_subscribe
+from gsuid_core.utils.database.models import Subscribe
 from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -52,10 +55,7 @@ async def get_restart_sh() -> str:
 
 
 async def restart_genshinuid(
-    bot_id: str,
-    bot_self_id: str,
-    send_type: str,
-    send_id: str,
+    event: Optional[Event] = None,
     is_send: bool = True,
 ) -> None:
     await save_global_val()
@@ -63,24 +63,22 @@ async def restart_genshinuid(
     restart_sh = await get_restart_sh()
     with open(restart_sh_path, "w", encoding="utf8") as f:
         f.write(restart_sh)
+
     if platform.system() == 'Linux':
         # os.system(f'chmod +x {str(restart_sh_path)}')
         # os.system(f'chmod +x {str(bot_start)}')
         pass
 
     now_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
-    if is_send:
-        update_log = {
-            'type': 'restart',
-            'msg': '🚀 重启完成!',
-            'bot_id': bot_id,
-            'bot_self_id': bot_self_id,
-            'send_type': send_type,
-            'send_to': send_id,
-            'time': now_time,
-        }
-        with open(str(update_log_path), 'w', encoding='utf-8') as f:
-            json.dump(update_log, f)
+
+    if is_send and event:
+        await gs_subscribe.add_subscribe(
+            subscribe_type='session',
+            task_name='[早柚核心] Restart',
+            event=event,
+            extra_message=now_time,
+        )
+
     if platform.system() == 'Linux':
         subprocess.Popen(
             f'kill -9 {pid} & {get_restart_command()}',
@@ -93,14 +91,21 @@ async def restart_genshinuid(
         )
 
 
-async def restart_message() -> dict:
+async def restart_message():
     if update_log_path.exists():
-        with open(update_log_path, 'r', encoding='utf-8') as f:
-            update_log = json.load(f)
-        msg = f'{update_log["msg"]}\n重启时间:{update_log["time"]}'
-        update_log['msg'] = msg
-        os.remove(update_log_path)
-        os.remove(restart_sh_path)
-        return update_log
+        update_log_path.unlink()
+
+    datas = await gs_subscribe.get_subscribe(
+        task_name='[早柚核心] Restart',
+    )
+    if datas:
+        now_time = time.strftime(
+            '%Y-%m-%d %H:%M:%S', time.localtime(time.time())
+        )
+        data = datas[0]
+        await data.send(
+            f'🚀 重启完成!\n关机时间: {data.extra_message}\n重启时间:{now_time}'
+        )
+        await Subscribe.delete_row(task_name='[早柚核心] Restart')
     else:
-        return {}
+        logger.warning('[Core重启] 没有找到[Core重启]的订阅, 无推送消息！')
