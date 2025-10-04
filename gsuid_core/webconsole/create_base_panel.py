@@ -1,5 +1,84 @@
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Dict, List, Union, Literal, Optional
+
+from .models import Option, CheckBox, TreeData
+
+
+def get_form(title: str, api: str, body: List):
+    data = {
+        "id": f"u:27663{title}",
+        "type": "form",
+        "title": title,
+        "mode": "flex",
+        "labelAlign": "top",
+        "dsType": "api",
+        "feat": "Insert",
+        "body": body,
+        "reload": f"u:27663{title}",
+        "actions": [
+            {
+                "type": "button",
+                "label": "提交",
+                "actionType": "submit",
+                "level": "primary",
+            }
+        ],
+        "api": api,
+        "wrapperCustomStyle": {".a-Panel": {"margin": "0"}},
+    }
+    return data
+
+
+def get_checkboxes(
+    name: str,
+    label: str,
+    value: List[str],
+    options: List[CheckBox],
+):
+    data = {
+        "name": name,
+        "type": "checkboxes",
+        "label": label,
+        "value": ','.join(value),
+        "options": options,
+    }
+    return data
+
+
+def get_page(title: str, body: List):
+    return {
+        'type': 'page',
+        'title': title,
+        'body': body,
+    }
+
+
+def get_input_tree(
+    name: str,
+    label: str,
+    value: List[str],
+    options: List[Option],
+) -> TreeData:
+    """
+    创建输入树组件的基础结构。
+    这个函数与数据源（文件系统、数据库等）无关。
+    """
+    data: TreeData = {
+        "type": "input-tree",
+        "name": name,
+        "label": label,
+        "multiple": True,
+        "options": options,
+        "heightAuto": True,
+        "virtualThreshold": 200,
+        "initiallyOpen": False,
+        "value": ','.join(value),
+        "searchable": True,
+        "wrapperCustomStyle": {".a-Panel": {"margin": "0"}},
+    }
+    return data
 
 
 def get_image_input(
@@ -201,6 +280,17 @@ def get_alert(
         'showIcon': True,
         'className': 'mb-2',
     }
+
+
+def get_select(label: str, name: str, options: List[CheckBox]):
+    data = {
+        "label": label,
+        "type": "select",
+        "name": name,
+        # "menuTpl": "<div>${label} 值：${value}, 当前是否选中: ${checked}</div>",
+        "options": options,
+    }
+    return data
 
 
 def get_select_panel(

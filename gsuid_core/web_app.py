@@ -15,9 +15,9 @@ from fastapi.responses import Response, StreamingResponse
 
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
-from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.mount_app import site
 from gsuid_core.segment import Message, MessageSegment
+from gsuid_core.data_store import image_res, backup_path
 from gsuid_core.config import CONFIG_DEFAULT, core_config
 from gsuid_core.logger import LOG_PATH, HistoryLogData, read_log
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
@@ -25,14 +25,15 @@ from gsuid_core.utils.plugins_config.models import (
     GsImageConfig,
     GsListStrConfig,
 )
-from gsuid_core.utils.plugins_config.gs_config import (
-    all_config_list,
-    core_plugins_config,
-)
 from gsuid_core.utils.database.global_val_models import (
     DataType,
     CoreDataSummary,
     CoreDataAnalysis,
+)
+from gsuid_core.utils.plugins_config.gs_config import (
+    backup_config,
+    all_config_list,
+    core_plugins_config,
 )
 from gsuid_core.utils.plugins_update._plugins import (
     check_status,
@@ -49,6 +50,71 @@ is_clean_pic = core_plugins_config.get_config('EnableCleanPicSrv').data
 pic_expire_time = core_plugins_config.get_config('ScheduledCleanPicSrv').data
 
 TEMP_DICT: Dict[str, Dict] = {}
+
+
+@app.post('/genshinuid/downloadBackUp')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _download_backup(request: Request, data: Dict):
+    host = request.headers.get('host')
+    scheme = request.url.scheme
+    base_url = f"{scheme}://{host}"
+
+    backup_file: str = data['backup_file']
+    backup_path = Path(backup_file)
+    if not backup_path.exists():
+        return Response(status_code=404)
+
+    DOWNLOAD_API = '/genshinuid/downloadFile'
+    download_url = f'{base_url}{DOWNLOAD_API}?file_id={backup_path.name}'
+
+    return {
+        "status": 0,
+        "msg": "数据提交成功",
+        "data": {
+            "fileId": backup_path.name,
+            "downloadUrl": download_url,
+        },
+        "redirect": download_url,
+    }
+
+
+@app.get('/genshinuid/downloadFile')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _download_file(request: Request):
+    # 从 URL query string 中获取文件 ID
+    file_id = request.query_params.get('file_id')
+
+    if not file_id:
+        return Response('缺少文件标识符', status_code=400)
+
+    _path = Path(backup_path / file_id)
+    if not _path.exists():
+        return Response('文件未找到', status_code=404)
+
+    async with aiofiles.open(_path, 'rb') as f:
+        content = await f.read()
+
+        headers = {'Content-Disposition': f'attachment; filename="{file_id}"'}
+
+        # 返回文件流
+        return Response(
+            content, media_type='application/octet-stream', headers=headers
+        )
+
+
+@app.post('/genshinuid/setBackUp')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _set_backup(request: Request, data: Dict):
+    backup_time: str = data['backup_time']
+    backup_dir: str = data['backup_dir']
+    backup_method: str = data['backup_method']
+
+    backup_config.set_config('backup_time', backup_time)
+    backup_config.set_config('backup_dir', backup_dir.split(','))
+    backup_config.set_config('backup_method', backup_method.split(','))
+
+    backup_config.update_config()
+    return Response(status_code=200)
 
 
 @app.post('/genshinuid/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}')
