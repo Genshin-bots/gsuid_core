@@ -21,6 +21,7 @@ from gsuid_core.data_store import image_res, backup_path
 from gsuid_core.config import CONFIG_DEFAULT, core_config
 from gsuid_core.logger import LOG_PATH, HistoryLogData, read_log
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
+from gsuid_core.utils.backup.backup_core import copy_and_rebase_paths
 from gsuid_core.utils.plugins_config.models import (
     GsImageConfig,
     GsListStrConfig,
@@ -75,6 +76,69 @@ async def _download_backup(request: Request, data: Dict):
             "downloadUrl": download_url,
         },
         "redirect": download_url,
+        "actions": [
+            {
+                "actionType": "download",
+                "url": download_url,
+                "method": "get",
+                "blank": True,
+            }
+        ],
+    }
+
+
+@app.get('/genshinuid/backupFiles')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _backup_files(request: Request):
+    backup_files = [
+        {
+            'fileName': i.name,
+            'downloadUrl': f'/genshinuid/downloadFile?file_id={i.name}',
+            'deleteUrl': f'/genshinuid/deleteBackUp?file_id={i.name}',
+        }
+        for i in backup_path.glob('*.zip')
+    ]
+    return {
+        "status": 0,
+        "msg": "数据提交成功",
+        "data": {
+            "items": backup_files,
+        },
+    }
+
+
+@app.get('/genshinuid/backUpNow')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _back_up_now(request: Request):
+    retcode = copy_and_rebase_paths(None, 'NowFile')
+    if retcode != 0:
+        return Response(status_code=500)
+
+    return {
+        "status": 0,
+        "msg": "成功完成备份!",
+    }
+
+
+@app.get('/genshinuid/deleteBackUp')
+@site.auth.requires('root', response=Response(status_code=403))
+async def _delete_backup(request: Request):
+    file_id = request.query_params.get('file_id')
+
+    if not file_id:
+        return Response('缺少文件标识符', status_code=400)
+
+    _path = Path(backup_path / file_id)
+    if not _path.exists():
+        return Response('文件未找到', status_code=404)
+
+    try:
+        _path.unlink()
+    except Exception as e:
+        return Response(f'删除文件失败: {e}', status_code=500)
+    return {
+        "status": 0,
+        "msg": "成功删除备份文件!",
     }
 
 

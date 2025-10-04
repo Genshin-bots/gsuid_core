@@ -4,20 +4,21 @@ from pathlib import Path
 from typing import Dict, List
 
 from gsuid_core.logger import logger
-from gsuid_core.data_store import backup_path
 from gsuid_core.utils.plugins_config.gs_config import backup_config
 
-from .models import Option, CheckBox
+from .models import Option
 from .create_base_panel import (
+    get_api,
     get_tab,
     get_form,
     get_page,
     get_tabs,
     get_alert,
-    get_select,
+    get_button,
     get_checkboxes,
     get_input_tree,
     get_time_select,
+    get_list_download,
 )
 
 
@@ -103,11 +104,6 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
 
     options: List[Option] = generate_file_tree_options(root_path_obj)
 
-    backup_files: List[CheckBox] = [
-        {'label': i.name, 'value': str(i.absolute())}
-        for i in backup_path.glob('*.zip')
-    ]
-
     tabs = get_tabs(
         [
             get_tab(
@@ -147,17 +143,16 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
             get_tab(
                 '备份下载',
                 [
-                    get_form(
-                        '备份下载',
-                        '/genshinuid/downloadBackUp',
-                        [
-                            get_select(
-                                '当前备份文件',
-                                'backup_file',
-                                backup_files,
-                            ),
-                        ],
-                    )
+                    get_button(
+                        '立即进行一次备份',
+                        get_api(
+                            '/genshinuid/backUpNow',
+                            'get',
+                            [],
+                        ),
+                        'backup_list',
+                    ),
+                    get_list_download(),
                 ],
             ),
         ]

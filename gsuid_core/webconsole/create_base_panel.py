@@ -6,6 +6,70 @@ from typing import Dict, List, Union, Literal, Optional
 from .models import Option, CheckBox, TreeData
 
 
+def get_list_download():
+    delete_action = {
+        'click': {
+            'actions': [
+                {
+                    'actionType': 'ajax',
+                    'api': {
+                        'method': 'get',
+                        'url': "${deleteUrl}",
+                    },
+                },
+                {
+                    'componentName': 'backup_list',
+                    'actionType': 'reload',
+                },
+            ]
+        }
+    }
+    data = {
+        'name': 'backup_list',
+        'type': 'page',
+        "initApi": {
+            "method": "get",
+            "url": "/genshinuid/backupFiles",
+        },
+        'body': [
+            {
+                "type": "list",
+                "name": "myList",
+                "listItem": {
+                    "body": [
+                        {
+                            "type": "flex",
+                            "justify": "space-between",
+                            "alignItems": "center",
+                            "items": [
+                                {"type": "tpl", "tpl": "${fileName}"},
+                                {
+                                    "type": "button-group",
+                                    "buttons": [
+                                        {
+                                            "type": "button",
+                                            "label": "下载",
+                                            "actionType": "download",
+                                            "api": "${downloadUrl}",
+                                        },
+                                        {
+                                            "type": "button",
+                                            "label": "删除",
+                                            "confirmText": "确定要删除这个文件吗？",
+                                            'onEvent': delete_action,
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    return data
+
+
 def get_form(title: str, api: str, body: List):
     data = {
         "id": f"u:27663{title}",
@@ -209,6 +273,9 @@ def get_button(
     }
     if api:
         data['onEvent']['click']['actions'].append(api)
+        data['onEvent']['click']['actions'].append(
+            {'componentName': reload_element, 'actionType': 'reload'}
+        )
     return data
 
 
@@ -432,8 +499,13 @@ def get_card(title: str, content: List[Dict]):
     return data
 
 
-def get_tab(title: str, bodys: List[Dict]):
-    return {'title': title, 'body': bodys}
+def get_tab(
+    title: str, bodys: List[Dict], name: Optional[str] = None
+) -> Dict[str, str]:
+    data = {'title': title, 'body': bodys}
+    if name:
+        data['name'] = name
+    return data
 
 
 def get_tabs(tabs: List[Dict]):

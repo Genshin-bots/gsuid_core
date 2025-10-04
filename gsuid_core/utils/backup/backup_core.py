@@ -8,7 +8,9 @@ from gsuid_core.data_store import backup_path, gs_data_path
 from gsuid_core.utils.plugins_config.gs_config import backup_config
 
 
-def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None) -> None:
+def copy_and_rebase_paths(
+    _paths_to_copy: Optional[List[Path]] = None, file_id: Optional[str] = None
+) -> int:
     """
     将路径列表中的文件/文件夹复制到备份目录，并移除指定的路径前缀。
 
@@ -22,9 +24,26 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None) -> None:
         paths_to_copy = _paths_to_copy
 
     prefix_to_remove = gs_data_path
-    date_str = datetime.now().strftime("%Y-%m-%d")
 
-    final_backup_dir = backup_path / date_str
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    if file_id is None:
+        file_id = date_str
+    else:
+        file_id = file_id.strip()
+
+    final_backup_dir = backup_path / f'{file_id}-{date_str}'
+
+    if final_backup_dir.exists():
+        logger.warning(f"备份目录已存在: {final_backup_dir}")
+        # 确认一下这个目录是否是backup_path开头的
+        if not final_backup_dir.is_relative_to(backup_path):
+            logger.warning(
+                f"目录 {final_backup_dir} 不是 {backup_path} 的子目录，跳过删除。"
+            )
+            return -1
+
+        # 递归删除该目录下的所有文件和子目录
+        shutil.rmtree(final_backup_dir)
 
     try:
         final_backup_dir.mkdir(parents=True, exist_ok=True)
@@ -32,7 +51,7 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None) -> None:
 
     except Exception as e:
         logger.info(f"创建备份目录失败: {e}")
-        return
+        return -5
 
     # 4. 遍历并复制路径
     for src_path in paths_to_copy:
@@ -72,3 +91,6 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None) -> None:
         logger.success(f"已压缩备份目录: {final_backup_dir}.zip")
     except Exception as e:
         logger.warning(f"压缩备份目录失败: {e}")
+        return -10
+
+    return 0
