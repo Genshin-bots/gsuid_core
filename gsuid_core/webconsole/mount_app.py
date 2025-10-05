@@ -53,6 +53,7 @@ from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.utils.database.base_models import finally_url
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
+from gsuid_core.webconsole.create_aps_panel import generate_amis_job_list
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
 from gsuid_core.webconsole.create_sv_panel import get_sv_page, get_ssv_page
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
@@ -648,6 +649,21 @@ class BackupPage(GsAdminPage):
                 root_dir=gs_data_path,
             )
         )
+
+
+@site.register_admin
+class APSchedulerPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('定时任务管理'),
+        icon='fa fa-clock-o',
+        url='/APScheduler',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    @handle_exceptions
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(generate_amis_job_list())
 
 
 @site.register_admin

@@ -37,7 +37,9 @@ async def count_group_user():
 
 
 @scheduler.scheduled_job('cron', hour='0', minute='0')
-async def _u_scheduled_save_global_val_all():
+async def _u_clear_and_save_global_val_all():
+    '''每天凌晨0点执行，清空全局状态'''
+
     await save_all_global_val(1)
     gv.bot_val = {}
     logger.success('[早柚核心] 状态已清空!')
@@ -48,6 +50,8 @@ async def _u_scheduled_save_global_val_all():
 # 每隔10分钟执行一次save_all_global_val，但凌晨0点不执行
 @scheduler.scheduled_job('cron', minute='*/10', hour='1-23')
 async def _scheduled_save_global_val_all():
+    '''每隔10分钟执行一次，同步全局状态'''
+
     await save_all_global_val(0)
     logger.success('[早柚核心] 状态已同步!')
 
