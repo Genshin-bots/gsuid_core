@@ -27,11 +27,16 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
     ban_k = '移除' if is_ban else '重新给予'
 
     params = ev.text.split()
+
     alias_list = {
-        alias: SL.plugins[plugin]
+        alias.lower(): SL.plugins[plugin]
         for plugin in SL.plugins
         for alias in SL.plugins[plugin].alias
     }
+
+    alias_list.update(
+        {plugin.lower(): SL.plugins[plugin] for plugin in SL.plugins}
+    )
 
     if ev.at_list:
         params.extend(ev.at_list)
@@ -39,8 +44,8 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
     if not params:
         params = [ev.group_id or ev.user_id]
 
-    if params[0] in alias_list:
-        plugin = alias_list[params[0]]
+    if params[0].lower() in alias_list:
+        plugin = alias_list[params[0].lower()]
         block_list = params[1:]
     else:
         plugin = None
