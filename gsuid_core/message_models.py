@@ -1,4 +1,4 @@
-from typing import List, Union, Literal, Optional
+from typing import List, Union, Literal, TypeVar, Optional
 
 from msgspec import Struct
 
@@ -21,7 +21,7 @@ class Button(Struct):
     _edited: bool = False  # 是否编辑过
 
 
-ButtonType = Union[
-    List[str], List[Button], List[List[str]], List[List[Button]]
-]
-ButtonList = Union[List[Button], List[List[Button]]]
+T = TypeVar('T', bound=Button)
+
+ButtonType = Union[List[str], List[T], List[List[str]], List[List[T]]]
+ButtonList = Union[List[T], List[List[T]]]

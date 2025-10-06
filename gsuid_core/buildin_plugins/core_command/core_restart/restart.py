@@ -92,6 +92,7 @@ async def restart_genshinuid(
 
 
 async def restart_message():
+    print('222')
     if update_log_path.exists():
         update_log_path.unlink()
 
@@ -104,7 +105,7 @@ async def restart_message():
         )
         data = datas[0]
         await data.send(
-            f'🚀 重启完成!\n关机时间: {data.extra_message}\n重启时间:{now_time}'
+            f'🚀 重启完成!\n关机时间: {data.extra_message}\n重启时间: {now_time}'
         )
         await Subscribe.delete_row(task_name='[早柚核心] Restart')
     else:

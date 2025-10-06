@@ -13,9 +13,9 @@ core_user_msg = SV('core信息确认')
 
 @core_user_info.on_fullmatch(('绑定信息'), block=True)
 async def send_bind_card(bot: Bot, ev: Event):
-    await bot.logger.info('开始执行[查询用户绑定状态]')
+    logger.info('开始执行[查询用户绑定状态]')
     im = await get_user_card(ev.bot_id, ev)
-    await bot.logger.info('[查询用户绑定状态]完成!等待图片发送中...')
+    logger.info('[查询用户绑定状态]完成!等待图片发送中...')
     await bot.send(im)
 
 
