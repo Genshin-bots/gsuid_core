@@ -92,7 +92,6 @@ async def restart_genshinuid(
 
 
 async def restart_message():
-    print('222')
     if update_log_path.exists():
         update_log_path.unlink()
 
