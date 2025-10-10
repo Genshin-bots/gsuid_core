@@ -29,7 +29,7 @@ def gs_cache(expire_time=3600):
             async def inner_async(*args, **kwargs):
                 time_key = time.time()
                 all_args = list(args) + list(kwargs.values())
-                file_key = ''
+                file_key = func.__name__
                 for arg in all_args:
                     if isinstance(arg, (str, int, float, bool, Tuple, Path)):
                         file_key += '_' + repr(arg)
