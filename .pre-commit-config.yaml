@@ -8,12 +8,12 @@ ci:
   autoupdate_commit_msg: "⬆️ `pre-commit-ci`自动升级"
 repos:
   - repo: https://github.com/pycqa/isort
-    rev: 6.0.1
+    rev: 6.1.0
     hooks:
       - id: isort
 
-  - repo: https://github.com/psf/black
-    rev: 25.1.0
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 25.9.0
     hooks:
       - id: black
 
@@ -34,14 +34,14 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/python-poetry/poetry
-    rev: 2.1.4
+    rev: 2.2.1
     hooks:
       - id: poetry-check
       - id: poetry-lock
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.8.19
+    rev: 0.8.23
     hooks:
       - id: uv-lock
       - id: uv-export
