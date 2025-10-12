@@ -23,6 +23,7 @@ class GsCoreSubscribe:
         event: Event,
         extra_message: Optional[str] = None,
         uid: Optional[str] = None,
+        extra_data: Optional[str] = None,
     ):
         '''📝简单介绍:
 
@@ -79,6 +80,8 @@ class GsCoreSubscribe:
                 extra_message=extra_message,
                 WS_BOT_ID=event.WS_BOT_ID,
                 uid=uid,
+                extra_data=extra_data,
+                msg_id=event.msg_id,
             )
         else:
             upd = {}
@@ -89,11 +92,14 @@ class GsCoreSubscribe:
                 'bot_self_id',
                 'user_type',
                 'WS_BOT_ID',
+                'msg_id',
             ]:
                 if i not in opt:
                     upd[i] = event.__getattribute__(i)
 
             upd['extra_message'] = extra_message
+            upd['extra_data'] = extra_data
+
             await Subscribe.update_data_by_data(
                 opt,
                 upd,
@@ -158,7 +164,7 @@ class GsCoreSubscribe:
         extra_message: str,
         uid: Optional[str] = None,
     ):
-        sed = {}
+        opt = {}
         upd = {}
 
         for i in [
@@ -167,20 +173,52 @@ class GsCoreSubscribe:
             'user_type',
             'WS_BOT_ID',
         ]:
-            sed[i] = event.__getattribute__(i)
+            opt[i] = event.__getattribute__(i)
 
         if subscribe_type == 'session' and event.user_type == 'group':
-            sed['group_id'] = event.group_id
+            opt['group_id'] = event.group_id
         else:
-            sed['user_id'] = event.user_id
+            opt['user_id'] = event.user_id
 
         if uid:
-            sed['uid'] = uid
+            opt['uid'] = uid
 
-        sed['task_name'] = task_name
+        opt['task_name'] = task_name
         upd['extra_message'] = extra_message
 
-        await Subscribe.update_data_by_data(sed, upd)
+        await Subscribe.update_data_by_data(opt, upd)
+
+    async def update_subscribe_data(
+        self,
+        subscribe_type: Literal['session', 'single'],
+        task_name: str,
+        event: Event,
+        extra_data: str,
+        uid: Optional[str] = None,
+    ):
+        opt = {}
+        upd = {}
+
+        for i in [
+            'bot_id',
+            'bot_self_id',
+            'user_type',
+            'WS_BOT_ID',
+        ]:
+            opt[i] = event.__getattribute__(i)
+
+        if subscribe_type == 'session' and event.user_type == 'group':
+            opt['group_id'] = event.group_id
+        else:
+            opt['user_id'] = event.user_id
+
+        if uid:
+            opt['uid'] = uid
+
+        opt['task_name'] = task_name
+        upd['extra_data'] = extra_data
+
+        await Subscribe.update_data_by_data(opt, upd)
 
     async def muti_task(
         self,
