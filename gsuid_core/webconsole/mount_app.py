@@ -44,19 +44,23 @@ from fastapi_amis_admin.amis.components import (
 )
 
 from gsuid_core.sv import SL
-from gsuid_core.data_store import core_path
 from gsuid_core.webconsole.log import render_html
 from gsuid_core.logger import logger, handle_exceptions
+from gsuid_core.data_store import core_path, gs_data_path
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck
 from gsuid_core.version import __version__ as gscore_version
 from gsuid_core.webconsole.html import gsuid_webconsole_help
 from gsuid_core.utils.database.base_models import finally_url
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
+from gsuid_core.webconsole.create_aps_panel import generate_amis_job_list
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
 from gsuid_core.webconsole.create_sv_panel import get_sv_page, get_ssv_page
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
 from gsuid_core.webconsole.create_core_config_panel import get_core_config_page
+from gsuid_core.webconsole.create_backup_panel import (
+    get_input_tree_from_pathlib,
+)
 from gsuid_core.webconsole.create_config_panel import (
     get_config_page,
     get_sconfig_page,
@@ -624,6 +628,42 @@ class PushPage(GsAdminPage):
     @handle_exceptions
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(await get_batch_push_panel())
+
+
+@site.register_admin
+class BackupPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('备份管理'),
+        icon='fa fa-archive',
+        url='/Backup',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    @handle_exceptions
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(
+            get_input_tree_from_pathlib(
+                name='backup_dir',
+                label='备份路径',
+                root_dir=gs_data_path,
+            )
+        )
+
+
+@site.register_admin
+class APSchedulerPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('定时任务管理'),
+        icon='fa fa-clock-o',
+        url='/APScheduler',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    @handle_exceptions
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(generate_amis_job_list())
 
 
 @site.register_admin

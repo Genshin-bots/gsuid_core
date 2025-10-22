@@ -8,6 +8,8 @@ import time
 from copy import deepcopy
 from typing import Dict, List, Union, Optional, cast
 
+from gsuid_core.utils.cache import gs_cache
+
 from .sign_request import SignMysApi
 from .tools import get_ds_token, generate_os_ds
 from .models import (
@@ -28,6 +30,8 @@ from .models import (
 
 
 class MysApi(SignMysApi):
+
+    @gs_cache(360)
     async def get_info(
         self, uid, ck: Optional[str] = None
     ) -> Union[IndexData, int]:
@@ -78,6 +82,7 @@ class MysApi(SignMysApi):
             return cast(BsIndex, data['data'])
         return data
 
+    @gs_cache(3600)
     async def get_achievement_info(
         self, uid: str
     ) -> Union[List[AchievementData], int]:
@@ -104,6 +109,7 @@ class MysApi(SignMysApi):
                 data = -999
         return data
 
+    @gs_cache(360)
     async def get_spiral_abyss_info(
         self, uid: str, schedule_type='1', ck: Optional[str] = None
     ) -> Union[AbyssData, int]:
@@ -122,6 +128,7 @@ class MysApi(SignMysApi):
             data = cast(AbyssData, data['data'])
         return data
 
+    @gs_cache(360)
     async def get_poetry_abyss_data(
         self, uid: str
     ) -> Union[PoetryAbyssDatas, int]:
@@ -149,6 +156,7 @@ class MysApi(SignMysApi):
             data = cast(PoetryAbyssDatas, data['data'])
         return data
 
+    @gs_cache(360)
     async def get_character(
         self, uid: str, character_ids: List[int], ck: Union[str, None] = None
     ) -> Union[CharDetailData, int]:
@@ -199,6 +207,7 @@ class MysApi(SignMysApi):
             data = cast(CharDetailData, data['data'])
         return data
 
+    @gs_cache(360)
     async def get_calculate_info(
         self, uid, char_id: int
     ) -> Union[CalculateInfo, int]:
@@ -212,6 +221,7 @@ class MysApi(SignMysApi):
             data = cast(CalculateInfo, data['data'])
         return data
 
+    @gs_cache(3600)
     async def get_batch_compute_info(
         self, uid: str, items: Union[List[Dict], List[str], List[int]]
     ) -> Union[ComputeData, int]:
@@ -239,6 +249,7 @@ class MysApi(SignMysApi):
             raw_data = cast(ComputeData, raw_data['data'])
         return raw_data
 
+    @gs_cache(360)
     async def get_mihoyo_bbs_info(
         self,
         mys_id: str,

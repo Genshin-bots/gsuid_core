@@ -10,4 +10,4 @@ async def update_core() -> List[str]:
 
 
 async def restart_core():
-    await restart_genshinuid('', '', '', '', False)
+    await restart_genshinuid(None, False)

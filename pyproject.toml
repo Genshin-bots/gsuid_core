@@ -53,7 +53,7 @@ dependencies = [
     "cryptography>=45.0.5",
 ]
 name = "gsuid-core"
-version = "0.8.4"
+version = "0.8.5"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 

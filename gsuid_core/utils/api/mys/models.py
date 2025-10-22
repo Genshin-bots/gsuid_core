@@ -286,6 +286,22 @@ class ExtMap(TypedDict):
     backup_link: str
 
 
+class IndexRoleCombat(TypedDict):
+    is_unlock: bool
+    max_round_id: int
+    has_data: bool
+    has_detail_data: bool
+    tarot_finished_cnt: int
+    difficulty_id: int
+
+
+class HardChallenge(TypedDict):
+    difficulty: int
+    name: str
+    has_data: bool
+    is_unlock: bool
+
+
 class Stats(TypedDict):
     active_day_number: int
     achievement_number: int
@@ -305,7 +321,11 @@ class Stats(TypedDict):
     hydroculus_number: int
     pyroculus_number: int
     cryoculus_number: int
+    moonoculus_number: int
     field_ext_map: Dict[str, ExtMap]
+    role_combat: IndexRoleCombat
+    full_fetter_avatar_num: int
+    hard_challenge: HardChallenge
 
 
 class Offering(TypedDict):

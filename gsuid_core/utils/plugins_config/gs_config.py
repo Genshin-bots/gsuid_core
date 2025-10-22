@@ -11,6 +11,7 @@ from gsuid_core.data_store import get_res_path
 
 from .sp_config import SP_CONIFG
 from .log_config import LOG_CONFIG
+from .backup_config import BACKUP_CONFIG
 from .status_config import STATUS_CONIFG
 from .config_default import CONIFG_DEFAULT
 from .pic_gen_config import PIC_GEN_CONIFG
@@ -260,4 +261,10 @@ status_config = StringConfig(
     'GsCore状态配置',
     RES / 'status_config.json',
     STATUS_CONIFG,
+)
+
+backup_config = StringConfig(
+    'GsCore备份配置',
+    RES / 'backup_config.json',
+    BACKUP_CONFIG,
 )

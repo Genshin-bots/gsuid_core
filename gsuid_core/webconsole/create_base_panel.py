@@ -1,5 +1,148 @@
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Dict, List, Union, Literal, Optional
+
+from .models import Option, CheckBox, TreeData
+
+
+def get_list_download():
+    delete_action = {
+        'click': {
+            'actions': [
+                {
+                    'actionType': 'ajax',
+                    'api': {
+                        'method': 'get',
+                        'url': "${deleteUrl}",
+                    },
+                },
+                {
+                    'componentName': 'backup_list',
+                    'actionType': 'reload',
+                },
+            ]
+        }
+    }
+    data = {
+        'name': 'backup_list',
+        'type': 'page',
+        "initApi": {
+            "method": "get",
+            "url": "/genshinuid/backupFiles",
+        },
+        'body': [
+            {
+                "type": "list",
+                "name": "myList",
+                "listItem": {
+                    "body": [
+                        {
+                            "type": "flex",
+                            "justify": "space-between",
+                            "alignItems": "center",
+                            "items": [
+                                {"type": "tpl", "tpl": "${fileName}"},
+                                {
+                                    "type": "button-group",
+                                    "buttons": [
+                                        {
+                                            "type": "button",
+                                            "label": "下载",
+                                            "actionType": "download",
+                                            "api": "${downloadUrl}",
+                                        },
+                                        {
+                                            "type": "button",
+                                            "label": "删除",
+                                            "confirmText": "确定要删除这个文件吗？",
+                                            'onEvent': delete_action,
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    return data
+
+
+def get_form(title: str, api: str, body: List):
+    data = {
+        "id": f"u:27663{title}",
+        "type": "form",
+        "title": title,
+        "mode": "flex",
+        "labelAlign": "top",
+        "dsType": "api",
+        "feat": "Insert",
+        "body": body,
+        "reload": f"u:27663{title}",
+        "actions": [
+            {
+                "type": "button",
+                "label": "提交",
+                "actionType": "submit",
+                "level": "primary",
+            }
+        ],
+        "api": api,
+        "wrapperCustomStyle": {".a-Panel": {"margin": "0"}},
+    }
+    return data
+
+
+def get_checkboxes(
+    name: str,
+    label: str,
+    value: List[str],
+    options: List[CheckBox],
+):
+    data = {
+        "name": name,
+        "type": "checkboxes",
+        "label": label,
+        "value": ','.join(value),
+        "options": options,
+    }
+    return data
+
+
+def get_page(title: str, body: List):
+    return {
+        'type': 'page',
+        'title': title,
+        'body': body,
+    }
+
+
+def get_input_tree(
+    name: str,
+    label: str,
+    value: List[str],
+    options: List[Option],
+) -> TreeData:
+    """
+    创建输入树组件的基础结构。
+    这个函数与数据源（文件系统、数据库等）无关。
+    """
+    data: TreeData = {
+        "type": "input-tree",
+        "name": name,
+        "label": label,
+        "multiple": True,
+        "options": options,
+        "heightAuto": True,
+        "virtualThreshold": 200,
+        "initiallyOpen": False,
+        "value": ','.join(value),
+        "searchable": True,
+        "wrapperCustomStyle": {".a-Panel": {"margin": "0"}},
+    }
+    return data
 
 
 def get_image_input(
@@ -130,6 +273,9 @@ def get_button(
     }
     if api:
         data['onEvent']['click']['actions'].append(api)
+        data['onEvent']['click']['actions'].append(
+            {'componentName': reload_element, 'actionType': 'reload'}
+        )
     return data
 
 
@@ -201,6 +347,17 @@ def get_alert(
         'showIcon': True,
         'className': 'mb-2',
     }
+
+
+def get_select(label: str, name: str, options: List[CheckBox]):
+    data = {
+        "label": label,
+        "type": "select",
+        "name": name,
+        # "menuTpl": "<div>${label} 值：${value}, 当前是否选中: ${checked}</div>",
+        "options": options,
+    }
+    return data
 
 
 def get_select_panel(
@@ -342,8 +499,13 @@ def get_card(title: str, content: List[Dict]):
     return data
 
 
-def get_tab(title: str, bodys: List[Dict]):
-    return {'title': title, 'body': bodys}
+def get_tab(
+    title: str, bodys: List[Dict], name: Optional[str] = None
+) -> Dict[str, str]:
+    data = {'title': title, 'body': bodys}
+    if name:
+        data['name'] = name
+    return data
 
 
 def get_tabs(tabs: List[Dict]):
