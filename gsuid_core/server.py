@@ -7,10 +7,10 @@ import subprocess
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+from importlib import metadata
 from typing import Dict, List, Tuple, Union, Callable
 
 import toml
-import pkg_resources
 from fastapi import WebSocket
 
 from gsuid_core.bot import _Bot
@@ -403,10 +403,12 @@ def execute_cmd(CMD: str):
 
 
 def get_installed_dependencies():
+    """获取已安装依赖的包名与版本"""
     global installed_dependencies
-    installed_packages = pkg_resources.working_set
     installed_dependencies = {
-        package.key: package.version for package in installed_packages
+        dist.metadata['Name'].lower(): dist.version
+        for dist in metadata.distributions()
+        if dist.metadata.get('Name')
     }
     return installed_dependencies
 
