@@ -23,3 +23,5 @@ def get_res_path(_path: Optional[Union[str, List]] = None) -> Path:
 image_res = get_res_path('IMAGE_TEMP')
 data_cache_path = get_res_path('DATA_CACHE_PATH')
 backup_path = get_res_path('GsCore_BACKUP_PATH')
+gscore_data_path = get_res_path('GsCore')
+error_mark_path = get_res_path(['logs', 'error_reports'])

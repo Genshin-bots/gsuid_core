@@ -2,37 +2,62 @@ import re
 import sys
 import time
 import asyncio
+import inspect
 import importlib
 import subprocess
 import importlib.util
 from pathlib import Path
 from types import ModuleType
 from importlib import metadata
-from typing import Dict, List, Tuple, Union, Callable
+from typing import Set, Dict, List, Tuple, Union, Callable
 
 import toml
 from fastapi import WebSocket
 
+try:
+    from packaging.requirements import Requirement
+except ImportError:
+    print("正在安装必要依赖 'packaging'...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "packaging"]
+    )
+    from packaging.requirements import Requirement
+
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
 from gsuid_core.config import core_config
-from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
 auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
 
-core_start_def: set[Callable] = set()
-core_shutdown_def: set[Callable] = set()
+core_start_def: Set[Callable] = set()
+core_shutdown_def: Set[Callable] = set()
 installed_dependencies: Dict[str, str] = {}
 _module_cache: Dict[str, ModuleType] = {}
-ignore_dep = ['python', 'fastapi', 'pydantic']
+# 忽略的基础依赖，避免重复检查
+ignore_dep = {
+    'python',
+    'fastapi',
+    'pydantic',
+    'gsuid-core',
+    'toml',
+    'packaging',
+}
 
 PLUGIN_PATH = Path(__file__).parent / 'plugins'
 BUILDIN_PLUGIN_PATH = Path(__file__).parent / 'buildin_plugins'
 
 if not PLUGIN_PATH.exists():
-    PLUGIN_PATH.mkdir()
+    PLUGIN_PATH.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_name(name: str) -> str:
+    """
+    将包名规范化：统一转小写，并将 . _ - 统一替换为 -
+    解决 starrail_damage_cal 和 starrail-damage-cal 不匹配的问题
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def on_core_start(func: Callable):
@@ -51,12 +76,11 @@ class GsServer:
     _instance = None
     is_initialized = False
     is_load = False
-    bot_connect_def = set()
+    bot_connect_def: Set[Callable] = set()
 
     def __new__(cls, *args, **kwargs):
-        # 判断sv是否已经被初始化
         if cls._instance is None:
-            cls._instance = super(GsServer, cls).__new__(cls, *args, **kwargs)
+            cls._instance = super(GsServer, cls).__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -71,9 +95,14 @@ class GsServer:
         module_list = []
         init_path = plugin / '__init__.py'
         name = plugin.name
+
         if init_path.exists():
-            if str(init_path.parents) not in sys.path:
-                sys.path.append(str(init_path.parents))
+            # fix: 使用 parent 而不是 parents (parents是迭代器)
+            # 添加包的父级目录到path，以便可以 import package_name
+            parent_path = str(init_path.parent.parent)
+            if parent_path not in sys.path:
+                sys.path.append(parent_path)
+
             module_list.append(
                 (
                     f'{plugin_parent}.{name}.{name}.__init__',
@@ -86,8 +115,10 @@ class GsServer:
             if sub_plugin.is_dir():
                 plugin_path = sub_plugin / '__init__.py'
                 if plugin_path.exists():
-                    if str(plugin_path.parents) not in sys.path:
-                        sys.path.append(str(plugin_path.parents))
+                    parent_path = str(plugin_path.parent.parent)
+                    if parent_path not in sys.path:
+                        sys.path.append(parent_path)
+
                     if nest:
                         _p = f'{plugin_parent}.{name}.{name}.{sub_plugin.name}'
                     else:
@@ -101,7 +132,7 @@ class GsServer:
                     )
         return module_list
 
-    def load_plugin(self, plugin: Union[str, Path, str]):
+    def load_plugin(self, plugin: Union[str, Path]):
         if isinstance(plugin, str):
             plugin = PLUGIN_PATH / plugin
 
@@ -113,7 +144,6 @@ class GsServer:
         if plugin.stem.startswith('_'):
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
-        # 如果发现文件夹，则视为插件包
         logger.debug(f'🔜 导入{plugin.stem}中...')
         logger.trace('===============')
         try:
@@ -123,15 +153,20 @@ class GsServer:
                 plugins_path = plugin / '__full__.py'
                 nest_path = plugin / '__nest__.py'
                 src_path = plugin / plugin.stem
-                # 如果文件夹内有__full_.py，则视为插件包合集
-                sys.path.append(str(plugin_path.parents))
+
+                # 统一添加路径
+                if plugin_path.exists():
+                    sys.path.append(str(plugin.parent))
+
+                # 检查依赖
+                pyproject = plugin / 'pyproject.toml'
+                if pyproject.exists():
+                    check_pyproject(pyproject)
+
                 if plugins_path.exists():
                     module_list = self.load_dir_plugins(plugin, plugin_parent)
                 elif nest_path.exists() or src_path.exists():
                     path = nest_path.parent / plugin.name
-                    pyproject = plugin / 'pyproject.toml'
-                    if pyproject.exists:
-                        check_pyproject(pyproject)
                     if path.exists():
                         module_list = self.load_dir_plugins(
                             path,
@@ -152,11 +187,9 @@ class GsServer:
                 module_list = [
                     (f'{plugin_parent}.{plugin.name[:-3]}', plugin, 'single'),
                 ]
-            '''导入成功'''
             return module_list
-        except Exception as e:  # noqa
+        except Exception as e:
             logger.error(f'❌ 插件{plugin.name}加载失败!: {e}')
-            # logger.warning(f'❌ 插件{plugin.name}加载失败!')
             return f'❌ 插件{plugin.name}加载失败'
 
     def cached_import(self, module_name: str, filepath: Path, _type: str):
@@ -167,23 +200,29 @@ class GsServer:
         spec = importlib.util.spec_from_file_location(module_name, filepath)
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name}")
+
         module = importlib.util.module_from_spec(spec)
+        # 先放入sys.modules，处理循环导入
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            # fix: 如果加载失败，清理 dirty module，防止后续误判已加载
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            raise
 
         end_time = time.time()
-
         duration = round(end_time - start_time, 2)
 
         if _type == 'plugin':
             logger.success(f'✅ 插件{filepath.parent.stem}导入成功!')
-        elif _type == 'full':
-            pass
         elif _type == 'single':
             logger.success(
                 f'✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒'
             )
-        else:
+        elif _type != 'full':
             logger.trace(
                 f'🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒'
             )
@@ -193,10 +232,12 @@ class GsServer:
 
     async def load_plugins(self, dev_mode: bool = False):
         logger.info('💖 [早柚核心]开始加载插件...')
-        get_installed_dependencies()
-        sys.path.append(str(Path(__file__).parents[1]))
+        refresh_installed_dependencies()
+        # fix: path append
+        root_path = str(Path(__file__).parents[1])
+        if root_path not in sys.path:
+            sys.path.append(root_path)
 
-        # 提前获取路径列表并过滤
         plug_path_list = [
             p
             for p in list(BUILDIN_PLUGIN_PATH.iterdir())
@@ -232,253 +273,233 @@ class GsServer:
         self.active_bot[bot_id] = bot = _Bot(bot_id, websocket)
         logger.info(f'{bot_id}已连接！')
         try:
-            _task = [_def() for _def in self.bot_connect_def]
-            asyncio.gather(*_task)
+            # fix: 正确处理同步和异步回调，并等待 gather
+            tasks = []
+            for func in self.bot_connect_def:
+                if inspect.iscoroutinefunction(func):
+                    tasks.append(func())
+                else:
+                    # 同步函数直接执行
+                    try:
+                        func()
+                    except Exception as e:
+                        logger.error(f"Hooks执行错误: {e}")
+
+            if tasks:
+                await asyncio.gather(*tasks)
+
         except Exception as e:
             logger.exception(e)
         return bot
 
     async def disconnect(self, bot_id: str):
-        await self.active_ws[bot_id].close(code=1001)
         if bot_id in self.active_ws:
+            try:
+                await self.active_ws[bot_id].close(code=1001)
+            except Exception:
+                pass
             del self.active_ws[bot_id]
         if bot_id in self.active_bot:
             del self.active_bot[bot_id]
         logger.warning(f'{bot_id}已中断！')
 
     async def send(self, message: str, bot_id: str):
-        await self.active_ws[bot_id].send_text(message)
+        if bot_id in self.active_ws:
+            await self.active_ws[bot_id].send_text(message)
 
     async def broadcast(self, message: str):
-        for bot_id in self.active_ws:
-            await self.send(message, bot_id)
+        # 创建任务列表以并发发送
+        tasks = [self.send(message, bot_id) for bot_id in self.active_ws]
+        if tasks:
+            await asyncio.gather(*tasks)
 
     @classmethod
     def on_bot_connect(cls, func: Callable):
-        if func.__name__ not in [
-            i.__name__ for i in list(cls.bot_connect_def)
-        ]:
+        if func not in cls.bot_connect_def:
             cls.bot_connect_def.add(func)
         return func
 
 
 def check_pyproject(pyproject: Path):
-    with open(pyproject, 'rb') as f:
-        file_content = f.read().decode('utf-8')
-        if "extend-exclude = '''" in file_content:
-            file_content = file_content.replace(
-                "extend-exclude = '''", ''
-            ).replace("'''", '', 1)
-        toml_data = toml.loads(file_content)
-
-    if auto_install_dep or auto_update_dep:
-        if 'project' in toml_data:
-            dependencies = toml_data['project'].get('dependencies')
-        elif 'tool' in toml_data and 'poetry' in toml_data['tool']:
-            dependencies = toml_data['tool']['poetry'].get('dependencies')
-        else:
-            dependencies = None
-    else:
-        dependencies = None
-
-    if isinstance(dependencies, List):
-        dependencies = parse_dependency(dependencies)
-    else:
-        dependencies = {}
-
-    if 'project' in toml_data:
-        sp_dep = toml_data['project'].get('gscore_auto_update_dep')
-        if sp_dep:
-            sp_dep = parse_dependency(sp_dep)
-            logger.debug('📄 [安装/更新依赖] 特殊依赖列表如下：')
-            logger.debug(sp_dep)
-            logger.debug('========')
-            install_dependencies(sp_dep, True)
-
-    if dependencies:
-        if auto_update_dep:
-            install_dependencies(dependencies, True)
-        else:
-            install_dependencies(dependencies, False)
-
-
-def install_dependencies(dependencies: Dict, need_update: bool = False):
-    global installed_dependencies
-    to_update = find_dependencies_to_update(
-        installed_dependencies, dependencies
-    )
-    if not to_update:
-        logger.debug('🚀 [安装/更新依赖] 无需更新依赖！')
+    try:
+        with open(pyproject, 'r', encoding='utf-8') as f:
+            file_content = f.read()
+            # 保留原有的兼容性替换
+            if "extend-exclude = '''" in file_content:
+                file_content = file_content.replace(
+                    "extend-exclude = '''", ''
+                ).replace("'''", '', 1)
+            toml_data = toml.loads(file_content)
+    except Exception as e:
+        logger.error(f"❌ 解析 pyproject.toml 失败: {pyproject}, 错误: {e}")
         return
 
-    logger.debug(f'[安装/更新依赖] 需更新依赖列表如下：\n{to_update}')
+    if not (auto_install_dep or auto_update_dep):
+        return
 
-    _tool = check_start_tool()
-    start_tool = check_start_tool(True)
-    logger.debug(f'[安装/更新依赖] 当前启动工具：{start_tool}')
+    dependencies = []
+    if 'project' in toml_data:
+        dependencies = toml_data['project'].get('dependencies', [])
+        sp_dep = toml_data['project'].get('gscore_auto_update_dep', [])
+        if sp_dep:
+            logger.debug('📄 [安装/更新依赖] 特殊依赖列表如下：')
+            logger.debug(sp_dep)
+            process_dependencies(sp_dep, update=True)
 
-    if start_tool.startswith('pdm') and False:
-        result = subprocess.run(
-            'pdm run python -m ensurepip',
-            capture_output=True,
-            text=True,
-            shell=True,
-        )
-        # 检查命令执行结果
-        if result.returncode != 0:
-            logger.warning("PDM中pip环境检查失败。错误信息：")
-            logger.warning(result.stderr)
-            return
+    elif 'tool' in toml_data and 'poetry' in toml_data['tool']:
+        # 处理 Poetry 格式
+        poetry_deps = toml_data['tool']['poetry'].get('dependencies', {})
+        for k, v in poetry_deps.items():
+            # 1. 跳过 python 自身检查
+            if k.lower() == "python":
+                continue
 
-    logger.trace(
-        f'[安装/更新依赖] 开始安装/更新依赖...模式是否为更新：{need_update}'
-    )
+            # 2. 处理字典格式的复杂依赖 (如: {version = "^1.0", extras = ["opt"]})
+            if isinstance(v, dict):
+                v = v.get("version", "*")
 
-    if need_update:
-        extra = '-U'
-    else:
-        extra = ''
+            # 3. 简单的 Poetry 语法转换 ( ^ -> ~= )
+            # Poetry 的 ^ 表示 "Next Major Version"，
+            # pip 的 ~= 表示 "Compatible release"
+            # 虽然不完全等价，但在安装依赖场景下，转为 ~= 或 >= 能让 pip 读懂
+            if isinstance(v, str):
+                if v.startswith('^'):
+                    v = '~=' + v[1:]
 
-    logger.trace('[安装/更新依赖] 需检查依赖列表如下：')
-    logger.trace(dependencies)
-    logger.trace('========')
+                if v == "*":
+                    dependencies.append(k)
+                else:
+                    dependencies.append(f"{k}{v}")
 
-    # 解析依赖项
-    for (
-        dependency,
-        _version,
-    ) in to_update.items():
-        if need_update:
-            condi = dependency not in ignore_dep
-        else:
-            condi = (
-                installed_dependencies
-                and dependency not in installed_dependencies
-                and dependency not in ignore_dep
-            )
-        logger.trace(
-            f'[安装/更新依赖] 检测到依赖 {dependency}, 是否满足安装/更新条件 {condi}'
-        )
+    if dependencies:
+        logger.trace(f"发现依赖: {dependencies}")
+        process_dependencies(dependencies, update=auto_update_dep)
 
-        if condi:
-            version: str = _version.get('required_version', '')
-            logger.info(f'[安装/更新依赖] {dependency} 中...')
-            CMD = f'{start_tool} install "{dependency}{version}" {extra}'
 
-            retcode = execute_cmd(CMD)
-            if retcode != 0:
-                logger.warning('[安装/更新依赖] 安装失败（将会重试两次）')
-                if _tool != 'python':
-                    CMD2 = f'{_tool} run python -m ensurepip'
-                    retcode = execute_cmd(CMD2)
-                    if retcode == 0:
-                        retcode = execute_cmd(CMD)
+def process_dependencies(dependency_list: List[str], update: bool = False):
+    """统一处理依赖列表"""
+    to_install = []
 
-            if retcode != 0:
-                logger.warning('[安装/更新依赖] 安装失败（将会重试一次）')
-                if ' python -m' in start_tool:
-                    start_tool = start_tool.replace(' python -m', '')
-                    CMD = (
-                        f'{start_tool} install "{dependency}{version}" {extra}'
+    # 每次处理前先刷新，确保获取最新状态
+    refresh_installed_dependencies()
+
+    for dep_str in dependency_list:
+        try:
+            req = Requirement(dep_str)
+            # 关键修复：使用规范化后的名字进行比对
+            req_name = normalize_name(req.name)
+
+            if req_name in ignore_dep:
+                continue
+
+            # 检查是否已安装以及版本是否符合
+            if req_name not in installed_dependencies:
+                # double check: 有时候元数据名字非常怪异，再次遍历检查
+                if req_name not in [
+                    normalize_name(k) for k in installed_dependencies.keys()
+                ]:
+                    logger.info(
+                        f"[依赖管理] 未安装依赖: {req_name} (原始需求: {req.name})"
                     )
-                execute_cmd(CMD)
-            installed_dependencies = get_installed_dependencies()
+                    to_install.append(dep_str)
+                    continue
+
+            # 如果已安装，检查版本
+            if update and req_name in installed_dependencies:
+                installed_ver = installed_dependencies[req_name]
+                if installed_ver not in req.specifier:
+                    logger.info(
+                        f"[依赖管理] 依赖版本不匹配: {req_name} "
+                        f"(当前: {installed_ver}, 需要: {req.specifier})"
+                    )
+                    to_install.append(dep_str)
+                else:
+                    logger.trace(
+                        f"[依赖管理] {req_name} 已满足 (当前: {installed_ver})"
+                    )
+
+        except Exception as e:
+            logger.warning(f"无法解析依赖字符串 '{dep_str}': {e}")
+
+    if to_install:
+        install_packages(to_install, upgrade=update)
+        # 安装完后再次刷新，防止后续逻辑读不到
+        refresh_installed_dependencies()
 
 
-def execute_cmd(CMD: str):
-    logger.info(f'[CMD执行] 开始执行：{CMD}')
-    result = subprocess.run(
-        CMD,
-        capture_output=True,
-        text=True,
-        shell=True,
-    )
-    # 检查命令执行结果
-    if result.returncode == 0:
-        logger.success(f"[CMD执行] {CMD} 成功执行!")
-    else:
-        logger.warning(f"[CMD执行] {CMD}执行失败。错误信息：")
-        logger.exception(result.stderr)
-    return result.returncode
+def install_packages(packages: List[str], upgrade: bool = False):
+    if not packages:
+        return
+
+    logger.info(f'🚀 [安装/更新依赖] 开始安装以下包: {packages}')
+
+    # 使用当前 Python 解释器路径，避免环境混乱
+    cmd = [sys.executable, "-m", "pip", "install"]
+    if upgrade:
+        cmd.append("-U")
+
+    # 将包名作为参数追加
+    cmd.extend(packages)
+
+    # 使用国内源可选项 (建议在配置中做，这里保留原逻辑的简化版)
+    cmd.extend(["-i", "https://pypi.org/simple"])
+
+    retcode = execute_cmd(cmd)
+
+    if retcode != 0:
+        logger.warning('[安装/更新依赖] 安装失败，尝试使用清华源重试...')
+        cmd_retry = cmd[:-2] + [
+            "-i",
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        ]
+        execute_cmd(cmd_retry)
+
+    refresh_installed_dependencies()
 
 
-def get_installed_dependencies():
+def execute_cmd(cmd_list: List[str]):
+    """
+    fix: 使用 list 传参且 shell=False，防止命令注入
+    """
+    cmd_str = " ".join(cmd_list)
+    logger.info(f'[CMD执行] {cmd_str}')
+
+    try:
+        # shell=False 是安全的默认值
+        result = subprocess.run(
+            cmd_list, capture_output=True, text=True, shell=False
+        )
+        if result.returncode == 0:
+            logger.success("[CMD执行] 成功!")
+            return 0
+        else:
+            logger.warning(f"[CMD执行] 失败 (Code {result.returncode})")
+            logger.warning(f"Stderr: {result.stderr}")
+            return result.returncode
+    except Exception as e:
+        logger.exception(f"[CMD执行] 发生异常: {e}")
+        return -1
+
+
+def refresh_installed_dependencies():
     """获取已安装依赖的包名与版本"""
+    # 关键修复：清除 importlib 的目录缓存，否则看不到刚安装的包
+    importlib.invalidate_caches()
+
     global installed_dependencies
-    installed_dependencies = {
-        dist.metadata['Name'].lower(): dist.version
-        for dist in metadata.distributions()
-        if dist.metadata.get('Name')
-    }
+
+    deps = {}
+    try:
+        # 重新扫描 distribution
+        dists = list(metadata.distributions())
+        for dist in dists:
+            name = dist.metadata.get('Name')
+            version = dist.version
+            if name:
+                # 关键修复：存入字典时也使用规范化名字
+                deps[normalize_name(name)] = version
+    except Exception as e:
+        logger.error(f"读取已安装包列表失败: {e}")
+
+    installed_dependencies = deps
     return installed_dependencies
-
-
-def parse_dependency(dependency: List):
-    dep = {}
-    for i in dependency:
-        dep.update(parse_dependency_string(i))
-    return dep
-
-
-def parse_dependency_string(dependency_string: str):
-    pattern = r'([\w\-_\.]+)([<>=!]+)([\w\-_\.]+)'
-    matches = re.findall(pattern, dependency_string)
-
-    dependencies = {}
-    for match in matches:
-        dependency = match[0]
-        operator = match[1]
-        version = match[2]
-        dependencies[dependency] = f"{operator}{version}"
-
-    return dependencies
-
-
-def extract_numeric_version(version):
-    # 提取版本中的数字和小数点部分
-    numeric_version = re.findall(r'\d+', version)
-    return tuple(map(int, numeric_version)) if numeric_version else (0,)
-
-
-def compare_versions(installed_version, required_version):
-    installed_tuple = extract_numeric_version(installed_version)
-    required_tuple = extract_numeric_version(
-        re.sub(r'[<>=]', '', required_version)
-    )
-
-    # 基于符号进行比较
-    if "<=" in required_version:
-        return installed_tuple <= required_tuple
-    elif ">=" in required_version:
-        return installed_tuple >= required_tuple
-    elif "==" in required_version:
-        return installed_tuple == required_tuple
-    elif "<" in required_version:
-        return installed_tuple < required_tuple
-    elif ">" in required_version:
-        return installed_tuple > required_tuple
-    return False
-
-
-def find_dependencies_to_update(
-    installed_deps: Dict[str, str], required_deps: Dict[str, str]
-) -> Dict[str, Dict[str, str]]:
-    to_update = {}
-
-    for dep, installed_version in installed_deps.items():
-        if dep in required_deps:
-            required_version = required_deps[dep]
-            if not compare_versions(installed_version, required_version):
-                to_update[dep] = {
-                    "installed_version": installed_version,
-                    "required_version": required_version,
-                }
-
-    for dep, version in required_deps.items():
-        if dep not in installed_deps:
-            to_update[dep] = {
-                "installed_version": "not installed",
-                "required_version": version,
-            }
-
-    return to_update
