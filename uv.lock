@@ -783,6 +783,7 @@ dependencies = [
     { name = "lxml" },
     { name = "mpmath" },
     { name = "msgspec" },
+    { name = "packaging" },
     { name = "pandas" },
     { name = "pillow" },
     { name = "psutil" },
@@ -830,6 +831,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=4.9.2" },
     { name = "mpmath", specifier = ">=1.3.0,<2.0.0" },
     { name = "msgspec", specifier = ">=0.13.1" },
+    { name = "packaging", specifier = ">=25.0" },
     { name = "pandas", specifier = ">=2.2.3" },
     { name = "pillow", specifier = ">=10.2.0" },
     { name = "psutil", specifier = ">=6.1.1" },
@@ -1475,6 +1477,15 @@ wheels = [
     { url = "https://mirrors.volces.com/pypi/packages/57/62/208293d7d6b2a8998a4a1f23ac758648c3c32182d4ce4346062018362e29/numpy-2.3.3-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8596ba2f8af5f93b01d97563832686d20206d303024777f6dfc2e7c7c3f1850e" },
     { url = "https://mirrors.volces.com/pypi/packages/ed/0c/8e86e0ff7072e14a71b4c6af63175e40d1e7e933ce9b9e9f765a95b4e0c3/numpy-2.3.3-pp311-pypy311_pp73-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e1ec5615b05369925bd1125f27df33f3b6c8bc10d788d5999ecd8769a1fa04db" },
     { url = "https://mirrors.volces.com/pypi/packages/af/11/0cc63f9f321ccf63886ac203336777140011fb669e739da36d8db3c53b98/numpy-2.3.3-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:2e267c7da5bf7309670523896df97f93f6e469fb931161f483cd6882b3b1a5dc" },
+]
+
+[[package]]
+name = "packaging"
+version = "25.0"
+source = { registry = "https://mirrors.volces.com/pypi/simple/" }
+sdist = { url = "https://mirrors.volces.com/pypi/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f" }
+wheels = [
+    { url = "https://mirrors.volces.com/pypi/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484" },
 ]
 
 [[package]]
