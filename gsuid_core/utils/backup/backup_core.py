@@ -94,3 +94,70 @@ def copy_and_rebase_paths(
         return -10
 
     return 0
+
+
+def remove_old_backups(days: int = 30) -> int:
+    """
+    删除超过指定天数的备份文件或目录。
+
+    :param days: 保留的天数，默认为30天。
+    :return: 被删除的文件/目录数量。
+    """
+    if not backup_path.exists():
+        logger.warning(f"备份目录不存在: {backup_path}，跳过清理。")
+        return 0
+
+    current_time = datetime.now()
+    deleted_count = 0
+
+    logger.info(f"开始清理超过 {days} 天的备份文件...")
+
+    # 遍历备份目录下的所有项目
+    for item in backup_path.iterdir():
+        # 获取文件名（不含扩展名），例如 'mydata-2023-11-19'
+        # item.stem 会自动去掉 .zip 后缀
+        name_stem = item.stem
+
+        # 尝试提取日期部分
+        # 你的命名格式是: f'{file_id}-{date_str}'，date_str 是 "YYYY-MM-DD" (10个字符)
+        # 所以我们取 stem 的最后 10 位
+        if len(name_stem) < 10:
+            continue
+
+        date_str_part = name_stem[-10:]
+
+        try:
+            # 尝试将后缀解析为日期
+            backup_date = datetime.strptime(date_str_part, "%Y-%m-%d")
+        except ValueError:
+            # 如果解析失败（说明不是符合该日期格式的文件），则跳过
+            continue
+
+        # 计算时间差
+        time_delta = current_time - backup_date
+
+        if time_delta.days > days:
+            try:
+                if item.is_file():
+                    item.unlink()  # 删除文件 (通常是 .zip)
+                    logger.info(
+                        "🗑️ [早柚核心] 已删除过期备份文件:"
+                        f" {item.name} ({time_delta.days}天前)"
+                    )
+                elif item.is_dir():
+                    shutil.rmtree(item)  # 删除目录 (如果存在未压缩的残留目录)
+                    logger.info(
+                        "🗑️ [早柚核心] 已删除过期备份目录:"
+                        f" {item.name} ({time_delta.days}天前)"
+                    )
+
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"❌ 删除 {item.name} 失败: {e}")
+
+    if deleted_count > 0:
+        logger.success(f"✅ 清理完成，共删除 {deleted_count} 个过期备份。")
+    else:
+        logger.info("✨ 没有发现需要删除的过期备份。")
+
+    return deleted_count

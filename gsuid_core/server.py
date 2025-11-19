@@ -18,6 +18,7 @@ try:
     from packaging.requirements import Requirement
 except ImportError:
     print("正在安装必要依赖 'packaging'...")
+    subprocess.check_call([sys.executable, "-m", "ensurepip"])
     subprocess.check_call(
         [sys.executable, "-m", "pip", "install", "packaging"]
     )
@@ -433,27 +434,53 @@ def install_packages(packages: List[str], upgrade: bool = False):
 
     logger.info(f'🚀 [安装/更新依赖] 开始安装以下包: {packages}')
 
-    # 使用当前 Python 解释器路径，避免环境混乱
-    cmd = [sys.executable, "-m", "pip", "install"]
+    # 定义镜像源列表 (名称, URL)
+    # 顺序: 字节 -> 阿里 -> 清华 -> 官方
+    mirrors = [
+        ("字节源 (Volces)", "https://mirrors.volces.com/pypi/simple/"),
+        ("阿里源 (Aliyun)", "https://mirrors.aliyun.com/pypi/simple/"),
+        ("清华源 (Tsinghua)", "https://pypi.tuna.tsinghua.edu.cn/simple"),
+        ("官方源 (PyPI)", "https://pypi.org/simple"),
+    ]
+
+    # 构建基础命令
+    base_cmd = [sys.executable, "-m", "pip", "install"]
     if upgrade:
-        cmd.append("-U")
+        base_cmd.append("-U")
 
-    # 将包名作为参数追加
-    cmd.extend(packages)
+    # 追加包名
+    base_cmd.extend(packages)
 
-    # 使用国内源可选项 (建议在配置中做，这里保留原逻辑的简化版)
-    cmd.extend(["-i", "https://pypi.org/simple"])
+    install_success = False
 
-    retcode = execute_cmd(cmd)
+    # 轮询尝试
+    for mirror_name, mirror_url in mirrors:
+        logger.info(f'⏳ [安装/更新依赖] 正在尝试使用 [{mirror_name}] ...')
 
-    if retcode != 0:
-        logger.warning('[安装/更新依赖] 安装失败，尝试使用清华源重试...')
-        cmd_retry = cmd[:-2] + [
-            "-i",
-            "https://pypi.tuna.tsinghua.edu.cn/simple",
-        ]
-        execute_cmd(cmd_retry)
+        # 组装完整命令，加入 -i 参数
+        cmd = base_cmd + ["-i", mirror_url]
 
+        # 有些环境可能需要信任 host，防止 SSL 报错，可选添加:
+        # host = mirror_url.split("//")[-1].split("/")[0]
+        # cmd.extend(["--trusted-host", host])
+
+        retcode = execute_cmd(cmd)
+
+        if retcode == 0:
+            logger.info(f'✅ [安装/更新依赖] 使用 [{mirror_name}] 安装成功!')
+            install_success = True
+            break  # 安装成功，跳出循环
+        else:
+            logger.warning(
+                f'⚠️ [安装/更新依赖] 使用 [{mirror_name}] 安装失败，准备尝试下一个源...'
+            )
+
+    if not install_success:
+        logger.error(
+            '❌ [安装/更新依赖] 所有源均尝试失败，请检查网络或包名是否正确。'
+        )
+
+    # 刷新依赖状态
     refresh_installed_dependencies()
 
 

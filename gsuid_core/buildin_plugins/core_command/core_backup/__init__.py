@@ -5,9 +5,12 @@ from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.database.base_models import DB_PATH
-from gsuid_core.utils.plugins_config.gs_config import backup_config
-from gsuid_core.utils.backup.backup_core import copy_and_rebase_paths
 from gsuid_core.utils.backup.backup_files import clean_log, backup_file
+from gsuid_core.utils.plugins_config.gs_config import log_config, backup_config
+from gsuid_core.utils.backup.backup_core import (
+    remove_old_backups,
+    copy_and_rebase_paths,
+)
 from gsuid_core.utils.database.global_val_models import (
     CoreDataSummary,
     CoreDataAnalysis,
@@ -24,6 +27,7 @@ sv_core_backup = SV('Core备份', pm=0)
 
 DB_BACKUP = get_res_path(['GsCore', 'database_backup'])
 
+CLEAN_DAY: str = log_config.get_config('ScheduledCleanLogDay').data
 backup_time: str = backup_config.get_config('backup_time').data
 backup_time = backup_time.lstrip('0')
 backup_hour, backup_minute = backup_time.split(':')
@@ -40,9 +44,10 @@ async def backup_path_files():
     '''
     凌晨自动备份`备份管理`中的路径树
     '''
-
     copy_and_rebase_paths()
     logger.success('♻️ [早柚核心] 路径已备份!')
+    remove_old_backups(int(CLEAN_DAY))
+    logger.success(f'♻️ [早柚核心] 已删除超过 {CLEAN_DAY} 天的备份文件!')
 
 
 @sv_core_backup.on_fullmatch('强制执行文件备份')
