@@ -19,7 +19,7 @@ from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message
-from gsuid_core.data_store import get_res_path
+from gsuid_core.data_store import get_res_path, error_mark_path
 
 log_history: List[EventDict] = []
 LOG_PATH = get_res_path() / 'logs'
@@ -87,6 +87,55 @@ class TraceCapableBoundLogger(structlog.stdlib.BoundLogger):
 
     def success(self, event: str, *args: Any, **kwargs: Any) -> None:
         self._proxy_to_logger("success", event, *args, **kwargs)
+
+
+def save_error_report_processor(
+    logger: WrappedLogger, method_name: str, event_dict: EventDict
+) -> EventDict:
+    """
+    自定义处理器：当日志级别为 error/critical/exception 时，
+    立即将完整上下文保存为单独的 JSON 报告文件。
+    """
+    # 1. 检查是否是错误级别
+    if method_name.lower() not in ("error", "critical", "exception"):
+        return event_dict
+
+    try:
+        report_content = dict(event_dict)
+
+        for key in ["_record", "_logger", "_from_structlog"]:
+            report_content.pop(key, None)
+
+        report_content.pop("exc_info", None)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+        report_file = error_mark_path / f"error_report_{now_str}.json"
+
+        report_content["_report_timestamp"] = now_str
+        report_content["_log_level"] = method_name
+
+        def json_default(obj):
+            if isinstance(obj, (datetime.datetime, datetime.date)):
+                return obj.isoformat()
+            if isinstance(obj, Path):
+                return str(obj)
+            # 对于其他无法识别的对象，转为字符串，防止报错
+            return str(obj)
+
+        # 8. 写入文件
+        with open(report_file, "w", encoding="utf-8") as f:
+            json.dump(
+                report_content,
+                f,
+                ensure_ascii=False,
+                indent=4,
+                default=json_default,
+            )
+
+    except Exception as e:
+        # 这里的 print 是为了在控制台看到为什么报告生成失败，防止死循环递归
+        print(f"Failed to save error report: {e}")
+
+    return event_dict
 
 
 def format_callsite_processor(
@@ -310,6 +359,7 @@ def setup_logging():
     file_processors: List[Processor] = shared_processors + [
         structlog.dev.set_exc_info,
         structlog.processors.format_exc_info,
+        save_error_report_processor,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
         log_to_history,
         structlog.processors.JSONRenderer(ensure_ascii=False),
