@@ -54,6 +54,7 @@ from gsuid_core.utils.database.base_models import finally_url
 from gsuid_core.webconsole.create_task_panel import get_tasks_panel
 from gsuid_core.webconsole.create_analysis_panel import get_analysis_page
 from gsuid_core.webconsole.create_aps_panel import generate_amis_job_list
+from gsuid_core.webconsole.create_error_panel import generate_error_schema
 from gsuid_core.webconsole.create_history_log import get_history_logs_page
 from gsuid_core.webconsole.create_sv_panel import get_sv_page, get_ssv_page
 from gsuid_core.webconsole.create_batch_push_panel import get_batch_push_panel
@@ -616,6 +617,20 @@ class HistoryLogsPage(GsAdminPage):
         return Page.parse_obj(get_history_logs_page())
 
 
+class ErrorPage(GsAdminPage):
+    page_schema = PageSchema(
+        label=('错误日志'),
+        icon='fa fa-exclamation-triangle',
+        url='/Error',
+        isDefaultPage=True,
+        sort=100,
+    )  # type: ignore
+
+    @handle_exceptions
+    async def get_page(self, request: Request) -> Page:
+        return Page.parse_obj(generate_error_schema())
+
+
 class PushPage(GsAdminPage):
     page_schema = PageSchema(
         label=('批量推送消息'),
@@ -675,6 +690,7 @@ class LogAndMessage(admin.AdminApp):
         self.register_admin(
             LogsPage,
             HistoryLogsPage,
+            ErrorPage,
             PushPage,
         )
 

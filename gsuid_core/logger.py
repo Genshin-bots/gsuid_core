@@ -8,7 +8,7 @@ from pathlib import Path
 from copy import deepcopy
 from functools import wraps
 from logging.handlers import TimedRotatingFileHandler
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 import aiofiles
 import structlog
@@ -69,15 +69,25 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
 
 class TraceCapableLogger(Protocol):
     def trace(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def debug(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def info(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def warning(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def error(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def critical(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def exception(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def success(self, event: Any, *args: Any, **kwargs: Any) -> None: ...
+
     def bind(self, **new_values: Any) -> 'TraceCapableLogger': ...
+
     def new(self, **new_values: Any) -> 'TraceCapableLogger': ...
+
     def unbind(self, *keys: str) -> 'TraceCapableLogger': ...
 
 
@@ -94,10 +104,37 @@ def save_error_report_processor(
 ) -> EventDict:
     """
     自定义处理器：当日志级别为 error/critical/exception 时，
-    立即将完整上下文保存为单独的 JSON 报告文件。
+    保存 JSON 报告，但自动忽略 Ctrl+C 和 任务取消 等系统级信号。
     """
-    # 1. 检查是否是错误级别
     if method_name.lower() not in ("error", "critical", "exception"):
+        return event_dict
+
+    IGNORED_EXCEPTIONS = (
+        KeyboardInterrupt,
+        SystemExit,
+        asyncio.CancelledError,
+    )
+
+    exc_info = event_dict.get("exc_info")
+    current_exc = None
+
+    if isinstance(exc_info, tuple):
+        current_exc = exc_info[1]
+    elif exc_info is True:
+        _, current_exc, _ = sys.exc_info()
+
+    if current_exc and isinstance(current_exc, IGNORED_EXCEPTIONS):
+        return event_dict
+
+    exception_text = str(event_dict.get("exception", ""))
+    if (
+        "KeyboardInterrupt" in exception_text
+        or "CancelledError" in exception_text
+    ):
+        return event_dict
+
+    event_text = str(event_dict.get("event", ""))
+    if "KeyboardInterrupt" in event_text or "CancelledError" in event_text:
         return event_dict
 
     try:
@@ -107,7 +144,11 @@ def save_error_report_processor(
             report_content.pop(key, None)
 
         report_content.pop("exc_info", None)
+
         now_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+        if not error_mark_path.exists():
+            error_mark_path.mkdir(parents=True, exist_ok=True)
+
         report_file = error_mark_path / f"error_report_{now_str}.json"
 
         report_content["_report_timestamp"] = now_str
@@ -118,10 +159,8 @@ def save_error_report_processor(
                 return obj.isoformat()
             if isinstance(obj, Path):
                 return str(obj)
-            # 对于其他无法识别的对象，转为字符串，防止报错
             return str(obj)
 
-        # 8. 写入文件
         with open(report_file, "w", encoding="utf-8") as f:
             json.dump(
                 report_content,
@@ -132,7 +171,6 @@ def save_error_report_processor(
             )
 
     except Exception as e:
-        # 这里的 print 是为了在控制台看到为什么报告生成失败，防止死循环递归
         print(f"Failed to save error report: {e}")
 
     return event_dict
@@ -356,7 +394,7 @@ def setup_logging():
         )
 
     # --- 文件处理链 ---
-    file_processors: List[Processor] = shared_processors + [
+    file_processors: Sequence[Processor] = shared_processors + [
         structlog.dev.set_exc_info,
         structlog.processors.format_exc_info,
         save_error_report_processor,
@@ -366,7 +404,7 @@ def setup_logging():
     ]
 
     # --- 控制台处理链 ---
-    console_processors: List[Processor] = shared_processors + [
+    console_processors: Sequence[Processor] = shared_processors + [
         colorize_brackets_processor,
         format_event_for_console,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
