@@ -235,8 +235,8 @@ async def download_all_file(
         TAG, BASE_URL = TAG or '[Unknown]', URL
     else:
         TAG, BASE_URL = await check_speed()
-        PLUGIN_RES = f'{BASE_URL}/{plugin_name}'
 
+    PLUGIN_RES = f'{BASE_URL}/{plugin_name}'
     if TAG is None:
         TAG = '[Unknown]'
 
