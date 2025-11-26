@@ -96,7 +96,9 @@ class Trigger:
             if self.prefix:
                 msg.text = msg.text.replace(self.prefix, '', 1)
         else:
-            command_group = re.search(self.keyword, msg.raw_text)
+            if self.prefix:
+                msg.text = msg.text.replace(self.prefix, '', 1)
+            command_group = re.search(self.keyword, msg.text)
             if command_group:
                 msg.regex_dict = command_group.groupdict()
                 msg.regex_group = command_group.groups()
