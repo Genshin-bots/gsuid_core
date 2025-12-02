@@ -201,7 +201,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     ]
     await asyncio.gather(*pending, return_exceptions=True)
     if len(valid_event) >= 1:
-        sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
+        sorted_event = sorted(
+            valid_event.items(),
+            key=lambda x: (not x[0].prefix, x[1]),
+        )
+        # sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
         for trigger, _ in sorted_event:
             _event = deepcopy(event)
             message = await trigger.get_command(_event)

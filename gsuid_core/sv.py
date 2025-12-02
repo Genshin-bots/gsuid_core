@@ -349,12 +349,12 @@ class SV:
             if "" in _pp:
                 _pp.remove("")
 
-            if self.plugins.allow_empty_prefix:
-                _pp.append("")
-
             if not self.plugins.disable_force_prefix:
                 for _i in self.plugins.force_prefix:
                     _pp.append(_i)
+
+            if self.plugins.allow_empty_prefix:
+                _pp.append("")
 
             # 去重
             _pp = list(set(_pp))
