@@ -218,11 +218,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             await count_data(event, trigger)
 
-            logger.info(
-                '[命令触发]',
-                trigger=[_event.raw_text, trigger.type, trigger.keyword],
-            )
-            logger.info('[命令触发]', command=message)
+            if trigger.type != 'message':
+                logger.info(
+                    '[命令触发]',
+                    trigger=[_event.raw_text, trigger.type, trigger.keyword],
+                )
+                logger.info('[命令触发]', command=message)
+            else:
+                logger.trace('[命令触发] [on_message]', command=message)
 
             ws.queue.put_nowait(trigger.func(bot, message))
             if _event.task_event:
