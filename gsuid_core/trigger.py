@@ -80,7 +80,7 @@ class Trigger:
 
     def _check_regex(self, pattern: str, msg: str) -> bool:
         if msg.startswith(self.prefix):
-            _msg = msg.replace(self.prefix, '')
+            _msg = msg.replace(self.prefix, '', 1)
             command_list = re.findall(pattern, _msg)
             if command_list:
                 return True
