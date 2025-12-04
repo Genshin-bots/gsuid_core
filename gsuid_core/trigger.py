@@ -1,5 +1,5 @@
 import re
-from typing import Callable, Literal
+from typing import Literal, Callable
 
 from gsuid_core.models import Event
 
@@ -106,5 +106,7 @@ class Trigger:
                     [i if i is not None else "" for i in list(msg.regex_group)]
                 )
             text_list = re.split(self.keyword, msg.raw_text)
-            msg.text = "|".join([i if i is not None else "" for i in text_list])
+            msg.text = "|".join(
+                [i if i is not None else "" for i in text_list]
+            )
         return msg
