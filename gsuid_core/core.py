@@ -30,6 +30,28 @@ ASCII_FONT = f'''
 
 
 async def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--dev",
+        default=False,
+        action="store_true",
+        help="启用开发模式",
+    )
+    parser.add_argument(
+        "--port",
+        default=None,
+        type=str,
+        help="监听端口（默认: 8765）",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        type=str,
+        help="监听地址 (0.0.0.0 = 监听全部地址，默认: localhost = 只允许本地访问)",
+    )
+    args = parser.parse_args()
+
     import time
 
     start_time = time.time()
@@ -39,15 +61,6 @@ async def main():
 
     from gsuid_core.gss import gss, load_gss  # noqa: E402
 
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--dev",
-        default=False,
-        action='store_true',
-        help="启用开发模式",
-    )
-    args = parser.parse_args()
     await load_gss(args.dev)
 
     from gsuid_core.bot import _Bot
@@ -58,6 +71,11 @@ async def main():
     from gsuid_core.utils.database.startup import (  # noqa: F401
         trans_adapter as ta,
     )
+
+    if args.port:
+        core_config.set_config("PORT", args.port)
+    if args.host:
+        core_config.set_config("HOST", args.host)
 
     HOST = core_config.get_config('HOST').lower()
     PORT = int(core_config.get_config('PORT'))
