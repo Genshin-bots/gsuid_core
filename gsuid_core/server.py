@@ -316,8 +316,16 @@ class GsServer:
 
     @classmethod
     def on_bot_connect(cls, func: Callable):
-        if func not in cls.bot_connect_def:
-            cls.bot_connect_def.add(func)
+        existing_funcs = [
+            f
+            for f in cls.bot_connect_def
+            if f.__name__ == func.__name__ and f.__module__ == func.__module__
+        ]
+
+        for f in existing_funcs:
+            cls.bot_connect_def.discard(f)
+
+        cls.bot_connect_def.add(func)
         return func
 
 

@@ -16,7 +16,7 @@ sv_core_config = SV('Core管理', pm=0)
 @gss.on_bot_connect
 async def check_msg():
     try:
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
         logger.info('[启动检查] 📝 检查遗留信息...')
         await restart_message()
         logger.info('✅ 遗留信息检查完毕!')
