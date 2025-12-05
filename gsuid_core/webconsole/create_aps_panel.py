@@ -25,27 +25,27 @@ def generate_amis_job_list() -> dict:
     amis_data_list = []
 
     for job in jobs:
-        if not hasattr(job, '__slots__'):
+        if not hasattr(job, "__slots__"):
             job_dict = vars(job)
         else:
             job_dict = {slot: getattr(job, slot) for slot in job.__slots__}
 
-        func_name = job_dict.get('name', 'N/A')
-        func_doc: str = job_dict.get('func').__doc__ or '暂无函数描述'
+        func_name = job_dict.get("name", "N/A")
+        func_doc: str = job_dict.get("func").__doc__ or "暂无函数描述"
 
         # 2. 格式化下次运行时间
         next_run = job.next_run_time
         if next_run:
-            next_run_str = next_run.strftime('%Y-%m-%d %H:%M:%S')
+            next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S")
         else:
             next_run_str = "已完成/已暂停"
 
         # 3. 提取运行规律描述
         trigger_desc = _get_trigger_description(job.trigger)
 
-        plugin_name = get_plugin_name(job_dict.get('func_ref', ''))
+        plugin_name = get_plugin_name(job_dict.get("func_ref", ""))
         if plugin_name is None:
-            plugin_name = '未知'
+            plugin_name = "未知"
 
         # 4. 组装成 Amis 列表项数据
         amis_item = {
@@ -59,7 +59,7 @@ def generate_amis_job_list() -> dict:
         amis_data_list.append(amis_item)
 
     # 按照plugin_name排序
-    amis_data_list.sort(key=lambda x: x['plugin_name'], reverse=True)
+    amis_data_list.sort(key=lambda x: x["plugin_name"], reverse=True)
     _func_doc = (
         "<div style='max-width:280px;white-space:nowrap;overflow:hidden;"
         "text-overflow:ellipsis;' title='${func_doc}'>${func_doc}</div>"

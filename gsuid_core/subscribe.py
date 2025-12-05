@@ -18,14 +18,14 @@ from gsuid_core.utils.database.models import Subscribe
 class GsCoreSubscribe:
     async def add_subscribe(
         self,
-        subscribe_type: Literal['session', 'single'],
+        subscribe_type: Literal["session", "single"],
         task_name: str,
         event: Event,
         extra_message: Optional[str] = None,
         uid: Optional[str] = None,
         extra_data: Optional[str] = None,
     ):
-        '''📝简单介绍:
+        """📝简单介绍:
 
             该方法允许向数据库添加一个订阅信息的持久化保存
 
@@ -53,17 +53,17 @@ class GsCoreSubscribe:
         🚀使用范例:
 
             `await GsCoreSubscribe.add_subscribe('single', '签到', event)`
-        '''
+        """
         opt: Dict[str, Union[str, int, None]] = {
-            'bot_id': event.bot_id,
-            'task_name': task_name,
-            'uid': uid,
+            "bot_id": event.bot_id,
+            "task_name": task_name,
+            "uid": uid,
         }
-        if subscribe_type == 'session' and event.user_type == 'group':
-            opt['group_id'] = event.group_id
-            opt['user_type'] = event.user_type
+        if subscribe_type == "session" and event.user_type == "group":
+            opt["group_id"] = event.group_id
+            opt["user_type"] = event.user_type
         else:
-            opt['user_id'] = event.user_id
+            opt["user_id"] = event.user_id
 
         condi = await Subscribe.data_exist(
             **opt,
@@ -86,19 +86,19 @@ class GsCoreSubscribe:
         else:
             upd = {}
             for i in [
-                'user_id',
-                'bot_id',
-                'group_id',
-                'bot_self_id',
-                'user_type',
-                'WS_BOT_ID',
-                'msg_id',
+                "user_id",
+                "bot_id",
+                "group_id",
+                "bot_self_id",
+                "user_type",
+                "WS_BOT_ID",
+                "msg_id",
             ]:
                 if i not in opt:
                     upd[i] = event.__getattribute__(i)
 
-            upd['extra_message'] = extra_message
-            upd['extra_data'] = extra_data
+            upd["extra_message"] = extra_message
+            upd["extra_data"] = extra_data
 
             await Subscribe.update_data_by_data(
                 opt,
@@ -115,50 +115,48 @@ class GsCoreSubscribe:
         WS_BOT_ID: Optional[str] = None,
     ):
         params = {
-            'task_name': task_name,
+            "task_name": task_name,
         }
 
         if user_id and bot_id and user_type:
-            params['user_id'] = user_id
-            params['bot_id'] = bot_id
-            params['user_type'] = user_type
+            params["user_id"] = user_id
+            params["bot_id"] = bot_id
+            params["user_type"] = user_type
 
         if uid:
-            params['uid'] = uid
+            params["uid"] = uid
 
         if WS_BOT_ID:
-            params['WS_BOT_ID'] = WS_BOT_ID
+            params["WS_BOT_ID"] = WS_BOT_ID
 
-        all_data: Optional[Sequence[Subscribe]] = await Subscribe.select_rows(
-            distinct=False, **params
-        )
+        all_data: Optional[Sequence[Subscribe]] = await Subscribe.select_rows(distinct=False, **params)
         return all_data
 
     async def delete_subscribe(
         self,
-        subscribe_type: Literal['session', 'single'],
+        subscribe_type: Literal["session", "single"],
         task_name: str,
         event: Event,
         uid: Optional[str] = None,
         WS_BOT_ID: Optional[str] = None,
     ):
         params = {
-            'task_name': task_name,
+            "task_name": task_name,
         }
         if uid:
-            params['uid'] = uid
+            params["uid"] = uid
 
         if WS_BOT_ID:
-            params['WS_BOT_ID'] = WS_BOT_ID
+            params["WS_BOT_ID"] = WS_BOT_ID
 
-        if subscribe_type == 'session' and event.user_type == 'group':
+        if subscribe_type == "session" and event.user_type == "group":
             await Subscribe.delete_row(group_id=event.group_id, **params)
         else:
             await Subscribe.delete_row(user_id=event.user_id, **params)
 
     async def update_subscribe_message(
         self,
-        subscribe_type: Literal['session', 'single'],
+        subscribe_type: Literal["session", "single"],
         task_name: str,
         event: Event,
         extra_message: str,
@@ -168,29 +166,29 @@ class GsCoreSubscribe:
         upd = {}
 
         for i in [
-            'bot_id',
-            'bot_self_id',
-            'user_type',
-            'WS_BOT_ID',
+            "bot_id",
+            "bot_self_id",
+            "user_type",
+            "WS_BOT_ID",
         ]:
             opt[i] = event.__getattribute__(i)
 
-        if subscribe_type == 'session' and event.user_type == 'group':
-            opt['group_id'] = event.group_id
+        if subscribe_type == "session" and event.user_type == "group":
+            opt["group_id"] = event.group_id
         else:
-            opt['user_id'] = event.user_id
+            opt["user_id"] = event.user_id
 
         if uid:
-            opt['uid'] = uid
+            opt["uid"] = uid
 
-        opt['task_name'] = task_name
-        upd['extra_message'] = extra_message
+        opt["task_name"] = task_name
+        upd["extra_message"] = extra_message
 
         await Subscribe.update_data_by_data(opt, upd)
 
     async def update_subscribe_data(
         self,
-        subscribe_type: Literal['session', 'single'],
+        subscribe_type: Literal["session", "single"],
         task_name: str,
         event: Event,
         extra_data: str,
@@ -200,23 +198,23 @@ class GsCoreSubscribe:
         upd = {}
 
         for i in [
-            'bot_id',
-            'bot_self_id',
-            'user_type',
-            'WS_BOT_ID',
+            "bot_id",
+            "bot_self_id",
+            "user_type",
+            "WS_BOT_ID",
         ]:
             opt[i] = event.__getattribute__(i)
 
-        if subscribe_type == 'session' and event.user_type == 'group':
-            opt['group_id'] = event.group_id
+        if subscribe_type == "session" and event.user_type == "group":
+            opt["group_id"] = event.group_id
         else:
-            opt['user_id'] = event.user_id
+            opt["user_id"] = event.user_id
 
         if uid:
-            opt['uid'] = uid
+            opt["uid"] = uid
 
-        opt['task_name'] = task_name
-        upd['extra_data'] = extra_data
+        opt["task_name"] = task_name
+        upd["extra_data"] = extra_data
 
         await Subscribe.update_data_by_data(opt, upd)
 
@@ -224,7 +222,7 @@ class GsCoreSubscribe:
         self,
         datas: Sequence[Subscribe],
         func: Callable[..., Awaitable[str]],
-        attr: str = 'uid',
+        attr: str = "uid",
     ):
         priv_result: Dict[str, PrivTask] = {}
         group_result: Dict[str, GroupTask] = {}
@@ -232,42 +230,40 @@ class GsCoreSubscribe:
             attr_data = data.__getattribute__(attr)
             if attr_data:
                 im = await func(attr_data)
-                if data.user_type == 'group':
-                    sid = f'{data.WS_BOT_ID}_{data.group_id}'
+                if data.user_type == "group":
+                    sid = f"{data.WS_BOT_ID}_{data.group_id}"
                     if sid not in group_result:
                         group_result[sid] = {
-                            'success': 0,
-                            'fail': 0,
-                            'event': data,
-                            'push_message': [],
+                            "success": 0,
+                            "fail": 0,
+                            "event": data,
+                            "push_message": [],
                         }
-                    if '失败' in im:
-                        group_result[sid]['fail'] += 1
+                    if "失败" in im:
+                        group_result[sid]["fail"] += 1
                         qid = attr_data = data.__getattribute__("user_id")
-                        group_result[sid]['push_message'].extend(
+                        group_result[sid]["push_message"].extend(
                             [
-                                MessageSegment.text('\n'),
+                                MessageSegment.text("\n"),
                                 MessageSegment.at(qid),
-                                MessageSegment.text('\n'),
+                                MessageSegment.text("\n"),
                                 MessageSegment.text(im),
                             ]
                         )
                     else:
-                        group_result[sid]['success'] += 1
+                        group_result[sid]["success"] += 1
                 else:
-                    sid = f'{data.WS_BOT_ID}_{data.user_id}'
+                    sid = f"{data.WS_BOT_ID}_{data.user_id}"
                     if sid not in priv_result:
                         priv_result[sid] = {
-                            'im': [],
-                            'event': data,
-                            'push_message': [],
+                            "im": [],
+                            "event": data,
+                            "push_message": [],
                         }
-                    priv_result[sid]['im'].append(im)
+                    priv_result[sid]["im"].append(im)
         return priv_result, group_result
 
-    async def _to_dict(
-        self, data: Sequence[Subscribe]
-    ) -> Dict[str, List[Subscribe]]:
+    async def _to_dict(self, data: Sequence[Subscribe]) -> Dict[str, List[Subscribe]]:
         result: Dict[str, List[Subscribe]] = {}
         for item in data:
             if str(item.uid) not in result:

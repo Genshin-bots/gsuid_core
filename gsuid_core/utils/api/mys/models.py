@@ -76,7 +76,7 @@ class MihoyoWeapon(TypedDict):
     rarity: int
     level: int
     promote_level: int
-    type_name: Literal['单手剑', '双手剑', '长柄武器', '弓', '法器']
+    type_name: Literal["单手剑", "双手剑", "长柄武器", "弓", "法器"]
     desc: str
     affix_level: int
 
@@ -122,27 +122,25 @@ class MihoyoAvatar(TypedDict):
     id: int
     image: str
     icon: str
-    '''在api/character接口有'''
+    """在api/character接口有"""
     name: str
-    element: Literal[
-        'Geo', 'Anemo', 'Dendro', 'Electro', 'Pyro', 'Cryo', 'Hydro'
-    ]
+    element: Literal["Geo", "Anemo", "Dendro", "Electro", "Pyro", "Cryo", "Hydro"]
     fetter: int
     level: int
     rarity: int
     weapon: MihoyoWeapon
-    '''在api/character接口有'''
+    """在api/character接口有"""
     reliquaries: List[MihoyoReliquary]
-    '''在api/character接口有'''
+    """在api/character接口有"""
     constellations: List[MihoyoConstellation]
-    '''在api/character接口有'''
+    """在api/character接口有"""
     actived_constellation_num: int
     costumes: List[MihoyoCostume]
-    '''在api/character接口有'''
+    """在api/character接口有"""
     card_image: str
-    '''在api/index接口有'''
+    """在api/index接口有"""
     is_chosen: bool
-    '''在api/index接口有'''
+    """在api/index接口有"""
 
 
 # Response
@@ -210,7 +208,7 @@ class AbyssData(TypedDict):
 
 class Expedition(TypedDict):
     avatar_side_icon: str
-    status: Literal['Ongoing', 'Finished']
+    status: Literal["Ongoing", "Finished"]
     remained_time: int
 
 
@@ -443,7 +441,7 @@ class QrPayload(TypedDict):
 
 
 class QrCodeStatus(TypedDict):
-    stat: Literal['Init', 'Scanned', 'Confirmed']
+    stat: Literal["Init", "Scanned", "Confirmed"]
     payload: QrPayload
 
 
@@ -515,18 +513,18 @@ class CardOpts(TypedDict):
 
 
 Props = TypedDict(
-    'Props',
+    "Props",
     {
-        '66a': str,
-        '50a': str,
-        '53b': str,
-        'pre_69b': str,
-        '49a': str,
-        '52b': str,
-        'pre_71b': str,
-        '37': str,
-        '48a': str,
-        '57': str,
+        "66a": str,
+        "50a": str,
+        "53b": str,
+        "pre_69b": str,
+        "49a": str,
+        "52b": str,
+        "pre_71b": str,
+        "37": str,
+        "48a": str,
+        "57": str,
     },
 )
 
@@ -708,7 +706,7 @@ class MysGameSwitch(TypedDict):
     switch_name: str
 
 
-'''支付相关'''
+"""支付相关"""
 
 
 class MysGoods(TypedDict):
@@ -717,13 +715,13 @@ class MysGoods(TypedDict):
     goods_name_i18n_key: str
     goods_desc: str
     goods_desc_i18n_key: str
-    goods_type: Literal['Normal', 'Special']
+    goods_type: Literal["Normal", "Special"]
     goods_unit: str
     goods_icon: str
-    currency: Literal['CNY']
+    currency: Literal["CNY"]
     price: str
-    symbol: Literal['￥']
-    tier_id: Literal['Tier_1']
+    symbol: Literal["￥"]
+    tier_id: Literal["Tier_1"]
     bonus_desc: MysGoodsBonus
     once_bonus_desc: MysGoodsBonus
     available: bool
@@ -746,13 +744,13 @@ class MysOrderCheck(TypedDict):
     goods_title: str
     goods_num: str
     order_no: str
-    pay_plat: Literal['alipay', 'weixin']
+    pay_plat: Literal["alipay", "weixin"]
 
 
 class MysOrder(TypedDict):
     goods_id: str
     order_no: str
-    currency: Literal['CNY']
+    currency: Literal["CNY"]
     amount: str
     redirect_url: str
     foreign_serial: str
@@ -766,7 +764,7 @@ class MysOrder(TypedDict):
     session_cookie: str
 
 
-'''七圣召唤牌组'''
+"""七圣召唤牌组"""
 
 
 class GcgDeckInfo(TypedDict):
@@ -788,7 +786,7 @@ class GcgAvatarSkill(TypedDict):
     id: int
     name: str
     desc: str
-    tag: Literal['普通攻击', '元素战技', '元素爆发', '被动技能']
+    tag: Literal["普通攻击", "元素战技", "元素爆发", "被动技能"]
 
 
 class GcgAvatar(TypedDict):
@@ -796,7 +794,7 @@ class GcgAvatar(TypedDict):
     name: str
     image: str
     desc: str
-    card_type: Literal['CardTypeCharacter']
+    card_type: Literal["CardTypeCharacter"]
     num: int
     tags: List[str]  # 元素和武器类型icon
     proficiency: int
@@ -811,7 +809,7 @@ class GcgAvatar(TypedDict):
 
 
 class GcgCost(TypedDict):
-    cost_type: Literal['CostTypeSame', 'CostTypeVoid']
+    cost_type: Literal["CostTypeSame", "CostTypeVoid"]
     cost_value: int
 
 
@@ -881,20 +879,20 @@ class RoleCalendarList(TypedDict):
 
 
 MonthlyRoleCalendar = TypedDict(
-    'MonthlyRoleCalendar',
+    "MonthlyRoleCalendar",
     {
-        '1': RoleCalendarList,
-        '2': RoleCalendarList,
-        '3': RoleCalendarList,
-        '4': RoleCalendarList,
-        '5': RoleCalendarList,
-        '6': RoleCalendarList,
-        '7': RoleCalendarList,
-        '8': RoleCalendarList,
-        '9': RoleCalendarList,
-        '10': RoleCalendarList,
-        '11': RoleCalendarList,
-        '12': RoleCalendarList,
+        "1": RoleCalendarList,
+        "2": RoleCalendarList,
+        "3": RoleCalendarList,
+        "4": RoleCalendarList,
+        "5": RoleCalendarList,
+        "6": RoleCalendarList,
+        "7": RoleCalendarList,
+        "8": RoleCalendarList,
+        "9": RoleCalendarList,
+        "10": RoleCalendarList,
+        "11": RoleCalendarList,
+        "12": RoleCalendarList,
     },
 )
 
@@ -1064,9 +1062,7 @@ class ComputeAvatar(TypedDict):
 class MaterialConsumeCategory(TypedDict):
     consume: List[ConsumeItem]
     avatars: List[ComputeAvatar]
-    weapons: List[
-        ConsumeItem
-    ]  # 假设 weapons 也是消耗材料的一部分，根据实际情况可能需要调整
+    weapons: List[ConsumeItem]  # 假设 weapons 也是消耗材料的一部分，根据实际情况可能需要调整
 
 
 class OverallMaterialConsume(TypedDict):

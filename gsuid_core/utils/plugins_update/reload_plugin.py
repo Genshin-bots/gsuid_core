@@ -1,15 +1,15 @@
 import importlib
 
 from gsuid_core.sv import SL
+from gsuid_core.aps import remove_repeat_job
 from gsuid_core.gss import gss
 from gsuid_core.logger import logger
-from gsuid_core.aps import remove_repeat_job
 
 
 def reload_plugin(plugin_name: str):
-    logger.warning('[重载插件] 该功能暂时被禁用...')
-    return '该功能暂时被禁用...'
-    logger.info(f'🔔 正在重载插件{plugin_name}...')
+    logger.warning("[重载插件] 该功能暂时被禁用...")
+    return "该功能暂时被禁用..."
+    logger.info(f"🔔 正在重载插件{plugin_name}...")
 
     del_k = []
     del_v = []
@@ -28,15 +28,15 @@ def reload_plugin(plugin_name: str):
 
     retcode = gss.load_plugin(plugin_name)
     if retcode is None:
-        logger.info(f'❌ 未知的插件类型{plugin_name}...')
-        return '未知错误, 请检查控制台...'
+        logger.info(f"❌ 未知的插件类型{plugin_name}...")
+        return "未知错误, 请检查控制台..."
 
     if isinstance(retcode, str):
-        logger.info(f'❌ 重载插件{plugin_name}失败...')
+        logger.info(f"❌ 重载插件{plugin_name}失败...")
         return retcode
     else:
         for module in retcode:
             importlib.reload(module)
         remove_repeat_job()
-        logger.info(f'✨ 已重载插件{plugin_name}')
-        return f'✨ 已重载插件{plugin_name}!'
+        logger.info(f"✨ 已重载插件{plugin_name}")
+        return f"✨ 已重载插件{plugin_name}!"

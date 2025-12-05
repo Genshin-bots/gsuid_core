@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from gsuid_core.logger import logger, clean_log
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
+from gsuid_core.logger import logger, clean_log
 from gsuid_core.server import core_start_def, core_shutdown_def
 from gsuid_core.utils.database.global_val_models import CoreDataAnalysis
 
@@ -13,7 +13,7 @@ from gsuid_core.utils.database.global_val_models import CoreDataAnalysis
 async def lifespan(app: FastAPI):
     try:
         logger.info(
-            '♻ [GsCore] 执行启动Hook函数中！',
+            "♻ [GsCore] 执行启动Hook函数中！",
             [_def.__name__ for _def in core_start_def],
         )
         for _def in core_start_def:
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
     try:
         logger.info(
-            '[GsCore] 执行关闭Hook函数中！',
+            "[GsCore] 执行关闭Hook函数中！",
             [_def.__name__ for _def in core_shutdown_def],
         )
         _task = [_def() for _def in core_shutdown_def]

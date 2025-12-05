@@ -2,21 +2,15 @@
   "python.languageServer": "None",
   "editor.formatOnSave": true,
   "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
     "editor.codeActionsOnSave": {
-      "source.organizeImports": "explicit"
+      "source.organizeImports": "explicit",
+      "source.fixAll.ruff": "explicit"
     }
   },
   "python.autoComplete.extraPaths": [
     "${workspaceFolder}/gsuid_core"
-  ],
-  "flake8.args": [
-    "--max-line-length=120"
-  ],
-  "isort.args": [
-    "--profile",
-    "black"
   ],
   "basedpyright.analysis.typeCheckingMode": "basic",
   "basedpyright.analysis.extraPaths": [

@@ -40,7 +40,7 @@ class GsImageConfig(GsConfig, tag=True):
     data: str
     upload_to: str
     filename: str
-    suffix: str = 'jpg'
+    suffix: str = "jpg"
 
 
 class GsTimeConfig(GsConfig, tag=True):

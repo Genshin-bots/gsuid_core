@@ -676,3 +676,4 @@ logs
 .pdm-python
 .pdm-build
 .VSCodeCounter
+.ruff_cache

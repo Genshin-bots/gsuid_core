@@ -15,17 +15,17 @@ class BaseTextContainer(list):
         self.append(other)
 
     def __repr__(self):
-        return f'BaseTextContainer({list(self)})'
+        return f"BaseTextContainer({list(self)})"
 
 
 class ColorText:
     def _set_color(self, color):
         self.color = Color(color)
 
-    def __init__(self, text: str, color: Union[str, tuple] = 'black'):
+    def __init__(self, text: str, color: Union[str, tuple] = "black"):
         self._check_color = check_if_color
         if not self._check_color(color):
-            print(f'Color: {color}\n' f'Type: {str(type(color))}')
+            print(f"Color: {color}\nType: {str(type(color))}")
 
         # assert self._check_color(color)
         self._set_color(color)
@@ -35,7 +35,7 @@ class ColorText:
         return len(self.text)
 
     def __repr__(self):
-        return f'ColorText(\'{self.text}\', {self.color})'
+        return f"ColorText('{self.text}', {self.color})"
 
     def __str__(self):
         return self.text
@@ -60,7 +60,7 @@ class ColorTextGroup(BaseTextContainer):
         if isinstance(text, (str, ColorText)):
             super().append(text)
         else:
-            raise TypeError('The text parameter is neither str nor ColorText')
+            raise TypeError("The text parameter is neither str nor ColorText")
 
 
 class TextBuffer(BaseTextContainer):
@@ -78,13 +78,12 @@ def split_ep(
 ):  # Cut strings by length but discard the first N characters
     # https://github.com/PyCQA/pycodestyle/issues/373
     return text[:pre_len], [
-        text[i : i + length] for i in range(pre_len, len(text), length)  # noqa
+        text[i : i + length]
+        for i in range(pre_len, len(text), length)  # noqa
     ]
 
 
-def split_ctg(
-    group: Union[list, ColorTextGroup], length: int
-) -> list:  # Cut strings from ColorTextGroup
+def split_ctg(group: Union[list, ColorTextGroup], length: int) -> list:  # Cut strings from ColorTextGroup
     result = []
     buffer = TextBuffer([], length)
 
@@ -111,38 +110,38 @@ def split_ctg(
     return result
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     from pprint import pformat
 
     from colorama import Fore, Style
 
     def test_ctg(length: int, *params):
         print(
-            f'{Fore.GREEN}> running split_ctg(){Style.RESET_ALL}\
+            f"{Fore.GREEN}> running split_ctg(){Style.RESET_ALL}\
             \n    length: {length}\
-            \n    texts: {params}'
+            \n    texts: {params}"
         )
         groups_ = ColorTextGroup(list(params))
-        f_ = pformat(split_ctg(groups_, length)).split('\n')
-        print(Fore.CYAN, '\t', f_[0], '\n\t'.join(f_[0:]))
+        f_ = pformat(split_ctg(groups_, length)).split("\n")
+        print(Fore.CYAN, "\t", f_[0], "\n\t".join(f_[0:]))
 
-    print('*** ColorTextGroup cutting test ***')
+    print("*** ColorTextGroup cutting test ***")
     test_ctg(
         5,
-        'test',
-        ColorText('i am red', 'red'),
-        'foo',
-        ColorText('bar', color='cyan'),
+        "test",
+        ColorText("i am red", "red"),
+        "foo",
+        ColorText("bar", color="cyan"),
     )
     test_ctg(
         10,
-        '获得',
-        ColorText('12%/15%/18%/21%/24%', color='rgb(69,113,236)'),
-        '所有元素伤害加成；队伍中附近的其他角色在施放元素战技时，'
-        '会为装备该武器的角色产生1层「波穗」效果，至多叠加2层，'
-        '每0.3秒最多触发1次。装备该武器的角色施放元素战技时，'
-        '如果有积累的「波穗」效果，则将消耗已有的「波穗」，'
-        '获得「波乱」：根据消耗的层数，每层提升',
-        ColorText('20%/25%/30%/35%/40%', (69, 113, 236)),
-        '普通攻击伤害，持续8秒。',
+        "获得",
+        ColorText("12%/15%/18%/21%/24%", color="rgb(69,113,236)"),
+        "所有元素伤害加成；队伍中附近的其他角色在施放元素战技时，"
+        "会为装备该武器的角色产生1层「波穗」效果，至多叠加2层，"
+        "每0.3秒最多触发1次。装备该武器的角色施放元素战技时，"
+        "如果有积累的「波穗」效果，则将消耗已有的「波穗」，"
+        "获得「波乱」：根据消耗的层数，每层提升",
+        ColorText("20%/25%/30%/35%/40%", (69, 113, 236)),
+        "普通攻击伤害，持续8秒。",
     )

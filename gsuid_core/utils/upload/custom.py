@@ -9,8 +9,8 @@ from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
 from .utils import is_auto_delete
 
-URL: str = pic_upload_config.get_config('custom_url').data
-_header: str = pic_upload_config.get_config('custom_header').data
+URL: str = pic_upload_config.get_config("custom_url").data
+_header: str = pic_upload_config.get_config("custom_header").data
 
 
 class CUSTOM:
@@ -18,24 +18,24 @@ class CUSTOM:
         self.header = json.dumps(_header)
 
     async def delete(self):
-        logger.warning('[custom / upload] 未实现delete...')
+        logger.warning("[custom / upload] 未实现delete...")
 
     async def upload(self, file_name: str, files: BytesIO):
         async with ClientSession() as client:
             async with client.request(
-                'POST',
+                "POST",
                 url=URL,
                 headers=self.header,
-                data={'file': files.getvalue()},
+                data={"file": files.getvalue()},
                 timeout=300,
             ) as resp:
-                logger.info('[custom / upload] 开始上传...')
+                logger.info("[custom / upload] 开始上传...")
                 raw_data = await resp.json()
-                logger.debug(f'[custom / upload] {raw_data}')
-                if raw_data and 'image_info_array' in raw_data[0]:
-                    data = raw_data[0]['image_info_array']
+                logger.debug(f"[custom / upload] {raw_data}")
+                if raw_data and "image_info_array" in raw_data[0]:
+                    data = raw_data[0]["image_info_array"]
                     if is_auto_delete:
                         asyncio.create_task(self.delete())
-                    return data['url']
+                    return data["url"]
                 else:
-                    logger.info('[custom / upload] 上传失败!')
+                    logger.info("[custom / upload] 上传失败!")

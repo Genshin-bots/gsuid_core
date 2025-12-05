@@ -1,7 +1,7 @@
 import json
 import datetime
-from pathlib import Path
 from typing import Dict, Union, Optional
+from pathlib import Path
 
 import httpx
 import aiofiles
@@ -15,10 +15,10 @@ async def download(
     path: Path,
     name: str,
     sess: Union[ClientSession, httpx.AsyncClient, None] = None,
-    tag: str = '',
+    tag: str = "",
 ):
-    logger.info(f'{tag} 开始下载 {name} 图片...')
-    logger.info(f'{tag} URL: {url}')
+    logger.info(f"{tag} 开始下载 {name} 图片...")
+    logger.info(f"{tag} URL: {url}")
     if sess is None:
         sess = httpx.AsyncClient()
 
@@ -35,7 +35,7 @@ async def download(
         if retcode == 200:
             async with aiofiles.open(path / name, "wb") as f:
                 await f.write(content)
-            logger.success(f'{tag} {name} 下载完成！')
+            logger.success(f"{tag} {name} 下载完成！")
         else:
             logger.warning(f"{tag} {name} 下载失败！错误码{retcode}")
         return retcode
@@ -44,30 +44,22 @@ async def download(
         logger.warning(f"{tag} {name} 下载失败！")
 
 
-async def get_data_from_url(
-    url: str, path: Path, expire_sec: Optional[float] = None
-) -> Dict:
+async def get_data_from_url(url: str, path: Path, expire_sec: Optional[float] = None) -> Dict:
     time_difference = 10
     if path.exists() and expire_sec is not None:
         modified_time = path.stat().st_mtime
         modified_datetime = datetime.datetime.fromtimestamp(modified_time)
         current_datetime = datetime.datetime.now()
 
-        time_difference = (
-            current_datetime - modified_datetime
-        ).total_seconds()
+        time_difference = (current_datetime - modified_datetime).total_seconds()
 
-    if (
-        expire_sec is not None and time_difference >= expire_sec
-    ) or not path.exists():
+    if (expire_sec is not None and time_difference >= expire_sec) or not path.exists():
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
             data = response.json()
-            async with aiofiles.open(path, 'w', encoding='UTF-8') as file:
-                await file.write(
-                    json.dumps(data, indent=4, ensure_ascii=False)
-                )
+            async with aiofiles.open(path, "w", encoding="UTF-8") as file:
+                await file.write(json.dumps(data, indent=4, ensure_ascii=False))
     else:
-        async with aiofiles.open(path, 'r', encoding='UTF-8') as file:
+        async with aiofiles.open(path, "r", encoding="UTF-8") as file:
             data = json.loads(await file.read())
     return data

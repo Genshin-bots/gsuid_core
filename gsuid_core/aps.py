@@ -5,17 +5,17 @@ from concurrent.futures import ThreadPoolExecutor
 from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from gsuid_core.logger import logger
 from gsuid_core.config import core_config
+from gsuid_core.logger import logger
 
-misfire_grace_time = core_config.get_config('misfire_grace_time')
+misfire_grace_time = core_config.get_config("misfire_grace_time")
 
 executor = ThreadPoolExecutor(max_workers=10)
-job_defaults = {'misfire_grace_time': misfire_grace_time, 'coalesce': True}
+job_defaults = {"misfire_grace_time": misfire_grace_time, "coalesce": True}
 options = {
-    'executor': executor,
-    'job_defaults': job_defaults,
-    'timezone': 'Asia/Shanghai',
+    "executor": executor,
+    "job_defaults": job_defaults,
+    "timezone": "Asia/Shanghai",
 }
 scheduler = AsyncIOScheduler()
 scheduler.configure(options)
@@ -24,13 +24,13 @@ scheduler.configure(options)
 async def start_scheduler():
     if not scheduler.running:
         scheduler.start()
-        logger.info('⏲ [定时器系统] 定时任务启动成功！')
+        logger.info("⏲ [定时器系统] 定时任务启动成功！")
 
 
 async def shutdown_scheduler():
     if scheduler.running:
         scheduler.shutdown()
-        logger.info('⌛ [定时器系统] 程序关闭！定时任务结束！')
+        logger.info("⌛ [定时器系统] 程序关闭！定时任务结束！")
 
 
 def remove_repeat_job():
@@ -44,9 +44,7 @@ def remove_repeat_job():
             if source_i == source_j:
                 scheduler.remove_job(i.id)
             else:
-                logger.warning(
-                    f'发现重复函数名定时任务{i.name}, 移除该任务...'
-                )
+                logger.warning(f"发现重复函数名定时任务{i.name}, 移除该任务...")
                 scheduler.remove_job(i.id)
 
     del repeat_jobs
@@ -66,9 +64,7 @@ def _get_trigger_description(trigger: Any) -> str:
 
     if isinstance(trigger, DateTrigger):
         if isinstance(trigger.run_date, datetime):
-            return (
-                f"一次性运行：{trigger.run_date.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+            return f"一次性运行：{trigger.run_date.strftime('%Y-%m-%d %H:%M:%S')}"
         return "一次性运行：未知时间"
 
     elif isinstance(trigger, IntervalTrigger):
@@ -89,37 +85,35 @@ def _get_trigger_description(trigger: Any) -> str:
         fields_info = {}
         for field in trigger.fields:
             expression = str(field)
-            if expression != '*' and expression is not None:
+            if expression != "*" and expression is not None:
                 fields_info[field.name] = expression
 
         date_parts = []
         time_parts = []
 
-        if 'day_of_week' in fields_info:
-            dow = fields_info['day_of_week']
+        if "day_of_week" in fields_info:
+            dow = fields_info["day_of_week"]
             dow_map = {
-                'mon': '周一',
-                'tue': '周二',
-                'wed': '周三',
-                'thu': '周四',
-                'fri': '周五',
-                'sat': '周六',
-                'sun': '周日',
+                "mon": "周一",
+                "tue": "周二",
+                "wed": "周三",
+                "thu": "周四",
+                "fri": "周五",
+                "sat": "周六",
+                "sun": "周日",
             }
             dow_display = dow_map.get(dow.lower(), dow)
             date_parts.append(f"每周的 {dow_display}")
-        if 'month' in fields_info and 'day' in fields_info:
-            date_parts.append(
-                f"每 {fields_info['month']} 月的 {fields_info['day']} 日"
-            )
-        elif 'day' in fields_info:
+        if "month" in fields_info and "day" in fields_info:
+            date_parts.append(f"每 {fields_info['month']} 月的 {fields_info['day']} 日")
+        elif "day" in fields_info:
             date_parts.append(f"每月的 {fields_info['day']} 日")
 
-        if 'hour' in fields_info:
+        if "hour" in fields_info:
             time_parts.append(f"{fields_info['hour']} 时")
-        if 'minute' in fields_info:
+        if "minute" in fields_info:
             time_parts.append(f"{fields_info['minute']} 分")
-        if 'second' in fields_info and fields_info['second'] != '0':
+        if "second" in fields_info and fields_info["second"] != "0":
             time_parts.append(f"{fields_info['second']} 秒")
 
         date_desc = "".join(date_parts).strip()

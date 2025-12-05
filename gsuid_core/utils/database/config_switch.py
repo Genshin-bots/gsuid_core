@@ -17,34 +17,34 @@ async def set_database_value(
     fields = model.__fields__
     for keyname in fields:
         field = fields[keyname]
-        if hasattr(field, 'field_info'):
+        if hasattr(field, "field_info"):
             field_info = field.field_info  # type: ignore
             extra = (
-                field_info.extra['json_schema_extra']
-                if field_info.extra and 'json_schema_extra' in field_info.extra
+                field_info.extra["json_schema_extra"]
+                if field_info.extra and "json_schema_extra" in field_info.extra
                 else {}
             )
         else:
             field_info = field
-            if hasattr(field_info, 'json_schema_extra'):
+            if hasattr(field_info, "json_schema_extra"):
                 extra = field_info.json_schema_extra  # type: ignore
             else:
                 extra = {}
 
-        desc = extra['hint'] if extra and 'hint' in extra else None
+        desc = extra["hint"] if extra and "hint" in extra else None
         title: Optional[str] = field_info.title  # type: ignore
         title = title if title else keyname
         if desc:
-            if desc == f'{command_start}{command_value}':
+            if desc == f"{command_start}{command_value}":
                 retcode = await model.update_data_by_uid(
                     uid,
                     bot_id,
                     game_name,
                     **{
-                        f'{keyname}': value,
+                        f"{keyname}": value,
                     },
                 )
                 if retcode == 0:
-                    return f'✅{title}\n📝已设置为{value}'
+                    return f"✅{title}\n📝已设置为{value}"
                 else:
-                    return f'❌{title}\n📝设置失败'
+                    return f"❌{title}\n📝设置失败"

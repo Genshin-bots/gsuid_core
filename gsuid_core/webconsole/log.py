@@ -1,4 +1,4 @@
-HIGHLIGHT = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0'
+HIGHLIGHT = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0"
 
 
 def render_html():

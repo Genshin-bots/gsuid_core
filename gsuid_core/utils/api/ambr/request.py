@@ -1,12 +1,12 @@
-'''
+"""
 安柏计划 API 请求模块。
-'''
+"""
 
 from __future__ import annotations
 
 from io import BytesIO
-from pathlib import Path
 from typing import Dict, Union, Literal, Optional, cast
+from pathlib import Path
 
 import aiofiles
 from PIL import Image
@@ -14,21 +14,6 @@ from httpx import AsyncClient
 
 from gsuid_core.logger import logger
 
-from ..types import AnyDict
-from ..utils import _HEADER, cache_data
-from .models import (
-    AmbrBook,
-    AmbrDaily,
-    AmbrEvent,
-    AmbrWeapon,
-    AmbrGCGList,
-    AmbrMonster,
-    AmbrCharacter,
-    AmbrGCGDetail,
-    AmbrBookDetail,
-    AmbrMonsterList,
-    AmbrUpgradeItem,
-)
 from .api import (
     AMBR_BOOK_URL,
     AMBR_CHAR_URL,
@@ -43,6 +28,21 @@ from .api import (
     AMBR_MONSTER_LIST,
     AMBR_BOOK_DATA_URL,
     AMBR_BOOK_DETAILS_URL,
+)
+from ..types import AnyDict
+from ..utils import _HEADER, cache_data
+from .models import (
+    AmbrBook,
+    AmbrDaily,
+    AmbrEvent,
+    AmbrWeapon,
+    AmbrGCGList,
+    AmbrMonster,
+    AmbrCharacter,
+    AmbrGCGDetail,
+    AmbrBookDetail,
+    AmbrMonsterList,
+    AmbrUpgradeItem,
 )
 
 
@@ -59,8 +59,8 @@ async def get_ambr_char_data(
     cache_path: Optional[Path] = None,
 ) -> Optional[AmbrCharacter]:
     data = await _ambr_request(url=AMBR_CHAR_URL.format(id))
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrCharacter, data)
     return None
 
@@ -71,8 +71,8 @@ async def get_ambr_monster_data(
     cache_path: Optional[Path] = None,
 ) -> Optional[AmbrMonster]:
     data = await _ambr_request(url=AMBR_MONSTER_URL.format(id))
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrMonster, data)
     return None
 
@@ -83,24 +83,24 @@ async def get_ambr_gcg_detail(
     cache_path: Optional[Path] = None,
 ) -> Optional[AmbrGCGDetail]:
     data = await _ambr_request(url=AMBR_GCG_DETAIL.format(id))
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrGCGDetail, data)
     return None
 
 
 async def get_ambr_gcg_list() -> Optional[AmbrGCGList]:
     data = await _ambr_request(url=AMBR_GCG_LIST_URL)
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrGCGList, data)
     return None
 
 
 async def get_ambr_monster_list() -> Optional[AmbrMonsterList]:
     data = await _ambr_request(url=AMBR_MONSTER_LIST)
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrMonsterList, data)
     return None
 
@@ -111,16 +111,16 @@ async def get_ambr_weapon_data(
     cache_path: Optional[Path] = None,
 ) -> Optional[AmbrWeapon]:
     data = await _ambr_request(url=AMBR_WEAPON_URL.format(id))
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrWeapon, data)
     return None
 
 
 async def get_ambr_daily_data() -> Optional[AmbrDaily]:
     data = await _ambr_request(url=AMBR_DAILY_URL)
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         insert = {}
         for day in data:
             insert[day] = [value for value in data[day].values()]
@@ -130,32 +130,32 @@ async def get_ambr_daily_data() -> Optional[AmbrDaily]:
 
 async def get_all_upgrade() -> Optional[AmbrUpgradeItem]:
     data = await _ambr_request(url=AMBR_UPGRADE_URL)
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrUpgradeItem, data)
     return None
 
 
 async def get_all_book_id() -> Optional[Dict[str, AmbrBook]]:
     data = await _ambr_request(url=AMBR_BOOK_URL)
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']['items']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]["items"]
         return cast(Dict[str, AmbrBook], data)
     return None
 
 
 async def get_book_volume(id: Union[int, str]) -> Optional[AmbrBookDetail]:
     data = await _ambr_request(url=AMBR_BOOK_DETAILS_URL.format(id))
-    if isinstance(data, Dict) and data['response'] == 200:
-        data = data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
         return cast(AmbrBookDetail, data)
     return None
 
 
 async def get_story_data(story_id: Union[int, str]) -> Optional[str]:
     data = await _ambr_request(url=AMBR_BOOK_DATA_URL.format(story_id))
-    if isinstance(data, Dict) and data['response'] == 200:
-        return data['data']
+    if isinstance(data, Dict) and data["response"] == 200:
+        return data["data"]
     return None
 
 
@@ -166,28 +166,28 @@ async def get_ambr_icon(
     ui_name: Optional[str] = None,
     save_name: Optional[str] = None,
 ) -> Image.Image:
-    '''
+    """
     获取ItemIcon:
         await get_ambr_icon('UI', '114004', path, 'ItemIcon')
         https://gi.yatta.moe/assets/UI/UI_ItemIcon_114004.png
     获取其他:
         await get_ambr_icon('UI', 'Chongyun', path, 'AvatarIcon')
         https://gi.yatta.moe/assets/UI/UI_AvatarIcon_Chongyun.png
-    '''
+    """
     if ui_name:
-        item_icon = f'UI_{ui_name}_{icon_name}.png'
-        url = f'{AMBR_ICON_URL}/{item_icon}'
+        item_icon = f"UI_{ui_name}_{icon_name}.png"
+        url = f"{AMBR_ICON_URL}/{item_icon}"
     else:
-        item_icon = f'{icon_name}.png'
-        url = f'{AMBR_ICON_URL}/{type}/{item_icon}'
+        item_icon = f"{icon_name}.png"
+        url = f"{AMBR_ICON_URL}/{type}/{item_icon}"
 
     if save_name:
-        item_icon = f'{save_name}.png'
+        item_icon = f"{save_name}.png"
 
     file_path = path / item_icon
 
     if file_path.exists():
-        async with aiofiles.open(file_path, 'rb') as f:
+        async with aiofiles.open(file_path, "rb") as f:
             return Image.open(BytesIO(await f.read()))
 
     async with AsyncClient(timeout=None) as client:
@@ -197,26 +197,24 @@ async def get_ambr_icon(
         )
         if req.status_code == 200:
             content = req.read()
-            async with aiofiles.open(file_path, 'wb') as f:
+            async with aiofiles.open(file_path, "wb") as f:
                 await f.write(content)
             return Image.open(BytesIO(content))
         else:
-            return Image.new('RGBA', (256, 256), (0, 0, 0))
+            return Image.new("RGBA", (256, 256), (0, 0, 0))
 
 
 async def _ambr_request(
     url: str,
-    method: Literal['GET', 'POST'] = 'GET',
+    method: Literal["GET", "POST"] = "GET",
     header: AnyDict = _HEADER,
     params: Optional[AnyDict] = None,
     data: Optional[AnyDict] = None,
 ) -> Optional[AnyDict]:
-    logger.debug(f'[AmbrRequest] {url} {method} {params} {data}')
+    logger.debug(f"[AmbrRequest] {url} {method} {params} {data}")
     async with AsyncClient(timeout=None) as client:
-        req = await client.request(
-            method, url=url, headers=header, params=params, json=data
-        )
+        req = await client.request(method, url=url, headers=header, params=params, json=data)
         data = req.json()
-        if data and 'code' in data:
-            data['response'] = data['code']
+        if data and "code" in data:
+            data["response"] = data["code"]
         return data

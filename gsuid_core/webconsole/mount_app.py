@@ -85,7 +85,7 @@ from gsuid_core.utils.database.models import (
     Subscribe,
 )
 
-WebConsoleCDN = core_plugins_config.get_config('WebConsoleCDN').data
+WebConsoleCDN = core_plugins_config.get_config("WebConsoleCDN").data
 
 
 class GsLoginFormAdmin(UserLoginFormAdmin):
@@ -93,17 +93,12 @@ class GsLoginFormAdmin(UserLoginFormAdmin):
 
     @property
     def route_page(self) -> Callable:
-        async def route(
-            request: Request, result=Depends(super(FormAdmin, self).route_page)
-        ):
+        async def route(request: Request, result=Depends(super(FormAdmin, self).route_page)):
             if request.user:
                 raise HTTPException(
                     status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-                    detail='已经登陆过啦~',
-                    headers={
-                        'location': request.query_params.get('redirect')
-                        or '/genshinuid'
-                    },
+                    detail="已经登陆过啦~",
+                    headers={"location": request.query_params.get("redirect") or "/genshinuid"},
                 )
             return result
 
@@ -111,21 +106,21 @@ class GsLoginFormAdmin(UserLoginFormAdmin):
 
     async def get_form(self, request: Request) -> Form:
         form = await super().get_form(request)
-        form.redirect = request.query_params.get('redirect') or '/genshinuid'
+        form.redirect = request.query_params.get("redirect") or "/genshinuid"
         form.update_from_kwargs(
-            title='',
+            title="",
             mode=DisplayModeEnum.horizontal,
-            submitText=_('登陆'),
-            actionsClassName='no-border m-none p-none',
-            panelClassName='',
+            submitText=_("登陆"),
+            actionsClassName="no-border m-none p-none",
+            panelClassName="",
             wrapWithPanel=True,
             horizontal=Horizontal(left=3, right=9),
             actions=[
                 ButtonToolbar(
                     buttons=[
                         Action(
-                            actionType='submit',
-                            label=_('Sign in'),
+                            actionType="submit",
+                            label=_("Sign in"),
                             level=LevelEnum.primary,
                         ),
                     ]
@@ -142,11 +137,10 @@ class GsUserRegFormAdmin(UserRegFormAdmin):
             response: Response,
             result: BaseApiOut = Depends(super().route_submit),  # type: ignore
         ):
-            if (
-                result.status == 0 and result.code == 0
-            ):  # 登录成功,设置用户信息
+            if result.status == 0 and result.code == 0:  # 登录成功,设置用户信息
                 response.set_cookie(
-                    'Authorization', f'bearer {result.data.access_token}'  # type: ignore
+                    "Authorization",
+                    f"bearer {result.data.access_token}",  # type: ignore
                 )
             return result
 
@@ -154,26 +148,26 @@ class GsUserRegFormAdmin(UserRegFormAdmin):
 
     async def get_form(self, request: Request) -> Form:
         form = await super().get_form(request)
-        form.redirect = request.query_params.get('redirect') or '/genshinuid'
+        form.redirect = request.query_params.get("redirect") or "/genshinuid"
         form.update_from_kwargs(
-            title='',
+            title="",
             mode=DisplayModeEnum.horizontal,
-            submitText=_('Sign up'),
-            actionsClassName='no-border m-none p-none',
-            panelClassName='',
+            submitText=_("Sign up"),
+            actionsClassName="no-border m-none p-none",
+            panelClassName="",
             wrapWithPanel=True,
             horizontal=Horizontal(left=3, right=9),
             actions=[
                 ButtonToolbar(
                     buttons=[
                         ActionType.Link(
-                            actionType='link',
-                            link=f'{self.router_path}/login',
-                            label=_('Sign in'),
+                            actionType="link",
+                            link=f"{self.router_path}/login",
+                            label=_("Sign in"),
                         ),
                         Action(
-                            actionType='submit',
-                            label=_('Sign up'),
+                            actionType="submit",
+                            label=_("Sign up"),
                             level=LevelEnum.primary,
                         ),
                     ]
@@ -195,11 +189,11 @@ class GsAuthAdminSite(AuthAdminSite):
 
 settings = Settings(
     database_url_async=finally_url,
-    site_path='/genshinuid',
-    site_icon='https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png',
-    site_title='GsCore - 网页控制台',
-    language='zh_CN',
-    amis_theme='ang',
+    site_path="/genshinuid",
+    site_icon="https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png",
+    site_title="GsCore - 网页控制台",
+    language="zh_CN",
+    amis_theme="ang",
     amis_cdn=WebConsoleCDN,
     amis_pkg="amis@6.0.0",
 )
@@ -227,7 +221,7 @@ def create_dynamic_page_class(
     url: str,
     page_call: Callable,
     args: Optional[List[Any]] = None,
-    icon: str = 'fa fa-columns',
+    icon: str = "fa fa-columns",
     sort: int = 100,
 ) -> Type["GsAdminPage"]:
     @handle_exceptions
@@ -259,7 +253,7 @@ def create_admin_class(class_name: str, label: str, admin_list: List):
 
     # 构建类的属性字典
     attrs = {
-        "page_schema": PageSchema(label=label, icon='fa fa-plus'),  # type: ignore
+        "page_schema": PageSchema(label=label, icon="fa fa-plus"),  # type: ignore
         "__init__": __init__,
     }
 
@@ -270,7 +264,7 @@ def create_admin_class(class_name: str, label: str, admin_list: List):
 
 # 自定义后台管理站点
 class GsAdminSite(GsAuthAdminSite):
-    template_name = str(Path(__file__).parent / 'page.html')
+    template_name = str(Path(__file__).parent / "page.html")
 
     def __init__(
         self,
@@ -284,13 +278,11 @@ class GsAdminSite(GsAuthAdminSite):
 
     async def get_page(self, request: Request) -> App:
         app = await super().get_page(request)
-        app.brandName = 'GsCore网页控制台'
-        app.logo = 'https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png'
+        app.brandName = "GsCore网页控制台"
+        app.logo = "https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png"
         return app
 
-    def register_admin(
-        self, *admin_cls: Type[BaseAdminT], _ADD: bool = False
-    ) -> Type[BaseAdminT]:
+    def register_admin(self, *admin_cls: Type[BaseAdminT], _ADD: bool = False) -> Type[BaseAdminT]:
         plugin_name = get_caller_plugin_name()
         if plugin_name and not _ADD:
             if plugin_name not in self.plugins_page:
@@ -298,20 +290,10 @@ class GsAdminSite(GsAuthAdminSite):
             self.plugins_page[plugin_name].extend(admin_cls)
         else:
             [self._registered.update({cls: None}) for cls in admin_cls if cls]
-            if hasattr(self, 'plugins_page'):
-                keys_to_move_last_set = set(
-                    self.plugins_page
-                )  # 转换为集合加速查找
-                front = {
-                    k: v
-                    for k, v in self._registered.items()
-                    if k not in keys_to_move_last_set
-                }
-                back = {
-                    k: v
-                    for k, v in self._registered.items()
-                    if k in keys_to_move_last_set
-                }
+            if hasattr(self, "plugins_page"):
+                keys_to_move_last_set = set(self.plugins_page)  # 转换为集合加速查找
+                front = {k: v for k, v in self._registered.items() if k not in keys_to_move_last_set}
+                back = {k: v for k, v in self._registered.items() if k in keys_to_move_last_set}
                 self._registered = {**front, **back}
 
         return admin_cls[0]
@@ -324,12 +306,12 @@ class GsAdminSite(GsAuthAdminSite):
                 if plugin_name in all_config_list:
                     admin_cls.append(
                         create_dynamic_page_class(
-                            f'{plugin_name}Config',
-                            '配置管理',
-                            f'/_{plugin_name}Config',
+                            f"{plugin_name}Config",
+                            "配置管理",
+                            f"/_{plugin_name}Config",
                             get_sconfig_page,
                             [plugin_name, all_config_list[plugin_name]],
-                            'fa fa-cogs',
+                            "fa fa-cogs",
                         )
                     )
 
@@ -339,18 +321,18 @@ class GsAdminSite(GsAuthAdminSite):
 
                     admin_cls.append(
                         create_dynamic_page_class(
-                            f'{plugin_name}Sv',
-                            '功能服务管理',
-                            f'/{plugin_name}SvConfig',
+                            f"{plugin_name}Sv",
+                            "功能服务管理",
+                            f"/{plugin_name}SvConfig",
                             get_ssv_page,
                             [sv_list, plugin],
-                            'fa fa-sliders',
+                            "fa fa-sliders",
                         )
                     )
 
                 cls = create_admin_class(
-                    f'{plugin_name}App',
-                    plugin_name.replace('UID', ''),
+                    f"{plugin_name}App",
+                    plugin_name.replace("UID", ""),
                     admin_cls,
                 )
                 self.register_admin(cls, _ADD=True)
@@ -387,19 +369,15 @@ class GsAdminModel(admin.ModelAdmin):
         obj: PageSchemaAdmin = None,  # type: ignore
         action: str = None,  # type: ignore
     ) -> bool:
-        return await super().has_page_permission(
-            request, obj, action
-        ) and await request.auth.requires(roles='root', response=False)(
-            request
-        )
+        return await super().has_page_permission(request, obj, action) and await request.auth.requires(
+            roles="root", response=False
+        )(request)
 
-    def calc_filter_clause(
-        self, data: Dict[str, Any]
-    ) -> List[BinaryExpression]:
+    def calc_filter_clause(self, data: Dict[str, Any]) -> List[BinaryExpression]:
         lst = []
         for k, v in data.items():
             sqlfield = self._filter_entities.get(k)
-            v = '[~]' + v
+            v = "[~]" + v
             if sqlfield is not None:
                 operator, val = self._parser_query_value(
                     v,
@@ -418,11 +396,9 @@ class GsAdminPage(admin.PageAdmin):
         obj: PageSchemaAdmin = None,  # type: ignore
         action: str = None,  # type: ignore
     ) -> bool:
-        return await super().has_page_permission(
-            request, obj, action
-        ) and await request.auth.requires(roles='root', response=False)(
-            request
-        )
+        return await super().has_page_permission(request, obj, action) and await request.auth.requires(
+            roles="root", response=False
+        )(request)
 
 
 # 注册自定义首页
@@ -430,32 +406,30 @@ class GsAdminPage(admin.PageAdmin):
 class MyHomeAdmin(admin.HomeAdmin):
     group_schema = None
     page_schema = PageSchema(
-        label=('主页'),
-        icon='fa fa-home',
-        url='/home',
+        label=("主页"),
+        icon="fa fa-home",
+        url="/home",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
-    page_path = '/home'
+    page_path = "/home"
 
     async def get_page(self, request: Request) -> Page:
         page = await super().get_page(request)
         page.body = [
             Alert(
-                level='warning',
-                body=' 警告: 初始root账号请务必前往「用户授权」➡「用户管理」处修改密码!',
+                level="warning",
+                body=" 警告: 初始root账号请务必前往「用户授权」➡「用户管理」处修改密码!",
             ),
             amis.Divider(),
             Property(
-                title='早柚核心 信息',
+                title="早柚核心 信息",
                 column=4,
                 items=[
-                    Property.Item(label='system', content=platform.system()),
-                    Property.Item(
-                        label='python', content=platform.python_version()
-                    ),
-                    Property.Item(label='version', content=gscore_version),
-                    Property.Item(label='license', content='GPLv3'),
+                    Property.Item(label="system", content=platform.system()),
+                    Property.Item(label="python", content=platform.python_version()),
+                    Property.Item(label="version", content=gscore_version),
+                    Property.Item(label="license", content="GPLv3"),
                 ],
             ),
         ]
@@ -473,9 +447,9 @@ class MyHomeAdmin(admin.HomeAdmin):
 @site.register_admin
 class AnalysisPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('数据统计'),
-        icon='fa fa-area-chart',
-        url='/Analysis',
+        label=("数据统计"),
+        icon="fa fa-area-chart",
+        url="/Analysis",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -488,9 +462,9 @@ class AnalysisPage(GsAdminPage):
 @site.register_admin
 class CoreManagePage(GsAdminPage):
     page_schema = PageSchema(
-        label=('Core配置'),
-        icon='fa fa-sliders',
-        url='/CoreManage',
+        label=("Core配置"),
+        icon="fa fa-sliders",
+        url="/CoreManage",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -502,9 +476,9 @@ class CoreManagePage(GsAdminPage):
 
 class SVManagePage(GsAdminPage):
     page_schema = PageSchema(
-        label=('功能服务配置'),
-        icon='fa fa-sliders',
-        url='/SvManage',
+        label=("功能服务配置"),
+        icon="fa fa-sliders",
+        url="/SvManage",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -516,9 +490,9 @@ class SVManagePage(GsAdminPage):
 
 class ConfigManagePage(GsAdminPage):
     page_schema = PageSchema(
-        label=('修改插件设定'),
-        icon='fa fa-cogs',
-        url='/ConfigManage',
+        label=("修改插件设定"),
+        icon="fa fa-cogs",
+        url="/ConfigManage",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -530,9 +504,9 @@ class ConfigManagePage(GsAdminPage):
 
 class PluginsManagePage(GsAdminPage):
     page_schema = PageSchema(
-        label=('插件管理'),
-        icon='fa fa-puzzle-piece',
-        url='/ConfigManage',
+        label=("插件管理"),
+        icon="fa fa-puzzle-piece",
+        url="/ConfigManage",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -556,10 +530,10 @@ class PluginsConfig(admin.AdminApp):
 
 
 class UserDatabase(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='用户数据库',
-        icon='fa fa-user',
+        label="用户数据库",
+        icon="fa fa-user",
     )  # type: ignore
 
     # 配置管理模型
@@ -567,10 +541,10 @@ class UserDatabase(GsAdminModel):
 
 
 class GroupDatabase(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='群组数据库',
-        icon='fa fa-group',
+        label="群组数据库",
+        icon="fa fa-group",
     )  # type: ignore
 
     # 配置管理模型
@@ -591,9 +565,9 @@ class UserConfig(admin.AdminApp):
 
 class LogsPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('实时日志'),
-        icon='fa fa-columns',
-        url='/logs',
+        label=("实时日志"),
+        icon="fa fa-columns",
+        url="/logs",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -605,9 +579,9 @@ class LogsPage(GsAdminPage):
 
 class HistoryLogsPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('历史日志'),
-        icon='fa fa-columns',
-        url='/logs',
+        label=("历史日志"),
+        icon="fa fa-columns",
+        url="/logs",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -619,9 +593,9 @@ class HistoryLogsPage(GsAdminPage):
 
 class ErrorPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('错误日志'),
-        icon='fa fa-exclamation-triangle',
-        url='/Error',
+        label=("错误日志"),
+        icon="fa fa-exclamation-triangle",
+        url="/Error",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -633,9 +607,9 @@ class ErrorPage(GsAdminPage):
 
 class PushPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('批量推送消息'),
-        icon='fa fa-paper-plane',
-        url='/BatchPush',
+        label=("批量推送消息"),
+        icon="fa fa-paper-plane",
+        url="/BatchPush",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -648,9 +622,9 @@ class PushPage(GsAdminPage):
 @site.register_admin
 class BackupPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('备份管理'),
-        icon='fa fa-archive',
-        url='/Backup',
+        label=("备份管理"),
+        icon="fa fa-archive",
+        url="/Backup",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -659,8 +633,8 @@ class BackupPage(GsAdminPage):
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(
             get_input_tree_from_pathlib(
-                name='backup_dir',
-                label='备份路径',
+                name="backup_dir",
+                label="备份路径",
                 root_dir=gs_data_path,
             )
         )
@@ -669,9 +643,9 @@ class BackupPage(GsAdminPage):
 @site.register_admin
 class APSchedulerPage(GsAdminPage):
     page_schema = PageSchema(
-        label=('定时任务管理'),
-        icon='fa fa-clock-o',
-        url='/APScheduler',
+        label=("定时任务管理"),
+        icon="fa fa-clock-o",
+        url="/APScheduler",
         isDefaultPage=True,
         sort=100,
     )  # type: ignore
@@ -696,40 +670,40 @@ class LogAndMessage(admin.AdminApp):
 
 
 class AmisPageAdmin(admin.PageAdmin):
-    page_schema = '入门使用'
+    page_schema = "入门使用"
 
     async def get_page(self, request: Request) -> Page:
         return Page.parse_obj(
             {
-                'type': 'page',
-                'body': {
-                    'type': 'markdown',
-                    'value': f'{gsuid_webconsole_help}',
+                "type": "page",
+                "body": {
+                    "type": "markdown",
+                    "value": f"{gsuid_webconsole_help}",
                 },
             }
         )
 
 
 class UserBindFormAdmin(GsNormalForm):
-    page_schema = PageSchema(label='绑定CK或SK', icon='fa fa-link')  # type: ignore
+    page_schema = PageSchema(label="绑定CK或SK", icon="fa fa-link")  # type: ignore
 
     async def get_form(self, request: Request) -> Form:
         form = await super().get_form(request)
         form.body.sort(key=lambda form_item: form_item.type, reverse=True)  # type: ignore
         form.update_from_kwargs(
-            title='',
+            title="",
             mode=DisplayModeEnum.horizontal,
-            submitText='绑定',
-            actionsClassName='no-border m-none p-none',
-            panelClassName='',
+            submitText="绑定",
+            actionsClassName="no-border m-none p-none",
+            panelClassName="",
             wrapWithPanel=True,
             horizontal=Horizontal(left=3, right=9),
             actions=[
                 ButtonToolbar(
                     buttons=[
                         Action(
-                            actionType='submit',
-                            label='绑定',
+                            actionType="submit",
+                            label="绑定",
                             level=LevelEnum.primary,
                         )
                     ]
@@ -742,41 +716,39 @@ class UserBindFormAdmin(GsNormalForm):
         page = await super().get_page(request)
         page.body = [
             Alert(
-                level='warning',
-                body='CK获取可查看左侧栏 [入门使用] 相关细则!',
+                level="warning",
+                body="CK获取可查看左侧栏 [入门使用] 相关细则!",
             ),
             amis.Divider(),
             Grid(
                 columns=[
                     {
-                        'body': [page.body],
-                        'lg': 10,
-                        'md': 10,
-                        'valign': 'middle',
+                        "body": [page.body],
+                        "lg": 10,
+                        "md": 10,
+                        "valign": "middle",
                     }
                 ],
-                align='center',
-                valign='middle',
+                align="center",
+                valign="middle",
             ),
         ]
         return page
 
     # 创建表单数据模型
     class schema(BaseModel):
-        bot_id: str = Field(..., title='平台ID')  # type: ignore
-        user_id: str = Field(..., title='用户ID', min_length=3, max_length=30)  # type: ignore
-        cookie: str = Field(..., title='Cookie或者Login_ticket')  # type: ignore
+        bot_id: str = Field(..., title="平台ID")  # type: ignore
+        user_id: str = Field(..., title="用户ID", min_length=3, max_length=30)  # type: ignore
+        cookie: str = Field(..., title="Cookie或者Login_ticket")  # type: ignore
 
     # 处理表单提交数据
-    async def handle(
-        self, request: Request, data: schema, **kwargs
-    ) -> BaseApiOut[Any]:
+    async def handle(self, request: Request, data: schema, **kwargs) -> BaseApiOut[Any]:
         try:
             im = await _deal_ck(data.bot_id, data.cookie, data.user_id)
         except Exception as e:
             logger.warning(e)
-            return BaseApiOut(status=-1, msg='你输入的CK可能已经失效/或者该用户ID未绑定UID')  # type: ignore
-        ok_num = im.count('成功')
+            return BaseApiOut(status=-1, msg="你输入的CK可能已经失效/或者该用户ID未绑定UID")  # type: ignore
+        ok_num = im.count("成功")
         if ok_num < 1:
             return BaseApiOut(status=-1, msg=im)  # type: ignore
         else:
@@ -796,10 +768,10 @@ class MiHoYoBind(admin.AdminApp):
 
 
 class CKAdmin(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='CK管理',
-        icon='fa fa-database',
+        label="CK管理",
+        icon="fa fa-database",
     )  # type: ignore
 
     # 配置管理模型
@@ -807,10 +779,10 @@ class CKAdmin(GsAdminModel):
 
 
 class PushAdmin(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='推送管理',
-        icon='fa fa-bullhorn',
+        label="推送管理",
+        icon="fa fa-bullhorn",
     )  # type: ignore
 
     # 配置管理模型
@@ -818,10 +790,10 @@ class PushAdmin(GsAdminModel):
 
 
 class CacheAdmin(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='缓存管理',
-        icon='fa fa-recycle',
+        label="缓存管理",
+        icon="fa fa-recycle",
     )  # type: ignore
 
     # 配置管理模型
@@ -829,10 +801,10 @@ class CacheAdmin(GsAdminModel):
 
 
 class BindAdmin(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='绑定管理',
-        icon='fa fa-users',
+        label="绑定管理",
+        icon="fa fa-users",
     )  # type: ignore
 
     # 配置管理模型
@@ -858,10 +830,10 @@ class MiHoYoDatabase(admin.AdminApp):
 
 @site.register_admin
 class SubscribeAdmin(GsAdminModel):
-    pk_name = 'id'
+    pk_name = "id"
     page_schema = PageSchema(
-        label='订阅管理',
-        icon='fa fa-rss',
+        label="订阅管理",
+        icon="fa fa-rss",
     )  # type: ignore
 
     # 配置管理模型

@@ -5,9 +5,9 @@ from PIL import ImageColor
 
 
 class ColorCodes(Enum):
-    HEX = 'hex'
-    RGB = 'rgb'
-    HSV = 'hsv'
+    HEX = "hex"
+    RGB = "rgb"
+    HSV = "hsv"
 
 
 class ConvertableColor:
@@ -22,29 +22,29 @@ class ConvertableColor:
         elif space == ColorCodes.HSV:
             return self.hsv
         else:
-            raise ValueError('Invalid color-code type')
+            raise ValueError("Invalid color-code type")
 
     @property
     def hex(self):
         if len(self.v_color) == 3:
             r, g, b = self.v_color
-            return f'#{r:02x}{g:02x}{b:02x}'
+            return f"#{r:02x}{g:02x}{b:02x}"
         elif len(self.v_color) == 4:
             r, g, b, a = self.v_color
-            return f'#{r:02x}{g:02x}{b:02x}{a:02x}'
+            return f"#{r:02x}{g:02x}{b:02x}{a:02x}"
         else:
-            raise ValueError('Invalid color value')
+            raise ValueError("Invalid color value")
 
     @property
     def rgb(self):
         if len(self.v_color) == 3:
             r, g, b = self.v_color
-            return f'rgb({r}, {g}, {b})'
+            return f"rgb({r}, {g}, {b})"
         elif len(self.v_color) == 4:
             r, g, b, a = self.v_color
-            return f'rgba({r}, {g}, {b}, {a})'
+            return f"rgba({r}, {g}, {b}, {a})"
         else:
-            raise ValueError('Invalid color value')
+            raise ValueError("Invalid color value")
 
     @property
     def hsv(self):
@@ -69,7 +69,7 @@ class ConvertableColor:
         else:
             s = df / mx
         v = mx
-        return f'hsv({h}, {s}, {v})'
+        return f"hsv({h}, {s}, {v})"
 
 
 class Color(tuple):
@@ -111,13 +111,13 @@ def check_if_color(color: Union[str, tuple]):
     return False
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     red = Color((1, 1, 1))
-    print(f'HEX: {red.to.hex}\nHSV: {red.to.hsv}\nRGB: {red.to.rgb}')
+    print(f"HEX: {red.to.hex}\nHSV: {red.to.hsv}\nRGB: {red.to.rgb}")
     print(
-        f'rgb(123, 23, -1) \
-        {check_if_color("rgb(123, 23, -1)")}\
+        f"rgb(123, 23, -1) \
+        {check_if_color('rgb(123, 23, -1)')}\
         \n(100, 200, 255): \
-        {check_if_color((100, 200, 256))}'
+        {check_if_color((100, 200, 256))}"
     )
-    print(check_if_color('#ff0000'))
+    print(check_if_color("#ff0000"))
