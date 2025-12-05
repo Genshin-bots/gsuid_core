@@ -74,33 +74,23 @@ try:
             )
 
             for para in para_list:
-                rep = rep.replace(
-                    "$$", rf"(?P<{para.replace('.', '')}>[\s\S]+)", 1
-                )
+                rep = rep.replace("$$", rf"(?P<{para.replace('.', '')}>[\s\S]+)", 1)
 
             markdown_templates[rep] = {
                 "template_id": markdown_template.stem,
                 "para": [i[1:] for i in para_list],
             }
 
-    markdown_templates = dict(
-        sorted(
-            markdown_templates.items(), key=lambda x: len(x[0]), reverse=True
-        )
-    )
+    markdown_templates = dict(sorted(markdown_templates.items(), key=lambda x: len(x[0]), reverse=True))
 
     for custom_button in custom_buttons_template.iterdir():
         with open(custom_button, "r", encoding="UTF-8") as f:
             button_data = json.load(f)
 
         if "id" in button_data and button_data["id"]:
-            custom_buttons[custom_button.stem] = Message(
-                type="template_buttons", data=button_data["id"]
-            )
+            custom_buttons[custom_button.stem] = Message(type="template_buttons", data=button_data["id"])
         elif "custom_button" in button_data and button_data["custom_button"]:
-            custom_buttons[custom_button.stem] = Message(
-                type="buttons", data=button_data["custom_button"]
-            )
+            custom_buttons[custom_button.stem] = Message(type="buttons", data=button_data["custom_button"])
 
 except Exception as e:
     logger.warning("[启动] [加载模板] 加载失败...检查模板文件..")

@@ -89,9 +89,7 @@ def generate_error_schema(logs: Optional[List[Dict]] = None) -> Dict:
         # 获取标题，如果过长截断
         event_title = log.get("event", "未知错误")
 
-        full_error_text = str(log.get("event", "")) + str(
-            log.get("exception", "")
-        )
+        full_error_text = str(log.get("event", "")) + str(log.get("exception", ""))
 
         if any(keyword in full_error_text for keyword in IGNORE_KEYWORDS):
             continue

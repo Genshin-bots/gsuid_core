@@ -29,9 +29,7 @@ async def drop_web_table():
                     for table_name in tables_to_delete:
                         try:
                             table = metadata.tables[table_name]
-                            await conn.execute(
-                                DropTable(table, if_exists=True)
-                            )
+                            await conn.execute(DropTable(table, if_exists=True))
                         except:  # noqa: E722
                             pass
                     logger.info("[core清除网页控制台密码] 操作完成..")

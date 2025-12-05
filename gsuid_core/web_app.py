@@ -1,14 +1,13 @@
+import asyncio
 from io import BytesIO
 from typing import Dict, List, Optional, Sequence
-import asyncio
 from pathlib import Path
-from datetime import date as dt_date
-from datetime import datetime, timedelta
+from datetime import date as dt_date, datetime, timedelta
 
+import aiofiles
 from bs4 import Tag, BeautifulSoup
 from PIL import Image
 from fastapi import UploadFile, BackgroundTasks
-import aiofiles
 from fastapi.responses import Response, StreamingResponse
 from starlette.requests import Request
 from fastapi.staticfiles import StaticFiles
@@ -161,9 +160,7 @@ async def _download_file(request: Request):
         headers = {"Content-Disposition": f'attachment; filename="{file_id}"'}
 
         # 返回文件流
-        return Response(
-            content, media_type="application/octet-stream", headers=headers
-        )
+        return Response(content, media_type="application/octet-stream", headers=headers)
 
 
 @app.post("/genshinuid/setBackUp")
@@ -196,9 +193,7 @@ async def _upload_image(
     if not filename:
         if file_name:
             file_name = file_name.split(".")[-1]
-            file_name = (
-                f"{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_name}"
-            )
+            file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_name}"
         else:
             file_name = "image.jpg"
     else:
@@ -297,9 +292,7 @@ def _set_Config(request: Request, data: Dict, config_name: str):
 def _set_Core_Config(request: Request, data: Dict):
     result = {}
     for i in data:
-        if (
-            i in CONFIG_DEFAULT and isinstance(CONFIG_DEFAULT[i], List)
-        ) or i in ["log_output"]:
+        if (i in CONFIG_DEFAULT and isinstance(CONFIG_DEFAULT[i], List)) or i in ["log_output"]:
             v = data[i].split(",")
         else:
             v = data[i]
@@ -367,9 +360,7 @@ async def _get_data_analysis(
         key = "bot"
 
     for day in range(46):
-        daystr = (
-            datetime.now() - timedelta(days=45) + timedelta(days=day)
-        ).strftime("%m-%d")
+        daystr = (datetime.now() - timedelta(days=45) + timedelta(days=day)).strftime("%m-%d")
         xaxis.append(daystr)
         send_data.append(datas[f"{key}_send"][day])
         receive_data.append(datas[f"{key}_receive"][day])
@@ -437,9 +428,7 @@ async def _get_usergroup_analysis(
         user_key = "bot_user_count"
 
     for day in range(46):
-        daystr = (
-            datetime.now() - timedelta(days=45) + timedelta(days=day)
-        ).strftime("%m-%d")
+        daystr = (datetime.now() - timedelta(days=45) + timedelta(days=day)).strftime("%m-%d")
         xaxis.append(daystr)
         group_data.append(datas[group_key][day])
         user_data.append(datas[user_key][day])
@@ -712,9 +701,7 @@ async def get_history_data(
         # 计算每个target_id的命令总数
         group_total = {gid: sum(cmds.values()) for gid, cmds in g_data.items()}
         # 取前20个target_id
-        top_groups = sorted(
-            group_total.items(), key=lambda x: x[1], reverse=True
-        )[:20]
+        top_groups = sorted(group_total.items(), key=lambda x: x[1], reverse=True)[:20]
         # 构建新的g_data，只保留前20
         g_data = {gid: g_data[gid] for gid, _ in top_groups}
 
@@ -771,9 +758,7 @@ async def get_history_data(
 
     else:
         user_total = {gid: sum(cmds.values()) for gid, cmds in u_data.items()}
-        top_users = sorted(
-            user_total.items(), key=lambda x: x[1], reverse=True
-        )[:20]
+        top_users = sorted(user_total.items(), key=lambda x: x[1], reverse=True)[:20]
         u_data = {gid: u_data[gid] for gid, _ in top_users}
 
         all_series: List[str] = y_data[:8] + ["其他命令"]

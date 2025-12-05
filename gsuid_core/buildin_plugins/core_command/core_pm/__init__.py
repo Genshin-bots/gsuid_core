@@ -28,15 +28,9 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
 
     params = ev.text.split()
 
-    alias_list = {
-        alias.lower(): SL.plugins[plugin]
-        for plugin in SL.plugins
-        for alias in SL.plugins[plugin].alias
-    }
+    alias_list = {alias.lower(): SL.plugins[plugin] for plugin in SL.plugins for alias in SL.plugins[plugin].alias}
 
-    alias_list.update(
-        {plugin.lower(): SL.plugins[plugin] for plugin in SL.plugins}
-    )
+    alias_list.update({plugin.lower(): SL.plugins[plugin] for plugin in SL.plugins})
 
     if ev.at_list:
         params.extend(ev.at_list)
@@ -54,10 +48,7 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
     if not block_list:
         block_list.append(ev.group_id or ev.user_id)
 
-    logger.info(
-        f"[Core权限管理] {ev.command} {plugin.name if plugin else '全局'} "
-        f"{ban_k} {' '.join(block_list)}"
-    )
+    logger.info(f"[Core权限管理] {ev.command} {plugin.name if plugin else '全局'} {ban_k} {' '.join(block_list)}")
 
     if plugin is None:
         resp = await bot.receive_resp(
@@ -67,15 +58,11 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
         )
         if resp:
             if resp.text.startswith("是"):
-                all_balck_list: List[str] = sp_config.get_config(
-                    "BlackList"
-                ).data
+                all_balck_list: List[str] = sp_config.get_config("BlackList").data
                 if is_ban:
                     all_balck_list.extend(block_list)
                     sp_config.set_config("BlackList", all_balck_list)
-                    return await bot.send(
-                        f"⛔ [Core权限管理] 已全局封禁{' '.join(block_list)}"
-                    )
+                    return await bot.send(f"⛔ [Core权限管理] 已全局封禁{' '.join(block_list)}")
                 else:
                     im_list = ["✅ [Core权限管理] 操作已完成!"]
                     for i in block_list:
@@ -100,18 +87,13 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
             if is_ban:
                 plugin.black_list.extend(block_list)
                 plugin.set(black_list=plugin.black_list)
-                await bot.send(
-                    f"⛔ [Core权限管理] 已对用户/群组 {'/'.join(block_list)}"
-                    f"封禁{plugin.name}"
-                )
+                await bot.send(f"⛔ [Core权限管理] 已对用户/群组 {'/'.join(block_list)}封禁{plugin.name}")
             else:
                 im_list = ["✅ [Core权限管理] 操作已完成!"]
                 for i in block_list:
                     if i in plugin.black_list:
                         plugin.black_list.remove(i)
-                        im_list.append(
-                            f"✅ 已成功给予 {i} 对插件 {plugin.name} 的访问权限!"
-                        )
+                        im_list.append(f"✅ 已成功给予 {i} 对插件 {plugin.name} 的访问权限!")
                     else:
                         im_list.append(f"❌ 该用户{i}未被封禁, 无需取消!")
                 plugin.set(black_list=plugin.black_list)

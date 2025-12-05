@@ -103,9 +103,7 @@ async def get_banword_msg(bot: Bot, ev: Event):
 async def get_regex_msg(bot: Bot, ev: Event):
     await bot.send("正在进行[正则测试]")
     await asyncio.sleep(2)
-    await bot.send(
-        f"[正则测试]校验成功！{ev.regex_dict['name']}你输入的是{ev.regex_dict['int']}"
-    )
+    await bot.send(f"[正则测试]校验成功！{ev.regex_dict['name']}你输入的是{ev.regex_dict['int']}")
 
 
 @sv_switch.on_fullmatch("图片MD")

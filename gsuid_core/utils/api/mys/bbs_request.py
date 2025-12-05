@@ -79,16 +79,12 @@ class BBSMysApi(TopupMysApi):
             "activity_id": 20220301153521,
             "year": 2023,
         }
-        data = await self._mys_request(
-            self.MAPI["CALENDAR_URL"], "GET", header, params
-        )
+        data = await self._mys_request(self.MAPI["CALENDAR_URL"], "GET", header, params)
         if isinstance(data, Dict):
             return cast(RolesCalendar, data["data"])
         return data
 
-    async def post_draw(
-        self, uid: str, role_id: int
-    ) -> Union[int, PostDraw, Dict]:
+    async def post_draw(self, uid: str, role_id: int) -> Union[int, PostDraw, Dict]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
         ck = await self.get_ck(uid, "OWNER")
         if ck is None:

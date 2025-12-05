@@ -103,9 +103,7 @@ async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
     all_user_model = {get_class_name(i): i for i in User.__subclasses__()}
     all_push_model = {get_class_name(i): i for i in Push.__subclasses__()}
 
-    all_plugin_data: Dict[
-        str, Dict[str, Dict[str, Dict[str, Dict[str, Any]]]]
-    ] = {}
+    all_plugin_data: Dict[str, Dict[str, Dict[str, Dict[str, Dict[str, Any]]]]] = {}
 
     for name in all_bind_model:
         user_keys: Dict[str, Dict[str, str]] = {}
@@ -200,11 +198,7 @@ async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
                             all_data.update(push_data)
 
                         if union_id not in UD:
-                            h += (
-                                (((len(all_data) - 1) // 3) + 1) * (_line + ez)
-                                + id_line
-                                + ez
-                            )
+                            h += (((len(all_data) - 1) // 3) + 1) * (_line + ez) + id_line + ez
                             UD[union_id] = {f"{UID_NAME} {uid}": all_data}
                         else:
                             h += id_line
@@ -266,11 +260,7 @@ async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
             _uid_len = len(_uid_list)
 
             _id_data = list(_uid_list.values())[0]
-            _data_h = (
-                (((len(_id_data) - 1) // 3) + 1) * _line
-                + id_line * _uid_len
-                + 20
-            )
+            _data_h = (((len(_id_data) - 1) // 3) + 1) * _line + id_line * _uid_len + 20
 
             temp_img = Image.new("RGBA", img.size)
             temp_draw = ImageDraw.Draw(temp_img)
@@ -309,9 +299,7 @@ async def get_user_card(bot_id: str, ev: Event) -> Union[bytes, str]:
                 status_draw = ImageDraw.Draw(status_pic)
 
                 status_draw.text((45, 71), title, BLACK, core_font(30), "lm")
-                status_draw.text(
-                    (45, 103), data_hint, GREY, core_font(22), "lm"
-                )
+                status_draw.text((45, 103), data_hint, GREY, core_font(22), "lm")
 
                 pic = status_on if data_status else status_off
                 status_pic.paste(pic, (212, 45), pic)

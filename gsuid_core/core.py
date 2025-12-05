@@ -1,14 +1,13 @@
 import sys
-from typing import Dict
 import asyncio
+import argparse
+from typing import Dict
 from asyncio import CancelledError
 from pathlib import Path
-import argparse
 
-from fastapi import WebSocket, WebSocketDisconnect
-from msgspec import json as msgjson
-from msgspec import to_builtins
 import uvicorn
+from fastapi import WebSocket, WebSocketDisconnect
+from msgspec import json as msgjson, to_builtins
 
 from gsuid_core.version import __version__
 
@@ -141,9 +140,7 @@ async def main():
     end_time = time.time()
     logger.success(ASCII_FONT)
     duration = round(end_time - start_time, 2)
-    logger.success(
-        f"🚀 [GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}"
-    )
+    logger.success(f"🚀 [GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}")
     await server.serve()
 
 

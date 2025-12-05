@@ -1,5 +1,5 @@
-from io import BytesIO
 import asyncio
+from io import BytesIO
 
 import aioboto3
 import aioboto3.session

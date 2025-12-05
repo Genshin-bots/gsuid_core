@@ -14,9 +14,7 @@ from ..utils import _HEADER
 HHW_ABYSS = "https://genshin.honeyhunterworld.com/d_1001/?lang=CHS"
 
 
-async def get_abyss_review(
-    raw_data: bytes, _id: Union[str, int], floor: Union[str, int]
-) -> Optional[Dict[str, str]]:
+async def get_abyss_review(raw_data: bytes, _id: Union[str, int], floor: Union[str, int]) -> Optional[Dict[str, str]]:
     """请求内鬼网 API 深渊怪物数据
 
     Returns:
@@ -41,9 +39,7 @@ async def get_abyss_review(
             if temp:
                 abyss_list.append(temp)
 
-    for index, half in enumerate(
-        ["-1上", "-1下", "-2上", "-2下", "-3上", "-3下"]
-    ):
+    for index, half in enumerate(["-1上", "-1下", "-2上", "-2下", "-3上", "-3下"]):
         result[f"{floor}{half}"] = abyss_list[index]
 
     return result

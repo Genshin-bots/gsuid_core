@@ -1,13 +1,13 @@
 import os
 import time
-from typing import Dict, Optional
 import asyncio
+from typing import Dict, Optional
 from pathlib import Path
 from urllib.parse import unquote
 
-from bs4 import BeautifulSoup
 import httpx
 import aiohttp
+from bs4 import BeautifulSoup
 
 from gsuid_core.logger import logger
 
@@ -110,9 +110,7 @@ async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
         logger.warning(f"Connect error occurred while fetching {url}: {exc}")
         return b""
     except httpx.UnsupportedProtocol as exc:
-        logger.warning(
-            f"Unsupported protocol error occurred while fetching {url}: {exc}"
-        )
+        logger.warning(f"Unsupported protocol error occurred while fetching {url}: {exc}")
         return b""
     except httpx.RequestError as exc:
         logger.warning(f"Request error occurred while fetching {url}: {exc}")
@@ -199,17 +197,11 @@ async def download_atag_file(
         else:
             is_diff = True
 
-        if (
-            not file_path.exists()
-            or not os.stat(file_path).st_size
-            or not is_diff
-        ):
+        if not file_path.exists() or not os.stat(file_path).st_size or not is_diff:
             logger.info(f"{TAG} {plugin_name} 开始下载 {endpoint}/{name}")
             temp_num += 1
             size_temp += size
-            TASK = asyncio.create_task(
-                download(file_url, path, name, client, TAG)
-            )
+            TASK = asyncio.create_task(download(file_url, path, name, client, TAG))
             TASKS.append(TASK)
             if size_temp >= 1500000:
                 await asyncio.gather(*TASKS)

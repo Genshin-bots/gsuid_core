@@ -75,9 +75,7 @@ def generate_file_tree_options(root_path_obj: Path) -> List[Option]:
 
             top_level_paths.append(top_level_path)
     except PermissionError:
-        logger.warning(
-            f"[Tree] Permission denied for root path: {root_path_obj}"
-        )
+        logger.warning(f"[Tree] Permission denied for root path: {root_path_obj}")
         return []
     top_level_paths.sort(key=lambda p: (-p.is_dir(), p.name.lower()))
 
@@ -98,9 +96,7 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
     if not root_path_obj.exists() or not root_path_obj.is_dir():
         logger.warning(f"[Tree] 该目录并不存在或不为目录: {root_dir}")
         # 返回一个空的 tree data
-        return get_page(
-            "数据备份", [get_input_tree(name, label, value, options=[])]
-        )
+        return get_page("数据备份", [get_input_tree(name, label, value, options=[])])
 
     options: List[Option] = generate_file_tree_options(root_path_obj)
 
@@ -132,9 +128,7 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
                                     },
                                 ],
                             ),
-                            get_time_select(
-                                "备份时间", "backup_time", backup_time
-                            ),
+                            get_time_select("备份时间", "backup_time", backup_time),
                             get_input_tree(name, label, value, options),
                         ],
                     ),

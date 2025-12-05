@@ -1,7 +1,7 @@
+import asyncio
 from copy import deepcopy
 from uuid import uuid4
 from typing import Dict, List
-import asyncio
 
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
@@ -80,9 +80,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if event.at:
         for shield_id in shield_list:
             if event.at.startswith(shield_id):
-                logger.warning(
-                    "消息中疑似包含@机器人的消息, 停止响应本消息内容"
-                )
+                logger.warning("消息中疑似包含@机器人的消息, 停止响应本消息内容")
                 return
 
     bid = event.bot_id if event.bot_id else "0"
@@ -154,26 +152,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 True
                 if SL.lst[sv].plugins.area == "SV"
                 or SL.lst[sv].plugins.area == "ALL"
-                or (
-                    event.user_type == "group"
-                    and SL.lst[sv].plugins.area == "GROUP"
-                )
-                or (
-                    event.user_type == "direct"
-                    and SL.lst[sv].plugins.area == "DIRECT"
-                )
+                or (event.user_type == "group" and SL.lst[sv].plugins.area == "GROUP")
+                or (event.user_type == "direct" and SL.lst[sv].plugins.area == "DIRECT")
                 else False
             )
             and (
                 True
-                if (
-                    not SL.lst[sv].plugins.white_list
-                    or SL.lst[sv].plugins.white_list == [""]
-                )
-                else (
-                    msg.user_id in SL.lst[sv].plugins.white_list
-                    or msg.group_id in SL.lst[sv].plugins.white_list
-                )
+                if (not SL.lst[sv].plugins.white_list or SL.lst[sv].plugins.white_list == [""])
+                else (msg.user_id in SL.lst[sv].plugins.white_list or msg.group_id in SL.lst[sv].plugins.white_list)
             )
             and SL.lst[sv].enabled
             and user_pm <= SL.lst[sv].pm
@@ -184,18 +170,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 if SL.lst[sv].area == "ALL"
                 or (SL.lst[sv].plugins.area == "ALL")
                 or (event.user_type == "group" and SL.lst[sv].area == "GROUP")
-                or (
-                    event.user_type == "direct" and SL.lst[sv].area == "DIRECT"
-                )
+                or (event.user_type == "direct" and SL.lst[sv].area == "DIRECT")
                 else False
             )
             and (
                 True
                 if (not SL.lst[sv].white_list or SL.lst[sv].white_list == [""])
-                else (
-                    msg.user_id in SL.lst[sv].white_list
-                    or msg.group_id in SL.lst[sv].white_list
-                )
+                else (msg.user_id in SL.lst[sv].white_list or msg.group_id in SL.lst[sv].white_list)
             )
         )
     ]

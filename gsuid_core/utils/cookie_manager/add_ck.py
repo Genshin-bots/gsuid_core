@@ -66,9 +66,7 @@ async def get_ck_by_stoken(bot_id: str, user_id: str):
                 game_name = None
             else:
                 game_name = _key.split("_")[0]
-            uid_list = await GsBind.get_uid_list_by_game(
-                user_id, bot_id, game_name
-            )
+            uid_list = await GsBind.get_uid_list_by_game(user_id, bot_id, game_name)
             if uid_list is None:
                 continue
             uid_dict = {uid: user_id for uid in uid_list}
@@ -187,9 +185,7 @@ async def get_account_id(simp_dict: SimpleCookie) -> str:
     return account_id
 
 
-async def get_all_bind_uid(
-    bot_id: str, user_id: str
-) -> Tuple[Union[str, None], ...]:
+async def get_all_bind_uid(bot_id: str, user_id: str) -> Tuple[Union[str, None], ...]:
     uid = await GsBind.get_uid_by_game(user_id, bot_id)
     sr_uid = await GsBind.get_uid_by_game(user_id, bot_id, "sr")
     zzz_uid = await GsBind.get_uid_by_game(user_id, bot_id, "zzz")
@@ -226,16 +222,12 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                 if stoken.startswith("v2_"):
                     if "mid" in simp_dict:
                         mid = simp_dict["mid"].value
-                        app_cookie = (
-                            f"stuid={account_id};stoken={stoken};mid={mid}"
-                        )
+                        app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
                     else:
                         return "v2类型SK必须携带mid..."
                 else:
                     app_cookie = f"stuid={account_id};stoken={stoken}"
-                cookie_token_data = await mys_api.get_cookie_token_by_stoken(
-                    stoken, account_id, app_cookie
-                )
+                cookie_token_data = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
                 if isinstance(cookie_token_data, Dict):
                     cookie_token = cookie_token_data["cookie_token"]
                     is_add_stoken = True
@@ -251,17 +243,11 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                 account_id = await get_account_id(simp_dict)
                 if not account_id:
                     return "该CK字段出错, 缺少login_uid或stuid或ltuid字段!"
-                stoken_data = await mys_api.get_stoken_by_login_ticket(
-                    login_ticket, account_id
-                )
+                stoken_data = await mys_api.get_stoken_by_login_ticket(login_ticket, account_id)
                 if isinstance(stoken_data, Dict):
                     stoken = stoken_data["list"][0]["token"]
                     app_cookie = f"stuid={account_id};stoken={stoken}"
-                    cookie_token_data = (
-                        await mys_api.get_cookie_token_by_stoken(
-                            stoken, account_id
-                        )
-                    )
+                    cookie_token_data = await mys_api.get_cookie_token_by_stoken(stoken, account_id)
                     if isinstance(cookie_token_data, Dict):
                         cookie_token = cookie_token_data["cookie_token"]
                         is_add_stoken = True
@@ -283,18 +269,10 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     account_cookie = f"account_id={account_id};cookie_token={cookie_token}"
 
     try:
-        if (
-            sr_uid
-            or (uid and int(uid[0]) < 6)
-            or (zzz_uid and len(zzz_uid) < 10)
-        ):
-            mys_data = await mys_api.get_mihoyo_bbs_info(
-                account_id, account_cookie
-            )
+        if sr_uid or (uid and int(uid[0]) < 6) or (zzz_uid and len(zzz_uid) < 10):
+            mys_data = await mys_api.get_mihoyo_bbs_info(account_id, account_cookie)
         else:
-            mys_data = await mys_api.get_mihoyo_bbs_info(
-                account_id, account_cookie, True
-            )
+            mys_data = await mys_api.get_mihoyo_bbs_info(account_id, account_cookie, True)
         # 剔除除了原神之外的其他游戏
         gs_uid_list: List[str] = []
         sr_uid_list: List[str] = []
@@ -343,23 +321,12 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
 
                     _uid_exist = await GsUID.uid_exist(_uid, game_name)
                     if _uid_exist and insert_dict:
-                        await GsUID.update_data(
-                            _uid_exist, game_name, **insert_dict
-                        )
+                        await GsUID.update_data(_uid_exist, game_name, **insert_dict)
                     else:
-                        await GsUID.full_insert_data(
-                            main_uid=_uid, game_name=game_name, **insert_dict
-                        )
+                        await GsUID.full_insert_data(main_uid=_uid, game_name=game_name, **insert_dict)
 
             else:
-                if not (
-                    uid_bind
-                    or sr_uid_bind
-                    or zzz_uid_bind
-                    or wd_uid_bind
-                    or bb_uid_bind
-                    or bbb_uid_bind
-                ):
+                if not (uid_bind or sr_uid_bind or zzz_uid_bind or wd_uid_bind or bb_uid_bind or bbb_uid_bind):
                     return f"你的米游社账号{account_id}尚未绑定游戏账号,请前往米游社操作！"
     except Exception:
         pass
@@ -398,9 +365,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             wd_uid=wd_uid_bind,
             device_id=nd[1],
             region=SERVER.get(uid_bind[0], "cn_gf01") if uid_bind else None,
-            sr_region=(
-                SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None
-            ),
+            sr_region=(SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None),
             zzz_region=zzz_region,
         )
     else:
@@ -421,9 +386,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             bbs_switch="off",
             draw_switch="off",
             region=SERVER.get(uid_bind[0], "cn_gf01") if uid_bind else None,
-            sr_region=(
-                SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None
-            ),
+            sr_region=(SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None),
             zzz_region=zzz_region,
             fp=nd[0],
             device_id=nd[1],
@@ -431,9 +394,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             sr_sign_switch="off",
         )
 
-    im_list.append(
-        f"添加Cookies成功,account_id={account_id},cookie_token={cookie_token}"
-    )
+    im_list.append(f"添加Cookies成功,account_id={account_id},cookie_token={cookie_token}")
     im_list.append(
         "Cookies和Stoken属于个人重要信息,如果你是在不知情的情况下添加,请马上修改米游社账户密码,保护个人隐私！"
     )

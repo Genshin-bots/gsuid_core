@@ -31,10 +31,7 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
     _p = []
     sum_data = await CoreDataSummary.get_distinct_date_data()
     if sum_data:
-        op = [
-            {"label": i.strftime("%Y-%m-%d"), "value": i.strftime("%Y-%m-%d")}
-            for i in sum_data
-        ]
+        op = [{"label": i.strftime("%Y-%m-%d"), "value": i.strftime("%Y-%m-%d")} for i in sum_data]
         _p.append(
             {
                 "type": "select",
@@ -180,11 +177,7 @@ async def get_analysis_page():
                                 get_divider(),
                                 get_chart(f"{BAPI}/{_bot_id}/{_bot_self_id}"),
                                 get_divider(),
-                                *(
-                                    await get_detail_chart(
-                                        _bot_id, _bot_self_id
-                                    )
-                                ),
+                                *(await get_detail_chart(_bot_id, _bot_self_id)),
                             ],
                         ),
                     ],

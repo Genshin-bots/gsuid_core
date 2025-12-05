@@ -29,9 +29,7 @@ exec_list = [
 async def move_database():
     old_path = get_res_path().parent / "GsData.db"
     if old_path.exists() and not DB_PATH.exists():
-        logger.warning(
-            "检测到主目录存在旧版数据库, 迁移中...该log只会看到一次..."
-        )
+        logger.warning("检测到主目录存在旧版数据库, 迁移中...该log只会看到一次...")
         move(old_path, db_url)
         logger.warning("迁移完成！")
 

@@ -1,5 +1,5 @@
-from typing import Any, List
 import inspect
+from typing import Any, List
 from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.job import Job
@@ -44,9 +44,7 @@ def remove_repeat_job():
             if source_i == source_j:
                 scheduler.remove_job(i.id)
             else:
-                logger.warning(
-                    f"发现重复函数名定时任务{i.name}, 移除该任务..."
-                )
+                logger.warning(f"发现重复函数名定时任务{i.name}, 移除该任务...")
                 scheduler.remove_job(i.id)
 
     del repeat_jobs
@@ -66,9 +64,7 @@ def _get_trigger_description(trigger: Any) -> str:
 
     if isinstance(trigger, DateTrigger):
         if isinstance(trigger.run_date, datetime):
-            return (
-                f"一次性运行：{trigger.run_date.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+            return f"一次性运行：{trigger.run_date.strftime('%Y-%m-%d %H:%M:%S')}"
         return "一次性运行：未知时间"
 
     elif isinstance(trigger, IntervalTrigger):
@@ -109,9 +105,7 @@ def _get_trigger_description(trigger: Any) -> str:
             dow_display = dow_map.get(dow.lower(), dow)
             date_parts.append(f"每周的 {dow_display}")
         if "month" in fields_info and "day" in fields_info:
-            date_parts.append(
-                f"每 {fields_info['month']} 月的 {fields_info['day']} 日"
-            )
+            date_parts.append(f"每 {fields_info['month']} 月的 {fields_info['day']} 日")
         elif "day" in fields_info:
             date_parts.append(f"每月的 {fields_info['day']} 日")
 

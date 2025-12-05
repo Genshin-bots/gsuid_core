@@ -33,12 +33,8 @@ GT_TEST_URL = GT_TEST + GT_QUERY
 GT_TEST_URL_V6 = GT_TEST_V6 + GT_QUERY
 
 GT_TPYE_URL = "https://api.geetest.com/gettype.php?gt={}"
-VERIFICATION_URL = (
-    f"{RECORD_BASE}/game_record/app/card/wapi/createVerification?is_high=false"
-)
-BBS_VERIFICATION_URL = (
-    f"{NEW_BBS_URL}/misc/api/createVerification?is_high=true"
-)
+VERIFICATION_URL = f"{RECORD_BASE}/game_record/app/card/wapi/createVerification?is_high=false"
+BBS_VERIFICATION_URL = f"{NEW_BBS_URL}/misc/api/createVerification?is_high=true"
 VERIFY_URL = f"{RECORD_BASE}/game_record/app/card/wapi/verifyVerification"
 BBS_VERIFY_URL = f"{NEW_BBS_URL}/misc/api/verifyVerification"
 
@@ -46,17 +42,13 @@ BBS_VERIFY_URL = f"{NEW_BBS_URL}/misc/api/verifyVerification"
 # 通过LoginTicket获取Stoken
 GET_STOKEN_URL = f"{GS_BASE}/auth/api/getMultiTokenByLoginTicket"
 # 国际服
-GET_STOKEN_URL_OS = (
-    f"{ACCOUNT_URL_OS}/account/auth/api/getMultiTokenByLoginTicket"
-)
+GET_STOKEN_URL_OS = f"{ACCOUNT_URL_OS}/account/auth/api/getMultiTokenByLoginTicket"
 # 通过Stoken获取Cookie_token
 GET_COOKIE_TOKEN_URL = f"{GS_BASE}/auth/api/getCookieAccountInfoBySToken"
 # 通过Stoken获取AuthKey
 GET_AUTHKEY_URL = f"{GS_BASE}/binding/api/genAuthKey"
 # 通过AuthKey获取gachalogs
-GET_GACHA_LOG_URL = (
-    "https://public-operation-hk4e.mihoyo.com/gacha_info/api/getGachaLog"
-)
+GET_GACHA_LOG_URL = "https://public-operation-hk4e.mihoyo.com/gacha_info/api/getGachaLog"
 GET_GACHA_LOG_URL_OS = f"{HK4_URL_OS}/gacha_info/api/getGachaLog"
 # 通过GameToken获取Stoken
 GET_STOKEN = f"{PASSPORT_URL}/account/ma-cn-session/app/getTokenByGameToken"
@@ -65,9 +57,7 @@ CREATE_QRCODE = f"{HK4_SDK_URL}/hk4e_cn/combo/panda/qrcode/fetch"
 # 检查二维码扫描状态
 CHECK_QRCODE = f"{HK4_SDK_URL}/hk4e_cn/combo/panda/qrcode/query"
 # 通过GameToken获取Cookie_token
-GET_COOKIE_TOKEN_BY_GAME_TOKEN = (
-    f"{GS_BASE}/auth/api/getCookieAccountInfoByGameToken"
-)
+GET_COOKIE_TOKEN_BY_GAME_TOKEN = f"{GS_BASE}/auth/api/getCookieAccountInfoByGameToken"
 
 """米游社相关"""
 # 获取签到列表
@@ -95,38 +85,22 @@ MONTHLY_AWARD_URL_OS = f"{HK4_URL_OS}/event/ysledgeros/month_info"
 PLAYER_INFO_URL = f"{RECORD_BASE}/game_record/app/genshin/api/index"
 PLAYER_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/index"
 # 获取深渊信息
-PLAYER_ABYSS_INFO_URL = (
-    f"{RECORD_BASE}/game_record/app/genshin/api/spiralAbyss"
-)
-PLAYER_ABYSS_INFO_URL_OS = (
-    f"{RECORD_BASE_OS}/game_record/genshin/api/spiralAbyss"
-)
+PLAYER_ABYSS_INFO_URL = f"{RECORD_BASE}/game_record/app/genshin/api/spiralAbyss"
+PLAYER_ABYSS_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/spiralAbyss"
 # 获取详细角色信息
-PLAYER_DETAIL_INFO_URL = (
-    f"{RECORD_BASE}/game_record/app/genshin/api/character/list"
-)
-PLAYER_DETAIL_INFO_URL_OS = (
-    f"{RECORD_BASE_OS}/game_record/genshin/api/character"
-)
+PLAYER_DETAIL_INFO_URL = f"{RECORD_BASE}/game_record/app/genshin/api/character/list"
+PLAYER_DETAIL_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/character"
 # 天赋计算器API 获取天赋等级信息
-CALCULATE_INFO_URL = (
-    f"{GS_BASE}/event/e20200928calculate/v1/sync/avatar/detail"
-)
-CALCULATE_INFO_URL_OS = (
-    "https://sg-public-api.hoyoverse.com/event/calculateos/sync/avatar/detail"
-)
+CALCULATE_INFO_URL = f"{GS_BASE}/event/e20200928calculate/v1/sync/avatar/detail"
+CALCULATE_INFO_URL_OS = "https://sg-public-api.hoyoverse.com/event/calculateos/sync/avatar/detail"
 # 新版素材计算器
 COMPUTE_URL = f"{GS_BASE}/event/e20200928calculate/v3/batch_compute"
 POETRY_ABYSS_URL = f"{RECORD_BASE}/game_record/app/genshin/api/role_combat"
 ACHI_URL = f"{RECORD_BASE}/game_record/app/genshin/api/achievement"
 
 # 获取米游社内的角色信息 mysid -> uid
-MIHOYO_BBS_PLAYER_INFO_URL = (
-    f"{RECORD_BASE}/game_record/card/wapi/getGameRecordCard"
-)
-MIHOYO_BBS_PLAYER_INFO_URL_OS = (
-    f"{RECORD_BASE_OS}/game_record/card/wapi/getGameRecordCard"
-)
+MIHOYO_BBS_PLAYER_INFO_URL = f"{RECORD_BASE}/game_record/card/wapi/getGameRecordCard"
+MIHOYO_BBS_PLAYER_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/card/wapi/getGameRecordCard"
 
 # 获取七圣召唤相关信息
 GCG_INFO = f"{RECORD_BASE}/game_record/app/genshin/api/gcg/basicInfo"
@@ -141,10 +115,7 @@ REG_TIME_OS = f"{ACT_URL_OS}/event/e20220928anniversary/game_data?"
 # 米游社的API列表
 BBS_TASKS_LIST = f"{BBS_URL}/apihub/sapi/getUserMissionsState"
 BBS_SIGN_URL = f"{BBS_URL}/apihub/app/api/signIn"
-BBS_LIST_URL = (
-    BBS_URL + "/post/api/getForumPostList?"
-    "forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1"
-)
+BBS_LIST_URL = BBS_URL + "/post/api/getForumPostList?forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1"
 
 BBS_COLLECTION_URL = BBS_URL + "/post/wapi/getPostFullInCollection"
 BBS_DETAIL_URL = BBS_URL + "/post/api/getPostFull?post_id={}"

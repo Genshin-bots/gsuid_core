@@ -1,13 +1,13 @@
-from typing import Dict, List, Tuple, Union, Optional
 import asyncio
-from pathlib import Path
 import datetime
+from typing import Dict, List, Tuple, Union, Optional
+from pathlib import Path
 
 from PIL import Image, ImageOps, ImageDraw
 
+import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
-import gsuid_core.global_val as gv
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.help.draw_core_help import ICON
 from gsuid_core.utils.image.convert import convert_img, number_to_chinese
@@ -217,9 +217,7 @@ async def draw_badge(
     else:
         value_str = value
 
-    if avg_value is not None and (
-        isinstance(value, int) or isinstance(value, float)
-    ):
+    if avg_value is not None and (isinstance(value, int) or isinstance(value, float)):
         if value >= avg_value * 1.2:
             arrow = Image.open(TEXT_PATH / "up.png")
             x = get_font_x(core_font(46), value_str)
@@ -260,16 +258,12 @@ async def draw_data_analysis1(
     local_val = gv.get_platform_val(bot_id, bot_self_id)
     data_bar = Image.new("RGBA", (1400, 200))
 
-    yesterday: Optional[
-        CoreDataSummary
-    ] = await CoreDataSummary.get_yesterday_data(
+    yesterday: Optional[CoreDataSummary] = await CoreDataSummary.get_yesterday_data(
         bot_id=bot_id,
         bot_self_id=bot_self_id,
     )
     if not yesterday:
-        yesterday = CoreDataSummary(
-            bot_id="1", bot_self_id="2", date=datetime.datetime.now()
-        )
+        yesterday = CoreDataSummary(bot_id="1", bot_self_id="2", date=datetime.datetime.now())
 
     badge1 = await draw_badge(
         "今日接收",
@@ -307,9 +301,7 @@ async def draw_data_analysis1(
         SE_COLOR,
     )
 
-    for index, i in enumerate(
-        [badge1, badge2, badge3, badge4, badge5, badge6]
-    ):
+    for index, i in enumerate([badge1, badge2, badge3, badge4, badge5, badge6]):
         data_bar.paste(i, (75 + index * 210, 25), i)
 
     return data_bar
@@ -349,9 +341,7 @@ async def draw_data_analysis2(
     )
 
     data_bar = Image.new("RGBA", (1400, 200))
-    for index, i in enumerate(
-        [badge1, badge2, badge3, badge4, badge5, badge6]
-    ):
+    for index, i in enumerate([badge1, badge2, badge3, badge4, badge5, badge6]):
         data_bar.paste(i, (75 + index * 210, 25), i)
 
     return data_bar
@@ -361,9 +351,7 @@ def draw_ring(value: float):
     img = Image.new("RGBA", (100, 100))
     resin_percent = value / 100
     ring_pic = Image.open(TEXT_PATH / "ring.webp")
-    percent = (
-        round(resin_percent * 49) if round(resin_percent * 49) <= 49 else 49
-    )
+    percent = round(resin_percent * 49) if round(resin_percent * 49) <= 49 else 49
     ring_pic.seek(percent)
     img.paste(ring_pic, (0, 0), ring_pic)
     img_draw = ImageDraw.Draw(img)
@@ -409,9 +397,7 @@ async def draw_hw():
     disk_task = asyncio.create_task(get_disk_info())
     swap_task = asyncio.create_task(get_swap_info())
 
-    cpu, memory, disk, swap = await asyncio.gather(
-        cpu_task, memory_task, disk_task, swap_task
-    )
+    cpu, memory, disk, swap = await asyncio.gather(cpu_task, memory_task, disk_task, swap_task)
 
     cpu_img = draw_hw_status_bar("CPU", cpu["value"], cpu["name"])
     memory_img = draw_hw_status_bar("内存", memory["value"], memory["name"])
@@ -555,24 +541,12 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
 
     for day in range(46):
         result[THEME_COLOR].append(
-            trends["all_bots_user_count"][day]
-            if day < len(trends["all_bots_user_count"])
-            else 0
+            trends["all_bots_user_count"][day] if day < len(trends["all_bots_user_count"]) else 0
         )
-        result[HINT_COLOR].append(
-            trends["all_bots_send"][day]
-            if day < len(trends["all_bots_send"])
-            else 0
-        )
+        result[HINT_COLOR].append(trends["all_bots_send"][day] if day < len(trends["all_bots_send"]) else 0)
 
-        result[(182, 122, 210)].append(
-            trends["bot_user_count"][day]
-            if day < len(trends["bot_user_count"])
-            else 0
-        )
-        result[(27, 146, 210)].append(
-            trends["bot_send"][day] if day < len(trends["bot_send"]) else 0
-        )
+        result[(182, 122, 210)].append(trends["bot_user_count"][day] if day < len(trends["bot_user_count"]) else 0)
+        result[(27, 146, 210)].append(trends["bot_send"][day] if day < len(trends["bot_send"]) else 0)
 
     curve_img = await draw_curve(result)
     return curve_img

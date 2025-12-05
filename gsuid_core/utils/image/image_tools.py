@@ -1,11 +1,11 @@
-from io import BytesIO
 import math
 import random
+from io import BytesIO
 from typing import Tuple, Union, Optional
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import httpx
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from httpx import get
 
 from gsuid_core.models import Event
@@ -121,9 +121,7 @@ def get_v4_bg(w: int, h: int, is_dark: bool = False, is_blur: bool = False):
     return img
 
 
-async def get_event_avatar(
-    ev: Event, avatar_path: Optional[Path] = None
-) -> Image.Image:
+async def get_event_avatar(ev: Event, avatar_path: Optional[Path] = None) -> Image.Image:
     img = None
     if ev.bot_id == "onebot" and ev.at:
         img = await get_qq_avatar(ev.at)
@@ -313,9 +311,7 @@ def draw_text_by_line(
     return y
 
 
-def easy_paste(
-    im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt"
-):
+def easy_paste(im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt"):
     """
     inplace method
     快速粘贴, 自动获取被粘贴图像的坐标。
@@ -333,9 +329,7 @@ def easy_paste(
     im.paste(im_paste, (x, y, x + size_x, y + size_y), im_paste)
 
 
-def easy_alpha_composite(
-    im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt"
-) -> Image.Image:
+def easy_alpha_composite(im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt") -> Image.Image:
     """
     透明图像快速粘贴
     """
@@ -345,16 +339,12 @@ def easy_alpha_composite(
     return base
 
 
-async def get_qq_avatar(
-    qid: Optional[Union[int, str]] = None, avatar_url: Optional[str] = None
-) -> Image.Image:
+async def get_qq_avatar(qid: Optional[Union[int, str]] = None, avatar_url: Optional[str] = None) -> Image.Image:
     if qid:
         avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qid}&s=640"
     elif avatar_url is None:
         avatar_url = "https://q1.qlogo.cn/g?b=qq&nk=3399214199&s=640"
-    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
-        "RGBA"
-    )
+    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert("RGBA")
     return char_pic
 
 
@@ -366,9 +356,7 @@ async def get_qqgroup_avatar(
     if not qid or not bot_id:
         return None
     avatar_url = f"https://q.qlogo.cn/qqapp/{bot_id}/{qid}/100"
-    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
-        "RGBA"
-    )
+    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert("RGBA")
     return char_pic
 
 
@@ -410,9 +398,7 @@ async def draw_pic_with_ring(
     return img
 
 
-def crop_center_img(
-    img: Image.Image, based_w: int, based_h: int
-) -> Image.Image:
+def crop_center_img(img: Image.Image, based_w: int, based_h: int) -> Image.Image:
     # 确定图片的长宽
     based_scale = "%.3f" % (based_w / based_h)
     w, h = img.size
@@ -452,15 +438,11 @@ async def get_color_bg(
         color = CI_img.get_bg_color(img)
     if is_full:
         color_img = Image.new("RGBA", (based_w, based_h), color)
-        mask = Image.new(
-            "RGBA", (based_w, based_h), (255, 255, 255, full_opacity)
-        )
+        mask = Image.new("RGBA", (based_w, based_h), (255, 255, 255, full_opacity))
         img.paste(color_img, (0, 0), mask)
     elif not without_mask:
         color_mask = Image.new("RGBA", (based_w, based_h), color)
-        enka_mask = Image.open(TEXT_PATH / "bg_mask.png").resize(
-            (based_w, based_h)
-        )
+        enka_mask = Image.open(TEXT_PATH / "bg_mask.png").resize((based_w, based_h))
         img.paste(color_mask, (0, 0), enka_mask)
     return img
 
@@ -469,9 +451,7 @@ class CustomizeImage:
     def __init__(self, bg_path: Path) -> None:
         self.bg_path = bg_path
 
-    def get_image(
-        self, image: Union[str, Image.Image, None], based_w: int, based_h: int
-    ) -> Image.Image:
+    def get_image(self, image: Union[str, Image.Image, None], based_w: int, based_h: int) -> Image.Image:
         # 获取背景图片
         if isinstance(image, Image.Image):
             edit_bg = image
@@ -496,9 +476,7 @@ class CustomizeImage:
         img = img.resize((1, 1), resample=0)
         dominant_color = img.getpixel((0, 0))
         if isinstance(dominant_color, float):
-            _dominant_color = tuple(
-                [int(dominant_color * 255) for _ in range(3)]
-            )  # type: ignore
+            _dominant_color = tuple([int(dominant_color * 255) for _ in range(3)])  # type: ignore
         elif dominant_color is None or isinstance(dominant_color, int):
             _dominant_color: Tuple[int, int, int] = (255, 255, 255)
         else:
@@ -507,9 +485,7 @@ class CustomizeImage:
         return _dominant_color
 
     @staticmethod
-    def get_bg_color(
-        edit_bg: Image.Image, is_light: Optional[bool] = False
-    ) -> Tuple[int, int, int]:
+    def get_bg_color(edit_bg: Image.Image, is_light: Optional[bool] = False) -> Tuple[int, int, int]:
         # 获取背景主色
         color = 8
         q = edit_bg.quantize(colors=color, method=Image.Quantize.FASTOCTREE)

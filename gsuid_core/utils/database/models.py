@@ -88,9 +88,7 @@ class Subscribe(BaseModel, table=True):
                 bot = Bot(BOT, ev)
                 await bot.send_option(**params)
             else:
-                logger.error(
-                    f"[订阅] 机器人{self.WS_BOT_ID}不存在, 该消息无法发送!"
-                )
+                logger.error(f"[订阅] 机器人{self.WS_BOT_ID}不存在, 该消息无法发送!")
                 return -1
         else:
             for bot_id in gss.active_bot:
@@ -189,9 +187,7 @@ class CoreUser(BaseBotIDModel, table=True):
         cls,
         session: AsyncSession,
     ):
-        result: Optional[Sequence[Type["CoreUser"]]] = await cls.select_rows(
-            True
-        )
+        result: Optional[Sequence[Type["CoreUser"]]] = await cls.select_rows(True)
         return result
 
     @classmethod
@@ -214,9 +210,7 @@ class CoreUser(BaseBotIDModel, table=True):
         session: AsyncSession,
         group_id: str,
     ):
-        result: Optional[Sequence[Type["CoreUser"]]] = await cls.select_rows(
-            group_id=group_id
-        )
+        result: Optional[Sequence[Type["CoreUser"]]] = await cls.select_rows(group_id=group_id)
         return result
 
     @classmethod
@@ -342,9 +336,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         cls,
         session: AsyncSession,
     ) -> Sequence[Type["CoreGroup"]]:
-        result: Optional[Sequence[Type["CoreGroup"]]] = await cls.select_rows(
-            True
-        )
+        result: Optional[Sequence[Type["CoreGroup"]]] = await cls.select_rows(True)
         return result
 
     @classmethod
@@ -368,9 +360,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         bot_id: str,
         group_id: str,
     ) -> int:
-        data: Optional["CoreGroup"] = await cls.base_select_data(
-            bot_id=bot_id, group_id=group_id
-        )
+        data: Optional["CoreGroup"] = await cls.base_select_data(bot_id=bot_id, group_id=group_id)
         if not data:
             await cls.full_insert_data(
                 bot_id=bot_id,
@@ -475,9 +465,7 @@ class GsPush(Push, table=True):
         schema_extra={"json_schema_extra": {"hint": "gs开启宝钱"}},
     )
     coin_value: Optional[int] = Field(title="洞天宝钱阈值", default=2100)
-    coin_is_push: Optional[str] = Field(
-        title="洞天宝钱是否已推送", default="off"
-    )
+    coin_is_push: Optional[str] = Field(title="洞天宝钱是否已推送", default="off")
     resin_push: Optional[str] = Field(
         title="体力推送",
         default="off",
@@ -498,9 +486,7 @@ class GsPush(Push, table=True):
         schema_extra={"json_schema_extra": {"hint": "gs开启质变仪"}},
     )
     transform_value: Optional[int] = Field(title="质变仪阈值", default=1000)
-    transform_is_push: Optional[str] = Field(
-        title="质变仪是否已推送", default="off"
-    )
+    transform_is_push: Optional[str] = Field(title="质变仪是否已推送", default="off")
 
 
 class GsUID(BaseIDModel, table=True):

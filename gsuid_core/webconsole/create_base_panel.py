@@ -180,9 +180,7 @@ def get_image_input(
         },
     }
     if is_show:
-        data["frameImage"] = (
-            f"/genshinuid/getImage/{suffix}/{filename}/{UPLOAD_PATH}"
-        )
+        data["frameImage"] = f"/genshinuid/getImage/{suffix}/{filename}/{UPLOAD_PATH}"
     return data
 
 
@@ -273,9 +271,7 @@ def get_button(
     }
     if api:
         data["onEvent"]["click"]["actions"].append(api)
-        data["onEvent"]["click"]["actions"].append(
-            {"componentName": reload_element, "actionType": "reload"}
-        )
+        data["onEvent"]["click"]["actions"].append({"componentName": reload_element, "actionType": "reload"})
     return data
 
 
@@ -463,9 +459,7 @@ def get_property(items: Union[List[Dict], Dict[str, str]], column: int = 2):
 
 def get_tag(
     label: str,
-    color: Literal[
-        "inactive", "processing", "success", "error", "active", "warning"
-    ] = "processing",
+    color: Literal["inactive", "processing", "success", "error", "active", "warning"] = "processing",
     displaymode: Literal["normal", "rounded"] = "normal",
 ):
     return {
@@ -499,9 +493,7 @@ def get_card(title: str, content: List[Dict]):
     return data
 
 
-def get_tab(
-    title: str, bodys: List[Dict], name: Optional[str] = None
-) -> Dict[str, str]:
+def get_tab(title: str, bodys: List[Dict], name: Optional[str] = None) -> Dict[str, str]:
     data = {"title": title, "body": bodys}
     if name:
         data["name"] = name

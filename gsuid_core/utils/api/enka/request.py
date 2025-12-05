@@ -17,9 +17,7 @@ ADDRESS = {
 }
 
 
-async def get_enka_info(
-    uid: str, address: Literal["enka", "microgg"] = "enka"
-) -> EnkaData:
+async def get_enka_info(uid: str, address: Literal["enka", "microgg"] = "enka") -> EnkaData:
     """请求 Enka Network
 
     Args:

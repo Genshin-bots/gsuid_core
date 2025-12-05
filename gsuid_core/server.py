@@ -1,15 +1,15 @@
 import re
 import sys
 import time
-from types import ModuleType
-from typing import Set, Dict, List, Tuple, Union, Callable
 import asyncio
 import inspect
-from pathlib import Path
 import importlib
-from importlib import metadata
 import subprocess
 import importlib.util
+from types import ModuleType
+from typing import Set, Dict, List, Tuple, Union, Callable
+from pathlib import Path
+from importlib import metadata
 
 import toml
 from fastapi import WebSocket
@@ -19,9 +19,7 @@ try:
 except ImportError:
     print("正在安装必要依赖 'packaging'...")
     subprocess.check_call([sys.executable, "-m", "ensurepip"])
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "packaging"]
-    )
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "packaging"])
     from packaging.requirements import Requirement
 
 from gsuid_core.bot import _Bot
@@ -90,9 +88,7 @@ class GsServer:
             self.active_bot: Dict[str, _Bot] = {}
             self.is_initialized = True
 
-    def load_dir_plugins(
-        self, plugin: Path, plugin_parent: str, nest: bool = False
-    ) -> List[Tuple[str, Path, str]]:
+    def load_dir_plugins(self, plugin: Path, plugin_parent: str, nest: bool = False) -> List[Tuple[str, Path, str]]:
         module_list = []
         init_path = plugin / "__init__.py"
         name = plugin.name
@@ -220,13 +216,9 @@ class GsServer:
         if _type == "plugin":
             logger.success(f"✅ 插件{filepath.parent.stem}导入成功!")
         elif _type == "single":
-            logger.success(
-                f"✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒"
-            )
+            logger.success(f"✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒")
         elif _type != "full":
-            logger.trace(
-                f"🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒"
-            )
+            logger.trace(f"🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒")
 
         _module_cache[module_name] = module
         return module
@@ -241,8 +233,7 @@ class GsServer:
 
         plug_path_list = [
             p
-            for p in list(BUILDIN_PLUGIN_PATH.iterdir())
-            + list(PLUGIN_PATH.iterdir())
+            for p in list(BUILDIN_PLUGIN_PATH.iterdir()) + list(PLUGIN_PATH.iterdir())
             if p.is_dir() or (p.is_file() and p.suffix == ".py")
         ]
 
@@ -260,9 +251,7 @@ class GsServer:
             try:
                 self.cached_import(module_name, filepath, _type)
             except Exception as e:
-                logger.exception(
-                    f"❌ 插件{filepath.stem}导入失败, 错误代码: {e}"
-                )
+                logger.exception(f"❌ 插件{filepath.stem}导入失败, 错误代码: {e}")
                 continue
 
         core_config.lazy_write_config()
@@ -317,9 +306,7 @@ class GsServer:
     @classmethod
     def on_bot_connect(cls, func: Callable):
         existing_funcs = [
-            f
-            for f in cls.bot_connect_def
-            if f.__name__ == func.__name__ and f.__module__ == func.__module__
+            f for f in cls.bot_connect_def if f.__name__ == func.__name__ and f.__module__ == func.__module__
         ]
 
         for f in existing_funcs:
@@ -335,9 +322,7 @@ def check_pyproject(pyproject: Path):
             file_content = f.read()
             # 保留原有的兼容性替换
             if "extend-exclude = '''" in file_content:
-                file_content = file_content.replace(
-                    "extend-exclude = '''", ""
-                ).replace("'''", "", 1)
+                file_content = file_content.replace("extend-exclude = '''", "").replace("'''", "", 1)
             toml_data = toml.loads(file_content)
     except Exception as e:
         logger.error(f"❌ 解析 pyproject.toml 失败: {pyproject}, 错误: {e}")
@@ -404,12 +389,8 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
             # 检查是否已安装以及版本是否符合
             if req_name not in installed_dependencies:
                 # double check: 有时候元数据名字非常怪异，再次遍历检查
-                if req_name not in [
-                    normalize_name(k) for k in installed_dependencies.keys()
-                ]:
-                    logger.info(
-                        f"[依赖管理] 未安装依赖: {req_name} (原始需求: {req.name})"
-                    )
+                if req_name not in [normalize_name(k) for k in installed_dependencies.keys()]:
+                    logger.info(f"[依赖管理] 未安装依赖: {req_name} (原始需求: {req.name})")
                     to_install.append(dep_str)
                     continue
 
@@ -417,15 +398,10 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
             if update and req_name in installed_dependencies:
                 installed_ver = installed_dependencies[req_name]
                 if installed_ver not in req.specifier:
-                    logger.info(
-                        f"[依赖管理] 依赖版本不匹配: {req_name} "
-                        f"(当前: {installed_ver}, 需要: {req.specifier})"
-                    )
+                    logger.info(f"[依赖管理] 依赖版本不匹配: {req_name} (当前: {installed_ver}, 需要: {req.specifier})")
                     to_install.append(dep_str)
                 else:
-                    logger.trace(
-                        f"[依赖管理] {req_name} 已满足 (当前: {installed_ver})"
-                    )
+                    logger.trace(f"[依赖管理] {req_name} 已满足 (当前: {installed_ver})")
 
         except Exception as e:
             logger.warning(f"无法解析依赖字符串 '{dep_str}': {e}")
@@ -479,14 +455,10 @@ def install_packages(packages: List[str], upgrade: bool = False):
             install_success = True
             break  # 安装成功，跳出循环
         else:
-            logger.warning(
-                f"⚠️ [安装/更新依赖] 使用 [{mirror_name}] 安装失败，准备尝试下一个源..."
-            )
+            logger.warning(f"⚠️ [安装/更新依赖] 使用 [{mirror_name}] 安装失败，准备尝试下一个源...")
 
     if not install_success:
-        logger.error(
-            "❌ [安装/更新依赖] 所有源均尝试失败，请检查网络或包名是否正确。"
-        )
+        logger.error("❌ [安装/更新依赖] 所有源均尝试失败，请检查网络或包名是否正确。")
 
     # 刷新依赖状态
     refresh_installed_dependencies()
@@ -501,9 +473,7 @@ def execute_cmd(cmd_list: List[str]):
 
     try:
         # shell=False 是安全的默认值
-        result = subprocess.run(
-            cmd_list, capture_output=True, text=True, shell=False
-        )
+        result = subprocess.run(cmd_list, capture_output=True, text=True, shell=False)
         if result.returncode == 0:
             logger.success("[CMD执行] 成功!")
             return 0

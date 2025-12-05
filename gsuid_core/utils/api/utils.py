@@ -13,15 +13,8 @@ _HEADER = {"User-Agent": f"gsuid-utils/{__version__}"}
 
 def cache_data(func: Callable[..., Awaitable[T]]):
     async def wrapper(*args, **kwargs) -> Optional[T]:
-        id = (
-            kwargs.get(
-                "id", kwargs.get("name", args[0] if args else func.__name__)
-            )
-            or func.__name__
-        )
-        cache_dir: Path = (
-            kwargs.get("cache_path", data_cache_path) or data_cache_path
-        )
+        id = kwargs.get("id", kwargs.get("name", args[0] if args else func.__name__)) or func.__name__
+        cache_dir: Path = kwargs.get("cache_path", data_cache_path) or data_cache_path
         cache_path = cache_dir / func.__name__
         cache_path.mkdir(parents=True, exist_ok=True)
 

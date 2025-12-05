@@ -42,9 +42,7 @@ class Trigger:
         return getattr(self, f"_check_{self.type}")(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
-        if msg.startswith(self.prefix + prefix) and not self._check_fullmatch(
-            prefix, msg
-        ):
+        if msg.startswith(self.prefix + prefix) and not self._check_fullmatch(prefix, msg):
             return True
         return False
 
@@ -54,11 +52,7 @@ class Trigger:
         return False
 
     def _check_suffix(self, suffix: str, msg: str) -> bool:
-        if (
-            msg.startswith(self.prefix)
-            and msg.endswith(suffix)
-            and not self._check_fullmatch(suffix, msg)
-        ):
+        if msg.startswith(self.prefix) and msg.endswith(suffix) and not self._check_fullmatch(suffix, msg):
             return True
         return False
 
@@ -102,11 +96,7 @@ class Trigger:
             if command_group:
                 msg.regex_dict = command_group.groupdict()
                 msg.regex_group = command_group.groups()
-                msg.command = "|".join(
-                    [i if i is not None else "" for i in list(msg.regex_group)]
-                )
+                msg.command = "|".join([i if i is not None else "" for i in list(msg.regex_group)])
             text_list = re.split(self.keyword, msg.raw_text)
-            msg.text = "|".join(
-                [i if i is not None else "" for i in text_list]
-            )
+            msg.text = "|".join([i if i is not None else "" for i in text_list])
         return msg

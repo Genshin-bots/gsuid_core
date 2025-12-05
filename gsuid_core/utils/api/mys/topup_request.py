@@ -1,5 +1,5 @@
-from copy import deepcopy
 import uuid
+from copy import deepcopy
 from typing import List, Union, Literal, cast
 
 from .tools import gen_payment_sign
@@ -81,9 +81,7 @@ class TopupMysApi(AccountMysApi):
             return resp
         return cast(MysOrder, resp["data"])
 
-    async def check_order(
-        self, order: MysOrder, uid: str
-    ) -> Union[int, MysOrderCheck]:
+    async def check_order(self, order: MysOrder, uid: str) -> Union[int, MysOrderCheck]:
         HEADER = deepcopy(self._HEADER)
         ck = await self.get_ck(uid, "OWNER")
         if ck is None:

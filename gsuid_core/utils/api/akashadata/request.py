@@ -66,7 +66,5 @@ async def _akasha_request(
         verify=False,
         timeout=None,
     ) as client:
-        req = await client.request(
-            method=method, url=url, params=params, data=data
-        )
+        req = await client.request(method=method, url=url, params=params, data=data)
         return req.text

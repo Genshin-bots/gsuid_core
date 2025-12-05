@@ -1,9 +1,9 @@
 import os
 import time
-from typing import Dict, List, Union, Optional
 import asyncio
-from pathlib import Path
 import subprocess
+from typing import Dict, List, Union, Optional
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
@@ -105,11 +105,7 @@ async def update_all_plugins(level: int = 0) -> List[str]:
 
 
 def _is_plugin(plugin: Path) -> bool:
-    if (
-        plugin.is_dir()
-        and plugin.name != "__pycache__"
-        and plugin.name != "core_command"
-    ):
+    if plugin.is_dir() and plugin.name != "__pycache__" and plugin.name != "core_command":
         return True
     return False
 
@@ -128,9 +124,7 @@ async def refresh_list() -> List[str]:
     async with aiohttp.ClientSession() as session:
         logger.trace(f"稍等...开始刷新插件列表, 地址: {plugins_lib}")
         async with session.get(plugins_lib) as resp:
-            _plugins_list: Dict[
-                str, Dict[str, Dict[str, str]]
-            ] = await resp.json()
+            _plugins_list: Dict[str, Dict[str, Dict[str, str]]] = await resp.json()
             for i in _plugins_list["plugins"]:
                 if i.lower() not in plugins_list:
                     refresh_list.append(i)
@@ -213,9 +207,7 @@ def check_can_update(repo: Repo) -> bool:
         return False
     local_commit = repo.commit()  # 获取本地最新提交
     remote_commit = remote.fetch()[0].commit  # 获取远程最新提交
-    if (
-        local_commit.hexsha == remote_commit.hexsha
-    ):  # 比较本地和远程的提交哈希值
+    if local_commit.hexsha == remote_commit.hexsha:  # 比较本地和远程的提交哈希值
         return False
     return True
 
@@ -224,14 +216,10 @@ async def async_check_plugins(plugin_name: str):
     path = PLUGINS_PATH / plugin_name
     if path.exists():
         cmd = "git fetch && git status"
-        proc = await asyncio.create_subprocess_shell(
-            cmd, cwd=path, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        proc = await asyncio.create_subprocess_shell(cmd, cwd=path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise Exception(
-                f"{cmd} 执行错误 {proc.returncode}: {stderr.decode()}"
-            )
+            raise Exception(f"{cmd} 执行错误 {proc.returncode}: {stderr.decode()}")
         if b"Your branch is up to date" in stdout:
             return 4
         elif b"not a git repository" in stdout:
@@ -275,9 +263,7 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
     original_url: str = stdout.decode().strip()
 
     if "git@" in original_url:
-        logger.info(
-            f"[core插件设置代理] {plugin_name} git地址为SSH, 无需设置代理"
-        )
+        logger.info(f"[core插件设置代理] {plugin_name} git地址为SSH, 无需设置代理")
         return f"{plugin_name} 无需设置代理"
 
     _main_url = extract_last_url(original_url)
@@ -306,9 +292,7 @@ async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
         new_url = f"{_proxy_url}{main_url}"
 
     if new_url == original_url:
-        logger.info(
-            f"[core插件设置代理] {plugin_name} 地址与代理地址相同，无需设置"
-        )
+        logger.info(f"[core插件设置代理] {plugin_name} 地址与代理地址相同，无需设置")
         return f"{plugin_name} 已经设过该地址了..."
 
     if not await async_change_plugin_url(repo, new_url):
@@ -377,13 +361,9 @@ async def update_from_git_in_tread(
     if not hasattr(asyncio, "to_thread"):
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor() as executor:
-            result = await loop.run_in_executor(
-                executor, update_from_git, level, repo_like, log_key, log_limit
-            )
+            result = await loop.run_in_executor(executor, update_from_git, level, repo_like, log_key, log_limit)
     else:
-        result = await asyncio.to_thread(
-            update_from_git, level, repo_like, log_key, log_limit
-        )
+        result = await asyncio.to_thread(update_from_git, level, repo_like, log_key, log_limit)
     return result
 
 
@@ -407,9 +387,7 @@ def update_from_git(
             plugin_name = repo_like
     except InvalidGitRepositoryError:
         logger.warning("[更新] 更新失败, 非有效Repo路径!")
-        return [
-            "更新失败, 该路径并不是一个有效的GitRepo路径, 请使用`git clone`安装插件..."
-        ]
+        return ["更新失败, 该路径并不是一个有效的GitRepo路径, 请使用`git clone`安装插件..."]
     except NoSuchPathError:
         logger.warning("[更新] 更新失败, 该路径不存在!")
         return ["更新失败, 路径/插件不存在!"]
@@ -437,9 +415,7 @@ def update_from_git(
     try:
         default_branch = repo.git.branch("--show-current")
 
-        commits_diff = list(
-            repo.iter_commits(f"HEAD..origin/{default_branch}")
-        )
+        commits_diff = list(repo.iter_commits(f"HEAD..origin/{default_branch}"))
     except GitCommandError as e:
         logger.warning(f"[更新] 查找默认分支失败...{e}!")
         commits_diff = list(repo.iter_commits(max_count=40))

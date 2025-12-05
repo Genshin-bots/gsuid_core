@@ -2,9 +2,9 @@
 米游社账号相关操作 API 请求模块。
 """
 
-from copy import deepcopy
 import uuid
 import random
+from copy import deepcopy
 from string import digits, ascii_letters
 from typing import Dict, Union, Optional, cast
 
@@ -32,9 +32,7 @@ class AccountMysApi(PassMysApi):
     账号相关请求
     """
 
-    async def get_cookie_token(
-        self, token: str, uid: str
-    ) -> Union[CookieTokenInfo, int]:
+    async def get_cookie_token(self, token: str, uid: str) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
             self.MAPI["GET_COOKIE_TOKEN_BY_GAME_TOKEN"],
             "GET",
@@ -67,9 +65,7 @@ class AccountMysApi(PassMysApi):
             }
         return data
 
-    async def check_qrcode(
-        self, app_id: str, ticket: str, device: str
-    ) -> Union[QrCodeStatus, int]:
+    async def check_qrcode(self, app_id: str, ticket: str, device: str) -> Union[QrCodeStatus, int]:
         data = await self._mys_request(
             self.MAPI["CHECK_QRCODE"],
             "POST",
@@ -83,9 +79,7 @@ class AccountMysApi(PassMysApi):
             data = cast(QrCodeStatus, data["data"])
         return data
 
-    async def get_cookie_token_by_game_token(
-        self, token: str, uid: str
-    ) -> Union[CookieTokenInfo, int]:
+    async def get_cookie_token_by_game_token(self, token: str, uid: str) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
             self.MAPI["GET_COOKIE_TOKEN_BY_GAME_TOKEN"],
             "GET",
@@ -119,9 +113,7 @@ class AccountMysApi(PassMysApi):
             data = cast(CookieTokenInfo, data["data"])
         return data
 
-    async def get_stoken_by_login_ticket(
-        self, lt: str, mys_id: str
-    ) -> Union[LoginTicketInfo, int]:
+    async def get_stoken_by_login_ticket(self, lt: str, mys_id: str) -> Union[LoginTicketInfo, int]:
         data = await self._mys_request(
             url=self.MAPI["GET_STOKEN_URL"],
             method="GET",
@@ -147,9 +139,7 @@ class AccountMysApi(PassMysApi):
             data = cast(LoginTicketInfo, data["data"])
         return data
 
-    async def get_stoken_by_game_token(
-        self, account_id: int, game_token: str
-    ) -> Union[GameTokenInfo, int]:
+    async def get_stoken_by_game_token(self, account_id: int, game_token: str) -> Union[GameTokenInfo, int]:
         _data = {
             "account_id": account_id,
             "game_token": game_token,
@@ -166,9 +156,7 @@ class AccountMysApi(PassMysApi):
                 "x-rpc-game_biz": "bbs_cn",
                 "x-rpc-sys_version": "11",
                 "x-rpc-device_id": uuid.uuid4().hex,
-                "x-rpc-device_fp": "".join(
-                    random.choices(ascii_letters + digits, k=13)
-                ),
+                "x-rpc-device_fp": "".join(random.choices(ascii_letters + digits, k=13)),
                 "x-rpc-device_name": "GenshinUid_login_device_lulu",
                 "x-rpc-device_model": "GenshinUid_login_device_lulu",
                 "x-rpc-app_id": "bll8iq97cem8",

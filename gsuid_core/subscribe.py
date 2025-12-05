@@ -129,9 +129,7 @@ class GsCoreSubscribe:
         if WS_BOT_ID:
             params["WS_BOT_ID"] = WS_BOT_ID
 
-        all_data: Optional[Sequence[Subscribe]] = await Subscribe.select_rows(
-            distinct=False, **params
-        )
+        all_data: Optional[Sequence[Subscribe]] = await Subscribe.select_rows(distinct=False, **params)
         return all_data
 
     async def delete_subscribe(
@@ -265,9 +263,7 @@ class GsCoreSubscribe:
                     priv_result[sid]["im"].append(im)
         return priv_result, group_result
 
-    async def _to_dict(
-        self, data: Sequence[Subscribe]
-    ) -> Dict[str, List[Subscribe]]:
+    async def _to_dict(self, data: Sequence[Subscribe]) -> Dict[str, List[Subscribe]]:
         result: Dict[str, List[Subscribe]] = {}
         for item in data:
             if str(item.uid) not in result:

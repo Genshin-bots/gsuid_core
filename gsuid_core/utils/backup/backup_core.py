@@ -8,18 +8,14 @@ from gsuid_core.data_store import backup_path, gs_data_path
 from gsuid_core.utils.plugins_config.gs_config import backup_config
 
 
-def copy_and_rebase_paths(
-    _paths_to_copy: Optional[List[Path]] = None, file_id: Optional[str] = None
-) -> int:
+def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: Optional[str] = None) -> int:
     """
     将路径列表中的文件/文件夹复制到备份目录，并移除指定的路径前缀。
 
     :param paths_to_copy: 待复制的 Path 对象列表 (List[Path])。
     """
     if _paths_to_copy is None:
-        paths_to_copy: List[Path] = [
-            Path(p) for p in backup_config.get_config("backup_dir").data
-        ]
+        paths_to_copy: List[Path] = [Path(p) for p in backup_config.get_config("backup_dir").data]
     else:
         paths_to_copy = _paths_to_copy
 
@@ -37,9 +33,7 @@ def copy_and_rebase_paths(
         logger.warning(f"备份目录已存在: {final_backup_dir}")
         # 确认一下这个目录是否是backup_path开头的
         if not final_backup_dir.is_relative_to(backup_path):
-            logger.warning(
-                f"目录 {final_backup_dir} 不是 {backup_path} 的子目录，跳过删除。"
-            )
+            logger.warning(f"目录 {final_backup_dir} 不是 {backup_path} 的子目录，跳过删除。")
             return -1
 
         # 递归删除该目录下的所有文件和子目录
@@ -63,25 +57,17 @@ def copy_and_rebase_paths(
             if src_path.is_file():
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_path)
-                logger.success(
-                    f"♻️ [早柚核心] 已复制文件: {src_path} -> {dest_path}"
-                )
+                logger.success(f"♻️ [早柚核心] 已复制文件: {src_path} -> {dest_path}")
 
             elif src_path.is_dir():
                 shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
-                logger.success(
-                    f"♻️ [早柚核心] 已复制目录: {src_path} -> {dest_path}"
-                )
+                logger.success(f"♻️ [早柚核心] 已复制目录: {src_path} -> {dest_path}")
 
             else:
-                logger.success(
-                    f"♻️ [早柚核心] 跳过非文件/非目录路径: {src_path}"
-                )
+                logger.success(f"♻️ [早柚核心] 跳过非文件/非目录路径: {src_path}")
 
         except ValueError:
-            logger.warning(
-                f"♻️ [早柚核心] 路径 '{src_path}' 不包含前缀 '{prefix_to_remove}'，跳过。"
-            )
+            logger.warning(f"♻️ [早柚核心] 路径 '{src_path}' 不包含前缀 '{prefix_to_remove}'，跳过。")
         except Exception as e:
             logger.warning(f"♻️ [早柚核心] 复制 '{src_path}' 时发生错误: {e}")
 
@@ -140,16 +126,10 @@ def remove_old_backups(days: int = 30) -> int:
             try:
                 if item.is_file():
                     item.unlink()  # 删除文件 (通常是 .zip)
-                    logger.info(
-                        "🗑️ [早柚核心] 已删除过期备份文件:"
-                        f" {item.name} ({time_delta.days}天前)"
-                    )
+                    logger.info(f"🗑️ [早柚核心] 已删除过期备份文件: {item.name} ({time_delta.days}天前)")
                 elif item.is_dir():
                     shutil.rmtree(item)  # 删除目录 (如果存在未压缩的残留目录)
-                    logger.info(
-                        "🗑️ [早柚核心] 已删除过期备份目录:"
-                        f" {item.name} ({time_delta.days}天前)"
-                    )
+                    logger.info(f"🗑️ [早柚核心] 已删除过期备份目录: {item.name} ({time_delta.days}天前)")
 
                 deleted_count += 1
             except Exception as e:

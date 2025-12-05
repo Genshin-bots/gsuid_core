@@ -1,11 +1,11 @@
-from io import BytesIO
 import math
+from io import BytesIO
 from base64 import b64encode
 from typing import Union, overload
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
 import aiofiles
+from PIL import Image, ImageDraw, ImageFont
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.fonts.fonts import core_font
@@ -121,9 +121,7 @@ async def str_lenth(r: str, size: int, limit: int = 540) -> str:
     return result
 
 
-def get_str_size(
-    r: str, font: ImageFont.FreeTypeFont, limit: int = 540
-) -> str:
+def get_str_size(r: str, font: ImageFont.FreeTypeFont, limit: int = 540) -> str:
     result = ""
     line = ""
     for i in r:
@@ -157,9 +155,7 @@ async def text2pic(text: str, max_size: int = 800, font_size: int = 24):
     if text.endswith("\n"):
         text = text[:-1]
 
-    img = Image.new(
-        "RGB", (max_size, len(text) * font_size // 3), (255, 255, 255)
-    )
+    img = Image.new("RGB", (max_size, len(text) * font_size // 3), (255, 255, 255))
     img_draw = ImageDraw.ImageDraw(img)
     y = draw_center_text_by_line(
         img_draw,

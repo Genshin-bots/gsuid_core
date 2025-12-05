@@ -1,13 +1,13 @@
 import json
 import time
 import base64
-from typing import Dict, List, Tuple, Union
 import inspect
+from typing import Dict, List, Tuple, Union
 from pathlib import Path
 from functools import wraps
 
-from PIL import Image
 import aiofiles
+from PIL import Image
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
@@ -33,9 +33,7 @@ def gs_cache(expire_time=3600):
                     if isinstance(arg, (str, int, float, bool, Tuple, Path)):
                         file_key += "_" + repr(arg)
                     elif isinstance(arg, Dict):
-                        file_key += "_" + str(
-                            hash(json.dumps(arg, sort_keys=True))
-                        )
+                        file_key += "_" + str(hash(json.dumps(arg, sort_keys=True)))
                     elif isinstance(arg, List):
                         file_key += "_" + str(hash(json.dumps(arg)))
                     else:
@@ -79,9 +77,7 @@ def gs_cache(expire_time=3600):
                         result.save(cache_target)
                     elif isinstance(result, bytes):
                         img_data = result
-                    elif isinstance(result, str) and result.startswith(
-                        "base64://"
-                    ):
+                    elif isinstance(result, str) and result.startswith("base64://"):
                         img_data = base64.b64decode(result[9:])
                     else:
                         cache_target = result
@@ -111,9 +107,7 @@ def gs_cache(expire_time=3600):
                     if isinstance(arg, (str, int, float, bool, Tuple, Path)):
                         file_key += "_" + repr(arg)
                     elif isinstance(arg, Dict):
-                        file_key += "_" + str(
-                            hash(json.dumps(arg, sort_keys=True))
-                        )
+                        file_key += "_" + str(hash(json.dumps(arg, sort_keys=True)))
                     elif isinstance(arg, List):
                         file_key += "_" + str(hash(json.dumps(arg)))
                     else:
@@ -157,9 +151,7 @@ def gs_cache(expire_time=3600):
                         result.save(cache_target)
                     elif isinstance(result, bytes):
                         img_data = result
-                    elif isinstance(result, str) and result.startswith(
-                        "base64://"
-                    ):
+                    elif isinstance(result, str) and result.startswith("base64://"):
                         img_data = base64.b64decode(result[9:])
                     else:
                         cache_target = result

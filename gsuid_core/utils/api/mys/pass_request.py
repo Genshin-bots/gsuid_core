@@ -12,17 +12,13 @@ ssl_verify = core_plugins_config.get_config("MhySSLVerify").data
 
 
 class PassMysApi(BaseMysApi):
-    async def _pass(
-        self, gt: str, ch: str, header: Dict
-    ) -> Tuple[Optional[str], Optional[str]]:
+    async def _pass(self, gt: str, ch: str, header: Dict) -> Tuple[Optional[str], Optional[str]]:
         # 警告：使用该服务（例如某RR等）需要注意风险问题
         # 本项目不以任何形式提供相关接口
         # 代码来源：GITHUB项目MIT开源
         _pass_api = core_plugins_config.get_config("_pass_API").data
         if _pass_api:
-            async with ClientSession(
-                connector=TCPConnector(verify_ssl=ssl_verify)
-            ) as client:
+            async with ClientSession(connector=TCPConnector(verify_ssl=ssl_verify)) as client:
                 async with client.request(
                     url=f"{_pass_api}&gt={gt}&challenge={ch}",
                     method="GET",
@@ -89,9 +85,7 @@ class PassMysApi(BaseMysApi):
             header=header,
         )
 
-    async def get_header_and_vl(
-        self, header: Dict, ch, vl, is_bbs: bool = False
-    ):
+    async def get_header_and_vl(self, header: Dict, ch, vl, is_bbs: bool = False):
         header["DS"] = get_ds_token(
             "",
             {
@@ -101,11 +95,7 @@ class PassMysApi(BaseMysApi):
             },
         )
         _ = await self._mys_request(
-            url=(
-                self.MAPI["VERIFY_URL"]
-                if not is_bbs
-                else self.MAPI["BBS_VERIFY_URL"]
-            ),
+            url=(self.MAPI["VERIFY_URL"] if not is_bbs else self.MAPI["BBS_VERIFY_URL"]),
             method="POST",
             header=header,
             data={

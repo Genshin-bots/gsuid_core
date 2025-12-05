@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import time
+from copy import deepcopy
 from typing import Dict, List, Union, Optional, cast
 
 from gsuid_core.utils.cache import gs_cache
@@ -31,9 +31,7 @@ from .sign_request import SignMysApi
 
 class MysApi(SignMysApi):
     @gs_cache(360)
-    async def get_info(
-        self, uid, ck: Optional[str] = None
-    ) -> Union[IndexData, int]:
+    async def get_info(self, uid, ck: Optional[str] = None) -> Union[IndexData, int]:
         data = await self.simple_mys_req("PLAYER_INFO_URL", uid, cookie=ck)
         if isinstance(data, Dict):
             data = cast(IndexData, data["data"])
@@ -82,9 +80,7 @@ class MysApi(SignMysApi):
         return data
 
     @gs_cache(3600)
-    async def get_achievement_info(
-        self, uid: str
-    ) -> Union[List[AchievementData], int]:
+    async def get_achievement_info(self, uid: str) -> Union[List[AchievementData], int]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
         HEADER = deepcopy(self._HEADER)
         ck = await self.get_ck(uid, "OWNER")
@@ -128,9 +124,7 @@ class MysApi(SignMysApi):
         return data
 
     @gs_cache(360)
-    async def get_poetry_abyss_data(
-        self, uid: str
-    ) -> Union[PoetryAbyssDatas, int]:
+    async def get_poetry_abyss_data(self, uid: str) -> Union[PoetryAbyssDatas, int]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
         HEADER = deepcopy(self._HEADER)
         ck = await self.get_ck(uid, "OWNER")
@@ -142,9 +136,7 @@ class MysApi(SignMysApi):
             "role_id": uid,
             "need_detail": True,
         }
-        HEADER["DS"] = get_ds_token(
-            "&".join([f"{k}={v}" for k, v in params.items()])
-        )
+        HEADER["DS"] = get_ds_token("&".join([f"{k}={v}" for k, v in params.items()]))
         data = await self._mys_request(
             self.MAPI["POETRY_ABYSS_URL"],
             "GET",
@@ -207,9 +199,7 @@ class MysApi(SignMysApi):
         return data
 
     @gs_cache(360)
-    async def get_calculate_info(
-        self, uid, char_id: int
-    ) -> Union[CalculateInfo, int]:
+    async def get_calculate_info(self, uid, char_id: int) -> Union[CalculateInfo, int]:
         server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
         data = await self.simple_mys_req(
             "CALCULATE_INFO_URL",
@@ -241,9 +231,7 @@ class MysApi(SignMysApi):
             "region": server_id,
             "uid": uid,
         }
-        raw_data = await self._mys_request(
-            self.MAPI["COMPUTE_URL"], "POST", header, data=data
-        )
+        raw_data = await self._mys_request(self.MAPI["COMPUTE_URL"], "POST", header, data=data)
         if isinstance(raw_data, Dict):
             raw_data = cast(ComputeData, raw_data["data"])
         return raw_data

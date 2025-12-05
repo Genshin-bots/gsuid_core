@@ -1,9 +1,9 @@
-from copy import deepcopy
 import json
-from typing import Any, Set, Dict, List, Tuple, Optional, Sequence, TypedDict
 import asyncio
-from pathlib import Path
 import datetime
+from copy import deepcopy
+from typing import Any, Set, Dict, List, Tuple, Optional, Sequence, TypedDict
+from pathlib import Path
 
 import aiofiles
 
@@ -52,9 +52,7 @@ def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:
 
     for key, value in dict2.items():
         if key in result:
-            if isinstance(value, (int, float)) and isinstance(
-                result[key], (int, float)
-            ):
+            if isinstance(value, (int, float)) and isinstance(result[key], (int, float)):
                 result[key] += value
             elif isinstance(value, dict) and isinstance(result[key], dict):
                 result[key] = merge_dict(result[key], value)  # type: ignore
@@ -90,9 +88,7 @@ async def get_all_bot_dict() -> Dict[str, List[str]]:
     result = {}
     for bot_id in bot_ids:
         result[bot_id] = []
-        self_ids: Sequence[
-            CoreDataSummary
-        ] = await CoreDataSummary.select_rows(bot_id=bot_id)
+        self_ids: Sequence[CoreDataSummary] = await CoreDataSummary.select_rows(bot_id=bot_id)
         if self_ids:
             ids = [i.bot_self_id for i in self_ids]
             result[bot_id] = list(set(ids))
@@ -182,9 +178,7 @@ async def get_global_analysis(
 
     # 流失率
     out_user_rate = (len(out_users) / len(all_users)) * 100 if all_users else 0
-    out_group_rate = (
-        (len(out_groups) / len(all_groups)) * 100 if all_groups else 0
-    )
+    out_group_rate = (len(out_groups) / len(all_groups)) * 100 if all_groups else 0
 
     result_data = {
         "DAU": f"{dau:.2f}",
@@ -200,17 +194,13 @@ async def get_global_analysis(
 async def load_all_global_val():
     today = datetime.date.today()
     logger.info(f"🔒️ 开始加载全局变量! 今日: {today}")
-    summarys: Optional[
-        Sequence[CoreDataSummary]
-    ] = await CoreDataSummary.select_rows(date=today)
+    summarys: Optional[Sequence[CoreDataSummary]] = await CoreDataSummary.select_rows(date=today)
     logger.debug(f"🔒️ summarys = {summarys}")
     if summarys:
         for summary in summarys:
             if summary.bot_id not in bot_val:
                 bot_val[summary.bot_id] = {}
-            datas: Optional[
-                Sequence[CoreDataAnalysis]
-            ] = await CoreDataAnalysis.select_rows(
+            datas: Optional[Sequence[CoreDataAnalysis]] = await CoreDataAnalysis.select_rows(
                 date=today,
                 bot_id=summary.bot_id,
                 bot_self_id=summary.bot_self_id,
@@ -230,9 +220,7 @@ async def save_all_global_val(day: int = 0):
     logger.success("🔒️ 全局变量保存完成!")
 
 
-async def trans_database_to_val(
-    summary: CoreDataSummary, datas: Sequence[CoreDataAnalysis]
-) -> PlatformVal:
+async def trans_database_to_val(summary: CoreDataSummary, datas: Sequence[CoreDataAnalysis]) -> PlatformVal:
     pv: PlatformVal = deepcopy(platform_val)
 
     pv["command"] = summary.command
@@ -241,13 +229,9 @@ async def trans_database_to_val(
     pv["send"] = summary.send
     for data in datas:
         if data.data_type == DataType.USER:
-            pv["user"][data.target_id] = {
-                data.command_name: data.command_count
-            }
+            pv["user"][data.target_id] = {data.command_name: data.command_count}
         if data.data_type == DataType.GROUP:
-            pv["group"][data.target_id] = {
-                data.command_name: data.command_count
-            }
+            pv["group"][data.target_id] = {data.command_name: data.command_count}
     return pv
 
 
@@ -427,17 +411,13 @@ async def trans_global_val():
             bot_self_id = file_path.parent.name
             date_string = file_path.stem[10:]
             format_code = "%Y_%d_%b"
-            date_object = datetime.datetime.strptime(
-                date_string, format_code
-            ).date()
+            date_object = datetime.datetime.strptime(date_string, format_code).date()
 
             async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
                 json_str = await f.read()
 
             local_val = await asyncio.to_thread(json.loads, json_str)
-            return prepare_models_from_json(
-                local_val, bot_id, bot_self_id, date_object
-            )
+            return prepare_models_from_json(local_val, bot_id, bot_self_id, date_object)
         except Exception as e:
             logger.error(f"[数据迁移] 处理文件 {file_path} 失败: {e}")
             return ([], [])
@@ -475,9 +455,7 @@ async def trans_global_val():
             update_key=analysis_update_key,
             index_elements=analysis_index,
         )
-        logger.success(
-            f"[数据迁移] 写入 {len(batch)} 条分析数据. 进度：{i}/{len(all_analysis_models)}"
-        )
+        logger.success(f"[数据迁移] 写入 {len(batch)} 条分析数据. 进度：{i}/{len(all_analysis_models)}")
     logger.success("[数据迁移] CoreDataAnalysis 数据写入完成.")
 
     # Write CoreDataSummary
@@ -498,9 +476,7 @@ async def trans_global_val():
             update_key=summary_update_key,
             index_elements=summary_index,
         )
-        logger.success(
-            f"[数据迁移] 写入 {len(batch)} 条概要数据. 进度：{i}/{len(all_summary_models)}"
-        )
+        logger.success(f"[数据迁移] 写入 {len(batch)} 条概要数据. 进度：{i}/{len(all_summary_models)}")
     logger.success("[数据迁移] CoreDataSummary 数据写入完成.")
 
     # 转移路径
@@ -540,9 +516,7 @@ async def get_global_val(
 
         if summarys:
             for summary in summarys:
-                datas: Optional[
-                    Sequence[CoreDataAnalysis]
-                ] = await CoreDataAnalysis.select_rows(
+                datas: Optional[Sequence[CoreDataAnalysis]] = await CoreDataAnalysis.select_rows(
                     date=summary.date,
                     bot_id=summary.bot_id,
                     bot_self_id=summary.bot_self_id,

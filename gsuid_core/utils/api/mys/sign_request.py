@@ -139,9 +139,7 @@ class SignMysApi(BBSMysApi):
         else:
             header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
-        data = await self._mys_request(
-            end_point, "GET", header, params, base_url=base_url
-        )
+        data = await self._mys_request(end_point, "GET", header, params, base_url=base_url)
 
         if isinstance(data, Dict):
             data = cast(SignInfo, data["data"])

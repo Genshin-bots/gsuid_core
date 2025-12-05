@@ -155,10 +155,7 @@ def get_sv_panel(
                         _class = "label label-info"
 
                     value.append(tr.keyword)
-                    maps[tr.keyword] = (
-                        f"<span class='{_class}' style='font-size: 12px;'"
-                        f">{tr.keyword}</span>"
-                    )
+                    maps[tr.keyword] = f"<span class='{_class}' style='font-size: 12px;'>{tr.keyword}</span>"
 
         mapping = {
             "type": "mapping",
@@ -361,9 +358,7 @@ def get_sv_panel(
             {
                 "type": "container",
                 "size": "xs",
-                "body": [
-                    get_input_tag("黑名单", "black_list", black_list, [])
-                ],
+                "body": [get_input_tag("黑名单", "black_list", black_list, [])],
                 "wrapperBody": False,
                 "style": {"flex": "0 0 auto", "display": "block"},
                 "id": "u:48c938f71548",
@@ -383,9 +378,7 @@ def get_sv_panel(
             {
                 "type": "container",
                 "size": "xs",
-                "body": [
-                    get_input_tag("白名单", "white_list", white_list, [])
-                ],
+                "body": [get_input_tag("白名单", "white_list", white_list, [])],
                 "wrapperBody": False,
                 "style": {"flex": "0 0 auto", "display": "block"},
                 "id": "u:48c938f71548",
@@ -436,13 +429,9 @@ def get_sv_panel(
     }
 
     if API == "/genshinuid/setPlugins":
-        card["body"]["body"].extend(
-            [mapping, get_divider(), switch, ol, extra, black, white]
-        )
+        card["body"]["body"].extend([mapping, get_divider(), switch, ol, extra, black, white])
     else:
-        card["body"]["body"].extend(
-            [mapping, get_divider(), switch, ol, black, white]
-        )
+        card["body"]["body"].extend([mapping, get_divider(), switch, ol, black, white])
 
     return card
 
@@ -450,9 +439,7 @@ def get_sv_panel(
 def get_sv_body(sv_list: List[SV], plugins: Plugins):
     panels = []
     grids = []
-    grids.append(
-        get_alert("该设定卡片为总设定，以下服务的触发均需满足总设定条件")
-    )
+    grids.append(get_alert("该设定卡片为总设定，以下服务的触发均需满足总设定条件"))
     tl: Dict[str, Dict[str, Trigger]] = {}
     for sv in sv_list:
         for tt in sv.TL:

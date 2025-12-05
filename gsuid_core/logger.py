@@ -1,18 +1,18 @@
 import re
 import sys
-from copy import deepcopy
 import json
-from typing import Any, Dict, List, Optional, Protocol, Sequence
 import asyncio
 import logging
-from pathlib import Path
 import datetime
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, Protocol, Sequence
+from pathlib import Path
 from functools import wraps
 from logging.handlers import TimedRotatingFileHandler
 
 import aiofiles
-from colorama import Fore, Style, init
 import structlog
+from colorama import Fore, Style, init
 from structlog.dev import ConsoleRenderer
 from structlog.types import EventDict, Processor, WrappedLogger
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
@@ -49,9 +49,7 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
     def _get_dated_filename(self):
         """根据当前日期生成完整的文件路径。"""
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        return str(
-            self.log_dir / self.base_filename_template.format(date=date_str)
-        )
+        return str(self.log_dir / self.base_filename_template.format(date=date_str))
 
     def doRollover(self):
         """在午夜执行轮转。"""
@@ -99,9 +97,7 @@ class TraceCapableBoundLogger(structlog.stdlib.BoundLogger):
         self._proxy_to_logger("success", event, *args, **kwargs)
 
 
-def save_error_report_processor(
-    logger: WrappedLogger, method_name: str, event_dict: EventDict
-) -> EventDict:
+def save_error_report_processor(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     """
     自定义处理器：当日志级别为 error/critical/exception 时，
     保存 JSON 报告，但自动忽略 Ctrl+C 和 任务取消 等系统级信号。
@@ -127,10 +123,7 @@ def save_error_report_processor(
         return event_dict
 
     exception_text = str(event_dict.get("exception", ""))
-    if (
-        "KeyboardInterrupt" in exception_text
-        or "CancelledError" in exception_text
-    ):
+    if "KeyboardInterrupt" in exception_text or "CancelledError" in exception_text:
         return event_dict
 
     event_text = str(event_dict.get("event", ""))
@@ -176,9 +169,7 @@ def save_error_report_processor(
     return event_dict
 
 
-def format_callsite_processor(
-    logger: WrappedLogger, method_name: str, event_dict: EventDict
-) -> EventDict:
+def format_callsite_processor(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     """
     一个自定义处理器，用于将调用点信息格式化并前置到事件消息中。
     """
@@ -191,9 +182,7 @@ def format_callsite_processor(
     # 将调用点信息和原始事件消息拼接起来
     # 我们在调用点字符串和原事件之间加了一个空格
     original_event = event_dict.get("event", "")
-    event_dict["event"] = (
-        f"{Fore.YELLOW}{callsite}{Style.RESET_ALL} {original_event}"
-    )
+    event_dict["event"] = f"{Fore.YELLOW}{callsite}{Style.RESET_ALL} {original_event}"
 
     return event_dict
 
@@ -210,9 +199,7 @@ def reduce_message(messages: List[Message]):
     return mes
 
 
-def format_event_for_console(
-    logger: WrappedLogger, method_name: str, event_dict: EventDict
-) -> EventDict:
+def format_event_for_console(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     event: Optional[Event] = deepcopy(event_dict.get("event_payload"))
     if isinstance(event, Event):
         # 使用 colorama 的颜色代码重新构建主事件消息
@@ -236,9 +223,7 @@ def format_event_for_console(
     return event_dict
 
 
-def colorize_brackets_processor(
-    logger: WrappedLogger, method_name: str, event_dict: EventDict
-) -> EventDict:
+def colorize_brackets_processor(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     """
     一个后处理器，用于给 event 字符串中所有被 [] 包围的部分上色。
     """
@@ -274,10 +259,7 @@ def safe_deepcopy_eventdict(event_dict: EventDict) -> EventDict:
             try:
                 sanitized_dict[key] = str(value)
             except Exception as e:
-                sanitized_dict[key] = (
-                    "<Unstringable object of type "
-                    f"{type(value).__name__}, error: {e}>"
-                )
+                sanitized_dict[key] = f"<Unstringable object of type {type(value).__name__}, error: {e}>"
 
     return sanitized_dict
 
@@ -320,9 +302,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
     # 使用 .critical() 或 .exception() 记录异常
     # 将 exc_info 参数设置为异常信息元组，structlog 会自动处理它
-    logger.critical(
-        "Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback)
-    )
+    logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
 
 
 def setup_logging():
@@ -333,9 +313,7 @@ def setup_logging():
     TRACE_LEVEL_NAME: str = "TRACE"
     logging.addLevelName(TRACE_LEVEL, TRACE_LEVEL_NAME)
 
-    def trace(
-        self: logging.Logger, message: str, *args: Any, **kws: Any
-    ) -> None:
+    def trace(self: logging.Logger, message: str, *args: Any, **kws: Any) -> None:
         if self.isEnabledFor(TRACE_LEVEL):
             self._log(TRACE_LEVEL, message, args, **kws)
 
@@ -345,9 +323,7 @@ def setup_logging():
     SUCCESS_LEVEL_NAME: str = "SUCCESS"
     logging.addLevelName(SUCCESS_LEVEL, SUCCESS_LEVEL_NAME)
 
-    def success(
-        self: logging.Logger, message: str, *args: Any, **kws: Any
-    ) -> None:
+    def success(self: logging.Logger, message: str, *args: Any, **kws: Any) -> None:
         if self.isEnabledFor(SUCCESS_LEVEL):
             self._log(SUCCESS_LEVEL, message, args, **kws)
 
@@ -356,9 +332,7 @@ def setup_logging():
     # 从配置读取
     log_config = core_config.get_config("log")
     LEVEL: str = log_config.get("level", "INFO").upper()
-    logger_list: List[str] = log_config.get(
-        "output", ["stdout", "stderr", "file"]
-    )
+    logger_list: List[str] = log_config.get("output", ["stdout", "stderr", "file"])
 
     final_level_styles = ConsoleRenderer.get_default_level_styles()
     level_styles = {
@@ -432,9 +406,7 @@ def setup_logging():
     if "stdout" in logger_list:
         stdout_handler = logging.StreamHandler(sys.stdout)
         stdout_handler.setLevel(LEVEL)
-        stdout_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(processors=console_processors)
-        )
+        stdout_handler.setFormatter(structlog.stdlib.ProcessorFormatter(processors=console_processors))
         root_logger.addHandler(stdout_handler)
 
     # c. 配置文件 handler (每日轮转)
@@ -446,9 +418,7 @@ def setup_logging():
             encoding="utf-8",
         )
         file_handler.setLevel(LEVEL)
-        file_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(processors=file_processors)
-        )
+        file_handler.setFormatter(structlog.stdlib.ProcessorFormatter(processors=file_processors))
         root_logger.addHandler(file_handler)
 
     # --- 最后配置 structlog ---
@@ -574,8 +544,4 @@ class HistoryLogData:
 
 
 def get_all_log_path():
-    return [
-        file
-        for file in LOG_PATH.iterdir()
-        if file.is_file() and file.suffix == ".log"
-    ]
+    return [file for file in LOG_PATH.iterdir() if file.is_file() and file.suffix == ".log"]

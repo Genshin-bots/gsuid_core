@@ -1,5 +1,5 @@
-from io import BytesIO
 import asyncio
+from io import BytesIO
 
 from aiohttp.client import ClientSession
 
@@ -49,9 +49,7 @@ class SMMS:
                     if is_auto_delete:
                         asyncio.create_task(self.delete(data["hash"]))
                     return data["url"]
-                elif (
-                    "code" in raw_data and raw_data["code"] == "image_repeated"
-                ):
+                elif "code" in raw_data and raw_data["code"] == "image_repeated":
                     logger.info("[sm.ms / upload] 图片已存在!")
                     if "images" in raw_data:
                         return raw_data["images"]

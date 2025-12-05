@@ -83,9 +83,7 @@ def split_ep(
     ]
 
 
-def split_ctg(
-    group: Union[list, ColorTextGroup], length: int
-) -> list:  # Cut strings from ColorTextGroup
+def split_ctg(group: Union[list, ColorTextGroup], length: int) -> list:  # Cut strings from ColorTextGroup
     result = []
     buffer = TextBuffer([], length)
 

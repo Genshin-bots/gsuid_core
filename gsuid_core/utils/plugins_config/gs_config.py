@@ -2,8 +2,7 @@ import json
 from typing import Any, Dict, List, Union
 from pathlib import Path
 
-from msgspec import ValidationError, to_builtins
-from msgspec import json as msgjson
+from msgspec import ValidationError, json as msgjson, to_builtins
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
@@ -47,9 +46,7 @@ class StringConfig:
             all_config_list[name] = _config
             return _config
 
-    def __init__(
-        self, config_name: str, CONFIG_PATH: Path, config_list: Dict[str, GSC]
-    ) -> None:
+    def __init__(self, config_name: str, CONFIG_PATH: Path, config_list: Dict[str, GSC]) -> None:
         self.config_list = config_list
         self.config_default = config_list
 
@@ -81,9 +78,7 @@ class StringConfig:
 
     def write_config(self):
         # 使用缓存文件避免强行关闭造成文件损坏
-        temp_file_path = (
-            self.CONFIG_PATH.parent / f"{self.CONFIG_PATH.name}.bak"
-        )
+        temp_file_path = self.CONFIG_PATH.parent / f"{self.CONFIG_PATH.name}.bak"
 
         if temp_file_path.exists():
             temp_file_path.unlink()
@@ -96,9 +91,7 @@ class StringConfig:
 
     def repair_config(self):
         with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
-            logger.warning(
-                f"[配置][{self.config_name}] 配置文件格式有变动, 已重置..."
-            )
+            logger.warning(f"[配置][{self.config_name}] 配置文件格式有变动, 已重置...")
             # 打开self.CONFIG_PATH，用json加载
             temp_config: Dict[str, Dict[str, Any]] = json.load(f)
 
@@ -137,9 +130,7 @@ class StringConfig:
             if key not in self.config:
                 self.config[key] = _defalut
             else:
-                if isinstance(_defalut, GsStrConfig) or isinstance(
-                    _defalut, GsListStrConfig
-                ):
+                if isinstance(_defalut, GsStrConfig) or isinstance(_defalut, GsListStrConfig):
                     self.config[key].options = _defalut.options  # type: ignore
 
         # 对默认值没有的值，直接删除
@@ -157,38 +148,26 @@ class StringConfig:
         if key in self.config:
             return self.config[key]
         elif key in self.config_list:
-            logger.info(
-                f"[配置][{self.config_name}] 配置项 {key} 不存在, 但是默认配置存在, 已更新..."
-            )
+            logger.info(f"[配置][{self.config_name}] 配置项 {key} 不存在, 但是默认配置存在, 已更新...")
             self.update_config()
             return self.config[key]
         else:
-            logger.warning(
-                f"[配置][{self.config_name}] 配置项 {key} 不存在也没有配置, 返回默认参数..."
-            )
+            logger.warning(f"[配置][{self.config_name}] 配置项 {key} 不存在也没有配置, 返回默认参数...")
             if default_value is None:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
             if isinstance(default_value, str):
                 return GsStrConfig("缺省值", "获取错误的配置项", default_value)
             elif isinstance(default_value, bool):
-                return GsBoolConfig(
-                    "缺省值", "获取错误的配置项", default_value
-                )
+                return GsBoolConfig("缺省值", "获取错误的配置项", default_value)
             elif isinstance(default_value, List):
-                return GsListStrConfig(
-                    "缺省值", "获取错误的配置项", default_value
-                )
+                return GsListStrConfig("缺省值", "获取错误的配置项", default_value)
             elif isinstance(default_value, Dict):
-                return GsDictConfig(
-                    "缺省值", "获取错误的配置项", default_value
-                )
+                return GsDictConfig("缺省值", "获取错误的配置项", default_value)
             else:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
-    def set_config(
-        self, key: str, value: Union[str, List, bool, Dict]
-    ) -> bool:
+    def set_config(self, key: str, value: Union[str, List, bool, Dict]) -> bool:
         if key in self.config_list:
             temp = self.config[key].data
             if type(value) == type(temp):  # noqa: E721
@@ -198,9 +177,7 @@ class StringConfig:
                 self.write_config()
                 return True
             else:
-                logger.warning(
-                    f"[配置][{self.config_name}] 配置项 {key} 写入类型不正确, 停止写入..."
-                )
+                logger.warning(f"[配置][{self.config_name}] 配置项 {key} 写入类型不正确, 停止写入...")
                 return False
         else:
             return False

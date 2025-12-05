@@ -1,6 +1,6 @@
-from typing import Dict, List, Union, Literal, Optional
 import asyncio
 import inspect
+from typing import Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -40,9 +40,7 @@ isb: List = core_plugins_config.get_config("SendButtonsPlatform").data
 isc: List = core_plugins_config.get_config("SendTemplatePlatform").data
 istry: List = core_plugins_config.get_config("TryTemplateForQQ").data
 
-enable_forward: str = core_plugins_config.get_config(
-    "EnableForwardMessage"
-).data
+enable_forward: str = core_plugins_config.get_config("EnableForwardMessage").data
 
 enable_buttons_platform = isb
 enable_markdown_platform = ism
@@ -227,9 +225,7 @@ class Bot:
         try:
             await asyncio.wait_for(self.event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.warning(
-                f"[等待回复超时] 等待回复{self.event}超时, 超时时间: {timeout}s"
-            )
+            logger.warning(f"[等待回复超时] 等待回复{self.event}超时, 超时时间: {timeout}s")
             return None
 
         self.receive_tag = False
@@ -248,9 +244,7 @@ class Bot:
 
     async def receive_mutiply_resp(
         self,
-        reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
-        ] = None,
+        reply: Optional[Union[Message, List[Message], List[str], str, bytes]] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         timeout: float = 60,
@@ -272,9 +266,7 @@ class Bot:
 
     async def send_option(
         self,
-        reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
-        ] = None,
+        reply: Optional[Union[Message, List[Message], List[str], str, bytes]] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         sep: str = "\n",
@@ -294,9 +286,7 @@ class Bot:
 
     async def receive_resp(
         self,
-        reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
-        ] = None,
+        reply: Optional[Union[Message, List[Message], List[str], str, bytes]] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         is_mutiply: bool = False,
@@ -363,23 +353,14 @@ class Bot:
                     if not success:
                         fake_buttons = parse_button(_buttons)
                         for custom_template_id in button_templates:
-                            p = parse_button(
-                                button_templates[custom_template_id]
-                            )
+                            p = parse_button(button_templates[custom_template_id])
                             if await check_same_buttons(p, fake_buttons):
-                                md.append(
-                                    MessageSegment.template_buttons(
-                                        custom_template_id
-                                    )
-                                )
+                                md.append(MessageSegment.template_buttons(custom_template_id))
                                 await self.send(md)
                                 success = True
                                 break
 
-                if (
-                    not success
-                    and self.ev.real_bot_id in enable_buttons_platform
-                ):
+                if not success and self.ev.real_bot_id in enable_buttons_platform:
                     _reply.append(MessageSegment.buttons(_buttons))
                     await self.send(_reply)
                     success = True
@@ -400,10 +381,7 @@ class Bot:
 
                 _reply.append(
                     MessageSegment.text(
-                        f"\n{command_tips}\n"
-                        + sep.join(
-                            [f"{command_start_text}{op}" for op in _options]
-                        )
+                        f"\n{command_tips}\n" + sep.join([f"{command_start_text}{op}" for op in _options])
                     )
                 )
                 await self.send(_reply)
@@ -446,11 +424,7 @@ class Bot:
         return await self.bot.target_send(
             message,
             self.ev.user_type,
-            (
-                self.ev.user_id
-                if self.ev.user_type == "direct"
-                else self.ev.group_id
-            ),
+            (self.ev.user_id if self.ev.user_type == "direct" else self.ev.group_id),
             self.ev.real_bot_id,
             self.bot_self_id,
             self.ev.msg_id,

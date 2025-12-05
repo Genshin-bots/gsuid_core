@@ -62,9 +62,7 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         "每晚凌晨四点四十自动重启core",
         False,
     ),
-    "AutoUpdateCoreTime": GsListStrConfig(
-        "自动更新Core时间设置", "每晚自动更新Core时间设置(时, 分)", ["3", "40"]
-    ),
+    "AutoUpdateCoreTime": GsListStrConfig("自动更新Core时间设置", "每晚自动更新Core时间设置(时, 分)", ["3", "40"]),
     "AutoUpdatePluginsTime": GsListStrConfig(
         "自动更新Core内所有插件时间设置",
         "每晚自动更新Core内所有插件时间设置(时, 分)",
@@ -75,9 +73,7 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
         "自动更新Core/插件时将内容通知主人",
         True,
     ),
-    "AutoRestartCoreTime": GsListStrConfig(
-        "自动重启Core时间设置", "每晚自动重启Core时间设置(时, 分)", ["4", "40"]
-    ),
+    "AutoRestartCoreTime": GsListStrConfig("自动重启Core时间设置", "每晚自动重启Core时间设置(时, 分)", ["4", "40"]),
     "AutoInstallDep": GsBoolConfig(
         "自动安装依赖",
         "安装插件时将会自动安装依赖",

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import uuid
+import traceback
+from copy import deepcopy
 from typing import Dict, List, Tuple, Union, Literal, Callable, Optional
 from pathlib import Path
 from functools import wraps
-import traceback
 
 from gsuid_core.bot import Bot
 from gsuid_core.config import core_config, plugins_sample
@@ -204,41 +204,27 @@ class SV:
             else:
                 if "prefix" not in config_plugins[plugins_name]:
                     if plugins_name in SL.plugins:
-                        config_plugins[plugins_name]["prefix"] = SL.plugins[
-                            plugins_name
-                        ].prefix
+                        config_plugins[plugins_name]["prefix"] = SL.plugins[plugins_name].prefix
                     else:
                         config_plugins[plugins_name]["prefix"] = []
                 elif isinstance(config_plugins[plugins_name]["prefix"], str):
                     if config_plugins[plugins_name]["prefix"] != "":
-                        config_plugins[plugins_name]["prefix"] = [
-                            config_plugins[plugins_name]["prefix"]
-                        ]
+                        config_plugins[plugins_name]["prefix"] = [config_plugins[plugins_name]["prefix"]]
                     else:
                         config_plugins[plugins_name]["prefix"] = []
 
                 if "allow_empty_prefix" not in config_plugins[plugins_name]:
                     if plugins_name in SL.plugins:
-                        config_plugins[plugins_name]["allow_empty_prefix"] = (
-                            SL.plugins[plugins_name].allow_empty_prefix
-                        )
+                        config_plugins[plugins_name]["allow_empty_prefix"] = SL.plugins[plugins_name].allow_empty_prefix
                     else:
-                        config_plugins[plugins_name]["allow_empty_prefix"] = (
-                            None
-                        )
+                        config_plugins[plugins_name]["allow_empty_prefix"] = None
 
                 if "disable_force_prefix" not in config_plugins[plugins_name]:
-                    config_plugins[plugins_name]["disable_force_prefix"] = (
-                        False
-                    )
+                    config_plugins[plugins_name]["disable_force_prefix"] = False
 
                 if plugins_name in SL.plugins:
-                    config_plugins[plugins_name]["force_prefix"] = SL.plugins[
-                        plugins_name
-                    ].force_prefix
-                    config_plugins[plugins_name]["alias"] = SL.plugins[
-                        plugins_name
-                    ].alias
+                    config_plugins[plugins_name]["force_prefix"] = SL.plugins[plugins_name].force_prefix
+                    config_plugins[plugins_name]["alias"] = SL.plugins[plugins_name].alias
 
                 plugins = Plugins(
                     **config_plugins[plugins_name],

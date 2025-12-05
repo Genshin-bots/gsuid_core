@@ -87,9 +87,7 @@ class CoreConfig:
             if isinstance(CONFIG_DEFAULT[key], Dict):
                 for sub_key in CONFIG_DEFAULT[key]:
                     if sub_key not in self.config[key]:
-                        self.config[key][sub_key] = CONFIG_DEFAULT[key][
-                            sub_key
-                        ]
+                        self.config[key][sub_key] = CONFIG_DEFAULT[key][sub_key]
 
         # 重新写回（必须懒加载）
         # self.write_config()
@@ -133,9 +131,7 @@ class CoreConfig:
     @overload
     def set_config(self, key: BOOL_CONFIG, value: bool) -> bool: ...
 
-    def set_config(
-        self, key: str, value: Union[str, List, Dict, int, bool]
-    ) -> bool:
+    def set_config(self, key: str, value: Union[str, List, Dict, int, bool]) -> bool:
         if key in CONFIG_DEFAULT:
             # 设置值
             self.config[key] = value
@@ -148,9 +144,7 @@ class CoreConfig:
     def lazy_write_config(self):
         self.write_config()
 
-    def lazy_set_config(
-        self, key: str, value: Union[str, List, Dict, int, bool]
-    ):
+    def lazy_set_config(self, key: str, value: Union[str, List, Dict, int, bool]):
         if key in CONFIG_DEFAULT:
             # 设置值
             self.config[key] = value

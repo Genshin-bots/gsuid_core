@@ -55,8 +55,6 @@ async def _hakush_request(
     data: Optional[AnyDict] = None,
 ) -> Optional[AnyDict]:
     async with AsyncClient(timeout=None) as client:
-        req = await client.request(
-            method, url=url, headers=header, params=params, json=data
-        )
+        req = await client.request(method, url=url, headers=header, params=params, json=data)
         data = req.json()
         return data

@@ -93,17 +93,12 @@ class GsLoginFormAdmin(UserLoginFormAdmin):
 
     @property
     def route_page(self) -> Callable:
-        async def route(
-            request: Request, result=Depends(super(FormAdmin, self).route_page)
-        ):
+        async def route(request: Request, result=Depends(super(FormAdmin, self).route_page)):
             if request.user:
                 raise HTTPException(
                     status_code=status.HTTP_307_TEMPORARY_REDIRECT,
                     detail="已经登陆过啦~",
-                    headers={
-                        "location": request.query_params.get("redirect")
-                        or "/genshinuid"
-                    },
+                    headers={"location": request.query_params.get("redirect") or "/genshinuid"},
                 )
             return result
 
@@ -142,9 +137,7 @@ class GsUserRegFormAdmin(UserRegFormAdmin):
             response: Response,
             result: BaseApiOut = Depends(super().route_submit),  # type: ignore
         ):
-            if (
-                result.status == 0 and result.code == 0
-            ):  # 登录成功,设置用户信息
+            if result.status == 0 and result.code == 0:  # 登录成功,设置用户信息
                 response.set_cookie(
                     "Authorization",
                     f"bearer {result.data.access_token}",  # type: ignore
@@ -289,9 +282,7 @@ class GsAdminSite(GsAuthAdminSite):
         app.logo = "https://s2.loli.net/2022/01/31/kwCIl3cF1Z2GxnR.png"
         return app
 
-    def register_admin(
-        self, *admin_cls: Type[BaseAdminT], _ADD: bool = False
-    ) -> Type[BaseAdminT]:
+    def register_admin(self, *admin_cls: Type[BaseAdminT], _ADD: bool = False) -> Type[BaseAdminT]:
         plugin_name = get_caller_plugin_name()
         if plugin_name and not _ADD:
             if plugin_name not in self.plugins_page:
@@ -300,19 +291,9 @@ class GsAdminSite(GsAuthAdminSite):
         else:
             [self._registered.update({cls: None}) for cls in admin_cls if cls]
             if hasattr(self, "plugins_page"):
-                keys_to_move_last_set = set(
-                    self.plugins_page
-                )  # 转换为集合加速查找
-                front = {
-                    k: v
-                    for k, v in self._registered.items()
-                    if k not in keys_to_move_last_set
-                }
-                back = {
-                    k: v
-                    for k, v in self._registered.items()
-                    if k in keys_to_move_last_set
-                }
+                keys_to_move_last_set = set(self.plugins_page)  # 转换为集合加速查找
+                front = {k: v for k, v in self._registered.items() if k not in keys_to_move_last_set}
+                back = {k: v for k, v in self._registered.items() if k in keys_to_move_last_set}
                 self._registered = {**front, **back}
 
         return admin_cls[0]
@@ -388,15 +369,11 @@ class GsAdminModel(admin.ModelAdmin):
         obj: PageSchemaAdmin = None,  # type: ignore
         action: str = None,  # type: ignore
     ) -> bool:
-        return await super().has_page_permission(
-            request, obj, action
-        ) and await request.auth.requires(roles="root", response=False)(
-            request
-        )
+        return await super().has_page_permission(request, obj, action) and await request.auth.requires(
+            roles="root", response=False
+        )(request)
 
-    def calc_filter_clause(
-        self, data: Dict[str, Any]
-    ) -> List[BinaryExpression]:
+    def calc_filter_clause(self, data: Dict[str, Any]) -> List[BinaryExpression]:
         lst = []
         for k, v in data.items():
             sqlfield = self._filter_entities.get(k)
@@ -419,11 +396,9 @@ class GsAdminPage(admin.PageAdmin):
         obj: PageSchemaAdmin = None,  # type: ignore
         action: str = None,  # type: ignore
     ) -> bool:
-        return await super().has_page_permission(
-            request, obj, action
-        ) and await request.auth.requires(roles="root", response=False)(
-            request
-        )
+        return await super().has_page_permission(request, obj, action) and await request.auth.requires(
+            roles="root", response=False
+        )(request)
 
 
 # 注册自定义首页
@@ -452,9 +427,7 @@ class MyHomeAdmin(admin.HomeAdmin):
                 column=4,
                 items=[
                     Property.Item(label="system", content=platform.system()),
-                    Property.Item(
-                        label="python", content=platform.python_version()
-                    ),
+                    Property.Item(label="python", content=platform.python_version()),
                     Property.Item(label="version", content=gscore_version),
                     Property.Item(label="license", content="GPLv3"),
                 ],
@@ -769,16 +742,12 @@ class UserBindFormAdmin(GsNormalForm):
         cookie: str = Field(..., title="Cookie或者Login_ticket")  # type: ignore
 
     # 处理表单提交数据
-    async def handle(
-        self, request: Request, data: schema, **kwargs
-    ) -> BaseApiOut[Any]:
+    async def handle(self, request: Request, data: schema, **kwargs) -> BaseApiOut[Any]:
         try:
             im = await _deal_ck(data.bot_id, data.cookie, data.user_id)
         except Exception as e:
             logger.warning(e)
-            return BaseApiOut(
-                status=-1, msg="你输入的CK可能已经失效/或者该用户ID未绑定UID"
-            )  # type: ignore
+            return BaseApiOut(status=-1, msg="你输入的CK可能已经失效/或者该用户ID未绑定UID")  # type: ignore
         ok_num = im.count("成功")
         if ok_num < 1:
             return BaseApiOut(status=-1, msg=im)  # type: ignore

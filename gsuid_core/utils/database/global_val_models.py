@@ -1,7 +1,6 @@
 import enum
 from typing import Any, Dict, List, Optional
-from datetime import date as ymddate
-from datetime import datetime, timedelta
+from datetime import date as ymddate, datetime, timedelta
 
 from sqlmodel import Field, Index, col, func, delete, select
 from sqlalchemy import UniqueConstraint, distinct
@@ -136,19 +135,12 @@ class CoreDataSummary(BaseIDModel, table=True):
             return result
 
         # 查询2: 指定机器人数据
-        filtered_query = (
-            select(cls)
-            .where(cls.date >= thirty_days_ago)
-            .where(cls.date < today)
-            .order_by(col(cls.date))
-        )
+        filtered_query = select(cls).where(cls.date >= thirty_days_ago).where(cls.date < today).order_by(col(cls.date))
         # 动态添加过滤条件
         if bot_id:
             filtered_query = filtered_query.where(cls.bot_id == bot_id)
         if bot_self_id:
-            filtered_query = filtered_query.where(
-                cls.bot_self_id == bot_self_id
-            )
+            filtered_query = filtered_query.where(cls.bot_self_id == bot_self_id)
 
         filtered_rows = (await session.execute(filtered_query)).scalars().all()
 
@@ -167,9 +159,7 @@ class CoreDataSummary(BaseIDModel, table=True):
             bot_image.append(getattr(row, "image", 0) if row else 0)
             bot_command.append(getattr(row, "command", 0) if row else 0)
             bot_user_count.append(getattr(row, "user_count", 0) if row else 0)
-            bot_group_count.append(
-                getattr(row, "group_count", 0) if row else 0
-            )
+            bot_group_count.append(getattr(row, "group_count", 0) if row else 0)
 
         result.update(
             {
@@ -223,9 +213,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         cls,
         session: AsyncSession,
     ):
-        result = (
-            select(col(cls.date)).distinct().order_by(col(cls.date).desc())
-        )
+        result = select(col(cls.date)).distinct().order_by(col(cls.date).desc())
         r = await session.execute(result)
         return r.scalars().all()
 
@@ -245,9 +233,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         {"extend_existing": True},
     )
 
-    data_type: DataType = Field(
-        title="数据类型", default=DataType.USER, index=True, max_length=64
-    )  # user or group
+    data_type: DataType = Field(title="数据类型", default=DataType.USER, index=True, max_length=64)  # user or group
     target_id: str = Field(title="数据ID", index=True, max_length=64)
     command_name: str = Field(title="指令名称", max_length=100)
     command_count: int = Field(title="指令调用次数", default=0)
@@ -418,13 +404,9 @@ class CoreDataAnalysis(BaseIDModel, table=True):
                 cls.bot_id == bot_id,
             )
         if bot_self_id:
-            past_targets_query = past_targets_query.where(
-                cls.bot_self_id == bot_self_id
-            )
+            past_targets_query = past_targets_query.where(cls.bot_self_id == bot_self_id)
 
-        new_targets_query = select(
-            func.count(distinct(col(cls.target_id)))
-        ).where(
+        new_targets_query = select(func.count(distinct(col(cls.target_id)))).where(
             cls.data_type == data_type,
             cls.date == today,
             col(cls.target_id).not_in(past_targets_query),  # type: ignore
@@ -432,9 +414,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         if bot_id:
             new_targets_query = new_targets_query.where(cls.bot_id == bot_id)
         if bot_self_id:
-            new_targets_query = new_targets_query.where(
-                cls.bot_self_id == bot_self_id
-            )
+            new_targets_query = new_targets_query.where(cls.bot_self_id == bot_self_id)
 
         new_targets_count_result = await session.execute(new_targets_query)
         stats["new"] = new_targets_count_result.scalar_one()
@@ -451,17 +431,11 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         )
 
         if bot_id:
-            recent_active_subquery = recent_active_subquery.where(
-                cls.bot_id == bot_id
-            )
+            recent_active_subquery = recent_active_subquery.where(cls.bot_id == bot_id)
         if bot_self_id:
-            recent_active_subquery = recent_active_subquery.where(
-                cls.bot_self_id == bot_self_id
-            )
+            recent_active_subquery = recent_active_subquery.where(cls.bot_self_id == bot_self_id)
 
-        out_targets_query = select(
-            func.count(distinct(col(cls.target_id)))
-        ).where(
+        out_targets_query = select(func.count(distinct(col(cls.target_id)))).where(
             cls.data_type == data_type,
             cls.date >= thirty_days_ago,
             cls.date < today,
@@ -471,43 +445,27 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         if bot_id:
             out_targets_query = out_targets_query.where(cls.bot_id == bot_id)
         if bot_self_id:
-            out_targets_query = out_targets_query.where(
-                cls.bot_self_id == bot_self_id
-            )
+            out_targets_query = out_targets_query.where(cls.bot_self_id == bot_self_id)
 
         out_targets_result = await session.execute(out_targets_query)
         out_targets_count = out_targets_result.scalar_one()
 
         # The denominator query for the rate calculation
-        total_targets_in_30_days_query = select(
-            func.count(distinct(col(cls.target_id)))
-        ).where(
+        total_targets_in_30_days_query = select(func.count(distinct(col(cls.target_id)))).where(
             cls.data_type == data_type,
             cls.date >= thirty_days_ago,
             cls.date < today,
         )
         if bot_id:
-            total_targets_in_30_days_query = (
-                total_targets_in_30_days_query.where(cls.bot_id == bot_id)
-            )
+            total_targets_in_30_days_query = total_targets_in_30_days_query.where(cls.bot_id == bot_id)
         if bot_self_id:
-            total_targets_in_30_days_query = (
-                total_targets_in_30_days_query.where(
-                    cls.bot_self_id == bot_self_id
-                )
-            )
+            total_targets_in_30_days_query = total_targets_in_30_days_query.where(cls.bot_self_id == bot_self_id)
 
-        total_targets_result = await session.execute(
-            total_targets_in_30_days_query
-        )
+        total_targets_result = await session.execute(total_targets_in_30_days_query)
         total_targets_count = total_targets_result.scalar_one()
 
         # Calculate rate
-        out_rate = (
-            (out_targets_count / total_targets_count * 100)
-            if total_targets_count > 0
-            else 0
-        )
+        out_rate = (out_targets_count / total_targets_count * 100) if total_targets_count > 0 else 0
         stats["out_rate"] = out_rate
 
         return stats

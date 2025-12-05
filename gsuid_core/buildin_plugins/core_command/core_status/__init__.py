@@ -1,11 +1,11 @@
 from typing import Sequence
 
+import gsuid_core.global_val as gv
 from gsuid_core.sv import SV
 from gsuid_core.aps import scheduler
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-import gsuid_core.global_val as gv
 from gsuid_core.global_val import save_all_global_val
 from gsuid_core.status.draw_status import draw_status
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
@@ -31,9 +31,7 @@ async def count_group_user():
                 group_data[user.group_id] = 0
 
     for g in group_data:
-        await CoreGroup.update_data_by_xx(
-            {"group_id": g}, group_count=group_data[g]
-        )
+        await CoreGroup.update_data_by_xx({"group_id": g}, group_count=group_data[g])
 
 
 @scheduler.scheduled_job("cron", hour="0", minute="0")
@@ -82,12 +80,7 @@ async def send_core_status_msg(bot: Bot, ev: Event):
     )
 
     if ev.group_id:
-        _command = sum(
-            [
-                sum(list(local_val["group"][g].values()))
-                for g in local_val["group"]
-            ]
-        )
+        _command = sum([sum(list(local_val["group"][g].values())) for g in local_val["group"]])
     else:
         _command = sum(list(local_val["user"][ev.user_id].values()))
 

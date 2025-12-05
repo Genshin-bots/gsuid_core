@@ -88,9 +88,7 @@ def get_history_logs_page():
                 "type": "select",
                 "label": "选择日期",
                 "name": "select",
-                "options": [
-                    {"label": i.name, "value": i.name} for i in all_log_path
-                ],
+                "options": [{"label": i.name, "value": i.name} for i in all_log_path],
                 "id": "u:30962bfb9f83",
                 "multiple": False,
                 "onEvent": {
@@ -392,9 +390,7 @@ def get_history_logs_page():
                         "id": "u:b1aead938964",
                     },
                 ],
-                "editorSetting": {
-                    "mock": {"enable": True, "maxDisplayRows": 5}
-                },
+                "editorSetting": {"mock": {"enable": True, "maxDisplayRows": 5}},
                 "loadDataOnce": True,
                 "showHeader": True,
             },

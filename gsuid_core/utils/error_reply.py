@@ -34,8 +34,7 @@ CHAR_HINT = "你还没有{}的缓存噢！\n" + _CHAR_HINT
 VERIFY_HINT = f"""出现验证码!请进行[{_start}绑定设备]以解除风险！"""
 
 SK_HINT = (
-    "你还没有绑定过Stoken或者Stoken已失效~\n"
-    f"请加好友私聊Bot\n [{_start}扫码登陆] 或 [{_start}添加]后跟SK格式 以绑定SK"
+    f"你还没有绑定过Stoken或者Stoken已失效~\n请加好友私聊Bot\n [{_start}扫码登陆] 或 [{_start}添加]后跟SK格式 以绑定SK"
 )
 
 UPDATE_HINT = f"""更新失败!更多错误信息请查看控制台...
@@ -78,9 +77,7 @@ TEXT_PATH = Path(__file__).parent / "image" / "texture2d"
 is_pic_error = send_security_config.get_config("ChangeErrorToPic").data
 
 
-def get_error(
-    retcode: Union[int, str], message: Union[str, Dict, None] = None
-) -> str:
+def get_error(retcode: Union[int, str], message: Union[str, Dict, None] = None) -> str:
     if isinstance(message, str):
         _msg = message
     elif isinstance(message, Dict):
@@ -92,9 +89,7 @@ def get_error(
             _msg = "无可用信息。"
     else:
         _msg = "无可用信息。"
-    return error_dict.get(
-        int(retcode), f"未知错误, 错误码为{retcode}!\n可能的错误消息: {_msg}"
-    )
+    return error_dict.get(int(retcode), f"未知错误, 错误码为{retcode}!\n可能的错误消息: {_msg}")
 
 
 def get_error_type(retcode: Union[int, str]) -> str:
@@ -131,16 +126,10 @@ async def draw_error_img(
         error_message = "未知错误, 请检查控制台输出..."
 
     error_img = Image.open(TEXT_PATH / "error_img.png")
-    img = await get_color_bg(
-        *error_img.size, is_full=True, color=(228, 222, 210)
-    )
+    img = await get_color_bg(*error_img.size, is_full=True, color=(228, 222, 210))
     img.paste(error_img, (0, 0), error_img)
     img_draw = ImageDraw.Draw(img)
     img_draw.text((350, 646), error_type, "white", core_font(26), "mm")
-    img_draw.text(
-        (350, 695), f"错误码 {retcode}", "white", core_font(36), "mm"
-    )
-    draw_center_text_by_line(
-        img_draw, (350, 750), error_message, core_font(30), "black", 440
-    )
+    img_draw.text((350, 695), f"错误码 {retcode}", "white", core_font(36), "mm")
+    draw_center_text_by_line(img_draw, (350, 750), error_message, core_font(30), "black", 440)
     return await convert_img(img)

@@ -1,6 +1,6 @@
 import re
-from copy import deepcopy
 import random
+from copy import deepcopy
 from typing import Dict, Literal, Optional
 from pathlib import Path
 
@@ -82,12 +82,7 @@ async def get_new_help(
 ):
     help_path = get_res_path("help") / f"{plugin_name}_{pm}.jpg"
 
-    if (
-        help_path.exists()
-        and plugin_name in cache
-        and cache[plugin_name]
-        and enable_cache
-    ):
+    if help_path.exists() and plugin_name in cache and cache[plugin_name] and enable_cache:
         return await convert_img(Image.open(help_path))
 
     if banner_bg is None:
@@ -188,9 +183,7 @@ async def get_new_help(
     # 基准图
     img = crop_center_img(help_bg, w, h)
     if need_cover:
-        color = CustomizeImage.get_bg_color(
-            img, False if help_mode == "dark" else True
-        )
+        color = CustomizeImage.get_bg_color(img, False if help_mode == "dark" else True)
         if help_mode == "light":
             add_color = 40
             max_color = 255
@@ -329,13 +322,7 @@ async def get_new_help(
 
             x, y = (
                 45 + (i % column) * 490,
-                int(
-                    new_banner_h
-                    + 70 * bscale
-                    + (i // column) * 175
-                    + hs
-                    + soft
-                ),
+                int(new_banner_h + 70 * bscale + (i // column) * 175 + hs + soft),
             )
             img.paste(command_bg, (x, y), command_bg)
 

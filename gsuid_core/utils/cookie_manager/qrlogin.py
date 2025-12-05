@@ -1,8 +1,8 @@
 import io
 import json
 import base64
-from typing import Any, Tuple, Union, Literal
 import asyncio
+from typing import Any, Tuple, Union, Literal
 from pathlib import Path
 from http.cookies import SimpleCookie
 
@@ -62,9 +62,7 @@ async def refresh(
     scanned = False
     while True:
         await asyncio.sleep(2)
-        status_data = await mys_api.check_qrcode(
-            code_data["app_id"], code_data["ticket"], code_data["device"]
-        )
+        status_data = await mys_api.check_qrcode(code_data["app_id"], code_data["ticket"], code_data["device"])
         if isinstance(status_data, int):
             logger.warning("[登录]二维码已过期")
             return False, None
@@ -92,11 +90,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
 
     im = []
     im.append(MessageSegment.text("请使用米游社扫描下方二维码登录："))
-    im.append(
-        MessageSegment.image(
-            await get_qrcode_base64(code_data["url"], path, ev.bot_id)
-        )
-    )
+    im.append(MessageSegment.image(await get_qrcode_base64(code_data["url"], path, ev.bot_id)))
     im.append(
         MessageSegment.text(
             "免责声明:您将通过扫码完成获取米游社sk以及ck。\n"
@@ -125,9 +119,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         stoken = stoken_data["token"]["token"]
         mid = stoken_data["user_info"]["mid"]
         app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
-        ck = await mys_api.get_cookie_token_by_stoken(
-            stoken, account_id, app_cookie
-        )
+        ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
         if isinstance(ck, int):
             return await send_msg("[登录]获取CK失败...")
         ck = ck["cookie_token"]

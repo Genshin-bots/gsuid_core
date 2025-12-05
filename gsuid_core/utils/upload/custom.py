@@ -1,6 +1,6 @@
-from io import BytesIO
 import json
 import asyncio
+from io import BytesIO
 
 from aiohttp.client import ClientSession
 

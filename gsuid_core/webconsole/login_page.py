@@ -17,7 +17,12 @@ def attach_page_head(page: Page) -> Page:
         Html(html=login_html),
         Grid(
             columns=[
-                {"body": [page.body], "lg": 3, "md": 4, "valign": "middle"}
+                {
+                    "body": [page.body],
+                    "lg": 3,
+                    "md": 4,
+                    "valign": "middle",
+                }
             ],
             align="center",
             valign="middle",
@@ -56,9 +61,7 @@ def route_logout(self):
     async def user_logout(request: Request):
         token_value = request.auth.backend.get_user_token(request=request)
         with contextlib.suppress(Exception):
-            await self.auth.backend.token_store.destroy_token(
-                token=token_value
-            )
+            await self.auth.backend.token_store.destroy_token(token=token_value)
         response = RedirectResponse(url="/genshinuid")
         response.delete_cookie("Authorization")
         return response

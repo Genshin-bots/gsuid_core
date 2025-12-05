@@ -1,6 +1,6 @@
 import random
-from typing import Dict, List
 import asyncio
+from typing import Dict, List
 
 from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
@@ -20,15 +20,11 @@ GAME_NAME_MAP = {
 async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
     sign_title = f"[{game_name}] [签到]"
     error_msg = get_error(retcode)
-    logger.warning(
-        f"{sign_title} {uid} 出错, 错误码{retcode}, 错误消息{error_msg}!"
-    )
+    logger.warning(f"{sign_title} {uid} 出错, 错误码{retcode}, 错误消息{error_msg}!")
     if retcode == 10001 or retcode == -100:
         ck = await GsUser.get_user_cookie_by_uid(uid, game_name)
         if ck:
-            await GsUser.update_data_by_uid_without_bot_id(
-                uid, game_name, status="error"
-            )
+            await GsUser.update_data_by_uid_without_bot_id(uid, game_name, status="error")
     return f"[{game_name}] 签到失败!{error_msg}"
 
 
@@ -70,30 +66,22 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                         Header["x-rpc-challenge"] = ch
                         Header["x-rpc-validate"] = vl
                         Header["x-rpc-seccode"] = f"{vl}|jordan"
-                        logger.info(
-                            f"{sign_title} {uid} 已获取验证码, 等待时间{delay}秒"
-                        )
+                        logger.info(f"{sign_title} {uid} 已获取验证码, 等待时间{delay}秒")
                         await asyncio.sleep(delay)
                     else:
                         delay = 605 + random.randint(1, 120)
-                        logger.info(
-                            f"{sign_title} {uid} 未获取验证码,等待{delay}秒后重试..."
-                        )
+                        logger.info(f"{sign_title} {uid} 未获取验证码,等待{delay}秒后重试...")
                         await asyncio.sleep(delay)
                     continue
                 else:
-                    logger.info(
-                        "配置文件暂未开启[跳过无感验证],跳过本次签到任务..."
-                    )
+                    logger.info("配置文件暂未开启[跳过无感验证],跳过本次签到任务...")
                 return "签到失败...出现验证码!"
             # 成功签到!
             else:
                 if index == 0:
                     logger.info(f"{sign_title} {uid} 该用户无校验码!")
                 else:
-                    logger.info(
-                        f"{sign_title} [无感验证] {uid} 该用户重试 {index} 次验证成功!"
-                    )
+                    logger.info(f"{sign_title} [无感验证] {uid} 该用户重试 {index} 次验证成功!")
                 break
         elif is_os and (sign_data["code"] == "ok"):
             # 国际服签到无risk_code字段
@@ -131,9 +119,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
         sign_missed -= 1
     sign_missed = sign_info.get("sign_cnt_missed") or sign_missed
     im = f"{mes_im}!\n{get_im}\n🚨本月漏签次数：{sign_missed}"
-    logger.info(
-        f"✅ {sign_title} UID{uid} 签到完成!\n📝结果: {mes_im}\n🚨漏签次数: {sign_missed}"
-    )
+    logger.info(f"✅ {sign_title} UID{uid} 签到完成!\n📝结果: {mes_im}\n🚨漏签次数: {sign_missed}")
     return im
 
 
@@ -150,9 +136,7 @@ async def single_daily_sign(
     if gid == "on":
         if qid not in private_msgs:
             private_msgs[qid] = []
-        private_msgs[qid].append(
-            {"bot_id": bot_id, "uid": uid, "msg": [MessageSegment.text(im)]}
-        )
+        private_msgs[qid].append({"bot_id": bot_id, "uid": uid, "msg": [MessageSegment.text(im)]})
     else:
         # 向群消息推送列表添加这个群
         if gid not in group_msgs:
@@ -190,11 +174,7 @@ async def daily_sign(game_name: str):
         )
         _switch = getattr(
             user,
-            (
-                f"{game_name}_sign_switch"
-                if game_name and game_name != "gs"
-                else "sign_switch"
-            ),
+            (f"{game_name}_sign_switch" if game_name and game_name != "gs" else "sign_switch"),
         )
         if _switch != "off" and not user.status and _uid:
             uid_list.append(_uid)
@@ -207,19 +187,11 @@ async def daily_sign(game_name: str):
                 user.bot_id,
                 getattr(
                     user,
-                    (
-                        f"{game_name}_uid"
-                        if game_name and game_name != "gs"
-                        else "uid"
-                    ),
+                    (f"{game_name}_uid" if game_name and game_name != "gs" else "uid"),
                 ),
                 getattr(
                     user,
-                    (
-                        f"{game_name}_sign_switch"
-                        if game_name and game_name != "gs"
-                        else "sign_switch"
-                    ),
+                    (f"{game_name}_sign_switch" if game_name and game_name != "gs" else "sign_switch"),
                 ),
                 user.user_id,
                 game_name,
@@ -230,9 +202,7 @@ async def daily_sign(game_name: str):
         if len(tasks) >= 1:
             await asyncio.gather(*tasks)
             delay = 30 + random.randint(3, 35)
-            logger.info(
-                f"[{game_name}] [签到] 已签到{len(tasks)}个用户, 等待{delay}秒进行下一次签到"
-            )
+            logger.info(f"[{game_name}] [签到] 已签到{len(tasks)}个用户, 等待{delay}秒进行下一次签到")
             tasks.clear()
             await asyncio.sleep(delay)
     await asyncio.gather(*tasks)

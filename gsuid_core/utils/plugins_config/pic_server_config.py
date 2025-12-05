@@ -18,7 +18,5 @@ PIC_UPLOAD_CONIFG: Dict[str, GSC] = {
     "s3_bucket": GsStrConfig("s3_bucket", "Bucket", ""),
     "s3_region": GsStrConfig("s3_region", "Region", ""),
     "custom_url": GsStrConfig("自定义上传图片API", "填入上传图片API", ""),
-    "custom_header": GsStrConfig(
-        "自定义上传图片Header", "填入上传图片hader", ""
-    ),
+    "custom_header": GsStrConfig("自定义上传图片Header", "填入上传图片hader", ""),
 }

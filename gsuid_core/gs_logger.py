@@ -12,9 +12,7 @@ class GsLogger:
         self.bot_id = bot_id
         self.bot = ws
 
-    def get_msg_send(
-        self, type: Literal["INFO", "WARNING", "ERROR", "SUCCESS"], msg: str
-    ):
+    def get_msg_send(self, type: Literal["INFO", "WARNING", "ERROR", "SUCCESS"], msg: str):
         return MessageSend(
             content=[MessageSegment.log(type, msg)],
             bot_id=self.bot_id,

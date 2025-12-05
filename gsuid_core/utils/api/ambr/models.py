@@ -100,9 +100,7 @@ class AmbrCharacter(TypedDict):
     id: int
     rank: int
     name: str
-    element: Literal[
-        "Electric", "Ice", "Wind", "Grass", "Water", "Rock", "Fire"
-    ]
+    element: Literal["Electric", "Ice", "Wind", "Grass", "Water", "Rock", "Fire"]
     weaponType: Literal[
         "WEAPON_SWORD_ONE_HAND",
         "WEAPON_CATALYST",

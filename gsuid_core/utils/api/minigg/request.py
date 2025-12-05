@@ -6,11 +6,11 @@ MiniGG Enka 加速服务不在此模块内。
 
 from __future__ import annotations
 
-from enum import Enum
 import json
+import warnings
+from enum import Enum
 from typing import Any, Dict, List, Union, Literal, Optional, cast, overload
 from pathlib import Path
-import warnings
 
 from httpx import AsyncClient
 
@@ -80,9 +80,7 @@ class APILanguages(str, Enum):
     """越南语"""
 
 
-async def get_map_data(
-    resource_name: str, map_id: str, is_cluster: bool = False
-) -> bytes:
+async def get_map_data(resource_name: str, map_id: str, is_cluster: bool = False) -> bytes:
     """返回地图信息。
 
     Args:
@@ -111,9 +109,7 @@ async def get_map_data(
         raise MiniggNotFoundError(**req.json())
 
 
-async def get_audio_info(
-    name: str, audio_id: str, language: str = "cn"
-) -> str:
+async def get_audio_info(name: str, audio_id: str, language: str = "cn") -> str:
     """`@deprecated: API is invalid` 访问 MiniGG API 获得原神角色音频信息。
 
     Args:
@@ -184,9 +180,7 @@ async def minigg_request(
         if req.status_code == 502:
             raise Exception("Minigg API is unavailable.")
         if req.status_code != 200:
-            raise Exception(
-                f"Minigg API is unavailable. (Error code: {req.status_code})"
-            )
+            raise Exception(f"Minigg API is unavailable. (Error code: {req.status_code})")
         return data
 
 
@@ -406,33 +400,23 @@ async def get_talent_info(
 
 
 @overload
-async def get_others_info(
-    type: Literal["foods"], name: str
-) -> Union[Food, int]: ...
+async def get_others_info(type: Literal["foods"], name: str) -> Union[Food, int]: ...
 
 
 @overload
-async def get_others_info(
-    type: Literal["enemies"], name: str
-) -> Union[Enemy, int]: ...
+async def get_others_info(type: Literal["enemies"], name: str) -> Union[Enemy, int]: ...
 
 
 @overload
-async def get_others_info(
-    type: Literal["domains"], name: str
-) -> Union[Domain, int]: ...
+async def get_others_info(type: Literal["domains"], name: str) -> Union[Domain, int]: ...
 
 
 @overload
-async def get_others_info(
-    type: Literal["artifacts"], name: str
-) -> Union[Artifact, int]: ...
+async def get_others_info(type: Literal["artifacts"], name: str) -> Union[Artifact, int]: ...
 
 
 @overload
-async def get_others_info(
-    type: Literal["materials"], name: str
-) -> Union[Material, int]: ...
+async def get_others_info(type: Literal["materials"], name: str) -> Union[Material, int]: ...
 
 
 async def get_others_info(

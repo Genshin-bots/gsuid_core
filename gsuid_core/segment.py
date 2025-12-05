@@ -1,14 +1,14 @@
-from io import BytesIO
 import re
 import uuid
+import random
+from io import BytesIO
 from venv import logger
 from base64 import b64decode, b64encode
-import random
 from typing import Dict, List, Tuple, Union, Literal, Optional, cast
 from pathlib import Path
 
-from PIL import Image
 import msgspec
+from PIL import Image
 
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
@@ -71,10 +71,7 @@ def process_buttons(buttons: ButtonList) -> ButtonList:
     if _is_nested_list(buttons):
         # 明确告知类型检查器这是 List[List[Button]]
         nested_buttons = cast(List[List[Button]], buttons)
-        return [
-            [_process_button(btn) for btn in sublist]
-            for sublist in nested_buttons
-        ]
+        return [[_process_button(btn) for btn in sublist] for sublist in nested_buttons]
     else:
         # 明确告知类型检查器这是 List[Button]
         flat_buttons = cast(List[Button], buttons)
@@ -93,9 +90,7 @@ def _is_nested_list(obj: ButtonList) -> bool:
         return False
 
     first = obj[0]
-    return isinstance(first, list) and (
-        not first or isinstance(first[0], Button)
-    )
+    return isinstance(first, list) and (not first or isinstance(first[0], Button))
 
 
 class MessageSegment:
@@ -107,9 +102,7 @@ class MessageSegment:
         if isinstance(img, Image.Image):
             img = img.convert("RGB")
             result_buffer = BytesIO()
-            img.save(
-                result_buffer, format="PNG", quality=pic_quality, subsampling=0
-            )
+            img.save(result_buffer, format="PNG", quality=pic_quality, subsampling=0)
             img = result_buffer.getvalue()
         elif isinstance(img, bytes):
             pass
@@ -204,9 +197,7 @@ class MessageSegment:
                 if msg.startswith("base64://"):
                     msg_list.append(Message(type="image", data=msg))
                 elif msg.startswith("http"):
-                    msg_list.append(
-                        Message(type="image", data=f"link://{msg}")
-                    )
+                    msg_list.append(Message(type="image", data=f"link://{msg}"))
                 else:
                     msg_list.append(MessageSegment.text(msg))
         return Message(type="node", data=msg_list)
@@ -252,9 +243,7 @@ class MessageSegment:
         )
 
     @staticmethod
-    def log(
-        type: Literal["INFO", "WARNING", "ERROR", "SUCCESS"], content: str
-    ) -> Message:
+    def log(type: Literal["INFO", "WARNING", "ERROR", "SUCCESS"], content: str) -> Message:
         return Message(type=f"log_{type}", data=content)
 
 
@@ -306,9 +295,7 @@ async def _image_to_local_url(image: Union[bytes, str]) -> List[Message]:
     ]
 
 
-async def _image_to_url(
-    image: Union[str, bytes], send_type: str, message: Message
-):
+async def _image_to_url(image: Union[str, bytes], send_type: str, message: Message):
     if send_type == "link_remote":
         return await _image_to_remote_url(image)
     elif (send_type == "link_local") or enable_pic_srv:
@@ -319,20 +306,14 @@ async def _image_to_url(
         return [message]
 
 
-async def _convert_message_to_image(
-    message: Message, bot_id: str, bot_self_id: str
-) -> List[Message]:
+async def _convert_message_to_image(message: Message, bot_id: str, bot_self_id: str) -> List[Message]:
     if message.data is None:
         return []
 
     send_type = send_pic_config.get_config(bot_id, "base64").data
     image_b64 = None
 
-    if (
-        message.type == "text"
-        and is_text2pic
-        and len(message.data) >= int(text2pic_limit)
-    ):
+    if message.type == "text" and is_text2pic and len(message.data) >= int(text2pic_limit):
         image_bytes = await text2pic(message.data)
         message = Message(type="image", data=image_bytes)
 
@@ -369,33 +350,23 @@ async def _convert_message_to_image(
     assert isinstance(image_bytes, bytes)
 
     if send_type == "base64":
-        return (
-            [Message(type="image", data=image_b64)]
-            if image_b64
-            else [MessageSegment.image(image_bytes)]
-        )
+        return [Message(type="image", data=image_b64)] if image_b64 else [MessageSegment.image(image_bytes)]
 
     return await _image_to_url(image_bytes, send_type, message)
 
 
-async def _convert_message(
-    message: Union[Message, str, bytes], bot_id: str, bot_self_id: str
-) -> List[Message]:
+async def _convert_message(message: Union[Message, str, bytes], bot_id: str, bot_self_id: str) -> List[Message]:
     _message = [message]
     if isinstance(message, Message):
         if message.data is None:
             return [message]
         if message.type == "image":
-            _message = await _convert_message_to_image(
-                message, bot_id, bot_self_id
-            )
+            _message = await _convert_message_to_image(message, bot_id, bot_self_id)
         elif message.type == "node":
             _temp = []
             for i in message.data:
                 if i.type == "image":
-                    _temp.extend(
-                        await _convert_message_to_image(i, bot_id, bot_self_id)
-                    )
+                    _temp.extend(await _convert_message_to_image(i, bot_id, bot_self_id))
                 else:
                     _temp.append(i)
             _message = [MessageSegment.node(_temp)]
@@ -406,15 +377,11 @@ async def _convert_message(
             _str_message = Message(type="image", data=message)
         else:
             _str_message = Message(type="text", data=message)
-        _message = await _convert_message_to_image(
-            _str_message, bot_id, bot_self_id
-        )
+        _message = await _convert_message_to_image(_str_message, bot_id, bot_self_id)
     elif isinstance(message, (bytes, bytearray, memoryview)):
         message = bytes(message)
         _bytes_message = Message(type="image", data=message)
-        _message = await _convert_message_to_image(
-            _bytes_message, bot_id, bot_self_id
-        )
+        _message = await _convert_message_to_image(_bytes_message, bot_id, bot_self_id)
     return _message
 
 
@@ -439,10 +406,7 @@ async def convert_message(
 
     # 启用了随机字符的话，随机加入字符
     if R_enabled:
-        result = "".join(
-            random.choice(R_text)
-            for _ in range(random.randint(1, len(R_text)))
-        )
+        result = "".join(random.choice(R_text) for _ in range(random.randint(1, len(R_text))))
         _message.append(MessageSegment.text(result))
 
     return _message
@@ -465,9 +429,7 @@ async def markdown_to_template_markdown(
                         for i in match_para:
                             if match_para[i]:
                                 if is_lf:
-                                    send_data = match_para[i].replace(
-                                        "\n", "\r"
-                                    )
+                                    send_data = match_para[i].replace("\n", "\r")
                                 else:
                                     send_data = match_para[i]
                                 _send_group[f"{i}"] = send_data
@@ -492,9 +454,7 @@ async def markdown_to_template_markdown(
                         )
                     )
                 else:
-                    logger.warning(
-                        "[GsCore] MD模板无匹配！将以正常消息发送..."
-                    )
+                    logger.warning("[GsCore] MD模板无匹配！将以正常消息发送...")
                     _message.append(m)
             else:
                 logger.warning("[GsCore] 未配置MD模板！将以正常消息发送...")
@@ -537,9 +497,7 @@ async def to_markdown(
                     url = await _image_to_url(m.data, send_type, m)
 
                 if url and size:
-                    _markdown_list.append(
-                        f"![图片 #{size[0]}px #{size[1]}px]({url})"
-                    )
+                    _markdown_list.append(f"![图片 #{size[0]}px #{size[1]}px]({url})")
 
         elif m.type == "text":
             assert isinstance(m.data, str)

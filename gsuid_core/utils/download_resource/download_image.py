@@ -2,8 +2,8 @@ from io import BytesIO
 from typing import Tuple, Optional
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
 import aiofiles
+from PIL import Image, UnidentifiedImageError
 from aiohttp.client import ClientSession
 from aiohttp.client_exceptions import ClientConnectorError
 
@@ -27,9 +27,7 @@ async def get_image(
                 return img.resize(size)
             return img
         except UnidentifiedImageError:
-            logger.warning(
-                f"[GsCore]{name}已存在文件读取失败, 尝试重新下载..."
-            )
+            logger.warning(f"[GsCore]{name}已存在文件读取失败, 尝试重新下载...")
 
     async with ClientSession() as sess:
         try:

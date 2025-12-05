@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from abc import abstractmethod
 import copy
 import time
 import uuid
 import random
+import asyncio
+from abc import abstractmethod
 from string import digits
 from typing import Any, Dict, Tuple, Union, Literal, Optional, overload
-import asyncio
 
 import aiohttp
 from async_timeout import timeout
@@ -15,8 +15,7 @@ from async_timeout import timeout
 from gsuid_core.bot import call_bot
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
-from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER
-from gsuid_core.utils.database.utils import SR_SERVER, ZZZ_SERVER
+from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER, SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.database.models import GsUID, GsUser
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -68,9 +67,7 @@ class BaseMysApi:
     async def _upass(self, header: Dict) -> str: ...
 
     @abstractmethod
-    async def _pass(
-        self, gt: str, ch: str, header: Dict
-    ) -> Tuple[Optional[str], Optional[str]]: ...
+    async def _pass(self, gt: str, ch: str, header: Dict) -> Tuple[Optional[str], Optional[str]]: ...
 
     async def get_uid(
         self,
@@ -115,19 +112,13 @@ class BaseMysApi:
                 condition=condition,
             )
         else:
-            return await GsUser.get_user_cookie_by_uid(
-                uid, game_name=game_name
-            )
+            return await GsUser.get_user_cookie_by_uid(uid, game_name=game_name)
 
-    async def get_stoken(
-        self, uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]:
+    async def get_stoken(self, uid: str, game_name: Optional[str] = None) -> Optional[str]:
         uid = await self.get_uid(uid, game_name)
         return await GsUser.get_user_stoken_by_uid(uid, game_name)
 
-    async def get_user_fp(
-        self, uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]:
+    async def get_user_fp(self, uid: str, game_name: Optional[str] = None) -> Optional[str]:
         uid = await self.get_uid(uid, game_name)
         data = await GsUser.get_user_attr_by_uid(
             uid,
@@ -145,9 +136,7 @@ class BaseMysApi:
             )
         return data
 
-    async def get_user_device_id(
-        self, uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]:
+    async def get_user_device_id(self, uid: str, game_name: Optional[str] = None) -> Optional[str]:
         uid = await self.get_uid(uid, game_name)
         data = await GsUser.get_user_attr_by_uid(
             uid,
@@ -207,9 +196,7 @@ class BaseMysApi:
     def get_seed(self):
         return self.get_device_id(), str(int(time.time() * 1000))
 
-    async def generate_fake_fp(
-        self, device_id: str, seed_id: str, seed_time: str
-    ):
+    async def generate_fake_fp(self, device_id: str, seed_id: str, seed_time: str):
         return await self.generate_fp(
             device_id,
             "PHK110",
@@ -217,8 +204,7 @@ class BaseMysApi:
             "OP5913L1",
             "taro",
             "1f1971b188c472f0",
-            "OnePlus/PHK110/OP5913L1:13/"
-            "SKQ1.221119.001/T.1328291_b9_41:user/release-keys",
+            "OnePlus/PHK110/OP5913L1:13/SKQ1.221119.001/T.1328291_b9_41:user/release-keys",
             seed_id,
             seed_time,
         )
@@ -269,9 +255,7 @@ class BaseMysApi:
         else:
             return res["data"]["device_fp"]
 
-    async def device_login_and_save(
-        self, device_id: str, device_fp: str, device_info: str, cookie: str
-    ):
+    async def device_login_and_save(self, device_id: str, device_fp: str, device_info: str, cookie: str):
         info = device_info.split("/")
         brand, model_name = info[0], info[1]
         body = {
@@ -320,9 +304,7 @@ class BaseMysApi:
         if isinstance(uid, bool):
             is_os = uid
             server_id = (
-                ("cn_qd01" if is_os else "cn_gf01")
-                if not self.is_sr
-                else ("prod_gf_cn" if is_os else "prod_gf_cn")
+                ("cn_qd01" if is_os else "cn_gf01") if not self.is_sr else ("prod_gf_cn" if is_os else "prod_gf_cn")
             )
         else:
             server_id = self.RECOGNIZE_SERVER.get(uid[0])
@@ -335,9 +317,7 @@ class BaseMysApi:
         else:
             _URL = self.MAPI[URL]
             HEADER = copy.deepcopy(self._HEADER)
-            HEADER["DS"] = get_ds_token(
-                ex_params if ex_params else f"role_id={uid}&server={server_id}"
-            )
+            HEADER["DS"] = get_ds_token(ex_params if ex_params else f"role_id={uid}&server={server_id}")
         HEADER.update(header)
         if cookie is not None:
             HEADER["Cookie"] = cookie
@@ -389,18 +369,14 @@ class BaseMysApi:
         return data
 
     @overload
-    async def ck_in_new_device(
-        self, uid: str, app_cookie: str
-    ) -> Tuple[str, str, str, str]: ...
+    async def ck_in_new_device(self, uid: str, app_cookie: str) -> Tuple[str, str, str, str]: ...
 
     @overload
     async def ck_in_new_device(
         self, uid: str, app_cookie: Optional[str] = None
     ) -> Optional[Tuple[str, str, str, str]]: ...
 
-    async def ck_in_new_device(
-        self, uid: str, app_cookie: Optional[str] = None
-    ):
+    async def ck_in_new_device(self, uid: str, app_cookie: Optional[str] = None):
         data = await GsUser.base_select_data(stoken=app_cookie)
         device_id = self.get_device_id()
         seed_id, seed_time = self.get_seed()
@@ -418,9 +394,7 @@ class BaseMysApi:
         if fp is None:
             fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
 
-        await self.device_login_and_save(
-            device_id, fp, device_info, app_cookie
-        )
+        await self.device_login_and_save(device_id, fp, device_info, app_cookie)
         if await GsUser.user_exists(uid, "sr" if self.is_sr else None):
             await GsUser.update_data_by_uid_without_bot_id(
                 uid, "sr" if self.is_sr else None, fp=fp, device_id=device_id
@@ -440,10 +414,7 @@ class BaseMysApi:
         time_out: Optional[int] = 300,
     ) -> Union[Dict, int]:
         if params:
-            params = {
-                k: str(v).lower() if isinstance(v, bool) else v
-                for k, v in params.items()
-            }
+            params = {k: str(v).lower() if isinstance(v, bool) else v for k, v in params.items()}
 
         logger.debug(f"[米游社请求] BaseUrl: {base_url}")
         logger.debug(f"[米游社请求] Url: {url}")
@@ -475,10 +446,7 @@ class BaseMysApi:
 
             if uid is not None:
                 try:
-                    if (
-                        "x-rpc-device_fp" not in header
-                        or "x-rpc-device_id" not in header
-                    ):
+                    if "x-rpc-device_fp" not in header or "x-rpc-device_id" not in header:
                         async with timeout(5):
                             device_id = await self.get_user_device_id(
                                 uid,
@@ -527,9 +495,7 @@ class BaseMysApi:
                     await call_bot().send("[mys_request] 请求连接错误...")
                     continue
                 except Exception as e:
-                    await call_bot().send(
-                        f"[mys_request] 请求错误, 请联系Bot主人检查控制台! 错误信息: {str(e)}"
-                    )
+                    await call_bot().send(f"[mys_request] 请求错误, 请联系Bot主人检查控制台! 错误信息: {str(e)}")
                     continue
 
                 logger.debug(raw_data)
@@ -545,17 +511,9 @@ class BaseMysApi:
                 # 做特殊处理
                 if retcode in _DEAD_CODE:
                     if uid:
-                        header["x-rpc-challenge_game"] = (
-                            "6" if self.is_sr else "2"
-                        )
-                        header["x-rpc-page"] = (
-                            "v1.4.1-rpg_#/rpg"
-                            if self.is_sr
-                            else "v4.1.5-ys_#ys"
-                        )
-                        header["x-rpc-tool-verison"] = (
-                            "v1.4.1-rpg" if self.is_sr else "v4.1.5-ys"
-                        )
+                        header["x-rpc-challenge_game"] = "6" if self.is_sr else "2"
+                        header["x-rpc-page"] = "v1.4.1-rpg_#/rpg" if self.is_sr else "v4.1.5-ys_#ys"
+                        header["x-rpc-tool-verison"] = "v1.4.1-rpg" if self.is_sr else "v4.1.5-ys"
 
                     if core_plugins_config.get_config("MysPass").data:
                         pass_header = copy.deepcopy(header)

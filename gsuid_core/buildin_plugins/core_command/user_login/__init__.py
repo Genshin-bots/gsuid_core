@@ -1,7 +1,7 @@
 import json
 import random
-from typing import Dict, List
 import asyncio
+from typing import Dict, List
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
@@ -52,9 +52,7 @@ async def send_check_cookie(bot: Bot, ev: Event):
                 True if int(user.uid[0]) > 5 else False,
             )
             if isinstance(mys_data, int):
-                await GsUser.update_data_by_uid(
-                    user.uid, ev.bot_id, cookie=None
-                )
+                await GsUser.update_data_by_uid(user.uid, ev.bot_id, cookie=None)
                 invalid_user.append(user)
                 continue
             for i in mys_data:
@@ -62,12 +60,7 @@ async def send_check_cookie(bot: Bot, ev: Event):
                     mys_data.remove(i)
     if len(user_list) > 4:
         im = f"正常Cookies数量: {len(user_list) - len(invalid_user)}"
-        invalid = "\n".join(
-            [
-                f"uid{user.uid}的Cookies是异常的!已删除该条Cookies!\n"
-                for user in invalid_user
-            ]
-        )
+        invalid = "\n".join([f"uid{user.uid}的Cookies是异常的!已删除该条Cookies!\n" for user in invalid_user])
         return_str = f"{im}\n{invalid if invalid else '无失效Cookie!'}"
     else:
         return_str = "\n".join(
@@ -100,23 +93,14 @@ async def send_check_stoken(bot: Bot, ev: Event):
     invalid_user: List[GsUser] = []
     for user in user_list:
         if user.stoken and user.mys_id:
-            mys_data = await mys_api.get_cookie_token_by_stoken(
-                "", user.mys_id, user.stoken
-            )
+            mys_data = await mys_api.get_cookie_token_by_stoken("", user.mys_id, user.stoken)
             if isinstance(mys_data, int) and user.uid:
-                await GsUser.update_data_by_uid(
-                    user.uid, ev.bot_id, stoken=None
-                )
+                await GsUser.update_data_by_uid(user.uid, ev.bot_id, stoken=None)
                 invalid_user.append(user)
                 continue
     if len(user_list) > 3:
         im = f"正常Stoken数量: {len(user_list) - len(invalid_user)}"
-        invalid = "\n".join(
-            [
-                f"uid{user.uid}的Stoken是异常的!已清除Stoken!\n"
-                for user in invalid_user
-            ]
-        )
+        invalid = "\n".join([f"uid{user.uid}的Stoken是异常的!已清除Stoken!\n" for user in invalid_user])
         return_str = f"{im}\n{invalid if invalid else '无失效Stoken!'}"
     else:
         return_str = "\n".join(
@@ -163,9 +147,7 @@ async def _send_help(bot: Bot, im):
     )
 
 
-@sv_core_user_qrcode_login.on_fullmatch(
-    ("扫码登陆", "扫码登录"), block=True, prefix=False
-)
+@sv_core_user_qrcode_login.on_fullmatch(("扫码登陆", "扫码登录"), block=True, prefix=False)
 @sv_core_user_qrcode_login.on_fullmatch(("扫码登陆", "扫码登录"), block=True)
 async def send_qrcode_login(bot: Bot, ev: Event):
     logger.info("开始执行[扫码登陆]")
@@ -173,9 +155,7 @@ async def send_qrcode_login(bot: Bot, ev: Event):
     if any(uid_list):
         im = await qrcode_login(bot, ev, ev.user_id)
     else:
-        return await bot.send(
-            "您还没有绑定原神/星铁UID！\n请先使用[绑定UID]或[sr绑定UID]..."
-        )
+        return await bot.send("您还没有绑定原神/星铁UID！\n请先使用[绑定UID]或[sr绑定UID]...")
 
     if not im:
         return

@@ -2,8 +2,8 @@ import json
 from typing import Dict, Literal
 from pathlib import Path
 
-from PIL import Image
 import aiofiles
+from PIL import Image
 
 from gsuid_core.sv import get_plugin_available_prefix
 from gsuid_core.version import __version__

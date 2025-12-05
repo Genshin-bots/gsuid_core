@@ -1,3 +1,5 @@
+import asyncio
+import sqlite3
 from typing import (
     Any,
     Dict,
@@ -8,8 +10,6 @@ from typing import (
     Optional,
     Awaitable,
 )
-import asyncio
-import sqlite3
 from functools import wraps
 from typing_extensions import ParamSpec, Concatenate
 
@@ -115,15 +115,11 @@ async def init_database():
                         # 'poolclass': StaticPool,
                     }
                 )
-                engine = create_async_engine(
-                    f"{base_url}{db_url}", **db_config
-                )
+                engine = create_async_engine(f"{base_url}{db_url}", **db_config)
                 finally_url = f"{base_url}{db_url}"
 
                 @event.listens_for(engine.sync_engine, "connect")
-                def set_sqlite_pragma(
-                    dbapi_connection: sqlite3.Connection, connection_record
-                ):
+                def set_sqlite_pragma(dbapi_connection: sqlite3.Connection, connection_record):
                     cursor = dbapi_connection.cursor()
                     cursor.execute("PRAGMA journal_mode=WAL")
                     cursor.execute("PRAGMA synchronous=NORMAL")
@@ -144,38 +140,26 @@ async def init_database():
                 try:
                     server_engine = None
                     if _db_type == "mysql":
-                        server_engine = create_engine(
-                            f"{sync_url}{db_url}", **db_config
-                        )
+                        server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
 
                         with server_engine.connect() as conn:
                             t1 = f"CREATE DATABASE IF NOT EXISTS {db_name} "
                             t2 = "CHARACTER SET utf8mb4 COLLATE "
                             t3 = "utf8mb4_unicode_ci"
                             conn.execute(text(t1 + t2 + t3))
-                            logger.success(
-                                f"[MySQL] 数据库 {db_name} 创建成功或已存在!"
-                            )
+                            logger.success(f"[MySQL] 数据库 {db_name} 创建成功或已存在!")
                     elif _db_type == "postgresql":
                         try:
-                            server_engine = create_engine(
-                                f"{sync_url}{db_url}", **db_config
-                            )
+                            server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
                             with server_engine.connect() as conn:
                                 t = f"CREATE DATABASE {db_name} WITH ENCODING "
-                                t2 = (
-                                    "'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE "
-                                )
+                                t2 = "'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE "
                                 t3 = "'en_US.UTF-8' TEMPLATE template0"
                                 conn.execute(text(t + t2 + t3))
                         except exc.ProgrammingError as e:
-                            if "already exists" in str(e) or "已经存在" in str(
-                                e
-                            ):
+                            if "already exists" in str(e) or "已经存在" in str(e):
                                 pass
-                        logger.success(
-                            f"[PostgreSQL] 数据库 {db_name} 创建成功或已存在!"
-                        )
+                        logger.success(f"[PostgreSQL] 数据库 {db_name} 创建成功或已存在!")
                 finally:
                     if server_engine:
                         server_engine.dispose()
@@ -195,9 +179,7 @@ async def init_database():
             _db_initialized = True
         except Exception as e:  # noqa: E722
             logger.exception(f"[GsCore] [数据库] 连接失败: {e}")
-            raise ValueError(
-                f"[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!"
-            )
+            raise ValueError(f"[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!")
 
 
 def with_session(
@@ -292,9 +274,7 @@ class BaseIDModel(SQLModel):
             from sqlalchemy.dialects.mysql import insert
 
             stmt = insert(cls)
-            update_dict = {
-                col: getattr(stmt.inserted, col) for col in update_key
-            }
+            update_dict = {col: getattr(stmt.inserted, col) for col in update_key}
             update_stmt = stmt.on_duplicate_key_update(**update_dict)
         else:
             raise ValueError(f"[GsCore] [数据库] 不支持 {_db_type} 数据库!")
@@ -451,9 +431,7 @@ class BaseIDModel(SQLModel):
         return data
 
     @classmethod
-    async def base_select_data(
-        cls: Type[T_BaseIDModel], **data
-    ) -> Optional[T_BaseIDModel]:
+    async def base_select_data(cls: Type[T_BaseIDModel], **data) -> Optional[T_BaseIDModel]:
         """📝简单介绍:
 
             数据库基类基础选择数据方法
@@ -674,9 +652,7 @@ class BaseModel(BaseBotIDModel):
         if bot_id is None:
             sql = select(cls).where(cls.user_id == user_id)
         else:
-            sql = select(cls).where(
-                and_(cls.user_id == user_id, cls.bot_id == bot_id)
-            )
+            sql = select(cls).where(and_(cls.user_id == user_id, cls.bot_id == bot_id))
         result = await session.execute(sql)
         data = result.scalars().all()
         return data if data else None
@@ -817,9 +793,7 @@ class BaseModel(BaseBotIDModel):
 
             🔸`int`: 成功为0, 失败为-1（未找到数据则无法更新）
         """
-        sql = update(cls).where(
-            and_(cls.user_id == user_id, cls.bot_id == bot_id)
-        )
+        sql = update(cls).where(and_(cls.user_id == user_id, cls.bot_id == bot_id))
         if data is not None:
             query = sql.values(**data)
             query.execution_options(synchronize_session="fetch")
@@ -1177,30 +1151,22 @@ class Bind(BaseModel):
         return 0
 
     @classmethod
-    async def get_bind_group_list(
-        cls: Type[T_Bind], user_id: str, bot_id: str
-    ) -> List[str]:
+    async def get_bind_group_list(cls: Type[T_Bind], user_id: str, bot_id: str) -> List[str]:
         """获取传入`user_id`和`bot_id`对应的绑定群列表"""
         data: Optional["Bind"] = await cls.select_data(user_id, bot_id)
         return data.group_id.split("_") if data and data.group_id else []
 
     @classmethod
-    async def get_bind_group(
-        cls: Type[T_Bind], user_id: str, bot_id: str
-    ) -> Optional[str]:
+    async def get_bind_group(cls: Type[T_Bind], user_id: str, bot_id: str) -> Optional[str]:
         """获取传入`user_id`和`bot_id`对应的绑定群（如多个则返回第一个）"""
         data = await cls.get_bind_group_list(user_id, bot_id)
         return data[0] if data else None
 
     @classmethod
     @with_session
-    async def get_group_all_uid(
-        cls: Type[T_Bind], session: AsyncSession, group_id: str
-    ):
+    async def get_group_all_uid(cls: Type[T_Bind], session: AsyncSession, group_id: str):
         """根据传入`group_id`获取该群号下所有绑定`uid`列表"""
-        result = await session.scalars(
-            select(cls).where(col(cls.group_id).contains(group_id))
-        )
+        result = await session.scalars(select(cls).where(col(cls.group_id).contains(group_id)))
         data = result.all()
         return data[0] if data else None
 
@@ -1247,9 +1213,7 @@ class User(BaseModel):
 
     @classmethod
     @with_session
-    async def get_user_all_data_by_user_id(
-        cls: Type[T_User], session: AsyncSession, user_id: str
-    ):
+    async def get_user_all_data_by_user_id(cls: Type[T_User], session: AsyncSession, user_id: str):
         """📝简单介绍:
 
             基础`User`类的数据选择方法, 获取该`user_id`绑定的全部数据实例
@@ -1267,9 +1231,7 @@ class User(BaseModel):
 
             🔸`Optional[T_BaseModel]`: 选中符合条件的数据列表，不存在则为`None`
         """
-        result = await session.execute(
-            select(cls).where(cls.user_id == user_id)
-        )
+        result = await session.execute(select(cls).where(cls.user_id == user_id))
         data = result.scalars().all()
         return data if data else None
 
@@ -1335,25 +1297,17 @@ class User(BaseModel):
 
     @classmethod
     @with_session
-    async def mark_invalid(
-        cls: Type[T_User], session: AsyncSession, cookie: str, mark: str
-    ):
+    async def mark_invalid(cls: Type[T_User], session: AsyncSession, cookie: str, mark: str):
         """令一个cookie所对应数据的`status`值为传入的mark
 
         例如：mark值可以是`error`, 标记该Cookie已失效
         """
-        sql = (
-            update(cls)
-            .where(and_(cls.cookie == cookie, true()))
-            .values(status=mark)
-        )
+        sql = update(cls).where(and_(cls.cookie == cookie, true())).values(status=mark)
         await session.execute(sql)
         return True
 
     @classmethod
-    async def get_user_cookie_by_uid(
-        cls: Type[T_User], uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]:
+    async def get_user_cookie_by_uid(cls: Type[T_User], uid: str, game_name: Optional[str] = None) -> Optional[str]:
         """根据传入的`uid`选择数据实例，然后返回该数据的`cookie`值
 
         如果没获取到数据则为`None`
@@ -1361,9 +1315,7 @@ class User(BaseModel):
         return await cls.get_user_attr_by_uid(uid, "cookie", game_name)
 
     @classmethod
-    async def get_user_cookie_by_user_id(
-        cls: Type[T_User], user_id: str, bot_id: str
-    ) -> Optional[str]:
+    async def get_user_cookie_by_user_id(cls: Type[T_User], user_id: str, bot_id: str) -> Optional[str]:
         """根据传入的`user_id`选择数据实例，然后返回该数据的`cookie`值
 
         如果没获取到数据则为`None`
@@ -1371,9 +1323,7 @@ class User(BaseModel):
         return await cls.get_user_attr(user_id, bot_id, "cookie")
 
     @classmethod
-    async def get_user_stoken_by_uid(
-        cls: Type[T_User], uid: str, game_name: Optional[str] = None
-    ) -> Optional[str]:
+    async def get_user_stoken_by_uid(cls: Type[T_User], uid: str, game_name: Optional[str] = None) -> Optional[str]:
         """根据传入的`uid`选择数据实例，然后返回该数据的`stoken`值
 
         如果没获取到数据则为`None`
@@ -1381,9 +1331,7 @@ class User(BaseModel):
         return await cls.get_user_attr_by_uid(uid, "stoken", game_name)
 
     @classmethod
-    async def get_user_stoken_by_user_id(
-        cls: Type[T_User], user_id: str, bot_id: str
-    ) -> Optional[str]:
+    async def get_user_stoken_by_user_id(cls: Type[T_User], user_id: str, bot_id: str) -> Optional[str]:
         """根据传入的`user_id`选择数据实例，然后返回该数据的`stoken`值
 
         如果没获取到数据则为`None`
@@ -1391,9 +1339,7 @@ class User(BaseModel):
         return await cls.get_user_attr(user_id, bot_id, "stoken")
 
     @classmethod
-    async def cookie_validate(
-        cls: Type[T_User], uid: str, game_name: Optional[str] = None
-    ) -> bool:
+    async def cookie_validate(cls: Type[T_User], uid: str, game_name: Optional[str] = None) -> bool:
         """根据传入的`uid`选择数据实例, 校验数据中的`cookie`是否有效
 
         方法是判断数据中的`status`是否为空值, 如果没有异常标记, 则为`True`
@@ -1406,9 +1352,7 @@ class User(BaseModel):
 
     @classmethod
     @with_session
-    async def get_switch_open_list(
-        cls: Type[T_User], session: AsyncSession, switch_name: str
-    ) -> List[T_User]:
+    async def get_switch_open_list(cls: Type[T_User], session: AsyncSession, switch_name: str) -> List[T_User]:
         """📝简单介绍:
 
             根据表定义的结构, 根据传入的`switch_name`, 寻找表数据中的该列
@@ -1440,9 +1384,7 @@ class User(BaseModel):
 
     @classmethod
     @with_session
-    async def get_all_user(
-        cls: Type[T_User], session: AsyncSession, without_error: bool = True
-    ):
+    async def get_all_user(cls: Type[T_User], session: AsyncSession, without_error: bool = True):
         """📝简单介绍:
 
             基础`User`类的扩展方法, 获取到全部的数据列表
@@ -1463,9 +1405,7 @@ class User(BaseModel):
             🔸`List[T_User]`: 有效数据的列表, 如没有则为`[]`
         """
         if without_error:
-            sql = select(cls).where(
-                cls.status == null(), cls.cookie != null(), cls.cookie != ""
-            )
+            sql = select(cls).where(cls.status == null(), cls.cookie != null(), cls.cookie != "")
         else:
             sql = select(cls).where(cls.cookie != null(), cls.cookie != "")
         result = await session.execute(sql)
@@ -1514,11 +1454,7 @@ class User(BaseModel):
         if push_title is None:
             return await cls.get_all_push_user_list()
         data = await cls.get_all_user()
-        return [
-            user
-            for user in data
-            if getattr(user, f"{push_title}_push_switch") != "off"
-        ]
+        return [user for user in data if getattr(user, f"{push_title}_push_switch") != "off"]
 
     @classmethod
     async def get_sign_user_list(
@@ -1529,16 +1465,10 @@ class User(BaseModel):
         if sign_title is None:
             return await cls.get_all_sign_user_list()
         data = await cls.get_all_user()
-        return [
-            user
-            for user in data
-            if getattr(user, f"{sign_title}_sign_switch") != "off"
-        ]
+        return [user for user in data if getattr(user, f"{sign_title}_sign_switch") != "off"]
 
     @classmethod
-    async def user_exists(
-        cls, uid: str, game_name: Optional[str] = None
-    ) -> bool:
+    async def user_exists(cls, uid: str, game_name: Optional[str] = None) -> bool:
         """根据传入`uid`，判定数据是否存在"""
         data = await cls.select_data_by_uid(uid, game_name)
         return True if data else False
@@ -1588,9 +1518,7 @@ class User(BaseModel):
             🔸`Optional[str]`: 如找到符合条件的cookie则返回，没有则为`None`
         """
         # 有绑定自己CK 并且该CK有效的前提下，优先使用自己CK
-        if await cls.user_exists(uid, game_name) and await cls.cookie_validate(
-            uid, game_name
-        ):
+        if await cls.user_exists(uid, game_name) and await cls.cookie_validate(uid, game_name):
             return await cls.get_user_cookie_by_uid(uid, game_name)
 
         # 自动刷新缓存
@@ -1604,11 +1532,7 @@ class User(BaseModel):
         # 随机取CK
         if condition:
             for i in condition:
-                sql = (
-                    select(cls)
-                    .where(getattr(cls, i) == condition[i])
-                    .order_by(func.random())
-                )
+                sql = select(cls).where(getattr(cls, i) == condition[i]).order_by(func.random())
                 data = await session.execute(sql)
                 user_list = data.scalars().all()
                 break
@@ -1632,17 +1556,13 @@ class User(BaseModel):
 
     @classmethod
     @with_session
-    async def delete_user_data_by_uid(
-        cls, session: AsyncSession, uid: str, game_name: Optional[str] = None
-    ) -> bool:
+    async def delete_user_data_by_uid(cls, session: AsyncSession, uid: str, game_name: Optional[str] = None) -> bool:
         """根据给定的`uid`获取数据后, 删除整行数据
 
         如果该数据存在, 删除后返回`True`, 不存在, 则返回`False`
         """
         if await cls.user_exists(uid, game_name):
-            sql = delete(cls).where(
-                getattr(cls, cls.get_gameid_name(game_name)) == uid
-            )
+            sql = delete(cls).where(getattr(cls, cls.get_gameid_name(game_name)) == uid)
             await session.execute(sql)
             return True
         return False
@@ -1660,18 +1580,14 @@ class Cache(BaseIDModel):
         game_name: Optional[str],
     ) -> Optional[str]:
         """根据给定的`uid`获取表中存在缓存的`cookie`并返回"""
-        sql = select(cls).where(
-            getattr(cls, cls.get_gameid_name(game_name)) == uid
-        )
+        sql = select(cls).where(getattr(cls, cls.get_gameid_name(game_name)) == uid)
         result = await session.execute(sql)
         data = result.scalars().all()
         return data[0].cookie if len(data) >= 1 else None
 
     @classmethod
     @with_session
-    async def delete_error_cache(
-        cls: Type[T_Cache], session: AsyncSession, user: Type["User"]
-    ) -> bool:
+    async def delete_error_cache(cls: Type[T_Cache], session: AsyncSession, user: Type["User"]) -> bool:
         """根据给定的`user`模型中, 查找该模型所有数据的status
 
         若`status != None`, 则代表该数据cookie有问题
@@ -1688,9 +1604,7 @@ class Cache(BaseIDModel):
 
     @classmethod
     @with_session
-    async def delete_all_cache(
-        cls, session: AsyncSession, user: Type["User"]
-    ) -> bool:
+    async def delete_all_cache(cls, session: AsyncSession, user: Type["User"]) -> bool:
         """删除整个表的数据
 
         根据给定的`user`模型中, 查找该模型所有数据的status
@@ -1712,22 +1626,14 @@ class Cache(BaseIDModel):
 
     @classmethod
     @with_session
-    async def refresh_cache(
-        cls, session: AsyncSession, uid: str, game_name: Optional[str] = None
-    ) -> bool:
+    async def refresh_cache(cls, session: AsyncSession, uid: str, game_name: Optional[str] = None) -> bool:
         """删除指定`uid`的数据行"""
-        await session.execute(
-            delete(cls).where(
-                getattr(cls, cls.get_gameid_name(game_name)) == uid
-            )
-        )
+        await session.execute(delete(cls).where(getattr(cls, cls.get_gameid_name(game_name)) == uid))
         return True
 
     @classmethod
     @with_session
-    async def insert_cache_data(
-        cls, session: AsyncSession, cookie: str, **data
-    ) -> bool:
+    async def insert_cache_data(cls, session: AsyncSession, cookie: str, **data) -> bool:
         """新增指定`cookie`的数据行, `**data`为数据"""
         new_data = cls(cookie=cookie, **data)
         session.add(new_data)

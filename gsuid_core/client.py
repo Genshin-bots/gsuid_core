@@ -1,13 +1,12 @@
 import sys
 import random
-from typing import Union
 import asyncio
+from typing import Union
 
 import httpx
-from models import Message, MessageSend, MessageReceive
-from msgspec import json as msgjson
-from msgspec import to_builtins
 import websockets.client
+from models import Message, MessageSend, MessageReceive
+from msgspec import json as msgjson, to_builtins
 from websockets.exceptions import ConnectionClosedError
 
 sys.path.append("..")
@@ -16,9 +15,7 @@ from segment import MessageSegment  # noqa: E402
 
 class GsClient:
     @classmethod
-    async def async_connect(
-        cls, IP: str = "localhost", PORT: Union[str, int] = "8765"
-    ):
+    async def async_connect(cls, IP: str = "localhost", PORT: Union[str, int] = "8765"):
         self = GsClient()
         cls.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot"
         print(f"连接至WS链接{self.ws_url}...")
@@ -39,9 +36,7 @@ class GsClient:
             await client.start()
 
     async def _input(self):
-        return await asyncio.get_event_loop().run_in_executor(
-            None, lambda: input("请输入消息\n")
-        )
+        return await asyncio.get_event_loop().run_in_executor(None, lambda: input("请输入消息\n"))
 
     async def send_msg(self):
         while True:

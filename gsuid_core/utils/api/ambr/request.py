@@ -8,9 +8,9 @@ from io import BytesIO
 from typing import Dict, Union, Literal, Optional, cast
 from pathlib import Path
 
+import aiofiles
 from PIL import Image
 from httpx import AsyncClient
-import aiofiles
 
 from gsuid_core.logger import logger
 
@@ -213,9 +213,7 @@ async def _ambr_request(
 ) -> Optional[AnyDict]:
     logger.debug(f"[AmbrRequest] {url} {method} {params} {data}")
     async with AsyncClient(timeout=None) as client:
-        req = await client.request(
-            method, url=url, headers=header, params=params, json=data
-        )
+        req = await client.request(method, url=url, headers=header, params=params, json=data)
         data = req.json()
         if data and "code" in data:
             data["response"] = data["code"]

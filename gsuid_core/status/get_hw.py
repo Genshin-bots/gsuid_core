@@ -88,9 +88,7 @@ async def get_disk_info():
     total_str = format_size(total_size)
     used_str = format_size(used_size)
 
-    usage_percent = (
-        round(used_size / total_size * 100, 1) if total_size > 0 else 0
-    )
+    usage_percent = round(used_size / total_size * 100, 1) if total_size > 0 else 0
     return {
         "name": f"{used_str} / {total_str}",
         "value": usage_percent,
@@ -105,16 +103,7 @@ async def get_network_info():
     await asyncio.sleep(1)  # 这个sleep是并行的关键
     after = psutil.net_io_counters()
 
-    speed_current = (
-        (
-            after.bytes_sent
-            - before.bytes_sent
-            + after.bytes_recv
-            - before.bytes_recv
-        )
-        * 8
-        / 1e6
-    )  # Mbps
+    speed_current = (after.bytes_sent - before.bytes_sent + after.bytes_recv - before.bytes_recv) * 8 / 1e6  # Mbps
 
     speed_max = 1000.0  # 默认值
     # 此部分获取最大带宽的逻辑已经是异步subprocess，无需大改
@@ -129,15 +118,9 @@ async def get_network_info():
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await proc.communicate()
-            default_interface = (
-                stdout.decode().split("dev ")[1].split()[0]
-                if "dev" in stdout.decode()
-                else None
-            )
+            default_interface = stdout.decode().split("dev ")[1].split()[0] if "dev" in stdout.decode() else None
             if default_interface:
-                with open(
-                    f"/sys/class/net/{default_interface}/speed", "r"
-                ) as f:
+                with open(f"/sys/class/net/{default_interface}/speed", "r") as f:
                     speed_max = float(f.read().strip())
         elif platform.system() == "Windows":
             proc = await asyncio.create_subprocess_exec(
@@ -156,11 +139,7 @@ async def get_network_info():
     except Exception as e:
         logger.exception(f"获取最大网络带宽失败: {e}")
 
-    usage_percent = (
-        min(round((speed_current / speed_max) * 100, 1), 100)
-        if speed_max > 0
-        else 0
-    )
+    usage_percent = min(round((speed_current / speed_max) * 100, 1), 100) if speed_max > 0 else 0
     return {
         "name": f"{speed_max:.0f}Mbps",
         "value": usage_percent,
@@ -174,11 +153,7 @@ async def get_swap_info():
     def _get_swap():
         swap = psutil.swap_memory()
         total_gb = swap.total / (1024**3)
-        name_total = (
-            f"{round(total_gb / 1024, 1)}TB"
-            if total_gb >= 1000
-            else f"{round(total_gb, 1)}GB"
-        )
+        name_total = f"{round(total_gb / 1024, 1)}TB" if total_gb >= 1000 else f"{round(total_gb, 1)}GB"
         used_gb = swap.used / (1024**3)
         name_used = f"{round(used_gb, 1)}GB"
 

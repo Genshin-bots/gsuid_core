@@ -124,9 +124,7 @@ class MihoyoAvatar(TypedDict):
     icon: str
     """在api/character接口有"""
     name: str
-    element: Literal[
-        "Geo", "Anemo", "Dendro", "Electro", "Pyro", "Cryo", "Hydro"
-    ]
+    element: Literal["Geo", "Anemo", "Dendro", "Electro", "Pyro", "Cryo", "Hydro"]
     fetter: int
     level: int
     rarity: int
@@ -1064,9 +1062,7 @@ class ComputeAvatar(TypedDict):
 class MaterialConsumeCategory(TypedDict):
     consume: List[ConsumeItem]
     avatars: List[ComputeAvatar]
-    weapons: List[
-        ConsumeItem
-    ]  # 假设 weapons 也是消耗材料的一部分，根据实际情况可能需要调整
+    weapons: List[ConsumeItem]  # 假设 weapons 也是消耗材料的一部分，根据实际情况可能需要调整
 
 
 class OverallMaterialConsume(TypedDict):
