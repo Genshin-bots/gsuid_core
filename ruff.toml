@@ -1,0 +1,12 @@
+line-length = 79
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[lint.isort]
+length-sort = true
+force-sort-within-sections = true
+known-first-party = ["gsuid_core"]
+extra-standard-library = ["typing_extensions"]
