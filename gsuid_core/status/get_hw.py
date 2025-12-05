@@ -18,10 +18,10 @@ async def get_cpu_info():
     cpu_name = "Unknown CPU"
     try:
         # 优先从 /proc/cpuinfo 获取 (Linux)
-        with open('/proc/cpuinfo', 'r') as f:
+        with open("/proc/cpuinfo", "r") as f:
             for line in f:
-                if line.startswith('model name'):
-                    cpu_name = line.split(': ')[1].strip()
+                if line.startswith("model name"):
+                    cpu_name = line.split(": ")[1].strip()
                     break
     except (FileNotFoundError, IndexError):
         # 如果失败，尝试 platform.processor()
@@ -32,7 +32,7 @@ async def get_cpu_info():
             cpu_name = "Unknown CPU"
 
     # 简化名称处理
-    cpu_name = ' '.join(cpu_name.split()[:2])
+    cpu_name = " ".join(cpu_name.split()[:2])
     cores = psutil.cpu_count(logical=True)
 
     # 等待耗时操作完成
@@ -64,7 +64,7 @@ def _get_disk_sync():
     total_size, used_size = 0, 0
     for part in psutil.disk_partitions(all=False):
         # 过滤掉非物理或特殊文件系统
-        if 'fixed' in part.opts or part.fstype != '':
+        if "fixed" in part.opts or part.fstype != "":
             try:
                 usage = psutil.disk_usage(part.mountpoint)
                 used_size += usage.used
@@ -119,30 +119,30 @@ async def get_network_info():
     speed_max = 1000.0  # 默认值
     # 此部分获取最大带宽的逻辑已经是异步subprocess，无需大改
     try:
-        if platform.system() == 'Linux':
+        if platform.system() == "Linux":
             proc = await asyncio.create_subprocess_exec(
-                'ip',
-                'route',
-                'show',
-                'default',
+                "ip",
+                "route",
+                "show",
+                "default",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await proc.communicate()
             default_interface = (
-                stdout.decode().split('dev ')[1].split()[0]
-                if 'dev' in stdout.decode()
+                stdout.decode().split("dev ")[1].split()[0]
+                if "dev" in stdout.decode()
                 else None
             )
             if default_interface:
                 with open(
-                    f'/sys/class/net/{default_interface}/speed', 'r'
+                    f"/sys/class/net/{default_interface}/speed", "r"
                 ) as f:
                     speed_max = float(f.read().strip())
-        elif platform.system() == 'Windows':
+        elif platform.system() == "Windows":
             proc = await asyncio.create_subprocess_exec(
-                'powershell',
-                '-Command',
+                "powershell",
+                "-Command",
                 "(Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}).Speed",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

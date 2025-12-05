@@ -8,18 +8,18 @@ class Trigger:
     def __init__(
         self,
         type: Literal[
-            'prefix',
-            'suffix',
-            'keyword',
-            'fullmatch',
-            'command',
-            'file',
-            'regex',
-            'message',
+            "prefix",
+            "suffix",
+            "keyword",
+            "fullmatch",
+            "command",
+            "file",
+            "regex",
+            "message",
         ],
         keyword: str,
         func: Callable,
-        prefix: str = '',
+        prefix: str = "",
         block: bool = False,
         to_me: bool = False,
     ):
@@ -37,9 +37,9 @@ class Trigger:
                 pass
             else:
                 return False
-        if self.type == 'file':
+        if self.type == "file":
             return self._check_file(self.keyword, ev)
-        return getattr(self, f'_check_{self.type}')(self.keyword, msg)
+        return getattr(self, f"_check_{self.type}")(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
         if msg.startswith(self.prefix + prefix) and not self._check_fullmatch(
@@ -68,19 +68,19 @@ class Trigger:
         return False
 
     def _check_fullmatch(self, keyword: str, msg: str) -> bool:
-        if msg == f'{self.prefix}{keyword}' and msg.startswith(self.prefix):
+        if msg == f"{self.prefix}{keyword}" and msg.startswith(self.prefix):
             return True
         return False
 
     def _check_file(self, file_type: str, ev: Event) -> bool:
         if ev.file:
-            if ev.file_name and ev.file_name.split('.')[-1] == file_type:
+            if ev.file_name and ev.file_name.split(".")[-1] == file_type:
                 return True
         return False
 
     def _check_regex(self, pattern: str, msg: str) -> bool:
         if msg.startswith(self.prefix):
-            _msg = msg.replace(self.prefix, '', 1)
+            _msg = msg.replace(self.prefix, "", 1)
             command_list = re.findall(pattern, _msg)
             if command_list:
                 return True
@@ -90,23 +90,23 @@ class Trigger:
         return True
 
     async def get_command(self, msg: Event) -> Event:
-        if self.type != 'regex':
+        if self.type != "regex":
             msg.command = self.keyword
-            msg.text = msg.raw_text.replace(self.keyword, '', 1)
+            msg.text = msg.raw_text.replace(self.keyword, "", 1)
             if self.prefix:
-                msg.text = msg.text.replace(self.prefix, '', 1)
+                msg.text = msg.text.replace(self.prefix, "", 1)
         else:
             if self.prefix:
-                msg.text = msg.text.replace(self.prefix, '', 1)
+                msg.text = msg.text.replace(self.prefix, "", 1)
             command_group = re.search(self.keyword, msg.text)
             if command_group:
                 msg.regex_dict = command_group.groupdict()
                 msg.regex_group = command_group.groups()
-                msg.command = '|'.join(
-                    [i if i is not None else '' for i in list(msg.regex_group)]
+                msg.command = "|".join(
+                    [i if i is not None else "" for i in list(msg.regex_group)]
                 )
             text_list = re.split(self.keyword, msg.raw_text)
-            msg.text = '|'.join(
-                [i if i is not None else '' for i in text_list]
+            msg.text = "|".join(
+                [i if i is not None else "" for i in text_list]
             )
         return msg

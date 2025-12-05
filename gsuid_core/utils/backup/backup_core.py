@@ -1,7 +1,7 @@
 import shutil
+from typing import List, Optional
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import backup_path, gs_data_path
@@ -18,7 +18,7 @@ def copy_and_rebase_paths(
     """
     if _paths_to_copy is None:
         paths_to_copy: List[Path] = [
-            Path(p) for p in backup_config.get_config('backup_dir').data
+            Path(p) for p in backup_config.get_config("backup_dir").data
         ]
     else:
         paths_to_copy = _paths_to_copy
@@ -31,7 +31,7 @@ def copy_and_rebase_paths(
     else:
         file_id = file_id.strip()
 
-    final_backup_dir = backup_path / f'{file_id}-{date_str}'
+    final_backup_dir = backup_path / f"{file_id}-{date_str}"
 
     if final_backup_dir.exists():
         logger.warning(f"备份目录已存在: {final_backup_dir}")
@@ -87,7 +87,7 @@ def copy_and_rebase_paths(
 
     # 最后, 打zip压缩包
     try:
-        shutil.make_archive(str(final_backup_dir), 'zip', final_backup_dir)
+        shutil.make_archive(str(final_backup_dir), "zip", final_backup_dir)
         logger.success(f"已压缩备份目录: {final_backup_dir}.zip")
     except Exception as e:
         logger.warning(f"压缩备份目录失败: {e}")

@@ -1,15 +1,15 @@
 import re
 import sys
 import time
+from types import ModuleType
+from typing import Set, Dict, List, Tuple, Union, Callable
 import asyncio
 import inspect
+from pathlib import Path
 import importlib
+from importlib import metadata
 import subprocess
 import importlib.util
-from pathlib import Path
-from types import ModuleType
-from importlib import metadata
-from typing import Set, Dict, List, Tuple, Union, Callable
 
 import toml
 from fastapi import WebSocket
@@ -25,12 +25,12 @@ except ImportError:
     from packaging.requirements import Requirement
 
 from gsuid_core.bot import _Bot
-from gsuid_core.logger import logger
 from gsuid_core.config import core_config
+from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
-auto_install_dep: bool = core_plugins_config.get_config('AutoInstallDep').data
-auto_update_dep: bool = core_plugins_config.get_config('AutoUpdateDep').data
+auto_install_dep: bool = core_plugins_config.get_config("AutoInstallDep").data
+auto_update_dep: bool = core_plugins_config.get_config("AutoUpdateDep").data
 
 core_start_def: Set[Callable] = set()
 core_shutdown_def: Set[Callable] = set()
@@ -38,16 +38,16 @@ installed_dependencies: Dict[str, str] = {}
 _module_cache: Dict[str, ModuleType] = {}
 # 忽略的基础依赖，避免重复检查
 ignore_dep = {
-    'python',
-    'fastapi',
-    'pydantic',
-    'gsuid-core',
-    'toml',
-    'packaging',
+    "python",
+    "fastapi",
+    "pydantic",
+    "gsuid-core",
+    "toml",
+    "packaging",
 }
 
-PLUGIN_PATH = Path(__file__).parent / 'plugins'
-BUILDIN_PLUGIN_PATH = Path(__file__).parent / 'buildin_plugins'
+PLUGIN_PATH = Path(__file__).parent / "plugins"
+BUILDIN_PLUGIN_PATH = Path(__file__).parent / "buildin_plugins"
 
 if not PLUGIN_PATH.exists():
     PLUGIN_PATH.mkdir(parents=True, exist_ok=True)
@@ -94,7 +94,7 @@ class GsServer:
         self, plugin: Path, plugin_parent: str, nest: bool = False
     ) -> List[Tuple[str, Path, str]]:
         module_list = []
-        init_path = plugin / '__init__.py'
+        init_path = plugin / "__init__.py"
         name = plugin.name
 
         if init_path.exists():
@@ -106,29 +106,29 @@ class GsServer:
 
             module_list.append(
                 (
-                    f'{plugin_parent}.{name}.{name}.__init__',
+                    f"{plugin_parent}.{name}.{name}.__init__",
                     init_path,
-                    'plugin',
+                    "plugin",
                 )
             )
 
         for sub_plugin in plugin.iterdir():
             if sub_plugin.is_dir():
-                plugin_path = sub_plugin / '__init__.py'
+                plugin_path = sub_plugin / "__init__.py"
                 if plugin_path.exists():
                     parent_path = str(plugin_path.parent.parent)
                     if parent_path not in sys.path:
                         sys.path.append(parent_path)
 
                     if nest:
-                        _p = f'{plugin_parent}.{name}.{name}.{sub_plugin.name}'
+                        _p = f"{plugin_parent}.{name}.{name}.{sub_plugin.name}"
                     else:
-                        _p = f'{plugin_parent}.{name}.{sub_plugin.name}'
+                        _p = f"{plugin_parent}.{name}.{sub_plugin.name}"
                     module_list.append(
                         (
-                            f'{_p}',
+                            f"{_p}",
                             plugin_path,
-                            'module',
+                            "module",
                         )
                     )
         return module_list
@@ -138,21 +138,21 @@ class GsServer:
             plugin = PLUGIN_PATH / plugin
 
         if not plugin.exists():
-            logger.warning(f'[更新] ❌ 插件{plugin.name}不存在!')
-            return f'❌ 插件{plugin.name}不存在!'
+            logger.warning(f"[更新] ❌ 插件{plugin.name}不存在!")
+            return f"❌ 插件{plugin.name}不存在!"
 
         plugin_parent = plugin.parent.name
-        if plugin.stem.startswith('_'):
+        if plugin.stem.startswith("_"):
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
-        logger.debug(f'🔜 导入{plugin.stem}中...')
-        logger.trace('===============')
+        logger.debug(f"🔜 导入{plugin.stem}中...")
+        logger.trace("===============")
         try:
             module_list = []
             if plugin.is_dir():
-                plugin_path = plugin / '__init__.py'
-                plugins_path = plugin / '__full__.py'
-                nest_path = plugin / '__nest__.py'
+                plugin_path = plugin / "__init__.py"
+                plugins_path = plugin / "__full__.py"
+                nest_path = plugin / "__nest__.py"
                 src_path = plugin / plugin.stem
 
                 # 统一添加路径
@@ -160,7 +160,7 @@ class GsServer:
                     sys.path.append(str(plugin.parent))
 
                 # 检查依赖
-                pyproject = plugin / 'pyproject.toml'
+                pyproject = plugin / "pyproject.toml"
                 if pyproject.exists():
                     check_pyproject(pyproject)
 
@@ -178,20 +178,20 @@ class GsServer:
                 elif plugin_path.exists():
                     module_list = [
                         (
-                            f'{plugin_parent}.{plugin.name}.__init__',
+                            f"{plugin_parent}.{plugin.name}.__init__",
                             plugin_path,
-                            'plugin',
+                            "plugin",
                         )
                     ]
             # 如果发现单文件，则视为单文件插件
-            elif plugin.suffix == '.py':
+            elif plugin.suffix == ".py":
                 module_list = [
-                    (f'{plugin_parent}.{plugin.name[:-3]}', plugin, 'single'),
+                    (f"{plugin_parent}.{plugin.name[:-3]}", plugin, "single"),
                 ]
             return module_list
         except Exception as e:
-            logger.error(f'❌ 插件{plugin.name}加载失败!: {e}')
-            return f'❌ 插件{plugin.name}加载失败'
+            logger.error(f"❌ 插件{plugin.name}加载失败!: {e}")
+            return f"❌ 插件{plugin.name}加载失败"
 
     def cached_import(self, module_name: str, filepath: Path, _type: str):
         if module_name in _module_cache:
@@ -217,22 +217,22 @@ class GsServer:
         end_time = time.time()
         duration = round(end_time - start_time, 2)
 
-        if _type == 'plugin':
-            logger.success(f'✅ 插件{filepath.parent.stem}导入成功!')
-        elif _type == 'single':
+        if _type == "plugin":
+            logger.success(f"✅ 插件{filepath.parent.stem}导入成功!")
+        elif _type == "single":
             logger.success(
-                f'✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒'
+                f"✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒"
             )
-        elif _type != 'full':
+        elif _type != "full":
             logger.trace(
-                f'🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒'
+                f"🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒"
             )
 
         _module_cache[module_name] = module
         return module
 
     async def load_plugins(self, dev_mode: bool = False):
-        logger.info('💖 [早柚核心]开始加载插件...')
+        logger.info("💖 [早柚核心]开始加载插件...")
         refresh_installed_dependencies()
         # fix: path append
         root_path = str(Path(__file__).parents[1])
@@ -243,12 +243,12 @@ class GsServer:
             p
             for p in list(BUILDIN_PLUGIN_PATH.iterdir())
             + list(PLUGIN_PATH.iterdir())
-            if p.is_dir() or (p.is_file() and p.suffix == '.py')
+            if p.is_dir() or (p.is_file() and p.suffix == ".py")
         ]
 
         all_plugins: List[Tuple[str, Path, str]] = []
         for plugin in plug_path_list:
-            if dev_mode and not plugin.name.endswith('-dev'):
+            if dev_mode and not plugin.name.endswith("-dev"):
                 continue
 
             d = self.load_plugin(plugin)
@@ -261,18 +261,18 @@ class GsServer:
                 self.cached_import(module_name, filepath, _type)
             except Exception as e:
                 logger.exception(
-                    f'❌ 插件{filepath.stem}导入失败, 错误代码: {e}'
+                    f"❌ 插件{filepath.stem}导入失败, 错误代码: {e}"
                 )
                 continue
 
         core_config.lazy_write_config()
-        logger.success('💖 [早柚核心] 插件加载完成!')
+        logger.success("💖 [早柚核心] 插件加载完成!")
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
         self.active_ws[bot_id] = websocket
         self.active_bot[bot_id] = bot = _Bot(bot_id, websocket)
-        logger.info(f'{bot_id}已连接！')
+        logger.info(f"{bot_id}已连接！")
         try:
             # fix: 正确处理同步和异步回调，并等待 gather
             tasks = []
@@ -302,7 +302,7 @@ class GsServer:
             del self.active_ws[bot_id]
         if bot_id in self.active_bot:
             del self.active_bot[bot_id]
-        logger.warning(f'{bot_id}已中断！')
+        logger.warning(f"{bot_id}已中断！")
 
     async def send(self, message: str, bot_id: str):
         if bot_id in self.active_ws:
@@ -331,13 +331,13 @@ class GsServer:
 
 def check_pyproject(pyproject: Path):
     try:
-        with open(pyproject, 'r', encoding='utf-8') as f:
+        with open(pyproject, "r", encoding="utf-8") as f:
             file_content = f.read()
             # 保留原有的兼容性替换
             if "extend-exclude = '''" in file_content:
                 file_content = file_content.replace(
-                    "extend-exclude = '''", ''
-                ).replace("'''", '', 1)
+                    "extend-exclude = '''", ""
+                ).replace("'''", "", 1)
             toml_data = toml.loads(file_content)
     except Exception as e:
         logger.error(f"❌ 解析 pyproject.toml 失败: {pyproject}, 错误: {e}")
@@ -347,17 +347,17 @@ def check_pyproject(pyproject: Path):
         return
 
     dependencies = []
-    if 'project' in toml_data:
-        dependencies = toml_data['project'].get('dependencies', [])
-        sp_dep = toml_data['project'].get('gscore_auto_update_dep', [])
+    if "project" in toml_data:
+        dependencies = toml_data["project"].get("dependencies", [])
+        sp_dep = toml_data["project"].get("gscore_auto_update_dep", [])
         if sp_dep:
-            logger.debug('📄 [安装/更新依赖] 特殊依赖列表如下：')
+            logger.debug("📄 [安装/更新依赖] 特殊依赖列表如下：")
             logger.debug(sp_dep)
             process_dependencies(sp_dep, update=True)
 
-    elif 'tool' in toml_data and 'poetry' in toml_data['tool']:
+    elif "tool" in toml_data and "poetry" in toml_data["tool"]:
         # 处理 Poetry 格式
-        poetry_deps = toml_data['tool']['poetry'].get('dependencies', {})
+        poetry_deps = toml_data["tool"]["poetry"].get("dependencies", {})
         for k, v in poetry_deps.items():
             # 1. 跳过 python 自身检查
             if k.lower() == "python":
@@ -372,8 +372,8 @@ def check_pyproject(pyproject: Path):
             # pip 的 ~= 表示 "Compatible release"
             # 虽然不完全等价，但在安装依赖场景下，转为 ~= 或 >= 能让 pip 读懂
             if isinstance(v, str):
-                if v.startswith('^'):
-                    v = '~=' + v[1:]
+                if v.startswith("^"):
+                    v = "~=" + v[1:]
 
                 if v == "*":
                     dependencies.append(k)
@@ -440,7 +440,7 @@ def install_packages(packages: List[str], upgrade: bool = False):
     if not packages:
         return
 
-    logger.info(f'🚀 [安装/更新依赖] 开始安装以下包: {packages}')
+    logger.info(f"🚀 [安装/更新依赖] 开始安装以下包: {packages}")
 
     # 定义镜像源列表 (名称, URL)
     # 顺序: 字节 -> 阿里 -> 清华 -> 官方
@@ -463,7 +463,7 @@ def install_packages(packages: List[str], upgrade: bool = False):
 
     # 轮询尝试
     for mirror_name, mirror_url in mirrors:
-        logger.info(f'⏳ [安装/更新依赖] 正在尝试使用 [{mirror_name}] ...')
+        logger.info(f"⏳ [安装/更新依赖] 正在尝试使用 [{mirror_name}] ...")
 
         # 组装完整命令，加入 -i 参数
         cmd = base_cmd + ["-i", mirror_url]
@@ -475,17 +475,17 @@ def install_packages(packages: List[str], upgrade: bool = False):
         retcode = execute_cmd(cmd)
 
         if retcode == 0:
-            logger.info(f'✅ [安装/更新依赖] 使用 [{mirror_name}] 安装成功!')
+            logger.info(f"✅ [安装/更新依赖] 使用 [{mirror_name}] 安装成功!")
             install_success = True
             break  # 安装成功，跳出循环
         else:
             logger.warning(
-                f'⚠️ [安装/更新依赖] 使用 [{mirror_name}] 安装失败，准备尝试下一个源...'
+                f"⚠️ [安装/更新依赖] 使用 [{mirror_name}] 安装失败，准备尝试下一个源..."
             )
 
     if not install_success:
         logger.error(
-            '❌ [安装/更新依赖] 所有源均尝试失败，请检查网络或包名是否正确。'
+            "❌ [安装/更新依赖] 所有源均尝试失败，请检查网络或包名是否正确。"
         )
 
     # 刷新依赖状态
@@ -497,7 +497,7 @@ def execute_cmd(cmd_list: List[str]):
     fix: 使用 list 传参且 shell=False，防止命令注入
     """
     cmd_str = " ".join(cmd_list)
-    logger.info(f'[CMD执行] {cmd_str}')
+    logger.info(f"[CMD执行] {cmd_str}")
 
     try:
         # shell=False 是安全的默认值
@@ -528,7 +528,7 @@ def refresh_installed_dependencies():
         # 重新扫描 distribution
         dists = list(metadata.distributions())
         for dist in dists:
-            name = dist.metadata.get('Name')
+            name = dist.metadata.get("Name")
             version = dist.version
             if name:
                 # 关键修复：存入字典时也使用规范化名字

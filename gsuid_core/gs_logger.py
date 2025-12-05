@@ -13,7 +13,7 @@ class GsLogger:
         self.bot = ws
 
     def get_msg_send(
-        self, type: Literal['INFO', 'WARNING', 'ERROR', 'SUCCESS'], msg: str
+        self, type: Literal["INFO", "WARNING", "ERROR", "SUCCESS"], msg: str
     ):
         return MessageSend(
             content=[MessageSegment.log(type, msg)],
@@ -27,13 +27,13 @@ class GsLogger:
             await self.bot.send_bytes(b)
 
     async def info(self, msg: str):
-        await self._send(msgjson.encode(self.get_msg_send('INFO', msg)))
+        await self._send(msgjson.encode(self.get_msg_send("INFO", msg)))
 
     async def warning(self, msg: str):
-        await self._send(msgjson.encode(self.get_msg_send('WARNING', msg)))
+        await self._send(msgjson.encode(self.get_msg_send("WARNING", msg)))
 
     async def error(self, msg: str):
-        await self._send(msgjson.encode(self.get_msg_send('ERROR', msg)))
+        await self._send(msgjson.encode(self.get_msg_send("ERROR", msg)))
 
     async def success(self, msg: str):
-        await self._send(msgjson.encode(self.get_msg_send('SUCCESS', msg)))
+        await self._send(msgjson.encode(self.get_msg_send("SUCCESS", msg)))

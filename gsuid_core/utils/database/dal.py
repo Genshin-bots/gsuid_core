@@ -1,9 +1,9 @@
 import re
 from typing import Dict, List, Literal, Optional
 
-from .base_models import async_maker
 from .utils import SERVER, SR_SERVER
 from .models import GsBind, GsPush, GsUser, GsCache
+from .base_models import async_maker
 
 
 class SQLA:
@@ -18,10 +18,10 @@ class SQLA:
         return await GsBind.select_data(user_id, self.bot_id)
 
     async def insert_bind_data(self, user_id: str, **data) -> int:
-        group_id = data['group_id'] if 'group_id' in data else None
-        new_uid: str = data['uid'] if 'uid' in data else ''
+        group_id = data["group_id"] if "group_id" in data else None
+        new_uid: str = data["uid"] if "uid" in data else ""
         new_uid = new_uid.strip()
-        new_sr_uid: str = data['sr_uid'] if 'sr_uid' in data else ''
+        new_sr_uid: str = data["sr_uid"] if "sr_uid" in data else ""
         new_sr_uid = new_sr_uid.strip()
         if not new_sr_uid and not new_uid:
             return -3
@@ -39,19 +39,19 @@ class SQLA:
                 group_id,
                 9,
                 True,
-                'sr',
+                "sr",
             )
             if retcode:
                 return retcode
         return 0
 
     async def delete_bind_data(self, user_id: str, **data) -> int:
-        _uid = data['uid'] if 'uid' in data else ''
-        _sr_uid = data['sr_uid'] if 'sr_uid' in data else ''
+        _uid = data["uid"] if "uid" in data else ""
+        _sr_uid = data["sr_uid"] if "sr_uid" in data else ""
         if _uid:
             return await GsBind.delete_uid(user_id, self.bot_id, _uid)
         elif _sr_uid:
-            return await GsBind.delete_uid(user_id, self.bot_id, _uid, 'sr')
+            return await GsBind.delete_uid(user_id, self.bot_id, _uid, "sr")
         else:
             return -1
 
@@ -64,7 +64,7 @@ class SQLA:
 
     async def get_all_uid_list(self) -> List[str]:
         return await GsBind.get_all_uid_list_by_game(
-            self.bot_id, 'sr' if self.is_sr else None
+            self.bot_id, "sr" if self.is_sr else None
         )
 
     async def get_bind_group_list(self, user_id: str) -> List[str]:
@@ -83,10 +83,10 @@ class SQLA:
         return await GsBind.get_uid_by_game(user_id, self.bot_id)
 
     async def get_bind_sruid_list(self, user_id: str) -> Optional[List[str]]:
-        return await GsBind.get_uid_list_by_game(user_id, self.bot_id, 'sr')
+        return await GsBind.get_uid_list_by_game(user_id, self.bot_id, "sr")
 
     async def get_bind_sruid(self, user_id: str) -> Optional[str]:
-        return await GsBind.get_uid_by_game(user_id, self.bot_id, 'sr')
+        return await GsBind.get_uid_by_game(user_id, self.bot_id, "sr")
 
     async def switch_uid(
         self, user_id: str, uid: Optional[str] = None
@@ -95,13 +95,13 @@ class SQLA:
             user_id,
             self.bot_id,
             uid,
-            'sr' if self.is_sr else None,
+            "sr" if self.is_sr else None,
         )
         if retcode == 0:
             return await GsBind.get_uid_list_by_game(
                 user_id,
                 self.bot_id,
-                'sr' if self.is_sr else None,
+                "sr" if self.is_sr else None,
             )
 
     #####################
@@ -110,7 +110,7 @@ class SQLA:
 
     async def select_user_data(self, uid: str) -> Optional[GsUser]:
         return await GsUser.select_data_by_uid(
-            uid, 'sr' if self.is_sr else None
+            uid, "sr" if self.is_sr else None
         )
 
     async def select_user_all_data_by_user_id(
@@ -125,7 +125,7 @@ class SQLA:
 
     async def select_cache_cookie(self, uid: str) -> Optional[str]:
         return await GsCache.select_cache_cookie(
-            uid, 'sr' if self.is_sr else None
+            uid, "sr" if self.is_sr else None
         )
 
     async def delete_error_cache(self) -> bool:
@@ -174,7 +174,7 @@ class SQLA:
             retcode = await GsUser.update_data_by_uid(
                 sr_uid,
                 self.bot_id,
-                'sr',
+                "sr",
                 cookie=cookie,
                 status=None,
                 stoken=stoken,
@@ -185,7 +185,7 @@ class SQLA:
             if cookie is None:
                 return False
 
-            account_id = re.search(r'account_id=(\d*)', cookie)
+            account_id = re.search(r"account_id=(\d*)", cookie)
             assert account_id is not None
             account_id = str(account_id.group(1))
 
@@ -197,16 +197,16 @@ class SQLA:
                 mys_id=account_id,
                 cookie=cookie,
                 stoken=stoken if stoken else None,
-                sign_switch='off',
-                push_switch='off',
-                bbs_switch='off',
-                draw_switch='off',
-                region=SERVER.get(uid[0], 'cn_gf01') if uid else None,
+                sign_switch="off",
+                push_switch="off",
+                bbs_switch="off",
+                draw_switch="off",
+                region=SERVER.get(uid[0], "cn_gf01") if uid else None,
                 sr_region=SR_SERVER.get(sr_uid[0], None) if sr_uid else None,
                 fp=fp,
                 device_id=device_id,
-                sr_push_switch='off',
-                sr_sign_switch='off',
+                sr_push_switch="off",
+                sr_sign_switch="off",
             )
         if retcode == 0:
             return True
@@ -215,13 +215,13 @@ class SQLA:
 
     async def update_user_data(self, uid: str, data: Dict = {}):
         return await GsUser.update_data_by_uid(
-            uid, self.bot_id, 'sr' if self.is_sr else None, **data
+            uid, self.bot_id, "sr" if self.is_sr else None, **data
         )
 
     async def delete_user_data(self, uid: str):
         if await GsUser.user_exists(uid):
             return await GsUser.delete_user_data_by_uid(
-                uid, 'sr' if self.is_sr else None
+                uid, "sr" if self.is_sr else None
             )
 
     async def delete_cache(self):
@@ -240,7 +240,7 @@ class SQLA:
         retcode = -1
         if await GsUser.user_exists(uid):
             retcode = await GsUser.update_data_by_uid(
-                uid, self.bot_id, 'sr' if self.is_sr else None, stoken=stoken
+                uid, self.bot_id, "sr" if self.is_sr else None, stoken=stoken
             )
         return bool(retcode)
 
@@ -250,7 +250,7 @@ class SQLA:
         retcode = -1
         if await GsUser.user_exists(uid):
             retcode = await GsUser.update_data_by_uid(
-                uid, self.bot_id, 'sr' if self.is_sr else None, cookie=cookie
+                uid, self.bot_id, "sr" if self.is_sr else None, cookie=cookie
             )
         return bool(retcode)
 
@@ -258,7 +258,7 @@ class SQLA:
         retcode = -1
         if await GsUser.user_exists(uid):
             retcode = await GsUser.update_data_by_uid(
-                uid, self.bot_id, 'sr' if self.is_sr else None, **data
+                uid, self.bot_id, "sr" if self.is_sr else None, **data
             )
         return bool(retcode)
 
@@ -267,21 +267,21 @@ class SQLA:
 
     async def get_user_cookie(self, uid: str) -> Optional[str]:
         return await GsUser.get_user_cookie_by_uid(
-            uid, 'sr' if self.is_sr else None
+            uid, "sr" if self.is_sr else None
         )
 
     async def get_user_cookie_by_user_id(self, user_id: str) -> Optional[str]:
         return await GsUser.get_user_cookie_by_user_id(user_id, self.bot_id)
 
     async def cookie_validate(self, uid: str) -> bool:
-        return await GsUser.cookie_validate(uid, 'sr' if self.is_sr else None)
+        return await GsUser.cookie_validate(uid, "sr" if self.is_sr else None)
 
     async def get_user_stoken_by_user_id(self, user_id: str) -> Optional[str]:
         return await GsUser.get_user_stoken_by_user_id(user_id, self.bot_id)
 
     async def get_user_stoken(self, uid: str) -> Optional[str]:
         return await GsUser.get_user_stoken_by_uid(
-            uid, 'sr' if self.is_sr else None
+            uid, "sr" if self.is_sr else None
         )
 
     async def get_all_user(self) -> List[GsUser]:
@@ -300,13 +300,13 @@ class SQLA:
         return await GsUser.get_all_push_user_list()
 
     async def get_random_cookie(self, uid: str) -> Optional[str]:
-        server = SERVER.get(uid[0], 'cn_gf01')
+        server = SERVER.get(uid[0], "cn_gf01")
         return await GsUser.get_random_cookie(
-            uid, GsCache, {'region': server}, 'sr' if self.is_sr else None
+            uid, GsCache, {"region": server}, "sr" if self.is_sr else None
         )
 
     async def get_switch_status_list(
-        self, switch: Literal['push', 'sign', 'bbs', 'sr_push', 'sr_sign']
+        self, switch: Literal["push", "sign", "bbs", "sr_push", "sr_sign"]
     ) -> List[GsUser]:
         return await GsUser.get_switch_open_list(switch)
 
@@ -317,18 +317,18 @@ class SQLA:
         await GsPush.full_insert_data(
             bot_id=self.bot_id,
             uid=uid,
-            coin_push='off',
+            coin_push="off",
             coin_value=2100,
-            coin_is_push='off',
-            resin_push='on',
+            coin_is_push="off",
+            resin_push="on",
             resin_value=140,
-            resin_is_push='off',
-            go_push='off',
+            resin_is_push="off",
+            go_push="off",
             go_value=120,
-            go_is_push='off',
-            transform_push='off',
+            go_is_push="off",
+            transform_push="off",
             transform_value=140,
-            transform_is_push='off',
+            transform_is_push="off",
         )
 
     async def update_push_data(
@@ -337,7 +337,7 @@ class SQLA:
         retcode = -1
         if await GsPush.data_exist(uid=uid):
             retcode = await GsPush.update_data_by_uid(
-                uid, self.bot_id, 'sr' if self.is_sr else None, **data
+                uid, self.bot_id, "sr" if self.is_sr else None, **data
             )
         else:
             retcode = await GsPush.full_insert_data(
@@ -348,12 +348,12 @@ class SQLA:
 
     async def change_push_status(
         self,
-        mode: Literal['coin', 'resin', 'go', 'transform'],
+        mode: Literal["coin", "resin", "go", "transform"],
         uid: str,
         bot_id: str,
         status: str,
     ):
-        await self.update_push_data(uid, bot_id, {f'{mode}_is_push': status})
+        await self.update_push_data(uid, bot_id, {f"{mode}_is_push": status})
 
     async def select_push_data(self, uid: str) -> Optional[GsPush]:
         return await GsPush.base_select_data(uid=uid)
@@ -366,7 +366,7 @@ class SQLA:
     #####################
 
     async def refresh_cache(self, uid: str):
-        await GsCache.refresh_cache(uid, 'sr' if self.is_sr else None)
+        await GsCache.refresh_cache(uid, "sr" if self.is_sr else None)
 
     async def close(self):
         async with async_maker() as session:

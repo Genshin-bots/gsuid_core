@@ -1,6 +1,6 @@
-'''Enka Network 请求模块。
+"""Enka Network 请求模块。
 MiniGG Enka 加速服务在此模块内。
-'''
+"""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ from ..utils import _HEADER
 from .models import EnkaData
 
 ADDRESS = {
-    'enka': 'https://enka.network',
-    'microgg': 'http://profile.microgg.cn',
+    "enka": "https://enka.network",
+    "microgg": "http://profile.microgg.cn",
 }
 
 
 async def get_enka_info(
-    uid: str, address: Literal['enka', 'microgg'] = 'enka'
+    uid: str, address: Literal["enka", "microgg"] = "enka"
 ) -> EnkaData:
-    '''请求 Enka Network
+    """请求 Enka Network
 
     Args:
         uid (str): 原神 UID
@@ -28,11 +28,11 @@ async def get_enka_info(
 
     Returns:
         EnkaData: Enka Network 响应数据
-    '''  # noqa: E501
+    """  # noqa: E501
     async with AsyncClient(
         base_url=ADDRESS[address],
         headers=_HEADER,
         timeout=None,
     ) as client:
-        req = await client.get(url=f'/api/uid/{uid}')
+        req = await client.get(url=f"/api/uid/{uid}")
         return req.json()

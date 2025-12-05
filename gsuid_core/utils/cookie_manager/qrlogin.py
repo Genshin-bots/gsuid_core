@@ -1,19 +1,19 @@
 import io
 import json
 import base64
+from typing import Any, Tuple, Union, Literal
 import asyncio
 from pathlib import Path
 from http.cookies import SimpleCookie
-from typing import Any, Tuple, Union, Literal
 
 import qrcode
 import aiofiles
-from qrcode.image.pil import PilImage
 from qrcode.constants import ERROR_CORRECT_L
+from qrcode.image.pil import PilImage
 
 from gsuid_core.bot import Bot
-from gsuid_core.models import Event
 from gsuid_core.logger import logger
+from gsuid_core.models import Event
 from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.api.mys_api import mys_api
 
@@ -27,30 +27,30 @@ async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
     )
     qr.add_data(url)
     qr.make(fit=True)
-    img = qr.make_image(fill_color=(255, 134, 36), back_color='white')
+    img = qr.make_image(fill_color=(255, 134, 36), back_color="white")
     assert isinstance(img, PilImage)
 
-    if bot_id == 'onebot':
+    if bot_id == "onebot":
         img = img.resize((700, 700))  # type: ignore
         img.save(  # type: ignore
             path,
-            format='PNG',
+            format="PNG",
             save_all=True,
             append_images=[img],
             duration=100,
             loop=0,
         )
-        async with aiofiles.open(path, 'rb') as fp:
+        async with aiofiles.open(path, "rb") as fp:
             img = await fp.read()
-    elif bot_id == 'onebot_v12':
+    elif bot_id == "onebot_v12":
         img_byte = io.BytesIO()
-        img.save(img_byte, format='PNG')  # type: ignore
+        img.save(img_byte, format="PNG")  # type: ignore
         img_byte = img_byte.getvalue()
-        img = f'base64://{base64.b64encode(img_byte).decode()}'
+        img = f"base64://{base64.b64encode(img_byte).decode()}"
         return img  # type: ignore
     else:
         img_byte = io.BytesIO()
-        img.save(img_byte, format='PNG')  # type: ignore
+        img.save(img_byte, format="PNG")  # type: ignore
         img = img_byte.getvalue()
 
     return img
@@ -63,46 +63,46 @@ async def refresh(
     while True:
         await asyncio.sleep(2)
         status_data = await mys_api.check_qrcode(
-            code_data['app_id'], code_data['ticket'], code_data['device']
+            code_data["app_id"], code_data["ticket"], code_data["device"]
         )
         if isinstance(status_data, int):
-            logger.warning('[登录]二维码已过期')
+            logger.warning("[登录]二维码已过期")
             return False, None
-        if status_data['stat'] == 'Scanned':
+        if status_data["stat"] == "Scanned":
             if not scanned:
-                logger.info('[登录]二维码已扫描')
+                logger.info("[登录]二维码已扫描")
                 scanned = True
             continue
-        if status_data['stat'] == 'Confirmed':
-            logger.info('[登录]二维码已确认')
+        if status_data["stat"] == "Confirmed":
+            logger.info("[登录]二维码已确认")
             break
-    return True, json.loads(status_data['payload']['raw'])
+    return True, json.loads(status_data["payload"]["raw"])
 
 
 async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
     async def send_msg(msg: str):
         await bot.send(msg)
-        return ''
+        return ""
 
     code_data = await mys_api.create_qrcode_url()
     if isinstance(code_data, int):
-        return await send_msg('[登录]链接创建失败...')
+        return await send_msg("[登录]链接创建失败...")
 
-    path = Path(__file__).parent / f'{user_id}.gif'
+    path = Path(__file__).parent / f"{user_id}.gif"
 
     im = []
-    im.append(MessageSegment.text('请使用米游社扫描下方二维码登录：'))
+    im.append(MessageSegment.text("请使用米游社扫描下方二维码登录："))
     im.append(
         MessageSegment.image(
-            await get_qrcode_base64(code_data['url'], path, ev.bot_id)
+            await get_qrcode_base64(code_data["url"], path, ev.bot_id)
         )
     )
     im.append(
         MessageSegment.text(
-            '免责声明:您将通过扫码完成获取米游社sk以及ck。\n'
-            '我方仅提供米游社查询及相关游戏内容服务,\n'
-            '若您的账号封禁、被盗等处罚与我方无关。\n'
-            '害怕风险请勿扫码~'
+            "免责声明:您将通过扫码完成获取米游社sk以及ck。\n"
+            "我方仅提供米游社查询及相关游戏内容服务,\n"
+            "若您的账号封禁、被盗等处罚与我方无关。\n"
+            "害怕风险请勿扫码~"
         )
     )
     await bot.send(MessageSegment.node(im))
@@ -113,38 +113,38 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
     status, game_token_data = await refresh(code_data)
     if status:
         assert game_token_data is not None  # 骗过 pyright
-        logger.info('[登录]game_token获取成功')
+        logger.info("[登录]game_token获取成功")
         cookie_token = await mys_api.get_cookie_token(**game_token_data)
         stoken_data = await mys_api.get_stoken_by_game_token(
-            account_id=int(game_token_data['uid']),
-            game_token=game_token_data['token'],
+            account_id=int(game_token_data["uid"]),
+            game_token=game_token_data["token"],
         )
         if isinstance(stoken_data, int):
-            return await send_msg('[登录]获取SK失败...')
-        account_id = game_token_data['uid']
-        stoken = stoken_data['token']['token']
-        mid = stoken_data['user_info']['mid']
-        app_cookie = f'stuid={account_id};stoken={stoken};mid={mid}'
+            return await send_msg("[登录]获取SK失败...")
+        account_id = game_token_data["uid"]
+        stoken = stoken_data["token"]["token"]
+        mid = stoken_data["user_info"]["mid"]
+        app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
         ck = await mys_api.get_cookie_token_by_stoken(
             stoken, account_id, app_cookie
         )
         if isinstance(ck, int):
-            return await send_msg('[登录]获取CK失败...')
-        ck = ck['cookie_token']
+            return await send_msg("[登录]获取CK失败...")
+        ck = ck["cookie_token"]
 
         if isinstance(cookie_token, int):
-            return await send_msg('[登录]获取CK失败...')
+            return await send_msg("[登录]获取CK失败...")
 
         return SimpleCookie(
             {
-                'stoken_v2': stoken_data['token']['token'],
-                'stuid': stoken_data['user_info']['aid'],
-                'mid': stoken_data['user_info']['mid'],
-                'cookie_token': cookie_token['cookie_token'],
+                "stoken_v2": stoken_data["token"]["token"],
+                "stuid": stoken_data["user_info"]["aid"],
+                "mid": stoken_data["user_info"]["mid"],
+                "cookie_token": cookie_token["cookie_token"],
             }
-        ).output(header='', sep=';')
+        ).output(header="", sep=";")
     else:
-        logger.warning('[登录]game_token获取失败')
-        im = '[登录]game_token获取失败: 二维码已过期'
+        logger.warning("[登录]game_token获取失败")
+        im = "[登录]game_token获取失败: 二维码已过期"
 
     return await send_msg(im)

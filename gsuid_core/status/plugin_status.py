@@ -12,4 +12,4 @@ def register_status(
     plugin_name: str,
     plugin_status: Dict[str, Callable[..., Awaitable[Union[str, int, float]]]],
 ):
-    plugins_status[plugin_name] = {'icon': ICON, 'status': plugin_status}
+    plugins_status[plugin_name] = {"icon": ICON, "status": plugin_status}

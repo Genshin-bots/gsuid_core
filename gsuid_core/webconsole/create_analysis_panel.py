@@ -5,16 +5,16 @@ from typing import Optional
 from gsuid_core.global_val import (
     get_all_bot_dict,
 )
-from gsuid_core.utils.database.global_val_models import (
-    CoreDataSummary,
-    CoreDataAnalysis,
-)
 from gsuid_core.webconsole.create_base_panel import (
     get_tab,
     get_card,
     get_tabs,
     get_divider,
     get_property,
+)
+from gsuid_core.utils.database.global_val_models import (
+    CoreDataSummary,
+    CoreDataAnalysis,
 )
 
 
@@ -27,12 +27,12 @@ def get_chart(api: str):
 
 async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
     characters = string.ascii_lowercase + string.digits
-    random_string = ''.join(random.choice(characters) for _ in range(12))
+    random_string = "".join(random.choice(characters) for _ in range(12))
     _p = []
     sum_data = await CoreDataSummary.get_distinct_date_data()
     if sum_data:
         op = [
-            {"label": i.strftime('%Y-%m-%d'), "value": i.strftime('%Y-%m-%d')}
+            {"label": i.strftime("%Y-%m-%d"), "value": i.strftime("%Y-%m-%d")}
             for i in sum_data
         ]
         _p.append(
@@ -87,7 +87,7 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
             "replaceChartOption": True,
             "height": "1000px",
             "api": {
-                "url": f'/genshinuid/api/loadData1/{bot_id}/{bot_self_id}',
+                "url": f"/genshinuid/api/loadData1/{bot_id}/{bot_self_id}",
                 "method": "post",
                 "requestAdaptor": "",
                 "adaptor": "",
@@ -103,7 +103,7 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
             "replaceChartOption": True,
             "height": "1000px",
             "api": {
-                "url": f'/genshinuid/api/loadData2/{bot_id}/{bot_self_id}',
+                "url": f"/genshinuid/api/loadData2/{bot_id}/{bot_self_id}",
                 "method": "post",
                 "requestAdaptor": "",
                 "adaptor": "",
@@ -119,7 +119,7 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
             "replaceChartOption": True,
             "height": "1000px",
             "api": {
-                "url": f'/genshinuid/api/loadData3/{bot_id}/{bot_self_id}',
+                "url": f"/genshinuid/api/loadData3/{bot_id}/{bot_self_id}",
                 "method": "post",
                 "requestAdaptor": "",
                 "adaptor": "",
@@ -132,25 +132,25 @@ async def get_detail_chart(bot_id: Optional[str], bot_self_id: Optional[str]):
 
 
 async def get_analysis_page():
-    AAPI = '/genshinuid/api/getAnalysisData'
-    BAPI = '/genshinuid/api/getAnalysisUserGroup'
+    AAPI = "/genshinuid/api/getAnalysisData"
+    BAPI = "/genshinuid/api/getAnalysisUserGroup"
     page = {
-        'type': 'page',
-        'title': '数据分析',
-        'body': [],
-        'id': 'u:a9be7e0dc626',
+        "type": "page",
+        "title": "数据分析",
+        "body": [],
+        "id": "u:a9be7e0dc626",
     }
-    all_bot = {'汇总': ['汇总']}
+    all_bot = {"汇总": ["汇总"]}
     all_bot.update(await get_all_bot_dict())
     tabs = []
     for bot_id in all_bot:
         for bot_self_id in all_bot[bot_id]:
-            if bot_id == '汇总':
+            if bot_id == "汇总":
                 _bot_id = None
             else:
                 _bot_id = bot_id
 
-            if bot_self_id == '汇总':
+            if bot_self_id == "汇总":
                 _bot_self_id = None
             else:
                 _bot_self_id = bot_self_id
@@ -161,24 +161,24 @@ async def get_analysis_page():
             )
             tabs.append(
                 get_tab(
-                    f'{bot_id}({bot_self_id})',
+                    f"{bot_id}({bot_self_id})",
                     [
                         get_card(
-                            f'✨ {bot_self_id}',
+                            f"✨ {bot_self_id}",
                             [
                                 get_property(
                                     {
-                                        '活跃用户数（DAU）': data['DAU'],
-                                        '活跃群组数（DAG）': data['DAG'],
-                                        '用户留存': data['OU'],
-                                        '用户新增': data['NU'],
+                                        "活跃用户数（DAU）": data["DAU"],
+                                        "活跃群组数（DAG）": data["DAG"],
+                                        "用户留存": data["OU"],
+                                        "用户新增": data["NU"],
                                     },
                                     2,
                                 ),
                                 get_divider(),
-                                get_chart(f'{AAPI}/{_bot_id}/{_bot_self_id}'),
+                                get_chart(f"{AAPI}/{_bot_id}/{_bot_self_id}"),
                                 get_divider(),
-                                get_chart(f'{BAPI}/{_bot_id}/{_bot_self_id}'),
+                                get_chart(f"{BAPI}/{_bot_id}/{_bot_self_id}"),
                                 get_divider(),
                                 *(
                                     await get_detail_chart(
@@ -190,5 +190,5 @@ async def get_analysis_page():
                     ],
                 )
             )
-    page['body'].append(get_tabs(tabs))
+    page["body"].append(get_tabs(tabs))
     return page

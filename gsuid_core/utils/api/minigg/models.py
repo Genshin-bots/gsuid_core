@@ -101,12 +101,12 @@ class Character(TypedDict):
     weaponText: str
     substatType: str
     substatText: str
-    gender: Literal['男', '女']
+    gender: Literal["男", "女"]
     qualityType: str
     bodyType: str
     association: str
     region: Literal[
-        '蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔'
+        "蒙德", "璃月", "稻妻", "须弥", "枫丹", "纳塔", "至冬", "穆纳塔"
     ]
     affiliation: str
     birthdaymmdd: str
@@ -291,7 +291,7 @@ class EnemyInvest(TypedDict):
 class Domain(TypedDict):
     name: str
     region: Literal[
-        '蒙德', '璃月', '稻妻', '须弥', '枫丹', '纳塔', '至冬', '穆纳塔'
+        "蒙德", "璃月", "稻妻", "须弥", "枫丹", "纳塔", "至冬", "穆纳塔"
     ]
     domainentrance: str
     domaintype: str
@@ -299,17 +299,17 @@ class Domain(TypedDict):
     recommendedlevel: int
     recommendedelements: List[
         Literal[
-            '冰元素',
-            '火元素',
-            '雷元素',
-            '水元素',
-            '草元素',
-            '岩元素',
-            '风元素',
+            "冰元素",
+            "火元素",
+            "雷元素",
+            "水元素",
+            "草元素",
+            "岩元素",
+            "风元素",
         ]
     ]
     daysofweek: List[
-        Literal['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+        Literal["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
     ]
     unlockrank: int
     rewardpreview: List[EnemyReward]
@@ -328,23 +328,23 @@ class Piece(TypedDict):
 
 
 class PieceFlower(Piece):
-    relicText: Literal['生之花']
+    relicText: Literal["生之花"]
 
 
 class PiecePlume(Piece):
-    relicText: Literal['死之羽']
+    relicText: Literal["死之羽"]
 
 
 class PieceSands(Piece):
-    relicText: Literal['时之沙']
+    relicText: Literal["时之沙"]
 
 
 class PieceGoblet(Piece):
-    relicText: Literal['空之杯']
+    relicText: Literal["空之杯"]
 
 
 class PieceCirclet(Piece):
-    relicText: Literal['理之冠']
+    relicText: Literal["理之冠"]
 
 
 class PieceImages(TypedDict):
@@ -366,22 +366,22 @@ class PieceImages(TypedDict):
 
 
 Artifact = TypedDict(
-    'Artifact',
+    "Artifact",
     {
-        'id': int,
-        'name': str,
-        'rarityList': List[int],
-        'effect1Pc': str,
-        'effect2Pc': str,
-        'effect4Pc': str,
-        'flower': PieceFlower,
-        'plume': PiecePlume,
-        'sands': PieceSands,
-        'goblet': PieceGoblet,
-        'circlet': PieceCirclet,
-        'images': PieceImages,
-        'url': FandomUrl,
-        'version': str,
+        "id": int,
+        "name": str,
+        "rarityList": List[int],
+        "effect1Pc": str,
+        "effect2Pc": str,
+        "effect4Pc": str,
+        "flower": PieceFlower,
+        "plume": PiecePlume,
+        "sands": PieceSands,
+        "goblet": PieceGoblet,
+        "circlet": PieceCirclet,
+        "images": PieceImages,
+        "url": FandomUrl,
+        "version": str,
     },
 )
 

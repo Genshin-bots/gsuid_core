@@ -1,40 +1,40 @@
 import enum
+from typing import Any, Dict, List, Optional
 from datetime import date as ymddate
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import UniqueConstraint, distinct
 from sqlmodel import Field, Index, col, func, delete, select
+from sqlalchemy import UniqueConstraint, distinct
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base_models import BaseIDModel, with_session
 
 
 class DataType(enum.Enum):
-    GROUP = 'group'
-    USER = 'user'
+    GROUP = "group"
+    USER = "user"
 
 
 class CoreDataSummary(BaseIDModel, table=True):
     __table_args__ = (
         UniqueConstraint(
-            'date',
-            'bot_id',
-            'bot_self_id',
-            name='record_summary',
+            "date",
+            "bot_id",
+            "bot_self_id",
+            name="record_summary",
         ),
-        {'extend_existing': True},
+        {"extend_existing": True},
     )
 
-    receive: int = Field(title='接收次数', default=0)
-    send: int = Field(title='发送次数', default=0)
-    command: int = Field(title='指令调用次数', default=0)
-    image: int = Field(title='图片生成次数', default=0)
-    user_count: int = Field(title='用户数量', default=0)
-    group_count: int = Field(title='群聊数量', default=0)
-    bot_id: str = Field(title='机器人平台', max_length=64)
-    bot_self_id: str = Field(title='机器人自身ID', max_length=64)
-    date: ymddate = Field(title='日期')
+    receive: int = Field(title="接收次数", default=0)
+    send: int = Field(title="发送次数", default=0)
+    command: int = Field(title="指令调用次数", default=0)
+    image: int = Field(title="图片生成次数", default=0)
+    user_count: int = Field(title="用户数量", default=0)
+    group_count: int = Field(title="群聊数量", default=0)
+    bot_id: str = Field(title="机器人平台", max_length=64)
+    bot_self_id: str = Field(title="机器人自身ID", max_length=64)
+    date: ymddate = Field(title="日期")
 
     @classmethod
     @with_session
@@ -233,27 +233,27 @@ class CoreDataSummary(BaseIDModel, table=True):
 class CoreDataAnalysis(BaseIDModel, table=True):
     __table_args__ = (
         UniqueConstraint(
-            'date',
-            'data_type',
-            'target_id',
-            'command_name',
-            'bot_id',
-            'bot_self_id',
-            name='record_analysis',
+            "date",
+            "data_type",
+            "target_id",
+            "command_name",
+            "bot_id",
+            "bot_self_id",
+            name="record_analysis",
         ),
-        Index('ix_query_stats', 'data_type', 'bot_id', 'bot_self_id', 'date'),
-        {'extend_existing': True},
+        Index("ix_query_stats", "data_type", "bot_id", "bot_self_id", "date"),
+        {"extend_existing": True},
     )
 
     data_type: DataType = Field(
-        title='数据类型', default=DataType.USER, index=True, max_length=64
+        title="数据类型", default=DataType.USER, index=True, max_length=64
     )  # user or group
-    target_id: str = Field(title='数据ID', index=True, max_length=64)
-    command_name: str = Field(title='指令名称', max_length=100)
-    command_count: int = Field(title='指令调用次数', default=0)
-    date: ymddate = Field(title='日期', index=True)
-    bot_id: str = Field(title='机器人平台', index=True, max_length=64)
-    bot_self_id: str = Field(title='机器人自身ID', index=True, max_length=64)
+    target_id: str = Field(title="数据ID", index=True, max_length=64)
+    command_name: str = Field(title="指令名称", max_length=100)
+    command_count: int = Field(title="指令调用次数", default=0)
+    date: ymddate = Field(title="日期", index=True)
+    bot_id: str = Field(title="机器人平台", index=True, max_length=64)
+    bot_self_id: str = Field(title="机器人自身ID", index=True, max_length=64)
 
     @classmethod
     @with_session
@@ -400,7 +400,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         daily_active_subquery = dau_query.group_by(col(cls.date)).subquery()
         avg_daily_query = select(func.avg(daily_active_subquery.c.daily_count))
         avg_result = await session.execute(avg_daily_query)
-        stats['dau_dag'] = avg_result.scalar_one_or_none() or 0.0
+        stats["dau_dag"] = avg_result.scalar_one_or_none() or 0.0
 
         twenty_nine_days_ago = today - timedelta(days=29)
 
@@ -437,7 +437,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
             )
 
         new_targets_count_result = await session.execute(new_targets_query)
-        stats['new'] = new_targets_count_result.scalar_one()
+        stats["new"] = new_targets_count_result.scalar_one()
 
         # --- OU/OG Calculation (Corrected Logic) ---
         recent_active_subquery = (
@@ -508,7 +508,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
             if total_targets_count > 0
             else 0
         )
-        stats['out_rate'] = out_rate
+        stats["out_rate"] = out_rate
 
         return stats
 
@@ -543,12 +543,12 @@ class CoreDataAnalysis(BaseIDModel, table=True):
 
         # 格式化并返回最终结果
         result_data = {
-            'DAU': f"{user_stats['dau_dag']:.2f}",
-            'DAG': f"{group_stats['dau_dag']:.2f}",
-            'NU': str(user_stats["new"]),
-            'OU': f"{user_stats['out_rate']:.2f}%",
-            'NG': str(group_stats["new"]),
-            'OG': f"{group_stats['out_rate']:.2f}%",
+            "DAU": f"{user_stats['dau_dag']:.2f}",
+            "DAG": f"{group_stats['dau_dag']:.2f}",
+            "NU": str(user_stats["new"]),
+            "OU": f"{user_stats['out_rate']:.2f}%",
+            "NG": str(group_stats["new"]),
+            "OG": f"{group_stats['out_rate']:.2f}%",
         }
 
         return result_data

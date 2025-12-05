@@ -359,9 +359,9 @@ def get_history_logs_page():
                             "ERROR": "<span class='label label-danger'>错误</span>",  # noqa: E501
                             "WARNING": "<span class='label label-label label-warning'>警告</span>",  # noqa: E501
                             "SUCCESS": "<span class='label label-success'>成功</span>",  # noqa: E501
-                            "DEBUG": "<span class=\"label\" style=\"background-color: rgb(58, 118, 251); color: white;\">调试</span>",  # noqa: E501
-                            "INFO": "<span class=\"label\" style=\"background-color: rgb(140, 140, 140); color: rgb(255, 255, 255);\">正常</span>",  # noqa: E501
-                            "TRACE": "<span class=\"label\" style=\"background-color: rgb(235, 62, 247); color: white;\">追溯</span>",  # noqa: E501
+                            "DEBUG": '<span class="label" style="background-color: rgb(58, 118, 251); color: white;">调试</span>',  # noqa: E501
+                            "INFO": '<span class="label" style="background-color: rgb(140, 140, 140); color: rgb(255, 255, 255);">正常</span>',  # noqa: E501
+                            "TRACE": '<span class="label" style="background-color: rgb(235, 62, 247); color: white;">追溯</span>',  # noqa: E501
                         },
                     },
                     {

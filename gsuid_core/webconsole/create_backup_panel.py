@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Dict, List
+from pathlib import Path
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import backup_config
@@ -38,7 +38,7 @@ def path_to_option(path_obj: Path) -> Option:
 
         try:
             for child_path in path_obj.iterdir():
-                if child_path.name.startswith('.'):
+                if child_path.name.startswith("."):
                     continue
 
                 children_paths.append(child_path)
@@ -70,7 +70,7 @@ def generate_file_tree_options(root_path_obj: Path) -> List[Option]:
     top_level_paths: List[Path] = []
     try:
         for top_level_path in root_path_obj.iterdir():
-            if top_level_path.name.startswith('.'):
+            if top_level_path.name.startswith("."):
                 continue
 
             top_level_paths.append(top_level_path)
@@ -91,15 +91,15 @@ def generate_file_tree_options(root_path_obj: Path) -> List[Option]:
 def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
     root_path_obj = Path(root_dir)
 
-    value: List[str] = backup_config.get_config('backup_dir').data
-    backup_time: str = backup_config.get_config('backup_time').data
-    backup_method: List[str] = backup_config.get_config('backup_method').data
+    value: List[str] = backup_config.get_config("backup_dir").data
+    backup_time: str = backup_config.get_config("backup_time").data
+    backup_method: List[str] = backup_config.get_config("backup_method").data
 
     if not root_path_obj.exists() or not root_path_obj.is_dir():
         logger.warning(f"[Tree] 该目录并不存在或不为目录: {root_dir}")
         # 返回一个空的 tree data
         return get_page(
-            '数据备份', [get_input_tree(name, label, value, options=[])]
+            "数据备份", [get_input_tree(name, label, value, options=[])]
         )
 
     options: List[Option] = generate_file_tree_options(root_path_obj)
@@ -107,33 +107,33 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
     tabs = get_tabs(
         [
             get_tab(
-                '数据备份配置',
+                "数据备份配置",
                 [
                     get_form(
-                        '数据备份',
-                        '/genshinuid/setBackUp',
+                        "数据备份",
+                        "/genshinuid/setBackUp",
                         [
                             get_alert(
-                                '修改配置之后需要立即重启早柚核心才能生效！',
-                                'danger',
+                                "修改配置之后需要立即重启早柚核心才能生效！",
+                                "danger",
                             ),
                             get_checkboxes(
-                                'backup_method',
-                                '备份方式',
+                                "backup_method",
+                                "备份方式",
                                 backup_method,
                                 [
                                     {
-                                        'label': '备份到文件',
-                                        'value': 'file',
+                                        "label": "备份到文件",
+                                        "value": "file",
                                     },
                                     {
-                                        'label': '备份到WebDav（暂不可用）',
-                                        'value': 'web_dav',
+                                        "label": "备份到WebDav（暂不可用）",
+                                        "value": "web_dav",
                                     },
                                 ],
                             ),
                             get_time_select(
-                                '备份时间', 'backup_time', backup_time
+                                "备份时间", "backup_time", backup_time
                             ),
                             get_input_tree(name, label, value, options),
                         ],
@@ -141,16 +141,16 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
                 ],
             ),
             get_tab(
-                '备份下载',
+                "备份下载",
                 [
                     get_button(
-                        '立即进行一次备份',
+                        "立即进行一次备份",
                         get_api(
-                            '/genshinuid/backUpNow',
-                            'get',
+                            "/genshinuid/backUpNow",
+                            "get",
                             [],
                         ),
-                        'backup_list',
+                        "backup_list",
                     ),
                     get_list_download(),
                 ],
@@ -158,4 +158,4 @@ def get_input_tree_from_pathlib(name: str, label: str, root_dir: Path) -> Dict:
         ]
     )
 
-    return get_page('数据备份', [tabs])
+    return get_page("数据备份", [tabs])

@@ -1,36 +1,36 @@
-import asyncio
-import datetime
-from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
+import asyncio
+from pathlib import Path
+import datetime
 
 from PIL import Image, ImageOps, ImageDraw
 
-import gsuid_core.global_val as gv
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
-from gsuid_core.help.draw_core_help import ICON
+import gsuid_core.global_val as gv
 from gsuid_core.utils.fonts.fonts import core_font
-from gsuid_core.utils.database.models import CoreUser, CoreGroup
-from gsuid_core.utils.plugins_config.gs_config import status_config
+from gsuid_core.help.draw_core_help import ICON
 from gsuid_core.utils.image.convert import convert_img, number_to_chinese
-from gsuid_core.utils.database.global_val_models import (
-    CoreDataSummary,
-    CoreDataAnalysis,
-)
+from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.image.image_tools import (
     add_footer,
     get_font_x,
     crop_center_img,
     draw_pic_with_ring,
 )
+from gsuid_core.utils.plugins_config.gs_config import status_config
+from gsuid_core.utils.database.global_val_models import (
+    CoreDataSummary,
+    CoreDataAnalysis,
+)
 
 from .utils import generate_y_ticks
-from .plugin_status import plugins_status
 from .get_hw import get_cpu_info, get_disk_info, get_swap_info, get_memory_info
+from .plugin_status import plugins_status
 
-TEXT_PATH = Path(__file__).parent / 'texture2d'
+TEXT_PATH = Path(__file__).parent / "texture2d"
 
-THEME_COLOR: str = status_config.get_config('CustomTheme').data
+THEME_COLOR: str = status_config.get_config("CustomTheme").data
 # THEME_COLOR = (94, 79, 171)
 HINT_COLOR = (235, 54, 54)
 BLACK = (24, 24, 24)
@@ -39,25 +39,25 @@ SE_COLOR = (71, 71, 71)
 
 
 async def draw_title():
-    title = Image.new('RGBA', (1400, 300))
+    title = Image.new("RGBA", (1400, 300))
     title_draw = ImageDraw.Draw(title)
 
     icon_path = ICON
-    if status_config.get_config('CustomIcon').data:
-        _icon_path = Path(status_config.get_config('CustomIconPath').data)
+    if status_config.get_config("CustomIcon").data:
+        _icon_path = Path(status_config.get_config("CustomIconPath").data)
         if _icon_path.exists():
             icon_path = _icon_path
 
     icon = Image.open(icon_path)
-    if icon.mode == 'RGB':
+    if icon.mode == "RGB":
         icon = await draw_pic_with_ring(icon, 186, (189, 72, 37))
     else:
         icon = icon.resize((186, 186))
 
     title.paste(icon, (92, 77), icon)
 
-    MAIN_TITLE: str = status_config.get_config('CustomName').data
-    S_TITLE: str = status_config.get_config('CustomSubtitle').data
+    MAIN_TITLE: str = status_config.get_config("CustomName").data
+    S_TITLE: str = status_config.get_config("CustomSubtitle").data
 
     all_group = await CoreGroup.get_all_group()
     all_user = await CoreUser.get_all_user_list()
@@ -71,7 +71,7 @@ async def draw_title():
         MAIN_TITLE,
         BLACK,
         core_font(40),
-        'lm',
+        "lm",
     )
     tag_w, tag_h = 111, 47
     title_draw.rounded_rectangle(
@@ -81,17 +81,17 @@ async def draw_title():
     )
     title_draw.text(
         (340 + x + 55, 145),
-        f'v{__version__}',
-        'White',
+        f"v{__version__}",
+        "White",
         core_font(32),
-        'mm',
+        "mm",
     )
     title_draw.text(
         (330, 193),
         S_TITLE,
         GREY,
         core_font(30),
-        'lm',
+        "lm",
     )
 
     msg_w, msg_h = 156, 32
@@ -107,17 +107,17 @@ async def draw_title():
     )
     title_draw.text(
         (983, 196),
-        '已服务群聊',
-        'White',
+        "已服务群聊",
+        "White",
         core_font(24),
-        'mm',
+        "mm",
     )
     title_draw.text(
         (1204, 196),
-        '已服务用户',
-        'White',
+        "已服务用户",
+        "White",
         core_font(24),
-        'mm',
+        "mm",
     )
 
     title_draw.text(
@@ -125,14 +125,14 @@ async def draw_title():
         number_to_chinese(all_group_num),
         BLACK,
         core_font(60),
-        'mm',
+        "mm",
     )
     title_draw.text(
         (1204, 147),
         number_to_chinese(all_user_num),
         BLACK,
         core_font(60),
-        'mm',
+        "mm",
     )
 
     return title
@@ -143,8 +143,7 @@ async def draw_bar(
     text2: str,
     sample: Optional[Dict[str, Union[Tuple[int, int, int], str]]] = None,
 ):
-
-    bar = Image.new('RGBA', (1400, 100))
+    bar = Image.new("RGBA", (1400, 100))
     bar_draw = ImageDraw.Draw(bar)
 
     bar_draw.rounded_rectangle(
@@ -158,7 +157,7 @@ async def draw_bar(
         text1,
         BLACK,
         core_font(40),
-        'lm',
+        "lm",
     )
     x = get_font_x(core_font(40), text1)
     bar_draw.text(
@@ -166,7 +165,7 @@ async def draw_bar(
         text2,
         GREY,
         core_font(32),
-        'lm',
+        "lm",
     )
 
     if sample:
@@ -184,7 +183,7 @@ async def draw_bar(
                 key,
                 BLACK,
                 core_font(24),
-                'lm',
+                "lm",
             )
 
     return bar
@@ -196,7 +195,7 @@ async def draw_badge(
     avg_value: Optional[int] = None,
     color: Union[Tuple[int, int, int], str] = THEME_COLOR,
 ):
-    badge = Image.new('RGBA', (240, 150))
+    badge = Image.new("RGBA", (240, 150))
     badge_draw = ImageDraw.Draw(badge)
 
     badge_draw.rounded_rectangle(
@@ -208,9 +207,9 @@ async def draw_badge(
     badge_draw.text(
         (120, 109),
         title,
-        'White',
+        "White",
         core_font(24),
-        'mm',
+        "mm",
     )
 
     if isinstance(value, int) or isinstance(value, float) or value.isdigit():
@@ -222,7 +221,7 @@ async def draw_badge(
         isinstance(value, int) or isinstance(value, float)
     ):
         if value >= avg_value * 1.2:
-            arrow = Image.open(TEXT_PATH / 'up.png')
+            arrow = Image.open(TEXT_PATH / "up.png")
             x = get_font_x(core_font(46), value_str)
             point = (107, 51)
             badge.paste(
@@ -231,7 +230,7 @@ async def draw_badge(
                 arrow,
             )
         elif value <= avg_value * 0.8:
-            arrow = Image.open(TEXT_PATH / 'down.png')
+            arrow = Image.open(TEXT_PATH / "down.png")
             x = get_font_x(core_font(46), value_str)
             point = (107, 51)
             badge.paste(
@@ -249,7 +248,7 @@ async def draw_badge(
         value_str,
         BLACK,
         core_font(46),
-        'mm',
+        "mm",
     )
     return badge
 
@@ -259,51 +258,51 @@ async def draw_data_analysis1(
     bot_self_id: Optional[str],
 ):
     local_val = gv.get_platform_val(bot_id, bot_self_id)
-    data_bar = Image.new('RGBA', (1400, 200))
+    data_bar = Image.new("RGBA", (1400, 200))
 
-    yesterday: Optional[CoreDataSummary] = (
-        await CoreDataSummary.get_yesterday_data(
-            bot_id=bot_id,
-            bot_self_id=bot_self_id,
-        )
+    yesterday: Optional[
+        CoreDataSummary
+    ] = await CoreDataSummary.get_yesterday_data(
+        bot_id=bot_id,
+        bot_self_id=bot_self_id,
     )
     if not yesterday:
         yesterday = CoreDataSummary(
-            bot_id='1', bot_self_id='2', date=datetime.datetime.now()
+            bot_id="1", bot_self_id="2", date=datetime.datetime.now()
         )
 
     badge1 = await draw_badge(
-        '今日接收',
-        local_val['receive'],
+        "今日接收",
+        local_val["receive"],
         yesterday.receive,
         SE_COLOR,
     )
 
     badge2 = await draw_badge(
-        '今日发送',
-        local_val['send'],
+        "今日发送",
+        local_val["send"],
         yesterday.send,
         HINT_COLOR,
     )
     badge3 = await draw_badge(
-        '绘制图片',
-        local_val['image'],
+        "绘制图片",
+        local_val["image"],
         yesterday.image,
     )
     badge4 = await draw_badge(
-        '触发命令',
-        local_val['command'],
+        "触发命令",
+        local_val["command"],
         yesterday.command,
     )
     badge5 = await draw_badge(
-        '使用群聊',
-        local_val['group_count'],
+        "使用群聊",
+        local_val["group_count"],
         yesterday.group_count,
         SE_COLOR,
     )
     badge6 = await draw_badge(
-        '使用用户',
-        local_val['user_count'],
+        "使用用户",
+        local_val["user_count"],
         yesterday.user_count,
         SE_COLOR,
     )
@@ -320,36 +319,36 @@ async def draw_data_analysis2(
     data: Dict,
 ):
     badge1 = await draw_badge(
-        'DAU',
-        data['DAU'],
+        "DAU",
+        data["DAU"],
         0,
         HINT_COLOR,
     )
     badge2 = await draw_badge(
-        'DAG',
-        data['DAG'],
+        "DAG",
+        data["DAG"],
     )
     badge3 = await draw_badge(
-        '用户新增',
-        data['NU'],
+        "用户新增",
+        data["NU"],
     )
     badge4 = await draw_badge(
-        '用户留存',
-        data['OU'],
+        "用户留存",
+        data["OU"],
         0,
         HINT_COLOR,
     )
     badge5 = await draw_badge(
-        '群聊新增',
-        data['NG'],
+        "群聊新增",
+        data["NG"],
     )
     badge6 = await draw_badge(
-        '群聊留存',
-        data['OG'],
+        "群聊留存",
+        data["OG"],
         0,
     )
 
-    data_bar = Image.new('RGBA', (1400, 200))
+    data_bar = Image.new("RGBA", (1400, 200))
     for index, i in enumerate(
         [badge1, badge2, badge3, badge4, badge5, badge6]
     ):
@@ -359,9 +358,9 @@ async def draw_data_analysis2(
 
 
 def draw_ring(value: float):
-    img = Image.new('RGBA', (100, 100))
+    img = Image.new("RGBA", (100, 100))
     resin_percent = value / 100
-    ring_pic = Image.open(TEXT_PATH / 'ring.webp')
+    ring_pic = Image.open(TEXT_PATH / "ring.webp")
     percent = (
         round(resin_percent * 49) if round(resin_percent * 49) <= 49 else 49
     )
@@ -370,16 +369,16 @@ def draw_ring(value: float):
     img_draw = ImageDraw.Draw(img)
     img_draw.text(
         (50, 50),
-        f'{int(value)}',
+        f"{int(value)}",
         GREY,
         core_font(27),
-        'mm',
+        "mm",
     )
     return img
 
 
 def draw_hw_status_bar(title: str, value: float, msg: str):
-    img = Image.new('RGBA', (740, 100))
+    img = Image.new("RGBA", (740, 100))
     img_draw = ImageDraw.Draw(img)
     ring = draw_ring(value)
     img.paste(ring, (77, 0), ring)
@@ -388,22 +387,22 @@ def draw_hw_status_bar(title: str, value: float, msg: str):
     img_draw.text(
         (220, 50),
         title,
-        'White',
+        "White",
         core_font(32),
-        'mm',
+        "mm",
     )
     img_draw.text(
         (280, 50),
         msg,
         GREY,
         core_font(32),
-        'lm',
+        "lm",
     )
     return img
 
 
 async def draw_hw():
-    img = Image.new('RGBA', (1400, 300))
+    img = Image.new("RGBA", (1400, 300))
 
     cpu_task = asyncio.create_task(get_cpu_info())
     memory_task = asyncio.create_task(get_memory_info())
@@ -414,10 +413,10 @@ async def draw_hw():
         cpu_task, memory_task, disk_task, swap_task
     )
 
-    cpu_img = draw_hw_status_bar('CPU', cpu['value'], cpu['name'])
-    memory_img = draw_hw_status_bar('内存', memory['value'], memory['name'])
-    disk_img = draw_hw_status_bar('磁盘', disk['value'], disk['name'])
-    swap_img = draw_hw_status_bar('交换', swap['value'], swap['name'])
+    cpu_img = draw_hw_status_bar("CPU", cpu["value"], cpu["name"])
+    memory_img = draw_hw_status_bar("内存", memory["value"], memory["name"])
+    disk_img = draw_hw_status_bar("磁盘", disk["value"], disk["name"])
+    swap_img = draw_hw_status_bar("交换", swap["value"], swap["name"])
 
     for index, i in enumerate([cpu_img, memory_img, disk_img, swap_img]):
         img.paste(
@@ -433,20 +432,20 @@ async def draw_plugins_status():
     plugins_num = len(plugins_status)
     plugins_h = 50 + plugins_num * 180
 
-    img = Image.new('RGBA', (1400, plugins_h))
+    img = Image.new("RGBA", (1400, plugins_h))
     img_draw = ImageDraw.Draw(img)
 
     if plugins_num == 0:
         img_draw.text(
             (700, 25),
-            '当前没有插件有额外信息',
+            "当前没有插件有额外信息",
             GREY,
             core_font(32),
-            'mm',
+            "mm",
         )
     else:
         for index, i in enumerate(plugins_status):
-            plugin_bar = Image.new('RGBA', (1400, 180))
+            plugin_bar = Image.new("RGBA", (1400, 180))
             plugin_bar_draw = ImageDraw.Draw(plugin_bar)
 
             plugin_bar_draw.rounded_rectangle(
@@ -456,17 +455,17 @@ async def draw_plugins_status():
             )
 
             plugin = plugins_status[i]
-            icon = plugin['icon']
+            icon = plugin["icon"]
             icon = icon.resize((128, 128))
-            status = plugin['status']
+            status = plugin["status"]
 
             plugin_bar.paste(icon, (109, 30), icon)
             plugin_bar_draw.text(
                 (251, 104),
                 i,
-                'White',
+                "White",
                 core_font(26),
-                'lm',
+                "lm",
             )
 
             for indexj, j in enumerate(status):
@@ -491,7 +490,7 @@ async def draw_plugins_status():
 async def draw_curve(
     datas: Dict[Union[Tuple[int, int, int], str], List[float]],
 ):
-    img = Image.new('RGBA', (1400, 550))
+    img = Image.new("RGBA", (1400, 550))
     img_draw = ImageDraw.Draw(img)
 
     num = 45
@@ -515,7 +514,7 @@ async def draw_curve(
                     str(number_to_chinese(y)),
                     BLACK,
                     core_font(30),
-                    'rm',
+                    "rm",
                 )
                 is_text = True
 
@@ -556,23 +555,23 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
 
     for day in range(46):
         result[THEME_COLOR].append(
-            trends['all_bots_user_count'][day]
-            if day < len(trends['all_bots_user_count'])
+            trends["all_bots_user_count"][day]
+            if day < len(trends["all_bots_user_count"])
             else 0
         )
         result[HINT_COLOR].append(
-            trends['all_bots_send'][day]
-            if day < len(trends['all_bots_send'])
+            trends["all_bots_send"][day]
+            if day < len(trends["all_bots_send"])
             else 0
         )
 
         result[(182, 122, 210)].append(
-            trends['bot_user_count'][day]
-            if day < len(trends['bot_user_count'])
+            trends["bot_user_count"][day]
+            if day < len(trends["bot_user_count"])
             else 0
         )
         result[(27, 146, 210)].append(
-            trends['bot_send'][day] if day < len(trends['bot_send']) else 0
+            trends["bot_send"][day] if day < len(trends["bot_send"]) else 0
         )
 
     curve_img = await draw_curve(result)
@@ -580,26 +579,26 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
 
 
 async def draw_bg(w: int, h: int):
-    path = TEXT_PATH / 'bg.jpg'
-    if status_config.get_config('CustomBg').data:
-        bg_path = Path(status_config.get_config('CustomBgPath').data)
+    path = TEXT_PATH / "bg.jpg"
+    if status_config.get_config("CustomBg").data:
+        bg_path = Path(status_config.get_config("CustomBgPath").data)
         if bg_path.exists():
             path = bg_path
 
-    bg = Image.open(path).convert('RGBA')
+    bg = Image.open(path).convert("RGBA")
     bg = crop_center_img(bg, w, h)
 
-    mask = Image.open(TEXT_PATH / 'mask.png')
-    line = Image.open(TEXT_PATH / 'line.png')
+    mask = Image.open(TEXT_PATH / "mask.png")
+    line = Image.open(TEXT_PATH / "line.png")
 
-    fg_temp = Image.new('RGBA', (w, h))
+    fg_temp = Image.new("RGBA", (w, h))
     fg_temp.paste(mask, (0, 222), mask)
 
     r, g, b, a = fg_temp.split()
     a_inv = ImageOps.invert(a)
     fg_temp = Image.merge("RGBA", (r, g, b, a_inv))
-    _fg = Image.new('RGBA', (w, h))
-    fg = crop_center_img(Image.open(TEXT_PATH / 'fg.png'), w, h)
+    _fg = Image.new("RGBA", (w, h))
+    fg = crop_center_img(Image.open(TEXT_PATH / "fg.png"), w, h)
 
     _fg.paste(fg, (0, 0), fg_temp)
 
@@ -610,20 +609,20 @@ async def draw_bg(w: int, h: int):
 
 async def draw_status(ev: Event):
     title = await draw_title()
-    bar1 = await draw_bar('服务器基础信息', 'Base Info')
-    bar2_1 = await draw_bar('机器人数据统计(单)', 'Data Analysis')
-    bar2_2 = await draw_bar('机器人数据统计(多)', 'Data Analysis')
+    bar1 = await draw_bar("服务器基础信息", "Base Info")
+    bar2_1 = await draw_bar("机器人数据统计(单)", "Data Analysis")
+    bar2_2 = await draw_bar("机器人数据统计(多)", "Data Analysis")
     bar3 = await draw_bar(
-        '日活曲线',
-        'Daily Activity',
+        "日活曲线",
+        "Daily Activity",
         {
-            '全用户': THEME_COLOR,
-            '全发送': HINT_COLOR,
-            '使用用户': (182, 122, 210),
-            '发送数量': (27, 146, 210),
+            "全用户": THEME_COLOR,
+            "全发送": HINT_COLOR,
+            "使用用户": (182, 122, 210),
+            "发送数量": (27, 146, 210),
         },
     )
-    bar4 = await draw_bar('插件额外信息', 'Extra Data')
+    bar4 = await draw_bar("插件额外信息", "Extra Data")
 
     mdata = await CoreDataAnalysis.calculate_dashboard_metrics()
     ndata = await CoreDataAnalysis.calculate_dashboard_metrics(
@@ -674,6 +673,6 @@ async def draw_status(ev: Event):
     img.paste(bar4, (0, 2778), bar4)
     img.paste(plugin_status_img, (0, 2878), plugin_status_img)
 
-    img = add_footer(img, footer=Image.open(TEXT_PATH / 'footer.png'))
+    img = add_footer(img, footer=Image.open(TEXT_PATH / "footer.png"))
     res = await convert_img(img)
     return res

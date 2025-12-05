@@ -2,10 +2,10 @@ import fastapi_amis_admin
 
 from gsuid_core.version import __version__ as gscore_version
 
-bots = 'HoshinoBot · NoneBot2 · Koishi · Yunzai · ZeroBot · AstrBot'
-sup = f'✨支持连接{bots}的多功能Bot插件核心✨'
+bots = "HoshinoBot · NoneBot2 · Koishi · Yunzai · ZeroBot · AstrBot"
+sup = f"✨支持连接{bots}的多功能Bot插件核心✨"
 
-style = '''
+style = """
 div {
   background: rgba(255, 255, 255, 0.6) url('/webstatic/bg.jpg');
   background-blend-mode: screen;
@@ -241,10 +241,10 @@ a-AsideNav-item.is-open > a > a-AsideNav-itemLabel {
     background-position: center center;
     display: inline-block;
 }
-'''  # noqa: E501
+"""  # noqa: E501
 
-web_url = 'https://docs.sayu-bot.com'
-login_html = f'''
+web_url = "https://docs.sayu-bot.com"
+login_html = f"""
 <html>
 <head>
 <style>
@@ -274,9 +274,9 @@ login_html = f'''
   </h5>
 </p>
 </html>
-'''
+"""
 
-footer_html = f'''
+footer_html = f"""
 <p align='right'>
     <div class='p-2 text-center bg-light'>Copyright © 2021 - 2024
         <a href='https://github.com/Genshin-bots/gsuid_core' target='_blank'
@@ -290,9 +290,9 @@ footer_html = f'''
         </a>
     </div>
 </p>
-'''
+"""
 
-gsuid_webconsole_help = '''
+gsuid_webconsole_help = """
 ## 初次使用
 
 欢迎进入网页控制台!
@@ -357,4 +357,4 @@ if (ask == true) {
 [通过额外APP获取Cookies](https://github.com/KimigaiiWuyi/GenshinUID/issues/203)
 ## IOS [@741807012](https://github.com/741807012)
 [通过快捷指令获取Cookies](https://github.com/KimigaiiWuyi/GenshinUID/issues/201)
-'''
+"""

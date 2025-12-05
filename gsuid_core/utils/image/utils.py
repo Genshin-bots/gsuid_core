@@ -1,7 +1,7 @@
 from io import BytesIO
 
-import httpx
 from PIL import Image
+import httpx
 
 
 async def sget(url: str):

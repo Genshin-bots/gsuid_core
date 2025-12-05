@@ -101,14 +101,14 @@ class AmbrCharacter(TypedDict):
     rank: int
     name: str
     element: Literal[
-        'Electric', 'Ice', 'Wind', 'Grass', 'Water', 'Rock', 'Fire'
+        "Electric", "Ice", "Wind", "Grass", "Water", "Rock", "Fire"
     ]
     weaponType: Literal[
-        'WEAPON_SWORD_ONE_HAND',
-        'WEAPON_CATALYST',
-        'WEAPON_CLAYMORE',
-        'WEAPON_BOW',
-        'WEAPON_POLE',
+        "WEAPON_SWORD_ONE_HAND",
+        "WEAPON_CATALYST",
+        "WEAPON_CLAYMORE",
+        "WEAPON_BOW",
+        "WEAPON_POLE",
     ]
     icon: str
     birthday: List[int]
@@ -214,14 +214,14 @@ class AmbrMonsterSimple(TypedDict):
 
 
 class AmbrGCGList(TypedDict):
-    types: Dict[str, Literal['characterCard', 'actionCard']]
+    types: Dict[str, Literal["characterCard", "actionCard"]]
     items: Dict[str, AmbrGCGCard]
 
 
 class AmbrGCGCard(TypedDict):
     id: int
     name: str
-    type: Literal['characterCard', 'actionCard']
+    type: Literal["characterCard", "actionCard"]
     tags: Dict[str, str]
     props: Dict[str, int]
     icon: str
@@ -248,7 +248,7 @@ class AmbrGCGTalent(TypedDict):
 class AmbrGCGEntry(TypedDict):
     id: int
     name: str
-    type: Literal['gcg']
+    type: Literal["gcg"]
     icon: str
 
 
