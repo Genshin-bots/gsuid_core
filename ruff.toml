@@ -10,7 +10,7 @@ exclude = [
 
 [lint]
 select = ["E", "F", "I", "W"]
-ignore = ["E501"]
+ignore = []
 
 [lint.isort]
 force-sort-within-sections = false
