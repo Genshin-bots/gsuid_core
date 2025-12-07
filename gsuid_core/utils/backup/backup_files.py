@@ -1,36 +1,31 @@
 import os
 import datetime
-from pathlib import Path
 from shutil import copyfile
+from pathlib import Path
 
 from gsuid_core.logger import LOG_PATH, logger
 from gsuid_core.utils.plugins_config.gs_config import log_config
 
-CLEAN_DAY: str = log_config.get_config('ScheduledCleanLogDay').data
+CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
 
 
 def clean_log():
     day = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 5
-    for i in LOG_PATH.glob('*.log'):
+    for i in LOG_PATH.glob("*.log"):
         try:
-            if (
-                i.stat().st_mtime
-                < (
-                    datetime.datetime.now() - datetime.timedelta(days=day)
-                ).timestamp()
-            ):
-                logger.warning(f'清理日志文件 {i.name}')
+            if i.stat().st_mtime < (datetime.datetime.now() - datetime.timedelta(days=day)).timestamp():
+                logger.warning(f"清理日志文件 {i.name}")
                 i.unlink()
         except FileNotFoundError:
             pass
 
 
 def _get_filename(file_path: Path, date: str):
-    return f'{file_path.stem}_BAK_{date}{file_path.suffix}'
+    return f"{file_path.stem}_BAK_{date}{file_path.suffix}"
 
 
 async def backup_file(file_path: Path, backup_path: Path, backup_day: int = 5):
-    '''📝简单介绍:
+    """📝简单介绍:
 
         按照日期备份文件，默认最多保留5天
 
@@ -48,7 +43,7 @@ async def backup_file(file_path: Path, backup_path: Path, backup_day: int = 5):
     🚀使用范例:
 
         `await backup_file(DB_PATH, DB_BACKUP)`
-    '''
+    """
     today = datetime.date.today()
     endday = today - datetime.timedelta(days=backup_day)
     date_format = today.strftime("%Y_%d_%b")
@@ -64,20 +59,20 @@ async def backup_file(file_path: Path, backup_path: Path, backup_day: int = 5):
 
     if os.path.exists(end_day_backup):
         os.remove(end_day_backup)
-        logger.warning(f'♻️ [备份核心] 已删除失效备份 {end_day_backup}')
+        logger.warning(f"♻️ [备份核心] 已删除失效备份 {end_day_backup}")
 
-    logger.success(f'✅ [备份核心] 已成功备份 {backup}')
+    logger.success(f"✅ [备份核心] 已成功备份 {backup}")
 
 
-def clear_path_all_file(path: Path, pattern: str = '*'):
+def clear_path_all_file(path: Path, pattern: str = "*"):
     try:
         for f in path.glob(pattern):
             try:
                 f.unlink()
             except OSError as e:
-                logger.warning(f'💥 [备份核心] 删除文件 {f} 失败！')
+                logger.warning(f"💥 [备份核心] 删除文件 {f} 失败！")
                 logger.error(e.strerror)
-        logger.success(f'🚧 [备份核心] 清空路径 {path} 成功！')
+        logger.success(f"🚧 [备份核心] 清空路径 {path} 成功！")
     except Exception as e:
-        logger.warning(f'💥 [备份核心] 清空路径 {path} 失败！')
+        logger.warning(f"💥 [备份核心] 清空路径 {path} 失败！")
         logger.error(e)

@@ -6,20 +6,7 @@ from fastapi import WebSocket
 from msgspec import json as msgjson
 
 from gsuid_core.logger import logger
-from gsuid_core.gs_logger import GsLogger
-from gsuid_core.global_val import get_global_val
-from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.models import Event, Message, MessageSend
-from gsuid_core.load_template import (
-    parse_button,
-    custom_buttons,
-    button_templates,
-)
-from gsuid_core.utils.plugins_config.gs_config import (
-    sp_config,
-    core_plugins_config,
-    send_security_config,
-)
 from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
@@ -28,21 +15,32 @@ from gsuid_core.segment import (
     check_same_buttons,
     markdown_to_template_markdown,
 )
+from gsuid_core.gs_logger import GsLogger
+from gsuid_core.global_val import get_global_val
+from gsuid_core.load_template import (
+    parse_button,
+    custom_buttons,
+    button_templates,
+)
+from gsuid_core.message_models import Button, ButtonType
+from gsuid_core.utils.plugins_config.gs_config import (
+    sp_config,
+    core_plugins_config,
+    send_security_config,
+)
 
-button_row_num: int = sp_config.get_config('ButtonRow').data
-at_sender_pos: str = sp_config.get_config('AtSenderPos').data
+button_row_num: int = sp_config.get_config("ButtonRow").data
+at_sender_pos: str = sp_config.get_config("AtSenderPos").data
 
-sp_msg_id: str = send_security_config.get_config('SpecificMsgId').data
-is_sp_msg_id: str = send_security_config.get_config('EnableSpecificMsgId').data
+sp_msg_id: str = send_security_config.get_config("SpecificMsgId").data
+is_sp_msg_id: str = send_security_config.get_config("EnableSpecificMsgId").data
 
-ism: List = core_plugins_config.get_config('SendMDPlatform').data
-isb: List = core_plugins_config.get_config('SendButtonsPlatform').data
-isc: List = core_plugins_config.get_config('SendTemplatePlatform').data
-istry: List = core_plugins_config.get_config('TryTemplateForQQ').data
+ism: List = core_plugins_config.get_config("SendMDPlatform").data
+isb: List = core_plugins_config.get_config("SendButtonsPlatform").data
+isc: List = core_plugins_config.get_config("SendTemplatePlatform").data
+istry: List = core_plugins_config.get_config("TryTemplateForQQ").data
 
-enable_forward: str = core_plugins_config.get_config(
-    'EnableForwardMessage'
-).data
+enable_forward: str = core_plugins_config.get_config("EnableForwardMessage").data
 
 enable_buttons_platform = isb
 enable_markdown_platform = ism
@@ -61,15 +59,15 @@ class _Bot:
     async def target_send(
         self,
         message: Union[Message, List[Message], List[str], str, bytes],
-        target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
+        target_type: Literal["group", "direct", "channel", "sub_channel"],
         target_id: Optional[str],
         bot_id: str,
         bot_self_id: str,
-        msg_id: str = '',
+        msg_id: str = "",
         at_sender: bool = False,
-        sender_id: str = '',
+        sender_id: str = "",
         group_id: Optional[str] = None,
-        task_id: str = '',
+        task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
     ):
         _message = await convert_message(
@@ -92,8 +90,8 @@ class _Bot:
             if (
                 _m.type
                 in [
-                    'markdown',
-                    'template_markdown',
+                    "markdown",
+                    "template_markdown",
                 ]
                 and is_split_button
                 and _m.data
@@ -107,26 +105,26 @@ class _Bot:
         for mr in _message_result:
             _temp_mr = []
             for _m in mr:
-                if _m.type == 'node':
-                    if enable_forward == '禁止(不发送任何消息)':
+                if _m.type == "node":
+                    if enable_forward == "禁止(不发送任何消息)":
                         continue
-                    elif enable_forward == '允许':
+                    elif enable_forward == "允许":
                         _temp_mr.append(_m)
-                    elif enable_forward == '全部拆成单独消息':
+                    elif enable_forward == "全部拆成单独消息":
                         for forward_m in _m.data:
-                            if forward_m.type != 'image_size':
+                            if forward_m.type != "image_size":
                                 message_result.append([forward_m])
-                    elif enable_forward == '合并为一条消息':
+                    elif enable_forward == "合并为一条消息":
                         _add = []
                         for index, forward_m in enumerate(_m.data):
                             _add.append(forward_m)
                             if index < len(_m.data) - 1:
-                                _add.append(MessageSegment.text('\n'))
+                                _add.append(MessageSegment.text("\n"))
                         _temp_mr.extend(_add)
 
                     elif enable_forward.isdigit():
                         for forward_m in _m.data[: int(enable_forward)]:
-                            if forward_m.type != 'image_size':
+                            if forward_m.type != "image_size":
                                 message_result.append([forward_m])
                 else:
                     _temp_mr.append(_m)
@@ -137,15 +135,15 @@ class _Bot:
             msg_id = sp_msg_id
 
         for mr in message_result:
-            logger.trace('[GsCore][即将发送消息]', messages=mr)
+            logger.trace("[GsCore][即将发送消息]", messages=mr)
             if at_sender and sender_id:
-                if at_sender_pos == '消息最后':
+                if at_sender_pos == "消息最后":
                     mr.append(MessageSegment.at(sender_id))
                 else:
                     mr.insert(0, MessageSegment.at(sender_id))
 
             if group_id:
-                mr.append(Message('group', group_id))
+                mr.append(Message("group", group_id))
 
             send = MessageSend(
                 content=mr,
@@ -158,9 +156,9 @@ class _Bot:
 
             local_val = await get_global_val(bot_id, bot_self_id)
 
-            local_val['send'] += 1
+            local_val["send"] += 1
 
-            logger.info(f'[发送消息to] {bot_id} - {target_type} - {target_id}')
+            logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
             if self.bot:
                 body = msgjson.encode(send)
                 await self.bot.send_bytes(body)
@@ -192,14 +190,14 @@ class Bot:
     mutiply_map: Dict[str, str] = {}
 
     def __init__(self, bot: _Bot, ev: Event):
-        self.uid = ev.user_id if ev.user_id else '0'
-        if ev.user_type != 'direct':
-            self.temp_gid = ev.group_id if ev.group_id else '0'
+        self.uid = ev.user_id if ev.user_id else "0"
+        if ev.user_type != "direct":
+            self.temp_gid = ev.group_id if ev.group_id else "0"
         else:
             self.temp_gid = self.uid
 
-        self.bid = ev.bot_id if ev.bot_id else '0'
-        self.session_id = f'{self.bid}{self.temp_gid}{self.uid}'
+        self.bid = ev.bot_id if ev.bot_id else "0"
+        self.session_id = f"{self.bid}{self.temp_gid}{self.uid}"
 
         self.bot = bot
         self.ev = ev
@@ -227,9 +225,7 @@ class Bot:
         try:
             await asyncio.wait_for(self.event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.warning(
-                f'[等待回复超时] 等待回复{self.event}超时, 超时时间: {timeout}s'
-            )
+            logger.warning(f"[等待回复超时] 等待回复{self.event}超时, 超时时间: {timeout}s")
             return None
 
         self.receive_tag = False
@@ -248,15 +244,13 @@ class Bot:
 
     async def receive_mutiply_resp(
         self,
-        reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
-        ] = None,
+        reply: Optional[Union[Message, List[Message], List[str], str, bytes]] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         timeout: float = 60,
-        sep: str = '\n',
-        command_tips: str = '请输入以下命令之一:',
-        command_start_text: str = '',
+        sep: str = "\n",
+        command_tips: str = "请输入以下命令之一:",
+        command_start_text: str = "",
     ):
         return await self.receive_resp(
             reply,
@@ -272,14 +266,12 @@ class Bot:
 
     async def send_option(
         self,
-        reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
-        ] = None,
+        reply: Optional[Union[Message, List[Message], List[str], str, bytes]] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
-        sep: str = '\n',
-        command_tips: str = '请输入以下命令之一:',
-        command_start_text: str = '',
+        sep: str = "\n",
+        command_tips: str = "请输入以下命令之一:",
+        command_start_text: str = "",
     ):
         return await self.receive_resp(
             reply,
@@ -294,21 +286,19 @@ class Bot:
 
     async def receive_resp(
         self,
-        reply: Optional[
-            Union[Message, List[Message], List[str], str, bytes]
-        ] = None,
+        reply: Optional[Union[Message, List[Message], List[str], str, bytes]] = None,
         option_list: Optional[ButtonType] = None,
         unsuported_platform: bool = False,
         is_mutiply: bool = False,
         is_recive: bool = True,
         timeout: float = 60,
-        sep: str = '\n',
-        command_tips: str = '请输入以下命令之一:',
-        command_start_text: str = '',
+        sep: str = "\n",
+        command_tips: str = "请输入以下命令之一:",
+        command_start_text: str = "",
     ) -> Optional[Event]:
         if option_list:
             if reply is None:
-                reply = f'请在{timeout}秒内做出选择...'
+                reply = f"请在{timeout}秒内做出选择..."
 
             _reply = await convert_message(
                 reply,
@@ -363,23 +353,14 @@ class Bot:
                     if not success:
                         fake_buttons = parse_button(_buttons)
                         for custom_template_id in button_templates:
-                            p = parse_button(
-                                button_templates[custom_template_id]
-                            )
+                            p = parse_button(button_templates[custom_template_id])
                             if await check_same_buttons(p, fake_buttons):
-                                md.append(
-                                    MessageSegment.template_buttons(
-                                        custom_template_id
-                                    )
-                                )
+                                md.append(MessageSegment.template_buttons(custom_template_id))
                                 await self.send(md)
                                 success = True
                                 break
 
-                if (
-                    not success
-                    and self.ev.real_bot_id in enable_buttons_platform
-                ):
+                if not success and self.ev.real_bot_id in enable_buttons_platform:
                     _reply.append(MessageSegment.buttons(_buttons))
                     await self.send(_reply)
                     success = True
@@ -400,10 +381,7 @@ class Bot:
 
                 _reply.append(
                     MessageSegment.text(
-                        f'\n{command_tips}\n'
-                        + sep.join(
-                            [f'{command_start_text}{op}' for op in _options]
-                        )
+                        f"\n{command_tips}\n" + sep.join([f"{command_start_text}{op}" for op in _options])
                     )
                 )
                 await self.send(_reply)
@@ -446,11 +424,7 @@ class Bot:
         return await self.bot.target_send(
             message,
             self.ev.user_type,
-            (
-                self.ev.user_id
-                if self.ev.user_type == 'direct'
-                else self.ev.group_id
-            ),
+            (self.ev.user_id if self.ev.user_type == "direct" else self.ev.group_id),
             self.ev.real_bot_id,
             self.bot_self_id,
             self.ev.msg_id,
@@ -464,10 +438,10 @@ class Bot:
     async def target_send(
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
-        target_type: Literal['group', 'direct', 'channel', 'sub_channel'],
+        target_type: Literal["group", "direct", "channel", "sub_channel"],
         target_id: Optional[str],
         at_sender: bool = False,
-        sender_id: str = '',
+        sender_id: str = "",
         send_source_group: Optional[str] = None,
     ):
         return await self.bot.target_send(
@@ -494,4 +468,4 @@ def call_bot():
                 return value
         frame = frame.f_back
 
-    raise ValueError('[GsCore] 当前Session中未找到可用Bot实例...')
+    raise ValueError("[GsCore] 当前Session中未找到可用Bot实例...")

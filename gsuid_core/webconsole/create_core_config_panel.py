@@ -18,22 +18,22 @@ from gsuid_core.webconsole.create_base_panel import (
 
 def get_core_config_page():
     page = {
-        'type': 'page',
-        'title': 'Core配置',
-        'body': [],
-        'id': 'u:a9be7e0dc626',
+        "type": "page",
+        "title": "Core配置",
+        "body": [],
+        "id": "u:a9be7e0dc626",
     }
     body = [
         get_alert(
-            '如无法确定选项原意，切勿随意修改，修改需重启GsCore生效',
-            'warning',
+            "如无法确定选项原意，切勿随意修改，修改需重启GsCore生效",
+            "warning",
         )
     ]
     solo_body = []
 
     api_input = []
     for c in core_config.config:
-        if c in ['sv', 'plugins']:
+        if c in ["sv", "plugins"]:
             continue
         data = core_config.config[c]
 
@@ -55,17 +55,17 @@ def get_core_config_page():
             solo_body.append(_data)
         elif isinstance(data, Dict):
             for d in data:
-                tag = f'{c}_{d}'
+                tag = f"{c}_{d}"
                 api_input.append(tag)
-                if d == 'level':
+                if d == "level":
                     _data = get_select_panel(
                         tag,
                         tag,
                         data[d],
-                        ['INFO', 'DEBUG', 'WARNING', 'ERROR', 'TRACE'],
+                        ["INFO", "DEBUG", "WARNING", "ERROR", "TRACE"],
                     )
                     solo_body.append(_data)
-                elif d == 'output':
+                elif d == "output":
                     _data = get_input_tag(
                         tag,
                         tag,
@@ -88,14 +88,14 @@ def get_core_config_page():
 
     body.append(
         get_button(
-            '✅确认修改',
+            "✅确认修改",
             get_api(
-                '/genshinuid/setCoreConfig',
-                'post',
+                "/genshinuid/setCoreConfig",
+                "post",
                 api_input,
             ),
         )
     )
-    page['body'] = body
+    page["body"] = body
 
     return page

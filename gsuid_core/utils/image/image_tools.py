@@ -1,20 +1,20 @@
 import math
 import random
 from io import BytesIO
-from pathlib import Path
 from typing import Tuple, Union, Optional
+from pathlib import Path
 
 import httpx
-from httpx import get
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from httpx import get
 
 from gsuid_core.models import Event
-from gsuid_core.utils.image.utils import sget
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.fonts.fonts import core_font
+from gsuid_core.utils.image.utils import sget
 
-TEXT_PATH = Path(__file__).parent / 'texture2d'
-BG_PATH = Path(__file__).parents[1] / 'default_bg'
+TEXT_PATH = Path(__file__).parent / "texture2d"
+BG_PATH = Path(__file__).parents[1] / "default_bg"
 
 
 def tint_image(input_image: Image.Image, color: Tuple[int, int, int]):
@@ -25,13 +25,13 @@ def tint_image(input_image: Image.Image, color: Tuple[int, int, int]):
     :param output_image_path: 输出图片的保存路径
     :param color: 目标颜色，一个RGB元组，例如红色为 (255, 0, 0)
     """
-    _, _, _, alpha = input_image.convert('RGBA').split()
-    color_layer = Image.new('RGBA', input_image.size, color)
+    _, _, _, alpha = input_image.convert("RGBA").split()
+    color_layer = Image.new("RGBA", input_image.size, color)
 
     red_channel, green_channel, blue_channel, _ = color_layer.split()
 
     tinted_img = Image.merge(
-        'RGBA',
+        "RGBA",
         (
             red_channel,
             green_channel,
@@ -48,7 +48,7 @@ def get_font_x(font: ImageFont.FreeTypeFont, text: str):
 
 
 def get_div():
-    return Image.open(TEXT_PATH / 'div.png')
+    return Image.open(TEXT_PATH / "div.png")
 
 
 def draw_color_badge(
@@ -63,7 +63,7 @@ def draw_color_badge(
     x3, y3, x4, y4 = x1 - offset_x, y1 - offset_y, x2 + offset_x, y2 + offset_y
     w, h = int(x4 - x3), int(y4 - y3)
     center_x, center_y = int(w // 2), int(h // 2)
-    img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle((0, 0, w, h), fill=color, radius=20)
     draw.text(
@@ -71,21 +71,21 @@ def draw_color_badge(
         text,
         font=font,
         fill=font_color,
-        anchor='mm',
+        anchor="mm",
     )
     return img
 
 
 def get_status_icon(status: Union[int, bool]) -> Image.Image:
     if status:
-        img = Image.open(TEXT_PATH / 'yes.png')
+        img = Image.open(TEXT_PATH / "yes.png")
     else:
-        img = Image.open(TEXT_PATH / 'no.png')
+        img = Image.open(TEXT_PATH / "no.png")
     return img
 
 
 def get_v4_footer():
-    return Image.open(TEXT_PATH / 'footer.png')
+    return Image.open(TEXT_PATH / "footer.png")
 
 
 def add_footer(
@@ -115,41 +115,39 @@ def get_v4_bg(w: int, h: int, is_dark: bool = False, is_blur: bool = False):
     if is_blur:
         img = img.filter(ImageFilter.GaussianBlur(radius=20))
     if is_dark:
-        black_img = Image.new('RGBA', (w, h), (0, 0, 0, 180))
+        black_img = Image.new("RGBA", (w, h), (0, 0, 0, 180))
         img.paste(black_img, (0, 0), black_img)
-    img = img.convert('RGBA')
+    img = img.convert("RGBA")
     return img
 
 
-async def get_event_avatar(
-    ev: Event, avatar_path: Optional[Path] = None
-) -> Image.Image:
+async def get_event_avatar(ev: Event, avatar_path: Optional[Path] = None) -> Image.Image:
     img = None
-    if ev.bot_id == 'onebot' and ev.at:
+    if ev.bot_id == "onebot" and ev.at:
         img = await get_qq_avatar(ev.at)
 
-    if img is None and 'avatar' in ev.sender and ev.sender['avatar']:
-        avatar_url: str = ev.sender['avatar']
-        if avatar_url.startswith(('http', 'https')):
+    if img is None and "avatar" in ev.sender and ev.sender["avatar"]:
+        avatar_url: str = ev.sender["avatar"]
+        if avatar_url.startswith(("http", "https")):
             try:
                 content = (await sget(avatar_url)).content
-                img = Image.open(BytesIO(content)).convert('RGBA')
+                img = Image.open(BytesIO(content)).convert("RGBA")
             except Exception:
                 img = None
 
-    if img is None and ev.bot_id == 'onebot' and not ev.sender:
+    if img is None and ev.bot_id == "onebot" and not ev.sender:
         img = await get_qq_avatar(ev.user_id)
-    elif img is None and ev.bot_id == 'qqgroup':
+    elif img is None and ev.bot_id == "qqgroup":
         img = await get_qqgroup_avatar(ev.bot_self_id, ev.user_id)
 
     if img is None and avatar_path:
         pic_path_list = list(avatar_path.iterdir())
         if pic_path_list:
             path = random.choice(pic_path_list)
-            img = Image.open(path).convert('RGBA')
+            img = Image.open(path).convert("RGBA")
 
     if img is None:
-        img = Image.open(TEXT_PATH / 'icon.jpg').convert('RGBA')
+        img = Image.open(TEXT_PATH / "icon.jpg").convert("RGBA")
 
     return img
 
@@ -166,8 +164,8 @@ async def get_avatar_with_ring(
 
 
 async def shift_image_hue(img: Image.Image, angle: float = 30) -> Image.Image:
-    alpha = img.getchannel('A')
-    img = img.convert('HSV')
+    alpha = img.getchannel("A")
+    img = img.convert("HSV")
 
     pixels = img.load()
     assert pixels is not None
@@ -179,7 +177,7 @@ async def shift_image_hue(img: Image.Image, angle: float = 30) -> Image.Image:
             h = (h + hue_shift) % 360
             pixels[x, y] = (h, s, v)  # type: ignore
 
-    img = img.convert('RGBA')
+    img = img.convert("RGBA")
     img.putalpha(alpha)
     return img
 
@@ -193,7 +191,7 @@ async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
         if resp.status_code != 200:
             if size is None:
                 size = (960, 600)
-            return Image.new('RGBA', size)
+            return Image.new("RGBA", size)
         pic = Image.open(BytesIO(resp.read()))
         pic = pic.convert("RGBA")
         if size is not None:
@@ -214,17 +212,17 @@ def draw_center_text_by_line(
     gun = "。！？；!?」』"
     x, y = pos
 
-    if hasattr(font, 'getsize'):
-        _, h = font.getsize('X')  # type: ignore
+    if hasattr(font, "getsize"):
+        _, h = font.getsize("X")  # type: ignore
     else:
-        bbox = font.getbbox('X')
+        bbox = font.getbbox("X")
         _, h = 0, bbox[3] - bbox[1]
 
-    line = ''
+    line = ""
     lenth = 0
-    anchor = 'la' if not_center else 'mm'
+    anchor = "la" if not_center else "mm"
     for index, char in enumerate(text):
-        if hasattr(font, 'getsize'):
+        if hasattr(font, "getsize"):
             # 获取当前字符的宽度
             size, _ = font.getsize(char)  # type: ignore
         else:
@@ -232,15 +230,15 @@ def draw_center_text_by_line(
             size, _ = bbox[2] - bbox[0], bbox[3] - bbox[1]
         lenth += size
         line += char
-        if lenth < max_length and char not in pun and char != '\n':
+        if lenth < max_length and char not in pun and char != "\n":
             pass
         else:
             if index + 1 < len(text) and text[index + 1] in gun:
                 pass
             else:
-                line = line.replace('\n', '')
+                line = line.replace("\n", "")
                 img.text((x, y), line, fill, font, anchor)
-                line, lenth = '', 0
+                line, lenth = "", 0
                 y += h * 2.5
     else:
         img.text((x, y), line, fill, font, anchor)
@@ -264,10 +262,10 @@ def draw_text_by_line(
     """
     x, y = pos
 
-    if hasattr(font, 'getsize'):
-        _, h = font.getsize('X')  # type: ignore
+    if hasattr(font, "getsize"):
+        _, h = font.getsize("X")  # type: ignore
     else:
-        bbox = font.getbbox('X')
+        bbox = font.getbbox("X")
         _, h = 0, bbox[3] - bbox[1]
 
     if line_space is None:
@@ -279,10 +277,10 @@ def draw_text_by_line(
     length = 0  # 记录本行长度
     for character in text:
         # 获取当前字符的宽度
-        if hasattr(font, 'getsize'):
+        if hasattr(font, "getsize"):
             w, h = font.getsize(character)  # type: ignore
         else:
-            bbox = font.getbbox('X')
+            bbox = font.getbbox("X")
             w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
         if length + w * 2 <= max_length:
@@ -291,19 +289,19 @@ def draw_text_by_line(
         else:
             row += character
             if center:
-                if hasattr(font, 'getsize'):
+                if hasattr(font, "getsize"):
                     font_size = font.getsize(row)  # type: ignore
                 else:
                     bbox = font.getbbox(character)
                     font_size = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 x = math.ceil((img.size[0] - font_size[0]) / 2)
             draw.text((x, y), row, font=font, fill=fill)
-            row = ''
+            row = ""
             length = 0
             y += y_add
     if row != "":
         if center:
-            if hasattr(font, 'getsize'):
+            if hasattr(font, "getsize"):
                 font_size = font.getsize(row)  # type: ignore
             else:
                 bbox = font.getbbox(row)
@@ -313,9 +311,7 @@ def draw_text_by_line(
     return y
 
 
-def easy_paste(
-    im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt"
-):
+def easy_paste(im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt"):
     """
     inplace method
     快速粘贴, 自动获取被粘贴图像的坐标。
@@ -333,28 +329,22 @@ def easy_paste(
     im.paste(im_paste, (x, y, x + size_x, y + size_y), im_paste)
 
 
-def easy_alpha_composite(
-    im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt"
-) -> Image.Image:
-    '''
+def easy_alpha_composite(im: Image.Image, im_paste: Image.Image, pos=(0, 0), direction="lt") -> Image.Image:
+    """
     透明图像快速粘贴
-    '''
+    """
     base = Image.new("RGBA", im.size)
     easy_paste(base, im_paste, pos, direction)
     base = Image.alpha_composite(im, base)
     return base
 
 
-async def get_qq_avatar(
-    qid: Optional[Union[int, str]] = None, avatar_url: Optional[str] = None
-) -> Image.Image:
+async def get_qq_avatar(qid: Optional[Union[int, str]] = None, avatar_url: Optional[str] = None) -> Image.Image:
     if qid:
-        avatar_url = f'http://q1.qlogo.cn/g?b=qq&nk={qid}&s=640'
+        avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qid}&s=640"
     elif avatar_url is None:
-        avatar_url = 'https://q1.qlogo.cn/g?b=qq&nk=3399214199&s=640'
-    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
-        'RGBA'
-    )
+        avatar_url = "https://q1.qlogo.cn/g?b=qq&nk=3399214199&s=640"
+    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert("RGBA")
     return char_pic
 
 
@@ -365,10 +355,8 @@ async def get_qqgroup_avatar(
 ) -> Optional[Image.Image]:
     if not qid or not bot_id:
         return None
-    avatar_url = f'https://q.qlogo.cn/qqapp/{bot_id}/{qid}/100'
-    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert(
-        'RGBA'
-    )
+    avatar_url = f"https://q.qlogo.cn/qqapp/{bot_id}/{qid}/100"
+    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert("RGBA")
     return char_pic
 
 
@@ -378,7 +366,7 @@ async def draw_pic_with_ring(
     bg_color: Optional[Tuple[int, int, int]] = None,
     is_ring: bool = True,
 ):
-    '''
+    """
     :说明:
       绘制一张带白色圆环的1:1比例图片。
 
@@ -389,15 +377,15 @@ async def draw_pic_with_ring(
 
     :返回:
       * img: `Image.Image`: 图片对象
-    '''
-    ring_pic = Image.open(TEXT_PATH / 'ring.png')
-    mask_pic = Image.open(TEXT_PATH / 'mask.png')
-    img = Image.new('RGBA', (size, size))
+    """
+    ring_pic = Image.open(TEXT_PATH / "ring.png")
+    mask_pic = Image.open(TEXT_PATH / "mask.png")
+    img = Image.new("RGBA", (size, size))
     resize_pic = crop_center_img(pic, size, size)
-    resize_pic = resize_pic.convert('RGBA')
+    resize_pic = resize_pic.convert("RGBA")
     mask = mask_pic.resize((size, size))
     if bg_color:
-        img_color = Image.new('RGBA', (size, size), bg_color)
+        img_color = Image.new("RGBA", (size, size), bg_color)
         img_color.paste(resize_pic, (0, 0), resize_pic)
         img.paste(img_color, (0, 0), mask)
     else:
@@ -410,13 +398,11 @@ async def draw_pic_with_ring(
     return img
 
 
-def crop_center_img(
-    img: Image.Image, based_w: int, based_h: int
-) -> Image.Image:
+def crop_center_img(img: Image.Image, based_w: int, based_h: int) -> Image.Image:
     # 确定图片的长宽
-    based_scale = '%.3f' % (based_w / based_h)
+    based_scale = "%.3f" % (based_w / based_h)
     w, h = img.size
-    scale_f = '%.3f' % (w / h)
+    scale_f = "%.3f" % (w / h)
     new_w = math.ceil(based_h * float(scale_f))
     new_h = math.ceil(based_w / float(scale_f))
     if scale_f > based_scale:
@@ -445,22 +431,18 @@ async def get_color_bg(
     full_opacity: int = 200,
 ) -> Image.Image:
     if bg_path is None:
-        bg_path = get_res_path(['GsCore', 'bg'])
+        bg_path = get_res_path(["GsCore", "bg"])
     CI_img = CustomizeImage(bg_path)
     img = CI_img.get_image(None, based_w, based_h)
     if color is None:
         color = CI_img.get_bg_color(img)
     if is_full:
-        color_img = Image.new('RGBA', (based_w, based_h), color)
-        mask = Image.new(
-            'RGBA', (based_w, based_h), (255, 255, 255, full_opacity)
-        )
+        color_img = Image.new("RGBA", (based_w, based_h), color)
+        mask = Image.new("RGBA", (based_w, based_h), (255, 255, 255, full_opacity))
         img.paste(color_img, (0, 0), mask)
     elif not without_mask:
-        color_mask = Image.new('RGBA', (based_w, based_h), color)
-        enka_mask = Image.open(TEXT_PATH / 'bg_mask.png').resize(
-            (based_w, based_h)
-        )
+        color_mask = Image.new("RGBA", (based_w, based_h), color)
+        enka_mask = Image.open(TEXT_PATH / "bg_mask.png").resize((based_w, based_h))
         img.paste(color_mask, (0, 0), enka_mask)
     return img
 
@@ -469,21 +451,19 @@ class CustomizeImage:
     def __init__(self, bg_path: Path) -> None:
         self.bg_path = bg_path
 
-    def get_image(
-        self, image: Union[str, Image.Image, None], based_w: int, based_h: int
-    ) -> Image.Image:
+    def get_image(self, image: Union[str, Image.Image, None], based_w: int, based_h: int) -> Image.Image:
         # 获取背景图片
         if isinstance(image, Image.Image):
             edit_bg = image
         elif image:
-            edit_bg = Image.open(BytesIO(get(image).content)).convert('RGBA')
+            edit_bg = Image.open(BytesIO(get(image).content)).convert("RGBA")
         else:
             _lst = list(self.bg_path.iterdir())
             if _lst:
                 path = random.choice(list(self.bg_path.iterdir()))
             else:
                 path = random.choice(list(BG_PATH.iterdir()))
-            edit_bg = Image.open(path).convert('RGBA')
+            edit_bg = Image.open(path).convert("RGBA")
 
         # 确定图片的长宽
         bg_img = crop_center_img(edit_bg, based_w, based_h)
@@ -496,9 +476,7 @@ class CustomizeImage:
         img = img.resize((1, 1), resample=0)
         dominant_color = img.getpixel((0, 0))
         if isinstance(dominant_color, float):
-            _dominant_color = tuple(
-                [int(dominant_color * 255) for _ in range(3)]
-            )  # type: ignore
+            _dominant_color = tuple([int(dominant_color * 255) for _ in range(3)])  # type: ignore
         elif dominant_color is None or isinstance(dominant_color, int):
             _dominant_color: Tuple[int, int, int] = (255, 255, 255)
         else:
@@ -507,9 +485,7 @@ class CustomizeImage:
         return _dominant_color
 
     @staticmethod
-    def get_bg_color(
-        edit_bg: Image.Image, is_light: Optional[bool] = False
-    ) -> Tuple[int, int, int]:
+    def get_bg_color(edit_bg: Image.Image, is_light: Optional[bool] = False) -> Tuple[int, int, int]:
         # 获取背景主色
         color = 8
         q = edit_bg.quantize(colors=color, method=Image.Quantize.FASTOCTREE)
@@ -522,7 +498,8 @@ class CustomizeImage:
         for i in range(color):
             bg = tuple(
                 q.getpalette()[  # type:ignore
-                    i * 3 : (i * 3) + 3  # noqa:E203
+                    i * 3 : (i * 3)
+                    + 3  # noqa:E203
                 ]
             )
             light_value = bg[0] * 0.3 + bg[1] * 0.6 + bg[2] * 0.1
@@ -594,23 +571,23 @@ class CustomizeImage:
         blue_color = color[2]
 
         highlight_color = {
-            'red': red_color - 127 if red_color > 127 else 127,
-            'green': green_color - 127 if green_color > 127 else 127,
-            'blue': blue_color - 127 if blue_color > 127 else 127,
+            "red": red_color - 127 if red_color > 127 else 127,
+            "green": green_color - 127 if green_color > 127 else 127,
+            "blue": blue_color - 127 if blue_color > 127 else 127,
         }
 
         max_color = max(highlight_color.values())
 
-        name = ''
+        name = ""
         for _highlight_color in highlight_color:
             if highlight_color[_highlight_color] == max_color:
                 name = str(_highlight_color)
 
-        if name == 'red':
-            return red_color, highlight_color['green'], highlight_color['blue']
-        elif name == 'green':
-            return highlight_color['red'], green_color, highlight_color['blue']
-        elif name == 'blue':
-            return highlight_color['red'], highlight_color['green'], blue_color
+        if name == "red":
+            return red_color, highlight_color["green"], highlight_color["blue"]
+        elif name == "green":
+            return highlight_color["red"], green_color, highlight_color["blue"]
+        elif name == "blue":
+            return highlight_color["red"], highlight_color["green"], blue_color
         else:
             return 0, 0, 0  # Error

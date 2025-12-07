@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PIL import ImageFont
 
-FONT_ORIGIN_PATH = Path(__file__).parent / 'MiSans-Bold.ttf'
+FONT_ORIGIN_PATH = Path(__file__).parent / "MiSans-Bold.ttf"
 
 
 def core_font(size: int) -> ImageFont.FreeTypeFont:

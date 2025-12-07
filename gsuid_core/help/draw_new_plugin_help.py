@@ -1,42 +1,42 @@
 import re
 import random
-from pathlib import Path
 from copy import deepcopy
 from typing import Dict, Literal, Optional
+from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from gsuid_core.help.model import PluginHelp
 from gsuid_core.data_store import get_res_path
+from gsuid_core.help.model import PluginHelp
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.convert import convert_img
-from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 from gsuid_core.utils.image.image_tools import (
     CustomizeImage,
     tint_image,
     crop_center_img,
     draw_color_badge,
 )
+from gsuid_core.utils.plugins_config.gs_config import pic_gen_config
 
 cache: Dict[str, int] = {}
-ICON_PATH = Path(__file__).parent / 'new_icon'
-TEXT_PATH = Path(__file__).parent / 'texture2d'
-pic_quality: int = pic_gen_config.get_config('PicQuality').data
+ICON_PATH = Path(__file__).parent / "new_icon"
+TEXT_PATH = Path(__file__).parent / "texture2d"
+pic_quality: int = pic_gen_config.get_config("PicQuality").data
 
 
 def find_icon(name: str, icon_path: Path = ICON_PATH):
-    for icon in icon_path.glob('*.png'):
+    for icon in icon_path.glob("*.png"):
         if icon.stem == name:
             _r = icon
             break
     else:
-        for icon in icon_path.glob('*.png'):
+        for icon in icon_path.glob("*.png"):
             if icon.stem in name:
                 _r = icon
                 break
         else:
-            if (icon_path / '通用.png').exists():
-                _r = icon_path / '通用.png'
+            if (icon_path / "通用.png").exists():
+                _r = icon_path / "通用.png"
             else:
                 _r = random.choice(list(icon_path.iterdir()))
     return Image.open(_r)
@@ -44,14 +44,14 @@ def find_icon(name: str, icon_path: Path = ICON_PATH):
 
 def calculate_string_length(s: str):
     total_length = 0
-    result = ''
+    result = ""
     for char in s:
         result += char
-        if '\u4e00' <= char <= '\u9fff':
+        if "\u4e00" <= char <= "\u9fff":
             total_length += 1
-        elif re.match(r'[A-Za-z0-9]', char):
+        elif re.match(r"[A-Za-z0-9]", char):
             total_length += 0.5
-        elif re.match(r'[^\w\s]', char):
+        elif re.match(r"[^\w\s]", char):
             total_length += 0.3
 
         if total_length >= 8:
@@ -65,10 +65,10 @@ async def get_new_help(
     plugin_info: Dict[str, str],
     plugin_icon: Image.Image,
     plugin_help: Dict[str, PluginHelp],
-    plugin_prefix: str = '',
-    help_mode: Literal['dark', 'light'] = 'dark',
+    plugin_prefix: str = "",
+    help_mode: Literal["dark", "light"] = "dark",
     banner_bg: Optional[Image.Image] = None,
-    banner_sub_text: str = '💖且听风吟。',
+    banner_sub_text: str = "💖且听风吟。",
     help_bg: Optional[Image.Image] = None,
     cag_bg: Optional[Image.Image] = None,
     item_bg: Optional[Image.Image] = None,
@@ -80,42 +80,37 @@ async def get_new_help(
     pm: int = 6,
     highlight_bg: Optional[Image.Image] = None,
 ):
-    help_path = get_res_path('help') / f'{plugin_name}_{pm}.jpg'
+    help_path = get_res_path("help") / f"{plugin_name}_{pm}.jpg"
 
-    if (
-        help_path.exists()
-        and plugin_name in cache
-        and cache[plugin_name]
-        and enable_cache
-    ):
+    if help_path.exists() and plugin_name in cache and cache[plugin_name] and enable_cache:
         return await convert_img(Image.open(help_path))
 
     if banner_bg is None:
-        banner_bg = Image.open(TEXT_PATH / f'banner_bg_{help_mode}.jpg')
+        banner_bg = Image.open(TEXT_PATH / f"banner_bg_{help_mode}.jpg")
     if help_bg is None:
-        help_bg = Image.open(TEXT_PATH / f'bg_{help_mode}.jpg')
+        help_bg = Image.open(TEXT_PATH / f"bg_{help_mode}.jpg")
     if cag_bg is None:
-        cag_bg = Image.open(TEXT_PATH / f'cag_bg_{help_mode}.png')
+        cag_bg = Image.open(TEXT_PATH / f"cag_bg_{help_mode}.png")
     if footer is None:
-        footer = Image.open(TEXT_PATH / f'footer_{help_mode}.png')
+        footer = Image.open(TEXT_PATH / f"footer_{help_mode}.png")
     if item_bg is None:
-        item_bg = Image.open(TEXT_PATH / f'item_{help_mode}.png')
+        item_bg = Image.open(TEXT_PATH / f"item_{help_mode}.png")
     if highlight_bg is None:
-        highlight_bg = Image.open(TEXT_PATH / 'highlight.png')
+        highlight_bg = Image.open(TEXT_PATH / "highlight.png")
 
-    if help_mode == 'dark':
+    if help_mode == "dark":
         main_color = (255, 255, 255)
         sub_color = (206, 206, 206)
     else:
         main_color = (0, 0, 0)
         sub_color = (102, 102, 102)
 
-    banner_bg = banner_bg.convert('RGBA')
-    help_bg = help_bg.convert('RGBA')
-    cag_bg = cag_bg.convert('RGBA')
-    item_bg = item_bg.convert('RGBA')
-    footer = footer.convert('RGBA')
-    highlight_bg = highlight_bg.convert('RGBA')
+    banner_bg = banner_bg.convert("RGBA")
+    help_bg = help_bg.convert("RGBA")
+    cag_bg = cag_bg.convert("RGBA")
+    item_bg = item_bg.convert("RGBA")
+    footer = footer.convert("RGBA")
+    highlight_bg = highlight_bg.convert("RGBA")
 
     plugin_icon = plugin_icon.resize((128, 128))
 
@@ -124,9 +119,9 @@ async def get_new_help(
 
     cag_num = 0
     for cag in plugin_help:
-        cag_data = plugin_help[cag]['data']
+        cag_data = plugin_help[cag]["data"]
         sv = plugin_help[cag]
-        if 'pm' in sv and isinstance(sv['pm'], int) and pm > sv['pm']:
+        if "pm" in sv and isinstance(sv["pm"], int) and pm > sv["pm"]:
             continue
 
         cag_num += 1
@@ -138,26 +133,26 @@ async def get_new_help(
     banner_bg.paste(plugin_icon, (89, banner_h - 212), plugin_icon)
     banner_draw: ImageDraw.ImageDraw = ImageDraw.Draw(banner_bg)
 
-    _banner_name = plugin_name + '帮助'
+    _banner_name = plugin_name + "帮助"
     banner_draw.text(
         (262, banner_h - 172),
         _banner_name,
         main_color,
         font=core_font(50),
-        anchor='lm',
+        anchor="lm",
     )
     banner_draw.text(
         (262, banner_h - 117),
         banner_sub_text,
         sub_color,
         font=core_font(30),
-        anchor='lm',
+        anchor="lm",
     )
     x1, y1, x2, y2 = core_font(50).getbbox(_banner_name)
     plugin_name_len = int(x2 - x1)
 
     for key, value in plugin_info.items():
-        if value == 'any' or not value:
+        if value == "any" or not value:
             value = (252, 69, 69)
         badge = draw_color_badge(
             key,
@@ -188,10 +183,8 @@ async def get_new_help(
     # 基准图
     img = crop_center_img(help_bg, w, h)
     if need_cover:
-        color = CustomizeImage.get_bg_color(
-            img, False if help_mode == 'dark' else True
-        )
-        if help_mode == 'light':
+        color = CustomizeImage.get_bg_color(img, False if help_mode == "dark" else True)
+        if help_mode == "light":
             add_color = 40
             max_color = 255
             c0 = color[0] + add_color
@@ -211,7 +204,7 @@ async def get_new_help(
             c2 = c2 if c2 > max_color else max_color
         _color = (c0, c1, c2, 190)
         _color_img = Image.new(
-            'RGBA',
+            "RGBA",
             (w, h),
             _color,
         )
@@ -224,11 +217,11 @@ async def get_new_help(
     for cag in plugin_help:
         sv = plugin_help[cag]
         cag_bar = deepcopy(cag_bg)
-        cag_desc = sv['desc']
-        if 'pm' in sv and isinstance(sv['pm'], int) and pm > sv['pm']:
+        cag_desc = sv["desc"]
+        if "pm" in sv and isinstance(sv["pm"], int) and pm > sv["pm"]:
             continue
 
-        cag_data = sv['data']
+        cag_data = sv["data"]
         cag_draw = ImageDraw.Draw(cag_bar)
 
         cag_draw.text(
@@ -236,7 +229,7 @@ async def get_new_help(
             cag,
             main_color,
             font=core_font(45),
-            anchor='lm',
+            anchor="lm",
         )
         bbox = core_font(45).getbbox(cag)
         cag_name_len = int(bbox[2] - bbox[0])
@@ -246,7 +239,7 @@ async def get_new_help(
             cag_desc,
             sub_color,
             font=core_font(30),
-            anchor='lm',
+            anchor="lm",
         )
 
         cag_bar = cag_bar.resize((w, new_cag_h))
@@ -258,12 +251,12 @@ async def get_new_help(
         )
 
         for i, command in enumerate(cag_data):
-            command_name = command['name']
+            command_name = command["name"]
             # command_desc = command['desc']
-            command_eg = command['eg']
+            command_eg = command["eg"]
             command_bg = deepcopy(item_bg)
-            if 'highlight' in command:
-                highlight = command['highlight']
+            if "highlight" in command:
+                highlight = command["highlight"]
             else:
                 highlight = 6
 
@@ -285,17 +278,17 @@ async def get_new_help(
             if hbg:
                 command_bg.paste(hbg, (0, 0), hbg)
 
-            if 'icon' in command:
-                if isinstance(command['icon'], Image.Image):
-                    icon: Image.Image = command['icon']
+            if "icon" in command:
+                if isinstance(command["icon"], Image.Image):
+                    icon: Image.Image = command["icon"]
                 else:
-                    icon = Image.open(command['icon'])
+                    icon = Image.open(command["icon"])
             else:
                 icon = find_icon(command_name, icon_path)
 
             if icon.width > 200:
                 icon = icon.resize((128, 128))
-                _icon = Image.new('RGBA', (150, 150))
+                _icon = Image.new("RGBA", (150, 150))
                 _icon.paste(icon, (11, 11), icon)
                 icon = _icon
             else:
@@ -311,10 +304,10 @@ async def get_new_help(
                 _command_name,
                 main_color,
                 font=core_font(38),
-                anchor='lm',
+                anchor="lm",
             )
 
-            if cag == '插件帮助一览':
+            if cag == "插件帮助一览":
                 eg = command_eg
             else:
                 eg = plugin_prefix + command_eg
@@ -324,18 +317,12 @@ async def get_new_help(
                 eg,
                 sub_color,
                 font=core_font(26),
-                anchor='lm',
+                anchor="lm",
             )
 
             x, y = (
                 45 + (i % column) * 490,
-                int(
-                    new_banner_h
-                    + 70 * bscale
-                    + (i // column) * 175
-                    + hs
-                    + soft
-                ),
+                int(new_banner_h + 70 * bscale + (i // column) * 175 + hs + soft),
             )
             img.paste(command_bg, (x, y), command_bg)
 
@@ -347,10 +334,10 @@ async def get_new_help(
         footer,
     )
 
-    img = img.convert('RGB')
+    img = img.convert("RGB")
     img.save(
         help_path,
-        'JPEG',
+        "JPEG",
         quality=pic_quality,
         subsampling=0,
     )

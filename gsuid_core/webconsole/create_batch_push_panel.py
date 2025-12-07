@@ -1,9 +1,9 @@
 from gsuid_core.gss import gss
-from gsuid_core.webconsole.create_base_panel import get_alert
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
+from gsuid_core.webconsole.create_base_panel import get_alert
 
-PLUGINS = 'image,lists,preview,link,advlist,wordcount'
-TOOLBAR = 'undo redo bold bullist numlist template link image preview'
+PLUGINS = "image,lists,preview,link,advlist,wordcount"
+TOOLBAR = "undo redo bold bullist numlist template link image preview"
 
 
 async def get_batch_push_panel():
@@ -15,15 +15,15 @@ async def get_batch_push_panel():
 
     if all_user:
         for user in all_user:
-            uuid = f'u:{user.user_id}|{user.bot_id}'
-            u = {"label": f'用户:{user.user_id}', "value": uuid}
+            uuid = f"u:{user.user_id}|{user.bot_id}"
+            u = {"label": f"用户:{user.user_id}", "value": uuid}
             if u not in _options_user:
                 _options_user.append(u)
 
     if all_group:
         for group in all_group:
-            uuid = f'g:{group.group_id}|{group.bot_id}'
-            g = {"label": f'群聊:{group.group_id}', "value": uuid}
+            uuid = f"g:{group.group_id}|{group.bot_id}"
+            g = {"label": f"群聊:{group.group_id}", "value": uuid}
             if g not in _options_group:
                 _options_group.append(g)
 

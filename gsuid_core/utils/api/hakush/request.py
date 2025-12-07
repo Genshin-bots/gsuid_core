@@ -4,15 +4,15 @@ from typing import Dict, Union, Literal, Optional, cast
 
 from httpx import AsyncClient
 
-from ..types import AnyDict
-from ..utils import _HEADER
-from .models import WeaponData, CharacterData
 from .api import (
     HAKUSH_CHAR_URL,
     HAKUSH_CHAR_DATA,
     HAKUSH_WEAPON_URL,
     HAKUSH_WEAPON_DATA,
 )
+from ..types import AnyDict
+from ..utils import _HEADER
+from .models import WeaponData, CharacterData
 
 
 async def get_hakush_char_data(
@@ -49,14 +49,12 @@ async def get_hakush_weapon_list() -> Optional[Dict[str, Dict[str, str]]]:
 
 async def _hakush_request(
     url: str,
-    method: Literal['GET', 'POST'] = 'GET',
+    method: Literal["GET", "POST"] = "GET",
     header: AnyDict = _HEADER,
     params: Optional[AnyDict] = None,
     data: Optional[AnyDict] = None,
 ) -> Optional[AnyDict]:
     async with AsyncClient(timeout=None) as client:
-        req = await client.request(
-            method, url=url, headers=header, params=params, json=data
-        )
+        req = await client.request(method, url=url, headers=header, params=params, json=data)
         data = req.json()
         return data

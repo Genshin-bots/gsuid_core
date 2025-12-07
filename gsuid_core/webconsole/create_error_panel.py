@@ -1,6 +1,6 @@
 import json
-from pathlib import Path
 from typing import Dict, List, Optional
+from pathlib import Path
 
 from gsuid_core.data_store import error_mark_path
 
@@ -18,17 +18,17 @@ def load_error_logs(report_path: Path) -> List[Dict]:
     # 遍历所有 json 文件
     for file_path in report_path.glob("*.json"):
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 # 为了列表展示更清晰，我们可以提取简短的标题
                 # 如果没有 event 字段，就用文件名
-                data['id'] = file_path.stem
+                data["id"] = file_path.stem
                 logs.append(data)
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
 
     # 按时间戳倒序排列 (最新的在最上面)
-    logs.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     return logs
 
 
@@ -87,11 +87,9 @@ def generate_error_schema(logs: Optional[List[Dict]] = None) -> Dict:
     collapse_items = []
     for log in logs:
         # 获取标题，如果过长截断
-        event_title = log.get('event', '未知错误')
+        event_title = log.get("event", "未知错误")
 
-        full_error_text = str(log.get('event', '')) + str(
-            log.get('exception', '')
-        )
+        full_error_text = str(log.get("event", "")) + str(log.get("exception", ""))
 
         if any(keyword in full_error_text for keyword in IGNORE_KEYWORDS):
             continue
@@ -111,7 +109,7 @@ def generate_error_schema(logs: Optional[List[Dict]] = None) -> Dict:
                         </span>
                     </div>
                     <span style="font-size: 12px; color: #999; margin-left: 10px; flex-shrink: 0;">
-                        {log.get('timestamp', '')}
+                        {log.get("timestamp", "")}
                     </span>
                 </div>
                 """,  # noqa: E501
@@ -137,7 +135,7 @@ def generate_error_schema(logs: Optional[List[Dict]] = None) -> Dict:
                         "language": "python",
                         "className": "error-stack-code",
                         "theme": "vs-dark",
-                        "value": log.get('exception', '无详细堆栈信息'),
+                        "value": log.get("exception", "无详细堆栈信息"),
                     },
                 ],
             }
