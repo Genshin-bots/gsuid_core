@@ -677,3 +677,7 @@ logs
 .pdm-build
 .VSCodeCounter
 .ruff_cache
+
+# dependencies
+uv.toml
+pdm.toml

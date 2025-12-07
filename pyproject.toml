@@ -55,7 +55,7 @@ dependencies = [
     "greenlet>=3.2.4",
 ]
 name = "gsuid-core"
-version = "0.8.6"
+version = "0.8.7"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
@@ -117,8 +117,18 @@ dev = ["ruff>=0.14.7", "pre-commit>=2.21.0"]
 includes = ["gsuid_core"]
 
 [[tool.poetry.source]]
-name = "NJU"
-url = "https://mirrors.volces.com/pypi/simple/"
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
+priority = "primary"
+
+[[tool.poetry.source]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+priority = "primary"
+
+[[tool.poetry.source]]
+name = "official-pypi"
+url = "https://pypi.org/simple"
 priority = "primary"
 
 [build-system]
@@ -145,15 +155,44 @@ force_sort_within_sections = true
 extra_standard_library = ["typing_extensions"]
 
 [[tool.uv.index]]
-url = "https://mirrors.volces.com/pypi/simple/"
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
 default = true
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "volces"
+url = "https://mirrors.volces.com/pypi/simple"
 
 [tool.pdm.resolution]
 respect-source-order = true
 
 [[tool.pdm.source]]
-name = "VOLCES"
-url = "https://mirrors.volces.com/pypi/simple/"
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
+verify_ssl = true
+
+[[tool.pdm.source]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+verify_ssl = true
+
+[[tool.pdm.source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[[tool.pdm.source]]
+name = "volces"
+url = "https://mirrors.volces.com/pypi/simple"
+verify_ssl = true
 
 [project.urls]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
