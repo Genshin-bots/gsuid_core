@@ -58,6 +58,23 @@
 - **架构支持**：支持 `linux/amd64` 和 `linux/arm64`
 - **注意**：镜像**仅包含运行环境**，不包含核心代码和插件
 
+#### Playwright 版本（SayuStock 专用）
+
+- **镜像地址**：`docker.cnb.cool/gscore-mirror/gscore-docker/playwright:latest`
+- **参考 Dockerfile**：[Dockerfile](https://cnb.cool/gscore-mirror/gscore-docker/-/blob/main/Dockerfile.playwright)
+- **使用方式**：
+
+  ```shell
+  # 方法一：直接使用环境变量
+  GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gscore-docker/playwright:latest docker-compose up -d
+
+  # 方法二：修改 .env 文件
+  cp .env.example .env
+  # 编辑 .env 文件，修改 GSCORE_IMAGE 的值
+  # GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gscore-docker/playwright:latest
+  docker-compose up -d
+  ```
+
 ### 部署方式
 
 **共同步骤**：

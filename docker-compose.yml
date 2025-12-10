@@ -3,7 +3,7 @@
 
 services:
   gsuid_core:
-    image: docker.cnb.cool/gscore-mirror/gscore-docker:latest
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gscore-docker:latest}
     container_name: gsuid_core
     ports:
       - "${PORT:-8765}:8765"
