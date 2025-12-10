@@ -155,3 +155,23 @@ docker exec -it gsuid_core git config --global http.proxy http://host.docker.int
 ```
 
 > 💡 如果使用代理，请开启 lan 模式
+
+### 常用命令
+
+**安装 Python 包**
+
+```shell
+docker exec -it gsuid_core uv pip install <包名>
+```
+
+**进入容器 shell**
+
+```shell
+docker exec -it gsuid_core sh
+```
+
+**停止并删除虚拟环境**
+
+```shell
+docker-compose down --volumes
+```
