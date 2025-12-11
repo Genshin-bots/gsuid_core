@@ -108,7 +108,7 @@ cp .env.example .env
      -v /opt/gscore_data:/gsuid_core/data \
      -v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins \
      -v gsuid_core_venv:/venv \
-     docker.cnb.cool/gscore-mirror/gsuid_core_docker:latest
+     docker.cnb.cool/gscore-mirror/gsuid_core:latest
    ```
 
    _(会自动拉取全量镜像)_

@@ -3,7 +3,7 @@
 
 services:
   gsuid_core:
-    image: docker.cnb.cool/gscore-mirror/gsuid_core_docker:latest
+    image: docker.cnb.cool/gscore-mirror/gsuid_core:latest
     container_name: gsuid_core
 
     ports:
