@@ -170,7 +170,7 @@ docker-compose down --volumes
 docker-compose up -d --build
 ```
 
-**生产模式：**
+**全量模式：**
 
 ```shell
 # docker-compose 模式
