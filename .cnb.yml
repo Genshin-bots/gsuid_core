@@ -1,0 +1,15 @@
+# https://docs.cnb.cool/zh/build/grammar.html#service-docker
+main:
+  push:
+    - docker:
+        image: astral/uv:python3.12-bookworm-slim
+      services:
+        - name: docker
+          options:
+            rootlessBuildkitd:
+              enabled: true
+      env:
+        IMAGE_TAG: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest
+      stages:
+        - name: playwright
+          script: docker buildx build --target bundle -t ${IMAGE_TAG} --platform linux/amd64,linux/arm64 --push -f Dockerfile .

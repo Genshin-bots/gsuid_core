@@ -39,47 +39,13 @@
 
 ## 使用 Docker 部署
 
-### 重要说明
+GSUID Core 提供两种 Docker 部署模式
 
-镜像仅提供运行环境，**不包含**：
+### 模式一：挂载模式 (Mount Mode) - 推荐
 
-- ❌ 核心代码文件
-- ❌ 插件文件
-- ❌ 配置文件
+**特点**：挂载本地代码到容器，修改即生效。
 
-用户需要通过以下方式提供代码：
-
-✅ **挂载本地代码目录**
-
-### 镜像特性
-
-- **镜像地址**：`docker.cnb.cool/gscore-mirror/gscore-docker:latest`
-- **基础镜像**：基于 `astral/uv:python3.12-bookworm-slim`
-- **架构支持**：支持 `linux/amd64` 和 `linux/arm64`
-- **注意**：镜像**仅包含运行环境**，不包含核心代码和插件
-
-#### Playwright 版本（SayuStock 专用）
-
-- **镜像地址**：`docker.cnb.cool/gscore-mirror/gscore-docker/playwright:latest`
-- **参考 Dockerfile**：[Dockerfile](https://cnb.cool/gscore-mirror/gscore-docker/-/blob/main/Dockerfile.playwright)
-- **使用方式**：
-
-  ```shell
-  # 方法一：直接使用环境变量
-  GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gscore-docker/playwright:latest docker-compose up -d
-
-  # 方法二：修改 .env 文件
-  cp .env.example .env
-  # 编辑 .env 文件，修改 GSCORE_IMAGE 的值
-  # GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gscore-docker/playwright:latest
-  docker-compose up -d
-  ```
-
-### 部署方式
-
-**共同步骤**：
-
-1. 拉取核心代码
+1. **拉取代码**
 
 ```shell
 # 方法一：从 GitHub 拉取
@@ -87,6 +53,8 @@ git clone https://github.com/Genshin-bots/gsuid_core.git
 
 # 方法二：从 cnb.cool 拉取（国内镜像更快）
 git clone https://cnb.cool/gscore-mirror/gsuid_core.git
+
+cd gsuid_core
 ```
 
 2. 创建配置文件（可选）
@@ -97,81 +65,120 @@ cp .env.example .env
 
 > 💡 如需自定义配置，请编辑 .env 文件并取消注释相应配置
 
-3. 启动服务
-
-**方式一：Docker Compose（推荐）**
+3. **启动服务**
 
 ```shell
-docker-compose up -d
+docker-compose up -d --build
 ```
 
-**方式二：Docker Run 命令**
+4. **管理**
+   - 服务运行在端口 `8765`。
+   - 启动后可通过 `localhost:8765/genshinuid` 进入核心的后台管理界面
+
+---
+
+### 模式二：全量模式 (Bundle Mode)
+
+**特点**：无需下载源码，直接运行全量镜像（包含环境+代码+依赖）。
+
+1. **获取配置文件**
+   只需下载 [docker-compose.bundle.yml](./docker-compose.bundle.yml) 文件。
+
+2. 创建配置文件（可选）
 
 ```shell
-docker run -d \
-  --name gsuid_core \
-  -p ${PORT:-8765}:8765 \
-  -v ${MOUNT_PATH:-.}:/gsuid_core \
-  -v venv-data:/venv \
-  docker.cnb.cool/gscore-mirror/gscore-docker:latest
+cp .env.example .env
 ```
 
-4. 访问控制台
+2. **启动服务**
 
-启动后可通过 `localhost:8765/genshinuid` 进入核心的后台管理界面
+   **方式 A：Docker Compose (推荐)**
 
-### 插件安装方式
+   ```shell
+   docker-compose -f docker-compose.bundle.yml up -d
+   ```
 
-插件可以安装在任何一种位置：
+   **方式 B：Docker Run**
 
-**方式一：在宿主机安装（推荐）**
+   ```shell
+   docker run -d \
+     --name gsuid_core \
+     --restart always \
+     -p 8765:8765 \
+     -v /opt/gscore_data:/gsuid_core/data \
+     -v /opt/gscore_plugins:/gsuid_core/gsuid_core/plugins \
+     -v gsuid_core_venv:/venv \
+     docker.cnb.cool/gscore-mirror/gsuid_core_docker:latest
+   ```
 
-```shell
-# 在宿主机上直接操作，无需进入容器
-cd gsuid_core/plugins
-git clone https://github.com/KimigaiiWuyi/GenshinUID.git -b v4
+   _(会自动拉取全量镜像)_
+
+3. **数据管理**
+
+   - 数据持久化在 `/opt/gscore_data` 目录。
+   - 自定义插件可放在 `/opt/gscore_plugins` 目录。
+
+4. **管理**
+   - 服务运行在端口 `8765`。
+   - 启动后可通过 `localhost:8765/genshinuid` 进入核心的后台管理界面
+
+---
+
+### Playwright 支持 (截图功能)
+
+目前所有 Docker 镜像 **默认均已包含 Playwright 及 Chromium 浏览器环境**，无需额外配置，开箱即用。
+
+---
+
+### 高级操作指南
+
+#### 1. 网络代理配置 (解决 GitHub 拉取失败)
+
+如果容器内无法访问 GitHub，请配置代理：
+**方法 A：修改 docker-compose.yml**
+在 `.env` 中添加：
+
+```yaml
+GSCORE_HTTP_PROXY=http://host.docker.internal:7890
+GSCORE_HTTPS_PROXY=http://host.docker.internal:7890
 ```
 
-**方式二：在容器内安装**
+_(注意：请确保代理软件开启了 "允许局域网连接/LAN" 模式)_
 
-```shell
-docker exec -it gsuid_core sh
-cd /gsuid_core/gsuid_core/plugins
-git clone https://github.com/KimigaiiWuyi/GenshinUID.git -b v4
-```
-
-### 容器部署说明
-
-- **挂载目录**：容器内的 `/gsuid_core` 目录对应项目根目录
-- **虚拟环境**：持久化存储在 `venv-data` 卷中
-- **网络**：支持通过 `host.docker.internal` 访问宿主机服务
-
-### Git 代理配置
-
-如果在容器内需要使用 git 代理，请在容器启动后手动配置：
+**方法 B：容器内临时设置 Git 代理**
 
 ```shell
 docker exec -it gsuid_core git config --global http.proxy http://host.docker.internal:7890
 ```
 
-> 💡 如果使用代理，请开启 lan 模式
+#### 2. 安装额外的 Python 包
 
-### 常用命令
-
-**安装 Python 包**
+如果你安装了第三方插件需要额外依赖：
 
 ```shell
 docker exec -it gsuid_core uv pip install <包名>
 ```
 
-**进入容器 shell**
+#### 3. 环境重置 (解决依赖冲突)
 
-```shell
-docker exec -it gsuid_core sh
-```
+如果更新镜像后报错（如缺少依赖），请执行以下命令**彻底清理**旧环境：
 
-**停止并删除虚拟环境**
+**挂载模式：**
 
 ```shell
 docker-compose down --volumes
+docker-compose up -d --build
 ```
+
+**生产模式：**
+
+```shell
+# docker-compose 模式
+docker-compose -f docker-compose.bundle.yml down --volumes
+docker-compose -f docker-compose.bundle.yml up -d
+
+# docker run 模式
+docker volume rm gsuid_core_venv
+```
+
+_(警告：这将删除 `venv-data` 卷，所有手动安装的包需要重新安装，但 `./data` 数据不会丢失)_

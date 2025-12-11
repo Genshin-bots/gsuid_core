@@ -1,9 +1,12 @@
 # gsuid_core Docker Compose 配置
-# 部署方式: 远程镜像
+# 部署方式: 本地构建 (挂载模式)
 
 services:
   gsuid_core:
-    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gscore-docker:latest}
+    build:
+      context: .
+      target: ${GSCORE_BUILD_TARGET:-runtime}
+    image: gsuid-core:${GSCORE_BUILD_TARGET:-runtime}
     container_name: gsuid_core
     ports:
       - "${PORT:-8765}:8765"
