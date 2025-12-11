@@ -1,5 +1,8 @@
 # 基于 astral/uv 的 Python 3.12 Bookworm-slim 镜像
-FROM astral/uv:python3.12-bookworm-slim
+# 原始镜像
+# FROM astral/uv:python3.12-bookworm-slim
+# CNB加速镜像
+FROM docker.cnb.cool/gscore-mirror/docker-sync/astral-uv:python3.12-bookworm-slim
 
 # 设置工作目录
 WORKDIR /gsuid_core
@@ -26,9 +29,7 @@ RUN apt-get update && apt-get install -y \
     ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo Asia/Shanghai > /etc/timezone
 
 # 配置 git safe.directory，防止容器内 ownership 报错
-RUN git config --global --add safe.directory '/gsuid_core' && \
-    git config --global --add safe.directory '/gsuid_core/*' && \
-    git config --global --add safe.directory '/venv'
+RUN git config --global --add safe.directory '*'
 
 # 在镜像层创建 venv
 RUN uv venv --seed /venv
