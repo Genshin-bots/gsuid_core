@@ -1,5 +1,5 @@
 # https://docs.cnb.cool/zh/build/grammar.html#service-docker
-main:
+master:
   push:
     - docker:
         image: astral/uv:python3.12-bookworm-slim
