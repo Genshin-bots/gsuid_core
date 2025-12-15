@@ -1,21 +1,23 @@
 # gsuid_core Docker Compose 配置
-# 部署方式: 本地构建 (挂载模式)
+# 部署方式: 全量模式
 
 services:
   gsuid_core:
-    build:
-      context: .
-      target: ${GSCORE_BUILD_TARGET:-runtime}
-    image: gsuid-core:${GSCORE_BUILD_TARGET:-runtime}
+    image: docker.cnb.cool/gscore-mirror/gsuid_core:latest
     container_name: gsuid_core
+
     ports:
       - "${PORT:-8765}:8765"
+
     volumes:
-      - ${MOUNT_PATH:-.}:/gsuid_core
+      - ${DATA_PATH:-/opt/gscore_data}:/gsuid_core/data
+      - ${PLUGIN_PATH:-/opt/gscore_plugins}:/gsuid_core/gsuid_core/plugins
       - venv-data:/venv
-    restart: unless-stopped
+
+    restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
     environment:
       - PYTHONUNBUFFERED=1
       - http_proxy=${GSCORE_HTTP_PROXY:-}
