@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo Asia/Shanghai > /etc/timezone \
-    && uv venv /venv
+    && uv venv /venv --seed
 
 # 配置 git safe.directory
 RUN git config --global --add safe.directory '*'
@@ -54,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /var/lib/apt/lists/*
 
 # ==========================================
-# Stage 3: Runtime (开发/挂载模式)
+# Stage 3: Runtime (挂载模式)
 # 继承自 playwright_base
 # ==========================================
 FROM playwright_base AS runtime
