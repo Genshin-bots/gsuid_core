@@ -1,32 +1,83 @@
-# 基准镜像更新版本至官方文档推荐版本：3.12 | Update base image to the version recommended by the official documentation: 3.12
-FROM m.daocloud.io/docker.io/library/python:3.12-slim-bullseye
+# ==========================================
+# Stage 1: Base (最基础的系统环境)
+# 包含：Python, 时区, 编译工具, Git, 空虚拟环境
+# ==========================================
+FROM docker.cnb.cool/gscore-mirror/docker-sync/astral-uv:python3.12-bookworm-slim AS base
 
-# 镜像工作路径保持与文档一致 | Keep the working directory consistent with the documentation
-WORKDIR /gsuid_core
-# 暴露 8765 端口 | Expose port 8765
+# 暴露端口 (放在最上面)
 EXPOSE 8765
-ENV PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# 可选参数配置见 entrypoint 脚本 | Optional parameter configuration can be found in the entrypoint script
 
-# 调整层顺序，这些安装是固定的，单独分层 | Adjust layer order, these installations are fixed, separate layer
-RUN echo build start ---------------------------- \
-    && apt-get update -y \
-    && apt install curl git -y \
-    && apt-get autoremove \
-    && apt-get clean \
-    && pip install --no-cache-dir --upgrade pip \
-    && pip install uv
+WORKDIR /gsuid_core
 
-# 下面的内容与项目代码相关，有可能变换，单独分层 | The following content is related to project code and may change, separate layer
-# 代码添加到根目录下，保证路径与文档一致 | Add code to the root directory to ensure the path is consistent with the documentation
-ADD ./ /gsuid_core/
-# 如果是海外用户，删除 uv.toml 中镜像加速相关设置，并更新 lock 文件中的包地址 | If you are an overseas user, delete the mirror acceleration settings in uv.toml and update the package addresses in the lock file
-RUN uv sync --index "https://pypi.org/simple" && \
-    chmod +x /gsuid_core/docker-entrypoint.sh && \
-    echo build end ----------------------------
+# 环境变量
+ENV UV_PROJECT_ENVIRONMENT=/venv
+ENV PATH="/venv/bin:$PATH"
+ENV UV_LINK_MODE=copy
 
-# 将需要初始化的一些代码放到 entrypoint 中 | Put some initialization code into the entrypoint
-ENTRYPOINT [ "/gsuid_core/docker-entrypoint.sh" ]
+# 1. 安装最基础的系统依赖
+# 2. 创建虚拟环境
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    gcc \
+    python3-dev \
+    build-essential \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo Asia/Shanghai > /etc/timezone \
+    && uv venv /venv --seed
 
-# 最后启动服务 | Finally, start the service
-CMD ["uv", "run", "core"]
+# 配置 git safe.directory
+RUN git config --global --add safe.directory '*'
+
+# ==========================================
+# Stage 2: Playwright Base (浏览器环境层)
+# 包含：Chromium, 中文字体, Python Playwright 库(已安装在 venv)
+# ==========================================
+FROM base AS playwright_base
+
+# 设置浏览器全局路径
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# 安装 Playwright 运行所需的额外依赖 (中文字体 + 浏览器依赖)
+RUN apt-get update && apt-get install -y \
+    fonts-noto-cjk \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1. 安装 Playwright 库到 venv (venv 已在 base 阶段创建)
+# 2. 下载 Chromium 及其依赖
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install playwright && \
+    playwright install --with-deps chromium && \
+    rm -rf /var/lib/apt/lists/*
+
+# ==========================================
+# Stage 3: Runtime (挂载模式)
+# 继承自 playwright_base
+# ==========================================
+FROM playwright_base AS runtime
+
+# 可以在这里添加 runtime 特有的环境变量
+# ENV MY_ENV_VAR=value
+
+# 启动命令
+CMD ["uv", "run", "--python", "/venv/bin/python", "core", "--host", "0.0.0.0"]
+
+
+# ==========================================
+# Stage 4: Bundle (全量模式)
+# 继承自 playwright_base
+# ==========================================
+FROM playwright_base AS bundle
+
+# 1. 复制项目代码
+COPY . .
+
+# 2. 安装项目
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
+
+# 启动命令
+CMD ["uv", "run", "--python", "/venv/bin/python", "core", "--host", "0.0.0.0"]
