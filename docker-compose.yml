@@ -6,6 +6,10 @@ services:
     build:
       context: .
       target: ${GSCORE_BUILD_TARGET:-runtime}
+      args:
+        - GSCORE_BASE_IMAGE=${GSCORE_BASE_IMAGE:-docker.cnb.cool/gscore-mirror/docker-sync/astral-uv:python3.12-bookworm-slim}
+        - GSCORE_PYTHON_INDEX=${GSCORE_PYTHON_INDEX:-https://pypi.org/simple}
+
     image: gsuid-core:${GSCORE_BUILD_TARGET:-runtime}
     container_name: gsuid_core
     ports:

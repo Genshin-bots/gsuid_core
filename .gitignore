@@ -678,6 +678,7 @@ logs
 .pdm-build
 .VSCodeCounter
 .ruff_cache
+.DS_Store
 
 # dependencies
 uv.toml
