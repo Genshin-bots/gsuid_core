@@ -22,6 +22,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - PYTHONUNBUFFERED=1
+      - UV_INDEX=${GSCORE_PYTHON_INDEX:-}
+      - UV_NO_CONFIG=${UV_NO_CONFIG:-}
       - http_proxy=${GSCORE_HTTP_PROXY:-}
       - https_proxy=${GSCORE_HTTPS_PROXY:-}
       - no_proxy=${GSCORE_NO_PROXY:-localhost,127.0.0.1,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
