@@ -72,7 +72,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM playwright_base AS runtime
 
 # 启动命令
-CMD ["uv", "run", "--python", "/venv/bin/python", "core", "--host", "::"]
+CMD ["uv", "run", "--python", "/venv/bin/python", "core", "--host", "0.0.0.0"]
 
 # ==========================================
 # Stage 4: Bundle (全量模式)
@@ -94,4 +94,4 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . .
 
 # 4. 启动命令
-CMD ["uv", "run", "--python", "/venv/bin/python", "core", "--host", "::"]
+CMD ["uv", "run", "--python", "/venv/bin/python", "core", "--host", "0.0.0.0"]
