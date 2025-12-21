@@ -3,6 +3,8 @@ import shutil
 from typing import Any, Dict, List, Union, Literal, overload
 from pathlib import Path
 
+from boltons.fileutils import atomic_save
+
 from gsuid_core.data_store import get_res_path
 
 CONFIG_PATH = get_res_path() / "config.json"
@@ -64,17 +66,16 @@ class CoreConfig:
         self.update_config()
 
     def write_config(self):
-        # 使用缓存文件避免强行关闭造成文件损坏
-        temp_file_path = CONFIG_PATH.parent / f"{CONFIG_PATH.name}.bak"
-
-        if temp_file_path.exists():
-            temp_file_path.unlink()
-
-        with open(temp_file_path, "w", encoding="UTF-8") as file:
-            json.dump(self.config, file, indent=4, ensure_ascii=False)
-
-        CONFIG_PATH.unlink()
-        temp_file_path.rename(CONFIG_PATH)
+        with atomic_save(str(CONFIG_PATH), text_mode=True, overwrite=True, file_perms=0o644) as file:
+            if file:
+                json.dump(
+                    self.config,
+                    file,
+                    indent=4,
+                    ensure_ascii=False,
+                )
+            else:
+                raise RuntimeError("写入配置文件失败!")
 
     def update_config(self):
         # 打开config.json
