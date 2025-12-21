@@ -110,15 +110,21 @@ class StringConfig:
     def update_config(self):
         is_error = False
         # 打开config.json
-        with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
-            try:
-                self.config: Dict[str, GSC] = msgjson.decode(
-                    f.read(),
-                    type=Dict[str, GSC],
-                )
-            except ValidationError:
-                self.repair_config()
-                is_error = True
+        try:
+            with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
+                d = f.read()
+        except UnicodeDecodeError:
+            with open(self.CONFIG_PATH, "r") as f:
+                d = f.read()
+
+        try:
+            self.config: Dict[str, GSC] = msgjson.decode(
+                d,
+                type=Dict[str, GSC],
+            )
+        except ValidationError:
+            self.repair_config()
+            is_error = True
 
         if is_error:
             self.update_config()

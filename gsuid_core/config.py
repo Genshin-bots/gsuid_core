@@ -66,21 +66,31 @@ class CoreConfig:
         self.update_config()
 
     def write_config(self):
-        with atomic_save(str(CONFIG_PATH), text_mode=True, overwrite=True, file_perms=0o644) as file:
+        with atomic_save(
+            str(CONFIG_PATH),
+            text_mode=False,
+            overwrite=True,
+            file_perms=0o644,
+        ) as file:
             if file:
-                json.dump(
+                json_str = json.dumps(
                     self.config,
-                    file,
                     indent=4,
                     ensure_ascii=False,
                 )
+                file.write(json_str.encode("utf-8"))
             else:
                 raise RuntimeError("写入配置文件失败!")
 
     def update_config(self):
         # 打开config.json
-        with open(CONFIG_PATH, "r", encoding="UTF-8") as f:
-            self.config: Dict[str, Any] = json.load(f)
+        try:
+            with open(CONFIG_PATH, "r", encoding="UTF-8") as f:
+                self.config: Dict[str, Any] = json.load(f)
+        except UnicodeDecodeError:
+            with open(CONFIG_PATH, "r") as f:
+                self.config = json.load(f)
+
         # 对没有的值，添加默认值
         for key in CONFIG_DEFAULT:
             if key not in self.config:
