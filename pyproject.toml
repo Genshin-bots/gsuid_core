@@ -118,21 +118,6 @@ dev = ["ruff>=0.14.7", "pre-commit>=2.21.0"]
 [tool.pdm.build]
 includes = ["gsuid_core"]
 
-[[tool.poetry.source]]
-name = "aliyun"
-url = "https://mirrors.aliyun.com/pypi/simple"
-priority = "primary"
-
-[[tool.poetry.source]]
-name = "tsinghua"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-priority = "primary"
-
-[[tool.poetry.source]]
-name = "official-pypi"
-url = "https://pypi.org/simple"
-priority = "primary"
-
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
@@ -143,45 +128,9 @@ dev = ["ruff>=0.14.7", "pre-commit>=2.21.0"]
 [tool.uv]
 default-groups = []
 
-[[tool.uv.index]]
-name = "aliyun"
-url = "https://mirrors.aliyun.com/pypi/simple"
-default = true
-
-[[tool.uv.index]]
-name = "volces"
-url = "https://mirrors.volces.com/pypi/simple/"
-
-[[tool.uv.index]]
-name = "tsinghua"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
-
 [tool.pdm.resolution]
 respect-source-order = true
 
-[[tool.pdm.source]]
-name = "aliyun"
-url = "https://mirrors.aliyun.com/pypi/simple"
-verify_ssl = true
-
-[[tool.pdm.source]]
-name = "tsinghua"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-verify_ssl = true
-
-[[tool.pdm.source]]
-name = "pypi"
-url = "https://pypi.org/simple"
-verify_ssl = true
-
-[[tool.pdm.source]]
-name = "volces"
-url = "https://mirrors.volces.com/pypi/simple"
-verify_ssl = true
 
 [project.urls]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"
