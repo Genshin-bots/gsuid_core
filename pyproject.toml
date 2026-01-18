@@ -60,6 +60,7 @@ dependencies = [
     "jieba>=0.42.1",
     "chromadb>=1.4.1",
     "joblib>=1.5.3",
+    "scikit-learn>=1.7.2",
 ]
 name = "gsuid-core"
 version = "0.9.0"
