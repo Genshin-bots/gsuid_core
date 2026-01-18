@@ -14,9 +14,12 @@ from functools import wraps
 from typing_extensions import ParamSpec, Concatenate
 
 from sqlmodel import Field, SQLModel, col, and_, delete, select, update
-from sqlalchemy import exc, text, event, create_engine
+from sqlalchemy import MetaData, exc, text, event, inspect, create_engine
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.engine import Connection
+from sqlalchemy.schema import CreateTable
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,  # type: ignore
     create_async_engine,
@@ -212,6 +215,60 @@ def with_session(
                 await asyncio.sleep(0.5 * (2**attempt))
 
     return wrapper  # type: ignore
+
+
+async def get_all_table_ddl(engine: AsyncEngine) -> Dict[str, str]:
+    """
+    异步获取数据库中所有表的 Create Table 语句 (DDL)。
+
+    :param engine: SQLAlchemy AsyncEngine 实例
+    :return: 字典 {表名: CREATE_TABLE_SQL_语句}
+    """
+
+    # 定义一个同步函数，用于在 run_sync 中运行
+    def _reflect_metadata_sync(conn: Connection) -> MetaData:
+        metadata = MetaData()
+        metadata.reflect(bind=conn)
+        return metadata
+
+    async with engine.connect() as conn:
+        metadata: MetaData = await conn.run_sync(_reflect_metadata_sync)
+        ddl_map: Dict[str, str] = {}
+
+        # 2. 遍历表对象，生成 DDL
+        # 注意：生成 SQL 字符串的操作可以在异步上下文中安全进行，因为内存里已经有了 metadata
+        for table_name, table in metadata.tables.items():
+            # 使用 CreateTable 构造器将 Table 对象编译成 SQL 字符串
+            # compile 即使在 async engine 下也需要传入 engine 或 dialect
+            # 这里我们利用 engine.dialect 进行编译
+            create_sql = str(CreateTable(table).compile(dialect=engine.dialect))
+
+            ddl_map[table_name] = create_sql.strip()
+
+        return ddl_map
+
+
+async def get_simple_schema_info(engine: AsyncEngine) -> Dict[str, List[Dict[str, Any]]]:
+    def _inspect_sync(conn: Connection):
+        inspector = inspect(conn)
+        table_names = inspector.get_table_names()
+        results = {}
+        for t_name in table_names:
+            columns_list = inspector.get_columns(t_name)
+
+            serializable_columns: List[Dict[str, Any]] = []
+
+            for column_info in columns_list:
+                col_dict = dict(column_info)
+                col_dict["type"] = str(column_info["type"])
+                serializable_columns.append(col_dict)
+
+            # 将处理后的列表赋值给结果
+            results[t_name] = serializable_columns
+        return results
+
+    async with engine.connect() as conn:
+        return await conn.run_sync(_inspect_sync)
 
 
 # https://github.com/tiangolo/sqlmodel/issues/264

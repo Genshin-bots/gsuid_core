@@ -448,7 +448,11 @@ def install_packages(packages: List[str], upgrade: bool = False):
         # host = mirror_url.split("//")[-1].split("/")[0]
         # cmd.extend(["--trusted-host", host])
 
-        retcode = execute_cmd(cmd)
+        retcode, result = execute_cmd(cmd)
+
+        if "No module named pip" in result:
+            execute_cmd([sys.executable, "-m", "ensurepip"])
+            execute_cmd(cmd)
 
         if retcode == 0:
             logger.info(f"✅ [安装/更新依赖] 使用 [{mirror_name}] 安装成功!")
@@ -476,14 +480,15 @@ def execute_cmd(cmd_list: List[str]):
         result = subprocess.run(cmd_list, capture_output=True, text=True, shell=False)
         if result.returncode == 0:
             logger.success("[CMD执行] 成功!")
-            return 0
+            return 0, result.stdout
         else:
             logger.warning(f"[CMD执行] 失败 (Code {result.returncode})")
             logger.warning(f"Stderr: {result.stderr}")
-            return result.returncode
+
+            return result.returncode, result.stderr
     except Exception as e:
         logger.exception(f"[CMD执行] 发生异常: {e}")
-        return -1
+        return -1, str(e)
 
 
 def refresh_installed_dependencies():

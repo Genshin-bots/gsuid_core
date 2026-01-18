@@ -12,7 +12,9 @@ from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
 from gsuid_core.utils.cooldown import cooldown_tracker
+from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
+from gsuid_core.ai_core.mode_classifier import classifier_service
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     log_config,
@@ -21,6 +23,11 @@ from gsuid_core.utils.plugins_config.gs_config import (
 
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
+
+enable_ai: bool = ai_config.get_config("enable").data
+enable_chat: bool = ai_config.get_config("enable_chat").data
+enable_task: bool = ai_config.get_config("enable_task").data
+ai_need_at: bool = ai_config.get_config("need_at").data
 
 _command_start: List[str]
 if command_start and enable_empty:
@@ -181,6 +188,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         )
     ]
     await asyncio.gather(*pending, return_exceptions=True)
+
     if len(valid_event) >= 1:
         sorted_event = sorted(
             valid_event.items(),
@@ -214,6 +222,20 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             if trigger.block:
                 break
+    else:
+        if ai_need_at and not event.is_tome:
+            return
+
+        if enable_ai:
+            res = await classifier_service.predict_async(event.raw_text)
+            # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
+            logger.trace(res)
+            if res["intent"] == "闲聊" and enable_chat:
+                pass
+            elif res["intent"] == "工具" and enable_task:
+                pass
+            else:
+                logger.warning(f"[GsCore][AI] 未知意图: {res['intent']}")
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
