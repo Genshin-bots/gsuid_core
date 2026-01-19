@@ -405,7 +405,7 @@ class BaseMysApi:
         self,
         url: str,
         method: Literal["GET", "POST"] = "GET",
-        header: Dict[str, Any] = _HEADER,
+        header: Dict[str, Any] = copy.deepcopy(_HEADER),
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         use_proxy: Optional[bool] = False,
