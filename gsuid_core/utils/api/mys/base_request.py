@@ -405,7 +405,7 @@ class BaseMysApi:
         self,
         url: str,
         method: Literal["GET", "POST"] = "GET",
-        header: Dict[str, Any] = _HEADER,
+        header: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         use_proxy: Optional[bool] = False,
@@ -430,6 +430,8 @@ class BaseMysApi:
 
         if not base_url:
             base_url = None
+        if header is None:
+            header = copy.deepcopy(self._HEADER)
 
         url = base_url + url if base_url else url
         async with aiohttp.ClientSession(
