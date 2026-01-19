@@ -431,7 +431,7 @@ class BaseMysApi:
         if not base_url:
             base_url = None
         if header is None:
-            header = copy.deepcopy(_HEADER)
+            header = copy.deepcopy(self._HEADER)
 
         url = base_url + url if base_url else url
         async with aiohttp.ClientSession(
