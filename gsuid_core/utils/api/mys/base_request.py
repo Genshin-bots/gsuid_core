@@ -430,7 +430,7 @@ class BaseMysApi:
 
         if not base_url:
             base_url = None
-        if not header:
+        if header is None:
             header = copy.deepcopy(_HEADER)
 
         url = base_url + url if base_url else url
