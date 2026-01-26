@@ -1,6 +1,7 @@
 import re
 import random
 import asyncio
+import logging
 import warnings
 from typing import Any, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +21,7 @@ AI_PATH = get_res_path("ai_core")
 MODEL_PATH = AI_PATH / "intent_classifier.joblib"
 
 warnings.filterwarnings("ignore")
-
+jieba.setLogLevel(logging.ERROR)
 
 ACTION_VERBS = {
     "查",
@@ -217,18 +218,26 @@ class IntentService:
         self._load_or_train()
 
     def _load_or_train(self):
-        """尝试加载模型，如果不存在则提示需要训练"""
+        """尝试加载模型，如果不存在或加载失败则强制重新训练"""
+        # 标记是否需要训练
+        need_train = False
+
         if self.model_path.exists():
             try:
+                # 尝试读取现有模型
                 self.model = load(self.model_path)
                 logger.debug(f"[Info] 模型已加载: {self.model_path}")
             except Exception as e:
-                logger.debug(f"[Error] 模型加载失败: {e}")
-                self.model = None
+                logger.warning(f"[Error] 模型加载失败 (版本不兼容或路径错误): {e}")
+                logger.warning("[Info] 正在重新训练模型以修复此问题...")
+                need_train = True
         else:
-            logger.debug(f"[Warning] 模型文件 {self.model_path} 不存在。将调用 .train() 方法进行训练。")
+            logger.debug(f"[Warning] 模型文件 {self.model_path} 不存在。")
+            need_train = True
+
+        # 如果需要训练（文件不存在 或 加载报错）
+        if need_train:
             self.train()
-            self._load_or_train()
 
     def _generate_enhanced_data(self):
         tool_samples = []

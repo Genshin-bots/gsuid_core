@@ -1,3 +1,4 @@
+import re
 import asyncio
 from io import BytesIO
 from typing import Dict, List, Optional, Sequence
@@ -605,6 +606,18 @@ async def core_log(request: Request):
     return StreamingResponse(read_log(), media_type="text/event-stream")
 
 
+def simplify_regex_logic(text: str):
+    if len(text) <= 10:
+        return text
+
+    groups = re.findall(r"\(\?P<([^>]+)>", text)
+
+    if groups:
+        return " + ".join(f"<{g}>" for g in groups)
+
+    return text[:5] + "..." + text[-5:]
+
+
 @app.post("/genshinuid/api/loadData{count}/{bot_id}/{bot_self_id}")
 @site.auth.requires("root")
 async def get_history_data(
@@ -669,7 +682,7 @@ async def get_history_data(
 
     # 对c_data按值从大到小排序
     sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-    y_data = [k for k, v in sorted_items]
+    y_data = [simplify_regex_logic(k) for k, v in sorted_items]
     series_data = [v for k, v in sorted_items]
 
     if count == 1:

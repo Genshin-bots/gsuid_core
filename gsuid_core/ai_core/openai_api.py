@@ -25,11 +25,12 @@ class AsyncOpenAISession:
         self,
         api_key: str,
         model: str = "gpt-4o",
+        base_url: str = "",
         system_prompt: Optional[str] = None,
         tools: Optional[List[Dict]] = None,
         functions: Optional[Dict[str, Callable]] = None,
     ):
-        self.client = AsyncOpenAI(api_key=api_key)
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.history = []
         if system_prompt:
@@ -260,4 +261,5 @@ def create_ai_session(
         api_key=api_key,
         system_prompt=system_prompt,
         model=model,
+        base_url=openai_config.get_config("base_url").data,
     )
