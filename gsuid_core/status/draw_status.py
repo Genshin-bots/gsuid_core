@@ -20,6 +20,7 @@ from gsuid_core.utils.image.image_tools import (
 )
 from gsuid_core.utils.plugins_config.gs_config import status_config
 from gsuid_core.utils.database.global_val_models import (
+    CountVal,
     CoreDataSummary,
     CoreDataAnalysis,
 )
@@ -308,7 +309,7 @@ async def draw_data_analysis1(
 
 
 async def draw_data_analysis2(
-    data: Dict,
+    data: CountVal,
 ):
     badge1 = await draw_badge(
         "DAU",
@@ -321,23 +322,24 @@ async def draw_data_analysis2(
         data["DAG"],
     )
     badge3 = await draw_badge(
-        "用户新增",
-        data["NU"],
+        "MAU",
+        data["MAU"],
     )
     badge4 = await draw_badge(
         "用户留存",
-        data["OU"],
+        data["OutUser"],
         0,
         HINT_COLOR,
     )
     badge5 = await draw_badge(
         "群聊新增",
-        data["NG"],
+        data["NewGroup"],
     )
     badge6 = await draw_badge(
-        "群聊留存",
-        data["OG"],
+        "用户粘性",
+        data["DAU_MAU"],
         0,
+        HINT_COLOR,
     )
 
     data_bar = Image.new("RGBA", (1400, 200))

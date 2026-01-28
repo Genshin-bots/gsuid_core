@@ -1,5 +1,5 @@
 import enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 from datetime import date as ymddate, datetime, timedelta
 
 from sqlmodel import Field, Index, col, func, delete, select
@@ -7,6 +7,19 @@ from sqlalchemy import UniqueConstraint, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base_models import BaseIDModel, with_session
+
+
+class CountVal(TypedDict):
+    DAU: str
+    MAU: str
+    DAU_MAU: str
+    NewUser: str
+    OutUser: str
+    DAG: str
+    MAG: str
+    DAG_MAG: str
+    NewGroup: str
+    OutGroup: str
 
 
 class DataType(enum.Enum):
@@ -477,6 +490,13 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         total_targets_result = await session.execute(total_targets_in_30_days_query)
         total_targets_count = total_targets_result.scalar_one()
 
+        stats["mau"] = total_targets_count
+
+        if total_targets_count > 0:
+            stats["stickiness"] = (stats["dau_dag"] / total_targets_count) * 100
+        else:
+            stats["stickiness"] = 0.0
+
         # Calculate rate
         out_rate = (out_targets_count / total_targets_count * 100) if total_targets_count > 0 else 0
         stats["out_rate"] = out_rate
@@ -488,7 +508,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         cls,
         bot_id: Optional[str] = None,
         bot_self_id: Optional[str] = None,
-    ) -> Dict[str, str]:
+    ) -> CountVal:
         today = ymddate.today()
         thirty_days_ago = today - timedelta(days=30)
         seven_days_ago = today - timedelta(days=7)
@@ -513,13 +533,19 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         )
 
         # 格式化并返回最终结果
-        result_data = {
+        result_data: CountVal = {
+            # 用户侧
             "DAU": f"{user_stats['dau_dag']:.2f}",
+            "MAU": str(user_stats["mau"]),
+            "DAU_MAU": f"{user_stats['stickiness']:.2f}%",
+            "NewUser": str(user_stats["new"]),
+            "OutUser": f"{user_stats['out_rate']:.2f}%",
+            # 群组侧
             "DAG": f"{group_stats['dau_dag']:.2f}",
-            "NU": str(user_stats["new"]),
-            "OU": f"{user_stats['out_rate']:.2f}%",
-            "NG": str(group_stats["new"]),
-            "OG": f"{group_stats['out_rate']:.2f}%",
+            "MAG": str(group_stats["mau"]),
+            "DAG_MAG": f"{group_stats['stickiness']:.2f}%",
+            "NewGroup": str(group_stats["new"]),
+            "OutGroup": f"{group_stats['out_rate']:.2f}%",
         }
 
         return result_data
