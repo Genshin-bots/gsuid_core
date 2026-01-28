@@ -14,6 +14,19 @@ class DataType(enum.Enum):
     USER = "user"
 
 
+class CoreTraffic(BaseIDModel, table=True):
+    __table_args__ = (
+        UniqueConstraint(
+            "date",
+            name="record_traffic",
+        ),
+        {"extend_existing": True},
+    )
+
+    max_qps: int = Field(title="最大QPS", default=0)
+    date: ymddate = Field(title="日期")
+
+
 class CoreDataSummary(BaseIDModel, table=True):
     __table_args__ = (
         UniqueConstraint(

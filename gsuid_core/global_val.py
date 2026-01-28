@@ -11,6 +11,7 @@ from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.database.global_val_models import (
     DataType,
+    CoreTraffic,
     CoreDataSummary,
     CoreDataAnalysis,
 )
@@ -45,6 +46,27 @@ platform_val: PlatformVal = {
 }
 
 bot_val: BotVal = {}
+bot_traffic: Dict[str, int] = {
+    "req": 0,
+    "max_qps": 0,
+}
+
+
+async def save_bot_max_qps():
+    logger.info(f"🔒️ 开始保存流量统计! {bot_traffic}")
+    today = datetime.date.today()
+
+    await CoreTraffic.batch_insert_data_with_update(
+        [
+            CoreTraffic(
+                max_qps=bot_traffic["max_qps"],
+                date=today,
+            )
+        ],
+        ["max_qps"],
+        ["date"],
+    )
+    logger.success("🔒️ 流量统计保存完成!")
 
 
 def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:

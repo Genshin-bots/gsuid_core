@@ -16,7 +16,7 @@ from gsuid_core.segment import (
     markdown_to_template_markdown,
 )
 from gsuid_core.gs_logger import GsLogger
-from gsuid_core.global_val import get_global_val
+from gsuid_core.global_val import bot_traffic, get_global_val
 from gsuid_core.load_template import (
     parse_button,
     custom_buttons,
@@ -55,7 +55,7 @@ class _Bot:
         self.queue = asyncio.queues.Queue()
         self.send_dict = {}
         self.bg_tasks = set()
-        self.sem = asyncio.Semaphore(4)
+        self.sem = asyncio.Semaphore(10)
 
     async def target_send(
         self,
@@ -182,12 +182,16 @@ class _Bot:
         async with self.sem:
             try:
                 await coro
+
+                bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
+                bot_traffic["req"] -= 1
             except Exception:
                 logger.exception("[核心执行异常] 插件执行发生未捕获异常")
 
     async def _process(self):
         while True:
             coro = await self.queue.get()
+            bot_traffic["req"] += 1
             asyncio.create_task(self._safe_run(coro))
             self.queue.task_done()
 
