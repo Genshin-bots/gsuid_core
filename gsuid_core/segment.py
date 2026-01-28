@@ -13,7 +13,7 @@ from PIL import Image
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
 from gsuid_core.global_val import get_global_val
-from gsuid_core.load_template import markdown_templates
+from gsuid_core.load_template import markdown_templates, markdown_templates_by_bot
 from gsuid_core.message_models import Button, ButtonList
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.image.image_tools import sget
@@ -414,13 +414,20 @@ async def convert_message(
 
 async def markdown_to_template_markdown(
     message: List[Message],
+    bot_self_id: Optional[str] = None,
 ) -> List[Message]:
     _message = []
     for m in message:
         if m.type == "markdown":
             _t = {}
-            if markdown_templates:
-                for mdt in markdown_templates:
+
+            if bot_self_id and markdown_templates_by_bot:
+                markdown_tep = markdown_templates_by_bot.get(bot_self_id, {})
+            else:
+                markdown_tep = markdown_templates
+
+            if markdown_tep:
+                for mdt in markdown_tep:
                     match = re.fullmatch(mdt, str(m.data).strip())
                     if match:
                         match_para = match.groupdict()

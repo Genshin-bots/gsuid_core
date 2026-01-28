@@ -181,9 +181,10 @@ class _Bot:
     async def _safe_run(self, coro: Coroutine):
         async with self.sem:
             try:
+                bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
+
                 await coro
 
-                bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
                 bot_traffic["req"] -= 1
             except Exception:
                 logger.exception("[核心执行异常] 插件执行发生未捕获异常")
