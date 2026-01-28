@@ -227,25 +227,28 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if ai_need_at and not event.is_tome:
             return
 
-        if enable_ai:
-            res = await classifier_service.predict_async(event.raw_text)
-            # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
-            logger.debug(res)
-            if res["intent"] == "闲聊" and enable_chat:
-                session = await get_ai_chat_session(event)
-                res = await session.chat(
-                    text=event.raw_text,
-                    images=event.image_list,
-                )
+        try:
+            if enable_ai:
+                res = await classifier_service.predict_async(event.raw_text)
+                # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
                 logger.debug(res)
-                bot = Bot(ws, event)
-                if isinstance(res, str):
-                    await bot.send(res)
+                if res["intent"] == "闲聊" and enable_chat:
+                    session = await get_ai_chat_session(event)
+                    res = await session.chat(
+                        text=event.raw_text,
+                        images=event.image_list,
+                    )
+                    logger.debug(res)
+                    bot = Bot(ws, event)
+                    if isinstance(res, str):
+                        await bot.send(res)
 
-            elif res["intent"] == "工具" and enable_task:
-                pass
-            else:
-                logger.warning(f"[GsCore][AI] 未知意图: {res['intent']}")
+                elif res["intent"] == "工具" and enable_task:
+                    pass
+                else:
+                    logger.warning(f"[GsCore][AI] 未知意图: {res['intent']}")
+        except Exception as e:
+            logger.exception(f"[GsCore][AI] 聊天异常: {e}")
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
