@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from typing import Dict, List, Union, Literal, Optional
+from typing import Dict, List, Union, Literal, Optional, Coroutine
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -55,6 +55,7 @@ class _Bot:
         self.queue = asyncio.queues.Queue()
         self.send_dict = {}
         self.bg_tasks = set()
+        self.sem = asyncio.Semaphore(8)
 
     async def target_send(
         self,
@@ -177,10 +178,17 @@ class _Bot:
         del self.send_dict[task_id]
         return result
 
+    async def _safe_run(self, coro: Coroutine):
+        async with self.sem:
+            try:
+                await coro
+            except Exception:
+                logger.exception("[核心执行异常] 插件执行发生未捕获异常")
+
     async def _process(self):
         while True:
-            data = await self.queue.get()
-            asyncio.create_task(data)
+            coro = await self.queue.get()
+            asyncio.create_task(self._safe_run(coro))
             self.queue.task_done()
 
 
