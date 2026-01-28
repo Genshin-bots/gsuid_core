@@ -139,6 +139,9 @@ class StringConfig:
                 if isinstance(_defalut, GsStrConfig) or isinstance(_defalut, GsListStrConfig):
                     self.config[key].options = _defalut.options  # type: ignore
 
+                self.config[key].title = _defalut.title
+                self.config[key].desc = _defalut.desc
+
         # 对默认值没有的值，直接删除
         delete_keys = []
         for key in self.config:
