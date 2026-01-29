@@ -353,7 +353,10 @@ class Bot:
                     success = True
 
                 if not success and istry and self.ev.real_bot_id in isc:
-                    md = await markdown_to_template_markdown(md)
+                    md = await markdown_to_template_markdown(
+                        md,
+                        self.bot_self_id,
+                    )
                     if self.ev.real_bot_id in enable_buttons_platform:
                         await self.send(md)
                         success = True

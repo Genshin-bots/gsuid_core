@@ -445,7 +445,7 @@ async def markdown_to_template_markdown(
                         size = len([i for i in match_values if i is not None])
                         if _t == {} or (_t and size >= list(_t.keys())[-1]):
                             _t[size] = [
-                                markdown_templates[mdt]["template_id"],
+                                markdown_tep[mdt]["template_id"],
                                 _send_group,
                             ]
                 if _t:

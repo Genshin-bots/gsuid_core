@@ -58,15 +58,6 @@ try:
             button_templates[button_template.stem] = btl
 
     for markdown_template in markdown_template_path.iterdir():
-        if markdown_template.stem.count("_") > 2:
-            bot_name = markdown_template.stem.split("_")[0]
-            if bot_name not in markdown_templates_by_bot:
-                markdown_templates_by_bot[bot_name] = {}
-
-            template_id = "_".join(markdown_template.stem.split("_")[1:])
-        else:
-            template_id = markdown_template.stem
-
         with open(markdown_template, "r") as file:
             file_content = file.read()
             para_list = re.findall(r"{{([^\n{}]+)}}", file_content)
@@ -87,12 +78,30 @@ try:
             for para in para_list:
                 rep = rep.replace("$$", rf"(?P<{para.replace('.', '')}>[\s\S]+)", 1)
 
-            markdown_templates[rep] = {
+        if markdown_template.stem.count("_") >= 2:
+            bot_name = markdown_template.stem.split("_")[0]
+            if bot_name not in markdown_templates_by_bot:
+                markdown_templates_by_bot[bot_name] = {}
+
+            template_id = "_".join(markdown_template.stem.split("_")[1:])
+
+            markdown_templates_by_bot[bot_name][rep] = {
                 "template_id": template_id,
                 "para": [i[1:] for i in para_list],
             }
 
+        else:
+            markdown_templates[rep] = {
+                "template_id": markdown_template.stem,
+                "para": [i[1:] for i in para_list],
+            }
+
     markdown_templates = dict(sorted(markdown_templates.items(), key=lambda x: len(x[0]), reverse=True))
+
+    for bot_name in markdown_templates_by_bot:
+        markdown_templates_by_bot[bot_name] = dict(
+            sorted(markdown_templates_by_bot[bot_name].items(), key=lambda x: len(x[0]), reverse=True)
+        )
 
     for custom_button in custom_buttons_template.iterdir():
         with open(custom_button, "r", encoding="UTF-8") as f:
