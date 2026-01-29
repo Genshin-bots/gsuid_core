@@ -55,7 +55,7 @@ class _Bot:
         self.queue = asyncio.queues.Queue()
         self.send_dict = {}
         self.bg_tasks = set()
-        self.sem = asyncio.Semaphore(10)
+        self.sem = asyncio.Semaphore(8)
 
     async def target_send(
         self,
