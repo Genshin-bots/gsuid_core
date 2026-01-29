@@ -53,6 +53,15 @@ bot_traffic: Dict[str, int] = {
 }
 
 
+async def load_bot_max_qps():
+    logger.info("🔒️ 开始加载流量统计!")
+    today = datetime.date.today()
+    traffic: Optional[Sequence[CoreTraffic]] = await CoreTraffic.select_rows(date=today)
+    if traffic:
+        bot_traffic["max_qps"] = traffic[0].max_qps
+    logger.success(f"🔒️ 流量统计加载完成! {bot_traffic}")
+
+
 async def save_bot_max_qps():
     logger.info(f"🔒️ 开始保存流量统计! {bot_traffic}")
     today = datetime.date.today()
