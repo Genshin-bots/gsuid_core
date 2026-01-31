@@ -88,10 +88,21 @@ class GsServer:
             self.active_bot: Dict[str, _Bot] = {}
             self.is_initialized = True
 
-    def load_dir_plugins(self, plugin: Path, plugin_parent: str, nest: bool = False) -> List[Tuple[str, Path, str]]:
+    def load_dir_plugins(
+        self,
+        plugin: Path,
+        plugin_parent: str,
+        nest: bool = False,
+        dev_mode: bool = False,
+    ) -> List[Tuple[str, Path, str]]:
         module_list = []
         init_path = plugin / "__init__.py"
-        name = plugin.name
+
+        if dev_mode:
+            name1 = plugin.name + "-dev"
+        else:
+            name1 = plugin.name
+        name2 = plugin.name
 
         if init_path.exists():
             # fix: 使用 parent 而不是 parents (parents是迭代器)
@@ -102,7 +113,7 @@ class GsServer:
 
             module_list.append(
                 (
-                    f"{plugin_parent}.{name}.{name}.__init__",
+                    f"{plugin_parent}.{name1}.{name2}.__init__",
                     init_path,
                     "plugin",
                 )
@@ -117,9 +128,9 @@ class GsServer:
                         sys.path.append(parent_path)
 
                     if nest:
-                        _p = f"{plugin_parent}.{name}.{name}.{sub_plugin.name}"
+                        _p = f"{plugin_parent}.{name1}.{name2}.{sub_plugin.name}"
                     else:
-                        _p = f"{plugin_parent}.{name}.{sub_plugin.name}"
+                        _p = f"{plugin_parent}.{name1}.{sub_plugin.name}"
                     module_list.append(
                         (
                             f"{_p}",
@@ -129,7 +140,7 @@ class GsServer:
                     )
         return module_list
 
-    def load_plugin(self, plugin: Union[str, Path]):
+    def load_plugin(self, plugin: Union[str, Path], dev_mode: bool = False):
         if isinstance(plugin, str):
             plugin = PLUGIN_PATH / plugin
 
@@ -161,14 +172,19 @@ class GsServer:
                     check_pyproject(pyproject)
 
                 if plugins_path.exists():
-                    module_list = self.load_dir_plugins(plugin, plugin_parent)
+                    module_list = self.load_dir_plugins(
+                        plugin,
+                        plugin_parent,
+                        dev_mode=dev_mode,
+                    )
                 elif nest_path.exists() or src_path.exists():
-                    path = nest_path.parent / plugin.name
+                    path = nest_path.parent / plugin.name.rstrip("-dev")
                     if path.exists():
                         module_list = self.load_dir_plugins(
                             path,
                             plugin_parent,
                             True,
+                            dev_mode=dev_mode,
                         )
                 # 如果文件夹内有__init_.py，则视为单个插件包
                 elif plugin_path.exists():
@@ -242,7 +258,7 @@ class GsServer:
             if dev_mode and not plugin.name.endswith("-dev"):
                 continue
 
-            d = self.load_plugin(plugin)
+            d = self.load_plugin(plugin, dev_mode)
             if isinstance(d, str):
                 continue
             all_plugins.extend(d)
