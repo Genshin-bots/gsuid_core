@@ -1,13 +1,10 @@
 import re
 import random
 import asyncio
-import logging
 import warnings
 from typing import Any, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-import jieba
-import jieba.posseg as pseg
 from joblib import dump, load
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline, FeatureUnion
@@ -17,11 +14,14 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 
+warnings.filterwarnings("ignore", category=UserWarning, module="jieba")
+
+import jieba  # noqa: E402
+import jieba.posseg as pseg  # noqa: E402
+
 AI_PATH = get_res_path("ai_core")
 MODEL_PATH = AI_PATH / "intent_classifier.joblib"
 
-warnings.filterwarnings("ignore")
-jieba.setLogLevel(logging.ERROR)
 
 ACTION_VERBS = {
     "查",

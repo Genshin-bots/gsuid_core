@@ -1,4 +1,4 @@
-# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.9.0
+# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.9.1
 
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-7C3AED.svg)](https://github.com/astral-sh/ruff)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/Genshin-bots/gsuid-core/master.svg)](https://results.pre-commit.ci/latest/github/Genshin-bots/gsuid-core/master)

@@ -503,7 +503,7 @@ def refresh_installed_dependencies():
         # 重新扫描 distribution
         dists = list(metadata.distributions())
         for dist in dists:
-            name = dist.metadata.get("Name")
+            name = dist.metadata.get("Name")  # type: ignore
             version = dist.version
             if name:
                 # 关键修复：存入字典时也使用规范化名字

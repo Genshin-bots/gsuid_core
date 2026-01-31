@@ -14,6 +14,8 @@ CONFIG_DEFAULT = {
     "HOST": "localhost",
     "PORT": "8765",
     "ENABLE_HTTP": False,
+    "WS_TOKEN": "",
+    "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1"],
     "masters": [],
     "superusers": [],
     "misfire_grace_time": 90,
@@ -29,9 +31,9 @@ CONFIG_DEFAULT = {
     "plugins": {},
 }
 
-STR_CONFIG = Literal["HOST", "PORT"]
+STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN"]
 INT_CONFIG = Literal["misfire_grace_time"]
-LIST_CONFIG = Literal["superusers", "masters", "command_start"]
+LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS"]
 DICT_CONFIG = Literal["sv", "log", "plugins"]
 BOOL_CONFIG = Literal["enable_empty_start", "ENABLE_HTTP"]
 

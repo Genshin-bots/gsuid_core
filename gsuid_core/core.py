@@ -1,7 +1,7 @@
 import sys
 import asyncio
 import argparse
-from typing import Dict
+from typing import Dict, List
 from asyncio import CancelledError
 from pathlib import Path
 
@@ -79,6 +79,8 @@ async def main():
     HOST = core_config.get_config("HOST").lower()
     PORT = int(core_config.get_config("PORT"))
     ENABLE_HTTP = core_config.get_config("ENABLE_HTTP")
+    WS_SECRET_TOKEN = core_config.get_config("WS_TOKEN") or ""
+    TRUSTED_IPS: List[str] = core_config.get_config("TRUSTED_IPS")
 
     if HOST == "all" or HOST == "none" or HOST == "dual" or not HOST:
         HOST = None
@@ -90,6 +92,23 @@ async def main():
 
     @app.websocket("/ws/{bot_id}")
     async def websocket_endpoint(websocket: WebSocket, bot_id: str):
+        if not websocket.client:
+            return
+
+        client_host = websocket.client.host
+        token = websocket.query_params.get("token")
+
+        if client_host not in TRUSTED_IPS:
+            if not WS_SECRET_TOKEN:
+                logger.warning("🔒️ [GsCore] 未配置WS_TOKEN，所有外网连接将被拒绝！")
+                await websocket.close(code=1008)
+                return
+
+            if token != WS_SECRET_TOKEN:
+                logger.warning(f"🚨 [GsCore] 非法访问拒绝: IP={client_host}, BotID={bot_id}")
+                await websocket.close(code=1008)
+                return
+
         try:
             bot = await gss.connect(websocket, bot_id)
 

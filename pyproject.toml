@@ -14,10 +14,9 @@ dependencies = [
     "pillow>=10.2.0",
     "aiosqlite>=0.17.0",
     "aiofiles>=0.8.0",
-    "sqlmodel>=0.0.8",
     "gitpython>=3.1.27",
-    "fastapi-amis-admin>=0.7.1",
-    "fastapi-user-auth>=0.7.2",
+    "fastapi-amis-admin>=0.7.3",
+    "fastapi-user-auth>=0.7.3",
     "qrcode[pil]<8.0.0,>=7.3.1",
     "msgspec>=0.13.1",
     "uvicorn>=0.20.0",
@@ -34,11 +33,8 @@ dependencies = [
     "bcrypt==4.0.1",
     "setuptools>=69.0.3",
     "email-validator>=2.2.0",
-    "pydantic<=2.8.2,>=2.0.0",
-    "pydantic-settings>=2.3.4",
-    "pydantic-core>=2.20.1",
     "annotated-types>=0.7.0",
-    "sqlmodel>=0.0.14",
+    "sqlmodel<0.0.31",
     "fastapi<0.112.3",
     "async-timeout<5.0.0,>=4.0.3",
     "toml<1.0.0,>=0.10.2",
@@ -61,52 +57,15 @@ dependencies = [
     "chromadb>=1.4.1",
     "joblib>=1.5.3",
     "scikit-learn>=1.7.2",
+    "pydantic>=2.8.2",
+    "pydantic-settings>=2.12.0",
+    "pydantic-core>=2.20.1",
+    "playwright>=1.58.0",
 ]
 name = "gsuid-core"
-version = "0.9.0"
+version = "0.9.1"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
-
-[tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-httpx = ">=0.23.0"
-beautifulsoup4 = ">=4.11.1"
-lxml = ">=4.9.2"
-aiohttp = ">=3.8.1"
-sqlalchemy = ">=2.0.0,<2.1.0"
-pillow = ">=10.2.0"
-aiosqlite = ">=0.17.0"
-aiofiles = ">=0.8.0"
-sqlmodel = ">=0.0.14"
-gitpython = ">=3.1.27"
-fastapi-amis-admin = ">=0.7.1"
-fastapi-user-auth = ">=0.7.2"
-qrcode = { extras = ["pil"], version = ">=7.3.1, <8.0" }
-msgspec = ">= 0.13.1"
-uvicorn = ">=0.20.0"
-websockets = ">=13.1"
-urllib3 = "^1.26.15"
-mpmath = "^1.3.0"
-fastapi = "<0.112.3"
-apscheduler = "^3.10.1"
-aioboto3 = "^12.0.0"
-jinja2 = "^3.1.2"
-colorama = "^0.4.6"
-async-timeout = "^4.0.3"
-toml = "^0.10.2"
-bcrypt = "^4.0.1"
-setuptools = ">=69.0.3"
-pydantic = ">=2.0.0, <=2.8.2"
-pydantic-settings = ">=2.3.4"
-email-validator = "^2.2.0"
-pydantic-core = ">=2.20.1"
-psutil = "^6.1.1"
-pytz = "^2024.2"
-pandas = "^2.2.3"
-betterproto = ">=2.0.0b7"
-structlog = ">=25.3.0"
-rich = ">=14.0.0"
-cryptography = ">=45.0.5"
 
 [tool.poetry.requires-plugins]
 poetry-plugin-export = ">=1.8"
