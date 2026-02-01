@@ -683,3 +683,4 @@ logs
 # dependencies
 uv.toml
 pdm.toml
+.python-version
