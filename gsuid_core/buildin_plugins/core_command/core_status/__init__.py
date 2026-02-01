@@ -117,11 +117,18 @@ async def get_max_qps():
     return bot_traffic["max_qps"]
 
 
+async def get_max_time():
+    # 转为秒
+    max_time = bot_traffic["max_time"]
+    return f"{max_time:.2f}秒"
+
+
 register_status(
     get_ICON(),
     "Status",
     {
         "当前请求量": get_now_req,
         "最大QPS": get_max_qps,
+        "最大耗时": get_max_time,
     },
 )

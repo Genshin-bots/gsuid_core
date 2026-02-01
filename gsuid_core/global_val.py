@@ -47,9 +47,12 @@ platform_val: PlatformVal = {
 }
 
 bot_val: BotVal = {}
-bot_traffic: Dict[str, int] = {
+bot_traffic: Dict[str, float] = {
     "req": 0,
     "max_qps": 0,
+    "total_count": 0,
+    "total_time": 0.0,
+    "max_time": 0.0,
 }
 
 
@@ -70,10 +73,13 @@ async def save_bot_max_qps():
         [
             CoreTraffic(
                 max_qps=bot_traffic["max_qps"],
+                total_count=bot_traffic["total_count"],
+                total_time=bot_traffic["total_time"],
+                max_time=bot_traffic["max_time"],
                 date=today,
             )
         ],
-        ["max_qps"],
+        ["max_qps", "total_count", "total_time", "max_time"],
         ["date"],
     )
     logger.success("🔒️ 流量统计保存完成!")

@@ -4,9 +4,9 @@ from base64 import b64encode
 from typing import Union, overload
 from pathlib import Path
 
-import aiofiles
 from PIL import Image, ImageDraw, ImageFont
 
+from gsuid_core.pool import run_in_thread_pool
 from gsuid_core.logger import logger
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.image_tools import draw_center_text_by_line
@@ -56,6 +56,14 @@ async def convert_img(
     :返回:
       * res: bytes对象或base64编码图片。
     """
+    return await _convert_img_sync(img, is_base64)
+
+
+@run_in_thread_pool
+def _convert_img_sync(
+    img: Union[Image.Image, str, Path, bytes],
+    is_base64: bool = False,
+):
     logger.info("🚀 [GsCore] 处理图片中....")
 
     if isinstance(img, Image.Image):
@@ -78,17 +86,44 @@ async def convert_img(
     elif isinstance(img, bytes):
         pass
     else:
-        async with aiofiles.open(Path(img), "rb") as fp:
-            img = await fp.read()
+        with open(Path(img), "rb") as fp:
+            img = fp.read()
 
     logger.success("[GsCore] 图片处理完成！")
 
     return f"base64://{b64encode(img).decode()}"
 
 
-def convert_img_sync(img_path: Path):
-    with open(img_path, "rb") as fp:
-        img = fp.read()
+def convert_img_sync(
+    img: Union[Image.Image, str, Path, bytes],
+    is_base64: bool = False,
+):
+    logger.info("🚀 [GsCore] 处理图片中....")
+
+    if isinstance(img, Image.Image):
+        if img.format == "GIF":
+            result_buffer = BytesIO()
+            img.save(result_buffer, format="GIF")
+        else:
+            img = img.convert("RGB")
+            result_buffer = BytesIO()
+            img.save(
+                result_buffer,
+                format="JPEG",
+                quality=pic_quality,
+            )
+
+        res = result_buffer.getvalue()
+        if is_base64:
+            res = "base64://" + b64encode(res).decode()
+        return res
+    elif isinstance(img, bytes):
+        pass
+    else:
+        with open(Path(img), "rb") as fp:
+            img = fp.read()
+
+    logger.success("[GsCore] 图片处理完成！")
 
     return f"base64://{b64encode(img).decode()}"
 

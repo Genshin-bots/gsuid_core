@@ -36,7 +36,11 @@ class CoreTraffic(BaseIDModel, table=True):
         {"extend_existing": True},
     )
 
-    max_qps: int = Field(title="最大QPS", default=0)
+    max_qps: float = Field(title="最大QPS", default=0)
+    total_count: int = Field(title="总请求次数", default=0)
+    total_time: float = Field(title="总耗时", default=0.0)
+    max_time: float = Field(title="最大耗时", default=0.0)
+
     date: ymddate = Field(title="日期")
 
 

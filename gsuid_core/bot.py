@@ -1,3 +1,4 @@
+import time
 import asyncio
 import inspect
 from typing import Dict, List, Union, Literal, Optional, Coroutine
@@ -55,7 +56,7 @@ class _Bot:
         self.queue = asyncio.queues.Queue()
         self.send_dict = {}
         self.bg_tasks = set()
-        self.sem = asyncio.Semaphore(8)
+        self.sem = asyncio.Semaphore(10)
 
     async def target_send(
         self,
@@ -179,22 +180,30 @@ class _Bot:
         return result
 
     async def _safe_run(self, coro: Coroutine):
-        async with self.sem:
-            try:
-                bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
+        start_time = time.perf_counter()
+        try:
+            bot_traffic["req"] += 1
+            bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
+            await coro
+        except Exception:
+            logger.exception("[核心执行异常] 插件执行发生未捕获异常")
+        finally:
+            end_time = time.perf_counter()
+            duration = end_time - start_time
 
-                await coro
+            bot_traffic["total_count"] += 1
+            bot_traffic["total_time"] += duration
+            bot_traffic["max_time"] = max(bot_traffic["max_time"], duration)
 
-                bot_traffic["req"] -= 1
-            except Exception:
-                logger.exception("[核心执行异常] 插件执行发生未捕获异常")
+            bot_traffic["req"] -= 1
+            self.sem.release()
+            self.queue.task_done()
 
     async def _process(self):
         while True:
             coro = await self.queue.get()
-            bot_traffic["req"] += 1
+            await self.sem.acquire()
             asyncio.create_task(self._safe_run(coro))
-            self.queue.task_done()
 
 
 class Bot:

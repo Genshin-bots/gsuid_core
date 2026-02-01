@@ -6,10 +6,11 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from gsuid_core.pool import run_in_thread_pool
 from gsuid_core.data_store import get_res_path
 from gsuid_core.help.model import PluginHelp
 from gsuid_core.utils.fonts.fonts import core_font
-from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.utils.image.convert import convert_img_sync
 from gsuid_core.utils.image.image_tools import (
     CustomizeImage,
     tint_image,
@@ -80,10 +81,53 @@ async def get_new_help(
     pm: int = 6,
     highlight_bg: Optional[Image.Image] = None,
 ):
+    return await _get_new_help(
+        plugin_name,
+        plugin_info,
+        plugin_icon,
+        plugin_help,
+        plugin_prefix,
+        help_mode,
+        banner_bg,
+        banner_sub_text,
+        help_bg,
+        cag_bg,
+        item_bg,
+        icon_path,
+        footer,
+        column,
+        need_cover,
+        enable_cache,
+        pm,
+        highlight_bg,
+    )
+
+
+@run_in_thread_pool
+def _get_new_help(
+    plugin_name: str,
+    plugin_info: Dict[str, str],
+    plugin_icon: Image.Image,
+    plugin_help: Dict[str, PluginHelp],
+    plugin_prefix: str = "",
+    help_mode: Literal["dark", "light"] = "dark",
+    banner_bg: Optional[Image.Image] = None,
+    banner_sub_text: str = "💖且听风吟。",
+    help_bg: Optional[Image.Image] = None,
+    cag_bg: Optional[Image.Image] = None,
+    item_bg: Optional[Image.Image] = None,
+    icon_path: Path = ICON_PATH,
+    footer: Optional[Image.Image] = None,
+    column: int = 3,
+    need_cover: bool = False,
+    enable_cache: bool = True,
+    pm: int = 6,
+    highlight_bg: Optional[Image.Image] = None,
+):
     help_path = get_res_path("help") / f"{plugin_name}_{pm}.jpg"
 
     if help_path.exists() and plugin_name in cache and cache[plugin_name] and enable_cache:
-        return await convert_img(Image.open(help_path))
+        return convert_img_sync(Image.open(help_path))
 
     if banner_bg is None:
         banner_bg = Image.open(TEXT_PATH / f"banner_bg_{help_mode}.jpg")
@@ -343,4 +387,4 @@ async def get_new_help(
     )
     cache[plugin_name] = 1
 
-    return await convert_img(img)
+    return convert_img_sync(img)
