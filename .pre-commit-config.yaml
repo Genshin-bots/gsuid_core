@@ -8,7 +8,7 @@ ci:
   autoupdate_commit_msg: "⬆️ `pre-commit-ci`自动升级"
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.10
+    rev: v0.14.14
     hooks:
       - id: ruff
         args: [--fix]
@@ -21,14 +21,14 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/python-poetry/poetry
-    rev: 2.2.1
+    rev: 2.3.2
     hooks:
       - id: poetry-check
       - id: poetry-lock
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.9.21
+    rev: 0.9.28
     hooks:
       - id: uv-lock
       - id: uv-export
