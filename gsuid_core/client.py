@@ -15,9 +15,14 @@ from segment import MessageSegment  # noqa: E402
 
 class GsClient:
     @classmethod
-    async def async_connect(cls, IP: str = "localhost", PORT: Union[str, int] = "8765"):
+    async def async_connect(
+        cls,
+        IP: str = "localhost",
+        PORT: Union[str, int] = "8765",
+        WS_TOKEN: str = "abc111",
+    ):
         self = GsClient()
-        cls.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot"
+        cls.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot?token={WS_TOKEN}"
         print(f"连接至WS链接{self.ws_url}...")
         cls.ws = await websockets.client.connect(  # type: ignore
             cls.ws_url, max_size=2**25, open_timeout=30
@@ -87,7 +92,7 @@ async def http_test():
 
 
 async def main():
-    await http_test()
+    # await http_test()
     client = await GsClient().async_connect()
     await client.start()
 

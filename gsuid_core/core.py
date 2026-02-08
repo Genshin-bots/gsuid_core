@@ -1,9 +1,10 @@
 import sys
 import asyncio
 import argparse
-from typing import Dict, List
+from typing import Dict
 from asyncio import CancelledError
 from pathlib import Path
+from dataclasses import dataclass
 
 import uvicorn
 from fastapi import WebSocket, WebSocketDisconnect
@@ -26,6 +27,12 @@ ASCII_FONT = f"""
 
           🌱 [早柚核心] 已启动! 版本 {__version__} ！
 """  # noqa: W605
+
+
+@dataclass
+class IPStatus:
+    failed_count: int = 0
+    ban_until: float = 0
 
 
 async def main():
@@ -67,6 +74,7 @@ async def main():
     from gsuid_core.logger import logger
     from gsuid_core.models import MessageReceive
     from gsuid_core.handler import handle_event
+    from gsuid_core.security_manager import sec_manager
     from gsuid_core.utils.database.startup import (  # noqa: F401
         trans_adapter as ta,
     )
@@ -80,7 +88,6 @@ async def main():
     PORT = int(core_config.get_config("PORT"))
     ENABLE_HTTP = core_config.get_config("ENABLE_HTTP")
     WS_SECRET_TOKEN = core_config.get_config("WS_TOKEN") or ""
-    TRUSTED_IPS: List[str] = core_config.get_config("TRUSTED_IPS")
 
     if HOST == "all" or HOST == "none" or HOST == "dual" or not HOST:
         HOST = None
@@ -98,16 +105,26 @@ async def main():
         client_host = websocket.client.host
         token = websocket.query_params.get("token")
 
-        if client_host not in TRUSTED_IPS:
+        if sec_manager.is_banned(client_host):
+            logger.warning(f"🔒️ [GsCore] 拒绝来自已封禁 IP 的连接: {client_host}")
+            await websocket.close(code=1008)  # Policy Violation
+            return
+
+        if not sec_manager.is_trusted(client_host):
             if not WS_SECRET_TOKEN:
                 logger.warning("🔒️ [GsCore] 未配置WS_TOKEN，所有外网连接将被拒绝！")
                 await websocket.close(code=1008)
                 return
 
             if token != WS_SECRET_TOKEN:
+                sec_manager.record_failure(client_host)
                 logger.warning(f"🚨 [GsCore] 非法访问拒绝: IP={client_host}, BotID={bot_id}")
+                count = sec_manager.status[client_host].failed_count
+                logger.warning(f"🚨 [GsCore] Token 错误!剩余尝试次数: {5 - count}")
                 await websocket.close(code=1008)
                 return
+            else:
+                sec_manager.record_success(client_host)
 
         try:
             bot = await gss.connect(websocket, bot_id)

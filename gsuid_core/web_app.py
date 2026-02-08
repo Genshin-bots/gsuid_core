@@ -570,7 +570,8 @@ async def _batch_push(request: Request, data: Dict):
 
 async def delete_image(image_path: Path):
     await asyncio.sleep(int(pic_expire_time))
-    image_path.unlink()
+    if image_path.exists():
+        image_path.unlink()
 
 
 app.mount(
