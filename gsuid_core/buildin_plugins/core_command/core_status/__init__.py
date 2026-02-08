@@ -47,7 +47,13 @@ async def _u_clear_and_save_global_val_all():
     gv.bot_val = {}
 
     await save_bot_max_qps()
-    bot_traffic = {"req": 0, "max_qps": 0}
+    bot_traffic = {
+        "req": 0,
+        "max_qps": 0,
+        "total_count": 0,
+        "total_time": 0.0,
+        "max_time": 0.0,
+    }
 
     logger.success("[早柚核心] 状态已清空!")
 
