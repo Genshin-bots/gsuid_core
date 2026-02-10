@@ -1,7 +1,19 @@
+import time
 import asyncio
-from typing import Any, Dict, List, Tuple, Literal, Optional
+from typing import Any, Dict, List, Tuple, Literal, Optional, Awaitable
+from dataclasses import dataclass
 
 from msgspec import Struct
+
+
+@dataclass
+class TaskContext:
+    coro: Awaitable[Any]
+    name: str
+    create_time: float = 0.0
+
+    def __post_init__(self):
+        self.create_time = time.perf_counter()
 
 
 class Message(Struct):

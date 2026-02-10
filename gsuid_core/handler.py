@@ -7,7 +7,7 @@ from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message, MessageReceive
+from gsuid_core.models import Event, Message, TaskContext, MessageReceive
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
@@ -217,7 +217,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             else:
                 logger.trace("[命令触发] [on_message]", command=message)
 
-            ws.queue.put_nowait(trigger.func(bot, message))
+            coro = trigger.func(bot, message)
+            func_name = getattr(coro, "__qualname__", str(coro))
+            task_ctx = TaskContext(coro=coro, name=func_name)
+            ws.queue.put_nowait(task_ctx)
             if _event.task_event:
                 return await ws.wait_task(_event.task_id, _event.task_event)
 

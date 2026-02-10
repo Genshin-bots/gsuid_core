@@ -6,12 +6,9 @@ from gsuid_core.aps import scheduler
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.global_val import bot_traffic, save_bot_max_qps, save_all_global_val
+from gsuid_core.global_val import BotTraffic
 from gsuid_core.status.draw_status import draw_status
-from gsuid_core.status.plugin_status import register_status
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
-
-from ..utils import get_ICON
 
 sv_core_status = SV("Core状态", pm=0)
 
@@ -41,19 +38,23 @@ async def count_group_user():
 async def _u_clear_and_save_global_val_all():
     """每天凌晨0点执行，清空全局状态"""
 
-    global bot_traffic
-
-    await save_all_global_val(1)
+    await gv.save_all_global_val(1)
     gv.bot_val = {}
 
-    await save_bot_max_qps()
-    bot_traffic = {
+    await gv.save_bot_max_qps()
+
+    new_data: BotTraffic = {
         "req": 0,
         "max_qps": 0,
         "total_count": 0,
         "total_time": 0.0,
         "max_time": 0.0,
+        "max_runtime": 0.0,
+        "max_wait_time": 0.0,
+        "max_runtime_func": "",
     }
+
+    gv.bot_traffic.update(new_data)
 
     logger.success("[早柚核心] 状态已清空!")
 
@@ -66,8 +67,8 @@ async def _u_clear_and_save_global_val_all():
 async def _scheduled_save_global_val_all():
     """每隔10分钟执行一次，同步全局状态"""
 
-    await save_all_global_val(0)
-    await save_bot_max_qps()
+    await gv.save_all_global_val(0)
+    await gv.save_bot_max_qps()
     logger.success("[早柚核心] 状态已同步!")
 
 
@@ -116,19 +117,21 @@ async def send_core_status_msg(bot: Bot, ev: Event):
 
 
 async def get_now_req():
-    return bot_traffic["req"]
+    return gv.bot_traffic["req"]
 
 
 async def get_max_qps():
-    return bot_traffic["max_qps"]
+    return gv.bot_traffic["max_qps"]
 
 
 async def get_max_time():
-    # 转为秒
-    max_time = bot_traffic["max_time"]
+    max_time = gv.bot_traffic["max_time"]
     return f"{max_time:.2f}秒"
 
 
+"""
+from gsuid_core.status.plugin_status import register_status
+from ..utils import get_ICON
 register_status(
     get_ICON(),
     "Status",
@@ -138,3 +141,4 @@ register_status(
         "最大耗时": get_max_time,
     },
 )
+"""

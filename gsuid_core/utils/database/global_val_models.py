@@ -22,6 +22,17 @@ class CountVal(TypedDict):
     OutGroup: str
 
 
+class BotTraffic(TypedDict):
+    req: int
+    max_qps: float
+    total_count: int
+    total_time: float
+    max_time: float
+    max_runtime: float
+    max_wait_time: float
+    max_runtime_func: str
+
+
 class DataType(enum.Enum):
     GROUP = "group"
     USER = "user"
@@ -40,6 +51,9 @@ class CoreTraffic(BaseIDModel, table=True):
     total_count: int = Field(title="总请求次数", default=0)
     total_time: float = Field(title="总耗时", default=0.0)
     max_time: float = Field(title="最大耗时", default=0.0)
+    max_runtime: float = Field(title="最大运行耗时", default=0.0)
+    max_wait_time: float = Field(title="最大等待耗时", default=0.0)
+    max_runtime_func: str = Field(title="最大运行耗时函数", default="")
 
     date: ymddate = Field(title="日期")
 

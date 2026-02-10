@@ -12,6 +12,7 @@ from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.database.global_val_models import (
     CountVal,
     DataType,
+    BotTraffic,
     CoreTraffic,
     CoreDataSummary,
     CoreDataAnalysis,
@@ -47,12 +48,15 @@ platform_val: PlatformVal = {
 }
 
 bot_val: BotVal = {}
-bot_traffic: Dict[str, float] = {
+bot_traffic: BotTraffic = {
     "req": 0,
     "max_qps": 0,
     "total_count": 0,
     "total_time": 0.0,
+    "max_runtime": 0.0,
+    "max_wait_time": 0.0,
     "max_time": 0.0,
+    "max_runtime_func": "",
 }
 
 
@@ -73,13 +77,16 @@ async def save_bot_max_qps():
         [
             CoreTraffic(
                 max_qps=bot_traffic["max_qps"],
-                total_count=bot_traffic["total_count"],
+                total_count=int(bot_traffic["total_count"]),
                 total_time=bot_traffic["total_time"],
                 max_time=bot_traffic["max_time"],
+                max_runtime=bot_traffic["max_runtime"],
+                max_wait_time=bot_traffic["max_wait_time"],
+                max_runtime_func=bot_traffic["max_runtime_func"],
                 date=today,
             )
         ],
-        ["max_qps", "total_count", "total_time", "max_time"],
+        ["max_qps", "total_count", "total_time", "max_time", "max_runtime", "max_wait_time", "max_runtime_func"],
         ["date"],
     )
     logger.success("🔒️ 流量统计保存完成!")

@@ -1,6 +1,7 @@
 import re
-from typing import Literal, Callable
+from typing import Any, Literal, Callable, Awaitable
 
+from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 
 
@@ -26,7 +27,7 @@ class Trigger:
         self.type = type
         self.prefix = prefix
         self.keyword = keyword
-        self.func = func
+        self.func: Callable[[Bot, Event], Awaitable[Any]] = func
         self.block = block
         self.to_me = to_me
 

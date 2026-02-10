@@ -1,13 +1,13 @@
 import time
 import asyncio
 import inspect
-from typing import Dict, List, Union, Literal, Optional, Coroutine
+from typing import Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
 
 from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message, MessageSend
+from gsuid_core.models import Event, Message, MessageSend, TaskContext
 from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
@@ -179,21 +179,32 @@ class _Bot:
         del self.send_dict[task_id]
         return result
 
-    async def _safe_run(self, coro: Coroutine):
-        start_time = time.perf_counter()
+    async def _safe_run(self, ctx: TaskContext):
+        start_exec_time = time.perf_counter()
+        wait_time = start_exec_time - ctx.create_time
+
+        if wait_time > 5.0:
+            logger.warning(f"[排队警告] 函数 {ctx.name} 等待了 {wait_time:.2f}s 才开始执行")
+
         try:
             bot_traffic["req"] += 1
             bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
-            await coro
+            func_name = getattr(ctx, "name")
+            logger.trace(f"[核心执行] 函数 {func_name} 开始执行")
+            await ctx.coro
         except Exception:
-            logger.exception("[核心执行异常] 插件执行发生未捕获异常")
+            logger.exception(f"[核心执行异常] 函数 {func_name} 执行发生未捕获异常")
         finally:
             end_time = time.perf_counter()
-            duration = end_time - start_time
+            run_duration = end_time - start_exec_time
+            total_duration = end_time - ctx.create_time
 
             bot_traffic["total_count"] += 1
-            bot_traffic["total_time"] += duration
-            bot_traffic["max_time"] = max(bot_traffic["max_time"], duration)
+            bot_traffic["total_time"] += total_duration
+            bot_traffic["max_runtime"] = max(bot_traffic["max_runtime"], run_duration)
+            bot_traffic["max_wait_time"] = max(bot_traffic["max_wait_time"], wait_time)
+            bot_traffic["max_time"] = max(bot_traffic["max_time"], total_duration)
+            bot_traffic["max_runtime_func"] = func_name
 
             bot_traffic["req"] -= 1
             self.sem.release()
@@ -201,9 +212,9 @@ class _Bot:
 
     async def _process(self):
         while True:
-            coro = await self.queue.get()
+            ctx: TaskContext = await self.queue.get()
             await self.sem.acquire()
-            asyncio.create_task(self._safe_run(coro))
+            asyncio.create_task(self._safe_run(ctx))
 
 
 class Bot:

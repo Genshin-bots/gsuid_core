@@ -190,11 +190,32 @@ async def draw_bar(
     return bar
 
 
+def _change_time(time: float):
+    if isinstance(time, str):
+        return time
+
+    hours, remainder = divmod(time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{int(hours)}时")
+
+    if minutes > 0 or hours > 0:
+        parts.append(f"{int(minutes)}分")
+        parts.append(f"{int(seconds)}秒")
+    else:
+        parts.append(f"{seconds:.2f}秒")
+
+    return "".join(parts)
+
+
 async def draw_badge(
     title: str,
     value: Union[str, int, float],
     avg_value: Optional[int] = None,
     color: Union[Tuple[int, int, int], str] = THEME_COLOR,
+    is_time: bool = False,
 ):
     badge = Image.new("RGBA", (240, 150))
     badge_draw = ImageDraw.Draw(badge)
@@ -213,6 +234,15 @@ async def draw_badge(
         "mm",
     )
 
+    if is_time:
+        if isinstance(value, (int, float)):
+            value = _change_time(value)
+        font_size = 34
+        if len(value) > 11:
+            value = value[10:] + ".."
+    else:
+        font_size = 46
+
     if isinstance(value, int) or isinstance(value, float) or value.isdigit():
         value_str = number_to_chinese(float(value))
     else:
@@ -221,7 +251,7 @@ async def draw_badge(
     if avg_value is not None and (isinstance(value, int) or isinstance(value, float)):
         if value >= avg_value * 1.2:
             arrow = Image.open(TEXT_PATH / "up.png")
-            x = get_font_x(core_font(46), value_str)
+            x = get_font_x(core_font(font_size), value_str)
             point = (107, 51)
             badge.paste(
                 arrow,
@@ -230,7 +260,7 @@ async def draw_badge(
             )
         elif value <= avg_value * 0.8:
             arrow = Image.open(TEXT_PATH / "down.png")
-            x = get_font_x(core_font(46), value_str)
+            x = get_font_x(core_font(font_size), value_str)
             point = (107, 51)
             badge.paste(
                 arrow,
@@ -246,7 +276,7 @@ async def draw_badge(
         point,
         value_str,
         BLACK,
-        core_font(46),
+        core_font(font_size),
         "mm",
     )
     return badge
@@ -583,11 +613,58 @@ async def draw_bg(w: int, h: int):
     return bg
 
 
+async def draw_traffic_analysis():
+    bt = gv.bot_traffic
+    badge1 = await draw_badge(
+        "最大同时处理",
+        bt["max_qps"],
+        None,
+        HINT_COLOR,
+    )
+    badge2 = await draw_badge(
+        "最大任务时间",
+        bt["max_runtime"],
+        is_time=True,
+    )
+    badge3 = await draw_badge(
+        "最大耗时函数",
+        bt["max_runtime_func"],
+        is_time=True,
+    )
+    badge4 = await draw_badge(
+        "最大等待",
+        bt["max_wait_time"],
+        None,
+        HINT_COLOR,
+        is_time=True,
+    )
+    badge5 = await draw_badge(
+        "总处理耗时",
+        bt["total_time"],
+        is_time=True,
+    )
+    badge6 = await draw_badge(
+        "总时间",
+        bt["max_time"],
+        None,
+        HINT_COLOR,
+        is_time=True,
+    )
+
+    data_bar = Image.new("RGBA", (1400, 200))
+    for index, i in enumerate([badge1, badge2, badge3, badge4, badge5, badge6]):
+        data_bar.paste(i, (75 + index * 210, 25), i)
+
+    return data_bar
+
+
 async def draw_status(ev: Event):
     title = await draw_title()
     bar1 = await draw_bar("服务器基础信息", "Base Info")
     bar2_1 = await draw_bar("机器人数据统计(单)", "Data Analysis")
     bar2_2 = await draw_bar("机器人数据统计(多)", "Data Analysis")
+    bar2_3 = await draw_bar("机器人流量统计", "Traffic Analysis")
+
     bar3 = await draw_bar(
         "日活曲线",
         "Daily Activity",
@@ -619,6 +696,9 @@ async def draw_status(ev: Event):
 
     data_bar2_1 = await draw_data_analysis2(ndata)
     data_bar2_2 = await draw_data_analysis2(mdata)
+
+    traffic_bar = await draw_traffic_analysis()
+
     trends = await CoreDataSummary.get_day_trends(
         ev.real_bot_id,
         ev.bot_self_id,
@@ -631,7 +711,7 @@ async def draw_status(ev: Event):
     plugins_num = len(plugins_status)
     plugins_h = 100 + plugins_num * 180
 
-    img = await draw_bg(1400, 2778 + 150 + plugins_h)
+    img = await draw_bg(1400, 2778 + 150 + plugins_h + 310)
 
     img.paste(title, (0, 0), title)
     img.paste(bar1, (0, 855), bar1)
@@ -644,10 +724,13 @@ async def draw_status(ev: Event):
     img.paste(data_bar1_2, (0, 1773), data_bar1_2)
     img.paste(data_bar2_2, (0, 1974), data_bar2_2)
 
-    img.paste(bar3, (0, 2197), bar3)
-    img.paste(curve_img, (0, 2266), curve_img)
-    img.paste(bar4, (0, 2778), bar4)
-    img.paste(plugin_status_img, (0, 2878), plugin_status_img)
+    img.paste(bar2_3, (0, 2197), bar2_3)
+    img.paste(traffic_bar, (0, 2284), traffic_bar)
+
+    img.paste(bar3, (0, 2197 + 310), bar3)
+    img.paste(curve_img, (0, 2266 + 310), curve_img)
+    img.paste(bar4, (0, 2778 + 310), bar4)
+    img.paste(plugin_status_img, (0, 2878 + 310), plugin_status_img)
 
     img = add_footer(img, footer=Image.open(TEXT_PATH / "footer.png"))
     res = await convert_img(img)
