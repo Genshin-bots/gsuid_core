@@ -84,6 +84,7 @@ from gsuid_core.utils.database.models import (
     CoreGroup,
     Subscribe,
 )
+from gsuid_core.utils.database.global_val_models import CoreDataSummary, CoreTraffic, CoreDataAnalysis
 
 WebConsoleCDN = core_plugins_config.get_config("WebConsoleCDN").data
 
@@ -526,6 +527,52 @@ class PluginsConfig(admin.AdminApp):
             SVManagePage,
             ConfigManagePage,
             PluginsManagePage,
+        )
+
+
+class CoreTrafficAdmin(GsAdminModel):
+    pk_name = "id"
+    page_schema = PageSchema(
+        label="流量数据管理",
+        icon="fa fa-chart-line",
+    )  # type: ignore
+
+    # 配置管理模型
+    model = CoreTraffic
+
+
+class CoreDataSummaryAdmin(GsAdminModel):
+    pk_name = "id"
+    page_schema = PageSchema(
+        label="数据摘要管理",
+        icon="fa fa-chart-line",
+    )  # type: ignore
+
+    # 配置管理模型
+    model = CoreDataSummary
+
+
+class CoreDataAnalysisAdmin(GsAdminModel):
+    pk_name = "id"
+    page_schema = PageSchema(
+        label="数据分析管理",
+        icon="fa fa-chart-line",
+    )  # type: ignore
+
+    # 配置管理模型
+    model = CoreDataAnalysis
+
+
+@site.register_admin
+class TrafficConfig(admin.AdminApp):
+    page_schema = PageSchema(label="机器人数据管理", icon="fa fa-user")  # type: ignore
+
+    def __init__(self, app: "admin.AdminApp"):
+        super().__init__(app)
+        self.register_admin(
+            CoreTrafficAdmin,
+            CoreDataSummaryAdmin,
+            CoreDataAnalysisAdmin,
         )
 
 

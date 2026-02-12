@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from gsuid_core.pool import run_in_thread_pool
+from gsuid_core.pool import to_thread
 from gsuid_core.data_store import get_res_path
 from gsuid_core.help.model import PluginHelp
 from gsuid_core.utils.fonts.fonts import core_font
@@ -103,7 +103,7 @@ async def get_new_help(
     )
 
 
-@run_in_thread_pool
+@to_thread
 def _get_new_help(
     plugin_name: str,
     plugin_info: Dict[str, str],

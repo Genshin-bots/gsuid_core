@@ -1,51 +1,78 @@
 import asyncio
+import inspect
 import functools
-from typing import Any, TypeVar, Callable, Awaitable
-from typing_extensions import ParamSpec
+import importlib
+from typing import Any, TypeVar, Callable, Awaitable, Coroutine, ParamSpec, cast, overload
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
-# 定义泛型变量
+T = TypeVar("T")
 P = ParamSpec("P")
-R = TypeVar("R")
 
-_executor = ProcessPoolExecutor()
-_thread_executor = ThreadPoolExecutor()
-
-
-async def run_in_process(func: Callable[..., R], *args: Any, **kwargs: Any) -> R:
-    """
-    通用分发函数：将同步函数扔进进程池运行并异步返回结果
-    """
-    loop = asyncio.get_running_loop()
-
-    if kwargs:
-        p_func = functools.partial(func, *args, **kwargs)
-        return await loop.run_in_executor(_executor, p_func)
-
-    return await loop.run_in_executor(_executor, func, *args)
+_executor = ThreadPoolExecutor(max_workers=10)
+_process_executor = ProcessPoolExecutor()
 
 
-def run_in_process_pool(func: Callable[P, R]) -> Callable[P, Awaitable[R]]:
-    """
-    专用装饰器：把普通耗时函数自动变成异步并在多进程运行。
-    """
+@overload
+def to_thread(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Awaitable[T]]: ...
+
+
+@overload
+def to_thread(func: Callable[P, T]) -> Callable[P, Awaitable[T]]: ...
+
+
+def to_thread(func: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        loop = asyncio.get_running_loop()
+
+        def sync_worker():
+            # 运行时判断
+            if inspect.iscoroutinefunction(func):
+                new_loop = asyncio.new_event_loop()
+                try:
+                    asyncio.set_event_loop(new_loop)
+                    return new_loop.run_until_complete(func(*args, **kwargs))
+                finally:
+                    new_loop.close()
+            else:
+                return func(*args, **kwargs)
+
+        return await loop.run_in_executor(_executor, sync_worker)
+
+    return cast(Callable[..., Awaitable[Any]], wrapper)
+
+
+run_in_thread_pool = to_thread
+
+
+def _process_worker(func_path: str, *args: Any, **kwargs: Any) -> Any:
+    module_name, func_name = func_path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    real_func = getattr(module, func_name)
+
+    if inspect.iscoroutinefunction(real_func):
+        return asyncio.run(real_func(*args, **kwargs))
+    else:
+        return real_func(*args, **kwargs)
+
+
+@overload
+def to_process(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Awaitable[T]]: ...
+
+
+@overload
+def to_process(func: Callable[P, T]) -> Callable[P, Awaitable[T]]: ...
+
+
+def to_process(func: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+    func_path = f"{func.__module__}.{func.__qualname__}"
 
     @functools.wraps(func)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_executor, functools.partial(func, *args, **kwargs))
 
-    return wrapper
+        return await loop.run_in_executor(
+            _process_executor, functools.partial(_process_worker, func_path, *args, **kwargs)
+        )
 
-
-def run_in_thread_pool(func: Callable[P, R]) -> Callable[P, Awaitable[R]]:
-    """
-    明确告知 IDE：此装饰器接收一个返回 R 的函数，
-    """
-
-    @functools.wraps(func)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_thread_executor, functools.partial(func, *args, **kwargs))
-
-    return wrapper
+    return cast(Callable[..., Awaitable[Any]], wrapper)

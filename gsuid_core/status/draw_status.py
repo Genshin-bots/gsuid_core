@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image, ImageOps, ImageDraw
 
 import gsuid_core.global_val as gv
+from gsuid_core.pool import to_thread
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
 from gsuid_core.utils.fonts.fonts import core_font
@@ -617,9 +618,10 @@ async def draw_traffic_analysis():
     bt = gv.bot_traffic
     badge1 = await draw_badge(
         "最大同时处理",
-        bt["max_qps"],
+        str(bt["max_qps"]),
         None,
         HINT_COLOR,
+        is_time=True,
     )
     badge2 = await draw_badge(
         "最大任务时间",
@@ -658,6 +660,7 @@ async def draw_traffic_analysis():
     return data_bar
 
 
+@to_thread
 async def draw_status(ev: Event):
     title = await draw_title()
     bar1 = await draw_bar("服务器基础信息", "Base Info")

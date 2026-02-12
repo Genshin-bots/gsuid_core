@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from gsuid_core.pool import run_in_thread_pool
+from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.utils.image.image_tools import draw_center_text_by_line
@@ -59,7 +59,7 @@ async def convert_img(
     return await _convert_img_sync(img, is_base64)
 
 
-@run_in_thread_pool
+@to_thread
 def _convert_img_sync(
     img: Union[Image.Image, str, Path, bytes],
     is_base64: bool = False,
