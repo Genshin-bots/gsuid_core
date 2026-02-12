@@ -66,6 +66,12 @@ async def load_bot_max_qps():
     traffic: Optional[Sequence[CoreTraffic]] = await CoreTraffic.select_rows(date=today)
     if traffic:
         bot_traffic["max_qps"] = traffic[0].max_qps
+        bot_traffic["max_time"] = traffic[0].max_time
+        bot_traffic["max_runtime"] = traffic[0].max_runtime
+        bot_traffic["max_wait_time"] = traffic[0].max_wait_time
+        bot_traffic["max_runtime_func"] = traffic[0].max_runtime_func
+        bot_traffic["total_count"] = traffic[0].total_count
+        bot_traffic["total_time"] = traffic[0].total_time
     logger.success(f"🔒️ 流量统计加载完成! {bot_traffic}")
 
 
