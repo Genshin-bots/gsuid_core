@@ -11,9 +11,13 @@ class TaskContext:
     coro: Awaitable[Any]
     name: str
     create_time: float = 0.0
+    priority: int = 2
 
     def __post_init__(self):
         self.create_time = time.perf_counter()
+
+    def __lt__(self, other: "TaskContext") -> bool:
+        return self.priority < other.priority
 
 
 class Message(Struct):

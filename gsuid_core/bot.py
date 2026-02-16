@@ -53,7 +53,7 @@ class _Bot:
         self.bot_id = _id
         self.bot = ws
         self.logger = GsLogger(self.bot_id, ws)
-        self.queue = asyncio.queues.Queue()
+        self.queue = asyncio.queues.PriorityQueue()
         self.send_dict = {}
         self.bg_tasks = set()
         self.sem = asyncio.Semaphore(10)

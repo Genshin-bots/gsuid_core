@@ -219,7 +219,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             coro = trigger.func(bot, message)
             func_name = getattr(coro, "__qualname__", str(coro))
-            task_ctx = TaskContext(coro=coro, name=func_name)
+            # 根据用户权限设置优先级，user_pm 越小优先级越高
+            task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm)
             ws.queue.put_nowait(task_ctx)
             if _event.task_event:
                 return await ws.wait_task(_event.task_id, _event.task_event)
