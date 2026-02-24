@@ -289,9 +289,11 @@ class AsyncOpenAISession:
 
                             # 6. 序列化结果
                             if isinstance(result, Message):
+                                function_response = "生成内容成功, 已经发送了相关消息！"
                                 tools_reply.append(result)
                             elif isinstance(result, str):
                                 function_response = result
+                                tools_reply.append(MessageSegment.text(function_response))
                             elif isinstance(result, dict):
                                 function_response = json.dumps(result, ensure_ascii=False)
                             elif isinstance(result, bytes):
