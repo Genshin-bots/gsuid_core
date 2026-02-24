@@ -123,6 +123,9 @@ class AsyncOpenAISession:
                 text += file_text
 
         if text:
+            if ev:
+                for i in ev.image_id_list:
+                    text += f"\n--- Upload Image ID: {i} ---\n"
             content_payload.append({"type": "text", "text": text})
 
         if images:
