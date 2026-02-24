@@ -190,12 +190,23 @@ def format_callsite_processor(logger: WrappedLogger, method_name: str, event_dic
 def reduce_message(messages: List[Message]):
     mes = deepcopy(messages)
     for message in mes:
-        dd = str(message.data)
-        if message.data and len(dd) >= 500:
-            try:
-                message.data = dd[:100]
-            except Exception:
-                pass
+        # 处理 message 可能是 dict 或 Message 对象的情况
+        if isinstance(message, dict):
+            data = message.get("data")
+        else:
+            data = getattr(message, "data", None)
+
+        if data:
+            dd = str(data)
+            if len(dd) >= 500:
+                try:
+                    truncated = dd[:100]
+                    if isinstance(message, dict):
+                        message["data"] = truncated
+                    else:
+                        message.data = truncated
+                except Exception:
+                    pass
     return mes
 
 

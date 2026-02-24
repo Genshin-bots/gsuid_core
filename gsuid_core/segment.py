@@ -1,5 +1,6 @@
 import re
 import uuid
+import base64
 import random
 from io import BytesIO
 from venv import logger
@@ -206,17 +207,20 @@ class MessageSegment:
     def record(content: Union[str, bytes, Path]) -> Message:
         if isinstance(content, bytes):
             pass
+        elif isinstance(content, (bytearray, memoryview)):
+            content = bytes(content)
         elif isinstance(content, Path):
             with open(str(content), "rb") as fp:
                 content = fp.read()
-        elif isinstance(content, (bytearray, memoryview)):
-            content = bytes(content)
         else:
             if content.startswith("base64://"):
-                return Message(type="image", data=content)
+                return Message(type="record", data=content)
             with open(content, "rb") as fp:
                 content = fp.read()
-        return Message(type="record", data=f"base64://{content}")
+
+        b64_str = base64.b64encode(content).decode("utf-8")
+
+        return Message(type="record", data=f"base64://{b64_str}")
 
     @staticmethod
     def file(content: Union[Path, str, bytes], file_name: str) -> Message:
@@ -241,6 +245,24 @@ class MessageSegment:
             type="file",
             data=f"{file_name}|{b64encode(file).decode()}",
         )
+
+    @staticmethod
+    def video(content: Union[str, bytes, Path]) -> Message:
+        if isinstance(content, bytes):
+            pass
+        elif isinstance(content, (bytearray, memoryview)):
+            content = bytes(content)
+        elif isinstance(content, Path):
+            with open(str(content), "rb") as fp:
+                content = fp.read()
+        else:
+            if content.startswith("base64://"):
+                return Message(type="video", data=content)
+            with open(content, "rb") as fp:
+                content = fp.read()
+
+        b64_str = base64.b64encode(content).decode("utf-8")
+        return Message(type="video", data=f"base64://{b64_str}")
 
     @staticmethod
     def log(type: Literal["INFO", "WARNING", "ERROR", "SUCCESS"], content: str) -> Message:

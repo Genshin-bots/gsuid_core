@@ -11,10 +11,14 @@ from gsuid_core.models import Event, Message, TaskContext, MessageReceive
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
+from gsuid_core.ai_core.models import ToolDef
 from gsuid_core.utils.cooldown import cooldown_tracker
+from gsuid_core.ai_core.register import get_registered_tools
 from gsuid_core.ai_core.ai_config import ai_config
-from gsuid_core.ai_core.ai_router import get_ai_chat_session
+from gsuid_core.ai_core.ai_router import get_ai_chat_session, get_ai_tool_session
+from gsuid_core.ai_core.embedding import search_tools
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
+from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.mode_classifier import classifier_service
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
@@ -195,7 +199,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             valid_event.items(),
             key=lambda x: (not x[0].prefix, x[1]),
         )
-        # sorted_event = sorted(valid_event.items(), key=lambda x: x[1])
+
         for trigger, _ in sorted_event:
             _event = deepcopy(event)
             message = await trigger.get_command(_event)
@@ -236,7 +240,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 res = await classifier_service.predict_async(event.raw_text)
                 # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
                 logger.debug(res)
-                if res["intent"] == "闲聊" and enable_chat:
+                if res["intent"] == "闲聊":
+                    if not enable_chat:
+                        return
                     session = await get_ai_chat_session(event)
                     res = await session.chat(
                         text=event.raw_text,
@@ -244,15 +250,36 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     )
                     logger.debug(res)
                     bot = Bot(ws, event)
-                    if isinstance(res, str):
-                        await bot.send(res)
+                    await bot.send(res)
+                elif res["intent"] == "工具":
+                    if not enable_task:
+                        return
+                    query = event.raw_text
+                    logger.info(f"🧠 [AI][Embedding] 用户意图: '{query}'")
+                    results = await search_tools(query, limit=5)
 
-                elif res["intent"] == "工具" and enable_task:
-                    pass
+                    result_tools: List[ToolDef] = []
+                    all_tools_metadata = get_registered_tools()
+
+                    for hit in results:
+                        if hit.payload is None:
+                            continue
+                        tool_name = hit.payload["name"]
+                        result_tools.append(all_tools_metadata[tool_name]["schema"])
+
+                    bot = Bot(ws, event)
+                    session = await get_ai_tool_session(event)
+                    chat_completion = await session.chat(
+                        text=event.raw_text,
+                        tools=result_tools,
+                        bot=bot,
+                        ev=event,
+                    )
+                    await bot.send(chat_completion)
                 else:
-                    logger.warning(f"[GsCore][AI] 未知意图: {res['intent']}")
+                    logger.warning(f"🧠 [GsCore][AI] 未知意图: {res['intent']}")
         except Exception as e:
-            logger.exception(f"[GsCore][AI] 聊天异常: {e}")
+            logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
@@ -301,7 +328,10 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.at_list.append(str(_msg.data))
         elif _msg.type == "image":
             event.image = _msg.data
-            event.image_list.append(_msg.data)
+            if _msg.data:
+                event.image_list.append(_msg.data)
+                event.image_id = RM.register(_msg.data)
+                event.image_id_list.append(event.image_id)
         elif _msg.type == "reply":
             event.reply = _msg.data
         elif _msg.type == "file" and _msg.data:

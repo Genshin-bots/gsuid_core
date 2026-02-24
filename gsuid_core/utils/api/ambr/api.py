@@ -1,5 +1,9 @@
 AMBR_BASE_URL = "https://gi.yatta.moe"
 AMBR_EVENT_URL = AMBR_BASE_URL + "/assets/data/event.json"
+
+AMBR_CHAR_LIST_URL = AMBR_BASE_URL + "/api/v2/chs/avatar"
+AMBR_WEAPON_LIST_URL = AMBR_BASE_URL + "/api/v2/chs/weapon"
+
 AMBR_CHAR_URL = AMBR_BASE_URL + "/api/v2/chs/avatar/{}?vh=32F2"
 AMBR_WEAPON_URL = AMBR_BASE_URL + "/api/v2/CHS/weapon/{}?vh=32F6"
 AMBR_BOOK_URL = AMBR_BASE_URL + "/api/v2/chs/book?vh=34F5"

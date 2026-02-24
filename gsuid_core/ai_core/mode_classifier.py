@@ -1,7 +1,8 @@
 import re
+import sys
 import random
 import asyncio
-import warnings
+import logging
 from typing import Any, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,10 +15,34 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 
-warnings.filterwarnings("ignore", category=UserWarning, module="jieba")
+# 完全禁用 jieba 的所有日志输出
+jieba_logger = logging.getLogger("jieba")
+jieba_logger.setLevel(logging.CRITICAL)  # 只显示 CRITICAL 级别的日志
+jieba_logger.propagate = False
+
+# 同时重定向 stdout/stderr 来捕获 jieba 的直接输出
+_old_stdout = sys.stdout
+_old_stderr = sys.stderr
+
+
+class DevNull:
+    def write(self, msg):
+        pass
+
+    def flush(self):
+        pass
+
+
+# 临时重定向到空设备
+sys.stdout = DevNull()
+sys.stderr = DevNull()
 
 import jieba  # noqa: E402
 import jieba.posseg as pseg  # noqa: E402
+
+# 恢复 stdout/stderr
+sys.stdout = _old_stdout
+sys.stderr = _old_stderr
 
 AI_PATH = get_res_path("ai_core")
 MODEL_PATH = AI_PATH / "intent_classifier.joblib"

@@ -46,8 +46,10 @@ class Event(MessageReceive):
     command: str = ""
     text: str = ""
     image: Optional[str] = None
-    at: Optional[str] = None
     image_list: List[Any] = []
+    image_id: Optional[str] = None
+    image_id_list: List[str] = []
+    at: Optional[str] = None
     at_list: List[Any] = []
     is_tome: bool = False
     reply: Optional[str] = None

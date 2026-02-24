@@ -1,9 +1,11 @@
-from typing import Dict, List, Callable
+from typing import Any, Dict, List, TypeVar, Callable, Optional, overload
 
 from gsuid_core.logger import logger
 
 from .utils import function_to_schema
 from .models import ToolSchema, EntitySchema
+
+F = TypeVar("F", bound=Callable)
 
 # --- 全局注册表和客户端 ---
 _TOOL_REGISTRY: Dict[str, ToolSchema] = {}
@@ -11,30 +13,68 @@ _ENTITIES: List[EntitySchema] = []
 
 
 def get_registered_tools():
+    logger.info(f"🧠 [AI][Registry] Registered tools: {_TOOL_REGISTRY.keys()}")
+    logger.debug(f"🧠 [AI][Registry] Registered tools schema: {_TOOL_REGISTRY}")
     return _TOOL_REGISTRY
 
 
-def ai_tools(func: Callable) -> Callable:
+@overload
+def ai_tools(func: F, /) -> F: ...
+
+
+@overload
+def ai_tools(
+    *,
+    check_func: Optional[Callable] = None,
+    **check_kwargs: Any,
+) -> Callable[[F], F]: ...
+
+
+def ai_tools(
+    func: Optional[F] = None,
+    *,
+    check_func: Optional[Callable] = None,
+    **check_kwargs: Any,
+):
     """
     装饰器：将函数注册为大模型工具。
     在启动时，自动生成 msgspec Schema 并存入注册表。
+
+    可选参数:
+        check_func: 一个异步函数，用于在执行工具前进行验证。
+                    函数签名应为 async def check_func(bot, ev, **kwargs) -> bool
+        **check_kwargs: 传递给 check_func 的额外参数
     """
-    func_name = func.__name__
 
-    # 1. 生成 Schema
-    schema = function_to_schema(func)
+    def decorator(func: F) -> F:
+        func_name = func.__name__
 
-    # 2. 存入全局注册表
-    _TOOL_REGISTRY[func_name] = {
-        "name": func_name,
-        "desc": schema["description"],
-        "params": schema["parameters"],
-        "schema": schema,
-        "func": func,
-    }
+        # 1. 生成 Schema
+        schema = function_to_schema(func)
 
-    logger.trace(f"[AI Tools][Registry] Tool registered: {func_name}")
-    return func
+        # 2. 存入全局注册表
+        _TOOLS: ToolSchema = {
+            "name": func_name,
+            "desc": schema["function"]["description"],
+            "params": schema["function"]["parameters"],
+            "schema": schema,
+            "func": func,
+            "check_func": check_func,
+            "check_kwargs": check_kwargs,
+        }
+        _TOOL_REGISTRY[func_name] = _TOOLS
+
+        logger.trace(f"🧠 [AI][Registry] Tool registered: {func_name}")
+        return func
+
+    # 支持直接使用 @ai_tools 或带参数 @ai_tools(check_func=xxx)
+    if callable(check_func) and not check_kwargs:
+        # 如果第一个参数是可调用函数且没有其他参数，则作为普通装饰器使用
+        actual_func: F = check_func  # type: ignore
+        check_func = None
+        return decorator(actual_func)
+
+    return decorator
 
 
 def ai_entity(name: str, domain: str, entity_type: str, aliases: List[str] = []):
@@ -50,7 +90,7 @@ def ai_entity(name: str, domain: str, entity_type: str, aliases: List[str] = [])
             "type": entity_type,
         }
     )
-    logger.trace(f"[AI Entities][Registry] Entity registered: {name}")
+    logger.trace(f"🧠 [AI][Registry] Entity registered: {name}")
 
 
 def startup_reverse_map():

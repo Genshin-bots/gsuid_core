@@ -27,6 +27,8 @@ from .api import (
     AMBR_GCG_LIST_URL,
     AMBR_MONSTER_LIST,
     AMBR_BOOK_DATA_URL,
+    AMBR_CHAR_LIST_URL,
+    AMBR_WEAPON_LIST_URL,
     AMBR_BOOK_DETAILS_URL,
 )
 from ..types import AnyDict
@@ -44,6 +46,20 @@ from .models import (
     AmbrMonsterList,
     AmbrUpgradeItem,
 )
+
+
+async def get_ambr_char_list() -> Optional[Dict[str, AmbrCharacter]]:
+    data = await _ambr_request(url=AMBR_CHAR_LIST_URL)
+    if isinstance(data, Dict):
+        return cast(Dict[str, AmbrCharacter], data["data"]["items"])
+    return None
+
+
+async def get_ambr_weapon_list() -> Optional[Dict[str, AmbrWeapon]]:
+    data = await _ambr_request(url=AMBR_WEAPON_LIST_URL)
+    if isinstance(data, Dict):
+        return cast(Dict[str, AmbrWeapon], data["data"]["items"])
+    return None
 
 
 async def get_ambr_event_info() -> Optional[Dict[str, AmbrEvent]]:

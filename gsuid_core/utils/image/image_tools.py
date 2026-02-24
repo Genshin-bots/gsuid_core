@@ -1,13 +1,15 @@
 import math
+import base64
 import random
 from io import BytesIO
-from typing import Tuple, Union, Optional
+from typing import List, Tuple, Union, Optional, overload
 from pathlib import Path
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from httpx import get
 
+from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.fonts.fonts import core_font
@@ -15,6 +17,62 @@ from gsuid_core.utils.image.utils import sget
 
 TEXT_PATH = Path(__file__).parent / "texture2d"
 BG_PATH = Path(__file__).parents[1] / "default_bg"
+
+
+@overload
+async def change_ev_image_to_bytes(img: str) -> bytes: ...
+
+
+@overload
+async def change_ev_image_to_bytes(img: List[str]) -> List[bytes]: ...
+
+
+@overload
+async def change_ev_image_to_bytes(img: None) -> None: ...
+
+
+@overload
+async def change_ev_image_to_bytes(img: Image.Image) -> bytes: ...
+
+
+async def change_ev_image_to_bytes(img: Union[str, List[str], None, Image.Image]) -> Union[None, bytes, List[bytes]]:
+    if isinstance(img, str):
+        img_list = [img]
+    elif isinstance(img, Image.Image):
+        img_list = [img]
+    else:
+        img_list = img
+
+    result_list = []
+
+    if img_list:
+        for item in img_list:
+            if isinstance(item, Image.Image):
+                result_list.append(item.tobytes())
+            elif item.startswith(("http", "https")):
+                image_bytes = await sget(item)
+                result_list.append(image_bytes.content)
+            else:
+                # Base64图片
+                if item.startswith("base64://"):
+                    base64_str = item.replace("base64://", "")
+                    result_list.append(base64.b64decode(base64_str))
+                elif item.startswith("data:image/png;base64,"):
+                    base64_str = item.replace("data:image/png;base64,", "")
+                    result_list.append(base64.b64decode(base64_str))
+                elif item.startswith("data:image/jpeg;base64,"):
+                    base64_str = item.replace("data:image/jpeg;base64,", "")
+                    result_list.append(base64.b64decode(base64_str))
+                else:
+                    logger.warning(f"图片格式可能错误: {item}")
+                    result_list.append(item.encode())
+    else:
+        return None
+
+    if isinstance(img, str):
+        return result_list[0]
+    else:
+        return result_list
 
 
 def tint_image(input_image: Image.Image, color: Tuple[int, int, int]):

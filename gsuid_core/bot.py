@@ -1,7 +1,7 @@
 import time
 import asyncio
 import inspect
-from typing import Dict, List, Union, Literal, Optional
+from typing import Any, Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -48,6 +48,40 @@ enable_markdown_platform = ism
 enable_Template_platform = isc
 
 
+def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
+    """
+    递归截断对象中的长字符串，用于日志输出。
+
+    - base64:// 开头的字符串显示为 base64://...(长度)
+    - 普通字符串超过 max_str_len 时截断
+    - bytes 显示为 <bytes: 长度>
+    - list/dict 递归处理
+    """
+    if isinstance(obj, str):
+        if obj.startswith("base64://") and len(obj) > 100:
+            return f"base64://...({len(obj)} chars)"
+        elif obj.startswith("link://"):
+            return obj  # 链接保持原样
+        elif len(obj) > max_str_len:
+            return obj[:max_str_len] + f"...({len(obj)} chars)"
+        return obj
+
+    if isinstance(obj, (bytes, bytearray)):
+        return f"<bytes: {len(obj)} bytes>"
+
+    if isinstance(obj, list):
+        return [_truncate_for_log(item, max_str_len) for item in obj]
+
+    if isinstance(obj, dict):
+        return {k: _truncate_for_log(v, max_str_len) for k, v in obj.items()}
+
+    # Message 对象特殊处理
+    if isinstance(obj, Message):
+        return {"type": obj.type, "data": _truncate_for_log(obj.data, max_str_len)}
+
+    return obj
+
+
 class _Bot:
     def __init__(self, _id: str, ws: Optional[WebSocket] = None):
         self.bot_id = _id
@@ -86,7 +120,8 @@ class _Bot:
             )
 
         _message_result = []
-        message_result = []
+        message_result: List[List[Message]] = []
+
         _t = []
         for _m in _message:
             if (
@@ -137,7 +172,7 @@ class _Bot:
             msg_id = sp_msg_id
 
         for mr in message_result:
-            logger.trace("[GsCore][即将发送消息]", messages=mr)
+            logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
             if at_sender and sender_id:
                 if at_sender_pos == "消息最后":
                     mr.append(MessageSegment.at(sender_id))
