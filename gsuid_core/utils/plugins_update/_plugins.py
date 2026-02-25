@@ -1,5 +1,6 @@
 import os
 import time
+import shutil
 import asyncio
 import subprocess
 from typing import Dict, List, Union, Optional
@@ -26,18 +27,28 @@ is_reload: bool = core_plugins_config.get_config("AutoReloadPlugins").data
 
 async def check_plugin_exist(name: str):
     name = name.lower()
+
     if name in ["core_command", "gs_test"]:
-        return "内置插件不可删除！"
+        return "❌ 内置插件不可删除！"
+
     for i in PLUGINS_PATH.iterdir():
-        if i.stem.lower() == name:
+        if i.stem.lower().strip("_") == name:
             return i
+    else:
+        for i in PLUGINS_PATH.iterdir():
+            if name in i.name.lower():
+                return i
 
 
 async def uninstall_plugin(path: Path):
     if not path.exists():
-        return "该插件不存在!"
-    path.unlink()
-    return "删除成功!"
+        return f"❌ 插件 {path.name} 不存在!"
+    if path.is_dir():
+        shutil.rmtree(path)
+        return f"✅ 插件目录 {path.name} 删除成功!"
+    else:
+        path.unlink()
+        return f"✅ 插件文件 {path.name} 删除成功!"
 
 
 # 传入一个path对象
