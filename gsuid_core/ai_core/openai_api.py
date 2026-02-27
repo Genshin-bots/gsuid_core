@@ -180,6 +180,7 @@ class AsyncOpenAISession:
             request_kwargs["tool_choice"] = "auto"
 
         tools_reply: List[Message] = []
+        tool_triggered = False  # 标记是否触发了工具
 
         while True:
             response: ChatCompletion = await self.client.chat.completions.create(**request_kwargs)
@@ -191,6 +192,7 @@ class AsyncOpenAISession:
 
             # --- 分支 1: 模型请求调用工具 ---
             if message.tool_calls:
+                tool_triggered = True  # 标记已触发工具
                 tool_calls_list = cast(
                     List[ChatCompletionMessageToolCall],
                     message.tool_calls,
@@ -326,6 +328,11 @@ class AsyncOpenAISession:
 
                 if not content:
                     raise ValueError("Empty content from model.")
+
+                # 如果没有触发任何工具，则不回复任何内容，直接返回空列表
+                if not tool_triggered:
+                    logger.debug("🧠 [AI][OpenAI] 未触发任何工具，结束对话")
+                    return []
 
                 if json_mode:
                     try:

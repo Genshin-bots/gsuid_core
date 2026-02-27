@@ -174,7 +174,7 @@ STATE_WORDS = {
     "疑惑",
 }
 
-QUERY_WORDS = {"怎么", "多少", "什么", "谁", "哪里", "几", "吗", "呢", "啥", "咋", "如何"}
+QUERY_WORDS = {"怎么", "多少", "什么", "谁", "哪里", "几", "吗", "呢", "啥", "咋", "如何", "为什么"}
 
 
 # 初始化 Jieba
@@ -390,19 +390,33 @@ class IntentService:
     def _rule_based_check(self, text: str) -> Optional[Dict[str, Any]]:
         """优先执行的正则/逻辑规则"""
 
+        # 规则 0: 询问大模型自身的问题 = 闲聊 (你是什么/你是谁/你使用什么模型)
+        if re.search(
+            r"^(我|你).*(是|使用|能|会).*(什么|谁|啥|怎么|多少|多大|名字|型号).*(模型|AI|助手|机器人|版本)", text
+        ):
+            return {"intent": "闲聊", "conf": 0.99, "reason": "Rule: SelfReference"}
+
         # 规则 1: 代词+疑问 = 闲聊 (这是什么/那是谁)
         if re.search(r"^(这|那|我|你|他|她|它|哪|谁).*(什么|咋|谁|哪|吗|呢)[?？]?$", text):
             return {"intent": "闲聊", "conf": 0.98, "reason": "Rule: Pronoun+Query"}
 
-        # 规则 2: 动词+否定/状态 = 闲聊 (看不懂/做不到)
+        # 规则 2: 纯疑问/情绪表达 = 闲聊 (为什么/咋回事/啊啊啊)
+        if re.search(r"^(为什么|咋回事|啊|哎呀|呜呜|哼|呵呵|哈哈|哇|唉|哎哟)+[!?😭😭😢😱😡🙏]+.*$", text):
+            return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: PureEmotion"}
+
+        # 规则 3: 询问观点/身份/模拟/建议 = 闲聊 (你对...看法/模拟.../你应该...)
+        if re.search(r".*(你对.*看法|你觉得|你认为|模拟|是.*化身|你应该|你要|你每).*", text):
+            return {"intent": "闲聊", "conf": 0.93, "reason": "Rule: OpinionOrSimulate"}
+
+        # 规则 4: 动词+否定/状态 = 闲聊 (看不懂/做不到)
         if re.search(r"(查|看|搜|找|分析|算|听|说)(不|没|无法|不能)(懂|了|到|行|好|明白)", text):
             return {"intent": "闲聊", "conf": 0.97, "reason": "Rule: Act+Neg+State"}
 
-        # 规则 3: 强否定 + 动作 = 闲聊 (不要查)
+        # 规则 5: 强否定 + 动作 = 闲聊 (不要查)
         if re.search(r"[不别没非][要]?.*?(查|看|搜|分析|算|测)", text):
             return {"intent": "闲聊", "conf": 0.99, "reason": "Rule: Negation+Action"}
 
-        # 规则 4: 纯情绪/状态词主导
+        # 规则 6: 纯情绪/状态词主导
         has_state = any(s in text for s in STATE_WORDS)
         has_query = any(q in text for q in QUERY_WORDS)
         has_prop = any(p in text for p in FUNCTIONAL_NOUNS)
@@ -465,6 +479,13 @@ async def benchmark(service: IntentService):
         "不要查",
         "茅台跌了吗",
         "光线传媒最近六个月涨的怎么样",
+        "你是使用什么模型？",
+        "为什么😭",
+        "为什么!",
+        "请问你对小招喵是什么看法？",
+        "你对抱抱的看法是？你是一个猫娘",
+        "模拟小狗的叫声",
+        "你既然是小招喵的化身，你没一句话的结尾应该加一个“喵”字",
     ]
 
     logger.debug(f"{'Input':<20} | {'Intent':<10} | {'Conf':<5} | {'Reason'}")

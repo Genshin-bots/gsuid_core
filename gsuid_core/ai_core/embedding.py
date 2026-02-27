@@ -1,11 +1,13 @@
+import os
 import json
 import uuid
 import hashlib
-from typing import Optional
+from typing import TYPE_CHECKING, Union
 
-from fastembed import TextEmbedding
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+if TYPE_CHECKING:
+    from fastembed import TextEmbedding
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start
@@ -20,12 +22,24 @@ DB_PATH = AI_CORE_PATH / "local_qdrant_db"
 DIMENSION = 512
 COLLECTION_NAME = "bot_tools"
 
-embedding_model: Optional[TextEmbedding] = None
-client: Optional[AsyncQdrantClient] = None
+# 使用 Any 作为运行时类型，类型检查器会使用 TYPE_CHECKING 中的类型
+
+embedding_model: "Union[TextEmbedding, None]" = None
+client: "Union[AsyncQdrantClient, None]" = None
 
 if enable_ai:
+    from fastembed import TextEmbedding
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+
     logger.info("🧠 [AI][Embedding] 正在加载 Embedding 模型...")
-    embedding_model = TextEmbedding(model_name="BAAI/bge-small-zh-v1.5", cache_dir=str(MODELS_CACHE))
+
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+
+    embedding_model = TextEmbedding(
+        model_name="BAAI/bge-small-zh-v1.5",
+        cache_dir=str(MODELS_CACHE),
+    )
     client = AsyncQdrantClient(path=str(DB_PATH))
 else:
     logger.info("🧠 [AI][Embedding] 未启用 Embedding 功能，将跳过加载模型, AI功能均不可用...")
