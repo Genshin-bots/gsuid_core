@@ -3,13 +3,13 @@ from typing import Any, Dict, List, TypeVar, Callable, Optional, overload
 from gsuid_core.logger import logger
 
 from .utils import function_to_schema
-from .models import ToolSchema, EntitySchema
+from .models import ToolSchema, KnowledgePoint
 
 F = TypeVar("F", bound=Callable)
 
 # --- 全局注册表和客户端 ---
 _TOOL_REGISTRY: Dict[str, ToolSchema] = {}
-_ENTITIES: List[EntitySchema] = []
+_ENTITIES: List[KnowledgePoint] = []
 
 
 def get_registered_tools():
@@ -77,29 +77,10 @@ def ai_tools(
     return decorator
 
 
-def ai_entity(name: str, domain: str, entity_type: str, aliases: List[str] = []):
+def ai_entity(entity: KnowledgePoint):
     """
     将实体注册为大模型实体。
     在启动时，自动将实体存入全局注册表。
     """
-    _ENTITIES.append(
-        {
-            "name": name,
-            "aliases": aliases,
-            "domain": domain,
-            "type": entity_type,
-        }
-    )
-    logger.trace(f"🧠 [AI][Registry] Entity registered: {name}")
-
-
-def startup_reverse_map():
-    """
-    构建反向映射，将实体名称和别名映射为实体信息。
-    """
-    reverse_map = {}
-    for entity in _ENTITIES:
-        reverse_map[entity["name"]] = entity
-        for alias in entity["aliases"]:
-            reverse_map[alias] = entity
-    return reverse_map
+    _ENTITIES.append(entity)
+    logger.trace(f"🧠 [AI][Registry] Entity registered: {entity['title']}")

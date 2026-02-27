@@ -70,7 +70,7 @@ async def init_db():
 async def sync_tools_to_db():
     """核心：智能同步本地代码字典与 Qdrant 数据库"""
     if client is None or embedding_model is None:
-        logger.info("🧠 [AI][Embedding] AI功能未启用，跳过同步")
+        logger.debug("🧠 [AI][Embedding] AI功能未启用，跳过同步")
         return
 
     all_tools_metadata = get_registered_tools()
