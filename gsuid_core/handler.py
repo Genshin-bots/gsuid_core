@@ -32,11 +32,16 @@ from gsuid_core.utils.plugins_config.gs_config import (
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
 
+# AI服务配置
 enable_ai: bool = ai_config.get_config("enable").data
 enable_chat: bool = ai_config.get_config("enable_chat").data
 enable_qa: bool = ai_config.get_config("enable_qa").data
 enable_task: bool = ai_config.get_config("enable_task").data
+
 ai_need_at: bool = ai_config.get_config("need_at").data
+ai_black_list: List[str] = ai_config.get_config("black_list").data
+ai_white_list: List[str] = ai_config.get_config("white_list").data
+
 
 _command_start: List[str]
 if command_start and enable_empty:
@@ -237,6 +242,12 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 break
     else:
         if ai_need_at and not event.is_tome:
+            return
+
+        if ai_black_list and (event.user_id in ai_black_list or event.group_id in ai_black_list):
+            return
+
+        if ai_white_list and (event.user_id not in ai_white_list and event.group_id not in ai_white_list):
             return
 
         try:
