@@ -147,7 +147,7 @@ async def search_tools(query: str, limit: int = 3):
     if client is None or embedding_model is None:
         raise RuntimeError("AI功能未启用，无法搜索工具")
 
-    logger.info(f"🧠 [AI][Embedding] 正在查询: {query}")
+    logger.info(f"🧠 [AI][Embedding][ToolSearch] 正在查询: {query}")
     query_vec = list(embedding_model.embed([query]))[0]
 
     response = await client.query_points(

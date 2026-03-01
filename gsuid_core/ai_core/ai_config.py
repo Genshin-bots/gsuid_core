@@ -20,6 +20,11 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用闲聊服务",
         False,
     ),
+    "enable_qa": GsBoolConfig(
+        "是否启用问答服务",
+        "指定是否启用问答服务",
+        False,
+    ),
     "enable_task": GsBoolConfig(
         "是否启用工具服务",
         "指定是否启用工具服务",

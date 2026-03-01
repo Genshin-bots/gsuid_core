@@ -17,10 +17,9 @@ from gsuid_core.data_store import get_res_path
 
 # 完全禁用 jieba 的所有日志输出
 jieba_logger = logging.getLogger("jieba")
-jieba_logger.setLevel(logging.CRITICAL)  # 只显示 CRITICAL 级别的日志
+jieba_logger.setLevel(logging.CRITICAL)
 jieba_logger.propagate = False
 
-# 同时重定向 stdout/stderr 来捕获 jieba 的直接输出
 _old_stdout = sys.stdout
 _old_stderr = sys.stderr
 
@@ -33,20 +32,21 @@ class DevNull:
         pass
 
 
-# 临时重定向到空设备
 sys.stdout = DevNull()
 sys.stderr = DevNull()
 
 import jieba  # noqa: E402
 import jieba.posseg as pseg  # noqa: E402
 
-# 恢复 stdout/stderr
 sys.stdout = _old_stdout
 sys.stderr = _old_stderr
 
 AI_PATH = get_res_path("ai_core")
-MODEL_PATH = AI_PATH / "intent_classifier.joblib"
+MODEL_PATH = AI_PATH / "intent_classifier_v2.joblib"
 
+# ==========================================
+# 1. 词典定义 (新增了 KNOWLEDGE_NOUNS)
+# ==========================================
 
 ACTION_VERBS = {
     "查",
@@ -83,7 +83,6 @@ FUNCTIONAL_NOUNS = {
     "排行",
     "排行榜",
     "榜单",
-    "攻略",
     "记录",
     "战绩",
     "股价",
@@ -111,6 +110,34 @@ FUNCTIONAL_NOUNS = {
     "掉落",
     "成本",
     "收益",
+}
+
+# [新增] 专门用于 RAG 问答的知识类名词
+KNOWLEDGE_NOUNS = {
+    "血量",
+    "机制",
+    "剧情",
+    "配队",
+    "队伍",
+    "武器",
+    "背景",
+    "故事",
+    "介绍",
+    "弱点",
+    "位置",
+    "材料",
+    "配方",
+    "打法",
+    "出处",
+    "世界观",
+    "天赋",
+    "命座",
+    "技能",
+    "成就",
+    "任务",
+    "彩蛋",
+    "设定",
+    "攻略",
 }
 
 NEGATION_WORDS = {"不", "没", "无", "非", "莫", "别", "不要", "不用", "休想", "禁止", "别去", "休"}
@@ -181,6 +208,8 @@ QUERY_WORDS = {"怎么", "多少", "什么", "谁", "哪里", "几", "吗", "呢
 def init_jieba():
     for w in FUNCTIONAL_NOUNS:
         jieba.add_word(w, tag="n_prop")
+    for w in KNOWLEDGE_NOUNS:  # [新增] 注册知识名词
+        jieba.add_word(w, tag="n_know")
     for w in NEGATION_WORDS:
         jieba.add_word(w, tag="d_neg")
     for w in STATE_WORDS:
@@ -195,8 +224,6 @@ init_jieba()
 
 
 class ItemSelector(BaseEstimator, TransformerMixin):
-    """用于在 Pipeline 中选择字典数据的特定 Key"""
-
     def __init__(self, key):
         self.key = key
 
@@ -208,9 +235,6 @@ class ItemSelector(BaseEstimator, TransformerMixin):
 
 
 def smart_abstraction(text: str) -> str:
-    """
-    逻辑：将文本转化为抽象标签序列，例如 "查雷神面板" -> "<ACT> <ENT> <PROP>"
-    """
     words = pseg.cut(text)
     clean_tokens = []
 
@@ -220,6 +244,8 @@ def smart_abstraction(text: str) -> str:
             clean_tokens.append("<NEG>")
         elif flag == "n_prop" or w in FUNCTIONAL_NOUNS:
             clean_tokens.append("<PROP>")
+        elif flag == "n_know" or w in KNOWLEDGE_NOUNS:  # [新增] 抽象出 KNOW 标签
+            clean_tokens.append("<KNOW>")
         elif flag == "a_state" or w in STATE_WORDS:
             clean_tokens.append("<STATE>")
         elif flag == "v_act" or w in ACTION_VERBS:
@@ -243,83 +269,93 @@ class IntentService:
         self._load_or_train()
 
     def _load_or_train(self):
-        """尝试加载模型，如果不存在或加载失败则强制重新训练"""
-        # 标记是否需要训练
         need_train = False
-
         if self.model_path.exists():
             try:
-                # 尝试读取现有模型
                 self.model = load(self.model_path)
-                logger.debug(f"[Info] 模型已加载: {self.model_path}")
+                # [新增检查] 如果读取到的旧模型只有2个分类，强制重新训练
+                if len(self.model.classes_) < 3:
+                    logger.warning("[Info] 检测到旧版本模型 (分类不足3个)，即将重新训练...")
+                    need_train = True
+                else:
+                    logger.debug(f"[Info] 模型已加载: {self.model_path}")
             except Exception as e:
-                logger.warning(f"[Error] 模型加载失败 (版本不兼容或路径错误): {e}")
-                logger.warning("[Info] 正在重新训练模型以修复此问题...")
+                logger.warning(f"[Error] 模型加载失败: {e}")
                 need_train = True
         else:
-            logger.debug(f"[Warning] 模型文件 {self.model_path} 不存在。")
             need_train = True
 
-        # 如果需要训练（文件不存在 或 加载报错）
         if need_train:
             self.train()
 
     def _generate_enhanced_data(self):
         tool_samples = []
         chat_samples = []
-        entities = ["雷神", "茅台", "纳指", "王者荣耀", "原神", "这只股票", "今天", "A股"]
+        qa_samples = []  # [新增] 问答样本集合
+
+        entities = ["雷神", "茅台", "纳指", "王者荣耀", "原神", "这只股票", "今天", "A股", "史莱姆", "钟离", "火神"]
 
         tool_patterns = [
-            "<ACT> <ENT>",
-            "<ACT> <PROP>",
+            "帮我 <ACT> <ENT>",
+            "<ACT> 我的 <PROP>",
+            "<ACT> <ENT> 的 <PROP>",
             "<ACT> <ENT> <PROP>",
-            "<ENT> <PROP>",
-            "<ENT> 的 <PROP>",
-            "<ENT> <ACT> <PROP>",
-            "<ACT> <ENT> <PROP> <QUERY>",
+            "打开 <ENT>",
+            "<ACT> 一张 <ENT>",
         ]
 
         chat_patterns = [
             "<NEG> <ACT>",
             "<NEG> <ACT> <ENT>",
             "<PROP> <STATE>",
-            "<PROP> <NEG> <STATE>",
             "<ENT> <STATE>",
             "<ENT> <NEG> <STATE>",
             "<STATE>",
-            "<ENT> <ACT> <STATE>",
-            "<ACT> <NEG> <ACT>",
             "我 <NEG> 知道",
             "<ACT> <NEG> <STATE>",
-            "<ACT> <NEG> <ENT>",
-            "<ENT> <QUERY>",
+            "为什么 <STATE>",
+        ]
+
+        # [新增] 问答专用的句式结构
+        qa_patterns = [
+            "<ENT> 的 <KNOW> 是 <QUERY>",
+            "<ENT> <KNOW> <QUERY>",
+            "<QUERY> 打 <ENT>",
+            "<ENT> <KNOW> 推荐",
+            "查一下 <ENT> 的 <KNOW>",
+            "<ENT> 在 <QUERY>",
+            "<ENT> 的 <KNOW> 介绍",
+            "<ENT> <KNOW> <QUERY> 搭配",
+            "<KNOW> <QUERY> 获得",
+            "<ENT> 的 <PROP> 是 <QUERY>",  # 有些属性也偏向问答，如: 雷神的面板是多少
         ]
 
         # 生成工具数据
         for pattern in tool_patterns:
             for ent in entities:
                 text = pattern.replace("<ENT>", ent)
-                if "<ACT>" in text:
-                    text = text.replace("<ACT>", random.choice(list(ACTION_VERBS)))
-                if "<PROP>" in text:
-                    text = text.replace("<PROP>", random.choice(list(FUNCTIONAL_NOUNS)))
-                if "<QUERY>" in text:
-                    text = text.replace("<QUERY>", random.choice(list(QUERY_WORDS)))
-                tool_samples.append(text)
+                text = text.replace("<ACT>", random.choice(list(ACTION_VERBS)))
+                text = text.replace("<PROP>", random.choice(list(FUNCTIONAL_NOUNS)))
+                tool_samples.append(text.replace(" ", ""))
 
         # 生成闲聊数据
         for pattern in chat_patterns:
             for ent in entities:
                 text = pattern.replace("<ENT>", ent)
-                if "<ACT>" in text:
-                    text = text.replace("<ACT>", random.choice(list(ACTION_VERBS)))
-                if "<PROP>" in text:
-                    text = text.replace("<PROP>", random.choice(list(FUNCTIONAL_NOUNS)))
-                if "<STATE>" in text:
-                    text = text.replace("<STATE>", random.choice(list(STATE_WORDS)))
-                if "<NEG>" in text:
-                    text = text.replace("<NEG>", random.choice(list(NEGATION_WORDS)))
-                chat_samples.append(text)
+                text = text.replace("<ACT>", random.choice(list(ACTION_VERBS)))
+                text = text.replace("<PROP>", random.choice(list(FUNCTIONAL_NOUNS)))
+                text = text.replace("<STATE>", random.choice(list(STATE_WORDS)))
+                text = text.replace("<NEG>", random.choice(list(NEGATION_WORDS)))
+                chat_samples.append(text.replace(" ", ""))
+
+        # [新增] 生成问答数据
+        for pattern in qa_patterns:
+            for ent in entities:
+                text = pattern.replace("<ENT>", ent)
+                text = text.replace("<KNOW>", random.choice(list(KNOWLEDGE_NOUNS)))
+                text = text.replace("<PROP>", random.choice(list(FUNCTIONAL_NOUNS)))
+                text = text.replace("<QUERY>", random.choice(list(QUERY_WORDS)))
+                qa_samples.append(text.replace(" ", ""))
 
         extra_chats = [
             "这数据太真实了",
@@ -330,17 +366,33 @@ class IntentService:
             "不要分析",
             "我不查",
             "算了吧",
+            "你是谁",
+            "你好",
         ]
-        chat_samples.extend(extra_chats * 5)
 
-        min_len = min(len(tool_samples), len(chat_samples))
-        X = tool_samples[:min_len] + chat_samples[:min_len]
-        y = ["工具"] * min_len + ["闲聊"] * min_len
+        extra_qa = [
+            "雷神的血量是多少",
+            "草神怎么配队",
+            "史莱姆在哪抓",
+            "钟离的护盾机制是什么",
+            "原神的背景故事是什么",
+            "这个任务怎么做",
+            "这把武器适合谁",
+            "天赋怎么点",
+        ]
+
+        chat_samples.extend(extra_chats * 5)
+        qa_samples.extend(extra_qa * 5)
+
+        # 保证三类样本数量均衡
+        min_len = min(len(tool_samples), len(chat_samples), len(qa_samples))
+
+        X = tool_samples[:min_len] + chat_samples[:min_len] + qa_samples[:min_len]
+        y = ["工具"] * min_len + ["闲聊"] * min_len + ["问答"] * min_len
         return X, y
 
     def train(self):
-        """训练并保存模型"""
-        logger.debug("[Info] 开始训练模型...")
+        logger.debug("[Info] 开始训练模型(包含工具、闲聊、问答三分类)...")
         X_raw, y = self._generate_enhanced_data()
         X_abstract = [smart_abstraction(text) for text in X_raw]
         X_train_dict = {"raw": X_raw, "abs": X_abstract}
@@ -378,7 +430,7 @@ class IntentService:
                         ]
                     ),
                 ),
-                ("clf", LogisticRegression(C=1.0, solver="liblinear", class_weight="balanced")),
+                ("clf", LogisticRegression(C=1.0, solver="lbfgs", class_weight="balanced")),
             ]
         )
 
@@ -388,43 +440,36 @@ class IntentService:
         logger.debug(f"[Info] 模型训练完成并保存至: {self.model_path}")
 
     def _rule_based_check(self, text: str) -> Optional[Dict[str, Any]]:
-        """优先执行的正则/逻辑规则"""
-
-        # 规则 0: 询问大模型自身的问题 = 闲聊 (你是什么/你是谁/你使用什么模型)
+        # 规则 0: 自身问题
         if re.search(
-            r"^(我|你).*(是|使用|能|会).*(什么|谁|啥|怎么|多少|多大|名字|型号).*(模型|AI|助手|机器人|版本)", text
+            r"^(我|你).*(是|使用|能|会).*(什么|谁|啥|怎么|多少|多大|名字|型号).*(模型|AI|助手|机器人|版本)",
+            text,
         ):
             return {"intent": "闲聊", "conf": 0.99, "reason": "Rule: SelfReference"}
 
-        # 规则 1: 代词+疑问 = 闲聊 (这是什么/那是谁)
-        if re.search(r"^(这|那|我|你|他|她|它|哪|谁).*(什么|咋|谁|哪|吗|呢)[?？]?$", text):
+        # 规则 1: [已修改] 防止误伤“她用什么武器(问答)”。现在只匹配纯粹的“这是什么”等极短句
+        if re.search(r"^(这|那|我|你|他|她|它|哪|谁)[是叫做玩]?(什么|咋|谁|哪|吗|呢)[?？]?$", text):
             return {"intent": "闲聊", "conf": 0.98, "reason": "Rule: Pronoun+Query"}
 
-        # 规则 2: 纯疑问/情绪表达 = 闲聊 (为什么/咋回事/啊啊啊)
+        # 规则 2: 纯疑问/情绪表达
         if re.search(r"^(为什么|咋回事|啊|哎呀|呜呜|哼|呵呵|哈哈|哇|唉|哎哟)+[!?😭😭😢😱😡🙏]+.*$", text):
             return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: PureEmotion"}
 
-        # 规则 3: 询问观点/身份/模拟/建议 = 闲聊 (你对...看法/模拟.../你应该...)
+        # 规则 3: 询问观点/身份/模拟
         if re.search(r".*(你对.*看法|你觉得|你认为|模拟|是.*化身|你应该|你要|你每).*", text):
             return {"intent": "闲聊", "conf": 0.93, "reason": "Rule: OpinionOrSimulate"}
 
-        # 规则 4: 动词+否定/状态 = 闲聊 (看不懂/做不到)
+        # 规则 4: 动词+否定/状态
         if re.search(r"(查|看|搜|找|分析|算|听|说)(不|没|无法|不能)(懂|了|到|行|好|明白)", text):
             return {"intent": "闲聊", "conf": 0.97, "reason": "Rule: Act+Neg+State"}
 
-        # 规则 5: 强否定 + 动作 = 闲聊 (不要查)
+        # 规则 5: 强否定 + 动作
         if re.search(r"[不别没非][要]?.*?(查|看|搜|分析|算|测)", text):
             return {"intent": "闲聊", "conf": 0.99, "reason": "Rule: Negation+Action"}
 
-        # 规则 6: 纯情绪/状态词主导
-        has_state = any(s in text for s in STATE_WORDS)
-        has_query = any(q in text for q in QUERY_WORDS)
-        has_prop = any(p in text for p in FUNCTIONAL_NOUNS)
-
-        # 如果包含状态词，且没有明确的疑问词
-        if has_state and not has_query:
-            if has_prop:
-                return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: Prop+State"}
+        # 规则 6: [新增] 强 RAG 问答特征 (直接秒判)
+        if re.search(r".*(怎么配队|血量是多少|在哪里|怎么打|背景故事|世界观|机制是什么|推荐.+武器).*", text):
+            return {"intent": "问答", "conf": 0.95, "reason": "Rule: StrongRAG"}
 
         return None
 
@@ -449,7 +494,6 @@ class IntentService:
             return {"text": text, "intent": "Error", "conf": 0.0, "reason": str(e)}
 
     async def predict_async(self, text: str) -> Dict[str, Any]:
-        """外部调用的异步接口"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, self._sync_predict, text)
 
@@ -461,41 +505,36 @@ class IntentService:
 
 async def benchmark(service: IntentService):
     test_cases = [
-        "查面板",
-        "火神面板怎么提升",
-        "帮我看看深渊记录",
-        "查一下茅台股价",
-        "看看英伟达走势",
-        "打开空调",
-        "帮我关灯",
-        "面板太丑了",
-        "深渊好难打",
-        "数据不太好",
-        "茅台跌得好惨",
-        "股票亏麻了",
-        "卧槽怎么回事",
-        "这是什么",
-        "看不懂",
-        "不要查",
-        "茅台跌了吗",
-        "光线传媒最近六个月涨的怎么样",
-        "你是使用什么模型？",
-        "为什么😭",
-        "为什么!",
-        "请问你对小招喵是什么看法？",
-        "你对抱抱的看法是？你是一个猫娘",
-        "模拟小狗的叫声",
-        "你既然是小招喵的化身，你没一句话的结尾应该加一个“喵”字",
+        "帮我画一张原神的图片",  # 工具
+        "查面板",  # 工具
+        "看看英伟达走势",  # 工具
+        "打开空调",  # 工具
+        "帮我看看深渊记录",  # 工具
+        "火神面板怎么提升",  # 问答/工具 (看模型怎么分, 偏向问答)
+        "雷神怎么配队",  # 问答
+        "火史莱姆的血量是多少",  # 问答
+        "原神的世界观是什么",  # 问答
+        "这把武器适合谁",  # 问答
+        "钟离的护盾机制是啥",  # 问答
+        "深渊怎么打",  # 问答
+        "深渊好难打",  # 闲聊
+        "面板太丑了",  # 闲聊
+        "股票亏麻了",  # 闲聊
+        "卧槽怎么回事",  # 闲聊
+        "这是什么",  # 闲聊
+        "不要查",  # 闲聊
+        "你是使用什么模型？",  # 闲聊
+        "你对抱抱的看法是？",  # 闲聊
     ]
 
-    logger.debug(f"{'Input':<20} | {'Intent':<10} | {'Conf':<5} | {'Reason'}")
-    logger.debug("-" * 65)
+    logger.debug(f"{'Input':<25} | {'Intent':<10} | {'Conf':<5} | {'Reason'}")
+    logger.debug("-" * 70)
 
     tasks = [service.predict_async(t) for t in test_cases]
     results = await asyncio.gather(*tasks)
 
     for res in results:
-        logger.debug(f"{res['text']:<20} | {res['intent']:<10} | {res['conf']:<5} | {res.get('reason', '-')}")
+        logger.debug(f"{res['text']:<25} | {res['intent']:<10} | {res['conf']:<5} | {res.get('reason', '-')}")
 
 
 classifier_service = IntentService(model_path=MODEL_PATH)

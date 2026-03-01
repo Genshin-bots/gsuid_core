@@ -14,7 +14,7 @@ _ENTITIES: List[KnowledgePoint] = []
 
 def get_registered_tools():
     logger.info(f"🧠 [AI][Registry] Registered tools: {_TOOL_REGISTRY.keys()}")
-    logger.debug(f"🧠 [AI][Registry] Registered tools schema: {_TOOL_REGISTRY}")
+    # logger.debug(f"🧠 [AI][Registry] Registered tools schema: {_TOOL_REGISTRY}")
     return _TOOL_REGISTRY
 
 
@@ -73,6 +73,9 @@ def ai_tools(
         actual_func: F = check_func  # type: ignore
         check_func = None
         return decorator(actual_func)
+
+    if func is not None:
+        return decorator(func)
 
     return decorator
 

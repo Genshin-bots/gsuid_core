@@ -1,6 +1,8 @@
+import io
 import math
 import base64
 import random
+import mimetypes
 from io import BytesIO
 from typing import List, Tuple, Union, Optional, overload
 from pathlib import Path
@@ -17,6 +19,86 @@ from gsuid_core.utils.image.utils import sget
 
 TEXT_PATH = Path(__file__).parent / "texture2d"
 BG_PATH = Path(__file__).parents[1] / "default_bg"
+
+
+ImageInput = Union[str, Path, bytes, io.BytesIO, Image.Image]
+
+
+def image_to_base64(image: ImageInput) -> str:
+    """
+    内部函数：将各种类型的图片输入转换为 Base64 字符串
+    """
+    try:
+        # 0. 如果输入已经是完整的 data URL，直接返回
+        if isinstance(image, str) and image.startswith("data:image"):
+            return image
+
+        img_byte_arr = io.BytesIO()
+        mime_type = "image/png"  # 默认
+
+        # 1. 处理 PIL Image 对象
+        if isinstance(image, Image.Image):
+            # 转换 RGBA 到 RGB (如果存为 JPEG)
+            if image.mode in ("RGBA", "P"):
+                image = image.convert("RGB")
+            image.save(img_byte_arr, format="PNG")
+
+        # 2. 处理 路径 (str 或 Path)
+        elif isinstance(image, (str, Path)):
+            path = Path(image)
+            if path.exists():
+                mime_type = mimetypes.guess_type(path)[0] or "image/png"
+                with open(path, "rb") as f:
+                    img_byte_arr.write(f.read())
+            else:
+                # 不是有效路径，可能是 base64 字符串（不含 data: 前缀）
+                # 尝试直接解码
+                try:
+                    if isinstance(image, str):
+                        # 如果包含 base64, 前缀，去掉它
+                        if "," in image:
+                            image = image.split(",", 1)[1]
+                        decoded_data = base64.b64decode(image)
+                        img_byte_arr.write(decoded_data)
+                        # 尝试检测 mime 类型
+                        try:
+                            with Image.open(io.BytesIO(decoded_data)) as img:
+                                if img.format == "JPEG":
+                                    mime_type = "image/jpeg"
+                                elif img.format == "PNG":
+                                    mime_type = "image/png"
+                        except Exception as e:
+                            logger.error(f"[img2b64] Error guessing image format: {e}")
+                            pass
+                    else:
+                        raise FileNotFoundError(f"[img2b64] Image not found: {path}")
+                except Exception:
+                    raise FileNotFoundError(f"[img2b64] Image not found and not valid base64: {path}")
+
+        # 3. 处理 Bytes / BytesIO
+        elif isinstance(image, (bytes, io.BytesIO)):
+            data = image if isinstance(image, bytes) else image.getvalue()
+            img_byte_arr.write(data)
+            # 尝试检测 mime 类型
+            try:
+                with Image.open(io.BytesIO(data)) as img:
+                    if img.format == "JPEG":
+                        mime_type = "image/jpeg"
+                    elif img.format == "PNG":
+                        mime_type = "image/png"
+            except Exception as e:
+                logger.error(f"[img2b64] Error guessing image format: {e}")
+                pass
+
+        else:
+            raise ValueError(f"[img2b64]Unsupported image type: {type(image)}")
+
+        base64_data = base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
+        return f"data:{mime_type};base64,{base64_data}"
+
+    except Exception as e:
+        logger.error(f"[img2b64] Error processing image: {e}")
+        return ""
 
 
 @overload
