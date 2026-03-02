@@ -178,7 +178,7 @@ class GsServer:
                         dev_mode=dev_mode,
                     )
                 elif nest_path.exists() or src_path.exists():
-                    path = nest_path.parent / plugin.name.rstrip("-dev")
+                    path = nest_path.parent / plugin.name.removesuffix("-dev")
                     if path.exists():
                         module_list = self.load_dir_plugins(
                             path,

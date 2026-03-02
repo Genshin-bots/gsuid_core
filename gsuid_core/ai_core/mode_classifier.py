@@ -372,6 +372,27 @@ def init_jieba():
             jieba.add_word(w, tag=tag)
 
 
+def sync_entities_to_jieba():
+    """动态同步插件实体到Jieba词典"""
+    from .register import _ENTITIES
+
+    entity_count = 0
+    for entity in _ENTITIES:
+        # 注册实体标题（如：神子、雷神、八重神子）
+        title = entity.get("title", "")
+        if title:
+            jieba.add_word(title, tag="n_ent")
+            entity_count += 1
+
+        # 注册类别（如：命之座、技能）
+        category = entity.get("category", "")
+        if category and category not in KNOWLEDGE_NOUNS:
+            jieba.add_word(category, tag="n_know")
+
+    if entity_count > 0:
+        logger.info(f"[AI] 已同步 {entity_count} 个实体到Jieba词典")
+
+
 init_jieba()
 
 
@@ -442,6 +463,7 @@ class IntentService:
         self.model_path = model_path
         self.executor = ThreadPoolExecutor(max_workers=num_threads)
         self.model = None
+        self._entities_synced = False
         self._load_or_train()
 
     def _load_or_train(self):
@@ -726,9 +748,25 @@ class IntentService:
         if re.search(r".*(怎么打|怎么配队|在哪里|在哪抓|什么效果|技能介绍|背景故事|突破材料).*", text):
             return {"intent": "问答", "conf": 0.96, "reason": "Rule: Strong QA Pattern"}
 
+        # [新增] 强化问答识别：<实体> + 的 + <知识点> + 疑问词
+        # 例如：神子的六命效果是什么、钟离的天赋怎么样
+        if re.search(
+            r".{1,8}(的|之)(命|技能|天赋|大招|战技|属性|机制|配队|武器|圣遗物|声骸).{0,6}(是什么|怎么|多少|如何|效果)",
+            text,
+        ):
+            return {"intent": "问答", "conf": 0.95, "reason": "Rule: Entity Knowledge Query"}
+
         return None
 
     def _sync_predict(self, text: str) -> Dict[str, Any]:
+        # 首次调用时同步实体词典
+        if not self._entities_synced:
+            try:
+                sync_entities_to_jieba()
+                self._entities_synced = True
+            except Exception as e:
+                logger.warning(f"[AI] 实体同步失败: {e}")
+
         rule_result = self._rule_based_check(text)
         if rule_result:
             return {"text": text, **rule_result}
@@ -759,8 +797,52 @@ class IntentService:
             return {"text": text, "intent": "Error", "conf": 0.0, "reason": str(e)}
 
     async def predict_async(self, text: str) -> Dict[str, Any]:
+        """异步预测意图（带向量检索兜底）"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self.executor, self._sync_predict, text)
+        result = await loop.run_in_executor(self.executor, self._sync_predict, text)
+
+        # 向量优先策略：如果模型判定为闲聊，但置信度不高，且包含疑问词
+        # 则试探性检索向量库，看是否有相关知识
+        if result["intent"] == "闲聊" and result["conf"] < 0.8:
+            # 检查是否包含疑问特征
+            has_query = any(
+                q in text
+                for q in [
+                    "什么",
+                    "怎么",
+                    "多少",
+                    "哪",
+                    "谁",
+                    "吗",
+                    "呢",
+                    "？",
+                    "?",
+                ]
+            )
+
+            if has_query:
+                try:
+                    # 动态导入避免循环依赖
+                    from .rag import query_knowledge
+
+                    # 试探性检索（只取Top 1，阈值稍高）
+                    hits = await query_knowledge(
+                        query=text,
+                        limit=1,
+                        score_threshold=0.5,
+                    )
+
+                    if hits and len(hits) > 0:
+                        # 向量库命中，说明这是个问答
+                        if hits[0].payload is None:
+                            return result
+
+                        logger.info(f"[AI] 向量兜底命中: {text} -> {hits[0].payload.get('title', 'Unknown')}")
+                        return {"text": text, "intent": "问答", "conf": round(hits[0].score, 4), "reason": "VectorHit"}
+                except Exception as e:
+                    logger.trace(f"[AI] 向量兜底检索失败: {e}")
+
+        return result
 
 
 # ==========================================
@@ -786,6 +868,9 @@ async def benchmark(service: IntentService):
         "火神是谁",  # 问答
         "深渊第12层怎么打",  # 问答
         "钟离的护盾机制是啥",  # 问答
+        "神子的六命效果是什么",  # 问答 (你的问题案例)
+        "八重神子的天赋怎么样",  # 问答
+        "钟离的大招倍率多少",  # 问答
         # --- 闲聊类 ---
         "你是猫猫吗？",  # 闲聊
         "在吗",  # 闲聊
