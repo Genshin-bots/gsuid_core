@@ -127,8 +127,8 @@ async def query_knowledge(
     query: str,
     category: Optional[str] = None,
     plugin: Optional[str] = None,
-    limit: int = 8,
-    score_threshold: float = 0.44,
+    limit: int = 10,
+    score_threshold: float = 0.45,
 ) -> List[ScoredPoint]:
     """查询知识
 

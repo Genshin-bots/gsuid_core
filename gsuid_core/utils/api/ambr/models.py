@@ -290,3 +290,31 @@ class AmbrUpgradeOne(TypedDict):
 class AmbrUpgradeItem(TypedDict):
     avatar: Dict[str, AmbrUpgradeOne]
     weapon: Dict[str, AmbrUpgradeOne]
+
+
+class AmbrReliquary(TypedDict):
+    id: int
+    name: str
+    levelList: List[int]
+    affixList: Dict[str, str]
+    icon: str
+    route: str
+    sortOrder: int
+
+
+class AmbrReliquarySuit(TypedDict):
+    name: str
+    description: str
+    maxLevel: int
+    icon: str
+
+
+class AmbrReliquarySG(TypedDict):
+    id: int
+    name: str
+    levelList: List[int]
+    affixList: Dict[str, str]
+    icon: str
+    route: str
+    suit: Dict[str, AmbrReliquarySuit]
+    source: Optional[str]

@@ -28,6 +28,7 @@ from .api import (
     AMBR_MONSTER_LIST,
     AMBR_BOOK_DATA_URL,
     AMBR_CHAR_LIST_URL,
+    AMBR_RELIQUARY_URL,
     AMBR_WEAPON_LIST_URL,
     AMBR_BOOK_DETAILS_URL,
 )
@@ -42,8 +43,10 @@ from .models import (
     AmbrMonster,
     AmbrCharacter,
     AmbrGCGDetail,
+    AmbrReliquary,
     AmbrBookDetail,
     AmbrMonsterList,
+    AmbrReliquarySG,
     AmbrUpgradeItem,
 )
 
@@ -66,6 +69,25 @@ async def get_ambr_event_info() -> Optional[Dict[str, AmbrEvent]]:
     data = await _ambr_request(url=AMBR_EVENT_URL)
     if isinstance(data, Dict):
         return cast(Dict[str, AmbrEvent], data)
+    return None
+
+
+async def get_ambr_reliquary_list() -> Optional[Dict[str, AmbrReliquary]]:
+    data = await _ambr_request(url=AMBR_RELIQUARY_URL)
+    if isinstance(data, Dict):
+        return cast(Dict[str, AmbrReliquary], data["data"]["items"])
+    return None
+
+
+@cache_data
+async def get_ambr_reliquary_data(
+    _id: Union[int, str],
+    cache_path: Optional[Path] = None,
+) -> Optional[AmbrReliquarySG]:
+    data = await _ambr_request(url=f"{AMBR_RELIQUARY_URL}/{_id}")
+    if isinstance(data, Dict) and data["response"] == 200:
+        data = data["data"]
+        return cast(AmbrReliquarySG, data)
     return None
 
 

@@ -293,8 +293,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 if not enable_task:
                     return
 
-                results = await search_tools(query, limit=5)
-                knowledge_results = await query_knowledge(query=query, limit=5)
+                results = await search_tools(query)
+                knowledge_results = await query_knowledge(query=query)
                 if knowledge_results:
                     context = "\n".join(
                         [
@@ -319,7 +319,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 if not enable_qa:
                     return
 
-                knowledge_results = await query_knowledge(query=query, limit=5)
+                knowledge_results = await query_knowledge(query=query)
                 # 问答模式专属 Prompt：要求严谨、基于事实
                 dynamic_system_prompt = qa_prompt
                 # RAG 参考资料通过 user_context 参数传递给用户消息
