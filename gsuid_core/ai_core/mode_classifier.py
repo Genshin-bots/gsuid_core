@@ -679,9 +679,7 @@ class IntentService:
 # ==========================================
 # 测试代码 (直接运行此文件可看效果)
 # ==========================================
-async def benchmark():
-    service = IntentService()
-
+async def benchmark(service: IntentService):
     test_cases = [
         # --- 工具类 (新需求) ---
         "在这张图下面加两个字'可爱'",  # 必须是工具
@@ -726,5 +724,7 @@ async def benchmark():
         print(f"{res['text']:<30} | {res['intent']:<6} | {res['conf']:<5} | {res['reason']}")
 
 
+classifier_service = IntentService(model_path=MODEL_PATH)
+
 if __name__ == "__main__":
-    asyncio.run(benchmark())
+    asyncio.run(benchmark(classifier_service))
