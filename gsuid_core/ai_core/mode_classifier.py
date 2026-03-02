@@ -17,7 +17,7 @@ from gsuid_core.data_store import get_res_path
 
 AI_PATH = get_res_path("ai_core")
 
-MODEL_PATH = AI_PATH / "intent_classifier_v3.joblib"
+MODEL_PATH = AI_PATH / "intent_classifier_v5.joblib"
 
 # ==========================================
 # 0. 环境静默设置 (Jieba)
@@ -412,8 +412,28 @@ class IntentService:
 
     def _generate_enhanced_data(self):
         """生成大规模增强语料"""
+        task_with_trash_content = [
+            "生成音乐，内容是：<STATE> <STATE>",
+            "生成语音：<STATE> <STATE> <SELF> <STATE>",
+            "画一张图，上面写着：<STATE>",
+            "做一个视频，台词是：<STATE> <STATE>",
+            "生成一段代码，注释要写：<STATE>",
+            "来个语音说 <STATE>",
+            "合成一段音频：<STATE> <STATE>",
+        ]
+
         X_raw = []
         y = []
+
+        # 在生成数据时，特意把工具类语料混入大量的“闲聊词”作为内容
+        for _ in range(30):  # 增加这类样本的权重
+            for pat in task_with_trash_content:
+                text = pat
+                text = text.replace("<GEN>", random.choice(list(GENERATE_VERBS)))
+                text = text.replace("<STATE>", random.choice(list(STATE_WORDS)))
+                text = text.replace("<SELF>", random.choice(list(CHAT_ENTITIES)))
+                X_raw.append(text.replace(" ", ""))
+                y.append("工具")
 
         entities = ["雷神", "原神", "纳指", "A股", "钟离", "火神", "这个", "那张", "上一个"]
 
@@ -582,21 +602,27 @@ class IntentService:
     def _rule_based_check(self, text: str) -> Optional[Dict[str, Any]]:
         text = text.strip()
 
-        # ================== 1. 优先排除：明显的闲聊模式 ==================
+        # 规则：显式的生成指令拦截
+        # 只要包含：(生成/画/做/制作/来个) + (音乐/歌/语音/图/视频/画)
+        # 即使后面跟着很长的情绪化内容，也直接判定为工具
+        if re.search(
+            r"(生成|制作|画|写|来个|整一个|弄个|创作|合成)(一张|一段|一首|个)?(音乐|歌|曲子|语音|声音|图|照片|画|视频|动画|代码|文案)",
+            text,
+        ):
+            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Explicit Generation Command"}
 
-        # 规则 1.1: 功能名词 + 负面/情绪形容词 (且无查询动词) -> 闲聊
-        # 解决 "面板太丑了", "股票亏麻了"
-        # 逻辑：有名词，有情绪词，但没有“查/看/生成”等动词
+        # [新增] 处理带引号的内容指令
+        # 例如：生成语音，内容是：“...”
+        if re.search(r"(内容|说|字|内容为)[:：= \"“]", text) and re.search(r"(生成|画|做|语音|图|音乐)", text):
+            return {"intent": "工具", "conf": 0.98, "reason": "Rule: Task With Content"}
+
+        # --- 保持之前的闲聊拦截规则 ---
         has_func = re.search(r"(面板|数据|战绩|排行|走势|股价|行情|价格|配置|装备|评分)", text)
         has_state = re.search(r"(丑|亏|烂|差|崩|难看|垃圾|离谱|恶心|高|低|麻|药丸|贵|便宜)", text)
         has_check = re.search(r"(查|看|找|搜|分析|计算|显示|获取|调用)", text)
-
         if has_func and has_state and not has_check:
             return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: Noun+Emotion=Chat"}
 
-        # 规则 1.2: 询问AI/他人的观点 -> 闲聊
-        # 解决 "你对抱抱的看法是？"
-        # 逻辑：涉及"你/我/大家" + "看法/评价"
         if re.search(r"(你|我|大家).*(看法|觉得|认为|评价|观点|想)", text):
             return {"intent": "闲聊", "conf": 0.96, "reason": "Rule: Subjective Opinion"}
 
@@ -714,6 +740,7 @@ async def benchmark(service: IntentService):
         "不要查",  # 闲聊
         "你是使用什么模型？",  # 闲聊
         "你对抱抱的看法是？",  # 闲聊
+        "生成音乐 可爱的女声，内容为：'嗯嗯 啊啊 欧欧 XX你真的好棒呀'",
     ]
 
     print(f"\n{'Input Text':<30} | {'Intent':<6} | {'Conf':<5} | {'Reason'}")
