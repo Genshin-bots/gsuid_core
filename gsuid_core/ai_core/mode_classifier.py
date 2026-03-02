@@ -671,7 +671,7 @@ class IntentService:
         except Exception as e:
             return {"text": text, "intent": "Error", "conf": 0.0, "reason": str(e)}
 
-    async def predict(self, text: str) -> Dict[str, Any]:
+    async def predict_async(self, text: str) -> Dict[str, Any]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, self._sync_predict, text)
 
@@ -720,7 +720,7 @@ async def benchmark(service: IntentService):
     print("-" * 80)
 
     for text in test_cases:
-        res = await service.predict(text)
+        res = await service.predict_async(text)
         print(f"{res['text']:<30} | {res['intent']:<6} | {res['conf']:<5} | {res['reason']}")
 
 
