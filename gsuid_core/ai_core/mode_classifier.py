@@ -17,7 +17,7 @@ from gsuid_core.data_store import get_res_path
 
 AI_PATH = get_res_path("ai_core")
 
-MODEL_PATH = AI_PATH / "intent_classifier_v5.joblib"
+MODEL_PATH = AI_PATH / "intent_classifier_v5.1.joblib"
 
 # ==========================================
 # 0. 环境静默设置 (Jieba)
@@ -150,6 +150,15 @@ FUNCTIONAL_NOUNS = {
     "库存",
     "余额",
     "声骸",
+    "面板",
+    "数据",
+    "属性",
+    "排行",
+    "排行榜",
+    "倍率",
+    "伤害",
+    "乘区",
+    "数值",
 }
 
 # [工具触发] 对象：媒体（图、音、视）
@@ -211,6 +220,46 @@ KNOWLEDGE_NOUNS = {
     "生日",
     "CV",
     "声优",
+    "血量",
+    "机制",
+    "剧情",
+    "配队",
+    "队伍",
+    "武器",
+    "天赋",
+    "命座",
+    "技能",
+    "大招",
+    "战技",
+    "普攻",
+    "Q",
+    "E",
+    "A",
+    "q",
+    "e",
+    "a",
+    "重击",
+    "下落攻击",
+    "暴击",
+    "爆伤",
+    "暴击伤害",
+    "暴击率",
+    "精通",
+    "元素精通",
+    "充能",
+    "元素充能",
+    "攻击",
+    "攻击力",
+    "防御",
+    "防御力",
+    "生命",
+    "生命值",
+    "基础攻击",
+    "法器",
+    "单手剑",
+    "双手剑",
+    "长柄武器",
+    "弓箭",
 }
 
 # [闲聊/通用] 否定词
@@ -348,6 +397,10 @@ def smart_abstraction(text: str) -> str:
     """
     words = pseg.cut(text)
     clean_tokens = []
+    for word, flag in words:
+        w = word.lower()
+        if w in KNOWLEDGE_NOUNS:
+            clean_tokens.append("<KNOW>")
 
     for word, flag in words:
         w = word.lower()
@@ -471,7 +524,11 @@ class IntentService:
         # --- 2. 问答 (QA) ---
         # 严格限制：必须是明确的“知识查询”
         qa_patterns = [
-            "<ENT> <QUERY> <KNOW>",  # 雷神怎么配队
+            "<QUERY> <KNOW> 的 <KNOW> 是 <KNOW>",
+            "带 <KNOW> 的 <KNOW> 有 <QUERY>",
+            "<KNOW> 属性的 <KNOW>",
+            "<ENT> 用的 <KNOW>",
+            "<ENT> <QUERY> <KNOW>",
             "<ENT> 的 <KNOW> 是 <QUERY>",  # 雷神的血量是多少
             "<ENT> <KNOW> <QUERY>",  # 钟离天赋怎么点
             "<QUERY> 打 <ENT>",  # 怎么打深渊
@@ -480,6 +537,10 @@ class IntentService:
             "<KNOW> 推荐",  # 配队推荐
             "<ENT> 是 <QUERY>",  # 钟离是谁
             "<ENT> <QUERY> 获得",  # 鱼获怎么获得
+            "<ENT> <NUM> 级 <KNOW> 倍率",
+            "<ENT> 的 <KNOW> 是多少",
+            "<ENT> <KNOW> 倍率",
+            "查查 <ENT> 的 <KNOW>",
         ]
 
         # --- 3. 闲聊 (Chat) ---
@@ -496,7 +557,7 @@ class IntentService:
             "<NEG> <GEN>",  # 不要画
             "为什么 <STATE>",  # 为什么亏死
             "<STATE>",  # 笑死 / 救命
-            "<FUNC> <STATE>",  # 面板好丑 (关键数据！)
+            "<FUNC> <STATE>",  # 面板好丑
             "<FUNC> <NEG> <STATE>",  # 走势不好
             "<FUNC> <QUERY>",  # 股价咋样 (询问状态而非查询数据，偏闲聊，但也可能模糊)
             "<SELF> 的 <OPINION> 是 <QUERY>",  # 你的看法是什么

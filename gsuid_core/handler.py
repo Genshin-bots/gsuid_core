@@ -18,6 +18,7 @@ from gsuid_core.ai_core.register import get_registered_tools
 from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.ai_core.ai_router import get_ai_session
 from gsuid_core.ai_core.embedding import search_tools
+from gsuid_core.ai_core.prompts_qa import qa_prompt
 from gsuid_core.ai_core.prompts_chat import chat_prompt
 from gsuid_core.ai_core.prompts_tools import tools_prompt
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
@@ -320,11 +321,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
                 knowledge_results = await query_knowledge(query=query, limit=5)
                 # 问答模式专属 Prompt：要求严谨、基于事实
-                dynamic_system_prompt = (
-                    "【当前模式：知识问答】\n"
-                    "请你变成一个严谨的数据百科。严格根据用户提供的【参考资料】来回答。\n"
-                    "如果资料中没提及，绝不可编造，请回答'数据库中未找到相关信息'。"
-                )
+                dynamic_system_prompt = qa_prompt
                 # RAG 参考资料通过 user_context 参数传递给用户消息
                 if knowledge_results:
                     context = "\n".join(
