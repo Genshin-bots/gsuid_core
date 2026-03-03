@@ -249,6 +249,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             if trigger.block:
                 break
     else:
+        # 检查AI是否启用
         if not enable_ai:
             return
 
@@ -265,96 +266,105 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         ):
             return
 
-        try:
-            # 1. 获取用户/群组的统一对话 Session（包含所有历史聊天记录）
-            session = await get_ai_session(event)
+        # 将AI处理逻辑放入队列异步执行，避免阻塞
+        coro = _handle_ai_chat(ws, event)
+        func_name = "_handle_ai_chat"
+        task_ctx = TaskContext(coro=coro, name=func_name, priority=event.user_pm)
+        ws.queue.put_nowait(task_ctx)
 
-            # 2. 意图识别
-            res = await classifier_service.predict_async(event.raw_text)
-            # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
-            intent = res["intent"]
-            query = event.raw_text
 
-            # 准备传给大模型的动态参数
-            dynamic_tools: List[ToolDef] = []
-            dynamic_system_prompt = ""  # 用于临时注入 RAG 知识和模式专属 System Prompt
-            rag_context = None
+async def _handle_ai_chat(ws: _Bot, event: Event):
+    """处理AI聊天逻辑的独立函数，用于异步队列执行"""
+    try:
+        # 1. 获取用户/群组的统一对话 Session（包含所有历史聊天记录）
+        session = await get_ai_session(event)
 
-            logger.debug(res)
+        # 2. 意图识别
+        res = await classifier_service.predict_async(event.raw_text)
+        # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
+        intent = res["intent"]
+        query = event.raw_text
 
-            # 3. 根据意图，动态准备当前轮次的上下文
-            if intent == "闲聊":
-                if not enable_chat:
-                    return
-                # 闲聊模式专属 Prompt：要求活泼、友好
-                dynamic_system_prompt = f"【当前模式：自由闲聊】\n{chat_prompt}"
+        # 准备传给大模型的动态参数
+        dynamic_tools: List[ToolDef] = []
+        dynamic_system_prompt = ""  # 用于临时注入 RAG 知识和模式专属 System Prompt
+        rag_context = None
 
-            elif intent == "工具":
-                if not enable_task:
-                    return
+        logger.debug(res)
 
-                results = await search_tools(query)
-                knowledge_results = await query_knowledge(query=query)
-                if knowledge_results:
-                    context = "\n".join(
-                        [
-                            f"[{r.payload['plugin']}] {r.payload['title']}: {r.payload['content']}"
-                            for r in knowledge_results
-                            if r.payload is not None
-                        ]
-                    )
-                    rag_context = f"【参考资料】\n{context}"
+        # 3. 根据意图，动态准备当前轮次的上下文
+        if intent == "闲聊":
+            if not enable_chat:
+                return
+            # 闲聊模式专属 Prompt：要求活泼、友好
+            dynamic_system_prompt = f"【当前模式：自由闲聊】\n{chat_prompt}"
 
-                all_tools_metadata = get_registered_tools()
-                for hit in results:
-                    if hit.payload is None:
-                        continue
-                    tool_name = hit.payload["name"]
-                    dynamic_tools.append(all_tools_metadata[tool_name]["schema"])
-
-                # 工具模式专属 Prompt：要求精准、遵循工具结构
-                dynamic_system_prompt = f"【当前模式：工具执行】\n{tools_prompt}"
-
-            elif intent == "问答":
-                if not enable_qa:
-                    return
-
-                knowledge_results = await query_knowledge(query=query)
-                # 问答模式专属 Prompt：要求严谨、基于事实
-                dynamic_system_prompt = qa_prompt
-                # RAG 参考资料通过 user_context 参数传递给用户消息
-                if knowledge_results:
-                    context = "\n".join(
-                        [
-                            f"[{r.payload['plugin']}] {r.payload['title']}: {r.payload['content']}"
-                            for r in knowledge_results
-                            if r.payload is not None
-                        ]
-                    )
-                    rag_context = f"【参考资料】\n{context}"
-            else:
-                logger.warning(f"🧠 [GsCore][AI] 未知意图: {res['intent']}")
+        elif intent == "工具":
+            if not enable_task:
                 return
 
-            # 4. 统一调用大模型（携带统一的历史记忆 + 当前轮次的动态资源）
-            bot = Bot(ws, event)
+            results = await search_tools(query)
+            knowledge_results = await query_knowledge(query=query)
+            if knowledge_results:
+                context = "\n".join(
+                    [
+                        f"[{r.payload['plugin']}] {r.payload['title']}: {r.payload['content']}"
+                        for r in knowledge_results
+                        if r.payload is not None
+                    ]
+                )
+                rag_context = f"【参考资料】\n{context}"
 
-            chat_completion = await session.chat(
-                text=query,
-                tools=dynamic_tools,  # 如果是闲聊或问答，这里是 None；如果是工具，这里有值
-                temp_system=dynamic_system_prompt,  # 根据意图注入的专属 Prompt
-                user_context=rag_context,  # RAG 参考资料放在用户消息中
-                image_ids=event.image_id_list,
-                bot=bot,
-                ev=event,
-            )
-            if isinstance(chat_completion, dict):
-                logger.error(f"🧠 [GsCore][AI] 聊天异常: {chat_completion}")
+            all_tools_metadata = get_registered_tools()
+            for hit in results:
+                if hit.payload is None:
+                    continue
+                tool_name = hit.payload["name"]
+                dynamic_tools.append(all_tools_metadata[tool_name]["schema"])
+
+            # 工具模式专属 Prompt：要求精准、遵循工具结构
+            dynamic_system_prompt = f"【当前模式：工具执行】\n{tools_prompt}"
+
+        elif intent == "问答":
+            if not enable_qa:
                 return
 
-            await bot.send(chat_completion)
-        except Exception as e:
-            logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")
+            knowledge_results = await query_knowledge(query=query)
+            # 问答模式专属 Prompt：要求严谨、基于事实
+            dynamic_system_prompt = qa_prompt
+            # RAG 参考资料通过 user_context 参数传递给用户消息
+            if knowledge_results:
+                context = "\n".join(
+                    [
+                        f"[{r.payload['plugin']}] {r.payload['title']}: {r.payload['content']}"
+                        for r in knowledge_results
+                        if r.payload is not None
+                    ]
+                )
+                rag_context = f"【参考资料】\n{context}"
+        else:
+            logger.warning(f"🧠 [GsCore][AI] 未知意图: {res['intent']}")
+            return
+
+        # 4. 统一调用大模型（携带统一的历史记忆 + 当前轮次的动态资源）
+        bot = Bot(ws, event)
+
+        chat_completion = await session.chat(
+            text=query,
+            tools=dynamic_tools,  # 如果是闲聊或问答，这里是 None；如果是工具，这里有值
+            temp_system=dynamic_system_prompt,  # 根据意图注入的专属 Prompt
+            user_context=rag_context,  # RAG 参考资料放在用户消息中
+            image_ids=event.image_id_list,
+            bot=bot,
+            ev=event,
+        )
+        if isinstance(chat_completion, dict):
+            logger.error(f"🧠 [GsCore][AI] 聊天异常: {chat_completion}")
+            return
+
+        await bot.send(chat_completion)
+    except Exception as e:
+        logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
