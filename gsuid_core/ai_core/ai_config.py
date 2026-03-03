@@ -30,6 +30,11 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用工具服务",
         True,
     ),
+    "enable_rerank": GsBoolConfig(
+        "是否启用Rerank",
+        "指定是否启用Rerank功能, Rerank可以提升RAG的检索质量, 但会增加一定的响应时间, 该模型较大, 请根据实际情况启用",
+        False,
+    ),
     "provider": GsStrConfig(
         title="AI服务提供格式",
         desc="指定AI服务提供格式, 目前共有两种",

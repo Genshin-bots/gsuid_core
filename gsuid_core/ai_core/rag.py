@@ -13,6 +13,7 @@ from gsuid_core.ai_core.embedding import DIMENSION, client, embedding_model
 
 from .models import KnowledgePoint
 from .register import _ENTITIES
+from .reranker import rerank_results
 
 # 全局知识集合名称
 COLLECTION_NAME = "knowledge"
@@ -33,6 +34,23 @@ async def init_collection():
         )
     else:
         logger.info(f"🧠 [RAG] 集合已存在: {COLLECTION_NAME}")
+
+
+def build_embedding_text(kp: KnowledgePoint) -> str:
+    parts = []
+
+    if kp.get("title"):
+        parts.append(f"标题：{kp['title']}")
+
+    if kp.get("tags"):
+        parts.append(f"标签：{' '.join(kp['tags'])}")
+
+    if kp.get("category"):
+        parts.append(f"类别：{kp['category']}")
+
+    parts.append(kp["content"])
+
+    return "\n".join(parts)
 
 
 async def sync_knowledge():
@@ -92,7 +110,7 @@ async def sync_knowledge():
             )
 
             # 生成向量
-            text_to_embed = knowledge["content"]
+            text_to_embed = build_embedding_text(knowledge)
             vector = list(embedding_model.embed([text_to_embed]))[0]
 
             # 构建payload
@@ -127,8 +145,10 @@ async def query_knowledge(
     query: str,
     category: Optional[str] = None,
     plugin: Optional[str] = None,
-    limit: int = 10,
+    limit: int = 12,
     score_threshold: float = 0.45,
+    use_rerank: bool = True,
+    rerank_top_k: int = 6,
 ) -> List[ScoredPoint]:
     """查询知识
 
@@ -138,6 +158,8 @@ async def query_knowledge(
         plugin: 可选，限定查询的插件
         limit: 返回结果数量
         score_threshold: 相似度分数阈值，低于此值的结果将被过滤
+        use_rerank: 是否使用重排序，默认True
+        rerank_top_k: 重排序后返回的前k个结果
 
     Returns:
         相关知识列表
@@ -185,6 +207,14 @@ async def query_knowledge(
 
     logger.info(f"🧠 [RAG] 查询完成: 找到 {len(filtered_results)} 个相关知识 (阈值: {score_threshold})")
     logger.trace(f"🧠 [RAG] 查询结果: {filtered_results}")
+
+    # 使用Reranker进行重排序
+    if use_rerank and filtered_results:
+        filtered_results = await rerank_results(
+            query=query,
+            results=filtered_results,
+            top_k=rerank_top_k,
+        )
 
     return filtered_results
 

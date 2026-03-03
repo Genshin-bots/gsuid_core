@@ -18,6 +18,7 @@ from gsuid_core.ai_core.register import get_registered_tools
 from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.ai_core.ai_router import get_ai_session
 from gsuid_core.ai_core.embedding import search_tools
+from gsuid_core.ai_core.normalize import normalize_query
 from gsuid_core.ai_core.prompts_qa import qa_prompt
 from gsuid_core.ai_core.prompts_chat import chat_prompt
 from gsuid_core.ai_core.prompts_tools import tools_prompt
@@ -329,7 +330,12 @@ async def _handle_ai_chat(ws: _Bot, event: Event):
             if not enable_qa:
                 return
 
-            knowledge_results = await query_knowledge(query=query)
+            # 查询知识库，使用rerank优化结果排序
+            query = normalize_query(query)
+            knowledge_results = await query_knowledge(
+                query=query,
+                use_rerank=True,
+            )
             # 问答模式专属 Prompt：要求严谨、基于事实
             dynamic_system_prompt = qa_prompt
             # RAG 参考资料通过 user_context 参数传递给用户消息

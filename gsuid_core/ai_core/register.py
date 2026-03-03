@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, TypeVar, Callable, Optional, overload
+from typing import Any, Dict, List, Union, TypeVar, Callable, Optional, overload
 
 from gsuid_core.logger import logger
 
@@ -10,6 +10,22 @@ F = TypeVar("F", bound=Callable)
 # --- 全局注册表和客户端 ---
 _TOOL_REGISTRY: Dict[str, ToolSchema] = {}
 _ENTITIES: List[KnowledgePoint] = []
+_ALIASES: Dict[str, List[str]] = {}
+
+
+def ai_alias(name: str, alias: Union[str, List[str]]):
+    """为特定实体注册别名"""
+    if isinstance(alias, str):
+        alias = [alias]
+
+    for a in alias:
+        if a not in _ALIASES:
+            _ALIASES[a] = []
+
+        if name not in _ALIASES[a]:
+            _ALIASES[a].append(name)
+
+    logger.debug(f"🧠 [AI][Registry] Registered aliases for {name}: {alias}")
 
 
 def get_registered_tools():
