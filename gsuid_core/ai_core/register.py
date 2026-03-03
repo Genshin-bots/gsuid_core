@@ -115,13 +115,6 @@ def ai_tools(
         logger.trace(f"🧠 [AI][Registry] Tool registered: {func_name}")
         return func
 
-    # 支持直接使用 @ai_tools 或带参数 @ai_tools(check_func=xxx)
-    if callable(check_func) and not check_kwargs:
-        # 如果第一个参数是可调用函数且没有其他参数，则作为普通装饰器使用
-        actual_func: F = check_func  # type: ignore
-        check_func = None
-        return decorator(actual_func)
-
     if func is not None:
         return decorator(func)
 

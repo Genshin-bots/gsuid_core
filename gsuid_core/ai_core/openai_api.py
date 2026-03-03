@@ -183,6 +183,12 @@ class AsyncOpenAISession:
                 for i in ev.image_id_list:
                     text += f"\n--- Upload Image ID: {i} ---\n"
 
+                for at in ev.at_list:
+                    text += f"\n--- Mentioned User: {at} ---\n"
+
+                text += f"\n--- UserID: {ev.user_id} ---\n"
+                text += f"\n--- GroupID: {ev.group_id} ---\n"
+
             content_payload.append({"type": "text", "text": text})
 
         if image_ids:
@@ -430,6 +436,16 @@ class AsyncOpenAISession:
                                         inject_args[param_name] = bot
                                     elif param_name in ("ev", "event"):
                                         inject_args[param_name] = ev
+                                    # 根据类型注入（防止漏网之鱼）
+                                    elif param.annotation is not inspect.Parameter.empty:
+                                        if param.annotation is Bot or (
+                                            isinstance(param.annotation, type) and issubclass(param.annotation, Bot)
+                                        ):
+                                            inject_args[param_name] = bot
+                                        elif param.annotation is Event or (
+                                            isinstance(param.annotation, type) and issubclass(param.annotation, Event)
+                                        ):
+                                            inject_args[param_name] = ev
 
                             if asyncio.iscoroutinefunction(func_obj):
                                 result = await func_obj(**inject_args)

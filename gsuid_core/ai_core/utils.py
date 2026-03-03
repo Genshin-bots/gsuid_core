@@ -110,12 +110,22 @@ def function_to_schema(func: Callable) -> ToolDef:
     defaults = {}
     required_params = []
 
+    # 忽略一些特殊参数
+    IGNORED_PARAMS = {"self", "args", "kwargs", "bot", "ev", "event"}
+
     for name, param in sig.parameters.items():
-        if name == "self":
-            continue  # 忽略 self
+        if name in IGNORED_PARAMS:
+            continue
 
         # 获取类型，默认为 Any
         param_type = type_hints.get(name, Any)
+
+        # 根据类型跳过 (防止漏网之鱼)
+        # 检查类型名称是否包含 'Event' 或 'Bot'
+        type_name = str(param_type)
+        if "Event" in type_name or "Bot" in type_name:
+            continue
+
         annotations[name] = param_type
 
         # 处理默认值，决定是否必填

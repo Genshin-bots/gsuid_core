@@ -92,7 +92,7 @@ async def sync_knowledge():
     local_ids = set()
 
     logger.info(f"🧠 [RAG] 本地知识数量: {len(_ENTITIES)}")
-    logger.trace(f"🧠 [RAG] 本地知识: {_ENTITIES}")
+    # logger.trace(f"🧠 [RAG] 本地知识: {_ENTITIES}")
     for knowledge in _ENTITIES:
         id_str = knowledge["id"]
         local_ids.add(id_str)

@@ -17,7 +17,7 @@ from gsuid_core.data_store import get_res_path
 
 AI_PATH = get_res_path("ai_core")
 
-MODEL_PATH = AI_PATH / "intent_classifier_v5.1.joblib"
+MODEL_PATH = AI_PATH / "intent_classifier_v5.2.joblib"
 
 # ==========================================
 # 0. 环境静默设置 (Jieba)
@@ -80,6 +80,7 @@ GENERATE_VERBS = {
     "画",
     "做",
     "写",
+    "协商",
     "创作",
     "绘制",
     "合成",
@@ -416,8 +417,16 @@ def smart_abstraction(text: str) -> str:
     """
     将句子抽象化为标签序列，保留句子结构特征
     """
+    if "<CONTENT>" in text:
+        # 临时把标记换成一个 jieba 能识别的特殊词，或者直接保留
+        pass
+
     words = pseg.cut(text)
     clean_tokens = []
+
+    if "<CONTENT>" in text:
+        clean_tokens.append("<HAS_CONTENT>")  # 显式添加一个特征
+
     for word, flag in words:
         w = word.lower()
         if w in KNOWLEDGE_NOUNS:
@@ -466,6 +475,17 @@ class IntentService:
         self._entities_synced = False
         self._load_or_train()
 
+    def _preprocess(self, text: str) -> str:
+        """
+        预处理：将引号内的具体内容替换为 <CONTENT> 标记
+        防止内容（如“我是..”）干扰意图判断
+        """
+        # 匹配中文引号、英文引号，将其内容替换为特殊标记
+        text = re.sub(r'["“‘\'].*?["”’\']', " <CONTENT> ", text)
+        # 匹配冒号后的内容（如果冒号在句尾附近）
+        text = re.sub(r"[:：]\s*.*$", " <CONTENT> ", text)
+        return text
+
     def _load_or_train(self):
         need_train = True
         if self.model_path.exists():
@@ -495,6 +515,18 @@ class IntentService:
             "生成一段代码，注释要写：<STATE>",
             "来个语音说 <STATE>",
             "合成一段音频：<STATE> <STATE>",
+        ]
+
+        content_task_patterns = [
+            "写上 <CONTENT>",
+            "内容是 <CONTENT>",
+            "加个字 <CONTENT>",
+            "把 <CONTENT> 写在图上",
+            "生成 <CONTENT>",
+            "说 <CONTENT>",
+            "语音内容 <CONTENT>",
+            "回复 <CONTENT>",
+            "编辑 <CONTENT>",
         ]
 
         X_raw = []
@@ -631,11 +663,12 @@ class IntentService:
         fill_data(edit_patterns, "工具", 30)
         fill_data(qa_patterns, "问答", 20)
         fill_data(chat_patterns, "闲聊", 30)  # 增加闲聊权重
+        fill_data(content_task_patterns, "工具", 40)
 
         return X_raw, y
 
     def train(self):
-        logger.info("[AI] 开始训练新版意图模型 (v4 - 优化闲聊误判)...")
+        logger.info("[AI] 开始训练新版意图模型 (v5 - 优化闲聊误判)...")
         X_raw, y = self._generate_enhanced_data()
         X_abstract = [smart_abstraction(text) for text in X_raw]
         X_train_dict = {"raw": X_raw, "abs": X_abstract}
@@ -689,9 +722,10 @@ class IntentService:
         # 只要包含：(生成/画/做/制作/来个) + (音乐/歌/语音/图/视频/画)
         # 即使后面跟着很长的情绪化内容，也直接判定为工具
         if re.search(
-            r"(生成|制作|画|写|来个|整一个|弄个|创作|合成)(一张|一段|一首|个)?(音乐|歌|曲子|语音|声音|图|照片|画|视频|动画|代码|文案)",
+            r"^(我|帮我)?(想要|要|求|跪求|来|整|搞)(一|两|三|\d+)?(张|个|首|段|份).{0,10}(图|画|照片|视频|语音|歌|代码|文案)",
             text,
         ):
+            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Direct Demand (我要...)"}
             return {"intent": "工具", "conf": 0.99, "reason": "Rule: Explicit Generation Command"}
 
         # [新增] 处理带引号的内容指令
@@ -709,6 +743,9 @@ class IntentService:
         if re.search(r"(你|我|大家).*(看法|觉得|认为|评价|观点|想)", text):
             return {"intent": "闲聊", "conf": 0.96, "reason": "Rule: Subjective Opinion"}
 
+        if re.search(r"(想要|要|准备).{0,4}(生成|制作|画|写|创作)", text):
+            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Want to Generate"}
+
         # 规则 1.3: 极短的代词指代询问 -> 闲聊
         # 解决 "这是什么", "那是什么鬼"
         # 逻辑：这/那 + 是 + 什么/啥 (且没有其他具体实体)
@@ -723,7 +760,9 @@ class IntentService:
         if re.search(r"(修改|编辑|P一下|P图|去水印|加水印|换背景)", text):
             return {"intent": "工具", "conf": 0.99, "reason": "Rule: Explicit Edit"}
 
-        if re.search(r"(在|把|给).{0,10}(图|照片|上|下|里|面).{0,5}(加|换|改|写|放).{0,5}(字|文|水印|背景)", text):
+        if re.search(
+            r"(在|把|给).{0,20}(图|照片|上|下|里|面).{0,20}(加|换|改|写|放|P).{0,20}(字|文|水印|背景|内容)", text
+        ):
             return {"intent": "工具", "conf": 0.99, "reason": "Rule: Complex Edit Command"}
 
         # 增加判断：如果有“查/看” + “名词”，基本是工具
@@ -771,10 +810,12 @@ class IntentService:
         if rule_result:
             return {"text": text, **rule_result}
 
+        masked_text = re.sub(r'[:：]?\s*["“‘\'].*?["”’\']', " <CONTENT> ", text)
+
         if self.model is None:
             return {"text": text, "intent": "Error", "conf": 0.0, "reason": "Model Not Loaded"}
 
-        abstracted = smart_abstraction(text)
+        abstracted = smart_abstraction(masked_text)
         input_data = {"raw": [text], "abs": [abstracted]}
 
         try:
@@ -887,6 +928,9 @@ async def benchmark(service: IntentService):
         "你是使用什么模型？",  # 闲聊
         "你对抱抱的看法是？",  # 闲聊
         "生成音乐 可爱的女声，内容为：'嗯嗯 啊啊 欧欧 XX你真的好棒呀'",
+        "我要一张可爱的风格的二次元图片",
+        "我要生成一张可爱的二次元图片",
+        "在图片最下面用白色文字写上：“我是皮卡猫”",
     ]
 
     print(f"\n{'Input Text':<30} | {'Intent':<6} | {'Conf':<5} | {'Reason'}")
