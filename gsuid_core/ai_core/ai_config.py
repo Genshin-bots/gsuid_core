@@ -88,8 +88,8 @@ OPENAI_CONFIG: Dict[str, GSC] = {
     "level_a_model": GsStrConfig(
         "中级模型",
         "指定OpenAI API的中级模型, 该模型将会用于处理中等任务, 该模型也会用于处理闲聊任务",
-        "gemini-2.5-flash",
-        options=["gemini-2.5-flash"],
+        "gemini-3.1-flash-lite-preview",
+        options=["gemini-2.5-flash", "gemini-3.1-flash-lite-preview"],
     ),
     "level_b_model": GsStrConfig(
         "低级模型",

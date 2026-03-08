@@ -49,6 +49,7 @@ def get_reranker() -> "Optional[TextCrossEncoder]":
             _reranker = TextCrossEncoder(
                 model_name=RERANKER_MODEL_NAME,
                 cache_dir=str(RERANK_MODELS_CACHE),
+                threads=2,
             )
             logger.info("🧠 [Reranker] Reranker模型加载完成")
         except Exception as e:

@@ -39,6 +39,7 @@ if enable_ai:
     embedding_model = TextEmbedding(
         model_name="BAAI/bge-small-zh-v1.5",
         cache_dir=str(MODELS_CACHE),
+        threads=2,
     )
     client = AsyncQdrantClient(path=str(DB_PATH))
 else:

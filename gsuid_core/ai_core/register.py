@@ -3,13 +3,13 @@ from typing import Any, Dict, List, Union, TypeVar, Callable, Optional, overload
 from gsuid_core.logger import logger
 
 from .utils import function_to_schema
-from .models import ToolSchema, KnowledgePoint
+from .models import ToolSchema, KnowledgeBase, KnowledgePoint
 
 F = TypeVar("F", bound=Callable)
 
 # --- 全局注册表和客户端 ---
 _TOOL_REGISTRY: Dict[str, ToolSchema] = {}
-_ENTITIES: List[KnowledgePoint] = []
+_ENTITIES: List[Union[KnowledgePoint, KnowledgeBase]] = []
 _ALIASES: Dict[str, List[str]] = {}
 
 
@@ -121,12 +121,12 @@ def ai_tools(
     return decorator
 
 
-def ai_entity(entity: KnowledgePoint):
+def ai_entity(entity: Union[KnowledgePoint, KnowledgeBase]):
     """
     将实体注册为大模型实体。
     在启动时，自动将实体存入全局注册表。
 
-        entity: 一个包含实体信息的字典
+        entity: 一个包含实体信息的字典, 不需要传入 _hash, 会自动计算
 
             id: str
             plugin: str
