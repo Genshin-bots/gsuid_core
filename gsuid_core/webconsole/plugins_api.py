@@ -49,8 +49,10 @@ async def get_plugins(request: Request, _user: Dict = Depends(require_auth)):
             if config_plugin_name and config_plugin_name.lower() == name.lower():
                 config_names.append(config_key)
                 group_config = {}
-                for cfg_name in config_obj.config_list:
-                    config = config_obj.config_list[cfg_name]
+                for cfg_name in config_obj.config_default:
+                    if cfg_name not in config_obj.config:
+                        continue
+                    config = config_obj.config[cfg_name]
                     config_type = type(config).__name__.replace("Config", "").lower()
 
                     item = {
@@ -128,8 +130,10 @@ async def get_framework_config(request: Request, _user: Dict = Depends(require_a
         if config_name.startswith("GsCore"):
             # 构建配置对象
             config_data = {}
-            for key in config_obj.config_list:
-                config = config_obj.config_list[key]
+            for key in config_obj.config_default:
+                if key not in config_obj.config:
+                    continue
+                config = config_obj.config[key]
                 config_type = type(config).__name__.replace("Config", "").lower()
                 config_data[key] = {
                     "value": config.data,
