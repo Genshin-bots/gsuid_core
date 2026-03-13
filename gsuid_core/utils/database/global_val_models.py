@@ -261,6 +261,23 @@ class CoreDataSummary(BaseIDModel, table=True):
         r = await session.execute(result)
         return r.scalars().all()
 
+    @classmethod
+    @with_session
+    async def get_all_bots(
+        cls,
+        session: AsyncSession,
+    ):
+        """
+        获取数据库中所有独立的bot（bot_id - bot_self_id对）
+        返回格式: [{"bot_id": "xxx", "bot_self_id": "yyy"}, ...]
+        """
+        result = (
+            select(col(cls.bot_id), col(cls.bot_self_id)).distinct().order_by(col(cls.bot_id), col(cls.bot_self_id))
+        )
+        r = await session.execute(result)
+        rows = r.all()
+        return [{"bot_id": row[0], "bot_self_id": row[1]} for row in rows]
+
 
 class CoreDataAnalysis(BaseIDModel, table=True):
     __table_args__ = (

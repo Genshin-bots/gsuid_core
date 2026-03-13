@@ -25,3 +25,32 @@ async def get_system_info(request: Request, _user: Dict = Depends(require_auth))
             "uptime": "N/A",  # TODO: Add uptime tracking
         },
     }
+
+
+@app.get("/api/system/health")
+async def health_check():
+    """Simple health check endpoint - no auth required"""
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "status": "healthy",
+        },
+    }
+
+
+@app.post("/api/system/restart")
+async def restart_core(_user: Dict = Depends(require_auth)):
+    """Restart GsCore"""
+    from gsuid_core.buildin_plugins.core_command.core_restart.restart import (
+        restart_genshinuid,
+    )
+
+    # Call the restart function without event (from web API)
+    await restart_genshinuid(event=None, is_send=False)
+
+    return {
+        "status": 0,
+        "msg": "重启指令已发送，核心即将重启...",
+        "data": None,
+    }

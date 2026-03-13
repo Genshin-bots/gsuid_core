@@ -194,7 +194,7 @@ def _collect_admin_models() -> Dict[str, List[DatabaseTableInfo]]:
                 model = getattr(obj, "model", None)
                 if model is not None:
                     found_admins.append(obj)
-                    logger.debug(f"Found GsAdminModel: {name} with model {model.__name__}")
+                    logger.trace(f"Found GsAdminModel: {name} with model {model.__name__}")
     except Exception as e:
         logger.error(f"Error importing mount_app: {e}")
         import traceback

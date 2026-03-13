@@ -21,7 +21,7 @@ async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Di
     _bot_id = None
     _bot_self_id = None
     if bot_id and bot_id != "all" and ":" in bot_id:
-        _bot_id, _bot_self_id = bot_id.split(":", 1)
+        _bot_self_id, _bot_id = bot_id.split(":", 1)
 
     try:
         # 获取真实的看板指标数据
@@ -78,7 +78,7 @@ async def get_dashboard_commands(request: Request, bot_id: str = "all", _user: D
     actual_bot_id = None
     actual_bot_self_id = None
     if bot_id and bot_id != "all" and ":" in bot_id:
-        actual_bot_id, actual_bot_self_id = bot_id.split(":", 1)
+        actual_bot_self_id, actual_bot_id = bot_id.split(":", 1)
 
     # 获取数据
     datas = await CoreDataSummary.get_day_trends(actual_bot_id, actual_bot_self_id)
@@ -114,7 +114,7 @@ async def get_dashboard_users_groups(request: Request, bot_id: str = "all", _use
     actual_bot_id = None
     actual_bot_self_id = None
     if bot_id and bot_id != "all" and ":" in bot_id:
-        actual_bot_id, actual_bot_self_id = bot_id.split(":", 1)
+        actual_bot_self_id, actual_bot_id = bot_id.split(":", 1)
 
     # 获取数据
     datas = await CoreDataSummary.get_day_trends(actual_bot_id, actual_bot_self_id)
@@ -147,7 +147,7 @@ async def get_daily_commands(request: Request, date: str, bot_id: str = "all", _
     _bot_id = None
     _bot_self_id = None
     if bot_id and bot_id != "all" and ":" in bot_id:
-        _bot_id, _bot_self_id = bot_id.split(":", 1)
+        _bot_self_id, _bot_id = bot_id.split(":", 1)
 
     try:
         date_obj = dt_date.fromisoformat(date)
@@ -217,7 +217,7 @@ async def get_daily_group_triggers(
     _bot_id = None
     _bot_self_id = None
     if bot_id and bot_id != "all" and ":" in bot_id:
-        _bot_id, _bot_self_id = bot_id.split(":", 1)
+        _bot_self_id, _bot_id = bot_id.split(":", 1)
 
     try:
         date_obj = dt_date.fromisoformat(date)
@@ -282,7 +282,7 @@ async def get_daily_personal_triggers(
     _bot_id = None
     _bot_self_id = None
     if bot_id and bot_id != "all" and ":" in bot_id:
-        _bot_id, _bot_self_id = bot_id.split(":", 1)
+        _bot_self_id, _bot_id = bot_id.split(":", 1)
 
     try:
         date_obj = dt_date.fromisoformat(date)
@@ -335,4 +335,48 @@ async def get_daily_personal_triggers(
             "status": 0,
             "msg": "ok",
             "data": [],
+        }
+
+
+@app.get("/api/dashboard/bots")
+async def get_dashboard_bots(_user: Dict = Depends(require_auth)):
+    """
+    获取所有可用的Bot列表（bot_id - bot_self_id对）
+    用于Dashboard页面右上角的Bot选择器
+    """
+    try:
+        # 从CoreDataSummary获取所有bot
+        bots = await CoreDataSummary.get_all_bots()
+
+        # 转换为前端期望的格式
+        # 格式: bot_self_id:bot_id (后端API使用这种格式来区分不同bot)
+        bot_list = [
+            {"id": "all", "name": "汇总"},
+        ]
+
+        for bot in bots:
+            bot_id = bot.get("bot_id", "")
+            bot_self_id = bot.get("bot_self_id", "")
+            if bot_id and bot_self_id:
+                # 使用 bot_self_id:bot_id 格式作为id
+                bot_list.append(
+                    {
+                        "id": f"{bot_self_id}:{bot_id}",
+                        "name": f"{bot_self_id} ({bot_id})",
+                    }
+                )
+
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": bot_list,
+        }
+    except Exception as e:
+        from gsuid_core.logger import logger
+
+        logger.warning(f"Failed to fetch bot list: {e}")
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": [{"id": "all", "name": "汇总"}],
         }

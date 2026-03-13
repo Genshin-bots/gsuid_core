@@ -55,8 +55,15 @@ async def get_plugins(request: Request, _user: Dict = Depends(require_auth)):
                     config = config_obj.config[cfg_name]
                     config_type = type(config).__name__.replace("Config", "").lower()
 
+                    value = config.data
+                    # 对于GsImage类型，检查文件是否存在，如果不存在则返回空值
+                    if config_type == "gsimage" and isinstance(value, str) and value:
+                        image_path = Path(value)
+                        if not image_path.exists() or not image_path.is_file():
+                            value = ""
+
                     item = {
-                        "value": config.data,
+                        "value": value,
                         "default": config.data,
                         "type": config_type,
                         "title": config.title,
@@ -135,8 +142,16 @@ async def get_framework_config(request: Request, _user: Dict = Depends(require_a
                     continue
                 config = config_obj.config[key]
                 config_type = type(config).__name__.replace("Config", "").lower()
+
+                value = config.data
+                # 对于GsImage类型，检查文件是否存在，如果不存在则返回空值
+                if config_type == "gsimage" and isinstance(value, str) and value:
+                    image_path = Path(value)
+                    if not image_path.exists() or not image_path.is_file():
+                        value = ""
+
                 config_data[key] = {
-                    "value": config.data,
+                    "value": value,
                     "default": config.data,
                     "type": config_type,
                     "title": config.title,

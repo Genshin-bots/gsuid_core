@@ -37,11 +37,26 @@ async def get_logs(
 
     # Filter by level
     if level and level != "all":
-        log_files = [log for log in log_files if log.get("level") == level]
+        level_mapping = {
+            "info": "info",
+            "warning": "warn",
+            "warn": "warn",
+            "error": "error",
+            "debug": "debug",
+            "critical": "error",
+            "fatal": "error",
+        }
+        filtered_logs = []
+        for log in log_files:
+            raw_level = log.get("日志等级", "INFO").lower()
+            mapped_level = level_mapping.get(raw_level, "info")
+            if mapped_level == level:
+                filtered_logs.append(log)
+        log_files = filtered_logs
 
     # Filter by source
     if source and source != "all":
-        log_files = [log for log in log_files if log.get("source") == source]
+        log_files = [log for log in log_files if log.get("来源", "core") == source]
 
     total = len(log_files)
     start = (page - 1) * per_page
@@ -96,6 +111,105 @@ async def get_log_sources(request: Request, _user: Dict = Depends(require_auth))
         "msg": "ok",
         "data": ["api", "auth", "database", "scheduler", "core"],
     }
+
+
+@app.get("/api/logs/stats")
+async def get_log_stats(
+    request: Request,
+    date: Optional[str] = None,
+    level: Optional[str] = None,
+    source: Optional[str] = None,
+    per_page: int = 100,
+    _user: Dict = Depends(require_auth),
+):
+    """Get log statistics (total count and page count) without fetching all logs"""
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    if date.endswith(".log"):
+        date = date.removesuffix(".log")
+
+    try:
+        history_log_data = HistoryLogData()
+        log_files = await history_log_data.get_parse_logs(LOG_PATH / f"{date}.log")
+
+        level_mapping = {
+            "info": "info",
+            "warning": "warn",
+            "warn": "warn",
+            "error": "error",
+            "debug": "debug",
+            "critical": "error",
+            "fatal": "error",
+        }
+
+        # Calculate statistics by level for entire date
+        info_count = 0
+        warn_count = 0
+        error_count = 0
+        debug_count = 0
+
+        for log in log_files:
+            raw_level = log.get("日志等级", "INFO").lower()
+            mapped_level = level_mapping.get(raw_level, "info")
+            if mapped_level == "info":
+                info_count += 1
+            elif mapped_level == "warn":
+                warn_count += 1
+            elif mapped_level == "error":
+                error_count += 1
+            elif mapped_level == "debug":
+                debug_count += 1
+
+        # Filter by level
+        if level and level != "all":
+            level_mapping = {
+                "info": "info",
+                "warning": "warn",
+                "warn": "warn",
+                "error": "error",
+                "debug": "debug",
+                "critical": "error",
+                "fatal": "error",
+            }
+            filtered_logs = []
+            for log in log_files:
+                raw_level = log.get("日志等级", "INFO").lower()
+                mapped_level = level_mapping.get(raw_level, "info")
+                if mapped_level == level:
+                    filtered_logs.append(log)
+            log_files = filtered_logs
+
+        # Filter by source
+        if source and source != "all":
+            log_files = [log for log in log_files if log.get("来源", "core") == source]
+
+        total = len(log_files)
+        total_pages = (total + per_page - 1) // per_page if per_page > 0 else 0
+
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "total": total,
+                "total_pages": total_pages,
+                "per_page": per_page,
+                "info_count": info_count,
+                "warn_count": warn_count,
+                "error_count": error_count,
+                "debug_count": debug_count,
+            },
+        }
+    except Exception:
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "total": 0,
+                "total_pages": 0,
+                "per_page": per_page,
+            },
+        }
 
 
 @app.get("/api/logs/stream")

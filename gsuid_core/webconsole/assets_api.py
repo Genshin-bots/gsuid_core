@@ -125,3 +125,37 @@ async def preview_asset(path: str, token: Optional[str] = None):
 
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"预览失败: {str(e)}")
+
+
+@app.delete("/api/assets/delete")
+async def delete_asset(path: str, _user: Dict = Depends(require_auth)):
+    """删除本地图片"""
+    try:
+        import urllib.parse
+
+        # URL解码
+        real_path_str = urllib.parse.unquote(path)
+
+        real_path = Path(real_path_str)
+
+        # 兼容相对路径，如果是相对路径，尝试从 data 目录查找
+        if not real_path.is_absolute():
+            from gsuid_core.data_store import gs_data_path
+
+            # 尝试在 data 目录下查找
+            test_path = gs_data_path / real_path_str
+            if test_path.exists():
+                real_path = test_path
+
+        if not real_path.exists() or not real_path.is_file():
+            return {"status": 1, "msg": "文件不存在"}
+
+        # 删除文件
+        real_path.unlink()
+
+        return {"status": 0, "msg": "删除成功"}
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return {"status": 1, "msg": f"删除失败: {str(e)}"}
