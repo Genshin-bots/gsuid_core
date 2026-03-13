@@ -686,3 +686,5 @@ pdm.toml
 .python-version
 
 gsuid_hub
+
+!gsuid_core/webconsole/dist
