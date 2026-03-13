@@ -3,7 +3,6 @@ from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.schema import DropTable
 
 from gsuid_core.logger import logger
-from gsuid_core.webconsole.__init__ import start_check
 from gsuid_core.utils.database.base_models import engine, async_maker
 
 
@@ -33,7 +32,6 @@ async def drop_web_table():
                         except:  # noqa: E722
                             pass
                     logger.info("[core清除网页控制台密码] 操作完成..")
-            await start_check()
             return "网页控制台root账户密码已重置为root, 请立即登陆网页控制台修改账户密码！"
         else:
             logger.info("[core清除网页控制台密码] 未找到表...")

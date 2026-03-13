@@ -16,6 +16,7 @@ async def lifespan(app: FastAPI):
             "♻ [GsCore] 执行启动Hook函数中！",
             [_def.__name__ for _def in core_start_def],
         )
+        # 所有 startup 回调通过 create_task 在后台执行，框架启动不会被阻塞
         for _def in core_start_def:
             if asyncio.iscoroutinefunction(_def):
                 asyncio.create_task(_def())
@@ -25,9 +26,9 @@ async def lifespan(app: FastAPI):
         logger.exception(e)
 
     from gsuid_core.global_val import trans_global_val
-    from gsuid_core.webconsole.__init__ import start_check
+    from gsuid_core.webconsole import _setup_frontend
 
-    await start_check()  # type:ignore
+    await _setup_frontend()
     await start_scheduler()
     asyncio.create_task(clean_log())
     await trans_global_val()

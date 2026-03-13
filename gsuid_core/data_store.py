@@ -26,3 +26,7 @@ backup_path = get_res_path("GsCore_BACKUP_PATH")
 gscore_data_path = get_res_path("GsCore")
 error_mark_path = get_res_path(["logs", "error_reports"])
 AI_CORE_PATH = get_res_path("ai_core")
+THEME_CONFIG_PATH = gs_data_path / "theme_config.json"
+
+WEBCONSOLE_PATH = Path(__file__).parent / "webconsole"
+DIST_PATH = WEBCONSOLE_PATH / "dist"

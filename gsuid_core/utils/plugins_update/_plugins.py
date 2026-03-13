@@ -150,6 +150,21 @@ async def get_plugins_list() -> Dict[str, Dict[str, str]]:
     return plugins_list
 
 
+async def get_local_plugins_list() -> Dict[str, Dict[str, str]]:
+    """获取本地已安装的插件列表"""
+    local_plugins: Dict[str, Dict[str, str]] = {}
+    for plugin_dir in PLUGINS_PATH.iterdir():
+        if _is_plugin(plugin_dir):
+            plugin_name = plugin_dir.name
+            local_plugins[plugin_name.lower()] = {
+                "name": plugin_name,
+                "link": str(plugin_dir),
+                "info": f"本地插件：{plugin_name}",
+                "branch": "main",
+            }
+    return local_plugins
+
+
 async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
     if not plugins_list:
         await refresh_list()
@@ -226,17 +241,31 @@ def check_can_update(repo: Repo) -> bool:
 async def async_check_plugins(plugin_name: str):
     path = PLUGINS_PATH / plugin_name
     if path.exists():
-        cmd = "git fetch && git status"
-        proc = await asyncio.create_subprocess_shell(cmd, cwd=path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise Exception(f"{cmd} 执行错误 {proc.returncode}: {stderr.decode()}")
-        if b"Your branch is up to date" in stdout:
-            return 4
-        elif b"not a git repository" in stdout:
-            return 3
-        else:
-            return 1
+        try:
+            cmd = "git fetch && git status"
+            proc = await asyncio.create_subprocess_shell(cmd, cwd=path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # 增加超时处理，最多等待10秒
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode != 0:
+                logger.warning(f"检查插件 {plugin_name} 状态失败: {stderr.decode()}")
+                return 0  # 0表示检查失败，未知状态
+            if b"Your branch is up to date" in stdout:
+                return 4
+            elif b"not a git repository" in stdout:
+                return 3
+            else:
+                return 1
+        except asyncio.TimeoutError:
+            logger.warning(f"检查插件 {plugin_name} 状态超时")
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            return 0
+        except Exception as e:
+            logger.warning(f"检查插件 {plugin_name} 状态异常: {str(e)}")
+            return 0
     return 3
 
 

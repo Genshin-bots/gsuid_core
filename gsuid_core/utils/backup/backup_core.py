@@ -15,7 +15,15 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: 
     :param paths_to_copy: 待复制的 Path 对象列表 (List[Path])。
     """
     if _paths_to_copy is None:
-        paths_to_copy: List[Path] = [Path(p) for p in backup_config.get_config("backup_dir").data]
+        # 获取配置中的路径，并确保它们是相对于gs_data_path的完整路径
+        config_paths = backup_config.get_config("backup_dir").data
+        paths_to_copy: List[Path] = []
+        for p in config_paths:
+            path = Path(p)
+            # 如果路径不是绝对路径，或者不是以gs_data_path开头的，就拼接上gs_data_path
+            if not path.is_absolute() or not path.is_relative_to(gs_data_path):
+                path = gs_data_path / path
+            paths_to_copy.append(path)
     else:
         paths_to_copy = _paths_to_copy
 

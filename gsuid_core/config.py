@@ -1,5 +1,6 @@
 import json
 import shutil
+import secrets
 from typing import Any, Dict, List, Union, Literal, overload
 from pathlib import Path
 
@@ -10,6 +11,12 @@ from gsuid_core.data_store import get_res_path
 CONFIG_PATH = get_res_path() / "config.json"
 OLD_CONFIG_PATH = Path(__file__).parent / "config.json"
 
+
+# 生成随机注册码
+def _generate_register_code() -> str:
+    return secrets.token_hex(16)
+
+
 CONFIG_DEFAULT = {
     "HOST": "localhost",
     "PORT": "8765",
@@ -18,6 +25,7 @@ CONFIG_DEFAULT = {
     "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1"],
     "masters": [],
     "superusers": [],
+    "REGISTER_CODE": _generate_register_code(),
     "misfire_grace_time": 90,
     "log": {
         "level": "INFO",
@@ -31,7 +39,7 @@ CONFIG_DEFAULT = {
     "plugins": {},
 }
 
-STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN"]
+STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN", "REGISTER_CODE"]
 INT_CONFIG = Literal["misfire_grace_time"]
 LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS"]
 DICT_CONFIG = Literal["sv", "log", "plugins"]
@@ -68,21 +76,34 @@ class CoreConfig:
         self.update_config()
 
     def write_config(self):
-        with atomic_save(
-            str(CONFIG_PATH),
-            text_mode=False,
-            overwrite=True,
-            file_perms=0o644,
-        ) as file:
-            if file:
-                json_str = json.dumps(
-                    self.config,
-                    indent=4,
-                    ensure_ascii=False,
-                )
-                file.write(json_str.encode("utf-8"))
-            else:
-                raise RuntimeError("写入配置文件失败!")
+        import time
+
+        max_retries = 3
+        retry_delay = 0.5
+
+        for attempt in range(max_retries):
+            try:
+                with atomic_save(
+                    str(CONFIG_PATH),
+                    text_mode=False,
+                    overwrite=True,
+                    file_perms=0o644,
+                ) as file:
+                    if file:
+                        json_str = json.dumps(
+                            self.config,
+                            indent=4,
+                            ensure_ascii=False,
+                        )
+                        file.write(json_str.encode("utf-8"))
+                    else:
+                        raise RuntimeError("写入配置文件失败!")
+                return  # 成功写入，直接返回
+            except OSError as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)  # 等待一段时间后重试
+                else:
+                    raise RuntimeError(f"写入配置文件失败，已重试 {max_retries} 次: {str(e)}")
 
     def update_config(self):
         # 打开config.json

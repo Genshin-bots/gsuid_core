@@ -1,3 +1,4 @@
+import sys
 import json
 from typing import Any, Dict, List, Union
 from pathlib import Path
@@ -58,7 +59,24 @@ class StringConfig:
         self.config_name = config_name
         self.CONFIG_PATH = CONFIG_PATH
         self.config: Dict[str, GSC] = {}  # type: ignore
+        # 获取调用者的插件名
+        self.plugin_name = self._get_caller_plugin_name()
         self.update_config()
+
+    def _get_caller_plugin_name(self):
+        try:
+            frame = sys._getframe(2)
+            parts = Path(frame.f_code.co_filename).resolve().parts
+
+            # 从后往前查找 gsuid_core/plugins
+            for i in range(len(parts) - 2, 0, -1):
+                if parts[i - 1] == "gsuid_core" and parts[i] == "plugins":
+                    # 返回 plugins 的下一级目录名
+                    return parts[i + 1] if i + 1 < len(parts) else None
+
+        except ValueError:
+            # 栈层级不够，getframe(2)失败
+            return None
 
     def __len__(self):
         return len(self.config)
@@ -68,6 +86,9 @@ class StringConfig:
 
     def __getitem__(self, key) -> GSC:
         return self.config[key]
+
+    def get_raw_config(self) -> Dict:
+        return to_builtins(self.config)
 
     def sort_config(self):
         _config = {}
@@ -195,7 +216,7 @@ class StringConfig:
 all_config_list: Dict[str, StringConfig] = {}
 
 core_plugins_config = StringConfig(
-    "Core",
+    "GsCore",
     RES / "core_config.json",
     CONIFG_DEFAULT,
 )

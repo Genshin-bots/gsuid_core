@@ -1,41 +1,48 @@
-from sqlmodel import SQLModel
+# 导入 web_api 模块以注册所有路由
+# 当其他模块导入 webconsole 时，会自动注册所有 API 路由
+# 导出 mount_app 中的内容，保持向后兼容
+from gsuid_core.webconsole import (
+    web_api,
+    auth_api,
+    logs_api,
+    mount_app,
+    theme_api,
+    assets_api,
+    backup_api,
+    system_api,
+    plugins_api,
+    database_api,
+    dashboard_api,
+    scheduler_api,
+    setup_frontend,
+    core_config_api,
+)
 
-from gsuid_core.config import core_config
-from gsuid_core.logger import logger
-from gsuid_core.webconsole.mount_app import site
+# 导出 mount_app 中的常用对象
+from gsuid_core.webconsole.mount_app import (
+    PageSchema,
+    GsAdminModel,
+    site,
+)
+from gsuid_core.webconsole.setup_frontend import _setup_frontend
 
-
-async def start_check():
-    # 语言本地化
-    from fastapi_user_auth import i18n as user_auth_i18n
-    from fastapi_amis_admin import i18n as admin_auth_i18n
-
-    HOST = core_config.get_config("HOST")
-    PORT = core_config.get_config("PORT")
-
-    admin_auth_i18n.set_language("zh_CN")
-    user_auth_i18n.set_language("zh_CN")
-
-    logger.info("💻 [网页控制台] 尝试挂载WebConsole")
-    await site.db.async_run_sync(
-        SQLModel.metadata.create_all,
-        is_session=False,  # type:ignore
-    )  # type:ignore
-    # 创建默认测试用户, 请及时修改密码!!!
-    auth = site.auth
-    await auth.create_role_user("root")
-    await auth.create_role_user("test")
-
-    await site.router.startup()
-
-    if not auth.enforcer.enforce("u:admin", site.unique_id, "page", "page"):
-        await auth.enforcer.add_policy("u:admin", site.unique_id, "page", "page", "allow")
-        await auth.enforcer.add_policy("u:test", site.unique_id, "page", "page", "allow")
-
-    if HOST == "localhost" or HOST == "127.0.0.1":
-        _host = "localhost"
-        logger.warning("💻 WebConsole挂载于本地, 如想外网访问请修改data/config.json中host为0.0.0.0!")
-    else:
-        _host = HOST
-
-    logger.success((f"💻 WebConsole挂载成功: http://{_host}:{PORT}/genshinuid"))
+__all__ = [
+    "web_api",
+    "auth_api",
+    "logs_api",
+    "mount_app",
+    "theme_api",
+    "backup_api",
+    "system_api",
+    "plugins_api",
+    "database_api",
+    "dashboard_api",
+    "scheduler_api",
+    "setup_frontend",
+    "core_config_api",
+    "assets_api",
+    "PageSchema",
+    "GsAdminModel",
+    "site",
+    "_setup_frontend",
+]

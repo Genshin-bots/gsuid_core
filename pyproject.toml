@@ -15,8 +15,6 @@ dependencies = [
     "aiosqlite>=0.17.0",
     "aiofiles>=0.8.0",
     "gitpython>=3.1.27",
-    "fastapi-amis-admin>=0.7.3",
-    "fastapi-user-auth>=0.7.3",
     "qrcode[pil]<8.0.0,>=7.3.1",
     "msgspec>=0.13.1",
     "uvicorn>=0.20.0",
@@ -63,6 +61,7 @@ dependencies = [
     "fastembed>=0.7.4",
     "qdrant-client>=1.17.0",
     "tiktoken>=0.12.0",
+    "python-multipart>=0.0.22",
 ]
 name = "gsuid-core"
 version = "0.9.2"

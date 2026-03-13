@@ -467,21 +467,6 @@ urllib3 = {version = ">=1.25.4,<2.2.0 || >2.2.0,<3", markers = "python_version >
 crt = ["awscrt (==0.19.19)"]
 
 [[package]]
-name = "casbin"
-version = "1.43.0"
-description = "An authorization library that supports access control models like ACL, RBAC, ABAC in Python"
-optional = false
-python-versions = ">=3.3"
-groups = ["main"]
-files = [
-    {file = "casbin-1.43.0-py3-none-any.whl", hash = "sha256:63a3d1228870250e859ccd94133fe478821093f71dd37f05e0baa0c6fea26623"},
-    {file = "casbin-1.43.0.tar.gz", hash = "sha256:d2e90ce8e72f912877851e94d37999f32c558c6ba7aba0437d483275262e86e0"},
-]
-
-[package.dependencies]
-simpleeval = ">=0.9.11"
-
-[[package]]
 name = "certifi"
 version = "2025.11.12"
 description = "Python package for providing Mozilla's CA Bundle."
@@ -928,55 +913,6 @@ typing-extensions = ">=4.8.0"
 [package.extras]
 all = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.5)", "httpx (>=0.23.0)", "itsdangerous (>=1.1.0)", "jinja2 (>=2.11.2)", "orjson (>=3.2.1)", "pydantic-extra-types (>=2.0.0)", "pydantic-settings (>=2.0.0)", "python-multipart (>=0.0.7)", "pyyaml (>=5.3.1)", "ujson (>=4.0.1,!=4.0.2,!=4.1.0,!=4.2.0,!=4.3.0,!=5.0.0,!=5.1.0)", "uvicorn[standard] (>=0.12.0)"]
 standard = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.5)", "httpx (>=0.23.0)", "jinja2 (>=2.11.2)", "python-multipart (>=0.0.7)", "uvicorn[standard] (>=0.12.0)"]
-
-[[package]]
-name = "fastapi-amis-admin"
-version = "0.7.3"
-description = "FastAPI-Amis-Admin is a high-performance, efficient and easily extensible FastAPI admin framework. Inspired by Django-admin, and has as many powerful functions as Django-admin. "
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-files = [
-    {file = "fastapi_amis_admin-0.7.3-py3-none-any.whl", hash = "sha256:12768d95d73e759d6b275d7b8c3669bdf5a02e65d29ae0f100c56541e93e2f53"},
-    {file = "fastapi_amis_admin-0.7.3.tar.gz", hash = "sha256:eb09c4db043e91e777eeca5c3fb3569b8cfa2b2836ed9ffe0655abf144210e35"},
-]
-
-[package.dependencies]
-aiofiles = ">=0.17.0"
-fastapi = ">=0.103.2"
-python-multipart = ">=0.0.5"
-sqlalchemy-database = ">=0.1.1,<0.2.0"
-sqlmodel = ">=0.0.14,<0.1.0"
-
-[package.extras]
-cli = ["fastapi-amis-admin-cli (>=0.2.1,<0.3.0)"]
-dev = ["pre-commit (>=2.20.0)", "ruff (>=0.0.261)"]
-standard = ["fastapi-amis-admin-cli (>=0.2.1,<0.3.0)", "uvicorn[standard] (>=0.19.0,<1.0)"]
-test = ["aiosqlite (>=0.15.0)", "fastapi-amis-admin-cli (>=0.2.1,<0.3.0)", "httpx (>=0.24.0,<1.0)", "jinja2 (>=2.11.2,<4.0.0)", "pydantic-settings (>=2.0.0)", "pytest (>=6.2.4)", "pytest-asyncio (>=0.17)", "requests (>=2.28.1)", "ujson (>=4.0.1)", "uvicorn[standard] (>=0.19.0,<1.0)"]
-
-[[package]]
-name = "fastapi-user-auth"
-version = "0.7.3"
-description = "FastAPI-User-Auth is a simple and powerful FastAPI user RBAC authentication and authorization library. Based on FastAPI-Amis-Admin and provides a freely extensible visual management interface."
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-files = [
-    {file = "fastapi_user_auth-0.7.3-py3-none-any.whl", hash = "sha256:4080462be01c069a5db767b75fbed7afca902c8af08d267c04598301a83b6f61"},
-    {file = "fastapi_user_auth-0.7.3.tar.gz", hash = "sha256:7d6f35b4eaf469927d3bd1d39232fb0594c28d8296e838eb031325ddadc49c3c"},
-]
-
-[package.dependencies]
-bcrypt = ">=4.0.0,<4.1.0"
-casbin = ">=1.34.0"
-email-validator = ">=1.3.1,<3.0.0"
-fastapi-amis-admin = ">=0.7.1,<0.8.0"
-passlib = ">=1.7.4"
-
-[package.extras]
-jwt = ["python-jose (>=3.3.0)"]
-redis = ["redis (>=4.2.0)"]
-test = ["aiosqlite (>=0.15.0)", "httpx (>=0.23.3)", "jinja2 (>=2.11.2,<4.0.0)", "pre-commit (>=2.20.0)", "pydantic-settings (>=2.0.0)", "pytest (>=6.2.4)", "pytest-asyncio (>=0.17,<0.23.0)", "python-jose (>=3.3.0)", "requests (>=2.28.1)", "sqlmodelx (>=0.0.11)", "ujson (>=5.5.0)", "uvicorn[standard] (>=0.19.0,<1.0)"]
 
 [[package]]
 name = "fastembed"
@@ -3036,24 +2972,6 @@ test = ["hypothesis (>=6.46.1)", "pytest (>=7.3.2)", "pytest-xdist (>=2.2.0)"]
 xml = ["lxml (>=4.9.2)"]
 
 [[package]]
-name = "passlib"
-version = "1.7.4"
-description = "comprehensive password hashing framework supporting over 30 schemes"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "passlib-1.7.4-py2.py3-none-any.whl", hash = "sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1"},
-    {file = "passlib-1.7.4.tar.gz", hash = "sha256:defd50f72b65c5402ab2c573830a6978e5f202ad0d984793c8dde2c4152ebe04"},
-]
-
-[package.extras]
-argon2 = ["argon2-cffi (>=18.2.0)"]
-bcrypt = ["bcrypt (>=3.1.0)"]
-build-docs = ["cloud-sptheme (>=1.10.1)", "sphinx (>=1.6)", "sphinxcontrib-fulltoc (>=1.2.0)"]
-totp = ["cryptography"]
-
-[[package]]
 name = "pillow"
 version = "11.3.0"
 description = "Python Imaging Library (Fork)"
@@ -3861,14 +3779,14 @@ cli = ["click (>=5.0)"]
 
 [[package]]
 name = "python-multipart"
-version = "0.0.21"
+version = "0.0.22"
 description = "A streaming multipart parser for Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "python_multipart-0.0.21-py3-none-any.whl", hash = "sha256:cf7a6713e01c87aa35387f4774e812c4361150938d20d232800f75ffcf266090"},
-    {file = "python_multipart-0.0.21.tar.gz", hash = "sha256:7137ebd4d3bbf70ea1622998f902b97a29434a9e8dc40eb203bbcf7c2a2cba92"},
+    {file = "python_multipart-0.0.22-py3-none-any.whl", hash = "sha256:2b2cd894c83d21bf49d702499531c7bafd057d730c201782048f7945d82de155"},
+    {file = "python_multipart-0.0.22.tar.gz", hash = "sha256:7340bef99a7e0032613f56dc36027b959fd3b30a787ed62d310e951f7c3a3a58"},
 ]
 
 [[package]]
@@ -4454,18 +4372,6 @@ files = [
 ]
 
 [[package]]
-name = "simpleeval"
-version = "1.0.3"
-description = "A simple, safe single expression evaluator library."
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "simpleeval-1.0.3-py3-none-any.whl", hash = "sha256:e3bdbb8c82c26297c9a153902d0fd1858a6c3774bf53ff4f134788c3f2035c38"},
-    {file = "simpleeval-1.0.3.tar.gz", hash = "sha256:67bbf246040ac3b57c29cf048657b9cf31d4e7b9d6659684daa08ca8f1e45829"},
-]
-
-[[package]]
 name = "six"
 version = "1.17.0"
 description = "Python 2 and 3 compatibility utilities"
@@ -4603,25 +4509,6 @@ postgresql-psycopg2cffi = ["psycopg2cffi"]
 postgresql-psycopgbinary = ["psycopg[binary] (>=3.0.7)"]
 pymysql = ["pymysql"]
 sqlcipher = ["sqlcipher3_binary"]
-
-[[package]]
-name = "sqlalchemy-database"
-version = "0.1.2"
-description = "SQLAlchemy-Database provides shortcut functions to common database operations for SQLAlchemy ORM."
-optional = false
-python-versions = ">=3.7"
-groups = ["main"]
-files = [
-    {file = "sqlalchemy_database-0.1.2-py3-none-any.whl", hash = "sha256:f9e5ff8cc607883673aedd9179c743e6550240bcca2084ff63771586cab8b3b4"},
-    {file = "sqlalchemy_database-0.1.2.tar.gz", hash = "sha256:85720ed45b10e2c02fd02b82b770c735b2644cda38ddab9c0cb94348b6e8e839"},
-]
-
-[package.dependencies]
-sqlalchemy = "*"
-
-[package.extras]
-docs = ["mkdocs-material (>=8.3.8)", "mkdocstrings[python] (>=0.19.0)"]
-test = ["aiosqlite", "fastapi", "httpx", "pytest (>=6.2.4,<7.0.0)", "pytest-asyncio (>=0.17)", "pytest-cov", "sqlmodel"]
 
 [[package]]
 name = "sqlmodel"
@@ -5328,4 +5215,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "a1e959ff992d5201bd80d4e462b81fc8a30b6ab02be5e1139ddba87ad6b5be36"
+content-hash = "155d07c7b58b05e2bc85d23d587f289b3b4969a925d889459835b51217217fb5"

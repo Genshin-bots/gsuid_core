@@ -334,18 +334,6 @@ wheels = [
 ]
 
 [[package]]
-name = "casbin"
-version = "1.43.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "simpleeval" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/df/ff2aa55cf0d7c14622ce4f9252cdc34c828c81d4213965d73207ac5434ae/casbin-1.43.0.tar.gz", hash = "sha256:d2e90ce8e72f912877851e94d37999f32c558c6ba7aba0437d483275262e86e0", size = 425727 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/07/facef6abd81378e6153b757dc1848621675d971fbc88ebb5d182ebc1c37f/casbin-1.43.0-py3-none-any.whl", hash = "sha256:63a3d1228870250e859ccd94133fe478821093f71dd37f05e0baa0c6fea26623", size = 475059 },
-]
-
-[[package]]
 name = "certifi"
 version = "2026.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -650,38 +638,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9c/11/4874d165e7ef97aa803a567a4be8f9c8b0bd7cced6d536d44033ef7d4bfa/fastapi-0.112.2.tar.gz", hash = "sha256:3d4729c038414d5193840706907a41839d839523da6ed0c2811f1168cac1798c", size = 291967 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/ae/6570ae1b67007735229f10f2e1174d6e33c056ee9c0c1754d432acbede94/fastapi-0.112.2-py3-none-any.whl", hash = "sha256:db84b470bd0e2b1075942231e90e3577e12a903c4dc8696f0d206a7904a7af1c", size = 93471 },
-]
-
-[[package]]
-name = "fastapi-amis-admin"
-version = "0.7.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiofiles" },
-    { name = "fastapi" },
-    { name = "python-multipart" },
-    { name = "sqlalchemy-database" },
-    { name = "sqlmodel" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/93/a02e3d63afbb8530a4783306501b1b5641cab7de444705d3afe1d35921ea/fastapi_amis_admin-0.7.3.tar.gz", hash = "sha256:eb09c4db043e91e777eeca5c3fb3569b8cfa2b2836ed9ffe0655abf144210e35", size = 476094 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/80/74/86cb9a1f0ae6d0335a036f188755df597bed2f89444758668af468bdf63a/fastapi_amis_admin-0.7.3-py3-none-any.whl", hash = "sha256:12768d95d73e759d6b275d7b8c3669bdf5a02e65d29ae0f100c56541e93e2f53", size = 115059 },
-]
-
-[[package]]
-name = "fastapi-user-auth"
-version = "0.7.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "bcrypt" },
-    { name = "casbin" },
-    { name = "email-validator" },
-    { name = "fastapi-amis-admin" },
-    { name = "passlib" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/fd/376d6bf9b52e46be8f55df7a82d7c71de6296c6a6a17fa0b5f8364465689/fastapi_user_auth-0.7.3.tar.gz", hash = "sha256:7d6f35b4eaf469927d3bd1d39232fb0594c28d8296e838eb031325ddadc49c3c", size = 91091 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/12/196e417c90503dcb3a0cd0778427e8ea71dbbc8b56072e7dbee01a98b9cf/fastapi_user_auth-0.7.3-py3-none-any.whl", hash = "sha256:4080462be01c069a5db767b75fbed7afca902c8af08d267c04598301a83b6f61", size = 47287 },
 ]
 
 [[package]]
@@ -1120,8 +1076,6 @@ dependencies = [
     { name = "cryptography" },
     { name = "email-validator" },
     { name = "fastapi" },
-    { name = "fastapi-amis-admin" },
-    { name = "fastapi-user-auth" },
     { name = "fastembed" },
     { name = "gitpython" },
     { name = "google-generativeai" },
@@ -1143,6 +1097,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-core" },
     { name = "pydantic-settings" },
+    { name = "python-multipart" },
     { name = "pytz" },
     { name = "qdrant-client" },
     { name = "qrcode", extra = ["pil"] },
@@ -1186,8 +1141,6 @@ requires-dist = [
     { name = "email-validator", specifier = ">=2.2.0,<3.0.0" },
     { name = "fastapi", specifier = "<0.112.3" },
     { name = "fastapi", specifier = ">=0.97.0,<0.112.3" },
-    { name = "fastapi-amis-admin", specifier = ">=0.7.3" },
-    { name = "fastapi-user-auth", specifier = ">=0.7.3" },
     { name = "fastembed", specifier = ">=0.7.4" },
     { name = "gitpython", specifier = ">=3.1.27" },
     { name = "google-generativeai", specifier = ">=0.8.6" },
@@ -1209,6 +1162,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.2" },
     { name = "pydantic-core", specifier = ">=2.20.1" },
     { name = "pydantic-settings", specifier = ">=2.12.0" },
+    { name = "python-multipart", specifier = ">=0.0.22" },
     { name = "pytz", specifier = ">=2024.2" },
     { name = "qdrant-client", specifier = ">=1.17.0" },
     { name = "qrcode", extras = ["pil"], specifier = ">=7.3.1,<8.0.0" },
@@ -2238,15 +2192,6 @@ wheels = [
 ]
 
 [[package]]
-name = "passlib"
-version = "1.7.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b6/06/9da9ee59a67fae7761aab3ccc84fa4f3f33f125b370f1ccdb915bf967c11/passlib-1.7.4.tar.gz", hash = "sha256:defd50f72b65c5402ab2c573830a6978e5f202ad0d984793c8dde2c4152ebe04", size = 689844 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/a4/ab6b7589382ca3df236e03faa71deac88cae040af60c071a78d254a62172/passlib-1.7.4-py2.py3-none-any.whl", hash = "sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1", size = 525554 },
-]
-
-[[package]]
 name = "pillow"
 version = "11.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3245,15 +3190,6 @@ wheels = [
 ]
 
 [[package]]
-name = "simpleeval"
-version = "1.0.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ff/6f/15be211749430f52f2c8f0c69158a6fc961c03aac93fa28d44d1a6f5ebc7/simpleeval-1.0.3.tar.gz", hash = "sha256:67bbf246040ac3b57c29cf048657b9cf31d4e7b9d6659684daa08ca8f1e45829", size = 24358 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/e9/e58082fbb8cecbb6fb4133033c40cc50c248b1a331582be3a0f39138d65b/simpleeval-1.0.3-py3-none-any.whl", hash = "sha256:e3bdbb8c82c26297c9a153902d0fd1858a6c3774bf53ff4f134788c3f2035c38", size = 15762 },
-]
-
-[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3336,18 +3272,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/33/75/f28622ba6dde79cd545055ea7bd4062dc934e0621f7b3be2891f8563f8de/sqlalchemy-2.0.46-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:ff33c6e6ad006bbc0f34f5faf941cfc62c45841c64c0a058ac38c799f15b5ede", size = 3470008 },
     { url = "https://files.pythonhosted.org/packages/a9/42/4afecbbc38d5e99b18acef446453c76eec6fbd03db0a457a12a056836e22/sqlalchemy-2.0.46-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:82ec52100ec1e6ec671563bbd02d7c7c8d0b9e71a0723c72f22ecf52d1755330", size = 3476137 },
     { url = "https://files.pythonhosted.org/packages/fc/a1/9c4efa03300926601c19c18582531b45aededfb961ab3c3585f1e24f120b/sqlalchemy-2.0.46-py3-none-any.whl", hash = "sha256:f9c11766e7e7c0a2767dda5acb006a118640c9fc0a4104214b96269bfb78399e", size = 1937882 },
-]
-
-[[package]]
-name = "sqlalchemy-database"
-version = "0.1.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "sqlalchemy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1e/62/aefbe690d926f32563d87c7a88fbd0e11ac2840d5d6c152f1e86827ccf7f/sqlalchemy_database-0.1.2.tar.gz", hash = "sha256:85720ed45b10e2c02fd02b82b770c735b2644cda38ddab9c0cb94348b6e8e839", size = 63512 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/36/d2/a100111c6e0b36a2fb121dbd920a3312ae0559434eec8c9a796f10f89fa6/sqlalchemy_database-0.1.2-py3-none-any.whl", hash = "sha256:f9e5ff8cc607883673aedd9179c743e6550240bcca2084ff63771586cab8b3b4", size = 11156 },
 ]
 
 [[package]]

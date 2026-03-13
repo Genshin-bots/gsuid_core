@@ -93,10 +93,7 @@ async def main():
     if HOST == "all" or HOST == "none" or HOST == "dual" or not HOST:
         HOST = None
 
-    if args.dev:
-        from .app_life import app
-    else:
-        from gsuid_core.web_app import app, site
+    from .app_life import app
 
     @app.websocket("/ws/{bot_id}")
     async def websocket_endpoint(websocket: WebSocket, bot_id: str):
@@ -161,10 +158,6 @@ async def main():
                 return {"status_code": 200, "data": to_builtins(result)}
             else:
                 return {"status_code": -100, "data": None}
-
-    if not args.dev:
-        site.gen_plugin_page()
-        site.mount_app(app)
 
     config = uvicorn.Config(
         app,
