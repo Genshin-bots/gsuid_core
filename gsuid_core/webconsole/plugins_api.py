@@ -167,6 +167,8 @@ async def get_framework_config(request: Request, _user: Dict = Depends(require_a
 @app.post("/api/framework-config/{config_name}")
 async def update_framework_config(request: Request, config_name: str, data: Dict, _user: Dict = Depends(require_auth)):
     """Update framework configuration"""
+    from gsuid_core.logger import logger
+
     # 完整配置名称
     full_config_name = config_name if config_name.startswith("GsCore") else f"GsCore{config_name}"
 
@@ -174,9 +176,20 @@ async def update_framework_config(request: Request, config_name: str, data: Dict
         return {"status": 1, "msg": "配置不存在"}
 
     config_obj = all_config_list[full_config_name]
+    is_success = False
 
     for key, value in data.items():
-        config_obj.set_config(key, value)
+        try:
+            result = config_obj.set_config(key, value)
+            if result:
+                is_success = True
+            else:
+                logger.warning(f"[框架配置][{config_name}] 配置项 {key} 写入失败")
+        except Exception as e:
+            logger.error(f"[框架配置][{config_name}] 配置项 {key} 写入异常: {e}")
+
+    if not is_success:
+        return {"status": 1, "msg": "部分或全部配置项保存失败"}
 
     return {"status": 0, "msg": "配置已保存"}
 
@@ -187,29 +200,142 @@ async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _
     name = plugin_name.lower()
     is_success = False
 
-    # 查找该插件的所有配置对象
-    for config_key, config_obj in all_config_list.items():
-        config_plugin_name = getattr(config_obj, "plugin_name", None)
-        # 匹配插件名
-        if config_plugin_name and config_plugin_name.lower() == name:
-            # 遍历提交的数据，尝试更新匹配的配置项
-            for key, value in data.items():
-                # 处理带前缀的 key: {config_key}_{cfg_name}
-                actual_key = key
-                prefix = f"{config_key}_"
-                if key.startswith(prefix):
-                    actual_key = key[len(prefix) :]
+    # 检查是否包含新的 config_groups 格式
+    if "config_groups" in data:
+        # 处理新的 config_groups 格式
+        for config_group in data["config_groups"]:
+            config_name = config_group.get("config_name")
+            group_config = config_group.get("config", {})
 
-                if actual_key in config_obj.config_list:
-                    config_obj.set_config(actual_key, value)
-                    is_success = True
+            # 查找对应的配置对象
+            found_config = False
+            for cfg_key, config_obj in all_config_list.items():
+                config_plugin_name = getattr(config_obj, "plugin_name", None)
 
-        # 兼容旧逻辑：如果 config_key 直接匹配 plugin_name
-        elif config_key.lower() in [name, name.rstrip("uid")]:
-            for key, value in data.items():
-                if key in config_obj.config_list:
-                    config_obj.set_config(key, value)
-                    is_success = True
+                # 匹配插件名或配置组名
+                if (config_plugin_name and config_plugin_name.lower() == name) or (
+                    config_name and cfg_key.lower() == config_name.lower()
+                ):
+                    # 更新该组的配置项
+                    for key, value in group_config.items():
+                        if key in config_obj.config_list:
+                            config_obj.set_config(key, value)
+                            is_success = True
+                    found_config = True
+
+            # 如果没有找到现有配置，尝试动态创建配置对象
+            if not found_config and config_name:
+                try:
+                    from gsuid_core.data_store import get_res_path
+                    from gsuid_core.utils.plugins_config.models import (
+                        GsStrConfig,
+                        GsBoolConfig,
+                        GsDictConfig,
+                        GsListConfig,
+                        GsListStrConfig,
+                    )
+                    from gsuid_core.utils.plugins_config.gs_config import StringConfig
+
+                    # 构建默认配置
+                    default_config = {
+                        "Ann_Groups": GsDictConfig("推送公告群组", "原神公告推送群组", {}),
+                        "Ann_Ids": GsListConfig("推送公告ID", "原神公告推送ID列表", []),
+                        "SignTime": GsListStrConfig(
+                            "每晚签到时间设置", "每晚米游社签到时间设置（时，分）", ["0", "38"]
+                        ),
+                        "BBSTaskTime": GsListStrConfig(
+                            "每晚米游社任务时间设置", "每晚米游社任务时间设置（时，分）", ["1", "41"]
+                        ),
+                        "GetDrawTaskTime": GsListStrConfig(
+                            "每晚留影叙佳期任务时间设置", "每晚留影叙佳期任务时间设置（时，分）", ["3", "25"]
+                        ),
+                        "MhyBBSCoinReport": GsBoolConfig(
+                            "米游币推送", "开启后会私聊每个用户当前米游币任务完成情况", False
+                        ),
+                        "MhyBBSCoinReportGroup": GsBoolConfig(
+                            "米游币群聊推送", "开启后会在群聊中推送当前群米游币任务完成情况", True
+                        ),
+                        "SignReportSimple": GsBoolConfig("简洁签到报告", "开启后可以大大减少每日签到报告字数", True),
+                        "PrivateReport": GsBoolConfig(
+                            "私聊报告", "关闭后将不再给主人推送当天米游币任务完成情况", False
+                        ),
+                        "PrivateSignReport": GsBoolConfig(
+                            "签到私聊报告", "关闭后将不再给任何人推送当天签到任务完成情况", True
+                        ),
+                        "RandomPic": GsBoolConfig("随机图", "开启后[查询心海]等命令展示图将替换为随机图片", False),
+                        "random_pic_API": GsStrConfig(
+                            "随机图API",
+                            "用于面板查询的随机图API",
+                            "https://genshin-res.cherishmoon.fun/img?name=",
+                            ["https://genshin-res.cherishmoon.fun/img?name="],
+                        ),
+                        "SchedSignin": GsBoolConfig("定时签到", "开启后每晚00:30将开始自动签到任务", True),
+                        "SchedMhyBBSCoin": GsBoolConfig("定时米游币", "开启后每晚01:16将开始自动米游币任务", True),
+                        "SchedGetDraw": GsBoolConfig("定时留影叙佳期", "开启后每晚03:25将开始自动米游币任务", True),
+                        "SchedResinPush": GsBoolConfig(
+                            "定时检查体力", "开启后每隔半小时检查一次开启推送的人的体力状态", True
+                        ),
+                        "CrazyNotice": GsBoolConfig("催命模式", "开启后当达到推送阈值将会一直推送", False),
+                        "OldPanle": GsBoolConfig("旧面板", "会稍微增加面板访问速度,但会损失很多功能", False),
+                        "ColorBG": GsBoolConfig("多彩面板", "面板颜色不按照属性来渲染,而按照自定义颜色", False),
+                        "DefaultPayWX": GsBoolConfig(
+                            "支付默认微信", "开启后使用gsrc命令将会以微信作为优先付款方式", False
+                        ),
+                        "DefaultBaseBG": GsBoolConfig("固定背景", "开启后部分功能的背景图将固定为特定背景", False),
+                        "PicWiki": GsBoolConfig("图片版WIKI", "开启后支持的WIKI功能将转为图片版", True),
+                        "WidgetResin": GsBoolConfig(
+                            "体力使用组件API", "开启后mr功能将转为调用组件API, 可能缺失数据、数据不准", True
+                        ),
+                        "EnableAkasha": GsBoolConfig("排名系统", "开启后强制刷新将同时刷新AkashaSystem", False),
+                        "help_column": GsStrConfig("帮助图列数", "修改帮助图有多少列", "6"),
+                        "EnableCharCardByMys": GsBoolConfig(
+                            "从米游社获取面板替代Enka服务", "开启后角色卡片将从米游社获取, 可能会遇到验证码", False
+                        ),
+                    }
+
+                    # 创建配置路径
+                    res_path = get_res_path()
+                    config_path = res_path / "GenshinUID" / "config.json"
+
+                    # 确保目录存在
+                    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # 创建配置对象
+                    config_obj = StringConfig(config_name, config_path, default_config)
+
+                    # 更新配置项
+                    for key, value in group_config.items():
+                        if key in config_obj.config_list:
+                            config_obj.set_config(key, value)
+                            is_success = True
+
+                except Exception as e:
+                    print(f"动态创建配置失败: {e}")
+    else:
+        # 原有的平铺格式处理
+        # 查找该插件的所有配置对象
+        for config_key, config_obj in all_config_list.items():
+            config_plugin_name = getattr(config_obj, "plugin_name", None)
+            # 匹配插件名
+            if config_plugin_name and config_plugin_name.lower() == name:
+                # 遍历提交的数据，尝试更新匹配的配置项
+                for key, value in data.items():
+                    # 处理带前缀的 key: {config_key}_{cfg_name}
+                    actual_key = key
+                    prefix = f"{config_key}_"
+                    if key.startswith(prefix):
+                        actual_key = key[len(prefix) :]
+
+                    if actual_key in config_obj.config_list:
+                        config_obj.set_config(actual_key, value)
+                        is_success = True
+
+            # 兼容旧逻辑：如果 config_key 直接匹配 plugin_name
+            elif config_key.lower() in [name, name.rstrip("uid")]:
+                for key, value in data.items():
+                    if key in config_obj.config_list:
+                        config_obj.set_config(key, value)
+                        is_success = True
 
     if not is_success:
         return {"status": 1, "msg": "未找到可更新的配置项"}
