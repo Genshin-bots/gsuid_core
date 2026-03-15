@@ -4575,6 +4575,23 @@ mpmath = ">=1.1.0,<1.4"
 dev = ["hypothesis (>=6.70.0)", "pytest (>=7.1.0)"]
 
 [[package]]
+name = "tavily-python"
+version = "0.7.23"
+description = "Python wrapper for the Tavily API"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "tavily_python-0.7.23-py3-none-any.whl", hash = "sha256:52ef85c44b926bce3f257570cd32bc1bd4db54666acf3105617f27411a59e188"},
+    {file = "tavily_python-0.7.23.tar.gz", hash = "sha256:3b92232e0e29ab68898b765f281bb4f2c650b02210b64affbc48e15292e96161"},
+]
+
+[package.dependencies]
+httpx = "*"
+requests = "*"
+tiktoken = ">=0.5.1"
+
+[[package]]
 name = "threadpoolctl"
 version = "3.6.0"
 description = "threadpoolctl"
@@ -5215,4 +5232,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "155d07c7b58b05e2bc85d23d587f289b3b4969a925d889459835b51217217fb5"
+content-hash = "654b48db11540fe6ea7a1ef7f20c094e240c8f355ae660228a6b0e71de8e282b"

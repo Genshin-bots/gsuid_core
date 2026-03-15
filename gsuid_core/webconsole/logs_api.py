@@ -10,7 +10,7 @@ from datetime import datetime
 from fastapi import Depends, Request
 from fastapi.responses import StreamingResponse
 
-from gsuid_core.logger import LOG_PATH, HistoryLogData, read_log
+from gsuid_core.logger import LOG_PATH, HistoryLogData, read_log, get_all_log_path
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -33,7 +33,10 @@ async def get_logs(
         date = date.removesuffix(".log")
 
     history_log_data = HistoryLogData()
-    log_files = await history_log_data.get_parse_logs(LOG_PATH / f"{date}.log")
+    log_file_path = LOG_PATH / f"{date}.log"
+    if not log_file_path.exists():
+        return {"status": 404, "msg": "该日志不存在", "data": None}
+    log_files = await history_log_data.get_parse_logs(log_file_path)
 
     # Filter by level
     if level and level != "all":
@@ -101,6 +104,25 @@ async def get_logs(
             "per_page": per_page,
         },
     }
+
+
+@app.get("/api/logs/available-dates")
+async def get_available_log_dates(
+    _user: Dict = Depends(require_auth),
+):
+    """
+    获取所有存在日志文件的日期列表，用于前端日历选择器标记可选择的日期
+
+    Returns:
+        包含以下字段的响应对象:
+        - status: 状态码，0表示成功
+        - msg: 状态信息
+        - data: 日期字符串列表，按倒序排列(最新日期在前)，格式为YYYY-MM-DD
+    """
+    log_files = get_all_log_path()
+    available_dates = [file.stem for file in log_files]
+    available_dates.sort(reverse=True)
+    return {"status": 0, "msg": "ok", "data": available_dates}
 
 
 @app.get("/api/logs/sources")
