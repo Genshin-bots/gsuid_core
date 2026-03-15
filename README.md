@@ -14,7 +14,7 @@
 - 🔀 **异步优先**：异步处理~~大量~~消息流，不会阻塞任务运行
 - 🔧 **易于开发**：即使完全没有接触过 Python，也能在一小时内迅速上手 👉 [插件编写指南](https://docs.sayu-bot.com/CodePlugins/CookBook.html)
 - ♻ **热重载**：修改插件配置&安装插件&更新插件，无需重启也能直接应用
-- **🌎 [网页控制台](https://docs.sayu-bot.com/Advance/WebConsole.html)**：集成网页控制台，可以通过 WEB 直接操作**插件数据库/配置文件/检索日志/权限控制/数据统计/批量发送** 等超多操作
+- **🌎 [网页控制台](https://docs.sayu-bot.com/Started/WebConsole.html)**：集成网页控制台，可以通过 WEB 直接操作**插件数据库/配置文件/检索日志/权限控制/数据统计/批量发送** 等超多操作
 - 📄 **高度统一**：统一**所有插件**的[插件前缀](https://docs.sayu-bot.com/CodePlugins/PluginsPrefix.html)/[配置管理](https://docs.sayu-bot.com/CodePlugins/PluginsConfig.html)/[帮助图生成](https://docs.sayu-bot.com/CodePlugins/PluginsHelp.html)/权限控制/[数据库写入](https://docs.sayu-bot.com/CodePlugins/PluginsDataBase.html)/[订阅消息](https://docs.sayu-bot.com/CodePlugins/Subscribe.html)，所有插件编写常见方法一应俱全，插件作者可通过简单的**继承重写**实现**高度统一**的逻辑
 - 💻 **多元适配**：借助上游 Bot (NoneBot2 / Koishi / YunzaiBot) 适配，支持 QQ/QQ 频道/微信/Tg/Discord/飞书/KOOK/DODO/OneBot v11(v12)等多个平台，做到**一套业务逻辑，多个平台支持**！
 - 🚀 **作为插件**：该项目**不能独立使用**，作为**上游 Bot (NoneBot2 / Koishi / YunzaiBot)** 的插件使用，无需迁移原本 Bot，保留之前全部的功能，便于充分扩展
