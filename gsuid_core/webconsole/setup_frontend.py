@@ -1,10 +1,62 @@
 import json
 from typing import Optional
+from pathlib import Path
 
 from fastapi.responses import FileResponse, HTMLResponse
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
+
+# 常见文件扩展名到 MIME 类型的映射
+MIME_TYPES = {
+    # JavaScript
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    # CSS
+    ".css": "text/css",
+    # 图片
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    # 字体
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".eot": "application/vnd.ms-fontobject",
+    ".otf": "font/otf",
+    # 文档
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".txt": "text/plain",
+    # 其他
+    ".wasm": "application/wasm",
+    ".map": "application/json",
+}
+
+
+def get_mime_type(file_path: Path) -> str:
+    """根据文件扩展名获取 MIME 类型"""
+
+    import mimetypes
+
+    suffix = file_path.suffix.lower()
+    mime_type = MIME_TYPES.get(suffix, None)
+
+    if mime_type is None:
+        # 尝试使用 mimetypes 模块
+        mime_type, _ = mimetypes.guess_file_type(str(file_path))
+        logger.debug(f"[WebConsole] 文件 {file_path} 的 MIME 类型为 {mime_type}")
+
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+
+    return mime_type
 
 
 def parse_version(version_str: str) -> tuple[int, ...]:
@@ -148,19 +200,22 @@ async def _setup_frontend():
                 index_path = dist_path / "index.html"
                 logger.info(f"💻 [网页控制台] 返回 index.html, 路径: {index_path}")
                 if index_path.exists():
-                    return FileResponse(index_path)
+                    return FileResponse(index_path, media_type="text/html")
 
             # 尝试作为文件提供
             file_path = dist_path / path
             logger.info(f"💻 [网页控制台] 尝试提供文件: {file_path}")
             if file_path.exists() and file_path.is_file():
-                return FileResponse(file_path)
+                # 强制设置正确的 MIME 类型
+                mime_type = get_mime_type(file_path)
+                logger.info(f"💻 [网页控制台] 强制设置 {file_path} MIME 类型: {mime_type}")
+                return FileResponse(file_path, media_type=mime_type)
 
             # 对于 SPA，返回 index.html 让前端路由处理
             index_path = dist_path / "index.html"
             logger.info("💻 [网页控制台] SPA fallback 返回 index.html")
             if index_path.exists():
-                return FileResponse(index_path)
+                return FileResponse(index_path, media_type="text/html")
 
             return HTMLResponse("Not Found", status_code=404)
 
