@@ -18,6 +18,7 @@ class ThemeConfigRequest(BaseModel):
     mode: str = "dark"
     style: str = "glassmorphism"
     color: str = "orchid"
+    language: str = "zh-CN"
     icon_color: str = "colored"
     background_image: str | None = None
     blur_intensity: int = 12
@@ -47,7 +48,10 @@ def save_theme_config(config: dict) -> bool:
 
 
 @app.get("/api/theme/config")
-async def get_theme_config(request: Request, authorization: str | None = Header(default=None)):
+async def get_theme_config(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     """Get theme configuration"""
     # Check auth (allow public access for theme config)
     # user_data = verify_token(authorization)
@@ -64,6 +68,7 @@ async def get_theme_config(request: Request, authorization: str | None = Header(
             "mode": "dark",
             "style": "glassmorphism",
             "color": "red",
+            "language": "zh-CN",
             "icon_color": "colored",
             "background_image": "https://cdn.pixabay.com/photo/2024/05/26/15/27/anime-8788959_1280.jpg",
             "blur_intensity": 12,
@@ -74,7 +79,9 @@ async def get_theme_config(request: Request, authorization: str | None = Header(
 
 @app.post("/api/theme/config")
 async def save_theme_config_endpoint(
-    request: Request, config: ThemeConfigRequest, authorization: str | None = Header(default=None)
+    request: Request,
+    config: ThemeConfigRequest,
+    authorization: str | None = Header(default=None),
 ):
     """Save theme configuration"""
     # 主题配置允许未登录时也保存（前端会在本地存储中保存设置）

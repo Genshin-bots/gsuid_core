@@ -224,6 +224,24 @@ async def api_register(request: Request, data: Dict):
     return {"status": 1, "msg": "注册失败，请稍后重试"}
 
 
+@app.get("/api/auth/admin/exists")
+async def check_admin_exists(request: Request):
+    """
+    检查管理员是否已存在
+
+    用于前端判断是否显示管理员注册入口
+
+    Returns:
+        status: 0 表示成功
+        data:
+            is_admin_exist: true 表示管理员已存在，false 表示管理员不存在
+    """
+    admin_count = await get_admin_count()
+    is_admin_exist = admin_count >= 1
+
+    return {"status": 0, "msg": "查询成功", "data": {"is_admin_exist": is_admin_exist}}
+
+
 @app.post("/api/auth/logout")
 async def api_logout(request: Request, authorization: str | None = Header(default=None)):
     """Frontend logout endpoint"""

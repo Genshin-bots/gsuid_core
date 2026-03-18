@@ -58,8 +58,18 @@ if command_start and enable_empty:
 else:
     _command_start = command_start
 
+IS_HANDDLE: bool = True
+
+
+def set_handle(is_handle: bool):
+    global IS_HANDDLE
+    IS_HANDDLE = is_handle
+
 
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
+    if not IS_HANDDLE:
+        return
+
     black_list: List[str] = sp_config.get_config("BlackList").data
     shield_list = core_plugins_config.get_config("ShieldQQBot").data
     show_receive: bool = log_config.get_config("ShowReceive").data

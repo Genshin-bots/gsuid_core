@@ -1,7 +1,7 @@
 from typing import List, Type, Union, Optional, Sequence
 
-from sqlmodel import Field, Index, select, update
-from sqlalchemy import UniqueConstraint, or_
+from sqlmodel import Field, Index, col, select, update
+from sqlalchemy import Row, UniqueConstraint, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.bot import Bot
@@ -151,35 +151,38 @@ class CoreUser(BaseBotIDModel, table=True):
 
     @classmethod
     @with_session
-    async def clean_repeat_user(
-        cls,
-        session: AsyncSession,
-    ):
-        # 移除重复的rows
-        datas = await cls.get_all_data()
-        _lst = []
-        for data in datas:
-            if (
-                data.bot_id,
-                data.user_id,
-                data.group_id,
-                data.user_name,
-            ) in _lst or data.group_id == "1":
-                await cls.delete_row(
-                    bot_id=data.bot_id,
-                    user_id=data.user_id,
-                    group_id=data.group_id,
-                    user_name=data.user_name,
-                )
+    async def clean_repeat_user(cls, session: AsyncSession):
+        # 1. 仅查询去重所需的必要字段，避免全量加载
+        statement = select(cls.bot_id, cls.user_id, cls.group_id, cls.user_name)
+        results = await session.execute(statement)
+        all_rows: Sequence[Row] = results.all()
+
+        logger.info(f"[clean_repeat_user] 共查询到 {len(all_rows)} 条记录")
+
+        seen = set()
+        to_delete_ids = []
+
+        # 2. 在 Python 内存中高效筛选重复 ID
+        for row in all_rows:
+            # 逻辑：group_id 为 "1" 或者 组合键已存在
+            identifier = (row.bot_id, row.user_id, row.group_id)
+
+            if row.group_id == "1" or identifier in seen:
+                to_delete_ids.append(row.id)
             else:
-                _lst.append(
-                    (
-                        data.bot_id,
-                        data.user_id,
-                        data.group_id,
-                        data.user_name,
-                    )
-                )
+                seen.add(identifier)
+
+        # 3. 分批删除（每批 2000 条），防止 SQL 语句过长或锁表时间过久
+        if to_delete_ids:
+            batch_size = 2000
+            for i in range(0, len(to_delete_ids), batch_size):
+                batch = to_delete_ids[i : i + batch_size]
+                await session.execute(delete(cls).where(col(cls.id).in_(batch)))
+                logger.info(f"[clean_repeat_user] 已删除 {len(batch)} 条重复记录")
+
+            await session.commit()
+
+        return len(to_delete_ids)
 
     @classmethod
     @with_session
@@ -306,29 +309,36 @@ class CoreGroup(BaseBotIDModel, table=True):
 
     @classmethod
     @with_session
-    async def clean_repeat_group(
-        cls,
-        session: AsyncSession,
-    ):
-        # 移除重复的rows
-        datas = await cls.get_all_data()
-        _lst = []
-        for data in datas:
-            if (
-                data.bot_id,
-                data.group_id,
-            ) in _lst or data.group_id == "1":
-                await cls.delete_row(
-                    bot_id=data.bot_id,
-                    group_id=data.group_id,
-                )
+    async def clean_repeat_group(cls, session: AsyncSession):
+        statement = select(cls.id, cls.bot_id, cls.group_id)
+        results = await session.execute(statement)
+        all_rows = results.all()
+
+        logger.info(f"[clean_repeat_group] 共查询到 {len(all_rows)} 条记录")
+
+        seen = set()
+        to_delete_ids = []
+
+        # 2. 线性扫描去重
+        for row in all_rows:
+            identifier = (row.bot_id, row.group_id)
+
+            if row.group_id == "1" or identifier in seen:
+                to_delete_ids.append(row.id)
             else:
-                _lst.append(
-                    (
-                        data.bot_id,
-                        data.group_id,
-                    )
-                )
+                seen.add(identifier)
+
+        # 3. 执行批量删除
+        if to_delete_ids:
+            batch_size = 2000
+            for i in range(0, len(to_delete_ids), batch_size):
+                batch = to_delete_ids[i : i + batch_size]
+                await session.execute(delete(cls).where(col(cls.id).in_(batch)))
+                logger.info(f"[clean_repeat_group] 已删除 {len(batch)} 条重复记录")
+
+            await session.commit()
+
+        return len(to_delete_ids)
 
     @classmethod
     @with_session
