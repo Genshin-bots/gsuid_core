@@ -8,7 +8,7 @@ from copy import deepcopy
 from string import digits, ascii_letters
 from typing import Dict, Union, Optional, cast
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 from .tools import (
     random_hex,
@@ -242,7 +242,7 @@ class AccountMysApi(PassMysApi):
                 headers=header,
                 json=data,
                 proxy=proxy,
-                timeout=300,
+                timeout=ClientTimeout(total=300),
             ) as resp:
                 raw_data = await resp.json()
                 if "retcode" in raw_data and raw_data["retcode"] == 0:

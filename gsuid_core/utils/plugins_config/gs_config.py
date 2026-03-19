@@ -92,8 +92,15 @@ class StringConfig:
 
     def sort_config(self):
         _config = {}
+
         for i in self.config_list:
-            _config[i] = self.config[i]
+            if i in self.config:
+                _config[i] = self.config[i]
+
+        for i in self.config:
+            if i not in _config:
+                _config[i] = self.config[i]
+
         self.config = _config
 
         self.write_config()
@@ -163,6 +170,7 @@ class StringConfig:
                 self.config[key].title = _defalut.title
                 self.config[key].desc = _defalut.desc
 
+        """
         # 对默认值没有的值，直接删除
         delete_keys = []
         for key in self.config:
@@ -170,6 +178,7 @@ class StringConfig:
                 delete_keys.append(key)
         for key in delete_keys:
             self.config.pop(key)
+        """
 
         # 重新写回
         self.sort_config()
@@ -211,6 +220,40 @@ class StringConfig:
                 return False
         else:
             return False
+
+    def migrate_from(self, old_configs: Union["StringConfig", List["StringConfig"]]):
+        """
+        自动从旧配置实例中吸取同名键的数据（仅迁移用户设定的 data 值，保留新配置的 title/desc）。
+        完成后自动从旧文件中清理该键。
+        """
+        if not isinstance(old_configs, list):
+            old_configs = [old_configs]
+
+        changed = False
+
+        for old_config in old_configs:
+            old_changed = False
+
+            # 遍历当前新配置合法的所有键
+            for key in self.config_list:
+                # 如果旧配置里有这个键
+                if key in old_config.config:
+                    # 仅转移最核心的 data 用户数据，这样就不会覆盖新配置的文本描述
+                    self.config[key].data = old_config.config[key].data  # type: ignore
+                    changed = True
+
+                    # 既然转移成功了，就从旧配置里物理删除它
+                    old_config.config.pop(key)
+                    old_changed = True
+                    logger.info(f"[配置迁移] 已将配置项 [{key}] 从 {old_config.config_name} 转移至 {self.config_name}")
+
+            # 如果旧配置被掏空了某些键，保存旧配置
+            if old_changed:
+                old_config.sort_config()
+
+        # 如果新配置吸收了数据，保存新配置
+        if changed:
+            self.sort_config()
 
 
 all_config_list: Dict[str, StringConfig] = {}
