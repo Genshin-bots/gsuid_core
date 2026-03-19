@@ -80,7 +80,14 @@ async def restart_genshinuid(
             f"kill -9 {pid} & {get_restart_command()}",
             shell=True,
         )
+    elif platform.system() == "Darwin":
+        # macOS (Darwin) 使用 kill 命令，与 Linux 相同
+        subprocess.Popen(
+            f"kill -9 {pid} & {get_restart_command()}",
+            shell=True,
+        )
     else:
+        # Windows
         subprocess.Popen(
             f"taskkill /F /PID {pid} & {get_restart_command()}",
             shell=True,
