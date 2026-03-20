@@ -9,7 +9,7 @@ from hashlib import sha256
 from datetime import datetime, timedelta
 
 import aiofiles
-from fastapi import Header, Request
+from fastapi import File, Header, Request, UploadFile
 from sqlmodel import func, select
 
 from gsuid_core.config import core_config
@@ -47,9 +47,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 async def get_user_by_email(email: str) -> Optional[WebUser]:
     """从数据库获取用户"""
-    async with async_maker() as session:
-        result = await session.execute(select(WebUser).where(WebUser.email == email))
-        return result.scalars().first()
+    return await WebUser.get_user_by_email(email=email)
 
 
 async def create_user_in_db(
@@ -76,15 +74,7 @@ async def create_user_in_db(
 
 async def update_user_avatar_in_db(email: str, avatar_url: str) -> int:
     """在数据库中更新用户头像"""
-    async with async_maker() as session:
-        result = await session.execute(select(WebUser).where(WebUser.email == email))
-        user = result.scalars().first()
-        if user:
-            user.avatar = avatar_url
-            user.updated_at = datetime.now()
-            await session.commit()
-            return 1
-        return 0
+    return await WebUser.update_avatar(email=email, avatar_url=avatar_url)
 
 
 async def get_admin_count() -> int:
@@ -275,7 +265,10 @@ async def get_current_user(request: Request, authorization: str | None = Header(
 
 
 @app.post("/api/auth/avatar")
-async def upload_avatar(request: Request, authorization: str | None = Header(default=None)):
+async def upload_avatar(
+    avatar: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
     """Upload user avatar"""
     user_data = verify_token(authorization)
     if not user_data:
@@ -286,17 +279,11 @@ async def upload_avatar(request: Request, authorization: str | None = Header(def
 
     # Read the multipart form data
     try:
-        form = await request.form()
-        avatar_file = form.get("avatar")
-
-        if not avatar_file or isinstance(avatar_file, str):
-            return {"status": 1, "msg": "请选择头像文件"}
-
         # Get user email
         user_email = user_data["user"]["email"]
 
         # Get filename and extension
-        avatar_filename = getattr(avatar_file, "filename", None) or "avatar.png"
+        avatar_filename = avatar.filename or "avatar.png"
         ext = avatar_filename.split(".")[-1] if "." in avatar_filename else "png"
 
         # Generate filename
@@ -304,7 +291,7 @@ async def upload_avatar(request: Request, authorization: str | None = Header(def
         file_path = AVATAR_PATH / filename
 
         # Save file
-        content = await avatar_file.read()
+        content = await avatar.read()
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(content)
 
@@ -354,3 +341,64 @@ async def get_avatar(request: Request, filename: str):
 
         logger.warning(f"Failed to get avatar: {e}")
         return {"status": 1, "msg": "获取头像失败"}
+
+
+@app.post("/api/auth/name")
+async def update_name(request: Request, data: Dict, authorization: str | None = Header(default=None)):
+    """Update user name"""
+    user_data = verify_token(authorization)
+    if not user_data:
+        return {"status": 1, "msg": "未授权", "data": None}
+
+    name = data.get("name", "")
+    if not name or len(name.strip()) == 0:
+        return {"status": 1, "msg": "用户名不能为空"}
+
+    if len(name) > 50:
+        return {"status": 1, "msg": "用户名不能超过50个字符"}
+
+    user_email = user_data["user"]["email"]
+
+    # Update name in database
+    result = await WebUser.update_name(email=user_email, name=name.strip())
+    if result == 0:
+        # Update in active_tokens
+        for token, tdata in active_tokens.items():
+            if tdata["user"]["email"] == user_email:
+                tdata["user"]["name"] = name.strip()
+
+        return {"status": 0, "msg": "用户名更新成功", "data": {"name": name.strip()}}
+
+    return {"status": 1, "msg": "用户名更新失败"}
+
+
+@app.post("/api/auth/password")
+async def update_password(request: Request, data: Dict, authorization: str | None = Header(default=None)):
+    """Update user password"""
+    user_data = verify_token(authorization)
+    if not user_data:
+        return {"status": 1, "msg": "未授权", "data": None}
+
+    old_password = data.get("old_password", "")
+    new_password = data.get("new_password", "")
+
+    if not old_password or not new_password:
+        return {"status": 1, "msg": "请输入旧密码和新密码"}
+
+    if len(new_password) < 6:
+        return {"status": 1, "msg": "新密码长度至少6位"}
+
+    user_email = user_data["user"]["email"]
+
+    # Verify old password
+    user = await get_user_by_email(user_email)
+    if not user or not verify_password(old_password, user.password_hash):
+        return {"status": 1, "msg": "旧密码错误"}
+
+    # Update password in database
+    new_password_hash = hash_password(new_password)
+    result = await WebUser.update_password(email=user_email, new_password_hash=new_password_hash)
+    if result == 0:
+        return {"status": 0, "msg": "密码更新成功"}
+
+    return {"status": 1, "msg": "密码更新失败"}

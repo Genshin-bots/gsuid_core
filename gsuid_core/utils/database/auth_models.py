@@ -66,6 +66,23 @@ class WebUser(BaseIDModel, table=True):
 
     @classmethod
     @with_session
+    async def update_name(
+        cls,
+        session: AsyncSession,
+        email: str,
+        name: str,
+    ) -> int:
+        """更新用户名"""
+        return await cls.update_data_by_data(
+            select_data={"email": email},
+            update_data={
+                "name": name,
+                "updated_at": datetime.now(),
+            },
+        )
+
+    @classmethod
+    @with_session
     async def update_password(
         cls,
         session: AsyncSession,
