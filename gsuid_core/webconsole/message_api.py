@@ -29,7 +29,7 @@ is_clean_pic = core_plugins_config.get_config("EnableCleanPicSrv").data
 pic_expire_time = core_plugins_config.get_config("ScheduledCleanPicSrv").data
 
 
-@app.post("/genshinuid/api/BatchPush")
+@app.post("/api/BatchPush")
 async def batch_push(request: Request, data: Dict, _: Dict = Depends(require_auth)):
     """
     批量消息推送接口
@@ -129,7 +129,7 @@ async def batch_push(request: Request, data: Dict, _: Dict = Depends(require_aut
 # ===================
 
 
-@app.post("/genshinuid/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}")
+@app.post("/api/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}")
 async def upload_image(
     request: Request,
     UPLOAD_PATH: str,
@@ -167,7 +167,7 @@ async def upload_image(
     return {"status": 0, "msg": "上传成功", "data": {"filename": file_name}}
 
 
-@app.get("/genshinuid/getImage/{suffix}/{filename}/{IMAGE_PATH:path}")
+@app.get("/api/getImage/{suffix}/{filename}/{IMAGE_PATH:path}")
 async def get_image(
     request: Request,
     IMAGE_PATH: str,
@@ -203,8 +203,8 @@ async def delete_image(image_path: Path):
         image_path.unlink()
 
 
-@app.head("/genshinuid/image/{image_id}")
-@app.get("/genshinuid/image/{image_id}")
+@app.head("/api/image/{image_id}")
+@app.get("/api/image/{image_id}")
 async def get_resource_image(
     image_id: str,
     background_tasks: BackgroundTasks,

@@ -310,7 +310,7 @@ async def _image_to_local_url(image: Union[bytes, str]) -> List[Message]:
     name = f"{uuid.uuid1()}.{suffix}"
     path = image_res / name
     path.write_bytes(image_bytes)
-    data = f"link://{pic_srv}/genshinuid/image/{name}"
+    data = f"link://{pic_srv}/api/image/{name}"
     return [
         Message(type="image", data=data),
         MessageSegment.image_size(_image.size),

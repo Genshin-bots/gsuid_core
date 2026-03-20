@@ -10,6 +10,7 @@ from gsuid_core.webconsole import (
     assets_api,
     backup_api,
     system_api,
+    message_api,
     plugins_api,
     database_api,
     dashboard_api,
@@ -45,4 +46,5 @@ __all__ = [
     "GsAdminModel",
     "site",
     "_setup_frontend",
+    "message_api",
 ]
