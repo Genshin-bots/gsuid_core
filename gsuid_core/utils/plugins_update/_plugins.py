@@ -44,11 +44,60 @@ async def uninstall_plugin(path: Path):
     if not path.exists():
         return f"❌ 插件 {path.name} 不存在!"
     if path.is_dir():
-        shutil.rmtree(path)
-        return f"✅ 插件目录 {path.name} 删除成功!"
+        # Windows下处理被锁定的文件
+        def onerror(func, path, exc):
+            """处理删除文件时的权限错误"""
+            import stat
+
+            # 检查文件是否只读
+            if not os.access(path, os.W_OK):
+                # 尝试移除只读属性
+                try:
+                    os.chmod(path, stat.S_IWUSR)
+                    func(path)
+                except Exception:
+                    pass  # 忽略二次错误
+            else:
+                raise exc
+
+        try:
+            shutil.rmtree(path)
+            return f"✅ 插件目录 {path.name} 删除成功!"
+        except PermissionError:
+            # 尝试使用onerror回调处理被锁定的文件
+            try:
+                shutil.rmtree(path, onexc=onerror)
+                if path.exists():
+                    # 仍存在则尝试手动删除
+                    _try_manual_delete(path)
+                return f"✅ 插件目录 {path.name} 删除成功!"
+            except Exception:
+                return f"⚠️ 插件目录 {path.name} 部分文件被锁定,请手动删除或重启后重试!"
     else:
         path.unlink()
         return f"✅ 插件文件 {path.name} 删除成功!"
+
+
+def _try_manual_delete(path: Path):
+    """手动尝试删除目录内容"""
+    import stat
+
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                os.chmod(item, stat.S_IWUSR)
+                item.unlink()
+            elif item.is_dir():
+                os.chmod(item, stat.S_IWUSR)
+                shutil.rmtree(item, ignore_errors=True)
+        except Exception:
+            pass
+    # 最后尝试删除根目录
+    try:
+        os.chmod(path, stat.S_IWUSR)
+        path.rmdir()
+    except Exception:
+        pass
 
 
 # 传入一个path对象

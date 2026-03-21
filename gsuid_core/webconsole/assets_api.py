@@ -23,7 +23,10 @@ class UploadRequest(BaseModel):
 
 
 @app.post("/api/assets/upload")
-async def upload_asset(data: UploadRequest, _user: Dict = Depends(require_auth)):
+async def upload_asset(
+    data: UploadRequest,
+    _user: Dict = Depends(require_auth),
+):
     """上传图片并返回本地绝对路径和预览URL"""
     try:
         # 解析 Base64

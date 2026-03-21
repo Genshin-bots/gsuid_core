@@ -341,8 +341,14 @@ async def get_table_data(
     table_name: str,
     page: int = 1,
     per_page: int = 20,
+    search: str = "",
+    search_columns: str = "",
+    filter_columns: str = "",
+    filter_values: str = "",
 ) -> PaginatedData:
-    """Get paginated data from a table"""
+    """Get paginated data from a table with optional search and filter"""
+    from sqlmodel import or_, and_
+
     table_info = get_table_info(table_name)
     if not table_info:
         return PaginatedData([], 0, page, per_page)
@@ -351,14 +357,73 @@ async def get_table_data(
 
     try:
         async with async_maker() as session:
+            # 构建查询条件
+            conditions = []
+
+            # 处理搜索条件 (search)
+            if search:
+                search_term = f"%{search}%"
+                search_conditions = []
+
+                # 确定搜索列：如果指定了 search_columns，则只搜索指定列；否则搜索所有文本列
+                if search_columns:
+                    search_col_list = [col.strip() for col in search_columns.split(",")]
+                else:
+                    # 默认搜索所有文本类型列
+                    search_col_list = [
+                        col.name for col in table_info.columns if col.col_type in ("str", "text", "json")
+                    ]
+
+                for col_name in search_col_list:
+                    # 验证列名是否有效
+                    if col_name in [col.name for col in table_info.columns]:
+                        search_conditions.append(getattr(model_class, col_name).ilike(search_term))
+
+                if search_conditions:
+                    conditions.append(or_(*search_conditions))
+
+            # 处理筛选条件 (filter_columns 和 filter_values)
+            if filter_columns and filter_values:
+                filter_col_list = [col.strip() for col in filter_columns.split(",")]
+                filter_val_list = [val.strip() for val in filter_values.split(",")]
+
+                # 如果列数和值数不匹配，以列数为准
+                min_len = min(len(filter_col_list), len(filter_val_list))
+
+                for i in range(min_len):
+                    col_name = filter_col_list[i]
+                    filter_val = filter_val_list[i]
+
+                    # 验证列名是否有效
+                    if col_name in [col.name for col in table_info.columns]:
+                        # 对于文本列使用模糊匹配，其他列使用精确匹配
+                        col_info = next((col for col in table_info.columns if col.name == col_name), None)
+                        if col_info and col_info.col_type in ("str", "text", "json"):
+                            conditions.append(getattr(model_class, col_name).ilike(f"%{filter_val}%"))
+                        else:
+                            conditions.append(getattr(model_class, col_name) == filter_val)
+
+            # 构建最终的查询
+            if conditions:
+                where_clause = and_(*conditions)
+            else:
+                where_clause = None
+
             # 获取总数
-            count_query = select(func.count()).select_from(model_class)
+            if where_clause is not None:
+                count_query = select(func.count()).select_from(model_class).where(where_clause)
+            else:
+                count_query = select(func.count()).select_from(model_class)
             count_result = await session.execute(count_query)
             total = count_result.scalar() or 0
 
             # 获取分页数据
             offset = (page - 1) * per_page
-            query = select(model_class).offset(offset).limit(per_page)
+            if where_clause is not None:
+                query = select(model_class).where(where_clause).offset(offset).limit(per_page)
+            else:
+                query = select(model_class).offset(offset).limit(per_page)
+
             result = await session.execute(query)
             items = result.scalars().all()
 

@@ -105,11 +105,23 @@ async def get_table_data_api(
     table_name: str,
     page: int = 1,
     per_page: int = 20,
+    search: str = "",
+    search_columns: str = "",
+    filter_columns: str = "",
+    filter_values: str = "",
     _user: Dict = Depends(require_auth),
 ):
-    """Get paginated data from table"""
+    """Get paginated data from table with optional search and filter"""
     try:
-        result = await get_table_data(table_name, page=page, per_page=per_page)
+        result = await get_table_data(
+            table_name,
+            page=page,
+            per_page=per_page,
+            search=search,
+            search_columns=search_columns,
+            filter_columns=filter_columns,
+            filter_values=filter_values,
+        )
         return {
             "status": 0,
             "msg": "ok",

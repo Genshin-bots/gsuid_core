@@ -515,7 +515,7 @@ async def install_plugin(
 
         result = await install_plugin(plugin_id)
 
-        if result:
+        if result == 0:
             return {"status": 0, "msg": "插件安装成功"}
         else:
             return {"status": 1, "msg": "插件安装失败"}
@@ -548,9 +548,10 @@ async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict = Depen
         plugin_path = PLUGINS_PATH / plugin_id
         result = await uninstall_plugin(plugin_path)
 
-        if result:
-            return {"status": 0, "msg": "插件卸载成功"}
+        # 检查结果中是否包含失败标记
+        if "❌" in result:
+            return {"status": 1, "msg": result}
         else:
-            return {"status": 1, "msg": "插件卸载失败"}
+            return {"status": 0, "msg": result}
     except Exception as e:
         return {"status": 1, "msg": f"卸载失败: {str(e)}"}

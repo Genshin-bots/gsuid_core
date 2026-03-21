@@ -30,4 +30,4 @@ THEME_CONFIG_PATH = gs_data_path / "theme_config.json"
 
 WEBCONSOLE_PATH = Path(__file__).parent / "webconsole"
 DIST_PATH = WEBCONSOLE_PATH / "dist"
-DIST_EX_PATH = gs_data_path / "webconsole_dist"
+DIST_EX_PATH = gs_data_path / "dist"

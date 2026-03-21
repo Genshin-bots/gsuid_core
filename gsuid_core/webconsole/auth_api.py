@@ -45,11 +45,6 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
-async def get_user_by_email(email: str) -> Optional[WebUser]:
-    """从数据库获取用户"""
-    return await WebUser.get_user_by_email(email=email)
-
-
 async def create_user_in_db(
     email: str,
     name: str,
@@ -72,11 +67,6 @@ async def create_user_in_db(
         return user
 
 
-async def update_user_avatar_in_db(email: str, avatar_url: str) -> int:
-    """在数据库中更新用户头像"""
-    return await WebUser.update_avatar(email=email, avatar_url=avatar_url)
-
-
 async def get_admin_count() -> int:
     """获取数据库中admin用户的数量"""
     async with async_maker() as session:
@@ -95,7 +85,7 @@ async def api_login(request: Request, data: Dict):
         return {"status": 1, "msg": "请输入邮箱和密码"}
 
     # 从数据库获取用户
-    user = await get_user_by_email(email)
+    user = await WebUser.get_user_by_email(email=email)
 
     if user and verify_password(password, user.password_hash):
         # Generate token
@@ -158,7 +148,7 @@ async def api_register(request: Request, data: Dict):
         return {"status": 1, "msg": "密码长度至少6位"}
 
     # 检查用户是否已存在
-    existing_user = await get_user_by_email(email)
+    existing_user = await WebUser.get_user_by_email(email=email)
     if existing_user:
         return {"status": 1, "msg": "该邮箱已被注册"}
 
@@ -251,7 +241,7 @@ async def get_current_user(request: Request, authorization: str | None = Header(
 
     # 从数据库获取最新用户信息
     email = user_data["user"]["email"]
-    db_user = await get_user_by_email(email)
+    db_user = await WebUser.get_user_by_email(email=email)
     if db_user:
         user_data["user"]["name"] = db_user.name
         user_data["user"]["role"] = db_user.role
@@ -297,7 +287,7 @@ async def upload_avatar(
 
         # Update user avatar in database
         avatar_url = f"/api/auth/avatar/{filename}"
-        await update_user_avatar_in_db(user_email, avatar_url)
+        await WebUser.update_avatar(email=user_email, avatar_url=avatar_url)
 
         # Update in active_tokens
         for token, data in active_tokens.items():
@@ -391,7 +381,7 @@ async def update_password(request: Request, data: Dict, authorization: str | Non
     user_email = user_data["user"]["email"]
 
     # Verify old password
-    user = await get_user_by_email(user_email)
+    user = await WebUser.get_user_by_email(email=user_email)
     if not user or not verify_password(old_password, user.password_hash):
         return {"status": 1, "msg": "旧密码错误"}
 

@@ -105,43 +105,15 @@ OPENAI_CONFIG: Dict[str, GSC] = {
     ),
 }
 
-
-GEMINI_CONFIG: Dict[str, GSC] = {
-    "base_url": GsStrConfig(
-        "基础URL",
-        "指定Gemini API的基础URL, 注意是以 /v1 结尾",
-        "https://api.gemini.com/v1",
-        options=["https://api.gemini.com/v1"],
-    ),
-    "api_key": GsListStrConfig(
-        "API密钥",
-        "指定Gemini API的密钥, 注意是以 sk- 开头, 不要泄露, 支持添加多个",
-        ["sk-"],
-        options=["sk-"],
-    ),
-    "model": GsStrConfig(
-        "模型",
-        "指定Gemini API的模型",
-        "gemini-1.5",
-        options=["gemini-1.5"],
-    ),
-}
-
 ai_config = StringConfig(
-    "GsCore AI配置",
+    "GsCore AI AI配置",
     get_res_path("AI_Core") / "ai_config.json",
     AI_CONFIG,
 )
 
 
 openai_config = StringConfig(
-    "GsCore OpenAI配置",
+    "GsCore AI OpenAI配置",
     get_res_path("AI_Core") / "openai_config.json",
     OPENAI_CONFIG,
-)
-
-gemini_config = StringConfig(
-    "GsCore Gemini配置",
-    get_res_path("AI_Core") / "gemini_config.json",
-    GEMINI_CONFIG,
 )
