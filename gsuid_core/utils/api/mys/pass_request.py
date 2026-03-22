@@ -1,5 +1,7 @@
+import ssl
 from typing import Dict, Tuple, Union, Optional
 
+import certifi
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
@@ -8,7 +10,7 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from .tools import get_ds_token
 from .base_request import BaseMysApi
 
-ssl_verify = core_plugins_config.get_config("MhySSLVerify").data
+ssl_context = ssl.create_default_context(cafile=certifi.where())
 
 
 class PassMysApi(BaseMysApi):
@@ -18,7 +20,11 @@ class PassMysApi(BaseMysApi):
         # 代码来源：GITHUB项目MIT开源
         _pass_api = core_plugins_config.get_config("_pass_API").data
         if _pass_api:
-            async with ClientSession(connector=TCPConnector(verify_ssl=ssl_verify)) as client:
+            async with ClientSession(
+                connector=TCPConnector(
+                    ssl_context=ssl_context,
+                )
+            ) as client:
                 async with client.request(
                     url=f"{_pass_api}&gt={gt}&challenge={ch}",
                     method="GET",

@@ -1,6 +1,7 @@
 import asyncio
 from io import BytesIO
 
+from aiohttp import ClientTimeout
 from aiohttp.client import ClientSession
 
 from gsuid_core.logger import logger
@@ -8,7 +9,7 @@ from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
 from .utils import is_auto_delete
 
-SERVER = pic_upload_config.get_config("PicUploadServer").data
+SERVER = pic_upload_config.get_config("PicUploader").data
 TOKEN = pic_upload_config.get_config("smms_token").data
 
 API = "https://sm.ms/api/v2"
@@ -26,7 +27,7 @@ class SMMS:
                 "GET",
                 url=f"{API}/delete/{hash_key}",
                 headers=self.header,
-                timeout=300,
+                timeout=ClientTimeout(total=300),
             ) as resp:
                 logger.info("[sm.ms / upload] 开始删除...")
                 raw_data = await resp.json()
@@ -39,7 +40,7 @@ class SMMS:
                 url=f"{API}/upload",
                 headers=self.header,
                 data={"smfile": files.getvalue()},
-                timeout=300,
+                timeout=ClientTimeout(total=300),
             ) as resp:
                 logger.info("[sm.ms / upload] 开始上传...")
                 raw_data = await resp.json()

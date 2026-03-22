@@ -4,11 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from msgspec import Meta
 from apscheduler.job import Job
-from ai_core.register import ai_tools
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.register import ai_tools
 
 misfire_grace_time = core_config.get_config("misfire_grace_time")
 

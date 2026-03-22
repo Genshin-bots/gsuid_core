@@ -28,7 +28,6 @@ from gsuid_core.ai_core.mode_classifier import classifier_service
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     log_config,
-    core_plugins_config,
 )
 
 command_start = core_config.get_config("command_start")
@@ -71,7 +70,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         return
 
     black_list: List[str] = sp_config.get_config("BlackList").data
-    shield_list = core_plugins_config.get_config("ShieldQQBot").data
+    shield_list = sp_config.get_config("ShieldQQBot").data
     show_receive: bool = log_config.get_config("ShowReceive").data
     same_user_cd: int = sp_config.get_config("SameUserEventCD").data
 

@@ -18,7 +18,19 @@ from gsuid_core.utils.backup.backup_core import backup_config, copy_and_rebase_p
 
 @app.get("/api/backup/files")
 async def get_backup_files(request: Request, _user: Dict = Depends(require_auth)):
-    """Get all backup files"""
+    """
+    获取所有备份文件列表
+
+    返回备份目录中所有 .zip 格式的备份文件信息。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 备份文件列表，每项包含 fileName、downloadUrl、deleteUrl、size、created
+    """
     host = request.headers.get("host")
     scheme = request.url.scheme
     base_url = f"{scheme}://{host}"
@@ -38,7 +50,19 @@ async def get_backup_files(request: Request, _user: Dict = Depends(require_auth)
 
 @app.post("/api/backup/create")
 async def create_backup(request: Request, _user: Dict = Depends(require_auth)):
-    """Create a new backup"""
+    """
+    创建新的备份文件
+
+    根据当前配置执行备份操作，将指定目录和配置打包为 zip 文件。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     retcode = copy_and_rebase_paths(None, "NowFile")
     if retcode != 0:
         return {"status": 1, "msg": "备份创建失败"}
@@ -48,7 +72,18 @@ async def create_backup(request: Request, _user: Dict = Depends(require_auth)):
 
 @app.delete("/api/backup/{file_id}")
 async def delete_backup(request: Request, file_id: str, _user: Dict = Depends(require_auth)):
-    """Delete a backup file"""
+    """
+    删除指定的备份文件
+
+    Args:
+        request: FastAPI 请求对象
+        file_id: 备份文件名
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     _path = Path(backup_path / file_id)
     if not _path.exists():
         return {"status": 1, "msg": "文件未找到"}
@@ -62,7 +97,22 @@ async def delete_backup(request: Request, file_id: str, _user: Dict = Depends(re
 
 @app.get("/api/backup/download")
 async def download_backup(request: Request, _user: Dict = Depends(require_auth)):
-    """Download a backup file"""
+    """
+    下载备份文件
+
+    根据 file_id 参数查找并返回对应的备份文件供下载。
+
+    Args:
+        request: FastAPI 请求对象，需包含 query 参数 file_id
+        _user: 认证用户信息
+
+    Returns:
+        文件二进制内容，Content-Type 为 application/octet-stream
+
+    Raises:
+        400: 缺少文件标识符
+        404: 文件未找到
+    """
     file_id = request.query_params.get("file_id")
 
     if not file_id:
@@ -82,7 +132,19 @@ async def download_backup(request: Request, _user: Dict = Depends(require_auth))
 
 @app.get("/api/backup/config")
 async def get_backup_config(request: Request, _user: Dict = Depends(require_auth)):
-    """Get backup configuration"""
+    """
+    获取备份配置信息
+
+    返回当前备份时间、备份目录、备份方式、WebDAV 等配置。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 备份配置对象
+    """
     raw_config = backup_config.get_raw_config()
 
     # 将backup_dir中的路径转换为相对于gs_data_path的相对路径
@@ -105,8 +167,21 @@ async def get_backup_config(request: Request, _user: Dict = Depends(require_auth
 
 @app.post("/api/backup/config")
 async def set_backup_config(request: Request, data: Dict, _user: Dict = Depends(require_auth)):
-    """Set backup configuration"""
-    backup_time: str = data.get("backup_time", "")
+    """
+    保存备份配置信息
+
+    更新备份时间、备份目录、备份方式、WebDAV 等配置项。
+
+    Args:
+        request: FastAPI 请求对象
+        data: 包含 backup_time、backup_dir、backup_method、webdav_url 等字段的字典
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        msg: 配置保存结果信息
+    """
+    backup_time = data.get("backup_time", "")
     backup_dir: list = data.get("backup_dir", [])
     backup_method: list = data.get("backup_method", [])
     webdav_url: str = data.get("webdav_url", "")
@@ -139,7 +214,19 @@ async def set_backup_config(request: Request, data: Dict, _user: Dict = Depends(
 
 @app.get("/api/backup/file-tree")
 async def get_backup_file_tree(request: Request, _user: Dict = Depends(require_auth)):
-    """Get file tree for backup selection (max 3 levels)"""
+    """
+    获取文件树用于备份选择
+
+    返回数据目录下最多 3 层深度的文件树结构，供用户选择需要备份的目录。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 文件树结构列表
+    """
 
     def build_file_tree(path: Path, root_path: Path, depth: int = 0):
         """Recursively build file tree structure with maximum 3 levels"""

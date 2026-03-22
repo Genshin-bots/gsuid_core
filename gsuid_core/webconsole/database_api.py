@@ -24,7 +24,19 @@ from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH
 
 @app.get("/api/database/plugins")
 async def get_database_plugins(request: Request, _user: Dict = Depends(require_auth)):
-    """Get all plugins with their databases"""
+    """
+    获取所有插件及其数据库信息
+
+    返回所有使用数据库的插件列表及其图标。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        data: 插件数据库信息列表
+    """
     try:
         plugins = get_all_plugin_databases()
 
@@ -64,7 +76,18 @@ async def get_database_plugins(request: Request, _user: Dict = Depends(require_a
 
 @app.get("/api/database/{plugin_id}/tables")
 async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict = Depends(require_auth)):
-    """Get tables for a specific plugin"""
+    """
+    获取指定插件的数据库表列表
+
+    Args:
+        plugin_id: 插件 ID
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1插件不存在
+        data: 插件表信息
+    """
     try:
         plugin = get_plugin_databases(plugin_id)
         if not plugin:
@@ -83,7 +106,20 @@ async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict = Depe
 
 @app.get("/api/database/table/{table_name}")
 async def get_table_metadata(table_name: str, request: Request, _user: Dict = Depends(require_auth)):
-    """Get table metadata including columns"""
+    """
+    获取数据表元数据
+
+    返回表的结构信息，包括列定义等。
+
+    Args:
+        table_name: 表名
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1表不存在
+        data: 表元数据
+    """
     try:
         table_info = get_table_info(table_name)
         if not table_info:
@@ -111,7 +147,25 @@ async def get_table_data_api(
     filter_values: str = "",
     _user: Dict = Depends(require_auth),
 ):
-    """Get paginated data from table with optional search and filter"""
+    """
+    获取数据表分页数据
+
+    支持搜索和过滤功能。
+
+    Args:
+        table_name: 表名
+        page: 页码，默认1
+        per_page: 每页数量，默认20
+        search: 搜索关键字
+        search_columns: 搜索列（逗号分隔）
+        filter_columns: 过滤列（逗号分隔）
+        filter_values: 过滤值（逗号分隔）
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 包含 items、total、page、per_page 的分页对象
+    """
     try:
         result = await get_table_data(
             table_name,
@@ -140,7 +194,18 @@ async def create_record_api(
     data: Dict = Body(...),
     _user: Dict = Depends(require_auth),
 ):
-    """Create a new record"""
+    """
+    创建新记录
+
+    Args:
+        table_name: 表名
+        data: 要创建的记录数据
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        data: 创建的记录
+    """
     try:
         record = await create_record(table_name, data)
         return {
@@ -162,7 +227,19 @@ async def update_record_api(
     data: Dict = Body(...),
     _user: Dict = Depends(require_auth),
 ):
-    """Update a record"""
+    """
+    更新记录
+
+    Args:
+        table_name: 表名
+        record_id: 记录 ID
+        data: 要更新的字段数据
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1记录不存在
+        data: 更新后的记录
+    """
     try:
         # Try to convert to int if it's numeric
         parsed_id: Any = record_id
@@ -192,7 +269,18 @@ async def delete_record_api(
     record_id: str,
     _user: Dict = Depends(require_auth),
 ):
-    """Delete a record"""
+    """
+    删除记录
+
+    Args:
+        table_name: 表名
+        record_id: 记录 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1记录不存在
+        msg: 操作结果信息
+    """
     try:
         # Try to convert to int if it's numeric
         parsed_id: Any = record_id

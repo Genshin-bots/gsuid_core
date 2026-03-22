@@ -14,9 +14,77 @@ from gsuid_core.webconsole.web_api import TEMP_DICT, require_auth
 from gsuid_core.utils.database.global_val_models import DataType, CoreDataSummary, CoreDataAnalysis
 
 
+def simplify_regex_command(command: str) -> str:
+    """
+    简化正则表达式命令，提取关键信息便于显示
+    """
+    # 如果不是正则表达式，直接返回
+    if not command.startswith("^") and "(?P<" not in command and "(?:" not in command:
+        return command
+
+    # 使用堆栈来匹配括号，找到第一个包含 | 的捕获组
+    stack = []
+    i = 0
+    while i < len(command):
+        if command[i : i + 4] == "(?P<":
+            # 命名捕获组开始
+            gt_pos = command.find(">", i)
+            if gt_pos != -1:
+                stack.append(("named", i, gt_pos))
+                i = gt_pos + 1
+                continue
+        elif command[i : i + 3] == "(?:":
+            # 非捕获组开始
+            stack.append(("non_capture", i))
+            i += 3
+            continue
+        elif command[i] == "(":
+            stack.append(("capture", i))
+            i += 1
+            continue
+        elif command[i] == ")":
+            # 结束一个组
+            if stack:
+                group_type, start, *extra = stack.pop()
+                if group_type == "named":
+                    gt_pos = extra[0]
+                    # 提取 > 后面的内容
+                    inner = command[gt_pos + 1 : i]
+                    if "|" in inner:
+                        return inner.split("|")[0]
+                elif group_type == "non_capture":
+                    # 提取 (?: 后面的内容
+                    inner = command[start + 3 : i]
+                    if "|" in inner:
+                        return inner.split("|")[0]
+                elif group_type == "capture":
+                    inner = command[start + 1 : i]
+                    if "|" in inner:
+                        return inner.split("|")[0]
+            i += 1
+            continue
+        i += 1
+
+    return command
+
+
 @app.get("/api/dashboard/metrics")
 async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Dict = Depends(require_auth)):
-    """Get key metrics for dashboard"""
+    """
+    获取 Dashboard 的关键指标数据
+
+    包括日活用户(DAU)、日活群(DAG)、月活用户(MAU)、月活群(MAG)、
+    留存率、新增用户、流失用户等核心数据。
+
+    Args:
+        request: FastAPI 请求对象
+        bot_id: Bot ID 筛选，格式为 bot_self_id:bot_id 或 "all"
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 包含 dau、dag、mau、mag、retention、newUsers、churnedUsers 等字段
+    """
     # 解析bot_id参数，支持格式：bot_self_id:bot_id 或者 "all"
     _bot_id = None
     _bot_self_id = None
@@ -70,7 +138,20 @@ async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Di
 
 @app.get("/api/dashboard/commands")
 async def get_dashboard_commands(request: Request, bot_id: str = "all", _user: Dict = Depends(require_auth)):
-    """Get command statistics for the last 30 days"""
+    """
+    获取最近 30 天的命令使用统计
+
+    按日期返回每天的命令发送数、接收数和调用次数。
+
+    Args:
+        request: FastAPI 请求对象
+        bot_id: Bot ID 筛选，格式为 bot_self_id:bot_id 或 "all"
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 包含 date、sentCommands、receivedCommands、commandCalls、imageGenerated 的列表
+    """
     data = []
     now = datetime.now()
 
@@ -106,7 +187,20 @@ async def get_dashboard_commands(request: Request, bot_id: str = "all", _user: D
 
 @app.get("/api/dashboard/users-groups")
 async def get_dashboard_users_groups(request: Request, bot_id: str = "all", _user: Dict = Depends(require_auth)):
-    """Get user and group data for the last 30 days"""
+    """
+    获取最近 30 天的用户和群组数据
+
+    按日期返回每天的用户数和群组数统计。
+
+    Args:
+        request: FastAPI 请求对象
+        bot_id: Bot ID 筛选，格式为 bot_self_id:bot_id 或 "all"
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 包含 date、users、groups 的列表
+    """
     data = []
     now = datetime.now()
 
@@ -142,7 +236,21 @@ async def get_dashboard_users_groups(request: Request, bot_id: str = "all", _use
 
 @app.get("/api/dashboard/daily/commands")
 async def get_daily_commands(request: Request, date: str, bot_id: str = "all", _user: Dict = Depends(require_auth)):
-    """Get command usage statistics for a specific date"""
+    """
+    获取指定日期的命令使用统计
+
+    返回该日期各命令的调用次数排行。
+
+    Args:
+        request: FastAPI 请求对象
+        date: 查询日期，格式为 YYYY-MM-DD
+        bot_id: Bot ID 筛选，格式为 bot_self_id:bot_id 或 "all"
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 命令统计列表，每项包含 command 和 count
+    """
     # 解析bot_id参数，支持格式：bot_self_id:bot_id 或者 "all"
     _bot_id = None
     _bot_self_id = None
@@ -190,7 +298,7 @@ async def get_daily_commands(request: Request, date: str, bot_id: str = "all", _
 
         # 按值从大到小排序
         sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-        result = [{"command": k, "count": v} for k, v in sorted_items]
+        result = [{"command": simplify_regex_command(k), "count": v} for k, v in sorted_items]
 
         return {
             "status": 0,
@@ -212,7 +320,21 @@ async def get_daily_commands(request: Request, date: str, bot_id: str = "all", _
 async def get_daily_group_triggers(
     request: Request, date: str, bot_id: str = "all", _user: Dict = Depends(require_auth)
 ):
-    """Get group command trigger statistics for a specific date"""
+    """
+    获取指定日期的群组命令触发统计
+
+    返回该日期各群组的命令触发排行（取前20个群组）。
+
+    Args:
+        request: FastAPI 请求对象
+        date: 查询日期，格式为 YYYY-MM-DD
+        bot_id: Bot ID 筛选，格式为 bot_self_id:bot_id 或 "all"
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 群组触发统计列表
+    """
     # 解析bot_id参数，支持格式：bot_self_id:bot_id 或者 "all"
     _bot_id = None
     _bot_self_id = None
@@ -238,7 +360,10 @@ async def get_daily_group_triggers(
 
         # 获取前8个命令，其他合并为"其他命令"
         sorted_commands = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-        top_commands = [k for k, v in sorted_commands[:8]] + ["其他命令"]
+        # 创建原始命令到简化命令的映射
+        cmd_mapping = {k: simplify_regex_command(k) for k, v in sorted_commands[:8]}
+        # 获取简化的命令名称列表
+        top_commands = list(cmd_mapping.values()) + ["其他命令"]
 
         # 构建结果
         result = []
@@ -246,8 +371,9 @@ async def get_daily_group_triggers(
             group_data = {"group": group_id}
             others = 0
             for cmd, count in cmds.items():
-                if cmd in top_commands:
-                    group_data[cmd] = count
+                simplified_cmd = cmd_mapping.get(cmd)
+                if simplified_cmd and simplified_cmd in top_commands:
+                    group_data[simplified_cmd] = count
                 else:
                     others += count
             # 补全所有top命令，没有的设为0
@@ -277,7 +403,21 @@ async def get_daily_group_triggers(
 async def get_daily_personal_triggers(
     request: Request, date: str, bot_id: str = "all", _user: Dict = Depends(require_auth)
 ):
-    """Get personal command trigger statistics for a specific date"""
+    """
+    获取指定日期的个人命令触发统计
+
+    返回该日期各用户的命令触发排行（取前20个用户）。
+
+    Args:
+        request: FastAPI 请求对象
+        date: 查询日期，格式为 YYYY-MM-DD
+        bot_id: Bot ID 筛选，格式为 bot_self_id:bot_id 或 "all"
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 个人触发统计列表
+    """
     # 解析bot_id参数，支持格式：bot_self_id:bot_id 或者 "all"
     _bot_id = None
     _bot_self_id = None
@@ -303,7 +443,10 @@ async def get_daily_personal_triggers(
 
         # 获取前8个命令，其他合并为"其他命令"
         sorted_commands = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-        top_commands = [k for k, v in sorted_commands[:8]] + ["其他命令"]
+        # 创建原始命令到简化命令的映射
+        cmd_mapping = {k: simplify_regex_command(k) for k, v in sorted_commands[:8]}
+        # 获取简化的命令名称列表
+        top_commands = list(cmd_mapping.values()) + ["其他命令"]
 
         # 构建结果
         result = []
@@ -311,8 +454,9 @@ async def get_daily_personal_triggers(
             user_data = {"user": user_id}
             others = 0
             for cmd, count in cmds.items():
-                if cmd in top_commands:
-                    user_data[cmd] = count
+                simplified_cmd = cmd_mapping.get(cmd)
+                if simplified_cmd and simplified_cmd in top_commands:
+                    user_data[simplified_cmd] = count
                 else:
                     others += count
             # 补全所有top命令，没有的设为0
@@ -341,8 +485,16 @@ async def get_daily_personal_triggers(
 @app.get("/api/dashboard/bots")
 async def get_dashboard_bots(_user: Dict = Depends(require_auth)):
     """
-    获取所有可用的Bot列表（bot_id - bot_self_id对）
-    用于Dashboard页面右上角的Bot选择器
+    获取所有可用的 Bot 列表
+
+    返回所有已注册的 bot_id - bot_self_id 对，用于 Dashboard 页面的 Bot 选择器。
+
+    Args:
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: Bot 列表，每项包含 id 和 name
     """
     try:
         # 从CoreDataSummary获取所有bot

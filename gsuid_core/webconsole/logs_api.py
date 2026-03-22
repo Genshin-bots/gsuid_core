@@ -25,7 +25,24 @@ async def get_logs(
     per_page: int = 50,
     _user: Dict = Depends(require_auth),
 ):
-    """Get logs with filtering and pagination"""
+    """
+    获取日志列表
+
+    支持按日期、级别、来源过滤和分页。
+
+    Args:
+        request: FastAPI 请求对象
+        date: 日期，格式 YYYY-MM-DD，默认今天
+        level: 日志级别筛选 (info/warn/error/debug)
+        source: 来源筛选
+        page: 页码，默认1
+        per_page: 每页数量，默认50
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，404日期不存在
+        data: 包含 count、rows、page、per_page 的分页对象
+    """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
@@ -127,7 +144,13 @@ async def get_available_log_dates(
 
 @app.get("/api/logs/sources")
 async def get_log_sources(request: Request, _user: Dict = Depends(require_auth)):
-    """Get available log sources"""
+    """
+    获取可用的日志来源列表
+
+    Returns:
+        status: 0成功
+        data: 来源列表
+    """
     return {
         "status": 0,
         "msg": "ok",
@@ -144,7 +167,23 @@ async def get_log_stats(
     per_page: int = 100,
     _user: Dict = Depends(require_auth),
 ):
-    """Get log statistics (total count and page count) without fetching all logs"""
+    """
+    获取日志统计信息
+
+    返回日志总数和页数统计，不返回具体日志内容。
+
+    Args:
+        request: FastAPI 请求对象
+        date: 日期，格式 YYYY-MM-DD，默认今天
+        level: 日志级别筛选
+        source: 来源筛选
+        per_page: 每页数量
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 统计信息
+    """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 

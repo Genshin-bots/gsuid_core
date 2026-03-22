@@ -27,7 +27,19 @@ async def upload_asset(
     data: UploadRequest,
     _user: Dict = Depends(require_auth),
 ):
-    """上传图片并返回本地绝对路径和预览URL"""
+    """
+    上传图片并返回本地绝对路径和预览URL
+
+    接收 Base64 编码的图片数据并保存到服务器，返回访问路径和预览 URL。
+
+    Args:
+        data: UploadRequest，包含 image(Base64)、filename、upload_to(可选)、target_filename(可选)
+
+    Returns:
+        status: 0成功，1失败
+        data.path: 文件绝对路径
+        data.url: 预览 URL
+    """
     try:
         # 解析 Base64
         if "," in data.image:
@@ -77,7 +89,23 @@ async def upload_asset(
 
 @app.get("/api/assets/preview")
 async def preview_asset(path: str, token: Optional[str] = None):
-    """预览本地图片"""
+    """
+    预览本地图片
+
+    通过 Base64 编码的路径访问服务器上的图片文件。
+
+    Args:
+        path: Base64 编码的文件路径
+        token: 可选的访问令牌
+
+    Returns:
+        图片文件响应
+
+    Raises:
+        HTTPException 403: 认证失败
+        HTTPException 404: 图片不存在
+        HTTPException 400: 预览失败
+    """
     # 验证 token
     from gsuid_core.webconsole.web_api import verify_token
 
@@ -132,7 +160,19 @@ async def preview_asset(path: str, token: Optional[str] = None):
 
 @app.delete("/api/assets/delete")
 async def delete_asset(path: str, _user: Dict = Depends(require_auth)):
-    """删除本地图片"""
+    """
+    删除本地图片
+
+    根据提供的文件路径删除服务器上的图片文件。
+
+    Args:
+        path: URL 解码后的文件路径
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     try:
         import urllib.parse
 

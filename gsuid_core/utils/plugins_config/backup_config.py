@@ -1,7 +1,7 @@
 from typing import Dict
 from pathlib import Path
 
-from .models import GSC, GsStrConfig, GsTimeConfig, GsListStrConfig
+from .models import GSC, GsStrConfig, GsTimeRConfig, GsListStrConfig
 
 # from gsuid_core.utils.database.base_models import DB_PATH
 DB_PATH = Path(__file__).parents[3] / "data" / "GsData.db"
@@ -14,10 +14,10 @@ BACKUP_CONFIG: Dict[str, GSC] = {
         ["file"],
         options=["file", "web_dav"],
     ),
-    "backup_time": GsTimeConfig(
+    "backup_time": GsTimeRConfig(
         "备份时间",
         "指定每日的备份时间",
-        "00:55",
+        (0, 55),
     ),
     "backup_dir": GsListStrConfig(
         "备份目录",

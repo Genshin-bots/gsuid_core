@@ -9,7 +9,7 @@ from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
 from .utils import is_auto_delete
 
-SERVER = pic_upload_config.get_config("PicUploadServer").data
+SERVER = pic_upload_config.get_config("PicUploader").data
 END_POINT = pic_upload_config.get_config("s3_endpoint").data
 ACCESS_KEY = pic_upload_config.get_config("s3_access_key").data
 SECRET_KEY = pic_upload_config.get_config("s3_secret_key").data

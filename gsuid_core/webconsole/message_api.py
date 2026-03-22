@@ -22,11 +22,11 @@ from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
 # 图片清理配置
-is_clean_pic = core_plugins_config.get_config("EnableCleanPicSrv").data
-pic_expire_time = core_plugins_config.get_config("ScheduledCleanPicSrv").data
+is_clean_pic = pic_upload_config.get_config("EnableCleanPicSrv").data
+pic_expire_time = pic_upload_config.get_config("ScheduledCleanPicSrv").data
 
 
 @app.post("/api/BatchPush")

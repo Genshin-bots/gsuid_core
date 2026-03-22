@@ -76,7 +76,19 @@ async def get_admin_count() -> int:
 
 @app.post("/api/auth/login")
 async def api_login(request: Request, data: Dict):
-    """Frontend login endpoint - generates token"""
+    """
+    用户登录接口
+
+    验证邮箱和密码，成功则生成 24 小时有效的访问令牌。
+
+    Args:
+        request: FastAPI 请求对象
+        data: 包含 email 和 password 的字典
+
+    Returns:
+        status: 0成功，1失败
+        data: 包含 user 和 token 的对象
+    """
 
     email = data.get("email", "")
     password = data.get("password", "")
@@ -123,7 +135,20 @@ async def api_login(request: Request, data: Dict):
 
 @app.post("/api/auth/register")
 async def api_register(request: Request, data: Dict):
-    """Frontend registration endpoint - creates new user"""
+    """
+    用户注册接口
+
+    创建新用户账号，需要提供有效的注册码。
+    首位注册用户自动设为管理员。
+
+    Args:
+        request: FastAPI 请求对象
+        data: 包含 name、email、password、register_code 的字典
+
+    Returns:
+        status: 0成功，1失败
+        data: 包含 user 和 token 的对象
+    """
 
     name = data.get("name", "")
     email = data.get("email", "")
@@ -224,7 +249,19 @@ async def check_admin_exists(request: Request):
 
 @app.post("/api/auth/logout")
 async def api_logout(request: Request, authorization: str | None = Header(default=None)):
-    """Frontend logout endpoint"""
+    """
+    用户登出接口
+
+    使当前令牌失效。
+
+    Args:
+        request: FastAPI 请求对象
+        authorization: Bearer 令牌
+
+    Returns:
+        status: 0成功
+        msg: 操作结果信息
+    """
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
         if token in active_tokens:
@@ -234,7 +271,19 @@ async def api_logout(request: Request, authorization: str | None = Header(defaul
 
 @app.get("/api/auth/me")
 async def get_current_user(request: Request, authorization: str | None = Header(default=None)):
-    """Get current user info"""
+    """
+    获取当前用户信息
+
+    通过令牌验证并返回用户详情。
+
+    Args:
+        request: FastAPI 请求对象
+        authorization: Bearer 令牌
+
+    Returns:
+        status: 0成功，1未授权
+        data: 用户信息对象
+    """
     user_data = verify_token(authorization)
     if not user_data:
         return {"status": 1, "msg": "未授权", "data": None}
@@ -259,7 +308,19 @@ async def upload_avatar(
     avatar: UploadFile = File(...),
     authorization: str | None = Header(default=None),
 ):
-    """Upload user avatar"""
+    """
+    上传用户头像
+
+    接收图片文件并保存，更新用户头像 URL。
+
+    Args:
+        avatar: 上传的头像文件
+        authorization: Bearer 令牌
+
+    Returns:
+        status: 0成功，1失败
+        data: 包含 avatar 路径的对象
+    """
     user_data = verify_token(authorization)
     if not user_data:
         return {"status": 1, "msg": "未授权", "data": None}
@@ -304,7 +365,16 @@ async def upload_avatar(
 
 @app.get("/api/auth/avatar/{filename}")
 async def get_avatar(request: Request, filename: str):
-    """Serve avatar files"""
+    """
+    获取用户头像文件
+
+    Args:
+        request: FastAPI 请求对象
+        filename: 头像文件名
+
+    Returns:
+        图片文件响应
+    """
     file_path = AVATAR_PATH / filename
     if not file_path.exists():
         return {"status": 1, "msg": "头像不存在"}
@@ -335,7 +405,18 @@ async def get_avatar(request: Request, filename: str):
 
 @app.post("/api/auth/name")
 async def update_name(request: Request, data: Dict, authorization: str | None = Header(default=None)):
-    """Update user name"""
+    """
+    更新用户名称
+
+    Args:
+        request: FastAPI 请求对象
+        data: 包含 name 的字典
+        authorization: Bearer 令牌
+
+    Returns:
+        status: 0成功，1失败
+        data: 包含新名称的对象
+    """
     user_data = verify_token(authorization)
     if not user_data:
         return {"status": 1, "msg": "未授权", "data": None}
@@ -364,7 +445,20 @@ async def update_name(request: Request, data: Dict, authorization: str | None = 
 
 @app.post("/api/auth/password")
 async def update_password(request: Request, data: Dict, authorization: str | None = Header(default=None)):
-    """Update user password"""
+    """
+    更新用户密码
+
+    需要验证旧密码后才能设置新密码。
+
+    Args:
+        request: FastAPI 请求对象
+        data: 包含 old_password 和 new_password 的字典
+        authorization: Bearer 令牌
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     user_data = verify_token(authorization)
     if not user_data:
         return {"status": 1, "msg": "未授权", "data": None}

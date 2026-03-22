@@ -14,7 +14,19 @@ from gsuid_core.webconsole.web_api import require_auth
 
 @app.get("/api/core/config")
 async def get_core_config(request: Request, _user: Dict = Depends(require_auth)):
-    """Get core configuration"""
+    """
+    获取核心配置
+
+    返回 GsCore 的核心配置项。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 核心配置对象
+    """
     config = core_config.config
     result = {}
     for key in CONFIG_DEFAULT:
@@ -31,7 +43,18 @@ async def get_core_config(request: Request, _user: Dict = Depends(require_auth))
 
 @app.post("/api/core/config")
 async def set_core_config(request: Request, data: Dict, _user: Dict = Depends(require_auth)):
-    """Set core configuration"""
+    """
+    保存核心配置
+
+    Args:
+        request: FastAPI 请求对象
+        data: 配置项键值对
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        msg: 配置保存结果信息
+    """
     result = {}
     for i in data:
         if (i in CONFIG_DEFAULT and isinstance(CONFIG_DEFAULT[i], List)) or i in ["log_output"]:

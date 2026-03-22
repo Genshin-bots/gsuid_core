@@ -2,7 +2,7 @@ from gsuid_core.sv import SV
 from gsuid_core.aps import scheduler
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
-from gsuid_core.models import Event
+from gsuid_core.models import Event, Tuple
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.database.models import (
     GsUser,
@@ -28,11 +28,8 @@ sv_core_backup = SV("Core备份", pm=0)
 DB_BACKUP = get_res_path(["GsCore", "database_backup"])
 
 CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
-backup_time: str = backup_config.get_config("backup_time").data
-backup_time = backup_time.lstrip("0")
-backup_hour, backup_minute = backup_time.split(":")
-if not backup_hour:
-    backup_hour = "0"
+backup_time: Tuple[int, int] = backup_config.get_config("backup_time").data
+backup_hour, backup_minute = backup_time
 
 
 @scheduler.scheduled_job(

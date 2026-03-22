@@ -1,4 +1,4 @@
-from typing import Dict, List, Union, Optional
+from typing import Dict, List, Tuple, Union, Optional
 
 import msgspec
 
@@ -43,7 +43,13 @@ class GsImageConfig(GsConfig, tag=True):
     suffix: str = "jpg"
 
 
+class GsTimeRConfig(GsConfig, tag=True):
+    data: Tuple[int, int]
+
+
 class GsTimeConfig(GsConfig, tag=True):
+    """deprecated/已废弃"""
+
     data: str
 
 
@@ -55,5 +61,6 @@ GSC = Union[
     GsStrConfig,
     GsIntConfig,
     GsImageConfig,
+    GsTimeRConfig,
     GsTimeConfig,
 ]

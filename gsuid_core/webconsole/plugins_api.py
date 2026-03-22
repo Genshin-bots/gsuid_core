@@ -4,10 +4,10 @@ Plugins APIs
 """
 
 import base64
-from typing import Dict
+from typing import Any, Dict, Optional
 from pathlib import Path
 
-from fastapi import Body, Depends, Request
+from fastapi import Body, Query, Depends, Request
 
 from gsuid_core.sv import SL
 from gsuid_core.webconsole.app_app import app
@@ -15,104 +15,192 @@ from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_local_plugins_list
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
 
+# ====================
+# 辅助函数
+# ====================
 
-@app.get("/api/plugins")
-async def get_plugins(request: Request, _user: Dict = Depends(require_auth)):
-    """Get all loaded plugins with their config"""
+
+def _read_plugin_icon(plugin_name: str) -> Optional[str]:
+    """读取插件图标，返回 base64 编码的字符串"""
+    icon_base64 = None
+    icon_path = PLUGINS_PATH / plugin_name / "ICON.png"
+    if not icon_path.exists():
+        icon_path = PLUGINS_PATH / plugin_name.lower() / "ICON.png"
+    if icon_path.exists() and icon_path.is_file():
+        with open(icon_path, "rb") as f:
+            icon_data = f.read()
+            icon_base64 = f"data:image/png;base64,{base64.b64encode(icon_data).decode('utf-8')}"
+    return icon_base64
+
+
+def _build_config_item(config) -> Dict:
+    """构建单个配置项的响应数据"""
+    config_type = type(config).__name__.replace("Config", "").lower()
+
+    value = config.data
+    # 对于GsImage类型，检查文件是否存在，如果不存在则返回空值
+    if config_type == "gsimage" and isinstance(value, str) and value:
+        image_path = Path(value)
+        if not image_path.exists() or not image_path.is_file():
+            value = ""
+
+    item = {
+        "value": value,
+        "default": config.data,
+        "type": config_type,
+        "title": config.title,
+        "desc": config.desc,
+    }
+    options = getattr(config, "options", None)
+    if options:
+        item["options"] = options
+
+    # 针对 GsImageConfig 传递额外参数
+    if config_type == "gsimage":
+        for attr in ["upload_to", "filename", "suffix"]:
+            val = getattr(config, attr, None)
+            if val:
+                item[attr] = str(val) if isinstance(val, Path) else val
+
+    return item
+
+
+# ====================
+# Plugin APIs
+# ====================
+
+
+@app.get("/api/plugins/list")
+async def get_plugins_list(request: Request, _user: Dict = Depends(require_auth)):
+    """
+    获取所有已加载插件的列表（轻量级接口）
+
+    返回所有已加载插件的基本信息，包含 ICON 头像数据。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 插件列表，每项包含 id、name、description、enabled、status、icon
+    """
     tasks = []
 
-    # 只遍历已加载的插件 (SL.plugins)
     for plugin_name, plugin in SL.plugins.items():
         name = plugin_name.lower()
+        icon_base64 = _read_plugin_icon(plugin_name)
 
-        # 读取插件图标
-        icon_base64 = None
-        icon_path = PLUGINS_PATH / plugin_name / "ICON.png"
-        if not icon_path.exists():
-            icon_path = PLUGINS_PATH / plugin_name.lower() / "ICON.png"
-        if icon_path.exists() and icon_path.is_file():
-            with open(icon_path, "rb") as f:
-                icon_data = f.read()
-                icon_base64 = f"data:image/png;base64,{base64.b64encode(icon_data).decode('utf-8')}"
+        tasks.append(
+            {
+                "id": name,
+                "name": plugin_name,
+                "description": f"已加载插件：{plugin_name}",
+                "enabled": plugin.enabled,
+                "status": "running",
+                "icon": icon_base64,
+            }
+        )
 
-        # Get plugin config if exists - collect all related configs by plugin_name
-        plugin_config = {}
-        config_groups = []
-        config_names = []
+    return {"status": 0, "msg": "ok", "data": tasks}
 
-        # 通过 plugin_name 属性查找该插件的所有配置
-        for config_key, config_obj in all_config_list.items():
-            # 获取配置对象的 plugin_name 属性
-            config_plugin_name = getattr(config_obj, "plugin_name", None)
 
-            # 如果配置属于这个插件（通过 plugin_name 匹配）
-            if config_plugin_name and config_plugin_name.lower() == name.lower():
-                config_names.append(config_key)
-                group_config = {}
-                for cfg_name in config_obj.config_default:
-                    if cfg_name not in config_obj.config:
-                        continue
-                    config = config_obj.config[cfg_name]
-                    config_type = type(config).__name__.replace("Config", "").lower()
+@app.get("/api/plugins/{plugin_name}")
+async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict = Depends(require_auth)):
+    """
+    获取单个插件的完整信息
 
-                    value = config.data
-                    # 对于GsImage类型，检查文件是否存在，如果不存在则返回空值
-                    if config_type == "gsimage" and isinstance(value, str) and value:
-                        image_path = Path(value)
-                        if not image_path.exists() or not image_path.is_file():
-                            value = ""
+    返回插件的详细信息，包括配置、服务、图标等。
 
-                    item = {
-                        "value": value,
-                        "default": config.data,
-                        "type": config_type,
-                        "title": config.title,
-                        "desc": config.desc,
-                    }
-                    options = getattr(config, "options", None)
-                    if options:
-                        item["options"] = options
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        _user: 认证用户信息
 
-                    group_config[cfg_name] = item
-                    # 保持平铺结构兼容旧前端
-                    plugin_config[cfg_name] = item
+    Returns:
+        status: 0成功，1插件不存在
+        data: 插件详细信息对象
+    """
+    name = plugin_name.lower()
 
-                config_groups.append({"config_name": config_key, "config": group_config})
+    # 查找插件
+    plugin = None
+    actual_plugin_name = plugin_name
+    for key in SL.plugins.keys():
+        if key.lower() == name:
+            plugin = SL.plugins[key]
+            actual_plugin_name = key
+            break
 
-        # 获取插件服务配置
-        service_config = {
-            "enabled": plugin.enabled,
-            "pm": plugin.pm,
-            "priority": plugin.priority,
-            "area": plugin.area,
-            "black_list": plugin.black_list,
-            "white_list": plugin.white_list,
-            "prefix": plugin.prefix,
-            "force_prefix": plugin.force_prefix,
-            "disable_force_prefix": plugin.disable_force_prefix,
-            "allow_empty_prefix": plugin.allow_empty_prefix,
-        }
+    if not plugin:
+        return {"status": 1, "msg": "插件不存在"}
 
-        # 获取插件下的单个服务配置 (从 SL.detail_lst)
-        sv_list = []
-        if plugin in SL.detail_lst:
-            for sv in SL.detail_lst[plugin]:
-                sv_list.append(
-                    {
-                        "name": sv.name,
-                        "enabled": sv.enabled,
-                        "pm": sv.pm,
-                        "priority": sv.priority,
-                        "area": sv.area,
-                        "black_list": sv.black_list,
-                        "white_list": sv.white_list,
-                    }
-                )
+    # 读取插件图标
+    icon_base64 = _read_plugin_icon(actual_plugin_name)
 
-        sample = {
+    # Get plugin config if exists - collect all related configs by plugin_name
+    plugin_config = {}
+    config_groups = []
+    config_names = []
+
+    # 通过 plugin_name 属性查找该插件的所有配置
+    for config_key, config_obj in all_config_list.items():
+        # 获取配置对象的 plugin_name 属性
+        config_plugin_name = getattr(config_obj, "plugin_name", None)
+
+        # 如果配置属于这个插件（通过 plugin_name 匹配）
+        if config_plugin_name and config_plugin_name.lower() == name.lower():
+            config_names.append(config_key)
+            group_config = {}
+            for cfg_name in config_obj.config_default:
+                if cfg_name not in config_obj.config:
+                    continue
+                config = config_obj.config[cfg_name]
+                item = _build_config_item(config)
+
+                group_config[cfg_name] = item
+                # 保持平铺结构兼容旧前端
+                plugin_config[cfg_name] = item
+
+            config_groups.append({"config_name": config_key, "config": group_config})
+
+    # 获取插件服务配置
+    service_config = {
+        "enabled": plugin.enabled,
+        "pm": plugin.pm,
+        "priority": plugin.priority,
+        "area": plugin.area,
+        "black_list": plugin.black_list,
+        "white_list": plugin.white_list,
+        "prefix": plugin.prefix,
+        "force_prefix": plugin.force_prefix,
+        "disable_force_prefix": plugin.disable_force_prefix,
+        "allow_empty_prefix": plugin.allow_empty_prefix,
+    }
+
+    # 获取插件下的单个服务配置 (从 SL.detail_lst)
+    sv_list = []
+    if plugin in SL.detail_lst:
+        for sv in SL.detail_lst[plugin]:
+            sv_list.append(
+                {
+                    "name": sv.name,
+                    "enabled": sv.enabled,
+                    "pm": sv.pm,
+                    "priority": sv.priority,
+                    "area": sv.area,
+                    "black_list": sv.black_list,
+                    "white_list": sv.white_list,
+                }
+            )
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
             "id": name,
-            "name": plugin_name,
-            "description": f"已加载插件：{plugin_name}",
+            "name": actual_plugin_name,
+            "description": f"已加载插件：{actual_plugin_name}",
             "enabled": plugin.enabled,
             "status": "running",
             "config": plugin_config,
@@ -121,71 +209,120 @@ async def get_plugins(request: Request, _user: Dict = Depends(require_auth)):
             "service_config": service_config,
             "sv_list": sv_list,
             "icon": icon_base64,
-        }
-        tasks.append(sample)
-
-    return {"status": 0, "msg": "ok", "data": tasks}
+        },
+    }
 
 
-@app.get("/api/framework-config")
-async def get_framework_config(request: Request, _user: Dict = Depends(require_auth)):
-    """Get all GsCore framework configurations"""
+# ====================
+# Framework Config APIs
+# ====================
+
+
+@app.get("/api/framework-config/list")
+async def get_framework_config_list(
+    request: Request,
+    prefix: str = Query(default="GsCore", description="配置名称前缀筛选，默认为 GsCore"),
+    _user: Dict = Depends(require_auth),
+):
+    """
+    获取所有框架配置的列表（轻量级接口）
+
+    返回所有可用的框架配置项基本信息。
+
+    Args:
+        request: FastAPI 请求对象
+        prefix: 配置名称前缀筛选，默认为 GsCore
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 配置列表，每项包含 id、name、full_name
+    """
     tasks = []
 
-    # 遍历 all_config_list，查找所有 GsCore 开头的配置
     for config_name, config_obj in all_config_list.items():
-        if config_name.startswith("GsCore"):
-            # 构建配置对象
-            config_data = {}
-            for key in config_obj.config_default:
-                if key not in config_obj.config:
-                    continue
-                config = config_obj.config[key]
-                config_type = type(config).__name__.replace("Config", "").lower()
-
-                value = config.data
-                # 对于GsImage类型，检查文件是否存在，如果不存在则返回空值
-                if config_type == "gsimage" and isinstance(value, str) and value:
-                    image_path = Path(value)
-                    if not image_path.exists() or not image_path.is_file():
-                        value = ""
-
-                config_data[key] = {
-                    "value": value,
-                    "default": config.data,
-                    "type": config_type,
-                    "title": config.title,
-                    "desc": config.desc,
-                }
-                # 针对 GsImageConfig 传递额外参数
-                if config_type == "gsimage":
-                    for attr in ["upload_to", "filename", "suffix"]:
-                        val = getattr(config, attr, None)
-                        if val:
-                            config_data[key][attr] = str(val) if isinstance(val, Path) else val
-
-                options = getattr(config, "options", None)
-                if options:
-                    config_data[key]["options"] = options
-
-            # 简化显示名称（去掉 GsCore 前缀）
-            display_name = config_name[6:] if len(config_name) > 6 else "核心配置"
+        if config_name.startswith(prefix):
+            # 简化显示名称（去掉前缀）
+            display_name = config_name[len(prefix) :] if len(config_name) > len(prefix) else "核心配置"
 
             tasks.append(
                 {
                     "id": config_name,
                     "name": display_name,
                     "full_name": config_name,
-                    "config": config_data,
                 }
             )
 
     return {"status": 0, "msg": "ok", "data": tasks}
 
 
+@app.get("/api/framework-config/{config_name}")
+async def get_framework_config_detail(request: Request, config_name: str, _user: Dict = Depends(require_auth)):
+    """
+    获取单个框架配置的完整信息
+
+    返回框架配置的详细结构，包含所有配置项。
+
+    Args:
+        request: FastAPI 请求对象
+        config_name: 配置名称
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1配置不存在
+        data: 配置详细信息
+    """
+    # 完整配置名称
+    full_config_name = config_name if config_name.startswith("GsCore") else f"GsCore{config_name}"
+
+    if full_config_name not in all_config_list:
+        return {"status": 1, "msg": "配置不存在"}
+
+    config_obj = all_config_list[full_config_name]
+
+    # 构建配置对象
+    config_data = {}
+    for key in config_obj.config_default:
+        if key not in config_obj.config:
+            continue
+        config = config_obj.config[key]
+        item = _build_config_item(config)
+        config_data[key] = item
+
+    # 简化显示名称（去掉 GsCore 前缀）
+    display_name = full_config_name[6:] if len(full_config_name) > 6 else "核心配置"
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "id": full_config_name,
+            "name": display_name,
+            "full_name": full_config_name,
+            "config": config_data,
+        },
+    }
+
+
 @app.post("/api/framework-config/{config_name}")
-async def update_framework_config(request: Request, config_name: str, data: Dict, _user: Dict = Depends(require_auth)):
-    """Update framework configuration"""
+async def update_framework_config(
+    request: Request, config_name: str, data: Dict = Body(...), _user: Dict = Depends(require_auth)
+):
+    """
+    更新框架配置
+
+    批量更新指定配置项的值。
+
+    Args:
+        request: FastAPI 请求对象
+        config_name: 配置名称
+        data: 配置项键值对
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     from gsuid_core.logger import logger
 
     # 完整配置名称
@@ -213,9 +350,72 @@ async def update_framework_config(request: Request, config_name: str, data: Dict
     return {"status": 0, "msg": "配置已保存"}
 
 
+@app.post("/api/framework-config/{config_name}/item/{item_name}")
+async def update_framework_config_item(
+    request: Request,
+    config_name: str,
+    item_name: str,
+    value: Any = Body(...),
+    _user: Dict = Depends(require_auth),
+):
+    """
+    更新单个框架配置项
+
+    更新指定配置对象中的单个配置项值。
+
+    Args:
+        request: FastAPI 请求对象
+        config_name: 配置名称
+        item_name: 配置项名称
+        value: 配置项新值
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
+    from gsuid_core.logger import logger
+
+    # 完整配置名称
+    full_config_name = config_name if config_name.startswith("GsCore") else f"GsCore{config_name}"
+
+    if full_config_name not in all_config_list:
+        return {"status": 1, "msg": "配置不存在"}
+
+    config_obj = all_config_list[full_config_name]
+
+    if item_name not in config_obj.config_list:
+        return {"status": 1, "msg": f"配置项 {item_name} 不存在"}
+
+    try:
+        result = config_obj.set_config(item_name, value)
+        if result:
+            return {"status": 0, "msg": "配置项已保存"}
+        else:
+            logger.warning(f"[框架配置][{config_name}] 配置项 {item_name} 写入失败")
+            return {"status": 1, "msg": "配置项写入失败"}
+    except Exception as e:
+        logger.error(f"[框架配置][{config_name}] 配置项 {item_name} 写入异常: {e}")
+        return {"status": 1, "msg": f"配置项写入异常: {str(e)}"}
+
+
 @app.post("/api/plugins/{plugin_name}")
 async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _user: Dict = Depends(require_auth)):
-    """Update plugin configuration - supports multiple config objects per plugin"""
+    """
+    更新插件配置
+
+    支持多配置对象格式和传统平铺格式。
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        data: 配置数据（支持 config_groups 格式或平铺格式）
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     name = plugin_name.lower()
     is_success = False
 
@@ -226,8 +426,6 @@ async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _
             config_name = config_group.get("config_name")
             group_config = config_group.get("config", {})
 
-            # 查找对应的配置对象
-            found_config = False
             for cfg_key, config_obj in all_config_list.items():
                 config_plugin_name = getattr(config_obj, "plugin_name", None)
 
@@ -240,96 +438,6 @@ async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _
                         if key in config_obj.config_list:
                             config_obj.set_config(key, value)
                             is_success = True
-                    found_config = True
-
-            # 如果没有找到现有配置，尝试动态创建配置对象
-            if not found_config and config_name:
-                try:
-                    from gsuid_core.data_store import get_res_path
-                    from gsuid_core.utils.plugins_config.models import (
-                        GsStrConfig,
-                        GsBoolConfig,
-                        GsDictConfig,
-                        GsListConfig,
-                        GsListStrConfig,
-                    )
-                    from gsuid_core.utils.plugins_config.gs_config import StringConfig
-
-                    # 构建默认配置
-                    default_config = {
-                        "Ann_Groups": GsDictConfig("推送公告群组", "原神公告推送群组", {}),
-                        "Ann_Ids": GsListConfig("推送公告ID", "原神公告推送ID列表", []),
-                        "SignTime": GsListStrConfig(
-                            "每晚签到时间设置", "每晚米游社签到时间设置（时，分）", ["0", "38"]
-                        ),
-                        "BBSTaskTime": GsListStrConfig(
-                            "每晚米游社任务时间设置", "每晚米游社任务时间设置（时，分）", ["1", "41"]
-                        ),
-                        "GetDrawTaskTime": GsListStrConfig(
-                            "每晚留影叙佳期任务时间设置", "每晚留影叙佳期任务时间设置（时，分）", ["3", "25"]
-                        ),
-                        "MhyBBSCoinReport": GsBoolConfig(
-                            "米游币推送", "开启后会私聊每个用户当前米游币任务完成情况", False
-                        ),
-                        "MhyBBSCoinReportGroup": GsBoolConfig(
-                            "米游币群聊推送", "开启后会在群聊中推送当前群米游币任务完成情况", True
-                        ),
-                        "SignReportSimple": GsBoolConfig("简洁签到报告", "开启后可以大大减少每日签到报告字数", True),
-                        "PrivateReport": GsBoolConfig(
-                            "私聊报告", "关闭后将不再给主人推送当天米游币任务完成情况", False
-                        ),
-                        "PrivateSignReport": GsBoolConfig(
-                            "签到私聊报告", "关闭后将不再给任何人推送当天签到任务完成情况", True
-                        ),
-                        "RandomPic": GsBoolConfig("随机图", "开启后[查询心海]等命令展示图将替换为随机图片", False),
-                        "random_pic_API": GsStrConfig(
-                            "随机图API",
-                            "用于面板查询的随机图API",
-                            "https://genshin-res.cherishmoon.fun/img?name=",
-                            ["https://genshin-res.cherishmoon.fun/img?name="],
-                        ),
-                        "SchedSignin": GsBoolConfig("定时签到", "开启后每晚00:30将开始自动签到任务", True),
-                        "SchedMhyBBSCoin": GsBoolConfig("定时米游币", "开启后每晚01:16将开始自动米游币任务", True),
-                        "SchedGetDraw": GsBoolConfig("定时留影叙佳期", "开启后每晚03:25将开始自动米游币任务", True),
-                        "SchedResinPush": GsBoolConfig(
-                            "定时检查体力", "开启后每隔半小时检查一次开启推送的人的体力状态", True
-                        ),
-                        "CrazyNotice": GsBoolConfig("催命模式", "开启后当达到推送阈值将会一直推送", False),
-                        "OldPanle": GsBoolConfig("旧面板", "会稍微增加面板访问速度,但会损失很多功能", False),
-                        "ColorBG": GsBoolConfig("多彩面板", "面板颜色不按照属性来渲染,而按照自定义颜色", False),
-                        "DefaultPayWX": GsBoolConfig(
-                            "支付默认微信", "开启后使用gsrc命令将会以微信作为优先付款方式", False
-                        ),
-                        "DefaultBaseBG": GsBoolConfig("固定背景", "开启后部分功能的背景图将固定为特定背景", False),
-                        "PicWiki": GsBoolConfig("图片版WIKI", "开启后支持的WIKI功能将转为图片版", True),
-                        "WidgetResin": GsBoolConfig(
-                            "体力使用组件API", "开启后mr功能将转为调用组件API, 可能缺失数据、数据不准", True
-                        ),
-                        "EnableAkasha": GsBoolConfig("排名系统", "开启后强制刷新将同时刷新AkashaSystem", False),
-                        "help_column": GsStrConfig("帮助图列数", "修改帮助图有多少列", "6"),
-                        "EnableCharCardByMys": GsBoolConfig(
-                            "从米游社获取面板替代Enka服务", "开启后角色卡片将从米游社获取, 可能会遇到验证码", False
-                        ),
-                    }
-
-                    # 创建配置路径
-                    res_path = get_res_path()
-                    config_path = res_path / "GenshinUID" / "config.json"
-
-                    # 确保目录存在
-                    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # 创建配置对象
-                    config_obj = StringConfig(config_name, config_path, default_config)
-
-                    # 更新配置项
-                    for key, value in group_config.items():
-                        if key in config_obj.config_list:
-                            config_obj.set_config(key, value)
-                            is_success = True
-
-                except Exception as e:
-                    print(f"动态创建配置失败: {e}")
     else:
         # 原有的平铺格式处理
         # 查找该插件的所有配置对象
@@ -362,11 +470,71 @@ async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _
     return {"status": 0, "msg": "配置已保存"}
 
 
+@app.post("/api/plugins/{plugin_name}/config/{config_name}/{item_name}")
+async def update_plugin_config_item(
+    request: Request,
+    plugin_name: str,
+    config_name: str,
+    item_name: str,
+    value: Any = Body(...),
+    _user: Dict = Depends(require_auth),
+):
+    """
+    更新单个插件配置项
+
+    更新指定插件配置中的单个配置项值。
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        config_name: 配置名称
+        item_name: 配置项名称
+        value: 配置项新值
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
+    name = plugin_name.lower()
+
+    # 查找该插件的配置对象
+    for cfg_key, config_obj in all_config_list.items():
+        config_plugin_name = getattr(config_obj, "plugin_name", None)
+
+        # 匹配插件名或配置组名
+        if (config_plugin_name and config_plugin_name.lower() == name) or (
+            config_name and cfg_key.lower() == config_name.lower()
+        ):
+            if item_name in config_obj.config_list:
+                try:
+                    config_obj.set_config(item_name, value)
+                    return {"status": 0, "msg": "配置项已保存"}
+                except Exception as e:
+                    return {"status": 1, "msg": f"配置项写入异常: {str(e)}"}
+
+    return {"status": 1, "msg": "未找到可更新的配置项"}
+
+
 @app.post("/api/plugins/{plugin_name}/service")
 async def update_plugin_service_config(
     request: Request, plugin_name: str, data: Dict, _user: Dict = Depends(require_auth)
 ):
-    """Update plugin service configuration - accepts modern list types directly"""
+    """
+    更新插件服务配置
+
+    更新插件的服务级配置，如 pm、priority、area 等。
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        data: 服务配置数据
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1插件不存在
+        msg: 操作结果信息
+    """
     # Try multiple possible keys for the plugin
     plugin = None
     possible_plugin_keys = [
@@ -396,11 +564,92 @@ async def update_plugin_service_config(
     return {"status": 0, "msg": "服务配置已保存"}
 
 
+@app.post("/api/plugins/{plugin_name}/service/{field_name}")
+async def update_plugin_service_field(
+    request: Request,
+    plugin_name: str,
+    field_name: str,
+    value: Any = Body(...),
+    _user: Dict = Depends(require_auth),
+):
+    """
+    更新插件服务配置的单个字段
+
+    更新指定插件服务配置中的单个字段值。
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        field_name: 字段名称
+        value: 字段新值
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
+    # Try multiple possible keys for the plugin
+    plugin = None
+    possible_plugin_keys = [
+        plugin_name,
+        plugin_name.lower(),
+        plugin_name.rstrip("UID"),
+        plugin_name.lower().rstrip("uid"),
+    ]
+
+    for key in possible_plugin_keys:
+        if key in SL.plugins:
+            plugin = SL.plugins[key]
+            break
+
+    if not plugin:
+        return {"status": 1, "msg": "插件不存在"}
+
+    # 允许更新的字段
+    allowed_fields = [
+        "pm",
+        "priority",
+        "area",
+        "black_list",
+        "white_list",
+        "prefix",
+        "force_prefix",
+        "disable_force_prefix",
+        "allow_empty_prefix",
+        "enabled",
+    ]
+
+    if field_name not in allowed_fields:
+        return {"status": 1, "msg": f"不允许更新字段 {field_name}"}
+
+    # 类型转换
+    if field_name in ["pm", "priority"]:
+        value = int(value)
+
+    plugin.set(False, **{field_name: value})
+    return {"status": 0, "msg": "服务配置已保存"}
+
+
 @app.post("/api/plugins/{plugin_name}/sv/{sv_name}")
 async def update_sv_config(
     request: Request, plugin_name: str, sv_name: str, data: Dict, _user: Dict = Depends(require_auth)
 ):
-    """Update individual service configuration - accepts modern list types directly"""
+    """
+    更新单个服务配置
+
+    更新指定服务的配置项。
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        sv_name: 服务名称
+        data: 服务配置数据
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1服务不存在
+        msg: 操作结果信息
+    """
     if sv_name not in SL.lst:
         return {"status": 1, "msg": "服务不存在"}
 
@@ -418,9 +667,64 @@ async def update_sv_config(
     return {"status": 0, "msg": "服务配置已保存"}
 
 
+@app.post("/api/plugins/{plugin_name}/sv/{sv_name}/{field_name}")
+async def update_sv_field(
+    request: Request,
+    plugin_name: str,
+    sv_name: str,
+    field_name: str,
+    value: Any = Body(...),
+    _user: Dict = Depends(require_auth),
+):
+    """
+    更新单个服务配置的单个字段
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        sv_name: 服务名称
+        field_name: 字段名称
+        value: 字段新值
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
+    if sv_name not in SL.lst:
+        return {"status": 1, "msg": "服务不存在"}
+
+    sv = SL.lst[sv_name]
+
+    # 允许更新的字段
+    allowed_fields = ["pm", "priority", "area", "black_list", "white_list", "enabled"]
+
+    if field_name not in allowed_fields:
+        return {"status": 1, "msg": f"不允许更新字段 {field_name}"}
+
+    # 类型转换
+    if field_name in ["pm", "priority"]:
+        value = int(value)
+
+    sv.set(False, **{field_name: value})
+    return {"status": 0, "msg": "服务配置已保存"}
+
+
 @app.post("/api/plugins/{plugin_name}/toggle")
 async def toggle_plugin(request: Request, plugin_name: str, enabled: bool, _user: Dict = Depends(require_auth)):
-    """Enable or disable a plugin"""
+    """
+    启用或禁用插件
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_name: 插件名称
+        enabled: 是否启用
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        msg: 操作结果信息
+    """
     # TODO: Implement actual enable/disable logic
     return {"status": 0, "msg": f"插件已{'启用' if enabled else '禁用'}"}
 
@@ -432,7 +736,19 @@ async def toggle_plugin(request: Request, plugin_name: str, enabled: bool, _user
 
 @app.get("/api/plugin-store/list")
 async def get_plugin_store_list(request: Request, _user: Dict = Depends(require_auth)):
-    """Get list of available plugins from the remote store"""
+    """
+    获取远程插件商店的插件列表
+
+    从远程服务器获取可用插件列表，并与本地已安装插件进行比对。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        data: 包含 plugins、fun_plugins、tool_plugins 的对象
+    """
     import httpx
 
     from gsuid_core.utils.plugins_update.api import plugins_lib
@@ -509,7 +825,19 @@ async def get_plugin_store_list(request: Request, _user: Dict = Depends(require_
 async def install_plugin(
     request: Request, plugin_id: str, repo_url: str = Body(embed=True), _user: Dict = Depends(require_auth)
 ):
-    """Install a plugin from the store"""
+    """
+    从商店安装插件
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_id: 插件 ID
+        repo_url: 插件仓库 URL
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     try:
         from gsuid_core.utils.plugins_update._plugins import install_plugin
 
@@ -525,7 +853,18 @@ async def install_plugin(
 
 @app.post("/api/plugin-store/update/{plugin_id}")
 async def update_plugin(request: Request, plugin_id: str, _user: Dict = Depends(require_auth)):
-    """Update an installed plugin"""
+    """
+    更新已安装的插件
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_id: 插件 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     try:
         from gsuid_core.utils.plugins_update._plugins import update_plugins
 
@@ -541,7 +880,18 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict = Depends(
 
 @app.delete("/api/plugin-store/uninstall/{plugin_id}")
 async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict = Depends(require_auth)):
-    """Uninstall an installed plugin"""
+    """
+    卸载已安装的插件
+
+    Args:
+        request: FastAPI 请求对象
+        plugin_id: 插件 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1失败
+        msg: 操作结果信息
+    """
     try:
         from gsuid_core.utils.plugins_update._plugins import uninstall_plugin
 

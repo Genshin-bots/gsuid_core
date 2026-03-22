@@ -3,12 +3,16 @@ from typing import Dict
 from .models import GSC, GsStrConfig, GsBoolConfig
 
 PIC_UPLOAD_CONIFG: Dict[str, GSC] = {
-    "PicUpload": GsBoolConfig("自动上传图片", "发送图片时将会自动上传", False),
-    "PicUploadServer": GsStrConfig(
+    "EnablePicSrv": GsBoolConfig(
+        "启用将图片转链接发送",
+        "发送图片转链接, 适用于某些无法发送本地base64图片的协议端",
+        False,
+    ),
+    "PicUploader": GsStrConfig(
         "上传图片方式",
-        "可选s3或smms或custom",
-        "smms",
-        ["smms", "s3", "custom"],
+        "可选s3或smms或custom或local, local需要公网",
+        "local",
+        ["smms", "s3", "local", "custom"],
     ),
     "AutoDelete": GsBoolConfig("上传完后自动删除", "是否自动删除图片", True),
     "smms_token": GsStrConfig("sm.ms_token", "sm.ms的token", ""),
@@ -19,4 +23,19 @@ PIC_UPLOAD_CONIFG: Dict[str, GSC] = {
     "s3_region": GsStrConfig("s3_region", "Region", ""),
     "custom_url": GsStrConfig("自定义上传图片API", "填入上传图片API", ""),
     "custom_header": GsStrConfig("自定义上传图片Header", "填入上传图片hader", ""),
+    "PicSrv": GsStrConfig(
+        "图片转链接为(需公网)",
+        "发送图片转链接",
+        "",
+    ),
+    "EnableCleanPicSrv": GsBoolConfig(
+        "是否定期清理本地图床",
+        "定期清理图床开关",
+        True,
+    ),
+    "ScheduledCleanPicSrv": GsStrConfig(
+        "本地图床定期清理(秒)",
+        "定期删除图片",
+        "180",
+    ),
 }

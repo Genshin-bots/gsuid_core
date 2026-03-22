@@ -11,7 +11,6 @@ from gsuid_core.utils.image.image_tools import (
     get_color_bg,
     draw_center_text_by_line,
 )
-from gsuid_core.utils.plugins_config.gs_config import send_security_config
 
 if command_start and command_start[0]:
     _start = command_start[0]
@@ -74,7 +73,6 @@ error_dict.update(
 )
 
 TEXT_PATH = Path(__file__).parent / "image" / "texture2d"
-is_pic_error = send_security_config.get_config("ChangeErrorToPic").data
 
 
 def get_error(retcode: Union[int, str], message: Union[str, Dict, None] = None) -> str:
@@ -108,6 +106,7 @@ async def get_error_img(
     message: Union[str, Dict, None] = None,
 ) -> Union[bytes, str]:
     error_message = get_error(retcode, message)
+    is_pic_error = False
     if is_pic_error or force_image:
         error_type = get_error_type(retcode)
         return await draw_error_img(retcode, error_message, error_type)

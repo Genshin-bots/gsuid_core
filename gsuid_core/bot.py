@@ -25,23 +25,19 @@ from gsuid_core.load_template import (
 )
 from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.utils.plugins_config.gs_config import (
+    bm_config,
     sp_config,
-    core_plugins_config,
-    send_security_config,
 )
 
-button_row_num: int = sp_config.get_config("ButtonRow").data
 at_sender_pos: str = sp_config.get_config("AtSenderPos").data
 
-sp_msg_id: str = send_security_config.get_config("SpecificMsgId").data
-is_sp_msg_id: str = send_security_config.get_config("EnableSpecificMsgId").data
+button_row_num: int = bm_config.get_config("ButtonRow").data
+ism: List = bm_config.get_config("SendMDPlatform").data
+isb: List = bm_config.get_config("SendButtonsPlatform").data
+isc: List = bm_config.get_config("SendTemplatePlatform").data
+istry: List = bm_config.get_config("TryTemplateForQQ").data
 
-ism: List = core_plugins_config.get_config("SendMDPlatform").data
-isb: List = core_plugins_config.get_config("SendButtonsPlatform").data
-isc: List = core_plugins_config.get_config("SendTemplatePlatform").data
-istry: List = core_plugins_config.get_config("TryTemplateForQQ").data
-
-enable_forward: str = core_plugins_config.get_config("EnableForwardMessage").data
+enable_forward: str = sp_config.get_config("EnableForwardMessage").data
 
 enable_buttons_platform = isb
 enable_markdown_platform = ism
@@ -167,9 +163,6 @@ class _Bot:
                     _temp_mr.append(_m)
             if _temp_mr:
                 message_result.append(_temp_mr)
-
-        if is_sp_msg_id and not msg_id:
-            msg_id = sp_msg_id
 
         for mr in message_result:
             logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))

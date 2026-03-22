@@ -75,12 +75,13 @@ poetry-plugin-export = ">=1.8"
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.14.7"
 pre-commit = "^2.21.0"
+pytest = "^8.3.0"
 
 [tool.pdm.scripts]
 core = "gsuid_core/core.py"
 
 [tool.pdm.dev-dependencies]
-dev = ["ruff>=0.14.7", "pre-commit>=2.21.0"]
+dev = ["ruff>=0.14.7", "pre-commit>=2.21.0", "pytest>=8.3.0"]
 
 [tool.pdm.build]
 includes = ["gsuid_core"]
@@ -90,7 +91,7 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 [dependency-groups]
-dev = ["ruff>=0.14.7", "pre-commit>=2.21.0"]
+dev = ["ruff>=0.14.7", "pre-commit>=2.21.0", "pytest>=8.3.0"]
 
 [tool.uv]
 default-groups = []
@@ -98,6 +99,12 @@ default-groups = []
 [tool.pdm.resolution]
 respect-source-order = true
 
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
 
 [project.urls]
 "Bug Tracker" = "https://github.com/Genshin-bots/gsuid-core/issues"

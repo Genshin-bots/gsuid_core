@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 import copy
 import time
 import uuid
@@ -10,6 +11,8 @@ from string import digits
 from typing import Any, Dict, Tuple, Union, Literal, Optional, overload
 
 import aiohttp
+import certifi
+from aiohttp import TCPConnector
 from async_timeout import timeout
 
 from gsuid_core.bot import call_bot
@@ -29,16 +32,10 @@ from .tools import (
 )
 
 _DEAD_CODE = [10035, 5003, 10041, 1034]
-
-
-Gproxy = core_plugins_config.get_config("Gproxy").data
-Nproxy = core_plugins_config.get_config("Nproxy").data
-ssl_verify = core_plugins_config.get_config("MhySSLVerify").data
+ssl_context = ssl.create_default_context(cafile=certifi.where())
 
 
 class BaseMysApi:
-    Gproxy: Optional[str] = Gproxy if Gproxy else None
-    Nproxy: Optional[str] = Nproxy if Nproxy else None
     mysVersion = mys_version
     _HEADER = {
         "x-rpc-app_version": mysVersion,
@@ -421,12 +418,7 @@ class BaseMysApi:
         logger.debug(f"[米游社请求] Params: {params}")
         logger.debug(f"[米游社请求] Data: {data}")
 
-        if use_proxy and self.Gproxy:
-            proxy = self.Gproxy
-        elif self.Nproxy and not use_proxy:
-            proxy = self.Nproxy
-        else:
-            proxy = None
+        proxy = None
 
         if not base_url:
             base_url = None
@@ -436,6 +428,9 @@ class BaseMysApi:
         url = base_url + url if base_url else url
         async with aiohttp.ClientSession(
             base_url=None,
+            connector=TCPConnector(
+                ssl_context=ssl_context,
+            ),
         ) as session:
             raw_data = {}
             uid = None

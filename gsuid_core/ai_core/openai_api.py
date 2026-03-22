@@ -4,6 +4,7 @@ import json
 import random
 import asyncio
 import inspect
+from enum import Enum
 from typing import Any, Dict, List, Tuple, Union, Optional, cast
 from pathlib import Path
 
@@ -54,6 +55,14 @@ def estimate_tokens(msg: MessageUnion, enc: Optional[tiktoken.Encoding] = None) 
     return total_tokens + 5 if total_tokens > 0 else 5
 
 
+class AgentState(Enum):
+    """ReAct Agent 状态机状态"""
+
+    THINKING = "thinking"  # AI 正在思考，决定下一步行动
+    ACTING = "acting"  # 执行工具中
+    FINISHED = "finished"  # 任务完成，生成最终回复
+
+
 class AsyncOpenAISession:
     def __init__(
         self,
@@ -61,6 +70,7 @@ class AsyncOpenAISession:
         model: str = "gpt-4o",
         base_url: str = "",
         system_prompt: Optional[str] = None,
+        max_tool_iterations: int = 5,
     ):
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
@@ -69,7 +79,7 @@ class AsyncOpenAISession:
         # 历史记录只保存 user 和 assistant 的对话，不保存 system 消息
         self.history = []
         # 配置：最大工具调用迭代次数，防止无限循环
-        self.max_tool_iterations = 5
+        self.max_tool_iterations = max_tool_iterations
         # 配置：最大历史 token 数量，按 token 裁剪（粗略估算，每个中文字符约2-3个token）
         self.max_history_tokens = 6000
         # 配置：OpenAI API 最大输出 token 数
@@ -174,7 +184,6 @@ class AsyncOpenAISession:
             if not isinstance(files, list):
                 files = [files]
             for f in files:
-                # 假设 _process_file 返回的是文本字符串
                 file_text = await self._process_file(f)
                 text += file_text
 
@@ -203,15 +212,12 @@ class AsyncOpenAISession:
                             "type": "image_url",
                             "image_url": {
                                 "url": base64_url,
-                                # "detail": "auto" # 可选：控制图片解析精度
                             },
                         }
                     )
 
-        # --- D. 处理 JSON 提示 ---
-        # 如果开启 JSON 模式，为了防止报错，确保 Prompt 里包含 "JSON"
+        # --- JSON 模式处理 ---
         if json_mode:
-            # 检查当前 payload 里是否有文本提示
             has_json_in_text = False
             for item in content_payload:
                 if item["type"] == "text" and "json" in item["text"].lower():
@@ -225,12 +231,10 @@ class AsyncOpenAISession:
         if not content_payload:
             raise ValueError("[AI] Empty input (no text or images provided).")
 
-        # 2. 动态组装最终发送给 API 的消息列表
-        # 组装最终的 System Prompt = 基础人设 + 当前意图专属规则
-        # 注意：RAG 参考资料应该通过 user_context 参数放在用户消息中，而不是 system prompt
+        # 2. 组装 System Prompt
         final_system_content = self.base_persona
         if temp_system:
-            final_system_content = f"{self.base_persona}\n\n{temp_system}"
+            final_system_content = f"{final_system_content}\n\n{temp_system}"
 
         # 构建历史记录专用的 User 消息（干净的，无 RAG 资料）
         history_user_msg = {"role": "user", "content": copy.deepcopy(content_payload)}
@@ -238,7 +242,6 @@ class AsyncOpenAISession:
         # 构建发给 API 的 User 消息（包含本轮 RAG 资料）
         api_user_msg_content = copy.deepcopy(content_payload)
         if user_context:
-            # 找到 text 节点并注入 RAG
             for item in api_user_msg_content:
                 if item["type"] == "text":
                     item["text"] = f"{user_context}\n\n--- 用户问题 ---\n{item['text']}"
@@ -247,289 +250,322 @@ class AsyncOpenAISession:
         current_api_user_msg = {"role": "user", "content": api_user_msg_content}
 
         api_messages = [{"role": "system", "content": final_system_content}]
-        # 加上历史记忆（让大模型知道上文）
         api_messages.extend(self.history)
-        # 加上用户这一轮的最新问题（带 RAG 的版本）
         api_messages.append(current_api_user_msg)
 
         tools_reply: List[Message] = []
-
-        # 临时的使用中的消息列表（用于工具调用的上下文）
         working_messages: List[MessageUnion] = api_messages.copy()
-
-        # 记录初始长度（此时包含了 current_api_user_msg）
         initial_working_length = len(working_messages)
 
-        # 工具调用迭代计数器，防止无限循环
+        # --- ReAct 状态机 ---
         iteration_count = 0
-        # JSON 解析错误次数计数器，防止无限自我修复循环
         json_error_count = 0
+        current_state: AgentState = AgentState.THINKING
+        tool_call_results: List[dict] = []  # 收集本轮所有工具调用结果
 
         while True:
-            # 检查最大迭代次数
             iteration_count += 1
             if iteration_count > self.max_tool_iterations:
-                logger.warning(f"🧠 [AI][OpenAI] 工具调用次数超过最大限制 {self.max_tool_iterations}，终止循环")
+                logger.warning(f"🧠 [AI][ReAct] 工具调用次数超过最大限制 {self.max_tool_iterations}，强制终止")
+                # 超过最大迭代次数，返回已收集的工具结果和终止提示
+                if tool_call_results:
+                    summary = self._summarize_tool_results(tool_call_results)
+                    return [MessageSegment.text(f"工具链执行已达最大次数限制。已收集结果：\n{summary}")]
                 raise RuntimeError(f"Tool call exceeded max depth of {self.max_tool_iterations}")
 
-            # 3. 在循环内重建 request_kwargs，避免状态污染
-            # 确保发送给 API 的消息不包含非法字段（如 _turn_id）
-            sanitized_messages = []
-            for msg in working_messages:
-                if isinstance(msg, dict):
-                    # 移除所有 OpenAI API 不允许的字段
-                    sanitized_msg = msg.copy()
-                    # 只保留 OpenAI API 允许的字段
-                    allowed_fields = {"role", "content", "name", "tool_calls", "tool_call_id"}
-                    for key in list(sanitized_msg.keys()):
-                        if key not in allowed_fields:
-                            del sanitized_msg[key]
-                    sanitized_messages.append(sanitized_msg)
+            # State Machine: 根据当前状态决定行为
+            if current_state == AgentState.THINKING:
+                logger.debug(f"🧠 [AI][ReAct] 状态: THINKING (迭代 {iteration_count})")
+
+                # 构建请求
+                sanitized_messages = self._sanitize_messages(working_messages)
+                request_kwargs = {
+                    "model": self.model,
+                    "messages": sanitized_messages,
+                    "max_tokens": self.max_tokens,
+                }
+
+                if json_mode:
+                    request_kwargs["response_format"] = {"type": "json_object"}
+
+                if tools:
+                    request_kwargs["tools"] = tools
+                    request_kwargs["tool_choice"] = "auto"
+
+                response: ChatCompletion = await self.client.chat.completions.create(**request_kwargs)
+                message: ChatCompletionMessage = response.choices[0].message
+
+                working_messages.append(message.model_dump(exclude_none=True))
+                logger.trace(f"🧠 [AI][ReAct] 模型回复: {message}")
+
+                # 检查是否有工具调用请求
+                if message.tool_calls:
+                    current_state = AgentState.ACTING
+                    continue  # 进入 ACTING 状态处理工具调用
                 else:
-                    # 如果不是字典，直接添加
-                    sanitized_messages.append(msg)
+                    # 没有工具调用，说明 AI 已完成思考并给出最终回复
+                    content = message.content or ""
+                    break  # 直接跳出循环处理最终回复
 
-            request_kwargs = {
-                "model": self.model,
-                "messages": sanitized_messages,
-                "max_tokens": self.max_tokens,
-            }
+            elif current_state == AgentState.ACTING:
+                logger.debug(f"🧠 [AI][ReAct] 状态: ACTING (迭代 {iteration_count})")
 
-            if json_mode:
-                request_kwargs["response_format"] = {"type": "json_object"}
+                # 获取最后一个 assistant 消息中的 tool_calls
+                assistant_msg = working_messages[-1]
+                if not isinstance(assistant_msg, dict) or "tool_calls" not in assistant_msg:
+                    # 没有 tool_calls，切换回 THINKING
+                    current_state = AgentState.THINKING
+                    continue
 
-            if tools:
-                request_kwargs["tools"] = tools
-                request_kwargs["tool_choice"] = "auto"
+                tool_calls_list = cast(List[ChatCompletionMessageToolCall], assistant_msg["tool_calls"])
+                logger.trace(f"🧠 [AI][ReAct] 批量执行工具: {len(tool_calls_list)} 个")
 
-            response: ChatCompletion = await self.client.chat.completions.create(**request_kwargs)
-            message: ChatCompletionMessage = response.choices[0].message
-
-            working_messages.append(message.model_dump(exclude_none=True))
-
-            logger.trace(f"🧠 [AI][OpenAI] 模型回复: {message}")
-
-            # --- 分支 1: 模型请求调用工具 ---
-            if message.tool_calls:
-                tool_calls_list = cast(
-                    List[ChatCompletionMessageToolCall],
-                    message.tool_calls,
-                )
-
-                logger.trace(f"🧠 [AI][OpenAI] 模型请求调用工具: {tool_calls_list}")
-
+                # 批量执行所有工具调用（ReAct 支持并行执行多个工具）
                 for tool_call in tool_calls_list:
-                    func_name = tool_call.function.name
-                    args_str = tool_call.function.arguments
-                    call_id = tool_call.id
+                    result = await self._execute_single_tool(tool_call, bot, ev, json_error_count)
+                    function_response, json_error_count, should_continue = result
 
-                    logger.debug(f"🧠 [AI][OpenAI] ID {call_id} 调用工具: {func_name}, 参数: {args_str}")
-
-                    function_response = "Error: Function not found"
-
-                    tools_list = get_registered_tools()
-
-                    if func_name in tools_list:
-                        try:
-                            tool_def = tools_list[func_name]
-                            # 1. 解析参数（清理可能的 markdown 标记）
-                            clean_args_str = re.sub(r"^```(?:json)?\n?|```$", "", args_str.strip(), flags=re.MULTILINE)
-                            try:
-                                func_args = json.loads(clean_args_str)
-                            except json.JSONDecodeError as e:
-                                json_error_count += 1
-                                # 巧妙利用 Tool Response 让 AI 知道自己错了并重试
-                                function_response = (
-                                    f"JSON解析错误: {str(e)}。请不要输出任何markdown标记，仅输出纯JSON对象。"
-                                )
-                                working_messages.append(
-                                    {
-                                        "tool_call_id": call_id,
-                                        "role": "tool",
-                                        "name": func_name,
-                                        "content": function_response,
-                                    }
-                                )
-                                # JSON 解析错误超过 2 次，停止重试
-                                if json_error_count >= 2:
-                                    logger.warning("🧠 [AI][OpenAI] JSON 解析错误次数超限，停止工具调用")
-                                    continue
-                                continue
-                            # 2. 查找函数
-                            func_obj = tool_def["func"]
-
-                            logger.debug(f"🧠 [AI][OpenAI] ID {call_id} 即将执行工具: {func_name}, 参数: {func_args}")
-
-                            # 3. 检查确认函数（如果存在）
-                            check_func = tool_def.get("check_func")
-                            check_kwargs = tool_def.get("check_kwargs", {})
-
-                            logger.debug(
-                                f"🧠 [AI][OpenAI] ID {call_id} 检查工具前置条件: {check_func}, 参数: {check_kwargs}"
-                            )
-
-                            if check_func is not None and bot is not None and ev is not None:
-                                # 检查 check_func 的签名，根据参数名和类型注解注入依赖
-                                sig = inspect.signature(check_func)
-                                check_args = {}
-
-                                for param_name, param in sig.parameters.items():
-                                    # 根据参数名注入
-                                    if param_name == "bot":
-                                        check_args[param_name] = bot
-                                    elif param_name == "ev" or param_name == "event":
-                                        check_args[param_name] = ev
-                                    # 根据类型注解注入
-                                    elif param.annotation != inspect.Parameter.empty:
-                                        # 获取类型注解的字符串表示
-                                        ann = param.annotation
-                                        # 处理 Optional[Type] 或 Union[Type, None]
-                                        origin = getattr(ann, "__origin__", None)
-                                        if origin is not None:
-                                            # 获取 Optional 内部的真实类型
-                                            args = getattr(ann, "__args__", ())
-                                            if args and len(args) > 0:
-                                                ann = args[0]
-
-                                        ann_str = str(ann)
-                                        if "Bot" in ann_str:
-                                            check_args[param_name] = bot
-                                        elif "Event" in ann_str:
-                                            check_args[param_name] = ev
-
-                                check_args.update(check_kwargs)
-
-                                # 执行确认函数
-                                if asyncio.iscoroutinefunction(check_func):
-                                    check_passed: Union[bool, Tuple[bool, str]] = await check_func(**check_args)
-                                else:
-                                    check_passed = check_func(**check_args)
-
-                                logger.debug(f"🧠 [AI][OpenAI] ID {call_id} 检查结果: {check_passed}")
-
-                                if isinstance(check_passed, tuple):
-                                    check_passed, reason = check_passed
-                                    await bot.send(reason)
-                                else:
-                                    check_passed = bool(check_passed)
-                                    reason = "错误: 权限检查未通过"
-
-                                if not check_passed:
-                                    function_response = f"{reason}"
-                                    # 跳过函数执行，继续下一个工具调用
-                                    working_messages.append(
-                                        {
-                                            "tool_call_id": call_id,
-                                            "role": "tool",
-                                            "name": func_name,
-                                            "content": function_response,
-                                        }
-                                    )
-                                    continue
-
-                            # 5. 执行函数 (兼容 async 和 sync) - 添加依赖注入
-                            inject_args = func_args.copy()
-                            sig = inspect.signature(func_obj)
-                            for param_name, param in sig.parameters.items():
-                                if param_name not in inject_args:  # 不覆盖大模型传的参数
-                                    if param_name in ("bot",):
-                                        inject_args[param_name] = bot
-                                    elif param_name in ("ev", "event"):
-                                        inject_args[param_name] = ev
-                                    # 根据类型注入（防止漏网之鱼）
-                                    elif param.annotation is not inspect.Parameter.empty:
-                                        if param.annotation is Bot or (
-                                            isinstance(param.annotation, type) and issubclass(param.annotation, Bot)
-                                        ):
-                                            inject_args[param_name] = bot
-                                        elif param.annotation is Event or (
-                                            isinstance(param.annotation, type) and issubclass(param.annotation, Event)
-                                        ):
-                                            inject_args[param_name] = ev
-
-                            if asyncio.iscoroutinefunction(func_obj):
-                                result = await func_obj(**inject_args)
-                            else:
-                                result = func_obj(**inject_args)
-
-                            # 6. 序列化结果
-                            if isinstance(result, Message):
-                                function_response = "生成内容成功, 已经发送了相关消息！"
-                                tools_reply.append(result)
-                            elif isinstance(result, str):
-                                function_response = result
-                                tools_reply.append(MessageSegment.text(function_response))
-                            elif isinstance(result, dict):
-                                function_response = json.dumps(result, ensure_ascii=False)
-                            elif isinstance(result, bytes):
-                                function_response = f"生成了某项资源, 资源ID: {RM.register(result)}"
-                                tools_reply.append(MessageSegment.image(result))
-                            elif isinstance(result, list):
-                                function_response = json.dumps(result, ensure_ascii=False)
-                            elif isinstance(result, Image.Image):
-                                function_response = f"生成了一张图片, 图片ID: {RM.register(result)}"
-                                tools_reply.append(MessageSegment.image(result))
-                            else:
-                                function_response = str(result)
-
-                        except Exception as e:
-                            function_response = f"Error executing {func_name}: {str(e)}"
-
-                    # 将工具结果作为 tool message 存入临时消息列表（不存入永久历史）
+                    # 将工具结果存入 working_messages
                     working_messages.append(
-                        {"tool_call_id": call_id, "role": "tool", "name": func_name, "content": function_response}
+                        {
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": tool_call.function.name,
+                            "content": function_response,
+                        }
                     )
 
-                request_kwargs["messages"] = working_messages
-                continue  # 继续下一轮循环，让 AI 读取工具结果并生成最终回复
+                    # 收集工具结果用于最终汇总
+                    tool_call_results.append(
+                        {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                            "result": function_response,
+                        }
+                    )
 
+                    if should_continue:
+                        # JSON 解析错误需要让 AI 重试
+                        continue
+
+                # 所有工具执行完毕，切换回 THINKING 状态让 AI 整合结果
+                current_state = AgentState.THINKING
+                continue
+
+        # --- 处理最终回复 ---
+        # 保存历史记录
+        new_history_messages = [history_user_msg] + working_messages[initial_working_length:]
+        for msg in new_history_messages:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                msg_content = msg.get("content")
+                if isinstance(msg_content, list):
+                    history_payload = []
+                    for item in msg_content:
+                        if isinstance(item, dict):
+                            if item.get("type") == "text":
+                                history_payload.append(item)
+                            elif item.get("type") == "image_url":
+                                history_payload.append({"type": "text", "text": "[用户上传了一张图片]"})
+                    msg["content"] = history_payload
+
+        for msg in new_history_messages:
+            self.history.append(msg)
+            self.current_token_count += estimate_tokens(msg, self.tokenizer)
+
+        logger.debug(f"🧠 [AI][ReAct] 历史记录已更新，新增 {len(new_history_messages)} 条消息")
+        self._safe_truncate_history()
+
+        # --- 返回结果处理 ---
+        if json_mode:
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                logger.error(f"JSON 解析失败: {content}")
+                return {"error": "JSON解析失败", "raw": content}
+
+        if content:
+            tools_reply.append(MessageSegment.text(content))
+
+        if not tools_reply:
+            return [MessageSegment.text("执行完毕。")]
+
+        return tools_reply
+
+    def _sanitize_messages(self, messages: List[MessageUnion]) -> List[dict]:
+        """清理消息列表，移除 API 不允许的字段"""
+        sanitized = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                sanitized_msg = msg.copy()
+                allowed_fields = {"role", "content", "name", "tool_calls", "tool_call_id"}
+                for key in list(sanitized_msg.keys()):
+                    if key not in allowed_fields:
+                        del sanitized_msg[key]
+                sanitized.append(sanitized_msg)
             else:
-                content = message.content or ""
+                sanitized.append(msg)
+        return sanitized
 
-                # 4. 保存历史记录 - 将真实的（无RAG）User 消息与本轮 AI 回复合并
-                new_history_messages = [history_user_msg] + working_messages[initial_working_length:]
+    async def _execute_single_tool(
+        self,
+        tool_call: ChatCompletionMessageToolCall,
+        bot: Optional[Bot],
+        ev: Optional[Event],
+        json_error_count: int,
+    ) -> Tuple[str, int, bool]:
+        """
+        执行单个工具调用
+        Returns: (function_response, updated_json_error_count, should_continue)
+        should_continue=True 表示需要让 AI 重试（JSON 解析错误）
+        """
+        func_name = tool_call.function.name
+        args_str = tool_call.function.arguments
+        # call_id = tool_call.id
 
-                # 对 user 消息进行图片降维存储（防止图片把 Token 撑爆）
-                for msg in new_history_messages:
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        msg_content = msg.get("content")
-                        if isinstance(msg_content, list):
-                            # 对 content_payload 进行降维
-                            history_payload = []
-                            for item in msg_content:
-                                if isinstance(item, dict):
-                                    if item.get("type") == "text":
-                                        history_payload.append(item)
-                                    elif item.get("type") == "image_url":
-                                        history_payload.append({"type": "text", "text": "[用户上传了一张图片]"})
-                            msg["content"] = history_payload
+        logger.debug(f"🧠 [AI][ReAct] 执行工具: {func_name}, 参数: {args_str}")
 
-                # 将本轮新增的消息追加到 self.history 中，并更新 token 计数
-                for msg in new_history_messages:
-                    self.history.append(msg)
-                    self.current_token_count += estimate_tokens(msg, self.tokenizer)
+        function_response = "Error: Function not found"
+        tools_list = get_registered_tools()
 
-                logger.debug(f"🧠 [AI][OpenAI] 历史记录已更新，新增 {len(new_history_messages)} 条消息")
+        if func_name not in tools_list:
+            return function_response, json_error_count, False
 
-                # 2. 修改 history 裁剪逻辑，安全截断避免切断工具链
-                self._safe_truncate_history()
+        try:
+            tool_def = tools_list[func_name]
+            # 解析参数
+            clean_args_str = re.sub(r"^```(?:json)?\n?|```$", "", args_str.strip(), flags=re.MULTILINE)
+            try:
+                func_args = json.loads(clean_args_str)
+            except json.JSONDecodeError as e:
+                json_error_count += 1
+                function_response = f"JSON解析错误: {str(e)}。请不要输出任何markdown标记，仅输出纯JSON对象。"
+                if json_error_count >= 2:
+                    logger.warning("🧠 [AI][ReAct] JSON 解析错误次数超限，跳过此工具")
+                    return function_response, json_error_count, False
+                return function_response, json_error_count, True  # 需要重试
 
-                # --- 返回结果处理 ---
-                if json_mode:
-                    try:
-                        return json.loads(content)
-                    except json.JSONDecodeError:
-                        logger.error(f"JSON 解析失败: {content}")
-                        return {"error": "JSON解析失败", "raw": content}
+            func_obj = tool_def["func"]
+            logger.debug(f"🧠 [AI][ReAct] 工具 {func_name} 参数解析成功: {func_args}")
 
-                if content:
-                    tools_reply.append(MessageSegment.text(content))
+            # 执行检查函数
+            check_func = tool_def.get("check_func")
+            check_kwargs = tool_def.get("check_kwargs", {})
 
-                if not tools_reply:
-                    # 如果工具没产生可见输出，大模型也没说话的保底措施
-                    return [MessageSegment.text("执行完毕。")]
+            if check_func is not None and bot is not None and ev is not None:
+                check_passed, reason = await self._run_check_function(check_func, check_kwargs, bot, ev)
+                if not check_passed:
+                    return f"{reason}", json_error_count, False
 
-                return tools_reply
+            # 执行工具函数
+            result = await self._run_tool_function(func_obj, func_args, bot, ev)
+
+            # 序列化结果
+            function_response = self._serialize_tool_result(result)
+
+        except Exception as e:
+            function_response = f"Error executing {func_name}: {str(e)}"
+            logger.error(f"🧠 [AI][ReAct] 工具执行异常: {function_response}")
+
+        return function_response, json_error_count, False
+
+    async def _run_check_function(
+        self,
+        check_func,
+        check_kwargs: dict,
+        bot: Optional[Bot],
+        ev: Optional[Event],
+    ) -> Tuple[bool, str]:
+        """运行工具的检查函数"""
+        sig = inspect.signature(check_func)
+        check_args = {}
+
+        for param_name, param in sig.parameters.items():
+            if param_name == "bot":
+                check_args[param_name] = bot
+            elif param_name in ("ev", "event"):
+                check_args[param_name] = ev
+            elif param.annotation != inspect.Parameter.empty:
+                ann = param.annotation
+                origin = getattr(ann, "__origin__", None)
+                if origin is not None:
+                    args = getattr(ann, "__args__", ())
+                    if args and len(args) > 0:
+                        ann = args[0]
+                ann_str = str(ann)
+                if "Bot" in ann_str:
+                    check_args[param_name] = bot
+                elif "Event" in ann_str:
+                    check_args[param_name] = ev
+
+        check_args.update(check_kwargs)
+
+        if asyncio.iscoroutinefunction(check_func):
+            check_result = await check_func(**check_args)
+        else:
+            check_result = check_func(**check_args)
+
+        if isinstance(check_result, tuple):
+            return check_result
+        return bool(check_result), "权限检查未通过"
+
+    async def _run_tool_function(
+        self,
+        func_obj,
+        func_args: dict,
+        bot: Optional[Bot],
+        ev: Optional[Event],
+    ) -> Any:
+        """运行工具函数，支持依赖注入"""
+        inject_args = func_args.copy()
+        sig = inspect.signature(func_obj)
+
+        for param_name, param in sig.parameters.items():
+            if param_name not in inject_args:
+                if param_name in ("bot",):
+                    inject_args[param_name] = bot
+                elif param_name in ("ev", "event"):
+                    inject_args[param_name] = ev
+                elif param.annotation is not inspect.Parameter.empty:
+                    if param.annotation is Bot or (
+                        isinstance(param.annotation, type) and issubclass(param.annotation, Bot)
+                    ):
+                        inject_args[param_name] = bot
+                    elif param.annotation is Event or (
+                        isinstance(param.annotation, type) and issubclass(param.annotation, Event)
+                    ):
+                        inject_args[param_name] = ev
+
+        if asyncio.iscoroutinefunction(func_obj):
+            return await func_obj(**inject_args)
+        return func_obj(**inject_args)
+
+    def _serialize_tool_result(self, result: Any) -> str:
+        """序列化工具执行结果"""
+        if isinstance(result, Message):
+            return "生成内容成功, 已经发送了相关消息！"
+        elif isinstance(result, str):
+            return result
+        elif isinstance(result, dict):
+            return json.dumps(result, ensure_ascii=False)
+        elif isinstance(result, bytes):
+            return f"生成了某项资源, 资源ID: {RM.register(result)}"
+        elif isinstance(result, list):
+            return json.dumps(result, ensure_ascii=False)
+        elif isinstance(result, Image.Image):
+            return f"生成了一张图片, 图片ID: {RM.register(result)}"
+        else:
+            return str(result)
+
+    def _summarize_tool_results(self, tool_call_results: List[dict]) -> str:
+        """汇总工具执行结果"""
+        if not tool_call_results:
+            return "无"
+
+        summary_parts = []
+        for result in tool_call_results:
+            summary_parts.append(f"{result['name']}: {result['result']}")
+
+        return " | ".join(summary_parts)
 
     def reset_session(self, system_prompt: Optional[str] = None):
         """重置会话，可选择性更新基础人设"""

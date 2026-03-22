@@ -39,7 +39,7 @@ AI_CONFIG: Dict[str, GSC] = {
         title="AI服务提供格式",
         desc="指定AI服务提供格式, 目前共有两种",
         data="openai",
-        options=["openai", "gemini(暂不可用)"],
+        options=["openai"],
     ),
     "multi_round_lenth": GsStrConfig(
         "最多允许多轮对话长度",
@@ -71,7 +71,11 @@ OPENAI_CONFIG: Dict[str, GSC] = {
         "OpenAI API基础URL",
         "指定OpenAI API的基础URL, 注意是以 /v1 结尾",
         "https://api.openai.com/v1",
-        options=["https://api.openai.com/v1", "https://api.bltcy.ai/v1"],
+        options=[
+            "https://api.openai.com/v1",
+            "https://api.bltcy.ai/v1",
+            "https://api.minimaxi.com/v1",
+        ],
     ),
     "api_key": GsListStrConfig(
         "OpenAI API密钥",
@@ -89,7 +93,11 @@ OPENAI_CONFIG: Dict[str, GSC] = {
         "中级模型",
         "指定OpenAI API的中级模型, 该模型将会用于处理中等任务, 该模型也会用于处理闲聊任务",
         "gemini-3.1-flash-lite-preview",
-        options=["gemini-2.5-flash", "gemini-3.1-flash-lite-preview"],
+        options=[
+            "gemini-2.5-flash",
+            "gemini-3.1-flash-lite-preview",
+            "MiniMax-M2.7",
+        ],
     ),
     "level_b_model": GsStrConfig(
         "低级模型",

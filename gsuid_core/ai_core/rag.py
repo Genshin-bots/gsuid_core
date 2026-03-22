@@ -3,7 +3,7 @@
 import json
 import uuid
 import hashlib
-from typing import Dict, List, Optional
+from typing import Dict, List, Union, Optional
 
 from qdrant_client.models import Filter, Distance, MatchValue, PointStruct, VectorParams, FieldCondition
 from qdrant_client.http.models.models import ScoredPoint
@@ -11,7 +11,7 @@ from qdrant_client.http.models.models import ScoredPoint
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.embedding import DIMENSION, client, embedding_model
 
-from .models import KnowledgePoint
+from .models import KnowledgeBase, KnowledgePoint
 from .register import _ENTITIES
 from .reranker import rerank_results
 
@@ -36,7 +36,7 @@ async def init_collection():
         logger.info(f"🧠 [RAG] 集合已存在: {COLLECTION_NAME}")
 
 
-def build_embedding_text(kp: KnowledgePoint) -> str:
+def build_embedding_text(kp: Union[KnowledgeBase, KnowledgePoint]) -> str:
     parts = []
 
     if kp.get("title"):
@@ -115,7 +115,7 @@ async def sync_knowledge():
 
             # 构建payload
             payload = knowledge.copy()
-            payload["_hash"] = current_hash
+            payload["_hash"] = current_hash  # type: ignore
 
             points_to_upsert.append(
                 PointStruct(
@@ -131,12 +131,16 @@ async def sync_knowledge():
         await client.upsert(collection_name=COLLECTION_NAME, points=points_to_upsert)
 
     # 4. 清理已删除的知识
-    ids_to_delete = [
-        existing_knowledge[id_str]["id"] for id_str in existing_knowledge.keys() if id_str not in local_ids
-    ]
-    if ids_to_delete:
-        await client.delete(collection_name=COLLECTION_NAME, points_selector=ids_to_delete)
-        logger.info(f"🧠 [RAG] 清理 {len(ids_to_delete)} 个已删除的知识点")
+    # 注意：如果本地知识为空，可能是插件还未注册完成，跳过清理以避免误删
+    if local_ids:
+        ids_to_delete = [
+            existing_knowledge[id_str]["id"] for id_str in existing_knowledge.keys() if id_str not in local_ids
+        ]
+        if ids_to_delete:
+            await client.delete(collection_name=COLLECTION_NAME, points_selector=ids_to_delete)
+            logger.info(f"🧠 [RAG] 清理 {len(ids_to_delete)} 个已删除的知识点")
+    else:
+        logger.info("🧠 [RAG] 本地知识为空，跳过清理步骤（可能是插件还未注册完成）")
 
     logger.info("🧠 [RAG] 知识库同步完成\n")
 
@@ -231,7 +235,7 @@ def get_knowledge_point_id(id_str: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, id_str))
 
 
-def calculate_knowledge_hash(knowledge: KnowledgePoint) -> str:
+def calculate_knowledge_hash(knowledge: Union[KnowledgePoint, KnowledgeBase]) -> str:
     """计算知识内容的哈希，用于检测更新
 
     Args:
@@ -240,5 +244,7 @@ def calculate_knowledge_hash(knowledge: KnowledgePoint) -> str:
     Returns:
         MD5哈希值
     """
-    json_str = json.dumps(knowledge, sort_keys=True, ensure_ascii=False)
+    # 排除 _hash 等临时字段，只计算实际内容的哈希
+    knowledge_copy = {k: v for k, v in knowledge.items() if k not in ("_hash", "id")}
+    json_str = json.dumps(knowledge_copy, sort_keys=True, ensure_ascii=False)
     return hashlib.md5(json_str.encode("utf-8")).hexdigest()

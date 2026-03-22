@@ -37,7 +37,19 @@ def get_trigger_description(job) -> str:
 
 @app.get("/api/scheduler/jobs")
 async def get_scheduler_jobs(request: Request, _user: Dict = Depends(require_auth)):
-    """Get all scheduled jobs"""
+    """
+    获取所有计划任务列表
+
+    返回所有已注册的计划任务信息。
+
+    Args:
+        request: FastAPI 请求对象
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功
+        data: 任务列表，每项包含 id、name、description、next_run_time、trigger、paused
+    """
     jobs = []
     if scheduler:
         for job in scheduler.get_jobs():
@@ -66,7 +78,20 @@ async def get_scheduler_jobs(request: Request, _user: Dict = Depends(require_aut
 
 @app.post("/api/scheduler/jobs/{job_id}/run")
 async def run_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
-    """Manually trigger a scheduled job"""
+    """
+    手动触发计划任务
+
+    立即执行指定任务，忽略其调度周期。
+
+    Args:
+        request: FastAPI 请求对象
+        job_id: 任务 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1任务不存在或调度器未启动
+        msg: 操作结果信息
+    """
     if scheduler:
         job = scheduler.get_job(job_id)
         if job:
@@ -79,7 +104,18 @@ async def run_scheduler_job(request: Request, job_id: str, _user: Dict = Depends
 
 @app.delete("/api/scheduler/jobs/{job_id}")
 async def delete_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
-    """Delete a scheduled job"""
+    """
+    删除计划任务
+
+    Args:
+        request: FastAPI 请求对象
+        job_id: 任务 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1调度器未启动
+        msg: 操作结果信息
+    """
     if scheduler:
         scheduler.remove_job(job_id)
         return {"status": 0, "msg": "任务已删除"}
@@ -89,7 +125,18 @@ async def delete_scheduler_job(request: Request, job_id: str, _user: Dict = Depe
 
 @app.post("/api/scheduler/jobs/{job_id}/pause")
 async def pause_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
-    """Pause a scheduled job"""
+    """
+    暂停计划任务
+
+    Args:
+        request: FastAPI 请求对象
+        job_id: 任务 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1任务不存在或调度器未启动
+        msg: 操作结果信息
+    """
     if scheduler:
         job = scheduler.get_job(job_id)
         if job:
@@ -102,7 +149,18 @@ async def pause_scheduler_job(request: Request, job_id: str, _user: Dict = Depen
 
 @app.post("/api/scheduler/jobs/{job_id}/resume")
 async def resume_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
-    """Resume a paused scheduled job"""
+    """
+    恢复已暂停的计划任务
+
+    Args:
+        request: FastAPI 请求对象
+        job_id: 任务 ID
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，1任务不存在或调度器未启动
+        msg: 操作结果信息
+    """
     if scheduler:
         job = scheduler.get_job(job_id)
         if job:

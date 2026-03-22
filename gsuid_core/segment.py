@@ -1,7 +1,6 @@
 import re
 import uuid
 import base64
-import random
 from io import BytesIO
 from venv import logger
 from base64 import b64decode, b64encode
@@ -19,31 +18,23 @@ from gsuid_core.message_models import Button, ButtonList
 from gsuid_core.utils.image.convert import text2pic
 from gsuid_core.utils.image.image_tools import sget
 from gsuid_core.utils.plugins_config.gs_config import (
+    bm_config,
     pic_gen_config,
     send_pic_config,
     pic_upload_config,
-    core_plugins_config,
-    send_security_config,
 )
 
-R_enabled = send_security_config.get_config("AutoAddRandomText").data
-R_text = send_security_config.get_config("RandomText").data
-is_text2pic = send_security_config.get_config("AutoTextToPic").data
-text2pic_limit = send_security_config.get_config("TextToPicThreshold").data
+force_send_md = bm_config.get_config("ForceSendMD").data
+is_lf = bm_config.get_config("UseCRLFReplaceLFForMD").data
+is_split_button = bm_config.get_config("SplitMDAndButtons").data
 
-enable_pic_srv = core_plugins_config.get_config("EnablePicSrv").data
-force_send_md = core_plugins_config.get_config("ForceSendMD").data
-pic_srv = core_plugins_config.get_config("PicSrv").data
-is_lf = core_plugins_config.get_config("UseCRLFReplaceLFForMD").data
-is_split_button = core_plugins_config.get_config("SplitMDAndButtons").data
-
-SERVER = pic_upload_config.get_config("PicUploadServer").data
-IS_UPLOAD = pic_upload_config.get_config("PicUpload").data
+pic_srv = pic_upload_config.get_config("PicSrv").data
+SERVER = pic_upload_config.get_config("PicUploader").data
+IS_UPLOAD = pic_upload_config.get_config("EnablePicSrv").data
 
 pic_quality: int = pic_gen_config.get_config("PicQuality").data
 
-enabled_banlist = send_security_config.get_config("EnableBanList").data
-banlist = send_security_config.get_config("BanList").data
+is_text2pic = False
 
 pclient = None
 if IS_UPLOAD:
@@ -115,7 +106,7 @@ class MessageSegment:
         else:
             if img.startswith("http"):
                 return Message(type="image", data=f"link://{img}")
-            if img.startswith("base64://") and not enable_pic_srv:
+            if img.startswith("base64://") and not IS_UPLOAD:
                 return Message(type="image", data=img)
             elif img.startswith("base64://"):
                 img = b64decode(img.replace("base64://", ""))
@@ -320,7 +311,7 @@ async def _image_to_local_url(image: Union[bytes, str]) -> List[Message]:
 async def _image_to_url(image: Union[str, bytes], send_type: str, message: Message):
     if send_type == "link_remote":
         return await _image_to_remote_url(image)
-    elif (send_type == "link_local") or enable_pic_srv:
+    elif (send_type == "link_local") or (IS_UPLOAD and SERVER == "local"):
         return await _image_to_local_url(image)
     elif pclient is not None:
         return await _image_to_remote_url(image)
@@ -335,7 +326,7 @@ async def _convert_message_to_image(message: Message, bot_id: str, bot_self_id: 
     send_type = send_pic_config.get_config(bot_id, "base64").data
     image_b64 = None
 
-    if message.type == "text" and is_text2pic and len(message.data) >= int(text2pic_limit):
+    if message.type == "text" and is_text2pic:
         image_bytes = await text2pic(message.data)
         message = Message(type="image", data=image_bytes)
 
@@ -361,12 +352,6 @@ async def _convert_message_to_image(message: Message, bot_id: str, bot_self_id: 
         else:
             image_bytes = img
     else:
-        if enabled_banlist and message.data:
-            d: str = message.data
-            for ban_word in banlist:
-                if ban_word in message.data:
-                    d = d.replace(ban_word, "*" * len(ban_word))
-            message = Message(type="text", data=d)
         return [message]
 
     assert isinstance(image_bytes, bytes)
@@ -425,11 +410,6 @@ async def convert_message(
                 _message.extend(await _convert_message(i, bot_id, bot_self_id))
     else:
         _message = await _convert_message(message, bot_id, bot_self_id)
-
-    # 启用了随机字符的话，随机加入字符
-    if R_enabled:
-        result = "".join(random.choice(R_text) for _ in range(random.randint(1, len(R_text))))
-        _message.append(MessageSegment.text(result))
 
     return _message
 
