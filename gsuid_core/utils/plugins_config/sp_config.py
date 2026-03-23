@@ -33,6 +33,12 @@ SP_CONIFG: Dict[str, GSC] = {
         "黑名单用户/群, 不会触发任何命令",
         [],
     ),
+    "ShieldQQBot": GsListStrConfig(
+        "含@该ID时消息禁止响应",
+        "当消息中包含@QQ机器人时禁止Core响应其他平台",
+        ["38890", "28541", "28542"],
+        ["38890", "28541", "28542"],
+    ),
     "EnableForwardMessage": GsStrConfig(
         "是否允许发送合并转发",
         "可选循环发送、合并消息、合并转发、禁止",
