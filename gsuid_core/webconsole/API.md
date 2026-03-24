@@ -313,10 +313,54 @@ GET /api/plugins/{plugin_name}
             "prefix": [],
             "force_prefix": []
         },
-        "sv_list": [...]
+        "sv_list": [
+            {
+                "name": "服务名称",
+                "enabled": true,
+                "pm": 6,
+                "priority": 5,
+                "area": "GROUP",
+                "black_list": [],
+                "white_list": [],
+                "commands": [
+                    {
+                        "type": "command",
+                        "keyword": "帮助",
+                        "block": false,
+                        "to_me": false
+                    },
+                    {
+                        "type": "prefix",
+                        "keyword": "我的",
+                        "block": false,
+                        "to_me": false
+                    },
+                    {
+                        "type": "keyword",
+                        "keyword": "原石",
+                        "block": false,
+                        "to_me": false
+                    },
+                    {
+                        "type": "regex",
+                        "keyword": ".*原石.*",
+                        "block": false,
+                        "to_me": false
+                    }
+                ]
+            }
+        ]
     }
 }
 ```
+
+> **前端调用说明**：前端可以通过遍历 `data.sv_list` 获取每个服务（SV），每个服务的 `commands` 数组包含了该服务下所有触发器的信息，可用于渲染命令列表。
+>
+> **commands 字段说明**：
+> - `type`: 触发器类型，可选值: `"command"`(命令), `"prefix"`(前缀匹配), `"suffix"`(后缀匹配), `"keyword"`(关键字匹配), `"fullmatch"`(完全匹配), `"regex"`(正则匹配), `"file"`(文件类型), `"message"`(消息)
+> - `keyword`: 触发关键字/正则表达式
+> - `block`: 是否阻止后续触发
+> - `to_me`: 是否仅响应 @ 机器人
 
 ---
 

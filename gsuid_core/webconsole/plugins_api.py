@@ -120,6 +120,82 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict = De
     Returns:
         status: 0成功，1插件不存在
         data: 插件详细信息对象
+
+    前端调用方式:
+        GET /api/plugins/{plugin_name}
+
+    返回 Sample:
+        {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "id": "gsuid_core",
+                "name": "gsuid_core",
+                "description": "已加载插件：gsuid_core",
+                "enabled": true,
+                "status": "running",
+                "config": {...},
+                "config_groups": [...],
+                "config_names": [...],
+                "service_config": {
+                    "enabled": true,
+                    "pm": 6,
+                    "priority": 5,
+                    "area": "ALL",
+                    "black_list": [],
+                    "white_list": [],
+                    "prefix": [],
+                    "force_prefix": [],
+                    "disable_force_prefix": false,
+                    "allow_empty_prefix": true
+                },
+                "sv_list": [
+                    {
+                        "name": "帮助",
+                        "enabled": true,
+                        "pm": 6,
+                        "priority": 5,
+                        "area": "GROUP",
+                        "black_list": [],
+                        "white_list": [],
+                        "commands": [
+                            {
+                                "type": "command",
+                                "keyword": "帮助",
+                                "block": false,
+                                "to_me": false
+                            },
+                            {
+                                "type": "prefix",
+                                "keyword": "我的",
+                                "block": false,
+                                "to_me": false
+                            },
+                            {
+                                "type": "keyword",
+                                "keyword": "原石",
+                                "block": false,
+                                "to_me": false
+                            },
+                            {
+                                "type": "regex",
+                                "keyword": ".*原石.*",
+                                "block": false,
+                                "to_me": false
+                            }
+                        ]
+                    }
+                ],
+                "icon": "base64_encoded_icon_data"
+            }
+        }
+
+        其中 sv_list 中的 commands 字段说明:
+            - type: 触发器类型，可选值: "command"(命令), "prefix"(前缀匹配), "suffix"(后缀匹配),
+                    "keyword"(关键字匹配), "fullmatch"(完全匹配), "regex"(正则匹配), "file"(文件类型), "message"(消息)
+            - keyword: 触发关键字/正则表达式
+            - block: 是否阻止后续触发
+            - to_me: 是否仅响应 @ 机器人
     """
     name = plugin_name.lower()
 
@@ -182,6 +258,19 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict = De
     sv_list = []
     if plugin in SL.detail_lst:
         for sv in SL.detail_lst[plugin]:
+            # 获取该服务下的所有触发器
+            commands = []
+            for trigger_type, triggers_dict in sv.TL.items():
+                for cmd_key, trigger in triggers_dict.items():
+                    commands.append(
+                        {
+                            "type": trigger.type,
+                            "keyword": trigger.keyword,
+                            "block": trigger.block,
+                            "to_me": trigger.to_me,
+                        }
+                    )
+
             sv_list.append(
                 {
                     "name": sv.name,
@@ -191,6 +280,7 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict = De
                     "area": sv.area,
                     "black_list": sv.black_list,
                     "white_list": sv.white_list,
+                    "commands": commands,
                 }
             )
 
