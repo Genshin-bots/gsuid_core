@@ -20,16 +20,10 @@ from gsuid_core.logger import logger
 from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER, SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.database.models import GsUID, GsUser
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import pass_config
 
 from .api import _API
-from .tools import (
-    random_hex,
-    mys_version,
-    get_ds_token,
-    generate_os_ds,
-    generate_passport_ds,
-)
+from .tools import random_hex, mys_version, get_ds_token, generate_os_ds, generate_passport_ds
 
 _DEAD_CODE = [10035, 5003, 10041, 1034]
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -223,7 +217,7 @@ class BaseMysApi:
         random_data2 = random.randint(150000, 300000)
         time_diff = int(time.time() * 1000)
 
-        ext_fields = f'''{{"proxyStatus":0,"isRoot":1,"romCapacity":"512","deviceName":"私人手机","productName":"{device}","romRemain":"491","hostname":"dg02-pool06-kvm82","screenSize":"1264x2640","isTablet":0,"aaid":"{self.generate_ID()}","model":"{model_name}","brand":"{device_brand}","hardware":"qcom","deviceType":"{device_type}","devId":"REL","serialNumber":"unknown","sdCapacity":{random_data},"buildTime":"1717740969000","buildUser":"root","simState":5,"ramRemain":"{random_data2}","appUpdateTimeDiff":{time_diff},"deviceInfo":"{device_info}","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"34","ui_mode":"UI_MODE_TYPE_NORMAL","isMockLocation":0,"cpuType":"arm64-v8a","isAirMode":0,"ringMode":1,"chargeStatus":1,"manufacturer":"{device_brand}","emulatorStatus":0,"appMemory":"512","osVersion":"14","vendor":"中国联通","accelerometer":"-1.3004991x6.38764x7.19103","sdRemain":{random_data2},"buildTags":"release-keys","packageName":"com.mihoyo.hyperion","networkType":"WiFi","oaid":"{oaid}","debugStatus":1,"ramCapacity":"{random_data}","magnetometer":"27.1084x-48.5804x-24.8758","display":"{model_name}_14.0.0.810(CN01)","appInstallTimeDiff":"{time_diff}","packageVersion":"2.20.2","gyroscope":"-0.02543317x0.005725792x0.003195791","batteryStatus":50,"hasKeyboard":0,"board":"{board}"}}'''  # noqa
+        ext_fields = f"""{{"proxyStatus":0,"isRoot":1,"romCapacity":"512","deviceName":"私人手机","productName":"{device}","romRemain":"491","hostname":"dg02-pool06-kvm82","screenSize":"1264x2640","isTablet":0,"aaid":"{self.generate_ID()}","model":"{model_name}","brand":"{device_brand}","hardware":"qcom","deviceType":"{device_type}","devId":"REL","serialNumber":"unknown","sdCapacity":{random_data},"buildTime":"1717740969000","buildUser":"root","simState":5,"ramRemain":"{random_data2}","appUpdateTimeDiff":{time_diff},"deviceInfo":"{device_info}","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"34","ui_mode":"UI_MODE_TYPE_NORMAL","isMockLocation":0,"cpuType":"arm64-v8a","isAirMode":0,"ringMode":1,"chargeStatus":1,"manufacturer":"{device_brand}","emulatorStatus":0,"appMemory":"512","osVersion":"14","vendor":"中国联通","accelerometer":"-1.3004991x6.38764x7.19103","sdRemain":{random_data2},"buildTags":"release-keys","packageName":"com.mihoyo.hyperion","networkType":"WiFi","oaid":"{oaid}","debugStatus":1,"ramCapacity":"{random_data}","magnetometer":"27.1084x-48.5804x-24.8758","display":"{model_name}_14.0.0.810(CN01)","appInstallTimeDiff":"{time_diff}","packageVersion":"2.20.2","gyroscope":"-0.02543317x0.005725792x0.003195791","batteryStatus":50,"hasKeyboard":0,"board":"{board}"}}"""  # noqa
 
         body = {
             "device_id": self.generate_seed(16),
@@ -512,7 +506,7 @@ class BaseMysApi:
                         header["x-rpc-page"] = "v1.4.1-rpg_#/rpg" if self.is_sr else "v4.1.5-ys_#ys"
                         header["x-rpc-tool-verison"] = "v1.4.1-rpg" if self.is_sr else "v4.1.5-ys"
 
-                    if core_plugins_config.get_config("MysPass").data:
+                    if pass_config.get_config("MysPass").data:
                         pass_header = copy.deepcopy(header)
                         ch = await self._upass(pass_header)
                         if ch == "":

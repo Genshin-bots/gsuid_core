@@ -8,7 +8,7 @@ from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import get_error
 from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.boardcast.models import BoardCastMsg, BoardCastMsgDict
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import pass_config
 
 GAME_NAME_MAP = {
     "gs": "原神",
@@ -57,7 +57,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
         if "risk_code" in sign_data:
             # 出现校验码
             if sign_data["risk_code"] in [375, 5001]:
-                if core_plugins_config.get_config("CaptchaPass").data:
+                if pass_config.get_config("CaptchaPass").data:
                     gt = sign_data["gt"]
                     ch = sign_data["challenge"]
                     vl, ch = await mys_api._pass(gt, ch, Header)

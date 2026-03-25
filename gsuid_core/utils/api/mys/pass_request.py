@@ -5,7 +5,7 @@ import certifi
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
 from gsuid_core.logger import logger
-from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+from gsuid_core.utils.plugins_config.gs_config import pass_config
 
 from .tools import get_ds_token
 from .base_request import BaseMysApi
@@ -18,7 +18,7 @@ class PassMysApi(BaseMysApi):
         # 警告：使用该服务（例如某RR等）需要注意风险问题
         # 本项目不以任何形式提供相关接口
         # 代码来源：GITHUB项目MIT开源
-        _pass_api = core_plugins_config.get_config("_pass_API").data
+        _pass_api = pass_config.get_config("_pass_API").data
         if _pass_api:
             async with ClientSession(
                 connector=TCPConnector(
