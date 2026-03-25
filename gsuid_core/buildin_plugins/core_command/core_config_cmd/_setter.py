@@ -52,6 +52,8 @@ def parse_val(item: GSC, raw: str):
         except ValueError:
             pass
     elif isinstance(item, (GsStrConfig, GsTimeConfig)):
+        if raw.lower() in _CLEAR:
+            return ""
         if isinstance(item, GsStrConfig) and item.options and raw not in item.options:
             return None
         return raw
@@ -63,6 +65,8 @@ def parse_val(item: GSC, raw: str):
             return None
         return vals
     elif isinstance(item, GsListConfig):
+        if raw.lower() in _CLEAR:
+            return []
         try:
             return [int(x) for x in _split(raw)]
         except ValueError:
