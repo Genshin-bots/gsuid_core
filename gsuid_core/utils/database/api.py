@@ -1,47 +1,11 @@
 import re
-from typing import Dict, Type, Tuple, Union, Literal, Optional, overload
-
-from sqlalchemy import event
+from typing import Type, Tuple, Union, Literal, Optional, overload
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
-from gsuid_core.utils.database.dal import SQLA
-from gsuid_core.utils.database.base_models import Bind, engine
+from gsuid_core.utils.database.base_models import Bind
 
 is_wal = False
-
-active_sqla: Dict[str, SQLA] = {}
-active_sr_sqla: Dict[str, SQLA] = {}
-
-
-class DBSqla:
-    def __init__(self, is_sr: bool = False) -> None:
-        self.is_sr = is_sr
-
-    def get_sqla(self, bot_id) -> SQLA:
-        sqla = self._get_sqla(bot_id, self.is_sr)
-        return sqla
-
-    def _get_sqla(self, bot_id, is_sr: bool = False) -> SQLA:
-        sqla_list = active_sr_sqla if is_sr else active_sqla
-        if bot_id not in sqla_list:
-            sqla = SQLA(bot_id, is_sr)
-            sqla_list[bot_id] = sqla
-
-            @event.listens_for(engine.sync_engine, "connect")
-            def set_sqlite_pragma(dbapi_connection, connection_record):
-                if is_wal:
-                    cursor = dbapi_connection.cursor()
-                    cursor.execute("PRAGMA journal_mode=WAL")
-                    cursor.close()
-
-        return sqla_list[bot_id]
-
-    def get_gs_sqla(self, bot_id):
-        return self._get_sqla(bot_id, False)
-
-    def get_sr_sqla(self, bot_id):
-        return self._get_sqla(bot_id, True)
 
 
 @overload
