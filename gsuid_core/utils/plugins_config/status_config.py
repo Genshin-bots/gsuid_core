@@ -2,7 +2,7 @@ from typing import Dict
 
 from gsuid_core.data_store import get_res_path
 
-from .models import GSC, GsStrConfig, GsBoolConfig, GsImageConfig
+from .models import GSC, GsStrConfig, GsBoolConfig, GsImageConfig, GsListStrConfig
 
 STATUS_CONIFG: Dict[str, GSC] = {
     "CustomBg": GsBoolConfig(
@@ -17,9 +17,15 @@ STATUS_CONIFG: Dict[str, GSC] = {
     ),
     "CustomName": GsStrConfig(
         "自定义名称",
-        "可自定义名称",
-        "机器人小柚子",
+        "可自定义名称, 当用户说话开头包括这些词时会被识别为在说机器人",
+        "小柚子",
         ["机器人小柚子", "早柚Core", "柚子"],
+    ),
+    "CustomNameAlias": GsListStrConfig(
+        "自定义名称别名",
+        "可自定义名称别名, 当用户说话开头包括这些词时会被识别为在说机器人",
+        [],
+        ["小柚子", "sayu"],
     ),
     "CustomBgPath": GsImageConfig(
         "自定义背景",

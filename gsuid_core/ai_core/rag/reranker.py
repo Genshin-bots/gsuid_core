@@ -5,22 +5,11 @@ from typing import TYPE_CHECKING, List, Optional
 from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.logger import logger
-from gsuid_core.data_store import AI_CORE_PATH
-from gsuid_core.ai_core.ai_config import ai_config
 
-RERANK_MODELS_CACHE = AI_CORE_PATH / "rerank_models_cache"
+from .base import RERANK_MODELS_CACHE, RERANKER_MODEL_NAME, is_enable_ai, is_enable_rerank
 
 if TYPE_CHECKING:
     from fastembed.rerank.cross_encoder import TextCrossEncoder
-
-# 从配置获取是否启用AI功能
-enable_ai: bool = ai_config.get_config("enable").data
-# 从配置获取是否启用Rerank功能
-enable_rerank: bool = ai_config.get_config("enable_rerank").data
-
-
-# Reranker模型名称
-RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 
 # Reranker实例（延迟加载）
 _reranker: "Optional[TextCrossEncoder]" = None
@@ -34,10 +23,10 @@ def get_reranker() -> "Optional[TextCrossEncoder]":
     """
     global _reranker
 
-    if not enable_ai:
+    if not is_enable_ai():
         return None
 
-    if not enable_rerank:
+    if not is_enable_rerank():
         logger.info("🧠 [Reranker] Rerank功能未启用，将跳过加载Reranker模型")
         return None
 

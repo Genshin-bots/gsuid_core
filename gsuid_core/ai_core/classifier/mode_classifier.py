@@ -375,7 +375,7 @@ def init_jieba():
 
 def sync_entities_to_jieba():
     """动态同步插件实体到Jieba词典"""
-    from .register import _ENTITIES
+    from ..register import _ENTITIES
 
     entity_count = 0
     for entity in _ENTITIES:
@@ -864,13 +864,12 @@ class IntentService:
             if has_query:
                 try:
                     # 动态导入避免循环依赖
-                    from .rag import query_knowledge
+                    from ..rag import query_knowledge
 
                     # 试探性检索（只取Top 1，阈值稍高）
                     hits = await query_knowledge(
                         query=text,
                         limit=1,
-                        score_threshold=0.5,
                     )
 
                     if hits and len(hits) > 0:

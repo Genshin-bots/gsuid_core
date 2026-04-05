@@ -1,9 +1,19 @@
-from typing import Any, Dict, List, Tuple, Union, Callable, Optional, TypedDict
+from typing import TYPE_CHECKING, Dict, List, Optional, TypedDict
+from dataclasses import dataclass
 
-"""
+from gsuid_core.bot import Bot
+from gsuid_core.models import Event
+
 if TYPE_CHECKING:
-    from qdrant_client.models import ExtendedPointId
-"""
+    from pydantic_ai.tools import Tool
+
+
+@dataclass
+class ToolContext:
+    """工具执行上下文"""
+
+    bot: Optional[Bot] = None
+    ev: Optional[Event] = None
 
 
 class KnowledgeBase(TypedDict):
@@ -11,17 +21,27 @@ class KnowledgeBase(TypedDict):
 
     id: str
     plugin: str
-    type: str
-    category: str
     title: str
     content: str
     tags: List[str]
+    source: str  # 知识来源: "plugin" 表示来自插件注册, "manual" 表示手动添加
 
 
 class KnowledgePoint(KnowledgeBase):
     """知识点类型"""
 
     _hash: str
+
+
+class ManualKnowledgeBase(TypedDict):
+    """手动添加的知识库类型 - 不会在启动时自动同步"""
+
+    id: str
+    plugin: str
+    title: str
+    content: str
+    tags: List[str]
+    source: str  # 固定为 "manual"
 
 
 class KnowledgeHash(TypedDict):
@@ -50,11 +70,16 @@ class ToolDef(TypedDict):
     function: FunctionDef
 
 
-class ToolSchema(TypedDict):
+class ToolBase:
+    """RAG工具类型 - 包含工具对象和元数据"""
+
     name: str
-    desc: str
-    params: Dict[str, Any]
-    schema: ToolDef
-    func: Callable
-    check_func: Optional[Callable[..., Union[Tuple[bool, str], bool]]]
-    check_kwargs: Dict[str, Any]
+    description: str
+    plugin: str  # 插件名称，core表示核心模块
+    tool: "Tool[ToolContext]"
+
+    def __init__(self, name: str, description: str, plugin: str, tool: "Tool[ToolContext]"):
+        self.name = name
+        self.description = description
+        self.plugin = plugin
+        self.tool = tool

@@ -3,12 +3,13 @@ from typing import Any, List, Literal, Callable, Optional, Annotated
 from concurrent.futures import ThreadPoolExecutor
 
 from msgspec import Meta
+from pydantic_ai import RunContext
 from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.register import ai_tools
+from gsuid_core.ai_core.models import ToolContext
 
 misfire_grace_time = core_config.get_config("misfire_grace_time")
 
@@ -139,8 +140,8 @@ def _get_trigger_description(trigger: Any) -> str:
     return "未知触发器类型"
 
 
-@ai_tools
-def add_scheduled_job(
+async def add_scheduled_job(
+    ctx: RunContext[ToolContext],
     func: Annotated[
         Callable,
         Meta(description="要执行的异步或同步函数"),

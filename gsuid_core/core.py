@@ -69,12 +69,12 @@ async def main():
 
     await load_gss(args.dev)
 
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
     from gsuid_core.bot import _Bot
     from gsuid_core.config import core_config
     from gsuid_core.logger import logger
     from gsuid_core.models import MessageReceive
     from gsuid_core.handler import handle_event
-    from gsuid_core.ai_core.register import get_registered_tools
     from gsuid_core.security_manager import sec_manager
     from gsuid_core.utils.database.startup import (  # noqa: F401
         trans_adapter as ta,
@@ -171,8 +171,6 @@ async def main():
     logger.success(ASCII_FONT)
     duration = round(end_time - start_time, 2)
     logger.success(f"🚀 [GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}")
-
-    get_registered_tools()
 
     await server.serve()
 

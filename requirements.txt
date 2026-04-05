@@ -131,6 +131,7 @@ anyio==4.12.1 \
     # via
     #   httpx
     #   openai
+    #   pydantic-ai-skills
     #   starlette
 apscheduler==3.11.2 \
     --hash=sha256:2a9966b052ec805f020c8c4c3ae6e6a06e24b1bf19f2e11d91d8cca0473eef41 \
@@ -523,6 +524,10 @@ fsspec==2026.1.0 \
     --hash=sha256:cb76aa913c2285a3b49bdd5fc55b1d7c708d7208126b60f2eb8194fe1b4cbdcc \
     --hash=sha256:e987cb0496a0d81bba3a9d1cee62922fb395e7d4c3b575e57f547953334fe07b
     # via huggingface-hub
+genai-prices==0.0.56 \
+    --hash=sha256:ac24b16a84d0ab97539bfa48dfa4649689de8e3ce71c12ebacef29efb1998045 \
+    --hash=sha256:dbe86be8f3f556bed1b72209ed36851fec8b01793b3b220f42921a4e7da945f6
+    # via pydantic-ai-slim
 gitdb==4.0.12 \
     --hash=sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571 \
     --hash=sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf
@@ -618,6 +623,10 @@ greenlet==3.3.1 \
     #   gsuid-core
     #   playwright
     #   sqlalchemy
+griffelib==2.0.1 \
+    --hash=sha256:59f39eabb4c777483a3823e39e8f9e03e69df271a7e49aee64e91a8cfa91bdf5 \
+    --hash=sha256:b769eed581c0e857d362fc8fcd8e57ecd2330c124b6104ac8b4c1c86d76970aa
+    # via pydantic-ai-slim
 grpcio==1.76.0 \
     --hash=sha256:04bbe1bfe3a68bbfd4e52402ab7d4eb59d72d02647ae2042204326cf4bbad280 \
     --hash=sha256:06c3d6b076e7b593905d04fdba6a0525711b3466f43b3400266f04ff735de0cd \
@@ -726,9 +735,12 @@ httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
     # via
+    #   genai-prices
     #   gsuid-core
     #   huggingface-hub
     #   openai
+    #   pydantic-ai-slim
+    #   pydantic-graph
     #   qdrant-client
     #   tavily-python
 huggingface-hub==1.3.5 \
@@ -754,6 +766,10 @@ idna==3.11 \
     #   httpx
     #   requests
     #   yarl
+importlib-metadata==8.7.1 \
+    --hash=sha256:49fef1ae6440c182052f407c8d34a68f72efc36db9ca90dc0113398f2fdde8bb \
+    --hash=sha256:5a1f80bf1daa489495071efbb095d75a634cf28a8bc299581244063b53176151
+    # via opentelemetry-api
 jieba==0.42.1 \
     --hash=sha256:055ca12f62674fafed09427f176506079bc135638a14e23e25be909131928db2
     # via gsuid-core
@@ -879,6 +895,10 @@ lmdb==1.7.5 \
     --hash=sha256:f7553ef5fa6ffa5c7476b5d9a2415137b6b05a7456d1c94b51630d89e89e1c21 \
     --hash=sha256:fc344bb8bc0786c87c4ccb19b31f09a38c08bd159ada6f037d669426fea06f03
     # via gsuid-core
+logfire-api==4.30.0 \
+    --hash=sha256:9138976dc30df4cf21617f1b188a84781683ef2ba88c46008774a7081f16f2c9 \
+    --hash=sha256:ab24c4283fbe90b0f275e59f69ce3b86712cbabec6aa7ae64f411e754c66e3fc
+    # via pydantic-graph
 loguru==0.7.3 \
     --hash=sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6 \
     --hash=sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c
@@ -1411,10 +1431,16 @@ onnxruntime==1.23.2 \
     --hash=sha256:da44b99206e77734c5819aa2142c69e64f3b46edc3bd314f6a45a932defc0b3e \
     --hash=sha256:e2b9233c4947907fd1818d0e581c049c41ccc39b2856cc942ff6d26317cee145
     # via fastembed
-openai==2.16.0 \
-    --hash=sha256:42eaa22ca0d8ded4367a77374104d7a2feafee5bd60a107c3c11b5243a11cd12 \
-    --hash=sha256:5f46643a8f42899a84e80c38838135d7038e7718333ce61396994f887b09a59b
-    # via gsuid-core
+openai==2.30.0 \
+    --hash=sha256:92f7661c990bda4b22a941806c83eabe4896c3094465030dd882a71abe80c885 \
+    --hash=sha256:9a5ae616888eb2748ec5e0c5b955a51592e0b201a11f4262db920f2a78c5231d
+    # via
+    #   gsuid-core
+    #   pydantic-ai-slim
+opentelemetry-api==1.40.0 \
+    --hash=sha256:159be641c0b04d11e9ecd576906462773eb97ae1b657730f0ecf64d32071569f \
+    --hash=sha256:82dd69331ae74b06f6a874704be0cfaa49a1650e1537d4a813b86ecef7d0ecf9
+    # via pydantic-ai-slim
 packaging==26.0 \
     --hash=sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4 \
     --hash=sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529
@@ -1762,12 +1788,25 @@ pydantic==2.12.5 \
     --hash=sha256:e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d
     # via
     #   fastapi
+    #   genai-prices
     #   google-generativeai
     #   gsuid-core
     #   openai
+    #   pydantic-ai-slim
+    #   pydantic-graph
     #   pydantic-settings
     #   qdrant-client
     #   sqlmodel
+pydantic-ai-skills==0.6.0 \
+    --hash=sha256:76aa54f5ad91e104205251a9b350c9e5ec69f76ef9d183c942ad3830a37fed7c \
+    --hash=sha256:8a583336bf5df3f920aaf5c01a6b34ce5de6d470699240f9af7518ee8b3b447f
+    # via gsuid-core
+pydantic-ai-slim==1.72.0 \
+    --hash=sha256:ccb84a890347571e6e3927ff49363aa98a3a5bbfdc42de2c8d3be9f673bbccc6 \
+    --hash=sha256:feb409a37a868eae300adc6110ed455b74f45e80c37094dd6926b36585c761e1
+    # via
+    #   gsuid-core
+    #   pydantic-ai-skills
 pydantic-core==2.41.5 \
     --hash=sha256:0177272f88ab8312479336e1d777f6b124537d47f2123f89cb37e0accea97f90 \
     --hash=sha256:01a3d0ab748ee531f4ea6c3e48ad9dac84ddba4b0d82291f87248f2f9de8d740 \
@@ -1851,6 +1890,10 @@ pydantic-core==2.41.5 \
     # via
     #   gsuid-core
     #   pydantic
+pydantic-graph==1.72.0 \
+    --hash=sha256:8970cc4cd4ba396976d4b4aa0ba5dcc9a0efeeac01a1a9253c7a8d90a4590046 \
+    --hash=sha256:d1c953d7395ff53b74c3e3b8b4cfac8d8ba06d32fc656ebae9363b2ade8598b0
+    # via pydantic-ai-slim
 pydantic-settings==2.12.0 \
     --hash=sha256:005538ef951e3c2a68e1c08b292b5f2e71490def8589d4221b95dab00dafcfd0 \
     --hash=sha256:fddb9fd99a5b18da837b29710391e945b1e30c135477f484084ee513adb93809
@@ -1957,7 +2000,9 @@ pyyaml==6.0.3 \
     --hash=sha256:ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
-    # via huggingface-hub
+    # via
+    #   huggingface-hub
+    #   pydantic-ai-skills
 qdrant-client==1.17.0 \
     --hash=sha256:47eb033edb9be33a4babb4d87b0d8d5eaf03d52112dca0218db7f2030bf41ba9 \
     --hash=sha256:f5b452c68c42b3580d3d266446fb00d3c6e3aae89c916e16585b3c704e108438
@@ -2323,6 +2368,7 @@ tiktoken==0.12.0 \
     --hash=sha256:ffc5288f34a8bc02e1ea7047b8d041104791d2ddbf42d1e5fa07822cbffe16bd
     # via
     #   gsuid-core
+    #   pydantic-ai-slim
     #   tavily-python
 tokenizers==0.22.2 \
     --hash=sha256:1c774b1276f71e1ef716e5486f21e76333464f47bece56bbd554485982a9e03e \
@@ -2371,6 +2417,7 @@ typing-extensions==4.15.0 \
     #   grpcio
     #   huggingface-hub
     #   openai
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   pyee
@@ -2383,6 +2430,8 @@ typing-inspection==0.4.2 \
     --hash=sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464
     # via
     #   pydantic
+    #   pydantic-ai-slim
+    #   pydantic-graph
     #   pydantic-settings
 tzdata==2025.3 ; sys_platform == 'emscripten' or sys_platform == 'win32' \
     --hash=sha256:06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1 \
@@ -2622,3 +2671,7 @@ yarl==1.22.0 \
     --hash=sha256:f87ac53513d22240c7d59203f25cc3beac1e574c6cd681bbfd321987b69f95fd \
     --hash=sha256:ff86011bd159a9d2dfc89c34cfd8aff12875980e3bd6a39ff097887520e60249
     # via aiohttp
+zipp==3.23.0 \
+    --hash=sha256:071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e \
+    --hash=sha256:a07157588a12518c9d4034df3fbbee09c814741a33ff63c05fa29d26a2404166
+    # via importlib-metadata

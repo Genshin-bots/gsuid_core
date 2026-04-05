@@ -295,10 +295,12 @@ class Bot:
 
 ## 四、AI 聊天流程
 
-当没有命令匹配时，系统会尝试进行 AI 聊天：
+当没有命令匹配时，系统会尝试进行 AI 聊天。详细流程请参阅 [`docs/ai_handle_flow.md`](ai_handle_flow.md)。
+
+### 4.1 简化流程
 
 ```python
-# handler.py::_handle_ai_chat()
+# handler.py::handle_event()
 
 if len(valid_event) >= 1:
     # 有命令匹配，执行命令
@@ -306,31 +308,73 @@ if len(valid_event) >= 1:
 else:
     # 无命令匹配，检查是否启用 AI
     if enable_ai:
-        # 1. 意图识别
-        res = await classifier_service.predict_async(event.raw_text)
-        intent = res["intent"]  # "闲聊" / "工具" / "问答"
+        bot = Bot(ws, event)
+        coro = handle_ai_chat(bot, event)  # 异步执行
+```
 
-        # 2. 根据意图准备上下文
-        if intent == "闲聊":
-            dynamic_system_prompt = chat_prompt
-        elif intent == "工具":
-            # 搜索相关工具
-            results = await search_tools(query)
-            dynamic_tools = [all_tools_metadata[tool_name]["schema"] for hit in results]
-        elif intent == "问答":
-            # 查询知识库
-            knowledge_results = await query_knowledge(query)
+### 4.2 AI Handle 流程
 
-        # 3. 调用大模型
-        chat_completion = await session.chat(
-            text=query,
-            tools=dynamic_tools,
-            temp_system=dynamic_system_prompt,
-            ...
-        )
+```python
+# handle_ai.py::handle_ai_chat()
 
-        # 4. 发送回复
-        await bot.send(chat_completion)
+async def handle_ai_chat(bot: Bot, event: Event):
+    # 1. 意图识别
+    res = await classifier_service.predict_async(event.raw_text)
+    intent = res["intent"]  # "闲聊" / "工具" / "问答"
+
+    # 2. 根据意图检查开关
+    if intent == "闲聊" and not enable_chat:
+        return
+    elif intent == "工具" and not enable_task:
+        return
+    elif intent == "问答" and not enable_qa:
+        return
+
+    # 3. 获取Session (persona只在创建时设置一次)
+    session = await get_ai_session(event)
+
+    # 4. 根据意图准备RAG上下文
+    rag_context = None
+    if intent == "工具":
+        # 工具模式：检索知识库作为上下文
+        knowledge_results = await query_knowledge(normalized_query)
+        rag_context = "【参考资料】\n" + ...
+    elif intent == "问答":
+        # 问答模式：检索知识库
+        knowledge_results = await query_knowledge(normalized_query)
+        rag_context = "【参考资料】\n" + ...
+
+    # 5. 调用Agent生成回复
+    chat_result = await session.run(
+        user_message=user_messages,
+        bot=bot,
+        ev=event,
+        rag_context=rag_context,  # RAG上下文传递
+    )
+
+    # 6. 发送回复
+    await bot.send(chat_result)
+```
+
+### 4.3 Session 管理
+
+```python
+# ai_router.py::SessionManager
+
+class SessionManager:
+    CLEANUP_INTERVAL = 3600   # 每小时检查一次
+    IDLE_THRESHOLD = 86400    # 24小时无访问则清理
+
+# Session创建时会根据群组配置选择persona
+async def get_ai_session(event: Event) -> GsCoreAIAgent:
+    session_id = f"{event.user_id}_{event.group_id}"
+    # 根据group_id匹配persona配置
+    for p in personas:
+        if event.group_id in group_personas.get(p, []):
+            base_persona = await build_persona_prompt(p)
+            break
+    else:
+        base_persona = await build_persona_prompt("智能助手")
 ```
 
 ---
