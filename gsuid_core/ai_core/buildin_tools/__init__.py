@@ -23,8 +23,9 @@ Buildin Tools 模块
 from gsuid_core.ai_core.register import ai_tools
 
 # AI日期工具 - 获取当前日期时间
-from gsuid_core.ai_core.buildin_tools.aitools import (
+from gsuid_core.ai_core.buildin_tools.get_time import (
     get_current_date,
+    get_current_date_simple,
 )
 
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
@@ -72,4 +73,5 @@ __all__ = [
     "set_user_favorability",
     # AI日期工具
     "get_current_date",
+    "get_current_date_simple",
 ]

@@ -129,11 +129,11 @@ TAVILY_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
-    "max_results": GsStrConfig(
+    "max_results": GsIntConfig(
         "最大搜索结果数",
         "指定每次搜索的最大返回结果数量",
-        "10",
-        options=["5", "10", "15", "20"],
+        10,
+        options=[5, 10, 15, 20],
     ),
     "search_depth": GsStrConfig(
         "搜索深度",
