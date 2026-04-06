@@ -13,12 +13,19 @@ Buildin Tools 模块
 - update_user_favorability: 更新用户好感度（增量）
 - set_user_favorability: 设置用户好感度（绝对值）
 - execute_shell_command: 执行系统命令
+- get_current_date: 获取当前日期和时间
+- get_current_date_simple: 获取当前日期（简化版）
 
 所有工具均使用 @ai_tools 装饰器注册。
 """
 
 # 工具装饰器
 from gsuid_core.ai_core.register import ai_tools
+
+# AI日期工具 - 获取当前日期时间
+from gsuid_core.ai_core.buildin_tools.aitools import (
+    get_current_date,
+)
 
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
 from gsuid_core.ai_core.buildin_tools.rag_search import search_knowledge
@@ -63,4 +70,6 @@ __all__ = [
     # 好感度管理工具
     "update_user_favorability",
     "set_user_favorability",
+    # AI日期工具
+    "get_current_date",
 ]
