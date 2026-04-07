@@ -130,6 +130,9 @@ async def handle_ai_chat(bot: Bot, event: Event):
 
                 logger.debug(f"🧠 [GsCore][AI] 已加载 {len(history)} 条历史消息")
 
+        # 保存当前历史长度，用于后续判断是否有新消息
+        history_len_before = len(session.history)
+
         # 6. 调用Agent生成回复
         chat_result = await session.run(
             user_message=user_messages,
@@ -143,20 +146,55 @@ async def handle_ai_chat(bot: Bot, event: Event):
             await bot.send(chat_result)
             logger.info(f"🧠 [GsCore][AI] 回复已发送 (模式: {intent})")
 
-            # 记录AI回复到历史记录
-            # 提取纯文本内容用于历史记录
-            reply_content = _extract_text_from_result(chat_result)
-            if reply_content:
-                history_manager.add_message(
-                    group_id=event.group_id,
-                    user_id=event.user_id,
-                    role="assistant",
-                    content=reply_content,
-                    metadata={
-                        "intent": intent,
-                        "bot_id": event.bot_id,
-                    },
-                )
+        # 记录AI回复到历史记录
+        # 优先使用 chat_result，如果为空则从 session.history 获取
+        reply_content = _extract_text_from_result(chat_result) if chat_result else None
+
+        # 如果 chat_result 为空，尝试从 session.history 获取最后一条 AI 回复
+        if not reply_content and len(session.history) > history_len_before:
+            # 获取新添加的消息
+            new_messages = session.history[history_len_before:]
+            logger.debug(f"🧠 [GsCore][AI] 从 session.history 获取 {len(new_messages)} 条新消息")
+            # 查找 ModelResponse 类型的消息（AI 回复）
+            for msg in reversed(new_messages):
+                msg_type = type(msg).__name__
+                logger.debug(f"🧠 [GsCore][AI] 检查消息: type={msg_type}")
+                # pydantic_ai 使用 ModelResponse 表示 AI 回复
+                if msg_type == "ModelResponse":
+                    # 尝试从消息中提取文本内容
+                    msg_parts = getattr(msg, "parts", None)
+                    if msg_parts:
+                        text_parts = []
+                        for part in msg_parts:
+                            part_type = type(part).__name__
+                            part_content = getattr(part, "content", None)
+                            logger.debug(
+                                f"🧠 [GsCore][AI] 检查 part: type={part_type}, has_content={part_content is not None}"
+                            )
+                            if part_content and part_type == "TextPart":
+                                text_parts.append(part_content)
+                        if text_parts:
+                            reply_content = " ".join(text_parts).strip()
+                            logger.debug(f"🧠 [GsCore][AI] 从 parts 提取回复: {reply_content[:50]}...")
+                    else:
+                        msg_content = getattr(msg, "content", None)
+                        if isinstance(msg_content, str):
+                            reply_content = msg_content.strip()
+                            logger.debug(f"🧠 [GsCore][AI] 从 content 提取回复: {reply_content[:50]}...")
+                    if reply_content:
+                        break
+
+        if reply_content:
+            history_manager.add_message(
+                group_id=event.group_id,
+                user_id=event.user_id,
+                role="assistant",
+                content=reply_content,
+                metadata={
+                    "intent": intent,
+                    "bot_id": event.bot_id,
+                },
+            )
 
     except Exception as e:
         logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")

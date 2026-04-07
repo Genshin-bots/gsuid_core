@@ -3,6 +3,7 @@ PydanticAI Agent 核心模块
 基于 pydantic_ai 实现的轻量级 Agent
 """
 
+import asyncio
 from typing import TYPE_CHECKING, Any, List, Union, Optional, Sequence
 
 from pydantic_ai import Agent
@@ -72,6 +73,8 @@ class GsCoreAIAgent:
     ):
         self.history: List[ModelMessage] = []
         self.system_prompt = system_prompt
+        # 用于串行执行 run 方法的锁
+        self._run_lock = asyncio.Lock()
 
         if model_name:
             self.model_name = model_name
@@ -90,7 +93,7 @@ class GsCoreAIAgent:
 
         self.max_tokens = max_tokens
 
-    async def run(
+    async def _execute_run(
         self,
         user_message: Union[str, Sequence[UserContent]],
         bot: Optional[Bot] = None,
@@ -98,10 +101,7 @@ class GsCoreAIAgent:
         rag_context: Optional[str] = None,
     ) -> str:
         """
-        运行 Agent 并返回结果
-
-        Returns:
-            Agent 执行结果，可能是 str 或其他类型（取决于 Agent 配置）
+        实际执行 Agent 运行的内部方法
         """
         multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
         limits = UsageLimits(request_limit=multi_agent_lenth)
@@ -215,6 +215,33 @@ class GsCoreAIAgent:
             logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
             logger.exception("🧠 [PydanticAI] 异常详情:")
             return f"执行出错: {str(e)}"
+
+    async def run(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot] = None,
+        ev: Optional[Event] = None,
+        rag_context: Optional[str] = None,
+    ) -> str:
+        """
+        运行 Agent 并返回结果
+
+        此方法使用锁机制确保同一时间只有一个请求在执行，
+        其他请求会挂起等待，执行时自动继承历史记录
+
+        Returns:
+            Agent 执行结果，可能是 str 或其他类型（取决于 Agent 配置）
+        """
+        async with self._run_lock:
+            logger.info("🧠 [GsCoreAIAgent] 获取到执行锁，开始执行...")
+            result = await self._execute_run(
+                user_message=user_message,
+                bot=bot,
+                ev=ev,
+                rag_context=rag_context,
+            )
+            logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
+            return result
 
 
 # 工厂函数

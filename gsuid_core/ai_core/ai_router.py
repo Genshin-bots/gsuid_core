@@ -224,8 +224,8 @@ async def get_ai_session(
     Returns:
         GsCoreAIAgent 实例
     """
-    # session_id 格式为 "{user_id}_{group_id}"
-    session_id = f"{event.user_id}_{event.group_id}"
+    # session_id 格式为 "{user_id}%%%{group_id}"
+    session_id = f"{event.user_id}%%%{event.group_id}"
 
     # 更新访问时间
     SessionManager.update_access_time(session_id)
