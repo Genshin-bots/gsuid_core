@@ -20,6 +20,7 @@ from gsuid_core.webconsole import (
     scheduler_api,
     setup_frontend,
     core_config_api,
+    system_prompt_api,
     knowledge_base_api,
 )
 
@@ -50,6 +51,7 @@ __all__ = [
     "assets_api",
     "persona_api",
     "knowledge_base_api",
+    "system_prompt_api",
     "PageSchema",
     "GsAdminModel",
     "site",

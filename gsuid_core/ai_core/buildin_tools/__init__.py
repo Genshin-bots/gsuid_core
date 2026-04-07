@@ -15,6 +15,7 @@ Buildin Tools 模块
 - execute_shell_command: 执行系统命令
 - get_current_date: 获取当前日期和时间
 - get_current_date_simple: 获取当前日期（简化版）
+- create_subagent: 创建子Agent完成特定任务
 
 所有工具均使用 @ai_tools 装饰器注册。
 """
@@ -25,8 +26,11 @@ from gsuid_core.ai_core.register import ai_tools
 # AI日期工具 - 获取当前日期时间
 from gsuid_core.ai_core.buildin_tools.get_time import (
     get_current_date,
-    get_current_date_simple,
+    _get_current_date,
 )
+
+# Subagent工具 - 创建子Agent完成特定任务
+from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
 from gsuid_core.ai_core.buildin_tools.rag_search import search_knowledge
@@ -73,5 +77,7 @@ __all__ = [
     "set_user_favorability",
     # AI日期工具
     "get_current_date",
-    "get_current_date_simple",
+    "_get_current_date",
+    # Subagent工具
+    "create_subagent",
 ]

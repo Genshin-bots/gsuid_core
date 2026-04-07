@@ -16,9 +16,10 @@
 4. [知识库注册](#4-知识库注册)
 5. [别名注册](#5-别名注册)
 6. [内置工具一览](#6-内置工具一览)
-7. [Skills 系统](#7-skills-系统)
-8. [类型定义](#8-类型定义)
-9. [完整示例](#9-完整示例)
+7. [System Prompt 管理](#7-system-prompt-管理)
+8. [Skills 系统](#8-skills-系统)
+9. [类型定义](#9-类型定义)
+10. [完整示例](#10-完整示例)
 
 ---
 
@@ -407,9 +408,120 @@ async def update_user_favorability(
 ) -> str
 ```
 
+### 6.6 create_subagent
+
+创建子Agent完成特定任务。根据任务描述搜索最匹配的System Prompt，创建一个临时子Agent来完成任务，结果返回给主Agent。
+
+```python
+from gsuid_core.ai_core.buildin_tools import create_subagent
+
+async def create_subagent(
+    ctx: RunContext[ToolContext],
+    task: str,                              # 任务描述
+    tags: Optional[str] = None,             # 可选，逗号分隔的标签
+    max_tokens: int = 1800,                # 子Agent最大输出
+) -> str
+```
+
+**功能说明**：
+- 根据 `task` 描述搜索最匹配的 System Prompt
+- 使用匹配的 System Prompt 创建子 Agent
+- 子 Agent 执行任务并返回结果
+- 适用于复杂任务分解、多角度分析、角色扮演等场景
+
+**示例**：
+```python
+# 编写代码任务
+result = await create_subagent(ctx, "写一个Python快速排序函数", tags="代码")
+
+# 角色扮演任务
+result = await create_subagent(ctx, "以角色的语气回复: 今天天气真好", tags="角色扮演")
+```
+
 ---
 
-## 7. Skills 系统
+## 7. System Prompt 管理
+
+System Prompt 模块提供系统提示词的管理和检索功能，支持向量检索匹配。
+
+### 7.1 模块导入
+
+```python
+from gsuid_core.ai_core.system_prompt import (
+    SystemPrompt,           # 数据模型
+    get_all_prompts,       # 获取所有System Prompt
+    get_prompt_by_id,      # 根据ID获取单个
+    add_prompt,            # 添加
+    update_prompt,         # 更新
+    delete_prompt,         # 删除
+    search_system_prompt,  # 检索
+    get_best_match,        # 获取最佳匹配
+)
+```
+
+### 7.2 数据模型
+
+```python
+class SystemPrompt(TypedDict):
+    id: str           # 唯一标识
+    title: str        # 标题
+    desc: str         # 描述（用于向量检索）
+    content: str      # 完整内容（作为系统提示词）
+    tags: List[str]   # 标签列表
+```
+
+### 7.3 存储位置
+
+- JSON文件: `AI_CORE_PATH / "system_prompts.json"`
+- 向量库Collection: `system_prompts`
+
+### 7.4 CRUD操作
+
+```python
+# 添加
+prompt = SystemPrompt(
+    id="my_prompt",
+    title="代码专家",
+    desc="擅长编写各种编程语言的代码",
+    content="你是一个专业的程序员...",
+    tags=["代码", "编程"]
+)
+add_prompt(prompt)
+
+# 查询
+all_prompts = get_all_prompts()
+single = get_prompt_by_id("my_prompt")
+
+# 更新
+update_prompt("my_prompt", {"title": "新标题"})
+
+# 删除
+delete_prompt("my_prompt")
+```
+
+### 7.5 向量检索
+
+```python
+# 搜索匹配的System Prompt
+results = await search_system_prompt(
+    query="写一个Python排序函数",
+    tags=["代码"],          # 可选，标签过滤
+    limit=5,               # 返回数量
+    use_vector=True,        # 是否使用向量检索
+)
+
+# 获取最佳匹配（用于subagent）
+best = await get_best_match(
+    query="写一个快速排序",
+    tags=["代码"]
+)
+if best:
+    system_prompt = best["content"]
+```
+
+---
+
+## 9. Skills 系统
 
 Skills 是 PydanticAI 的技能系统，用于为 AI 提供额外的指令和能力。
 
@@ -481,9 +593,9 @@ class ManualKnowledgeBase(TypedDict):
 
 ---
 
-## 9. 完整示例
+## 10. 完整示例
 
-### 9.1 示例一：注册工具并使用 check_func
+### 10.1 示例一：注册工具并使用 check_func
 
 ```python
 from pydantic_ai import RunContext
@@ -553,7 +665,7 @@ ai_entity(KnowledgePoint(
 ))
 ```
 
-### 9.2 示例二：创建临时 Agent 处理自定义任务
+### 10.2 示例二：创建临时 Agent 处理自定义任务
 
 ```python
 from gsuid_core.ai_core.gs_agent import create_agent
@@ -576,7 +688,7 @@ result = await translate_text("你好，世界！")
 print(result)  # Hello, world!
 ```
 
-### 9.3 示例三：完整的插件初始化示例
+### 10.3 示例三：完整的插件初始化示例
 
 ```python
 # my_plugin/__init__.py

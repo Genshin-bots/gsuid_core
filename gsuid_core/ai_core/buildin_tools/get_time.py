@@ -43,7 +43,7 @@ async def _get_current_date_impl(format: Optional[str] = None) -> str:
 
 
 @ai_tools()
-async def get_current_date(
+async def _get_current_date(
     format: Optional[str] = None,
 ) -> str:
     """
@@ -62,6 +62,12 @@ async def get_current_date(
         >>> date = await get_current_date(ctx)
         >>> date = await get_current_date(ctx, format="%Y-%m-%d")
     """
+    return await _get_current_date_impl(format)
+
+
+async def get_current_date(
+    format: Optional[str] = None,
+) -> str:
     try:
         result = await _get_current_date_impl(format)
         logger.info(f"🧠 [BuildinTools] 获取当前日期: {result}")
@@ -70,7 +76,3 @@ async def get_current_date(
     except Exception as e:
         logger.exception(f"🧠 [BuildinTools] 获取日期失败: {e}")
         return f"获取日期失败：{str(e)}"
-
-
-# 导出内部实现函数供其他模块直接调用
-get_current_date_simple = _get_current_date_impl

@@ -17,7 +17,24 @@ async def init_all():
     await init_tools_collection()
     await init_knowledge_collection()
 
+    # 3. 初始化System Prompt集合
     from gsuid_core.logger import logger
+    from gsuid_core.ai_core.system_prompt import (
+        get_all_prompts,
+        init_default_prompts,
+        sync_to_vector_store,
+        init_system_prompt_collection,
+    )
+
+    # 初始化默认System Prompt（如果还没有的话）
+    added = init_default_prompts()
+    logger.info(f"🧠 [SystemPrompt] 初始化了 {added} 个默认System Prompt")
+
+    await init_system_prompt_collection()
+    all_prompts = get_all_prompts()
+    if all_prompts:
+        await sync_to_vector_store(all_prompts)  # type: ignore
+
     from gsuid_core.ai_core.register import _TOOL_REGISTRY
 
     logger.info(f"🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {len(_TOOL_REGISTRY)}")
