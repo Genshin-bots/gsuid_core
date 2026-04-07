@@ -112,18 +112,23 @@ class _Bot:
             if target_type == "direct":
                 # 私聊场景
                 _hist_group_id = None
-                _hist_user_id = target_id
+                _hist_user_id = bot_self_id
             else:
                 # 群聊场景
                 _hist_group_id = target_id
-                _hist_user_id = sender_id if sender_id else "bot"
+                _hist_user_id = bot_self_id
 
             # 提取消息内容
             content = ""
             metadata = {}
 
             if isinstance(message, str):
-                content = message
+                # 检查是否是 base64 图片
+                if message.startswith("base64://"):
+                    content = "[图片]"
+                    metadata["type"] = "base64_image"
+                else:
+                    content = message
             elif isinstance(message, bytes):
                 content = "[图片/文件]"
                 metadata["type"] = "bytes"
