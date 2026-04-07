@@ -102,6 +102,72 @@ class _Bot:
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
     ):
+        # 记录 bot 回复到历史记录
+        try:
+            from gsuid_core.ai_core.history import get_history_manager
+
+            history_manager = get_history_manager()
+
+            # 确定 group_id 和 user_id
+            if target_type == "direct":
+                # 私聊场景
+                _hist_group_id = None
+                _hist_user_id = target_id
+            else:
+                # 群聊场景
+                _hist_group_id = target_id
+                _hist_user_id = sender_id if sender_id else "bot"
+
+            # 提取消息内容
+            content = ""
+            metadata = {}
+
+            if isinstance(message, str):
+                content = message
+            elif isinstance(message, bytes):
+                content = "[图片/文件]"
+                metadata["type"] = "bytes"
+            elif isinstance(message, list):
+                # 处理消息列表
+                text_parts = []
+                image_count = 0
+                for msg in message:
+                    if isinstance(msg, Message):
+                        if msg.type == "text":
+                            text_parts.append(str(msg.data))
+                        elif msg.type == "image":
+                            image_count += 1
+                        elif msg.type == "at":
+                            text_parts.append(f"@{msg.data}")
+                        else:
+                            text_parts.append(f"[{msg.type}]")
+                    elif isinstance(msg, str):
+                        text_parts.append(msg)
+                content = " ".join(text_parts)
+                if image_count > 0:
+                    metadata["image_count"] = image_count
+            elif isinstance(message, Message):
+                if message.type == "text":
+                    content = str(message.data)
+                elif message.type == "image":
+                    content = "[图片]"
+                    metadata["type"] = "image"
+                else:
+                    content = f"[{message.type}]"
+
+            # 记录到历史记录
+            if content and _hist_user_id:
+                history_manager.add_message(
+                    group_id=_hist_group_id,
+                    user_id=_hist_user_id,
+                    role="assistant",
+                    content=content,
+                    user_name="AI",
+                    metadata=metadata,
+                )
+        except Exception as e:
+            logger.debug(f"🧠 [GsCore][Bot] 记录历史记录失败: {e}")
+
         _message = await convert_message(
             message,
             bot_id,

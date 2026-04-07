@@ -8,10 +8,6 @@ from typing import Dict
 
 from fastapi import Depends
 
-from gsuid_core.ai_core.ai_router import (
-    SessionManager,
-    session_history,
-)
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.history.manager import (
@@ -31,36 +27,35 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
     """
     try:
         manager = get_history_manager()
-        # 从 ai_router 获取 session 信息（与 persona API 使用相同的 session_id 格式）
-        ai_router_sessions = SessionManager.get_all_sessions_info()
+        # 从 HistoryManager 获取所有 session 信息（已统一）
+        all_sessions = manager.get_all_sessions_info()
 
+        # 构建最终结果
         result = []
-        for session_id, session_info in ai_router_sessions.items():
-            # 解析 session_id 格式: "{user_id}%%%{group_id}"
-            if "%%%" in session_id:
-                user_id_str, group_id_str = session_id.split("%%%", 1)
-                user_id = user_id_str if user_id_str != "None" else None
-                group_id = group_id_str if group_id_str != "None" else None
-            else:
-                # 兼容旧格式（不应该发生）
-                user_id = None
-                group_id = None
+        for session_id, session_data in all_sessions.items():
+            # 从 session_data 直接获取 user_id 和 group_id
+            user_id = session_data.get("user_id")
+            group_id = session_data.get("group_id")
 
             # 判断 session 类型
             if group_id:
                 session_type = "group"
-            elif user_id:
-                session_type = "private"
             else:
-                session_type = "unknown"
+                session_type = "private"
 
             # 从 history_manager 获取消息数量
             if group_id:
                 msg_count = manager.get_history_count(group_id, user_id or "")
-            elif user_id:
-                msg_count = manager.get_history_count(None, user_id)
             else:
-                msg_count = 0
+                msg_count = manager.get_history_count(None, user_id or "")
+
+            # 检查是否有 AI session
+            has_ai_session = manager.has_ai_session(session_id)
+            ai_history_length = 0
+            if has_ai_session:
+                ai_session = manager.get_ai_session(session_id)
+                if ai_session and hasattr(ai_session, "history"):
+                    ai_history_length = len(ai_session.history)
 
             result.append(
                 {
@@ -69,9 +64,11 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
                     "group_id": group_id,
                     "user_id": user_id,
                     "message_count": msg_count,
-                    "last_access": session_info.get("last_access"),
-                    "created_at": session_info.get("created_at"),
-                    "history_length": session_info.get("history_length", 0),
+                    "last_access": session_data.get("last_access"),
+                    "created_at": session_data.get("created_at"),
+                    "history_length": session_data.get("history_length", 0),
+                    "has_ai_session": has_ai_session,
+                    "ai_history_length": ai_history_length,
                 }
             )
 
@@ -114,7 +111,8 @@ async def get_session_history(
                 "data": None,
             }
 
-        user_id, group_id_str = session_id.split("%%%", 1)
+        user_id_str, group_id_str = session_id.split("%%%", 1)
+        user_id = user_id_str if user_id_str != "None" else ""
         group_id = group_id_str if group_id_str != "None" else None
 
         manager = get_history_manager()
@@ -210,20 +208,18 @@ async def clear_session_history(
                 "data": None,
             }
 
-        user_id, group_id_str = session_id.split("%%%", 1)
+        user_id_str, group_id_str = session_id.split("%%%", 1)
+        user_id = user_id_str if user_id_str != "None" else ""
         group_id = group_id_str if group_id_str != "None" else None
 
         manager = get_history_manager()
 
         if delete_session:
-            # 完全删除session
+            # 完全删除session（包括历史、AI session等）
             if group_id:
-                success = manager.delete_session(group_id, user_id)
+                success = manager.delete_session(group_id, user_id or "")
             else:
                 success = manager.delete_session(None, user_id)
-
-            # 同时清理ai_router中的session
-            SessionManager.remove_session(session_id)
 
             if success:
                 return {
@@ -238,16 +234,16 @@ async def clear_session_history(
                     "data": None,
                 }
         else:
-            # 仅清空历史记录
+            # 仅清空历史记录（保留AI session对象但清空其history）
             if group_id:
-                success = manager.clear_history(group_id, user_id)
+                success = manager.clear_history(group_id, user_id or "")
             else:
                 success = manager.clear_history(None, user_id)
 
-            # 同时清理ai_router中session的历史
-            if session_id in session_history:
-                session = session_history[session_id]
-                if hasattr(session, "history"):
+            # 清空AI session的history（如果有）
+            if manager.has_ai_session(session_id):
+                session = manager.get_ai_session(session_id)
+                if session and hasattr(session, "history"):
                     session.history.clear()
 
             if success:
@@ -286,14 +282,21 @@ async def get_session_persona(
         data: persona内容（system_prompt）
     """
     try:
-        if session_id not in session_history:
+        manager = get_history_manager()
+        if not manager.has_ai_session(session_id):
             return {
                 "status": 1,
                 "msg": f"Session {session_id} 不存在或尚未创建",
                 "data": None,
             }
 
-        session = session_history[session_id]
+        session = manager.get_ai_session(session_id)
+        if not session:
+            return {
+                "status": 1,
+                "msg": f"Session {session_id} 无法获取",
+                "data": None,
+            }
 
         # 获取system_prompt
         persona_content = None
@@ -343,7 +346,7 @@ async def get_history_stats(_: Dict = Depends(require_auth)) -> Dict:
         stats = manager.get_stats()
 
         # 同时获取ai_router中的session统计
-        ai_router_sessions = SessionManager.get_all_sessions_info()
+        ai_sessions = manager.get_all_ai_sessions()
 
         return {
             "status": 0,
@@ -351,8 +354,8 @@ async def get_history_stats(_: Dict = Depends(require_auth)) -> Dict:
             "data": {
                 "history_manager": stats,
                 "ai_router_sessions": {
-                    "count": len(ai_router_sessions),
-                    "sessions": ai_router_sessions,
+                    "count": len(ai_sessions),
+                    "sessions": list(ai_sessions.keys()),
                 },
             },
         }
