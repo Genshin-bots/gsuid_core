@@ -110,9 +110,8 @@ class _Bot:
 
             # 确定 group_id 和 user_id
             if target_type == "direct":
-                # 私聊场景
                 _hist_group_id = None
-                _hist_user_id = bot_self_id
+                _hist_user_id = target_id if target_id else bot_self_id
             else:
                 # 群聊场景
                 _hist_group_id = target_id
