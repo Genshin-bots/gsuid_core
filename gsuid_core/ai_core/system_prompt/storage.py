@@ -5,23 +5,20 @@ from typing import List, Optional
 from pathlib import Path
 
 from gsuid_core.logger import logger
-from gsuid_core.data_store import AI_CORE_PATH
 
 from .models import SystemPrompt
-
-# 存储文件夹路径
-STORAGE_DIR = AI_CORE_PATH / "system_prompt"
+from ..resource import SYSTEM_PROMPTS_PATH
 
 
-def _ensure_storage_dir() -> Path:
+def _ensure_SYSTEM_PROMPTS_PATH() -> Path:
     """确保存储目录存在"""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    return STORAGE_DIR
+    SYSTEM_PROMPTS_PATH.mkdir(parents=True, exist_ok=True)
+    return SYSTEM_PROMPTS_PATH
 
 
 def _get_prompt_file_path(prompt_id: str) -> Path:
     """获取Prompt文件的完整路径"""
-    return _ensure_storage_dir() / f"{prompt_id}.json"
+    return _ensure_SYSTEM_PROMPTS_PATH() / f"{prompt_id}.json"
 
 
 def _load_prompt_from_file(file_path: Path) -> Optional[SystemPrompt]:
@@ -62,10 +59,10 @@ def _delete_prompt_file(prompt_id: str) -> bool:
 def get_all_prompts() -> List[SystemPrompt]:
     """获取所有System Prompt"""
     prompts = []
-    storage_dir = _ensure_storage_dir()
+    SYSTEM_PROMPTS_PATH = _ensure_SYSTEM_PROMPTS_PATH()
 
     # 遍历所有.json文件
-    for file_path in storage_dir.glob("*.json"):
+    for file_path in SYSTEM_PROMPTS_PATH.glob("*.json"):
         prompt = _load_prompt_from_file(file_path)
         if prompt:
             prompts.append(prompt)

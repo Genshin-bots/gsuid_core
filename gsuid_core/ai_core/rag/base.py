@@ -24,6 +24,7 @@ RERANKER_MODEL_NAME: Final[str] = rerank_model_config.get_config("rerank_model_n
 # ============== Collection名称 ==============
 TOOLS_COLLECTION_NAME: Final[str] = "bot_tools"
 KNOWLEDGE_COLLECTION_NAME: Final[str] = "knowledge"
+IMAGE_COLLECTION_NAME: Final[str] = "image"
 
 
 # ============== 配置开关（动态读取，避免模块加载时配置文件不存在导致默认值错误） ==============

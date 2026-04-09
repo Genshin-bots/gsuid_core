@@ -10,7 +10,7 @@ from gsuid_core.segment import Message
 from gsuid_core.ai_core.utils import handle_tool_result
 from gsuid_core.ai_core.models import ToolContext
 
-from .models import ToolBase, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase
+from .models import ToolBase, ImageEntity, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Union[str, Message]]])
 
@@ -47,8 +47,9 @@ def _get_plugin_name_from_module(module_path: str) -> str:
 # --- 全局注册表和客户端 ---
 _TOOL_REGISTRY: Dict[str, ToolBase] = {}  # 工具注册表，包含工具对象和元数据
 _BUILDIN_TOOLS_REGISTRY: Dict[str, ToolBase] = {}  # 内置AI工具注册表，包含工具对象和元数据
-_ENTITIES: List[Union[KnowledgePoint, KnowledgeBase]] = []  # 来自插件注册的知识
+_ENTITIES: List[Union[KnowledgePoint, KnowledgeBase, ImageEntity]] = []  # 来自插件注册的知识和图片
 _MANUAL_ENTITIES: List[ManualKnowledgeBase] = []  # 手动添加的知识，不会自动同步
+_IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片
 _ALIASES: Dict[str, List[str]] = {}
 
 
@@ -400,4 +401,64 @@ def get_manual_entity(entity_id: str) -> Optional[ManualKnowledgeBase]:
     for existing in _MANUAL_ENTITIES:
         if existing["id"] == entity_id:
             return existing
+    return None
+
+
+def ai_image(entity: ImageEntity):
+    """
+    将图片实体注册为可检索的图片。
+    在启动时，自动将图片实体存入全局注册表，并同步到向量库。
+
+    插件作者可以通过此函数注册图片，让 AI 能够根据描述语义搜索到图片。
+
+    Args:
+        entity: 图片实体，包含以下字段:
+
+            id: str - 唯一标识符
+            plugin: str - 插件名称
+            path: str - 图片文件路径（绝对路径或相对路径）
+            tags: List[str] - 图片标签，用于描述图片内容，如 ["胡桃", "原神", "角色"]
+            content: str - 详细描述文本，可选
+            source: str (自动设置为 "plugin")
+
+    例如:
+
+    from gsuid_core.ai_core.models import ImageEntity
+    from gsuid_core.ai_core.register import ai_image
+
+    ai_image(ImageEntity(
+        id="hutao_character",
+        plugin="GenshinUID",
+        path="./resources/characters/hutao.png",
+        tags=["胡桃", "原神", "角色", "火系"],
+        content="胡桃角色立绘图片，往生堂第七十七代堂主",
+        source="plugin",
+        _hash="",
+    ))
+
+    然后在代码中可以通过 RAG 搜索获取图片:
+
+    from gsuid_core.ai_core.rag.image_rag import search_and_load_image
+
+    image = await search_and_load_image("给我看看胡桃的图片")
+    if image:
+        await bot.send(image)
+    """
+    # 自动添加 source="plugin" 标识
+    entity["source"] = "plugin"
+    _ENTITIES.append(entity)
+    _IMAGE_ENTITIES.append(entity)
+    logger.trace(f"🧠 [AI][Registry] Image registered: {entity.get('tags', [])}")
+
+
+def get_image_entities() -> List[ImageEntity]:
+    """获取所有已注册的图片实体"""
+    return _IMAGE_ENTITIES.copy()
+
+
+def get_image_entity(entity_id: str) -> Optional[ImageEntity]:
+    """获取指定 ID 的图片实体"""
+    for entity in _IMAGE_ENTITIES:
+        if entity["id"] == entity_id:
+            return entity
     return None

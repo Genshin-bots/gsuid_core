@@ -196,6 +196,13 @@ class GsCoreAIAgent:
                 logger.info("🧠[GsCoreAIAgent] 6. _agent.iter() 执行成功")
 
                 self.history.extend(result.new_messages())
+
+                # 截断历史记录，避免无限制增长
+                max_history = 50
+                if len(self.history) > max_history:
+                    self.history = self.history[-max_history:]
+                    logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {max_history} 条")
+
                 # 始终返回字符串类型
                 result_msg = str(result.output).strip()
                 if now_text.strip() == result_msg.strip():

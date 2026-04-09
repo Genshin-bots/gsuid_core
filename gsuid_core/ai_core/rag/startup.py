@@ -11,11 +11,12 @@ async def init_all():
     # 1. 初始化Embedding模型和Qdrant客户端
     init_embedding_model()
 
-    # 2. 初始化工具和知识集合
-    from . import init_tools_collection, init_knowledge_collection
+    # 2. 初始化工具、知识和图片集合
+    from . import init_image_collection, init_tools_collection, init_knowledge_collection
 
     await init_tools_collection()
     await init_knowledge_collection()
+    await init_image_collection()
 
     # 3. 初始化System Prompt集合
     from gsuid_core.logger import logger
@@ -39,7 +40,8 @@ async def init_all():
 
     logger.info(f"🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {len(_TOOL_REGISTRY)}")
 
-    from . import sync_tools, sync_knowledge
+    from . import sync_tools, sync_images, sync_knowledge
 
     await sync_tools(_TOOL_REGISTRY)
     await sync_knowledge()
+    await sync_images()

@@ -44,6 +44,23 @@ class ManualKnowledgeBase(TypedDict):
     source: str  # 固定为 "manual"
 
 
+class ImageEntity(TypedDict):
+    """图片实体类型 - 用于RAG图片检索
+
+    插件作者可以通过 ai_image() 注册图片，
+    系统会根据描述文本(tags + content)进行向量化存储，
+    支持通过语义搜索找到匹配的图片路径。
+    """
+
+    id: str  # 唯一标识符
+    plugin: str  # 插件名称
+    path: str  # 图片文件路径
+    tags: List[str]  # 图片标签，用于描述图片内容
+    content: str  # 详细描述文本
+    source: str  # 来源: "plugin" 表示来自插件注册
+    _hash: Optional[str]  # 内容哈希，用于增量更新检测
+
+
 class KnowledgeHash(TypedDict):
     """知识点哈希值类型"""
 

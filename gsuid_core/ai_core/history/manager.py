@@ -1,7 +1,7 @@
 """
 历史会话管理器
 
-管理每个session（群聊/私聊）的最近30条消息，使用滑动窗口机制。
+管理每个session（群聊/私聊）的最近60条消息，使用滑动窗口机制。
 支持将历史记录转换为AI可用的prompt格式。
 管理AI会话对象（GsCoreAIAgent）的生命周期。
 
@@ -90,7 +90,7 @@ class HistoryManager:
     """
     历史会话管理器
 
-    使用滑动窗口机制，为每个session单独维护最近30条消息。
+    使用滑动窗口机制，为每个session单独维护最近60条消息。
     - 群聊：整个群共享历史记录（不区分用户）
     - 私聊：单独维护用户历史记录
 
@@ -99,7 +99,7 @@ class HistoryManager:
     线程安全，支持并发访问。
     """
 
-    DEFAULT_MAX_MESSAGES = 30
+    DEFAULT_MAX_MESSAGES = 60
     CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
     IDLE_THRESHOLD = 86400  # 空闲阈值（秒），默认1天
     MAX_AI_HISTORY_LENGTH = 50  # AI会话最大历史长度

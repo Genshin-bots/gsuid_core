@@ -19,6 +19,7 @@ from gsuid_core.ai_core.rag.base import (
     RERANK_MODELS_CACHE,
     RERANKER_MODEL_NAME,
     EMBEDDING_MODEL_NAME,
+    IMAGE_COLLECTION_NAME,
     TOOLS_COLLECTION_NAME,
     KNOWLEDGE_COLLECTION_NAME,
     client,
@@ -42,6 +43,17 @@ from gsuid_core.ai_core.rag.reranker import (
     get_reranker,
     rerank_results,
 )
+from gsuid_core.ai_core.rag.image_rag import (
+    sync_images,
+    search_images,
+    get_image_list,
+    build_image_text,
+    delete_image_from_db,
+    load_image_from_path,
+    init_image_collection,
+    search_and_load_image,
+    get_image_path_by_query,
+)
 from gsuid_core.ai_core.rag.knowledge import (
     sync_knowledge,
     query_knowledge,
@@ -59,6 +71,7 @@ __all__ = [
     "RERANKER_MODEL_NAME",
     "TOOLS_COLLECTION_NAME",
     "KNOWLEDGE_COLLECTION_NAME",
+    "IMAGE_COLLECTION_NAME",
     # base - 配置（动态函数）
     "is_enable_ai",
     "is_enable_rerank",
@@ -78,6 +91,16 @@ __all__ = [
     "sync_knowledge",
     "query_knowledge",
     "build_knowledge_text",
+    # image_rag
+    "init_image_collection",
+    "sync_images",
+    "search_images",
+    "get_image_list",
+    "build_image_text",
+    "delete_image_from_db",
+    "load_image_from_path",
+    "search_and_load_image",
+    "get_image_path_by_query",
     # reranker
     "get_reranker",
     "rerank_results",
