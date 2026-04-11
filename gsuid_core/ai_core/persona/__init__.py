@@ -4,6 +4,11 @@ Persona 模块
 角色扮演系统模块，提供人格角色的提示词管理和资料存储功能。
 """
 
+from gsuid_core.ai_core.persona.config import (
+    DEFAULT_PERSONA_CONFIG,
+    PersonaConfigManager,
+    persona_config_manager,
+)
 from gsuid_core.ai_core.persona.models import PersonaFiles, PersonaMetadata
 from gsuid_core.ai_core.persona.persona import PERSONA_PATH, Persona
 from gsuid_core.ai_core.persona.prompts import (
@@ -48,4 +53,8 @@ __all__ = [
     "SYSTEM_CONSTRAINTS",
     # 初始化函数
     "init_default_personas",
+    # 配置管理
+    "PersonaConfigManager",
+    "persona_config_manager",
+    "DEFAULT_PERSONA_CONFIG",
 ]

@@ -33,9 +33,10 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
         # 构建最终结果
         result = []
         for session_id, session_data in all_sessions.items():
-            # 从 session_data 直接获取 user_id 和 group_id
+            # 从 session_data 直接获取 user_id、group_id 和 bot_id
             user_id = session_data.get("user_id")
             group_id = session_data.get("group_id")
+            bot_id = session_data.get("bot_id", "")
 
             # 判断 session 类型
             if group_id:
@@ -44,10 +45,15 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
                 session_type = "private"
 
             # 从 history_manager 获取消息数量
-            if group_id:
-                msg_count = manager.get_history_count(group_id, user_id or "")
-            else:
-                msg_count = manager.get_history_count(None, user_id or "")
+            from gsuid_core.models import Event
+
+            ev = Event(
+                bot_id=bot_id,
+                user_id=user_id or "",
+                group_id=group_id,
+                user_type="group" if group_id else "direct",
+            )
+            msg_count = manager.get_history_count(ev)
 
             # 检查是否有 AI session
             has_ai_session = manager.has_ai_session(session_id)
@@ -95,7 +101,7 @@ async def get_session_history(
     获取指定session的历史记录
 
     Args:
-        session_id: Session标识符，格式为 "{user_id}%%%{group_id}"
+        session_id: Session标识符，格式为 "{bot_id}%%%{group_id}%%%{user_id}"
         format_type: 返回格式，可选 "text"(文本格式)、"json"(原始JSON)、"messages"(OpenAI格式)
 
     Returns:
@@ -103,27 +109,51 @@ async def get_session_history(
         data: 历史记录内容
     """
     try:
-        # 解析session_id (使用 %%% 作为分隔符)
-        if "%%%" not in session_id:
+        # 解析session_id
+        # 新格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
+        # 旧格式兼容: {bot_id}%%%{group_id}%%%{user_id} 或 group:{group_id} / private:{user_id}
+        bot_id = ""
+        if session_id.startswith("bot:"):
+            parts = session_id.split(":", 3)
+            if len(parts) >= 4:
+                bot_id = parts[1]
+                if parts[2] == "group":
+                    group_id = parts[3]
+                    user_id = ""
+                elif parts[2] == "private":
+                    group_id = None
+                    user_id = parts[3]
+                else:
+                    return {"status": 1, "msg": "无效的session_id格式", "data": None}
+            else:
+                return {"status": 1, "msg": "无效的session_id格式", "data": None}
+        elif session_id.startswith("group:"):
+            group_id = session_id[6:]
+            user_id = ""
+        elif session_id.startswith("private:"):
+            group_id = None
+            user_id = session_id[8:]
+        else:
             return {
                 "status": 1,
-                "msg": "无效的session_id格式，应为 '{user_id}%%%{group_id}'",
+                "msg": "无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}'",
                 "data": None,
             }
 
-        user_id_str, group_id_str = session_id.split("%%%", 1)
-        user_id = user_id_str if user_id_str != "None" else ""
-        group_id = group_id_str if group_id_str != "None" else None
-
         manager = get_history_manager()
 
+        # 构造 Event 对象
+        from gsuid_core.models import Event
+
+        ev = Event(
+            bot_id=bot_id,
+            user_id=user_id,
+            group_id=group_id,
+            user_type="group" if group_id else "direct",
+        )
+
         # 获取历史记录
-        if group_id:
-            # 群聊场景
-            history = manager.get_history(group_id, user_id)
-        else:
-            # 私聊场景
-            history = manager.get_history(None, user_id)
+        history = manager.get_history(ev)
 
         if not history:
             return {
@@ -193,33 +223,59 @@ async def clear_session_history(
     清空指定session的历史记录
 
     Args:
-        session_id: Session标识符，格式为 "{user_id}%%%{group_id}"
+        session_id: Session标识符，格式为 "{bot_id}%%%{group_id}%%%{user_id}"
         delete_session: 是否完全删除session（释放内存），默认为False仅清空历史
 
     Returns:
         status: 0成功，1失败
     """
     try:
-        # 解析session_id (使用 %%% 作为分隔符)
-        if "%%%" not in session_id:
+        # 解析session_id
+        # 新格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
+        # 旧格式兼容: {bot_id}%%%{group_id}%%%{user_id} 或 group:{group_id} / private:{user_id}
+        bot_id = ""
+        if session_id.startswith("bot:"):
+            parts = session_id.split(":", 3)
+            if len(parts) >= 4:
+                bot_id = parts[1]
+                if parts[2] == "group":
+                    group_id = parts[3]
+                    user_id = ""
+                elif parts[2] == "private":
+                    group_id = None
+                    user_id = parts[3]
+                else:
+                    return {"status": 1, "msg": "无效的session_id格式", "data": None}
+            else:
+                return {"status": 1, "msg": "无效的session_id格式", "data": None}
+        elif session_id.startswith("group:"):
+            group_id = session_id[6:]
+            user_id = ""
+        elif session_id.startswith("private:"):
+            group_id = None
+            user_id = session_id[8:]
+        else:
             return {
                 "status": 1,
-                "msg": "无效的session_id格式，应为 '{user_id}%%%{group_id}'",
+                "msg": "无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}'",
                 "data": None,
             }
 
-        user_id_str, group_id_str = session_id.split("%%%", 1)
-        user_id = user_id_str if user_id_str != "None" else ""
-        group_id = group_id_str if group_id_str != "None" else None
-
         manager = get_history_manager()
+
+        # 构造 Event 对象
+        from gsuid_core.models import Event
+
+        ev = Event(
+            bot_id=bot_id,
+            user_id=user_id,
+            group_id=group_id,
+            user_type="group" if group_id else "direct",
+        )
 
         if delete_session:
             # 完全删除session（包括历史、AI session等）
-            if group_id:
-                success = manager.delete_session(group_id, user_id or "")
-            else:
-                success = manager.delete_session(None, user_id)
+            success = manager.delete_session(ev)
 
             if success:
                 return {
@@ -235,10 +291,7 @@ async def clear_session_history(
                 }
         else:
             # 仅清空历史记录（保留AI session对象但清空其history）
-            if group_id:
-                success = manager.clear_history(group_id, user_id or "")
-            else:
-                success = manager.clear_history(None, user_id)
+            success = manager.clear_history(ev)
 
             # 清空AI session的history（如果有）
             if manager.has_ai_session(session_id):
@@ -275,7 +328,7 @@ async def get_session_persona(
     获取指定session当前使用的persona内容
 
     Args:
-        session_id: Session标识符，格式为 "{user_id}%%%{group_id}"
+        session_id: Session标识符，格式为 "{bot_id}%%%{group_id}%%%{user_id}"
 
     Returns:
         status: 0成功，1失败

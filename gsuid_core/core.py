@@ -1,4 +1,5 @@
 import sys
+import signal
 import asyncio
 import argparse
 from typing import Dict
@@ -11,6 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from msgspec import json as msgjson, to_builtins
 
 from gsuid_core.version import __version__
+from gsuid_core.shutdown import shutdown_event
 
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -129,15 +131,27 @@ async def main():
 
             async def start():
                 try:
-                    while True:
-                        data = await websocket.receive_bytes()
-                        msg = msgjson.decode(data, type=MessageReceive)
-                        await handle_event(bot, msg)
-                except WebSocketDisconnect:
+                    while not shutdown_event.is_set():
+                        try:
+                            # 使用 wait_for 添加超时，以便定期检查 shutdown_event
+                            data = await asyncio.wait_for(websocket.receive_bytes(), timeout=1.0)
+                            msg = msgjson.decode(data, type=MessageReceive)
+                            await handle_event(bot, msg)
+                        except asyncio.TimeoutError:
+                            continue
+                        except WebSocketDisconnect:
+                            break
+                except CancelledError:
+                    pass
+                finally:
                     await gss.disconnect(bot_id)
 
             async def process():
-                await bot._process()
+                """process 函数的职责是启动 bot._process，由 _process 内部处理 shutdown"""
+                try:
+                    await bot._process(shutdown_event)
+                except CancelledError:
+                    pass
 
             logger.info("[GsCore] 启动WS服务中...")
             await asyncio.gather(process(), start())
@@ -166,6 +180,22 @@ async def main():
         log_config=None,
         loop="asyncio",
     )
+
+    # 设置信号处理，在收到 SIGINT/SIGTERM 时设置 shutdown_event
+    # 注意：uvicorn 也会处理这些信号，这里主要是为了通知所有任务
+    loop = asyncio.get_event_loop()
+
+    def set_shutdown_event():
+        logger.info("[GsCore] 收到关闭信号，正在设置 shutdown_event...")
+        shutdown_event.set()
+
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, set_shutdown_event)
+    except NotImplementedError:
+        # Windows 不支持 add_signal_handler，仅依赖 uvicorn 的信号处理
+        logger.debug("[GsCore] 当前平台不支持 add_signal_handler，将依赖 uvicorn 的关闭流程")
+
     server = uvicorn.Server(config)
     end_time = time.time()
     logger.success(ASCII_FONT)

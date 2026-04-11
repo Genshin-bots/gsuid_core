@@ -11,6 +11,88 @@ from dataclasses import dataclass
 # 支持的音频格式，按优先级排序（mp3优先）
 SUPPORTED_AUDIO_FORMATS = [".mp3", ".ogg", ".wav", ".m4a", ".flac"]
 
+# 支持的图片格式
+SUPPORTED_IMAGE_FORMATS = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+
+# 图片MIME类型映射
+IMAGE_MIME_TYPES = {
+    b"\x89PNG\r\n\x1a\n": "image/png",
+    b"\xff\xd8\xff": "image/jpeg",
+    b"GIF87a": "image/gif",
+    b"GIF89a": "image/gif",
+    b"RIFF": "image/webp",  # WebP starts with RIFF....WEBP
+}
+
+# 允许的最大文件大小（5MB）
+MAX_FILE_SIZE = 5 * 1024 * 1024
+
+
+def validate_image_type(data: bytes) -> bool:
+    """
+    验证图片数据的MIME类型
+
+    通过检测文件头魔术字节来判断真实文件类型，
+    防止攻击者上传伪装成图片的可执行文件。
+
+    Args:
+        data: 图片二进制数据
+
+    Returns:
+        True 如果是支持的图片格式，否则 False
+    """
+    if len(data) < 12:
+        return False
+
+    for magic, mime_type in IMAGE_MIME_TYPES.items():
+        if data[: len(magic)] == magic:
+            return True
+
+    return False
+
+
+def validate_audio_type(data: bytes, extension: str) -> bool:
+    """
+    验证音频数据的MIME类型
+
+    通过检测文件头魔术字节来验证音频格式。
+
+    Args:
+        data: 音频二进制数据
+        extension: 文件扩展名 (不含点)
+
+    Returns:
+        True 如果是支持的音频格式，否则 False
+    """
+    if len(data) < 12:
+        return False
+
+    # MP3: 通常以 FF FB 或 FF F3 或 ID3 开头
+    if extension == "mp3":
+        if data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+            return True
+        if data[:3] == b"ID3":
+            return True
+        return False
+
+    # OGG: 以 OggS 开头
+    if extension == "ogg":
+        return data[:4] == b"OggS"
+
+    # WAV: 以 RIFF....WAVE 开头
+    if extension == "wav":
+        if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+            return True
+        return False
+
+    # M4A/FLAC 简单检查
+    if extension == "m4a":
+        return data[:4] == b"ftyp"
+
+    if extension == "flac":
+        return data[:4] == b"fLaC"
+
+    return False
+
 
 @dataclass
 class PersonaFiles:

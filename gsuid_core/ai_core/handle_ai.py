@@ -10,20 +10,19 @@ AI聊天处理模块
 - 工具按需启用：通过tool_names参数控制是否启用工具调用
 """
 
-from typing import Optional
-
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.rag import query_knowledge
 from gsuid_core.ai_core.utils import prepare_content_payload
-from gsuid_core.ai_core.history import get_history_manager
+from gsuid_core.ai_core.history import get_history_manager, format_history_for_agent
 from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.ai_core.ai_router import (
     get_ai_session,
 )
 from gsuid_core.ai_core.normalize import normalize_query
 from gsuid_core.ai_core.classifier import classifier_service
+from gsuid_core.ai_core.statistics import statistics_manager
 
 # AI服务配置开关
 enable_ai: bool = ai_config.get_config("enable").data
@@ -63,6 +62,15 @@ async def handle_ai_chat(bot: Bot, event: Event):
         intent = res["intent"]
         logger.debug(f"🧠 [GsCore][AI] 意图识别结果: {res}")
 
+        # 记录意图统计和活跃用户
+        statistics_manager.record_intent(intent=intent)
+        statistics_manager.record_activity(
+            group_id=event.group_id or "private",
+            user_id=event.user_id,
+            ai_interaction_count=1,
+            message_count=1,
+        )
+
         # 2. 根据意图判断是否启用对应服务
         if intent == "闲聊":
             logger.info("🧠 [GsCore][AI] 闲聊模式")
@@ -75,39 +83,34 @@ async def handle_ai_chat(bot: Bot, event: Event):
         session = await get_ai_session(event)
 
         # 4. 根据意图准备上下文
-        rag_context: Optional[str] = None  # RAG检索结果
+        rag_context: str = ""
 
-        # 检索知识库作为上下文
-        normalized_query = normalize_query(query)
-        knowledge_results = await query_knowledge(
-            query=normalized_query,
-        )
+        if intent == "问答":
+            # 检索知识库作为上下文
+            normalized_query = normalize_query(query)
+            knowledge_results = await query_knowledge(
+                query=normalized_query,
+            )
 
-        if knowledge_results:
-            context_parts = []
-            for r in knowledge_results:
-                if r.payload is not None:
-                    plugin = r.payload.get("plugin", "unknown")
-                    title = r.payload.get("title", "")
-                    content = r.payload.get("content", "")
-                    context_parts.append(f"[{plugin}] {title}: {content}")
-            if context_parts:
-                rag_context = "【参考资料】\n" + "\n".join(context_parts)
+            if knowledge_results:
+                context_parts = []
+                for r in knowledge_results:
+                    if r.payload is not None:
+                        plugin = r.payload.get("plugin", "unknown")
+                        title = r.payload.get("title", "")
+                        content = r.payload.get("content", "")
+                        context_parts.append(f"[{plugin}] {title}: {content}")
+                if context_parts:
+                    rag_context += "【参考资料】\n" + "\n".join(context_parts)
 
         # 5. 准备用户消息内容
         user_messages = prepare_content_payload(event)
 
         # 5.5 获取群聊历史记录并格式化为上下文
-        from gsuid_core.ai_core.history import format_history_for_agent
-
         # 获取最近的历史记录（最多30条）
         # 注意：当前消息已在handler.py中记录到历史，但会通过user_messages单独传递给AI
         # 所以这里获取历史时排除最后一条（即当前消息），避免重复
-        raw_history = history_manager.get_history(
-            group_id=event.group_id,
-            user_id=event.user_id,
-            limit=30,
-        )
+        raw_history = history_manager.get_history(event, limit=30)
 
         # 排除最后一条（当前用户刚发的消息），避免与user_messages重复
         history = raw_history[:-1] if raw_history else []
@@ -123,11 +126,7 @@ async def handle_ai_chat(bot: Bot, event: Event):
 
             # 将历史上下文添加到RAG上下文
             if history_context:
-                if rag_context:
-                    rag_context = f"【历史对话】\n{history_context}\n\n{rag_context}"
-                else:
-                    rag_context = f"【历史对话】\n{history_context}"
-
+                rag_context += f"【历史对话】\n{history_context}\n"
                 logger.debug(f"🧠 [GsCore][AI] 已加载 {len(history)} 条历史消息")
 
         # 6. 调用Agent生成回复
@@ -145,42 +144,3 @@ async def handle_ai_chat(bot: Bot, event: Event):
 
     except Exception as e:
         logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")
-
-
-def _extract_text_from_result(chat_result) -> str:
-    """
-    从chat_result中提取纯文本内容用于历史记录
-
-    Args:
-        chat_result: AI返回的结果，可能是字符串、消息列表或其他格式
-
-    Returns:
-        提取的纯文本内容
-    """
-    if chat_result is None:
-        return ""
-
-    # 如果是字符串，直接返回
-    if isinstance(chat_result, str):
-        return chat_result.strip()
-
-    # 如果是列表（消息段列表），提取文本内容
-    if isinstance(chat_result, list):
-        text_parts = []
-        for item in chat_result:
-            if isinstance(item, str):
-                text_parts.append(item)
-            elif isinstance(item, dict):
-                # 处理消息段格式 {"type": "text", "data": "..."}
-                if item.get("type") == "text" and item.get("data"):
-                    text_parts.append(str(item["data"]))
-                elif item.get("type") == "at" and item.get("data"):
-                    # @某人格式
-                    text_parts.append(f"@{item['data']}")
-        return " ".join(text_parts).strip()
-
-    # 其他类型，尝试转换为字符串
-    try:
-        return str(chat_result).strip()
-    except Exception:
-        return ""

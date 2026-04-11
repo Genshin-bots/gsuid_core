@@ -17,12 +17,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用AI服务",
         False,
     ),
-    "ai_mode": GsListStrConfig(
-        "AI行动模式",
-        "指定AI的行动模式, AI只会在预定条件完成时才会执行操作",
-        ["提及应答"],
-        options=["提及应答", "定时巡检", "趣向捕捉(暂不可用)", "困境救场(暂不可用)"],
-    ),
     "enable_rerank": GsBoolConfig(
         "是否启用Rerank",
         "指定是否启用Rerank功能, Rerank可以提升RAG的检索质量, 但会增加一定的响应时间, 该模型较大, 请根据实际情况启用",

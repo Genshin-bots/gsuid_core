@@ -3,6 +3,7 @@ PydanticAI Agent 核心模块
 基于 pydantic_ai 实现的轻量级 Agent
 """
 
+import time
 import asyncio
 from typing import TYPE_CHECKING, Any, List, Union, Optional, Sequence
 
@@ -27,6 +28,7 @@ from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.register import _TOOL_REGISTRY, _BUILDIN_TOOLS_REGISTRY
 from gsuid_core.ai_core.ai_config import ai_config, openai_config
 from gsuid_core.ai_core.rag.tools import search_tools
+from gsuid_core.ai_core.statistics import statistics_manager
 
 if TYPE_CHECKING:
     ToolList = List["Tool[ToolContext]"]
@@ -70,9 +72,11 @@ class GsCoreAIAgent:
         api_key: Optional[str] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 1800,
+        persona_name: Optional[str] = None,
     ):
         self.history: List[ModelMessage] = []
         self.system_prompt = system_prompt
+        self.persona_name = persona_name  # 用于热重载检查
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
 
@@ -105,6 +109,9 @@ class GsCoreAIAgent:
         """
         multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
         limits = UsageLimits(request_limit=multi_agent_lenth)
+
+        # 记录开始时间用于延迟统计
+        start_time = time.time()
 
         logger.info("🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======")
         context = ToolContext(bot=bot, ev=ev)
@@ -203,6 +210,30 @@ class GsCoreAIAgent:
                     self.history = self.history[-max_history:]
                     logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {max_history} 条")
 
+                # 记录 Token 使用量和延迟统计
+                try:
+                    # 记录响应延迟
+                    latency = time.time() - start_time
+                    statistics_manager.record_latency(latency=latency)
+
+                    try:
+                        usage_obj = result.usage()
+                        input_tokens: int = usage_obj.input_tokens
+                        output_tokens: int = usage_obj.output_tokens
+                        logger.info(f"📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}")
+                        if input_tokens > 0 or output_tokens > 0:
+                            statistics_manager.record_token_usage(
+                                model_name=self.model_name,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                            )
+                    except AttributeError as e:
+                        # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
+                        logger.info(f"📊 [GsCoreAIAgent] result.usage 访问失败: {e}")
+                        pass
+                except Exception as e:
+                    logger.warning(f"📊 [GsCoreAIAgent] 记录统计失败: {e}")
+
                 # 始终返回字符串类型
                 result_msg = str(result.output).strip()
                 if now_text.strip() == result_msg.strip():
@@ -216,11 +247,13 @@ class GsCoreAIAgent:
             # 达到限制后的处理逻辑
             error_msg = "⚠️ 这个问题太复杂了!"
             logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 达到最高思考轮数限制 {limits.request_limit}")
+            statistics_manager.record_error(error_type="usage_limit")
             return error_msg
 
         except Exception as e:
             logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
             logger.exception("🧠 [PydanticAI] 异常详情:")
+            statistics_manager.record_error(error_type="agent_error")
             return f"执行出错: {str(e)}"
 
     async def run(
@@ -255,12 +288,15 @@ class GsCoreAIAgent:
 def create_agent(
     model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    persona_name: Optional[str] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
 
     Args:
+        model_name: 模型名称
         system_prompt: 系统提示词
+        persona_name: Persona 名称（用于热重载检测）
 
     Returns:
         PydanticAIAgent 实例
@@ -273,4 +309,5 @@ def create_agent(
     return GsCoreAIAgent(
         model_name=model_name,
         system_prompt=system_prompt,
+        persona_name=persona_name,
     )

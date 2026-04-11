@@ -87,6 +87,11 @@ class _Bot:
         self.send_dict = {}
         self.bg_tasks = set()
         self.sem = asyncio.Semaphore(10)
+        self._shutdown_event: Optional[asyncio.Event] = None
+
+    def set_shutdown_event(self, event: asyncio.Event):
+        """设置 shutdown 事件，用于优雅关闭"""
+        self._shutdown_event = event
 
     async def target_send(
         self,
@@ -159,11 +164,17 @@ class _Bot:
                 else:
                     content = f"[{message.type}]"
 
-            # 记录到历史记录
+            # 构造 Event 对象用于记录历史（WS_BOT_ID 即 self.bot_id）
             if content and _hist_user_id:
-                history_manager.add_message(
+                ev = Event(
+                    bot_id=bot_id,
+                    user_type=target_type,
                     group_id=_hist_group_id,
                     user_id=_hist_user_id,
+                    WS_BOT_ID=self.bot_id,
+                )
+                history_manager.add_message(
+                    event=ev,
                     role="assistant",
                     content=content,
                     user_name="AI",
@@ -308,9 +319,17 @@ class _Bot:
             self.sem.release()
             self.queue.task_done()
 
-    async def _process(self):
+    async def _process(self, shutdown_event: Optional[asyncio.Event] = None):
+        """处理队列中的任务，支持通过 shutdown_event 优雅关闭"""
         while True:
-            ctx: TaskContext = await self.queue.get()
+            # 如果提供了 shutdown_event，检查是否已设置
+            if shutdown_event is not None and shutdown_event.is_set():
+                break
+            try:
+                # 使用 wait_for 添加超时，以便定期检查 shutdown_event
+                ctx: TaskContext = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             await self.sem.acquire()
             asyncio.create_task(self._safe_run(ctx))
 

@@ -1,7 +1,7 @@
 """
 Persona APIs
 提供 AI Persona 角色相关的 RESTful APIs
-包括列出所有角色、获取角色详情、上传角色资源文件等功能
+包括列出所有角色、获取角色详情、上传角色资源文件、配置管理等功能
 """
 
 import base64
@@ -24,7 +24,13 @@ from gsuid_core.ai_core.persona import (
 )
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
-from gsuid_core.ai_core.persona.models import SUPPORTED_AUDIO_FORMATS
+from gsuid_core.ai_core.persona.config import persona_config_manager
+from gsuid_core.ai_core.persona.models import (
+    MAX_FILE_SIZE,
+    SUPPORTED_AUDIO_FORMATS,
+    validate_audio_type,
+    validate_image_type,
+)
 
 # 音频MIME类型映射
 AUDIO_MIME_TYPES = {
@@ -187,6 +193,22 @@ async def upload_persona_avatar(
             "data": None,
         }
 
+    # 文件大小检查
+    if len(image_data) > MAX_FILE_SIZE:
+        return {
+            "status": 1,
+            "msg": f"图片大小超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）",
+            "data": None,
+        }
+
+    # 图片类型验证（防止上传伪装成图片的可执行文件）
+    if not validate_image_type(image_data):
+        return {
+            "status": 1,
+            "msg": "无效的图片格式，仅支持 PNG、JPG、GIF、WebP",
+            "data": None,
+        }
+
     # 保存文件
     persona = Persona(persona_name)
     try:
@@ -245,6 +267,22 @@ async def upload_persona_image(
         return {
             "status": 1,
             "msg": "图片数据无效",
+            "data": None,
+        }
+
+    # 文件大小检查
+    if len(image_data) > MAX_FILE_SIZE:
+        return {
+            "status": 1,
+            "msg": f"图片大小超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）",
+            "data": None,
+        }
+
+    # 图片类型验证
+    if not validate_image_type(image_data):
+        return {
+            "status": 1,
+            "msg": "无效的图片格式，仅支持 PNG、JPG、GIF、WebP",
             "data": None,
         }
 
@@ -316,6 +354,22 @@ async def upload_persona_audio(
         return {
             "status": 1,
             "msg": "音频数据无效",
+            "data": None,
+        }
+
+    # 文件大小检查
+    if len(audio_data) > MAX_FILE_SIZE:
+        return {
+            "status": 1,
+            "msg": f"音频大小超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）",
+            "data": None,
+        }
+
+    # 音频类型验证
+    if not validate_audio_type(audio_data, audio_format):
+        return {
+            "status": 1,
+            "msg": f"文件内容与声明的音频格式({audio_format})不匹配",
             "data": None,
         }
 
@@ -421,3 +475,215 @@ async def remove_persona(
             "msg": f"角色 '{persona_name}' 不存在",
             "data": None,
         }
+
+
+# ==================== Persona 配置管理 API ====================
+
+
+@app.get("/api/persona/{persona_name}/config")
+async def get_persona_config(
+    persona_name: str,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    获取指定 Persona 的配置
+
+    Args:
+        persona_name: 角色名称
+
+    Returns:
+        status: 0成功，1失败
+        data: 配置对象，包含 ai_mode, scope, target_groups
+    """
+    config = persona_config_manager.get_persona_config_dict(persona_name)
+    if config is None:
+        return {
+            "status": 1,
+            "msg": f"角色 '{persona_name}' 的配置不存在",
+            "data": None,
+        }
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": config,
+    }
+
+
+@app.put("/api/persona/{persona_name}/config")
+async def update_persona_config(
+    persona_name: str,
+    data: Dict,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    更新指定 Persona 的配置
+
+    Args:
+        persona_name: 角色名称
+        data: 配置对象，可包含 ai_mode, scope, target_groups
+
+    Returns:
+        status: 0成功，1失败
+        data: 更新后的配置对象
+
+    注意：
+    - scope 可选值为: "disabled"(不对任何群聊启用), "global"(对所有群/角色启用), "specific"(仅对指定群聊启用)
+    - 全部人格中只能有一个配置为 "global"
+    """
+    # 检查 persona 是否存在
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {
+            "status": 1,
+            "msg": f"角色 '{persona_name}' 不存在",
+            "data": None,
+        }
+
+    results = []
+
+    # 更新 scope（如果提供）
+    if "scope" in data:
+        scope = data["scope"]
+        success, msg = persona_config_manager.set_scope(persona_name, scope)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"scope: {scope}")
+
+    # 更新 target_groups（如果提供）
+    if "target_groups" in data:
+        target_groups = data["target_groups"]
+        if not isinstance(target_groups, list):
+            return {
+                "status": 1,
+                "msg": "target_groups 必须是列表",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_target_groups(persona_name, target_groups)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"target_groups: {target_groups}")
+
+    # 更新 ai_mode（如果提供）
+    if "ai_mode" in data:
+        ai_mode = data["ai_mode"]
+        if not isinstance(ai_mode, list):
+            return {
+                "status": 1,
+                "msg": "ai_mode 必须是列表",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_ai_mode(persona_name, ai_mode)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"ai_mode: {ai_mode}")
+
+        # 如果启用了定时巡检，启动该 persona 的巡检任务
+        if "定时巡检" in ai_mode:
+            from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
+
+            start_heartbeat_inspector()
+
+    # 更新 inspect_interval（如果提供）
+    if "inspect_interval" in data:
+        inspect_interval = data["inspect_interval"]
+        if not isinstance(inspect_interval, int):
+            return {
+                "status": 1,
+                "msg": "inspect_interval 必须是整数",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_inspect_interval(persona_name, inspect_interval)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"inspect_interval: {inspect_interval}")
+
+        # 如果该 persona 已启用定时巡检，重新启动以应用新间隔
+        config = persona_config_manager.get_config(persona_name)
+        if "定时巡检" in config.get_config("ai_mode").data:
+            from gsuid_core.ai_core.heartbeat.inspector import get_inspector
+
+            inspector = get_inspector()
+            inspector.stop_for_persona(persona_name)
+            inspector.start_for_persona(persona_name)
+
+    # 更新 keywords（如果提供）
+    if "keywords" in data:
+        keywords = data["keywords"]
+        if not isinstance(keywords, list):
+            return {
+                "status": 1,
+                "msg": "keywords 必须是列表",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_keywords(persona_name, keywords)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"keywords: {keywords}")
+
+    # 返回更新后的配置
+    updated_config = persona_config_manager.get_persona_config_dict(persona_name)
+    return {
+        "status": 0,
+        "msg": f"已更新: {', '.join(results)}" if results else "没有更新任何配置",
+        "data": updated_config,
+    }
+
+
+@app.get("/api/persona/config/global")
+async def get_global_persona(_: Dict = Depends(require_auth)) -> Dict:
+    """
+    获取当前配置为全局启用的 Persona
+
+    Returns:
+        status: 0成功，1失败
+        data: 全局启用的 Persona 名称，如果没有则返回 null
+    """
+    global_persona = persona_config_manager.get_global_persona()
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": global_persona,
+    }
+
+
+@app.get("/api/persona/config/all")
+async def get_all_persona_configs(_: Dict = Depends(require_auth)) -> Dict:
+    """
+    获取所有 Persona 的配置
+
+    Returns:
+        status: 0成功
+        data: 字典，key 为 persona 名称，value 为配置对象
+    """
+    configs = {}
+    for persona_name in list_available_personas():
+        config = persona_config_manager.get_persona_config_dict(persona_name)
+        if config is not None:
+            configs[persona_name] = config
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": configs,
+    }

@@ -22,6 +22,7 @@ from gsuid_core.webconsole import (
     scheduler_api,
     setup_frontend,
     core_config_api,
+    ai_statistics_api,
     system_prompt_api,
     knowledge_base_api,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "scheduler_api",
     "setup_frontend",
     "core_config_api",
+    "ai_statistics_api",
     "assets_api",
     "persona_api",
     "knowledge_base_api",

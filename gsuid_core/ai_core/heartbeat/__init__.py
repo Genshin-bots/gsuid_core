@@ -6,12 +6,12 @@
 """
 
 from .decision import should_ai_speak, generate_proactive_message
-from .inspector import is_inspector_running, stop_heartbeat_inspector, start_heartbeat_inspector
+from .inspector import is_heartbeat_running, stop_heartbeat_inspector, start_heartbeat_inspector
 
 __all__ = [
     "start_heartbeat_inspector",
     "stop_heartbeat_inspector",
-    "is_inspector_running",
+    "is_heartbeat_running",
     "should_ai_speak",
     "generate_proactive_message",
 ]

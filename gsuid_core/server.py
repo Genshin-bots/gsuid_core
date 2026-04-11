@@ -71,6 +71,47 @@ def on_core_shutdown(func: Callable):
     return func
 
 
+async def core_start_execute():
+    try:
+        logger.info(
+            "♻ [GsCore] 执行启动Hook函数中！",
+            [_def.__name__ for _def in core_start_def],
+        )
+        # 所有 startup 回调通过 create_task 在后台执行，框架启动不会被阻塞
+        for _def in core_start_def:
+            if asyncio.iscoroutinefunction(_def):
+                asyncio.create_task(_def())
+            else:
+                asyncio.create_task(asyncio.to_thread(_def))
+    except Exception as e:
+        logger.exception(e)
+
+
+async def core_shutdown_execute():
+    try:
+        logger.info(
+            "♻ [GsCore] 执行关闭Hook函数中！",
+            [_def.__name__ for _def in core_shutdown_def],
+        )
+        tasks = []
+        for _def in core_shutdown_def:
+            if asyncio.iscoroutinefunction(_def):
+                tasks.append(_def())
+            else:
+                # 同步函数转为异步线程任务，或者直接在这里同步执行
+                tasks.append(asyncio.to_thread(_def))
+
+        if tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=15.0,
+            )
+    except asyncio.TimeoutError:
+        logger.warning("[GsCore] shutdown hook 执行超时，强制结束！")
+    except Exception as e:
+        logger.exception(e)
+
+
 class GsServer:
     _instance = None
     is_initialized = False

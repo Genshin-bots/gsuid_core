@@ -4,7 +4,7 @@
 提供查询用户数据等信息的工具函数。
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic_ai import RunContext
 
@@ -12,6 +12,9 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.database.models import UserFavorability
+
+if TYPE_CHECKING:
+    from gsuid_core.bot import Bot
 
 
 @ai_tools()
@@ -37,13 +40,22 @@ async def query_user_favorability(
         >>> info = await query_user_favorability(ctx, user_id="123456")
     """
     tool_ctx: ToolContext = ctx.deps
-    target_id = user_id or getattr(tool_ctx.ev, "user_id", None) or getattr(tool_ctx.ev, "散列id", None)
+
+    # 获取 target_id
+    ev = tool_ctx.ev
+    if user_id:
+        target_id = user_id
+    elif ev is not None:
+        target_id = ev.user_id if hasattr(ev, "user_id") else None
+    else:
+        target_id = None
 
     if not target_id:
         return "查询失败：无法确定目标用户"
 
     try:
-        bot_id = getattr(tool_ctx.bot, "bot_id", "") if tool_ctx.bot else ""
+        bot: Optional[Bot] = tool_ctx.bot
+        bot_id: str = bot.bot_id if bot is not None else ""
         user_data = await UserFavorability.get_user_favorability(target_id, bot_id)
 
         if not user_data:

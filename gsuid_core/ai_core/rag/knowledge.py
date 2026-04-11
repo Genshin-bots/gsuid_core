@@ -21,8 +21,10 @@ from gsuid_core.ai_core.rag.base import (
     calculate_hash,
 )
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.statistics import statistics_manager
 
 from .reranker import rerank_results
+from .image_rag import build_image_text
 
 
 async def init_knowledge_collection():
@@ -129,11 +131,19 @@ async def sync_knowledge():
         is_modified = not is_new and existing_knowledge[id_str]["hash"] != current_hash
 
         if is_new or is_modified:
-            action_str = "新增" if is_new else "更新"
-            logger.info(f"🧠 [Knowledge] [{knowledge['plugin']}] [{action_str}] 知识: {knowledge['title']}")
+            # 根据类型选择不同的文本构建函数
+            if "title" in knowledge:
+                # KnowledgePoint 或 KnowledgeBase
+                action_str = "新增" if is_new else "更新"
+                logger.info(f"🧠 [Knowledge] [{knowledge['plugin']}] [{action_str}] 知识: {knowledge['title']}")
+                text_to_embed = build_knowledge_text(knowledge)
+            else:
+                # ImageEntity
+                action_str = "新增" if is_new else "更新"
+                logger.info(f"🧠 [ImageRAG] [{knowledge['plugin']}] [{action_str}] 图片: {knowledge['id']}")
+                text_to_embed = build_image_text(knowledge)
 
             # 生成向量
-            text_to_embed = build_knowledge_text(knowledge)
             vector = list(embedding_model.embed([text_to_embed]))[0]
 
             # 构建payload
@@ -217,6 +227,16 @@ async def query_knowledge(
     # Rerank（如果启用）
     if results and is_enable_rerank():
         results = await rerank_results(query, results)
+
+    if results:
+        for r in results:
+            if r.payload is not None:
+                statistics_manager.record_rag_hit(
+                    document_id=str(r.id),
+                    document_name=r.payload.get("title", ""),
+                )
+    else:
+        statistics_manager.record_rag_miss()
 
     return results
 

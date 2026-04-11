@@ -9,7 +9,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.models import ToolContext
 
 misfire_grace_time = core_config.get_config("misfire_grace_time")
 
@@ -23,6 +22,9 @@ options = {
 scheduler = AsyncIOScheduler()
 scheduler.configure(options)
 
+# 延迟导入避免循环导入
+from gsuid_core.ai_core.models import ToolContext  # noqa: E402
+
 
 async def start_scheduler():
     if not scheduler.running:
@@ -32,7 +34,8 @@ async def start_scheduler():
 
 async def shutdown_scheduler():
     if scheduler.running:
-        scheduler.shutdown()
+        # 使用 wait=False 避免阻塞等待正在执行的任务
+        scheduler.shutdown(wait=False)
         logger.info("⌛ [定时器系统] 程序关闭！定时任务结束！")
 
 

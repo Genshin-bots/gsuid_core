@@ -117,7 +117,7 @@ def delete_persona(char_name: str) -> bool:
     """
     删除角色资料和相关文件
 
-    删除 persona 目录下该角色的整个文件夹。
+    删除 persona 目录下该角色的整个文件夹，包括配置文件。
 
     Args:
         char_name: 角色名称
@@ -125,6 +125,11 @@ def delete_persona(char_name: str) -> bool:
     Returns:
         True 如果成功删除，False 如果角色不存在
     """
+    # 先删除配置文件
+    from .config import persona_config_manager
+
+    persona_config_manager.delete_persona_config(char_name)
+
     persona = Persona(char_name)
     return persona.delete()
 

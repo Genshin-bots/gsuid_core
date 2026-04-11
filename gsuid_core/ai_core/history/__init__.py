@@ -9,7 +9,6 @@
 """
 
 from gsuid_core.ai_core.history.manager import (
-    SessionKey,
     MessageRecord,
     HistoryManager,
     history_to_prompt,
@@ -21,7 +20,6 @@ from gsuid_core.ai_core.history.manager import (
 __all__ = [
     "HistoryManager",
     "MessageRecord",
-    "SessionKey",
     "history_to_prompt",
     "history_to_messages",
     "format_history_for_agent",

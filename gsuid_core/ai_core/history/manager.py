@@ -15,13 +15,12 @@ import time
 import asyncio
 
 # 类型声明，避免循环导入
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from threading import Lock
 from collections import deque
 from dataclasses import field, dataclass
 
-if TYPE_CHECKING:
-    pass
+from gsuid_core.models import Event
 
 
 @dataclass
@@ -59,33 +58,6 @@ class MessageRecord:
         )
 
 
-@dataclass(frozen=True)
-class SessionKey:
-    """会话标识键"""
-
-    user_id: str  # 用户ID
-    group_id: Optional[str] = None  # 群聊ID，私聊时为None
-
-    def __str__(self) -> str:
-        if self.group_id:
-            return f"group:{self.group_id}"
-        return f"private:{self.user_id}"
-
-    @classmethod
-    def from_string(cls, key_str: str) -> SessionKey:
-        """从字符串解析SessionKey"""
-        if key_str.startswith("group:"):
-            # 群聊格式: group:{group_id}
-            group_id = key_str[6:]  # 去掉 "group:" 前缀
-            return cls(user_id="", group_id=group_id)
-        elif key_str.startswith("private:"):
-            # 私聊格式: private:{user_id}
-            user_id = key_str[8:]  # 去掉 "private:" 前缀
-            return cls(user_id=user_id, group_id=None)
-        # 兼容旧格式
-        return cls(user_id=key_str, group_id=None)
-
-
 class HistoryManager:
     """
     历史会话管理器
@@ -112,10 +84,10 @@ class HistoryManager:
             max_messages: 每个session保留的最大消息数，默认30条
         """
         self._max_messages = max_messages
-        # 存储结构: {SessionKey: deque[MessageRecord]}
-        self._histories: Dict[SessionKey, deque] = {}
-        # session 元数据: {SessionKey: {created_at, last_access, history_length}}
-        self._session_metadata: Dict[SessionKey, Dict[str, Any]] = {}
+        # 存储结构: {Event: deque[MessageRecord]}，Event 的哈希基于 session 标识字段
+        self._histories: Dict["Event", deque] = {}
+        # session 元数据: {Event: {created_at, last_access, history_length, user_id, group_id, bot_id, user_type}}
+        self._session_metadata: Dict["Event", Dict[str, Any]] = {}
         # AI会话对象: {session_id: GsCoreAIAgent}
         self._ai_sessions: Dict[str, Any] = {}
         self._lock = Lock()
@@ -123,34 +95,9 @@ class HistoryManager:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._cleanup_running: bool = False
 
-    def _get_or_create_history(self, session_key: SessionKey) -> deque:
-        """获取或创建指定session的历史记录队列"""
-        if session_key not in self._histories:
-            self._histories[session_key] = deque(maxlen=self._max_messages)
-        return self._histories[session_key]
-
-    def _make_session_key(
-        self,
-        group_id: Optional[str],
-        user_id: str,
-    ) -> SessionKey:
-        """
-        创建session key
-        - 群聊：使用 group_id 作为key（整个群共享，不区分用户）
-        - 私聊：使用 user_id 作为key（每个用户独立）
-        """
-        if group_id:
-            # 群聊场景：整个群共享历史，user_id 只用于记录，不作为 key 的一部分
-            # 使用空字符串作为 user_id，确保同一个群的所有消息使用相同的 key
-            return SessionKey(user_id="", group_id=group_id)
-        else:
-            # 私聊场景：每个用户独立历史
-            return SessionKey(user_id=user_id, group_id=None)
-
     def add_message(
         self,
-        group_id: Optional[str],
-        user_id: str,
+        event: Event,
         role: Literal["user", "assistant", "system"],
         content: str,
         user_name: Optional[str] = None,
@@ -160,64 +107,76 @@ class HistoryManager:
         添加一条消息到历史记录
 
         Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 发送者用户ID
+            event: Event 事件对象（包含 bot_id/group_id/user_id/user_type，WS_BOT_ID 用于发送）
             role: 消息角色 (user/assistant/system)
             content: 消息内容
             user_name: 发送者昵称（可选）
-            metadata: 可选的元数据（可包含 image_id, at_list 等）
+            metadata: 可选的元数据
 
         Returns:
             创建的消息记录
         """
-        session_key = self._make_session_key(group_id, user_id)
         record = MessageRecord(
             role=role,
             content=content,
-            user_id=user_id,
+            user_id=event.user_id,
             user_name=user_name,
             metadata=metadata or {},
         )
 
+        # 对于群聊，user_id 不参与 session 标识（session_id 中不包含 user_id）
+        # 因此创建用于存储的 key 时，将群聊的 user_id 设为空字符串以保证一致性
+        if event.user_type != "direct" and event.user_id:
+            storage_event = Event(
+                bot_id=event.bot_id,
+                user_id="",
+                group_id=event.group_id,
+                user_type=event.user_type,
+            )
+        else:
+            storage_event = event
+
         with self._lock:
-            history = self._get_or_create_history(session_key)
+            if storage_event not in self._histories:
+                self._histories[storage_event] = deque(maxlen=self._max_messages)
+            history = self._histories[storage_event]
             history.append(record)
 
             # 更新 session 元数据
             now = time.time()
-            if session_key not in self._session_metadata:
-                self._session_metadata[session_key] = {
+            if storage_event not in self._session_metadata:
+                self._session_metadata[storage_event] = {
                     "created_at": now,
                     "last_access": now,
                     "history_length": len(history),
+                    "user_id": event.user_id,  # 保留原始 user_id
+                    "group_id": event.group_id,
+                    "bot_id": event.bot_id,
+                    "user_type": event.user_type,
                 }
             else:
-                self._session_metadata[session_key]["last_access"] = now
-                self._session_metadata[session_key]["history_length"] = len(history)
+                self._session_metadata[storage_event]["last_access"] = now
+                self._session_metadata[storage_event]["history_length"] = len(history)
 
         return record
 
     def get_history(
         self,
-        group_id: Optional[str],
-        user_id: str,
+        event: "Event",
         limit: Optional[int] = None,
     ) -> List[MessageRecord]:
         """
         获取指定session的历史记录
 
         Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 用户ID（用于确定私聊session）
+            event: Event 事件对象
             limit: 返回的最大消息数，默认返回全部
 
         Returns:
             消息记录列表（按时间顺序）
         """
-        session_key = self._make_session_key(group_id, user_id)
-
         with self._lock:
-            history = self._histories.get(session_key, deque())
+            history = self._histories.get(event, deque())
             records = list(history)
 
         if limit and limit > 0:
@@ -225,175 +184,80 @@ class HistoryManager:
 
         return records
 
-    def get_history_count(
-        self,
-        group_id: Optional[str],
-        user_id: str,
-    ) -> int:
-        """
-        获取指定session的历史消息数量
-
-        Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 用户ID
-
-        Returns:
-            消息数量
-        """
-        session_key = self._make_session_key(group_id, user_id)
-
+    def get_history_count(self, event: "Event") -> int:
+        """获取指定session的历史消息数量"""
         with self._lock:
-            history = self._histories.get(session_key, deque())
+            history = self._histories.get(event, deque())
             return len(history)
 
-    def clear_history(
-        self,
-        group_id: Optional[str],
-        user_id: str,
-    ) -> bool:
-        """
-        清空指定session的历史记录
-
-        Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 用户ID
-
-        Returns:
-            是否成功清空（存在记录并清空返回True）
-        """
-        session_key = self._make_session_key(group_id, user_id)
-
+    def clear_history(self, event: "Event") -> bool:
+        """清空指定session的历史记录"""
         with self._lock:
-            if session_key in self._histories:
-                self._histories[session_key].clear()
-                return True
-            return False
+            if event in self._histories:
+                self._histories[event].clear()
+            return event in self._histories
 
-    def delete_session(
-        self,
-        group_id: Optional[str],
-        user_id: str,
-    ) -> bool:
-        """
-        删除整个session的历史记录（释放内存）
-
-        Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 用户ID
-
-        Returns:
-            是否成功删除
-        """
-        session_key = self._make_session_key(group_id, user_id)
-        # 生成 session_id 用于删除 AI session
-        # 群聊: None%%%{group_id}
-        # 私聊: {user_id}%%%None
-        if group_id:
-            session_id = f"None%%%{group_id}"
-        else:
-            session_id = f"{user_id}%%%None"
+    def delete_session(self, event: "Event") -> bool:
+        """删除整个session的历史记录（释放内存）"""
+        session_id = event.session_id
 
         with self._lock:
             deleted = False
-            if session_key in self._histories:
-                del self._histories[session_key]
+            if event in self._histories:
+                del self._histories[event]
                 deleted = True
-            # 同时删除元数据
-            if session_key in self._session_metadata:
-                del self._session_metadata[session_key]
-
-            # 同时删除 AI session
+            if event in self._session_metadata:
+                del self._session_metadata[event]
             if session_id in self._ai_sessions:
                 del self._ai_sessions[session_id]
                 deleted = True
 
             return deleted
 
-    def list_sessions(self) -> List[SessionKey]:
-        """
-        列出所有活跃的session
-
-        Returns:
-            SessionKey列表
-        """
+    def list_sessions(self) -> List["Event"]:
+        """列出所有活跃的session（返回 Event 列表）"""
         with self._lock:
             return list(self._histories.keys())
 
-    def get_session_info(
-        self,
-        group_id: Optional[str],
-        user_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        获取指定session的信息
-
-        Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 用户ID
-
-        Returns:
-            session信息字典，包含 created_at, last_access, history_length
-        """
-        session_key = self._make_session_key(group_id, user_id)
-
+    def get_session_info(self, event: "Event") -> Optional[Dict[str, Any]]:
+        """获取指定session的信息"""
         with self._lock:
-            metadata = self._session_metadata.get(session_key)
+            metadata = self._session_metadata.get(event)
             if metadata:
                 return {
-                    "session_id": f"{user_id}%%%{group_id}" if group_id else f"{user_id}%%%None",
+                    "session_id": event.session_id,
                     "created_at": metadata.get("created_at"),
                     "last_access": metadata.get("last_access"),
                     "history_length": metadata.get("history_length", 0),
-                    "user_id": user_id,
-                    "group_id": group_id,
+                    "user_id": event.user_id,
+                    "group_id": event.group_id,
+                    "bot_id": event.bot_id,
+                    "user_type": event.user_type,
                 }
             return None
 
     def get_all_sessions_info(self) -> Dict[str, Dict[str, Any]]:
-        """
-        获取所有session的信息
-
-        Returns:
-            {session_id: session_info} 字典
-        """
+        """获取所有session的信息"""
         result = {}
         with self._lock:
-            for session_key, metadata in self._session_metadata.items():
-                # 生成 session_id
-                # 群聊: None%%%{group_id}
-                # 私聊: {user_id}%%%None
-                if session_key.group_id:
-                    session_id = f"None%%%{session_key.group_id}"
-                else:
-                    session_id = f"{session_key.user_id}%%%None"
-
-                result[session_id] = {
-                    "session_id": session_id,
+            for ev, metadata in self._session_metadata.items():
+                result[ev.session_id] = {
+                    "session_id": ev.session_id,
                     "created_at": metadata.get("created_at"),
                     "last_access": metadata.get("last_access"),
                     "history_length": metadata.get("history_length", 0),
-                    "user_id": session_key.user_id,
-                    "group_id": session_key.group_id,
+                    "user_id": ev.user_id,
+                    "group_id": ev.group_id,
+                    "bot_id": ev.bot_id,
+                    "user_type": ev.user_type,
                 }
         return result
 
-    def update_session_access(
-        self,
-        group_id: Optional[str],
-        user_id: str,
-    ) -> None:
-        """
-        更新session的最后访问时间
-
-        Args:
-            group_id: 群聊ID，私聊时为None
-            user_id: 用户ID
-        """
-        session_key = self._make_session_key(group_id, user_id)
-
+    def update_session_access(self, event: "Event") -> None:
+        """更新session的最后访问时间"""
         with self._lock:
-            if session_key in self._session_metadata:
-                self._session_metadata[session_key]["last_access"] = time.time()
+            if event in self._session_metadata:
+                self._session_metadata[event]["last_access"] = time.time()
 
     # ============== AI 会话对象管理 ==============
 
@@ -464,10 +328,15 @@ class HistoryManager:
         """
         cleaned = 0
         for session_id, session in self._ai_sessions.items():
-            if hasattr(session, "history") and len(session.history) > self.MAX_AI_HISTORY_LENGTH:
-                # 保留最近的消息
-                session.history = session.history[-self.MAX_AI_HISTORY_LENGTH :]
-                cleaned += 1
+            try:
+                history_len = len(session.history)  # type: ignore
+                if history_len > self.MAX_AI_HISTORY_LENGTH:
+                    # 保留最近的消息
+                    session.history = session.history[-self.MAX_AI_HISTORY_LENGTH :]  # type: ignore
+                    cleaned += 1
+            except AttributeError:
+                # session 没有 history 属性，跳过
+                pass
         return cleaned
 
     # ============== 清理任务管理 ==============
@@ -521,38 +390,30 @@ class HistoryManager:
         sessions_to_remove = []
 
         with self._lock:
-            for session_id, info in self._session_metadata.items():
+            for ev, info in self._session_metadata.items():
                 last_access = info.get("last_access", 0)
                 if current_time - last_access > idle_threshold:
                     # 只清理有AI session的
-                    session_id_str = self._session_key_to_id(session_id)
-                    if session_id_str in self._ai_sessions:
-                        sessions_to_remove.append(session_id_str)
+                    if ev.session_id in self._ai_sessions:
+                        sessions_to_remove.append(ev.session_id)
 
         for session_id in sessions_to_remove:
             self.remove_ai_session(session_id)
 
         return len(sessions_to_remove)
 
-    def _session_key_to_id(self, session_key: SessionKey) -> str:
-        """将SessionKey转换为session_id字符串"""
-        if session_key.group_id:
-            session_str = str(session_key)
-            if session_str.startswith("group:"):
-                return f"None%%%{session_key.group_id}"
-            else:
-                return f"{session_key.group_id}%%%None"
-        return "unknown"
-
-    def get_all_histories(self) -> Dict[SessionKey, List[MessageRecord]]:
+    def get_all_histories(self) -> Dict[str, List[MessageRecord]]:
         """
         获取所有session的历史记录（用于持久化）
 
         Returns:
-            {SessionKey: [MessageRecord, ...]}
+            {session_id_str: [MessageRecord, ...]}
         """
         with self._lock:
-            return {key: list(history) for key, history in self._histories.items()}
+            result = {}
+            for ev, history in self._histories.items():
+                result[ev.session_id] = list(history)
+            return result
 
     def load_histories(
         self,
@@ -562,18 +423,38 @@ class HistoryManager:
         批量加载历史记录（用于从持久化恢复）
 
         Args:
-            data: {session_key_str: [message_dict, ...]}
+            data: {session_id_str: [message_dict, ...]}
+            格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
         """
         with self._lock:
             for key_str, messages in data.items():
-                session_key = SessionKey.from_string(key_str)
-                history = deque(maxlen=self._max_messages)
+                # 解析 session_id 字符串，格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
+                parts = key_str.split(":", 3)
+                if len(parts) < 4 or parts[0] != "bot":
+                    continue
+                bot_id = parts[1]
+                if parts[2] == "group":
+                    group_id = parts[3]
+                    user_id = ""
+                    user_type: Literal["group", "direct", "channel", "sub_channel"] = "group"
+                elif parts[2] == "private":
+                    group_id = None
+                    user_id = parts[3]
+                    user_type = "direct"
+                else:
+                    continue
 
+                event_key = Event(
+                    bot_id=bot_id,
+                    group_id=group_id,
+                    user_id=user_id,
+                    user_type=user_type,
+                )
+                history = deque(maxlen=self._max_messages)
                 for msg_data in messages:
                     record = MessageRecord.from_dict(msg_data)
                     history.append(record)
-
-                self._histories[session_key] = history
+                self._histories[event_key] = history
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -723,7 +604,7 @@ def history_to_messages(
 
 def format_history_for_agent(
     history: List[MessageRecord],
-    current_user_id: str,
+    current_user_id: Optional[str] = None,
     current_user_name: Optional[str] = None,
 ) -> str:
     """
@@ -774,8 +655,8 @@ def format_history_for_agent(
         else:
             display_user_id = record.user_id
 
-        # 构建消息块
-        if record.user_id == current_user_id and record.role == "user":
+        # 构建消息块：始终显示用户ID
+        if current_user_id is not None and record.user_id == current_user_id and record.role == "user":
             # 当前用户的消息，标记为"当前用户ID"
             lines.append(f"当前用户ID: {display_user_id}：")
         else:

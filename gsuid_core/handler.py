@@ -15,6 +15,7 @@ from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.ai_core.history import get_history_manager
 from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.ai_core.handle_ai import handle_ai_chat
+from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.utils.plugins_config.gs_config import (
@@ -37,6 +38,9 @@ bot_name_list = (bot_name, *bot_name_alias)
 # AI服务配置
 enable_ai: bool = ai_config.get_config("enable").data
 ai_mode: List[str] = ai_config.get_config("ai_mode").data
+
+# 输入安全配置
+MAX_TEXT_LENGTH = 4000  # 单条消息最大文本长度，超过则截断
 
 ai_black_list: List[str] = ai_config.get_config("black_list").data
 ai_white_list: List[str] = ai_config.get_config("white_list").data
@@ -110,8 +114,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             metadata["file_id"] = event.file
 
         history_manager.add_message(
-            group_id=event.group_id,
-            user_id=event.user_id,
+            event=event,
             role="user",
             content=event.raw_text.strip(),
             user_name=user_name,
@@ -161,7 +164,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     else:
         temp_gid = uid
 
-    session_id = f"{bid}{temp_gid}{uid}"
+    session_id = f"{bid}%%%{temp_gid}%%%{uid}"
 
     instances = Bot.get_instances()
     mutiply_instances = Bot.get_mutiply_instances()
@@ -312,8 +315,40 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if ai_white_list and not (user_in_white_list or group_in_white_list):
             return
 
+        # 根据当前 session 获取对应的 persona 配置
+        from gsuid_core.ai_core.persona.config import persona_config_manager
+
+        # 使用 Event.session_id 属性获取标准格式的 session_id
+        session_id = event.session_id
+        persona_name = persona_config_manager.get_persona_for_session(session_id)
+
+        # 如果没有匹配的 persona 配置，直接返回，不执行 AI 处理
+        if persona_name is None:
+            return
+
+        # 获取该 persona 的 ai_mode 配置
+        persona_config = persona_config_manager.get_config(persona_name)
+        ai_mode = persona_config.get_config("ai_mode").data
+        keywords = persona_config.get_config("keywords").data
+
         if "提及应答" in ai_mode:
-            if not event.is_tome:
+            # 检查是否应该响应：@机器人 或者 包含关键词
+            should_respond = event.is_tome
+            trigger_type = "mention"
+            if not should_respond and keywords:
+                # 检查消息内容是否包含关键词
+                msg_text = getattr(event, "raw_text", "") or ""
+                should_respond = any(kw in msg_text for kw in keywords)
+                if should_respond:
+                    trigger_type = "keyword"
+
+            # 记录触发方式统计
+            try:
+                statistics_manager.record_trigger(trigger_type=trigger_type)
+            except Exception:
+                pass
+
+            if not should_respond:
                 return
 
             # 将AI处理逻辑放入队列异步执行，避免阻塞
@@ -363,8 +398,21 @@ async def msg_process(msg: MessageReceive) -> Event:
 
     for _msg in msg.content:
         if _msg.type == "text":
-            event.raw_text += _msg.data.strip()  # type:ignore
-            event.text += _msg.data.strip()  # type:ignore
+            if not _msg.data:
+                continue
+            text_part = str(_msg.data).strip()
+            # 输入截断：防止单条消息过大导致 Token 爆炸
+            if len(event.raw_text) + len(text_part) > MAX_TEXT_LENGTH:
+                remaining = MAX_TEXT_LENGTH - len(event.raw_text)
+                if remaining > 0:
+                    text_part = text_part[:remaining]
+                    event.raw_text += text_part
+                    event.text += text_part
+                    logger.warning(f"[GsCore][输入截断] 消息已截断至 {MAX_TEXT_LENGTH} 字符")
+                # 超出部分直接丢弃
+                continue
+            event.raw_text += text_part  # type:ignore
+            event.text += text_part  # type:ignore
             # 如果用户说的话以bot的名字开头，认为这是在说话给bot听的
             if event.text.startswith(bot_name_list):
                 event.is_tome = True

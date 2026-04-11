@@ -292,7 +292,7 @@ class StringConfig:
             else:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
-    def set_config(self, key: str, value: Union[str, List, bool, Dict]) -> bool:
+    def set_config(self, key: str, value: Union[str, List, bool, Dict, int]) -> bool:
         if key in self.config_list:
             temp = self.config[key].data
             if type(value) == type(temp):  # noqa: E721
