@@ -8,7 +8,7 @@ from typing import Dict, List
 
 from fastapi import Depends
 
-from gsuid_core.ai_core.register import get_registered_tools
+from gsuid_core.ai_core.register import get_all_tools
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -22,7 +22,7 @@ async def get_ai_tools_list(_: Dict = Depends(require_auth)) -> Dict:
         status: 0成功，1失败
         data: 包含 tools 字典（按插件名称分组）和总 count
     """
-    tools_map = get_registered_tools()
+    tools_map = get_all_tools()
 
     # 按插件名称分组
     tools_by_plugin: Dict[str, List[Dict]] = {}
@@ -65,7 +65,7 @@ async def get_ai_tool_detail(tool_name: str, _: Dict = Depends(require_auth)) ->
         status: 0成功，1失败
         data: 工具详情
     """
-    tools_map = get_registered_tools()
+    tools_map = get_all_tools()
     tool_base = tools_map.get(tool_name)
 
     if tool_base is None:

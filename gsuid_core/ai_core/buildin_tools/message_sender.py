@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     pass
 
 
-@ai_tools(buildin=True)
+@ai_tools(category="buildin")
 async def send_message_by_ai(
     ctx: RunContext[ToolContext],
     message_type: Literal["text", "image"],

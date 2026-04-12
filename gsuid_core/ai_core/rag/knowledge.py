@@ -21,7 +21,6 @@ from gsuid_core.ai_core.rag.base import (
     calculate_hash,
 )
 from gsuid_core.ai_core.register import _ENTITIES
-from gsuid_core.ai_core.statistics import statistics_manager
 
 from .reranker import rerank_results
 from .image_rag import build_image_text
@@ -193,6 +192,7 @@ async def query_knowledge(
         匹配的知识点列表
     """
     from gsuid_core.ai_core.rag.base import client, embedding_model, is_enable_rerank
+    from gsuid_core.ai_core.statistics import statistics_manager
 
     if client is None or embedding_model is None:
         logger.warning("🧠 [Knowledge] AI功能未启用，无法查询知识")

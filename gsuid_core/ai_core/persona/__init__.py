@@ -27,7 +27,7 @@ from gsuid_core.ai_core.persona.resource import (
     get_persona_avatar_path,
     list_available_personas,
 )
-from gsuid_core.ai_core.persona.processor import build_new_persona, build_persona_prompt
+from gsuid_core.ai_core.persona.processor import build_persona_prompt
 
 __all__ = [
     # Persona 核心类
@@ -37,7 +37,6 @@ __all__ = [
     "PERSONA_PATH",
     # 处理器
     "build_persona_prompt",
-    "build_new_persona",
     # 资源管理（向后兼容的函数接口）
     "save_persona",
     "load_persona",

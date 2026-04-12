@@ -15,13 +15,13 @@ from gsuid_core.ai_core.persona import (
     load_persona,
     save_persona,
     delete_persona,
-    build_new_persona,
     get_persona_metadata,
     get_persona_audio_path,
     get_persona_image_path,
     get_persona_avatar_path,
     list_available_personas,
 )
+from gsuid_core.ai_core.gs_agent import build_new_persona
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.persona.config import persona_config_manager

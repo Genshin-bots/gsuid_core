@@ -13,12 +13,12 @@ from collections import Counter, defaultdict
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.statistics.models import (
-    HeartbeatMetrics,
-    DailyAIStatistics,
-    RAGMissStatistics,
-    TokenUsageByModel,
-    RAGDocumentStatistics,
-    GroupUserActivityStats,
+    AIDailyStatistics,
+    AIHeartbeatMetrics,
+    AIRAGMissStatistics,
+    AITokenUsageByModel,
+    AIRAGDocumentStatistics,
+    AIGroupUserActivityStats,
 )
 
 from .dataclass_models import BotState, LatencyStats
@@ -147,15 +147,22 @@ class StatisticsManager:
                 k: {"count": agg_intents[k], "percentage": agg_intents[k] / total_intents * 100}
                 for k in ["chat", "tool", "qa"]
             },
-            "errors": {**agg_errors, "total": sum(agg_errors.values())},
+            "errors": {
+                "timeout": agg_errors.get("timeout", 0),
+                "rate_limit": agg_errors.get("rate_limit", 0),
+                "network_error": agg_errors.get("network_error", 0),
+                "usage_limit": agg_errors.get("usage_limit", 0),
+                "agent_error": agg_errors.get("agent_error", 0),
+                "total": sum(agg_errors.values()),
+            },
             "heartbeat": {
                 "should_speak_true": hb_true,
                 "should_speak_false": hb_false,
                 "conversion_rate": hb_true / (hb_true + hb_false) * 100 if (hb_true + hb_false) > 0 else 0,
             },
             "trigger_distribution": {
-                k: {"count": agg_triggers[k], "percentage": agg_triggers[k] / total_triggers * 100}
-                for k in ["mention", "keyword", "heartbeat"]
+                k: {"count": agg_triggers.get(k, 0), "percentage": agg_triggers.get(k, 0) / total_triggers * 100}
+                for k in ["mention", "keyword", "heartbeat", "scheduled"]
             },
             "rag": {
                 "hit_count": self._rag["hit"],
@@ -173,8 +180,8 @@ class StatisticsManager:
             today = self._today
             logger.info(f"📊 [StatisticsManager] 正在从数据库加载 {today} 的统计数据")
 
-            # 1. 加载 DailyAIStatistics
-            stats = await DailyAIStatistics.get_daily_stats(today)
+            # 1. 加载 AIDailyStatistics
+            stats = await AIDailyStatistics.get_daily_stats(today)
             if stats:
                 s = self._bot_state
                 s.total_tokens.update(input=stats.total_input_tokens or 0, output=stats.total_output_tokens or 0)
@@ -187,37 +194,40 @@ class StatisticsManager:
                     timeout=stats.api_timeout_count or 0,
                     rate_limit=stats.api_rate_limit_count or 0,
                     network_error=stats.api_network_error_count or 0,
+                    usage_limit=stats.api_usage_limit_count or 0,
+                    agent_error=stats.api_agent_error_count or 0,
                 )
                 s.triggers.update(
                     mention=stats.trigger_mention_count or 0,
                     keyword=stats.trigger_keyword_count or 0,
                     heartbeat=stats.trigger_heartbeat_count or 0,
+                    scheduled=stats.trigger_scheduled_count or 0,
                 )
 
-            # 2. 加载 TokenUsageByModel
-            all_token_use = await TokenUsageByModel.get_daily_data(date=today)
+            # 2. 加载 AITokenUsageByModel
+            all_token_use = await AITokenUsageByModel.get_daily_data(date=today)
             for stats in all_token_use:
                 self._bot_state.token_by_model[stats.model_name.lower()].add(
                     stats.input_tokens or 0, stats.output_tokens or 0
                 )
 
-            # 3. 加载 HeartbeatMetrics
-            all_heartbeat = await HeartbeatMetrics.get_daily_data(date=today)
+            # 3. 加载 AIHeartbeatMetrics
+            all_heartbeat = await AIHeartbeatMetrics.get_daily_data(date=today)
             for stats in all_heartbeat:
                 self._bot_state.heartbeats[stats.group_id].update(
                     should_speak_true=stats.should_speak_count or 0,
                     should_speak_false=stats.should_not_speak_count or 0,
                 )
 
-            # 4. 加载 GroupUserActivityStats
-            all_activity = await GroupUserActivityStats.get_daily_data(date=today)
+            # 4. 加载 AIGroupUserActivityStats
+            all_activity = await AIGroupUserActivityStats.get_daily_data(date=today)
             for stats in all_activity:
                 self._bot_state.activities[f"{stats.group_id}:{stats.user_id}"].update(
                     ai_interaction=stats.ai_interaction_count or 0, message=stats.message_count or 0
                 )
 
             # 5. 加载 RAG 统计数据
-            rag_data = await RAGMissStatistics.get_daily_data(today)
+            rag_data = await AIRAGMissStatistics.get_daily_data(today)
             if rag_data:
                 self._rag["hit"] = rag_data.hit_count or 0
                 self._rag["miss"] = rag_data.miss_count or 0
@@ -238,7 +248,7 @@ class StatisticsManager:
             today = self._today
             hit = self._rag.get("hit", 0)
             miss = self._rag.get("miss", 0)
-            await RAGMissStatistics.upsert_rag_stats(today, hit, miss)
+            await AIRAGMissStatistics.upsert_rag_stats(today, hit, miss)
 
             # 持久化文档命中统计
             documents = self._rag.get("documents", {})
@@ -246,7 +256,7 @@ class StatisticsManager:
             for doc_name in documents.values():
                 doc_counter[doc_name] += 1
             for doc_name, count in doc_counter.items():
-                await RAGDocumentStatistics.upsert_rag_hit_count(doc_name, count)
+                await AIRAGDocumentStatistics.upsert_rag_hit_count(doc_name, count)
         except Exception as e:
             logger.exception(f"📊 [StatisticsManager] 持久化 RAG 统计失败: {e}")
 
@@ -268,7 +278,7 @@ class StatisticsManager:
             today = self._today
 
             # 基础统计
-            await DailyAIStatistics.upsert_daily_stats(
+            await AIDailyStatistics.upsert_daily_stats(
                 date=today,
                 total_input_tokens=s.total_tokens["input"],
                 total_output_tokens=s.total_tokens["output"],
@@ -280,41 +290,68 @@ class StatisticsManager:
                 api_timeout_count=s.errors["timeout"],
                 api_rate_limit_count=s.errors["rate_limit"],
                 api_network_error_count=s.errors["network_error"],
+                api_usage_limit_count=s.errors["usage_limit"],
+                api_agent_error_count=s.errors["agent_error"],
                 active_session_count=0,
                 avg_messages_per_session=0.0,
                 trigger_mention_count=s.triggers["mention"],
                 trigger_keyword_count=s.triggers["keyword"],
                 trigger_heartbeat_count=s.triggers["heartbeat"],
+                trigger_scheduled_count=s.triggers.get("scheduled", 0),
             )
 
-            # Token 按模型统计
-            for model_name, usage in s.token_by_model.items():
-                await TokenUsageByModel.upsert_token_usage(
+            # Token 按模型统计 - 批量插入
+            token_data = [
+                AITokenUsageByModel(
                     date=today,
                     model_name=model_name,
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
                 )
+                for model_name, usage in s.token_by_model.items()
+            ]
+            if token_data:
+                await AITokenUsageByModel.batch_insert_data_with_update(
+                    datas=token_data,
+                    update_key=["input_tokens", "output_tokens"],
+                    index_elements=["date", "model_name"],
+                )
 
-            # 活跃统计
-            for key, astats in s.activities.items():
-                parts = key.split(":", 1)
-                await GroupUserActivityStats.upsert_activity(
+            # 活跃统计 - 批量插入
+            activity_data = [
+                AIGroupUserActivityStats(
                     date=today,
-                    group_id=parts[0] if len(parts) > 0 else "",
-                    user_id=parts[1] if len(parts) > 1 else "",
+                    group_id=key.split(":", 1)[0] if ":" in key else "",
+                    user_id=key.split(":", 1)[1] if ":" in key else key,
                     ai_interaction_count=astats["ai_interaction"],
                     message_count=astats["message"],
                 )
+                for key, astats in s.activities.items()
+            ]
+            if activity_data:
+                await AIGroupUserActivityStats.batch_insert_data_with_update(
+                    datas=activity_data,
+                    update_key=["ai_interaction_count", "message_count"],
+                    index_elements=["date", "group_id", "user_id"],
+                )
 
-            # Heartbeat 指标
-            for group_id, hstats in s.heartbeats.items():
-                if "should_speak_true" in hstats or "should_speak_false" in hstats:
-                    await HeartbeatMetrics.upsert_heartbeat_decision(
-                        date=today,
-                        group_id=group_id,
-                        should_speak=hstats["should_speak_true"] > 0,
-                    )
+            # Heartbeat 指标 - 批量插入
+            heartbeat_data = [
+                AIHeartbeatMetrics(
+                    date=today,
+                    group_id=group_id,
+                    should_speak_count=hstats.get("should_speak_true", 0),
+                    should_not_speak_count=hstats.get("should_speak_false", 0),
+                )
+                for group_id, hstats in s.heartbeats.items()
+                if hstats.get("should_speak_true") or hstats.get("should_speak_false")
+            ]
+            if heartbeat_data:
+                await AIHeartbeatMetrics.batch_insert_data_with_update(
+                    datas=heartbeat_data,
+                    update_key=["should_speak_count", "should_not_speak_count"],
+                    index_elements=["date", "group_id"],
+                )
 
         except Exception as e:
             logger.exception(f"📊 [StatisticsManager] 持久化统计数据失败: {e}")
@@ -323,13 +360,13 @@ class StatisticsManager:
         """从数据库获取指定日期的统计摘要"""
         try:
             # 获取 RAG 统计数据
-            rag_data = await RAGMissStatistics.get_daily_data(date)
+            rag_data = await AIRAGMissStatistics.get_daily_data(date)
             hit_count = rag_data.hit_count if rag_data else 0
             miss_count = rag_data.miss_count if rag_data else 0
             total = hit_count + miss_count
             hit_rate = (hit_count / total * 100) if total > 0 else 0.0
 
-            stats = await DailyAIStatistics.get_daily_stats(date)
+            stats = await AIDailyStatistics.get_daily_stats(date)
             if not stats:
                 return None
             return self._daily_stats_to_dict(stats, hit_count, miss_count, hit_rate)
@@ -339,12 +376,12 @@ class StatisticsManager:
 
     def _daily_stats_to_dict(
         self,
-        stats: DailyAIStatistics,
+        stats: AIDailyStatistics,
         rag_hit: int = 0,
         rag_miss: int = 0,
         rag_hit_rate: float = 0.0,
     ) -> Dict[str, Any]:
-        """将 DailyAIStatistics 转换为字典格式"""
+        """将 AIDailyStatistics 转换为字典格式"""
         t_intent = (stats.intent_chat_count or 0) + (stats.intent_tool_count or 0) + (stats.intent_qa_count or 0) or 1
         return {
             "date": stats.date,
@@ -369,14 +406,22 @@ class StatisticsManager:
                 },
             },
             "errors": {
-                "total_errors": (stats.api_timeout_count or 0)
+                "timeout": stats.api_timeout_count or 0,
+                "rate_limit": stats.api_rate_limit_count or 0,
+                "network_error": stats.api_network_error_count or 0,
+                "usage_limit": stats.api_usage_limit_count or 0,
+                "agent_error": stats.api_agent_error_count or 0,
+                "total": (stats.api_timeout_count or 0)
                 + (stats.api_rate_limit_count or 0)
                 + (stats.api_network_error_count or 0)
+                + (stats.api_usage_limit_count or 0)
+                + (stats.api_agent_error_count or 0),
             },
             "trigger_distribution": {
                 "mention": stats.trigger_mention_count or 0,
                 "keyword": stats.trigger_keyword_count or 0,
                 "heartbeat": stats.trigger_heartbeat_count or 0,
+                "scheduled": stats.trigger_scheduled_count or 0,
             },
             "rag": {"hit_count": rag_hit, "miss_count": rag_miss, "hit_rate": rag_hit_rate},
             "active_users": [],

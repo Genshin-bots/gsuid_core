@@ -20,13 +20,14 @@ from typing import Optional
 from datetime import datetime
 
 from sqlmodel import Field, and_, select
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import BaseIDModel, with_session
 
 
-class DailyAIStatistics(BaseIDModel, table=True):
+class AIDailyStatistics(BaseIDModel, table=True):
     """
     每日 AI 统计数据表
 
@@ -64,11 +65,14 @@ class DailyAIStatistics(BaseIDModel, table=True):
     api_timeout_count: int = Field(default=0, title="API超时次数")
     api_rate_limit_count: int = Field(default=0, title="RateLimit次数")
     api_network_error_count: int = Field(default=0, title="网络错误次数")
+    api_usage_limit_count: int = Field(default=0, title="使用限制次数")
+    api_agent_error_count: int = Field(default=0, title="Agent执行错误次数")
     active_session_count: int = Field(default=0, title="活跃Session数")
     avg_messages_per_session: float = Field(default=0.0, title="平均每Session消息数")
     trigger_mention_count: int = Field(default=0, title="@触发次数")
     trigger_keyword_count: int = Field(default=0, title="关键词触发次数")
     trigger_heartbeat_count: int = Field(default=0, title="主动巡检触发次数")
+    trigger_scheduled_count: int = Field(default=0, title="定时任务触发次数")
     created_at: int = Field(default=0, title="创建时间戳")
     updated_at: int = Field(default=0, title="更新时间戳")
 
@@ -83,7 +87,7 @@ class DailyAIStatistics(BaseIDModel, table=True):
         cls,
         session: AsyncSession,
         date: str,
-    ) -> Optional["DailyAIStatistics"]:
+    ) -> Optional["AIDailyStatistics"]:
         """获取指定日期的统计数据"""
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
@@ -114,16 +118,19 @@ class DailyAIStatistics(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [DailyAIStatistics] 更新统计数据失败: {e}")
+            logger.exception(f"📊 [AIDailyStatistics] 更新统计数据失败: {e}")
             return False
 
 
-class TokenUsageByModel(BaseIDModel, table=True):
+class AITokenUsageByModel(BaseIDModel, table=True):
     """
     按模型分组的 Token 消耗统计
     """
 
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        UniqueConstraint("date", "model_name", name="aitokenusagebydate_model"),
+        {"extend_existing": True},
+    )
 
     date: str = Field(default="", title="统计日期")
     model_name: str = Field(default="", title="模型名称")
@@ -136,7 +143,7 @@ class TokenUsageByModel(BaseIDModel, table=True):
         cls,
         session: AsyncSession,
         date: str,
-    ) -> list["TokenUsageByModel"]:
+    ) -> list["AITokenUsageByModel"]:
         """获取指定日期的统计数据"""
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
@@ -149,7 +156,7 @@ class TokenUsageByModel(BaseIDModel, table=True):
         session: AsyncSession,
         date: str,
         model_name: str,
-    ) -> Optional["TokenUsageByModel"]:
+    ) -> Optional["AITokenUsageByModel"]:
         """获取指定模型在某日的统计"""
         stmt = select(cls).where(
             and_(
@@ -190,16 +197,19 @@ class TokenUsageByModel(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [TokenUsageByModel] 更新Token消耗失败: {e}")
+            logger.exception(f"📊 [AITokenUsageByModel] 更新Token消耗失败: {e}")
             return False
 
 
-class GroupUserActivityStats(BaseIDModel, table=True):
+class AIGroupUserActivityStats(BaseIDModel, table=True):
     """
     群组/用户活跃统计
     """
 
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        UniqueConstraint("date", "group_id", "user_id", name="aiactivitybydate_group_user"),
+        {"extend_existing": True},
+    )
 
     date: str = Field(default="", title="统计日期")
     group_id: str = Field(default="", title="群组ID")
@@ -215,7 +225,7 @@ class GroupUserActivityStats(BaseIDModel, table=True):
         date: str,
         group_id: str,
         user_id: str,
-    ) -> Optional["GroupUserActivityStats"]:
+    ) -> Optional["AIGroupUserActivityStats"]:
         """获取指定用户在某日的统计"""
         stmt = select(cls).where(
             and_(
@@ -233,7 +243,7 @@ class GroupUserActivityStats(BaseIDModel, table=True):
         cls,
         session: AsyncSession,
         date: str,
-    ) -> list["GroupUserActivityStats"]:
+    ) -> list["AIGroupUserActivityStats"]:
         """获取指定日期的所有活跃统计数据"""
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
@@ -271,16 +281,19 @@ class GroupUserActivityStats(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [GroupUserActivityStats] 更新活跃统计失败: {e}")
+            logger.exception(f"📊 [AIGroupUserActivityStats] 更新活跃统计失败: {e}")
             return False
 
 
-class HeartbeatMetrics(BaseIDModel, table=True):
+class AIHeartbeatMetrics(BaseIDModel, table=True):
     """
     Heartbeat 巡检详细指标
     """
 
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        UniqueConstraint("date", "group_id", name="aiheartbeatbydate_group"),
+        {"extend_existing": True},
+    )
 
     date: str = Field(default="", title="统计日期")
     group_id: str = Field(default="", title="群组ID")
@@ -294,7 +307,7 @@ class HeartbeatMetrics(BaseIDModel, table=True):
         session: AsyncSession,
         date: str,
         group_id: str,
-    ) -> Optional["HeartbeatMetrics"]:
+    ) -> Optional["AIHeartbeatMetrics"]:
         """获取指定群组在某日的统计"""
         stmt = select(cls).where(
             and_(
@@ -311,7 +324,7 @@ class HeartbeatMetrics(BaseIDModel, table=True):
         cls,
         session: AsyncSession,
         date: str,
-    ) -> list["HeartbeatMetrics"]:
+    ) -> list["AIHeartbeatMetrics"]:
         """获取指定日期的所有 Heartbeat 统计数据"""
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
@@ -348,11 +361,11 @@ class HeartbeatMetrics(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [HeartbeatMetrics] 更新Heartbeat决策失败: {e}")
+            logger.exception(f"📊 [AIHeartbeatMetrics] 更新Heartbeat决策失败: {e}")
             return False
 
 
-class RAGMissStatistics(BaseIDModel, table=True):
+class AIRAGMissStatistics(BaseIDModel, table=True):
     """
     RAG 未命中统计（简单计数）
     """
@@ -365,7 +378,7 @@ class RAGMissStatistics(BaseIDModel, table=True):
 
     @classmethod
     @with_session
-    async def get_daily_data(cls, session: AsyncSession, date: str) -> Optional["RAGMissStatistics"]:
+    async def get_daily_data(cls, session: AsyncSession, date: str) -> Optional["AIRAGMissStatistics"]:
         """获取指定日期的统计"""
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
@@ -386,7 +399,7 @@ class RAGMissStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(date=date, miss_count=1)
             return True
         except Exception as e:
-            logger.exception(f"📊 [RAGMissStatistics] 更新RAG未命中统计失败: {e}")
+            logger.exception(f"📊 [AIRAGMissStatistics] 更新RAG未命中统计失败: {e}")
             return False
 
     @classmethod
@@ -404,11 +417,11 @@ class RAGMissStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(date=date, hit_count=hit_count, miss_count=miss_count)
             return True
         except Exception as e:
-            logger.exception(f"📊 [RAGMissStatistics] 更新RAG统计失败: {e}")
+            logger.exception(f"📊 [AIRAGMissStatistics] 更新RAG统计失败: {e}")
             return False
 
 
-class RAGDocumentStatistics(BaseIDModel, table=True):
+class AIRAGDocumentStatistics(BaseIDModel, table=True):
     """
     RAG 文档命中统计（按文档名统计）
     """
@@ -420,7 +433,7 @@ class RAGDocumentStatistics(BaseIDModel, table=True):
 
     @classmethod
     @with_session
-    async def get_by_document(cls, session: AsyncSession, document_name: str) -> Optional["RAGDocumentStatistics"]:
+    async def get_by_document(cls, session: AsyncSession, document_name: str) -> Optional["AIRAGDocumentStatistics"]:
         """获取指定文档的统计"""
         stmt = select(cls).where(cls.document_name == document_name)
         result = await session.execute(stmt)
@@ -428,7 +441,7 @@ class RAGDocumentStatistics(BaseIDModel, table=True):
 
     @classmethod
     @with_session
-    async def get_all_data(cls, session: AsyncSession) -> list["RAGDocumentStatistics"]:
+    async def get_all_data(cls, session: AsyncSession) -> list["AIRAGDocumentStatistics"]:
         """获取所有文档统计"""
         stmt = select(cls)
         result = await session.execute(stmt)
@@ -449,7 +462,7 @@ class RAGDocumentStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(document_name=document_name, hit_count=1)
             return True
         except Exception as e:
-            logger.exception(f"📊 [RAGDocumentStatistics] 更新RAG命中统计失败: {e}")
+            logger.exception(f"📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}")
             return False
 
     @classmethod
@@ -467,5 +480,5 @@ class RAGDocumentStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(document_name=document_name, hit_count=hit_count)
             return True
         except Exception as e:
-            logger.exception(f"📊 [RAGDocumentStatistics] 更新RAG命中统计失败: {e}")
+            logger.exception(f"📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}")
             return False

@@ -225,7 +225,7 @@ prompt = await build_persona_prompt("凯露")
 使用AI生成新的角色提示词。
 
 ```python
-from gsuid_core.ai_core.persona import build_new_persona
+from gsuid_core.ai_core.gs_agent import build_new_persona
 
 content = await build_new_persona("一个傲娇的猫耳魔法师")
 # 返回AI生成的角色描述

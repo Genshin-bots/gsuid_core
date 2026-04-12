@@ -3,21 +3,28 @@ Buildin Tools 模块
 
 系统内建AI工具模块，提供自主型AI常用的基础工具函数。
 
-包含工具：
+主Agent工具（category="buildin"，直接调用）：
 - search_knowledge: 检索知识库内容，支持按类别/插件筛选
 - web_search: Web搜索工具，基于Tavily API
-- send_text_message: 发送文本消息给用户
-- send_image_message: 发送图片消息给用户
+- send_message_by_ai: 发送消息给用户
 - query_user_favorability: 查询用户好感度信息
 - query_user_memory: 查询用户记忆条数
 - update_user_favorability: 更新用户好感度（增量）
 - set_user_favorability: 设置用户好感度（绝对值）
-- execute_shell_command: 执行系统命令
-- get_current_date: 获取当前日期和时间
-- get_current_date_simple: 获取当前日期（简化版）
 - create_subagent: 创建子Agent完成特定任务
+- get_self_persona_info: 获取自身Persona信息（配置/立绘/头像/音频）
+- add_scheduled_task: 定时执行任务
 
-所有工具均使用 @ai_tools 装饰器注册。
+子Agent工具（通过 create_subagent 调用）：
+- execute_shell_command: 执行系统命令（需权限）
+- get_current_date: 获取当前日期和时间
+- read_file_content: 读取文件内容
+- write_file_content: 写入文件内容
+- execute_file: 执行脚本文件
+- diff_file_content: 对比两个文件的差异
+- list_directory: 列出目录内容
+
+所有工具均使用 @ai_tools(category=...) 装饰器注册。
 """
 
 # 工具装饰器
@@ -32,11 +39,26 @@ from gsuid_core.ai_core.buildin_tools.get_time import (
 # Subagent工具 - 创建子Agent完成特定任务
 from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 
+# 定时任务工具 - 定时执行任务
+from gsuid_core.ai_core.buildin_tools.scheduler import add_scheduled_task
+
+# 自我信息工具 - 获取自身Persona信息
+from gsuid_core.ai_core.buildin_tools.self_info import get_self_persona_info
+
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
 from gsuid_core.ai_core.buildin_tools.rag_search import search_knowledge
 
 # Web搜索工具 - 基于Tavily的web搜索
 from gsuid_core.ai_core.buildin_tools.web_search import web_search
+
+# 文件管理工具 - 读写执行文件和diff对比
+from gsuid_core.ai_core.buildin_tools.file_manager import (
+    execute_file,
+    list_directory,
+    diff_file_content,
+    read_file_content,
+    write_file_content,
+)
 
 # 数据库查询工具 - 查询用户数据
 from gsuid_core.ai_core.buildin_tools.database_query import (
@@ -80,4 +102,14 @@ __all__ = [
     "_get_current_date",
     # Subagent工具
     "create_subagent",
+    # 自我信息工具
+    "get_self_persona_info",
+    # 文件管理工具
+    "read_file_content",
+    "write_file_content",
+    "execute_file",
+    "diff_file_content",
+    "list_directory",
+    # 定时任务工具
+    "add_scheduled_task",
 ]

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from gsuid_core.bot import Bot
 
 
-@ai_tools()
+@ai_tools(category="buildin")
 async def query_user_favorability(
     ctx: RunContext[ToolContext],
     user_id: Optional[str] = None,
@@ -75,7 +75,7 @@ async def query_user_favorability(
         return f"查询失败：{str(e)}"
 
 
-@ai_tools()
+@ai_tools(category="buildin")
 async def query_user_memory(
     ctx: RunContext[ToolContext],
     user_id: Optional[str] = None,

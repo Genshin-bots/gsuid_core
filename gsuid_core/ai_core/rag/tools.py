@@ -6,6 +6,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolBase
+from gsuid_core.ai_core.register import get_all_tools
 
 from .base import (
     DIMENSION,
@@ -122,7 +123,7 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
     logger.info("🧠 [Tools] 工具同步完成\n")
 
 
-async def search_tools(query: str, limit: int = 5) -> List[str]:
+async def search_tools(query: str, limit: int = 5) -> list:
     """根据自然语言意图检索关联工具
 
     Args:
@@ -156,4 +157,7 @@ async def search_tools(query: str, limit: int = 5) -> List[str]:
             if name:
                 tool_names.append(name)
 
-    return tool_names
+    all_tools = get_all_tools()
+    tools = [all_tools[tool].tool for tool in all_tools if all_tools[tool].name in tool_names]
+
+    return tools

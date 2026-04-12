@@ -8,6 +8,7 @@ from typing import (
     TypeVar,
     Callable,
     Optional,
+    Sequence,
     Awaitable,
 )
 from functools import wraps
@@ -291,7 +292,7 @@ class BaseIDModel(SQLModel):
     async def batch_insert_data(
         cls,
         session: AsyncSession,
-        datas: List["BaseIDModel"],
+        datas: Sequence["BaseIDModel"],
     ):
         session.add_all(datas)
 
@@ -300,7 +301,7 @@ class BaseIDModel(SQLModel):
     async def batch_insert_data_with_update(
         cls,
         session: AsyncSession,
-        datas: List["BaseIDModel"],
+        datas: Sequence["BaseIDModel"],
         update_key: List[str],
         index_elements: List[str],
     ):

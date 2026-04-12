@@ -7,5 +7,6 @@ AI 模块统计数据管理
 """
 
 from gsuid_core.ai_core.statistics.manager import StatisticsManager, statistics_manager
+from gsuid_core.ai_core.statistics.startup import init_ai_core_statistics
 
-__all__ = ["StatisticsManager", "statistics_manager"]
+__all__ = ["StatisticsManager", "statistics_manager", "init_ai_core_statistics"]

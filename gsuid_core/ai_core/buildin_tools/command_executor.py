@@ -313,7 +313,7 @@ def _get_safe_environment() -> dict:
     return safe_env
 
 
-@ai_tools(buildin=True, check_func=check_pm)
+@ai_tools(check_func=check_pm)
 async def execute_shell_command(
     ctx: RunContext[ToolContext],
     command: str,

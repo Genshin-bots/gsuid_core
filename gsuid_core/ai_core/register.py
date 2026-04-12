@@ -45,8 +45,8 @@ def _get_plugin_name_from_module(module_path: str) -> str:
 
 
 # --- 全局注册表和客户端 ---
-_TOOL_REGISTRY: Dict[str, ToolBase] = {}  # 工具注册表，包含工具对象和元数据
-_BUILDIN_TOOLS_REGISTRY: Dict[str, ToolBase] = {}  # 内置AI工具注册表，包含工具对象和元数据
+# 工具注册表: Dict[分类名, Dict[工具名, ToolBase]]
+_TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
 _ENTITIES: List[Union[KnowledgePoint, KnowledgeBase, ImageEntity]] = []  # 来自插件注册的知识和图片
 _MANUAL_ENTITIES: List[ManualKnowledgeBase] = []  # 手动添加的知识，不会自动同步
 _IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片
@@ -65,8 +65,8 @@ def ai_tools(
     func: None = None,
     /,
     *,
+    category: str = "default",
     check_func: Optional[CheckFunc] = None,
-    buildin: bool = False,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 
@@ -75,19 +75,19 @@ def ai_tools(
     func: Optional[Callable] = None,
     /,
     *,
+    category: str = "default",
     check_func: Optional[CheckFunc] = None,
-    buildin: bool = False,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
-    用法: @ai_tools 或 @ai_tools(check_func=my_check) 或 @ai_tools(buildin=True)
+    用法: @ai_tools 或 @ai_tools(check_func=my_check) 或 @ai_tools(category="buildin")
     自动从被装饰函数的 __name__ 和 __doc__ 获取工具信息。
     支持智能推断原函数参数，自动注入上下文，并对 PydanticAI 提供完美兼容的 Schema 签名。
 
     Args:
         func: 被装饰的函数
+        category: 工具分类名称，默认 "default"。用于将工具放入不同的分类字典中
         check_func: 可选的权限校验函数
-        buildin: 是否注册为内置工具，默认False。True时注册到 _BUILDIN_TOOLS_REGISTRY
         **check_kwargs: 传递给 check_func 的额外参数
     """
 
@@ -205,21 +205,19 @@ def ai_tools(
         # 获取插件名称
         plugin_name = _get_plugin_name_from_module(fn.__module__)
 
-        logger.info(
-            f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (插件: {plugin_name}, 内置: {buildin})"
-        )
+        logger.info(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {category})")
 
-        # 根据 buildin 参数决定注册到哪个注册表
         tool_base = ToolBase(
             name=fn.__name__,
             description=(fn.__doc__ or "").strip(),
             plugin=plugin_name,
             tool=tool_obj,
         )
-        if buildin:
-            _BUILDIN_TOOLS_REGISTRY[fn.__name__] = tool_base
-        else:
-            _TOOL_REGISTRY[fn.__name__] = tool_base
+
+        # 根据 category 分类注册工具
+        if category not in _TOOL_REGISTRY:
+            _TOOL_REGISTRY[category] = {}
+        _TOOL_REGISTRY[category][fn.__name__] = tool_base
 
         return cast(F, wrapped_tool)
 
@@ -228,14 +226,17 @@ def ai_tools(
     return cast(F, decorator(cast(F, func)))
 
 
-def get_registered_tools() -> Dict[str, ToolBase]:
-    """获取所有已注册的工具"""
+def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]:
+    """获取所有已注册的工具（按分类）"""
     return _TOOL_REGISTRY
 
 
-def get_buildin_tools() -> Dict[str, ToolBase]:
-    """获取所有已注册的内置工具"""
-    return _BUILDIN_TOOLS_REGISTRY
+def get_all_tools() -> Dict[str, ToolBase]:
+    """获取所有已注册的工具（平铺结构）"""
+    result = {}
+    for category_tools in _TOOL_REGISTRY.values():
+        result.update(category_tools)
+    return result
 
 
 def ai_alias(name: str, alias: Union[str, List[str]]):

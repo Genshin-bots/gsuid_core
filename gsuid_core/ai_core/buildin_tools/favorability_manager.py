@@ -14,7 +14,7 @@ from gsuid_core.ai_core.database import UserFavorability
 from gsuid_core.ai_core.register import ai_tools
 
 
-@ai_tools()
+@ai_tools(category="buildin")
 async def update_user_favorability(
     ctx: RunContext[ToolContext],
     delta: int,
@@ -65,7 +65,7 @@ async def update_user_favorability(
         return f"操作失败：{str(e)}"
 
 
-@ai_tools()
+@ai_tools(category="buildin")
 async def set_user_favorability(
     ctx: RunContext[ToolContext],
     value: int,

@@ -7,6 +7,7 @@ import time
 import asyncio
 from typing import TYPE_CHECKING, Any, List, Union, Optional, Sequence
 
+import httpx
 from pydantic_ai import Agent
 from pydantic_graph import End
 from pydantic_ai.usage import UsageLimits
@@ -25,10 +26,10 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
-from gsuid_core.ai_core.register import _TOOL_REGISTRY, _BUILDIN_TOOLS_REGISTRY
+from gsuid_core.ai_core.register import _TOOL_REGISTRY
 from gsuid_core.ai_core.ai_config import ai_config, openai_config
 from gsuid_core.ai_core.rag.tools import search_tools
-from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 
 if TYPE_CHECKING:
     ToolList = List["Tool[ToolContext]"]
@@ -36,21 +37,19 @@ else:
     ToolList = List[Any]
 
 
-def get_tools(tool_names: Optional[List[str]] = None) -> ToolList:
-    """根据工具名称列表获取工具对象
+def get_main_agent_tools() -> ToolList:
+    """获取主Agent专用的工具列表
 
-    Args:
-        tool_names: 工具名称列表，如果为None则返回空列表
+    主Agent只使用buildin分类下的核心工具，其他复杂工具需要通过create_subagent调用。
 
     Returns:
-        ToolList: 工具对象列表，用于传递给 pydantic_ai Agent
+        ToolList: 主Agent工具对象列表
     """
-    if not tool_names:
-        return []
-
-    plugin_tools = [_TOOL_REGISTRY[name].tool for name in tool_names if name in _TOOL_REGISTRY]
-    buildin_tools = [_BUILDIN_TOOLS_REGISTRY[n].tool for n in _BUILDIN_TOOLS_REGISTRY]
-    return buildin_tools + plugin_tools
+    # 主Agent只使用buildin分类下的工具
+    buildin_tools = []
+    if "buildin" in _TOOL_REGISTRY:
+        buildin_tools = [_TOOL_REGISTRY["buildin"][n].tool for n in _TOOL_REGISTRY["buildin"]]
+    return buildin_tools
 
 
 class GsCoreAIAgent:
@@ -103,10 +102,13 @@ class GsCoreAIAgent:
         bot: Optional[Bot] = None,
         ev: Optional[Event] = None,
         rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
     ) -> str:
         """
         实际执行 Agent 运行的内部方法
         """
+        from gsuid_core.ai_core.statistics import statistics_manager
+
         multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
         limits = UsageLimits(request_limit=multi_agent_lenth)
 
@@ -123,15 +125,26 @@ class GsCoreAIAgent:
             elif isinstance(final_user_message, list):
                 final_user_message = list(final_user_message)
                 final_user_message.append(f"\n\n{rag_context}")
-            logger.info("🧠[GsCoreAIAgent] 2. 已添加 RAG 上下文")
+            logger.info("🧠[GsCoreAIAgent] 已添加 RAG 上下文")
 
-        tool_names = await search_tools(str(user_message), limit=7)
-        tools = get_tools(tool_names)
+        if not tools:
+            tools = get_main_agent_tools()
+            if isinstance(user_message, str):
+                logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {user_message}")
+                tools += await search_tools(query=user_message, limit=3)
+            elif ev is not None:
+                logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {ev.raw_text}")
+                tools += await search_tools(query=ev.raw_text, limit=3)
 
-        logger.debug(f"🧠 [GsCoreAIAgent] 本轮命令获取工具数量: {len(tools)}")
-        logger.debug(f"🧠 [GsCoreAIAgent] 本轮命令获取工具: {tool_names}")
+            logger.debug(f"🧠 [GsCoreAIAgent] 主Agent工具数量: {len(tools)}")
+        else:
+            logger.debug(f"🧠 [GsCoreAIAgent] 传入Tools列表: {len(tools)}，已传入参数")
+
+        logger.debug(f"🧠 [GsCoreAIAgent] 工具列表: {[tool.name for tool in tools]}")
 
         now_text = ""
+
+        tools = list({obj.name: obj for obj in tools}.values())
 
         _agent: Agent[ToolContext, str] = Agent(
             model=OpenAIChatModel(
@@ -250,6 +263,23 @@ class GsCoreAIAgent:
             statistics_manager.record_error(error_type="usage_limit")
             return error_msg
 
+        except httpx.TimeoutException as e:
+            # HTTP 请求超时
+            logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 请求超时 {e}")
+            statistics_manager.record_error(error_type="timeout")
+            return "执行出错: 请求超时"
+
+        except httpx.HTTPError as e:
+            # 其他 HTTP 错误（网络相关）
+            error_str = str(e).lower()
+            if "rate" in error_str or "429" in error_str or "limit" in error_str:
+                logger.warning(f"🧠 [PydanticAI] Agent 运行异常: Rate Limit {e}")
+                statistics_manager.record_error(error_type="rate_limit")
+            else:
+                logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 网络错误 {e}")
+                statistics_manager.record_error(error_type="network_error")
+            return f"执行出错: {str(e)}"
+
         except Exception as e:
             logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
             logger.exception("🧠 [PydanticAI] 异常详情:")
@@ -262,6 +292,7 @@ class GsCoreAIAgent:
         bot: Optional[Bot] = None,
         ev: Optional[Event] = None,
         rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
     ) -> str:
         """
         运行 Agent 并返回结果
@@ -279,6 +310,7 @@ class GsCoreAIAgent:
                 bot=bot,
                 ev=ev,
                 rag_context=rag_context,
+                tools=tools,
             )
             logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
             return result
@@ -311,3 +343,20 @@ def create_agent(
         system_prompt=system_prompt,
         persona_name=persona_name,
     )
+
+
+async def build_new_persona(query: str) -> str:
+    """
+    构建新的角色提示词
+
+    使用角色构建模板和用户查询，生成新的角色提示词。
+
+    Args:
+        query: 用户查询，描述新角色的特征和能力
+
+    Returns:
+        新角色的提示词字符串
+    """
+    agent = create_agent(system_prompt=CHARACTER_BUILDING_TEMPLATE)
+    response = await agent.run(query)
+    return response.strip()

@@ -3421,7 +3421,9 @@ GET /api/ai/statistics/summary
             "timeout": 2,
             "rate_limit": 1,
             "network_error": 0,
-            "total": 3
+            "usage_limit": 0,
+            "agent_error": 1,
+            "total": 4
         },
         "heartbeat": {
             "should_speak_true": 45,
@@ -3431,7 +3433,8 @@ GET /api/ai/statistics/summary
         "trigger_distribution": {
             "mention": {"count": 150, "percentage": 50.0},
             "keyword": {"count": 100, "percentage": 33.3},
-            "heartbeat": {"count": 50, "percentage": 16.7}
+            "heartbeat": {"count": 50, "percentage": 16.7},
+            "scheduled": {"count": 20, "percentage": 6.7}
         },
         "rag": {
             "hit_count": 80,
@@ -3578,7 +3581,9 @@ GET /api/ai/statistics/errors
         "timeout": 2,
         "rate_limit": 1,
         "network_error": 0,
-        "total": 3
+        "usage_limit": 0,
+        "agent_error": 1,
+        "total": 4
     }
 }
 ```

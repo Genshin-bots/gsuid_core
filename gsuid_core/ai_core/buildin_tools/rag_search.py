@@ -14,7 +14,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 
 
-@ai_tools(buildin=True)
+@ai_tools(category="buildin")
 async def search_knowledge(
     ctx: RunContext[ToolContext],
     query: str,
@@ -64,7 +64,7 @@ async def search_knowledge(
     return str(knowledge_list)
 
 
-@ai_tools(buildin=True)
+@ai_tools(category="buildin")
 async def search_image(
     ctx: RunContext[ToolContext],
     query: str,

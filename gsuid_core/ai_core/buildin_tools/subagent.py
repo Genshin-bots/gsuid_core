@@ -12,10 +12,11 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.gs_agent import create_agent
 from gsuid_core.ai_core.register import ai_tools
+from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.system_prompt import get_best_match
 
 
-@ai_tools(buildin=True)
+@ai_tools(category="buildin")
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
@@ -58,6 +59,9 @@ async def create_subagent(
     if not matched_prompt:
         return "⚠️ 没有找到匹配的系统提示词，请尝试不同的任务描述或标签。"
 
+    # 搜索工具
+    tools = await search_tools(query=task, limit=5)
+
     logger.info(f"🧠 [Subagent] 匹配到System Prompt: {matched_prompt.get('title', 'unknown')}")
 
     # 构建系统提示词
@@ -79,6 +83,7 @@ async def create_subagent(
             user_message=task,
             bot=ctx.deps.bot,
             ev=ctx.deps.ev,
+            tools=tools,
         )
 
         logger.info(f"🧠 [Subagent] 子Agent执行完成，结果长度: {len(result)}")

@@ -39,8 +39,12 @@ bot_name_list = (bot_name, *bot_name_alias)
 enable_ai: bool = ai_config.get_config("enable").data
 ai_mode: List[str] = ai_config.get_config("ai_mode").data
 
-# 输入安全配置
-MAX_TEXT_LENGTH = 4000  # 单条消息最大文本长度，超过则截断
+# 输入安全配置（已弃用，截断逻辑移除，改为智能摘要）
+# MAX_TEXT_LENGTH = 4000  # 单条消息最大文本长度
+
+# AI并发控制配置
+MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
+_ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
 
 ai_black_list: List[str] = ai_config.get_config("black_list").data
 ai_white_list: List[str] = ai_config.get_config("white_list").data
@@ -334,7 +338,6 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if "提及应答" in ai_mode:
             # 检查是否应该响应：@机器人 或者 包含关键词
             should_respond = event.is_tome
-            trigger_type = "mention"
             if not should_respond and keywords:
                 # 检查消息内容是否包含关键词
                 msg_text = getattr(event, "raw_text", "") or ""
@@ -342,14 +345,12 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 if should_respond:
                     trigger_type = "keyword"
 
-            # 记录触发方式统计
-            try:
-                statistics_manager.record_trigger(trigger_type=trigger_type)
-            except Exception:
-                pass
-
             if not should_respond:
                 return
+
+            # 记录触发方式统计
+            trigger_type = "mention"
+            statistics_manager.record_trigger(trigger_type=trigger_type)
 
             # 将AI处理逻辑放入队列异步执行，避免阻塞
             task_ctx = TaskContext(
@@ -401,16 +402,6 @@ async def msg_process(msg: MessageReceive) -> Event:
             if not _msg.data:
                 continue
             text_part = str(_msg.data).strip()
-            # 输入截断：防止单条消息过大导致 Token 爆炸
-            if len(event.raw_text) + len(text_part) > MAX_TEXT_LENGTH:
-                remaining = MAX_TEXT_LENGTH - len(event.raw_text)
-                if remaining > 0:
-                    text_part = text_part[:remaining]
-                    event.raw_text += text_part
-                    event.text += text_part
-                    logger.warning(f"[GsCore][输入截断] 消息已截断至 {MAX_TEXT_LENGTH} 字符")
-                # 超出部分直接丢弃
-                continue
             event.raw_text += text_part  # type:ignore
             event.text += text_part  # type:ignore
             # 如果用户说的话以bot的名字开头，认为这是在说话给bot听的

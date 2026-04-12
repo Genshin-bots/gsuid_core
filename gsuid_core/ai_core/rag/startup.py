@@ -1,6 +1,9 @@
 """RAG模块初始化"""
 
+from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start
+from gsuid_core.ai_core.register import get_all_tools
+from gsuid_core.ai_core.rag.tools import sync_tools
 
 from .base import init_embedding_model
 
@@ -18,8 +21,11 @@ async def init_all():
     await init_knowledge_collection()
     await init_image_collection()
 
+    all_tools = get_all_tools()
+    await sync_tools(all_tools)
+    logger.info(f"🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {len(all_tools)}")
+
     # 3. 初始化System Prompt集合
-    from gsuid_core.logger import logger
     from gsuid_core.ai_core.system_prompt import (
         get_all_prompts,
         init_default_prompts,
@@ -36,12 +42,7 @@ async def init_all():
     if all_prompts:
         await sync_to_vector_store(all_prompts)  # type: ignore
 
-    from gsuid_core.ai_core.register import _TOOL_REGISTRY
+    from . import sync_images, sync_knowledge
 
-    logger.info(f"🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {len(_TOOL_REGISTRY)}")
-
-    from . import sync_tools, sync_images, sync_knowledge
-
-    await sync_tools(_TOOL_REGISTRY)
     await sync_knowledge()
     await sync_images()

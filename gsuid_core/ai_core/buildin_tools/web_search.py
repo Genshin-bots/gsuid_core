@@ -11,7 +11,7 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.web_search import tavily_search
 
 
-@ai_tools()
+@ai_tools(category="buildin")
 async def web_search(
     ctx: RunContext[ToolContext],
     query: str,
