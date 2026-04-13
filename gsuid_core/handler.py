@@ -87,7 +87,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if show_receive:
         logger.info("[收到事件]", event_payload=event)
 
-    # 记录用户消息到历史记录（仅记录有实际内容的消息）
+    # 记录用户消息到历史记录
     if event.raw_text and event.raw_text.strip():
         # 获取用户昵称
         user_name = None

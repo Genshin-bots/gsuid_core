@@ -347,7 +347,7 @@ class Bot:
             self.temp_gid = self.uid
 
         self.bid = ev.bot_id if ev.bot_id else "0"
-        self.session_id = f"{self.bid}{self.temp_gid}{self.uid}"
+        self.session_id = f"{self.bid}%%%{self.temp_gid}%%%{self.uid}"
 
         self.bot = bot
         self.ev = ev
