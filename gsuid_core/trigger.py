@@ -1,12 +1,12 @@
 import re
 from typing import Any, Literal, Callable, Awaitable
 
+import jieba
 
 from gsuid_core.bot import Bot
-from gsuid_core.models import Event
 from gsuid_core.logger import logger
+from gsuid_core.models import Event
 
-import jieba
 
 class Trigger:
     def __init__(
@@ -49,7 +49,7 @@ class Trigger:
     def _check_fuzzy(self, keyword: str, msg: str) -> bool:
         if not msg.startswith(self.prefix):
             return False
-        new_msg = msg.replace(self.prefix, '', 1)
+        new_msg = msg.replace(self.prefix, "", 1)
         msg_set = set(jieba.cut(new_msg))
         if msg_set.__contains__(keyword):
             logger.info(f"_check_fuzzy: msg:{msg} keyword:{keyword} msg_set:{msg_set}")
