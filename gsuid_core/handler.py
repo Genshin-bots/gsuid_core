@@ -231,8 +231,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         [fuzzy_event_list.append(trigger) if info["fuzzy_match"] else None for trigger, info in sorted_event]
         normal_event_list = []
         [normal_event_list.append(trigger) if info["normal_match"] else None for trigger, info in sorted_event]
-        logger.trace(f"normal_event_list:{[f"{trigger.prefix + trigger.keyword}\n" for trigger in normal_event_list]}")
-        logger.trace(f"fuzzy_event_list:{[f"{trigger.prefix + trigger.keyword}\n" for trigger in fuzzy_event_list]}")
+        logger.trace(f"normal_event_list:{[f'{trigger.prefix + trigger.keyword}\n' for trigger in normal_event_list]}")
+        logger.trace(f"fuzzy_event_list:{[f'{trigger.prefix + trigger.keyword}\n' for trigger in fuzzy_event_list]}")
         if len(normal_event_list) == 0:
             _event = deepcopy(event)
             bot = Bot(ws, _event)
