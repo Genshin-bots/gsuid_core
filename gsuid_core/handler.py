@@ -238,7 +238,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if len(normal_event_list) == 0:
             _event = deepcopy(event)
             bot = Bot(ws, _event)
-            await bot.send("找不到相关命令\n你是否在找如下命令:\n{}".format(normal_cmd_lines))
+            if len(fuzzy_event_list) > 0:
+                await bot.send("找不到相关命令\n你是否在找如下命令:\n{}".format(fuzzy_cmd_lines))
             return
         else:
             sorted_event = normal_event_list
