@@ -231,13 +231,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         [fuzzy_event_list.append(trigger) if info["fuzzy_match"] else None for trigger, info in sorted_event]
         normal_event_list = []
         [normal_event_list.append(trigger) if info["normal_match"] else None for trigger, info in sorted_event]
-        logger.trace(f"normal_event_list:{[f'{trigger.prefix + trigger.keyword}' + "\n" for trigger in normal_event_list]}")
-        logger.trace(f"fuzzy_event_list:{[f'{trigger.prefix + trigger.keyword}' + "\n" for trigger in fuzzy_event_list]}")
+        normal_cmd_lines = "\n".join([f"{trigger.prefix + trigger.keyword}" for trigger in normal_event_list])
+        fuzzy_cmd_lines = "\n".join([f"{trigger.prefix + trigger.keyword}" for trigger in fuzzy_event_list])
+        logger.trace(f"normal_cmd_lines:{normal_cmd_lines}")
+        logger.trace(f"fuzzy_cmd_lines:{fuzzy_cmd_lines}")
         if len(normal_event_list) == 0:
             _event = deepcopy(event)
             bot = Bot(ws, _event)
-            command_name_lines = "\n".join([f"{trigger.prefix + trigger.keyword}" for trigger in fuzzy_event_list])
-            await bot.send("找不到相关命令\n你是否在找如下命令:\n{}".format(command_name_lines))
+            await bot.send("找不到相关命令\n你是否在找如下命令:\n{}".format(normal_cmd_lines))
             return
         else:
             sorted_event = normal_event_list
