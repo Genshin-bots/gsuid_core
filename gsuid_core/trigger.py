@@ -114,5 +114,4 @@ class Trigger:
                 msg.command = "|".join([i if i is not None else "" for i in list(msg.regex_group)])
             text_list = re.split(self.keyword, msg.raw_text)
             msg.text = "|".join([i if i is not None else "" for i in text_list])
-        logger.error("get_command:", msg)
         return msg
