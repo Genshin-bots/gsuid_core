@@ -1,9 +1,12 @@
 import re
 from typing import Any, Literal, Callable, Awaitable
 
+
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
+from gsuid_core.logger import logger
 
+import jieba
 
 class Trigger:
     def __init__(
@@ -31,16 +34,27 @@ class Trigger:
         self.block = block
         self.to_me = to_me
 
-    def check_command(self, ev: Event) -> bool:
+    def check_command(self, ev: Event) -> [bool, bool]:
         msg = ev.raw_text
         if self.to_me:
             if ev.is_tome:
                 pass
             else:
-                return False
+                return False, False
+        fuzzy_match = self._check_fuzzy(self.keyword, msg)
         if self.type == "file":
-            return self._check_file(self.keyword, ev)
-        return getattr(self, f"_check_{self.type}")(self.keyword, msg)
+            return self._check_file(self.keyword, ev), fuzzy_match
+        return getattr(self, f"_check_{self.type}")(self.keyword, msg), fuzzy_match
+
+    def _check_fuzzy(self, keyword: str, msg: str) -> bool:
+        if not msg.startswith(self.prefix):
+            return False
+        new_msg = msg.replace(self.prefix, '', 1)
+        msg_set = set(jieba.cut(new_msg))
+        if msg_set.__contains__(keyword):
+            logger.info(f"_check_fuzzy: msg:{msg} keyword:{keyword} msg_set:{msg_set}")
+            return True
+        return False
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
         if msg.startswith(self.prefix + prefix) and not self._check_fullmatch(prefix, msg):
@@ -100,4 +114,5 @@ class Trigger:
                 msg.command = "|".join([i if i is not None else "" for i in list(msg.regex_group)])
             text_list = re.split(self.keyword, msg.raw_text)
             msg.text = "|".join([i if i is not None else "" for i in text_list])
+        logger.error("get_command:", msg)
         return msg
