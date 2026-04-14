@@ -25,6 +25,8 @@ Scheduled Task 模块
 注意：add_scheduled_task 工具位于 buildin_tools/scheduler.py
 """
 
+# 导入启动模块以注册 on_core_start 和 on_core_shutdown 回调
+from gsuid_core.ai_core.scheduled_task import startup
 from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
 from gsuid_core.ai_core.scheduled_task.executor import (
     reload_pending_tasks,
@@ -35,4 +37,5 @@ __all__ = [
     "AIScheduledTask",
     "execute_scheduled_task",
     "reload_pending_tasks",
+    "startup",
 ]

@@ -25,6 +25,7 @@ from gsuid_core.webconsole import (
     ai_statistics_api,
     system_prompt_api,
     knowledge_base_api,
+    ai_scheduled_task_api,
 )
 
 # 导出 mount_app 中的常用对象
@@ -57,6 +58,7 @@ __all__ = [
     "persona_api",
     "knowledge_base_api",
     "system_prompt_api",
+    "ai_scheduled_task_api",
     "history_api",
     "PageSchema",
     "GsAdminModel",

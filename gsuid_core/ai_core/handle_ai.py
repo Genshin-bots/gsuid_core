@@ -32,7 +32,7 @@ history_manager = get_history_manager()
 
 # 双层长度防护配置
 ABSOLUTE_MAX_LENGTH = 14000  # 绝对上限：超过此长度直接截断，防止子Agent Token爆炸
-MAX_SUMMARY_LENGTH = 4000  # 摘要阈值：超过此长度调用子Agent进行智能摘要
+MAX_SUMMARY_LENGTH = 8000  # 摘要阈值：超过此长度调用子Agent进行智能摘要（调整至8000避免短文本被过度摘要）
 
 
 async def handle_ai_chat(bot: Bot, event: Event):

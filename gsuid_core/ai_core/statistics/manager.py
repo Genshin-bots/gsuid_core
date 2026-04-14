@@ -369,7 +369,41 @@ class StatisticsManager:
             stats = await AIDailyStatistics.get_daily_stats(date)
             if not stats:
                 return None
-            return self._daily_stats_to_dict(stats, hit_count, miss_count, hit_rate)
+
+            # 获取按模型分组的 Token 消耗数据
+            token_by_model_data = await AITokenUsageByModel.get_daily_data(date)
+            by_model = [
+                {
+                    "model": t.model_name,
+                    "input_tokens": t.input_tokens,
+                    "output_tokens": t.output_tokens,
+                }
+                for t in token_by_model_data
+            ]
+
+            # 获取活跃用户数据
+            activity_data = await AIGroupUserActivityStats.get_daily_data(date)
+            active_users = [
+                {
+                    "group_id": a.group_id,
+                    "user_id": a.user_id,
+                    "ai_interaction": a.ai_interaction_count,
+                    "message_count": a.message_count,
+                }
+                for a in activity_data
+            ]
+
+            # 获取 Heartbeat 数据
+            heartbeat_data = await AIHeartbeatMetrics.get_daily_data(date)
+            hb_true = sum(h.should_speak_count or 0 for h in heartbeat_data)
+            hb_false = sum(h.should_not_speak_count or 0 for h in heartbeat_data)
+            heartbeat = {
+                "should_speak_true": hb_true,
+                "should_speak_false": hb_false,
+                "conversion_rate": hb_true / (hb_true + hb_false) * 100 if (hb_true + hb_false) > 0 else 0,
+            }
+
+            return self._daily_stats_to_dict(stats, hit_count, miss_count, hit_rate, by_model, active_users, heartbeat)
         except Exception as e:
             logger.warning(f"📊 [StatisticsManager] 查询历史统计失败: {e}")
             return None
@@ -380,6 +414,9 @@ class StatisticsManager:
         rag_hit: int = 0,
         rag_miss: int = 0,
         rag_hit_rate: float = 0.0,
+        by_model: Optional[List[Dict[str, Any]]] = None,
+        active_users: Optional[List[Dict[str, Any]]] = None,
+        heartbeat: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """将 AIDailyStatistics 转换为字典格式"""
         t_intent = (stats.intent_chat_count or 0) + (stats.intent_tool_count or 0) + (stats.intent_qa_count or 0) or 1
@@ -388,7 +425,7 @@ class StatisticsManager:
             "token_usage": {
                 "total_input_tokens": stats.total_input_tokens or 0,
                 "total_output_tokens": stats.total_output_tokens or 0,
-                "by_model": [],
+                "by_model": by_model or [],
             },
             "latency": {"avg": stats.avg_latency or 0.0, "p95": stats.p95_latency or 0.0},
             "intent_distribution": {
@@ -424,7 +461,8 @@ class StatisticsManager:
                 "scheduled": stats.trigger_scheduled_count or 0,
             },
             "rag": {"hit_count": rag_hit, "miss_count": rag_miss, "hit_rate": rag_hit_rate},
-            "active_users": [],
+            "heartbeat": heartbeat or {"should_speak_true": 0, "should_speak_false": 0, "conversion_rate": 0},
+            "active_users": active_users or [],
         }
 
 

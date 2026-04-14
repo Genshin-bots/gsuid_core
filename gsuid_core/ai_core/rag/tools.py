@@ -1,19 +1,26 @@
 """工具向量存储 - 管理工具的入库和检索"""
 
-from typing import Set, Dict, List
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Union
 
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.models import ToolBase
-from gsuid_core.ai_core.register import get_all_tools
+from gsuid_core.ai_core.models import ToolBase, ToolContext
+from gsuid_core.ai_core.register import get_all_tools, get_registered_tools
 
+if TYPE_CHECKING:
+    from pydantic_ai.tools import Tool
 from .base import (
     DIMENSION,
     TOOLS_COLLECTION_NAME,
     get_point_id,
     calculate_hash,
 )
+
+if TYPE_CHECKING:
+    ToolList = List["Tool[ToolContext]"]
+else:
+    ToolList = List[Any]
 
 
 async def init_tools_collection():
@@ -123,12 +130,30 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
     logger.info("🧠 [Tools] 工具同步完成\n")
 
 
-async def search_tools(query: str, limit: int = 5) -> list:
+def get_main_agent_tools() -> ToolList:
+    all_tools_cag = get_registered_tools()
+    all_tools = {}
+    for cat in ["self", "buildin"]:
+        all_tools.update(all_tools_cag[cat])
+
+    return [all_tools[tool].tool for tool in all_tools]
+
+
+async def search_tools(
+    query: str,
+    limit: int = 5,
+    category: Union[str, list[str]] = "all",
+    non_category: Union[str, list[str]] = "",
+) -> ToolList:
     """根据自然语言意图检索关联工具
+
+    category 和 non_category 不会同时生效, 且 non_category 优先级比 category 高
 
     Args:
         query: 用户查询的自然语言描述
         limit: 返回结果数量限制
+        category: 工具分类名称，可选值："buildin"、"default"、"common"、"all"，默认为"all", 也可传入列表
+        non_category: 将不会在这个分类中找工具, 优先级比category高，可选值："self"、"buildin"、"common"，默认为空
 
     Returns:
         匹配的工具列表
@@ -143,21 +168,40 @@ async def search_tools(query: str, limit: int = 5) -> list:
 
     logger.info(f"🧠 [Tools] 正在查询: {query}")
     query_vec = list(embedding_model.embed([query]))[0]
-
     response = await client.query_points(
         collection_name=TOOLS_COLLECTION_NAME,
         query=list(query_vec),
         limit=limit,
     )
     tool_names: List[str] = []
-
     for point in response.points:
         if point.payload and point.payload.get("name"):
             name = point.payload.get("name")
             if name:
                 tool_names.append(name)
 
-    all_tools = get_all_tools()
+    if category == "all":
+        all_tools = get_all_tools()
+        tools = [all_tools[tool].tool for tool in all_tools if all_tools[tool].name in tool_names]
+    else:
+        all_tools_cag = get_registered_tools()
+        if isinstance(category, str):
+            category = [category]
+
+        all_tools = {}
+        if non_category:
+            if isinstance(non_category, str):
+                non_category = [non_category]
+            for cat in non_category:
+                if cat in all_tools_cag:
+                    continue
+                all_tools.update(all_tools_cag[cat])
+        else:
+            for cat in category:
+                if cat not in all_tools_cag:
+                    continue
+                all_tools.update(all_tools_cag[cat])
+
     tools = [all_tools[tool].tool for tool in all_tools if all_tools[tool].name in tool_names]
 
     return tools

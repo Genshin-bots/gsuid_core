@@ -15,13 +15,17 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.system_prompt import get_best_match
 
+# 子Agent最大迭代次数上限，防止死循环
+_SUBAGENT_MAX_ITERATIONS = 3
 
-@ai_tools(category="buildin")
+
+@ai_tools(category="self")
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
     tags: Optional[str] = None,
     max_tokens: int = 1800,
+    max_iterations: int = _SUBAGENT_MAX_ITERATIONS,
 ) -> str:
     """
     创建子Agent完成特定任务
@@ -37,6 +41,7 @@ async def create_subagent(
         task: 要完成的任务描述，请详细描述任务需求
         tags: 可选，限定System Prompt的标签，如"代码专家"、"角色扮演"等
         max_tokens: 子Agent最大输出token数，默认1800
+        max_iterations: 子Agent最大迭代次数（工具调用轮数），默认3次，防止死循环
 
     Returns:
         子Agent的执行结果
@@ -60,7 +65,7 @@ async def create_subagent(
         return "⚠️ 没有找到匹配的系统提示词，请尝试不同的任务描述或标签。"
 
     # 搜索工具
-    tools = await search_tools(query=task, limit=5)
+    tools = await search_tools(query=task, limit=5, non_category="self")
 
     logger.info(f"🧠 [Subagent] 匹配到System Prompt: {matched_prompt.get('title', 'unknown')}")
 
@@ -69,11 +74,12 @@ async def create_subagent(
     if not system_prompt:
         return "⚠️ 匹配的系统提示词内容为空。"
 
-    # 创建子Agent
-    agent = create_agent(system_prompt=system_prompt)
-
-    # 设置max_tokens
-    agent.max_tokens = max_tokens
+    # 创建子Agent，传递 max_iterations 限制防止死循环
+    agent = create_agent(
+        system_prompt=system_prompt,
+        max_tokens=max_tokens,
+        max_iterations=max_iterations,
+    )
 
     try:
         # 运行子Agent

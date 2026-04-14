@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from gsuid_core.bot import Bot
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="self")
 async def query_user_favorability(
     ctx: RunContext[ToolContext],
     user_id: Optional[str] = None,

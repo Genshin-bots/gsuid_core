@@ -292,9 +292,10 @@ class PersonaConfigManager:
             Persona 名称，如果没有匹配的则返回 None
         """
         group_id: Optional[str] = None
+        user_id: Optional[str] = None
         is_private_chat = False
 
-        # 解析 session_id 获取 group_id
+        # 解析 session_id 获取 group_id 或 user_id
         # 格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
         if session_id.startswith("bot:"):
             parts = session_id.split(":", 3)
@@ -302,6 +303,7 @@ class PersonaConfigManager:
                 if parts[2] == "group":
                     group_id = parts[3]
                 elif parts[2] == "private":
+                    user_id = parts[3]
                     is_private_chat = True
         else:
             # 无法解析格式
@@ -313,9 +315,12 @@ class PersonaConfigManager:
             scope = config.get_config("scope").data
             target_groups = config.get_config("target_groups").data
 
-            # 检查是否专门针对该群聊
-            if scope == "specific" and group_id and group_id in target_groups:
-                return persona_name
+            # 检查是否专门针对该群聊或用户
+            if scope == "specific":
+                if group_id and group_id in target_groups:
+                    return persona_name
+                if user_id and user_id in target_groups:
+                    return persona_name
 
             # 记录全局启用的 persona
             if scope == "global":

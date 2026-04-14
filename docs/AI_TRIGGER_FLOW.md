@@ -15,12 +15,21 @@
 7. [Scheduled Task 定时任务系统](#7-scheduled-task-定时任务系统)
    - [7.1 概述](#71-概述)
    - [7.2 模块结构](#72-模块结构)
-   - [7.3 核心组件](#73-核心组件)
-   - [7.4 架构设计](#74-架构设计)
-   - [7.5 使用流程](#75-使用流程)
-   - [7.6 触发方式统计](#76-触发方式统计)
-   - [7.7 重启恢复](#77-重启恢复)
-   - [7.8 启用方式](#78-启用方式)
+   - [7.3 任务类型](#73-任务类型)
+      - [7.3.1 一次性任务 (once)](#731-一次性任务-once)
+      - [7.3.2 循环任务 (interval)](#732-循环任务-interval)
+   - [7.4 核心组件](#74-核心组件)
+      - [7.4.1 数据库模型 - `AIScheduledTask`](#741-数据库模型---aischeduledtask)
+      - [7.4.2 工具函数 - `manage_scheduled_task`](#742-工具函数---manage_scheduled_task)
+      - [7.4.3 执行器 - `execute_scheduled_task`](#743-执行器---execute_scheduled_task)
+   - [7.5 安全限制](#75-安全限制)
+   - [7.6 架构设计](#76-架构设计)
+   - [7.7 使用流程](#77-使用流程)
+   - [7.8 任务状态机](#78-任务状态机)
+   - [7.9 重启恢复](#79-重启恢复)
+   - [7.10 触发方式统计](#710-触发方式统计)
+   - [7.11 启用方式](#711-启用方式)
+   - [7.12 WebConsole API](#712-webconsole-api)
 8. [WebConsole API 与配置热重载](#8-webconsole-api-与配置热重载)
 9. [AI Statistics 统计系统](#9-ai-statistics-统计系统)
 10. [完整流程图](#10-完整流程图)
@@ -268,9 +277,11 @@ if len(event.raw_text) > MAX_SUMMARY_LENGTH:
 
 | 层级 | 触发条件 | 处理方式 | 目的 |
 |------|---------|---------|------|
-| 第一层 | `> 10000` 字符 | 硬截断至 10000 字符 + 截断提示 | 防止子Agent Token爆炸、API超限 |
-| 第二层 | `> 2000` 字符 | 调用子Agent智能摘要 | 压缩长文本，保留关键信息 |
-| 无需处理 | `≤ 2000` 字符 | 直接传递给主Agent | 正常短消息处理 |
+| 第一层 | `> 14000` 字符 | 硬截断至 14000 字符 + 截断提示 | 防止子Agent Token爆炸、API超限 |
+| 第二层 | `> 8000` 字符 | 调用子Agent智能摘要 | 压缩长文本，保留关键信息 |
+| 无需处理 | `≤ 8000` 字符 | 直接传递给主Agent | 正常短消息处理 |
+
+> **说明**：第二层阈值从 2000 调整为 8000，因为现代 LLM 上下文窗口动辄 128K（约 10 万汉字），2000 字符对 LLM 来说毫无压力。对于代码、报错日志等长文本，摘要会丢失细节，应尽量避免自动摘要。
 
 **新增 System Prompt** (`system_prompt/defaults.py`):
 - ID: `default-text-summarizer`
@@ -655,8 +666,18 @@ async def cleanup_idle_sessions(self, idle_threshold: int = None):
 |------|------|------|
 | 滑动窗口 | `deque(maxlen=60)` | 每 Session 最多 60 条消息 |
 | AI 历史限制 | `MAX_AI_HISTORY_LENGTH=50` | AI 对话历史不超过 50 条 |
+| **字符数截断** | `MAX_HISTORY_CHARS=6000` | 历史记录超过 6000 字符时从后往前丢弃 |
 | 空闲清理 | `IDLE_THRESHOLD=86400` (1天) | 1天不活跃的 Session 自动清除 |
 | 定时清理 | `cleanup_interval=3600` (1小时) | 每小时检查一次空闲 Session |
+
+> **⚠️ 重要改进**：原版 `deque(maxlen=60)` 仅按消息条数截断，存在"隐形 Token 爆炸"风险。
+> 如果在群聊中，5 个人连续发了 10 篇 5000 字的长文，虽然只有 50 条消息（未触发限制），
+> 但合计 25 万字会瞬间突破主流 LLM 的 Token 上限或产生极其昂贵的费用。
+>
+> 现在 `format_history_for_agent()` 增加了**字符数滑动截断**机制：
+> - 从后往前统计历史记录的总字符数
+> - 超过 6000 字符阈值时，丢弃更早的历史
+> - 避免长文本堆叠导致的 Token 爆炸问题
 
 ### 5.4 Persona Prompt 热重载
 
@@ -777,50 +798,137 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 |------|------|--------|------|
 | `category` | `str` | `"default"` | 工具分类名称，用于分组管理 |
 
-#### 5.5.3 工具分类
+#### 5.5.3 工具分类与渐进式加载
 
-| 分类 | 说明 | 工具示例 |
-|------|------|----------|
-| `buildin` | 主Agent直接调用的核心工具 | `search_knowledge`, `create_subagent`, `send_message_by_ai` 等 |
-| `default` | 通过 `create_subagent` 调用的复杂工具 | `read_file_content`, `execute_file`, `list_directory` 等 |
+系统采用**渐进式加载**机制，工具按用途和重要性分为四个层级：
 
-#### 5.5.4 主Agent与子Agent架构
+| 分类 | 说明 | 加载方式 | 示例 |
+|------|------|----------|------|
+| `self` | 仅为自身服务的能力 | 主Agent专属，始终加载 | 好感度管理、发送消息、创建子Agent |
+| `buildin` | 默认内置工具 | 主Agent始终加载 | 知识库检索、Web搜索、查询记忆 |
+| `common` | 通常工具 | 按需加载，用户明确需要时 | 定时任务管理、获取自身信息 |
+| `default` | 子Agent工具 | 由子Agent使用 | 文件操作、日期获取、系统命令 |
+
+**加载优先级**: `self` > `buildin` > `common`
+
+#### 5.5.4 渐进式加载架构图
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      主Agent (Main Agent)                   │
-│                  system_prompt + buildin 工具                │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ create_subagent() 调用
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    子Agent (Sub Agent)                      │
-│              根据任务匹配 System Prompt + default 工具        │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ self 工具 (始终加载)                                  │   │
+│  │ - 好感度查询/更新                                    │   │
+│  │ - 发送消息                                          │   │
+│  │ - 创建子Agent                                       │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ buildin 工具 (始终加载)                              │   │
+│  │ - 知识库检索                                       │   │
+│  │ - Web搜索                                          │   │
+│  │ - 查询用户记忆                                      │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ common 工具 (按需加载)                                │   │
+│  │ - 定时任务管理 (add/list/query/modify/cancel...)    │   │
+│  │ - 获取自身Persona信息                                │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          │                                │
+│                          │ create_subagent() 调用         │
+│                          ▼                                │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                    子Agent (Sub Agent)                │   │
+│  │           default 工具 (由子Agent使用)                 │   │
+│  │ - get_current_date                                   │   │
+│  │ - read_file_content / write_file_content             │   │
+│  │ - execute_file / execute_shell_command               │   │
+│  │ - list_directory / diff_file_content               │   │
+│  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**主Agent工具** (`category="buildin"`):
-- `search_knowledge`: 检索知识库内容
-- `search_image`: 检索图片
-- `web_search`: Web搜索 (Tavily API)
-- `send_message_by_ai`: 发送消息给用户
-- `query_user_favorability`: 查询用户好感度
-- `query_user_memory`: 查询用户记忆条数
-- `update_user_favorability`: 更新好感度(增量)
-- `set_user_favorability`: 设置好感度(绝对值)
-- `get_self_persona_info`: 获取自身Persona信息
-- `execute_shell_command`: 执行系统命令 (需权限)
-- `create_subagent`: 创建子Agent
+#### 5.5.5 主Agent与子Agent的工具加载差异
 
-**子Agent工具** (`category="default"`):
-- `get_current_date`: 获取当前日期时间
-- `read_file_content`: 读取文件内容
-- `write_file_content`: 写入文件内容
-- `execute_file`: 执行脚本文件
-- `diff_file_content`: 对比两个文件
-- `list_directory`: 列出目录内容
+系统中的工具加载分为两个独立的上下文：
 
-#### 5.5.5 核心函数
+**主Agent (Main Agent)**
+- 使用 `get_main_agent_tools()` 获取基础工具集
+- 加载 `self` 和 `buildin` 分类的所有工具（始终加载）
+- 通过 `search_tools(non_category=["self", "buildin"])` 按需加载 `common` 分类工具
+- **不会调用 `default` 分类的工具**
+
+**子Agent (Sub Agent)**
+- 由 `create_subagent()` 创建
+- 使用 `search_tools(non_category="self")` 搜索工具
+- 加载 `buildin`、`common`、`default` 分类的工具
+- **不会调用 `self` 分类的工具**（如 `query_user_favorability`、`send_message_by_ai` 等）
+
+这种设计确保了工具调用的安全性：
+- `self` 工具仅限主Agent使用，防止子Agent直接操作用户数据
+- `default` 工具（如文件操作、系统命令）仅通过子Agent使用
+
+#### 5.5.6 Self 工具 (`category="self"`)
+
+主Agent专属工具，用于自身能力调用，始终加载。
+
+| 工具 | 说明 |
+|------|------|
+| `query_user_favorability` | 查询用户好感度 |
+| `update_user_favorability` | 更新用户好感度（增量） |
+| `send_message_by_ai` | 发送消息给用户 |
+| `create_subagent` | 创建子Agent |
+
+#### 5.5.7 主Agent内置工具 (`category="buildin"`)
+
+主Agent默认加载的核心工具，直接调用。
+
+| 工具 | 说明 |
+|------|------|
+| `search_knowledge` | 检索知识库内容 |
+| `web_search` | Web搜索 (Tavily API) |
+| `query_user_memory` | 查询用户记忆 |
+
+#### 5.5.8 通常工具 (`category="common"`)
+
+当用户明确需要相关功能时按需加载。
+
+| 工具 | 说明 |
+|------|------|
+| `get_self_persona_info` | 获取自身Persona信息 |
+| `add_once_task` | 添加一次性定时任务 |
+| `add_interval_task` | 添加循环任务 |
+| `list_scheduled_tasks` | 列出所有定时任务 |
+| `query_scheduled_task` | 查询任务详情 |
+| `modify_scheduled_task` | 修改任务 |
+| `cancel_scheduled_task` | 取消任务 |
+| `pause_scheduled_task` | 暂停任务 |
+| `resume_scheduled_task` | 恢复任务 |
+
+#### 5.5.9 子Agent工具 (`category="default"`)
+
+通过 `create_subagent` 调用，用于文件操作、代码执行等。
+
+| 工具 | 说明 |
+|------|------|
+| `get_current_date` | 获取当前日期时间 |
+| `read_file_content` | 读取文件内容 |
+| `write_file_content` | 写入文件内容 |
+| `execute_file` | 执行脚本文件 |
+| `diff_file_content` | 对比两个文件 |
+| `list_directory` | 列出目录内容 |
+| `execute_shell_command` | 执行系统命令 (需权限) |
+
+> **⚠️ 死循环防护**：
+> 子Agent 执行时可能有错误的命令导致报错，然后尝试修复导致无限循环。
+> 现在 `create_subagent` 实现了 `max_iterations=3` 的硬限制：
+> - 子Agent 最多执行 3 次工具调用
+> - 达到上限后强制终止并返回错误日志
+> - 防止 思考 -> 执行 -> 报错 -> 思考 的无限循环
+
+#### 5.5.10 核心函数
 
 ```python
 def get_tools(tool_names: List[str]) -> ToolList:
@@ -1121,10 +1229,15 @@ async def _get_bot_for_session(self, event: Event) -> Optional["_Bot"]:
 
 ### 7.1 概述
 
-Scheduled Task 模块提供定时 AI 任务能力，允许主 Agent 预约未来某个时间执行的复杂任务。当时间到达时，系统会加载当时的 persona 和 session，使用与主 Agent 一致的语气执行任务。
+Scheduled Task 模块提供定时/循环 AI 任务能力，允许主 Agent 预约未来某个时间执行的复杂任务，或设定循环执行的任务。当时间到达时，系统会加载当时的 persona 和 session，使用与主 Agent 一致的语气执行任务。
 
 **设计理念**：现代 AI 框架（如 AutoGen, LangChain）处理这类问题的标准做法是：
 - **Scheduled Prompt（定时提示词）+ 唤醒 Sub-Agent（子智能体）**
+
+**新增功能**（v2.0）：
+- 支持**循环任务**：按固定间隔重复执行
+- 支持**任务管理**：增删改查启停
+- 内置**安全限制**：防止无限循环和资源耗尽
 
 ### 7.2 模块结构
 
@@ -1132,29 +1245,53 @@ Scheduled Task 模块提供定时 AI 任务能力，允许主 Agent 预约未来
 gsuid_core/ai_core/
 ├── buildin_tools/
 │   ├── __init__.py
-│   └── scheduler.py     # add_scheduled_task 工具
+│   └── scheduler.py     # manage_scheduled_task / add_scheduled_task 工具
 └── scheduled_task/
     ├── __init__.py      # 模块初始化
-    ├── models.py        # 数据库模型 ScheduledAITask
+    ├── models.py        # 数据库模型 AIScheduledTask
     ├── executor.py      # execute_scheduled_task 执行器
     └── README.md        # 设计文档
 ```
 
-### 7.3 核心组件
+### 7.3 任务类型
 
-#### 7.3.1 数据库模型 - `ScheduledAITask`
+#### 7.3.1 一次性任务 (once)
+
+在指定时间点执行一次，执行后状态变为 `executed`。
+
+**适用场景**：
+- "明天早上 6 点叫我起床"
+- "周五晚上 8 点提醒我交报告"
+
+#### 7.3.2 循环任务 (interval)
+
+按固定间隔重复执行，达到最大执行次数后自动结束。
+
+**适用场景**：
+- "每半小时帮我查一下股市行情"
+- "每天早上 8 点给我发天气预报"
+
+**循环间隔单位**：
+- `minutes` - 分钟
+- `hours` - 小时
+- `days` - 天
+
+### 7.4 核心组件
+
+#### 7.4.1 数据库模型 - `AIScheduledTask`
 
 **文件位置**: [`gsuid_core/ai_core/scheduled_task/models.py`](gsuid_core/ai_core/scheduled_task/models.py)
 
 ```python
-class ScheduledAITask(BaseBotIDModel, table=True):
+class AIScheduledTask(BaseBotIDModel, table=True):
     """定时 AI 任务模型"""
 
     task_id: str             # 唯一ID
-    user_id: str             # 谁制定的任务
-    group_id: Optional[str]  # 目标群（私聊则为空）
+    task_type: str           # 任务类型：once=一次性，interval=循环任务
 
     # Event 相关字段（用于发送消息）
+    user_id: str             # 用户ID
+    group_id: Optional[str]  # 群ID（私聊则为空）
     bot_self_id: str         # 机器人自身ID
     user_type: str           # 用户类型 (group/direct)
     WS_BOT_ID: Optional[str] # WS机器人ID
@@ -1163,36 +1300,114 @@ class ScheduledAITask(BaseBotIDModel, table=True):
     persona_name: Optional[str]  # Persona 名称
     session_id: str           # Session ID
 
-    trigger_time: datetime   # 触发时间
+    # 一次性任务字段
+    trigger_time: Optional[datetime]  # 触发时间
+
+    # 任务相关字段
     task_prompt: str         # 任务描述
 
-    status: str              # pending / executed / failed
+    status: str              # pending / executed / failed / cancelled / paused
+
     created_at: datetime     # 创建时间
-    executed_at: datetime    # 执行时间
+    executed_at: Optional[datetime]  # 执行时间
+
     result: Optional[str]    # 执行结果
     error_message: Optional[str]  # 错误信息
+
+    # 循环任务字段
+    interval_seconds: Optional[int]  # 间隔秒数
+    max_executions: Optional[int]   # 最大执行次数
+    current_executions: Optional[int]  # 当前执行次数
+    start_time: Optional[datetime]  # 开始时间
+    next_run_time: Optional[datetime]  # 下次执行时间
 ```
 
-#### 7.3.2 工具函数 - `add_scheduled_task`
+#### 7.4.2 工具函数 - `manage_scheduled_task`
 
 **文件位置**: [`gsuid_core/ai_core/buildin_tools/scheduler.py`](gsuid_core/ai_core/buildin_tools/scheduler.py)
 
-主 Agent 调用的工具，用于预约定时任务。
+主 Agent 调用的统一任务管理工具，支持增删改查启停。
 
 ```python
 @ai_tools(category="buildin")
-async def add_scheduled_task(
+async def manage_scheduled_task(
     ctx: RunContext[ToolContext],
-    run_time: str,         # 格式 "YYYY-MM-DD HH:MM:SS"
-    task_prompt: str,      # 具体要执行的任务
+    action: Literal["add", "cancel", "modify", "list", "query", "pause", "resume"],
+    task_id: Optional[str] = None,
+    run_time: Optional[str] = None,
+    interval_type: Optional[Literal["minutes", "hours", "days"]] = None,
+    interval_value: Optional[int] = None,
+    task_prompt: Optional[str] = None,
+    max_executions: Optional[int] = None,
+    enabled: Optional[bool] = None,
 ) -> str:
     """
-    当你需要为用户设定未来某个时间执行的复杂任务时调用。
-    注意：task_prompt 必须非常详细，包含需要查询的实体和需要返回的格式。
+    管理预约定时/循环任务（增删改查启停）
+
+    支持一次性任务和循环任务两种类型。
+
+    **安全限制**:
+    - 单用户最多 20 个待执行任务
+    - 循环任务最大执行次数为 10 次
+    - 循环任务最小间隔为 5 分钟
     """
 ```
 
-#### 7.3.3 执行器 - `execute_scheduled_task`
+**action 参数说明**：
+
+| action | 说明 | 必需参数 |
+|--------|------|----------|
+| `add` | 添加新任务 | task_prompt + (run_time 或 interval_type+interval_value) |
+| `cancel` | 取消任务 | task_id |
+| `modify` | 修改任务 | task_id |
+| `list` | 列出所有任务 | - |
+| `query` | 查询任务详情 | task_id |
+| `pause` | 暂停任务（仅循环任务） | task_id |
+| `resume` | 恢复任务 | task_id |
+
+**使用示例**：
+
+```python
+# 添加一次性任务
+await manage_scheduled_task(
+    ctx,
+    action="add",
+    run_time="2024-05-15 06:30:00",
+    task_prompt="查询英伟达(NVDA)的实时股价和最新新闻",
+)
+
+# 添加循环任务（每30分钟执行一次）
+await manage_scheduled_task(
+    ctx,
+    action="add",
+    interval_type="minutes",
+    interval_value=30,
+    task_prompt="帮我关注股市行情",
+    max_executions=10,  # 最多执行10次
+)
+
+# 列出所有任务
+await manage_scheduled_task(ctx, action="list")
+
+# 取消任务
+await manage_scheduled_task(ctx, action="cancel", task_id="xxx")
+
+# 修改任务
+await manage_scheduled_task(
+    ctx,
+    action="modify",
+    task_id="xxx",
+    task_prompt="新的任务描述",
+)
+
+# 暂停任务
+await manage_scheduled_task(ctx, action="pause", task_id="xxx")
+
+# 恢复任务
+await manage_scheduled_task(ctx, action="resume", task_id="xxx")
+```
+
+#### 7.4.3 执行器 - `execute_scheduled_task`
 
 **文件位置**: [`gsuid_core/ai_core/scheduled_task/executor.py`](gsuid_core/ai_core/scheduled_task/executor.py)
 
@@ -1201,7 +1416,7 @@ async def add_scheduled_task(
 ```python
 async def execute_scheduled_task(task_id: str):
     # 1. 从数据库读取任务信息
-    task = await ScheduledAITask.select_rows(task_id=task_id)
+    task = await AIScheduledTask.select_rows(task_id=task_id)
 
     # 2. 构建 Event 对象
     ev = Event(...)
@@ -1212,45 +1427,66 @@ async def execute_scheduled_task(task_id: str):
     # 4. 通过 session 执行任务
     result = await session.run(user_message=..., bot=bot_instance, ev=ev)
 
-    # 5. 记录触发方式
+    # 5. 根据任务类型处理
+    #    - 一次性任务：状态变为 executed
+    #    - 循环任务：更新 current_executions，检查是否达到最大次数
+
+    # 6. 记录触发方式
     statistics_manager.record_trigger(trigger_type="scheduled")
 
-    # 6. 将结果推送给用户 (无需)
-    # await bot_instance.send(f"⏰ 您的定时任务结果来了！\n\n{result}")
+    # 7. 将结果推送给用户
+    await bot_instance.send(result)
 ```
 
-### 7.4 架构设计
+### 7.5 安全限制
+
+为防止恶意用户创建无限循环任务或耗尽系统资源，系统内置以下安全限制：
+
+| 限制项 | 默认值 | 说明 |
+|--------|--------|------|
+| 单用户最大待执行任务数 | 20 | 防止创建过多任务 |
+| 循环任务最大执行次数 | 10 | 防止无限循环 |
+| 循环任务最小间隔 | 5 分钟 | 防止过于频繁执行 |
+
+**特殊处理**：
+- 即使用户要求"无限循环"，系统也会强制设置 `max_executions=10`
+- 达到最大执行次数后，任务状态自动变为 `executed`
+- 单用户待执行任务数超限时，添加任务操作会被拒绝
+
+### 7.6 架构设计
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         用户请求                                  │
-│   "明天早上6点30，帮我查一下英伟达的股价和最新新闻"                │
+│   "每隔半小时帮我查一下英伟达的股价"                              │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      主 Agent (LLM)                              │
-│              识别意图 → 提取时间和任务 → 调用工具                   │
+│         识别意图 → 提取间隔和任务 → 调用 manage_scheduled_task    │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              buildin_tools/scheduler.py                           │
-│                  add_scheduled_task 工具                          │
-│  1. 存入数据库 ScheduledAITask（包含 persona_name, session_id）   │
-│  2. 注册到 APScheduler                                           │
+│                  manage_scheduled_task 工具                      │
+│  1. 安全检查：用户任务数、最大次数、最小间隔                        │
+│  2. 存入数据库 AIScheduledTask（包含循环任务字段）                │
+│  3. 注册到 APScheduler (interval 触发器)                          │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      数据库 (持久化)                              │
-│              任务状态: pending / executed / failed               │
+│  任务状态: pending / paused / executed / failed / cancelled    │
+│  循环任务: interval_seconds, max_executions, current_executions  │
 └─────────────────────────────────────────────────────────────────┘
 
                           ...
 
 ┌─────────────────────────────────────────────────────────────────┐
-│              时间到达 → APScheduler 触发                         │
+│              间隔到达 → APScheduler 触发                         │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
@@ -1260,54 +1496,84 @@ async def execute_scheduled_task(task_id: str):
 │  1. 从数据库读取任务信息                                          │
 │  2. 使用 get_ai_session(event) 加载 persona 和 session           │
 │  3. 向 session 发送任务消息                                      │
-│  4. 记录触发方式为 "scheduled"                                  │
-│  5. 将结果推送给用户                                              │
+│  4. 更新 current_executions                                      │
+│  5. 检查是否达到最大次数                                          │
+│     - 未达到：计算下次执行时间，重新注册 APScheduler              │
+│     - 已达到：状态变为 executed，停止调度                          │
+│  6. 记录触发方式为 "scheduled"                                  │
+│  7. 将结果推送给用户                                              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.5 使用流程
+### 7.7 使用流程
 
-**场景：用户预约查股票**
+**场景：用户设定循环任务**
 
-1. **用户输入**（晚上10点）
+1. **用户输入**
    ```
-   "明天早上 6 点半，帮我查一下英伟达（NVDA）的股价和最新新闻"
+   "每隔半小时帮我查一下英伟达的股价，有异常波动时提醒我"
    ```
 
 2. **主 Agent 思考**
-   - 意图识别发现这是一个未来任务
-   - 提取时间：`2024-05-15 06:30:00`
-   - 提炼提示词：查询英伟达(NVDA)的实时股价和最新新闻并总结
+   - 意图识别发现这是一个循环任务
+   - 提取间隔：`interval_type="minutes", interval_value=30`
+   - 提炼提示词：查询英伟达(NVDA)的实时股价和最新新闻
+   - 检查安全限制：max_executions 默认为 10
 
 3. **调用工具**
-   主 Agent 调用 `add_scheduled_task`，系统：
-   - 将任务存入数据库（包含 persona_name, session_id）
-   - 往 APScheduler 注册了一个 date 触发器
+   主 Agent 调用 `manage_scheduled_task(action="add", ...)`，系统：
+   - 验证安全限制（用户任务数、最大次数、最小间隔）
+   - 将任务存入数据库（task_type="interval"）
+   - 往 APScheduler 注册了一个 interval 触发器
 
-4. **定时触发**（第二天 6:30）
+4. **定时触发**（每 30 分钟）
    APScheduler 触发 `execute_scheduled_task`
 
 5. **执行任务**
-   - `execute_scheduled_task` 使用 `get_ai_session(ev)` 加载当时的 persona
+   - `execute_scheduled_task` 使用 `get_ai_session(ev)` 加载 persona
    - 保持与主 Agent 一致的语气和风格
    - 调用 web_search 等工具完成任务
+   - 更新 `current_executions = 1`
+   - 检查是否达到 `max_executions=10`
+   - 如果未达到，计算下次执行时间，重新注册 APScheduler
    - 记录触发方式 `scheduled`
 
 6. **推送结果**
    系统把 AI 生成的结果，主动发给用户
 
-### 7.6 触发方式统计
+7. **循环往复**
+   - 第 10 次执行后，`current_executions >= max_executions`
+   - 任务状态变为 `executed`，调度器不再触发
 
-定时任务的触发方式记录为 `scheduled`，与现有触发方式一致：
+### 7.8 任务状态机
 
-| 触发方式 | 说明 | 记录位置 |
-|---------|------|----------|
-| `mention` | 用户@机器人触发 | handler.py |
-| `keyword` | 关键词触发 | - |
-| `heartbeat` | 心跳巡检触发 | heartbeat/inspector.py |
-| `scheduled` | 定时任务触发 | scheduled_task/executor.py |
+```
+                    ┌─────────────┐
+                    │   创建任务   │
+                    └──────┬──────┘
+                           │
+                           ▼
+                    ┌─────────────┐
+         ┌─────────│   pending   │─────────┐
+         │         └──────┬──────┘         │
+         │                │                │
+         ▼                ▼                ▼
+┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+│  cancelled  │   │   paused    │   │  executed   │
+│  (手动取消)  │   │  (仅循环任务) │   │  (执行完毕)  │
+└─────────────┘   └──────┬──────┘   └─────────────┘
+                         │                ▲
+                         │                │
+                         │         ┌──────┴──────┐
+                         │         │             │
+                         │         ▼             │
+                         │   ┌───────────┐       │
+                         └──▶│  resume   │───────┘
+                             └───────────┘
+                             (恢复 pending)
+```
 
-### 7.7 重启恢复
+### 7.9 重启恢复
 
 在系统启动时，调用 `reload_pending_tasks()` 可以重新加载所有待执行的任务：
 
@@ -1320,15 +1586,49 @@ await reload_pending_tasks()
 
 此函数会：
 1. 查询所有 `pending` 状态的任务
-2. 对于已过期的任务，立即执行
-3. 对于未过期的任务，重新注册到 APScheduler
+2. 对于**一次性任务**：
+   - 已过期则立即执行
+   - 未过期则重新注册到 APScheduler
+3. 对于**循环任务**：
+   - 检查 `next_run_time`，已到期则立即执行
+   - 未到期则重新注册到 APScheduler
 
-### 7.8 启用方式
+### 7.10 触发方式统计
+
+定时任务的触发方式记录为 `scheduled`，与现有触发方式一致：
+
+| 触发方式 | 说明 | 记录位置 |
+|---------|------|----------|
+| `mention` | 用户@机器人触发 | handler.py |
+| `keyword` | 关键词触发 | - |
+| `heartbeat` | 心跳巡检触发 | heartbeat/inspector.py |
+| `scheduled` | 定时/循环任务触发 | scheduled_task/executor.py |
+
+### 7.11 启用方式
 
 在 `buildin_tools/__init__.py` 中导入即可：
 ```python
-from gsuid_core.ai_core.buildin_tools.scheduler import add_scheduled_task
+from gsuid_core.ai_core.buildin_tools.scheduler import manage_scheduled_task
 ```
+
+### 7.12 WebConsole API
+
+前端可以通过 WebConsole API 管理 AI 定时任务。
+
+**文件位置**: [`gsuid_core/webconsole/ai_scheduled_task_api.py`](gsuid_core/webconsole/ai_scheduled_task_api.py)
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/api/ai/scheduled_tasks` | 获取任务列表（支持筛选） |
+| GET | `/api/ai/scheduled_tasks/{task_id}` | 获取任务详情 |
+| POST | `/api/ai/scheduled_tasks` | 创建任务 |
+| PUT | `/api/ai/scheduled_tasks/{task_id}` | 修改任务 |
+| DELETE | `/api/ai/scheduled_tasks/{task_id}` | 删除任务 |
+| POST | `/api/ai/scheduled_tasks/{task_id}/pause` | 暂停任务 |
+| POST | `/api/ai/scheduled_tasks/{task_id}/resume` | 恢复任务 |
+| GET | `/api/ai/scheduled_tasks/stats/overview` | 获取统计概览 |
+
+详细 API 文档见 [API.md](../gsuid_core/webconsole/API.md#21-ai-scheduled-task-api---apiaischeduled_tasks)
 
 ---
 
@@ -1776,8 +2076,8 @@ summary = statistics_manager.get_summary()
                                     ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  3. 双层长度防护 (D-10 修复)                                           │
-│     ├── 第一层：if len > 10000: 硬截断 + 截断提示（防子Agent爆炸）      │
-│     └── 第二层：if len > 2000:  调用 create_subagent 智能摘要          │
+│     ├── 第一层：if len > 14000: 硬截断 + 截断提示（防子Agent爆炸）     │
+│     └── 第二层：if len > 8000:  调用 create_subagent 智能摘要          │
 └──────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼

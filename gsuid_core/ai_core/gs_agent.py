@@ -5,51 +5,26 @@ PydanticAI Agent 核心模块
 
 import time
 import asyncio
-from typing import TYPE_CHECKING, Any, List, Union, Optional, Sequence
+from typing import List, Union, Optional, Sequence
 
 import httpx
 from pydantic_ai import Agent
 from pydantic_graph import End
+from pydantic_ai.agent import CallToolsNode, ModelRequestNode
 from pydantic_ai.usage import UsageLimits
+from pydantic_ai.messages import TextPart, UserContent, ModelMessage, ThinkingPart, ToolCallPart
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-
-if TYPE_CHECKING:
-    from pydantic_ai.tools import Tool
-
-from pydantic_ai.agent import CallToolsNode, ModelRequestNode
-from pydantic_ai.messages import TextPart, UserContent, ModelMessage, ThinkingPart, ToolCallPart
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
-from gsuid_core.ai_core.register import _TOOL_REGISTRY
 from gsuid_core.ai_core.ai_config import ai_config, openai_config
-from gsuid_core.ai_core.rag.tools import search_tools
+from gsuid_core.ai_core.rag.tools import ToolList, search_tools, get_main_agent_tools
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
-
-if TYPE_CHECKING:
-    ToolList = List["Tool[ToolContext]"]
-else:
-    ToolList = List[Any]
-
-
-def get_main_agent_tools() -> ToolList:
-    """获取主Agent专用的工具列表
-
-    主Agent只使用buildin分类下的核心工具，其他复杂工具需要通过create_subagent调用。
-
-    Returns:
-        ToolList: 主Agent工具对象列表
-    """
-    # 主Agent只使用buildin分类下的工具
-    buildin_tools = []
-    if "buildin" in _TOOL_REGISTRY:
-        buildin_tools = [_TOOL_REGISTRY["buildin"][n].tool for n in _TOOL_REGISTRY["buildin"]]
-    return buildin_tools
 
 
 class GsCoreAIAgent:
@@ -71,6 +46,7 @@ class GsCoreAIAgent:
         api_key: Optional[str] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 1800,
+        max_iterations: Optional[int] = None,
         persona_name: Optional[str] = None,
     ):
         self.history: List[ModelMessage] = []
@@ -95,6 +71,7 @@ class GsCoreAIAgent:
             self.base_url = openai_config.get_config("base_url").data
 
         self.max_tokens = max_tokens
+        self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
 
     async def _execute_run(
         self,
@@ -109,8 +86,12 @@ class GsCoreAIAgent:
         """
         from gsuid_core.ai_core.statistics import statistics_manager
 
-        multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
-        limits = UsageLimits(request_limit=multi_agent_lenth)
+        # 使用自定义迭代次数限制（如果有），否则使用配置默认值
+        if self.max_iterations is not None:
+            limits = UsageLimits(request_limit=self.max_iterations)
+        else:
+            multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
+            limits = UsageLimits(request_limit=multi_agent_lenth)
 
         # 记录开始时间用于延迟统计
         start_time = time.time()
@@ -129,12 +110,19 @@ class GsCoreAIAgent:
 
         if not tools:
             tools = get_main_agent_tools()
+            qy = ""
             if isinstance(user_message, str):
-                logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {user_message}")
-                tools += await search_tools(query=user_message, limit=3)
+                qy = user_message
             elif ev is not None:
-                logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {ev.raw_text}")
-                tools += await search_tools(query=ev.raw_text, limit=3)
+                qy = ev.raw_text
+
+            if qy:
+                logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
+                tools += await search_tools(
+                    query=qy,
+                    limit=3,
+                    non_category=["self", "buildin"],
+                )
 
             logger.debug(f"🧠 [GsCoreAIAgent] 主Agent工具数量: {len(tools)}")
         else:
@@ -159,7 +147,7 @@ class GsCoreAIAgent:
         )
 
         try:
-            logger.info("🧠 [GsCoreAIAgent] 5. 开始执行 _agent.iter()...")
+            logger.info("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()...")
 
             async with _agent.iter(
                 final_user_message,
@@ -283,7 +271,10 @@ class GsCoreAIAgent:
         except Exception as e:
             logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
             logger.exception("🧠 [PydanticAI] 异常详情:")
-            statistics_manager.record_error(error_type="agent_error")
+            if "529" in str(e):
+                statistics_manager.record_error(error_type="rate_limit")
+            else:
+                statistics_manager.record_error(error_type="agent_error")
             return f"执行出错: {str(e)}"
 
     async def run(
@@ -320,6 +311,8 @@ class GsCoreAIAgent:
 def create_agent(
     model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    max_tokens: int = 1800,
+    max_iterations: Optional[int] = None,
     persona_name: Optional[str] = None,
 ) -> GsCoreAIAgent:
     """
@@ -328,6 +321,8 @@ def create_agent(
     Args:
         model_name: 模型名称
         system_prompt: 系统提示词
+        max_tokens: 最大输出 token 数
+        max_iterations: 最大迭代次数限制，None 时使用配置默认值
         persona_name: Persona 名称（用于热重载检测）
 
     Returns:
@@ -341,6 +336,8 @@ def create_agent(
     return GsCoreAIAgent(
         model_name=model_name,
         system_prompt=system_prompt,
+        max_tokens=max_tokens,
+        max_iterations=max_iterations,
         persona_name=persona_name,
     )
 

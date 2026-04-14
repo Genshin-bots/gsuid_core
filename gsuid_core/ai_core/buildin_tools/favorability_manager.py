@@ -14,7 +14,7 @@ from gsuid_core.ai_core.database import UserFavorability
 from gsuid_core.ai_core.register import ai_tools
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="self")
 async def update_user_favorability(
     ctx: RunContext[ToolContext],
     delta: int,
