@@ -326,7 +326,7 @@ class HeartbeatInspector:
                 target_type=target_type,
                 target_id=target_id,
                 bot_id=_bot.bot_id,
-                bot_self_id="",
+                bot_self_id=event.bot_self_id,
             )
 
             logger.info(f"🫀 [Heartbeat] 发送成功 -> {target_id}: {message}")
