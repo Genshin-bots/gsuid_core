@@ -325,7 +325,7 @@ class HeartbeatInspector:
                 message=message,
                 target_type=target_type,
                 target_id=target_id,
-                bot_id=_bot.bot_id,
+                bot_id=event.bot_id,
                 bot_self_id=event.bot_self_id,
             )
 
