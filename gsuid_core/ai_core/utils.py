@@ -7,9 +7,9 @@ from pydantic_ai.messages import ImageUrl, UserContent
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message
-from gsuid_core.ai_core.ai_config import openai_config
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.configs.ai_config import openai_config
 
 # AI服务配置
 model_support: list[str] = openai_config.get_config("model_support").data

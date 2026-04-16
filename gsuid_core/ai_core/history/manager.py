@@ -71,10 +71,10 @@ class HistoryManager:
     线程安全，支持并发访问。
     """
 
-    DEFAULT_MAX_MESSAGES = 60
+    DEFAULT_MAX_MESSAGES = 40
     CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
     IDLE_THRESHOLD = 86400  # 空闲阈值（秒），默认1天
-    MAX_AI_HISTORY_LENGTH = 50  # AI会话最大历史长度
+    MAX_AI_HISTORY_LENGTH = 30  # AI会话最大历史长度
 
     def __init__(self, max_messages: int = DEFAULT_MAX_MESSAGES):
         """

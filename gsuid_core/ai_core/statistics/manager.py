@@ -420,6 +420,9 @@ class StatisticsManager:
     ) -> Dict[str, Any]:
         """将 AIDailyStatistics 转换为字典格式"""
         t_intent = (stats.intent_chat_count or 0) + (stats.intent_tool_count or 0) + (stats.intent_qa_count or 0) or 1
+        total_triggers = (stats.trigger_mention_count or 0) + (stats.trigger_keyword_count or 0) + (
+            stats.trigger_heartbeat_count or 0
+        ) + (stats.trigger_scheduled_count or 0) or 1
         return {
             "date": stats.date,
             "token_usage": {
@@ -455,10 +458,22 @@ class StatisticsManager:
                 + (stats.api_agent_error_count or 0),
             },
             "trigger_distribution": {
-                "mention": stats.trigger_mention_count or 0,
-                "keyword": stats.trigger_keyword_count or 0,
-                "heartbeat": stats.trigger_heartbeat_count or 0,
-                "scheduled": stats.trigger_scheduled_count or 0,
+                "mention": {
+                    "count": stats.trigger_mention_count or 0,
+                    "percentage": (stats.trigger_mention_count or 0) / total_triggers * 100,
+                },
+                "keyword": {
+                    "count": stats.trigger_keyword_count or 0,
+                    "percentage": (stats.trigger_keyword_count or 0) / total_triggers * 100,
+                },
+                "heartbeat": {
+                    "count": stats.trigger_heartbeat_count or 0,
+                    "percentage": (stats.trigger_heartbeat_count or 0) / total_triggers * 100,
+                },
+                "scheduled": {
+                    "count": stats.trigger_scheduled_count or 0,
+                    "percentage": (stats.trigger_scheduled_count or 0) / total_triggers * 100,
+                },
             },
             "rag": {"hit_count": rag_hit, "miss_count": rag_miss, "hit_rate": rag_hit_rate},
             "heartbeat": heartbeat or {"should_speak_true": 0, "should_speak_false": 0, "conversion_rate": 0},

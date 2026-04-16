@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from tavily import TavilyClient
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.ai_config import tavily_config
+from gsuid_core.ai_core.configs.ai_config import tavily_config
 
 
 @dataclass

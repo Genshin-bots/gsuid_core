@@ -15,14 +15,15 @@ AI聊天处理模块
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.mem import memory_client
 from gsuid_core.ai_core.utils import prepare_content_payload
 from gsuid_core.ai_core.history import get_history_manager, format_history_for_agent
-from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.ai_core.ai_router import (
     get_ai_session,
 )
 from gsuid_core.ai_core.classifier import classifier_service
 from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.configs.ai_config import ai_config
 
 # AI服务配置开关
 enable_ai: bool = ai_config.get_config("enable").data
@@ -125,7 +126,40 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 logger.info(f"🧠 [GsCore][AI] 摘要完成，摘要长度: {len(summarized)} 字符")
 
             # ============================================================
-            # 步骤 5: 历史记录上下文
+            # 步骤 5: 记忆上下文（memv）
+            # 基于用户ID检索相关记忆，用于个性化响应
+            # ============================================================
+            memory_context: str = ""
+
+            try:
+                async with memory_client:
+                    logger.debug("🧠 [GsCore][AI] 开始加载用户记忆上下文...")
+                    mem_result_user = await memory_client.retrieve(
+                        event.raw_text,
+                        user_id=event.user_id,
+                        top_k=5,
+                    )
+                    if mem_result_user.retrieved_knowledge:
+                        memory_context = f"\n【用户记忆】\n{mem_result_user.to_prompt()}\n"
+                        logger.debug(
+                            f"🧠 [GsCore][AI] 已加载用户记忆上下文 ({len(mem_result_user.retrieved_knowledge)} 条)"
+                        )
+                    if event.group_id:
+                        mem_result_group = await memory_client.retrieve(
+                            event.raw_text,
+                            user_id=event.group_id,
+                            top_k=5,
+                        )
+                        if mem_result_group.retrieved_knowledge:
+                            memory_context = f"\n【群聊记忆】\n{mem_result_group.to_prompt()}\n"
+                            logger.debug(
+                                f"🧠 [GsCore][AI] 已加载群聊记忆上下文 ({len(mem_result_group.retrieved_knowledge)} 条)"
+                            )
+            except Exception as e:
+                logger.warning(f"🧠 [GsCore][AI] 记忆检索失败: {e}")
+
+            # ============================================================
+            # 步骤 6: 历史记录上下文
             # 注意：RAG 知识库检索已移除为强制前置步骤（D-11 修复）
             # 主Agent通过 search_knowledge 工具按需决定是否检索知识库。
             # 这样可以避免无谓的检索延迟（如用户只是说"你好"时不触发RAG）。
@@ -153,21 +187,42 @@ async def handle_ai_chat(bot: Bot, event: Event):
                     rag_context = f"【历史对话】\n{history_context}\n"
                     logger.debug(f"🧠 [GsCore][AI] 已加载 {len(history)} 条历史消息")
 
+            # 合并记忆上下文到 rag_context
+            full_context = f"{rag_context}{memory_context}" if memory_context else rag_context
+
             # ============================================================
-            # 步骤 6: 调用 Agent 生成回复
+            # 步骤 7: 调用 Agent 生成回复
             # Agent 会根据对话内容自主决定是否调用 search_knowledge 工具
             # ============================================================
             chat_result = await session.run(
                 user_message=user_messages,
                 bot=bot,
                 ev=event,
-                rag_context=rag_context,
+                rag_context=full_context,
             )
 
-            # 步骤 7: 发送回复
+            # 步骤 8: 发送回复
             if chat_result:
                 await bot.send(chat_result)
                 logger.info(f"🧠 [GsCore][AI] 回复已发送 (模式: {intent})")
+
+            # 步骤 9: 存储对话到记忆
+            # 在发送回复后将对话添加到记忆系统
+            try:
+                async with memory_client:
+                    await memory_client.add_exchange(
+                        user_id=event.user_id,
+                        user_message=event.raw_text,
+                        assistant_message=chat_result or "",
+                    )
+                    if event.group_id:
+                        await memory_client.add_exchange(
+                            user_id=event.group_id,
+                            user_message=history_context,
+                            assistant_message=chat_result or "",
+                        )
+            except Exception as e:
+                logger.warning(f"🧠 [GsCore][AI] 记忆存储失败: {e}")
 
         except Exception as e:
             logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")

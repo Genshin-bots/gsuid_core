@@ -46,7 +46,7 @@
 gsuid_core/ai_core/
 ├── __init__.py          # 核心初始化入口
 ├── ai_router.py         # Session 路由管理
-├── ai_config.py         # AI 全局配置
+├── adapter.py           # 共享适配器（LLM/嵌入配置复用）
 ├── check_func.py        # 检查函数
 ├── gs_agent.py          # AI Agent 实现
 ├── handle_ai.py         # AI 聊天处理入口
@@ -55,6 +55,10 @@ gsuid_core/ai_core/
 ├── register.py          # 工具注册
 ├── resource.py          # 资源管理
 ├── utils.py             # 工具函数
+├── configs/             # 配置文件
+│   ├── __init__.py
+│   ├── ai_config.py     # AI 全局配置
+│   └── models.py        # 配置数据模型
 ├── buildin_tools/       # 内建 AI 工具
 │   ├── __init__.py
 │   ├── command_executor.py  # 执行系统命令
@@ -85,6 +89,10 @@ gsuid_core/ai_core/
 ├── history/              # 历史记录管理
 │   ├── __init__.py
 │   ├── manager.py
+│   └── README.md
+├── mem/                  # Agent 记忆层 (基于 memv)
+│   ├── __init__.py
+│   ├── memory.py        # memv 封装
 │   └── README.md
 ├── persona/              # Persona 角色系统
 │   ├── __init__.py
@@ -632,14 +640,14 @@ HistoryManager 包含完善的内存保护机制，**不存在 OOM 风险**：
 
 ```python
 # 每个 Session 使用 deque 限制消息数量
-DEFAULT_MAX_MESSAGES = 60  # 每 Session 最多保留 60 条消息
-MAX_AI_HISTORY_LENGTH = 50  # AI 对话历史最大长度
+DEFAULT_MAX_MESSAGES = 40  # 每 Session 最多保留 60 条消息
+MAX_AI_HISTORY_LENGTH = 30  # AI 对话历史最大长度
 
 # 在 __init__ 中
 self._histories[session_key] = deque(maxlen=self._max_messages)
 ```
 
-**效果**: 每个 Session 的消息历史被限制在 `deque(maxlen=60)` 中，超过限制的旧消息自动被丢弃。
+**效果**: 每个 Session 的消息历史被限制在 `deque(maxlen=40)` 中，超过限制的旧消息自动被丢弃。
 
 #### 5.3.2 空闲 Session 清理
 

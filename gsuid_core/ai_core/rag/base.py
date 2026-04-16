@@ -7,7 +7,7 @@ import hashlib
 from typing import TYPE_CHECKING, Final, Union
 
 from gsuid_core.data_store import AI_CORE_PATH
-from gsuid_core.ai_core.ai_config import ai_config, rerank_model_config, local_embedding_config
+from gsuid_core.ai_core.configs.ai_config import ai_config, rerank_model_config, local_embedding_config
 
 # ============== 向量库配置 ==============
 DIMENSION: Final[int] = 512

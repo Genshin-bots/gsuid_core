@@ -9,3 +9,7 @@ SKILLS_PATH = get_res_path(AI_CORE_PATH / "skills")
 SYSTEM_PROMPTS_PATH = get_res_path(AI_CORE_PATH / "system_prompt")
 # 读写执行文件路径
 FILE_PATH = get_res_path(AI_CORE_PATH / "file")
+# 记忆系统数据库路径
+MEM_PATH = get_res_path(AI_CORE_PATH / "mem_db")
+# 记忆系统数据库URL
+MEM_DB_URL = str(MEM_PATH / "memory.db")

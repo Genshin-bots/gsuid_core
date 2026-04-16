@@ -20,7 +20,6 @@ from gsuid_core.ai_core.history import get_history_manager
 from .persona import build_persona_prompt, persona_config_manager
 from .gs_agent import GsCoreAIAgent, create_agent
 from .resource import PERSONA_PATH
-from .ai_config import openai_config
 
 # Persona 文件的 mtime 缓存，用于检测热重载
 _persona_mtime_cache: dict[str, float] = {}
@@ -110,8 +109,7 @@ async def _get_or_create_ai_session(
     base_persona = await build_persona_prompt(persona_name)
     _persona_mtime_cache[persona_name] = _get_persona_mtime(persona_name)
 
-    model_name = openai_config.get_config("model_name").data or "gpt-4o"
-    session = create_agent(model_name=model_name, system_prompt=base_persona, persona_name=persona_name)
+    session = create_agent(system_prompt=base_persona, persona_name=persona_name)
 
     history_manager.set_ai_session(session_id, session)
     history_manager.update_session_access(event)

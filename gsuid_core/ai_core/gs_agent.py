@@ -5,26 +5,116 @@ PydanticAI Agent 核心模块
 
 import time
 import asyncio
-from typing import List, Union, Optional, Sequence
+from typing import Set, List, Union, Optional, Sequence
 
 import httpx
 from pydantic_ai import Agent
 from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.messages import TextPart, UserContent, ModelMessage, ThinkingPart, ToolCallPart
+from pydantic_ai.messages import (
+    TextPart,
+    UserContent,
+    ModelMessage,
+    ThinkingPart,
+    ToolCallPart,
+    ModelResponse,
+    ToolReturnPart,
+)
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.mem import memory_client
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
-from gsuid_core.ai_core.ai_config import ai_config, openai_config
 from gsuid_core.ai_core.rag.tools import ToolList, search_tools, get_main_agent_tools
+from gsuid_core.ai_core.configs.models import get_openai_chat_model
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
+from gsuid_core.ai_core.configs.ai_config import ai_config
+
+
+def _truncate_history_with_tool_safety(
+    history: List[ModelMessage],
+    max_history: int,
+) -> List[ModelMessage]:
+    """
+    安全截断 history，确保 ToolCallPart 和 ToolReturnPart 保持配对。
+
+    问题：如果简单地从末尾截断 history，可能导致 ToolReturnPart 被保留
+    但其对应的 ToolCallPart 被丢弃，从而在下一轮请求时出现
+    "tool result's tool id not found" 错误。
+
+    解决策略：
+    1. 从后向前扫描，收集所有未配对的 tool_call_id
+    2. 如果截断点落在未配对的 tool call/return 范围内，则扩展截断点
+    3. 确保所有保留的 ToolReturnPart 都有对应的 ToolCallPart
+
+    Args:
+        history: 原始消息历史
+        max_history: 最大保留消息数
+
+    Returns:
+        截断后的安全消息历史
+    """
+    if len(history) <= max_history:
+        return history
+
+    # 第一步：从后向前扫描，收集所有有 tool_call_id 的 parts
+    # 记录哪些 tool_call_id 有 ToolCallPart（call），哪些有 ToolReturnPart（return）
+    call_ids: Set[str] = set()
+    return_ids: Set[str] = set()
+
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    call_ids.add(part.tool_call_id)
+                elif isinstance(part, ToolReturnPart):
+                    return_ids.add(part.tool_call_id)
+
+    # 找出有 return 但没有 call 的 tool_call_id（这些是孤立的 tool return）
+    orphaned_returns = return_ids - call_ids
+
+    if not orphaned_returns:
+        # 没有孤立的 tool return，可以安全地从末尾截断
+        truncated = history[-max_history:]
+        logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(truncated)} (无孤立 tool return)")
+        return truncated
+
+    # 第二步：找到所有包含孤立 tool return 的消息位置
+    orphaned_msg_indices: Set[int] = set()
+    for idx, msg in enumerate(history):
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart) and part.tool_call_id in orphaned_returns:
+                    orphaned_msg_indices.add(idx)
+
+    # 第三步：确定截断点
+    # 如果截断后的历史中包含孤立的 tool return，需要扩大截断范围
+    truncate_index = len(history) - max_history
+
+    # 检查是否有孤立的 msg indices 在截断点之后
+    orphaned_in_tail = [i for i in orphaned_msg_indices if i >= truncate_index]
+
+    if orphaned_in_tail:
+        # 需要扩展截断范围，确保孤立的 tool return 被包含或连同其 call 一起被保留
+        # 找到最小的孤立消息索引，然后确保截断点在其之前
+        min_orphaned_idx = min(orphaned_in_tail)
+        # 扩展截断范围，留出更多空间确保配对完整
+        new_truncate_index = max(0, min_orphaned_idx - 5)
+        truncated = history[new_truncate_index:]
+        logger.warning(
+            f"🧠 [GsCoreAIAgent] 检测到 {len(orphaned_returns)} 个孤立 tool return，"
+            f"扩展截断范围: {len(history)} -> {len(truncated)} (从索引 {new_truncate_index} 开始)"
+        )
+        return truncated
+
+    truncated = history[-max_history:]
+    logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(truncated)}")
+    return truncated
 
 
 class GsCoreAIAgent:
@@ -41,9 +131,7 @@ class GsCoreAIAgent:
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        openai_chat_model: Optional[OpenAIChatModel] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 1800,
         max_iterations: Optional[int] = None,
@@ -54,24 +142,12 @@ class GsCoreAIAgent:
         self.persona_name = persona_name  # 用于热重载检查
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
-
-        if model_name:
-            self.model_name = model_name
-        else:
-            self.model_name = openai_config.get_config("model_name").data
-
-        if api_key:
-            self.api_key = api_key
-        else:
-            self.api_key = openai_config.get_config("api_key").data[0]
-
-        if base_url:
-            self.base_url = base_url
-        else:
-            self.base_url = openai_config.get_config("base_url").data
-
         self.max_tokens = max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
+
+        self.model = openai_chat_model
+        if self.model is None:
+            self.model = get_openai_chat_model()
 
     async def _execute_run(
         self,
@@ -135,10 +211,7 @@ class GsCoreAIAgent:
         tools = list({obj.name: obj for obj in tools}.values())
 
         _agent: Agent[ToolContext, str] = Agent(
-            model=OpenAIChatModel(
-                model_name=self.model_name,
-                provider=OpenAIProvider(api_key=self.api_key, base_url=self.base_url),
-            ),
+            model=self.model,
             deps_type=ToolContext,
             system_prompt=self.system_prompt or "你是一个智能助手, 简短的一句话回答问题即可。",
             model_settings={"max_tokens": self.max_tokens},
@@ -208,8 +281,15 @@ class GsCoreAIAgent:
                 # 截断历史记录，避免无限制增长
                 max_history = 50
                 if len(self.history) > max_history:
-                    self.history = self.history[-max_history:]
-                    logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {max_history} 条")
+                    self.history = _truncate_history_with_tool_safety(self.history, max_history)
+                    logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {len(self.history)} 条")
+                    if ev:
+                        async with memory_client:
+                            count = await memory_client.process(ev.user_id)
+                            logger.debug("🧠 [GsCore][AI] 用户对话已添加到记忆, 当前记忆数量: {}".format(count))
+                            if ev.group_id:
+                                count = await memory_client.process(ev.group_id)
+                                logger.debug("🧠 [GsCore][AI] 群聊对话已添加到记忆, 当前记忆数量: {}".format(count))
 
                 # 记录 Token 使用量和延迟统计
                 try:
@@ -224,7 +304,7 @@ class GsCoreAIAgent:
                         logger.info(f"📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}")
                         if input_tokens > 0 or output_tokens > 0:
                             statistics_manager.record_token_usage(
-                                model_name=self.model_name,
+                                model_name=self.model.model_name if self.model else "unknown",
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
                             )
@@ -309,7 +389,6 @@ class GsCoreAIAgent:
 
 # 工厂函数
 def create_agent(
-    model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     max_tokens: int = 1800,
     max_iterations: Optional[int] = None,
@@ -334,7 +413,6 @@ def create_agent(
         )
     """
     return GsCoreAIAgent(
-        model_name=model_name,
         system_prompt=system_prompt,
         max_tokens=max_tokens,
         max_iterations=max_iterations,

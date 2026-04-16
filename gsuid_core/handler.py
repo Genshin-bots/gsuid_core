@@ -13,11 +13,11 @@ from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.ai_core.history import get_history_manager
-from gsuid_core.ai_core.ai_config import ai_config
 from gsuid_core.ai_core.handle_ai import handle_ai_chat
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     log_config,
