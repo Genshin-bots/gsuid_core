@@ -108,7 +108,6 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
     if status:
         assert game_token_data is not None  # 骗过 pyright
         logger.info("[登录]game_token获取成功")
-        cookie_token = await mys_api.get_cookie_token(**game_token_data)
         stoken_data = await mys_api.get_stoken_by_game_token(
             account_id=int(game_token_data["uid"]),
             game_token=game_token_data["token"],
@@ -122,7 +121,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
         if isinstance(ck, int):
             return await send_msg("[登录]获取CK失败...")
-        ck = ck["cookie_token"]
+        cookie_token = ck["cookie_token"]
 
         if isinstance(cookie_token, int):
             return await send_msg("[登录]获取CK失败...")
@@ -132,7 +131,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
                 "stoken_v2": stoken_data["token"]["token"],
                 "stuid": stoken_data["user_info"]["aid"],
                 "mid": stoken_data["user_info"]["mid"],
-                "cookie_token": cookie_token["cookie_token"],
+                "cookie_token": cookie_token,
             }
         ).output(header="", sep=";")
     else:
