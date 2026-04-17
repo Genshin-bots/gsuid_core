@@ -114,16 +114,14 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         )
         if isinstance(stoken_data, int):
             return await send_msg("[登录]获取SK失败...")
+
         account_id = game_token_data["uid"]
         stoken = stoken_data["token"]["token"]
         mid = stoken_data["user_info"]["mid"]
         app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
+
         ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
         if isinstance(ck, int):
-            return await send_msg("[登录]获取CK失败...")
-        cookie_token = ck["cookie_token"]
-
-        if isinstance(cookie_token, int):
             return await send_msg("[登录]获取CK失败...")
 
         return SimpleCookie(
@@ -131,7 +129,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
                 "stoken_v2": stoken_data["token"]["token"],
                 "stuid": stoken_data["user_info"]["aid"],
                 "mid": stoken_data["user_info"]["mid"],
-                "cookie_token": cookie_token,
+                "cookie_token": ck["cookie_token"],
             }
         ).output(header="", sep=";")
     else:
