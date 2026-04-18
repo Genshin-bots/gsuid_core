@@ -44,7 +44,7 @@ GET_STOKEN_URL = f"{GS_BASE}/auth/api/getMultiTokenByLoginTicket"
 # 国际服
 GET_STOKEN_URL_OS = f"{ACCOUNT_URL_OS}/account/auth/api/getMultiTokenByLoginTicket"
 # 通过Stoken获取Cookie_token
-GET_COOKIE_TOKEN_URL = f"{GS_BASE}/auth/api/getCookieAccountInfoBySToken"
+GET_COOKIE_TOKEN_URL = f"{PASSPORT_URL}/account/auth/api/getCookieAccountInfoBySToken"
 # 通过Stoken获取AuthKey
 GET_AUTHKEY_URL = f"{GS_BASE}/binding/api/genAuthKey"
 # 通过AuthKey获取gachalogs
