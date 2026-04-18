@@ -352,7 +352,7 @@ class GsCoreAIAgent:
             logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
             logger.exception("🧠 [PydanticAI] 异常详情:")
             if "529" in str(e):
-                statistics_manager.record_error(error_type="rate_limit")
+                statistics_manager.record_error(error_type="api_529_error")
             else:
                 statistics_manager.record_error(error_type="agent_error")
             return f"执行出错: {str(e)}"

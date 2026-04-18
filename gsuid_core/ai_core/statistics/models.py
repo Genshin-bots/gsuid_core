@@ -44,12 +44,21 @@ class AIDailyStatistics(BaseIDModel, table=True):
         intent_qa_count: 问答意图次数
         api_timeout_count: API 超时次数
         api_rate_limit_count: Rate Limit 次数
+        api_529_count: API 负载过高次数
         api_network_error_count: 网络错误次数
         active_session_count: 活跃 Session 数
         avg_messages_per_session: 平均每 Session 消息数
         trigger_mention_count: @机器人触发次数
         trigger_keyword_count: 关键词触发次数
         trigger_heartbeat_count: 主动巡检触发次数
+
+        memory_observations: 记忆观察入队总数
+        memory_ingestions: 摄入完成总数
+        memory_ingestion_errors: 摄入失败总数
+        memory_retrievals: 检索请求总数
+        memory_entities_created: 新建 Entity 总数
+        memory_edges_created: 新建 Edge 总数
+        memory_episodes_created: 新建 Episode 总数
     """
 
     __table_args__ = {"extend_existing": True}
@@ -64,6 +73,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
     intent_qa_count: int = Field(default=0, title="问答次数")
     api_timeout_count: int = Field(default=0, title="API超时次数")
     api_rate_limit_count: int = Field(default=0, title="RateLimit次数")
+    api_529_count: int = Field(default=0, title="API负载过高次数")
     api_network_error_count: int = Field(default=0, title="网络错误次数")
     api_usage_limit_count: int = Field(default=0, title="使用限制次数")
     api_agent_error_count: int = Field(default=0, title="Agent执行错误次数")

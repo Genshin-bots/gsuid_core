@@ -240,6 +240,7 @@ class StatisticsManager:
                 s.errors.update(
                     timeout=stats.api_timeout_count or 0,
                     rate_limit=stats.api_rate_limit_count or 0,
+                    api_529_error=stats.api_529_count or 0,
                     network_error=stats.api_network_error_count or 0,
                     usage_limit=stats.api_usage_limit_count or 0,
                     agent_error=stats.api_agent_error_count or 0,
@@ -351,6 +352,7 @@ class StatisticsManager:
                 intent_qa_count=s.intents["qa"],
                 api_timeout_count=s.errors["timeout"],
                 api_rate_limit_count=s.errors["rate_limit"],
+                api_529_count=s.errors["api_529_error"],
                 api_network_error_count=s.errors["network_error"],
                 api_usage_limit_count=s.errors["usage_limit"],
                 api_agent_error_count=s.errors["agent_error"],
@@ -536,11 +538,13 @@ class StatisticsManager:
                 "network_error": stats.api_network_error_count or 0,
                 "usage_limit": stats.api_usage_limit_count or 0,
                 "agent_error": stats.api_agent_error_count or 0,
+                "api_529_error": stats.api_529_count or 0,
                 "total": (stats.api_timeout_count or 0)
                 + (stats.api_rate_limit_count or 0)
                 + (stats.api_network_error_count or 0)
                 + (stats.api_usage_limit_count or 0)
-                + (stats.api_agent_error_count or 0),
+                + (stats.api_agent_error_count or 0)
+                + (stats.api_529_count or 0),
             },
             "trigger_distribution": {
                 "mention": {
