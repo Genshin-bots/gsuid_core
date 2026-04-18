@@ -79,6 +79,7 @@ async def create_subagent(
         system_prompt=system_prompt,
         max_tokens=max_tokens,
         max_iterations=max_iterations,
+        create_by="SubAgent",
     )
 
     try:

@@ -49,6 +49,7 @@ class BotState:
 
     # 模型细分统计
     token_by_model: Dict[str, TokenUsage] = field(default_factory=lambda: defaultdict(TokenUsage))
+    token_by_type: Dict[str, TokenUsage] = field(default_factory=lambda: defaultdict(TokenUsage))
 
     # 性能统计
     latencies: LatencyStats = field(default_factory=LatencyStats)
@@ -56,3 +57,12 @@ class BotState:
     # 嵌套/ID 相关统计 (key 为关联 ID，value 为 Counter)
     heartbeats: Dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
     activities: Dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
+
+    # 记忆系统统计
+    memory_observations: int = 0  # 观察入队总数
+    memory_ingestions: int = 0  # 摄入完成总数
+    memory_ingestion_errors: int = 0  # 摄入失败总数
+    memory_retrievals: int = 0  # 检索请求总数
+    memory_entities_created: int = 0  # 新建 Entity 总数
+    memory_edges_created: int = 0  # 新建 Edge 总数
+    memory_episodes_created: int = 0  # 新建 Episode 总数

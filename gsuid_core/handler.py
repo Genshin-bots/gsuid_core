@@ -124,6 +124,27 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             user_name=user_name,
             metadata=metadata,
         )
+        # ====== 【新增】Memory Observer Hook ======
+        if event.raw_text and event.raw_text.strip():
+            try:
+                from gsuid_core.ai_core.memory.config import memory_config
+
+                if memory_config.observer_enabled:
+                    from gsuid_core.ai_core.memory import observe
+
+                    asyncio.create_task(
+                        observe(
+                            content=event.raw_text,
+                            speaker_id=str(event.user_id),
+                            group_id=str(event.group_id or event.user_id),
+                            bot_self_id=str(event.bot_self_id),
+                            observer_blacklist=memory_config.observer_blacklist,
+                            message_type="group_msg" if event.group_id else "private_msg",
+                        )
+                    )
+            except Exception:
+                pass  # Observer 失败不应影响主流程
+        # ============================================
 
     if event.user_pm == 0:
         if not await Subscribe.data_exist(

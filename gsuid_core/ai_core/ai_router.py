@@ -109,7 +109,11 @@ async def _get_or_create_ai_session(
     base_persona = await build_persona_prompt(persona_name)
     _persona_mtime_cache[persona_name] = _get_persona_mtime(persona_name)
 
-    session = create_agent(system_prompt=base_persona, persona_name=persona_name)
+    session = create_agent(
+        system_prompt=base_persona,
+        persona_name=persona_name,
+        create_by="Chat",
+    )
 
     history_manager.set_ai_session(session_id, session)
     history_manager.update_session_access(event)

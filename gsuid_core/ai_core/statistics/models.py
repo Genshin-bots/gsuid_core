@@ -73,6 +73,14 @@ class AIDailyStatistics(BaseIDModel, table=True):
     trigger_keyword_count: int = Field(default=0, title="关键词触发次数")
     trigger_heartbeat_count: int = Field(default=0, title="主动巡检触发次数")
     trigger_scheduled_count: int = Field(default=0, title="定时任务触发次数")
+    # 记忆系统统计
+    memory_observations: int = Field(default=0, title="记忆观察入队数")
+    memory_ingestions: int = Field(default=0, title="记忆摄入完成数")
+    memory_ingestion_errors: int = Field(default=0, title="记忆摄入失败数")
+    memory_retrievals: int = Field(default=0, title="记忆检索请求数")
+    memory_entities_created: int = Field(default=0, title="新建Entity数")
+    memory_edges_created: int = Field(default=0, title="新建Edge数")
+    memory_episodes_created: int = Field(default=0, title="新建Episode数")
     created_at: int = Field(default=0, title="创建时间戳")
     updated_at: int = Field(default=0, title="更新时间戳")
 
@@ -119,6 +127,85 @@ class AIDailyStatistics(BaseIDModel, table=True):
             return True
         except Exception as e:
             logger.exception(f"📊 [AIDailyStatistics] 更新统计数据失败: {e}")
+            return False
+
+
+class AITokenUsageByType(BaseIDModel, table=True):
+    """
+    按使用类型分组的 Token 消耗统计
+    """
+
+    __table_args__ = (
+        UniqueConstraint("date", "chat_type", name="aitokenusagebytype_date"),
+        {"extend_existing": True},
+    )
+
+    date: str = Field(default="", title="统计日期")
+    chat_type: str = Field(default="", title="消耗类型")
+    input_tokens: int = Field(default=0, title="输入Token")
+    output_tokens: int = Field(default=0, title="输出Token")
+
+    @classmethod
+    @with_session
+    async def get_daily_data(
+        cls,
+        session: AsyncSession,
+        date: str,
+    ) -> list["AITokenUsageByType"]:
+        """获取指定日期的统计数据"""
+        stmt = select(cls).where(and_(cls.date == date))
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def get_by_type(
+        cls,
+        session: AsyncSession,
+        date: str,
+        chat_type: str,
+    ) -> Optional["AITokenUsageByType"]:
+        """获取指定类型在某日的统计"""
+        stmt = select(cls).where(
+            and_(
+                cls.date == date,
+                cls.chat_type == chat_type,
+            )
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    @classmethod
+    @with_session
+    async def upsert_token_usage(
+        cls,
+        session: AsyncSession,
+        date: str,
+        chat_type: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> bool:
+        """创建或更新 Token 使用统计"""
+        try:
+            existing = await cls.get_by_type(date, chat_type)
+            if existing:
+                await cls.update_data_by_data(
+                    select_data={"date": date, "chat_type": chat_type},
+                    update_data={
+                        "input_tokens": existing.input_tokens + input_tokens,
+                        "output_tokens": existing.output_tokens + output_tokens,
+                    },
+                )
+            else:
+                await cls.full_insert_data(
+                    date=date,
+                    chat_type=chat_type,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            return True
+        except Exception as e:
+            logger.exception(f"📊 [AITokenUsageByType] 更新Token消耗失败: {e}")
             return False
 
 

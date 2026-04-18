@@ -274,7 +274,7 @@ async def get_simple_schema_info(engine: AsyncEngine) -> Dict[str, List[Dict[str
 
 # https://github.com/tiangolo/sqlmodel/issues/264
 class BaseIDModel(SQLModel):
-    id: Optional[int] = Field(default=None, primary_key=True, title="序号")
+    id: int = Field(default=None, primary_key=True, title="序号")
 
     @classmethod
     @with_session

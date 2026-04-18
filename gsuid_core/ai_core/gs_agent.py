@@ -135,6 +135,7 @@ class GsCoreAIAgent:
         max_tokens: int = 1800,
         max_iterations: Optional[int] = None,
         persona_name: Optional[str] = None,
+        create_by: str = "LLM",
     ):
         self.history: List[ModelMessage] = []
         self.system_prompt = system_prompt
@@ -143,6 +144,8 @@ class GsCoreAIAgent:
         self._run_lock = asyncio.Lock()
         self.max_tokens = max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
+
+        self.create_by = create_by
 
         self.model = openai_chat_model
         if self.model is None:
@@ -175,6 +178,7 @@ class GsCoreAIAgent:
         context = ToolContext(bot=bot, ev=ev)
 
         final_user_message = user_message
+
         if rag_context:
             if isinstance(final_user_message, str):
                 final_user_message = f"{final_user_message}\n\n{rag_context}"
@@ -183,29 +187,30 @@ class GsCoreAIAgent:
                 final_user_message.append(f"\n\n{rag_context}")
             logger.info("🧠[GsCoreAIAgent] 已添加 RAG 上下文")
 
-        if not tools:
-            tools = get_main_agent_tools()
-            qy = ""
-            if isinstance(user_message, str):
-                qy = user_message
-            elif ev is not None:
-                qy = ev.raw_text
+        tools = []
+        if self.create_by in ["SubAgent", "Chat", "Agent"]:
+            if not tools:
+                tools = get_main_agent_tools()
+                qy = ""
+                if isinstance(user_message, str):
+                    qy = user_message
+                elif ev is not None:
+                    qy = ev.raw_text
 
-            if qy:
-                logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
-                tools += await search_tools(
-                    query=qy,
-                    limit=3,
-                    non_category=["self", "buildin"],
-                )
-
-            logger.debug(f"🧠 [GsCoreAIAgent] 主Agent工具数量: {len(tools)}")
+                if qy:
+                    logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
+                    tools += await search_tools(
+                        query=qy,
+                        limit=3,
+                        non_category=["self", "buildin"],
+                    )
+                logger.debug(f"🧠 [GsCoreAIAgent] 主Agent工具数量: {len(tools)}")
+            else:
+                logger.debug(f"🧠 [GsCoreAIAgent] 传入Tools列表: {len(tools)}，已传入参数")
         else:
-            logger.debug(f"🧠 [GsCoreAIAgent] 传入Tools列表: {len(tools)}，已传入参数")
+            logger.debug("🧠 [GsCoreAIAgent] 不搜索工具")
 
         logger.debug(f"🧠 [GsCoreAIAgent] 工具列表: {[tool.name for tool in tools]}")
-
-        now_text = ""
 
         tools = list({obj.name: obj for obj in tools}.values())
 
@@ -221,6 +226,7 @@ class GsCoreAIAgent:
         try:
             logger.info("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()...")
 
+            now_text = ""
             async with _agent.iter(
                 final_user_message,
                 deps=context,
@@ -297,9 +303,11 @@ class GsCoreAIAgent:
                         if input_tokens > 0 or output_tokens > 0:
                             statistics_manager.record_token_usage(
                                 model_name=self.model.model_name if self.model else "unknown",
+                                chat_type=self.create_by,
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
                             )
+                            statistics_manager.record_token_usage
                     except AttributeError as e:
                         # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
                         logger.info(f"📊 [GsCoreAIAgent] result.usage 访问失败: {e}")
@@ -385,6 +393,7 @@ def create_agent(
     max_tokens: int = 1800,
     max_iterations: Optional[int] = None,
     persona_name: Optional[str] = None,
+    create_by: str = "LLM",
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -409,6 +418,7 @@ def create_agent(
         max_tokens=max_tokens,
         max_iterations=max_iterations,
         persona_name=persona_name,
+        create_by=create_by,
     )
 
 
@@ -424,6 +434,9 @@ async def build_new_persona(query: str) -> str:
     Returns:
         新角色的提示词字符串
     """
-    agent = create_agent(system_prompt=CHARACTER_BUILDING_TEMPLATE)
+    agent = create_agent(
+        system_prompt=CHARACTER_BUILDING_TEMPLATE,
+        create_by="BuildPersona",
+    )
     response = await agent.run(query)
     return response.strip()

@@ -15,7 +15,6 @@ AI聊天处理模块
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.mem import memory_client
 from gsuid_core.ai_core.utils import prepare_content_payload
 from gsuid_core.ai_core.history import get_history_manager, format_history_for_agent
 from gsuid_core.ai_core.ai_router import (
@@ -23,7 +22,9 @@ from gsuid_core.ai_core.ai_router import (
 )
 from gsuid_core.ai_core.classifier import classifier_service
 from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
 # AI服务配置开关
 enable_ai: bool = ai_config.get_config("enable").data
@@ -126,37 +127,29 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 logger.info(f"🧠 [GsCore][AI] 摘要完成，摘要长度: {len(summarized)} 字符")
 
             # ============================================================
-            # 步骤 5: 记忆上下文（memv）
-            # 基于用户ID检索相关记忆，用于个性化响应
+            # 步骤 5: 记忆上下文（Memory Retrieval）
+            # 基于群组/用户ID检索相关记忆，用于个性化响应
             # ============================================================
-            memory_context: str = ""
-
-            try:
-                async with memory_client:
-                    logger.debug("🧠 [GsCore][AI] 开始加载用户记忆上下文...")
-                    mem_result_user = await memory_client.retrieve(
-                        event.raw_text,
-                        user_id=event.user_id,
-                        top_k=5,
+            memory_context_text = ""
+            if memory_config.enable_retrieval:
+                try:
+                    mem_ctx = await dual_route_retrieve(
+                        query=query,
+                        group_id=str(event.group_id or event.user_id),
+                        user_id=str(event.user_id),
+                        top_k=memory_config.retrieval_top_k,
+                        enable_system2=memory_config.enable_system2,
+                        enable_user_global=memory_config.enable_user_global_memory,
                     )
-                    if mem_result_user.retrieved_knowledge:
-                        memory_context = f"\n【用户记忆】\n{mem_result_user.to_prompt()}\n"
-                        logger.debug(
-                            f"🧠 [GsCore][AI] 已加载用户记忆上下文 ({len(mem_result_user.retrieved_knowledge)} 条)"
-                        )
-                    if event.group_id:
-                        mem_result_group = await memory_client.retrieve(
-                            event.raw_text,
-                            user_id=event.group_id,
-                            top_k=5,
-                        )
-                        if mem_result_group.retrieved_knowledge:
-                            memory_context = f"\n【群聊记忆】\n{mem_result_group.to_prompt()}\n"
-                            logger.debug(
-                                f"🧠 [GsCore][AI] 已加载群聊记忆上下文 ({len(mem_result_group.retrieved_knowledge)} 条)"
-                            )
-            except Exception as e:
-                logger.warning(f"🧠 [GsCore][AI] 记忆检索失败: {e}")
+                    memory_context_text = mem_ctx.to_prompt_text(max_chars=2000)
+                    logger.debug(f"🧠 [Memory] 检索到记忆上下文 ({len(memory_context_text)} 字符)")
+                    # 上报记忆检索统计
+                    try:
+                        statistics_manager.record_memory_retrieval()
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"🧠 [Memory] 记忆检索失败: {e}")
 
             # ============================================================
             # 步骤 6: 历史记录上下文
@@ -188,7 +181,10 @@ async def handle_ai_chat(bot: Bot, event: Event):
                     logger.debug(f"🧠 [GsCore][AI] 已加载 {len(history)} 条历史消息")
 
             # 合并记忆上下文到 rag_context
-            full_context = f"{rag_context}{memory_context}" if memory_context else rag_context
+            if memory_context_text:
+                full_context = f"{rag_context}\n【长期记忆】\n{memory_context_text}\n"
+            else:
+                full_context = f"{rag_context}"
 
             # ============================================================
             # 步骤 7: 调用 Agent 生成回复
@@ -206,23 +202,28 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 await bot.send(chat_result)
                 logger.info(f"🧠 [GsCore][AI] 回复已发送 (模式: {intent})")
 
-            # 步骤 9: 存储对话到记忆
-            # 在发送回复后将对话添加到记忆系统
-            try:
-                async with memory_client:
-                    await memory_client.add_exchange(
-                        user_id=event.user_id,
-                        user_message=event.raw_text,
-                        assistant_message=chat_result or "",
-                    )
-                    if event.group_id:
-                        await memory_client.add_exchange(
-                            user_id=event.group_id,
-                            user_message=history_context,
-                            assistant_message=chat_result or "",
+                # ====== 【新增】Memory Observer: AI 回复后入队观察 ======
+                from gsuid_core.ai_core.memory.config import memory_config as _mc
+
+                if _mc.observer_enabled:
+                    try:
+                        import asyncio
+
+                        from gsuid_core.ai_core.memory import observe
+
+                        asyncio.create_task(
+                            observe(
+                                content=chat_result,
+                                speaker_id=f"bot_{bot.bot_id}",
+                                group_id=str(event.group_id or event.user_id),
+                                bot_self_id=str(bot.bot_id),
+                                observer_blacklist=_mc.observer_blacklist,
+                                message_type="ai_reply",
+                            )
                         )
-            except Exception as e:
-                logger.warning(f"🧠 [GsCore][AI] 记忆存储失败: {e}")
+                    except Exception as _e:
+                        logger.debug(f"🧠 [Memory] AI回复观察入队失败: {_e}")
+                # ==========================================================
 
         except Exception as e:
             logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")

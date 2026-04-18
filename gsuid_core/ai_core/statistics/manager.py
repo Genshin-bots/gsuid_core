@@ -15,6 +15,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.statistics.models import (
     AIDailyStatistics,
     AIHeartbeatMetrics,
+    AITokenUsageByType,
     AIRAGMissStatistics,
     AITokenUsageByModel,
     AIRAGDocumentStatistics,
@@ -52,9 +53,16 @@ class StatisticsManager:
         """重置每日计数器"""
         self._bot_state = BotState()
 
-    def record_token_usage(self, model_name: str, input_tokens: int, output_tokens: int):
+    def record_token_usage(
+        self,
+        model_name: str,
+        chat_type: str,
+        input_tokens: int,
+        output_tokens: int,
+    ):
         """记录 Token 使用量"""
         self._bot_state.token_by_model[model_name.lower()].add(input_tokens, output_tokens)
+        self._bot_state.token_by_type[chat_type.lower()].add(input_tokens, output_tokens)
         self._bot_state.total_tokens.update(input=input_tokens, output=output_tokens)
 
     def record_latency(self, latency: float):
@@ -92,6 +100,36 @@ class StatisticsManager:
     def record_rag_miss(self):
         """记录 RAG 未命中"""
         self._rag["miss"] += 1
+
+    # ==================== 记忆系统统计 ====================
+
+    def record_memory_observation(self, count: int = 1):
+        """记录记忆观察入队"""
+        self._bot_state.memory_observations += count
+
+    def record_memory_ingestion(self, count: int = 1):
+        """记录记忆摄入完成"""
+        self._bot_state.memory_ingestions += count
+
+    def record_memory_ingestion_error(self, count: int = 1):
+        """记录记忆摄入失败"""
+        self._bot_state.memory_ingestion_errors += count
+
+    def record_memory_retrieval(self, count: int = 1):
+        """记录记忆检索请求"""
+        self._bot_state.memory_retrievals += count
+
+    def record_memory_entity_created(self, count: int = 1):
+        """记录新建 Entity"""
+        self._bot_state.memory_entities_created += count
+
+    def record_memory_edge_created(self, count: int = 1):
+        """记录新建 Edge"""
+        self._bot_state.memory_edges_created += count
+
+    def record_memory_episode_created(self, count: int = 1):
+        """记录新建 Episode"""
+        self._bot_state.memory_episodes_created += count
 
     # ==================== 数据查询与聚合 ====================
 
@@ -169,6 +207,15 @@ class StatisticsManager:
                 "miss_count": self._rag["miss"],
                 "hit_rate": self._rag["hit"] / (self._rag["hit"] + self._rag["miss"] or 1) * 100,
             },
+            "memory": {
+                "observations": b.memory_observations,
+                "ingestions": b.memory_ingestions,
+                "ingestion_errors": b.memory_ingestion_errors,
+                "retrievals": b.memory_retrievals,
+                "entities_created": b.memory_entities_created,
+                "edges_created": b.memory_edges_created,
+                "episodes_created": b.memory_episodes_created,
+            },
             "active_users": active_users,
         }
 
@@ -204,10 +251,25 @@ class StatisticsManager:
                     scheduled=stats.trigger_scheduled_count or 0,
                 )
 
+                # 加载记忆系统统计
+                s.memory_observations = stats.memory_observations or 0
+                s.memory_ingestions = stats.memory_ingestions or 0
+                s.memory_ingestion_errors = stats.memory_ingestion_errors or 0
+                s.memory_retrievals = stats.memory_retrievals or 0
+                s.memory_entities_created = stats.memory_entities_created or 0
+                s.memory_edges_created = stats.memory_edges_created or 0
+                s.memory_episodes_created = stats.memory_episodes_created or 0
+
             # 2. 加载 AITokenUsageByModel
             all_token_use = await AITokenUsageByModel.get_daily_data(date=today)
             for stats in all_token_use:
                 self._bot_state.token_by_model[stats.model_name.lower()].add(
+                    stats.input_tokens or 0, stats.output_tokens or 0
+                )
+
+            all_token_use_type = await AITokenUsageByType.get_daily_data(date=today)
+            for stats in all_token_use_type:
+                self._bot_state.token_by_type[stats.chat_type.lower()].add(
                     stats.input_tokens or 0, stats.output_tokens or 0
                 )
 
@@ -298,6 +360,13 @@ class StatisticsManager:
                 trigger_keyword_count=s.triggers["keyword"],
                 trigger_heartbeat_count=s.triggers["heartbeat"],
                 trigger_scheduled_count=s.triggers.get("scheduled", 0),
+                memory_observations=s.memory_observations,
+                memory_ingestions=s.memory_ingestions,
+                memory_ingestion_errors=s.memory_ingestion_errors,
+                memory_retrievals=s.memory_retrievals,
+                memory_entities_created=s.memory_entities_created,
+                memory_edges_created=s.memory_edges_created,
+                memory_episodes_created=s.memory_episodes_created,
             )
 
             # Token 按模型统计 - 批量插入
@@ -315,6 +384,22 @@ class StatisticsManager:
                     datas=token_data,
                     update_key=["input_tokens", "output_tokens"],
                     index_elements=["date", "model_name"],
+                )
+
+            token_type_data = [
+                AITokenUsageByType(
+                    date=today,
+                    chat_type=chat_type,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
+                for chat_type, usage in s.token_by_type.items()
+            ]
+            if token_type_data:
+                await AITokenUsageByType.batch_insert_data_with_update(
+                    datas=token_data,
+                    update_key=["input_tokens", "output_tokens"],
+                    index_elements=["date", "chat_type"],
                 )
 
             # 活跃统计 - 批量插入
@@ -476,6 +561,15 @@ class StatisticsManager:
                 },
             },
             "rag": {"hit_count": rag_hit, "miss_count": rag_miss, "hit_rate": rag_hit_rate},
+            "memory": {
+                "observations": stats.memory_observations or 0,
+                "ingestions": stats.memory_ingestions or 0,
+                "ingestion_errors": stats.memory_ingestion_errors or 0,
+                "retrievals": stats.memory_retrievals or 0,
+                "entities_created": stats.memory_entities_created or 0,
+                "edges_created": stats.memory_edges_created or 0,
+                "episodes_created": stats.memory_episodes_created or 0,
+            },
             "heartbeat": heartbeat or {"should_speak_true": 0, "should_speak_false": 0, "conversion_rate": 0},
             "active_users": active_users or [],
         }

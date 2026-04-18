@@ -32,8 +32,22 @@
    - [7.12 WebConsole API](#712-webconsole-api)
 8. [WebConsole API 与配置热重载](#8-webconsole-api-与配置热重载)
 9. [AI Statistics 统计系统](#9-ai-statistics-统计系统)
-10. [完整流程图](#10-完整流程图)
-11. [附录](#附录)
+10. [Memory 记忆系统](#10-memory-记忆系统)
+    - [10.1 概述](#101-概述)
+    - [10.2 模块结构](#102-模块结构)
+    - [10.3 核心架构](#103-核心架构)
+    - [10.4 Scope Key 隔离体系](#104-scope-key-隔离体系)
+    - [10.5 Observer 观察者管道](#105-observer-观察者管道)
+    - [10.6 Ingestion 摄入引擎](#106-ingestion-摄入引擎)
+    - [10.7 双路检索引擎](#107-双路检索引擎)
+    - [10.8 分层语义图](#108-分层语义图)
+    - [10.9 数据库模型](#109-数据库模型)
+    - [10.10 向量存储](#1010-向量存储)
+    - [10.11 配置项](#1011-配置项)
+    - [10.12 与现有模块的集成](#1012-与现有模块的集成)
+    - [10.13 记忆统计](#1013-记忆统计)
+11. [完整流程图](#11-完整流程图)
+12. [附录](#附录)
    - [D. 已知问题汇总](#d-已知问题汇总)
 
 ---
@@ -90,10 +104,6 @@ gsuid_core/ai_core/
 │   ├── __init__.py
 │   ├── manager.py
 │   └── README.md
-├── mem/                  # Agent 记忆层 (基于 memv)
-│   ├── __init__.py
-│   ├── memory.py        # memv 封装
-│   └── README.md
 ├── persona/              # Persona 角色系统
 │   ├── __init__.py
 │   ├── config.py        # Persona 配置管理
@@ -112,6 +122,38 @@ gsuid_core/ai_core/
 │   ├── reranker.py
 │   ├── startup.py
 │   └── tools.py
+├── memory/               # 记忆系统（Mnemis 双路检索）
+│   ├── __init__.py       # 模块导出
+│   ├── config.py         # 记忆系统全局配置
+│   ├── scope.py          # Scope Key 隔离体系
+│   ├── observer.py       # 观察者管道
+│   ├── startup.py        # 初始化入口
+│   ├── database/         # 图结构存储（SQLAlchemy）
+│   │   ├── __init__.py   # Session 工厂
+│   │   └── models.py     # MemEpisode/Entity/Edge/Category 模型
+│   ├── ingestion/        # 摄入引擎
+│   │   ├── __init__.py
+│   │   ├── worker.py     # IngestionWorker 后台消费
+│   │   ├── episode.py    # Episode 写入
+│   │   ├── entity.py     # Entity 去重与写入
+│   │   ├── edge.py       # Edge 写入与冲突检测
+│   │   └── hiergraph.py  # 分层语义图构建
+│   ├── retrieval/        # 检索引擎
+│   │   ├── __init__.py
+│   │   ├── system1.py    # System-1 向量相似度检索
+│   │   ├── system2.py    # System-2 分层图遍历
+│   │   └── dual_route.py # 双路合并 + Reranker
+│   ├── vector/           # 向量存储（Qdrant）
+│   │   ├── __init__.py
+│   │   ├── collections.py # Collection 名称常量
+│   │   ├── startup.py    # Collection 初始化
+│   │   └── ops.py        # 向量写入/读取操作
+│   └── prompts/          # LLM 提示词模板
+│       ├── __init__.py
+│       ├── extraction.py  # Entity/Edge 提取
+│       ├── categorization.py # Category 分类
+│       ├── selection.py   # 节点选择
+│       └── summary.py    # 摘要生成
 ├── skills/               # Skills 技能系统
 │   ├── __init__.py
 │   ├── operations.py
@@ -897,7 +939,6 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 |------|------|
 | `search_knowledge` | 检索知识库内容 |
 | `web_search` | Web搜索 (Tavily API) |
-| `query_user_memory` | 查询用户记忆 |
 
 #### 5.5.8 通常工具 (`category="common"`)
 
@@ -2004,9 +2045,712 @@ summary = statistics_manager.get_summary()
 
 ---
 
-## 9. 完整流程图
+## 10. Memory 记忆系统
 
-### 8.1 消息处理总流程
+### 10.1 概述
+
+Memory 模块是基于 Mnemis 双路检索思想的多群组/多用户 Agent 记忆系统，适配 gsuid_core 单进程架构。AI 可以"记住"群聊中发生的事情，在后续对话中利用这些记忆提供个性化响应。
+
+**设计理念**：
+- **Observer 与发言决策正交**：AI 可以读取所有消息以构建认知，但不需要因此回复任何一条。即使 Persona 配置为纯静默模式，记忆依然在后台积累。
+- **双路检索（Dual-Route Retrieval）**：System-1（向量相似度快速匹配）+ System-2（分层图遍历全局选择），合并后经 Reranker 重排序。
+- **Scope Key 隔离**：群组间严格隔离，同时支持用户跨群全局画像。
+- **单进程 asyncio.Queue**：避免进程间通信的复杂性。
+
+**核心数据流**：
+
+```
+用户消息 → handler.py (observe 入队)
+         → handle_ai.py (dual_route_retrieve 检索记忆上下文)
+         → AI 回复 → handle_ai.py (observe 入队)
+         → IngestionWorker 后台消费
+           → LLM 提取 Entity/Edge
+           → 写入 SQLAlchemy + Qdrant
+           → 触发分层图增量重建
+```
+
+### 10.2 模块结构
+
+```
+gsuid_core/ai_core/memory/
+├── __init__.py           # 模块导出（observe, dual_route_retrieve, MemoryContext 等）
+├── config.py             # MemoryConfig 全局配置（dataclass 单例）
+├── scope.py              # ScopeType 枚举 + make_scope_key() 函数
+├── observer.py           # 观察者管道（asyncio.Queue + 过滤逻辑）
+├── startup.py            # @on_core_start 初始化入口
+├── database/             # 图结构存储（SQLAlchemy，独立 MemBase）
+│   ├── __init__.py       # _MemorySessionFactory + get_async_session
+│   └── models.py         # 6 个模型 + 2 个关联表
+├── ingestion/            # 摄入引擎（后台消费 + LLM 提取）
+│   ├── __init__.py
+│   ├── worker.py         # IngestionWorker（单实例后台任务）
+│   ├── episode.py        # create_episode() Episode 写入
+│   ├── entity.py         # extract_and_upsert_entities() 两阶段去重
+│   ├── edge.py           # extract_and_upsert_edges() 冲突检测
+│   └── hiergraph.py      # HierarchicalGraphBuilder 分层图构建
+├── retrieval/            # 检索引擎
+│   ├── __init__.py
+│   ├── system1.py        # System-1 向量相似度 + RRF 融合
+│   ├── system2.py        # System-2 BFS + LLM 节点选择
+│   └── dual_route.py     # 双路合并 + Reranker 重排序
+├── vector/               # 向量存储（Qdrant，复用 rag/base.py 客户端）
+│   ├── __init__.py
+│   ├── collections.py    # 3 个 Collection 名称常量
+│   ├── startup.py        # ensure_memory_collections()
+│   └── ops.py            # upsert/search 操作（query_points API）
+└── prompts/              # LLM 提示词模板
+    ├── __init__.py
+    ├── extraction.py     # Entity/Edge 提取 Prompt
+    ├── categorization.py # Category 分类 Prompt
+    ├── selection.py      # 节点选择 Prompt
+    └── summary.py        # 摘要生成 Prompt
+```
+
+### 10.3 核心架构
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Memory System Architecture                    │
+│                                                                     │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐  │
+│  │  handler.py  │    │ handle_ai.py │    │ handle_ai.py         │  │
+│  │  (消息入口)   │    │ (AI回复后)    │    │ (AI回复前)           │  │
+│  │  observe()   │    │ observe()    │    │ dual_route_retrieve()│  │
+│  └──────┬───────┘    └──────┬───────┘    └──────────┬───────────┘  │
+│         │                   │                       │              │
+│         ▼                   ▼                       │              │
+│  ┌──────────────────────────────────┐               │              │
+│  │     asyncio.Queue (maxsize=10000) │               │              │
+│  │     _observation_queue            │               │              │
+│  └──────────────┬───────────────────┘               │              │
+│                 │                                    │              │
+│                 ▼                                    │              │
+│  ┌──────────────────────────────────┐               │              │
+│  │     IngestionWorker (单实例)       │               │              │
+│  │  ┌────────────────────────────┐  │               │              │
+│  │  │ _consume_loop()            │  │               │              │
+│  │  │ _flush_timer_loop()        │  │               │              │
+│  │  │ _flush(scope_key)          │  │               │              │
+│  │  │   └── _ingest_batch()      │  │               │              │
+│  │  │       ├── create_episode() │  │               │              │
+│  │  │       ├── _llm_extract()   │  │               │              │
+│  │  │       ├── extract_and_     │  │               │              │
+│  │  │       │  upsert_entities() │  │               │              │
+│  │  │       ├── extract_and_     │  │               │              │
+│  │  │       │  upsert_edges()    │  │               │              │
+│  │  │       └── hiergraph        │  │               │              │
+│  │  │          incremental_rebuild│  │               │              │
+│  │  └────────────────────────────┘  │               │              │
+│  └──────────────┬───────────────────┘               │              │
+│                 │                                    │              │
+│         ┌───────┴────────┐                           │              │
+│         ▼                ▼                           │              │
+│  ┌─────────────┐  ┌─────────────┐                    │              │
+│  │  SQLAlchemy  │  │   Qdrant    │                    │              │
+│  │  (图结构)    │  │  (向量索引)  │                    │              │
+│  └─────────────┘  └─────────────┘                    │              │
+│         │                │                            │              │
+│         └───────┬────────┘                            │              │
+│                 │  ←──────────────────────────────────┘              │
+│                 ▼                                                     │
+│  ┌──────────────────────────────────┐                                │
+│  │     Dual-Route Retrieval          │                                │
+│  │  ┌────────────┐ ┌──────────────┐ │                                │
+│  │  │ System-1   │ │ System-2     │ │                                │
+│  │  │ 向量相似度  │ │ 分层图遍历    │ │                                │
+│  │  │ + RRF融合  │ │ + LLM选择    │ │                                │
+│  │  └─────┬──────┘ └──────┬───────┘ │                                │
+│  │        └───────┬───────┘          │                                │
+│  │                ▼                  │                                │
+│  │        合并去重 + Reranker         │                                │
+│  │                │                  │                                │
+│  │                ▼                  │                                │
+│  │        MemoryContext              │                                │
+│  │        .to_prompt_text()          │                                │
+│  └──────────────────────────────────┘                                │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.4 Scope Key 隔离体系
+
+**文件位置**: [`gsuid_core/ai_core/memory/scope.py`](gsuid_core/ai_core/memory/scope.py)
+
+所有记忆节点（Episode、Entity、Edge、Category）均携带 `scope_key` 字段，实现群组间严格隔离。
+
+**ScopeType 枚举**：
+
+| 类型 | 格式 | 说明 |
+|------|------|------|
+| `GROUP` | `group:{group_id}` | 群组级记忆，群内所有消息共享 |
+| `USER_GLOBAL` | `user_global:{user_id}` | 用户跨群全局画像 |
+| `USER_IN_GROUP` | `user_in_group:{user_id}@{group_id}` | 用户在特定群组内的局部档案（可选精细化） |
+
+**示例**：
+```python
+from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+
+make_scope_key(ScopeType.GROUP, "789012")
+# → "group:789012"
+
+make_scope_key(ScopeType.USER_GLOBAL, "12345")
+# → "user_global:12345"
+```
+
+**隔离规则**：
+- 群 A 的记忆对群 B 完全不可见（SQL WHERE scope_key = ?）
+- 用户全局画像可跨群查询（`enable_user_global_memory` 配置项控制）
+- Qdrant 向量检索通过 `scope_key` payload filter 实现同等隔离
+
+### 10.5 Observer 观察者管道
+
+**文件位置**: [`gsuid_core/ai_core/memory/observer.py`](gsuid_core/ai_core/memory/observer.py)
+
+Observer 是记忆系统的"被动感知层"，通过 `asyncio.Queue` 在单进程内传递观察记录。
+
+**ObservationRecord 数据结构**：
+
+```python
+@dataclass
+class ObservationRecord:
+    raw_content: str      # 原始消息文本
+    speaker_id: str       # 发言者 ID
+    group_id: str         # 原始群组 ID
+    scope_key: str        # 格式化后的 Scope Key
+    timestamp: datetime   # 观察时间
+    message_type: str     # "group_msg" | "private_msg" | "ai_reply"
+```
+
+**过滤规则** (`_should_observe()`)：
+
+| 规则 | 说明 |
+|------|------|
+| 自身消息过滤 | `speaker_id == bot_self_id` 时不入队 |
+| 黑名单群组 | `group_id in observer_blacklist` 时不入队 |
+| 过短内容 | `< 5` 字符的纯表情/单字回复不入队 |
+| 纯图片/文件 | 无文字内容不入队 |
+
+**队列溢出策略**：队列满时丢弃最老的一条，保证新消息不丢失。
+
+**调用方式**：
+```python
+# handler.py 中（消息入口）
+asyncio.create_task(
+    observe(
+        content=event.raw_text,
+        speaker_id=str(event.user_id),
+        group_id=str(event.group_id or event.user_id),
+        bot_self_id=str(ws.bot_id),
+        observer_blacklist=memory_config.observer_blacklist,
+        message_type="group_msg" if event.group_id else "private_msg",
+    )
+)
+
+# handle_ai.py 中（AI 回复后）
+asyncio.create_task(
+    observe(
+        content=chat_result,
+        speaker_id=f"bot_{bot.bot_id}",
+        group_id=str(event.group_id or event.user_id),
+        bot_self_id=str(bot.bot_id),
+        observer_blacklist=_mc.observer_blacklist,
+        message_type="ai_reply",
+    )
+)
+```
+
+### 10.6 Ingestion 摄入引擎
+
+**文件位置**: [`gsuid_core/ai_core/memory/ingestion/`](gsuid_core/ai_core/memory/ingestion/)
+
+#### 10.6.1 IngestionWorker
+
+**文件位置**: [`gsuid_core/ai_core/memory/ingestion/worker.py`](gsuid_core/ai_core/memory/ingestion/worker.py)
+
+单实例后台任务，从 `observation_queue` 消费消息，按 `scope_key` 分组缓冲，满足时间窗口或数量阈值时触发 flush。
+
+**缓冲与 Flush 机制**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `batch_interval_seconds` | 300 (5分钟) | 消息聚合窗口，超时强制 flush |
+| `batch_max_size` | 30 | 单次最大聚合条数 |
+| `llm_semaphore_limit` | 3 | 同时进行的 LLM 调用上限 |
+
+**Flush 流程**：
+
+```
+_flush(scope_key)
+    │
+    ├── 1. 取出缓冲区所有 records
+    ├── 2. 获取 LLM 信号量
+    └── 3. _ingest_batch(session, records, scope_key)
+            │
+            ├── Step 1: 格式化对话文本
+            ├── Step 2: create_episode() 写入 Episode
+            ├── Step 3: _llm_extract() LLM 提取 Entity/Edge
+            ├── Step 4: extract_and_upsert_entities() 两阶段去重写入
+            ├── Step 5: extract_and_upsert_edges() 冲突检测写入
+            ├── Step 7: user_global Scope 跨群属性写入
+            └── Step 8: check_and_trigger_hierarchical_update()
+```
+
+#### 10.6.2 Entity 两阶段去重
+
+**文件位置**: [`gsuid_core/ai_core/memory/ingestion/entity.py`](gsuid_core/ai_core/memory/ingestion/entity.py)
+
+```
+extract_and_upsert_entities()
+    │
+    ├── Phase 1: 精确名称匹配
+    │   └── SELECT FROM mem_entities WHERE scope_key=? AND name=?
+    │       ├── 命中 → 更新 summary/tag，关联 Episode
+    │       └── 未命中 → Phase 2
+    │
+    └── Phase 2: 向量相似度匹配
+        └── Qdrant search_entities(name, scope_key, top_k=3)
+            ├── similarity >= 0.92 → 视为同一实体，合并
+            └── similarity < 0.92 → 新建 Entity
+```
+
+**去重阈值**：`dedup_similarity_threshold = 0.92`
+
+#### 10.6.3 Edge 冲突检测
+
+**文件位置**: [`gsuid_core/ai_core/memory/ingestion/edge.py`](gsuid_core/ai_core/memory/ingestion/edge.py)
+
+当新 Edge 与已有 Edge 语义冲突时（如"Alice 喜欢篮球" vs "Alice 不再打篮球"），通过 `invalid_at` 字段标记旧 Edge 失效：
+
+```
+extract_and_upsert_edges()
+    │
+    ├── 1. 查找 source/target Entity
+    ├── 2. 向量搜索同源同目标的已有 Edge
+    ├── 3. 冲突判断（similarity < edge_conflict_threshold）
+    │   └── 冲突 → 旧 Edge.invalid_at = now
+    └── 4. 写入新 Edge
+```
+
+**冲突阈值**：`edge_conflict_threshold = 0.88`（比 Entity 去重更宽松）
+
+### 10.7 双路检索引擎
+
+**文件位置**: [`gsuid_core/ai_core/memory/retrieval/`](gsuid_core/ai_core/memory/retrieval/)
+
+#### 10.7.1 System-1：向量相似度检索
+
+**文件位置**: [`gsuid_core/ai_core/memory/retrieval/system1.py`](gsuid_core/ai_core/memory/retrieval/system1.py)
+
+对 Episode、Entity、Edge 三个 Qdrant Collection 分别进行向量搜索，使用 **RRF（Reciprocal Rank Fusion）** 合并排序。
+
+```
+system1_search(query, scope_keys, top_k)
+    │
+    ├── search_episodes(query, scope_keys)  → Episode 候选
+    ├── search_entities(query, scope_keys)  → Entity 候选
+    ├── search_edges(query, scope_keys)     → Edge 候选
+    │
+    └── RRF 融合排序
+        score = Σ (1 / (k + rank_i))   # k=60 (标准 RRF 参数)
+```
+
+#### 10.7.2 System-2：分层图遍历
+
+**文件位置**: [`gsuid_core/ai_core/memory/retrieval/system2.py`](gsuid_core/ai_core/memory/retrieval/system2.py)
+
+从顶层 Category 开始 BFS 遍历，每层通过 LLM 判断哪些子节点与查询相关，逐层深入直到 Entity 叶子节点。
+
+```
+system2_global_selection(query, scope_key, session)
+    │
+    ├── 1. 获取顶层 Category (layer = max_layer)
+    ├── 2. BFS 遍历
+    │   └── 每层: LLM 选择相关子节点
+    │       ├── 相关 → 继续深入
+    │       └── 不相关 → 剪枝
+    ├── 3. 收集所有相关 Entity
+    └── 4. 加载关联 Edge
+```
+
+**成本控制**：System-2 需要多次 LLM 调用，可通过 `enable_system2=False` 关闭。
+
+#### 10.7.3 双路合并与 Reranker
+
+**文件位置**: [`gsuid_core/ai_core/memory/retrieval/dual_route.py`](gsuid_core/ai_core/memory/retrieval/dual_route.py)
+
+```python
+async def dual_route_retrieve(
+    query: str,
+    group_id: str,
+    user_id: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+    top_k: int = 10,
+    enable_system2: bool = True,
+    enable_user_global: bool = False,
+) -> MemoryContext:
+    # 1. 并行执行双路
+    s1_task = asyncio.create_task(system1_search(...))
+    s2_task = asyncio.create_task(system2_global_selection(...))
+
+    # 2. 合并去重
+    merged_episodes = _merge_dedup(s1.episodes, s2.episodes)
+    merged_entities = _merge_dedup(s1.entities, s2.entities)
+    merged_edges = _merge_dedup(s1.edges, s2.edges)
+
+    # 3. Reranker 重排序（复用 rag/reranker.py）
+    reranker = get_reranker()
+    if reranker:
+        merged_edges = await rerank_results(query, merged_edges, ...)
+
+    # 4. 返回 MemoryContext
+    return MemoryContext(episodes=..., entities=..., edges=...)
+```
+
+**MemoryContext 输出**：
+
+```python
+@dataclass
+class MemoryContext:
+    episodes: list[dict]    # 相关对话片段
+    entities: list[dict]    # 相关实体
+    edges: list[dict]       # 相关事实（Edge）
+    retrieval_meta: dict    # 检索元信息
+
+    def to_prompt_text(self, max_chars=3000) -> str:
+        """格式化为可注入 System Prompt 的记忆上下文文本"""
+        # 输出格式：
+        # 【已知事实】
+        # • Alice 喜欢户外运动
+        # • Bob 是程序员
+        #
+        # 【历史对话片段】
+        # [2026-04-18] [Alice]: 今天天气真好...
+```
+
+### 10.8 分层语义图
+
+**文件位置**: [`gsuid_core/ai_core/memory/ingestion/hiergraph.py`](gsuid_core/ai_core/memory/ingestion/hiergraph.py)
+
+分层语义图（Hierarchical Graph）将大量 Entity 归纳为多层 Category，支持 System-2 的自顶向下遍历检索。
+
+**构建流程**：
+
+```
+HierarchicalGraphBuilder.incremental_rebuild()
+    │
+    ├── 1. 检查是否需要重建
+    │   ├── Entity 增长 > hiergraph_rebuild_ratio (1.10)
+    │   └── 距上次重建 > hiergraph_rebuild_interval_seconds (86400)
+    │
+    ├── 2. 获取未分配 Category 的 Entity
+    │   └── _get_unassigned_entities()
+    │
+    ├── 3. LLM 分类
+    │   └── _llm_categorize(entities, parent_category=None)
+    │       └── 返回 {category_name: [entity_names]}
+    │
+    ├── 4. 应用分类结果
+    │   ├── _apply_assignments() → 创建 Category + 关联 Entity
+    │   └── 递归对子 Category 继续分类（直到 min_children_per_category 或 max_layers）
+    │
+    ├── 5. 更新 Meta
+    │   └── _update_meta()
+    │
+    └── 6. 更新群组摘要缓存
+        └── _update_group_summary_cache()
+            └── 用顶层 Category 的 name + summary 生成群组整体摘要
+```
+
+**配置项**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `min_children_per_category` | 3 | 每个 Category 至少包含的子节点数 |
+| `max_layers` | 5 | 分层图最大层数 |
+| `hiergraph_rebuild_ratio` | 1.10 | Entity 增长超过此比例时触发增量重建 |
+| `hiergraph_rebuild_interval_seconds` | 86400 (24h) | 距上次重建超过此秒数时触发 |
+
+### 10.9 数据库模型
+
+**文件位置**: [`gsuid_core/ai_core/memory/database/models.py`](gsuid_core/ai_core/memory/database/models.py)
+
+记忆系统使用独立的 SQLAlchemy `DeclarativeBase`（通过 `BaseIDModel.metadata`），与现有 `SQLModel` Base 完全隔离，但共享同一个 engine 和 async_maker。
+
+**模型总览**：
+
+| 模型 | 表名 | 说明 |
+|------|------|------|
+| `AIMemEpisode` | `mem_episodes` | 原始对话片段（Base Graph 第一层） |
+| `AIMemEntity` | `mem_entities` | 实体节点（Base Graph 第二层） |
+| `AIMemEdge` | `mem_edges` | 实体间关系边（Base Graph 第三层） |
+| `AIMemCategory` | `mem_categories` | 分层语义图节点 |
+| `AIMemCategoryEdge` | `mem_category_edges` | Category ↔ Category 层次关联 |
+| `AIMemHierarchicalGraphMeta` | `mem_hierarchical_graph_meta` | 分层图构建状态追踪 |
+
+**关联表**：
+
+| 表名 | 说明 |
+|------|------|
+| `mem_episode_entity_mentions` | Episode ↔ Entity 多对多 |
+| `mem_category_entity_members` | Category ↔ Entity 多对多 |
+
+**AIMemEpisode 关键字段**：
+
+```python
+class AIMemEpisode(BaseIDModel, table=True):
+    scope_key: str          # "group:789012"
+    content: str            # 聚合后的对话文本
+    speaker_ids: str        # JSON: ["user_001", "user_002"]
+    valid_at: datetime      # 最早消息时间
+    qdrant_id: str          # Qdrant memory_episodes Collection point ID
+    mentioned_entities: list[AIMemEntity]  # 多对多关联
+```
+
+**AIMemEntity 关键字段**：
+
+```python
+class AIMemEntity(BaseIDModel, table=True):
+    scope_key: str          # "group:789012"
+    name: str               # 实体名称（同 scope_key 内唯一）
+    summary: str            # 实体摘要
+    tag: str                # JSON: ["Speaker", "Group Member"]
+    is_speaker: bool        # 是否是群成员实体
+    user_id: str | None     # Speaker 实体的原始 user_id
+    qdrant_id: str          # Qdrant memory_entities Collection point ID
+    # 唯一约束: (scope_key, name)
+```
+
+**AIMemEdge 关键字段**：
+
+```python
+class AIMemEdge(BaseIDModel, table=True):
+    scope_key: str          # "group:789012"
+    fact: str               # 事实描述: "Alice 喜欢户外运动"
+    source_entity_id: str   # FK → mem_entities.id
+    target_entity_id: str   # FK → mem_entities.id
+    valid_at: datetime      # 事实生效时间
+    invalid_at: datetime | None  # 事实失效时间（冲突时设置）
+    qdrant_id: str          # Qdrant memory_edges Collection point ID
+```
+
+**AIMemCategory 关键字段**：
+
+```python
+class AIMemCategory(BaseIDModel, table=True):
+    scope_key: str          # "group:789012"
+    name: str               # 类目名称
+    summary: str            # 类目摘要
+    tag: str                # JSON: ["Sport", "Outdoor Activity"]
+    layer: int              # 层级（1=最具体，max=最抽象）
+    # 唯一约束: (scope_key, layer, name)
+    child_categories: list[AIMemCategory]   # 子类目
+    parent_categories: list[AIMemCategory]  # 父类目
+    member_entities: list[AIMemEntity]      # 直接包含的 Entity
+```
+
+### 10.10 向量存储
+
+**文件位置**: [`gsuid_core/ai_core/memory/vector/`](gsuid_core/ai_core/memory/vector/)
+
+复用现有 `rag/base.py` 的 Qdrant 客户端和 Embedding 模型，创建 3 个独立 Collection。
+
+**Collection 定义**：
+
+| Collection | 存储内容 | Payload |
+|------------|----------|---------|
+| `memory_episodes` | Episode 向量 | `scope_key`, `content` |
+| `memory_entities` | Entity 向量 | `scope_key`, `name`, `summary` |
+| `memory_edges` | Edge 向量 | `scope_key`, `fact` |
+
+**向量维度**：复用 `rag/base.py` 的 `DIMENSION` 常量。
+
+**API 说明**：使用 `client.query_points()` 方法（非已弃用的 `client.search()`），与现有 `rag/knowledge.py` 和 `rag/tools.py` 保持一致。
+
+**核心操作函数**：
+
+| 函数 | 说明 |
+|------|------|
+| `upsert_episode_vector()` | 写入 Episode 向量 |
+| `upsert_entity_vector()` | 写入 Entity 向量 |
+| `upsert_edge_vector()` | 写入 Edge 向量 |
+| `search_episodes()` | 向量搜索 Episode |
+| `search_entities()` | 向量搜索 Entity |
+| `search_edges()` | 向量搜索 Edge |
+
+### 10.11 配置项
+
+**文件位置**: [`gsuid_core/ai_core/memory/config.py`](gsuid_core/ai_core/memory/config.py)
+
+全局单例 `memory_config = MemoryConfig()`，所有配置项均有合理默认值。
+
+#### 观察者配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `observer_enabled` | bool | `True` | 是否启用消息观察者 |
+| `observer_blacklist` | List[str] | `[]` | 黑名单群组 ID 列表 |
+
+#### 摄入配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `ingestion_enabled` | bool | `True` | 是否启用摄入引擎 |
+| `batch_interval_seconds` | int | `300` | 消息聚合窗口（秒） |
+| `batch_max_size` | int | `30` | 单次最大聚合条数 |
+| `llm_semaphore_limit` | int | `3` | 同时进行的 LLM 调用上限 |
+
+#### 检索配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enable_retrieval` | bool | `True` | 是否启用记忆检索 |
+| `enable_system2` | bool | `True` | 是否启用 System-2（成本较高） |
+| `enable_user_global_memory` | bool | `False` | 是否联合查询用户跨群画像 |
+| `enable_heartbeat_memory` | bool | `True` | 是否在 Heartbeat 中注入群组摘要 |
+| `retrieval_top_k` | int | `10` | 最终返回的 Episode 数量上限 |
+
+#### 去重与冲突阈值
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `dedup_similarity_threshold` | float | `0.92` | Entity 去重余弦相似度阈值 |
+| `edge_conflict_threshold` | float | `0.88` | Edge 语义冲突判断阈值 |
+
+#### 分层图配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `min_children_per_category` | int | `3` | 每个 Category 最少子节点数 |
+| `max_layers` | int | `5` | 分层图最大层数 |
+| `hiergraph_rebuild_ratio` | float | `1.10` | Entity 增长触发增量重建的比例 |
+| `hiergraph_rebuild_interval_seconds` | int | `86400` | 距上次重建触发增量重建的秒数 |
+
+### 10.12 与现有模块的集成
+
+#### 10.12.1 handler.py 集成
+
+**文件位置**: [`gsuid_core/handler.py`](gsuid_core/handler.py:90)
+
+在 `handle_event()` 的消息入口处添加 Memory Observer Hook，在历史记录写入之前：
+
+```python
+# handler.py - handle_event() 中
+if event.raw_text and event.raw_text.strip():
+    try:
+        from gsuid_core.ai_core.memory.config import memory_config
+        if memory_config.observer_enabled:
+            from gsuid_core.ai_core.memory import observe
+            asyncio.create_task(
+                observe(
+                    content=event.raw_text,
+                    speaker_id=str(event.user_id),
+                    group_id=str(event.group_id or event.user_id),
+                    bot_self_id=str(ws.bot_id),
+                    observer_blacklist=memory_config.observer_blacklist,
+                    message_type="group_msg" if event.group_id else "private_msg",
+                )
+            )
+    except Exception:
+        pass  # Observer 失败不应影响主流程
+```
+
+#### 10.12.2 handle_ai.py 集成
+
+**文件位置**: [`gsuid_core/ai_core/handle_ai.py`](gsuid_core/ai_core/handle_ai.py:128)
+
+**记忆检索（AI 回复前）**：在步骤 5 中，AI 生成回复前检索相关记忆并注入上下文：
+
+```python
+# handle_ai.py - 步骤 5: 记忆上下文
+memory_context_text = ""
+if memory_config.enable_retrieval:
+    async with get_async_session() as mem_session:
+        mem_ctx = await dual_route_retrieve(
+            query=query,
+            group_id=str(event.group_id or event.user_id),
+            user_id=str(event.user_id),
+            session=mem_session,
+        )
+    memory_context_text = mem_ctx.to_prompt_text(max_chars=2000)
+
+# 合并记忆上下文到 full_context
+if memory_context_text:
+    full_context = f"{rag_context}\n【长期记忆】\n{memory_context_text}\n"
+```
+
+**记忆观察（AI 回复后）**：AI 回复发送后，将回复内容入队观察：
+
+```python
+# handle_ai.py - 步骤 8 后
+if chat_result and _mc.observer_enabled:
+    asyncio.create_task(
+        observe(
+            content=chat_result,
+            speaker_id=f"bot_{bot.bot_id}",
+            group_id=str(event.group_id or event.user_id),
+            bot_self_id=str(bot.bot_id),
+            observer_blacklist=_mc.observer_blacklist,
+            message_type="ai_reply",
+        )
+    )
+```
+
+#### 10.12.3 启动初始化
+
+**文件位置**: [`gsuid_core/ai_core/memory/startup.py`](gsuid_core/ai_core/memory/startup.py)
+
+```python
+@on_core_start
+async def init_memory_system():
+    """初始化记忆系统"""
+    # 1. 确保 Qdrant Collection 存在
+    await ensure_memory_collections()
+    # 2. 创建数据库表
+    async with engine.begin() as conn:
+        await conn.run_sync(BaseIDModel.metadata.create_all)
+    # 3. 启动 IngestionWorker
+    worker = IngestionWorker(db_session_factory=get_async_session)
+    asyncio.create_task(worker.start())
+```
+
+### 10.13 记忆统计
+
+记忆系统的运行统计集成在 AI Statistics 模块中，通过 `StatisticsManager` 的 `record_memory_*` 方法记录。
+
+**统计指标**：
+
+| 统计项 | 方法 | 记录位置 |
+|--------|------|----------|
+| 观察入队数 | `record_memory_observation()` | `observer.py` - `observe()` |
+| 摄入完成数 | `record_memory_ingestion()` | `worker.py` - `_flush()` |
+| 摄入失败数 | `record_memory_ingestion_error()` | `worker.py` - `_flush()` |
+| 检索请求数 | `record_memory_retrieval()` | `handle_ai.py` - 记忆检索后 |
+| 新建 Entity 数 | `record_memory_entity_created()` | `worker.py` - `_ingest_batch()` |
+| 新建 Edge 数 | `record_memory_edge_created()` | `worker.py` - `_ingest_batch()` |
+| 新建 Episode 数 | `record_memory_episode_created()` | `worker.py` - `_flush()` |
+
+**数据库持久化**：以上 7 项统计字段已添加到 `AIDailyStatistics` 模型，随定时任务（每 30 分钟 + 零点重置）持久化到数据库。
+
+**统计摘要输出**：`get_summary()` 和 `_daily_stats_to_dict()` 的 `memory` 区块：
+
+```json
+{
+    "memory": {
+        "observations": 150,
+        "ingestions": 12,
+        "ingestion_errors": 1,
+        "retrievals": 45,
+        "entities_created": 38,
+        "edges_created": 25,
+        "episodes_created": 12
+    }
+}
+```
+
+---
+
+## 11. 完整流程图
+
+### 11.1 消息处理总流程
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -2061,7 +2805,7 @@ summary = statistics_manager.get_summary()
                                 └─────────────────────────────────────┘
 ```
 
-### 8.2 AI 聊天处理流程 (handle_ai_chat)
+### 11.2 AI 聊天处理流程 (handle_ai_chat)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -2141,7 +2885,7 @@ summary = statistics_manager.get_summary()
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.3 Heartbeat 定时巡检流程
+### 11.3 Heartbeat 定时巡检流程
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -2221,7 +2965,7 @@ summary = statistics_manager.get_summary()
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.4 配置更新与热重载流程
+### 11.4 配置更新与热重载流程
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -2259,7 +3003,7 @@ summary = statistics_manager.get_summary()
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.5 消息触发 vs 定时巡检 对比
+### 11.5 消息触发 vs 定时巡检 对比
 
 | 特性 | 提及应答模式 | 定时巡检模式 |
 |------|-------------|-------------|
@@ -2288,6 +3032,14 @@ summary = statistics_manager.get_summary()
 | [`gsuid_core/ai_core/heartbeat/decision.py`](gsuid_core/ai_core/heartbeat/decision.py) | LLM 决策 |
 | [`gsuid_core/webconsole/persona_api.py`](gsuid_core/webconsole/persona_api.py) | Persona API |
 | [`gsuid_core/utils/plugins_config/gs_config.py`](gsuid_core/utils/plugins_config/gs_config.py) | 配置管理 |
+| [`gsuid_core/ai_core/memory/__init__.py`](gsuid_core/ai_core/memory/__init__.py) | 记忆系统模块导出 |
+| [`gsuid_core/ai_core/memory/config.py`](gsuid_core/ai_core/memory/config.py) | 记忆系统配置 |
+| [`gsuid_core/ai_core/memory/observer.py`](gsuid_core/ai_core/memory/observer.py) | 观察者管道 |
+| [`gsuid_core/ai_core/memory/scope.py`](gsuid_core/ai_core/memory/scope.py) | Scope Key 隔离 |
+| [`gsuid_core/ai_core/memory/ingestion/worker.py`](gsuid_core/ai_core/memory/ingestion/worker.py) | 摄入引擎 Worker |
+| [`gsuid_core/ai_core/memory/retrieval/dual_route.py`](gsuid_core/ai_core/memory/retrieval/dual_route.py) | 双路检索引擎 |
+| [`gsuid_core/ai_core/memory/database/models.py`](gsuid_core/ai_core/memory/database/models.py) | 记忆系统数据模型 |
+| [`gsuid_core/ai_core/memory/vector/ops.py`](gsuid_core/ai_core/memory/vector/ops.py) | 向量存储操作 |
 
 ### B. 配置热重载矩阵
 
@@ -2355,3 +3107,4 @@ Session ID 格式说明:
 | 2026-04-12 | v1.8 | 修复 D-8（用户触发并发控制，使用 `_ai_semaphore` 信号量限制）、D-9（长文本截断已实现但仍为粗暴截断，待进一步优化为智能截断） |
 | 2026-04-12 | v1.9 | 完整修复 D-9：移除 handler.py 粗暴截断逻辑，改为在 handle_ai.py 中调用 create_subagent 智能摘要（>2000字符触发），新增"文本摘要专家"系统提示词；更新 8.2 流程图补充并发控制(步骤2)和长文本摘要(步骤5.5)；修正 D-4/D-9 问题表章节引用（2.4→2.3）；D-9 状态更新为已修复 |
 | 2026-04-12 | v2.0 | 修复 D-10（双层长度防护：新增 ABSOLUTE_MAX_LENGTH=10000 硬截断层，防止子Agent Token爆炸）；修复 D-11（RAG 强制前置检索改为主Agent工具按需调用：移除 handle_ai.py 中强制 query_knowledge 逻辑，改由 LLM 自主调用 search_knowledge 工具，消除闲聊场景 1~2 秒无谓延迟）；更新 2.3 节（双层防护表格）、新增 2.6 节（RAG 按需调用对比说明）、更新 8.2 流程图（步骤3双层防护+步骤6历史上下文说明）、更新附录 D（D-10/D-11）|
+| 2026-04-18 | v3.0 | 新增第10节 Memory 记忆系统：基于 Mnemis 双路检索的多群组/多用户 Agent 记忆系统，包含 Observer 观察者管道、Ingestion 摄入引擎（两阶段 Entity 去重 + Edge 冲突检测）、Dual-Route Retrieval 双路检索（System-1 向量相似度 + System-2 分层图遍历 + Reranker 重排序）、Hierarchical Graph 分层语义图、Scope Key 隔离体系、SQLAlchemy 图结构模型 + Qdrant 向量索引；更新 1.1 节目录结构（新增 memory/ 模块）；更新 9 节统计系统（新增 7 项记忆统计指标）；更新附录 A（新增记忆系统相关文件路径）；更新完整流程图章节编号（8→11） |
