@@ -404,7 +404,7 @@ class StatisticsManager:
             ]
             if token_type_data:
                 await AITokenUsageByType.batch_insert_data_with_update(
-                    datas=token_data,
+                    datas=token_type_data,
                     update_key=["input_tokens", "output_tokens"],
                     index_elements=["date", "chat_type"],
                 )

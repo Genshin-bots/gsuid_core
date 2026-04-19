@@ -9,6 +9,7 @@ from typing import Optional
 from dataclasses import field, dataclass
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.rag.reranker import get_reranker
 
 from .system1 import System1Result, system1_search
@@ -69,10 +70,10 @@ async def dual_route_retrieve(
         enable_system2:     是否启用 System-2 全局选择（成本较高）
         enable_user_global: 是否联合查询用户跨群画像
     """
-    group_scope = f"group:{group_id}"
+    group_scope = make_scope_key(ScopeType.GROUP, group_id)
     scope_keys = [group_scope]
     if enable_user_global and user_id:
-        scope_keys.append(f"user_global:{user_id}")
+        scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, user_id))
 
     # 并行执行双路
     s1_task = asyncio.create_task(system1_search(query, scope_keys, top_k=top_k))
