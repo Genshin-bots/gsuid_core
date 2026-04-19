@@ -27,6 +27,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.utils import send_chat_result
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.rag.tools import ToolList, search_tools, get_main_agent_tools
@@ -187,6 +188,8 @@ class GsCoreAIAgent:
                 final_user_message.append(f"\n\n{rag_context}")
             logger.info("🧠[GsCoreAIAgent] 已添加 RAG 上下文")
 
+        logger.trace(f"🧠[GsCoreAIAgent] 用户消息: {final_user_message}")
+
         tools = []
         if self.create_by in ["SubAgent", "Chat", "Agent"]:
             if not tools:
@@ -262,7 +265,7 @@ class GsCoreAIAgent:
                                 _text = part.content.strip()
                                 logger.debug(f"🧠 [大模型文本]: {_text}")
                                 if bot and _text:
-                                    await bot.send(_text)
+                                    await send_chat_result(bot, _text)
                                     now_text = _text
 
                             elif isinstance(part, ThinkingPart):
@@ -279,7 +282,7 @@ class GsCoreAIAgent:
             # 遍历完成后，直接从 agent_run 中获取最终结果
             result = agent_run.result
             if result:
-                logger.info("🧠[GsCoreAIAgent] 6. _agent.iter() 执行成功")
+                logger.info("🧠 [GsCoreAIAgent] _agent.iter() 执行成功!")
 
                 self.history.extend(result.new_messages())
 

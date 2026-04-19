@@ -10,7 +10,6 @@
 """
 
 import uuid
-import asyncio
 from typing import List, Optional
 from datetime import datetime, timezone
 
@@ -198,17 +197,17 @@ class AIMemEntity(SQLModel, table=True):
         entities_data: list[dict],
         episode_id: str,
         speaker_ids: list[str],
-    ) -> dict[str, str]:
-        """处理 LLM 提取出的 Entity 列表，去重后写入数据库和向量库。
-
-        Returns:
-            {entity_name: entity_id} 映射，供 Edge 写入时使用
+    ) -> tuple[dict[str, str], list[dict]]:
         """
-        from gsuid_core.ai_core.memory.vector.ops import upsert_entity_vector
+        Returns:
+            name_to_id,
+            vector_payloads  ← 新增
+        """
 
         name_to_id: dict[str, str] = {}
+        vector_payloads: list[dict] = []
 
-        # 强制将 speaker_ids 加入 entities_data
+        # 补 speaker
         for uid in speaker_ids:
             entities_data.append(
                 {
@@ -229,38 +228,36 @@ class AIMemEntity(SQLModel, table=True):
             existing = result.scalar_one_or_none()
 
             if existing:
-                # 合并 summary
                 new_summary = entity_data.get("summary", "")
                 if new_summary and new_summary not in existing.summary:
                     existing.summary = f"{existing.summary}\n{new_summary}".strip()
 
-                # 合并 tag（tag 字段为原生 list，直接集合运算）
-                existing_tags: list = existing.tag if isinstance(existing.tag, list) else []
+                existing_tags = existing.tag if isinstance(existing.tag, list) else []
                 merged_tags = list(set(existing_tags) | set(entity_data.get("tag", [])))
+
                 existing.tag = merged_tags
                 existing.updated_at = datetime.now(timezone.utc)
                 session.add(existing)
 
-                try:
-                    asyncio.create_task(
-                        upsert_entity_vector(
-                            entity_id=existing.id,
-                            name=existing.name,
-                            summary=existing.summary,
-                            scope_key=scope_key,
-                            is_speaker=existing.is_speaker,
-                            user_id=existing.user_id,
-                            tag=merged_tags,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"Entity vector upsert failed for {existing.id}: {e}")
+                # 👉 收集 vector payload
+                vector_payloads.append(
+                    {
+                        "entity_id": existing.id,
+                        "name": existing.name,
+                        "summary": existing.summary,
+                        "scope_key": scope_key,
+                        "is_speaker": existing.is_speaker,
+                        "user_id": existing.user_id,
+                        "tag": merged_tags,
+                    }
+                )
 
                 name_to_id[name] = existing.id
 
             else:
                 entity_id = str(uuid.uuid4())
-                tag_list: list = entity_data.get("tag", [])
+                tag_list = entity_data.get("tag", [])
+
                 new_entity = cls(
                     id=entity_id,
                     scope_key=scope_key,
@@ -273,24 +270,21 @@ class AIMemEntity(SQLModel, table=True):
                 )
                 session.add(new_entity)
 
-                try:
-                    asyncio.create_task(
-                        upsert_entity_vector(
-                            entity_id=entity_id,
-                            name=name,
-                            summary=entity_data.get("summary", ""),
-                            scope_key=scope_key,
-                            is_speaker=entity_data.get("is_speaker", False),
-                            user_id=entity_data.get("user_id"),
-                            tag=tag_list,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"Entity vector upsert failed for {entity_id}: {e}")
+                vector_payloads.append(
+                    {
+                        "entity_id": entity_id,
+                        "name": name,
+                        "summary": entity_data.get("summary", ""),
+                        "scope_key": scope_key,
+                        "is_speaker": entity_data.get("is_speaker", False),
+                        "user_id": entity_data.get("user_id"),
+                        "tag": tag_list,
+                    }
+                )
 
                 name_to_id[name] = entity_id
 
-        return name_to_id
+        return name_to_id, vector_payloads
 
 
 # ─────────────────────────────────────────────

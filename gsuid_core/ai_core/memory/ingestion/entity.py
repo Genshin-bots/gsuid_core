@@ -10,6 +10,8 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gsuid_core.logger import logger
+
 from ..database.models import AIMemEntity
 
 
@@ -24,10 +26,21 @@ async def extract_and_upsert_entities(
     episode_id: str,
     speaker_ids: list[str],
 ) -> dict[str, str]:
-    return await AIMemEntity.extract_and_upsert(
+    from gsuid_core.ai_core.memory.vector.ops import upsert_entity_vector
+
+    name_to_id, vector_payloads = await AIMemEntity.extract_and_upsert(
         session,
         scope_key,
         entities_data,
         episode_id,
         speaker_ids,
     )
+
+    # 🔥 统一写 vector（关键点）
+    for payload in vector_payloads:
+        try:
+            await upsert_entity_vector(**payload)
+        except Exception as e:
+            logger.warning(f"[Qdrant] Entity vector upsert failed for {payload['entity_id']}: {e}")
+
+    return name_to_id

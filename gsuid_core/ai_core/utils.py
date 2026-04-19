@@ -1,4 +1,6 @@
+import re
 import json
+import asyncio
 from typing import Any, Optional, Sequence
 
 from PIL import Image
@@ -6,7 +8,8 @@ from pydantic_ai.messages import ImageUrl, UserContent
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message
+from gsuid_core.models import Event
+from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.configs.ai_config import openai_config
@@ -129,3 +132,68 @@ def prepare_content_payload(
                 logger.warning(f"无法处理图片ID: {i}")
 
     return content_payload
+
+
+async def send_chat_result(bot: Bot, chat_result: str):
+    """
+    解析并发送 chat_result，支持：
+    - 按换行分割多条消息
+    - @用户ID 语法 → MessageSegment.at(user_id)
+    """
+    if not chat_result:
+        return
+
+    # 按换行分割为多条消息
+    lines = chat_result.split("\n")
+
+    for line in lines:
+        if not line.strip():
+            continue
+
+        # 解析 @user_id 语法，转换为消息段列表
+        segments = _parse_at_segments(line)
+
+        # 模拟打字延迟（基于纯文本长度）
+        plain_text = re.sub(r"@\d+", "", line)
+        await asyncio.sleep(len(plain_text) / 7)
+
+        await bot.send(segments)
+
+
+def _parse_at_segments(text: str) -> list[Message]:
+    """
+    将含有 @用户ID 的文本解析为 MessageSegment 列表。
+
+    规则：
+    - @后跟纯数字（QQ号格式）才会被解析为 at segment
+    - 其余文本保持为 text segment
+    - 示例输入："好哦 @444835641 你来看"
+    - 示例输出：[Text("好哦 "), At(444835641), Text(" 你来看")]
+    """
+    # 匹配 @数字，前后允许空格（空格属于分隔符，不计入文本内容）
+    pattern = re.compile(r"\s*@(\d+)\s*")
+    segments: list[Message] = []
+    last_end = 0
+
+    for match in pattern.finditer(text):
+        # 匹配前的普通文本
+        before = text[last_end : match.start()]
+        if before:
+            segments.append(MessageSegment.text(before))
+
+        # @ 片段
+        user_id = match.group(1)
+        segments.append(MessageSegment.at(user_id))
+
+        last_end = match.end()
+
+    # 剩余文本
+    tail = text[last_end:]
+    if tail:
+        segments.append(MessageSegment.text(tail))
+
+    # 如果没有任何 @ 匹配，直接返回原始字符串（兼容旧调用）
+    if not segments:
+        return [MessageSegment.text(text)]
+
+    return segments

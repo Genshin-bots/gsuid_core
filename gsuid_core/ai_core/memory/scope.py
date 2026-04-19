@@ -21,13 +21,13 @@ def make_scope_key(scope_type: ScopeType, scope_id: str, secondary_id: str = "")
 
     Examples:
         make_scope_key(ScopeType.GROUP, "789012")
-        → "group:789012"
+        → "ScopeType.GROUP:789012"
 
         make_scope_key(ScopeType.USER_GLOBAL, "12345")
-        → "user_global:12345"
+        → "ScopeType.USER_GLOBAL:12345"
 
         make_scope_key(ScopeType.USER_IN_GROUP, "12345", "789012")
-        → "user_in_group:12345@789012"
+        → "ScopeType.USER_IN_GROUP:12345@789012"
 
     Args:
         scope_type: Scope 类型
