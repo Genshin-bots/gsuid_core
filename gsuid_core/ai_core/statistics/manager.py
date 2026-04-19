@@ -179,6 +179,10 @@ class StatisticsManager:
                     {"model": m, "input_tokens": u.input_tokens, "output_tokens": u.output_tokens}
                     for m, u in b.token_by_model.items()
                 ],
+                "by_type": [
+                    {"type": t, "input_tokens": u.input_tokens, "output_tokens": u.output_tokens}
+                    for t, u in b.token_by_type.items()
+                ],
             },
             "latency": {"avg": LatencyStats(all_latencies).avg, "p95": LatencyStats(all_latencies).p95},
             "intent_distribution": {
@@ -191,6 +195,7 @@ class StatisticsManager:
                 "network_error": agg_errors.get("network_error", 0),
                 "usage_limit": agg_errors.get("usage_limit", 0),
                 "agent_error": agg_errors.get("agent_error", 0),
+                "api_529_error": agg_errors.get("api_529_error", 0),
                 "total": sum(agg_errors.values()),
             },
             "heartbeat": {
@@ -468,6 +473,17 @@ class StatisticsManager:
                 for t in token_by_model_data
             ]
 
+            # 获取按模型分组的 Token 消耗数据
+            token_by_type_data = await AITokenUsageByType.get_daily_data(date)
+            by_type = [
+                {
+                    "chat_type": t.chat_type,
+                    "input_tokens": t.input_tokens,
+                    "output_tokens": t.output_tokens,
+                }
+                for t in token_by_type_data
+            ]
+
             # 获取活跃用户数据
             activity_data = await AIGroupUserActivityStats.get_daily_data(date)
             active_users = [
@@ -490,7 +506,16 @@ class StatisticsManager:
                 "conversion_rate": hb_true / (hb_true + hb_false) * 100 if (hb_true + hb_false) > 0 else 0,
             }
 
-            return self._daily_stats_to_dict(stats, hit_count, miss_count, hit_rate, by_model, active_users, heartbeat)
+            return self._daily_stats_to_dict(
+                stats,
+                hit_count,
+                miss_count,
+                hit_rate,
+                by_model,
+                by_type,
+                active_users,
+                heartbeat,
+            )
         except Exception as e:
             logger.warning(f"📊 [StatisticsManager] 查询历史统计失败: {e}")
             return None
@@ -502,6 +527,7 @@ class StatisticsManager:
         rag_miss: int = 0,
         rag_hit_rate: float = 0.0,
         by_model: Optional[List[Dict[str, Any]]] = None,
+        by_type: Optional[List[Dict[str, Any]]] = None,
         active_users: Optional[List[Dict[str, Any]]] = None,
         heartbeat: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -516,6 +542,7 @@ class StatisticsManager:
                 "total_input_tokens": stats.total_input_tokens or 0,
                 "total_output_tokens": stats.total_output_tokens or 0,
                 "by_model": by_model or [],
+                "by_type": by_type or [],
             },
             "latency": {"avg": stats.avg_latency or 0.0, "p95": stats.p95_latency or 0.0},
             "intent_distribution": {

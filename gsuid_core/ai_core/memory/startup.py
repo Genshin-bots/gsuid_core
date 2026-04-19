@@ -10,7 +10,7 @@ from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start
 
 
-@on_core_start
+@on_core_start(priority=5)
 async def init_memory_system():
     """初始化记忆系统的所有组件。
 

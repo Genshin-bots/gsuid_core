@@ -21,14 +21,23 @@ GET /api/ai/statistics/summary
         "token_usage": {
             "total_input_tokens": 150000,
             "total_output_tokens": 80000,
-            "total_cost_usd": 1.25,
-            "total_cost_cny": 9.00,
             "by_model": [
                 {
                     "model": "gpt-4",
                     "input_tokens": 100000,
-                    "output_tokens": 50000,
-                    "cost_usd": 1.0
+                    "output_tokens": 50000
+                }
+            ],
+            "by_type": [
+                {
+                    "type": "group",
+                    "input_tokens": 80000,
+                    "output_tokens": 40000
+                },
+                {
+                    "type": "private",
+                    "input_tokens": 70000,
+                    "output_tokens": 40000
                 }
             ]
         },
@@ -47,6 +56,7 @@ GET /api/ai/statistics/summary
             "network_error": 0,
             "usage_limit": 0,
             "agent_error": 1,
+            "api_529_error": 0,
             "total": 4
         },
         "heartbeat": {
@@ -64,6 +74,15 @@ GET /api/ai/statistics/summary
             "hit_count": 80,
             "miss_count": 20,
             "hit_rate": 80.0
+        },
+        "memory": {
+            "observations": 25,
+            "ingestions": 20,
+            "ingestion_errors": 2,
+            "retrievals": 50,
+            "entities_created": 10,
+            "edges_created": 15,
+            "episodes_created": 5
         },
         "active_users": [
             {
@@ -97,14 +116,12 @@ GET /api/ai/statistics/token-by-model
         {
             "model": "gpt-4",
             "input_tokens": 100000,
-            "output_tokens": 50000,
-            "cost_usd": 1.0
+            "output_tokens": 50000
         },
         {
             "model": "gpt-3.5-turbo",
             "input_tokens": 50000,
-            "output_tokens": 30000,
-            "cost_usd": 0.08
+            "output_tokens": 30000
         }
     ]
 }
@@ -208,6 +225,7 @@ GET /api/ai/statistics/errors
         "network_error": 0,
         "usage_limit": 0,
         "agent_error": 1,
+        "api_529_error": 0,
         "total": 4
     }
 }

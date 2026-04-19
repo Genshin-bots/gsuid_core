@@ -8,12 +8,11 @@ import re
 import json
 import uuid
 import asyncio
-from typing import Any, Optional, cast
+from typing import Optional
 from datetime import datetime, timezone
 
 from sqlmodel import Field, SQLModel, col, select
 from sqlalchemy import Text, Column, func
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.logger import logger
@@ -186,17 +185,13 @@ class HierarchicalGraphBuilder:
         return list(result.scalars().all())
 
     async def _find_or_create_category(self, layer: int, name: str) -> tuple[AIMemCategory, bool]:
-        # 使用 selectinload 预加载成员
-        stmt = (
-            select(AIMemCategory)
-            .where(
+        result = await self.session.execute(
+            select(AIMemCategory).where(
                 AIMemCategory.scope_key == self.scope_key,
                 AIMemCategory.layer == layer,
                 AIMemCategory.name == name,
             )
-            .options(selectinload(cast(Any, AIMemCategory.member_entities)))  # 显式加载关系
         )
-        result = await self.session.execute(stmt)
         category = result.scalar_one_or_none()
 
         if category:
@@ -210,7 +205,6 @@ class HierarchicalGraphBuilder:
             summary="",
             tag=[],
         )
-        category.member_entities = []  # 初始化空列表防止属性访问报错
         self.session.add(category)
         await self.session.flush()
         return category, True
@@ -288,25 +282,41 @@ class HierarchicalGraphBuilder:
         layer: int,
         child_categories: list[AIMemCategory],
     ) -> list[AIMemCategory]:
-        """将子 Category 分配写入父 Category（ORM relationship）"""
+        """将子 Category 显式写入 AIMemCategoryEdge 关联表"""
+        from sqlmodel import select
+
+        from gsuid_core.ai_core.memory.database.models import AIMemCategoryEdge
+
         new_categories: list[AIMemCategory] = []
+
         for assignment in assignments:
             cat_name = assignment.get("category", "").strip()
             if not cat_name:
                 continue
+
             parent, created = await self._find_or_create_category(layer, cat_name)
             if created:
                 new_categories.append(parent)
 
-            existing_ids = {c.id for c in parent.child_categories}
+            # ✅ 查出已有的子关系，避免重复插入
+            existing_result = await self.session.execute(
+                select(AIMemCategoryEdge).where(AIMemCategoryEdge.parent_category_id == parent.id)
+            )
+            existing_child_ids = {row.child_category_id for row in existing_result.scalars().all()}
+
             for idx in assignment.get("indexes", []):
                 real_idx = idx - 1
                 if 0 <= real_idx < len(child_categories):
                     child = child_categories[real_idx]
-                    if child.id not in existing_ids:
-                        parent.child_categories.append(child)
-                        existing_ids.add(child.id)
-            self.session.add(parent)
+                    if child.id not in existing_child_ids:
+                        # ✅ 直接插入关联行，完全绕开 ORM relationship
+                        edge = AIMemCategoryEdge(
+                            parent_category_id=parent.id,
+                            child_category_id=child.id,
+                        )
+                        self.session.add(edge)
+                        existing_child_ids.add(child.id)
+
         return new_categories
 
     async def _update_meta(self) -> None:

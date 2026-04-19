@@ -7,9 +7,11 @@ import importlib
 import subprocess
 import importlib.util
 from types import ModuleType
-from typing import Set, Dict, List, Tuple, Union, Callable
+from typing import Set, Dict, List, Tuple, Union, Callable, Optional
 from pathlib import Path
 from importlib import metadata
+from itertools import groupby
+from dataclasses import field, dataclass
 
 import toml
 from fastapi import WebSocket
@@ -30,10 +32,6 @@ from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 auto_install_dep: bool = core_plugins_config.get_config("AutoInstallDep").data
 auto_update_dep: bool = core_plugins_config.get_config("AutoUpdateDep").data
 
-core_start_def: Set[Callable] = set()
-core_shutdown_def: Set[Callable] = set()
-installed_dependencies: Dict[str, str] = {}
-_module_cache: Dict[str, ModuleType] = {}
 # 忽略的基础依赖，避免重复检查
 ignore_dep = {
     "python",
@@ -59,55 +57,93 @@ def normalize_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def on_core_start(func: Callable):
-    if func not in core_start_def:
-        core_start_def.add(func)
-    return func
+@dataclass
+class _DefHook:
+    priority: int
+    func: Callable = field(compare=False)
+
+    def __hash__(self) -> int:
+        return hash(self.func)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _DefHook):
+            return self.func is other.func
+        return NotImplemented
+
+    def __lt__(self, other: "_DefHook") -> bool:
+        return self.priority < other.priority
 
 
-def on_core_shutdown(func: Callable):
-    if func not in core_shutdown_def:
-        core_shutdown_def.add(func)
-    return func
+core_start_def: Set[_DefHook] = set()
+core_shutdown_def: Set[_DefHook] = set()
+installed_dependencies: Dict[str, str] = {}
+_module_cache: Dict[str, ModuleType] = {}
+
+
+def on_core_start(
+    func: Optional[Callable] = None,
+    /,
+    priority: int = 0,
+):
+    def decorator(f: Callable) -> Callable:
+        core_start_def.add(_DefHook(priority=priority, func=f))
+        return f
+
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+def on_core_shutdown(
+    func: Optional[Callable] = None,
+    /,
+    priority: int = 0,
+):
+    def decorator(f: Callable) -> Callable:
+        core_shutdown_def.add(_DefHook(priority=priority, func=f))
+        return f
+
+    if func is not None:
+        return decorator(func)
+    return decorator
 
 
 async def core_start_execute():
     try:
+        sorted_defs = sorted(core_start_def)
         logger.info(
             "♻ [GsCore] 执行启动Hook函数中！",
-            [_def.__name__ for _def in core_start_def],
+            [hook.func.__name__ for hook in sorted_defs],
         )
-        # 所有 startup 回调通过 create_task 在后台执行，框架启动不会被阻塞
-        for _def in core_start_def:
-            if asyncio.iscoroutinefunction(_def):
-                asyncio.create_task(_def())
-            else:
-                asyncio.create_task(asyncio.to_thread(_def))
+        # 按优先级分组
+        for priority, group in groupby(sorted_defs, key=lambda h: h.priority):
+            # 同一优先级并发执行，全部完成后再进入下一优先级
+            await asyncio.gather(
+                *[
+                    hook.func() if asyncio.iscoroutinefunction(hook.func) else asyncio.to_thread(hook.func)
+                    for hook in group
+                ]
+            )
     except Exception as e:
         logger.exception(e)
 
 
 async def core_shutdown_execute():
     try:
+        sorted_defs = sorted(core_shutdown_def)
         logger.info(
-            "♻ [GsCore] 执行关闭Hook函数中！",
-            [_def.__name__ for _def in core_shutdown_def],
+            "♻ [GsCore] 执行启动Hook函数中！",
+            [hook.func.__name__ for hook in sorted_defs],
         )
-        tasks = []
-        for _def in core_shutdown_def:
-            if asyncio.iscoroutinefunction(_def):
-                tasks.append(_def())
-            else:
-                # 同步函数转为异步线程任务，或者直接在这里同步执行
-                tasks.append(asyncio.to_thread(_def))
-
-        if tasks:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=15.0,
+        # 按优先级分组
+        for priority, group in groupby(sorted_defs, key=lambda h: h.priority):
+            # 同一优先级并发执行，全部完成后再进入下一优先级
+            await asyncio.gather(
+                *[
+                    hook.func() if asyncio.iscoroutinefunction(hook.func) else asyncio.to_thread(hook.func)
+                    for hook in group
+                ]
             )
-    except asyncio.TimeoutError:
-        logger.warning("[GsCore] shutdown hook 执行超时，强制结束！")
     except Exception as e:
         logger.exception(e)
 

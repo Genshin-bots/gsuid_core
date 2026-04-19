@@ -5,7 +5,6 @@
 """
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.base import DIMENSION, client, init_embedding_model
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
@@ -20,11 +19,11 @@ async def ensure_memory_collections():
     在 memory/startup.py 的初始化流程中调用一次。
     前置条件：rag/base.py 的 init_embedding_model() 必须已执行。
     """
+    from gsuid_core.ai_core.rag.base import DIMENSION, client
+
     if client is None:
-        init_embedding_model()
-        if client is None:
-            logger.debug("🧠 [Memory] RAG 未启用，跳过记忆 Collection 初始化")
-            return
+        logger.debug("🧠 [Memory] RAG 未启用，跳过记忆 Collection 初始化")
+        return
 
     try:
         existing = {c.name for c in (await client.get_collections()).collections}

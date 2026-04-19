@@ -5,6 +5,7 @@
 
 GROUP_SUMMARY_PROMPT = """基于以下知识图谱摘要，生成一份关于该群组当前状态的简短描述，
 供 AI 在决定是否主动发言时参考。
+注意Speaker指的是发言角色，不是什么特定内容。
 
 群组标识：{scope_key}
 更新时间：{last_update}
