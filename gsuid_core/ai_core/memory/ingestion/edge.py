@@ -9,17 +9,16 @@ import logging
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.memory.vector.ops import search_edges, upsert_edge_vector
+from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
 logger = logging.getLogger(__name__)
 
 
 async def extract_and_upsert_edges(
-    session: AsyncSession,
     scope_key: str,
     edges_data: list[dict],
     entity_name_to_id: dict[str, str],
@@ -59,32 +58,34 @@ async def extract_and_upsert_edges(
         except Exception:
             similar_edges = []
 
-        for sim_edge in similar_edges:
-            if sim_edge["score"] >= threshold:
-                if (
-                    sim_edge.get("source_entity_id") == source_id
-                    and sim_edge.get("target_entity_id") == target_id
-                    and sim_edge.get("invalid_at_ts") is None
-                ):
-                    # 将旧 Edge 标记为过期
-                    result = await session.execute(select(AIMemEdge).where(AIMemEdge.id == sim_edge["id"]))
-                    old_edge = result.scalar_one_or_none()
-                    if old_edge:
-                        old_edge.invalid_at = now
+        async with async_maker() as session:
+            for sim_edge in similar_edges:
+                if sim_edge["score"] >= threshold:
+                    if (
+                        sim_edge.get("source_entity_id") == source_id
+                        and sim_edge.get("target_entity_id") == target_id
+                        and sim_edge.get("invalid_at_ts") is None
+                    ):
+                        # 将旧 Edge 标记为过期
+                        result = await session.execute(select(AIMemEdge).where(AIMemEdge.id == sim_edge["id"]))
+                        old_edge = result.scalar_one_or_none()
+                        if old_edge:
+                            old_edge.invalid_at = now
 
-        # 创建新 Edge
-        edge_id = str(uuid.uuid4())
-        new_edge = AIMemEdge(
-            id=edge_id,
-            scope_key=scope_key,
-            fact=fact,
-            source_entity_id=source_id,
-            target_entity_id=target_id,
-            valid_at=now,
-            qdrant_id=edge_id,
-        )
-        session.add(new_edge)
-        await session.flush()
+            # 创建新 Edge
+            edge_id = str(uuid.uuid4())
+            new_edge = AIMemEdge(
+                id=edge_id,
+                scope_key=scope_key,
+                fact=fact,
+                source_entity_id=source_id,
+                target_entity_id=target_id,
+                valid_at=now,
+                qdrant_id=edge_id,
+            )
+            session.add(new_edge)
+
+            await session.commit()
 
         # 写入 Qdrant 向量
         try:

@@ -16,6 +16,7 @@ from gsuid_core.webconsole import (
     plugins_api,
     ai_tools_api,
     database_api,
+    ai_memory_api,
     ai_skills_api,
     dashboard_api,
     image_rag_api,
@@ -26,6 +27,7 @@ from gsuid_core.webconsole import (
     system_prompt_api,
     knowledge_base_api,
     ai_scheduled_task_api,
+    chat_with_history_api,
 )
 
 # 导出 mount_app 中的常用对象
@@ -59,7 +61,9 @@ __all__ = [
     "knowledge_base_api",
     "system_prompt_api",
     "ai_scheduled_task_api",
+    "ai_memory_api",
     "history_api",
+    "chat_with_history_api",
     "PageSchema",
     "GsAdminModel",
     "site",

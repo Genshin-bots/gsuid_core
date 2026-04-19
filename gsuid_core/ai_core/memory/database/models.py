@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import JSON
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vector
-from gsuid_core.utils.database.base_models import with_session
+from gsuid_core.utils.database.base_models import async_maker, with_session
 
 # ─────────────────────────────────────────────
 # 多对多关联表
@@ -69,7 +69,6 @@ class AIMemEpisode(SQLModel, table=True):
     @classmethod
     async def create_episode(
         cls,
-        session: AsyncSession,
         scope_key: str,
         content: str,
         speaker_ids: list[str],
@@ -97,7 +96,9 @@ class AIMemEpisode(SQLModel, table=True):
             created_at=datetime.utcnow(),
             qdrant_id=episode_id,
         )
-        session.add(episode)
+        async with async_maker() as session:
+            session.add(episode)
+            await session.commit()
 
         try:
             await upsert_episode_vector(

@@ -8,9 +8,8 @@
 
 from typing import Optional
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from gsuid_core.logger import logger
+from gsuid_core.utils.database.base_models import async_maker
 
 from ..database.models import AIMemEntity
 
@@ -20,7 +19,6 @@ async def find_existing_entity(scope_key: str, name: str) -> Optional[AIMemEntit
 
 
 async def extract_and_upsert_entities(
-    session: AsyncSession,
     scope_key: str,
     entities_data: list[dict],
     episode_id: str,
@@ -28,13 +26,15 @@ async def extract_and_upsert_entities(
 ) -> dict[str, str]:
     from gsuid_core.ai_core.memory.vector.ops import upsert_entity_vector
 
-    name_to_id, vector_payloads = await AIMemEntity.extract_and_upsert(
-        session,
-        scope_key,
-        entities_data,
-        episode_id,
-        speaker_ids,
-    )
+    async with async_maker() as session:
+        name_to_id, vector_payloads = await AIMemEntity.extract_and_upsert(
+            session,
+            scope_key,
+            entities_data,
+            episode_id,
+            speaker_ids,
+        )
+        await session.commit()
 
     # 🔥 统一写 vector（关键点）
     for payload in vector_payloads:

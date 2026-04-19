@@ -25,17 +25,17 @@ class MemoryContext:
     edges: list[dict] = field(default_factory=list)
     retrieval_meta: dict = field(default_factory=dict)
 
-    def to_prompt_text(self, max_chars: int = 3000) -> str:
+    def to_prompt_text(self, max_chars: int = 20000) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本"""
         parts = []
 
         if self.edges:
             facts_text = "\n".join(f"• {e['fact']}" for e in self.edges[:12])
-            parts.append(f"【已知事实】\n{facts_text}")
+            parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
 
         if self.episodes:
             hist_text = "\n".join(f"[{ep.get('valid_at', '?')[:10]}] {ep['content'][:200]}" for ep in self.episodes[:5])
-            parts.append(f"【历史对话片段】\n{hist_text}")
+            parts.append(f"【历史对话片段】\n{hist_text if hist_text else '暂无历史对话'}")
 
         result = "\n\n".join(parts)
         if len(result) > max_chars:
@@ -84,6 +84,10 @@ async def dual_route_retrieve(
 
     # 等待 System-1
     s1: System1Result = await s1_task
+    logger.debug(
+        f"🧠 [Memory] System-1 检索完成，共 {len(s1.episodes)} 条 Episode, "
+        f"{len(s1.entities)} 个 Entity, {len(s1.edges)} 条 Edge"
+    )
 
     # 等待 System-2（如果启用）
     s2: Optional[System2Result] = None
@@ -92,6 +96,12 @@ async def dual_route_retrieve(
             s2 = await s2_task
         except Exception:
             s2 = None
+
+        if s2 is not None:
+            logger.debug(
+                f"🧠 [Memory] System-2 检索完成，共 {len(s2.episodes)} 条 Episode, "
+                f"{len(s2.selected_entities)} 个 Entity, {len(s2.edges)} 条 Edge"
+            )
 
     # 合并去重
     all_episodes = _merge_dedup(
@@ -136,10 +146,7 @@ async def _rerank(query: str, items: list[dict], text_field: str, top_k: int) ->
         # Reranker 未启用，直接返回原始顺序
         return items[:top_k]
 
-    try:
-        texts = [item.get(text_field, "") for item in items]
-        scores = list(reranker.rerank(query, texts))
-        ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
-        return [item for _, item in ranked[:top_k]]
-    except Exception:
-        return items[:top_k]
+    texts = [item.get(text_field, "") for item in items]
+    scores = list(reranker.rerank(query, texts))
+    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
+    return [item for _, item in ranked[:top_k]]

@@ -11,8 +11,6 @@ import asyncio
 import logging
 from collections import defaultdict
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.memory.observer import ObservationRecord, get_observation_queue
 from gsuid_core.utils.database.base_models import async_maker
@@ -39,6 +37,8 @@ class IngestionWorker:
         self._last_flush: dict[str, float] = {}
         self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
         self._running = False
+        # 保护 flush_all() 执行期间禁止新 observe 入队
+        self._flush_lock = asyncio.Lock()
 
     async def start(self):
         """启动后台消费循环"""
@@ -47,6 +47,28 @@ class IngestionWorker:
             self._consume_loop(),
             self._flush_timer_loop(),
         )
+
+    async def flush_all(self):
+        """立即将所有缓冲区 flush 到数据库。
+
+        用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
+        在 flush 期间禁止新的 observe 记录入队（通过 asyncio.Lock 保护）。
+        """
+        logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
+        async with self._flush_lock:
+            # 先消费所有队列中的数据到 buffers
+            while not self._queue.empty():
+                try:
+                    record = self._queue.get_nowait()
+                    self._buffers[record.scope_key].append(record)
+                except asyncio.QueueEmpty:
+                    break
+
+            # 再 flush buffers
+            logger.info(f"🧠 [Memory] 开始同步记忆条数{len(self._buffers)}")
+            scope_keys = list(self._buffers.keys())
+            for scope_key in scope_keys:
+                await self._flush(scope_key)
 
     async def stop(self):
         """停止后台消费循环"""
@@ -84,11 +106,8 @@ class IngestionWorker:
 
         async with self._llm_semaphore:
             try:
-                async with self._db_session_factory() as session:
-                    await _ingest_batch(session, records, scope_key)
-                    await session.commit()
-                    # 上报摄入完成统计
-                    _record_ingestion_stats(len(records), success=True)
+                await _ingest_batch(records, scope_key)
+                _record_ingestion_stats(len(records), success=True)
             except Exception as e:
                 logger.error(f"Ingestion failed for {scope_key}: {e}", exc_info=True)
                 # 上报摄入失败统计
@@ -123,7 +142,6 @@ def _record_entity_edge_stats(entity_count: int, edge_count: int):
 
 
 async def _ingest_batch(
-    session: AsyncSession,
     records: list[ObservationRecord],
     scope_key: str,
 ):
@@ -136,7 +154,6 @@ async def _ingest_batch(
 
     # Step 2: 写入 Episode
     episode = await AIMemEpisode.create_episode(
-        session=session,
         scope_key=scope_key,
         content=dialogue,
         speaker_ids=speaker_ids,
@@ -145,9 +162,7 @@ async def _ingest_batch(
 
     # Step 3 & 4: LLM 提取 + Entity 去重写入
     extracted = await _llm_extract(dialogue, scope_key)
-
     entity_name_to_id = await extract_and_upsert_entities(
-        session=session,
         scope_key=scope_key,
         entities_data=extracted.get("entities", []),
         episode_id=episode.id,
@@ -162,7 +177,6 @@ async def _ingest_batch(
 
     # Step 5: Edge 写入
     await extract_and_upsert_edges(
-        session=session,
         scope_key=scope_key,
         edges_data=extracted.get("edges", []),
         entity_name_to_id=entity_name_to_id,
@@ -175,7 +189,6 @@ async def _ingest_batch(
         user_scoped_entities = [e for e in user_global_entities if e.get("user_id") == user_id]
         if user_scoped_entities:
             await extract_and_upsert_entities(
-                session=session,
                 scope_key=user_global_scope,
                 entities_data=user_scoped_entities,
                 episode_id=episode.id,

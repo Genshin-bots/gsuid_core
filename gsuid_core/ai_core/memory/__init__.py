@@ -18,6 +18,7 @@
 from .scope import ScopeType, make_scope_key
 from .config import memory_config
 from .startup import *  # noqa: F401, F403
+from .startup import get_ingestion_worker
 from .observer import ObservationRecord, observe, get_observation_queue
 from .retrieval.dual_route import MemoryContext, dual_route_retrieve
 
@@ -30,4 +31,5 @@ __all__ = [
     "ObservationRecord",
     "dual_route_retrieve",
     "MemoryContext",
+    "get_ingestion_worker",
 ]

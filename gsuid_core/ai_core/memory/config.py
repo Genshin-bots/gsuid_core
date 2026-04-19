@@ -48,7 +48,7 @@ class MemoryConfig:
     enable_heartbeat_memory: bool = True
     """是否在 Heartbeat 决策中注入群组摘要缓存"""
 
-    retrieval_top_k: int = 10
+    retrieval_top_k: int = 30
     """最终返回的 Episode 数量上限"""
 
     # ====== 去重与冲突阈值 ======

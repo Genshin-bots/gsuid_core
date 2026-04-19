@@ -133,12 +133,14 @@ class GsCoreAIAgent:
         self,
         openai_chat_model: Optional[OpenAIChatModel] = None,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 1800,
+        max_tokens: int = 20000,
         max_iterations: Optional[int] = None,
         persona_name: Optional[str] = None,
+        max_history: int = 20,
         create_by: str = "LLM",
     ):
         self.history: List[ModelMessage] = []
+        self.max_history = max_history
         self.system_prompt = system_prompt
         self.persona_name = persona_name  # 用于热重载检查
         # 用于串行执行 run 方法的锁
@@ -152,6 +154,14 @@ class GsCoreAIAgent:
         if self.model is None:
             self.model = get_openai_chat_model()
 
+    def extract_history(self):
+        if len(self.history) > self.max_history:
+            self.history = _truncate_history_with_tool_safety(
+                self.history,
+                self.max_history,
+            )
+            logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {len(self.history)} 条")
+
     async def _execute_run(
         self,
         user_message: Union[str, Sequence[UserContent]],
@@ -159,6 +169,7 @@ class GsCoreAIAgent:
         ev: Optional[Event] = None,
         rag_context: Optional[str] = None,
         tools: Optional[ToolList] = None,
+        must_return: bool = False,
     ) -> str:
         """
         实际执行 Agent 运行的内部方法
@@ -178,7 +189,7 @@ class GsCoreAIAgent:
         logger.info("🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======")
         context = ToolContext(bot=bot, ev=ev)
 
-        final_user_message = user_message
+        final_user_message = f"【用户发言】\n{user_message}"
 
         if rag_context:
             if isinstance(final_user_message, str):
@@ -226,8 +237,12 @@ class GsCoreAIAgent:
             toolsets=[skills_toolset],
         )
 
+        # 截断历史记录，避免无限制增长
+        self.extract_history()
+
         try:
             logger.info("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()...")
+            logger.info(f"🧠 [GsCoreAIAgent] 当前 history: {len(self.history)}")
 
             now_text = ""
             async with _agent.iter(
@@ -264,7 +279,7 @@ class GsCoreAIAgent:
                             elif isinstance(part, TextPart):
                                 _text = part.content.strip()
                                 logger.debug(f"🧠 [大模型文本]: {_text}")
-                                if bot and _text:
+                                if bot and _text and not must_return:
                                     await send_chat_result(bot, _text)
                                     now_text = _text
 
@@ -285,12 +300,6 @@ class GsCoreAIAgent:
                 logger.info("🧠 [GsCoreAIAgent] _agent.iter() 执行成功!")
 
                 self.history.extend(result.new_messages())
-
-                # 截断历史记录，避免无限制增长
-                max_history = 50
-                if len(self.history) > max_history:
-                    self.history = _truncate_history_with_tool_safety(self.history, max_history)
-                    logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {len(self.history)} 条")
 
                 # 记录 Token 使用量和延迟统计
                 try:
@@ -320,7 +329,7 @@ class GsCoreAIAgent:
 
                 # 始终返回字符串类型
                 result_msg = str(result.output).strip()
-                if now_text.strip() == result_msg.strip():
+                if now_text.strip() == result_msg.strip() and not must_return:
                     return ""
                 return str(result.output).strip()
 
@@ -367,6 +376,7 @@ class GsCoreAIAgent:
         ev: Optional[Event] = None,
         rag_context: Optional[str] = None,
         tools: Optional[ToolList] = None,
+        must_return: bool = False,
     ) -> str:
         """
         运行 Agent 并返回结果
@@ -385,6 +395,7 @@ class GsCoreAIAgent:
                 ev=ev,
                 rag_context=rag_context,
                 tools=tools,
+                must_return=must_return,
             )
             logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
             return result
@@ -393,10 +404,11 @@ class GsCoreAIAgent:
 # 工厂函数
 def create_agent(
     system_prompt: Optional[str] = None,
-    max_tokens: int = 1800,
+    max_tokens: int = 20000,
     max_iterations: Optional[int] = None,
     persona_name: Optional[str] = None,
     create_by: str = "LLM",
+    max_history: int = 20,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -422,6 +434,7 @@ def create_agent(
         max_iterations=max_iterations,
         persona_name=persona_name,
         create_by=create_by,
+        max_history=max_history,
     )
 
 

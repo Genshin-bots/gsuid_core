@@ -13,7 +13,7 @@ from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.base_models import async_maker
+from gsuid_core.utils.database.base_models import async_maker, with_session
 from gsuid_core.ai_core.memory.database.models import (
     AIMemEdge,
     AIMemEntity,
@@ -47,15 +47,16 @@ class System2GlobalSelector:
     由调用方（with_session 装饰的入口函数）统一管理事务。
     """
 
-    def __init__(self, session: AsyncSession, scope_key: str):
-        self.session = session
+    def __init__(self, scope_key: str):
         self.scope_key = scope_key
 
     async def select(self, query: str) -> System2Result:
-        result = await self.session.execute(
-            select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
-        )
-        meta = result.scalar_one_or_none()
+        async with async_maker() as session:
+            result = await session.execute(
+                select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
+            )
+            meta = result.scalar_one_or_none()
+
         if meta is None or meta.max_layer == 0:
             return System2Result()
 
@@ -64,22 +65,24 @@ class System2GlobalSelector:
 
         for layer in range(meta.max_layer, 0, -1):
             if layer == meta.max_layer:
-                r = await self.session.execute(
-                    select(AIMemCategory).where(
-                        AIMemCategory.scope_key == self.scope_key,
-                        AIMemCategory.layer == layer,
+                async with async_maker() as session:
+                    r = await session.execute(
+                        select(AIMemCategory).where(
+                            AIMemCategory.scope_key == self.scope_key,
+                            AIMemCategory.layer == layer,
+                        )
                     )
-                )
-                current = list(r.scalars().all())
+                    current = list(r.scalars().all())
             elif prev_selected:
                 parent_ids = [c.id for c in prev_selected]
-                r = await self.session.execute(
-                    select(AIMemCategory)
-                    .join(AIMemCategoryEdge, col(AIMemCategoryEdge.child_category_id) == col(AIMemCategory.id))
-                    .where(col(AIMemCategoryEdge.parent_category_id).in_(parent_ids))
-                    .distinct()
-                )
-                current = list(r.scalars().all())
+                async with async_maker() as session:
+                    r = await session.execute(
+                        select(AIMemCategory)
+                        .join(AIMemCategoryEdge, col(AIMemCategoryEdge.child_category_id) == col(AIMemCategory.id))
+                        .where(col(AIMemCategoryEdge.parent_category_id).in_(parent_ids))
+                        .distinct()
+                    )
+                    current = list(r.scalars().all())
             else:
                 break
 
@@ -152,15 +155,17 @@ class System2GlobalSelector:
                 (shortcut if sel.get("get_all_children", False) else selected).append(cat)
         return selected, shortcut
 
-    async def _get_direct_member_ids(self, category_id: str) -> list[str]:
-        result = await self.session.execute(
+    @with_session
+    async def _get_direct_member_ids(self, session: AsyncSession, category_id: str) -> list[str]:
+        result = await session.execute(
             select(mem_category_entity_members.c.entity_id).where(
                 mem_category_entity_members.c.category_id == category_id
             )
         )
         return [row[0] for row in result.fetchall()]
 
-    async def _get_all_descendant_entities(self, category_id: str) -> list[AIMemEntity]:
+    @with_session
+    async def _get_all_descendant_entities(self, session: AsyncSession, category_id: str) -> list[AIMemEntity]:
         visited: set[str] = set()
         queue = [category_id]
         all_entity_ids: set[str] = set()
@@ -171,14 +176,14 @@ class System2GlobalSelector:
                 continue
             visited.add(current_id)
 
-            r = await self.session.execute(
+            r = await session.execute(
                 select(mem_category_entity_members.c.entity_id).where(
                     mem_category_entity_members.c.category_id == current_id
                 )
             )
             all_entity_ids.update(row[0] for row in r.fetchall())
 
-            r = await self.session.execute(
+            r = await session.execute(
                 select(AIMemCategoryEdge.child_category_id).where(AIMemCategoryEdge.parent_category_id == current_id)
             )
             queue.extend(c for c in (row[0] for row in r.fetchall()) if c not in visited)
@@ -186,7 +191,7 @@ class System2GlobalSelector:
         if not all_entity_ids:
             return []
 
-        result = await self.session.execute(
+        result = await session.execute(
             select(AIMemEntity).where(
                 col(AIMemEntity.id).in_(all_entity_ids),
                 AIMemEntity.scope_key == self.scope_key,
@@ -194,8 +199,11 @@ class System2GlobalSelector:
         )
         return list(result.scalars().all())
 
-    async def _get_episodes_for_entities(self, entity_ids: list[str], limit: int = 20) -> list[AIMemEpisode]:
-        result = await self.session.execute(
+    @with_session
+    async def _get_episodes_for_entities(
+        self, session: AsyncSession, entity_ids: list[str], limit: int = 20
+    ) -> list[AIMemEpisode]:
+        result = await session.execute(
             select(AIMemEpisode)
             .join(
                 mem_episode_entity_mentions,
@@ -211,8 +219,11 @@ class System2GlobalSelector:
         )
         return list(result.scalars().all())
 
-    async def _get_edges_for_entities(self, entity_ids: list[str], limit: int = 30) -> list[AIMemEdge]:
-        result = await self.session.execute(
+    @with_session
+    async def _get_edges_for_entities(
+        self, session: AsyncSession, entity_ids: list[str], limit: int = 30
+    ) -> list[AIMemEdge]:
+        result = await session.execute(
             select(AIMemEdge)
             .where(
                 AIMemEdge.scope_key == self.scope_key,
@@ -227,8 +238,9 @@ class System2GlobalSelector:
         )
         return list(result.scalars().all())
 
-    async def _get_entities_by_ids(self, entity_ids: list[str]) -> list[AIMemEntity]:
-        result = await self.session.execute(select(AIMemEntity).where(col(AIMemEntity.id).in_(entity_ids)))
+    @with_session
+    async def _get_entities_by_ids(self, session: AsyncSession, entity_ids: list[str]) -> list[AIMemEntity]:
+        result = await session.execute(select(AIMemEntity).where(col(AIMemEntity.id).in_(entity_ids)))
         return list(result.scalars().all())
 
 
@@ -241,5 +253,4 @@ async def system2_global_selection(
     query: str,
     scope_key: str,
 ) -> System2Result:
-    async with async_maker() as session:
-        return await System2GlobalSelector(session, scope_key).select(query)
+    return await System2GlobalSelector(scope_key).select(query)

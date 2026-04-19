@@ -8,6 +8,7 @@ Observer 是整个记忆系统的"被动感知层"：AI 可以读取所有消息
 """
 
 import asyncio
+from typing import Optional
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
@@ -23,7 +24,7 @@ class ObservationRecord:
 
     raw_content: str
     speaker_id: str
-    group_id: str  # 原始群组 ID（如 "789012"）
+    group_id: Optional[str]  # 原始群组 ID（如 "789012"）
     scope_key: str  # 格式化后的 Scope Key（如 "group:789012"）
     timestamp: datetime
     message_type: str  # "group_msg" | "private_msg"
@@ -34,14 +35,14 @@ def _should_observe(
     speaker_id: str,
     bot_self_id: str,
     observer_blacklist: list[str],
-    group_id: str,
+    group_id: Optional[str],
 ) -> bool:
     """判断该消息是否值得入队"""
     # 过滤自身消息
     if speaker_id == bot_self_id:
         return False
     # 过滤黑名单群组
-    if group_id in observer_blacklist:
+    if group_id and group_id in observer_blacklist:
         return False
     # 过滤过短内容（纯表情、单字回复等噪声）
     stripped = content.strip()
@@ -56,7 +57,7 @@ def _should_observe(
 async def observe(
     content: str,
     speaker_id: str,
-    group_id: str,
+    group_id: Optional[str],
     bot_self_id: str,
     observer_blacklist: list[str],
     message_type: str = "group_msg",
@@ -85,7 +86,10 @@ async def observe(
         raw_content=content,
         speaker_id=speaker_id,
         group_id=group_id,
-        scope_key=make_scope_key(ScopeType.GROUP, group_id),
+        scope_key=make_scope_key(
+            ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL,
+            group_id if group_id else speaker_id,
+        ),
         timestamp=datetime.now(timezone.utc),
         message_type=message_type,
     )

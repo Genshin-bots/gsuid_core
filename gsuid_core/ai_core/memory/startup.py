@@ -43,14 +43,24 @@ async def init_memory_system():
         return
 
     # 3. 启动 IngestionWorker 后台任务
+    global _ingestion_worker
     try:
         from .ingestion.worker import IngestionWorker
 
-        worker = IngestionWorker()
-        asyncio.create_task(worker.start())
+        _ingestion_worker = IngestionWorker()
+        asyncio.create_task(_ingestion_worker.start())
         logger.info("🧠 [Memory] IngestionWorker 后台任务已启动")
     except Exception as e:
         logger.error(f"🧠 [Memory] IngestionWorker 启动失败: {e}")
         return
 
     logger.info("🧠 [Memory] 记忆系统初始化完成")
+
+
+# 模块级引用，供 /api/chat_with_history 调用 flush_all()
+_ingestion_worker = None
+
+
+def get_ingestion_worker():
+    """获取 IngestionWorker 实例（需在记忆系统初始化后调用才有效）"""
+    return _ingestion_worker

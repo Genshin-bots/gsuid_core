@@ -58,6 +58,8 @@ class AIMemHierarchicalGraphMeta(SQLModel, table=True):
     ) -> None:
         """每次 Ingestion 后调用，判断是否需要触发分层图异步重建"""
 
+        logger.info(f"🧠 [HierarchicalGraph] 正在检查分层图更新: {scope_key}")
+
         result = await session.execute(select(cls).where(cls.scope_key == scope_key))
         meta = result.scalar_one_or_none()
 
@@ -100,17 +102,14 @@ async def rebuild_task(scope_key: str) -> None:
     if lock.locked():
         return
     async with lock:
-        async with async_maker() as session:
-            try:
-                builder = HierarchicalGraphBuilder(session, scope_key)
-                await builder.incremental_rebuild()
-                await session.commit()
-            except Exception as e:
-                logger.error(
-                    f"Hierarchical graph rebuild failed for {scope_key}: {e}",
-                    exc_info=True,
-                )
-                await session.rollback()
+        try:
+            builder = HierarchicalGraphBuilder(scope_key)
+            await builder.incremental_rebuild()
+        except Exception as e:
+            logger.error(
+                f"Hierarchical graph rebuild failed for {scope_key}: {e}",
+                exc_info=True,
+            )
 
 
 class HierarchicalGraphBuilder:
@@ -120,8 +119,7 @@ class HierarchicalGraphBuilder:
     因为整个重建过程需要在同一个事务内完成，由 rebuild_task 统一 commit/rollback。
     """
 
-    def __init__(self, session: AsyncSession, scope_key: str):
-        self.session = session
+    def __init__(self, scope_key: str):
         self.scope_key = scope_key
 
     async def incremental_rebuild(self) -> None:
@@ -162,9 +160,10 @@ class HierarchicalGraphBuilder:
     def _min_children(self) -> int:
         return memory_config.min_children_per_category
 
-    async def _get_unassigned_entities(self) -> list[AIMemEntity]:
+    @with_session
+    async def _get_unassigned_entities(self, session: AsyncSession) -> list[AIMemEntity]:
         assigned_subquery = select(mem_category_entity_members.c.entity_id)
-        result = await self.session.execute(
+        result = await session.execute(
             select(AIMemEntity).where(
                 AIMemEntity.scope_key == self.scope_key,
                 col(AIMemEntity.id).not_in(assigned_subquery),
@@ -172,8 +171,9 @@ class HierarchicalGraphBuilder:
         )
         return list(result.scalars().all())
 
-    async def _get_categories_by_layer(self, layer: int) -> list[AIMemCategory]:
-        result = await self.session.execute(
+    @with_session
+    async def _get_categories_by_layer(self, session: AsyncSession, layer: int) -> list[AIMemCategory]:
+        result = await session.execute(
             select(AIMemCategory).where(
                 AIMemCategory.scope_key == self.scope_key,
                 AIMemCategory.layer == layer,
@@ -181,8 +181,10 @@ class HierarchicalGraphBuilder:
         )
         return list(result.scalars().all())
 
-    async def _find_or_create_category(self, layer: int, name: str) -> tuple[AIMemCategory, bool]:
-        result = await self.session.execute(
+    async def _find_or_create_category(
+        self, session: AsyncSession, layer: int, name: str
+    ) -> tuple[AIMemCategory, bool]:
+        result = await session.execute(
             select(AIMemCategory).where(
                 AIMemCategory.scope_key == self.scope_key,
                 AIMemCategory.layer == layer,
@@ -202,8 +204,7 @@ class HierarchicalGraphBuilder:
             summary="",
             tag=[],
         )
-        self.session.add(category)
-        await self.session.flush()
+        session.add(category)
         return category, True
 
     async def _llm_categorize(
@@ -246,8 +247,10 @@ class HierarchicalGraphBuilder:
             logger.warning(f"Categorization LLM call failed at layer {layer}: {e}")
             return []
 
+    @with_session
     async def _apply_entity_assignments(
         self,
+        session: AsyncSession,
         assignments: list[dict],
         layer: int,
         entities: list[AIMemEntity],
@@ -258,13 +261,13 @@ class HierarchicalGraphBuilder:
             cat_name = assignment.get("category", "").strip()
             if not cat_name:
                 continue
-            category, created = await self._find_or_create_category(layer, cat_name)
+            category, created = await self._find_or_create_category(session, layer, cat_name)
             if created:
                 new_categories.append(category)
 
-            # ✅ 不访问 category.member_entities（会触发懒加载崩溃）
+            # 不访问 category.member_entities（会触发懒加载崩溃）
             # 改为直接查关联表
-            existing_result = await self.session.execute(
+            existing_result = await session.execute(
                 select(mem_category_entity_members.c.entity_id).where(
                     mem_category_entity_members.c.category_id == category.id
                 )
@@ -277,7 +280,7 @@ class HierarchicalGraphBuilder:
                     entity = entities[real_idx]
                     if entity.id not in existing_ids:
                         # ✅ 直接 insert 关联行
-                        await self.session.execute(
+                        await session.execute(
                             mem_category_entity_members.insert().values(
                                 category_id=category.id,
                                 entity_id=entity.id,
@@ -287,8 +290,10 @@ class HierarchicalGraphBuilder:
 
         return new_categories
 
+    @with_session
     async def _apply_category_assignments(
         self,
+        session: AsyncSession,
         assignments: list[dict],
         layer: int,
         child_categories: list[AIMemCategory],
@@ -305,12 +310,12 @@ class HierarchicalGraphBuilder:
             if not cat_name:
                 continue
 
-            parent, created = await self._find_or_create_category(layer, cat_name)
+            parent, created = await self._find_or_create_category(session, layer, cat_name)
             if created:
                 new_categories.append(parent)
 
-            # ✅ 查出已有的子关系，避免重复插入
-            existing_result = await self.session.execute(
+            # 查出已有的子关系，避免重复插入
+            existing_result = await session.execute(
                 select(AIMemCategoryEdge).where(AIMemCategoryEdge.parent_category_id == parent.id)
             )
             existing_child_ids = {row.child_category_id for row in existing_result.scalars().all()}
@@ -325,27 +330,28 @@ class HierarchicalGraphBuilder:
                             parent_category_id=parent.id,
                             child_category_id=child.id,
                         )
-                        self.session.add(edge)
+                        session.add(edge)
                         existing_child_ids.add(child.id)
 
         return new_categories
 
-    async def _update_meta(self) -> None:
+    @with_session
+    async def _update_meta(self, session: AsyncSession) -> None:
         now = datetime.utcnow()
 
         count: int = (
-            await self.session.execute(
+            await session.execute(
                 select(func.count()).select_from(AIMemEntity).where(AIMemEntity.scope_key == self.scope_key)
             )
         ).scalar() or 0
 
         max_layer: int = (
-            await self.session.execute(
+            await session.execute(
                 select(func.max(AIMemCategory.layer)).where(AIMemCategory.scope_key == self.scope_key)
             )
         ).scalar() or 0
 
-        result = await self.session.execute(
+        result = await session.execute(
             select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
         )
         meta = result.scalar_one_or_none()
@@ -362,9 +368,12 @@ class HierarchicalGraphBuilder:
                 entity_count_at_last_rebuild=count,
                 current_entity_count=count,
             )
-        self.session.add(meta)
+        session.add(meta)
 
-    async def _update_group_summary_cache(self, top_categories: list[AIMemCategory]) -> None:
+    async def _update_group_summary_cache(
+        self,
+        top_categories: list[AIMemCategory],
+    ) -> None:
         from gsuid_core.ai_core.gs_agent import create_agent
         from gsuid_core.ai_core.memory.prompts.summary import GROUP_SUMMARY_PROMPT
 
@@ -385,14 +394,16 @@ class HierarchicalGraphBuilder:
         if not summary:
             return
 
-        result = await self.session.execute(
-            select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
-        )
-        meta = result.scalar_one_or_none()
-        if meta:
-            meta.group_summary_cache = summary
-            meta.group_summary_updated_at = datetime.utcnow()
-            self.session.add(meta)
+        async with async_maker() as session:
+            result = await session.execute(
+                select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
+            )
+            meta = result.scalar_one_or_none()
+            if meta:
+                meta.group_summary_cache = summary
+                meta.group_summary_updated_at = datetime.utcnow()
+                session.add(meta)
+                await session.commit()
 
 
 async def check_and_trigger_hierarchical_update(scope_key: str) -> None:
