@@ -13,7 +13,6 @@
 from typing import Optional
 
 from .persona import Persona
-from .prompts import assistant_prompt
 
 
 async def save_persona(char_name: str, profile_content: str) -> None:
@@ -47,7 +46,7 @@ async def load_persona(char_name: str) -> str:
         FileNotFoundError: 如果角色资料文件不存在
     """
     if char_name == "智能助手":
-        return assistant_prompt
+        return "你是一个智能助手，简短的一句话回答问题即可。"
 
     persona = Persona(char_name)
     return await persona.load_content()

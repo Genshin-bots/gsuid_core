@@ -68,7 +68,6 @@ class AIMemEpisode(SQLModel, table=True):
     )
 
     @classmethod
-    @with_session
     async def create_episode(
         cls,
         session: AsyncSession,
@@ -192,7 +191,6 @@ class AIMemEntity(SQLModel, table=True):
         return None
 
     @classmethod
-    @with_session
     async def extract_and_upsert(
         cls,
         session: AsyncSession,

@@ -23,7 +23,7 @@ from gsuid_core.ai_core.history import get_history_manager
 from gsuid_core.ai_core.ai_router import get_ai_session_by_id
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import persona_config_manager
-from gsuid_core.ai_core.heartbeat.decision import should_ai_speak, generate_proactive_message
+from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
 
 # 并发控制：最多同时进行 5 个 LLM 调用
 MAX_CONCURRENT_LLM_CALLS = 5
@@ -271,29 +271,11 @@ class HeartbeatInspector:
             return
 
         # 4. 决策阶段 (隐形 Sub-Agent)
-        should_speak, reason = await should_ai_speak(history, ai_session)
-
-        # 记录 Heartbeat 触发统计
-        try:
-            statistics_manager.record_trigger(trigger_type="heartbeat")
-            statistics_manager.record_heartbeat_decision(
-                group_id=group_id or "",
-                should_speak=should_speak,
-            )
-        except Exception as e:
-            logger.warning(f"📊 [Heartbeat] 记录决策统计失败: {e}")
-
-        if not should_speak:
-            logger.debug(f"🫀 [Heartbeat] 🤫 保持沉默: {reason} ({event})")
-            return
-
-        logger.info(f"🫀 [Heartbeat] 💡 决定插话: {reason} ({event})")
-
-        # 5. 生成阶段 (主 Agent)
-        message = await generate_proactive_message(history, ai_session, reason)
-        if not message:
+        meta = await run_heartbeat(event, history, ai_session)
+        if not meta:
             logger.debug(f"🫀 [Heartbeat] 会话 {event} 文本生成为空，放弃发送")
             return
+        message, reason = meta[0], meta[1]
 
         # 6. 发送阶段
         await self._send_proactive_message(event, user_id, message, reason)
@@ -310,7 +292,13 @@ class HeartbeatInspector:
                     return True
         return False
 
-    async def _send_proactive_message(self, event: Event, user_id: str, message: str, reason: str) -> None:
+    async def _send_proactive_message(
+        self,
+        event: Event,
+        user_id: str,
+        message: str,
+        reason: str,
+    ) -> None:
         try:
             _bot = await self._get_bot_for_session(event)
             if not _bot:

@@ -8,6 +8,8 @@
 
 from typing import Optional
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..database.models import AIMemEntity
 
 
@@ -16,9 +18,16 @@ async def find_existing_entity(scope_key: str, name: str) -> Optional[AIMemEntit
 
 
 async def extract_and_upsert_entities(
+    session: AsyncSession,
     scope_key: str,
     entities_data: list[dict],
     episode_id: str,
     speaker_ids: list[str],
 ) -> dict[str, str]:
-    return await AIMemEntity.extract_and_upsert(scope_key, entities_data, episode_id, speaker_ids)
+    return await AIMemEntity.extract_and_upsert(
+        session,
+        scope_key,
+        entities_data,
+        episode_id,
+        speaker_ids,
+    )

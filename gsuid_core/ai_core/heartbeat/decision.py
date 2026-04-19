@@ -1,135 +1,185 @@
+import re
 import json
-from typing import Any, List, Tuple, Optional
+from typing import Any, List, Optional
 from datetime import datetime
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.history import format_history_for_agent
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+from gsuid_core.ai_core.statistics import statistics_manager
 
 DECISION_PROMPT_TEMPLATE = """
-你是一个 AI 聊天助手，请根据你的【性格与人设】以及【历史对话记录】，判断你现在是否应该**主动**插话或开启新话题。
-
-【你的性格与人设】
 {persona_text}
+---
 
-【当前系统时间】
+现在你独自看着群里的聊天记录，思考自己要不要说点什么。
+
+【当前时间】
 {current_time}
 
-【决策指南】
-1. 结合人设活跃度：高冷角色尽量少说话（非必要不开口），活泼角色可以主动活跃气氛。
-2. 结合人设兴趣：如果大家在聊你非常感兴趣的事，你应该插话。
-3. 察言观色：如果用户表现出困惑、求助，你应该主动提供帮助。
-4. 观察时间线：对比消息时间与当前系统时间，如果距离最后一条消息已经过去很久（冷场），且符合你的性格，可以主动开启话题。
-5. 避免刷屏：如果你刚刚已经发言过，或者当前话题已经自然结束大家准备离开，请不要发言。
-
-【历史对话记录】
+【群里最近发生的事】
 {history_context}
 
-请综合思考后做出决策。必须以严格的 JSON 格式输出，不要包含任何 Markdown 标记（如 ```json），格式要求如下：
-{{"should_speak": true 或 false, "reason": "简要说明你做出该决策的思考过程"}}
-"""
+---
+
+做决定前，先问自己几件事：
+
+- 现在几点？这个时间点，我这种人会在干嘛？会想开口吗？
+- 群里最后一条消息是什么时候发的？现在算冷场吗？
+- 大家聊的东西我有没有兴趣？或者有没有人需要我？
+- 我上次说话是什么时候？有没有必要再说？
+
+结合自己的性格做判断，不要为了说话而说话。
+
+以严格 JSON 格式输出，禁止包含任何 Markdown 标记：
+{{"should_speak": true 或 false, "mood": "此刻角色的内心状态，一句话，用第一人称", "context_hook": "如果决定说话，简述你打算接哪个话头或借什么由头；不说话则留空"}}
+"""  # noqa: E501
+
 
 PROACTIVE_MESSAGE_PROMPT = """
-你决定主动参与对话。请根据以下上下文，生成一条自然的主动发言。
-
-【你的性格与人设】
 {persona_text}
 
-【历史对话记录】
+---
+
+【群里最近发生的事】
 {history_context}
 
-【触发主动发言的原因】
-{trigger_reason}
+【此刻你的状态】
+{mood}
 
-【发言要求】
-1. 绝对符合你的性格特征和说话风格。
-2. 自然地融入当前上下文，不要显得突兀。
-3. 简短自然，像真人一样，字数控制在 5-20 字之间。
-4. 直接输出发言内容，不要有任何前缀、引号或解释说明。
+---
+
+你决定开口了。
+直接输出你想说的话，不要任何前缀、引号或解释。
 """
 
 
-async def should_ai_speak(
+def _parse_decision_json(response: str) -> dict:
+    """
+    解析 LLM 返回的决策 JSON，容忍以下常见格式问题：
+    - Markdown 代码块包裹（```json ... ``` 或 ``` ... ```）
+    - 首尾多余空白
+    - 字段缺失（提供默认值）
+
+    Returns:
+        包含 should_speak / mood / context_hook 的字典
+    """
+    # 去除 Markdown 代码块：先剥反引号块，再 strip 空白
+    clean = re.sub(r"```(?:json)?", "", response).strip()
+
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError:
+        logger.warning(f"🫀 [Decision] JSON 解析失败，原始回复: {response}")
+        # 容错：从原文中粗判断 should_speak
+        data = {
+            "should_speak": "true" in clean.lower(),
+            "mood": "",
+            "context_hook": "",
+        }
+
+    return {
+        "should_speak": bool(data.get("should_speak", False)),
+        "mood": str(data.get("mood", "")),
+        "context_hook": str(data.get("context_hook", "")),
+    }
+
+
+def _strip_message_quotes(text: str) -> str:
+    """去除生成消息首尾可能出现的引号包裹"""
+    text = text.strip()
+    for quote in ('"""', "'''", '"', "'"):
+        if text.startswith(quote) and text.endswith(quote) and len(text) > len(quote) * 2:
+            text = text[len(quote) : -len(quote)].strip()
+            break
+    return text
+
+
+async def run_heartbeat(
+    event: Event,
     history: List[Any],
     session: GsCoreAIAgent,
-) -> Tuple[bool, str]:
+) -> Optional[tuple[str, str]]:
     """
-    纯 LLM 驱动：判断 AI 是否应该主动发言
+    Heartbeat 主入口：决策 + 生成，合并为一次完整流程。
+
+    Returns:
+        主动发言内容字符串；若决定不发言或出错则返回 None
     """
-    try:
-        if not history:
-            return False, "无历史记录"
-
-        # 1. 准备上下文：格式化历史记录与当前时间
-        history_context = format_history_for_agent(history=history)
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        persona_text = session.system_prompt
-
-        if not persona_text:
-            return False, "无法获取人设文本"
-
-        # 构建决策 Prompt
-        prompt = DECISION_PROMPT_TEMPLATE.format(
-            persona_text=persona_text,
-            current_time=current_time,
-            history_context=history_context,
-        )
-
-        # 4. 调用 LLM 进行决策
-        response = await session.run(user_message=prompt)
-
-        # 5. 解析 LLM 输出的 JSON
-        if not response:
-            return False, "LLM 未返回任何内容"
-
-        try:
-            # 清理可能存在的 Markdown 代码块包裹
-            clean_response = response.strip().strip("`").removeprefix("json").strip()
-            decision_data = json.loads(clean_response)
-
-            should_speak = bool(decision_data.get("should_speak", False))
-            reason = str(decision_data.get("reason", "未提供原因"))
-
-            logger.debug(f"🫀 [LLM Decision] 决策结果: {should_speak}, 原因: {reason}")
-            return should_speak, reason
-
-        except json.JSONDecodeError:
-            logger.warning(f"🫀 [Decision] LLM 返回的不是标准 JSON: {response}")
-            # 极简正则容错：如果 JSON 解析失败，找找有没有 true
-            fallback_decision = "true" in response.lower()
-            return fallback_decision, f"JSON解析失败，原始回复: {response}"
-
-    except Exception as e:
-        logger.exception(f"🫀 [Decision] 决策过程出错: {e}")
-        return False, f"系统错误: {str(e)}"
-
-
-async def generate_proactive_message(
-    history: List[Any],
-    session: GsCoreAIAgent,
-    trigger_reason: str,
-) -> Optional[str]:
-    """
-    生成主动发言内容
-    """
-    try:
-        history_context = format_history_for_agent(history=history)
-        persona_text = session.system_prompt
-
-        prompt = PROACTIVE_MESSAGE_PROMPT.format(
-            persona_text=persona_text,
-            history_context=history_context,
-            trigger_reason=trigger_reason,
-        )
-
-        response = await session.run(user_message=prompt)
-
-        if response and response.strip():
-            message = response.strip().strip('"""').strip("'''").strip('"')
-            return message
-
+    if not history:
+        logger.debug("🫀 [Heartbeat] 无历史记录，跳过")
         return None
 
-    except Exception as e:
-        logger.exception(f"🫀 [Decision] 生成主动消息失败: {e}")
+    persona_text = session.system_prompt
+    if not persona_text:
+        logger.warning("🫀 [Heartbeat] 无法获取人设文本，跳过")
         return None
+
+    # 两个阶段共用同一份上下文，只格式化一次
+    history_context = format_history_for_agent(history=history)
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # ----------------------------------------------------------------
+    # 阶段一：决策
+    # ----------------------------------------------------------------
+    decision_prompt = DECISION_PROMPT_TEMPLATE.format(
+        persona_text=persona_text,
+        current_time=current_time,
+        history_context=history_context,
+    )
+
+    try:
+        decision_response = await session.run(user_message=decision_prompt)
+    except Exception as e:
+        logger.exception(f"🫀 [Heartbeat] 决策阶段出错: {e}")
+        return None
+
+    if not decision_response:
+        logger.debug("🫀 [Heartbeat] 决策阶段无返回，跳过")
+        return None
+
+    decision = _parse_decision_json(decision_response)
+
+    mood: str = decision["mood"]
+    should_speak: bool = decision["should_speak"]
+
+    logger.debug(f"🫀 [Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={decision['context_hook']!r}")
+
+    try:
+        statistics_manager.record_trigger(trigger_type="heartbeat")
+        statistics_manager.record_heartbeat_decision(
+            group_id=event.group_id or "",
+            should_speak=should_speak,
+        )
+    except Exception as e:
+        logger.warning(f"📊 [Heartbeat] 记录决策统计失败: {e}")
+
+    if not should_speak:
+        logger.debug(f"🫀 [Heartbeat] 🤫 保持沉默: {mood} ({event})")
+        return None
+
+    logger.info(f"🫀 [Heartbeat] 💡 决定插话: {mood} ({event})")
+
+    # ----------------------------------------------------------------
+    # 阶段二：生成发言
+    # ----------------------------------------------------------------
+    message_prompt = PROACTIVE_MESSAGE_PROMPT.format(
+        persona_text=persona_text,
+        history_context=history_context,
+        mood=decision["mood"],
+    )
+
+    try:
+        message_response = await session.run(user_message=message_prompt)
+    except Exception as e:
+        logger.exception(f"🫀 [Heartbeat] 生成阶段出错: {e}")
+        return None
+
+    if not message_response or not message_response.strip():
+        logger.debug("🫀 [Heartbeat] 生成阶段无返回")
+        return None
+
+    message = _strip_message_quotes(message_response)
+    logger.info(f"🫀 [Heartbeat] 主动发言: {message!r}")
+    return mood, message

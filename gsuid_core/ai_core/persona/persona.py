@@ -10,7 +10,6 @@ from pathlib import Path
 import aiofiles
 
 from .models import PersonaFiles, PersonaMetadata
-from .prompts import assistant_prompt
 from ..resource import PERSONA_PATH
 
 
@@ -67,7 +66,7 @@ class Persona:
             FileNotFoundError: 如果markdown文件不存在
         """
         if self.name == "智能助手":
-            return assistant_prompt
+            return "你是一个智能助手，简短的一句话回答问题即可。"
 
         if not self.exists():
             raise FileNotFoundError(f"Persona '{self.name}' 不存在")

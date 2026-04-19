@@ -12,9 +12,13 @@ AI聊天处理模块
 - 并发控制：使用全局信号量限制并发AI调用数
 """
 
+import re
+import asyncio
+
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.ai_core.utils import prepare_content_payload
 from gsuid_core.ai_core.history import get_history_manager, format_history_for_agent
 from gsuid_core.ai_core.ai_router import (
@@ -35,6 +39,71 @@ history_manager = get_history_manager()
 # 双层长度防护配置
 ABSOLUTE_MAX_LENGTH = 14000  # 绝对上限：超过此长度直接截断，防止子Agent Token爆炸
 MAX_SUMMARY_LENGTH = 8000  # 摘要阈值：超过此长度调用子Agent进行智能摘要（调整至8000避免短文本被过度摘要）
+
+
+async def send_chat_result(bot: Bot, chat_result: str):
+    """
+    解析并发送 chat_result，支持：
+    - 按换行分割多条消息
+    - @用户ID 语法 → MessageSegment.at(user_id)
+    """
+    if not chat_result:
+        return
+
+    # 按换行分割为多条消息
+    lines = chat_result.split("\n")
+
+    for line in lines:
+        if not line.strip():
+            continue
+
+        # 解析 @user_id 语法，转换为消息段列表
+        segments = _parse_at_segments(line)
+
+        # 模拟打字延迟（基于纯文本长度）
+        plain_text = re.sub(r"@\d+", "", line)
+        await asyncio.sleep(len(plain_text) / 7)
+
+        await bot.send(segments)
+
+
+def _parse_at_segments(text: str) -> list[Message]:
+    """
+    将含有 @用户ID 的文本解析为 MessageSegment 列表。
+
+    规则：
+    - @后跟纯数字（QQ号格式）才会被解析为 at segment
+    - 其余文本保持为 text segment
+    - 示例输入："好哦 @444835641 你来看"
+    - 示例输出：[Text("好哦 "), At(444835641), Text(" 你来看")]
+    """
+    # 匹配 @数字，前后允许空格（空格属于分隔符，不计入文本内容）
+    pattern = re.compile(r"\s*@(\d+)\s*")
+    segments: list[Message] = []
+    last_end = 0
+
+    for match in pattern.finditer(text):
+        # 匹配前的普通文本
+        before = text[last_end : match.start()]
+        if before:
+            segments.append(MessageSegment.text(before))
+
+        # @ 片段
+        user_id = match.group(1)
+        segments.append(MessageSegment.at(user_id))
+
+        last_end = match.end()
+
+    # 剩余文本
+    tail = text[last_end:]
+    if tail:
+        segments.append(MessageSegment.text(tail))
+
+    # 如果没有任何 @ 匹配，直接返回原始字符串（兼容旧调用）
+    if not segments:
+        return [MessageSegment.text(text)]
+
+    return segments
 
 
 async def handle_ai_chat(bot: Bot, event: Event):
@@ -199,7 +268,7 @@ async def handle_ai_chat(bot: Bot, event: Event):
 
             # 步骤 8: 发送回复
             if chat_result:
-                await bot.send(chat_result)
+                await send_chat_result(bot, chat_result)
                 logger.info(f"🧠 [GsCore][AI] 回复已发送 (模式: {intent})")
 
                 # ====== 【新增】Memory Observer: AI 回复后入队观察 ======
@@ -207,8 +276,6 @@ async def handle_ai_chat(bot: Bot, event: Event):
 
                 if _mc.observer_enabled:
                     try:
-                        import asyncio
-
                         from gsuid_core.ai_core.memory import observe
 
                         asyncio.create_task(

@@ -136,6 +136,7 @@ async def _ingest_batch(
 
     # Step 2: 写入 Episode
     episode = await AIMemEpisode.create_episode(
+        session=session,
         scope_key=scope_key,
         content=dialogue,
         speaker_ids=speaker_ids,
@@ -146,6 +147,7 @@ async def _ingest_batch(
     extracted = await _llm_extract(dialogue, scope_key)
 
     entity_name_to_id = await extract_and_upsert_entities(
+        session=session,
         scope_key=scope_key,
         entities_data=extracted.get("entities", []),
         episode_id=episode.id,
@@ -173,6 +175,7 @@ async def _ingest_batch(
         user_scoped_entities = [e for e in user_global_entities if e.get("user_id") == user_id]
         if user_scoped_entities:
             await extract_and_upsert_entities(
+                session=session,
                 scope_key=user_global_scope,
                 entities_data=user_scoped_entities,
                 episode_id=episode.id,
