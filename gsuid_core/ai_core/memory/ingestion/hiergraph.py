@@ -71,9 +71,6 @@ class AIMemHierarchicalGraphMeta(SQLModel, table=True):
             asyncio.create_task(rebuild_task(scope_key))
             return
 
-        meta.current_entity_count = current_count
-        session.add(meta)
-
         should_rebuild = (
             meta.last_rebuild_at is None
             or current_count > meta.entity_count_at_last_rebuild * memory_config.hiergraph_rebuild_ratio
@@ -255,8 +252,8 @@ class HierarchicalGraphBuilder:
         layer: int,
         entities: list[AIMemEntity],
     ) -> list[AIMemCategory]:
-        """将 Entity 分配写入 Category（ORM relationship，避免手动操作关联表）"""
         new_categories: list[AIMemCategory] = []
+
         for assignment in assignments:
             cat_name = assignment.get("category", "").strip()
             if not cat_name:
@@ -265,15 +262,29 @@ class HierarchicalGraphBuilder:
             if created:
                 new_categories.append(category)
 
-            existing_ids = {e.id for e in category.member_entities}
+            # ✅ 不访问 category.member_entities（会触发懒加载崩溃）
+            # 改为直接查关联表
+            existing_result = await self.session.execute(
+                select(mem_category_entity_members.c.entity_id).where(
+                    mem_category_entity_members.c.category_id == category.id
+                )
+            )
+            existing_ids = {row[0] for row in existing_result.fetchall()}
+
             for idx in assignment.get("indexes", []):
                 real_idx = idx - 1
                 if 0 <= real_idx < len(entities):
                     entity = entities[real_idx]
                     if entity.id not in existing_ids:
-                        category.member_entities.append(entity)
+                        # ✅ 直接 insert 关联行
+                        await self.session.execute(
+                            mem_category_entity_members.insert().values(
+                                category_id=category.id,
+                                entity_id=entity.id,
+                            )
+                        )
                         existing_ids.add(entity.id)
-            self.session.add(category)
+
         return new_categories
 
     async def _apply_category_assignments(
