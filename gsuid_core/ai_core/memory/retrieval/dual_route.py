@@ -25,7 +25,7 @@ class MemoryContext:
     edges: list[dict] = field(default_factory=list)
     retrieval_meta: dict = field(default_factory=dict)
 
-    def to_prompt_text(self, max_chars: int = 20000) -> str:
+    def to_prompt_text(self, max_chars: int = 24000) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本"""
         parts = []
 
@@ -34,7 +34,9 @@ class MemoryContext:
             parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
 
         if self.episodes:
-            hist_text = "\n".join(f"[{ep.get('valid_at', '?')[:10]}] {ep['content'][:200]}" for ep in self.episodes[:5])
+            hist_text = "\n".join(
+                f"[{ep.get('valid_at', '?')[:10]}] {ep['content'][:6000]}" for ep in self.episodes[:5]
+            )
             parts.append(f"【历史对话片段】\n{hist_text if hist_text else '暂无历史对话'}")
 
         result = "\n\n".join(parts)
@@ -53,11 +55,11 @@ def _merge_dedup(list_a: list[dict], list_b: list[dict], id_field: str = "id") -
 
 async def dual_route_retrieve(
     query: str,
-    group_id: str,
-    user_id: Optional[str] = None,
+    user_id: str,
+    group_id: Optional[str] = None,
     top_k: int = 10,
     enable_system2: bool = True,
-    enable_user_global: bool = False,
+    enable_user_global: bool = True,
 ) -> MemoryContext:
     """双路检索主入口。在 handle_ai.py 中，AI 准备回复前调用此函数。
 
@@ -70,17 +72,41 @@ async def dual_route_retrieve(
         enable_system2:     是否启用 System-2 全局选择（成本较高）
         enable_user_global: 是否联合查询用户跨群画像
     """
-    group_scope = make_scope_key(ScopeType.GROUP, group_id)
-    scope_keys = [group_scope]
+    scope_keys: list[str] = []
+    if group_id:
+        scope_keys.append(
+            make_scope_key(
+                ScopeType.GROUP,
+                group_id,
+            )
+        )
+
     if enable_user_global and user_id:
-        scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, user_id))
+        user_scope = make_scope_key(
+            ScopeType.USER_GLOBAL,
+            user_id,
+        )
+        scope_keys.append(user_scope)
+    else:
+        user_scope = None
 
     # 并行执行双路
-    s1_task = asyncio.create_task(system1_search(query, scope_keys, top_k=top_k))
+    s1_task = asyncio.create_task(
+        system1_search(
+            query,
+            scope_keys,
+            top_k=top_k,
+        )
+    )
 
     s2_task = None
-    if enable_system2:
-        s2_task = asyncio.create_task(system2_global_selection(query, group_scope))
+    if enable_system2 and user_scope:
+        s2_task = asyncio.create_task(
+            system2_global_selection(
+                query,
+                user_scope,
+            )
+        )
 
     # 等待 System-1
     s1: System1Result = await s1_task
@@ -94,7 +120,8 @@ async def dual_route_retrieve(
     if s2_task is not None:
         try:
             s2 = await s2_task
-        except Exception:
+        except Exception as e:
+            logger.error(f"🧠 [Memory] System-2 检索失败，{e}")
             s2 = None
 
         if s2 is not None:

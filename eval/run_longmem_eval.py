@@ -109,7 +109,7 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
 DEFAULT_CHAT_API = "/api/chat_with_history"
 DEFAULT_SEND_API = "/api/send_msg"
-DEFAULT_TIMEOUT = 1000.0  # 单次请求超时（秒），长对话可能需要较长时间
+DEFAULT_TIMEOUT = 2000.0  # 单次请求超时（秒），长对话可能需要较长时间
 
 # 评判用的 System Prompt
 JUDGE_SYSTEM_PROMPT = """你是一个严格的答案评判助手。你的任务是判断 Agent 的回答是否与标准答案语义一致。

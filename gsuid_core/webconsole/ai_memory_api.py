@@ -37,8 +37,8 @@ class MemorySearchRequest(BaseModel):
     """记忆检索请求"""
 
     query: str = Field(..., min_length=1, max_length=2000, description="查询文本")
-    group_id: str = Field(..., min_length=1, max_length=128, description="群组 ID")
-    user_id: Optional[str] = Field(default=None, max_length=64, description="用户 ID（可选，用于联合用户全局记忆）")
+    group_id: Optional[str] = Field(None, min_length=1, max_length=128, description="群组 ID")
+    user_id: str = Field(..., max_length=64, description="用户 ID（可选，用于联合用户全局记忆）")
     top_k: int = Field(default=10, ge=1, le=50, description="返回结果数量上限")
     enable_system2: bool = Field(default=True, description="是否启用 System-2 分层图遍历")
     enable_user_global: bool = Field(default=False, description="是否联合查询用户跨群画像")

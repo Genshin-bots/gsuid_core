@@ -42,7 +42,7 @@ class MemoryConfig:
     enable_system2: bool = True
     """是否启用 System-2 全局选择（成本较高，可按需关闭）"""
 
-    enable_user_global_memory: bool = False
+    enable_user_global_memory: bool = True
     """是否联合查询用户跨群画像"""
 
     enable_heartbeat_memory: bool = True
@@ -62,7 +62,7 @@ class MemoryConfig:
     min_children_per_category: int = 3
     """每个 Category 至少包含的子节点数（压缩效率约束）"""
 
-    max_layers: int = 5
+    max_layers: int = 3
     """分层图最大层数"""
 
     hiergraph_rebuild_ratio: float = 1.10

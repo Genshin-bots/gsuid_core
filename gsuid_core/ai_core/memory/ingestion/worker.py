@@ -54,6 +54,8 @@ class IngestionWorker:
         用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
         在 flush 期间禁止新的 observe 记录入队（通过 asyncio.Lock 保护）。
         """
+        from gsuid_core.ai_core.memory.ingestion.hiergraph import rebuild_task, _rebuild_locks
+
         logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
         async with self._flush_lock:
             # 先消费所有队列中的数据到 buffers
@@ -69,6 +71,19 @@ class IngestionWorker:
             scope_keys = list(self._buffers.keys())
             for scope_key in scope_keys:
                 await self._flush(scope_key)
+
+            # 等待所有 rebuild_task 完成
+            rebuild_tasks = []
+            for scope_key in scope_keys:
+                lock = _rebuild_locks.get(scope_key)
+                if lock and lock.locked():
+                    # 已在运行，等它
+                    async with lock:
+                        pass
+                else:
+                    rebuild_tasks.append(rebuild_task(scope_key))
+            if rebuild_tasks:
+                await asyncio.gather(*rebuild_tasks)
 
     async def stop(self):
         """停止后台消费循环"""
@@ -106,8 +121,12 @@ class IngestionWorker:
 
         async with self._llm_semaphore:
             try:
-                await _ingest_batch(records, scope_key)
-                _record_ingestion_stats(len(records), success=True)
+                batch_size = memory_config.batch_max_size
+                batches = [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
+                logger.info(f"🧠 [Memory] scope={scope_key} 共 {len(records)} 条，分 {len(batches)} 批处理")
+                for batch in batches:
+                    await _ingest_batch(batch, scope_key)
+                    _record_ingestion_stats(len(batch), success=True)
             except Exception as e:
                 logger.error(f"Ingestion failed for {scope_key}: {e}", exc_info=True)
                 # 上报摄入失败统计
@@ -207,9 +226,15 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.memory.prompts.extraction import ENTITY_EXTRACTION_PROMPT
 
+    MAX_CHARS = 10000
+    if len(dialogue) > MAX_CHARS:
+        logger.warning(
+            f"🧠 [Memory] dialogue 超过 {MAX_CHARS} 字符被截断 (实际 {len(dialogue)})，建议减小 batch_max_size"
+        )
+
     prompt = ENTITY_EXTRACTION_PROMPT.format(
         scope_key=scope_key,
-        dialogue_content=dialogue[:4000],  # 硬性 token 预算
+        dialogue_content=dialogue[:MAX_CHARS],  # 硬性 token 预算
     )
 
     try:

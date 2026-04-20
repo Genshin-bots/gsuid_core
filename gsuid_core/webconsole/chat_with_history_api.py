@@ -35,7 +35,6 @@ async def chatWithHistory(req: Dict):
     """
     带历史对话的 AI 聊天接口
     """
-    return None
     from gsuid_core.bot import Bot
     from gsuid_core.ai_core.history import format_history_for_agent
     from gsuid_core.ai_core.gs_agent import create_agent
@@ -45,6 +44,7 @@ async def chatWithHistory(req: Dict):
     _bot = _Bot("HTTP")
 
     user_id = req.get("user_id", "http_user")
+    logger.info(f"[chat_with_history] received user_id={repr(user_id)}")
     message = req.get("message", "")
     history = req.get("history", [])
     persona_name = req.get("persona_name")
@@ -84,7 +84,7 @@ async def chatWithHistory(req: Dict):
                     await observe(
                         content=content,
                         speaker_id=str(user_id),
-                        group_id=str(group_id or user_id),
+                        group_id=group_id,
                         bot_self_id=bot_self_id_str,
                         observer_blacklist=obs_blacklist,
                         message_type=msg_type,
@@ -99,7 +99,7 @@ async def chatWithHistory(req: Dict):
             system_prompt="你是一个智能助手，请根据对话历史回答用户的问题。",
             persona_name=persona_name,
             create_by="TEST",
-            max_history=10,
+            max_history=1,
         )
 
         if history:
@@ -175,9 +175,10 @@ async def chatWithHistory(req: Dict):
         # 构建记忆上下文（基于 user_id / group_id 检索）
         memory_context_text = ""
         if memory_config.enable_retrieval:
+            logger.info(f"[dual_route_retrieve] user_id={repr(str(user_id))}")
             mem_ctx = await dual_route_retrieve(
                 query=message,
-                group_id=str(group_id or user_id),
+                group_id=group_id,
                 user_id=str(user_id),
                 top_k=memory_config.retrieval_top_k,
                 enable_system2=memory_config.enable_system2,

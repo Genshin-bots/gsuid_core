@@ -138,6 +138,12 @@ class HierarchicalGraphBuilder:
             if len(prev_layer) < self._min_children():
                 break
 
+            # 如果上层节点数太少，没有必要再抽象
+            if len(prev_layer) < self._min_children() * 2:
+                # 节点数刚好够一个 category，直接 break 而不是让 LLM 硬凑
+                logger.debug(f"🧠 [HierGraph] layer {layer} 节点数 {len(prev_layer)} 过少，停止向上构建")
+                break
+
             existing_upper = await self._get_categories_by_layer(layer)
             upper_assignments = await self._llm_categorize(
                 prev_layer, existing_upper, layer=layer, is_category_input=True

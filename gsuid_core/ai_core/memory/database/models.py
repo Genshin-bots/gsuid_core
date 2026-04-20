@@ -208,17 +208,28 @@ class AIMemEntity(SQLModel, table=True):
         name_to_id: dict[str, str] = {}
         vector_payloads: list[dict] = []
 
+        for ed in entities_data:
+            if "is_speaker" in ed or "Speaker" in ed.get("tag", []):
+                # 如果 LLM 写的是 user_444835641，统一改成 444835641
+                name = ed.get("name", "")
+                if name.startswith("user_"):
+                    ed["name"] = name[len("user_") :]
+
+        # 再补充 speaker（此时 LLM 已有的会被精确匹配去重）
+        existing_speaker_names = {ed.get("name") for ed in entities_data if "Speaker" in ed.get("tag", [])}
+
         # 补 speaker
         for uid in speaker_ids:
-            entities_data.append(
-                {
-                    "name": uid,
-                    "summary": f"用户 {uid}",
-                    "tag": ["Speaker"],
-                    "is_speaker": True,
-                    "user_id": uid,
-                }
-            )
+            if uid not in existing_speaker_names:
+                entities_data.append(
+                    {
+                        "name": uid,
+                        "summary": f"用户 {uid}",
+                        "tag": ["Speaker"],
+                        "is_speaker": True,
+                        "user_id": uid,
+                    }
+                )
 
         for entity_data in entities_data:
             name = entity_data.get("name", "").strip()
