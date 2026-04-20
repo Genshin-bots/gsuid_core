@@ -163,7 +163,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             if not is_start:
                 return
 
-    valid_event: Dict[Trigger, int] = {}
+    valid_event: Dict[Trigger, {}] = {}
     pending = [
         _check_command(
             SL.lst[sv].TL[_type][tr],
@@ -224,10 +224,26 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
         sorted_event = sorted(
             valid_event.items(),
-            key=lambda x: (not x[0].prefix, x[1]),
+            key=lambda x: (not x[0].prefix, x[1]["priority"]),
         )
-
-        for trigger, _ in sorted_event:
+        # 所有的trigger都没有匹配, 并且包含模糊匹配的trigger，那么返回模糊匹配的命令列表
+        fuzzy_event_list = []
+        [fuzzy_event_list.append(trigger) if info["fuzzy_match"] else None for trigger, info in sorted_event]
+        normal_event_list = []
+        [normal_event_list.append(trigger) if info["normal_match"] else None for trigger, info in sorted_event]
+        normal_cmd_lines = "\n".join([f"{trigger.prefix + trigger.keyword}" for trigger in normal_event_list])
+        fuzzy_cmd_lines = "\n".join([f"{trigger.prefix + trigger.keyword}" for trigger in fuzzy_event_list])
+        logger.trace(f"normal_cmd_lines:{normal_cmd_lines}")
+        logger.trace(f"fuzzy_cmd_lines:{fuzzy_cmd_lines}")
+        if len(normal_event_list) == 0:
+            _event = deepcopy(event)
+            bot = Bot(ws, _event)
+            if len(fuzzy_event_list) > 0:
+                await bot.send("找不到相关命令\n你是否在找如下命令:\n{}".format(fuzzy_cmd_lines))
+            return
+        else:
+            sorted_event = normal_event_list
+        for trigger in sorted_event:
             _event = deepcopy(event)
             message = await trigger.get_command(_event)
             _event.task_id = str(uuid4())
@@ -475,7 +491,7 @@ async def _check_command(
     trigger: Trigger,
     priority: int,
     message: Event,
-    valid_event: Dict[Trigger, int],
+    valid_event: Dict[Trigger, {}],
 ):
-    if trigger.check_command(message):
-        valid_event[trigger] = priority
+    normal_match, fuzzy_match = trigger.check_command(message)
+    valid_event[trigger] = {"priority": priority, "normal_match": normal_match, "fuzzy_match": fuzzy_match}
