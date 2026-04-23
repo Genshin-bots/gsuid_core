@@ -5,7 +5,7 @@ PydanticAI Agent 核心模块
 
 import time
 import asyncio
-from typing import Set, List, Union, Optional, Sequence
+from typing import Any, Set, List, Union, TypeVar, Optional, Sequence, overload
 
 import httpx
 from pydantic_ai import Agent
@@ -34,6 +34,8 @@ from gsuid_core.ai_core.rag.tools import ToolList, search_tools, get_main_agent_
 from gsuid_core.ai_core.configs.models import get_openai_chat_model
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
+
+_T = TypeVar("_T")
 
 
 def _truncate_history_with_tool_safety(
@@ -155,12 +157,39 @@ class GsCoreAIAgent:
             self.model = get_openai_chat_model()
 
     def extract_history(self):
+        if self.max_history <= 0:
+            self.history = []
+
         if len(self.history) > self.max_history:
             self.history = _truncate_history_with_tool_safety(
                 self.history,
                 self.max_history,
             )
             logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {len(self.history)} 条")
+
+    @overload
+    async def _execute_run(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot] = None,
+        ev: Optional[Event] = None,
+        rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
+        must_return: bool = False,
+        output_type: None = None,
+    ) -> str: ...
+
+    @overload
+    async def _execute_run(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot] = None,
+        ev: Optional[Event] = None,
+        rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
+        must_return: bool = False,
+        output_type: type[_T] = ...,
+    ) -> _T: ...
 
     async def _execute_run(
         self,
@@ -170,9 +199,15 @@ class GsCoreAIAgent:
         rag_context: Optional[str] = None,
         tools: Optional[ToolList] = None,
         must_return: bool = False,
-    ) -> str:
+        output_type: Optional[type] = None,
+    ) -> Union[str, Any]:
         """
         实际执行 Agent 运行的内部方法
+
+        Args:
+            output_type: 当指定为某个 Pydantic 模型类时，利用 pydantic_ai 的
+                output_type 特性，要求模型必须返回符合该模型结构的 JSON。
+                此时返回值为该 Pydantic 模型实例而非字符串。
         """
         from gsuid_core.ai_core.statistics import statistics_manager
 
@@ -228,13 +263,17 @@ class GsCoreAIAgent:
 
         tools = list({obj.name: obj for obj in tools}.values())
 
-        _agent: Agent[ToolContext, str] = Agent(
+        # 当 return_model 指定时，使用 output_type 让 pydantic_ai 强制结构化输出
+        # output_type 默认为 str（返回文本），指定 Pydantic 模型时强制返回结构化 JSON
+        _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
             system_prompt=self.system_prompt or "你是一个智能助手, 简短的一句话回答问题即可。",
             model_settings={"max_tokens": self.max_tokens},
             tools=tools,
             toolsets=[skills_toolset],
+            retries=3,
+            output_type=output_type or str,
         )
 
         # 截断历史记录，避免无限制增长
@@ -247,7 +286,7 @@ class GsCoreAIAgent:
             now_text = ""
             async with _agent.iter(
                 final_user_message,
-                deps=context,
+                deps=context,  # type: ignore[arg-type]
                 message_history=self.history,
                 usage_limits=limits,
             ) as agent_run:
@@ -327,6 +366,9 @@ class GsCoreAIAgent:
                 except Exception as e:
                     logger.warning(f"📊 [GsCoreAIAgent] 记录统计失败: {e}")
 
+                # 当 return_model 指定时，直接返回 Pydantic 模型实例
+                if output_type is not None:
+                    return result.output
                 # 始终返回字符串类型
                 result_msg = str(result.output).strip()
                 if now_text.strip() == result_msg.strip() and not must_return:
@@ -369,6 +411,7 @@ class GsCoreAIAgent:
                 statistics_manager.record_error(error_type="agent_error")
             return f"执行出错: {str(e)}"
 
+    @overload
     async def run(
         self,
         user_message: Union[str, Sequence[UserContent]],
@@ -377,15 +420,44 @@ class GsCoreAIAgent:
         rag_context: Optional[str] = None,
         tools: Optional[ToolList] = None,
         must_return: bool = False,
-    ) -> str:
+        output_type: None = None,
+    ) -> str: ...
+
+    @overload
+    async def run(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot] = None,
+        ev: Optional[Event] = None,
+        rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
+        must_return: bool = False,
+        output_type: type[_T] = ...,
+    ) -> _T: ...
+
+    async def run(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot] = None,
+        ev: Optional[Event] = None,
+        rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
+        must_return: bool = False,
+        output_type: Optional[type] = None,
+    ) -> Union[str, Any]:
         """
         运行 Agent 并返回结果
 
         此方法使用锁机制确保同一时间只有一个请求在执行，
         其他请求会挂起等待，执行时自动继承历史记录
 
+        Args:
+            output_type: 当指定为某个 Pydantic 模型类时，利用 pydantic_ai 的
+                output_type 特性，要求模型必须返回符合该模型结构的 JSON。
+                此时返回值为该 Pydantic 模型实例而非字符串。
+
         Returns:
-            Agent 执行结果，可能是 str 或其他类型（取决于 Agent 配置）
+            Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
         """
         async with self._run_lock:
             logger.info("🧠 [GsCoreAIAgent] 获取到执行锁，开始执行...")
@@ -396,6 +468,7 @@ class GsCoreAIAgent:
                 rag_context=rag_context,
                 tools=tools,
                 must_return=must_return,
+                output_type=output_type,
             )
             logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
             return result

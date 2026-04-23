@@ -27,7 +27,12 @@ def get_openai_config() -> tuple[str, str, str]:
 def get_openai_chat_model() -> "OpenAIChatModel":
     """获取OpenAI Chat Model"""
     base_url, api_key, model_name = get_openai_config()
+    # http_client = httpx.AsyncClient(proxy="http://127.0.0.1:7890")
     return OpenAIChatModel(
         model_name=model_name,
-        provider=OpenAIProvider(api_key=api_key, base_url=base_url),
+        provider=OpenAIProvider(
+            api_key=api_key,
+            base_url=base_url,
+            # http_client=http_client,
+        ),
     )

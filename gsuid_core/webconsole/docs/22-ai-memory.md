@@ -497,6 +497,7 @@ GET /api/ai/memory/categories
                 "summary": "分类摘要",
                 "tag": ["标签1"],
                 "layer": 1,
+                "parent_id": null,
                 "child_categories_count": 3,
                 "member_entities_count": 8,
                 "created_at": "2024-01-15 10:30:00",
@@ -538,6 +539,7 @@ GET /api/ai/memory/categories/{category_id}
         "summary": "分类摘要",
         "tag": ["标签1"],
         "layer": 2,
+        "parent_id": "parent-uuid-string",
         "created_at": "2024-01-15 10:30:00",
         "updated_at": "2024-01-15 12:00:00",
         "parent_categories": [

@@ -38,6 +38,7 @@ mem_category_entity_members = Table(
     SQLModel.metadata,
     Column("category_id", String(36), ForeignKey("aimemcategory.id"), primary_key=True),
     Column("entity_id", String(36), ForeignKey("aimementity.id"), primary_key=True),
+    Index("ix_mem_cat_entity_entity_id", "entity_id"),
 )
 
 
@@ -53,8 +54,8 @@ class AIMemEpisode(SQLModel, table=True):
     scope_key: str = Field(index=True, max_length=128)
     content: str = Field(sa_column=Column(Text, nullable=False))
     speaker_ids: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
-    valid_at: datetime = Field(default_factory=datetime.utcnow)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    valid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
 
     mentioned_entities: List["AIMemEntity"] = Relationship(
@@ -93,7 +94,7 @@ class AIMemEpisode(SQLModel, table=True):
             content=content,
             speaker_ids=speaker_ids,
             valid_at=valid_at,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             qdrant_id=episode_id,
         )
         async with async_maker() as session:
@@ -124,6 +125,7 @@ class AIMemEntity(SQLModel, table=True):
         UniqueConstraint("scope_key", "name", name="uq_entity_scope_name"),
         Index("ix_mem_entity_scope_name", "scope_key", "name"),
         Index("ix_mem_entity_scope_speaker", "scope_key", "is_speaker"),
+        Index("ix_mem_entity_scope_id", "scope_key", "id"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
@@ -133,8 +135,8 @@ class AIMemEntity(SQLModel, table=True):
     tag: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     is_speaker: bool = Field(default=False)
     user_id: Optional[str] = Field(default=None, index=True, max_length=64)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
 
     episodes: List["AIMemEpisode"] = Relationship(
@@ -171,9 +173,9 @@ class AIMemEntity(SQLModel, table=True):
         scope_key: str,
         name: str,
     ) -> Optional["AIMemEntity"]:
-        """两阶段去重查找：精确匹配 → 向量相似度"""
+        """两阶段去重查找：精确匹配 → 混合检索（BM25+向量）"""
         from gsuid_core.ai_core.memory.config import memory_config
-        from gsuid_core.ai_core.memory.vector.ops import search_entities
+        from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
 
         # 阶段1：精确匹配
         result = await session.execute(select(cls).where(cls.scope_key == scope_key, cls.name == name))
@@ -181,8 +183,12 @@ class AIMemEntity(SQLModel, table=True):
         if entity:
             return entity
 
-        # 阶段2：向量相似度搜索
-        similar = await search_entities(query=name, scope_keys=[scope_key], top_k=3)
+        # 阶段2：混合检索（BM25+向量 RRF 融合），比纯向量更可靠
+        similar = await _hybrid_search_entities(
+            query=name,
+            scope_keys=[scope_key],
+            top_k=3,
+        )
         threshold = memory_config.dedup_similarity_threshold
         if similar and similar[0]["score"] >= threshold:
             result = await session.execute(select(cls).where(cls.id == similar[0]["id"]))
@@ -209,43 +215,68 @@ class AIMemEntity(SQLModel, table=True):
         vector_payloads: list[dict] = []
 
         for ed in entities_data:
-            if "is_speaker" in ed or "Speaker" in ed.get("tag", []):
+            if "is_speaker" in ed or "Speaker" in (ed["tag"] if "tag" in ed else []):
                 # 如果 LLM 写的是 user_444835641，统一改成 444835641
-                name = ed.get("name", "")
+                name = ed["name"] if "name" in ed else ""
                 if name.startswith("user_"):
                     ed["name"] = name[len("user_") :]
 
         # 再补充 speaker（此时 LLM 已有的会被精确匹配去重）
-        existing_speaker_names = {ed.get("name") for ed in entities_data if "Speaker" in ed.get("tag", [])}
+        """
+        existing_speaker_names = {
+            ed["name"] if "name" in ed else ""
+            for ed in entities_data
+            if "Speaker" in (ed["tag"] if "tag" in ed else [])
+        }
+        """
+        existing_map: dict[str, AIMemEntity] = {}
+        all_names = [
+            (ed["name"] if "name" in ed else "").strip() for ed in entities_data if (ed["name"] if "name" in ed else "")
+        ]
+        if all_names:
+            result = await session.execute(select(cls).where(cls.scope_key == scope_key, col(cls.name).in_(all_names)))
+            existing_map = {e.name: e for e in result.scalars().all()}
 
-        # 补 speaker
-        for uid in speaker_ids:
-            if uid not in existing_speaker_names:
-                entities_data.append(
-                    {
-                        "name": uid,
-                        "summary": f"用户 {uid}",
-                        "tag": ["Speaker"],
-                        "is_speaker": True,
-                        "user_id": uid,
-                    }
+        # ── 向量去重阶段：对 SQL 未命中的名称，用混合检索查找语义相似实体 ──
+        unmatched_names = [n for n in all_names if n not in existing_map]
+        if unmatched_names:
+            from gsuid_core.ai_core.memory.config import memory_config as _mc
+            from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
+
+            for uname in unmatched_names:
+                similar = await _hybrid_search_entities(
+                    query=uname,
+                    scope_keys=[scope_key],
+                    top_k=3,
                 )
+                if similar and similar[0]["score"] >= _mc.dedup_similarity_threshold:
+                    sid = similar[0]["id"]
+                    # 双重保障：SQL 查询增加 scope_key 条件，防止 Qdrant payload 不一致时跨 scope 匹配
+                    r = await session.execute(select(cls).where(cls.id == sid, cls.scope_key == scope_key))
+                    matched = r.scalar_one_or_none()
+                    if matched:
+                        existing_map[uname] = matched
+
+        # Summary 增长上限，防止无限拼接导致 token 超限
+        _MAX_SUMMARY_CHARS = 2000
 
         for entity_data in entities_data:
-            name = entity_data.get("name", "").strip()
+            name = (entity_data["name"] if "name" in entity_data else "").strip()
             if not name:
                 continue
 
-            result = await session.execute(select(cls).where(cls.scope_key == scope_key, cls.name == name))
-            existing = result.scalar_one_or_none()
+            existing = existing_map[name] if name in existing_map else None
 
             if existing:
-                new_summary = entity_data.get("summary", "")
+                new_summary = entity_data["summary"] if "summary" in entity_data else ""
                 if new_summary and new_summary not in existing.summary:
-                    existing.summary = f"{existing.summary}\n{new_summary}".strip()
+                    combined = f"{existing.summary}\n{new_summary}".strip()
+                    if len(combined) > _MAX_SUMMARY_CHARS:
+                        combined = combined[-_MAX_SUMMARY_CHARS:]
+                    existing.summary = combined
 
                 existing_tags = existing.tag if isinstance(existing.tag, list) else []
-                merged_tags = list(set(existing_tags) | set(entity_data.get("tag", [])))
+                merged_tags = list(set(existing_tags) | set(entity_data["tag"] if "tag" in entity_data else []))
 
                 existing.tag = merged_tags
                 existing.updated_at = datetime.now(timezone.utc)
@@ -268,16 +299,16 @@ class AIMemEntity(SQLModel, table=True):
 
             else:
                 entity_id = str(uuid.uuid4())
-                tag_list = entity_data.get("tag", [])
+                tag_list = entity_data["tag"] if "tag" in entity_data else []
 
                 new_entity = cls(
                     id=entity_id,
                     scope_key=scope_key,
                     name=name,
-                    summary=entity_data.get("summary", ""),
+                    summary=entity_data["summary"] if "summary" in entity_data else "",
                     tag=tag_list,
-                    is_speaker=entity_data.get("is_speaker", False),
-                    user_id=entity_data.get("user_id"),
+                    is_speaker=entity_data["is_speaker"] if "is_speaker" in entity_data else False,
+                    user_id=entity_data["user_id"] if "user_id" in entity_data else None,
                     qdrant_id=entity_id,
                 )
                 session.add(new_entity)
@@ -286,15 +317,36 @@ class AIMemEntity(SQLModel, table=True):
                     {
                         "entity_id": entity_id,
                         "name": name,
-                        "summary": entity_data.get("summary", ""),
+                        "summary": entity_data["summary"] if "summary" in entity_data else "",
                         "scope_key": scope_key,
-                        "is_speaker": entity_data.get("is_speaker", False),
-                        "user_id": entity_data.get("user_id"),
+                        "is_speaker": entity_data["is_speaker"] if "is_speaker" in entity_data else False,
+                        "user_id": entity_data["user_id"] if "user_id" in entity_data else None,
                         "tag": tag_list,
                     }
                 )
 
                 name_to_id[name] = entity_id
+
+        # 写入 Episodic Edge（Episode ↔ Entity 关联），论文 Section 2.1
+        if episode_id and name_to_id:
+            # 查出已存在的关联，避免重复插入
+            existing_mentions = await session.execute(
+                select(mem_episode_entity_mentions.c.entity_id).where(
+                    mem_episode_entity_mentions.c.episode_id == episode_id
+                )
+            )
+            existing_entity_ids = {row[0] for row in existing_mentions.fetchall()}
+
+            # name_to_id.values() 可能包含重复的 entity_id（不同 name 去重后指向同一 Entity），
+            # 需要先 set() 去重，再与已有关联做差集
+            for entity_id in set(name_to_id.values()):
+                if entity_id not in existing_entity_ids:
+                    await session.execute(
+                        mem_episode_entity_mentions.insert().values(
+                            episode_id=episode_id,
+                            entity_id=entity_id,
+                        )
+                    )
 
         return name_to_id, vector_payloads
 
@@ -316,9 +368,9 @@ class AIMemEdge(SQLModel, table=True):
     fact: str = Field(sa_column=Column(Text, nullable=False))
     source_entity_id: str = Field(foreign_key="aimementity.id", max_length=36)
     target_entity_id: str = Field(foreign_key="aimementity.id", max_length=36)
-    valid_at: datetime = Field(default_factory=datetime.utcnow)
+    valid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     invalid_at: Optional[datetime] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
 
     source_entity: Optional["AIMemEntity"] = Relationship(
@@ -384,8 +436,8 @@ class AIMemCategory(SQLModel, table=True):
     summary: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
     tag: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     layer: int = Field(default=1)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     child_categories: List["AIMemCategory"] = Relationship(
         back_populates="parent_categories",

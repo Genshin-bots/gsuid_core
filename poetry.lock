@@ -2014,6 +2014,21 @@ files = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.59.4"
+description = "A package to repair broken json strings"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "json_repair-0.59.4-py3-none-any.whl", hash = "sha256:46052e646bc0b0c39db672ebbf732f774f3c1a5bde81a54f0b0e19d3af4f45cd"},
+    {file = "json_repair-0.59.4.tar.gz", hash = "sha256:559ca1828f6f566530663cd96d64bee29f8282b9d2ff0e661e05fa87b4171ab3"},
+]
+
+[package.extras]
+schema = ["jsonschema (>=4.21) ; python_full_version < \"3.15.0a0\" or python_full_version >= \"3.15.0\"", "pydantic (>=2) ; python_full_version < \"3.15.0a0\" or python_full_version >= \"3.15.0\""]
+
+[[package]]
 name = "lmdb"
 version = "1.7.5"
 description = "Universal Python binding for the LMDB 'Lightning' Database"
@@ -5490,4 +5505,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "51132b20d99dc005cb8ab77696d24ed9b3eb79f768566f23c5d4e9ff50b1fc52"
+content-hash = "176e0d85e4894a2e5153cfed673856d69304b979089e2ee03d3be6cc692c2eea"

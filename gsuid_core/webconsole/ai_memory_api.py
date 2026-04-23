@@ -5,6 +5,7 @@ AI Memory APIs
 包括记忆检索、Episode/Entity/Edge 浏览、分层语义图查看、配置管理、统计信息等。
 """
 
+import asyncio
 from typing import Dict, List, Optional
 
 from fastapi import Depends
@@ -26,7 +27,7 @@ from gsuid_core.ai_core.memory.database.models import (
     mem_category_entity_members,
     mem_episode_entity_mentions,
 )
-from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
+from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta, rebuild_task
 
 # ─────────────────────────────────────────────
 # Pydantic 请求模型
@@ -827,8 +828,17 @@ async def list_categories(
                 .label("member_count")
             )
 
-            # 3. 构造主查询：同时选取模型和两个子查询结果
-            query = select(AIMemCategory, child_count_subq, member_count_subq)
+            # 3. 显式定义子查询：获取父分类 ID（取第一个父分类）
+            parent_id_subq = (
+                select(col(AIMemCategoryEdge.parent_category_id))
+                .where(AIMemCategoryEdge.child_category_id == AIMemCategory.id)
+                .limit(1)
+                .scalar_subquery()
+                .label("parent_id")
+            )
+
+            # 4. 构造主查询：同时选取模型和三个子查询结果
+            query = select(AIMemCategory, child_count_subq, member_count_subq, parent_id_subq)
             count_query = select(func.count()).select_from(AIMemCategory)
 
             # 注意：actual_scope_key 为 None 且 all_scopes=True 时，不加过滤条件，查所有
@@ -854,7 +864,7 @@ async def list_categories(
             rows = result.all()
 
             items = []
-            for cat, child_count, member_count in rows:
+            for cat, child_count, member_count, parent_id in rows:
                 items.append(
                     {
                         "id": cat.id,
@@ -863,6 +873,7 @@ async def list_categories(
                         "summary": cat.summary,
                         "tag": cat.tag,
                         "layer": cat.layer,
+                        "parent_id": parent_id,  # 直接使用 SQL 子查询的结果
                         "child_categories_count": child_count,  # 直接使用 SQL 计算出的结果
                         "member_entities_count": member_count,  # 直接使用 SQL 计算出的结果
                         "created_at": str(cat.created_at) if cat.created_at else None,
@@ -947,6 +958,11 @@ async def get_category_detail(
                         }
                     )
 
+            # 获取父分类 ID（如果有父分类的话）
+            parent_id = None
+            if category.parent_categories and len(category.parent_categories) > 0:
+                parent_id = category.parent_categories[0].id
+
             return {
                 "status": 0,
                 "msg": "ok",
@@ -957,6 +973,7 @@ async def get_category_detail(
                     "summary": category.summary,
                     "tag": category.tag,
                     "layer": category.layer,
+                    "parent_id": parent_id,
                     "created_at": str(category.created_at) if category.created_at else None,
                     "updated_at": str(category.updated_at) if category.updated_at else None,
                     "parent_categories": parent_categories,
@@ -1039,6 +1056,54 @@ async def get_hiergraph_status(
         return {
             "status": 1,
             "msg": f"获取分层图状态失败: {str(e)}",
+            "data": None,
+        }
+
+
+@app.post("/api/ai/memory/hiergraph/rebuild")
+async def trigger_hiergraph_rebuild(
+    group_id: Optional[str] = None,
+    scope_key: Optional[str] = None,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    手动触发分层图重建（评测模式使用）
+
+    Args:
+        group_id: 群组 ID（可选）
+        scope_key: 完整的 Scope Key（可选，优先级高于 group_id）
+
+    Returns:
+        status: 0成功，1失败
+        data: 重建任务启动信息
+    """
+    try:
+        actual_scope_key = scope_key
+        if actual_scope_key is None and group_id is not None:
+            actual_scope_key = make_scope_key(ScopeType.GROUP, group_id)
+
+        if actual_scope_key is None:
+            return {
+                "status": 1,
+                "msg": "必须提供 group_id 或 scope_key",
+                "data": None,
+            }
+
+        # 异步触发重建（不等待完成）
+        asyncio.create_task(rebuild_task(actual_scope_key))
+
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "scope_key": actual_scope_key,
+                "message": "分层图重建任务已启动",
+            },
+        }
+    except Exception as e:
+        return {
+            "status": 1,
+            "msg": f"触发分层图重建失败: {str(e)}",
             "data": None,
         }
 

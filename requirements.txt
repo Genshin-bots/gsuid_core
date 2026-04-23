@@ -869,6 +869,10 @@ joblib==1.5.3 \
     # via
     #   gsuid-core
     #   scikit-learn
+json-repair==0.59.4 \
+    --hash=sha256:46052e646bc0b0c39db672ebbf732f774f3c1a5bde81a54f0b0e19d3af4f45cd \
+    --hash=sha256:559ca1828f6f566530663cd96d64bee29f8282b9d2ff0e661e05fa87b4171ab3
+    # via gsuid-core
 lmdb==1.7.5 \
     --hash=sha256:01907a5e9346d58fe29651f44119fe3aa33e1b248bb2ac27b48289cdfb552e68 \
     --hash=sha256:0ad85a15acbfe8a42fdef92ee5e869610286d38507e976755f211be0fc905ca7 \

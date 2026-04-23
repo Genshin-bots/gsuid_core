@@ -109,7 +109,7 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
 DEFAULT_CHAT_API = "/api/chat_with_history"
 DEFAULT_SEND_API = "/api/send_msg"
-DEFAULT_TIMEOUT = 2000.0  # 单次请求超时（秒），长对话可能需要较长时间
+DEFAULT_TIMEOUT = 4000.0  # 单次请求超时（秒），长对话可能需要较长时间
 
 # 评判用的 System Prompt
 JUDGE_SYSTEM_PROMPT = """你是一个严格的答案评判助手。你的任务是判断 Agent 的回答是否与标准答案语义一致。
@@ -136,6 +136,36 @@ def load_eval_data(json_path: str) -> List[Dict[str, Any]]:
         data = json.load(f)
     print(f"[Loader] 已加载 {len(data)} 道题目，来自 {json_path}")
     return data
+
+
+def load_existing_answers(output_dir: str) -> tuple[List[Dict[str, Any]], set[str], Optional[str]]:
+    """
+    加载 output_dir/answers.json 文件，用于增量更新。
+
+    返回:
+        existing_results: 已有结果列表
+        existing_ids: 已处理的 question_id 集合
+        answers_file: 检测到的已有文件路径（如果没有则返回 None）
+    """
+    answers_file = os.path.join(output_dir, "answers.json")
+    if not os.path.isfile(answers_file):
+        return [], set(), None
+
+    try:
+        with open(answers_file, "r", encoding="utf-8") as f:
+            existing_results = json.load(f)
+        if not isinstance(existing_results, list):
+            print(f"[Resume] 已有文件格式异常，忽略: {answers_file}")
+            return [], set(), None
+        existing_ids = {
+            item["question_id"] for item in existing_results if isinstance(item, dict) and "question_id" in item
+        }
+        print(f"[Resume] 已加载 {len(existing_results)} 条已有结果，来自 {answers_file}")
+        print(f"[Resume] 已处理 {len(existing_ids)} 道题目，将跳过这些题目")
+        return existing_results, existing_ids, answers_file
+    except Exception as e:
+        print(f"[Resume] 读取已有结果失败: {e}")
+        return [], set(), None
 
 
 def flatten_haystack_sessions(
@@ -166,6 +196,263 @@ def flatten_haystack_sessions(
 
 
 # ---------------------------------------------------------------------------
+# Phase A: 仅 System-1 检索 - 摄入+检索，不重建分层图
+# ---------------------------------------------------------------------------
+
+
+async def run_phase_s1_only(
+    eval_data_path: str,
+    base_url: str,
+    output_dir: str,
+    start: Optional[int] = None,
+    end: Optional[int] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    resume: bool = False,
+) -> str:
+    """
+    Phase A: 仅 System-1 检索
+
+    流程:
+    1. 将 haystack_sessions 摄入记忆系统
+    2. 仅使用 System-1 向量检索（enable_system2=False）
+    3. 保存到 answer_a.json
+    4. 不触发分层图重建
+
+    Args:
+        eval_data_path: 评估数据 JSON 文件路径
+        base_url: gsuid_core 服务基础 URL
+        output_dir: 输出目录
+        start: 起始题目索引（含）
+        end: 结束题目索引（不含）
+        timeout: 请求超时
+        resume: 是否启用增量更新
+
+    Returns:
+        回答文件路径
+    """
+    eval_data = load_eval_data(eval_data_path)
+
+    if start is not None or end is not None:
+        s = start or 0
+        e = end or len(eval_data)
+        eval_data = eval_data[s:e]
+        print(f"[PhaseA] 题目范围: [{s}, {e})，共 {len(eval_data)} 道")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 使用 answer_a.json
+    answers_file = os.path.join(output_dir, "answer_a.json")
+    existing_results: List[Dict[str, Any]] = []
+    existing_ids: set[str] = set()
+
+    if resume and os.path.isfile(answers_file):
+        try:
+            with open(answers_file, "r", encoding="utf-8") as f:
+                existing_results = json.load(f)
+            existing_ids = {
+                item["question_id"] for item in existing_results if isinstance(item, dict) and "question_id" in item
+            }
+            eval_data = [q for q in eval_data if q.get("question_id") not in existing_ids]
+            print(f"[PhaseA] 增量模式: 跳过 {len(existing_ids)} 道已处理题目，剩余 {len(eval_data)} 道")
+        except Exception as e:
+            print(f"[PhaseA] 读取已有结果失败: {e}")
+
+    results: List[Dict[str, Any]] = list(existing_results)
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+        for idx, question_data in enumerate(eval_data):
+            try:
+                question_id = question_data["question_id"]
+                question = question_data["question"]
+                haystack_sessions = question_data.get("haystack_sessions", [])
+                history = flatten_haystack_sessions(haystack_sessions)
+
+                print(f"\n[PhaseA Question {idx}] ID: {question_id}")
+
+                # enable_observer=True (摄入), enable_system2=False (仅System-1)
+                resp = await call_chat_with_history(
+                    client=client,
+                    base_url=base_url,
+                    user_id=f"eval_{question_id}",
+                    message=question,
+                    history=history,
+                    timeout=timeout,
+                    enable_observer=True,
+                    enable_system2=False,
+                )
+
+                status_code = resp.get("status_code", -1)
+                agent_answer = ""
+                if status_code == 200:
+                    agent_answer = extract_text_from_response(resp.get("data"))
+                else:
+                    agent_answer = f"[ERROR] status_code={status_code}"
+
+                result = {
+                    "question_id": question_id,
+                    "question": question,
+                    "standard_answer": question_data.get("answer", ""),
+                    "agent_answer": agent_answer,
+                    "status_code": status_code,
+                }
+                results.append(result)
+
+                # 每次保存
+                with open(answers_file, "w", encoding="utf-8") as f:
+                    json.dump(results, f, ensure_ascii=False, indent=2)
+
+            except Exception as e:
+                print(f"  [ERROR] {e}")
+
+    print(f"\n[PhaseA] 完成! 回答已保存至: {answers_file}")
+    return answers_file
+
+
+# ---------------------------------------------------------------------------
+# Phase B: 手动触发分层图重建
+# ---------------------------------------------------------------------------
+
+
+async def run_trigger_rebuild(
+    base_url: str,
+    scope_key: Optional[str] = None,
+) -> None:
+    """
+    Phase B: 手动触发分层图重建
+
+    调用 /api/ai/memory/hiergraph/rebuild 触发分层图重建
+
+    Args:
+        base_url: gsuid_core 服务基础 URL
+        scope_key: 指定 scope_key，不指定则使用默认 scope
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        url = f"{base_url}/api/ai/memory/hiergraph/rebuild"
+        params = {}
+        if scope_key:
+            params["scope_key"] = scope_key
+
+        try:
+            resp = await client.post(url, params=params)
+            resp.raise_for_status()
+            print(f"[PhaseB] 重建触发成功: {resp.json()}")
+        except Exception as e:
+            print(f"[PhaseB] 重建触发失败: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Phase C: 使用已有记忆检索+回答 - 不摄入新数据
+# ---------------------------------------------------------------------------
+
+
+async def run_phase_full_retrieval(
+    eval_data_path: str,
+    base_url: str,
+    output_dir: str,
+    start: Optional[int] = None,
+    end: Optional[int] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    resume: bool = False,
+) -> str:
+    """
+    Phase C: 使用已有记忆检索+回答
+
+    流程:
+    1. 不摄入任何数据（enable_observer=False）
+    2. 使用 System-1 + System-2 检索（enable_system2=True）
+    3. 保存到 answer_b.json
+
+    Args:
+        eval_data_path: 评估数据 JSON 文件路径
+        base_url: gsuid_core 服务基础 URL
+        output_dir: 输出目录
+        start: 起始题目索引（含）
+        end: 结束题目索引（不含）
+        timeout: 请求超时
+        resume: 是否启用增量更新
+
+    Returns:
+        回答文件路径
+    """
+    eval_data = load_eval_data(eval_data_path)
+
+    if start is not None or end is not None:
+        s = start or 0
+        e = end or len(eval_data)
+        eval_data = eval_data[s:e]
+        print(f"[PhaseC] 题目范围: [{s}, {e})，共 {len(eval_data)} 道")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 使用 answer_b.json
+    answers_file = os.path.join(output_dir, "answer_b.json")
+    existing_results: List[Dict[str, Any]] = []
+    existing_ids: set[str] = set()
+
+    if resume and os.path.isfile(answers_file):
+        try:
+            with open(answers_file, "r", encoding="utf-8") as f:
+                existing_results = json.load(f)
+            existing_ids = {
+                item["question_id"] for item in existing_results if isinstance(item, dict) and "question_id" in item
+            }
+            eval_data = [q for q in eval_data if q.get("question_id") not in existing_ids]
+            print(f"[PhaseC] 增量模式: 跳过 {len(existing_ids)} 道已处理题目，剩余 {len(eval_data)} 道")
+        except Exception as e:
+            print(f"[PhaseC] 读取已有结果失败: {e}")
+
+    results: List[Dict[str, Any]] = list(existing_results)
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+        for idx, question_data in enumerate(eval_data):
+            try:
+                question_id = question_data["question_id"]
+                question = question_data["question"]
+                haystack_sessions = question_data.get("haystack_sessions", [])
+                history = flatten_haystack_sessions(haystack_sessions)
+
+                print(f"\n[PhaseC Question {idx}] ID: {question_id}")
+
+                # enable_observer=False (不摄入), enable_system2=True (使用System-2)
+                resp = await call_chat_with_history(
+                    client=client,
+                    base_url=base_url,
+                    user_id=f"eval_{question_id}",
+                    message=question,
+                    history=history,
+                    timeout=timeout,
+                    enable_observer=False,
+                    enable_system2=True,
+                )
+
+                status_code = resp.get("status_code", -1)
+                agent_answer = ""
+                if status_code == 200:
+                    agent_answer = extract_text_from_response(resp.get("data"))
+                else:
+                    agent_answer = f"[ERROR] status_code={status_code}"
+
+                result = {
+                    "question_id": question_id,
+                    "question": question,
+                    "standard_answer": question_data.get("answer", ""),
+                    "agent_answer": agent_answer,
+                    "status_code": status_code,
+                }
+                results.append(result)
+
+                # 每次保存
+                with open(answers_file, "w", encoding="utf-8") as f:
+                    json.dump(results, f, ensure_ascii=False, indent=2)
+
+            except Exception as e:
+                print(f"  [ERROR] {e}")
+
+    print(f"\n[PhaseC] 完成! 回答已保存至: {answers_file}")
+    return answers_file
+
+
+# ---------------------------------------------------------------------------
 # Phase 1: 运行评估 - 通过 /api/chat_with_history 传入 history + question
 # ---------------------------------------------------------------------------
 
@@ -178,6 +465,8 @@ async def call_chat_with_history(
     history: List[Dict[str, str]],
     persona_name: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
+    enable_observer: Optional[bool] = None,
+    enable_system2: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     调用 /api/chat_with_history 接口
@@ -189,6 +478,8 @@ async def call_chat_with_history(
         persona_name : str|None     - Persona名称（可选）
         bot_id       : str          - Bot ID（默认 "HTTP"）
         group_id     : str|None     - 群组ID（私聊时为 None）
+        enable_observer: bool|None   - 是否启用观察者摄入（可选）
+        enable_system2: bool|None   - 是否启用 System-2 检索（可选）
 
     响应体:
         {"status_code": 200, "data": "Agent的回复文本"}
@@ -206,6 +497,10 @@ async def call_chat_with_history(
     }
     if persona_name:
         payload["persona_name"] = persona_name
+    if enable_observer is not None:
+        payload["enable_observer"] = enable_observer
+    if enable_system2 is not None:
+        payload["enable_system2"] = enable_system2
 
     try:
         response = await client.post(url, json=payload, timeout=timeout)
@@ -357,12 +652,14 @@ async def run_single_question(
         timeout=timeout,
     )
 
-    # 提取回答文本
+    # 提取回答文本和 memory 字段
     agent_answer = ""
+    memory = None
     status_code = resp.get("status_code", -1)
     if status_code == 200:
         raw_data = resp.get("data")
         agent_answer = extract_text_from_response(raw_data)
+        memory = resp.get("memory")
     else:
         error_msg = resp.get("error", "unknown")
         agent_answer = f"[ERROR] 请求失败: status_code={status_code}, error={error_msg}"
@@ -375,6 +672,7 @@ async def run_single_question(
         "question": question,
         "standard_answer": answer,
         "agent_answer": agent_answer,
+        "memory": memory,
         "status_code": status_code,
         "history_turns": len(history),
     }
@@ -387,6 +685,7 @@ async def run_phase1(
     start: Optional[int] = None,
     end: Optional[int] = None,
     timeout: float = DEFAULT_TIMEOUT,
+    resume: bool = False,
 ) -> str:
     """
     Phase 1: 运行评估，收集 Agent 回答
@@ -398,6 +697,7 @@ async def run_phase1(
         start: 起始题目索引（含）
         end: 结束题目索引（不含）
         timeout: 请求超时
+        resume: 是否启用增量更新，跳过已存在于 results/answers.json 中的 question_id
 
     Returns:
         回答文件路径
@@ -415,12 +715,26 @@ async def run_phase1(
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
 
-    # 回答文件路径
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    answers_file = os.path.join(output_dir, f"answers_{timestamp}.json")
+    # 增量更新：加载已有结果
+    existing_results: List[Dict[str, Any]] = []
+    existing_ids: set[str] = set()
+    answers_file: Optional[str] = None
 
-    # 运行评估
-    results: List[Dict[str, Any]] = []
+    if resume:
+        existing_results, existing_ids, answers_file = load_existing_answers(output_dir)
+        if existing_ids:
+            skipped_count = sum(1 for q in eval_data if q.get("question_id") in existing_ids)
+            eval_data = [q for q in eval_data if q.get("question_id") not in existing_ids]
+            print(f"[Phase1] 增量模式: 跳过 {skipped_count} 道已处理题目，剩余 {len(eval_data)} 道")
+        else:
+            print("[Phase1] 增量模式: 未检测到已有结果，将从头开始")
+
+    # 如果没有检测到已有文件，则固定使用 answers.json
+    if answers_file is None:
+        answers_file = os.path.join(output_dir, "answers.json")
+
+    # 运行评估（已有结果 + 新结果）
+    results: List[Dict[str, Any]] = list(existing_results)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
         # 先测试连接
@@ -460,12 +774,14 @@ async def run_phase1(
             with open(answers_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
 
-    # 最终统计
+    # 最终统计（基于全部结果）
+    total_count = len(results)
+    new_count = total_count - len(existing_results)
     success_count = sum(1 for r in results if r.get("status_code") == 200)
-    error_count = len(results) - success_count
+    error_count = total_count - success_count
     print(f"\n{'=' * 60}")
     print("[Phase1] 完成!")
-    print(f"  总题数: {len(results)}")
+    print(f"  总题数: {total_count} (本次新增: {new_count})")
     print(f"  成功: {success_count}")
     print(f"  失败: {error_count}")
     print(f"  回答已保存至: {answers_file}")
@@ -856,6 +1172,11 @@ async def main():
         default=DEFAULT_TIMEOUT,
         help=f"单次请求超时秒数 (默认: {DEFAULT_TIMEOUT})",
     )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="增量更新模式：跳过 output_dir 下已有 answers_*.json 中已处理的 question_id",
+    )
 
     # ---- judge 子命令 ----
     judge_parser = subparsers.add_parser("judge", help="Phase 2: 评判回答，计算准确率")
@@ -932,6 +1253,114 @@ async def main():
         action="store_true",
         help="不使用 LLM 评判，改用简单字符串匹配",
     )
+    all_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="增量更新模式：跳过 output_dir 下已有 answers_*.json 中已处理的 question_id",
+    )
+
+    # ---- run_s1 子命令 ----
+    run_s1_parser = subparsers.add_parser("run_s1", help="Phase A: 仅 System-1 检索，摄入+检索，不重建分层图")
+    run_s1_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=DEFAULT_BASE_URL,
+        help=f"gsuid_core 服务基础 URL (默认: {DEFAULT_BASE_URL})",
+    )
+    run_s1_parser.add_argument(
+        "--eval-data",
+        type=str,
+        default=None,
+        help="评估数据 JSON 文件路径",
+    )
+    run_s1_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="eval/results",
+        help="输出目录 (默认: eval/results)",
+    )
+    run_s1_parser.add_argument(
+        "--start",
+        type=int,
+        default=None,
+        help="起始题目索引（含）",
+    )
+    run_s1_parser.add_argument(
+        "--end",
+        type=int,
+        default=None,
+        help="结束题目索引（不含）",
+    )
+    run_s1_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"单次请求超时秒数 (默认: {DEFAULT_TIMEOUT})",
+    )
+    run_s1_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="增量更新模式",
+    )
+
+    # ---- rebuild 子命令 ----
+    rebuild_parser = subparsers.add_parser("rebuild", help="Phase B: 手动触发分层图重建")
+    rebuild_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=DEFAULT_BASE_URL,
+        help=f"gsuid_core 服务基础 URL (默认: {DEFAULT_BASE_URL})",
+    )
+    rebuild_parser.add_argument(
+        "--scope-key",
+        type=str,
+        default=None,
+        help="指定 scope_key，不指定则触发所有 scope",
+    )
+
+    # ---- run_full 子命令 ----
+    run_full_parser = subparsers.add_parser("run_full", help="Phase C: 使用已有记忆检索+回答，不摄入新数据")
+    run_full_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=DEFAULT_BASE_URL,
+        help=f"gsuid_core 服务基础 URL (默认: {DEFAULT_BASE_URL})",
+    )
+    run_full_parser.add_argument(
+        "--eval-data",
+        type=str,
+        default=None,
+        help="评估数据 JSON 文件路径",
+    )
+    run_full_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="eval/results",
+        help="输出目录 (默认: eval/results)",
+    )
+    run_full_parser.add_argument(
+        "--start",
+        type=int,
+        default=None,
+        help="起始题目索引（含）",
+    )
+    run_full_parser.add_argument(
+        "--end",
+        type=int,
+        default=None,
+        help="结束题目索引（不含）",
+    )
+    run_full_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"单次请求超时秒数 (默认: {DEFAULT_TIMEOUT})",
+    )
+    run_full_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="增量更新模式",
+    )
 
     args = parser.parse_args()
 
@@ -952,6 +1381,45 @@ async def main():
             start=args.start,
             end=args.end,
             timeout=args.timeout,
+            resume=args.resume,
+        )
+
+    elif args.command == "run_s1":
+        eval_data_path = args.eval_data or resolve_eval_data_path()
+        if not os.path.exists(eval_data_path):
+            print(f"[ERROR] 评估数据文件不存在: {eval_data_path}")
+            return
+
+        await run_phase_s1_only(
+            eval_data_path=eval_data_path,
+            base_url=args.base_url,
+            output_dir=args.output_dir,
+            start=args.start,
+            end=args.end,
+            timeout=args.timeout,
+            resume=args.resume,
+        )
+
+    elif args.command == "rebuild":
+        await run_trigger_rebuild(
+            base_url=args.base_url,
+            scope_key=args.scope_key,
+        )
+
+    elif args.command == "run_full":
+        eval_data_path = args.eval_data or resolve_eval_data_path()
+        if not os.path.exists(eval_data_path):
+            print(f"[ERROR] 评估数据文件不存在: {eval_data_path}")
+            return
+
+        await run_phase_full_retrieval(
+            eval_data_path=eval_data_path,
+            base_url=args.base_url,
+            output_dir=args.output_dir,
+            start=args.start,
+            end=args.end,
+            timeout=args.timeout,
+            resume=args.resume,
         )
 
     elif args.command == "judge":
@@ -981,6 +1449,7 @@ async def main():
             start=args.start,
             end=args.end,
             timeout=args.timeout,
+            resume=args.resume,
         )
 
         if not answers_file:

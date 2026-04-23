@@ -6,6 +6,7 @@ Qdrant 的 MatchAny 过滤器会同时搜索所有指定 Scope。
 """
 
 import asyncio
+from typing import TYPE_CHECKING
 from dataclasses import field, dataclass
 
 from gsuid_core.ai_core.memory.vector.ops import (
@@ -14,14 +15,17 @@ from gsuid_core.ai_core.memory.vector.ops import (
     search_episodes,
 )
 
+if TYPE_CHECKING:
+    from .types import Edge, Entity, Episode
+
 
 @dataclass
 class System1Result:
     """System-1 检索结果"""
 
-    episodes: list[dict] = field(default_factory=list)
-    entities: list[dict] = field(default_factory=list)
-    edges: list[dict] = field(default_factory=list)
+    episodes: list["Episode"] = field(default_factory=list)
+    entities: list["Entity"] = field(default_factory=list)
+    edges: list["Edge"] = field(default_factory=list)
 
 
 def _reciprocal_rank_fusion(
@@ -39,7 +43,7 @@ def _reciprocal_rank_fusion(
     for ranked in ranked_lists:
         for rank, item in enumerate(ranked, start=1):
             item_id = item[id_field]
-            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+            scores[item_id] = scores[item_id] + 1.0 / (k + rank) if item_id in scores else 1.0 / (k + rank)
             items[item_id] = item
 
     return sorted(items.values(), key=lambda x: scores[x[id_field]], reverse=True)
@@ -60,9 +64,21 @@ async def system1_search(
     Returns:
         System1Result 包含 episodes、entities、edges 三类结果
     """
-    episodes_task = search_episodes(query, scope_keys, top_k=top_k)
-    entities_task = search_entities(query, scope_keys, top_k=top_k * 2)
-    edges_task = search_edges(query, scope_keys, top_k=top_k * 2)
+    episodes_task = search_episodes(
+        query,
+        scope_keys,
+        top_k=top_k,
+    )
+    entities_task = search_entities(
+        query,
+        scope_keys,
+        top_k=top_k * 2,
+    )
+    edges_task = search_edges(
+        query,
+        scope_keys,
+        top_k=top_k * 2,
+    )
 
     episodes, entities, edges = await asyncio.gather(episodes_task, entities_task, edges_task)
 

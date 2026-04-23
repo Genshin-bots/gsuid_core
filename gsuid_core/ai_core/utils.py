@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Optional, Sequence
 
 from PIL import Image
+from json_repair import repair_json
 from pydantic_ai.messages import ImageUrl, UserContent
 
 from gsuid_core.bot import Bot
@@ -16,6 +17,22 @@ from gsuid_core.ai_core.configs.ai_config import openai_config
 
 # AI服务配置
 model_support: list[str] = openai_config.get_config("model_support").data
+
+
+def extract_json_from_text(raw_text: str) -> dict:
+    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw_text).strip()
+    cleaned = repair_json(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
+        if match:
+            stripped = match.group(0).strip()
+            cl = repair_json(stripped)
+            data = json.loads(cl)
+        else:
+            raise
+    return data
 
 
 async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 4000) -> str:

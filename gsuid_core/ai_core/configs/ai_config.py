@@ -22,6 +22,11 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用Rerank功能, Rerank可以提升RAG的检索质量, 但会增加一定的响应时间, 该模型较大, 请根据实际情况启用",
         False,
     ),
+    "enable_memory": GsBoolConfig(
+        "是否启用记忆",
+        "指定是否启用记忆功能",
+        True,
+    ),
     "openai_provider": GsStrConfig(
         title="AI模型服务提供方",
         desc="指定AI服务提供格式, OpenAI兼容",
@@ -154,6 +159,43 @@ RERANK_MODEL_CONFIG: Dict[str, GSC] = {
         options=["BAAI/bge-reranker-base"],
     ),
 }
+
+MEMORY_CONFIG: Dict[str, GSC] = {
+    "memory_mode": GsListStrConfig(
+        "记忆路径",
+        "指定启用的记忆路径, 被动感知全部群友会话或只记住自己有参与的聊天记录",
+        ["被动感知", "主动会话"],
+        options=["被动感知", "主动会话"],
+    ),
+    "memory_session": GsStrConfig(
+        "被动感知范围",
+        "指定被动感知的范围",
+        "按人格配置",
+        options=["按人格配置", "全部群聊"],
+    ),
+    "retrieval_top_k": GsIntConfig(
+        "最终检索数量",
+        "指定最终检索数量, 可以提高检索精度但会增加性能开销",
+        15,
+        options=[5, 10, 15, 20],
+    ),
+    "enable_system2": GsBoolConfig(
+        "是否启用 System-2",
+        "指定是否启用 System-2, 可以提高检索精度但会增加性能开销",
+        True,
+    ),
+    "eval_mode": GsBoolConfig(
+        "记忆评测模式",
+        "指定是否启用记忆评测模式, 启用后无法使用 System-2 和 Rerank",
+        False,
+    ),
+}
+
+memory_config = StringConfig(
+    "GsCore AI 记忆配置",
+    get_res_path("ai_core") / "memory_config.json",
+    MEMORY_CONFIG,
+)
 
 ai_config = StringConfig(
     "GsCore AI AI配置",

@@ -65,6 +65,7 @@ dependencies = [
     "tavily-python>=0.7.23",
     "pydantic-ai-slim[openai]>=1.72.0",
     "pydantic-ai-skills>=0.6.0",
+    "json-repair>=0.59.4",
 ]
 name = "gsuid-core"
 version = "0.9.5"
