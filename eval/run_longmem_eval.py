@@ -88,6 +88,15 @@ Session 结构: List[Turn]，每个会话是一个多轮对话
 
   # 不使用 LLM 评判，改用字符串匹配
   python eval/run_longmem_eval.py judge --answers-file eval/results/answers.json --no-llm-judge
+
+  # Phase A: 仅 System-1 检索（摄入+检索，不重建分层图）
+  python eval/run_longmem_eval.py run_s1 --base-url http://127.0.0.1:8765
+
+  # Phase B: 手动触发分层图重建
+  python eval/run_longmem_eval.py rebuild --base-url http://127.0.0.1:8765
+
+  # Phase C: 使用已有记忆检索+回答，不摄入新数据
+  python eval/run_longmem_eval.py run_full --base-url http://127.0.0.1:8765
 """
 
 import os

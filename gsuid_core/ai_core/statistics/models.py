@@ -87,6 +87,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
     memory_observations: int = Field(default=0, title="记忆观察入队数")
     memory_ingestions: int = Field(default=0, title="记忆摄入完成数")
     memory_ingestion_errors: int = Field(default=0, title="记忆摄入失败数")
+    memory_extraction_errors: int = Field(default=0, title="记忆提取失败数")
     memory_retrievals: int = Field(default=0, title="记忆检索请求数")
     memory_entities_created: int = Field(default=0, title="新建Entity数")
     memory_edges_created: int = Field(default=0, title="新建Edge数")

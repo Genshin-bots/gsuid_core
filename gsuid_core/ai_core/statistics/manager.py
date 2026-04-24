@@ -131,6 +131,10 @@ class StatisticsManager:
         """记录新建 Episode"""
         self._bot_state.memory_episodes_created += count
 
+    def record_memory_extraction_error(self, count: int = 1):
+        """记录记忆提取失败"""
+        self._bot_state.memory_extraction_errors += count
+
     # ==================== 数据查询与聚合 ====================
 
     def get_summary(self) -> Dict[str, Any]:
@@ -216,6 +220,7 @@ class StatisticsManager:
                 "observations": b.memory_observations,
                 "ingestions": b.memory_ingestions,
                 "ingestion_errors": b.memory_ingestion_errors,
+                "extraction_errors": b.memory_extraction_errors,
                 "retrievals": b.memory_retrievals,
                 "entities_created": b.memory_entities_created,
                 "edges_created": b.memory_edges_created,
@@ -261,6 +266,7 @@ class StatisticsManager:
                 s.memory_observations = stats.memory_observations or 0
                 s.memory_ingestions = stats.memory_ingestions or 0
                 s.memory_ingestion_errors = stats.memory_ingestion_errors or 0
+                s.memory_extraction_errors = stats.memory_extraction_errors or 0
                 s.memory_retrievals = stats.memory_retrievals or 0
                 s.memory_entities_created = stats.memory_entities_created or 0
                 s.memory_edges_created = stats.memory_edges_created or 0
@@ -370,6 +376,7 @@ class StatisticsManager:
                 memory_observations=s.memory_observations,
                 memory_ingestions=s.memory_ingestions,
                 memory_ingestion_errors=s.memory_ingestion_errors,
+                memory_extraction_errors=s.memory_extraction_errors,
                 memory_retrievals=s.memory_retrievals,
                 memory_entities_created=s.memory_entities_created,
                 memory_edges_created=s.memory_edges_created,
@@ -596,6 +603,7 @@ class StatisticsManager:
                 "observations": stats.memory_observations or 0,
                 "ingestions": stats.memory_ingestions or 0,
                 "ingestion_errors": stats.memory_ingestion_errors or 0,
+                "extraction_errors": stats.memory_extraction_errors or 0,
                 "retrievals": stats.memory_retrievals or 0,
                 "entities_created": stats.memory_entities_created or 0,
                 "edges_created": stats.memory_edges_created or 0,

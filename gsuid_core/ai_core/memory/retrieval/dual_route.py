@@ -31,6 +31,7 @@ class MemoryContext:
     retrieval_meta: RetrievalMeta = field(
         default_factory=lambda: RetrievalMeta(s1_episodes=0, s2_episodes=0, scope_keys=[])
     )
+    retrieval_paths: list[list[dict]] = field(default_factory=list)  # System-2 检索路径
 
     def to_prompt_text(self, max_chars: int = 24000) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本"""
@@ -43,6 +44,16 @@ class MemoryContext:
                 f"• [L{c['layer']}] {c['name']}: {(c['summary'] or '')[:150]}" for c in sorted_cats[:8]
             )
             parts.append(f"【语义类目摘要】\n{cats_text}")
+
+        # 检索路径（论文 Section 2.3：路径信息注入）
+        # Bug-08 修复：retrieval_paths 是 [[Layer0_cats], [Layer1_cats], ...] 结构
+        # 每项是同层选中的所有 category，不应用 → 连接（那是路径不是同类列表）
+        if self.retrieval_paths:
+            path_lines = []
+            for layer_idx, path in enumerate(self.retrieval_paths[:3]):
+                layer_names = ", ".join(p["name"] for p in path)
+                path_lines.append(f"  [Layer{layer_idx}] {layer_names}")
+            parts.append("【检索路径（按层级）】\n" + "\n".join(path_lines))
 
         if self.edges:
             facts_text = "\n".join(f"• {e['fact']}" for e in self.edges[: memory_config.search_edge_count])
@@ -126,6 +137,7 @@ async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[
         return []
     reranker = get_reranker()
     if reranker is None:
+        logger.warning("Reranker not available, falling back to top-k truncation")
         return items[:top_k]
     texts = [item["summary"] for item in items]
     scores = list(reranker.rerank(query, texts))
@@ -242,6 +254,11 @@ async def dual_route_retrieve(
         s2_edges.extend(s2.edges)
         s2_categories.extend(s2.categories)
 
+    # 收集 System-2 检索路径
+    s2_retrieval_paths: list[list[dict]] = []
+    for s2 in s2_results:
+        s2_retrieval_paths.extend(s2.retrieval_paths)
+
     # 先合并 S1 + S2 结果（去重）
     all_episodes: list[Episode] = _merge_episodes(s1.episodes if s1 else [], s2_episodes)
     all_entities: list[Entity] = _merge_entities(s1.entities if s1 else [], s2_entities)
@@ -254,9 +271,12 @@ async def dual_route_retrieve(
     # Category 摘要（如"Physical Health: 包含个体的健康状况..."）与用户 query
     # 字面重合度极低，统一 Rerank 会被"误杀"踢出 top_k。
     # 保证 LLM 永远能看到大纲（Category），再看细节（Episode/Entity/Edge）。
-    ranked_episodes: list[Episode] = await _rerank_episodes(query, all_episodes, top_k)
-    ranked_entities: list[Entity] = await _rerank_entities(query, all_entities, top_k * 2)
-    ranked_edges: list[Edge] = await _rerank_edges(query, all_edges, top_k * 2)
+    # P-04 优化：三路 Reranker 并行执行，避免串行等待
+    ranked_episodes, ranked_entities, ranked_edges = await asyncio.gather(
+        _rerank_episodes(query, all_episodes, top_k),
+        _rerank_entities(query, all_entities, top_k * 2),
+        _rerank_edges(query, all_edges, top_k * 2),
+    )
     # Category 按 layer 降序排列（最抽象的在前），不经过 Reranker
     ranked_categories: list[Category] = sorted(all_categories, key=lambda c: c["layer"], reverse=True)
 
@@ -275,4 +295,5 @@ async def dual_route_retrieve(
             "s2_episodes": sum(len(r.episodes) for r in s2_results),
             "scope_keys": scope_keys,
         },
+        retrieval_paths=s2_retrieval_paths,
     )

@@ -33,6 +33,8 @@ class IngestionWorker:
         self._buffers: dict[str, list[ObservationRecord]] = defaultdict(list)
         # {scope_key: last_flush_time}
         self._last_flush: dict[str, float] = {}
+        # {scope_key: True} 标记某个 scope_key 正在 flush 中，避免重复创建 flush 任务
+        self._flushing: set[str] = set()
         self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
         self._running = False
         # 保护 flush_all() 执行期间禁止新的 _flush 并发执行
@@ -54,7 +56,6 @@ class IngestionWorker:
         用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
         在 flush 期间禁止新的 observe 记录入队（通过 asyncio.Lock 保护）。
         """
-        from gsuid_core.ai_core.memory.ingestion.hiergraph import rebuild_task, _rebuild_locks
 
         logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
         async with self._flush_lock:
@@ -70,28 +71,21 @@ class IngestionWorker:
             logger.info(f"🧠 [Memory] 开始同步记忆条数{len(self._buffers)}")
             scope_keys = list(self._buffers.keys())
             for scope_key in scope_keys:
-                await self._flush(scope_key)
+                # 修复：对于正在 flush 中的 scope_key，等待其完成后再强制 flush 一次
+                while scope_key in self._flushing:
+                    logger.debug(f"🧠 [Memory] scope={scope_key} 正在 flush 中，等待 0.1s...")
+                    await asyncio.sleep(0.1)
+                # 等待后重新检查 buffer 是否有新数据
+                if self._buffers.get(scope_key):
+                    await self._flush(scope_key)
 
-            # 评测模式下跳过分层图重建（由外部手动触发）
+            # 隐患二修复：移除等待 rebuild_task 的逻辑
+            # 分层图重建采用最终一致性，用户查询时使用旧版图谱也可接受
+            # rebuild_task 在后台异步运行，不阻塞 flush_all
             if memory_config.eval_mode:
                 logger.info("🧠 [Memory] 评测模式，跳过 flush_all 中的分层图重建")
-                return
-
-            # 等待所有 rebuild_task 完成（带超时，避免无限阻塞）
-            rebuild_tasks = []
-            for scope_key in scope_keys:
-                lock = _rebuild_locks.get(scope_key)
-                if lock and lock.locked():
-                    # 已在运行，等待其完成（最多 120 秒）
-                    try:
-                        await asyncio.wait_for(lock.acquire(), timeout=300)
-                        lock.release()
-                    except asyncio.TimeoutError:
-                        logger.warning(f"🧠 [Memory] rebuild_task for {scope_key} 超时 300s，跳过等待")
-                else:
-                    rebuild_tasks.append(rebuild_task(scope_key))
-            if rebuild_tasks:
-                await asyncio.gather(*rebuild_tasks)
+            else:
+                logger.info("🧠 [Memory] flush_all 完成，分层图将在后台异步重建")
 
     async def stop(self):
         """停止后台消费循环"""
@@ -104,8 +98,11 @@ class IngestionWorker:
                 record: ObservationRecord = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 self._buffers[record.scope_key].append(record)
 
-                # 超过单次上限立即触发
-                if len(self._buffers[record.scope_key]) >= memory_config.batch_max_size:
+                # 超过单次上限且该 scope_key 没有正在 flush 时才触发
+                if (
+                    len(self._buffers[record.scope_key]) >= memory_config.batch_max_size
+                    and record.scope_key not in self._flushing
+                ):
                     asyncio.create_task(self._flush(record.scope_key))
             except asyncio.TimeoutError:
                 continue
@@ -117,13 +114,22 @@ class IngestionWorker:
             now = time.time()
             for scope_key in list(self._buffers.keys()):
                 last = self._last_flush.get(scope_key, 0)
+                # 只在有数据且该 scope_key 没有正在 flush 时才触发
                 if self._buffers[scope_key] and (now - last) >= memory_config.batch_interval_seconds:
-                    asyncio.create_task(self._flush(scope_key))
+                    if scope_key not in self._flushing:
+                        asyncio.create_task(self._flush(scope_key))
 
     async def _flush(self, scope_key: str):
         """将缓冲区中的消息批量处理"""
+        # Bug-01 修复：使用 _flushing 标记避免重复创建 flush 任务
+        if scope_key in self._flushing:
+            logger.debug(f"🧠 [Memory] scope={scope_key} 正在 flush 中，跳过")
+            return
+
+        self._flushing.add(scope_key)
         records = self._buffers.pop(scope_key, [])
         if not records:
+            self._flushing.discard(scope_key)
             return
         self._last_flush[scope_key] = time.time()
 
@@ -137,8 +143,13 @@ class IngestionWorker:
                     _record_ingestion_stats(len(batch), success=True)
             except Exception as e:
                 logger.error(f"Ingestion failed for {scope_key}: {e}", exc_info=True)
+                # Bug-01 修复：异常时将数据还原到缓冲区，等待下次重试
+                self._buffers[scope_key].extend(records)
+                logger.warning(f"🧠 [Memory] scope={scope_key} 数据已还原到缓冲区，等待重试")
                 # 上报摄入失败统计
                 _record_ingestion_stats(len(records), success=False)
+            finally:
+                self._flushing.discard(scope_key)
 
 
 def _record_ingestion_stats(record_count: int, success: bool):
@@ -195,7 +206,7 @@ async def _ingest_batch(
 
     # Step 4: LLM 提取 + Entity 去重写入
     extracted = await _llm_extract(dialogue, scope_key)
-    entity_name_to_id = await extract_and_upsert_entities(
+    entity_name_to_id, new_entity_count = await extract_and_upsert_entities(
         scope_key=scope_key,
         entities_data=extracted["entities"],
         episode_id=episode.id,
@@ -204,13 +215,14 @@ async def _ingest_batch(
 
     # 上报 Entity 创建统计
     _record_entity_edge_stats(
-        entity_count=len(entity_name_to_id),
+        entity_count=new_entity_count,
         edge_count=len(extracted["edges"] if "edges" in extracted else []),
     )
 
     # 增量更新 meta.current_entity_count，避免 _check_should_rebuild 全表 COUNT(*)
-    if entity_name_to_id:
-        await increment_entity_count(scope_key, len(entity_name_to_id))
+    # 仅统计新建实体数量，防止已存在实体被更新时虚高计数
+    if new_entity_count > 0:
+        await increment_entity_count(scope_key, new_entity_count)
 
     # Step 5: Edge 写入
     await extract_and_upsert_edges(
@@ -220,26 +232,29 @@ async def _ingest_batch(
     )
 
     # Step 7: user_global Scope 的跨群属性
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+
     user_global_entities = [
         e
         for e in (extracted["entities"] if "entities" in extracted else [])
         if (e["scope_hint"] if "scope_hint" in e else None) == "user_global"
     ]
     for user_id in speaker_ids:
-        user_global_scope = f"user_global:{user_id}"
+        # Bug-03 修复：使用 make_scope_key 函数生成 scope_key，保持一致性
+        user_global_scope = make_scope_key(ScopeType.USER_GLOBAL, user_id)
         user_scoped_entities = [
             e for e in user_global_entities if (e["user_id"] if "user_id" in e else None) == user_id
         ]
         if user_scoped_entities:
-            user_global_name_to_id = await extract_and_upsert_entities(
+            user_global_name_to_id, user_global_new_count = await extract_and_upsert_entities(
                 scope_key=user_global_scope,
                 entities_data=user_scoped_entities,
                 episode_id=episode.id,
                 speaker_ids=[user_id],
             )
-            # 增量更新 user_global scope 的 entity 计数
-            if user_global_name_to_id:
-                await increment_entity_count(user_global_scope, len(user_global_name_to_id))
+            # 增量更新 user_global scope 的 entity 计数（仅统计新建实体）
+            if user_global_new_count > 0:
+                await increment_entity_count(user_global_scope, user_global_new_count)
 
     # Step 8: 触发分层图更新检查（评测模式下跳过，由外部统一触发）
     if not memory_config.eval_mode:
@@ -275,7 +290,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     使用结构化 JSON 输出，减少解析失败风险。
     当对话超过 MAX_CHARS 时，自动分片提取并合并去重，避免硬截断丢失内容。
     """
-    MAX_CHARS = 8000
+    MAX_CHARS = 14000
 
     if len(dialogue) <= MAX_CHARS:
         return await _llm_extract_single(dialogue, scope_key)
@@ -319,9 +334,11 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     # 按 (source, target, fact) 去重 Edge
     seen_edges: dict[str, dict] = {}
     for edge in all_edges:
-        key = f"{(edge['source'] if 'source' in edge else '')}|"
-        f"{(edge['target'] if 'target' in edge else '')}|"
-        f"{(edge['fact'] if 'fact' in edge else '')}"
+        key = (
+            f"{(edge['source'] if 'source' in edge else '')}|"
+            f"{(edge['target'] if 'target' in edge else '')}|"
+            f"{(edge['fact'] if 'fact' in edge else '')}"
+        )
 
         if key:
             seen_edges[key] = edge
@@ -344,12 +361,14 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
     MAX_CHARS = 10000
 
     # 安全兜底：单次调用仍限制长度
+    # 修复：向前查找最近的一个换行符进行安全截断，避免破坏 JSON 或半句话
     if len(dialogue) > MAX_CHARS:
         truncated = dialogue[:MAX_CHARS]
-        last_newline = truncated.rfind("\n[")
-        if last_newline > MAX_CHARS // 2:
+        # 向前查找最近的一个换行符
+        last_newline = truncated.rfind("\n")
+        if last_newline > MAX_CHARS // 4:  # 至少要在前 1/4 处找到换行符才截断
             truncated = truncated[:last_newline]
-        dialogue = truncated
+        dialogue = truncated + "\n[内容已截断...]"
 
     prompt = ENTITY_EXTRACTION_PROMPT.format(
         scope_key=scope_key,
@@ -396,7 +415,19 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
 
     except asyncio.TimeoutError:
         logger.warning(f"🧠 [Memory] LLM extraction timeout for {scope_key}")
+        try:
+            from gsuid_core.ai_core.statistics import statistics_manager
+
+            statistics_manager.record_memory_extraction_error()
+        except Exception:
+            pass
     except Exception as e:
-        logger.warning(f"🧠 [Memory] LLM extraction call failed for {scope_key}: {e}")
+        logger.error(f"🧠 [Memory] LLM extraction failed: {e}", exc_info=True)
+        try:
+            from gsuid_core.ai_core.statistics import statistics_manager
+
+            statistics_manager.record_memory_extraction_error()
+        except Exception:
+            pass
 
     return {"entities": [], "edges": []}

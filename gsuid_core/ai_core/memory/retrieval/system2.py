@@ -40,6 +40,7 @@ class System2Result:
     episodes: list["Episode"] = dc_field(default_factory=list)
     edges: list["Edge"] = dc_field(default_factory=list)
     categories: list["Category"] = dc_field(default_factory=list)
+    retrieval_paths: list[list[dict]] = dc_field(default_factory=list)  # 从 Layer N 到 Layer 1 的完整检索路径
 
 
 # ─────────────────────────────────────────────
@@ -68,6 +69,7 @@ class System2GlobalSelector:
         selected_entity_ids: set[str] = set()
         prev_selected: list[AIMemCategory] = []
         traversed_categories: list[AIMemCategory] = []
+        retrieval_paths: list[list[dict]] = []  # 记录每层的检索路径
 
         for layer in range(meta.max_layer, 0, -1):
             if layer == meta.max_layer:
@@ -96,6 +98,11 @@ class System2GlobalSelector:
                 break
 
             selected, shortcut_all = await self._llm_select_nodes(query, current)
+
+            # 记录本层选中的 Category 构建检索路径
+            layer_path = [{"name": c.name, "layer": c.layer, "id": c.id} for c in selected]
+            if layer_path:
+                retrieval_paths.append(layer_path)
 
             # 记录本层选中的 Category
             traversed_categories.extend(selected)
@@ -169,8 +176,9 @@ class System2GlobalSelector:
             edges=[
                 {
                     "id": ed.id,
-                    "source_id": "",
-                    "target_id": "",
+                    # Bug-4.6 修复：直接使用 ed.source_entity_id 和 ed.target_entity_id，而非空字符串
+                    "source_id": ed.source_entity_id,
+                    "target_id": ed.target_entity_id,
                     "fact": ed.fact,
                     "weight": 0.0,
                     "score": 0.0,
@@ -188,6 +196,7 @@ class System2GlobalSelector:
                 for c in unique_cats
                 if c.summary
             ],
+            retrieval_paths=retrieval_paths,
         )
 
     async def _llm_select_nodes(

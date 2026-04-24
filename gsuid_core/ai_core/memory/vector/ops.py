@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -51,8 +52,9 @@ _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem_embe
 # 反而比单线程更慢。因此批量调用使用 max_workers=1，确保 ONNX 独占 CPU 资源。
 _EMBED_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem_embed_batch")
 
-# 全局 Sparse Embedding 模型（懒加载）
+# 全局 Sparse Embedding 模型（懒加载，线程安全）
 _sparse_model = None
+_sparse_model_lock = threading.Lock()
 
 # Sparse Embedding 降级计数器，用于监控降级频率
 _sparse_degrade_count = 0
@@ -60,14 +62,18 @@ _sparse_degrade_last_log = 0.0
 
 
 def _get_sparse_model():
+    """隐患三修复：添加线程锁防止并发初始化模型"""
     global _sparse_model
     if _sparse_model is None:
-        try:
-            from fastembed import SparseTextEmbedding
+        with _sparse_model_lock:
+            # 双重检查锁定
+            if _sparse_model is None:
+                try:
+                    from fastembed import SparseTextEmbedding
 
-            _sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
-        except Exception as e:
-            logger.warning(f"🧠 [Memory] SparseTextEmbedding 初始化失败: {e}")
+                    _sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+                except Exception as e:
+                    logger.warning(f"🧠 [Memory] SparseTextEmbedding 初始化失败: {e}")
     return _sparse_model
 
 
@@ -526,3 +532,54 @@ async def search_entities(query: str, scope_keys: list[str], top_k: int = 20) ->
 async def search_edges(query: str, scope_keys: list[str], top_k: int = 20) -> list["Edge"]:
     """在 Edge Collection 中搜索相似向量"""
     return await _hybrid_search_edges(query, scope_keys, top_k)
+
+
+async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> list["Entity"]:
+    """根据 entity_ids 批量获取 Entity 详情（用于 One-hop 邻居扩展）
+
+    Args:
+        entity_ids: Entity ID 列表
+        scope_keys: Scope Key 列表（用于过滤）
+
+    Returns:
+        Entity 列表
+    """
+    if not entity_ids:
+        return []
+
+    from gsuid_core.ai_core.rag.base import client as qdrant_client
+    from gsuid_core.ai_core.memory.vector.collections import MEMORY_ENTITIES_COLLECTION
+
+    if qdrant_client is None:
+        return []
+
+    results = await qdrant_client.retrieve(
+        collection_name=MEMORY_ENTITIES_COLLECTION,
+        ids=entity_ids,
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    entities: list["Entity"] = []
+    for r in results:
+        payload = r.payload
+        if payload is None:
+            continue
+        # 过滤不在指定 scope_keys 中的 entity
+        entity_scope_key = payload.get("scope_key", "")
+        if entity_scope_key not in scope_keys:
+            continue
+
+        tag = payload.get("tag", [])
+        entities.append(
+            {
+                "id": str(r.id),
+                "name": payload.get("name", ""),
+                "summary": payload.get("summary", ""),
+                "entity_type": ",".join(tag) if isinstance(tag, list) else str(tag),
+                "layer": 0,
+                "score": 0.0,  # One-hop 邻居无相关性分数
+            }
+        )
+
+    return entities

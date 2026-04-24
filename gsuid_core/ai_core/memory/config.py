@@ -31,7 +31,7 @@ class MemoryConfig:
     batch_interval_seconds: int = 1800
     """消息聚合窗口（秒），超过此时间强制 flush"""
 
-    batch_max_size: int = 20
+    batch_max_size: int = 25
     """单次最大聚合条数，防止单个 LLM 调用 token 超限"""
 
     llm_semaphore_limit: int = 3

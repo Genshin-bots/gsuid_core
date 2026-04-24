@@ -62,6 +62,7 @@ class BotState:
     memory_observations: int = 0  # 观察入队总数
     memory_ingestions: int = 0  # 摄入完成总数
     memory_ingestion_errors: int = 0  # 摄入失败总数
+    memory_extraction_errors: int = 0  # 提取失败总数
     memory_retrievals: int = 0  # 检索请求总数
     memory_entities_created: int = 0  # 新建 Entity 总数
     memory_edges_created: int = 0  # 新建 Edge 总数

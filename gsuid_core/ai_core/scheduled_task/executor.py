@@ -219,7 +219,7 @@ async def reload_pending_tasks() -> int:
 
     count = 0
     for task_data in tasks:
-        task = AIScheduledTask(**task_data)
+        task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
 
         # 根据任务类型处理
         if task.task_type == "interval":
@@ -283,7 +283,7 @@ async def cleanup_completed_tasks() -> int:
 
     cleaned_count = 0
     for task_data in all_tasks:
-        task = AIScheduledTask(**task_data)
+        task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
 
         # 只处理非 pending 状态的任务
         if task.status != "pending":

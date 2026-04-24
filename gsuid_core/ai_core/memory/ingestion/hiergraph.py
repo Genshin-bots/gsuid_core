@@ -26,6 +26,18 @@ from gsuid_core.ai_core.memory.database.models import (
 from ...utils import extract_json_from_text
 
 
+def _ensure_aware_datetime(dt: Optional[datetime]) -> Optional[datetime]:
+    """确保 datetime 为 aware（带时区信息），避免 naive/aware 混用导致比较失败。
+
+    从 SQLite 读取的 datetime 可能是 naive 的，需要统一转换为 UTC aware datetime。
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 # ─────────────────────────────────────────────
 # 分层图构建状态追踪
 # ─────────────────────────────────────────────
@@ -83,9 +95,7 @@ class AIMemHierarchicalGraphMeta(SQLModel, table=True):
 
         # last_rebuild_at 从数据库读出可能是 naive datetime（SQLite 不保留时区），
         # 需要统一为 aware datetime 后再比较
-        last_rebuild = meta.last_rebuild_at
-        if last_rebuild is not None and last_rebuild.tzinfo is None:
-            last_rebuild = last_rebuild.replace(tzinfo=timezone.utc)
+        last_rebuild = _ensure_aware_datetime(meta.last_rebuild_at)
         time_since_rebuild = (
             (datetime.now(timezone.utc) - last_rebuild).total_seconds() if last_rebuild is not None else float("inf")
         )
@@ -431,20 +441,22 @@ class HierarchicalGraphBuilder:
         except Exception as e:
             logger.warning(f"[HierGraph] layer {layer} LLM 调用失败: {e}")
 
-        # 兜底：所有节点归入一个默认 Category，确保不丢失
-        # 使用时间戳后缀避免不同批次创建同名碎片化 Category
-        fallback_name = (
-            existing_categories[0].name if existing_categories else f"Layer{layer}综合类目_{uuid.uuid4().hex[:6]}"
-        )
-        logger.info(f"[HierGraph] layer {layer} 使用兜底类目: {fallback_name}")
-        return [
-            {
-                "category": fallback_name,
-                "summary": f"Layer {layer} 自动聚合类目",
-                "tag": ["Auto"],
-                "indexes": list(range(1, len(entities) + 1)),
-            }
-        ]
+        # 兜底：每个未分类节点单独成为一个 Category（论文 Section 2.2 例外规则）
+        # "An exception is made for nodes that cannot be naturally merged with others;
+        #  such nodes are directly promoted to the next layer as standalone categories."
+        fallback_assignments = []
+        for idx, entity in enumerate(entities, start=1):
+            entity_name = entity.name if hasattr(entity, "name") else str(entity)
+            fallback_assignments.append(
+                {
+                    "category": entity_name,
+                    "summary": getattr(entity, "summary", None) or f"关于{entity_name}的独立类目",
+                    "tag": getattr(entity, "tag", []) or ["Standalone"],
+                    "indexes": [idx],
+                }
+            )
+        logger.info(f"[HierGraph] layer {layer} 使用兜底策略：{len(fallback_assignments)} 个节点单独成 Category")
+        return fallback_assignments
 
     @with_session
     async def _apply_entity_assignments(
@@ -455,6 +467,51 @@ class HierarchicalGraphBuilder:
         entities: list[AIMemEntity],
     ) -> list[AIMemCategory]:
         new_categories: list[AIMemCategory] = []
+
+        # M-06: Layer-1 Speaker 强制归类硬性保障
+        # 论文 Section 2.2 明确：is_speaker=True 的 Entity 必须强制归入 "Speaker" Category
+        if layer == 1:
+            speaker_cat_name = "Speaker"
+            speaker_indexes: list[int] = []
+            for idx, entity in enumerate(entities, start=1):
+                if entity.is_speaker:
+                    speaker_indexes.append(idx)
+
+            if speaker_indexes:
+                # 找出所有原本被分配到非Speaker Category的speakerIndexes
+                reassigned_indexes: set[int] = set()
+                for assignment in assignments:
+                    for idx in assignment.get("indexes", []):
+                        if idx in speaker_indexes:
+                            reassigned_indexes.add(idx)
+
+                # Bug-02 修复：如果有speaker实体被分配到其他Category，强制添加到Speaker Category
+                # 而不是从其他Category移除（论文支持 Many-to-Many Mapping）
+                if reassigned_indexes:
+                    logger.info(
+                        "[HierGraph] Layer-1 Speaker强制归类："
+                        f"{len(reassigned_indexes)} 个实体的speaker索引添加到 Speaker Category"
+                    )
+
+                    # 添加/更新Speaker Category的assignment（增量添加，不影响其他Category）
+                    speaker_assignment_exists = False
+                    for assignment in assignments:
+                        if assignment.get("category") == speaker_cat_name:
+                            existing_speaker_indexes = set(assignment.get("indexes", []))
+                            existing_speaker_indexes.update(reassigned_indexes)
+                            assignment["indexes"] = list(existing_speaker_indexes)
+                            speaker_assignment_exists = True
+                            break
+
+                    if not speaker_assignment_exists:
+                        assignments.append(
+                            {
+                                "category": speaker_cat_name,
+                                "summary": "发言者实体类目",
+                                "tag": ["Speaker"],
+                                "indexes": list(reassigned_indexes),
+                            }
+                        )
 
         # 预先批量查出所有涉及 Category 的已有成员，避免逐个 Category 串行查询
         all_cat_ids: list[str] = []
@@ -496,22 +553,30 @@ class HierarchicalGraphBuilder:
             )
             if created:
                 new_categories.append(category)
+                # 初始化新建 Category 的成员映射，避免后续 INSERT 时遗漏
+                existing_members_map[category.id] = set()
 
             existing_ids = existing_members_map[category.id] if category.id in existing_members_map else set()
 
+            # 隐患四修复：收集所有要插入的数据，循环外批量执行
+            insert_batch = []
             for idx in assignment["indexes"] if "indexes" in assignment else []:
                 real_idx = idx - 1
                 if 0 <= real_idx < len(entities):
                     entity = entities[real_idx]
                     if entity.id not in existing_ids:
-                        # ✅ 直接 insert 关联行
-                        await session.execute(
-                            mem_category_entity_members.insert().values(
-                                category_id=category.id,
-                                entity_id=entity.id,
-                            )
-                        )
+                        insert_batch.append({"category_id": category.id, "entity_id": entity.id})
                         existing_ids.add(entity.id)
+                else:
+                    # Bug-04 修复：索引超出范围时记录警告，避免隐性数据丢失
+                    logger.warning(
+                        f"[HierGraph] Layer {layer} 分类索引 {idx} 超出范围 "
+                        f"(entities={len(entities)})，category={assignment.get('category')}，已跳过"
+                    )
+
+            # 循环外一次性批量写入
+            if insert_batch:
+                await session.execute(mem_category_entity_members.insert(), insert_batch)
 
         return new_categories
 

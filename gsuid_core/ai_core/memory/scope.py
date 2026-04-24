@@ -19,15 +19,19 @@ class ScopeType(str, Enum):
 def make_scope_key(scope_type: ScopeType, scope_id: str, secondary_id: str = "") -> str:
     """构造 scope_key 字符串，作为所有记忆节点的命名空间。
 
+    Note:
+        ScopeType 继承自 str Enum，因此 f"{scope_type}" 输出枚举的 value 而非 name。
+        例如 ScopeType.GROUP 的 value 是 "group"，所以输出是 "group:789012" 而非 "ScopeType.GROUP:789012"。
+
     Examples:
         make_scope_key(ScopeType.GROUP, "789012")
-        → "ScopeType.GROUP:789012"
+        → "group:789012"
 
         make_scope_key(ScopeType.USER_GLOBAL, "12345")
-        → "ScopeType.USER_GLOBAL:12345"
+        → "user_global:12345"
 
         make_scope_key(ScopeType.USER_IN_GROUP, "12345", "789012")
-        → "ScopeType.USER_IN_GROUP:12345@789012"
+        → "user_in_group:12345@789012"
 
     Args:
         scope_type: Scope 类型
@@ -38,5 +42,5 @@ def make_scope_key(scope_type: ScopeType, scope_id: str, secondary_id: str = "")
         格式化的 scope_key 字符串
     """
     if scope_type == ScopeType.USER_IN_GROUP:
-        return f"{scope_type}:{scope_id}@{secondary_id}"
-    return f"{scope_type}:{scope_id}"
+        return f"{scope_type.value}:{scope_id}@{secondary_id}"
+    return f"{scope_type.value}:{scope_id}"

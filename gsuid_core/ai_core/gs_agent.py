@@ -5,7 +5,7 @@ PydanticAI Agent 核心模块
 
 import time
 import asyncio
-from typing import Any, Set, List, Union, TypeVar, Optional, Sequence, overload
+from typing import Any, Set, Dict, List, Union, TypeVar, Optional, Sequence, overload
 
 import httpx
 from pydantic_ai import Agent
@@ -50,9 +50,11 @@ def _truncate_history_with_tool_safety(
     "tool result's tool id not found" 错误。
 
     解决策略：
-    1. 从后向前扫描，收集所有未配对的 tool_call_id
-    2. 如果截断点落在未配对的 tool call/return 范围内，则扩展截断点
-    3. 确保所有保留的 ToolReturnPart 都有对应的 ToolCallPart
+    1. 从头扫描所有消息，收集所有 tool_call_id 及其出现位置
+    2. ToolCallPart 出现在 ModelResponse 中，ToolReturnPart 出现在 ModelRequest 中
+    3. 追踪每个 tool_call_id 的 call 和 return 是否配对
+    4. 如果截断点落在未配对的范围内，则扩展截断点
+    5. 确保所有保留的 ToolReturnPart 都有对应的 ToolCallPart
 
     Args:
         history: 原始消息历史
@@ -64,20 +66,35 @@ def _truncate_history_with_tool_safety(
     if len(history) <= max_history:
         return history
 
-    # 第一步：从后向前扫描，收集所有有 tool_call_id 的 parts
-    # 记录哪些 tool_call_id 有 ToolCallPart（call），哪些有 ToolReturnPart（return）
+    from pydantic_ai.messages import ModelRequest
+
+    # 第一步：扫描所有消息，收集 tool_call_id 的位置和类型
+    # call_ids: 记录哪些 tool_call_id 有 ToolCallPart（出现在 ModelResponse）
+    # return_ids: 记录哪些 tool_call_id 有 ToolReturnPart（出现在 ModelRequest）
+    # call_positions: 每个 tool_call_id 的 ToolCallPart 所在的消息索引
+    # return_positions: 每个 tool_call_id 的 ToolReturnPart 所在的消息索引
     call_ids: Set[str] = set()
     return_ids: Set[str] = set()
+    call_positions: Dict[str, List[int]] = {}
+    return_positions: Dict[str, List[int]] = {}
 
-    for msg in history:
+    for idx, msg in enumerate(history):
         if isinstance(msg, ModelResponse):
             for part in msg.parts:
                 if isinstance(part, ToolCallPart):
                     call_ids.add(part.tool_call_id)
-                elif isinstance(part, ToolReturnPart):
+                    if part.tool_call_id not in call_positions:
+                        call_positions[part.tool_call_id] = []
+                    call_positions[part.tool_call_id].append(idx)
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
                     return_ids.add(part.tool_call_id)
+                    if part.tool_call_id not in return_positions:
+                        return_positions[part.tool_call_id] = []
+                    return_positions[part.tool_call_id].append(idx)
 
-    # 找出有 return 但没有 call 的 tool_call_id（这些是孤立的 tool return）
+    # 第二步：找出孤立的 tool return（有 return 但没有 call）
     orphaned_returns = return_ids - call_ids
 
     if not orphaned_returns:
@@ -86,16 +103,13 @@ def _truncate_history_with_tool_safety(
         logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(truncated)} (无孤立 tool return)")
         return truncated
 
-    # 第二步：找到所有包含孤立 tool return 的消息位置
+    # 第三步：找到所有包含孤立 tool return 的消息位置
     orphaned_msg_indices: Set[int] = set()
-    for idx, msg in enumerate(history):
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart) and part.tool_call_id in orphaned_returns:
-                    orphaned_msg_indices.add(idx)
+    for tool_call_id in orphaned_returns:
+        if tool_call_id in return_positions:
+            orphaned_msg_indices.update(return_positions[tool_call_id])
 
-    # 第三步：确定截断点
-    # 如果截断后的历史中包含孤立的 tool return，需要扩大截断范围
+    # 第四步：确定截断点
     truncate_index = len(history) - max_history
 
     # 检查是否有孤立的 msg indices 在截断点之后
@@ -103,7 +117,6 @@ def _truncate_history_with_tool_safety(
 
     if orphaned_in_tail:
         # 需要扩展截断范围，确保孤立的 tool return 被包含或连同其 call 一起被保留
-        # 找到最小的孤立消息索引，然后确保截断点在其之前
         min_orphaned_idx = min(orphaned_in_tail)
         # 扩展截断范围，留出更多空间确保配对完整
         new_truncate_index = max(0, min_orphaned_idx - 5)

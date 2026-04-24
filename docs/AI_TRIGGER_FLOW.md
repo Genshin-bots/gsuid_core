@@ -3246,6 +3246,14 @@ Session ID 格式说明:
 | D-9 | 🟡 设计 | Handler | 长文本粗暴截断导致语法破损，已改用 subagent 智能摘要替代 | ✅ 已修复 | 2.3 |
 | D-10 | 🔴 安全 | Handler | 缺乏绝对长度上限，10万字文本导致子Agent Token爆炸 | ✅ 已修复 | 2.3 |
 | D-11 | 🟡 性能 | handle_ai | RAG 强制前置检索，闲聊消息多1~2秒延迟+无意义Token消耗 | ✅ 已修复 | 2.6 |
+| D-12 | 🔴 正确性 | worker.py | Edge去重key拼接f-string错误，三个相邻f-string未用括号包裹导致key只含source后的|字符，去重失效 | ✅ 已修复 | 10.6 |
+| D-13 | 🔴 正确性 | worker.py/entity.py | entity计数虚高：increment_entity_count使用len(entity_name_to_id)包含已存在实体，导致HierGraph频繁重建 | ✅ 已修复 | 10.6 |
+| D-14 | 🟡 正确性 | hiergraph.py | _apply_entity_assignments新建Category时existing_ids初始化缺失，可能导致重复插入 | ✅ 已修复 | 10.8 |
+| D-15 | 🟡 性能 | models.py | Entity向量去重O(N)串行await，N=10时10次串行Qdrant查询 | ✅ 已修复 | 10.10 |
+| D-16 | 🟡 性能 | dual_route.py | Reranker三路(episodes/entities/edges)串行调用，可改为asyncio.gather并行 | ✅ 已修复 | 10.7 |
+| D-17 | 🟡 性能 | models.py | ORM Relationship lazy='selectin'导致N+1查询问题，应改为'noload'显式加载 | ✅ 已修复 | 10.9 |
+| D-18 | 🟡 设计 | hiergraph.py | Layer-1 Speaker归类仅依赖LLM遵守指令，代码层缺乏硬性保障 | ✅ 已修复 | 10.8 |
+| D-19 | 🟡 设计 | system1.py | System-1 One-hop邻居扩展未实现，与论文Section 2.3描述不符 | ✅ 已修复 | 10.7 |
 
 ---
 
@@ -3266,3 +3274,4 @@ Session ID 格式说明:
 | 2026-04-12 | v2.0 | 修复 D-10（双层长度防护：新增 ABSOLUTE_MAX_LENGTH=10000 硬截断层，防止子Agent Token爆炸）；修复 D-11（RAG 强制前置检索改为主Agent工具按需调用：移除 handle_ai.py 中强制 query_knowledge 逻辑，改由 LLM 自主调用 search_knowledge 工具，消除闲聊场景 1~2 秒无谓延迟）；更新 2.3 节（双层防护表格）、新增 2.6 节（RAG 按需调用对比说明）、更新 8.2 流程图（步骤3双层防护+步骤6历史上下文说明）、更新附录 D（D-10/D-11）|
 | 2026-04-18 | v3.0 | 新增第10节 Memory 记忆系统：基于 Mnemis 双路检索的多群组/多用户 Agent 记忆系统，包含 Observer 观察者管道、Ingestion 摄入引擎（两阶段 Entity 去重 + Edge 冲突检测）、Dual-Route Retrieval 双路检索（System-1 向量相似度 + System-2 分层图遍历 + Reranker 重排序）、Hierarchical Graph 分层语义图、Scope Key 隔离体系、SQLAlchemy 图结构模型 + Qdrant 向量索引；更新 1.1 节目录结构（新增 memory/ 模块）；更新 9 节统计系统（新增 7 项记忆统计指标）；更新附录 A（新增记忆系统相关文件路径）；更新完整流程图章节编号（8→11） |
 | 2026-04-19 | v3.1 | 全面核对 ai_core 代码与文档一致性，修正以下内容：1.1 模块结构（新增 dynamic_tool_discovery.py、dataclass_models.py、startup.py、scheduled_task/scheduler.py，移除 adapter.py、episode.py）；2.3 MAX_SUMMARY_LENGTH 4000→8000；3.1 AI 处理流程（8步：含记忆检索、send_chat_result、observe）；5.1 Session 创建（create_agent 移除 model_name、新增 create_by="Chat"，mtime 缓存，session_id 格式 bot:{bot_id}:group:{group_id}）；5.3 内存保护（DEFAULT_MAX_MESSAGES=40、MAX_AI_HISTORY_LENGTH=30、移除 MAX_HISTORY_CHARS、Agent 内部截断含 ToolCall/ToolReturn 配对保护）；5.5.2 @ai_tools 新增 check_func/**check_kwargs 参数和智能参数注入；5.5.7 buildin 工具新增 query_user_memory；5.5.10-5.5.11 动态工具发现和核心函数签名；6.4 巡检流程（_pre_check_session + _inspect_session_with_semaphore 两阶段）；6.5 决策 Prompt（mood/context_hook 替代 reason，_parse_decision_json，_strip_message_quotes）；6.7.1 INACTIVE_THRESHOLD_HOURS=1；6.7.2 _get_bot_for_session 三级查找（gss.active_bot）；7.2 模块结构（scheduler.py、startup.py）；7.4.2 独立工具函数替代 manage_scheduled_task；7.6-7.11 架构图和使用流程；8.1 统计模块结构（dataclass_models.py、startup.py）；8.3 数据库模型（BaseIDModel、AITokenUsageByType、api_529_count、memory 字段）；8.4 持久化机制（startup.py）；8.6 record_token_usage 新增 chat_type 参数；10.2 移除 episode.py；10.4 Scope Key 格式修正（ScopeType.GROUP:789012）；10.5 ObservationRecord 移除 ai_reply；10.6/10.11 batch_interval_seconds=1800、llm_semaphore_limit=2；10.9 数据库模型（SQLModel 非 BaseIDModel、AIMemHierarchicalGraphMeta 在 hiergraph.py）；10.12.3 启动初始化（无 create_all、IngestionWorker() 无参）；11.3 Heartbeat 流程图（mood/context_hook）；附录 B model_name 热重载 ✅；附录 C Session ID 格式 bot:{bot_id}:group:{group_id} |
+| 2026-04-24 | v3.2 | Memory 系统 Bug 修复与性能优化：修复 B-01（Edge 去重 key 拼接 f-string 错误，worker.py）；修复 B-02（entity 计数虚高导致频繁重建 hiergraph，models.py/entity.py/worker.py）；修复 B-03（_apply_entity_assignments 新建 Category 初始化缺失，hiergraph.py）；优化 P-01（Entity 向量去重串行改并行，models.py）；优化 P-04（Reranker 三路并行化，dual_route.py）；优化 P-03（ORM Relationship lazy='selectin' 改为 'noload'，消除 N+1 查询，models.py）；修复 M-06（Speaker 强制 Layer-1 归类硬性保障，hiergraph.py）；新增 System-1 One-hop 邻居扩展（system1.py/ops.py）；新增已知问题 D-12~D-17 |

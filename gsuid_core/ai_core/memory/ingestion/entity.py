@@ -23,11 +23,12 @@ async def extract_and_upsert_entities(
     entities_data: list[dict],
     episode_id: str,
     speaker_ids: list[str],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], int]:
+    """返回 (name_to_id, new_entity_count)"""
     from gsuid_core.ai_core.memory.vector.ops import upsert_entity_vectors_batch
 
     async with async_maker() as session:
-        name_to_id, vector_payloads = await AIMemEntity.extract_and_upsert(
+        name_to_id, vector_payloads, new_entity_count = await AIMemEntity.extract_and_upsert(
             session,
             scope_key,
             entities_data,
@@ -55,4 +56,4 @@ async def extract_and_upsert_entities(
                 else:
                     logger.error(f"[Qdrant] Entity vector batch upsert failed after 3 retries: {e}")
 
-    return name_to_id
+    return name_to_id, new_entity_count

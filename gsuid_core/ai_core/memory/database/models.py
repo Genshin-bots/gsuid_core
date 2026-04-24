@@ -10,11 +10,12 @@
 """
 
 import uuid
+import asyncio
 from typing import List, Optional
 from datetime import datetime, timezone
 
 from sqlmodel import Field, SQLModel, Relationship, col, select
-from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueConstraint, or_
+from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueConstraint, or_, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import JSON
 
@@ -63,7 +64,7 @@ class AIMemEpisode(SQLModel, table=True):
         sa_relationship_kwargs={
             "secondary": mem_episode_entity_mentions,
             "back_populates": "episodes",
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
 
@@ -144,14 +145,14 @@ class AIMemEntity(SQLModel, table=True):
         sa_relationship_kwargs={
             "secondary": mem_episode_entity_mentions,
             "back_populates": "mentioned_entities",
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
     outgoing_edges: List["AIMemEdge"] = Relationship(
         back_populates="source_entity",
         sa_relationship_kwargs={
             "primaryjoin": "AIMemEntity.id == AIMemEdge.source_entity_id",
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
 
@@ -159,7 +160,7 @@ class AIMemEntity(SQLModel, table=True):
         back_populates="target_entity",
         sa_relationship_kwargs={
             "primaryjoin": "AIMemEntity.id == AIMemEdge.target_entity_id",
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
 
@@ -204,15 +205,17 @@ class AIMemEntity(SQLModel, table=True):
         entities_data: list[dict],
         episode_id: str,
         speaker_ids: list[str],
-    ) -> tuple[dict[str, str], list[dict]]:
+    ) -> tuple[dict[str, str], list[dict], int]:
         """
         Returns:
             name_to_id,
-            vector_payloads  ← 新增
+            vector_payloads,
+            new_entity_count  ← 新建实体数量（仅新建不包含已更新）
         """
 
         name_to_id: dict[str, str] = {}
         vector_payloads: list[dict] = []
+        new_entity_count: int = 0
 
         for ed in entities_data:
             if "is_speaker" in ed or "Speaker" in (ed["tag"] if "tag" in ed else []):
@@ -238,17 +241,29 @@ class AIMemEntity(SQLModel, table=True):
             existing_map = {e.name: e for e in result.scalars().all()}
 
         # ── 向量去重阶段：对 SQL 未命中的名称，用混合检索查找语义相似实体 ──
+        # P-01 优化：改为 asyncio.gather 并行执行，避免串行 O(N) 查询延迟
+        # Bug-05 修复：分两阶段执行，避免同一 AsyncSession 并发 SQL 查询
+        # 阶段1：并行 Qdrant 相似度搜索（无 session 共享问题）
+        # 阶段2：串行 SQL 查询确认（避免并发 session 问题）
         unmatched_names = [n for n in all_names if n not in existing_map]
         if unmatched_names:
             from gsuid_core.ai_core.memory.config import memory_config as _mc
             from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
 
-            for uname in unmatched_names:
+            async def _hybrid_search_for_name(uname: str) -> tuple[str, list]:
+                """并行查询单个名称的相似实体（仅 Qdrant 搜索）"""
                 similar = await _hybrid_search_entities(
                     query=uname,
                     scope_keys=[scope_key],
                     top_k=3,
                 )
+                return uname, similar
+
+            # 阶段1：并行执行所有 Qdrant 相似度搜索
+            search_results = await asyncio.gather(*[_hybrid_search_for_name(n) for n in unmatched_names])
+
+            # 阶段2：串行 SQL 查询确认（避免同一 session 并发执行）
+            for uname, similar in search_results:
                 if similar and similar[0]["score"] >= _mc.dedup_similarity_threshold:
                     sid = similar[0]["id"]
                     # 双重保障：SQL 查询增加 scope_key 条件，防止 Qdrant payload 不一致时跨 scope 匹配
@@ -272,7 +287,8 @@ class AIMemEntity(SQLModel, table=True):
                 if new_summary and new_summary not in existing.summary:
                     combined = f"{existing.summary}\n{new_summary}".strip()
                     if len(combined) > _MAX_SUMMARY_CHARS:
-                        combined = combined[-_MAX_SUMMARY_CHARS:]
+                        # Bug-06 修复：保留头部（早期上下文通常更重要），添加截断提示
+                        combined = combined[:_MAX_SUMMARY_CHARS] + "\n[...早期记忆已截断...]"
                     existing.summary = combined
 
                 existing_tags = existing.tag if isinstance(existing.tag, list) else []
@@ -300,6 +316,7 @@ class AIMemEntity(SQLModel, table=True):
             else:
                 entity_id = str(uuid.uuid4())
                 tag_list = entity_data["tag"] if "tag" in entity_data else []
+                new_entity_count += 1
 
                 new_entity = cls(
                     id=entity_id,
@@ -339,16 +356,15 @@ class AIMemEntity(SQLModel, table=True):
 
             # name_to_id.values() 可能包含重复的 entity_id（不同 name 去重后指向同一 Entity），
             # 需要先 set() 去重，再与已有关联做差集
-            for entity_id in set(name_to_id.values()):
-                if entity_id not in existing_entity_ids:
-                    await session.execute(
-                        mem_episode_entity_mentions.insert().values(
-                            episode_id=episode_id,
-                            entity_id=entity_id,
-                        )
-                    )
+            new_relations = [
+                {"episode_id": episode_id, "entity_id": entity_id}
+                for entity_id in set(name_to_id.values())
+                if entity_id not in existing_entity_ids
+            ]
+            if new_relations:
+                await session.execute(insert(mem_episode_entity_mentions), new_relations)
 
-        return name_to_id, vector_payloads
+        return name_to_id, vector_payloads, new_entity_count
 
 
 # ─────────────────────────────────────────────
@@ -375,12 +391,18 @@ class AIMemEdge(SQLModel, table=True):
 
     source_entity: Optional["AIMemEntity"] = Relationship(
         back_populates="outgoing_edges",
-        sa_relationship_kwargs={"foreign_keys": "[AIMemEdge.source_entity_id]"},
+        sa_relationship_kwargs={
+            "foreign_keys": "[AIMemEdge.source_entity_id]",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
+        },
     )
 
     target_entity: Optional["AIMemEntity"] = Relationship(
         back_populates="incoming_edges",
-        sa_relationship_kwargs={"foreign_keys": "[AIMemEdge.target_entity_id]"},
+        sa_relationship_kwargs={
+            "foreign_keys": "[AIMemEdge.target_entity_id]",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
+        },
     )
 
     @classmethod
@@ -445,7 +467,7 @@ class AIMemCategory(SQLModel, table=True):
         sa_relationship_kwargs={
             "primaryjoin": "AIMemCategory.id == AIMemCategoryEdge.parent_category_id",
             "secondaryjoin": "AIMemCategory.id == AIMemCategoryEdge.child_category_id",
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
     parent_categories: List["AIMemCategory"] = Relationship(
@@ -454,13 +476,13 @@ class AIMemCategory(SQLModel, table=True):
         sa_relationship_kwargs={
             "primaryjoin": "AIMemCategory.id == AIMemCategoryEdge.child_category_id",
             "secondaryjoin": "AIMemCategory.id == AIMemCategoryEdge.parent_category_id",
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
     member_entities: List["AIMemEntity"] = Relationship(
         sa_relationship_kwargs={
             "secondary": mem_category_entity_members,
-            "lazy": "selectin",
+            "lazy": "noload",  # P-03: 避免 selectin 自动加载导致 N+1 查询问题
         },
     )
 
