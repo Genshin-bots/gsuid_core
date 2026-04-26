@@ -35,6 +35,7 @@ async def init_tools_collection():
         await client.create_collection(
             collection_name=TOOLS_COLLECTION_NAME,
             vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE),
+            on_disk_payload=True,
         )
 
 

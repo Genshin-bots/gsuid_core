@@ -33,6 +33,7 @@ async def init_system_prompt_collection():
         await client.create_collection(
             collection_name=SYSTEM_PROMPT_COLLECTION_NAME,
             vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE),
+            on_disk_payload=True,
         )
     else:
         logger.info(f"🧠 [SystemPrompt] 集合已存在: {SYSTEM_PROMPT_COLLECTION_NAME}")

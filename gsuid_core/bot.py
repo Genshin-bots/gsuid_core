@@ -24,6 +24,7 @@ from gsuid_core.load_template import (
     button_templates,
 )
 from gsuid_core.message_models import Button, ButtonType
+from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     bm_config,
     sp_config,
@@ -76,6 +77,25 @@ def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
         return {"type": obj.type, "data": _truncate_for_log(obj.data, max_str_len)}
 
     return obj
+
+
+def message_list_to_str(messages: list[Message]) -> str:
+    """将 Message 列表转为字符串"""
+    s: list[str] = []
+    for m in messages:
+        if m.type == "text":
+            s.append(str(m.data))
+        elif m.type == "image":
+            pass
+        elif m.type == "record":
+            s.append("[语音]")
+        elif m.type == "video":
+            s.append("[视频]")
+        elif m.type == "file":
+            s.append("[文件]")
+        elif m.type == "node":
+            s.append("[节点]")
+    return "\n".join(s)
 
 
 class _Bot:
@@ -268,6 +288,29 @@ class _Bot:
             local_val = await get_global_val(bot_id, bot_self_id)
 
             local_val["send"] += 1
+
+            from gsuid_core.ai_core.memory.config import memory_config
+
+            enable_ai: bool = ai_config.get_config("enable").data
+            is_enable_memory: bool = ai_config.get_config("enable_memory").data
+            memory_mode: list[str] = memory_config.memory_mode
+            if enable_ai and is_enable_memory and "主动会话" in memory_mode:
+                from gsuid_core.ai_core.memory import observe
+
+                try:
+                    asyncio.create_task(
+                        observe(
+                            content=message_list_to_str(mr),
+                            speaker_id=f"__assistant_{bot_id}__",
+                            group_id=target_id if target_type == "group" else None,
+                            bot_self_id=bot_self_id,
+                            observer_blacklist=memory_config.observer_blacklist,
+                            message_type="group_msg" if target_type == "group" else "private_msg",
+                        )
+                    )
+                except Exception:
+                    pass  # Observer 失败不应影响主流程
+            # ============================================
 
             logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
             if self.bot:

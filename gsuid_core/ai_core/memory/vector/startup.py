@@ -56,6 +56,7 @@ async def ensure_memory_collections():
                     collection_name=name,
                     vectors_config={"dense": vector_config},
                     sparse_vectors_config={"sparse": sparse_config},
+                    on_disk_payload=True,
                 )
                 # 为 scope_key 建立 payload 索引，大幅加速过滤
                 await client.create_payload_index(
@@ -82,6 +83,7 @@ async def ensure_memory_collections():
                         collection_name=name,
                         vectors_config={"dense": vector_config},
                         sparse_vectors_config={"sparse": sparse_config},
+                        on_disk_payload=True,
                     )
                     await client.create_payload_index(
                         collection_name=name,

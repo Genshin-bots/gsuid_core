@@ -149,6 +149,58 @@ async def _sparse_embed_async(text: str) -> Optional[SparseVector]:
     return await loop.run_in_executor(_EMBED_EXECUTOR, _sparse_embed, text)
 
 
+def _sparse_embed_batch(texts: list[str]) -> list[Optional[SparseVector]]:
+    """同步批量调用 SparseTextEmbedding.embed，利用其原生批量接口一次处理多条文本。
+
+    BUG-08 修复：相比逐条调用 _sparse_embed（受限于 4 线程池），批量接口可减少
+    Python↔C++ 上下文切换开销，在大量文本场景下性能提升显著。
+    如果模型不支持批量接口，则降级为逐条调用。
+    """
+    global _sparse_degrade_count, _sparse_degrade_last_log
+    import time as _time
+
+    model = _get_sparse_model()
+    if model is None:
+        _sparse_degrade_count += 1
+        now = _time.time()
+        if now - _sparse_degrade_last_log > 300:
+            logger.warning(f"🧠 [Memory] Sparse Embedding 不可用，已降级 {_sparse_degrade_count} 次")
+            _sparse_degrade_last_log = now
+        return [None] * len(texts)
+
+    try:
+        # 尝试使用批量接口
+        results = list(model.embed(texts))
+        return [
+            SparseVector(
+                indices=result.indices.tolist(),
+                values=result.values.tolist(),
+            )
+            for result in results
+        ]
+    except TypeError:
+        # 模型不支持批量接口，降级为逐条调用
+        _sparse_degrade_count += 1
+        now = _time.time()
+        if now - _sparse_degrade_last_log > 300:
+            logger.warning(f"🧠 [Memory] SparseTextEmbedding 不支持批量接口，已降级 {_sparse_degrade_count} 次")
+            _sparse_degrade_last_log = now
+        return [_sparse_embed(text) for text in texts]
+    except Exception as e:
+        logger.warning(f"🧠 [Memory] Sparse batch embedding 失败: {e}")
+        return [None] * len(texts)
+
+
+async def _sparse_embed_batch_async(texts: list[str]) -> list[Optional[SparseVector]]:
+    """异步包装 _sparse_embed_batch，使用专用单线程执行器。
+
+    BUG-08 修复：使用专用单线程执行器（max_workers=1），
+    与 _embed_batch_async 保持一致，确保 Sparse Embedding 模型独占 CPU 资源。
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_EMBED_BATCH_EXECUTOR, _sparse_embed_batch, texts)
+
+
 def _scope_filter(scope_keys: str | list[str]) -> Filter:
     """构造 scope_key 过滤器，支持单值或多值（OR）"""
 
@@ -205,23 +257,40 @@ async def upsert_entity_vector(
 ):
     """写入 Entity 向量到 Qdrant
 
-    Entity 向量 = name + ": " + summary 的联合表示
+    3.2 修复：Entity 使用双嵌入索引（name_dense + summary_dense）分离存储，
+    支持更灵活的检索策略（可分别按 name 或 summary 检索）。
+
+    使用 Qdrant 的 named vectors：name_dense + summary_dense（共用同一个 sparse vector）
     """
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return
-    text = f"{name}: {summary}" if summary else name
 
     # 1. 锁外计算 Embedding (CPU耗时操作，使用线程池避免阻塞事件循环)
-    vector = await _embed_async(text)
-    sparse_vector = await _sparse_embed_async(text)
+    # 3.2 双嵌入：name 和 summary 分别生成向量
+    name_vector = await _embed_async(name)
+    if summary:
+        summary_vector = await _embed_async(summary)
+    else:
+        summary_vector = name_vector
+    sparse_vector = await _sparse_embed_async(name)
 
     # 2. 锁内写入 (防止并发破坏索引长度同步)
+    # 构建 named vectors：name_dense + summary_dense + sparse
+    # 注意：pyright 对 dict[str, list[float]] 与 VectorStruct 的类型检查有误报，
+    # 但运行时 Qdrant client 能正确处理，因此使用 type: ignore 抑制误报
+    vector_data: dict[str, list[float] | SparseVector] = {
+        "name_dense": name_vector,
+        "summary_dense": summary_vector,
+    }
+    if sparse_vector is not None:
+        vector_data["sparse"] = sparse_vector  # type: ignore
+
     async with _QDRANT_LOCKS[MEMORY_ENTITIES_COLLECTION]:
         point = PointStruct(
             id=entity_id,
-            vector={"dense": vector} if sparse_vector is None else {"dense": vector, "sparse": sparse_vector},
+            vector=vector_data,  # type: ignore
             payload={
                 "name": name,
                 "summary": summary,
@@ -294,14 +363,14 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
     texts = []
     for d in entities_data:
         name = d["name"]
-        summary = d["summary"] if "summary" in d else ""
+        summary = d.get("summary", "") or ""
         texts.append(f"{name}: {summary}" if summary else name)
 
     # 批量 Dense Embedding：一次 embed 调用处理所有文本
     dense_vectors = await _embed_batch_async(texts)
 
-    # 批量 Sparse Embedding：逐条调用（BM25 模型无原生批量接口）
-    sparse_vectors = await asyncio.gather(*[_sparse_embed_async(t) for t in texts])
+    # BUG-08 修复：使用批量 Sparse Embedding 接口，提升大量文本时的效率
+    sparse_vectors = await _sparse_embed_batch_async(texts)
 
     # 2. 组装 PointStruct
     points = []
@@ -313,11 +382,11 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
                 vector={"dense": dense_vectors[i]} if sv is None else {"dense": dense_vectors[i], "sparse": sv},
                 payload={
                     "name": d["name"],
-                    "summary": d["summary"] if "summary" in d else "",
+                    "summary": d.get("summary", "") or "",
                     "scope_key": d["scope_key"],
-                    "is_speaker": d["is_speaker"] if "is_speaker" in d else False,
-                    "user_id": d["user_id"] if "user_id" in d else None,
-                    "tag": d["tag"] if "tag" in d else [],
+                    "is_speaker": d.get("is_speaker", False),
+                    "user_id": d.get("user_id"),
+                    "tag": d.get("tag", []),
                 },
             )
         )
@@ -354,8 +423,8 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
     # 批量 Dense Embedding：一次 embed 调用处理所有文本
     dense_vectors = await _embed_batch_async(texts)
 
-    # 批量 Sparse Embedding：逐条调用（BM25 模型无原生批量接口）
-    sparse_vectors = await asyncio.gather(*[_sparse_embed_async(t) for t in texts])
+    # BUG-08 修复：使用批量 Sparse Embedding 接口，提升大量文本时的效率
+    sparse_vectors = await _sparse_embed_batch_async(texts)
 
     # 2. 组装 PointStruct
     points = []

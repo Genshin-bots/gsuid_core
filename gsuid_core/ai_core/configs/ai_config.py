@@ -11,6 +11,37 @@ from gsuid_core.utils.plugins_config.models import (
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
+from .openai_config import list_available_openai_configs
+from .anthropic_config import list_available_anthropic_configs
+
+
+def _get_openai_config_options() -> list[str]:
+    """动态获取可用的 OpenAI 配置文件列表"""
+
+    configs = list_available_openai_configs()
+    if not configs:
+        return ["openai_config"]
+    return configs
+
+
+def _get_anthropic_config_options() -> list[str]:
+    """动态获取可用的 Anthropic 配置文件列表"""
+
+    configs = list_available_anthropic_configs()
+    if not configs:
+        return ["anthropic_config"]
+    return configs
+
+
+def _get_provider_config_options(provider: str) -> list[str]:
+    """动态获取可用的 Provider 配置文件列表（不含扩展名）"""
+    if provider == "openai":
+        return _get_openai_config_options()
+    elif provider == "anthropic":
+        return _get_anthropic_config_options()
+    return ["openai_config"]
+
+
 AI_CONFIG: Dict[str, GSC] = {
     "enable": GsBoolConfig(
         "是否启用AI服务",
@@ -27,11 +58,15 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用记忆功能",
         True,
     ),
-    "openai_provider": GsStrConfig(
-        title="AI模型服务提供方",
-        desc="指定AI服务提供格式, OpenAI兼容",
-        data="openai",
-        options=["openai"],
+    "high_level_provider_config_name": GsStrConfig(
+        title="高级任务AI模型配置名称",
+        desc="指定用于高级任务(复杂推理/工具调用)的AI配置文件名称",
+        data="",
+    ),
+    "low_level_provider_config_name": GsStrConfig(
+        title="低级任务AI模型配置名称",
+        desc="指定用于低级任务(简单问答/快速响应)的AI配置文件名称",
+        data="",
     ),
     "embedding_provider": GsStrConfig(
         "嵌入模型服务提供方",
@@ -65,46 +100,6 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
 }
 
-OPENAI_CONFIG: Dict[str, GSC] = {
-    "base_url": GsStrConfig(
-        "OpenAI API基础URL",
-        "指定OpenAI API的基础URL, 注意是以 /v1 结尾",
-        "https://api.openai.com/v1",
-        options=[
-            "https://api.openai.com/v1",
-            "https://api.bltcy.ai/v1",
-            "https://api.minimaxi.com/v1",
-        ],
-    ),
-    "api_key": GsListStrConfig(
-        "OpenAI API密钥",
-        "指定OpenAI API的密钥, 注意是以 sk- 开头, 不要泄露, 支持添加多个",
-        ["sk-"],
-        options=["sk-"],
-    ),
-    "model_name": GsStrConfig(
-        "调用模型名称",
-        "指定OpenAI API的模型, 该模型将会用于处理大部分任务",
-        "",
-        options=[
-            "gemini-2.5-flash",
-            "gemini-3.1-flash-lite-preview",
-            "MiniMax-M2.7",
-        ],
-    ),
-    "embedding_model": GsStrConfig(
-        "嵌入模型(暂不支持远程嵌入)",
-        "指定OpenAI API的嵌入模型, 该模型将会用于处理文本嵌入",
-        "text-embedding-3-small",
-        options=["text-embedding-3-small"],
-    ),
-    "model_support": GsListStrConfig(
-        "模型支持能力",
-        "显式指定模型支持能力，如是否能看图、能处理文件/音频/视频等",
-        ["text"],
-        options=["text", "image", "audio", "video"],
-    ),
-}
 
 PERSONA_CONFIG: Dict[str, GSC] = {
     "enable_persona": GsListStrConfig(
@@ -219,13 +214,6 @@ tavily_config = StringConfig(
     "GsCore AI Tavily搜索配置",
     get_res_path("ai_core") / "tavily_config.json",
     TAVILY_CONFIG,
-)
-
-
-openai_config = StringConfig(
-    "GsCore AI OpenAI配置",
-    get_res_path("ai_core") / "openai_config.json",
-    OPENAI_CONFIG,
 )
 
 persona_config = StringConfig(

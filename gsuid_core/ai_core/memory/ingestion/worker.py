@@ -41,6 +41,8 @@ class IngestionWorker:
         # 注意：此锁不阻止 observe 入队（Queue 本身线程安全），
         # 而是防止 flush_all 与 _consume_loop 的 _flush 产生竞态
         self._flush_lock = asyncio.Lock()
+        # BUG-03 修复：暂停事件，flush_all 持有 _flush_lock 时通知 _consume_loop 暂停入队
+        self._pause_consume = asyncio.Event()
 
     async def start(self):
         """启动后台消费循环"""
@@ -54,12 +56,20 @@ class IngestionWorker:
         """立即将所有缓冲区 flush 到数据库。
 
         用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
-        在 flush 期间禁止新的 observe 记录入队（通过 asyncio.Lock 保护）。
-        """
 
+        BUG-03 修复：
+        1. 使用 asyncio.Event 通知 _consume_loop 暂停入队，而非仅用 Lock 保护 flush_all 自身。
+           _consume_loop 在 _flush_lock 持有期间产生的新数据会写入 buffer，
+           这些数据会在 flush 循环末尾的第二次队列消费中被处理。
+        2. 在 flush 循环末尾再执行一次队列消费 + flush，确保 flush 期间入队的数据也被写入。
+        """
         logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
+
+        # 通知 _consume_loop 暂停入队（通过设置事件）
+        self._pause_consume.set()
+
         async with self._flush_lock:
-            # 先消费所有队列中的数据到 buffers
+            # 第一次：消费所有队列中的数据到 buffers
             while not self._queue.empty():
                 try:
                     record = self._queue.get_nowait()
@@ -67,34 +77,57 @@ class IngestionWorker:
                 except asyncio.QueueEmpty:
                     break
 
-            # 再 flush buffers
+            # flush buffers
             logger.info(f"🧠 [Memory] 开始同步记忆条数{len(self._buffers)}")
             scope_keys = list(self._buffers.keys())
             for scope_key in scope_keys:
-                # 修复：对于正在 flush 中的 scope_key，等待其完成后再强制 flush 一次
                 while scope_key in self._flushing:
                     logger.debug(f"🧠 [Memory] scope={scope_key} 正在 flush 中，等待 0.1s...")
                     await asyncio.sleep(0.1)
-                # 等待后重新检查 buffer 是否有新数据
                 if self._buffers.get(scope_key):
                     await self._flush(scope_key)
 
-            # 隐患二修复：移除等待 rebuild_task 的逻辑
-            # 分层图重建采用最终一致性，用户查询时使用旧版图谱也可接受
-            # rebuild_task 在后台异步运行，不阻塞 flush_all
+            # BUG-03 修复：flush 循环结束后，再次消费队列 + flush，
+            # 确保 flush_all 持有锁期间 _consume_loop 入队的数据也被写入
+            while not self._queue.empty():
+                try:
+                    record = self._queue.get_nowait()
+                    self._buffers[record.scope_key].append(record)
+                except asyncio.QueueEmpty:
+                    break
+
+            # 第二次 flush，确保前述消费的数据也被写入
+            scope_keys = list(self._buffers.keys())
+            for scope_key in scope_keys:
+                while scope_key in self._flushing:
+                    await asyncio.sleep(0.1)
+                if self._buffers.get(scope_key):
+                    await self._flush(scope_key)
+
             if memory_config.eval_mode:
                 logger.info("🧠 [Memory] 评测模式，跳过 flush_all 中的分层图重建")
             else:
                 logger.info("🧠 [Memory] flush_all 完成，分层图将在后台异步重建")
+
+        # 恢复 _consume_loop 入队
+        self._pause_consume.clear()
 
     async def stop(self):
         """停止后台消费循环"""
         self._running = False
 
     async def _consume_loop(self):
-        """从队列取消息，放入对应 scope_key 的缓冲区"""
+        """从队列取消息，放入对应 scope_key 的缓冲区。
+
+        BUG-03 修复：当 _pause_consume 事件被设置时，暂停入队等待 flush_all 完成。
+        """
         while self._running:
             try:
+                # BUG-03 修复：暂停等待时让出控制权，避免 busy-wait
+                if self._pause_consume.is_set():
+                    await asyncio.wait_for(self._pause_consume.wait(), timeout=1.0)
+                    continue
+
                 record: ObservationRecord = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 self._buffers[record.scope_key].append(record)
 
@@ -106,6 +139,8 @@ class IngestionWorker:
                     asyncio.create_task(self._flush(record.scope_key))
             except asyncio.TimeoutError:
                 continue
+            except asyncio.CancelledError:
+                raise
 
     async def _flush_timer_loop(self):
         """定期检查所有缓冲区，超时的强制 flush"""
@@ -405,7 +440,10 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
         return result
 
     try:
-        agent = create_agent(create_by="MemEntityExtraction")
+        agent = create_agent(
+            create_by="MemEntityExtraction",
+            task_level="low",
+        )
         # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace
         raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
         raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))

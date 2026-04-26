@@ -13,3 +13,7 @@ FILE_PATH = get_res_path(AI_CORE_PATH / "file")
 MEM_PATH = get_res_path(AI_CORE_PATH / "mem_db")
 # 记忆系统数据库URL
 MEM_DB_URL = str(MEM_PATH / "memory.db")
+# OpenAI配置文件目录 - 存放多个openai兼容格式的配置文件
+OPENAI_CONFIGS_PATH = get_res_path(AI_CORE_PATH / "openai_config")
+# Anthropic配置文件目录 - 存放多个anthropic兼容格式的配置文件
+ANTHROPIC_CONFIGS_PATH = get_res_path(AI_CORE_PATH / "anthropic_config")

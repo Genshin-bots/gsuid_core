@@ -26,6 +26,7 @@ from gsuid_core.webconsole import (
     ai_statistics_api,
     system_prompt_api,
     knowledge_base_api,
+    provider_config_api,
     ai_scheduled_task_api,
     chat_with_history_api,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "system_api",
     "plugins_api",
     "database_api",
+    "provider_config_api",
     "ai_tools_api",
     "ai_skills_api",
     "dashboard_api",

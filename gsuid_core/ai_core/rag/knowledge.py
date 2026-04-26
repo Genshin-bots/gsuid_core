@@ -38,6 +38,7 @@ async def init_knowledge_collection():
         await client.create_collection(
             collection_name=KNOWLEDGE_COLLECTION_NAME,
             vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE),
+            on_disk_payload=True,
         )
     else:
         logger.info(f"🧠 [Knowledge] 集合已存在: {KNOWLEDGE_COLLECTION_NAME}")

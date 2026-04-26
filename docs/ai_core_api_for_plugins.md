@@ -19,16 +19,21 @@
 7. [图片实体注册](#7-图片实体注册)
 8. [内置工具一览](#8-内置工具一览)
 9. [System Prompt 管理](#9-system-prompt-管理)
-10. [工具注册表查询 API](#10-工具注册表查询-api)
-11. [类型定义参考](#11-类型定义参考)
-12. [完整示例](#12-完整示例)
+10. [Persona 角色系统](#10-persona-角色系统)
+11. [Memory 记忆系统](#11-memory-记忆系统)
+12. [Scheduled Task 定时任务](#12-scheduled-task-定时任务)
+13. [工具注册表查询 API](#13-工具注册表查询-api)
+14. [类型定义参考](#14-类型定义参考)
+15. [完整示例](#15-完整示例)
 
 ---
 
 ## 1. 模块导入速查
 
 ```python
+# ============================================================
 # 工具注册装饰器
+# ============================================================
 from gsuid_core.ai_core.register import (
     ai_tools,            # 工具注册装饰器
     ai_entity,           # 知识库注册
@@ -43,16 +48,32 @@ from gsuid_core.ai_core.register import (
     get_all_tools,           # 获取所有已注册工具（平铺结构）
 )
 
+# ============================================================
 # Agent 创建
-from gsuid_core.ai_core.gs_agent import create_agent, get_main_agent_tools
+# ============================================================
+from gsuid_core.ai_core.gs_agent import (
+    create_agent,           # 创建临时 Agent
+    get_main_agent_tools,   # 获取主Agent工具列表
+)
 
+# ============================================================
+# AI 聊天入口
+# ============================================================
+from gsuid_core.ai_core.handle_ai import handle_ai_chat
+
+# ============================================================
 # 工具上下文
+# ============================================================
 from gsuid_core.ai_core.models import ToolContext
 
+# ============================================================
 # PydanticAI RunContext
+# ============================================================
 from pydantic_ai import RunContext
 
+# ============================================================
 # 数据模型
+# ============================================================
 from gsuid_core.ai_core.models import (
     KnowledgeBase,       # 知识库基类
     KnowledgePoint,      # 知识点（插件注册）
@@ -61,27 +82,124 @@ from gsuid_core.ai_core.models import (
     ToolBase,            # 工具元数据
 )
 
+# ============================================================
 # 内置工具（可直接导入使用）
+# ============================================================
 from gsuid_core.ai_core.buildin_tools import (
-    # 主Agent工具 (category="buildin")
+    # --- Self 工具 (category="self") ---
+    # 只有主Agent能调用，用于核心操作
+    query_user_favorability,    # 查询用户好感度
+    update_user_favorability,   # 更新用户好感度（增量）
+    create_subagent,            # 创建子Agent完成特定任务
+    send_message_by_ai,         # 发送消息给用户
+
+    # --- Buildin 工具 (category="buildin") ---
+    # 主Agent调用时也会加载，直接调用不会拒绝
     search_knowledge,           # 知识库检索
     web_search,                 # Web搜索
-    send_message_by_ai,         # 发送消息
-    query_user_favorability,    # 查询好感度
     query_user_memory,          # 查询用户记忆
-    update_user_favorability,   # 更新好感度（增量）
-    set_user_favorability,      # 设置好感度（绝对值）
-    create_subagent,            # 创建子Agent
-    get_self_persona_info,      # 获取自身Persona信息
-    execute_shell_command,      # 执行系统命令
 
-    # 子Agent工具 (category="default")
+    # --- Common 工具 (category="common") ---
+    # 有选择地调用，当用户明确需要相关功能时使用
+    get_self_persona_info,     # 获取自身Persona信息
+    add_once_task,              # 添加一次性定时任务
+    add_interval_task,          # 添加循环任务
+    list_scheduled_tasks,       # 列出所有定时任务
+    query_scheduled_task,       # 查询任务详情
+    modify_scheduled_task,      # 修改任务
+    cancel_scheduled_task,       # 取消任务
+    pause_scheduled_task,       # 暂停任务
+    resume_scheduled_task,      # 恢复任务
+
+    # --- Default 工具 (category="default") ---
+    # 通过 create_subagent 调用，用于文件操作、代码执行等
+    execute_shell_command,      # 执行系统命令
     get_current_date,           # 获取当前日期时间
     read_file_content,          # 读取文件
     write_file_content,         # 写入文件
     execute_file,               # 执行脚本
     diff_file_content,          # 文件对比
     list_directory,             # 列出目录
+
+    # --- 动态工具发现 ---
+    discover_tools,             # 发现可能需要的新工具
+    list_available_tools,       # 列出可用工具
+)
+
+# ============================================================
+# RAG / 向量检索
+# ============================================================
+from gsuid_core.ai_core.rag import (
+    init_embedding_model,
+    sync_knowledge,
+    query_knowledge,
+    sync_images,
+    search_images,
+    search_and_load_image,
+    init_knowledge_collection,
+    init_image_collection,
+    get_reranker,
+    rerank_results,
+)
+
+# ============================================================
+# System Prompt 管理
+# ============================================================
+from gsuid_core.ai_core.system_prompt import (
+    SystemPrompt,
+    get_all_prompts,
+    get_prompt_by_id,
+    add_prompt,
+    update_prompt,
+    delete_prompt,
+    search_system_prompt,
+    get_best_match,
+)
+
+# ============================================================
+# Persona 角色系统
+# ============================================================
+from gsuid_core.ai_core.persona import (
+    Persona,
+    PersonaMetadata,
+    PersonaFiles,
+    build_persona_prompt,
+    load_persona,
+    save_persona,
+    list_available_personas,
+    get_persona_metadata,
+    get_persona_image_path,
+    get_persona_avatar_path,
+    get_persona_audio_path,
+    persona_config_manager,
+)
+
+# ============================================================
+# Memory 记忆系统
+# ============================================================
+from gsuid_core.ai_core.memory import (
+    memory_config,
+    ScopeType,
+    make_scope_key,
+    observe,
+    get_observation_queue,
+    ObservationRecord,
+    dual_route_retrieve,
+    MemoryContext,
+    get_ingestion_worker,
+)
+
+# ============================================================
+# Statistics 统计系统
+# ============================================================
+from gsuid_core.ai_core.statistics import (
+    statistics_manager,
+    record_latency,
+    record_token_usage,
+    record_intent,
+    record_activity,
+    record_memory_retrieval,
+    record_error,
 )
 ```
 
@@ -110,7 +228,7 @@ def ai_tools(
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"buildin"` 为主Agent工具，`"default"` 为子Agent工具 |
+| `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"self"` 为主Agent核心工具，`"buildin"` 为内置工具，`"common"` 为通用工具，`"default"` 为子Agent工具 |
 | `check_func` | `Callable` | `None` | 可选的权限校验函数，签名为 `async def check(ev: Event) -> Tuple[bool, str]` |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
 
@@ -170,7 +288,7 @@ async def my_tool(query: str) -> str:
     return query
 
 # 方式二：带参数装饰
-@ai_tools(category="buildin", check_func=my_check_func)
+@ai_tools(category="common", check_func=my_check_func)
 async def my_tool(ctx: RunContext[ToolContext], query: str) -> str:
     """工具描述"""
     return query
@@ -225,12 +343,26 @@ async def admin_tool(ctx: RunContext[ToolContext], uid: str) -> str:
 ```python
 # 内部结构
 _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
+    "self": {
+        "query_user_favorability": ToolBase(...),
+        "update_user_favorability": ToolBase(...),
+        "create_subagent": ToolBase(...),
+        "send_message_by_ai": ToolBase(...),
+    },
     "buildin": {
         "search_knowledge": ToolBase(...),
-        "create_subagent": ToolBase(...),
-        # ... 其他 buildin 工具
+        "web_search": ToolBase(...),
+        "query_user_memory": ToolBase(...),
+    },
+    "common": {
+        "get_self_persona_info": ToolBase(...),
+        "add_once_task": ToolBase(...),
+        "add_interval_task": ToolBase(...),
+        "list_scheduled_tasks": ToolBase(...),
+        # ... 其他 common 工具
     },
     "default": {
+        "execute_shell_command": ToolBase(...),
         "get_current_date": ToolBase(...),
         "read_file_content": ToolBase(...),
         # ... 其他 default 工具
@@ -245,8 +377,10 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 
 | 分类名 | 说明 | 谁可以调用 |
 |--------|------|-----------|
-| `"buildin"` | 核心内置工具，主Agent直接调用 | 主Agent（Main Agent） |
-| `"default"` | 通用工具，需通过 `create_subagent` 调用 | 子Agent（Sub Agent） |
+| `"self"` | 核心自我操作工具，只有主Agent能调用 | 主Agent（Main Agent） |
+| `"buildin"` | 内置工具，主Agent调用时也会加载 | 主Agent（Main Agent） |
+| `"common"` | 通用工具，有选择地调用 | 主Agent（Main Agent） |
+| `"default"` | 子Agent工具，需通过 `create_subagent` 调用 | 子Agent（Sub Agent） |
 | `"<自定义>"` | 插件自定义分类 | 根据配置决定 |
 
 ### 3.3 Agent 调用架构
@@ -254,12 +388,22 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 ```
 ┌─────────────────────────────────────────────────────┐
 │              主Agent (Main Agent)                   │
-│          使用 category="buildin" 的工具              │
+│         使用 category="self", "buildin", "common"    │
 │                                                     │
-│  - search_knowledge    - create_subagent            │
-│  - web_search          - get_self_persona_info      │
-│  - send_message_by_ai  - execute_shell_command      │
-│  - query_user_*        - set_user_favorability      │
+│  Self工具:                                           │
+│  - query_user_favorability - create_subagent        │
+│  - send_message_by_ai     - update_user_favorability│
+│                                                     │
+│  Buildin工具:                                        │
+│  - search_knowledge       - web_search               │
+│  - query_user_memory                                │
+│                                                     │
+│  Common工具:                                         │
+│  - get_self_persona_info  - add_once_task            │
+│  - add_interval_task      - list_scheduled_tasks     │
+│  - query_scheduled_task   - modify_scheduled_task    │
+│  - cancel_scheduled_task  - pause_scheduled_task    │
+│  - resume_scheduled_task                            │
 └─────────────────────────┬───────────────────────────┘
                           │ create_subagent()
                           ▼
@@ -267,9 +411,10 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 │              子Agent (Sub Agent)                    │
 │          使用 category="default" 的工具              │
 │                                                     │
-│  - get_current_date    - write_file_content         │
-│  - read_file_content   - diff_file_content          │
-│  - execute_file        - list_directory             │
+│  - execute_shell_command  - get_current_date         │
+│  - read_file_content     - write_file_content        │
+│  - execute_file          - diff_file_content         │
+│  - list_directory                                    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -284,8 +429,8 @@ async def my_simple_tool(query: str) -> str:
     """简单查询工具"""
     ...
 
-# 高频/核心工具（主Agent直接调用，需谨慎）
-@ai_tools(category="buildin")
+# 核心工具（主Agent直接调用，需谨慎）
+@ai_tools(category="common")
 async def my_core_tool(ctx: RunContext[ToolContext], uid: str) -> str:
     """核心工具，主Agent直接调用"""
     ...
@@ -314,6 +459,11 @@ def create_agent(
     model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     persona_name: Optional[str] = None,
+    max_tokens: int = 20000,
+    max_iterations: Optional[int] = None,
+    max_history: int = 20,
+    create_by: str = "LLM",
+    task_level: Literal["high", "low"] = "high",
 ) -> GsCoreAIAgent
 ```
 
@@ -324,6 +474,11 @@ def create_agent(
 | `model_name` | `str` | `None` | 模型名称，`None` 时使用全局配置 |
 | `system_prompt` | `str` | `None` | 系统提示词 |
 | `persona_name` | `str` | `None` | 绑定的 Persona 名称（用于热重载检测） |
+| `max_tokens` | `int` | `20000` | 最大输出 token 数 |
+| `max_iterations` | `int` | `None` | 最大迭代次数，`None` 时使用配置默认值 |
+| `max_history` | `int` | `20` | 最大历史消息数 |
+| `create_by` | `str` | `"LLM"` | 创建者标识，影响工具加载策略 |
+| `task_level` | `str` | `"high"` | 任务级别，`"high"` 或 `"low"`，用于选择对应模型配置 |
 
 **示例**：
 
@@ -350,7 +505,10 @@ async def run(
     bot: Optional[Bot] = None,
     ev: Optional[Event] = None,
     rag_context: Optional[str] = None,
-) -> str
+    tools: Optional[ToolList] = None,
+    must_return: bool = False,
+    output_type: Optional[type[_T]] = None,
+) -> Union[str, _T]
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
@@ -359,8 +517,11 @@ async def run(
 | `bot` | `Bot` | 否 | Bot 对象，工具调用时注入 `ctx.deps.bot` |
 | `ev` | `Event` | 否 | 事件对象，工具调用时注入 `ctx.deps.ev` |
 | `rag_context` | `str` | 否 | 额外的 RAG 上下文，追加到 system_prompt |
+| `tools` | `ToolList` | 否 | 自定义工具列表 |
+| `must_return` | `bool` | 否 | 是否强制返回结果（不发送消息） |
+| `output_type` | `type[_T]` | 否 | 指定 Pydantic 模型类时，强制结构化输出 |
 
-**返回**: AI 响应字符串
+**返回**: AI 响应字符串，或指定的 Pydantic 模型实例
 
 ### 4.3 get_main_agent_tools - 获取主Agent工具列表
 
@@ -370,7 +531,23 @@ from gsuid_core.ai_core.gs_agent import get_main_agent_tools
 def get_main_agent_tools() -> ToolList
 ```
 
-返回所有 `category="buildin"` 的工具列表，用于构建主Agent。
+返回所有 `category="self"` 和 `"buildin"` 的工具列表，用于构建主Agent。
+
+### 4.4 handle_ai_chat - AI聊天入口
+
+```python
+from gsuid_core.ai_core.handle_ai import handle_ai_chat
+
+async def handle_ai_chat(bot: Bot, event: Event, mode: str = "chat")
+```
+
+**工作流程**：
+1. 双层长度防护：硬截断 + 智能摘要
+2. 意图识别：使用分类器判断用户意图（闲聊/工具/问答）
+3. 获取 AI Session（含 system_prompt/Persona）
+4. 准备上下文（历史记录 + 记忆检索）
+5. 调用 Agent 生成回复
+6. 发送回复给用户
 
 ---
 
@@ -585,10 +762,10 @@ ai_image(ImageEntity(
 
 ### 7.5 图片检索使用
 
-注册图片后，AI 可以通过 `search_image` 工具或 RAG API 进行语义检索：
+注册图片后，AI 可以通过 RAG API 进行语义检索：
 
 ```python
-from gsuid_core.ai_core.rag.image_rag import search_and_load_image
+from gsuid_core.ai_core.rag import search_and_load_image
 
 # 在插件命令处理中使用
 async def show_character_image(bot, ev):
@@ -603,7 +780,68 @@ async def show_character_image(bot, ev):
 
 所有内置工具均已注册到全局工具注册表，可直接在插件中使用或让 AI 自动调用。
 
-### 8.1 主Agent工具（category="buildin"）
+### 8.1 Self 工具（category="self"）
+
+只有主Agent能调用，用于核心自我操作。
+
+#### query_user_favorability - 查询用户好感度
+
+```python
+@ai_tools(category="self")
+async def query_user_favorability(
+    ctx: RunContext[ToolContext],
+    user_id: Optional[str] = None,  # 用户ID，None时查询当前用户
+) -> str
+```
+
+#### update_user_favorability - 更新用户好感度（增量）
+
+```python
+@ai_tools(category="self")
+async def update_user_favorability(
+    ctx: RunContext[ToolContext],
+    delta: int,                     # 好感度变化量（可为负数）
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### create_subagent - 创建子Agent
+
+```python
+@ai_tools(category="self")
+async def create_subagent(
+    ctx: RunContext[ToolContext],
+    task: str,                      # 任务描述，请详细说明
+    tags: Optional[str] = None,     # 逗号分隔的标签，用于匹配 System Prompt
+    max_tokens: int = 1800,         # 子Agent最大输出 token 数
+) -> str
+```
+
+**工作流程**：
+1. 根据 `task` 和 `tags` 向量检索最匹配的 System Prompt
+2. 使用匹配的 System Prompt 创建临时子 Agent
+3. 子 Agent 执行任务并返回结果
+
+**`tags` 参数格式**：逗号分隔字符串，如 `"代码,Python"` 或 `"摘要,总结"`
+
+#### send_message_by_ai - 主动发送消息
+
+```python
+@ai_tools(category="self")
+async def send_message_by_ai(
+    ctx: RunContext[ToolContext],
+    message_type: Literal["text", "image"],  # 消息类型
+    text: Optional[str] = None,              # 文本内容
+    image_id: Optional[str] = None,         # 图片资源ID
+    user_id: Optional[str] = None,          # 指定目标用户ID（可选）
+) -> str
+```
+
+---
+
+### 8.2 Buildin 工具（category="buildin"）
+
+主Agent调用时也会加载，直接调用不会拒绝。
 
 #### search_knowledge - 知识库检索
 
@@ -632,29 +870,6 @@ async def web_search(
 
 > **注意**：需要配置 Tavily API Key
 
-#### send_message_by_ai - 主动发送消息
-
-```python
-@ai_tools(category="buildin")
-async def send_message_by_ai(
-    ctx: RunContext[ToolContext],
-    message_type: Literal["text", "image"],  # 消息类型
-    text: Optional[str] = None,              # 文本内容
-    image_id: Optional[str] = None,         # 图片资源ID
-    user_id: Optional[str] = None,          # 指定目标用户ID（可选）
-) -> str
-```
-
-#### query_user_favorability - 查询好感度
-
-```python
-@ai_tools(category="buildin")
-async def query_user_favorability(
-    ctx: RunContext[ToolContext],
-    user_id: Optional[str] = None,  # 用户ID，None时查询当前用户
-) -> str
-```
-
 #### query_user_memory - 查询用户记忆
 
 ```python
@@ -665,62 +880,16 @@ async def query_user_memory(
 ) -> str
 ```
 
-#### update_user_favorability - 更新好感度（增量）
+---
 
-```python
-@ai_tools(category="buildin")
-async def update_user_favorability(
-    ctx: RunContext[ToolContext],
-    delta: int,                     # 好感度变化量（可为负数）
-    user_id: Optional[str] = None,
-) -> str
-```
+### 8.3 Common 工具（category="common"）
 
-#### set_user_favorability - 设置好感度（绝对值）
-
-```python
-@ai_tools(category="buildin")
-async def set_user_favorability(
-    ctx: RunContext[ToolContext],
-    value: int,                     # 好感度绝对值
-    user_id: Optional[str] = None,
-) -> str
-```
-
-#### create_subagent - 创建子Agent
-
-```python
-@ai_tools(category="buildin")
-async def create_subagent(
-    ctx: RunContext[ToolContext],
-    task: str,                      # 任务描述，请详细说明
-    tags: Optional[str] = None,     # 逗号分隔的标签，用于匹配 System Prompt
-    max_tokens: int = 1800,         # 子Agent最大输出 token 数
-) -> str
-```
-
-**工作流程**：
-1. 根据 `task` 和 `tags` 向量检索最匹配的 System Prompt
-2. 使用匹配的 System Prompt 创建临时子 Agent
-3. 子 Agent 执行任务并返回结果
-
-**`tags` 参数格式**：逗号分隔字符串，如 `"代码,Python"` 或 `"摘要,总结"`
-
-```python
-# 代码任务
-result = await create_subagent(ctx, "写一个Python快速排序", tags="代码,Python")
-
-# 文本摘要（>2000字符自动触发）
-result = await create_subagent(ctx, f"请总结：\n{long_text}", tags="摘要,总结", max_tokens=500)
-
-# 角色扮演
-result = await create_subagent(ctx, "以傲娇的语气回复：今天天气真好", tags="角色扮演")
-```
+有选择地调用，当用户明确需要相关功能时使用。
 
 #### get_self_persona_info - 获取自身 Persona 信息
 
 ```python
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def get_self_persona_info(
     ctx: RunContext[ToolContext],
     info_type: Literal["config", "image", "avatar", "audio"],
@@ -737,10 +906,109 @@ async def get_self_persona_info(
 | `"avatar"` | 头像图片路径 |
 | `"audio"` | 音频文件路径 |
 
+#### add_once_task - 添加一次性定时任务
+
+```python
+@ai_tools(category="common")
+async def add_once_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,              # 任务名称
+    task_content: str,           # 任务内容
+    trigger_time: str,           # 触发时间（ISO格式或相对时间）
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### add_interval_task - 添加循环任务
+
+```python
+@ai_tools(category="common")
+async def add_interval_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,              # 任务名称
+    task_content: str,            # 任务内容
+    interval_seconds: int,       # 间隔秒数
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### list_scheduled_tasks - 列出所有定时任务
+
+```python
+@ai_tools(category="common")
+async def list_scheduled_tasks(
+    ctx: RunContext[ToolContext],
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### query_scheduled_task - 查询任务详情
+
+```python
+@ai_tools(category="common")
+async def query_scheduled_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### modify_scheduled_task - 修改任务
+
+```python
+@ai_tools(category="common")
+async def modify_scheduled_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,
+    new_content: Optional[str] = None,
+    new_interval: Optional[int] = None,
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### cancel_scheduled_task - 取消任务
+
+```python
+@ai_tools(category="common")
+async def cancel_scheduled_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### pause_scheduled_task - 暂停任务
+
+```python
+@ai_tools(category="common")
+async def pause_scheduled_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,
+    user_id: Optional[str] = None,
+) -> str
+```
+
+#### resume_scheduled_task - 恢复任务
+
+```python
+@ai_tools(category="common")
+async def resume_scheduled_task(
+    ctx: RunContext[ToolContext],
+    task_name: str,
+    user_id: Optional[str] = None,
+) -> str
+```
+
+---
+
+### 8.4 Default 工具（category="default"）
+
+通过 `create_subagent` 调用，用于文件操作、代码执行等。
+
 #### execute_shell_command - 执行系统命令
 
 ```python
-@ai_tools(category="buildin")
+@ai_tools(category="default")
 async def execute_shell_command(
     ctx: RunContext[ToolContext],
     command: str,                   # 要执行的命令
@@ -749,12 +1017,6 @@ async def execute_shell_command(
 ```
 
 > ⚠️ **安全警告**：此工具执行系统命令，需要通过 `check_func` 严格控制权限，建议仅在沙箱环境中开放。
-
----
-
-### 8.2 子Agent工具（category="default"）
-
-子Agent工具由主Agent通过 `create_subagent` 调用，或在临时 Agent 中使用。
 
 #### get_current_date - 获取当前日期时间
 
@@ -769,7 +1031,7 @@ async def get_current_date(
 #### read_file_content - 读取文件
 
 ```python
-@ai_tools()  # category="default"
+@ai_tools(category="default")
 async def read_file_content(
     ctx: RunContext[ToolContext],
     file_path: str,  # 相对于 FILE_PATH 的路径，如 "data/config.json"
@@ -781,7 +1043,7 @@ async def read_file_content(
 #### write_file_content - 写入文件
 
 ```python
-@ai_tools()  # category="default"
+@ai_tools(category="default")
 async def write_file_content(
     ctx: RunContext[ToolContext],
     file_path: str,         # 相对于 FILE_PATH 的路径
@@ -793,7 +1055,7 @@ async def write_file_content(
 #### execute_file - 执行脚本
 
 ```python
-@ai_tools()  # category="default"
+@ai_tools(category="default")
 async def execute_file(
     ctx: RunContext[ToolContext],
     file_path: str,     # 相对于 FILE_PATH 的脚本路径
@@ -804,7 +1066,7 @@ async def execute_file(
 #### diff_file_content - 文件对比
 
 ```python
-@ai_tools()  # category="default"
+@ai_tools(category="default")
 async def diff_file_content(
     ctx: RunContext[ToolContext],
     file_path_a: str,  # 第一个文件路径
@@ -815,11 +1077,35 @@ async def diff_file_content(
 #### list_directory - 列出目录
 
 ```python
-@ai_tools()  # category="default"
+@ai_tools(category="default")
 async def list_directory(
     ctx: RunContext[ToolContext],
     dir_path: str = "",        # 相对于 FILE_PATH 的目录路径，空字符串表示根目录
     recursive: bool = False,   # 是否递归列出子目录
+) -> str
+```
+
+---
+
+### 8.5 动态工具发现
+
+#### discover_tools - 发现可能需要的新工具
+
+```python
+@ai_tools(category="common")
+async def discover_tools(
+    ctx: RunContext[ToolContext],
+    task_description: str,  # 任务描述
+) -> str
+```
+
+#### list_available_tools - 列出可用工具
+
+```python
+@ai_tools(category="common")
+async def list_available_tools(
+    ctx: RunContext[ToolContext],
+    category: Optional[str] = None,  # 可选，按分类筛选
 ) -> str
 ```
 
@@ -922,20 +1208,190 @@ if best:
     print(best["content"])  # 系统提示词内容
 ```
 
-### 9.6 默认内置 System Prompt
+---
 
-系统自带以下 System Prompt（在 `defaults.py` 中定义）：
+## 10. Persona 角色系统
 
-| ID | 标题 | 适用场景 |
-|----|------|---------|
-| `default-code-expert` | 代码专家 | 编写各种编程语言的代码 |
-| `default-finance-expert` | 财经专家 | 股票分析、投资建议 |
-| `default-design-expert` | 图片设计专家 | UI/UX、海报、Logo设计 |
-| `default-text-summarizer` | 文本摘要专家 | 长文本压缩摘要 |
+Persona 模块提供人格角色的提示词管理和资料存储功能。
+
+### 10.1 模块导入
+
+```python
+from gsuid_core.ai_core.persona import (
+    Persona,
+    PersonaMetadata,
+    PersonaFiles,
+    build_persona_prompt,
+    load_persona,
+    save_persona,
+    list_available_personas,
+    get_persona_metadata,
+    get_persona_image_path,
+    get_persona_avatar_path,
+    get_persona_audio_path,
+    persona_config_manager,
+)
+```
+
+### 10.2 核心类
+
+```python
+class Persona(TypedDict):
+    id: str              # 唯一标识
+    name: str            # 角色名称
+    description: str     # 角色描述
+    image_path: str      # 立绘图片路径
+    avatar_path: str     # 头像图片路径
+    audio_path: str      # 音频文件路径
+    config_path: str     # 配置文件路径
+    introduction: str   # 角色介绍（长文本）
+```
+
+### 10.3 构建 Persona 提示词
+
+```python
+from gsuid_core.ai_core.persona import build_persona_prompt
+
+# 构建完整的 persona 提示词
+prompt = await build_persona_prompt(
+    persona_name="my_persona",
+    user_name="用户",
+    context="当前对话上下文"
+)
+```
+
+### 10.4 Persona 资源管理
+
+```python
+from gsuid_core.ai_core.persona import (
+    list_available_personas,
+    get_persona_metadata,
+    get_persona_image_path,
+    get_persona_avatar_path,
+    get_persona_audio_path,
+)
+
+# 列出所有可用 Persona
+personas = list_available_personas()
+
+# 获取 Persona 元数据
+metadata = get_persona_metadata("my_persona")
+
+# 获取各种资源路径
+image_path = get_persona_image_path("my_persona")
+avatar_path = get_persona_avatar_path("my_persona")
+audio_path = get_persona_audio_path("my_persona")
+```
 
 ---
 
-## 10. 工具注册表查询 API
+## 11. Memory 记忆系统
+
+基于 Mnemis 双路检索思想的多群组/多用户 Agent 记忆系统。
+
+### 11.1 模块导入
+
+```python
+from gsuid_core.ai_core.memory import (
+    memory_config,
+    ScopeType,
+    make_scope_key,
+    observe,
+    get_observation_queue,
+    ObservationRecord,
+    dual_route_retrieve,
+    MemoryContext,
+    get_ingestion_worker,
+)
+```
+
+### 11.2 记忆检索
+
+```python
+# 双路检索获取记忆上下文
+mem_ctx = await dual_route_retrieve(
+    query="用户之前提到的游戏偏好",
+    group_id="群组ID",
+    user_id="用户ID",
+    top_k=5,
+    enable_system2=True,
+    enable_user_global=True,
+)
+
+# 转换为提示词文本
+memory_text = mem_ctx.to_prompt_text(max_chars=2000)
+```
+
+### 11.3 记忆配置
+
+```python
+from gsuid_core.ai_core.memory import memory_config
+
+# 记忆系统配置
+memory_config.enable_retrieval    # 是否启用检索
+memory_config.enable_system2      # 是否启用 System-2 检索
+memory_config.enable_user_global_memory  # 是否启用用户全局记忆
+memory_config.retrieval_top_k     # 检索返回数量
+```
+
+### 11.4 消息观察
+
+```python
+from gsuid_core.ai_core.memory import observe, ObservationRecord
+
+# 观察消息并记录到记忆
+observe(
+    group_id="群组ID",
+    user_id="用户ID",
+    content="用户说想养一只猫",
+    message_type="text"
+)
+
+# 获取观察队列
+queue = get_observation_queue()
+```
+
+---
+
+## 12. Scheduled Task 定时任务
+
+定时任务系统支持一次性任务和循环任务。
+
+### 12.1 模块导入
+
+```python
+from gsuid_core.ai_core.scheduled_task import (
+    ScheduledTask,
+    TaskTrigger,
+    add_once_task,
+    add_interval_task,
+    list_scheduled_tasks,
+    query_scheduled_task,
+    modify_scheduled_task,
+    cancel_scheduled_task,
+    pause_scheduled_task,
+    resume_scheduled_task,
+)
+```
+
+### 12.2 数据模型
+
+```python
+class ScheduledTask(TypedDict):
+    id: str                    # 任务ID
+    name: str                  # 任务名称
+    content: str               # 任务内容
+    trigger_type: str          # "once" 或 "interval"
+    trigger_time: Optional[str]  # 一次性任务的触发时间
+    interval_seconds: Optional[int]  # 循环任务的间隔秒数
+    user_id: str               # 用户ID
+    group_id: Optional[str]    # 群组ID
+    status: str                # "active", "paused", "completed"
+```
+
+---
+
+## 13. 工具注册表查询 API
 
 ```python
 from gsuid_core.ai_core.register import get_registered_tools, get_all_tools
@@ -944,13 +1400,15 @@ from gsuid_core.ai_core.register import get_registered_tools, get_all_tools
 # 返回: Dict[str, Dict[str, ToolBase]]
 all_by_category = get_registered_tools()
 # {
+#   "self": {"query_user_favorability": ToolBase(...), ...},
 #   "buildin": {"search_knowledge": ToolBase(...), ...},
-#   "default": {"get_current_date": ToolBase(...), ...},
+#   "common": {"get_self_persona_info": ToolBase(...), ...},
+#   "default": {"execute_shell_command": ToolBase(...), ...},
 # }
 
 # 查看某分类的工具
-buildin_tools = all_by_category.get("buildin", {})
-for name, tool_base in buildin_tools.items():
+self_tools = all_by_category.get("self", {})
+for name, tool_base in self_tools.items():
     print(f"{name}: {tool_base.description}")
 
 # 获取平铺结构（所有分类合并）
@@ -971,9 +1429,9 @@ for name, tool_base in all_flat.items():
 
 ---
 
-## 11. 类型定义参考
+## 14. 类型定义参考
 
-### 11.1 ToolContext
+### 14.1 ToolContext
 
 ```python
 @dataclass
@@ -999,26 +1457,26 @@ async def my_tool(ctx: ToolContext, ...) -> str:
     ev = ctx.ev
 ```
 
-### 11.2 KnowledgeBase
+### 14.2 KnowledgeBase
 
 ```python
 class KnowledgeBase(TypedDict):
-    id: str          # 唯一标识符
-    plugin: str      # 插件名称
-    title: str       # 标题
-    content: str     # 内容（支持 Markdown）
-    tags: List[str]  # 标签列表
-    source: str      # "plugin" 或 "manual"
+    id: str
+    plugin: str
+    title: str
+    content: str
+    tags: List[str]
+    source: str  # "plugin" 或 "manual"
 ```
 
-### 11.3 KnowledgePoint
+### 14.3 KnowledgePoint
 
 ```python
 class KnowledgePoint(KnowledgeBase):
     _hash: str  # 自动计算的内容哈希
 ```
 
-### 11.4 ManualKnowledgeBase
+### 14.4 ManualKnowledgeBase
 
 ```python
 class ManualKnowledgeBase(TypedDict):
@@ -1030,7 +1488,7 @@ class ManualKnowledgeBase(TypedDict):
     source: str  # 固定为 "manual"
 ```
 
-### 11.5 ImageEntity
+### 14.5 ImageEntity
 
 ```python
 class ImageEntity(TypedDict):
@@ -1043,7 +1501,7 @@ class ImageEntity(TypedDict):
     _hash: Optional[str]  # 内容哈希
 ```
 
-### 11.6 ToolBase
+### 14.6 ToolBase
 
 ```python
 class ToolBase:
@@ -1053,7 +1511,7 @@ class ToolBase:
     tool: Tool[ToolContext]       # PydanticAI Tool 对象
 ```
 
-### 11.7 CheckFunc 类型
+### 14.7 CheckFunc 类型
 
 ```python
 # 支持同步和异步
@@ -1069,9 +1527,9 @@ CheckFunc = Callable[..., Union[
 
 ---
 
-## 12. 完整示例
+## 15. 完整示例
 
-### 12.1 示例一：基础工具注册
+### 15.1 示例一：基础工具注册
 
 ```python
 # my_plugin/ai_tools.py
@@ -1150,7 +1608,7 @@ async def calculate(
 
 
 # 需要上下文的工具
-@ai_tools(category="default", check_func=check_bound)
+@ai_tools(category="common", check_func=check_bound)
 async def query_character(
     ctx: RunContext[ToolContext],
     character_name: str,
@@ -1168,7 +1626,7 @@ async def query_character(
 
 
 # 管理员工具
-@ai_tools(category="default", check_func=check_admin)
+@ai_tools(category="common", check_func=check_admin)
 async def admin_reset_cd(
     ctx: RunContext[ToolContext],
     user_id: str,
@@ -1199,7 +1657,7 @@ async def send_custom_message(
     return "✅ 消息已发送"
 ```
 
-### 12.2 示例二：创建临时 Agent 做专项任务
+### 15.2 示例二：创建临时 Agent 做专项任务
 
 ```python
 from gsuid_core.ai_core.gs_agent import create_agent
@@ -1245,7 +1703,7 @@ async def review_code(code: str, bot, ev) -> str:
     )
 ```
 
-### 12.3 示例三：完整插件入口文件
+### 15.3 示例三：完整插件入口文件
 
 ```python
 # my_plugin/__init__.py
@@ -1275,7 +1733,7 @@ AI功能：
 """)
 ```
 
-### 12.4 示例四：注册并使用自定义 System Prompt
+### 15.4 示例四：注册并使用自定义 System Prompt
 
 ```python
 from gsuid_core.ai_core.system_prompt import add_prompt, SystemPrompt
@@ -1315,12 +1773,12 @@ register_prompts()
 ### Q1: 工具注册后 AI 能直接使用吗？
 
 取决于 `category`：
-- `category="buildin"`：主Agent直接可用
+- `category="self"`, `"buildin"`, `"common"`：主Agent直接可用
 - `category="default"` 或其他：需通过 `create_subagent` 在子Agent中使用
 
 ### Q2: 如何让插件工具被 AI 主Agent直接调用？
 
-将 `category` 设置为 `"buildin"`，但要谨慎——主Agent的工具越多，token 消耗越大。推荐将高频核心工具注册为 `"buildin"`，其他通过子Agent完成。
+将 `category` 设置为 `"common"`，但要谨慎——主Agent的工具越多，token 消耗越大。推荐将高频核心工具注册为 `"common"`，其他通过子Agent完成。
 
 ### Q3: check_func 和工具自身的错误处理有什么区别？
 
@@ -1351,10 +1809,13 @@ async def my_tool(ctx: RunContext[ToolContext], param: str) -> str:
 - `ai_entity`：系统启动时，`rag/startup.py` 的 `init_all()` 自动同步
 - `add_manual_knowledge`：不自动同步，需要手动调用向量库 API
 
+### Q6: RAG 知识库检索的工作方式是什么？
+
+RAG 知识库检索不再作为强制前置流程。`search_knowledge` 工具注册为 `buildin` 分类，主Agent会根据对话内容自主决定是否调用该工具进行知识库检索。
+
 ---
 
 ## 相关文档
 
 - [AI 触发流转文档](./AI_TRIGGER_FLOW.md)
-- [toAgent 设计文档](./toAgent.md)
 - [WebConsole API 文档](../gsuid_core/webconsole/API.md)

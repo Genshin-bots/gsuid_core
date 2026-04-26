@@ -1,7 +1,7 @@
 import re
 import json
 import asyncio
-from typing import Any, Optional, Sequence
+from typing import Any, Literal, Optional, Sequence
 
 from PIL import Image
 from json_repair import repair_json
@@ -12,11 +12,8 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.ai_core.configs.models import get_model_config_for_task
 from gsuid_core.utils.resource_manager import RM
-from gsuid_core.ai_core.configs.ai_config import openai_config
-
-# AI服务配置
-model_support: list[str] = openai_config.get_config("model_support").data
 
 
 def extract_json_from_text(raw_text: str) -> dict:
@@ -95,6 +92,7 @@ async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 
 
 def prepare_content_payload(
     ev: Event,
+    task_level: Literal["high", "low"] = "high",
 ) -> Sequence[UserContent]:
     """
     准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
@@ -124,6 +122,9 @@ def prepare_content_payload(
         text += f"\n--- 提及用户(@用户): {at} ---\n"
 
     text += f"\n--- 当前群ID: {getattr(ev, 'group_id', 'unknown')} ---\n"
+
+    model_config = get_model_config_for_task(task_level)
+    model_support = model_config.get_config("model_support").data
 
     # 处理用户文本消息
     if "text" in model_support:
@@ -161,18 +162,20 @@ async def send_chat_result(bot: Bot, chat_result: str):
         return
 
     # 按换行分割为多条消息
-    lines = chat_result.split("\n")
+    blocks = re.split(r"\n\s*\n", chat_result.strip())
 
-    for line in lines:
-        if not line.strip():
+    for block in blocks:
+        if not block.strip():
             continue
 
-        # 解析 @user_id 语法，转换为消息段列表
-        segments = _parse_at_segments(line)
+        segments = _parse_at_segments(block)
 
-        # 模拟打字延迟（基于纯文本长度）
-        plain_text = re.sub(r"@\d+", "", line)
-        await asyncio.sleep(len(plain_text) / 7)
+        # 计算纯文本长度
+        plain_text = re.sub(r"@\d+", "", block)
+
+        # 模拟打字延迟（见下方的优化建议）
+        delay = min(max(len(plain_text) / 7, 0.5), 3.0)
+        await asyncio.sleep(delay)
 
         await bot.send(segments)
 

@@ -12,6 +12,8 @@ AI聊天处理模块
 - 并发控制：使用全局信号量限制并发AI调用数
 """
 
+import asyncio
+
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
@@ -24,6 +26,7 @@ from gsuid_core.ai_core.classifier import classifier_service
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
 # AI服务配置开关
@@ -35,6 +38,10 @@ history_manager = get_history_manager()
 # 双层长度防护配置
 ABSOLUTE_MAX_LENGTH = 14000  # 绝对上限：超过此长度直接截断，防止子Agent Token爆炸
 MAX_SUMMARY_LENGTH = 8000  # 摘要阈值：超过此长度调用子Agent进行智能摘要（调整至8000避免短文本被过度摘要）
+
+# AI并发控制配置
+MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
+_ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
 
 
 async def handle_ai_chat(bot: Bot, event: Event, mode: str = "chat"):
@@ -60,9 +67,6 @@ async def handle_ai_chat(bot: Bot, event: Event, mode: str = "chat"):
     if not enable_ai:
         logger.debug("🧠 [GsCore][AI] AI服务未启用，跳过处理")
         return
-
-    # 从 handler 导入并发控制信号量（避免循环导入）
-    from gsuid_core.handler import _ai_semaphore
 
     async with _ai_semaphore:
         try:
@@ -115,12 +119,10 @@ async def handle_ai_chat(bot: Bot, event: Event, mode: str = "chat"):
             # 第二层：智能摘要（在安全范围内对长文本进行摘要）
             if len(event.raw_text) > MAX_SUMMARY_LENGTH:
                 logger.info(f"🧠 [GsCore][AI] 检测到长文本 ({len(event.raw_text)} 字符)，开始摘要...")
-                from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 
                 summarized = await create_subagent(
                     ctx=None,  # type: ignore
                     task=f"请总结以下用户输入，保留关键信息：\n\n{event.raw_text}",
-                    tags="摘要,总结",
                     max_tokens=500,
                 )
                 user_messages = summarized
@@ -131,7 +133,8 @@ async def handle_ai_chat(bot: Bot, event: Event, mode: str = "chat"):
             # 基于群组/用户ID检索相关记忆，用于个性化响应
             # ============================================================
             memory_context_text = ""
-            if memory_config.enable_retrieval:
+            is_enable_memory: bool = ai_config.get_config("enable_memory").data
+            if is_enable_memory and memory_config.enable_retrieval:
                 try:
                     mem_ctx = await dual_route_retrieve(
                         query=query,

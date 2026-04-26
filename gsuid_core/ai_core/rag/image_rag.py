@@ -43,6 +43,7 @@ async def init_image_collection():
         await client.create_collection(
             collection_name=IMAGE_COLLECTION_NAME,
             vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE),
+            on_disk_payload=True,
         )
     else:
         logger.info(f"🧠 [ImageRAG] 集合已存在: {IMAGE_COLLECTION_NAME}")

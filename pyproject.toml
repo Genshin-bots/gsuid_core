@@ -63,7 +63,7 @@ dependencies = [
     "tiktoken>=0.12.0",
     "python-multipart>=0.0.22",
     "tavily-python>=0.7.23",
-    "pydantic-ai-slim[openai]>=1.72.0",
+    "pydantic-ai-slim[anthropic,openai]>=1.72.0",
     "pydantic-ai-skills>=0.6.0",
     "json-repair>=0.59.4",
 ]

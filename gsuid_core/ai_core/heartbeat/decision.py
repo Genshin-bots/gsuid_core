@@ -1,12 +1,11 @@
-import re
-import json
 from typing import Any, List, Optional
 from datetime import datetime
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.utils import extract_json_from_text
 from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.history import format_history_for_agent
-from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.config import memory_config
@@ -58,37 +57,6 @@ PROACTIVE_MESSAGE_PROMPT = """
 你决定开口了。
 直接输出你想说的话，不要任何前缀、引号或解释。
 """
-
-
-def _parse_decision_json(response: str) -> dict:
-    """
-    解析 LLM 返回的决策 JSON，容忍以下常见格式问题：
-    - Markdown 代码块包裹（```json ... ``` 或 ``` ... ```）
-    - 首尾多余空白
-    - 字段缺失（提供默认值）
-
-    Returns:
-        包含 should_speak / mood / context_hook 的字典
-    """
-    # 去除 Markdown 代码块：先剥反引号块，再 strip 空白
-    clean = re.sub(r"```(?:json)?", "", response).strip()
-
-    try:
-        data = json.loads(clean)
-    except json.JSONDecodeError:
-        logger.warning(f"🫀 [Decision] JSON 解析失败，原始回复: {response}")
-        # 容错：从原文中粗判断 should_speak
-        data = {
-            "should_speak": "true" in clean.lower(),
-            "mood": "",
-            "context_hook": "",
-        }
-
-    return {
-        "should_speak": bool(data.get("should_speak", False)),
-        "mood": str(data.get("mood", "")),
-        "context_hook": str(data.get("context_hook", "")),
-    }
 
 
 def _strip_message_quotes(text: str) -> str:
@@ -169,17 +137,21 @@ async def run_heartbeat(
     )
 
     try:
-        decision_response = await session.run(user_message=decision_prompt)
+        _agent = create_agent(
+            decision_prompt,
+            create_by="Heartbeat_Decision",
+        )
+        result = await _agent.run(user_message=decision_prompt)
+
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 决策阶段出错: {e}")
         return None
 
-    if not decision_response:
+    if not result:
         logger.debug("🫀 [Heartbeat] 决策阶段无返回，跳过")
         return None
 
-    decision = _parse_decision_json(decision_response)
-
+    decision = extract_json_from_text(result)
     mood: str = decision["mood"]
     should_speak: bool = decision["should_speak"]
 
@@ -210,15 +182,19 @@ async def run_heartbeat(
     )
 
     try:
-        message_response = await session.run(user_message=message_prompt)
+        _agent = create_agent(
+            message_prompt,
+            create_by="Heartbeat_Output",
+        )
+        result = await _agent.run(user_message=message_prompt)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 生成阶段出错: {e}")
         return None
 
-    if not message_response or not message_response.strip():
+    if not result or not result.strip():
         logger.debug("🫀 [Heartbeat] 生成阶段无返回")
         return None
 
-    message = _strip_message_quotes(message_response)
+    message = _strip_message_quotes(result)
     logger.info(f"🫀 [Heartbeat] 主动发言: {message!r}")
     return mood, message

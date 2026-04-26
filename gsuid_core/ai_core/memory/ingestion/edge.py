@@ -76,6 +76,9 @@ async def extract_and_upsert_edges(
 
     # 统一在一个 session 中写入所有 Edge
     edges_vector_data: list[dict] = []
+    # BUG-04/3.5 修复：记录需要更新 Qdrant payload 的失效 Edge
+    expired_edge_updates: list[tuple[str, float]] = []  # (edge_id, invalid_at_ts)
+
     async with async_maker() as session:
         for i, (edge_data, source_id, target_id, fact) in enumerate(valid_edges):
             # 标记冲突的旧 Edge 为过期
@@ -84,6 +87,8 @@ async def extract_and_upsert_edges(
                 old_edge = result.scalar_one_or_none()
                 if old_edge:
                     old_edge.invalid_at = now
+                    # BUG-04/3.5 修复：记录需要同步更新 Qdrant payload 的失效 Edge
+                    expired_edge_updates.append((expired_id, now.timestamp()))
 
             # 创建新 Edge
             edge_id = str(uuid.uuid4())
@@ -112,6 +117,23 @@ async def extract_and_upsert_edges(
             )
 
         await session.commit()
+
+    # BUG-04/3.5 修复：Edge 失效时必须同步更新 Qdrant payload 中的 invalid_at_ts 字段
+    # 否则 Qdrant 向量搜索时，已失效的 Edge 仍会被返回，导致 System-1 检索结果中混入已失效的 Edge
+    if expired_edge_updates:
+        try:
+            from gsuid_core.ai_core.rag.base import client
+            from gsuid_core.ai_core.memory.vector.collections import MEMORY_EDGES_COLLECTION
+
+            if client is not None:
+                for expired_id, invalid_at_ts in expired_edge_updates:
+                    await client.set_payload(
+                        collection_name=MEMORY_EDGES_COLLECTION,
+                        payload={"invalid_at_ts": invalid_at_ts},
+                        points=[expired_id],
+                    )
+        except Exception as e:
+            logger.warning(f"Edge invalid_at_ts Qdrant payload update failed: {e}")
 
     # 批量写入所有 Qdrant 向量（无锁并发计算 + 单次批量加锁写入）
     if edges_vector_data:

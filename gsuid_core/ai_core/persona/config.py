@@ -19,7 +19,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsStrConfig,
     GsListStrConfig,
 )
-from gsuid_core.utils.plugins_config.gs_config import StringConfig
+from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetManager
 
 from ..resource import PERSONA_PATH
 
@@ -59,42 +59,35 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
 }
 
 
-class PersonaConfigManager:
+class PersonaConfigManager(ConfigSetManager):
     """
     Persona 配置管理器
 
-    管理所有 Persona 的配置，确保全局唯一性约束：
-    - 只能有一个 Persona 配置为 "global" (对所有群/角色启用)
+    继承自 ConfigSetManager，使用 StringConfig 对象进行配置管理。
+    确保全局唯一性约束：只能有一个 Persona 配置为 "global" (对所有群/角色启用)
     """
 
     def __init__(self):
-        self._config_cache: Dict[str, StringConfig] = {}
-        self._persona_path = PERSONA_PATH
+        super().__init__(
+            base_path=PERSONA_PATH,
+            config_template=DEFAULT_PERSONA_CONFIG,
+            name_suffix="Persona",
+        )
 
-    def _get_config_path(self, persona_name: str) -> Path:
-        """获取指定 persona 的配置文件路径"""
-        return self._persona_path / persona_name / "config.json"
+    def _get_config_path(self, config_name: str) -> Path:
+        """获取指定 persona 的配置文件路径（目录结构）"""
+        return self._base_path / config_name / "config.json"
 
-    def get_config(self, persona_name: str) -> StringConfig:
-        """
-        获取指定 Persona 的配置实例
+    def _list_configs(self) -> List[str]:
+        """列出所有 Persona 配置"""
+        if not self._base_path.exists():
+            return []
 
-        Args:
-            persona_name: Persona 名称
-
-        Returns:
-            StringConfig 实例
-        """
-        if persona_name not in self._config_cache:
-            config_path = self._get_config_path(persona_name)
-            # 确保父目录存在
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            self._config_cache[persona_name] = StringConfig(
-                f"Persona_{persona_name}",
-                config_path,
-                DEFAULT_PERSONA_CONFIG.copy(),
-            )
-        return self._config_cache[persona_name]
+        configs = []
+        for item in self._base_path.iterdir():
+            if item.is_dir():
+                configs.append(item.name)
+        return sorted(configs)
 
     def get_all_configs(self) -> Dict[str, StringConfig]:
         """
@@ -104,10 +97,10 @@ class PersonaConfigManager:
             字典，key 为 persona 名称，value 为 StringConfig 实例
         """
         configs = {}
-        if not self._persona_path.exists():
+        if not self._base_path.exists():
             return configs
 
-        for persona_dir in self._persona_path.iterdir():
+        for persona_dir in self._base_path.iterdir():
             if persona_dir.is_dir():
                 persona_name = persona_dir.name
                 configs[persona_name] = self.get_config(persona_name)
@@ -365,8 +358,8 @@ class PersonaConfigManager:
         Returns:
             是否成功删除
         """
-        if persona_name in self._config_cache:
-            del self._config_cache[persona_name]
+        if persona_name in self._cache:
+            del self._cache[persona_name]
 
         config_path = self._get_config_path(persona_name)
         if config_path.exists():

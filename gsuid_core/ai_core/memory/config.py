@@ -85,6 +85,22 @@ class MemoryConfig:
         """评测模式：启用后摄入时不自动触发分层图重建，由外部统一调用 rebuild_task"""
         return mrc.get_config("eval_mode").data
 
+    @property
+    def memory_mode(self) -> list[str]:
+        """记忆路径
+
+        指定启用的记忆路径, 被动感知全部群友会话或只记住自己有参与的聊天记录
+        """
+        return mrc.get_config("memory_mode").data
+
+    @property
+    def memory_session(self) -> str:
+        """被动感知范围
+
+        指定被动感知的范围
+        """
+        return mrc.get_config("memory_session").data
+
 
 # 全局单例
 memory_config = MemoryConfig()

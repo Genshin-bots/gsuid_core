@@ -5,7 +5,7 @@ PydanticAI Agent 核心模块
 
 import time
 import asyncio
-from typing import Any, Set, Dict, List, Union, TypeVar, Optional, Sequence, overload
+from typing import Any, Set, Dict, List, Union, Literal, TypeVar, Optional, Sequence, overload
 
 import httpx
 from pydantic_ai import Agent
@@ -31,7 +31,7 @@ from gsuid_core.ai_core.utils import send_chat_result
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.rag.tools import ToolList, search_tools, get_main_agent_tools
-from gsuid_core.ai_core.configs.models import get_openai_chat_model
+from gsuid_core.ai_core.configs.models import get_model_for_task
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -153,6 +153,7 @@ class GsCoreAIAgent:
         persona_name: Optional[str] = None,
         max_history: int = 20,
         create_by: str = "LLM",
+        task_level: Literal["high", "low"] = "high",
     ):
         self.history: List[ModelMessage] = []
         self.max_history = max_history
@@ -162,12 +163,13 @@ class GsCoreAIAgent:
         self._run_lock = asyncio.Lock()
         self.max_tokens = max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
+        self.task_level = task_level  # 任务级别，用于选择对应的模型配置
 
         self.create_by = create_by
 
         self.model = openai_chat_model
         if self.model is None:
-            self.model = get_openai_chat_model()
+            self.model = get_model_for_task(task_level)
 
     def extract_history(self):
         if self.max_history <= 0:
@@ -249,8 +251,10 @@ class GsCoreAIAgent:
 
         logger.trace(f"🧠[GsCoreAIAgent] 用户消息: {final_user_message}")
 
-        tools = []
-        if self.create_by in ["SubAgent", "Chat", "Agent"]:
+        if tools is None:
+            tools = []
+
+        if self.create_by in ["SubAgent", "Chat", "Agent", "AutoPlanner"]:
             if not tools:
                 tools = get_main_agent_tools()
                 qy = ""
@@ -308,6 +312,21 @@ class GsCoreAIAgent:
                     # 1. 发起大模型请求前的处理
                     if isinstance(node, ModelRequestNode):
                         logger.debug("🧠 [GsCoreAIAgent] ⚡ 触发节点: ModelRequestNode")
+
+                        for part in node.request.parts:
+                            if isinstance(part, ToolReturnPart):
+                                # 返回的可能是对象也可能是字符串，这里为了打印转成 str
+                                tool_result_str = str(part.content)
+                                logger.debug(
+                                    f"[✅ 工具执行完毕]: 工具名称='{part.tool_name}', 结果给到Agent={tool_result_str}"
+                                )
+
+                                # 你也可以在这里发送安抚话语
+                                if context.bot and context.ev:
+                                    done_msg = f"✅ 「{part.tool_name}」操作执行完毕！"
+                                    if bot:
+                                        await bot.send(done_msg)
+
                         logger.debug("🧠  ▶ [发起请求]: 正在等待大模型思考...")
 
                     # 2. 获取到大模型响应，准备调用工具或者输出文本
@@ -393,10 +412,41 @@ class GsCoreAIAgent:
 
         except UsageLimitExceeded:
             # 达到限制后的处理逻辑
-            error_msg = "⚠️ 这个问题太复杂了!"
-            logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 达到最高思考轮数限制 {limits.request_limit}")
+            logger.warning(f"🧠 [PydanticAI] Agent 达到最高思考轮数限制 {limits.request_limit}")
             statistics_manager.record_error(error_type="usage_limit")
-            return error_msg
+
+            # 安抚用户
+            if bot:
+                await bot.send("⏳ 思考链过长，正在根据已有线索为你整理最终结论...")
+
+            # ✨ 【关键点2】发起“强制总结”请求
+            try:
+                # 追加一条系统强制指令，严禁再次调用工具
+                fallback_prompt = (
+                    "（系统强制指令）：你先前的思考和工具调用已达到最大轮数限制被强制中断。"
+                    "请立即停止使用任何工具，并仅根据上述已获取的所有信息，根据用户的问题给出一个总结性的最终回答或结论。"
+                )
+
+                # 使用上一次崩溃前保存的上下文，再次请求大模型
+                fallback_result = await _agent.run(
+                    fallback_prompt,
+                    deps=context,
+                    message_history=self.history,
+                    usage_limits=UsageLimits(request_limit=1),
+                )
+
+                # 获取强制总结的文本并发送
+                now_text = fallback_result.output
+                if bot:
+                    await send_chat_result(bot, fallback_result.output)
+                return ""
+
+            except Exception as e:
+                # 如果强制总结还报错（比如最后一次它还死活要调工具导致再次超限），再使用保底话术
+                logger.error(f"🧠 [PydanticAI] 强制总结失败: {e}")
+                error_msg = "⚠️ 这个问题太复杂了，目前获取到的信息不足以给出准确答案。"
+                "可以尝试提高思维链长度，或者尝试其他方法解决问题。"
+                return error_msg
 
         except httpx.TimeoutException as e:
             # HTTP 请求超时
@@ -495,6 +545,7 @@ def create_agent(
     persona_name: Optional[str] = None,
     create_by: str = "LLM",
     max_history: int = 20,
+    task_level: Literal["high", "low"] = "high",
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -505,12 +556,13 @@ def create_agent(
         max_tokens: 最大输出 token 数
         max_iterations: 最大迭代次数限制，None 时使用配置默认值
         persona_name: Persona 名称（用于热重载检测）
+        task_level: 任务级别，"high"表示高级任务，"low"表示低级任务
 
     Returns:
         PydanticAIAgent 实例
 
     Example:
-        agent = create_pydantic_agent(
+        agent = create_agent(
             system_prompt='你是一个智能助手。',
         )
     """
@@ -521,6 +573,7 @@ def create_agent(
         persona_name=persona_name,
         create_by=create_by,
         max_history=max_history,
+        task_level=task_level,
     )
 
 
@@ -539,6 +592,7 @@ async def build_new_persona(query: str) -> str:
     agent = create_agent(
         system_prompt=CHARACTER_BUILDING_TEMPLATE,
         create_by="BuildPersona",
+        task_level="high",
     )
     response = await agent.run(query)
     return response.strip()

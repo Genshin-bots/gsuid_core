@@ -44,6 +44,7 @@ GsCore WebConsole 提供基于 FastAPI 的 RESTful API，供前端 React 应用�
 20. [AI Statistics API - /api/ai/statistics](./20-ai-statistics.md)
 21. [AI Scheduled Task API - /api/ai/scheduled_tasks](./21-ai-scheduled-tasks.md)
 22. [AI Memory API - /api/ai/memory](./22-ai-memory.md)
+23. [Provider Config API - /api/provider_config](./24-provider-config.md)
 
 ---
 

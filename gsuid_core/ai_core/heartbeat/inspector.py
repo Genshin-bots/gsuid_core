@@ -255,11 +255,14 @@ class HeartbeatInspector:
         if not user_id:
             return
 
-        # 3. 获取 AI Session（关键前置！必须先有 Session 才能做 LLM 决策）
+        # 3. 获取 AI Session
         session_id = event.session_id
         try:
             ai_session = await get_ai_session_by_id(
-                session_id, user_id, group_id, is_group_chat=event.user_type != "direct"
+                session_id,
+                user_id,
+                group_id,
+                is_group_chat=event.user_type != "direct",
             )
         except ValueError:
             # 没有配置 persona，跳过
@@ -271,7 +274,11 @@ class HeartbeatInspector:
             return
 
         # 4. 决策阶段 (隐形 Sub-Agent)
-        meta = await run_heartbeat(event, history, ai_session)
+        meta = await run_heartbeat(
+            event,
+            history,
+            ai_session,
+        )
         if not meta:
             logger.debug(f"🫀 [Heartbeat] 会话 {event} 文本生成为空，放弃发送")
             return

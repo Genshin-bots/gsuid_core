@@ -34,6 +34,16 @@ if TYPE_CHECKING:
 # ─────────────────────────────────────────────
 # System-2 检索结果
 # ─────────────────────────────────────────────
+class LLMNodeSelectionError(Exception):
+    """LLM 节点选择失败或超时异常。
+
+    BUG-06 修复：区分"LLM 返回空选择（正常情况）"和"LLM 失败/超时（异常情况）"，
+    使调用方 dual_route.py 能正确记录错误日志。
+    """
+
+    pass
+
+
 @dataclass
 class System2Result:
     selected_entities: list["Entity"] = dc_field(default_factory=list)
@@ -97,7 +107,11 @@ class System2GlobalSelector:
             if not current:
                 break
 
-            selected, shortcut_all = await self._llm_select_nodes(query, current)
+            try:
+                selected, shortcut_all = await self._llm_select_nodes(query, current)
+            except LLMNodeSelectionError as e:
+                logger.warning(f"LLM node selection failed at layer {layer}, aborting System-2: {e}")
+                return System2Result()
 
             # 记录本层选中的 Category 构建检索路径
             layer_path = [{"name": c.name, "layer": c.layer, "id": c.id} for c in selected]
@@ -224,7 +238,10 @@ class System2GlobalSelector:
             return result
 
         try:
-            agent = create_agent(create_by="MemNodeSelection")
+            agent = create_agent(
+                create_by="MemNodeSelection",
+                task_level="low",
+            )
             # 不传 output_type，让模型直接输出 JSON
             raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
             raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))
@@ -234,10 +251,10 @@ class System2GlobalSelector:
 
         except asyncio.TimeoutError:
             logger.warning("LLM node selection timeout")
-            return [], []
+            raise LLMNodeSelectionError("LLM node selection timeout after 180s")
         except Exception as e:
             logger.warning(f"LLM node selection failed: {e}")
-            return [], []
+            raise LLMNodeSelectionError(f"LLM node selection failed: {e}")
 
         id_to_cat = {c.id: c for c in candidates}
         selected: list[AIMemCategory] = []

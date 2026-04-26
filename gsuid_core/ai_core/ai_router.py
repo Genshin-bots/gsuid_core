@@ -113,6 +113,7 @@ async def _get_or_create_ai_session(
         system_prompt=base_persona,
         persona_name=persona_name,
         create_by="Chat",
+        task_level="high",
     )
 
     history_manager.set_ai_session(session_id, session)

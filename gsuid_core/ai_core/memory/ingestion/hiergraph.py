@@ -166,7 +166,7 @@ class HierarchicalGraphBuilder:
         total_start = time.time()
         unassigned = await self._get_unassigned_entities()
         if not unassigned:
-            await self._update_meta()
+            await self._update_meta(valid_prev_layer=None)
             return
 
         logger.info(f"🧠 [HierGraph] 开始增量重建，未分配 Entity 数: {len(unassigned)}")
@@ -213,16 +213,20 @@ class HierarchicalGraphBuilder:
                 # 回滚本层新建的 Category
                 if new_upper:
                     async with async_maker() as session:
-                        await self._rollback_new_categories(session, new_upper)
+                        await self._rollback_new_categories(session, new_upper, layer)
                         await session.commit()
-                # rollback 后 prev_layer 包含已删除的 Category，回退到上一有效层
+                # rollback 后 prev_layer 包含已删除的 Category，
+                # valid_prev_layer 保持为上一层有效的 categories，不需要更新
+                # 因为 break 后不会继续更新 valid_prev_layer
                 break
 
             valid_prev_layer = new_upper + existing_upper
             prev_layer = valid_prev_layer
             prev_layer_count = total_this_layer
 
-        await self._update_meta()
+        # BUG-01 修复：使用 valid_prev_layer 计算 max_layer，而非数据库 MAX() 查询
+        # 因为回滚后数据库中的 max_layer 可能仍包含已删除的 layer，导致 System-2 以错误的顶层出发
+        await self._update_meta(valid_prev_layer=valid_prev_layer)
         await self._update_group_summary_cache(valid_prev_layer)
         logger.info(f"🧠 [HierGraph] 增量重建完成，总耗时 {time.time() - total_start:.1f}s")
 
@@ -397,6 +401,7 @@ class HierarchicalGraphBuilder:
             agent = create_agent(
                 create_by="MemCategorization",
                 system_prompt=CATEGORIZATION_SYSTEM_PROMPT,
+                task_level="low",
             )
             # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace
             raw = await asyncio.wait_for(
@@ -588,15 +593,19 @@ class HierarchicalGraphBuilder:
         layer: int,
         child_categories: list[AIMemCategory],
     ) -> list[AIMemCategory]:
-        """将子 Category 显式写入 AIMemCategoryEdge 关联表"""
+        """将子 Category 显式写入 AIMemCategoryEdge 关联表。
+
+        BUG-02 修复：合并两个循环为 zip(assignments, parent_ids)，
+        避免 parent_idx 与 assignments 迭代不同步导致的索引错位问题。
+        """
         from sqlmodel import select
 
         from gsuid_core.ai_core.memory.database.models import AIMemCategoryEdge
 
         new_categories: list[AIMemCategory] = []
 
-        # 先创建/查找所有 parent Category，收集 ID
-        parent_ids: list[str] = []
+        # 过滤掉空 category 名称的 assignments，同时创建/查找所有 parent Category
+        valid_assignments_with_parents: list[tuple[dict, AIMemCategory, bool]] = []
         for assignment in assignments:
             cat_name = (assignment["category"] if "category" in assignment else "").strip()
             if not cat_name:
@@ -608,7 +617,10 @@ class HierarchicalGraphBuilder:
             )
             if created:
                 new_categories.append(parent)
-            parent_ids.append(parent.id)
+            valid_assignments_with_parents.append((assignment, parent, created))
+
+        # 提取有效的 parent_id 列表
+        parent_ids = [parent.id for _, parent, _ in valid_assignments_with_parents]
 
         # 批量查询所有 parent 的已有子关系，避免逐个 Category 串行查询
         existing_children_map: dict[str, set[str]] = {}
@@ -619,17 +631,12 @@ class HierarchicalGraphBuilder:
             for row in existing_result.scalars().all():
                 existing_children_map.setdefault(row.parent_category_id, set()).add(row.child_category_id)
 
-        # 逐个处理 assignment 的 indexes
-        parent_idx = 0
-        for assignment in assignments:
-            cat_name = (assignment["category"] if "category" in assignment else "").strip()
-            if not cat_name:
-                continue
-            parent_id = parent_ids[parent_idx]
-            parent_idx += 1
-            existing_child_ids = existing_children_map[parent_id] if parent_id in existing_children_map else set()
+        # BUG-02 修复：使用 zip 同步迭代，避免 parent_idx 偏移错误
+        for assignment, parent, _ in valid_assignments_with_parents:
+            parent_id = parent.id
+            existing_child_ids = existing_children_map.get(parent_id, set())
 
-            for idx in assignment["indexes"] if "indexes" in assignment else []:
+            for idx in assignment.get("indexes", []):
                 real_idx = idx - 1
                 if 0 <= real_idx < len(child_categories):
                     child = child_categories[real_idx]
@@ -644,7 +651,16 @@ class HierarchicalGraphBuilder:
         return new_categories
 
     @with_session
-    async def _update_meta(self, session: AsyncSession) -> None:
+    async def _update_meta(
+        self,
+        session: AsyncSession,
+        valid_prev_layer: Optional[list[AIMemCategory]] = None,
+    ) -> None:
+        """更新分层图元数据。
+
+        BUG-01 修复：max_layer 从 valid_prev_layer 计算，而非数据库 MAX() 查询。
+        这样在回滚后能正确反映当前实际存在的最大层数。
+        """
         # 注意：所有 datetime 字段统一使用 aware datetime（UTC），
         # 与 _check_should_rebuild 中的比较保持一致，避免 naive/aware 混用
         now = datetime.now(timezone.utc)
@@ -655,11 +671,18 @@ class HierarchicalGraphBuilder:
             )
         ).scalar() or 0
 
-        max_layer: int = (
-            await session.execute(
-                select(func.max(AIMemCategory.layer)).where(AIMemCategory.scope_key == self.scope_key)
-            )
-        ).scalar() or 0
+        # BUG-01 修复：使用 valid_prev_layer 计算 max_layer，而非数据库 MAX() 查询
+        # 因为回滚后数据库中的 Category 记录可能尚未删除（或已删除但 query cache 未刷新），
+        # 导致 max_layer 计算错误，进而使 System-2 以错误的顶层出发
+        if valid_prev_layer:
+            max_layer = max(c.layer for c in valid_prev_layer) if valid_prev_layer else 0
+        else:
+            # 无有效 layer 时（如全量重建后无任何 category），查数据库
+            max_layer = (
+                await session.execute(
+                    select(func.max(AIMemCategory.layer)).where(AIMemCategory.scope_key == self.scope_key)
+                )
+            ).scalar() or 0
 
         result = await session.execute(
             select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
@@ -680,13 +703,23 @@ class HierarchicalGraphBuilder:
             )
         session.add(meta)
 
-    async def _rollback_new_categories(self, session: AsyncSession, new_categories: list[AIMemCategory]) -> None:
-        """回滚指定层新建的 Category（违反约束时调用）"""
+    async def _rollback_new_categories(
+        self,
+        session: AsyncSession,
+        new_categories: list[AIMemCategory],
+        layer: int,
+    ) -> None:
+        """回滚指定层新建的 Category（违反约束时调用）。
+
+        BUG-01 修复：显式传入 layer 参数，只删除该 layer 的新建节点，
+        避免误删其他 layer 的同名 Category。
+        """
         from sqlalchemy import delete as sql_delete
 
         from gsuid_core.ai_core.memory.database.models import AIMemCategoryEdge
 
-        cat_ids = [c.id for c in new_categories]
+        # BUG-01 修复：按 layer 过滤，避免误删其他 layer 的同名 Category
+        cat_ids = [c.id for c in new_categories if c.layer == layer]
         if not cat_ids:
             return
 
@@ -712,7 +745,10 @@ class HierarchicalGraphBuilder:
         )
 
         try:
-            agent = create_agent(create_by="MemGroupSummary")
+            agent = create_agent(
+                create_by="MemGroupSummary",
+                task_level="low",
+            )
             summary = (await asyncio.wait_for(agent.run(prompt), timeout=180))[:500]
         except asyncio.TimeoutError:
             logger.warning(f"🧠 [HierGraph] Group summary LLM timeout for {self.scope_key} (>{60}s)")

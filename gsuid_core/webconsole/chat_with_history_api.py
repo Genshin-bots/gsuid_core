@@ -130,6 +130,7 @@ async def chatWithHistory(req: Dict):
             persona_name=persona_name,
             create_by="TEST",
             max_history=0,
+            task_level="high",
         )
 
         if history:

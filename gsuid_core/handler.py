@@ -11,17 +11,18 @@ from gsuid_core.models import Event, Message, TaskContext, MessageReceive
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
+from gsuid_core.ai_core.memory import observe
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.ai_core.history import get_history_manager
 from gsuid_core.ai_core.handle_ai import handle_ai_chat
 from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     log_config,
-    status_config,
 )
 
 # 初始化历史记录管理器
@@ -30,32 +31,6 @@ history_manager = get_history_manager()
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
 
-# 提及bot
-bot_name: str = status_config.get_config("CustomName").data
-bot_name_alias: list[str] = status_config.get_config("CustomNameAlias").data
-bot_name_list = (bot_name, *bot_name_alias)
-
-# AI服务配置
-enable_ai: bool = ai_config.get_config("enable").data
-ai_mode: List[str] = ai_config.get_config("ai_mode").data
-
-# 输入安全配置（已弃用，截断逻辑移除，改为智能摘要）
-# MAX_TEXT_LENGTH = 4000  # 单条消息最大文本长度
-
-# AI并发控制配置
-MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
-_ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
-
-ai_black_list: List[str] = ai_config.get_config("black_list").data
-ai_white_list: List[str] = ai_config.get_config("white_list").data
-
-if "" in ai_black_list:
-    ai_black_list.remove("")
-if "" in ai_white_list:
-    ai_white_list.remove("")
-
-ai_black_list = list(set(ai_black_list))
-ai_white_list = list(set(ai_white_list))
 
 _command_start: List[str]
 if command_start and enable_empty:
@@ -79,6 +54,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     shield_list = sp_config.get_config("ShieldQQBot").data
     show_receive: bool = log_config.get_config("ShowReceive").data
     same_user_cd: int = sp_config.get_config("SameUserEventCD").data
+
+    enable_ai: bool = ai_config.get_config("enable").data
 
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
@@ -124,14 +101,26 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             user_name=user_name,
             metadata=metadata,
         )
-        # ====== 【新增】Memory Observer Hook ======
-        if event.raw_text and event.raw_text.strip():
+
+        # ====== Memory Observer Hook ======
+        if enable_ai and event.raw_text and event.raw_text.strip():
+            is_enable_memory: bool = ai_config.get_config("enable_memory").data
+            memory_mode: list[str] = memory_config.memory_mode
+            memory_session: str = memory_config.memory_session
+
+            # 根据当前 session 获取对应的 persona 配置
+            from gsuid_core.ai_core.persona.config import persona_config_manager
+
+            # 使用 Event.session_id 属性获取标准格式的 session_id
+            session_id = event.session_id
+            persona_name = persona_config_manager.get_persona_for_session(session_id)
+
+            # 如果没有匹配的 persona 配置，直接返回，不执行 AI 处理
+            if persona_name is None and memory_session == "按人格配置":
+                return
+
             try:
-                from gsuid_core.ai_core.memory.config import memory_config
-
-                if memory_config.observer_enabled:
-                    from gsuid_core.ai_core.memory import observe
-
+                if is_enable_memory and memory_config.observer_enabled and "被动感知" in memory_mode:
                     asyncio.create_task(
                         observe(
                             content=event.raw_text,
@@ -328,6 +317,18 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if not enable_ai:
             return
 
+        # 初始化黑名单和白名单
+        ai_black_list: List[str] = ai_config.get_config("black_list").data
+        ai_white_list: List[str] = ai_config.get_config("white_list").data
+
+        if "" in ai_black_list:
+            ai_black_list.remove("")
+        if "" in ai_white_list:
+            ai_white_list.remove("")
+
+        ai_black_list = list(set(ai_black_list))
+        ai_white_list = list(set(ai_white_list))
+
         # 检查用户或群组是否在黑名单中
         user_in_black_list = event.user_id in ai_black_list
         group_in_black_list = event.group_id is not None and event.group_id in ai_black_list
@@ -425,9 +426,11 @@ async def msg_process(msg: MessageReceive) -> Event:
             text_part = str(_msg.data).strip()
             event.raw_text += text_part  # type:ignore
             event.text += text_part  # type:ignore
+            """
             # 如果用户说的话以bot的名字开头，认为这是在说话给bot听的
             if event.text.startswith(bot_name_list):
                 event.is_tome = True
+            """
         elif _msg.type == "at":
             if event.bot_self_id == _msg.data:
                 event.is_tome = True
