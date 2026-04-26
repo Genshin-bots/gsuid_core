@@ -19,8 +19,11 @@ from gsuid_core.webconsole.web_api import require_auth
 async def get_logs(
     request: Request,
     date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     level: Optional[str] = None,
     source: Optional[str] = None,
+    search: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
     _user: Dict = Depends(require_auth),
@@ -28,13 +31,16 @@ async def get_logs(
     """
     获取日志列表
 
-    支持按日期、级别、来源过滤和分页。
+    支持按日期/日期范围、级别、来源、文本搜索过滤和分页。
 
     Args:
         request: FastAPI 请求对象
-        date: 日期，格式 YYYY-MM-DD，默认今天
+        date: 单个日期，格式 YYYY-MM-DD，默认今天
+        start_date: 开始日期，格式 YYYY-MM-DD，与 end_date 配合使用
+        end_date: 结束日期，格式 YYYY-MM-DD，与 start_date 配合使用
         level: 日志级别筛选 (info/warn/error/debug)
         source: 来源筛选
+        search: 文本搜索，匹配日志内容
         page: 页码，默认1
         per_page: 每页数量，默认50
         _user: 认证用户信息
@@ -43,17 +49,38 @@ async def get_logs(
         status: 0成功，404日期不存在
         data: 包含 count、rows、page、per_page 的分页对象
     """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+    if start_date and end_date:
+        # Multi-date range search
+        all_log_files = []
+        from datetime import timedelta
 
-    if date.endswith(".log"):
-        date = date.removesuffix(".log")
+        current_date = datetime.strptime(start_date, "%Y-%m-%d")
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
 
-    history_log_data = HistoryLogData()
-    log_file_path = LOG_PATH / f"{date}.log"
-    if not log_file_path.exists():
-        return {"status": 404, "msg": "该日志不存在", "data": None}
-    log_files = await history_log_data.get_parse_logs(log_file_path)
+        while current_date <= end_date_obj:
+            date_str = current_date.strftime("%Y-%m-%d")
+            log_file_path = LOG_PATH / f"{date_str}.log"
+            if log_file_path.exists():
+                history_log_data = HistoryLogData()
+                logs = await history_log_data.get_parse_logs(log_file_path)
+                for log in logs:
+                    log["_date"] = date_str
+                all_log_files.extend(logs)
+            current_date += timedelta(days=1)
+
+        log_files = all_log_files
+    else:
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        if date.endswith(".log"):
+            date = date.removesuffix(".log")
+
+        history_log_data = HistoryLogData()
+        log_file_path = LOG_PATH / f"{date}.log"
+        if not log_file_path.exists():
+            return {"status": 404, "msg": "该日志不存在", "data": None}
+        log_files = await history_log_data.get_parse_logs(log_file_path)
 
     # Filter by level
     if level and level != "all":
@@ -77,6 +104,18 @@ async def get_logs(
     # Filter by source
     if source and source != "all":
         log_files = [log for log in log_files if log.get("来源", "core") == source]
+
+    # Filter by search text
+    if search:
+        search_lower = search.lower()
+        filtered_logs = []
+        for log in log_files:
+            message = log.get("内容", "")
+            if not isinstance(message, str):
+                message = json.dumps(message, ensure_ascii=False)
+            if search_lower in message.lower():
+                filtered_logs.append(log)
+        log_files = filtered_logs
 
     total = len(log_files)
     start = (page - 1) * per_page
@@ -162,8 +201,11 @@ async def get_log_sources(request: Request, _user: Dict = Depends(require_auth))
 async def get_log_stats(
     request: Request,
     date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     level: Optional[str] = None,
     source: Optional[str] = None,
+    search: Optional[str] = None,
     per_page: int = 100,
     _user: Dict = Depends(require_auth),
 ):
@@ -174,9 +216,12 @@ async def get_log_stats(
 
     Args:
         request: FastAPI 请求对象
-        date: 日期，格式 YYYY-MM-DD，默认今天
+        date: 单个日期，格式 YYYY-MM-DD，默认今天
+        start_date: 开始日期，格式 YYYY-MM-DD，与 end_date 配合使用
+        end_date: 结束日期，格式 YYYY-MM-DD，与 start_date 配合使用
         level: 日志级别筛选
         source: 来源筛选
+        search: 文本搜索，匹配日志内容
         per_page: 每页数量
         _user: 认证用户信息
 
@@ -184,16 +229,40 @@ async def get_log_stats(
         status: 0成功
         data: 统计信息
     """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+    if start_date and end_date:
+        # Multi-date range search
+        all_log_files = []
+        from datetime import timedelta
 
-    if date.endswith(".log"):
-        date = date.removesuffix(".log")
+        current_date = datetime.strptime(start_date, "%Y-%m-%d")
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+
+        while current_date <= end_date_obj:
+            date_str = current_date.strftime("%Y-%m-%d")
+            log_file_path = LOG_PATH / f"{date_str}.log"
+            if log_file_path.exists():
+                history_log_data = HistoryLogData()
+                logs = await history_log_data.get_parse_logs(log_file_path)
+                for log in logs:
+                    log["_date"] = date_str
+                all_log_files.extend(logs)
+            current_date += timedelta(days=1)
+
+        log_files = all_log_files
+    else:
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        if date.endswith(".log"):
+            date = date.removesuffix(".log")
+
+        try:
+            history_log_data = HistoryLogData()
+            log_files = await history_log_data.get_parse_logs(LOG_PATH / f"{date}.log")
+        except Exception:
+            log_files = []
 
     try:
-        history_log_data = HistoryLogData()
-        log_files = await history_log_data.get_parse_logs(LOG_PATH / f"{date}.log")
-
         level_mapping = {
             "info": "info",
             "warning": "warn",
@@ -244,6 +313,18 @@ async def get_log_stats(
         # Filter by source
         if source and source != "all":
             log_files = [log for log in log_files if log.get("来源", "core") == source]
+
+        # Filter by search text
+        if search:
+            search_lower = search.lower()
+            filtered_logs = []
+            for log in log_files:
+                message = log.get("内容", "")
+                if not isinstance(message, str):
+                    message = json.dumps(message, ensure_ascii=False)
+                if search_lower in message.lower():
+                    filtered_logs.append(log)
+            log_files = filtered_logs
 
         total = len(log_files)
         total_pages = (total + per_page - 1) // per_page if per_page > 0 else 0

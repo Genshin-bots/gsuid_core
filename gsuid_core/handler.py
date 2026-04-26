@@ -11,45 +11,26 @@ from gsuid_core.models import Event, Message, TaskContext, MessageReceive
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
-from gsuid_core.ai_core.rag import query_knowledge
-from gsuid_core.ai_core.models import ToolDef
+from gsuid_core.ai_core.memory import observe
 from gsuid_core.utils.cooldown import cooldown_tracker
-from gsuid_core.ai_core.register import get_registered_tools
-from gsuid_core.ai_core.ai_config import ai_config
-from gsuid_core.ai_core.ai_router import get_ai_session
-from gsuid_core.ai_core.embedding import search_tools
-from gsuid_core.ai_core.normalize import normalize_query
-from gsuid_core.ai_core.prompts_qa import qa_prompt
-from gsuid_core.ai_core.prompts_chat import chat_prompt
-from gsuid_core.ai_core.prompts_tools import tools_prompt
+from gsuid_core.ai_core.history import get_history_manager
+from gsuid_core.ai_core.handle_ai import handle_ai_chat
+from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
-from gsuid_core.ai_core.mode_classifier import classifier_service
+from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     log_config,
 )
 
+# 初始化历史记录管理器
+history_manager = get_history_manager()
+
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
 
-# AI服务配置
-enable_ai: bool = ai_config.get_config("enable").data
-enable_chat: bool = ai_config.get_config("enable_chat").data
-enable_qa: bool = ai_config.get_config("enable_qa").data
-enable_task: bool = ai_config.get_config("enable_task").data
-
-ai_need_at: bool = ai_config.get_config("need_at").data
-ai_black_list: List[str] = ai_config.get_config("black_list").data
-ai_white_list: List[str] = ai_config.get_config("white_list").data
-
-if "" in ai_black_list:
-    ai_black_list.remove("")
-if "" in ai_white_list:
-    ai_white_list.remove("")
-
-ai_black_list = list(set(ai_black_list))
-ai_white_list = list(set(ai_white_list))
 
 _command_start: List[str]
 if command_start and enable_empty:
@@ -74,12 +55,85 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     show_receive: bool = log_config.get_config("ShowReceive").data
     same_user_cd: int = sp_config.get_config("SameUserEventCD").data
 
+    enable_ai: bool = ai_config.get_config("enable").data
+
     # 获取用户权限，越小越高
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     event.WS_BOT_ID = ws.bot_id
     if show_receive:
         logger.info("[收到事件]", event_payload=event)
+
+    # 记录用户消息到历史记录
+    if event.raw_text and event.raw_text.strip():
+        # 获取用户昵称
+        user_name = None
+        if event.sender and "nickname" in event.sender:
+            user_name = event.sender["nickname"]
+
+        # 构建元数据
+        from typing import Any, Dict
+
+        metadata: Dict[str, Any] = {
+            "msg_id": event.msg_id,
+            "bot_id": event.bot_id,
+            "user_type": event.user_type,
+        }
+
+        # 添加图片ID列表
+        if event.image_id_list:
+            metadata["image_id_list"] = event.image_id_list
+        elif event.image_id:
+            metadata["image_id"] = event.image_id
+
+        # 添加@列表
+        if event.at_list:
+            metadata["at_list"] = event.at_list
+
+        # 添加文件信息
+        if event.file:
+            metadata["file_id"] = event.file
+
+        history_manager.add_message(
+            event=event,
+            role="user",
+            content=event.raw_text.strip(),
+            user_name=user_name,
+            metadata=metadata,
+        )
+
+        # ====== Memory Observer Hook ======
+        if enable_ai and event.raw_text and event.raw_text.strip():
+            is_enable_memory: bool = ai_config.get_config("enable_memory").data
+            memory_mode: list[str] = memory_config.memory_mode
+            memory_session: str = memory_config.memory_session
+
+            # 根据当前 session 获取对应的 persona 配置
+            from gsuid_core.ai_core.persona.config import persona_config_manager
+
+            # 使用 Event.session_id 属性获取标准格式的 session_id
+            session_id = event.session_id
+            persona_name = persona_config_manager.get_persona_for_session(session_id)
+
+            # 如果没有匹配的 persona 配置，直接返回，不执行 AI 处理
+            if persona_name is None and memory_session == "按人格配置":
+                return
+
+            try:
+                if is_enable_memory and memory_config.observer_enabled and "被动感知" in memory_mode:
+                    asyncio.create_task(
+                        observe(
+                            content=event.raw_text,
+                            speaker_id=str(event.user_id),
+                            group_id=str(event.group_id or event.user_id),
+                            bot_self_id=str(event.bot_self_id),
+                            observer_blacklist=memory_config.observer_blacklist,
+                            message_type="group_msg" if event.group_id else "private_msg",
+                        )
+                    )
+            except Exception:
+                pass  # Observer 失败不应影响主流程
+        # ============================================
 
     if event.user_pm == 0:
         if not await Subscribe.data_exist(
@@ -124,7 +178,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     else:
         temp_gid = uid
 
-    session_id = f"{bid}{temp_gid}{uid}"
+    session_id = f"{bid}%%%{temp_gid}%%%{uid}"
 
     instances = Bot.get_instances()
     mutiply_instances = Bot.get_mutiply_instances()
@@ -263,123 +317,73 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if not enable_ai:
             return
 
-        if ai_need_at and not event.is_tome:
+        # 初始化黑名单和白名单
+        ai_black_list: List[str] = ai_config.get_config("black_list").data
+        ai_white_list: List[str] = ai_config.get_config("white_list").data
+
+        if "" in ai_black_list:
+            ai_black_list.remove("")
+        if "" in ai_white_list:
+            ai_white_list.remove("")
+
+        ai_black_list = list(set(ai_black_list))
+        ai_white_list = list(set(ai_white_list))
+
+        # 检查用户或群组是否在黑名单中
+        user_in_black_list = event.user_id in ai_black_list
+        group_in_black_list = event.group_id is not None and event.group_id in ai_black_list
+        if ai_black_list and (user_in_black_list or group_in_black_list):
             return
 
-        if ai_black_list and (
-            event.user_id in ai_black_list or (event.group_id is not None and event.group_id in ai_black_list)
-        ):
+        # 检查用户或群组是否在白名单中
+        user_in_white_list = event.user_id in ai_white_list
+        group_in_white_list = event.group_id is not None and event.group_id in ai_white_list
+        if ai_white_list and not (user_in_white_list or group_in_white_list):
             return
 
-        if ai_white_list and (
-            event.user_id not in ai_white_list and (event.group_id is None or event.group_id not in ai_white_list)
-        ):
+        # 根据当前 session 获取对应的 persona 配置
+        from gsuid_core.ai_core.persona.config import persona_config_manager
+
+        # 使用 Event.session_id 属性获取标准格式的 session_id
+        session_id = event.session_id
+        persona_name = persona_config_manager.get_persona_for_session(session_id)
+
+        # 如果没有匹配的 persona 配置，直接返回，不执行 AI 处理
+        if persona_name is None:
             return
 
-        # 将AI处理逻辑放入队列异步执行，避免阻塞
-        coro = _handle_ai_chat(ws, event)
-        func_name = "_handle_ai_chat"
-        task_ctx = TaskContext(coro=coro, name=func_name, priority=event.user_pm)
-        ws.queue.put_nowait(task_ctx)
+        # 获取该 persona 的 ai_mode 配置
+        persona_config = persona_config_manager.get_config(persona_name)
+        ai_mode = persona_config.get_config("ai_mode").data
+        keywords = persona_config.get_config("keywords").data
 
+        if "提及应答" in ai_mode:
+            # 检查是否应该响应：@机器人 或者 包含关键词
+            should_respond = event.is_tome
+            if not should_respond and keywords:
+                # 检查消息内容是否包含关键词
+                msg_text = getattr(event, "raw_text", "") or ""
+                should_respond = any(kw in msg_text for kw in keywords)
+                if should_respond:
+                    trigger_type = "keyword"
 
-async def _handle_ai_chat(ws: _Bot, event: Event):
-    """处理AI聊天逻辑的独立函数，用于异步队列执行"""
-    try:
-        # 1. 获取用户/群组的统一对话 Session（包含所有历史聊天记录）
-        session = await get_ai_session(event)
-
-        # 2. 意图识别
-        res = await classifier_service.predict_async(event.raw_text)
-        # {'text': '你是谁', 'intent': '闲聊', 'conf': 0.98, 'reason': 'Rule: Pronoun+Query'}
-        intent = res["intent"]
-        query = event.raw_text
-
-        # 准备传给大模型的动态参数
-        dynamic_tools: List[ToolDef] = []
-        dynamic_system_prompt = ""  # 用于临时注入 RAG 知识和模式专属 System Prompt
-        rag_context = None
-
-        logger.debug(res)
-
-        # 3. 根据意图，动态准备当前轮次的上下文
-        if intent == "闲聊":
-            if not enable_chat:
-                return
-            # 闲聊模式专属 Prompt：要求活泼、友好
-            dynamic_system_prompt = f"【当前模式：自由闲聊】\n{chat_prompt}"
-
-        elif intent == "工具":
-            if not enable_task:
+            if not should_respond:
                 return
 
-            results = await search_tools(query)
-            knowledge_results = await query_knowledge(query=query)
-            if knowledge_results:
-                context = "\n".join(
-                    [
-                        f"[{r.payload['plugin']}] {r.payload['title']}: {r.payload['content']}"
-                        for r in knowledge_results
-                        if r.payload is not None
-                    ]
-                )
-                rag_context = f"【参考资料】\n{context}"
+            # 记录触发方式统计
+            trigger_type = "mention"
+            statistics_manager.record_trigger(trigger_type=trigger_type)
 
-            all_tools_metadata = get_registered_tools()
-            for hit in results:
-                if hit.payload is None:
-                    continue
-                tool_name = hit.payload["name"]
-                dynamic_tools.append(all_tools_metadata[tool_name]["schema"])
-
-            # 工具模式专属 Prompt：要求精准、遵循工具结构
-            dynamic_system_prompt = f"【当前模式：工具执行】\n{tools_prompt}"
-
-        elif intent == "问答":
-            if not enable_qa:
-                return
-
-            # 查询知识库，使用rerank优化结果排序
-            query = normalize_query(query)
-            knowledge_results = await query_knowledge(
-                query=query,
-                use_rerank=True,
+            # 将AI处理逻辑放入队列异步执行，避免阻塞
+            task_ctx = TaskContext(
+                coro=handle_ai_chat(
+                    Bot(ws, event),
+                    event,
+                ),
+                name="handle_ai_chat",
+                priority=event.user_pm,
             )
-            # 问答模式专属 Prompt：要求严谨、基于事实
-            dynamic_system_prompt = qa_prompt
-            # RAG 参考资料通过 user_context 参数传递给用户消息
-            if knowledge_results:
-                context = "\n".join(
-                    [
-                        f"[{r.payload['plugin']}] {r.payload['title']}: {r.payload['content']}"
-                        for r in knowledge_results
-                        if r.payload is not None
-                    ]
-                )
-                rag_context = f"【参考资料】\n{context}"
-        else:
-            logger.warning(f"🧠 [GsCore][AI] 未知意图: {res['intent']}")
-            return
-
-        # 4. 统一调用大模型（携带统一的历史记忆 + 当前轮次的动态资源）
-        bot = Bot(ws, event)
-
-        chat_completion = await session.chat(
-            text=query,
-            tools=dynamic_tools,  # 如果是闲聊或问答，这里是 None；如果是工具，这里有值
-            temp_system=dynamic_system_prompt,  # 根据意图注入的专属 Prompt
-            user_context=rag_context,  # RAG 参考资料放在用户消息中
-            image_ids=event.image_id_list,
-            bot=bot,
-            ev=event,
-        )
-        if isinstance(chat_completion, dict):
-            logger.error(f"🧠 [GsCore][AI] 聊天异常: {chat_completion}")
-            return
-
-        await bot.send(chat_completion)
-    except Exception as e:
-        logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")
+            ws.queue.put_nowait(task_ctx)
 
 
 async def get_user_pml(msg: MessageReceive) -> int:
@@ -417,8 +421,16 @@ async def msg_process(msg: MessageReceive) -> Event:
 
     for _msg in msg.content:
         if _msg.type == "text":
-            event.raw_text += _msg.data.strip()  # type:ignore
-            event.text += _msg.data.strip()  # type:ignore
+            if not _msg.data:
+                continue
+            text_part = str(_msg.data).strip()
+            event.raw_text += text_part  # type:ignore
+            event.text += text_part  # type:ignore
+            """
+            # 如果用户说的话以bot的名字开头，认为这是在说话给bot听的
+            if event.text.startswith(bot_name_list):
+                event.is_tome = True
+            """
         elif _msg.type == "at":
             if event.bot_self_id == _msg.data:
                 event.is_tome = True

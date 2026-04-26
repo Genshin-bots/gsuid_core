@@ -1,5 +1,6 @@
 import sys
 import json
+from abc import ABC
 from typing import Any, Dict, List, Union
 from pathlib import Path
 
@@ -292,7 +293,7 @@ class StringConfig:
             else:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
-    def set_config(self, key: str, value: Union[str, List, bool, Dict]) -> bool:
+    def set_config(self, key: str, value: Union[str, List, bool, Dict, int]) -> bool:
         if key in self.config_list:
             temp = self.config[key].data
             if type(value) == type(temp):  # noqa: E721
@@ -447,3 +448,188 @@ pass_config.migrate_from(core_plugins_config)
 pic_upload_config.migrate_from(core_plugins_config)
 bm_config.migrate_from([core_plugins_config, sp_config])
 sp_config.migrate_from(core_plugins_config)
+
+
+# ==================== ConfigSetManager 基类 ====================
+
+
+class ConfigSetManager(ABC):
+    """
+    配置集管理器抽象基类
+
+    使用 StringConfig 对象进行配置管理。
+
+    Attributes:
+        _base_path: 配置文件存储的基础路径
+        _config_template: 配置项模板
+        _cache: StringConfig 实例缓存
+    """
+
+    def __init__(
+        self,
+        base_path: Path,
+        config_template: Dict[str, GSC],
+        name_suffix: str = "",
+    ):
+        """
+        初始化配置管理器
+
+        Args:
+            base_path: 配置文件存储的基础路径
+            config_template: 配置项模板字典
+            name_suffix: StringConfig 名称后缀，区分不同管理器实例
+        """
+        self._base_path = base_path
+        self._config_template = config_template
+        self._name_suffix = name_suffix
+        self._cache: Dict[str, StringConfig] = {}
+
+    def _get_config_path(self, config_name: str) -> Path:
+        """
+        获取配置文件的完整路径
+
+        默认实现：直接用 base_path 拼接 config_name（扁平结构）
+
+        子类如需特殊结构（如 persona 的目录结构），可覆盖此方法
+
+        Args:
+            config_name: 配置名（不含扩展名）
+
+        Returns:
+            配置文件路径
+        """
+        return self._base_path / f"{config_name}.json"
+
+    def _list_configs(self) -> List[str]:
+        """
+        列出所有配置文件
+
+        Returns:
+            配置名列表
+        """
+        if not self._base_path.exists():
+            return []
+
+        configs = []
+        for file in self._base_path.iterdir():
+            if file.is_file() and file.suffix == ".json":
+                configs.append(file.stem)
+        return sorted(configs)
+
+    def _create_string_config(self, config_name: str) -> StringConfig:
+        """
+        创建 StringConfig 实例
+
+        Args:
+            config_name: 配置名
+
+        Returns:
+            StringConfig 实例
+        """
+        config_path = self._get_config_path(config_name)
+        # 确保父目录存在
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        return StringConfig(
+            f"{self.__class__.__name__}{self._name_suffix}_{config_name}",
+            config_path,
+            self._config_template.copy(),
+        )
+
+    def get_config(self, config_name: str) -> StringConfig:
+        """
+        获取指定配置实例（带缓存）
+
+        Args:
+            config_name: 配置名
+
+        Returns:
+            StringConfig 实例
+        """
+        if config_name not in self._cache:
+            self._cache[config_name] = self._create_string_config(config_name)
+        return self._cache[config_name]
+
+    def list_available(self) -> List[str]:
+        """
+        列出所有可用的配置名
+
+        Returns:
+            配置名列表
+        """
+        return self._list_configs()
+
+    def get_all_configs(self) -> Dict[str, StringConfig]:
+        """
+        获取所有配置实例
+
+        Returns:
+            配置字典，key 为配置名，value 为 StringConfig 实例
+        """
+        result = {}
+        for name in self.list_available():
+            result[name] = self.get_config(name)
+        return result
+
+    def exists(self, config_name: str) -> bool:
+        """
+        检查配置是否存在
+
+        Args:
+            config_name: 配置名
+
+        Returns:
+            是否存在
+        """
+        return self._get_config_path(config_name).exists()
+
+    def create_default(self, config_name: str) -> bool:
+        """
+        创建默认配置
+
+        Args:
+            config_name: 配置名
+
+        Returns:
+            是否创建成功（如果已存在则返回 False）
+        """
+        if config_name in self.list_available():
+            return False
+
+        self.get_config(config_name)
+        # 初始化默认配置会创建文件
+        logger.info(f"已创建默认配置: {config_name}")
+        return True
+
+    def delete(self, config_name: str) -> bool:
+        """
+        删除配置
+
+        Args:
+            config_name: 配置名
+
+        Returns:
+            是否删除成功
+        """
+        config_path = self._get_config_path(config_name)
+        if not config_path.exists():
+            return False
+
+        try:
+            if config_path.is_dir():
+                import shutil
+
+                shutil.rmtree(config_path)
+            else:
+                config_path.unlink()
+
+            if config_name in self._cache:
+                del self._cache[config_name]
+            logger.info(f"已删除配置: {config_name}")
+            return True
+        except Exception as e:
+            logger.error(f"删除配置 '{config_name}' 失败: {e}")
+            return False
+
+    def clear_cache(self) -> None:
+        """清除配置缓存"""
+        self._cache.clear()

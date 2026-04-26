@@ -134,7 +134,11 @@ async def load_plugins(self, dev_mode: bool = False):
         except Exception as e:
             logger.exception(f"❌ 插件{filepath.stem}导入失败")
 
-    # 6. 写入配置
+    # 6. 调用 core_start 钩子 (AI初始化等)
+    for func in core_start_def:
+        await func()
+
+    # 7. 写入配置
     core_config.lazy_write_config()
 ```
 
@@ -151,6 +155,8 @@ gsuid_core/
 │   │   └── __init__.py         # 单插件包
 │   ├── plugin_b/
 │   │   └── __full__.py         # 全量加载模式
+│   │       ├── module_a.py
+│   │       └── module_b.py
 │   └── single_plugin.py        # 单文件插件
 │
 └── buildin_plugins/            # 内置插件目录
@@ -224,6 +230,7 @@ normalize_name() 规范化名称
 (统一小写，-_. 互换)
     │
     ├─── 在 ignore_dep 列表中? ──► 跳过
+    │       (fastapi/pydantic/gsuid-core/toml/packaging等基础包)
     │
     ├─── 未安装? ──► 加入安装队列
     │
@@ -249,6 +256,19 @@ mirrors = [
     ("清华源 (Tsinghua)", "https://pypi.tuna.tsinghua.edu.cn/simple"),
     ("官方源 (PyPI)", "https://pypi.org/simple"),
 ]
+```
+
+### 4.4 忽略的基础依赖
+
+```python
+ignore_dep = {
+    "python",
+    "fastapi",
+    "pydantic",
+    "gsuid-core",
+    "toml",
+    "packaging",
+}
 ```
 
 ---
@@ -411,9 +431,74 @@ class SV:
 
 ---
 
-## 七、Web 服务启动
+## 七、Core Start 钩子系统
 
-### 7.1 uvicorn 配置
+### 7.1 钩子定义
+
+```python
+# gsuid_core/server.py
+
+core_start_def: Set[Callable] = set()
+core_shutdown_def: Set[Callable] = set()
+
+def on_core_start(func: Callable):
+    """Core启动时执行的钩子"""
+    if func not in core_start_def:
+        core_start_def.add(func)
+    return func
+
+def on_core_shutdown(func: Callable):
+    """Core关闭时执行的钩子"""
+    if func not in core_shutdown_def:
+        core_shutdown_def.add(func)
+    return func
+```
+
+### 7.2 已注册的启动钩子
+
+| 钩子函数 | 模块 | 功能 |
+|----------|------|------|
+| `init_default_personas` | `ai_core/persona/startup.py` | 初始化默认角色（早柚） |
+| `init_all` | `ai_core/rag/startup.py` | 初始化RAG模块 |
+
+### 7.3 RAG模块初始化详解
+
+```python
+# gsuid_core/ai_core/rag/startup.py::init_all()
+
+@on_core_start
+async def init_all():
+    """初始化RAG模块的所有组件"""
+    # 1. 初始化Embedding模型和Qdrant客户端
+    init_embedding_model()
+
+    # 2. 初始化工具和知识集合
+    from . import init_tools_collection, init_knowledge_collection
+    await init_tools_collection()
+    await init_knowledge_collection()
+
+    # 3. 同步工具和知识到向量库
+    from gsuid_core.ai_core.register import _TOOL_REGISTRY
+    from . import sync_tools, sync_knowledge
+    await sync_tools(_TOOL_REGISTRY)
+    await sync_knowledge()
+```
+
+### 7.4 Persona模块初始化详解
+
+```python
+# gsuid_core/ai_core/persona/startup.py
+
+@on_core_start
+async def init_default_personas():
+    await save_persona("早柚", sayu_persona_prompt)
+```
+
+---
+
+## 八、Web 服务启动
+
+### 8.1 uvicorn 配置
 
 ```python
 # gsuid_core/core.py
@@ -431,7 +516,7 @@ server = uvicorn.Server(config)
 await server.serve()
 ```
 
-### 7.2 WebSocket 端点
+### 8.2 WebSocket 端点
 
 ```python
 # gsuid_core/core.py::websocket_endpoint()
@@ -462,7 +547,7 @@ async def websocket_endpoint(websocket: WebSocket, bot_id: str):
     await asyncio.gather(process(), start())
 ```
 
-### 7.3 HTTP 端点 (可选)
+### 8.3 HTTP 端点 (可选)
 
 ```python
 if ENABLE_HTTP:
@@ -478,9 +563,34 @@ if ENABLE_HTTP:
             return {"status_code": -100, "data": None}
 ```
 
+### 8.4 Bot连接管理
+
+```python
+# gsuid_core/server.py::GsServer
+
+class GsServer:
+    def __init__(self):
+        self.active_ws: Dict[str, WebSocket] = {}    # WebSocket连接
+        self.active_bot: Dict[str, _Bot] = {}        # Bot实例
+
+    async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
+        """建立Bot连接"""
+        self.active_ws[bot_id] = websocket
+        bot = _Bot(bot_id, websocket)
+        self.active_bot[bot_id] = bot
+        return bot
+
+    async def disconnect(self, bot_id: str):
+        """断开Bot连接"""
+        if bot_id in self.active_ws:
+            del self.active_ws[bot_id]
+        if bot_id in self.active_bot:
+            del self.active_bot[bot_id]
+```
+
 ---
 
-## 八、启动检查清单
+## 九、启动检查清单
 
 | 步骤 | 操作 | 文件 |
 |------|------|------|
@@ -489,12 +599,17 @@ if ENABLE_HTTP:
 | 3 | 依赖安装 | `server.py::check_pyproject()` → `process_dependencies()` |
 | 4 | 模块导入 | `server.py::cached_import()` |
 | 5 | 配置合并 | `config.py::CoreConfig.update_config()` |
-| 6 | WebSocket 服务 | `core.py::websocket_endpoint()` |
-| 7 | HTTP 服务 (可选) | `core.py::sendMsg()` |
+| 6 | **Core Start钩子** | `server.py::core_start_def` |
+| 7 | **RAG初始化** | `ai_core/rag/startup.py::init_all()` |
+| 8 | **Persona初始化** | `ai_core/persona/startup.py::init_default_personas()` |
+| 9 | WebSocket服务 | `core.py::websocket_endpoint()` |
+| 10 | HTTP服务 (可选) | `core.py::sendMsg()` |
 
 ---
 
-## 九、开发模式
+## 十、开发模式
+
+### 10.1 启动参数
 
 ```bash
 # 启动开发模式 (只加载 -dev 后缀插件)
@@ -503,14 +618,62 @@ python -m gsuid_core --dev
 # 指定端口
 python -m gsuid_core --port 8888
 
-# 指定地址
+# 指定地址 (0.0.0.0 = 监听全部地址)
 python -m gsuid_core --host 0.0.0.0
+
+# 组合使用
+python -m gsuid_core --dev --port 8888 --host 0.0.0.0
 ```
 
+### 10.2 开发模式区别
+
 ```python
-# 开发模式区别
+# server.py::load_plugins()
 if dev_mode:
     # 只加载 name.endswith("-dev") 的插件
     if not plugin.name.endswith("-dev"):
         continue
+```
+
+### 10.3 开发模式插件命名
+
+```
+# 普通插件（开发模式不加载）
+gsuid_core/plugins/my_plugin/__init__.py
+
+# 开发模式插件
+gsuid_core/plugins/my_plugin-dev/__init__.py
+```
+
+---
+
+## 十一、启动失败排查
+
+### 11.1 常见错误
+
+| 错误 | 可能原因 | 解决方案 |
+|------|----------|----------|
+| `ModuleNotFoundError` | 依赖未安装 | 检查pyproject.toml或手动pip install |
+| `Port already in use` | 端口被占用 | 更换端口或关闭占用进程 |
+| `WS_TOKEN` 警告 | 未配置WebSocket令牌 | 配置WS_TOKEN或仅本地访问 |
+| 数据库连接失败 | 数据库文件权限问题 | 检查数据目录权限 |
+
+### 11.2 日志查看
+
+```bash
+# 查看实时日志
+tail -f logs/gsuid_core.log
+
+# 查看ERROR级别日志
+grep ERROR logs/gsuid_core.log
+```
+
+### 11.3 健康检查
+
+```bash
+# 检查Web服务是否正常
+curl http://localhost:8765/api/system/info
+
+# 检查WebSocket连接
+ws://localhost:8765/ws/test_bot?token=<WS_TOKEN>
 ```

@@ -17,7 +17,6 @@ from async_timeout import timeout
 
 from gsuid_core.bot import call_bot
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.api import DBSqla
 from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER, SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.database.models import GsUID, GsUser
 from gsuid_core.utils.plugins_config.gs_config import pass_config
@@ -52,7 +51,6 @@ class BaseMysApi:
     is_sr = False
     RECOGNIZE_SERVER = RECOGNIZE_SERVER
     chs = {}
-    dbsqla: DBSqla = DBSqla()
 
     @abstractmethod
     async def _upass(self, header: Dict) -> str: ...

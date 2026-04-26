@@ -1,218 +1,219 @@
-import inspect
-from typing import Any, List, Callable, get_type_hints
+import re
+import json
+import asyncio
+from typing import Any, Literal, Optional, Sequence
 
-import msgspec
+from PIL import Image
+from json_repair import repair_json
+from pydantic_ai.messages import ImageUrl, UserContent
 
-from .models import ToolDef
-
-
-def _type_to_json_schema_type(param_type: Any) -> dict:
-    """将 Python 类型转换为 JSON Schema 类型定义"""
-    import typing
-    from typing import get_args, get_origin
-
-    # 处理 Annotated 类型
-    origin = get_origin(param_type)
-    args = get_args(param_type)
-
-    if origin is not None:
-        # 处理 Annotated[type, Meta(...)]
-        if hasattr(origin, "__origin__") and origin.__origin__ is typing.Annotated or origin is typing.Annotated:
-            if args:
-                inner_type = args[0]
-                # 检查是否有 Meta 信息
-                description = None
-                for arg in args[1:]:
-                    if hasattr(arg, "description"):
-                        description = arg.description
-                result = _type_to_json_schema_type(inner_type)
-                if description:
-                    result["description"] = description
-                return result
-
-        # 处理 Optional[T] = Union[T, None]
-        if origin is typing.Union or str(origin) == "typing.Union":
-            non_none_types = [arg for arg in args if arg is not type(None)]
-            if len(non_none_types) == 1:
-                result = _type_to_json_schema_type(non_none_types[0])
-                if type(None) in args:
-                    # Optional 字段
-                    pass
-                return result
-
-    # 基本类型映射
-    type_map = {
-        str: {"type": "string"},
-        int: {"type": "integer"},
-        float: {"type": "number"},
-        bool: {"type": "boolean"},
-        bytes: {"type": "string", "format": "binary"},
-        list: {"type": "array"},
-        dict: {"type": "object"},
-        Any: {},
-    }
-
-    if param_type in type_map:
-        return type_map[param_type]
-
-    # 处理 List[T]
-    if origin is list or origin is typing.List:
-        if args:
-            item_schema = _type_to_json_schema_type(args[0])
-            return {"type": "array", "items": item_schema}
-        return {"type": "array"}
-
-    # 默认返回空对象
-    return {}
+from gsuid_core.bot import Bot
+from gsuid_core.logger import logger
+from gsuid_core.models import Event
+from gsuid_core.segment import Message, MessageSegment
+from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.ai_core.configs.models import get_model_config_for_task
+from gsuid_core.utils.resource_manager import RM
 
 
-def _build_simple_schema(annotations: dict, defaults: dict, required_params: list) -> dict:
-    """当 msgspec 失败时，使用简单的手动 schema 构建"""
-    properties = {}
-
-    for name, param_type in annotations.items():
-        schema_entry = _type_to_json_schema_type(param_type)
-
-        # 添加默认值
-        if name in defaults:
-            default_val = defaults[name]
-            # 处理特殊类型
-            if default_val is None:
-                schema_entry["default"] = None
-            elif isinstance(default_val, (str, int, float, bool)):
-                schema_entry["default"] = default_val
-
-        properties[name] = schema_entry
-
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": required_params,
-    }
-
-
-def function_to_schema(func: Callable) -> ToolDef:
-    """
-    使用 msgspec 高速生成函数的 JSON Schema。
-    支持 typing.Annotated[type, msgspec.Meta(description="...")]
-    """
-    func_name = func.__name__
-    doc = inspect.getdoc(func) or ""
-
+def extract_json_from_text(raw_text: str) -> dict:
+    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw_text).strip()
+    cleaned = repair_json(cleaned)
     try:
-        type_hints = get_type_hints(func, include_extras=True)
-    except Exception:
-        type_hints = {}
-
-    sig = inspect.signature(func)
-
-    annotations = {}
-    defaults = {}
-    required_params = []
-
-    # 忽略一些特殊参数
-    IGNORED_PARAMS = {"self", "args", "kwargs", "bot", "ev", "event"}
-
-    for name, param in sig.parameters.items():
-        if name in IGNORED_PARAMS:
-            continue
-
-        # 获取类型，默认为 Any
-        param_type = type_hints.get(name, Any)
-
-        # 根据类型跳过 (防止漏网之鱼)
-        # 检查类型名称是否包含 'Event' 或 'Bot'
-        type_name = str(param_type)
-        if "Event" in type_name or "Bot" in type_name:
-            continue
-
-        annotations[name] = param_type
-
-        # 处理默认值，决定是否必填
-        if param.default is inspect.Parameter.empty:
-            required_params.append(name)
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
+        if match:
+            stripped = match.group(0).strip()
+            cl = repair_json(stripped)
+            data = json.loads(cl)
         else:
-            defaults[name] = param.default
+            raise
+    return data
 
-    # 使用 exec 动态创建带注解的 Struct 类
-    # 这样 msgspec 能正确识别 Annotated 类型和 Meta 信息
-    class_body = []
-    for name, param_type in annotations.items():
-        if name in defaults:
-            default_val = defaults[name]
-            if isinstance(default_val, str):
-                default_str = f"{repr(default_val)}"
+
+async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 4000) -> str:
+    """
+    序列化工具执行结果, 当函数返回Message对象时调用Bot.send方法发送, 并将序列化后的字符串返回方便AI识别。
+
+    Args:
+        bot: Bot 对象
+        result: 工具函数返回的结果
+        max_length: 最大返回长度，超长会被截断
+
+    Returns:
+        序列化的字符串
+    """
+    if isinstance(result, Message):
+        a = "生成内容成功!"
+        if bot is not None:
+            await bot.send(result)
+            a += ", 已经发送了相关消息！"
+        else:
+            a += ", 由于没有Bot对象, 未发送相关消息！"
+        return a
+    elif isinstance(result, str):
+        res_str = result
+    elif isinstance(result, dict):
+        res_str = json.dumps(result, ensure_ascii=False)
+    elif isinstance(result, Image.Image):
+        img_bytes = await convert_img(result)
+        a = f"生成了图片资源, 资源ID: {RM.register(img_bytes)}"
+        if bot is not None:
+            await bot.send(img_bytes)
+            a += ", 已经发送了相关资源！"
+        else:
+            a += ", 由于没有Bot对象, 未发送相关资源！"
+        return a
+    elif isinstance(result, bytes):
+        a = f"生成了某项资源, 资源ID: {RM.register(result)}"
+        if bot is not None:
+            await bot.send(result)
+            a += ", 已经发送了相关资源！"
+        else:
+            a += ", 由于没有Bot对象, 未发送相关资源！"
+        return a
+    elif isinstance(result, list):
+        res_str = json.dumps(result, ensure_ascii=False)
+    elif hasattr(result, "model_dump_json"):
+        # Pydantic v2
+        res_str = result.model_dump_json()
+    elif hasattr(result, "json"):
+        # Pydantic v1
+        res_str = result.json()
+    else:
+        res_str = str(result)
+
+    # 截断过长的返回值，防止 Token 爆炸
+    if len(res_str) > max_length:
+        return res_str[:max_length] + f"\n...[系统截断: 省略后 {len(res_str) - max_length} 字符]"
+    return res_str
+
+
+def prepare_content_payload(
+    ev: Event,
+    task_level: Literal["high", "low"] = "high",
+) -> Sequence[UserContent]:
+    """
+    准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
+
+    Args:
+        text: 文本内容
+        image_ids: 图片 ID 列表
+        files_content: 文件内容
+        ev: 事件对象
+
+    Returns:
+        content payload 列表
+    """
+    content_payload: Sequence[UserContent] = []
+    text = f"--- 当前用户ID: {getattr(ev, 'user_id', 'unknown')} ---\n"
+
+    if not ev.text:
+        text += "用户没有发送文本内容。"
+    else:
+        text += ev.text.strip()
+
+    # 预处理, 将用户发送的文本/AT/图片ID等信息整合到一个字符串中, 方便AI处理
+    for i in ev.image_id_list:
+        text += f"\n--- 用户上传图片ID: {i} ---\n"
+
+    for at in ev.at_list:
+        text += f"\n--- 提及用户(@用户): {at} ---\n"
+
+    text += f"\n--- 当前群ID: {getattr(ev, 'group_id', 'unknown')} ---\n"
+
+    model_config = get_model_config_for_task(task_level)
+    model_support = model_config.get_config("model_support").data
+
+    # 处理用户文本消息
+    if "text" in model_support:
+        content_payload.append(text)
+
+    # 处理用户图片消息
+    if "image" in model_support:
+        for i in ev.image_list:
+            if isinstance(i, str):
+                if i.startswith(("http", "https")):
+                    img_url = i
+                else:
+                    # 转为DataURI
+                    if i.startswith("base64://"):
+                        img_url = f"data:image/png;base64,{i[10:]}"
+                    elif i.startswith("data:image/"):
+                        img_url = i
+                    else:
+                        img_url = f"data:image/png;base64,{i}"
+
+                content_payload.append(ImageUrl(url=img_url))
             else:
-                default_str = repr(default_val)
-            class_body.append(f"    {name}: {name}_type = {default_str}")
-        else:
-            class_body.append(f"    {name}: {name}_type")
+                logger.warning(f"无法处理图片ID: {i}")
 
-    # 准备 exec 的局部变量，包含所有类型
-    exec_locals = {"Struct": msgspec.Struct}
-    for name, param_type in annotations.items():
-        exec_locals[f"{name}_type"] = param_type
-
-    class_code = f"""
-class {func_name}_Params(Struct):
-{chr(10).join(class_body) if class_body else "    pass"}
-"""
-
-    try:
-        exec(class_code, {"Struct": msgspec.Struct, **exec_locals}, exec_locals)
-        DynamicParams = exec_locals[f"{func_name}_Params"]
-    except Exception as e:
-        print(f"Dynamic class creation failed for {func_name}: {e}")
-        # 回退到简单的 schema 生成
-        schema = _build_simple_schema(annotations, defaults, required_params)
-        return {
-            "type": "function",
-            "function": {
-                "name": func_name,
-                "description": doc,
-                "parameters": schema,
-            },
-        }
-
-    # 生成 Schema
-    try:
-        schema = msgspec.json.schema(DynamicParams)
-
-        # msgspec 的 schema 可能包含 $ref，我们需要展开它
-        if "$ref" in schema:
-            defs = schema.get("$defs", {})
-            ref_key = schema["$ref"].split("/")[-1]
-            if ref_key in defs:
-                schema = defs[ref_key]
-
-        # 确保有 properties 字段
-        if "properties" not in schema:
-            schema["properties"] = {}
-
-        # 设置 required 字段
-        schema["required"] = required_params
-
-        # 移除 msgspec 特有的字段
-        schema.pop("title", None)
-        schema.pop("$defs", None)
-        schema.pop("$ref", None)
-
-    except Exception as e:
-        print(f"Schema generation failed for {func_name}: {e}")
-        schema = {"type": "object", "properties": {}}
-
-    tool: ToolDef = {
-        "type": "function",
-        "function": {
-            "name": func_name,
-            "description": doc,  # 函数的 docstring 作为主描述
-            "parameters": schema,
-        },
-    }
-
-    return tool
+    return content_payload
 
 
-def generate_tools_schema(funcs: List[Callable]) -> List[ToolDef]:
-    """批量转换"""
-    return [function_to_schema(f) for f in funcs]
+async def send_chat_result(bot: Bot, chat_result: str):
+    """
+    解析并发送 chat_result，支持：
+    - 按换行分割多条消息
+    - @用户ID 语法 → MessageSegment.at(user_id)
+    """
+    if not chat_result:
+        return
+
+    # 按换行分割为多条消息
+    blocks = re.split(r"\n\s*\n", chat_result.strip())
+
+    for block in blocks:
+        if not block.strip():
+            continue
+
+        segments = _parse_at_segments(block)
+
+        # 计算纯文本长度
+        plain_text = re.sub(r"@\d+", "", block)
+
+        # 模拟打字延迟（见下方的优化建议）
+        delay = min(max(len(plain_text) / 7, 0.5), 3.0)
+        await asyncio.sleep(delay)
+
+        await bot.send(segments)
+
+
+def _parse_at_segments(text: str) -> list[Message]:
+    """
+    将含有 @用户ID 的文本解析为 MessageSegment 列表。
+
+    规则：
+    - @后跟纯数字（QQ号格式）才会被解析为 at segment
+    - 其余文本保持为 text segment
+    - 示例输入："好哦 @444835641 你来看"
+    - 示例输出：[Text("好哦 "), At(444835641), Text(" 你来看")]
+    """
+    # 匹配 @数字，前后允许空格（空格属于分隔符，不计入文本内容）
+    pattern = re.compile(r"\s*@(\d+)\s*")
+    segments: list[Message] = []
+    last_end = 0
+
+    for match in pattern.finditer(text):
+        # 匹配前的普通文本
+        before = text[last_end : match.start()]
+        if before:
+            segments.append(MessageSegment.text(before))
+
+        # @ 片段
+        user_id = match.group(1)
+        segments.append(MessageSegment.at(user_id))
+
+        last_end = match.end()
+
+    # 剩余文本
+    tail = text[last_end:]
+    if tail:
+        segments.append(MessageSegment.text(tail))
+
+    # 如果没有任何 @ 匹配，直接返回原始字符串（兼容旧调用）
+    if not segments:
+        return [MessageSegment.text(text)]
+
+    return segments

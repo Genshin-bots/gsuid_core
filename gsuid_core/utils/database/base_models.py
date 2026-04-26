@@ -8,6 +8,7 @@ from typing import (
     TypeVar,
     Callable,
     Optional,
+    Sequence,
     Awaitable,
 )
 from functools import wraps
@@ -273,7 +274,7 @@ async def get_simple_schema_info(engine: AsyncEngine) -> Dict[str, List[Dict[str
 
 # https://github.com/tiangolo/sqlmodel/issues/264
 class BaseIDModel(SQLModel):
-    id: Optional[int] = Field(default=None, primary_key=True, title="序号")
+    id: int = Field(default=None, primary_key=True, title="序号")
 
     @classmethod
     @with_session
@@ -291,7 +292,7 @@ class BaseIDModel(SQLModel):
     async def batch_insert_data(
         cls,
         session: AsyncSession,
-        datas: List["BaseIDModel"],
+        datas: Sequence["BaseIDModel"],
     ):
         session.add_all(datas)
 
@@ -300,7 +301,7 @@ class BaseIDModel(SQLModel):
     async def batch_insert_data_with_update(
         cls,
         session: AsyncSession,
-        datas: List["BaseIDModel"],
+        datas: Sequence["BaseIDModel"],
         update_key: List[str],
         index_elements: List[str],
     ):

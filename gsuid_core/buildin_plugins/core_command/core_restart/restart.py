@@ -7,12 +7,11 @@ from pathlib import Path
 
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.server import core_shutdown_execute
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.utils.database.models import Subscribe
 from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
-
-from ..core_status.command_global_val import save_global_val
 
 bot_start = Path(__file__).parents[3] / "core.py"
 restart_sh_path = Path().cwd() / "gs_restart.sh"
@@ -54,7 +53,6 @@ async def restart_genshinuid(
     event: Optional[Event] = None,
     is_send: bool = True,
 ) -> None:
-    await save_global_val()
     pid = os.getpid()
     restart_sh = await get_restart_sh()
     with open(restart_sh_path, "w", encoding="utf8") as f:
@@ -75,21 +73,24 @@ async def restart_genshinuid(
             extra_message=now_time,
         )
 
+    await core_shutdown_execute()
+
     if platform.system() == "Linux":
         subprocess.Popen(
-            f"kill -9 {pid} & {get_restart_command()}",
+            f"kill -9 {pid} ; sleep 1 ; {get_restart_command()}",
             shell=True,
         )
     elif platform.system() == "Darwin":
-        # macOS (Darwin) 使用 kill 命令，与 Linux 相同
+        # macOS (Darwin)
         subprocess.Popen(
-            f"kill -9 {pid} & {get_restart_command()}",
+            f"kill -9 {pid} ; sleep 1 ; {get_restart_command()}",
             shell=True,
         )
     else:
         # Windows
+        # 加入 timeout /t 2 /nobreak 来等待 2 秒，确保旧进程彻底死亡，文件锁释放
         subprocess.Popen(
-            f"taskkill /F /PID {pid} & {get_restart_command()}",
+            f"taskkill /F /PID {pid} & timeout /t 2 /nobreak > NUL & {get_restart_command()}",
             shell=True,
         )
 

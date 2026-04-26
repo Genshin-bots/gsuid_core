@@ -24,6 +24,7 @@ from gsuid_core.load_template import (
     button_templates,
 )
 from gsuid_core.message_models import Button, ButtonType
+from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     bm_config,
     sp_config,
@@ -78,6 +79,25 @@ def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
     return obj
 
 
+def message_list_to_str(messages: list[Message]) -> str:
+    """将 Message 列表转为字符串"""
+    s: list[str] = []
+    for m in messages:
+        if m.type == "text":
+            s.append(str(m.data))
+        elif m.type == "image":
+            pass
+        elif m.type == "record":
+            s.append("[语音]")
+        elif m.type == "video":
+            s.append("[视频]")
+        elif m.type == "file":
+            s.append("[文件]")
+        elif m.type == "node":
+            s.append("[节点]")
+    return "\n".join(s)
+
+
 class _Bot:
     def __init__(self, _id: str, ws: Optional[WebSocket] = None):
         self.bot_id = _id
@@ -87,6 +107,11 @@ class _Bot:
         self.send_dict = {}
         self.bg_tasks = set()
         self.sem = asyncio.Semaphore(10)
+        self._shutdown_event: Optional[asyncio.Event] = None
+
+    def set_shutdown_event(self, event: asyncio.Event):
+        """设置 shutdown 事件，用于优雅关闭"""
+        self._shutdown_event = event
 
     async def target_send(
         self,
@@ -102,6 +127,82 @@ class _Bot:
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
     ):
+        # 记录 bot 回复到历史记录
+        try:
+            from gsuid_core.ai_core.history import get_history_manager
+
+            history_manager = get_history_manager()
+
+            # 确定 group_id 和 user_id
+            if target_type == "direct":
+                _hist_group_id = None
+                _hist_user_id = target_id if target_id else bot_self_id
+            else:
+                # 群聊场景
+                _hist_group_id = target_id
+                _hist_user_id = bot_self_id
+
+            # 提取消息内容
+            content = ""
+            metadata = {}
+
+            if isinstance(message, str):
+                # 检查是否是 base64 图片
+                if message.startswith("base64://"):
+                    content = "[图片]"
+                    metadata["type"] = "base64_image"
+                else:
+                    content = message
+            elif isinstance(message, bytes):
+                content = "[图片/文件]"
+                metadata["type"] = "bytes"
+            elif isinstance(message, list):
+                # 处理消息列表
+                text_parts = []
+                image_count = 0
+                for msg in message:
+                    if isinstance(msg, Message):
+                        if msg.type == "text":
+                            text_parts.append(str(msg.data))
+                        elif msg.type == "image":
+                            image_count += 1
+                        elif msg.type == "at":
+                            text_parts.append(f"@{msg.data}")
+                        else:
+                            text_parts.append(f"[{msg.type}]")
+                    elif isinstance(msg, str):
+                        text_parts.append(msg)
+                content = " ".join(text_parts)
+                if image_count > 0:
+                    metadata["image_count"] = image_count
+            elif isinstance(message, Message):
+                if message.type == "text":
+                    content = str(message.data)
+                elif message.type == "image":
+                    content = "[图片]"
+                    metadata["type"] = "image"
+                else:
+                    content = f"[{message.type}]"
+
+            # 构造 Event 对象用于记录历史（WS_BOT_ID 即 self.bot_id）
+            if content and _hist_user_id:
+                ev = Event(
+                    bot_id=bot_id,
+                    user_type=target_type,
+                    group_id=_hist_group_id,
+                    user_id=_hist_user_id,
+                    WS_BOT_ID=self.bot_id,
+                )
+                history_manager.add_message(
+                    event=ev,
+                    role="assistant",
+                    content=content,
+                    user_name="AI",
+                    metadata=metadata,
+                )
+        except Exception as e:
+            logger.debug(f"🧠 [GsCore][Bot] 记录历史记录失败: {e}")
+
         _message = await convert_message(
             message,
             bot_id,
@@ -188,6 +289,29 @@ class _Bot:
 
             local_val["send"] += 1
 
+            from gsuid_core.ai_core.memory.config import memory_config
+
+            enable_ai: bool = ai_config.get_config("enable").data
+            is_enable_memory: bool = ai_config.get_config("enable_memory").data
+            memory_mode: list[str] = memory_config.memory_mode
+            if enable_ai and is_enable_memory and "主动会话" in memory_mode:
+                from gsuid_core.ai_core.memory import observe
+
+                try:
+                    asyncio.create_task(
+                        observe(
+                            content=message_list_to_str(mr),
+                            speaker_id=f"__assistant_{bot_id}__",
+                            group_id=target_id if target_type == "group" else None,
+                            bot_self_id=bot_self_id,
+                            observer_blacklist=memory_config.observer_blacklist,
+                            message_type="group_msg" if target_type == "group" else "private_msg",
+                        )
+                    )
+                except Exception:
+                    pass  # Observer 失败不应影响主流程
+            # ============================================
+
             logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
             if self.bot:
                 body = msgjson.encode(send)
@@ -238,9 +362,17 @@ class _Bot:
             self.sem.release()
             self.queue.task_done()
 
-    async def _process(self):
+    async def _process(self, shutdown_event: Optional[asyncio.Event] = None):
+        """处理队列中的任务，支持通过 shutdown_event 优雅关闭"""
         while True:
-            ctx: TaskContext = await self.queue.get()
+            # 如果提供了 shutdown_event，检查是否已设置
+            if shutdown_event is not None and shutdown_event.is_set():
+                break
+            try:
+                # 使用 wait_for 添加超时，以便定期检查 shutdown_event
+                ctx: TaskContext = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             await self.sem.acquire()
             asyncio.create_task(self._safe_run(ctx))
 
@@ -258,7 +390,7 @@ class Bot:
             self.temp_gid = self.uid
 
         self.bid = ev.bot_id if ev.bot_id else "0"
-        self.session_id = f"{self.bid}{self.temp_gid}{self.uid}"
+        self.session_id = f"{self.bid}%%%{self.temp_gid}%%%{self.uid}"
 
         self.bot = bot
         self.ev = ev

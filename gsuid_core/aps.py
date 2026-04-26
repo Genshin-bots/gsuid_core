@@ -3,12 +3,12 @@ from typing import Any, List, Literal, Callable, Optional, Annotated
 from concurrent.futures import ThreadPoolExecutor
 
 from msgspec import Meta
+from pydantic_ai import RunContext
 from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.register import ai_tools
 
 misfire_grace_time = core_config.get_config("misfire_grace_time")
 
@@ -22,6 +22,9 @@ options = {
 scheduler = AsyncIOScheduler()
 scheduler.configure(options)
 
+# 延迟导入避免循环导入
+from gsuid_core.ai_core.models import ToolContext  # noqa: E402
+
 
 async def start_scheduler():
     if not scheduler.running:
@@ -31,7 +34,8 @@ async def start_scheduler():
 
 async def shutdown_scheduler():
     if scheduler.running:
-        scheduler.shutdown()
+        # 使用 wait=False 避免阻塞等待正在执行的任务
+        scheduler.shutdown(wait=False)
         logger.info("⌛ [定时器系统] 程序关闭！定时任务结束！")
 
 
@@ -139,8 +143,8 @@ def _get_trigger_description(trigger: Any) -> str:
     return "未知触发器类型"
 
 
-@ai_tools
-def add_scheduled_job(
+async def add_scheduled_job(
+    ctx: RunContext[ToolContext],
     func: Annotated[
         Callable,
         Meta(description="要执行的异步或同步函数"),

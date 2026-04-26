@@ -1,9 +1,12 @@
 import time
 import asyncio
-from typing import Any, Dict, List, Tuple, Literal, Optional, Awaitable
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Literal, Optional, Awaitable
 from dataclasses import dataclass
 
 from msgspec import Struct
+
+if TYPE_CHECKING:
+    pass
 
 
 @dataclass
@@ -58,6 +61,31 @@ class Event(MessageReceive):
     file_type: Optional[Literal["url", "base64"]] = None
     regex_group: Tuple[str, ...] = ()
     regex_dict: Dict[str, str] = {}
+
+    def __hash__(self) -> int:
+        """哈希：只基于会话标识字段，不含 WS_BOT_ID，保证同一会话哈希一致"""
+        return hash((self.bot_id, self.user_id, self.group_id, self.user_type))
+
+    def __eq__(self, other: object) -> bool:
+        """等值比较：只比较会话标识字段，与 __hash__ 保持一致"""
+        if not isinstance(other, Event):
+            return NotImplemented
+        return (self.bot_id, self.user_id, self.group_id, self.user_type) == (
+            other.bot_id,
+            other.user_id,
+            other.group_id,
+            other.user_type,
+        )
+
+    @property
+    def session_id(self) -> str:
+        """会话唯一标识字符串，格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}"""
+        bid = self.bot_id if self.bot_id else "0"
+        if self.user_type != "direct":
+            gid = self.group_id if self.group_id else "0"
+            return f"bot:{bid}:group:{gid}"
+        uid = self.user_id if self.user_id else "0"
+        return f"bot:{bid}:private:{uid}"
 
 
 class MessageSend(Struct):
