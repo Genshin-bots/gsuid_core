@@ -51,7 +51,7 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: Literal[False] = False,
-    partten: Optional[str] = r"\d+",
+    pattern: Optional[str] = r"\d+",
 ) -> Optional[str]: ...
 
 
@@ -62,7 +62,7 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: Literal[True] = True,
-    partten: Optional[str] = r"\d+",
+    pattern: Optional[str] = r"\d+",
 ) -> Tuple[Optional[str], str]: ...
 
 
@@ -72,11 +72,11 @@ async def get_uid(
     bind_model: Type[Bind],
     game_name: Optional[str] = None,
     get_user_id: bool = False,
-    partten: Optional[str] = r"\d+",
+    pattern: Optional[str] = r"\d+",
 ) -> Union[Optional[str], Tuple[Optional[str], str]]:
     uid_data = []
-    if partten:
-        uid_data = re.findall(partten, ev.text)
+    if pattern:
+        uid_data = re.findall(pattern, ev.text)
 
     user_id = ev.at if ev.at else ev.user_id
 
