@@ -201,7 +201,7 @@ class HierarchicalGraphBuilder:
                 upper_assignments, layer=layer, child_categories=prev_layer
             )
 
-            total_this_layer = len(new_upper) + len(existing_upper)
+            total_this_layer = len(new_upper or []) + len(existing_upper or [])
             total_prev_layer = prev_layer_count
 
             # Node count reduction rule（论文 Section 2.2）
@@ -632,6 +632,8 @@ class HierarchicalGraphBuilder:
                 existing_children_map.setdefault(row.parent_category_id, set()).add(row.child_category_id)
 
         # BUG-02 修复：使用 zip 同步迭代，避免 parent_idx 偏移错误
+        # FIX-03 修复：使用批量 INSERT OR IGNORE 替代逐个 add，避免 UNIQUE constraint failed
+        edges_to_insert = []
         for assignment, parent, _ in valid_assignments_with_parents:
             parent_id = parent.id
             existing_child_ids = existing_children_map.get(parent_id, set())
@@ -641,12 +643,19 @@ class HierarchicalGraphBuilder:
                 if 0 <= real_idx < len(child_categories):
                     child = child_categories[real_idx]
                     if child.id not in existing_child_ids:
-                        edge = AIMemCategoryEdge(
-                            parent_category_id=parent_id,
-                            child_category_id=child.id,
+                        edges_to_insert.append(
+                            {
+                                "parent_category_id": parent_id,
+                                "child_category_id": child.id,
+                            }
                         )
-                        session.add(edge)
                         existing_child_ids.add(child.id)
+
+        # 批量插入，使用 INSERT OR IGNORE 避免 UNIQUE constraint 冲突
+        if edges_to_insert:
+            from sqlalchemy import insert as sql_insert
+
+            await session.execute(sql_insert(AIMemCategoryEdge).prefix_with("OR IGNORE").values(edges_to_insert))
 
         return new_categories
 

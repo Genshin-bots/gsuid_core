@@ -5,8 +5,11 @@
 """
 
 import asyncio
-from typing import TypeVar, Optional, Sequence
+from typing import TypeVar, Iterable, Optional, Sequence
 from dataclasses import field, dataclass
+from concurrent.futures import ThreadPoolExecutor
+
+from fastembed.rerank.cross_encoder.text_cross_encoder import TextCrossEncoder
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
@@ -18,6 +21,33 @@ from .system1 import System1Result, system1_search
 from .system2 import System2Result, system2_global_selection
 
 T = TypeVar("T", bound=dict)
+
+# OPT-01: Reranker 是 CPU/GPU 密集型，使用线程池避免阻塞事件循环
+_RERANK_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="reranker")
+
+
+async def _run_sync_rerank(
+    reranker: TextCrossEncoder,
+    query: str,
+    texts: list[str],
+) -> Iterable[float]:
+    """在线程池里运行同步 reranker，不阻塞事件循环。
+
+    Args:
+        reranker: 具备 rerank(query, texts) 方法的 reranker 实例
+        query: 查询文本
+        texts: 待重排序文本列表
+
+    Returns:
+        重排序分数列表
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _RERANK_EXECUTOR,
+        reranker.rerank,
+        query,
+        texts,
+    )
 
 
 @dataclass
@@ -116,14 +146,14 @@ def _merge_categories(list_a: Sequence[Category], list_b: Sequence[Category]) ->
 
 
 async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list[Episode]:
-    """对 Episode 列表进行 Rerank"""
+    """对 Episode 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
     if not items:
         return []
-    reranker = get_reranker()
+    reranker: TextCrossEncoder | None = get_reranker()
     if reranker is None:
         return items[:top_k]
     texts = [item["content"] for item in items]
-    scores = list(reranker.rerank(query, texts))
+    scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
         logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
         return items[:top_k]
@@ -132,7 +162,7 @@ async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list
 
 
 async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[Entity]:
-    """对 Entity 列表进行 Rerank"""
+    """对 Entity 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
     if not items:
         return []
     reranker = get_reranker()
@@ -140,7 +170,7 @@ async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[
         logger.warning("Reranker not available, falling back to top-k truncation")
         return items[:top_k]
     texts = [item["summary"] for item in items]
-    scores = list(reranker.rerank(query, texts))
+    scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
         logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
         return items[:top_k]
@@ -149,14 +179,14 @@ async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[
 
 
 async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]:
-    """对 Edge 列表进行 Rerank"""
+    """对 Edge 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
     if not items:
         return []
     reranker = get_reranker()
     if reranker is None:
         return items[:top_k]
     texts = [item["fact"] for item in items]
-    scores = list(reranker.rerank(query, texts))
+    scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
         logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
         return items[:top_k]
@@ -201,7 +231,7 @@ async def dual_route_retrieve(
     else:
         user_scope = None
 
-    # 并行执行双路
+    # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
     s1_task = asyncio.create_task(
         system1_search(
             query,
@@ -210,7 +240,7 @@ async def dual_route_retrieve(
         )
     )
 
-    # System-2 对 group_scope 和 user_scope 都执行（要求结构化检索覆盖所有 Scope）
+    # System-2 对 group_scope 和 user_scope 都执行
     s2_tasks: list[asyncio.Task] = []
     s2_scope_keys: list[str] = []
     if enable_system2:
@@ -221,27 +251,34 @@ async def dual_route_retrieve(
             s2_tasks.append(asyncio.create_task(system2_global_selection(query, user_scope)))
             s2_scope_keys.append(user_scope)
 
-    # 等待 System-1
-    s1: System1Result = await s1_task
+    # OPT-02: 同时等待 S1 和 S2，谁先完成谁先用，不存在先后阻塞
+    all_tasks = [s1_task] + s2_tasks
+    all_results = await asyncio.gather(*all_tasks, return_exceptions=True)
+
+    # 处理 System-1 结果
+    s1_raw = all_results[0]
+    if isinstance(s1_raw, Exception):
+        logger.error(f"🧠 [Memory] System-1 检索失败: {s1_raw}")
+        s1: System1Result = System1Result()
+    else:
+        s1 = s1_raw  # type: ignore[assignment]
+
+    s2_results: list[System2Result] = []
+    for i, raw_result in enumerate(all_results[1:], start=1):
+        if isinstance(raw_result, Exception):
+            logger.error(f"🧠 [Memory] System-2 检索失败 (scope={s2_scope_keys[i - 1]}): {raw_result}")
+        elif isinstance(raw_result, System2Result):
+            s2_results.append(raw_result)
+            logger.debug(
+                f"🧠 [Memory] System-2 检索完成 (scope={s2_scope_keys[i - 1]})，"
+                f"共 {len(raw_result.episodes)} 条 Episode, "
+                f"{len(raw_result.selected_entities)} 个 Entity, {len(raw_result.edges)} 条 Edge"
+            )
+
     logger.debug(
         f"🧠 [Memory] System-1 检索完成，共 {len(s1.episodes)} 条 Episode, "
         f"{len(s1.entities)} 个 Entity, {len(s1.edges)} 条 Edge"
     )
-
-    # 等待 System-2（如果启用）
-    s2_results: list[System2Result] = []
-    if s2_tasks:
-        s2_raw = await asyncio.gather(*s2_tasks, return_exceptions=True)
-        for i, raw_result in enumerate(s2_raw):
-            if isinstance(raw_result, Exception):
-                logger.error(f"🧠 [Memory] System-2 检索失败 (scope={s2_scope_keys[i]})，{raw_result}")
-            elif isinstance(raw_result, System2Result):
-                s2_results.append(raw_result)
-                logger.debug(
-                    f"🧠 [Memory] System-2 检索完成 (scope={s2_scope_keys[i]})，"
-                    f"共 {len(raw_result.episodes)} 条 Episode, "
-                    f"{len(raw_result.selected_entities)} 个 Entity, {len(raw_result.edges)} 条 Edge"
-                )
 
     # 合并去重（多个 S2 结果之间也要去重）
     s2_episodes = []

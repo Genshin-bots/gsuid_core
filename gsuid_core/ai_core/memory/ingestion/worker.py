@@ -41,8 +41,11 @@ class IngestionWorker:
         # 注意：此锁不阻止 observe 入队（Queue 本身线程安全），
         # 而是防止 flush_all 与 _consume_loop 的 _flush 产生竞态
         self._flush_lock = asyncio.Lock()
-        # BUG-03 修复：暂停事件，flush_all 持有 _flush_lock 时通知 _consume_loop 暂停入队
-        self._pause_consume = asyncio.Event()
+        # OPT-03: 修复暂停逻辑竞态。使用"允许消费"事件而非"暂停"事件
+        # _can_consume.set() = 可以消费，_can_consume.clear() = 暂停消费
+        # 这样 wait() 在 clear 时会真正阻塞，clear 后 set() 才会放行
+        self._can_consume = asyncio.Event()
+        self._can_consume.set()  # 默认允许消费
 
     async def start(self):
         """启动后台消费循环"""
@@ -65,8 +68,8 @@ class IngestionWorker:
         """
         logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
 
-        # 通知 _consume_loop 暂停入队（通过设置事件）
-        self._pause_consume.set()
+        # OPT-03: 通知 _consume_loop 暂停入队（通过清除事件）
+        self._can_consume.clear()
 
         async with self._flush_lock:
             # 第一次：消费所有队列中的数据到 buffers
@@ -109,8 +112,8 @@ class IngestionWorker:
             else:
                 logger.info("🧠 [Memory] flush_all 完成，分层图将在后台异步重建")
 
-        # 恢复 _consume_loop 入队
-        self._pause_consume.clear()
+        # OPT-03: 恢复 _consume_loop 入队
+        self._can_consume.set()
 
     async def stop(self):
         """停止后台消费循环"""
@@ -119,14 +122,12 @@ class IngestionWorker:
     async def _consume_loop(self):
         """从队列取消息，放入对应 scope_key 的缓冲区。
 
-        BUG-03 修复：当 _pause_consume 事件被设置时，暂停入队等待 flush_all 完成。
+        OPT-03 修复：使用 _can_consume.wait() 真正阻塞，clear 时 wait() 阻塞，set 时放行。
         """
         while self._running:
             try:
-                # BUG-03 修复：暂停等待时让出控制权，避免 busy-wait
-                if self._pause_consume.is_set():
-                    await asyncio.wait_for(self._pause_consume.wait(), timeout=1.0)
-                    continue
+                # OPT-03: 等待 _can_consume 被 clear 时会真正阻塞，不会立即返回
+                await self._can_consume.wait()
 
                 record: ObservationRecord = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 self._buffers[record.scope_key].append(record)

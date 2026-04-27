@@ -38,22 +38,29 @@ async def extract_and_upsert_entities(
         await session.commit()
 
     # 🔥 批量写 vector（关键点：Qdrant 与 SQL 一致性保障）
-    # 采用"无锁并发计算 + 单次批量加锁写入"模式，避免逐条竞争 _QDRANT_LOCK
+    # OPT-04: 加全局超时保护，避免 Qdrant 超时阻塞整个 ingestion worker
     if vector_payloads:
         import asyncio
 
-        for attempt in range(3):
-            try:
-                await upsert_entity_vectors_batch(vector_payloads)
-                break
-            except Exception as e:
-                if attempt < 2:
-                    delay = 0.5 * (2**attempt)  # 指数退避: 0.5s, 1s
-                    logger.warning(
-                        f"[Qdrant] Entity vector batch upsert failed (retry {attempt + 1}/3, wait {delay}s): {e}"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"[Qdrant] Entity vector batch upsert failed after 3 retries: {e}")
+        async def _upsert_with_retry():
+            for attempt in range(3):
+                try:
+                    await upsert_entity_vectors_batch(vector_payloads)
+                    return True
+                except Exception as e:
+                    if attempt < 2:
+                        delay = 0.5 * (2**attempt)  # 指数退避: 0.5s, 1s
+                        logger.warning(
+                            f"[Qdrant] Entity vector batch upsert failed (retry {attempt + 1}/3, wait {delay}s): {e}"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"[Qdrant] Entity vector batch upsert failed after 3 retries: {e}")
+                        return False
+
+        try:
+            await asyncio.wait_for(_upsert_with_retry(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.error("[Qdrant] Entity vector batch upsert global timeout (30s)")
 
     return name_to_id, new_entity_count
