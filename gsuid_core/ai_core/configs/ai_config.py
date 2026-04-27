@@ -48,6 +48,15 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用AI服务",
         False,
     ),
+    "hf_endpoint": GsStrConfig(
+        "HuggingFace 服务器地址",
+        "指定 HuggingFace 服务器地址",
+        "https://hf-mirror.com",
+        options=[
+            "https://huggingface.co",
+            "https://hf-mirror.com",
+        ],
+    ),
     "enable_rerank": GsBoolConfig(
         "是否启用Rerank",
         "指定是否启用Rerank功能, Rerank可以提升RAG的检索质量, 但会增加一定的响应时间, 该模型较大, 请根据实际情况启用",

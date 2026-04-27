@@ -1,10 +1,13 @@
 """Reranker模块 - 使用fastembed进行重排序"""
 
+import os
 from typing import TYPE_CHECKING, List, Optional
 
+from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.configs.ai_config import ai_config
 
 from .base import RERANK_MODELS_CACHE, RERANKER_MODEL_NAME, is_enable_ai, is_enable_rerank
 
@@ -32,9 +35,13 @@ def get_reranker() -> "Optional[TextCrossEncoder]":
 
     if _reranker is None:
         try:
-            from fastembed.rerank.cross_encoder import TextCrossEncoder
-
             logger.info(f"🧠 [Reranker] 正在加载Reranker模型: {RERANKER_MODEL_NAME}")
+
+            hf_endpoint: str = ai_config.get_config("hf_endpoint").data
+
+            os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+            os.environ["HF_ENDPOINT"] = hf_endpoint
+
             _reranker = TextCrossEncoder(
                 model_name=RERANKER_MODEL_NAME,
                 cache_dir=str(RERANK_MODELS_CACHE),

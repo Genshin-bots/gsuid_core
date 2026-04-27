@@ -6,6 +6,9 @@ import uuid
 import hashlib
 from typing import TYPE_CHECKING, Final, Union
 
+from fastembed import TextEmbedding
+from qdrant_client import AsyncQdrantClient
+
 from gsuid_core.data_store import AI_CORE_PATH
 from gsuid_core.ai_core.configs.ai_config import ai_config, rerank_model_config, local_embedding_config
 
@@ -56,10 +59,10 @@ def init_embedding_model():
     if client is not None:
         return
 
-    from fastembed import TextEmbedding
-    from qdrant_client import AsyncQdrantClient
+    hf_endpoint: str = ai_config.get_config("hf_endpoint").data
 
     os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+    os.environ["HF_ENDPOINT"] = hf_endpoint
 
     embedding_model = TextEmbedding(
         model_name=EMBEDDING_MODEL_NAME,
