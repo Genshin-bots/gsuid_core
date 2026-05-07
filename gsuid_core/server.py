@@ -247,7 +247,7 @@ class GsServer:
 
             module_list.append(
                 (
-                    f"{plugin_parent}.{name1}.{name2}.__init__",
+                    f"{plugin_parent}.{name1}.{name2}",
                     init_path,
                     "plugin",
                 )
@@ -325,7 +325,7 @@ class GsServer:
                 elif plugin_path.exists():
                     module_list = [
                         (
-                            f"{plugin_parent}.{plugin.name}.__init__",
+                            f"{plugin_parent}.{plugin.name}",
                             plugin_path,
                             "plugin",
                         )
