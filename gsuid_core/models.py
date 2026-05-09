@@ -36,7 +36,7 @@ class MessageReceive(Struct):
     group_id: Optional[str] = None
     user_id: str = ""
     sender: Dict[str, Any] = {}
-    user_pm: int = 3
+    user_pm: int = 6
     content: List[Message] = []
 
 

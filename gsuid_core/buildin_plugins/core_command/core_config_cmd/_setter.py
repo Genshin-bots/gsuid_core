@@ -169,9 +169,9 @@ def apply_set(
         try:
             v = int(raw_value)
         except ValueError:
-            return "权限必须是整数 (0=master, 1=superuser, 2=管理员, 6=普通用户)"
+            return "权限必须是整数 (0=master, 1=superuser, 2=群主, 3=群管理员, 6=普通用户)"
         if not 0 <= v <= 6:
-            return "权限范围: 0-6 (0=master, 1=superuser, 2=管理员, 6=普通用户)"
+            return "权限范围: 0-6 (0=master, 1=superuser, 2=群主, 3=群管理员, 6=普通用户)"
         target.set(is_lazy=False, pm=v)
         return f"{label} 权限已设置为 {v}"
 

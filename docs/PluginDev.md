@@ -32,7 +32,7 @@ from gsuid_core.sv import SV
 # 创建 SV 实例，name 应与插件目录名一致
 sv = SV(
     name="我的插件",
-    pm=6,                    # 权限等级（1-10，数字越大权限越高）
+    pm=6,                    # 权限等级（0-6，数字越小权限越高）
     priority=5,              # 优先级，数字越小越先执行
     enabled=True,            # 是否启用
     area="ALL",             # 作用范围：GROUP(群聊) / DIRECT(私聊) / ALL
@@ -46,7 +46,7 @@ sv = SV(
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `name` | str | - | SV 名称，应与插件目录名一致 |
-| `pm` | int | 6 | 权限等级，1-10 |
+| `pm` | int | 6 | 权限等级，0-6，数字越小权限越高 |
 | `priority` | int | 5 | 优先级，数字越小越先执行 |
 | `enabled` | bool | True | 是否启用 |
 | `area` | str | "ALL" | 作用范围：GROUP/DIRECT/ALL |

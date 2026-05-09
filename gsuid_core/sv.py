@@ -271,7 +271,7 @@ class SV:
                 self.enabled = enabled
                 # 黑名单群
                 self.black_list = black_list
-                # 权限 0为master，1为superuser，2为群的群主&管理员，3为普通
+                # 权限 0=master，1=superuser，2=群主，3=群管理员，6=普通用户
                 self.pm = pm
                 # 作用范围
                 self.area = area

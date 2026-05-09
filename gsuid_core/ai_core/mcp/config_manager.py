@@ -79,9 +79,10 @@ class MCPConfig:
             值为最低权限等级（pm），与 Event.user_pm 对比：
             - 0: 仅 master 用户
             - 1: superuser 及以上
-            - 2: 群主/管理员及以上
-            - 3: 所有用户（默认）
-            例如 {"send_email": 0, "query_data": 3}
+            - 2: 群主及以上
+            - 3: 群管理员及以上
+            - 6: 所有用户（默认）
+            例如 {"send_email": 0, "query_data": 6}
     """
 
     name: str
@@ -130,10 +131,10 @@ class MCPConfig:
             tool_name: 工具名称
 
         Returns:
-            权限等级 (0=master, 1=superuser, 2=admin, 3=所有人)
-            默认返回 3（所有人可用）
+            权限等级 (0=master, 1=superuser, 2=群主, 3=群管理员, 6=普通用户)
+            默认返回 6（所有人可用）
         """
-        return self.tool_permissions.get(tool_name, 3)
+        return self.tool_permissions.get(tool_name, 6)
 
 
 def parse_mcp_tool_id(mcp_tool_id: str) -> tuple[str, str]:

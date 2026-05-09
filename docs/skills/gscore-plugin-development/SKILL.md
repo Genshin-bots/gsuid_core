@@ -1471,7 +1471,7 @@ from gsuid_core.sv import Plugins
 #   force_prefix:     强制前缀列表，用户必须以此开头才能触发命令
 #   allow_empty_prefix: 是否允许无前缀触发（默认根据 prefix/force_prefix 自动推断）
 #   alias:            插件别名列表
-#   pm:               权限等级（1-10，数字越大权限越高）
+#   pm:               权限等级（0-6，数字越小权限越高）
 #   prefix:           可选前缀列表（与 force_prefix 的区别：force_prefix 强制，prefix 可选）
 #   disable_force_prefix: 是否禁用强制前缀
 #

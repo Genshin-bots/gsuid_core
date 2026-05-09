@@ -144,7 +144,7 @@ agent_mesh/
 {
     "tool_permissions": {
         "send_email": 0,
-        "query_data": 3
+        "query_data": 6
     }
 }
 ```
@@ -155,14 +155,17 @@ agent_mesh/
 |-------|------|------|
 | `0` | master | 仅 master 用户（机器人主人） |
 | `1` | superuser | superuser 及以上 |
-| `2` | admin | 群主/管理员及以上 |
-| `3` | 所有人 | 所有用户（默认值） |
+| `2` | 群主 | 群主及以上 |
+| `3` | 群管理员 | 群管理员及以上 |
+| `4` | 频道管理员 | 频道管理员及以上 |
+| `5` | 当前频道管理员 | 当前频道管理员及以上 |
+| `6` | 普通用户 | 所有用户（默认值） |
 
 对比逻辑：`ev.user_pm > required_pm` 时拒绝调用。
 
 ### 3.3 实现细节
 
-- `MCPConfig.get_tool_required_pm(tool_name)` — 返回工具的 pm 等级（默认 3）
+- `MCPConfig.get_tool_required_pm(tool_name)` — 返回工具的 pm 等级（默认 6）
 - `_build_mcp_check_func(config, tool_name)` — 自动生成权限检查函数
 - MCP 工具注册时自动为每个工具生成 `check_func`
 - 前端 API 已支持 `tool_permissions: Dict[str, int]` 字段的读写

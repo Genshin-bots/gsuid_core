@@ -152,8 +152,9 @@ def _build_mcp_check_func(
     权限等级与 Event.user_pm 对比：
     - pm=0: 仅 master 用户
     - pm=1: superuser 及以上
-    - pm=2: 群主/管理员及以上
-    - pm=3: 所有用户（默认，不生成检查函数）
+    - pm=2: 群主及以上
+    - pm=3: 群管理员及以上
+    - pm=6: 所有用户（默认，不生成检查函数）
 
     Args:
         config: MCP 服务器配置
@@ -164,8 +165,8 @@ def _build_mcp_check_func(
     """
     required_pm = config.get_tool_required_pm(tool_name)
 
-    # required_pm >= 3 表示所有人可用，无需检查
-    if required_pm >= 3:
+    # required_pm >= 6 表示所有人可用，无需检查
+    if required_pm >= 6:
         return None
 
     async def _mcp_check_func(ev: Any) -> tuple[bool, str]:
