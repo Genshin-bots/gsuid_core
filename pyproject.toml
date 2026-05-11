@@ -68,6 +68,7 @@ dependencies = [
     "exa-py>=2.12.1",
     "fastmcp>=2.0.0",
     "markdownify>=1.2.2",
+    "onnxruntime>=1.24.1",
 ]
 name = "gsuid-core"
 version = "0.10.1"
@@ -118,3 +119,7 @@ repository = "https://github.com/Genshin-bots/gsuid-core"
 
 [project.scripts]
 core = "gsuid_core.core:main"
+
+
+[tool.uv.extra-build-dependencies]
+py-rust-stemmers = ["maturin"]
