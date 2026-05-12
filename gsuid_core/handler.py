@@ -277,7 +277,22 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                             f"[GsCore] trigger.check_command 异常: type={_trigger.type} keyword={_trigger.keyword!r}"
                         )
 
-    if len(valid_event) >= 1:
+    command_triggers = {t: p for t, p in valid_event.items() if t.type != "message"}
+    message_triggers = {t: p for t, p in valid_event.items() if t.type == "message"}
+
+    for trigger in message_triggers:
+        _event = deepcopy(event)
+        message = await trigger.get_command(_event)
+        _event.task_id = str(uuid4())
+        bot = Bot(ws, _event)
+        await count_data(event, trigger)
+        logger.trace("[命令触发] [on_message]", command=message)
+        coro = trigger.func(bot, message)
+        func_name = getattr(coro, "__qualname__", str(coro))
+        task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm)
+        ws.queue.put_nowait(task_ctx)
+
+    if len(command_triggers) >= 1:
         if event.at:
             for shield_id in shield_list:
                 if event.at.startswith(shield_id):
@@ -285,7 +300,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     return
 
         sorted_event = sorted(
-            valid_event.items(),
+            command_triggers.items(),
             key=lambda x: (not x[0].prefix, x[1]),
         )
 
@@ -301,14 +316,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             await count_data(event, trigger)
 
-            if trigger.type != "message":
-                logger.info(
-                    "[命令触发]",
-                    trigger=[_event.raw_text, trigger.type, trigger.keyword],
-                )
-                logger.info("[命令触发]", command=message)
-            else:
-                logger.trace("[命令触发] [on_message]", command=message)
+            logger.info(
+                "[命令触发]",
+                trigger=[_event.raw_text, trigger.type, trigger.keyword],
+            )
+            logger.info("[命令触发]", command=message)
 
             coro = trigger.func(bot, message)
             func_name = getattr(coro, "__qualname__", str(coro))
