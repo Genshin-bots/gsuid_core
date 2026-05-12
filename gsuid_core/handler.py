@@ -1,15 +1,15 @@
 import asyncio
 from copy import deepcopy
 from uuid import uuid4
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message, TaskContext, MessageReceive
-from gsuid_core.trigger import Trigger
 from gsuid_core.server import on_core_shutdown
+from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
 from gsuid_core.ai_core.memory import observe
@@ -72,7 +72,7 @@ async def _flush_user_group_buffer():
             await CoreUser.insert_user(rbi, uid, gid, nick, avatar)
         except Exception as e:
             logger.warning(f"[GsCore] 缓冲 CoreUser 写入失败: {e}")
-    for (rbi, gid) in g_pending:
+    for rbi, gid in g_pending:
         try:
             await CoreGroup.insert_group(rbi, gid)
         except Exception as e:
