@@ -1,7 +1,7 @@
 import asyncio
 from copy import deepcopy
 from uuid import uuid4
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
@@ -9,6 +9,7 @@ from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message, TaskContext, MessageReceive
 from gsuid_core.trigger import Trigger
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
 from gsuid_core.ai_core.memory import observe
@@ -44,6 +45,80 @@ IS_HANDDLE: bool = True
 def set_handle(is_handle: bool):
     global IS_HANDDLE
     IS_HANDDLE = is_handle
+
+
+# ===== CoreUser / CoreGroup 缓冲写入（参考 XutheringWavesUID 活跃度模式）=====
+# 默认关闭, 走原同步 await 路径; 启用后 60s 批量 flush, 退出时强制 flush.
+_BUFFERED_USER_WRITES: bool = bool(core_config.get_config("buffered_user_writes"))
+_USER_FLUSH_INTERVAL: float = 60.0
+
+_user_buffer: Dict[Tuple[str, str], Tuple[Optional[str], Optional[str], Optional[str]]] = {}
+_group_buffer: set = set()
+_user_flush_shutdown_event: asyncio.Event = asyncio.Event()
+_user_flush_task: Optional[asyncio.Task] = None
+
+
+async def _flush_user_group_buffer():
+    """把缓冲区中的 CoreUser/CoreGroup 写入批量刷到数据库."""
+    if not _user_buffer and not _group_buffer:
+        return
+    u_pending = dict(_user_buffer)
+    _user_buffer.clear()
+    g_pending = set(_group_buffer)
+    _group_buffer.clear()
+
+    for (rbi, uid), (gid, nick, avatar) in u_pending.items():
+        try:
+            await CoreUser.insert_user(rbi, uid, gid, nick, avatar)
+        except Exception as e:
+            logger.warning(f"[GsCore] 缓冲 CoreUser 写入失败: {e}")
+    for (rbi, gid) in g_pending:
+        try:
+            await CoreGroup.insert_group(rbi, gid)
+        except Exception as e:
+            logger.warning(f"[GsCore] 缓冲 CoreGroup 写入失败: {e}")
+
+
+async def _user_flush_loop():
+    """后台循环 60s 一次刷写, shutdown event 触发立即退出."""
+    while not _user_flush_shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(_user_flush_shutdown_event.wait(), timeout=_USER_FLUSH_INTERVAL)
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await _flush_user_group_buffer()
+        except Exception as e:
+            logger.warning(f"[GsCore] CoreUser/Group 缓冲刷写循环异常: {e}")
+
+
+def _ensure_flush_task_started():
+    """首次缓冲写入时懒启动后台 flush 任务."""
+    global _user_flush_task
+    if _user_flush_task is None or _user_flush_task.done():
+        try:
+            _user_flush_task = asyncio.get_event_loop().create_task(_user_flush_loop())
+        except RuntimeError:
+            _user_flush_task = None
+
+
+@on_core_shutdown
+async def _flush_user_buffer_on_shutdown():
+    """退出前最后一次刷写, 防止丢数据."""
+    if not _BUFFERED_USER_WRITES:
+        return
+    logger.info("[GsCore] 退出前停止 CoreUser/Group 缓冲刷写循环...")
+    _user_flush_shutdown_event.set()
+    global _user_flush_task
+    if _user_flush_task is not None:
+        try:
+            await asyncio.wait_for(_user_flush_task, timeout=30)
+        except asyncio.TimeoutError:
+            _user_flush_task.cancel()
+    logger.info("[GsCore] 刷写 CoreUser/Group 缓冲区...")
+    await _flush_user_group_buffer()
+    logger.info("[GsCore] CoreUser/Group 缓冲区刷写完成")
 
 
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
@@ -167,18 +242,31 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if event.sender and "avatar" in event.sender:
         sender_avater = event.sender["avatar"]
 
-    await CoreUser.insert_user(
-        event.real_bot_id,
-        event.user_id,
-        event.group_id,
-        sender_nickname,
-        sender_avater,
-    )
-    if event.group_id:
-        await CoreGroup.insert_group(
+    if _BUFFERED_USER_WRITES:
+        _key_u = (event.real_bot_id, event.user_id)
+        if _key_u in _user_buffer:
+            _old_gid, _old_nick, _old_avatar = _user_buffer[_key_u]
+            if not sender_nickname:
+                sender_nickname = _old_nick
+            if not sender_avater:
+                sender_avater = _old_avatar
+        _user_buffer[_key_u] = (event.group_id, sender_nickname, sender_avater)
+        if event.group_id:
+            _group_buffer.add((event.real_bot_id, event.group_id))
+        _ensure_flush_task_started()
+    else:
+        await CoreUser.insert_user(
             event.real_bot_id,
+            event.user_id,
             event.group_id,
+            sender_nickname,
+            sender_avater,
         )
+        if event.group_id:
+            await CoreGroup.insert_group(
+                event.real_bot_id,
+                event.group_id,
+            )
 
     bid = event.bot_id if event.bot_id else "0"
     uid = event.user_id if event.user_id else "0"

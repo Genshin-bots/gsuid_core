@@ -36,6 +36,7 @@ CONFIG_DEFAULT = {
     },
     "enable_empty_start": True,
     "command_start": [],
+    "buffered_user_writes": False,
     "sv": {},
 }
 
@@ -43,7 +44,7 @@ STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN", "REGISTER_CODE"]
 INT_CONFIG = Literal["misfire_grace_time"]
 LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS"]
 DICT_CONFIG = Literal["sv", "log"]
-BOOL_CONFIG = Literal["enable_empty_start", "ENABLE_HTTP"]
+BOOL_CONFIG = Literal["enable_empty_start", "ENABLE_HTTP", "buffered_user_writes"]
 
 plugins_sample = {
     "name": "",
