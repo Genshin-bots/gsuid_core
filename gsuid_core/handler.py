@@ -228,56 +228,54 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 return
 
     valid_event: Dict[Trigger, int] = {}
-    pending = [
-        _check_command(
-            SL.lst[sv].TL[_type][tr],
-            SL.lst[sv].priority,
-            event,
-            valid_event,
-        )
-        for sv in SL.lst
-        for _type in SL.lst[sv].TL
-        for tr in SL.lst[sv].TL[_type]
-        if (
-            msg.group_id not in black_list
-            and msg.user_id not in black_list
-            and SL.lst[sv].plugins.enabled
-            and user_pm <= SL.lst[sv].plugins.pm
-            and msg.group_id not in SL.lst[sv].plugins.black_list
-            and msg.user_id not in SL.lst[sv].plugins.black_list
-            and (
-                True
-                if SL.lst[sv].plugins.area == "SV"
-                or SL.lst[sv].plugins.area == "ALL"
-                or (event.user_type == "group" and SL.lst[sv].plugins.area == "GROUP")
-                or (event.user_type == "direct" and SL.lst[sv].plugins.area == "DIRECT")
-                else False
-            )
-            and (
-                True
-                if (not SL.lst[sv].plugins.white_list or SL.lst[sv].plugins.white_list == [""])
-                else (msg.user_id in SL.lst[sv].plugins.white_list or msg.group_id in SL.lst[sv].plugins.white_list)
-            )
-            and SL.lst[sv].enabled
-            and user_pm <= SL.lst[sv].pm
-            and msg.group_id not in SL.lst[sv].black_list
-            and msg.user_id not in SL.lst[sv].black_list
-            and (
-                True
-                if SL.lst[sv].area == "ALL"
-                or (SL.lst[sv].plugins.area == "ALL")
-                or (event.user_type == "group" and SL.lst[sv].area == "GROUP")
-                or (event.user_type == "direct" and SL.lst[sv].area == "DIRECT")
-                else False
-            )
-            and (
-                True
-                if (not SL.lst[sv].white_list or SL.lst[sv].white_list == [""])
-                else (msg.user_id in SL.lst[sv].white_list or msg.group_id in SL.lst[sv].white_list)
-            )
-        )
-    ]
-    await asyncio.gather(*pending, return_exceptions=True)
+    if msg.group_id not in black_list and msg.user_id not in black_list:
+        for _sv_name in SL.lst:
+            _sv = SL.lst[_sv_name]
+            _plugins = _sv.plugins
+            if not _plugins.enabled:
+                continue
+            if user_pm > _plugins.pm:
+                continue
+            if msg.group_id in _plugins.black_list or msg.user_id in _plugins.black_list:
+                continue
+            _plugins_area = _plugins.area
+            if not (
+                _plugins_area == "SV"
+                or _plugins_area == "ALL"
+                or (event.user_type == "group" and _plugins_area == "GROUP")
+                or (event.user_type == "direct" and _plugins_area == "DIRECT")
+            ):
+                continue
+            if _plugins.white_list and _plugins.white_list != [""]:
+                if msg.user_id not in _plugins.white_list and msg.group_id not in _plugins.white_list:
+                    continue
+            if not _sv.enabled:
+                continue
+            if user_pm > _sv.pm:
+                continue
+            if msg.group_id in _sv.black_list or msg.user_id in _sv.black_list:
+                continue
+            if not (
+                _sv.area == "ALL"
+                or _plugins_area == "ALL"
+                or (event.user_type == "group" and _sv.area == "GROUP")
+                or (event.user_type == "direct" and _sv.area == "DIRECT")
+            ):
+                continue
+            if _sv.white_list and _sv.white_list != [""]:
+                if msg.user_id not in _sv.white_list and msg.group_id not in _sv.white_list:
+                    continue
+
+            _priority = _sv.priority
+            for _trigger_dict in _sv.TL.values():
+                for _trigger in _trigger_dict.values():
+                    try:
+                        if _trigger.check_command(event):
+                            valid_event[_trigger] = _priority
+                    except Exception:
+                        logger.exception(
+                            f"[GsCore] trigger.check_command 异常: type={_trigger.type} keyword={_trigger.keyword!r}"
+                        )
 
     if len(valid_event) >= 1:
         if event.at:
