@@ -94,11 +94,7 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
 
         removed_hooks = 0
         for hook_set in (core_start_def, core_start_before_def, core_shutdown_def):
-            stale = {
-                h
-                for h in hook_set
-                if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
-            }
+            stale = {h for h in hook_set if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)}
             hook_set -= stale  # 原地差集; stale 取自集合内的同一批对象, 精确移除
             removed_hooks += len(stale)
         if removed_hooks:
@@ -111,13 +107,9 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
         from gsuid_core.web_app import app
 
         original = list(app.router.routes)
-        kept = [
-            r for r in original if not _belongs_to_plugin(_route_owner_module(r), plugin_name)
-        ]
+        kept = [r for r in original if not _belongs_to_plugin(_route_owner_module(r), plugin_name)]
         if len(kept) != len(original):
-            logger.info(
-                f"🧹 [GsCore] 已清理插件 {plugin_name} 的 {len(original) - len(kept)} 条旧 web 路由/挂载"
-            )
+            logger.info(f"🧹 [GsCore] 已清理插件 {plugin_name} 的 {len(original) - len(kept)} 条旧 web 路由/挂载")
             app.router.routes[:] = kept  # 原地替换, 保留列表引用; 无 .endpoint/.app 归属的条目自动保留
     except Exception as e:
         logger.warning(f"🧹 [GsCore] 清理插件 {plugin_name} 的 web 路由时异常: {e}")
@@ -141,18 +133,14 @@ def _run_plugin_start_hooks(plugin_name: str) -> None:
 
         # 第 3.5 步②已清掉旧 hook、第四步重新 import 注册了 fresh hook, 这里过滤到的就是 fresh 的
         plugin_hooks = sorted(
-            h
-            for h in core_start_def
-            if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
+            h for h in core_start_def if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
         )
         if not plugin_hooks:
             logger.debug(f"♻ [GsCore] 插件 {plugin_name} 无 @on_core_start hook, 跳过启动 Hook 重跑")
             return
 
         async def _runner():
-            logger.info(
-                f"♻ [GsCore] 重载后执行插件 {plugin_name} 的启动 Hook ({len(plugin_hooks)} 个)..."
-            )
+            logger.info(f"♻ [GsCore] 重载后执行插件 {plugin_name} 的启动 Hook ({len(plugin_hooks)} 个)...")
             failed = 0
             # 按 priority 分组, 组内并发、组间串行 (与 core_start_execute 一致)
             for priority, group in groupby(plugin_hooks, key=lambda h: h.priority):
@@ -163,9 +151,7 @@ def _run_plugin_start_hooks(plugin_name: str) -> None:
                 )
                 results = await asyncio.gather(
                     *[
-                        h.func()
-                        if asyncio.iscoroutinefunction(h.func)
-                        else asyncio.to_thread(h.func)
+                        h.func() if asyncio.iscoroutinefunction(h.func) else asyncio.to_thread(h.func)
                         for h in group_hooks
                     ],
                     return_exceptions=True,
