@@ -950,14 +950,12 @@ async def install_plugin(
     try:
         from gsuid_core.utils.plugins_update._plugins import install_plugin as _install_plugin
 
+        # install_plugin 内部已完成「安装 + reload_plugin 加载」，直接复用其返回信息，
+        # 不再在此处重复 reload。失败信息统一以 ❌ 前缀标识。
         result = await _install_plugin(plugin_id)
-
-        if result == 0:
-            # 安装成功后重载插件
-            reload_result = reload_plugin(plugin_id)
-            return {"status": 0, "msg": f"插件安装成功，已重载: {reload_result}"}
-        else:
-            return {"status": 1, "msg": "插件安装失败"}
+        if result.lstrip().startswith("❌"):
+            return {"status": 1, "msg": result}
+        return {"status": 0, "msg": result}
     except Exception as e:
         return {"status": 1, "msg": f"安装失败: {str(e)}"}
 

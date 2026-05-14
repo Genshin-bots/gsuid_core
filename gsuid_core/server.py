@@ -345,6 +345,15 @@ class GsServer:
         if module_name in _module_cache:
             return _module_cache[module_name]
 
+        # fix: 已在 sys.modules 中(通常是被其它模块作为依赖传递导入并执行过),
+        # 直接复用, 不重复 exec —— 否则模块级副作用(如 scheduler.add_job)会重复执行,
+        # 重载场景下会导致 ConflictingIdError 等冲突。
+        if module_name in sys.modules:
+            module = sys.modules[module_name]
+            _module_cache[module_name] = module
+            logger.trace(f"🌱 模块{filepath.parent.stem}已加载, 复用缓存")
+            return module
+
         start_time = time.time()
         spec = importlib.util.spec_from_file_location(module_name, filepath)
         if spec is None or spec.loader is None:

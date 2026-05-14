@@ -416,7 +416,7 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
     logger.info(f"稍等...开始安装插件, 地址: {git_path}")
     path = PLUGINS_PATH / plugin_name
     if path.exists():
-        return "该插件已经安装过了!"
+        return "❌ 该插件已经安装过了!"
 
     branch = plugins["branch"] if plugins["branch"] != "main" else None
 
@@ -425,19 +425,20 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         return f"❌ 插件{plugin_name}安装失败: {message}"
 
     logger.info(f"插件{plugin_name}安装成功!")
-    if is_reload:
-        from gsuid_core.gss import gss
+    # 显式安装即视为「需要它」，直接 reload_plugin 真正加载（与网页端安装行为一致）。
+    # reload_plugin 对从未加载过的插件等价于「首次加载」：清理步骤皆为空操作，
+    # 第四步 import 加载、第五步跑其 @on_core_start，并经 gss.load_plugin 完成依赖检查。
+    retcode = reload_plugin(plugin_name)
+    if retcode.lstrip().startswith("❌"):
+        return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[gs重启]:\n{retcode}"
+    return f"✅ 插件{plugin_name}安装并加载成功!"
 
-        gss.load_plugin(path)
-    return f"插件{plugin_name}安装成功!发送[gs重启]以应用! (如已开启自动重载插件则无需重启)"
 
-
-async def install_plugin(plugin_name: str) -> int:
+async def install_plugin(plugin_name: str) -> str:
     url = await get_plugins_url(plugin_name)
     if url is None:
-        return -1
-    await install_plugins(url)
-    return 0
+        return f"❌ 不存在插件 {plugin_name}, 请检查名称或使用[刷新插件列表]!"
+    return await install_plugins(url)
 
 
 async def check_plugins(plugin_name: str) -> Optional[Path]:
@@ -616,20 +617,19 @@ async def update_from_git_async(
     else:
         log_list.append(f"✅插件 {plugin_name} 本次无更新内容！")
 
-    if plugin_name != "早柚核心" and is_reload:
+    # 仅在「确实有新提交」或「强制更新(reset --hard 可能改动工作区, 且为显式操作)」时才重载,
+    # 避免无更新的插件被无谓重载 —— 尤其凌晨自动更新会遍历全部插件。
+    if (commits_diff or level >= 1) and plugin_name != "早柚核心" and is_reload:
         reload_plugin(plugin_name)
     return log_list
 
 
-async def update_plugins(
-    plugin_name: str,
-    level: int = 0,
-    log_key: List[str] = [],
-    log_limit: int = 10,
-) -> Union[str, List]:
-    if not plugin_name:
-        return "请后跟有效的插件名称！\n例如：core更新插件genshinuid"
+async def resolve_plugin_name(plugin_name: str) -> str:
+    """把用户输入的插件名(可能是别名 / 大小写不对)解析为实际的插件目录名。
 
+    先按远程插件列表的 alias 归一化, 再对照本地 PLUGINS_PATH 目录名修正大小写;
+    解析不到则原样返回。`更新` / `重载插件` 等指令共用此别名逻辑。
+    """
     if not plugins_list:
         await refresh_list()
 
@@ -644,8 +644,21 @@ async def update_plugins(
 
     for _n in PLUGINS_PATH.iterdir():
         if pn == _n.name.lower():
-            plugin_name = _n.name
-            break
+            return _n.name
+
+    return plugin_name
+
+
+async def update_plugins(
+    plugin_name: str,
+    level: int = 0,
+    log_key: List[str] = [],
+    log_limit: int = 10,
+) -> Union[str, List]:
+    if not plugin_name:
+        return "请后跟有效的插件名称！\n例如：core更新插件genshinuid"
+
+    plugin_name = await resolve_plugin_name(plugin_name)
 
     log_list = await update_from_git_async(
         level,

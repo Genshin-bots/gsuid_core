@@ -6,10 +6,12 @@ from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.plugins_update._plugins import (
+    is_reload,
     run_install,
     check_retcode,
     update_plugins,
     update_all_plugins,
+    resolve_plugin_name,
     set_proxy_all_plugins,
     update_from_git_async,
 )
@@ -19,9 +21,14 @@ from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
 sv_core_config = SV("Core管理", pm=0)
 
 
-@sv_core_config.on_prefix(("手动重载插件"))
+@sv_core_config.on_prefix(("手动重载插件", "重载插件"))
 async def send_core_reload_msg(bot: Bot, ev: Event):
     plugin_name = ev.text.strip()
+    if not plugin_name:
+        await bot.send("请后跟有效的插件名称！\n例如：core重载插件genshinuid")
+        return
+    # 和 core更新 共用别名逻辑：支持别名 / 大小写不敏感
+    plugin_name = await resolve_plugin_name(plugin_name)
     logger.info(f"🔔 开始执行 [重载] {plugin_name}")
     await bot.send(f"🔔 正在尝试重载插件{plugin_name}...")
     retcode = reload_plugin(plugin_name)
@@ -44,6 +51,9 @@ async def send_core_update_msg(bot: Bot, ev: Event):
         log_list = await update_from_git_async(level)
 
     await bot.send(log_list)
+    # 仅在未开启自动重载时提示手动重载；开启了的话 update_plugins 已自动重载（有更新才重载）
+    if txt and not is_reload:
+        await bot.send(f"可使用 core重载插件{txt} 重新加载插件")
 
 
 @sv_core_config.on_command(("设置镜像"), block=True)
