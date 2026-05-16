@@ -149,11 +149,7 @@ def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> 
         from gsuid_core.web_app import app
 
         routes = app.router.routes
-        owned_idx_set = {
-            i
-            for i, r in enumerate(routes)
-            if _belongs_to_plugin(_route_owner_module(r), plugin_name)
-        }
+        owned_idx_set = {i for i, r in enumerate(routes) if _belongs_to_plugin(_route_owner_module(r), plugin_name)}
         if not owned_idx_set:
             return
         if min(owned_idx_set) <= anchor:
@@ -164,9 +160,7 @@ def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> 
         insert_at = min(anchor, len(rest))
         # 单次切片赋值替代 pop+insert 序列, 在事件循环主线程里逻辑上原子
         routes[:] = rest[:insert_at] + owned + rest[insert_at:]
-        logger.debug(
-            f"🧹 [GsCore] 已将插件 {plugin_name} 的 {len(owned)} 条新路由回插到 index {insert_at}"
-        )
+        logger.debug(f"🧹 [GsCore] 已将插件 {plugin_name} 的 {len(owned)} 条新路由回插到 index {insert_at}")
     except Exception as e:
         logger.warning(f"🧹 [GsCore] 回插插件 {plugin_name} 路由位置时异常: {e}")
 
