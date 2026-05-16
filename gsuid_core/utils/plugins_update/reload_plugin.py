@@ -1,6 +1,6 @@
 import sys
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 from itertools import groupby
 
 from gsuid_core.sv import SL
@@ -115,6 +115,62 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
         logger.warning(f"🧹 [GsCore] 清理插件 {plugin_name} 的 web 路由时异常: {e}")
 
 
+def _snapshot_plugin_route_anchor(plugin_name: str) -> Optional[int]:
+    """记录该插件在 app.router.routes 中最早一条路由的位置, 供重导入后回插用。
+
+    必须在 _clean_plugin_global_state 之前调用 —— 清理后位置就丢了。
+    """
+    try:
+        from gsuid_core.web_app import app
+
+        for i, r in enumerate(app.router.routes):
+            if _belongs_to_plugin(_route_owner_module(r), plugin_name):
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> None:
+    """把重导入后 append 到末尾的插件路由, 移回原 anchor 位置。
+
+    重载时 @app.get(...) 装饰器把新路由追加到 routes 末尾, Starlette 按 list 顺序首匹配,
+    若启动时排在该插件之后的其它插件含 catch-all 路径参数路由, 重载后该 catch-all 会
+    抢先命中, 把本插件更具体的路径吃掉。保住 anchor 位置, 整张表对其它插件的相对顺序
+    就和重载前一致。
+
+    必须在事件循环主线程同步调用 (`reload_plugin` 本身就是这种形态); 若被 `asyncio.
+    to_thread` 等机制甩到线程池, 失去 GIL 单线程保护后 routes 的整表替换不再原子,
+    可能与其它协程的路由注册产生竞争。
+    """
+    if anchor is None:
+        return
+    try:
+        from gsuid_core.web_app import app
+
+        routes = app.router.routes
+        owned_idx_set = {
+            i
+            for i, r in enumerate(routes)
+            if _belongs_to_plugin(_route_owner_module(r), plugin_name)
+        }
+        if not owned_idx_set:
+            return
+        if min(owned_idx_set) <= anchor:
+            return  # 已经在原位或更前, 无需调整
+        owned = [routes[i] for i in sorted(owned_idx_set)]
+        rest = [r for i, r in enumerate(routes) if i not in owned_idx_set]
+        # cleanup 后 list 变短, anchor 可能越过 len(rest), 截一下保证 slice 合法
+        insert_at = min(anchor, len(rest))
+        # 单次切片赋值替代 pop+insert 序列, 在事件循环主线程里逻辑上原子
+        routes[:] = rest[:insert_at] + owned + rest[insert_at:]
+        logger.debug(
+            f"🧹 [GsCore] 已将插件 {plugin_name} 的 {len(owned)} 条新路由回插到 index {insert_at}"
+        )
+    except Exception as e:
+        logger.warning(f"🧹 [GsCore] 回插插件 {plugin_name} 路由位置时异常: {e}")
+
+
 def _discard_start_task(plugin_name: str, task: asyncio.Task) -> None:
     """启动 Hook 后台任务结束后, 从句柄表里摘除自己 (仅当还是当前这个任务时)。"""
     if _plugin_start_tasks.get(plugin_name) is task:
@@ -227,7 +283,9 @@ def reload_plugin(plugin_name: str) -> str:
     # ──────────────────────────────────────────
     # 第 3.5 步：清理插件注册到全局单例上的状态（定时任务+监听器 / 生命周期 Hook / web 路由）
     # 必须在重新 import 之前，否则带固定 id 的定时任务会撞 ConflictingIdError
+    # 路由位置先 snapshot 一下, 第 4.5 步要用来把新路由放回原位
     # ──────────────────────────────────────────
+    route_anchor = _snapshot_plugin_route_anchor(plugin_name)
     _clean_plugin_global_state(plugin_name)
 
     # ──────────────────────────────────────────
@@ -246,6 +304,12 @@ def reload_plugin(plugin_name: str) -> str:
         except Exception as e:
             logger.exception(f"❌ 重载模块 {module_name} 失败: {e}")
             return f"❌ 重载失败: {e}"
+
+    # ──────────────────────────────────────────
+    # 第 4.5 步：把刚 append 到末尾的新路由放回原 anchor 位置
+    # 保住与其它插件 (尤其是带 catch-all path 参数的) 的相对顺序
+    # ──────────────────────────────────────────
+    _restore_plugin_routes_position(plugin_name, route_anchor)
 
     # ──────────────────────────────────────────
     # 第五步：重载完成后，重跑该插件的 @on_core_start hook（补全「插件加载」语义）
