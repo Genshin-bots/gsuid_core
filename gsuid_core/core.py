@@ -146,6 +146,20 @@ async def main():
                             # 使用 wait_for 添加超时，以便定期检查 shutdown_event
                             data = await asyncio.wait_for(websocket.receive_bytes(), timeout=1.0)
                             msg = msgjson.decode(data, type=MessageReceive)
+                            if msg.send_id:
+                                for content in msg.content:
+                                    if content.type == "active_message_result":
+                                        result_data = content.data
+                                        if isinstance(result_data, dict) and "success" in result_data:
+                                            result = bool(result_data["success"])
+                                        else:
+                                            result = bool(result_data)
+                                        bot.set_active_message_result(
+                                            msg.send_id,
+                                            result,
+                                        )
+                                        break
+                                continue
                             await handle_event(bot, msg)
                         except asyncio.TimeoutError:
                             continue

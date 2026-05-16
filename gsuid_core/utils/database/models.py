@@ -59,6 +59,8 @@ class Subscribe(BaseModel, table=True):
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
         force_direct: bool = False,
+        active_message: bool = False,
+        wait_active_result: bool = False,
     ):
         if force_direct:
             user_type = "direct"
@@ -86,7 +88,14 @@ class Subscribe(BaseModel, table=True):
             if self.WS_BOT_ID in gss.active_bot:
                 BOT = gss.active_bot[self.WS_BOT_ID]
                 bot = Bot(BOT, ev)
-                await bot.send_option(**params)
+                if option_list:
+                    await bot.send_option(**params)
+                else:
+                    await bot.send(
+                        reply,
+                        active_message=active_message,
+                        wait_active_result=wait_active_result,
+                    )
             else:
                 # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
                 found = False
@@ -101,7 +110,14 @@ class Subscribe(BaseModel, table=True):
                             WS_BOT_ID=ws_bot_id,
                         )
                         bot = Bot(_bot, ev)
-                        await bot.send_option(**params)
+                        if option_list:
+                            await bot.send_option(**params)
+                        else:
+                            await bot.send(
+                                reply,
+                                active_message=active_message,
+                                wait_active_result=wait_active_result,
+                            )
                         found = True
                         break
                 if not found:
@@ -111,7 +127,14 @@ class Subscribe(BaseModel, table=True):
             for bot_id in gss.active_bot:
                 BOT = gss.active_bot[bot_id]
                 bot = Bot(BOT, ev)
-                await bot.send_option(**params)
+                if option_list:
+                    await bot.send_option(**params)
+                else:
+                    await bot.send(
+                        reply,
+                        active_message=active_message,
+                        wait_active_result=wait_active_result,
+                    )
 
 
 class CoreTag(BaseIDModel, table=True):
