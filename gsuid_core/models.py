@@ -95,3 +95,4 @@ class MessageSend(Struct):
     target_type: Optional[str] = None
     target_id: Optional[str] = None
     content: Optional[List[Message]] = None
+    recall: int = 0

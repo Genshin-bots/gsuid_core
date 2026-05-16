@@ -201,6 +201,7 @@ class _Bot:
         group_id: Optional[str] = None,
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
+        recall: int = 0,
     ):
         # 记录 bot 回复到历史记录
         try:
@@ -340,6 +341,11 @@ class _Bot:
             if _temp_mr:
                 message_result.append(_temp_mr)
 
+        if recall < 0:
+            recall = 0
+        elif recall > 120:
+            recall = 120
+
         for mr in message_result:
             logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
             if at_sender and sender_id:
@@ -358,6 +364,7 @@ class _Bot:
                 target_type=target_type,
                 target_id=target_id,
                 msg_id=msg_id,
+                recall=recall,
             )
 
             local_val = await get_global_val(bot_id, bot_self_id)
@@ -708,6 +715,7 @@ class Bot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
+        recall: int = 0,
     ):
         return await self.bot.target_send(
             message,
@@ -721,6 +729,7 @@ class Bot:
             self.ev.group_id,
             self.ev.task_id,
             self.ev.task_event,
+            recall=recall,
         )
 
     async def target_send(
@@ -731,6 +740,7 @@ class Bot:
         at_sender: bool = False,
         sender_id: str = "",
         send_source_group: Optional[str] = None,
+        recall: int = 0,
     ):
         return await self.bot.target_send(
             message,
@@ -742,6 +752,7 @@ class Bot:
             at_sender,
             sender_id,
             send_source_group,
+            recall=recall,
         )
 
 
