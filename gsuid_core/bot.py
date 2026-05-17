@@ -206,7 +206,6 @@ class _Bot:
         task_event: Optional[asyncio.Event] = None,
         recall: int = 0,
         active_message: bool = False,
-        wait_active_result: bool = False,
     ):
         # 记录 bot 回复到历史记录
         try:
@@ -353,7 +352,7 @@ class _Bot:
 
         send_id = ""
         active_result_future = None
-        if active_message and wait_active_result:
+        if active_message:
             send_id = uuid4().hex
             active_result_future = asyncio.get_running_loop().create_future()
             self.active_message_results[send_id] = active_result_future
@@ -589,14 +588,12 @@ class Bot:
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
         active_message: bool = False,
-        wait_active_result: bool = False,
     ):
         if option_list is None:
             if reply:
                 return await self.send(
                     reply,
                     active_message=active_message,
-                    wait_active_result=wait_active_result,
                 )
             return None
 
@@ -758,7 +755,6 @@ class Bot:
         at_sender: bool = False,
         recall: int = 0,
         active_message: bool = False,
-        wait_active_result: bool = False,
     ):
         return await self.bot.target_send(
             message,
@@ -774,7 +770,6 @@ class Bot:
             self.ev.task_event,
             recall=recall,
             active_message=active_message,
-            wait_active_result=wait_active_result,
         )
 
     async def target_send(
@@ -787,7 +782,6 @@ class Bot:
         send_source_group: Optional[str] = None,
         recall: int = 0,
         active_message: bool = False,
-        wait_active_result: bool = False,
     ):
         return await self.bot.target_send(
             message,
@@ -801,7 +795,6 @@ class Bot:
             send_source_group,
             recall=recall,
             active_message=active_message,
-            wait_active_result=wait_active_result,
         )
 
 

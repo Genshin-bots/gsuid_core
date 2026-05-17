@@ -60,7 +60,6 @@ class Subscribe(BaseModel, table=True):
         command_start_text: str = "",
         force_direct: bool = False,
         active_message: bool = False,
-        wait_active_result: bool = False,
     ):
         if force_direct:
             user_type = "direct"
@@ -94,7 +93,6 @@ class Subscribe(BaseModel, table=True):
                     await bot.send(
                         reply,
                         active_message=active_message,
-                        wait_active_result=wait_active_result,
                     )
             else:
                 # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
@@ -116,7 +114,6 @@ class Subscribe(BaseModel, table=True):
                             await bot.send(
                                 reply,
                                 active_message=active_message,
-                                wait_active_result=wait_active_result,
                             )
                         found = True
                         break
@@ -133,7 +130,6 @@ class Subscribe(BaseModel, table=True):
                     await bot.send(
                         reply,
                         active_message=active_message,
-                        wait_active_result=wait_active_result,
                     )
 
 
