@@ -14,6 +14,7 @@ from msgspec import json as msgjson, to_builtins
 
 from gsuid_core.version import __version__
 from gsuid_core.shutdown import shutdown_event
+from gsuid_core.startup_info import core_startup_info
 
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -212,6 +213,7 @@ async def main():
     end_time = time.time()
     logger.success(ASCII_FONT)
     duration = round(end_time - start_time, 2)
+    core_startup_info.duration = duration
 
     from gsuid_core.sv import SL
 
