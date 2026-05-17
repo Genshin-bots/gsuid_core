@@ -26,8 +26,10 @@ async def search_knowledge(
     """
     检索知识库内容
 
-    根据用户查询的自然语言描述，从向量数据库中检索匹配的知识条目。
-    支持语义相似度匹配和按类别/插件过滤，返回排名最高的结果。
+    当需要查询专业知识、游戏攻略、角色资料、技能效果、物品信息等相对稳定的内容时使用。
+    适合"怎么打""有什么技能""属性是什么""在哪里""怎么获得"这类专业问题。
+    遇到任何专业领域问题应优先调用本工具查知识库，再考虑 web 搜索。
+    返回知识库中语义最相关的文档条目。
 
     Args:
         ctx: 工具执行上下文
@@ -64,7 +66,7 @@ async def search_knowledge(
     return str(knowledge_list)
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def search_image(
     ctx: RunContext[ToolContext],
     query: str,

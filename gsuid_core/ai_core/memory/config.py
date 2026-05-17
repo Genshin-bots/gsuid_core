@@ -76,6 +76,11 @@ class MemoryConfig:
         return mrc.get_config("retrieval_top_k").data
 
     @property
+    def memory_inject_max_chars(self) -> int:
+        """单次注入对话上下文的记忆文本最大字符数（Token 预算）"""
+        return mrc.get_config("memory_inject_max_chars").data
+
+    @property
     def enable_system2(self) -> bool:
         """是否启用 System-2 全局选择（成本较高，可按需关闭）"""
         return mrc.get_config("enable_system2").data

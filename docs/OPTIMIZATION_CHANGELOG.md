@@ -13,7 +13,8 @@
 5. [History Token 上限精确控制](#5-history-token-上限精确控制)
 6. [Persona 情绪状态机](#6-persona-情绪状态机)
 7. [Persona 群聊适应性](#7-persona-群聊适应性)
-8. [文件变更清单](#8-文件变更清单)
+8. [AI Agent 框架能力深度优化](#8-ai-agent-框架能力深度优化)
+9. [文件变更清单](#9-文件变更清单)
 
 ---
 
@@ -204,7 +205,7 @@ agent_mesh/
 
 ## 5. History Token 上限精确控制
 
-**涉及文件**: `ai_core/history/manager.py`
+**涉及文件**: `message_history/manager.py`
 
 ### 5.1 问题
 
@@ -319,7 +320,46 @@ effective_intensity = intensity * 0.5^(elapsed / 1800)
 
 ---
 
-## 8. 文件变更清单
+## 8. AI Agent 框架能力深度优化
+
+**完整说明文档**：[`docs/AI_AGENT_CAPABILITY_UPGRADE.md`](AI_AGENT_CAPABILITY_UPGRADE.md)
+
+针对"复杂长链条任务无法跨会话存活"与"语境消歧任务卡住"两类系统性缺陷，对框架能力层做了一轮深度优化，共 14 项改动（P0~P3）。要点摘录：
+
+### 8.1 P0 立即修复
+
+- **调试信息泄露修复**：工具调用列表不再追加到用户可见消息，只进调试日志。
+- **框架保底工具池**：由工具注册时的 `category` 决定——`self` + `buildin` 分类的工具无条件全部加载，搜索/记忆/自我认知/持久状态等基础工具不被向量搜索挤掉。采用分类驱动而非硬编码名单，插件用 `@ai_tools(category="buildin")` 即可让工具进入保底池。
+- **Persona 决策逻辑重写**：`prompts.py` 改为严格优先级决策树，明确禁止以"角色不懂"为由跳过工具调用。
+- **主人好感度初始化**：session 创建时主人好感度低于 90 自动拉升到 95。
+- **主人说话者高亮**：主人发言时说话者感知文本显著标注「⚡ 你的主人」。
+
+### 8.2 P1 近期优化
+
+- **通用持久状态存储**（新增 `ai_core/state_store/`）：框架级键值存储，`state_get/set/delete/list/append` 工具，支持 scope 隔离与 TTL，让复杂任务跨会话存活。
+- **记忆提取质量改造**：提取提示词新增信息完整性检查（丢弃无结论的行为流水账）与别名识别。
+- **实体消歧**：`worker.py` 别名重定向，把外号的 edge 引用统一到正式实体。
+- **记忆 Token 预算**：`dual_route.py` 预算配分式格式化 + query 别名展开。
+- **图片理解摘要层**：长图片描述按用户问题二次摘要，节省 Token。
+- **自我认知工具**：新增 `get_self_info`，返回身份/能力边界/主人信息。
+- **连续无工具调用检测**：连续 ≥2 轮无工具调用时注入强制提醒。
+
+### 8.3 P2 中期新增
+
+- **群组画像**（新增 `memory/group_profile.py`）：自动维护群组语境标签与词汇映射表。
+- **语境工具池**：`@ai_tools` 新增 `context_tags` 参数，框架按群组语境自动加载相关工具集。
+- **语境注入**：对话上下文注入【当前群聊语境】，让 Agent 直接知道"深渊"指什么。
+- **定时任务结构化上下文**：`AIScheduledTask` 新增 `structured_context` / `last_result_summary` 字段。
+- **工具前摇代码层触发**：耗时工具调用前自动发送角色化前摇台词。
+
+### 8.4 P3 深度拟人化
+
+- **情绪主人联动**：主人发言额外触发"温暖"情绪。
+- **工具 description 标准化**：按"触发条件 + 输出"规范重写关键内置工具描述，提升向量检索命中率。
+
+---
+
+## 9. 文件变更清单
 
 ### 新增文件
 
@@ -340,6 +380,12 @@ effective_intensity = intensity * 0.5^(elapsed / 1800)
 | `gsuid_core/ai_core/buildin_tools/agent_mesh_tools.py` | Agent Mesh AI 工具 |
 | `docs/MCP_TOOL_PERMISSIONS.md` | MCP 权限前端文档 |
 | `docs/OPTIMIZATION_CHANGELOG.md` | 本文档 |
+| `gsuid_core/ai_core/state_store/__init__.py` | 通用持久状态存储模块导出 |
+| `gsuid_core/ai_core/state_store/models.py` | `AIPersistentState` 数据库模型 |
+| `gsuid_core/ai_core/state_store/store.py` | 状态存储核心读写逻辑 |
+| `gsuid_core/ai_core/state_store/tools.py` | `state_*` AI 工具 |
+| `gsuid_core/ai_core/memory/group_profile.py` | 群组画像（语境标签 + 词汇映射表） |
+| `docs/AI_AGENT_CAPABILITY_UPGRADE.md` | AI Agent 框架能力深度优化完整说明 |
 
 ### 修改文件
 
@@ -350,7 +396,7 @@ effective_intensity = intensity * 0.5^(elapsed / 1800)
 | `gsuid_core/ai_core/mcp/startup.py` | `_build_mcp_check_func()` 自动生成权限检查 |
 | `gsuid_core/ai_core/models.py` | `ToolBase` 新增 `check_func` 属性 |
 | `gsuid_core/utils/resource_manager.py` | TTL 清理机制 |
-| `gsuid_core/ai_core/history/manager.py` | Token 滑动窗口 |
+| `gsuid_core/message_history/manager.py` | Token 滑动窗口 |
 | `gsuid_core/ai_core/persona/processor.py` | 注入情绪状态 + 群聊上下文 |
 | `gsuid_core/ai_core/ai_router.py` | 获取群聊上下文注入 Persona |
 | `gsuid_core/ai_core/handle_ai.py` | 情绪状态更新集成 |
@@ -358,3 +404,21 @@ effective_intensity = intensity * 0.5^(elapsed / 1800)
 | `gsuid_core/ai_core/buildin_tools/web_fetch.py` | 新增网页抓取 AI 工具 |
 | `gsuid_core/ai_core/image_understand/understand.py` | 同步IO改为 aiofiles |
 | `gsuid_core/webconsole/mcp_config_api.py` | API 支持 `tool_permissions` |
+| `gsuid_core/ai_core/gs_agent.py` | 保底/语境工具池注入；图片二次摘要；连续无工具调用检测；前摇触发；调试信息泄露修复 |
+| `gsuid_core/ai_core/rag/tools.py` | 保底工具池、语境工具池相关函数 |
+| `gsuid_core/ai_core/persona/prompts.py` | 决策树重写；绝对禁止行为；SubAgent 结构化模板 |
+| `gsuid_core/ai_core/ai_router.py` | 主人好感度初始化 |
+| `gsuid_core/ai_core/utils.py` | 主人判定与说话者感知高亮 |
+| `gsuid_core/ai_core/models.py` | `ToolBase` 新增 `context_tags` 字段 |
+| `gsuid_core/ai_core/register.py` | `@ai_tools` 新增 `context_tags` 参数 |
+| `gsuid_core/ai_core/handle_ai.py` | 群组语境注入；情绪主人联动 |
+| `gsuid_core/ai_core/buildin_tools/self_info.py` | 新增 `get_self_info` 工具 |
+| `gsuid_core/ai_core/buildin_tools/web_search.py` | 工具 description 标准化 |
+| `gsuid_core/ai_core/buildin_tools/rag_search.py` | 工具 description 标准化 |
+| `gsuid_core/ai_core/buildin_tools/web_fetch.py` | 工具 description 标准化 |
+| `gsuid_core/ai_core/memory/prompts/extraction.py` | 信息完整性检查 + 别名识别 |
+| `gsuid_core/ai_core/memory/ingestion/worker.py` | 别名重定向；群组画像维护 |
+| `gsuid_core/ai_core/memory/retrieval/dual_route.py` | Token 预算格式化；别名展开检索 |
+| `gsuid_core/ai_core/scheduled_task/models.py` | 新增 `structured_context` / `last_result_summary` 字段 |
+| `gsuid_core/ai_core/scheduled_task/executor.py` | 结构化上下文注入与结果摘要回写 |
+| `gsuid_core/utils/database/startup.py` | 定时任务表新增列的 `ALTER TABLE` 语句 |

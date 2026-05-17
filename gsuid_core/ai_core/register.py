@@ -77,6 +77,7 @@ def ai_tools(
     *,
     category: str = "default",
     check_func: Optional[CheckFunc] = None,
+    context_tags: Optional[List[str]] = None,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -88,6 +89,8 @@ def ai_tools(
         func: 被装饰的函数
         category: 工具分类名称，默认 "default"。用于将工具放入不同的分类字典中
         check_func: 可选的权限校验函数
+        context_tags: 可选的语境标签列表，如 ["原神", "游戏"]。
+            声明后，框架会在匹配该语境的群聊中自动加载本工具（语境工具池）。
         **check_kwargs: 传递给 check_func 的额外参数
     """
 
@@ -214,13 +217,14 @@ def ai_tools(
         # 获取插件名称
         plugin_name = _get_plugin_name_from_module(fn.__module__)
 
-        logger.info(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {category})")
+        logger.debug(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {category})")
 
         tool_base = ToolBase(
             name=fn.__name__,
             description=(fn.__doc__ or "").strip(),
             plugin=plugin_name,
             tool=tool_obj,
+            context_tags=context_tags,
         )
 
         # 根据 category 分类注册工具

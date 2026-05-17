@@ -172,7 +172,7 @@ async def chatWithHistory(req: Dict):
         """
         if history:
             # 将 history 转为 HistoryManager 兼容的 MessageRecord 格式用于格式化
-            from gsuid_core.ai_core.history.manager import MessageRecord
+            from gsuid_core.message_history import MessageRecord
 
             history_records = []
             for msg in agent.history:  # 直接遍历 agent.history

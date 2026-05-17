@@ -472,7 +472,7 @@ GET /api/ai/session_logs/bot:onebot:group:123456/abc12345/detail
 
 列表接口内部执行以下合并逻辑：
 
-1. **收集内存活跃会话**：遍历 `HistoryManager._ai_sessions`，从每个 `GsCoreAIAgent._session_logger` 提取摘要
+1. **收集内存活跃会话**：遍历 `AISessionRegistry._ai_sessions`，从每个 `GsCoreAIAgent._session_logger` 提取摘要
 2. **收集磁盘持久化文件**：扫描 `data/ai_core/session_logs/*.json`，解析每个文件
 3. **按 session_uuid 去重**：同一 session_uuid 在内存和磁盘中都存在时，**优先使用内存版本**（数据更新）
 4. **按 created_at 倒序排列**

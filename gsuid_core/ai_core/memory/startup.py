@@ -7,14 +7,12 @@
 from typing import Optional
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 # 模块级引用，供 /api/chat_with_history 调用 flush_all()
 _ingestion_worker: Optional[object] = None
 
 
-@on_core_start(priority=5)
 async def init_memory_system():
     """初始化记忆系统的所有组件。
 
@@ -24,8 +22,8 @@ async def init_memory_system():
     3. 创建 SQLAlchemy 数据库表
     4. 启动 IngestionWorker 后台任务
 
-    注意：on_core_start 钩子由 core_start_execute() 按优先级顺序 await，
-    同一钩子函数不会并发执行，因此无需加锁保护 _ingestion_worker。
+    由 ai_core/startup.py 的 init_ai_core() 在 RAG 初始化之后顺序调用，
+    不会并发执行，因此无需加锁保护 _ingestion_worker。
     """
     # 检查AI总开关
     if not ai_config.get_config("enable").data:

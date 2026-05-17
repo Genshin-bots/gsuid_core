@@ -17,7 +17,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start, on_core_shutdown
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.models import ToolBase, ToolContext
 from gsuid_core.ai_core.mcp.client import MCPClient
 from gsuid_core.ai_core.mcp.config_manager import MCPConfig, mcp_config_manager
@@ -352,7 +352,7 @@ async def register_all_mcp_tools() -> None:
     """
     启动时注册所有启用的 MCP 服务器工具。
 
-    由 on_core_start 装饰器调用，在框架启动时自动执行。
+    由 ai_core/startup.py 的 init_ai_core() 在框架启动后台阶段调用。
     """
     enabled_configs = mcp_config_manager.get_enabled_configs()
 
@@ -378,10 +378,9 @@ async def shutdown_mcp_clients() -> None:
     logger.info("🔌 [MCP] MCP 客户端资源已清理")
 
 
-# 注册启动和关闭钩子
-@on_core_start(priority=5)
-async def _on_start():
-    """框架启动时注册 MCP 工具（优先级 5，在基础模块加载后执行）"""
+# 启动/关闭函数（由 ai_core/startup.py 的 init_ai_core() 统一调用）
+async def init_mcp_tools():
+    """框架启动时注册 MCP 工具（在 RAG 等基础模块初始化之后执行）"""
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:

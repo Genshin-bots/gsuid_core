@@ -5,7 +5,7 @@ import asyncio
 import logging
 import datetime
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Optional, Protocol, Sequence, TypedDict, NotRequired
 from pathlib import Path
 from functools import wraps
 from logging.handlers import TimedRotatingFileHandler
@@ -517,20 +517,35 @@ def handle_exceptions(async_function):
     return wrapper
 
 
+class LogEntry(TypedDict):
+    """单条已解析的历史日志条目。
+
+    id / 时间 / 日志等级 / 内容 四个键由 get_parse_logs 解析时必然写入；
+    来源、_date 为可选键，由调用方（如日志 API）按需补充。
+    """
+
+    id: int
+    时间: str
+    日志等级: str
+    内容: object
+    来源: NotRequired[str]
+    _date: NotRequired[str]
+
+
 class HistoryLogData:
     def __init__(self):
-        self.log_list: Dict[str, List[Dict]] = {}
+        self.log_list: Dict[str, List[LogEntry]] = {}
 
-    async def get_parse_logs(self, log_file_path: Path):
+    async def get_parse_logs(self, log_file_path: Path) -> List[LogEntry]:
         if log_file_path.name in self.log_list:
             return self.log_list[log_file_path.name]
 
-        log_entries: List[Dict] = []
+        log_entries: List[LogEntry] = []
 
         async with aiofiles.open(log_file_path, "r", encoding="utf-8") as file:
             lines = await file.readlines()
 
-        current_entry = None
+        current_entry: Optional[LogEntry] = None
 
         _id = 1
         for line in lines:

@@ -570,7 +570,7 @@ def on_core_shutdown(func=None, /, priority: int = 0):
 | `init_memory_system` | `ai_core/memory/startup.py` | 5 | 初始化记忆系统（Qdrant Collection + IngestionWorker独立线程） |
 | `_on_start` | `ai_core/mcp/startup.py` | 5 | 注册 MCP 工具（读取 mcp_configs/*.json，连接服务器，注册到 _TOOL_REGISTRY["mcp"]）；支持 `register_as_ai_tools` 字段控制是否注册为 AI 工具 |
 | `init_meme_module` | `ai_core/meme/startup.py` | 5 | 初始化表情包模块（Qdrant Collection + 打标 Worker） |
-| `init_ai_core_statistics` | `ai_core/statistics/startup.py` | 10 | 初始化AI统计系统（HistoryManager清理 + Heartbeat巡检） |
+| `init_ai_core_statistics` | `ai_core/statistics/startup.py` | 10 | 初始化AI统计系统（AISessionRegistry空闲清理 + Heartbeat巡检） |
 | `init_scheduled_tasks` | `ai_core/scheduled_task/startup.py` | 0 | 重新加载待执行定时任务 |
 
 ### 7.3 RAG模块初始化详解

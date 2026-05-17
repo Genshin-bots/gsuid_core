@@ -2,18 +2,17 @@ from datetime import datetime
 
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start, on_core_shutdown
-from gsuid_core.ai_core.history import get_history_manager
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
 from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
 
-@on_core_start
 async def init_ai_core_statistics():
     """初始化AI Core的Session管理器和定时巡检"""
-    # 启动 HistoryManager 的清理任务
-    history_manager = get_history_manager()
-    await history_manager.start_cleanup_loop()
+    # 启动 AISessionRegistry 的空闲清理任务
+    registry = get_ai_session_registry()
+    await registry.start_cleanup_loop()
 
     # 启动定时巡检（heartbeat/inspector.py 内部会检查 enable_ai）
     start_heartbeat_inspector()

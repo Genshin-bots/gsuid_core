@@ -1,6 +1,18 @@
 # 18. History Manager API - /api/history
 
-> History Manager API 用于管理 AI 会话的历史记录，支持查看、清空 session 历史以及查看 session 使用的 persona。
+> History Manager API 用于管理会话的消息历史记录，支持查看、清空 session 历史以及查看 session 使用的 persona。
+
+> **关于 AI 总开关（enable_ai）**
+>
+> 消息历史模块（`gsuid_core.message_history`）已从 `ai_core` 解耦为通用的 Bot 消息输入/输出历史记录模块。
+> 因此本组 API 在 AI 总开关关闭（`enable_ai=False`）时**依然可以正常读取与管理消息历史**，
+> 仅 AI 会话相关的增强信息会按下述规则降级：
+>
+> - **列出 Session**：`has_ai_session` 恒为 `false`、`ai_history_length` 恒为 `0`。
+> - **查看历史记录**：完全不受影响，始终可用。
+> - **清空 Session**：AI 开启时清空「消息历史 + AI 会话对象」；AI 关闭时仅清空「消息历史」。
+> - **查看 Persona**：persona 属于 AI 会话信息，AI 关闭时该接口统一返回「session 不存在」。
+> - **统计信息**：`history_manager` 部分始终可用；`ai_router_sessions` 在 AI 关闭时为空统计。
 
 ## 18.1 获取所有 Session 列表
 
@@ -174,6 +186,10 @@ Authorization: Bearer <token>
 |------|------|--------|------|------|
 | delete_session | boolean | 否 | false | 是否完全删除 session（释放内存），false 则仅清空历史 |
 
+> **行为说明**：
+> - AI 开启时：清空/删除「消息历史」与对应的「AI 会话对象」（完全删除时会触发 AI 会话日志落盘）。
+> - AI 关闭时：仅清空/删除「消息历史」，不存在 AI 会话对象。
+
 **响应（清空历史）**：
 ```json
 {
@@ -224,6 +240,9 @@ Authorization: Bearer <token>
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+
+> **行为说明**：persona 属于 AI 会话信息。当 AI 总开关关闭（`enable_ai=False`）时，
+> 系统不存在任何 AI 会话对象，本接口统一返回「session 不存在或尚未创建」（`status: 1`）。
 
 **响应（有 persona）**：
 ```json
@@ -306,9 +325,90 @@ Authorization: Bearer <token>
 | data.history_manager.total_messages | integer | 总消息数量 |
 | data.history_manager.group_sessions | integer | 群聊 session 数量 |
 | data.history_manager.max_messages_per_session | integer | 每个 session 最大消息数 |
-| data.ai_router_sessions | object | AI Router 中的 session 信息 |
-| data.ai_router_sessions.count | integer | AI Router 中的 session 数量 |
+| data.ai_router_sessions | object | AI 会话注册表中的 session 信息（AI 关闭时为空统计 `{"count": 0, "sessions": []}`） |
+| data.ai_router_sessions.count | integer | AI 会话注册表中的 session 数量 |
 | data.ai_router_sessions.sessions | object | 各 session 的详细信息 |
+
+---
+
+## 18.6 向指定 Session 发送消息
+
+```
+POST /api/history/{session_id}/send
+```
+
+根据 `session_id` 解析出 `bot_id` / `group_id` / `user_id`，定位对应的 Bot 连接后，将文本与图片组装为消息段并调用 `bot.send()` 发送。支持**纯文本、纯图片、多图、图文混排**。
+
+> **说明**：
+> - 请求类型为 `multipart/form-data`。**图片由前端直接上传文件，无需自行做 base64 编码**，后端读取二进制后自动转换。
+> - 发送的消息会经由 `target_send` **自动记录进该 session 的消息历史**，无需额外调用。
+> - 本接口属于通用 Bot 能力，与 AI 总开关无关，`enable_ai=False` 时同样可用。
+> - 群聊发往 `group_id`，私聊发往 `user_id`。
+
+**请求头**：
+```
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+```
+
+**路径参数**：
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+
+**表单字段**（`multipart/form-data`）：
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| message | string | 否 | `""` | 文本内容，可为空 |
+| images | file | 否 | - | 图片文件，可重复该字段上传多张 |
+| image_urls | string | 否 | - | 图片直链（**仅 http/https**），可重复该字段传多个 |
+| at_sender | boolean | 否 | false | 是否 @ 发送对象（仅群聊场景有意义） |
+
+> `message` 文本与 `images` / `image_urls` 图片**至少需提供其一**，否则返回「消息内容不能为空」。
+
+**请求示例（curl）**：
+```bash
+curl -X POST "http://<host>/api/history/bot:0:group:789012/send" \
+  -H "Authorization: Bearer <token>" \
+  -F "message=你好，这是一条图文消息" \
+  -F "images=@/path/to/pic1.png" \
+  -F "images=@/path/to/pic2.jpg" \
+  -F "image_urls=https://example.com/remote.png" \
+  -F "at_sender=false"
+```
+
+**响应（发送成功）**：
+```json
+{
+    "status": 0,
+    "msg": "消息发送成功",
+    "data": {
+        "session_id": "bot:0:group:789012",
+        "target_type": "group",
+        "target_id": "789012",
+        "text_sent": true,
+        "image_count": 3
+    }
+}
+```
+
+**响应字段说明**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| data.target_type | string | 发送目标类型：`group` 或 `private` |
+| data.target_id | string | 实际发送目标 ID（群号或用户 ID） |
+| data.text_sent | boolean | 本次是否发送了文本 |
+| data.image_count | integer | 本次发送的图片数量（上传文件 + 直链合计） |
+
+**错误响应**：
+| 场景 | status | msg |
+|------|--------|-----|
+| 文本与图片均为空 | 1 | 消息内容不能为空（需提供 message 文本或 images/image_urls 图片） |
+| session_id 格式非法 | 1 | 无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}' |
+| session_id 缺少发送目标 | 1 | session_id 中缺少有效的发送目标 |
+| image_urls 非 http(s) 直链 | 1 | image_urls 仅支持 http/https 直链: {url} |
+| 当前无任何已连接 Bot | 1 | 当前没有任何已连接的 Bot |
+| 指定的 Bot 未连接 | 1 | Bot '{bot_id}' 当前未连接，无法发送消息 |
 
 ---
 

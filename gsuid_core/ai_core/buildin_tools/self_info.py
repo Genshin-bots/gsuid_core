@@ -15,7 +15,7 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.persona.persona import Persona
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def get_self_persona_info(
     ctx: RunContext[ToolContext],
     info_type: Literal["config", "image", "avatar", "audio"],
@@ -86,3 +86,100 @@ async def get_self_persona_info(
 
     else:
         return f"⚠️ 不支持的信息类型: {info_type}，可选值: config, image, avatar, audio"
+
+
+@ai_tools(category="buildin")
+async def get_self_info(ctx: RunContext[ToolContext]) -> str:
+    """
+    获取自身的完整自我认知信息。
+
+    当用户问"你是谁"、"你能做什么"、"你的主人是谁"，
+    或你需要判断某个任务是否在自己能力范围内时，调用此工具。
+    返回身份、运行框架、能力边界（可用工具）、主人、当前会话语境等信息。
+
+    Returns:
+        结构化的自我认知档案文本
+    """
+    from gsuid_core.config import core_config
+    from gsuid_core.ai_core.register import get_registered_tools
+
+    ev = ctx.deps.ev
+    session_id = ev.session_id if ev else ""
+
+    # 当前 Persona 名称
+    persona_name = "未知"
+    try:
+        from gsuid_core.ai_core.persona import persona_config_manager
+
+        if session_id:
+            pn = persona_config_manager.get_persona_for_session(session_id)
+            if pn:
+                persona_name = pn
+    except Exception:
+        pass
+
+    # 能力边界：按分类汇总已注册工具
+    capability_lines: list[str] = []
+    try:
+        registry = get_registered_tools()
+        cat_labels = {
+            "self": "核心能力",
+            "buildin": "基础工具",
+            "common": "常用工具",
+            "media": "多媒体",
+            "default": "子任务工具",
+            "by_trigger": "插件工具",
+        }
+        for cat, tools in registry.items():
+            if not tools:
+                continue
+            label = cat_labels[cat] if cat in cat_labels else cat
+            names = "、".join(list(tools.keys())[:15])
+            capability_lines.append(f"  [{label}] {names}")
+    except Exception:
+        capability_lines.append("  [获取失败]")
+
+    # 主人
+    masters = core_config.get_config("masters") or []
+    masters_text = "、".join(str(m) for m in masters) if masters else "（未配置）"
+
+    # 当前会话语境
+    group_id = ev.group_id if ev else None
+    scope_desc = f"群聊 {group_id}" if group_id else "私聊"
+    context_tags_text = ""
+    try:
+        if group_id:
+            from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+            from gsuid_core.ai_core.memory.group_profile import get_context_tags
+
+            tags = await get_context_tags(make_scope_key(ScopeType.GROUP, str(group_id)))
+            if tags:
+                context_tags_text = "、".join(tags)
+    except Exception:
+        pass
+
+    lines = [
+        "【自我认知档案】",
+        "",
+        "身份基本信息:",
+        f"  Persona名称: {persona_name}",
+        "  运行框架: GsCore AI Core（PydanticAI Agent 架构）",
+        f"  会话ID: {session_id or '未知'}",
+        "",
+        "我能做到的事（工具能力边界）:",
+        *capability_lines,
+        "  [说明] 以上工具的具体可用性取决于已安装的插件",
+        "",
+        "我不能做到的事（诚实边界）:",
+        "  - 只能调用已注册的工具，无法直接控制外部系统",
+        "  - 无法保证实时信息 100% 准确",
+        "",
+        f"我的主人（最高权限用户）: {masters_text}",
+        "",
+        "当前会话:",
+        f"  所在场景: {scope_desc}",
+    ]
+    if context_tags_text:
+        lines.append(f"  群组语境: {context_tags_text}")
+
+    return "\n".join(lines)

@@ -2,6 +2,10 @@
 
 AI 定时任务 API，用于管理 AI 创建的定时/循环任务，支持增删改查启停。
 
+> **任务数据模型补充字段**：
+> - `structured_context`：创建任务时填写的结构化上下文（JSON 字符串）。执行任务的 SubAgent 优先从此字段读取上下文（如关联的持久状态键名、广播目标），而非反复解析 `task_prompt`。
+> - `last_result_summary`：上次执行的结果摘要。循环任务每次执行后自动回写，下次执行时注入消息，让 SubAgent 了解历史、避免重复操作。
+
 ## 21.1 获取任务列表
 ```
 GET /api/ai/scheduled_tasks
@@ -29,6 +33,8 @@ GET /api/ai/scheduled_tasks
             "persona_name": "default",
             "session_id": "onebot%%%private%%%user_001",
             "task_prompt": "帮我关注股市行情",
+            "structured_context": "{\"state_key\": \"stock:portfolio\"}",
+            "last_result_summary": "上次巡检：账户余额 98500，持仓 2 支",
             "status": "pending",
             "created_at": "2024-05-14T22:00:00",
             "executed_at": null,
@@ -67,6 +73,8 @@ GET /api/ai/scheduled_tasks/{task_id}
         "persona_name": "default",
         "session_id": "onebot%%%private%%%user_001",
         "task_prompt": "帮我关注股市行情",
+        "structured_context": "{\"state_key\": \"stock:portfolio\"}",
+        "last_result_summary": "上次巡检：账户余额 98500，持仓 2 支",
         "status": "pending",
         "created_at": "2024-05-14T22:00:00",
         "executed_at": null,

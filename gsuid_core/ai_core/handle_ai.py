@@ -16,14 +16,14 @@ import asyncio
 from typing import Optional
 from datetime import datetime
 
-# 导入表情包模块以注册 on_core_start 钩子和 @ai_tools
+# 导入表情包模块以注册 on_core_shutdown 钩子和 @ai_tools
 import gsuid_core.ai_core.meme.startup  # noqa: F401
 import gsuid_core.ai_core.buildin_tools.meme_tools  # noqa: F401
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import send_chat_result, prepare_content_payload
-from gsuid_core.ai_core.history import get_history_manager, format_history_for_agent
+from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.ai_router import (
     get_ai_session,
 )
@@ -31,12 +31,11 @@ from gsuid_core.ai_core.classifier import classifier_service
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.mood import update_mood, get_mood_description
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.ai_core.database.models import UserFavorability
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
-
-# 导入表情包模块以注册 on_core_start 钩子和 @ai_tools
 
 # 历史记录管理器
 history_manager = get_history_manager()
@@ -181,7 +180,7 @@ async def handle_ai_chat(bot: Bot, event: Event):
                         enable_system2=memory_config.enable_system2,
                         enable_user_global=memory_config.enable_user_global_memory,
                     )
-                    memory_context_text = mem_ctx.to_prompt_text(max_chars=2000)
+                    memory_context_text = mem_ctx.to_prompt_text(max_chars=memory_config.memory_inject_max_chars)
                     logger.debug(f"🧠 [Memory] 检索到记忆上下文 ({len(memory_context_text)} 字符)")
                     # 上报记忆检索统计
                     try:
@@ -252,10 +251,26 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 except Exception as e:
                     logger.debug(f"🎭 [Mood] 情绪描述获取失败: {e}")
 
+            # 群组语境注入（群组画像：主要话题 + 词汇映射表）
+            # 让 Agent 直接知道"深渊"在本群指什么、某个外号对应哪个角色
+            group_context_text = ""
+            if event.group_id:
+                try:
+                    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+                    from gsuid_core.ai_core.memory.group_profile import format_context_injection
+
+                    group_context_text = await format_context_injection(
+                        make_scope_key(ScopeType.GROUP, str(event.group_id))
+                    )
+                except Exception as e:
+                    logger.debug(f"🧠 [GsCore][AI] 群组语境注入失败: {e}")
+
             # 组装完整上下文
             context_parts = []
             if rag_context:
                 context_parts.append(rag_context)
+            if group_context_text:
+                context_parts.append(group_context_text)
             # Prompt-2.5: 用括号包裹情绪状态，暗示这是内心状态而非对话指令
             if mood_desc:
                 context_parts.append(f"（{mood_desc}。）")
@@ -294,11 +309,14 @@ async def handle_ai_chat(bot: Bot, event: Event):
             # ============================================================
             if session.persona_name:
                 mood_key = str(event.group_id) if event.group_id else str(event.user_id)
+                from gsuid_core.ai_core.utils import _is_master_user
+
                 mood_task = asyncio.create_task(
                     _update_persona_mood(
                         persona_name=session.persona_name,
                         group_id=mood_key,
                         user_message=query,
+                        is_master=_is_master_user(str(event.user_id)),
                     )
                 )
                 # 安全获取底层 _Bot 实例，兼容 Bot 和 MockBot
@@ -327,6 +345,7 @@ async def _update_persona_mood(
     persona_name: str,
     group_id: str,
     user_message: str,
+    is_master: bool = False,
 ) -> None:
     """根据用户消息内容推断情绪事件并更新 Persona 情绪状态
 
@@ -336,9 +355,14 @@ async def _update_persona_mood(
         persona_name: Persona 名称
         group_id: 群聊 ID
         user_message: 用户消息内容
+        is_master: 当前说话者是否为主人。主人发言会带来额外的正面情绪。
     """
     try:
         text = user_message.lower()
+
+        # 主人发言：带来温暖情绪（与具体内容关键词命中相独立，优先体现）
+        if is_master:
+            await update_mood(persona_name, group_id, "greeting", 0.35, "主人发言了")
 
         # 赞美关键词
         praise_keywords = ["可爱", "厉害", "棒", "好强", "喜欢你", "真好", "太帅了", "漂亮", "萌", "赞"]

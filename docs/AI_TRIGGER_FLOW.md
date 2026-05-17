@@ -678,8 +678,10 @@ async def _get_or_create_ai_session(
     history_manager = get_history_manager()
     history_manager.update_session_access(event)
 
+    registry = get_ai_session_registry()
+
     # 检查是否已存在 AI session
-    session = history_manager.get_ai_session(session_id)
+    session = registry.get_ai_session(session_id)
     is_group_chat = event.user_type != "direct"
     if session is not None:
         persona_name = persona_config_manager.get_persona_for_session(session_id)
@@ -703,8 +705,8 @@ async def _get_or_create_ai_session(
         create_by="Chat",
     )
 
-    # 保存到 HistoryManager
-    history_manager.set_ai_session(session_id, session)
+    # 保存到 AISessionRegistry
+    registry.set_ai_session(session_id, session)
     history_manager.update_session_access(event)
 
     return session
@@ -723,25 +725,32 @@ session_id = f"bot:{bot_id}:private:{user_id}"
 
 ### 5.2 Session 存储
 
-Session 存储在 `HistoryManager` 中 (`history/manager.py`):
+消息历史与 AI 会话对象已拆分为两个独立模块：
+
+- 通用消息历史 `HistoryManager`（`gsuid_core/message_history/manager.py`）—— 不涉及 AI，
+  负责记录 Bot 的消息输入/输出历史。
+- AI 会话对象注册表 `AISessionRegistry`（`gsuid_core/ai_core/session_registry.py`）—— 仅在
+  AI 开启时使用，负责 `GsCoreAIAgent` 对象的注册与生命周期。
+
+AI Session 对象存储在 `AISessionRegistry` 中：
 
 ```python
-class HistoryManager:
+class AISessionRegistry:
     def __init__(self):
-        self._ai_sessions: Dict[str, GsCoreAIAgent] = {}
+        self._ai_sessions: Dict[str, Any] = {}  # session_id -> GsCoreAIAgent
 
-    def get_ai_session(self, session_id: str) -> Optional[GsCoreAIAgent]:
+    def get_ai_session(self, session_id: str) -> Optional[Any]:
         return self._ai_sessions.get(session_id)
 
-    def set_ai_session(self, session_id: str, session: GsCoreAIAgent):
+    def set_ai_session(self, session_id: str, session: Any):
         self._ai_sessions[session_id] = session
 ```
 
 ### 5.3 内存保护机制 (滑动窗口 + 自动清理)
 
-HistoryManager 包含完善的内存保护机制，**不存在 OOM 风险**：
+消息历史与 AI 会话对象各自包含内存保护机制，**不存在 OOM 风险**：
 
-#### 5.3.1 滑动窗口机制
+#### 5.3.1 滑动窗口机制（`HistoryManager`）
 
 ```python
 # 每个 Session 使用 deque 限制消息数量
@@ -756,34 +765,39 @@ self._histories[storage_event] = deque(maxlen=self._max_messages)
 
 > **注意**：群聊场景下，`storage_event` 的 `user_id` 被设为空字符串，确保同一群聊的所有用户消息共享同一个 deque。
 
-#### 5.3.2 空闲 Session 清理
+#### 5.3.2 空闲 Session 清理（`AISessionRegistry`）
+
+空闲清理由 `AISessionRegistry` 负责，依据 `HistoryManager` 的 session 元数据
+判断 session 是否空闲：
 
 ```python
 IDLE_THRESHOLD = 1800  # 空闲阈值（秒），默认 30 分钟
 CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒），默认 1 小时
 
-# 启动清理循环
+# 启动清理循环（由 ai_core/statistics/startup.py 调用）
 async def start_cleanup_loop(self):
     self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
-# 清理逻辑
+# 清理逻辑：移除空闲 session 对应的 AI 会话对象
 async def cleanup_idle_sessions(self, idle_threshold: int = None):
-    # 清理超过阈值未活跃的 AI Session
-    if current_time - last_access > idle_threshold:
-        self.remove_ai_session(session_id)
+    history_manager = get_history_manager()
+    for session_id, info in history_manager.get_all_sessions_info().items():
+        if current_time - info["last_access"] > idle_threshold:
+            self.remove_ai_session(session_id)
 ```
 
-**效果**: 超过 30 分钟未活跃的 Session 自动从内存中清除。
+**效果**: 超过 30 分钟未活跃的 Session 对应的 AI 会话对象自动从内存中清除。
 
 #### 5.3.3 内存保护总结
 
-| 机制 | 配置 | 效果 |
-|------|------|------|
-| 滑动窗口 | `deque(maxlen=40)` | 每 Session 最多 40 条消息 |
-| AI 历史限制 | `MAX_AI_HISTORY_LENGTH=30` | AI 对话历史不超过 30 条 |
-| Agent 内部截断 | `max_history=50` | `GsCoreAIAgent.history` 超过 50 条时安全截断（含 ToolCall/ToolReturn 配对保护） |
-| 空闲清理 | `IDLE_THRESHOLD=1800` (30分钟) | 30 分钟不活跃的 Session 自动清除 |
-| 定时清理 | `CLEANUP_INTERVAL=3600` (1小时) | 每小时检查一次空闲 Session |
+| 机制 | 所属模块 | 配置 | 效果 |
+|------|---------|------|------|
+| 滑动窗口 | `HistoryManager` | `deque(maxlen=40)` | 每 Session 最多 40 条消息 |
+| Token 上限 | `HistoryManager` | `MAX_HISTORY_TOKENS=160000` | 单 Session Token 总量超限时淘汰最旧消息 |
+| AI 历史限制 | `AISessionRegistry` | `MAX_AI_HISTORY_LENGTH=30` | AI 对话历史不超过 30 条 |
+| Agent 内部截断 | `GsCoreAIAgent` | `max_history=50` | `GsCoreAIAgent.history` 超过 50 条时安全截断（含 ToolCall/ToolReturn 配对保护） |
+| 空闲清理 | `AISessionRegistry` | `IDLE_THRESHOLD=1800` (30分钟) | 30 分钟不活跃的 Session 自动清除 |
+| 定时清理 | `AISessionRegistry` | `CLEANUP_INTERVAL=3600` (1小时) | 每小时检查一次空闲 Session |
 
 > **⚠️ 重要改进**：`deque(maxlen=40)` 仅按消息条数截断，存在"隐形 Token 爆炸"风险。
 > 如果在群聊中，5 个人连续发了 10 篇 5000 字的长文，虽然只有 50 条消息（未触发限制），
@@ -844,8 +858,8 @@ Session ID 格式修改为：
 修改后的架构：
 - `Event.session_id` 格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}`
 - `get_persona_for_session()` 解析 session_id 提取 `group_id` 或 `user_id` 用于 Persona 匹配
-- `HistoryManager` 以 `Event` 对象为 key 存储历史记录，群聊时 `user_id` 置空确保同一群聊共享 deque
-- AI Session 的共享由 `history_manager._ai_sessions` 决定，按 `session_id` 字符串存储
+- `HistoryManager`（`gsuid_core/message_history`）以 `Event` 对象为 key 存储历史记录，群聊时 `user_id` 置空确保同一群聊共享 deque
+- AI Session 的共享由 `AISessionRegistry._ai_sessions` 决定，按 `session_id` 字符串存储
 
 #### 5.6.2 Persona Prompt 热重载的"缓存陷阱" (设计缺陷) ✅ 已修复
 
@@ -1041,9 +1055,14 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 
 系统中的工具加载分为两个独立的上下文：
 
-**主Agent (Main Agent)**
-- 使用 `get_main_agent_tools()` 获取基础工具集（仅 `self` + `buildin` 分类，始终加载）
-- 通过 `search_tools(non_category=["self", "buildin", "default"])` 按需加载 `by_trigger`、`common`、`mcp` 分类工具（向量检索，受 limit 数量限制）
+**主Agent (Main Agent)** — 工具列表按**三层工具池**组装：
+
+1. **保底工具池**：`get_main_agent_tools()` 无条件全部加载 `self` + `buildin` 两个分类的工具（搜索、记忆、自我认知 `get_self_info`、消息发送、持久状态 `state_*`、好感度、子Agent、定时任务**创建**入口 `add_once_task` / `add_interval_task` 等）。是否属于保底池**完全由工具注册时的 `category` 决定**，不依赖任何硬编码工具名单。定时任务的**管理**类工具（列出/查询/修改/取消/暂停/恢复）注册为 `common`，不在保底池，由查询工具池按需检索。
+2. **语境工具池**：群聊场景下，由 `get_scope_context_tags()` 读取群组画像的语境标签，再由 `get_tools_by_context_tags()` 自动加载声明了匹配 `context_tags` 的工具（最多 8 个）。
+3. **查询工具池**：由 `search_tools(non_category=["self", "buildin"])` 按用户 query 向量检索加载 `by_trigger`、`common`、`media`、`mcp` 工具。
+
+保底工具池全部保留；语境 + 查询工具池合并去重后限制附加数量上限（12 个）。
+
 - **不会调用 `default` 分类的工具**（子Agent专用）
 
 **子Agent (Sub Agent)**
@@ -1056,9 +1075,12 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 - `self` 工具仅限主Agent使用，防止子Agent直接操作用户数据
 - `default` 工具（如文件操作、系统命令）仅通过子Agent使用
 
+> 三层工具池机制解决了"口语化提问命中不到基础工具"与"群里问游戏问题命中不到游戏工具"的问题。
+> 详见 [`docs/AI_AGENT_CAPABILITY_UPGRADE.md`](AI_AGENT_CAPABILITY_UPGRADE.md)。
+
 #### 5.5.6 Self 工具 (`category="self"`)
 
-主Agent专属工具，用于自身能力调用，始终加载。
+主Agent专属工具，属于保底工具池，始终加载。
 
 | 工具 | 说明 |
 |------|------|
@@ -1066,37 +1088,40 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 | `update_user_favorability` | 更新用户好感度（增量） |
 | `send_message_by_ai` | 发送消息给用户 |
 | `create_subagent` | 创建子Agent |
+| `add_once_task` | 添加一次性定时任务（创建入口，口语化触发，需常驻保底池） |
+| `add_interval_task` | 添加循环任务（创建入口，口语化触发，需常驻保底池） |
 
 #### 5.5.7 主Agent内置工具 (`category="buildin"`)
 
-主Agent默认加载的核心工具，直接调用。
+主Agent默认加载的核心工具，属于保底工具池，直接调用。
 
 | 工具 | 说明 |
 |------|------|
 | `search_knowledge` | 检索知识库内容 |
-| `web_search` | Web搜索（支持 Tavily / Exa / MCP 三种提供方，通过 `websearch_provider` 配置切换） |
-| `web_fetch` | 网页抓取（转 Markdown） |
+| `web_search_tool` | Web搜索（支持 Tavily / Exa / MCP 三种提供方，通过 `websearch_provider` 配置切换） |
+| `web_fetch_tool` | 网页抓取（转 Markdown） |
 | `query_user_memory` | 查询用户记忆条数 |
-| `send_message_by_ai` | 发送消息/图片给用户（通过资源 ID 发送触发器拦截到的图片） |
-| `send_meme` | 发送表情包（根据情绪/场景智能选取） |
-| `collect_meme` | 手动收集表情包 |
-| `search_meme` | 搜索表情包库 |
+| `get_self_info` | 获取完整自我认知（身份/能力边界/主人） |
+| `state_get` / `state_set` / `state_delete` / `state_list` / `state_append` | 通用持久状态存储（跨会话键值数据） |
 
 #### 5.5.8 通常工具 (`category="common"`)
 
-当用户明确需要相关功能时按需加载。
+不属于保底池，当用户明确需要相关功能时由查询工具池向量检索按需加载。
 
 | 工具 | 说明 |
 |------|------|
-| `get_self_persona_info` | 获取自身Persona信息 |
-| `add_once_task` | 添加一次性定时任务 |
-| `add_interval_task` | 添加循环任务 |
-| `list_scheduled_tasks` | 列出所有定时任务 |
-| `query_scheduled_task` | 查询任务详情 |
-| `modify_scheduled_task` | 修改任务 |
-| `cancel_scheduled_task` | 取消任务 |
-| `pause_scheduled_task` | 暂停任务 |
-| `resume_scheduled_task` | 恢复任务 |
+| `search_image` | 检索图片资源 |
+| `get_self_persona_info` | 获取自身Persona资源信息 |
+| `set_user_favorability` | 设置用户好感度（绝对值） |
+| `send_meme` | 发送表情包（根据情绪/场景智能选取） |
+| `collect_meme` | 手动收集表情包 |
+| `search_meme` | 搜索表情包库 |
+| `list_scheduled_tasks` | 列出所有定时任务（管理类） |
+| `query_scheduled_task` | 查询任务详情（管理类） |
+| `modify_scheduled_task` | 修改任务（管理类） |
+| `cancel_scheduled_task` | 取消任务（管理类） |
+| `pause_scheduled_task` | 暂停任务（管理类） |
+| `resume_scheduled_task` | 恢复任务（管理类） |
 | `create_persistent_agent_tool` | 创建持久化子 Agent |
 | `send_agent_task_tool` | 向持久化 Agent 发送任务 |
 | `list_agents_tool` | 列出所有活跃的持久化 Agent |
@@ -1799,20 +1824,23 @@ class AIScheduledTask(BaseBotIDModel, table=True):
 
 **文件位置**: [`gsuid_core/ai_core/buildin_tools/scheduler.py`](gsuid_core/ai_core/buildin_tools/scheduler.py)
 
-每个 action 对应一个独立的 AI 工具函数，均使用 `@ai_tools(category="common")` 注册。
+每个 action 对应一个独立的 AI 工具函数。其中"创建"入口（`add_once_task` / `add_interval_task`）
+注册为 `@ai_tools(category="self")`，属保底工具池常驻加载——因其触发高度口语化（"每天下午三点半
+推送新闻"），向量检索难以命中；"管理"类工具（增删查改启停中的查改启停）注册为
+`@ai_tools(category="common")`，由查询工具池按 query 向量检索按需加载。
 
 **工具列表**：
 
-| 工具函数 | 说明 | 必需参数 |
-|----------|------|----------|
-| `add_once_task` | 添加一次性定时任务 | run_time, task_prompt |
-| `add_interval_task` | 添加循环任务 | interval_value, task_prompt, interval_type, max_executions |
-| `list_scheduled_tasks` | 列出当前用户的所有定时任务 | - |
-| `query_scheduled_task` | 查询指定任务的详细信息 | task_id |
-| `modify_scheduled_task` | 修改定时任务 | task_id, task_prompt?, max_executions? |
-| `cancel_scheduled_task` | 取消定时任务 | task_id |
-| `pause_scheduled_task` | 暂停循环任务 | task_id |
-| `resume_scheduled_task` | 恢复已暂停的循环任务 | task_id |
+| 工具函数 | category | 说明 | 必需参数 |
+|----------|----------|------|----------|
+| `add_once_task` | `self` | 添加一次性定时任务 | run_time, task_prompt |
+| `add_interval_task` | `self` | 添加循环任务 | interval_value, task_prompt, interval_type, max_executions |
+| `list_scheduled_tasks` | `common` | 列出当前用户的所有定时任务 | - |
+| `query_scheduled_task` | `common` | 查询指定任务的详细信息 | task_id |
+| `modify_scheduled_task` | `common` | 修改定时任务 | task_id, task_prompt?, max_executions? |
+| `cancel_scheduled_task` | `common` | 取消定时任务 | task_id |
+| `pause_scheduled_task` | `common` | 暂停循环任务 | task_id |
+| `resume_scheduled_task` | `common` | 恢复已暂停的循环任务 | task_id |
 
 **安全限制**（全局常量）：
 
@@ -2487,9 +2515,9 @@ class AIGroupUserActivityStats(BaseIDModel, table=True):
 @on_core_start
 async def init_ai_core_statistics():
     """初始化AI Core的Session管理器和定时巡检"""
-    # 启动 HistoryManager 的清理任务
-    history_manager = get_history_manager()
-    await history_manager.start_cleanup_loop()
+    # 启动 AISessionRegistry 的空闲清理任务
+    registry = get_ai_session_registry()
+    await registry.start_cleanup_loop()
 
     # 检查AI总开关，仅在启用时启动定时巡检
     if ai_config.get_config("enable").data:
@@ -3664,7 +3692,7 @@ web_search(query)
 │  5. 获取 AI Session                                                   │
 │     └── session = await get_ai_session(event)                        │
 │         ├── 构建 session_id                                           │
-│         ├── 检查 HistoryManager 中是否已存在                          │
+│         ├── 检查 AISessionRegistry 中是否已存在                       │
 │         ├── 不存在则创建新 Session                                     │
 │         │   ├── get_persona_for_session()                            │
 │         │   ├── build_persona_prompt()                                │

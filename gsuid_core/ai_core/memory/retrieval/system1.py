@@ -74,8 +74,8 @@ async def system1_search(
     one_hop_entity_ids: set[str] = set()
 
     for edge in edges:
-        source_id = edge.get("source_id", "")
-        target_id = edge.get("target_id", "")
+        source_id = edge["source_id"]
+        target_id = edge["target_id"]
         # 如果 edge 的 source 或 target 在检索到的 entities 中，另一端就是 one-hop neighbor
         if source_id in entity_ids_from_search and target_id:
             one_hop_entity_ids.add(target_id)

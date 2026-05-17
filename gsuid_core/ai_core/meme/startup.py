@@ -1,17 +1,16 @@
 """表情包模块启动初始化
 
-在 on_core_start 钩子中执行：
+由 ai_core/startup.py 的 init_ai_core() 统一调用：
 1. 确保目录存在
 2. 确保 Qdrant Collection 存在
 3. 启动后台打标 worker
 """
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start, on_core_shutdown
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.meme.library import get_memes_base_path
 
 
-@on_core_start(priority=5)
 async def init_meme_module():
     """初始化表情包模块"""
     from gsuid_core.ai_core.meme.config import meme_config

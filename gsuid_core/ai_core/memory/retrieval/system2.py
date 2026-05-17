@@ -165,13 +165,16 @@ class System2GlobalSelector:
                 seen_cat_ids.add(cat.id)
                 unique_cats.append(cat)
 
+        # 构建 entity ID → name 映射，用于 Edge 的 source_name / target_name 填充
+        entity_id_to_name: dict[str, str] = {e.id: e.name for e in entities}
+
         return System2Result(
             selected_entities=[
                 {
                     "id": e.id,
                     "name": e.name,
                     "summary": e.summary,
-                    "entity_type": getattr(e, "tag", ""),
+                    "entity_type": ",".join(e.tag) if isinstance(e.tag, list) else str(e.tag),
                     "layer": 0,
                     "score": 0.0,
                 }
@@ -193,6 +196,12 @@ class System2GlobalSelector:
                     # Bug-4.6 修复：直接使用 ed.source_entity_id 和 ed.target_entity_id，而非空字符串
                     "source_id": ed.source_entity_id,
                     "target_id": ed.target_entity_id,
+                    "source_name": entity_id_to_name[ed.source_entity_id]
+                    if ed.source_entity_id in entity_id_to_name
+                    else "",
+                    "target_name": entity_id_to_name[ed.target_entity_id]
+                    if ed.target_entity_id in entity_id_to_name
+                    else "",
                     "fact": ed.fact,
                     "weight": 0.0,
                     "score": 0.0,

@@ -7,10 +7,27 @@
 | 分类 | 说明 | 加载方式 |
 |------|------|---------|
 | `self` | 自我调用工具（如 create_subagent） | 主 Agent 默认加载 |
-| `buildin` | 内置工具（如 search_knowledge、send_message） | 主 Agent 默认加载 |
+| `buildin` | 内置工具（如 search_knowledge、send_message、state_*） | 主 Agent 默认加载 |
 | `default` | 默认分类工具 | 按需通过向量检索加载 |
 | `common` | 通用工具 | 按需通过向量检索加载 |
 | `mcp` | MCP 外部工具（用户自定义的 MCP 服务器工具） | 启动时自动注册，按需加载 |
+
+## 工具组装机制（三层工具池）
+
+主 Agent 每次运行时，工具列表按以下三层组装：
+
+| 层级 | 说明 |
+|------|------|
+| **保底工具池** | `self` + `buildin` 两个分类下的工具，**无条件全部加载**，不受向量搜索影响。是否属于保底池**完全由工具注册时声明的 `category` 决定**，不存在硬编码的工具名单 |
+| **语境工具池** | 群聊场景下，根据群组画像的语境标签自动加载匹配的工具集（工具需通过 `@ai_tools(context_tags=[...])` 声明语境，最多加载 8 个） |
+| **查询工具池** | 基于当前用户 query 的向量搜索结果（排除已属于保底池的 `self` / `buildin` 分类） |
+
+保底工具池全部保留；语境工具池 + 查询工具池合并去重后限制附加数量上限（12 个），避免 context 膨胀。
+
+> 该机制解决了"口语化提问命中不到基础工具"与"群里问游戏问题命中不到游戏工具"的问题。详见 [`docs/AI_AGENT_CAPABILITY_UPGRADE.md`](../../../docs/AI_AGENT_CAPABILITY_UPGRADE.md)。
+
+新增的 `state_get` / `state_set` / `state_delete` / `state_list` / `state_append` 通用持久状态存储工具，以及 `get_self_info` 自我认知工具，均注册为 `buildin` 分类，因此自动属于保底工具池。
+若插件希望某个工具成为保底工具，只需注册时使用 `category="buildin"`（或 `"self"`）即可，无需修改框架代码。
 
 ## 14.1 获取 AI 工具列表
 

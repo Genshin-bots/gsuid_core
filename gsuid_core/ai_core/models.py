@@ -96,6 +96,7 @@ class ToolBase:
     plugin: str  # 插件名称，core表示核心模块
     tool: "Tool[ToolContext]"
     check_func: Any  # 可选的权限检查函数
+    context_tags: List[str]  # 语境标签，用于语境工具池自动加载
 
     def __init__(
         self,
@@ -104,9 +105,11 @@ class ToolBase:
         plugin: str,
         tool: "Tool[ToolContext]",
         check_func: Any = None,
+        context_tags: Optional[List[str]] = None,
     ):
         self.name = name
         self.description = description
         self.plugin = plugin
         self.tool = tool
         self.check_func = check_func
+        self.context_tags = context_tags or []

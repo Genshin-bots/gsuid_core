@@ -5,11 +5,11 @@ from datetime import datetime
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import extract_json_from_text
 from gsuid_core.ai_core.models import Event
-from gsuid_core.ai_core.history import format_history_for_agent
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.ai_core.persona.prompts import ROLE_PLAYING_START
 from gsuid_core.ai_core.persona.resource import load_persona
 from gsuid_core.utils.database.base_models import async_maker

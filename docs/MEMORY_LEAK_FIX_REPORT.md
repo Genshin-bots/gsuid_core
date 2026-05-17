@@ -514,10 +514,10 @@ async def init_memory_system():
 
 **分析**：
 - `Bot` 实例在函数局部作用域中创建，函数返回后应可被 GC
-- 但若 `Bot` 实例被注册到某些全局缓存（如 `HistoryManager._ai_sessions`），则可能无法释放
-- `HistoryManager.cleanup_idle_sessions()` 已每 30 分钟清理一次空闲 session
+- 但若 `Bot` 实例被注册到某些全局缓存（如 `AISessionRegistry._ai_sessions`），则可能无法释放
+- `AISessionRegistry.cleanup_idle_sessions()` 已每 30 分钟清理一次空闲 session
 
-**建议**：监控 `HistoryManager._ai_sessions` 的大小，若持续增长，考虑缩短 `IDLE_THRESHOLD`。
+**建议**：监控 `AISessionRegistry._ai_sessions` 的大小，若持续增长，考虑缩短 `IDLE_THRESHOLD`。
 
 ### 3.4 反向查找 O(n) 性能问题（技术债务）
 

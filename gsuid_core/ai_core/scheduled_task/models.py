@@ -79,6 +79,12 @@ class AIScheduledTask(BaseBotIDModel, table=True):
     # 任务相关字段
     task_prompt: str = Field(title="任务描述")
 
+    # 结构化上下文：创建任务的 Agent 填写的 JSON 字符串，
+    # SubAgent 执行时优先从此字段读取上下文，而非解析 task_prompt
+    structured_context: Optional[str] = Field(title="结构化上下文", default=None)
+    # 上次执行的结果摘要，让循环任务的下一次执行了解历史
+    last_result_summary: Optional[str] = Field(title="上次执行结果摘要", default=None)
+
     status: str = Field(
         title="状态",
         default="pending",

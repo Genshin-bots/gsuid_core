@@ -204,7 +204,7 @@ class _Bot:
     ):
         # 记录 bot 回复到历史记录
         try:
-            from gsuid_core.ai_core.history import get_history_manager
+            from gsuid_core.message_history import get_history_manager
 
             history_manager = get_history_manager()
 
@@ -213,9 +213,9 @@ class _Bot:
                 _hist_group_id = None
                 _hist_user_id = target_id if target_id else bot_self_id
             else:
-                # 群聊场景
+                # 群聊场景：优先使用 bot_self_id，回退到 bot_id
                 _hist_group_id = target_id
-                _hist_user_id = bot_self_id
+                _hist_user_id = bot_self_id or bot_id or self.bot_id
 
             # 提取消息内容
             content = ""

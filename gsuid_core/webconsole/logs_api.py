@@ -10,7 +10,13 @@ from datetime import datetime
 from fastapi import Depends, Request
 from fastapi.responses import StreamingResponse
 
-from gsuid_core.logger import LOG_PATH, HistoryLogData, read_log, get_all_log_path
+from gsuid_core.logger import (
+    LOG_PATH,
+    LogEntry,
+    HistoryLogData,
+    read_log,
+    get_all_log_path,
+)
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -51,7 +57,7 @@ async def get_logs(
     """
     if start_date and end_date:
         # Multi-date range search
-        all_log_files = []
+        all_log_files: list[LogEntry] = []
         from datetime import timedelta
 
         current_date = datetime.strptime(start_date, "%Y-%m-%d")
@@ -81,6 +87,8 @@ async def get_logs(
         if not log_file_path.exists():
             return {"status": 404, "msg": "该日志不存在", "data": None}
         log_files = await history_log_data.get_parse_logs(log_file_path)
+        for log in log_files:
+            log["_date"] = date
 
     # Filter by level
     if level and level != "all":
@@ -95,22 +103,22 @@ async def get_logs(
         }
         filtered_logs = []
         for log in log_files:
-            raw_level = log.get("日志等级", "INFO").lower()
-            mapped_level = level_mapping.get(raw_level, "info")
+            raw_level = log["日志等级"].lower()
+            mapped_level = level_mapping[raw_level] if raw_level in level_mapping else "info"
             if mapped_level == level:
                 filtered_logs.append(log)
         log_files = filtered_logs
 
     # Filter by source
     if source and source != "all":
-        log_files = [log for log in log_files if log.get("来源", "core") == source]
+        log_files = [log for log in log_files if (log["来源"] if "来源" in log else "core") == source]
 
     # Filter by search text
     if search:
         search_lower = search.lower()
         filtered_logs = []
         for log in log_files:
-            message = log.get("内容", "")
+            message = log["内容"]
             if not isinstance(message, str):
                 message = json.dumps(message, ensure_ascii=False)
             if search_lower in message.lower():
@@ -134,15 +142,17 @@ async def get_logs(
         "fatal": "error",
     }
     for i, log in enumerate(log_page):
-        raw_level = log.get("日志等级", "INFO").lower()
-        level = level_mapping.get(raw_level, "info")
-        message = log.get("内容", "")
+        raw_level = log["日志等级"].lower()
+        level = level_mapping[raw_level] if raw_level in level_mapping else "info"
+        message = log["内容"]
         if not isinstance(message, str):
             message = json.dumps(message, ensure_ascii=False)
         formatted_logs.append(
             {
                 "id": start + i + 1,
-                "timestamp": log.get("时间", ""),
+                "log_id": log["id"],
+                "date": log["_date"] if "_date" in log else "",
+                "timestamp": log["时间"],
                 "level": level,
                 "source": "core",
                 "message": message,
@@ -231,7 +241,7 @@ async def get_log_stats(
     """
     if start_date and end_date:
         # Multi-date range search
-        all_log_files = []
+        all_log_files: list[LogEntry] = []
         from datetime import timedelta
 
         current_date = datetime.strptime(start_date, "%Y-%m-%d")
@@ -280,8 +290,8 @@ async def get_log_stats(
         debug_count = 0
 
         for log in log_files:
-            raw_level = log.get("日志等级", "INFO").lower()
-            mapped_level = level_mapping.get(raw_level, "info")
+            raw_level = log["日志等级"].lower()
+            mapped_level = level_mapping[raw_level] if raw_level in level_mapping else "info"
             if mapped_level == "info":
                 info_count += 1
             elif mapped_level == "warn":
@@ -304,22 +314,22 @@ async def get_log_stats(
             }
             filtered_logs = []
             for log in log_files:
-                raw_level = log.get("日志等级", "INFO").lower()
-                mapped_level = level_mapping.get(raw_level, "info")
+                raw_level = log["日志等级"].lower()
+                mapped_level = level_mapping[raw_level] if raw_level in level_mapping else "info"
                 if mapped_level == level:
                     filtered_logs.append(log)
             log_files = filtered_logs
 
         # Filter by source
         if source and source != "all":
-            log_files = [log for log in log_files if log.get("来源", "core") == source]
+            log_files = [log for log in log_files if (log["来源"] if "来源" in log else "core") == source]
 
         # Filter by search text
         if search:
             search_lower = search.lower()
             filtered_logs = []
             for log in log_files:
-                message = log.get("内容", "")
+                message = log["内容"]
                 if not isinstance(message, str):
                     message = json.dumps(message, ensure_ascii=False)
                 if search_lower in message.lower():
@@ -352,6 +362,107 @@ async def get_log_stats(
                 "per_page": per_page,
             },
         }
+
+
+@app.get("/api/logs/context")
+async def get_log_context(
+    request: Request,
+    log_id: int,
+    date: str,
+    before: int = 10,
+    after: int = 10,
+    _user: Dict = Depends(require_auth),
+):
+    """
+    获取指定日志前后的上下文日志
+
+    当用户搜索到某条关键日志后，可通过此接口获取该日志前后的日志记录，
+    以便快速定位和理解关键日志的上下文环境。
+
+    Args:
+        request: FastAPI 请求对象
+        log_id: 目标日志的原始行号（来自 /api/logs 返回的 log_id 字段）
+        date: 目标日志所在日期，格式 YYYY-MM-DD
+        before: 获取目标日志之前的日志条数，默认10，最大100
+        after: 获取目标日志之后的日志条数，默认10，最大100
+        _user: 认证用户信息
+
+    Returns:
+        status: 0成功，404日志不存在
+        data: 包含 target、before_logs、after_logs 的上下文对象
+    """
+    # 限制 before/after 最大值，防止一次请求过多数据
+    before = min(before, 100)
+    after = min(after, 100)
+
+    if date.endswith(".log"):
+        date = date.removesuffix(".log")
+
+    log_file_path = LOG_PATH / f"{date}.log"
+    if not log_file_path.exists():
+        return {"status": 404, "msg": "该日期的日志不存在", "data": None}
+
+    history_log_data = HistoryLogData()
+    log_files = await history_log_data.get_parse_logs(log_file_path)
+
+    # 通过原始行号 (id) 查找目标日志
+    target_index = None
+    for i, log in enumerate(log_files):
+        if log["id"] == log_id:
+            target_index = i
+            break
+
+    if target_index is None:
+        return {"status": 404, "msg": "未找到指定的日志条目", "data": None}
+
+    # 计算前后日志的切片范围
+    before_start = max(0, target_index - before)
+    after_end = min(len(log_files), target_index + after + 1)
+
+    before_logs = log_files[before_start:target_index]
+    after_logs = log_files[target_index + 1 : after_end]
+    target_log = log_files[target_index]
+
+    # 日志格式化辅助函数
+    level_mapping = {
+        "info": "info",
+        "warning": "warn",
+        "warn": "warn",
+        "error": "error",
+        "debug": "debug",
+        "critical": "error",
+        "fatal": "error",
+    }
+
+    def format_context_log(log: LogEntry) -> Dict:
+        raw_level = log["日志等级"].lower()
+        mapped_level = level_mapping[raw_level] if raw_level in level_mapping else "info"
+        message = log["内容"]
+        if not isinstance(message, str):
+            message = json.dumps(message, ensure_ascii=False)
+        return {
+            "log_id": log["id"],
+            "date": date,
+            "timestamp": log["时间"],
+            "level": mapped_level,
+            "source": "core",
+            "message": message,
+        }
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "target": format_context_log(target_log),
+            "before_logs": [format_context_log(log) for log in before_logs],
+            "after_logs": [format_context_log(log) for log in after_logs],
+            "before_count": len(before_logs),
+            "after_count": len(after_logs),
+            "total_in_date": len(log_files),
+            "has_more_before": before_start > 0,
+            "has_more_after": after_end < len(log_files),
+        },
+    }
 
 
 @app.get("/api/logs/stream")

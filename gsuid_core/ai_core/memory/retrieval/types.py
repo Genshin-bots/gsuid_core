@@ -30,6 +30,8 @@ class Edge(TypedDict):
     id: str
     source_id: str
     target_id: str
+    source_name: str  # source 实体名称，检索阶段填充，用于 fact 主语补全
+    target_name: str  # target 实体名称，检索阶段填充
     fact: str
     weight: float
     score: float

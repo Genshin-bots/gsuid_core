@@ -20,7 +20,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.server import _Bot
 from gsuid_core.ai_core.utils import send_chat_result
-from gsuid_core.ai_core.history import get_history_manager
+from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.ai_router import get_ai_session_by_id
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import persona_config_manager

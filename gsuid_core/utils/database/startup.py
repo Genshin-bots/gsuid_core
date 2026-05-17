@@ -28,6 +28,8 @@ exec_list = [
     "CREATE INDEX ix_subscribe_task_name ON Subscribe (task_name);",
     "CREATE INDEX ix_subscribe_uid ON Subscribe (uid);",
     "CREATE INDEX ix_subscribe_task_name_uid ON Subscribe (task_name, uid);",
+    "ALTER TABLE aischeduledtask ADD COLUMN structured_context TEXT DEFAULT NULL;",
+    "ALTER TABLE aischeduledtask ADD COLUMN last_result_summary TEXT DEFAULT NULL;",
 ]
 
 

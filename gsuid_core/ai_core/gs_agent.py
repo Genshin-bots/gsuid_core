@@ -32,7 +32,13 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import send_chat_result
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
-from gsuid_core.ai_core.rag.tools import ToolList, search_tools, get_main_agent_tools
+from gsuid_core.ai_core.rag.tools import (
+    ToolList,
+    search_tools,
+    get_main_agent_tools,
+    get_scope_context_tags,
+    get_tools_by_context_tags,
+)
 from gsuid_core.ai_core.configs.models import get_model_for_task
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.utils.resource_manager import RM
@@ -40,6 +46,66 @@ from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 _T = TypeVar("_T")
+
+# 框架默认的工具前摇台词（仅针对耗时较长、用户需要被告知"正在做事"的工具）。
+# 这是框架级默认值，必须保持「人格中性」——不带任何特定 Persona 的口吻或语气，
+# 任何 Persona 都应能直接套用而不出戏。带角色个性的台词应由各 Persona 在
+# config.json 的 "pre_tool_expressions" 字段中覆盖（值为空字符串表示该工具
+# 无需前摇）。早柚等具体人格的专属台词请写在其 Persona 配置内，切勿写在此处。
+_FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
+    "web_search_tool": "稍等，我查一下相关信息…",
+    "search_knowledge": "让我先查一下资料…",
+    "web_fetch_tool": "我打开这个链接看看…",
+    "create_subagent": "这个任务我来安排处理…",
+    "render_html_to_image": "稍等，正在生成图片…",
+    "render_markdown_to_image": "稍等，正在生成图片…",
+}
+
+# 每次运行最多发送的前摇数量，避免刷屏
+_MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
+
+# Persona 前摇配置缓存 {persona_name: dict}
+_persona_pre_tool_cache: dict[str, dict] = {}
+
+
+def _get_pre_tool_expression(persona_name: Optional[str], tool_name: str) -> Optional[str]:
+    """获取某工具的前摇台词。
+
+    优先使用 Persona config.json 中的 "pre_tool_expressions" 配置，
+    否则回退到框架默认台词。返回 None 表示该工具不需要前摇。
+    """
+    persona_table: dict = {}
+    if persona_name:
+        if persona_name not in _persona_pre_tool_cache:
+            table: dict = {}
+            try:
+                import json
+
+                from gsuid_core.ai_core.resource import PERSONA_PATH
+
+                config_path = PERSONA_PATH / persona_name / "config.json"
+                if config_path.exists():
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    if isinstance(cfg, dict) and "pre_tool_expressions" in cfg:
+                        raw = cfg["pre_tool_expressions"]
+                        if isinstance(raw, dict):
+                            table = raw
+            except Exception:
+                table = {}
+            _persona_pre_tool_cache[persona_name] = table
+        persona_table = _persona_pre_tool_cache[persona_name]
+
+    import random
+
+    for source in (persona_table, _FRAMEWORK_PRE_TOOL_EXPRESSIONS):
+        if tool_name in source:
+            value = source[tool_name]
+            if isinstance(value, list):
+                value = random.choice(value) if value else ""
+            value = str(value).strip()
+            return value or None
+    return None
 
 
 def _extract_run_context(history: List[ModelMessage], max_fact_len: int = 2000) -> str:
@@ -235,6 +301,10 @@ class GsCoreAIAgent:
         self.session_id: Optional[str] = session_id
         self.is_subagent: bool = is_subagent
 
+        # 连续无工具调用计数：连续多轮只输出文本、不调用任何工具时，
+        # 下一轮注入强制提醒，防止 Agent 以角色无知为由持续推脱
+        self._consecutive_no_tool_rounds: int = 0
+
         self.model = openai_chat_model
         if self.model is None:
             self.model = get_model_for_task(task_level)
@@ -309,10 +379,13 @@ class GsCoreAIAgent:
         # 模型不支持图片，调用图片理解模块转述
         if image_urls:
             logger.info(f"🖼️ [ImageUnderstand] 当前模型不支持图片，开始图片理解转述，共 {len(image_urls)} 张图片")
+            # 用户问题：用于把冗长的图片描述按需精简到与问题相关的部分
+            user_question = "\n".join(text_parts).strip()
             descriptions: list[str] = []
             for idx, url in enumerate(image_urls):
                 try:
                     description = await understand_image(image_url=url)
+                    description = await self._summarize_image_description(description, user_question)
                     descriptions.append(f"图片{idx + 1}: {description}")
                 except Exception as e:
                     logger.error(f"🖼️ [ImageUnderstand] 图片 {idx + 1} 理解失败: {e}")
@@ -324,6 +397,50 @@ class GsCoreAIAgent:
 
         combined = "\n".join(text_parts) if text_parts else ""
         return f"【用户发言】\n{combined}"
+
+    async def _summarize_image_description(
+        self,
+        description: str,
+        user_question: str,
+    ) -> str:
+        """对冗长的图片理解结果做二次摘要，只保留与用户问题直接相关的信息。
+
+        图片理解的完整描述常常长达上千字（含大量与当前问题无关的细节），
+        直接塞入上下文会严重浪费 Token。此处用低成本模型做一次聚焦摘要。
+
+        描述较短（不超过 400 字）时直接返回原文，不额外调用模型。
+        """
+        SUMMARY_THRESHOLD = 400
+        if not description or len(description) <= SUMMARY_THRESHOLD:
+            return description
+
+        try:
+            from gsuid_core.ai_core.configs.models import get_model_for_task
+
+            prompt = (
+                "以下是一张图片的完整描述。"
+                f"用户正在问：「{user_question or '（无明确问题）'}」。\n"
+                "请从图片描述中提取与用户问题直接相关的信息，用 1-3 句话概括，"
+                "无关信息完全省略。若用户没有明确问题，则用一句话概括图片主旨。\n\n"
+                f"【图片完整描述】\n{description}"
+            )
+            _summary_agent = Agent(
+                model=get_model_for_task("low"),
+                system_prompt="你是一个图片信息提炼助手，只输出精简摘要，不输出多余解释。",
+                model_settings={"max_tokens": 500},
+                tools=[],
+                toolsets=[],
+                retries=0,
+                output_type=str,
+            )
+            result = await _summary_agent.run(prompt, message_history=[])
+            summary = str(result.output).strip()
+            if summary:
+                logger.debug(f"🖼️ [ImageUnderstand] 图片描述二次摘要: {len(description)} -> {len(summary)} 字符")
+                return summary
+        except Exception as e:
+            logger.debug(f"🖼️ [ImageUnderstand] 图片描述二次摘要失败，使用原始描述: {e}")
+        return description
 
     @overload
     async def _execute_run(
@@ -370,6 +487,7 @@ class GsCoreAIAgent:
         from gsuid_core.ai_core.statistics import statistics_manager
 
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
+        _pre_tool_sent: int = 0  # 本次运行已发送的前摇数量
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
         if self.max_iterations is not None:
@@ -406,6 +524,21 @@ class GsCoreAIAgent:
                 final_user_message.append(f"\n\n{rag_context}")
             logger.info("🧠[GsCoreAIAgent] 已添加 RAG 上下文")
 
+        # 连续无工具调用检测：连续两轮以上只推脱不调工具时，注入强制提醒
+        if self.create_by in ["Chat", "Agent"] and self._consecutive_no_tool_rounds >= 2:
+            no_tool_reminder = (
+                "\n\n【⚠️ 系统检测】你已连续多轮未调用任何工具，"
+                "当前用户问题可能尚未得到有效回答。"
+                "请立即检查工具列表，选择最合适的工具调用，"
+                "或明确说明为何确实无工具可用——禁止以角色不懂为由跳过工具。"
+            )
+            if isinstance(final_user_message, str):
+                final_user_message += no_tool_reminder
+            elif isinstance(final_user_message, list):
+                final_user_message = list(final_user_message)
+                final_user_message.append(no_tool_reminder)
+            logger.debug("🧠 [GsCoreAIAgent] 已注入连续无工具调用强制提醒")
+
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(final_user_message)
         logger.trace(f"🧠[GsCoreAIAgent] 用户消息: {truncated_msg}")
@@ -426,16 +559,56 @@ class GsCoreAIAgent:
                 elif ev is not None:
                     qy = ev.raw_text
 
-                tools = await get_main_agent_tools(query=qy)
+                # 第一层：框架保底工具池（self + buildin 分类，由 category 决定，无条件全部加载）
+                core_tools = await get_main_agent_tools()
+                core_names = {t.name for t in core_tools}
 
+                # 附加工具池 = 语境工具池 + 查询工具池
+                extra_tools: ToolList = []
+
+                # 第二层：语境工具池——根据群组画像标签自动加载相关工具集
+                # （如原神群自动加载所有声明了 context_tags=["原神"] 的工具）
+                if ev is not None and ev.group_id:
+                    try:
+                        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+
+                        scope_key = make_scope_key(ScopeType.GROUP, str(ev.group_id))
+                        ctx_tags = await get_scope_context_tags(scope_key)
+                        if ctx_tags:
+                            ctx_tools = get_tools_by_context_tags(ctx_tags, max_count=8)
+                            if ctx_tools:
+                                extra_tools += ctx_tools
+                                logger.debug(
+                                    f"🧠 [GsCoreAIAgent] 语境工具池加载 {len(ctx_tools)} 个工具 (语境标签: {ctx_tags})"
+                                )
+                    except Exception as e:
+                        logger.debug(f"🧠 [GsCoreAIAgent] 语境工具池加载失败: {e}")
+
+                # 第三层：查询工具池——基于 query 的向量搜索（排除已在保底池的分类）
                 if qy:
                     logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
-                    tools += await search_tools(
+                    extra_tools += await search_tools(
                         query=qy,
                         limit=6,
                         non_category=["self", "buildin"],
                     )
-                logger.debug(f"🧠 [GsCoreAIAgent] 主Agent工具数量: {len(tools)}")
+
+                # 附加池去重：剔除与保底工具重名、以及附加池内部重复的工具
+                seen: Set[str] = set(core_names)
+                deduped_extra: ToolList = []
+                for t in extra_tools:
+                    if t.name in seen:
+                        continue
+                    seen.add(t.name)
+                    deduped_extra.append(t)
+
+                # 保底工具全部保留；附加工具池限制数量上限，避免 context 膨胀
+                MAX_EXTRA_TOOLS = 12
+                tools = core_tools + deduped_extra[:MAX_EXTRA_TOOLS]
+                logger.debug(
+                    f"🧠 [GsCoreAIAgent] 工具数量: {len(tools)} "
+                    f"(保底 {len(core_tools)} + 附加 {min(len(deduped_extra), MAX_EXTRA_TOOLS)})"
+                )
             else:
                 logger.debug(f"🧠 [GsCoreAIAgent] 传入Tools列表: {len(tools)}，已传入参数")
         else:
@@ -443,6 +616,7 @@ class GsCoreAIAgent:
 
         logger.debug(f"🧠 [GsCoreAIAgent] 工具列表: {[tool.name for tool in tools]}")
 
+        # 最终去重（兼容外部直接传入 tools 的情况）
         tools = list({obj.name: obj for obj in tools}.values())
         tool_names = [t.name for t in tools]
 
@@ -531,6 +705,21 @@ class GsCoreAIAgent:
                                 if self._session_logger is not None:
                                     self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
 
+                                # 代码层前摇触发：耗时工具调用前，主动发送一句角色化台词，
+                                # 避免用户面对沉默等待。每次运行最多发送 N 句，防止刷屏。
+                                if (
+                                    bot
+                                    and return_mode in ["always", "by_bot"]
+                                    and _pre_tool_sent < _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN
+                                ):
+                                    pre_expr = _get_pre_tool_expression(self.persona_name, part.tool_name)
+                                    if pre_expr:
+                                        _pre_tool_sent += 1
+                                        try:
+                                            await send_chat_result(bot, pre_expr, ev=ev)
+                                        except Exception as _e:
+                                            logger.debug(f"🧠 [GsCoreAIAgent] 前摇发送失败: {_e}")
+
                             # 大模型直接输出文本
                             elif isinstance(part, TextPart):
                                 _text = part.content.strip()
@@ -561,6 +750,13 @@ class GsCoreAIAgent:
                 logger.info("🧠 [GsCoreAIAgent] _agent.iter() 执行成功!")
 
                 self.history.extend(result.new_messages())
+
+                # 更新连续无工具调用计数（仅对交互式主 Agent 生效）
+                if self.create_by in ["Chat", "Agent"]:
+                    if _tool_call_list:
+                        self._consecutive_no_tool_rounds = 0
+                    else:
+                        self._consecutive_no_tool_rounds += 1
 
                 # 记录 Token 使用量和延迟统计
                 try:
@@ -602,8 +798,9 @@ class GsCoreAIAgent:
 
                 # 始终返回字符串类型
                 result_msg = str(result.output).strip()
+                # 工具调用列表只进调试日志，不追加到用户可见消息
                 if _tool_call_list:
-                    result_msg += f"\n\n（🔧 本次执行工具调用列表: {'、'.join(_tool_call_list)}）"
+                    logger.debug(f"🔧 [本次工具调用] {', '.join(_tool_call_list)}")
 
                 if self._session_logger is not None:
                     self._session_logger.log_run_end(result_msg)

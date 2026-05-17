@@ -10,10 +10,12 @@ from pydantic_ai import RunContext
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
-from gsuid_core.ai_core.history import get_history_manager
-from gsuid_core.ai_core.gs_agent import create_agent
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
+from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+# 注意：create_agent 在 create_subagent() 内部懒加载导入，
+# 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
 
 # 子Agent最大迭代次数上限，防止死循环
 _SUBAGENT_MAX_ITERATIONS = 3
@@ -81,6 +83,8 @@ async def create_subagent(
 
         import hashlib
 
+        from gsuid_core.ai_core.gs_agent import create_agent
+
         task_hash = hashlib.md5(task.encode()).hexdigest()[:8]
         subagent_session_id = f"subagent_{task_hash}"
         agent = create_agent(
@@ -93,15 +97,15 @@ async def create_subagent(
             is_subagent=True,
         )
 
-        # 将 SubAgent 注册到 HistoryManager，使其在运行期间可被内存查找
-        _history_manager = get_history_manager()
-        _history_manager.set_ai_session(subagent_session_id, agent)
+        # 将 SubAgent 注册到 AISessionRegistry，使其在运行期间可被内存查找
+        _session_registry = get_ai_session_registry()
+        _session_registry.set_ai_session(subagent_session_id, agent)
 
         # 建立主 Agent ↔ SubAgent 的关联（双向）
         try:
             parent_session_id = ctx.deps.ev.session_id if ctx.deps.ev else None
             if parent_session_id:
-                parent_session = _history_manager.get_ai_session(parent_session_id)
+                parent_session = _session_registry.get_ai_session(parent_session_id)
                 if parent_session is not None:
                     parent_logger = getattr(parent_session, "_session_logger", None)
                     sub_logger = getattr(agent, "_session_logger", None)
@@ -149,10 +153,10 @@ async def create_subagent(
             logger.error(f"❌[Subagent] 执行失败: {e}")
             return f"⚠️ 复杂任务执行失败，子Agent崩溃: {str(e)}"
         finally:
-            # SubAgent 执行完毕（无论成功或异常），确保日志落盘并从 HistoryManager 移除
+            # SubAgent 执行完毕（无论成功或异常），确保日志落盘并从 AISessionRegistry 移除
             if hasattr(agent, "_session_logger") and agent._session_logger is not None:
                 agent._session_logger.close()
             try:
-                _history_manager.remove_ai_session(subagent_session_id)
+                _session_registry.remove_ai_session(subagent_session_id)
             except Exception:
                 pass

@@ -370,7 +370,7 @@ def _register_trigger_as_ai_tool(
         _TOOL_REGISTRY["by_trigger"] = {}
 
     _TOOL_REGISTRY["by_trigger"][tool_func_name] = tool_base
-    logger.info(
+    logger.debug(
         f"🧠 [Trigger→AI] 触发器 [{primary_keyword}] 的函数 [{tool_func_name}] "
         f"已注册为 AI 工具 (分类: by_trigger, 插件: {plugin_name})"
     )

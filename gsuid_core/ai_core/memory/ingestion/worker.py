@@ -11,6 +11,7 @@ import time
 import queue as sync_queue
 import asyncio
 import threading
+from typing import TypedDict
 from collections import defaultdict
 
 from gsuid_core.logger import logger
@@ -23,6 +24,18 @@ from gsuid_core.ai_core.memory.ingestion.entity import extract_and_upsert_entiti
 from gsuid_core.ai_core.memory.ingestion.hiergraph import increment_entity_count, check_and_trigger_hierarchical_update
 
 from ...utils import extract_json_from_text
+
+
+class ExtractedResult(TypedDict):
+    """LLM 实体/关系提取的规整结果。
+
+    由 _restore_keys 将 LLM 原始 JSON 规整产出，entities / edges 两键必然存在。
+    列表元素仍为普通 dict（其形状由 _restore_keys 保证），以兼容下游
+    extract_and_upsert_* 的 list[dict] 入参，避免 list 不变性带来的类型级联。
+    """
+
+    entities: list[dict]
+    edges: list[dict]
 
 
 class IngestionWorker:
@@ -308,6 +321,26 @@ async def _ingest_batch(
 
     # Step 4: LLM 提取 + Entity 去重写入
     extracted = await _llm_extract(dialogue, scope_key)
+
+    # Step 4.5: 别名重定向（实体消歧 Level-1），并维护群组画像
+    alias_map = _apply_alias_redirection(extracted)
+    try:
+        from gsuid_core.ai_core.memory.group_profile import (
+            record_entity_tags,
+            record_term_mappings,
+        )
+
+        if alias_map:
+            await record_term_mappings(scope_key, alias_map)
+        # 累计实体标签频次，用于推断群组语境标签
+        all_tags: list[str] = []
+        for _e in extracted["entities"]:
+            all_tags.extend(_e["tag"] or [])
+        if all_tags:
+            await record_entity_tags(scope_key, all_tags)
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 群组画像更新失败: {e}")
+
     entity_name_to_id, new_entity_count = await extract_and_upsert_entities(
         scope_key=scope_key,
         entities_data=extracted["entities"],
@@ -386,7 +419,83 @@ async def _get_recent_episodes(
         return episodes
 
 
-async def _llm_extract(dialogue: str, scope_key: str) -> dict:
+def _apply_alias_redirection(extracted: ExtractedResult) -> dict[str, str]:
+    """别名重定向（实体消歧 Level-1：alias_of 硬规则）。
+
+    将 LLM 标注了 alias_of 的别名实体合并到正式实体，
+    并把所有 edge 中对别名的引用重写为正式名称，
+    从而保证关于同一事物的记忆不会被分散到多个独立实体上。
+
+    （Level-2 向量相似度合并已由 AIMemEntity.extract_and_upsert 的混合检索去重承担。）
+
+    Returns:
+        {别名: 正式名称} 映射，供群组画像 term_mappings 记录。
+    """
+    # extracted 由 _restore_keys 规整产出，entities / edges 两键必然存在
+    entities = extracted["entities"]
+    edges = extracted["edges"]
+
+    # 1. 收集别名映射
+    alias_map: dict[str, str] = {}
+    for e in entities:
+        alias = (e["name"] or "").strip()
+        formal = (e["alias_of"] or "").strip()
+        if alias and formal and alias != formal:
+            alias_map[alias] = formal
+
+    if not alias_map:
+        for e in entities:
+            e.pop("alias_of", None)
+        return {}
+
+    # 2. 解析传递性别名（别名指向别名）
+    def _resolve(name: str, _depth: int = 0) -> str:
+        if _depth > 5 or name not in alias_map:
+            return name
+        return _resolve(alias_map[name], _depth + 1)
+
+    resolved = {a: _resolve(a) for a in alias_map}
+
+    # 3. 重写 edge 的 src/tgt 引用
+    for edge in edges:
+        src = (edge["source"] or "").strip()
+        tgt = (edge["target"] or "").strip()
+        if src in resolved and resolved[src] != src:
+            edge["source"] = resolved[src]
+        if tgt in resolved and resolved[tgt] != tgt:
+            edge["target"] = resolved[tgt]
+
+    # 4. 合并别名实体到正式实体
+    by_name = {(e["name"] or "").strip(): e for e in entities}
+    kept: list[dict] = []
+    for e in entities:
+        name = (e["name"] or "").strip()
+        if name in resolved and resolved[name] != name:
+            formal = resolved[name]
+            formal_entity = by_name[formal] if formal in by_name else None
+            alias_summary = (e["summary"] or "").strip()
+            if formal_entity is not None:
+                # 把别名摘要并入正式实体，别名本身不独立存储
+                if alias_summary and alias_summary not in (formal_entity["summary"] or ""):
+                    formal_entity["summary"] = (
+                        f"{formal_entity['summary'] or ''}\n（别名'{name}'：{alias_summary}）"
+                    ).strip()
+            else:
+                # 正式实体不在本批次，把别名实体重命名为正式名称后保留
+                e["name"] = formal
+                e.pop("alias_of", None)
+                kept.append(e)
+            continue
+        e.pop("alias_of", None)
+        kept.append(e)
+
+    extracted["entities"] = kept
+    if resolved:
+        logger.debug(f"🧠 [Memory] 别名重定向: {resolved}")
+    return resolved
+
+
+async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     """调用 LLM 从对话文本中提取 Entity 和 Edge。
 
     使用结构化 JSON 输出，减少解析失败风险。
@@ -423,8 +532,8 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     all_edges: list[dict] = []
     for i, chunk in enumerate(chunks):
         result = await _llm_extract_single(chunk, scope_key)
-        all_entities.extend(result["entities"] if "entities" in result else [])
-        all_edges.extend(result["edges"] if "edges" in result else [])
+        all_entities.extend(result["entities"])
+        all_edges.extend(result["edges"])
 
     # 按 name 去重 Entity（同名保留后出现的，信息更完整）
     seen_names: dict[str, dict] = {}
@@ -451,7 +560,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     }
 
 
-async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
+async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
     """单次 LLM 提取调用，直接解析 JSON（不使用 output_type，避免 thinking trace）
 
     使用简写键名 n/s/t/u/src/tgt/f，需要在解析后还原为完整键名。
@@ -477,34 +586,56 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
         dialogue_content=dialogue,
     )
 
-    def _restore_keys(data: dict) -> dict:
-        """将简写键名还原为完整键名"""
-        result = {"entities": [], "edges": []}
+    def _restore_keys(data: dict) -> ExtractedResult:
+        """将 LLM 输出的简写键名 JSON 还原为完整键名结构。
 
-        for e in data.get("entities", []):
-            result["entities"].append(
-                {
-                    "name": e.get("n", ""),
-                    "summary": e.get("s", ""),
-                    "tag": e.get("t", []),
-                    "user_id": e.get("u"),
-                    "scope_hint": e.get("scope_hint"),
-                    "is_speaker": "Speaker" in e.get("t", []),
-                }
-            )
+        data 是 LLM 直接产出的原始 JSON，形状不受信任，因此逐字段用
+        in + isinstance 守卫取值，不使用 .get 兜底——缺失或类型不符即取默认值。
+        """
+        entities: list[dict] = []
+        edges: list[dict] = []
 
-        for edge in data.get("edges", []):
-            result["edges"].append(
-                {
-                    "source": edge.get("src", ""),
-                    "target": edge.get("tgt", ""),
-                    "fact": edge.get("f", ""),
-                    "user_id": edge.get("u"),
-                    "scope_hint": edge.get("scope_hint"),
-                }
-            )
+        raw_entities = data["entities"] if "entities" in data else None
+        if isinstance(raw_entities, list):
+            for e in raw_entities:
+                if not isinstance(e, dict):
+                    continue
+                name = e["n"] if "n" in e and isinstance(e["n"], str) else ""
+                summary = e["s"] if "s" in e and isinstance(e["s"], str) else ""
+                tag = e["t"] if "t" in e and isinstance(e["t"], list) else []
+                user_id = e["u"] if "u" in e and isinstance(e["u"], str) else None
+                scope_hint = e["scope_hint"] if "scope_hint" in e and isinstance(e["scope_hint"], str) else None
+                alias_of = e["a"] if "a" in e and isinstance(e["a"], str) and e["a"] else None
+                entities.append(
+                    {
+                        "name": name,
+                        "summary": summary,
+                        "tag": tag,
+                        "user_id": user_id,
+                        "scope_hint": scope_hint,
+                        "is_speaker": "Speaker" in tag,
+                        "alias_of": alias_of,
+                    }
+                )
 
-        return result
+        raw_edges = data["edges"] if "edges" in data else None
+        if isinstance(raw_edges, list):
+            for edge in raw_edges:
+                if not isinstance(edge, dict):
+                    continue
+                edges.append(
+                    {
+                        "source": edge["src"] if "src" in edge and isinstance(edge["src"], str) else "",
+                        "target": edge["tgt"] if "tgt" in edge and isinstance(edge["tgt"], str) else "",
+                        "fact": edge["f"] if "f" in edge and isinstance(edge["f"], str) else "",
+                        "user_id": edge["u"] if "u" in edge and isinstance(edge["u"], str) else None,
+                        "scope_hint": (
+                            edge["scope_hint"] if "scope_hint" in edge and isinstance(edge["scope_hint"], str) else None
+                        ),
+                    }
+                )
+
+        return {"entities": entities, "edges": edges}
 
     try:
         agent = create_agent(

@@ -5,13 +5,12 @@ Scheduled Task 启动模块
 """
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start, on_core_shutdown
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 from .executor import reload_pending_tasks, cleanup_completed_tasks
 
 
-@on_core_start
 async def init_scheduled_tasks():
     """
     初始化定时任务调度器

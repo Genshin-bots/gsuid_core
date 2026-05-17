@@ -15,7 +15,7 @@ try:
         init_fontconfig,
     )
 except ImportError as e:
-    print(f"缺少 htmlkit 库，请先安装：pip install htmlkit, {e}")
+    print(f"缺少 htmlkit 库，请先安装：pip install pyrenderhtml, {e}")
 
 from gsuid_core.logger import logger
 

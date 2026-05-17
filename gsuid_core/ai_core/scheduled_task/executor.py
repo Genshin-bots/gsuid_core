@@ -127,9 +127,18 @@ async def execute_scheduled_task(task_id: str) -> None:
         # 获取 AI session（会自动加载 persona）
         session: GsCoreAIAgent = await get_ai_session(ev)
 
-        # 构建任务消息
+        # 构建任务消息（含结构化上下文与上次执行摘要）
+        context_block = ""
+        if task.structured_context:
+            context_block += f"\n\n【结构化上下文】\n{task.structured_context}"
+        if task.last_result_summary:
+            context_block += f"\n\n【上次执行结果摘要】\n{task.last_result_summary}"
+        if task.task_type == "interval":
+            exec_no = (task.current_executions or 0) + 1
+            context_block += f"\n\n【执行信息】这是第 {exec_no} 次执行"
         task_message = (
-            f"【定时任务执行】请完成以下任务，直接输出结果（不要有多余的解释）：\n\n任务内容：{task.task_prompt}"
+            "【定时任务执行】请完成以下任务，直接输出结果（不要有多余的解释）："
+            f"\n\n任务内容：{task.task_prompt}{context_block}"
         )
 
         # 通过 session 执行任务
@@ -138,6 +147,9 @@ async def execute_scheduled_task(task_id: str) -> None:
             bot=bot_instance,
             ev=ev,
         )
+
+        # 截取本次执行结果摘要，供下次执行参考
+        result_summary = str(result)[:200] if result else None
 
         # 5. 根据任务类型处理
         if task.task_type == "interval":
@@ -157,6 +169,7 @@ async def execute_scheduled_task(task_id: str) -> None:
                         "executed_at": datetime.now(TZ_SHANGHAI),
                         "current_executions": current_exec,
                         "result": result,
+                        "last_result_summary": result_summary,
                     },
                 )
                 logger.info(
@@ -189,6 +202,7 @@ async def execute_scheduled_task(task_id: str) -> None:
                         "current_executions": current_exec,
                         "next_run_time": next_run,
                         "result": result,
+                        "last_result_summary": result_summary,
                     },
                 )
                 logger.info(
@@ -203,6 +217,7 @@ async def execute_scheduled_task(task_id: str) -> None:
                     "status": "executed",
                     "executed_at": datetime.now(TZ_SHANGHAI),
                     "result": result,
+                    "last_result_summary": result_summary,
                 },
             )
 
@@ -217,13 +232,15 @@ async def execute_scheduled_task(task_id: str) -> None:
     except Exception as e:
         logger.error(f"❌ [ScheduledTask] 任务执行失败: {task_id}, error={e}")
 
-        # 更新任务状态为失败
+        # 更新任务状态为失败；同时把失败信息写入 last_result_summary，
+        # 否则循环任务下次执行会读到上一次"成功"的过期摘要，无从得知上次已失败。
         await AIScheduledTask.update_data_by_data(
             select_data={"task_id": task_id},
             update_data={
                 "status": "failed",
                 "executed_at": datetime.now(TZ_SHANGHAI),
                 "error_message": str(e),
+                "last_result_summary": f"[上次执行失败] {str(e)[:150]}",
             },
         )
 

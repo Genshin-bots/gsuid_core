@@ -145,36 +145,42 @@ from gsuid_core.ai_core.web_search.search import (
 # 内置工具（可直接导入使用）
 # ============================================================
 from gsuid_core.ai_core.buildin_tools import (
-    # --- Self 工具 (category="self") ---
+    # --- Self 工具 (category="self") --- 保底池，无条件全部加载
     # 只有主Agent能调用，用于核心操作
     query_user_favorability,    # 查询用户好感度
     update_user_favorability,   # 更新用户好感度（增量）
     create_subagent,            # 创建子Agent完成特定任务
     send_message_by_ai,         # 发送消息给用户
-    add_once_task,              # 添加一次性定时任务
-    add_interval_task,          # 添加循环任务
-    list_scheduled_tasks,       # 列出所有定时任务
-    query_scheduled_task,       # 查询任务详情
-    modify_scheduled_task,      # 修改任务
-    cancel_scheduled_task,      # 取消任务
-    pause_scheduled_task,       # 暂停任务
-    resume_scheduled_task,      # 恢复任务
+    add_once_task,              # 添加一次性定时任务（创建入口，口语化触发）
+    add_interval_task,          # 添加循环任务（创建入口，口语化触发）
 
-    # --- Buildin 工具 (category="buildin") ---
+    # --- Buildin 工具 (category="buildin") --- 保底池，无条件全部加载
     # 主Agent调用时也会加载，直接调用不会拒绝
     search_knowledge,           # 知识库检索
-    search_image,               # 图片检索
     web_search_tool,            # Web搜索
     web_fetch_tool,             # 网页抓取（转Markdown）
     query_user_memory,          # 查询用户记忆
-    get_self_persona_info,      # 获取自身Persona信息
-    set_user_favorability,      # 设置用户好感度（绝对值）
+    get_self_info,              # 获取完整自我认知（身份/能力边界/主人）
+    state_get,                  # 读取通用持久状态
+    state_set,                  # 写入通用持久状态
+    state_delete,               # 删除通用持久状态
+    state_list,                 # 列出通用持久状态键
+    state_append,               # 向列表型持久状态追加元素
 
     # --- Common 工具 (category="common") ---
-    # 有选择地调用，当用户明确需要相关功能时使用
+    # 不属于保底池，向量检索按需加载，用户明确需要相关功能时才出现
+    search_image,               # 图片检索
+    get_self_persona_info,      # 获取自身Persona资源信息
+    set_user_favorability,      # 设置用户好感度（绝对值）
     send_meme,                  # 发送表情包
     collect_meme,               # 收藏表情包
     search_meme,                # 搜索表情包
+    list_scheduled_tasks,       # 列出所有定时任务（管理类）
+    query_scheduled_task,       # 查询任务详情（管理类）
+    modify_scheduled_task,      # 修改任务（管理类）
+    cancel_scheduled_task,      # 取消任务（管理类）
+    pause_scheduled_task,       # 暂停任务（管理类）
+    resume_scheduled_task,      # 恢复任务（管理类）
     create_persistent_agent_tool,  # 创建持久化子Agent
     send_agent_task_tool,       # 向持久化Agent发送任务
     list_agents_tool,           # 列出所有活跃的持久化Agent
@@ -288,6 +294,7 @@ def ai_tools(
     *,
     category: str = "default",
     check_func: Optional[CheckFunc] = None,
+    context_tags: Optional[List[str]] = None,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 ```
@@ -298,7 +305,17 @@ def ai_tools(
 |------|------|--------|------|
 | `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"self"` 为主Agent核心工具，`"buildin"` 为内置工具，`"common"` 为通用工具，`"default"` 为子Agent工具 |
 | `check_func` | `Callable` | `None` | 可选的权限校验函数，签名为 `async def check(ev: Event) -> Tuple[bool, str]` |
+| `context_tags` | `List[str]` | `None` | 语境标签。声明后，框架会在匹配该语境的群聊中通过**语境工具池**自动加载本工具，无需依赖向量搜索命中 |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
+
+> **语境工具池**：插件可通过 `context_tags` 声明工具的适用语境，例如：
+> ```python
+> @ai_tools(category="genshin", context_tags=["原神", "Genshin", "游戏"])
+> async def get_genshin_characters(ctx: RunContext[ToolContext], user_id: str) -> str:
+>     """获取指定用户的原神角色列表及练度信息"""
+>     ...
+> ```
+> 当框架通过群组画像判定当前群聊语境为"原神"时，该群内所有声明了 `原神` 标签的工具会被自动加入工具列表（最多 8 个），解决"群里问游戏问题但向量搜索命中不到游戏工具"的问题。语境标签由记忆系统在摄入群组对话时自动维护，无需人工配置。
 
 ### 2.3 被装饰函数要求
 
@@ -416,28 +433,35 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
         "update_user_favorability": ToolBase(...),
         "create_subagent": ToolBase(...),
         "send_message_by_ai": ToolBase(...),
-        "add_once_task": ToolBase(...),
-        "add_interval_task": ToolBase(...),
+        "add_once_task": ToolBase(...),       # 定时任务"创建"入口，口语化触发
+        "add_interval_task": ToolBase(...),   # 定时任务"创建"入口，口语化触发
+    },
+    "buildin": {
+        "search_knowledge": ToolBase(...),
+        "web_search_tool": ToolBase(...),
+        "web_fetch_tool": ToolBase(...),
+        "query_user_memory": ToolBase(...),
+        "get_self_info": ToolBase(...),
+        "state_get": ToolBase(...),
+        "state_set": ToolBase(...),
+        "state_delete": ToolBase(...),
+        "state_list": ToolBase(...),
+        "state_append": ToolBase(...),
+    },
+    "common": {
+        "search_image": ToolBase(...),
+        "get_self_persona_info": ToolBase(...),
+        "set_user_favorability": ToolBase(...),
+        "send_meme": ToolBase(...),
+        "collect_meme": ToolBase(...),
+        "search_meme": ToolBase(...),
+        # 定时任务"管理"类——用户显式提需求时按需向量检索加载
         "list_scheduled_tasks": ToolBase(...),
         "query_scheduled_task": ToolBase(...),
         "modify_scheduled_task": ToolBase(...),
         "cancel_scheduled_task": ToolBase(...),
         "pause_scheduled_task": ToolBase(...),
         "resume_scheduled_task": ToolBase(...),
-    },
-    "buildin": {
-        "search_knowledge": ToolBase(...),
-        "search_image": ToolBase(...),
-        "web_search_tool": ToolBase(...),
-        "web_fetch_tool": ToolBase(...),
-        "query_user_memory": ToolBase(...),
-        "get_self_persona_info": ToolBase(...),
-        "set_user_favorability": ToolBase(...),
-    },
-    "common": {
-        "send_meme": ToolBase(...),
-        "collect_meme": ToolBase(...),
-        "search_meme": ToolBase(...),
         "create_persistent_agent_tool": ToolBase(...),
         "send_agent_task_tool": ToolBase(...),
         "list_agents_tool": ToolBase(...),
@@ -464,15 +488,20 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 
 ### 3.2 分类说明
 
-| 分类名 | 说明 | 谁可以调用 |
+| 分类名 | 说明 | 加载方式 |
 |--------|------|-----------|
-| `"self"` | 核心自我操作工具，只有主Agent能调用 | 主Agent（Main Agent） |
-| `"buildin"` | 内置工具，主Agent调用时也会加载 | 主Agent（Main Agent） |
-| `"common"` | 通用工具，有选择地调用 | 主Agent（Main Agent） |
-| `"media"` | 多媒体渲染工具 | 主Agent（Main Agent） |
-| `"default"` | 子Agent工具，需通过 `create_subagent` 调用 | 子Agent（Sub Agent） |
-| `"mcp"` | MCP 外部工具，启动时自动注册，按需加载 | 主Agent（Main Agent） |
-| `"<自定义>"` | 插件自定义分类 | 根据配置决定 |
+| `"self"` | 核心自我操作工具，只有主Agent能调用 | **保底**：无条件全部加载进主Agent |
+| `"buildin"` | 框架基础工具（搜索/记忆/自我认知/持久状态等） | **保底**：无条件全部加载进主Agent |
+| `"common"` | 通用工具，有选择地调用 | 向量检索按需加载 |
+| `"media"` | 多媒体渲染工具 | 向量检索按需加载 |
+| `"default"` | 子Agent工具，需通过 `create_subagent` 调用 | 子Agent向量检索按需加载 |
+| `"mcp"` | MCP 外部工具，启动时自动注册 | 向量检索按需加载 |
+| `"<自定义>"` | 插件自定义分类 | 向量检索按需加载 |
+
+> **框架保底工具池**：`self` 与 `buildin` 两个分类构成"框架保底工具池"，
+> `get_main_agent_tools()` 会把这两个分类下的工具**无条件全部加载**进主Agent，不受向量搜索影响。
+> 一个工具是否属于保底池，**完全由它注册时声明的 `category` 决定**，框架内不存在硬编码的工具名单。
+> 因此插件若希望某个工具成为主Agent的保底工具，注册时使用 `category="buildin"` 即可。
 
 ### 3.3 Agent 调用架构
 
@@ -481,25 +510,27 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 │              主Agent (Main Agent)                   │
 │    使用 category="self", "buildin", "common", "media" │
 │                                                     │
-│  Self工具:                                           │
+│  Self工具（保底，全部加载）:                          │
 │  - query_user_favorability - update_user_favorability│
 │  - create_subagent        - send_message_by_ai      │
 │  - add_once_task          - add_interval_task        │
+│                                                     │
+│  Buildin工具（保底，全部加载）:                       │
+│  - search_knowledge       - web_search_tool          │
+│  - web_fetch_tool         - query_user_memory        │
+│  - get_self_info                                     │
+│  - state_get/set/delete/list/append                  │
+│                                                     │
+│  Common工具（向量检索按需加载）:                      │
+│  - search_image           - get_self_persona_info    │
+│  - set_user_favorability                             │
+│  - send_meme              - collect_meme             │
+│  - search_meme                                      │
 │  - list_scheduled_tasks   - query_scheduled_task     │
 │  - modify_scheduled_task  - cancel_scheduled_task    │
 │  - pause_scheduled_task   - resume_scheduled_task    │
-│                                                     │
-│  Buildin工具:                                        │
-│  - search_knowledge       - search_image             │
-│  - web_search_tool        - web_fetch_tool           │
-│  - query_user_memory      - get_self_persona_info    │
-│  - set_user_favorability                             │
-│                                                     │
-│  Common工具:                                         │
-│  - send_meme              - collect_meme             │
-│  - search_meme            - create_persistent_agent  │
-│  - send_agent_task        - list_agents              │
-│  - stop_agent                                       │
+│  - create_persistent_agent - send_agent_task         │
+│  - list_agents            - stop_agent               │
 │                                                     │
 │  Media工具:                                          │
 │  - render_html_to_image   - render_markdown_to_image │
@@ -753,15 +784,19 @@ async def run(
 
 **返回**: AI 响应字符串，或指定的 Pydantic 模型实例
 
-### 5.3 get_main_agent_tools - 获取主Agent工具列表
+### 5.3 get_main_agent_tools - 获取主Agent保底工具集
 
 ```python
 from gsuid_core.ai_core.rag.tools import get_main_agent_tools
 
-def get_main_agent_tools() -> ToolList
+async def get_main_agent_tools(query: str = "") -> ToolList
 ```
 
-返回所有 `category="self"` 和 `"buildin"` 的工具列表，用于构建主Agent。
+返回**框架保底工具池**——即 `category="self"` 和 `category="buildin"` 两个分类下的**全部**工具，
+无条件加载、不受向量搜索影响。`query` 参数已废弃保留（仅作签名兼容），保底工具不再依赖 query 筛选。
+
+主Agent 的完整工具列表 = 保底工具池（本函数）+ 语境工具池（`get_tools_by_context_tags`）
++ 查询工具池（`search_tools`），后两者合并去重后受附加数量上限约束。
 
 ### 5.4 handle_ai_chat - AI聊天入口
 
@@ -1089,10 +1124,19 @@ async def add_interval_task(
 ) -> str
 ```
 
+---
+
+### 9.1.1 定时任务管理工具（category="common"）
+
+定时任务的"管理"类工具（列出/查询/修改/取消/暂停/恢复）**不属于保底池**，由 `search_tools()`
+按用户 query 向量检索按需加载——用户使用这些功能时通常会显式带任务 ID 或明确表达"取消任务""暂停任务"
+等需求，向量命中率高。而"创建"入口 `add_once_task` / `add_interval_task` 因口语化触发（"每天下午三点
+半给我推送新闻"）向量难命中，故保留在 `self` 保底池。
+
 #### list_scheduled_tasks - 列出所有定时任务
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def list_scheduled_tasks(
     ctx: RunContext[ToolContext],
 ) -> str
@@ -1101,7 +1145,7 @@ async def list_scheduled_tasks(
 #### query_scheduled_task - 查询任务详情
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def query_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,                # 任务ID
@@ -1111,7 +1155,7 @@ async def query_scheduled_task(
 #### modify_scheduled_task - 修改任务
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def modify_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,                # 任务ID
@@ -1123,7 +1167,7 @@ async def modify_scheduled_task(
 #### cancel_scheduled_task - 取消任务
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def cancel_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,                # 任务ID
@@ -1133,7 +1177,7 @@ async def cancel_scheduled_task(
 #### pause_scheduled_task - 暂停任务
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def pause_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,                # 任务ID
@@ -1143,7 +1187,7 @@ async def pause_scheduled_task(
 #### resume_scheduled_task - 恢复任务
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def resume_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,                # 任务ID
@@ -1152,9 +1196,9 @@ async def resume_scheduled_task(
 
 ---
 
-### 9.2 Buildin 工具（category="buildin"）
+### 9.2 Buildin 工具（category="buildin"）—— 框架保底工具池
 
-主Agent调用时也会加载，直接调用不会拒绝。
+`buildin` 分类下的工具属于**框架保底工具池**，主Agent 无条件全部加载，不受向量搜索影响。
 
 #### search_knowledge - 知识库检索
 
@@ -1165,18 +1209,6 @@ async def search_knowledge(
     query: str,                      # 自然语言查询
     category: Optional[str] = None, # 知识类别筛选（可选）
     plugin: Optional[str] = None,   # 插件来源筛选（可选）
-    limit: int = 10,                # 最大返回数量
-    score_threshold: float = 0.45,  # 相似度阈值（0~1）
-) -> str
-```
-
-#### search_image - 图片检索
-
-```python
-@ai_tools(category="buildin")
-async def search_image(
-    ctx: RunContext[ToolContext],
-    query: str,                      # 自然语言查询
     limit: int = 10,                # 最大返回数量
     score_threshold: float = 0.45,  # 相似度阈值（0~1）
 ) -> str
@@ -1215,10 +1247,79 @@ async def query_user_memory(
 ) -> str
 ```
 
-#### get_self_persona_info - 获取自身 Persona 信息
+#### get_self_info - 获取完整自我认知
 
 ```python
 @ai_tools(category="buildin")
+async def get_self_info(ctx: RunContext[ToolContext]) -> str
+```
+
+返回身份、运行框架、能力边界（按分类汇总的已注册工具）、主人列表、当前会话语境标签。
+当用户问"你是谁""你能做什么""你的主人是谁"，或需要判断任务是否在能力范围内时调用。
+
+#### state_get / state_set / state_delete / state_list / state_append - 通用持久状态存储
+
+框架级别的跨会话键值存储，让复杂任务（虚拟账户、任务进度、报名名单等）的结构化状态在会话结束后依然存活。属于框架保底工具，任何 session 默认注入。
+
+```python
+@ai_tools(category="buildin")
+async def state_set(
+    ctx: RunContext[ToolContext],
+    key: str,                       # 键名，建议格式 "插件名:业务名"
+    value: str,                     # JSON 字符串
+    scope: str = "auto",            # 隔离范围，见下表
+    ttl_days: Optional[int] = None, # 可选，保留天数
+) -> str
+
+@ai_tools(category="buildin")
+async def state_get(ctx, key: str, scope: str = "auto") -> str
+
+@ai_tools(category="buildin")
+async def state_delete(ctx, key: str, scope: str = "auto") -> str
+
+@ai_tools(category="buildin")
+async def state_list(ctx, prefix: str = "", scope: str = "auto") -> str
+
+@ai_tools(category="buildin")
+async def state_append(
+    ctx, key: str, item: str, scope: str = "auto",
+    max_length: Optional[int] = None, ttl_days: Optional[int] = None,
+) -> str   # 向列表型状态追加元素，原子操作，避免 get→改→set 的竞态
+```
+
+`scope` 取值：
+
+| scope | 说明 |
+|-------|------|
+| `"auto"` | 按当前会话自动判断：群聊 → `group:{群ID}`，私聊 → `user:{用户ID}` |
+| `"user:{id}"` | 指定用户的私有数据 |
+| `"group:{id}"` | 指定群组的共享数据 |
+| `"global"` | 全局共享数据 |
+
+> 插件可直接复用底层 API（`from gsuid_core.ai_core.state_store import state_get_value, state_set_value, ...`）来构建有状态功能，无需关心存储细节。
+
+---
+
+### 9.3 Common 工具（category="common"）
+
+不属于保底工具池，通过向量检索按需加载，当用户明确需要相关功能时才会出现在工具列表中。
+
+#### search_image - 图片检索
+
+```python
+@ai_tools(category="common")
+async def search_image(
+    ctx: RunContext[ToolContext],
+    query: str,                      # 自然语言查询
+    limit: int = 10,                # 最大返回数量
+    score_threshold: float = 0.45,  # 相似度阈值（0~1）
+) -> str
+```
+
+#### get_self_persona_info - 获取自身 Persona 资源信息
+
+```python
+@ai_tools(category="common")
 async def get_self_persona_info(
     ctx: RunContext[ToolContext],
     info_type: Literal["config", "image", "avatar", "audio"],
@@ -1226,31 +1327,20 @@ async def get_self_persona_info(
 ) -> str
 ```
 
-**info_type 说明**：
+**info_type 说明**：`"config"` 返回 config.json 配置；`"image"` / `"avatar"` / `"audio"` 返回对应资源文件路径。
 
-| info_type | 返回内容 |
-|-----------|---------|
-| `"config"` | `config.json` 配置内容（JSON 字符串，不含 introduction） |
-| `"image"` | 立绘图片路径 |
-| `"avatar"` | 头像图片路径 |
-| `"audio"` | 音频文件路径 |
+> 完整的自我认知请使用保底工具 `get_self_info`；本工具仅用于获取具体的 Persona 资源文件路径。
 
 #### set_user_favorability - 设置用户好感度（绝对值）
 
 ```python
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def set_user_favorability(
     ctx: RunContext[ToolContext],
     value: int,                     # 好感度绝对值
     user_id: Optional[str] = None,
 ) -> str
 ```
-
----
-
-### 9.3 Common 工具（category="common"）
-
-有选择地调用，当用户明确需要相关功能时使用。
 
 #### send_meme - 发送表情包
 

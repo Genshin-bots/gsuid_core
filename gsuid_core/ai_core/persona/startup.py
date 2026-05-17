@@ -1,12 +1,10 @@
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 from .persona import Persona
 from .prompts import sayu_persona_prompt
 
 
-@on_core_start
 async def init_default_personas():
     """
     初始化默认persona

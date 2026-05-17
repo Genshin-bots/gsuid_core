@@ -97,6 +97,51 @@ def compare_versions(v1: Optional[dict], v2: Optional[dict]) -> int:
     return 0
 
 
+def _import_webconsole_apis() -> None:
+    """导入所有 webconsole API 模块，触发其路由注册到 FastAPI app。
+
+    其中 meme_api / persona_api / ai_memory_api 等模块会拉起 AI 核心重依赖，
+    因此本函数由 _setup_frontend() 在 WS 启动后的后台阶段调用，
+    不再于同步插件加载阶段执行，避免阻塞框架启动。
+    """
+    from gsuid_core.webconsole import (  # noqa: F401
+        web_api,
+        auth_api,
+        logs_api,
+        meme_api,
+        theme_api,
+        assets_api,
+        backup_api,
+        system_api,
+        history_api,
+        message_api,
+        persona_api,
+        plugins_api,
+        version_api,
+        ai_tools_api,
+        database_api,
+        ai_memory_api,
+        ai_skills_api,
+        ai_wizard_api,
+        dashboard_api,
+        image_rag_api,
+        scheduler_api,
+        git_mirror_api,
+        git_update_api,
+        mcp_config_api,
+        core_config_api,
+        plugin_icon_api,
+        ai_statistics_api,
+        system_prompt_api,
+        knowledge_base_api,
+        ai_session_logs_api,
+        provider_config_api,
+        embedding_config_api,
+        ai_scheduled_task_api,
+        chat_with_history_api,
+    )
+
+
 async def _setup_frontend():
     """Setup frontend static files and API routes"""
 
@@ -112,11 +157,16 @@ async def _setup_frontend():
     except Exception as e:
         logger.warning(f"[WebUser] 数据库表创建失败: {e}")
 
-    # 导入 app 对象和 web_api 模块
-    # web_api 模块在导入时会自动注册所有路由到 app 对象
+    # 导入 app 对象
     from gsuid_core.webconsole.app_app import app
 
-    # web_api 模块已自动将路由注册到 app，无需 include_router
+    # 导入所有 webconsole API 模块以注册路由。
+    # 这些模块部分会拉起 AI 核心等重依赖，原先在插件加载阶段同步执行严重阻塞启动，
+    # 现移至此处（由后台任务调用），不阻塞 WS 服务。
+    try:
+        _import_webconsole_apis()
+    except Exception as e:
+        logger.exception(f"💻 [网页控制台] API 模块导入失败（部分路由可能不可用）: {e}")
 
     dvj = DIST_PATH / "version.json"
     devj = DIST_EX_PATH / "version.json"

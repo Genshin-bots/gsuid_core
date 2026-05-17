@@ -12,12 +12,7 @@ from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
-from gsuid_core.ai_core.memory import observe
 from gsuid_core.utils.cooldown import cooldown_tracker
-from gsuid_core.ai_core.history import get_history_manager
-from gsuid_core.ai_core.handle_ai import handle_ai_chat
-from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -26,8 +21,8 @@ from gsuid_core.utils.plugins_config.gs_config import (
     log_config,
 )
 
-# 初始化历史记录管理器
-history_manager = get_history_manager()
+# 注意：handle_ai / history / memory / statistics 等 AI 重模块改为在
+# handle_event 内按需懒加载，避免 import handler 时同步拉起 AI ML 栈而阻塞启动。
 
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
@@ -181,7 +176,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if event.file:
             metadata["file_id"] = event.file
 
-        history_manager.add_message(
+        from gsuid_core.message_history import get_history_manager
+
+        get_history_manager().add_message(
             event=event,
             role="user",
             content=event.raw_text.strip(),
@@ -191,6 +188,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
         # ====== Memory Observer Hook ======
         if enable_ai and event.raw_text and event.raw_text.strip():
+            from gsuid_core.ai_core.memory import observe
+            from gsuid_core.ai_core.memory.config import memory_config
+
             is_enable_memory: bool = ai_config.get_config("enable_memory").data
             memory_mode: list[str] = memory_config.memory_mode
             memory_session: str = memory_config.memory_session
@@ -485,6 +485,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             if not should_respond:
                 return
+
+            from gsuid_core.ai_core.handle_ai import handle_ai_chat
+            from gsuid_core.ai_core.statistics import statistics_manager
 
             # 记录触发方式统计
             trigger_type = "mention"
