@@ -5,8 +5,7 @@ from uuid import uuid4
 from typing import Any, Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
-from msgspec import to_builtins
-from msgspec import json as msgjson
+from msgspec import json as msgjson, to_builtins
 from starlette.websockets import WebSocketState
 
 from gsuid_core.logger import logger
