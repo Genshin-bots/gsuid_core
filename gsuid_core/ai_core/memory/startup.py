@@ -4,13 +4,17 @@
 前置条件：rag/base.py 的 init_embedding_model() 必须已执行。
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from gsuid_core.logger import logger
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
+if TYPE_CHECKING:
+    from .ingestion.worker import IngestionWorker
+
 # 模块级引用，供 /api/chat_with_history 调用 flush_all()
-_ingestion_worker: Optional[object] = None
+_ingestion_worker: Optional["IngestionWorker"] = None
 
 
 async def init_memory_system():
@@ -75,3 +79,23 @@ def get_ingestion_worker():
     if _ingestion_worker is None:
         logger.warning("🧠 [Memory] IngestionWorker 尚未初始化，请确认记忆系统已启动")
     return _ingestion_worker
+
+
+@on_core_shutdown(priority=20)
+async def shutdown_memory_system():
+    """关闭记忆系统后台摄入线程。
+
+    需要在主事件循环销毁和解释器关闭前显式停止独立事件循环，避免后台线程
+    在默认执行器关闭后继续调度任务。
+    """
+    global _ingestion_worker
+    if _ingestion_worker is None:
+        return
+
+    logger.info("🧠 [Memory] 正在关闭 IngestionWorker...")
+    try:
+        await _ingestion_worker.stop()
+    except Exception as e:
+        logger.error(f"🧠 [Memory] IngestionWorker 关闭失败: {e}", exc_info=True)
+    finally:
+        _ingestion_worker = None
