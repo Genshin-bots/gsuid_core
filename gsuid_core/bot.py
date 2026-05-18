@@ -263,6 +263,7 @@ class _Bot:
             if content and _hist_user_id:
                 ev = Event(
                     bot_id=bot_id,
+                    bot_self_id=bot_self_id,
                     user_type=target_type,
                     group_id=_hist_group_id,
                     user_id=_hist_user_id,

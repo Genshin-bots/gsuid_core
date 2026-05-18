@@ -118,7 +118,7 @@ class HistoryManager:
         # 存储结构: {Event: deque[MessageRecord]}，Event 的哈希基于 session 标识字段
         self._histories: Dict["Event", deque] = {}
         # session 元数据: {Event: {created_at, last_access, history_length,
-        # user_id, group_id, bot_id, WS_BOT_ID, user_type}}
+        # user_id, group_id, bot_id, bot_self_id, WS_BOT_ID, user_type}}
         self._session_metadata: Dict["Event", Dict[str, Any]] = {}
         # Token 计数: {Event: int} 每个 session 的当前 Token 总量
         self._session_tokens: Dict["Event", int] = {}
@@ -127,12 +127,13 @@ class HistoryManager:
     def _get_storage_event(self, event: "Event") -> "Event":
         """获取用于内部存储/查询的 Event key。
 
-        群聊历史按 WS_BOT_ID + bot_id + group_id 共享，不按 user_id 区分；
-        私聊历史按 WS_BOT_ID + bot_id + user_id 区分。
+        群聊历史按 WS_BOT_ID + bot_id + bot_self_id + group_id 共享，不按 user_id 区分；
+        私聊历史按 WS_BOT_ID + bot_id + bot_self_id + user_id 区分。
         """
         if event.user_type != "direct" and event.user_id:
             return Event(
                 bot_id=event.bot_id,
+                bot_self_id=event.bot_self_id,
                 user_id="",
                 group_id=event.group_id,
                 user_type=event.user_type,
@@ -156,7 +157,7 @@ class HistoryManager:
         当 Token 总量超限时，从最旧的消息开始逐条删除直到回到限制内。
 
         Args:
-            event: Event 事件对象（包含 bot_id/group_id/user_id/user_type，WS_BOT_ID 用于发送）
+            event: Event 事件对象（包含 bot_id/bot_self_id/group_id/user_id/user_type，WS_BOT_ID 用于发送）
             role: 消息角色 (user/assistant/system)
             content: 消息内容
             user_name: 发送者昵称（可选）
@@ -178,7 +179,7 @@ class HistoryManager:
 
         # 对于群聊，user_id 不参与 session 标识（session_id 中不包含 user_id）
         # 因此创建用于存储的 key 时，将群聊的 user_id 设为空字符串以保证一致性。
-        # WS_BOT_ID 参与 session 标识，用于区分不同 WS 链接。
+        # WS_BOT_ID 与 bot_self_id 参与 session 标识，用于区分不同 WS 链接和机器人账号。
         storage_event = self._get_storage_event(event)
 
         with self._lock:
@@ -205,6 +206,7 @@ class HistoryManager:
                     "user_id": event.user_id,  # 保留原始 user_id
                     "group_id": event.group_id,
                     "bot_id": event.bot_id,
+                    "bot_self_id": event.bot_self_id,
                     "WS_BOT_ID": event.WS_BOT_ID,
                     "user_type": event.user_type,
                 }
@@ -298,6 +300,56 @@ class HistoryManager:
         with self._lock:
             return list(self._histories.keys())
 
+    def merge_session(self, source_event: "Event", target_event: "Event") -> bool:
+        """将 source session 的历史与元数据合并到 target session，并删除 source。
+
+        用于在 Session ID 补齐 bot_self_id 后，把旧的空 bot_self_id 会话迁移到真实
+        bot_self_id 会话，避免 /api/history/send 后出现两个 session。
+        """
+        source_key = self._get_storage_event(source_event)
+        target_key = self._get_storage_event(target_event)
+        if source_key == target_key:
+            return False
+
+        with self._lock:
+            source_history = self._histories.get(source_key)
+            if not source_history:
+                return False
+
+            target_history = self._histories.setdefault(target_key, deque(maxlen=self._max_messages))
+            merged_records = list(target_history) + list(source_history)
+            target_history.clear()
+            target_history.extend(merged_records[-self._max_messages :])
+
+            source_tokens = self._session_tokens.pop(source_key, 0)
+            self._session_tokens[target_key] = self._session_tokens.get(target_key, 0) + source_tokens
+            self._enforce_token_limit(target_key)
+
+            now = time.time()
+            source_metadata = self._session_metadata.pop(source_key, {})
+            target_metadata = self._session_metadata.get(target_key, {})
+            self._session_metadata[target_key] = {
+                "created_at": min(
+                    target_metadata.get("created_at", now),
+                    source_metadata.get("created_at", now),
+                ),
+                "last_access": max(
+                    target_metadata.get("last_access", 0),
+                    source_metadata.get("last_access", 0),
+                    now,
+                ),
+                "history_length": len(target_history),
+                "user_id": target_event.user_id,
+                "group_id": target_event.group_id,
+                "bot_id": target_event.bot_id,
+                "bot_self_id": target_event.bot_self_id,
+                "WS_BOT_ID": target_event.WS_BOT_ID,
+                "user_type": target_event.user_type,
+            }
+
+            del self._histories[source_key]
+            return True
+
     def get_session_info(self, event: "Event") -> Optional[Dict[str, Any]]:
         """获取指定session的信息"""
         with self._lock:
@@ -311,6 +363,7 @@ class HistoryManager:
                     "user_id": event.user_id,
                     "group_id": event.group_id,
                     "bot_id": event.bot_id,
+                    "bot_self_id": event.bot_self_id,
                     "WS_BOT_ID": event.WS_BOT_ID,
                     "user_type": event.user_type,
                 }
@@ -329,6 +382,7 @@ class HistoryManager:
                     "user_id": ev.user_id,
                     "group_id": ev.group_id,
                     "bot_id": ev.bot_id,
+                    "bot_self_id": ev.bot_self_id,
                     "WS_BOT_ID": ev.WS_BOT_ID,
                     "user_type": ev.user_type,
                 }
@@ -363,16 +417,17 @@ class HistoryManager:
 
         Args:
             data: {session_id_str: [message_dict, ...]}
-            格式: {WS_BOT_ID}:{bot_id}:group:{group_id} 或 {WS_BOT_ID}:{bot_id}:private:{user_id}
+            格式: {WS_BOT_ID}:{bot_id}:{bot_self_id}:group:{group_id}
+            或 {WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}
         """
         with self._lock:
             for key_str, messages in data.items():
-                parts = key_str.split(":", 3)
-                if len(parts) != 4:
+                parts = key_str.split(":", 4)
+                if len(parts) != 5:
                     continue
 
-                ws_bot_id, bot_id, target_type, target_id = parts
-                if not ws_bot_id or not bot_id or not target_id:
+                ws_bot_id, bot_id, bot_self_id, target_type, target_id = parts
+                if not ws_bot_id or not bot_id or not bot_self_id or not target_id:
                     continue
 
                 if target_type == "group":
@@ -388,6 +443,7 @@ class HistoryManager:
 
                 event_key = Event(
                     bot_id=bot_id,
+                    bot_self_id=bot_self_id,
                     group_id=group_id,
                     user_id=user_id,
                     user_type=user_type,

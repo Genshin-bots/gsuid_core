@@ -1,4 +1,4 @@
-# 消息历史模块解耦变更记录（History → message_history）
+﻿# 消息历史模块解耦变更记录（History → message_history）
 
 > 本文档记录将 `history` 模块从 `ai_core` 中剥离、解耦为通用 Bot 消息历史模块的完整变更。
 

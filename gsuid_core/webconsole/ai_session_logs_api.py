@@ -608,7 +608,7 @@ async def get_session_log_detail(
     优先从内存查找活跃会话的实时日志，若不存在则从磁盘文件查找。
 
     Args:
-        session_id: Session ID（如 ws-onebot:onebot:group:123456）
+        session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
         session_uuid: Session 实例 UUID（如 abc12345）
 
     Returns:
@@ -704,7 +704,7 @@ async def get_session_linked_agents(
     支持按 agent_type 过滤，为前端展示 Agent 关系图提供数据。
 
     Args:
-        session_id: Session ID（如 ws-onebot:onebot:group:123456）
+        session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
         agent_type: 可选的关联类型过滤
                     * "sub_agent"    – 由本 Agent 创建的子 Agent
                     * "peer_agent"   – 同级/对等 Agent（预留）

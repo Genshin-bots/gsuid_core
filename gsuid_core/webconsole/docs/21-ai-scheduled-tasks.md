@@ -1,4 +1,4 @@
-# 21. AI Scheduled Task API - /api/ai/scheduled_tasks
+﻿# 21. AI Scheduled Task API - /api/ai/scheduled_tasks
 
 AI 定时任务 API，用于管理 AI 创建的定时/循环任务，支持增删改查启停。
 
@@ -31,7 +31,7 @@ GET /api/ai/scheduled_tasks
             "bot_self_id": "123456",
             "user_type": "direct",
             "persona_name": "default",
-            "session_id": "ws-onebot:onebot:private:user_001",
+            "session_id": "ws-onebot:onebot:bot_001:private:user_001",
             "task_prompt": "帮我关注股市行情",
             "structured_context": "{\"state_key\": \"stock:portfolio\"}",
             "last_result_summary": "上次巡检：账户余额 98500，持仓 2 支",
@@ -71,7 +71,7 @@ GET /api/ai/scheduled_tasks/{task_id}
         "bot_self_id": "123456",
         "user_type": "direct",
         "persona_name": "default",
-        "session_id": "ws-onebot:onebot:private:user_001",
+        "session_id": "ws-onebot:onebot:bot_001:private:user_001",
         "task_prompt": "帮我关注股市行情",
         "structured_context": "{\"state_key\": \"stock:portfolio\"}",
         "last_result_summary": "上次巡检：账户余额 98500，持仓 2 支",
