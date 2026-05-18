@@ -714,13 +714,13 @@ async def _get_or_create_ai_session(
 
 **Session ID 格式**:
 ```
-# 群聊时: 以 bot: 为前缀，包含 bot_id
-session_id = f"bot:{bot_id}:group:{group_id}"
-示例: "bot:onebot:group:789012"
+# 群聊时: 以 {WS_BOT_ID}:{bot_id}: 为前缀，同时包含 WS 链接标识和平台标识
+session_id = f"{WS_BOT_ID}:{bot_id}:group:{group_id}"
+示例: "ws-onebot:onebot:group:789012"
 
-# 私聊时: 以 bot: 为前缀，包含 bot_id
-session_id = f"bot:{bot_id}:private:{user_id}"
-示例: "bot:onebot:private:345678"
+# 私聊时: 以 {WS_BOT_ID}:{bot_id}: 为前缀，同时包含 WS 链接标识和平台标识
+session_id = f"{WS_BOT_ID}:{bot_id}:private:{user_id}"
+示例: "ws-onebot:onebot:private:345678"
 ```
 
 ### 5.2 Session 存储
@@ -833,15 +833,15 @@ session_id = f"{bid}%%%{temp_gid}%%%{uid}"
 
 Session ID 格式修改为：
 ```python
-# 群聊: bot:{bot_id}:group:{group_id}
-# 私聊: bot:{bot_id}:private:{user_id}
+# 群聊: {WS_BOT_ID}:{bot_id}:group:{group_id}
+# 私聊: {WS_BOT_ID}:{bot_id}:private:{user_id}
 ```
 
 ```python
 # models.py - Event.session_id 属性
 # session_id 由 Event 的属性自动生成
-# 群聊: f"bot:{bot_id}:group:{group_id}"
-# 私聊: f"bot:{bot_id}:private:{user_id}"
+# 群聊: f"{WS_BOT_ID}:{bot_id}:group:{group_id}"
+# 私聊: f"{WS_BOT_ID}:{bot_id}:private:{user_id}"
 ```
 
 **关键区别**：
@@ -850,13 +850,13 @@ Session ID 格式修改为：
 
 **实际 Session 路由逻辑** (`ai_router.py`):
 ```python
-# session_id 格式: "bot:{bot_id}:group:{group_id}" 或 "bot:{bot_id}:private:{user_id}"
+# session_id 格式: "{WS_BOT_ID}:{bot_id}:group:{group_id}" 或 "{WS_BOT_ID}:{bot_id}:private:{user_id}"
 # AI Router 使用 event.session_id 获取或创建 Session
 # HistoryManager 以 Event 为 key 存储历史记录（群聊时 user_id 置空以保证一致性）
 ```
 
 修改后的架构：
-- `Event.session_id` 格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}`
+- `Event.session_id` 格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}`
 - `get_persona_for_session()` 解析 session_id 提取 `group_id` 或 `user_id` 用于 Persona 匹配
 - `HistoryManager`（`gsuid_core/message_history`）以 `Event` 对象为 key 存储历史记录，群聊时 `user_id` 置空确保同一群聊共享 deque
 - AI Session 的共享由 `AISessionRegistry._ai_sessions` 决定，按 `session_id` 字符串存储
@@ -3937,15 +3937,15 @@ web_search(query)
 Session ID 格式说明:
 
 群聊:
-  session_id = f"bot:{bot_id}:group:{group_id}"
-  示例: "bot:onebot:group:789012"
+  session_id = f"{WS_BOT_ID}:{bot_id}:group:{group_id}"
+  示例: "ws-onebot:onebot:group:789012"
 
 私聊:
-  session_id = f"bot:{bot_id}:private:{user_id}"
-  示例: "bot:onebot:private:345678"
+  session_id = f"{WS_BOT_ID}:{bot_id}:private:{user_id}"
+  示例: "ws-onebot:onebot:private:345678"
 
 说明:
-- 使用 bot:{bot_id}: 前缀区分不同 Bot 实例
+- 使用 {WS_BOT_ID}:{bot_id}: 前缀同时区分 WS 链接和平台
 - 群聊使用 group: 前缀，私聊使用 private: 前缀
 - 群聊共享同一个 session_id，实现上下文共享
 - 用于在 HistoryManager 中唯一标识一个会话

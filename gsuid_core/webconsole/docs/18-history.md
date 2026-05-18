@@ -32,8 +32,8 @@ Authorization: Bearer <token>
     "msg": "ok",
     "data": [
         {
-            "session_id": "bot:0:private:123456",
-            "session_key": "bot:0:private:123456",
+            "session_id": "ws-onebot:onebot:private:123456",
+            "session_key": "ws-onebot:onebot:private:123456",
             "type": "private",
             "group_id": null,
             "user_id": "user123",
@@ -42,8 +42,8 @@ Authorization: Bearer <token>
             "created_at": 1712345600.0
         },
         {
-            "session_id": "bot:0:group:789012",
-            "session_key": "bot:0:group:789012",
+            "session_id": "ws-onebot:onebot:group:789012",
+            "session_key": "ws-onebot:onebot:group:789012",
             "type": "group",
             "group_id": "group456",
             "user_id": null,
@@ -59,7 +59,7 @@ Authorization: Bearer <token>
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | data | array | Session 列表 |
-| data[].session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+| data[].session_id | string | Session 标识符，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}` |
 | data[].session_key | string | 内部使用的 session key |
 | data[].type | string | Session 类型：`private`(私聊) 或 `group`(群聊) |
 | data[].group_id | string/null | 群聊 ID，私聊时为 null |
@@ -84,7 +84,7 @@ Authorization: Bearer <token>
 **路径参数**：
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+| session_id | string | Session 标识符，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}` |
 
 **查询参数**：
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
@@ -97,7 +97,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "ok",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "content": "[用户-用户昵称]: 你好\n[AI]: 你好！有什么可以帮助你的吗？\n[用户-用户昵称]: 今天天气怎么样？",
         "count": 3
     }
@@ -110,7 +110,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "ok",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "messages": [
             {
                 "role": "user",
@@ -140,7 +140,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "ok",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "messages": [
             {"role": "user", "content": "你好"},
             {"role": "assistant", "content": "你好！有什么可以帮助你的吗？"}
@@ -156,7 +156,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "该session没有历史记录",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "messages": [],
         "count": 0
     }
@@ -179,7 +179,7 @@ Authorization: Bearer <token>
 **路径参数**：
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+| session_id | string | Session 标识符，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}` |
 
 **查询参数**：
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
@@ -196,7 +196,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "Session user123&&None 的历史记录已清空",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "cleared": true
     }
 }
@@ -208,7 +208,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "Session user123&&None 已完全删除",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "deleted": true
     }
 }
@@ -239,7 +239,7 @@ Authorization: Bearer <token>
 **路径参数**：
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+| session_id | string | Session 标识符，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}` |
 
 > **行为说明**：persona 属于 AI 会话信息。当 AI 总开关关闭（`enable_ai=False`）时，
 > 系统不存在任何 AI 会话对象，本接口统一返回「session 不存在或尚未创建」（`status: 1`）。
@@ -250,7 +250,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "ok",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "persona_content": "[角色扮演开始]\n\n### [Character: 智能助手]\n..."
     }
 }
@@ -262,7 +262,7 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "该session没有设置persona",
     "data": {
-        "session_id": "bot:0:private:123456",
+        "session_id": "ws-onebot:onebot:private:123456",
         "persona_content": null
     }
 }
@@ -305,8 +305,8 @@ Authorization: Bearer <token>
         "ai_router_sessions": {
             "count": 8,
             "sessions": {
-                "bot:0:private:123456": {
-                    "session_id": "bot:0:private:123456",
+                "ws-onebot:onebot:private:123456": {
+                    "session_id": "ws-onebot:onebot:private:123456",
                     "last_access": 1712345678.0,
                     "created_at": 1712345600.0,
                     "history_length": 15
@@ -337,7 +337,7 @@ Authorization: Bearer <token>
 POST /api/history/{session_id}/send
 ```
 
-根据 `session_id` 解析出 `bot_id` / `group_id` / `user_id`，定位对应的 Bot 连接后，将文本与图片组装为消息段并调用 `bot.send()` 发送。支持**纯文本、纯图片、多图、图文混排**。
+根据 `session_id` 解析出 `WS_BOT_ID` / `bot_id` / `group_id` / `user_id`，定位对应的 Bot 连接后，将文本与图片组装为消息段并调用 `bot.send()` 发送。支持**纯文本、纯图片、多图、图文混排**。
 
 > **说明**：
 > - 请求类型为 `multipart/form-data`。**图片由前端直接上传文件，无需自行做 base64 编码**，后端读取二进制后自动转换。
@@ -354,7 +354,7 @@ Content-Type: multipart/form-data
 **路径参数**：
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| session_id | string | Session 标识符，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}` |
+| session_id | string | Session 标识符，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}` |
 
 **表单字段**（`multipart/form-data`）：
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
@@ -368,7 +368,7 @@ Content-Type: multipart/form-data
 
 **请求示例（curl）**：
 ```bash
-curl -X POST "http://<host>/api/history/bot:0:group:789012/send" \
+curl -X POST "http://<host>/api/history/ws-onebot:onebot:group:789012/send" \
   -H "Authorization: Bearer <token>" \
   -F "message=你好，这是一条图文消息" \
   -F "images=@/path/to/pic1.png" \
@@ -383,7 +383,7 @@ curl -X POST "http://<host>/api/history/bot:0:group:789012/send" \
     "status": 0,
     "msg": "消息发送成功",
     "data": {
-        "session_id": "bot:0:group:789012",
+        "session_id": "ws-onebot:onebot:group:789012",
         "target_type": "group",
         "target_id": "789012",
         "text_sent": true,
@@ -404,7 +404,7 @@ curl -X POST "http://<host>/api/history/bot:0:group:789012/send" \
 | 场景 | status | msg |
 |------|--------|-----|
 | 文本与图片均为空 | 1 | 消息内容不能为空（需提供 message 文本或 images/image_urls 图片） |
-| session_id 格式非法 | 1 | 无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}' |
+| session_id 格式非法 | 1 | 无效的session_id格式，应为 '{WS_BOT_ID}:{bot_id}:group:{group_id}' 或 '{WS_BOT_ID}:{bot_id}:private:{user_id}' |
 | session_id 缺少发送目标 | 1 | session_id 中缺少有效的发送目标 |
 | image_urls 非 http(s) 直链 | 1 | image_urls 仅支持 http/https 直链: {url} |
 | 当前无任何已连接 Bot | 1 | 当前没有任何已连接的 Bot |
@@ -414,15 +414,15 @@ curl -X POST "http://<host>/api/history/bot:0:group:789012/send" \
 
 ## Session ID 格式说明
 
-Session ID 用于唯一标识一个会话，格式为 `bot:{bot_id}:group:{group_id}` 或 `bot:{bot_id}:private:{user_id}`：
+Session ID 用于唯一标识一个会话，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}` 或 `{WS_BOT_ID}:{bot_id}:private:{user_id}`：
 
 | 场景 | session_id 格式 | 示例 | 说明 |
 |------|----------------|------|------|
-| 私聊 | `bot:{bot_id}:private:{user_id}` | `bot:0:private:123456` | 用户私聊会话 |
-| 群聊 | `bot:{bot_id}:group:{group_id}` | `bot:0:group:789012` | 群聊会话 |
+| 私聊 | `{WS_BOT_ID}:{bot_id}:private:{user_id}` | `ws-onebot:onebot:private:123456` | 用户私聊会话 |
+| 群聊 | `{WS_BOT_ID}:{bot_id}:group:{group_id}` | `ws-onebot:onebot:group:789012` | 群聊会话 |
 
 > 注意：
-> - 新格式使用 `:` 作为分隔符，包含 bot_id 和会话目标（group 或 private）
+> - 新格式使用 `:` 作为分隔符，包含 WS_BOT_ID、bot_id 和会话目标（group 或 private）
 > - 私聊时使用 `private:{user_id}` 格式
 > - 群聊时使用 `group:{group_id}` 格式
-> - bot_id 通常为 "0" 或具体的机器人实例ID
+> - WS_BOT_ID 是 `gss.active_bot` 中的 WS 链接标识符；bot_id 是该 WS 链接对应的平台标识

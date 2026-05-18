@@ -270,8 +270,8 @@ class PersonaConfigManager(ConfigSetManager):
         根据 Session ID 获取应该使用的 Persona
 
         Session ID 格式:
-        - 群聊: "bot:{bot_id}:group:{group_id}"
-        - 私聊: "bot:{bot_id}:private:{user_id}"
+        - 群聊: "{WS_BOT_ID}:{bot_id}:group:{group_id}"
+        - 私聊: "{WS_BOT_ID}:{bot_id}:private:{user_id}"
 
         匹配规则：
         1. 首先查找专门针对该群聊的 Persona（scope 为 specific 且 target_groups 包含该群聊）
@@ -289,15 +289,18 @@ class PersonaConfigManager(ConfigSetManager):
         is_private_chat = False
 
         # 解析 session_id 获取 group_id 或 user_id
-        # 格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
-        if session_id.startswith("bot:"):
-            parts = session_id.split(":", 3)
-            if len(parts) >= 4:
-                if parts[2] == "group":
-                    group_id = parts[3]
-                elif parts[2] == "private":
-                    user_id = parts[3]
-                    is_private_chat = True
+        # 格式: {WS_BOT_ID}:{bot_id}:group:{group_id} 或 {WS_BOT_ID}:{bot_id}:private:{user_id}
+        parts = session_id.split(":", 3)
+        if len(parts) == 4:
+            target_type = parts[2]
+            target_id = parts[3]
+            if target_type == "group":
+                group_id = target_id
+            elif target_type == "private":
+                user_id = target_id
+                is_private_chat = True
+            else:
+                raise ValueError(f"Invalid session_id format: {session_id}")
         else:
             # 无法解析格式
             raise ValueError(f"Invalid session_id format: {session_id}")

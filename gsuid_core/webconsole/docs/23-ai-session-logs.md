@@ -45,7 +45,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| session_id | string | Session ID（如 `bot:onebot:group:123456`） |
+| session_id | string | Session ID（如 `ws-onebot:onebot:group:123456`） |
 | session_uuid | string | Session 实例 UUID |
 | persona_name | string | Persona 名称 |
 | create_by | string | 创建来源（Chat/SubAgent/BuildPersona/LLM） |
@@ -88,7 +88,7 @@
     "data": {
         "items": [
             {
-                "session_id": "bot:onebot:group:123456",
+                "session_id": "ws-onebot:onebot:group:123456",
                 "session_uuid": "abc12345",
                 "persona_name": "默认助手",
                 "create_by": "Chat",
@@ -114,7 +114,7 @@
                 "linked_agents": [
                     {
                         "agent_type": "sub_agent",
-                        "session_id": "bot:onebot:group:123456:sub:planner",
+                        "session_id": "ws-onebot:onebot:group:123456:sub:planner",
                         "session_uuid": "sub12345",
                         "persona_name": "规划助手",
                         "create_by": "SubAgent",
@@ -132,7 +132,7 @@
                 "linked_agent_count": 1
             },
             {
-                "session_id": "bot:onebot:group:789012",
+                "session_id": "ws-onebot:onebot:group:789012",
                 "session_uuid": "def67890",
                 "persona_name": "傲娇助手",
                 "create_by": "Chat",
@@ -177,13 +177,13 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| session_id | string | 是 | Session ID（如 `bot:onebot:group:123456`） |
+| session_id | string | 是 | Session ID（如 `ws-onebot:onebot:group:123456`） |
 | session_uuid | string | 是 | Session 实例 UUID（如 `abc12345`，从列表接口的 `session_uuid` 字段获取） |
 
 **请求示例**:
 
 ```
-GET /api/ai/session_logs/bot:onebot:group:123456/abc12345/detail
+GET /api/ai/session_logs/ws-onebot:onebot:group:123456/abc12345/detail
 ```
 
 **响应示例**:
@@ -193,7 +193,7 @@ GET /api/ai/session_logs/bot:onebot:group:123456/abc12345/detail
     "status": 0,
     "msg": "ok",
     "data": {
-        "session_id": "bot:onebot:group:123456",
+        "session_id": "ws-onebot:onebot:group:123456",
         "session_uuid": "abc12345",
         "persona_name": "默认助手",
         "create_by": "Chat",
@@ -206,7 +206,7 @@ GET /api/ai/session_logs/bot:onebot:group:123456/abc12345/detail
                 "type": "session_created",
                 "timestamp": 1715305800.0,
                 "data": {
-                    "session_id": "bot:onebot:group:123456",
+                    "session_id": "ws-onebot:onebot:group:123456",
                     "session_uuid": "abc12345",
                     "persona_name": "默认助手",
                     "create_by": "Chat",
@@ -411,7 +411,7 @@ GET /api/ai/session_logs/bot:onebot:group:123456/abc12345/detail
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| session_id | string | 是 | Session ID（如 `bot:onebot:group:123456`） |
+| session_id | string | 是 | Session ID（如 `ws-onebot:onebot:group:123456`） |
 
 **Query 参数**:
 
@@ -426,12 +426,12 @@ GET /api/ai/session_logs/bot:onebot:group:123456/abc12345/detail
     "status": 0,
     "msg": "ok",
     "data": {
-        "session_id": "bot:onebot:group:123456",
+        "session_id": "ws-onebot:onebot:group:123456",
         "session_uuid": "abc12345",
         "linked_agents": [
             {
                 "agent_type": "sub_agent",
-                "session_id": "bot:onebot:group:123456:sub:planner",
+                "session_id": "ws-onebot:onebot:group:123456:sub:planner",
                 "session_uuid": "sub12345",
                 "persona_name": "规划助手",
                 "create_by": "SubAgent",

@@ -30,29 +30,24 @@ def _is_ai_enabled() -> bool:
 
 def _parse_session_id(
     session_id: str,
-) -> Optional[Tuple[str, Optional[str], str]]:
-    """解析 session_id，返回 (bot_id, group_id, user_id)。
+) -> Optional[Tuple[str, str, Optional[str], str]]:
+    """解析 session_id，返回 (WS_BOT_ID, bot_id, group_id, user_id)。
 
-    支持两种格式：
-    - 新格式：bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
-    - 旧格式：group:{group_id} 或 private:{user_id}（无 bot_id，bot_id 返回空字符串）
-
+    格式：{WS_BOT_ID}:{bot_id}:group:{group_id} 或 {WS_BOT_ID}:{bot_id}:private:{user_id}。
     群聊时 user_id 为空字符串、group_id 为群号；私聊时 group_id 为 None。
     格式非法时返回 None。
     """
-    if session_id.startswith("bot:"):
-        parts = session_id.split(":", 3)
-        if len(parts) >= 4:
-            bot_id = parts[1]
-            if parts[2] == "group":
-                return bot_id, parts[3], ""
-            if parts[2] == "private":
-                return bot_id, None, parts[3]
+    parts = session_id.split(":", 3)
+    if len(parts) != 4:
         return None
-    if session_id.startswith("group:"):
-        return "", session_id[6:], ""
-    if session_id.startswith("private:"):
-        return "", None, session_id[8:]
+
+    ws_bot_id, bot_id, target_type, target_id = parts
+    if not ws_bot_id or not bot_id or not target_id:
+        return None
+    if target_type == "group":
+        return ws_bot_id, bot_id, target_id, ""
+    if target_type == "private":
+        return ws_bot_id, bot_id, None, target_id
     return None
 
 
@@ -81,10 +76,11 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
         # 构建最终结果
         result = []
         for session_id, session_data in all_sessions.items():
-            # 从 session_data 直接获取 user_id、group_id 和 bot_id
+            # 从 session_data 直接获取 user_id、group_id、bot_id 和 WS_BOT_ID
             user_id = session_data.get("user_id")
             group_id = session_data.get("group_id")
             bot_id = session_data.get("bot_id", "")
+            ws_bot_id = session_data.get("WS_BOT_ID")
 
             # 判断 session 类型
             if group_id:
@@ -97,9 +93,10 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
 
             ev = Event(
                 bot_id=bot_id,
-                user_id=user_id or "",
+                user_id="" if group_id else (user_id or ""),
                 group_id=group_id,
                 user_type="group" if group_id else "direct",
+                WS_BOT_ID=ws_bot_id,
             )
             msg_count = manager.get_history_count(ev)
 
@@ -117,6 +114,8 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
                 {
                     "session_id": session_id,
                     "type": session_type,
+                    "WS_BOT_ID": ws_bot_id,
+                    "bot_id": bot_id,
                     "group_id": group_id,
                     "user_id": user_id,
                     "message_count": msg_count,
@@ -153,7 +152,8 @@ async def get_session_history(
     本接口仅读取通用消息历史，与 AI 总开关无关，enable_ai=False 时同样可用。
 
     Args:
-        session_id: Session标识符，格式为 "{bot_id}%%%{group_id}%%%{user_id}"
+        session_id: Session标识符，格式为 "{WS_BOT_ID}:{bot_id}:group:{group_id}"
+            或 "{WS_BOT_ID}:{bot_id}:private:{user_id}"
         format_type: 返回格式，可选 "text"(文本格式)、"json"(原始JSON)、"messages"(OpenAI格式)
 
     Returns:
@@ -161,36 +161,18 @@ async def get_session_history(
         data: 历史记录内容
     """
     try:
-        # 解析session_id
-        # 新格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
-        # 旧格式兼容: {bot_id}%%%{group_id}%%%{user_id} 或 group:{group_id} / private:{user_id}
-        bot_id = ""
-        if session_id.startswith("bot:"):
-            parts = session_id.split(":", 3)
-            if len(parts) >= 4:
-                bot_id = parts[1]
-                if parts[2] == "group":
-                    group_id = parts[3]
-                    user_id = ""
-                elif parts[2] == "private":
-                    group_id = None
-                    user_id = parts[3]
-                else:
-                    return {"status": 1, "msg": "无效的session_id格式", "data": None}
-            else:
-                return {"status": 1, "msg": "无效的session_id格式", "data": None}
-        elif session_id.startswith("group:"):
-            group_id = session_id[6:]
-            user_id = ""
-        elif session_id.startswith("private:"):
-            group_id = None
-            user_id = session_id[8:]
-        else:
+        parsed = _parse_session_id(session_id)
+        if parsed is None:
             return {
                 "status": 1,
-                "msg": "无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}'",
+                "msg": (
+                    "无效的session_id格式，应为 "
+                    "'{WS_BOT_ID}:{bot_id}:group:{group_id}' 或 "
+                    "'{WS_BOT_ID}:{bot_id}:private:{user_id}'"
+                ),
                 "data": None,
             }
+        ws_bot_id, bot_id, group_id, user_id = parsed
 
         manager = get_history_manager()
 
@@ -202,6 +184,7 @@ async def get_session_history(
             user_id=user_id,
             group_id=group_id,
             user_type="group" if group_id else "direct",
+            WS_BOT_ID=ws_bot_id,
         )
 
         # 获取历史记录
@@ -280,43 +263,26 @@ async def clear_session_history(
     - AI 关闭时：仅清空消息历史（不存在 AI 会话对象）。
 
     Args:
-        session_id: Session标识符，格式为 "{bot_id}%%%{group_id}%%%{user_id}"
+        session_id: Session标识符，格式为 "{WS_BOT_ID}:{bot_id}:group:{group_id}"
+            或 "{WS_BOT_ID}:{bot_id}:private:{user_id}"
         delete_session: 是否完全删除session（释放内存），默认为False仅清空历史
 
     Returns:
         status: 0成功，1失败
     """
     try:
-        # 解析session_id
-        # 新格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
-        # 旧格式兼容: {bot_id}%%%{group_id}%%%{user_id} 或 group:{group_id} / private:{user_id}
-        bot_id = ""
-        if session_id.startswith("bot:"):
-            parts = session_id.split(":", 3)
-            if len(parts) >= 4:
-                bot_id = parts[1]
-                if parts[2] == "group":
-                    group_id = parts[3]
-                    user_id = ""
-                elif parts[2] == "private":
-                    group_id = None
-                    user_id = parts[3]
-                else:
-                    return {"status": 1, "msg": "无效的session_id格式", "data": None}
-            else:
-                return {"status": 1, "msg": "无效的session_id格式", "data": None}
-        elif session_id.startswith("group:"):
-            group_id = session_id[6:]
-            user_id = ""
-        elif session_id.startswith("private:"):
-            group_id = None
-            user_id = session_id[8:]
-        else:
+        parsed = _parse_session_id(session_id)
+        if parsed is None:
             return {
                 "status": 1,
-                "msg": "无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}'",
+                "msg": (
+                    "无效的session_id格式，应为 "
+                    "'{WS_BOT_ID}:{bot_id}:group:{group_id}' 或 "
+                    "'{WS_BOT_ID}:{bot_id}:private:{user_id}'"
+                ),
                 "data": None,
             }
+        ws_bot_id, bot_id, group_id, user_id = parsed
 
         manager = get_history_manager()
         ai_enabled = _is_ai_enabled()
@@ -329,6 +295,7 @@ async def clear_session_history(
             user_id=user_id,
             group_id=group_id,
             user_type="group" if group_id else "direct",
+            WS_BOT_ID=ws_bot_id,
         )
 
         if delete_session:
@@ -398,7 +365,8 @@ async def get_session_persona(
     此时该接口统一返回"session 不存在"。
 
     Args:
-        session_id: Session标识符，格式为 "{bot_id}%%%{group_id}%%%{user_id}"
+        session_id: Session标识符，格式为 "{WS_BOT_ID}:{bot_id}:group:{group_id}"
+            或 "{WS_BOT_ID}:{bot_id}:private:{user_id}"
 
     Returns:
         status: 0成功，1失败
@@ -527,13 +495,13 @@ async def send_message_to_session(
     - `image_urls`：图片直链（仅 http/https），可多个
     - `at_sender`：是否 @ 发送对象（仅群聊场景有意义）
 
-    根据 session_id 解析出 bot_id / group_id / user_id，定位对应的 Bot 连接后，
+    根据 session_id 解析出 WS_BOT_ID / bot_id / group_id / user_id，定位对应的 Bot 连接后，
     将文本与图片组装为消息段列表并调用 bot.send()。发送的消息会经由 target_send
     自动记录进该 session 的消息历史。本接口与 AI 总开关无关，enable_ai=False 时同样可用。
 
     Args:
-        session_id: Session 标识符，格式为 `bot:{bot_id}:group:{group_id}`
-            或 `bot:{bot_id}:private:{user_id}`
+        session_id: Session 标识符，格式为 `{WS_BOT_ID}:{bot_id}:group:{group_id}`
+            或 `{WS_BOT_ID}:{bot_id}:private:{user_id}`
         message: 文本内容（Form 字段）
         image_urls: 图片直链列表（Form 字段，可重复）
         images: 上传的图片文件列表（File 字段，可重复）
@@ -548,10 +516,14 @@ async def send_message_to_session(
         if parsed is None:
             return {
                 "status": 1,
-                "msg": "无效的session_id格式，应为 'bot:{bot_id}:group:{group_id}' 或 'bot:{bot_id}:private:{user_id}'",
+                "msg": (
+                    "无效的session_id格式，应为 "
+                    "'{WS_BOT_ID}:{bot_id}:group:{group_id}' 或 "
+                    "'{WS_BOT_ID}:{bot_id}:private:{user_id}'"
+                ),
                 "data": None,
             }
-        bot_id, group_id, user_id = parsed
+        ws_bot_id, bot_id, group_id, user_id = parsed
 
         # 群聊发往 group_id，私聊发往 user_id
         is_group = group_id is not None
@@ -573,17 +545,13 @@ async def send_message_to_session(
                 "data": None,
             }
 
-        if bot_id:
-            _bot = gss.active_bot.get(bot_id)
-            if _bot is None:
-                return {
-                    "status": 1,
-                    "msg": f"Bot '{bot_id}' 当前未连接，无法发送消息",
-                    "data": None,
-                }
-        else:
-            # 兼容旧格式 session_id（不含 bot_id），使用任一活跃连接
-            _bot = next(iter(gss.active_bot.values()))
+        _bot = gss.active_bot.get(ws_bot_id)
+        if _bot is None:
+            return {
+                "status": 1,
+                "msg": f"Bot WS '{ws_bot_id}' 当前未连接，无法发送消息",
+                "data": None,
+            }
 
         # 3. 组装消息段：文本 + 上传图片（二进制）+ 图片直链
         from gsuid_core.segment import MessageSegment
@@ -634,6 +602,7 @@ async def send_message_to_session(
             user_id=user_id,
             group_id=group_id,
             user_type="group" if is_group else "direct",
+            WS_BOT_ID=ws_bot_id,
         )
         bot = Bot(_bot, ev)
         await bot.send(segments, at_sender=at_sender)

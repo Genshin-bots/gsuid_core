@@ -103,8 +103,8 @@ AI 关闭时不会触及 `ai_core` 的 AI 会话相关代码。
 
 - 请求类型为 `multipart/form-data`，表单字段：`message`（文本）、`images`（图片文件，可多张）、
   `image_urls`（图片直链，可多个）、`at_sender`。**图片由前端直接上传文件，无需 base64 编码。**
-- 通过 `_parse_session_id()` 从 `session_id` 解析出 `bot_id` / `group_id` / `user_id`。
-- 从 `gss.active_bot` 定位对应的 `_Bot` 连接（按 `bot_id` 精确匹配，旧格式 session_id 退化为任一活跃连接）。
+- 通过 `_parse_session_id()` 从 `session_id` 解析出 `WS_BOT_ID` / `bot_id` / `group_id` / `user_id`。
+- 从 `gss.active_bot` 使用 `WS_BOT_ID` 精确定位对应的 `_Bot` 连接。
 - 后端读取上传图片的二进制，连同文本、直链一起经 `MessageSegment` 组装为消息段列表，
   构造 `Event` 与高层 `Bot` 包装器后调用 `bot.send()` 发送。
 - 发送的消息经由 `target_send` 自动记录进该 session 的消息历史。

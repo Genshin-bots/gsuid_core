@@ -115,7 +115,7 @@ class AIScheduledTask(BaseBotIDModel, table=True):
                 "user_type": "direct",
                 "WS_BOT_ID": None,
                 "persona_name": "default",
-                "session_id": "onebot%%%private%%%user_001",
+                "session_id": "ws-onebot:onebot:private:user_001",
                 "trigger_time": "2024-05-15 06:30:00",
                 "task_prompt": "查询英伟达(NVDA)的实时股价和最新新闻并总结",
                 "status": "pending",

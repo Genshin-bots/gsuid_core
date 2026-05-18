@@ -117,11 +117,29 @@ class HistoryManager:
         self._max_messages = max_messages
         # 存储结构: {Event: deque[MessageRecord]}，Event 的哈希基于 session 标识字段
         self._histories: Dict["Event", deque] = {}
-        # session 元数据: {Event: {created_at, last_access, history_length, user_id, group_id, bot_id, user_type}}
+        # session 元数据: {Event: {created_at, last_access, history_length,
+        # user_id, group_id, bot_id, WS_BOT_ID, user_type}}
         self._session_metadata: Dict["Event", Dict[str, Any]] = {}
         # Token 计数: {Event: int} 每个 session 的当前 Token 总量
         self._session_tokens: Dict["Event", int] = {}
         self._lock = Lock()
+
+    def _get_storage_event(self, event: "Event") -> "Event":
+        """获取用于内部存储/查询的 Event key。
+
+        群聊历史按 WS_BOT_ID + bot_id + group_id 共享，不按 user_id 区分；
+        私聊历史按 WS_BOT_ID + bot_id + user_id 区分。
+        """
+        if event.user_type != "direct" and event.user_id:
+            return Event(
+                bot_id=event.bot_id,
+                user_id="",
+                group_id=event.group_id,
+                user_type=event.user_type,
+                WS_BOT_ID=event.WS_BOT_ID,
+                real_bot_id=event.real_bot_id,
+            )
+        return event
 
     def add_message(
         self,
@@ -159,16 +177,9 @@ class HistoryManager:
         new_tokens = _estimate_tokens(content)
 
         # 对于群聊，user_id 不参与 session 标识（session_id 中不包含 user_id）
-        # 因此创建用于存储的 key 时，将群聊的 user_id 设为空字符串以保证一致性
-        if event.user_type != "direct" and event.user_id:
-            storage_event = Event(
-                bot_id=event.bot_id,
-                user_id="",
-                group_id=event.group_id,
-                user_type=event.user_type,
-            )
-        else:
-            storage_event = event
+        # 因此创建用于存储的 key 时，将群聊的 user_id 设为空字符串以保证一致性。
+        # WS_BOT_ID 参与 session 标识，用于区分不同 WS 链接。
+        storage_event = self._get_storage_event(event)
 
         with self._lock:
             if storage_event not in self._histories:
@@ -194,6 +205,7 @@ class HistoryManager:
                     "user_id": event.user_id,  # 保留原始 user_id
                     "group_id": event.group_id,
                     "bot_id": event.bot_id,
+                    "WS_BOT_ID": event.WS_BOT_ID,
                     "user_type": event.user_type,
                 }
             else:
@@ -238,8 +250,9 @@ class HistoryManager:
         Returns:
             消息记录列表（按时间顺序）
         """
+        storage_event = self._get_storage_event(event)
         with self._lock:
-            history = self._histories.get(event, deque())
+            history = self._histories.get(storage_event, deque())
             records = list(history)
 
         if limit and limit > 0:
@@ -249,31 +262,34 @@ class HistoryManager:
 
     def get_history_count(self, event: "Event") -> int:
         """获取指定session的历史消息数量"""
+        storage_event = self._get_storage_event(event)
         with self._lock:
-            history = self._histories.get(event, deque())
+            history = self._histories.get(storage_event, deque())
             return len(history)
 
     def clear_history(self, event: "Event") -> bool:
         """清空指定session的历史记录"""
+        storage_event = self._get_storage_event(event)
         with self._lock:
-            if event in self._histories:
-                self._histories[event].clear()
-            return event in self._histories
+            if storage_event in self._histories:
+                self._histories[storage_event].clear()
+            return storage_event in self._histories
 
     def delete_session(self, event: "Event") -> bool:
         """删除整个session的历史记录（释放内存）
 
         仅删除消息历史与元数据，不涉及 AI 会话对象。
         """
+        storage_event = self._get_storage_event(event)
         with self._lock:
             deleted = False
-            if event in self._histories:
-                del self._histories[event]
+            if storage_event in self._histories:
+                del self._histories[storage_event]
                 deleted = True
-            if event in self._session_metadata:
-                del self._session_metadata[event]
-            if event in self._session_tokens:
-                del self._session_tokens[event]
+            if storage_event in self._session_metadata:
+                del self._session_metadata[storage_event]
+            if storage_event in self._session_tokens:
+                del self._session_tokens[storage_event]
 
             return deleted
 
@@ -295,6 +311,7 @@ class HistoryManager:
                     "user_id": event.user_id,
                     "group_id": event.group_id,
                     "bot_id": event.bot_id,
+                    "WS_BOT_ID": event.WS_BOT_ID,
                     "user_type": event.user_type,
                 }
             return None
@@ -312,15 +329,17 @@ class HistoryManager:
                     "user_id": ev.user_id,
                     "group_id": ev.group_id,
                     "bot_id": ev.bot_id,
+                    "WS_BOT_ID": ev.WS_BOT_ID,
                     "user_type": ev.user_type,
                 }
         return result
 
     def update_session_access(self, event: "Event") -> None:
         """更新session的最后访问时间"""
+        storage_event = self._get_storage_event(event)
         with self._lock:
-            if event in self._session_metadata:
-                self._session_metadata[event]["last_access"] = time.time()
+            if storage_event in self._session_metadata:
+                self._session_metadata[storage_event]["last_access"] = time.time()
 
     def get_all_histories(self) -> Dict[str, List[MessageRecord]]:
         """
@@ -344,22 +363,25 @@ class HistoryManager:
 
         Args:
             data: {session_id_str: [message_dict, ...]}
-            格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
+            格式: {WS_BOT_ID}:{bot_id}:group:{group_id} 或 {WS_BOT_ID}:{bot_id}:private:{user_id}
         """
         with self._lock:
             for key_str, messages in data.items():
-                # 解析 session_id 字符串，格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}
                 parts = key_str.split(":", 3)
-                if len(parts) < 4 or parts[0] != "bot":
+                if len(parts) != 4:
                     continue
-                bot_id = parts[1]
-                if parts[2] == "group":
-                    group_id = parts[3]
+
+                ws_bot_id, bot_id, target_type, target_id = parts
+                if not ws_bot_id or not bot_id or not target_id:
+                    continue
+
+                if target_type == "group":
+                    group_id = target_id
                     user_id = ""
                     user_type: Literal["group", "direct", "channel", "sub_channel"] = "group"
-                elif parts[2] == "private":
+                elif target_type == "private":
                     group_id = None
-                    user_id = parts[3]
+                    user_id = target_id
                     user_type = "direct"
                 else:
                     continue
@@ -369,6 +391,7 @@ class HistoryManager:
                     group_id=group_id,
                     user_id=user_id,
                     user_type=user_type,
+                    WS_BOT_ID=ws_bot_id,
                 )
                 history = deque(maxlen=self._max_messages)
                 for msg_data in messages:

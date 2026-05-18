@@ -108,15 +108,32 @@ async def get_ai_session_by_id(
     group_id: Optional[str] = None,
     is_group_chat: bool = False,
 ) -> Optional[GsCoreAIAgent]:
-    """通过 session_id 获取或创建 AI Session（兼容接口）"""
-    # 从 session_id 构造兼容用的 Event（仅含 session 信息，无 WS_BOT_ID）
+    """通过 session_id 获取或创建 AI Session"""
+    # 从 session_id 构造 Event，保留 WS_BOT_ID / bot_id，避免 HistoryManager 访问时间更新时 key 不一致。
     from gsuid_core.models import Event
 
+    parts = session_id.split(":", 3)
+    if len(parts) != 4:
+        return None
+
+    ws_bot_id, bot_id, target_type, target_id = parts
+    if target_type == "group":
+        parsed_group_id = target_id
+        parsed_user_id = ""
+        user_type = "group"
+    elif target_type == "private":
+        parsed_group_id = None
+        parsed_user_id = target_id
+        user_type = "direct"
+    else:
+        return None
+
     ev = Event(
-        bot_id="",
-        user_id=user_id,
-        group_id=group_id,
-        user_type="group" if is_group_chat else "direct",
+        bot_id=bot_id,
+        user_id=parsed_user_id,
+        group_id=parsed_group_id,
+        user_type=user_type,
+        WS_BOT_ID=ws_bot_id,
     )
     return await _get_or_create_ai_session(ev, session_id=session_id)
 
