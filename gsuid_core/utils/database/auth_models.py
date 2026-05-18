@@ -6,7 +6,7 @@ Auth Models
 from typing import Any, Dict, Optional
 from datetime import datetime
 
-from sqlmodel import Field, Index
+from sqlmodel import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base_models import BaseIDModel, with_session
@@ -17,10 +17,7 @@ class WebUser(BaseIDModel, table=True):
     Web控制台用户表
     """
 
-    __table_args__ = (
-        Index("ix_webuser_email", "email", unique=True),
-        {"extend_existing": True},
-    )
+    __table_args__ = {"extend_existing": True}
 
     email: str = Field(title="邮箱", default=None, unique=True, index=True)
     name: str = Field(title="用户名", default=None)
