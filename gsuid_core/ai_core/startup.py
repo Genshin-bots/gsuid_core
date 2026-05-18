@@ -97,6 +97,13 @@ _INIT_STEPS = [
 @on_core_start
 async def init_ai_core():
     """AI 核心统一初始化（后台执行，不阻塞 WS 启动）。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    enable_ai = ai_config.get_config("enable").data
+    if not enable_ai:
+        logger.info("🧠 [AI Core] AI总开关已关闭，跳过 AI 重依赖导入与子系统初始化")
+        return
+
     start = time.time()
     logger.info("🧠 [AI Core] 开始后台初始化 AI 核心...")
 
@@ -109,22 +116,15 @@ async def init_ai_core():
         logger.exception(f"🧠 [AI Core] AI 重依赖导入失败, 初始化中止: {e}")
         return
 
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    enable_ai = ai_config.get_config("enable").data
-
-    if enable_ai:
-        logger.debug(f"🧠 [AI Core] AI 重依赖导入完成, 耗时: {time.time() - import_start:.2f}秒")
+    logger.debug(f"🧠 [AI Core] AI 重依赖导入完成, 耗时: {time.time() - import_start:.2f}秒")
 
     # 按依赖顺序依次初始化各子系统，单个失败不影响后续步骤
+    for name, step in _INIT_STEPS:
+        step_start = time.time()
+        try:
+            await step()
+            logger.info(f"🧠 [AI Core] {name} 初始化完成, 耗时: {time.time() - step_start:.2f}秒")
+        except Exception as e:
+            logger.exception(f"🧠 [AI Core] {name} 初始化失败: {e}")
 
-    if enable_ai:
-        for name, step in _INIT_STEPS:
-            step_start = time.time()
-            try:
-                await step()
-                logger.info(f"🧠 [AI Core] {name} 初始化完成, 耗时: {time.time() - step_start:.2f}秒")
-            except Exception as e:
-                logger.exception(f"🧠 [AI Core] {name} 初始化失败: {e}")
-
-        logger.success(f"🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {time.time() - start:.2f}秒")
+    logger.success(f"🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {time.time() - start:.2f}秒")

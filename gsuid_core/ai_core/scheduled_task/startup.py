@@ -37,6 +37,10 @@ async def shutdown_scheduled_tasks():
     在系统关闭时调用，清理所有已完成任务的 APScheduler job，
     避免重启后重复触发已完成的任务。
     """
+    if not ai_config.get_config("enable").data:
+        logger.info("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务关闭清理")
+        return
+
     try:
         count = await cleanup_completed_tasks()
         logger.info(f"✅ [ScheduledTask] 定时任务调度器关闭完成，清理了 {count} 个已完成任务")

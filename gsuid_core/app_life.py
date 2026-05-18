@@ -11,7 +11,7 @@ from gsuid_core.shutdown import shutdown_event
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from gsuid_core.webconsole import _setup_frontend
+    from gsuid_core.webconsole.setup_frontend import setup_frontend_b
     from gsuid_core.utils.download_resource.download_core import check_speed
 
     # 先执行启动前钩子（数据库迁移、全局变量加载等），阻塞式
@@ -20,13 +20,13 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(check_speed())
     asyncio.create_task(core_start_execute())
 
-    async def _bg_setup_frontend():
+    async def _bgsetup_frontend_b():
         try:
-            await _setup_frontend()
+            await setup_frontend_b()
         except Exception as e:
             logger.exception(f"💻 [网页控制台] 后台初始化失败: {e}")
 
-    asyncio.create_task(_bg_setup_frontend())
+    asyncio.create_task(_bgsetup_frontend_b())
 
     await start_scheduler()
 

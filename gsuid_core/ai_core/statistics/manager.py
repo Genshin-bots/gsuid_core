@@ -635,5 +635,10 @@ statistics_manager = get_statistics_manager()
 @scheduler.scheduled_job("cron", minute="*/30")
 async def _persist_loop():
     """每30分钟将 AI 统计数据持久化"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return
+
     await statistics_manager._persist_all_stats_to_db()
     logger.info("📊 [StatisticsManager] 每30分钟定时持久化完成")

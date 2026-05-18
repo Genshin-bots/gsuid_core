@@ -112,7 +112,7 @@ main()
   ├── uvicorn.Server.serve() → WS 服务启动
   └── lifespan:
         ├── await core_start_execute()  ← 阻塞！等待所有钩子完成
-        ├── _setup_frontend()
+        ├── setup_frontend_b()
         ├── start_scheduler()
         └── yield
 ```
@@ -127,7 +127,7 @@ main()
   └── lifespan:
         ├── await core_start_before_execute()  ← 阻塞，但只执行轻量级操作
         ├── asyncio.create_task(core_start_execute())  ← 后台异步，不阻塞
-        ├── _setup_frontend()
+        ├── setup_frontend_b()
         ├── start_scheduler()
         └── yield
 ```

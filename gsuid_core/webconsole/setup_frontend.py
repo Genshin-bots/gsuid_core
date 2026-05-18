@@ -50,7 +50,7 @@ def get_mime_type(file_path: Path) -> str:
 
     if mime_type is None:
         # 尝试使用 mimetypes 模块
-        mime_type, _ = mimetypes.guess_file_type(str(file_path))
+        mime_type, _ = mimetypes.guess_type(str(file_path))
         logger.debug(f"[WebConsole] 文件 {file_path} 的 MIME 类型为 {mime_type}")
 
     if mime_type is None:
@@ -101,7 +101,7 @@ def _import_webconsole_apis() -> None:
     """导入所有 webconsole API 模块，触发其路由注册到 FastAPI app。
 
     其中 meme_api / persona_api / ai_memory_api 等模块会拉起 AI 核心重依赖，
-    因此本函数由 _setup_frontend() 在 WS 启动后的后台阶段调用，
+    因此本函数由 setup_frontend_b() 在 WS 启动后的后台阶段调用，
     不再于同步插件加载阶段执行，避免阻塞框架启动。
     """
     from gsuid_core.webconsole import (  # noqa: F401
@@ -142,20 +142,16 @@ def _import_webconsole_apis() -> None:
     )
 
 
-async def _setup_frontend():
+async def setup_frontend_b():
     """Setup frontend static files and API routes"""
 
-    """确保webuser表存在"""
+    """确保核心数据库表存在"""
     try:
-        from sqlmodel import SQLModel
+        from gsuid_core.utils.database.startup import ensure_core_database_tables
 
-        from gsuid_core.utils.database.base_models import engine
-
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        logger.info("[WebUser] 数据库表创建成功!")
+        await ensure_core_database_tables()
     except Exception as e:
-        logger.warning(f"[WebUser] 数据库表创建失败: {e}")
+        logger.warning(f"[数据库] 核心数据库表创建失败: {e}")
 
     # 导入 app 对象
     from gsuid_core.webconsole.app_app import app

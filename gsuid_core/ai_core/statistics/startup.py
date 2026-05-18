@@ -23,6 +23,11 @@ async def init_ai_core_statistics():
 
 @scheduler.scheduled_job("cron", hour=0, minute=0)
 async def _scheduled_ai_core_reset():
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return
+
     logger.info("📊 [StatisticsManager] 日期变更, 执行每日重置")
 
     await statistics_manager._persist_all_stats_to_db()
@@ -38,6 +43,12 @@ async def _scheduled_ai_core_reset():
 @on_core_shutdown
 async def shutdown_ai_core_statistics():
     """关闭AI Core统计管理器"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        logger.info("📊 [StatisticsManager] AI总开关已关闭，跳过统计持久化")
+        return
+
     logger.info("📊 [StatisticsManager] 准备持久化数据...")
     await statistics_manager._persist_all_stats_to_db()
     logger.info("📊 [StatisticsManager] 统计管理器已停止")
