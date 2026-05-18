@@ -90,6 +90,8 @@ class MockBot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
+        recall: int = 0,
+        active_message: bool = False,
     ) -> None:
         """拦截 send：文本存入上下文返回给 AI，图片通过 RM 注册并返回资源 ID。"""
         ctx = object.__getattribute__(self, "_ctx")
@@ -118,9 +120,11 @@ class MockBot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
+        recall: int = 0,
+        active_message: bool = False,
     ) -> None:
         """拦截 reply，行为与 send 相同。"""
-        await self.send(message, at_sender)
+        await self.send(message, at_sender, recall, active_message)
 
     async def send_option(
         self,

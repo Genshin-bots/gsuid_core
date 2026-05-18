@@ -38,6 +38,7 @@ class MessageReceive(Struct):
     sender: Dict[str, Any] = {}
     user_pm: int = 6
     content: List[Message] = []
+    send_id: str = ""
 
 
 class Event(MessageReceive):
@@ -100,6 +101,9 @@ class MessageSend(Struct):
     bot_id: str = "Bot"
     bot_self_id: str = ""
     msg_id: str = ""
+    send_id: str = ""
     target_type: Optional[str] = None
     target_id: Optional[str] = None
     content: Optional[List[Message]] = None
+    recall: int = 0
+    active_message: bool = False

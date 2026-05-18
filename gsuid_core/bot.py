@@ -1,10 +1,11 @@
 import time
 import asyncio
 import inspect
+from uuid import uuid4
 from typing import Any, Dict, List, Union, Literal, Optional
 
 from fastapi import WebSocket
-from msgspec import json as msgjson
+from msgspec import json as msgjson, to_builtins
 from starlette.websockets import WebSocketState
 
 from gsuid_core.logger import logger
@@ -106,6 +107,7 @@ class _Bot:
         self.logger = GsLogger(self.bot_id, ws)
         self.queue = asyncio.queues.PriorityQueue()
         self.send_dict = {}
+        self.active_message_results: Dict[str, asyncio.Future] = {}
         self.bg_tasks: set[asyncio.Task] = set()
         self.sem = asyncio.Semaphore(10)
         self._shutdown_event: Optional[asyncio.Event] = None
@@ -201,6 +203,8 @@ class _Bot:
         group_id: Optional[str] = None,
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
+        recall: int = 0,
+        active_message: bool = False,
     ):
         # 记录 bot 回复到历史记录
         try:
@@ -341,6 +345,18 @@ class _Bot:
             if _temp_mr:
                 message_result.append(_temp_mr)
 
+        if recall < 0:
+            recall = 0
+        elif recall > 120:
+            recall = 120
+
+        send_id = ""
+        active_result_future = None
+        if active_message:
+            send_id = uuid4().hex
+            active_result_future = asyncio.get_running_loop().create_future()
+            self.active_message_results[send_id] = active_result_future
+
         for mr in message_result:
             logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
             if at_sender and sender_id:
@@ -356,9 +372,12 @@ class _Bot:
                 content=mr,
                 bot_id=bot_id,
                 bot_self_id=bot_self_id,
+                send_id=send_id,
                 target_type=target_type,
                 target_id=target_id,
                 msg_id=msg_id,
+                recall=recall,
+                active_message=active_message,
             )
 
             local_val = await get_global_val(bot_id, bot_self_id)
@@ -390,7 +409,10 @@ class _Bot:
             # ============================================
 
             logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
-            body = msgjson.encode(send)
+            send_body = to_builtins(send)
+            if not send_id:
+                send_body.pop("send_id", None)
+            body = msgjson.encode(send_body)
             # 通过发送队列串行化 WebSocket 发送，避免多任务并发写入
             # 闭包不捕获 ws，执行时动态读取 self.bot，重连后自动使用新 ws
 
@@ -407,6 +429,19 @@ class _Bot:
             else:
                 # WS 模式：无论连没连都入队，worker 会等重连
                 await self._enqueue_send(_do_send())
+
+        if active_result_future is not None:
+            try:
+                return await asyncio.wait_for(active_result_future, timeout=15)
+            except asyncio.TimeoutError:
+                return None
+            finally:
+                self.active_message_results.pop(send_id, None)
+
+    def set_active_message_result(self, send_id: str, success: bool) -> None:
+        future = self.active_message_results.get(send_id)
+        if future is not None and not future.done():
+            future.set_result(success)
 
     async def wait_task(
         self,
@@ -552,7 +587,16 @@ class Bot:
         sep: str = "\n",
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
+        active_message: bool = False,
     ):
+        if option_list is None:
+            if reply:
+                return await self.send(
+                    reply,
+                    active_message=active_message,
+                )
+            return None
+
         return await self.receive_resp(
             reply,
             option_list,
@@ -709,6 +753,8 @@ class Bot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
+        recall: int = 0,
+        active_message: bool = False,
     ):
         return await self.bot.target_send(
             message,
@@ -722,6 +768,8 @@ class Bot:
             self.ev.group_id,
             self.ev.task_id,
             self.ev.task_event,
+            recall=recall,
+            active_message=active_message,
         )
 
     async def target_send(
@@ -732,6 +780,8 @@ class Bot:
         at_sender: bool = False,
         sender_id: str = "",
         send_source_group: Optional[str] = None,
+        recall: int = 0,
+        active_message: bool = False,
     ):
         return await self.bot.target_send(
             message,
@@ -743,6 +793,8 @@ class Bot:
             at_sender,
             sender_id,
             send_source_group,
+            recall=recall,
+            active_message=active_message,
         )
 
 
