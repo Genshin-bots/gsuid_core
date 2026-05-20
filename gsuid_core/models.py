@@ -98,4 +98,4 @@ class MessageSend(Struct):
     target_id: Optional[str] = None
     content: Optional[List[Message]] = None
     recall: int = 0
-    active_message: bool = False
+    wait_send_result: bool = False

@@ -108,7 +108,7 @@ class _Bot:
         self.logger = GsLogger(self.bot_id, ws)
         self.queue = asyncio.queues.PriorityQueue()
         self.send_dict = {}
-        self.active_message_results: Dict[str, asyncio.Future] = {}
+        self.send_result_waiters: Dict[str, asyncio.Future] = {}
         self.bg_tasks: set[asyncio.Task] = set()
         self.sem = asyncio.Semaphore(10)
         self._shutdown_event: Optional[asyncio.Event] = None
@@ -205,8 +205,7 @@ class _Bot:
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
         recall: int = 0,
-        active_message: bool = False,
-        wait_active_result: bool = False,
+        wait_send_result: bool = False,
     ):
         # 记录 bot 回复到历史记录
         try:
@@ -352,11 +351,11 @@ class _Bot:
             recall = 120
 
         send_id = ""
-        active_result_future = None
-        if active_message and wait_active_result:
+        send_result_future = None
+        if wait_send_result:
             send_id = uuid4().hex
-            active_result_future = asyncio.get_running_loop().create_future()
-            self.active_message_results[send_id] = active_result_future
+            send_result_future = asyncio.get_running_loop().create_future()
+            self.send_result_waiters[send_id] = send_result_future
 
         for mr in message_result:
             logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
@@ -378,7 +377,7 @@ class _Bot:
                 target_id=target_id,
                 msg_id=msg_id,
                 recall=recall,
-                active_message=active_message,
+                wait_send_result=wait_send_result,
             )
 
             local_val = await get_global_val(bot_id, bot_self_id)
@@ -431,16 +430,16 @@ class _Bot:
                 # WS 模式：无论连没连都入队，worker 会等重连
                 await self._enqueue_send(_do_send())
 
-        if active_result_future is not None:
+        if send_result_future is not None:
             try:
-                return await asyncio.wait_for(active_result_future, timeout=15)
+                return await asyncio.wait_for(send_result_future, timeout=15)
             except asyncio.TimeoutError:
                 return None
             finally:
-                self.active_message_results.pop(send_id, None)
+                self.send_result_waiters.pop(send_id, None)
 
-    def set_active_message_result(self, send_id: str, success: bool) -> None:
-        future = self.active_message_results.get(send_id)
+    def set_send_result(self, send_id: str, success: bool) -> None:
+        future = self.send_result_waiters.get(send_id)
         if future is not None and not future.done():
             future.set_result(success)
 
@@ -588,15 +587,13 @@ class Bot:
         sep: str = "\n",
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
-        active_message: bool = False,
-        wait_active_result: bool = False,
+        wait_send_result: bool = False,
     ):
         if option_list is None:
             if reply:
                 return await self.send(
                     reply,
-                    active_message=active_message,
-                    wait_active_result=wait_active_result,
+                    wait_send_result=wait_send_result,
                 )
             return None
 
@@ -757,8 +754,7 @@ class Bot:
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
         recall: int = 0,
-        active_message: bool = False,
-        wait_active_result: bool = False,
+        wait_send_result: bool = False,
     ):
         return await self.bot.target_send(
             message,
@@ -773,8 +769,7 @@ class Bot:
             self.ev.task_id,
             self.ev.task_event,
             recall=recall,
-            active_message=active_message,
-            wait_active_result=wait_active_result,
+            wait_send_result=wait_send_result,
         )
 
     async def target_send(
@@ -786,8 +781,7 @@ class Bot:
         sender_id: str = "",
         send_source_group: Optional[str] = None,
         recall: int = 0,
-        active_message: bool = False,
-        wait_active_result: bool = False,
+        wait_send_result: bool = False,
     ):
         return await self.bot.target_send(
             message,
@@ -800,8 +794,7 @@ class Bot:
             sender_id,
             send_source_group,
             recall=recall,
-            active_message=active_message,
-            wait_active_result=wait_active_result,
+            wait_send_result=wait_send_result,
         )
 
 

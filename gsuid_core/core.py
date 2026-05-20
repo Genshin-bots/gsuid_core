@@ -148,13 +148,13 @@ async def main():
                             msg = msgjson.decode(data, type=MessageReceive)
                             if msg.send_id:
                                 for content in msg.content:
-                                    if content.type == "active_message_result":
+                                    if content.type == "send_result":
                                         result_data = content.data
                                         if isinstance(result_data, dict) and "success" in result_data:
                                             result = bool(result_data["success"])
                                         else:
                                             result = bool(result_data)
-                                        bot.set_active_message_result(
+                                        bot.set_send_result(
                                             msg.send_id,
                                             result,
                                         )

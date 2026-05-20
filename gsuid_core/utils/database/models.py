@@ -59,8 +59,7 @@ class Subscribe(BaseModel, table=True):
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
         force_direct: bool = False,
-        active_message: bool = False,
-        wait_active_result: bool = False,
+        wait_send_result: bool = False,
     ):
         if force_direct:
             user_type = "direct"
@@ -93,8 +92,7 @@ class Subscribe(BaseModel, table=True):
                 else:
                     await bot.send(
                         reply,
-                        active_message=active_message,
-                        wait_active_result=wait_active_result,
+                        wait_send_result=wait_send_result,
                     )
             else:
                 # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
@@ -115,8 +113,7 @@ class Subscribe(BaseModel, table=True):
                         else:
                             await bot.send(
                                 reply,
-                                active_message=active_message,
-                                wait_active_result=wait_active_result,
+                                wait_send_result=wait_send_result,
                             )
                         found = True
                         break
@@ -132,8 +129,7 @@ class Subscribe(BaseModel, table=True):
                 else:
                     await bot.send(
                         reply,
-                        active_message=active_message,
-                        wait_active_result=wait_active_result,
+                        wait_send_result=wait_send_result,
                     )
 
 
