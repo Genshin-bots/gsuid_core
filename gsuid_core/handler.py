@@ -134,10 +134,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if show_receive:
         logger.info("[收到事件]", event_payload=event)
 
+    from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
+
+    ai_scope_banned = is_scope_banned(event.session_id)
+
     # ====== Meme Observer Hook ======
     from gsuid_core.ai_core.meme.observer import observe_message_for_memes
 
-    if enable_ai:
+    if enable_ai and not ai_scope_banned:
         meme_task = asyncio.create_task(
             observe_message_for_memes(
                 event,
@@ -187,7 +191,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         )
 
         # ====== Memory Observer Hook ======
-        if enable_ai and event.raw_text and event.raw_text.strip():
+        _has_text = bool(event.raw_text and event.raw_text.strip())
+        _img_urls = [img for img in ([event.image] + list(event.image_list or [])) if isinstance(img, str) and img]
+        if enable_ai and not ai_scope_banned and (_has_text or _img_urls):
             from gsuid_core.ai_core.memory import observe
             from gsuid_core.ai_core.memory.config import memory_config
 
@@ -213,7 +219,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     if persona_name is not None:
                         should_observe = True
 
-                if should_observe:
+                if should_observe and _has_text:
                     mem_task = asyncio.create_task(
                         observe(
                             content=event.raw_text,
@@ -225,6 +231,22 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                         )
                     )
                     ws._add_bg_task(mem_task)
+
+                # C9 多模态摄入：高价值图片走独立队列，由 ImageUnderstandWorker
+                # 异步转述后再进主管道——纯入队、不阻塞当前消息处理。
+                if should_observe and _img_urls:
+                    from gsuid_core.ai_core.memory.ingestion.multimodal import (
+                        submit_image_observation,
+                    )
+
+                    submit_image_observation(
+                        image_urls=_img_urls,
+                        speaker_id=str(event.user_id),
+                        group_id=str(event.group_id or event.user_id),
+                        bot_self_id=str(event.bot_self_id),
+                        observer_blacklist=memory_config.observer_blacklist,
+                        message_type="group_msg" if event.group_id else "private_msg",
+                    )
         # ============================================
 
     if event.user_pm == 0:
@@ -431,6 +453,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     else:
         # 检查AI是否启用
         if not enable_ai:
+            return
+        if ai_scope_banned:
             return
 
         # 初始化黑名单和白名单

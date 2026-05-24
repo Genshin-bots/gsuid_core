@@ -18,7 +18,7 @@ import time
 import asyncio
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start
+from gsuid_core.server import on_core_start, on_core_shutdown
 
 
 def _import_ai_heavy_deps():
@@ -47,6 +47,12 @@ async def _init_scheduled_task():
     from gsuid_core.ai_core.scheduled_task.startup import init_scheduled_tasks
 
     await init_scheduled_tasks()
+
+
+async def _init_planning():
+    from gsuid_core.ai_core.planning.startup import init_planning
+
+    await init_planning()
 
 
 async def _init_memory():
@@ -86,6 +92,7 @@ _INIT_STEPS = [
     ("RAG", _init_rag),
     ("Persona", _init_persona),
     ("定时任务", _init_scheduled_task),
+    ("长任务编排", _init_planning),
     ("Memory", _init_memory),
     ("MCP 工具", _init_mcp_tools),
     ("Meme", _init_meme),
@@ -128,3 +135,22 @@ async def init_ai_core():
             logger.exception(f"🧠 [AI Core] {name} 初始化失败: {e}")
 
     logger.success(f"🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {time.time() - start:.2f}秒")
+
+
+@on_core_shutdown
+async def flush_ai_sessions_on_shutdown() -> None:
+    """框架关闭时，强制把所有活跃 AI 会话的日志落盘。
+
+    依赖 `AISessionRegistry.shutdown_all()` 逐个调用 logger.close()，
+    确保未达到 10 分钟兜底间隔的会话也能保留完整日志。
+    """
+    try:
+        from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+        registry = get_ai_session_registry()
+        await registry.stop_cleanup_loop()
+        closed = registry.shutdown_all()
+        if closed:
+            logger.info(f"📝 [AISessionLogger] 关闭流程已持久化 {closed} 个活跃会话")
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"📝 [AISessionLogger] 关闭流程持久化失败: {e}")

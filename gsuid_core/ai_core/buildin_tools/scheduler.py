@@ -12,8 +12,9 @@
 ## 安全限制
 
 - 单用户最多 20 个待执行任务
-- 循环任务最大执行次数为 10 次
+- 循环任务最大执行次数为 150 次
 - 循环任务最小间隔为 5 分钟
+- 单轮对话内 `add_once_task` 调用上限：2 次（防"逐时间点枚举"工具误用）
 
 ## 状态说明
 
@@ -25,7 +26,7 @@
 """
 
 import uuid
-from typing import Optional
+from typing import Dict, Tuple, Optional
 from datetime import datetime, timedelta
 
 from pytz import timezone
@@ -41,8 +42,31 @@ TZ_SHANGHAI = timezone("Asia/Shanghai")
 
 # 安全限制
 MAX_PENDING_TASKS_PER_USER = 20
-MAX_EXECUTION_LIMIT = 10
+MAX_EXECUTION_LIMIT = 150
 MIN_INTERVAL_SECONDS = 300
+
+# 单轮节流：防止主人格用 add_once_task 逐时间点枚举周期任务。
+# Key: (session_id, turn_id) — turn_id 由 gs_agent._execute_run 写入
+# ToolContext.extra["turn_id"]。Value: 本轮已成功创建的 add_once_task 计数。
+PER_TURN_ONCE_TASK_LIMIT = 2
+_PER_TURN_ONCE_TASK_COUNT: Dict[Tuple[str, str], int] = {}
+
+
+def _get_turn_throttle_key(ctx: RunContext[ToolContext]) -> Optional[Tuple[str, str]]:
+    """构造 (session_id, turn_id) 节流键；缺一不可（无 turn_id 时跳过节流）。"""
+    tool_ctx: ToolContext = ctx.deps
+    ev = tool_ctx.ev
+    if ev is None:
+        return None
+    turn_id = tool_ctx.extra.get("turn_id") if tool_ctx.extra else None
+    if not turn_id:
+        return None
+    return (str(ev.session_id), str(turn_id))
+
+
+def clear_turn_throttle(session_id: str, turn_id: str) -> None:
+    """回合结束时清理本轮的节流计数（由 gs_agent._execute_run finally 调用）。"""
+    _PER_TURN_ONCE_TASK_COUNT.pop((str(session_id), str(turn_id)), None)
 
 
 def _get_session_info(ev) -> tuple[Optional[str], Optional[str]]:
@@ -111,6 +135,13 @@ async def add_once_task(
         ...     run_time="2024-05-14 16:30:00",
         ...     task_prompt="温柔地提醒用户喝水，说'主人，记得多喝水对身体好哦~'",
         ... )
+
+    **何时不该用本工具**：
+    - 涉及"决策 / 分析 / 复盘 / 持仓 / 账本" → 走 register_kanban_task
+    - 同一意图需要 3+ 个时间点触发 → 走 add_interval_task 或
+      register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")
+    - 单轮调用本工具不得超过 2 次（硬约束，第 3 次直接拒绝）
+    - 「我为每个时间点逐一调用 add_once_task」是工具选错的最强信号
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -127,6 +158,21 @@ async def add_once_task(
     if not run_time:
         return "⚠️ 添加任务失败：缺少 run_time"
 
+    # 单轮节流：本轮已调过 N 次 add_once_task 即拒绝，强提示走周期模板。
+    # 这是反"逐时间点枚举"误用的硬约束——见模块顶端注释。
+    throttle_key = _get_turn_throttle_key(ctx)
+    if throttle_key is not None:
+        count = _PER_TURN_ONCE_TASK_COUNT.get(throttle_key, 0)
+        if count >= PER_TURN_ONCE_TASK_LIMIT:
+            return (
+                f"⚠️ 单轮对话内已调用 add_once_task {PER_TURN_ONCE_TASK_LIMIT} 次。\n"
+                "如果你正在为多个时间点逐一注册任务，这是**工具选错**的信号。\n"
+                "→ 单步周期请改用 add_interval_task\n"
+                "→ 多步周期（含决策/复盘/账本）请改用 "
+                'register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")\n'
+                "本次调用已被拒绝。"
+            )
+
     # 解析时间（统一使用 Asia/Shanghai 时区）
     try:
         trigger_time = datetime.strptime(run_time, "%Y-%m-%d %H:%M:%S")
@@ -142,7 +188,13 @@ async def add_once_task(
     existing_tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
     user_pending_count = sum(1 for t in existing_tasks if t.status == "pending")
     if user_pending_count >= MAX_PENDING_TASKS_PER_USER:
-        return f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务，请先取消一些任务"
+        return (
+            f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务。\n"
+            "→ 如果这是「周期性多步任务」（如长期追踪/复盘/记账），"
+            "请改用 register_kanban_task(recurring_trigger=...) ——它不走该上限，"
+            "也能由 Kanban 统一编排。\n"
+            "→ 否则请先取消已有任务后重试。"
+        )
 
     # 生成任务ID
     task_id = f"scheduled_task_{uuid.uuid4().hex[:12]}"
@@ -174,6 +226,10 @@ async def add_once_task(
             replace_existing=True,
         )
 
+        # 任务成功落库后再计入单轮节流计数（失败的不算）。
+        if throttle_key is not None:
+            _PER_TURN_ONCE_TASK_COUNT[throttle_key] = _PER_TURN_ONCE_TASK_COUNT.get(throttle_key, 0) + 1
+
         return f"✅ 一次性任务添加成功！\n📋 任务ID：{task_id}\n📅 执行时间：{run_time}\n📝 任务内容：{task_prompt}"
 
     except Exception as e:
@@ -197,7 +253,16 @@ async def add_interval_task(
     例如"每半小时查一下股价"、"每天早上发天气预报"、"每天下午3点30分查xxx"。
 
     循环任务会按照设定的时间间隔重复执行，达到最大执行次数后自动结束。
-    系统安全限制：最大执行10次，最小间隔5分钟。
+    系统安全限制：最大执行 150 次，最小间隔 5 分钟。
+
+    **何时不该用本工具**：
+    - 任务包含"决策 / 多代理协作 / 持仓记账 / 周期复盘"——这些属于多步任务，
+      应走 register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")，
+      而不是把多步流程塞进 task_prompt。
+    - task_prompt 写得超过 2 个步骤（"先 A 再 B 再 C 再写日志再汇报"），
+      这是**工具选错**的强信号。
+    - task_prompt 含 if-then-else 多步判断（"如果是工作日就 A 否则 B"），
+      也是工具选错——多步逻辑由 Kanban 子任务树承载。
 
     Args:
         ctx: 工具执行上下文
@@ -298,7 +363,12 @@ async def add_interval_task(
     existing_tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
     user_pending_count = sum(1 for t in existing_tasks if t.status == "pending")
     if user_pending_count >= MAX_PENDING_TASKS_PER_USER:
-        return f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务，请先取消一些任务"
+        return (
+            f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务。\n"
+            "→ 如果这是「周期性多步任务」（含决策/复盘/账本），"
+            "请改用 register_kanban_task(recurring_trigger=...) ——它不走该上限。\n"
+            "→ 否则请先取消已有任务后重试。"
+        )
 
     # 生成任务ID
     task_id = f"scheduled_task_{uuid.uuid4().hex[:12]}"

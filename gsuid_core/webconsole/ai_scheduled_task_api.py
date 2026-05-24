@@ -271,7 +271,10 @@ async def delete_scheduled_task(
     _user: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
-    删除 AI 定时任务
+    软删除 AI 定时任务（保留历史记录）
+
+    将任务状态置为 cancelled，并从 APScheduler 移除已注册作业。
+    历史与执行结果保留在数据库中，可供审计/回溯。
 
     Args:
         task_id: 任务 ID
@@ -289,7 +292,7 @@ async def delete_scheduled_task(
         if scheduler.get_job(task_id):
             scheduler.remove_job(task_id)
 
-        # 删除数据库记录（这里用 update 模拟删除，将状态改为 cancelled）
+        # 软删除：状态置为 cancelled，DB 行保留
         await AIScheduledTask.update_data_by_data(
             select_data={"task_id": task_id},
             update_data={"status": "cancelled"},
@@ -299,6 +302,114 @@ async def delete_scheduled_task(
 
     except Exception as e:
         return {"status": 1, "msg": f"删除任务失败: {str(e)}", "data": None}
+
+
+@app.delete("/api/ai/scheduled_tasks/{task_id}/hard")
+async def hard_delete_scheduled_task(
+    task_id: str,
+    _user: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    硬删除 AI 定时任务（彻底从数据库移除）
+
+    与软删除不同：本接口会彻底删除 DB 行，无法找回；同时移除 APScheduler 作业。
+    适用于前端"清理废弃任务"按钮。
+
+    Args:
+        task_id: 任务 ID
+
+    Returns:
+        status: 0成功，1任务不存在或删除失败
+    """
+    tasks = await AIScheduledTask.select_rows(task_id=task_id)
+
+    if not tasks:
+        return {"status": 1, "msg": "任务不存在", "data": None}
+
+    try:
+        if scheduler.get_job(task_id):
+            scheduler.remove_job(task_id)
+
+        deleted = await AIScheduledTask.delete_row(task_id=task_id)
+        if deleted == 0:
+            return {"status": 1, "msg": "硬删除失败：未删除任何记录", "data": None}
+
+        return {"status": 0, "msg": "任务已彻底删除", "data": {"task_id": task_id}}
+
+    except Exception as e:
+        return {"status": 1, "msg": f"硬删除任务失败: {str(e)}", "data": None}
+
+
+@app.delete("/api/ai/scheduled_tasks")
+async def clear_scheduled_tasks(
+    user_id: Optional[str] = Query(None, description="按用户ID过滤"),
+    status: Optional[str] = Query(None, description="按状态过滤（如 cancelled/failed/executed）"),
+    task_type: Optional[str] = Query(None, description="按任务类型过滤（once/interval）"),
+    confirm: bool = Query(False, description="必须显式传 true 才会执行清空，防误删"),
+    _user: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    批量硬删除 AI 定时任务（支持按筛选条件清空或全部清空）
+
+    所有匹配的任务会被**彻底**从数据库移除，对应的 APScheduler 作业同步移除。
+    无任何筛选条件时等同于"全部清空"，因此必须显式传 confirm=true 才会执行。
+
+    Args:
+        user_id: 仅清空指定用户的任务（可选）
+        status: 仅清空指定状态的任务（可选）
+        task_type: 仅清空指定类型的任务（可选）
+        confirm: 安全开关，未传或为 false 时直接返回拒绝
+
+    Returns:
+        status: 0成功，1失败/拒绝
+        data: { "deleted": 删除数量, "matched": 命中数量 }
+    """
+    if not confirm:
+        return {
+            "status": 1,
+            "msg": "请显式传 confirm=true 以确认批量清空",
+            "data": None,
+        }
+
+    filters: Dict[str, Any] = {}
+    if user_id:
+        filters["user_id"] = user_id
+    if status:
+        filters["status"] = status
+    if task_type:
+        filters["task_type"] = task_type
+
+    try:
+        tasks = await AIScheduledTask.select_rows(**filters)
+        matched: int = len(tasks)
+        if matched == 0:
+            return {"status": 0, "msg": "无匹配任务", "data": {"deleted": 0, "matched": 0}}
+
+        deleted: int = 0
+        for task in tasks:
+            if isinstance(task, AIScheduledTask):
+                tid = task.task_id
+            else:
+                tid = task.get("task_id")
+            if not tid:
+                continue
+            try:
+                if scheduler.get_job(tid):
+                    scheduler.remove_job(tid)
+            except Exception:  # noqa: BLE001
+                pass
+            removed = await AIScheduledTask.delete_row(task_id=tid)
+            if removed:
+                deleted += 1
+
+        return {
+            "status": 0,
+            "msg": f"已彻底删除 {deleted} 个任务",
+            "data": {"deleted": deleted, "matched": matched},
+        }
+
+    except Exception as e:
+        return {"status": 1, "msg": f"批量删除失败: {str(e)}", "data": None}
 
 
 @app.post("/api/ai/scheduled_tasks/{task_id}/pause")

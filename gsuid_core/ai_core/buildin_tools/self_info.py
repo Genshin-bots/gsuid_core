@@ -183,3 +183,41 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
         lines.append(f"  群组语境: {context_tags_text}")
 
     return "\n".join(lines)
+
+
+@ai_tools(category="common", capability_domain="自我认知")
+async def update_self_note(
+    ctx: RunContext[ToolContext],
+    content: str,
+    note_type: Literal["preference", "commitment", "reflection"] = "preference",
+) -> str:
+    """记录一条关于你自己的长期信息（写入自我认知演化层）。
+
+    当用户明确表达了对你的称呼偏好、禁忌或长期约束（如"从现在起叫我老板"），
+    或你对自己作出了某个承诺、复盘出某个反思时，调用此工具持久化记录。
+    从下一轮对话起，这条信息会自动出现在你的自我认知里，无需再次记忆。
+    注意：不要为玩笑、临时或不确定的内容调用此工具。
+
+    Args:
+        ctx: 工具执行上下文
+        content: 要记录的内容，简短一句话即可
+        note_type: 记录类型——
+            "preference"=学到的偏好（称呼/禁忌等），
+            "commitment"=对用户作出的承诺，
+            "reflection"=自我复盘反思
+
+    Returns:
+        记录结果说明
+    """
+    from gsuid_core.ai_core.self_cognition import add_self_note
+
+    field_map = {
+        "preference": "preferences_learned",
+        "commitment": "commitments",
+        "reflection": "self_notes",
+    }
+    # Bot.bot_id 是已声明字段；deps.bot 为 None 时退化为空串走 default scope
+    bot_id = ctx.deps.bot.bot_id if ctx.deps.bot is not None else ""
+
+    ok = await add_self_note(bot_id, content, field_map[note_type])
+    return "✅ 已记入我的自我认知" if ok else "⚠️ 自我认知记录失败"

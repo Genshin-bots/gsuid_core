@@ -1,4 +1,4 @@
-# GsCore AI Core 插件开发者 API 文档
+﻿# GsCore AI Core 插件开发者 API 文档
 
 ## 概述
 
@@ -19,17 +19,16 @@
 7. [别名注册](#7-别名注册)
 8. [图片实体注册](#8-图片实体注册)
 9. [内置工具一览](#9-内置工具一览)
-10. [System Prompt 管理](#10-system-prompt-管理)
-11. [Persona 角色系统](#11-persona-角色系统)
-12. [Memory 记忆系统](#12-memory-记忆系统)
-13. [Scheduled Task 定时任务](#13-scheduled-task-定时任务)
-14. [工具注册表查询 API](#14-工具注册表查询-api)
-15. [类型定义参考](#15-类型定义参考)
-16. [完整示例](#16-完整示例)
-17. [MCP 工具集成](#17-mcp-工具集成)
-18. [Image Understand 图片理解](#18-image-understand-图片理解)
-19. [Web Search 统一搜索](#19-web-search-统一搜索)
-20. [Meme 表情包模块](#20-meme-表情包模块)
+10. [Persona 角色系统](#10-persona-角色系统)
+11. [Memory 记忆系统](#11-memory-记忆系统)
+12. [Scheduled Task 定时任务](#12-scheduled-task-定时任务)
+13. [工具注册表查询 API](#13-工具注册表查询-api)
+14. [类型定义参考](#14-类型定义参考)
+15. [完整示例](#15-完整示例)
+16. [MCP 工具集成](#16-mcp-工具集成)
+17. [Image Understand 图片理解](#17-image-understand-图片理解)
+18. [Web Search 统一搜索](#18-web-search-统一搜索)
+19. [Meme 表情包模块](#19-meme-表情包模块)
 
 ---
 
@@ -221,21 +220,7 @@ from gsuid_core.ai_core.rag import (
     get_reranker,
     rerank_results,
 )
-
-# ============================================================
-# System Prompt 管理
-# ============================================================
-from gsuid_core.ai_core.system_prompt import (
-    SystemPrompt,
-    get_all_prompts,
-    get_prompt_by_id,
-    add_prompt,
-    update_prompt,
-    delete_prompt,
-    search_system_prompt,
-    get_best_match,
-)
-
+`n
 # ============================================================
 # Persona 角色系统
 # ============================================================
@@ -295,6 +280,7 @@ def ai_tools(
     category: str = "default",
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
+    capability_domain: Optional[str] = None,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 ```
@@ -306,6 +292,7 @@ def ai_tools(
 | `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"self"` 为主Agent核心工具，`"buildin"` 为内置工具，`"common"` 为通用工具，`"default"` 为子Agent工具 |
 | `check_func` | `Callable` | `None` | 可选的权限校验函数，签名为 `async def check(ev: Event) -> Tuple[bool, str]` |
 | `context_tags` | `List[str]` | `None` | 语境标签。声明后，框架会在匹配该语境的群聊中通过**语境工具池**自动加载本工具，无需依赖向量搜索命中 |
+| `capability_domain` | `str` | `None` | **（C3-d 新增）** 能力域名称（如 `"原神数据"`）。声明后框架会按 domain 聚合成自然语言能力清单，注入 Bot 的自我认知；未声明时按 `category` 兜底 |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
 
 > **语境工具池**：插件可通过 `context_tags` 声明工具的适用语境，例如：
@@ -945,17 +932,24 @@ from gsuid_core.ai_core.register import ai_alias
 ### 7.2 函数签名
 
 ```python
-def ai_alias(name: str, alias: Union[str, List[str]]) -> None
+def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global") -> None
 ```
 
-别名系统用于 LLM 调用前进行**专有名词归一化**，将用户输入的别名统一替换为标准名称。
+别名系统用于专有名词归一化。
+
+> **C2 变更（2026-05-19）**：别名注册表已**接入 AI 记忆摄入链路**。注册的别名会在
+> 实体抽取时作为"本群已知别名"注入提取提示词，指导 LLM 把别名对齐到正式名（C2-a/c）；
+> 检索期也用于查询展开与动态实体链接消歧（C2-e）。原先 `ai_alias` 的唯一消费者
+> `normalize_query` 是 dead code，现已降级为命令层非 LLM fallback（R1），
+> 不再参与 AI 推理链路。
 
 ### 7.3 参数说明
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `name` | `str` | 标准名称（归一化目标） |
-| `alias` | `str \| List[str]` | 别名，可以是单个字符串或列表 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `name` | `str` | — | 标准名称（归一化目标） |
+| `alias` | `str \| List[str]` | — | 别名，可以是单个字符串或列表 |
+| `scope` | `str` | `"global"` | **（C2-d 新增）** 别名作用域。默认 `"global"` 为通用别名；插件可传业务 scope（如 `"Genshin"`）隔离同名别名，避免"深渊"等词在不同游戏间串味 |
 
 ### 7.4 示例
 
@@ -968,6 +962,10 @@ ai_alias("雷电将军", "雷神")
 # 多个别名
 ai_alias("胡桃", ["小胡桃", "HuTao", "胡桃儿"])
 ai_alias("丝柯克", ["skk", "斯柯克", "SKK", "丝绸之路"])
+
+# C2-d：用 scope 隔离跨游戏同名别名
+ai_alias("幽境危战", "深渊", scope="WutheringWaves")
+ai_alias("渊月螺旋", "深渊", scope="Genshin")
 
 # 在插件初始化时批量注册
 ALIASES = {
@@ -1077,15 +1075,18 @@ async def update_user_favorability(
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,                      # 任务描述，请详细说明
-    max_tokens: int = 10000,        # 子Agent最大输出 token 数
+    max_tokens: int = 35000,        # 子Agent最大输出 token 数
     max_iterations: int = 15,       # 子Agent最大迭代次数
+    agent_profile: str = "",        # 可选：派给指定的无人格能力代理
 ) -> str
 ```
 
 **工作流程**：
-1. 根据 `task` 向量检索最匹配的工具
-2. 使用内置的 Plan-and-Solve System Prompt 创建临时子 Agent
-3. 子 Agent 执行任务并返回结果
+- `agent_profile` 留空（默认）：根据 `task` 向量检索工具，用内置 Plan-and-Solve
+  System Prompt 创建临时泛化子 Agent，执行并返回结果。
+- `agent_profile` 非空（自然语言描述，如"写代码""金融分析""调研"）：经
+  `resolve_profile` 解析到对应的**无人格能力代理**执行（见 §9.8），执行/表达
+  分离，适合专业、易引发人格漂移的任务。
 
 #### send_message_by_ai - 主动发送消息
 
@@ -1555,108 +1556,153 @@ async def list_available_tools(
 ) -> str
 ```
 
+### 9.7 Kanban 任务编排工具（category="buildin" / "self"）
+
+多步、多代理协作的任务由 `ai_core/planning` 模块的两张持久化表
+（`AIAgentTask` + `AIAgentTaskLog`）和 `AIAgentArtifact` Hub 承载，进程重启不丢。
+插件无需直接操作这些表——以下工具已注册为框架保底工具，主 Agent 自主调用：
+
+| 工具 | 用途 |
+|------|------|
+| `evaluate_agent_mesh_capability` | 创建任务树**前置**：让 capability_evaluator 评估现有画像是否覆盖任务，返回 covered / missing / suggested_subtasks |
+| `register_kanban_task` | 注册一棵任务树（根 + N 子任务节点），事件驱动并发推进 |
+| `respawn_subtask` | 复活 failed 子任务（最多 3 次后强制转 waiting_approval） |
+| `fail_task_tree` | 明确终结整棵任务树 + 级联未完成子任务 |
+| `respond_subtask_approval` | 转达主人对 waiting_approval 子任务的同意 / 拒绝 |
+| `artifact_put` / `artifact_get` / `artifact_list` | 任务树内 Artifact Hub 增 / 取 / 列 |
+| `artifact_get_recent` | 取根任务最近一份 artifact 原文，专给主人格追问溯源用 |
+
+**关键约束**：
+
+- 真实 ID（`task_id` / `root_task_id`）由框架代管，**绝不作为 LLM 工具参数暴露**；
+  任务引用一律走自然语言句柄 + 框架解析；artifact 用显式 `res_xxx` 句柄。
+- **没有定时器**：Kanban 纯事件驱动，需要"明天 6 点触发""每天复盘"这类时间
+  触发，请用 §9.3 的 `add_once_task` / `add_interval_task` 在那个时刻把主人格
+  唤醒，再由主人格视情况调 `register_kanban_task`。
+- artifact 跨 `root_task_id` 严格隔离；同一任务树内才能通过 `artifact_get`
+  互读。
+
+**能力代理推进**：Kanban 调度器把每个子任务派给画像对应的**无人格能力代理**
+（`run_capability_agent`）执行，结果再经主人格 `_persona_relay` 转译后通知主人。
+`create_subagent` 也支持 `agent_profile` 参数（即时委派单步任务），见下方 §9.8。
+
+### 9.8 能力代理（Capability Agent）
+
+能力代理是**无人格**的专职执行角色，把「执行」从「人格表达」剥离：主人格只做
+识别派发 / 查进度 / 转译汇报，执行交给专职代理（不拒绝、不漂移）。现行多步任务
+统一由 Kanban 任务树承载：主人格先调 `evaluate_agent_mesh_capability` 评估画像覆盖，
+再调 `register_kanban_task` 创建根任务 + 子任务；每个子任务由 `agent_profile` 指定的
+能力代理推进，结果经 `_persona_relay` 用人格口吻回告。
+
+框架内置 6 个通用画像：`research_agent` / `code_agent` / `aigc_creator` /
+`data_analyst` / `memory_curator` / `scheduler_assistant`。`capability_evaluator` 是内部
+专用画像，只服务 `evaluate_agent_mesh_capability`，插件不要引用或覆盖它。业务画像
+（如 `finance_agent`、`weather_agent`、`game_data_agent`）由插件自行注册。
+
+#### 9.8.1 插件创建并注册业务画像
+
+插件通常在自身启动模块或插件入口导入时注册画像。注册表是进程内存数据，后写覆盖
+前写：插件可注册新 `profile_id`，也可用同名 `profile_id` 覆盖内置画像；WebConsole
+用户画像启动加载后也可覆盖同名内置 / 插件画像。
+
+```python
+# plugins/SayuStock/startup.py
+from gsuid_core.ai_core.capability_agents import (
+    CapabilityAgentProfile,
+    register_capability_agent,
+)
+
+FINANCE_PROMPT = """你是一个严谨的「量化操盘代理」。你没有任何角色人格，
+只对任务结果负责，不做角色扮演、不加语气词。
+
+【工作流】
+1. 规划：先输出 <TODO_LIST>，把任务拆成 2~5 步。
+2. 执行：优先调用当前工具列表中的金融专业工具：
+   - 行情查询：send_stock_info / send_my_stock / search_stock
+   - 估值：send_stock_PB_info（PB/PE/PS）
+   - 资金流向：send_cloudmap_img（板块资金云图）
+   - 市场情绪：get_vix_index（A 股 VIX）
+3. 决策必须基于工具数据：选股、加减仓、止损止盈都要回答清楚
+   “从哪个工具的哪段数据得到的结论”，禁止只凭 web_search 的新闻标题做决定。
+4. 在 Kanban 子任务中完成执行后，用 artifact_put 把主要产出登记成 res 句柄。
+5. 高风险动作（实盘下单 / 修改持仓）一律不自己执行，在交付摘要里显式列出
+   “需要主人决策的动作”，让主人格转告主人定夺。
+
+【交付格式】
+① 决定 / 推荐（简洁可执行）；
+② 依据：逐条列理由 + 数据来源（哪个工具 / 字段 / 数值）；
+③ 风险提示。
+"""
+
+
+def register_finance_agent() -> None:
+    register_capability_agent(CapabilityAgentProfile(
+        profile_id="finance_agent",
+        display_name="操盘助手",
+        when_to_use="需要查行情、做仓位决策、每日复盘的金融任务",
+        system_prompt=FINANCE_PROMPT,
+        match_keywords=["炒股", "操盘", "股票", "金融", "行情", "选股"],
+        tool_names=[
+            "send_stock_info",
+            "send_my_stock",
+            "send_my_stock_img",
+            "send_stock_PB_info",
+            "search_stock",
+            "get_vix_index",
+            "send_cloudmap_img",
+        ],
+        tool_query="",
+        max_iterations=25,
+        max_tokens=40000,
+    ))
+
+
+register_finance_agent()
+```
+
+#### 9.8.2 字段含义与写法约束
+
+| 字段 | 插件应该怎么填 |
+|-----|----------------|
+| `profile_id` | 稳定唯一句柄，如 `finance_agent`；主人格 / Kanban 子任务会保存这个值 |
+| `display_name` | 给用户和 WebConsole 看的名称 |
+| `when_to_use` | 一句话说明何时派给该画像，供评估代理和人工管理理解 |
+| `system_prompt` | 纯职能 Plan-and-Solve 提示词；禁止写人格口吻、好感度、角色扮演 |
+| `match_keywords` | 自然语言 hint 命中词，如主人格传 `agent_profile="操盘"` 时可解析到本画像 |
+| `tool_names` | 只写业务专业工具名；框架会额外附加 Artifact / state / search / web 等永远工具 |
+| `tool_query` | 可选的工具向量检索查询；已有明确白名单时可留空 |
+| `max_iterations` / `max_tokens` | 单次能力代理执行预算 |
+
+`tool_names` 应只列插件提供的专业工具。框架会自动附加 `_ALWAYS_TOOLS`：
+`artifact_put` / `artifact_get` / `artifact_list`、`state_*`、`search_knowledge`、
+`web_search_tool` / `web_fetch_tool` 等基础能力；不要为了“保险”重复写入。
+
+#### 9.8.3 与 Kanban / `create_subagent` 的关系
+
+- 复合多步任务：主人格按决策树先调 `evaluate_agent_mesh_capability`，覆盖后调
+  `register_kanban_task`。子任务里的 `agent_profile` 必须是已注册画像，调度器运行时
+  才解析画像，因此插件晚于 `init_planning` 注册也可生效。
+- 即时单步委派：`create_subagent` 仍支持 `agent_profile` 参数，适合马上执行的一次性
+  专项任务；复杂依赖、并行、多产物任务应交给 Kanban。
+- 专业域诚实底线：如果插件未注册金融 / 医疗 / 法律等专业画像和工具，评估代理应返回
+  `covered=false`，主人格不得强行创建任务树；`research_agent` 也会避免只靠通用搜索给
+  高风险专业建议。
+
+| API | 用途 |
+|-----|------|
+| `register_capability_agent(profile)` | 注册一个能力代理画像；同名后写覆盖前写 |
+| `unregister_capability_agent(profile_id)` | 从内存注册表移除一个画像；返回是否真的删了一项 |
+| `CapabilityAgentProfile` | 画像数据类 |
+| `resolve_profile(hint, default)` | 自然语言 hint → `profile_id` |
+| `get_profile(profile_id)` / `list_profiles()` | 查询注册表 |
+| `run_capability_agent(profile_id, task, ev, bot, ...)` | 实例化并运行一个能力代理；插件通常不直接调用，Kanban 调度器会调用 |
+
+> ⚠️ **不要直接访问 `registry._PROFILES` 内部字典**——请使用
+> `register_capability_agent` / `unregister_capability_agent` / `get_profile` /
+> `list_profiles` 等公开 API，避免破坏 WebConsole 三态来源和用户画像覆盖流程。
+
 ---
-
-## 10. System Prompt 管理
-
-System Prompt 模块提供系统提示词的 CRUD 管理和向量检索功能，主要供 `create_subagent` 使用。
-
-### 10.1 模块导入
-
-```python
-from gsuid_core.ai_core.system_prompt import (
-    SystemPrompt,          # 数据模型
-    get_all_prompts,       # 获取所有 System Prompt
-    get_prompt_by_id,      # 根据 ID 获取单个
-    add_prompt,            # 添加
-    update_prompt,         # 更新
-    delete_prompt,         # 删除
-    search_system_prompt,  # 向量检索
-    get_best_match,        # 获取最佳匹配（供 create_subagent 使用）
-)
-```
-
-### 10.2 数据模型
-
-```python
-class SystemPrompt(TypedDict):
-    id: str            # 唯一标识，推荐格式: "plugin-name-purpose"
-    title: str         # 标题，如"代码专家"
-    desc: str          # 描述，用于向量检索匹配
-    content: str       # 完整系统提示词内容（作为 system_prompt 传给 AI）
-    tags: List[str]    # 标签列表，支持标签过滤检索
-```
-
-### 10.3 存储位置
-
-- JSON 文件：`AI_CORE_PATH / "system_prompts.json"`
-- 向量库 Collection：`system_prompts`
-
-### 10.4 CRUD 操作
-
-```python
-from gsuid_core.ai_core.system_prompt import (
-    SystemPrompt, add_prompt, get_prompt_by_id,
-    update_prompt, delete_prompt, get_all_prompts,
-)
-
-# 添加新的 System Prompt
-prompt = SystemPrompt(
-    id="my-plugin-math-expert",
-    title="数学专家",
-    desc="专业的数学解题专家，擅长各类数学问题",
-    content="""你是一个专业的数学老师，代号MathMaster。
-
-## 核心能力
-- 解答各类数学问题（代数、几何、微积分）
-- 提供清晰的解题步骤
-- 用通俗的语言解释复杂概念
-
-## 回复格式
-- 给出解题步骤
-- 最后给出答案
-- 必要时用 LaTeX 公式""",
-    tags=["数学", "解题", "教育"]
-)
-add_prompt(prompt)
-
-# 查询
-all_prompts = get_all_prompts()
-single = get_prompt_by_id("my-plugin-math-expert")
-
-# 更新
-update_prompt("my-plugin-math-expert", {"title": "高级数学专家"})
-
-# 删除
-delete_prompt("my-plugin-math-expert")
-```
-
-### 10.5 向量检索
-
-```python
-from gsuid_core.ai_core.system_prompt import search_system_prompt, get_best_match
-
-# 搜索匹配的 System Prompt
-results = await search_system_prompt(
-    query="写一个Python快速排序函数",
-    tags=["代码"],     # 可选，标签过滤
-    limit=5,           # 最大返回数量
-    use_vector=True,   # 使用向量检索（默认）
-)
-
-# 获取最佳匹配（返回匹配度最高的一个）
-best = await get_best_match(
-    query="帮我写一段代码",
-    tags=["代码"]
-)
-if best:
-    print(best["title"])    # 代码专家
-    print(best["content"])  # 系统提示词内容
-```
-
----
-
-## 11. Persona 角色系统
+`n---`n`n## 10. Persona 角色系统
 
 Persona 模块提供人格角色的提示词管理和资料存储功能。
 
@@ -2190,43 +2236,7 @@ AI功能：
 - 直接@机器人并描述需求，AI会自动调用相关工具
 """)
 ```
-
-### 15.4 示例四：注册并使用自定义 System Prompt
-
-```python
-from gsuid_core.ai_core.system_prompt import add_prompt, SystemPrompt
-
-# 在插件初始化时注册 System Prompt
-def register_prompts():
-    add_prompt(SystemPrompt(
-        id="myplugin-game-guide",
-        title="游戏攻略助手",
-        desc="专业的游戏攻略助手，擅长解答原神等游戏的相关问题",
-        content="""你是一个专业的游戏攻略助手，代号 GameGuide。
-
-## 专长领域
-- 原神：角色培养、圣遗物搭配、队伍组合
-- 崩坏：星穹铁道：遗器搭配、角色技能
-- 鸣潮：共鸣者培养
-
-## 回复规范
-1. 提供具体数据和建议
-2. 考虑玩家实际资源情况
-3. 标注信息时效性（如版本号）
-4. 用简洁的格式呈现""",
-        tags=["游戏", "攻略", "原神", "星穹铁道"]
-    ))
-
-register_prompts()
-
-# 之后 create_subagent 会自动找到这个 System Prompt
-# @ai_tools 工具中调用：
-# result = await create_subagent(ctx, "雷电将军圣遗物怎么搭？", tags="游戏,原神")
-```
-
----
-
-## 17. MCP 工具集成
+`n---`n`n## 17. MCP 工具集成
 
 ### 17.1 概述
 
@@ -2404,6 +2414,175 @@ for r in results:
 
 ---
 
+## 19.5 能力代理（Capability Agent）注册
+
+> 详见 [`AGENT_CAPABILITY_AGENT_MERGED_20260521.md`](./AGENT_CAPABILITY_AGENT_MERGED_20260521.md)
+> 与 [`AGENT_MESH_KANBAN_IMPLEMENTATION_20260522.md`](./AGENT_MESH_KANBAN_IMPLEMENTATION_20260522.md)。
+
+### 19.5.1 什么是能力代理画像
+
+「能力代理（Capability Agent）」是**无人格**的专职执行代理。主人格负责识别任务、
+调用 `evaluate_agent_mesh_capability` 评估覆盖、调用 `register_kanban_task` 创建任务树、
+查询进度和转译结果；真正执行由画像对应的能力代理完成。一个**画像（Profile）**描述
+一种执行者：
+
+- `profile_id`：稳定句柄（如 `finance_agent`、`weather_agent`），Kanban 子任务的
+  `agent_profile` 会保存这个值。
+- `display_name` / `when_to_use`：给用户、WebConsole 和评估代理理解用途。
+- `system_prompt`：纯职能 Plan-and-Solve 提示词，**禁止角色化语言**。
+- `tool_names`：显式业务工具白名单（按工具名）。
+- `match_keywords`：自然语言 hint 命中关键词，主人格传 `agent_profile="操盘"` 时由
+  `resolve_profile` 命中。
+- `tool_query` / `max_iterations` / `max_tokens`：可选工具检索查询与执行预算。
+
+框架内置 6 个通用画像：`research_agent` / `code_agent` / `aigc_creator` /
+`data_analyst` / `memory_curator` / `scheduler_assistant`。内部 `capability_evaluator`
+只服务能力覆盖评估，插件不要引用。**业务画像（金融、游戏数据、天气等）由对应插件
+自行注册**——框架不内置业务数据是设计原则。
+
+### 19.5.2 在插件启动钩子里注册业务画像
+
+```python
+# plugins/SayuStock/startup.py
+from gsuid_core.ai_core.capability_agents import (
+    CapabilityAgentProfile,
+    register_capability_agent,
+)
+
+FINANCE_PROMPT = """你是一个严谨的「量化操盘代理」。你没有任何角色人格，
+只对任务结果负责，不做角色扮演、不加语气词。
+
+【工作流】
+1. 规划：先输出 <TODO_LIST>，把任务拆成 2~5 步。
+2. 执行：优先调用当前工具列表中的金融专业工具：
+   - 行情查询：send_stock_info / send_my_stock / search_stock
+   - 估值：send_stock_PB_info（PB/PE/PS）
+   - 资金流向：send_cloudmap_img（板块资金云图）
+   - 市场情绪：get_vix_index（A 股 VIX）
+3. 决策必须基于工具数据：选股、加减仓、止损止盈都要回答清楚
+   “从哪个工具的哪段数据得到的结论”，禁止只凭 web_search 的新闻标题做决定。
+4. Kanban 子任务执行时，产物落 Artifact Workspace；最终交付通过 artifact_put
+   登记 res 句柄，便于主人格追问溯源。
+5. 高风险动作（实盘下单 / 修改持仓）一律不自己执行，在交付摘要里显式列出
+   “需要主人决策的动作”，让主人格转告主人定夺。
+
+【交付格式】
+① 决定 / 推荐；② 依据（理由 + 数据来源）；③ 风险提示。
+"""
+
+
+def register_finance_agent() -> None:
+    register_capability_agent(CapabilityAgentProfile(
+        profile_id="finance_agent",
+        display_name="操盘助手",
+        when_to_use="需要查行情、做仓位决策、每日复盘的金融任务",
+        system_prompt=FINANCE_PROMPT,
+        match_keywords=["炒股", "操盘", "股票", "金融", "行情", "选股"],
+        tool_names=[
+            "send_stock_info",
+            "send_my_stock",
+            "send_my_stock_img",
+            "send_stock_PB_info",
+            "search_stock",
+            "get_vix_index",
+            "send_cloudmap_img",
+        ],
+        tool_query="",      # 已显式白名单 → 不再做向量检索补充
+        max_iterations=25,
+        max_tokens=40000,
+    ))
+
+
+register_finance_agent()
+```
+
+> **重要**：`tool_names` 只写**业务领域的专业工具**。框架会自动附加
+> `_ALWAYS_TOOLS`（`artifact_put` / `artifact_get` / `artifact_list`、`state_*`、
+> `search_knowledge`、`web_search_tool` / `web_fetch_tool` 等基础工具），不需要在
+> `tool_names` 里重复列出。
+
+### 19.5.3 主人格 / Kanban 如何选中画像
+
+1. 复合多步任务：主人格按决策树 3.5 先调 `evaluate_agent_mesh_capability`。若返回
+   `covered=false`，必须拒绝拆任务并说明缺少哪个画像 / 工具；若返回 `covered=true`，
+   再调 `register_kanban_task` 创建任务树。
+2. `register_kanban_task` 创建的每个子任务都必须带 `agent_profile`；调度器在子任务
+   运行时按该画像调用 `run_capability_agent`。
+3. `resolve_profile` 的优先级：hint 直接等于已注册 `profile_id` → 命中；hint 命中
+   `match_keywords` → 命中；都不命中 → 回退到 `research_agent`。
+4. 即时单步委派仍可用 `create_subagent(agent_profile="...")`；复杂依赖、并行、多产物
+   工作流应交给 Kanban。
+
+### 19.5.4 用户手工新建 / 编辑画像（通过 WebConsole）
+
+管理员可以通过 `/api/ai/capability-agents/*` REST API 在网页控制台新建用户画像，
+落到 `data/ai_core/capability_agents/<profile_id>.json`，框架启动时自动挂回内存。
+画像来源分为 `builtin` / `plugin` / `user` 三态：内置与插件画像只读，用户画像可
+PATCH / DELETE；用户画像与同名内置 / 插件画像冲突时按后写覆盖处理。
+详见 [`webconsole/docs/34-capability-agents.md`](../gsuid_core/webconsole/docs/34-capability-agents.md)。
+
+### 19.5.5 注意事项
+
+- **画像和人格的区别**：人格有口吻、好感度、合规性等社交属性；画像只是中性提示词
+  + 工具白名单。一个任务的执行者是画像，对外播报的口吻是人格，两者由 `_persona_relay`
+  桥接。
+- **同名覆盖**：注册表后写覆盖前写。插件可以覆盖内置画像；用户画像也可覆盖同名
+  内置 / 插件画像，这是支持“复制模板再改”的设计行为。
+- **专业域缺口要显式暴露**：金融、医疗、法律等强专业域若没有插件专业工具，不要让
+  通用 `research_agent` 只靠网页搜索给建议；应让评估结果 `covered=false`。
+- **不要访问私有注册表**：使用 `register_capability_agent`、`unregister_capability_agent`、
+  `get_profile`、`list_profiles` 等公开 API，不要读写 `registry._PROFILES`。
+
+---
+
+## 19.6 self_model 演化层（自我认知 4 字段）
+
+实现：`gsuid_core/ai_core/self_cognition.py`。存储：`state_store` 表，
+scope = `self:{bot_id}`，state_key = `self_model`，value 为 4 字段字典。
+每轮对话由 `handle_ai` 调用 `build_self_cognition_context` 拼成"【关于我自己】"段
+注入到 **用户消息侧**（不进 system_prompt，避免 prompt cache 抖动）。
+
+### 19.6.1 四个字段语义
+
+| 字段 | 中文含义 | 写入入口 | 注入位置（每轮取最后 N 条） |
+|------|---------|---------|---------------------------|
+| `commitments` | 对用户作出的承诺 | `update_self_note(note_type="commitment")` / `add_self_note(..., field="commitments")` / webconsole 整字段覆盖 | "我的承诺: …"（取后 5 条） |
+| `preferences_learned` | 观察 / 被告知的偏好 | `update_self_note(note_type="preference")` / `add_self_note(..., field="preferences_learned")` / webconsole 整字段覆盖 | "我学到的偏好: …"（取后 5 条） |
+| `recurring_topics` | 反复出现的话题 | **当前无主动写入**，仅 webconsole 可整字段覆盖；预留给 Memory 模块后续自动回填 | "反复出现的话题: …"（取后 5 条） |
+| `self_notes` | 自我复盘 / 反思 | `update_self_note(note_type="reflection")` / `add_self_note(..., field="self_notes")` / webconsole 整字段覆盖；Kanban 任务终结后的自动复盘链路当前未接入 | "我最近的反思: …"（取后 3 条） |
+
+### 19.6.2 写入 API
+
+| API | 位置 | 说明 |
+|-----|------|------|
+| `update_self_note(content, note_type)` | `buildin_tools/self_info.py`（LLM 工具） | `note_type ∈ {"preference","commitment","reflection"}` → 自动映射到对应字段 |
+| `add_self_note(bot_id, content, field)` | `ai_core/self_cognition.py`（Python API） | 插件可直接调用，`field` 必须是 4 字段之一 |
+| `overwrite_self_model_field(bot_id, field, items)` | `ai_core/self_cognition.py`（Python API） | 整字段覆盖（webconsole 后台用），同样受写入限流保护 |
+
+写入限流（保护 self_model 不被刷爆）：
+
+- 单条 ≤ 200 字符；
+- 重复内容去重（同条文本被移到列表末尾视为"最新"）；
+- 每字段最多 20 条，超出丢弃最早一条；
+- 非法 `field` 名返回 `False` 并日志告警。
+
+### 19.6.3 插件使用示例
+
+```python
+# 插件检测到用户表达明确偏好时，主动写入：
+from gsuid_core.ai_core.self_cognition import add_self_note
+
+await add_self_note(
+    bot_id=ev.bot_id,
+    content="用户偏好被称呼为「老板」",
+    field="preferences_learned",
+)
+```
+
+`bot_id` 缺失时退化到 `self:default` scope（多 bot 部署时建议显式传）。
+
+---
+
 ## 20. Meme 表情包模块
 
 ### 20.1 概述
@@ -2478,3 +2657,4 @@ RAG 知识库检索不再作为强制前置流程。`search_knowledge` 工具注
 
 - [AI 触发流转文档](./AI_TRIGGER_FLOW.md)
 - [WebConsole API 文档](../gsuid_core/webconsole/API.md)
+- [能力代理架构最终合并文档](./AGENT_CAPABILITY_AGENT_MERGED_20260521.md)

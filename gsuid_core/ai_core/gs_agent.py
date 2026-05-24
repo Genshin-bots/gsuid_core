@@ -4,6 +4,7 @@ PydanticAI Agent 核心模块
 """
 
 import time
+import uuid
 import asyncio
 from typing import Any, Set, List, Union, Literal, TypeVar, Optional, Sequence, overload
 
@@ -22,6 +23,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ModelResponse,
     ToolReturnPart,
+    RetryPromptPart,
 )
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -226,6 +228,12 @@ def _truncate_history_with_tool_safety(
                 for part in msg.parts:
                     if isinstance(part, ToolReturnPart):
                         retained_return_ids.add(part.tool_call_id)
+                    # RetryPromptPart 也是"工具结果型"消息：工具参数校验失败时
+                    # 由 PydanticAI 生成，同样带 tool_call_id、必须有配对的
+                    # ToolCallPart。tool_name 为 None 时是输出校验重试，不绑定
+                    # 具体工具调用，不计入。
+                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
+                        retained_return_ids.add(part.tool_call_id)
 
         # 找出截断结果中的孤立 return（有 return 但没有对应的 call）
         orphaned = retained_return_ids - retained_call_ids
@@ -245,7 +253,12 @@ def _truncate_history_with_tool_safety(
                 continue  # 只看截断范围内的
             if isinstance(msg, ModelRequest):
                 for part in msg.parts:
-                    if isinstance(part, ToolReturnPart) and part.tool_call_id in orphaned:
+                    tcid: Optional[str] = None
+                    if isinstance(part, ToolReturnPart):
+                        tcid = part.tool_call_id
+                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
+                        tcid = part.tool_call_id
+                    if tcid is not None and tcid in orphaned:
                         min_orphaned_idx = min(min_orphaned_idx, idx)
 
         # 向前移动截断点到孤立 return 之前，再留 2 条消息的缓冲
@@ -260,6 +273,75 @@ def _truncate_history_with_tool_safety(
     # truncate_index == 0，保留全部历史
     logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(history)} (保留全部)")
     return history
+
+
+def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]:
+    """丢弃所有找不到配对 ToolCallPart 的孤儿工具结果消息。
+
+    最终一致性兜底：即便 ``_truncate_history_with_tool_safety`` 逻辑正确，
+    历史里仍可能因并发 / 异常中断残留坏配对（孤儿 ToolReturnPart 或带
+    tool_name 的 RetryPromptPart）。本函数在 ``extract_history()`` 末尾被
+    无条件调用，保证送进 API 的 message_history 永远自洽——一次坏截断不会
+    让 session 永久不可用（"tool result's tool id not found" 400）。
+    """
+    call_ids: Set[str] = set()
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    call_ids.add(part.tool_call_id)
+
+    cleaned: List[ModelMessage] = []
+    for msg in history:
+        if isinstance(msg, ModelRequest):
+            kept_parts = []
+            for part in msg.parts:
+                # 复用同一个 isinstance 守卫：进入分支时 part 类型已被 mypy/Pyright
+                # 收窄为 ToolReturnPart / RetryPromptPart，两者都有 tool_call_id，
+                # 不需要 getattr 兜底（LLM.md §1.4）。
+                if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids:
+                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={part.tool_call_id}")
+                    continue
+                if (
+                    isinstance(part, RetryPromptPart)
+                    and part.tool_name is not None
+                    and part.tool_call_id not in call_ids
+                ):
+                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 RetryPromptPart: tool_call_id={part.tool_call_id}")
+                    continue
+                kept_parts.append(part)
+            if kept_parts:
+                msg.parts = kept_parts
+                cleaned.append(msg)
+            # parts 全被丢弃的空 ModelRequest 整条剔除
+        else:
+            cleaned.append(msg)
+    return cleaned
+
+
+# 单轮意图-行为不一致检测关键词：thinking 里点名了某工具 / 任务编排意图
+# 却没真正调用——直接顶到阈值，下一轮立刻强制提醒。提到模块级避免每轮重建。
+_INTENT_TRIGGER_KEYWORDS: tuple[str, ...] = (
+    "register_kanban_task",
+    "evaluate_agent_mesh_capability",
+    "create_subagent",
+    "复合多代理任务",
+    "任务树",
+    "创建任务树",
+    "托管",
+    "委派",
+    # 「枚举时间点」思维信号——主人格想用 add_once_task 逐个时间点注册时，
+    # 本轮即便确实调用了 add_once_task，下一轮也强提醒走 register_kanban_task
+    # 的 recurring_trigger 路径。
+    "逐个时间点",
+    "逐一设置",
+    "每个时间点单独",
+    "为每个时间点",
+    "5个时间点",
+    "10个时间点",
+    "cron 的话需要写多个",
+    "需要写多个触发器",
+)
 
 
 class GsCoreAIAgent:
@@ -332,7 +414,9 @@ class GsCoreAIAgent:
                 self.history,
                 self.max_history,
             )
-            logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已截断至 {len(self.history)} 条")
+        # 兜底：无论是否截断，都做一次孤儿工具结果清理，确保历史对 API 自洽
+        self.history = _drop_orphan_tool_results(self.history)
+        logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已处理至 {len(self.history)} 条")
 
     async def _prepare_user_message(
         self,
@@ -488,6 +572,7 @@ class GsCoreAIAgent:
 
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
         _pre_tool_sent: int = 0  # 本次运行已发送的前摇数量
+        _thinking_segments: list[str] = []  # 累积本轮模型 thinking 文本，供意图-行为一致性检测
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
         if self.max_iterations is not None:
@@ -500,7 +585,10 @@ class GsCoreAIAgent:
         start_time = time.time()
 
         logger.info("🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======")
-        context = ToolContext(bot=bot, ev=ev)
+        # turn_id：本轮 run 的唯一标识，写入 ToolContext.extra 供子工具读取（如
+        # scheduler.py 的 add_once_task 单轮节流计数）。回合结束 finally 清理。
+        turn_id = uuid.uuid4().hex
+        context = ToolContext(bot=bot, ev=ev, extra={"turn_id": turn_id})
 
         # 记录原始用户问题，供后续强制总结使用
         last_user_question: str = ""
@@ -529,8 +617,11 @@ class GsCoreAIAgent:
             no_tool_reminder = (
                 "\n\n【⚠️ 系统检测】你已连续多轮未调用任何工具，"
                 "当前用户问题可能尚未得到有效回答。"
-                "请立即检查工具列表，选择最合适的工具调用，"
-                "或明确说明为何确实无工具可用——禁止以角色不懂为由跳过工具。"
+                "若你上一轮的思考里明确提到要调用某个工具（如 register_kanban_task、"
+                "evaluate_agent_mesh_capability、create_subagent）却没有真正调用——"
+                "口头答应 ≠ 执行，请本轮立即调用对应工具。否则请立即检查工具列表，"
+                "选择最合适的工具调用，或明确说明为何确实无工具可用——禁止以角色"
+                "不懂为由跳过工具。"
             )
             if isinstance(final_user_message, str):
                 final_user_message += no_tool_reminder
@@ -727,11 +818,19 @@ class GsCoreAIAgent:
                                 if self._session_logger is not None:
                                     self._session_logger.log_text_output(_text)
                                 if bot and _text and return_mode in ["always", "by_bot"]:
-                                    await send_chat_result(bot, _text, ev=ev)
+                                    # Why: send_chat_result 抛异常会穿透 _agent.iter() 的
+                                    # async context，触发 pydantic_graph 的 athrow/cancel scope
+                                    # 错误。必须在循环体内吞掉发送侧的故障。
+                                    try:
+                                        await send_chat_result(bot, _text, ev=ev)
+                                    except Exception as _e:
+                                        logger.debug(f"🧠 [GsCoreAIAgent] 文本发送失败: {_e}")
 
                             elif isinstance(part, ThinkingPart):
                                 _thinking = part.content.strip()
                                 logger.trace(f"🧠 [大模型思考]: {_thinking}")
+                                if _thinking:
+                                    _thinking_segments.append(_thinking)
                                 if self._session_logger is not None:
                                     self._session_logger.log_thinking(_thinking)
                                 if bot and _thinking:
@@ -757,6 +856,13 @@ class GsCoreAIAgent:
                         self._consecutive_no_tool_rounds = 0
                     else:
                         self._consecutive_no_tool_rounds += 1
+                        # 单轮意图-行为不一致检测：thinking 里点名了某工具 / 长任务
+                        # 编排意图却没真正调用——直接顶到阈值，下一轮立刻强制提醒。
+                        # 纯规则字符串匹配，零额外 LLM 成本。
+                        thinking_blob = "\n".join(_thinking_segments)
+                        if thinking_blob and any(kw in thinking_blob for kw in _INTENT_TRIGGER_KEYWORDS):
+                            self._consecutive_no_tool_rounds = max(self._consecutive_no_tool_rounds, 2)
+                            logger.debug("🧠 [GsCoreAIAgent] 检测到意图-行为不一致，下一轮将强制提醒")
 
                 # 记录 Token 使用量和延迟统计
                 try:
@@ -911,6 +1017,20 @@ class GsCoreAIAgent:
             if self._session_logger is not None:
                 self._session_logger.log_error("agent_error", str(e))
             return f"执行出错: {str(e)}"
+        finally:
+            # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享），
+            # 防止内存中 key 无限累积。session_id 缺失时跳过——本轮也没机会
+            # 写入计数。
+            try:
+                from gsuid_core.ai_core.buildin_tools.scheduler import (
+                    clear_turn_throttle,
+                )
+
+                sess = ev.session_id if ev is not None else None
+                if sess:
+                    clear_turn_throttle(str(sess), turn_id)
+            except Exception as _e:
+                logger.debug(f"🧠 [GsCoreAIAgent] 清理单轮节流计数失败: {_e}")
 
     @overload
     async def run(

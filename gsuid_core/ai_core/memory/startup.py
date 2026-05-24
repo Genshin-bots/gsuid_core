@@ -71,6 +71,31 @@ async def init_memory_system():
             logger.error(f"🧠 [Memory] IngestionWorker 启动失败: {e}")
             return
 
+    # 3.5 C9：启动多模态摄入 Worker（独立队列，异步转述高价值图片）
+    try:
+        from .ingestion.multimodal import start_multimodal_worker
+
+        start_multimodal_worker()
+    except Exception as e:
+        logger.warning(f"🧠 [Memory] C9 多模态摄入 Worker 启动失败: {e}")
+
+    # 4. C11：注册记忆生命周期维护定时任务（每周一次衰减 / 巩固 / 遗忘）
+    try:
+        from gsuid_core.aps import scheduler
+
+        from .lifecycle.consolidation_worker import run_lifecycle_maintenance
+
+        scheduler.add_job(
+            func=run_lifecycle_maintenance,
+            trigger="interval",
+            weeks=1,
+            id="ai_memory_lifecycle_maintenance",
+            replace_existing=True,
+        )
+        logger.info("🧠 [Memory] C11 记忆生命周期维护任务已注册（每周一次）")
+    except Exception as e:
+        logger.warning(f"🧠 [Memory] C11 生命周期维护任务注册失败: {e}")
+
     logger.info("🧠 [Memory] 记忆系统初始化完成")
 
 
@@ -99,3 +124,11 @@ async def shutdown_memory_system():
         logger.error(f"🧠 [Memory] IngestionWorker 关闭失败: {e}", exc_info=True)
     finally:
         _ingestion_worker = None
+
+    # C9：关闭多模态摄入 Worker
+    try:
+        from .ingestion.multimodal import stop_multimodal_worker
+
+        await stop_multimodal_worker()
+    except Exception as e:
+        logger.error(f"🧠 [Memory] 多模态摄入 Worker 关闭失败: {e}")

@@ -5,8 +5,6 @@ local_embedding_images = get_res_path(AI_CORE_PATH / "local_embedding_images")
 PERSONA_PATH = get_res_path(AI_CORE_PATH / "persona")
 # AI技能存储路径 - 所有技能文件夹存放的目录
 SKILLS_PATH = get_res_path(AI_CORE_PATH / "skills")
-# 系统提示词存放路径
-SYSTEM_PROMPTS_PATH = get_res_path(AI_CORE_PATH / "system_prompt")
 # 读写执行文件路径
 FILE_PATH = get_res_path(AI_CORE_PATH / "file")
 # 记忆系统数据库路径

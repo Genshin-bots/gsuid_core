@@ -31,18 +31,30 @@ def extract_json_from_text(raw_text: str) -> dict:
     if stripped in ("<SILENCE>", "[SILENCE]", "SILENCE"):
         raise ValueError(f"Special marker '{stripped}' is not valid JSON")
 
+    # 上游 agent 出错时会返回 "执行出错: ..." 之类的字符串，这里提前拦截
+    if stripped.startswith("执行出错"):
+        raise ValueError(f"Upstream agent returned error message, not JSON: {stripped[:80]}")
+
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw_text).strip()
     cleaned = repair_json(cleaned)
+    if not cleaned or not cleaned.strip():
+        raise ValueError("JSON extraction yielded empty content after repair")
+
     try:
         data = json.loads(cleaned)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
         if match:
             stripped = match.group(0).strip()
             cl = repair_json(stripped)
-            data = json.loads(cl)
+            if not cl or not cl.strip():
+                raise ValueError("Fallback JSON extraction yielded empty content") from e
+            try:
+                data = json.loads(cl)
+            except json.JSONDecodeError as e2:
+                raise ValueError(f"Failed to parse JSON after fallback repair: {e2}") from e2
         else:
-            raise
+            raise ValueError(f"Failed to parse JSON: {e}") from e
     return data
 
 

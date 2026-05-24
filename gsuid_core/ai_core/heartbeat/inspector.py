@@ -220,7 +220,28 @@ class HeartbeatInspector:
         if self._has_recent_ai_response(history):
             return False, "AI 最近已发言（防刷屏）"
 
+        # C8：统一主动网关——同一目标刚有主动输出（含定时任务播报）则抑制本次巡检
+        from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+
+        if get_dispatcher().should_suppress_heartbeat(self._target_key(event, history)):
+            return False, "C8 网关抑制（近期已有主动输出，防撞车）"
+
         return True, ""
+
+    def _target_key(self, event: Event, history: List[Any]) -> str:
+        """统一主动网关的目标标识：群聊用群号，私聊用用户号。
+
+        history 元素由 ``message_history.manager.MessageRecord`` 落盘而成，
+        ``user_id`` 是其已声明字段（见 manager.py:63），直接属性访问；
+        type 显式标注为 ``Any`` 仅为避免与 message_history 模块循环依赖。
+        """
+        if event.group_id:
+            return str(event.group_id)
+        if not history:
+            return ""
+        last_record = history[-1]
+        # MessageRecord.user_id 是已声明字段，直接访问
+        return str(last_record.user_id) if last_record.user_id else ""
 
     def _should_inspect_session(
         self,
@@ -246,6 +267,12 @@ class HeartbeatInspector:
 
     async def _inspect_session(self, event: Event, persona_name: str) -> None:
         """处理单个会话的核心逻辑流水线"""
+        from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
+
+        if is_scope_banned(event.session_id):
+            logger.debug(f"🫀 [Heartbeat] 会话 {event.session_id} 处于 AI 禁言状态，跳过巡检")
+            return
+
         # 1. 获取历史记录（使用 history 模块的全部消息，不再限制时间窗口）
         history = self._get_history(event)
 
@@ -282,10 +309,16 @@ class HeartbeatInspector:
             return
 
         # 4. 决策阶段 (隐形 Sub-Agent)
+        # C8：从统一主动网关取出近窗口内的定时任务结果摘要，合并进决策语境，
+        # 让 AI 自然提及任务进展而非生硬另起一条播报。
+        from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+
+        merge_ctx = get_dispatcher().consume_merge_context(self._target_key(event, history))
         meta = await run_heartbeat(
             event,
             history,
             ai_session,
+            extra_context=merge_ctx,
         )
         if not meta:
             logger.debug(f"🫀 [Heartbeat] 会话 {event} 文本生成为空，放弃发送")
@@ -333,6 +366,11 @@ class HeartbeatInspector:
 
             target_id = event.group_id or user_id
             logger.info(f"🫀 [Heartbeat] 发送成功 -> {target_id}: {message}")
+
+            # C8：向统一主动网关登记本次主动发送，供后续协调防撞车
+            from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+
+            get_dispatcher().register_send(str(target_id), "heartbeat")
 
             # 追加到系统历史记忆，带上特定的 metadata 标记
             self._history_manager.add_message(

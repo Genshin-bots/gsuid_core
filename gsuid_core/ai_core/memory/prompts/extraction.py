@@ -6,7 +6,7 @@
 ENTITY_EXTRACTION_PROMPT = """你是一个信息提取专家，处理来自即时通讯群组的对话记录。
 
 当前对话标识：{scope_key}
-
+{known_context}
 <对话内容>
 {dialogue_content}
 </对话内容>
@@ -59,4 +59,15 @@ t 包含 "Speaker"。
     {{"src": "444835641", "tgt": "户外运动", "f": "喜欢户外运动"}}
   ]
 }}
+"""  # noqa: E501
+
+
+# C2-a / C2-b：运行时注入"本群已知别名 + 已存在实体"的上下文片段模板。
+# 由 worker._build_known_context 在 .format() 前填充到 ENTITY_EXTRACTION_PROMPT 的
+# {known_context} 占位符；无可注入数据时该占位符为空字符串。
+KNOWN_CONTEXT_TEMPLATE = """
+<本群已知信息（提取时务必参考）>
+{alias_section}{entity_section}说明：遇到上述别名时，必须在该实体的 a 字段填写对应正式名称；
+遇到与上述已存在实体疑似同一对象的新名称时，也用 a 字段对齐到该正式名，避免同一对象被拆成多个实体。
+</本群已知信息>
 """  # noqa: E501

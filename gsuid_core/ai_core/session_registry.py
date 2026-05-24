@@ -163,6 +163,41 @@ class AISessionRegistry:
             except Exception:
                 pass  # 忽略清理循环中的异常
 
+    def flush_all_loggers(self) -> int:
+        """对所有活跃 AI 会话执行一次"无清理的持久化"。
+
+        与 `cleanup_idle_sessions` 不同，本方法只触发日志落盘、**不**关闭 logger、
+        **不**从注册表移除会话；用于框架关闭等场合的兜底保护。
+
+        Returns:
+            实际触发持久化的会话数量
+        """
+        flushed: int = 0
+        for session in list(self._ai_sessions.values()):
+            session_logger = getattr(session, "_session_logger", None)
+            if session_logger is None:
+                continue
+            try:
+                session_logger._persist_sync()
+                flushed += 1
+            except Exception:  # noqa: BLE001
+                continue
+        return flushed
+
+    def shutdown_all(self) -> int:
+        """关闭所有活跃 AI 会话的 logger，并清空注册表。
+
+        在框架关闭路径调用，保证未落盘的会话日志全部写出。
+
+        Returns:
+            被关闭的会话数量
+        """
+        closed: int = 0
+        for session_id in list(self._ai_sessions.keys()):
+            if self.remove_ai_session(session_id):
+                closed += 1
+        return closed
+
     async def cleanup_idle_sessions(self, idle_threshold: Optional[int] = None) -> int:
         """
         清理超过阈值的未活跃Session的AI会话对象

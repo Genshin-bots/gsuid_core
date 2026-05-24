@@ -1,64 +1,108 @@
 """
-Buildin Tools 模块
+Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
-系统内建AI工具模块，提供自主型AI常用的基础工具函数。
+本模块**只负责导入并 re-export 工具函数**，让其在框架启动时被 ``@ai_tools(...)``
+装饰器执行、登记到全局 ``_TOOL_REGISTRY``。真正的工具实现散落在各子文件
+（``file_manager.py`` / ``command_executor.py`` / ``scheduler.py`` 等）。
 
-## 工具分类与"框架保底工具池"
+## 一、工具分类（category）与"框架保底池"的关系
 
-工具是否属于"框架保底工具"完全由注册时声明的 `category` 决定，**不存在任何硬编码的工具名单**。
-`self` 与 `buildin` 两个分类即"框架保底工具池"——`get_main_agent_tools()` 会把这两个分类下的
-工具无条件全部加载进主Agent，不受向量搜索影响。其余分类（`common` / `media` / `default` /
-插件的 `by_trigger` 等）通过 `search_tools()` 向量检索按需加载。
+工具是否属于"框架保底"完全由注册时声明的 ``category`` 字符串决定，
+**不存在任何硬编码的工具名单**：
 
-因此，若希望某个新工具成为保底工具，只需注册时使用 `category="self"` 或 `category="buildin"`。
+- ``get_main_agent_tools()``     → 加载 ``self`` + ``buildin`` 两个分类（**保底池**）。
+- ``search_tools(query=...)``    → 在 ``common`` / ``media`` / ``default`` 与插件
+                                   注册的 ``by_trigger`` 等分类里做向量检索按需加载。
+- ``create_subagent`` 默认子代理 → 默认装配 ``default`` 分类 + ``buildin`` 部分。
 
-### Self工具, 只有主Agent能调用 (category="self") —— 保底
-- query_user_favorability: 查询用户好感度
-- update_user_favorability: 更新用户好感度（增量）
-- create_subagent: 创建子Agent完成特定任务
-- send_message_by_ai: 发送消息给用户
-- add_once_task: 添加一次性定时任务（创建入口，口语化触发，需常驻保底池）
-- add_interval_task: 添加循环任务（创建入口，口语化触发，需常驻保底池）
+要让一个新工具成为保底工具，注册时写 ``category="self"`` 或 ``category="buildin"``。
+要让新工具仅在向量检索命中时出现，留 ``category="common"`` / ``"media"`` /
+``"default"`` 即可。
 
-### 框架基础工具 (category="buildin") —— 保底
-主Agent无条件全部加载，覆盖搜索、记忆、自我认知、持久状态等"任何任务都可能需要"的能力。
-- search_knowledge: 检索知识库内容
-- web_search_tool: Web搜索工具
-- web_fetch_tool: 网页抓取工具（将网页转换为Markdown）
-- query_user_memory: 查询用户记忆
-- get_self_info: 获取完整自我认知（身份/能力边界/主人）
-- state_get / state_set / state_delete / state_list / state_append: 通用持久状态存储
+## 二、按 category 列出所有内置工具
 
-### 通常工具 (category="common")
-不属于保底池，通过向量检索按需加载，当用户明确需要相关功能时才会出现在工具列表中。
-- search_image: 检索图片资源
-- get_self_persona_info: 获取自身Persona资源信息（立绘/头像/音频路径等）
-- set_user_favorability: 设置用户好感度（绝对值）
-- send_meme: 发送表情包
-- collect_meme: 收藏表情包
-- search_meme: 搜索表情包
-- list_scheduled_tasks: 列出所有定时任务（管理类，用户显式提需求时按需检索）
-- query_scheduled_task: 查询任务详情（管理类，用户显式提需求时按需检索）
-- modify_scheduled_task: 修改任务（管理类，用户显式提需求时按需检索）
-- cancel_scheduled_task: 取消任务（管理类，用户显式提需求时按需检索）
-- pause_scheduled_task: 暂停任务（管理类，用户显式提需求时按需检索）
-- resume_scheduled_task: 恢复任务（管理类，用户显式提需求时按需检索）
-- create_persistent_agent_tool: 创建持久化子Agent
-- send_agent_task_tool: 向持久化Agent发送任务
-- list_agents_tool: 列出所有活跃的持久化Agent
-- stop_agent_tool: 停止指定的持久化Agent
+下表是当前 ``buildin_tools/*.py`` + ``state_store/*.py`` + ``planning/kanban_tools.py``
+注册到全局注册表的完整工具清单，**真实分类来源是装饰器声明**——若实现里改了
+分类而本文档没同步，请以 ``register.py`` 的 ``_TOOL_REGISTRY`` 为准。
 
-### 子Agent工具 (category="default")
-通过 create_subagent 调用，用于文件操作、代码执行等。
-- execute_shell_command: 执行系统命令
-- get_current_date: 获取当前日期时间
-- read_file_content: 读取文件内容
-- write_file_content: 写入文件内容
-- execute_file: 执行脚本文件
-- diff_file_content: 对比文件差异
-- list_directory: 列出目录内容
+### 2.1 ``category="self"`` —— 仅主人格保底（不会装配进能力代理）
+这些是"只能由主人格直接调用"的工具：副作用强、面向用户、或会引发任务编排。
 
-所有工具均使用 @ai_tools(category=...) 装饰器注册。
+| 工具 | 来源 | 说明 |
+|---|---|---|
+| ``create_subagent`` | ``subagent.py`` | 派一个子 Agent 跑即时多步任务（不进 Kanban 任务树） |
+| ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
+| ``query_user_favorability`` | ``database_query.py`` | 查询好感度（主人格读自身状态） |
+| ``update_user_favorability`` | ``favorability_manager.py`` | 增量更新好感度 |
+| ``add_once_task`` | ``scheduler.py`` | 注册一次性定时任务（口语触发，需常驻主人格手边） |
+| ``add_interval_task`` | ``scheduler.py`` | 注册周期定时任务（同上） |
+| ``evaluate_agent_mesh_capability`` | ``planning/kanban_tools.py`` | Kanban 任务树前置评估，**仅主人格调** |
+
+### 2.2 ``category="buildin"`` —— 主人格 + 能力代理都保底
+"任何任务都可能需要"的基础能力。能力代理实例化时也会通过 ``_ALWAYS_TOOLS`` 拿到大部分。
+
+- ``search_knowledge``（``rag_search.py``）：向量检索知识库
+- ``web_search_tool``（``web_search.py``）：Tavily web 搜索
+- ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
+- ``query_user_memory``（``database_query.py``）：查询用户多群组记忆
+- ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
+- ``state_get`` / ``state_set`` / ``state_delete`` / ``state_list`` /
+  ``state_append``（``state_store/tools.py``）：通用持久键值状态
+- ``record_put`` / ``record_get`` / ``record_list`` / ``record_delete`` /
+  ``record_summary``（``state_store/record_tools.py``）：通用结构化集合
+- ``register_kanban_task``（``planning/kanban_tools.py``）：创建 Kanban 任务树
+- ``respawn_subtask`` / ``fail_task_tree`` / ``respond_subtask_approval``
+  （``planning/kanban_tools.py``）：任务树重派 / 终结 / 审批
+- ``artifact_put`` / ``artifact_get`` / ``artifact_list`` / ``artifact_get_recent``
+  （``planning/kanban_tools.py``）：任务节点 artifact 增查
+
+### 2.3 ``category="common"`` —— 向量检索按需加载（非保底）
+用户明确表达需求时才会被 ``search_tools()`` 命中并加载。
+
+- ``search_image``（``rag_search.py``）：图片资源向量检索
+- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源
+- ``update_self_note``（``self_info.py``）：写 self_note
+  （``capability_domain="自我认知"``）
+- ``set_user_favorability``（``favorability_manager.py``）：绝对值设置好感度
+- ``send_meme`` / ``collect_meme`` / ``search_meme``（``meme_tools.py``）：
+  表情包发送 / 收藏 / 检索
+- ``list_scheduled_tasks`` / ``query_scheduled_task`` / ``modify_scheduled_task``
+  （``scheduler.py``）：定时任务管理（只读 / 改）按需
+- ``cancel_scheduled_task`` / ``pause_scheduled_task`` / ``resume_scheduled_task``
+  （``scheduler.py``）：定时任务停 / 起按需
+
+### 2.4 ``category="media"`` —— 向量检索按需（图文渲染）
+| 工具 | 来源 | 说明 |
+|---|---|---|
+| ``render_html_to_image`` | ``html_render_tools.py`` | HTML 模板 → 图片（webconsole 复用浏览器） |
+| ``render_markdown_to_image`` | ``html_render_tools.py`` | Markdown → 图片 |
+
+### 2.5 ``category="default"`` —— 沙盒 / 子 Agent 专用
+``@ai_tools()`` 不传 category 即落入 ``"default"``。这些工具不在保底池，
+但会被 ``create_subagent`` 装配 + 由能力代理（``code_agent`` 等）通过显式
+白名单引用。
+
+- ``read_file_content`` / ``write_file_content`` / ``diff_file_content`` /
+  ``list_directory`` / ``execute_file``（``file_manager.py``）：
+  Artifact Workspace 沙盒文件操作
+- ``execute_shell_command``（``command_executor.py``）：沙盒 shell
+  （``check_pm`` 权限校验）
+- ``_get_current_date``（``get_time.py``）：当前日期时间（注册名带下划线前缀）
+
+> 注：``dynamic_tool_discovery.py`` 里的 ``discover_tools`` / ``list_available_tools``
+> 当前注释掉了 ``@ai_tools``，未在注册表中——通过 Python import 暴露给框架内部使用。
+
+## 三、能力代理的"永远工具"
+
+``capability_agents/runner.py::_ALWAYS_TOOLS`` 是能力代理被实例化时框架无条件
+追加的工具白名单（即便画像 ``tool_names`` 忘写也不会丢这些基础能力）：
+
+``artifact_put`` / ``artifact_get`` / ``artifact_list`` + ``state_set`` /
+``state_get`` / ``state_append`` / ``state_list`` + ``search_knowledge`` +
+``web_search_tool`` / ``web_fetch_tool``。
+
+注意：``send_message_by_ai`` 不在此列——能力代理只对主人格交付结果，由
+``kanban_executor._persona_relay`` 用主人格口吻转译后送达，不持有"直接和主人对话"的下行通道。
 """
 
 # 工具装饰器
@@ -68,9 +112,29 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.state_store import (
     state_get,
     state_set,
+    record_get,
+    record_put,
     state_list,
+    record_list,
     state_append,
     state_delete,
+    record_append,
+    record_delete,
+    record_update,
+    record_summary,
+)
+
+# Kanban 任务编排工具 - 多代理协作任务树
+from gsuid_core.ai_core.planning.kanban_tools import (
+    artifact_get,
+    artifact_put,
+    artifact_list,
+    fail_task_tree,
+    respawn_subtask,
+    artifact_get_recent,
+    register_kanban_task,
+    respond_subtask_approval,
+    evaluate_agent_mesh_capability,
 )
 
 # AI日期工具 - 获取当前日期时间
@@ -139,14 +203,8 @@ from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
 )
 
-# Agent Mesh 工具 - 持久化 Agent 协作
-from gsuid_core.ai_core.buildin_tools.agent_mesh_tools import (
-    stop_agent_tool,
-    list_agents_tool,
-    send_agent_task_tool,
-    create_persistent_agent_tool,
-)
-
+# R2（C5 落地后）：移除 agent_mesh 的"假持久化" PersistentAgent 及其 4 个工具。
+# 跨天 / 步骤化长任务改由 ai_core/planning 的真持久化三表 + 定时唤醒承担。
 # 命令执行工具 - 执行系统命令
 from gsuid_core.ai_core.buildin_tools.command_executor import execute_shell_command
 
@@ -224,12 +282,25 @@ __all__ = [
     "state_delete",
     "state_list",
     "state_append",
-    # Agent Mesh 工具
-    "create_persistent_agent_tool",
-    "send_agent_task_tool",
-    "list_agents_tool",
-    "stop_agent_tool",
+    # 通用结构化集合工具（具名集合 + 记录原语）
+    "record_put",
+    "record_get",
+    "record_list",
+    "record_append",
+    "record_update",
+    "record_delete",
+    "record_summary",
     # HTML渲染工具
     "render_html_to_image",
     "render_markdown_to_image",
+    # Kanban 任务编排工具
+    "evaluate_agent_mesh_capability",
+    "register_kanban_task",
+    "respawn_subtask",
+    "fail_task_tree",
+    "respond_subtask_approval",
+    "artifact_put",
+    "artifact_get",
+    "artifact_list",
+    "artifact_get_recent",
 ]

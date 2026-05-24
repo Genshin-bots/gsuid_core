@@ -344,7 +344,7 @@ async def _ingest_batch(
 ):
     """核心摄入逻辑：将一批 ObservationRecord 转化为 Episode、Entity、Edge"""
 
-    # Step 1: 格式化对话文本
+    # Step 1: 格式化对话文本（Episode 始终保存完整对话，含 LOW 价值消息）
     dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in records)
     speaker_ids = list({r.speaker_id for r in records})
     earliest_ts = min(r.timestamp for r in records)
@@ -357,14 +357,28 @@ async def _ingest_batch(
         valid_at=earliest_ts,
     )
 
-    # Step 3: 拉取最近 3 条 Episode 作为背景上下文（论文: "current and recent Episodes"）
+    # C1 / C6：分流——SELF scope（Bot 自我情景记忆）与全 LOW 价值批次只写 Episode，
+    # 跳过实体/边抽取。SELF scope 跳过可杜绝 Bot 戏言被提取成"客观事实"污染图谱；
+    # LOW 价值跳过可避免寒暄复读耗费 LLM 配额。
+    is_self_scope = scope_key.startswith("self:")
+    high_records = [r for r in records if getattr(r, "value_tier", "HIGH") == "HIGH"]
+    if is_self_scope or not high_records:
+        logger.debug(f"🧠 [Memory] scope={scope_key} 本批 {len(records)} 条为 LOW/SELF，仅写 Episode 跳过抽取")
+        return
+
+    # Step 3: 抽取仅使用 HIGH 价值消息，拼接近期背景上下文
+    extract_dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in high_records)
     recent_episodes = await _get_recent_episodes(scope_key, limit=3, exclude_episode_id=episode.id)
     if recent_episodes:
         context_text = "\n".join(ep.content for ep in recent_episodes)
-        dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{dialogue}\n</当前对话>"
+        extract_dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{extract_dialogue}\n</当前对话>"
 
     # Step 4: LLM 提取 + Entity 去重写入
-    extracted = await _llm_extract(dialogue, scope_key)
+    extracted = await _llm_extract(extract_dialogue, scope_key)
+
+    # C3-b：主人识别——把主人发言对应的 Speaker 实体打上 "Master" 标签，
+    # 供检索期优先。主人列表统一取 core_config.masters，不依赖人格 md 硬编码。
+    _apply_master_tags(extracted)
 
     # Step 4.5: 别名重定向（实体消歧 Level-1），并维护群组画像
     alias_map = _apply_alias_redirection(extracted)
@@ -539,6 +553,92 @@ def _apply_alias_redirection(extracted: ExtractedResult) -> dict[str, str]:
     return resolved
 
 
+def _apply_master_tags(extracted: ExtractedResult) -> None:
+    """给主人对应的 Speaker 实体打上 "Master" 标签（C3-b）。
+
+    主人列表统一取 ``core_config.masters``，不依赖人格 markdown 硬编码。
+    实体自带的 ``name`` / ``user_id`` 即发言者标识，据此与主人列表比对。
+    检索期可据此标签优先分配预算（见 C4 / dual_route）。
+    """
+    try:
+        from gsuid_core.config import core_config
+
+        masters = {str(m) for m in (core_config.get_config("masters") or [])}
+    except Exception:
+        masters = set()
+    if not masters:
+        return
+
+    for e in extracted["entities"]:
+        name = (e["name"] or "").strip()
+        uid = (e["user_id"] or "").strip() if e["user_id"] else ""
+        if name in masters or (uid and uid in masters):
+            tags = e["tag"] if isinstance(e["tag"], list) else []
+            if "Master" not in tags:
+                tags.append("Master")
+            e["tag"] = tags
+
+
+async def _build_known_context(scope_key: str, dialogue: str) -> str:
+    """构造注入实体提取提示词的"本群已知别名 + 已存在实体"片段（C2-a / C2-b）。
+
+    Token 防爆：别名只注入本批对话中字面命中的条目，外加少量高频兜底；
+    已存在实体取最近活跃的非发言者实体；整体硬限制约 1000 字符。
+    无可注入数据时返回空串。
+    """
+    from gsuid_core.ai_core.register import get_aliases_for_scope
+    from gsuid_core.ai_core.memory.group_profile import get_term_mappings
+    from gsuid_core.ai_core.memory.prompts.extraction import KNOWN_CONTEXT_TEMPLATE
+
+    MAX_BLOCK_CHARS = 1000
+
+    # 1. 汇总候选别名：群组画像 term_mappings（运行时学到的）+ 插件 ai_alias 注册表
+    candidates: dict[str, str] = {}
+    try:
+        term_mappings = await get_term_mappings(scope_key)
+        for alias, formal in term_mappings.items():
+            if alias and formal:
+                candidates[alias] = formal
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 读取 term_mappings 失败: {e}")
+    try:
+        for alias, formals in get_aliases_for_scope().items():
+            if alias and formals and alias not in candidates:
+                candidates[alias] = formals[0]
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 读取 ai_alias 注册表失败: {e}")
+
+    # 2. L0 字面命中过滤：只保留本批对话出现的别名，不足 5 条时补高频兜底
+    hit: dict[str, str] = {a: f for a, f in candidates.items() if a in dialogue}
+    if len(hit) < 5:
+        for a, f in candidates.items():
+            if len(hit) >= 5:
+                break
+            if a not in hit:
+                hit[a] = f
+
+    alias_section = ""
+    if hit:
+        pairs = "; ".join(f"{a}={f}" for a, f in list(hit.items())[:30])
+        alias_section = f"已知别名映射：{pairs[:MAX_BLOCK_CHARS]}\n"
+
+    # 3. 本群高频已存在实体清单（C2-b 跨批次消歧锚点）
+    entity_section = ""
+    try:
+        from gsuid_core.ai_core.memory.database.models import AIMemEntity
+
+        names = await AIMemEntity.get_frequent_names(scope_key, limit=20)
+        named = [n for n in names if n and not n.isdigit()]
+        if named:
+            entity_section = f"已存在实体：{('、'.join(named))[:MAX_BLOCK_CHARS]}\n"
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 读取高频实体失败: {e}")
+
+    if not alias_section and not entity_section:
+        return ""
+    return KNOWN_CONTEXT_TEMPLATE.format(alias_section=alias_section, entity_section=entity_section)
+
+
 async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     """调用 LLM 从对话文本中提取 Entity 和 Edge。
 
@@ -625,9 +725,13 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
             truncated = truncated[:last_newline]
         dialogue = truncated + "\n[内容已截断...]"
 
+    # C2-a / C2-b：注入"本群已知别名 + 已存在实体"，指导 LLM 对齐别名、跨批次消歧
+    known_context = await _build_known_context(scope_key, dialogue)
+
     prompt = ENTITY_EXTRACTION_PROMPT.format(
         scope_key=scope_key,
         dialogue_content=dialogue,
+        known_context=known_context,
     )
 
     def _restore_keys(data: dict) -> ExtractedResult:
@@ -695,6 +799,16 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
 
     except asyncio.TimeoutError:
         logger.warning(f"🧠 [Memory] LLM extraction timeout for {scope_key}")
+        try:
+            from gsuid_core.ai_core.statistics import statistics_manager
+
+            statistics_manager.record_memory_extraction_error()
+        except Exception:
+            pass
+    except ValueError as e:
+        # 上游 agent 返回空/非 JSON 时 extract_json_from_text 抛 ValueError，
+        # 这是预期内的"模型输出不可用"，只 warning，不打 stack trace
+        logger.warning(f"🧠 [Memory] LLM output not parseable as JSON: {e}")
         try:
             from gsuid_core.ai_core.statistics import statistics_manager
 

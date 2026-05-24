@@ -13,6 +13,7 @@ Git Async 工具模块
 
 import os
 import asyncio
+import subprocess
 from typing import Optional
 from pathlib import Path
 
@@ -55,31 +56,55 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
     # 使用简单的 User-Agent 避免某些服务器拒绝
     env["GIT_HTTP_USER_AGENT"] = "git/gsuid_core"
 
-    process = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=repo_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout,
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=repo_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
-    except asyncio.TimeoutError:
-        logger.warning(f"[Git Async] 命令超时({timeout}s): {cmd_str} @ {repo_path}")
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        return (-999, "", "timeout")
 
-    returncode = process.returncode or 0
-    stdout_str = stdout.decode("utf-8", errors="replace").strip()
-    stderr_str = stderr.decode("utf-8", errors="replace").strip()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[Git Async] 命令超时({timeout}s): {cmd_str} @ {repo_path}")
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            return (-999, "", "timeout")
+
+        returncode = process.returncode or 0
+        stdout_str = stdout.decode("utf-8", errors="replace").strip()
+        stderr_str = stderr.decode("utf-8", errors="replace").strip()
+    except NotImplementedError:
+        # Windows 下如果主程序使用了不支持子进程的 SelectorEventLoop，
+        # asyncio.create_subprocess_exec 会直接抛出 NotImplementedError。
+        # 这里退化为在线程中执行同步 subprocess.run，避免接口 500 且无需重启进程。
+        logger.warning(f"[Git Async] 当前事件循环不支持异步子进程，切换到线程执行: {cmd_str} @ {repo_path}")
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                ["git", *args],
+                cwd=repo_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[Git Async] 命令超时({timeout}s): {cmd_str} @ {repo_path}")
+            return (-999, "", "timeout")
+
+        returncode = completed.returncode or 0
+        stdout_str = completed.stdout.decode("utf-8", errors="replace").strip()
+        stderr_str = completed.stderr.decode("utf-8", errors="replace").strip()
 
     if returncode != 0:
         logger.warning(f"[Git Async] 命令失败(returncode={returncode}): {cmd_str} @ {repo_path}")

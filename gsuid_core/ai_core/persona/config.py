@@ -306,6 +306,15 @@ class PersonaConfigManager(ConfigSetManager):
             # 无法解析格式
             raise ValueError(f"Invalid session_id format: {session_id}")
 
+        try:
+            from gsuid_core.buildin_plugins.core_command.core_ai_control.state import get_persona_override
+
+            override_persona = get_persona_override(session_id)
+            if override_persona and override_persona in self.get_all_configs():
+                return override_persona
+        except Exception:
+            pass
+
         global_persona: Optional[str] = None
 
         for persona_name, config in self.get_all_configs().items():

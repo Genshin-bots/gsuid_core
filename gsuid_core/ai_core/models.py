@@ -97,6 +97,7 @@ class ToolBase:
     tool: "Tool[ToolContext]"
     check_func: Any  # 可选的权限检查函数
     context_tags: List[str]  # 语境标签，用于语境工具池自动加载
+    capability_domain: Optional[str]  # C3-d 能力域，用于聚合成自然语言能力清单
 
     def __init__(
         self,
@@ -106,6 +107,7 @@ class ToolBase:
         tool: "Tool[ToolContext]",
         check_func: Any = None,
         context_tags: Optional[List[str]] = None,
+        capability_domain: Optional[str] = None,
     ):
         self.name = name
         self.description = description
@@ -113,3 +115,4 @@ class ToolBase:
         self.tool = tool
         self.check_func = check_func
         self.context_tags = context_tags or []
+        self.capability_domain = capability_domain

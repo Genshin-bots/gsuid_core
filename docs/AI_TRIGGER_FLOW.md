@@ -79,7 +79,6 @@ gsuid_core/ai_core/
 │   └── models.py        # 配置数据模型
 ├── buildin_tools/       # 内建 AI 工具
 │   ├── __init__.py
-│   ├── agent_mesh_tools.py  # Agent 间通信与协作工具
 │   ├── command_executor.py  # 执行系统命令
 │   ├── database_query.py    # 数据库查询（好感度/记忆）
 │   ├── dynamic_tool_discovery.py  # 动态工具发现
@@ -95,12 +94,20 @@ gsuid_core/ai_core/
 │   ├── subagent.py          # 创建子Agent
 │   ├── web_search.py        # Web 搜索
 │   └── web_fetch.py         # 网页抓取（转 Markdown）
-├── agent_mesh/             # Agent 间通信与协作协议
-│   ├── __init__.py          # 模块导出
-│   ├── models.py            # AgentTask / AgentMessage 数据模型
-│   ├── message_bus.py       # Agent 间异步消息总线
-│   ├── persistent_agent.py  # 持久化子 Agent
-│   └── coordinator.py       # 多 Agent 任务协调器（DAG 依赖图执行）
+├── planning/               # 长任务编排层（C5/C7）—— 取代已移除的 agent_mesh
+│   ├── models.py            # AIAgentTask / AIAgentTaskStep / AIAgentTaskLog 三表
+│   ├── manager.py           # 框架内部编排函数（不暴露为 LLM 工具）
+│   ├── resolver.py          # 自然语言任务引用解析
+│   ├── runtime.py           # contextvars 绑定 current_task
+│   ├── executor.py          # 定时唤醒执行器 + 崩溃恢复 + 人格转译播报
+│   ├── context.py           # 每轮注入活跃任务摘要
+│   ├── tools.py             # 暴露给 LLM 的无 UUID 工具
+│   └── startup.py           # 初始化与僵尸任务恢复
+├── capability_agents/      # 能力代理层 —— 执行/表达分离（无人格专职执行体）
+│   ├── registry.py          # CapabilityAgentProfile 注册表 + resolve_profile + unregister_capability_agent
+│   ├── profiles.py          # 内置 research/code 能力代理画像
+│   ├── persistence.py       # 用户自定义画像 JSON 持久化 + source 三态（builtin/plugin/user）
+│   └── runner.py            # 能力代理运行器（无人格 Plan-Solve）
 ├── multimodal/             # 多模态消息处理模块
 │   ├── __init__.py          # 模块导出
 │   ├── asr.py               # 语音转文字（ASR）
@@ -188,13 +195,6 @@ gsuid_core/ai_core/
 │   ├── models.py        # 数据库模型
 │   ├── dataclass_models.py  # 内存数据结构（BotState/LatencyStats/TokenUsage）
 │   └── startup.py       # 启动/关闭/零点重置回调
-├── system_prompt/        # System Prompt 管理
-│   ├── __init__.py
-│   ├── defaults.py
-│   ├── models.py
-│   ├── search.py
-│   ├── storage.py
-│   └── vector_store.py
 ├── mcp/                  # MCP (Model Context Protocol) 工具集成
 │   ├── __init__.py       # 模块导出（MCPClient, MCPConfig, mcp_config_manager 等）
 │   ├── client.py         # MCP 客户端（基于 fastmcp，stdio 传输）
@@ -382,12 +382,7 @@ if len(event.raw_text) > MAX_SUMMARY_LENGTH:
 | 无需处理 | `≤ 15000` 字符 | 直接传递给主Agent | 正常短消息处理 |
 
 > **说明**：第二层阈值从 2000 调整为 15000，因为现代 LLM 上下文窗口动辄 128K（约 10 万汉字），2000 字符对 LLM 来说毫无压力。对于代码、报错日志等长文本，摘要会丢失细节，应尽量避免自动摘要。
-
-**新增 System Prompt** (`system_prompt/defaults.py`):
-- ID: `default-text-summarizer`
-- Title: 文本摘要专家
-- Tags: 摘要、总结、压缩、文本处理、长文本
-
+`n
 ### 2.5 AI 并发控制机制
 
 **问题**: 原代码在用户触发路径（`handle_ai_chat`）没有并发控制，恶意用户可能瞬间发送大量请求导致 Rate Limit。
@@ -1076,7 +1071,7 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 - `default` 工具（如文件操作、系统命令）仅通过子Agent使用
 
 > 三层工具池机制解决了"口语化提问命中不到基础工具"与"群里问游戏问题命中不到游戏工具"的问题。
-> 详见 [`docs/AI_AGENT_CAPABILITY_UPGRADE.md`](AI_AGENT_CAPABILITY_UPGRADE.md)。
+> 当前最终说明以 `docs/AGENT_CAPABILITY_AGENT_MERGED_20260521.md` 为准；历史拆分稿已归档到 `docs/backups/`。
 
 #### 5.5.6 Self 工具 (`category="self"`)
 
@@ -1122,10 +1117,27 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str:
 | `cancel_scheduled_task` | 取消任务（管理类） |
 | `pause_scheduled_task` | 暂停任务（管理类） |
 | `resume_scheduled_task` | 恢复任务（管理类） |
-| `create_persistent_agent_tool` | 创建持久化子 Agent |
-| `send_agent_task_tool` | 向持久化 Agent 发送任务 |
-| `list_agents_tool` | 列出所有活跃的持久化 Agent |
-| `stop_agent_tool` | 停止指定的持久化 Agent |
+| `evaluate_agent_mesh_capability` | 创建 Kanban 任务树前置——评估现有画像能否覆盖（必须 covered=true 才可创建） |
+| `register_kanban_task` | 注册一棵 Kanban 任务树（根 + N 子任务节点），事件驱动并发推进 |
+| `respawn_subtask` | 复活 failed 子任务（达 3 次自动转 waiting_approval） |
+| `fail_task_tree` | 明确终结整棵任务树 + 级联未完成子任务 |
+| `respond_subtask_approval` | 转达主人对 waiting_approval 子任务的同意 / 拒绝 |
+| `artifact_put` / `artifact_get` / `artifact_list` | 任务树内 Artifact Hub 增 / 取 / 列 |
+| `artifact_get_recent` | 取根任务最近一份 artifact 原文，专给主人格追问溯源用 |
+
+> ⚠️ 原 `create_persistent_agent_tool`（agent_mesh）与 C5 长任务工具
+> （`register_long_task` / `task_commit_step` / `task_*` 系列）已全部移除——
+> 多步任务统一收敛到 Kanban 任务树（事件驱动 + 子任务依赖）。当前最终语义见
+> `docs/AGENT_MESH_KANBAN_IMPLEMENTATION_20260522.md` 与
+> `docs/AGENT_CAPABILITY_AGENT_MERGED_20260521.md`。
+>
+> 🆕 调度模型：Kanban 纯**事件驱动**。需要"明天 6 点触发""每天复盘"等时间
+> 触发条件，用 `add_once_task` / `add_interval_task` 在那个时刻把主人格唤醒，
+> 唤醒时主人格视情况调 `register_kanban_task`；不要把时间塞进子任务字段。
+>
+> 🆕 主人格在追问溯源场景（"你为什么选 X / 为什么这样做"）应**先调
+> `artifact_get_recent`** 把对应任务树的最近一份 artifact 原文查回来，再用
+> 角色口吻转告主人；严禁自行 web_search 重新拼凑解释。决策树 3.6 强制走这条路径。
 
 #### 5.5.9 触发器桥接工具 (`category="by_trigger"`)
 
@@ -2765,9 +2777,14 @@ gsuid_core/ai_core/memory/
 
 | 类型 | 格式 | 说明 |
 |------|------|------|
-| `GROUP` | `ScopeType.GROUP:{group_id}` | 群组级记忆，群内所有消息共享 |
-| `USER_GLOBAL` | `ScopeType.USER_GLOBAL:{user_id}` | 用户跨群全局画像 |
-| `USER_IN_GROUP` | `ScopeType.USER_IN_GROUP:{user_id}@{group_id}` | 用户在特定群组内的局部档案（可选精细化） |
+| `GROUP` | `group:{group_id}` | 群组级记忆，群内所有消息共享 |
+| `USER_GLOBAL` | `user_global:{user_id}` | 用户跨群全局画像 |
+| `USER_IN_GROUP` | `user_in_group:{user_id}@{group_id}` | 用户在特定群组内的局部档案（可选精细化） |
+| `SELF` | `self:{bot_id}` | **（C6 新增）** Bot 自身的情景记忆与自我模型——"我说过/做过什么" |
+
+> **C6（2026-05-19）**：新增 `SELF` scope。Bot 自身发言（`__assistant_*`）不再混入
+> 群组事实图谱，改路由到 `self:{bot_id}` 做轻量摄入（仅 Episode、不抽取 Entity/Edge），
+> 从根源杜绝"Bot 戏言污染群记忆"。
 
 **示例**：
 ```python
@@ -2805,16 +2822,26 @@ class ObservationRecord:
     scope_key: str        # 格式化后的 Scope Key
     timestamp: datetime   # 观察时间
     message_type: str     # "group_msg" | "private_msg"
+    value_tier: str       # （C1 新增）记忆价值分级 "HIGH" / "LOW"
 ```
 
-**过滤规则** (`_should_observe()`)：
+**C1 摄入质量门控（2026-05-19 新增）** —— 门控 **100% 由纯规则 / 正则实现，绝不调用 LLM**：
+
+入队前的门控函数 `_gate()` 做两件事：① 过滤噪声；② 给每条记录打 `value_tier`。
+`_should_observe()` 已被 `_gate()` + `_classify_value_tier()` 取代。
 
 | 规则 | 说明 |
 |------|------|
 | 自身消息过滤 | `speaker_id == bot_self_id` 时不入队 |
 | 黑名单群组 | `group_id in observer_blacklist` 时不入队 |
-| 过短内容 | `< 5` 字符的纯表情/单字回复不入队 |
-| 纯图片/文件 | 无文字内容不入队 |
+| 命令回显过滤 | 正则命中"请输入正确/功能名称"等框架报错回显 → 丢弃 |
+| 注入特征过滤 | 正则命中"忘记所有指令""ignore previous instructions"等 → 丢弃 |
+| 复读 / 刷屏过滤 | 与本 scope 最近 12 条完全相同 → 丢弃（保留首次出现） |
+| 重要性分级 | 含姓名自述/称呼偏好/承诺/数字日期 → HIGH；情绪词兜底 → HIGH；纯寒暄且 < 10 字且无实体 → LOW；其余默认 HIGH |
+
+> 不再因 `len < 5` 直接丢弃短消息——"我是张三""叫我老板"等短句改由重要性分级判定。
+> `value_tier=LOW` 的记录由 IngestionWorker 只写 Episode、跳过 Entity/Edge 抽取。
+> Bot 自身发言（`__assistant_*`）路由到 `SELF` scope（见 10.4），不过本门控。
 
 **队列溢出策略**：队列满时丢弃最老的一条，保证新消息不丢失。
 
@@ -3534,7 +3561,7 @@ web_search(query)
 ┌─────────────────────────────────────────────────────────┐
 │                    调用方（无需感知底层实现）                │
 │  rag/tools.py · rag/knowledge.py · rag/image_rag.py     │
-│  system_prompt/vector_store.py · memory/vector/ops.py   │
+│  memory/vector/ops.py                                   │
 └───────────────────────┬─────────────────────────────────┘
                         │
                         ▼
@@ -3584,7 +3611,7 @@ web_search(query)
 
 ### 11.4 向后兼容
 
-`rag/base.py` 中的 `embedding_model` 全局变量通过 `_EmbeddingModelWrapper` 包装 `EmbeddingProvider`，保持与原有 `fastembed.TextEmbedding` 相同的 `.embed([text])` 接口。现有调用方（`rag/tools.py`、`rag/knowledge.py`、`rag/image_rag.py`、`system_prompt/vector_store.py`）无需任何修改。
+`rag/base.py` 中的 `embedding_model` 全局变量通过 `_EmbeddingModelWrapper` 包装 `EmbeddingProvider`，保持与原有 `fastembed.TextEmbedding` 相同的 `.embed([text])` 接口。现有调用方（`rag/tools.py`、`rag/knowledge.py`、`rag/image_rag.py`）无需任何修改。
 
 新增 `embedding_provider` 全局变量暴露底层 `EmbeddingProvider` 实例，供 `memory/vector/ops.py` 等需要直接使用异步接口的模块使用。
 
@@ -3865,6 +3892,138 @@ web_search(query)
 
 ---
 
+## 13. 长任务编排与记忆生命周期（C5/C7/C11/C9）
+
+> 2026-05-20 起落地；能力代理与长任务编排的当前最终语义见
+> `docs/AGENT_CAPABILITY_AGENT_MERGED_20260521.md`。
+
+### 13.1 Kanban 任务编排层 `ai_core/planning/`
+
+把跨步骤、多代理协作的任务做成真正的数据库持久化任务树，取代历史上"假持久化
+PersistentAgent"（agent_mesh）与"单代理跨天串行步骤长任务"（C5）两套老方案。
+
+**两张持久化表 + 一张 Artifact 表**
+- `AIAgentTask`（`aiagenttask`）：任务节点表——根任务 + 子任务**共表**，
+  `node_kind="root|subtask"` 区分；字段含 `ordinal`(用户可见短序号) / `goal` /
+  `status` / `parent_task_id` / `root_task_id` / `dependency_task_ids` /
+  `agent_profile`(子任务由哪类能力代理推进) / `failure_reason` / `respawn_count`
+  / `params_override` / `input_artifact_ids` / `output_artifact_id` /
+  `failure_policy` / `workspace_policy` / `broadcast_targets` / `review_notes`。
+- `AIAgentTaskLog`（`aiagenttasklog`）：任务事件流——`plan_created` /
+  `step_started` / `step_done` / `step_failed` / `decision` / `approval` /
+  `workspace_violation`，崩溃恢复 / 审计窗口的依据。
+- `AIAgentArtifact`（`aiagentartifact`）：任务节点产出登记表——`payload_inline`
+  ≤4KB / 超过走 `payload_path` 落盘；按 `root_task_id` 严格隔离跨树读取。
+
+**约束 2：真实 ID 绝不暴露给 LLM**——LLM 工具参数无 `task_id` / `root_task_id`；
+写原语作用于框架经 `runtime.py` 的 `contextvars` 绑定的 current_task；引用类
+工具用自然语言句柄（`resolver.resolve_task_ref` 仅匹配根任务，解析"任务#3"/
+"炒股那个"/"运行中的"）；子任务句柄形如 `"<root_ref>#sub<N>"`；artifact
+则用显式 `res_xxx` 句柄。
+
+**生命周期（事件驱动 · 无定时器）**：
+1. **能力评估**：主人格先调 `evaluate_agent_mesh_capability`，由内部
+   `capability_evaluator` 一次性无记忆代理判断现有画像能否覆盖。
+2. **建树**：`covered=true` 时调 `register_kanban_task` 创建根任务 + N 子任务，
+   立刻 `kick_root` 一次。
+3. **并发派活**：`kanban_executor.execute_ready_tasks` 扫树拿可跑节点
+   （依赖已满足、未被并发抢走），用 `asyncio.gather` 并发跑
+   `run_capability_agent`。
+4. **状态推进**：节点跑完 / 失败 → 子任务条件 SQL 落终态 +
+   `refresh_root_status` 汇总根任务 → 递归 `_schedule_continuation` 最多 4 层
+   处理"上游刚完成、下游立即就绪"的级联。
+5. **追问溯源**：每个能力代理调 `artifact_put` 登记产出；没显式登记时执行器
+   用 `raw_result` 兜底写一份 `output` artifact。
+6. **失败处理**：默认 `notify_persona` 策略——子任务失败把 `failure_reason`
+   用人格口吻通知主人格，主人格决定 `respawn_subtask` / `fail_task_tree`；
+   重派达 3 次自动转 `waiting_approval`，由主人在 webconsole 或对话回复审批
+   （`respond_subtask_approval`）。
+7. **崩溃恢复**：启动期 `recover_zombie_subtasks` 复活心跳过期的 running
+   子任务，再对所有 running / pending 根任务统一 `kick_root` 一次。
+
+每轮对话由 `planning.context.build_task_context` 注入活跃**根任务**摘要
+（不含子任务，避免顶层概览被污染）。
+
+**没有定时器**：Kanban 纯事件驱动。需要"明天 6 点触发""每天复盘"等时间
+触发条件，请用 `add_once_task` / `add_interval_task` 在那个时刻把主人格
+唤醒，由主人格视情况调 `register_kanban_task` 或更新已有任务树。
+
+**能力代理推进（执行/表达分离）**：调度器派活时绕过主人格会话——人格被设定为
+"懒惰、回避分析"的话会让严肃执行抵制、空转，并出现人格漂移。
+`run_capability_agent` 按子任务 `agent_profile` 唤醒 `ai_core/capability_agents/`
+的**无人格能力代理**（不拒绝、不漂移），执行结果再经 `_persona_relay` 用人格
+口吻转译后通知主人。框架内置 `research_agent` / `code_agent` / `aigc_creator` /
+`data_analyst` / `memory_curator` / `scheduler_assistant` 6 个画像 + 内部
+`capability_evaluator`，业务画像（如 `finance_agent`）由插件注册。
+
+🆕 **追问溯源**：每个节点跑完后 `artifact_put` 或框架兜底落一份 `output`
+artifact 到 `AIAgentArtifact` 表。主人格在被追问"为什么这样选"时调
+`artifact_get_recent` 工具回溯任务树最近一份 artifact 原文，避免主人格自己
+web_search 编造与原代理推理不一致的解释。决策树 3.6 强制走这条路径。
+
+🆕 **Windows subprocess 兼容**：`core.py` 把事件循环切到
+`WindowsSelectorEventLoopPolicy` 以规避 ProactorEventLoop 关闭 socket 时的
+InvalidStateError，但 SelectorEventLoop **不支持** 子进程——`code_agent`
+在 Windows 上跑 `execute_shell_command` / `execute_file` 必抛
+`NotImplementedError`。修复方案：在两个工具内分平台分支，Windows 走"同步
+`subprocess.run` + `asyncio.to_thread`"，POSIX 仍走原生
+`asyncio.create_subprocess_exec`，timeout 转译为 `asyncio.TimeoutError` 保持
+上层契约。
+
+🆕 **code_agent 工具集扩充**：从 6 个文件 / 命令工具扩到 16 个，新增
+`render_markdown_to_image` / `render_html_to_image` / `send_message_by_ai` /
+`state_*` / `search_knowledge` / `web_search_tool` / `web_fetch_tool` /
+`get_current_date`，并改写 `_CODE_PROMPT` 强调"端到端跑完拿到产物、把生成的图
+发给主人"。`match_keywords` 由抽象词扩成具体动作词（"绘制 / PIL / 渲染 /
+生成图 / 运行 Python"等），提高主人格 resolve 命中率。
+
+🆕 **webconsole 管理**：
+- `/api/ai/kanban/*`：Kanban 5 列看板 / 任务详情 / 暂停 / 恢复 / 终止 /
+  审批 / 重派 / 评估触发，见 `webconsole/docs/35-kanban.md`。
+- `/api/ai/artifacts/*` + `/api/ai/kanban/tasks/{id}/workspace/*`：Artifact Hub
+  与 Workspace 文件管理。
+- `/api/ai/capability-agents/*`：画像 CRUD（builtin / plugin / user 三态权限），
+  用户画像落在 `data/ai_core/capability_agents/<id>.json`，启动自动挂回。
+  见 `webconsole/docs/34-capability-agents.md`。
+
+### 13.2 HITL 人工审批流
+
+Kanban 子任务连续重派达 3 次（默认 `DEFAULT_RESPAWN_LIMIT`）后会自动转
+`waiting_approval`，根任务状态汇总也会变 `waiting_approval`。主人有两条审批
+通路：
+
+1. **webconsole**：在 Kanban 看板 Blocked 列点击卡片走
+   `POST /api/ai/kanban/subtasks/{id}/approve`。
+2. **对话回复**：主人直接对 bot 说"同意 / 拒绝（附说明）"，主人格调
+   `respond_subtask_approval(approved, note, subtask_ref="")` 把决定回传——
+   后端等价于 webconsole 端点。批准 → 子任务退回 `pending` 进入下次调度；
+   拒绝 → 子任务 `failed`，主人格再决定是否 `fail_task_tree` 整树终结。
+
+### 13.3 记忆生命周期（C11）`ai_core/memory/lifecycle/`
+
+`run_lifecycle_maintenance` 由 APScheduler 每周触发，纯规则无 LLM：
+- **巩固**：`mention_count ≥ 3` 的高频 Edge `decay_score` 回升 1.0。
+- **衰减**：14 天未被检索且非高频的 Edge `decay_score *= 0.85`。
+- **遗忘**：`decay_score < 0.1` 的 Edge 物理删除（SQL + Qdrant）。
+
+`AIMemEdge` 新增 `decay_score` / `last_accessed` 列；检索命中后台刷新 `last_accessed`。
+`ingestion/edge.py` 增否定极性矛盾检测：同 src/tgt 高相似但极性相反 → 旧 Edge 软删除 +
+记录 `AIMemConflict`，不向 LLM 堆叠新旧矛盾。
+
+### 13.4 多模态摄入（C9）`ai_core/memory/ingestion/multimodal.py`
+
+`handler.py` 的 Observer Hook 检测到图片 → `submit_image_observation` 纯规则过滤
+（URL 去重 + 按 scope 限流）后投入独立 `_multimodal_queue`（与文本 `observation_queue`
+物理隔离）→ `ImageUnderstandWorker` 异步调 `understand_image` 转述 → 以 `[图片理解]`
+前缀包装成观察记录推入主 `observe()` 管道。图片风暴不阻塞文本聊天。
+
+### 13.5 可视化调试台（C10）`webconsole/agent_debug_api.py`
+
+三面板后端 API（需鉴权）：记忆图谱浏览/软删 Edge、长任务看板/步骤改写/终止、
+self_model 演化层查看/人工修正。
+
+---
+
 ## 附录
 
 ### A. 相关文件路径
@@ -3904,10 +4063,15 @@ web_search(query)
 | [`gsuid_core/ai_core/memory/retrieval/dual_route.py`](gsuid_core/ai_core/memory/retrieval/dual_route.py) | 双路检索引擎 |
 | [`gsuid_core/ai_core/memory/database/models.py`](gsuid_core/ai_core/memory/database/models.py) | 记忆系统数据模型 |
 | [`gsuid_core/ai_core/memory/vector/ops.py`](gsuid_core/ai_core/memory/vector/ops.py) | 向量存储操作 |
-| [`gsuid_core/ai_core/agent_mesh/__init__.py`](gsuid_core/ai_core/agent_mesh/__init__.py) | Agent Mesh 模块导出 |
-| [`gsuid_core/ai_core/agent_mesh/persistent_agent.py`](gsuid_core/ai_core/agent_mesh/persistent_agent.py) | 持久化 Agent |
-| [`gsuid_core/ai_core/agent_mesh/coordinator.py`](gsuid_core/ai_core/agent_mesh/coordinator.py) | DAG 任务协调器 |
-| [`gsuid_core/ai_core/agent_mesh/message_bus.py`](gsuid_core/ai_core/agent_mesh/message_bus.py) | Agent 消息总线 |
+| [`gsuid_core/ai_core/memory/lifecycle/consolidation_worker.py`](gsuid_core/ai_core/memory/lifecycle/consolidation_worker.py) | C11 记忆生命周期维护 Worker |
+| [`gsuid_core/ai_core/memory/ingestion/multimodal.py`](gsuid_core/ai_core/memory/ingestion/multimodal.py) | C9 多模态摄入队列 + Worker |
+| [`gsuid_core/ai_core/planning/models.py`](gsuid_core/ai_core/planning/models.py) | C5 长任务三表模型 |
+| [`gsuid_core/ai_core/planning/manager.py`](gsuid_core/ai_core/planning/manager.py) | C5 框架内部编排函数 |
+| [`gsuid_core/ai_core/planning/executor.py`](gsuid_core/ai_core/planning/executor.py) | C5 定时唤醒执行器 + 崩溃恢复 |
+| [`gsuid_core/ai_core/planning/tools.py`](gsuid_core/ai_core/planning/tools.py) | C5/C7 暴露给 LLM 的长任务工具 |
+| [`gsuid_core/ai_core/capability_agents/registry.py`](gsuid_core/ai_core/capability_agents/registry.py) | 能力代理画像注册表 + resolve_profile |
+| [`gsuid_core/ai_core/capability_agents/profiles.py`](gsuid_core/ai_core/capability_agents/profiles.py) | 内置 research/code 能力代理画像 |
+| [`gsuid_core/ai_core/capability_agents/runner.py`](gsuid_core/ai_core/capability_agents/runner.py) | 能力代理运行器（无人格 Plan-Solve 执行体） |
 | [`gsuid_core/ai_core/multimodal/__init__.py`](gsuid_core/ai_core/multimodal/__init__.py) | 多模态模块导出 |
 | [`gsuid_core/ai_core/multimodal/asr.py`](gsuid_core/ai_core/multimodal/asr.py) | 语音转文字 |
 | [`gsuid_core/ai_core/multimodal/tts.py`](gsuid_core/ai_core/multimodal/tts.py) | 文字转语音 |
@@ -3915,7 +4079,7 @@ web_search(query)
 | [`gsuid_core/ai_core/multimodal/document.py`](gsuid_core/ai_core/multimodal/document.py) | 文档提取 |
 | [`gsuid_core/ai_core/persona/mood.py`](gsuid_core/ai_core/persona/mood.py) | 情绪状态机 |
 | [`gsuid_core/ai_core/persona/group_context.py`](gsuid_core/ai_core/persona/group_context.py) | 群聊适应性 |
-| [`gsuid_core/ai_core/buildin_tools/agent_mesh_tools.py`](gsuid_core/ai_core/buildin_tools/agent_mesh_tools.py) | Agent Mesh AI 工具 |
+| [`gsuid_core/webconsole/agent_debug_api.py`](gsuid_core/webconsole/agent_debug_api.py) | C10 Agent 可视化调试台 API |
 
 ### B. 配置热重载矩阵
 
@@ -4000,3 +4164,6 @@ Session ID 格式说明:
 | 2026-05-05 | v4.0 | **MCP 重构 + Image Understand + Meme Module + Web Search 统一接口**：1.1 模块结构（新增 mcp/mcp_tool_caller.py、mcp/mcp_tools_config.py、image_understand/ 模块、meme/ 模块）；5.5.7 buildin 工具新增 web_fetch、send_meme/collect_meme/search_meme；5.5.12 MCP 工具集成全面更新（新增 register_as_ai_tools/tools 字段、MCP 工具 ID 格式、mcp_tools_config 配置、通用 call_mcp_tool 调用、MCP 预设配置、4 个新 API 端点）；8.0 MCP 配置 API 新增 tools/discover/import/presets 端点；新增 10.14 Meme 表情包模块（引用 MEME_MODULE.md）；新增 10.15 Image Understand 图片理解模块（MCP 驱动，GsCoreAIAgent._prepare_user_message 自动处理）；新增 10.16 Web Search 统一搜索接口（Tavily/Exa/MCP 三选一，MiniMax 搜索迁移至 MCP）；附录 A 新增 MCP/ImageUnderstand/Meme/WebSearch 相关文件路径 |
 | 2026-05-11 | v4.1 | **修复 D-20（强制总结偏离用户问题）v3 到 v4 演进**：v3 实现保留 `_last_user_question`、`_extract_known_facts()`、message_history 置空、无工具 Agent；v4 在 v3 基础上进一步把 `_extract_known_facts` 替换为 `_extract_run_context`（按轮次保留工具返回+LLM 中间推理），去掉 fallback Agent 冗余的 `deps_type/deps` 参数，修正错误处理避免消息双发；更新 5.6.3 节 |
 | 2026-05-14 | v4.2 | **AI 总开关控制全面修复**：1. `handle_ai.py` 中 `enable_ai` 改为函数内动态读取（`ai_config.get_config("enable").data`），确保 WebConsole 切换开关后无需重启即可生效；2. 所有 `@on_core_start` 钩子增加 `enable_ai` 检查：rag/startup.py、persona/startup.py、memory/startup.py、statistics/startup.py（heartbeat）、scheduled_task/startup.py、mcp/startup.py、mcp/server.py；3. `scheduled_task/executor.py` 执行前增加 `enable_ai` 检查；4. `heartbeat/inspector.py` 启动前增加 `enable_ai` 检查；5. 更新 2.2 节、8.4.1 节、10.12.3 节、12.2 节文档描述；6. 新增已知问题 D-21（AI 总开关控制不全面） |
+| 2026-05-19 | v4.3 | **拟人化 Agent 升级 P0+P1+C8**（依据 `plans/agent_design_review.md`，详见归档文档 `docs/backups/AGENT_UPGRADE_P0P1C8_20260519.md`）：C1 记忆摄入纯规则质量门控（命令回显/注入/复读过滤 + HIGH/LOW 价值分级，`ObservationRecord` 新增 `value_tier`）；C1 Edge 跨发言者归并（`AIMemEdge` 新增 `mention_count` 列，旧库经 startup.py ALTER 补齐）；C6 新增 `ScopeType.SELF`，Bot 自身发言路由 `self:{bot_id}` 轻量摄入；C2 别名系统接通记忆链路（抽取提示词注入"已知别名+已存在实体"、`ai_alias` 加 `scope` 参数、`_ALIASES` 改分 scope 结构）；C3 自我认知（新增 `ai_core/self_cognition.py`，每轮动态注入 `self_cognition_context`、`@ai_tools` 加 `capability_domain`、主人实体打 `Master` 标签、新增 `update_self_note` 工具）；C4 记忆检索寒暄门控 + 主人记忆预算优先级；R1 `normalize.py` 降级为命令层 fallback；C8 新增 `heartbeat/dispatcher.py` 统一主动消息网关（防撞车 + 任务结果合并进 Heartbeat 语境）。更新 §10.4 / §10.5 |
+| 2026-05-20 | v4.4 | **能力代理架构升级**（最终语义见 `AGENT_CAPABILITY_AGENT_MERGED_20260521.md`）：历史截断纳入 `RetryPromptPart`（`gs_agent.py` 截断函数 + 新增 `_drop_orphan_tool_results` 自愈兜底，根治"久聊必崩"400）；能力代理架构（新增 `ai_core/capability_agents/` 模块——执行/表达分离，长任务由无人格能力代理推进、结果经 `_persona_relay` 人格转译；`AIAgentTask` 新增 `agent_profile` 列；新增 `task_pause`/`task_resume` 工具；`register_long_task`/`create_subagent` 加 `agent_profile` 参数）；系统提示词改造（决策树补长任务分支 3.5、认知防火墙/极简原则改写、新增 `voice_anchor` 逐轮口吻锚点）；`register_long_task` 创建后立即执行第一步 + 单轮意图-行为一致性检测。更新 §13.1 |
+| 2026-05-21 | v4.5 | **能力代理架构合并收尾**（详见 `AGENT_CAPABILITY_AGENT_MERGED_20260521.md`）：主人格追问溯源（`AIAgentTask` 新增 `last_artifact` 列、新增 `task_get_last_artifact` LLM 工具、决策树补 3.6 追问溯源分支、`last_artifact` 空串回退到 `step.result_summary`）；`_RESEARCH_PROMPT` 重写"工具优先级+诚实底线+结论双段"；`code_agent` 工具集扩到 16 个；Windows subprocess 兼容 SelectorEventLoop；`next_run_at` 持久化调度；新增 webconsole `long_tasks_api` / `capability_agents_api` 两套 REST API + 用户画像 JSON 持久化；二次审计联动收尾（`capability_agents/registry` 新增 `unregister_capability_agent` 公开 API、`_dto_to_profile` 改显式存在性检查、`heartbeat/dispatcher` 与 `inspector._target_key` 去 `dict.get`/`getattr`、`gs_agent._drop_orphan_tool_results` 拆双 isinstance 分支、`webconsole/capability_agents_api` 的 `_pick` 内联展开等） |

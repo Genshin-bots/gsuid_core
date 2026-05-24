@@ -75,7 +75,11 @@ class MemoryContext:
     )
     retrieval_paths: list[list[dict]] = field(default_factory=list)  # System-2 检索路径
 
-    def to_prompt_text(self, max_chars: int = 2000) -> str:
+    def to_prompt_text(
+        self,
+        max_chars: int = 2000,
+        priority_speakers: Optional[set] = None,
+    ) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本。
 
         采用 Token 预算控制，按"信息密度"分配空间：
@@ -84,6 +88,11 @@ class MemoryContext:
         - 相关对话片段（episodes）：约 30%，只保留少量最相关轮次
 
         每个区块在自己的预算内逐条累加，超预算即停止，避免低价值内容挤占空间。
+
+        Args:
+            max_chars: 注入预算字符数
+            priority_speakers: C4 预算优先级——这些发言者（如主人）相关的 edge
+                会被稳定上浮到核心事实区块最前，优先占用预算。
         """
 
         def _take(items: list[str], budget: int) -> list[str]:
@@ -102,11 +111,25 @@ class MemoryContext:
         # 核心事实（最高优先级）
         if self.edges:
             fact_budget = int(max_chars * 0.55)
+            edges = self.edges[: memory_config.search_edge_count]
+            # C4 预算优先级：主人等优先发言者的 edge 稳定上浮（不打乱 rerank 内部序）
+            if priority_speakers:
+                edges = sorted(
+                    edges,
+                    key=lambda e: 0 if e["source_name"] in priority_speakers else 1,
+                )
+            # C11 后置拦截器：按 fact 归一化签名去重，避免近义重复事实挤占注入预算
             fact_lines: list[str] = []
-            for e in self.edges[: memory_config.search_edge_count]:
+            seen_facts: set = set()
+            for e in edges:
                 fact = _complete_fact_subject(e["fact"], e["source_name"])
-                if fact:
-                    fact_lines.append(f"• {fact}")
+                if not fact:
+                    continue
+                sig = fact.strip().lower().replace(" ", "")[:24]
+                if sig in seen_facts:
+                    continue
+                seen_facts.add(sig)
+                fact_lines.append(f"• {fact}")
             taken = _take(fact_lines, fact_budget)
             if taken:
                 parts.append("【核心事实 - 与当前问题相关】\n" + "\n".join(taken))
@@ -376,6 +399,15 @@ async def dual_route_retrieve(
         f"🧠 [Memory] 共计 {len(all_episodes)} 条 Episode, {len(all_entities)} 个 Entity, "
         f"{len(all_edges)} 条 Edge, {len(all_categories)} 个 Category"
     )
+
+    # C11：把本次命中的 Edge 标记为"刚被检索"，刷新 last_accessed 供衰减 Worker 判定。
+    # 后台 fire-and-forget，不阻塞检索返回。
+    # "id" 是 ranked_edges 的固定字段，仅过滤 falsy 值（空串）以防上游异常数据。
+    edge_ids = [e["id"] for e in ranked_edges if "id" in e and e["id"]]
+    if edge_ids:
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        asyncio.create_task(AIMemEdge.touch_accessed(edge_ids))
 
     return MemoryContext(
         episodes=ranked_episodes,

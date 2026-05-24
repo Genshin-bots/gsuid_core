@@ -12,6 +12,7 @@ AI聊天处理模块
 - 并发控制：使用全局信号量限制并发AI调用数
 """
 
+import re
 import asyncio
 from typing import Optional
 from datetime import datetime
@@ -47,6 +48,38 @@ MAX_SUMMARY_LENGTH = 15000  # 摘要阈值：超过此长度调用子Agent进行
 # AI并发控制配置
 MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
 _ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
+
+# C4 寒暄门控：回指 / 实体 / 任务引用词，命中则强制触发记忆检索
+_FORCE_RETRIEVE_RE = re.compile(
+    r"(之前|上次|上回|那个|那次|昨天|前几天|你说过|你不是说|记不记得|还记得|提到过|任务|计划|进度)"
+)
+# C4 / C3-c：明显情绪词，命中则强制检索（避免错过用户昨日事件背景）
+_EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤心|焦虑|想哭|绝望|委屈|孤独)")
+# C3-c 自我情景记忆召回触发词：用户回指 Bot 自己曾经的言行
+_SELF_RECALL_RE = re.compile(r"(你之前|你上次|你不是说|你说过|你还记得|你刚才说|你答应)")
+# 可能含实体的特征（英文词 / 引号内容 / 长串中文）
+_ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
+
+
+def _should_retrieve_memory(query: str, intent: str, user_id: str) -> bool:
+    """C4 寒暄门控：判断是否需要触发双路记忆检索（纯规则，无 LLM）。
+
+    只有在"短、闲聊、无实体、无情绪、无回指、非任务引用"同时满足时才跳过；
+    主人 / 回指 / 情绪 / 实体一律强制检索，避免漏掉重要背景。
+    """
+    from gsuid_core.ai_core.utils import _is_master_user
+
+    q = query.strip()
+    # 主人：倾向检索
+    if _is_master_user(str(user_id)):
+        return True
+    # 回指 / 任务引用 / 情绪 → 强制检索
+    if _FORCE_RETRIEVE_RE.search(q) or _EMOTION_RETRIEVE_RE.search(q):
+        return True
+    # 仅当短 + 闲聊 + 无实体时跳过双路检索
+    if intent == "闲聊" and len(q) < 12 and not _ENTITY_HINT_RE.search(q):
+        return False
+    return True
 
 
 async def handle_ai_chat(bot: Bot, event: Event):
@@ -123,7 +156,8 @@ async def handle_ai_chat(bot: Bot, event: Event):
             # 查询当前用户好感度（从外部存储，非模型推断）
             favorability: Optional[int] = None
             try:
-                bot_id = getattr(bot, "bot_id", "") if bot else ""
+                # Bot.bot_id 是已声明字段；handle_ai 链路 bot 通常非 None
+                bot_id = bot.bot_id if bot is not None else ""
                 user_data = await UserFavorability.get_user_favorability(
                     user_id=str(event.user_id),
                     bot_id=bot_id,
@@ -171,24 +205,36 @@ async def handle_ai_chat(bot: Bot, event: Event):
             memory_context_text = ""
             is_enable_memory: bool = ai_config.get_config("enable_memory").data
             if is_enable_memory and memory_config.enable_retrieval:
-                try:
-                    mem_ctx = await dual_route_retrieve(
-                        query=query,
-                        group_id=str(event.group_id or event.user_id),
-                        user_id=str(event.user_id),
-                        top_k=memory_config.retrieval_top_k,
-                        enable_system2=memory_config.enable_system2,
-                        enable_user_global=memory_config.enable_user_global_memory,
-                    )
-                    memory_context_text = mem_ctx.to_prompt_text(max_chars=memory_config.memory_inject_max_chars)
-                    logger.debug(f"🧠 [Memory] 检索到记忆上下文 ({len(memory_context_text)} 字符)")
-                    # 上报记忆检索统计
+                # C4 寒暄门控：纯寒暄（短+闲聊+无实体/情绪/回指）跳过双路检索，
+                # 节省向量搜索 + Reranker 开销；其余情况照常检索。
+                if not _should_retrieve_memory(query, intent, str(event.user_id)):
+                    logger.debug("🧠 [Memory] 命中寒暄门控，跳过双路检索")
+                else:
                     try:
-                        statistics_manager.record_memory_retrieval()
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.warning(f"🧠 [Memory] 记忆检索失败: {e}")
+                        mem_ctx = await dual_route_retrieve(
+                            query=query,
+                            group_id=str(event.group_id or event.user_id),
+                            user_id=str(event.user_id),
+                            top_k=memory_config.retrieval_top_k,
+                            enable_system2=memory_config.enable_system2,
+                            enable_user_global=memory_config.enable_user_global_memory,
+                        )
+                        # C4 预算优先级：主人相关记忆优先占用注入预算
+                        from gsuid_core.config import core_config
+
+                        masters_set = {str(m) for m in (core_config.get_config("masters") or [])}
+                        memory_context_text = mem_ctx.to_prompt_text(
+                            max_chars=memory_config.memory_inject_max_chars,
+                            priority_speakers=masters_set or None,
+                        )
+                        logger.debug(f"🧠 [Memory] 检索到记忆上下文 ({len(memory_context_text)} 字符)")
+                        # 上报记忆检索统计
+                        try:
+                            statistics_manager.record_memory_retrieval()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.warning(f"🧠 [Memory] 记忆检索失败: {e}")
 
             # ============================================================
             # 步骤 6: 历史记录上下文
@@ -265,6 +311,53 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 except Exception as e:
                     logger.debug(f"🧠 [GsCore][AI] 群组语境注入失败: {e}")
 
+            # ============================================================
+            # C3-a/c: 自我认知动态注入
+            # 演化层 self_model + 关系 + 能力域，每轮独立拼接到 user message 侧，
+            # 绝不写入 persona 目录文件（约束 1：规避热重载滚动销毁会话）。
+            # ============================================================
+            self_cognition_text = ""
+            self_episode_text = ""
+            try:
+                from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+                from gsuid_core.ai_core.self_cognition import (
+                    retrieve_self_episodes,
+                    build_self_cognition_context,
+                )
+
+                # Bot.bot_id 是已声明字段，直接访问；handle_ai 链路 bot 通常非 None
+                bot_id_for_self = bot.bot_id if bot is not None else ""
+                # scope_key：让 self_cognition 能用 group_profile 的累计 tag 实时
+                # 计算"反复出现的话题"。无 group_id 时退回 user_global scope。
+                cognition_scope = make_scope_key(
+                    ScopeType.GROUP if event.group_id else ScopeType.USER_GLOBAL,
+                    str(event.group_id) if event.group_id else str(event.user_id),
+                )
+                self_cognition_text = await build_self_cognition_context(
+                    bot_id=bot_id_for_self,
+                    user_id=str(event.user_id),
+                    favorability=favorability,
+                    scope_key=cognition_scope,
+                )
+                # C3-c: 用户回指 Bot 自己曾经的言行时，召回自我情景记忆
+                if _SELF_RECALL_RE.search(query):
+                    self_episode_text = await retrieve_self_episodes(bot_id_for_self)
+            except Exception as e:
+                logger.debug(f"🪞 [SelfCognition] 自我认知注入失败: {e}")
+
+            # ============================================================
+            # C5: 长任务进度动态注入
+            # 注入当前用户的活跃长任务摘要（仅短序号、无 UUID），
+            # 让用户可追问"那个任务怎么样了"，Agent 也不对自己在跑的长任务失明。
+            # ============================================================
+            task_context_text = ""
+            try:
+                from gsuid_core.ai_core.planning.context import build_task_context
+
+                task_context_text = await build_task_context(str(event.user_id))
+            except Exception as e:
+                logger.debug(f"📋 [Planning] 长任务上下文注入失败: {e}")
+
             # 组装完整上下文
             context_parts = []
             if rag_context:
@@ -274,6 +367,22 @@ async def handle_ai_chat(bot: Bot, event: Event):
             # Prompt-2.5: 用括号包裹情绪状态，暗示这是内心状态而非对话指令
             if mood_desc:
                 context_parts.append(f"（{mood_desc}。）")
+            if self_cognition_text:
+                context_parts.append(self_cognition_text)
+            # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
+            # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一行紧凑口吻自述。
+            try:
+                from gsuid_core.ai_core.persona import get_voice_anchor
+
+                voice_anchor = get_voice_anchor(session.persona_name) if session.persona_name else ""
+                if voice_anchor:
+                    context_parts.append(f"（口吻锚点：{voice_anchor}）")
+            except Exception as e:
+                logger.debug(f"🧠 [GsCore][AI] 人格口吻锚点注入失败: {e}")
+            if self_episode_text:
+                context_parts.append(self_episode_text)
+            if task_context_text:
+                context_parts.append(task_context_text)
             if memory_context_text:
                 context_parts.append(f"【长期记忆】\n{memory_context_text}")
 

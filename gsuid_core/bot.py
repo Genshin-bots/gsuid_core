@@ -202,6 +202,25 @@ class _Bot:
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
     ):
+        try:
+            from gsuid_core.buildin_plugins.core_command.core_ai_control.state import (
+                is_scope_banned,
+                get_target_scope_key,
+            )
+
+            scope_key = get_target_scope_key(
+                ws_bot_id=self.bot_id,
+                bot_id=bot_id,
+                bot_self_id=bot_self_id,
+                target_type=target_type,
+                target_id=target_id,
+            )
+            if scope_key and is_scope_banned(scope_key):
+                logger.debug(f"[Core AI控制] 当前会话范围处于禁言状态，拦截发送: {scope_key}")
+                return
+        except Exception as e:
+            logger.debug(f"[Core AI控制] 禁言状态检查失败，继续发送: {e}")
+
         # 记录 bot 回复到历史记录
         try:
             from gsuid_core.message_history import get_history_manager

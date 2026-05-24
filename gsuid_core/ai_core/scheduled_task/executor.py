@@ -39,7 +39,7 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
 
 
 # 安全限制：最大循环执行次数
-MAX_EXECUTION_LIMIT = 10
+MAX_EXECUTION_LIMIT = 150
 
 
 async def execute_scheduled_task(task_id: str) -> None:
@@ -225,6 +225,18 @@ async def execute_scheduled_task(task_id: str) -> None:
         if bot_instance:
             if result:
                 await bot_instance.send(result)
+                # C8：向统一主动网关登记定时任务播报，供 Heartbeat 协调
+                # （防撞车 + 把任务结果作为 context_hook 合并进巡检语境）
+                try:
+                    from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+
+                    get_dispatcher().register_send(
+                        str(task.group_id or task.user_id or ""),
+                        "task",
+                        result_summary or "",
+                    )
+                except Exception as e:
+                    logger.debug(f"⏰ [ScheduledTask] 主动网关登记失败: {e}")
             logger.info(f"✅ [ScheduledTask] 任务执行成功并已推送: task_id={task_id}")
         else:
             logger.warning(f"⚠️ [ScheduledTask] 无法获取 Bot 实例，结果未推送: task_id={task_id}")

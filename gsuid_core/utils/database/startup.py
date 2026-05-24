@@ -23,6 +23,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.state_store.models",
     "gsuid_core.ai_core.statistics.models",
     "gsuid_core.ai_core.scheduled_task.models",
+    "gsuid_core.ai_core.planning.models",
     "gsuid_core.ai_core.memory.database.models",
     "gsuid_core.ai_core.memory.ingestion.hiergraph",
     "gsuid_core.ai_core.meme.database_model",
@@ -50,6 +51,36 @@ exec_list = [
     "CREATE INDEX ix_subscribe_task_name_uid ON Subscribe (task_name, uid);",
     "ALTER TABLE aischeduledtask ADD COLUMN structured_context TEXT DEFAULT NULL;",
     "ALTER TABLE aischeduledtask ADD COLUMN last_result_summary TEXT DEFAULT NULL;",
+    # C1 跨发言者 Edge 归并：旧库 aimemedge 表补齐 mention_count 列（向后兼容）
+    "ALTER TABLE aimemedge ADD COLUMN mention_count INTEGER DEFAULT 1;",
+    # C11 记忆生命周期：旧库 aimemedge 表补齐时效衰减相关列（向后兼容）
+    "ALTER TABLE aimemedge ADD COLUMN decay_score FLOAT DEFAULT 1.0;",
+    "ALTER TABLE aimemedge ADD COLUMN last_accessed TIMESTAMP DEFAULT NULL;",
+    # Kanban 任务树字段（每条 ALTER 都是幂等的，失败 pass；旧库新加列即可向后兼容）
+    "ALTER TABLE aiagenttask ADD COLUMN agent_profile VARCHAR DEFAULT '';",
+    "ALTER TABLE aiagenttask ADD COLUMN parent_task_id VARCHAR DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN root_task_id VARCHAR DEFAULT '';",
+    "ALTER TABLE aiagenttask ADD COLUMN node_kind VARCHAR DEFAULT 'root';",
+    "ALTER TABLE aiagenttask ADD COLUMN dependency_task_ids JSON DEFAULT '[]';",
+    "ALTER TABLE aiagenttask ADD COLUMN failure_reason TEXT DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN respawn_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aiagenttask ADD COLUMN params_override JSON DEFAULT '{}';",
+    "ALTER TABLE aiagenttask ADD COLUMN input_artifact_ids JSON DEFAULT '[]';",
+    "ALTER TABLE aiagenttask ADD COLUMN output_artifact_id VARCHAR DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN failure_policy VARCHAR DEFAULT 'notify_persona';",
+    "ALTER TABLE aiagenttask ADD COLUMN workspace_policy VARCHAR DEFAULT 'artifact_only';",
+    # Kanban 周期触发字段（2026-05-22 复盘修订）：模板根 + 克隆实例语义
+    "ALTER TABLE aiagenttask ADD COLUMN recurring_trigger VARCHAR DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN template_subtask_id VARCHAR DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN recurring_until TIMESTAMP DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN template_root_id VARCHAR DEFAULT NULL;",
+    "ALTER TABLE aiagenttask ADD COLUMN recurring_status VARCHAR DEFAULT '';",
+    "ALTER TABLE aiagenttask ADD COLUMN fire_count INTEGER DEFAULT 0;",
+    # 子任务级 not_before：支持"等开盘 / 等下班"延后语义（2026-05-24 复盘新增）
+    "ALTER TABLE aiagenttask ADD COLUMN not_before TIMESTAMP DEFAULT NULL;",
+    # 旧任务（最早 C5 长任务）的 root_task_id 默认空——一次性把 root_task_id=id
+    # 写回，让它们退化为"只有根节点的退化树"，统一进 Kanban 渲染。
+    "UPDATE aiagenttask SET root_task_id = id WHERE root_task_id IS NULL OR root_task_id = '';",
 ]
 
 

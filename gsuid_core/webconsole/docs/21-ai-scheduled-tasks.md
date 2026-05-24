@@ -152,10 +152,13 @@ PUT /api/ai/scheduled_tasks/{task_id}
 
 ---
 
-## 21.5 删除任务
+## 21.5 软删除任务（保留历史）
 ```
 DELETE /api/ai/scheduled_tasks/{task_id}
 ```
+
+将任务状态改为 `cancelled`，并从 APScheduler 中移除该作业。DB 行保留，
+执行历史/结果可继续审计与回溯。
 
 **响应**:
 ```json
@@ -164,6 +167,70 @@ DELETE /api/ai/scheduled_tasks/{task_id}
     "msg": "任务已取消"
 }
 ```
+
+---
+
+## 21.5.1 硬删除任务（彻底移除）
+```
+DELETE /api/ai/scheduled_tasks/{task_id}/hard
+```
+
+彻底删除 DB 行 + 移除 APScheduler 作业，**无法找回**。
+适用于前端"清理废弃任务"按钮场景。
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "任务已彻底删除",
+    "data": {
+        "task_id": "scheduled_task_abc123"
+    }
+}
+```
+
+任务不存在时返回 `status: 1, msg: "任务不存在"`。
+
+---
+
+## 21.5.2 批量清空任务（按筛选条件硬删除）
+```
+DELETE /api/ai/scheduled_tasks?confirm=true[&user_id=...&status=...&task_type=...]
+```
+
+按筛选条件批量彻底删除任务。不传任何筛选条件时等同于"全部清空"，
+因此**必须**显式传 `confirm=true`，否则直接拒绝。
+
+**Query 参数**:
+- `confirm`: 必填，必须为 `true` 才会执行（防误删）
+- `user_id`: 仅清空指定用户的任务（可选）
+- `status`: 仅清空指定状态的任务（可选，如 `cancelled` / `failed` / `executed`）
+- `task_type`: 仅清空指定类型的任务（可选，`once` / `interval`）
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "已彻底删除 12 个任务",
+    "data": {
+        "deleted": 12,
+        "matched": 12
+    }
+}
+```
+
+未传 `confirm=true` 时：
+```json
+{
+    "status": 1,
+    "msg": "请显式传 confirm=true 以确认批量清空"
+}
+```
+
+**典型用法**：
+- 清空所有已取消的任务：`DELETE /api/ai/scheduled_tasks?status=cancelled&confirm=true`
+- 清空某用户的全部任务：`DELETE /api/ai/scheduled_tasks?user_id=user_001&confirm=true`
+- 全部清空（**慎用**）：`DELETE /api/ai/scheduled_tasks?confirm=true`
 
 ---
 

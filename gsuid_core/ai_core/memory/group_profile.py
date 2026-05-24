@@ -109,8 +109,8 @@ async def record_entity_tags(scope_key: str, tags: List[str]) -> None:
     """
     if not tags:
         return
-    # 过滤掉对语境无意义的结构性标签
-    ignore = {"Speaker", "Nickname", "Entity", "Concept"}
+    # 过滤掉对语境无意义的结构性标签（含 C3-b 的 Master 标记，它不是话题语境）
+    ignore = {"Speaker", "Nickname", "Entity", "Concept", "Master"}
     meaningful = [t for t in tags if t and t not in ignore]
     if not meaningful:
         return
@@ -177,7 +177,19 @@ async def format_context_injection(
     tags = await get_context_tags(scope_key, top_n=6)
     term_mappings = profile["term_mappings"]
 
-    if not tags and not term_mappings:
+    # C2-c/e：并入插件 ai_alias 注册的别名，多候选别名单列为"歧义参考"，
+    # 交由 Agent 按上下文消歧（动态实体链接），不做字符串替换。
+    ambiguous: Dict[str, List[str]] = {}
+    try:
+        from gsuid_core.ai_core.register import get_aliases_for_scope
+
+        for alias, formals in get_aliases_for_scope().items():
+            if len(formals) > 1:
+                ambiguous[alias] = formals
+    except Exception:
+        ambiguous = {}
+
+    if not tags and not term_mappings and not ambiguous:
         return ""
 
     lines: List[str] = ["【当前群聊语境】"]
@@ -188,6 +200,13 @@ async def format_context_injection(
         # 按频次降序截断，超预算则停止添加词汇映射
         for alias, formal in list(term_mappings.items())[:12]:
             entry = f'  - "{alias}" = {formal}'
+            if sum(len(line) for line in lines) + len(entry) > max_chars:
+                break
+            lines.append(entry)
+    if ambiguous:
+        lines.append("可能的别名歧义（请按上下文判断具体指代）:")
+        for alias, formals in list(ambiguous.items())[:6]:
+            entry = f'  - "{alias}" 可能指: {"、".join(formals)}'
             if sum(len(line) for line in lines) + len(entry) > max_chars:
                 break
             lines.append(entry)
