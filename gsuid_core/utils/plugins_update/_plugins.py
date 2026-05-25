@@ -430,7 +430,7 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
     # 第四步 import 加载、第五步跑其 @on_core_start，并经 gss.load_plugin 完成依赖检查。
     retcode = reload_plugin(plugin_name)
     if retcode.lstrip().startswith("❌"):
-        return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[gs重启]:\n{retcode}"
+        return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[core重启]:\n{retcode}"
     return f"✅ 插件{plugin_name}安装并加载成功!"
 
 
