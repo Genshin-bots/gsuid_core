@@ -3,9 +3,9 @@ import sys
 import signal
 import asyncio
 import inspect
+import logging
 import functools
 import importlib
-import logging
 from typing import Any, TypeVar, Callable, Awaitable, Coroutine, ParamSpec, cast, overload
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
