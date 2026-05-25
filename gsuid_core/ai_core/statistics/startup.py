@@ -30,14 +30,11 @@ async def _scheduled_ai_core_reset():
 
     logger.info("📊 [StatisticsManager] 日期变更, 执行每日重置")
 
-    await statistics_manager._persist_all_stats_to_db()
-    statistics_manager._reset_daily_counters()
-    today = datetime.now().strftime("%Y-%m-%d")
+    # 走原子方法: 持久化 → 清空 → 切日期 全程在 _persist_lock 内完成,
+    # 避免与 _persist_loop (同样 cron 0 0 重叠触发) 出现 "空状态覆盖 Day N" 的竞态。
+    await statistics_manager.persist_and_reset_daily()
 
-    # 更新当前日期
-    statistics_manager._today = today
-
-    logger.success(f"📊 [StatisticsManager] 每日重置完成，新日期: {today}")
+    logger.success(f"📊 [StatisticsManager] 每日重置完成，新日期: {statistics_manager._today}")
 
 
 @on_core_shutdown
