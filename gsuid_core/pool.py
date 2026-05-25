@@ -1,15 +1,53 @@
+import os
+import sys
+import signal
 import asyncio
 import inspect
 import functools
 import importlib
+import logging
 from typing import Any, TypeVar, Callable, Awaitable, Coroutine, ParamSpec, cast, overload
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 T = TypeVar("T")
 P = ParamSpec("P")
 
+
+def _process_pool_initializer() -> None:
+    # fork worker 继承父进程已 bind 的监听 socket; 父进程被 kill 后内核 SIGKILL 本 worker, 防残留占端口
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        libc.prctl.restype = ctypes.c_int
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+    except Exception as e:
+        logging.getLogger("gsuid_core").warning(f"[pool] PR_SET_PDEATHSIG 设置失败: {e}")
+
+
 _executor = ThreadPoolExecutor(max_workers=10)
-_process_executor = ProcessPoolExecutor()
+_process_executor = ProcessPoolExecutor(initializer=_process_pool_initializer)
+
+
+def shutdown_pools() -> None:
+    for ex in (_process_executor, _executor):
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+
+try:
+    from gsuid_core.server import on_core_shutdown
+
+    on_core_shutdown(shutdown_pools)
+except Exception:
+    pass
 
 
 @overload
