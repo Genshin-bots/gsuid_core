@@ -16,7 +16,7 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     ),
     "restart_command": GsStrConfig(
         "自定义重启命令",
-        "自定义使用gs重启时触发的控制台命令(看不懂勿改)",
+        "自定义使用core重启时触发的控制台命令(看不懂勿改)",
         "poetry run python",
     ),
     "AutoUpdateCore": GsBoolConfig(
