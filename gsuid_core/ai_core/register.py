@@ -84,6 +84,7 @@ def ai_tools(
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
+    timeout: Optional[float] = 300.0,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -100,6 +101,9 @@ def ai_tools(
         capability_domain: 可选的能力域名称，如 "原神数据"、"网络搜索"。
             声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
             替代生硬的函数名罗列。未声明时按 category 兜底。
+        timeout: 工具调用的最大等待时间（秒），默认 300 秒（5 分钟）。
+            超时后工具返回错误字符串，agent 可继续而不会永久挂起。
+            设为 None 表示不限制超时。
         **check_kwargs: 传递给 check_func 的额外参数
     """
 
@@ -178,12 +182,20 @@ def ai_tools(
                     call_kwargs[param_name] = ctx.deps.bot
 
             # ===== 智能传参 =====
-            if func_takes_run_context:
-                raw_result = await fn(ctx, *args, **call_kwargs)
-            elif func_takes_tool_context:
-                raw_result = await fn(ctx.deps, *args, **call_kwargs)
-            else:
-                raw_result = await fn(*args, **call_kwargs)
+            async def _call() -> Union[str, Message, bytes]:
+                if func_takes_run_context:
+                    return await fn(ctx, *args, **call_kwargs)
+                elif func_takes_tool_context:
+                    return await fn(ctx.deps, *args, **call_kwargs)
+                else:
+                    return await fn(*args, **call_kwargs)
+
+            try:
+                raw_result = await asyncio.wait_for(_call(), timeout=timeout)
+            except asyncio.TimeoutError:
+                timeout_sec = int(timeout) if timeout is not None else 0
+                logger.warning(f"🧠 [Register] 工具 [{fn.__name__}] 执行超时（>{timeout_sec}s），已中断")
+                return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
 
             # 处理并返回结果
             result = await handle_tool_result(ctx.deps.bot, raw_result)

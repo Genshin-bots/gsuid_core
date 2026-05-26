@@ -233,6 +233,12 @@ class IngestionWorker:
                 record: ObservationRecord = self._queue.get_nowait()
                 self._buffers[record.scope_key].append(record)
 
+                # 首次入队时初始化 _last_flush 为当前时间，
+                # 避免新 scope_key 的 last=0 导致 timer 条件 (now-0 >> interval) 恒成立，
+                # 从而在第一次 timer 检查（30s 内）就立即 flush，使 batch_interval_seconds 失效。
+                if record.scope_key not in self._last_flush:
+                    self._last_flush[record.scope_key] = time.time()
+
                 # 超过单次上限且该 scope_key 没有正在 flush 时才触发
                 if (
                     len(self._buffers[record.scope_key]) >= memory_config.batch_max_size

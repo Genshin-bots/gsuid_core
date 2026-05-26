@@ -66,18 +66,24 @@ async def send_message_by_ai(
     ctx: RunContext[ToolContext],
     text: str = "",
     image_id: str = "",
+    video_id: str = "",
     user_id: Optional[str] = None,
 ) -> str:
     """
     主动发送消息给用户
 
-    支持发送文本消息、图片消息，或两者同时发送。
-    AI 可以任意传入 text 和/或 image_id，系统会按顺序发送。
+    支持发送文本消息、图片消息、视频消息，或组合发送。
+    AI 可以任意传入 text 和/或 image_id 和/或 video_id，系统会按顺序发送。
+
+    **重要**：当其他工具返回 `[视频消息]`/`[图片消息]`/`[语音消息]` 等标记时，
+    表示该媒体已由框架自动发送给用户，**无需再调用本工具重复发送**。
+    本工具仅用于主动补充发送文字说明或追加媒体时使用。
 
     Args:
         ctx: 工具执行上下文（包含bot和ev对象）
         text: 文本内容，可选
         image_id: 图片资源ID，可选，格式通常为"res_xxxxxx"或"img_xxxxx"
+        video_id: 视频资源ID，可选，格式通常为"video_xxxxxx"或"img_xxxxxx"
         user_id: 可选，目标用户ID，默认为事件关联的用户
 
     Returns:
@@ -87,7 +93,7 @@ async def send_message_by_ai(
         >>> await send_message_by_ai(ctx, text="你好！这是一条主动消息。")
         >>> await send_message_by_ai(ctx, text="提醒你...", user_id="123456")
         >>> await send_message_by_ai(ctx, image_id="res_abc123")
-        >>> await send_message_by_ai(ctx, text="这是你要的图片！", image_id="res_abc123")
+        >>> await send_message_by_ai(ctx, text="这是你要的视频！", video_id="img_abc123")
     """
     tool_ctx: ToolContext = ctx.deps
     bot: Optional[Bot] = tool_ctx.bot
@@ -96,8 +102,8 @@ async def send_message_by_ai(
         logger.warning("🧠 [BuildinTools] send_message_by_ai: Bot对象为空，无法发送消息")
         return "发送失败：Bot对象不可用"
 
-    if not text and not image_id:
-        return "发送失败：text 和 image_id 至少提供一个"
+    if not text and not image_id and not video_id:
+        return "发送失败：text、image_id 和 video_id 至少提供一个"
 
     target_id = user_id or getattr(tool_ctx.ev, "user_id", None) or getattr(tool_ctx.ev, "散列id", None)
 
@@ -157,6 +163,19 @@ async def send_message_by_ai(
                     else:
                         return f"❌ 资源ID: {image_id} 数据转换失败: {e}"
 
+        if video_id:
+            try:
+                logger.debug(f"🧠 [BuildinTools] 调用 RM.get('{video_id}')")
+                video_data = await RM.get(video_id)
+                logger.debug(f"🧠 [BuildinTools] RM.get 成功, video_data type={type(video_data)}")
+                parts.append(MessageSegment.video(video_data))
+            except ValueError as e:
+                logger.warning(f"🧠 [BuildinTools] RM.get({video_id}) 抛出 ValueError: {e}")
+                if "找不到资源" in str(e):
+                    return f"❌ 找不到资源ID: {video_id}，可能已过期或ID不正确。"
+                else:
+                    return f"❌ 资源ID: {video_id} 数据转换失败: {e}"
+
         if len(parts) == 1:
             await bot.send(parts[0])
         else:
@@ -167,6 +186,8 @@ async def send_message_by_ai(
             content_desc.append("文本")
         if image_id:
             content_desc.append(f"图片({image_id})")
+        if video_id:
+            content_desc.append(f"视频({video_id})")
         logger.info(f"🧠 [BuildinTools] 发送 {'+'.join(content_desc)} 给用户 {target_id}")
         return f"消息已发送给用户 {target_id}"
 

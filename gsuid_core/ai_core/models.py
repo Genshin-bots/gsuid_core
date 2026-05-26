@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypedDict, NotRequired
 from dataclasses import field, dataclass
 
 from gsuid_core.bot import Bot
@@ -25,13 +25,13 @@ class KnowledgeBase(TypedDict):
     title: str
     content: str
     tags: List[str]
-    source: str  # 知识来源: "plugin" 表示来自插件注册, "manual" 表示手动添加
+    source: NotRequired[str]  # 知识来源: 由框架自动设置, "plugin" 或 "manual"
 
 
 class KnowledgePoint(KnowledgeBase):
     """知识点类型"""
 
-    _hash: str
+    _hash: NotRequired[str]  # 内容哈希: 由框架自动计算, 无需手动提供
 
 
 class ManualKnowledgeBase(TypedDict):

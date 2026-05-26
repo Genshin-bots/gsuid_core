@@ -46,6 +46,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
 - ``query_user_memory``（``database_query.py``）：查询用户多群组记忆
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
+- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
 - ``state_get`` / ``state_set`` / ``state_delete`` / ``state_list`` /
   ``state_append``（``state_store/tools.py``）：通用持久键值状态
 - ``record_put`` / ``record_get`` / ``record_list`` / ``record_delete`` /
@@ -60,7 +61,6 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 用户明确表达需求时才会被 ``search_tools()`` 命中并加载。
 
 - ``search_image``（``rag_search.py``）：图片资源向量检索
-- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源
 - ``update_self_note``（``self_info.py``）：写 self_note
   （``capability_domain="自我认知"``）
 - ``set_user_favorability``（``favorability_manager.py``）：绝对值设置好感度

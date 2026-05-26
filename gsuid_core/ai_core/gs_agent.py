@@ -61,10 +61,17 @@ _FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
     "create_subagent": "这个任务我来安排处理…",
     "render_html_to_image": "稍等，正在生成图片…",
     "render_markdown_to_image": "稍等，正在生成图片…",
+    "generate_image": "稍等，正在生成图片，可能需要一点时间…",
+    "generate_video": "稍等，正在生成视频，这个会比较久，请耐心等待…",
+    "edit_image": "稍等，正在处理图片…",
+    "generate_music": "稍等，正在生成音乐…",
 }
 
 # 每次运行最多发送的前摇数量，避免刷屏
 _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
+
+# 模型输出的沉默标记：命中时跳过发送，对话层保持静默
+_SILENCE_MARKERS: frozenset[str] = frozenset({"<SILENCE>", "[SILENCE]", "SILENCE"})
 
 # Persona 前摇配置缓存 {persona_name: dict}
 _persona_pre_tool_cache: dict[str, dict] = {}
@@ -680,7 +687,7 @@ class GsCoreAIAgent:
                     logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
                     extra_tools += await search_tools(
                         query=qy,
-                        limit=6,
+                        limit=8,
                         non_category=["self", "buildin"],
                     )
 
@@ -817,7 +824,9 @@ class GsCoreAIAgent:
                                 logger.debug(f"🧠 [大模型文本]: {_text}")
                                 if self._session_logger is not None:
                                     self._session_logger.log_text_output(_text)
-                                if bot and _text and return_mode in ["always", "by_bot"]:
+                                if _text in _SILENCE_MARKERS:
+                                    logger.info(f"🧠 [GsCoreAIAgent] 检测到沉默标记 '{_text}'，跳过发送")
+                                elif bot and _text and return_mode in ["always", "by_bot"]:
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的
                                     # async context，触发 pydantic_graph 的 athrow/cancel scope
                                     # 错误。必须在循环体内吞掉发送侧的故障。

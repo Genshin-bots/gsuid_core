@@ -549,6 +549,7 @@ async def _hybrid_search_impl(
     query: str,
     scope_keys: list[str],
     top_k: int = 10,
+    score_threshold: float = 0.3,
 ) -> list[dict]:
     """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合"""
     from gsuid_core.ai_core.rag.base import client
@@ -572,7 +573,10 @@ async def _hybrid_search_impl(
                 limit=top_k,
                 with_payload=True,
             )
-            return [{"id": r.id, "score": r.score, **(r.payload or {})} for r in response.points]
+            results = [{"id": r.id, "score": r.score, **(r.payload or {})} for r in response.points]
+            if score_threshold > 0:
+                results = [r for r in results if r["score"] >= score_threshold]
+            return results
 
         response = await client.query_points(
             collection_name=collection_name,
@@ -594,7 +598,10 @@ async def _hybrid_search_impl(
             limit=top_k,
             with_payload=True,
         )
-        return [{"id": r.id, "score": r.score, **(r.payload or {})} for r in response.points]
+        results = [{"id": r.id, "score": r.score, **(r.payload or {})} for r in response.points]
+        if score_threshold > 0:
+            results = [r for r in results if r["score"] >= score_threshold]
+        return results
     except IndexError as e:
         logger.critical(f"🧠 [Qdrant] 索引崩溃: {e}。建议删除本地存储目录并重启。")
         return []

@@ -105,14 +105,19 @@ class MockBot:
             else:
                 ctx["bot_messages"].append(message)
         else:
-            # Message / List[Message] — 提取图片数据注册到 RM
+            # Message / List[Message] — 提取图片或视频数据注册到 RM
             image_data = _extract_image_data(message)
             if image_data is not None:
                 resource_id = RM.register(image_data)
                 ctx["image_ids"].append(resource_id)
             else:
-                # 纯文字 Message，转为字符串存入返回值
-                ctx["bot_messages"].append(_message_to_text(message))
+                video_data = _extract_video_data(message)
+                if video_data is not None:
+                    resource_id = RM.register(video_data)
+                    ctx["video_ids"].append(resource_id)
+                else:
+                    # 纯文字 Message，转为字符串存入返回值
+                    ctx["bot_messages"].append(_message_to_text(message))
 
     async def reply(
         self,
@@ -184,6 +189,22 @@ def _extract_image_data(message: Any) -> Union[str, bytes, None]:
     return None
 
 
+def _extract_video_data(message: Any) -> Union[str, bytes, None]:
+    """从消息对象中提取视频数据，用于 RM.register()。返回 None 表示非视频消息。"""
+    if isinstance(message, Message):
+        if message.type == "video" and message.data is not None:
+            data = message.data
+            if isinstance(data, (str, bytes)):
+                return data
+        return None
+    if isinstance(message, (list, tuple)):
+        for m in message:
+            result = _extract_video_data(m)
+            if result is not None:
+                return result
+    return None
+
+
 def _message_contains_image(message: Any) -> bool:
     """检查消息对象是否包含图片段（image segment）。"""
     return _extract_image_data(message) is not None
@@ -249,7 +270,7 @@ def _register_trigger_as_ai_tool(
     # 工具函数名：使用原函数名
     tool_func_name = func.__name__
 
-    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str) -> str:
+    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "") -> str:
         real_bot = ctx.deps.bot
         ev = ctx.deps.ev
         assert real_bot is not None, "触发器 AI 工具调用时 bot 不能为 None"
@@ -274,6 +295,9 @@ def _register_trigger_as_ai_tool(
         fake_ev.command = primary_keyword
         # raw_text 也要对齐，保证 trigger 内部逻辑一致
         fake_ev.raw_text = f"{primary_keyword} {text}".strip()
+        # 允许 AI 传入已有的 RM 资源 ID（如之前生成的图片），供触发器做图生图/图生视频
+        if image_id:
+            fake_ev.image_id = image_id
 
         # 如果触发器类型是 regex，需要模拟 regex 匹配
         if trigger_type == "regex":
@@ -291,6 +315,7 @@ def _register_trigger_as_ai_tool(
         call_ctx: Dict[str, Any] = {
             "texts": [],  # ai_return() 写入的文字
             "image_ids": [],  # bot.send 拦截到的图片，通过 RM 注册后的资源 ID
+            "video_ids": [],  # bot.send 拦截到的视频，通过 RM 注册后的资源 ID
             "bot_messages": [],  # bot.send(str/Message(text)) 拦截到的文字
         }
 
@@ -319,6 +344,15 @@ def _register_trigger_as_ai_tool(
                 f"或根据用户意图决定是否发送。]"
             )
 
+        if call_ctx["video_ids"]:
+            video_count = len(call_ctx["video_ids"])
+            id_list = ", ".join(call_ctx["video_ids"])
+            parts.append(
+                f"[已生成 {video_count} 个视频，资源ID: {id_list}。"
+                f"请调用 send_message_by_ai 工具传入 video_id 将视频发送给用户，"
+                f"或根据用户意图决定是否发送。]"
+            )
+
         if parts:
             return "\n".join(parts)
 
@@ -335,6 +369,7 @@ def _register_trigger_as_ai_tool(
     _ai_tool_wrapper.__annotations__ = {
         "ctx": RunContext[ToolContext],
         "text": str,
+        "image_id": str,
         "return": str,
     }
 
@@ -348,6 +383,12 @@ def _register_trigger_as_ai_tool(
             "text",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             annotation=str,
+        ),
+        inspect.Parameter(
+            "image_id",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=str,
+            default="",
         ),
     ]
     _ai_tool_wrapper.__signature__ = inspect.Signature(

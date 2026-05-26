@@ -244,7 +244,7 @@ async def evaluate_agent_mesh_capability(
 # ─────────────────────────────────────────────────────────────────────
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def register_kanban_task(
     ctx: RunContext[ToolContext],
     goal: str,
@@ -726,7 +726,7 @@ async def _resolve_subtask(ev, subtask_ref: str) -> Optional[AIAgentTask]:
     return children[0]
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def respawn_subtask(
     ctx: RunContext[ToolContext],
     subtask_ref: str,
@@ -773,7 +773,7 @@ async def respawn_subtask(
     return ("✅ " if ok else "ℹ️ ") + msg
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reason: str) -> str:
     """主人格明确判断整棵任务树不应继续时调用：根任务 failed + 级联 failed 未完成子任务。
 
@@ -805,7 +805,7 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
     return f"✅ 已终结整树【任务#{root.ordinal}｜{root.display_name}】：{reason}"
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def respond_subtask_approval(
     ctx: RunContext[ToolContext],
     approved: bool,
@@ -869,7 +869,7 @@ async def respond_subtask_approval(
 # ─────────────────────────────────────────────────────────────────────
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def artifact_put(
     ctx: RunContext[ToolContext],
     payload: str = "",
@@ -954,7 +954,7 @@ async def artifact_put(
     return f"✅ 已登记 artifact: {art.id}（{art.size_bytes} bytes，mime={art.mime}）{binary_hint}"
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,
@@ -972,7 +972,7 @@ async def artifact_get(
     return _format_artifact(art)
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def artifact_list(
     ctx: RunContext[ToolContext],
     task_ref_text: str = "",
@@ -992,7 +992,7 @@ async def artifact_list(
     return "\n".join(lines)
 
 
-@ai_tools(category="buildin", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP)
 async def artifact_get_recent(
     ctx: RunContext[ToolContext],
     task_ref_text: str = "",

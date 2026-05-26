@@ -237,7 +237,7 @@ async def search_tools(
     limit: int = 10,
     category: Union[str, list[str]] = "all",
     non_category: Union[str, list[str]] = "",
-    threshold: float = 0.5,
+    threshold: float = 0.38,
     debug: bool = False,
 ) -> ToolList:
     """根据自然语言意图检索关联工具
@@ -249,7 +249,7 @@ async def search_tools(
         limit: 返回结果数量限制，默认为10
         category: 工具分类名称，可选值："buildin"、"default"、"common"、"all"，默认为"all", 也可传入列表
         non_category: 将不会在这个分类中找工具, 优先级比category高，可选值："self"、"buildin"、"common"，默认为空
-        threshold: 相似度分数阈值，只有分数高于该值的工具才会被返回，默认为0.65
+        threshold: 相似度分数阈值，只有分数高于该值的工具才会被返回，默认为0.38
         debug: 是否启用调试模式，启用后会记录所有返回工具的分数（无论是否超过阈值），默认为False
 
     Returns:
@@ -301,27 +301,27 @@ async def search_tools(
     if debug:
         logger.debug(f"🧠 [Tools] 向量搜索所有工具分数(debug): {', '.join(all_scores_info)}")
 
-    # 根据 category/non_category 过滤工具
-    if category == "all":
+    # 根据 category/non_category 过滤工具（non_category 优先级高于 category）
+    all_tools_cag = get_registered_tools()
+    all_tools_dict = {}
+
+    if non_category:
+        # non_category 优先：排除指定分类，其余全部纳入候选
+        if isinstance(non_category, str):
+            non_category = [non_category]
+        for cat in all_tools_cag:
+            if cat in non_category:
+                continue
+            all_tools_dict.update(all_tools_cag[cat])
+    elif category == "all":
         all_tools_dict = get_all_tools()
     else:
-        all_tools_cag = get_registered_tools()
         if isinstance(category, str):
             category = [category]
-
-        all_tools_dict = {}
-        if non_category:
-            if isinstance(non_category, str):
-                non_category = [non_category]
-            for cat in all_tools_cag:
-                if cat in non_category:
-                    continue
-                all_tools_dict.update(all_tools_cag[cat])
-        else:
-            for cat in category:
-                if cat not in all_tools_cag:
-                    continue
-                all_tools_dict.update(all_tools_cag[cat])
+        for cat in category:
+            if cat not in all_tools_cag:
+                continue
+            all_tools_dict.update(all_tools_cag[cat])
 
     # 从 all_tools_dict 中筛选出 tool_names 中的工具
     # all_tools_dict 的 value 是 ToolBase 对象（有 .tool 属性），也可能是 Tool 对象

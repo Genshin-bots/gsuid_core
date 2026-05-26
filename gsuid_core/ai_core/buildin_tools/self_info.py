@@ -12,10 +12,11 @@ from pydantic_ai import RunContext
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
+from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.persona.persona import Persona
 
 
-@ai_tools(category="common")
+@ai_tools(category="buildin")
 async def get_self_persona_info(
     ctx: RunContext[ToolContext],
     info_type: Literal["config", "image", "avatar", "audio"],
@@ -31,18 +32,19 @@ async def get_self_persona_info(
         ctx: 工具执行上下文（包含bot和ev对象）
         info_type: 信息类型，可选值：
             - "config": 返回config.json配置内容（不含介绍）
-            - "image": 返回立绘图片路径
-            - "avatar": 返回头像图片路径
-            - "audio": 返回音频文件路径
+            - "image": 读取立绘图片并注册到资源管理器，返回可直接用于 edit_image 的资源ID
+            - "avatar": 读取头像图片并注册到资源管理器，返回可直接用于 edit_image 的资源ID
+            - "audio": 读取音频并注册到资源管理器，返回资源ID
         persona_name: Persona名称，用于指定要查询的 persona
 
     Returns:
-        指定类型的信息内容，格式因info_type而异
+        - "config": JSON字符串
+        - "image"/"avatar"/"audio": 资源ID（格式 img_xxxxxxxx），可直接作为
+          image_id 传给 edit_image 或 send_message_by_ai
 
     Example:
         >>> await get_self_persona_info(ctx, info_type="config", persona_name="小梦")
-        >>> await get_self_persona_info(ctx, info_type="avatar", persona_name="小梦")
-        >>> await get_self_persona_info(ctx, info_type="audio", persona_name="小梦")
+        >>> await get_self_persona_info(ctx, info_type="image", persona_name="小梦")  # 返回 img_xxxxxxxx
     """
     persona = Persona(persona_name)
 
@@ -64,25 +66,43 @@ async def get_self_persona_info(
             return f"⚠️ 读取配置失败: {str(e)}"
 
     elif info_type == "image":
-        # 返回立绘图片路径
         image_path = persona.files.image_path
         if not image_path.exists():
             return f"⚠️ 立绘图片不存在: {image_path}"
-        return str(image_path)
+        try:
+            data = image_path.read_bytes()
+            resource_id = RM.register(data)
+            logger.debug(f"🧠 [SelfInfo] 立绘已注册到RM: {resource_id}")
+            return f"{resource_id}（立绘图片，可直接作为 image_id 传给 edit_image）"
+        except Exception as e:
+            logger.error(f"❌ [SelfInfo] 注册立绘到RM失败: {e}")
+            return f"⚠️ 立绘读取失败: {e}"
 
     elif info_type == "avatar":
-        # 返回头像图片路径
         avatar_path = persona.files.avatar_path
         if not avatar_path.exists():
             return f"⚠️ 头像图片不存在: {avatar_path}"
-        return str(avatar_path)
+        try:
+            data = avatar_path.read_bytes()
+            resource_id = RM.register(data)
+            logger.debug(f"🧠 [SelfInfo] 头像已注册到RM: {resource_id}")
+            return f"{resource_id}（头像图片，可直接作为 image_id 传给 edit_image）"
+        except Exception as e:
+            logger.error(f"❌ [SelfInfo] 注册头像到RM失败: {e}")
+            return f"⚠️ 头像读取失败: {e}"
 
     elif info_type == "audio":
-        # 返回音频文件路径
         audio_path = persona.files.get_audio_path()
         if not audio_path or not audio_path.exists():
             return "⚠️ 音频文件不存在"
-        return str(audio_path)
+        try:
+            data = audio_path.read_bytes()
+            resource_id = RM.register(data)
+            logger.debug(f"🧠 [SelfInfo] 音频已注册到RM: {resource_id}")
+            return f"{resource_id}（音频文件）"
+        except Exception as e:
+            logger.error(f"❌ [SelfInfo] 注册音频到RM失败: {e}")
+            return f"⚠️ 音频读取失败: {e}"
 
     else:
         return f"⚠️ 不支持的信息类型: {info_type}，可选值: config, image, avatar, audio"

@@ -272,87 +272,17 @@ SYSTEM_CONSTRAINTS = """
    - `task_prompt` 应当只是**一句话描述**和必要参数，**不应包含** if-then-else
      多步流程（"如果是工作日就 A 否则 B"）。多步流程一律走 Kanban 子任务树。
 
-   **「持久化状态 + 周期更新 + 最终汇总」类任务的"一棵树多阶段子任务"模板**
-   （**新版推荐架构**，最容易出错请重点看）：
-
-   ```
-   # 任何"建一份持久化数据集合 + 周期更新 + 期末汇总"形态都套这个结构。
-   # 包括但不限于：虚拟盘 / 健康打卡 / 学习计划 / 销售追踪 / 项目追踪 /
-   # 给你 N 元让你管理 N 天后考察、等等。
-   # cron 表达式按用户描述的实际时段写，不要照抄；以下用工作日每天上午为例。
-
-   第 1 步：evaluate_agent_mesh_capability("...对整棵树意图的一句话描述...")
-   第 2 步：register_kanban_task(
-              goal="<任务简称 + 持续期限>",
-              subtasks=[
-                  # ① 一次性 init 子任务：建好本任务要维护的 record 集合
-                  {"description": "用 record_put 初始化 record:<集合名> (账户/打卡日历/进度表/客户名单等)",
-                   "agent_profile": "code_agent",
-                   "depends_on": []},
-                  # ② **周期子任务**（核心！子任务级 recurring_trigger）：
-                  # init 完成后框架自动 arm 挂 APScheduler，到点 fire 时克隆一个执行
-                  # 实例子任务跑"查状态 → 决策或采集 → 写流水 → 必要时更新主表"。
-                  # 周期子任务本身**永远 armed 不 completed**，整棵树持续 running。
-                  {"description": "查当前状态→决策或采集→record_append写流水→必要时record_update更新主表→汇报本次",
-                   "agent_profile": "<evaluate 返回过的业务画像 id>",
-                   "depends_on": [0],  # 等 init 完成才 arm
-                   "recurring_trigger": "cron:0 9 * * 1-5",  # 按用户时段反推
-                   "recurring_until": "<截止日 ISO>"},
-                  # ③ 一次性 final 子任务：用 not_before 设结算时刻，**不要 depends_on 周期子任务**
-                  # （周期子任务永远不 completed，下游死锁）。
-                  {"description": "record_list 拉流水 + record_summary 算关键指标 → 渲染报告",
-                   "agent_profile": "internal_reporter",
-                   "depends_on": [],
-                   "not_before": "<结算时刻 ISO>"},
-              ],
-          )
-
-   关键改进 vs 旧版"三棵树"拆解：
-   - 一棵树就能表达完整的「init → 周期 → final」生命周期，看板上是一张卡而非三张；
-   - 跨任务的状态用 `record_*` 持久化（在第 ① 步初始化），周期子任务每次 fire 都
-     用新的执行实例去更新，状态跨 fire 自然保留；
-   - 整棵树在所有 armed 周期子任务过期 / 被 disarm 之前都保持 running 状态——
-     主人在看板看到的就是"任务还在持续运行中"，不会因为 init 完成而误以为整棵
-     任务结束了；
-   - 周期触发 / 等到点派出全部交给框架的 APScheduler 桥，主人格不需要自己写循环。
-
-   而不是：枚举 20+ 次 add_once_task；后者一定撞 20 个待执行任务硬上限。
-   也不是：分成三棵独立 register_kanban_task 串行注册——容易撞 rate-limit 且
-   语义割裂（主人在看板上看不到三棵树是同一个任务的不同阶段）。
-   ```
+   **「持久化状态 + 周期更新 + 最终汇总」类任务**：用一棵树包含 init / 周期 / final
+   三类子任务（`record_*` 持久化跨 fire 状态，周期子任务用 `recurring_trigger` 驱动，
+   final 子任务用 `not_before` 定结算时刻，**禁止** `depends_on` 周期子任务避免死锁）。
+   不要用旧版"三棵独立树"拆解，不要枚举 20+ 次 `add_once_task`。
 
    **「产物交付 / 专业域委派」两条等价路径**：
+   - 路径 A（多步 / 依赖编排 / 周期触发）：`evaluate_agent_mesh_capability` → `register_kanban_task`
+   - 路径 B（单步即时委派）：`create_subagent(agent_profile="<画像>", task=...)`
+     框架自动转单子任务 Kanban 树，完成后 _persona_relay 已发给主人，**不要重复发**。
 
-   ```
-   用户：[任何"让代理执行一次专业域任务"的请求，例：
-         「帮我生成一份周报」/「用 PIL 画个爱心给我」/「分析下今天的盘」/
-         「按这些字段出个对比图」/「把 X 数据汇总成 Y 格式」]
-
-   ── 路径 A：复合 / 多步 / 需要依赖编排 / 周期触发 ──
-   第 1 步：evaluate_agent_mesh_capability("...对该任务的简短描述...")
-   第 2 步：register_kanban_task(goal=..., subtasks=[...], ...)
-
-   ── 路径 B：单步 / 即时 / 一句话委派给单个专业代理 ──
-   create_subagent(agent_profile="<画像>", task=...)
-   # ↑ 框架内部会自动转为创建一棵单子任务 Kanban 树并同步等待跑完；
-   #   你直接拿到结果 + artifact 句柄列表。**不需要**你先跑 evaluate；
-   #   **也不需要**你自己 register_kanban_task 单子任务。
-   ```
-
-   两条路径**产物归属一致**：都挂到 Kanban 树的 root_task_id 下，看板可见，
-   `artifact_get_recent` 可追溯。区别只是路径 A 主人格显式编排 N 个子任务、
-   控制依赖与周期；路径 B 把单步专业委派的样板代码省掉。
-
-   框架对路径 B 的处理细节：
-   #   ① 自动建 workspace 目录（data/ai_core/artifacts/<root>/<task>/workspace/，
-   #      所有中间代码 + 真实产物 + 落盘 artifact 都在同一个 workspace 里）；
-   #   ② 代理在 workspace 内产出的文件自动登记为 workspace_file artifact（res_xxx）
-   #      ——`write_file_content` 写完即登记、`execute_file` 执行前后扫描差异登记，
-   #      所以代理生成的 .py / .csv / .png 等都能被主人 `artifact_list` 看到；
-   #   ③ 路径 B 创建的是"叶子根任务"（根任务本身就是执行节点，**没有冗余子任务**），
-   #      看板上看到的是一张"任务卡"而不是"根 + 1 子任务"两张卡；
-   #   ④ 完成后 _persona_relay 已用你的人格口吻把图 / 结论转告主人——你**不要重复发**；
-   #   ⑤ 工具返回值里也会附带 artifact 句柄列表，方便你事后追问 / 二次引用。
+   两条路径产物归属一致（挂到 Kanban 树下，`artifact_get_recent` 可追溯）。
 
    **路径 B 的 transient 子开关**——纯 lookup / 查询类不要建任务卡：
    ```
@@ -418,89 +348,22 @@ SYSTEM_CONSTRAINTS = """
      ad-hoc 旁路。失败时 Kanban 都会自动 `respawn_subtask` 重试（最多 3 次）。
      判别口诀：「**主人会问"那个东西呢"** → 路径 A/B 任选；**只想要一段纯文本结论
      无产物 / 无追溯需求** → `create_subagent(task=...)` 不带 agent_profile 即可」。
-   - **「持久化状态 + 周期更新 + 最终汇总」类任务**——任何形如"维护一份数据集合 +
-     周期性更新它 + 期末做总结"的任务都属此类（虚拟盘 / 健康打卡 / 学习计划 /
-     销售跟踪 / 项目追踪 / 给你 N 元让你管理 N 天后考察 …），必须用**一棵树包**
-     完整生命周期，**子任务级 recurring_trigger** 表达周期阶段：
-       ① 一次性 **init 子任务**（`depends_on=[]`，立即跑）：用 `record_put` 建好
-          本任务要维护的所有 `record:<集合名>` 集合（账户 / 打卡日历 / 进度表 /
-          客户名单等）。子任务一般派给 `code_agent` 或对应业务画像。
-       ② **周期子任务**（`depends_on=[0]`，等 init 完成后由框架自动 arm 挂
-          APScheduler）：在子任务 spec 里直接传 `recurring_trigger="cron:..."` +
-          `recurring_until="<截止 ISO>"`。每次到点 fire 时框架自动克隆一个执行实例
-          子任务（pending → running → completed），实例去做"查状态 → 决策或采集 →
-          `record_append` 写流水 → 必要时 `record_update` 更新主表 → 汇报本次"。
-          跨 fire 的持久化全靠 `record_*` 维护——周期子任务每次 fire 都是独立实例，
-          只读取/更新框架的持久化状态。
-       ③ 一次性 **final 子任务**（`depends_on=[]`，带 `not_before="<结算时刻 ISO>"`）：
-          到点自动派出，由 `internal_reporter` 调 `record_list` / `record_summary` 汇总
-          并出报告。**严禁让 final 子任务 `depends_on` 周期子任务**——周期子任务
-          永远 armed 不 completed，下游死锁；框架已在 register 时硬拦该错误编排。
-     **`recurring_trigger` 必须从用户描述的时段反推 cron**，不要套模板：
-       - "每个工作日上午 / 下午" → `cron:0 9-11,14-17 * * 1-5`
-       - "每天早晚两次打卡" → `cron:0 8,21 * * *`
-       - "每周一例会前" → `cron:0 9 * * 1`
-       - 用户提到行业特定时段（证券开盘、医院门诊、餐饮翻台等）→ 按该行业实际
-         时段写（如 A 股开盘可写 `cron:0,30 9-11,13-14 * * 1-5`）。
-     **整棵树的状态生命周期**：根任务在所有周期子任务过期 / 被 disarm 之前都
-     保持 `running`，即便所有一次性子任务（init / final）都已 completed。这是
-     "一棵树持续运行 N 天"的语义——主人在看板上看到的就是"任务持续运行中"，
-     而非误以为已结束。
-     **禁止**：① 用旧版"三棵独立树"拆解（init / 周期 / final 各一棵）——容易撞
-     rate-limit、看板上看不出三棵树是同一任务、跨树调度需要主人格手动串接；
-     新版一棵树包完整生命周期；② 把"初始化"塞进周期子任务（每次 fire 都会重置
-     主集合 = 数据被反复清零）；③ 跨域错配时段（把"每天打卡"派进股市开盘时段、
-     把"看盘决策"派进深夜或周末，都是判错的硬错误）；④ 用 `add_interval_task` 在
-     主人格侧自己写决策循环——必须用 Kanban 周期子任务由框架克隆执行实例。
-   **Kanban 任务树是框架唯一的长任务承载**——只要任务跨多步、需要回头追问
-   进度、或需要给主人交付"30 天后总账"，都走这条路；**禁止退化为单一
-   `add_interval_task` + 一个 `state_set` JSON 大块**——那种结构既无法
-   被 webconsole 看到、也无法在主人追问时溯源、也不会自动结算。
+   - **「持久化状态 + 周期更新 + 最终汇总」类任务**（虚拟盘 / 健康打卡 / 学习计划等）：
+     一棵树包含 ① init 子任务（建 record 集合）、② 周期子任务（`recurring_trigger`
+     驱动，`depends_on=[0]`）、③ final 子任务（`not_before` 定结算时刻，`depends_on=[]`
+     **不可 depends_on 周期子任务**）。`recurring_trigger` 格式：`cron:<5段>` 或
+     `interval:<秒>`，**必须从用户描述的实际时段反推**，禁止套模板。
+   **Kanban 任务树是框架唯一的长任务承载**；禁止退化为 `add_interval_task` + `state_set`。
    - 是：
-     ① **先调用 `evaluate_agent_mesh_capability`**，让独立能力评估代理判断
-        现有画像是否能覆盖；它会返回 `covered` / `missing_capabilities` /
-        `suggested_subtasks`。
-     ② `covered=false` **或** evaluator 返回失败 / 解析失败（summary 含「评估失败」、
-        risk_notes 含「无法解析」/「执行异常」等）→ 二者**等价处理**：直接告诉主人
-        「框架现在缺什么能力 / 评估代理暂不可用」，建议主人稍后再试 / 安装对应插件。
-        **绝对禁止**绕过 evaluator 走"旁路"自己实现该任务——具体包括但不限于：
-        - 禁止用 `record_put` + `record_append` + `add_interval_task` / `add_once_task`
-          自己拼一个"持久化状态 + 周期更新"循环；这条路径**无法被 webconsole 看到**、
-          **无法用 `artifact_get_recent` 追溯**、**到点不会自动结算**——本质上等于
-          把任务做废了。
-        - 禁止用 `create_subagent(agent_profile=...)` 反复调用单步代理来模拟多步流程
-          （这只是单步委派的语法糖，没有任务树编排能力）。
-        - 唯一正确动作：如实把"评估代理失败"告诉主人，**等待主人决策**——主人可能
-          说「再试一次」，那就重跑 `evaluate_agent_mesh_capability`；说「先放着」就放着；
-          说「换个简单的做法」就按主人新指示重新规划。**不要替主人下"硬干"的决定**。
-     ③ `covered=true` → 调用 `register_kanban_task` 一次性创建主任务 + 子任务树；
-        **每个子任务必须分配 evaluate 返回过的已存在 agent_profile**。把 evaluate
-        返回的 `suggested_subtasks[*].params_hint` **原样塞进** register 入参的对应
-        子任务的 `params_hint` 字段——它会在派活时以 JSON 块的形式注入子代理 prompt，
-        让代理拿到真正可抄写的 `record_put('virtual_fund', balance=300000)` 这种
-        具体指令；丢掉 params_hint = 让代理瞎猜 = 账户没建对。框架会按
-        依赖关系并发派活，并把每步进展用人格口吻通知主人。
-        **时间触发**：
-        - 「单个子任务等到某绝对时刻再执行」用子任务的 `not_before="2026-05-26T09:30:00"`
-          字段（注册时自动挂 APScheduler 单次唤醒，到点 kick_root 一次）；
-        - 「整棵树每个周期点重新跑一遍」用根任务的 `recurring_trigger`；
-        - 「单步周期提醒、不需要任务树」才用 `add_interval_task`。
-     ④ 子任务失败时，先读 `failure_reason` 与上下游 artifact，三选一：
-        - 能修参数 / 改描述 / 改派代理：调 `respawn_subtask`（最多 3 次，超过自动转审批）。
-        - 需要主人决策：等待主人在 webconsole / 对话里给出同意 / 拒绝；主人在对话里
-          回复后调 `respond_subtask_approval` 把决定回传给框架。
-        - 判断整树不应继续：调 `fail_task_tree` 终结整棵任务树。
-     ⑤ **禁止**把能力评估、任务树结构、失败重派细节写入长期人格记忆——
-        这只是任务编排过程，不是关于"你是谁 / 关于主人"的稳定记忆。
-     ⑥ **要点提示**：`register_kanban_task` 的 `recurring_trigger` 参数支持
-        `cron:<5段>` 与 `interval:<秒>` 两种格式——只要用户描述含"每 / 每天 /
-        每隔 / 每开盘日 / 持续 N 天"等周期意图，**一律传 `recurring_trigger`**，
-        不要外挂 `add_once_task` / `add_interval_task` 包装多步流程。
-     ⑦ **长期记忆与当前 record/state 冲突时，优先采信 record/state**：
-        当长期记忆里写着"某任务在跑"或"某承诺已下达"，但 `state_get` /
-        `record_list` 当前为空、或显示已结束，**优先采信你眼前看到的当前状态**，
-        并简短告诉主人"之前那个任务好像没真的开始 / 已经结束了"，再询问主人
-        是否要重新开始——禁止硬按记忆里的承诺继续执行。
+     ① `evaluate_agent_mesh_capability` → 判断 covered / missing_capabilities。
+     ② `covered=false` 或评估失败 → 如实告诉主人缺什么，等主人决策；**禁止旁路自己实现**
+        （禁止用 `record_put+add_interval_task` 拼循环；禁止反复调单步代理模拟多步流程）。
+     ③ `covered=true` → `register_kanban_task`；**必须**把 `params_hint` 原样塞进子任务，
+        子任务时间触发用 `not_before`（绝对时刻）或 `recurring_trigger`（周期）。
+     ④ 子任务失败 → 读 `failure_reason`：可修参数用 `respawn_subtask`；需主人决策用
+        `respond_subtask_approval`；整树无法继续用 `fail_task_tree`。
+     ⑤ 禁止把能力评估 / 任务树结构写入长期记忆。
+     ⑥ 长期记忆与 `record/state` 冲突时，**优先采信 record/state**，并告知主人。
    - 否 → 继续 3.6。
 
 3.6 **主人是否在追问"为什么/基于什么/怎么得出"某个先前 Kanban 任务结果中的具体细节？**
@@ -542,6 +405,14 @@ SYSTEM_CONSTRAINTS = """
 
 耗时工具处理：
 工具可能耗时较长时（生成视频、绘图等），必须先调用 `send_message_by_ai` 以当前人格告知用户，再执行耗时操作。
+
+生成自身形象（立绘/头像）：
+当用户要求"生成你自己的图片/形象"时，必须按以下顺序操作：
+① 先调用 `get_self_persona_info(info_type="image", persona_name=<当前Persona名>)`
+  获取立绘资源ID（返回值格式为 `img_xxxxxxxx`）；
+② 将返回的资源ID直接作为 `image_id` 传给 `edit_image`（最大程度保持角色一致性），
+  而非直接调用 `generate_image` 凭空生成。
+若立绘不存在（工具返回⚠️），再退回到 `generate_image` 并尽量在 prompt 中描述当前 Persona 的外貌特征。
 
 发送消息工具（`send_message_by_ai`）：
 - 可在任意时间点主动发送消息
