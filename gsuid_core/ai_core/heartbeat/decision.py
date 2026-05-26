@@ -11,7 +11,7 @@ from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.ai_core.persona.prompts import ROLE_PLAYING_START
-from gsuid_core.ai_core.persona.resource import load_persona
+from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
 
@@ -137,7 +137,13 @@ async def run_heartbeat(
         logger.warning("🫀 [Heartbeat] 无法加载角色资料，跳过")
         return None
 
+    # 决策阶段用压缩版人格（仅 Identity / Style / Tone / Presence 四要素），
+    # 节省每次心跳 ~70% 的 persona token；compact 提取失败则回退完整原文，
+    # 保证不会因正则未匹配丢人格描述。完整原文留给后续"生成发言"阶段使用。
+    compact_persona = extract_compact_persona(persona_content)
+    decision_persona = compact_persona or persona_content
     persona_text = f"{ROLE_PLAYING_START}\n{persona_content}"
+    decision_persona_text = f"{ROLE_PLAYING_START}\n{decision_persona}"
 
     # 两个阶段共用同一份上下文，只格式化一次
     history_context = format_history_for_agent(history=history)
@@ -155,7 +161,7 @@ async def run_heartbeat(
     # 阶段一：决策
     # ----------------------------------------------------------------
     decision_prompt = DECISION_PROMPT_TEMPLATE.format(
-        persona_text=persona_text,
+        persona_text=decision_persona_text,
         current_time=current_time,
         history_context=history_context,
         group_summary_section=group_summary,

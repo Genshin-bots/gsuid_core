@@ -99,9 +99,18 @@ class AIMemHierarchicalGraphMeta(SQLModel, table=True):
         time_since_rebuild = (
             (datetime.now(timezone.utc) - last_rebuild).total_seconds() if last_rebuild is not None else float("inf")
         )
+
+        # 最小增量阈值：避免 baseline=0 时 current_count>0 恒成立导致冷启动反复重建，
+        # 也避免 baseline 很小时（例如 5→8）频繁触发。要求至少新增 MIN_DELTA 个实体
+        # 才与 ratio 条件联合生效；时间窗到期仍走兜底分支。
+        baseline = meta.entity_count_at_last_rebuild or 0
+        delta = current_count - baseline
+        MIN_DELTA = 20
+        ratio_triggered = delta >= MIN_DELTA and current_count > baseline * memory_config.hiergraph_rebuild_ratio
+
         return (
             meta.last_rebuild_at is None
-            or current_count > meta.entity_count_at_last_rebuild * memory_config.hiergraph_rebuild_ratio
+            or ratio_triggered
             or time_since_rebuild > memory_config.hiergraph_rebuild_interval_seconds
         )
 
@@ -181,6 +190,24 @@ class HierarchicalGraphBuilder:
         # 记录合法的 prev_layer，用于 rollback 时回退到上一有效层
         valid_prev_layer = prev_layer
         prev_layer_count = len(prev_layer)
+
+        # 小 scope 截断：本 scope 总 entity < SMALL_SCOPE_THRESHOLD 时，
+        # 不构建 layer 2/3。原因：抽象层数对小数据集没有压缩收益，
+        # 反而每次重建都要把 layer-1 全部 category 灌 LLM 再分类一次。
+        # 阈值取 30：粗略对应"3 个 category × 10 entity/category"的 layer-1 规模。
+        SMALL_SCOPE_THRESHOLD = 30
+        total_entities = await self._get_total_entity_count()
+        if total_entities < SMALL_SCOPE_THRESHOLD:
+            logger.debug(
+                f"🧠 [HierGraph] scope={self.scope_key} entity={total_entities}<{SMALL_SCOPE_THRESHOLD}，跳过 layer 2+"
+            )
+            should_regen_summary = await self._should_regen_group_summary(valid_prev_layer)
+            await self._update_meta(valid_prev_layer=valid_prev_layer)
+            if should_regen_summary:
+                await self._update_group_summary_cache(valid_prev_layer)
+            logger.info(f"🧠 [HierGraph] 增量重建完成（仅 layer 1），总耗时 {time.time() - total_start:.1f}s")
+            return
+
         for layer in range(2, self._max_layers() + 1):
             if len(prev_layer) < self._min_children():
                 break
@@ -226,8 +253,13 @@ class HierarchicalGraphBuilder:
 
         # BUG-01 修复：使用 valid_prev_layer 计算 max_layer，而非数据库 MAX() 查询
         # 因为回滚后数据库中的 max_layer 可能仍包含已删除的 layer，导致 System-2 以错误的顶层出发
+        # 注意：should_regen 必须在 _update_meta 之前判断，否则 baseline/max_layer 已被覆盖
+        should_regen_summary = await self._should_regen_group_summary(valid_prev_layer)
         await self._update_meta(valid_prev_layer=valid_prev_layer)
-        await self._update_group_summary_cache(valid_prev_layer)
+        if should_regen_summary:
+            await self._update_group_summary_cache(valid_prev_layer)
+        else:
+            logger.debug(f"🧠 [HierGraph] scope={self.scope_key} group_summary 无显著变化，跳过重算")
         logger.info(f"🧠 [HierGraph] 增量重建完成，总耗时 {time.time() - total_start:.1f}s")
 
     def _max_layers(self) -> int:
@@ -235,6 +267,28 @@ class HierarchicalGraphBuilder:
 
     def _min_children(self) -> int:
         return memory_config.min_children_per_category
+
+    @with_session
+    async def _get_total_entity_count(self, session: AsyncSession) -> int:
+        """获取本 scope 的总 entity 数。
+
+        优先读 AIMemHierarchicalGraphMeta.current_entity_count（O(1) 增量计数），
+        meta 不存在时退化为 COUNT(*)，结果只用于小 scope 阈值判断，少量误差可接受。
+        """
+        result = await session.execute(
+            select(AIMemHierarchicalGraphMeta.current_entity_count).where(
+                AIMemHierarchicalGraphMeta.scope_key == self.scope_key
+            )
+        )
+        cached = result.scalar_one_or_none()
+        if cached is not None:
+            return cached
+        count = (
+            await session.execute(
+                select(func.count()).select_from(AIMemEntity).where(AIMemEntity.scope_key == self.scope_key)
+            )
+        ).scalar() or 0
+        return int(count)
 
     @with_session
     async def _get_unassigned_entities(self, session: AsyncSession) -> list[AIMemEntity]:
@@ -372,6 +426,7 @@ class HierarchicalGraphBuilder:
 
         from gsuid_core.ai_core.gs_agent import create_agent
         from gsuid_core.ai_core.memory.prompts.categorization import (
+            LAYER_HINTS,
             CATEGORIZATION_USER_PROMPT,
             CATEGORIZATION_SYSTEM_PROMPT,
         )
@@ -394,6 +449,7 @@ class HierarchicalGraphBuilder:
 
         user_prompt = CATEGORIZATION_USER_PROMPT.format(
             layer=layer,
+            layer_hint=LAYER_HINTS.get(layer, ""),
             nodes_info=nodes_info,
             existing_categories=existing_cats_info,
             min_children=self._min_children(),
@@ -741,6 +797,32 @@ class HierarchicalGraphBuilder:
         )
         # 删除 category 本身
         await session.execute(sql_delete(AIMemCategory).where(col(AIMemCategory.id).in_(cat_ids)))
+
+    async def _should_regen_group_summary(self, valid_prev_layer: list[AIMemCategory]) -> bool:
+        """判断是否需要重新生成 group_summary 缓存。
+
+        全量重算每次都要一发 LLM，对静态群（只新增几个 entity）纯浪费。
+        以下任一条件成立才重算：
+        - 首次（meta 不存在或 group_summary_cache 空）
+        - 顶层结构变化（max_layer 与本次实际不一致）
+        - 自上次重建以来新增 entity ≥ GROUP_SUMMARY_DELTA_THRESHOLD
+        """
+        GROUP_SUMMARY_DELTA_THRESHOLD = 50
+
+        new_max_layer = max((c.layer for c in valid_prev_layer), default=0)
+        async with async_maker() as session:
+            result = await session.execute(
+                select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
+            )
+            meta = result.scalar_one_or_none()
+
+        if meta is None or not meta.group_summary_cache:
+            return True
+        if (meta.max_layer or 0) != new_max_layer:
+            return True
+        baseline = meta.entity_count_at_last_rebuild or 0
+        current_count = meta.current_entity_count or 0
+        return (current_count - baseline) >= GROUP_SUMMARY_DELTA_THRESHOLD
 
     async def _update_group_summary_cache(
         self,

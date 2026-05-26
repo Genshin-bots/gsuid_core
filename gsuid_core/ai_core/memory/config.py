@@ -28,10 +28,10 @@ class MemoryConfig:
     ingestion_enabled: bool = True
     """是否启用摄入引擎，关闭后消息入队但不处理"""
 
-    batch_interval_seconds: int = 1800
+    batch_interval_seconds: int = 3600
     """消息聚合窗口（秒），超过此时间强制 flush"""
 
-    batch_max_size: int = 25
+    batch_max_size: int = 40
     """单次最大聚合条数，防止单个 LLM 调用 token 超限"""
 
     llm_semaphore_limit: int = 3
@@ -64,7 +64,7 @@ class MemoryConfig:
     max_layers: int = 3
     """分层图最大层数"""
 
-    hiergraph_rebuild_ratio: float = 1.50
+    hiergraph_rebuild_ratio: float = 2.50
     """Entity 增长超过此比例时触发增量重建"""
 
     hiergraph_rebuild_interval_seconds: int = 172800
@@ -83,7 +83,7 @@ class MemoryConfig:
     @property
     def enable_system2(self) -> bool:
         """是否启用 System-2 全局选择（成本较高，可按需关闭）"""
-        return mrc.get_config("enable_system2").data
+        return mrc.get_config("enable_system2get").data
 
     @property
     def eval_mode(self) -> bool:

@@ -50,6 +50,16 @@ _TONE_INLINE_RE = re.compile(
 )
 _IDENTITY_RE = re.compile(r"Identity\s*:[ \t]*([^\n]+)", re.IGNORECASE)
 
+# compact persona 抽取：心跳决策只需要"我是谁 / 怎么说话 / 何时开口"四要素，
+# 不需要工具协议、好感度梯度、触发例等执行细节。下列正则与上方块/行版本
+# 配套使用，行匹配优先级 Name / Identity / Interest 顺序。
+_NAME_RE = re.compile(r"Name\s*:[ \t]*([^\n]+)", re.IGNORECASE)
+_INTEREST_RE = re.compile(r"Interest\s*:[ \t]*([^\n]+)", re.IGNORECASE)
+# Presence 块下面常见两行：感兴趣的话题、主动发言示例。这两行最能帮 Heartbeat
+# 模型理解"何时插话、说什么"，比整段 Presence 表更紧凑。
+_PRESENCE_TOPIC_RE = re.compile(r"感兴趣的话题\s*[：:][ \t]*([^\n]+)")
+_PRESENCE_EXAMPLE_RE = re.compile(r"主动发言示例\s*[：:][ \t]*([^\n]+)")
+
 # 跳过模板占位符 / 通用说明 / 示例 / 元提示行（这些不是真正的"风格描述"）
 _META_LINE_PREFIXES: Tuple[str, ...] = (
     "举出",
@@ -128,6 +138,95 @@ def _extract_voice_anchor_from_persona(persona_text: str) -> str:
             return candidate
 
     return ""
+
+
+def extract_compact_persona(persona_text: str) -> str:
+    """从完整 persona.md 中提取心跳决策所需的压缩版人格描述。
+
+    决策阶段只判断"该不该说话、用什么口吻"，无需工具协议 / 好感度梯度 /
+    触发例等执行细节，把整篇 persona.md 灌进去会产生大量重复 token。
+    本函数按以下顺序提取四要素，全部失败时返回空串由调用方回退到原文：
+
+        [身份] Name / Identity / Interest
+        [风格] Style (风格) 块的最具描述性一行
+        [语气] Tone Markers (语气词) 块的最具描述性一行
+        [活跃] 感兴趣的话题 + 主动发言示例 两行
+
+    Args:
+        persona_text: 完整 persona.md 文本
+
+    Returns:
+        压缩后的纯文本片段（约 200-600 字符），无任何匹配时返回空串。
+    """
+    if not persona_text:
+        return ""
+
+    sections: list[str] = []
+
+    # 1. [身份] —— Name / Identity / Interest 三行合并
+    identity_parts: list[str] = []
+    name_match = _NAME_RE.search(persona_text)
+    if name_match:
+        v = name_match.group(1).strip()
+        if v and "[SLOT:" not in v:
+            identity_parts.append(f"Name: {v}")
+    identity_match = _IDENTITY_RE.search(persona_text)
+    if identity_match:
+        v = identity_match.group(1).strip()
+        if v and "[SLOT:" not in v:
+            identity_parts.append(f"Identity: {v}")
+    interest_match = _INTEREST_RE.search(persona_text)
+    if interest_match:
+        v = interest_match.group(1).strip()
+        if v and "[SLOT:" not in v:
+            identity_parts.append(f"Interest: {v}")
+    if identity_parts:
+        sections.append("[身份] " + " / ".join(identity_parts))
+
+    # 2. [风格] —— Style 块（块形式优先，回退行内）
+    style_line = ""
+    style_match = _STYLE_BLOCK_RE.search(persona_text)
+    if style_match:
+        style_line = _pick_concrete_line(style_match.group(2))
+    if not style_line:
+        style_inline = _STYLE_INLINE_RE.search(persona_text)
+        if style_inline:
+            cand = style_inline.group(1).strip()
+            if cand and "[SLOT:" not in cand:
+                style_line = cand
+    if style_line:
+        sections.append(f"[风格] {style_line}")
+
+    # 3. [语气] —— Tone Markers 块（块形式优先，回退行内）
+    tone_line = ""
+    tone_match = _TONE_BLOCK_RE.search(persona_text)
+    if tone_match:
+        tone_line = _pick_concrete_line(tone_match.group(2))
+    if not tone_line:
+        tone_inline = _TONE_INLINE_RE.search(persona_text)
+        if tone_inline:
+            cand = tone_inline.group(1).strip()
+            if cand and "[SLOT:" not in cand:
+                tone_line = cand
+    if tone_line:
+        sections.append(f"[语气] {tone_line}")
+
+    # 4. [活跃] —— Presence 中的"感兴趣的话题" + "主动发言示例"两行
+    presence_parts: list[str] = []
+    topic_match = _PRESENCE_TOPIC_RE.search(persona_text)
+    if topic_match:
+        v = topic_match.group(1).strip()
+        if v and "[SLOT:" not in v:
+            presence_parts.append(f"感兴趣的话题：{v}")
+    example_match = _PRESENCE_EXAMPLE_RE.search(persona_text)
+    if example_match:
+        v = example_match.group(1).strip()
+        if v and "[SLOT:" not in v:
+            presence_parts.append(f"主动发言示例：{v}")
+    if presence_parts:
+        sections.append("[活跃] " + " / ".join(presence_parts))
+
+    return "\n".join(sections)
 
 
 # voice_anchor 显式手调入口的文件名。

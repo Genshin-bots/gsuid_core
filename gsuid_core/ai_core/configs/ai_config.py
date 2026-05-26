@@ -288,10 +288,10 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         2000,
         options=[1000, 2000, 4000, 8000, 16000],
     ),
-    "enable_system2": GsBoolConfig(
+    "enable_system2get": GsBoolConfig(
         "是否启用 System-2",
         "指定是否启用 System-2, 可以提高检索精度但会增加性能开销",
-        True,
+        False,
     ),
     "eval_mode": GsBoolConfig(
         "记忆评测模式",
