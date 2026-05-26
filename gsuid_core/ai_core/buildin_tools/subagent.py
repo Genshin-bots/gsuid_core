@@ -30,7 +30,6 @@ from pydantic_ai import RunContext
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
-from gsuid_core.ai_core.history import get_history_manager
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
@@ -148,7 +147,6 @@ async def create_subagent(
 
         task_hash = hashlib.md5(task.encode()).hexdigest()[:8]
         subagent_session_id = f"subagent_{task_hash}"
-        from gsuid_core.ai_core.gs_agent import create_agent  # 延迟导入避免循环导入
 
         agent = create_agent(
             system_prompt=system_prompt,
