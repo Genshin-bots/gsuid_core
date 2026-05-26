@@ -21,6 +21,17 @@ MEME_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 模型输出的沉默/控制标记：命中时跳过发送，对话层保持静默
+# 所有需要过滤这些标记的地方都应引用此常量，避免散落多处维护不一致
+SILENCE_MARKERS: frozenset[str] = frozenset(
+    {
+        "<SILENCE>",
+        "[SILENCE]",
+        "SILENCE",
+        "<end_turn>",
+    }
+)
+
 
 def extract_json_from_text(raw_text: str) -> dict:
     if not raw_text or not raw_text.strip():
@@ -28,7 +39,7 @@ def extract_json_from_text(raw_text: str) -> dict:
 
     # 过滤已知的非 JSON 特殊标记（如模型输出的 <SILENCE>）
     stripped = raw_text.strip()
-    if stripped in ("<SILENCE>", "[SILENCE]", "SILENCE"):
+    if stripped in SILENCE_MARKERS:
         raise ValueError(f"Special marker '{stripped}' is not valid JSON")
 
     # 上游 agent 出错时会返回 "执行出错: ..." 之类的字符串，这里提前拦截
@@ -227,9 +238,15 @@ async def prepare_content_payload(
     else:
         text += ev.text.strip()
 
-    # 预处理, 将用户发送的文本/AT/图片ID等信息整合到一个字符串中, 方便AI处理
+    # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
     for i in ev.image_id_list:
         text += f"\n--- 用户上传图片ID: {i} ---\n"
+
+    if hasattr(ev, "audio_id") and ev.audio_id:
+        text += f"\n--- 用户上传音频ID: {ev.audio_id} ---\n"
+
+    for i in getattr(ev, "audio_id_list", []):
+        text += f"\n--- 用户上传音频ID: {i} ---\n"
 
     for at in ev.at_list:
         text += f"\n--- 提及用户(@用户): {at} ---\n"
@@ -258,6 +275,12 @@ async def send_chat_result(
     - <meme: 情绪> 标记（可带反引号）→ 触发表情包发送（需传入 ev）
     """
     if not text:
+        return
+
+    # 过滤模型输出的特殊控制标记（如 <end_turn>），避免发送给用户
+    _trimmed = text.strip()
+    if _trimmed in SILENCE_MARKERS:
+        logger.debug(f"[send_chat_result] 跳过特殊标记: {_trimmed!r}")
         return
 
     # Trace 日志：记录原始输出

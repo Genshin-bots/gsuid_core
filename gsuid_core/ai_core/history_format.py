@@ -256,6 +256,11 @@ def format_history_for_agent(
         for at_id in metadata.get("at_list", []):
             block.append(f"--- 提及用户(@用户): {at_id} ———")
 
+        # 音频ID
+        audio_id = metadata.get("audio_id")
+        if audio_id:
+            block.append(f"--- 用户上传音频ID: {audio_id} ———")
+
         # 文件ID
         file_id = metadata.get("file_id")
         if file_id:

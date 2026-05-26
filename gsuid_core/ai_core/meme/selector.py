@@ -56,10 +56,10 @@ async def pick(
     """根据情境选择一张表情包
 
     检索策略：
-    1. 用 mood + scene 生成向量查询 Qdrant
+    1. 用 mood + scene 生成向量查询 Qdrant（带相似度阈值过滤）
     2. 过滤 folder 为 persona_{persona} 或 common，排除最近 N 条已发
-    3. 若无结果，降级为随机选择该文件夹内最久未使用图片
-    4. 若无图片，返回 None
+    3. 仅当无查询文本时，降级为随机/最久未使用选取
+    4. 若无匹配图片，返回 None（不会强行发不相关的图）
 
     Args:
         mood: 情绪描述（如 "开心", "无语"）
@@ -85,7 +85,7 @@ async def pick(
     # 按优先级检索：先 persona 专属，再通用库
     for folder in [f"persona_{persona}", "common"]:
         if query_text:
-            # 向量检索
+            # 向量检索（带相似度阈值，低于阈值的结果会被过滤）
             results = await MemeLibrary.search_by_text(
                 query_text=query_text,
                 folder=folder,
@@ -96,8 +96,11 @@ async def pick(
                 _record_send(session_id)
                 _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
                 return record
+            # 向量检索无匹配 → 不降级到随机，继续检查下一个 folder
+            logger.debug(f"[Meme] 向量检索无匹配: folder={folder}, query={query_text!r}")
+            continue
 
-        # 降级：随机选取
+        # 仅当无查询文本时才降级：随机选取
         record = await AiMemeRecord.random_pick(folder, exclude_ids)
         if record:
             _record_send(session_id)
@@ -111,7 +114,7 @@ async def pick(
             _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
             return record
 
-    logger.debug(f"[Meme] 未找到可用表情包: mood={mood}, scene={scene}, persona={persona}")
+    logger.debug(f"[Meme] 未找到匹配的表情包: mood={mood}, scene={scene}, persona={persona}")
     return None
 
 

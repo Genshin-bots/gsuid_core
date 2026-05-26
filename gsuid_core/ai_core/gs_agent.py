@@ -31,7 +31,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import send_chat_result
+from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.rag.tools import (
@@ -70,8 +70,6 @@ _FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
 # 每次运行最多发送的前摇数量，避免刷屏
 _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
 
-# 模型输出的沉默标记：命中时跳过发送，对话层保持静默
-_SILENCE_MARKERS: frozenset[str] = frozenset({"<SILENCE>", "[SILENCE]", "SILENCE"})
 
 # Persona 前摇配置缓存 {persona_name: dict}
 _persona_pre_tool_cache: dict[str, dict] = {}
@@ -824,7 +822,7 @@ class GsCoreAIAgent:
                                 logger.debug(f"🧠 [大模型文本]: {_text}")
                                 if self._session_logger is not None:
                                     self._session_logger.log_text_output(_text)
-                                if _text in _SILENCE_MARKERS:
+                                if _text in SILENCE_MARKERS:
                                     logger.info(f"🧠 [GsCoreAIAgent] 检测到沉默标记 '{_text}'，跳过发送")
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的

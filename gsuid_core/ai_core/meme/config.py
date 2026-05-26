@@ -68,6 +68,11 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="同一会话两次发送表情包之间的最小间隔",
         data=60,
     ),
+    "meme_search_threshold": GsFloatConfig(
+        title="表情包搜索相似度阈值(0~1)",
+        desc="向量检索的最低相似度分数，低于此值的结果将被视为不匹配。越高越严格，建议 0.3~0.6",
+        data=0.4,
+    ),
 }
 
 MEME_CONFIG_PATH = get_res_path("ai_core") / "meme_config.json"

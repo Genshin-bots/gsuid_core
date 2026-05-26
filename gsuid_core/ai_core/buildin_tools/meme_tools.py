@@ -170,6 +170,7 @@ async def search_meme(
     records: Sequence[AiMemeRecord] = await MemeLibrary.search_by_text(
         query_text=query,
         top_k=5,
+        score_threshold=meme_config.get_config("meme_search_threshold").data,
     )
 
     if not records:

@@ -3,7 +3,7 @@ from typing import Any, List, Optional
 from datetime import datetime
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import extract_json_from_text
+from gsuid_core.ai_core.utils import SILENCE_MARKERS, extract_json_from_text
 from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
@@ -183,9 +183,9 @@ async def run_heartbeat(
         logger.debug("🫀 [Heartbeat] 决策阶段无返回，跳过")
         return None
 
-    # 模型输出 <SILENCE> 表示选择不发言，直接跳过
-    if result.strip() == "<SILENCE>":
-        logger.debug("🫀 [Heartbeat] 模型输出 <SILENCE>，保持沉默")
+    # 模型输出 <SILENCE> 或 <end_turn> 表示选择不发言，直接跳过
+    if result.strip() in SILENCE_MARKERS:
+        logger.debug("🫀 [Heartbeat] 模型输出沉默标记，保持沉默")
         return None
 
     try:

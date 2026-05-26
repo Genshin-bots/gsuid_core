@@ -129,7 +129,7 @@ _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
 
 | # | 触发判据（first-match） | 剧本 | 主要工具 / 落点 |
 |---|---|---|---|
-| A | 寒暄 / 纯情绪 / `<SILENCE>` 适用场景 | [§3](#3-剧本-a简单问题寒暄--表达情绪) | 不调工具，可能 `send_meme` |
+| A | 寒暄 / 纯情绪 / `<SILENCE>` / `<end_turn>` 适用场景 | [§3](#3-剧本-a简单问题寒暄--表达情绪) | 不调工具，可能 `send_meme` |
 | B | "怎么打 / 在哪 / 是什么"等纯知识查询 | [§4](#4-剧本-b信息查询游戏--知识--实时事实) | `search_knowledge` → `web_search_tool` |
 | C | 单工具一击即得的私有 / 实时 / 个人数据 | [§5](#5-剧本-c单工具任务a-类工具输出即答案) | 单个 `by_trigger` 工具 |
 | D | 主人追问"你为什么 / 凭什么这么说" | [§6](#6-剧本-d追问溯源问为什么基于什么) | `artifact_get_recent` / `artifact_list` |
@@ -166,7 +166,7 @@ classifier(query) → intent="闲聊"
        │
        └── session.run(...)
               ├── Persona 系统提示词决策树 §2 命中 → 直接角色化回应
-              ├── 群聊路过 → 极简（一个词 / 沉默 <SILENCE>）
+              ├── 群聊路过 → 极简（一个词 / 沉默 <SILENCE> / <end_turn>）
               ├── 私聊主人 → 可适当展开
               └── （可选）回复中嵌入 `<meme: 情绪>` 标记
 ```
@@ -186,6 +186,8 @@ classifier(query) → intent="闲聊"
 请只输出以下文本，不要输出其他任何内容：
 <SILENCE>
 ```
+
+> **沉默标记过滤**：框架在 [`gsuid_core/ai_core/utils.py`](../gsuid_core/ai_core/utils.py:26) 中定义了统一的 `SILENCE_MARKERS` 常量（`frozenset`），包含 `<SILENCE>`、`[SILENCE]`、`SILENCE`、`<end_turn>`。所有输出路径（`gs_agent.py`、`handle_ai.py`、`heartbeat/decision.py`、`send_chat_result`）均引用此常量，命中时跳过发送。模型输出 `<end_turn>` 等控制标记时不会被当作普通消息发送给用户。如需新增静默标记，只需在 `SILENCE_MARKERS` 中添加一项即可。
 
 ### 3.4 落点
 

@@ -135,11 +135,13 @@ def _build_mcp_tool_handler(
     trigger_type = trigger_info["trigger_type"]
     to_ai_doc = trigger_info["to_ai_doc"]
 
-    async def handler(text: str = "") -> str:
+    async def handler(text: str = "", image_id: str = "", audio_id: str = "") -> str:
         """MCP 工具处理函数：调用触发器并返回结果。
 
         Args:
             text: 传递给触发器的文本参数
+            image_id: 可选，参考图片的资源ID
+            audio_id: 可选，参考音频的资源ID
 
         Returns:
             触发器执行结果的文本描述
@@ -149,6 +151,12 @@ def _build_mcp_tool_handler(
         # 创建模拟对象
         mock_bot = _create_mock_bot()
         fake_ev = _create_mock_event(text, primary_keyword)
+
+        # 允许 MCP 客户端传入资源 ID
+        if image_id:
+            fake_ev.image_id = image_id
+        if audio_id:
+            fake_ev.audio_id = audio_id
 
         # 如果触发器类型是 regex，模拟 regex 匹配
         if trigger_type == "regex":
@@ -166,6 +174,8 @@ def _build_mcp_tool_handler(
         call_ctx: Dict[str, Any] = {
             "texts": [],
             "image_ids": [],
+            "audio_ids": [],
+            "video_ids": [],
             "bot_messages": [],
         }
 
@@ -190,6 +200,16 @@ def _build_mcp_tool_handler(
             image_count = len(call_ctx["image_ids"])
             id_list = ", ".join(call_ctx["image_ids"])
             parts.append(f"[已生成 {image_count} 张图片，资源ID: {id_list}]")
+
+        if call_ctx.get("audio_ids"):
+            audio_count = len(call_ctx["audio_ids"])
+            id_list = ", ".join(call_ctx["audio_ids"])
+            parts.append(f"[已生成 {audio_count} 个音频，资源ID: {id_list}]")
+
+        if call_ctx.get("video_ids"):
+            video_count = len(call_ctx["video_ids"])
+            id_list = ", ".join(call_ctx["video_ids"])
+            parts.append(f"[已生成 {video_count} 个视频，资源ID: {id_list}]")
 
         if parts:
             return "\n".join(parts)

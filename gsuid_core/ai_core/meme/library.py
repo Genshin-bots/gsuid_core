@@ -293,6 +293,7 @@ class MemeLibrary:
         query_vector: List[float],
         folder: Optional[str] = None,
         top_k: int = 5,
+        score_threshold: Optional[float] = None,
     ) -> Sequence[AiMemeRecord]:
         """通过向量检索搜索表情包
 
@@ -300,11 +301,12 @@ class MemeLibrary:
             query_vector: 查询向量
             folder: 可选的文件夹过滤
             top_k: 返回数量
+            score_threshold: 最低相似度阈值，低于此值的结果将被过滤
 
         Returns:
             匹配的 AiMemeRecord 列表
         """
-        meme_ids = await _search_qdrant(query_vector, folder, top_k)
+        meme_ids = await _search_qdrant(query_vector, folder, top_k, score_threshold)
         if not meme_ids:
             return []
         return await AiMemeRecord.search_by_ids(meme_ids)
@@ -314,6 +316,7 @@ class MemeLibrary:
         query_text: str,
         folder: Optional[str] = None,
         top_k: int = 5,
+        score_threshold: Optional[float] = None,
     ) -> Sequence[AiMemeRecord]:
         """通过文本语义搜索表情包
 
@@ -321,6 +324,7 @@ class MemeLibrary:
             query_text: 查询文本
             folder: 可选的文件夹过滤
             top_k: 返回数量
+            score_threshold: 最低相似度阈值，低于此值的结果将被过滤
 
         Returns:
             匹配的 AiMemeRecord 列表
@@ -328,7 +332,7 @@ class MemeLibrary:
         query_vector = await _embed_text(query_text)
         if query_vector is None:
             return []
-        return await MemeLibrary.search(query_vector, folder, top_k)
+        return await MemeLibrary.search(query_vector, folder, top_k, score_threshold)
 
     @staticmethod
     async def sync_to_qdrant(record: AiMemeRecord) -> None:
@@ -453,8 +457,19 @@ async def _search_qdrant(
     query_vector: List[float],
     folder: Optional[str],
     top_k: int,
+    score_threshold: Optional[float] = None,
 ) -> List[str]:
-    """在 Qdrant 中搜索相似向量，返回 meme_id 列表"""
+    """在 Qdrant 中搜索相似向量，返回 meme_id 列表
+
+    Args:
+        query_vector: 查询向量
+        folder: 可选的文件夹过滤
+        top_k: 返回数量
+        score_threshold: 最低相似度阈值，低于此值的结果将被过滤
+
+    Returns:
+        匹配的 meme_id 列表
+    """
     from qdrant_client.models import Filter, MatchValue, FieldCondition
 
     from gsuid_core.ai_core.rag.base import client
@@ -477,11 +492,18 @@ async def _search_qdrant(
             ]
         )
 
+    # 如果未指定阈值，从配置中读取
+    if score_threshold is None:
+        from gsuid_core.ai_core.meme.config import meme_config
+
+        score_threshold = meme_config.get_config("meme_search_threshold").data
+
     response = await client.query_points(
         collection_name=MEME_COLLECTION_NAME,
         query=query_vector,
         query_filter=query_filter,
         limit=top_k,
+        score_threshold=score_threshold,
         with_payload=True,
     )
     return [r.payload["meme_id"] for r in response.points if r.payload and "meme_id" in r.payload]

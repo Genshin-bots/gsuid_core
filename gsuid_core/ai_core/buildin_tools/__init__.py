@@ -88,6 +88,8 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``execute_shell_command``（``command_executor.py``）：沙盒 shell
   （``check_pm`` 权限校验）
 - ``_get_current_date``（``get_time.py``）：当前日期时间（注册名带下划线前缀）
+- ``move_file`` / ``copy_file`` / ``pack_to_zip``（``file_operations.py``）：
+  artifacts 路径内文件移动（不可覆盖）/ 复制 / 打包 zip
 
 > 注：``dynamic_tool_discovery.py`` 里的 ``discover_tools`` / ``list_available_tools``
 > 当前注释掉了 ``@ai_tools``，未在注册表中——通过 Python import 暴露给框架内部使用。
@@ -203,6 +205,13 @@ from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
 )
 
+# 文件操作工具 - artifacts 路径内的文件移动/复制/打包 zip
+from gsuid_core.ai_core.buildin_tools.file_operations import (
+    copy_file,
+    move_file,
+    pack_to_zip,
+)
+
 # R2（C5 落地后）：移除 agent_mesh 的"假持久化" PersistentAgent 及其 4 个工具。
 # 跨天 / 步骤化长任务改由 ai_core/planning 的真持久化三表 + 定时唤醒承担。
 # 命令执行工具 - 执行系统命令
@@ -264,6 +273,10 @@ __all__ = [
     "execute_file",
     "diff_file_content",
     "list_directory",
+    # 文件操作工具（artifacts 路径内移动/复制/打包 zip）
+    "move_file",
+    "copy_file",
+    "pack_to_zip",
     # 定时任务工具
     "add_once_task",
     "add_interval_task",

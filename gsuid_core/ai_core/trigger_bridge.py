@@ -91,7 +91,7 @@ class MockBot:
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
     ) -> None:
-        """拦截 send：文本存入上下文返回给 AI，图片通过 RM 注册并返回资源 ID。"""
+        """拦截 send：文本存入上下文返回给 AI，图片/音频/视频通过 RM 注册并返回资源 ID。"""
         ctx = object.__getattribute__(self, "_ctx")
         if isinstance(message, bytes):
             # bytes 通常是图片数据，注册到 RM 并记录资源 ID
@@ -105,19 +105,24 @@ class MockBot:
             else:
                 ctx["bot_messages"].append(message)
         else:
-            # Message / List[Message] — 提取图片或视频数据注册到 RM
+            # Message / List[Message] — 提取图片、音频或视频数据注册到 RM
             image_data = _extract_image_data(message)
             if image_data is not None:
                 resource_id = RM.register(image_data)
                 ctx["image_ids"].append(resource_id)
             else:
-                video_data = _extract_video_data(message)
-                if video_data is not None:
-                    resource_id = RM.register(video_data)
-                    ctx["video_ids"].append(resource_id)
+                audio_data = _extract_audio_data(message)
+                if audio_data is not None:
+                    resource_id = RM.register_audio(audio_data)
+                    ctx["audio_ids"].append(resource_id)
                 else:
-                    # 纯文字 Message，转为字符串存入返回值
-                    ctx["bot_messages"].append(_message_to_text(message))
+                    video_data = _extract_video_data(message)
+                    if video_data is not None:
+                        resource_id = RM.register_video(video_data)
+                        ctx["video_ids"].append(resource_id)
+                    else:
+                        # 纯文字 Message，转为字符串存入返回值
+                        ctx["bot_messages"].append(_message_to_text(message))
 
     async def reply(
         self,
@@ -190,7 +195,7 @@ def _extract_image_data(message: Any) -> Union[str, bytes, None]:
 
 
 def _extract_video_data(message: Any) -> Union[str, bytes, None]:
-    """从消息对象中提取视频数据，用于 RM.register()。返回 None 表示非视频消息。"""
+    """从消息对象中提取视频数据，用于 RM.register_video()。返回 None 表示非视频消息。"""
     if isinstance(message, Message):
         if message.type == "video" and message.data is not None:
             data = message.data
@@ -200,6 +205,22 @@ def _extract_video_data(message: Any) -> Union[str, bytes, None]:
     if isinstance(message, (list, tuple)):
         for m in message:
             result = _extract_video_data(m)
+            if result is not None:
+                return result
+    return None
+
+
+def _extract_audio_data(message: Any) -> Union[str, bytes, None]:
+    """从消息对象中提取音频数据，用于 RM.register_audio()。返回 None 表示非音频消息。"""
+    if isinstance(message, Message):
+        if message.type == "record" and message.data is not None:
+            data = message.data
+            if isinstance(data, (str, bytes)):
+                return data
+        return None
+    if isinstance(message, (list, tuple)):
+        for m in message:
+            result = _extract_audio_data(m)
             if result is not None:
                 return result
     return None
@@ -270,7 +291,7 @@ def _register_trigger_as_ai_tool(
     # 工具函数名：使用原函数名
     tool_func_name = func.__name__
 
-    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "") -> str:
+    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "", audio_id: str = "") -> str:
         real_bot = ctx.deps.bot
         ev = ctx.deps.ev
         assert real_bot is not None, "触发器 AI 工具调用时 bot 不能为 None"
@@ -298,6 +319,9 @@ def _register_trigger_as_ai_tool(
         # 允许 AI 传入已有的 RM 资源 ID（如之前生成的图片），供触发器做图生图/图生视频
         if image_id:
             fake_ev.image_id = image_id
+        # 允许 AI 传入已有的 RM 音频资源 ID（如之前生成的语音），供触发器做语音克隆等
+        if audio_id:
+            fake_ev.audio_id = audio_id
 
         # 如果触发器类型是 regex，需要模拟 regex 匹配
         if trigger_type == "regex":
@@ -315,6 +339,7 @@ def _register_trigger_as_ai_tool(
         call_ctx: Dict[str, Any] = {
             "texts": [],  # ai_return() 写入的文字
             "image_ids": [],  # bot.send 拦截到的图片，通过 RM 注册后的资源 ID
+            "audio_ids": [],  # bot.send 拦截到的音频，通过 RM 注册后的资源 ID
             "video_ids": [],  # bot.send 拦截到的视频，通过 RM 注册后的资源 ID
             "bot_messages": [],  # bot.send(str/Message(text)) 拦截到的文字
         }
@@ -344,6 +369,15 @@ def _register_trigger_as_ai_tool(
                 f"或根据用户意图决定是否发送。]"
             )
 
+        if call_ctx["audio_ids"]:
+            audio_count = len(call_ctx["audio_ids"])
+            id_list = ", ".join(call_ctx["audio_ids"])
+            parts.append(
+                f"[已生成 {audio_count} 个音频，资源ID: {id_list}。"
+                f"请调用 send_message_by_ai 工具传入 audio_id 将音频发送给用户，"
+                f"或根据用户意图决定是否发送。]"
+            )
+
         if call_ctx["video_ids"]:
             video_count = len(call_ctx["video_ids"])
             id_list = ", ".join(call_ctx["video_ids"])
@@ -370,6 +404,7 @@ def _register_trigger_as_ai_tool(
         "ctx": RunContext[ToolContext],
         "text": str,
         "image_id": str,
+        "audio_id": str,
         "return": str,
     }
 
@@ -386,6 +421,12 @@ def _register_trigger_as_ai_tool(
         ),
         inspect.Parameter(
             "image_id",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=str,
+            default="",
+        ),
+        inspect.Parameter(
+            "audio_id",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             annotation=str,
             default="",

@@ -23,7 +23,7 @@ import gsuid_core.ai_core.buildin_tools.meme_tools  # noqa: F401
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import send_chat_result, prepare_content_payload
+from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, prepare_content_payload
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.ai_router import (
     get_ai_session,
@@ -404,7 +404,7 @@ async def handle_ai_chat(bot: Bot, event: Event):
             if chat_result:
                 # 拦截沉默信号
                 result_text = chat_result if isinstance(chat_result, str) else str(chat_result)
-                if result_text.strip() == "<SILENCE>":
+                if result_text.strip() in SILENCE_MARKERS:
                     logger.info("🧠 [GsCore][AI] 角色选择沉默，不发送回复")
                     # 情绪仍然正常更新，只是不发消息
                 else:

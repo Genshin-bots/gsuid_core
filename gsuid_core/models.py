@@ -52,6 +52,8 @@ class Event(MessageReceive):
     image_list: List[Any] = []
     image_id: Optional[str] = None
     image_id_list: List[str] = []
+    audio_id: Optional[str] = None
+    audio_id_list: List[str] = []
     at: Optional[str] = None
     at_list: List[Any] = []
     is_tome: bool = False

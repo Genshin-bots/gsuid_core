@@ -414,6 +414,13 @@ SYSTEM_CONSTRAINTS = """
   而非直接调用 `generate_image` 凭空生成。
 若立绘不存在（工具返回⚠️），再退回到 `generate_image` 并尽量在 prompt 中描述当前 Persona 的外貌特征。
 
+使用自身音色生成语音：
+当调用 `generate_speech` 生成语音时，如果没有用户提供参考音频，必须按以下顺序操作：
+① 先调用 `get_self_persona_info(info_type="audio", persona_name=<当前Persona名>)`
+  获取自身音频资源ID（返回值格式为 `aud_xxxxxxxx`）；
+② 将返回的资源ID作为 `audio_id` 传给 `generate_speech`，这样生成的语音会使用你自己的音色。
+若音频不存在（工具返回⚠️），则不传 `audio_id`，让工具使用默认音色。
+
 发送消息工具（`send_message_by_ai`）：
 - 可在任意时间点主动发送消息
 - 是否发送由你自己决定，也可以选择无视

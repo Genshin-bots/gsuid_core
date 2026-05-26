@@ -256,11 +256,27 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             bot_id=event.bot_id,
             WS_BOT_ID=event.WS_BOT_ID,
         ):
-            await gs_subscribe.add_subscribe(
-                "single",
-                "主人用户",
-                event,
+            # 检查是否存在 WS_BOT_ID 为空的同名记录，若有则更新而非新增
+            existing_sub = await Subscribe.base_select_data(
+                user_id=event.user_id,
+                task_name="主人用户",
+                bot_id=event.bot_id,
             )
+            if existing_sub and not existing_sub.WS_BOT_ID:
+                await Subscribe.update_data_by_data(
+                    {
+                        "user_id": event.user_id,
+                        "task_name": "主人用户",
+                        "bot_id": event.bot_id,
+                    },
+                    {"WS_BOT_ID": event.WS_BOT_ID},
+                )
+            else:
+                await gs_subscribe.add_subscribe(
+                    "single",
+                    "主人用户",
+                    event,
+                )
 
     local_val = get_platform_val(event.real_bot_id, event.bot_self_id)
     local_val["receive"] += 1
@@ -587,6 +603,10 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.image_list.append(_msg.data)
                 event.image_id = RM.register(_msg.data)
                 event.image_id_list.append(event.image_id)
+        elif _msg.type == "record":
+            if _msg.data:
+                event.audio_id = RM.register_audio(_msg.data)
+                event.audio_id_list.append(event.audio_id)
         elif _msg.type == "reply":
             event.reply = _msg.data
         elif _msg.type == "file" and _msg.data:

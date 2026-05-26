@@ -45,6 +45,32 @@ class ResourceManager:
         self._store[resource_id] = (data, time.time())
         return resource_id
 
+    def register_audio(self, data: Union[str, bytes]) -> str:
+        """存入音频二进制数据或base64数据/URL，返回一个 ID
+
+        Args:
+            data: 音频数据（bytes、base64 字符串或 URL）
+
+        Returns:
+            资源 ID（格式: aud_xxxxxxxx）
+        """
+        resource_id = f"aud_{uuid.uuid4().hex[:8]}"
+        self._store[resource_id] = (data, time.time())
+        return resource_id
+
+    def register_video(self, data: Union[str, bytes]) -> str:
+        """存入视频二进制数据或base64数据/URL，返回一个 ID
+
+        Args:
+            data: 视频数据（bytes、base64 字符串或 URL）
+
+        Returns:
+            资源 ID（格式: vid_xxxxxxxx）
+        """
+        resource_id = f"vid_{uuid.uuid4().hex[:8]}"
+        self._store[resource_id] = (data, time.time())
+        return resource_id
+
     async def get(self, resource_id: str) -> bytes:
         """根据 ID 取回数据
 

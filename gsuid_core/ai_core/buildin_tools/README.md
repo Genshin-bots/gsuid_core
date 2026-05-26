@@ -10,13 +10,23 @@
 ```
 buildin_tools/
 ├── __init__.py              # 模块导出（Facade接口）
-├── rag_search.py             # RAG检索工具（引用 ai_core.rag.query_knowledge）
-├── web_search.py             # Web搜索工具（引用 ai_core.web_search.tavily_search）
-├── message_sender.py         # 消息发送工具
-├── command_executor.py       # 命令执行工具
-├── database_query.py         # 数据库查询工具
-├── favorability_manager.py   # 好感度管理工具（引用 ai_core.database.AIDAL）
-└── README.md                 # 使用文档
+├── rag_search.py            # RAG检索工具（引用 ai_core.rag.query_knowledge）
+├── web_search.py            # Web搜索工具（引用 ai_core.web_search.tavily_search）
+├── web_fetch.py             # 网页抓取工具（抓取网页并转 Markdown）
+├── message_sender.py        # 消息发送工具
+├── command_executor.py      # 命令执行工具
+├── database_query.py        # 数据库查询工具
+├── favorability_manager.py  # 好感度管理工具（引用 ai_core.database.AIDAL）
+├── file_manager.py          # 文件管理工具（沙盒内读写执行文件）
+├── file_operations.py       # 文件操作工具（artifacts 路径内移动/复制/打包 zip）
+├── get_time.py              # 日期时间工具
+├── html_render_tools.py     # HTML/Markdown 渲染为图片
+├── meme_tools.py            # 表情包工具（发送/收藏/搜索）
+├── scheduler.py             # 定时任务管理工具
+├── self_info.py             # 自我认知信息工具
+├── subagent.py              # 子Agent派生工具
+├── dynamic_tool_discovery.py # 动态工具发现
+└── README.md                # 使用文档
 ```
 
 ## 架构说明
@@ -27,10 +37,20 @@ buildin_tools/
 |---------|---------|------|
 | rag_search.py | ai_core.rag.query_knowledge | 知识库检索封装 |
 | web_search.py | ai_core.web_search.tavily_search | Web搜索封装 |
+| web_fetch.py | httpx | 网页抓取并转 Markdown |
 | message_sender.py | bot.send() | 独立业务逻辑 |
 | command_executor.py | asyncio.subprocess | 独立业务逻辑（安全检查） |
 | database_query.py | gsuid_core.utils.database.SQLA | 绑定数据查询 |
 | favorability_manager.py | ai_core.database.AIDAL | AI好感度数据访问 |
+| file_manager.py | pathlib / asyncio | 沙盒文件读写执行 |
+| file_operations.py | shutil / zipfile | artifacts 路径内文件移动/复制/打包 zip |
+| get_time.py | datetime | 日期时间获取 |
+| html_render_tools.py | pyrenderhtml / playwright | HTML/Markdown 渲染为图片 |
+| meme_tools.py | ai_core.meme | 表情包发送/收藏/搜索 |
+| scheduler.py | APScheduler | 定时任务管理 |
+| self_info.py | ai_core.persona | 自我认知信息查询 |
+| subagent.py | ai_core.gs_agent | 子Agent派生 |
+| dynamic_tool_discovery.py | _TOOL_REGISTRY | 动态工具搜索发现 |
 
 ## 工具列表
 
