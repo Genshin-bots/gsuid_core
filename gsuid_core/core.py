@@ -3,6 +3,7 @@ import sys
 import signal
 import asyncio
 import argparse
+import multiprocessing
 from typing import Dict
 from asyncio import CancelledError
 from pathlib import Path
@@ -249,4 +250,6 @@ async def main():
     await server.serve()
 
 
-asyncio.run(main())
+# 仅主进程启动服务(spawn 子进程重 import 本模块时跳过)
+if multiprocessing.current_process().name == "MainProcess":
+    asyncio.run(main())
