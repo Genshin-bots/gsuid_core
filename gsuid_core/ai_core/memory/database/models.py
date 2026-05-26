@@ -12,7 +12,7 @@
 import uuid
 import asyncio
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Field, SQLModel, Relationship, col, select
 from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueConstraint, or_, insert
@@ -366,6 +366,27 @@ class AIMemEntity(SQLModel, table=True):
 
         return name_to_id, vector_payloads, new_entity_count
 
+    @classmethod
+    @with_session
+    async def get_frequent_names(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int = 20,
+    ) -> list[str]:
+        """获取本 scope 最近活跃的非发言者实体名，作为跨批次消歧锚点（C2-b）。
+
+        无独立的提及计数列，故以 updated_at 倒序近似"高频活跃"，
+        并排除 Speaker 实体（其 name 为 user_id，对消歧无意义）。
+        """
+        result = await session.execute(
+            select(cls.name)
+            .where(cls.scope_key == scope_key, col(cls.is_speaker).is_(False))
+            .order_by(col(cls.updated_at).desc())
+            .limit(limit)
+        )
+        return [row[0] for row in result.all()]
+
 
 # ─────────────────────────────────────────────
 # Edge：实体间的关系（Base Graph 第三层）
@@ -388,6 +409,15 @@ class AIMemEdge(SQLModel, table=True):
     invalid_at: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
+    # C1 跨发言者归并：同一 fact 被不同 source 重复陈述时，命中既有 Edge 只累加此计数，
+    # 不再写入 N 条重复 Edge。旧库无此列，由 startup.py 的 ALTER 语句补齐（默认 1）。
+    mention_count: int = Field(default=1)
+    # C11 记忆生命周期：时效衰减分。检索排序按 reranker_score × decay_score 加权；
+    # 长期未被检索的 Edge 由衰减 Worker 周期性下调，decay_score < 阈值则被遗忘。
+    # 旧库无此列，由 startup.py 的 ALTER 语句补齐（默认 1.0）。
+    decay_score: float = Field(default=1.0)
+    # C11：最近一次被检索命中的时间，衰减判定的依据。旧库由 ALTER 补齐（默认 NULL）。
+    last_accessed: Optional[datetime] = Field(default=None)
 
     source_entity: Optional["AIMemEntity"] = Relationship(
         back_populates="outgoing_edges",
@@ -429,6 +459,107 @@ class AIMemEdge(SQLModel, table=True):
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    # ── C11 记忆生命周期 ───────────────────────────
+
+    @classmethod
+    @with_session
+    async def touch_accessed(cls, session: AsyncSession, edge_ids: list[str]) -> None:
+        """把一批 Edge 标记为"刚被检索命中"，刷新 last_accessed（C11 Decay 依据）。"""
+        if not edge_ids:
+            return
+        from sqlalchemy import update as _update
+
+        await session.execute(
+            _update(cls).where(col(cls.id).in_(edge_ids)).values(last_accessed=datetime.now(timezone.utc))
+        )
+
+    @classmethod
+    @with_session
+    async def apply_decay(
+        cls,
+        session: AsyncSession,
+        stale_days: int = 14,
+        decay_factor: float = 0.85,
+        protect_mention_count: int = 3,
+    ) -> int:
+        """时效衰减（C11）：超过 stale_days 未被检索、且非高频提及的有效 Edge，
+        ``decay_score *= decay_factor``。返回受影响行数。"""
+        from sqlalchemy import update as _update
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+        result = await session.execute(
+            select(cls).where(
+                col(cls.invalid_at).is_(None),
+                col(cls.mention_count) < protect_mention_count,
+                or_(col(cls.last_accessed).is_(None), col(cls.last_accessed) < cutoff),
+            )
+        )
+        rows = list(result.scalars().all())
+        for edge in rows:
+            new_score = round((edge.decay_score or 1.0) * decay_factor, 4)
+            await session.execute(_update(cls).where(col(cls.id) == edge.id).values(decay_score=new_score))
+        return len(rows)
+
+    @classmethod
+    @with_session
+    async def collect_forgotten(cls, session: AsyncSession, threshold: float = 0.1) -> list[str]:
+        """收集 decay_score 已低于阈值、应被遗忘（物理删除）的 Edge ID 列表（C11）。"""
+        result = await session.execute(select(cls.id, cls.qdrant_id).where(col(cls.decay_score) < threshold))
+        return [row[1] or row[0] for row in result.all()]
+
+    @classmethod
+    @with_session
+    async def purge_by_ids(cls, session: AsyncSession, edge_ids: list[str]) -> int:
+        """按 ID 物理删除 Edge（C11 遗忘）。返回删除行数。"""
+        if not edge_ids:
+            return 0
+        from sqlalchemy import delete as _delete
+
+        await session.execute(_delete(cls).where(col(cls.qdrant_id).in_(edge_ids)))
+        return len(edge_ids)
+
+
+# ─────────────────────────────────────────────
+# C11：记忆矛盾记录（Contradiction Engine）
+# ─────────────────────────────────────────────
+class AIMemConflict(SQLModel, table=True):
+    """记录一对语义冲突的 Edge（同实体/关系但事实相反）。
+
+    冲突检测不在普通回复中把新旧矛盾全量丢给 LLM——只保留一条框架生成的
+    冲突摘要，并默认以最新有效记录为准（见 dual_route 后置拦截器）。
+    """
+
+    __table_args__ = (Index("ix_mem_conflict_scope_sig", "scope_key", "fact_signature"),)
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+    scope_key: str = Field(index=True, max_length=128)
+    fact_signature: str = Field(default="", max_length=256)
+    old_edge_id: str = Field(default="", max_length=36)
+    new_edge_id: str = Field(default="", max_length=36)
+    summary: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @with_session
+    async def record(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        fact_signature: str,
+        old_edge_id: str,
+        new_edge_id: str,
+        summary: str,
+    ) -> None:
+        session.add(
+            cls(
+                scope_key=scope_key,
+                fact_signature=fact_signature[:256],
+                old_edge_id=old_edge_id,
+                new_edge_id=new_edge_id,
+                summary=summary[:2000],
+            )
+        )
 
 
 # ─────────────────────────────────────────────

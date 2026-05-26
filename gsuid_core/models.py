@@ -63,15 +63,17 @@ class Event(MessageReceive):
     regex_dict: Dict[str, str] = {}
 
     def __hash__(self) -> int:
-        """哈希：只基于会话标识字段，不含 WS_BOT_ID，保证同一会话哈希一致"""
-        return hash((self.bot_id, self.user_id, self.group_id, self.user_type))
+        """哈希：只基于会话标识字段，包含 WS_BOT_ID 与 bot_self_id 以区分不同 WS 连接和机器人账号。"""
+        return hash((self.WS_BOT_ID, self.bot_id, self.bot_self_id, self.user_id, self.group_id, self.user_type))
 
     def __eq__(self, other: object) -> bool:
-        """等值比较：只比较会话标识字段，与 __hash__ 保持一致"""
+        """等值比较：只比较会话标识字段，与 __hash__ 保持一致。"""
         if not isinstance(other, Event):
             return NotImplemented
-        return (self.bot_id, self.user_id, self.group_id, self.user_type) == (
+        return (self.WS_BOT_ID, self.bot_id, self.bot_self_id, self.user_id, self.group_id, self.user_type) == (
+            other.WS_BOT_ID,
             other.bot_id,
+            other.bot_self_id,
             other.user_id,
             other.group_id,
             other.user_type,
@@ -79,13 +81,19 @@ class Event(MessageReceive):
 
     @property
     def session_id(self) -> str:
-        """会话唯一标识字符串，格式: bot:{bot_id}:group:{group_id} 或 bot:{bot_id}:private:{user_id}"""
+        """会话唯一标识字符串。
+
+        格式: {WS_BOT_ID}:{bot_id}:{bot_self_id}:group:{group_id}
+        或 {WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}
+        """
+        ws_bid = self.WS_BOT_ID or self.real_bot_id or self.bot_id or "0"
         bid = self.bot_id if self.bot_id else "0"
+        bot_self_id = self.bot_self_id if self.bot_self_id else "0"
         if self.user_type != "direct":
             gid = self.group_id if self.group_id else "0"
-            return f"bot:{bid}:group:{gid}"
+            return f"{ws_bid}:{bid}:{bot_self_id}:group:{gid}"
         uid = self.user_id if self.user_id else "0"
-        return f"bot:{bid}:private:{uid}"
+        return f"{ws_bid}:{bid}:{bot_self_id}:private:{uid}"
 
 
 class MessageSend(Struct):

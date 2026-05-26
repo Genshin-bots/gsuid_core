@@ -151,49 +151,83 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
     logger.info("🧠 [Tools] 工具同步完成")
 
 
-async def get_main_agent_tools(query: str = "") -> ToolList:
-    """获取主Agent基础工具集
+# 框架保底工具分类——这些分类下的工具会被无条件全部注入主Agent，
+# 不受向量搜索影响。"保底工具"由工具注册时声明的 category 决定，而非硬编码名单：
+#   - "self"   ：主Agent核心工具（好感度、子Agent、定时任务、消息发送等）
+#   - "buildin"：框架基础工具（搜索、记忆、自我认知、持久状态等）
+# 插件/核心若要让某个工具进入保底池，只需注册时使用上述分类即可。
+GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
 
-    - self 分类：始终加载
-    - buildin 分类：按阈值 0.45 以上加载，最多 6 个（如果有 query 则按 query 筛选）
 
-    by_trigger 分类的工具不再无条件加载，而是通过 search_tools() 向量检索按需加载，
-    避免插件数量膨胀导致工具列表过大（100+ 工具）浪费 Token 并降低 LLM 选工具准确率。
+def get_tools_by_context_tags(tags: List[str], max_count: int = 8) -> ToolList:
+    """根据语境标签匹配工具（语境工具池）。
+
+    工具在注册时可通过 @ai_tools(context_tags=[...]) 声明适用语境，
+    当当前会话语境（群组画像标签）与之匹配时，自动加载该工具集。
 
     Args:
-        query: 用户查询字符串，用于筛选 buildin 工具。如果为空则使用通用查询。
+        tags: 当前会话的语境标签，如 ["原神", "游戏"]
+        max_count: 返回工具数量上限
+
+    Returns:
+        匹配到的 Tool 对象列表（按匹配标签数降序）
     """
-    from gsuid_core.ai_core.rag.base import client, embedding_model
+    if not tags:
+        return []
 
+    tag_set = {t.lower() for t in tags if t}
+    scored: List[tuple[int, Any]] = []
+    for tool_base in get_all_tools().values():
+        if not tool_base.context_tags:
+            continue
+        overlap = len({t.lower() for t in tool_base.context_tags} & tag_set)
+        if overlap > 0:
+            scored.append((overlap, tool_base.tool))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [tool for _, tool in scored[:max_count]]
+
+
+async def get_scope_context_tags(scope_key: str) -> List[str]:
+    """读取某个群组 scope 的语境标签（来自群组画像）。
+
+    Args:
+        scope_key: 记忆系统的 scope_key，如 "group:929275476"
+    """
+    try:
+        from gsuid_core.ai_core.memory.group_profile import get_context_tags
+
+        return await get_context_tags(scope_key)
+    except Exception as e:
+        logger.debug(f"🧠 [Tools] 读取语境标签失败: {e}")
+        return []
+
+
+async def get_main_agent_tools(query: str = "") -> ToolList:
+    """获取主Agent的框架保底工具集。
+
+    `GUARANTEED_TOOL_CATEGORIES`（即 `self` + `buildin` 分类）下的工具
+    **无条件全部加载**，不受向量搜索影响——这两个分类就是"框架保底工具池"，
+    覆盖搜索、记忆、自我认知、持久状态、好感度、子Agent、定时任务等基础能力。
+
+    判定一个工具是否为保底工具，完全取决于它注册时声明的 `category`，
+    不再依赖任何硬编码的工具名单。
+
+    `by_trigger` / `common` / `media` / `mcp` 等分类的工具不在此函数加载，
+    而是通过 `search_tools()` 向量检索按需加载，避免插件工具膨胀浪费 Token。
+
+    Args:
+        query: 保留参数（保底工具不再依赖 query 筛选），仅作签名兼容。
+    """
     all_tools_cag = get_registered_tools()
-    result_tools = []
+    result_tools: ToolList = []
 
-    # self 分类始终加载（ToolBase 包装对象，需要取 .tool）
-    if "self" in all_tools_cag:
-        for tool_base in all_tools_cag["self"].values():
+    for cat in GUARANTEED_TOOL_CATEGORIES:
+        if cat not in all_tools_cag:
+            continue
+        for tool_base in all_tools_cag[cat].values():
             result_tools.append(tool_base.tool)
-        logger.debug(f"🧠 [Tools] self 分类加载 {len(all_tools_cag['self'])} 个工具")
-
-    # buildin 分类按阈值加载（search_tools 返回的已经是 Tool 对象）
-    if "buildin" in all_tools_cag:
-        if client is not None and embedding_model is not None:
-            # 使用用户查询加载高相似度的 buildin 工具，如果 query 为空则使用通用查询
-            search_query = query if query else "buildin tool utility common function"
-            buildin_tools_search = await search_tools(
-                query=search_query,
-                limit=4,
-                category="buildin",
-                threshold=0.1,
-            )
-            logger.debug(
-                f"🧠 [Tools] buildin 分类通过阈值筛选加载 {len(buildin_tools_search)} 个工具 (query: {search_query})"
-            )
-            result_tools.extend(buildin_tools_search)
-        else:
-            # AI功能未启用时，加载所有 buildin 工具（ToolBase 包装对象，需要取 .tool）
-            for tool_base in all_tools_cag["buildin"].values():
-                result_tools.append(tool_base.tool)
-            logger.debug(f"🧠 [Tools] buildin 分类加载 {len(all_tools_cag['buildin'])} 个工具（AI未启用）")
+        logger.debug(f"🧠 [Tools] 保底分类 [{cat}] 加载 {len(all_tools_cag[cat])} 个工具")
 
     return result_tools
 

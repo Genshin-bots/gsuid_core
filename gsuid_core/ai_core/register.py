@@ -50,7 +50,12 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
 _ENTITIES: List[Union[KnowledgePoint, KnowledgeBase, ImageEntity]] = []  # 来自插件注册的知识和图片
 _MANUAL_ENTITIES: List[ManualKnowledgeBase] = []  # 手动添加的知识，不会自动同步
 _IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片
-_ALIASES: Dict[str, List[str]] = {}
+# 别名注册表（C2-d 分 scope 防跨域串味）：
+# 结构为 {scope: {别名: [正式名候选, ...]}}。
+# scope 默认 "global"（插件注册的通用别名）；插件可传业务 scope（如 "Genshin"）
+# 隔离同名别名（如"深渊"在不同游戏指代不同对象）。
+# 值为 List 以天然支持一对多 / 多候选映射，供动态实体链接按上下文消歧（C2-e）。
+_ALIASES: Dict[str, Dict[str, List[str]]] = {}
 
 
 @overload
@@ -77,6 +82,8 @@ def ai_tools(
     *,
     category: str = "default",
     check_func: Optional[CheckFunc] = None,
+    context_tags: Optional[List[str]] = None,
+    capability_domain: Optional[str] = None,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -88,6 +95,11 @@ def ai_tools(
         func: 被装饰的函数
         category: 工具分类名称，默认 "default"。用于将工具放入不同的分类字典中
         check_func: 可选的权限校验函数
+        context_tags: 可选的语境标签列表，如 ["原神", "游戏"]。
+            声明后，框架会在匹配该语境的群聊中自动加载本工具（语境工具池）。
+        capability_domain: 可选的能力域名称，如 "原神数据"、"网络搜索"。
+            声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
+            替代生硬的函数名罗列。未声明时按 category 兜底。
         **check_kwargs: 传递给 check_func 的额外参数
     """
 
@@ -214,13 +226,15 @@ def ai_tools(
         # 获取插件名称
         plugin_name = _get_plugin_name_from_module(fn.__module__)
 
-        logger.info(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {category})")
+        logger.debug(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {category})")
 
         tool_base = ToolBase(
             name=fn.__name__,
-            description=(fn.__doc__ or "").strip(),
+            description=(wrapped_tool.__doc__ or "").strip(),
             plugin=plugin_name,
             tool=tool_obj,
+            context_tags=context_tags,
+            capability_domain=capability_domain,
         )
 
         # 根据 category 分类注册工具
@@ -248,15 +262,26 @@ def get_all_tools() -> Dict[str, ToolBase]:
     return result
 
 
-def ai_alias(name: str, alias: Union[str, List[str]]):
+def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global"):
     """
-    为特定实体注册别名, 用于大模型调用前进行专有名词归一化
+    为特定实体注册别名。
+
+    注册的别名会接入 AI 记忆摄入链路（C2-c）：实体抽取时框架会把命中的别名
+    作为"本群已知别名"注入提取提示词，指导 LLM 把别名对齐到正式名；
+    检索期也会用于查询展开。
+
+    Args:
+        name:  正式名称
+        alias: 单个别名或别名列表
+        scope: 别名作用域，默认 "global"（通用）。插件可传业务 scope（如 "Genshin"）
+               隔离同名别名，避免"深渊"等词在不同游戏间串味。
+
     调用时, 例如:
 
-    from gsuid_core.ai_core.register import ai_alias
+        from gsuid_core.ai_core.register import ai_alias
 
-    ai_alias("丝柯克", ['skk', '斯柯克'])
-
+        ai_alias("丝柯克", ['skk', '斯柯克'])
+        ai_alias("幽境危战", "深渊", scope="WutheringWaves")
     """
     # 检查AI是否启用，未启用则跳过别名注册
     try:
@@ -270,14 +295,35 @@ def ai_alias(name: str, alias: Union[str, List[str]]):
     if isinstance(alias, str):
         alias = [alias]
 
+    scope_map = _ALIASES.setdefault(scope, {})
     for a in alias:
-        if a not in _ALIASES:
-            _ALIASES[a] = []
+        formals = scope_map.setdefault(a, [])
+        if name not in formals:
+            formals.append(name)
 
-        if name not in _ALIASES[a]:
-            _ALIASES[a].append(name)
+    logger.trace(f"🧠 [AI][Registry] Registered aliases for {name} (scope={scope}): {alias}")
 
-    logger.trace(f"🧠 [AI][Registry] Registered aliases for {name}: {alias}")
+
+def get_aliases_for_scope(scope: str = "global") -> Dict[str, List[str]]:
+    """获取指定 scope 的别名映射（合并 global 兜底）。
+
+    返回扁平的 {别名: [正式名候选, ...]} 字典，供记忆摄入提示词注入（C2-a）
+    与检索期查询展开 / 动态实体链接（C2-e）消费。
+
+    Args:
+        scope: 业务 scope；始终额外并入 "global" 通用别名。
+    """
+    merged: Dict[str, List[str]] = {}
+    for src_scope in ("global", scope):
+        scope_map = _ALIASES[src_scope] if src_scope in _ALIASES else None
+        if not scope_map:
+            continue
+        for alias, formals in scope_map.items():
+            bucket = merged.setdefault(alias, [])
+            for f in formals:
+                if f not in bucket:
+                    bucket.append(f)
+    return merged
 
 
 def ai_entity(entity: Union[KnowledgePoint, KnowledgeBase]):

@@ -12,12 +12,7 @@ from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
-from gsuid_core.ai_core.memory import observe
 from gsuid_core.utils.cooldown import cooldown_tracker
-from gsuid_core.ai_core.history import get_history_manager
-from gsuid_core.ai_core.handle_ai import handle_ai_chat
-from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -26,8 +21,8 @@ from gsuid_core.utils.plugins_config.gs_config import (
     log_config,
 )
 
-# 初始化历史记录管理器
-history_manager = get_history_manager()
+# 注意：handle_ai / history / memory / statistics 等 AI 重模块改为在
+# handle_event 内按需懒加载，避免 import handler 时同步拉起 AI ML 栈而阻塞启动。
 
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
@@ -139,10 +134,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if show_receive:
         logger.info("[收到事件]", event_payload=event)
 
+    from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
+
+    ai_scope_banned = is_scope_banned(event.session_id)
+
     # ====== Meme Observer Hook ======
     from gsuid_core.ai_core.meme.observer import observe_message_for_memes
 
-    if enable_ai:
+    if enable_ai and not ai_scope_banned:
         meme_task = asyncio.create_task(
             observe_message_for_memes(
                 event,
@@ -181,7 +180,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if event.file:
             metadata["file_id"] = event.file
 
-        history_manager.add_message(
+        from gsuid_core.message_history import get_history_manager
+
+        get_history_manager().add_message(
             event=event,
             role="user",
             content=event.raw_text.strip(),
@@ -190,7 +191,12 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         )
 
         # ====== Memory Observer Hook ======
-        if enable_ai and event.raw_text and event.raw_text.strip():
+        _has_text = bool(event.raw_text and event.raw_text.strip())
+        _img_urls = [img for img in ([event.image] + list(event.image_list or [])) if isinstance(img, str) and img]
+        if enable_ai and not ai_scope_banned and (_has_text or _img_urls):
+            from gsuid_core.ai_core.memory import observe
+            from gsuid_core.ai_core.memory.config import memory_config
+
             is_enable_memory: bool = ai_config.get_config("enable_memory").data
             memory_mode: list[str] = memory_config.memory_mode
             memory_session: str = memory_config.memory_session
@@ -213,7 +219,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     if persona_name is not None:
                         should_observe = True
 
-                if should_observe:
+                if should_observe and _has_text:
                     mem_task = asyncio.create_task(
                         observe(
                             content=event.raw_text,
@@ -225,6 +231,22 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                         )
                     )
                     ws._add_bg_task(mem_task)
+
+                # C9 多模态摄入：高价值图片走独立队列，由 ImageUnderstandWorker
+                # 异步转述后再进主管道——纯入队、不阻塞当前消息处理。
+                if should_observe and _img_urls:
+                    from gsuid_core.ai_core.memory.ingestion.multimodal import (
+                        submit_image_observation,
+                    )
+
+                    submit_image_observation(
+                        image_urls=_img_urls,
+                        speaker_id=str(event.user_id),
+                        group_id=str(event.group_id or event.user_id),
+                        bot_self_id=str(event.bot_self_id),
+                        observer_blacklist=memory_config.observer_blacklist,
+                        message_type="group_msg" if event.group_id else "private_msg",
+                    )
         # ============================================
 
     if event.user_pm == 0:
@@ -432,6 +454,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         # 检查AI是否启用
         if not enable_ai:
             return
+        if ai_scope_banned:
+            return
 
         # 初始化黑名单和白名单
         ai_black_list: List[str] = ai_config.get_config("black_list").data
@@ -485,6 +509,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             if not should_respond:
                 return
+
+            from gsuid_core.ai_core.handle_ai import handle_ai_chat
+            from gsuid_core.ai_core.statistics import statistics_manager
 
             # 记录触发方式统计
             trigger_type = "mention"

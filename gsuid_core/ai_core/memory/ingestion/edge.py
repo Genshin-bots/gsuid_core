@@ -14,9 +14,19 @@ from sqlmodel import col, select
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.memory.vector.ops import search_edges, upsert_edge_vectors_batch
 from gsuid_core.utils.database.base_models import async_maker
-from gsuid_core.ai_core.memory.database.models import AIMemEdge
+from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemConflict
 
 logger = logging.getLogger(__name__)
+
+# C11 矛盾检测：否定极性标记词。两条同 src/tgt 的高相似 fact 若极性相反，
+# 视为"语义矛盾"而非"重复陈述"——按时效以新事实为准，旧事实软删除并记录冲突。
+_NEGATION_MARKERS = ("不", "没", "无", "非", "别", "讨厌", "拒绝", "反对", "停止")
+
+
+def _fact_polarity(fact: str) -> bool:
+    """粗判 fact 的否定极性：含奇数个否定标记 → True（否定句）。"""
+    hits = sum(fact.count(m) for m in _NEGATION_MARKERS)
+    return hits % 2 == 1
 
 
 async def extract_and_upsert_edges(
@@ -54,41 +64,55 @@ async def extract_and_upsert_edges(
     if not valid_edges:
         return
 
-    # 并行执行所有冲突检测的向量搜索（session 外执行，避免长时间持有连接）
-    async def _check_conflict(fact: str, source_id: str, target_id: str) -> list[str]:
-        """返回需要标记为过期的 Edge ID 列表"""
-        expired_ids: list[str] = []
+    # C1 跨发言者归并：并行检索语义等价的既有 Edge（session 外执行，避免长时间持连接）。
+    # 同一 fact（相似度≥阈值）被不同 source 重复陈述时，归并到既有 Edge 并累加
+    # mention_count，而不再写入 N 条重复 Edge + 软删除。
+    async def _find_mergeable_edge(fact: str, source_id: str, target_id: str) -> str:
+        """返回可归并到的既有有效 Edge ID（同 src/tgt 且语义≥阈值），无则返回空串。"""
         try:
             similar_edges = await search_edges(fact, [scope_key], top_k=3)
         except Exception:
-            return expired_ids
+            return ""
         for sim_edge in similar_edges:
-            if sim_edge["score"] >= threshold:
-                if (
-                    sim_edge["source_id"] == source_id
-                    and sim_edge["target_id"] == target_id
-                    and sim_edge["invalid_at_ts"] is None
-                ):
-                    expired_ids.append(sim_edge["id"])
-        return expired_ids
+            if (
+                sim_edge["score"] >= threshold
+                and sim_edge["source_id"] == source_id
+                and sim_edge["target_id"] == target_id
+                and sim_edge["invalid_at_ts"] is None
+            ):
+                return sim_edge["id"]
+        return ""
 
-    conflict_results = await asyncio.gather(*[_check_conflict(fact, sid, tid) for _, sid, tid, fact in valid_edges])
+    merge_results = await asyncio.gather(*[_find_mergeable_edge(fact, sid, tid) for _, sid, tid, fact in valid_edges])
 
     # 统一在一个 session 中写入所有 Edge
     edges_vector_data: list[dict] = []
-    # BUG-04/3.5 修复：记录需要更新 Qdrant payload 的失效 Edge
-    expired_edge_updates: list[tuple[str, float]] = []  # (edge_id, invalid_at_ts)
+    merged_count = 0
 
     async with async_maker() as session:
         for i, (edge_data, source_id, target_id, fact) in enumerate(valid_edges):
-            # 标记冲突的旧 Edge 为过期
-            for expired_id in conflict_results[i]:
-                result = await session.execute(select(AIMemEdge).where(col(AIMemEdge.id) == expired_id))
+            merge_into = merge_results[i]
+            if merge_into:
+                result = await session.execute(select(AIMemEdge).where(col(AIMemEdge.id) == merge_into))
                 old_edge = result.scalar_one_or_none()
-                if old_edge:
-                    old_edge.invalid_at = now
-                    # BUG-04/3.5 修复：记录需要同步更新 Qdrant payload 的失效 Edge
-                    expired_edge_updates.append((expired_id, now.timestamp()))
+                if old_edge is not None:
+                    if _fact_polarity(old_edge.fact) != _fact_polarity(fact):
+                        # C11 语义矛盾：同 src/tgt 高相似但极性相反 → 以新事实为准，
+                        # 旧事实软删除 + 记录 AIMemConflict（不在普通回复中堆叠新旧矛盾）。
+                        old_edge.invalid_at = now
+                        await AIMemConflict.record(
+                            scope_key=scope_key,
+                            fact_signature=f"{source_id}|{target_id}",
+                            old_edge_id=old_edge.id,
+                            new_edge_id="",
+                            summary=f"[事实更新] 旧:{old_edge.fact[:120]} → 新:{fact[:120]}",
+                        )
+                    else:
+                        # 命中既有等价 Edge：累加提及次数并刷新有效期，不写重复 Edge
+                        old_edge.mention_count = (old_edge.mention_count or 1) + 1
+                        old_edge.valid_at = now
+                        merged_count += 1
+                        continue
 
             # 创建新 Edge
             edge_id = str(uuid.uuid4())
@@ -100,6 +124,7 @@ async def extract_and_upsert_edges(
                 target_entity_id=target_id,
                 valid_at=now,
                 qdrant_id=edge_id,
+                mention_count=1,
             )
             session.add(new_edge)
 
@@ -118,22 +143,8 @@ async def extract_and_upsert_edges(
 
         await session.commit()
 
-    # BUG-04/3.5 修复：Edge 失效时必须同步更新 Qdrant payload 中的 invalid_at_ts 字段
-    # 否则 Qdrant 向量搜索时，已失效的 Edge 仍会被返回，导致 System-1 检索结果中混入已失效的 Edge
-    if expired_edge_updates:
-        try:
-            from gsuid_core.ai_core.rag.base import client
-            from gsuid_core.ai_core.memory.vector.collections import MEMORY_EDGES_COLLECTION
-
-            if client is not None:
-                for expired_id, invalid_at_ts in expired_edge_updates:
-                    await client.set_payload(
-                        collection_name=MEMORY_EDGES_COLLECTION,
-                        payload={"invalid_at_ts": invalid_at_ts},
-                        points=[expired_id],
-                    )
-        except Exception as e:
-            logger.warning(f"Edge invalid_at_ts Qdrant payload update failed: {e}")
+    if merged_count:
+        logger.info(f"🧠 [Memory] scope={scope_key} Edge 归并 {merged_count} 条重复事实")
 
     # 批量写入所有 Qdrant 向量（无锁并发计算 + 单次批量加锁写入）
     if edges_vector_data:

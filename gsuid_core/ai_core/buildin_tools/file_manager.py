@@ -7,6 +7,7 @@
 import os
 import asyncio
 import platform
+import subprocess
 from typing import Optional
 from pathlib import Path
 
@@ -17,28 +18,34 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.resource import FILE_PATH
 
+# Windows + SelectorEventLoop（见 core.py）不支持 asyncio 子进程；
+# 与 command_executor.py 同源——见同名常量的注释。
+_IS_WINDOWS = platform.system() == "Windows"
+
 
 def _get_safe_path(base_path: Path, relative_path: str) -> Optional[Path]:
-    """安全地获取路径，防止路径遍历攻击
+    """安全地获取路径，防止路径遍历攻击。
 
-    Args:
-        base_path: 基础路径 (FILE_PATH)
-        relative_path: 用户提供的相对路径
-
-    Returns:
-        安全解析后的路径，如果路径不合法则返回 None
+    v2 · Kanban：如果当前在任务执行上下文中（绑定了 artifact_workspace），路径会
+    被强制解析到 Artifact Workspace 内，base_path 退化为兜底；否则保持原沙盒行为。
     """
     try:
-        # 清理路径，去除多余的斜杠和点
-        clean_path = os.path.normpath(relative_path)
-        # 构建完整路径
-        full_path = (base_path / clean_path).resolve()
-        # 确保路径在 base_path 下，防止路径遍历
-        if not str(full_path).startswith(str(base_path.resolve())):
+        from gsuid_core.ai_core.planning.workspace import resolve_safe_path
+
+        full_path, err = resolve_safe_path(relative_path, base_path)
+        if err:
             return None
         return full_path
-    except Exception:
-        return None
+    except ImportError:
+        # planning 模块尚未就绪（极早期启动），退回纯沙盒解析
+        try:
+            clean_path = os.path.normpath(relative_path)
+            full_path = (base_path / clean_path).resolve()
+            if not str(full_path).startswith(str(base_path.resolve())):
+                return None
+            return full_path
+        except Exception:
+            return None
 
 
 @ai_tools()
@@ -120,6 +127,8 @@ async def write_file_content(
 
     safe_path = _get_safe_path(FILE_PATH, file_path)
     if safe_path is None:
+        # v2 · Kanban：越界写入直接登记 workspace_violation 事件供调度器统计
+        await _record_workspace_violation(file_path, "write_file_content 越界拒绝")
         return f"错误：非法路径访问拒绝: {file_path}"
 
     try:
@@ -132,11 +141,93 @@ async def write_file_content(
 
         safe_path.write_text(content, encoding="utf-8")
         logger.info(f"🧠 [BuildinTools] 写入文件成功: {file_path}")
+        # v2 · Kanban：写入完成后立刻把新文件登记为 workspace_file artifact，
+        # 让主人格 artifact_list / 看板工作区视图能立即看到中间代码。否则会回到
+        # 实测会话 a5696b00 的状态：code_agent 写了 .py 文件但主人格只看到 .png，
+        # 以为代理"没生成代码"。详见 §workspace 自动登记完整性章节。
+        await _register_single_workspace_file(safe_path)
         return f"成功写入文件: {file_path}"
 
     except Exception as e:
         logger.exception(f"🧠 [BuildinTools] 写入文件失败: {e}")
         return f"错误：写入文件失败: {str(e)}"
+
+
+async def _register_single_workspace_file(path: Path) -> None:
+    """把单个 workspace 内文件登记为 workspace_file artifact（如未登记）。
+
+    用于 ``write_file_content`` 写入完成后、``execute_file`` 执行前后扫描新增/修改文件。
+    无任务上下文 / planning 未就绪时静默 no-op。同一份路径已被登记过时框架按
+    payload_path 去重——多 artifact 共享一个 path 时 TTL 清理也按 path 去重。
+    """
+    try:
+        from gsuid_core.ai_core.planning.runtime import get_plan_context
+        from gsuid_core.ai_core.planning.workspace import register_workspace_artifacts
+
+        plan_ctx = get_plan_context()
+        if plan_ctx is None or plan_ctx.artifact_workspace is None or not plan_ctx.task_id:
+            return
+        if not path.exists() or not path.is_file():
+            return
+        # 确保路径在 workspace 内
+        try:
+            path.resolve().relative_to(plan_ctx.artifact_workspace.resolve())
+        except ValueError:
+            return
+        size = path.stat().st_size
+        await register_workspace_artifacts(
+            root_task_id=plan_ctx.root_task_id,
+            task_id=plan_ctx.task_id,
+            workspace=plan_ctx.artifact_workspace,
+            changes=[(path, size)],
+            agent_profile=plan_ctx.agent_profile or "",
+            parent_task_id=None,
+        )
+    except ImportError:
+        return
+    except Exception as e:
+        logger.debug(f"🧠 [BuildinTools] workspace_file artifact 自动登记失败: {e}")
+
+
+def _resolve_exec_cwd(fallback: Path) -> Path:
+    """v2 · Kanban：处于任务执行上下文时，把 cwd 强制为 Artifact Workspace。
+
+    2026-05-23 加固注释：``fallback`` 永远是 ``FILE_PATH``（``execute_file`` 入参），
+    **绝不允许**被改成 ``Path.cwd()`` 或项目根——后者会让 code_agent 的脚本在主
+    仓库根目录跑，污染框架自身。``capability_agents/runner._ensure_adhoc_workspace``
+    保证 ``create_subagent`` 路径下也会绑定 ad-hoc workspace；这里的 fallback 只
+    在"planning 模块未就绪 / fallback 路径仍能正常工作"的极早期场景生效。
+    """
+    try:
+        from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+        plan_ctx = get_plan_context()
+        if plan_ctx is not None and plan_ctx.artifact_workspace is not None:
+            ws = plan_ctx.artifact_workspace
+            ws.mkdir(parents=True, exist_ok=True)
+            return ws
+    except ImportError:
+        pass
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+async def _record_workspace_violation(req_path: str, detail: str) -> None:
+    """v2 · Kanban：若处于任务上下文，把越界拒绝写入任务日志（不在则静默）。"""
+    try:
+        from gsuid_core.ai_core.planning.runtime import get_plan_context
+        from gsuid_core.ai_core.planning.workspace import record_violation
+
+        plan_ctx = get_plan_context()
+        if plan_ctx is None or not plan_ctx.task_id:
+            return
+        await record_violation(
+            plan_ctx.task_id,
+            f"{detail}: {req_path}",
+            root_task_id=plan_ctx.root_task_id,
+        )
+    except ImportError:
+        return
 
 
 @ai_tools()
@@ -209,29 +300,71 @@ async def execute_file(
         if args:
             cmd.extend(args.split())
 
-        logger.info(f"🧠 [BuildinTools] 执行文件: {' '.join(cmd)}")
+        # v2 · Kanban：在任务执行上下文里把 cwd 强制为 Artifact Workspace，
+        # 命令产出的所有文件都自动落在任务节点的工作区下；非任务上下文沿用 FILE_PATH。
+        exec_cwd_path = _resolve_exec_cwd(FILE_PATH)
+        exec_cwd = str(exec_cwd_path)
 
-        # 使用 asyncio 执行子进程
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(FILE_PATH),
-        )
+        logger.info(f"🧠 [BuildinTools] 执行文件: {' '.join(cmd)} cwd={exec_cwd}")
 
-        stdout, stderr = await process.communicate()
+        # 执行前快照 workspace（仅当 cwd 是任务的 workspace 时——非任务上下文跑
+        # FILE_PATH 沙盒不登记 artifact）
+        before_snapshot = None
+        try:
+            from gsuid_core.ai_core.planning.runtime import get_plan_context
+            from gsuid_core.ai_core.planning.workspace import snapshot_workspace
+
+            plan_ctx = get_plan_context()
+            if plan_ctx is not None and plan_ctx.artifact_workspace is not None:
+                ws = plan_ctx.artifact_workspace
+                # 仅当 exec_cwd 就是当前任务的 workspace 时才扫描——避免把 FILE_PATH
+                # 沙盒的产物错登记到任务 workspace（虽然两者通常一致）
+                if str(exec_cwd_path.resolve()) == str(ws.resolve()):
+                    before_snapshot = snapshot_workspace(ws)
+        except ImportError:
+            before_snapshot = None
+
+        if _IS_WINDOWS:
+            stdout, stderr, returncode = await _exec_file_in_thread(cmd, exec_cwd)
+        else:
+            stdout, stderr, returncode = await _exec_file_async(cmd, exec_cwd)
+
+        # 执行后扫描 workspace 变更，登记新增 / 修改文件为 workspace_file artifact——
+        # 让代理跑完脚本生成的所有产物自动出现在 artifact_list / 看板工作区视图。
+        if before_snapshot is not None:
+            try:
+                from gsuid_core.ai_core.planning.runtime import get_plan_context
+                from gsuid_core.ai_core.planning.workspace import (
+                    scan_workspace_changes,
+                    register_workspace_artifacts,
+                )
+
+                plan_ctx = get_plan_context()
+                if plan_ctx is not None and plan_ctx.artifact_workspace is not None and plan_ctx.task_id:
+                    changes = scan_workspace_changes(plan_ctx.artifact_workspace, before_snapshot)
+                    if changes:
+                        await register_workspace_artifacts(
+                            root_task_id=plan_ctx.root_task_id,
+                            task_id=plan_ctx.task_id,
+                            workspace=plan_ctx.artifact_workspace,
+                            changes=changes,
+                            agent_profile=plan_ctx.agent_profile or "",
+                            parent_task_id=None,
+                        )
+            except Exception as e:
+                logger.debug(f"🧠 [BuildinTools] execute_file workspace 扫描失败: {e}")
 
         result_parts = []
         if stdout:
             result_parts.append(f"标准输出:\n{stdout.decode('utf-8', errors='replace')}")
         if stderr:
             result_parts.append(f"标准错误:\n{stderr.decode('utf-8', errors='replace')}")
-        if process.returncode != 0:
-            result_parts.append(f"退出码: {process.returncode}")
+        if returncode != 0:
+            result_parts.append(f"退出码: {returncode}")
 
         result = "\n".join(result_parts) if result_parts else "命令执行完成，无输出"
 
-        logger.info(f"🧠 [BuildinTools] 文件执行完成，退出码: {process.returncode}")
+        logger.info(f"🧠 [BuildinTools] 文件执行完成，退出码: {returncode}")
         return result
 
     except FileNotFoundError as e:
@@ -239,6 +372,38 @@ async def execute_file(
     except Exception as e:
         logger.exception(f"🧠 [BuildinTools] 执行文件失败: {e}")
         return f"错误：执行文件失败: {str(e)}"
+
+
+async def _exec_file_async(cmd: list, cwd: str) -> tuple[bytes, bytes, int]:
+    """POSIX 路径：原生 asyncio 子进程跑文件。"""
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
+    stdout, stderr = await process.communicate()
+    return stdout, stderr, process.returncode or 0
+
+
+async def _exec_file_in_thread(cmd: list, cwd: str) -> tuple[bytes, bytes, int]:
+    """Windows 路径：见 command_executor._run_subprocess_in_thread 的成因说明。"""
+
+    def _runner() -> tuple[bytes, bytes, int]:
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+        completed = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            check=False,
+            creationflags=creationflags,
+        )
+        return completed.stdout or b"", completed.stderr or b"", completed.returncode
+
+    return await asyncio.to_thread(_runner)
 
 
 @ai_tools()
@@ -318,20 +483,24 @@ async def list_directory(
     """
     列出目录内容
 
-    列出 FILE_PATH 目录下指定文件夹的内容。
+    列出当前可写沙盒下指定文件夹的内容。在 Kanban / ad-hoc 任务上下文里，
+    根目录是该任务的 Artifact Workspace；其它情况下回退到 FILE_PATH 沙盒。
 
     Args:
         ctx: 工具执行上下文
-        dir_path: 相对于 FILE_PATH 的目录路径，默认为空（列出根目录）
+        dir_path: 相对于沙盒根的目录路径，默认为空（列出根目录本身）
 
     Returns:
         目录内容列表
 
     Example:
         >>> result = await list_directory(ctx, "subfolder")
-        >>> result = await list_directory(ctx)  # 列出根目录
+        >>> result = await list_directory(ctx)  # 列出沙盒根
     """
-    safe_path = _get_safe_path(FILE_PATH, dir_path)
+    # 空字符串 = "当前沙盒根"。resolve_safe_path 把空串当成非法请求会拒绝，
+    # 这里替成 "." 让它解析到 workspace / FILE_PATH 本身。实测会话里 code_agent
+    # 多次 list_directory() 都被拒，只能改用 execute_shell_command 绕一圈。
+    safe_path = _get_safe_path(FILE_PATH, dir_path or ".")
     if safe_path is None:
         return f"错误：非法路径访问拒绝: {dir_path}"
 

@@ -492,19 +492,53 @@ async def _hybrid_search_edges(
     scope_keys: list[str],
     top_k: int = 20,
 ) -> list["Edge"]:
-    """搜索 Edge"""
+    """搜索 Edge，并批量回填 source_name / target_name"""
     results = await _hybrid_search_impl(MEMORY_EDGES_COLLECTION, query, scope_keys, top_k)
+
+    # 收集所有 source/target entity ID，批量查询实体名称
+    entity_ids: set[str] = set()
+    for r in results:
+        source_id = r["source_entity_id"]
+        target_id = r["target_entity_id"]
+        if source_id:
+            entity_ids.add(source_id)
+        if target_id:
+            entity_ids.add(target_id)
+
+    # 批量从 Qdrant 获取实体名称
+    id_to_name: dict[str, str] = {}
+    if entity_ids:
+        from gsuid_core.ai_core.rag.base import client as qdrant_client
+
+        if qdrant_client is not None:
+            try:
+                entity_results = await qdrant_client.retrieve(
+                    collection_name=MEMORY_ENTITIES_COLLECTION,
+                    ids=list(entity_ids),
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for er in entity_results:
+                    if er.payload and "name" in er.payload:
+                        id_to_name[str(er.id)] = er.payload["name"]
+            except Exception as e:
+                logger.warning(f"🧠 [Qdrant] Edge 实体名称批量查询失败: {e}")
+
     edges: list["Edge"] = []
     for r in results:
+        source_id = r["source_entity_id"]
+        target_id = r["target_entity_id"]
         edges.append(
             {
                 "id": r["id"],
-                "source_id": r["source_entity_id"] if "source_entity_id" in r else "",
-                "target_id": r["target_entity_id"] if "target_entity_id" in r else "",
-                "fact": r["fact"] if "fact" in r else "",
+                "source_id": source_id,
+                "target_id": target_id,
+                "source_name": id_to_name[source_id] if source_id in id_to_name else "",
+                "target_name": id_to_name[target_id] if target_id in id_to_name else "",
+                "fact": r["fact"],
                 "weight": 0.0,
-                "score": r["score"] if "score" in r else 0.0,
-                "invalid_at_ts": r["invalid_at_ts"] if "invalid_at_ts" in r else None,
+                "score": r["score"],
+                "invalid_at_ts": r["invalid_at_ts"],
             }
         )
     return edges

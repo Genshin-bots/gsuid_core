@@ -5,13 +5,12 @@ Scheduled Task 启动模块
 """
 
 from gsuid_core.logger import logger
-from gsuid_core.server import on_core_start, on_core_shutdown
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 from .executor import reload_pending_tasks, cleanup_completed_tasks
 
 
-@on_core_start
 async def init_scheduled_tasks():
     """
     初始化定时任务调度器
@@ -38,6 +37,10 @@ async def shutdown_scheduled_tasks():
     在系统关闭时调用，清理所有已完成任务的 APScheduler job，
     避免重启后重复触发已完成的任务。
     """
+    if not ai_config.get_config("enable").data:
+        logger.info("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务关闭清理")
+        return
+
     try:
         count = await cleanup_completed_tasks()
         logger.info(f"✅ [ScheduledTask] 定时任务调度器关闭完成，清理了 {count} 个已完成任务")

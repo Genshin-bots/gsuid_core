@@ -196,16 +196,38 @@ class StringConfig:
         with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
             logger.warning(f"[配置][{self.config_name}] 配置文件格式有变动, 已重置...")
             # 打开self.CONFIG_PATH，用json加载
-            temp_config: Dict[str, Dict[str, Any]] = json.load(f)
+            temp_config: Dict[str, Any] = json.load(f)
 
             for key in self.config_list:
                 defalut_dict = to_builtins(self.config_list[key])
                 if key not in temp_config:
                     continue
-                if list(temp_config[key].keys()) == list(defalut_dict.keys()):
+                stored = temp_config[key]
+                # 容错：已知配置项的值若不是 dict（如被外部模块误写成字符串），
+                # 直接当作"格式异常"重置为默认值，避免后续 .keys() 抛 AttributeError。
+                if not isinstance(stored, dict):
+                    temp_config[key] = defalut_dict
+                    continue
+                if list(stored.keys()) == list(defalut_dict.keys()):
                     continue
                 else:
                     temp_config[key] = defalut_dict
+
+            # 旁路字段清理: 不属于 config_list 且不是 dict 的字段 (字符串 / 数字 /
+            # 列表) 一定不是 GSC 条目, 留着会让 update_config 再次 ValidationError
+            # 进入死循环。``repair_config`` 必须在每次调用中都至少推进一步, 否则
+            # update_config -> repair_config -> update_config 永不收敛。
+            #
+            # 保留"不在 config_list 但形如 dict"的字段 (可能是模板调整后遗留的
+            # 历史 GSC 条目, 应当让用户/迁移流程显式处理而不是静默丢弃)。
+            foreign_non_dict_keys = [
+                k for k, v in temp_config.items() if k not in self.config_list and not isinstance(v, dict)
+            ]
+            for k in foreign_non_dict_keys:
+                logger.warning(
+                    f"[配置][{self.config_name}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {type(temp_config[k]).__name__})"
+                )
+                temp_config.pop(k)
 
         with open(self.CONFIG_PATH, "w", encoding="UTF-8") as f:
             json.dump(temp_config, f, indent=4, ensure_ascii=False)

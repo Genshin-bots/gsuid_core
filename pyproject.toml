@@ -61,10 +61,10 @@ dependencies = [
     "fastmcp>=2.0.0",
     "markdownify>=1.2.2",
     "onnxruntime>=1.24.1",
-    "pyhtmlrender>=0.1.5",
+    "pyhtmlrender>=0.1.6",
 ]
 name = "gsuid-core"
-version = "0.10.3"
+version = "0.10.5"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 

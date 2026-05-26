@@ -202,9 +202,28 @@ class _Bot:
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
     ):
+        try:
+            from gsuid_core.buildin_plugins.core_command.core_ai_control.state import (
+                is_scope_banned,
+                get_target_scope_key,
+            )
+
+            scope_key = get_target_scope_key(
+                ws_bot_id=self.bot_id,
+                bot_id=bot_id,
+                bot_self_id=bot_self_id,
+                target_type=target_type,
+                target_id=target_id,
+            )
+            if scope_key and is_scope_banned(scope_key):
+                logger.debug(f"[Core AI控制] 当前会话范围处于禁言状态，拦截发送: {scope_key}")
+                return
+        except Exception as e:
+            logger.debug(f"[Core AI控制] 禁言状态检查失败，继续发送: {e}")
+
         # 记录 bot 回复到历史记录
         try:
-            from gsuid_core.ai_core.history import get_history_manager
+            from gsuid_core.message_history import get_history_manager
 
             history_manager = get_history_manager()
 
@@ -213,9 +232,9 @@ class _Bot:
                 _hist_group_id = None
                 _hist_user_id = target_id if target_id else bot_self_id
             else:
-                # 群聊场景
+                # 群聊场景：优先使用 bot_self_id，回退到 bot_id
                 _hist_group_id = target_id
-                _hist_user_id = bot_self_id
+                _hist_user_id = bot_self_id or bot_id or self.bot_id
 
             # 提取消息内容
             content = ""
@@ -263,6 +282,7 @@ class _Bot:
             if content and _hist_user_id:
                 ev = Event(
                     bot_id=bot_id,
+                    bot_self_id=bot_self_id,
                     user_type=target_type,
                     group_id=_hist_group_id,
                     user_id=_hist_user_id,

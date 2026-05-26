@@ -44,6 +44,24 @@ async def _run_sync_rerank(
     )
 
 
+def _complete_fact_subject(fact: str, source_name: str) -> str:
+    """给缺少主语的 fact 补全主语。
+
+    历史数据中部分 fact 是"建议关注中证白酒指数"这类缺主语的短语，
+    这里用边的 source_name 补成"用户xxx建议关注…"的完整句子。
+    纯数字名称视为用户 ID，补成"用户{id}"。
+    source_name 由检索阶段直接填充到 Edge.source_name，不再依赖运行时查找。
+    """
+    fact = fact.strip()
+    if not fact:
+        return ""
+    if source_name and source_name not in fact:
+        subject = f"用户{source_name}" if source_name.isdigit() else source_name
+        if subject not in fact:
+            fact = f"{subject}{fact}"
+    return fact
+
+
 @dataclass
 class MemoryContext:
     """双路检索的最终输出，直接注入 Prompt"""
@@ -57,50 +75,99 @@ class MemoryContext:
     )
     retrieval_paths: list[list[dict]] = field(default_factory=list)  # System-2 检索路径
 
-    def to_prompt_text(self, max_chars: int = 24000) -> str:
-        """格式化为可注入 System Prompt 的记忆上下文文本"""
-        parts = []
+    def to_prompt_text(
+        self,
+        max_chars: int = 2000,
+        priority_speakers: Optional[set] = None,
+    ) -> str:
+        """格式化为可注入 System Prompt 的记忆上下文文本。
 
-        # Category 摘要（System-2 路径上的语义节点，信息密度最高）
-        if self.categories:
-            sorted_cats = sorted(self.categories, key=lambda c: c["layer"], reverse=True)
-            cats_text = "\n".join(
-                f"• [L{c['layer']}] {c['name']}: {(c['summary'] or '')[:150]}" for c in sorted_cats[:8]
-            )
-            parts.append(f"【语义类目摘要】\n{cats_text}")
+        采用 Token 预算控制，按"信息密度"分配空间：
+        - 核心事实（edges）：约 55%，是最可供 Agent 推理的内容，优先保证
+        - 语义类目（categories）：约 15%，提供话题大纲
+        - 相关对话片段（episodes）：约 30%，只保留少量最相关轮次
 
-        # 检索路径（论文 Section 2.3：路径信息注入）
-        # Bug-08 修复：retrieval_paths 是 [[Layer0_cats], [Layer1_cats], ...] 结构
-        # 每项是同层选中的所有 category，不应用 → 连接（那是路径不是同类列表）
-        if self.retrieval_paths:
-            path_lines = []
-            for layer_idx, path in enumerate(self.retrieval_paths[:3]):
-                layer_names = ", ".join(p["name"] for p in path)
-                path_lines.append(f"  [Layer{layer_idx}] {layer_names}")
-            parts.append("【检索路径（按层级）】\n" + "\n".join(path_lines))
+        每个区块在自己的预算内逐条累加，超预算即停止，避免低价值内容挤占空间。
 
+        Args:
+            max_chars: 注入预算字符数
+            priority_speakers: C4 预算优先级——这些发言者（如主人）相关的 edge
+                会被稳定上浮到核心事实区块最前，优先占用预算。
+        """
+
+        def _take(items: list[str], budget: int) -> list[str]:
+            """在字符预算内尽量多地累加条目。"""
+            out: list[str] = []
+            used = 0
+            for line in items:
+                if used + len(line) > budget and out:
+                    break
+                out.append(line)
+                used += len(line)
+            return out
+
+        parts: list[str] = []
+
+        # 核心事实（最高优先级）
         if self.edges:
-            facts_text = "\n".join(f"• {e['fact']}" for e in self.edges[: memory_config.search_edge_count])
-            parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
+            fact_budget = int(max_chars * 0.55)
+            edges = self.edges[: memory_config.search_edge_count]
+            # C4 预算优先级：主人等优先发言者的 edge 稳定上浮（不打乱 rerank 内部序）
+            if priority_speakers:
+                edges = sorted(
+                    edges,
+                    key=lambda e: 0 if e["source_name"] in priority_speakers else 1,
+                )
+            # C11 后置拦截器：按 fact 归一化签名去重，避免近义重复事实挤占注入预算
+            fact_lines: list[str] = []
+            seen_facts: set = set()
+            for e in edges:
+                fact = _complete_fact_subject(e["fact"], e["source_name"])
+                if not fact:
+                    continue
+                sig = fact.strip().lower().replace(" ", "")[:24]
+                if sig in seen_facts:
+                    continue
+                seen_facts.add(sig)
+                fact_lines.append(f"• {fact}")
+            taken = _take(fact_lines, fact_budget)
+            if taken:
+                parts.append("【核心事实 - 与当前问题相关】\n" + "\n".join(taken))
 
+        # 语义类目摘要（话题大纲）
+        if self.categories:
+            cat_budget = int(max_chars * 0.15)
+            sorted_cats = sorted(self.categories, key=lambda c: c["layer"], reverse=True)
+            cat_lines = [f"• [L{c['layer']}] {c['name']}: {(c['summary'] or '')[:100]}" for c in sorted_cats[:6]]
+            taken = _take(cat_lines, cat_budget)
+            if taken:
+                parts.append("【语义类目摘要】\n" + "\n".join(taken))
+
+        # 相关对话片段（只保留少量最相关轮次）
         if self.episodes:
-            hist_text = "\n".join(
-                f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content'][:6000]}" for ep in self.episodes[:5]
-            )
-            parts.append(f"【历史对话片段】\n{hist_text if hist_text else '暂无历史对话'}")
+            ep_budget = int(max_chars * 0.30)
+            ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content'][:200]}" for ep in self.episodes[:3]]
+            taken = _take(ep_lines, ep_budget)
+            if taken:
+                parts.append("【相关对话片段】\n" + "\n".join(taken))
 
-        result = str("\n\n".join(parts))
+        result = "\n\n".join(parts)
         if len(result) > max_chars:
             result = result[:max_chars] + "\n...[记忆已截断]"
-        return str(result)
+        return result
 
     def to_memory_text(self, max_chars: int = 24000) -> str:
         """格式化为可注入 Memory 的记忆上下文文本"""
 
-        parts = []
+        parts: list[str] = []
 
         if self.edges:
-            facts_text = "\n".join(f"• {e['fact']}" for e in self.edges[: memory_config.search_edge_count])
+            fact_lines: list[str] = []
+            for e in self.edges[: memory_config.search_edge_count]:
+                fact = _complete_fact_subject(e["fact"], e["source_name"])
+                if fact:
+                    fact_lines.append(f"• {fact}")
+            facts_text = "\n".join(fact_lines)
             parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
 
         result = str("\n\n".join(parts))
@@ -218,6 +285,21 @@ async def dual_route_retrieve(
         )
         scope_keys.append(group_scope)
 
+        # 别名展开：若 query 中出现群内别名，附加正式名称以提升记忆召回
+        try:
+            from gsuid_core.ai_core.memory.group_profile import (
+                get_term_mappings,
+                expand_query_with_aliases,
+            )
+
+            mappings = await get_term_mappings(group_scope)
+            expanded = expand_query_with_aliases(query, mappings)
+            if expanded != query:
+                logger.debug(f"🧠 [Memory] query 别名展开: {query!r} -> {expanded!r}")
+                query = expanded
+        except Exception as e:
+            logger.debug(f"🧠 [Memory] 别名展开失败: {e}")
+
     if enable_user_global and user_id:
         user_scope = make_scope_key(
             ScopeType.USER_GLOBAL,
@@ -317,6 +399,15 @@ async def dual_route_retrieve(
         f"🧠 [Memory] 共计 {len(all_episodes)} 条 Episode, {len(all_entities)} 个 Entity, "
         f"{len(all_edges)} 条 Edge, {len(all_categories)} 个 Category"
     )
+
+    # C11：把本次命中的 Edge 标记为"刚被检索"，刷新 last_accessed 供衰减 Worker 判定。
+    # 后台 fire-and-forget，不阻塞检索返回。
+    # "id" 是 ranked_edges 的固定字段，仅过滤 falsy 值（空串）以防上游异常数据。
+    edge_ids = [e["id"] for e in ranked_edges if "id" in e and e["id"]]
+    if edge_ids:
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        asyncio.create_task(AIMemEdge.touch_accessed(edge_ids))
 
     return MemoryContext(
         episodes=ranked_episodes,

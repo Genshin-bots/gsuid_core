@@ -6,6 +6,7 @@ AI 模块统计管理器
 支持每日数据持久化（启动/关闭/零点重置）。
 """
 
+import asyncio
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from collections import Counter, defaultdict
@@ -48,6 +49,16 @@ class StatisticsManager:
         self._bot_state: BotState = BotState()  # 全局统计状态
         self._today: str = datetime.now().strftime("%Y-%m-%d")
         self._rag: Dict[str, Any] = {"hit": 0, "miss": 0, "documents": {}}
+        # Why: 启动期 _persist_loop (cron */30 + misfire补偿) 可能在 _load_today_data_from_db
+        #      完成前抢先 fire, 把空的 _bot_state 写回 DB, 抹掉当日 AIDailyStatistics 的 total_*,
+        #      却保留 by_model/by_type 表 (空 dict 走 batch_insert 直接 return), 造成
+        #      total < sum(by_model) = sum(by_type) 的永久偏差。用 _loaded 闸门确保
+        #      "未加载完毕一律不许 persist"。
+        self._loaded: bool = False
+        # Why: _persist_loop 与日切 _scheduled_ai_core_reset 在 00:00 会同时触发;
+        #      reset 内 "持久化 → 清空 → 切日期" 三步若被并发 persist 切片, 可能把空状态
+        #      回写到当日 Day N 行。用同一把锁串行化 persist / 日切, 保证原子性。
+        self._persist_lock: asyncio.Lock = asyncio.Lock()
 
     def _reset_daily_counters(self):
         """重置每日计数器"""
@@ -310,15 +321,41 @@ class StatisticsManager:
                 self._rag["hit"] = rag_data.hit_count or 0
                 self._rag["miss"] = rag_data.miss_count or 0
 
+            # 所有维度都加载完毕才开闸放行 persist; 任一步抛异常会跳过本行,
+            # _loaded 保持 False, 让后续 _persist_loop 主动跳过以保护历史数据。
+            self._loaded = True
             logger.info("📊 [StatisticsManager] 成功加载今日统计数据")
         except Exception as e:
             logger.exception(f"📊 [StatisticsManager] 加载今日数据失败: {e}")
 
     async def _persist_all_stats_to_db(self):
-        """将所有统计数据持久化到数据库"""
-        await self._persist_stats()
-        # 持久化 RAG 统计（全局数据，只持久化一次）
-        await self._persist_rag_stats()
+        """将所有统计数据持久化到数据库。
+
+        - 未完成首次加载前直接返回, 防止空状态覆盖 DB。
+        - 与日切 reset 共用 _persist_lock, 保证原子性。
+        """
+        if not self._loaded:
+            logger.warning("📊 [StatisticsManager] 尚未完成今日数据加载, 跳过本次持久化以防覆盖历史数据")
+            return
+        async with self._persist_lock:
+            await self._persist_stats()
+            # 持久化 RAG 统计（全局数据，只持久化一次）
+            await self._persist_rag_stats()
+
+    async def persist_and_reset_daily(self):
+        """日切原子操作: 持久化今日 → 重置内存 → 切换日期。
+
+        Why: _persist_loop 与本方法同时受 _persist_lock 保护, 避免在 reset 已清空
+             内存但 _today 尚未推进的窗口里, 让 cron persist 把空状态回写到 Day N 行。
+        """
+        async with self._persist_lock:
+            if self._loaded:
+                await self._persist_stats()
+                await self._persist_rag_stats()
+            else:
+                logger.warning("📊 [StatisticsManager] 日切时尚未完成加载, 跳过当日持久化")
+            self._reset_daily_counters()
+            self._today = datetime.now().strftime("%Y-%m-%d")
 
     async def _persist_rag_stats(self):
         """持久化 RAG 统计数据到数据库"""
@@ -635,5 +672,10 @@ statistics_manager = get_statistics_manager()
 @scheduler.scheduled_job("cron", minute="*/30")
 async def _persist_loop():
     """每30分钟将 AI 统计数据持久化"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return
+
     await statistics_manager._persist_all_stats_to_db()
     logger.info("📊 [StatisticsManager] 每30分钟定时持久化完成")

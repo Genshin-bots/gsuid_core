@@ -11,6 +11,7 @@ import time
 import queue as sync_queue
 import asyncio
 import threading
+from typing import TypedDict
 from collections import defaultdict
 
 from gsuid_core.logger import logger
@@ -23,6 +24,18 @@ from gsuid_core.ai_core.memory.ingestion.entity import extract_and_upsert_entiti
 from gsuid_core.ai_core.memory.ingestion.hiergraph import increment_entity_count, check_and_trigger_hierarchical_update
 
 from ...utils import extract_json_from_text
+
+
+class ExtractedResult(TypedDict):
+    """LLM 实体/关系提取的规整结果。
+
+    由 _restore_keys 将 LLM 原始 JSON 规整产出，entities / edges 两键必然存在。
+    列表元素仍为普通 dict（其形状由 _restore_keys 保证），以兼容下游
+    extract_and_upsert_* 的 list[dict] 入参，避免 list 不变性带来的类型级联。
+    """
+
+    entities: list[dict]
+    edges: list[dict]
 
 
 class IngestionWorker:
@@ -45,6 +58,8 @@ class IngestionWorker:
         self._running = False
         # 保护 flush_all() 执行期间禁止新的 _flush 并发执行
         self._flush_lock: asyncio.Lock | None = None  # 在独立事件循环中创建
+        # 用于唤醒独立事件循环中的后台循环，避免关闭时仍等待 sleep/queue polling
+        self._stop_event: asyncio.Event | None = None  # 在独立事件循环中创建
         # 独立线程事件循环
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -64,10 +79,13 @@ class IngestionWorker:
             # 在独立事件循环中创建 asyncio 原语
             self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
             self._flush_lock = asyncio.Lock()
+            self._stop_event = asyncio.Event()
             self._running = True
             ready_event.set()  # 通知主线程：事件循环已就绪
             try:
                 self._loop.run_until_complete(self._run_forever())
+                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                self._loop.run_until_complete(self._loop.shutdown_default_executor())
             except Exception as e:
                 logger.error(f"🧠 [Memory] IngestionWorker 线程异常退出: {e}", exc_info=True)
             finally:
@@ -82,20 +100,31 @@ class IngestionWorker:
 
     async def _run_forever(self):
         """独立事件循环中的主循环"""
-        await asyncio.gather(
-            self._consume_loop(),
-            self._flush_timer_loop(),
-        )
+        consume_task = asyncio.create_task(self._consume_loop(), name="memory_ingestion_consume")
+        flush_timer_task = asyncio.create_task(self._flush_timer_loop(), name="memory_ingestion_flush_timer")
+        try:
+            await asyncio.gather(consume_task, flush_timer_task)
+        finally:
+            self._running = False
+            for task in (consume_task, flush_timer_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(consume_task, flush_timer_task, return_exceptions=True)
+
+            # 退出前尽量落盘已缓冲数据；失败只记录日志，避免关闭流程卡死。
+            try:
+                if self._buffers or not self._queue.empty():
+                    await self._flush_all_inner()
+            except Exception as e:
+                logger.warning(f"🧠 [Memory] IngestionWorker 关闭前 flush 失败: {e}", exc_info=True)
 
     async def start(self):
         """兼容旧接口：在当前事件循环中启动（不推荐，会阻塞主循环）"""
         self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
         self._flush_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
         self._running = True
-        await asyncio.gather(
-            self._consume_loop(),
-            self._flush_timer_loop(),
-        )
+        await self._run_forever()
 
     async def flush_all(self):
         """立即将所有缓冲区 flush 到数据库。
@@ -104,7 +133,7 @@ class IngestionWorker:
         此方法通过 asyncio.run_coroutine_threadsafe() 跨线程提交到独立事件循环执行，
         使用 asyncio.wrap_future 异步等待，不阻塞主事件循环。
         """
-        if self._loop is None or not self._running:
+        if self._loop is None or not self._running or self._loop.is_closed():
             logger.warning("🧠 [Memory] IngestionWorker 未启动，跳过 flush_all")
             return
 
@@ -166,27 +195,42 @@ class IngestionWorker:
                 logger.info("🧠 [Memory] flush_all 完成，分层图将在后台异步重建")
 
     async def stop(self):
-        """停止后台消费循环"""
+        """停止后台消费循环并等待独立线程退出。
+
+        不能直接调用 loop.stop()，否则 run_until_complete(_run_forever()) 会被中断，
+        正在执行的后台任务可能在解释器或默认 executor 关闭后继续调度，
+        触发 `RuntimeError: cannot schedule new futures after shutdown`。
+        """
         self._running = False
-        if self._loop is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        loop = self._loop
+        if loop is not None and loop.is_running() and not loop.is_closed():
+
+            def _wake_stop_event() -> None:
+                if self._stop_event is not None:
+                    self._stop_event.set()
+
+            loop.call_soon_threadsafe(_wake_stop_event)
+
+        if self._thread is not None and self._thread.is_alive() and threading.current_thread() is not self._thread:
+            deadline = time.monotonic() + 10
+            while self._thread.is_alive() and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            if self._thread.is_alive():
+                logger.warning("🧠 [Memory] IngestionWorker 线程在 10 秒内未退出")
+            else:
+                logger.info("🧠 [Memory] IngestionWorker 已停止")
 
     async def _consume_loop(self):
         """从队列取消息，放入对应 scope_key 的缓冲区。
 
-        使用线程安全的 queue.Queue，通过 asyncio.to_thread 避免阻塞事件循环。
-        直接使用 queue.get(timeout=1.0) 的内置超时，不额外包裹 wait_for，
-        避免超时取消后线程悬挂导致的线程泄漏。
+        使用非阻塞 get_nowait + 短 sleep 轮询，避免后台线程事件循环依赖默认
+        ThreadPoolExecutor。关闭阶段默认 executor 可能已进入 shutdown，继续
+        asyncio.to_thread()/run_in_executor 会偶发抛出
+        `RuntimeError: cannot schedule new futures after shutdown`。
         """
         while self._running:
             try:
-                # queue.get 带 timeout，超时抛出 sync_queue.Empty
-                # 不用 wait_for 包裹，避免 to_thread 线程在 wait_for 取消后仍阻塞
-                record: ObservationRecord = await asyncio.to_thread(
-                    self._queue.get,
-                    True,
-                    1.0,  # block=True, timeout=1.0
-                )
+                record: ObservationRecord = self._queue.get_nowait()
                 self._buffers[record.scope_key].append(record)
 
                 # 超过单次上限且该 scope_key 没有正在 flush 时才触发
@@ -196,14 +240,27 @@ class IngestionWorker:
                 ):
                     asyncio.create_task(self._flush(record.scope_key))
             except sync_queue.Empty:
-                continue
+                if self._stop_event is not None:
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(0.2)
             except asyncio.CancelledError:
                 raise
 
     async def _flush_timer_loop(self):
         """定期检查所有缓冲区，超时的强制 flush"""
         while self._running:
-            await asyncio.sleep(30)  # 每30秒检查一轮
+            if self._stop_event is not None:
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=30)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(30)  # 每30秒检查一轮
             now = time.time()
             for scope_key in list(self._buffers.keys()):
                 last = self._last_flush.get(scope_key, 0)
@@ -287,7 +344,7 @@ async def _ingest_batch(
 ):
     """核心摄入逻辑：将一批 ObservationRecord 转化为 Episode、Entity、Edge"""
 
-    # Step 1: 格式化对话文本
+    # Step 1: 格式化对话文本（Episode 始终保存完整对话，含 LOW 价值消息）
     dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in records)
     speaker_ids = list({r.speaker_id for r in records})
     earliest_ts = min(r.timestamp for r in records)
@@ -300,14 +357,48 @@ async def _ingest_batch(
         valid_at=earliest_ts,
     )
 
-    # Step 3: 拉取最近 3 条 Episode 作为背景上下文（论文: "current and recent Episodes"）
+    # C1 / C6：分流——SELF scope（Bot 自我情景记忆）与全 LOW 价值批次只写 Episode，
+    # 跳过实体/边抽取。SELF scope 跳过可杜绝 Bot 戏言被提取成"客观事实"污染图谱；
+    # LOW 价值跳过可避免寒暄复读耗费 LLM 配额。
+    is_self_scope = scope_key.startswith("self:")
+    high_records = [r for r in records if getattr(r, "value_tier", "HIGH") == "HIGH"]
+    if is_self_scope or not high_records:
+        logger.debug(f"🧠 [Memory] scope={scope_key} 本批 {len(records)} 条为 LOW/SELF，仅写 Episode 跳过抽取")
+        return
+
+    # Step 3: 抽取仅使用 HIGH 价值消息，拼接近期背景上下文
+    extract_dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in high_records)
     recent_episodes = await _get_recent_episodes(scope_key, limit=3, exclude_episode_id=episode.id)
     if recent_episodes:
         context_text = "\n".join(ep.content for ep in recent_episodes)
-        dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{dialogue}\n</当前对话>"
+        extract_dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{extract_dialogue}\n</当前对话>"
 
     # Step 4: LLM 提取 + Entity 去重写入
-    extracted = await _llm_extract(dialogue, scope_key)
+    extracted = await _llm_extract(extract_dialogue, scope_key)
+
+    # C3-b：主人识别——把主人发言对应的 Speaker 实体打上 "Master" 标签，
+    # 供检索期优先。主人列表统一取 core_config.masters，不依赖人格 md 硬编码。
+    _apply_master_tags(extracted)
+
+    # Step 4.5: 别名重定向（实体消歧 Level-1），并维护群组画像
+    alias_map = _apply_alias_redirection(extracted)
+    try:
+        from gsuid_core.ai_core.memory.group_profile import (
+            record_entity_tags,
+            record_term_mappings,
+        )
+
+        if alias_map:
+            await record_term_mappings(scope_key, alias_map)
+        # 累计实体标签频次，用于推断群组语境标签
+        all_tags: list[str] = []
+        for _e in extracted["entities"]:
+            all_tags.extend(_e["tag"] or [])
+        if all_tags:
+            await record_entity_tags(scope_key, all_tags)
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 群组画像更新失败: {e}")
+
     entity_name_to_id, new_entity_count = await extract_and_upsert_entities(
         scope_key=scope_key,
         entities_data=extracted["entities"],
@@ -386,7 +477,169 @@ async def _get_recent_episodes(
         return episodes
 
 
-async def _llm_extract(dialogue: str, scope_key: str) -> dict:
+def _apply_alias_redirection(extracted: ExtractedResult) -> dict[str, str]:
+    """别名重定向（实体消歧 Level-1：alias_of 硬规则）。
+
+    将 LLM 标注了 alias_of 的别名实体合并到正式实体，
+    并把所有 edge 中对别名的引用重写为正式名称，
+    从而保证关于同一事物的记忆不会被分散到多个独立实体上。
+
+    （Level-2 向量相似度合并已由 AIMemEntity.extract_and_upsert 的混合检索去重承担。）
+
+    Returns:
+        {别名: 正式名称} 映射，供群组画像 term_mappings 记录。
+    """
+    # extracted 由 _restore_keys 规整产出，entities / edges 两键必然存在
+    entities = extracted["entities"]
+    edges = extracted["edges"]
+
+    # 1. 收集别名映射
+    alias_map: dict[str, str] = {}
+    for e in entities:
+        alias = (e["name"] or "").strip()
+        formal = (e["alias_of"] or "").strip()
+        if alias and formal and alias != formal:
+            alias_map[alias] = formal
+
+    if not alias_map:
+        for e in entities:
+            e.pop("alias_of", None)
+        return {}
+
+    # 2. 解析传递性别名（别名指向别名）
+    def _resolve(name: str, _depth: int = 0) -> str:
+        if _depth > 5 or name not in alias_map:
+            return name
+        return _resolve(alias_map[name], _depth + 1)
+
+    resolved = {a: _resolve(a) for a in alias_map}
+
+    # 3. 重写 edge 的 src/tgt 引用
+    for edge in edges:
+        src = (edge["source"] or "").strip()
+        tgt = (edge["target"] or "").strip()
+        if src in resolved and resolved[src] != src:
+            edge["source"] = resolved[src]
+        if tgt in resolved and resolved[tgt] != tgt:
+            edge["target"] = resolved[tgt]
+
+    # 4. 合并别名实体到正式实体
+    by_name = {(e["name"] or "").strip(): e for e in entities}
+    kept: list[dict] = []
+    for e in entities:
+        name = (e["name"] or "").strip()
+        if name in resolved and resolved[name] != name:
+            formal = resolved[name]
+            formal_entity = by_name[formal] if formal in by_name else None
+            alias_summary = (e["summary"] or "").strip()
+            if formal_entity is not None:
+                # 把别名摘要并入正式实体，别名本身不独立存储
+                if alias_summary and alias_summary not in (formal_entity["summary"] or ""):
+                    formal_entity["summary"] = (
+                        f"{formal_entity['summary'] or ''}\n（别名'{name}'：{alias_summary}）"
+                    ).strip()
+            else:
+                # 正式实体不在本批次，把别名实体重命名为正式名称后保留
+                e["name"] = formal
+                e.pop("alias_of", None)
+                kept.append(e)
+            continue
+        e.pop("alias_of", None)
+        kept.append(e)
+
+    extracted["entities"] = kept
+    if resolved:
+        logger.debug(f"🧠 [Memory] 别名重定向: {resolved}")
+    return resolved
+
+
+def _apply_master_tags(extracted: ExtractedResult) -> None:
+    """给主人对应的 Speaker 实体打上 "Master" 标签（C3-b）。
+
+    主人列表统一取 ``core_config.masters``，不依赖人格 markdown 硬编码。
+    实体自带的 ``name`` / ``user_id`` 即发言者标识，据此与主人列表比对。
+    检索期可据此标签优先分配预算（见 C4 / dual_route）。
+    """
+    try:
+        from gsuid_core.config import core_config
+
+        masters = {str(m) for m in (core_config.get_config("masters") or [])}
+    except Exception:
+        masters = set()
+    if not masters:
+        return
+
+    for e in extracted["entities"]:
+        name = (e["name"] or "").strip()
+        uid = (e["user_id"] or "").strip() if e["user_id"] else ""
+        if name in masters or (uid and uid in masters):
+            tags = e["tag"] if isinstance(e["tag"], list) else []
+            if "Master" not in tags:
+                tags.append("Master")
+            e["tag"] = tags
+
+
+async def _build_known_context(scope_key: str, dialogue: str) -> str:
+    """构造注入实体提取提示词的"本群已知别名 + 已存在实体"片段（C2-a / C2-b）。
+
+    Token 防爆：别名只注入本批对话中字面命中的条目，外加少量高频兜底；
+    已存在实体取最近活跃的非发言者实体；整体硬限制约 1000 字符。
+    无可注入数据时返回空串。
+    """
+    from gsuid_core.ai_core.register import get_aliases_for_scope
+    from gsuid_core.ai_core.memory.group_profile import get_term_mappings
+    from gsuid_core.ai_core.memory.prompts.extraction import KNOWN_CONTEXT_TEMPLATE
+
+    MAX_BLOCK_CHARS = 1000
+
+    # 1. 汇总候选别名：群组画像 term_mappings（运行时学到的）+ 插件 ai_alias 注册表
+    candidates: dict[str, str] = {}
+    try:
+        term_mappings = await get_term_mappings(scope_key)
+        for alias, formal in term_mappings.items():
+            if alias and formal:
+                candidates[alias] = formal
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 读取 term_mappings 失败: {e}")
+    try:
+        for alias, formals in get_aliases_for_scope().items():
+            if alias and formals and alias not in candidates:
+                candidates[alias] = formals[0]
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 读取 ai_alias 注册表失败: {e}")
+
+    # 2. L0 字面命中过滤：只保留本批对话出现的别名，不足 5 条时补高频兜底
+    hit: dict[str, str] = {a: f for a, f in candidates.items() if a in dialogue}
+    if len(hit) < 5:
+        for a, f in candidates.items():
+            if len(hit) >= 5:
+                break
+            if a not in hit:
+                hit[a] = f
+
+    alias_section = ""
+    if hit:
+        pairs = "; ".join(f"{a}={f}" for a, f in list(hit.items())[:30])
+        alias_section = f"已知别名映射：{pairs[:MAX_BLOCK_CHARS]}\n"
+
+    # 3. 本群高频已存在实体清单（C2-b 跨批次消歧锚点）
+    entity_section = ""
+    try:
+        from gsuid_core.ai_core.memory.database.models import AIMemEntity
+
+        names = await AIMemEntity.get_frequent_names(scope_key, limit=20)
+        named = [n for n in names if n and not n.isdigit()]
+        if named:
+            entity_section = f"已存在实体：{('、'.join(named))[:MAX_BLOCK_CHARS]}\n"
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 读取高频实体失败: {e}")
+
+    if not alias_section and not entity_section:
+        return ""
+    return KNOWN_CONTEXT_TEMPLATE.format(alias_section=alias_section, entity_section=entity_section)
+
+
+async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     """调用 LLM 从对话文本中提取 Entity 和 Edge。
 
     使用结构化 JSON 输出，减少解析失败风险。
@@ -423,8 +676,8 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     all_edges: list[dict] = []
     for i, chunk in enumerate(chunks):
         result = await _llm_extract_single(chunk, scope_key)
-        all_entities.extend(result["entities"] if "entities" in result else [])
-        all_edges.extend(result["edges"] if "edges" in result else [])
+        all_entities.extend(result["entities"])
+        all_edges.extend(result["edges"])
 
     # 按 name 去重 Entity（同名保留后出现的，信息更完整）
     seen_names: dict[str, dict] = {}
@@ -451,7 +704,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> dict:
     }
 
 
-async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
+async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
     """单次 LLM 提取调用，直接解析 JSON（不使用 output_type，避免 thinking trace）
 
     使用简写键名 n/s/t/u/src/tgt/f，需要在解析后还原为完整键名。
@@ -472,39 +725,65 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
             truncated = truncated[:last_newline]
         dialogue = truncated + "\n[内容已截断...]"
 
+    # C2-a / C2-b：注入"本群已知别名 + 已存在实体"，指导 LLM 对齐别名、跨批次消歧
+    known_context = await _build_known_context(scope_key, dialogue)
+
     prompt = ENTITY_EXTRACTION_PROMPT.format(
         scope_key=scope_key,
         dialogue_content=dialogue,
+        known_context=known_context,
     )
 
-    def _restore_keys(data: dict) -> dict:
-        """将简写键名还原为完整键名"""
-        result = {"entities": [], "edges": []}
+    def _restore_keys(data: dict) -> ExtractedResult:
+        """将 LLM 输出的简写键名 JSON 还原为完整键名结构。
 
-        for e in data.get("entities", []):
-            result["entities"].append(
-                {
-                    "name": e.get("n", ""),
-                    "summary": e.get("s", ""),
-                    "tag": e.get("t", []),
-                    "user_id": e.get("u"),
-                    "scope_hint": e.get("scope_hint"),
-                    "is_speaker": "Speaker" in e.get("t", []),
-                }
-            )
+        data 是 LLM 直接产出的原始 JSON，形状不受信任，因此逐字段用
+        in + isinstance 守卫取值，不使用 .get 兜底——缺失或类型不符即取默认值。
+        """
+        entities: list[dict] = []
+        edges: list[dict] = []
 
-        for edge in data.get("edges", []):
-            result["edges"].append(
-                {
-                    "source": edge.get("src", ""),
-                    "target": edge.get("tgt", ""),
-                    "fact": edge.get("f", ""),
-                    "user_id": edge.get("u"),
-                    "scope_hint": edge.get("scope_hint"),
-                }
-            )
+        raw_entities = data["entities"] if "entities" in data else None
+        if isinstance(raw_entities, list):
+            for e in raw_entities:
+                if not isinstance(e, dict):
+                    continue
+                name = e["n"] if "n" in e and isinstance(e["n"], str) else ""
+                summary = e["s"] if "s" in e and isinstance(e["s"], str) else ""
+                tag = e["t"] if "t" in e and isinstance(e["t"], list) else []
+                user_id = e["u"] if "u" in e and isinstance(e["u"], str) else None
+                scope_hint = e["scope_hint"] if "scope_hint" in e and isinstance(e["scope_hint"], str) else None
+                alias_of = e["a"] if "a" in e and isinstance(e["a"], str) and e["a"] else None
+                entities.append(
+                    {
+                        "name": name,
+                        "summary": summary,
+                        "tag": tag,
+                        "user_id": user_id,
+                        "scope_hint": scope_hint,
+                        "is_speaker": "Speaker" in tag,
+                        "alias_of": alias_of,
+                    }
+                )
 
-        return result
+        raw_edges = data["edges"] if "edges" in data else None
+        if isinstance(raw_edges, list):
+            for edge in raw_edges:
+                if not isinstance(edge, dict):
+                    continue
+                edges.append(
+                    {
+                        "source": edge["src"] if "src" in edge and isinstance(edge["src"], str) else "",
+                        "target": edge["tgt"] if "tgt" in edge and isinstance(edge["tgt"], str) else "",
+                        "fact": edge["f"] if "f" in edge and isinstance(edge["f"], str) else "",
+                        "user_id": edge["u"] if "u" in edge and isinstance(edge["u"], str) else None,
+                        "scope_hint": (
+                            edge["scope_hint"] if "scope_hint" in edge and isinstance(edge["scope_hint"], str) else None
+                        ),
+                    }
+                )
+
+        return {"entities": entities, "edges": edges}
 
     try:
         agent = create_agent(
@@ -520,6 +799,16 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> dict:
 
     except asyncio.TimeoutError:
         logger.warning(f"🧠 [Memory] LLM extraction timeout for {scope_key}")
+        try:
+            from gsuid_core.ai_core.statistics import statistics_manager
+
+            statistics_manager.record_memory_extraction_error()
+        except Exception:
+            pass
+    except ValueError as e:
+        # 上游 agent 返回空/非 JSON 时 extract_json_from_text 抛 ValueError，
+        # 这是预期内的"模型输出不可用"，只 warning，不打 stack trace
+        logger.warning(f"🧠 [Memory] LLM output not parseable as JSON: {e}")
         try:
             from gsuid_core.ai_core.statistics import statistics_manager
 

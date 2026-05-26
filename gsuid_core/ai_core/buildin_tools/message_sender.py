@@ -2,9 +2,19 @@
 消息发送工具模块
 
 提供主动向用户发送消息的能力，支持文本消息和图片消息。
+
+资源 ID 解析：``image_id`` 支持三种来源：
+
+1. ``img_xxxxxxxx``——RM（``ResourceManager``）注册的临时图片，``RM.get`` 直读。
+2. ``res_xxxxxxxx``——Kanban ``AIAgentArtifact`` 句柄；本工具会读 artifact 的
+   ``payload_path`` / ``payload_inline``，把数据 ``RM.register`` 自动转一次成
+   RM 资源再发，让主人格 / 转译代理可以直接把能力代理产物发给主人，无需关心
+   两套存储的区分（详见 ``AI_AGENT_ARCHITECTURE.md`` §3.6）。
+3. ``http://`` / ``https://`` / ``base64://``——直接走 ``MessageSegment.image``。
 """
 
-from typing import TYPE_CHECKING, List, Optional, cast
+from typing import TYPE_CHECKING, List, Union, Optional, cast
+from pathlib import Path
 
 from pydantic_ai import RunContext
 
@@ -18,6 +28,37 @@ from gsuid_core.utils.resource_manager import RM
 
 if TYPE_CHECKING:
     pass
+
+
+async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
+    """尝试把一个 ``res_xxx`` 句柄解析成可发送的图片数据。
+
+    走 ``AIAgentArtifact.get_by_id``——找到 artifact 后：
+    - 优先读 ``payload_path``（落盘 ≥4KB 大工件）→ 返回文件 bytes
+    - 否则读 ``payload_inline``（≤4KB inline 文本）→ 多为代码 / 文本，无法当图片发，
+      返回 None 让上层退回 RM 链路
+
+    找不到 artifact / 读文件失败时返回 None；不抛异常，避免上层 try-except 兜底。
+    """
+    if not res_id.startswith("res_"):
+        return None
+    try:
+        from gsuid_core.ai_core.planning.models import AIAgentArtifact
+    except ImportError:
+        return None
+    art = await AIAgentArtifact.get_by_id(res_id)
+    if art is None:
+        return None
+    if art.payload_path:
+        p = Path(art.payload_path)
+        if p.exists():
+            return p.read_bytes()
+        logger.debug(f"🧠 [BuildinTools] Kanban artifact {res_id} 落盘路径不存在: {art.payload_path}")
+        return None
+    if art.payload_inline:
+        # inline payload 通常是 ≤4KB 文本（代码 / JSON 摘要），不是图片字节
+        return art.payload_inline
+    return None
 
 
 @ai_tools(category="self")
@@ -65,9 +106,43 @@ async def send_message_by_ai(
         if text:
             parts.append(MessageSegment.text(text))
         if image_id:
-            # 资源ID（如 img_xxxxxxxx）需要通过 RM 获取实际图片数据
+            # 资源ID（如 img_xxxxxxxx 走 RM，res_xxxxxxxx 走 Kanban artifact 后转 RM）
             if image_id.startswith("http") or image_id.startswith("base64://"):
                 parts.append(MessageSegment.image(image_id))
+            elif image_id.startswith("res_"):
+                # Kanban artifact 句柄：从 AIAgentArtifact 解析 → 转 RM → 发送
+                # 这一段是 §3.6 "主人格透明发送能力代理产物"的实现基础——主人格
+                # 不需要知道 RM / artifact 是两套存储，只要拿到 res_xxx 句柄直接发。
+                kanban_payload = await _resolve_kanban_artifact(image_id)
+                if kanban_payload is None:
+                    # 兜底：仍可能是用户上传时被框架登记成 RM 但前缀写成 res_ 的情况
+                    logger.debug(f"🧠 [BuildinTools] Kanban artifact 解析失败，回退尝试 RM.get('{image_id}')")
+                    try:
+                        img_data = await RM.get(image_id)
+                        parts.append(MessageSegment.image(img_data))
+                    except ValueError as e:
+                        logger.warning(f"🧠 [BuildinTools] RM.get({image_id}) 抛出 ValueError: {e}")
+                        if "找不到资源" in str(e):
+                            return (
+                                f"❌ 找不到资源ID: {image_id}（既不在 Kanban artifact 表，"
+                                f"也不在 RM 临时资源池）。可能 ID 错了 / artifact 已过期 / "
+                                f"代理执行未实际登记 artifact——请确认。"
+                            )
+                        return f"❌ 资源ID: {image_id} 数据转换失败: {e}"
+                elif isinstance(kanban_payload, bytes):
+                    # 文件类 artifact：转 RM 自动注册一次（便于后续重复发送），然后直接发 bytes
+                    new_rm_id = RM.register(kanban_payload)
+                    logger.info(
+                        f"🧠 [BuildinTools] send_message_by_ai: Kanban artifact "
+                        f"{image_id} → 自动注册成 RM 资源 {new_rm_id}"
+                    )
+                    parts.append(MessageSegment.image(kanban_payload))
+                else:
+                    # inline 文本 artifact：不是图片，提示主人格用 text 参数发
+                    return (
+                        f"❌ 资源ID: {image_id} 是 Kanban inline 文本 artifact（非图片字节），"
+                        f"请用 artifact_get({image_id}) 取原文后用 text 参数发送。"
+                    )
             else:
                 try:
                     logger.debug(f"🧠 [BuildinTools] 调用 RM.get('{image_id}')")

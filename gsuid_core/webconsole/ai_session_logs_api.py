@@ -16,10 +16,10 @@ from fastapi import Depends
 from pydantic import Field, BaseModel
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.history import get_history_manager
 from gsuid_core.ai_core.resource import AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
 # ─────────────────────────────────────────────
 # TypedDict 定义
@@ -187,8 +187,8 @@ def _enrich_linked_agent(agent_record: Dict[str, Any]) -> LinkedAgentEnriched:
         return cast(LinkedAgentEnriched, enriched)
 
     # 1. 优先从内存查找
-    history_manager = get_history_manager()
-    session = history_manager.get_ai_session(agent_session_id)
+    registry = get_ai_session_registry()
+    session = registry.get_ai_session(agent_session_id)
     if session is not None:
         logger_obj = getattr(session, "_session_logger", None)
         if logger_obj is not None:
@@ -362,8 +362,8 @@ def _build_unified_list() -> List[SessionLogSummary]:
     memory_map: Dict[str, SessionLogSummary] = {}  # session_uuid -> summary
     memory_session_id_map: Dict[str, str] = {}  # session_id -> session_uuid (用于快速查找)
 
-    history_manager = get_history_manager()
-    sessions = history_manager.get_all_ai_sessions()
+    registry = get_ai_session_registry()
+    sessions = registry.get_all_ai_sessions()
 
     for sid, session in sessions.items():
         summary = _build_summary_from_memory(sid, session)
@@ -461,8 +461,8 @@ def _find_log_by_session_id_and_uuid(
     优先从内存查找（活跃会话），其次从磁盘文件查找。
     """
     # 1. 优先从内存查找
-    history_manager = get_history_manager()
-    session = history_manager.get_ai_session(session_id)
+    registry = get_ai_session_registry()
+    session = registry.get_ai_session(session_id)
     if session is not None:
         logger_obj: Optional[Any] = getattr(session, "_session_logger", None)
         if logger_obj is not None:
@@ -608,7 +608,7 @@ async def get_session_log_detail(
     优先从内存查找活跃会话的实时日志，若不存在则从磁盘文件查找。
 
     Args:
-        session_id: Session ID（如 bot:onebot:group:123456）
+        session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
         session_uuid: Session 实例 UUID（如 abc12345）
 
     Returns:
@@ -704,7 +704,7 @@ async def get_session_linked_agents(
     支持按 agent_type 过滤，为前端展示 Agent 关系图提供数据。
 
     Args:
-        session_id: Session ID（如 bot:onebot:group:123456）
+        session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
         agent_type: 可选的关联类型过滤
                     * "sub_agent"    – 由本 Agent 创建的子 Agent
                     * "peer_agent"   – 同级/对等 Agent（预留）
@@ -729,8 +729,8 @@ async def get_session_linked_agents(
         }
     """
     try:
-        history_manager = get_history_manager()
-        session = history_manager.get_ai_session(session_id)
+        registry = get_ai_session_registry()
+        session = registry.get_ai_session(session_id)
 
         linked_agents: List[Dict[str, Any]] = []
         session_uuid: Optional[str] = None

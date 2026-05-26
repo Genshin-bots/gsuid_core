@@ -84,6 +84,12 @@ core_shutdown_def: Set[_DefHook] = set()
 installed_dependencies: Dict[str, str] = {}
 _module_cache: Dict[str, ModuleType] = {}
 _added_paths: Set[str] = set()
+# 待安装/待更新依赖累积器：逐插件检查时只收集，
+# 最后由 flush_pending_installs() 合并为一次 pip 调用
+_pending_install: List[str] = []
+_pending_update: List[str] = []
+# 插件导入耗时记录 (插件名, 耗时秒)，用于启动耗时归因
+_import_durations: List[Tuple[str, float]] = []
 
 
 def on_core_start(
@@ -375,17 +381,23 @@ class GsServer:
         duration = round(end_time - start_time, 2)
 
         if _type == "plugin":
-            logger.success(f"✅ 插件{filepath.parent.stem}导入成功!")
+            name = filepath.parent.stem
+            logger.success(f"✅ 插件{name}导入成功! 耗时: {duration:.2f}秒")
         elif _type == "single":
-            logger.success(f"✅ 插件{filepath.stem}导入成功! 耗时: {duration:.2f}秒")
-        elif _type != "full":
-            logger.trace(f"🌱 模块{filepath.parent.stem}导入成功! 耗时: {duration:.2f}秒")
+            name = filepath.stem
+            logger.success(f"✅ 插件{name}导入成功! 耗时: {duration:.2f}秒")
+        else:
+            name = filepath.parent.stem
+            if _type != "full":
+                logger.trace(f"🌱 模块{name}导入成功! 耗时: {duration:.2f}秒")
+        _import_durations.append((name, duration))
 
         _module_cache[module_name] = module
         return module
 
     async def load_plugins(self, dev_mode: bool = False):
         logger.info("💖 [早柚核心]开始加载插件...")
+        _load_start = time.time()
         refresh_installed_dependencies()
         # fix: path append
         root_path = str(Path(__file__).parents[1])
@@ -398,6 +410,8 @@ class GsServer:
             if p.is_dir() or (p.is_file() and p.suffix == ".py")
         ]
 
+        # 阶段一：发现插件 + 收集缺失依赖（不立即安装）
+        _discover_start = time.time()
         all_plugins: List[Tuple[str, Path, str]] = []
         for plugin in plug_path_list:
             if dev_mode and not plugin.name.endswith("-dev"):
@@ -407,18 +421,34 @@ class GsServer:
             if isinstance(d, str):
                 continue
             all_plugins.extend(d)
+        logger.info(f"🔍 [早柚核心] 插件发现与依赖检查完成, 耗时: {time.time() - _discover_start:.2f}秒")
 
+        # 阶段二：合并安装所有插件收集到的缺失依赖（一次性 pip 调用）
+        flush_pending_installs()
+
+        # 阶段三：导入所有插件模块
+        _import_start = time.time()
+        _import_durations.clear()
         for module_name, filepath, _type in all_plugins:
             try:
                 self.cached_import(module_name, filepath, _type)
             except Exception as e:
                 logger.exception(f"❌ 插件{filepath.stem}导入失败, 错误代码: {e}")
                 continue
+        logger.info(f"📥 [早柚核心] 插件模块导入完成, 耗时: {time.time() - _import_start:.2f}秒")
+
+        # 启动耗时归因：输出导入最慢的插件 Top 10
+        if _import_durations:
+            top = sorted(_import_durations, key=lambda x: x[1], reverse=True)[:10]
+            total = sum(d for _, d in _import_durations)
+            logger.info(f"🐢 [早柚核心] 共导入 {len(_import_durations)} 个模块, 累计 {total:.2f}秒, 最慢 Top 10:")
+            for name, dur in top:
+                logger.info(f"    ⏱️ {dur:6.2f}秒  {name}")
 
         plugin_config_store.save_all()
         core_config.lazy_write_config()
 
-        logger.success("💖 [早柚核心] 插件加载完成!")
+        logger.success(f"💖 [早柚核心] 插件加载完成! 总耗时: {time.time() - _load_start:.2f}秒")
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
@@ -625,42 +655,65 @@ def check_pyproject(pyproject: Path):
 
 
 def process_dependencies(dependency_list: List[str], update: bool = False):
-    """统一处理依赖列表"""
-    to_install = []
+    """检查依赖并收集待安装/待更新项。
 
+    实际安装不在此处执行，而是由 load_plugins() 在所有插件检查完毕后
+    调用 flush_pending_installs() 合并为一次 pip 调用，
+    避免逐插件触发独立的 pip 子进程。
+    """
     for dep_str in dependency_list:
         try:
             req = Requirement(dep_str)
-            # 关键修复：使用规范化后的名字进行比对
+            # 关键：使用规范化后的名字进行比对
             req_name = normalize_name(req.name)
 
             if req_name in ignore_dep:
                 continue
 
-            # 检查是否已安装以及版本是否符合
+            # 未安装 -> 加入待安装队列
             if req_name not in installed_dependencies:
-                # double check: 有时候元数据名字非常怪异，再次遍历检查
-                if req_name not in [normalize_name(k) for k in installed_dependencies.keys()]:
-                    logger.info(f"[依赖管理] 未安装依赖: {req_name} (原始需求: {req.name})")
-                    to_install.append(dep_str)
-                    continue
+                logger.info(f"[依赖管理] 未安装依赖: {req_name} (原始需求: {req.name})")
+                _pending_install.append(dep_str)
+                continue
 
-            # 如果已安装，检查版本
-            if update and req_name in installed_dependencies:
+            # 已安装且开启更新 -> 检查版本是否满足
+            if update:
                 installed_ver = installed_dependencies[req_name]
                 if installed_ver not in req.specifier:
                     logger.info(f"[依赖管理] 依赖版本不匹配: {req_name} (当前: {installed_ver}, 需要: {req.specifier})")
-                    to_install.append(dep_str)
+                    _pending_update.append(dep_str)
                 else:
                     logger.trace(f"[依赖管理] {req_name} 已满足 (当前: {installed_ver})")
 
         except Exception as e:
             logger.warning(f"无法解析依赖字符串 '{dep_str}': {e}")
 
-    if to_install:
-        install_packages(to_install, upgrade=update)
-        # 安装完后再次刷新，防止后续逻辑读不到
-        refresh_installed_dependencies()
+
+def flush_pending_installs():
+    """合并所有插件收集到的待安装/待更新依赖，一次性安装。
+
+    避免逐插件触发独立的 pip 子进程（每次还带镜像源 fallback），
+    首次启动或新增插件时可显著缩短耗时。
+    install_packages() 内部会在结束后刷新 installed_dependencies。
+    """
+    global _pending_install, _pending_update
+
+    if not _pending_install and not _pending_update:
+        return
+
+    # 去重并保持插件发现顺序
+    install_list = list(dict.fromkeys(_pending_install))
+    update_list = list(dict.fromkeys(_pending_update))
+    _pending_install = []
+    _pending_update = []
+
+    if install_list:
+        logger.info(f"📦 [依赖管理] 合并安装 {len(install_list)} 个缺失依赖: {install_list}")
+        install_packages(install_list, upgrade=False)
+
+    if update_list:
+        logger.info(f"📦 [依赖管理] 合并更新 {len(update_list)} 个依赖: {update_list}")
+        install_packages(update_list, upgrade=True)
 
 
 def install_packages(packages: List[str], upgrade: bool = False):

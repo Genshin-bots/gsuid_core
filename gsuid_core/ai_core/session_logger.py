@@ -41,7 +41,9 @@ class AISessionLogger:
       * "parent_agent"– 父 Agent（预留，用于 agent_mesh）
     """
 
-    PERSIST_INTERVAL: int = 600  # 10分钟，单位秒
+    PERSIST_INTERVAL: int = 600  # 10分钟兜底强制持久化，单位秒
+    IDLE_PERSIST_THRESHOLD: int = 60  # 60 秒无新消息即落盘
+    POLL_INTERVAL: int = 15  # 后台轮询周期，单位秒
 
     def __init__(
         self,
@@ -61,6 +63,10 @@ class AISessionLogger:
         self.created_at: float = time.time()
         self.updated_at: float = self.created_at
         self.ended_at: Optional[float] = None
+        # 上次持久化时记录的 updated_at；用来判断是否有未落盘的新内容
+        self._last_persisted_updated_at: float = 0.0
+        # 上次实际落盘的时间戳，用于强制兜底
+        self._last_persisted_at: float = 0.0
 
         self.entries: List[Dict[str, Any]] = []
         self._file_path: Path = self._build_file_path()
@@ -258,15 +264,34 @@ class AISessionLogger:
             pass
 
     async def _persist_loop(self) -> None:
-        """后台循环：每隔 PERSIST_INTERVAL 秒执行一次持久化"""
+        """后台循环：按 POLL_INTERVAL 轮询，满足条件时持久化。
+
+        触发持久化的两类条件（任一满足即刻落盘）：
+        1. 距离 self.updated_at 已 ≥ IDLE_PERSIST_THRESHOLD，即"会话空闲超过 1 分钟"。
+        2. 距离 self._last_persisted_at 已 ≥ PERSIST_INTERVAL，即"兜底周期到了"。
+
+        没有未落盘的新增内容时不会重写文件。
+        """
         while not self._closed:
-            await asyncio.sleep(self.PERSIST_INTERVAL)
-            if not self._closed:
+            await asyncio.sleep(self.POLL_INTERVAL)
+            if self._closed:
+                break
+            if self.updated_at <= self._last_persisted_updated_at:
+                continue
+            now: float = time.time()
+            idle_seconds: float = now - self.updated_at
+            since_last_persist: float = now - self._last_persisted_at
+            if idle_seconds >= self.IDLE_PERSIST_THRESHOLD or since_last_persist >= self.PERSIST_INTERVAL:
                 self._persist_sync()
 
     def _persist_sync(self) -> None:
-        """同步持久化当前内存中的日志到 JSON 文件"""
+        """同步持久化当前内存中的日志到 JSON 文件。
+
+        若 entries 为空、或自上次落盘后没有新增内容，直接返回避免无效写入。
+        """
         if not self.entries:
+            return
+        if self.updated_at <= self._last_persisted_updated_at:
             return
 
         data: Dict[str, Any] = self._build_data()
@@ -274,6 +299,9 @@ class AISessionLogger:
 
         with open(self._file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+        self._last_persisted_updated_at = self.updated_at
+        self._last_persisted_at = time.time()
 
         logger.debug(f"📝 [AISessionLogger] 持久化日志: {self._file_path.name} ({len(self.entries)} 条)")
 

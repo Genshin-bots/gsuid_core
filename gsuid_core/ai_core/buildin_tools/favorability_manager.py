@@ -65,7 +65,7 @@ async def update_user_favorability(
         return f"操作失败：{str(e)}"
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def set_user_favorability(
     ctx: RunContext[ToolContext],
     value: int,

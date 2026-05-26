@@ -282,6 +282,12 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         15,
         options=[5, 10, 15, 20],
     ),
+    "memory_inject_max_chars": GsIntConfig(
+        "记忆注入字符预算",
+        "单次注入对话上下文的记忆文本最大字符数, 调大可保留更多历史但更费 Token",
+        2000,
+        options=[1000, 2000, 4000, 8000, 16000],
+    ),
     "enable_system2": GsBoolConfig(
         "是否启用 System-2",
         "指定是否启用 System-2, 可以提高检索精度但会增加性能开销",

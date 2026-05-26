@@ -8,6 +8,7 @@ import re
 import shlex
 import asyncio
 import platform
+import subprocess
 from typing import Set, Optional
 from pathlib import Path
 
@@ -17,6 +18,13 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.check_func import check_pm
+
+# Windows 平台兼容：core.py 强制把事件循环切换为 WindowsSelectorEventLoopPolicy
+# 以规避 ProactorEventLoop 关闭 socket 时的 InvalidStateError。代价是 Selector
+# 事件循环上 `asyncio.create_subprocess_exec` 会抛 NotImplementedError。
+# 解决方案：Windows 上把同步的 `subprocess.run` 派到独立线程 + asyncio.to_thread
+# 等待结果（不阻塞主事件循环）；POSIX 上仍走原生 asyncio 子进程链路。
+_IS_WINDOWS = platform.system() == "Windows"
 
 # 允许执行的安全命令白名单（基础命令）
 ALLOWED_COMMANDS: Set[str] = {
@@ -108,6 +116,7 @@ ALLOWED_COMMANDS: Set[str] = {
     "nslookup",
     "net",
     "sc",
+    "where",  # Windows 上等同 which，用于定位 python / pip 等可执行文件
 }
 
 # 危险命令和模式黑名单
@@ -382,90 +391,68 @@ async def execute_shell_command(
         return "执行失败：命令解析结果为空"
 
     # 确定工作目录
-    if work_dir:
+    # v2 · Kanban：处于任务执行上下文时，强制以 Artifact Workspace 为 cwd——
+    # 即使 LLM 传了 work_dir，也会被改写为 workspace，避免命令落产物到任意位置。
+    #
+    # 2026-05-23 加固：无任务上下文 + LLM 未传 work_dir 时，**绝不**兜底 Path.cwd()
+    # （会落到项目根目录，等于代理拿到了对主仓库的 shell 通道），统一兜底到 FILE_PATH
+    # （`data/ai_core/file/`）。LLM 主动传 work_dir 也强制要求落在 FILE_PATH 之下。
+    forced_ws = _resolve_workspace_cwd()
+    if forced_ws is not None:
+        work_path = forced_ws
+        work_path.mkdir(parents=True, exist_ok=True)
+    elif work_dir:
         try:
-            work_path = Path(work_dir).resolve()
-            # 确保工作目录存在且不是敏感目录
+            # 在 LLM 给的 work_dir 前面附 FILE_PATH 兜底，避免它写绝对路径绕过白名单
+            from gsuid_core.ai_core.resource import FILE_PATH
+
+            candidate = Path(work_dir)
+            if not candidate.is_absolute():
+                candidate = FILE_PATH / candidate
+            work_path = candidate.resolve()
             if not work_path.exists():
                 return f"执行失败：工作目录不存在: {work_dir}"
-            # 禁止在系统关键目录执行
-            sensitive_paths = [
-                "/etc",
-                "/bin",
-                "/sbin",
-                "/lib",
-                "/usr/bin",
-                "/usr/sbin",
-                "/sys",
-                "/proc",
-                "C:\\Windows\\System32",
-            ]
-            for sensitive in sensitive_paths:
-                if str(work_path).startswith(sensitive):
-                    return f"执行失败：禁止在系统目录执行命令: {work_dir}"
+            # 强制白名单：work_dir 必须位于 FILE_PATH 之下
+            try:
+                work_path.relative_to(FILE_PATH.resolve())
+            except ValueError:
+                return f"执行失败：工作目录必须位于框架沙盒 {FILE_PATH} 之下，收到：{work_dir}"
         except Exception as e:
             return f"执行失败：工作目录解析错误 - {str(e)}"
     else:
-        work_path = Path.cwd()
+        # 兜底：FILE_PATH（绝不能是 Path.cwd() / 项目根）
+        from gsuid_core.ai_core.resource import FILE_PATH
+
+        work_path = FILE_PATH
+        work_path.mkdir(parents=True, exist_ok=True)
+        logger.warning(f"🧠 [BuildinTools] 命令未指定 work_dir 且无任务上下文，兜底为 {work_path}")
 
     logger.info(f"🧠 [BuildinTools] 执行命令: {command[:100]}... 工作目录: {work_path}")
 
-    try:
-        # 使用清理后的环境变量
-        env = _get_safe_environment()
+    # 使用清理后的环境变量
+    env = _get_safe_environment()
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd_list,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=str(work_path),
-            env=env,
-        )
-
+    # v2 · Kanban：执行前对工作区拍快照，结束后扫描新增文件登记为 workspace_file
+    pre_snapshot = None
+    if forced_ws is not None:
         try:
-            # 使用 communicate 但限制输出大小
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            from gsuid_core.ai_core.planning.workspace import snapshot_workspace
 
-            # 截断过大的输出
-            if len(stdout) > max_output:
-                stdout = stdout[:max_output]
-                truncated_msg = f"\n\n[输出已截断，超过最大限制 {max_output} 字节]"
-            else:
-                truncated_msg = ""
+            pre_snapshot = snapshot_workspace(work_path)
+        except ImportError:
+            pre_snapshot = None
 
-            output = stdout.decode("utf-8", errors="replace").strip()
-
-            # 添加截断提示
-            if truncated_msg:
-                output += truncated_msg
-
-            if process.returncode == 0:
-                logger.info(f"🧠 [BuildinTools] 命令执行成功 (返回码: 0, 输出长度: {len(stdout)})")
-                return output if output else "命令执行成功，无输出"
-            else:
-                logger.warning(f"🧠 [BuildinTools] 命令执行完成 (返回码: {process.returncode})")
-                return (
-                    f"[返回码: {process.returncode}]\n{output}"
-                    if output
-                    else f"命令执行完成 (返回码: {process.returncode})"
-                )
-
-        except asyncio.TimeoutError:
-            # 更彻底的清理
-            try:
-                process.kill()
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                # 如果 kill 后 5 秒还没结束，强制 terminate
-                try:
-                    process.terminate()
-                except Exception as e:
-                    logger.error(f"🧠 [BuildinTools] 强制终止失败: {e}")
-                    pass
-
-            logger.warning(f"🧠 [BuildinTools] 命令执行超时: {timeout}秒")
-            return f"执行失败：命令超时 (超过 {timeout} 秒)"
-
+    try:
+        if _IS_WINDOWS:
+            # Windows + SelectorEventLoop 不支持 asyncio 子进程，派到线程跑同步版
+            stdout_bytes, returncode = await _run_subprocess_in_thread(
+                cmd_list, str(work_path), env, timeout, max_output
+            )
+        else:
+            stdout_bytes, returncode = await _run_subprocess_async(cmd_list, str(work_path), env, timeout, max_output)
+    except asyncio.TimeoutError:
+        logger.warning(f"🧠 [BuildinTools] 命令执行超时: {timeout}秒")
+        return f"执行失败：命令超时 (超过 {timeout} 秒)"
     except FileNotFoundError:
         logger.warning(f"🧠 [BuildinTools] 命令未找到: {cmd_list[0]}")
         return f"执行失败：命令未找到 '{cmd_list[0]}'"
@@ -475,3 +462,133 @@ async def execute_shell_command(
     except Exception as e:
         logger.exception(f"🧠 [BuildinTools] 命令执行异常: {e}")
         return f"执行失败：{type(e).__name__}: {str(e)}"
+
+    output = stdout_bytes.decode("utf-8", errors="replace").strip()
+    if len(stdout_bytes) > max_output:
+        output += f"\n\n[输出已截断，超过最大限制 {max_output} 字节]"
+
+    # v2 · Kanban：执行后扫描 workspace 变更并登记 artifact
+    if forced_ws is not None and pre_snapshot is not None:
+        await _register_workspace_changes(work_path, pre_snapshot)
+
+    if returncode == 0:
+        logger.info(f"🧠 [BuildinTools] 命令执行成功 (返回码: 0, 输出长度: {len(stdout_bytes)})")
+        return output if output else "命令执行成功，无输出"
+    logger.warning(f"🧠 [BuildinTools] 命令执行完成 (返回码: {returncode})")
+    return f"[返回码: {returncode}]\n{output}" if output else f"命令执行完成 (返回码: {returncode})"
+
+
+async def _run_subprocess_async(
+    cmd_list: list,
+    cwd: str,
+    env: dict,
+    timeout: int,
+    max_output: int,
+) -> tuple[bytes, int]:
+    """POSIX 路径：用原生 asyncio 子进程跑命令，stderr 合并到 stdout，按 max_output 截断。"""
+    process = await asyncio.create_subprocess_exec(
+        *cmd_list,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=cwd,
+        env=env,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            process.kill()
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            try:
+                process.terminate()
+            except Exception as kill_err:
+                logger.error(f"🧠 [BuildinTools] 强制终止失败: {kill_err}")
+        raise
+    if len(stdout) > max_output:
+        stdout = stdout[:max_output]
+    return stdout, process.returncode or 0
+
+
+async def _run_subprocess_in_thread(
+    cmd_list: list,
+    cwd: str,
+    env: dict,
+    timeout: int,
+    max_output: int,
+) -> tuple[bytes, int]:
+    """Windows 路径：把同步 subprocess.run 派到独立线程，主事件循环不阻塞。
+
+    SelectorEventLoop 不支持 asyncio 子进程，而切回 ProactorEventLoop 又会让
+    WS / FastAPI 在并发关闭时偶发抛 InvalidStateError（见 core.py
+    `_configure_windows_event_loop_policy` 的旁注）。所以 Windows 上选择"同步
+    subprocess + to_thread"——开销可接受、行为与异步版一致。
+    """
+
+    def _runner() -> tuple[bytes, int]:
+        # 在 Windows 上避免弹出黑色 cmd 窗口
+        creationflags = 0
+        if _IS_WINDOWS and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+        completed = subprocess.run(
+            cmd_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            check=False,
+            creationflags=creationflags,
+        )
+        out = completed.stdout or b""
+        if len(out) > max_output:
+            out = out[:max_output]
+        return out, completed.returncode
+
+    try:
+        return await asyncio.to_thread(_runner)
+    except subprocess.TimeoutExpired:
+        # 转译成上层认识的 asyncio.TimeoutError
+        raise asyncio.TimeoutError() from None
+
+
+def _resolve_workspace_cwd() -> Optional[Path]:
+    """v2 · Kanban：处于任务执行上下文且 workspace_policy=artifact_only 时，
+    返回该任务节点的 Artifact Workspace，作为命令的强制 cwd。"""
+    try:
+        from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+        plan_ctx = get_plan_context()
+        if plan_ctx is None or plan_ctx.artifact_workspace is None:
+            return None
+        return plan_ctx.artifact_workspace
+    except ImportError:
+        return None
+
+
+async def _register_workspace_changes(workspace: Path, before_snapshot: dict) -> None:
+    """命令执行后扫描 workspace 变更，把新增 / 修改的文件登记为 workspace_file artifact。"""
+    try:
+        from gsuid_core.ai_core.planning.runtime import get_plan_context
+        from gsuid_core.ai_core.planning.workspace import (
+            scan_workspace_changes,
+            register_workspace_artifacts,
+        )
+
+        plan_ctx = get_plan_context()
+        if plan_ctx is None or not plan_ctx.root_task_id:
+            return
+        changes = scan_workspace_changes(workspace, before_snapshot)
+        if not changes:
+            return
+        await register_workspace_artifacts(
+            root_task_id=plan_ctx.root_task_id,
+            task_id=plan_ctx.task_id,
+            workspace=workspace,
+            changes=changes,
+            agent_profile=plan_ctx.agent_profile,
+        )
+    except ImportError:
+        return
+    except Exception as e:
+        logger.debug(f"🧠 [BuildinTools] workspace 变更登记失败: {e}")

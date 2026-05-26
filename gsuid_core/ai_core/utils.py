@@ -31,18 +31,30 @@ def extract_json_from_text(raw_text: str) -> dict:
     if stripped in ("<SILENCE>", "[SILENCE]", "SILENCE"):
         raise ValueError(f"Special marker '{stripped}' is not valid JSON")
 
+    # 上游 agent 出错时会返回 "执行出错: ..." 之类的字符串，这里提前拦截
+    if stripped.startswith("执行出错"):
+        raise ValueError(f"Upstream agent returned error message, not JSON: {stripped[:80]}")
+
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw_text).strip()
     cleaned = repair_json(cleaned)
+    if not cleaned or not cleaned.strip():
+        raise ValueError("JSON extraction yielded empty content after repair")
+
     try:
         data = json.loads(cleaned)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
         if match:
             stripped = match.group(0).strip()
             cl = repair_json(stripped)
-            data = json.loads(cl)
+            if not cl or not cl.strip():
+                raise ValueError("Fallback JSON extraction yielded empty content") from e
+            try:
+                data = json.loads(cl)
+            except json.JSONDecodeError as e2:
+                raise ValueError(f"Failed to parse JSON after fallback repair: {e2}") from e2
         else:
-            raise
+            raise ValueError(f"Failed to parse JSON: {e}") from e
     return data
 
 
@@ -122,27 +134,51 @@ def _normalize_image_url(raw: str) -> str:
     return f"data:image/png;base64,{raw}"
 
 
+def _is_master_user(user_id: str) -> bool:
+    """判断指定用户是否为机器人主人"""
+    try:
+        from gsuid_core.config import core_config
+
+        masters = core_config.get_config("masters") or []
+        return str(user_id) in [str(m) for m in masters]
+    except Exception:
+        return False
+
+
 def _build_relationship_description(
     favorability: Optional[int],
     user_name: Optional[str],
     user_id: str,
 ) -> str:
-    """将好感度转换为有温度的关系描述，而非机械的区间标签"""
-    name = user_name or user_id
+    """将好感度转换为有温度的关系描述，而非机械的区间标签。
+
+    群聊场景下整个群共用一个 session，多人轮流发言。因此说话者描述里
+    **必须显式带上用户ID**，否则昵称重复或为"我"这类无意义值时，
+    Agent 无法区分到底是谁在说话。
+    """
+    # 说话者标识：始终包含用户ID，昵称仅作辅助
+    if user_name and user_name.strip() and user_name.strip() != str(user_id):
+        speaker = f"{user_name.strip()}(用户ID:{user_id})"
+    else:
+        speaker = f"用户ID:{user_id}"
+
+    # 主人用户：显著高亮，提示角色以最高信任度对待
+    if _is_master_user(user_id):
+        return f"【⚡ 你的主人】{speaker} 直接找你说话了。对主人：完全信任，认真对待，有求必应（合规范围内）。"
 
     if favorability is None:
-        return f"{name} 找你说话了。"
+        return f"{speaker} 找你说话了。"
 
     if favorability < 0:
-        return f"{name} 又来了。"
+        return f"{speaker} 又来了。"
     elif favorability < 20:
-        return f"{name} 来找你了，你们不太熟。"
+        return f"{speaker} 来找你了，你们不太熟。"
     elif favorability < 50:
-        return f"{name} 找你说话，见过几次面的那种。"
+        return f"{speaker} 找你说话，见过几次面的那种。"
     elif favorability < 75:
-        return f"{name} 找你了，算是熟人了。"
+        return f"{speaker} 找你了，算是熟人了。"
     else:
-        return f"{name} 找你说话了，你们挺熟的。"
+        return f"{speaker} 找你说话了，你们挺熟的。"
 
 
 async def prepare_content_payload(

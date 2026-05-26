@@ -3,6 +3,7 @@ import sys
 import random
 import asyncio
 import logging
+import threading
 from typing import Any, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -473,7 +474,23 @@ class IntentService:
         self.executor = ThreadPoolExecutor(max_workers=num_threads)
         self.model = None
         self._entities_synced = False
-        self._load_or_train()
+        # 模型加载/训练延迟到首次预测时进行，避免在 import 阶段阻塞启动
+        self._model_ready = False
+        self._model_lock = threading.Lock()
+
+    def _ensure_model(self):
+        """首次预测时才加载（或训练）意图模型。
+
+        joblib 反序列化 sklearn pipeline 较慢，放在 import 阶段会阻塞框架启动；
+        而意图模型仅在收到聊天消息时才用得到，因此延迟到首次预测。
+        """
+        if self._model_ready:
+            return
+        with self._model_lock:
+            if self._model_ready:
+                return
+            self._load_or_train()
+            self._model_ready = True
 
     def _preprocess(self, text: str) -> str:
         """
@@ -798,6 +815,9 @@ class IntentService:
         return None
 
     def _sync_predict(self, text: str) -> Dict[str, Any]:
+        # 首次预测时才加载模型（在 executor 线程内执行，不阻塞事件循环）
+        self._ensure_model()
+
         # 首次调用时同步实体词典
         if not self._entities_synced:
             try:

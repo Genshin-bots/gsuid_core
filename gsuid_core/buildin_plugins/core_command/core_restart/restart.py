@@ -8,7 +8,9 @@ from pathlib import Path
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.server import core_shutdown_execute
+from gsuid_core.version import __version__
 from gsuid_core.subscribe import gs_subscribe
+from gsuid_core.startup_info import core_startup_info
 from gsuid_core.utils.database.models import Subscribe
 from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
@@ -103,9 +105,22 @@ async def restart_message():
         task_name="[早柚核心] Restart",
     )
     if datas:
-        now_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+        now_timestamp = time.time()
+        now_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_timestamp))
         data = datas[0]
-        await data.send(f"🚀 重启完成!\n关机时间: {data.extra_message}\n重启时间: {now_time}")
+        duration_msg = ""
+        if core_startup_info.duration is not None:
+            duration_msg = f"\n耗时: {core_startup_info.duration:.2f}s"
+            if data.extra_message:
+                try:
+                    shutdown_timestamp = time.mktime(time.strptime(data.extra_message, "%Y-%m-%d %H:%M:%S"))
+                    restart_duration = now_timestamp - shutdown_timestamp
+                    duration_msg += f" / {restart_duration:.1f}s"
+                except ValueError:
+                    pass
+        await data.send(
+            f"🚀 重启完成!\n关机时间: {data.extra_message}\n重启时间: {now_time}{duration_msg}\n版本: {__version__}"
+        )
         await Subscribe.delete_row(task_name="[早柚核心] Restart")
     else:
         logger.warning("[Core重启] 没有找到[Core重启]的订阅, 无推送消息！")

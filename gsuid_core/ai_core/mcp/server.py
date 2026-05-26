@@ -27,7 +27,7 @@ from fastmcp.server.auth import AccessToken, AuthProvider
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.server import on_core_start, on_core_shutdown
+from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.trigger_bridge import (
     _AI_CALL_CONTEXT,
     _MCP_TRIGGER_REGISTRY,
@@ -329,9 +329,8 @@ def get_mcp_trigger_count() -> int:
 # ─── 启动/关闭钩子 ──────────────────────────────────────────────────────────
 
 
-@on_core_start(priority=10)
-async def _on_start():
-    """框架启动时启动 MCP Server（优先级 10，在 MCP 工具注册之后执行）。"""
+async def init_mcp_server():
+    """框架启动时启动 MCP Server（在 MCP 工具注册之后执行）。"""
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:

@@ -3,6 +3,7 @@ import sys
 import signal
 import asyncio
 import argparse
+import multiprocessing
 from typing import Dict
 from asyncio import CancelledError
 from pathlib import Path
@@ -14,6 +15,7 @@ from msgspec import json as msgjson, to_builtins
 
 from gsuid_core.version import __version__
 from gsuid_core.shutdown import shutdown_event
+from gsuid_core.startup_info import core_startup_info
 
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -82,7 +84,9 @@ async def main():
 
     await load_gss(args.dev)
 
-    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    # 注册 AI 核心后台初始化钩子（init_ai_core）。该模块本身很轻量，
+    # 重依赖（buildin_tools 等）的导入推迟到 WS 启动后的后台阶段执行。
+    import gsuid_core.ai_core.startup  # noqa: F401
     from gsuid_core.bot import _Bot
     from gsuid_core.config import core_config
     from gsuid_core.models import MessageReceive
@@ -210,6 +214,7 @@ async def main():
     end_time = time.time()
     logger.success(ASCII_FONT)
     duration = round(end_time - start_time, 2)
+    core_startup_info.duration = duration
 
     from gsuid_core.sv import SL
 
@@ -219,7 +224,32 @@ async def main():
     logger.success(f"🚀 [GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}")
     logger.success(f"📦 插件: {plugin_count} | 🛠️ 服务: {sv_count} | ⚡ 触发器: {trigger_count}")
 
+    # AI 核心统计（仅在 AI 功能启用时显示）
+    try:
+        if ai_config.get_config("enable").data:
+            from gsuid_core.ai_core.register import _TOOL_REGISTRY, get_all_tools
+            from gsuid_core.ai_core.persona.resource import list_available_personas
+            from gsuid_core.ai_core.configs.provider_config_manager import (
+                list_available_provider_configs,
+            )
+
+            ai_tool_count = len(get_all_tools())
+            trigger_ai_tool_count = len(_TOOL_REGISTRY["by_trigger"]) if "by_trigger" in _TOOL_REGISTRY else 0
+            persona_count = len(list_available_personas())
+            openai_config_count = len(list_available_provider_configs("openai"))
+            anthropic_config_count = len(list_available_provider_configs("anthropic"))
+            config_count = openai_config_count + anthropic_config_count
+
+            logger.success(
+                f"🧠 AI工具: {ai_tool_count} | 🔗 Trigger工具: {trigger_ai_tool_count} | "
+                f"🎭 人格: {persona_count} | 📋 配置文件: {config_count}"
+            )
+    except Exception as e:
+        logger.debug(f"🧠 [GsCore] AI 核心统计输出失败: {e}")
+
     await server.serve()
 
 
-asyncio.run(main())
+# 仅主进程启动服务(spawn 子进程重 import 本模块时跳过)
+if multiprocessing.current_process().name == "MainProcess":
+    asyncio.run(main())

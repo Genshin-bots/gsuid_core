@@ -15,7 +15,7 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.persona.persona import Persona
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def get_self_persona_info(
     ctx: RunContext[ToolContext],
     info_type: Literal["config", "image", "avatar", "audio"],
@@ -86,3 +86,138 @@ async def get_self_persona_info(
 
     else:
         return f"⚠️ 不支持的信息类型: {info_type}，可选值: config, image, avatar, audio"
+
+
+@ai_tools(category="buildin")
+async def get_self_info(ctx: RunContext[ToolContext]) -> str:
+    """
+    获取自身的完整自我认知信息。
+
+    当用户问"你是谁"、"你能做什么"、"你的主人是谁"，
+    或你需要判断某个任务是否在自己能力范围内时，调用此工具。
+    返回身份、运行框架、能力边界（可用工具）、主人、当前会话语境等信息。
+
+    Returns:
+        结构化的自我认知档案文本
+    """
+    from gsuid_core.config import core_config
+    from gsuid_core.ai_core.register import get_registered_tools
+
+    ev = ctx.deps.ev
+    session_id = ev.session_id if ev else ""
+
+    # 当前 Persona 名称
+    persona_name = "未知"
+    try:
+        from gsuid_core.ai_core.persona import persona_config_manager
+
+        if session_id:
+            pn = persona_config_manager.get_persona_for_session(session_id)
+            if pn:
+                persona_name = pn
+    except Exception:
+        pass
+
+    # 能力边界：按分类汇总已注册工具
+    capability_lines: list[str] = []
+    try:
+        registry = get_registered_tools()
+        cat_labels = {
+            "self": "核心能力",
+            "buildin": "基础工具",
+            "common": "常用工具",
+            "media": "多媒体",
+            "default": "子任务工具",
+            "by_trigger": "插件工具",
+        }
+        for cat, tools in registry.items():
+            if not tools:
+                continue
+            label = cat_labels[cat] if cat in cat_labels else cat
+            names = "、".join(list(tools.keys())[:15])
+            capability_lines.append(f"  [{label}] {names}")
+    except Exception:
+        capability_lines.append("  [获取失败]")
+
+    # 主人
+    masters = core_config.get_config("masters") or []
+    masters_text = "、".join(str(m) for m in masters) if masters else "（未配置）"
+
+    # 当前会话语境
+    group_id = ev.group_id if ev else None
+    scope_desc = f"群聊 {group_id}" if group_id else "私聊"
+    context_tags_text = ""
+    try:
+        if group_id:
+            from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+            from gsuid_core.ai_core.memory.group_profile import get_context_tags
+
+            tags = await get_context_tags(make_scope_key(ScopeType.GROUP, str(group_id)))
+            if tags:
+                context_tags_text = "、".join(tags)
+    except Exception:
+        pass
+
+    lines = [
+        "【自我认知档案】",
+        "",
+        "身份基本信息:",
+        f"  Persona名称: {persona_name}",
+        "  运行框架: GsCore AI Core（PydanticAI Agent 架构）",
+        f"  会话ID: {session_id or '未知'}",
+        "",
+        "我能做到的事（工具能力边界）:",
+        *capability_lines,
+        "  [说明] 以上工具的具体可用性取决于已安装的插件",
+        "",
+        "我不能做到的事（诚实边界）:",
+        "  - 只能调用已注册的工具，无法直接控制外部系统",
+        "  - 无法保证实时信息 100% 准确",
+        "",
+        f"我的主人（最高权限用户）: {masters_text}",
+        "",
+        "当前会话:",
+        f"  所在场景: {scope_desc}",
+    ]
+    if context_tags_text:
+        lines.append(f"  群组语境: {context_tags_text}")
+
+    return "\n".join(lines)
+
+
+@ai_tools(category="common", capability_domain="自我认知")
+async def update_self_note(
+    ctx: RunContext[ToolContext],
+    content: str,
+    note_type: Literal["preference", "commitment", "reflection"] = "preference",
+) -> str:
+    """记录一条关于你自己的长期信息（写入自我认知演化层）。
+
+    当用户明确表达了对你的称呼偏好、禁忌或长期约束（如"从现在起叫我老板"），
+    或你对自己作出了某个承诺、复盘出某个反思时，调用此工具持久化记录。
+    从下一轮对话起，这条信息会自动出现在你的自我认知里，无需再次记忆。
+    注意：不要为玩笑、临时或不确定的内容调用此工具。
+
+    Args:
+        ctx: 工具执行上下文
+        content: 要记录的内容，简短一句话即可
+        note_type: 记录类型——
+            "preference"=学到的偏好（称呼/禁忌等），
+            "commitment"=对用户作出的承诺，
+            "reflection"=自我复盘反思
+
+    Returns:
+        记录结果说明
+    """
+    from gsuid_core.ai_core.self_cognition import add_self_note
+
+    field_map = {
+        "preference": "preferences_learned",
+        "commitment": "commitments",
+        "reflection": "self_notes",
+    }
+    # Bot.bot_id 是已声明字段；deps.bot 为 None 时退化为空串走 default scope
+    bot_id = ctx.deps.bot.bot_id if ctx.deps.bot is not None else ""
+
+    ok = await add_self_note(bot_id, content, field_map[note_type])
+    return "✅ 已记入我的自我认知" if ok else "⚠️ 自我认知记录失败"

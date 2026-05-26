@@ -12,8 +12,9 @@
 ## 安全限制
 
 - 单用户最多 20 个待执行任务
-- 循环任务最大执行次数为 10 次
+- 循环任务最大执行次数为 150 次
 - 循环任务最小间隔为 5 分钟
+- 单轮对话内 `add_once_task` 调用上限：2 次（防"逐时间点枚举"工具误用）
 
 ## 状态说明
 
@@ -25,7 +26,7 @@
 """
 
 import uuid
-from typing import Optional
+from typing import Dict, Tuple, Optional
 from datetime import datetime, timedelta
 
 from pytz import timezone
@@ -41,8 +42,31 @@ TZ_SHANGHAI = timezone("Asia/Shanghai")
 
 # 安全限制
 MAX_PENDING_TASKS_PER_USER = 20
-MAX_EXECUTION_LIMIT = 10
+MAX_EXECUTION_LIMIT = 150
 MIN_INTERVAL_SECONDS = 300
+
+# 单轮节流：防止主人格用 add_once_task 逐时间点枚举周期任务。
+# Key: (session_id, turn_id) — turn_id 由 gs_agent._execute_run 写入
+# ToolContext.extra["turn_id"]。Value: 本轮已成功创建的 add_once_task 计数。
+PER_TURN_ONCE_TASK_LIMIT = 2
+_PER_TURN_ONCE_TASK_COUNT: Dict[Tuple[str, str], int] = {}
+
+
+def _get_turn_throttle_key(ctx: RunContext[ToolContext]) -> Optional[Tuple[str, str]]:
+    """构造 (session_id, turn_id) 节流键；缺一不可（无 turn_id 时跳过节流）。"""
+    tool_ctx: ToolContext = ctx.deps
+    ev = tool_ctx.ev
+    if ev is None:
+        return None
+    turn_id = tool_ctx.extra.get("turn_id") if tool_ctx.extra else None
+    if not turn_id:
+        return None
+    return (str(ev.session_id), str(turn_id))
+
+
+def clear_turn_throttle(session_id: str, turn_id: str) -> None:
+    """回合结束时清理本轮的节流计数（由 gs_agent._execute_run finally 调用）。"""
+    _PER_TURN_ONCE_TASK_COUNT.pop((str(session_id), str(turn_id)), None)
 
 
 def _get_session_info(ev) -> tuple[Optional[str], Optional[str]]:
@@ -111,6 +135,13 @@ async def add_once_task(
         ...     run_time="2024-05-14 16:30:00",
         ...     task_prompt="温柔地提醒用户喝水，说'主人，记得多喝水对身体好哦~'",
         ... )
+
+    **何时不该用本工具**：
+    - 涉及"决策 / 分析 / 复盘 / 持仓 / 账本" → 走 register_kanban_task
+    - 同一意图需要 3+ 个时间点触发 → 走 add_interval_task 或
+      register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")
+    - 单轮调用本工具不得超过 2 次（硬约束，第 3 次直接拒绝）
+    - 「我为每个时间点逐一调用 add_once_task」是工具选错的最强信号
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -127,6 +158,21 @@ async def add_once_task(
     if not run_time:
         return "⚠️ 添加任务失败：缺少 run_time"
 
+    # 单轮节流：本轮已调过 N 次 add_once_task 即拒绝，强提示走周期模板。
+    # 这是反"逐时间点枚举"误用的硬约束——见模块顶端注释。
+    throttle_key = _get_turn_throttle_key(ctx)
+    if throttle_key is not None:
+        count = _PER_TURN_ONCE_TASK_COUNT.get(throttle_key, 0)
+        if count >= PER_TURN_ONCE_TASK_LIMIT:
+            return (
+                f"⚠️ 单轮对话内已调用 add_once_task {PER_TURN_ONCE_TASK_LIMIT} 次。\n"
+                "如果你正在为多个时间点逐一注册任务，这是**工具选错**的信号。\n"
+                "→ 单步周期请改用 add_interval_task\n"
+                "→ 多步周期（含决策/复盘/账本）请改用 "
+                'register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")\n'
+                "本次调用已被拒绝。"
+            )
+
     # 解析时间（统一使用 Asia/Shanghai 时区）
     try:
         trigger_time = datetime.strptime(run_time, "%Y-%m-%d %H:%M:%S")
@@ -142,7 +188,13 @@ async def add_once_task(
     existing_tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
     user_pending_count = sum(1 for t in existing_tasks if t.status == "pending")
     if user_pending_count >= MAX_PENDING_TASKS_PER_USER:
-        return f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务，请先取消一些任务"
+        return (
+            f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务。\n"
+            "→ 如果这是「周期性多步任务」（如长期追踪/复盘/记账），"
+            "请改用 register_kanban_task(recurring_trigger=...) ——它不走该上限，"
+            "也能由 Kanban 统一编排。\n"
+            "→ 否则请先取消已有任务后重试。"
+        )
 
     # 生成任务ID
     task_id = f"scheduled_task_{uuid.uuid4().hex[:12]}"
@@ -174,6 +226,10 @@ async def add_once_task(
             replace_existing=True,
         )
 
+        # 任务成功落库后再计入单轮节流计数（失败的不算）。
+        if throttle_key is not None:
+            _PER_TURN_ONCE_TASK_COUNT[throttle_key] = _PER_TURN_ONCE_TASK_COUNT.get(throttle_key, 0) + 1
+
         return f"✅ 一次性任务添加成功！\n📋 任务ID：{task_id}\n📅 执行时间：{run_time}\n📝 任务内容：{task_prompt}"
 
     except Exception as e:
@@ -197,7 +253,16 @@ async def add_interval_task(
     例如"每半小时查一下股价"、"每天早上发天气预报"、"每天下午3点30分查xxx"。
 
     循环任务会按照设定的时间间隔重复执行，达到最大执行次数后自动结束。
-    系统安全限制：最大执行10次，最小间隔5分钟。
+    系统安全限制：最大执行 150 次，最小间隔 5 分钟。
+
+    **何时不该用本工具**：
+    - 任务包含"决策 / 多代理协作 / 持仓记账 / 周期复盘"——这些属于多步任务，
+      应走 register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")，
+      而不是把多步流程塞进 task_prompt。
+    - task_prompt 写得超过 2 个步骤（"先 A 再 B 再 C 再写日志再汇报"），
+      这是**工具选错**的强信号。
+    - task_prompt 含 if-then-else 多步判断（"如果是工作日就 A 否则 B"），
+      也是工具选错——多步逻辑由 Kanban 子任务树承载。
 
     Args:
         ctx: 工具执行上下文
@@ -298,7 +363,12 @@ async def add_interval_task(
     existing_tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
     user_pending_count = sum(1 for t in existing_tasks if t.status == "pending")
     if user_pending_count >= MAX_PENDING_TASKS_PER_USER:
-        return f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务，请先取消一些任务"
+        return (
+            f"⚠️ 您已有 {MAX_PENDING_TASKS_PER_USER} 个待执行任务。\n"
+            "→ 如果这是「周期性多步任务」（含决策/复盘/账本），"
+            "请改用 register_kanban_task(recurring_trigger=...) ——它不走该上限。\n"
+            "→ 否则请先取消已有任务后重试。"
+        )
 
     # 生成任务ID
     task_id = f"scheduled_task_{uuid.uuid4().hex[:12]}"
@@ -391,28 +461,18 @@ async def add_interval_task(
 # ============ 查询任务 ============
 
 
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def list_scheduled_tasks(
     ctx: RunContext[ToolContext],
 ) -> str:
     """
-    列出当前用户的所有定时任务
+    列出我创建的所有定时任务
 
-    当用户想要查看自己创建的所有定时/循环任务时调用此工具。
-    可以看到每个任务的状态、类型、下次执行时间等信息。
+    当用户想查看、列出自己设置过的定时任务、提醒、循环任务时调用此工具。
+    触发场景如"我有哪些定时任务""看看我的提醒""我设了什么任务""任务列表"。
 
     Returns:
-        当前用户的所有任务列表，按创建时间倒序排列
-
-    Examples:
-        # 用户说"我创建了哪些定时任务？"
-        >>> await list_scheduled_tasks(ctx)
-
-        # 用户说"看看我的任务"
-        >>> await list_scheduled_tasks(ctx)
-
-        # 用户说"有哪些任务在排队？"
-        >>> await list_scheduled_tasks(ctx)
+        当前用户的全部任务列表，含每个任务的 ID、类型、状态、下次执行时间
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -472,30 +532,23 @@ async def list_scheduled_tasks(
         return f"⚠️ 查询任务列表失败: {str(e)}"
 
 
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def query_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
 ) -> str:
     """
-    查询指定任务的详细信息
+    查看某个定时任务的详细信息
 
-    当用户想要查看某个具体任务的完整信息时调用此工具。
-    会显示任务的创建时间、执行时间、状态、已执行次数、下次执行时间等详细信息。
+    当用户想了解某个具体任务的完整情况时调用此工具，触发场景如
+    "这个任务什么时候执行""任务 xxx 的详情""那个提醒还在吗"。
 
     Args:
         ctx: 工具执行上下文
-        task_id: 任务ID，从 list_scheduled_tasks 或添加任务时的返回值获取
+        task_id: 任务 ID，从 list_scheduled_tasks 的结果或创建任务时的返回值中获取
 
     Returns:
-        任务的详细信息
-
-    Examples:
-        # 用户说"查看任务 abc123 的详情"
-        >>> await query_scheduled_task(ctx, task_id="abc123")
-
-        # 用户说"这个任务什么时候执行？"
-        >>> await query_scheduled_task(ctx, task_id="scheduled_task_abc123")
+        该任务的创建时间、执行时间、状态、已执行次数、上次结果等详细信息
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -563,7 +616,7 @@ async def query_scheduled_task(
 # ============ 修改任务 ============
 
 
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def modify_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -571,34 +624,20 @@ async def modify_scheduled_task(
     max_executions: Optional[int] = None,
 ) -> str:
     """
-    修改定时任务
+    修改一个定时任务的描述或最大执行次数
 
-    当用户想要修改已创建任务的描述或最大执行次数时调用此工具。
-    注意：只能修改 pending 或 paused 状态的任务。
+    当用户想调整已设置的定时任务时调用此工具，触发场景如
+    "把那个任务改成…""定时任务的内容换一下""把循环次数改成 5 次"。
+    只能修改 pending 或 paused 状态的任务。
 
     Args:
         ctx: 工具执行上下文
-        task_id: 任务ID
-        task_prompt: 新的任务描述（可选）
-        max_executions: 新的最大执行次数（可选，仅循环任务有效）
+        task_id: 任务 ID
+        task_prompt: 新的任务描述，不修改则不传
+        max_executions: 新的最大执行次数，仅循环任务有效，不修改则不传
 
     Returns:
         操作结果信息
-
-    Examples:
-        # 用户说"把任务 abc123 的描述改成每天提醒我喝水"
-        >>> await modify_scheduled_task(
-        ...     ctx,
-        ...     task_id="abc123",
-        ...     task_prompt="每天提醒我喝水，说'主人，记得多喝水哦~'",
-        ... )
-
-        # 用户说"把那个循环任务的执行次数改成5次"
-        >>> await modify_scheduled_task(
-        ...     ctx,
-        ...     task_id="abc123",
-        ...     max_executions=5,
-        ... )
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -650,30 +689,23 @@ async def modify_scheduled_task(
 # ============ 删除/取消任务 ============
 
 
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def cancel_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
 ) -> str:
     """
-    取消定时任务
+    取消（删除）一个定时任务
 
-    当用户想要取消一个已创建的任务时调用此工具。
-    取消后任务将不会继续执行。
+    当用户想停掉、删除、不再需要某个定时任务或提醒时调用此工具，触发场景如
+    "取消那个任务""别再提醒我了""删掉定时任务 xxx"。取消后任务不再执行。
 
     Args:
         ctx: 工具执行上下文
-        task_id: 任务ID
+        task_id: 任务 ID
 
     Returns:
         操作结果信息
-
-    Examples:
-        # 用户说"取消任务 abc123"
-        >>> await cancel_scheduled_task(ctx, task_id="abc123")
-
-        # 用户说"不想再提醒我开会了"
-        >>> await cancel_scheduled_task(ctx, task_id="scheduled_task_abc123")
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -713,31 +745,24 @@ async def cancel_scheduled_task(
 # ============ 暂停/恢复任务 ============
 
 
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def pause_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
 ) -> str:
     """
-    暂停循环任务
+    暂停一个循环任务（之后可恢复）
 
-    当用户想要暂时停止一个循环任务的执行时调用此工具。
-    暂停后任务不会继续执行，但任务数据会保留，之后可以恢复。
-    注意：只有循环任务可以暂停，一次性任务不支持暂停。
+    当用户想暂时停止、但不彻底删除某个循环任务时调用此工具，触发场景如
+    "先暂停那个任务""这阵子别执行了""暂停循环提醒"。
+    仅循环任务支持暂停，一次性任务不支持。
 
     Args:
         ctx: 工具执行上下文
-        task_id: 任务ID
+        task_id: 任务 ID
 
     Returns:
         操作结果信息
-
-    Examples:
-        # 用户说"暂停任务 abc123"
-        >>> await pause_scheduled_task(ctx, task_id="abc123")
-
-        # 用户说"这周先不要提醒我喝水了"
-        >>> await pause_scheduled_task(ctx, task_id="scheduled_task_abc123")
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -777,30 +802,23 @@ async def pause_scheduled_task(
         return f"⚠️ 暂停任务失败: {str(e)}"
 
 
-@ai_tools(category="self")
+@ai_tools(category="common")
 async def resume_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
 ) -> str:
     """
-    恢复已暂停的循环任务
+    恢复一个已暂停的循环任务
 
-    当用户想要恢复之前暂停的循环任务时调用此工具。
-    任务会从暂停的地方继续执行。
+    当用户想让之前暂停的循环任务继续执行时调用此工具，触发场景如
+    "恢复那个任务""继续之前的循环提醒""把暂停的任务开起来"。
 
     Args:
         ctx: 工具执行上下文
-        task_id: 任务ID
+        task_id: 任务 ID
 
     Returns:
         操作结果信息
-
-    Examples:
-        # 用户说"恢复任务 abc123"
-        >>> await resume_scheduled_task(ctx, task_id="abc123")
-
-        # 用户说"这周继续提醒我喝水吧"
-        >>> await resume_scheduled_task(ctx, task_id="scheduled_task_abc123")
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev

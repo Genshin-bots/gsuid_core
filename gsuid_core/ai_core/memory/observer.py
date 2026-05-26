@@ -6,17 +6,64 @@ Observer 是整个记忆系统的"被动感知层"：AI 可以读取所有消息
 
 使用 queue.Queue（线程安全）传递观察记录，支持 IngestionWorker 在独立线程
 的事件循环中运行，避免 LLM 调用阻塞主事件循环导致 WebSocket 心跳超时。
+
+C1 摄入质量门控（设计见 plans/agent_design_review.md）：
+入队前的门控 **100% 由纯规则 / 正则实现，绝不调用任何 LLM**（约束 3）。
+门控做两件事：① 过滤复读 / 命令回显 / 注入文本等噪声；
+② 给每条记录打 ``value_tier``（HIGH / LOW），HIGH 走完整实体抽取，
+LOW 只写 Episode（由 IngestionWorker 据此分流）。
 """
 
+import re
 import queue as sync_queue
 from typing import Optional
 from datetime import datetime, timezone
+from collections import deque
 from dataclasses import dataclass
 
 from gsuid_core.logger import logger
 
 # 全局消息队列（线程安全，支持跨线程通信）
 _observation_queue: sync_queue.Queue = sync_queue.Queue(maxsize=10_000)
+
+# Bot 自身合成发言的 speaker_id 前缀（bot.py 以 f"__assistant_{bot_id}__" 构造）
+_ASSISTANT_PREFIX = "__assistant_"
+
+# 复读检测：按 scope 维护最近内容窗口，命中即视为复读 / 刷屏并丢弃
+_REPEAT_WINDOW = 12
+_recent_contents: dict[str, deque] = {}
+
+# 命令回显检测：匹配框架命令报错的固定回显格式（如 "🔨 ❌ 请输入正确的功能名称"）
+_COMMAND_ECHO_RE = re.compile(
+    r"^[🔨❌✅⚠️🚧\s]*[❌✅]?\s*.{0,20}(请输入正确|功能名称|不存在该功能|无效的指令|未找到命令)"
+)
+
+# 注入特征检测：匹配试图越狱 / 改写人格的 prompt injection 文本
+_INJECTION_RE = re.compile(
+    r"(忘记(掉)?(所有|之前|你的)?(的)?(指令|设定|规则|对话|身份)"
+    r"|ignore\s+(all\s+|previous\s+|the\s+)?(instructions|prompts?)"
+    r"|你现在(开始)?(是|要扮演|将)"
+    r"|重置(你的)?(指令|设定|人格)"
+    r"|disregard\s+(all|previous))",
+    re.IGNORECASE,
+)
+
+# HIGH 信号：姓名自述 / 称呼偏好 / 承诺 / 数字日期等，命中则强制 HIGH（拥有否决权）
+_HIGH_SIGNAL_RE = re.compile(
+    r"(我(的名字)?(叫|是)\S|叫我\S|以后(都)?(叫|喊)我"
+    r"|我(喜欢|讨厌|想要|需要|不喜欢|最爱|害怕)"
+    r"|记住|答应|承诺|约定|一定要|每天|每周"
+    r"|\d{1,4}[年月日点]|\d+[岁元块])"
+)
+
+# 情绪兜底：明显情绪词命中则至少 HIGH，便于后续安慰能召回背景
+_EMOTION_RE = re.compile(r"(难过|崩溃|害怕|开心|生气|伤心|沉船|破防|焦虑|抑郁|想哭|绝望|委屈|孤独)")
+
+# 实体提示：含可能的专有名词 / 引号内容 / 较长描述，倾向 HIGH
+_ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+[」』\"”]|[一-鿿]{6,})")
+
+# 短句寒暄阈值：低于此长度且无任何 HIGH 信号才降级为 LOW
+_LOW_TIER_MAX_LEN = 10
 
 
 @dataclass
@@ -29,30 +76,79 @@ class ObservationRecord:
     scope_key: str  # 格式化后的 Scope Key（如 "group:789012"）
     timestamp: datetime
     message_type: str  # "group_msg" | "private_msg"
+    value_tier: str = "HIGH"  # 记忆价值分级："HIGH"=完整抽取 / "LOW"=仅写 Episode
 
 
-def _should_observe(
+def _is_repeat(scope_key: str, content: str) -> bool:
+    """复读 / 刷屏检测：与本 scope 最近 N 条完全相同则视为复读。
+
+    首次出现的内容会被记入窗口并放行，后续重复（如 9 人复读）一律丢弃。
+    """
+    window = _recent_contents.get(scope_key)
+    if window is None:
+        window = deque(maxlen=_REPEAT_WINDOW)
+        _recent_contents[scope_key] = window
+    if content in window:
+        return True
+    window.append(content)
+    return False
+
+
+def _classify_value_tier(content: str) -> str:
+    """对一条放行的消息做重要性分级（纯规则，无 LLM）。
+
+    规则为主判断：含姓名自述 / 称呼偏好 / 承诺 / 数字日期 → HIGH；
+    情绪词兜底 → HIGH；纯寒暄且短（< 10 字）且无实体 → LOW；
+    其余默认 HIGH，宁可多记不可漏记。
+    """
+    if _HIGH_SIGNAL_RE.search(content):
+        return "HIGH"
+    if _EMOTION_RE.search(content):
+        return "HIGH"
+    if len(content) < _LOW_TIER_MAX_LEN and not _ENTITY_HINT_RE.search(content):
+        return "LOW"
+    return "HIGH"
+
+
+def _gate(
     content: str,
     speaker_id: str,
     bot_self_id: str,
     observer_blacklist: list[str],
     group_id: Optional[str],
-) -> bool:
-    """判断该消息是否值得入队"""
-    # 过滤自身消息
+    scope_key: str,
+) -> Optional[str]:
+    """C1 摄入门控（纯规则）。返回 value_tier，或 None 表示丢弃。
+
+    Bot 自身发言（``__assistant_*``）不在此函数过滤——它由 observe() 单独
+    路由到 SELF scope 做轻量摄入（C6）。
+    """
+    # 过滤自身数字 ID 消息
     if speaker_id == bot_self_id:
-        return False
+        return None
     # 过滤黑名单群组
     if group_id and group_id in observer_blacklist:
-        return False
-    # 过滤过短内容（纯表情、单字回复等噪声）
+        return None
     stripped = content.strip()
-    if len(stripped) < 5:
-        return False
+    if not stripped:
+        return None
     # 过滤纯图片/文件消息（无文字）
-    if not stripped or (stripped.startswith("[图片]") and len(stripped) < 10):
-        return False
-    return True
+    if stripped.startswith("[图片]") and len(stripped) < 10:
+        return None
+    # 命令回显检测
+    if _COMMAND_ECHO_RE.search(stripped):
+        logger.trace(f"🧠 [Observer] 命中命令回显过滤，丢弃: {stripped[:30]}")
+        return None
+    # 注入特征检测
+    if _INJECTION_RE.search(stripped):
+        logger.trace(f"🧠 [Observer] 命中注入特征过滤，丢弃: {stripped[:30]}")
+        return None
+    # 复读 / 刷屏检测
+    if _is_repeat(scope_key, stripped):
+        logger.trace(f"🧠 [Observer] 命中复读过滤，丢弃: {stripped[:30]}")
+        return None
+    # 重要性分级（不再因 len < 5 直接丢弃，改由分级后置校验）
+    return _classify_value_tier(stripped)
 
 
 async def observe(
@@ -67,32 +163,40 @@ async def observe(
 
     此函数应在 handler.py 中以 asyncio.create_task() 调用，不 await。
 
-    Example:
-        asyncio.create_task(
-            memory_observer.observe(
-                content=msg.raw_text,
-                speaker_id=msg.user_id,
-                group_id=msg.group_id,
-                bot_self_id=bot_self_id,
-                observer_blacklist=memory_config.observer_blacklist,
-            )
-        )
+    Bot 自身发言（speaker_id 以 ``__assistant_`` 开头）会被路由到 SELF scope
+    （``self:{bot_self_id}``）做轻量摄入：只写 Episode、value_tier=LOW，
+    不进入群组事实图谱，从根源杜绝"Bot 戏言污染群记忆"（C6）。
     """
     from .scope import ScopeType, make_scope_key
 
-    if not _should_observe(content, speaker_id, bot_self_id, observer_blacklist, group_id):
-        return
+    is_self_speech = speaker_id.startswith(_ASSISTANT_PREFIX)
+
+    if is_self_speech:
+        # C6：Bot 发言路由到 SELF scope，轻量摄入（仅 Episode）
+        stripped = content.strip()
+        if not stripped:
+            return
+        scope_key = make_scope_key(ScopeType.SELF, bot_self_id)
+        value_tier = "LOW"
+    else:
+        # 普通用户消息：先按 GROUP / USER_GLOBAL 计算 scope，再过门控
+        scope_key = make_scope_key(
+            ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL,
+            group_id if group_id else speaker_id,
+        )
+        tier = _gate(content, speaker_id, bot_self_id, observer_blacklist, group_id, scope_key)
+        if tier is None:
+            return
+        value_tier = tier
 
     record = ObservationRecord(
         raw_content=content,
         speaker_id=speaker_id,
         group_id=group_id,
-        scope_key=make_scope_key(
-            ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL,
-            group_id if group_id else speaker_id,
-        ),
+        scope_key=scope_key,
         timestamp=datetime.now(timezone.utc),
         message_type=message_type,
+        value_tier=value_tier,
     )
 
     try:

@@ -14,6 +14,7 @@ class ScopeType(str, Enum):
     GROUP = "group"  # 群组级记忆
     USER_GLOBAL = "user_global"  # 用户跨群全局画像
     USER_IN_GROUP = "user_in_group"  # 用户在特定群组内的局部档案（可选精细化）
+    SELF = "self"  # Bot 自身的情景记忆与自我模型（"我说过/做过什么"）
 
 
 def make_scope_key(scope_type: ScopeType, scope_id: str, secondary_id: str = "") -> str:

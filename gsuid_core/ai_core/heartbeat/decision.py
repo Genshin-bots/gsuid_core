@@ -5,11 +5,11 @@ from datetime import datetime
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import extract_json_from_text
 from gsuid_core.ai_core.models import Event
-from gsuid_core.ai_core.history import format_history_for_agent
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.ai_core.persona.prompts import ROLE_PLAYING_START
 from gsuid_core.ai_core.persona.resource import load_persona
 from gsuid_core.utils.database.base_models import async_maker
@@ -26,7 +26,7 @@ DECISION_PROMPT_TEMPLATE = """
 
 【群里最近发生的事】
 {history_context}
-{group_summary_section}
+{group_summary_section}{proactive_merge_section}
 
 ---
 
@@ -51,7 +51,7 @@ PROACTIVE_MESSAGE_PROMPT = """
 
 【群里最近发生的事】
 {history_context}
-
+{proactive_merge_section}
 【此刻你的状态】
 {mood}
 
@@ -106,9 +106,17 @@ async def run_heartbeat(
     event: Event,
     history: List[Any],
     session: GsCoreAIAgent,
+    extra_context: str = "",
 ) -> Optional[tuple[str, str]]:
     """
     Heartbeat 主入口：决策 + 生成，合并为一次完整流程。
+
+    Args:
+        event:   会话事件
+        history: 历史消息列表
+        session: AI Session
+        extra_context: C8 统一主动网关合并进来的语境（如刚完成的定时任务结果摘要），
+            注入决策/发言提示词，让 AI 自然提及而非生硬另起一条播报。
 
     Returns:
         主动发言内容字符串；若决定不发言或出错则返回 None
@@ -138,6 +146,11 @@ async def run_heartbeat(
     # 获取群组摘要缓存（如果启用）
     group_summary = await _get_group_summary_for_heartbeat(event.group_id or "")
 
+    # C8：统一主动网关合并进来的语境（刚完成的定时任务结果等）
+    proactive_merge_section = ""
+    if extra_context:
+        proactive_merge_section = f"\n\n【你刚完成的事（可自然提及，不必生硬播报）】\n{extra_context}"
+
     # ----------------------------------------------------------------
     # 阶段一：决策
     # ----------------------------------------------------------------
@@ -146,6 +159,7 @@ async def run_heartbeat(
         current_time=current_time,
         history_context=history_context,
         group_summary_section=group_summary,
+        proactive_merge_section=proactive_merge_section,
     )
 
     try:
@@ -200,6 +214,7 @@ async def run_heartbeat(
         persona_text=persona_text,
         history_context=history_context,
         mood=decision["mood"],
+        proactive_merge_section=proactive_merge_section,
     )
 
     try:
