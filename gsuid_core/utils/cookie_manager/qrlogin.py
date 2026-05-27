@@ -1,5 +1,4 @@
 import io
-import json
 import base64
 import asyncio
 from typing import Any, Tuple, Union, Literal
@@ -62,19 +61,26 @@ async def refresh(
     scanned = False
     while True:
         await asyncio.sleep(2)
-        status_data = await mys_api.check_qrcode(code_data["app_id"], code_data["ticket"], code_data["device"])
+        status_data = await mys_api.check_hyp_qrcode(
+            code_data["ticket"],
+            code_data["device_id"],
+        )
         if isinstance(status_data, int):
             logger.warning("[登录]二维码已过期")
             return False, None
-        if status_data["stat"] == "Scanned":
+        if status_data["status"] == "Created":
+            continue
+        if status_data["status"] == "Scanned":
             if not scanned:
                 logger.info("[登录]二维码已扫描")
                 scanned = True
             continue
-        if status_data["stat"] == "Confirmed":
+        if status_data["status"] == "Confirmed":
             logger.info("[登录]二维码已确认")
             break
-    return True, json.loads(status_data["payload"]["raw"])
+        logger.warning(f"[登录]未知二维码状态: {status_data['status']}")
+        return False, None
+    return True, status_data
 
 
 async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
@@ -82,7 +88,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
         await bot.send(msg)
         return ""
 
-    code_data = await mys_api.create_qrcode_url()
+    code_data = await mys_api.create_hyp_qrcode_url()
     if isinstance(code_data, int):
         return await send_msg("[登录]链接创建失败...")
 
@@ -104,21 +110,28 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
     if path.exists():
         path.unlink()
 
-    status, game_token_data = await refresh(code_data)
+    status, login_data = await refresh(code_data)
     if status:
-        assert game_token_data is not None  # 骗过 pyright
-        logger.info("[登录]game_token获取成功")
-        stoken_data = await mys_api.get_stoken_by_game_token(
-            account_id=int(game_token_data["uid"]),
-            game_token=game_token_data["token"],
-        )
-        if isinstance(stoken_data, int):
+        assert login_data is not None  # 骗过 pyright
+        tokens = login_data.get("tokens", [])
+        user_info = login_data.get("user_info") or {}
+        if not tokens or "mid" not in user_info:
             return await send_msg("[登录]获取SK失败...")
 
-        account_id = game_token_data["uid"]
-        stoken = stoken_data["token"]["token"]
-        mid = stoken_data["user_info"]["mid"]
+        account_id = str(user_info.get("aid") or user_info.get("uid") or user_info.get("account_id", ""))
+        if not account_id:
+            return await send_msg("[登录]获取account_id失败...")
+
+        stoken = ""
+        for token in tokens:
+            if token.get("name") in {"stoken", "stoken_v2"}:
+                stoken = token["token"]
+                break
+        if not stoken:
+            stoken = tokens[0]["token"]
+        mid = user_info["mid"]
         app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
+        logger.info("[登录]stoken获取成功")
 
         ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
         if isinstance(ck, int):
@@ -126,14 +139,14 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
 
         return SimpleCookie(
             {
-                "stoken_v2": stoken_data["token"]["token"],
-                "stuid": stoken_data["user_info"]["aid"],
-                "mid": stoken_data["user_info"]["mid"],
+                "stoken_v2": stoken,
+                "stuid": account_id,
+                "mid": mid,
                 "cookie_token": ck["cookie_token"],
             }
         ).output(header="", sep=";")
     else:
-        logger.warning("[登录]game_token获取失败")
-        im = "[登录]game_token获取失败: 二维码已过期"
+        logger.warning("[登录]stoken获取失败")
+        im = "[登录]stoken获取失败: 二维码已过期"
 
     return await send_msg(im)

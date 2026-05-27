@@ -445,6 +445,12 @@ class QrCodeStatus(TypedDict):
     payload: QrPayload
 
 
+class HypQrCodeStatus(TypedDict):
+    status: Literal["Created", "Scanned", "Confirmed"]
+    tokens: NotRequired[List[StokenInfo]]
+    user_info: NotRequired[Optional[UserInfo]]
+
+
 ################
 # UserInfo相关 #
 ################

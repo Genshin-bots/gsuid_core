@@ -56,6 +56,10 @@ GET_STOKEN = f"{PASSPORT_URL}/account/ma-cn-session/app/getTokenByGameToken"
 CREATE_QRCODE = f"{HK4_SDK_URL}/hk4e_cn/combo/panda/qrcode/fetch"
 # 检查二维码扫描状态
 CHECK_QRCODE = f"{HK4_SDK_URL}/hk4e_cn/combo/panda/qrcode/query"
+# HYP创建登录二维码
+CREATE_QRCODE_HYP = f"{PASSPORT_URL}/account/ma-cn-passport/app/createQRLogin"
+# HYP检查二维码扫描状态
+CHECK_QRCODE_HYP = f"{PASSPORT_URL}/account/ma-cn-passport/app/queryQRLoginStatus"
 # 通过GameToken获取Cookie_token
 GET_COOKIE_TOKEN_BY_GAME_TOKEN = f"{GS_BASE}/auth/api/getCookieAccountInfoByGameToken"
 

@@ -7,6 +7,7 @@ import random
 from copy import deepcopy
 from string import digits, ascii_letters
 from typing import Dict, Union, Optional, cast
+from http.cookies import SimpleCookie
 
 from aiohttp import ClientSession, ClientTimeout
 
@@ -22,6 +23,7 @@ from .models import (
     QrCodeStatus,
     GameTokenInfo,
     CookieTokenInfo,
+    HypQrCodeStatus,
     LoginTicketInfo,
 )
 from .pass_request import PassMysApi
@@ -31,6 +33,17 @@ class AccountMysApi(PassMysApi):
     """
     账号相关请求
     """
+
+    HYP_VERSION = "1.3.3.182"
+
+    @staticmethod
+    def _hyp_qrcode_header(device_id: str) -> Dict[str, str]:
+        return {
+            "x-rpc-device_id": device_id,
+            "User-Agent": f"HYPContainer/{AccountMysApi.HYP_VERSION}",
+            "x-rpc-app_id": "ddxf5dufpuyo",
+            "x-rpc-client_type": "3",
+        }
 
     async def get_cookie_token(self, token: str, uid: str) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
@@ -65,6 +78,22 @@ class AccountMysApi(PassMysApi):
             }
         return data
 
+    async def create_hyp_qrcode_url(self) -> Union[Dict, int]:
+        device_id = uuid.uuid4().hex + uuid.uuid4().hex
+        data = await self._mys_request(
+            self.MAPI["CREATE_QRCODE_HYP"],
+            "POST",
+            header=self._hyp_qrcode_header(device_id),
+            data={},
+        )
+        if isinstance(data, Dict):
+            return {
+                "ticket": data["data"]["ticket"],
+                "url": data["data"]["url"],
+                "device_id": device_id,
+            }
+        return data
+
     async def check_qrcode(self, app_id: str, ticket: str, device: str) -> Union[QrCodeStatus, int]:
         data = await self._mys_request(
             self.MAPI["CHECK_QRCODE"],
@@ -77,6 +106,21 @@ class AccountMysApi(PassMysApi):
         )
         if isinstance(data, Dict):
             data = cast(QrCodeStatus, data["data"])
+        return data
+
+    async def check_hyp_qrcode(
+        self,
+        ticket: str,
+        device_id: str,
+    ) -> Union[HypQrCodeStatus, int]:
+        data = await self._mys_request(
+            self.MAPI["CHECK_QRCODE_HYP"],
+            "POST",
+            header=self._hyp_qrcode_header(device_id),
+            data={"ticket": ticket},
+        )
+        if isinstance(data, Dict):
+            data = cast(HypQrCodeStatus, data["data"])
         return data
 
     async def get_cookie_token_by_game_token(self, token: str, uid: str) -> Union[CookieTokenInfo, int]:
@@ -96,18 +140,28 @@ class AccountMysApi(PassMysApi):
         self, stoken: str, mys_id: str, full_sk: Optional[str] = None
     ) -> Union[CookieTokenInfo, int]:
         HEADER = deepcopy(self._HEADER)
+        params = {
+            "stoken": stoken,
+            "uid": mys_id,
+        }
         if full_sk:
             HEADER["Cookie"] = full_sk
+            simp_dict = SimpleCookie(full_sk)
+            if not stoken:
+                if "stoken" in simp_dict:
+                    stoken = simp_dict["stoken"].value
+                elif "stoken_v2" in simp_dict:
+                    stoken = simp_dict["stoken_v2"].value
+                params["stoken"] = stoken
+            if "mid" in simp_dict:
+                params["mid"] = simp_dict["mid"].value
         else:
             HEADER["Cookie"] = f"stuid={mys_id};stoken={stoken}"
         data = await self._mys_request(
             url=self.MAPI["GET_COOKIE_TOKEN_URL"],
             method="GET",
             header=HEADER,
-            params={
-                "stoken": stoken,
-                "uid": mys_id,
-            },
+            params=params,
         )
         if isinstance(data, Dict):
             data = cast(CookieTokenInfo, data["data"])
