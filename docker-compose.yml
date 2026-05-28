@@ -7,7 +7,7 @@ services:
       context: .
       target: ${GSCORE_BUILD_TARGET:-runtime}
       args:
-        - GSCORE_BASE_IMAGE=${GSCORE_BASE_IMAGE:-docker.cnb.cool/gscore-mirror/docker-sync/astral-uv:python3.12-bookworm-slim}
+        - GSCORE_BUILTIN_BASE=${GSCORE_BUILTIN_BASE:-docker.cnb.cool/gscore-mirror/gsuid_core/gscore-uv-3.12:latest}
         - GSCORE_PYTHON_INDEX=${GSCORE_PYTHON_INDEX:-https://pypi.org/simple}
 
     image: gsuid-core:${GSCORE_BUILD_TARGET:-runtime}
@@ -17,13 +17,12 @@ services:
     volumes:
       - ${MOUNT_PATH:-.}:/gsuid_core
       - venv-data:/venv
-    restart: unless-stopped
+    restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       - PYTHONUNBUFFERED=1
-      - UV_INDEX=${GSCORE_PYTHON_INDEX:-}
-      - UV_NO_CONFIG=${UV_NO_CONFIG:-false}
+      - UV_DEFAULT_INDEX=${GSCORE_PYTHON_INDEX:-}
       - UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT:-120}
       - http_proxy=${GSCORE_HTTP_PROXY:-}
       - https_proxy=${GSCORE_HTTPS_PROXY:-}

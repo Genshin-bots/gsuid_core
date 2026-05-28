@@ -9,7 +9,12 @@ master:
             rootlessBuildkitd:
               enabled: true
       env:
+        BASE_TAG: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/gscore-uv-3.12:latest
         IMAGE_TAG: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest
       stages:
-        - name: playwright
+        - name: build base
+          ifModify:
+            - "docker/base/**"
+          script: docker buildx build -t ${BASE_TAG} --platform linux/amd64,linux/arm64 --push -f docker/base/Dockerfile docker/base/
+        - name: build bundle
           script: docker buildx build --target bundle -t ${IMAGE_TAG} --platform linux/amd64,linux/arm64 --push -f Dockerfile .
