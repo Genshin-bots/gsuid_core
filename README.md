@@ -73,7 +73,7 @@ docker-compose up -d --build
 
 4. **管理**
    - 服务运行在端口 `8765`。
-   - 启动后可通过 `localhost:8765/genshinuid` 进入核心的后台管理界面
+   - 启动后可通过 `localhost:8765/app` 进入核心的后台管理界面
 
 ---
 
@@ -90,7 +90,7 @@ docker-compose up -d --build
 cp .env.example .env
 ```
 
-2. **启动服务**
+3. **启动服务**
 
    **方式 A：Docker Compose (推荐)**
 
@@ -113,14 +113,13 @@ cp .env.example .env
 
    _(会自动拉取全量镜像)_
 
-3. **数据管理**
-
+4. **数据管理**
    - 数据持久化在 `/opt/gscore_data` 目录。
    - 自定义插件可放在 `/opt/gscore_plugins` 目录。
 
-4. **管理**
+5. **管理**
    - 服务运行在端口 `8765`。
-   - 启动后可通过 `localhost:8765/genshinuid` 进入核心的后台管理界面
+   - 启动后可通过 `localhost:8765/app` 进入核心的后台管理界面
 
 ---
 

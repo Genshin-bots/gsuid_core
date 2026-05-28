@@ -20,8 +20,7 @@ services:
 
     environment:
       - PYTHONUNBUFFERED=1
-      - UV_INDEX=${GSCORE_PYTHON_INDEX:-}
-      - UV_NO_CONFIG=${UV_NO_CONFIG:-false}
+      - UV_DEFAULT_INDEX=${GSCORE_PYTHON_INDEX:-}
       - UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT:-120}
       - http_proxy=${GSCORE_HTTP_PROXY:-}
       - https_proxy=${GSCORE_HTTPS_PROXY:-}
