@@ -235,7 +235,25 @@ GET /api/logs/stream
 
 使用 Server-Sent Events (SSE) 实时推送日志内容。
 
-> **推送策略**：服务端推送**全级别日志**（包括 TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL），前端在本地根据用户选择的级别进行过滤显示。切换级别时**无需断开/重连 SSE**。
+**Query 参数**：
+- `level`: 允许推送的日志级别列表，支持重复参数。默认为 `DEBUG`、`INFO`、`ERROR`。传 `all` 时推送全部级别日志。
+
+> **推送策略**：服务端仅推送 `level` 列表中指定的级别日志。默认推送 DEBUG/INFO/ERROR，前端如需切换级别可断开并使用新的 `level` 参数重连 SSE。
+
+**使用示例**：
+```bash
+# 默认：仅推送 DEBUG、INFO、ERROR
+GET /api/logs/stream
+
+# 推送全部级别日志
+GET /api/logs/stream?level=all
+
+# 自定义级别组合：推送 DEBUG、INFO、WARNING、ERROR
+GET /api/logs/stream?level=DEBUG&level=INFO&level=WARNING&level=ERROR
+
+# 仅推送 ERROR 和 CRITICAL
+GET /api/logs/stream?level=ERROR&level=CRITICAL
+```
 
 **SSE 数据格式**：
 ```json
@@ -246,18 +264,16 @@ data: {"level": "INFO", "message": "...", "message_type": "html", "timestamp": "
 
 **前端接入示例**：
 ```javascript
+// 默认连接（DEBUG/INFO/ERROR）
 const eventSource = new EventSource('/api/logs/stream');
-const selectedLevel = "debug"; // 用户从下拉框选择
-const levelOrder = ["trace", "debug", "info", "success", "warning", "error", "critical"];
-const minIndex = levelOrder.indexOf(selectedLevel);
+
+// 自定义级别连接
+const levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+const eventSource = new EventSource(`/api/logs/stream?${levels.map(l => `level=${l}`).join('&')}`);
 
 eventSource.onmessage = (event) => {
     const log = JSON.parse(event.data);
-    const logIndex = levelOrder.indexOf(log.level.toLowerCase());
-    if (logIndex >= minIndex) {
-        appendLogToConsole(log); // 显示
-    }
-    // 否则丢弃（不显示），但保持 SSE 连接
+    appendLogToConsole(log); // 服务端已过滤，直接显示
 };
 ```
 

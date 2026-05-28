@@ -39,7 +39,13 @@ Authorization: Bearer <token>
             "user_id": "user123",
             "message_count": 15,
             "last_access": 1712345678.0,
-            "created_at": 1712345600.0
+            "created_at": 1712345600.0,
+            "last_user": {
+                "user_id": "user123",
+                "user_name": "用户昵称",
+                "user_avatar": "https://example.com/avatar/user123.png",
+                "message": "今天天气怎么样？"
+            }
         },
         {
             "session_id": "ws-onebot:onebot:bot_001:group:789012",
@@ -49,7 +55,8 @@ Authorization: Bearer <token>
             "user_id": null,
             "message_count": 30,
             "last_access": 1712345678.0,
-            "created_at": 1712345600.0
+            "created_at": 1712345600.0,
+            "last_user": null
         }
     ]
 }
@@ -67,6 +74,11 @@ Authorization: Bearer <token>
 | data[].message_count | integer | 该 session 的消息数量 |
 | data[].last_access | float/null | 最后访问时间戳 |
 | data[].created_at | float/null | 创建时间戳 |
+| data[].last_user | object/null | 该 session 中最后一条用户消息信息，无用户消息时为 null |
+| data[].last_user.user_id | string | 最后发言用户的 ID |
+| data[].last_user.user_name | string/null | 最后发言用户的昵称 |
+| data[].last_user.user_avatar | string/null | 最后发言用户的头像 URL |
+| data[].last_user.message | string | 最后一条用户消息内容 |
 
 ---
 
@@ -117,6 +129,7 @@ Authorization: Bearer <token>
                 "content": "你好",
                 "user_id": "user123",
                 "user_name": "用户昵称",
+                "user_avatar": "https://example.com/avatar/user123.png",
                 "timestamp": 1712345600.0,
                 "metadata": {}
             },
@@ -125,6 +138,7 @@ Authorization: Bearer <token>
                 "content": "你好！有什么可以帮助你的吗？",
                 "user_id": "ai",
                 "user_name": null,
+                "user_avatar": null,
                 "timestamp": 1712345601.0,
                 "metadata": {}
             }

@@ -62,6 +62,7 @@ class MessageRecord:
     content: str
     user_id: str  # 发送者用户ID
     user_name: Optional[str] = None  # 发送者昵称
+    user_avatar: Optional[str] = None  # 发送者头像URL
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -72,6 +73,7 @@ class MessageRecord:
             "content": self.content,
             "user_id": self.user_id,
             "user_name": self.user_name,
+            "user_avatar": self.user_avatar,
             "timestamp": self.timestamp,
             "metadata": self.metadata,
         }
@@ -84,6 +86,7 @@ class MessageRecord:
             content=data["content"],
             user_id=data.get("user_id", ""),
             user_name=data.get("user_name"),
+            user_avatar=data.get("user_avatar"),
             timestamp=data.get("timestamp", time.time()),
             metadata=data.get("metadata", {}),
         )
@@ -148,6 +151,7 @@ class HistoryManager:
         role: Literal["user", "assistant", "system"],
         content: str,
         user_name: Optional[str] = None,
+        user_avatar: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> MessageRecord:
         """
@@ -161,6 +165,7 @@ class HistoryManager:
             role: 消息角色 (user/assistant/system)
             content: 消息内容
             user_name: 发送者昵称（可选）
+            user_avatar: 发送者头像URL（可选）
             metadata: 可选的元数据
 
         Returns:
@@ -171,6 +176,7 @@ class HistoryManager:
             content=content,
             user_id=event.user_id,
             user_name=user_name,
+            user_avatar=user_avatar,
             metadata=metadata or {},
         )
 
@@ -268,6 +274,33 @@ class HistoryManager:
         with self._lock:
             history = self._histories.get(storage_event, deque())
             return len(history)
+
+    def get_last_user_message(self, event: "Event") -> Optional[Dict[str, Any]]:
+        """获取指定session中最后一条用户消息
+
+        从历史记录中倒序查找 role="user" 的消息，返回其 user_id、user_name、user_avatar 和 message。
+
+        Args:
+            event: Event 事件对象
+
+        Returns:
+            包含 user_id、user_name、user_avatar、message 的字典，无用户消息时返回 None
+        """
+        storage_event = self._get_storage_event(event)
+        with self._lock:
+            history = self._histories.get(storage_event, deque())
+            if not history:
+                return None
+            # 倒序遍历，找到最后一条 role="user" 的消息
+            for record in reversed(history):
+                if record.role == "user":
+                    return {
+                        "user_id": record.user_id,
+                        "user_name": record.user_name,
+                        "user_avatar": record.user_avatar,
+                        "message": record.content,
+                    }
+        return None
 
     def clear_history(self, event: "Event") -> bool:
         """清空指定session的历史记录"""

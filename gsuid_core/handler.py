@@ -158,6 +158,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if event.sender and "nickname" in event.sender:
             user_name = event.sender["nickname"]
 
+        # 获取用户头像URL
+        user_avatar = None
+        if event.sender and "avatar" in event.sender:
+            user_avatar = event.sender["avatar"]
+
         # 构建元数据
         from typing import Any, Dict
 
@@ -188,6 +193,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             role="user",
             content=event.raw_text.strip(),
             user_name=user_name,
+            user_avatar=user_avatar,
             metadata=metadata,
         )
 

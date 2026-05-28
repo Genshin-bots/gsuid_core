@@ -646,6 +646,7 @@ def setup_logging():
         trace_collect_processor,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
         log_to_history,
+        structlog.processors.JSONRenderer(ensure_ascii=False),
     ]
     collect_handler = CollectLogHandler(level=5)
     collect_handler.setFormatter(structlog.stdlib.ProcessorFormatter(processors=collect_processors))
@@ -720,23 +721,23 @@ logger: TraceCapableLogger = structlog.get_logger("GsCore")
 trace_collector = _init_trace_collector()
 
 
-async def read_log(min_level: Optional[str] = None):
+async def read_log(levels: Optional[List[str]] = None):
     """
     SSE 实时日志生成器。
 
     Args:
-        min_level: 最小日志级别，如 "info" / "debug" / "trace" 等。
-                   为空时不过滤，推送所有已缓冲的日志。
+        levels: 允许的日志级别列表，如 ["DEBUG", "INFO", "ERROR"]。
+               为空时不过滤，推送所有已缓冲的日志。
     """
     index = 0
-    min_level_num = LEVEL_NUM_MAP.get(min_level.lower(), 0) if min_level else 0
+    # 将允许的级别统一转为小写 set，便于快速匹配
+    allowed_levels: Optional[set] = set(ld.lower() for ld in levels) if levels else None
     while True:
         if index <= len(log_history) - 1:
             ev = log_history[index]
             if ev:
-                # 服务端不做任何过滤时 min_level 为空；网页前端可通过 query param 控制
                 level_str = str(ev.get("level", "")).lower()
-                if LEVEL_NUM_MAP.get(level_str, 0) >= min_level_num:
+                if allowed_levels is None or level_str in allowed_levels:
                     log_data = {
                         "level": ev["level"].upper(),
                         "message": ev["gevent"],

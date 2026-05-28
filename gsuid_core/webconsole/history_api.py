@@ -103,6 +103,9 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
             )
             msg_count = manager.get_history_count(ev)
 
+            # 获取最后一条用户消息
+            last_user = manager.get_last_user_message(ev)
+
             # 检查是否有 AI session（AI 关闭时恒为无）
             has_ai_session = False
             ai_history_length = 0
@@ -128,6 +131,7 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
                     "history_length": session_data.get("history_length", 0),
                     "has_ai_session": has_ai_session,
                     "ai_history_length": ai_history_length,
+                    "last_user": last_user,
                 }
             )
 

@@ -4,10 +4,10 @@ Logs APIs
 """
 
 import json
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 
-from fastapi import Depends, Request
+from fastapi import Query, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.logger import (
@@ -467,18 +467,19 @@ async def get_log_context(
 
 @app.get("/api/logs/stream")
 async def stream_logs(
-    level: Optional[str] = None,
+    level: Optional[List[str]] = Query(default=["DEBUG", "INFO", "ERROR"]),
     _user: Dict = Depends(require_auth),
 ):
     """Stream real-time logs using Server-Sent Events
 
     Args:
-        level: 实时日志最小级别过滤，如 trace/debug/info/warning/error/critical。
-               不传或传 all 时推送全部级别日志。
+        level: 允许推送的日志级别列表，如 ["DEBUG", "INFO", "ERROR"]。
+               默认为 ["DEBUG", "INFO", "ERROR"]；传 ["all"] 时推送全部级别日志。
+               支持重复参数，如 ?level=DEBUG&level=INFO&level=ERROR。
     """
-    if level and level.lower() == "all":
+    if level and "all" in [ld.lower() for ld in level]:
         level = None
-    return StreamingResponse(read_log(min_level=level), media_type="text/event-stream")
+    return StreamingResponse(read_log(levels=level), media_type="text/event-stream")
 
 
 @app.get("/api/logs/levels")
