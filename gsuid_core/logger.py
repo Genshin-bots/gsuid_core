@@ -1,6 +1,7 @@
 import re
 import sys
 import json
+import time
 import asyncio
 import logging
 import datetime
@@ -8,6 +9,7 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional, Protocol, Sequence, TypedDict, NotRequired
 from pathlib import Path
 from functools import wraps
+from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
 
 import aiofiles
@@ -18,12 +20,25 @@ from structlog.types import EventDict, Processor, WrappedLogger
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
 from gsuid_core.config import core_config
-from gsuid_core.models import Event, Message
+from gsuid_core.models import Event, Message, TraceContext
 from gsuid_core.data_store import get_res_path, error_mark_path
 
 log_history: List[EventDict] = []
 LOG_PATH = get_res_path() / "logs"
 IS_DEBUG_LOG: bool = False
+
+# 日志级别数值映射（用于 SSE 实时日志过滤）
+LEVEL_NUM_MAP: Dict[str, int] = {
+    "trace": 5,
+    "debug": 10,
+    "info": 20,
+    "success": 25,
+    "warning": 30,
+    "warn": 30,
+    "error": 40,
+    "critical": 50,
+    "fatal": 50,
+}
 
 
 class DailyNamedFileHandler(TimedRotatingFileHandler):
@@ -63,6 +78,219 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
 
         if not self.delay:
             self.stream = self._open()
+
+
+class CollectLogHandler(logging.Handler):
+    """
+    专门用于触发格式化处理器链以收集日志的 Handler。
+    不输出到任何流，仅让 log_to_history 等处理器将日志写入内存缓冲区，
+    供 SSE 实时日志流消费。
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.format(record)
+
+
+# ── 追踪日志条目 ──
+@dataclass
+class TraceLogEntry:
+    timestamp: str
+    level: str
+    event: str
+
+
+_MAX_EVENT_LEN: int = 4096
+_MAX_TRACE_LOGS: int = 5000
+
+
+class TraceCollector:
+    """以 trace_id 为维度收集日志，命令完成时保留内存并输出标记到 daily log"""
+
+    def __init__(self, max_traces: int = 1000, finalize_ttl_sec: float = 1800.0):
+        self._traces: Dict[str, List[TraceLogEntry]] = {}
+        self._trace_meta: Dict[str, TraceContext] = {}
+        self._trace_finalized_time: Dict[str, float] = {}
+        self._max_traces = max_traces
+        self._finalize_ttl_sec = finalize_ttl_sec
+
+    def start_trace(self, ctx: TraceContext) -> None:
+        """开始一个新追踪——仅在任务实际执行时调用"""
+        self._traces[ctx.trace_id] = []
+        self._trace_meta[ctx.trace_id] = ctx
+        self._trace_finalized_time.pop(ctx.trace_id, None)
+
+        trace_start_event = f"📝 [TraceStart] trace_id={ctx.trace_id} command={ctx.command} user_id={ctx.user_id}"
+        _slg = structlog.get_logger("GsCore")
+        _slg.info(trace_start_event, trace_id=ctx.trace_id)
+
+        # 写入 JSONL running 标记
+        try:
+            from gsuid_core.trace_archive import write_trace_meta
+
+            write_trace_meta(ctx.trace_id, ctx, status="running", log_count=0)
+        except Exception as e:
+            _slg = structlog.get_logger("GsCore")
+            _slg.error(f"❌ [TraceCollector] JSONL running 标记写入失败 trace_id={ctx.trace_id}: {e}")
+
+        if len(self._traces) > self._max_traces:
+            self._evict_oldest()
+
+    def _evict_oldest(self) -> None:
+        """FIFO 淘汰最旧的可丢弃追踪（跳过活跃中或仍在保留期内的）"""
+        now = time.perf_counter()
+        evicted = False
+        for oldest_id in list(self._traces.keys()):
+            finalized_at = self._trace_finalized_time.get(oldest_id)
+            if finalized_at is None:
+                continue
+            elapsed = now - finalized_at
+            if elapsed < self._finalize_ttl_sec:
+                continue
+            self._traces.pop(oldest_id, None)
+            self._trace_meta.pop(oldest_id, None)
+            self._trace_finalized_time.pop(oldest_id, None)
+            evicted = True
+            break
+        if not evicted:
+            _slg = structlog.get_logger("GsCore")
+            _slg.warning(
+                f"[TraceCollector] 追踪数达上限 {self._max_traces}，但所有追踪仍在活跃或保留期内，建议扩容 max_traces"
+            )
+
+    def collect(self, event_dict: EventDict) -> None:
+        """收集一条日志到当前追踪——只存储精简字段，超长 event 截断"""
+        if "trace_id" not in event_dict:
+            return
+        trace_id = event_dict["trace_id"]
+        if trace_id not in self._traces:
+            return
+        raw_event = str(event_dict["event"]) if "event" in event_dict else ""
+        if len(raw_event) > _MAX_EVENT_LEN:
+            raw_event = raw_event[:_MAX_EVENT_LEN] + " [truncated]"
+
+        entry = TraceLogEntry(
+            timestamp=str(event_dict["timestamp"]) if "timestamp" in event_dict else "",
+            level=str(event_dict["level"]) if "level" in event_dict else "",
+            event=raw_event,
+        )
+        self._traces[trace_id].append(entry)
+
+        if len(self._traces[trace_id]) > _MAX_TRACE_LOGS:
+            logs = self._traces[trace_id]
+            self._traces[trace_id] = logs[:100] + logs[-100:]
+            self._traces[trace_id].insert(
+                100,
+                TraceLogEntry(
+                    timestamp=logs[100].timestamp,
+                    level="warning",
+                    event=f"[TraceCollector] 日志过多，已截断，原始条数={len(logs)}",
+                ),
+            )
+
+    def get_short_id(self, trace_id: str) -> Optional[str]:
+        """从 meta 查找短码（供控制台格式化使用）"""
+        meta = self._trace_meta.get(trace_id)
+        return meta.short_id if meta else None
+
+    def finalize_trace(self, trace_id: str) -> Optional[List[TraceLogEntry]]:
+        """完成追踪——输出标记、JSONL 归档、内存保留供快速查询"""
+        logs = self._traces.get(trace_id)
+        meta = self._trace_meta.get(trace_id)
+        if not logs or not meta:
+            return None
+
+        try:
+            from gsuid_core.trace_archive import write_trace_meta
+
+            duration_ms = int((time.perf_counter() - meta.start_time) * 1000)
+            write_trace_meta(trace_id, meta, status="completed", log_count=len(logs), duration_ms=duration_ms)
+        except Exception as e:
+            _slg = structlog.get_logger("GsCore")
+            _slg.error(
+                f"❌ [TraceCollector] JSONL 归档失败 trace_id={trace_id}: {e}. 内存数据保留，将在下次 finalize 重试。"
+            )
+            return logs
+
+        duration_ms = int((time.perf_counter() - meta.start_time) * 1000)
+        trace_end_event = (
+            f"🏁 [TraceEnd] trace_id={trace_id} command={meta.command} duration={duration_ms}ms logs={len(logs)}"
+        )
+        _slg = structlog.get_logger("GsCore")
+        _slg.info(trace_end_event, trace_id=trace_id)
+        self._trace_finalized_time[trace_id] = time.perf_counter()
+        return logs
+
+    def get_active_traces(self) -> Dict[str, Dict]:
+        """获取当前活跃/保留期内的追踪列表，正确标记 running/completed 状态"""
+        return {
+            tid: {
+                "command": meta.command,
+                "user_id": meta.user_id,
+                "start_time": meta.start_time,
+                "log_count": len(self._traces.get(tid, [])),
+                "status": "completed" if tid in self._trace_finalized_time else "running",
+            }
+            for tid, meta in self._trace_meta.items()
+        }
+
+    def get_trace_meta(self, trace_id: str) -> Optional[TraceContext]:
+        """获取指定追踪的元数据"""
+        return self._trace_meta.get(trace_id)
+
+    def get_trace_logs(self, trace_id: str) -> Optional[List[TraceLogEntry]]:
+        """获取仍活跃在内存中的追踪日志"""
+        return self._traces.get(trace_id)
+
+
+# ── 绑定 / 解绑 ──
+_TRACE_CONTEXT_KEYS = ("trace_id",)
+
+
+def bind_trace_context(ctx: TraceContext) -> None:
+    """绑定追踪上下文到 structlog contextvars"""
+    structlog.contextvars.bind_contextvars(trace_id=ctx.trace_id)
+
+
+def clear_trace_context() -> None:
+    """精确解绑 trace_id，避免误清其他模块的 contextvars"""
+    structlog.contextvars.unbind_contextvars(*_TRACE_CONTEXT_KEYS)
+
+
+def trace_collect_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
+    """将带有 trace_id 的日志同时收集到 TraceCollector"""
+    if "trace_id" in event_dict:
+        _collector = _get_trace_collector()
+        if _collector is not None:
+            _collector.collect(event_dict)
+    return event_dict
+
+
+def format_trace_id_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
+    """在控制台日志中显示追踪短码"""
+    if "trace_id" in event_dict:
+        _collector = _get_trace_collector()
+        if _collector is not None:
+            short_id = _collector.get_short_id(event_dict["trace_id"])
+            if short_id:
+                original_event = event_dict["event"]
+                if isinstance(original_event, str):
+                    event_dict["event"] = f"[{short_id}] {original_event}"
+    return event_dict
+
+
+# 延迟初始化追踪收集器单例
+_trace_collector_instance: Optional[TraceCollector] = None
+
+
+def _get_trace_collector() -> Optional[TraceCollector]:
+    return _trace_collector_instance
+
+
+def _init_trace_collector() -> TraceCollector:
+    global _trace_collector_instance
+    if _trace_collector_instance is None:
+        _trace_collector_instance = TraceCollector()
+    return _trace_collector_instance
 
 
 class TraceCapableLogger(Protocol):
@@ -242,7 +470,7 @@ def colorize_brackets_processor(logger: WrappedLogger, method_name: str, event_d
 
     # 如果事件内容是字符串类型
     if isinstance(event, str):
-        # 定义我们想要的“橙色” (亮黄色在大多数终端中看起来像橙色)
+        # 定义我们想要的"橙色" (亮黄色在大多数终端中看起来像橙色)
         orange_color = Style.BRIGHT + Fore.LIGHTMAGENTA_EX
 
         # 使用正则表达式查找所有 [anything] 模式，并用颜色代码包裹它们
@@ -384,12 +612,12 @@ def setup_logging():
         structlog.processors.format_exc_info,
         save_error_report_processor,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-        log_to_history,
         structlog.processors.JSONRenderer(ensure_ascii=False),
     ]
 
     # --- 控制台处理链 ---
     console_processors: Sequence[Processor] = shared_processors + [
+        format_trace_id_processor,
         colorize_brackets_processor,
         format_event_for_console,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -411,9 +639,19 @@ def setup_logging():
     root_logger.setLevel(logging.INFO)  # 设置根级别
 
     my_app_logger = logging.getLogger("GsCore")
-    my_app_logger.setLevel(LEVEL)
+    my_app_logger.setLevel(5)  # TRACE 级别，确保全级别日志都能被收集
 
-    # a. 配置 stdout handler (低于 ERROR)
+    # --- 内存收集 handler（全级别，用于 SSE 实时日志）---
+    collect_processors: Sequence[Processor] = shared_processors + [
+        trace_collect_processor,
+        structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+        log_to_history,
+    ]
+    collect_handler = CollectLogHandler(level=5)
+    collect_handler.setFormatter(structlog.stdlib.ProcessorFormatter(processors=collect_processors))
+    my_app_logger.addHandler(collect_handler)
+
+    # a. 配置 stdout handler
     if "stdout" in logger_list:
         stdout_handler = logging.StreamHandler(sys.stdout)
         stdout_handler.setLevel(LEVEL)
@@ -422,7 +660,6 @@ def setup_logging():
 
     # c. 配置文件 handler (每日轮转)
     if "file" in logger_list:
-        # 关键：使用 TimedRotatingFileHandler 实现每日轮转
         file_handler = DailyNamedFileHandler(
             log_dir=LOG_PATH,
             backupCount=0,
@@ -479,20 +716,34 @@ def setup_logging():
 setup_logging()
 logger: TraceCapableLogger = structlog.get_logger("GsCore")
 
+# 初始化追踪收集器（在 setup_logging 和 logger 就绪后）
+trace_collector = _init_trace_collector()
 
-async def read_log():
+
+async def read_log(min_level: Optional[str] = None):
+    """
+    SSE 实时日志生成器。
+
+    Args:
+        min_level: 最小日志级别，如 "info" / "debug" / "trace" 等。
+                   为空时不过滤，推送所有已缓冲的日志。
+    """
     index = 0
+    min_level_num = LEVEL_NUM_MAP.get(min_level.lower(), 0) if min_level else 0
     while True:
         if index <= len(log_history) - 1:
             ev = log_history[index]
             if ev:
-                log_data = {
-                    "level": ev["level"].upper(),
-                    "message": ev["gevent"],
-                    "message_type": "html",
-                    "timestamp": ev["timestamp"],
-                }
-                yield f"data: {json.dumps(log_data)}\n\n"
+                # 服务端不做任何过滤时 min_level 为空；网页前端可通过 query param 控制
+                level_str = str(ev.get("level", "")).lower()
+                if LEVEL_NUM_MAP.get(level_str, 0) >= min_level_num:
+                    log_data = {
+                        "level": ev["level"].upper(),
+                        "message": ev["gevent"],
+                        "message_type": "html",
+                        "timestamp": ev["timestamp"],
+                    }
+                    yield f"data: {json.dumps(log_data)}\n\n"
             index += 1
         else:
             await asyncio.sleep(1)

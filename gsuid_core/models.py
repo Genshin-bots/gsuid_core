@@ -10,11 +10,26 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class TraceContext:
+    """追踪上下文，以单次命令调用为维度记录日志。"""
+
+    trace_id: str  # 唯一追踪 ID（复用 task_id）
+    short_id: str  # 短码（前 8 位，用于控制台显示）
+    command: str  # 触发的命令关键词
+    user_id: str  # 用户 ID
+    group_id: Optional[str]  # 群组 ID
+    bot_id: str  # Bot ID
+    session_id: str  # 会话 ID
+    start_time: float  # 命令开始时间（perf_counter，单调时钟）
+
+
+@dataclass
 class TaskContext:
     coro: Awaitable[Any]
     name: str
     create_time: float = 0.0
     priority: int = 2
+    trace_context: Optional[TraceContext] = None
 
     def __post_init__(self):
         self.create_time = time.perf_counter()

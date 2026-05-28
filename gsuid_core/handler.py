@@ -1,3 +1,4 @@
+import time
 import asyncio
 from copy import deepcopy
 from uuid import uuid4
@@ -7,7 +8,7 @@ from gsuid_core.sv import SL
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message, TaskContext, MessageReceive
+from gsuid_core.models import Event, Message, TaskContext, TraceContext, MessageReceive
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
@@ -423,7 +424,17 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         logger.trace("[命令触发] [on_message]", command=message)
         coro = trigger.func(bot, message)
         func_name = getattr(coro, "__qualname__", str(coro))
-        task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm)
+        trace_ctx = TraceContext(
+            trace_id=_event.task_id,
+            short_id=_event.task_id[:8],
+            command=_event.command or trigger.keyword or "",
+            user_id=_event.user_id,
+            group_id=_event.group_id,
+            bot_id=_event.bot_id,
+            session_id=_event.session_id,
+            start_time=time.perf_counter(),
+        )
+        task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm, trace_context=trace_ctx)
         ws.queue.put_nowait(task_ctx)
 
     if len(command_triggers) >= 1:
@@ -458,8 +469,17 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             coro = trigger.func(bot, message)
             func_name = getattr(coro, "__qualname__", str(coro))
-            # 根据用户权限设置优先级，user_pm 越小优先级越高
-            task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm)
+            trace_ctx = TraceContext(
+                trace_id=_event.task_id,
+                short_id=_event.task_id[:8],
+                command=_event.command or trigger.keyword or "",
+                user_id=_event.user_id,
+                group_id=_event.group_id,
+                bot_id=_event.bot_id,
+                session_id=_event.session_id,
+                start_time=time.perf_counter(),
+            )
+            task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm, trace_context=trace_ctx)
             ws.queue.put_nowait(task_ctx)
             if _event.task_event:
                 return await ws.wait_task(_event.task_id, _event.task_event)

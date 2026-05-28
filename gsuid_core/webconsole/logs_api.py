@@ -466,6 +466,35 @@ async def get_log_context(
 
 
 @app.get("/api/logs/stream")
-async def stream_logs(_user: Dict = Depends(require_auth)):
-    """Stream real-time logs using Server-Sent Events"""
-    return StreamingResponse(read_log(), media_type="text/event-stream")
+async def stream_logs(
+    level: Optional[str] = None,
+    _user: Dict = Depends(require_auth),
+):
+    """Stream real-time logs using Server-Sent Events
+
+    Args:
+        level: 实时日志最小级别过滤，如 trace/debug/info/warning/error/critical。
+               不传或传 all 时推送全部级别日志。
+    """
+    if level and level.lower() == "all":
+        level = None
+    return StreamingResponse(read_log(min_level=level), media_type="text/event-stream")
+
+
+@app.get("/api/logs/levels")
+async def get_log_levels(_user: Dict = Depends(require_auth)):
+    """获取可用的日志级别列表（供前端实时日志级别切换使用）"""
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": [
+            {"label": "全部", "value": "all"},
+            {"label": "TRACE", "value": "trace"},
+            {"label": "DEBUG", "value": "debug"},
+            {"label": "INFO", "value": "info"},
+            {"label": "SUCCESS", "value": "success"},
+            {"label": "WARNING", "value": "warning"},
+            {"label": "ERROR", "value": "error"},
+            {"label": "CRITICAL", "value": "critical"},
+        ],
+    }

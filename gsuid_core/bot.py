@@ -444,6 +444,18 @@ class _Bot:
         if wait_time > 5.0:
             logger.warning(f"[排队警告] 函数 {ctx.name} 等待了 {wait_time:.2f}s 才开始执行")
 
+        # ── 启动追踪并绑定上下文 ──
+        trace_ctx = getattr(ctx, "trace_context", None)
+        if trace_ctx is not None:
+            from gsuid_core.logger import (
+                trace_collector,
+                bind_trace_context,
+                clear_trace_context,
+            )
+
+            trace_collector.start_trace(trace_ctx)
+            bind_trace_context(trace_ctx)
+
         try:
             bot_traffic["req"] += 1
             bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
@@ -453,6 +465,11 @@ class _Bot:
         except Exception:
             logger.exception(f"[核心执行异常] 函数 {func_name} 执行发生未捕获异常")
         finally:
+            # ── 清除追踪上下文并完成追踪 ──
+            if trace_ctx is not None:
+                clear_trace_context()
+                trace_collector.finalize_trace(trace_ctx.trace_id)
+
             end_time = time.perf_counter()
             run_duration = end_time - start_exec_time
             total_duration = end_time - ctx.create_time

@@ -110,6 +110,8 @@ def _import_webconsole_apis() -> None:
         logs_api,
         meme_api,
         theme_api,
+        # 追踪日志 webconsole 后端
+        trace_api,
         assets_api,
         backup_api,
         # Agent Mesh Kanban webconsole 后端

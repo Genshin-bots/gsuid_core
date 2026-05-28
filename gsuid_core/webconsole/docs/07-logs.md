@@ -235,16 +235,186 @@ GET /api/logs/stream
 
 使用 Server-Sent Events (SSE) 实时推送日志内容。
 
-**响应**：SSE 流格式
-```
-data: [2024-01-01 12:00:00] [INFO] 日志内容
+> **推送策略**：服务端推送**全级别日志**（包括 TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL），前端在本地根据用户选择的级别进行过滤显示。切换级别时**无需断开/重连 SSE**。
 
-data: [2024-01-01 12:00:01] [ERROR] 错误信息
+**SSE 数据格式**：
+```json
+data: {"level": "DEBUG", "message": "...", "message_type": "html", "timestamp": "05-28 10:00:00"}
+
+data: {"level": "INFO", "message": "...", "message_type": "html", "timestamp": "05-28 10:00:01"}
+```
+
+**前端接入示例**：
+```javascript
+const eventSource = new EventSource('/api/logs/stream');
+const selectedLevel = "debug"; // 用户从下拉框选择
+const levelOrder = ["trace", "debug", "info", "success", "warning", "error", "critical"];
+const minIndex = levelOrder.indexOf(selectedLevel);
+
+eventSource.onmessage = (event) => {
+    const log = JSON.parse(event.data);
+    const logIndex = levelOrder.indexOf(log.level.toLowerCase());
+    if (logIndex >= minIndex) {
+        appendLogToConsole(log); // 显示
+    }
+    // 否则丢弃（不显示），但保持 SSE 连接
+};
 ```
 
 ---
 
-## 7.7 搜索功能说明
+## 7.7 获取可用日志级别
+```
+GET /api/logs/levels
+```
+
+返回可用的日志级别列表，供前端实时日志级别下拉选择器使用。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": [
+        {"label": "全部", "value": "all"},
+        {"label": "TRACE", "value": "trace"},
+        {"label": "DEBUG", "value": "debug"},
+        {"label": "INFO", "value": "info"},
+        {"label": "SUCCESS", "value": "success"},
+        {"label": "WARNING", "value": "warning"},
+        {"label": "ERROR", "value": "error"},
+        {"label": "CRITICAL", "value": "critical"}
+    ]
+}
+```
+
+---
+
+## 7.8 追踪日志 API
+
+> **适用范围**：仅追踪**命令执行路径**（用户发送 `/command` 或消息触发插件函数）。AI 核心路径（LLM 调用、tool use 等）有独立的 `ai_session_logs_api`，不走此追踪系统。
+
+### 存储架构
+
+| 层级 | 内容 | 用途 |
+|------|------|------|
+| 内存（30min TTL） | `TraceLogEntry` 列表 | 活跃追踪实时查询 |
+| JSONL 目录 | 元数据（trace_id, command, user_id, status, duration_ms, log_count） | 已完成追踪目录索引 |
+| daily log | 每条 JSON 带 `trace_id` 字段 | 完整日志持久化，供扫描提取 |
+
+### 7.8.1 获取追踪列表（统一入口）
+```
+GET /api/traces?date=2026-05-28&limit=100
+```
+
+**Query 参数**：
+- `date`: 日期 YYYY-MM-DD，默认今天。用于扫描 JSONL 已完成追踪。
+- `limit`: 返回条数上限，默认 500
+
+合并内存中的 **running** 追踪和 JSONL 中的 **completed** 追踪，返回统一目录。前端点击 `trace_id` 后可调用 `GET /api/traces/{trace_id}` 查看详情。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": [
+        {
+            "trace_id": "a1b2c3d4-xxx",
+            "command": "签到",
+            "user_id": "12345",
+            "group_id": "67890",
+            "start_time": 1748356800.123,
+            "duration_ms": 3000,
+            "log_count": 15,
+            "status": "completed"
+        },
+        {
+            "trace_id": "e5f6g7h8-xxx",
+            "command": "我的自选",
+            "user_id": "12345",
+            "group_id": "67890",
+            "start_time": 1748356900.456,
+            "duration_ms": null,
+            "log_count": 42,
+            "status": "running"
+        }
+    ]
+}
+```
+
+**字段说明**：
+- `status`: `running` 表示仍在执行中，`completed` 表示已结束
+- `duration_ms`: 已完成时有值，running 时为 `null`
+
+### 7.8.2 获取追踪详情
+```
+GET /api/traces/{trace_id}?date=2026-05-28
+```
+
+优先查内存；未命中时扫描 daily log 按 `trace_id` 提取完整日志。
+
+**Query 参数**：
+- `date`: 日期 YYYY-MM-DD，默认今天。用于定位 JSONL 目录和 daily log 文件。
+
+**响应**（running 状态）：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "trace_id": "e5f6g7h8-xxx",
+        "command": "我的自选",
+        "user_id": "12345",
+        "group_id": "67890",
+        "bot_id": "Bot",
+        "session_id": "Bot%%%67890%%%12345",
+        "start_time": 1748356900.456,
+        "status": "running",
+        "logs": [
+            {"timestamp": "05-28 10:01:30", "level": "trace", "event": "[核心执行] 函数 xxx 开始执行"},
+            {"timestamp": "05-28 10:01:31", "level": "info", "event": "[命令触发] ..."}
+        ]
+    }
+}
+```
+
+**响应**（completed 状态）：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "trace_id": "a1b2c3d4-xxx",
+        "command": "签到",
+        "user_id": "12345",
+        "group_id": "67890",
+        "bot_id": "Bot",
+        "session_id": "Bot%%%67890%%%12345",
+        "start_time": 1748356800.123,
+        "duration_ms": 3000,
+        "log_count": 15,
+        "status": "completed",
+        "logs": [
+            {"timestamp": "05-28 10:00:00", "level": "trace", "event": "[核心执行] 函数 xxx 开始执行"},
+            {"timestamp": "05-28 10:00:01", "level": "info", "event": "[命令完成] 签到成功"}
+        ]
+    }
+}
+```
+
+**查询路径**：
+1. 内存未命中 → 查 JSONL 目录确认元数据 → 从 daily log 扫描提取完整日志
+2. 即使追踪仍在执行中（status=running），也可通过 `trace_id` 持续查询获取最新日志
+
+**错误响应**：
+```json
+{"status": 404, "msg": "追踪不存在", "data": null}
+```
+
+---
+
+## 7.9 搜索功能说明
 
 日志搜索功能支持以下组合方式：
 
