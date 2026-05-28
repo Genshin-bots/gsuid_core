@@ -207,6 +207,21 @@ async def send_message_by_ai(
         if audio_id:
             content_desc.append(f"音频({audio_id})")
         logger.info(f"🧠 [BuildinTools] 发送 {'+'.join(content_desc)} 给用户 {target_id}")
+
+        # §8.1：工具本质上仍然是"框架在 LLM run 外注入到用户会话"的主动输出
+        # ——若拿得到调用方所在的主 session，把发出去的文本同步追加进该
+        # session 的 pydantic_ai 历史，避免后续轮主人格"对自己刚发的话失忆"。
+        # 仅同步文本（图 / 音 / 视频在 pydantic_ai 历史里没有合适的语义形态）。
+        if text and tool_ctx.parent_session_id:
+            from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+            parent_session = get_ai_session_registry().get_ai_session(tool_ctx.parent_session_id)
+            if parent_session is not None:
+                parent_session.append_proactive_assistant_turn(
+                    content=text,
+                    source="tool",
+                    trigger_reason="send_message_by_ai",
+                )
         return f"消息已发送给用户 {target_id}"
 
     except Exception as e:

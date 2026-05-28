@@ -2,14 +2,21 @@
 execute_scheduled_task 定时执行器
 
 当 APScheduler 触发定时任务时，调用此函数执行。
-使用 get_ai_session(event) 加载当时的 persona 和 session 来执行任务，
-保持回复语气与主 Agent 一致。
+
+执行模型（§3.3 改造后）：
+- 不再把任务 prompt 当 user_message 喂给真用户主 session（否则会污染主
+  session 的 ``self.history`` / ``message_history`` / ``session_logger``）。
+- 改成派一个 SubAgent 形态的"执行体"——独立 ``session_id`` + ``is_subagent=True``
+  + 任务对应 persona 的 system_prompt，任务 prompt 只在 SubAgent 内出现。
+- 结果通过 ``emit_proactive_message(source="scheduled_task")`` 统一播报，
+  由它一并完成 bot.send / message_history / 主 session 同步 / C8 网关登记。
 
 支持两种任务类型：
 - once: 一次性任务，执行后状态变为 executed
 - interval: 循环任务，执行后检查是否达到最大执行次数，若未达到则更新下次执行时间
 """
 
+import time
 from typing import Optional
 from datetime import datetime, timedelta
 
@@ -50,10 +57,10 @@ async def execute_scheduled_task(task_id: str) -> None:
     此函数会：
     1. 从数据库读取任务信息
     2. 构建 Event 对象
-    3. 使用 get_ai_session(event) 加载当时的 persona/session
-    4. 向 session 发送任务消息，让 AI 执行
-    5. 将结果推送给用户
-    6. 对于循环任务，更新下次执行时间或标记为已完成
+    3. 派 SubAgent 执行体（独立 session、独立日志、不污染主 session）
+    4. 通过 emit_proactive_message 把结果以"主动消息"形式播报给用户，同时
+       同步进主 session 的 pydantic_ai 历史与 session_logger
+    5. 对于循环任务，更新下次执行时间或标记为已完成
 
     Args:
         task_id: 任务ID，从 APScheduler 传递
@@ -111,21 +118,21 @@ async def execute_scheduled_task(task_id: str) -> None:
             bot_instance = Bot(BOT, ev)
             break  # 只使用第一个
 
-    # 4. 使用 get_ai_session 加载 persona 和 session
+    # 4. 派一个 SubAgent 形态的"执行体"完成任务，结果再通过 emitter 播报。
+    #    与旧路径的区别：**任务 prompt 不再被当作 user_message 喂给真用户主
+    #    session**——主用户 session 不再被伪 user_input"【定时任务执行】..."污染。
     try:
-        from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-        from gsuid_core.ai_core.ai_router import get_ai_session
+        from gsuid_core.ai_core.persona import build_persona_prompt
+        from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
+        from gsuid_core.ai_core.proactive import emit_proactive_message
         from gsuid_core.ai_core.statistics.manager import statistics_manager
 
         logger.info(
-            f"🧠 [ScheduledTask] 加载 session 执行任务: session_id={task.session_id}, persona={task.persona_name}"
+            f"🧠 [ScheduledTask] 启动定时任务 SubAgent: session_id={task.session_id}, persona={task.persona_name}"
         )
 
         # 记录触发方式为 scheduled
         statistics_manager.record_trigger(trigger_type="scheduled")
-
-        # 获取 AI session（会自动加载 persona）
-        session: GsCoreAIAgent = await get_ai_session(ev)
 
         # 构建任务消息（含结构化上下文与上次执行摘要）
         context_block = ""
@@ -141,15 +148,41 @@ async def execute_scheduled_task(task_id: str) -> None:
             f"\n\n任务内容：{task.task_prompt}{context_block}"
         )
 
-        # 通过 session 执行任务
-        result = await session.run(
-            user_message=task_message,
-            bot=bot_instance,
-            ev=ev,
+        # 用任务对应 persona 构造 SubAgent；session_id 独立于真用户 session，
+        # 任务 prompt 只在 SubAgent 内当 user_message 出现。
+        exec_session_id = f"sched_task_{task.task_id}_{int(time.time())}"
+        persona_prompt = ""
+        if task.persona_name:
+            persona_prompt = await build_persona_prompt(task.persona_name)
+
+        sub_agent: GsCoreAIAgent = create_agent(
+            system_prompt=persona_prompt or None,
+            persona_name=task.persona_name or None,
+            create_by="ScheduledTask_Exec",
+            session_id=exec_session_id,
+            is_subagent=True,
         )
+        sub_agent_logger = sub_agent._session_logger
+        sub_agent_log_files: list[str] = []
+
+        # 通过 SubAgent 执行任务（return_mode="return"：拿到结果文本，先不发，
+        # 由 emitter 统一播报；避免 SubAgent 工具池里没有 send_chat_result 也能
+        # 完成"由框架代发"的效果）。run 异常时由外层 try/except 捕获并落库；
+        # finally 保证 SubAgent logger 无论如何都关闭，避免轮询任务堆积。
+        try:
+            result: str = await sub_agent.run(
+                user_message=task_message,
+                bot=bot_instance,
+                ev=ev,
+                return_mode="return",
+            )
+        finally:
+            if sub_agent_logger is not None:
+                sub_agent_log_files.append(str(sub_agent_logger._file_path))
+                sub_agent_logger.close()
 
         # 截取本次执行结果摘要，供下次执行参考
-        result_summary = str(result)[:200] if result else None
+        result_summary: Optional[str] = str(result)[:200] if result else None
 
         # 5. 根据任务类型处理
         if task.task_type == "interval":
@@ -221,25 +254,25 @@ async def execute_scheduled_task(task_id: str) -> None:
                 },
             )
 
-        # 6. 推送结果给用户
-        if bot_instance:
-            if result:
-                await bot_instance.send(result)
-                # C8：向统一主动网关登记定时任务播报，供 Heartbeat 协调
-                # （防撞车 + 把任务结果作为 context_hook 合并进巡检语境）
-                try:
-                    from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
-
-                    get_dispatcher().register_send(
-                        str(task.group_id or task.user_id or ""),
-                        "task",
-                        result_summary or "",
-                    )
-                except Exception as e:
-                    logger.debug(f"⏰ [ScheduledTask] 主动网关登记失败: {e}")
-            logger.info(f"✅ [ScheduledTask] 任务执行成功并已推送: task_id={task_id}")
+        # 6. 推送结果给用户：走统一 emitter，由它一并完成
+        #    bot.send / message_history (proactive metadata) / 主 session 同步
+        #    （append_proactive_assistant_turn → pydantic_ai 历史 + proactive_emission
+        #    entry）/ C8 网关 register_send。
+        if result:
+            sent = await emit_proactive_message(
+                event=ev,
+                message=str(result),
+                source="scheduled_task",
+                trigger_reason=f"task_id={task_id}",
+                generator_log_files=sub_agent_log_files,
+                bot=bot_instance,
+            )
+            if sent:
+                logger.info(f"✅ [ScheduledTask] 任务执行成功并已推送: task_id={task_id}")
+            else:
+                logger.warning(f"⚠️ [ScheduledTask] 任务结果发送被抑制 / Bot 不可用: task_id={task_id}")
         else:
-            logger.warning(f"⚠️ [ScheduledTask] 无法获取 Bot 实例，结果未推送: task_id={task_id}")
+            logger.warning(f"⚠️ [ScheduledTask] 任务结果为空，未推送: task_id={task_id}")
 
     except Exception as e:
         logger.error(f"❌ [ScheduledTask] 任务执行失败: {task_id}, error={e}")

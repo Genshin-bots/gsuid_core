@@ -1,7 +1,7 @@
 import re
 import json
 import asyncio
-from typing import Any, Literal, Optional, Sequence
+from typing import Any, Dict, Literal, Optional, Sequence
 
 from PIL import Image
 from json_repair import repair_json
@@ -267,12 +267,15 @@ async def send_chat_result(
     bot: Bot,
     text: str,
     ev: Event | None = None,
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     解析并发送聊天结果，支持：
     - 按换行分割多条消息
     - @用户ID 语法 → MessageSegment.at(user_id)
     - <meme: 情绪> 标记（可带反引号）→ 触发表情包发送（需传入 ev）
+    - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``，最终落到
+      ``message_history`` 记录上（如主动消息的 ``proactive=True / source / reason``）
     """
     if not text:
         return
@@ -319,7 +322,7 @@ async def send_chat_result(
         delay = min(max(len(plain_text) / 7, 0.5), 3.0)
         await asyncio.sleep(delay)
 
-        await bot.send(segments)
+        await bot.send(segments, extra_metadata=extra_metadata)
 
     # 发送表情包（如有）
     if meme_tags and ev is not None:

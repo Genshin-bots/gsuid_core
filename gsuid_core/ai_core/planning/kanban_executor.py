@@ -19,12 +19,14 @@
 webconsole 或对话回复审批（``respond_subtask_approval``）。
 """
 
+import time
 import asyncio
-from typing import List, Optional
+from typing import List, Tuple, Optional
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.proactive import emit_proactive_message
 
 from . import kanban
 from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact
@@ -136,7 +138,7 @@ async def _collect_upstream_artifacts(child: AIAgentTask) -> List[AIAgentArtifac
     return bag
 
 
-async def _persona_relay(task: AIAgentTask, raw_result: str) -> str:
+async def _persona_relay(task: AIAgentTask, raw_result: str) -> Tuple[str, List[str]]:
     """人格转译：能力代理结果再过一遍主人格口吻。
 
     把本子任务登记的 ``workspace_file`` / ``output`` artifact 显式列在转译 prompt
@@ -151,18 +153,28 @@ async def _persona_relay(task: AIAgentTask, raw_result: str) -> str:
     多份 artifact 里随机挑一个 inline 文本 artifact 发出去（实测 ``love_heart`` 会话
     曾出现 code_agent 自己又叠了一份 HTML 模板预览图、转译 agent 发错那张的问题）。
 
-    转译 Agent 不写 session log（``session_id=None``）——每次子任务完成都会触发
-    一次转译，过去每次都生成 60+KB 的会话日志，纯属噪声。
+    转译 Agent 启用 SubAgent 日志（``is_subagent=True``）。早期为了避免 60+KB 噪声
+    曾经禁用过这个日志，但归一到 ``emit_proactive_message`` 后转译日志会作为
+    ``generator_log_files`` 挂到主 session 的 ``linked_agents`` 上——事后审计
+    "为什么转译时是这种口吻"必须有日志才能复盘。
+
+    返回 ``(转译后文本, 转译 SubAgent 日志路径列表)``。
     """
     if not task.persona_name:
-        return raw_result
-    try:
-        from gsuid_core.ai_core.persona import build_persona_prompt
-        from gsuid_core.ai_core.gs_agent import create_agent
-        from gsuid_core.ai_core.register import get_all_tools
+        return raw_result, []
 
+    from gsuid_core.ai_core.persona import build_persona_prompt
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
+    from gsuid_core.ai_core.register import get_all_tools
+    from gsuid_core.ai_core.session_logger import AISessionLogger
+
+    relay_log_files: List[str] = []
+    agent: Optional[GsCoreAIAgent] = None
+    relay_logger: Optional[AISessionLogger] = None
+
+    try:
         arts = await AIAgentArtifact.list_for_task(task.id)
-        artifact_block = ""
+        artifact_block: str = ""
         if arts:
             # 排序：图片落盘 > 其它落盘 > 纯 inline 文本；同档按时间倒序（最新先）
             def _priority(a: AIAgentArtifact) -> int:
@@ -173,19 +185,19 @@ async def _persona_relay(task: AIAgentTask, raw_result: str) -> str:
                 return 2
 
             sorted_arts = sorted(arts, key=lambda a: (_priority(a), -a.created_at.timestamp()))
-            recommended = next(
+            recommended: Optional[AIAgentArtifact] = next(
                 (a for a in sorted_arts if a.payload_path and a.mime.startswith("image/")),
                 None,
             ) or next((a for a in sorted_arts if a.payload_path), None)
 
-            lines = []
+            lines: List[str] = []
             for a in sorted_arts[:8]:
                 payload_hint = f" path={a.payload_path}" if a.payload_path else " (inline 文本)"
                 star = " ⭐" if recommended is not None and a.id == recommended.id else ""
                 lines.append(
                     f"- {a.id} | kind={a.artifact_kind} | mime={a.mime}{payload_hint} | {a.summary[:80]}{star}"
                 )
-            hint = ""
+            hint: str = ""
             if recommended is not None:
                 hint = (
                     f"\n⭐ 推荐发送：`{recommended.id}`（{recommended.mime}，"
@@ -199,14 +211,19 @@ async def _persona_relay(task: AIAgentTask, raw_result: str) -> str:
                 "框架会自动从 Kanban artifact 读 payload 并转 RM 发送）】\n" + "\n".join(lines) + hint
             )
 
-        base = await build_persona_prompt(task.persona_name)
-        # session_id=None：不写转译 session 日志，避免每次子任务完成都产生 ~67KB 噪声
+        base: str = await build_persona_prompt(task.persona_name)
+        # 启用 SubAgent 日志：转译过程要进 generator_log_files，由 emitter
+        # 挂到主 session 的 linked_agents 上做事后审计。
+        relay_session_id: str = f"kanban_relay_{task.id[:8]}_{int(time.time())}"
         agent = create_agent(
             system_prompt=base,
             create_by="Kanban_Relay",
+            persona_name=task.persona_name,
             task_level="low",
-            session_id=None,
+            session_id=relay_session_id,
+            is_subagent=True,
         )
+        relay_logger = agent._session_logger
 
         # 给转译 agent 准备最小工具池：只装 send_message_by_ai（已统一支持
         # img_xxx / res_xxx / http / base64 多种来源，无需额外的 send_original_pic）
@@ -216,7 +233,7 @@ async def _persona_relay(task: AIAgentTask, raw_result: str) -> str:
             relay_tools.append(all_tools["send_message_by_ai"].tool)
 
         ev = _build_event(task)
-        spoken = await agent.run(
+        spoken: str = await agent.run(
             user_message=(
                 f"【Kanban 子任务播报转译】你的专职助手刚完成了「{task.display_name}」，"
                 f"执行结果如下。请用你自己的口吻、简短地把这条进展转告主人——"
@@ -228,20 +245,42 @@ async def _persona_relay(task: AIAgentTask, raw_result: str) -> str:
             tools=relay_tools,
             return_mode="return",
         )
-        return str(spoken).strip() or raw_result
+        return spoken.strip() or raw_result, relay_log_files
     except Exception as e:
         logger.debug(f"📋 [Kanban] 人格转译失败，原样播报: {e}")
-        return raw_result
+        return raw_result, relay_log_files
+    finally:
+        # 无论成功 / 异常，关闭转译 SubAgent logger；relay_log_files 在
+        # return 表达式求值后才被 append（list 是引用，append 对返回值同样可见）。
+        if relay_logger is not None:
+            relay_log_files.append(str(relay_logger._file_path))
+            relay_logger.close()
 
 
-async def _notify(task: AIAgentTask, message: str) -> None:
-    """通过任意可用 Bot 把消息送达 owner（与 v1 _notify 同源）。"""
+async def _notify(
+    task: AIAgentTask,
+    message: str,
+    trigger_reason: str,
+    generator_log_files: Optional[List[str]] = None,
+) -> None:
+    """通过统一主动消息出口把转译 / 失败播报送给主人。
+
+    替代旧 ``bot.send`` 直发的写法——经过 ``emit_proactive_message`` 后会自动：
+    1. 在主用户 session 的 pydantic_ai history 里追加一条 assistant-only turn；
+    2. 在主用户 session_logger 中写一条 ``proactive_emission``；
+    3. 走 C8 网关（``source="kanban"`` 不被抑制，避免误杀关键播报）；
+    4. message_history 单次落库且 metadata 含 ``proactive_source=kanban``。
+    """
     ev = _build_event(task)
-    bot = _get_bot(task, ev)
-    if not bot:
-        logger.warning(f"📋 [Kanban] 任务 root=#{task.ordinal} 无可用 Bot，消息未送达")
-        return
-    await bot.send(message)
+    sent = await emit_proactive_message(
+        event=ev,
+        message=message,
+        source="kanban",
+        trigger_reason=trigger_reason,
+        generator_log_files=generator_log_files or [],
+    )
+    if not sent:
+        logger.warning(f"📋 [Kanban] 任务 root=#{task.ordinal} 主动消息发送失败 / 被抑制")
 
 
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
@@ -324,17 +363,30 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         else:
             await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
             if bot and raw_result:
-                spoken = await _persona_relay(fresh, raw_result)
+                spoken, relay_log_files = await _persona_relay(fresh, raw_result)
                 if spoken:
-                    await _notify(fresh, spoken)
+                    await _notify(
+                        fresh,
+                        spoken,
+                        trigger_reason=f"subtask={fresh.display_name}",
+                        generator_log_files=relay_log_files,
+                    )
 
 
 async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) -> None:
-    """子任务失败时按 failure_policy 通知主人格。默认 notify_persona。"""
+    """子任务失败时按 failure_policy 通知主人格。默认 notify_persona。
+
+    §8.1 改造：失败播报同样走 ``emit_proactive_message``——否则主 session 不知道
+    任务失败发生过，用户追问"刚那条警告是啥意思"时主人格会失忆。
+    """
     policy = root.failure_policy or "notify_persona"
     if policy == "auto_abort":
         await kanban.fail_task_tree(root.id, f"子任务 {child.display_name} 失败：{reason[:200]}")
-        await _notify(child, f"⚠️ 任务「{root.display_name}」整树终止：{reason[:200]}")
+        await _notify(
+            child,
+            f"⚠️ 任务「{root.display_name}」整树终止：{reason[:200]}",
+            trigger_reason=f"failure_abort:{child.display_name}",
+        )
         return
     # notify_persona：把失败原因转告人格，让主人格走 respawn / fail 决策
     spoken = (
@@ -342,7 +394,11 @@ async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) ->
         f"请用 respawn_subtask 修参数重派（达上限会自动转 waiting_approval）；"
         f"或 fail_task_tree 终结整树。"
     )
-    await _notify(child, spoken)
+    await _notify(
+        child,
+        spoken,
+        trigger_reason=f"failure:{child.display_name}",
+    )
 
 
 async def execute_ready_tasks(root_task_id: str) -> None:

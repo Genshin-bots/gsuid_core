@@ -13,10 +13,16 @@ from __future__ import annotations
 
 import time
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 from threading import Lock
 
 from gsuid_core.message_history import get_history_manager
+
+if TYPE_CHECKING:
+    # 仅类型检查期导入，运行时不引入循环依赖（gs_agent 不依赖 session_registry，
+    # 但其它消费者经由 session_registry 反向引用 gs_agent 时会形成循环——
+    # 故运行时延后到 ``if TYPE_CHECKING``，类型上仍保持完全可追踪）。
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
 
 class AISessionRegistry:
@@ -38,14 +44,14 @@ class AISessionRegistry:
 
     def __init__(self) -> None:
         # AI会话对象: {session_id: GsCoreAIAgent}
-        self._ai_sessions: Dict[str, Any] = {}
+        self._ai_sessions: Dict[str, "GsCoreAIAgent"] = {}
         # 清理任务
         self._cleanup_task: Optional[asyncio.Task] = None
         self._cleanup_running: bool = False
 
     # ============== AI 会话对象管理 ==============
 
-    def get_ai_session(self, session_id: str) -> Optional[Any]:
+    def get_ai_session(self, session_id: str) -> Optional["GsCoreAIAgent"]:
         """
         获取指定session的AI会话对象
 
@@ -57,7 +63,7 @@ class AISessionRegistry:
         """
         return self._ai_sessions.get(session_id)
 
-    def set_ai_session(self, session_id: str, session: Any) -> None:
+    def set_ai_session(self, session_id: str, session: "GsCoreAIAgent") -> None:
         """
         设置指定session的AI会话对象
 
@@ -79,14 +85,15 @@ class AISessionRegistry:
         Returns:
             是否成功移除
         """
-        if session_id in self._ai_sessions:
-            session = self._ai_sessions[session_id]
-            # 触发 session logger 最终持久化
-            if hasattr(session, "_session_logger") and session._session_logger is not None:
-                session._session_logger.close()
-            del self._ai_sessions[session_id]
-            return True
-        return False
+        if session_id not in self._ai_sessions:
+            return False
+        session = self._ai_sessions[session_id]
+        # 触发 session logger 最终持久化；_session_logger 是 GsCoreAIAgent
+        # 的已声明字段（Optional[AISessionLogger]），不需要 hasattr 守卫。
+        if session._session_logger is not None:
+            session._session_logger.close()
+        del self._ai_sessions[session_id]
+        return True
 
     def has_ai_session(self, session_id: str) -> bool:
         """
@@ -100,7 +107,7 @@ class AISessionRegistry:
         """
         return session_id in self._ai_sessions
 
-    def get_all_ai_sessions(self) -> Dict[str, Any]:
+    def get_all_ai_sessions(self) -> Dict[str, "GsCoreAIAgent"]:
         """
         获取所有AI会话对象
 
@@ -117,16 +124,12 @@ class AISessionRegistry:
             清理的Session数量
         """
         cleaned = 0
-        for session_id, session in self._ai_sessions.items():
-            try:
-                history_len = len(session.history)  # type: ignore
-                if history_len > self.MAX_AI_HISTORY_LENGTH:
-                    # 保留最近的消息
-                    session.history = session.history[-self.MAX_AI_HISTORY_LENGTH :]  # type: ignore
-                    cleaned += 1
-            except AttributeError:
-                # session 没有 history 属性，跳过
-                pass
+        for session in self._ai_sessions.values():
+            # session.history 是 GsCoreAIAgent 的已声明 List[ModelMessage]，
+            # 类型追踪完备，无需 try/except AttributeError 兜底。
+            if len(session.history) > self.MAX_AI_HISTORY_LENGTH:
+                session.history = session.history[-self.MAX_AI_HISTORY_LENGTH :]
+                cleaned += 1
         return cleaned
 
     # ============== 清理任务管理 ==============
@@ -174,14 +177,11 @@ class AISessionRegistry:
         """
         flushed: int = 0
         for session in list(self._ai_sessions.values()):
-            session_logger = getattr(session, "_session_logger", None)
-            if session_logger is None:
+            # _session_logger 是 GsCoreAIAgent 的已声明字段，类型追踪完备。
+            if session._session_logger is None:
                 continue
-            try:
-                session_logger._persist_sync()
-                flushed += 1
-            except Exception:  # noqa: BLE001
-                continue
+            session._session_logger._persist_sync()
+            flushed += 1
         return flushed
 
     def shutdown_all(self) -> int:

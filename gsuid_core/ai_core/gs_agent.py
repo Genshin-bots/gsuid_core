@@ -42,7 +42,7 @@ from gsuid_core.ai_core.rag.tools import (
     get_tools_by_context_tags,
 )
 from gsuid_core.ai_core.configs.models import get_model_for_task
-from gsuid_core.ai_core.session_logger import AISessionLogger
+from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -409,6 +409,41 @@ class GsCoreAIAgent:
             if system_prompt is not None:
                 self._session_logger.log_system_prompt(system_prompt)
 
+    def append_proactive_assistant_turn(
+        self,
+        content: str,
+        source: ProactiveSource,
+        trigger_reason: str,
+        generator_log_files: Optional[List[str]] = None,
+    ) -> None:
+        """把一条主动消息以 assistant-only ModelMessage 形式追加进 history。
+
+        语义：Heartbeat / ScheduledTask / Kanban / 工具主动 send 等"框架在 LLM
+        run 之外注入的输出"——它们没有配对的 ModelRequest（pydantic_ai 允许这种
+        assistant-only turn 出现在 message_history 里）。本方法保证：
+        1. 下一轮用户搭话时 pydantic_ai 的 message_history 内能看到这条输出，
+           主 Agent 不会"对自己刚说过的话失忆"。
+        2. 同步在 session_logger 记一条 `proactive_emission` entry，前端可按
+           source 分桶展示。
+        3. 调用 extract_history()，复用 `_drop_orphan_tool_results` 兜底，
+           防止裸 TextPart 触发 pydantic_ai message_history 自洽性问题。
+
+        参考：plans/proactive_message_session_unification_20260529.md §3.5
+        """
+        if not content:
+            return
+        self.history.append(ModelResponse(parts=[TextPart(content=content)]))
+        if self._session_logger is not None:
+            self._session_logger.log_proactive_emission(
+                source=source,
+                content=content,
+                trigger_reason=trigger_reason,
+                generator_log_files=generator_log_files,
+            )
+        # 复用现有清理逻辑：纯 TextPart 不会被孤儿工具结果清理误伤，但顺手
+        # 保证下次 _agent.iter(message_history=self.history) 入参自洽。
+        self.extract_history()
+
     def extract_history(self):
         if self.max_history <= 0:
             self.history = []
@@ -592,8 +627,16 @@ class GsCoreAIAgent:
         logger.info("🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======")
         # turn_id：本轮 run 的唯一标识，写入 ToolContext.extra 供子工具读取（如
         # scheduler.py 的 add_once_task 单轮节流计数）。回合结束 finally 清理。
+        # parent_session_id：透传给工具，让 send_message_by_ai 等"工具内主动发"
+        # 路径能找到调用自己的主 session，把发出去的话同步进 pydantic_ai 历史 +
+        # session_logger（见 §8.1）。
         turn_id = uuid.uuid4().hex
-        context = ToolContext(bot=bot, ev=ev, extra={"turn_id": turn_id})
+        context = ToolContext(
+            bot=bot,
+            ev=ev,
+            extra={"turn_id": turn_id},
+            parent_session_id=self.session_id,
+        )
 
         # 记录原始用户问题，供后续强制总结使用
         last_user_question: str = ""

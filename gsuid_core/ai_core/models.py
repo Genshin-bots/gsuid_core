@@ -10,11 +10,19 @@ if TYPE_CHECKING:
 
 @dataclass
 class ToolContext:
-    """工具执行上下文"""
+    """工具执行上下文
+
+    ``parent_session_id``：当前 Agent 的 ``session_id``。工具内可借此找到调用
+    自己的那一个 ``GsCoreAIAgent``，再调 ``append_proactive_assistant_turn``
+    把"工具主动发出去的话"同步到该主 session 的 pydantic_ai 历史与 logger。
+    见 plans/proactive_message_session_unification_20260529.md §8.1
+    "send_message_by_ai 主 session 同步" 一节。
+    """
 
     bot: Optional[Bot] = None
     ev: Optional[Event] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+    parent_session_id: Optional[str] = None
 
 
 class KnowledgeBase(TypedDict):

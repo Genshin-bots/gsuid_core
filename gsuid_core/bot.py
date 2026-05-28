@@ -201,6 +201,7 @@ class _Bot:
         group_id: Optional[str] = None,
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ):
         try:
             from gsuid_core.buildin_plugins.core_command.core_ai_control.state import (
@@ -237,8 +238,8 @@ class _Bot:
                 _hist_user_id = bot_self_id or bot_id or self.bot_id
 
             # 提取消息内容
-            content = ""
-            metadata = {}
+            content: str = ""
+            metadata: Dict[str, Any] = {}
 
             if isinstance(message, str):
                 # 检查是否是 base64 图片
@@ -288,6 +289,9 @@ class _Bot:
                     user_id=_hist_user_id,
                     WS_BOT_ID=self.bot_id,
                 )
+                # 显式 merge：调用方传入的 extra_metadata 覆盖默认推断的 type/image_count
+                if extra_metadata:
+                    metadata.update(extra_metadata)
                 history_manager.add_message(
                     event=ev,
                     role="assistant",
@@ -745,6 +749,7 @@ class Bot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ):
         return await self.bot.target_send(
             message,
@@ -758,6 +763,7 @@ class Bot:
             self.ev.group_id,
             self.ev.task_id,
             self.ev.task_event,
+            extra_metadata=extra_metadata,
         )
 
     async def target_send(

@@ -18,12 +18,33 @@ import json
 import time
 import uuid
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, TypedDict
 from pathlib import Path
 from datetime import datetime
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH
+
+# 主动消息来源枚举，供 webconsole 与前端复用
+ProactiveSource = Literal["heartbeat", "scheduled_task", "kanban", "tool"]
+
+
+class ProactiveEmissionPayload(TypedDict):
+    """主动消息 emission entry 的 data 段结构（详见 plans/proactive_message_session_unification_20260529.md §3.2）"""
+
+    source: ProactiveSource
+    content: str
+    trigger_reason: str
+    generator_log_files: List[str]
+
+
+# linked_agents 中 agent_type 可选枚举值：
+# - "sub_agent"            原有：由本 Agent 创建的子 Agent
+# - "peer_agent"           预留：同级 / 对等 Agent
+# - "parent_agent"         预留：父 Agent
+# - "proactive_generator"  主动消息生成子 Agent（Heartbeat 决策 / 发言、
+#                          Kanban 转译、ScheduledTask 执行体等）
+LinkedAgentType = Literal["sub_agent", "peer_agent", "parent_agent", "proactive_generator"]
 
 
 class AISessionLogger:
@@ -53,23 +74,13 @@ class AISessionLogger:
         create_by: str = "LLM",
         is_subagent: bool = False,
     ):
-        self.session_uuid: str = str(uuid.uuid4())[:8]
         self.session_id: str = session_id
         self.system_prompt: Optional[str] = system_prompt
         self.persona_name: Optional[str] = persona_name
         self.create_by: str = create_by
         self.is_subagent: bool = is_subagent
 
-        self.created_at: float = time.time()
-        self.updated_at: float = self.created_at
         self.ended_at: Optional[float] = None
-        # 上次持久化时记录的 updated_at；用来判断是否有未落盘的新内容
-        self._last_persisted_updated_at: float = 0.0
-        # 上次实际落盘的时间戳，用于强制兜底
-        self._last_persisted_at: float = 0.0
-
-        self.entries: List[Dict[str, Any]] = []
-        self._file_path: Path = self._build_file_path()
         self._persist_task: Optional[asyncio.Task] = None
         self._closed: bool = False
 
@@ -78,20 +89,106 @@ class AISessionLogger:
         #           "persona_name": str|None, "create_by": str, "linked_at": float}
         self.linked_agents: List[Dict[str, Any]] = []
 
-        # 记录会话创建事件
-        self._add_entry(
-            "session_created",
-            {
-                "session_id": session_id,
-                "session_uuid": self.session_uuid,
-                "persona_name": persona_name,
-                "create_by": create_by,
-                "system_prompt": system_prompt,
-            },
-        )
+        # ── 磁盘日志回放（非 subagent） ──
+        # 当主 session 被 AISessionRegistry 空闲清理后，主动消息
+        # （Heartbeat / ScheduledTask）通过 persist_proactive_emission_to_disk
+        # 直接向磁盘日志文件追加了 entry。用户下次搭话时 _get_or_create_ai_session
+        # 创建新的 GsCoreAIAgent + AISessionLogger，若不复用已有文件，就会产生
+        # 两个独立日志文件（不同 session_uuid），破坏"同一 session 所有日志在同一
+        # 文件"的语义。因此对非 subagent logger，初始化时检查磁盘上是否已有同
+        # session_id 的日志文件，有则回放复用。
+        resumed: Optional[Dict[str, Any]] = None
+        resumed_path: Optional[Path] = None
+        if not is_subagent:
+            resumed, resumed_path = self._find_existing_log_on_disk(session_id)
+
+        # 在 if/else 之前统一声明实例属性（避免 basedpyright "变量声明被同名声明覆盖"）
+        self.session_uuid: str = ""
+        self.created_at: float = 0.0
+        self.updated_at: float = 0.0
+        self._last_persisted_updated_at: float = 0.0
+        self._last_persisted_at: float = 0.0
+        self.entries: List[Dict[str, Any]] = []
+        self._file_path: Path = Path("")
+
+        if resumed is not None and resumed_path is not None:
+            # 回放：复用磁盘日志的 session_uuid / created_at / entries / linked_agents / 文件路径
+            self.session_uuid = resumed.get("session_uuid", str(uuid.uuid4())[:8])
+            self.created_at = resumed.get("created_at", time.time())
+            self.updated_at = time.time()
+            self._last_persisted_updated_at = resumed.get("updated_at", 0.0)
+            self._last_persisted_at = time.time()
+            self.entries = resumed.get("entries", [])
+            self.linked_agents = resumed.get("linked_agents", [])
+            self._file_path = resumed_path
+            # 记录会话恢复事件（区别于全新创建）
+            self._add_entry(
+                "session_resumed",
+                {
+                    "session_id": session_id,
+                    "session_uuid": self.session_uuid,
+                    "persona_name": persona_name,
+                    "create_by": create_by,
+                    "system_prompt": system_prompt,
+                    "resumed_from_entries": len(self.entries) - 1,  # 排除本 entry 自身
+                },
+            )
+        else:
+            # 全新创建
+            self.session_uuid = str(uuid.uuid4())[:8]
+            self.created_at = time.time()
+            self.updated_at = self.created_at
+            self._last_persisted_updated_at = 0.0
+            self._last_persisted_at = 0.0
+            self.entries = []
+            self._file_path = self._build_file_path()
+            # 记录会话创建事件
+            self._add_entry(
+                "session_created",
+                {
+                    "session_id": session_id,
+                    "session_uuid": self.session_uuid,
+                    "persona_name": persona_name,
+                    "create_by": create_by,
+                    "system_prompt": system_prompt,
+                },
+            )
 
         # 启动定时持久化循环
         self._start_persist_loop()
+
+    @staticmethod
+    def _find_existing_log_on_disk(session_id: str) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
+        """在 AI_SESSION_LOGS_PATH 中查找该 session_id 最新的日志文件。
+
+        Returns:
+            (data_dict, file_path) 二元组；找不到则返回 (None, None)。
+        """
+        safe_session_id = session_id.replace(":", "_").replace("/", "_")
+        prefix = f"{safe_session_id}_"
+
+        best_path: Optional[Path] = None
+        best_updated_at: float = 0.0
+        best_data: Optional[Dict[str, Any]] = None
+
+        if AI_SESSION_LOGS_PATH.exists():
+            for p in AI_SESSION_LOGS_PATH.iterdir():
+                if not p.is_file() or p.suffix != ".json":
+                    continue
+                if not p.name.startswith(prefix):
+                    continue
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    ua = data.get("updated_at", 0.0)
+                    if ua > best_updated_at:
+                        best_updated_at = ua
+                        best_path = p
+                        best_data = data
+                except Exception:
+                    continue
+
+        return best_data, best_path
 
     def _build_file_path(self) -> Path:
         """构建日志文件路径
@@ -200,11 +297,180 @@ class AISessionLogger:
         """记录 Agent 节点状态转换（如 ModelRequestNode / CallToolsNode / End）"""
         self._add_entry("node_transition", {"node_type": node_type, "details": details or {}})
 
+    def log_proactive_emission(
+        self,
+        source: ProactiveSource,
+        content: str,
+        trigger_reason: str,
+        generator_log_files: Optional[List[str]] = None,
+    ) -> None:
+        """记录一条主动消息发射事件（详见 §3.2）
+
+        与普通 text_output 的区别：本 entry 表示"在 LLM 当前 run 之外注入到本
+        session history 的 assistant turn"，即 Heartbeat / ScheduledTask / Kanban
+        / 工具主动调用产生的输出。前端会按 source 分桶高亮显示。
+        """
+        payload: ProactiveEmissionPayload = {
+            "source": source,
+            "content": content,
+            "trigger_reason": trigger_reason,
+            "generator_log_files": list(generator_log_files or []),
+        }
+        # entry 落盘的 data 与 ProactiveEmissionPayload 同构
+        self._add_entry("proactive_emission", dict(payload))
+
+    @staticmethod
+    def persist_proactive_emission_to_disk(
+        session_id: str,
+        source: ProactiveSource,
+        content: str,
+        trigger_reason: str,
+        generator_log_files: Optional[List[str]] = None,
+    ) -> bool:
+        """当主 session 不在内存注册表时，直接向磁盘日志文件追加 proactive_emission entry。
+
+        查找该 session_id 最新的日志文件，读取 → 追加 entry + linked_agents → 写回。
+        若找不到任何日志文件（用户从未与 AI 对话过），则创建一个最小化的日志文件，
+        保证主动消息的日志不丢失。
+
+        注意：本方法不做并发保护，调用方应确保不会与同一文件的其它写操作冲突。
+        在实际场景中（Heartbeat 每 30 分钟一次 / ScheduledTask 按调度执行），
+        冲突概率极低。
+
+        Returns:
+            是否成功写入磁盘
+        """
+        safe_session_id = session_id.replace(":", "_").replace("/", "_")
+        prefix = f"{safe_session_id}_"
+
+        # 1. 在 AI_SESSION_LOGS_PATH 中查找匹配的最新日志文件
+        best_path: Optional[Path] = None
+        best_updated_at: float = 0.0
+
+        if AI_SESSION_LOGS_PATH.exists():
+            for p in AI_SESSION_LOGS_PATH.iterdir():
+                if not p.is_file() or p.suffix != ".json":
+                    continue
+                if not p.name.startswith(prefix):
+                    continue
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    ua = data.get("updated_at", 0.0)
+                    if ua > best_updated_at:
+                        best_updated_at = ua
+                        best_path = p
+                except Exception:
+                    continue
+
+        # 2. 构造要追加的 entry 和 linked_agent 记录
+        now = time.time()
+        payload: ProactiveEmissionPayload = {
+            "source": source,
+            "content": content,
+            "trigger_reason": trigger_reason,
+            "generator_log_files": list(generator_log_files or []),
+        }
+        new_entry = {
+            "type": "proactive_emission",
+            "timestamp": now,
+            "data": dict(payload),
+        }
+
+        new_linked_agents: List[Dict[str, Any]] = []
+        new_agent_linked_entries: List[Dict[str, Any]] = []
+        for log_file in generator_log_files or []:
+            la_record = {
+                "agent_type": "proactive_generator",
+                "session_id": Path(log_file).stem,
+                "session_uuid": "",
+                "persona_name": None,
+                "create_by": f"Proactive_{source}",
+                "log_file": log_file,
+                "linked_at": now,
+            }
+            new_linked_agents.append(la_record)
+            new_agent_linked_entries.append(
+                {
+                    "type": "agent_linked",
+                    "timestamp": now,
+                    "data": la_record,
+                }
+            )
+
+        # 3. 读取现有数据或创建最小化日志
+        if best_path is not None:
+            try:
+                with open(best_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                logger.warning(f"📝 [AISessionLogger] 读取磁盘日志失败: {best_path}")
+                return False
+
+            entries: List[Dict[str, Any]] = data.get("entries", [])
+            entries.append(new_entry)
+            entries.extend(new_agent_linked_entries)
+
+            linked_agents: List[Dict[str, Any]] = data.get("linked_agents", [])
+            linked_agents.extend(new_linked_agents)
+
+            data["entries"] = entries
+            data["linked_agents"] = linked_agents
+            data["updated_at"] = now
+            data["entry_count"] = len(entries)
+            data["linked_agent_count"] = len(linked_agents)
+        else:
+            # 用户从未与 AI 对话过，创建最小化日志文件
+            session_uuid = str(uuid.uuid4())[:8]
+            ts = datetime.fromtimestamp(now).strftime("%Y%m%d_%H%M%S")
+            filename = f"{safe_session_id}_{session_uuid}_{ts}.json"
+            best_path = AI_SESSION_LOGS_PATH / filename
+
+            session_created_entry = {
+                "type": "session_created",
+                "timestamp": now,
+                "data": {
+                    "session_id": session_id,
+                    "session_uuid": session_uuid,
+                    "persona_name": None,
+                    "create_by": f"Proactive_{source}",
+                    "system_prompt": None,
+                },
+            }
+
+            all_entries = [session_created_entry, new_entry] + new_agent_linked_entries
+
+            data = {
+                "session_id": session_id,
+                "session_uuid": session_uuid,
+                "persona_name": None,
+                "create_by": f"Proactive_{source}",
+                "is_subagent": False,
+                "created_at": now,
+                "updated_at": now,
+                "ended_at": None,
+                "entry_count": len(all_entries),
+                "entries": all_entries,
+                "linked_agents": new_linked_agents,
+                "linked_agent_count": len(new_linked_agents),
+            }
+
+        # 4. 写回磁盘
+        best_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(best_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"📝 [AISessionLogger] 主动消息已持久化到磁盘: {best_path.name}")
+            return True
+        except Exception as e:
+            logger.warning(f"📝 [AISessionLogger] 写入磁盘日志失败: {best_path}: {e}")
+            return False
+
     def link_agent(
         self,
         agent_session_id: str,
         agent_session_uuid: str,
-        agent_type: str = "sub_agent",
+        agent_type: LinkedAgentType = "sub_agent",
         persona_name: Optional[str] = None,
         create_by: Optional[str] = None,
         log_file: Optional[str] = None,
@@ -216,7 +482,8 @@ class AISessionLogger:
             agent_session_id: 被关联 Agent 的 session_id
             agent_session_uuid: 被关联 Agent 的 session_uuid
             agent_type: 关联类型，默认 "sub_agent"
-                        可选: "sub_agent", "peer_agent", "parent_agent"
+                        可选: "sub_agent", "peer_agent", "parent_agent",
+                              "proactive_generator"
             persona_name: 被关联 Agent 的 persona_name
             create_by: 被关联 Agent 的 create_by
             log_file: 被关联 Agent 的日志文件路径（绝对路径或相对路径）
@@ -240,7 +507,17 @@ class AISessionLogger:
             f"📝 [AISessionLogger] 关联 Agent: {agent_type} session_id={agent_session_id}, uuid={agent_session_uuid}"
         )
 
-    def get_linked_agents(self, agent_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    @property
+    def has_unpersisted_data(self) -> bool:
+        """是否存在尚未落盘的新数据。
+
+        当 updated_at > _last_persisted_updated_at 时，说明自上次持久化以来
+        有新条目写入，内存版本比磁盘版本更新；反之则说明内存与磁盘完全同步，
+        数据已安全落盘。
+        """
+        return self.updated_at > self._last_persisted_updated_at
+
+    def get_linked_agents(self, agent_type: Optional[LinkedAgentType] = None) -> List[Dict[str, Any]]:
         """
         获取关联的 Agent 列表
 

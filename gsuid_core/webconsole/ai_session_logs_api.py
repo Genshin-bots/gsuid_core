@@ -125,6 +125,8 @@ def _build_summary_from_memory(sid: str, session: Any) -> SessionLogSummary:
         ended_at: Optional[float] = getattr(logger_obj, "ended_at", None)
         file_name: Optional[str] = str(getattr(logger_obj, "_file_path", Path("")).name) or None
         linked_agents: List[Dict[str, Any]] = getattr(logger_obj, "linked_agents", [])
+        # 判断内存中是否有未落盘的新数据：有则 source=memory，否则 source=disk
+        _has_unpersisted: bool = getattr(logger_obj, "has_unpersisted_data", True)
     else:
         entries = []
         created_at = 0
@@ -136,6 +138,7 @@ def _build_summary_from_memory(sid: str, session: Any) -> SessionLogSummary:
         ended_at = None
         file_name = None
         linked_agents = []
+        _has_unpersisted = True
 
     # 计算运行时长
     duration: Optional[float] = None
@@ -166,7 +169,7 @@ def _build_summary_from_memory(sid: str, session: Any) -> SessionLogSummary:
         "entry_count": len(entries),
         "type_counts": type_counts,
         "is_active": ended_at is None,
-        "source": "memory",
+        "source": "memory" if _has_unpersisted else "disk",
         "file_name": file_name,
         "linked_agents": _enrich_linked_agents_list(linked_agents),
         "linked_agent_count": len(linked_agents),
@@ -202,7 +205,7 @@ def _enrich_linked_agent(agent_record: Dict[str, Any]) -> LinkedAgentEnriched:
             enriched["is_active"] = getattr(logger_obj, "ended_at", None) is None
             enriched["created_at"] = getattr(logger_obj, "created_at", 0)
             enriched["ended_at"] = getattr(logger_obj, "ended_at", None)
-            enriched["source"] = "memory"
+            enriched["source"] = "memory" if getattr(logger_obj, "has_unpersisted_data", True) else "disk"
             return cast(LinkedAgentEnriched, enriched)
 
     # 2. 从磁盘文件查找（使用 log_file 路径或 session_id + session_uuid 匹配）
@@ -221,9 +224,20 @@ def _enrich_linked_agent(agent_record: Dict[str, Any]) -> LinkedAgentEnriched:
                     type_counts[etype] = type_counts.get(etype, 0) + 1
                 enriched["entry_count"] = len(entries)
                 enriched["type_counts"] = type_counts
-                enriched["is_active"] = data.get("ended_at") is None
+                # 磁盘上 ended_at 为 null 不代表仍活跃——可能只是定时落盘未写 ended_at。
+                # 只有在内存 registry 中存在的 session 才是真正活跃的。
+                _disk_ended_at = data.get("ended_at")
+                if _disk_ended_at is None:
+                    _agent_in_mem = get_ai_session_registry().get_ai_session(agent_session_id)
+                    enriched["is_active"] = _agent_in_mem is not None
+                    if _agent_in_mem is None:
+                        enriched["ended_at"] = data.get("updated_at")
+                    else:
+                        enriched["ended_at"] = None
+                else:
+                    enriched["is_active"] = False
+                    enriched["ended_at"] = _disk_ended_at
                 enriched["created_at"] = data.get("created_at", 0)
-                enriched["ended_at"] = data.get("ended_at", None)
                 enriched["source"] = "disk"
                 return cast(LinkedAgentEnriched, enriched)
             except Exception:
@@ -244,9 +258,19 @@ def _enrich_linked_agent(agent_record: Dict[str, Any]) -> LinkedAgentEnriched:
                         type_counts[etype] = type_counts.get(etype, 0) + 1
                     enriched["entry_count"] = len(entries)
                     enriched["type_counts"] = type_counts
-                    enriched["is_active"] = data.get("ended_at") is None
+                    # 同上：磁盘 ended_at 为 null 时需检查内存 registry
+                    _disk_ended_at = data.get("ended_at")
+                    if _disk_ended_at is None:
+                        _agent_in_mem = get_ai_session_registry().get_ai_session(agent_session_id)
+                        enriched["is_active"] = _agent_in_mem is not None
+                        if _agent_in_mem is None:
+                            enriched["ended_at"] = data.get("updated_at")
+                        else:
+                            enriched["ended_at"] = None
+                    else:
+                        enriched["is_active"] = False
+                        enriched["ended_at"] = _disk_ended_at
                     enriched["created_at"] = data.get("created_at", 0)
-                    enriched["ended_at"] = data.get("ended_at", None)
                     enriched["source"] = "disk"
                     return cast(LinkedAgentEnriched, enriched)
             except Exception:
@@ -402,7 +426,23 @@ def _build_unified_list() -> List[SessionLogSummary]:
     for key, info in memory_map.items():
         unified[key] = info
 
-    # 4. 按 created_at 倒序排列
+    # 4. 修正 is_active：磁盘上 ended_at 为 null 的 session 不一定仍活跃，
+    #    只有在内存 registry 中真正存在的 session 才是活跃的。
+    #    （AISessionLogger 定时落盘不写 ended_at，只有 close() 才写；
+    #    进程重启后旧 session 不在内存中，应视为已结束。）
+    memory_session_ids: set = set(sessions.keys())  # 内存中真正活跃的 session_id 集合
+    for key, info in unified.items():
+        if info.get("is_active") and info.get("source") == "disk":
+            sid = info.get("session_id", "")
+            if sid not in memory_session_ids:
+                info["is_active"] = False
+                # 用 updated_at 近似作为 ended_at（最后一次活动时间）
+                if info.get("ended_at") is None:
+                    info["ended_at"] = info.get("updated_at")
+                    ea = info["ended_at"]
+                    info["ended_at_str"] = datetime.fromtimestamp(ea).strftime("%Y-%m-%d %H:%M:%S") if ea else None
+
+    # 5. 按 created_at 倒序排列
     results = sorted(
         unified.values(),
         key=lambda x: x.get("created_at", 0),
@@ -470,6 +510,7 @@ def _find_log_by_session_id_and_uuid(
             # 如果指定了 uuid，必须匹配；否则取内存中的
             if session_uuid is None or mem_uuid == session_uuid:
                 linked_agents: List[Dict[str, Any]] = getattr(logger_obj, "linked_agents", [])
+                _mem_ended_at = getattr(logger_obj, "ended_at", None)
                 return cast(
                     SessionLogDetail,
                     {
@@ -480,16 +521,17 @@ def _find_log_by_session_id_and_uuid(
                         "is_subagent": getattr(logger_obj, "is_subagent", False),
                         "created_at": getattr(logger_obj, "created_at", 0),
                         "updated_at": getattr(logger_obj, "updated_at", 0),
-                        "ended_at": getattr(logger_obj, "ended_at", None),
+                        "ended_at": _mem_ended_at,
+                        "is_active": _mem_ended_at is None,
                         "entry_count": len(getattr(logger_obj, "entries", [])),
                         "entries": getattr(logger_obj, "entries", []),
                         "linked_agents": _enrich_linked_agents_list(linked_agents),
                         "linked_agent_count": len(linked_agents),
-                        "source": "memory",
+                        "source": "memory" if getattr(logger_obj, "has_unpersisted_data", True) else "disk",
                     },
                 )
 
-    # 2. 从磁盘文件查找
+    # 2. 从磁盘文件查找（按 JSON 内 session_id 字段匹配）
     best_data: Optional[Dict[str, Any]] = None
     best_updated_at: float = 0
 
@@ -508,9 +550,48 @@ def _find_log_by_session_id_and_uuid(
             best_updated_at = updated_at
             best_data = data
             best_data["source"] = "disk"  # type: ignore
+            # 修正 is_active：磁盘 ended_at 为 null 时需检查内存 registry
+            _disk_ended = best_data.get("ended_at")
+            if _disk_ended is None:
+                _in_mem = registry.get_ai_session(session_id)
+                best_data["is_active"] = _in_mem is not None
+                if _in_mem is None:
+                    best_data["ended_at"] = best_data.get("updated_at")
+            else:
+                best_data["is_active"] = False
             # Enrich linked_agents with type_counts, entry_count, is_active
             if best_data.get("linked_agents"):
                 best_data["linked_agents"] = _enrich_linked_agents_list(best_data["linked_agents"])
+
+    # 3. 回退：按文件名 stem 匹配
+    #    前端可能把 file_name（如 xxx_uuid_20260529_040912.json）的 stem
+    #    当作 session_id 传入，此时按 JSON 字段匹配不到，需要按文件名匹配。
+    if best_data is None:
+        target_stem = session_id  # 前端传入的可能是文件名 stem
+        for path in _list_log_files():
+            if path.stem == target_stem:
+                data = _load_log_detail(path)
+                if data is None:
+                    continue
+                # 如果指定了 uuid，也需匹配
+                if session_uuid is not None and data.get("session_uuid") != session_uuid:
+                    continue
+                data["source"] = "disk"  # type: ignore
+                # 修正 is_active
+                _disk_ended = data.get("ended_at")
+                _real_sid: str = data.get("session_id", "")
+                if _disk_ended is None:
+                    _in_mem = registry.get_ai_session(_real_sid)
+                    data["is_active"] = _in_mem is not None
+                    if _in_mem is None:
+                        data["ended_at"] = data.get("updated_at")
+                else:
+                    data["is_active"] = False
+                # Enrich linked_agents
+                if data.get("linked_agents"):
+                    data["linked_agents"] = _enrich_linked_agents_list(data["linked_agents"])
+                best_data = data
+                break  # 文件名精确匹配，最多一个
 
     return cast(Optional[SessionLogDetail], best_data)
 
@@ -592,10 +673,11 @@ async def list_session_logs(
 # ─────────────────────────────────────────────
 
 
+@app.get("/api/ai/session_logs/{session_id}/detail")
 @app.get("/api/ai/session_logs/{session_id}/{session_uuid}/detail")
 async def get_session_log_detail(
     session_id: str,
-    session_uuid: str,
+    session_uuid: Optional[str] = None,
     _: Dict = Depends(require_auth),
 ) -> Dict:
     """
@@ -609,7 +691,8 @@ async def get_session_log_detail(
 
     Args:
         session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
-        session_uuid: Session 实例 UUID（如 abc12345）
+        session_uuid: Session 实例 UUID（如 abc12345），可选；
+            省略时返回该 session_id 最新的实例
 
     Returns:
         status: 0成功，1失败

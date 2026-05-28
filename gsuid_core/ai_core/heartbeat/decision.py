@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any, List, Optional
 from datetime import datetime
 
@@ -105,27 +106,31 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
 async def run_heartbeat(
     event: Event,
     history: List[Any],
-    session: GsCoreAIAgent,
+    persona_name: str,
     extra_context: str = "",
-) -> Optional[tuple[str, str]]:
+) -> Optional[tuple[str, str, List[str]]]:
     """
     Heartbeat 主入口：决策 + 生成，合并为一次完整流程。
 
     Args:
         event:   会话事件
         history: 历史消息列表
-        session: AI Session
+        persona_name: 该会话已配置的角色名（由 inspector 直接从
+            ``persona_config_manager.get_persona_for_session(session_id)`` 取出，
+            **不再通过创建 GsCoreAIAgent 间接拿**——避免每次心跳给"用户从未跟
+            AI 说过话"的会话凭空生成一个 2-entry 的空壳 session_logger 文件）。
         extra_context: C8 统一主动网关合并进来的语境（如刚完成的定时任务结果摘要），
             注入决策/发言提示词，让 AI 自然提及而非生硬另起一条播报。
 
     Returns:
-        主动发言内容字符串；若决定不发言或出错则返回 None
+        ``(mood, message, generator_log_files)`` 三元组；若决定不发言或出错返回 None。
+        ``generator_log_files`` 是决策 + 发言两个子 agent 的 session 日志路径，
+        交给 ``emit_proactive_message`` 挂到主 session 的 ``linked_agents`` 上。
     """
     if not history:
         logger.debug("🫀 [Heartbeat] 无历史记录，跳过")
         return None
 
-    persona_name = session.persona_name
     if not persona_name:
         logger.warning("🫀 [Heartbeat] 无法获取角色名称，跳过")
         return None
@@ -168,16 +173,36 @@ async def run_heartbeat(
         proactive_merge_section=proactive_merge_section,
     )
 
-    try:
-        _agent = create_agent(
-            decision_prompt,
-            create_by="Heartbeat_Decision",
-        )
-        result = await _agent.run(user_message=decision_prompt)
+    # 为决策子 agent 分配独立 session_id 并启用 SubAgent 日志，
+    # 让"为什么这一刻决定开口"事后可审计（见 §3.3 Heartbeat 改造）。
+    target_for_sid: str = event.group_id or event.user_id or "unknown"
+    ts_now: int = int(time.time())
+    decision_session_id: str = f"heartbeat_decision_{persona_name}_{target_for_sid}_{ts_now}"
+    output_session_id: str = f"heartbeat_output_{persona_name}_{target_for_sid}_{ts_now}"
+    generator_log_files: List[str] = []
 
+    decision_agent: GsCoreAIAgent = create_agent(
+        decision_prompt,
+        create_by="Heartbeat_Decision",
+        persona_name=persona_name,
+        session_id=decision_session_id,
+        is_subagent=True,
+    )
+    # 用本地变量记住 logger 引用，避免多分支重复读取 _session_logger 的 None 守卫；
+    # SubAgent 用完即关，否则 30 分钟巡检间隔会不断堆 logger 后台任务。
+    decision_logger = decision_agent._session_logger
+    try:
+        result: str = await decision_agent.run(user_message=decision_prompt)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 决策阶段出错: {e}")
+        if decision_logger is not None:
+            generator_log_files.append(str(decision_logger._file_path))
+            decision_logger.close()
         return None
+
+    if decision_logger is not None:
+        generator_log_files.append(str(decision_logger._file_path))
+        decision_logger.close()
 
     if not result:
         logger.debug("🫀 [Heartbeat] 决策阶段无返回，跳过")
@@ -223,20 +248,31 @@ async def run_heartbeat(
         proactive_merge_section=proactive_merge_section,
     )
 
+    output_agent: GsCoreAIAgent = create_agent(
+        message_prompt,
+        create_by="Heartbeat_Output",
+        persona_name=persona_name,
+        session_id=output_session_id,
+        is_subagent=True,
+    )
+    output_logger = output_agent._session_logger
     try:
-        _agent = create_agent(
-            message_prompt,
-            create_by="Heartbeat_Output",
-        )
-        result = await _agent.run(user_message=message_prompt)
+        result = await output_agent.run(user_message=message_prompt)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 生成阶段出错: {e}")
+        if output_logger is not None:
+            generator_log_files.append(str(output_logger._file_path))
+            output_logger.close()
         return None
+
+    if output_logger is not None:
+        generator_log_files.append(str(output_logger._file_path))
+        output_logger.close()
 
     if not result or not result.strip():
         logger.debug("🫀 [Heartbeat] 生成阶段无返回")
         return None
 
-    message = _strip_message_quotes(result)
+    message: str = _strip_message_quotes(result)
     logger.info(f"🫀 [Heartbeat] 主动发言: {message!r}")
-    return mood, message
+    return mood, message, generator_log_files

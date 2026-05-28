@@ -18,10 +18,8 @@ from datetime import datetime, timedelta
 # 延迟导入避免循环依赖
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.server import _Bot
-from gsuid_core.ai_core.utils import send_chat_result
 from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.ai_router import get_ai_session_by_id
+from gsuid_core.ai_core.proactive import emit_proactive_message
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
@@ -290,22 +288,15 @@ class HeartbeatInspector:
         if not user_id:
             return
 
-        # 3. 获取 AI Session
-        session_id = event.session_id
-        try:
-            ai_session = await get_ai_session_by_id(
-                session_id,
-                user_id,
-                group_id,
-                is_group_chat=event.user_type != "direct",
-            )
-        except ValueError:
-            # 没有配置 persona，跳过
+        # 3. 直接查会话的 persona 配置——**不通过 get_ai_session_by_id 创建主
+        #    GsCoreAIAgent**。run_heartbeat 只需要 persona_name，而旧路径会无
+        #    条件创建主 session + AISessionLogger，导致每个心跳触发都会留下一
+        #    个"只有 session_created + system_prompt 的 2-entry 空壳" 日志文件，
+        #    /api/ai/session_logs 看起来像一堆活跃但什么也没做的 session。
+        session_id: str = event.session_id
+        session_persona_name: Optional[str] = persona_config_manager.get_persona_for_session(session_id)
+        if not session_persona_name:
             logger.debug(f"🫀 [Heartbeat] 会话 {event} 没有配置 persona")
-            return
-
-        if not ai_session:
-            logger.debug(f"🫀 [Heartbeat] 无法加载会话 {event} 的 AI Session")
             return
 
         # 4. 决策阶段 (隐形 Sub-Agent)
@@ -317,20 +308,22 @@ class HeartbeatInspector:
         meta = await run_heartbeat(
             event,
             history,
-            ai_session,
+            session_persona_name,
             extra_context=merge_ctx,
         )
         if not meta:
             logger.debug(f"🫀 [Heartbeat] 会话 {event} 文本生成为空，放弃发送")
             return
-        mood, message = meta[0], meta[1]
+        mood, message, generator_log_files = meta
 
-        # 6. 发送阶段
-        await self._send_proactive_message(
-            event,
-            user_id,
-            message,
-            mood,
+        # 6. 发送阶段：走统一 emitter，由它一并完成 bot.send / message_history
+        #    / 主 session 历史同步 / proactive_emission entry / C8 网关登记。
+        await emit_proactive_message(
+            event=event,
+            message=message,
+            source="heartbeat",
+            trigger_reason=mood,
+            generator_log_files=generator_log_files,
         )
 
     def _get_history(self, event: Event) -> List[Any]:
@@ -344,80 +337,6 @@ class HeartbeatInspector:
                 if (record.metadata or {}).get("proactive", False):
                     return True
         return False
-
-    async def _send_proactive_message(
-        self,
-        event: Event,
-        user_id: str,
-        message: str,
-        reason: str,
-    ) -> None:
-        try:
-            from gsuid_core.bot import Bot
-
-            _bot = await self._get_bot_for_session(event)
-            if not _bot:
-                logger.warning(f"🫀 [Heartbeat] 找不到可用的 Bot ({event})")
-                return
-
-            # 创建 Bot 实例以使用 send_chat_result（支持 @语法解析）
-            bot_instance = Bot(_bot, event)
-            await send_chat_result(bot_instance, message, ev=event)
-
-            target_id = event.group_id or user_id
-            logger.info(f"🫀 [Heartbeat] 发送成功 -> {target_id}: {message}")
-
-            # C8：向统一主动网关登记本次主动发送，供后续协调防撞车
-            from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
-
-            get_dispatcher().register_send(str(target_id), "heartbeat")
-
-            # 追加到系统历史记忆，带上特定的 metadata 标记
-            self._history_manager.add_message(
-                event=event,
-                role="assistant",
-                content=message,
-                metadata={
-                    "proactive": True,
-                    "trigger_reason": reason,
-                    "bot_id": _bot.bot_id,
-                    "bot_self_id": "",
-                },
-            )
-        except Exception as e:
-            logger.exception(f"🫀 [Heartbeat] 发送主动消息失败: {e}")
-
-    async def _get_bot_for_session(self, event: Event) -> Optional["_Bot"]:
-        """获取用于发送消息的 _Bot 实例
-
-        优先使用 event.WS_BOT_ID（WS 连接 ID）直接查找 gss.active_bot，
-        这是最准确的方式，因为 WS_BOT_ID 就是 gss.active_bot 的 key。
-
-        Returns:
-            _Bot 实例或 None
-        """
-        from gsuid_core.gss import gss
-
-        # 方式1（最优先）：直接用 WS_BOT_ID 查找 WS 连接
-        if event.WS_BOT_ID and event.WS_BOT_ID in gss.active_bot:
-            return gss.active_bot[event.WS_BOT_ID]
-
-        # 方式2（兜底）：遍历历史消息的 metadata 尝试找 bot_id
-        bot_id: Optional[str] = None
-        history = self._history_manager._histories.get(event, [])
-        for record in reversed(history):
-            metadata = record.metadata or {}
-            if _bot_id := metadata.get("bot_id"):
-                bot_id = _bot_id
-                break
-
-        if bot_id and bot_id in gss.active_bot:
-            return gss.active_bot[bot_id]
-
-        # 方式3（最后的兜底）：返回任意一个可用的 _Bot
-        if gss.active_bot:
-            return list(gss.active_bot.values())[0]
-        return None
 
 
 _inspector = HeartbeatInspector()
