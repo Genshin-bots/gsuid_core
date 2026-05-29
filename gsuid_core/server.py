@@ -519,6 +519,12 @@ class GsServer:
             # 已经断开过了，幂等返回
             return
 
+        # ws 已移除且实例已标记断连(保留等待重连)时, 重复调用幂等返回, 避免重复清理与告警
+        if bot_id not in self.active_ws:
+            _retained = self.active_bot.get(bot_id)
+            if _retained is not None and getattr(_retained, "_disconnected_at", None) is not None:
+                return
+
         from gsuid_core.bot import Bot
 
         if bot_id in self.active_ws:

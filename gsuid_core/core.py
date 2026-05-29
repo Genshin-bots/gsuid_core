@@ -161,16 +161,30 @@ async def main():
                     await gss.disconnect(bot_id)
 
             async def process():
-                """process 函数的职责是启动 bot._process，由 _process 内部处理 shutdown"""
                 try:
                     await bot._process(shutdown_event)
                 except CancelledError:
                     pass
 
             logger.info("[GsCore] 启动WS服务中...")
-            await asyncio.gather(process(), start())
-        except CancelledError:
-            await gss.disconnect(bot_id)
+            # 任一结束(通常是 start 断连返回)即取消另一个, 避免 _process 残留消费同一队列
+            process_task = asyncio.create_task(process())
+            start_task = asyncio.create_task(start())
+            try:
+                await asyncio.wait(
+                    {process_task, start_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for _t in (process_task, start_task):
+                    if not _t.done():
+                        _t.cancel()
+                # 取回两个子任务结果, 避免 "exception never retrieved" 告警
+                _results = await asyncio.gather(process_task, start_task, return_exceptions=True)
+            # 子任务有真实异常(非取消)则向上抛; 放在 finally 外, 不吞外层取消
+            for _r in _results:
+                if isinstance(_r, BaseException) and not isinstance(_r, CancelledError):
+                    raise _r
         finally:
             await gss.disconnect(bot_id)
 
