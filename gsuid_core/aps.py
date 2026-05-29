@@ -19,7 +19,15 @@ options = {
     "job_defaults": job_defaults,
     "timezone": "Asia/Shanghai",
 }
-scheduler = AsyncIOScheduler()
+
+
+class _GsScheduler(AsyncIOScheduler):
+    def scheduled_job(self, *args, **kwargs):
+        kwargs.pop("replace_existing", None)
+        return super().scheduled_job(*args, **kwargs)
+
+
+scheduler = _GsScheduler()
 scheduler.configure(options)
 
 # 延迟导入避免循环导入
