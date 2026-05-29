@@ -266,6 +266,7 @@ async def execute_scheduled_task(task_id: str) -> None:
                 trigger_reason=f"task_id={task_id}",
                 generator_log_files=sub_agent_log_files,
                 bot=bot_instance,
+                suppress_when_heartbeat_recent=False,
             )
             if sent:
                 logger.info(f"✅ [ScheduledTask] 任务执行成功并已推送: task_id={task_id}")
