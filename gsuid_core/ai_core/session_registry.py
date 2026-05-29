@@ -180,8 +180,11 @@ class AISessionRegistry:
             # _session_logger 是 GsCoreAIAgent 的已声明字段，类型追踪完备。
             if session._session_logger is None:
                 continue
-            session._session_logger._persist_sync()
-            flushed += 1
+            try:
+                session._session_logger._persist_sync()
+                flushed += 1
+            except Exception:
+                continue
         return flushed
 
     def shutdown_all(self) -> int:

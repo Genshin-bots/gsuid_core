@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.proactive import emit_proactive_message
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
@@ -318,6 +317,8 @@ class HeartbeatInspector:
 
         # 6. 发送阶段：走统一 emitter，由它一并完成 bot.send / message_history
         #    / 主 session 历史同步 / proactive_emission entry / C8 网关登记。
+        from gsuid_core.ai_core.proactive import emit_proactive_message
+
         await emit_proactive_message(
             event=event,
             message=message,

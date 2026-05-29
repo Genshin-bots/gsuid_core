@@ -278,6 +278,7 @@ async def _notify(
         source="kanban",
         trigger_reason=trigger_reason,
         generator_log_files=generator_log_files or [],
+        suppress_when_heartbeat_recent=False,
     )
     if not sent:
         logger.warning(f"📋 [Kanban] 任务 root=#{task.ordinal} 主动消息发送失败 / 被抑制")
