@@ -314,9 +314,11 @@ GET /api/logs/levels
 
 | 层级 | 内容 | 用途 |
 |------|------|------|
-| 内存（30min TTL） | `TraceLogEntry` 列表 | 活跃追踪实时查询 |
+| 内存（仅执行中） | `TraceLogEntry` 列表 | **正在执行中**追踪的实时查询；命令一结束即落盘并从内存移除，不做内存保留 |
 | JSONL 目录 | 元数据（trace_id, command, user_id, status, duration_ms, log_count） | 已完成追踪目录索引 |
 | daily log | 每条 JSON 带 `trace_id` 字段 | 完整日志持久化，供扫描提取 |
+
+> 已完成追踪不再驻留内存：查询其详情时从 JSONL（元数据）+ daily log（完整日志，按 `trace_id` 扫描重建）读取。异常退出导致未正常结束的 running 追踪，由后台任务按 `stale_running_sec`（默认 1h）兜底回收。
 
 ### 7.8.1 获取追踪列表（统一入口）
 ```

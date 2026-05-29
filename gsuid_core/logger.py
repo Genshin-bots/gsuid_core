@@ -104,20 +104,31 @@ _MAX_TRACE_LOGS: int = 5000
 
 
 class TraceCollector:
-    """以 trace_id 为维度收集日志，命令完成时保留内存并输出标记到 daily log"""
+    """以 trace_id 为维度收集执行中命令的日志；命令一结束即落盘归档并从内存移除，
+    内存中只保留正在执行中的追踪，不做内存保留。"""
 
-    def __init__(self, max_traces: int = 1000, finalize_ttl_sec: float = 1800.0):
+    def __init__(
+        self,
+        max_traces: int = 1000,
+        stale_running_sec: float = 3600.0,
+    ):
+        # 仅保存「正在执行中」的追踪；命令一结束即落盘并从内存移除，不做内存保留
         self._traces: Dict[str, List[TraceLogEntry]] = {}
         self._trace_meta: Dict[str, TraceContext] = {}
-        self._trace_finalized_time: Dict[str, float] = {}
         self._max_traces = max_traces
-        self._finalize_ttl_sec = finalize_ttl_sec
+        # running 超过该时长仍未 finalize，视为泄漏（命令异常退出未走 finally 等），可被回收
+        self._stale_running_sec = stale_running_sec
+        # 容量告警节流时间戳（perf_counter），避免每条命令都刷 warning
+        self._last_capacity_warn: float = 0.0
 
     def start_trace(self, ctx: TraceContext) -> None:
         """开始一个新追踪——仅在任务实际执行时调用"""
+        # 先回收，保证登记新追踪后内存不超过容量硬上限
+        if len(self._traces) >= self._max_traces:
+            self._evict_to_capacity()
+
         self._traces[ctx.trace_id] = []
         self._trace_meta[ctx.trace_id] = ctx
-        self._trace_finalized_time.pop(ctx.trace_id, None)
 
         trace_start_event = f"📝 [TraceStart] trace_id={ctx.trace_id} command={ctx.command} user_id={ctx.user_id}"
         _slg = structlog.get_logger("GsCore")
@@ -132,37 +143,89 @@ class TraceCollector:
             _slg = structlog.get_logger("GsCore")
             _slg.error(f"❌ [TraceCollector] JSONL running 标记写入失败 trace_id={ctx.trace_id}: {e}")
 
-        if len(self._traces) > self._max_traces:
-            self._evict_oldest()
+    def _drop(self, trace_id: str) -> None:
+        """从内存中彻底移除一个追踪（两张表一起清，避免残留）"""
+        self._traces.pop(trace_id, None)
+        self._trace_meta.pop(trace_id, None)
 
-    def _evict_oldest(self) -> None:
-        """FIFO 淘汰最旧的可丢弃追踪（跳过活跃中或仍在保留期内的）"""
+    def reclaim_stale(self) -> int:
+        """回收僵死（疑似泄漏）的 running 追踪——命令异常退出未走 finally 等场景。
+
+        正常情况下命令结束即 finalize 落盘并移除，内存里只剩在执行中的追踪；但若
+        finalize 因故未被调用，对应追踪会滞留为 running。该方法由后台定时任务周期调用，
+        把存活超过 stale_running_sec 的 running 追踪兜底清掉。返回回收条数。
+        """
         now = time.perf_counter()
-        evicted = False
-        for oldest_id in list(self._traces.keys()):
-            finalized_at = self._trace_finalized_time.get(oldest_id)
-            if finalized_at is None:
-                continue
-            elapsed = now - finalized_at
-            if elapsed < self._finalize_ttl_sec:
-                continue
-            self._traces.pop(oldest_id, None)
-            self._trace_meta.pop(oldest_id, None)
-            self._trace_finalized_time.pop(oldest_id, None)
-            evicted = True
-            break
-        if not evicted:
-            _slg = structlog.get_logger("GsCore")
-            _slg.warning(
-                f"[TraceCollector] 追踪数达上限 {self._max_traces}，但所有追踪仍在活跃或保留期内，建议扩容 max_traces"
-            )
+        to_drop: List[str] = []
+        for tid in list(self._traces.keys()):
+            meta = self._trace_meta.get(tid)
+            age = now - meta.start_time if meta else float("inf")
+            if age >= self._stale_running_sec:
+                to_drop.append(tid)
+        for tid in to_drop:
+            self._drop(tid)
+        return len(to_drop)
+
+    def _evict_to_capacity(self) -> None:
+        """回收追踪直到低于容量硬上限，给即将登记的新追踪留出空位。
+
+        内存里只保存在执行中的追踪，正常远低于上限。一旦逼近上限，多半是大量命令
+        异常退出未 finalize 导致的泄漏堆积。回收优先级：① running 但已僵死（疑似泄漏）
+        → ② 真正在跑的追踪（绝对兜底，最旧优先）。容量是硬约束，保证内存不会无限增长。
+        """
+        target = self._max_traces - 1  # 留一个空位给新追踪
+        if len(self._traces) <= target:
+            return
+
+        now = time.perf_counter()
+        stale_running: List[str] = []  # running 但僵死（疑似泄漏）：可丢
+        running_active: List[str] = []  # 真正在跑：绝对兜底才丢
+
+        # dict 保持插入顺序，故下列各组内部均为「最旧在前」
+        for tid in list(self._traces.keys()):
+            meta = self._trace_meta.get(tid)
+            age = now - meta.start_time if meta else float("inf")
+            if age >= self._stale_running_sec:
+                stale_running.append(tid)
+            else:
+                running_active.append(tid)
+
+        sacrificed = 0  # 被迫牺牲的活跃追踪数（用于告警）
+        for group, is_safe in ((stale_running, True), (running_active, False)):
+            for tid in group:
+                if len(self._traces) <= target:
+                    break
+                self._drop(tid)
+                if not is_safe:
+                    sacrificed += 1
+            if len(self._traces) <= target:
+                break
+
+        if sacrificed:
+            self._warn_capacity(sacrificed)
+
+    def _warn_capacity(self, sacrificed: int) -> None:
+        """容量告警（节流到最多每 60s 一条），避免高并发时刷屏"""
+        now = time.perf_counter()
+        if now - self._last_capacity_warn < 60.0:
+            return
+        self._last_capacity_warn = now
+        _slg = structlog.get_logger("GsCore")
+        _slg.warning(
+            f"[TraceCollector] 执行中追踪数达上限 {self._max_traces}，"
+            f"已强制回收 {sacrificed} 条活跃追踪以保证内存上界；"
+            f"通常意味着大量命令异常退出未正常结束追踪，请排查；如属正常高并发可调大 max_traces"
+        )
 
     def collect(self, event_dict: EventDict) -> None:
         """收集一条日志到当前追踪——只存储精简字段，超长 event 截断"""
         if "trace_id" not in event_dict:
             return
         trace_id = event_dict["trace_id"]
-        if trace_id not in self._traces:
+        # 取一次列表引用：即使该追踪被并发回收（后台定时清理在其它线程触发日志期间），
+        # 也只是往一个已脱钩的列表追加，不会 KeyError，也不会复活已回收的追踪。
+        bucket = self._traces.get(trace_id)
+        if bucket is None:
             return
         raw_event = str(event_dict["event"]) if "event" in event_dict else ""
         if len(raw_event) > _MAX_EVENT_LEN:
@@ -173,19 +236,21 @@ class TraceCollector:
             level=str(event_dict["level"]) if "level" in event_dict else "",
             event=raw_event,
         )
-        self._traces[trace_id].append(entry)
+        bucket.append(entry)
 
-        if len(self._traces[trace_id]) > _MAX_TRACE_LOGS:
-            logs = self._traces[trace_id]
-            self._traces[trace_id] = logs[:100] + logs[-100:]
-            self._traces[trace_id].insert(
+        if len(bucket) > _MAX_TRACE_LOGS:
+            truncated = bucket[:100] + bucket[-100:]
+            truncated.insert(
                 100,
                 TraceLogEntry(
-                    timestamp=logs[100].timestamp,
+                    timestamp=bucket[100].timestamp,
                     level="warning",
-                    event=f"[TraceCollector] 日志过多，已截断，原始条数={len(logs)}",
+                    event=f"[TraceCollector] 日志过多，已截断，原始条数={len(bucket)}",
                 ),
             )
+            # 仅当该追踪仍在内存中时回写，避免复活已被回收的追踪
+            if trace_id in self._traces:
+                self._traces[trace_id] = truncated
 
     def get_short_id(self, trace_id: str) -> Optional[str]:
         """从 meta 查找短码（供控制台格式化使用）"""
@@ -193,42 +258,47 @@ class TraceCollector:
         return meta.short_id if meta else None
 
     def finalize_trace(self, trace_id: str) -> Optional[List[TraceLogEntry]]:
-        """完成追踪——输出标记、JSONL 归档、内存保留供快速查询"""
-        logs = self._traces.get(trace_id)
+        """完成追踪——输出 TraceEnd 标记、JSONL 归档，然后立即从内存移除。
+
+        命令的每条日志在执行过程中已实时写入 daily log 文件，JSONL 也记录了元数据，
+        因此追踪结束后不再保留内存副本：直接落盘并 _drop。网页控制台查询已完成追踪时
+        从 JSONL + daily log 重建即可。无论归档成功与否都会移除内存副本，避免追踪滞留。
+        """
         meta = self._trace_meta.get(trace_id)
-        if not logs or not meta:
+        if meta is None:
+            # 追踪从未登记，或已被容量/僵死回收，无需处理
             return None
 
+        logs = self._traces.get(trace_id)
+        log_count = len(logs) if logs else 0
+        duration_ms = int((time.perf_counter() - meta.start_time) * 1000)
+
+        _slg = structlog.get_logger("GsCore")
         try:
             from gsuid_core.trace_archive import write_trace_meta
 
-            duration_ms = int((time.perf_counter() - meta.start_time) * 1000)
-            write_trace_meta(trace_id, meta, status="completed", log_count=len(logs), duration_ms=duration_ms)
-        except Exception as e:
-            _slg = structlog.get_logger("GsCore")
-            _slg.error(
-                f"❌ [TraceCollector] JSONL 归档失败 trace_id={trace_id}: {e}. 内存数据保留，将在下次 finalize 重试。"
+            write_trace_meta(trace_id, meta, status="completed", log_count=log_count, duration_ms=duration_ms)
+            trace_end_event = (
+                f"🏁 [TraceEnd] trace_id={trace_id} command={meta.command} duration={duration_ms}ms logs={log_count}"
             )
-            return logs
+            _slg.info(trace_end_event, trace_id=trace_id)
+        except Exception as e:
+            _slg.error(f"❌ [TraceCollector] JSONL 归档失败 trace_id={trace_id}: {e}")
+        finally:
+            # 无论归档成败都从内存移除，避免追踪滞留导致泄漏
+            self._drop(trace_id)
 
-        duration_ms = int((time.perf_counter() - meta.start_time) * 1000)
-        trace_end_event = (
-            f"🏁 [TraceEnd] trace_id={trace_id} command={meta.command} duration={duration_ms}ms logs={len(logs)}"
-        )
-        _slg = structlog.get_logger("GsCore")
-        _slg.info(trace_end_event, trace_id=trace_id)
-        self._trace_finalized_time[trace_id] = time.perf_counter()
         return logs
 
     def get_active_traces(self) -> Dict[str, Dict]:
-        """获取当前活跃/保留期内的追踪列表，正确标记 running/completed 状态"""
+        """获取当前正在执行中的追踪列表（内存只保留 running，已完成的已落盘并移除）"""
         return {
             tid: {
                 "command": meta.command,
                 "user_id": meta.user_id,
                 "start_time": meta.start_time,
                 "log_count": len(self._traces.get(tid, [])),
-                "status": "completed" if tid in self._trace_finalized_time else "running",
+                "status": "running",
             }
             for tid, meta in self._trace_meta.items()
         }
@@ -755,6 +825,25 @@ async def clean_log():
     while True:
         await asyncio.sleep(480)
         log_history = []
+
+
+async def clean_trace_collector():
+    """后台定时回收 TraceCollector 中僵死（疑似泄漏）的 running 追踪。
+
+    正常情况下命令结束即落盘并移除，内存里只剩在执行中的追踪；该任务由 app 生命周期
+    启动，按 stale_running_sec 兜底清理异常退出导致未 finalize 而滞留的 running 追踪，
+    避免内存随时间缓慢增长。
+    """
+    while True:
+        await asyncio.sleep(300)
+        try:
+            collector = _get_trace_collector()
+            if collector is not None:
+                dropped = collector.reclaim_stale()
+                if dropped:
+                    logger.debug(f"🧹 [TraceCollector] 定时回收僵死追踪 {dropped} 条")
+        except Exception as e:
+            logger.warning(f"[TraceCollector] 定时回收异常: {e}")
 
 
 def handle_exceptions(async_function):

@@ -74,11 +74,10 @@ async def get_trace_detail(
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    # 先查内存
+    # 先查内存（内存只保留正在执行中的追踪，命中即说明该追踪仍在 running）
     memory_logs = trace_collector.get_trace_logs(trace_id)
     if memory_logs is not None:
         meta = trace_collector.get_trace_meta(trace_id)
-        is_finalized = trace_id in trace_collector._trace_finalized_time
         return {
             "status": 0,
             "msg": "ok",
@@ -90,7 +89,7 @@ async def get_trace_detail(
                 "bot_id": meta.bot_id if meta else "",
                 "session_id": meta.session_id if meta else "",
                 "start_time": meta.start_time if meta else 0,
-                "status": "completed" if is_finalized else "running",
+                "status": "running",
                 "logs": [{"timestamp": e.timestamp, "level": e.level, "event": e.event} for e in memory_logs],
             },
         }

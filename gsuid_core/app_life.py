@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
-from gsuid_core.logger import logger, clean_log
+from gsuid_core.logger import logger, clean_log, clean_trace_collector
 from gsuid_core.server import core_start_execute, core_shutdown_execute, core_start_before_execute
 from gsuid_core.shutdown import shutdown_event
 
@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
     # await trans_global_val()
 
     asyncio.create_task(clean_log())
+    asyncio.create_task(clean_trace_collector())
 
     yield
 
