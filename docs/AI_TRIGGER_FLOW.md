@@ -3479,14 +3479,24 @@ async def understand_image(
 GsCoreAIAgent._prepare_user_message()
     │
     ├── 检查 model_support 配置
-    │   ├── "image" in model_support → 保留 ImageUrl，直接传图给 LLM
+    │   ├── "image" in model_support → 保留 ImageUrl，直接传图给 LLM（回复路径不调 understand_image）
     │   └── "image" not in model_support → 调用 understand_image 转述
     │
-    └── understand_image(image_url)
-        ├── 读取 mcp_tools_config["image_understand_mcp_tool_id"]
-        ├── call_mcp_tool(mcp_tool_id, arguments)
-        └── 返回文本描述
+    └── understand_image(image_url, task_level="high")
+        ├── _resolve_native_image_model(task_level)：model_support 含 image 时
+        │   └── 直接用大模型原生多模态（OpenAI / Anthropic 兼容请求）转述，无需 MCP
+        └── 否则回退 MCP 转述模型
+            ├── 读取 mcp_tools_config["image_understand_mcp_tool_id"]
+            ├── call_mcp_tool(mcp_tool_id, arguments)
+            └── 返回文本描述
 ```
+
+> ⚠️ `understand_image` 不止被回复路径调用，记忆摄入（`memory/ingestion/multimodal.py`
+> 的 `ImageUnderstandWorker`）、视频帧、表情包打标等后台路径也会调它。这些路径
+> **不经过 `_prepare_user_message` 的能力分支**，因此当模型原生支持图片（`model_support`
+> 含 `image`）时，必须由 `understand_image` 自身优先走大模型原生多模态，**而非要求
+> 用户额外配置图片转述模型（MCP）**——否则未配 MCP 时会刷出"图片理解失败（已忽略）:
+> Image Understand MCP 工具未配置"。
 
 **与 GsCoreAIAgent 的集成**: [`_prepare_user_message()`](gsuid_core/ai_core/gs_agent.py:177) 方法在 `_execute_run` 中自动处理：
 - 分离文本和图片内容

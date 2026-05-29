@@ -1,17 +1,27 @@
 """
 Image Understand 公共 API 模块
 
-提供统一的图片理解接口，根据用户配置自动选择图片理解服务提供商（MCP）。
-外部模块应通过本模块的函数调用图片理解，无需关心底层实现细节。
+提供统一的图片理解接口：优先使用大模型原生的多模态能力（model_support 含 image
+时走 OpenAI / Anthropic 兼容请求），仅在模型不支持图片时才回退到独立的图片转述
+模型（MCP）。外部模块应通过本模块的函数调用图片理解，无需关心底层实现细节。
 """
 
 import os
 import base64
 import tempfile
+from typing import Union, Literal, Optional
 
 import aiofiles
+from pydantic_ai import Agent
+from pydantic_ai.messages import ImageUrl
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.configs.models import (
+    get_model_for_task,
+    get_model_config_for_task,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
 from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
@@ -25,6 +35,49 @@ def _get_provider() -> str:
         提供方名称，如 "MCP"
     """
     return ai_config.get_config("image_understand_provider").data
+
+
+def _resolve_native_image_model(
+    task_level: Literal["high", "low"],
+) -> Optional[Union[OpenAIChatModel, AnthropicModel]]:
+    """若指定级别的模型在 model_support 中声明了 image，则返回其原生模型实例。
+
+    模型原生支持图片时，应直接用大模型的多模态能力（OpenAI / Anthropic 兼容请求）
+    转述图片，无需再单独配置图片转述模型（MCP）。不支持时返回 None，交由 MCP 兜底。
+    """
+    model_config = get_model_config_for_task(task_level)
+    model_support = model_config.get_config("model_support").data
+    if "image" in model_support:
+        return get_model_for_task(task_level)
+    return None
+
+
+async def _understand_image_native(
+    model: Union[OpenAIChatModel, AnthropicModel],
+    image_url: str,
+    prompt: str,
+) -> str:
+    """用大模型原生多模态能力转述图片（OpenAI / Anthropic 兼容请求）。
+
+    直接把图片以 ImageUrl 形式连同 prompt 一起喂给大模型，由 pydantic_ai 按
+    provider 选择 OpenAI 兼容或 Anthropic 兼容的请求格式，无需依赖 MCP 转述工具。
+    """
+    from gsuid_core.ai_core.utils import _normalize_image_url
+
+    agent = Agent(
+        model=model,
+        system_prompt="你是一个图片理解助手，只输出对图片内容的客观描述，不要输出多余的解释或寒暄。",
+        model_settings={"max_tokens": 1024},
+        tools=[],
+        toolsets=[],
+        retries=1,
+        output_type=str,
+    )
+    result = await agent.run(
+        [prompt, ImageUrl(url=_normalize_image_url(image_url))],
+        message_history=[],
+    )
+    return str(result.output).strip()
 
 
 async def _prepare_image_for_mcp(image_url: str) -> str:
@@ -81,16 +134,20 @@ async def _prepare_image_for_mcp(image_url: str) -> str:
 async def understand_image(
     image_url: str,
     prompt: str | None = None,
+    task_level: Literal["high", "low"] = "high",
 ) -> str:
     """
     统一的图片理解接口
 
-    根据用户配置的 image_understand_provider 自动选择图片理解服务。
-    将图片内容转述为文本描述，供不支持图片的 LLM 模型使用。
+    将图片内容转述为文本描述。优先使用大模型原生的多模态能力：
+    - 当前模型在 model_support 中声明了 image 时，直接用大模型（OpenAI / Anthropic
+      兼容请求）转述图片，**无需配置图片转述模型，配置了也优先走原生多模态**。
+    - 仅当模型不支持图片时，才回退到 image_understand_provider 配置的转述模型（MCP）。
 
     Args:
         image_url: 图片来源，支持 HTTP/HTTPS URL、base64 DataURI 或文件路径
         prompt: 对图片的提问或分析要求，默认为通用描述
+        task_level: 用于判断 model_support 并选择原生多模态模型的任务级别
 
     Returns:
         图片内容的文本描述
@@ -105,6 +162,12 @@ async def understand_image(
     """
     if not prompt:
         prompt = "请详细描述这张图片的内容，包括主要对象、场景、文字、颜色等信息。"
+
+    # 优先：当前模型原生支持图片时，直接走大模型多模态，无需配置转述模型(MCP)
+    native_model = _resolve_native_image_model(task_level)
+    if native_model is not None:
+        logger.debug("🖼️ [ImageUnderstand] 当前模型原生支持图片，使用大模型多模态能力转述")
+        return await _understand_image_native(native_model, image_url, prompt)
 
     provider = _get_provider()
 
