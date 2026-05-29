@@ -24,6 +24,8 @@ def _join(lst) -> str:
 
 def fmt_val(item: GSC, key: str = "") -> str:
     """格式化配置项的值, 敏感字段脱敏"""
+    if getattr(item, "secret", False):
+        return "<已隐藏>"
     if isinstance(item, GsBoolConfig):
         return "开启" if item.data else "关闭"
     if isinstance(item, GsTimeRConfig):

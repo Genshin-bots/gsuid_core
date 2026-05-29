@@ -278,6 +278,7 @@ class StringConfig:
 
                     self.config[key].title = _defalut.title
                     self.config[key].desc = _defalut.desc
+                    self.config[key].secret = _defalut.secret
 
         """
         # 对默认值没有的值，直接删除
