@@ -6,7 +6,7 @@
 
 ## 概述
 
-表情包管理 API 提供完整的表情包增删改查、手动上传、重新打标、统计概览等功能。
+表情包管理 API 提供完整的表情包增删改查、手动上传、重新打标、统计概览、批量删除、批量导出/导入等功能。
 前端页面通过调用这些 REST API 实现管理界面，无需维护本地状态。
 
 ---
@@ -24,6 +24,9 @@
 | POST | `/api/meme/upload` | 手动上传表情包 |
 | POST | `/api/meme/{meme_id}/retag` | 重新触发 VLM 打标 |
 | GET | `/api/meme/stats` | 统计概览 |
+| POST | `/api/meme/batch_delete` | 批量删除表情包 |
+| POST | `/api/meme/export` | 批量导出为 .meme 格式 |
+| POST | `/api/meme/import` | 导入 .meme 格式文件 |
 
 ---
 
@@ -265,6 +268,222 @@ GET /api/meme/stats
 
 ---
 
+### 10. 批量删除表情包
+
+```
+POST /api/meme/batch_delete
+```
+
+批量删除多个表情包（文件+数据库记录+Qdrant 向量），逐条处理，返回成功/失败详情。
+
+**请求体** (JSON):
+
+```json
+{
+    "meme_ids": ["ab12cd34ef56gh78", "1234abcd5678efgh"]
+}
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `meme_ids` | string[] | 是 | 要删除的表情包 ID 列表，至少 1 个 |
+
+**响应**:
+
+全部成功时：
+
+```json
+{
+    "status": 0,
+    "msg": "批量删除成功，共删除 2 个",
+    "data": {
+        "success_count": 2,
+        "failed": []
+    }
+}
+```
+
+部分失败时：
+
+```json
+{
+    "status": 1,
+    "msg": "删除完成：成功 1 个，失败 1 个",
+    "data": {
+        "success_count": 1,
+        "failed": [
+            {"meme_id": "1234abcd5678efgh", "reason": "不存在"}
+        ]
+    }
+}
+```
+
+### 11. 批量导出表情包（.meme 格式）
+
+```
+POST /api/meme/export
+```
+
+将选定的表情包打包为 `.meme` 格式文件（实际为 ZIP），包含源文件和元数据。
+
+**请求体** (JSON):
+
+```json
+{
+    "meme_ids": ["ab12cd34ef56gh78", "1234abcd5678efgh"]
+}
+```
+
+或按文件夹导出：
+
+```json
+{
+    "folder": "common"
+}
+```
+
+或不传参数导出全部：
+
+```json
+{}
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `meme_ids` | string[] | 否 | 要导出的表情包 ID 列表，为空则导出全部 |
+| `folder` | string | 否 | 按文件夹导出（与 `meme_ids` 互斥，优先使用 `meme_ids`） |
+
+**响应**: 返回 `.meme` 文件二进制流，`Content-Type` 为 `application/octet-stream`。
+
+**响应头**:
+
+```
+Content-Disposition: attachment; filename="memes_20260530_093000.meme"
+```
+
+**错误响应** (无数据可导出时返回 JSON):
+
+```json
+{
+    "status": 1,
+    "msg": "没有可导出的表情包"
+}
+```
+
+### 12. 导入 .meme 格式文件
+
+```
+POST /api/meme/import
+```
+
+导入 `.meme` 格式文件，解析其中的源文件和元数据，逐条写入文件系统和数据库。
+
+**表单参数** (multipart/form-data):
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `file` | file | 是 | - | `.meme` 格式文件（ZIP） |
+| `skip_existing` | bool | 否 | `true` | 是否跳过已存在的表情包 |
+| `auto_tag` | bool | 否 | `false` | 是否对新导入的表情包触发 VLM 打标 |
+
+**响应**:
+
+```json
+{
+    "status": 0,
+    "msg": "导入完成：成功 10 个，跳过 2 个，失败 0 个",
+    "data": {
+        "imported_count": 10,
+        "skipped_count": 2,
+        "imported_ids": ["ab12cd34ef56gh78", "..."],
+        "skipped_ids": ["1234abcd5678efgh", "..."],
+        "failed": []
+    }
+}
+```
+
+部分失败时 `failed` 列表包含失败详情：
+
+```json
+{
+    "failed": [
+        {"meme_id": "xxx", "reason": "包中缺少源文件: files/xxx.webp"}
+    ]
+}
+```
+
+---
+
+## .meme 文件格式规范
+
+`.meme` 文件本质为 ZIP 压缩包，扩展名为 `.meme`，用于表情包的完整导出与导入。
+
+### 目录结构
+
+```
+memes_20260530_093000.meme
+├── manifest.json      # 版本与导出信息
+├── metadata.json      # 表情包元数据列表
+└── files/             # 表情包源文件目录
+    ├── ab12cd34ef56gh78.webp
+    ├── 1234abcd5678efgh.jpg
+    └── ...
+```
+
+### manifest.json
+
+```json
+{
+    "version": "1.0",
+    "exported_at": "2026-05-30T09:30:00+00:00",
+    "total_count": 10
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `version` | string | 格式版本号，当前为 `"1.0"` |
+| `exported_at` | string | 导出时间（ISO 8601） |
+| `total_count` | int | 包含的表情包数量 |
+
+### metadata.json
+
+数组格式，每项对应一个表情包的元数据：
+
+```json
+[
+    {
+        "meme_id": "ab12cd34ef56gh78",
+        "file_path": "common/ab12cd34ef56gh78.webp",
+        "file_size": 123456,
+        "file_mime": "image/webp",
+        "width": 300,
+        "height": 300,
+        "folder": "common",
+        "persona_hint": "common",
+        "emotion_tags": ["搞笑", "无语"],
+        "scene_tags": ["吐槽"],
+        "description": "一只猫翻白眼",
+        "custom_tags": [],
+        "status": "tagged",
+        "nsfw_score": 0.0
+    }
+]
+```
+
+> **注意**: `metadata.json` 中不包含运行时字段（`use_count`、`last_used_at`、`last_used_group`、`created_at`、`tagged_at`、`updated_at`、`qdrant_id`、`source_group`、`source_user`、`source_url`），这些字段在导入时会重置为默认值。
+
+### files/ 目录
+
+存放表情包源文件，文件名格式为 `{meme_id}.{ext}`，与 `metadata.json` 中的 `file_path` 字段对应。
+
+### 版本兼容
+
+- 当前版本：`1.0`
+- 导入时校验 `manifest.json` 中的 `version` 字段，仅支持 `1.x` 版本
+
+---
+
 ## 数据模型
 
 ### AiMemeRecord 字段说明
@@ -308,7 +527,9 @@ any → rejected (NSFW 或质量不达标)
 
 ## 前端页面设计要点
 
-1. **列表页**: 瀑布流图片网格，支持文件夹/状态过滤、排序（最新/发送次数）。每张卡片显示缩略图、简要描述、情绪标签、使用次数。支持关键字搜索（调用 `?q=xxx`）。
+1. **列表页**: 瀑布流图片网格，支持文件夹/状态过滤、排序（最新/发送次数）。每张卡片显示缩略图、简要描述、情绪标签、使用次数。支持关键字搜索（调用 `?q=xxx`）。支持多选模式，选中后可批量删除或批量导出。
 2. **详情面板**: 大图预览，可编辑描述、情绪标签、场景标签、自定义标签、Persona 归属。显示使用统计（次数、最后使用时间、群）。提供移动文件夹、重新打标、删除操作。
 3. **上传区**: 拖拽或点击上传，可选择目标文件夹，支持自动打标或手动输入标签。
 4. **统计概览**: 展示总图片数、AI 发送总次数、待打标数、各文件夹分布（图表）。Top 10 最常用表情包（图片+次数）。
+5. **批量操作**: 列表页多选后出现操作栏，支持批量删除（调用 `POST /api/meme/batch_delete`）和批量导出（调用 `POST /api/meme/export`）。导出时可选按文件夹导出或全量导出。
+6. **导入导出**: 提供导入按钮，上传 `.meme` 文件（调用 `POST /api/meme/import`），可选跳过已存在项和自动打标。导出按钮下载 `.meme` 文件，包含源文件和标签元数据，可用于备份迁移。

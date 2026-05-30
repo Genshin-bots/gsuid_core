@@ -4,6 +4,13 @@ Image Understand 公共 API 模块
 提供统一的图片理解接口：优先使用大模型原生的多模态能力（model_support 含 image
 时走 OpenAI / Anthropic 兼容请求），仅在模型不支持图片时才回退到独立的图片转述
 模型（MCP）。外部模块应通过本模块的函数调用图片理解，无需关心底层实现细节。
+
+会话日志：原生多模态转述同样是一次真实 LLM 调用——统一走 ``create_agent``
+（自动派生 ``auto_ImageUnderstand_*`` 的 subagent 日志），并在拿到调用方
+``parent_session_id`` 时 ``link_agent`` 挂到调用方主 session 的 linked_agents 上，
+保证"任何 AI 调用都有日志"（不再裸用 pydantic_ai ``Agent()``）。MCP 回退路径是
+外部工具调用而非 LLM agent run，由 MCP 侧自行记录，不进 AISessionLogger。
+详见 ``docs/AI_SESSION_LOGGING.md``。
 """
 
 import os
@@ -12,7 +19,6 @@ import tempfile
 from typing import Union, Literal, Optional
 
 import aiofiles
-from pydantic_ai import Agent
 from pydantic_ai.messages import ImageUrl
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -53,31 +59,58 @@ def _resolve_native_image_model(
 
 
 async def _understand_image_native(
-    model: Union[OpenAIChatModel, AnthropicModel],
     image_url: str,
     prompt: str,
+    task_level: Literal["high", "low"],
+    parent_session_id: Optional[str] = None,
 ) -> str:
     """用大模型原生多模态能力转述图片（OpenAI / Anthropic 兼容请求）。
 
-    直接把图片以 ImageUrl 形式连同 prompt 一起喂给大模型，由 pydantic_ai 按
-    provider 选择 OpenAI 兼容或 Anthropic 兼容的请求格式，无需依赖 MCP 转述工具。
+    统一走 ``create_agent``：图片以 ImageUrl 形式连同 prompt 一起喂给大模型，由
+    ``GsCoreAIAgent._execute_run`` 选 provider 并自动写一份 ``auto_ImageUnderstand_*``
+    的 subagent 会话日志（``is_subagent=True``，落 ``session_logs/subagents/``）。
+
+    会话窗口规则下 ``_resolve_native_image_model`` 已确认该 task_level 模型支持图片，
+    因此 create_agent 内部的 ``_prepare_user_message`` 会保留 ImageUrl 而**不会**反过来
+    递归调用本函数。
+
+    Args:
+        parent_session_id: 调用方（如主对话 GsCoreAIAgent）的 session_id；非空且仍在
+            内存注册表时，把本次图片理解的 subagent 日志 link 到调用方 session 的
+            linked_agents，便于 webconsole 下钻（"附到调用方 session"策略）。
     """
     from gsuid_core.ai_core.utils import _normalize_image_url
+    from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-    agent = Agent(
-        model=model,
+    agent = create_agent(
         system_prompt="你是一个图片理解助手，只输出对图片内容的客观描述，不要输出多余的解释或寒暄。",
-        model_settings={"max_tokens": 1024},
-        tools=[],
-        toolsets=[],
-        retries=1,
-        output_type=str,
+        max_tokens=1024,
+        max_iterations=1,
+        create_by="ImageUnderstand",
+        task_level=task_level,
+        is_subagent=True,
     )
-    result = await agent.run(
-        [prompt, ImageUrl(url=_normalize_image_url(image_url))],
-        message_history=[],
-    )
-    return str(result.output).strip()
+    try:
+        result = await agent.run(
+            [prompt, ImageUrl(url=_normalize_image_url(image_url))],
+            return_mode="return",
+        )
+        return str(result).strip()
+    finally:
+        # "附到调用方 session"：拿得到父 session 就把本次图片理解日志 link 过去，
+        # 否则它仍以独立 auto_ImageUnderstand_* subagent 日志存在（webconsole 列表可见）。
+        if parent_session_id:
+            parent = get_ai_session_registry().get_ai_session(parent_session_id)
+            if parent is not None:
+                parent._session_logger.link_agent(
+                    agent_session_id=agent.session_id,
+                    agent_session_uuid=agent._session_logger.session_uuid,
+                    agent_type="sub_agent",
+                    create_by="ImageUnderstand",
+                    log_file=str(agent._session_logger._file_path),
+                )
+        agent._session_logger.close()
 
 
 async def _prepare_image_for_mcp(image_url: str) -> str:
@@ -135,6 +168,7 @@ async def understand_image(
     image_url: str,
     prompt: str | None = None,
     task_level: Literal["high", "low"] = "high",
+    parent_session_id: Optional[str] = None,
 ) -> str:
     """
     统一的图片理解接口
@@ -148,6 +182,9 @@ async def understand_image(
         image_url: 图片来源，支持 HTTP/HTTPS URL、base64 DataURI 或文件路径
         prompt: 对图片的提问或分析要求，默认为通用描述
         task_level: 用于判断 model_support 并选择原生多模态模型的任务级别
+        parent_session_id: 调用方 session_id（如主对话 GsCoreAIAgent.session_id）；
+            原生多模态路径会把图片理解的 subagent 日志 link 到该 session（见
+            ``_understand_image_native``）。
 
     Returns:
         图片内容的文本描述
@@ -167,7 +204,12 @@ async def understand_image(
     native_model = _resolve_native_image_model(task_level)
     if native_model is not None:
         logger.debug("🖼️ [ImageUnderstand] 当前模型原生支持图片，使用大模型多模态能力转述")
-        return await _understand_image_native(native_model, image_url, prompt)
+        return await _understand_image_native(
+            image_url,
+            prompt,
+            task_level=task_level,
+            parent_session_id=parent_session_id,
+        )
 
     provider = _get_provider()
 

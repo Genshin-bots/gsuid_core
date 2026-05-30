@@ -10,6 +10,7 @@ from gsuid_core.utils.database.models import (
     CoreUser,
     CoreGroup,
 )
+from gsuid_core.ai_core.session_logger import clean_old_session_logs
 from gsuid_core.utils.backup.backup_core import (
     remove_old_backups,
     copy_and_rebase_paths,
@@ -62,6 +63,9 @@ async def database_backup():
 
     await backup_file(DB_PATH, DB_BACKUP)
     clean_log()
+    # AI 会话日志也遵循 ScheduledCleanLogDay 清理（与框架日志同一配置；0 = 不清理）
+    ai_clean_days = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 8
+    clean_old_session_logs(ai_clean_days)
     logger.success("♻️ [早柚核心] 数据库已备份!")
 
 

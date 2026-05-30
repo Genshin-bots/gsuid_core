@@ -209,8 +209,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
                     "session_id": "ws-onebot:onebot:bot_001:group:123456",
                     "session_uuid": "abc12345",
                     "persona_name": "默认助手",
-                    "create_by": "Chat",
-                    "system_prompt": "你是一个智能助手..."
+                    "create_by": "Chat"
                 }
             },
             {
@@ -221,7 +220,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
             {
                 "type": "run_start",
                 "timestamp": 1715305802.0,
-                "data": { "user_message": "【用户发言】\n你好" }
+                "data": {}
             },
             {
                 "type": "user_input",
@@ -374,12 +373,13 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 
 | type | 说明 | data 内容 |
 |------|------|-----------|
-| `session_created` | 会话创建 | session_id, session_uuid, persona_name, create_by, system_prompt |
+| `session_created` | 会话创建 | session_id, session_uuid, persona_name, create_by |
+| `session_resumed` | 会话窗口续写 | session_id, session_uuid, persona_name, create_by, resumed_from_entries |
 | `session_ended` | 会话结束 | ended_at |
-| `system_prompt` | 系统提示词 | content |
-| `run_start` | 单次 run 开始 | user_message |
-| `run_end` | 单次 run 结束 | output |
-| `user_input` | 用户输入 | content |
+| `system_prompt` | 系统提示词（唯一记录处） | content |
+| `run_start` | 单次 run 开始（纯标记） | （空，用户输入见 user_input） |
+| `run_end` | 单次 run 结束（纯标记） | （空，最终输出见 result） |
+| `user_input` | 用户输入（唯一记录处） | content |
 | `thinking` | 模型思考过程 | content |
 | `tool_call` | 工具调用请求 | tool_name, args, tool_call_id |
 | `tool_return` | 工具执行返回 | tool_name, content, tool_call_id |

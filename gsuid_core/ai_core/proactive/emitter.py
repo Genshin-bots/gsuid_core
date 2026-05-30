@@ -79,8 +79,9 @@ async def _sync_to_main_session(
        proactive_emission entry + link_agent，并立即持久化（避免巡检间隔内
        session 被空闲清理导致 entry 丢失）。
     2. **磁盘回退**：主 session 不在注册表（已被空闲清理 / 用户从未与 AI 说过话）
-       → 调 ``AISessionLogger.persist_proactive_emission_to_disk`` 直接向磁盘日志
-       文件追加 entry。若找不到日志文件则创建最小化日志，保证主动消息不丢失。
+       → 调 ``AISessionLogger.log_standalone_proactive`` 用临时 logger 走统一的
+       会话窗口续写 + _build_data 写盘，格式与活跃 session 一致；窗口内续写既有
+       文件，超时 / 从未对话过则新建，保证主动消息不丢失。
     """
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
     from gsuid_core.ai_core.session_logger import AISessionLogger
@@ -93,8 +94,10 @@ async def _sync_to_main_session(
     session: Optional[GsCoreAIAgent] = registry.get_ai_session(session_id)
 
     if session is None:
-        # 主 session 不在内存——走磁盘回退路径
-        AISessionLogger.persist_proactive_emission_to_disk(
+        # 主 session 不在内存——走磁盘回退路径。log_standalone_proactive 用一个
+        # 临时 logger 复用统一的窗口续写 + _build_data 写盘，格式与活跃 session 一致
+        # （取代了旧的手工拼文件的 persist_proactive_emission_to_disk）。
+        AISessionLogger.log_standalone_proactive(
             session_id=session_id,
             source=source,
             content=message,
@@ -107,16 +110,16 @@ async def _sync_to_main_session(
     # 用日志文件的 stem 作为可读的 agent_session_id——它包含原始 session_id +
     # session_uuid + 时间戳，唯一且可回溯。session_uuid 字段在 link_agent 里只
     # 做透传存档，留空即可（webconsole 主要通过 log_file 字段做跳转）。
-    if session._session_logger is not None:
-        for log_file in generator_log_files:
-            session._session_logger.link_agent(
-                agent_session_id=Path(log_file).stem,
-                agent_session_uuid="",
-                agent_type="proactive_generator",
-                persona_name=session.persona_name,
-                create_by=f"Proactive_{source}",
-                log_file=log_file,
-            )
+    # logger 恒在（GsCoreAIAgent 不再有 Optional logger），直接使用。
+    for log_file in generator_log_files:
+        session._session_logger.link_agent(
+            agent_session_id=Path(log_file).stem,
+            agent_session_uuid="",
+            agent_type="proactive_generator",
+            persona_name=session.persona_name,
+            create_by=f"Proactive_{source}",
+            log_file=log_file,
+        )
     # 追加 assistant-only turn + 写 proactive_emission entry
     session.append_proactive_assistant_turn(
         content=message,
@@ -127,8 +130,7 @@ async def _sync_to_main_session(
     # 立即持久化：主动消息写入后立刻落盘，避免 session 被空闲清理时
     # 内存中的 proactive_emission entry 丢失（巡检间隔 30 分钟远大于
     # IDLE_THRESHOLD 30 分钟，entry 很可能在下次持久化前就被清理掉）。
-    if session._session_logger is not None:
-        session._session_logger._persist_sync()
+    session._session_logger._persist_sync()
 
 
 async def emit_proactive_message(

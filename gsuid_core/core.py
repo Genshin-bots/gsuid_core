@@ -155,6 +155,11 @@ async def main():
                             continue
                         except WebSocketDisconnect:
                             break
+                        except (ConnectionResetError, ConnectionAbortedError):
+                            # Windows ProactorEventLoop: 客户端异常断开时抛出
+                            # [WinError 995] 由于线程退出或应用程序请求，已中止 I/O 操作
+                            logger.debug(f"[GsCore] WebSocket 连接被重置: {bot_id}")
+                            break
                 except CancelledError:
                     pass
                 finally:
@@ -266,4 +271,12 @@ async def main():
 
 # 仅主进程启动服务(spawn 子进程重 import 本模块时跳过)
 if multiprocessing.current_process().name == "MainProcess":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (ConnectionResetError, ConnectionAbortedError):
+        # Windows ProactorEventLoop: 客户端异常断开时可能逃逸到顶层
+        pass
+    except asyncio.InvalidStateError:
+        # Windows ProactorEventLoop 已知问题: 连接重置时 set_exception
+        # 可能被调用在已终态的 Future 上，导致 InvalidStateError 逃逸
+        pass

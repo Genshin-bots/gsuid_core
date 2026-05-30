@@ -16,9 +16,9 @@
 3. **完全异步**：所有可能阻塞的方法必须 `async def`；同步 CPU 工作用 `@to_thread`（见 `gsuid_core/pool.py`）。
 4. **数据库**：本目录的所有表都继承 `BaseIDModel / BaseBotIDModel / BaseModel`，所有类方法用 `@with_session`；表名 = 类名全小写无下划线，**禁止** `__tablename__`。详见 `docs/LLM.md` §3。
 5. **主动消息（Heartbeat / ScheduledTask / Kanban / 工具主动 send）必须走 `ai_core.proactive.emit_proactive_message`**——不要直接 `bot.send` + 手动 `message_history.add_message` + 手动 `dispatcher.register_send`。详见 §"`proactive/`" 与 `plans/proactive_message_session_unification_20260529.md`。
-6. **SubAgent 日志**：用 `create_agent(..., session_id="xxx", is_subagent=True)` 启用。SubAgent 日志落 `data/ai_core/session_logs/subagents/`，与主 session 物理隔离。**用完务必 `agent._session_logger.close()`**，否则定时巡检 / Kanban 会堆一堆挂着的轮询任务。
+6. **会话日志统一在 `AISessionLogger`**（详见 `docs/AI_SESSION_LOGGING.md`）：**所有 `GsCoreAIAgent` 恒有 `_session_logger`**（非 Optional）——不传 `session_id` 的来源（评估 / meme / 记忆 / 图片理解等后台调用）会在 `__init__` 自动派生 `auto_<create_by>_<rand>` 的一次性 subagent id。SubAgent 日志落 `data/ai_core/session_logs/subagents/`，与主 session 物理隔离。**显式 SubAgent 用完仍建议 `agent._session_logger.close()`** 及时落盘（subagent 不跑后台轮询，靠 close/__del__ 落盘）。**相同 session_id 在 1 小时窗口内续写同一文件，超时滚动新文件**（`SESSION_WINDOW_SECONDS`）。
 7. **不要把任务 prompt 当 user_message 喂给主用户 session**（污染 `self.history` 与 `session_logger`，让用户回放历史时看到自己"发"过没发的话）。如果你要让人格执行某项后台任务，请派 SubAgent + emit_proactive_message。
-8. **session_logger 落盘是异步轮询的**（`PERSIST_INTERVAL=600s` 兜底 / `IDLE_PERSIST_THRESHOLD=60s`），事件循环不在时只能靠最终 `close()` 兜底——所以即使是一次性 SubAgent 也必须显式 `close()`。
+8. **session_logger 落盘**：**仅主 session** 启动异步轮询（`PERSIST_INTERVAL=600s` 兜底 / `IDLE_PERSIST_THRESHOLD=60s`）；**subagent（含 auto_*）不轮询**，跑完即 `close()` 或由 `__del__` 兜底落盘——所以一次性 SubAgent 仍应显式 `close()` 以便及时可见。entry 类型受 `SESSION_ENTRY_TYPES` 白名单约束，新增类型必须先登记（否则记 warning）。会话日志按 `ScheduledCleanLogDay` 每日清理 X 天外文件（**0=不清理**，与框架日志同配置，见 `docs/AI_SESSION_LOGGING.md` §6.1）。
 9. **`message_history` 由 `_Bot.target_send` 内部写入**（`bot.py:291`）。如果你额外手动 `history_manager.add_message`，同一条消息会被重复落库。
 10. **`fewer permission prompts`**：本目录代码经常被前端 / webconsole API 读取（`ai_session_logs_api.py`、`history_api.py`），改动 entry / metadata schema 时是**追加字段**，**不要破坏**老字段（前端 dist 已编译了对旧字段的依赖）。
 
@@ -32,7 +32,7 @@
 | `handle_ai.py` | 用户消息入口（被消息触发器调用）。负责会话匹配、前置规则过滤、`format_history_for_agent` 构造 history_context、调用 `GsCoreAIAgent.run`。 |
 | `ai_router.py` | `get_ai_session` / `get_ai_session_by_id`：根据 Event 找到或创建主用户绑定的 `GsCoreAIAgent`，并触发 Persona 热重载、主人好感度初始化。 |
 | `session_registry.py` | `{session_id → GsCoreAIAgent}` 注册表 + 空闲 session 清理 / logger flush / shutdown。 |
-| `session_logger.py` | **`AISessionLogger`**：每个 Agent 实例的日志记录器。entry 类型涵盖 `system_prompt / user_input / tool_call / tool_return / text_output / thinking / proactive_emission` 等；支持 `link_agent` 串联 SubAgent；落 `data/ai_core/session_logs/`。**修改 entry / linked_agents 结构会影响 webconsole 前端**。 |
+| `session_logger.py` | **`AISessionLogger`** —— ai_core **唯一**的会话日志序列化器（所有来源同一条写盘路径）。entry 类型由 `SESSION_ENTRY_TYPES` 白名单固定（`system_prompt / user_input / tool_call / tool_return / text_output / thinking / proactive_emission` 等）；`link_agent` 串联 SubAgent；会话窗口 `SESSION_WINDOW_SECONDS=3600`（相同 session_id 续写 / 超时滚动）；`log_standalone_proactive` 处理主动消息磁盘回退。落 `data/ai_core/session_logs[/subagents]/`。**完整契约见 `docs/AI_SESSION_LOGGING.md`；修改 entry / linked_agents 结构会影响 webconsole 前端**。 |
 | `models.py` | `ToolContext`（包含 `bot / ev / extra / parent_session_id`）、`ToolBase`、`KnowledgeBase` 等 TypedDict。 |
 | `register.py` | `@ai_tools` 装饰器，把工具按 category（`self / buildin / 插件名`）登记到全局工具表。 |
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
@@ -66,7 +66,7 @@
 
 1. **C8 防撞车**——复用 `heartbeat/dispatcher.py` 的 `UnifiedProactiveDispatcher.should_suppress_heartbeat`。`source="heartbeat"` 默认开启抑制；其它来源（`task / kanban / tool`）默认 `False`，避免关键播报被刚发完的 Heartbeat 误杀。
 2. **bot.send**——通过 `send_chat_result(bot, message, extra_metadata={"proactive": True, "proactive_source": source, "trigger_reason": ...})`。`message_history` 由 `_Bot.target_send` 内部写入一次。**禁止**调用方再手动 `history_manager.add_message`，否则同一条消息会落库两次。
-3. **主 session 同步**——通过 `session_registry.get_ai_session(event.session_id)` 找到用户绑定的 `GsCoreAIAgent`，调 `append_proactive_assistant_turn(...)` 把消息塞进 `self.history`，并在 `AISessionLogger` 写 `proactive_emission` entry；`generator_log_files` 会通过 `link_agent("proactive_generator", ..., log_file=...)` 挂到 `linked_agents` 上，webconsole 可点跳子 agent 日志。
+3. **主 session 同步**——通过 `session_registry.get_ai_session(event.session_id)` 找到用户绑定的 `GsCoreAIAgent`，调 `append_proactive_assistant_turn(...)` 把消息塞进 `self.history`，并在 `AISessionLogger` 写 `proactive_emission` entry；`generator_log_files` 会通过 `link_agent("proactive_generator", ..., log_file=...)` 挂到 `linked_agents` 上，webconsole 可点跳子 agent 日志。**主 session 不在内存时**（已被空闲清理 / 用户从未对话）走 `AISessionLogger.log_standalone_proactive` —— 用临时 logger 复用统一的会话窗口续写 + `_build_data` 写盘，格式与活跃 session 完全一致（详见 `docs/AI_SESSION_LOGGING.md`）。
 4. **C8 网关登记**——`dispatcher.register_send(target_key, legacy_source, summary)`。
 
 ⚠️ 改造前，Heartbeat / ScheduledTask / Kanban 各自手写"bot.send + add_message + register_send"链路，造成：
