@@ -76,17 +76,19 @@ async def draw_title():
         core_font(40),
         "lm",
     )
-    tag_w, tag_h = 111, 47
+    version_text = f"v{__version__}"
+    version_font = core_font(32)
+    tag_w, tag_h = max(111, get_font_x(version_font, version_text) + 20), 47
     title_draw.rounded_rectangle(
         (340 + x, 121, 340 + x + tag_w, 121 + tag_h),
         12,
         HINT_COLOR,
     )
     title_draw.text(
-        (340 + x + 55, 145),
-        f"v{__version__}",
+        (340 + x + tag_w // 2, 145),
+        version_text,
         "White",
-        core_font(32),
+        version_font,
         "mm",
     )
     title_draw.text(
