@@ -186,7 +186,16 @@ async def init_ai_core():
         for name, step in _INIT_STEPS:
             step_start = time.time()
             try:
-                await step()
+                logger.info(f"🧠 [AI Core] 开始初始化 {name}...")
+                step_task = asyncio.create_task(step())
+                while not step_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(step_task), timeout=60.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"🧠 [AI Core] {name} 初始化仍在执行中，已耗时: {time.time() - step_start:.2f}秒"
+                        )
+                await step_task
                 logger.info(f"🧠 [AI Core] {name} 初始化完成, 耗时: {time.time() - step_start:.2f}秒")
             except Exception as e:
                 init_failed = True

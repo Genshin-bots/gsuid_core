@@ -4,6 +4,8 @@
 插件作者可以注册图片路径及其描述，系统通过语义搜索匹配图片。
 """
 
+import time
+import asyncio
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from pathlib import Path
 
@@ -249,7 +251,15 @@ async def sync_images():
 
     logger.info(f"🧠 [ImageRAG] 插件注册图片数量: {len(image_entities)}")
 
-    for image in image_entities:
+    last_scan_progress_log = time.monotonic()
+    for index, image in enumerate(image_entities, start=1):
+        if index % 200 == 0:
+            await asyncio.sleep(0)
+        now = time.monotonic()
+        if now - last_scan_progress_log >= 30.0 or index == len(image_entities):
+            logger.info(f"🧠 [ImageRAG] 扫描插件图片进度: {index}/{len(image_entities)}")
+            last_scan_progress_log = now
+
         # 获取并验证 id
         raw_id = image.get("id")
         if not isinstance(raw_id, str) or not raw_id:
@@ -304,9 +314,19 @@ async def sync_images():
             f"🧠 [ImageRAG] 需要新增/更新 {len(pending_items)} 个图片，开始批量嵌入(batch={embed_batch_size})..."
         )
 
+    last_embed_progress_log = time.monotonic()
     for start in range(0, len(pending_items), embed_batch_size):
         batch = pending_items[start : start + embed_batch_size]
+        batch_no = start // embed_batch_size + 1
+        total_batches = (len(pending_items) + embed_batch_size - 1) // embed_batch_size
         vectors = list(await embedding_model.aembed([item[2] for item in batch]))
+        now = time.monotonic()
+        if now - last_embed_progress_log >= 30.0 or start + len(batch) >= len(pending_items):
+            logger.info(
+                f"🧠 [ImageRAG] 批量嵌入进度: {start + len(batch)}/{len(pending_items)} "
+                f"(batch {batch_no}/{total_batches})"
+            )
+            last_embed_progress_log = now
         if len(vectors) != len(batch):
             logger.warning(
                 f"🧠 [ImageRAG] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过"

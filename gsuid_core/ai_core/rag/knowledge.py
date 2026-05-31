@@ -1,5 +1,6 @@
 """知识库RAG管理 - 同步与查询"""
 
+import time
 import asyncio
 from typing import Any, Dict, List, Optional
 
@@ -295,7 +296,15 @@ async def sync_knowledge():
     pending_items: list[tuple[str, dict, str, str, str]] = []
 
     logger.info(f"🧠 [Knowledge] 插件注册知识数量: {len(_ENTITIES)}")
-    for knowledge in _ENTITIES:
+    last_scan_progress_log = time.monotonic()
+    for index, knowledge in enumerate(_ENTITIES, start=1):
+        if index % 200 == 0:
+            await asyncio.sleep(0)
+        now = time.monotonic()
+        if now - last_scan_progress_log >= 30.0 or index == len(_ENTITIES):
+            logger.info(f"🧠 [Knowledge] 扫描插件知识进度: {index}/{len(_ENTITIES)}")
+            last_scan_progress_log = now
+
         id_str = knowledge["id"]
         local_ids.add(id_str)
 
@@ -324,10 +333,20 @@ async def sync_knowledge():
     if pending_items:
         logger.info(f"🧠 [Knowledge] 需要新增/更新 {len(pending_items)} 条，开始批量嵌入(batch={embed_batch_size})...")
 
+    last_embed_progress_log = time.monotonic()
     for start in range(0, len(pending_items), embed_batch_size):
         batch = pending_items[start : start + embed_batch_size]
+        batch_no = start // embed_batch_size + 1
+        total_batches = (len(pending_items) + embed_batch_size - 1) // embed_batch_size
         texts = [item[2] for item in batch]
         vectors = list(await embedding_model.aembed(texts))
+        now = time.monotonic()
+        if now - last_embed_progress_log >= 30.0 or start + len(batch) >= len(pending_items):
+            logger.info(
+                f"🧠 [Knowledge] 批量嵌入进度: {start + len(batch)}/{len(pending_items)} "
+                f"(batch {batch_no}/{total_batches})"
+            )
+            last_embed_progress_log = now
         if len(vectors) != len(batch):
             logger.warning(
                 f"🧠 [Knowledge] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过"
