@@ -14,52 +14,166 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
     FieldCondition,
-    VectorParamsDiff,
 )
 from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ImageEntity
 from gsuid_core.ai_core.rag.base import (
-    DIMENSION,
     IMAGE_COLLECTION_NAME,
     get_point_id,
     calculate_hash,
+    get_strict_dimension,
+    get_rag_embed_batch_size,
+    get_rag_upsert_batch_size,
 )
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.rag.collection_migration import (
+    load_payload_backup,
+    save_payload_backup,
+    scroll_all_payloads,
+    ensure_vector_on_disk,
+    remove_payload_backup,
+    count_collection_points,
+    force_recreate_collection,
+    find_latest_payload_backup,
+    collection_vector_mismatched,
+)
 
 if TYPE_CHECKING:
     pass
 
 
 async def init_image_collection():
-    """初始化图片向量集合"""
+    """初始化图片向量集合，并在嵌入维度变化时自动重嵌入旧 payload。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return
 
-    if not await client.collection_exists(IMAGE_COLLECTION_NAME):
-        logger.info(f"🧠 [ImageRAG] 创建新集合: {IMAGE_COLLECTION_NAME}")
-        await client.create_collection(
+    dimension = get_strict_dimension()
+    payload_backup: list[tuple[Any, dict[str, Any]]] = []
+    backup_path = None
+    latest_backup_path = find_latest_payload_backup(IMAGE_COLLECTION_NAME)
+    collection_exists = await client.collection_exists(IMAGE_COLLECTION_NAME)
+    need_recreate = not collection_exists
+
+    if collection_exists:
+        if await collection_vector_mismatched(IMAGE_COLLECTION_NAME, dimension):
+            payload_backup = await scroll_all_payloads(IMAGE_COLLECTION_NAME)
+            backup_path = await save_payload_backup(IMAGE_COLLECTION_NAME, payload_backup)
+            logger.warning(
+                f"🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 维度变化，"
+                f"导出 {len(payload_backup)} 条 payload 后强制重建并重嵌入"
+            )
+            need_recreate = True
+        elif latest_backup_path is not None:
+            backup_payloads = load_payload_backup(latest_backup_path, IMAGE_COLLECTION_NAME)
+            point_count = await count_collection_points(IMAGE_COLLECTION_NAME)
+            if backup_payloads and point_count < len(backup_payloads):
+                payload_backup = backup_payloads
+                backup_path = latest_backup_path
+                need_recreate = True
+                logger.warning(
+                    f"🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 疑似上次迁移未完成"
+                    f"(points={point_count}, backup={len(backup_payloads)})，将强制重建并继续恢复"
+                )
+            else:
+                await ensure_vector_on_disk(IMAGE_COLLECTION_NAME)
+                return
+        else:
+            await ensure_vector_on_disk(IMAGE_COLLECTION_NAME)
+            return
+    elif latest_backup_path is not None:
+        payload_backup = load_payload_backup(latest_backup_path, IMAGE_COLLECTION_NAME)
+        backup_path = latest_backup_path
+        if payload_backup:
+            logger.warning(
+                f"🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 不存在但发现未完成迁移备份，"
+                f"将重建 Collection 并恢复 {len(payload_backup)} 条 payload"
+            )
+
+    if need_recreate:
+        logger.info(f"🧠 [ImageRAG] 强制重建集合: {IMAGE_COLLECTION_NAME}, 维度: {dimension}")
+        await force_recreate_collection(
             collection_name=IMAGE_COLLECTION_NAME,
-            vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE, on_disk=True),
+            vectors_config=VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True),
             on_disk_payload=True,
         )
-    else:
-        # 已存在的 collection：尝试迁移向量到磁盘存储
+
+    if payload_backup:
         try:
-            col_info = await client.get_collection(collection_name=IMAGE_COLLECTION_NAME)
-            vectors_config = col_info.config.params.vectors
-            if isinstance(vectors_config, VectorParams) and not vectors_config.on_disk:
-                logger.info(f"🧠 [ImageRAG] 迁移集合 {IMAGE_COLLECTION_NAME} 向量到磁盘存储...")
-                await client.update_collection(
-                    collection_name=IMAGE_COLLECTION_NAME,
-                    vectors_config={"": VectorParamsDiff(on_disk=True)},
-                )
-                logger.info(f"🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 迁移完成")
+            await _reindex_image_payloads(payload_backup)
         except Exception as e:
-            logger.warning(f"🧠 [ImageRAG] 检查/迁移集合 on_disk 配置失败: {e}")
+            logger.error(
+                f"🧠 [ImageRAG] 维度迁移重嵌入失败，迁移备份已保留，下次启动将自动继续恢复: {backup_path}, {e}"
+            )
+            raise
+        remove_payload_backup(backup_path, IMAGE_COLLECTION_NAME)
+
+
+async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
+    """基于旧 payload 重新生成图片检索向量。"""
+    from gsuid_core.ai_core.rag.base import client, embedding_model
+
+    if client is None or embedding_model is None:
+        return
+
+    prepared: list[tuple[Any, dict[str, Any], str]] = []
+    skipped = 0
+    for point_id, payload in payload_backup:
+        try:
+            raw_id = payload.get("id") or str(point_id)
+            entity = ImageEntity(
+                id=str(raw_id),
+                plugin=str(payload.get("plugin", "manual")),
+                path=str(payload.get("path", "")),
+                tags=[str(t) for t in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else [],
+                content=str(payload.get("content", "")),
+                source=str(payload.get("source", "manual")),
+                _hash=str(payload.get("_hash", "")),
+            )
+            text_to_embed = build_image_text(entity)
+            if not text_to_embed.strip():
+                skipped += 1
+                continue
+            prepared.append((point_id, dict(payload), text_to_embed))
+        except Exception as e:
+            skipped += 1
+            logger.warning(f"🧠 [ImageRAG] 准备旧 payload 重嵌入失败，已跳过: {e}")
+
+    points_to_upsert: list[PointStruct] = []
+    batch_size = get_rag_embed_batch_size()
+    for start in range(0, len(prepared), batch_size):
+        batch = prepared[start : start + batch_size]
+        try:
+            vectors = list(await embedding_model.aembed([item[2] for item in batch]))
+            for (point_id, payload, _), vector in zip(batch, vectors):
+                points_to_upsert.append(PointStruct(id=point_id, vector=list(vector), payload=payload))
+        except Exception as e:
+            skipped += len(batch)
+            logger.warning(f"🧠 [ImageRAG] 批量重嵌入旧 payload 失败，已跳过 {len(batch)} 条: {e}")
+
+    if points_to_upsert:
+        try:
+            await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=points_to_upsert)
+        except Exception as e:
+            from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
+
+            if not is_vector_structure_error(str(e)):
+                raise
+            logger.warning(f"🧠 [ImageRAG] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}")
+            await force_recreate_collection(
+                collection_name=IMAGE_COLLECTION_NAME,
+                vectors_config=VectorParams(size=get_strict_dimension(), distance=Distance.COSINE, on_disk=True),
+                on_disk_payload=True,
+            )
+            from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+            if refreshed_client is None:
+                raise RuntimeError("Qdrant client 重建后不可用")
+            await refreshed_client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=points_to_upsert)
+    logger.info(f"🧠 [ImageRAG] 维度迁移重嵌入完成: {len(points_to_upsert)} 条，跳过 {skipped} 条")
 
 
 def build_image_text(entity: ImageEntity) -> str:
@@ -125,8 +239,9 @@ async def sync_images():
         if next_page_offset is None:
             break
 
-    # 2. 准备新数据 - 从 _ENTITIES 中筛选出图片类型
+    # 2. 准备新数据 - 从 _ENTITIES 中筛选出图片类型；先收集文本，再统一批量 embedding。
     points_to_upsert = []
+    pending_items: list[tuple[str, dict, str, str, list[str], bool]] = []
     local_ids: set[str] = set()
 
     # 筛选图片实体（通过检查是否有 path 字段来判断）
@@ -165,10 +280,7 @@ async def sync_images():
                 is_modified = existing_hash != current_hash
 
         if is_new or is_modified:
-            action_str = "新增" if is_new else "更新"
-            logger.info(f"🧠 [ImageRAG] [{plugin_name}] [{action_str}] 图片: {tags}")
-
-            # 构建 ImageEntity 并生成向量
+            # 构建 ImageEntity 并生成待嵌入文本
             image_entity = ImageEntity(
                 id=id_str,
                 plugin=plugin_name,
@@ -179,13 +291,30 @@ async def sync_images():
                 _hash=current_hash,
             )
             text_to_embed = build_image_text(image_entity)
-            vector = list(await embedding_model.aembed([text_to_embed]))[0]
 
             # 构建payload
             payload: dict = dict(image)
             payload["_hash"] = current_hash
             payload["source"] = "plugin"
+            pending_items.append((id_str, payload, text_to_embed, plugin_name, tags, is_new))
 
+    embed_batch_size = get_rag_embed_batch_size()
+    if pending_items:
+        logger.info(
+            f"🧠 [ImageRAG] 需要新增/更新 {len(pending_items)} 个图片，开始批量嵌入(batch={embed_batch_size})..."
+        )
+
+    for start in range(0, len(pending_items), embed_batch_size):
+        batch = pending_items[start : start + embed_batch_size]
+        vectors = list(await embedding_model.aembed([item[2] for item in batch]))
+        if len(vectors) != len(batch):
+            logger.warning(
+                f"🧠 [ImageRAG] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过"
+            )
+            continue
+        for (id_str, payload, _, plugin_name, tags, is_new), vector in zip(batch, vectors):
+            action_str = "新增" if is_new else "更新"
+            logger.info(f"🧠 [ImageRAG] [{plugin_name}] [{action_str}] 图片: {tags}")
             points_to_upsert.append(
                 PointStruct(
                     id=get_point_id(id_str),
@@ -196,8 +325,13 @@ async def sync_images():
 
     # 3. 执行更新
     if points_to_upsert:
-        logger.info(f"🧠 [ImageRAG] 写入 {len(points_to_upsert)} 个图片...")
-        await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=points_to_upsert)
+        upsert_batch_size = get_rag_upsert_batch_size()
+        logger.info(f"🧠 [ImageRAG] 写入 {len(points_to_upsert)} 个图片(batch={upsert_batch_size})...")
+        for start in range(0, len(points_to_upsert), upsert_batch_size):
+            await client.upsert(
+                collection_name=IMAGE_COLLECTION_NAME,
+                points=points_to_upsert[start : start + upsert_batch_size],
+            )
 
     # 4. 清理已删除的图片
     if local_ids:
@@ -234,7 +368,11 @@ async def search_images(
         return []
 
     # 生成查询向量
-    query_vector = list(await embedding_model.aembed([query]))[0]
+    _vectors = list(await embedding_model.aembed([query]))
+    if not _vectors:
+        logger.warning("🧠 [ImageRAG] 嵌入模型返回空结果，无法搜索图片")
+        return []
+    query_vector = _vectors[0]
 
     # 构建过滤条件
     search_filter = None

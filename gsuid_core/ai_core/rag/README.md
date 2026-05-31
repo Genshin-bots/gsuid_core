@@ -49,7 +49,7 @@ rag/
 ### base.py
 
 **常量：**
-- `DIMENSION` - 向量维度（512）
+- `DEFAULT_DIMENSION` - 默认向量维度（512，仅在嵌入提供方维度未知时回退使用）
 - `EMBEDDING_MODEL_NAME` - Embedding模型名称
 - `MODELS_CACHE` - 模型缓存目录
 - `DB_PATH` - Qdrant本地数据库路径
@@ -61,6 +61,7 @@ rag/
 
 **函数：**
 - `init_embedding_model()` - 初始化Embedding模型和Qdrant客户端
+- `get_dimension()` - 动态获取当前嵌入向量维度（随启用的嵌入提供方/模型变化）
 - `get_point_id(id_str)` - 生成唯一UUID
 - `calculate_hash(content)` - 计算内容MD5哈希
 

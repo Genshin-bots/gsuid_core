@@ -24,7 +24,8 @@ from gsuid_core.ai_core.rag.embedding import (
 from gsuid_core.ai_core.configs.ai_config import ai_config, rerank_model_config, local_embedding_config
 
 # ============== 向量库配置 ==============
-DIMENSION: Final[int] = 512
+# 默认向量维度（本地 bge-small-zh-v1.5 模型为 512），仅在嵌入提供方维度未知时回退使用
+DEFAULT_DIMENSION: Final[int] = 512
 
 # Embedding模型相关
 EMBEDDING_MODEL_NAME: Final[str] = local_embedding_config.get_config("embedding_model_name").data
@@ -39,6 +40,14 @@ RERANKER_MODEL_NAME: Final[str] = rerank_model_config.get_config("rerank_model_n
 TOOLS_COLLECTION_NAME: Final[str] = "bot_tools"
 KNOWLEDGE_COLLECTION_NAME: Final[str] = "knowledge"
 IMAGE_COLLECTION_NAME: Final[str] = "image"
+
+# ============== RAG批量参数 ==============
+# 远程 embedding / Qdrant upsert 使用较大批量减少网络和写入开销；
+# 本地 fastembed 单次大批量会长时间占用 ONNX Runtime，启动同步期间容易造成明显等待。
+RAG_BATCH_SIZE: Final[int] = 300
+RAG_LOCAL_EMBED_BATCH_SIZE: Final[int] = 1
+RAG_REMOTE_EMBED_BATCH_SIZE: Final[int] = RAG_BATCH_SIZE
+RAG_UPSERT_BATCH_SIZE: Final[int] = RAG_BATCH_SIZE
 
 
 # ============== 模型HF仓库映射 ==============
@@ -69,6 +78,75 @@ def is_enable_rerank() -> bool:
 def _get_hf_endpoint() -> str:
     """获取HuggingFace服务器地址"""
     return ai_config.get_config("hf_endpoint").data
+
+
+def get_rag_embed_batch_size() -> int:
+    """按当前 embedding provider 返回 RAG 同步嵌入批大小。
+
+    本地模型默认单条提交，避免一次大批量推理长时间占用 CPU；远程模型使用大批量减少 HTTP 往返。
+    """
+    provider_name = ai_config.get_config("embedding_provider").data
+    if provider_name == "local":
+        return RAG_LOCAL_EMBED_BATCH_SIZE
+    return RAG_REMOTE_EMBED_BATCH_SIZE
+
+
+def get_rag_upsert_batch_size() -> int:
+    """返回 Qdrant upsert 批大小。"""
+    return RAG_UPSERT_BATCH_SIZE
+
+
+def get_dimension() -> int:
+    """动态获取当前嵌入向量的维度。
+
+    仅用于非严格兼容场景；Collection 创建/迁移必须使用 get_strict_dimension()，
+    避免未知维度时以 DEFAULT_DIMENSION 创建出错误维度的 Qdrant Collection。
+    """
+    if embedding_provider is not None:
+        dim = embedding_provider.dimension
+        if dim > 0:
+            return dim
+        logger.warning(
+            f"🧠 [Embedding] 当前嵌入提供方维度未知(0)，回退到默认维度 {DEFAULT_DIMENSION}，"
+            "如使用非标准维度的模型请在嵌入模型配置中手动指定 dimension"
+        )
+    return DEFAULT_DIMENSION
+
+
+def get_strict_dimension() -> int:
+    """严格获取当前嵌入维度；未知时直接报错，禁止创建错误维度 Collection。"""
+    if embedding_provider is None:
+        raise RuntimeError("EmbeddingProvider 未初始化，无法确定向量维度")
+
+    dim = embedding_provider.dimension
+    if dim <= 0:
+        raise RuntimeError(
+            "当前嵌入模型维度未知，已阻止创建/迁移 Qdrant Collection。"
+            "请检查嵌入模型 API 是否可用，或在 OpenAI 嵌入模型配置中显式设置 dimension。"
+        )
+    return dim
+
+
+async def ensure_embedding_dimension() -> int:
+    """确保启动阶段已解析出真实嵌入维度。
+
+    OpenAI 兼容的非标准模型在配置 dimension=0 时可能只有首次 API 响应后才知道维度。
+    因此在任何 Collection 创建前主动发起一次最小 embedding 预热。
+    """
+    if embedding_provider is None:
+        raise RuntimeError("EmbeddingProvider 未初始化，无法预热向量维度")
+
+    if embedding_provider.dimension > 0:
+        return embedding_provider.dimension
+
+    logger.info("🧠 [Embedding] 嵌入维度未知，启动阶段执行一次最小向量预热...")
+    await embedding_provider.embed_single("维度探测")
+    dim = embedding_provider.dimension
+    if dim <= 0:
+        raise RuntimeError("嵌入模型 API 调用后仍无法推断向量维度，请在 OpenAI 嵌入模型配置中显式设置 dimension。")
+
+    logger.info(f"🧠 [Embedding] 启动阶段已解析嵌入维度: {dim}")
+    return dim
 
 
 def _format_size(size_bytes: int) -> str:
@@ -270,8 +348,9 @@ async def pre_download_models():
         )
         logger.info("🧠 [RAG] Sparse模型预下载完成")
 
-        # 下载Reranker模型（如果启用了rerank）
-        if is_enable_rerank():
+        # 下载Reranker模型（仅本地 rerank 模式需要预下载）
+        rerank_provider = ai_config.get_config("rerank_provider").data
+        if is_enable_rerank() and rerank_provider == "local":
             logger.info(f"🧠 [RAG] 预下载Reranker模型: {RERANKER_HF_REPO}")
             snapshot_download(
                 repo_id=RERANKER_HF_REPO,
@@ -330,6 +409,11 @@ client: "Union[AsyncQdrantClient, None]" = None
 # 全局 Sparse Embedding 模型（懒加载，线程安全）
 _sparse_model = None
 _sparse_model_lock = threading.Lock()
+# Embedding/Qdrant 初始化锁：init_embedding_model 会经 asyncio.to_thread 在多个线程并发触发
+# （RAG init_all、sync_knowledge 懒加载、init_memory_system）。check-then-act 若无锁，
+# 两个线程会同时构造 AsyncQdrantClient，触发本地 Qdrant 文件锁冲突：
+# "Storage folder ... is already accessed by another instance of Qdrant client"。
+_client_init_lock = threading.Lock()
 
 
 def _get_sparse_model():
@@ -362,15 +446,22 @@ def init_embedding_model():
     if not is_enable_ai():
         return
 
-    # 防止重复初始化，导致Qdrant文件锁冲突
+    # 快速路径：已初始化直接返回，避免无谓加锁
     if client is not None:
         return
 
-    # 通过统一的嵌入提供方抽象层初始化
-    provider = get_embedding_provider()
-    embedding_provider = provider
-    embedding_model = _EmbeddingModelWrapper(provider)
-    client = AsyncQdrantClient(path=str(DB_PATH))
+    # 加锁 + 双重检查：本函数可能经 asyncio.to_thread 在多个线程并发触发，
+    # 没有锁时 check-then-act 会让两个线程同时构造 AsyncQdrantClient，导致本地
+    # Qdrant 文件锁冲突。锁内只做一次真正的初始化，保证全局只有一个 client 实例。
+    with _client_init_lock:
+        if client is not None:
+            return
+
+        # 通过统一的嵌入提供方抽象层初始化
+        provider = get_embedding_provider()
+        embedding_provider = provider
+        embedding_model = _EmbeddingModelWrapper(provider)
+        client = AsyncQdrantClient(path=str(DB_PATH))
 
 
 def get_point_id(id_str: str) -> str:

@@ -16,6 +16,7 @@
 
 import time
 import asyncio
+from typing import Optional
 
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
@@ -85,6 +86,41 @@ async def _init_mcp_server():
     await init_mcp_server()
 
 
+_AI_CORE_READY = False
+_AI_CORE_INITIALIZING = False
+_AI_CORE_READY_EVENT: Optional[asyncio.Event] = None
+
+
+def _get_ready_event() -> asyncio.Event:
+    global _AI_CORE_READY_EVENT
+    if _AI_CORE_READY_EVENT is None:
+        _AI_CORE_READY_EVENT = asyncio.Event()
+    return _AI_CORE_READY_EVENT
+
+
+def is_ai_core_ready() -> bool:
+    """AI 核心是否已完成启动初始化。"""
+    return _AI_CORE_READY
+
+
+def is_ai_core_initializing() -> bool:
+    """AI 核心是否仍在启动初始化/迁移中。"""
+    return _AI_CORE_INITIALIZING
+
+
+async def wait_ai_core_ready(timeout: float = 300.0) -> bool:
+    """等待 AI 核心启动初始化完成，避免迁移期间处理聊天触发旧向量查询。"""
+    if _AI_CORE_READY:
+        return True
+    if not _AI_CORE_INITIALIZING:
+        return False
+    try:
+        await asyncio.wait_for(_get_ready_event().wait(), timeout=timeout)
+        return _AI_CORE_READY
+    except asyncio.TimeoutError:
+        return False
+
+
 # 各 AI 子系统初始化步骤，按依赖顺序排列：
 # RAG 先初始化 Embedding 模型，Memory / Meme 依赖其结果；
 # MCP Server 依赖 MCP 工具先完成注册。
@@ -104,13 +140,30 @@ _INIT_STEPS = [
 @on_core_start
 async def init_ai_core():
     """AI 核心统一初始化（后台执行，不阻塞 WS 启动）。"""
+    global _AI_CORE_READY, _AI_CORE_INITIALIZING
+
+    # 防止 on_core_start 多次触发导致并发初始化：两条流水线会让 RAG / Memory 同时
+    # 初始化同一个本地 Qdrant 并并发写入集合，触发文件锁冲突
+    # "Storage folder ... is already accessed by another instance of Qdrant client"。
+    # 下面的状态判断与 _AI_CORE_INITIALIZING 置位之间不存在 await，asyncio 协作式调度下
+    # 是原子的；后到的协程会在首个 await 让出后看到标记并直接退出，从而保证整条初始化串行。
+    if _AI_CORE_READY or _AI_CORE_INITIALIZING:
+        logger.debug("🧠 [AI Core] 初始化已在进行或已完成，跳过本次重复触发")
+        return
+
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     enable_ai = ai_config.get_config("enable").data
     if not enable_ai:
+        _AI_CORE_READY = True
+        _AI_CORE_INITIALIZING = False
+        _get_ready_event().set()
         logger.info("🧠 [AI Core] AI总开关已关闭，跳过 AI 重依赖导入与子系统初始化")
         return
 
+    _AI_CORE_READY = False
+    _AI_CORE_INITIALIZING = True
+    _get_ready_event().clear()
     start = time.time()
     logger.info("🧠 [AI Core] 开始后台初始化 AI 核心...")
 
@@ -121,20 +174,34 @@ async def init_ai_core():
         await asyncio.to_thread(_import_ai_heavy_deps)
     except Exception as e:
         logger.exception(f"🧠 [AI Core] AI 重依赖导入失败, 初始化中止: {e}")
+        _AI_CORE_INITIALIZING = False
+        _get_ready_event().set()
         return
 
     logger.debug(f"🧠 [AI Core] AI 重依赖导入完成, 耗时: {time.time() - import_start:.2f}秒")
 
-    # 按依赖顺序依次初始化各子系统，单个失败不影响后续步骤
-    for name, step in _INIT_STEPS:
-        step_start = time.time()
-        try:
-            await step()
-            logger.info(f"🧠 [AI Core] {name} 初始化完成, 耗时: {time.time() - step_start:.2f}秒")
-        except Exception as e:
-            logger.exception(f"🧠 [AI Core] {name} 初始化失败: {e}")
+    # 按依赖顺序依次初始化各子系统，单个失败不影响后续步骤；但 AI Core 只有全部步骤成功才标记 ready。
+    init_failed = False
+    try:
+        for name, step in _INIT_STEPS:
+            step_start = time.time()
+            try:
+                await step()
+                logger.info(f"🧠 [AI Core] {name} 初始化完成, 耗时: {time.time() - step_start:.2f}秒")
+            except Exception as e:
+                init_failed = True
+                logger.exception(f"🧠 [AI Core] {name} 初始化失败: {e}")
 
-    logger.success(f"🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {time.time() - start:.2f}秒")
+        if init_failed:
+            logger.warning(
+                f"🧠 [AI Core] AI 核心初始化存在失败步骤，总耗时: {time.time() - start:.2f}秒，暂不接收 AI 会话"
+            )
+        else:
+            logger.success(f"🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {time.time() - start:.2f}秒")
+    finally:
+        _AI_CORE_READY = not init_failed
+        _AI_CORE_INITIALIZING = False
+        _get_ready_event().set()
 
 
 @on_core_shutdown

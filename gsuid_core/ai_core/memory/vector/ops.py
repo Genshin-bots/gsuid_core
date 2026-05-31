@@ -21,7 +21,7 @@ from qdrant_client.models import (
 )
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.base import _get_sparse_model
+from gsuid_core.ai_core.rag.base import _get_sparse_model, get_rag_embed_batch_size
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
@@ -89,12 +89,20 @@ async def _embed_async(text: str) -> list[float]:
 
 
 async def _embed_batch_async(texts: list[str]) -> list[list[float]]:
-    """异步批量嵌入（直接使用 provider 的异步接口）"""
+    """异步批量嵌入，小批次调用 provider 以降低远程 API 500 概率。"""
     from gsuid_core.ai_core.rag.base import embedding_provider
 
     if embedding_provider is None:
         raise RuntimeError("embedding_provider 未初始化，请检查 rag/base.py 的 init_embedding_model()")
-    return await embedding_provider.embed(texts)
+    if not texts:
+        return []
+
+    vectors: list[list[float]] = []
+    batch_size = get_rag_embed_batch_size()
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        vectors.extend(await embedding_provider.embed(batch))
+    return vectors
 
 
 def _sparse_embed(text: str) -> Optional[SparseVector]:
@@ -180,11 +188,15 @@ async def _sparse_embed_batch_async(texts: list[str]) -> list[Optional[SparseVec
     return await loop.run_in_executor(_EMBED_BATCH_EXECUTOR, _sparse_embed_batch, texts)
 
 
-def _scope_filter(scope_keys: str | list[str]) -> Filter:
+def _scope_filter(scope_keys: str | list[str]) -> Optional[Filter]:
     """构造 scope_key 过滤器，支持单值或多值（OR）"""
 
     if isinstance(scope_keys, str):
+        if not scope_keys:
+            return None
         return Filter(must=[FieldCondition(key="scope_key", match=MatchValue(value=scope_keys))])
+    if not scope_keys:
+        return None
     return Filter(must=[FieldCondition(key="scope_key", match=MatchAny(any=scope_keys))])
 
 
@@ -223,6 +235,44 @@ async def upsert_episode_vector(
             )
         except Exception as e:
             logger.error(f"🧠 [Qdrant] Episode 写入失败: {e}")
+
+
+async def upsert_episode_vectors_batch(episodes_data: list[dict]):
+    """批量写入 Episode 向量到 Qdrant。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not episodes_data:
+        return
+
+    texts = [str(d["content"]) for d in episodes_data]
+    dense_vectors = await _embed_batch_async(texts)
+    sparse_vectors = await _sparse_embed_batch_async(texts)
+
+    points = []
+    for i, d in enumerate(episodes_data):
+        sv = sparse_vectors[i]
+        points.append(
+            PointStruct(
+                id=d["episode_id"],
+                vector={"dense": dense_vectors[i]} if sv is None else {"dense": dense_vectors[i], "sparse": sv},
+                payload={
+                    "content": d["content"],
+                    "scope_key": d["scope_key"],
+                    "valid_at_ts": d["valid_at_ts"],
+                    "speaker_ids": d.get("speaker_ids", []),
+                },
+            )
+        )
+
+    async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
+        try:
+            await client.upsert(
+                collection_name=MEMORY_EPISODES_COLLECTION,
+                points=points,
+            )
+        except Exception as e:
+            logger.error(f"🧠 [Qdrant] 批量写入 Episode 失败: {e}")
+            raise
 
 
 async def upsert_entity_vector(
@@ -325,40 +375,43 @@ async def upsert_edge_vector(
 
 
 async def upsert_entity_vectors_batch(entities_data: list[dict]):
-    """批量写入 Entity 向量到 Qdrant
+    """批量写入 Entity 向量到 Qdrant。
 
-    采用"批量 Embedding + 单次加锁写入"模式，
-    利用 fastembed 原生批量接口一次处理所有文本，性能提升 10-40x。
-
-    Args:
-        entities_data: 每个元素包含 entity_id, name, summary, scope_key, is_speaker, user_id, tag
+    Entity Collection 使用 named vectors：name_dense + summary_dense + sparse。
+    批量写入必须与单条 upsert_entity_vector 保持完全一致的向量结构。
     """
     from gsuid_core.ai_core.rag.base import client
 
     if client is None or not entities_data:
         return
 
-    # 1. 锁外：批量计算所有 embedding（利用 fastembed 批量接口 + 线程池）
-    texts = []
+    names: list[str] = []
+    summaries: list[str] = []
+    sparse_texts: list[str] = []
     for d in entities_data:
-        name = d["name"]
-        summary = d.get("summary", "") or ""
-        texts.append(f"{name}: {summary}" if summary else name)
+        name = str(d["name"])
+        summary = str(d.get("summary", "") or "")
+        names.append(name)
+        summaries.append(summary if summary else name)
+        sparse_texts.append(f"{name}: {summary}" if summary else name)
 
-    # 批量 Dense Embedding：一次 embed 调用处理所有文本
-    dense_vectors = await _embed_batch_async(texts)
+    name_vectors = await _embed_batch_async(names)
+    summary_vectors = await _embed_batch_async(summaries)
+    sparse_vectors = await _sparse_embed_batch_async(sparse_texts)
 
-    # BUG-08 修复：使用批量 Sparse Embedding 接口，提升大量文本时的效率
-    sparse_vectors = await _sparse_embed_batch_async(texts)
-
-    # 2. 组装 PointStruct
     points = []
     for i, d in enumerate(entities_data):
         sv = sparse_vectors[i]
+        vector_data: dict[str, list[float] | SparseVector] = {
+            "name_dense": name_vectors[i],
+            "summary_dense": summary_vectors[i],
+        }
+        if sv is not None:
+            vector_data["sparse"] = sv  # type: ignore
         points.append(
             PointStruct(
                 id=d["entity_id"],
-                vector={"dense": dense_vectors[i]} if sv is None else {"dense": dense_vectors[i], "sparse": sv},
+                vector=vector_data,  # type: ignore
                 payload={
                     "name": d["name"],
                     "summary": d.get("summary", "") or "",
@@ -379,6 +432,7 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
             )
         except Exception as e:
             logger.error(f"🧠 [Qdrant] 批量写入 Entity 失败: {e}")
+            raise
 
 
 async def upsert_edge_vectors_batch(edges_data: list[dict]):
@@ -433,6 +487,7 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
             )
         except Exception as e:
             logger.error(f"🧠 [Qdrant] 批量写入 Edge 失败: {e}")
+            raise
 
 
 async def _hybrid_search_episodes(
@@ -470,7 +525,9 @@ async def _hybrid_search_entities(
     top_k: int = 20,
 ) -> list["Entity"]:
     """搜索 Entity"""
-    results = await _hybrid_search_impl(MEMORY_ENTITIES_COLLECTION, query, scope_keys, top_k)
+    results = await _hybrid_search_impl(
+        MEMORY_ENTITIES_COLLECTION, query, scope_keys, top_k, dense_vector_name="summary_dense"
+    )
     entities: list["Entity"] = []
     for r in results:
         tag = r["tag"] if "tag" in r else []
@@ -550,11 +607,16 @@ async def _hybrid_search_impl(
     scope_keys: list[str],
     top_k: int = 10,
     score_threshold: float = 0.3,
+    dense_vector_name: str = "dense",
 ) -> list[dict]:
     """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
+        return []
+
+    # 空 scope 表示没有可检索范围，直接返回空，避免无过滤条件跨所有 scope 检索。
+    if not scope_keys:
         return []
 
     query_dense = await _embed_async(query)
@@ -568,7 +630,7 @@ async def _hybrid_search_impl(
             response = await client.query_points(
                 collection_name=collection_name,
                 query=query_dense,
-                using="dense",
+                using=dense_vector_name,
                 query_filter=scope_filter,
                 limit=top_k,
                 with_payload=True,
@@ -583,7 +645,7 @@ async def _hybrid_search_impl(
             prefetch=[
                 Prefetch(
                     query=query_dense,
-                    using="dense",
+                    using=dense_vector_name,
                     filter=scope_filter,
                     limit=top_k * 2,
                 ),
@@ -606,7 +668,16 @@ async def _hybrid_search_impl(
         logger.critical(f"🧠 [Qdrant] 索引崩溃: {e}。建议删除本地存储目录并重启。")
         return []
     except Exception as e:
-        logger.error(f"🧠 [Qdrant] Hybrid 检索异常: {e}")
+        from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
+
+        message = str(e)
+        if is_vector_structure_error(message):
+            logger.warning(
+                f"🧠 [Qdrant] Hybrid 检索检测到集合 {collection_name} 向量结构/维度异常，"
+                f"本次降级为空结果，等待启动迁移完成后恢复: {e}"
+            )
+        else:
+            logger.error(f"🧠 [Qdrant] Hybrid 检索异常: {e}")
         return []
 
 

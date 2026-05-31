@@ -1,14 +1,20 @@
+import re
 from typing import Set, Optional
 
 from gsuid_core.utils.plugins_config.models import (
     GSC,
+    GsDivider,
     GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
+    GsDateConfig,
     GsListConfig,
     GsTimeConfig,
+    GsColorConfig,
+    GsFloatConfig,
     GsTimeRConfig,
     GsListStrConfig,
+    GsTimeRangeConfig,
 )
 
 _BOOL_ON = {"开", "开启", "true", "on", "1", "是"}
@@ -36,6 +42,8 @@ def _split(raw: str):
 
 def parse_val(item: GSC, raw: str):
     """把用户输入解析成与配置项匹配的值, 失败返回 None"""
+    if isinstance(item, GsDivider):
+        return None
     if isinstance(item, GsBoolConfig):
         if raw.lower() in _BOOL_ON:
             return True
@@ -45,6 +53,16 @@ def parse_val(item: GSC, raw: str):
         try:
             v = int(raw)
             if item.options and v not in item.options:
+                return None
+            if item.max_value is not None and v > item.max_value:
+                return None
+            return v
+        except ValueError:
+            pass
+    elif isinstance(item, GsFloatConfig):
+        try:
+            v = float(raw)
+            if item.min_value is not None and v < item.min_value:
                 return None
             if item.max_value is not None and v > item.max_value:
                 return None
@@ -78,11 +96,38 @@ def parse_val(item: GSC, raw: str):
                 return [h, m]
         except (ValueError, IndexError):
             pass
+    elif isinstance(item, GsTimeRangeConfig):
+        # 格式: HH:MM-HH:MM, 例如 08:00-20:00
+        try:
+            parts = raw.replace(" ", "").split("-")
+            if len(parts) != 2:
+                return None
+            s_h, s_m = int(parts[0].split(":")[0]), int(parts[0].split(":")[1])
+            e_h, e_m = int(parts[1].split(":")[0]), int(parts[1].split(":")[1])
+            if all(0 <= v <= 23 for v in (s_h, e_h)) and all(0 <= v <= 59 for v in (s_m, e_m)):
+                return [[s_h, s_m], [e_h, e_m]]
+        except (ValueError, IndexError):
+            pass
+    elif isinstance(item, GsDateConfig):
+        # 格式: YYYY-MM-DD
+        import datetime
+
+        try:
+            datetime.date.fromisoformat(raw)
+            return raw
+        except ValueError:
+            pass
+    elif isinstance(item, GsColorConfig):
+        # 格式: #RRGGBB 或 #RRGGBBAA
+        if re.match(r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", raw):
+            return raw
     return None
 
 
 def _parse_hint(item: GSC) -> str:
     """根据配置项类型生成输入格式提示"""
+    if isinstance(item, GsDivider):
+        return "分割线类型, 不可设置值"
     if isinstance(item, GsBoolConfig):
         return "请输入: 开启 / 关闭"
     if isinstance(item, GsIntConfig):
@@ -91,6 +136,13 @@ def _parse_hint(item: GSC) -> str:
             parts.append(f"最大 {item.max_value}")
         if item.options:
             parts.append(f"可选: {', '.join(str(o) for o in item.options)}")
+        return ", ".join(parts)
+    if isinstance(item, GsFloatConfig):
+        parts = ["请输入浮点数"]
+        if item.min_value is not None:
+            parts.append(f"最小 {item.min_value}")
+        if item.max_value is not None:
+            parts.append(f"最大 {item.max_value}")
         return ", ".join(parts)
     if isinstance(item, GsStrConfig):
         if item.options:
@@ -105,6 +157,12 @@ def _parse_hint(item: GSC) -> str:
         return "请输入逗号分隔的整数"
     if isinstance(item, GsTimeRConfig):
         return "请输入时间格式 HH:MM, 例如 01:05"
+    if isinstance(item, GsTimeRangeConfig):
+        return "请输入时间范围 HH:MM-HH:MM, 例如 08:00-20:00"
+    if isinstance(item, GsDateConfig):
+        return "请输入日期格式 YYYY-MM-DD, 例如 2025-01-01"
+    if isinstance(item, GsColorConfig):
+        return "请输入颜色值, 例如 #FFFFFF 或 #FFFFFFFF"
     return "请检查输入格式"
 
 

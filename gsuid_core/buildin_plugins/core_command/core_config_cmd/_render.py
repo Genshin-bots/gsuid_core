@@ -3,15 +3,22 @@ from typing import List
 from gsuid_core.sv import SL
 from gsuid_core.utils.plugins_config.models import (
     GSC,
+    GsDivider,
     GsBoolConfig,
+    GsDateConfig,
     GsDictConfig,
+    GsColorConfig,
+    GsFloatConfig,
     GsImageConfig,
     GsTimeRConfig,
+    GsTimeRangeConfig,
+    GsFileUploadConfig,
+    GsFilesUploadConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 _SENSITIVE_KEYS = {"token", "key", "secret", "password", "密钥", "口令", "apikey", "api_key"}
-_SKIP_TYPES = (GsDictConfig, GsImageConfig)
+_SKIP_TYPES = (GsDictConfig, GsImageConfig, GsFileUploadConfig, GsFilesUploadConfig, GsDivider)
 
 
 def is_skip_type(item) -> bool:
@@ -24,12 +31,23 @@ def _join(lst) -> str:
 
 def fmt_val(item: GSC, key: str = "") -> str:
     """格式化配置项的值, 敏感字段脱敏"""
+    if isinstance(item, GsDivider):
+        return item.data if item.data is not None else ""
     if getattr(item, "secret", False):
         return "<已隐藏>"
     if isinstance(item, GsBoolConfig):
         return "开启" if item.data else "关闭"
     if isinstance(item, GsTimeRConfig):
         return f"{item.data[0]:02d}:{item.data[1]:02d}"
+    if isinstance(item, GsTimeRangeConfig):
+        s, e = item.data
+        return f"{s[0]:02d}:{s[1]:02d} - {e[0]:02d}:{e[1]:02d}"
+    if isinstance(item, GsDateConfig):
+        return str(item.data)
+    if isinstance(item, GsColorConfig):
+        return item.data
+    if isinstance(item, GsFloatConfig):
+        return str(item.data)
     val = str(item.data)
     if key and val and any(s in key.lower() for s in _SENSITIVE_KEYS):
         return val[:2] + "****" + val[-2:] if len(val) > 4 else "****"
@@ -40,14 +58,33 @@ def render_config_list(names: List[str]) -> str:
     return "可配置插件列表:\n" + "\n".join(f"  · {n}" for n in names)
 
 
+def _skip_tag(item) -> str:
+    """为跳过类型生成标签"""
+    if isinstance(item, GsDictConfig):
+        return "Dict"
+    if isinstance(item, GsImageConfig):
+        return "Image"
+    if isinstance(item, GsFileUploadConfig):
+        return "FileUpload"
+    if isinstance(item, GsFilesUploadConfig):
+        return "FilesUpload"
+    if isinstance(item, GsDivider):
+        return "Divider"
+    return "Skip"
+
+
 def render_config_items(plugin_name: str, configs: dict) -> str:
     lines = [f"[{plugin_name}] 配置项:"]
     for cfg_name, cfg in configs.items():
         lines.append(f"\n  ── {cfg_name} ──")
         for key, item in cfg.config.items():
             if isinstance(item, _SKIP_TYPES):
-                tag = "Dict" if isinstance(item, GsDictConfig) else "Image"
-                lines.append(f"  {key}  [{tag}]  {item.title}  (请使用WebConsole修改)")
+                tag = _skip_tag(item)
+                if isinstance(item, GsDivider):
+                    subtitle = f": {item.data}" if item.data else ""
+                    lines.append(f"  ── {item.title}{subtitle} ──")
+                else:
+                    lines.append(f"  {key}  [{tag}]  {item.title}  (请使用WebConsole修改)")
             else:
                 tag = type(item).__name__.replace("Gs", "").replace("Config", "")
                 lines.append(f"  {key}  [{tag}]  {item.title}  = {fmt_val(item, key)}")

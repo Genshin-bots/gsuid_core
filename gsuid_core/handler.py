@@ -552,8 +552,16 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             if not should_respond:
                 return
 
+            from gsuid_core.ai_core.startup import is_ai_core_ready, is_ai_core_initializing
             from gsuid_core.ai_core.handle_ai import handle_ai_chat
             from gsuid_core.ai_core.statistics import statistics_manager
+
+            if not is_ai_core_ready():
+                if is_ai_core_initializing():
+                    logger.info("🧠 [GsCore][AI] AI Core 正在初始化/迁移，暂不将本次消息加入 AI 会话队列")
+                else:
+                    logger.warning("🧠 [GsCore][AI] AI Core 初始化未完成或存在失败步骤，跳过本次 AI 会话")
+                return
 
             # 记录触发方式统计
             trigger_type = "mention"

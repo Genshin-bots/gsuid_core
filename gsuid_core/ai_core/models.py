@@ -96,6 +96,53 @@ class ToolDef(TypedDict):
     function: FunctionDef
 
 
+# ─────────────────────────────────────────────
+# AI 会话日志序列化结构
+#
+# 这三个 TypedDict 是 ``AISessionLogger`` 落盘格式的唯一类型来源
+# （对应 session_logger.py 的 ``_add_entry`` / ``link_agent`` / ``_build_data``）。
+# webconsole 的日志 API 读取磁盘 JSON 与内存 logger 时复用它们，
+# 使全部字段可追踪到实时类型，无需 getattr / dict.get 兜底。
+# ─────────────────────────────────────────────
+
+
+class SessionLogEntry(TypedDict):
+    """单条会话日志条目（``AISessionLogger._add_entry`` 落盘结构）"""
+
+    type: str  # 取值受 SESSION_ENTRY_TYPES 白名单约束
+    timestamp: float
+    data: Dict[str, Any]  # 各 entry 类型特定的 payload
+
+
+class LinkedAgentRecord(TypedDict):
+    """关联 Agent 记录（``AISessionLogger.link_agent`` 落盘结构）"""
+
+    agent_type: str  # sub_agent / peer_agent / parent_agent / proactive_generator
+    session_id: str
+    session_uuid: str
+    persona_name: Optional[str]
+    create_by: Optional[str]
+    log_file: Optional[str]
+    linked_at: float
+
+
+class SessionLogFileData(TypedDict):
+    """AI 会话日志文件的磁盘 JSON 结构（``AISessionLogger._build_data`` 唯一来源）"""
+
+    session_id: str
+    session_uuid: str
+    persona_name: Optional[str]
+    create_by: str
+    is_subagent: bool
+    created_at: float
+    updated_at: float
+    ended_at: Optional[float]
+    entry_count: int
+    entries: List[SessionLogEntry]
+    linked_agents: List[LinkedAgentRecord]
+    linked_agent_count: int
+
+
 class ToolBase:
     """RAG工具类型 - 包含工具对象和元数据"""
 

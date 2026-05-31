@@ -54,12 +54,19 @@ import json
 import time
 import uuid
 import asyncio
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypedDict
 from pathlib import Path
 from datetime import datetime
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.models import (
+        SessionLogEntry,
+        LinkedAgentRecord,
+        SessionLogFileData,
+    )
 
 # 主动消息来源枚举，供 webconsole 与前端复用
 ProactiveSource = Literal["heartbeat", "scheduled_task", "kanban", "tool"]
@@ -159,10 +166,8 @@ class AISessionLogger:
         self._persist_task: Optional[asyncio.Task] = None
         self._closed: bool = False
 
-        # 关联 Agent 列表（持久化 + 活跃状态）
-        # 每个元素: {"agent_type": str, "session_id": str, "session_uuid": str,
-        #           "persona_name": str|None, "create_by": str, "linked_at": float}
-        self.linked_agents: List[Dict[str, Any]] = []
+        # 关联 Agent 列表（持久化 + 活跃状态），元素结构见 LinkedAgentRecord
+        self.linked_agents: List[LinkedAgentRecord] = []
 
         # ── 磁盘日志回放 / 会话窗口续写（非 subagent） ──
         # 当主 session 被 AISessionRegistry 空闲清理后，主动消息（Heartbeat /
@@ -172,7 +177,7 @@ class AISessionLogger:
         # session_uuid），破坏"同一 session 所有日志在同一文件"的语义。因此对非
         # subagent logger，初始化时按会话窗口（SESSION_WINDOW_SECONDS）检查磁盘上
         # 是否已有同 session_id 且未超时的日志文件，有则回放续写；超时则滚动新文件。
-        resumed: Optional[Dict[str, Any]] = None
+        resumed: Optional[SessionLogFileData] = None
         resumed_path: Optional[Path] = None
         if not is_subagent:
             resumed, resumed_path = self._find_existing_log_on_disk(session_id)
@@ -183,7 +188,7 @@ class AISessionLogger:
         self.updated_at: float = 0.0
         self._last_persisted_updated_at: float = 0.0
         self._last_persisted_at: float = 0.0
-        self.entries: List[Dict[str, Any]] = []
+        self.entries: List[SessionLogEntry] = []
         self._file_path: Path = Path("")
 
         if resumed is not None and resumed_path is not None:
@@ -237,7 +242,7 @@ class AISessionLogger:
         self._start_persist_loop()
 
     @staticmethod
-    def _find_existing_log_on_disk(session_id: str) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
+    def _find_existing_log_on_disk(session_id: str) -> tuple[Optional["SessionLogFileData"], Optional[Path]]:
         """在 AI_SESSION_LOGS_PATH 中查找该 session_id **当前会话窗口内**最新的日志文件。
 
         会话窗口规则（见模块 docstring）：只有 updated_at 距今 ≤ SESSION_WINDOW_SECONDS
@@ -253,7 +258,7 @@ class AISessionLogger:
 
         best_path: Optional[Path] = None
         best_updated_at: float = 0.0
-        best_data: Optional[Dict[str, Any]] = None
+        best_data: Optional[SessionLogFileData] = None
 
         if AI_SESSION_LOGS_PATH.exists():
             for p in AI_SESSION_LOGS_PATH.iterdir():
@@ -491,7 +496,7 @@ class AISessionLogger:
         if self._closed:
             return
 
-        link_record = {
+        link_record: LinkedAgentRecord = {
             "agent_type": agent_type,
             "session_id": agent_session_id,
             "session_uuid": agent_session_uuid,
@@ -501,7 +506,7 @@ class AISessionLogger:
             "linked_at": time.time(),
         }
         self.linked_agents.append(link_record)
-        self._add_entry("agent_linked", link_record)
+        self._add_entry("agent_linked", dict(link_record))
         self.updated_at = time.time()
         logger.debug(
             f"📝 [AISessionLogger] 关联 Agent: {agent_type} session_id={agent_session_id}, uuid={agent_session_uuid}"
@@ -517,7 +522,7 @@ class AISessionLogger:
         """
         return self.updated_at > self._last_persisted_updated_at
 
-    def get_linked_agents(self, agent_type: Optional[LinkedAgentType] = None) -> List[Dict[str, Any]]:
+    def get_linked_agents(self, agent_type: Optional[LinkedAgentType] = None) -> List["LinkedAgentRecord"]:
         """
         获取关联的 Agent 列表
 
@@ -578,7 +583,7 @@ class AISessionLogger:
         if self.updated_at <= self._last_persisted_updated_at:
             return
 
-        data: Dict[str, Any] = self._build_data()
+        data = self._build_data()
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(self._file_path, "w", encoding="utf-8") as f:
@@ -589,7 +594,7 @@ class AISessionLogger:
 
         logger.debug(f"📝 [AISessionLogger] 持久化日志: {self._file_path.name} ({len(self.entries)} 条)")
 
-    def _build_data(self) -> Dict[str, Any]:
+    def _build_data(self) -> "SessionLogFileData":
         """构建完整的日志数据结构"""
         return {
             "session_id": self.session_id,

@@ -369,35 +369,100 @@ MEME_COLLECTION_NAME = "ai_meme"
 
 
 async def _ensure_meme_collection() -> None:
-    """确保 ai_meme Collection 存在"""
-    from gsuid_core.ai_core.rag.base import DIMENSION, client
+    """确保 ai_meme Collection 存在，并在嵌入维度变化时基于数据库记录重建索引。"""
+    from gsuid_core.ai_core.rag.base import client, get_strict_dimension
+    from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection, collection_vector_mismatched
 
     if client is None:
         return
 
+    dimension = get_strict_dimension()
     existing = {c.name for c in (await client.get_collections()).collections}
-    if MEME_COLLECTION_NAME not in existing:
+    should_reindex = False
+
+    if MEME_COLLECTION_NAME in existing:
+        if await collection_vector_mismatched(MEME_COLLECTION_NAME, dimension):
+            logger.warning(f"[Meme] Collection {MEME_COLLECTION_NAME} 维度变化，强制重建后基于数据库记录重建索引")
+            should_reindex = True
+        else:
+            if await _meme_collection_needs_recovery():
+                logger.warning(
+                    f"[Meme] Collection {MEME_COLLECTION_NAME} 疑似上次迁移/同步未完成，强制重建后从数据库恢复索引"
+                )
+                should_reindex = True
+            else:
+                return
+
+    if MEME_COLLECTION_NAME not in existing or should_reindex:
         from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
 
-        await client.create_collection(
+        await force_recreate_collection(
             collection_name=MEME_COLLECTION_NAME,
             vectors_config=VectorParams(
-                size=DIMENSION,
+                size=dimension,
                 distance=Distance.COSINE,
+                on_disk=True,
             ),
+            on_disk_payload=True,
         )
+        from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+        if refreshed_client is None:
+            raise RuntimeError("Qdrant client 重建后不可用")
         # 为 folder 建立 payload 索引
-        await client.create_payload_index(
+        await refreshed_client.create_payload_index(
             collection_name=MEME_COLLECTION_NAME,
             field_name="folder",
             field_schema=PayloadSchemaType.KEYWORD,
         )
-        await client.create_payload_index(
+        await refreshed_client.create_payload_index(
             collection_name=MEME_COLLECTION_NAME,
             field_name="status",
             field_schema=PayloadSchemaType.KEYWORD,
         )
-        logger.info(f"[Meme] 创建 Qdrant Collection: {MEME_COLLECTION_NAME}")
+        logger.info(f"[Meme] 创建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}")
+
+    if should_reindex:
+        await _reindex_meme_collection_from_db()
+
+
+async def _eligible_meme_records() -> list[AiMemeRecord]:
+    """返回可写入向量索引的表情包记录。"""
+    records = await AiMemeRecord.get_all_records_no_page()
+    return [record for record in records if record.status in {"tagged", "manual"}]
+
+
+async def _meme_collection_needs_recovery() -> bool:
+    """检测 Meme Collection 是否可能处于上次迁移/同步失败后的不完整状态。"""
+    from gsuid_core.ai_core.rag.collection_migration import count_collection_points
+
+    records = await _eligible_meme_records()
+    if not records:
+        return False
+    point_count = await count_collection_points(MEME_COLLECTION_NAME)
+    return point_count < len(records)
+
+
+async def _reindex_meme_collection_from_db() -> None:
+    """基于 AiMemeRecord 数据库记录重建表情包向量索引。"""
+    records = await _eligible_meme_records()
+    restored = 0
+    skipped = 0
+    for record in records:
+        content = f"{record.description} {' '.join(record.all_tags)}".strip()
+        if not content:
+            skipped += 1
+            continue
+        try:
+            await MemeLibrary.sync_to_qdrant(record)
+            restored += 1
+        except Exception as e:
+            skipped += 1
+            logger.warning(f"[Meme] 重建表情包向量索引失败，已跳过 {record.meme_id}: {e}")
+
+    logger.info(f"[Meme] 维度迁移重建索引完成: {restored} 条，跳过 {skipped} 条")
+    if records and restored == 0:
+        raise RuntimeError("Meme 维度迁移未恢复任何索引，保留重试状态并等待下次启动继续恢复")
 
 
 async def _embed_text(text: str) -> Optional[List[float]]:
@@ -407,6 +472,43 @@ async def _embed_text(text: str) -> Optional[List[float]]:
     if embedding_provider is None:
         return None
     return await embedding_provider.embed_single(text)
+
+
+async def _force_recreate_meme_collection() -> None:
+    """强制重建表情包 Collection，用于本地 Qdrant 旧维度 ndarray 残留自恢复。"""
+    from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
+
+    from gsuid_core.ai_core.rag.base import client, get_strict_dimension
+    from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection
+
+    if client is None:
+        return
+
+    dimension = get_strict_dimension()
+    await force_recreate_collection(
+        collection_name=MEME_COLLECTION_NAME,
+        vectors_config=VectorParams(
+            size=dimension,
+            distance=Distance.COSINE,
+            on_disk=True,
+        ),
+        on_disk_payload=True,
+    )
+    from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+    if refreshed_client is None:
+        raise RuntimeError("Qdrant client 重建后不可用")
+    await refreshed_client.create_payload_index(
+        collection_name=MEME_COLLECTION_NAME,
+        field_name="folder",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await refreshed_client.create_payload_index(
+        collection_name=MEME_COLLECTION_NAME,
+        field_name="status",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    logger.info(f"[Meme] 已强制重建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}")
 
 
 async def _upsert_to_qdrant(
@@ -433,23 +535,38 @@ async def _upsert_to_qdrant(
         return None
 
     point_id = str(uuid.uuid4())
-    await client.upsert(
-        collection_name=MEME_COLLECTION_NAME,
-        points=[
-            PointStruct(
-                id=point_id,
-                vector=vector,
-                payload={
-                    "meme_id": meme_id,
-                    "folder": folder,
-                    "persona_hint": persona_hint,
-                    "status": status,
-                    "use_count": use_count,
-                    "file_mime": file_mime,
-                },
-            )
-        ],
+    point = PointStruct(
+        id=point_id,
+        vector=vector,
+        payload={
+            "meme_id": meme_id,
+            "folder": folder,
+            "persona_hint": persona_hint,
+            "status": status,
+            "use_count": use_count,
+            "file_mime": file_mime,
+        },
     )
+    try:
+        await client.upsert(
+            collection_name=MEME_COLLECTION_NAME,
+            points=[point],
+        )
+    except Exception as e:
+        from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
+
+        if not is_vector_structure_error(str(e)):
+            raise
+        logger.warning(f"[Meme] Qdrant 写入检测到向量维度残留，强制重建 Collection 后重试: {e}")
+        await _force_recreate_meme_collection()
+        from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+        if refreshed_client is None:
+            raise RuntimeError("Qdrant client 重建后不可用")
+        await refreshed_client.upsert(
+            collection_name=MEME_COLLECTION_NAME,
+            points=[point],
+        )
     return point_id
 
 

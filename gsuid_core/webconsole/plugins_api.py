@@ -12,6 +12,18 @@ from fastapi import Body, Query, Depends, Request
 from gsuid_core.sv import SL
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.utils.plugins_config.models import (
+    GSC,
+    GsDivider,
+    GsIntConfig,
+    GsStrConfig,
+    GsColorConfig,
+    GsFloatConfig,
+    GsImageConfig,
+    GsListStrConfig,
+    GsFileUploadConfig,
+    GsFilesUploadConfig,
+)
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_plugin_commit, get_local_plugins_list
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
 from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
@@ -34,34 +46,66 @@ def _read_plugin_icon(plugin_name: str) -> Optional[str]:
     return icon_base64
 
 
-def _build_config_item(config) -> Dict:
+def _build_config_item(config: GSC) -> Dict:
     """构建单个配置项的响应数据"""
     config_type = type(config).__name__.replace("Config", "").lower()
 
-    value = config.data
-    # 对于GsImage类型，检查文件是否存在，如果不存在则返回空值
-    if config_type == "gsimage" and isinstance(value, str) and value:
-        image_path = Path(value)
+    # GsDivider 作为前端分割线，data 为可选标题
+    if isinstance(config, GsDivider):
+        divider: Dict[str, Any] = {
+            "type": config_type,
+            "title": config.title,
+            "desc": config.desc,
+        }
+        if config.data is not None:
+            divider["value"] = config.data
+            divider["default"] = config.data
+        return divider
+
+    # 对于 GsImageConfig，文件不存在时返回空值
+    value: Any = config.data
+    if isinstance(config, GsImageConfig) and config.data:
+        image_path = Path(config.data)
         if not image_path.exists() or not image_path.is_file():
             value = ""
 
-    item = {
+    item: Dict[str, Any] = {
         "value": value,
         "default": config.data,
         "type": config_type,
         "title": config.title,
         "desc": config.desc,
     }
-    options = getattr(config, "options", None)
-    if options:
-        item["options"] = options
 
-    # 针对 GsImageConfig 传递额外参数
-    if config_type == "gsimage":
-        for attr in ["upload_to", "filename", "suffix"]:
-            val = getattr(config, attr, None)
-            if val:
-                item[attr] = str(val) if isinstance(val, Path) else val
+    # secret: 标记敏感项（前端应渲染为密码框）；GsDivider / GsColorConfig 无该字段
+    if not isinstance(config, (GsDivider, GsColorConfig)) and config.secret:
+        item["secret"] = True
+
+    # options: 仅 GsStrConfig / GsListStrConfig / GsIntConfig 拥有
+    if isinstance(config, (GsStrConfig, GsListStrConfig, GsIntConfig)) and config.options:
+        item["options"] = config.options
+
+    # regex: 仅 GsStrConfig（仅用于前端正则校验）
+    if isinstance(config, GsStrConfig) and config.regex:
+        item["regex"] = config.regex
+
+    # 范围限制: GsIntConfig 仅 max_value, GsFloatConfig 含 min/max
+    if isinstance(config, (GsIntConfig, GsFloatConfig)) and config.max_value is not None:
+        item["max_value"] = config.max_value
+    if isinstance(config, GsFloatConfig) and config.min_value is not None:
+        item["min_value"] = config.min_value
+
+    # 文件上传类: 传递 upload_to / filename / suffix
+    if isinstance(config, (GsImageConfig, GsFileUploadConfig)):
+        if config.upload_to:
+            item["upload_to"] = str(config.upload_to) if isinstance(config.upload_to, Path) else config.upload_to
+        if config.filename:
+            item["filename"] = str(config.filename) if isinstance(config.filename, Path) else config.filename
+        if config.suffix:
+            item["suffix"] = config.suffix
+    elif isinstance(config, GsFilesUploadConfig):
+        if config.suffix:
+            item["suffix"] = config.suffix
 
     return item
 

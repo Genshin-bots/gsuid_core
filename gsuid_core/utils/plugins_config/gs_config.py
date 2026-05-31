@@ -1,5 +1,6 @@
 import sys
 import json
+import datetime
 from abc import ABC
 from typing import Any, Dict, List, Union
 from pathlib import Path
@@ -12,11 +13,16 @@ from gsuid_core.data_store import RES, CONFIGS_PATH
 
 from .models import (
     GSC,
+    GsDivider,
     GsStrConfig,
     GsBoolConfig,
+    GsDateConfig,
     GsDictConfig,
+    GsColorConfig,
+    GsFloatConfig,
     GsTimeRConfig,
     GsListStrConfig,
+    GsTimeRangeConfig,
 )
 from .sp_config import SP_CONIFG
 from .log_config import LOG_CONFIG
@@ -273,12 +279,20 @@ class StringConfig:
                     )
                     self.config[key] = _defalut
                 else:
-                    if isinstance(_defalut, GsStrConfig) or isinstance(_defalut, GsListStrConfig):
-                        self.config[key].options = _defalut.options  # type: ignore
+                    stored = self.config[key]
+                    if isinstance(_defalut, (GsStrConfig, GsListStrConfig)) and isinstance(
+                        stored, (GsStrConfig, GsListStrConfig)
+                    ):
+                        stored.options = _defalut.options
 
-                    self.config[key].title = _defalut.title
-                    self.config[key].desc = _defalut.desc
-                    self.config[key].secret = _defalut.secret
+                    stored.title = _defalut.title
+                    stored.desc = _defalut.desc
+                    # secret 字段并非所有配置类型都有 (GsDivider / GsColorConfig 无该字段),
+                    # 不能无条件访问, 否则 msgspec slots 会抛 AttributeError
+                    if not isinstance(stored, (GsDivider, GsColorConfig)) and not isinstance(
+                        _defalut, (GsDivider, GsColorConfig)
+                    ):
+                        stored.secret = _defalut.secret
 
         """
         # 对默认值没有的值，直接删除
@@ -318,16 +332,41 @@ class StringConfig:
 
     def set_config(self, key: str, value: Union[str, List, bool, Dict, int]) -> bool:
         if key in self.config_list:
-            temp = self.config[key].data
+            item = self.config[key]
+            temp = item.data
             if type(value) == type(temp):  # noqa: E721
                 # 设置值
                 self.config[key].data = value  # type: ignore
                 # 重新写回
                 self.write_config()
                 return True
-            elif isinstance(self.config[key], GsTimeRConfig) and isinstance(value, list):
+            elif isinstance(item, GsTimeRConfig) and isinstance(value, list):
                 # GsTimeRConfig 接受 list 类型并转换为 tuple
                 self.config[key].data = tuple(value)  # type: ignore
+                self.write_config()
+                return True
+            elif isinstance(item, GsTimeRangeConfig) and isinstance(value, (list, tuple)) and len(value) == 2:
+                # GsTimeRangeConfig 前端/命令传入嵌套 list, 落库需转换为嵌套 tuple
+                start, end = value
+                try:
+                    item.data = ((int(start[0]), int(start[1])), (int(end[0]), int(end[1])))
+                except (ValueError, TypeError, IndexError):
+                    logger.warning(f"[配置][{self.config_name}] 配置项 {key} 时间范围格式非法 '{value}', 停止写入...")
+                    return False
+                self.write_config()
+                return True
+            elif isinstance(item, GsFloatConfig) and isinstance(value, int) and not isinstance(value, bool):
+                # 前端可能以整数 JSON (如 10, 而非 10.0) 传入浮点配置, 归一化为 float
+                item.data = float(value)
+                self.write_config()
+                return True
+            elif isinstance(item, GsDateConfig) and isinstance(value, str):
+                # GsDateConfig 前端/命令传入 ISO 日期字符串, 落库需转换为 datetime.date
+                try:
+                    item.data = datetime.date.fromisoformat(value)
+                except ValueError:
+                    logger.warning(f"[配置][{self.config_name}] 配置项 {key} 日期格式非法 '{value}', 停止写入...")
+                    return False
                 self.write_config()
                 return True
             else:

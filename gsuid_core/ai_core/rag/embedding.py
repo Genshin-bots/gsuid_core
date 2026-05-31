@@ -121,14 +121,16 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         "text-embedding-ada-002": 1536,
     }
 
-    def __init__(self, base_url: str, api_key: str, model_name: str):
+    def __init__(self, base_url: str, api_key: str, model_name: str, dimension: int = 0):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model_name = model_name
         self._dim: int = 0
 
-        # 尝试从已知映射获取维度
-        if model_name in self.KNOWN_DIMENSIONS:
+        # 维度来源优先级：用户配置 > 已知映射 > 首次调用 API 时推断
+        if dimension and dimension > 0:
+            self._dim = dimension
+        elif model_name in self.KNOWN_DIMENSIONS:
             self._dim = self.KNOWN_DIMENSIONS[model_name]
 
         logger.info(
@@ -139,6 +141,31 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
     @property
     def dimension(self) -> int:
         return self._dim
+
+    def _validate_and_update_dimension(self, vectors: list[list[float]]) -> None:
+        """校验 API 实际返回维度与配置维度一致。"""
+        if not vectors:
+            return
+
+        actual_dim = len(vectors[0])
+        for index, vector in enumerate(vectors):
+            if len(vector) != actual_dim:
+                raise ValueError(
+                    f"OpenAI 嵌入模型返回的第 {index} 个向量维度不一致: "
+                    f"actual={len(vector)}, expected_batch_dim={actual_dim}"
+                )
+
+        if self._dim == 0:
+            self._dim = actual_dim
+            logger.info(f"🧠 [Embedding] 从 API 响应推断嵌入维度: {self._dim}")
+            return
+
+        if actual_dim != self._dim:
+            raise ValueError(
+                "OpenAI 嵌入模型实际返回维度与配置不一致: "
+                f"actual={actual_dim}, configured={self._dim}。"
+                "请修正 openai_embedding_config.json 中的 dimension，或设为 0 自动推断。"
+            )
 
     def _call_api(self, texts: list[str]) -> list[list[float]]:
         """同步调用 OpenAI Embeddings API"""
@@ -161,11 +188,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         sorted_data = sorted(data["data"], key=lambda x: x["index"])
         vectors = [item["embedding"] for item in sorted_data]
 
-        # 首次调用时推断维度
-        if self._dim == 0 and vectors:
-            self._dim = len(vectors[0])
-            logger.info(f"🧠 [Embedding] 从 API 响应推断嵌入维度: {self._dim}")
-
+        self._validate_and_update_dimension(vectors)
         return vectors
 
     def embed_sync(self, texts: list[str]) -> list[list[float]]:
@@ -194,10 +217,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         sorted_data = sorted(data["data"], key=lambda x: x["index"])
         vectors = [item["embedding"] for item in sorted_data]
 
-        if self._dim == 0 and vectors:
-            self._dim = len(vectors[0])
-            logger.info(f"🧠 [Embedding] 从 API 响应推断嵌入维度: {self._dim}")
-
+        self._validate_and_update_dimension(vectors)
         return vectors
 
     async def embed_single(self, text: str) -> list[float]:
@@ -249,12 +269,17 @@ def get_embedding_provider() -> EmbeddingProvider:
         )
     elif provider_name == "openai":
         base_url = openai_embedding_config.get_config("base_url").data
-        api_key = openai_embedding_config.get_config("api_key").data[0]
+        api_key_list = openai_embedding_config.get_config("api_key").data
+        if not api_key_list:
+            raise ValueError("OpenAI 嵌入模型 API 密钥不能为空，请在配置中至少设置一个 api_key")
+        api_key = api_key_list[0]
         model_name = openai_embedding_config.get_config("embedding_model").data
+        dimension = openai_embedding_config.get_config("dimension").data
         _provider = OpenAIEmbeddingProvider(
             base_url=base_url,
             api_key=api_key,
             model_name=model_name,
+            dimension=dimension,
         )
     else:
         raise ValueError(f"🧠 [Embedding] 不支持的嵌入模型提供方: '{provider_name}'，仅支持 'local' 或 'openai'")

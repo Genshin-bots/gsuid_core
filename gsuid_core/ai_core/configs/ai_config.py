@@ -52,6 +52,12 @@ AI_CONFIG: Dict[str, GSC] = {
         "local",
         options=["local", "openai"],
     ),
+    "rerank_provider": GsStrConfig(
+        title="Rerank模型服务提供方",
+        desc="指定 Rerank 模型提供方。local 使用本地 fastembed 模型；openai 使用 OpenAI兼容 rerank API 的远程服务",
+        data="local",
+        options=["local", "openai"],
+    ),
     "websearch_provider": GsStrConfig(
         "网络搜索服务提供方",
         "指定网络搜索服务提供方",
@@ -252,14 +258,48 @@ OPENAI_EMBEDDING_CONFIG: Dict[str, GSC] = {
             "Pro/BAAI/bge-m3",
         ],
     ),
+    "dimension": GsIntConfig(
+        title="嵌入向量维度",
+        desc=(
+            "指定嵌入模型输出的向量维度。0 表示自动推断"
+            "（OpenAI 官方模型可自动识别, 其它模型将在首次调用 API 时从响应推断）。"
+            "切换到不同维度的模型时建议手动指定, 以确保向量库维度正确"
+        ),
+        data=0,
+        options=[0, 256, 512, 768, 1024, 1536, 2048, 3072, 4096],
+    ),
 }
 
 RERANK_MODEL_CONFIG: Dict[str, GSC] = {
     "rerank_model_name": GsStrConfig(
         "指定Rerank模型名称",
-        "指定启用的Rerank模型名称",
+        "指定启用的Rerank模型名称。本地模式填写 fastembed 支持的模型名；远程模式填写服务商提供的 rerank 模型名",
         "BAAI/bge-reranker-base",
-        options=["BAAI/bge-reranker-base"],
+        options=[
+            "BAAI/bge-reranker-base",
+            "BAAI/bge-reranker-v2-m3",
+            "bge-reranker-v2-m3",
+            "jina-reranker-v2-base-multilingual",
+            "rerank-multilingual-v3.0",
+        ],
+    ),
+    "base_url": GsStrConfig(
+        title="Rerank模型API基础URL",
+        desc="指定远程 Rerank API 基础URL。一般为服务商 /v1 地址；程序会自动拼接 /rerank",
+        data="https://api.siliconflow.cn/v1",
+        options=[
+            "https://api.siliconflow.cn/v1",
+            "https://api.jina.ai/v1",
+            "https://api.cohere.com/v1",
+            "http://localhost:3000/v1",
+            "http://127.0.0.1:3000/v1",
+        ],
+    ),
+    "api_key": GsListStrConfig(
+        title="Rerank模型API密钥",
+        desc="指定远程 Rerank API 密钥，local 模式无需配置",
+        data=["sk-"],
+        options=["sk-"],
     ),
 }
 

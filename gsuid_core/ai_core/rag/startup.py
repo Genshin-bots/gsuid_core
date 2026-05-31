@@ -7,7 +7,7 @@ from gsuid_core.ai_core.register import get_all_tools
 from gsuid_core.ai_core.rag.tools import sync_tools
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
-from .base import pre_download_models, init_embedding_model
+from .base import pre_download_models, init_embedding_model, ensure_embedding_dimension
 
 
 async def init_all():
@@ -23,6 +23,9 @@ async def init_all():
     # 1. 初始化Embedding模型和Qdrant客户端
     # 模型加载是同步 CPU 密集操作，放到线程执行避免冻住事件循环
     await asyncio.to_thread(init_embedding_model)
+
+    # 1.5 启动阶段严格解析真实嵌入维度，避免未知维度时创建错误的 Qdrant Collection
+    await ensure_embedding_dimension()
 
     # 2. 初始化工具、知识和图片集合
     from . import init_image_collection, init_tools_collection, init_knowledge_collection

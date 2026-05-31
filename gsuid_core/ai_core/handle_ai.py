@@ -106,6 +106,17 @@ async def handle_ai_chat(bot: Bot, event: Event):
         logger.debug("🧠 [GsCore][AI] AI服务未启用，跳过处理")
         return
 
+    try:
+        from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
+
+        if not is_ai_core_ready():
+            logger.info("🧠 [GsCore][AI] AI Core 正在初始化/迁移，等待初始化完成后再处理本次消息...")
+            if not await wait_ai_core_ready(timeout=300.0):
+                logger.warning("🧠 [GsCore][AI] AI Core 初始化等待超时，跳过本次消息以避免查询未完成迁移的向量库")
+                return
+    except Exception as e:
+        logger.warning(f"🧠 [GsCore][AI] 检查 AI Core 初始化状态失败，继续降级处理: {e}")
+
     async with _ai_semaphore:
         try:
             query = event.raw_text

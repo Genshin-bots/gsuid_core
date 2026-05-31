@@ -118,6 +118,10 @@ GET /api/plugins/{plugin_name}
 GET /api/plugins/{plugin_name}/config
 ```
 
+返回指定插件的所有配置项，每项包含 `value`、`default`、`type`、`title`、`desc` 及类型特有字段。
+
+> 📖 **详细说明**：配置类型的完整字段定义、请求体格式、返回体结构及前端渲染建议，请参阅 [39. 插件配置类型参考](./39-plugin-config-types.md)。
+
 ---
 
 ## 3.4 保存插件配置
@@ -125,7 +129,29 @@ GET /api/plugins/{plugin_name}/config
 POST /api/plugins/{plugin_name}/config
 ```
 
-**请求体**：插件配置键值对
+**请求体（平铺格式）**：
+```json
+{
+    "config_key_1": "新值",
+    "config_key_2": true
+}
+```
+
+**请求体（config_groups 格式）**：
+```json
+{
+    "config_groups": [
+        {
+            "config_name": "配置组名",
+            "config": {
+                "config_key_1": "新值"
+            }
+        }
+    ]
+}
+```
+
+> 📖 各配置类型的值格式要求详见 [39. 插件配置类型参考](./39-plugin-config-types.md)。
 
 ---
 

@@ -14,8 +14,8 @@
 from gsuid_core.ai_core.rag.base import (
     DB_PATH,
     # 常量
-    DIMENSION,
     MODELS_CACHE,
+    DEFAULT_DIMENSION,
     RERANK_MODELS_CACHE,
     RERANKER_MODEL_NAME,
     EMBEDDING_MODEL_NAME,
@@ -26,13 +26,16 @@ from gsuid_core.ai_core.rag.base import (
     get_point_id,
     # 配置（动态函数）
     is_enable_ai,
+    get_dimension,
     calculate_hash,
     # 全局变量
     embedding_model,
     is_enable_rerank,
     embedding_provider,
+    get_strict_dimension,
     # 函数
     init_embedding_model,
+    ensure_embedding_dimension,
 )
 from gsuid_core.ai_core.rag.tools import (
     sync_tools,
@@ -43,6 +46,7 @@ from gsuid_core.ai_core.rag.startup import init_all
 from gsuid_core.ai_core.rag.reranker import (
     get_reranker,
     rerank_results,
+    reset_reranker,
 )
 from gsuid_core.ai_core.rag.embedding import (
     EmbeddingProvider,
@@ -69,7 +73,7 @@ from gsuid_core.ai_core.rag.knowledge import (
 
 __all__ = [
     # base - 常量
-    "DIMENSION",
+    "DEFAULT_DIMENSION",
     "EMBEDDING_MODEL_NAME",
     "MODELS_CACHE",
     "DB_PATH",
@@ -81,6 +85,9 @@ __all__ = [
     # base - 配置（动态函数）
     "is_enable_ai",
     "is_enable_rerank",
+    "get_dimension",
+    "get_strict_dimension",
+    "ensure_embedding_dimension",
     # base - 全局变量
     "embedding_model",
     "embedding_provider",
@@ -114,6 +121,7 @@ __all__ = [
     "get_image_path_by_query",
     # reranker
     "get_reranker",
+    "reset_reranker",
     "rerank_results",
     # init
     "init_all",

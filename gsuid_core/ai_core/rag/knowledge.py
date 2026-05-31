@@ -1,5 +1,6 @@
 """知识库RAG管理 - 同步与查询"""
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from qdrant_client.models import (
@@ -9,55 +10,201 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
     FieldCondition,
-    VectorParamsDiff,
 )
 from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.models import KnowledgeBase
+from gsuid_core.ai_core.models import KnowledgeBase, ManualKnowledgeBase
 from gsuid_core.ai_core.rag.base import (
-    DIMENSION,
     KNOWLEDGE_COLLECTION_NAME,
     get_point_id,
     calculate_hash,
+    get_strict_dimension,
+    get_rag_embed_batch_size,
+    get_rag_upsert_batch_size,
 )
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.rag.collection_migration import (
+    load_payload_backup,
+    save_payload_backup,
+    scroll_all_payloads,
+    ensure_vector_on_disk,
+    remove_payload_backup,
+    count_collection_points,
+    force_recreate_collection,
+    find_latest_payload_backup,
+    collection_vector_mismatched,
+)
 
 from .reranker import rerank_results
 from .image_rag import build_image_text
 
 
 async def init_knowledge_collection():
-    """初始化知识库向量集合"""
+    """初始化知识库向量集合，并在嵌入维度变化时自动重嵌入旧 payload。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return
 
-    if not await client.collection_exists(KNOWLEDGE_COLLECTION_NAME):
-        logger.info(f"🧠 [Knowledge] 创建新集合: {KNOWLEDGE_COLLECTION_NAME}")
-        await client.create_collection(
+    dimension = get_strict_dimension()
+    payload_backup: list[tuple[Any, dict[str, Any]]] = []
+    backup_path = None
+    latest_backup_path = find_latest_payload_backup(KNOWLEDGE_COLLECTION_NAME)
+    collection_exists = await client.collection_exists(KNOWLEDGE_COLLECTION_NAME)
+    need_recreate = not collection_exists
+
+    if collection_exists:
+        if await collection_vector_mismatched(KNOWLEDGE_COLLECTION_NAME, dimension):
+            payload_backup = await scroll_all_payloads(KNOWLEDGE_COLLECTION_NAME)
+            # 上次迁移可能在“已清空集合但未完成重嵌入”时中断（集合为空但维度仍不匹配），
+            # 此时实时 scroll 到的 payload 比历史备份少甚至为空，优先用更完整的历史备份恢复，避免丢数据。
+            if latest_backup_path is not None:
+                prior_backup = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
+                if len(prior_backup) > len(payload_backup):
+                    logger.warning(
+                        f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 实时 payload"
+                        f"({len(payload_backup)}) 少于历史迁移备份({len(prior_backup)})，"
+                        f"疑似上次迁移已清空但未完成，改用备份恢复"
+                    )
+                    payload_backup = prior_backup
+                    backup_path = latest_backup_path
+            if backup_path is None:
+                backup_path = await save_payload_backup(KNOWLEDGE_COLLECTION_NAME, payload_backup)
+            logger.warning(
+                f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 维度变化，"
+                f"导出 {len(payload_backup)} 条 payload 后强制重建并重嵌入"
+            )
+            need_recreate = True
+        elif latest_backup_path is not None:
+            backup_payloads = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
+            point_count = await count_collection_points(KNOWLEDGE_COLLECTION_NAME)
+            if backup_payloads and point_count < len(backup_payloads):
+                payload_backup = backup_payloads
+                backup_path = latest_backup_path
+                need_recreate = True
+                logger.warning(
+                    f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 疑似上次迁移未完成"
+                    f"(points={point_count}, backup={len(backup_payloads)})，将强制重建并继续恢复"
+                )
+            else:
+                await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME)
+                return
+        else:
+            await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME)
+            return
+    elif latest_backup_path is not None:
+        payload_backup = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
+        backup_path = latest_backup_path
+        if payload_backup:
+            logger.warning(
+                f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 不存在但发现未完成迁移备份，"
+                f"将重建 Collection 并恢复 {len(payload_backup)} 条 payload"
+            )
+
+    if need_recreate:
+        logger.info(f"🧠 [Knowledge] 强制重建集合: {KNOWLEDGE_COLLECTION_NAME}, 维度: {dimension}")
+        await force_recreate_collection(
             collection_name=KNOWLEDGE_COLLECTION_NAME,
-            vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE, on_disk=True),
+            vectors_config=VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True),
             on_disk_payload=True,
         )
-    else:
-        # 已存在的 collection：尝试迁移向量到磁盘存储
+
+    if payload_backup:
         try:
-            col_info = await client.get_collection(collection_name=KNOWLEDGE_COLLECTION_NAME)
-            vectors_config = col_info.config.params.vectors
-            if isinstance(vectors_config, VectorParams) and not vectors_config.on_disk:
-                logger.info(f"🧠 [Knowledge] 迁移集合 {KNOWLEDGE_COLLECTION_NAME} 向量到磁盘存储...")
-                await client.update_collection(
-                    collection_name=KNOWLEDGE_COLLECTION_NAME,
-                    vectors_config={"": VectorParamsDiff(on_disk=True)},
-                )
-                logger.info(f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 迁移完成")
+            await _reindex_knowledge_payloads(payload_backup)
         except Exception as e:
-            logger.warning(f"🧠 [Knowledge] 检查/迁移集合 on_disk 配置失败: {e}")
+            logger.error(
+                f"🧠 [Knowledge] 维度迁移重嵌入失败，迁移备份已保留，下次启动将自动继续恢复: {backup_path}, {e}"
+            )
+            raise
+        remove_payload_backup(backup_path, KNOWLEDGE_COLLECTION_NAME)
 
 
-def build_knowledge_text(kp: KnowledgeBase) -> str:
+async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
+    """基于旧 payload 重新生成知识向量。"""
+    from gsuid_core.ai_core.rag.base import client, embedding_model
+
+    if client is None or embedding_model is None:
+        return
+
+    prepared: list[tuple[Any, dict[str, Any], str]] = []
+    skipped = 0
+    for point_id, payload in payload_backup:
+        try:
+            payload = dict(payload)
+            if not payload.get("id"):
+                payload["id"] = str(point_id)
+            if "path" in payload:
+                text_to_embed = build_image_text(payload)  # type: ignore[arg-type]
+            elif "content" in payload or "title" in payload:
+                text_to_embed = build_knowledge_text(payload)  # type: ignore[arg-type]
+            else:
+                skipped += 1
+                logger.warning(f"🧠 [Knowledge] 无法识别旧 payload 类型，已跳过: point_id={point_id}")
+                continue
+            if not text_to_embed.strip():
+                skipped += 1
+                continue
+            prepared.append((point_id, payload, text_to_embed))
+        except Exception as e:
+            skipped += 1
+            logger.warning(f"🧠 [Knowledge] 准备旧 payload 重嵌入失败，已跳过: {e}")
+
+    points_to_upsert: list[PointStruct] = []
+    batch_size = get_rag_embed_batch_size()
+    for start in range(0, len(prepared), batch_size):
+        batch = prepared[start : start + batch_size]
+        try:
+            vectors = list(await embedding_model.aembed([item[2] for item in batch]))
+            for (point_id, payload, _), vector in zip(batch, vectors):
+                points_to_upsert.append(PointStruct(id=point_id, vector=list(vector), payload=payload))
+        except Exception as e:
+            skipped += len(batch)
+            logger.warning(f"🧠 [Knowledge] 批量重嵌入旧 payload 失败，已跳过 {len(batch)} 条: {e}")
+
+    if points_to_upsert:
+        await _upsert_knowledge_points(points_to_upsert)
+    logger.info(f"🧠 [Knowledge] 维度迁移重嵌入完成: {len(points_to_upsert)} 条，跳过 {skipped} 条")
+
+
+async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Optional[int] = None) -> None:
+    """批量写入 Knowledge points，并在本地 Qdrant 旧维度残留时强制重建后重试。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not points:
+        return
+    if batch_size is None:
+        batch_size = get_rag_upsert_batch_size()
+
+    try:
+        for start in range(0, len(points), batch_size):
+            await client.upsert(
+                collection_name=KNOWLEDGE_COLLECTION_NAME,
+                points=points[start : start + batch_size],
+            )
+    except Exception as e:
+        message = str(e)
+        if "broadcast input array" not in message and "not aligned" not in message and "dim" not in message:
+            raise
+        logger.warning(f"🧠 [Knowledge] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}")
+        await force_recreate_collection(
+            collection_name=KNOWLEDGE_COLLECTION_NAME,
+            vectors_config=VectorParams(size=get_strict_dimension(), distance=Distance.COSINE, on_disk=True),
+            on_disk_payload=True,
+        )
+        from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+        if refreshed_client is None:
+            raise RuntimeError("Qdrant client 重建后不可用")
+        for start in range(0, len(points), batch_size):
+            await refreshed_client.upsert(
+                collection_name=KNOWLEDGE_COLLECTION_NAME,
+                points=points[start : start + batch_size],
+            )
+
+
+def build_knowledge_text(kp: KnowledgeBase | ManualKnowledgeBase) -> str:
     """构建用于向量化的文本表示
 
     将知识点的标题、标签和内容组合成一段文本，
@@ -77,7 +224,7 @@ def build_knowledge_text(kp: KnowledgeBase) -> str:
     if kp.get("tags"):
         parts.append(f"标签：{' '.join(kp['tags'])}")
 
-    parts.append(kp["content"])
+    parts.append(kp.get("content", ""))
 
     return "\n".join(parts)
 
@@ -92,10 +239,24 @@ async def sync_knowledge():
     注意：此函数仅同步 source="plugin" 的知识（来自插件注册）。
     手动添加的知识 (source="manual") 不会在此同步中被检查、修改或删除。
     """
-    from gsuid_core.ai_core.rag.base import client, embedding_model
+    import gsuid_core.ai_core.rag.base as rag_base
+    from gsuid_core.ai_core.rag.base import init_embedding_model, ensure_embedding_dimension
+    from gsuid_core.ai_core.configs.ai_config import ai_config
 
-    if client is None or embedding_model is None:
+    if not ai_config.get_config("enable").data:
         logger.debug("🧠 [Knowledge] AI功能未启用，跳过同步")
+        return
+
+    if rag_base.client is None or rag_base.embedding_model is None:
+        logger.info("🧠 [Knowledge] AI 已启用但 RAG 尚未初始化，尝试懒初始化 Embedding/Qdrant 后同步")
+        await asyncio.to_thread(init_embedding_model)
+        await ensure_embedding_dimension()
+        await init_knowledge_collection()
+
+    client = rag_base.client
+    embedding_model = rag_base.embedding_model
+    if client is None or embedding_model is None:
+        logger.warning("🧠 [Knowledge] RAG client 或 embedding_model 未初始化，暂跳过同步")
         return
 
     logger.info("🧠 [Knowledge] 开始同步知识库...")
@@ -128,9 +289,10 @@ async def sync_knowledge():
         if next_page_offset is None:
             break
 
-    # 2. 准备新数据
+    # 2. 准备新数据：先收集所有需要嵌入的文本，再批量调用远程 embedding，避免几千条知识逐条请求。
     points_to_upsert = []
     local_ids = set()
+    pending_items: list[tuple[str, dict, str, str, str]] = []
 
     logger.info(f"🧠 [Knowledge] 插件注册知识数量: {len(_ENTITIES)}")
     for knowledge in _ENTITIES:
@@ -144,26 +306,36 @@ async def sync_knowledge():
         is_modified = not is_new and existing_knowledge[id_str]["hash"] != current_hash
 
         if is_new or is_modified:
-            # 根据类型选择不同的文本构建函数
             if "title" in knowledge:
-                # KnowledgePoint 或 KnowledgeBase
-                action_str = "新增" if is_new else "更新"
-                logger.info(f"🧠 [Knowledge] [{knowledge['plugin']}] [{action_str}] 知识: {knowledge['title']}")
                 text_to_embed = build_knowledge_text(knowledge)
+                log_prefix = "Knowledge"
+                log_name = str(knowledge.get("title", id_str))
             else:
-                # ImageEntity
-                action_str = "新增" if is_new else "更新"
-                logger.info(f"🧠 [ImageRAG] [{knowledge['plugin']}] [{action_str}] 图片: {knowledge['id']}")
                 text_to_embed = build_image_text(knowledge)
+                log_prefix = "ImageRAG"
+                log_name = id_str
 
-            # 生成向量
-            vector = list(await embedding_model.aembed([text_to_embed]))[0]
-
-            # 构建payload
             payload: dict = dict(knowledge)
             payload["_hash"] = current_hash
             payload["source"] = "plugin"  # 确保标记为插件来源
+            pending_items.append((id_str, payload, text_to_embed, log_prefix, log_name))
 
+    embed_batch_size = get_rag_embed_batch_size()
+    if pending_items:
+        logger.info(f"🧠 [Knowledge] 需要新增/更新 {len(pending_items)} 条，开始批量嵌入(batch={embed_batch_size})...")
+
+    for start in range(0, len(pending_items), embed_batch_size):
+        batch = pending_items[start : start + embed_batch_size]
+        texts = [item[2] for item in batch]
+        vectors = list(await embedding_model.aembed(texts))
+        if len(vectors) != len(batch):
+            logger.warning(
+                f"🧠 [Knowledge] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过"
+            )
+            continue
+        for (id_str, payload, _, log_prefix, log_name), vector in zip(batch, vectors):
+            action_str = "新增" if id_str not in existing_knowledge else "更新"
+            logger.info(f"🧠 [{log_prefix}] [{payload.get('plugin')}] [{action_str}] 知识: {log_name}")
             points_to_upsert.append(
                 PointStruct(
                     id=get_point_id(id_str),
@@ -174,8 +346,9 @@ async def sync_knowledge():
 
     # 3. 执行更新
     if points_to_upsert:
-        logger.info(f"🧠 [Knowledge] 写入 {len(points_to_upsert)} 个知识点...")
-        await client.upsert(collection_name=KNOWLEDGE_COLLECTION_NAME, points=points_to_upsert)
+        upsert_batch_size = get_rag_upsert_batch_size()
+        logger.info(f"🧠 [Knowledge] 写入 {len(points_to_upsert)} 个知识点(batch={upsert_batch_size})...")
+        await _upsert_knowledge_points(points_to_upsert, batch_size=upsert_batch_size)
 
     # 4. 清理已删除的插件知识（手动添加的知识不会被删除）
     if local_ids:
@@ -213,13 +386,17 @@ async def query_knowledge(
         return []
 
     # 生成查询向量
-    query_vector = list(await embedding_model.aembed([query]))[0]
+    _vectors = list(await embedding_model.aembed([query]))
+    if not _vectors:
+        logger.warning("🧠 [Knowledge] 嵌入模型返回空结果，无法查询知识")
+        return []
+    query_vector = _vectors[0]
 
     # 构建过滤条件
     search_filter = None
     if plugin_filter:
         search_filter = Filter(
-            must=[
+            should=[
                 FieldCondition(
                     key="plugin",
                     match=MatchValue(value=plugin),

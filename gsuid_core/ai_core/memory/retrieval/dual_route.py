@@ -9,11 +9,9 @@ from typing import TypeVar, Optional, Sequence
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
-from fastembed.rerank.cross_encoder.text_cross_encoder import TextCrossEncoder
-
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-from gsuid_core.ai_core.rag.reranker import get_reranker
+from gsuid_core.ai_core.rag.reranker import RerankerProvider, get_reranker
 from gsuid_core.ai_core.memory.config import memory_config
 
 from .types import Edge, Entity, Episode, Category, RetrievalMeta
@@ -27,7 +25,7 @@ _RERANK_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="reranke
 
 
 async def _run_sync_rerank(
-    reranker: TextCrossEncoder,
+    reranker: RerankerProvider,
     query: str,
     texts: list[str],
 ) -> list[float]:
@@ -212,7 +210,7 @@ async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list
     """对 Episode 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
     if not items:
         return []
-    reranker: TextCrossEncoder | None = get_reranker()
+    reranker = get_reranker()
     if reranker is None:
         return items[:top_k]
     texts = [item["content"] for item in items]
@@ -407,7 +405,21 @@ async def dual_route_retrieve(
     if edge_ids:
         from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
-        asyncio.create_task(AIMemEdge.touch_accessed(edge_ids))
+        async def _touch_edges_accessed() -> None:
+            try:
+                await AIMemEdge.touch_accessed(edge_ids)
+            except Exception as _e:
+                logger.debug(f"🧠 [Memory] 刷新 edge last_accessed 失败: {_e}")
+
+        def _on_task_done(t):
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.warning(f"🧠 [Memory] 刷新 edge last_accessed 后台任务异常: {exc}")
+
+        task = asyncio.create_task(_touch_edges_accessed())
+        task.add_done_callback(_on_task_done)
 
     return MemoryContext(
         episodes=ranked_episodes,

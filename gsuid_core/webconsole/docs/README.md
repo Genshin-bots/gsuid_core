@@ -57,6 +57,7 @@ GsCore WebConsole 提供基于 FastAPI 的 RESTful API，供前端 React 应用�
 34. [Agent Mesh Kanban API - /api/ai/kanban](./35-kanban.md)
 35. [Artifact Hub API - /api/ai/artifacts](./36-artifacts.md)
 36. [Artifact Workspace API - /api/ai/kanban/tasks/.../workspace](./37-workspace.md)
+37. [插件配置类型参考 - /api/plugins/{plugin_name}/config](./39-plugin-config-types.md)
 
 ---
 

@@ -3190,7 +3190,7 @@ class AIMemCategory(SQLModel, table=True):
 | `memory_entities` | Entity 向量 | `scope_key`, `name`, `summary` |
 | `memory_edges` | Edge 向量 | `scope_key`, `fact` |
 
-**向量维度**：复用 `rag/base.py` 的 `DIMENSION` 常量。
+**向量维度**：复用 `rag/base.py` 的 `get_dimension()` 函数（随启用的嵌入模型动态变化，默认回退 512）。
 
 **API 说明**：使用 `client.query_points()` 方法（非已弃用的 `client.search()`），与现有 `rag/knowledge.py` 和 `rag/tools.py` 保持一致。
 

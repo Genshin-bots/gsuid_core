@@ -6,7 +6,6 @@ from qdrant_client.models import (
     Distance,
     PointStruct,
     VectorParams,
-    VectorParamsDiff,
 )
 
 from gsuid_core.logger import logger
@@ -16,11 +15,14 @@ from gsuid_core.ai_core.register import get_all_tools, get_registered_tools
 if TYPE_CHECKING:
     from pydantic_ai.tools import Tool
 from .base import (
-    DIMENSION,
     TOOLS_COLLECTION_NAME,
     get_point_id,
     calculate_hash,
+    get_strict_dimension,
+    get_rag_embed_batch_size,
+    get_rag_upsert_batch_size,
 )
+from .collection_migration import ensure_vector_on_disk, force_recreate_collection, collection_vector_mismatched
 
 if TYPE_CHECKING:
     ToolList = List["Tool[ToolContext]"]
@@ -29,34 +31,28 @@ else:
 
 
 async def init_tools_collection():
-    """初始化工具向量集合"""
+    """初始化工具向量集合，并在嵌入维度变化时自动重建。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return
 
-    if not await client.collection_exists(TOOLS_COLLECTION_NAME):
-        logger.info(f"🧠 [Tools] 初始化新集合: {TOOLS_COLLECTION_NAME}")
-        await client.create_collection(
-            collection_name=TOOLS_COLLECTION_NAME,
-            vectors_config=VectorParams(size=DIMENSION, distance=Distance.COSINE, on_disk=True),
-            on_disk_payload=True,
-        )
-    else:
-        # 已存在的 collection：尝试迁移向量到磁盘存储
-        try:
-            col_info = await client.get_collection(collection_name=TOOLS_COLLECTION_NAME)
-            vectors_config = col_info.config.params.vectors
-            # 单向量模式：检查 on_disk 状态
-            if isinstance(vectors_config, VectorParams) and not vectors_config.on_disk:
-                logger.info(f"🧠 [Tools] 迁移集合 {TOOLS_COLLECTION_NAME} 向量到磁盘存储...")
-                await client.update_collection(
-                    collection_name=TOOLS_COLLECTION_NAME,
-                    vectors_config={"": VectorParamsDiff(on_disk=True)},
-                )
-                logger.info(f"🧠 [Tools] 集合 {TOOLS_COLLECTION_NAME} 迁移完成")
-        except Exception as e:
-            logger.warning(f"🧠 [Tools] 检查/迁移集合 on_disk 配置失败: {e}")
+    existing = {c.name for c in (await client.get_collections()).collections}
+    dimension = get_strict_dimension()
+
+    if TOOLS_COLLECTION_NAME in existing:
+        if await collection_vector_mismatched(TOOLS_COLLECTION_NAME, dimension):
+            logger.warning(f"🧠 [Tools] 集合 {TOOLS_COLLECTION_NAME} 维度变化，强制重建后由 sync_tools 自动重建")
+        else:
+            await ensure_vector_on_disk(TOOLS_COLLECTION_NAME)
+            return
+
+    logger.info(f"🧠 [Tools] 初始化新集合: {TOOLS_COLLECTION_NAME}, 维度: {dimension}")
+    await force_recreate_collection(
+        collection_name=TOOLS_COLLECTION_NAME,
+        vectors_config=VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True),
+        on_disk_payload=True,
+    )
 
 
 async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
@@ -97,8 +93,9 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         if next_page_offset is None:
             break
 
-    # 2. 准备要写入的工具
+    # 2. 准备要写入的工具：先收集文本，再批量 embedding，避免远程嵌入逐条请求过慢。
     points_to_upsert = []
+    pending_items: list[tuple[str, dict, str]] = []
     local_tool_names: Set[str] = set(tools_map.keys())
 
     for tool_name, tool in tools_map.items():
@@ -111,16 +108,26 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         is_modified = not is_new and existing_tools[tool_name]["hash"] != current_hash
 
         if is_new or is_modified:
-            action_str = "新增" if is_new else "更新"
-            logger.info(f"🧠 [Tools] [{action_str}] 工具: {tool_name}")
-
             # 生成向量：使用 name + description
             desc_and_name = f"{tool_name}\n{tool.description}"
-            vector = list(await embedding_model.aembed([desc_and_name]))[0]
 
             # 构建payload
             payload = {"name": tool.name, "description": tool.description, "_hash": current_hash}
+            pending_items.append((tool_name, payload, desc_and_name))
 
+    embed_batch_size = get_rag_embed_batch_size()
+    if pending_items:
+        logger.info(f"🧠 [Tools] 需要新增/更新 {len(pending_items)} 个工具，开始批量嵌入(batch={embed_batch_size})...")
+
+    for start in range(0, len(pending_items), embed_batch_size):
+        batch = pending_items[start : start + embed_batch_size]
+        vectors = list(await embedding_model.aembed([item[2] for item in batch]))
+        if len(vectors) != len(batch):
+            logger.warning(f"🧠 [Tools] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过")
+            continue
+        for (tool_name, payload, _), vector in zip(batch, vectors):
+            action_str = "新增" if tool_name not in existing_tools else "更新"
+            logger.info(f"🧠 [Tools] [{action_str}] 工具: {tool_name}")
             points_to_upsert.append(
                 PointStruct(
                     id=get_point_id(tool_name),
@@ -131,8 +138,9 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
 
     # 3. 执行更新
     if points_to_upsert:
-        logger.info(f"🧠 [Tools] 写入 {len(points_to_upsert)} 个工具...")
-        await client.upsert(collection_name=TOOLS_COLLECTION_NAME, points=points_to_upsert)
+        upsert_batch_size = get_rag_upsert_batch_size()
+        logger.info(f"🧠 [Tools] 写入 {len(points_to_upsert)} 个工具(batch={upsert_batch_size})...")
+        await _upsert_tool_points(points_to_upsert, batch_size=upsert_batch_size)
 
     # 4. 清理已删除的工具
     if local_tool_names:
@@ -149,6 +157,42 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         logger.info("🧠 [Tools] 本地工具为空，跳过清理步骤")
 
     logger.info("🧠 [Tools] 工具同步完成")
+
+
+async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None = None) -> None:
+    """批量写入工具向量，并在本地 Qdrant 旧维度残留时强制重建后重试。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not points:
+        return
+    if batch_size is None:
+        batch_size = get_rag_upsert_batch_size()
+
+    try:
+        for start in range(0, len(points), batch_size):
+            await client.upsert(
+                collection_name=TOOLS_COLLECTION_NAME,
+                points=points[start : start + batch_size],
+            )
+    except Exception as e:
+        message = str(e)
+        if "broadcast input array" not in message and "not aligned" not in message and "dim" not in message:
+            raise
+        logger.warning(f"🧠 [Tools] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}")
+        await force_recreate_collection(
+            collection_name=TOOLS_COLLECTION_NAME,
+            vectors_config=VectorParams(size=get_strict_dimension(), distance=Distance.COSINE, on_disk=True),
+            on_disk_payload=True,
+        )
+        from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+        if refreshed_client is None:
+            raise RuntimeError("Qdrant client 重建后不可用")
+        for start in range(0, len(points), batch_size):
+            await refreshed_client.upsert(
+                collection_name=TOOLS_COLLECTION_NAME,
+                points=points[start : start + batch_size],
+            )
 
 
 # 框架保底工具分类——这些分类下的工具会被无条件全部注入主Agent，
@@ -264,22 +308,48 @@ async def search_tools(
         raise RuntimeError("AI功能未启用，无法搜索工具")
 
     logger.info(f"🧠 [Tools] 正在查询: {query}, threshold={threshold}, limit={limit}, debug={debug}")
-    query_vec = list(await embedding_model.aembed([query]))[0]
+    vectors = list(await embedding_model.aembed([query]))
+    if not vectors:
+        logger.warning("🧠 [Tools] 嵌入模型返回空结果，跳过工具向量检索")
+        return []
+    query_vec = vectors[0]
 
-    # 如果启用 debug，使用大 limit 获取所有工具以便查看分数
-    if debug:
-        response = await client.query_points(
-            collection_name=TOOLS_COLLECTION_NAME,
-            query=list(query_vec),
-            limit=1000,  # debug 模式下用大 limit 获取所有工具
-        )
-    else:
-        response = await client.query_points(
+    async def _query_tools():
+        # 如果启用 debug，使用大 limit 获取所有工具以便查看分数
+        if debug:
+            return await client.query_points(
+                collection_name=TOOLS_COLLECTION_NAME,
+                query=list(query_vec),
+                limit=1000,  # debug 模式下用大 limit 获取所有工具
+            )
+        return await client.query_points(
             collection_name=TOOLS_COLLECTION_NAME,
             query=list(query_vec),
             limit=limit,
             score_threshold=threshold if threshold > 0 else None,
         )
+
+    try:
+        response = await _query_tools()
+    except Exception as e:
+        from .collection_migration import is_vector_structure_error
+
+        if is_vector_structure_error(str(e)):
+            logger.warning(f"🧠 [Tools] 工具集合向量维度异常，尝试重建并重新同步: {e}")
+            try:
+                await client.delete_collection(collection_name=TOOLS_COLLECTION_NAME)
+            except Exception:
+                pass
+            await init_tools_collection()
+            await sync_tools(get_all_tools())
+            try:
+                response = await _query_tools()
+            except Exception as retry_e:
+                logger.warning(f"🧠 [Tools] 工具集合重建后仍查询失败，跳过向量工具检索: {retry_e}")
+                return []
+        else:
+            logger.warning(f"🧠 [Tools] 工具向量检索失败，跳过向量工具检索: {e}")
+            return []
 
     tool_names: List[str] = []
     score_map: Dict[str, float] = {}

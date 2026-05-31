@@ -17,11 +17,12 @@
   - [3. 日志文件详情（按文件名，调试用）](#3-日志文件详情按文件名调试用)
   - [4. 日志统计概览](#4-日志统计概览)
   - [5. 查询会话关联 Agent](#5-查询会话关联-agent)
-  - [6. 日志数据结构](#6-日志数据结构)
+  - [6. 日志分类（按会话来源聚合）](#6-日志分类按会话来源聚合)
+  - [7. 日志数据结构](#7-日志数据结构)
     - [Entry 类型说明](#entry-类型说明)
     - [Entry 类型列表](#entry-类型列表)
     - [列表条目额外字段](#列表条目额外字段)
-  - [7. 去重与合并规则](#7-去重与合并规则)
+  - [8. 去重与合并规则](#8-去重与合并规则)
     - [前端使用建议](#前端使用建议)
       - [获取日志详情（推荐方式）](#获取日志详情推荐方式)
       - [点击 linked\_agents 中的子 Agent](#点击-linked_agents-中的子-agent)
@@ -425,7 +426,122 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 
 ---
 
-## 6. 日志数据结构
+## 6. 日志分类（按会话来源聚合）
+
+**端点**: `GET /api/ai/session_logs/categories`
+
+**描述**: 获取**当前后台日志中实际出现的所有会话来源（`create_by`）分类**，按来源聚合并附带前端展示名、说明、所属分组与数量统计。基于统一合并后的数据（内存活跃 + 磁盘持久化），供前端渲染分类筛选 Tab / Chip。返回的 `create_by` 可直接作为 [日志列表接口](#1-日志列表统一合并) 的 `create_by` 查询参数使用。
+
+> 每个 AI 会话在创建时都会带一个 `create_by` 来源标识（如 `Chat`、`MemCategorization`、`Heartbeat_Decision`、`Heartbeat_Output`、`SubAgent`、`Proactive_*` 等）。本接口把这些原始标识归一化为可读分类，未在内置目录中的来源会回退到 `other` 分组（不会报错）。
+
+**请求参数**: 无（仅需鉴权）。
+
+**响应示例**:
+
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "categories": [
+            {
+                "create_by": "Chat",
+                "label": "聊天对话",
+                "description": "用户与 AI 的常规聊天会话",
+                "group": "chat",
+                "count": 100,
+                "active_count": 2,
+                "subagent_count": 0
+            },
+            {
+                "create_by": "MemCategorization",
+                "label": "记忆分类",
+                "description": "对记忆进行分层图谱分类",
+                "group": "memory",
+                "count": 18,
+                "active_count": 0,
+                "subagent_count": 0
+            },
+            {
+                "create_by": "Heartbeat_Decision",
+                "label": "心跳决策",
+                "description": "心跳机制判断是否主动发言",
+                "group": "heartbeat",
+                "count": 12,
+                "active_count": 1,
+                "subagent_count": 0
+            },
+            {
+                "create_by": "Proactive_heartbeat",
+                "label": "主动消息(heartbeat)",
+                "description": "主动消息发送器触发的会话",
+                "group": "proactive",
+                "count": 4,
+                "active_count": 0,
+                "subagent_count": 0
+            }
+        ],
+        "groups": {
+            "chat": 103,
+            "memory": 18,
+            "heartbeat": 12,
+            "proactive": 4
+        },
+        "total": 4
+    }
+}
+```
+
+**data 字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| categories | array | 分类列表，按 `count` 倒序排列（见下表） |
+| groups | object | 分组维度的会话数量聚合 `{group: count}` |
+| total | int | 分类种类数（即 categories 长度） |
+
+**categories 条目字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| create_by | string | 原始来源标识，可直接作为列表接口的 `create_by` 查询参数 |
+| label | string | 前端展示名（中文） |
+| description | string | 分类说明 |
+| group | string | 所属分组：`chat` / `agent` / `capability` / `image` / `persona` / `heartbeat` / `meme` / `memory` / `kanban` / `scheduled` / `proactive` / `other` |
+| count | int | 该来源的会话总数 |
+| active_count | int | 其中仍活跃（运行中）的会话数 |
+| subagent_count | int | 其中属于 SubAgent 的会话数 |
+
+**内置来源目录（create_by → 分类）**：
+
+| create_by | label | group |
+|-----------|-------|-------|
+| `Chat` | 聊天对话 | chat |
+| `Agent` | Agent 对话 | chat |
+| `LLM` | 通用 LLM | chat |
+| `SubAgent` | 子 Agent | agent |
+| `AutoPlanner` | 自动规划 | agent |
+| `CapabilityEvaluator` | 能力评估 | capability |
+| `CapabilityAgent` | 能力 Agent | capability |
+| `ImageUnderstand` | 图片理解 | image |
+| `ImageDescSummary` | 图片描述汇总 | image |
+| `BuildPersona` | 人格构建 | persona |
+| `Heartbeat_Decision` | 心跳决策 | heartbeat |
+| `Heartbeat_Output` | 心跳输出 | heartbeat |
+| `MemeTagger` | 表情包打标 | meme |
+| `MemCategorization` | 记忆分类 | memory |
+| `MemGroupSummary` | 群记忆摘要 | memory |
+| `MemEntityExtraction` | 记忆实体抽取 | memory |
+| `MemNodeSelection` | 记忆节点选择 | memory |
+| `Kanban_Relay` | 看板中继 | kanban |
+| `ScheduledTask_Exec` | 定时任务执行 | scheduled |
+| `Proactive_*`（前缀匹配） | 主动消息(*) | proactive |
+
+> 目录之外的来源会以原始 `create_by` 作为 `label`、归入 `other` 分组。**新增来源时仅需在后端 `_CREATE_BY_CATALOG` 补充一行即可被本接口识别**，无需改动前端。
+
+---
+
+## 7. 日志数据结构
 
 ### Entry 类型说明
 
@@ -472,7 +588,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 
 ---
 
-## 7. 去重与合并规则
+## 8. 去重与合并规则
 
 列表接口内部执行以下合并逻辑：
 
