@@ -359,6 +359,50 @@ def _load_log_detail(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _find_log_by_file_stem(file_stem: str) -> Optional[Dict[str, Any]]:
+    """按文件名 stem 直接查找日志详情（高效 O(1)，避免全目录扫描）
+
+    在主目录和 subagents 子目录中查找 ``{file_stem}.json`` 文件。
+    找到后加载并补充 source / is_active / linked_agents 等字段。
+
+    Args:
+        file_stem: 日志文件名去掉 .json 后缀的部分
+            （如 ``heartbeat_decision_早柚_xxx_c7b1408f_20260531_134144``）
+
+    Returns:
+        补充了 source/is_active/linked_agents 的日志数据字典，未找到返回 None
+    """
+    # 安全检查：防止目录遍历
+    if ".." in file_stem or "/" in file_stem or "\\" in file_stem:
+        return None
+
+    registry = get_ai_session_registry()
+
+    for base_path in (AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH):
+        candidate = base_path / f"{file_stem}.json"
+        if candidate.exists() and candidate.is_file():
+            data = _load_log_detail(candidate)
+            if data is None:
+                continue
+            data["source"] = "disk"
+            # 修正 is_active：磁盘 ended_at 为 null 时需检查内存 registry
+            _disk_ended = data.get("ended_at")
+            _real_sid: str = data.get("session_id", "")
+            if _disk_ended is None:
+                _in_mem = registry.get_ai_session(_real_sid)
+                data["is_active"] = _in_mem is not None
+                if _in_mem is None:
+                    data["ended_at"] = data.get("updated_at")
+            else:
+                data["is_active"] = False
+            # Enrich linked_agents
+            if data.get("linked_agents"):
+                data["linked_agents"] = _enrich_linked_agents_list(data["linked_agents"])
+            return data
+
+    return None
+
+
 def _list_log_files(include_subagents: bool = True) -> List[Path]:
     """列出所有日志文件
 
@@ -496,11 +540,30 @@ def _find_log_by_session_id_and_uuid(
     根据 session_id + session_uuid 查找日志详情
 
     当 session_uuid 提供时，精确匹配到具体实例；
-    当 session_uuid 为 None 时，返回该 session_id 最新的实例（向后兼容）。
+    当 session_uuid 为 None 或空字符串时，返回该 session_id 最新的实例（向后兼容）。
 
-    优先从内存查找（活跃会话），其次从磁盘文件查找。
+    查找优先级：
+    1. 文件名 stem 精确匹配（O(1)，最高效）
+    2. 内存活跃会话（实时数据）
+    3. JSON 内 session_id 字段全目录扫描（兜底）
+
+    当 session_id 实际上是文件名 stem（如 subagent 日志的
+    ``heartbeat_decision_早柚_xxx_c7b1408f_20260531_134144``）时，
+    文件名 stem 匹配能直接命中，无需全目录扫描。
     """
-    # 1. 优先从内存查找
+    # 规范化：空字符串视为未指定（与 None 等价）
+    if session_uuid is not None and session_uuid.strip() == "":
+        session_uuid = None
+
+    # 1. 优先按文件名 stem 精确匹配（O(1)）
+    #    subagent 日志的 session_id 常等于文件名 stem，直接命中
+    file_stem_data = _find_log_by_file_stem(session_id)
+    if file_stem_data is not None:
+        # 如果指定了 uuid，需验证
+        if session_uuid is None or file_stem_data.get("session_uuid") == session_uuid:
+            return cast(SessionLogDetail, file_stem_data)
+
+    # 2. 从内存查找（活跃会话）
     registry = get_ai_session_registry()
     session = registry.get_ai_session(session_id)
     if session is not None:
@@ -531,7 +594,7 @@ def _find_log_by_session_id_and_uuid(
                     },
                 )
 
-    # 2. 从磁盘文件查找（按 JSON 内 session_id 字段匹配）
+    # 3. 从磁盘文件查找（按 JSON 内 session_id 字段全目录扫描，兜底）
     best_data: Optional[Dict[str, Any]] = None
     best_updated_at: float = 0
 
@@ -562,36 +625,6 @@ def _find_log_by_session_id_and_uuid(
             # Enrich linked_agents with type_counts, entry_count, is_active
             if best_data.get("linked_agents"):
                 best_data["linked_agents"] = _enrich_linked_agents_list(best_data["linked_agents"])
-
-    # 3. 回退：按文件名 stem 匹配
-    #    前端可能把 file_name（如 xxx_uuid_20260529_040912.json）的 stem
-    #    当作 session_id 传入，此时按 JSON 字段匹配不到，需要按文件名匹配。
-    if best_data is None:
-        target_stem = session_id  # 前端传入的可能是文件名 stem
-        for path in _list_log_files():
-            if path.stem == target_stem:
-                data = _load_log_detail(path)
-                if data is None:
-                    continue
-                # 如果指定了 uuid，也需匹配
-                if session_uuid is not None and data.get("session_uuid") != session_uuid:
-                    continue
-                data["source"] = "disk"  # type: ignore
-                # 修正 is_active
-                _disk_ended = data.get("ended_at")
-                _real_sid: str = data.get("session_id", "")
-                if _disk_ended is None:
-                    _in_mem = registry.get_ai_session(_real_sid)
-                    data["is_active"] = _in_mem is not None
-                    if _in_mem is None:
-                        data["ended_at"] = data.get("updated_at")
-                else:
-                    data["is_active"] = False
-                # Enrich linked_agents
-                if data.get("linked_agents"):
-                    data["linked_agents"] = _enrich_linked_agents_list(data["linked_agents"])
-                best_data = data
-                break  # 文件名精确匹配，最多一个
 
     return cast(Optional[SessionLogDetail], best_data)
 
@@ -673,31 +706,11 @@ async def list_session_logs(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/session_logs/{session_id}/detail")
-@app.get("/api/ai/session_logs/{session_id}/{session_uuid}/detail")
-async def get_session_log_detail(
+def _handle_detail_request(
     session_id: str,
     session_uuid: Optional[str] = None,
-    _: Dict = Depends(require_auth),
 ) -> Dict:
-    """
-    获取指定 Session 实例的日志详情
-
-    通过 session_id + session_uuid 精确定位到某个具体实例。
-    同一 session_id 可能有多个实例（不同 session_uuid），用于区分
-    同一会话的不同运行记录。
-
-    优先从内存查找活跃会话的实时日志，若不存在则从磁盘文件查找。
-
-    Args:
-        session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
-        session_uuid: Session 实例 UUID（如 abc12345），可选；
-            省略时返回该 session_id 最新的实例
-
-    Returns:
-        status: 0成功，1失败
-        data: 完整日志数据
-    """
+    """日志详情请求的统一处理逻辑，供多个路由复用"""
     try:
         data = _find_log_by_session_id_and_uuid(session_id, session_uuid)
         if data is None:
@@ -715,6 +728,106 @@ async def get_session_log_detail(
             "msg": f"获取日志详情失败: {str(e)}",
             "data": None,
         }
+
+
+@app.get("/api/ai/session_logs/detail")
+async def get_session_log_detail_by_query(
+    session_id: str,
+    session_uuid: Optional[str] = None,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    获取指定 Session 实例的日志详情（查询参数版，推荐）
+
+    通过查询参数传递 session_id 和 session_uuid，避免路径参数中特殊字符
+    （如冒号、中文、连续斜杠）导致的路由匹配问题。
+
+    优先从内存查找活跃会话的实时日志，若不存在则从磁盘文件查找。
+
+    Args:
+        session_id: Session ID（如 ws-onebot:onebot:bot_001:group:123456）
+            或文件名 stem（如 heartbeat_decision_早柚_xxx_c7b1408f_20260531_134144）
+        session_uuid: Session 实例 UUID（如 abc12345），可选；
+            省略时返回该 session_id 最新的实例
+
+    Returns:
+        status: 0成功，1失败
+        data: 完整日志数据
+    """
+    return _handle_detail_request(session_id, session_uuid)
+
+
+@app.get("/api/ai/session_logs/{session_id}/detail")
+async def get_session_log_detail(
+    session_id: str,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    获取指定 Session 实例的日志详情（路径参数版）
+
+    通过 session_id 精确定位。同一 session_id 可能有多个实例（不同
+    session_uuid），返回最新的实例。
+
+    Args:
+        session_id: Session ID 或文件名 stem
+
+    Returns:
+        status: 0成功，1失败
+        data: 完整日志数据
+    """
+    return _handle_detail_request(session_id, None)
+
+
+@app.get("/api/ai/session_logs/{session_id}/{session_uuid}/detail")
+async def get_session_log_detail_with_uuid(
+    session_id: str,
+    session_uuid: str,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    获取指定 Session 实例的日志详情（路径参数版，含 UUID）
+
+    通过 session_id + session_uuid 精确定位到某个具体实例。
+
+    Args:
+        session_id: Session ID 或文件名 stem
+        session_uuid: Session 实例 UUID
+
+    Returns:
+        status: 0成功，1失败
+        data: 完整日志数据
+    """
+    return _handle_detail_request(session_id, session_uuid)
+
+
+@app.get("/api/ai/session_logs/{rest:path}/detail")
+async def get_session_log_detail_catch_all(
+    rest: str,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    日志详情 catch-all 路由（处理 URL 中含连续斜杠等边缘情况）
+
+    前端可能构造 ``/api/ai/session_logs/{file_stem}//detail`` 这样的 URL
+    （session_uuid 为空时产生连续斜杠），此时标准路径参数路由无法匹配。
+    本路由使用 ``:path`` 转换器兜底捕获，并手动解析 session_id / session_uuid。
+
+    Args:
+        rest: catch-all 路径段，如 ``file_stem/`` 或 ``file_stem/uuid``
+
+    Returns:
+        status: 0成功，1失败
+        data: 完整日志数据
+    """
+    # 解析 rest 路径：按 "/" 拆分，第一段为 session_id，第二段（可选）为 session_uuid
+    parts = rest.split("/", 1)
+    session_id = parts[0]
+    session_uuid = parts[1] if len(parts) > 1 else None
+    # 规范化：空字符串视为未指定
+    if session_uuid is not None and session_uuid.strip() == "":
+        session_uuid = None
+
+    return _handle_detail_request(session_id, session_uuid)
 
 
 # ─────────────────────────────────────────────
@@ -744,7 +857,13 @@ async def get_session_log_by_file(
         if ".." in file_name or "/" in file_name or "\\" in file_name:
             return {"status": 1, "msg": "非法文件名", "data": None}
 
-        # 优先从主目录查找，再从 subagents 子目录查找
+        # 使用 _find_log_by_file_stem 按文件名 stem 查找（不含 .json 后缀）
+        stem = file_name.removesuffix(".json")
+        data = _find_log_by_file_stem(stem)
+        if data is not None:
+            return {"status": 0, "msg": "ok", "data": data}
+
+        # 兜底：传统路径查找（兼容极端情况）
         path = AI_SESSION_LOGS_PATH / file_name
         if not path.exists():
             path = AI_SUBAGENT_LOGS_PATH / file_name

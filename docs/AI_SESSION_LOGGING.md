@@ -221,15 +221,39 @@ AI 会话日志与框架日志共用同一个配置项 **`ScheduledCleanLogDay`*
 
 ---
 
-## 7. webconsole 读取契约（不变）
+## 7. webconsole 读取契约
 
 `webconsole/ai_session_logs_api.py` 合并内存活跃会话 + 磁盘文件，按 `session_uuid`
 去重（内存优先），从 entries 聚合 `type_counts`，并沿 `linked_agents[].log_file`
-下钻子 agent。本次重构**不改任何读取字段**：
+下钻子 agent。顶层 schema（§4.1）与 `SessionLogSummary` 期望完全一致。
 
-- 顶层 schema（§4.1）与 `SessionLogSummary` 期望完全一致。
-- 新增的 `auto_*` 仅多出若干 subagent 文件，自然出现在 subagents 列表。
-- `proactive_emission` / `agent_type="proactive_generator"` 为前序方案已引入的追加项。
+### 7.1 API 端点总览
+
+| 端点 | 说明 | 推荐度 |
+|---|---|---|
+| `GET /api/ai/session_logs` | 统一日志列表（合并内存+磁盘，去重） | ⭐ |
+| `GET /api/ai/session_logs/detail?session_id=...&session_uuid=...` | **查询参数版详情（推荐）** | ⭐⭐⭐ |
+| `GET /api/ai/session_logs/{session_id}/detail` | 路径参数版详情（单 session_id） | ⭐⭐ |
+| `GET /api/ai/session_logs/{session_id}/{session_uuid}/detail` | 路径参数版详情（含 uuid） | ⭐⭐ |
+| `GET /api/ai/session_logs/{rest:path}/detail` | catch-all 路由（`//` 等边缘情况兜底） | ⭐ |
+| `GET /api/ai/session_logs/file/{file_name}` | 按文件名获取详情（调试用） | ⭐ |
+| `GET /api/ai/session_logs/{session_id}/linked_agents` | 查询关联 Agent | ⭐⭐ |
+| `GET /api/ai/session_logs/stats/overview` | 统计概览 | ⭐⭐ |
+
+**前端推荐使用查询参数版详情接口**（`/api/ai/session_logs/detail?session_id=...`），
+避免路径参数中特殊字符（冒号、中文、连续斜杠等）导致的路由匹配问题。
+
+详见 `webconsole/docs/23-ai-session-logs.md`。
+
+### 7.2 查找优先级
+
+详情接口（`_find_log_by_session_id_and_uuid`）的查找顺序：
+
+1. **文件名 stem 精确匹配**（O(1)）：当 session_id 实际上是文件名 stem 时直接命中
+2. **内存活跃会话**：从 `AISessionRegistry` 查找
+3. **JSON 内 session_id 字段全目录扫描**（兜底）
+
+空字符串 `session_uuid` 自动规范化为 `None`（与省略等价），避免路径参数中 `//` 导致的 404。
 
 ---
 

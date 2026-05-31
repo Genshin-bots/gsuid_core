@@ -25,6 +25,8 @@
 | POST | `/api/meme/{meme_id}/retag` | 重新触发 VLM 打标 |
 | GET | `/api/meme/stats` | 统计概览 |
 | POST | `/api/meme/batch_delete` | 批量删除表情包 |
+| POST | `/api/meme/purge_rejected` | 清除所有已拒绝的表情包 |
+| POST | `/api/meme/batch_retag_pending` | 批量重新打标（待手动处理状态） |
 | POST | `/api/meme/export` | 批量导出为 .meme 格式 |
 | POST | `/api/meme/import` | 导入 .meme 格式文件 |
 
@@ -313,6 +315,110 @@ POST /api/meme/batch_delete
         "success_count": 1,
         "failed": [
             {"meme_id": "1234abcd5678efgh", "reason": "不存在"}
+        ]
+    }
+}
+```
+
+### 10b. 清除所有已拒绝的表情包
+
+```
+POST /api/meme/purge_rejected
+```
+
+一键删除所有状态为 `rejected` 的表情包，包括源文件、数据库记录和 Qdrant 向量索引。无需请求体。
+
+**响应**:
+
+无已拒绝表情包时：
+
+```json
+{
+    "status": 0,
+    "msg": "没有已拒绝的表情包",
+    "data": {
+        "purged_count": 0,
+        "failed": []
+    }
+}
+```
+
+全部成功时：
+
+```json
+{
+    "status": 0,
+    "msg": "已清除 15 个已拒绝的表情包",
+    "data": {
+        "purged_count": 15,
+        "failed": []
+    }
+}
+```
+
+部分失败时：
+
+```json
+{
+    "status": 1,
+    "msg": "清除完成：成功 14 个，失败 1 个",
+    "data": {
+        "purged_count": 14,
+        "failed": [
+            {"meme_id": "xxx", "reason": "删除失败"}
+        ]
+    }
+}
+```
+
+### 10c. 批量重新打标（待手动处理状态）
+
+```
+POST /api/meme/batch_retag_pending
+```
+
+一键将所有状态为 `pending_manual`（VLM 打标失败，待人工处理）的表情包重新加入 VLM 打标队列。无需请求体。
+
+执行逻辑：将 `pending_manual` 状态的记录重置为 `pending`，并逐条调用打标队列入队。
+
+**响应**:
+
+无待手动处理的表情包时：
+
+```json
+{
+    "status": 0,
+    "msg": "没有待手动处理的表情包",
+    "data": {
+        "retag_count": 0,
+        "failed": []
+    }
+}
+```
+
+全部成功时：
+
+```json
+{
+    "status": 0,
+    "msg": "已将 8 个待手动处理的表情包加入打标队列",
+    "data": {
+        "retag_count": 8,
+        "failed": []
+    }
+}
+```
+
+部分失败时：
+
+```json
+{
+    "status": 1,
+    "msg": "操作完成：成功 7 个，失败 1 个",
+    "data": {
+        "retag_count": 7,
+        "failed": [
+            {"meme_id": "xxx", "reason": "入队失败"}
         ]
     }
 }

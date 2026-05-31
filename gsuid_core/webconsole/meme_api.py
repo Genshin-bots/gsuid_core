@@ -549,6 +549,116 @@ async def batch_delete_memes(
 
 
 # ─────────────────────────────────────────────
+# 10b. 清除所有已拒绝的表情包
+# ─────────────────────────────────────────────
+
+
+@app.post("/api/meme/purge_rejected")
+async def purge_rejected_memes(
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    批量删除所有状态为 rejected 的表情包（源文件+数据库记录+Qdrant 向量）
+
+    Returns:
+        status: 0成功，1部分失败
+        data: 包含成功/失败详情
+    """
+    try:
+        # 获取所有 rejected 状态的记录（不分页）
+        records = await AiMemeRecord.get_all_by_status(status="rejected")
+
+        if not records:
+            return {"status": 0, "msg": "没有已拒绝的表情包", "data": {"purged_count": 0, "failed": []}}
+
+        success_ids: List[str] = []
+        failed_items: List[dict] = []
+
+        for record in records:
+            try:
+                ok = await MemeLibrary.delete_meme(record.meme_id)
+                if ok:
+                    success_ids.append(record.meme_id)
+                else:
+                    failed_items.append({"meme_id": record.meme_id, "reason": "删除失败"})
+            except Exception as e:
+                failed_items.append({"meme_id": record.meme_id, "reason": str(e)})
+
+        if not failed_items:
+            return {
+                "status": 0,
+                "msg": f"已清除 {len(success_ids)} 个已拒绝的表情包",
+                "data": {"purged_count": len(success_ids), "failed": []},
+            }
+        else:
+            return {
+                "status": 1,
+                "msg": f"清除完成：成功 {len(success_ids)} 个，失败 {len(failed_items)} 个",
+                "data": {"purged_count": len(success_ids), "failed": failed_items},
+            }
+    except Exception as e:
+        return {"status": 1, "msg": f"清除失败: {e}", "data": None}
+
+
+# ─────────────────────────────────────────────
+# 10c. 批量重新打标（待手动处理状态）
+# ─────────────────────────────────────────────
+
+
+@app.post("/api/meme/batch_retag_pending")
+async def batch_retag_pending(
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    批量重新触发 VLM 打标，针对所有状态为 pending_manual 的表情包
+
+    将 pending_manual 状态的记录重置为 pending，并逐条加入打标队列。
+
+    Returns:
+        status: 0成功，1部分失败
+        data: 包含入队成功/失败详情
+    """
+    try:
+        # 获取所有 pending_manual 状态的记录（不分页）
+        records = await AiMemeRecord.get_all_by_status(status="pending_manual")
+
+        if not records:
+            return {
+                "status": 0,
+                "msg": "没有待手动处理的表情包",
+                "data": {"retag_count": 0, "failed": []},
+            }
+
+        success_ids: List[str] = []
+        failed_items: List[dict] = []
+
+        for record in records:
+            try:
+                # 重置状态为待打标
+                await AiMemeRecord.update_record(record.meme_id, {"status": "pending"})
+                # 加入打标队列
+                await enqueue_tag(record.meme_id)
+                success_ids.append(record.meme_id)
+            except Exception as e:
+                failed_items.append({"meme_id": record.meme_id, "reason": str(e)})
+
+        if not failed_items:
+            return {
+                "status": 0,
+                "msg": f"已将 {len(success_ids)} 个待手动处理的表情包加入打标队列",
+                "data": {"retag_count": len(success_ids), "failed": []},
+            }
+        else:
+            return {
+                "status": 1,
+                "msg": f"操作完成：成功 {len(success_ids)} 个，失败 {len(failed_items)} 个",
+                "data": {"retag_count": len(success_ids), "failed": failed_items},
+            }
+    except Exception as e:
+        return {"status": 1, "msg": f"操作失败: {e}", "data": None}
+
+
+# ─────────────────────────────────────────────
 # 11. 批量导出表情包（.meme 格式）
 # ─────────────────────────────────────────────
 
@@ -598,19 +708,10 @@ async def export_memes(
             records = await AiMemeRecord.get_by_meme_ids(req.meme_ids)
         elif req.folder:
             # 按文件夹获取全部（不分页）
-            records, _ = await AiMemeRecord.get_by_folder(
-                folder=req.folder,
-                sort="created_at_desc",
-                page=1,
-                page_size=999999,
-            )
+            records = await AiMemeRecord.get_all_by_folder(folder=req.folder)
         else:
             # 导出全部
-            records, _ = await AiMemeRecord.get_all_records(
-                sort="created_at_desc",
-                page=1,
-                page_size=999999,
-            )
+            records = await AiMemeRecord.get_all_records_no_page()
 
         if not records:
             return StreamingResponse(

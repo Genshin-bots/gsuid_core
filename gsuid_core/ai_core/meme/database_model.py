@@ -240,6 +240,49 @@ class AiMemeRecord(SQLModel, table=True):
 
     @classmethod
     @with_session
+    async def get_all_by_status(
+        cls,
+        session: AsyncSession,
+        status: str,
+    ) -> Sequence["AiMemeRecord"]:
+        """获取指定状态的所有记录（不分页）"""
+        result = await session.execute(select(cls).where(cls.status == status).order_by(col(cls.created_at).desc()))
+        return result.scalars().all()
+
+    @classmethod
+    @with_session
+    async def get_all_by_folder(
+        cls,
+        session: AsyncSession,
+        folder: str,
+        status: Optional[str] = None,
+    ) -> Sequence["AiMemeRecord"]:
+        """获取指定文件夹的所有记录（不分页）"""
+        stmt = select(cls).where(cls.folder == folder)
+        if status:
+            stmt = stmt.where(cls.status == status)
+        stmt = stmt.order_by(col(cls.created_at).desc())
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+    @classmethod
+    @with_session
+    async def get_all_records_no_page(
+        cls,
+        session: AsyncSession,
+        status: Optional[str] = None,
+    ) -> Sequence["AiMemeRecord"]:
+        """获取所有记录（不分页）"""
+        if status:
+            stmt = select(cls).where(cls.status == status)
+        else:
+            stmt = select(cls)
+        stmt = stmt.order_by(col(cls.created_at).desc())
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+    @classmethod
+    @with_session
     async def random_pick(
         cls,
         session: AsyncSession,
