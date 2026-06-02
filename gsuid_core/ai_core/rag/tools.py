@@ -1,6 +1,6 @@
 """工具向量存储 - 管理工具的入库和检索"""
 
-from typing import TYPE_CHECKING, Any, Set, Dict, List, Union
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Union, Sequence
 
 from qdrant_client.models import (
     Distance,
@@ -19,8 +19,9 @@ from .base import (
     get_point_id,
     calculate_hash,
     get_strict_dimension,
-    get_rag_embed_batch_size,
+    embed_texts_with_backoff,
     get_rag_upsert_batch_size,
+    upsert_points_with_backoff,
 )
 from .collection_migration import ensure_vector_on_disk, force_recreate_collection, collection_vector_mismatched
 
@@ -115,32 +116,35 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
             payload = {"name": tool.name, "description": tool.description, "_hash": current_hash}
             pending_items.append((tool_name, payload, desc_and_name))
 
-    embed_batch_size = get_rag_embed_batch_size()
     if pending_items:
-        logger.info(f"🧠 [Tools] 需要新增/更新 {len(pending_items)} 个工具，开始批量嵌入(batch={embed_batch_size})...")
+        logger.info(f"🧠 [Tools] 需要新增/更新 {len(pending_items)} 个工具，开始批量嵌入...")
 
-    for start in range(0, len(pending_items), embed_batch_size):
-        batch = pending_items[start : start + embed_batch_size]
-        vectors = list(await embedding_model.aembed([item[2] for item in batch]))
-        if len(vectors) != len(batch):
-            logger.warning(f"🧠 [Tools] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过")
+    async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
+        return list(await embedding_model.aembed(list(texts)))
+
+    vectors = await embed_texts_with_backoff(
+        [item[2] for item in pending_items],
+        _embed_pending,
+        log_tag="Tools",
+    )
+    for i, (tool_name, payload, _) in enumerate(pending_items):
+        vector = vectors[i]
+        if vector is None:
             continue
-        for (tool_name, payload, _), vector in zip(batch, vectors):
-            action_str = "新增" if tool_name not in existing_tools else "更新"
-            logger.info(f"🧠 [Tools] [{action_str}] 工具: {tool_name}")
-            points_to_upsert.append(
-                PointStruct(
-                    id=get_point_id(tool_name),
-                    vector=list(vector),
-                    payload=payload,
-                )
+        action_str = "新增" if tool_name not in existing_tools else "更新"
+        logger.info(f"🧠 [Tools] [{action_str}] 工具: {tool_name}")
+        points_to_upsert.append(
+            PointStruct(
+                id=get_point_id(tool_name),
+                vector=list(vector),
+                payload=payload,
             )
+        )
 
     # 3. 执行更新
     if points_to_upsert:
-        upsert_batch_size = get_rag_upsert_batch_size()
-        logger.info(f"🧠 [Tools] 写入 {len(points_to_upsert)} 个工具(batch={upsert_batch_size})...")
-        await _upsert_tool_points(points_to_upsert, batch_size=upsert_batch_size)
+        logger.info(f"🧠 [Tools] 写入 {len(points_to_upsert)} 个工具...")
+        await _upsert_tool_points(points_to_upsert)
 
     # 4. 清理已删除的工具
     if local_tool_names:
@@ -160,20 +164,22 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
 
 
 async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None = None) -> None:
-    """批量写入工具向量，并在本地 Qdrant 旧维度残留时强制重建后重试。"""
+    """批量写入工具向量，内置 413 退避 + 本地 Qdrant 旧维度残留重建。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None or not points:
         return
-    if batch_size is None:
-        batch_size = get_rag_upsert_batch_size()
+
+    bs = batch_size or get_rag_upsert_batch_size()
+
+    async def _do_upsert(batch):
+        c = client
+        if c is None:
+            raise RuntimeError("Qdrant client 不可用")
+        await c.upsert(collection_name=TOOLS_COLLECTION_NAME, points=batch)
 
     try:
-        for start in range(0, len(points), batch_size):
-            await client.upsert(
-                collection_name=TOOLS_COLLECTION_NAME,
-                points=points[start : start + batch_size],
-            )
+        await upsert_points_with_backoff(points, _do_upsert, initial_batch_size=bs, log_tag="Tools")
     except Exception as e:
         message = str(e)
         if "broadcast input array" not in message and "not aligned" not in message and "dim" not in message:
@@ -188,11 +194,11 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
 
         if refreshed_client is None:
             raise RuntimeError("Qdrant client 重建后不可用")
-        for start in range(0, len(points), batch_size):
-            await refreshed_client.upsert(
-                collection_name=TOOLS_COLLECTION_NAME,
-                points=points[start : start + batch_size],
-            )
+
+        async def _do_upsert_after_recreate(batch):
+            await refreshed_client.upsert(collection_name=TOOLS_COLLECTION_NAME, points=batch)
+
+        await upsert_points_with_backoff(points, _do_upsert_after_recreate, initial_batch_size=bs, log_tag="Tools")
 
 
 # 框架保底工具分类——这些分类下的工具会被无条件全部注入主Agent，

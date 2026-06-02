@@ -7,7 +7,7 @@ import hashlib
 import zipfile
 import tempfile
 import threading
-from typing import Final, Union
+from typing import Final, Union, Callable, Sequence, Awaitable
 from pathlib import Path
 
 import httpx
@@ -94,6 +94,139 @@ def get_rag_embed_batch_size() -> int:
 def get_rag_upsert_batch_size() -> int:
     """返回 Qdrant upsert 批大小。"""
     return RAG_UPSERT_BATCH_SIZE
+
+
+# ============== 413 退避重试工具 ==============
+# 全局缓存：413 退避发现的有效批大小，避免每次调用都从默认值重新试错
+_cached_embed_bs: int = 0  # 0 表示尚未发现过 413，使用默认值
+_cached_upsert_bs: int = 0
+
+_413_TEXT_MARKERS: tuple[str, ...] = (
+    "413",
+    "payload too large",
+    "request entity too large",
+    "request body too large",
+    "context length",
+    "too many tokens",
+)
+
+
+def _is_413_error(exc: BaseException) -> bool:
+    """判断异常是否对应 413 / Payload Too Large。
+
+    覆盖 httpx.HTTPStatusError、openai 异常、以及纯文本兜底。
+    """
+    # 1) 结构化 status_code / code 属性
+    for attr in ("status_code", "code", "http_status"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int) and val == 413:
+            return True
+        if isinstance(val, str) and val.strip() == "413":
+            return True
+    # 2) httpx.Response 类
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 413:
+        return True
+    # 3) 纯文本兜底
+    msg = (str(exc) or "").lower()
+    return any(marker in msg for marker in _413_TEXT_MARKERS)
+
+
+async def embed_texts_with_backoff(
+    texts: Sequence[str],
+    embed_fn: Callable[[Sequence[str]], Awaitable[Sequence[Sequence[float]]]],
+    *,
+    initial_batch_size: int | None = None,
+    log_tag: str = "Embedding",
+) -> list[Sequence[float] | None]:
+    """对一组文本做远程嵌入，遇到 413 时把批大小减半后重试，最小到 1。
+
+    已成功写入的批会保留在结果中（顺序与输入一致）。
+    当批大小已为 1 且仍触发 413 时，对应位置返回 None 并记 warning。
+    非 413 异常直接抛出，保留调用方原有降级/抛出策略。
+    """
+    global _cached_embed_bs
+    if not texts:
+        return []
+    if initial_batch_size is not None:
+        bs = initial_batch_size
+    elif _cached_embed_bs > 0:
+        bs = _cached_embed_bs
+    else:
+        bs = get_rag_embed_batch_size()
+    if bs <= 0:
+        bs = 1
+    results: list[Sequence[float] | None] = [None] * len(texts)
+    index = 0
+    while index < len(texts):
+        current_bs = min(bs, len(texts) - index)
+        batch = texts[index : index + current_bs]
+        try:
+            vectors = await embed_fn(batch)
+        except Exception as e:
+            if not _is_413_error(e):
+                raise
+            if current_bs <= 1:
+                logger.warning(f"🧠 [{log_tag}] 单条仍触发 413 限流，跳过: index={index}, err={e}")
+                index += 1
+                continue
+            new_bs = max(current_bs // 2, 1)
+            logger.warning(f"🧠 [{log_tag}] 远端拒绝大批量(413)，批大小 {current_bs} -> {new_bs}: {e}")
+            _cached_embed_bs = new_bs
+            bs = new_bs
+            continue  # 当前批不前进, 用更小批重试同一窗口
+        if len(vectors) != len(batch):
+            raise RuntimeError(f"🧠 [{log_tag}] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}")
+        results[index : index + current_bs] = vectors
+        index += current_bs
+    return results
+
+
+async def upsert_points_with_backoff(
+    points: Sequence,
+    upsert_fn: Callable[[Sequence], Awaitable[None]],
+    *,
+    initial_batch_size: int | None = None,
+    log_tag: str = "QdrantUpsert",
+) -> int:
+    """对一组 Qdrant PointStruct 写入，遇到 413 时把批大小减半后重试，最小到 1。
+
+    返回成功写入的 point 数量。bs == 1 仍 413 时记录 warning 并跳过该条。
+    非 413 异常直接抛出。
+    """
+    global _cached_upsert_bs
+    if not points:
+        return 0
+    if initial_batch_size is not None:
+        bs = initial_batch_size
+    elif _cached_upsert_bs > 0:
+        bs = _cached_upsert_bs
+    else:
+        bs = get_rag_upsert_batch_size()
+    if bs <= 0:
+        bs = 1
+    written = 0
+    index = 0
+    while index < len(points):
+        current_bs = min(bs, len(points) - index)
+        batch = points[index : index + current_bs]
+        try:
+            await upsert_fn(batch)
+        except Exception as e:
+            if not _is_413_error(e):
+                raise
+            if current_bs <= 1:
+                logger.warning(f"🧠 [{log_tag}] 单条 Point 仍触发 413，跳过: index={index}, err={e}")
+                index += 1
+                continue
+            new_bs = max(current_bs // 2, 1)
+            logger.warning(f"🧠 [{log_tag}] Qdrant 远端拒绝大批量(413)，批大小 {current_bs} -> {new_bs}: {e}")
+            _cached_upsert_bs = new_bs
+            bs = new_bs
+            continue
+        written += current_bs
+        index += current_bs
+    return written
 
 
 def get_dimension() -> int:

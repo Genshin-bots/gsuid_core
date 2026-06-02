@@ -21,7 +21,7 @@ from qdrant_client.models import (
 )
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.base import _get_sparse_model, get_rag_embed_batch_size
+from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
@@ -97,12 +97,15 @@ async def _embed_batch_async(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
-    vectors: list[list[float]] = []
-    batch_size = get_rag_embed_batch_size()
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        vectors.extend(await embedding_provider.embed(batch))
-    return vectors
+    async def _embed_fn(batch):
+        return await embedding_provider.embed(batch)
+
+    results = await embed_texts_with_backoff(texts, _embed_fn, log_tag="Memory")
+    # bs=1 仍 413 时对应位置为 None，无法用于向量存储，抛出异常
+    for i, vec in enumerate(results):
+        if vec is None:
+            raise RuntimeError(f"🧠 [Memory] 文本 {i} 嵌入失败（413 限流），无法继续")
+    return [list(vec) for vec in results if vec is not None]
 
 
 def _sparse_embed(text: str) -> Optional[SparseVector]:

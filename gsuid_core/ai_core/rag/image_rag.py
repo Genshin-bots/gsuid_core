@@ -6,7 +6,7 @@
 
 import time
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from pathlib import Path
 
 from qdrant_client.models import (
@@ -26,8 +26,8 @@ from gsuid_core.ai_core.rag.base import (
     get_point_id,
     calculate_hash,
     get_strict_dimension,
-    get_rag_embed_batch_size,
-    get_rag_upsert_batch_size,
+    embed_texts_with_backoff,
+    upsert_points_with_backoff,
 )
 from gsuid_core.ai_core.register import _ENTITIES
 from gsuid_core.ai_core.rag.collection_migration import (
@@ -145,20 +145,33 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
             logger.warning(f"🧠 [ImageRAG] 准备旧 payload 重嵌入失败，已跳过: {e}")
 
     points_to_upsert: list[PointStruct] = []
-    batch_size = get_rag_embed_batch_size()
-    for start in range(0, len(prepared), batch_size):
-        batch = prepared[start : start + batch_size]
-        try:
-            vectors = list(await embedding_model.aembed([item[2] for item in batch]))
-            for (point_id, payload, _), vector in zip(batch, vectors):
-                points_to_upsert.append(PointStruct(id=point_id, vector=list(vector), payload=payload))
-        except Exception as e:
-            skipped += len(batch)
-            logger.warning(f"🧠 [ImageRAG] 批量重嵌入旧 payload 失败，已跳过 {len(batch)} 条: {e}")
+
+    async def _embed_reembed(texts: Sequence[str]) -> list[list[float]]:
+        return list(await embedding_model.aembed(list(texts)))
+
+    try:
+        vectors = await embed_texts_with_backoff(
+            [item[2] for item in prepared],
+            _embed_reembed,
+            log_tag="ImageRAG",
+        )
+        for i, (point_id, payload, _) in enumerate(prepared):
+            vec = vectors[i]
+            if vec is None:
+                skipped += 1
+                continue
+            points_to_upsert.append(PointStruct(id=point_id, vector=list(vec), payload=payload))
+    except Exception as e:
+        skipped += len(prepared)
+        logger.warning(f"🧠 [ImageRAG] 批量重嵌入旧 payload 失败，已跳过 {len(prepared)} 条: {e}")
 
     if points_to_upsert:
+
+        async def _do_upsert(batch):
+            await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=batch)
+
         try:
-            await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=points_to_upsert)
+            await upsert_points_with_backoff(points_to_upsert, _do_upsert, log_tag="ImageRAG")
         except Exception as e:
             from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
 
@@ -174,7 +187,11 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
 
             if refreshed_client is None:
                 raise RuntimeError("Qdrant client 重建后不可用")
-            await refreshed_client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=points_to_upsert)
+
+            async def _do_upsert_after_recreate(batch):
+                await refreshed_client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=batch)
+
+            await upsert_points_with_backoff(points_to_upsert, _do_upsert_after_recreate, log_tag="ImageRAG")
     logger.info(f"🧠 [ImageRAG] 维度迁移重嵌入完成: {len(points_to_upsert)} 条，跳过 {skipped} 条")
 
 
@@ -308,50 +325,39 @@ async def sync_images():
             payload["source"] = "plugin"
             pending_items.append((id_str, payload, text_to_embed, plugin_name, tags, is_new))
 
-    embed_batch_size = get_rag_embed_batch_size()
     if pending_items:
-        logger.info(
-            f"🧠 [ImageRAG] 需要新增/更新 {len(pending_items)} 个图片，开始批量嵌入(batch={embed_batch_size})..."
-        )
+        logger.info(f"🧠 [ImageRAG] 需要新增/更新 {len(pending_items)} 个图片，开始批量嵌入...")
 
-    last_embed_progress_log = time.monotonic()
-    for start in range(0, len(pending_items), embed_batch_size):
-        batch = pending_items[start : start + embed_batch_size]
-        batch_no = start // embed_batch_size + 1
-        total_batches = (len(pending_items) + embed_batch_size - 1) // embed_batch_size
-        vectors = list(await embedding_model.aembed([item[2] for item in batch]))
-        now = time.monotonic()
-        if now - last_embed_progress_log >= 30.0 or start + len(batch) >= len(pending_items):
-            logger.info(
-                f"🧠 [ImageRAG] 批量嵌入进度: {start + len(batch)}/{len(pending_items)} "
-                f"(batch {batch_no}/{total_batches})"
-            )
-            last_embed_progress_log = now
-        if len(vectors) != len(batch):
-            logger.warning(
-                f"🧠 [ImageRAG] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过"
-            )
+    async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
+        return list(await embedding_model.aembed(list(texts)))
+
+    vectors = await embed_texts_with_backoff(
+        [item[2] for item in pending_items],
+        _embed_pending,
+        log_tag="ImageRAG",
+    )
+    for i, (id_str, payload, _, plugin_name, tags, is_new) in enumerate(pending_items):
+        vector = vectors[i]
+        if vector is None:
             continue
-        for (id_str, payload, _, plugin_name, tags, is_new), vector in zip(batch, vectors):
-            action_str = "新增" if is_new else "更新"
-            logger.info(f"🧠 [ImageRAG] [{plugin_name}] [{action_str}] 图片: {tags}")
-            points_to_upsert.append(
-                PointStruct(
-                    id=get_point_id(id_str),
-                    vector=list(vector),
-                    payload=payload,
-                )
+        action_str = "新增" if is_new else "更新"
+        logger.info(f"🧠 [ImageRAG] [{plugin_name}] [{action_str}] 图片: {tags}")
+        points_to_upsert.append(
+            PointStruct(
+                id=get_point_id(id_str),
+                vector=list(vector),
+                payload=payload,
             )
+        )
 
     # 3. 执行更新
     if points_to_upsert:
-        upsert_batch_size = get_rag_upsert_batch_size()
-        logger.info(f"🧠 [ImageRAG] 写入 {len(points_to_upsert)} 个图片(batch={upsert_batch_size})...")
-        for start in range(0, len(points_to_upsert), upsert_batch_size):
-            await client.upsert(
-                collection_name=IMAGE_COLLECTION_NAME,
-                points=points_to_upsert[start : start + upsert_batch_size],
-            )
+        logger.info(f"🧠 [ImageRAG] 写入 {len(points_to_upsert)} 个图片...")
+
+        async def _do_upsert(batch):
+            await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=batch)
+
+        await upsert_points_with_backoff(points_to_upsert, _do_upsert, log_tag="ImageRAG")
 
     # 4. 清理已删除的图片
     if local_ids:

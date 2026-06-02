@@ -2,7 +2,7 @@
 
 import time
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from qdrant_client.models import (
     Filter,
@@ -21,8 +21,9 @@ from gsuid_core.ai_core.rag.base import (
     get_point_id,
     calculate_hash,
     get_strict_dimension,
-    get_rag_embed_batch_size,
+    embed_texts_with_backoff,
     get_rag_upsert_batch_size,
+    upsert_points_with_backoff,
 )
 from gsuid_core.ai_core.register import _ENTITIES
 from gsuid_core.ai_core.rag.collection_migration import (
@@ -153,16 +154,21 @@ async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, 
             logger.warning(f"🧠 [Knowledge] 准备旧 payload 重嵌入失败，已跳过: {e}")
 
     points_to_upsert: list[PointStruct] = []
-    batch_size = get_rag_embed_batch_size()
-    for start in range(0, len(prepared), batch_size):
-        batch = prepared[start : start + batch_size]
-        try:
-            vectors = list(await embedding_model.aembed([item[2] for item in batch]))
-            for (point_id, payload, _), vector in zip(batch, vectors):
-                points_to_upsert.append(PointStruct(id=point_id, vector=list(vector), payload=payload))
-        except Exception as e:
-            skipped += len(batch)
-            logger.warning(f"🧠 [Knowledge] 批量重嵌入旧 payload 失败，已跳过 {len(batch)} 条: {e}")
+
+    async def _embed_reembed(texts: Sequence[str]) -> list[list[float]]:
+        return list(await embedding_model.aembed(list(texts)))
+
+    vectors = await embed_texts_with_backoff(
+        [item[2] for item in prepared],
+        _embed_reembed,
+        log_tag="Knowledge",
+    )
+    for i, (point_id, payload, _) in enumerate(prepared):
+        vec = vectors[i]
+        if vec is None:
+            skipped += 1
+            continue
+        points_to_upsert.append(PointStruct(id=point_id, vector=list(vec), payload=payload))
 
     if points_to_upsert:
         await _upsert_knowledge_points(points_to_upsert)
@@ -170,20 +176,22 @@ async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, 
 
 
 async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Optional[int] = None) -> None:
-    """批量写入 Knowledge points，并在本地 Qdrant 旧维度残留时强制重建后重试。"""
+    """批量写入 Knowledge points，内置 413 退避 + 本地 Qdrant 旧维度残留重建。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None or not points:
         return
-    if batch_size is None:
-        batch_size = get_rag_upsert_batch_size()
+
+    bs = batch_size or get_rag_upsert_batch_size()
+
+    async def _do_upsert(batch):
+        c = client
+        if c is None:
+            raise RuntimeError("Qdrant client 不可用")
+        await c.upsert(collection_name=KNOWLEDGE_COLLECTION_NAME, points=batch)
 
     try:
-        for start in range(0, len(points), batch_size):
-            await client.upsert(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                points=points[start : start + batch_size],
-            )
+        await upsert_points_with_backoff(points, _do_upsert, initial_batch_size=bs, log_tag="Knowledge")
     except Exception as e:
         message = str(e)
         if "broadcast input array" not in message and "not aligned" not in message and "dim" not in message:
@@ -198,11 +206,11 @@ async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Option
 
         if refreshed_client is None:
             raise RuntimeError("Qdrant client 重建后不可用")
-        for start in range(0, len(points), batch_size):
-            await refreshed_client.upsert(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                points=points[start : start + batch_size],
-            )
+
+        async def _do_upsert_after_recreate(batch):
+            await refreshed_client.upsert(collection_name=KNOWLEDGE_COLLECTION_NAME, points=batch)
+
+        await upsert_points_with_backoff(points, _do_upsert_after_recreate, initial_batch_size=bs, log_tag="Knowledge")
 
 
 def build_knowledge_text(kp: KnowledgeBase | ManualKnowledgeBase) -> str:
@@ -329,45 +337,35 @@ async def sync_knowledge():
             payload["source"] = "plugin"  # 确保标记为插件来源
             pending_items.append((id_str, payload, text_to_embed, log_prefix, log_name))
 
-    embed_batch_size = get_rag_embed_batch_size()
     if pending_items:
-        logger.info(f"🧠 [Knowledge] 需要新增/更新 {len(pending_items)} 条，开始批量嵌入(batch={embed_batch_size})...")
+        logger.info(f"🧠 [Knowledge] 需要新增/更新 {len(pending_items)} 条，开始批量嵌入...")
 
-    last_embed_progress_log = time.monotonic()
-    for start in range(0, len(pending_items), embed_batch_size):
-        batch = pending_items[start : start + embed_batch_size]
-        batch_no = start // embed_batch_size + 1
-        total_batches = (len(pending_items) + embed_batch_size - 1) // embed_batch_size
-        texts = [item[2] for item in batch]
-        vectors = list(await embedding_model.aembed(texts))
-        now = time.monotonic()
-        if now - last_embed_progress_log >= 30.0 or start + len(batch) >= len(pending_items):
-            logger.info(
-                f"🧠 [Knowledge] 批量嵌入进度: {start + len(batch)}/{len(pending_items)} "
-                f"(batch {batch_no}/{total_batches})"
-            )
-            last_embed_progress_log = now
-        if len(vectors) != len(batch):
-            logger.warning(
-                f"🧠 [Knowledge] 批量嵌入返回数量异常: expected={len(batch)}, actual={len(vectors)}，本批跳过"
-            )
+    async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
+        return list(await embedding_model.aembed(list(texts)))
+
+    vectors = await embed_texts_with_backoff(
+        [item[2] for item in pending_items],
+        _embed_pending,
+        log_tag="Knowledge",
+    )
+    for i, (id_str, payload, _, log_prefix, log_name) in enumerate(pending_items):
+        vector = vectors[i]
+        if vector is None:
             continue
-        for (id_str, payload, _, log_prefix, log_name), vector in zip(batch, vectors):
-            action_str = "新增" if id_str not in existing_knowledge else "更新"
-            logger.info(f"🧠 [{log_prefix}] [{payload.get('plugin')}] [{action_str}] 知识: {log_name}")
-            points_to_upsert.append(
-                PointStruct(
-                    id=get_point_id(id_str),
-                    vector=list(vector),
-                    payload=payload,
-                )
+        action_str = "新增" if id_str not in existing_knowledge else "更新"
+        logger.info(f"🧠 [{log_prefix}] [{payload.get('plugin')}] [{action_str}] 知识: {log_name}")
+        points_to_upsert.append(
+            PointStruct(
+                id=get_point_id(id_str),
+                vector=list(vector),
+                payload=payload,
             )
+        )
 
     # 3. 执行更新
     if points_to_upsert:
-        upsert_batch_size = get_rag_upsert_batch_size()
-        logger.info(f"🧠 [Knowledge] 写入 {len(points_to_upsert)} 个知识点(batch={upsert_batch_size})...")
-        await _upsert_knowledge_points(points_to_upsert, batch_size=upsert_batch_size)
+        logger.info(f"🧠 [Knowledge] 写入 {len(points_to_upsert)} 个知识点...")
+        await _upsert_knowledge_points(points_to_upsert)
 
     # 4. 清理已删除的插件知识（手动添加的知识不会被删除）
     if local_ids:
