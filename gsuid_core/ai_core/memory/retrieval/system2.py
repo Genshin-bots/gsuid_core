@@ -203,7 +203,7 @@ class System2GlobalSelector:
                     if ed.target_entity_id in entity_id_to_name
                     else "",
                     "fact": ed.fact,
-                    "weight": 0.0,
+                    "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
                     "score": 0.0,
                     "invalid_at_ts": None,
                 }

@@ -23,6 +23,8 @@ _PROFILE_SCOPE = "__gscore_group_profile__"
 # 词汇映射表与标签的容量上限，防止无限膨胀
 _MAX_TERM_MAPPINGS = 60
 _MAX_TAGS = 40
+# A-4：群成员称呼表容量上限
+_MAX_MEMBER_ALIASES = 60
 
 
 class GroupProfileData(TypedDict):
@@ -34,6 +36,7 @@ class GroupProfileData(TypedDict):
     scope_key: str
     tag_counts: Dict[str, int]  # {标签: 累计出现频次}
     term_mappings: Dict[str, str]  # {别名: 正式名称}
+    member_aliases: Dict[str, str]  # A-4：{群成员称呼/外号: 用户ID}（确定性身份库）
     last_updated: str  # ISO 时间字符串，空串表示尚未写入
 
 
@@ -44,14 +47,18 @@ def _normalize(raw: Any, scope_key: str) -> GroupProfileData:
     因此逐字段用 isinstance 守卫取值，而非直接信任其形状。
     """
     if not isinstance(raw, dict):
-        return GroupProfileData(scope_key=scope_key, tag_counts={}, term_mappings={}, last_updated="")
+        return GroupProfileData(
+            scope_key=scope_key, tag_counts={}, term_mappings={}, member_aliases={}, last_updated=""
+        )
     raw_tags = raw["tag_counts"] if "tag_counts" in raw else None
     raw_terms = raw["term_mappings"] if "term_mappings" in raw else None
+    raw_members = raw["member_aliases"] if "member_aliases" in raw else None
     raw_updated = raw["last_updated"] if "last_updated" in raw else None
     return GroupProfileData(
         scope_key=scope_key,
         tag_counts=raw_tags if isinstance(raw_tags, dict) else {},
         term_mappings=raw_terms if isinstance(raw_terms, dict) else {},
+        member_aliases=raw_members if isinstance(raw_members, dict) else {},
         last_updated=raw_updated if isinstance(raw_updated, str) else "",
     )
 
@@ -137,6 +144,43 @@ async def get_term_mappings(scope_key: str) -> Dict[str, str]:
     return profile["term_mappings"]
 
 
+async def record_member_alias(scope_key: str, alias: str, user_id: str) -> None:
+    """A-4：记录"群成员称呼/外号 → 用户ID"到确定性身份库。
+
+    当群里明确指定某人的称呼（"以后叫她小C"）时由 ``remember_user_alias`` 工具写入。
+    与易抽错、靠相似度召回的图记忆不同，这里是**确定性映射**，可被现场覆盖（同 alias
+    再写一次即更新），注入时作为高可信身份事实呈现。
+
+    Args:
+        scope_key: 群组 scope key
+        alias:     称呼 / 外号 / 昵称
+        user_id:   被指称的用户ID
+    """
+    alias = (alias or "").strip()
+    user_id = str(user_id or "").strip()
+    if not scope_key or not alias or not user_id:
+        return
+    from gsuid_core.ai_core.state_store import state_mutate
+
+    def _mutate(current: Any) -> GroupProfileData:
+        profile = _as_profile(current, scope_key)
+        member_aliases: Dict[str, str] = dict(profile["member_aliases"])
+        member_aliases[alias] = user_id  # 同 alias 再写即覆盖（现场纠正优先）
+        if len(member_aliases) > _MAX_MEMBER_ALIASES:
+            member_aliases = dict(list(member_aliases.items())[-_MAX_MEMBER_ALIASES:])
+        profile["member_aliases"] = member_aliases
+        return profile
+
+    await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
+    logger.debug(f"🧠 [GroupProfile] {scope_key} 群成员称呼已更新: {alias} = {user_id}")
+
+
+async def get_member_aliases(scope_key: str) -> Dict[str, str]:
+    """获取群成员称呼表 {称呼: 用户ID}。"""
+    profile = await get_group_profile(scope_key)
+    return profile["member_aliases"]
+
+
 async def get_context_tags(scope_key: str, top_n: int = 8) -> List[str]:
     """获取群组的主要语境标签（按累计频次降序）。"""
     profile = await get_group_profile(scope_key)
@@ -176,6 +220,7 @@ async def format_context_injection(
     profile = await get_group_profile(scope_key)
     tags = await get_context_tags(scope_key, top_n=6)
     term_mappings = profile["term_mappings"]
+    member_aliases = profile["member_aliases"]
 
     # C2-c/e：并入插件 ai_alias 注册的别名，多候选别名单列为"歧义参考"，
     # 交由 Agent 按上下文消歧（动态实体链接），不做字符串替换。
@@ -189,10 +234,18 @@ async def format_context_injection(
     except Exception:
         ambiguous = {}
 
-    if not tags and not term_mappings and not ambiguous:
+    if not tags and not term_mappings and not ambiguous and not member_aliases:
         return ""
 
     lines: List[str] = ["【当前群聊语境】"]
+    # A-4：群成员称呼表——确定性身份库，优先级高于长期记忆里的待证身份事实
+    if member_aliases:
+        lines.append("群成员称呼（确定，以此为准；与长期记忆中的身份冲突时信这个）:")
+        for alias, uid in list(member_aliases.items())[:12]:
+            entry = f'  - "{alias}" = 用户{uid}'
+            if sum(len(line) for line in lines) + len(entry) > max_chars:
+                break
+            lines.append(entry)
     if tags:
         lines.append(f"主要话题: {'、'.join(tags)}")
     if term_mappings:

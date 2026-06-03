@@ -34,7 +34,7 @@ from gsuid_core.ai_core.session_logger import ProactiveSource
 
 # 旧路径仍保留（heartbeat/dispatcher.py），本模块直接复用其单例，
 # 不重复实现"防撞车 + 合并语境"语义。
-from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
 # 老 dispatcher.register_send 兼容字面量集合（plans/proactive_message_session_unification_20260529.md §3.1）
 LegacyDispatcherSource = Literal["heartbeat", "task"]
@@ -57,12 +57,8 @@ def _resolve_active_bot(event: Event) -> Optional["_Bot"]:
 
 
 def _target_key(event: Event) -> str:
-    """C8 网关目标标识：群聊用 group_id，私聊用 user_id。"""
-    if event.group_id:
-        return str(event.group_id)
-    if event.user_id:
-        return str(event.user_id)
-    return ""
+    """C8 网关目标标识：群聊用 group_id，私聊用 user_id（与 decision/inspector 同口径）。"""
+    return make_target_key(event.group_id, event.user_id)
 
 
 async def _sync_to_main_session(

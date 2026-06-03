@@ -42,6 +42,7 @@ from gsuid_core.ai_core.persona.prompts import (
     ROLE_PLAYING_START,
     SYSTEM_CONSTRAINTS,
     CHARACTER_BUILDING_TEMPLATE,
+    TOOL_ORCHESTRATION_CONSTRAINTS,
 )
 from gsuid_core.ai_core.persona.startup import init_default_personas
 from gsuid_core.ai_core.persona.resource import (
@@ -83,6 +84,7 @@ __all__ = [
     "CHARACTER_BUILDING_TEMPLATE",
     "ROLE_PLAYING_START",
     "SYSTEM_CONSTRAINTS",
+    "TOOL_ORCHESTRATION_CONSTRAINTS",
     # 初始化函数
     "init_default_personas",
     # 配置管理

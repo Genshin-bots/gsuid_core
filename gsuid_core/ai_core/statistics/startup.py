@@ -3,13 +3,16 @@ from datetime import datetime
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_shutdown
-from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
 
 async def init_ai_core_statistics():
     """初始化AI Core的Session管理器和定时巡检"""
+    # 延迟到函数内导入 heartbeat：避免与 heartbeat → decision → statistics
+    # 形成模块级循环（详见 plans/.../proactive 设计）。
+    from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
+
     # 启动 AISessionRegistry 的空闲清理任务
     registry = get_ai_session_registry()
     await registry.start_cleanup_loop()

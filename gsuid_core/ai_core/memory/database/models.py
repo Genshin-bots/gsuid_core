@@ -464,6 +464,21 @@ class AIMemEdge(SQLModel, table=True):
 
     @classmethod
     @with_session
+    async def get_confidence_inputs(cls, session: AsyncSession, edge_ids: list[str]) -> dict[str, tuple[int, float]]:
+        """批量取边的置信度输入 {id: (mention_count, decay_score)}。
+
+        检索期 dual_route 据此富集 Edge.weight（置信度=佐证×新鲜度）。decay_score 由衰减
+        Worker 周期更新、且只落 DB（Qdrant 载荷会过期），故置信度一律以 DB 实时值为准。
+        """
+        if not edge_ids:
+            return {}
+        result = await session.execute(
+            select(cls.id, cls.mention_count, cls.decay_score).where(col(cls.id).in_(edge_ids))
+        )
+        return {row[0]: (row[1], row[2]) for row in result.all()}
+
+    @classmethod
+    @with_session
     async def touch_accessed(cls, session: AsyncSession, edge_ids: list[str]) -> None:
         """把一批 Edge 标记为"刚被检索命中"，刷新 last_accessed（C11 Decay 依据）。"""
         if not edge_ids:

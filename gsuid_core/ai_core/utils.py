@@ -263,6 +263,35 @@ async def prepare_content_payload(
     return content_payload
 
 
+def _looks_like_tool_table(text: str) -> bool:
+    """检测文本是否为工具结果 / 数据展示（含 markdown 表格或代码块）。
+
+    用于在 ``send_chat_result`` 中豁免 markdown 净化——闲聊回复剥离 markdown，
+    但工具检索结果（如表格）需保留原样。
+    """
+    if "```" in text:
+        return True
+    # 含表格分隔行 |---| 或多个表格竖线时视为表格
+    if re.search(r"\|.*\|.*\|", text) and ("---" in text or text.count("|") >= 4):
+        return True
+    return False
+
+
+def _strip_persona_markdown(text: str) -> str:
+    """剥离闲聊/人格回复里的 markdown 与 ``*动作*`` 旁白（B-2）。
+
+    QQ 等 IM 不渲染 markdown，字面的 ``**加粗**`` / ``*揉揉眼睛*`` 极不拟人。
+    但**工具结果**（含表格 / 代码块）需保留原样以便阅读，故命中
+    ``_looks_like_tool_table`` 时原样返回、不做任何剥离。
+    """
+    if _looks_like_tool_table(text):
+        return text
+    text = re.sub(r"\*{1,3}([^*\n]+)\*{1,3}", r"\1", text)  # **x** / *x* → x
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.M)  # 标题
+    text = re.sub(r"^\s{0,3}[-*>]\s+", "", text, flags=re.M)  # 列表 / 引用
+    return text
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -293,8 +322,12 @@ async def send_chat_result(
     meme_tags: list[str] = MEME_TAG_PATTERN.findall(text)
     clean_text: str = MEME_TAG_PATTERN.sub("", text).strip()
 
-    # 清理标记残留的多余空格/标点
-    clean_text = re.sub(r"\s{2,}", " ", clean_text)
+    # 闲聊/人格回复剥离 markdown 与 *动作* 旁白（工具表格/代码块自动豁免，见该函数）。
+    clean_text = _strip_persona_markdown(clean_text)
+
+    # 清理标记残留的多余空格/标点。只压"空格/制表符"、保留换行——原 \s{2,} 会把
+    # \n\n 也压成空格，导致下方 re.split(r"\n\s*\n") 切不出多条，"连发多条短句"退化成一整段。
+    clean_text = re.sub(r"[ \t]{2,}", " ", clean_text)
     clean_text = re.sub(r"^[，。！？\s]+|[，。！？\s]+$", "", clean_text)
 
     # Trace 日志：记录解析结果

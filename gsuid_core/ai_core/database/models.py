@@ -202,7 +202,9 @@ class UserFavorability(BaseModel, table=True):
                 await session.execute(stmt)
                 await session.commit()
 
-            logger.info(f"🧠 [UserFavorability] 更新用户 {user_id} 好感度: {record.favorability} -> {new_value}")
+            # debug 级：被动累积每条消息都会调用，info 级会刷屏；
+            # 显式工具路径（favorability_manager）另有自己的 info 结果日志。
+            logger.debug(f"🧠 [UserFavorability] 更新用户 {user_id} 好感度: {record.favorability} -> {new_value}")
             return True
         except Exception as e:
             logger.exception(f"🧠 [UserFavorability] 更新好感度失败: {e}")

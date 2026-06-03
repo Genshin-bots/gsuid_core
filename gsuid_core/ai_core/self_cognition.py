@@ -248,7 +248,8 @@ def _relationship_line(user_id: str, favorability: Optional[int]) -> str:
     if _is_master_user(user_id):
         return "当前对话者是我的主人（最高信任）。"
     if favorability is None:
-        return "当前对话者：尚不熟悉。"
+        # None 仅代表"没显式打过分"，不等于陌生——避免对高频群友恒判"尚不熟悉"
+        return "当前对话者：打过照面的群友。"
     if favorability >= 75:
         rel = "很熟的老朋友"
     elif favorability >= 50:
@@ -297,7 +298,9 @@ async def build_self_cognition_context(
     # （由 memory.ingestion.worker._ingest_batch 中的 record_entity_tags 维护），
     # 拿不到再退回静态 self_model.recurring_topics（人工 / 离线写入的兜底）。
     live_topics = await _compute_live_recurring_topics(scope_key) if scope_key else []
-    final_topics = live_topics or model["recurring_topics"][-5:]
+    # 过滤掉作为"话题"误注入的 schema 类型标签（Person/Game/Product… 不是话题）
+    _SCHEMA_TAGS = {"Person", "Game", "Character", "Event", "Product", "Organization", "Location"}
+    final_topics = [t for t in (live_topics or model["recurring_topics"][-5:]) if t not in _SCHEMA_TAGS]
     if final_topics:
         lines.append(f"反复出现的话题: {'、'.join(final_topics)}")
     if model["self_notes"]:
@@ -305,12 +308,10 @@ async def build_self_cognition_context(
 
     lines.append(_relationship_line(user_id, favorability))
 
-    domains = get_capability_domains()
-    if domains:
-        domain_names = "、".join(list(domains.keys())[:10])
-        lines.append(f"我的能力域: {domain_names}")
+    # 不再注入"我的能力域: planning / mcp / 子任务工具…"等工程语汇——每轮复读会把
+    # 角色重塑成"工具系统"，是出戏主因。能调什么工具由 tools schema 承担，不进自述。
 
-    # 仅有标题行 + 关系行（无演化数据、无能力域）时仍值得注入关系信息
+    # 仅有标题行 + 关系行（无演化数据）时仍值得注入关系信息
     if len(lines) <= 1:
         return ""
     return "\n".join(lines)

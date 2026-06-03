@@ -4,6 +4,8 @@
 合并去重后经 Reranker 重排序，输出最终的 MemoryContext。
 """
 
+import re
+import time
 import asyncio
 from typing import TypeVar, Optional, Sequence
 from dataclasses import field, dataclass
@@ -22,6 +24,14 @@ T = TypeVar("T", bound=dict)
 
 # OPT-01: Reranker 是 CPU/GPU 密集型，使用线程池避免阻塞事件循环
 _RERANK_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="reranker")
+
+# A-5 降噪：事件型 trivia（"X提及/提到/在唱/演唱/询问…"这类一次性提及）信息密度低，
+# 注入核心事实时下沉到末尾，把预算优先留给实体/关系型高价值事实。
+_TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到|讨论|说起|谈到)")
+
+# A-3：身份等价类 fact 的特征词。这类 fact 主语极易抽错（"谈论小C"会被固化成
+# "<说话人>本人是小C"），故①禁止用 source_name 强补主语 ②注入时统一标"待证"。
+_IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
 
 
 async def _run_sync_rerank(
@@ -53,11 +63,31 @@ def _complete_fact_subject(fact: str, source_name: str) -> str:
     fact = fact.strip()
     if not fact:
         return ""
-    if source_name and source_name not in fact:
+    # 身份等价类 fact 禁止用 source_name 强补主语——否则"谈论小C"会被固化成
+    # "<说话人>本人是小C"，引发身份级联错乱。
+    _identity = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
+    if source_name and source_name not in fact and not _identity:
         subject = f"用户{source_name}" if source_name.isdigit() else source_name
         if subject not in fact:
             fact = f"{subject}{fact}"
     return fact
+
+
+def compute_edge_confidence(mention_count: Optional[int], decay_score: Optional[float]) -> float:
+    """由"佐证次数 × 新鲜度"折算事实置信度 weight ∈ (0, 1]（置信度轴，与相关性正交）。
+
+    - ``mention_count``（C1 跨发言者归并计数）：同一事实被独立复述越多越可信，
+      用 ``1 - 0.5**mc`` 饱和映射（1→0.5、2→0.75、3→0.875…），单次提及给 0.5 基线；
+    - ``decay_score``（C11 时效衰减分，新鲜=1.0、久未命中→下降）：作为新鲜度系数夹到 [0,1]。
+
+    此值只衡量"这条事实有多可信"，与当前 query 无关——相关性由 reranker score 负责。
+    旧库 ALTER 补列前个别行可能为 None，故按 None→默认值兜住（mc→1、decay→1.0）。
+    """
+    mc = mention_count if (mention_count and mention_count > 0) else 1
+    corroboration = 1.0 - 0.5**mc
+    decay = decay_score if decay_score is not None else 1.0
+    decay = min(max(decay, 0.0), 1.0)
+    return round(corroboration * decay, 4)
 
 
 @dataclass
@@ -110,16 +140,26 @@ class MemoryContext:
         if self.edges:
             fact_budget = int(max_chars * 0.55)
             edges = self.edges[: memory_config.search_edge_count]
-            # C4 预算优先级：主人等优先发言者的 edge 稳定上浮（不打乱 rerank 内部序）
-            if priority_speakers:
-                edges = sorted(
-                    edges,
-                    key=lambda e: 0 if e["source_name"] in priority_speakers else 1,
-                )
+
+            # C4 预算优先级：主人 edge 稳定上浮；A-5 降噪：事件型 trivia 下沉，
+            # 让高价值实体/关系事实优先占用注入预算（stable sort 不打乱 rerank 内部序）。
+            def _edge_rank(e: Edge) -> tuple[int, int]:
+                is_priority = 0 if (priority_speakers and e["source_name"] in priority_speakers) else 1
+                is_trivia = 1 if _TRIVIA_FACT_RE.search(e["fact"] or "") else 0
+                return (is_priority, is_trivia)
+
+            edges = sorted(edges, key=_edge_rank)
             # C11 后置拦截器：按 fact 归一化签名去重，避免近义重复事实挤占注入预算
             fact_lines: list[str] = []
             seen_facts: set = set()
+            now_ts = time.time()
             for e in edges:
+                # 过滤已失效边（invalid_at_ts 过期）与低置信边（weight 低于阈值）
+                invalid_at = e["invalid_at_ts"]
+                if invalid_at and invalid_at < now_ts:
+                    continue
+                if e["weight"] < memory_config.min_edge_weight:
+                    continue
                 fact = _complete_fact_subject(e["fact"], e["source_name"])
                 if not fact:
                     continue
@@ -127,7 +167,9 @@ class MemoryContext:
                 if sig in seen_facts:
                     continue
                 seen_facts.add(sig)
-                fact_lines.append(f"• {fact}")
+                # 身份/称呼类事实极易抽错，加"待证"标注，避免被当成铁证盲信
+                _id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
+                fact_lines.append(f"• {'（记忆·待证）' if _id else ''}{fact}")
             taken = _take(fact_lines, fact_budget)
             if taken:
                 parts.append("【核心事实 - 与当前问题相关】\n" + "\n".join(taken))
@@ -240,7 +282,12 @@ async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[
 
 
 async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]:
-    """对 Edge 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
+    """对 Edge 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）。
+
+    Reranker 分数即"事实与当前 query 的相关性"——把它回写进 ``item["score"]`` 供下游
+    使用，并按 ``min_edge_rerank_score`` 剔除完全无关的边（相关性轴，与 weight 置信度无关）。
+    无 Reranker 时没有相关性信号，仅做 top_k 截断、不过滤。
+    """
     if not items:
         return []
     reranker = get_reranker()
@@ -252,7 +299,13 @@ async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]
         logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
         return items[:top_k]
     ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
-    return [item for _, item in ranked[:top_k]]
+    kept: list[Edge] = []
+    for score, item in ranked[:top_k]:
+        item["score"] = score  # 回写相关性分数，供注入阶段与日志排查使用
+        if score < memory_config.min_edge_rerank_score:
+            continue  # 相关性过滤：剔除被判为完全无关（负分/低分）的事实
+        kept.append(item)
+    return kept
 
 
 async def dual_route_retrieve(
@@ -404,6 +457,16 @@ async def dual_route_retrieve(
     edge_ids = [e["id"] for e in ranked_edges if "id" in e and e["id"]]
     if edge_ids:
         from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        # 置信度富集（weight 轴）：从 DB 取每条边的 mention_count / decay_score，折算成
+        # weight=佐证×新鲜度，覆盖构造期占位的 0.0。with_session 失败会吞异常返回 None，
+        # 故 if 守一手；查不到的边保留占位 0.0（默认 min_edge_weight=0.0 时不影响）。
+        conf_inputs = await AIMemEdge.get_confidence_inputs(edge_ids)
+        if conf_inputs:
+            for e in ranked_edges:
+                if e["id"] in conf_inputs:
+                    mc, decay = conf_inputs[e["id"]]
+                    e["weight"] = compute_edge_confidence(mc, decay)
 
         async def _touch_edges_accessed() -> None:
             try:

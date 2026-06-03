@@ -46,8 +46,8 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
     ),
     "inspect_interval": GsIntConfig(
         "定时巡检间隔",
-        "当AI行动模式包含'定时巡检'时，指定巡检间隔（分钟）。默认30分钟",
-        30,
+        "当AI行动模式包含'定时巡检'时，指定巡检间隔（分钟）。默认60分钟",
+        60,
         options=[5, 10, 15, 30, 60],
     ),
     "keywords": GsListStrConfig(

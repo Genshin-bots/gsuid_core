@@ -200,6 +200,11 @@ from gsuid_core.ai_core.buildin_tools.database_query import (
     query_user_favorability,
 )
 
+# A-4：群成员称呼 / 身份确定性记忆
+from gsuid_core.ai_core.buildin_tools.identity_tools import (
+    remember_user_alias,
+)
+
 # 消息发送工具 - 主动发送消息
 from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
@@ -255,6 +260,8 @@ __all__ = [
     # 好感度管理工具
     "update_user_favorability",
     "set_user_favorability",
+    # 群成员称呼 / 身份
+    "remember_user_alias",
     # 表情包工具
     "send_meme",
     "collect_meme",

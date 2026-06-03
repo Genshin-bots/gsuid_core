@@ -27,18 +27,19 @@ DECISION_PROMPT_TEMPLATE = """
 
 【群里最近发生的事】
 {history_context}
-{group_summary_section}{proactive_merge_section}
+{group_summary_section}{proactive_merge_section}{recent_speak_section}
 
 ---
 
-做决定前，先问自己几件事：
+潜水是常态。**只有"确实有我能接得上、且群里需要我"时才开口**，否则一律沉默。
 
-- 现在几点？这个时间点，我这种人会在干嘛？会想开口吗？
-- 群里最后一条消息是什么时候发的？现在算冷场吗？
-- 大家聊的东西我有没有兴趣？或者有没有人需要我？
-- 我上次说话是什么时候？有没有必要再说？
+以下情况**必须沉默**（should_speak=false）：
+- 群里在聊我不懂 / 不感兴趣的专业话题（如配队、攻略、股票）；
+- 上一条只是别人之间的寒暄、或在 @ 别人，与我无关；
+- 我最近已经说过话（别刷存在感）。
 
-结合自己的性格做判断，不要为了说话而说话。
+**禁止**仅因为出现一个我感兴趣的词（如"咖啡""睡觉"）就把话题硬拽到自己身上。
+不要为了说话而说话——拿不准就沉默。
 
 以严格 JSON 格式输出，禁止包含任何 Markdown 标记：
 {{"should_speak": true 或 false, "mood": "此刻角色的内心状态，一句话，用第一人称", "context_hook": "如果决定说话，简述你打算接哪个话头或借什么由头；不说话则留空"}}
@@ -162,6 +163,19 @@ async def run_heartbeat(
     if extra_context:
         proactive_merge_section = f"\n\n【你刚完成的事（可自然提及，不必生硬播报）】\n{extra_context}"
 
+    # C-5：把"近 1 小时我已主动发言 N 次"喂给决策 LLM，促其自我克制（与 C-3 硬上限互补）
+    from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
+
+    # 与 emitter / inspector 共用 make_target_key 口径，否则计数查不到、C-5 形同虚设。
+    target_key = make_target_key(event.group_id, event.user_id)
+    recent_n = get_dispatcher().get_recent_heartbeat_count(target_key)
+    recent_speak_section = ""
+    if recent_n > 0:
+        recent_speak_section = (
+            f"\n\n（注意：你最近 1 小时已经主动说过 {recent_n} 次了，"
+            "除非这次真的很有必要，否则更应该保持沉默，别刷存在感。）"
+        )
+
     # ----------------------------------------------------------------
     # 阶段一：决策
     # ----------------------------------------------------------------
@@ -171,6 +185,7 @@ async def run_heartbeat(
         history_context=history_context,
         group_summary_section=group_summary,
         proactive_merge_section=proactive_merge_section,
+        recent_speak_section=recent_speak_section,
     )
 
     # 为决策子 agent 分配独立 session_id 并启用 SubAgent 日志，

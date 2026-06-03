@@ -596,7 +596,7 @@ async def _hybrid_search_edges(
                 "source_name": id_to_name[source_id] if source_id in id_to_name else "",
                 "target_name": id_to_name[target_id] if target_id in id_to_name else "",
                 "fact": r["fact"],
-                "weight": 0.0,
+                "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
                 "score": r["score"],
                 "invalid_at_ts": r["invalid_at_ts"],
             }

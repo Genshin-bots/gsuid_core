@@ -27,6 +27,8 @@ from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
 MAX_CONCURRENT_LLM_CALLS = 5
 # 冷场阈值：超过 1 小时不活跃的群不再巡检
 INACTIVE_THRESHOLD_HOURS = 1
+# 被动→主动冷却：最近一条 AI 消息（无论主动/被动）距今 < 此值（分钟）则不主动插话
+RECENT_AI_COOLDOWN_MINUTES = 12
 
 
 class HeartbeatInspector:
@@ -220,25 +222,33 @@ class HeartbeatInspector:
         # C8：统一主动网关——同一目标刚有主动输出（含定时任务播报）则抑制本次巡检
         from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
 
-        if get_dispatcher().should_suppress_heartbeat(self._target_key(event, history)):
+        dispatcher = get_dispatcher()
+        target_key = self._target_key(event, history)
+        if dispatcher.should_suppress_heartbeat(target_key):
             return False, "C8 网关抑制（近期已有主动输出，防撞车）"
+
+        # C-3：主动发言频率硬上限（每小时/每天），超限直接跳过，连决策 LLM 都不调
+        if dispatcher.should_suppress_by_rate(target_key):
+            return False, "C-3 频率上限（近期主动发言已达上限）"
 
         return True, ""
 
     def _target_key(self, event: Event, history: List[Any]) -> str:
         """统一主动网关的目标标识：群聊用群号，私聊用用户号。
 
-        history 元素由 ``message_history.manager.MessageRecord`` 落盘而成，
-        ``user_id`` 是其已声明字段（见 manager.py:63），直接属性访问；
-        type 显式标注为 ``Any`` 仅为避免与 message_history 模块循环依赖。
+        与 emitter / decision 共用 ``make_target_key`` 口径（登记/限流/计数必须同键）。
+        仅当 event 未带 user_id 时，才退回最后一条消息的发送者兜底——history 元素由
+        ``message_history.manager.MessageRecord`` 落盘，``user_id`` 是已声明字段（见
+        manager.py:63），可直接访问；type 标注为 ``Any`` 仅为避免与该模块循环依赖。
         """
-        if event.group_id:
-            return str(event.group_id)
-        if not history:
-            return ""
-        last_record = history[-1]
-        # MessageRecord.user_id 是已声明字段，直接访问
-        return str(last_record.user_id) if last_record.user_id else ""
+        from gsuid_core.ai_core.heartbeat.dispatcher import make_target_key
+
+        key = make_target_key(event.group_id, event.user_id)
+        if key:
+            return key
+        if history and history[-1].user_id:
+            return str(history[-1].user_id)
+        return ""
 
     def _should_inspect_session(
         self,
@@ -332,11 +342,20 @@ class HeartbeatInspector:
         return list(self._history_manager._histories.get(event, []))
 
     def _has_recent_ai_response(self, history: List[Any]) -> bool:
-        """如果最近 5 条消息里 AI 已经开过口了，就不再发言，防刷屏"""
-        for record in reversed(history[-5:]):
-            if record.role == "assistant":
-                if (record.metadata or {}).get("proactive", False):
-                    return True
+        """最近一条 AI 消息（主动或被动）若在冷却窗口内，就不再主动发言。
+
+        旧逻辑只看最近 5 条里的 ``proactive`` 标记，导致刚结束的密集被动对话后
+        仍会立刻插话。改为：找到最近一条 assistant 消息，只要它在
+        ``RECENT_AI_COOLDOWN_MINUTES`` 内（无论主动/被动）就抑制本次主动发言。
+        """
+        now = datetime.now()
+        for record in reversed(history):
+            if record.role != "assistant":
+                continue
+            # MessageRecord.timestamp 是已声明字段（float，default_factory=time.time），
+            # 与 _target_key 中直接访问 user_id 同理，无需 getattr 兜底。
+            last_time = datetime.fromtimestamp(record.timestamp)
+            return (now - last_time) < timedelta(minutes=RECENT_AI_COOLDOWN_MINUTES)
         return False
 
 

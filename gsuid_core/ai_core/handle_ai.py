@@ -431,6 +431,11 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 mood_key = str(event.group_id) if event.group_id else str(event.user_id)
                 from gsuid_core.ai_core.utils import _is_master_user
 
+                # 好感度被动累积：每次有效互动微增(+1)，让熟人随时间自然升档，
+                # 触发 persona 的"熟人短句连发"寄存器（好感度 50-100）。
+                # update_favorability 内部已兜底（失败仅返回 False 并记日志），无需再包 try。
+                await UserFavorability.update_favorability(str(event.user_id), bot.bot_id, 1)
+
                 mood_task = asyncio.create_task(
                     _update_persona_mood(
                         persona_name=session.persona_name,

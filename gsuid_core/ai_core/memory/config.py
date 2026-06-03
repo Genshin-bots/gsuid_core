@@ -50,6 +50,24 @@ class MemoryConfig:
     search_edge_count: int = 30
     """Edge 搜索结果数量上限"""
 
+    min_edge_weight: float = 0.0
+    """【置信度轴】注入核心事实时过滤 weight（事实可信度）低于此值的 Edge。
+
+    weight 与"相关性"是两个独立维度：weight 衡量"这条事实有多可信"、与 query 无关；
+    相关性由 min_edge_rerank_score 负责。weight 由检索期 compute_edge_confidence 现场折算
+    = 佐证(mention_count) × 新鲜度(decay_score) ∈ (0, 1]，单次提及的新鲜事实约 0.5。
+    默认 0.0=不过滤；可调高收紧低置信事实（如 0.4 ≈ 至少需两次佐证或一次新鲜提及）。
+    """
+
+    min_edge_rerank_score: float = 0.0
+    """【相关性轴】注入核心事实时过滤 Reranker 相关性分数低于此值的 Edge。
+
+    与 weight（置信度）正交：此值衡量"这条事实与当前 query 有多相关"，由 Reranker 现场打分。
+    默认 0.0：仅剔除被 Reranker 判为"负相关/完全无关"的边（交叉编码器对无关文本给负分），
+    对输出 0~1 归一化分数的远程 Reranker 等价于不过滤，可按需调高（如 0.3）收紧弱相关事实。
+    无 Reranker 时无相关性信号，不做此过滤。
+    """
+
     # ====== 去重与冲突阈值 ======
     dedup_similarity_threshold: float = 0.92
     """Entity 去重余弦相似度阈值，超过则视为同一实体"""

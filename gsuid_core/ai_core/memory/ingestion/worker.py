@@ -399,7 +399,10 @@ async def _ingest_batch(
         # 累计实体标签频次，用于推断群组语境标签
         all_tags: list[str] = []
         for _e in extracted["entities"]:
-            all_tags.extend(_e["tag"] or [])
+            # 累计实体"名称"作为群组话题标签——原先误用实体"类型"(Person/Game/
+            # Product…)既出戏又无意义（会被注入成"反复出现的话题: Person、Game"）。
+            if _e["name"]:
+                all_tags.append(_e["name"])
         if all_tags:
             await record_entity_tags(scope_key, all_tags)
     except Exception as e:
