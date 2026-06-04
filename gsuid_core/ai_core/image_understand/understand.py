@@ -14,7 +14,9 @@ Image Understand 公共 API 模块
 """
 
 import os
+import time
 import base64
+import hashlib
 import tempfile
 from typing import Union, Literal, Optional
 
@@ -41,6 +43,49 @@ def _get_provider() -> str:
         提供方名称，如 "MCP"
     """
     return ai_config.get_config("image_understand_provider").data
+
+
+# ── 图片理解结果短期缓存（O-C）─────────────────────────────────────────────
+# memory 摄入（ImageUnderstandWorker）与即时回复（_prepare_user_message，模型不支持图时）
+# 会对同一张图各调一次 understand_image——命中缓存即复用，省一次多模态 LLM/MCP 调用，并消除
+# 两路描述不一致(desync)。N-1 说明：键是图片**来源字符串**(http URL 或 base64 DataURI)的 md5、
+# **忽略 prompt**——对 DataURI（base64 直传）平台等价于"内容哈希"；但对返回**每次不同鉴权 URL**
+# 的平台（如部分图床），同一张图跨消息会换 URL 而缓存不命中（仅多一次转述，非正确性问题）。
+# 同一条消息的两路（即时回复 / 异步 memory worker）拿到的是同一 URL 串，复用始终有效——这正是
+# TTL=600s 要覆盖的窗口。先到者写入、后到者复用同一段客观描述。纯进程内存、重启清空。
+_UNDERSTAND_CACHE_TTL = 600.0  # 10 分钟，覆盖即时回复与异步 memory worker 的时间差
+_UNDERSTAND_CACHE_MAX = 512
+_understand_cache: dict[str, tuple[float, str]] = {}
+
+
+def _img_cache_key(image_url: str) -> str:
+    # N-1：哈希的是来源字符串（URL 或 DataURI），不是下载后的图片字节——详见上方缓存说明。
+    return hashlib.md5(image_url.encode("utf-8", "ignore")).hexdigest()
+
+
+def _understand_cache_get(key: str) -> Optional[str]:
+    item = _understand_cache.get(key)
+    if not item:
+        return None
+    expire_at, value = item
+    if time.time() >= expire_at:
+        _understand_cache.pop(key, None)
+        return None
+    return value
+
+
+def _understand_cache_put(key: str, value: str) -> None:
+    if not value:
+        return
+    now = time.time()
+    # 容量上限：先清过期项，仍满则丢最早到期的一条
+    if len(_understand_cache) >= _UNDERSTAND_CACHE_MAX:
+        for k in [k for k, (exp, _) in _understand_cache.items() if exp <= now]:
+            _understand_cache.pop(k, None)
+        if len(_understand_cache) >= _UNDERSTAND_CACHE_MAX:
+            oldest = min(_understand_cache, key=lambda k: _understand_cache[k][0])
+            _understand_cache.pop(oldest, None)
+    _understand_cache[key] = (now + _UNDERSTAND_CACHE_TTL, value)
 
 
 def _resolve_native_image_model(
@@ -200,16 +245,25 @@ async def understand_image(
     if not prompt:
         prompt = "请详细描述这张图片的内容，包括主要对象、场景、文字、颜色等信息。"
 
+    # O-C 缓存：同图短期内复用同一段描述（按来源字符串 URL/DataURI 哈希、忽略 prompt，见 N-1）
+    cache_key = _img_cache_key(image_url)
+    cached = _understand_cache_get(cache_key)
+    if cached:
+        logger.debug("🖼️ [ImageUnderstand] 命中图片理解缓存，跳过重复解析")
+        return cached
+
     # 优先：当前模型原生支持图片时，直接走大模型多模态，无需配置转述模型(MCP)
     native_model = _resolve_native_image_model(task_level)
     if native_model is not None:
         logger.debug("🖼️ [ImageUnderstand] 当前模型原生支持图片，使用大模型多模态能力转述")
-        return await _understand_image_native(
+        desc = await _understand_image_native(
             image_url,
             prompt,
             task_level=task_level,
             parent_session_id=parent_session_id,
         )
+        _understand_cache_put(cache_key, desc)
+        return desc
 
     provider = _get_provider()
 
@@ -234,6 +288,7 @@ async def understand_image(
             if result.is_error:
                 raise RuntimeError(f"Image Understand MCP 调用失败: {result.text}")
 
+            _understand_cache_put(cache_key, result.text)
             return result.text
         finally:
             # 清理临时文件

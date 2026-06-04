@@ -151,8 +151,21 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         )
         ws._add_bg_task(meme_task)
 
-    # 记录用户消息到历史记录
-    if event.raw_text and event.raw_text.strip():
+    # ====== 文本 / 图片标志位（在文本门控之外预先计算）======
+    # A-3 修复：原先"记历史 + 记忆 observe + submit_image_observation"整段都被
+    # `if event.raw_text and event.raw_text.strip():` 包住，导致 `_has_text` 在块内
+    # 恒为 True，纯图片消息（无文字）永远进不了 `submit_image_observation` 分支——
+    # C9"高价值图片走独立队列异步转述"对纯图片消息形同死代码。现把"图片观察"提到
+    # 文本门控之外：历史记录仍只在有文本时写，图片摄入则对纯图片消息也可达。
+    _has_text = bool(event.raw_text and event.raw_text.strip())
+    # B-5 修复：event.image 通常已是 image_list 最后一项，dict.fromkeys 去重避免
+    # 同一张图被重复提交给 submit_image_observation。
+    _img_urls = list(
+        dict.fromkeys(img for img in ([event.image] + list(event.image_list or [])) if isinstance(img, str) and img)
+    )
+
+    # 记录用户消息到历史记录（仅在有文本时）
+    if _has_text:
         # 获取用户昵称
         user_name = None
         if event.sender and "nickname" in event.sender:
@@ -197,64 +210,63 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             metadata=metadata,
         )
 
-        # ====== Memory Observer Hook ======
-        _has_text = bool(event.raw_text and event.raw_text.strip())
-        _img_urls = [img for img in ([event.image] + list(event.image_list or [])) if isinstance(img, str) and img]
-        if enable_ai and not ai_scope_banned and (_has_text or _img_urls):
-            from gsuid_core.ai_core.memory import observe
-            from gsuid_core.ai_core.memory.config import memory_config
+    # ====== Memory Observer Hook（文本门控之外：文本 OR 图片均可触发）======
+    if enable_ai and not ai_scope_banned and (_has_text or _img_urls):
+        from gsuid_core.ai_core.memory import observe
+        from gsuid_core.ai_core.memory.config import memory_config
 
-            is_enable_memory: bool = ai_config.get_config("enable_memory").data
-            memory_mode: list[str] = memory_config.memory_mode
-            memory_session: str = memory_config.memory_session
+        is_enable_memory: bool = ai_config.get_config("enable_memory").data
+        memory_mode: list[str] = memory_config.memory_mode
+        memory_session: str = memory_config.memory_session
 
-            # 基础条件检查：记忆开启、observer开启、包含"被动感知"
-            if is_enable_memory and memory_config.observer_enabled and "被动感知" in memory_mode:
-                should_observe = False
+        # 基础条件检查：记忆开启、observer开启、包含"被动感知"
+        if is_enable_memory and memory_config.observer_enabled and "被动感知" in memory_mode:
+            should_observe = False
 
-                if memory_session == "全部群聊":
-                    # 全部群聊模式：全部记录
+            if memory_session == "全部群聊":
+                # 全部群聊模式：全部记录
+                should_observe = True
+            elif memory_session == "按人格配置":
+                # 按人格配置模式：只记录人格配置范围内的
+                from gsuid_core.ai_core.persona.config import persona_config_manager
+
+                session_id = event.session_id
+                persona_name = persona_config_manager.get_persona_for_session(session_id)
+
+                # get_persona_for_session 返回非 None 说明当前 session 已匹配人格范围
+                if persona_name is not None:
                     should_observe = True
-                elif memory_session == "按人格配置":
-                    # 按人格配置模式：只记录人格配置范围内的
-                    from gsuid_core.ai_core.persona.config import persona_config_manager
 
-                    session_id = event.session_id
-                    persona_name = persona_config_manager.get_persona_for_session(session_id)
-
-                    # get_persona_for_session 返回非 None 说明当前 session 已匹配人格范围
-                    if persona_name is not None:
-                        should_observe = True
-
-                if should_observe and _has_text:
-                    mem_task = asyncio.create_task(
-                        observe(
-                            content=event.raw_text,
-                            speaker_id=str(event.user_id),
-                            group_id=str(event.group_id or event.user_id),
-                            bot_self_id=str(event.bot_self_id),
-                            observer_blacklist=memory_config.observer_blacklist,
-                            message_type="group_msg" if event.group_id else "private_msg",
-                        )
-                    )
-                    ws._add_bg_task(mem_task)
-
-                # C9 多模态摄入：高价值图片走独立队列，由 ImageUnderstandWorker
-                # 异步转述后再进主管道——纯入队、不阻塞当前消息处理。
-                if should_observe and _img_urls:
-                    from gsuid_core.ai_core.memory.ingestion.multimodal import (
-                        submit_image_observation,
-                    )
-
-                    submit_image_observation(
-                        image_urls=_img_urls,
+            if should_observe and _has_text:
+                mem_task = asyncio.create_task(
+                    observe(
+                        content=event.raw_text,
                         speaker_id=str(event.user_id),
                         group_id=str(event.group_id or event.user_id),
                         bot_self_id=str(event.bot_self_id),
                         observer_blacklist=memory_config.observer_blacklist,
                         message_type="group_msg" if event.group_id else "private_msg",
                     )
-        # ============================================
+                )
+                ws._add_bg_task(mem_task)
+
+            # C9 多模态摄入：高价值图片走独立队列，由 ImageUnderstandWorker
+            # 异步转述后再进主管道——纯入队、不阻塞当前消息处理。
+            # 文本门控之外，纯图片消息（无文字）也能进入此分支。
+            if should_observe and _img_urls:
+                from gsuid_core.ai_core.memory.ingestion.multimodal import (
+                    submit_image_observation,
+                )
+
+                submit_image_observation(
+                    image_urls=_img_urls,
+                    speaker_id=str(event.user_id),
+                    group_id=str(event.group_id or event.user_id),
+                    bot_self_id=str(event.bot_self_id),
+                    observer_blacklist=memory_config.observer_blacklist,
+                    message_type="group_msg" if event.group_id else "private_msg",
+                )
+    # ============================================
 
     if event.user_pm == 0:
         if not await Subscribe.data_exist(
@@ -364,6 +376,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             if event.raw_text.strip().startswith(start):
                 event.raw_text = event.raw_text.replace(start, "", 1)
                 is_start = True
+                # N-3 修复：命中首个前缀即停。原先 for 无 break，多前缀配置下
+                # （如 command_start=["#","/"]）"#/帮助"会被连剥两层前缀（→"帮助"）。
+                # break 后 for...else 的 else 不再执行（仅在无 break 完成时执行），
+                # 故"命中即放行、不返回"的门控语义不变，只是保证最多剥一层前缀。
+                break
         else:
             if not is_start:
                 return
@@ -541,7 +558,12 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
         if "提及应答" in ai_mode:
             # 检查是否应该响应：@机器人 或者 包含关键词
+            # A-4 修复：trigger_type 在此处一次性定型——is_tome（被@/私聊）记为
+            # "mention"，命中关键词记为 "keyword"。原代码在下方无条件重置为
+            # "mention" 才上报，导致所有"关键词触发"在统计里都被记成 mention，
+            # trigger_distribution.keyword 永远趋近 0。
             should_respond = event.is_tome
+            trigger_type = "mention" if should_respond else ""
             if not should_respond and keywords:
                 # 检查消息内容是否包含关键词
                 msg_text = getattr(event, "raw_text", "") or ""
@@ -563,15 +585,16 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.warning("🧠 [GsCore][AI] AI Core 初始化未完成或存在失败步骤，跳过本次 AI 会话")
                 return
 
-            # 记录触发方式统计
-            trigger_type = "mention"
-            statistics_manager.record_trigger(trigger_type=trigger_type)
+            # 记录触发方式统计（trigger_type 已在上方按 mention/keyword 定型，
+            # 此处不再覆盖，保证关键词触发能正确计入 keyword 分布）
+            statistics_manager.record_trigger(trigger_type=trigger_type or "mention")
 
             # 将AI处理逻辑放入队列异步执行，避免阻塞
             task_ctx = TaskContext(
                 coro=handle_ai_chat(
                     Bot(ws, event),
                     event,
+                    enqueue_ts=time.time(),
                 ),
                 name="handle_ai_chat",
                 priority=event.user_pm,

@@ -16,11 +16,11 @@ from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_pe
 from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
 
-DECISION_PROMPT_TEMPLATE = """
-{persona_text}
----
-
-现在你独自看着群里的聊天记录，思考自己要不要说点什么。
+# B-1 修复：人格放 system_prompt（稳定前缀），逐轮变化的"群里发生的事 + 决策指令"
+# 放 user_message。原实现把整段 `{persona_text}+history+指令` 同时作为 create_agent
+# 的 system_prompt 和 run() 的 user_message 发送两遍，多群高频巡检下是显著 token 浪费。
+# 下面两个模板**只含 user 侧内容**，persona_text 由调用处单独作为 system_prompt 传入。
+DECISION_USER_TEMPLATE = """现在你独自看着群里的聊天记录，思考自己要不要说点什么。
 
 【当前时间】
 {current_time}
@@ -46,12 +46,7 @@ DECISION_PROMPT_TEMPLATE = """
 """  # noqa: E501
 
 
-PROACTIVE_MESSAGE_PROMPT = """
-{persona_text}
-
----
-
-【群里最近发生的事】
+PROACTIVE_MESSAGE_USER_TEMPLATE = """【群里最近发生的事】
 {history_context}
 {proactive_merge_section}
 【此刻你的状态】
@@ -179,8 +174,9 @@ async def run_heartbeat(
     # ----------------------------------------------------------------
     # 阶段一：决策
     # ----------------------------------------------------------------
-    decision_prompt = DECISION_PROMPT_TEMPLATE.format(
-        persona_text=decision_persona_text,
+    # B-1：persona 进 system_prompt，逐轮变化的群况 + 决策指令进 user_message，
+    # 不再把同一大段（persona + history）作为 system + user 发送两遍。
+    decision_user = DECISION_USER_TEMPLATE.format(
         current_time=current_time,
         history_context=history_context,
         group_summary_section=group_summary,
@@ -197,7 +193,7 @@ async def run_heartbeat(
     generator_log_files: List[str] = []
 
     decision_agent: GsCoreAIAgent = create_agent(
-        decision_prompt,
+        decision_persona_text,
         create_by="Heartbeat_Decision",
         persona_name=persona_name,
         session_id=decision_session_id,
@@ -207,7 +203,7 @@ async def run_heartbeat(
     # SubAgent 用完即关，否则 30 分钟巡检间隔会不断堆 logger 后台任务。
     decision_logger = decision_agent._session_logger
     try:
-        result: str = await decision_agent.run(user_message=decision_prompt)
+        result: str = await decision_agent.run(user_message=decision_user)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 决策阶段出错: {e}")
         if decision_logger is not None:
@@ -256,15 +252,16 @@ async def run_heartbeat(
     # ----------------------------------------------------------------
     # 阶段二：生成发言
     # ----------------------------------------------------------------
-    message_prompt = PROACTIVE_MESSAGE_PROMPT.format(
-        persona_text=persona_text,
+    # B-1：发言阶段同样把人格放 system_prompt（用完整原文 persona_text），
+    # 群况 + 状态进 user_message。
+    message_user = PROACTIVE_MESSAGE_USER_TEMPLATE.format(
         history_context=history_context,
         mood=decision["mood"],
         proactive_merge_section=proactive_merge_section,
     )
 
     output_agent: GsCoreAIAgent = create_agent(
-        message_prompt,
+        persona_text,
         create_by="Heartbeat_Output",
         persona_name=persona_name,
         session_id=output_session_id,
@@ -272,7 +269,7 @@ async def run_heartbeat(
     )
     output_logger = output_agent._session_logger
     try:
-        result = await output_agent.run(user_message=message_prompt)
+        result = await output_agent.run(user_message=message_user)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 生成阶段出错: {e}")
         if output_logger is not None:

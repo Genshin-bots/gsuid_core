@@ -110,6 +110,26 @@ def _classify_value_tier(content: str) -> str:
     return "HIGH"
 
 
+# 用户命令 / typo 命令的标点兜底特征（如 "/draw"、误打的 "/.ban"、"#帮助"）
+_USER_COMMAND_RE = re.compile(r"^[/#!！·、.]{1,2}\S")
+
+
+def _looks_like_command(text: str) -> bool:
+    """判断一条用户消息是否为命令 / typo 命令。
+
+    优先用 ``command_start`` 配置精确匹配（最准确），再用命令式标点 + 短文本启发式
+    兜底打错前缀的指令（如 ``/.ban``）。命中者不应进入记忆抽取，否则长期记忆会积累
+    大量"废弃指令噪声"污染召回（§2 / 附录二 O-B）。
+    """
+    from gsuid_core.config import core_config
+
+    starts = [s for s in (core_config.get_config("command_start") or []) if s]
+    if starts and any(text.startswith(s) for s in starts):
+        return True
+    # typo 兜底：以 1~2 个命令式标点开头且整体较短，避免误伤以 "." / "、" 开头的正常长句
+    return bool(_USER_COMMAND_RE.match(text)) and len(text) <= 30
+
+
 def _gate(
     content: str,
     speaker_id: str,
@@ -135,9 +155,13 @@ def _gate(
     # 过滤纯图片/文件消息（无文字）
     if stripped.startswith("[图片]") and len(stripped) < 10:
         return None
-    # 命令回显检测
+    # 命令回显检测（bot 侧报错回显）
     if _COMMAND_ECHO_RE.search(stripped):
         logger.trace(f"🧠 [Observer] 命中命令回显过滤，丢弃: {stripped[:30]}")
+        return None
+    # 用户命令 / typo 命令检测（用户侧指令原文）：不进记忆抽取，避免废弃指令噪声污染召回
+    if _looks_like_command(stripped):
+        logger.trace(f"🧠 [Observer] 命中用户命令/typo 过滤，丢弃: {stripped[:30]}")
         return None
     # 注入特征检测
     if _INJECTION_RE.search(stripped):

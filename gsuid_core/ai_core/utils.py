@@ -1,8 +1,10 @@
 import re
 import json
+import base64
 import asyncio
 from typing import Any, Dict, Literal, Optional, Sequence
 
+import httpx
 from PIL import Image
 from json_repair import repair_json
 from pydantic_ai.messages import ImageUrl, UserContent
@@ -143,6 +145,53 @@ def _normalize_image_url(raw: str) -> str:
     if raw.startswith("data:image/"):
         return raw
     return f"data:image/png;base64,{raw}"
+
+
+def _guess_image_mime(url: str) -> str:
+    """按 URL 扩展名兜底推断图片 MIME，识别不出时默认 image/jpeg。"""
+    u = url.lower()
+    if u.endswith(".png"):
+        return "image/png"
+    if u.endswith(".gif"):
+        return "image/gif"
+    if u.endswith(".webp"):
+        return "image/webp"
+    if u.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    return "image/jpeg"
+
+
+async def materialize_image_url(raw: str) -> str:
+    """把图片标识统一物化为「不会过期」的可消费形式。
+
+    远程 http(s) 图片 URL（典型如 QQ 带 ``rkey`` 的临时链接）有时效，过期后
+    推理端再去下载就会返回 500「Failed to download image」。而这些 URL 会被
+    写进 pydantic_ai 的 ``message_history`` 并在之后每一轮重发——一旦过期，整个
+    会话会被反复 500 卡死。故在「入历史前」就把远程 URL 下载并编码为 base64
+    DataURI（内联数据，永不过期）。
+
+    - http(s) URL：下载 → ``data:<mime>;base64,<...>``；下载失败时回退原 URL
+      （不致命，行为不差于改动前）。
+    - base64:// / data:image/ / 裸 base64：交给 :func:`_normalize_image_url`
+      处理即可，本就不会过期，无需下载。
+    """
+    if not raw.startswith(("http://", "https://")):
+        return _normalize_image_url(raw)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(raw)
+            resp.raise_for_status()
+            data = resp.content
+            mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not mime.startswith("image/"):
+            mime = _guess_image_mime(raw)
+        b64 = base64.b64encode(data).decode("ascii")
+        logger.debug(f"🖼️ [GsCoreAI] 远程图片已物化为 base64 DataURI ({mime}, {len(data)} bytes)")
+        return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        logger.warning(f"🖼️ [GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}")
+        return raw
 
 
 def _is_master_user(user_id: str) -> bool:

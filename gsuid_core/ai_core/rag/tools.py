@@ -1,6 +1,6 @@
 """工具向量存储 - 管理工具的入库和检索"""
 
-from typing import TYPE_CHECKING, Any, Set, Dict, List, Union, Sequence
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Union, Optional, Sequence
 
 from qdrant_client.models import (
     Distance,
@@ -203,10 +203,20 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
 
 # 框架保底工具分类——这些分类下的工具会被无条件全部注入主Agent，
 # 不受向量搜索影响。"保底工具"由工具注册时声明的 category 决定，而非硬编码名单：
-#   - "self"   ：主Agent核心工具（好感度、子Agent、定时任务、消息发送等）
-#   - "buildin"：框架基础工具（搜索、记忆、自我认知、持久状态等）
+#   - "self"    ：主Agent核心工具（好感度、子Agent、定时任务、消息发送等）
+#   - "buildin" ：框架基础工具（搜索、记忆、自我认知、持久状态 state_* 等）
+#   - "planning"：长任务编排 / 产物 / 结构化集合工具（register_kanban_task、
+#                 respawn_subtask、fail_task_tree、respond_subtask_approval、
+#                 artifact_put/get/list/get_recent、record_put/get/list/append/
+#                 update/delete/summary）。
+# A-1 修复：这些 planning 工具被 SYSTEM_CONSTRAINTS / TOOL_ORCHESTRATION_CONSTRAINTS
+# 决策树当作"随时可调"（如 §3.6 追问溯源**必须**先调 artifact_get_recent、结构化
+# 集合**必须**用 record_*），但原先它们只在第 3 层向量检索（附加池≤12）里碰运气
+# 命中——当用户 query 与工具名相似度不足（追问"为什么这么选"、闲聊里临时记账）时
+# 工具压根不在列表里，主人格"想调却无工具"，被迫退化成拼凑答案 / state_set 大 JSON。
+# 故把 planning 提为保底分类，与 prompt 决策树的强依赖对齐。
 # 插件/核心若要让某个工具进入保底池，只需注册时使用上述分类即可。
-GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
+GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin", "planning"]
 
 
 def get_tools_by_context_tags(tags: List[str], max_count: int = 8) -> ToolList:
@@ -253,11 +263,11 @@ async def get_scope_context_tags(scope_key: str) -> List[str]:
         return []
 
 
-async def get_main_agent_tools(query: str = "") -> ToolList:
+async def get_main_agent_tools(query: str = "", exclude_categories: Optional[List[str]] = None) -> ToolList:
     """获取主Agent的框架保底工具集。
 
-    `GUARANTEED_TOOL_CATEGORIES`（即 `self` + `buildin` 分类）下的工具
-    **无条件全部加载**，不受向量搜索影响——这两个分类就是"框架保底工具池"，
+    `GUARANTEED_TOOL_CATEGORIES`（即 `self` + `buildin` + `planning` 分类）下的工具
+    **无条件全部加载**，不受向量搜索影响——这些分类就是"框架保底工具池"，
     覆盖搜索、记忆、自我认知、持久状态、好感度、子Agent、定时任务等基础能力。
 
     判定一个工具是否为保底工具，完全取决于它注册时声明的 `category`，
@@ -268,11 +278,15 @@ async def get_main_agent_tools(query: str = "") -> ToolList:
 
     Args:
         query: 保留参数（保底工具不再依赖 query 筛选），仅作签名兼容。
+        exclude_categories: 本次按需从保底池剔除的分类（意图驱动动态精简 Tool Shedding）。
+            如纯闲聊且无活跃任务时传 ``["planning"]``，避免重型规划工具常驻每轮闲聊。
+            剔除后调用方应同步放该分类重回 `search_tools` 向量检索兜底（见 gs_agent）。
     """
     all_tools_cag = get_registered_tools()
     result_tools: ToolList = []
 
-    for cat in GUARANTEED_TOOL_CATEGORIES:
+    cats = [c for c in GUARANTEED_TOOL_CATEGORIES if not (exclude_categories and c in exclude_categories)]
+    for cat in cats:
         if cat not in all_tools_cag:
             continue
         for tool_base in all_tools_cag[cat].values():

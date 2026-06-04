@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ModelResponse,
     ToolReturnPart,
+    UserPromptPart,
     RetryPromptPart,
 )
 from pydantic_ai.exceptions import UsageLimitExceeded
@@ -31,7 +32,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result
+from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, materialize_image_url
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.rag.tools import (
@@ -73,6 +74,20 @@ _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
 
 # Persona 前摇配置缓存 {persona_name: dict}
 _persona_pre_tool_cache: dict[str, dict] = {}
+
+
+def invalidate_persona_pre_tool_cache(persona_name: Optional[str] = None) -> None:
+    """清理 persona 前摇台词缓存：``persona_name`` 为 None 清全部，否则只清一项。
+
+    A-6 修复：``_persona_pre_tool_cache`` 是模块级缓存、首次读取后不再回盘。persona
+    热重载（``ai_router`` 检测到目录 mtime 变化重建 session）时若不清缓存，改了
+    ``config.json`` 的 ``pre_tool_expressions`` 必须重启进程才生效。供 ``ai_router``
+    在热重载分支调用，与 ``invalidate_voice_anchor_cache`` 配套。
+    """
+    if persona_name is None:
+        _persona_pre_tool_cache.clear()
+        return
+    _persona_pre_tool_cache.pop(persona_name, None)
 
 
 def _get_pre_tool_expression(persona_name: Optional[str], tool_name: str) -> Optional[str]:
@@ -324,6 +339,38 @@ def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]
     return cleaned
 
 
+def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
+    """把历史里残留的「远程图片 URL」剥离成文字占位，返回剥离处数量。
+
+    推理端报「Failed to download image」基本都是早先入历史的远程图片 URL
+    （如 QQ 带 rkey 的临时链接）已过期。不清掉的话，后续每一轮把它重发给
+    推理端都会 500，整个会话被永久卡死。这里把过期的远程 ``ImageUrl`` 替换为
+    文字占位，让下一轮自动恢复。base64 DataURI 不会过期，保留不动。
+    """
+    removed = 0
+    for msg in history:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, UserPromptPart):
+                continue
+            content = part.content
+            if isinstance(content, str):
+                continue
+            new_content: List[UserContent] = []
+            changed = False
+            for item in content:
+                if isinstance(item, ImageUrl) and item.url.startswith(("http://", "https://")):
+                    new_content.append("[图片已过期，无法再显示]")
+                    changed = True
+                    removed += 1
+                else:
+                    new_content.append(item)
+            if changed:
+                part.content = new_content
+    return removed
+
+
 # 单轮意图-行为不一致检测关键词：thinking 里点名了某工具 / 任务编排意图
 # 却没真正调用——直接顶到阈值，下一轮立刻强制提醒。提到模块级避免每轮重建。
 _INTENT_TRIGGER_KEYWORDS: tuple[str, ...] = (
@@ -347,6 +394,10 @@ _INTENT_TRIGGER_KEYWORDS: tuple[str, ...] = (
     "cron 的话需要写多个",
     "需要写多个触发器",
 )
+
+# O-A 群聊队头阻塞防护：交互式回复在 _run_lock 上排队超过此秒数（话题大概率已翻篇）
+# 则丢弃本次回复，避免对早已结束的话题"过期答复"。仅作用于 create_by=="Chat" 的主对话。
+STALE_CHAT_REQUEST_TTL = 8.0
 
 
 class GsCoreAIAgent:
@@ -495,11 +546,17 @@ class GsCoreAIAgent:
                 text_parts.append(item)
 
         if "image" in model_support:
-            # 模型支持图片，保留原始内容
+            # 模型支持图片，保留原始内容；但远程图片 URL（如 QQ 带 rkey 的临时
+            # 链接）会过期，一旦写进 message_history，之后每轮重发都会让推理端
+            # 反复下载并 500「Failed to download image」、整个会话被永久卡死。
+            # 故在「入历史前」就把远程 URL 物化为 base64 DataURI（永不过期）；
+            # 已是 DataURI 的输入会被 materialize_image_url 原样跳过。
             result: list[UserContent] = []
             for item in content_list:
                 if isinstance(item, str):
                     result.append(f"【用户发言】\n{item}")
+                elif isinstance(item, ImageUrl):
+                    result.append(ImageUrl(url=await materialize_image_url(item.url)))
                 else:
                     result.append(item)
             return result
@@ -589,6 +646,8 @@ class GsCoreAIAgent:
         tools: Optional[ToolList] = None,
         return_mode: Literal["always", "return", "by_bot"] = "by_bot",
         output_type: None = None,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
     ) -> str: ...
 
     @overload
@@ -601,6 +660,8 @@ class GsCoreAIAgent:
         tools: Optional[ToolList] = None,
         return_mode: Literal["always", "return", "by_bot"] = "by_bot",
         output_type: type[_T] = ...,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
     ) -> _T: ...
 
     async def _execute_run(
@@ -612,6 +673,8 @@ class GsCoreAIAgent:
         tools: Optional[ToolList] = None,
         return_mode: Literal["always", "return", "by_bot"] = "by_bot",
         output_type: Optional[type] = None,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
     ) -> Union[str, Any]:
         """
         实际执行 Agent 运行的内部方法
@@ -710,8 +773,12 @@ class GsCoreAIAgent:
                 elif ev is not None:
                     qy = ev.raw_text
 
-                # 第一层：框架保底工具池（self + buildin 分类，由 category 决定，无条件全部加载）
-                core_tools = await get_main_agent_tools()
+                # O-D 意图驱动动态精简（Tool Shedding）：纯闲聊且当前无活跃 Kanban 任务时，
+                # 把重型 planning 工具类从保底池剔除，避免每轮闲聊都常驻 10+ 个规划工具 schema
+                # 抬高 Token 并稀释工具选择精度。仅作用于交互式主 Agent。
+                shed_planning = self.create_by in ["Chat", "Agent"] and intent == "闲聊" and not has_active_task
+                # 第一层：框架保底工具池（self + buildin + planning 分类，由 category 决定，无条件加载）
+                core_tools = await get_main_agent_tools(exclude_categories=["planning"] if shed_planning else None)
                 core_names = {t.name for t in core_tools}
 
                 # 附加工具池 = 语境工具池 + 查询工具池
@@ -735,13 +802,17 @@ class GsCoreAIAgent:
                     except Exception as e:
                         logger.debug(f"🧠 [GsCoreAIAgent] 语境工具池加载失败: {e}")
 
-                # 第三层：查询工具池——基于 query 的向量搜索（排除已在保底池的分类）
+                # 第三层：查询工具池——基于 query 的向量搜索（排除已在保底池的分类，
+                # 含 A-1 后新增的 planning，避免向量检索把已保底的工具又捞一遍占名额）。
+                # O-D 配套：若本轮把 planning 剔出了保底池，则必须放它重回向量检索，
+                # 否则"闲聊里临时要记账/建任务"会彻底拿不到 planning 工具。
                 if qy:
                     logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
+                    _non_cat = ["self", "buildin"] if shed_planning else ["self", "buildin", "planning"]
                     extra_tools += await search_tools(
                         query=qy,
                         limit=8,
-                        non_category=["self", "buildin"],
+                        non_category=_non_cat,
                     )
 
                 # 附加池去重：剔除与保底工具重名、以及附加池内部重复的工具
@@ -1060,11 +1131,21 @@ class GsCoreAIAgent:
         except Exception as e:
             logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
             logger.exception("🧠 [PydanticAI] 异常详情:")
-            if "529" in str(e):
+            err_str = str(e)
+            if "529" in err_str:
                 statistics_manager.record_error(error_type="api_529_error")
             else:
                 statistics_manager.record_error(error_type="agent_error")
-            self._session_logger.log_error("agent_error", str(e))
+            self._session_logger.log_error("agent_error", err_str)
+            # 自愈：推理端「Failed to download image」基本都是历史里残留了过期的
+            # 远程图片 URL，不清掉会导致之后每一轮重发都 500、整个会话卡死。这里把
+            # 历史中的过期远程图片剥离成文字占位，使下一轮能自动恢复。
+            if "download image" in err_str.lower():
+                stripped = _strip_remote_images_from_history(self.history)
+                if stripped:
+                    logger.warning(
+                        f"🧠 [GsCoreAIAgent] 图片下载失败，已从历史剥离 {stripped} 处过期远程图片，下一轮自动恢复"
+                    )
             return f"执行出错: {str(e)}"
         finally:
             # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享），
@@ -1091,6 +1172,9 @@ class GsCoreAIAgent:
         tools: Optional[ToolList] = None,
         return_mode: Literal["always", "return", "by_bot"] = "by_bot",
         output_type: None = None,
+        enqueue_ts: Optional[float] = None,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
     ) -> str: ...
 
     @overload
@@ -1103,6 +1187,9 @@ class GsCoreAIAgent:
         tools: Optional[ToolList] = None,
         return_mode: Literal["always", "return", "by_bot"] = "by_bot",
         output_type: type[_T] = ...,
+        enqueue_ts: Optional[float] = None,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
     ) -> _T: ...
 
     async def run(
@@ -1114,6 +1201,9 @@ class GsCoreAIAgent:
         tools: Optional[ToolList] = None,
         return_mode: Literal["always", "return", "by_bot"] = "by_bot",
         output_type: Optional[type] = None,
+        enqueue_ts: Optional[float] = None,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
     ) -> Union[str, Any]:
         """
         运行 Agent 并返回结果
@@ -1125,12 +1215,25 @@ class GsCoreAIAgent:
             output_type: 当指定为某个 Pydantic 模型类时，利用 pydantic_ai 的
                 output_type 特性，要求模型必须返回符合该模型结构的 JSON。
                 此时返回值为该 Pydantic 模型实例而非字符串。
+            enqueue_ts: 本次请求入队时间戳（O-A）。交互式主对话在 _run_lock 上排队过久
+                （> STALE_CHAT_REQUEST_TTL）则视为"过期请求"丢弃，避免对早已结束的话题
+                突兀回复。仅对 create_by=="Chat" 生效。
+            intent / has_active_task: 透传给工具装配做意图驱动动态精简（O-D）。
 
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
         """
         async with self._run_lock:
             logger.info("🧠 [GsCoreAIAgent] 获取到执行锁，开始执行...")
+            # O-A 群聊队头阻塞防护：拿到锁时若已排队过久（话题大概率翻篇），丢弃过期回复。
+            if (
+                enqueue_ts is not None
+                and self.create_by == "Chat"
+                and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL
+            ):
+                waited = time.time() - enqueue_ts
+                logger.info(f"🧠 [GsCoreAIAgent] 队列等待 {waited:.1f}s 超 TTL，丢弃过期请求，释放锁")
+                return "" if output_type is None else None
             result = await self._execute_run(
                 user_message=user_message,
                 bot=bot,
@@ -1139,6 +1242,8 @@ class GsCoreAIAgent:
                 tools=tools,
                 return_mode=return_mode,
                 output_type=output_type,
+                intent=intent,
+                has_active_task=has_active_task,
             )
             logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
             return result

@@ -164,6 +164,14 @@ async def _get_or_create_ai_session(
         if persona_name and _check_persona_changed(session, persona_name):
             logger.info(f"🧠 [AI Router] 热重载 Session {session_id} 的 Persona '{persona_name}'")
             registry.remove_ai_session(session_id)
+            # A-6 修复：热重载只重建 session 还不够——voice_anchor / pre_tool 台词
+            # 都是模块级缓存、首次读取后不回盘。同步失效，否则改了 voice_anchor.txt /
+            # config.json 的 pre_tool_expressions 必须重启进程才生效。
+            from .persona import invalidate_voice_anchor_cache
+            from .gs_agent import invalidate_persona_pre_tool_cache
+
+            invalidate_voice_anchor_cache(persona_name)
+            invalidate_persona_pre_tool_cache(persona_name)
             session = None
         else:
             return session
@@ -198,7 +206,8 @@ async def _get_or_create_ai_session(
     )
 
     registry.set_ai_session(session_id, session)
-    history_manager.update_session_access(event)
+    # B-3 修复：函数入口（_get_or_create_ai_session 顶部）已调过一次
+    # update_session_access，新建路径这里不再重复刷新访问时间。
 
     logger.debug(f"🧠 [AI Router] 创建新Session: {session_id}, 使用Persona: {persona_name}")
     return session

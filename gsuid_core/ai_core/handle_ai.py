@@ -13,6 +13,7 @@ AI聊天处理模块
 """
 
 import re
+import time
 import asyncio
 from typing import Optional
 from datetime import datetime
@@ -25,6 +26,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, prepare_content_payload
 from gsuid_core.message_history import get_history_manager
+from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL
 from gsuid_core.ai_core.ai_router import (
     get_ai_session,
 )
@@ -42,8 +44,8 @@ from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 history_manager = get_history_manager()
 
 # 双层长度防护配置
-ABSOLUTE_MAX_LENGTH = 60000  # 绝对上限：超过此长度直接截断，防止子Agent Token爆炸
-MAX_SUMMARY_LENGTH = 15000  # 摘要阈值：超过此长度调用子Agent进行智能摘要（调整至8000避免短文本被过度摘要）
+ABSOLUTE_MAX_LENGTH = 60000  # 绝对上限：超过此长度直接硬截断，防止子Agent Token爆炸
+MAX_SUMMARY_LENGTH = 15000  # 摘要阈值：超过此长度调用子Agent进行智能摘要
 
 # AI并发控制配置
 MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
@@ -82,14 +84,14 @@ def _should_retrieve_memory(query: str, intent: str, user_id: str) -> bool:
     return True
 
 
-async def handle_ai_chat(bot: Bot, event: Event):
+async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = None):
     """
     处理AI聊天逻辑的独立函数，用于异步队列执行，是全部AI逻辑的入口函数
 
     工作流程：
     1. 双层长度防护：
-       - > ABSOLUTE_MAX_LENGTH (14000) → 硬截断，防止子Agent Token爆炸
-       - > MAX_SUMMARY_LENGTH (4000) → 调用 create_subagent 智能摘要
+       - > ABSOLUTE_MAX_LENGTH (60000) → 硬截断，防止子Agent Token爆炸
+       - > MAX_SUMMARY_LENGTH (15000) → 调用 create_subagent 智能摘要
     2. 意图识别：使用分类器判断用户意图（闲聊/工具/问答）
     3. 获取 AI Session（含 system_prompt/Persona）
     4. 准备上下文（历史记录）
@@ -118,6 +120,11 @@ async def handle_ai_chat(bot: Bot, event: Event):
         logger.warning(f"🧠 [GsCore][AI] 检查 AI Core 初始化状态失败，继续降级处理: {e}")
 
     async with _ai_semaphore:
+        # O-A 早退：拿到全局并发信号量时若已排队过久（全局过载场景），话题大概率已翻篇，
+        # 直接放弃，省下后续分类 / 记忆检索等开销。锁级别的二次防护见 gs_agent.run。
+        if enqueue_ts is not None and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL:
+            logger.info(f"🧠 [GsCore][AI] 队列等待 {time.time() - enqueue_ts:.1f}s 超 TTL，丢弃过期请求")
+            return
         try:
             query = event.raw_text
 
@@ -409,6 +416,9 @@ async def handle_ai_chat(bot: Bot, event: Event):
                 ev=event,
                 rag_context=full_context,
                 return_mode="by_bot",  # 由 Agent 决定何时通过 bot 发送回复
+                enqueue_ts=enqueue_ts,  # O-A 队头阻塞防护：锁级别再判一次 TTL
+                intent=intent,  # O-D 意图驱动工具精简
+                has_active_task=bool(task_context_text),  # O-D 是否有活跃 Kanban 任务
             )
 
             # 步骤 8: 发送回复

@@ -291,11 +291,11 @@ class IngestionWorker:
 
         assert self._llm_semaphore is not None, "IngestionWorker 未初始化"
         async with self._llm_semaphore:
+            batch_size = memory_config.batch_max_size
+            batches = [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
+            logger.info(f"🧠 [Memory] scope={scope_key} 共 {len(records)} 条，分 {len(batches)} 批处理")
             try:
-                batch_size = memory_config.batch_max_size
-                batches = [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
-                logger.info(f"🧠 [Memory] scope={scope_key} 共 {len(records)} 条，分 {len(batches)} 批处理")
-                for batch in batches:
+                for idx, batch in enumerate(batches):
                     # P0: 对每批摄入添加超时保护，防止 LLM 调用无限阻塞
                     try:
                         await asyncio.wait_for(
@@ -306,13 +306,23 @@ class IngestionWorker:
                     except asyncio.TimeoutError:
                         logger.warning(f"🧠 [Memory] scope={scope_key} 批次摄入超时（120秒），跳过")
                         _record_ingestion_stats(len(batch), success=False)
-            except Exception as e:
-                logger.error(f"Ingestion failed for {scope_key}: {e}", exc_info=True)
-                # Bug-01 修复：异常时将数据还原到缓冲区，等待下次重试
-                self._buffers[scope_key].extend(records)
-                logger.warning(f"🧠 [Memory] scope={scope_key} 数据已还原到缓冲区，等待重试")
-                # 上报摄入失败统计
-                _record_ingestion_stats(len(records), success=False)
+                    except Exception as e:
+                        # A-5 修复：以"批"为最小重试单位。原代码用外层 try/except 捕获，
+                        # 异常时把**整个 records**（含已成功写入的前几批）退回缓冲，
+                        # 重试时已写入的 Episode 没有幂等键会被重复摄入、实体计数虚高。
+                        # 现仅把"从当前失败批起、尚未成功处理"的剩余批次退回缓冲，
+                        # 已成功批次绝不重摄。
+                        logger.error(
+                            f"Ingestion failed for {scope_key} (batch {idx + 1}/{len(batches)}): {e}",
+                            exc_info=True,
+                        )
+                        remaining = [r for b in batches[idx:] for r in b]
+                        self._buffers[scope_key].extend(remaining)
+                        logger.warning(
+                            f"🧠 [Memory] scope={scope_key} 第 {idx + 1} 批起 {len(remaining)} 条退回缓冲，等待重试"
+                        )
+                        _record_ingestion_stats(len(remaining), success=False)
+                        break
             finally:
                 self._flushing.discard(scope_key)
 
@@ -372,6 +382,39 @@ async def _ingest_batch(
         logger.debug(f"🧠 [Memory] scope={scope_key} 本批 {len(records)} 条为 LOW/SELF，仅写 Episode 跳过抽取")
         return
 
+    # Step 3+：实体/边抽取与图谱写入（best-effort 富集）。
+    # N-2 修复：Episode 已在 Step 2 持久化为 durable 原始记忆；抽取阶段若抛**非超时**异常
+    # （_llm_extract JSON/网络错、entity/edge DB 错）并冒泡到 _flush，会让**整个失败批**
+    # （含已写入的 Episode）被退回缓冲重试——而 Episode 无幂等键 → 重复 Episode、实体计数
+    # 虚高。故把抽取与 Episode 写入解耦：在此就地吞掉抽取异常（仅记录），保证失败批不会被
+    # _flush 退回重试而重复写 Episode；唯有 Step 2（Episode 写库）失败才向上传播，那时尚无
+    # Episode，退回缓冲重试是安全的。
+    try:
+        await _extract_and_upsert_from_episode(
+            episode=episode,
+            high_records=high_records,
+            speaker_ids=speaker_ids,
+            scope_key=scope_key,
+        )
+    except Exception as e:
+        logger.warning(
+            f"🧠 [Memory] scope={scope_key} Episode {episode.id} 抽取阶段失败"
+            f"（Episode 已持久化，不退回重试以免重复写入）: {e}"
+        )
+
+
+async def _extract_and_upsert_from_episode(
+    *,
+    episode: "AIMemEpisode",
+    high_records: list[ObservationRecord],
+    speaker_ids: list[str],
+    scope_key: str,
+) -> None:
+    """从已持久化的 Episode 抽取实体/边并写入图谱（与 Episode 写入解耦的可失败阶段）。
+
+    N-2：调用方 ``_ingest_batch`` 在 try/except 内调用本函数。本阶段失败**不应**连累
+    已写入的 Episode 被退回缓冲重试——Episode 无幂等键，重试会重复写入。
+    """
     # Step 3: 抽取仅使用 HIGH 价值消息，拼接近期背景上下文
     extract_dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in high_records)
     recent_episodes = await _get_recent_episodes(scope_key, limit=3, exclude_episode_id=episode.id)

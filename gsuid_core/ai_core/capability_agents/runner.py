@@ -45,6 +45,13 @@ CAPABILITY_AGENT_ERROR_PREFIX = "⚠️ 能力代理执行失败"
 
 # 能力代理永远附带的 Kanban 推进 / 基础工具。即便是即时委派也无害——不在任务
 # 执行上下文时 artifact_put 会返回"当前不在 Kanban 任务上下文"而已。
+# A-2 修复：kanban_executor._format_subtask_prompt 的【交付要求】明确要求子任务
+# "持久化业务数据用 record_put / record_append / record_update 写入 record:<集合>"，
+# 但能力代理走显式 tools（绕过 _execute_run 自动装配），若画像 tool_names 未列且
+# tool_query/task 向量检索未命中就拿不到 record_*，只能退回 prompt 已禁止的
+# state_set 大 JSON / 自写文件（其它子任务读不到）。故把 record_* 提为常备工具。
+# N-4：常备集**刻意不含破坏性的 record_delete**——交付要求只用 put/append/update 持久化，
+# 删除非常备能力；确需删行的画像可在 profile.tool_names 显式声明 record_delete。
 _ALWAYS_TOOLS: List[str] = [
     "artifact_put",
     "artifact_get",
@@ -53,6 +60,12 @@ _ALWAYS_TOOLS: List[str] = [
     "state_get",
     "state_append",
     "state_list",
+    "record_put",
+    "record_get",
+    "record_list",
+    "record_append",
+    "record_update",
+    "record_summary",
     "search_knowledge",
     "web_search_tool",
     "web_fetch_tool",
