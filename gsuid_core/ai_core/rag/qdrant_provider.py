@@ -50,14 +50,41 @@ def get_remote_connection() -> tuple[str, str | None]:
     return url, (api_key or None)
 
 
+def _get_effective_provider(provider: str) -> str:
+    """返回 provider 实际生效的后端类型。
+
+    remote 配置但缺少 url 时会回退到 local，因此 effective provider 可能与配置值不同。
+    """
+    if provider == PROVIDER_REMOTE:
+        url, _ = get_remote_connection()
+        if not url:
+            return PROVIDER_LOCAL
+        return PROVIDER_REMOTE
+    return PROVIDER_LOCAL
+
+
 def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
     """按 provider 构造 AsyncQdrantClient。
 
     provider 为 None 时读取当前配置。remote 但未配置 url 时回退到本地嵌入式 Qdrant，
     避免误连空地址导致整个 AI 子系统不可用。
+
+    当请求的实际后端与当前全局 client 一致且全局 client 已初始化时，直接复用全局实例，
+    避免在同一进程内对同一个本地目录创建多个 Qdrant client 导致文件锁冲突。
     """
     if provider is None:
         provider = get_qdrant_provider()
+
+    effective = _get_effective_provider(provider)
+    current_effective = _get_effective_provider(get_qdrant_provider())
+
+    # 复用全局 client：同一实际后端且全局 client 已存在时直接返回，
+    # 防止两个 AsyncQdrantClient 同时持有同一个本地目录的文件锁。
+    if effective == current_effective:
+        import gsuid_core.ai_core.rag.base as rag_base
+
+        if rag_base.client is not None:
+            return rag_base.client
 
     if provider == PROVIDER_REMOTE:
         url, api_key = get_remote_connection()
