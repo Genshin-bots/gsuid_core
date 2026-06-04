@@ -24,6 +24,12 @@ async def init_all():
     # 模型加载是同步 CPU 密集操作，放到线程执行避免冻住事件循环
     await asyncio.to_thread(init_embedding_model)
 
+    # 1.2 Qdrant 后端(local/remote)发生切换时，把旧后端历史数据迁移到新后端(保留原数据)。
+    # 必须在 init_embedding_model 之后(全局 client 已指向新后端)、各 Collection 初始化之前执行。
+    from .qdrant_provider import migrate_qdrant_if_provider_changed
+
+    await migrate_qdrant_if_provider_changed()
+
     # 1.5 启动阶段严格解析真实嵌入维度，避免未知维度时创建错误的 Qdrant Collection
     await ensure_embedding_dimension()
 

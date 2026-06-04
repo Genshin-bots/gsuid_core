@@ -22,6 +22,10 @@ from gsuid_core.ai_core.rag.embedding import (
     get_embedding_provider,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config, rerank_model_config, local_embedding_config
+from gsuid_core.ai_core.rag.qdrant_provider import (
+    LOCAL_QDRANT_DB_PATH,
+    build_qdrant_client,
+)
 
 # ============== 向量库配置 ==============
 # 默认向量维度（本地 bge-small-zh-v1.5 模型为 512），仅在嵌入提供方维度未知时回退使用
@@ -30,7 +34,9 @@ DEFAULT_DIMENSION: Final[int] = 512
 # Embedding模型相关
 EMBEDDING_MODEL_NAME: Final[str] = local_embedding_config.get_config("embedding_model_name").data
 MODELS_CACHE = AI_CORE_PATH / "models_cache"
-DB_PATH = AI_CORE_PATH / "local_qdrant_db"
+# 本地嵌入式 Qdrant 数据目录。实际的本地/远程连接选择已抽象到 rag/qdrant_provider.py，
+# 此处保留 DB_PATH 仅为兼容历史导出（rag/__init__.py 等）。
+DB_PATH = LOCAL_QDRANT_DB_PATH
 
 # Reranker模型相关
 RERANK_MODELS_CACHE = AI_CORE_PATH / "rerank_models_cache"
@@ -43,9 +49,12 @@ IMAGE_COLLECTION_NAME: Final[str] = "image"
 
 # ============== RAG批量参数 ==============
 # 远程 embedding / Qdrant upsert 使用较大批量减少网络和写入开销；
-# 本地 fastembed 单次大批量会长时间占用 ONNX Runtime，启动同步期间容易造成明显等待。
+# 本地 fastembed 也应使用适中批量：ONNX Runtime 对批量推理做了高度优化，逐条(=1)提交会让
+# 每条都付出一次完整的 Python↔执行器往返与算子启动开销，在维度迁移这类需要重嵌入数万~十几万条
+# 的场景下慢得无法接受(60558 实体 ×2 向量 + 118781 边)。批量 64 的短文本推理在 CPU 上仍是
+# 亚秒级，对单条会话同步几乎无感(min(64, n) 会退化为实际条数)，却能让批量重嵌入提速数十倍。
 RAG_BATCH_SIZE: Final[int] = 300
-RAG_LOCAL_EMBED_BATCH_SIZE: Final[int] = 1
+RAG_LOCAL_EMBED_BATCH_SIZE: Final[int] = 64
 RAG_REMOTE_EMBED_BATCH_SIZE: Final[int] = RAG_BATCH_SIZE
 RAG_UPSERT_BATCH_SIZE: Final[int] = RAG_BATCH_SIZE
 
@@ -594,7 +603,8 @@ def init_embedding_model():
         provider = get_embedding_provider()
         embedding_provider = provider
         embedding_model = _EmbeddingModelWrapper(provider)
-        client = AsyncQdrantClient(path=str(DB_PATH))
+        # 经 qdrant_provider 抽象层按配置构造本地/远程客户端，切换由抽象层内部统一处理
+        client = build_qdrant_client()
 
 
 def get_point_id(id_str: str) -> str:

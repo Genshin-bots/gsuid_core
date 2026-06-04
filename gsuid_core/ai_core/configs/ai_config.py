@@ -58,6 +58,16 @@ AI_CONFIG: Dict[str, GSC] = {
         data="local",
         options=["local", "openai"],
     ),
+    "qdrant_provider": GsStrConfig(
+        title="Qdrant向量库部署方式",
+        desc=(
+            "指定向量库(Qdrant)的部署方式。local 使用本地嵌入式 Qdrant; "
+            "remote 连接远程 Qdrant 服务(需在 Qdrant配置 中填写 url/api_key)。"
+            "切换后启动时会自动把历史数据迁移到新后端(保留原后端数据)"
+        ),
+        data="local",
+        options=["local", "remote"],
+    ),
     "websearch_provider": GsStrConfig(
         "网络搜索服务提供方",
         "指定网络搜索服务提供方",
@@ -303,6 +313,27 @@ RERANK_MODEL_CONFIG: Dict[str, GSC] = {
     ),
 }
 
+QDRANT_CONFIG: Dict[str, GSC] = {
+    "url": GsStrConfig(
+        title="Qdrant 远程服务地址",
+        desc=(
+            "指定远程 Qdrant 服务的 URL，例如 http://localhost:6333 或 "
+            "https://xxxx.cloud.qdrant.io:6333。仅在 qdrant_provider 为 remote 时生效"
+        ),
+        data="http://localhost:6333",
+        options=[
+            "http://localhost:6333",
+            "http://127.0.0.1:6333",
+        ],
+    ),
+    "api_key": GsStrConfig(
+        title="Qdrant API 密钥",
+        desc="指定远程 Qdrant 服务的 API Key（可选，本地或无鉴权的服务可留空）",
+        data="",
+        secret=True,
+    ),
+}
+
 MEMORY_CONFIG: Dict[str, GSC] = {
     "memory_mode": GsListStrConfig(
         "记忆路径",
@@ -392,4 +423,10 @@ openai_embedding_config = StringConfig(
     "GsCore AI OpenAI嵌入模型配置",
     get_res_path("ai_core") / "openai_embedding_config.json",
     OPENAI_EMBEDDING_CONFIG,
+)
+
+qdrant_config = StringConfig(
+    "GsCore AI Qdrant向量库配置",
+    get_res_path("ai_core") / "qdrant_configs.json",
+    QDRANT_CONFIG,
 )
