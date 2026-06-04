@@ -19,7 +19,7 @@ from gsuid_core.ai_core.meme.selector import pick
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="表情")
 async def send_meme(
     ev: Event,
     bot: Bot,
@@ -82,7 +82,7 @@ async def send_meme(
     return f"已发送表情包: {record.description or record.meme_id}"
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="表情")
 async def collect_meme(
     ev: Event,
     reason: str = "",
@@ -145,7 +145,7 @@ async def collect_meme(
     return "; ".join(results)
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="表情")
 async def search_meme(
     query: str,
 ) -> str:

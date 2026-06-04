@@ -430,6 +430,43 @@ GET /api/traces/{trace_id}?date=2026-05-28
 {"status": 404, "msg": "追踪不存在", "data": null}
 ```
 
+### 7.8.3 获取每日命令数（日历选择器）
+```
+GET /api/traces/daily_counts?days=60
+```
+
+返回最近 N 天**每天去重后的命令数**，用于前端日历选择器判断哪些日期可点击：`count == 0` 的日期当天没有任何命令记录，**不可点击**。
+
+> 路由说明：该固定路径声明在 `/api/traces/{trace_id}` 之前，避免被当作 `trace_id` 误匹配。
+
+**Query 参数**：
+- `days`: 回溯天数，默认 `60`（约两个月），服务端自动夹取到 `[1, 366]`。
+
+**统计口径**：
+- 数据源为 JSONL 目录（`logs/traces/YYYY-MM-DD.jsonl`），按 `trace_id` 去重计数，同一追踪的 `running -> completed` 多条记录只算一次。
+- **今天的计数实时可见**：running 追踪在开始时即写入 JSONL running 标记，无需等命令结束。
+- 当天无命令（JSONL 文件不存在）→ 计数为 `0`。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": [
+        {"date": "2026-04-07", "count": 0},
+        {"date": "2026-04-08", "count": 12},
+        {"date": "2026-06-05", "count": 2}
+    ]
+}
+```
+
+**字段说明**：
+- `data`: 按日期**升序**（最早在前）的数组，长度恒等于 `days`，每一天都有一项。
+- `date`: 日期 `YYYY-MM-DD`。
+- `count`: 当天去重后的命令数；`count == 0` 表示该日期不可点击。
+
+**前端用法**：渲染日历时，对每个日期取 `count`，`count > 0` 才允许点击；点击后用该 `date` 调 `GET /api/traces?date=<date>` 拉取当天追踪列表。
+
 ---
 
 ## 7.9 搜索功能说明

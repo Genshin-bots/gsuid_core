@@ -35,11 +35,13 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, materialize_image_url
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
+from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
 from gsuid_core.ai_core.rag.tools import (
     ToolList,
     search_tools,
     get_main_agent_tools,
     get_scope_context_tags,
+    expand_tools_to_families,
     get_tools_by_context_tags,
 )
 from gsuid_core.ai_core.configs.models import get_model_for_task
@@ -49,6 +51,11 @@ from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 _T = TypeVar("_T")
+
+# L3 会话驻留：一个能力族被使用后，继续在随后多少轮里保持常驻（兜底紧邻的追问）。
+_STICKY_FAMILY_TURNS = 3
+# L5 上下文增强检索：把最近多少轮用户原话拼进工具向量检索 query（含本轮）。
+_RECENT_TEXT_WINDOW = 3
 
 # 框架默认的工具前摇台词（仅针对耗时较长、用户需要被告知"正在做事"的工具）。
 # 这是框架级默认值，必须保持「人格中性」——不带任何特定 Persona 的口吻或语气，
@@ -449,6 +456,13 @@ class GsCoreAIAgent:
         # 下一轮注入强制提醒，防止 Agent 以角色无知为由持续推脱
         self._consecutive_no_tool_rounds: int = 0
 
+        # L3 会话驻留：最近使用过的能力族 → 剩余可常驻轮数（每轮递减）。
+        # 兜底"刚用过某能力、紧接着的追问语义却召不回该工具"的场景。
+        self._recent_tool_families: dict[str, int] = {}
+        # L5 上下文增强检索：最近几轮用户原话，拼进工具向量检索 query，
+        # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
+        self._recent_user_texts: List[str] = []
+
         self.model = openai_chat_model
         if self.model is None:
             self.model = get_model_for_task(task_level)
@@ -773,13 +787,43 @@ class GsCoreAIAgent:
                 elif ev is not None:
                     qy = ev.raw_text
 
-                # O-D 意图驱动动态精简（Tool Shedding）：纯闲聊且当前无活跃 Kanban 任务时，
-                # 把重型 planning 工具类从保底池剔除，避免每轮闲聊都常驻 10+ 个规划工具 schema
-                # 抬高 Token 并稀释工具选择精度。仅作用于交互式主 Agent。
-                shed_planning = self.create_by in ["Chat", "Agent"] and intent == "闲聊" and not has_active_task
-                # 第一层：框架保底工具池（self + buildin + planning 分类，由 category 决定，无条件加载）
-                core_tools = await get_main_agent_tools(exclude_categories=["planning"] if shed_planning else None)
+                # 第一层：框架保底工具池（仅 self + buildin 分类，由 category 决定，无条件加载）。
+                # planning 工具（kanban/artifact/record）不再保底——它们靠下方"状态驱动工具池
+                # （L2）"按持久实体精确召回 + 向量检索（L4/L5）按需加载，避免每轮闲聊都常驻
+                # 15 个规划工具 schema 抬高 Token 并稀释工具选择精度。
+                core_tools = await get_main_agent_tools()
                 core_names = {t.name for t in core_tools}
+
+                # 第 1.5 层：状态驱动工具池（L2）——用户已有持久实体时把对应能力族补进保底：
+                # 活跃 Kanban 任务→长期任务编排+产物族；未完成定时任务→定时任务族；
+                # 名下有 record:* 集合→结构化记录族。解决"一小时后追问'改成后天'""追问任务
+                # 产物原文"等无法靠单条语义召回的场景——无论本轮意图如何都生效。
+                try:
+                    from gsuid_core.ai_core.tool_state_signals import get_state_driven_family_tools
+
+                    state_tools = await get_state_driven_family_tools(
+                        ev, core_names, has_active_task=has_active_task, intent=intent
+                    )
+                    if state_tools:
+                        core_tools = core_tools + state_tools
+                        core_names.update(t.name for t in state_tools)
+                except Exception as e:
+                    logger.debug(f"🧠 [GsCoreAIAgent] 状态驱动工具池加载失败: {e}")
+
+                # 第 1.6 层：会话驻留工具池（L3）——最近几轮用过的能力族继续常驻数轮，
+                # 兜底"刚用过某能力、紧接着的追问语义却召不回该工具"（如改完别名又口头追加）。
+                # 加载后递减 TTL 并清理到期项。
+                if self._recent_tool_families:
+                    for _dom, _ttl in list(self._recent_tool_families.items()):
+                        if _ttl <= 0:
+                            continue
+                        for _tb in get_tools_by_capability_domain(_dom):
+                            if _tb.name not in core_names:
+                                core_names.add(_tb.name)
+                                core_tools.append(_tb.tool)
+                    self._recent_tool_families = {
+                        _d: _t - 1 for _d, _t in self._recent_tool_families.items() if _t - 1 > 0
+                    }
 
                 # 附加工具池 = 语境工具池 + 查询工具池
                 extra_tools: ToolList = []
@@ -802,35 +846,42 @@ class GsCoreAIAgent:
                     except Exception as e:
                         logger.debug(f"🧠 [GsCoreAIAgent] 语境工具池加载失败: {e}")
 
-                # 第三层：查询工具池——基于 query 的向量搜索（排除已在保底池的分类，
-                # 含 A-1 后新增的 planning，避免向量检索把已保底的工具又捞一遍占名额）。
-                # O-D 配套：若本轮把 planning 剔出了保底池，则必须放它重回向量检索，
-                # 否则"闲聊里临时要记账/建任务"会彻底拿不到 planning 工具。
+                # 第三层：查询工具池——基于 query 的向量搜索。只排除已在保底池的
+                # self / buildin 分类；planning 工具不再保底，必须保留在向量检索里按需
+                # 召回（"闲聊里临时要记账/建任务/查产物"靠这一层 + L4 族展开拿到）。
                 if qy:
-                    logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {qy}")
-                    _non_cat = ["self", "buildin"] if shed_planning else ["self", "buildin", "planning"]
+                    # L5 上下文增强检索：把最近几轮用户原话拼进检索 query，
+                    # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
+                    search_query = "\n".join([*self._recent_user_texts, qy]) if self._recent_user_texts else qy
+                    logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {search_query}")
                     extra_tools += await search_tools(
-                        query=qy,
+                        query=search_query,
                         limit=8,
-                        non_category=_non_cat,
+                        non_category=["self", "buildin"],
                     )
 
-                # 附加池去重：剔除与保底工具重名、以及附加池内部重复的工具
-                seen: Set[str] = set(core_names)
-                deduped_extra: ToolList = []
-                for t in extra_tools:
-                    if t.name in seen:
-                        continue
-                    seen.add(t.name)
-                    deduped_extra.append(t)
-
-                # 保底工具全部保留；附加工具池限制数量上限，避免 context 膨胀
-                MAX_EXTRA_TOOLS = 12
-                tools = core_tools + deduped_extra[:MAX_EXTRA_TOOLS]
-                logger.debug(
-                    f"🧠 [GsCoreAIAgent] 工具数量: {len(tools)} "
-                    f"(保底 {len(core_tools)} + 附加 {min(len(deduped_extra), MAX_EXTRA_TOOLS)})"
+                # 附加池：先按能力族整族展开（L4），再去重/限量。
+                # 召回族内任一工具即带出整族（剔除与保底重名/族内重复），
+                # 保证"能创建就能改/删"——如召回 add_once_task 即带出
+                # modify/cancel_scheduled_task，避免后续追问"改成后天"时无工具可调。
+                MAX_EXTRA_TOOLS = 16
+                deduped_extra = expand_tools_to_families(
+                    extra_tools,
+                    exclude_names=core_names,
+                    max_tools=MAX_EXTRA_TOOLS,
                 )
+
+                # 保底工具全部保留；附加工具池已在族展开时限量
+                tools = core_tools + deduped_extra
+                logger.debug(
+                    f"🧠 [GsCoreAIAgent] 工具数量: {len(tools)} (保底 {len(core_tools)} + 附加 {len(deduped_extra)})"
+                )
+
+                # L5：记录本轮用户原话，供下一轮上下文增强检索（保留窗口内的"上文"）
+                if qy:
+                    keep = max(_RECENT_TEXT_WINDOW - 1, 0)
+                    self._recent_user_texts.append(qy)
+                    self._recent_user_texts = self._recent_user_texts[-keep:] if keep else []
             else:
                 logger.debug(f"🧠 [GsCoreAIAgent] 传入Tools列表: {len(tools)}，已传入参数")
         else:
@@ -972,6 +1023,15 @@ class GsCoreAIAgent:
                 logger.info("🧠 [GsCoreAIAgent] _agent.iter() 执行成功!")
 
                 self.history.extend(result.new_messages())
+
+                # L3：记录本轮实际调用过的工具所属能力族，使其在随后数轮继续常驻，
+                # 兜底紧邻的同主题追问（语义本身可能召不回该工具）。
+                if _tool_call_list:
+                    for _tname in set(_tool_call_list):
+                        _tb = find_tool_base(_tname)
+                        _dom = _tb.capability_domain if _tb else None
+                        if _dom:
+                            self._recent_tool_families[_dom] = _STICKY_FAMILY_TURNS
 
                 # 更新连续无工具调用计数（仅对交互式主 Agent 生效）
                 if self.create_by in ["Chat", "Agent"]:
@@ -1218,7 +1278,10 @@ class GsCoreAIAgent:
             enqueue_ts: 本次请求入队时间戳（O-A）。交互式主对话在 _run_lock 上排队过久
                 （> STALE_CHAT_REQUEST_TTL）则视为"过期请求"丢弃，避免对早已结束的话题
                 突兀回复。仅对 create_by=="Chat" 生效。
-            intent / has_active_task: 透传给工具装配做意图驱动动态精简（O-D）。
+            has_active_task: 是否存在需即时介入的 Kanban 任务，透传给状态驱动工具池（L2），
+                决定是否把"长期任务编排 + 产物"能力族补进工具列表。
+            intent: 本轮意图标签（闲聊/工具/问答）。当前工具装配不再据此精简（planning
+                已退出保底池、改由状态驱动 + 向量检索按需召回），保留参数仅作调用方兼容。
 
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例

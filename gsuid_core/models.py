@@ -20,7 +20,8 @@ class TraceContext:
     group_id: Optional[str]  # 群组 ID
     bot_id: str  # Bot ID
     session_id: str  # 会话 ID
-    start_time: float  # 命令开始时间（perf_counter，单调时钟）
+    start_time: float  # 命令开始时间（perf_counter，单调时钟）——仅用于算 duration/存活时长
+    start_ts: float  # 命令开始的墙钟时间戳（time.time()，Unix 秒）——对外展示/排序用
 
 
 @dataclass

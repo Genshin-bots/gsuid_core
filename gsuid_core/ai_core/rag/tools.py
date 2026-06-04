@@ -205,18 +205,70 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
 # 不受向量搜索影响。"保底工具"由工具注册时声明的 category 决定，而非硬编码名单：
 #   - "self"    ：主Agent核心工具（好感度、子Agent、定时任务、消息发送等）
 #   - "buildin" ：框架基础工具（搜索、记忆、自我认知、持久状态 state_* 等）
-#   - "planning"：长任务编排 / 产物 / 结构化集合工具（register_kanban_task、
-#                 respawn_subtask、fail_task_tree、respond_subtask_approval、
-#                 artifact_put/get/list/get_recent、record_put/get/list/append/
-#                 update/delete/summary）。
-# A-1 修复：这些 planning 工具被 SYSTEM_CONSTRAINTS / TOOL_ORCHESTRATION_CONSTRAINTS
-# 决策树当作"随时可调"（如 §3.6 追问溯源**必须**先调 artifact_get_recent、结构化
-# 集合**必须**用 record_*），但原先它们只在第 3 层向量检索（附加池≤12）里碰运气
-# 命中——当用户 query 与工具名相似度不足（追问"为什么这么选"、闲聊里临时记账）时
-# 工具压根不在列表里，主人格"想调却无工具"，被迫退化成拼凑答案 / state_set 大 JSON。
-# 故把 planning 提为保底分类，与 prompt 决策树的强依赖对齐。
-# 插件/核心若要让某个工具进入保底池，只需注册时使用上述分类即可。
-GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin", "planning"]
+#
+# planning（长任务编排 / 产物 / 结构化集合：register_kanban_task、respawn_subtask、
+# fail_task_tree、respond_subtask_approval、artifact_*、record_*）**刻意不再保底**：
+# 这 15 个重型 schema 每轮常驻会显著抬高 Token 并稀释工具选择精度（实测闲聊一句
+# "宝宝下午好"也挂满 15 个规划工具）。改为按持久状态精确召回——
+#   · 有活跃 Kanban 任务      → 状态驱动补「长期任务编排」+「产物」族（见 tool_state_signals）
+#   · 有未完成定时任务        → 状态驱动补「定时任务」族
+#   · 名下有 record:* 集合     → 状态驱动补「结构化记录」族
+#   · 临时起意（记账/建任务/查产物）→ 第 3 层向量检索命中后按能力族整族展开（L4）
+# 既解决 A-1「想调却无工具」（状态驱动让 artifact_get_recent / record_* 在该场景下
+# 必然在列），又避免无关轮次的全量常驻。
+# 插件/核心若要让某个工具进入保底池，只需注册时使用 self / buildin 分类即可。
+GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
+
+# O-B 白名单：只有框架核心 self 工具才允许进入保底池。
+# 插件滥用 category="self" 会导致保底池膨胀（如鸣潮插件把 12+ 个游戏查询工具
+# 全部注册为 self，使闲聊时也常驻）。此处用函数名白名单兜底，不依赖插件自觉。
+# 不在白名单中的 self 分类工具，降级走向量检索（common/media 路径）。
+_SELF_CATEGORY_WHITELIST: Set[str] = {
+    "send_message_by_ai",
+    "update_user_favorability",
+    "add_once_task",
+    "add_interval_task",
+}
+
+
+def expand_tools_to_families(
+    seed_tools: ToolList,
+    exclude_names: Optional[Set[str]] = None,
+    max_tools: int = 16,
+) -> ToolList:
+    """把召回到的"种子"工具按能力族（capability_domain）整族展开（L4）。
+
+    召回某工具时，把它所属的整个能力族一并纳入，使"能创建就能改/删"——
+    例如检索命中 add_once_task，则 modify/cancel/query_scheduled_task 等同族工具一起加载，
+    解决"单条消息语义召回只能捞到一个工具、后续追问改不了"的问题。
+
+    规则：
+    - 整族要么全进、要么不进，避免把一个族截断成半个；
+    - 跨族去重，并排除 ``exclude_names``（通常是保底池工具名，避免重复）；
+    - 总数受 ``max_tools`` 约束。未声明 capability_domain 的工具视为单工具族。
+    """
+    from gsuid_core.ai_core.register import get_family_members
+
+    seen: Set[str] = set(exclude_names or set())
+    out: ToolList = []
+    for seed in seed_tools:
+        # seed 与 tb.tool 都是 pydantic_ai 的 Tool，name 恒为 str
+        if seed.name in seen:
+            continue
+        family = get_family_members(seed.name)
+        family_tools = [tb.tool for tb in family] if family else [seed]
+        new_members = [ft for ft in family_tools if ft.name not in seen]
+        if not new_members:
+            continue
+        # 整族不可截断：放不下整族且已有内容时停止累加
+        if out and len(out) + len(new_members) > max_tools:
+            break
+        for ft in new_members:
+            seen.add(ft.name)
+            out.append(ft)
+        if len(out) >= max_tools:
+            break
+    return out
 
 
 def get_tools_by_context_tags(tags: List[str], max_count: int = 8) -> ToolList:
@@ -266,21 +318,20 @@ async def get_scope_context_tags(scope_key: str) -> List[str]:
 async def get_main_agent_tools(query: str = "", exclude_categories: Optional[List[str]] = None) -> ToolList:
     """获取主Agent的框架保底工具集。
 
-    `GUARANTEED_TOOL_CATEGORIES`（即 `self` + `buildin` + `planning` 分类）下的工具
+    `GUARANTEED_TOOL_CATEGORIES`（即 `self` + `buildin` 分类）下的工具
     **无条件全部加载**，不受向量搜索影响——这些分类就是"框架保底工具池"，
     覆盖搜索、记忆、自我认知、持久状态、好感度、子Agent、定时任务等基础能力。
 
     判定一个工具是否为保底工具，完全取决于它注册时声明的 `category`，
     不再依赖任何硬编码的工具名单。
 
-    `by_trigger` / `common` / `media` / `mcp` 等分类的工具不在此函数加载，
-    而是通过 `search_tools()` 向量检索按需加载，避免插件工具膨胀浪费 Token。
+    `planning` / `by_trigger` / `common` / `media` / `mcp` 等分类的工具不在此函数加载，
+    而是通过状态驱动工具池（见 tool_state_signals）与 `search_tools()` 向量检索按需
+    加载，避免重型规划工具与插件工具膨胀浪费 Token。
 
     Args:
         query: 保留参数（保底工具不再依赖 query 筛选），仅作签名兼容。
-        exclude_categories: 本次按需从保底池剔除的分类（意图驱动动态精简 Tool Shedding）。
-            如纯闲聊且无活跃任务时传 ``["planning"]``，避免重型规划工具常驻每轮闲聊。
-            剔除后调用方应同步放该分类重回 `search_tools` 向量检索兜底（见 gs_agent）。
+        exclude_categories: 可选，按需从保底池再剔除的分类（保留给调用方做进一步精简）。
     """
     all_tools_cag = get_registered_tools()
     result_tools: ToolList = []
@@ -289,9 +340,20 @@ async def get_main_agent_tools(query: str = "", exclude_categories: Optional[Lis
     for cat in cats:
         if cat not in all_tools_cag:
             continue
+        loaded = 0
+        skipped = 0
         for tool_base in all_tools_cag[cat].values():
+            # O-B self 白名单：只有框架核心 self 工具才进保底池。
+            # 插件滥用 category="self" 的，降级走向量检索（search_tools 仍会召回）。
+            if cat == "self" and tool_base.name not in _SELF_CATEGORY_WHITELIST:
+                skipped += 1
+                continue
             result_tools.append(tool_base.tool)
-        logger.debug(f"🧠 [Tools] 保底分类 [{cat}] 加载 {len(all_tools_cag[cat])} 个工具")
+            loaded += 1
+        if skipped:
+            logger.debug(f"🧠 [Tools] 保底分类 [{cat}] 加载 {loaded} 个工具，过滤掉 {skipped} 个非白名单工具")
+        else:
+            logger.debug(f"🧠 [Tools] 保底分类 [{cat}] 加载 {loaded} 个工具")
 
     return result_tools
 

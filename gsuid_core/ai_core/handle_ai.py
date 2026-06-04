@@ -369,10 +369,12 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
             # 让用户可追问"那个任务怎么样了"，Agent 也不对自己在跑的长任务失明。
             # ============================================================
             task_context_text = ""
+            has_actionable = False
             try:
-                from gsuid_core.ai_core.planning.context import build_task_context
+                from gsuid_core.ai_core.planning.context import build_task_context, has_actionable_task
 
                 task_context_text = await build_task_context(str(event.user_id))
+                has_actionable = await has_actionable_task(str(event.user_id))
             except Exception as e:
                 logger.debug(f"📋 [Planning] 长任务上下文注入失败: {e}")
 
@@ -418,7 +420,7 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
                 return_mode="by_bot",  # 由 Agent 决定何时通过 bot 发送回复
                 enqueue_ts=enqueue_ts,  # O-A 队头阻塞防护：锁级别再判一次 TTL
                 intent=intent,  # O-D 意图驱动工具精简
-                has_active_task=bool(task_context_text),  # O-D 是否有活跃 Kanban 任务
+                has_active_task=has_actionable,  # O-D 是否有需要即时介入的 Kanban 任务
             )
 
             # 步骤 8: 发送回复

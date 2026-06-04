@@ -14,8 +14,23 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 
+# 受保护的特殊称谓 —— 带有身份/权力含义，只允许 PM=0（主人）注册
+PROTECTED_ALIASES = {
+    "主人",
+    "妈妈",
+    "爸爸",
+    "爹",
+    "娘",
+    "妈",
+    "爸",
+    "上帝",
+    "造物主",
+    "管理员",
+    "admin",
+}
 
-@ai_tools(category="self")
+
+@ai_tools(category="common", capability_domain="用户档案")
 async def remember_user_alias(
     ctx: RunContext[ToolContext],
     alias: str,
@@ -26,6 +41,9 @@ async def remember_user_alias(
     当群里明确指定某个群成员的称呼时调用，例如："以后叫他小A"、"@某人 是小B"、
     "她叫小C"。把"称呼 → 用户ID"存入群成员称呼表，之后会作为**确定身份事实**注入
     对话，避免日后把人认错。同一个称呼再写一次即覆盖（用户现场纠正时直接更新）。
+
+    **权限限制**：称呼如"主人"、"妈妈"、"爸爸"、"管理员"等带有特殊身份/权力含义的
+    受保护称谓，**只允许 PM=0（主人）注册**。若普通用户试图注册这类称谓，直接拒绝。
 
     Args:
         ctx: 工具执行上下文
@@ -52,6 +70,13 @@ async def remember_user_alias(
     alias = (alias or "").strip()
     if not alias:
         return "操作失败：称呼为空"
+
+    # 权限检查：受保护称谓只允许 PM=0（主人）注册
+    # Event.user_pm 为已声明字段（int，默认 6=最低权限）；ev 缺失时按最低权限处理
+    caller_pm = ev.user_pm if ev is not None else 6
+    if alias in PROTECTED_ALIASES and caller_pm != 0:
+        logger.warning(f"🧠 [Identity] 用户{target_id}(pm={caller_pm}) 试图注册受保护称谓「{alias}」，已拒绝")
+        return f"操作失败：称呼「{alias}」为受保护称谓，只有主人（PM=0）才能注册，当前用户权限等级为 {caller_pm}"
 
     try:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key

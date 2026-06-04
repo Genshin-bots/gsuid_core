@@ -296,7 +296,8 @@ class TraceCollector:
             tid: {
                 "command": meta.command,
                 "user_id": meta.user_id,
-                "start_time": meta.start_time,
+                # 对外暴露墙钟时间戳（Unix 秒），不暴露 perf_counter 单调时钟
+                "start_time": meta.start_ts,
                 "log_count": len(self._traces.get(tid, [])),
                 "status": "running",
             }

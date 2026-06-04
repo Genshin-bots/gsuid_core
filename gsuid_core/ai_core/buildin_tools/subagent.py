@@ -52,7 +52,7 @@ _KANBAN_INLINE_WAIT_TIMEOUT_SEC = 180.0
 _KANBAN_INLINE_POLL_INTERVAL_SEC = 0.6
 
 
-@ai_tools(category="self")
+@ai_tools(category="common", capability_domain="长期任务编排")
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,

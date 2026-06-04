@@ -7,12 +7,14 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 ## 一、工具分类（category）与"框架保底池"的关系
 
-工具是否属于"框架保底"完全由注册时声明的 ``category`` 字符串决定，
-**不存在任何硬编码的工具名单**：
+工具是否属于"框架保底"主要由注册时声明的 ``category`` 字符串决定：
 
-- ``get_main_agent_tools()``     → 加载 ``self`` + ``buildin`` 两个分类（**保底池**）。
-- ``search_tools(query=...)``    → 在 ``common`` / ``media`` / ``default`` 与插件
-                                   注册的 ``by_trigger`` 等分类里做向量检索按需加载。
+- ``get_main_agent_tools()``     → 加载 ``self`` + ``buildin`` 两个分类（**保底池**）；
+                                   其中 ``self`` 再经 ``_SELF_CATEGORY_WHITELIST`` 收敛到
+                                   4 个核心工具，防插件滥用 ``category="self"`` 撑大保底池。
+- ``search_tools(query=...)``    → 在 ``planning`` / ``common`` / ``media`` / ``default``
+                                   与插件注册的 ``by_trigger`` 等分类里做向量检索按需加载。
+- ``tool_state_signals``         → 按"用户名下持久实体"把 ``planning`` 能力族精确补进工具列表。
 - ``create_subagent`` 默认子代理 → 默认装配 ``default`` 分类 + ``buildin`` 部分。
 
 要让一个新工具成为保底工具，注册时写 ``category="self"`` 或 ``category="buildin"``。
@@ -26,17 +28,19 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 分类而本文档没同步，请以 ``register.py`` 的 ``_TOOL_REGISTRY`` 为准。
 
 ### 2.1 ``category="self"`` —— 仅主人格保底（不会装配进能力代理）
-这些是"只能由主人格直接调用"的工具：副作用强、面向用户、或会引发任务编排。
+这些是"只能由主人格直接调用"的工具：副作用强、面向用户。``get_main_agent_tools``
+还会用 ``rag.tools._SELF_CATEGORY_WHITELIST`` 把 self 保底池收敛到这 4 个核心工具
+（防插件滥用 ``category="self"`` 撑大保底池），故下表即当前的 self 白名单全集：
 
 | 工具 | 来源 | 说明 |
 |---|---|---|
-| ``create_subagent`` | ``subagent.py`` | 派一个子 Agent 跑即时多步任务（不进 Kanban 任务树） |
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
-| ``query_user_favorability`` | ``database_query.py`` | 查询好感度（主人格读自身状态） |
 | ``update_user_favorability`` | ``favorability_manager.py`` | 增量更新好感度 |
 | ``add_once_task`` | ``scheduler.py`` | 注册一次性定时任务（口语触发，需常驻主人格手边） |
 | ``add_interval_task`` | ``scheduler.py`` | 注册周期定时任务（同上） |
-| ``evaluate_agent_mesh_capability`` | ``planning/kanban_tools.py`` | Kanban 任务树前置评估，**仅主人格调** |
+
+> ``create_subagent`` / ``evaluate_agent_mesh_capability`` 已改为 ``common``、
+> ``query_user_memory`` 已改为 ``buildin``——见下文对应小节。
 
 ### 2.2 ``category="buildin"`` —— 主人格 + 能力代理都保底
 "任何任务都可能需要"的基础能力。能力代理实例化时也会通过 ``_ALWAYS_TOOLS`` 拿到大部分。
@@ -44,26 +48,44 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``search_knowledge``（``rag_search.py``）：向量检索知识库
 - ``web_search_tool``（``web_search.py``）：Tavily web 搜索
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
-- ``query_user_memory``（``database_query.py``）：查询用户多群组记忆
+- ``query_user_memory``（``database_query.py``）：查询用户多群组记忆 + 好感度（统一照会）
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
-- ``state_get`` / ``state_set`` / ``state_delete`` / ``state_list`` /
-  ``state_append``（``state_store/tools.py``）：通用持久键值状态
-- ``record_put`` / ``record_get`` / ``record_list`` / ``record_delete`` /
-  ``record_summary``（``state_store/record_tools.py``）：通用结构化集合
-- ``register_kanban_task``（``planning/kanban_tools.py``）：创建 Kanban 任务树
-- ``respawn_subtask`` / ``fail_task_tree`` / ``respond_subtask_approval``
-  （``planning/kanban_tools.py``）：任务树重派 / 终结 / 审批
+- ``state_get`` / ``state_set`` / ``state_list``（``state_store/tools.py``）：
+  高频通用持久键值状态（低频的 ``state_delete`` / ``state_append`` 已降为 ``common``，
+  靠"持久状态"能力族按需召回）
+
+### 2.2.1 ``category="planning"`` —— 状态驱动 + 向量检索按需（**非保底**）
+长任务编排 / 产物 / 结构化集合工具。**刻意不进保底池**——这 15 个重型 schema 每轮常驻会
+显著抬高 Token 并稀释工具选择精度。改由 ``tool_state_signals`` 按"用户名下的持久实体"
+精确召回 + ``search_tools()`` 向量检索按需加载（命中后按 ``capability_domain`` 整族展开）：
+
+- ``register_kanban_task`` / ``respawn_subtask`` / ``fail_task_tree`` /
+  ``respond_subtask_approval``（``planning/kanban_tools.py``，``capability_domain="长期任务编排"``）：
+  存在活跃(running/waiting_approval) Kanban 任务时随状态带出
 - ``artifact_put`` / ``artifact_get`` / ``artifact_list`` / ``artifact_get_recent``
-  （``planning/kanban_tools.py``）：任务节点 artifact 增查
+  （``planning/kanban_tools.py``，``capability_domain="产物"``）：同上随活跃任务带出
+  （兜底 A-1「追问产物原文必须能调 ``artifact_get_recent``」）
+- ``record_put`` / ``record_get`` / ``record_list`` / ``record_append`` /
+  ``record_update`` / ``record_delete`` / ``record_summary``
+  （``state_store/record_tools.py``，``capability_domain="结构化记录"``）：
+  当前作用域已有 ``record:*`` 集合时随状态带出
 
 ### 2.3 ``category="common"`` —— 向量检索按需加载（非保底）
 用户明确表达需求时才会被 ``search_tools()`` 命中并加载。
 
+- ``create_subagent``（``subagent.py``，``capability_domain="长期任务编排"``）：
+  派子 Agent 跑即时多步任务（不进 Kanban 任务树）
+- ``evaluate_agent_mesh_capability``（``planning/kanban_tools.py``，
+  ``capability_domain="长期任务编排"``）：Kanban 任务树前置评估
 - ``search_image``（``rag_search.py``）：图片资源向量检索
 - ``update_self_note``（``self_info.py``）：写 self_note
   （``capability_domain="自我认知"``）
 - ``set_user_favorability``（``favorability_manager.py``）：绝对值设置好感度
+- ``remember_user_alias``（``identity_tools.py``，``capability_domain="用户档案"``）：
+  记群成员称呼（受保护称谓仅 PM=0 可注册）
+- ``state_delete`` / ``state_append``（``state_store/tools.py``，
+  ``capability_domain="持久状态"``）：低频持久键值删除 / 追加
 - ``send_meme`` / ``collect_meme`` / ``search_meme``（``meme_tools.py``）：
   表情包发送 / 收藏 / 检索
 - ``list_scheduled_tasks`` / ``query_scheduled_task`` / ``modify_scheduled_task``
@@ -194,10 +216,9 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
     write_file_content,
 )
 
-# 数据库查询工具 - 查询用户数据
+# 数据库查询工具 - 查询用户数据（记忆/事实/好感度统一照会）
 from gsuid_core.ai_core.buildin_tools.database_query import (
     query_user_memory,
-    query_user_favorability,
 )
 
 # A-4：群成员称呼 / 身份确定性记忆
@@ -255,7 +276,6 @@ __all__ = [
     # 命令执行工具
     "execute_shell_command",
     # 数据库查询工具
-    "query_user_favorability",
     "query_user_memory",
     # 好感度管理工具
     "update_user_favorability",

@@ -274,6 +274,46 @@ def get_all_tools() -> Dict[str, ToolBase]:
     return result
 
 
+def find_tool_base(tool_name: str) -> Optional[ToolBase]:
+    """按工具名跨所有分类查找 ToolBase，找不到返回 None。"""
+    for category_tools in _TOOL_REGISTRY.values():
+        tb = category_tools.get(tool_name)
+        if tb is not None:
+            return tb
+    return None
+
+
+def get_tools_by_capability_domain(domain: str) -> List[ToolBase]:
+    """返回声明了同一 capability_domain（能力族）的所有工具。
+
+    能力族 = 注册时 ``@ai_tools(capability_domain="定时任务")`` 声明的同名工具集合。
+    用于"能力族整体召回（L4）"：召回族内任一工具时把整族一起加载，
+    保证"能创建就能改/删"（如召回 add_once_task 即带出 modify/cancel_scheduled_task）。
+    """
+    if not domain:
+        return []
+    result: List[ToolBase] = []
+    for category_tools in _TOOL_REGISTRY.values():
+        for tb in category_tools.values():
+            if tb.capability_domain == domain:
+                result.append(tb)
+    return result
+
+
+def get_family_members(tool_name: str) -> List[ToolBase]:
+    """给定工具名，返回与其同属一个能力族（capability_domain）的全部工具。
+
+    - 工具未注册：返回空列表（调用方应回退到仅用该工具自身）。
+    - 工具已注册但未声明 capability_domain：返回仅含自身的列表（单工具"族"）。
+    """
+    target = find_tool_base(tool_name)
+    if target is None:
+        return []
+    if not target.capability_domain:
+        return [target]
+    return get_tools_by_capability_domain(target.capability_domain)
+
+
 def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global"):
     """
     为特定实体注册别名。

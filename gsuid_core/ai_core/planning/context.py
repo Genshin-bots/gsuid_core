@@ -75,3 +75,20 @@ async def build_task_context(user_id: str) -> str:
             short = (ch.display_name or ch.goal or "")[:30]
             lines.append(f"     · #{ch.ordinal} [{agent}] {short}｜{_status_cn(ch.status)}")
     return "\n".join(lines)
+
+
+async def has_actionable_task(user_id: str) -> bool:
+    """判断用户是否有需要主人格即时介入的 Kanban 任务。
+
+    与 ``build_task_context`` 的"只要活跃就注入"不同，本函数只关心
+    ``running`` / ``waiting_approval`` 状态——这两种状态意味着主人格
+    随时可能需要 fail_task_tree / respond_subtask_approval。
+    ``pending`` / ``paused``（如十几天后的周期模板）不触发，避免闲聊
+    时无谓挂载 15 个 planning 工具。
+    """
+    try:
+        tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
+    except Exception:
+        return False
+    actionable_statuses = {"running", "waiting_approval"}
+    return any(t.status in actionable_statuses for t in tasks)

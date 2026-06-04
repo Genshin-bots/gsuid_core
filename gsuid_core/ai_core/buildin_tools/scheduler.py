@@ -92,7 +92,7 @@ def _get_execute_scheduled_task():
 # ============ 添加任务 ============
 
 
-@ai_tools(category="self")
+@ai_tools(category="self", capability_domain="定时任务")
 async def add_once_task(
     ctx: RunContext[ToolContext],
     run_time: str,
@@ -237,7 +237,7 @@ async def add_once_task(
         return f"⚠️ 添加任务失败: {str(e)}"
 
 
-@ai_tools(category="self")
+@ai_tools(category="self", capability_domain="定时任务")
 async def add_interval_task(
     ctx: RunContext[ToolContext],
     interval_value: int,
@@ -461,7 +461,7 @@ async def add_interval_task(
 # ============ 查询任务 ============
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="定时任务")
 async def list_scheduled_tasks(
     ctx: RunContext[ToolContext],
 ) -> str:
@@ -532,7 +532,7 @@ async def list_scheduled_tasks(
         return f"⚠️ 查询任务列表失败: {str(e)}"
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="定时任务")
 async def query_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -616,24 +616,27 @@ async def query_scheduled_task(
 # ============ 修改任务 ============
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="定时任务")
 async def modify_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
     task_prompt: Optional[str] = None,
+    run_time: Optional[str] = None,
     max_executions: Optional[int] = None,
 ) -> str:
     """
-    修改一个定时任务的描述或最大执行次数
+    修改一个定时任务（描述 / 执行时间 / 最大执行次数）
 
     当用户想调整已设置的定时任务时调用此工具，触发场景如
-    "把那个任务改成…""定时任务的内容换一下""把循环次数改成 5 次"。
+    "把那个任务改成…""定时任务的内容换一下""把时间改到后天""改成明晚8点""把循环次数改成 5 次"。
     只能修改 pending 或 paused 状态的任务。
 
     Args:
         ctx: 工具执行上下文
         task_id: 任务 ID
         task_prompt: 新的任务描述，不修改则不传
+        run_time: 新的执行时间，格式 "YYYY-MM-DD HH:MM:SS"，不修改则不传。必须是未来时间。
+            一次性任务=新的触发时间；循环任务=下一次执行的时间（执行间隔保持不变）。
         max_executions: 新的最大执行次数，仅循环任务有效，不修改则不传
 
     Returns:
@@ -659,9 +662,24 @@ async def modify_scheduled_task(
         return f"⚠️ 任务状态为 {task.status}，无法修改"
 
     update_data = {}
+    new_trigger_dt: Optional[datetime] = None
 
     if task_prompt is not None:
         update_data["task_prompt"] = task_prompt
+
+    if run_time is not None:
+        try:
+            new_trigger_dt = datetime.strptime(run_time, "%Y-%m-%d %H:%M:%S")
+            new_trigger_dt = TZ_SHANGHAI.localize(new_trigger_dt)
+        except ValueError:
+            return "⚠️ 时间格式错误，请使用 YYYY-MM-DD HH:MM:SS 格式"
+        now_shanghai = datetime.now(TZ_SHANGHAI)
+        if new_trigger_dt <= now_shanghai:
+            return f"⚠️ 新的执行时间必须在未来，当前时间: {now_shanghai.strftime('%Y-%m-%d %H:%M:%S')}"
+        update_data["next_run_time"] = new_trigger_dt
+        # 一次性任务的触发时间字段也要同步；循环任务仅改下次执行时间，间隔不变
+        if task.task_type == "once":
+            update_data["trigger_time"] = new_trigger_dt
 
     if max_executions is not None:
         if max_executions > MAX_EXECUTION_LIMIT:
@@ -679,17 +697,67 @@ async def modify_scheduled_task(
             update_data=update_data,
         )
 
-        return f"✅ 任务已修改！\n📋 任务ID：{task_id}\n📝 更新内容：{update_data}"
+        # 时间变更需同步重排 APScheduler 调度，否则只改库不改实际触发时间
+        if new_trigger_dt is not None:
+            _reschedule_job_run_time(task, new_trigger_dt)
+
+        changes = []
+        if task_prompt is not None:
+            changes.append("任务描述")
+        if new_trigger_dt is not None:
+            changes.append(f"执行时间→{new_trigger_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        if max_executions is not None:
+            changes.append(f"最大执行次数→{update_data['max_executions']}")
+        return f"✅ 任务已修改！\n📋 任务ID：{task_id}\n📝 更新内容：{', '.join(changes)}"
 
     except Exception as e:
         logger.error(f"❌ [ScheduledTask] 修改任务失败: {e}")
         return f"⚠️ 修改任务失败: {str(e)}"
 
 
+def _reschedule_job_run_time(task: AIScheduledTask, new_dt: datetime) -> None:
+    """把某任务在 APScheduler 中的下次执行时间重排到 new_dt。
+
+    优先用 modify_job 调整 next_run_time（once/interval 通用，循环任务的间隔保持不变）；
+    若调度器中找不到该 job（如重启后尚未重建），则按任务类型重新 add_job 兜底。
+    """
+    from apscheduler.jobstores.base import JobLookupError
+
+    task_id = task.task_id
+    try:
+        scheduler.modify_job(job_id=task_id, next_run_time=new_dt)
+        return
+    except JobLookupError:
+        pass
+
+    execute_scheduled_task = _get_execute_scheduled_task()
+    # interval_seconds 为 AIScheduledTask 已声明字段（Optional[int]）
+    interval_seconds = task.interval_seconds
+    if task.task_type == "interval" and interval_seconds:
+        scheduler.add_job(
+            func=execute_scheduled_task,
+            trigger="interval",
+            seconds=int(interval_seconds),
+            start_date=new_dt,
+            args=[task_id],
+            id=task_id,
+            replace_existing=True,
+        )
+    else:
+        scheduler.add_job(
+            func=execute_scheduled_task,
+            trigger="date",
+            run_date=new_dt,
+            args=[task_id],
+            id=task_id,
+            replace_existing=True,
+        )
+
+
 # ============ 删除/取消任务 ============
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="定时任务")
 async def cancel_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -745,7 +813,7 @@ async def cancel_scheduled_task(
 # ============ 暂停/恢复任务 ============
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="定时任务")
 async def pause_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -802,7 +870,7 @@ async def pause_scheduled_task(
         return f"⚠️ 暂停任务失败: {str(e)}"
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="定时任务")
 async def resume_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,

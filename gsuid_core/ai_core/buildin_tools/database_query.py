@@ -1,10 +1,10 @@
 """
 数据库查询工具模块
 
-提供查询用户数据等信息的工具函数。
+提供主人格"读取自身对某用户/当前对话的已知信息"的工具。
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from pydantic_ai import RunContext
 
@@ -13,107 +13,75 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.database.models import UserFavorability
 
-if TYPE_CHECKING:
-    from gsuid_core.bot import Bot
-
-
-@ai_tools(category="self")
-async def query_user_favorability(
-    ctx: RunContext[ToolContext],
-    user_id: Optional[str] = None,
-) -> str:
-    """
-    查询用户好感度信息
-
-    查询指定用户或当前用户的好感度及相关统计信息。
-    好感度系统用于角色扮演中衡量用户与角色的关系程度。
-
-    Args:
-        ctx: 工具执行上下文
-        user_id: 可选，指定用户ID，默认为事件关联的用户
-
-    Returns:
-        用户好感度信息字符串，包含好感度值和相关统计
-
-    Example:
-        >>> info = await query_user_favorability(ctx)
-        >>> info = await query_user_favorability(ctx, user_id="123456")
-    """
-    tool_ctx: ToolContext = ctx.deps
-
-    # 获取 target_id
-    ev = tool_ctx.ev
-    if user_id:
-        target_id = user_id
-    elif ev is not None:
-        target_id = ev.user_id if hasattr(ev, "user_id") else None
-    else:
-        target_id = None
-
-    if not target_id:
-        return "查询失败：无法确定目标用户"
-
-    try:
-        bot: Optional[Bot] = tool_ctx.bot
-        bot_id: str = bot.bot_id if bot is not None else ""
-        user_data = await UserFavorability.get_user_favorability(target_id, bot_id)
-
-        if not user_data:
-            return f"用户 {target_id} 的好感度信息：陌生（0）"
-
-        favorability = user_data.favorability
-        user_name = user_data.user_name or target_id
-        relation = user_data.relationship_level
-
-        result = f"用户: {user_name} ({target_id})\n好感度: {favorability} ({relation})"
-
-        logger.info(f"🧠 [BuildinTools] 查询用户 {target_id} 好感度: {favorability}")
-        return result
-
-    except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 查询好感度失败: {e}")
-        return f"查询失败：{str(e)}"
-
 
 @ai_tools(category="buildin")
 async def query_user_memory(
     ctx: RunContext[ToolContext],
+    query: str = "",
     user_id: Optional[str] = None,
+    top_k: int = 20,
 ) -> str:
-    """
-    查询用户记忆条数
+    """查询关于某个用户/当前对话的已知信息：相关记忆片段、已沉淀的事实，以及好感度。
 
-    获取指定用户已存储的记忆/上下文条目数量。
+    什么时候用：
+    - 用户问到过去的事（"上周/上次/之前我们聊过…""我之前说过的那个…"），而当前上下文里
+      没有现成答案时，用本工具按 query 去记忆库里现找，而不是凭空回答"不记得了"。
+    - 想确认"我对某人了解多少 / 关系如何"时。
 
     Args:
         ctx: 工具执行上下文
-        user_id: 可选，指定用户ID，默认为事件关联的用户
+        query: 想检索的内容（自然语言），如"上周做了什么""用户的口味偏好"。
+            留空则返回该用户当前最相关的近期记忆与事实。
+        user_id: 可选，指定用户ID，默认为当前对话用户。
+        top_k: 检索召回条数上限，默认 20。
 
     Returns:
-        用户记忆统计信息字符串
+        合并文本：相关记忆/事实 + 好感度概览。
 
     Example:
-        >>> info = await query_user_memory(ctx)
+        >>> await query_user_memory(ctx, query="上周聊过的旅行计划")
+        >>> await query_user_memory(ctx)  # 我对当前用户都了解些什么
     """
     tool_ctx: ToolContext = ctx.deps
-    target_id = user_id or getattr(tool_ctx.ev, "user_id", None) or getattr(tool_ctx.ev, "散列id", None)
-
+    ev = tool_ctx.ev
+    # Event.user_id 为已声明字段，直接取；显式传入的 user_id 优先
+    target_id = user_id or (ev.user_id if ev is not None else None)
     if not target_id:
         return "查询失败：无法确定目标用户"
+    group_id = ev.group_id if ev is not None else None
 
+    parts: list[str] = []
+
+    # 1) 相关记忆 + 事实：复用与"自动注入"同款的双路检索与预算化格式化（edges/categories/episodes）
     try:
-        bot_id = getattr(tool_ctx.bot, "bot_id", "") if tool_ctx.bot else ""
-        user_data = await UserFavorability.get_user_favorability(target_id, bot_id)
+        from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
-        if not user_data:
-            return f"用户 {target_id} 的记忆信息：暂无记录"
-
-        memory_count = user_data.memory_count
-
-        result = f"用户 {target_id} 的记忆条数：{memory_count}"
-        logger.info(f"🧠 [BuildinTools] 查询用户 {target_id} 记忆: {memory_count}")
-        return result
-
+        mem_ctx = await dual_route_retrieve(
+            query=query or "",
+            user_id=str(target_id),
+            group_id=str(group_id) if group_id else str(target_id),
+            top_k=top_k,
+        )
+        mem_text = mem_ctx.to_prompt_text(max_chars=2000)
+        parts.append(mem_text.strip() if (mem_text and mem_text.strip()) else "（暂无相关记忆/事实）")
+        logger.info(f"🧠 [BuildinTools] query_user_memory 检索用户 {target_id}: query={query!r}")
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 查询记忆失败: {e}")
-        return f"查询失败：{str(e)}"
+        logger.warning(f"🧠 [BuildinTools] 记忆检索失败: {e}")
+        parts.append("（记忆检索暂不可用）")
+
+    # 2) 好感度（吸收原 query_user_favorability）
+    try:
+        # Bot.bot_id 为已声明字段；bot 可能为 None（如后台无事件上下文）时退化为空串
+        bot_id = tool_ctx.bot.bot_id if tool_ctx.bot is not None else ""
+        fav = await UserFavorability.get_user_favorability(str(target_id), bot_id)
+        if fav:
+            parts.append(
+                f"【好感度】{fav.user_name or target_id}：{fav.favorability}"
+                f"（{fav.relationship_level}），已沉淀记忆 {fav.memory_count} 条"
+            )
+        else:
+            parts.append(f"【好感度】用户 {target_id}：陌生（0）")
+    except Exception as e:
+        logger.debug(f"🧠 [BuildinTools] 好感度查询失败: {e}")
+
+    return "\n\n".join(parts)

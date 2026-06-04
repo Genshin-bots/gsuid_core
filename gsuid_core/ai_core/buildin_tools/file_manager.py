@@ -48,7 +48,7 @@ def _get_safe_path(base_path: Path, relative_path: str) -> Optional[Path]:
             return None
 
 
-@ai_tools()
+@ai_tools(capability_domain="文件")
 async def read_file_content(
     ctx: RunContext[ToolContext],
     file_path: str,
@@ -98,7 +98,7 @@ async def read_file_content(
         return f"错误：读取文件失败: {str(e)}"
 
 
-@ai_tools()
+@ai_tools(capability_domain="文件")
 async def write_file_content(
     ctx: RunContext[ToolContext],
     file_path: str,
@@ -230,7 +230,7 @@ async def _record_workspace_violation(req_path: str, detail: str) -> None:
         return
 
 
-@ai_tools()
+@ai_tools(capability_domain="文件")
 async def execute_file(
     ctx: RunContext[ToolContext],
     file_path: str,
@@ -406,7 +406,7 @@ async def _exec_file_in_thread(cmd: list, cwd: str) -> tuple[bytes, bytes, int]:
     return await asyncio.to_thread(_runner)
 
 
-@ai_tools()
+@ai_tools(capability_domain="文件")
 async def diff_file_content(
     ctx: RunContext[ToolContext],
     file_path_1: str,
@@ -475,7 +475,7 @@ async def diff_file_content(
         return f"错误：文件对比失败: {str(e)}"
 
 
-@ai_tools()
+@ai_tools(capability_domain="文件")
 async def list_directory(
     ctx: RunContext[ToolContext],
     dir_path: str = "",

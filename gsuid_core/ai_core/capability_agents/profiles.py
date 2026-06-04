@@ -165,7 +165,7 @@ _INTERNAL_REPORTER_PROMPT = (
 
 【职责边界】
 - **只**面向"框架内部库 → 结构化报告"：
-  - 用户 / 群组维度：`query_user_memory` / `query_user_favorability`
+  - 用户 / 群组维度：`query_user_memory`（含相关记忆/事实/好感度）
   - 通用结构化集合（账户 / 持仓 / 流水 / 名单 / 库存等）：`record_get` /
     `record_list` / `record_summary`
   - 持久键值状态：`state_get` / `state_list`
@@ -374,7 +374,6 @@ def register_builtin_profiles() -> None:
             tool_names=[
                 # 用户域
                 "query_user_memory",
-                "query_user_favorability",
                 # 结构化集合
                 "record_get",
                 "record_list",

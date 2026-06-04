@@ -1,7 +1,7 @@
 import json
 from typing import Dict, List, Optional
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from gsuid_core.logger import LOG_PATH, TraceContext
 
@@ -36,7 +36,8 @@ def write_trace_meta(
         "group_id": meta.group_id,
         "bot_id": meta.bot_id,
         "session_id": meta.session_id,
-        "start_time": meta.start_time,
+        # 落盘墙钟时间戳（Unix 秒），供前端直接展示；perf_counter 单调时钟不可跨进程/展示
+        "start_time": meta.start_ts,
         "status": status,
         "log_count": log_count,
     }
@@ -105,6 +106,47 @@ def list_traces_from_jsonl(date_str: str | None = None, limit: int = 500) -> Lis
     records = list(seen.values())
     records.sort(key=lambda x: x["start_time"], reverse=True)
     return records[:limit]
+
+
+def count_traces_from_jsonl(date_str: str) -> int:
+    """统计某天 JSONL 中去重后的命令追踪数。
+
+    同一 trace_id 一天内会写多条（running -> completed），按 trace_id 去重计数，
+    口径与 ``list_traces_from_jsonl`` 一致，且不受其 ``limit`` 截断影响。
+    文件不存在（当天无任何命令）时返回 0。
+    """
+    jsonl_path = _get_jsonl_path(date_str)
+    if not jsonl_path.exists():
+        return 0
+
+    seen: set[str] = set()
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                tid = json.loads(line).get("trace_id")
+            except json.JSONDecodeError:
+                continue
+            if tid:
+                seen.add(tid)
+    return len(seen)
+
+
+def daily_trace_counts(days: int = 60) -> List[Dict]:
+    """返回最近 ``days`` 天每天的去重命令数，按日期升序（最早在前）。
+
+    供前端日历选择器判断可点击日期：``count == 0`` 的日期当天没有任何命令记录，
+    不可点击。今天也计入——running 追踪在 ``start_trace`` 时即写入 JSONL running 标记，
+    故当天计数实时可见，无需等命令结束。
+    """
+    today = datetime.now().date()
+    result: List[Dict] = []
+    for offset in range(days - 1, -1, -1):
+        date_str = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+        result.append({"date": date_str, "count": count_traces_from_jsonl(date_str)})
+    return result
 
 
 def get_trace_logs_from_daily_log(trace_id: str, date_str: str | None = None) -> List[Dict]:

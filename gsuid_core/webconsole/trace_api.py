@@ -10,6 +10,7 @@ from fastapi import Depends
 
 from gsuid_core.logger import trace_collector
 from gsuid_core.trace_archive import (
+    daily_trace_counts,
     get_trace_from_jsonl,
     list_traces_from_jsonl,
     get_trace_logs_from_daily_log,
@@ -61,6 +62,25 @@ async def get_traces(
     return {"status": 0, "msg": "ok", "data": result[:limit]}
 
 
+# 注意：本路由必须声明在 `/api/traces/{trace_id}` **之前**，否则 FastAPI 会把
+# "daily_counts" 当作 trace_id 匹配到详情路由（返回 404）。固定路径优先于路径参数。
+@app.get("/api/traces/daily_counts")
+async def get_trace_daily_counts(
+    days: int = 60,
+    _user: Dict = Depends(require_auth),
+):
+    """近 N 天每天的命令数——供前端日历选择器判断哪些日期可点击。
+
+    Query 参数：
+    - ``days``: 回溯天数，默认 60（约两个月），自动夹取到 [1, 366]。
+
+    ``data`` 为按日期升序的列表，每项 ``{date, count}``；``count == 0`` 表示当天
+    无命令记录、日历上不可点击。今天的计数实时可见（running 追踪已计入）。
+    """
+    days = max(1, min(days, 366))
+    return {"status": 0, "msg": "ok", "data": daily_trace_counts(days)}
+
+
 @app.get("/api/traces/{trace_id}")
 async def get_trace_detail(
     trace_id: str,
@@ -88,7 +108,7 @@ async def get_trace_detail(
                 "group_id": meta.group_id if meta else None,
                 "bot_id": meta.bot_id if meta else "",
                 "session_id": meta.session_id if meta else "",
-                "start_time": meta.start_time if meta else 0,
+                "start_time": meta.start_ts if meta else 0,
                 "status": "running",
                 "logs": [{"timestamp": e.timestamp, "level": e.level, "event": e.event} for e in memory_logs],
             },

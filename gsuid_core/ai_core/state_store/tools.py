@@ -1,8 +1,10 @@
 """
 通用持久状态存储 - AI 工具
 
-向 Agent 暴露 state_get / state_set / state_delete / state_list / state_append
-五个工具，是框架保底工具的一部分，任何 session 都会默认注入。
+向 Agent 暴露 state_get / state_set / state_delete / state_list / state_append 五个工具。
+其中高频的 state_set / state_get / state_list 为框架保底工具（任何 session 默认注入）；
+低频的 state_delete / state_append 降为检索池工具，靠能力族（持久状态）/ 会话驻留 / 向量检索
+按需召回——用到 KV 写读时整族带出，避免每轮闲聊都常驻 5 个 state_* 抬高 Token。
 """
 
 import json
@@ -51,7 +53,7 @@ def _parse_value(value: str) -> Any:
         return value
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", capability_domain="持久状态")
 async def state_set(
     ctx: RunContext[ToolContext],
     key: str,
@@ -85,7 +87,7 @@ async def state_set(
         return f"保存失败: {e}"
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", capability_domain="持久状态")
 async def state_get(
     ctx: RunContext[ToolContext],
     key: str,
@@ -114,7 +116,7 @@ async def state_get(
         return f"读取失败: {e}"
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common", capability_domain="持久状态")
 async def state_delete(
     ctx: RunContext[ToolContext],
     key: str,
@@ -141,7 +143,7 @@ async def state_delete(
         return f"删除失败: {e}"
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", capability_domain="持久状态")
 async def state_list(
     ctx: RunContext[ToolContext],
     prefix: str = "",
@@ -170,7 +172,7 @@ async def state_list(
         return f"列出失败: {e}"
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common", capability_domain="持久状态")
 async def state_append(
     ctx: RunContext[ToolContext],
     key: str,

@@ -456,6 +456,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             bot_id=_event.bot_id,
             session_id=_event.session_id,
             start_time=time.perf_counter(),
+            start_ts=time.time(),
         )
         task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm, trace_context=trace_ctx)
         ws.queue.put_nowait(task_ctx)
@@ -501,6 +502,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 bot_id=_event.bot_id,
                 session_id=_event.session_id,
                 start_time=time.perf_counter(),
+                start_ts=time.time(),
             )
             task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm, trace_context=trace_ctx)
             ws.queue.put_nowait(task_ctx)

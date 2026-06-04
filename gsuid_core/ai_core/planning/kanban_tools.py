@@ -186,7 +186,7 @@ class KanbanSubtaskSpec(BaseModel):
 # ─────────────────────────────────────────────────────────────────────
 
 
-@ai_tools(category="self", capability_domain=_CAP)
+@ai_tools(category="common", capability_domain=_CAP)
 async def evaluate_agent_mesh_capability(
     ctx: RunContext[ToolContext],
     user_goal: str,
@@ -869,7 +869,7 @@ async def respond_subtask_approval(
 # ─────────────────────────────────────────────────────────────────────
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain="产物")
 async def artifact_put(
     ctx: RunContext[ToolContext],
     payload: str = "",
@@ -954,7 +954,7 @@ async def artifact_put(
     return f"✅ 已登记 artifact: {art.id}（{art.size_bytes} bytes，mime={art.mime}）{binary_hint}"
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain="产物")
 async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,
@@ -972,7 +972,7 @@ async def artifact_get(
     return _format_artifact(art)
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain="产物")
 async def artifact_list(
     ctx: RunContext[ToolContext],
     task_ref_text: str = "",
@@ -992,7 +992,7 @@ async def artifact_list(
     return "\n".join(lines)
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain="产物")
 async def artifact_get_recent(
     ctx: RunContext[ToolContext],
     task_ref_text: str = "",
