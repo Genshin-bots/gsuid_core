@@ -12,7 +12,6 @@ from gsuid_core.config import core_config, plugins_sample, plugin_config_store
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.trigger import Trigger
-from gsuid_core.ai_core.trigger_bridge import _register_trigger_as_ai_tool
 
 
 class SVList:
@@ -375,15 +374,22 @@ class SV:
                         )
                         logger.trace(f"载入{type}触发器【{_k}】!")
 
-            # 新增：如果声明了 to_ai，将函数注册为 AI 工具
+            # 声明 to_ai 时注册为 AI 工具；懒加载 + enable 网关，避免 sv 在 AI 关闭时拉入 pydantic_ai
             if to_ai.strip():
-                _register_trigger_as_ai_tool(
-                    func=func,
-                    keyword=keyword,
-                    to_ai_doc=to_ai.strip(),
-                    sv=self,
-                    trigger_type=type,
-                )
+                from gsuid_core.ai_core.configs.ai_config import ai_config
+
+                if ai_config.get_config("enable").data:
+                    from gsuid_core.ai_core.trigger_bridge import (
+                        _register_trigger_as_ai_tool,
+                    )
+
+                    _register_trigger_as_ai_tool(
+                        func=func,
+                        keyword=keyword,
+                        to_ai_doc=to_ai.strip(),
+                        sv=self,
+                        trigger_type=type,
+                    )
 
             @wraps(func)
             async def wrapper(bot: Bot, msg) -> Optional[Callable]:

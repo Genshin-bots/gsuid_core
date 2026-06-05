@@ -11,7 +11,6 @@ from pathlib import Path
 from datetime import datetime
 
 import aiofiles
-from bs4 import Tag, BeautifulSoup
 from PIL import Image
 from fastapi import Depends, Request, Response, UploadFile, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -36,6 +35,8 @@ async def batch_push(request: Request, data: Dict, _: Dict = Depends(require_aut
     支持解析 HTML（提取 <p> 和 <img>），并向特定 Bot 下的
     "所有用户(ALLUSER)"、"所有群(ALLGROUP)"或指定的群/用户循环发送群发消息
     """
+    from bs4 import Tag, BeautifulSoup  # 仅本接口用，+约5MB，按需导入
+
     send_msg = data["push_text"]
     soup = BeautifulSoup(send_msg, "lxml")
 

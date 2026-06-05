@@ -98,46 +98,55 @@ def compare_versions(v1: Optional[dict], v2: Optional[dict]) -> int:
 
 
 def _import_webconsole_apis() -> None:
-    """导入所有 webconsole API 模块，触发其路由注册到 FastAPI app。
+    """导入 webconsole API 路由（WS 启动后后台调用，不阻塞启动）。
 
-    其中 meme_api / persona_api / ai_memory_api 等模块会拉起 AI 核心重依赖，
-    因此本函数由 setup_frontend_b() 在 WS 启动后的后台阶段调用，
-    不再于同步插件加载阶段执行，避免阻塞框架启动。
+    核心 API 始终导入；AI API 会传递导入 pydantic_ai 等约 150MB 重栈，仅 AI 开启时导入。
     """
+    # —— 核心 API（与 AI 无关，始终导入）——
     from gsuid_core.webconsole import (  # noqa: F401
         web_api,
         auth_api,
         logs_api,
-        meme_api,
         theme_api,
         # 追踪日志 webconsole 后端
         trace_api,
         assets_api,
         backup_api,
-        # Agent Mesh Kanban webconsole 后端
-        kanban_api,
         system_api,
         history_api,
         message_api,
-        persona_api,
         plugins_api,
         version_api,
-        ai_tools_api,
         database_api,
+        dashboard_api,
+        scheduler_api,
+        git_mirror_api,
+        git_update_api,
+        core_config_api,
+        plugin_icon_api,
+    )
+
+    # —— AI API（拉起 AI 重依赖，仅在 AI 开启时导入）——
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        logger.info("💻 [网页控制台] AI 总开关已关闭，跳过 AI 相关 API 路由导入（节省约 150MB 内存）")
+        return
+
+    from gsuid_core.webconsole import (  # noqa: F401
+        meme_api,
+        # Agent Mesh Kanban webconsole 后端
+        kanban_api,
+        persona_api,
+        ai_tools_api,
         ai_memory_api,
         ai_skills_api,
         ai_wizard_api,
         artifacts_api,
-        dashboard_api,
         image_rag_api,
-        scheduler_api,
         workspace_api,
-        git_mirror_api,
-        git_update_api,
         mcp_config_api,
         agent_debug_api,
-        core_config_api,
-        plugin_icon_api,
         state_store_api,
         ai_statistics_api,
         knowledge_base_api,

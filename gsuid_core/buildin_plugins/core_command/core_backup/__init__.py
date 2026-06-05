@@ -10,7 +10,6 @@ from gsuid_core.utils.database.models import (
     CoreUser,
     CoreGroup,
 )
-from gsuid_core.ai_core.session_logger import clean_old_session_logs
 from gsuid_core.utils.backup.backup_core import (
     remove_old_backups,
     copy_and_rebase_paths,
@@ -60,6 +59,9 @@ async def database_backup():
     """
     凌晨自动备份数据库, 并清理过期的日志文件
     """
+
+    # 懒加载：避免框架启动时即触碰 gsuid_core.ai_core 包
+    from gsuid_core.ai_core.session_logger import clean_old_session_logs
 
     await backup_file(DB_PATH, DB_BACKUP)
     clean_log()

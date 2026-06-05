@@ -5,10 +5,7 @@ from typing import Any, Tuple, Union, Literal
 from pathlib import Path
 from http.cookies import SimpleCookie
 
-import qrcode
 import aiofiles
-from qrcode.constants import ERROR_CORRECT_L
-from qrcode.image.pil import PilImage
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
@@ -18,6 +15,11 @@ from gsuid_core.utils.api.mys_api import mys_api
 
 
 async def get_qrcode_base64(url: str, path: Path, bot_id: str) -> bytes:
+    # qrcode(+约2.7MB, 连带 PIL) 仅扫码登录时用到, 按需导入避免常驻启动内存。
+    import qrcode
+    from qrcode.constants import ERROR_CORRECT_L
+    from qrcode.image.pil import PilImage
+
     qr = qrcode.QRCode(  # type: ignore
         version=1,
         error_correction=ERROR_CORRECT_L,

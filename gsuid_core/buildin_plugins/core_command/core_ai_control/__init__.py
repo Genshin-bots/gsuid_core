@@ -12,12 +12,10 @@ from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.gs_agent import create_agent
-from gsuid_core.ai_core.persona.config import persona_config_manager
-from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
 from .state import ban_scope, get_ban_remaining, set_persona_override
 
+# AI 依赖改函数内懒加载：此插件始终加载，顶层 import 会让 AI 关闭时也付出整套 AI 重栈
 sv_core_ai_control = SV("Core AI控制", pm=0)
 
 _DURATION_RE = re.compile(r"(?P<num>\d+)\s*(?P<unit>秒|s|分钟|分|m|小时|时|h|天|日|d)?", re.IGNORECASE)
@@ -64,6 +62,8 @@ def _parse_duration(text: str, default_seconds: int = 1800) -> int:
 
 def _list_persona_names() -> list[str]:
     """列出可用人格名称。"""
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
     return sorted(persona_config_manager.get_all_configs().keys())
 
 
@@ -87,6 +87,8 @@ def _resolve_persona_name(text: str) -> Optional[str]:
 @sv_core_ai_control.on_command(("clear", "清空会话"), block=True)
 async def clear_ai_session(bot: Bot, ev: Event):
     """清空当前 session 的消息历史与 AI 会话对象。"""
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
     session_id = ev.session_id
     history_deleted = get_history_manager().clear_history(ev)
     ai_deleted = get_ai_session_registry().remove_ai_session(session_id)
@@ -111,6 +113,8 @@ async def switch_persona(bot: Bot, ev: Event):
             )
         return
 
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
     set_persona_override(session_id, persona_name)
     get_ai_session_registry().remove_ai_session(session_id)
     logger.info(f"[Core AI控制] 当前会话人格热切换: {session_id} -> {persona_name}")
@@ -124,6 +128,9 @@ async def run_ephemeral_agent(bot: Bot, ev: Event):
     if not task:
         await bot.send("❌ [Core AI控制] 请在 btw / 顺便一提 后填写要让新 Agent 完成的内容。")
         return
+
+    from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
     session_id = f"btw:{ev.session_id}:{uuid4().hex[:8]}"
     agent = create_agent(

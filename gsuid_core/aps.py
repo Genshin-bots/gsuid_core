@@ -1,14 +1,19 @@
 import inspect
-from typing import Any, List, Literal, Callable, Optional, Annotated
+from typing import TYPE_CHECKING, Any, List, Literal, Callable, Optional, Annotated
 from concurrent.futures import ThreadPoolExecutor
 
 from msgspec import Meta
-from pydantic_ai import RunContext
 from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
+
+if TYPE_CHECKING:
+    # 仅供类型注解；避免核心 aps 在 AI 关闭时也加载 pydantic_ai 重栈
+    from pydantic_ai import RunContext
+
+    from gsuid_core.ai_core.models import ToolContext
 
 misfire_grace_time = core_config.get_config("misfire_grace_time")
 
@@ -29,9 +34,6 @@ class _GsScheduler(AsyncIOScheduler):
 
 scheduler = _GsScheduler()
 scheduler.configure(options)
-
-# 延迟导入避免循环导入
-from gsuid_core.ai_core.models import ToolContext  # noqa: E402
 
 
 async def start_scheduler():
@@ -152,7 +154,7 @@ def _get_trigger_description(trigger: Any) -> str:
 
 
 async def add_scheduled_job(
-    ctx: RunContext[ToolContext],
+    ctx: "RunContext[ToolContext]",
     func: Annotated[
         Callable,
         Meta(description="要执行的异步或同步函数"),
