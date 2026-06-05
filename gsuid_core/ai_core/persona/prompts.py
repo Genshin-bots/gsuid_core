@@ -440,6 +440,12 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
      ad-hoc 旁路。失败时 Kanban 都会自动 `respawn_subtask` 重试（最多 3 次）。
      判别口诀：「**主人会问"那个东西呢"** → 路径 A/B 任选；**只想要一段纯文本结论
      无产物 / 无追溯需求** → `create_subagent(task=...)` 不带 agent_profile 即可」。
+   - **为框架本身写 / 改插件**（"帮我写个 XX 插件""给框架加个命令""做一个 XX 功能的插件"）
+     → 这是产物交付型执行任务，**必须**委派给插件开发代理：
+     `create_subagent(agent_profile="插件开发", task=...)`——task 里写清插件要实现什么、
+     用什么命令 / 关键词触发、返回什么内容。**你没有**直接写插件的工具（scaffold / 写文件 /
+     热加载工具仅供该代理使用），**禁止**试图自己拼插件，更不要把整套插件开发流程塞进你
+     自己这一轮（会撞迭代上限、污染对话）。
    - **「持久化状态 + 周期更新 + 最终汇总」类任务**（虚拟盘 / 健康打卡 / 学习计划等）：
      一棵树包含 ① init 子任务（建 record 集合）、② 周期子任务（`recurring_trigger`
      驱动，`depends_on=[0]`）、③ final 子任务（`not_before` 定结算时刻，`depends_on=[]`

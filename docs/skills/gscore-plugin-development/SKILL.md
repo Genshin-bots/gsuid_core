@@ -2433,6 +2433,64 @@ from gsuid_core.ai_core.capability_agents.profiles import _DELIVERY_BOUNDARY
 
 ---
 
+## 十四附、框架自带的插件开发代理（`plugin_developer_agent`）
+
+除了让插件**注册自己的**业务画像（§14），框架还内置了一个**元能力**画像
+`plugin_developer_agent`（display_name「插件开发代理」）——它让 AI 能**端到端编写一个
+本框架插件并自助热加载使用**，无需人工拷文件、重启进程。
+
+### 14附.1 定位与触发
+
+| 项 | 内容 |
+|----|------|
+| profile_id | `plugin_developer_agent` |
+| 触发关键词 | 「写插件 / 开发插件 / 做个插件 / 生成插件 / 插件开发 / 帮我写插件 …」 |
+| 权限 | **仅主人（PM=0）**——每个写/删/加载工具都 `check_func=check_pm` |
+| 落盘 | 直接写入 `gsuid_core/plugins/<Name>/`（路径强制限定单插件目录，防穿越） |
+| 加载 | 复用框架 `reload_plugin()` 热加载，命令立即生效 |
+
+主人对 AI 说「帮我写一个 XX 插件」→ 主人格经 `resolve_profile` 命中本画像 →
+经 `create_subagent(agent_profile="写插件")` / Kanban 派活 → 代理执行。
+
+### 14附.2 专用工具集（`category="plugin_dev"`）
+
+实现于 [`buildin_tools/plugin_developer.py`](../../../gsuid_core/ai_core/buildin_tools/plugin_developer.py:1)。
+**有意不复用** `code_agent` 的 `write_file_content` 等沙箱工具——后者被强制改写到
+Artifact Workspace、够不到插件目录；本组工具是「被授权写入 `plugins/`」的专用通道：
+
+| 工具 | 作用 |
+|------|------|
+| `scaffold_plugin` | 在 `plugins/<Name>/` 下生成嵌套加载骨架（外层包 + 内层同名包 + Plugins 声明） |
+| `write_plugin_file` / `read_plugin_file` | 单插件目录内写 / 读文件 |
+| `list_plugin_tree` / `delete_plugin_path` | 列文件树 / 删单个文件 |
+| `validate_plugin` | 对插件内所有 `.py` 做 `py_compile` 语法自检 |
+| `load_plugin_into_core` | 热加载（全新 / 改动后均走它），原样回传 `reload_plugin` 的成功/失败文本 |
+| `test_plugin_command` | **功能自测**：经 by_trigger 实跑某条 `to_ai` 命令（MockBot 拦截下发、只回收产出），交付前确认命令真能跑出预期结果 |
+| `read_plugin_dev_guide` | 按需查阅本 SKILL 全文（空参看目录、传章节标题读正文） |
+
+### 14附.3 端到端工作流
+
+代理 system_prompt 内置了本 SKILL 的精要 + 红线，并强制按此顺序闭环：
+
+```
+规划 <TODO_LIST>（不确定就 read_plugin_dev_guide 查证）
+  → scaffold_plugin 起骨架
+  → write_plugin_file 逐文件写业务代码（面向用户的命令尽量都写 to_ai）
+  → validate_plugin 语法自检（不过就改）
+  → load_plugin_into_core 热加载（含 ❌ 则读报错→改→重载，直到「✨ 已重载插件」）
+  → test_plugin_command 功能自测：实跑每条核心命令、核对产出（不符就改→重载→再测）
+  → 交付：插件名 + 命令清单 + **自测结果** + 文件清单（交回主人格转告主人）
+```
+
+> **「测了再回复」是硬要求**：语法过、能加载 ≠ 功能正确。交付前必须用
+> `test_plugin_command` 实跑核心命令拿到符合预期的产出；测不了的命令（没写 to_ai
+> 或属写入/不可逆副作用）如实标注"需主人手动验证"，绝不假装测过。
+
+> 这就是「AI 自助写插件」的元能力：它产出的插件本身仍然遵循本 SKILL 的全部规范
+> （目录结构、触发器签名、`convert_img`、`gs_subscribe` 推送、LLM.md 代码红线等）。
+
+---
+
 ## 十五、完整插件示例
 
 以下是一个包含全部核心功能的完整游戏查询插件示例，遵循 GsCore 插件命名规范。

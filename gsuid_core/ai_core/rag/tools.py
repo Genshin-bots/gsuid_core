@@ -31,6 +31,16 @@ else:
     ToolList = List[Any]
 
 
+# 这些分类的工具**永不通过向量检索暴露给任何 Agent**——主人格、通用子代理、
+# 其它能力代理的补充检索都召回不到它们。它们副作用强、面向"为框架本身改代码并
+# 热加载"（plugin_dev），只允许专职能力代理按 ``profile.tool_names`` 显式装配
+# （``capability_agents.runner._resolve_tools`` 走 ``get_all_tools`` 按名取、不经本函数）。
+# 仅当调用方在 ``search_tools(category=...)`` 里**显式**点名该分类时才返回。
+# 背景：plugin_dev 工具一度被向量检索召回进主人格工具池，导致主人格绕过能力代理
+# "自己把插件写了"（还撞上迭代上限），故在检索层统一拦截。
+NON_SEARCHABLE_TOOL_CATEGORIES: frozenset[str] = frozenset({"plugin_dev"})
+
+
 async def init_tools_collection():
     """初始化工具向量集合，并在嵌入维度变化时自动重建。"""
     from gsuid_core.ai_core.rag.base import client
@@ -474,6 +484,17 @@ async def search_tools(
             if cat not in all_tools_cag:
                 continue
             all_tools_dict.update(all_tools_cag[cat])
+
+    # 永不可检索分类（plugin_dev 等"仅按名装配给专职能力代理"的工具）：除非调用方
+    # 在 category 里**显式**点名，否则从候选里剔除——任何 Agent 都不该通过向量检索
+    # "捡到"这些工具而绕过委派（见 NON_SEARCHABLE_TOOL_CATEGORIES 注释）。
+    explicit_cats = category if isinstance(category, list) else [category]
+    for hidden_cat in NON_SEARCHABLE_TOOL_CATEGORIES:
+        if hidden_cat in explicit_cats or hidden_cat not in all_tools_cag:
+            continue
+        for hidden_name in all_tools_cag[hidden_cat]:
+            if hidden_name in all_tools_dict:
+                del all_tools_dict[hidden_name]
 
     # 从 all_tools_dict 中筛选出 tool_names 中的工具
     # all_tools_dict 的 value 是 ToolBase 对象（有 .tool 属性），也可能是 Tool 对象

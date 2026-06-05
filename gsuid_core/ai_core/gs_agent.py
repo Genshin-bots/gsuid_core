@@ -37,6 +37,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
 from gsuid_core.ai_core.rag.tools import (
+    NON_SEARCHABLE_TOOL_CATEGORIES,
     ToolList,
     search_tools,
     get_main_agent_tools,
@@ -77,6 +78,39 @@ _FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
 
 # 每次运行最多发送的前摇数量，避免刷屏
 _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
+
+
+def _matched_delegation_only_profile(query: str) -> str:
+    """用户意图是否命中某个"工具对主人格隐藏、只能委派"的能力代理画像。
+
+    返回命中的 ``profile_id``；无命中返回 ``""``。判定：画像的 ``match_keywords`` /
+    ``profile_id`` 命中 ``query``，且该画像 ``tool_names`` 引用了
+    ``NON_SEARCHABLE_TOOL_CATEGORIES`` 分类里的工具——这些工具既不在保底池
+    (self/buildin)、也永不被向量检索召回（见 ``rag.tools``），即主人格自己根本
+    够不到。命中时调用方会给主人格补 ``create_subagent`` 作为委派入口——否则会
+    复现实测问题：主人格想干"写插件"这类活，却既没有对应工具、又没有委派入口，
+    只能放弃或拿碎片工具硬拼。
+    """
+    h = (query or "").strip().lower()
+    if not h:
+        return ""
+
+    from gsuid_core.ai_core.register import get_registered_tools
+    from gsuid_core.ai_core.capability_agents.registry import list_profiles
+
+    registered = get_registered_tools()
+    hidden_names: set[str] = set()
+    for cat in NON_SEARCHABLE_TOOL_CATEGORIES:
+        if cat in registered:
+            hidden_names.update(registered[cat].keys())
+    if not hidden_names:
+        return ""
+
+    for profile in list_profiles():
+        matched = profile.profile_id.lower() in h or any(kw.lower() in h for kw in profile.match_keywords)
+        if matched and any(tn in hidden_names for tn in profile.tool_names):
+            return profile.profile_id
+    return ""
 
 
 # Persona 前摇配置缓存 {persona_name: dict}
@@ -854,6 +888,9 @@ class GsCoreAIAgent:
                     # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
                     search_query = "\n".join([*self._recent_user_texts, qy]) if self._recent_user_texts else qy
                     logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {search_query}")
+                    # 只排除已在保底池的 self/buildin；plugin_dev 等"委派专用"分类由
+                    # search_tools 在检索层统一拦截（NON_SEARCHABLE_TOOL_CATEGORIES），
+                    # 不必也不应在这里重复声明。
                     extra_tools += await search_tools(
                         query=search_query,
                         limit=8,
@@ -873,6 +910,21 @@ class GsCoreAIAgent:
 
                 # 保底工具全部保留；附加工具池已在族展开时限量
                 tools = core_tools + deduped_extra
+
+                # 委派保障：意图命中"工具对主人格隐藏、只能委派"的能力代理（如
+                # plugin_developer_agent）时，确保 create_subagent 在池里。否则主人格
+                # 既够不到那些工具、又没有委派入口，只能放弃或拿碎片工具硬拼。只补
+                # create_subagent 本身（不做能力族展开），代价仅 +1 个工具 schema。
+                if qy:
+                    deleg_pid = _matched_delegation_only_profile(qy)
+                    if deleg_pid and not any(t.name == "create_subagent" for t in tools):
+                        cs = find_tool_base("create_subagent")
+                        if cs is not None:
+                            tools.append(cs.tool)
+                            logger.debug(
+                                f"🧠 [GsCoreAIAgent] 意图命中委派型画像 {deleg_pid}，注入 create_subagent 保障委派路径"
+                            )
+
                 logger.debug(
                     f"🧠 [GsCoreAIAgent] 工具数量: {len(tools)} (保底 {len(core_tools)} + 附加 {len(deduped_extra)})"
                 )
