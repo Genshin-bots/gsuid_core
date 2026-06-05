@@ -213,6 +213,28 @@ async def init_ai_core():
         _get_ready_event().set()
 
 
+@on_core_shutdown(priority=100)
+async def close_qdrant_client_on_shutdown() -> None:
+    """框架关闭时优雅关闭全局 Qdrant client，释放本地嵌入式 Qdrant 的目录文件锁。
+
+    本地 Qdrant 的文件锁默认只在进程退出时由 OS 释放；显式 close() 让“重启”在
+    core_shutdown_execute() 阶段(taskkill 之前)就释放锁，缩短新进程因旧锁未释放而
+    迁移/初始化失败的窗口。用最大优先级(最后执行)，确保 Memory/MCP 等仍可能写
+    Qdrant 的关机钩子先完成。
+    """
+    try:
+        from gsuid_core.ai_core.rag import base as rag_base
+
+        client = rag_base.client
+        if client is None:
+            return
+        await client.close()
+        rag_base.client = None
+        logger.info("🧠 [AI Core] 已关闭 Qdrant client，释放本地向量库文件锁")
+    except Exception as e:
+        logger.debug(f"🧠 [AI Core] 关闭 Qdrant client 失败(可忽略): {e}")
+
+
 @on_core_shutdown
 async def flush_ai_sessions_on_shutdown() -> None:
     """框架关闭时，强制把所有活跃 AI 会话的日志落盘。

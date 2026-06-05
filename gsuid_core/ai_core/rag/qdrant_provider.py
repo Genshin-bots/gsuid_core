@@ -10,7 +10,9 @@
 local 还是 remote，都能据此构造出对应方向的源/目标客户端完成迁移。
 """
 
+import gc
 import json
+import asyncio
 from pathlib import Path
 
 from qdrant_client import AsyncQdrantClient
@@ -20,6 +22,7 @@ from qdrant_client.models import (
     VectorStruct,
     VectorStructOutput,
 )
+from qdrant_client.local.async_qdrant_local import AsyncQdrantLocal
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
@@ -196,6 +199,55 @@ async def _copy_collection(source: AsyncQdrantClient, target: AsyncQdrantClient,
     return copied
 
 
+def _is_lock_conflict(e: BaseException) -> bool:
+    """判断异常是否为本地嵌入式 Qdrant 的目录文件锁冲突。
+
+    qdrant 在 ``.lock`` 被其它实例占用时抛 RuntimeError，文案含 'already accessed'。
+    """
+    return isinstance(e, RuntimeError) and "already accessed" in str(e)
+
+
+async def _build_source_with_lock_retry(
+    provider: str,
+    *,
+    attempts: int = 3,
+    base_delay: float = 2.0,
+) -> AsyncQdrantClient:
+    """构造迁移源客户端；本地源被占用(文件锁冲突)时带退避重试。
+
+    重启窗口内旧进程可能尚未完全退出释放本地锁，给它时间后再试，避免一次锁冲突
+    就让整条 RAG 初始化失败。仅对锁冲突重试，其它异常立即抛出。
+    """
+    last_err: BaseException | None = None
+    for i in range(attempts):
+        try:
+            return build_qdrant_client(provider)
+        except RuntimeError as e:
+            if not _is_lock_conflict(e):
+                raise
+            last_err = e
+            if i < attempts - 1:
+                delay = base_delay * (i + 1)
+                logger.warning(f"🧠 [Qdrant] 迁移源(本地)被其它实例占用，{delay:.0f}s 后重试 ({i + 1}/{attempts}): {e}")
+                await asyncio.sleep(delay)
+    assert last_err is not None
+    raise last_err
+
+
+def _release_qdrant_client_memory(client: AsyncQdrantClient) -> None:
+    """主动断开本地嵌入式 Qdrant client 载入内存的 collection 引用，便于 GC 回收。
+
+    AsyncQdrantLocal.close() 只释放文件锁与 sqlite 句柄，不会清空其 collections——
+    其中的 numpy 向量/payload(大库可达数百 MB~GB)会一直驻留到 client 对象被回收，
+    且 client 内部存在引用环，仅靠作用域退出的引用计数无法及时释放。这里清空内部容器，
+    配合 gc.collect() 尽快回收内存。远程 client 的内部实现不是 AsyncQdrantLocal，跳过。
+    """
+    inner = client._client
+    if isinstance(inner, AsyncQdrantLocal):
+        inner.collections.clear()
+        inner.aliases.clear()
+
+
 async def migrate_qdrant_if_provider_changed() -> None:
     """检测 Qdrant 后端是否发生切换，若是则把历史数据迁移到新后端（保留旧后端数据）。
 
@@ -231,7 +283,17 @@ async def migrate_qdrant_if_provider_changed() -> None:
         return
 
     logger.info(f"🧠 [Qdrant] 检测到向量库后端切换: {last} -> {current}，开始迁移历史数据(保留原数据)...")
-    source = build_qdrant_client(last)
+    try:
+        source = await _build_source_with_lock_retry(last)
+    except RuntimeError as e:
+        if _is_lock_conflict(e):
+            logger.error(
+                "🧠 [Qdrant] 本地向量库目录被另一个 Qdrant 实例占用，无法读取历史数据进行迁移。"
+                "常见原因：仍有第二个 gsuid_core 进程在运行(“重启”只会结束当前进程，不会结束重复实例)。"
+                "本次迁移已跳过(状态未对齐)，处理掉冲突进程后下次启动会自动重试。"
+            )
+            return
+        raise
     failed = False
     total = 0
     try:
@@ -262,3 +324,8 @@ async def migrate_qdrant_if_provider_changed() -> None:
             await source.close()
         except Exception as e:
             logger.debug(f"🧠 [Qdrant] 关闭源客户端时出现异常(可忽略): {e}")
+        # close() 不会清空已载入内存的向量/payload，主动断引用 + GC，
+        # 避免本地大库迁移完成后内存仍占用到下次重启才释放。
+        _release_qdrant_client_memory(source)
+        del source
+        gc.collect()
