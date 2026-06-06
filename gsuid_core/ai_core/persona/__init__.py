@@ -39,6 +39,7 @@ from gsuid_core.ai_core.persona.config import (
 from gsuid_core.ai_core.persona.models import PersonaFiles, PersonaMetadata
 from gsuid_core.ai_core.persona.persona import PERSONA_PATH, Persona
 from gsuid_core.ai_core.persona.prompts import (
+    INNER_OS_MARKER,
     ROLE_PLAYING_START,
     SYSTEM_CONSTRAINTS,
     CHARACTER_BUILDING_TEMPLATE,
@@ -85,6 +86,7 @@ __all__ = [
     "ROLE_PLAYING_START",
     "SYSTEM_CONSTRAINTS",
     "TOOL_ORCHESTRATION_CONSTRAINTS",
+    "INNER_OS_MARKER",
     # 初始化函数
     "init_default_personas",
     # 配置管理

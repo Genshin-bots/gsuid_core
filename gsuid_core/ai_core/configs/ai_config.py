@@ -139,6 +139,11 @@ AI_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    "enable_deepseek_rp": GsBoolConfig(
+        "启用DS专属角色扮演模式",
+        "用于在思考模式下切换思维链风格, [文档](https://github.com/victorchen96/deepseek_v4_rolepaly_instruct/blob/main/README.md)",
+        False,
+    ),
 }
 
 

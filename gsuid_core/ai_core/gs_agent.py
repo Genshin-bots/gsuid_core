@@ -48,7 +48,7 @@ from gsuid_core.ai_core.rag.tools import (
 from gsuid_core.ai_core.configs.models import get_model_for_task
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.utils.resource_manager import RM
-from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
+from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER, CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 _T = TypeVar("_T")
@@ -790,6 +790,16 @@ class GsCoreAIAgent:
                 final_user_message = list(final_user_message)
                 final_user_message.append(f"\n\n{rag_context}")
             logger.info("🧠[GsCoreAIAgent] 已添加 RAG 上下文")
+
+        # DS 专属角色扮演模式（inner_os）：仅在 Chat 模式首轮 user_message 末尾追加
+        if (
+            self.create_by == "Chat"
+            and not self.history
+            and ai_config.get_config("enable_deepseek_rp").data
+            and isinstance(final_user_message, str)
+        ):
+            final_user_message = f"{final_user_message}{INNER_OS_MARKER}"
+            logger.info("🧠[GsCoreAIAgent] 已注入 DS 角色扮演 Marker（首轮 Chat）")
 
         # 连续无工具调用检测：连续两轮以上只推脱不调工具时，注入强制提醒
         if self.create_by in ["Chat", "Agent"] and self._consecutive_no_tool_rounds >= 2:
