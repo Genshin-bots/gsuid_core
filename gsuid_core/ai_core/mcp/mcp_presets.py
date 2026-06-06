@@ -2,6 +2,10 @@
 MCP 预设配置
 
 提供常见、知名 MCP 服务提供方的预设配置，方便用户快速添加。
+
+预设配置支持两种传输方式:
+- stdio: 通过 command + args + env_template 启动本地进程
+- sse: 通过 url + headers_template 连接远程 SSE 服务器
 """
 
 from typing import Any
@@ -564,6 +568,21 @@ MCP_PRESETS: list[dict[str, Any]] = [
         "default_tools": [
             {"name": "list_highlights", "description": "List reading highlights"},
             {"name": "search_highlights", "description": "Search highlights"},
+        ],
+    },
+    # =========================================================================
+    # SSE 远程服务
+    # =========================================================================
+    {
+        "name": "知乎搜索",
+        "description": "知乎站内搜索 MCP 服务，通过 SSE 方式提供知乎搜索能力",
+        "transport": "sse",
+        "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+        "headers_template": {
+            "Authorization": "Bearer ",
+        },
+        "default_tools": [
+            {"name": "zhihu_search", "description": "搜索知乎站内内容"},
         ],
     },
 ]

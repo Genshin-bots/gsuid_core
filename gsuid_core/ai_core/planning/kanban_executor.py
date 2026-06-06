@@ -19,6 +19,7 @@
 webconsole 或对话回复审批（``respond_subtask_approval``）。
 """
 
+import re
 import time
 import asyncio
 from typing import List, Tuple, Optional
@@ -35,6 +36,26 @@ from .workspace import put_artifact, ensure_workspace
 
 _VALID_USER_TYPES = ("group", "direct", "channel", "sub_channel")
 
+# 围栏代码块匹配（含语言标注的 ```python ... ```）。用于在"转译兜底"时剥离能力代理
+# 原始产出里的大段代码 / 原始数据——它们绝不该直接回灌给用户（群聊刷屏与污染）。
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _sanitize_for_user(text: str) -> str:
+    """剥离面向用户文本里的围栏代码块并限长，用于转译为空 / 转译异常时的兜底返回。
+
+    设计原则：宁可丢失原始细节，也绝不把能力代理（plugin_developer_agent /
+    code_agent 等）产出的代码 / 原始数据当作播报正文直接发给用户。正常情况下人格
+    转译已遵循"只点结论、不复述细节"，本函数只兜底那条 `or raw_result` 退路。
+    """
+    if not text:
+        return text
+    sanitized = _CODE_FENCE_RE.sub("〔代码已省略〕", text)
+    # 半个未配对的围栏：从首个 ``` 处截断，杜绝半截代码块漏出
+    if "```" in sanitized:
+        sanitized = sanitized.split("```", 1)[0].rstrip() + " 〔代码已省略〕"
+    return sanitized.strip()[:600]
+
 
 def _build_event(task: AIAgentTask) -> Event:
     user_type = task.user_type if task.user_type in _VALID_USER_TYPES else "direct"
@@ -46,6 +67,9 @@ def _build_event(task: AIAgentTask) -> Event:
         group_id=task.group_id,
         real_bot_id=task.bot_id,
         msg_id="",
+        # 还原派活时的权限等级，否则退回 Event 默认 6（非管理员），pm 门控工具
+        # （check_pm，如 plugin_dev 全家）会拒绝主人本人派出的子代理。
+        user_pm=task.user_pm,
     )
 
 
@@ -63,6 +87,7 @@ def _format_subtask_prompt(
     root: AIAgentTask,
     child: AIAgentTask,
     upstream_artifacts: List[AIAgentArtifact],
+    resume_hint: str = "",
 ) -> str:
     """拼装喂给能力代理的任务文本（含上游 artifact + 工作区约束）。
 
@@ -86,6 +111,10 @@ def _format_subtask_prompt(
             f"本子任务描述：{child.goal[:1000]}",
             f"分配画像：{child.agent_profile or '（未指定）'}",
         ]
+    # 断点续作提示：审批挂起→批准→重新调度后，能力代理 history 为空、会从头重做；
+    # 这段提示放在任务描述紧后面（高显著位），让它直接接着上一轮的断点往下做。
+    if resume_hint:
+        parts.append(resume_hint)
     if child.params_override:
         # JSON 而非 Python repr——避免 dict 渲染成 {'k': 'v'} 让 LLM 误以为是
         # Python 字面量；JSON 格式更接近代理实际要往 record_put / state_set 里塞
@@ -122,6 +151,26 @@ def _format_subtask_prompt(
     return "\n".join(parts)
 
 
+async def _build_resume_hint(child: AIAgentTask) -> str:
+    """重新调度时给能力代理的「断点续作」提示（目前仅插件开发的多步安装流程需要）。
+
+    审批挂起 → 批准 → 重新调度后，能力代理的对话 history 为空、会从头重做（重读指南 /
+    重新 scaffold）。这里按画像读对应的进度账本，给一段明确的续作指引，让它直接接着
+    copy/load/test，而不是把整套流程重跑一遍。非该类画像或无进行中流程时返回空串。
+    """
+    if child.agent_profile != "plugin_developer_agent":
+        return ""
+    try:
+        from gsuid_core.ai_core.buildin_tools.plugin_developer import (
+            install_resume_hint_for_task,
+        )
+
+        return await install_resume_hint_for_task(child.id)
+    except Exception as e:
+        logger.debug(f"📋 [Kanban] 构造断点续作提示失败: {e}")
+        return ""
+
+
 async def _collect_upstream_artifacts(child: AIAgentTask) -> List[AIAgentArtifact]:
     """汇总上游子任务的 output_artifact + 全量 workspace_file 列表。"""
     deps = child.dependency_task_ids if isinstance(child.dependency_task_ids, list) else []
@@ -138,8 +187,13 @@ async def _collect_upstream_artifacts(child: AIAgentTask) -> List[AIAgentArtifac
     return bag
 
 
-async def _persona_relay(task: AIAgentTask, raw_result: str) -> Tuple[str, List[str]]:
+async def _persona_relay(
+    task: AIAgentTask, raw_result: str, is_approval_request: bool = False
+) -> Tuple[str, List[str]]:
     """人格转译：能力代理结果再过一遍主人格口吻。
+
+    ``is_approval_request=True`` 时按"请求主人审批"口吻转译（请主人回复同意/拒绝），
+    而非"任务已完成"的进展播报。
 
     把本子任务登记的 ``workspace_file`` / ``output`` artifact 显式列在转译 prompt
     里——否则主人格转译时看不到 ``res_xxx`` 句柄，主人事后追问"刚才那张图呢"
@@ -233,22 +287,32 @@ async def _persona_relay(task: AIAgentTask, raw_result: str) -> Tuple[str, List[
             relay_tools.append(all_tools["send_message_by_ai"].tool)
 
         ev = _build_event(task)
+        if is_approval_request:
+            instruction = (
+                f"【Kanban 审批请求转译】你的专职助手开发好了「{task.display_name}」，但装进框架需要主人点头。"
+                "请用你自己的口吻简短转告主人这件事，并**明确请主人回复同意或拒绝**——不要复述代码/细节，也不要替主人做决定。"
+            )
+        else:
+            instruction = (
+                f"【Kanban 子任务播报转译】你的专职助手刚完成了「{task.display_name}」，执行结果如下。"
+                "请用你自己的口吻、简短地把这条进展转告主人——只点关键结论与下一步动作，"
+                "**不要复述细节、不要把自己当作做出该决定的人**。"
+                "**严禁原样输出任何代码块、文件内容或大段原始数据**（会造成群聊刷屏）；"
+                "如助手产出了代码 / 文件，只需一句话说明做了什么、放在哪，不要把代码贴出来。"
+            )
         spoken: str = await agent.run(
-            user_message=(
-                f"【Kanban 子任务播报转译】你的专职助手刚完成了「{task.display_name}」，"
-                f"执行结果如下。请用你自己的口吻、简短地把这条进展转告主人——"
-                f"只点关键结论与下一步动作，**不要复述细节、不要把自己当作做出该决定的人**。"
-                f"\n---\n{raw_result[:1500]}" + artifact_block
-            ),
+            user_message=f"{instruction}\n---\n{raw_result[:1500]}" + artifact_block,
             ev=ev,
             bot=_get_bot(task, ev),
             tools=relay_tools,
             return_mode="return",
         )
-        return spoken.strip() or raw_result, relay_log_files
+        # 人格转译正常产出直接用；仅"转译为空"的兜底退路对 raw_result 做去代码处理，
+        # 避免把能力代理的原始代码 / 数据当播报正文发给用户。
+        return spoken.strip() or _sanitize_for_user(raw_result), relay_log_files
     except Exception as e:
-        logger.debug(f"📋 [Kanban] 人格转译失败，原样播报: {e}")
-        return raw_result, relay_log_files
+        logger.debug(f"📋 [Kanban] 人格转译失败，去代码兜底播报: {e}")
+        return _sanitize_for_user(raw_result), relay_log_files
     finally:
         # 无论成功 / 异常，关闭转译 SubAgent logger；relay_log_files 在
         # return 表达式求值后才被 append（list 是引用，append 对返回值同样可见）。
@@ -316,7 +380,8 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         ev = _build_event(fresh)
         bot = _get_bot(fresh, ev)
         upstream = await _collect_upstream_artifacts(fresh)
-        prompt = _format_subtask_prompt(root, fresh, upstream)
+        resume_hint = await _build_resume_hint(fresh)
+        prompt = _format_subtask_prompt(root, fresh, upstream, resume_hint)
 
         # 3) 让能力代理执行
         raw_result: str = ""
@@ -358,7 +423,20 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             CAPABILITY_AGENT_ERROR_PREFIX,
         )
 
-        if (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
+        # 5a) 安装审批：copy_to_plugin_dir 已把任务挂为 waiting_approval，转译审批请求且不落终态
+        if latest is not None and latest.status == "waiting_approval":
+            if bot:
+                spoken, relay_log_files = await _persona_relay(
+                    fresh, latest.failure_reason or raw_result, is_approval_request=True
+                )
+                if spoken:
+                    await _notify(
+                        fresh,
+                        spoken,
+                        trigger_reason=f"approval_request:{fresh.display_name}",
+                        generator_log_files=relay_log_files,
+                    )
+        elif (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
             await kanban.mark_subtask_failed(fresh, raw_result[:1000])
             await _notify_failure(root, fresh, raw_result[:1000])
         else:

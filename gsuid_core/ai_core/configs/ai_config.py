@@ -86,12 +86,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "MCP",
         options=["MCP"],
     ),
-    "tts_provider": GsStrConfig(
-        "语音合成服务提供方",
-        "指定语音合成（TTS）服务提供方，用于将AI回复转为语音消息",
-        "MCP",
-        options=["MCP"],
-    ),
     "video_understand_provider": GsStrConfig(
         "视频理解服务提供方",
         "指定视频理解服务提供方，用于从视频中提取关键帧并理解内容",
@@ -107,7 +101,7 @@ AI_CONFIG: Dict[str, GSC] = {
     "multi_agent_lenth": GsIntConfig(
         "最多允许AI思考轮数",
         "指定多轮思考调用工具的最大递归深度, 注意: 多轮对话会占用更多的token, 请根据实际情况调整",
-        12,
+        20,
         options=[9, 12, 20, 30],
     ),
     "enable_mcp_server": GsBoolConfig(

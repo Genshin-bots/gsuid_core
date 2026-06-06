@@ -6,15 +6,23 @@ Web Search 公共 API 模块
 """
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.mcp.utils import (
+    get_mcp_tool_id,
+    is_mcp_provider,
+    sanitize_mcp_text,
+    build_mcp_arguments,
+    call_mcp_tool_checked,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
-from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 
 from .exa_search import exa_search
 from .tavily_search import (
     tavily_search,
     tavily_search_with_context,
 )
+
+# 单条 MCP 原始返回兜底透传时的最大字符数，避免一次搜索把上下文吃满
+_MAX_MCP_RAW_CHARS = 4000
 
 
 def _get_provider() -> str:
@@ -38,19 +46,14 @@ async def _mcp_search(query: str, max_results: int | None = None) -> list[dict]:
     Returns:
         搜索结果列表
     """
-    mcp_tool_id = mcp_tools_config.get_config("websearch_mcp_tool_id").data
+    mcp_tool_id = get_mcp_tool_id("websearch_mcp_tool_id", "Web Search")
 
-    if not mcp_tool_id:
-        raise RuntimeError("Web Search MCP 工具未配置，请前往 AI 配置页面设置")
+    arguments = build_mcp_arguments(
+        "websearch_mcp_tool_id",
+        {"query": query, "max_results": max_results},
+    )
 
-    arguments: dict[str, str | int] = {"query": query}
-    if max_results is not None:
-        arguments["max_results"] = max_results
-
-    result = await call_mcp_tool(mcp_tool_id=mcp_tool_id, arguments=arguments)
-
-    if result.is_error:
-        raise RuntimeError(f"Web Search MCP 调用失败: {result.text}")
+    result = await call_mcp_tool_checked(mcp_tool_id, arguments, "Web Search")
 
     return _parse_mcp_search_result(result.text, max_results)
 
@@ -58,6 +61,11 @@ async def _mcp_search(query: str, max_results: int | None = None) -> list[dict]:
 def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> list[dict]:
     """
     解析 MCP web search 返回的原始文本为结构化结果
+
+    两段式策略（不同 MCP 返回格式差异极大，无法用一套 schema 归一）：
+    1. 能 ``json.loads`` → 走结构化归一，按条干净截断（MiniMax 等）。
+    2. 不能（知乎等返回 XML 化文本）→ **不再丢弃返回 []**，而是消毒（剥指令壳）
+       + 限长后整段透传给模型当参考资料，由 LLM 自己阅读。
 
     Args:
         raw_text: MCP 返回的原始文本
@@ -68,14 +76,25 @@ def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> l
     """
     import json
 
+    # 先消毒：剥掉 instruction 壳，避免间接 prompt injection
+    cleaned = sanitize_mcp_text(raw_text)
+
     try:
-        data = json.loads(raw_text)
+        data = json.loads(cleaned)
     except json.JSONDecodeError:
-        logger.warning(f"🌐 [WebSearch][MCP] 解析 JSON 失败，原始文本: {raw_text[:200]}...")
-        return []
+        # 非 JSON：兜底透传（限长），而不是返回空让模型误以为“搜不到”
+        logger.debug(f"🌐 [WebSearch][MCP] 非 JSON 返回，按原文透传 ({len(cleaned)} 字)")
+        return [
+            {
+                "title": "",
+                "url": "",
+                "content": sanitize_mcp_text(raw_text, max_chars=_MAX_MCP_RAW_CHARS),
+                "score": 0.0,
+            }
+        ]
 
     # 调试日志：打印原始返回数据
-    logger.debug(f"🌐 [WebSearch][MCP] 原始返回数据: {raw_text[:500]}...")
+    logger.debug(f"🌐 [WebSearch][MCP] 结构化返回: {cleaned[:500]}...")
 
     # 尝试解析为结果列表
     # MiniMax MCP 返回格式可能是 {"organic": [...]} 或 {"results": [...]} 或直接是 [...]
@@ -139,7 +158,7 @@ async def web_search(
     if provider == "Exa":
         return await exa_search(query=query, max_results=max_results)
 
-    if provider == "MCP":
+    if is_mcp_provider(provider):
         return await _mcp_search(query=query, max_results=max_results)
 
     # 默认使用 Tavily
@@ -169,7 +188,7 @@ async def web_search_with_context(
         results = await exa_search(query=query, max_results=max_results)
         return {"results": results, "answer": None}
 
-    if provider == "MCP":
+    if is_mcp_provider(provider):
         results = await _mcp_search(query=query, max_results=max_results)
         return {"results": results, "answer": None}
 

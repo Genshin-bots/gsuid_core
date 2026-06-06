@@ -521,11 +521,13 @@ class StatisticsManager:
                 for t in token_by_model_data
             ]
 
-            # 获取按模型分组的 Token 消耗数据
+            # 获取按类型分组的 Token 消耗数据
+            # 注意: 字段名统一为 `type`, 与 get_summary() 中今日内存数据的 by_type 保持一致,
+            #       避免前端 AIStatisticsPage.tsx 的 TokenByType 接口拿到 `chat_type` 时回落成 "Unknown"。
             token_by_type_data = await AITokenUsageByType.get_daily_data(date)
             by_type = [
                 {
-                    "chat_type": t.chat_type,
+                    "type": t.chat_type,
                     "input_tokens": t.input_tokens,
                     "output_tokens": t.output_tokens,
                 }

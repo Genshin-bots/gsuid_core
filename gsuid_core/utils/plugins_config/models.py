@@ -19,6 +19,7 @@ class GsStrConfig(GsConfig, tag=True):
     options: List[str] = []
     regex: Optional[str] = None
     """仅用于前端正则校验的正则表达式"""
+    details: Optional[dict] = None
     secret: bool = False
 
 

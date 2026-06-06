@@ -17,7 +17,7 @@ from pydantic_ai.tools import Tool
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
-from gsuid_core.models import Message
+from gsuid_core.models import Event, Message
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import _TOOL_REGISTRY, ToolBase, _get_plugin_name_from_module
 from gsuid_core.utils.resource_manager import RM
@@ -243,6 +243,60 @@ def _message_to_text(message: Any) -> str:
     if isinstance(message, (list, tuple)):
         return " ".join(_message_to_text(m) for m in message)
     return str(message)
+
+
+def _assemble_trigger_output(call_ctx: Dict[str, Any]) -> str:
+    """把 MockBot 收集到的 ai_return 文本 / bot.send 文字 / 图片·音频·视频资源 ID
+    组装为返回字符串（图片等二进制绝不进返回值，只回传资源 ID）。"""
+    parts: List[str] = []
+    parts.extend(call_ctx.get("texts", []))
+    parts.extend(call_ctx.get("bot_messages", []))
+    if call_ctx.get("image_ids"):
+        id_list = ", ".join(call_ctx["image_ids"])
+        parts.append(
+            f"[已生成 {len(call_ctx['image_ids'])} 张图片，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 image_id。]"
+        )
+    if call_ctx.get("audio_ids"):
+        id_list = ", ".join(call_ctx["audio_ids"])
+        parts.append(
+            f"[已生成 {len(call_ctx['audio_ids'])} 个音频，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 audio_id。]"
+        )
+    if call_ctx.get("video_ids"):
+        id_list = ", ".join(call_ctx["video_ids"])
+        parts.append(
+            f"[已生成 {len(call_ctx['video_ids'])} 个视频，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 video_id。]"
+        )
+    return "\n".join(parts)
+
+
+async def run_trigger_via_mockbot(real_bot: Bot, fake_ev: Event, func: Any) -> str:
+    """用 MockBot 实跑一个触发器处理函数并收集其产出（不真正发给用户）。
+
+    供两处复用：
+    - to_ai 触发器的 AI 工具包装（``_ai_tool_wrapper`` 内联了等价逻辑）；
+    - 插件开发自测工具（``plugin_developer.test_plugin_command``）对**纯命令**触发器
+      （未声明 to_ai）的实跑——纯命令插件本就无需 to_ai 即可工作，自测也应支持，
+      避免开发代理因"找不到 to_ai 触发器"反复改代码陷入死循环。
+
+    返回收集到的文本 / 资源摘要；触发器无任何产出时返回空串（话术交调用方决定）。
+    异常向上抛出，由调用方按需包装。
+    """
+    call_ctx: Dict[str, Any] = {
+        "texts": [],
+        "image_ids": [],
+        "audio_ids": [],
+        "video_ids": [],
+        "bot_messages": [],
+    }
+    token = _AI_CALL_CONTEXT.set(call_ctx)
+    try:
+        await func(MockBot(real_bot, call_ctx), fake_ev)
+    finally:
+        _AI_CALL_CONTEXT.reset(token)
+    return _assemble_trigger_output(call_ctx)
 
 
 # ─── _register_trigger_as_ai_tool ─────────────────────────────────────────────

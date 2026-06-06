@@ -6,23 +6,31 @@
 
 每个 MCP 配置对应一个 MCP 服务器，配置以 JSON 文件形式存储在 `data/ai_core/mcp_configs/` 目录下。
 
+支持两种传输方式：
+- **stdio** — 通过命令行启动本地 MCP 服务器（`command` + `args` + `env`）
+- **sse** — 通过 HTTP/SSE 连接远程 MCP 服务器（`url` + `headers`）
+
 **配置字段说明**：
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 是 | MCP 服务器显示名称 |
-| command | string | 是 | 启动命令，如 `uvx`, `npx`, `python` |
-| args | array | 否 | 命令参数列表，默认 `[]` |
-| env | object | 否 | 环境变量字典，默认 `{}` |
+| transport | string | 否 | 传输方式：`"stdio"` 或 `"sse"`，默认 `"stdio"`。若未显式设置，会根据 `url` 字段自动推断 |
+| command | string | stdio 模式必填 | 启动命令，如 `uvx`, `npx`, `python` |
+| args | array | 否 | 命令参数列表（stdio 模式），默认 `[]` |
+| env | object | 否 | 环境变量字典（stdio 模式），默认 `{}` |
+| url | string | sse 模式必填 | SSE 服务器 URL，如 `https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse` |
+| headers | object | 否 | HTTP 请求头字典（sse 模式），如 `{"Authorization": "Bearer xxx"}`，默认 `{}` |
 | enabled | boolean | 否 | 是否启用，默认 `true` |
 | register_as_ai_tools | boolean | 否 | 是否将 MCP 工具注册为 AI 工具，默认 `false` |
 | tools | array | 否 | 工具定义列表，默认 `[]` |
 | tool_permissions | object | 否 | 工具权限配置，键为工具名，值为权限等级，默认 `{}` |
 
-**配置文件示例**：
+**配置文件示例 (stdio)**：
 ```json
 {
     "name": "MiniMax",
+    "transport": "stdio",
     "command": "uvx",
     "args": ["minimax-coding-plan-mcp"],
     "env": {"MINIMAX_API_KEY": "your_key"},
@@ -40,6 +48,28 @@
     "tool_permissions": {
         "search_code": 6
     }
+}
+```
+
+**配置文件示例 (sse)**：
+```json
+{
+    "name": "知乎搜索",
+    "transport": "sse",
+    "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    "headers": {"Authorization": "Bearer your_access_secret"},
+    "enabled": true,
+    "register_as_ai_tools": false,
+    "tools": [
+        {
+            "name": "zhihu_search",
+            "description": "搜索知乎站内内容",
+            "parameters": {
+                "query": {"type": "string", "description": "搜索关键词", "required": true},
+                "count": {"type": "integer", "description": "返回条数 1-10", "required": false}
+            }
+        }
+    ]
 }
 ```
 
@@ -166,13 +196,30 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | name | string | 是 | - | MCP 服务器名称，同时用于生成 config_id |
-| command | string | 是 | - | 启动命令 |
-| args | array | 否 | `[]` | 命令参数 |
-| env | object | 否 | `{}` | 环境变量 |
+| transport | string | 否 | `"stdio"` | 传输方式：`"stdio"` 或 `"sse"`，未设置时自动推断 |
+| command | string | stdio 模式必填 | `""` | 启动命令 |
+| args | array | 否 | `[]` | 命令参数（stdio 模式） |
+| env | object | 否 | `{}` | 环境变量（stdio 模式） |
+| url | string | sse 模式必填 | `""` | SSE 服务器 URL |
+| headers | object | 否 | `{}` | HTTP 请求头（sse 模式，如 `{"Authorization": "Bearer xxx"}`） |
 | enabled | boolean | 否 | `true` | 是否启用 |
 | register_as_ai_tools | boolean | 否 | `false` | 是否将 MCP 工具注册为 AI 工具 |
 | tools | array | 否 | `[]` | 工具定义列表，见下方工具定义格式 |
 | tool_permissions | object | 否 | `{}` | 工具权限配置，键为工具名，值为权限等级 |
+
+**SSE 模式创建示例**：
+```json
+{
+    "name": "知乎搜索",
+    "transport": "sse",
+    "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    "headers": {"Authorization": "Bearer your_access_secret"},
+    "enabled": true,
+    "register_as_ai_tools": false,
+    "tools": [],
+    "tool_permissions": {}
+}
+```
 
 **工具定义格式**：
 ```json
@@ -245,9 +292,12 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 否 | MCP 服务器名称 |
+| transport | string | 否 | 传输方式：`"stdio"` 或 `"sse"` |
 | command | string | 否 | 启动命令 |
 | args | array | 否 | 命令参数 |
 | env | object | 否 | 环境变量 |
+| url | string | 否 | SSE 服务器 URL |
+| headers | object | 否 | HTTP 请求头（sse 模式） |
 | enabled | boolean | 否 | 是否启用 |
 | register_as_ai_tools | boolean | 否 | 是否将 MCP 工具注册为 AI 工具 |
 | tools | array | 否 | 工具定义列表 |
@@ -506,8 +556,12 @@ POST /api/ai/mcp/tools/discover
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "搜索关键词"}
-                    }
+                        "query": {"type": "string", "title": "Query"}
+                    },
+                    "required": ["query"]
+                },
+                "parameters": {
+                    "query": {"type": "string", "description": "Query", "required": true}
                 }
             }
         ],
@@ -515,6 +569,17 @@ POST /api/ai/mcp/tools/discover
     }
 }
 ```
+
+**响应字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| name | string | 工具名称 |
+| description | string | 工具描述 |
+| input_schema | object | MCP 工具的原始 JSON Schema 输入定义 |
+| parameters | object | 从 `input_schema` 自动转换的扁平化参数字典，可直接传给创建接口 |
+
+**前端使用建议**：discover 返回的 `parameters` 字段可直接作为创建配置 `POST /api/ai/mcp` 时 `tools[].parameters` 的值，无需前端手动转换。
 
 **响应**（连接失败）：
 ```json
@@ -586,6 +651,214 @@ POST /api/ai/mcp/tools/import
 
 ---
 
+## 26.11 MCP 工具参数映射配置
+
+MCP 工具配置 API (`/api/ai/mcp-tools-config`) 用于管理各业务模块对接 MCP 工具时的参数映射。
+
+### 背景说明
+
+不同的 MCP 工具对外提供的参数名不同，而框架内部函数的参数名是固定的。例如内部 `web_search` 函数的参数叫 `query` 和 `max_results`，但某个 MCP 工具可能叫 `query_context` 和 `limit`。
+
+通过 `details` 字段建立映射关系，框架在调用 MCP 工具时会自动将内部参数转换为 MCP 工具期望的参数。
+
+**details 映射规则**：
+
+| 值的格式 | 含义 | 示例 |
+|----------|------|------|
+| `"params - <内部参数名>"` | 从内部函数的参数中取值 | `"params - query"` → 取内部 `query` 参数的值 |
+| 字面量 (str/int/float/bool) | 固定值，每次调用都传入 | `"custom"` / `6` / `true` |
+| `null` | 跳过该参数，不传给 MCP 工具 | |
+
+**配置示例** (`mcp_tools_config.json`)：
+```json
+{
+    "websearch_mcp_tool_id": {
+        "type": "GsStrConfig",
+        "title": "Web Search MCP 工具",
+        "desc": "...",
+        "data": "minimax - web_search",
+        "details": {
+            "query": "params - query",
+            "max_results": "params - max_results",
+            "search_model": "custom",
+            "max": 6
+        }
+    }
+}
+```
+
+含义：
+- MCP 的 `query` 参数 ← 内部 `query` 参数的值
+- MCP 的 `max_results` 参数 ← 内部 `max_results` 参数的值
+- MCP 的 `search_model` 参数 ← 固定值 `"custom"`
+- MCP 的 `max` 参数 ← 固定值 `6`
+
+---
+
+### 26.11.1 获取 MCP 工具配置列表
+
+```
+GET /api/ai/mcp-tools-config/list
+```
+
+**请求头**：
+```
+Authorization: Bearer <token>
+```
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "items": [
+            {
+                "key": "websearch_mcp_tool_id",
+                "title": "Web Search MCP 工具",
+                "desc": "指定 Web Search 使用的 MCP 工具...",
+                "data": "minimax - web_search",
+                "details": {
+                    "query": "params - query",
+                    "max_results": "params - max_results"
+                }
+            }
+        ],
+        "count": 6
+    }
+}
+```
+
+---
+
+### 26.11.2 获取指定 MCP 工具配置详情
+
+```
+GET /api/ai/mcp-tools-config/{item_key}
+```
+
+**路径参数**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| item_key | string | 是 | 配置项键名，如 `websearch_mcp_tool_id` |
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "key": "websearch_mcp_tool_id",
+        "title": "Web Search MCP 工具",
+        "desc": "指定 Web Search 使用的 MCP 工具...",
+        "data": "minimax - web_search",
+        "details": {
+            "query": "params - query",
+            "max_results": "params - max_results"
+        }
+    }
+}
+```
+
+---
+
+### 26.11.3 更新 MCP 工具配置（含 details 参数映射）
+
+```
+PUT /api/ai/mcp-tools-config/{item_key}
+```
+
+**路径参数**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| item_key | string | 是 | 配置项键名 |
+
+**请求体**：
+```json
+{
+    "data": "brave - brave_web_search",
+    "details": {
+        "query": "params - query",
+        "count": "params - max_results",
+        "search_model": "custom",
+        "max": 6
+    }
+}
+```
+
+**请求体字段说明**：
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| data | string | 否 | MCP 工具 ID，格式为 `"{mcp_id} - {tool_name}"` |
+| details | object | 否 | 参数映射字典，键为 MCP 参数名，值为映射规则 |
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "key": "websearch_mcp_tool_id",
+        "updated_fields": ["data", "details"],
+        "data": "brave - brave_web_search",
+        "details": {
+            "query": "params - query",
+            "count": "params - max_results",
+            "search_model": "custom",
+            "max": 6
+        }
+    }
+}
+```
+
+---
+
+### 26.11.4 details 参数映射规则说明
+
+`details` 字典用于将框架内部工具的参数名映射到 MCP 工具期望的参数名。其 **值** 的解析规则如下：
+
+| 值格式 | 含义 | 示例 |
+|--------|------|------|
+| `"params - <内部参数名>"` | **动态映射**：运行时从内部参数中取对应键的值 | `"params - query"` → 取内部 `query` 参数的实际值 |
+| 其他字符串 / 数字 / 布尔 | **固定值**：每次调用都直接传入该字面量 | `"custom"` → 固定传入字符串 `"custom"` |
+| `null` | 跳过该参数，不传给 MCP 工具 | `null` → 忽略 |
+
+> ⚠️ **前端关键区分**：
+> - `"params - query"` — 以 `params - ` 为前缀，表示"取内部参数 `query` 的运行时值"，是**动态映射**。
+> - `"query"` — 不含 `params - ` 前缀，表示**固定字符串** `"query"`，每次调用都会原样传入字面量 `"query"`。
+>
+> 两者含义完全不同！前端在展示时应隐去 `params - ` 前缀，改用下拉列表让用户选择内部参数名；对于非 `params - ` 开头的值，应展示为"固定值"输入框。
+
+#### 各内部工具可用参数一览
+
+前端可利用此表为每个配置项的 `details` 提供"内部参数"下拉预设，用户选择后自动拼接为 `"params - <参数名>"` 格式保存。用户也可自行输入字符串作为固定值。
+
+| 配置项键名 (`item_key`) | 内部参数名 | 参数类型 | 说明 |
+|-------------------------|-----------|----------|------|
+| `websearch_mcp_tool_id` | `query` | string | 搜索查询关键词 |
+| | `max_results` | int | 最大返回结果数量 |
+| `image_understand_mcp_tool_id` | `image_source` | string | 图片来源（文件路径或 URL） |
+| | `prompt` | string | 对图片的提问/分析指令 |
+| `asr_mcp_tool_id` | `audio_source` | string | 音频文件路径 |
+| | `language` | string \| null | 语言代码，如 `"zh"`、`"en"`，null 表示自动检测 |
+| `document_extract_mcp_tool_id` | `file_source` | string | 文档文件路径 |
+| | `page_range` | string \| null | 页码范围，如 `"1-5"`，null 表示全部 |
+| `video_extract_mcp_tool_id` | `video_source` | string | 视频文件路径 |
+| | `max_frames` | int | 最大提取帧数 |
+| | `interval_seconds` | float \| null | 提取间隔（秒），null 表示自动 |
+| `video_understand_mcp_tool_id` | `video_source` | string | 视频文件路径 |
+| | `prompt` | string | 对视频的提问/分析指令 |
+
+#### 前端交互建议
+
+1. **展示方式**：对 `details` 中每个键值对，将 MCP 参数名（键）作为标签固定展示；值的编辑区域分为两种模式：
+   - **选择内部参数**（推荐）：下拉列表展示上表中对应配置项的可用内部参数名，用户选择后保存为 `"params - <参数名>"` 格式。
+   - **自定义固定值**：文本/数字输入框，用户直接输入字面量，原样保存。
+2. **新增映射**：用户可点击"添加参数"新增 `details` 条目，MCP 参数名由用户输入（或从工具发现结果中选择），值通过上述两种模式之一设置。
+3. **区分标识**：可通过图标或颜色区分"动态映射"和"固定值"两种条目，便于用户一目了然。
+
+---
+
 ## 前端使用建议
 
 1. **首次加载**：调用 `GET /api/ai/mcp/list` 获取所有配置列表
@@ -598,3 +871,4 @@ POST /api/ai/mcp/tools/import
 8. **使用预设**：调用 `GET /api/ai/mcp/presets` 获取预设配置，快速填充表单
 9. **发现工具**：在保存配置前，调用 `POST /api/ai/mcp/tools/discover` 预览服务器提供的工具
 10. **导入配置**：调用 `POST /api/ai/mcp/tools/import` 从 MCP 官方 JSON 配置导入
+11. **配置参数映射**：调用 `GET /api/ai/mcp-tools-config/list` 查看各业务模块的 MCP 工具映射，`PUT /api/ai/mcp-tools-config/{item_key}` 更新工具 ID 和参数映射

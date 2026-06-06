@@ -4,19 +4,16 @@
 
 模块结构:
 - asr.py: 语音转文字（ASR）
-- tts.py: 文字转语音（TTS）
 - video.py: 视频关键帧提取 + 多帧理解
 - document.py: 文档内容提取管道（PDF/Word/Excel → Markdown）
 """
 
 from .asr import transcribe_audio
-from .tts import synthesize_speech
 from .video import understand_video, extract_video_frames
 from .document import extract_document_content
 
 __all__ = [
     "transcribe_audio",
-    "synthesize_speech",
     "extract_video_frames",
     "understand_video",
     "extract_document_content",

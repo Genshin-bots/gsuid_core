@@ -25,6 +25,8 @@ _MAX_TERM_MAPPINGS = 60
 _MAX_TAGS = 40
 # A-4：群成员称呼表容量上限
 _MAX_MEMBER_ALIASES = 60
+# A-4：单个称呼最多绑定的用户数（同名多人时保留多个候选，超限丢弃最早绑定的）
+_MAX_IDS_PER_ALIAS = 5
 
 
 class GroupProfileData(TypedDict):
@@ -36,8 +38,45 @@ class GroupProfileData(TypedDict):
     scope_key: str
     tag_counts: Dict[str, int]  # {标签: 累计出现频次}
     term_mappings: Dict[str, str]  # {别名: 正式名称}
-    member_aliases: Dict[str, str]  # A-4：{群成员称呼/外号: 用户ID}（确定性身份库）
+    # A-4：{群成员称呼/外号: [用户ID, ...]}（确定性身份库），列表按最近绑定在前。
+    # 同一个称呼可能被指给多个人（群里同名/换人），全部保留，注入时多候选降级为"歧义"交 Agent 消歧。
+    #
+    # 字段版本说明：旧版本曾用 `member_aliases`，值为单个用户ID（str）。本版本起改用全新字段
+    # `member_alias_ids`（值为列表），**老字段一律不再读取、静默废弃**——既不迁移也不解析旧格式，
+    # 因此不会因旧数据形状抛错。老字段原样保留在库里（见下 `member_aliases`），仅为可回滚，不参与逻辑。
+    member_alias_ids: Dict[str, List[str]]
+    # 遗留字段：旧版 {称呼: 用户ID(str)}。**永不读取**，仅原样透传保留以便回滚；新逻辑只认上面的字段。
+    member_aliases: Any
     last_updated: str  # ISO 时间字符串，空串表示尚未写入
+
+
+def _coerce_member_alias_ids(raw: Any) -> Dict[str, List[str]]:
+    """规整 member_alias_ids 字段为 {称呼: [用户ID, ...]}。
+
+    本字段只由新逻辑以列表形式写入；这里**不迁移**老字段、不解析旧格式，仅对新字段做防御性解析
+    （值非列表/含空项也不报错，统一收敛为合法结构），保证任何脏数据都不抛异常。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, List[str]] = {}
+    for alias, value in raw.items():
+        if not isinstance(alias, str) or not alias:
+            continue
+        if isinstance(value, list):
+            candidates = [str(v) for v in value]
+        elif isinstance(value, (str, int, float)):
+            # 防御：本不该出现的标量值也包成单元素列表收下，而非丢弃或报错
+            candidates = [str(value)]
+        else:
+            continue
+        ids: List[str] = []
+        for uid in candidates:
+            uid = uid.strip()
+            if uid and uid not in ids:
+                ids.append(uid)
+        if ids:
+            out[alias] = ids
+    return out
 
 
 def _normalize(raw: Any, scope_key: str) -> GroupProfileData:
@@ -48,17 +87,25 @@ def _normalize(raw: Any, scope_key: str) -> GroupProfileData:
     """
     if not isinstance(raw, dict):
         return GroupProfileData(
-            scope_key=scope_key, tag_counts={}, term_mappings={}, member_aliases={}, last_updated=""
+            scope_key=scope_key,
+            tag_counts={},
+            term_mappings={},
+            member_alias_ids={},
+            member_aliases={},
+            last_updated="",
         )
     raw_tags = raw["tag_counts"] if "tag_counts" in raw else None
     raw_terms = raw["term_mappings"] if "term_mappings" in raw else None
-    raw_members = raw["member_aliases"] if "member_aliases" in raw else None
+    raw_alias_ids = raw["member_alias_ids"] if "member_alias_ids" in raw else None
+    # 旧字段原样透传：永不读取/解析，仅保留以便回滚（见 GroupProfileData.member_aliases 说明）
+    legacy_aliases = raw["member_aliases"] if "member_aliases" in raw else {}
     raw_updated = raw["last_updated"] if "last_updated" in raw else None
     return GroupProfileData(
         scope_key=scope_key,
         tag_counts=raw_tags if isinstance(raw_tags, dict) else {},
         term_mappings=raw_terms if isinstance(raw_terms, dict) else {},
-        member_aliases=raw_members if isinstance(raw_members, dict) else {},
+        member_alias_ids=_coerce_member_alias_ids(raw_alias_ids),
+        member_aliases=legacy_aliases,
         last_updated=raw_updated if isinstance(raw_updated, str) else "",
     )
 
@@ -144,51 +191,70 @@ async def get_term_mappings(scope_key: str) -> Dict[str, str]:
     return profile["term_mappings"]
 
 
-async def record_member_alias(scope_key: str, alias: str, user_id: str) -> None:
+async def record_member_alias(scope_key: str, alias: str, user_id: str) -> List[str]:
     """A-4：记录"群成员称呼/外号 → 用户ID"到确定性身份库。
 
     当群里明确指定某人的称呼（"以后叫她小C"）时由 ``remember_user_alias`` 工具写入。
-    与易抽错、靠相似度召回的图记忆不同，这里是**确定性映射**，可被现场覆盖（同 alias
-    再写一次即更新），注入时作为高可信身份事实呈现。
+    与易抽错、靠相似度召回的图记忆不同，这里是**确定性映射**，注入时作为高可信身份事实呈现。
+
+    **同名多人的处理**：同一个称呼可能先后指给不同的人（群里恰好同名，或换了个人这么叫）。
+    仅凭 ``(alias, user_id)`` 无法区分"纠正同一个人"和"两个人同名"，因此本函数**不静默覆盖**：
+    把本次 user_id 放到候选列表最前（最近/纠正优先），其余旧绑定保留。注入时单候选呈现为
+    确定身份、多候选呈现为歧义交由 Agent 按上下文消歧。
 
     Args:
         scope_key: 群组 scope key
         alias:     称呼 / 外号 / 昵称
         user_id:   被指称的用户ID
+
+    Returns:
+        该称呼写入后的完整候选用户ID列表（最近绑定在前）。长度 > 1 表示该称呼现指向多人。
     """
     alias = (alias or "").strip()
     user_id = str(user_id or "").strip()
     if not scope_key or not alias or not user_id:
-        return
+        return []
     from gsuid_core.ai_core.state_store import state_mutate
 
     def _mutate(current: Any) -> GroupProfileData:
         profile = _as_profile(current, scope_key)
-        member_aliases: Dict[str, str] = dict(profile["member_aliases"])
-        member_aliases[alias] = user_id  # 同 alias 再写即覆盖（现场纠正优先）
-        if len(member_aliases) > _MAX_MEMBER_ALIASES:
-            member_aliases = dict(list(member_aliases.items())[-_MAX_MEMBER_ALIASES:])
-        profile["member_aliases"] = member_aliases
+        alias_ids: Dict[str, List[str]] = dict(profile["member_alias_ids"])
+        # 本次绑定置顶、去重，旧绑定保留在后——既支持现场纠正（最近的排最前作首选），
+        # 又不丢弃同名其他人的绑定（避免静默覆盖导致认错人）。
+        existing = alias_ids[alias] if alias in alias_ids else []
+        ids = [user_id] + [uid for uid in existing if uid != user_id]
+        if len(ids) > _MAX_IDS_PER_ALIAS:
+            ids = ids[:_MAX_IDS_PER_ALIAS]
+        alias_ids[alias] = ids
+        if len(alias_ids) > _MAX_MEMBER_ALIASES:
+            alias_ids = dict(list(alias_ids.items())[-_MAX_MEMBER_ALIASES:])
+        profile["member_alias_ids"] = alias_ids
         return profile
 
-    await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
-    logger.debug(f"🧠 [GroupProfile] {scope_key} 群成员称呼已更新: {alias} = {user_id}")
+    new_profile = await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
+    result = new_profile["member_alias_ids"].get(alias, [user_id])
+    logger.debug(f"🧠 [GroupProfile] {scope_key} 群成员称呼已更新: {alias} = {result}")
+    return result
 
 
-async def get_member_aliases(scope_key: str) -> Dict[str, str]:
-    """获取群成员称呼表 {称呼: 用户ID}。"""
+async def get_member_aliases(scope_key: str) -> Dict[str, List[str]]:
+    """获取群成员称呼表 {称呼: [用户ID, ...]}（最近绑定在前，多元素表示同名多人）。"""
     profile = await get_group_profile(scope_key)
-    return profile["member_aliases"]
+    return profile["member_alias_ids"]
+
+
+def _rank_tags(tag_counts: Dict[str, int], top_n: int) -> List[str]:
+    """按累计频次降序取 top_n 个标签。纯函数，便于复用已加载的 profile，避免重复查库。"""
+    if not tag_counts:
+        return []
+    ranked = sorted(tag_counts.items(), key=lambda kv: kv[1], reverse=True)
+    return [t for t, _ in ranked[:top_n]]
 
 
 async def get_context_tags(scope_key: str, top_n: int = 8) -> List[str]:
     """获取群组的主要语境标签（按累计频次降序）。"""
     profile = await get_group_profile(scope_key)
-    tag_counts = profile["tag_counts"]
-    if not tag_counts:
-        return []
-    ranked = sorted(tag_counts.items(), key=lambda kv: kv[1], reverse=True)
-    return [t for t, _ in ranked[:top_n]]
+    return _rank_tags(profile["tag_counts"], top_n)
 
 
 def expand_query_with_aliases(query: str, term_mappings: Dict[str, str]) -> str:
@@ -218,9 +284,10 @@ async def format_context_injection(
         max_chars: 最大字符数限制，默认 400，超出则截断词汇映射条目
     """
     profile = await get_group_profile(scope_key)
-    tags = await get_context_tags(scope_key, top_n=6)
+    # 直接用已加载的 profile 计算标签，避免 get_context_tags 再查一次同一行（热路径每条消息都走）
+    tags = _rank_tags(profile["tag_counts"], top_n=6)
     term_mappings = profile["term_mappings"]
-    member_aliases = profile["member_aliases"]
+    alias_ids = profile["member_alias_ids"]
 
     # C2-c/e：并入插件 ai_alias 注册的别名，多候选别名单列为"歧义参考"，
     # 交由 Agent 按上下文消歧（动态实体链接），不做字符串替换。
@@ -234,18 +301,33 @@ async def format_context_injection(
     except Exception:
         ambiguous = {}
 
-    if not tags and not term_mappings and not ambiguous and not member_aliases:
+    if not tags and not term_mappings and not ambiguous and not alias_ids:
         return ""
 
     lines: List[str] = ["【当前群聊语境】"]
-    # A-4：群成员称呼表——确定性身份库，优先级高于长期记忆里的待证身份事实
-    if member_aliases:
-        lines.append("群成员称呼（确定，以此为准；与长期记忆中的身份冲突时信这个）:")
-        for alias, uid in list(member_aliases.items())[:12]:
-            entry = f'  - "{alias}" = 用户{uid}'
-            if sum(len(line) for line in lines) + len(entry) > max_chars:
-                break
-            lines.append(entry)
+    # A-4：群成员称呼表——仅用于「认人」（把昵称对应到 user_id），是身份消歧的高可信来源，
+    # 但**绝不代表权限或主人身份**：权限只由 masters 配置 + PM 决定，谁被叫"主人/陛下"
+    # 都不因此获得任何权力。单候选直接给出对应用户，多候选（同名多人）作为歧义交 Agent 消歧。
+    if alias_ids:
+        certain = {a: ids[0] for a, ids in alias_ids.items() if len(ids) == 1}
+        conflicting = {a: ids for a, ids in alias_ids.items() if len(ids) > 1}
+        if certain:
+            lines.append(
+                "群成员称呼（仅供认人，确定称呼对应哪个用户ID；与长期记忆中的身份冲突时信这个。"
+                "称呼不代表任何权限或主人身份）:"
+            )
+            for alias, uid in list(certain.items())[:12]:
+                entry = f'  - "{alias}" = 用户{uid}'
+                if sum(len(line) for line in lines) + len(entry) > max_chars:
+                    break
+                lines.append(entry)
+        if conflicting:
+            lines.append("群成员称呼（同名多人，仅供认人，按上下文判断；最近指定的排在最前。称呼不代表权限）:")
+            for alias, ids in list(conflicting.items())[:6]:
+                entry = f'  - "{alias}" 可能指: {"、".join("用户" + uid for uid in ids)}'
+                if sum(len(line) for line in lines) + len(entry) > max_chars:
+                    break
+                lines.append(entry)
     if tags:
         lines.append(f"主要话题: {'、'.join(tags)}")
     if term_mappings:

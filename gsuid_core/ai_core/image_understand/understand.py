@@ -13,26 +13,29 @@ Image Understand 公共 API 模块
 详见 ``docs/AI_SESSION_LOGGING.md``。
 """
 
-import os
 import time
-import base64
 import hashlib
-import tempfile
 from typing import Union, Literal, Optional
 
-import aiofiles
 from pydantic_ai.messages import ImageUrl
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.mcp.utils import (
+    get_mcp_tool_id,
+    is_mcp_provider,
+    cleanup_tempfile,
+    sanitize_mcp_text,
+    build_mcp_arguments,
+    call_mcp_tool_checked,
+    prepare_source_for_mcp,
+)
 from gsuid_core.ai_core.configs.models import (
     get_model_for_task,
     get_model_config_for_task,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
-from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 
 
 def _get_provider() -> str:
@@ -158,57 +161,6 @@ async def _understand_image_native(
         agent._session_logger.close()
 
 
-async def _prepare_image_for_mcp(image_url: str) -> str:
-    """
-    准备图片数据给 MCP 工具使用
-
-    MiniMax MCP 的 understand_image 工具期望文件路径，不是 base64 或 URL。
-    如果是 base64 DataURI，需要先保存为临时文件。
-
-    Args:
-        image_url: 图片来源，支持 HTTP/HTTPS URL、base64 DataURI 或文件路径
-
-    Returns:
-        文件路径（临时文件路径或原始 URL/路径）
-    """
-    # 如果已经是 HTTP/HTTPS URL 或文件路径，直接返回
-    if image_url.startswith("http://") or image_url.startswith("https://"):
-        return image_url
-
-    if os.path.exists(image_url):
-        return image_url
-
-    # 如果是 base64 DataURI 格式，保存为临时文件
-    if image_url.startswith("data:"):
-        # 解析 DataURI 格式: data:image/png;base64,xxxxx
-        if ";base64," in image_url:
-            header, b64_data = image_url.split(";base64,", 1)
-            # 提取 MIME 类型
-            mime_type = header.replace("data:", "")
-            # 解码 base64
-            image_bytes = base64.b64decode(b64_data)
-
-            # 创建临时文件
-            suffix = ".png"
-            if mime_type == "image/jpeg":
-                suffix = ".jpg"
-            elif mime_type == "image/gif":
-                suffix = ".gif"
-            elif mime_type == "image/webp":
-                suffix = ".webp"
-
-            temp_fd, temp_path = tempfile.mkstemp(suffix=suffix)
-            os.close(temp_fd)
-            async with aiofiles.open(temp_path, "wb") as f:
-                await f.write(image_bytes)
-
-            logger.debug(f"🖼️ [ImageUnderstand] 已保存图片到临时文件: {temp_path}")
-            return temp_path
-
-    # 其他情况直接返回
-    return image_url
-
-
 async def understand_image(
     image_url: str,
     prompt: str | None = None,
@@ -267,37 +219,27 @@ async def understand_image(
 
     provider = _get_provider()
 
-    if provider == "MCP":
-        mcp_tool_id = mcp_tools_config.get_config("image_understand_mcp_tool_id").data
+    if is_mcp_provider(provider):
+        mcp_tool_id = get_mcp_tool_id("image_understand_mcp_tool_id", "Image Understand")
 
-        if not mcp_tool_id:
-            raise RuntimeError("Image Understand MCP 工具未配置，请前往 AI 配置页面设置")
+        # MCP 工具通常期望文件路径，需将 DataURI 保存为临时文件
+        image_source = await prepare_source_for_mcp(image_url, "🖼️ [ImageUnderstand]")
 
-        # MiniMax MCP 的 understand_image 工具期望文件路径
-        # 需要将图片数据保存为临时文件
-        image_source = await _prepare_image_for_mcp(image_url)
-
-        arguments = {
-            "image_source": image_source,
-            "prompt": prompt,
-        }
+        arguments = build_mcp_arguments(
+            "image_understand_mcp_tool_id",
+            {"image_source": image_source, "prompt": prompt},
+        )
 
         try:
-            result = await call_mcp_tool(mcp_tool_id=mcp_tool_id, arguments=arguments)
+            result = await call_mcp_tool_checked(mcp_tool_id, arguments, "Image Understand")
 
-            if result.is_error:
-                raise RuntimeError(f"Image Understand MCP 调用失败: {result.text}")
-
-            _understand_cache_put(cache_key, result.text)
-            return result.text
+            description = sanitize_mcp_text(result.text)
+            _understand_cache_put(cache_key, description)
+            return description
         finally:
-            # 清理临时文件
-            if image_source != image_url and os.path.exists(image_source):
-                try:
-                    os.unlink(image_source)
-                    logger.debug(f"🖼️ [ImageUnderstand] 已删除临时文件: {image_source}")
-                except Exception as e:
-                    logger.warning(f"🖼️ [ImageUnderstand] 删除临时文件失败: {e}")
+            # 仅清理临时文件（若 image_source 与原始 image_url 不同，说明创建了临时文件）
+            if image_source != image_url:
+                cleanup_tempfile(image_source, "🖼️ [ImageUnderstand]")
 
     # 未知 provider
     logger.warning(f"🖼️ [ImageUnderstand] 未知的提供方 '{provider}'，仅支持 MCP")

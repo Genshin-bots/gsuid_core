@@ -13,14 +13,21 @@
 import os
 import json
 import base64
-import tempfile
 
 import aiofiles
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.mcp.utils import (
+    get_mcp_tool_id,
+    is_mcp_provider,
+    cleanup_tempfile,
+    sanitize_mcp_text,
+    build_mcp_arguments,
+    call_mcp_tool_checked,
+    save_binary_to_tempfile,
+    get_mcp_tool_id_optional,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
-from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 
 
 def _get_video_provider() -> str:
@@ -30,29 +37,6 @@ def _get_video_provider() -> str:
         提供方名称，如 "MCP"
     """
     return ai_config.get_config("video_understand_provider").data
-
-
-async def _save_video_to_tempfile(
-    video_data: bytes,
-    video_format: str = "mp4",
-) -> str:
-    """将视频数据保存为临时文件
-
-    Args:
-        video_data: 视频二进制数据
-        video_format: 视频格式（mp4/avi/mov/mkv）
-
-    Returns:
-        临时文件路径
-    """
-    suffix = f".{video_format}"
-    temp_fd, temp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(temp_fd)
-    async with aiofiles.open(temp_path, "wb") as f:
-        await f.write(video_data)
-
-    logger.debug(f"🎬 [Video] 已保存视频到临时文件: {temp_path}")
-    return temp_path
 
 
 async def extract_video_frames(
@@ -79,38 +63,27 @@ async def extract_video_frames(
     """
     provider = _get_video_provider()
 
-    if provider == "MCP":
-        mcp_tool_id = mcp_tools_config.get_config("video_extract_mcp_tool_id").data
+    if is_mcp_provider(provider):
+        mcp_tool_id = get_mcp_tool_id("video_extract_mcp_tool_id", "Video Extract")
 
-        if not mcp_tool_id:
-            raise RuntimeError("视频帧提取 MCP 工具未配置，请前往 AI 配置页面设置")
+        video_path = await save_binary_to_tempfile(video_data, f".{video_format}", "🎬 [Video]")
 
-        video_path = await _save_video_to_tempfile(video_data, video_format)
-
-        arguments: dict[str, str | int | float] = {
-            "video_source": video_path,
-            "max_frames": max_frames,
-        }
-        if interval_seconds is not None:
-            arguments["interval_seconds"] = interval_seconds
+        arguments = build_mcp_arguments(
+            "video_extract_mcp_tool_id",
+            {
+                "video_source": video_path,
+                "max_frames": max_frames,
+                "interval_seconds": interval_seconds,
+            },
+        )
 
         try:
-            result = await call_mcp_tool(
-                mcp_tool_id=mcp_tool_id,
-                arguments=arguments,
-            )
-
-            if result.is_error:
-                raise RuntimeError(f"视频帧提取 MCP 调用失败: {result.text}")
+            result = await call_mcp_tool_checked(mcp_tool_id, arguments, "Video Extract")
 
             # 解析返回的帧数据（可能是 base64 列表或文件路径列表）
             return await _parse_frames_result(result.text)
         finally:
-            if os.path.exists(video_path):
-                try:
-                    os.unlink(video_path)
-                except Exception as e:
-                    logger.warning(f"🎬 [Video] 删除临时文件失败: {e}")
+            cleanup_tempfile(video_path, "🎬 [Video]")
 
     logger.warning(f"🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP")
     raise RuntimeError(f"视频帧提取不支持该提供方: {provider}")
@@ -148,29 +121,27 @@ async def understand_video(
 
     provider = _get_video_provider()
 
-    if provider == "MCP":
-        # 方案1: 直接使用 MCP 视频理解工具（如果有的话）
-        direct_tool_id = mcp_tools_config.get_config("video_understand_mcp_tool_id").data
+    if is_mcp_provider(provider):
+        # 方案1: 直接使用 MCP 视频理解工具（如果有的话）。这里用 optional 版本：
+        # 未配置直连工具时返回 ""，落到下方方案2（关键帧提取 + 图片理解）；若用会抛异常
+        # 的 get_mcp_tool_id，未配置时会直接 raise，方案2 永远变成死代码。
+        direct_tool_id = get_mcp_tool_id_optional("video_understand_mcp_tool_id")
 
         if direct_tool_id:
-            video_path = await _save_video_to_tempfile(video_data, video_format)
+            video_path = await save_binary_to_tempfile(video_data, f".{video_format}", "🎬 [Video]")
             try:
-                result = await call_mcp_tool(
-                    mcp_tool_id=direct_tool_id,
-                    arguments={
-                        "video_source": video_path,
-                        "prompt": prompt,
-                    },
+                arguments = build_mcp_arguments(
+                    "video_understand_mcp_tool_id",
+                    {"video_source": video_path, "prompt": prompt},
                 )
-                if result.is_error:
-                    raise RuntimeError(f"视频理解 MCP 调用失败: {result.text}")
-                return result.text
+                result = await call_mcp_tool_checked(
+                    direct_tool_id,
+                    arguments,
+                    "Video Understand",
+                )
+                return sanitize_mcp_text(result.text)
             finally:
-                if os.path.exists(video_path):
-                    try:
-                        os.unlink(video_path)
-                    except Exception:
-                        pass
+                cleanup_tempfile(video_path)
 
         # 方案2: 提取关键帧 + 图片理解
         logger.info(f"🎬 [Video] 使用关键帧提取 + 图片理解方案，提取 {max_frames} 帧")

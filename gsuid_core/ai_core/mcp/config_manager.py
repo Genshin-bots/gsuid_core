@@ -4,9 +4,14 @@ MCP 配置管理器模块
 管理用户自定义的 MCP 服务器配置，支持增删改查。
 每个 MCP 配置以独立 JSON 文件存储在 data/ai_core/mcp_configs/ 目录下。
 
-配置文件格式 (JSON):
+支持两种传输方式:
+1. stdio — 通过命令行启动本地 MCP 服务器（command + args + env）
+2. sse  — 通过 HTTP/SSE 连接远程 MCP 服务器（url + headers）
+
+配置文件格式 (JSON) — stdio 示例:
 {
     "name": "MiniMax",
+    "transport": "stdio",
     "command": "uvx",
     "args": ["minimax-coding-plan-mcp"],
     "env": {"MINIMAX_API_KEY": "your_key"},
@@ -19,6 +24,26 @@ MCP 配置管理器模块
             "parameters": {
                 "query": {"type": "string", "required": true},
                 "max_results": {"type": "integer", "required": false}
+            }
+        }
+    ]
+}
+
+配置文件格式 (JSON) — SSE 示例:
+{
+    "name": "知乎搜索",
+    "transport": "sse",
+    "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    "headers": {"Authorization": "Bearer your_access_secret"},
+    "enabled": true,
+    "register_as_ai_tools": false,
+    "tools": [
+        {
+            "name": "zhihu_search",
+            "description": "知乎站内搜索",
+            "parameters": {
+                "query": {"type": "string", "required": true},
+                "count": {"type": "integer", "required": false}
             }
         }
     ]
@@ -67,11 +92,21 @@ class MCPToolDefinition:
 class MCPConfig:
     """MCP 服务器配置数据类
 
+    支持两种传输方式:
+    - stdio: 通过 command + args + env 启动本地进程
+    - sse: 通过 url + headers 连接远程 SSE 服务器
+
     Attributes:
         name: MCP 服务器名称
-        command: 启动命令
-        args: 命令参数
-        env: 环境变量
+        transport: 传输方式，"stdio" 或 "sse"，默认 "stdio"
+            若未显式设置，会根据 url / command 字段自动推断:
+            - url 存在且以 http 开头 → sse
+            - 否则 → stdio
+        command: 启动命令（stdio 模式必填）
+        args: 命令参数（stdio 模式）
+        env: 环境变量（stdio 模式）
+        url: SSE 服务器 URL（sse 模式必填，如 https://xxx/sse）
+        headers: HTTP 请求头（sse 模式，如 Authorization 等）
         enabled: 是否启用
         register_as_ai_tools: 是否将该 MCP 服务器的工具注册为 AI Tools
         tools: 工具列表
@@ -86,25 +121,62 @@ class MCPConfig:
     """
 
     name: str
-    command: str
+    transport: str = "stdio"  # "stdio" 或 "sse"
+    command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    url: str = ""  # SSE 模式的服务器 URL
+    headers: dict[str, str] = field(default_factory=dict)  # SSE 模式的 HTTP 请求头
     enabled: bool = True
     register_as_ai_tools: bool = False  # 是否将该 MCP 服务器的工具注册为 AI Tools
     tools: list[MCPToolDefinition] = field(default_factory=list)  # 工具列表
     tool_permissions: dict[str, int] = field(default_factory=dict)
 
+    def _detect_transport(self) -> str:
+        """根据 url / command 字段自动推断传输方式"""
+        if self.url and isinstance(self.url, str) and self.url.startswith("http"):
+            return "sse"
+        return "stdio"
+
+    def get_transport(self) -> str:
+        """获取有效的传输方式（自动推断未显式设置的 transport）"""
+        if self.transport and self.transport not in ("auto", ""):
+            return self.transport
+        return self._detect_transport()
+
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
+        effective_transport = self.get_transport()
         result: dict[str, Any] = {
             "name": self.name,
-            "command": self.command,
-            "args": self.args,
-            "env": self.env,
+            "transport": effective_transport,
             "enabled": self.enabled,
             "register_as_ai_tools": self.register_as_ai_tools,
             "tools": [t.to_dict() for t in self.tools],
         }
+        if effective_transport == "sse":
+            result["url"] = self.url
+            if self.headers:
+                result["headers"] = self.headers
+            # 兼容：保留 command/args/env（可能为空）
+            if self.command:
+                result["command"] = self.command
+            if self.args:
+                result["args"] = self.args
+            if self.env:
+                result["env"] = self.env
+        else:
+            # stdio 模式
+            result["command"] = self.command
+            if self.args:
+                result["args"] = self.args
+            if self.env:
+                result["env"] = self.env
+            # 兼容：保留 url/headers（可能为空）
+            if self.url:
+                result["url"] = self.url
+            if self.headers:
+                result["headers"] = self.headers
         if self.tool_permissions:
             result["tool_permissions"] = self.tool_permissions
         return result
@@ -113,11 +185,22 @@ class MCPConfig:
     def from_dict(cls, data: dict[str, Any]) -> "MCPConfig":
         """从字典创建配置"""
         tools = [MCPToolDefinition.from_dict(t) for t in data.get("tools", [])]
+        transport = data.get("transport", "")
+        url = data.get("url", "")
+        # 自动推断 transport：如果 url 存在且以 http 开头，则推断为 sse
+        if not transport or transport == "auto":
+            if url and isinstance(url, str) and url.startswith("http"):
+                transport = "sse"
+            else:
+                transport = "stdio"
         return cls(
             name=data["name"],
-            command=data["command"],
+            transport=transport,
+            command=data.get("command", ""),
             args=data.get("args", []),
             env=data.get("env", {}),
+            url=url,
+            headers=data.get("headers", {}),
             enabled=data.get("enabled", True),
             register_as_ai_tools=data.get("register_as_ai_tools", False),
             tools=tools,

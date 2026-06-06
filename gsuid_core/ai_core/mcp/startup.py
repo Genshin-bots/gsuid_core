@@ -254,6 +254,8 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> int:
         command=config.command,
         args=config.args,
         env=config.env,
+        url=config.url,
+        headers=config.headers,
     )
 
     try:

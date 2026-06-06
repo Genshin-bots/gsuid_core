@@ -161,7 +161,7 @@ def _guess_image_mime(url: str) -> str:
     return "image/jpeg"
 
 
-async def materialize_image_url(raw: str) -> str:
+async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
     """把图片标识统一物化为「不会过期」的可消费形式。
 
     远程 http(s) 图片 URL（典型如 QQ 带 ``rkey`` 的临时链接）有时效，过期后
@@ -172,8 +172,14 @@ async def materialize_image_url(raw: str) -> str:
 
     - http(s) URL：下载 → ``data:<mime>;base64,<...>``；下载失败时回退原 URL
       （不致命，行为不差于改动前）。
+      当 ``strict=True`` 时下载失败会抛出异常而非静默回退，供调用方显式处理。
     - base64:// / data:image/ / 裸 base64：交给 :func:`_normalize_image_url`
       处理即可，本就不会过期，无需下载。
+
+    Args:
+        raw: 原始图片标识。
+        strict: 是否严格模式。为 True 时下载失败抛出 RuntimeError，
+                为 False（默认）时下载失败回退原始 URL。
     """
     if not raw.startswith(("http://", "https://")):
         return _normalize_image_url(raw)
@@ -190,6 +196,8 @@ async def materialize_image_url(raw: str) -> str:
         logger.debug(f"🖼️ [GsCoreAI] 远程图片已物化为 base64 DataURI ({mime}, {len(data)} bytes)")
         return f"data:{mime};base64,{b64}"
     except Exception as e:
+        if strict:
+            raise RuntimeError(f"远程图片下载失败，无法物化为 base64: {raw[:120]} ({e})") from e
         logger.warning(f"🖼️ [GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}")
         return raw
 
@@ -302,10 +310,18 @@ async def prepare_content_payload(
 
     content_payload.append(text)
 
-    # 处理用户图片消息（直接附加 ImageUrl，由 _execute_run 自动处理能力判断）
+    # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
+    # 远程 URL（如 QQ 带 rkey 的临时链接）会在短时间内过期；一旦以原始
+    # URL 形式存入 message_history，后续每轮重发都会让推理端 400/500。
     for i in ev.image_list:
         if isinstance(i, str):
-            content_payload.append(ImageUrl(url=_normalize_image_url(i)))
+            # strict=True：远程图片下载失败直接抛出，跳过该图片而非把过期 URL 塞进历史
+            try:
+                url = await materialize_image_url(i, strict=True)
+            except Exception as e:
+                logger.warning(f"🖼️ [GsCoreAI] 图片物化失败（URL 可能已过期），跳过图片: {i[:120]} ({e})")
+                continue
+            content_payload.append(ImageUrl(url=url))
         else:
             logger.warning(f"无法处理图片ID: {i}")
 

@@ -599,6 +599,7 @@ async def register_kanban_task(
         user_type=ev.user_type or "direct",
         WS_BOT_ID=ev.WS_BOT_ID,
         session_id=ev.session_id,
+        user_pm=ev.user_pm,
         broadcast_targets=broadcast,
         display_name=goal[:64],
         subtasks=spec_dicts,
@@ -805,6 +806,59 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
     return f"✅ 已终结整树【任务#{root.ordinal}｜{root.display_name}】：{reason}"
 
 
+# respond_subtask_approval 的「主人亲口表态」证据校验关键词。审批是人在环（human in
+# the loop）的信任闸门，本工具只负责【转达】主人的决定、绝不允许代理替主人拍板——故
+# 必须在**当前这条用户消息**里找到明确的同意 / 拒绝表达才放行。
+# 拒绝词优先匹配（"不同意" 含子串 "同意"，必须先判否定），且多用多字词避免误命中
+# （如不要裸 "别"，否则 "特别好" 会被误判为拒绝）。
+_APPROVE_WORDS = (
+    "同意",
+    "批准",
+    "可以",
+    "答应",
+    "准了",
+    "通过",
+    "去吧",
+    "装吧",
+    "安装吧",
+    "去装",
+    "可装",
+    "好的",
+    "好啊",
+    "好呀",
+    "行吧",
+    "没问题",
+    "允许",
+    "认可",
+    "ok",
+    "okay",
+    "yes",
+    "approve",
+    "go ahead",
+    "agree",
+)
+_REJECT_WORDS = (
+    "不同意",
+    "不批准",
+    "不可以",
+    "不行",
+    "不要",
+    "不用",
+    "别装",
+    "别安装",
+    "先别",
+    "拒绝",
+    "取消",
+    "算了",
+    "驳回",
+    "否决",
+    "不准",
+    "no",
+    "deny",
+    "reject",
+)
+
+
 @ai_tools(category="planning", capability_domain=_CAP)
 async def respond_subtask_approval(
     ctx: RunContext[ToolContext],
@@ -818,6 +872,12 @@ async def respond_subtask_approval(
     私信审批请求时，主人在对话中回复"同意"或"拒绝"，由你调用本工具把决定回传
     给框架。
 
+    ⚠️ **这是人在环的审批闸门**：本工具只用于【转达主人**亲口**说的同意 / 拒绝】。
+    你**绝不能**替主人拍板——只有当主人在**当前这一轮对话**里明确表达了同意（"同意 /
+    可以 / 装吧"）或拒绝（"不要 / 拒绝 / 取消"）时才调用，且 ``approved`` 必须与主人
+    话里的意思一致。主人没表态时，请只把"插件已做好、正在等审批"转告主人并请其回复，
+    **不要**自己调用本工具放行。框架会校验当前用户消息里确有对应表态，伪造会被拒绝。
+
     Args:
         approved: True=同意（子任务退回 pending，进入调度），False=拒绝（子任务标 failed）。
         note: 主人的附加说明。
@@ -827,6 +887,31 @@ async def respond_subtask_approval(
     if ev is None:
         return "⚠️ 无法获取会话信息。"
     owner = str(ev.user_id)
+
+    # ── 防"代理替主人伪造审批"闸门 ───────────────────────────────────────
+    # 实测会话 2df150：主人只说了"代码不对"，主人格却在同一轮 create_subagent 后紧接着
+    # respond_subtask_approval(approved=True) 把自己发起的安装请求放行了，完全绕过主人
+    # 审批。这里用**当前这条用户消息**当证据：必须出现明确的同意 / 拒绝表达，且与
+    # approved 一致，才放行；否则拒绝，逼代理回去等主人亲口表态。webconsole 审批走
+    # kanban.approve_subtask、不经本工具，不受影响。
+    user_msg = (ev.raw_text or ev.text or "").strip().lower()
+    said_reject = any(w in user_msg for w in _REJECT_WORDS)
+    said_approve = (not said_reject) and any(w in user_msg for w in _APPROVE_WORDS)
+    if approved and not said_approve:
+        return (
+            "⛔ 拒绝执行：不能替主人做审批决定。本工具只用于【转达主人亲口说的同意】，"
+            "而当前这条用户消息里没有「同意 / 可以 / 批准 / 装吧」之类的明确批准表达"
+            f"（原文：{user_msg[:60]!r}）。请**不要**自行 approved=True 放行安装——先把"
+            "「插件已开发好、正在等待安装审批」用你的口吻转告主人，并明确请主人回复同意"
+            "或拒绝；等主人**这一轮亲口**说了同意，再调用本工具。"
+        )
+    if (not approved) and not said_reject:
+        return (
+            "⛔ 拒绝执行：不能替主人做拒绝决定。本工具只用于【转达主人亲口说的拒绝】，"
+            "而当前这条用户消息里没有「拒绝 / 不要 / 取消」之类的明确拒绝表达"
+            f"（原文：{user_msg[:60]!r}）。主人没明确拒绝就别传 approved=False；如果主人"
+            "其实是同意，请改用 approved=True；都不是就等主人亲口表态再转达。"
+        )
 
     # 解析待审批子任务：先按 ref 解析；否则取主人名下唯一的待审批子任务
     target: Optional[AIAgentTask] = None
@@ -853,15 +938,28 @@ async def respond_subtask_approval(
         target = mine[0]
 
     ok, msg = await kanban.approve_subtask(target, approved, note)
-    if ok and approved and target.root_task_id:
-        import asyncio
+    if not ok:
+        return f"⚠️ {msg}"
+    if approved:
+        if target.root_task_id:
+            import asyncio
 
-        from .kanban_executor import kick_root
+            from .kanban_executor import kick_root
 
-        asyncio.create_task(kick_root(target.root_task_id))
-
-    label = "批准" if approved else "拒绝"
-    return ("✅ 已转达" + label + f"：{msg}") if ok else f"⚠️ {msg}"
+            asyncio.create_task(kick_root(target.root_task_id))
+        # 关键：批准 ≠ 完成。批准只是把子任务退回调度、让专职助手**继续往下做**
+        # （如插件的实际安装 + 热加载 + 功能自测都还没发生）。必须显式拦住人格在
+        # 这一步就宣布"已搞定/能用了"——实测会话 fa7eef 主人一句"同意啦"后，人格
+        # 立刻回"天气插件已经装好了"，而此时安装/自测根本还没跑。真正完成后框架会
+        # 经 _persona_relay 另发一条独立的完成播报，到那时再如实转达。
+        return (
+            "✅ 已转达批准，专职助手已被重新调度、正在**继续执行剩余步骤**"
+            "（如插件的实际安装 → 热加载 → 功能自测，现在都还没完成）。\n"
+            "⚠️ 现在请只简短回主人「好的，正在装 / 正在继续」之类的话，**切勿**说"
+            "「已安装好 / 已搞定 / 现在能用了 / 测试通过」——这些都还没发生。等它真正"
+            "完成并自测通过，框架会再给你一条独立的完成播报，到时再如实转达结果。"
+        )
+    return f"✅ 已转达拒绝：{msg}"
 
 
 # ─────────────────────────────────────────────────────────────────────

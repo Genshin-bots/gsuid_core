@@ -20,6 +20,7 @@ from gsuid_core.ai_core.mcp.startup import (
 )
 from gsuid_core.ai_core.mcp.mcp_presets import MCP_PRESETS
 from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition, mcp_config_manager
+from gsuid_core.utils.plugins_config.models import GsStrConfig
 
 
 class MCPToolDefinitionModel(BaseModel):
@@ -28,15 +29,79 @@ class MCPToolDefinitionModel(BaseModel):
     name: str
     description: str = ""
     parameters: Dict[str, Any] = {}
+    input_schema: Optional[Dict[str, Any]] = None
+    """MCP 工具的 JSON Schema 输入定义（discover 返回的原始格式）
+
+    前端可直接传入 discover API 返回的 input_schema，后端会自动提取
+    properties 并转换为 parameters 格式存储。
+    """
+
+
+def _convert_input_schema_to_parameters(
+    input_schema: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """将 MCP 工具的 JSON Schema (input_schema) 转换为 parameters 格式。
+
+    discover API 返回的 input_schema 是标准 JSON Schema 格式::
+
+        {
+            "properties": {
+                "query": {"title": "Query", "type": "string"},
+                "image_source": {"title": "Image Source", "type": "string"},
+            },
+            "required": ["query", "image_source"],
+            "type": "object",
+        }
+
+    转换后的 parameters 是扁平字典格式::
+
+        {
+            "query": {"type": "string", "description": "Query"},
+            "image_source": {"type": "string", "description": "Image Source"},
+        }
+
+    Args:
+        input_schema: MCP 工具的 JSON Schema 输入定义
+
+    Returns:
+        扁平化的参数字典
+    """
+    properties = input_schema.get("properties", {})
+    required = input_schema.get("required", [])
+
+    parameters: Dict[str, Dict[str, Any]] = {}
+    for param_name, param_schema in properties.items():
+        param_def: Dict[str, Any] = {}
+        # 提取类型
+        if "type" in param_schema:
+            param_def["type"] = param_schema["type"]
+        # 提取描述（优先用 description，其次用 title）
+        desc = param_schema.get("description", "") or param_schema.get("title", "")
+        if desc:
+            param_def["description"] = desc
+        # 标记是否必填
+        if param_name in required:
+            param_def["required"] = True
+        # 保留其他字段（enum, default 等）
+        for extra_key in ("enum", "default", "anyOf", "allOf", "oneOf", "items"):
+            if extra_key in param_schema:
+                param_def[extra_key] = param_schema[extra_key]
+
+        parameters[param_name] = param_def
+
+    return parameters
 
 
 class MCPConfigCreate(BaseModel):
     """MCP 配置创建请求模型"""
 
     name: str
-    command: str
+    transport: str = "stdio"  # "stdio" 或 "sse"
+    command: str = ""
     args: List[str] = []
     env: Dict[str, str] = {}
+    url: str = ""  # SSE 服务器 URL
+    headers: Dict[str, str] = {}  # SSE HTTP 请求头
     enabled: bool = True
     register_as_ai_tools: bool = False
     tools: List[MCPToolDefinitionModel] = []
@@ -47,9 +112,12 @@ class MCPConfigUpdate(BaseModel):
     """MCP 配置更新请求模型"""
 
     name: Optional[str] = None
+    transport: Optional[str] = None
     command: Optional[str] = None
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
+    url: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
     enabled: Optional[bool] = None
     register_as_ai_tools: Optional[bool] = None
     tools: Optional[List[MCPToolDefinitionModel]] = None
@@ -163,8 +231,8 @@ async def create_mcp_config(
     """
     import re
 
-    # 从 name 生成 config_id（转小写，特殊字符替换为下划线）
-    config_id = re.sub(r"[^a-zA-Z0-9_-]", "_", body.name.lower()).strip("_")
+    # 从 name 生成 config_id（支持 Unicode 字符如中文，仅替换文件系统不安全字符）
+    config_id = re.sub(r"[^\w-]", "_", body.name, flags=re.UNICODE).strip("_").lower()
     if not config_id:
         return {
             "status": 1,
@@ -172,20 +240,30 @@ async def create_mcp_config(
             "data": None,
         }
 
-    tools = [
-        MCPToolDefinition(
-            name=t.name,
-            description=t.description,
-            parameters=t.parameters,
+    tools = []
+    for t in body.tools:
+        # 优先使用 input_schema 自动转换为 parameters
+        if t.input_schema and not t.parameters:
+            parameters = _convert_input_schema_to_parameters(t.input_schema)
+        else:
+            parameters = t.parameters
+
+        tools.append(
+            MCPToolDefinition(
+                name=t.name,
+                description=t.description,
+                parameters=parameters,
+            )
         )
-        for t in body.tools
-    ]
 
     config = MCPConfig(
         name=body.name,
+        transport=body.transport,
         command=body.command,
         args=body.args,
         env=body.env,
+        url=body.url,
+        headers=body.headers,
         enabled=body.enabled,
         register_as_ai_tools=body.register_as_ai_tools,
         tools=tools,
@@ -432,17 +510,22 @@ async def discover_mcp_tools(
             command=config.command,
             args=config.args,
             env=config.env,
+            url=config.url,
+            headers=config.headers,
         )
         tools = await client.list_tools()
 
         # 转换为前端需要的格式
         tool_list = []
         for tool in tools:
+            # 同时返回原始 input_schema 和转换后的 parameters
+            converted_params = _convert_input_schema_to_parameters(tool.input_schema)
             tool_list.append(
                 {
                     "name": tool.name,
                     "description": tool.description,
                     "input_schema": tool.input_schema,
+                    "parameters": converted_params,
                 }
             )
 
@@ -467,9 +550,12 @@ class MCPDiscoverRequest(BaseModel):
     """MCP 临时配置（仅用于发现工具，不保存）"""
 
     name: str
-    command: str
+    transport: str = "stdio"  # "stdio" 或 "sse"
+    command: str = ""
     args: List[str] = []
     env: Dict[str, str] = {}
+    url: str = ""  # SSE 服务器 URL
+    headers: Dict[str, str] = {}  # SSE HTTP 请求头
 
 
 @app.post("/api/ai/mcp/tools/discover")
@@ -498,6 +584,8 @@ async def discover_tools_from_temp_config(
             command=body.command,
             args=body.args,
             env=body.env,
+            url=body.url,
+            headers=body.headers,
         )
         tools = await client.list_tools()
 
@@ -589,9 +677,19 @@ async def import_mcp_from_json(
                 "data": None,
             }
 
-        # 构建 MCPConfig
+        # 构建 MCPConfig（兼容 stdio 和 sse 两种格式）
         env = server_config.get("env", {})
         args = server_config.get("args", [])
+        url = server_config.get("url", server_config.get("sseUrl", ""))
+        headers = server_config.get("headers", server_config.get("headersTemplate", {}))
+        transport = server_config.get("transport", "")
+
+        # 自动推断 transport：如果 url 存在且以 http 开头，则为 sse
+        if not transport or transport == "auto":
+            if url and isinstance(url, str) and url.startswith("http"):
+                transport = "sse"
+            else:
+                transport = "stdio"
 
         # 如果没有 tools，先连接服务器发现工具
         tools = []
@@ -600,16 +698,18 @@ async def import_mcp_from_json(
 
             client = MCPClient(
                 name=server_name,
-                command=server_config.get("command", "uvx"),
+                command=server_config.get("command", ""),
                 args=args,
                 env=env,
+                url=url,
+                headers=headers,
             )
             raw_tools = await client.list_tools()
             tools = [
                 MCPToolDefinition(
                     name=t.name,
                     description=t.description,
-                    parameters=t.input_schema.get("properties", {}) if t.input_schema else {},
+                    parameters=_convert_input_schema_to_parameters(t.input_schema) if t.input_schema else {},
                 )
                 for t in raw_tools
             ]
@@ -619,9 +719,12 @@ async def import_mcp_from_json(
 
         mcp_config = MCPConfig(
             name=server_name,
-            command=server_config.get("command", "uvx"),
+            transport=transport,
+            command=server_config.get("command", ""),
             args=args,
             env=env,
+            url=url,
+            headers=headers,
             enabled=True,
             register_as_ai_tools=False,
             tools=tools,
@@ -650,4 +753,173 @@ async def import_mcp_from_json(
         "status": 1,
         "msg": "不支持的 JSON 格式，请确保包含 mcpServers 字段",
         "data": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP 工具配置 (mcp_tools_config) — details 参数映射 API
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/ai/mcp-tools-config/list")
+async def get_mcp_tools_config_list(
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    获取 MCP 工具配置列表
+
+    返回所有 mcp_tools_config 中各业务模块对应的 MCP 工具 ID 和 details 参数映射。
+
+    Returns:
+        status: 0成功
+        data: 配置列表
+    """
+    from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
+
+    items = []
+    for key, config_item in mcp_tools_config.config.items():
+        item_data = {
+            "key": key,
+            "title": config_item.title,
+            "desc": config_item.desc,
+            "data": config_item.data,
+            # 仅 GsStrConfig 带 details；用 isinstance 守卫替代 getattr 兜底
+            "details": config_item.details if isinstance(config_item, GsStrConfig) else None,
+        }
+        items.append(item_data)
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "items": items,
+            "count": len(items),
+        },
+    }
+
+
+@app.get("/api/ai/mcp-tools-config/{item_key}")
+async def get_mcp_tools_config_detail(
+    item_key: str,
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    获取指定 MCP 工具配置项的详情（含 details 参数映射）
+
+    Args:
+        item_key: 配置项键名，如 websearch_mcp_tool_id
+
+    Returns:
+        status: 0成功，1失败
+        data: 配置项详情
+    """
+    from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
+
+    config_item = mcp_tools_config.get_config(item_key)
+    if not config_item:
+        return {
+            "status": 1,
+            "msg": f"配置项 '{item_key}' 不存在",
+            "data": None,
+        }
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "key": item_key,
+            "title": config_item.title,
+            "desc": config_item.desc,
+            "data": config_item.data,
+            "details": config_item.details if isinstance(config_item, GsStrConfig) else None,
+        },
+    }
+
+
+class MCPToolDetailsUpdate(BaseModel):
+    """MCP 工具 details 参数映射更新模型"""
+
+    data: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+
+@app.put("/api/ai/mcp-tools-config/{item_key}")
+async def update_mcp_tools_config(
+    item_key: str,
+    body: MCPToolDetailsUpdate,
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    更新指定 MCP 工具配置项（含 details 参数映射）
+
+    可同时更新工具 ID (data) 和 details 参数映射。
+
+    **details 格式说明**:
+
+    details 字典的 **键** 为 MCP 工具的参数名，**值** 为映射来源:
+    - `"params - <内部参数名>"` → 从内部函数的参数中取值
+    - 字面量 (字符串 / 数字 / 布尔) → 固定值，每次调用都传入
+
+    示例:
+    ```json
+    {
+        "data": "minimax - web_search",
+        "details": {
+            "query": "params - query",
+            "max_results": "params - max_results",
+            "search_model": "custom",
+            "max": 6
+        }
+    }
+    ```
+
+    Args:
+        item_key: 配置项键名
+        body: 更新内容
+
+    Returns:
+        status: 0成功，1失败
+    """
+    from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
+
+    config_item = mcp_tools_config.get_config(item_key)
+    # data / details 均为 GsStrConfig 字段；非 GsStrConfig 不支持本接口
+    if not isinstance(config_item, GsStrConfig):
+        return {
+            "status": 1,
+            "msg": f"配置项 '{item_key}' 不存在或不支持 details 映射",
+            "data": None,
+        }
+
+    updated_fields = []
+
+    # 更新 data (MCP 工具 ID)
+    if body.data is not None:
+        config_item.data = body.data
+        updated_fields.append("data")
+
+    # 更新 details (参数映射)
+    if body.details is not None:
+        config_item.details = body.details
+        updated_fields.append("details")
+
+    if not updated_fields:
+        return {
+            "status": 1,
+            "msg": "没有提供要更新的字段",
+            "data": None,
+        }
+
+    # 写回配置文件
+    mcp_tools_config.write_config()
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "key": item_key,
+            "updated_fields": updated_fields,
+            "data": config_item.data,
+            "details": config_item.details,
+        },
     }

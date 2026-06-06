@@ -106,6 +106,11 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
     user_type: str = Field(default="direct", max_length=16)
     WS_BOT_ID: Optional[str] = Field(default=None, max_length=64)
     session_id: str = Field(default="", max_length=256)
+    # 派活时的用户权限等级（与 Event.user_pm 对齐，越小权限越高，0=主人）。
+    # 必须随任务持久化：Kanban 执行体由 _build_event 重建 Event 后，pm 门控工具
+    # （check_pm，如 plugin_dev 全家）要靠它判定主人身份；不存就退回默认 6（非管理员），
+    # 导致主人派出的子代理被自家工具拒绝（实测：pm=0 主人无法让代理写插件）。
+    user_pm: int = Field(default=6)
 
     # 授权播报白名单（群号 / 用户号列表）；空表示仅回送 owner
     broadcast_targets: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))

@@ -78,6 +78,10 @@ exec_list = [
     "ALTER TABLE aiagenttask ADD COLUMN fire_count INTEGER DEFAULT 0;",
     # 子任务级 not_before：支持"等开盘 / 等下班"延后语义（2026-05-24 复盘新增）
     "ALTER TABLE aiagenttask ADD COLUMN not_before TIMESTAMP DEFAULT NULL;",
+    # 派活时的用户权限等级（与 Event.user_pm 对齐）。旧库默认 6=非管理员；主人
+    # （pm=0）派出的子代理重建 Event 后据此判定主人身份，pm 门控工具（plugin_dev）
+    # 才不会拒绝主人本人发起的任务。
+    "ALTER TABLE aiagenttask ADD COLUMN user_pm INTEGER DEFAULT 6;",
     # 旧任务（最早 C5 长任务）的 root_task_id 默认空——一次性把 root_task_id=id
     # 写回，让它们退化为"只有根节点的退化树"，统一进 Kanban 渲染。
     "UPDATE aiagenttask SET root_task_id = id WHERE root_task_id IS NULL OR root_task_id = '';",

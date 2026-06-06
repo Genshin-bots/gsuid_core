@@ -203,8 +203,11 @@
 | `client.py` | MCP 客户端核心。 |
 | `server.py` | MCP server 实现。 |
 | `mcp_tool_caller.py` | 把 MCP 工具桥接为 pydantic_ai Tool。 |
-| `mcp_tools_config.py / mcp_presets.py / config_manager.py` | 配置层。 |
+| `utils.py` | MCP 复用函数层（`build_mcp_arguments` / `is_mcp_provider` 等），含 **details 参数映射**。 |
+| `mcp_tools_config.py / mcp_presets.py / config_manager.py` | 配置层。`mcp_tools_config` 支持 `details` 字段实现参数名映射。 |
 | `startup.py` | 启动期注入。 |
+
+**details 参数映射**：不同 MCP 工具的参数名不同，通过 `details` 字典建立映射（`"params - <内部名>"` → 从内部取值，字面量 → 固定值），使框架内部函数的参数自动转换为 MCP 工具期望的格式。
 
 ### `configs/` — LLM 提供商配置
 
@@ -265,7 +268,6 @@
 | 文件 | 用途 |
 |---|---|
 | `asr.py` | 语音转文字。 |
-| `tts.py` | 文字转语音。 |
 | `video.py` | 视频生成 / 处理。 |
 | `document.py` | 文档解析（PDF / DOCX 等）。 |
 

@@ -122,15 +122,15 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 池(self/buildin)、也**永不**被任何 Agent 的向量检索召回；**只**由
 ``capability_agents`` 的 ``plugin_developer_agent`` 画像在 ``tool_names`` 里显式装配
 （``runner._resolve_tools`` 按名取，无视 category）。每个工具都 ``check_func=check_pm``——
-**仅主人 (PM=0)** 可触发，写入路径被 ``_resolve_in_plugin`` 强制限定在单个插件目录内。
+**仅主人 (PM=0)** 可触发；插件代码全程在工作区读写（用 file_manager 工具），仅
+``copy_to_plugin_dir`` 经主人审批后才落 ``plugins/``。
 
-- ``scaffold_plugin``：在 ``plugins/<Name>/`` 下生成嵌套加载骨架
-- ``write_plugin_file`` / ``read_plugin_file`` / ``list_plugin_tree`` /
-  ``delete_plugin_path``：单插件目录内的文件读写 / 列举 / 删除
-- ``validate_plugin``：对插件内所有 ``.py`` 做 ``py_compile`` 语法自检
+- ``scaffold_plugin``：在工作区生成嵌套加载骨架（含可加载的业务示例）
+- ``validate_plugin``：对工作区里插件所有 ``.py`` 做 ``py_compile`` 语法自检
+- ``copy_to_plugin_dir``：非阻塞发起安装审批，主人同意后把工作区插件装进 ``plugins/``
 - ``load_plugin_into_core``：复用 ``reload_plugin`` 把（全新 / 改动后的）插件热加载进框架
-- ``test_plugin_command``：**功能自测**——经 by_trigger 包装实跑插件某条 to_ai 命令
-  （MockBot 拦截下发、只回收产出），回复主人前确认命令真能跑出预期结果
+- ``test_plugin_command``：**功能自测**——实跑插件某条命令（MockBot 拦截下发、只回收产出），
+  回复主人前确认命令真能跑出预期结果
 - ``read_plugin_dev_guide``：按需查阅 ``gscore-plugin-development`` SKILL 全文（目录 / 章节）
 
 ## 三、能力代理的"永远工具"
@@ -260,15 +260,12 @@ from gsuid_core.ai_core.buildin_tools.file_operations import (
 # 命令执行工具 - 执行系统命令
 from gsuid_core.ai_core.buildin_tools.command_executor import execute_shell_command
 
-# 插件开发工具 - 让「插件开发代理」在 plugins/ 下脚手架/读写/自检/热加载一个 GsCore 插件
+# 插件开发工具 - 让「插件开发代理」在工作区脚手架/自检，审批后热加载一个 GsCore 插件
 # （category="plugin_dev"，仅 plugin_developer_agent 画像显式装配；全部 check_pm 限主人）
 from gsuid_core.ai_core.buildin_tools.plugin_developer import (
     scaffold_plugin,
     validate_plugin,
-    list_plugin_tree,
-    read_plugin_file,
-    write_plugin_file,
-    delete_plugin_path,
+    copy_to_plugin_dir,
     test_plugin_command,
     load_plugin_into_core,
     read_plugin_dev_guide,
@@ -349,14 +346,11 @@ __all__ = [
     "list_available_tools",
     # 插件开发工具（plugin_developer_agent 专用）
     "scaffold_plugin",
-    "write_plugin_file",
-    "read_plugin_file",
-    "list_plugin_tree",
-    "delete_plugin_path",
     "validate_plugin",
     "load_plugin_into_core",
     "test_plugin_command",
     "read_plugin_dev_guide",
+    "copy_to_plugin_dir",
     # 通用持久状态存储工具
     "state_get",
     "state_set",

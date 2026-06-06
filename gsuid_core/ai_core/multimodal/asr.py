@@ -9,15 +9,17 @@
     text = await transcribe_audio(audio_data=b"...", format="ogg")
 """
 
-import os
-import tempfile
-
-import aiofiles
-
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.mcp.utils import (
+    get_mcp_tool_id,
+    is_mcp_provider,
+    cleanup_tempfile,
+    sanitize_mcp_text,
+    build_mcp_arguments,
+    call_mcp_tool_checked,
+    save_binary_to_tempfile,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
-from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 
 
 def _get_asr_provider() -> str:
@@ -27,31 +29,6 @@ def _get_asr_provider() -> str:
         提供方名称，如 "MCP"
     """
     return ai_config.get_config("asr_provider").data
-
-
-async def _prepare_audio_for_mcp(
-    audio_data: bytes,
-    audio_format: str = "ogg",
-) -> str:
-    """准备音频数据给 MCP 工具使用
-
-    MCP 的 ASR 工具通常期望文件路径，需要将 bytes 保存为临时文件。
-
-    Args:
-        audio_data: 音频二进制数据
-        audio_format: 音频格式（ogg/mp3/wav/m4a）
-
-    Returns:
-        临时文件路径
-    """
-    suffix = f".{audio_format}"
-    temp_fd, temp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(temp_fd)
-    async with aiofiles.open(temp_path, "wb") as f:
-        await f.write(audio_data)
-
-    logger.debug(f"🎤 [ASR] 已保存音频到临时文件: {temp_path}")
-    return temp_path
 
 
 async def transcribe_audio(
@@ -82,37 +59,22 @@ async def transcribe_audio(
     """
     provider = _get_asr_provider()
 
-    if provider == "MCP":
-        mcp_tool_id = mcp_tools_config.get_config("asr_mcp_tool_id").data
-
-        if not mcp_tool_id:
-            raise RuntimeError("ASR MCP 工具未配置，请前往 AI 配置页面设置 asr_mcp_tool_id")
+    if is_mcp_provider(provider):
+        mcp_tool_id = get_mcp_tool_id("asr_mcp_tool_id", "ASR")
 
         # 将音频数据保存为临时文件
-        audio_path = await _prepare_audio_for_mcp(audio_data, audio_format)
+        audio_path = await save_binary_to_tempfile(audio_data, f".{audio_format}", "🎤 [ASR]")
 
-        arguments: dict[str, str] = {"audio_source": audio_path}
-        if language:
-            arguments["language"] = language
+        arguments = build_mcp_arguments(
+            "asr_mcp_tool_id",
+            {"audio_source": audio_path, "language": language},
+        )
 
         try:
-            result = await call_mcp_tool(
-                mcp_tool_id=mcp_tool_id,
-                arguments=arguments,
-            )
-
-            if result.is_error:
-                raise RuntimeError(f"ASR MCP 调用失败: {result.text}")
-
-            return result.text
+            result = await call_mcp_tool_checked(mcp_tool_id, arguments, "ASR")
+            return sanitize_mcp_text(result.text)
         finally:
-            # 清理临时文件
-            if os.path.exists(audio_path):
-                try:
-                    os.unlink(audio_path)
-                    logger.debug(f"🎤 [ASR] 已删除临时文件: {audio_path}")
-                except Exception as e:
-                    logger.warning(f"🎤 [ASR] 删除临时文件失败: {e}")
+            cleanup_tempfile(audio_path, "🎤 [ASR]")
 
     # 未知 provider
     logger.warning(f"🎤 [ASR] 未知的提供方 '{provider}'，仅支持 MCP")

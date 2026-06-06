@@ -8,7 +8,7 @@
 from typing import Any
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.mcp import MCPClient, MCPToolResult
+from gsuid_core.ai_core.mcp.client import MCPClient, MCPToolResult
 from gsuid_core.ai_core.mcp.config_manager import parse_mcp_tool_id, mcp_config_manager
 
 
@@ -41,12 +41,14 @@ async def call_mcp_tool(
     if not config:
         raise RuntimeError(f"MCP 配置 '{mcp_id}' 不存在，请检查配置")
 
-    # 构建 MCP 客户端
+    # 构建 MCP 客户端（自动根据 transport 选择 stdio / sse）
     client = MCPClient(
         name=config.name,
         command=config.command,
         args=config.args,
         env=config.env,
+        url=config.url,
+        headers=config.headers,
     )
 
     # 记录调用参数（截断过长的值）

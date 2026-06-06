@@ -2,19 +2,20 @@
 MCP 客户端核心模块
 
 提供通用的 MCP 客户端功能，用于连接和调用 MCP 服务器。
-基于 fastmcp 实现，支持通过 stdio 方式连接 MCP 服务器。
+基于 fastmcp 实现，支持通过 stdio 和 sse 两种方式连接 MCP 服务器。
 
 设计原则：
 - 每次调用时建立连接、执行操作、断开连接（无状态模式）
-- 支持通过代码配置连接参数（command, args, env）
+- 支持通过代码配置连接参数（command, args, env）— stdio 模式
+- 支持通过 URL 和请求头连接远程服务器（url, headers）— sse 模式
 - 完全异步，兼容项目的 async 架构
 """
 
-from typing import Any
+from typing import Any, Union
 from dataclasses import field, dataclass
 
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports import SSETransport, StdioTransport
 
 from mcp.types import TextContent, ImageContent, ResourceLink, EmbeddedResource
 from gsuid_core.logger import logger
@@ -53,16 +54,21 @@ class MCPClient:
     """
     MCP 客户端
 
-    通过 stdio 方式连接 MCP 服务器，提供工具列表查询和工具调用功能。
+    支持两种传输方式连接 MCP 服务器：
+    - stdio: 通过 command + args + env 启动本地进程
+    - sse: 通过 url + headers 连接远程 SSE 服务器
+
     每次操作独立建立连接，操作完成后自动断开。
 
     Args:
         name: MCP 服务器名称，用于日志标识
-        command: 启动命令，如 "uvx", "npx", "python" 等
-        args: 命令参数列表
-        env: 环境变量字典
+        command: 启动命令，如 "uvx", "npx", "python" 等（stdio 模式）
+        args: 命令参数列表（stdio 模式）
+        env: 环境变量字典（stdio 模式）
+        url: SSE 服务器 URL（sse 模式）
+        headers: HTTP 请求头字典（sse 模式，如 Authorization）
 
-    Example:
+    Example (stdio):
         >>> client = MCPClient(
         ...     name="MiniMax",
         ...     command="uvx",
@@ -71,20 +77,46 @@ class MCPClient:
         ... )
         >>> tools = await client.list_tools()
         >>> result = await client.call_tool("web_search", {"query": "Python"})
+
+    Example (sse):
+        >>> client = MCPClient(
+        ...     name="知乎搜索",
+        ...     url="https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+        ...     headers={"Authorization": "Bearer your_key"},
+        ... )
+        >>> tools = await client.list_tools()
+        >>> result = await client.call_tool("zhihu_search", {"query": "RAG"})
     """
 
     name: str
-    command: str
+    command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    url: str = ""  # SSE 服务器 URL
+    headers: dict[str, str] = field(default_factory=dict)  # SSE HTTP 请求头
 
-    def _create_transport(self) -> StdioTransport:
-        """创建 stdio 传输层"""
-        return StdioTransport(
-            command=self.command,
-            args=self.args,
-            env=self.env if self.env else None,
-        )
+    def _detect_transport(self) -> str:
+        """根据 url / command 字段自动推断传输方式"""
+        if self.url and isinstance(self.url, str) and self.url.startswith("http"):
+            return "sse"
+        return "stdio"
+
+    def _create_transport(self) -> Union[StdioTransport, SSETransport]:
+        """创建传输层（根据 url / command 自动选择 stdio 或 sse）"""
+        transport_type = self._detect_transport()
+
+        if transport_type == "sse":
+            logger.debug(f"🔌 [MCP][{self.name}] 使用 SSE 传输，URL: {self.url}")
+            return SSETransport(
+                url=self.url,
+                headers=self.headers if self.headers else None,
+            )
+        else:
+            return StdioTransport(
+                command=self.command,
+                args=self.args,
+                env=self.env if self.env else None,
+            )
 
     @staticmethod
     def _truncate_args(arguments: dict[str, Any] | None, max_len: int = 100) -> dict[str, Any]:

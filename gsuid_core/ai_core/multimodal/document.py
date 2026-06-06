@@ -10,14 +10,18 @@
 """
 
 import os
-import tempfile
-
-import aiofiles
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.mcp.utils import (
+    get_mcp_tool_id,
+    is_mcp_provider,
+    cleanup_tempfile,
+    sanitize_mcp_text,
+    build_mcp_arguments,
+    call_mcp_tool_checked,
+    save_binary_to_tempfile,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
-from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 
 # 支持的文档格式
 SUPPORTED_DOCUMENT_FORMATS = {
@@ -72,29 +76,6 @@ def is_supported_document(filename: str) -> bool:
     return ext in SUPPORTED_DOCUMENT_FORMATS
 
 
-async def _save_file_to_tempfile(
-    file_data: bytes,
-    filename: str,
-) -> str:
-    """将文件数据保存为临时文件
-
-    Args:
-        file_data: 文件二进制数据
-        filename: 原始文件名（用于保留扩展名）
-
-    Returns:
-        临时文件路径
-    """
-    ext = _get_file_extension(filename)
-    temp_fd, temp_path = tempfile.mkstemp(suffix=ext)
-    os.close(temp_fd)
-    async with aiofiles.open(temp_path, "wb") as f:
-        await f.write(file_data)
-
-    logger.debug(f"📄 [Document] 已保存文件到临时文件: {temp_path}")
-    return temp_path
-
-
 async def extract_document_content(
     file_data: bytes,
     filename: str,
@@ -136,35 +117,22 @@ async def extract_document_content(
 
     provider = _get_doc_provider()
 
-    if provider == "MCP":
-        mcp_tool_id = mcp_tools_config.get_config("document_extract_mcp_tool_id").data
+    if is_mcp_provider(provider):
+        mcp_tool_id = get_mcp_tool_id("document_extract_mcp_tool_id", "Document Extract")
 
-        if not mcp_tool_id:
-            raise RuntimeError("文档提取 MCP 工具未配置，请前往 AI 配置页面设置")
+        ext = _get_file_extension(filename)
+        file_path = await save_binary_to_tempfile(file_data, ext, "📄 [Document]")
 
-        file_path = await _save_file_to_tempfile(file_data, filename)
-
-        arguments: dict[str, str] = {"file_source": file_path}
-        if page_range:
-            arguments["page_range"] = page_range
+        arguments = build_mcp_arguments(
+            "document_extract_mcp_tool_id",
+            {"file_source": file_path, "page_range": page_range},
+        )
 
         try:
-            result = await call_mcp_tool(
-                mcp_tool_id=mcp_tool_id,
-                arguments=arguments,
-            )
-
-            if result.is_error:
-                raise RuntimeError(f"文档提取 MCP 调用失败: {result.text}")
-
-            return result.text
+            result = await call_mcp_tool_checked(mcp_tool_id, arguments, "Document Extract")
+            return sanitize_mcp_text(result.text)
         finally:
-            if os.path.exists(file_path):
-                try:
-                    os.unlink(file_path)
-                    logger.debug(f"📄 [Document] 已删除临时文件: {file_path}")
-                except Exception as e:
-                    logger.warning(f"📄 [Document] 删除临时文件失败: {e}")
+            cleanup_tempfile(file_path, "📄 [Document]")
 
     # 未知 provider
     logger.warning(f"📄 [Document] 未知的提供方 '{provider}'，仅支持 MCP")

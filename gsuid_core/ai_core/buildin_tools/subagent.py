@@ -358,6 +358,9 @@ async def _dispatch_via_kanban(
         user_type=ev.user_type or "direct",
         WS_BOT_ID=ev.WS_BOT_ID,
         session_id=ev.session_id,
+        # 透传派活人的权限等级——否则 Kanban 执行体重建 Event 后退回默认 6，
+        # 主人（pm=0）派出的 plugin_dev 代理会被自家 check_pm 工具全部拒绝。
+        user_pm=ev.user_pm,
         broadcast_targets=[],
         display_name=root_goal[:64],
         subtasks=[],

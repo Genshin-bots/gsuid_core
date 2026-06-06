@@ -604,7 +604,14 @@ class GsCoreAIAgent:
                 if isinstance(item, str):
                     result.append(f"【用户发言】\n{item}")
                 elif isinstance(item, ImageUrl):
-                    result.append(ImageUrl(url=await materialize_image_url(item.url)))
+                    # Fix-07 兜底：入历史前再次确认远程 URL 已物化为 base64；
+                    # 若物化失败（仍为 http(s) URL），跳过该图片，避免把过期
+                    # 链接写入 message_history 导致后续轮次 400/500。
+                    url = await materialize_image_url(item.url)
+                    if url.startswith(("http://", "https://")):
+                        logger.warning(f"🖼️ [GsCoreAIAgent] 图片入历史前物化失败，跳过该图片: {item.url[:120]}")
+                        continue
+                    result.append(ImageUrl(url=url))
                 else:
                     result.append(item)
             return result
@@ -1156,6 +1163,18 @@ class GsCoreAIAgent:
             logger.warning(f"🧠 [PydanticAI] Agent 达到最高思考轮数限制 {limits.request_limit}")
             statistics_manager.record_error(error_type="usage_limit")
             self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {limits.request_limit}")
+
+            # 子代理（return 模式，如 Kanban 能力代理 / plugin_developer_agent）：
+            # **绝不**直接对用户的 bot 说话，也**绝不**把超轮数的中间产物强制总结后回灌
+            # 给用户——那些中间文本往往是大段代码 / 原始数据，直接下发会造成群聊刷屏与
+            # 污染。只返回一句简短状态，由 Kanban 转译层（_persona_relay）决定要不要、用
+            # 什么口吻告诉用户。原"安抚 + 强制总结 + send_chat_result"逻辑仅服务于面向
+            # 用户的主人格（by_bot / always 模式）。
+            if return_mode == "return":
+                return (
+                    "⚠️ 已达最大思考轮数，未能在限定步数内完成本任务。"
+                    "中间产物（如已写入的文件 / artifact）已留在工作区，未回传以避免刷屏。"
+                )
 
             # 安抚用户
             if bot:

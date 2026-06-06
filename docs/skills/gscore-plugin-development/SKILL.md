@@ -2455,17 +2455,16 @@ from gsuid_core.ai_core.capability_agents.profiles import _DELIVERY_BOUNDARY
 ### 14附.2 专用工具集（`category="plugin_dev"`）
 
 实现于 [`buildin_tools/plugin_developer.py`](../../../gsuid_core/ai_core/buildin_tools/plugin_developer.py:1)。
-**有意不复用** `code_agent` 的 `write_file_content` 等沙箱工具——后者被强制改写到
-Artifact Workspace、够不到插件目录；本组工具是「被授权写入 `plugins/`」的专用通道：
+插件代码全程在**工作区**用 file_manager 的 `read_file_content` / `write_file_content` 读写，
+本组工具只负责脚手架、自检、审批安装与热加载：
 
 | 工具 | 作用 |
 |------|------|
-| `scaffold_plugin` | 在 `plugins/<Name>/` 下生成嵌套加载骨架（外层包 + 内层同名包 + Plugins 声明） |
-| `write_plugin_file` / `read_plugin_file` | 单插件目录内写 / 读文件 |
-| `list_plugin_tree` / `delete_plugin_path` | 列文件树 / 删单个文件 |
-| `validate_plugin` | 对插件内所有 `.py` 做 `py_compile` 语法自检 |
+| `scaffold_plugin` | 在工作区生成嵌套加载骨架（外层包 + 内层同名包 + Plugins 声明 + 业务示例） |
+| `validate_plugin` | 对工作区里插件所有 `.py` 做 `py_compile` 语法自检 |
+| `copy_to_plugin_dir` | 非阻塞发起安装审批，主人同意后把工作区插件装进 `plugins/`（覆盖已存在的同名插件时分两步、各一次审批：先以临时名安装新代码、再单独审批删除旧目录，全程不直接删同名目录；运行期 `data/` 由插件自身负责兼容，不做特殊保留） |
 | `load_plugin_into_core` | 热加载（全新 / 改动后均走它），原样回传 `reload_plugin` 的成功/失败文本 |
-| `test_plugin_command` | **功能自测**：经 by_trigger 实跑某条 `to_ai` 命令（MockBot 拦截下发、只回收产出），交付前确认命令真能跑出预期结果 |
+| `test_plugin_command` | **功能自测**：实跑某条命令（MockBot 拦截下发、只回收产出），交付前确认命令真能跑出预期结果 |
 | `read_plugin_dev_guide` | 按需查阅本 SKILL 全文（空参看目录、传章节标题读正文） |
 
 ### 14附.3 端到端工作流
@@ -2475,8 +2474,9 @@ Artifact Workspace、够不到插件目录；本组工具是「被授权写入 `
 ```
 规划 <TODO_LIST>（不确定就 read_plugin_dev_guide 查证）
   → scaffold_plugin 起骨架
-  → write_plugin_file 逐文件写业务代码（面向用户的命令尽量都写 to_ai）
+  → write_file_content 逐文件写业务代码（面向用户的命令按需写 to_ai）
   → validate_plugin 语法自检（不过就改）
+  → copy_to_plugin_dir 发起安装审批（返回「已发起审批…请停止」即原样交回并结束本轮；主人同意后框架重新调度，重入再调它才落 plugins/。**覆盖已存在的同名插件**时会再要一次「删除旧目录」审批，照样按返回提示停手等待重新调度即可）
   → load_plugin_into_core 热加载（含 ❌ 则读报错→改→重载，直到「✨ 已重载插件」）
   → test_plugin_command 功能自测：实跑每条核心命令、核对产出（不符就改→重载→再测）
   → 交付：插件名 + 命令清单 + **自测结果** + 文件清单（交回主人格转告主人）
