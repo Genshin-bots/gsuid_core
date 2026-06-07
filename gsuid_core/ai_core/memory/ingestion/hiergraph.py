@@ -25,6 +25,18 @@ from gsuid_core.ai_core.memory.database.models import (
 
 from ...utils import extract_json_from_text
 
+# #3 单轮重建预算上限：一次最多归类的未分配实体数。防止 2.5x 比例触发后单轮
+# backlog 数万实体一次性灌爆 LLM；超额留待下一轮（本轮结束自动续调度，backlog 单调收敛）。
+MAX_ENTITIES_PER_REBUILD = 800
+# #4 分层图构建的最小实体门槛：低于此数的 scope 整体跳过分层图——类目对小数据集的
+# 压缩/大纲收益≈0，召回完全可由 System-1 向量 + edges 覆盖，不值得为其花 LLM 分类。
+MIN_ENTITIES_FOR_HIERGRAPH = 30
+# #2 向量预分配：新实体与"已归类近邻"的 summary_dense 余弦相似度 ≥ 此阈值时，直接并入
+# 近邻所在 Category 并跳过 LLM。取高值以避免误归类——宁可漏分（交 LLM）不可错分。
+VECTOR_ASSIGN_THRESHOLD = 0.85
+# 每个待分配实体检索的近邻数，取其中相似度最高且已归类的一个作为归属
+VECTOR_ASSIGN_TOP_K = 5
+
 
 def _ensure_aware_datetime(dt: Optional[datetime]) -> Optional[datetime]:
     """确保 datetime 为 aware（带时区信息），避免 naive/aware 混用导致比较失败。
@@ -173,40 +185,50 @@ class HierarchicalGraphBuilder:
     async def incremental_rebuild(self) -> None:
         """增量重建主流程（在同一 session/事务内执行）"""
         total_start = time.time()
-        unassigned = await self._get_unassigned_entities()
-        if not unassigned:
+
+        # #4 小 scope 整体跳过分层图：实体过少时类目无压缩/大纲收益，
+        # 召回由 System-1 向量 + edges 覆盖即可，省去 layer-1 分类开销。
+        total_entities = await self._get_total_entity_count()
+        if total_entities < MIN_ENTITIES_FOR_HIERGRAPH:
+            logger.debug(
+                f"🧠 [HierGraph] scope={self.scope_key} entity={total_entities}"
+                f"<{MIN_ENTITIES_FOR_HIERGRAPH}，跳过分层图构建"
+            )
             await self._update_meta(valid_prev_layer=None)
             return
 
-        logger.info(f"🧠 [HierGraph] 开始增量重建，未分配 Entity 数: {len(unassigned)}")
+        # #3 单轮预算上限：本轮最多归类 MAX_ENTITIES_PER_REBUILD 个未分配实体（按 created_at
+        # 取最旧，优先清积压），超额留待下一轮。capped=True 时本轮结束自动续调度一次重建。
+        unassigned = await self._get_unassigned_entities(limit=MAX_ENTITIES_PER_REBUILD)
+        if not unassigned:
+            await self._update_meta(valid_prev_layer=None)
+            return
+        capped = len(unassigned) >= MAX_ENTITIES_PER_REBUILD
+
+        logger.info(
+            f"🧠 [HierGraph] 开始增量重建，本轮处理未分配 Entity 数: {len(unassigned)}"
+            + ("（已达单轮上限，结束后将继续清理 backlog）" if capped else "")
+        )
 
         existing_layer1 = await self._get_categories_by_layer(1)
-        layer_start = time.time()
-        assignments = await self._llm_categorize(unassigned, existing_layer1, layer=1)
-        logger.info(f"🧠 [HierGraph] Layer 1 分类完成，耗时 {time.time() - layer_start:.1f}s")
-        new_layer1 = await self._apply_entity_assignments(assignments, layer=1, entities=unassigned)
+
+        # #2 向量预分配：与已归类近邻高度相似的实体直接并入其 Category，仅残余交 LLM
+        residual = await self._vector_pre_assign(unassigned, existing_layer1)
+
+        new_layer1: list[AIMemCategory] = []
+        if residual:
+            layer_start = time.time()
+            assignments = await self._llm_categorize(residual, existing_layer1, layer=1)
+            logger.info(
+                f"🧠 [HierGraph] Layer 1 分类完成（残余 {len(residual)}/{len(unassigned)} 交 LLM），"
+                f"耗时 {time.time() - layer_start:.1f}s"
+            )
+            new_layer1 = await self._apply_entity_assignments(assignments, layer=1, entities=residual)
 
         prev_layer = new_layer1 + existing_layer1
         # 记录合法的 prev_layer，用于 rollback 时回退到上一有效层
         valid_prev_layer = prev_layer
         prev_layer_count = len(prev_layer)
-
-        # 小 scope 截断：本 scope 总 entity < SMALL_SCOPE_THRESHOLD 时，
-        # 不构建 layer 2/3。原因：抽象层数对小数据集没有压缩收益，
-        # 反而每次重建都要把 layer-1 全部 category 灌 LLM 再分类一次。
-        # 阈值取 30：粗略对应"3 个 category × 10 entity/category"的 layer-1 规模。
-        SMALL_SCOPE_THRESHOLD = 30
-        total_entities = await self._get_total_entity_count()
-        if total_entities < SMALL_SCOPE_THRESHOLD:
-            logger.debug(
-                f"🧠 [HierGraph] scope={self.scope_key} entity={total_entities}<{SMALL_SCOPE_THRESHOLD}，跳过 layer 2+"
-            )
-            should_regen_summary = await self._should_regen_group_summary(valid_prev_layer)
-            await self._update_meta(valid_prev_layer=valid_prev_layer)
-            if should_regen_summary:
-                await self._update_group_summary_cache(valid_prev_layer)
-            logger.info(f"🧠 [HierGraph] 增量重建完成（仅 layer 1），总耗时 {time.time() - total_start:.1f}s")
-            return
 
         for layer in range(2, self._max_layers() + 1):
             if len(prev_layer) < self._min_children():
@@ -219,15 +241,35 @@ class HierarchicalGraphBuilder:
                 break
 
             existing_upper = await self._get_categories_by_layer(layer)
+
+            # #1 Layer-2/3 增量化：只把"尚无父类目"的下层节点喂给 LLM。已有父边的节点
+            # 上一轮已归类，无需每次重建都重跑整层——把"按存量收费"降为"按新增收费"，
+            # 这是消除高频复发 token 的关键。
+            unparented_children = await self._filter_unparented(prev_layer)
+            if not unparented_children:
+                # 下层已全部归类 → 本层无新增，跳过 LLM；推进到已存在的上层继续向上检查，
+                # 使 valid_prev_layer 正确停在真实顶层（避免 max_layer 被低估）。
+                if existing_upper:
+                    valid_prev_layer = existing_upper
+                    prev_layer = existing_upper
+                    prev_layer_count = len(existing_upper)
+                    continue
+                break
+
             layer_start = time.time()
             upper_assignments = await self._llm_categorize(
-                prev_layer, existing_upper, layer=layer, is_category_input=True
+                unparented_children, existing_upper, layer=layer, is_category_input=True
             )
-            logger.info(f"🧠 [HierGraph] Layer {layer} 分类完成，耗时 {time.time() - layer_start:.1f}s")
+            logger.info(
+                f"🧠 [HierGraph] Layer {layer} 分类完成（增量 {len(unparented_children)} 节点），"
+                f"耗时 {time.time() - layer_start:.1f}s"
+            )
             new_upper = await self._apply_category_assignments(
-                upper_assignments, layer=layer, child_categories=prev_layer
+                upper_assignments, layer=layer, child_categories=unparented_children
             )
 
+            # total_this_layer / total_prev_layer 仍用"整层总数"参与 node count reduction rule，
+            # 与增量输入无关——比较的是图的层级规模，不是本轮处理量。
             total_this_layer = len(new_upper or []) + len(existing_upper or [])
             total_prev_layer = prev_layer_count
 
@@ -262,6 +304,11 @@ class HierarchicalGraphBuilder:
             logger.debug(f"🧠 [HierGraph] scope={self.scope_key} group_summary 无显著变化，跳过重算")
         logger.info(f"🧠 [HierGraph] 增量重建完成，总耗时 {time.time() - total_start:.1f}s")
 
+        # #3 backlog 续清：本轮达单轮上限说明仍有未归类实体，结束后再调度一次重建。
+        # rebuild_task 内有锁：本轮锁释放后新任务才执行；backlog 单调递减，必然收敛。
+        if capped:
+            asyncio.create_task(rebuild_task(self.scope_key))
+
     def _max_layers(self) -> int:
         return memory_config.max_layers
 
@@ -291,17 +338,128 @@ class HierarchicalGraphBuilder:
         return int(count)
 
     @with_session
-    async def _get_unassigned_entities(self, session: AsyncSession) -> list[AIMemEntity]:
+    async def _get_unassigned_entities(self, session: AsyncSession, limit: Optional[int] = None) -> list[AIMemEntity]:
         # 使用 NOT EXISTS 替代 NOT IN，避免子查询结果集过大时的性能瓶颈
-        from sqlalchemy import exists
+        from sqlalchemy import or_, exists
 
-        result = await session.execute(
-            select(AIMemEntity).where(
-                AIMemEntity.scope_key == self.scope_key,
-                ~exists().where(mem_category_entity_members.c.entity_id == AIMemEntity.id),
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        # 入口过滤：只把"有价值"的实体喂给 LLM 分类——即 is_speaker（群成员花名册，
+        # 须强制归入 Speaker Category）或至少挂着一条 edge（承载事实）的实体。
+        # 无 edge 的非 speaker 实体不进 prompt、不承载事实，纯属噪声，喂进去只会
+        # 几何级抬高分类 token；过滤掉后它们仍留在表里充当去重锚点，待形成 edge
+        # 后下一轮重建自然纳入。死实体的物理回收由生命周期 Worker 的孤儿 GC 负责。
+        has_edge = exists().where(
+            or_(
+                AIMemEdge.source_entity_id == AIMemEntity.id,
+                AIMemEdge.target_entity_id == AIMemEntity.id,
             )
         )
+        query = (
+            select(AIMemEntity)
+            .where(
+                AIMemEntity.scope_key == self.scope_key,
+                ~exists().where(mem_category_entity_members.c.entity_id == AIMemEntity.id),
+                or_(col(AIMemEntity.is_speaker).is_(True), has_edge),
+            )
+            # 按 created_at 升序：单轮预算上限下优先归类最旧的积压实体，避免饿死
+            .order_by(col(AIMemEntity.created_at))
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await session.execute(query)
         return list(result.scalars().all())
+
+    @with_session
+    async def _filter_unparented(self, session: AsyncSession, categories: list[AIMemCategory]) -> list[AIMemCategory]:
+        """从给定 category 列表中筛出"尚无父类目"的，作为上层增量分类的输入。
+
+        已有父边（AIMemCategoryEdge.child_category_id 命中）的 category 上一轮已归类，
+        无需每次重建都重复喂 LLM。返回的列表会原样作为 _llm_categorize 的输入与
+        _apply_category_assignments 的 child_categories，二者必须一致以保证 indexes 对齐。
+        """
+        if not categories:
+            return []
+        from gsuid_core.ai_core.memory.database.models import AIMemCategoryEdge
+
+        cat_ids = [c.id for c in categories]
+        result = await session.execute(
+            select(AIMemCategoryEdge.child_category_id).where(col(AIMemCategoryEdge.child_category_id).in_(cat_ids))
+        )
+        parented = {row[0] for row in result.all()}
+        return [c for c in categories if c.id not in parented]
+
+    @with_session
+    async def _vector_pre_assign(
+        self,
+        session: AsyncSession,
+        entities: list[AIMemEntity],
+        existing_layer1: list[AIMemCategory],
+    ) -> list[AIMemEntity]:
+        """#2 向量预分配：把与"已归类近邻"高度相似的新实体直接并入其 Layer-1 Category，
+        跳过 LLM。返回仍需 LLM 分类的残余实体（speaker + 未命中相似近邻者）。
+
+        speaker 一律交 LLM：其归类由 _apply_entity_assignments 的 Speaker 强制逻辑统一处理。
+        """
+        if not existing_layer1:
+            return entities
+
+        candidates = [e for e in entities if not e.is_speaker]
+        if not candidates:
+            return entities
+
+        from gsuid_core.ai_core.memory.vector.ops import search_categorized_neighbors
+
+        neighbor_map = await search_categorized_neighbors(
+            [e.id for e in candidates], self.scope_key, top_k=VECTOR_ASSIGN_TOP_K
+        )
+        if not neighbor_map:
+            return entities
+
+        # 批量查"近邻实体 -> 其所属 Layer-1 Category id 集合"，只认本 scope 现有的 Layer-1 类目
+        neighbor_ids = {nid for pairs in neighbor_map.values() for nid, _ in pairs}
+        layer1_ids = {c.id for c in existing_layer1}
+        rows = await session.execute(
+            select(
+                mem_category_entity_members.c.entity_id,
+                mem_category_entity_members.c.category_id,
+            ).where(
+                mem_category_entity_members.c.entity_id.in_(neighbor_ids),
+                mem_category_entity_members.c.category_id.in_(layer1_ids),
+            )
+        )
+        neighbor_to_cats: dict[str, set[str]] = {}
+        for ent_id, cat_id in rows.all():
+            neighbor_to_cats.setdefault(ent_id, set()).add(cat_id)
+
+        insert_batch: list[dict[str, str]] = []
+        assigned_ids: set[str] = set()
+        for entity in candidates:
+            if entity.id not in neighbor_map:
+                continue
+            matched_cats: set[str] = set()
+            # neighbor_map 已按相似度降序：取首个"达阈值且已归类"的近邻，其类目即归属
+            for neighbor_id, score in neighbor_map[entity.id]:
+                if score < VECTOR_ASSIGN_THRESHOLD:
+                    break
+                if neighbor_id in neighbor_to_cats:
+                    matched_cats = neighbor_to_cats[neighbor_id]
+                    break
+            if not matched_cats:
+                continue
+            insert_batch.extend({"category_id": cid, "entity_id": entity.id} for cid in matched_cats)
+            assigned_ids.add(entity.id)
+
+        if insert_batch:
+            await session.execute(mem_category_entity_members.insert(), insert_batch)
+
+        residual = [e for e in entities if e.id not in assigned_ids]
+        if assigned_ids:
+            logger.info(
+                f"🧠 [HierGraph] 向量预分配 {len(assigned_ids)} 个实体直接归类（跳过 LLM），"
+                f"残余 {len(residual)} 个交 LLM"
+            )
+        return residual
 
     @with_session
     async def _get_categories_by_layer(self, session: AsyncSession, layer: int) -> list[AIMemCategory]:

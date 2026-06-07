@@ -697,6 +697,63 @@ async def search_edges(query: str, scope_keys: list[str], top_k: int = 20) -> li
     return await _hybrid_search_edges(query, scope_keys, top_k)
 
 
+async def search_categorized_neighbors(
+    entity_ids: list[str],
+    scope_key: str,
+    top_k: int = 5,
+) -> dict[str, list[tuple[str, float]]]:
+    """复用各 Entity 在 Qdrant 中已存的 summary_dense 向量（不重新嵌入），
+    检索同 scope 内最相似的近邻。
+
+    返回 ``{entity_id: [(neighbor_id, cosine_score), ...]}``：已剔除自身、按相似度降序。
+    供分层图 Layer-1 向量预分配（把新实体并入近邻所在 Category）使用。
+    """
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not entity_ids:
+        return {}
+
+    scope_filter = _scope_filter(scope_key)
+
+    try:
+        retrieved = await client.retrieve(
+            collection_name=MEMORY_ENTITIES_COLLECTION,
+            ids=list(entity_ids),
+            with_payload=False,
+            with_vectors=["summary_dense"],
+        )
+    except Exception as e:
+        logger.warning(f"🧠 [Qdrant] 批量取实体向量失败: {e}")
+        return {}
+
+    id_to_vector: dict[str, list[float]] = {}
+    for point in retrieved:
+        vector = point.vector
+        if isinstance(vector, dict) and "summary_dense" in vector:
+            dense = vector["summary_dense"]
+            if isinstance(dense, list):
+                id_to_vector[str(point.id)] = dense
+
+    neighbors: dict[str, list[tuple[str, float]]] = {}
+    for entity_id, dense in id_to_vector.items():
+        try:
+            response = await client.query_points(
+                collection_name=MEMORY_ENTITIES_COLLECTION,
+                query=dense,
+                using="summary_dense",
+                query_filter=scope_filter,
+                limit=top_k + 1,
+                with_payload=False,
+            )
+        except Exception as e:
+            logger.warning(f"🧠 [Qdrant] 实体近邻检索失败 (id={entity_id}): {e}")
+            continue
+        pairs = [(str(p.id), p.score) for p in response.points if str(p.id) != entity_id]
+        if pairs:
+            neighbors[entity_id] = pairs[:top_k]
+    return neighbors
+
+
 async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> list["Entity"]:
     """根据 entity_ids 批量获取 Entity 详情（用于 One-hop 邻居扩展）
 

@@ -129,6 +129,34 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
             query = event.raw_text
 
             # ============================================================
+            # 主动会话记忆 · 记录「触发者发言」
+            # 能进入本函数即代表 AI 实际参与了交互，按「主动会话」语义需把触发者
+            # 这条原话也写入记忆（Bot 自身回复由 bot.py 发送路径单独入队到 SELF scope）。
+            # 去重：若同时开启「被动感知」，该消息已在 handler.py 入口处入队过一次，
+            # 此处必须跳过，避免同一条触发消息被二次写入记忆。
+            # observe() 内部走与被动感知一致的纯规则门控 / scope 计算，无 LLM 调用。
+            # ============================================================
+            try:
+                _memory_mode = memory_config.memory_mode
+                if (
+                    ai_config.get_config("enable_memory").data
+                    and "主动会话" in _memory_mode
+                    and "被动感知" not in _memory_mode
+                ):
+                    from gsuid_core.ai_core.memory import observe
+
+                    await observe(
+                        content=event.raw_text,
+                        speaker_id=str(event.user_id),
+                        group_id=str(event.group_id or event.user_id),
+                        bot_self_id=str(event.bot_self_id),
+                        observer_blacklist=memory_config.observer_blacklist,
+                        message_type="group_msg" if event.group_id else "private_msg",
+                    )
+            except Exception as e:
+                logger.debug(f"🧠 [Memory] 主动会话触发者发言入队失败: {e}")
+
+            # ============================================================
             # 步骤 1: 双层长度防护（D-10 修复）
             # ============================================================
             raw_text_len = len(query)

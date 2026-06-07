@@ -366,6 +366,65 @@ class AIMemEntity(SQLModel, table=True):
 
         return name_to_id, vector_payloads, new_entity_count
 
+    # ── 孤儿实体回收（C11 扩展：实体级 GC）──────────
+    # Edge 会被生命周期 Worker 衰减→遗忘物理删除，但其连接的 Entity 没人回收，
+    # 久而久之孤儿实体只增不减，膨胀分层图分类成本。以下两个方法为后台 GC 提供支持。
+
+    @classmethod
+    @with_session
+    async def collect_orphans(
+        cls,
+        session: AsyncSession,
+        ttl_days: int = 10,
+    ) -> list[tuple[str, str, str]]:
+        """收集应被回收的孤儿实体：非 speaker、无任何 edge、且超过 ttl_days 未更新。
+
+        - 排除 is_speaker：群成员花名册即使无 edge 也要保留。
+        - updated_at 时效护栏：避免误删刚抽出、edge 尚未形成的新实体。
+        - 无 edge：孤儿实体不进 prompt、不承载事实，回收不损失召回质量。
+
+        返回 [(id, scope_key, qdrant_id), ...]，供上层删 SQL / 删向量 / 递减计数。
+        """
+        from sqlalchemy import exists
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+        has_edge = exists().where(
+            or_(
+                AIMemEdge.source_entity_id == cls.id,
+                AIMemEdge.target_entity_id == cls.id,
+            )
+        )
+        result = await session.execute(
+            select(cls.id, cls.scope_key, cls.qdrant_id).where(
+                col(cls.is_speaker).is_(False),
+                col(cls.updated_at) < cutoff,
+                ~has_edge,
+            )
+        )
+        return [(row[0], row[1], row[2] or row[0]) for row in result.all()]
+
+    @classmethod
+    @with_session
+    async def purge_orphans_by_ids(
+        cls,
+        session: AsyncSession,
+        entity_ids: list[str],
+    ) -> int:
+        """物理删除孤儿实体并清理其 Episode / Category 关联表。返回删除行数。"""
+        if not entity_ids:
+            return 0
+        from sqlalchemy import delete as _delete
+
+        # 先清两张多对多关联表，再删主表，避免悬空外键
+        await session.execute(
+            mem_episode_entity_mentions.delete().where(mem_episode_entity_mentions.c.entity_id.in_(entity_ids))
+        )
+        await session.execute(
+            mem_category_entity_members.delete().where(mem_category_entity_members.c.entity_id.in_(entity_ids))
+        )
+        await session.execute(_delete(cls).where(col(cls.id).in_(entity_ids)))
+        return len(entity_ids)
+
     @classmethod
     @with_session
     async def get_frequent_names(
