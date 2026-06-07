@@ -48,6 +48,11 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="总开关，关闭后停止所有表情包采集和发送功能",
         data=True,
     ),
+    "meme_vlm_enable": GsBoolConfig(
+        title="启用 VLM 打标",
+        desc="总开关，关闭后停止所有 VLM 打标功能",
+        data=False,
+    ),
     "meme_auto_collect": GsBoolConfig(
         title="自动采集群聊图片",
         desc="开启后自动监听群聊中的图片并入库",

@@ -34,6 +34,24 @@ _tag_semaphore: Optional[asyncio.Semaphore] = None
 # 打标 worker 任务引用
 _worker_task: Optional[asyncio.Task] = None
 
+# 打标开关关闭时的轮询间隔（秒）：worker / scanner 暂停时以此间隔重新检查开关，
+# 越小则网页控制台切换 meme_vlm_enable 后恢复打标越及时
+_TAG_PAUSE_POLL_SEC: int = 5
+
+
+def is_tagging_enabled() -> bool:
+    """是否允许执行 VLM 打标
+
+    实时读取配置：总开关 meme_enable 与 VLM 打标开关 meme_vlm_enable 任一关闭即停止。
+    配置由网页控制台 set_config 即时写入内存，因此无需重启即可实时启停打标队列。
+    """
+    if not meme_config.get_config("meme_enable").data:
+        return False
+    if not meme_config.get_config("meme_vlm_enable").data:
+        return False
+    return True
+
+
 # VLM 打标提示词
 TAG_PROMPT = """你是一个图片分析助手。请分析这张图片并返回 JSON 格式的标签信息。
 
@@ -71,7 +89,11 @@ async def start_tag_worker() -> None:
 
     _worker_task = asyncio.create_task(_tag_worker_loop())
     _scanner_task = asyncio.create_task(_pending_scanner_loop())
-    logger.info(f"[Meme] 打标 worker 已启动，并发上限: {semaphore_count}")
+
+    # worker 常驻运行并实时轮询 meme_vlm_enable，启动时若该开关关闭则处于暂停态，
+    # 待网页控制台开启后自动开始消费队列
+    state = "运行中" if is_tagging_enabled() else "已暂停 (meme_vlm_enable 关闭)"
+    logger.info(f"[Meme] 打标 worker 已启动，并发上限: {semaphore_count}，当前状态: {state}")
 
 
 async def stop_tag_worker() -> None:
@@ -98,6 +120,10 @@ async def enqueue_tag(meme_id: str) -> None:
     Args:
         meme_id: 表情包 ID
     """
+    # 打标开关关闭时不入队，避免堆满有界队列；重新启用后由 _pending_scanner_loop
+    # 扫描 pending 记录补回，不会丢失待打标图片
+    if not is_tagging_enabled():
+        return
     if _tag_queue.full():
         logger.warning(f"[Meme] 打标队列已满（>{_tag_queue.maxsize}），丢弃: {meme_id}")
         return
@@ -106,10 +132,34 @@ async def enqueue_tag(meme_id: str) -> None:
 
 
 async def _tag_worker_loop() -> None:
-    """打标 worker 主循环"""
+    """打标 worker 主循环
+
+    每次循环实时检查打标开关（meme_enable / meme_vlm_enable），任一关闭时暂停消费队列，
+    实现通过网页控制台对打标队列的实时启停（无需重启）。
+    """
+    was_enabled: Optional[bool] = None
     while True:
         try:
-            meme_id = await _tag_queue.get()
+            enabled = is_tagging_enabled()
+            # 开关状态切换时打印日志，便于在网页控制台实时启停时观察生效情况
+            if enabled != was_enabled:
+                if enabled:
+                    logger.info("[Meme] VLM 打标已启用，开始消费打标队列")
+                elif was_enabled is not None:
+                    logger.info("[Meme] VLM 打标已关闭，暂停打标队列")
+                was_enabled = enabled
+
+            if not enabled:
+                await asyncio.sleep(_TAG_PAUSE_POLL_SEC)
+                continue
+
+            # 带超时获取，队列为空时也能周期性重新检查开关；关闭开关后最多再处理一条
+            # 已在队列中的图片（下一轮循环顶部即暂停），该图片会被正常打标，无需二次确认
+            try:
+                meme_id = await asyncio.wait_for(_tag_queue.get(), timeout=_TAG_PAUSE_POLL_SEC)
+            except asyncio.TimeoutError:
+                continue
+
             if _tag_semaphore is None:
                 await asyncio.sleep(1)
                 _tag_queue.task_done()
@@ -149,6 +199,11 @@ async def _pending_scanner_loop() -> None:
 
     while True:
         try:
+            # 实时开关检查：关闭时不扫描、不入队，短间隔轮询以便重新启用后快速恢复打标
+            if not is_tagging_enabled():
+                await asyncio.sleep(_TAG_PAUSE_POLL_SEC)
+                continue
+
             # 扫描 pending 状态的记录
             pending_records = await AiMemeRecord.get_pending_records(limit=50)
             if pending_records:

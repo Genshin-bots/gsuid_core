@@ -50,18 +50,22 @@ async def init_meme_module():
     except Exception as e:
         logger.error(f"[Meme] 打标 worker 启动失败: {e}")
 
-    # 4. 处理 inbox 中遗留的待打标图片
-    try:
-        from gsuid_core.ai_core.meme.tagger import enqueue_tag
-        from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+    # 4. 处理 inbox 中遗留的待打标图片（仅在 VLM 打标启用时；关闭时由 worker/scanner
+    #    在网页控制台开启 meme_vlm_enable 后自动补回 pending 记录）
+    if meme_config.get_config("meme_vlm_enable").data:
+        try:
+            from gsuid_core.ai_core.meme.tagger import enqueue_tag
+            from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
-        pending_records = await AiMemeRecord.get_pending_records(limit=50)
-        for record in pending_records:
-            await enqueue_tag(record.meme_id)
-        if pending_records:
-            logger.info(f"[Meme] 已将 {len(pending_records)} 条遗留记录加入打标队列")
-    except Exception as e:
-        logger.warning(f"[Meme] 处理遗留记录失败: {e}")
+            pending_records = await AiMemeRecord.get_pending_records(limit=50)
+            for record in pending_records:
+                await enqueue_tag(record.meme_id)
+            if pending_records:
+                logger.info(f"[Meme] 已将 {len(pending_records)} 条遗留记录加入打标队列")
+        except Exception as e:
+            logger.warning(f"[Meme] 处理遗留记录失败: {e}")
+    else:
+        logger.info("[Meme] VLM 打标未启用 (meme_vlm_enable=false)，跳过遗留图片打标，可在网页控制台实时开启")
 
     logger.info("[Meme] 表情包模块初始化完成")
 

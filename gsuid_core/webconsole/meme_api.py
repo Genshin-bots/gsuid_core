@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
-from gsuid_core.ai_core.meme.tagger import enqueue_tag
+from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
 from gsuid_core.ai_core.meme.library import (
     MemeLibrary,
     _read_file,
@@ -462,8 +462,15 @@ async def retag_meme(
         if not record:
             return {"status": 1, "msg": "表情包不存在", "data": None}
 
-        # 重置状态为待打标
+        # 重置状态为待打标（即使 VLM 打标当前关闭也保留 pending，开启后会自动补打标）
         await AiMemeRecord.update_record(meme_id, {"status": "pending"})
+
+        if not is_tagging_enabled():
+            return {
+                "status": 0,
+                "msg": "VLM 打标当前已关闭，已标记为待打标，开启 meme_vlm_enable 后将自动处理",
+                "data": None,
+            }
 
         # 加入打标队列
         await enqueue_tag(meme_id)
@@ -627,6 +634,18 @@ async def batch_retag_pending(
                 "status": 0,
                 "msg": "没有待手动处理的表情包",
                 "data": {"retag_count": 0, "failed": []},
+            }
+
+        # VLM 打标关闭时，仅重置为 pending，由开启后台扫描自动补打标
+        if not is_tagging_enabled():
+            for record in records:
+                await AiMemeRecord.update_record(record.meme_id, {"status": "pending"})
+            return {
+                "status": 0,
+                "msg": (
+                    f"VLM 打标当前已关闭，已将 {len(records)} 个表情包标记为待打标，开启 meme_vlm_enable 后将自动处理"
+                ),
+                "data": {"retag_count": len(records), "failed": []},
             }
 
         success_ids: List[str] = []
