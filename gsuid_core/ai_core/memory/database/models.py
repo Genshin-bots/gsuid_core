@@ -390,8 +390,8 @@ class AIMemEntity(SQLModel, table=True):
         cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
         has_edge = exists().where(
             or_(
-                AIMemEdge.source_entity_id == cls.id,
-                AIMemEdge.target_entity_id == cls.id,
+                col(AIMemEdge.source_entity_id) == cls.id,
+                col(AIMemEdge.target_entity_id) == cls.id,
             )
         )
         result = await session.execute(

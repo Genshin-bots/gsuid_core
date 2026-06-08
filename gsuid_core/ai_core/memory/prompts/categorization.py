@@ -42,11 +42,8 @@ CATEGORIZATION_USER_PROMPT = """当前处理层级：Layer {layer}（1=最具体
 **待分类节点**（以编号索引）：
 {nodes_info}
 
-**现有类目**（可复用，直接使用其名称）：
+**现有类目**（可复用，归入时必须原样写出其名称）：
 {existing_categories}
-
-**待分类节点示例（帮助理解当前层级的抽象粒度）**：
-{sample_nodes}
 """
 
 # 单层抽象度引导映射：仅向 LLM 提供当前 layer 的一行类比，省去其他 layer 的冗余示例。

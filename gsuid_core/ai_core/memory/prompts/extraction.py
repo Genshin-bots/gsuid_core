@@ -3,13 +3,11 @@
 用于从对话文本中提取实体和关系的 LLM 提示词模板。
 """
 
+# 注意：本模板刻意将「全部静态指令」前置、把随每次调用变化的
+# {scope_key} / {known_context} / {dialogue_content} 统一放到末尾。
+# 这样静态段构成稳定前缀，可被 OpenAI/DeepSeek 等兼容服务的 prompt 前缀缓存命中，
+# 减少重复 Token 计费；切勿把变量字段移回模板上方，否则会破坏前缀缓存。
 ENTITY_EXTRACTION_PROMPT = """你是一个信息提取专家，处理来自即时通讯群组的对话记录。
-
-当前对话标识：{scope_key}
-{known_context}
-<对话内容>
-{dialogue_content}
-</对话内容>
 
 请按以下步骤执行（在内部完成，最终只输出 JSON）：
 
@@ -59,6 +57,16 @@ t 包含 "Speaker"。
     {{"src": "444835641", "tgt": "户外运动", "f": "喜欢户外运动"}}
   ]
 }}
+
+——以下为本次待处理的具体内容——
+
+当前对话标识：{scope_key}
+{known_context}
+<对话内容>
+{dialogue_content}
+</对话内容>
+
+现在请基于上述「对话内容」输出 JSON：
 """  # noqa: E501
 
 

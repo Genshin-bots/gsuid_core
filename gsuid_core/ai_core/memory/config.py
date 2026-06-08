@@ -28,11 +28,19 @@ class MemoryConfig:
     ingestion_enabled: bool = True
     """是否启用摄入引擎，关闭后消息入队但不处理"""
 
-    batch_interval_seconds: int = 3600
-    """消息聚合窗口（秒），超过此时间强制 flush"""
+    batch_interval_seconds: int = 7200
+    """消息聚合窗口（秒），超过此时间强制 flush。
 
-    batch_max_size: int = 40
-    """单次最大聚合条数，防止单个 LLM 调用 token 超限"""
+    窗口越长，单个 scope 的累积消息越多、单次 flush 覆盖的对话越完整，
+    抽取调用次数越少（固定 prompt 开销按调用次数支付），从而摊薄 Token。
+    """
+
+    batch_max_size: int = 80
+    """单次最大聚合条数，防止单个 LLM 调用 token 超限。
+
+    调大可让每次抽取覆盖更多消息、减少调用次数以摊薄固定开销；
+    但受 `_llm_extract` 的 MAX_CHARS 上限约束，过大会触发分片反而增加调用。
+    """
 
     llm_semaphore_limit: int = 3
     """同时进行的 LLM 调用上限"""
@@ -123,6 +131,73 @@ class MemoryConfig:
         指定被动感知的范围
         """
         return mrc.get_config("memory_session").data
+
+    @property
+    def background_episode_count(self) -> int:
+        """实体抽取时注入的近期对话片段（Episode）数量。
+
+        用于跨批次指代消解；调小可显著降低每次抽取的 Token 开销
+        （原始信息仍由 Episode 完整留存），0 表示不注入背景。
+        """
+        return mrc.get_config("background_episode_count").data
+
+    @property
+    def background_episode_max_chars(self) -> int:
+        """每条注入的近期对话片段在抽取提示词中的最大字符数（超出截断）"""
+        return mrc.get_config("background_episode_max_chars").data
+
+    @property
+    def extraction_value_gate(self) -> str:
+        """抽取价值门控档位（宽松 / 均衡 / 严格）。
+
+        决定哪些消息触发 LLM 实体抽取；无论档位，原文都完整存为 Episode 不丢信息。
+        """
+        return mrc.get_config("extraction_value_gate").data
+
+    @property
+    def hiergraph_build_mode(self) -> str:
+        """分层图构建模式（自动 / 始终 / 仅摘要 / 关闭）。
+
+        分层类目树仅被 System-2 检索消费；非"始终"模式下可跳过 Layer-1/2/3 的 LLM
+        分类，大幅削减重建 Token（Episode/Entity/Edge 等记忆本体不受影响）。
+        """
+        return mrc.get_config("hiergraph_build_mode").data
+
+    @property
+    def hiergraph_batch_size(self) -> int:
+        """建树时每次 LLM 分类的节点数。
+
+        调大可减少单轮 LLM 调用次数、摊薄每批重发的固定开销，但过大有超时风险。
+        """
+        return mrc.get_config("hiergraph_batch_size").data
+
+    @property
+    def hiergraph_vector_assign_threshold(self) -> float:
+        """建树时向量预分配的余弦相似度阈值（配置为字符串，此处解析为 float）。
+
+        调低可让更多实体走零 LLM 的预分配路径以省 Token，代价是误归类风险上升。
+        """
+        return float(mrc.get_config("hiergraph_vector_assign_threshold").data)
+
+    @property
+    def hiergraph_min_entities(self) -> int:
+        """分层图最小实体门槛：scope 实体数低于此值则整体跳过分层图（含轻量群摘要）。"""
+        return mrc.get_config("hiergraph_min_entities").data
+
+    @property
+    def hiergraph_max_existing_cats(self) -> int:
+        """建树分类时每批最多带入的已有类目数（仅名称），上限越小越省 Token。"""
+        return mrc.get_config("hiergraph_max_existing_cats").data
+
+    @property
+    def hiergraph_node_summary_chars(self) -> int:
+        """建树分类时每个待分类节点附带的实体摘要字符上限（0 表示不带摘要）。"""
+        return mrc.get_config("hiergraph_node_summary_chars").data
+
+    @property
+    def hiergraph_summary_delta(self) -> int:
+        """群摘要刷新的新增实体阈值：达此增量才重算群摘要，调大更省 Token。"""
+        return mrc.get_config("hiergraph_summary_delta").data
 
 
 # 全局单例

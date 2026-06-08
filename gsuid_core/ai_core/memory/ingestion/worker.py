@@ -7,6 +7,7 @@
 （Entity/Edge 提取）阻塞主事件循环导致 WebSocket 心跳超时。
 """
 
+import re
 import time
 import queue as sync_queue
 import asyncio
@@ -24,6 +25,79 @@ from gsuid_core.ai_core.memory.ingestion.entity import extract_and_upsert_entiti
 from gsuid_core.ai_core.memory.ingestion.hiergraph import increment_entity_count, check_and_trigger_hierarchical_update
 
 from ...utils import extract_json_from_text
+
+# 抽取前折叠（Fix-7）：仅由非字母数字字符（标点 / 表情 / 符号）构成的行视为无实体信息。
+# 注意 Python 正则默认 \w 含 CJK，故纯中文语气词不会命中此正则，由 _NOISE_WORDS 兜底。
+_NOISE_ONLY_RE = re.compile(r"^[\s\W_]+$")
+
+# QQ / 微信文字表情：整行仅为一对方括号包裹的短标签（如 [doge] / [微笑] / [OK] / [图片]），无实体信息。
+_EMOTE_RE = re.compile(r"^\[[^\[\]]{1,6}\]$")
+
+# 常见无实体信息的语气词 / 复读梗，喂给 LLM 抽取纯属浪费 Token（Episode 仍存全文）。
+_NOISE_WORDS = frozenset(
+    {
+        "哈",
+        "哈哈",
+        "哈哈哈",
+        "哈哈哈哈",
+        "草",
+        "笑死",
+        "awsl",
+        "yyds",
+        "666",
+        "233",
+        "2333",
+        "23333",
+        "在",
+        "在吗",
+        "嗯",
+        "嗯嗯",
+        "嗯呢",
+        "好",
+        "好的",
+        "好滴",
+        "好吧",
+        "ok",
+        "okk",
+        "收到",
+        "赞",
+        "顶",
+        "+1",
+        "啊",
+        "啊这",
+        "确实",
+        "是的",
+        "对",
+        "对对对",
+    }
+)
+
+
+def _compact_high_records_dialogue(records: list[ObservationRecord]) -> str:
+    """折叠抽取输入：剔除纯表情 / 标点 / 语气词等无实体信息行、合并相邻完全重复行，
+    并把**连续同一发言者**的多条消息并成一轮（IM 常见的一句话拆多条），省去重复的
+    ``[speaker_id]:`` 前缀、同时给 LLM 更连贯的发言上下文。
+
+    仅作用于喂给 LLM 的抽取文本以省 Token；Episode 已在上游 ``_ingest_batch`` 完整保存
+    原文，此处折叠不影响"记住全部群聊信息"。
+    """
+    # 每个元素是 (speaker_id, [该发言者连续的多条内容])
+    turns: list[tuple[str, list[str]]] = []
+    prev_content: str | None = None
+    for r in records:
+        content = r.raw_content.strip()
+        if not content:
+            continue
+        if content == prev_content:  # 相邻完全重复（复读 / 刷屏残留）只取一条
+            continue
+        if content in _NOISE_WORDS or _NOISE_ONLY_RE.match(content) or _EMOTE_RE.match(content):
+            continue
+        if turns and turns[-1][0] == r.speaker_id:
+            turns[-1][1].append(content)  # 连续同一发言者，并入当前轮
+        else:
+            turns.append((r.speaker_id, [content]))
+        prev_content = content
+    return "\n".join(f"[{speaker_id}]: {' '.join(contents)}" for speaker_id, contents in turns)
 
 
 class ExtractedResult(TypedDict):
@@ -415,12 +489,25 @@ async def _extract_and_upsert_from_episode(
     N-2：调用方 ``_ingest_batch`` 在 try/except 内调用本函数。本阶段失败**不应**连累
     已写入的 Episode 被退回缓冲重试——Episode 无幂等键，重试会重复写入。
     """
-    # Step 3: 抽取仅使用 HIGH 价值消息，拼接近期背景上下文
-    extract_dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in high_records)
-    recent_episodes = await _get_recent_episodes(scope_key, limit=3, exclude_episode_id=episode.id)
-    if recent_episodes:
-        context_text = "\n".join(ep.content for ep in recent_episodes)
-        extract_dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{extract_dialogue}\n</当前对话>"
+    # Step 3: 抽取仅使用 HIGH 价值消息，并在喂给 LLM 前折叠无实体信息行以省 Token（Fix-7）
+    extract_dialogue = _compact_high_records_dialogue(high_records)
+    if not extract_dialogue.strip():
+        logger.debug(f"🧠 [Memory] scope={scope_key} 抽取文本折叠后为空，跳过 LLM 抽取")
+        return
+
+    # 拼接近期背景上下文（Fix-1）：数量与单条字符上限均可在控制台配置，
+    # 调小 / 置 0 可显著降低每次抽取的固定 Token 开销（原文仍由 Episode 完整留存）。
+    background_count = memory_config.background_episode_count
+    if background_count > 0:
+        recent_episodes = await _get_recent_episodes(
+            scope_key,
+            limit=background_count,
+            max_content_chars=memory_config.background_episode_max_chars,
+            exclude_episode_id=episode.id,
+        )
+        if recent_episodes:
+            context_text = "\n".join(ep.content for ep in recent_episodes)
+            extract_dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{extract_dialogue}\n</当前对话>"
 
     # Step 4: LLM 提取 + Entity 去重写入
     extracted = await _llm_extract(extract_dialogue, scope_key)
@@ -507,14 +594,19 @@ async def _extract_and_upsert_from_episode(
 
 
 async def _get_recent_episodes(
-    scope_key: str, limit: int = 3, max_content_chars: int = 2000, exclude_episode_id: str = ""
+    scope_key: str, limit: int = 1, max_content_chars: int = 600, exclude_episode_id: str = ""
 ) -> list:
     """拉取最近 N 条 Episode 作为背景上下文，截断过长的 content 防止 token 超限。
     排除当前 Episode，避免背景上下文包含当前对话本身造成冗余。
+
+    ``limit <= 0`` 表示不需要背景，直接返回空列表，省去一次数据库查询。
     """
     from sqlmodel import col, select
 
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+
+    if limit <= 0:
+        return []
 
     async with async_maker() as session:
         query = select(AIMemEpisode).where(AIMemEpisode.scope_key == scope_key)

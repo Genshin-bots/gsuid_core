@@ -9,7 +9,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsDictConfig,
     GsListStrConfig,
 )
-from gsuid_core.utils.plugins_config.gs_config import StringConfig
+from gsuid_core.utils.plugins_config.gs_config import GsDivider, StringConfig
 
 AI_CONFIG: Dict[str, GSC] = {
     "enable": GsBoolConfig(
@@ -346,6 +346,11 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "按人格配置",
         options=["按人格配置", "全部群聊"],
     ),
+    "MemoryRecall": GsDivider(
+        "记忆检索设置",
+        "记忆检索设置",
+        "记忆检索设置",
+    ),
     "retrieval_top_k": GsIntConfig(
         "最终检索数量",
         "指定最终检索数量, 可以提高检索精度但会增加性能开销",
@@ -362,6 +367,91 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "是否启用 System-2",
         "指定是否启用 System-2, 可以提高检索精度但会增加性能开销",
         False,
+    ),
+    "MemoryRetrieval": GsDivider(
+        "记忆摄取设置",
+        "记忆摄取设置",
+        "记忆摄取设置",
+    ),
+    "background_episode_count": GsIntConfig(
+        "抽取背景片段数量",
+        "实体抽取时注入的近期对话片段(Episode)数量, 用于跨批次指代消解; "
+        "调小可显著降低每次抽取的 Token 开销(原始信息仍由 Episode 完整留存), 0 表示不注入背景",
+        1,
+        options=[0, 1, 2, 3],
+    ),
+    "background_episode_max_chars": GsIntConfig(
+        "抽取背景片段字符上限",
+        "每条注入的近期对话片段(Episode)在抽取提示词中的最大字符数, 超出部分截断; 调小可降低 Token 开销",
+        600,
+        options=[300, 600, 1000, 2000],
+    ),
+    "extraction_value_gate": GsStrConfig(
+        "抽取价值门控档位",
+        "决定哪些消息会触发 LLM 实体抽取(无论档位, 原文都完整存为 Episode, 不丢信息)。"
+        "宽松: 默认全部抽取(最全, 最费 Token); "
+        "均衡: 无实体特征的纯寒暄降级为仅存档不抽取; "
+        "严格: 仅含强信号(姓名/承诺/情绪等)的消息才抽取(最省 Token)",
+        "均衡",
+        options=["宽松", "均衡", "严格"],
+    ),
+    "hiergraph_build_mode": GsStrConfig(
+        "分层图构建模式",
+        "分层类目树仅被 System-2 检索消费, 也是记忆重建 Token 的大头(实体/边/原文不受影响)。"
+        "自动: 仅当启用 System-2 时才构建整棵类目树, 否则只按需刷新群摘要(推荐, 最省); "
+        "始终: 总是构建完整类目树(旧行为); "
+        "仅摘要: 从不建树, 仅按需刷新群摘要; "
+        "关闭: 既不建树也不生成摘要(最省 Token)",
+        "自动",
+        options=["自动", "始终", "仅摘要", "关闭"],
+    ),
+    "hiergraph_batch_size": GsIntConfig(
+        "分层图单批节点数",
+        "建树时每次 LLM 分类的节点数。调大→单轮 LLM 调用更少、每批重发的固定开销(system+现有类目)"
+        "被摊薄更省 Token; 但过大会拉长单次耗时、逼近超时(超时兜底会让每节点单独成类, 污染类目)。"
+        "模型较慢时建议保持较小值",
+        20,
+        options=[15, 20, 30, 40],
+    ),
+    "hiergraph_vector_assign_threshold": GsStrConfig(
+        "分层图向量预分配阈值",
+        "建树时新实体与已归类近邻的余弦相似度 ≥ 此阈值即直接归类、跳过 LLM。"
+        "调低→更多实体走零 LLM 的预分配路径、更省 Token, 但误归类风险上升(宁可漏分不可错分)",
+        "0.85",
+        options=["0.80", "0.82", "0.85", "0.88", "0.90"],
+    ),
+    "hiergraph_min_entities": GsIntConfig(
+        "分层图最小实体门槛",
+        "scope 实体数低于此值则整体跳过分层图(含轻量群摘要)。调大→更多小群被整体跳过、更省 Token; "
+        "其召回仍由 System-1 向量 + edges 覆盖, 不影响记忆完整性",
+        30,
+        options=[30, 50, 80, 120, 200],
+    ),
+    "hiergraph_max_existing_cats": GsIntConfig(
+        "分层图已有类目上限",
+        "建树分类时每批最多带入的已有类目数(仅名称)。调小→每批 prompt 更省 Token, "
+        "但过小会让 LLM 看不到已有类目而重复造新类目, 反而膨胀后续成本",
+        50,
+        options=[20, 30, 50, 80],
+    ),
+    "hiergraph_node_summary_chars": GsIntConfig(
+        "分层图节点摘要字符上限",
+        "建树分类时每个待分类节点附带的实体摘要字符数(名称+标签始终保留)。"
+        "调小(含 0=不带摘要)更省 Token, 但摘要有助于消歧相近实体, 过小可能降低归类精度",
+        60,
+        options=[0, 30, 60, 100],
+    ),
+    "hiergraph_summary_delta": GsIntConfig(
+        "群摘要刷新增量阈值",
+        "自上次重建以来新增实体达此值才重新生成群摘要(Heartbeat/人格群语境消费)。"
+        "调大→摘要刷新更稀疏、更省 Token, 代价是摘要新鲜度下降",
+        50,
+        options=[50, 100, 200, 500],
+    ),
+    "MemoryExtra": GsDivider(
+        "记忆其他设置",
+        "记忆其他设置",
+        "记忆其他设置",
     ),
     "eval_mode": GsBoolConfig(
         "记忆评测模式",

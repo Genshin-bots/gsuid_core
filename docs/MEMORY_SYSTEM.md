@@ -154,7 +154,7 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 - **Bot 自身发言**（`__assistant_` 前缀）→ 路由到 `SELF` scope，强制 `value_tier=LOW`，**仅写 Episode、不进群组事实图谱**（C6：杜绝 Bot 戏言污染群记忆）。
 - **普通用户消息** → 计算 GROUP/USER_GLOBAL scope，过 `_gate()`：
   - **丢弃**：自身数字 ID 消息、黑名单群、空消息、纯图片短消息、命令回显、用户命令/typo（按 `command_start` 匹配）、prompt 注入文本、复读（同 scope 最近 12 条重复）。
-  - **分级 `_classify_value_tier`**：含姓名自述/称呼偏好/承诺/数字日期 → `HIGH`；情绪词兜底 → `HIGH`；纯寒暄且 <10 字且无实体特征 → `LOW`；其余默认 `HIGH`。
+  - **分级 `_classify_value_tier`**（受 `extraction_value_gate` 档位控制）：含姓名自述/称呼偏好/承诺/数字日期/情绪词 → `HIGH`；其余按档位归档——`宽松`（等价旧行为）：纯寒暄且 <10 字且无实体特征 → `LOW`，其余 `HIGH`；`均衡`（默认）：无实体特征即 `LOW`；`严格`：仅强信号/情绪为 `HIGH`，其余全 `LOW`。**任何档位下 `LOW` 仍完整写 Episode，只省抽取 Token、不丢原文。**
 
 放行的记录封装为 `ObservationRecord`，`put_nowait` 进 `queue.Queue`（线程安全，maxsize 10000，满则丢最老一条）。
 
@@ -162,7 +162,7 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 
 `IngestionWorker` 在**独立线程的事件循环**中运行（关键：LLM 抽取不阻塞主事件循环 → 不触发 WebSocket 心跳超时）：
 
-- 按 `scope_key` 分桶缓冲；满足 **数量阈值（`batch_max_size`=40）** 或 **时间窗（`batch_interval_seconds`，默认 3600s，timer 每 30s 检查）** 时 `_flush`。
+- 按 `scope_key` 分桶缓冲；满足 **数量阈值（`batch_max_size`=80）** 或 **时间窗（`batch_interval_seconds`，默认 7200s，timer 每 30s 检查）** 时 `_flush`。批越大 / 窗越长，单次抽取覆盖的对话越完整、调用次数越少，固定 prompt 开销被摊薄。
 - `_flush` 内以 `batch_max_size` 切批，每批 `_ingest_batch` 有 120s 超时；失败**以批为单位**退回缓冲重试（已成功批绝不重摄，避免重复 Episode）。
 - 并发受 `llm_semaphore_limit`（默认 3）约束。
 
@@ -175,7 +175,8 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 ```
 
 `_extract_and_upsert_from_episode` 步骤：
-- 仅用 HIGH 价值消息拼接，附最近 3 条 Episode 作背景上下文。
+- 仅用 HIGH 价值消息拼接，并经 `_compact_high_records_dialogue` **折叠纯表情/标点/语气词等无实体信息行 + 合并相邻重复 + 合并连续同一发言者为一轮**后喂给 LLM（去掉重复的 `[speaker]:` 前缀、给 LLM 更连贯的发言；Episode 已存全文，此折叠只省抽取 Token）；折叠后为空则跳过 LLM 抽取。
+- 附最近 `background_episode_count` 条 Episode 作背景上下文（默认 **1**，单条截断至 `background_episode_max_chars`=600 字符；置 0 则不注入背景、省去该查询与其 Token）。
 - `_llm_extract`：注入"本群已知别名 + 已存在实体"指导 LLM，输出简写键 JSON，解析为 `{entities, edges}`；超长对话分片提取再合并去重。
 - `_apply_master_tags`：主人（`core_config.masters`）对应 Speaker 实体打 `Master` 标签。
 - `_apply_alias_redirection`：LLM 标注的别名实体合并到正式实体，重写 Edge 引用（实体消歧 Level-1）。
@@ -210,6 +211,14 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 
 入口 [`ingestion/hiergraph.py`](../gsuid_core/ai_core/memory/ingestion/hiergraph.py) `HierarchicalGraphBuilder.incremental_rebuild()`。
 
+> **构建消费方与 `hiergraph_build_mode` 门控（成本关键）**：分层类目树**只被 System-2 检索消费**（`dual_route` 中 `enable_system2` 门控）；唯一被"非 System-2"路径消费的产物是 `group_summary_cache`（Heartbeat 决策 + 人格群语境）。因此 `incremental_rebuild` 在小 scope 跳过后先判 `hiergraph_build_mode`：
+> - `自动`（默认）：仅当 `enable_system2` 开启才构建整棵类目树；否则走 `_summary_only_rebuild`——**跳过 Layer-1/2/3 的全部 LLM 分类**，仅在新增实体 ≥ 50 时从高频实体名直接刷新群摘要（至多 1 次 LLM）。
+> - `始终`：总是构建完整类目树（旧行为）。
+> - `仅摘要`：从不建树，仅按需刷新群摘要。
+> - `关闭`：既不建树也不刷摘要（重建零 LLM）。
+>
+> System-2 关闭时，类目树无任何消费方，构建它纯属浪费——这是大规模下重建 Token 的最大可削减项。Entity/Edge/Episode 等记忆本体不受任何模式影响。
+
 ### 5.1 触发判定（`_check_should_rebuild`）
 
 满足任一即触发（增量计数，不扫全表）：
@@ -223,7 +232,7 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 
 ```
 incremental_rebuild()
- ├ [小 scope 跳过] 总实体 < MIN_ENTITIES_FOR_HIERGRAPH(30) → 仅更新 Meta 返回
+ ├ [小 scope 跳过] 总实体 < hiergraph_min_entities(默认30,可配) → 仅更新 Meta 返回
  │     （类目对小数据集无收益，召回靠 System-1 向量 + edges）
  │
  ├ 取未分配实体 _get_unassigned_entities(limit=MAX_ENTITIES_PER_REBUILD)
@@ -232,7 +241,7 @@ incremental_rebuild()
  │     └ [单轮上限] 按 created_at 取最旧的至多 800 个，超额留待续轮
  │
  ├ Layer-1 归类
- │     ├ [向量预分配] 与"已归类近邻"summary_dense 余弦 ≥ VECTOR_ASSIGN_THRESHOLD(0.85)
+ │     ├ [向量预分配] 与"已归类近邻"summary_dense 余弦 ≥ 阈值(默认0.85,可配)
  │     │     → 直接并入近邻所在 Category（_vector_pre_assign，零 LLM）
  │     └ 残余（speaker + 未命中）才走 LLM（_llm_categorize / _apply_entity_assignments）
  │           · speaker 由 M-06 强制归入 "Speaker" Category
@@ -248,7 +257,9 @@ incremental_rebuild()
  └ [续清] 本轮达单轮上限 → 再调度一次 rebuild_task（backlog 单调收敛）
 ```
 
-**LLM 分类 `_llm_categorize`**：BATCH_SIZE=15 分批；已有类目数限制 `MAX_EXISTING_CATS`=50 防 prompt 爆炸；失败兜底为"每节点单独成类"。
+**LLM 分类 `_llm_categorize`**：按 `hiergraph_batch_size`（默认 20，可配置）分批；已有类目数限制 `hiergraph_max_existing_cats`（默认 50，可配置）防 prompt 爆炸；每节点附带的实体摘要长度由 `hiergraph_node_summary_chars`（默认 60，可配置，0=不带）控制；失败兜底为"每节点单独成类"。
+
+> **建树期 token 压缩（need_tree 路径）**：① 移除冗余的"待分类节点示例"（原是 `nodes_info` 前 5 条的重复，抽象粒度已由 `layer_hint` 一行类比给出）；② 现有类目**只发名称**（复用按名称匹配，逐条 summary 每批重发收益低）；③ `hiergraph_batch_size` 调大 → 单轮调用更少、摊薄每批固定开销；④ `hiergraph_vector_assign_threshold` 调低 → 更多实体走零 LLM 的向量预分配路径。
 
 > 这些优化的目的：实体规模上 10 万级后，旧逻辑每轮重建按存量收费、token 几何级上升。优化后一次常规重建的 LLM 调用从"几百~几千次"降到"个位数甚至 0"。
 
@@ -309,8 +320,12 @@ incremental_rebuild()
 | `observer_enabled` | True | 消息观察者总开关 |
 | `observer_blacklist` | [] | 不记忆的群组 ID |
 | `ingestion_enabled` | True | 摄入引擎开关 |
-| `batch_interval_seconds` | 3600 | 聚合窗口（超时强制 flush） |
-| `batch_max_size` | 40 | 单次最大聚合条数 |
+| `batch_interval_seconds` | 7200 | 聚合窗口（超时强制 flush）；越长越省 Token |
+| `batch_max_size` | 80 | 单次最大聚合条数；越大调用越少、摊薄固定开销 |
+| `background_episode_count` | 1 | 抽取时注入的近期 Episode 背景数（0=不注入） |
+| `background_episode_max_chars` | 600 | 每条背景 Episode 在抽取提示词中的字符上限 |
+| `extraction_value_gate` | 均衡 | 抽取价值门控档位（宽松/均衡/严格），调严省 Token 不丢原文 |
+| `hiergraph_build_mode` | 自动 | 分层图构建模式（自动/始终/仅摘要/关闭）；自动模式下 System-2 关闭即跳过整棵类目树 |
 | `llm_semaphore_limit` | 3 | 并发 LLM 调用上限 |
 | `enable_retrieval` | True | 检索注入开关 |
 | `enable_user_global_memory` | True | 联合用户跨群画像 |
@@ -337,12 +352,14 @@ incremental_rebuild()
 | 队列 maxsize | 10000 | observer.py | 观察队列容量 |
 | `_REPEAT_WINDOW` | 12 | observer.py | 复读检测窗口 |
 | `_LOW_TIER_MAX_LEN` | 10 | observer.py | 短句降级 LOW 阈值 |
-| `MIN_ENTITIES_FOR_HIERGRAPH` | 30 | hiergraph.py | 小 scope 跳过分层图 |
+| `hiergraph_min_entities` | 30 | ai_config（可配置） | 小 scope 跳过分层图（含轻量摘要）；调大省 token |
 | `MAX_ENTITIES_PER_REBUILD` | 800 | hiergraph.py | 单轮重建实体上限 |
-| `VECTOR_ASSIGN_THRESHOLD` | 0.85 | hiergraph.py | 向量预分配余弦阈值 |
+| `hiergraph_vector_assign_threshold` | 0.85 | ai_config（可配置） | 向量预分配余弦阈值；调低省 token（更多实体走零 LLM 预分配） |
 | `VECTOR_ASSIGN_TOP_K` | 5 | hiergraph.py | 预分配检索近邻数 |
-| `BATCH_SIZE` | 15 | hiergraph.py | LLM 分类批大小 |
-| `MAX_EXISTING_CATS` | 50 | hiergraph.py | 喂入的已有类目上限 |
+| `hiergraph_batch_size` | 20 | ai_config（可配置） | LLM 分类批大小；调大省 token（更少调用、摊薄固定开销） |
+| `hiergraph_max_existing_cats` | 50 | ai_config（可配置） | 喂入的已有类目上限（仅名称）；调小省 token |
+| `hiergraph_node_summary_chars` | 60 | ai_config（可配置） | 分类输入中每节点的实体摘要字符上限（0=不带） |
+| `hiergraph_summary_delta` | 50 | ai_config（可配置） | 群摘要刷新的新增实体阈值；调大省 token |
 | `MIN_DELTA` | 20 | hiergraph.py | 重建最小增量 |
 | `DECAY_STALE_DAYS` | 14 | consolidation_worker.py | 衰减判定天数 |
 | `DECAY_FACTOR` | 0.85 | consolidation_worker.py | 单次衰减系数 |

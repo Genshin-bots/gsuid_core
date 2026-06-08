@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.memory.config import memory_config
 
 # 全局消息队列（线程安全，支持跨线程通信）
 _observation_queue: sync_queue.Queue = sync_queue.Queue(maxsize=10_000)
@@ -94,18 +95,28 @@ def _is_repeat(scope_key: str, content: str) -> bool:
     return False
 
 
-def _classify_value_tier(content: str) -> str:
+def _classify_value_tier(content: str, gate_mode: str = "宽松") -> str:
     """对一条放行的消息做重要性分级（纯规则，无 LLM）。
 
-    规则为主判断：含姓名自述 / 称呼偏好 / 承诺 / 数字日期 → HIGH；
-    情绪词兜底 → HIGH；纯寒暄且短（< 10 字）且无实体 → LOW；
-    其余默认 HIGH，宁可多记不可漏记。
+    ``gate_mode``（来自 ``memory_config.extraction_value_gate``）决定无强信号消息的
+    归档策略。无论档位，LOW 仍会完整写入 Episode，差异仅在于是否触发 LLM 实体抽取
+    （HIGH 才抽取），因此调严档位只省 Token、不丢原始信息：
+
+    - ``宽松``（默认，等价旧行为）：含强信号 / 情绪 → HIGH；纯寒暄且短（< 10 字）
+      且无实体特征 → LOW；其余默认 HIGH，宁可多记不可漏记。
+    - ``均衡``：无强信号 / 情绪 / 实体特征的消息一律 LOW（不再因"够长"而 HIGH）。
+    - ``严格``：仅含强信号或情绪词的消息为 HIGH，其余（含仅有实体特征的）一律 LOW。
     """
-    if _HIGH_SIGNAL_RE.search(content):
+    if _HIGH_SIGNAL_RE.search(content) or _EMOTION_RE.search(content):
         return "HIGH"
-    if _EMOTION_RE.search(content):
-        return "HIGH"
-    if len(content) < _LOW_TIER_MAX_LEN and not _ENTITY_HINT_RE.search(content):
+    # 至此：无强信号、无情绪词
+    if gate_mode == "严格":
+        return "LOW"
+    has_entity_hint = bool(_ENTITY_HINT_RE.search(content))
+    if gate_mode == "均衡":
+        return "HIGH" if has_entity_hint else "LOW"
+    # 宽松（默认）：短寒暄且无实体特征 → LOW，其余 HIGH
+    if len(content) < _LOW_TIER_MAX_LEN and not has_entity_hint:
         return "LOW"
     return "HIGH"
 
@@ -172,7 +183,7 @@ def _gate(
         logger.trace(f"🧠 [Observer] 命中复读过滤，丢弃: {stripped[:30]}")
         return None
     # 重要性分级（不再因 len < 5 直接丢弃，改由分级后置校验）
-    return _classify_value_tier(stripped)
+    return _classify_value_tier(stripped, memory_config.extraction_value_gate)
 
 
 async def observe(

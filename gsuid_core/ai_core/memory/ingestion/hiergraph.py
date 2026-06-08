@@ -28,12 +28,12 @@ from ...utils import extract_json_from_text
 # #3 单轮重建预算上限：一次最多归类的未分配实体数。防止 2.5x 比例触发后单轮
 # backlog 数万实体一次性灌爆 LLM；超额留待下一轮（本轮结束自动续调度，backlog 单调收敛）。
 MAX_ENTITIES_PER_REBUILD = 800
-# #4 分层图构建的最小实体门槛：低于此数的 scope 整体跳过分层图——类目对小数据集的
-# 压缩/大纲收益≈0，召回完全可由 System-1 向量 + edges 覆盖，不值得为其花 LLM 分类。
-MIN_ENTITIES_FOR_HIERGRAPH = 30
-# #2 向量预分配：新实体与"已归类近邻"的 summary_dense 余弦相似度 ≥ 此阈值时，直接并入
-# 近邻所在 Category 并跳过 LLM。取高值以避免误归类——宁可漏分（交 LLM）不可错分。
-VECTOR_ASSIGN_THRESHOLD = 0.85
+# #4 分层图构建的最小实体门槛由 memory_config.hiergraph_min_entities 配置：低于此数的 scope
+# 整体跳过分层图（含轻量摘要）——类目对小数据集的压缩/大纲收益≈0，召回可由 System-1 向量 +
+# edges 覆盖。调大可让更多小群整体跳过, 进一步省 token。
+# #2 向量预分配：新实体与"已归类近邻"的 summary_dense 余弦相似度 ≥ 阈值时，直接并入近邻所在
+# Category 并跳过 LLM。阈值越低 → 越多实体走零 LLM 的预分配路径、越省 token，但误归类风险上升。
+# 阈值由 memory_config.hiergraph_vector_assign_threshold 配置（默认 0.85，宁可漏分不可错分）。
 # 每个待分配实体检索的近邻数，取其中相似度最高且已归类的一个作为归属
 VECTOR_ASSIGN_TOP_K = 5
 
@@ -189,12 +189,21 @@ class HierarchicalGraphBuilder:
         # #4 小 scope 整体跳过分层图：实体过少时类目无压缩/大纲收益，
         # 召回由 System-1 向量 + edges 覆盖即可，省去 layer-1 分类开销。
         total_entities = await self._get_total_entity_count()
-        if total_entities < MIN_ENTITIES_FOR_HIERGRAPH:
+        min_entities = memory_config.hiergraph_min_entities
+        if total_entities < min_entities:
             logger.debug(
-                f"🧠 [HierGraph] scope={self.scope_key} entity={total_entities}"
-                f"<{MIN_ENTITIES_FOR_HIERGRAPH}，跳过分层图构建"
+                f"🧠 [HierGraph] scope={self.scope_key} entity={total_entities}<{min_entities}，跳过分层图构建"
             )
             await self._update_meta(valid_prev_layer=None)
+            return
+
+        # 分层类目树仅被 System-2 检索消费（dual_route 中 enable_system2 门控）。
+        # 非"始终"模式且 System-2 关闭时，整棵树没有任何消费方——跳过 Layer-1/2/3 的
+        # LLM 分类（重建 Token 的大头），仅保留 Heartbeat / 人格语境消费的群摘要。
+        build_mode = memory_config.hiergraph_build_mode
+        need_tree = build_mode == "始终" or (build_mode == "自动" and memory_config.enable_system2)
+        if not need_tree:
+            await self._summary_only_rebuild(build_mode)
             return
 
         # #3 单轮预算上限：本轮最多归类 MAX_ENTITIES_PER_REBUILD 个未分配实体（按 created_at
@@ -257,9 +266,7 @@ class HierarchicalGraphBuilder:
                 break
 
             layer_start = time.time()
-            upper_assignments = await self._llm_categorize(
-                unparented_children, existing_upper, layer=layer, is_category_input=True
-            )
+            upper_assignments = await self._llm_categorize(unparented_children, existing_upper, layer=layer)
             logger.info(
                 f"🧠 [HierGraph] Layer {layer} 分类完成（增量 {len(unparented_children)} 节点），"
                 f"耗时 {time.time() - layer_start:.1f}s"
@@ -351,8 +358,8 @@ class HierarchicalGraphBuilder:
         # 后下一轮重建自然纳入。死实体的物理回收由生命周期 Worker 的孤儿 GC 负责。
         has_edge = exists().where(
             or_(
-                AIMemEdge.source_entity_id == AIMemEntity.id,
-                AIMemEdge.target_entity_id == AIMemEntity.id,
+                col(AIMemEdge.source_entity_id) == AIMemEntity.id,
+                col(AIMemEdge.target_entity_id) == AIMemEntity.id,
             )
         )
         query = (
@@ -432,6 +439,7 @@ class HierarchicalGraphBuilder:
         for ent_id, cat_id in rows.all():
             neighbor_to_cats.setdefault(ent_id, set()).add(cat_id)
 
+        threshold = memory_config.hiergraph_vector_assign_threshold
         insert_batch: list[dict[str, str]] = []
         assigned_ids: set[str] = set()
         for entity in candidates:
@@ -440,7 +448,7 @@ class HierarchicalGraphBuilder:
             matched_cats: set[str] = set()
             # neighbor_map 已按相似度降序：取首个"达阈值且已归类"的近邻，其类目即归属
             for neighbor_id, score in neighbor_map[entity.id]:
-                if score < VECTOR_ASSIGN_THRESHOLD:
+                if score < threshold:
                     break
                 if neighbor_id in neighbor_to_cats:
                     matched_cats = neighbor_to_cats[neighbor_id]
@@ -507,15 +515,18 @@ class HierarchicalGraphBuilder:
         entities: list,
         existing_categories: list[AIMemCategory],
         layer: int,
-        is_category_input: bool = False,
     ) -> list[dict]:
         """调用 LLM 对 entities/categories 进行分类。
 
         返回格式：[{"category": "...", "summary": "...", "tag": [...], "indexes": [1, 3, 5]}, ...]
         当节点数超过上限时，分批调用 LLM 并修正索引偏移，避免截断丢失数据。
         """
-        BATCH_SIZE = 15  # 减小批次大小，配合更快的模型；15 个节点时模型通常 15-25 秒完成，不会超时
-        MAX_EXISTING_CATS = 50  # 限制已有类目数量，避免 prompt 爆炸
+        # 单批节点数可配置：越大单轮 LLM 调用越少、越省每批重发的固定开销（system + 现有类目），
+        # 但过大会拉长单次耗时、逼近超时（超时兜底会让每节点单独成类，污染类目）。
+        BATCH_SIZE = memory_config.hiergraph_batch_size
+        MAX_EXISTING_CATS = (
+            memory_config.hiergraph_max_existing_cats
+        )  # 已有类目上限，越小每批越省 token（过小易产生重复类目）
 
         if len(entities) <= BATCH_SIZE:
             # 也限制 existing_categories 数量
@@ -524,7 +535,7 @@ class HierarchicalGraphBuilder:
                 if len(existing_categories) > MAX_EXISTING_CATS
                 else existing_categories
             )
-            return await self._llm_categorize_single_batch(entities, limited_existing, layer, is_category_input)
+            return await self._llm_categorize_single_batch(entities, limited_existing, layer)
 
         # 分批处理，修正 indexes 偏移
         logger.info(
@@ -543,7 +554,7 @@ class HierarchicalGraphBuilder:
                 if len(existing_categories) > MAX_EXISTING_CATS
                 else existing_categories
             ) + batch_created_categories
-            batch_result = await self._llm_categorize_single_batch(batch, combined_existing, layer, is_category_input)
+            batch_result = await self._llm_categorize_single_batch(batch, combined_existing, layer)
             # 修正索引偏移：batch 内索引从1开始，需要加上批次偏移
             for assignment in batch_result:
                 original_indexes = assignment["indexes"] if "indexes" in assignment else []
@@ -573,7 +584,6 @@ class HierarchicalGraphBuilder:
         entities: list,
         existing_categories: list[AIMemCategory],
         layer: int,
-        is_category_input: bool = False,
     ) -> list[dict]:
         """单批次 LLM 分类调用，直接解析 JSON（不使用 output_type，避免 thinking trace）
 
@@ -589,29 +599,26 @@ class HierarchicalGraphBuilder:
             CATEGORIZATION_SYSTEM_PROMPT,
         )
 
-        # 缩短 entity summary 长度，避免 prompt token 爆炸
+        # 缩短 entity summary 长度，避免 prompt token 爆炸；单条上限可配，调小（含 0=不发摘要）更省
+        summary_chars = memory_config.hiergraph_node_summary_chars
         nodes_info = "\n".join(
-            f"{i + 1}. {e.name}: [{', '.join(e.tag if isinstance(e.tag, list) else [])}] {(e.summary or '')[:60]}"
+            f"{i + 1}. {e.name}: ["
+            f"{', '.join(e.tag if isinstance(e.tag, list) else [])}] "
+            f"{(e.summary or '')[:summary_chars]}"
             for i, e in enumerate(entities)
         )
-        existing_cats_info = (
-            "\n".join(f"- {c.name}: {(c.summary or '')[:40]}" for c in existing_categories) or "（无现有类目）"
-        )
+        # 现有类目只发名称：复用按名称匹配（见 SYSTEM_PROMPT 规则2），逐条 summary 对归类
+        # 决策增益有限却要每批重发，去掉可显著压缩重建 token。
+        existing_cats_info = "\n".join(f"- {c.name}" for c in existing_categories) or "（无现有类目）"
 
-        # 待分类节点示例，帮助 LLM 理解当前层的抽象粒度
-        sample_nodes = (
-            "\n".join(f"- {e.name}" for e in entities[:5])
-            if not is_category_input
-            else "\n".join(f"- {e.name}: {(e.summary or '')[:50]}" for e in entities[:5])
-        )
-
+        # 注：原"待分类节点示例"是 nodes_info 前 5 条的重复，且抽象粒度已由 layer_hint 一行
+        # 类比给出，故移除以省每批冗余 token。
         user_prompt = CATEGORIZATION_USER_PROMPT.format(
             layer=layer,
             layer_hint=LAYER_HINTS.get(layer, ""),
             nodes_info=nodes_info,
             existing_categories=existing_cats_info,
             min_children=self._min_children(),
-            sample_nodes=sample_nodes,
         )
 
         try:
@@ -963,9 +970,9 @@ class HierarchicalGraphBuilder:
         以下任一条件成立才重算：
         - 首次（meta 不存在或 group_summary_cache 空）
         - 顶层结构变化（max_layer 与本次实际不一致）
-        - 自上次重建以来新增 entity ≥ GROUP_SUMMARY_DELTA_THRESHOLD
+        - 自上次重建以来新增 entity ≥ hiergraph_summary_delta（可配）
         """
-        GROUP_SUMMARY_DELTA_THRESHOLD = 50
+        GROUP_SUMMARY_DELTA_THRESHOLD = memory_config.hiergraph_summary_delta
 
         new_max_layer = max((c.layer for c in valid_prev_layer), default=0)
         async with async_maker() as session:
@@ -986,13 +993,17 @@ class HierarchicalGraphBuilder:
         self,
         top_categories: list[AIMemCategory],
     ) -> None:
+        cats_info = "\n".join(f"- {c.name} (layer {c.layer}): {c.summary[:100]}" for c in top_categories[:10])
+        await self._run_group_summary_llm(cats_info)
+
+    async def _run_group_summary_llm(self, categories_summary: str) -> None:
+        """据给定 summary 文本生成群摘要并写入 meta 缓存，供类目树 / 高频实体两种来源复用。"""
         from gsuid_core.ai_core.gs_agent import create_agent
         from gsuid_core.ai_core.memory.prompts.summary import GROUP_SUMMARY_PROMPT
 
-        cats_info = "\n".join(f"- {c.name} (layer {c.layer}): {c.summary[:100]}" for c in top_categories[:10])
         prompt = GROUP_SUMMARY_PROMPT.format(
             scope_key=self.scope_key,
-            categories_summary=cats_info,
+            categories_summary=categories_summary,
             last_update=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
         )
 
@@ -1003,10 +1014,10 @@ class HierarchicalGraphBuilder:
             )
             summary = (await asyncio.wait_for(agent.run(prompt), timeout=180))[:500]
         except asyncio.TimeoutError:
-            logger.warning(f"🧠 [HierGraph] Group summary LLM timeout for {self.scope_key} (>{60}s)")
+            logger.warning(f"🧠 [HierGraph] Group summary LLM timeout for {self.scope_key}")
             return
         except Exception as e:
-            logger.warning(f"Group summary generation failed for {self.scope_key}: {e}")
+            logger.warning(f"🧠 [HierGraph] Group summary generation failed for {self.scope_key}: {e}")
             return
 
         if not summary:
@@ -1022,6 +1033,45 @@ class HierarchicalGraphBuilder:
                 meta.group_summary_updated_at = datetime.now(timezone.utc)
                 session.add(meta)
                 await session.commit()
+
+    async def _summary_only_rebuild(self, build_mode: str) -> None:
+        """System-2 关闭时的轻量重建：跳过 Layer-1/2/3 分类树，仅按需刷新群摘要。
+
+        群摘要是 Heartbeat 决策与人格群语境共同消费的产物，这里改从"高频活跃实体名"
+        直接生成、不依赖类目树，单次至多 1 次 LLM 调用（且受 delta 阈值约束，多数轮次为 0）。
+        Episode / Entity / Edge 等记忆本体在摄入链路已写入，完全不受本路径影响。
+        """
+        # 关闭模式不产出任何 LLM；其余模式仅在新增实体达阈值时刷新摘要。
+        if build_mode != "关闭" and await self._should_regen_summary_lite():
+            await self._update_group_summary_from_entities()
+        # 推进 baseline / 时间戳，避免触发条件反复命中导致空转重建。
+        await self._update_meta(valid_prev_layer=None)
+
+    async def _should_regen_summary_lite(self) -> bool:
+        """轻量重建下是否需要刷新群摘要：无缓存，或自上次重建以来新增实体达阈值。"""
+        GROUP_SUMMARY_DELTA_THRESHOLD = memory_config.hiergraph_summary_delta
+        async with async_maker() as session:
+            result = await session.execute(
+                select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
+            )
+            meta = result.scalar_one_or_none()
+        if meta is None or not meta.group_summary_cache:
+            return True
+        baseline = meta.entity_count_at_last_rebuild or 0
+        current_count = meta.current_entity_count or 0
+        return (current_count - baseline) >= GROUP_SUMMARY_DELTA_THRESHOLD
+
+    async def _update_group_summary_from_entities(self) -> None:
+        """不依赖类目树，从高频活跃实体名直接生成群摘要并写入 meta 缓存。
+
+        与 `_update_group_summary_cache`（基于类目）等价的轻量替身，用于 System-2 关闭、
+        没有类目树可用的场景。
+        """
+        names = await AIMemEntity.get_frequent_names(self.scope_key, limit=20)
+        named = [n for n in names if n and not n.isdigit()]
+        if not named:
+            return
+        await self._run_group_summary_llm("、".join(named))
 
 
 async def check_and_trigger_hierarchical_update(scope_key: str) -> None:
