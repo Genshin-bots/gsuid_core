@@ -70,7 +70,6 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
             "grok-4.20",
             "grok-4.20-multi-agent",
             "grok-4.1-fast",
-            "grok-4",
             # Anthropic (Claude 4.7 / 4.6 家族)
             "claude-opus-4-7",
             "claude-opus-4-6",
@@ -110,6 +109,12 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         desc="显式指定模型支持能力，如是否能看图、能处理文件/音频/视频等",
         data=["text"],
         options=["text", "image", "audio", "video"],
+    ),
+    "model_effort": GsStrConfig(
+        title="模型性能",
+        desc="指定模型思考性能, 不同模型的标准不同，该选项并不保证能真实起效",
+        data="enable",
+        options=["enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
     ),
 }
 

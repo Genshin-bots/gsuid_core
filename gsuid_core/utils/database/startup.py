@@ -85,6 +85,19 @@ exec_list = [
     # 旧任务（最早 C5 长任务）的 root_task_id 默认空——一次性把 root_task_id=id
     # 写回，让它们退化为"只有根节点的退化树"，统一进 Kanban 渲染。
     "UPDATE aiagenttask SET root_task_id = id WHERE root_task_id IS NULL OR root_task_id = '';",
+    # 缓存Token统计：旧库补齐缓存读写Token列（向后兼容）
+    "ALTER TABLE aidailystatistics ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN total_cache_write_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aitokenusagebytype ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aitokenusagebytype ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
+    # 小时级性能统计表 aihourlyperformance 为全新表，由 SQLModel create_all 全量
+    # 建表，无需逐列 ALTER；以下仅补齐"运行过开发期中间版本（缺均值采样列）"的库
+    "ALTER TABLE aihourlyperformance ADD COLUMN ttft_sum_ms FLOAT DEFAULT 0.0;",
+    "ALTER TABLE aihourlyperformance ADD COLUMN ttft_sample_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aihourlyperformance ADD COLUMN tps_sum FLOAT DEFAULT 0.0;",
+    "ALTER TABLE aihourlyperformance ADD COLUMN tps_sample_count INTEGER DEFAULT 0;",
 ]
 
 

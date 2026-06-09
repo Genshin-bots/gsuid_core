@@ -17,13 +17,17 @@ from gsuid_core.ai_core.statistics.models import (
     AIDailyStatistics,
     AIHeartbeatMetrics,
     AITokenUsageByType,
+    AIHourlyPerformance,
     AIRAGMissStatistics,
     AITokenUsageByModel,
     AIRAGDocumentStatistics,
     AIGroupUserActivityStats,
 )
 
-from .dataclass_models import BotState, LatencyStats
+from .dataclass_models import BotState, LatencyStats, HourlyPerformanceEntry
+
+# 小时级性能统计的内存缓冲 key: (date, hour, provider, model_name)
+HourlyPerfKey = tuple[str, int, str, str]
 
 
 class StatisticsManager:
@@ -59,10 +63,92 @@ class StatisticsManager:
         #      reset 内 "持久化 → 清空 → 切日期" 三步若被并发 persist 切片, 可能把空状态
         #      回写到当日 Day N 行。用同一把锁串行化 persist / 日切, 保证原子性。
         self._persist_lock: asyncio.Lock = asyncio.Lock()
+        # 小时级性能统计（内存缓冲, 只保留尚未持久化的增量）
+        # key: (date, hour, provider, model_name)
+        self._hourly_perf: Dict[HourlyPerfKey, HourlyPerformanceEntry] = defaultdict(HourlyPerformanceEntry)
 
     def _reset_daily_counters(self):
         """重置每日计数器"""
         self._bot_state = BotState()
+        # _hourly_perf 不在此清空: key 自带日期维度, persist 成功即出队,
+        # 此刻仍残留的只可能是落库失败的增量, 保留到下一轮 persist 重试即可。
+
+    def record_hourly_performance(
+        self,
+        provider: str,
+        model_name: str,
+        ttft_ms: float = 0.0,
+        tps: float = 0.0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        tool_call_count: int = 0,
+    ) -> None:
+        """记录一次模型请求的小时级性能统计
+
+        Args:
+            provider: 模型提供商标识（如 openai、anthropic）
+            model_name: 模型名称
+            ttft_ms: 首字延迟（毫秒），0 表示本次无有效样本
+            tps: 每秒生成 Token 数，0 表示本次无有效样本
+            input_tokens: 输入 Token 数
+            output_tokens: 输出 Token 数
+            cache_read_tokens: 缓存读取 Token 数
+            cache_write_tokens: 缓存写入 Token 数
+            tool_call_count: 本次请求中的工具调用次数
+        """
+        now = datetime.now()
+        key: HourlyPerfKey = (now.strftime("%Y-%m-%d"), now.hour, provider, model_name)
+        self._hourly_perf[key].update(
+            ttft_ms=ttft_ms,
+            tps=tps,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            tool_call_count=tool_call_count,
+        )
+
+    @staticmethod
+    def _hourly_entry_to_dict(provider: str, model: str, entry: HourlyPerformanceEntry) -> Dict[str, Any]:
+        """将一条小时级聚合转换为 API 返回的 provider 维度字典"""
+        return {
+            "provider": provider,
+            "model": model,
+            "request_count": entry.request_count,
+            "ttft_min_ms": entry.ttft_ms_min,
+            "ttft_max_ms": entry.ttft_ms_max,
+            "ttft_avg_ms": entry.ttft_ms_avg,
+            "tps_min": entry.tps_min,
+            "tps_max": entry.tps_max,
+            "tps_avg": entry.tps_avg,
+            "input_tokens": entry.input_tokens,
+            "output_tokens": entry.output_tokens,
+            "cache_read_tokens": entry.cache_read_tokens,
+            "cache_write_tokens": entry.cache_write_tokens,
+            "tool_call_count": entry.tool_call_count,
+        }
+
+    @staticmethod
+    def _hourly_row_to_entry(row: AIHourlyPerformance) -> HourlyPerformanceEntry:
+        """将 DB 行还原为内存聚合结构，便于与内存增量复用同一套合并逻辑"""
+        return HourlyPerformanceEntry(
+            request_count=row.request_count,
+            ttft_ms_min=row.ttft_min_ms,
+            ttft_ms_max=row.ttft_max_ms,
+            ttft_ms_sum=row.ttft_sum_ms,
+            ttft_sample_count=row.ttft_sample_count,
+            tps_min=row.tps_min,
+            tps_max=row.tps_max,
+            tps_sum=row.tps_sum,
+            tps_sample_count=row.tps_sample_count,
+            input_tokens=row.input_tokens,
+            output_tokens=row.output_tokens,
+            cache_read_tokens=row.cache_read_tokens,
+            cache_write_tokens=row.cache_write_tokens,
+            tool_call_count=row.tool_call_count,
+        )
 
     def record_token_usage(
         self,
@@ -70,11 +156,22 @@ class StatisticsManager:
         chat_type: str,
         input_tokens: int,
         output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ):
         """记录 Token 使用量"""
-        self._bot_state.token_by_model[model_name.lower()].add(input_tokens, output_tokens)
-        self._bot_state.token_by_type[chat_type.lower()].add(input_tokens, output_tokens)
-        self._bot_state.total_tokens.update(input=input_tokens, output=output_tokens)
+        self._bot_state.token_by_model[model_name.lower()].add(
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        )
+        self._bot_state.token_by_type[chat_type.lower()].add(
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        )
+        self._bot_state.total_tokens.update(
+            input=input_tokens,
+            output=output_tokens,
+            cache_read=cache_read_tokens,
+            cache_write=cache_write_tokens,
+        )
 
     def record_latency(self, latency: float):
         """记录响应延迟"""
@@ -190,12 +287,26 @@ class StatisticsManager:
             "token_usage": {
                 "total_input_tokens": agg_tokens["input"],
                 "total_output_tokens": agg_tokens["output"],
+                "total_cache_read_tokens": agg_tokens["cache_read"],
+                "total_cache_write_tokens": agg_tokens["cache_write"],
                 "by_model": [
-                    {"model": m, "input_tokens": u.input_tokens, "output_tokens": u.output_tokens}
+                    {
+                        "model": m,
+                        "input_tokens": u.input_tokens,
+                        "output_tokens": u.output_tokens,
+                        "cache_read_tokens": u.cache_read_tokens,
+                        "cache_write_tokens": u.cache_write_tokens,
+                    }
                     for m, u in b.token_by_model.items()
                 ],
                 "by_type": [
-                    {"type": t, "input_tokens": u.input_tokens, "output_tokens": u.output_tokens}
+                    {
+                        "type": t,
+                        "input_tokens": u.input_tokens,
+                        "output_tokens": u.output_tokens,
+                        "cache_read_tokens": u.cache_read_tokens,
+                        "cache_write_tokens": u.cache_write_tokens,
+                    }
                     for t, u in b.token_by_type.items()
                 ],
             },
@@ -252,7 +363,12 @@ class StatisticsManager:
             stats = await AIDailyStatistics.get_daily_stats(today)
             if stats:
                 s = self._bot_state
-                s.total_tokens.update(input=stats.total_input_tokens or 0, output=stats.total_output_tokens or 0)
+                s.total_tokens.update(
+                    input=stats.total_input_tokens or 0,
+                    output=stats.total_output_tokens or 0,
+                    cache_read=stats.total_cache_read_tokens or 0,
+                    cache_write=stats.total_cache_write_tokens or 0,
+                )
                 if stats.avg_latency:
                     s.latencies.add(stats.avg_latency)
                 s.intents.update(
@@ -288,14 +404,20 @@ class StatisticsManager:
             if all_token_use:
                 for stats in all_token_use:
                     self._bot_state.token_by_model[stats.model_name.lower()].add(
-                        stats.input_tokens or 0, stats.output_tokens or 0
+                        stats.input_tokens or 0,
+                        stats.output_tokens or 0,
+                        stats.cache_read_tokens or 0,
+                        stats.cache_write_tokens or 0,
                     )
 
             all_token_use_type = await AITokenUsageByType.get_daily_data(date=today)
             if all_token_use_type:
                 for stats in all_token_use_type:
                     self._bot_state.token_by_type[stats.chat_type.lower()].add(
-                        stats.input_tokens or 0, stats.output_tokens or 0
+                        stats.input_tokens or 0,
+                        stats.output_tokens or 0,
+                        stats.cache_read_tokens or 0,
+                        stats.cache_write_tokens or 0,
                     )
 
             # 3. 加载 AIHeartbeatMetrics
@@ -397,6 +519,8 @@ class StatisticsManager:
                 date=today,
                 total_input_tokens=s.total_tokens["input"],
                 total_output_tokens=s.total_tokens["output"],
+                total_cache_read_tokens=s.total_tokens["cache_read"],
+                total_cache_write_tokens=s.total_tokens["cache_write"],
                 avg_latency=s.latencies.avg,
                 p95_latency=s.latencies.p95,
                 intent_chat_count=s.intents["chat"],
@@ -431,13 +555,15 @@ class StatisticsManager:
                     model_name=model_name,
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
                 )
                 for model_name, usage in s.token_by_model.items()
             ]
             if token_data:
                 await AITokenUsageByModel.batch_insert_data_with_update(
                     datas=token_data,
-                    update_key=["input_tokens", "output_tokens"],
+                    update_key=["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
                     index_elements=["date", "model_name"],
                 )
 
@@ -447,13 +573,15 @@ class StatisticsManager:
                     chat_type=chat_type,
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
                 )
                 for chat_type, usage in s.token_by_type.items()
             ]
             if token_type_data:
                 await AITokenUsageByType.batch_insert_data_with_update(
                     datas=token_type_data,
-                    update_key=["input_tokens", "output_tokens"],
+                    update_key=["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
                     index_elements=["date", "chat_type"],
                 )
 
@@ -493,8 +621,76 @@ class StatisticsManager:
                     index_elements=["date", "group_id"],
                 )
 
+            # 小时级性能统计持久化
+            await self._persist_hourly_performance()
+
         except Exception as e:
             logger.exception(f"📊 [StatisticsManager] 持久化统计数据失败: {e}")
+
+    async def _persist_hourly_performance(self):
+        """持久化小时级性能统计到数据库
+
+        upsert 是增量累加语义, 因此成功落库的 key 必须立即出队, 否则下一轮
+        定时持久化会把同一份累计值重复累加进 DB（数据成倍膨胀）。
+        先 pop 再 await: upsert 期间新到的请求会写入新建的 entry, 不会丢增量;
+        落库失败则把增量 merge 回缓冲, 等下一轮重试。
+        本方法仅在 _persist_lock 内被调用, 不存在并发的出队/清空。
+        """
+        for key in list(self._hourly_perf.keys()):
+            entry = self._hourly_perf.pop(key)
+            date, hour, provider, model_name = key
+            ok = await AIHourlyPerformance.upsert_performance(
+                date=date,
+                hour=hour,
+                provider=provider,
+                model_name=model_name,
+                request_count=entry.request_count,
+                ttft_min_ms=entry.ttft_ms_min,
+                ttft_max_ms=entry.ttft_ms_max,
+                ttft_sum_ms=entry.ttft_ms_sum,
+                ttft_sample_count=entry.ttft_sample_count,
+                tps_min=entry.tps_min,
+                tps_max=entry.tps_max,
+                tps_sum=entry.tps_sum,
+                tps_sample_count=entry.tps_sample_count,
+                input_tokens=entry.input_tokens,
+                output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                cache_write_tokens=entry.cache_write_tokens,
+                tool_call_count=entry.tool_call_count,
+            )
+            if not ok:
+                self._hourly_perf[key].merge(entry)
+                logger.warning(f"📊 [StatisticsManager] 小时性能统计落库失败, 增量已回滚至缓冲: {key}")
+
+    async def get_hourly_performance_by_date(self, date: str) -> List[Dict[str, Any]]:
+        """获取指定日期的小时级性能统计（DB 基线 + 内存未持久化增量合并）"""
+        try:
+            merged: Dict[tuple[int, str, str], HourlyPerformanceEntry] = {}
+            for row in await AIHourlyPerformance.get_daily_data(date):
+                merged[(row.hour, row.provider, row.model_name)] = self._hourly_row_to_entry(row)
+            # 内存缓冲只保留尚未持久化的增量, 叠加到 DB 基线上,
+            # 既覆盖"今日未到持久化周期"也覆盖"重启后当日 DB 数据"两种场景
+            for (d, hour, provider, model), entry in list(self._hourly_perf.items()):
+                if d != date:
+                    continue
+                base = merged.get((hour, provider, model))
+                if base is None:
+                    base = HourlyPerformanceEntry()
+                    merged[(hour, provider, model)] = base
+                base.merge(entry)
+
+            result: Dict[int, Dict[str, Any]] = {}
+            for (hour, provider, model), entry in merged.items():
+                if hour not in result:
+                    result[hour] = {"hour": hour, "providers": []}
+                result[hour]["providers"].append(self._hourly_entry_to_dict(provider, model, entry))
+            for item in result.values():
+                item["providers"].sort(key=lambda p: (p["provider"], p["model"]))
+            return sorted(result.values(), key=lambda x: x["hour"])
+        except Exception as e:
+            logger.warning(f"📊 [StatisticsManager] 查询小时性能统计失败: {e}")
+            return []
 
     async def get_summary_by_date(self, date: str) -> Optional[Dict[str, Any]]:
         """从数据库获取指定日期的统计摘要"""
@@ -517,6 +713,8 @@ class StatisticsManager:
                     "model": t.model_name,
                     "input_tokens": t.input_tokens,
                     "output_tokens": t.output_tokens,
+                    "cache_read_tokens": t.cache_read_tokens or 0,
+                    "cache_write_tokens": t.cache_write_tokens or 0,
                 }
                 for t in token_by_model_data
             ]
@@ -530,6 +728,8 @@ class StatisticsManager:
                     "type": t.chat_type,
                     "input_tokens": t.input_tokens,
                     "output_tokens": t.output_tokens,
+                    "cache_read_tokens": t.cache_read_tokens or 0,
+                    "cache_write_tokens": t.cache_write_tokens or 0,
                 }
                 for t in token_by_type_data
             ]
@@ -591,6 +791,8 @@ class StatisticsManager:
             "token_usage": {
                 "total_input_tokens": stats.total_input_tokens or 0,
                 "total_output_tokens": stats.total_output_tokens or 0,
+                "total_cache_read_tokens": stats.total_cache_read_tokens or 0,
+                "total_cache_write_tokens": stats.total_cache_write_tokens or 0,
                 "by_model": by_model or [],
                 "by_type": by_type or [],
             },

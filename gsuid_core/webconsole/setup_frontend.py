@@ -149,6 +149,7 @@ def _import_webconsole_apis() -> None:
         agent_debug_api,
         state_store_api,
         ai_statistics_api,
+        ai_performance_api,
         knowledge_base_api,
         ai_session_logs_api,
         provider_config_api,

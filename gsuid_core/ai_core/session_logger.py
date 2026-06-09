@@ -373,7 +373,14 @@ class AISessionLogger:
         """记录错误信息"""
         self._add_entry("error", {"error_type": error_type, "message": message})
 
-    def log_token_usage(self, input_tokens: int, output_tokens: int, model_name: str) -> None:
+    def log_token_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        model_name: str,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> None:
         """记录 Token 使用量"""
         self._add_entry(
             "token_usage",
@@ -381,6 +388,8 @@ class AISessionLogger:
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "model_name": model_name,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
             },
         )
 

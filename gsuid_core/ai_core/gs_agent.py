@@ -12,7 +12,7 @@ import httpx
 from pydantic_ai import Agent
 from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.messages import (
     ImageUrl,
     TextPart,
@@ -25,6 +25,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
     RetryPromptPart,
+    ModelResponsePart,
 )
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -410,6 +411,45 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
             if changed:
                 part.content = new_content
     return removed
+
+
+def _split_embedded_thinking(
+    parts: Sequence[ModelResponsePart],
+    thinking_tags: tuple[str, str],
+) -> List[ModelResponsePart]:
+    """把 TextPart 里以 thinking_tags 包裹的内嵌思考重新拆成独立的 ThinkingPart。
+
+    流式请求下 pydantic_ai 只有在 ``<think>`` 作为独立 SSE chunk 到达时才会拆分思考
+    标签（见 _parts_manager.handle_text_delta）；MiniMax 等兼容网关不保证这一点，
+    导致 ``<think>...</think>`` 残留在 TextPart 里被原样发往 C 端，且思考内容拿不到
+    意图-行为一致性检测。这里按完整文本重新拆分，对齐非流式路径
+    （openai 模型的 split_content_into_text_and_thinking）的行为。非 TextPart 与不含
+    起始标签的 TextPart 原样透传。
+    """
+    start_tag, end_tag = thinking_tags
+    result: List[ModelResponsePart] = []
+    for part in parts:
+        if not isinstance(part, TextPart) or start_tag not in part.content:
+            result.append(part)
+            continue
+        content = part.content
+        start_index = content.find(start_tag)
+        while start_index >= 0:
+            before, content = content[:start_index], content[start_index + len(start_tag) :]
+            if before:
+                result.append(TextPart(content=before))
+            end_index = content.find(end_tag)
+            if end_index >= 0:
+                think, content = content[:end_index], content[end_index + len(end_tag) :]
+                result.append(ThinkingPart(content=think))
+            else:
+                # 缺少闭合标签：丢弃 <think> 起始标签，剩余内容按文本处理
+                result.append(TextPart(content=content))
+                content = ""
+            start_index = content.find(start_tag)
+        if content:
+            result.append(TextPart(content=content))
+    return result
 
 
 # 单轮意图-行为不一致检测关键词：thinking 里点名了某工具 / 任务编排意图
@@ -981,6 +1021,18 @@ class GsCoreAIAgent:
         # 截断历史记录，避免无限制增长
         self.extract_history()
 
+        # TTFT/TPS 流式统计：按"每次模型请求"打点，在对应 CallToolsNode 中结算入库。
+        # _req_start 在 ModelRequestNode 发起前记录；_first/_last_event_at 由
+        # node.stream() 的事件流逐 event 刷新。
+        _req_start: float = 0.0
+        _first_event_at: Optional[float] = None
+        _last_event_at: Optional[float] = None
+        _model_name: str = self.model.model_name if self.model else "unknown"
+        _provider: str = self.model.system if self.model else "unknown"
+        # 流式响应下需手动按完整文本重新拆分内嵌 <think> 标签（见
+        # _split_embedded_thinking）。thinking_tags 取自模型 profile，默认 ('<think>','</think>')。
+        _thinking_tags: tuple[str, str] = self.model.profile.thinking_tags if self.model else ("<think>", "</think>")
+
         try:
             logger.info("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()...")
             logger.info(f"🧠 [GsCoreAIAgent] 当前 history: {len(self.history)}")
@@ -1024,6 +1076,19 @@ class GsCoreAIAgent:
                                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
 
                         logger.debug("🧠  ▶ [发起请求]: 正在等待大模型思考...")
+                        # 以流式方式发起本轮模型请求并逐 event 打点：
+                        # 普通的节点迭代走非流式请求，CallToolsNode 要等完整响应返回
+                        # 后才产出，无法区分"首 token 延迟"与"生成耗时"。这里主动
+                        # 消费 node.stream()，请求即转为流式；流结束后完整响应仍会
+                        # 照常进入 CallToolsNode，后续工具调用/文本处理逻辑不受影响。
+                        _req_start = time.perf_counter()
+                        _first_event_at = None
+                        _last_event_at = None
+                        async with node.stream(agent_run.ctx) as request_stream:
+                            async for _event in request_stream:
+                                _last_event_at = time.perf_counter()
+                                if _first_event_at is None:
+                                    _first_event_at = _last_event_at
 
                     # 2. 获取到大模型响应，准备调用工具或者输出文本
                     # 这里使用了 isinstance，Pyright 就能明确知道此时 node 是 CallToolsNode，拥有 model_response 属性
@@ -1031,6 +1096,14 @@ class GsCoreAIAgent:
                         logger.debug("🧠 [GsCoreAIAgent] ⚡ 触发节点: CallToolsNode")
 
                         self._session_logger.log_node_transition("CallToolsNode")
+
+                        # 流式请求下 pydantic_ai 未必能拆出内嵌 <think> 标签（仅当标签作为
+                        # 独立 SSE chunk 到达时才拆），MiniMax 等网关不保证这点，导致
+                        # <think>...</think> 残留在 TextPart 里。这里原地按完整文本重新拆分，
+                        # 与非流式路径对齐：既避免思考内容经显示循环 / result.output 泄漏到 C 端，
+                        # 也补回意图-行为检测所需的 ThinkingPart。原地改写同一 model_response 对象，
+                        # 故 history 与 result.output 一并保持干净；ToolCallPart 原样保留，工具执行不受影响。
+                        node.model_response.parts = _split_embedded_thinking(node.model_response.parts, _thinking_tags)
 
                         # 遍历大模型返回的具体片段 (Parts)
                         for part in node.model_response.parts:
@@ -1058,6 +1131,10 @@ class GsCoreAIAgent:
                             # 大模型直接输出文本
                             elif isinstance(part, TextPart):
                                 _text = part.content.strip()
+                                # 拆出 <think> 后只剩空白的文本片段（如纯思考+工具调用轮），
+                                # 既无需打印也无需下发，直接跳过，避免空的「大模型文本」噪声日志。
+                                if not _text:
+                                    continue
                                 logger.debug(f"🧠 [大模型文本]: {_text}")
                                 self._session_logger.log_text_output(_text)
                                 if _text in SILENCE_MARKERS:
@@ -1073,12 +1150,39 @@ class GsCoreAIAgent:
 
                             elif isinstance(part, ThinkingPart):
                                 _thinking = part.content.strip()
-                                logger.trace(f"🧠 [大模型思考]: {_thinking}")
+                                logger.debug(f"🧠 [大模型思考]: {_thinking}")
                                 if _thinking:
                                     _thinking_segments.append(_thinking)
                                 self._session_logger.log_thinking(_thinking)
                                 if bot and _thinking:
                                     pass
+
+                        # 结算本轮模型请求的性能统计：
+                        # TTFT = 请求发起 → 首个流式 event；生成耗时 = 首个 → 最后一个 event；
+                        # TPS 用本轮响应自身的 usage（而非整个 run 的累计值）计算
+                        _ttft_ms: float = 0.0
+                        _tps: float = 0.0
+                        _req_usage = node.model_response.usage
+                        if _first_event_at is not None and _last_event_at is not None:
+                            _ttft_ms = round((_first_event_at - _req_start) * 1000, 2)
+                            _generation_time = _last_event_at - _first_event_at
+                            if _req_usage.output_tokens > 0 and _generation_time > 0:
+                                _tps = round(_req_usage.output_tokens / _generation_time, 2)
+                            logger.debug(f"⏱️ [GsCoreAIAgent] TTFT: {_ttft_ms:.2f} ms, TPS: {_tps:.2f} tokens/s")
+                        statistics_manager.record_hourly_performance(
+                            provider=_provider,
+                            model_name=_model_name,
+                            ttft_ms=_ttft_ms,
+                            tps=_tps,
+                            input_tokens=_req_usage.input_tokens,
+                            output_tokens=_req_usage.output_tokens,
+                            cache_read_tokens=_req_usage.cache_read_tokens,
+                            cache_write_tokens=_req_usage.cache_write_tokens,
+                            tool_call_count=sum(1 for p in node.model_response.parts if isinstance(p, ToolCallPart)),
+                        )
+                        # 复位打点，避免异常路径下两轮请求的数据串台
+                        _first_event_at = None
+                        _last_event_at = None
 
                     # 3. 运行结束节点
                     elif isinstance(node, End):
@@ -1117,32 +1221,44 @@ class GsCoreAIAgent:
                             logger.debug("🧠 [GsCoreAIAgent] 检测到意图-行为不一致，下一轮将强制提醒")
 
                 # 记录 Token 使用量和延迟统计
-                try:
-                    # 记录响应延迟
-                    latency = time.time() - start_time
-                    statistics_manager.record_latency(latency=latency)
+                # 记录响应延迟
+                latency = time.time() - start_time
+                statistics_manager.record_latency(latency=latency)
 
-                    try:
-                        usage_obj = result.usage()
-                        input_tokens: int = usage_obj.input_tokens
-                        output_tokens: int = usage_obj.output_tokens
-                        logger.info(f"📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}")
-                        if input_tokens > 0 or output_tokens > 0:
-                            statistics_manager.record_token_usage(
-                                model_name=self.model.model_name if self.model else "unknown",
-                                chat_type=self.create_by,
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens,
-                            )
-                            self._session_logger.log_token_usage(
-                                input_tokens,
-                                output_tokens,
-                                self.model.model_name if self.model else "unknown",
-                            )
-                    except AttributeError as e:
-                        # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
-                        logger.info(f"📊 [GsCoreAIAgent] result.usage 访问失败: {e}")
-                        pass
+                try:
+                    usage_obj: RunUsage = result.usage()
+                    input_tokens: int = usage_obj.input_tokens
+                    output_tokens: int = usage_obj.output_tokens
+                    cache_read_tokens: int = usage_obj.cache_read_tokens
+                    cache_write_tokens: int = usage_obj.cache_write_tokens
+
+                    logger.info(
+                        f"📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}, "
+                        f"cache_read={cache_read_tokens}, cache_write={cache_write_tokens}"
+                    )
+
+                    # 小时级性能统计（TTFT/TPS）已在每轮 CallToolsNode 中按请求结算,
+                    # 此处只记录 run 级的 Token 汇总
+                    if input_tokens > 0 or output_tokens > 0:
+                        statistics_manager.record_token_usage(
+                            model_name=_model_name,
+                            chat_type=self.create_by,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cache_read_tokens=cache_read_tokens,
+                            cache_write_tokens=cache_write_tokens,
+                        )
+                        self._session_logger.log_token_usage(
+                            input_tokens,
+                            output_tokens,
+                            _model_name,
+                            cache_read_tokens,
+                            cache_write_tokens,
+                        )
+                except AttributeError as e:
+                    # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
+                    logger.info(f"📊 [GsCoreAIAgent] result.usage 访问失败: {e}")
+                    pass
                 except Exception as e:
                     logger.warning(f"📊 [GsCoreAIAgent] 记录统计失败: {e}")
 

@@ -61,10 +61,6 @@ ANTHROPIC_CONFIG_TEMPLATE: Dict[str, GSC] = {
             "claude-sonnet-4-20250514",
             "claude-opus-4-20250514",
             "claude-haiku-4-20250514",
-            # 2024 年经典遗留版本 (向下兼容)
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
         ],
     ),
     "max_tokens": GsStrConfig(
@@ -78,6 +74,12 @@ ANTHROPIC_CONFIG_TEMPLATE: Dict[str, GSC] = {
         desc="显式指定模型支持能力，如是否能看图、能处理文件/音频/视频等",
         data=["text"],
         options=["text", "image"],
+    ),
+    "model_effort": GsStrConfig(
+        title="模型性能",
+        desc="指定模型思考性能, 不同模型的标准不同，该选项并不保证能真实起效",
+        data="enable",
+        options=["enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
     ),
 }
 

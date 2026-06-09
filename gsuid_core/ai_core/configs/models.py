@@ -11,6 +11,7 @@
 
 from typing import Union, Literal
 
+from pydantic_ai.settings import ModelSettings, ThinkingLevel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -72,26 +73,51 @@ def format_provider_config_name(provider: str, config_name: str) -> str:
     return f"{provider}{PROVIDER_CONFIG_SEPARATOR}{config_name}"
 
 
-def get_openai_config_by_name(config_name: str) -> tuple[str, str, str]:
+# 配置项 model_effort 字符串 → pydantic_ai ThinkingLevel 的映射。
+# ThinkingLevel = bool | Literal["minimal","low","medium","high","xhigh"]，
+# "enable"/"disable" 必须映射为 True/False，原样透传会在 provider 的
+# REASONING_EFFORT/THINKING_BUDGET 映射表中触发 KeyError。
+THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
+    "enable": True,
+    "disable": False,
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+}
+
+
+def to_thinking_level(value: str) -> ThinkingLevel:
+    """将配置中的 model_effort 字符串转换为 pydantic_ai 的 ThinkingLevel"""
+    if value not in THINKING_LEVEL_MAP:
+        logger.warning(f"🧠 [GsCore] 未知的 model_effort 配置: {value!r}, 已回退为 enable")
+        return True
+    return THINKING_LEVEL_MAP[value]
+
+
+def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
     oconfig = get_openai_config(config_name)
-    base_url, api_key, model_name = (
+    base_url, api_key, model_name, model_effort = (
         oconfig.get_config("base_url").data,
         oconfig.get_config("api_key").data[0],
         oconfig.get_config("model_name").data,
+        to_thinking_level(oconfig.get_config("model_effort").data),
     )
     logger.info(f"🧠 [GsCore] 加载 OpenAI 配置: Name: {model_name}, URL: {base_url}, Key: ...{api_key[-4:]}")
-    return base_url, api_key, model_name
+    return base_url, api_key, model_name, model_effort
 
 
-def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str]:
+def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
     aconfig = get_anthropic_config(config_name)
-    base_url, api_key, model_name = (
+    base_url, api_key, model_name, model_effort = (
         aconfig.get_config("base_url").data,
         aconfig.get_config("api_key").data[0],
         aconfig.get_config("model_name").data,
+        to_thinking_level(aconfig.get_config("model_effort").data),
     )
     logger.info(f"🧠 [GsCore] 加载 Anthropic 配置: Name: {model_name}, URL: {base_url}, Key: ...{api_key[-4:]}")
-    return base_url, api_key, model_name
+    return base_url, api_key, model_name, model_effort
 
 
 def get_openai_chat_model_by_name(config_name: str) -> "OpenAIChatModel":
@@ -100,7 +126,7 @@ def get_openai_chat_model_by_name(config_name: str) -> "OpenAIChatModel":
     Args:
         config_name: 配置文件名（不含扩展名）
     """
-    base_url, api_key, model_name = get_openai_config_by_name(config_name)
+    base_url, api_key, model_name, model_effort = get_openai_config_by_name(config_name)
 
     return OpenAIChatModel(
         model_name=model_name,
@@ -108,6 +134,7 @@ def get_openai_chat_model_by_name(config_name: str) -> "OpenAIChatModel":
             api_key=api_key,
             base_url=base_url,
         ),
+        settings=ModelSettings(thinking=model_effort),
     )
 
 
@@ -116,7 +143,7 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
     Args:
         config_name: 配置文件名（不含扩展名）
     """
-    base_url, api_key, model_name = get_anthropic_config_by_name(config_name)
+    base_url, api_key, model_name, model_effort = get_anthropic_config_by_name(config_name)
 
     logger.info(f"🧠 [GsCore] 加载 Anthropic 模型: Name: {model_name}, URL: {base_url}, Key: ...{api_key[-4:]}")
 
@@ -126,6 +153,7 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
             api_key=api_key,
             base_url=base_url,
         ),
+        settings=ModelSettings(thinking=model_effort),
     )
 
 

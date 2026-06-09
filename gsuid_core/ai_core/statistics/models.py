@@ -16,10 +16,10 @@ AI Core Statistics 数据库模型
 """
 
 import time
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 
-from sqlmodel import Field, and_, select
+from sqlmodel import Field, col, and_, select
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,8 @@ class AIDailyStatistics(BaseIDModel, table=True):
     date: str = Field(default="", title="统计日期")
     total_input_tokens: int = Field(default=0, title="总输入Token")
     total_output_tokens: int = Field(default=0, title="总输出Token")
+    total_cache_read_tokens: int = Field(default=0, title="总缓存读取Token")
+    total_cache_write_tokens: int = Field(default=0, title="总缓存写入Token")
     avg_latency: float = Field(default=0.0, title="平均延迟(秒)")
     p95_latency: float = Field(default=0.0, title="P95延迟(秒)")
     intent_chat_count: int = Field(default=0, title="闲聊次数")
@@ -155,6 +157,8 @@ class AITokenUsageByType(BaseIDModel, table=True):
     chat_type: str = Field(default="", title="消耗类型")
     input_tokens: int = Field(default=0, title="输入Token")
     output_tokens: int = Field(default=0, title="输出Token")
+    cache_read_tokens: int = Field(default=0, title="缓存读取Token")
+    cache_write_tokens: int = Field(default=0, title="缓存写入Token")
 
     @classmethod
     @with_session
@@ -195,6 +199,8 @@ class AITokenUsageByType(BaseIDModel, table=True):
         chat_type: str,
         input_tokens: int,
         output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> bool:
         """创建或更新 Token 使用统计"""
         try:
@@ -205,6 +211,8 @@ class AITokenUsageByType(BaseIDModel, table=True):
                     update_data={
                         "input_tokens": existing.input_tokens + input_tokens,
                         "output_tokens": existing.output_tokens + output_tokens,
+                        "cache_read_tokens": existing.cache_read_tokens + cache_read_tokens,
+                        "cache_write_tokens": existing.cache_write_tokens + cache_write_tokens,
                     },
                 )
             else:
@@ -213,6 +221,8 @@ class AITokenUsageByType(BaseIDModel, table=True):
                     chat_type=chat_type,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                 )
             return True
         except Exception as e:
@@ -234,6 +244,8 @@ class AITokenUsageByModel(BaseIDModel, table=True):
     model_name: str = Field(default="", title="模型名称")
     input_tokens: int = Field(default=0, title="输入Token")
     output_tokens: int = Field(default=0, title="输出Token")
+    cache_read_tokens: int = Field(default=0, title="缓存读取Token")
+    cache_write_tokens: int = Field(default=0, title="缓存写入Token")
 
     @classmethod
     @with_session
@@ -274,6 +286,8 @@ class AITokenUsageByModel(BaseIDModel, table=True):
         model_name: str,
         input_tokens: int,
         output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> bool:
         """创建或更新 Token 使用统计"""
         try:
@@ -284,6 +298,8 @@ class AITokenUsageByModel(BaseIDModel, table=True):
                     update_data={
                         "input_tokens": existing.input_tokens + input_tokens,
                         "output_tokens": existing.output_tokens + output_tokens,
+                        "cache_read_tokens": existing.cache_read_tokens + cache_read_tokens,
+                        "cache_write_tokens": existing.cache_write_tokens + cache_write_tokens,
                     },
                 )
             else:
@@ -292,6 +308,8 @@ class AITokenUsageByModel(BaseIDModel, table=True):
                     model_name=model_name,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                 )
             return True
         except Exception as e:
@@ -579,4 +597,198 @@ class AIRAGDocumentStatistics(BaseIDModel, table=True):
             return True
         except Exception as e:
             logger.exception(f"📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}")
+            return False
+
+
+class AIHourlyPerformance(BaseIDModel, table=True):
+    """
+    按小时分组的 AI 性能与 Token 消耗统计
+    用于流式请求下的 TTFT、TPS、Token 消耗、工具调用次数等小时级聚合。
+    """
+
+    __table_args__ = (
+        UniqueConstraint("date", "hour", "provider", "model_name", name="aihourlyperf_date_hour_provider_model"),
+        {"extend_existing": True},
+    )
+
+    date: str = Field(default="", title="统计日期")
+    hour: int = Field(default=0, title="小时(0-23)")
+    provider: str = Field(default="", title="模型提供商")
+    model_name: str = Field(default="", title="模型名称")
+
+    # TTFT/TPS 统计（极值 + 总和/有效样本数，便于跨批次合并后仍能算均值）
+    # sample_count 只统计 >0 的有效样本；min/max 以 sample_count == 0 作为未赋值判据
+    request_count: int = Field(default=0, title="请求次数")
+    ttft_min_ms: float = Field(default=0.0, title="TTFT最小值(ms)")
+    ttft_max_ms: float = Field(default=0.0, title="TTFT最大值(ms)")
+    ttft_sum_ms: float = Field(default=0.0, title="TTFT总和(ms)")
+    ttft_sample_count: int = Field(default=0, title="TTFT有效样本数")
+    tps_min: float = Field(default=0.0, title="TPS最小值(tokens/s)")
+    tps_max: float = Field(default=0.0, title="TPS最大值(tokens/s)")
+    tps_sum: float = Field(default=0.0, title="TPS总和(tokens/s)")
+    tps_sample_count: int = Field(default=0, title="TPS有效样本数")
+
+    # Token 消耗
+    input_tokens: int = Field(default=0, title="输入Token")
+    output_tokens: int = Field(default=0, title="输出Token")
+    cache_read_tokens: int = Field(default=0, title="缓存读取Token")
+    cache_write_tokens: int = Field(default=0, title="缓存写入Token")
+
+    # 工具调用
+    tool_call_count: int = Field(default=0, title="工具调用次数")
+
+    created_at: int = Field(default=0, title="创建时间戳")
+    updated_at: int = Field(default=0, title="更新时间戳")
+
+    @classmethod
+    @with_session
+    async def get_hourly_data(
+        cls,
+        session: AsyncSession,
+        date: str,
+        hour: int,
+        provider: str,
+        model_name: str,
+    ) -> Optional["AIHourlyPerformance"]:
+        """获取指定日期-小时-提供商-模型的统计"""
+        stmt = select(cls).where(
+            and_(
+                cls.date == date,
+                cls.hour == hour,
+                cls.provider == provider,
+                cls.model_name == model_name,
+            )
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    @classmethod
+    @with_session
+    async def get_daily_data(
+        cls,
+        session: AsyncSession,
+        date: str,
+    ) -> list["AIHourlyPerformance"]:
+        """获取指定日期的所有小时统计数据"""
+        stmt = select(cls).where(cls.date == date).order_by(col(cls.hour).asc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def get_range_data(
+        cls,
+        session: AsyncSession,
+        start_date: str,
+        end_date: str,
+    ) -> list["AIHourlyPerformance"]:
+        """获取指定日期范围的所有小时统计数据"""
+        stmt = (
+            select(cls)
+            .where(
+                and_(
+                    cls.date >= start_date,
+                    cls.date <= end_date,
+                )
+            )
+            .order_by(col(cls.date).asc(), col(cls.hour).asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def upsert_performance(
+        cls,
+        session: AsyncSession,
+        date: str,
+        hour: int,
+        provider: str,
+        model_name: str,
+        request_count: int = 0,
+        ttft_min_ms: float = 0.0,
+        ttft_max_ms: float = 0.0,
+        ttft_sum_ms: float = 0.0,
+        ttft_sample_count: int = 0,
+        tps_min: float = 0.0,
+        tps_max: float = 0.0,
+        tps_sum: float = 0.0,
+        tps_sample_count: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        tool_call_count: int = 0,
+    ) -> bool:
+        """创建或更新小时性能统计
+
+        入参为一批增量聚合（来自内存缓冲），与已有行做合并：
+        计数与总和累加，min/max 取两侧极值。调用方负责在成功后清空对应增量，
+        否则增量语义会重复累加。
+        """
+        try:
+            existing = await cls.get_hourly_data(date, hour, provider, model_name)
+            if existing:
+                update_data: dict[str, Any] = {
+                    "request_count": existing.request_count + request_count,
+                    "input_tokens": existing.input_tokens + input_tokens,
+                    "output_tokens": existing.output_tokens + output_tokens,
+                    "cache_read_tokens": existing.cache_read_tokens + cache_read_tokens,
+                    "cache_write_tokens": existing.cache_write_tokens + cache_write_tokens,
+                    "tool_call_count": existing.tool_call_count + tool_call_count,
+                    "updated_at": int(time.time()),
+                }
+                # TTFT 合并：以 sample_count == 0 判定已有行是否有有效样本
+                if ttft_sample_count > 0:
+                    update_data["ttft_min_ms"] = (
+                        ttft_min_ms if existing.ttft_sample_count == 0 else min(existing.ttft_min_ms, ttft_min_ms)
+                    )
+                    update_data["ttft_max_ms"] = max(existing.ttft_max_ms, ttft_max_ms)
+                    update_data["ttft_sum_ms"] = existing.ttft_sum_ms + ttft_sum_ms
+                    update_data["ttft_sample_count"] = existing.ttft_sample_count + ttft_sample_count
+                # TPS 合并
+                if tps_sample_count > 0:
+                    update_data["tps_min"] = (
+                        tps_min if existing.tps_sample_count == 0 else min(existing.tps_min, tps_min)
+                    )
+                    update_data["tps_max"] = max(existing.tps_max, tps_max)
+                    update_data["tps_sum"] = existing.tps_sum + tps_sum
+                    update_data["tps_sample_count"] = existing.tps_sample_count + tps_sample_count
+
+                await cls.update_data_by_data(
+                    select_data={
+                        "date": date,
+                        "hour": hour,
+                        "provider": provider,
+                        "model_name": model_name,
+                    },
+                    update_data=update_data,
+                )
+            else:
+                now = int(time.time())
+                await cls.full_insert_data(
+                    date=date,
+                    hour=hour,
+                    provider=provider,
+                    model_name=model_name,
+                    request_count=request_count,
+                    ttft_min_ms=ttft_min_ms,
+                    ttft_max_ms=ttft_max_ms,
+                    ttft_sum_ms=ttft_sum_ms,
+                    ttft_sample_count=ttft_sample_count,
+                    tps_min=tps_min,
+                    tps_max=tps_max,
+                    tps_sum=tps_sum,
+                    tps_sample_count=tps_sample_count,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    tool_call_count=tool_call_count,
+                    created_at=now,
+                    updated_at=now,
+                )
+            return True
+        except Exception as e:
+            logger.exception(f"📊 [AIHourlyPerformance] 更新小时性能统计失败: {e}")
             return False

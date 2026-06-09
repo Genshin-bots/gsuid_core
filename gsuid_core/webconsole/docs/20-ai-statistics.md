@@ -11,6 +11,14 @@ GET /api/ai/statistics/summary
 **Query 参数**:
 - `date`: 日期字符串，格式为 "YYYY-MM-DD"，默认为今天（获取今日实时数据）。指定日期时从数据库查询历史数据
 
+**`token_usage` 字段说明**:
+- `total_input_tokens` / `total_output_tokens`: 当日输入 / 输出 Token 总量
+- `total_cache_read_tokens`: 命中提示词缓存、按缓存价计费的读取 Token 总量（Anthropic / OpenAI 等的 prompt caching）
+- `total_cache_write_tokens`: 写入提示词缓存所产生的 Token 总量
+- `by_model` / `by_type`: 按模型名 / 会话类型（group / private）拆分，每项均含上述四类 Token（`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`）
+
+> 缓存 Token 字段对今日实时（内存）与历史（数据库）数据均返回；旧版本写入的历史行无缓存数据时按 `0` 返回。
+
 **响应**:
 ```json
 {
@@ -21,23 +29,31 @@ GET /api/ai/statistics/summary
         "token_usage": {
             "total_input_tokens": 150000,
             "total_output_tokens": 80000,
+            "total_cache_read_tokens": 60000,
+            "total_cache_write_tokens": 12000,
             "by_model": [
                 {
                     "model": "gpt-4",
                     "input_tokens": 100000,
-                    "output_tokens": 50000
+                    "output_tokens": 50000,
+                    "cache_read_tokens": 40000,
+                    "cache_write_tokens": 8000
                 }
             ],
             "by_type": [
                 {
                     "type": "group",
                     "input_tokens": 80000,
-                    "output_tokens": 40000
+                    "output_tokens": 40000,
+                    "cache_read_tokens": 32000,
+                    "cache_write_tokens": 6000
                 },
                 {
                     "type": "private",
                     "input_tokens": 70000,
-                    "output_tokens": 40000
+                    "output_tokens": 40000,
+                    "cache_read_tokens": 28000,
+                    "cache_write_tokens": 6000
                 }
             ]
         },
@@ -107,6 +123,8 @@ GET /api/ai/statistics/token-by-model
 **Query 参数**:
 - `date`: 日期字符串 (YYYY-MM-DD)，默认为今天
 
+**说明**: 即 `summary` 接口 `token_usage.by_model` 的内容，每项含输入 / 输出及缓存读写四类 Token。
+
 **响应**:
 ```json
 {
@@ -116,12 +134,16 @@ GET /api/ai/statistics/token-by-model
         {
             "model": "gpt-4",
             "input_tokens": 100000,
-            "output_tokens": 50000
+            "output_tokens": 50000,
+            "cache_read_tokens": 40000,
+            "cache_write_tokens": 8000
         },
         {
             "model": "gpt-3.5-turbo",
             "input_tokens": 50000,
-            "output_tokens": 30000
+            "output_tokens": 30000,
+            "cache_read_tokens": 20000,
+            "cache_write_tokens": 4000
         }
     ]
 }
