@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from qdrant_client.models import VectorParams, VectorParamsDiff
+from qdrant_client.http.models.models import PayloadSchemaType
 
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
@@ -296,6 +297,53 @@ async def ensure_vector_on_disk(collection_name: str, vector_name: Optional[str]
         logger.info(f"🧠 [Qdrant] 集合 {collection_name} on_disk 迁移完成")
     except Exception as e:
         logger.warning(f"🧠 [Qdrant] 检查/迁移集合 {collection_name} on_disk 配置失败: {e}")
+
+
+async def ensure_payload_indexes(
+    collection_name: str,
+    keyword_fields: list[str],
+) -> None:
+    """确保指定 Collection 上的关键字段已创建 keyword 类型的 payload 索引。
+
+    远程 Qdrant 服务在使用 Filter 按 payload 字段过滤时，要求该字段必须存在对应类型的
+    索引。远程索引检查/创建失败时必须中断初始化，避免后续查询阶段才抛出 400；本地嵌入式
+    Qdrant 不强制要求 payload 索引，因此本地失败仅记录警告。
+    """
+    from qdrant_client.local.async_qdrant_local import AsyncQdrantLocal
+
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None:
+        return
+
+    is_local_client = isinstance(client._client, AsyncQdrantLocal)
+
+    try:
+        col_info = await client.get_collection(collection_name=collection_name)
+        existing_indexes = col_info.payload_schema or {}
+    except Exception as e:
+        message = f"🧠 [Qdrant] 获取集合 {collection_name} 信息失败，无法确认 payload 索引: {e}"
+        if is_local_client:
+            logger.warning(message)
+            return
+        raise RuntimeError(message) from e
+
+    for field in keyword_fields:
+        if field in existing_indexes:
+            continue
+        try:
+            await client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            logger.info(f"🧠 [Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}")
+        except Exception as e:
+            message = f"🧠 [Qdrant] 为集合 {collection_name} 创建 keyword 索引 {field} 失败: {e}"
+            if is_local_client:
+                logger.warning(message)
+                continue
+            raise RuntimeError(message) from e
 
 
 async def collection_vector_mismatched(

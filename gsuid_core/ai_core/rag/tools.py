@@ -23,7 +23,11 @@ from .base import (
     get_rag_upsert_batch_size,
     upsert_points_with_backoff,
 )
-from .collection_migration import ensure_vector_on_disk, force_recreate_collection, collection_vector_mismatched
+from .collection_migration import (
+    ensure_vector_on_disk,
+    force_recreate_collection,
+    collection_vector_mismatched,
+)
 
 if TYPE_CHECKING:
     ToolList = List["Tool[ToolContext]"]

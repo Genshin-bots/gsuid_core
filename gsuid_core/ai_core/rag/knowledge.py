@@ -32,6 +32,7 @@ from gsuid_core.ai_core.rag.collection_migration import (
     scroll_all_payloads,
     ensure_vector_on_disk,
     remove_payload_backup,
+    ensure_payload_indexes,
     count_collection_points,
     force_recreate_collection,
     find_latest_payload_backup,
@@ -91,10 +92,8 @@ async def init_knowledge_collection():
                 )
             else:
                 await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME)
-                return
         else:
             await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME)
-            return
     elif latest_backup_path is not None:
         payload_backup = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
         backup_path = latest_backup_path
@@ -121,6 +120,12 @@ async def init_knowledge_collection():
             )
             raise
         remove_payload_backup(backup_path, KNOWLEDGE_COLLECTION_NAME)
+
+    # 确保远程 Qdrant 所需的 payload 索引存在（本地嵌入式 Qdrant 不强制要求）
+    await ensure_payload_indexes(
+        collection_name=KNOWLEDGE_COLLECTION_NAME,
+        keyword_fields=["source", "plugin", "id"],
+    )
 
 
 async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
