@@ -155,7 +155,7 @@ async def send_qrcode_login(bot: Bot, ev: Event):
     if any(uid_list):
         im = await qrcode_login(bot, ev, ev.user_id)
     else:
-        return await bot.send("您还没有绑定原神/星铁UID！\n请先使用[绑定UID]或[sr绑定UID]...")
+        return await bot.send("您还没有绑定原神/星铁/绝区零/崩坏3的UID！\n请先检查对应插件的帮助说明绑定任一UID...")
 
     if not im:
         return

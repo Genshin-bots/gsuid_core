@@ -45,12 +45,10 @@ def _check_model_vision_support(provider: str, config_name: str) -> Dict[str, An
             from gsuid_core.ai_core.configs.openai_config import get_openai_config
 
             config = get_openai_config(config_name)
-            model_name = config.get_config("model_name").data if config else ""
         elif provider == "anthropic":
             from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
 
             config = get_anthropic_config(config_name)
-            model_name = config.get_config("model_name").data if config else ""
         else:
             return {
                 "supported": False,
@@ -58,23 +56,18 @@ def _check_model_vision_support(provider: str, config_name: str) -> Dict[str, An
                 "note": f"不支持的 provider: {provider}",
             }
 
-        # 常见支持视觉的模型关键词
-        vision_keywords = [
-            "vision",
-            "vl",
-            "image",
-            "gpt-4o",
-            "gpt-4-turbo",
-            "claude-3-opus",
-            "claude-3-sonnet",
-            "claude-3-5",
-            "claude-3-haiku",
-            "gemini",
-            "qwen-vl",
-            "qwen2-vl",
-        ]
+        if not config:
+            return {
+                "supported": False,
+                "model_name": "未配置",
+                "note": "模型未配置",
+            }
 
-        has_vision = any(kw in model_name.lower() for kw in vision_keywords)
+        model_name = config.get_config("model_name").data or ""
+        # 以模型配置中显式声明的 model_support 能力为准（含 "image" 即支持图片理解），
+        # 与 gs_agent / image_understand 的判断逻辑保持一致，避免靠模型名关键词猜测。
+        model_support = config.get_config("model_support").data or []
+        has_vision = "image" in model_support
 
         return {
             "supported": has_vision,

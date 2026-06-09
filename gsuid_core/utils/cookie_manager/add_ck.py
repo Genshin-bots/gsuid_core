@@ -189,23 +189,26 @@ async def get_all_bind_uid(bot_id: str, user_id: str) -> Tuple[Union[str, None],
     uid = await GsBind.get_uid_by_game(user_id, bot_id)
     sr_uid = await GsBind.get_uid_by_game(user_id, bot_id, "sr")
     zzz_uid = await GsBind.get_uid_by_game(user_id, bot_id, "zzz")
-    return uid, sr_uid, zzz_uid
+    bbb_uid = await GsBind.get_uid_by_game(user_id, bot_id, "bbb")
+    return uid, sr_uid, zzz_uid, bbb_uid
 
 
 async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     simp_dict = SimpleCookie(mes)
-    uid, sr_uid, zzz_uid = await get_all_bind_uid(bot_id, user_id)
+    uid, sr_uid, zzz_uid, bbb_uid = await get_all_bind_uid(bot_id, user_id)
 
     uid_bind = sr_uid_bind = zzz_uid_bind = None
     wd_uid_bind = bb_uid_bind = bbb_uid_bind = None
 
-    if uid is None and sr_uid is None and zzz_uid is None:
+    if uid is None and sr_uid is None and zzz_uid is None and bbb_uid is None:
         if uid is None:
             return UID_HINT
         elif sr_uid is None:
             return "请绑定星穹铁道UID..."
         elif zzz_uid is None:
             return "请绑定绝区零UID..."
+        elif bbb_uid is None:
+            return "请绑定崩坏3UID..."
 
     im_list = []
     is_add_stoken = False
