@@ -35,7 +35,7 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
 )
 
 
-def extract_json_from_text(raw_text: str) -> dict:
+def extract_json_from_text(raw_text: str) -> dict | list:
     if not raw_text or not raw_text.strip():
         raise ValueError("Empty input text for JSON extraction")
 

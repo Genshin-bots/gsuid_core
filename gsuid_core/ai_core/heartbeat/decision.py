@@ -229,10 +229,22 @@ async def run_heartbeat(
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning(f"🫀 [Heartbeat] 决策结果 JSON 解析失败: {e}, raw={result!r}")
         return None
-    mood: str = decision["mood"]
-    should_speak: bool = decision["should_speak"]
 
-    logger.debug(f"🫀 [Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={decision['context_hook']!r}")
+    # 模型可能把决策对象包进数组（如 [{...}]），取首个 dict 归一化，非 dict 判为解析失败
+    if isinstance(decision, list):
+        decision = next((item for item in decision if isinstance(item, dict)), None)
+    if not isinstance(decision, dict):
+        logger.warning(f"🫀 [Heartbeat] 决策结果不是预期的对象结构，跳过: raw={result!r}")
+        return None
+    if "mood" not in decision or "should_speak" not in decision:
+        logger.warning(f"🫀 [Heartbeat] 决策对象缺少必要字段，跳过: raw={result!r}")
+        return None
+
+    mood: str = decision["mood"]
+    should_speak: bool = bool(decision["should_speak"])
+    context_hook = decision["context_hook"] if "context_hook" in decision else ""
+
+    logger.debug(f"🫀 [Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}")
 
     try:
         statistics_manager.record_trigger(trigger_type="heartbeat")
@@ -256,7 +268,7 @@ async def run_heartbeat(
     # 群况 + 状态进 user_message。
     message_user = PROACTIVE_MESSAGE_USER_TEMPLATE.format(
         history_context=history_context,
-        mood=decision["mood"],
+        mood=mood,
         proactive_merge_section=proactive_merge_section,
     )
 
