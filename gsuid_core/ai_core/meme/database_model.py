@@ -415,9 +415,64 @@ class AiMemeRecord(SQLModel, table=True):
         cls,
         session: AsyncSession,
         meme_ids: List[str],
-    ) -> Sequence["AiMemeRecord"]:
-        """根据 meme_id 列表搜索记录（用于 Qdrant 向量检索后补全元数据）"""
+    ) -> List["AiMemeRecord"]:
+        """根据 meme_id 列表搜索记录（用于 Qdrant 向量检索后补全元数据）
+
+        保持 meme_ids 的原始顺序（即 Qdrant 相似度排序）。
+        """
         if not meme_ids:
             return []
         result = await session.execute(select(cls).where(col(cls.meme_id).in_(meme_ids)))
-        return result.scalars().all()
+        record_map = {r.meme_id: r for r in result.scalars().all()}
+        # 保持 Qdrant 返回的相似度排序
+        return [record_map[mid] for mid in meme_ids if mid in record_map]
+
+    @classmethod
+    @with_session
+    async def search_by_tags(
+        cls,
+        session: AsyncSession,
+        tags: List[str],
+        folder: Optional[str] = None,
+        limit: int = 5,
+    ) -> List["AiMemeRecord"]:
+        """根据标签 / 描述精确匹配搜索表情包
+
+        匹配规则（任意一个命中即返回）：
+        1. emotion_tags / scene_tags / custom_tags 中包含任一关键词
+        2. description 中包含任一关键词
+
+        使用 Python 端过滤，兼容所有数据库后端。
+
+        Args:
+            tags: 要匹配的关键词列表
+            folder: 可选的文件夹过滤
+            limit: 返回数量
+
+        Returns:
+            匹配的 AiMemeRecord 列表（按使用次数降序）
+        """
+        if not tags:
+            return []
+
+        tag_set = set(tags)
+
+        stmt = select(cls).where(col(cls.status).in_(["tagged", "manual"]))
+        if folder:
+            stmt = stmt.where(cls.folder == folder)
+
+        result = await session.execute(stmt)
+        records = result.scalars().all()
+
+        # Python 端过滤：标签精确命中 或 description 包含关键词
+        matched: List["AiMemeRecord"] = []
+        for record in records:
+            all_tags = set(record.emotion_tags + record.scene_tags + record.custom_tags)
+            if tag_set & all_tags:
+                matched.append(record)
+            elif record.description and any(kw in record.description for kw in tags):
+                matched.append(record)
+
+        # 按使用次数降序排序
+        matched.sort(key=lambda r: r.use_count, reverse=True)
+        return matched[:limit]

@@ -318,7 +318,12 @@ class MemeLibrary:
         top_k: int = 5,
         score_threshold: Optional[float] = None,
     ) -> Sequence[AiMemeRecord]:
-        """通过文本语义搜索表情包
+        """通过文本语义 + 标签精确匹配搜索表情包
+
+        策略：
+        1. 将查询文本按空格拆分为关键词，尝试标签精确匹配
+        2. 同时进行向量语义检索
+        3. 标签精确匹配的结果优先返回，再补充向量检索结果（去重）
 
         Args:
             query_text: 查询文本
@@ -329,10 +334,34 @@ class MemeLibrary:
         Returns:
             匹配的 AiMemeRecord 列表
         """
-        query_vector = await _embed_text(query_text)
-        if query_vector is None:
-            return []
-        return await MemeLibrary.search(query_vector, folder, top_k, score_threshold)
+        # 将查询文本拆分为关键词用于标签匹配
+        keywords = [kw.strip() for kw in query_text.split() if kw.strip()]
+
+        # 标签精确匹配（优先级最高）
+        tag_results = await AiMemeRecord.search_by_tags(keywords, folder=folder, limit=top_k)
+
+        # 如果标签匹配已有足够结果，直接返回
+        if len(tag_results) >= top_k:
+            return tag_results[:top_k]
+
+        # 向量语义检索（补充标签匹配不足的部分）
+        vec_results = await _vector_search(query_text, folder, top_k, score_threshold)
+
+        # 合并结果：标签匹配优先，向量结果补充（去重）
+        seen_ids: set[str] = set()
+        merged: list[AiMemeRecord] = []
+
+        for record in tag_results:
+            if record.meme_id not in seen_ids:
+                seen_ids.add(record.meme_id)
+                merged.append(record)
+
+        for record in vec_results:
+            if record.meme_id not in seen_ids:
+                seen_ids.add(record.meme_id)
+                merged.append(record)
+
+        return merged[:top_k]
 
     @staticmethod
     async def sync_to_qdrant(record: AiMemeRecord) -> None:
@@ -361,6 +390,19 @@ class MemeLibrary:
                     "qdrant_id": point_id,
                 },
             )
+
+
+async def _vector_search(
+    query_text: str,
+    folder: Optional[str],
+    top_k: int,
+    score_threshold: Optional[float],
+) -> Sequence[AiMemeRecord]:
+    """纯向量语义检索（内部辅助函数，供 search_by_text 调用）"""
+    query_vector = await _embed_text(query_text)
+    if query_vector is None:
+        return []
+    return await MemeLibrary.search(query_vector, folder, top_k, score_threshold)
 
 
 # ── Qdrant 操作辅助函数 ──
@@ -587,7 +629,7 @@ async def _search_qdrant(
     Returns:
         匹配的 meme_id 列表
     """
-    from qdrant_client.models import Filter, MatchValue, FieldCondition
+    from qdrant_client.models import Filter, MatchAny, MatchValue, FieldCondition
 
     from gsuid_core.ai_core.rag.base import client
 
@@ -604,7 +646,7 @@ async def _search_qdrant(
                 ),
                 FieldCondition(
                     key="status",
-                    match=MatchValue(value="tagged"),
+                    match=MatchAny(any=["tagged", "manual"]),
                 ),
             ]
         )

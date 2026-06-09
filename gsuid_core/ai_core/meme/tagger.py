@@ -66,7 +66,15 @@ TAG_PROMPT = """你是一个图片分析助手。请分析这张图片并返回 
 }
 
 字段说明：
-- is_meme: 是否为表情包（带文字/配文的图片、表情包、梗图等）, 如果是普通照片/风景/人物写真/截图/二次元/美女等内容填false
+- is_meme: 是否适合作为表情包使用。
+    判断标准：只要图片具有表达情绪、态度或可用于社交聊天的功能，就应标记为 true。包括但不限于：
+  · 带文字/配文的图片、梗图、表情包
+  · 二次元/动漫角色的夸张表情或可爱动作（即使没有文字）
+  · 动物的搞笑/可爱瞬间
+  · 简笔画、涂鸦、卡通形象
+  · 具有明显情绪表达的人物表情特写
+  · meme 格式的图片（如对比图、反应图等）
+  仅当图片为纯粹的风景照、证件照、产品图、截图、普通写真、技术图表等完全不具备表情包属性的内容时才填 false
 - description: 图片内容的简短描述
 - emotion_tags: 情绪标签列表，如 "开心", "无语", "搞笑", "可爱", "愤怒", "悲伤", "惊讶", "尴尬", "得意", "委屈"
 - scene_tags: 场景标签列表，如 "日常", "吐槽", "卖萌", "怼人", "安慰", "庆祝", "晚安", "早安"
@@ -315,16 +323,30 @@ async def _tag_single(meme_id: str) -> None:
         await MemeLibrary.mark_tag_failed(meme_id)
         return
 
-    # NSFW 检查
+    # NSFW 检查：rejected 前也写入标签，方便后期人工审核
     nsfw_threshold: float = meme_config.get_config("meme_nsfw_threshold").data
     if tag_result["nsfw_score"] >= nsfw_threshold:
         logger.info(f"[Meme] NSFW 分数过高，标记为 rejected: {meme_id}")
+        await MemeLibrary.update_tags(
+            meme_id=meme_id,
+            description=tag_result["description"],
+            emotion_tags=tag_result["emotion_tags"],
+            scene_tags=tag_result["scene_tags"],
+            persona_hint=tag_result["persona_hint"],
+        )
         await MemeLibrary.mark_rejected(meme_id, tag_result["nsfw_score"])
         return
 
-    # 非表情包检查
+    # 非表情包检查：rejected 前也写入标签，方便后期人工审核
     if not tag_result["is_meme"]:
         logger.info(f"[Meme] 不是表情包，标记为 rejected: {meme_id}")
+        await MemeLibrary.update_tags(
+            meme_id=meme_id,
+            description=tag_result["description"],
+            emotion_tags=tag_result["emotion_tags"],
+            scene_tags=tag_result["scene_tags"],
+            persona_hint=tag_result["persona_hint"],
+        )
         await MemeLibrary.mark_rejected(meme_id, 0.0)
         return
 
