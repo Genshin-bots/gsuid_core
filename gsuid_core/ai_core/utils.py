@@ -31,6 +31,7 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
         "[SILENCE]",
         "SILENCE",
         "<end_turn>",
+        "<no_tool_call>",
     }
 )
 
