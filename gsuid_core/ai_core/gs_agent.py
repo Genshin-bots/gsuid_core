@@ -59,6 +59,14 @@ _STICKY_FAMILY_TURNS = 3
 # L5 上下文增强检索：把最近多少轮用户原话拼进工具向量检索 query（含本轮）。
 _RECENT_TEXT_WINDOW = 3
 
+# 工具自动装配白名单：仅列表内 create_by 未显式传 tools 时走向量检索装配。
+# CapabilityAgent 自带显式 tools 故排除（见 runner.py）。
+_AGENTIC_CREATE_BY = ("SubAgent", "Chat", "Agent", "AutoPlanner")
+
+# skills_toolset 挂载白名单：agentic + CapabilityAgent
+# （需 list_skills/run_skill_script）；名单外后台调用不挂，避免白送 token。
+_SKILLS_CREATE_BY = (*_AGENTIC_CREATE_BY, "CapabilityAgent")
+
 # 框架默认的工具前摇台词（仅针对耗时较长、用户需要被告知"正在做事"的工具）。
 # 这是框架级默认值，必须保持「人格中性」——不带任何特定 Persona 的口吻或语气，
 # 任何 Persona 都应能直接套用而不出戏。带角色个性的台词应由各 Persona 在
@@ -870,7 +878,7 @@ class GsCoreAIAgent:
         if tools is None:
             tools = []
 
-        if self.create_by in ["SubAgent", "Chat", "Agent", "AutoPlanner"]:
+        if self.create_by in _AGENTIC_CREATE_BY:
             if not tools:
                 qy = ""
                 if isinstance(user_message, str):
@@ -1007,13 +1015,16 @@ class GsCoreAIAgent:
 
         # 当 return_model 指定时，使用 output_type 让 pydantic_ai 强制结构化输出
         # output_type 默认为 str（返回文本），指定 Pydantic 模型时强制返回结构化 JSON
+        # skills_toolset 仅挂载于 agentic + CapabilityAgent
+        # （详见 _SKILLS_CREATE_BY）；后台调用不挂，避免白送 token 破坏缓存。
+        _toolsets = [skills_toolset] if self.create_by in _SKILLS_CREATE_BY else []
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
             system_prompt=self.system_prompt or "你是一个智能助手, 简短的一句话回答问题即可。",
             model_settings={"max_tokens": self.max_tokens},
             tools=tools,
-            toolsets=[skills_toolset],
+            toolsets=_toolsets,
             retries=3,
             output_type=output_type or str,
         )

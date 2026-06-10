@@ -3,11 +3,9 @@
 用于从对话文本中提取实体和关系的 LLM 提示词模板。
 """
 
-# 注意：本模板刻意将「全部静态指令」前置、把随每次调用变化的
-# {scope_key} / {known_context} / {dialogue_content} 统一放到末尾。
-# 这样静态段构成稳定前缀，可被 OpenAI/DeepSeek 等兼容服务的 prompt 前缀缓存命中，
-# 减少重复 Token 计费；切勿把变量字段移回模板上方，否则会破坏前缀缓存。
-ENTITY_EXTRACTION_PROMPT = """你是一个信息提取专家，处理来自即时通讯群组的对话记录。
+# SYSTEM/USER 拆分依据：MiniMax 按「工具定义→系统提示词→对话内容」做前缀匹配，
+# 变量放 user message 才能让系统提示词构成 >512 token 的稳定缓存前缀。
+ENTITY_EXTRACTION_SYSTEM = """你是一个信息提取专家，处理来自即时通讯群组的对话记录。
 
 请按以下步骤执行（在内部完成，最终只输出 JSON）：
 
@@ -48,17 +46,18 @@ t 包含 "Speaker"。
 - 不确定时，不添加 scope_hint
 
 **输出格式（纯 JSON，不含任何额外文字）**：
-{{
+{
   "entities":[
-    {{"n": "444835641", "s": "群成员", "t": ["Speaker"], "u": "444835641"}},
-    {{"n": "户外运动", "s": "用户爱好", "t": ["Activity"]}}
+    {"n": "444835641", "s": "群成员", "t": ["Speaker"], "u": "444835641"},
+    {"n": "户外运动", "s": "用户爱好", "t": ["Activity"]}
   ],
   "edges":[
-    {{"src": "444835641", "tgt": "户外运动", "f": "喜欢户外运动"}}
+    {"src": "444835641", "tgt": "户外运动", "f": "喜欢户外运动"}
   ]
-}}
+}"""  # noqa: E501
 
-——以下为本次待处理的具体内容——
+# 每次调用变化的内容走 user message（「对话内容」模块），不参与稳定前缀缓存。
+ENTITY_EXTRACTION_USER = """——以下为本次待处理的具体内容——
 
 当前对话标识：{scope_key}
 {known_context}
@@ -70,9 +69,8 @@ t 包含 "Speaker"。
 """  # noqa: E501
 
 
-# C2-a / C2-b：运行时注入"本群已知别名 + 已存在实体"的上下文片段模板。
-# 由 worker._build_known_context 在 .format() 前填充到 ENTITY_EXTRACTION_PROMPT 的
-# {known_context} 占位符；无可注入数据时该占位符为空字符串。
+# C2-a/C2-b：运行时注入已知别名+实体的上下文模板，
+# 由 worker._build_known_context 填充到 ENTITY_EXTRACTION_USER。
 KNOWN_CONTEXT_TEMPLATE = """
 <本群已知信息（提取时务必参考）>
 {alias_section}{entity_section}说明：遇到上述别名时，必须在该实体的 a 字段填写对应正式名称；

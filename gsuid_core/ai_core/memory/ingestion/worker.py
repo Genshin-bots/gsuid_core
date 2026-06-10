@@ -855,7 +855,10 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
     """
 
     from gsuid_core.ai_core.gs_agent import create_agent
-    from gsuid_core.ai_core.memory.prompts.extraction import ENTITY_EXTRACTION_PROMPT
+    from gsuid_core.ai_core.memory.prompts.extraction import (
+        ENTITY_EXTRACTION_USER,
+        ENTITY_EXTRACTION_SYSTEM,
+    )
 
     MAX_CHARS = 10000
 
@@ -872,7 +875,8 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
     # C2-a / C2-b：注入"本群已知别名 + 已存在实体"，指导 LLM 对齐别名、跨批次消歧
     known_context = await _build_known_context(scope_key, dialogue)
 
-    prompt = ENTITY_EXTRACTION_PROMPT.format(
+    # 静态指令走 system_prompt、变量走 user message，构成稳定前缀以命中缓存（详见 prompts/extraction.py）。
+    prompt = ENTITY_EXTRACTION_USER.format(
         scope_key=scope_key,
         dialogue_content=dialogue,
         known_context=known_context,
@@ -933,12 +937,19 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         agent = create_agent(
             create_by="MemEntityExtraction",
             task_level="low",
+            system_prompt=ENTITY_EXTRACTION_SYSTEM,
         )
         # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace
         raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
         raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))
         data = extract_json_from_text(raw_text)
-
+        # 模型偶尔把对象包进数组（extract_json_from_text 的解析兜底也会返回 list），
+        # 与 heartbeat/decision 一致：取数组首个 dict 归一化；仍非 dict 则走下方
+        # ValueError 路径（warning + 计入提取失败统计），不静默丢弃
+        if isinstance(data, list):
+            data = next((item for item in data if isinstance(item, dict)), None)
+        if not isinstance(data, dict):
+            raise ValueError(f"extraction output is not a JSON object: {raw_text[:80]!r}")
         return _restore_keys(data)
 
     except asyncio.TimeoutError:
