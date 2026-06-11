@@ -80,9 +80,12 @@ def save_theme_config(config: dict) -> bool:
 @app.get("/api/theme/config")
 async def get_theme_config(
     request: Request,
-    _: Dict = Depends(require_auth),
 ):
-    """Get theme configuration"""
+    """Get theme configuration (公开接口，无需鉴权)
+
+    加载界面在用户未登录时就需要读取主题配置（例如背景图/毛玻璃强度等），
+    若此处要求鉴权会返回 401，前端重试导致白屏循环。
+    """
     config = load_theme_config()
     # 读取时若存储中没有 card_opacity 等新字段，返回时补默认值，
     # 避免前端拿到 undefined 触发回退逻辑。
