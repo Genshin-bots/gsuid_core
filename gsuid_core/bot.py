@@ -524,6 +524,52 @@ class _Bot:
             for _e in _recall_echos:
                 self._recall_waiters.pop(_e, None)
 
+    async def ban(
+        self,
+        user_id: Union[str, int],
+        group_id: Union[str, int],
+        duration: int,
+        target_type: Literal["group", "direct", "channel", "sub_channel"],
+        target_id: Optional[str],
+        bot_id: str,
+        bot_self_id: str,
+    ) -> None:
+        """请求 adapter 在群聊中禁言指定用户（fire-and-forget，无回执）。
+
+        content 为单个 Message(type="excute_ban_user",
+        data={"user_id": str, "group_id": str, "duration": int|str})。
+        duration 在 core 侧校验为 int 或纯数字字符串后再下发；与普通消息共用发送队列，
+        保证与在途消息的相对顺序。
+        """
+        send = MessageSend(
+            content=[
+                Message(
+                    type="excute_ban_user",
+                    data={
+                        "user_id": str(user_id),
+                        "group_id": str(group_id),
+                        "duration": duration,
+                    },
+                )
+            ],
+            bot_id=bot_id,
+            bot_self_id=bot_self_id,
+            target_type=target_type,
+            target_id=target_id,
+        )
+        logger.info(
+            f"[禁言用户to] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}"
+        )
+        body = msgjson.encode(send)
+
+        async def _do_send(body: bytes = body):
+            if self.bot is not None:
+                await self.bot.send_bytes(body)
+            else:
+                logger.warning("[_Bot] ws 未连接，消息丢弃")
+
+        await self._enqueue_send(_do_send())
+
     async def unsend(
         self,
         message_id: Union[str, int, List[Union[str, int]]],
@@ -540,7 +586,7 @@ class _Bot:
         mids = message_id if isinstance(message_id, list) else [message_id]
         for mid in mids:
             send = MessageSend(
-                content=[Message(type="excute_delete_message", data=str(mid))],
+                content=[Message(type="excute_delete_message", data={"message_id": str(mid)})],
                 bot_id=bot_id,
                 bot_self_id=bot_self_id,
                 target_type=target_type,
@@ -892,6 +938,38 @@ class Bot:
             self.ev.task_event,
             extra_metadata=extra_metadata,
             wait_recall=wait_recall,
+        )
+
+    async def ban(
+        self,
+        user_id: Union[str, int],
+        group_id: Union[str, int],
+        duration: int,
+        target_type: Optional[Literal["group", "direct", "channel", "sub_channel"]] = None,
+        target_id: Optional[str] = None,
+    ) -> None:
+        """请求 adapter 在群聊中禁言指定用户。
+
+        :param user_id: 被禁言的用户 id。
+        :param group_id: 禁言发生的群 id。
+        :param duration: 禁言时长（秒），int 或纯数字字符串。
+        :param target_type: 会话类型；缺省为当前事件所在会话。
+        :param target_id: 会话 id；仅在显式传入 ``target_type`` 时使用。
+        """
+        if self.ev.task_event is not None:
+            logger.debug("[ban] HTTP 模式不支持禁言操作，已忽略")
+            return
+        if target_type is None:
+            target_type = self.ev.user_type
+            target_id = self.ev.user_id if self.ev.user_type == "direct" else self.ev.group_id
+        await self.bot.ban(
+            user_id,
+            group_id,
+            duration,
+            target_type,
+            target_id,
+            self.ev.real_bot_id,
+            self.bot_self_id,
         )
 
     async def unsend(
