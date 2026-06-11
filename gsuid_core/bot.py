@@ -241,7 +241,7 @@ class _Bot:
         bot_self_id: str,
         msg_id: str = "",
         at_sender: bool = False,
-        sender_id: str = "",
+        sender_id: Optional[str] = "",
         group_id: Optional[str] = None,
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
@@ -972,13 +972,12 @@ class Bot:
             return
         if target_type is None:
             target_type = self.ev.user_type
-            target_id = self.ev.user_id if self.ev.user_type == "direct" else self.ev.group_id
         await self.bot.ban(
             user_id,
             group_id,
             duration,
             target_type,
-            target_id,
+            str(user_id),
             self.ev.real_bot_id,
             self.bot_self_id,
         )
