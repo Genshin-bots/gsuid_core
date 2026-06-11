@@ -203,9 +203,16 @@ class _Bot:
         if isinstance(data, dict) and "echo" in data and data["echo"] is not None:
             fut = self._recall_waiters.pop(str(data["echo"]), None)
             if fut is not None and not fut.done():
-                # id 归一为 str（OneBot 等平台的 message_id 为 int），保证返回元素类型恒为 str
+                # id 归一为 str（OneBot 等平台的 message_id 为 int），保证返回元素类型恒为 str。
+                # adapter 把一帧拆成多条消息发送时（如不支持合并转发的平台展开 node），
+                # id 可为 list，保留为 List[str]，由收集处 flatten 进最终扁平结果。
                 _mid = data["id"] if "id" in data else None
-                fut.set_result(None if _mid is None else str(_mid))
+                if _mid is None:
+                    fut.set_result(None)
+                elif isinstance(_mid, list):
+                    fut.set_result([str(x) for x in _mid])
+                else:
+                    fut.set_result(str(_mid))
         return True
 
     def start_send_worker(self):
@@ -505,7 +512,10 @@ class _Bot:
             for _f in _recall_futs:
                 if _f.done() and not _f.cancelled():
                     _v = _f.result()
-                    if _v is not None:
+                    # 一帧可能回多 id（list，平台把 node 展开为多条消息）；flatten 进扁平结果
+                    if isinstance(_v, list):
+                        ids.extend(_v)
+                    elif _v is not None:
                         ids.append(_v)
 
             # 能力探测：拿到任意真实 id 才算"支持回执"。断连会 set_result(None)，

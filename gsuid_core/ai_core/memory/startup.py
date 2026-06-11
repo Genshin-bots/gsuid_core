@@ -56,7 +56,8 @@ async def init_memory_system():
         logger.error(f"🧠 [Memory] Qdrant Collection 初始化失败: {e}")
         return
 
-    # 3. 启动 IngestionWorker 后台任务（在独立线程中运行，避免 LLM 调用阻塞主事件循环）
+    # 3. 启动 IngestionWorker 后台任务（主事件循环上的 task，LLM 调用为
+    # await 网络 I/O 不阻塞循环；独立线程双循环架构曾因跨循环取消击穿主循环，已废弃）
     global _ingestion_worker
     if _ingestion_worker is not None:
         logger.info("🧠 [Memory] IngestionWorker 已存在，跳过重复启动")
@@ -65,8 +66,8 @@ async def init_memory_system():
             from .ingestion.worker import IngestionWorker
 
             _ingestion_worker = IngestionWorker()
-            _ingestion_worker.start_in_thread()
-            logger.info("🧠 [Memory] IngestionWorker 后台任务已启动（独立线程）")
+            _ingestion_worker.start()
+            logger.info("🧠 [Memory] IngestionWorker 后台任务已启动")
         except Exception as e:
             logger.error(f"🧠 [Memory] IngestionWorker 启动失败: {e}")
             return
@@ -108,10 +109,9 @@ def get_ingestion_worker():
 
 @on_core_shutdown(priority=20)
 async def shutdown_memory_system():
-    """关闭记忆系统后台摄入线程。
+    """关闭记忆系统后台摄入任务。
 
-    需要在主事件循环销毁和解释器关闭前显式停止独立事件循环，避免后台线程
-    在默认执行器关闭后继续调度任务。
+    priority=20 保证在数据库引擎 dispose 之前完成关闭前的最后一次 flush。
     """
     global _ingestion_worker
     if _ingestion_worker is None:

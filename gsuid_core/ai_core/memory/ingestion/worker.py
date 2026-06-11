@@ -3,15 +3,20 @@
 单实例后台任务，从 observation_queue 消费消息，批量处理并写入数据库。
 按 scope_key 分组，维护缓冲区，满足时间窗口或数量阈值时触发 flush。
 
-关键设计：IngestionWorker 在独立线程的事件循环中运行，避免 LLM 调用
-（Entity/Edge 提取）阻塞主事件循环导致 WebSocket 心跳超时。
+关键设计：IngestionWorker 以主事件循环上的后台 task 运行。LLM 调用
+（Entity/Edge 提取）是纯异步网络 I/O，await 期间不阻塞事件循环；CPU 密集的
+embedding 推理已走 vector/ops.py 的独立线程池。历史上的"独立线程双事件循环"
+架构与主循环共享了循环亲和资源（pydantic_ai 缓存的 httpx.AsyncClient、全局
+SQLAlchemy 引擎、全局 AsyncQdrantClient），批次超时的跨循环取消会击中主循环
+Proactor 内核（WinError 995 → InvalidStateError → run_forever 崩溃 → WS 全线
+断连），详见 plans/ws_disconnect_agent_ingestion_investigation_20260611.md，
+故废弃。
 """
 
 import re
 import time
 import queue as sync_queue
 import asyncio
-import threading
 from typing import TypedDict
 from collections import defaultdict
 
@@ -113,10 +118,11 @@ class ExtractedResult(TypedDict):
 
 
 class IngestionWorker:
-    """单实例，在独立线程的事件循环中运行。
+    """单实例，以主事件循环上的后台 task 运行（同 multimodal.ImageUnderstandWorker）。
 
     从 observation_queue（线程安全的 queue.Queue）消费消息，批量处理并写入数据库。
-    独立线程运行确保 LLM 调用不会阻塞主事件循环。
+    LLM 调用是 await 的网络 I/O，不阻塞事件循环；所有超时取消均发生在单一循环
+    内部，走正常 CancelledError 传播路径。
     """
 
     def __init__(self):
@@ -128,52 +134,31 @@ class IngestionWorker:
         self._last_flush: dict[str, float] = {}
         # {scope_key: True} 标记某个 scope_key 正在 flush 中，避免重复创建 flush 任务
         self._flushing: set[str] = set()
-        self._llm_semaphore: asyncio.Semaphore | None = None  # 在独立事件循环中创建
+        self._llm_semaphore: asyncio.Semaphore | None = None  # start() 时创建
         self._running = False
         # 保护 flush_all() 执行期间禁止新的 _flush 并发执行
-        self._flush_lock: asyncio.Lock | None = None  # 在独立事件循环中创建
-        # 用于唤醒独立事件循环中的后台循环，避免关闭时仍等待 sleep/queue polling
-        self._stop_event: asyncio.Event | None = None  # 在独立事件循环中创建
-        # 独立线程事件循环
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        # flush_all 同步等待事件
-        self._flush_all_event: threading.Event | None = None
+        self._flush_lock: asyncio.Lock | None = None  # start() 时创建
+        # 用于唤醒后台循环，避免关闭时仍等待 sleep/queue polling
+        self._stop_event: asyncio.Event | None = None  # start() 时创建
+        # 主循环上的后台任务句柄
+        self._task: asyncio.Task | None = None
 
-    def start_in_thread(self):
-        """在独立线程中启动事件循环，避免阻塞主循环。
+    def start(self):
+        """在当前（主）事件循环中启动后台摄入任务，立即返回。
 
-        此方法在主事件循环中调用，启动后立即返回。
+        必须在主事件循环运行中调用（init_memory_system 满足此条件）。
         """
-        ready_event = threading.Event()
-
-        def _run_loop():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            # 在独立事件循环中创建 asyncio 原语
-            self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
-            self._flush_lock = asyncio.Lock()
-            self._stop_event = asyncio.Event()
-            self._running = True
-            ready_event.set()  # 通知主线程：事件循环已就绪
-            try:
-                self._loop.run_until_complete(self._run_forever())
-                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
-                self._loop.run_until_complete(self._loop.shutdown_default_executor())
-            except Exception as e:
-                logger.error(f"🧠 [Memory] IngestionWorker 线程异常退出: {e}", exc_info=True)
-            finally:
-                self._loop.close()
-
-        self._thread = threading.Thread(target=_run_loop, daemon=True, name="MemoryIngestionWorker")
-        self._thread.start()
-        ready_event.wait(timeout=10)  # 等待事件循环就绪
-        if not self._loop:
-            raise RuntimeError("IngestionWorker 线程启动超时")
-        logger.info("🧠 [Memory] IngestionWorker 独立线程已启动")
+        if self._running:
+            logger.info("🧠 [Memory] IngestionWorker 已在运行，跳过重复启动")
+            return
+        self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
+        self._flush_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
+        self._running = True
+        self._task = asyncio.create_task(self._run_forever(), name="memory_ingestion_worker")
 
     async def _run_forever(self):
-        """独立事件循环中的主循环"""
+        """后台主任务：并行运行队列消费与定时 flush 巡检"""
         consume_task = asyncio.create_task(self._consume_loop(), name="memory_ingestion_consume")
         flush_timer_task = asyncio.create_task(self._flush_timer_loop(), name="memory_ingestion_flush_timer")
         try:
@@ -192,42 +177,26 @@ class IngestionWorker:
             except Exception as e:
                 logger.warning(f"🧠 [Memory] IngestionWorker 关闭前 flush 失败: {e}", exc_info=True)
 
-    async def start(self):
-        """兼容旧接口：在当前事件循环中启动（不推荐，会阻塞主循环）"""
-        self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
-        self._flush_lock = asyncio.Lock()
-        self._stop_event = asyncio.Event()
-        self._running = True
-        await self._run_forever()
-
     async def flush_all(self):
         """立即将所有缓冲区 flush 到数据库。
 
         用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
-        此方法通过 asyncio.run_coroutine_threadsafe() 跨线程提交到独立事件循环执行，
-        使用 asyncio.wrap_future 异步等待，不阻塞主事件循环。
+        最多等待 120 秒，超时则放弃（取消在单循环内传播，安全）。
         """
-        if self._loop is None or not self._running or self._loop.is_closed():
+        if not self._running or self._flush_lock is None:
             logger.warning("🧠 [Memory] IngestionWorker 未启动，跳过 flush_all")
             return
 
         logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
-
-        # 跨线程提交到独立事件循环
-        future = asyncio.run_coroutine_threadsafe(
-            self._flush_all_inner(),
-            self._loop,
-        )
-        # 异步等待最多 120 秒，不阻塞主事件循环
         try:
-            await asyncio.wait_for(asyncio.wrap_future(future), timeout=120)
+            await asyncio.wait_for(self._flush_all_inner(), timeout=120)
         except asyncio.TimeoutError:
             logger.error("🧠 [Memory] flush_all 超时（120秒），放弃等待")
         except Exception as e:
             logger.error(f"🧠 [Memory] flush_all 异常: {e}", exc_info=True)
 
     async def _flush_all_inner(self):
-        """在独立事件循环中执行的 flush_all 核心逻辑"""
+        """flush_all 核心逻辑"""
         assert self._flush_lock is not None, "IngestionWorker 未初始化"
         async with self._flush_lock:
             # 消费所有队列中的数据到 buffers
@@ -269,38 +238,36 @@ class IngestionWorker:
                 logger.info("🧠 [Memory] flush_all 完成，分层图将在后台异步重建")
 
     async def stop(self):
-        """停止后台消费循环并等待独立线程退出。
+        """停止后台消费循环并等待退出（含关闭前 flush）。
 
-        不能直接调用 loop.stop()，否则 run_until_complete(_run_forever()) 会被中断，
-        正在执行的后台任务可能在解释器或默认 executor 关闭后继续调度，
-        触发 `RuntimeError: cannot schedule new futures after shutdown`。
+        置位 _stop_event 后 _consume_loop / _flush_timer_loop 会自行醒来退出；
+        cancel 兜底卡死场景——本方法与 _run_forever 同循环，set 与 cancel 之间
+        无让出点，取消必然落在 gather 的 await 处，finally 中的关闭前 flush
+        仍会完整执行。
         """
         self._running = False
-        loop = self._loop
-        if loop is not None and loop.is_running() and not loop.is_closed():
+        if self._stop_event is not None:
+            self._stop_event.set()
 
-            def _wake_stop_event() -> None:
-                if self._stop_event is not None:
-                    self._stop_event.set()
-
-            loop.call_soon_threadsafe(_wake_stop_event)
-
-        if self._thread is not None and self._thread.is_alive() and threading.current_thread() is not self._thread:
-            deadline = time.monotonic() + 10
-            while self._thread.is_alive() and time.monotonic() < deadline:
-                await asyncio.sleep(0.1)
-            if self._thread.is_alive():
-                logger.warning("🧠 [Memory] IngestionWorker 线程在 10 秒内未退出")
-            else:
-                logger.info("🧠 [Memory] IngestionWorker 已停止")
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"🧠 [Memory] IngestionWorker 停止时异常: {e}", exc_info=True)
+        logger.info("🧠 [Memory] IngestionWorker 已停止")
 
     async def _consume_loop(self):
         """从队列取消息，放入对应 scope_key 的缓冲区。
 
-        使用非阻塞 get_nowait + 短 sleep 轮询，避免后台线程事件循环依赖默认
-        ThreadPoolExecutor。关闭阶段默认 executor 可能已进入 shutdown，继续
-        asyncio.to_thread()/run_in_executor 会偶发抛出
-        `RuntimeError: cannot schedule new futures after shutdown`。
+        observation_queue 是线程安全的 queue.Queue（可能被非事件循环线程投递），
+        故保留非阻塞 get_nowait + 短轮询，不改 asyncio.Queue。
         """
         while self._running:
             try:

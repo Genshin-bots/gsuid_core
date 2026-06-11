@@ -3373,27 +3373,30 @@ async def init_memory_system():
     # 1. 确保 Qdrant Collection 存在
     await ensure_memory_collections()
 
-    # 2. 启动 IngestionWorker（在独立线程中运行，避免 LLM 调用阻塞主事件循环）
+    # 2. 启动 IngestionWorker（主事件循环上的后台 task）
     worker = IngestionWorker()
-    worker.start_in_thread()  # 启动独立线程事件循环，而非 asyncio.create_task()
+    worker.start()  # 内部 asyncio.create_task(self._run_forever())
 ```
 
-> **设计变更**：IngestionWorker 从 `asyncio.create_task(worker.start())` 改为
-> `worker.start_in_thread()`，在独立线程的事件循环中运行。
-> 这确保了 Memory 系统的 LLM 调用（Entity/Edge 提取）不会阻塞主事件循环，
-> 避免 NoneBot2 WebSocket 心跳超时断连。
+> **设计变更（2026-06）**：IngestionWorker 曾改为 `start_in_thread()` 在独立线程的
+> 事件循环中运行，动机是"避免 LLM 调用阻塞主事件循环导致 WS 心跳超时"。该动机
+> 是误判——LLM 调用是 `await` 的纯网络 I/O，等待期间不占用事件循环。双循环架构
+> 反而与主循环共享了三个循环亲和资源（pydantic_ai 缓存的 httpx.AsyncClient、全局
+> SQLAlchemy 引擎、全局 AsyncQdrantClient），批次超时的跨循环取消会击穿主循环
+> Proactor 内核（WinError 995 → InvalidStateError → 主循环崩溃 → WS 全线断连），
+> 详见 `plans/ws_disconnect_agent_ingestion_investigation_20260611.md`。
+> 现已回归主循环后台 task（与 ImageUnderstandWorker 同架构）。
 >
-> **线程架构**：
+> **任务架构**：
 > ```
 > 主事件循环 (Main Event Loop)
 > ├── WebSocket 消息接收
 > ├── AI 对话处理
-> └── 其他定时任务
->
-> 独立线程事件循环 (MemoryIngestionWorker)
-> ├── _consume_loop() - 从 queue.Queue 消费消息
-> ├── _flush() - 批量 LLM 提取 + 数据库写入
-> └── _flush_timer_loop() - 定时检查缓冲区
+> ├── 其他定时任务
+> └── memory_ingestion_worker (asyncio.Task)
+>     ├── _consume_loop() - 从 queue.Queue 非阻塞消费消息
+>     ├── _flush() - 批量 LLM 提取 + 数据库写入
+>     └── _flush_timer_loop() - 定时检查缓冲区
 > ```
 
 #### 10.12.4 bot.py 集成（主动会话 · Bot 自身回复）
@@ -4234,3 +4237,4 @@ Session ID 格式说明:
 | 2026-05-20 | v4.4 | **能力代理架构升级**（最终语义见 `AGENT_CAPABILITY_AGENT_MERGED_20260521.md`）：历史截断纳入 `RetryPromptPart`（`gs_agent.py` 截断函数 + 新增 `_drop_orphan_tool_results` 自愈兜底，根治"久聊必崩"400）；能力代理架构（新增 `ai_core/capability_agents/` 模块——执行/表达分离，长任务由无人格能力代理推进、结果经 `_persona_relay` 人格转译；`AIAgentTask` 新增 `agent_profile` 列；新增 `task_pause`/`task_resume` 工具；`register_long_task`/`create_subagent` 加 `agent_profile` 参数）；系统提示词改造（决策树补长任务分支 3.5、认知防火墙/极简原则改写、新增 `voice_anchor` 逐轮口吻锚点）；`register_long_task` 创建后立即执行第一步 + 单轮意图-行为一致性检测。更新 §13.1 |
 | 2026-05-21 | v4.5 | **能力代理架构合并收尾**（详见 `AGENT_CAPABILITY_AGENT_MERGED_20260521.md`）：主人格追问溯源（`AIAgentTask` 新增 `last_artifact` 列、新增 `task_get_last_artifact` LLM 工具、决策树补 3.6 追问溯源分支、`last_artifact` 空串回退到 `step.result_summary`）；`_RESEARCH_PROMPT` 重写"工具优先级+诚实底线+结论双段"；`code_agent` 工具集扩到 16 个；Windows subprocess 兼容 SelectorEventLoop；`next_run_at` 持久化调度；新增 webconsole `long_tasks_api` / `capability_agents_api` 两套 REST API + 用户画像 JSON 持久化；二次审计联动收尾（`capability_agents/registry` 新增 `unregister_capability_agent` 公开 API、`_dto_to_profile` 改显式存在性检查、`heartbeat/dispatcher` 与 `inspector._target_key` 去 `dict.get`/`getattr`、`gs_agent._drop_orphan_tool_results` 拆双 isinstance 分支、`webconsole/capability_agents_api` 的 `_pick` 内联展开等） |
 | 2026-05-27 | v4.6 | **沉默标记统一化**：`utils.py` 新增 `SILENCE_MARKERS` 模块级常量（`frozenset`，含 `<SILENCE>`/`[SILENCE]`/`SILENCE`/`<end_turn>`），`gs_agent.py`、`handle_ai.py`、`heartbeat/decision.py`、`send_chat_result`、`extract_json_from_text` 全部改为引用此常量，消除散落的硬编码列表；修复模型输出 `<end_turn>` 时被当作普通消息发送的 bug |
+| 2026-06-11 | v4.7 | **IngestionWorker 回归主循环**（根因调查见 `plans/ws_disconnect_agent_ingestion_investigation_20260611.md`）：废弃独立线程双事件循环架构——其与主循环共享循环亲和资源（pydantic_ai 缓存 httpx.AsyncClient、全局 SQLAlchemy 引擎、全局 AsyncQdrantClient），批次超时的跨循环取消击穿主循环 Proactor（WinError 995 → InvalidStateError → 主循环崩溃 → WS 全线断连）。`worker.py` 删除 `start_in_thread()` 及线程基础设施，`start()` 改为主循环 `asyncio.create_task` 正式入口，`flush_all()` 去跨线程化（直接 `wait_for(_flush_all_inner(), 120)`），`stop()` 简化为 set 停止事件 + cancel + await；`startup.py` 启动/关闭时序同步简化；更新 10.12.3 节 |

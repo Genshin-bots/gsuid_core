@@ -4,8 +4,8 @@ Observer 是整个记忆系统的"被动感知层"：AI 可以读取所有消息
 但不需要因此回复任何一条。它与 AI 的发言决策完全正交——即使 Persona 配置为
 纯静默模式，记忆依然在后台积累。
 
-使用 queue.Queue（线程安全）传递观察记录，支持 IngestionWorker 在独立线程
-的事件循环中运行，避免 LLM 调用阻塞主事件循环导致 WebSocket 心跳超时。
+使用 queue.Queue（线程安全）传递观察记录，允许非事件循环线程投递；
+IngestionWorker（主事件循环上的后台 task）以非阻塞轮询消费。
 
 C1 摄入质量门控（设计见 plans/agent_design_review.md）：
 入队前的门控 **100% 由纯规则 / 正则实现，绝不调用任何 LLM**（约束 3）。

@@ -44,7 +44,11 @@ MessageReceive(
 
 > adapter 规则（无需理解"多帧"概念）：**每个**带 `echo` 的 `MessageSend`，发送平台消息成功后回传一个 `recall_message_id` 控制消息，`echo` 原样、`id` 填平台返回 id。一次 `send()` 拆出的 N 帧自然回 N 次。
 >
-> core 收到回执后会对 `echo` 与 `id` 做 `str()` 归一——OneBot 等平台 `message_id` 为 int，adapter 不必自行转字符串，插件侧拿到的元素类型恒为 `str`。
+> **拿不到平台 id 时**（如纯文件上传帧、平台未建模回执、发送异常）：仍**必须回执**，`id` 填 `None`。core 会立即结算该帧（不计入返回列表），避免空等 `RECALL_WAIT_TIMEOUT` 或连续零回执被误判为"不支持回执"。**只要 `echo` 非空就回执**，与是否拿到 id 无关。
+>
+> **一帧被平台展开为多条消息时**（如不支持合并转发的平台把 `node` 逐条发送）：`id` 可填 `List[str]`，core 会 `extend` flatten 进最终的扁平 `List[str]`。单条消息照常填单个 `id`。
+>
+> core 收到回执后会对 `echo` 与 `id` 做 `str()` 归一（`id` 为 list 时逐元素归一）——OneBot 等平台 `message_id` 为 int，adapter 不必自行转字符串，插件侧拿到的元素类型恒为 `str`。
 
 ### 1.3 内部机制
 
@@ -115,13 +119,14 @@ MessageSend(
     bot_self_id=...,
     target_type="group" | "direct" | ...,   # 消息所在会话
     target_id="<会话 id>",
-    content=[Message(type="excute_delete_message", data="<待撤回消息 id>")],
+    content=[Message(type="excute_delete_message",
+                     data={"message_id": "<待撤回消息 id>"})],
 )
 ```
 
-- `data` 即待撤回消息 id，core 侧已 `str()` 归一。
+- `data` 为 `{"message_id": "<id>"}`（**dict**，非裸字符串）；`message_id` 已在 core 侧 `str()` 归一。
 - `msg_id` 留空、`echo` 为 `None`（撤回请求本身不参与回执机制）。
-- adapter 规则：`content` 单段且 `type == "excute_delete_message"` ⇒ 调用平台撤回 API，**不当作普通消息发送**。
+- adapter 规则：`content` 单段且 `type == "excute_delete_message"` ⇒ 取 `data["message_id"]` 调用平台撤回 API，**不当作普通消息发送**。
 - 撤回包与普通消息**共用同一发送队列**：与在途消息保持相对顺序，断连时同样暂存、重连后发出。
 
 #### 边界
