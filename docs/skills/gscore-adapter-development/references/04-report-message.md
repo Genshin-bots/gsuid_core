@@ -175,4 +175,14 @@ msg = MessageReceive(
 ```
 这正是 `bot.send_option` / `Button(text, data, ...)` 能工作的原因：点击 → 平台回调 → 适配器把
 `data` 当文本上报 → core 重新走触发器。各平台回调事件细节见 [§8.3](./08-special-platforms.md)。
+
+## 4.9 元事件上报（meta）：进群 / 退群 / 戳一戳
+
+平台的**通知类事件**不是聊天消息，但也通过上报链路进 core——构造一条 `content` 为**单段**
+`Message("meta-<事件名>", data)` 的 `MessageReceive`，由 core 的 `@sv.on_meta(...)` 触发器分发。
+这与按钮回调（§4.8 把 `data` 当 `text` 重新驱动命令）是**两条不同的路**：meta 段**不参与**文本/命令
+解析，专供插件监听平台事件。
+
+标准事件**仅三种**：`user_join_group` / `user_exit_group` / `poke`，为平台统一考量其他事件不做适配。
+三者统一的 `data` 字段、多适配器映射拆分写法见 [§11.1](./11-meta-and-control.md#111-元事件上报meta-event)。
 </content>

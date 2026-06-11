@@ -82,6 +82,20 @@
 - core 看不懂你平台的 `file_id` / 内部图片引用。**上报前**把图片/文件换成 url 或 base64。
   见 [§7.6](./07-image-and-media.md)。
 
+## 红线 16：控制包（撤回/禁言）不能当普通消息发
+
+- `content` 单段且 `type` 为 `excute_delete_message` / `excute_ban_user` 的包，要在分发**前**短路，
+  调平台撤回/禁言 API。误当消息发 → 非 OneBot 平台会**误发一条空消息**。见 [§11.3/§11.4](./11-meta-and-control.md)。
+
+## 红线 17：`echo` 非空必须回执，且 meta 段单独成包
+
+- `MessageSend.echo` 非空 ⇒ 发完真实消息**必须**回传 `recall_message_id`（即便没拿到 id 也回 `id=None`）。
+  漏回会被 core latch 成"不支持回执"，插件 `wait_recall` 此后直接拿空。
+- 上报 meta 事件时 `content` **只放一个** `Message("meta-<事件名>", data)`，别和文本混发——整包会被劫持进
+  meta 路径而跳过文本触发器。
+- meta 标准事件**仅三种**：`user_join_group` / `user_exit_group` / `poke`，`data` 字段名按 §11.1 统一表
+  严格对齐（插件依赖跨平台一致性）；其他事件不做适配、不要上报。见 [§11.1/§11.2](./11-meta-and-control.md)。
+
 ## 自查清单（复制到 PR 描述里逐条打勾）
 
 - [ ] 发的是二进制帧，`max_size` 已调大
@@ -96,4 +110,7 @@
 - [ ] 双 ID 平台 `group_id` 用 `-` 拼/拆一致
 - [ ] 不支持的类型 warning 跳过、不抛异常
 - [ ] 平台内部引用（file_id 等）上报前已转 url/base64
+- [ ] 控制包 `excute_delete_message`/`excute_ban_user` 分发前短路、不误发空消息
+- [ ] `echo` 非空必回执（没拿到 id 也回）；meta 段 `meta-` 前缀且单独成包
+- [ ] meta 只上报三种标准事件（`user_join_group`/`user_exit_group`/`poke`），字段名与 §11.1 统一表一致
 </content>

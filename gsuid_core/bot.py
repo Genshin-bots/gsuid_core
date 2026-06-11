@@ -590,7 +590,8 @@ class _Bot:
     ) -> None:
         """请求 adapter 撤回已发出的消息（fire-and-forget，无回执）。
 
-        每个 id 单独成包：content 为单个 Message(type="excute_delete_message", data="<id>")。
+        每个 id 单独成包：content 为单个 Message(type="excute_delete_message",
+        data={"message_id": "<id>"})。
         id 在 core 侧 str() 归一；与普通消息共用发送队列，保证与在途消息的相对顺序。
         """
         mids = message_id if isinstance(message_id, list) else [message_id]

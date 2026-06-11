@@ -192,6 +192,62 @@ async def get_time_limit_resp_msg(bot: Bot, ev: Event):
 
 `receive_mutiply_resp` 和 `send_option` 内部均调用 `receive_resp`，因此参数基本一致。
 
+## 3.5 撤回消息（`wait_recall` + `unsend`）与禁言（`ban`）
+
+### 拿到出站 id 并撤回
+
+`bot.send(...)` 默认返回 `None`（零额外开销）。传 `wait_recall=True` 时返回**出站消息 id 列表**
+`Optional[List[str]]`，再用 `bot.unsend(...)` 撤回：
+
+```python
+@sv.on_command("倒计时撤回")
+async def _(bot: Bot, ev: Event) -> None:
+    recall_ids = await bot.send("这条 5 秒后撤回", wait_recall=True)
+    # recall_ids: List[str]，每个气泡一个真实出站 id（哪怕只有一条也是单元素 list）
+    await asyncio.sleep(5)
+    await bot.unsend(recall_ids)          # 撤回本次全部气泡；直接透传即可
+```
+
+**`wait_recall` 关键点**：
+
+- 返回类型恒为 `Optional[List[str]]`：**单气泡也是单元素 list**（`["<id>"]`），绝不解包成裸 `str`。
+- 多帧（markdown 拆分、按钮独立帧、转发展开）返回**全部气泡** id，顺序与气泡出站顺序一致。
+- 旧适配器不支持回执 / 超时 ⇒ 返回 `[]`（空 list），不是 `None`。
+- **最坏阻塞 10 秒**（`RECALL_WAIT_TIMEOUT`，多帧共享一个窗口）：正常适配器一个往返内即返回；
+  连续 3 次整次零回执后该连接被记为"不支持回执"，此后 `wait_recall=True` **立即**返回 `[]` 不再等待。
+- AI 上下文（`MockBot`）下 `wait_recall` 被忽略、返回 `None`——**透传给 `unsend` 也安全**（见下）。
+
+**`bot.unsend(message_id, target_type=None, target_id=None)` 关键点**：
+
+- `message_id` 接受 `str | int | List[...] | None`；传 `None` / 空列表**静默忽略**，所以可以无脑透传
+  `wait_recall` 的返回值，不用判空。
+- `target_type` / `target_id` 缺省取**当前事件所在会话**。撤回 `target_send` 发往**其他会话**的消息时，
+  必须**连同 `target_id` 一起显式传入**。
+- fire-and-forget：**无回执、无返回值**，不保证平台一定撤回成功（超时窗口 / 权限由平台决定）。
+
+### 禁言群成员（`bot.ban`）
+
+```python
+@sv.on_command("禁言")
+async def _(bot: Bot, ev: Event) -> None:
+    if ev.at and ev.group_id:
+        await bot.ban(ev.at, ev.group_id, duration=600)   # 禁言 10 分钟
+        await bot.send("已禁言 10 分钟")
+
+# duration=0 表示解除禁言
+await bot.ban(ev.at, ev.group_id, duration=0)
+```
+
+- 签名：`bot.ban(user_id, group_id, duration, target_type=None, target_id=None)`。
+- `duration` 传 **int，单位秒**，`0` = 解除禁言；core 原样下发**不做校验**，非数字值会被适配器侧丢弃。
+- 同样是 fire-and-forget，无返回值。**平台能力差异大**：OneBot/Milky 等支持，Telegram/Discord
+  概念不同、私聊无意义时 adapter 会 warning 跳过。
+
+> ⚠️ **HTTP 模式（`/api/send_msg`）三者均不可用**：`wait_recall` 被忽略（返回 `None` 而非 `[]`），
+> `unsend` / `ban` 被静默忽略并记 debug 日志（无 adapter WS 连接）。
+> 这三个 API 的下行协议与适配器落地见适配器 SKILL 的
+> [§11.2–§11.4](../../gscore-adapter-development/references/11-meta-and-control.md)。
+
 ### 常用参数
 
 - **`reply`**：可填入 `bot.send()` 接受的任何值（字符串、`Message`、`MessageSegment` 等），会在等待回复前先发送一次消息。

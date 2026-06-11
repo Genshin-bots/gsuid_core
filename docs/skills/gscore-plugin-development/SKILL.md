@@ -10,7 +10,8 @@ description: >
 
   为 GsCore 机器人框架编写插件的完整指南。涵盖项目级目录规范（参照 ZZZeroUID / SayuStock）、
   Plugins/SV 双层架构、各类触发器的语义差异（on_command vs on_prefix vs on_fullmatch vs
-  on_keyword vs on_regex vs on_message vs on_file）、消息收发、数据库操作并注册到网页控制台
+  on_keyword vs on_regex vs on_message vs on_file）、on_meta 监听平台元事件（进群 / 退群 / 戳一戳
+  三种标准事件）、消息收发与撤回（wait_recall / unsend）/ 禁言（ban）、数据库操作并注册到网页控制台
   （site.register_admin / GsAdminModel）、订阅系统（gs_subscribe）、定时任务、配置管理、
   帮助系统（register_help + get_new_help）、推荐的渲染范式（优先 PIL → htmlkit
   → playwright 兜底）、AI 工具集成（@ai_tools、to_ai、ai_return、create_agent）、
@@ -49,7 +50,7 @@ description: >
 ## 推荐开发流程（按需跳转）
 
 1. **新建插件**：先看 [一、插件基础结构](./references/01-plugin-basics.md) 确定目录与命名，参考 [十五、完整插件示例](./references/15-full-plugin-example.md) 起步。
-2. **加命令**：看 [二、SV 与触发器](./references/02-sv-and-triggers.md) 选合适触发器，按 [三、消息收发](./references/03-messaging.md) 写发送 / 多步会话。
+2. **加命令**：看 [二、SV 与触发器](./references/02-sv-and-triggers.md) 选合适触发器，按 [三、消息收发](./references/03-messaging.md) 写发送 / 多步会话；要监听进群/退群/戳一戳用 `on_meta`（[§2.6](./references/02-sv-and-triggers.md#26-on_meta监听平台元事件进群--退群--戳一戳)），要撤回/禁言看 [§3.5](./references/03-messaging.md#35-撤回消息wait_recall--unsend与禁言ban)。
 3. **加配置**：看 [四、配置管理](./references/04-config-management.md) 定义 `CONFIG_DEFAULT` 与 `StringConfig`。
 4. **加数据库表**：看 [五、数据库操作](./references/05-database.md)；要可视化后台看 §5.5，要给已部署用户补字段看 §5.7。
 5. **加定时推送**：看 [六、定时任务与订阅](./references/06-scheduler-and-subscribe.md) 的 `gs_subscribe` 强制规范。
@@ -72,6 +73,8 @@ description: >
 - **嵌套加载**：`外层 __init__.py` + `外层 __nest__.py`（空文件） + `内层 __init__.py` 声明 `Plugins(...)` + `内层 __full__.py`（空文件）。详见 [一、插件基础结构 §1.2](./references/01-plugin-basics.md#12-入口三件套)。
 - **Plugins vs SV**：插件级 vs 服务模块级；`SV` 自动从调用栈推断归属。详见 [§1.3](./references/01-plugin-basics.md#13-plugins-vs-sv-的层级关系)。
 - **触发器选择**：`on_command`（推荐默认）vs `on_prefix`（强制带参）vs `on_fullmatch`（精确匹配）vs `on_keyword`（污染消息流，慎用）vs `on_regex`（复杂结构）vs `on_file` / `on_message`（特殊）。详见 [§2.2](./references/02-sv-and-triggers.md#22-触发器语义速查)。
+- **监听平台事件用 `on_meta`**：标准元事件**仅三种**——`user_join_group` / `user_exit_group` / `poke`，`data` 字段跨平台统一（适配器侧已归一），可放心监听；其他事件不做适配。触发器内用 `ev.get_meta(key)` 读字段；与命令路径**双向隔离**。详见 [§2.6](./references/02-sv-and-triggers.md#26-on_meta监听平台元事件进群--退群--戳一戳)。
+- **撤回 / 禁言**：`bot.send(..., wait_recall=True)` 返回出站 id 列表（`Optional[List[str]]`），配 `bot.unsend(...)` 撤回；`bot.ban(user_id, group_id, duration)` 禁言（`duration=0` 解禁）。三者 HTTP 模式不支持。详见 [§3.5](./references/03-messaging.md#35-撤回消息wait_recall--unsend与禁言ban)。
 - **`to_ai` vs `@ai_tools` 二选一**：同一函数不可同时用。命令也允许用户直接触发 → `to_ai`；纯 AI 内部工具 → `@ai_tools`。详见 [§10 顶部警告](./references/10-ai-to-ai-and-ai-return.md) 与 [§11 顶部警告](./references/11-ai-tools-decorator.md)。
 - **主动推送必须用 `gs_subscribe`**：不要 `for bot in gss.active_bot.items(): await bot.target_send(...)` 硬塞群号。详见 [§6.2](./references/06-scheduler-and-subscribe.md#62-主动推送强制规范)。
 - **数据库 Schema 变更用 `exec_list`**：放在 `on_core_start_before` 阶段执行。详见 [§5.7](./references/05-database.md#57-为已定义的表添加新列)。

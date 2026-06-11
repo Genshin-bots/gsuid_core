@@ -6,7 +6,8 @@ description: >
   "上报消息怎么写"、"core 发回来的消息怎么解析"、"base64:// 和 link:// 有什么区别"、
   "按钮 / Markdown 怎么适配到我的平台"、"node 合并转发怎么处理"、"双 ID 平台 group_id 怎么拼"、
   "QQ 官方 msg_id / msg_seq 时序问题"、"为什么我的命令前缀被吞了 / 没被识别"、
-  "适配器 token 鉴权 / 断线重连怎么写"、"log_ 日志包是什么"时触发此 SKILL。
+  "适配器 token 鉴权 / 断线重连怎么写"、"log_ 日志包是什么"、
+  "进退群 / 戳一戳元事件怎么上报"、"wait_recall 回执 / unsend 撤回 / ban 禁言怎么在适配器实现"时触发此 SKILL。
   凡是"把某个聊天平台接入 GsCore"或"调试 core 与适配器之间通信"的任务都应优先读取此 SKILL。
 
   为 GsCore（早柚核心 / gsuid-core）机器人框架编写**平台适配器**的完整指南。适配器是运行在
@@ -16,7 +17,8 @@ description: >
   收发双协程骨架）、上报消息（平台→core，每种 content 类型如何构造、user_pm 映射、is_tome 机制、
   命令前缀处理）、发送消息（core→平台，recv 循环按 bot_id 路由、每种 type 的落地处理）、
   base64:// 与 link:// 双形态图片处理、按钮与 Markdown 跨平台映射、node 合并转发、双 ID 平台
-  （villa / heybox）、QQ 官方时序、回调按钮上报、log_ 日志包、易错点红线清单与端到端完整示例。
+  （villa / heybox）、QQ 官方时序、回调按钮上报、log_ 日志包、元事件上报（user_join_group /
+  user_exit_group / poke 三种标准事件）、echo 撤回回执、撤回 / 禁言控制包、易错点红线清单与端到端完整示例。
 ---
 
 # GsCore 适配器开发完整指南（核心入口）
@@ -48,6 +50,7 @@ description: >
 | 八 | 特殊平台适配要点（双 ID 平台 / `group` 段 / QQ 官方 msg_id-msg_seq 时序 / 回调按钮上报 / 文件上报） | [references/08-special-platforms.md](./references/08-special-platforms.md) |
 | 九 | 端到端完整示例（最小适配器 → OneBot v11 全功能适配器） | [references/09-full-adapter-example.md](./references/09-full-adapter-example.md) |
 | 十 | 易错点与红线清单（二进制帧、bot_id 路由、双形态图片、node、log 包、msg_id 时序…） | [references/10-pitfalls.md](./references/10-pitfalls.md) |
+| 十一 | 元事件上报与控制消息（meta 标准三事件 进群/退群/戳一戳 上报、`echo` 撤回回执、`excute_delete_message` 主动撤回、`excute_ban_user` 禁言） | [references/11-meta-and-control.md](./references/11-meta-and-control.md) |
 
 ## 推荐开发流程（按需跳转）
 
@@ -58,8 +61,9 @@ description: >
 5. **打通下发链路**：读 [五、发送消息](./references/05-send-message.md)，让 core 回复的文本/图片能发回平台。
 6. **补齐富媒体**：图片走 [七、图片与多媒体](./references/07-image-and-media.md)，按钮/MD 走 [六、按钮与 Markdown](./references/06-buttons-and-markdown.md)。
 7. **处理平台怪癖**：双 ID、QQ 时序、回调按钮等看 [八、特殊平台](./references/08-special-platforms.md)。
-8. **对照完整示例**：随时参考 [九、端到端示例](./references/09-full-adapter-example.md)。
-9. **交付前自查**：逐条过 [十、易错点红线](./references/10-pitfalls.md)。
+8. **接元事件与撤回/禁言**：要上报进群/退群/戳一戳三种标准元事件、或支持插件 `wait_recall`/`unsend`/`ban`，看 [十一、元事件与控制消息](./references/11-meta-and-control.md)。
+9. **对照完整示例**：随时参考 [九、端到端示例](./references/09-full-adapter-example.md)。
+10. **交付前自查**：逐条过 [十、易错点红线](./references/10-pitfalls.md) 与 [十一、自查清单](./references/11-meta-and-control.md#116-自查清单)。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
@@ -84,6 +88,10 @@ description: >
   `group_id = f"{villa_id}-{room_id}"`，下发时再 `split('-')` 拆回。core 还会把 `group` 类型段附在末尾辅助定位。详见 [§8.1](./references/08-special-platforms.md)。
 - **`node` 是合并转发，不能嵌套**：`node` 的 `data` 是 `List[Message]`，多数平台不支持原生合并转发，
   需要**遍历逐条发送**。详见 [§5.4](./references/05-send-message.md)。
+- **元事件 / 撤回 / 禁言走专门通道**：标准元事件**仅三种**（`user_join_group` / `user_exit_group` / `poke`，
+  `data` 字段跨平台统一，其他事件不做适配），**上报**为单段 `Message("meta-<事件名>", data)`；
+  `MessageSend.echo` 非空时发完消息**必须回执** `recall_message_id`；`excute_delete_message` / `excute_ban_user`
+  是**下行控制包**，按 `bot_id` 调平台撤回/禁言 API、**不当普通消息发**。详见 [§11](./references/11-meta-and-control.md)。
 
 ## 关联文档（同仓库其他位置）
 
@@ -96,7 +104,10 @@ description: >
   - 下发消息编码（`base64://`/`link://`/`node`/`image_size`）：`gsuid_core/segment.py`、`gsuid_core/bot.py` 的 `target_send()`
   - 日志回显包：`gsuid_core/gs_logger.py`
 - **官方参考实现**（强烈建议对照阅读）：
-  - 多平台全功能适配器：`GenshinUID/GenshinUID/client.py`（下发）+ `__init__.py`（上报）
+  - 多平台全功能适配器：`GenshinUID/GenshinUID/client.py`（下发 + 撤回回执）+ `__init__.py`（上报）
+  - 元事件多适配器映射拆分：`GenshinUID/GenshinUID/meta_event.py`
+  - 撤回/禁言平台 API 分支：`GenshinUID/GenshinUID/send_utils.py` 的 `del_msg` / `excute_ban_user`
+  - 撤回 / 元事件协议契约：`gsuid_core/RECALL_AND_META_EVENTS.md`
   - 最小可运行测试客户端：`gsuid_core/client.py`
 </content>
 </invoke>

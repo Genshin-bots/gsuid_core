@@ -488,9 +488,10 @@ class SV:
         event_name: Union[str, Tuple[str, ...]],
         block: bool = False,
     ) -> Callable:
-        """注册 Meta 事件触发器（退群/加好友/戳一戳等平台通知类事件）。
+        """注册 Meta 事件触发器（进群/退群/戳一戳等平台通知类事件）。
 
-        :param event_name: 事件名（不含 "meta-" 前缀），如 "user_exit_group"；
+        :param event_name: 事件名（不含 "meta-" 前缀）。标准事件仅三种：
+            "user_join_group" / "user_exit_group" / "poke"（其他事件不做适配）；
             可传元组批量订阅多个事件，如 ("user_join_group", "user_exit_group")。
         :param block: 命中后是否阻断同事件的后续（低优先级）触发器。
         """

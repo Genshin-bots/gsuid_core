@@ -222,7 +222,22 @@ MessageSend(
 | `image_size` | `[w, h]` | 配合 MD 图片尺寸 | 渲染辅助 |
 | `group` | group_id str | 第二定位 ID | 双 ID 平台 |
 | `log_{LEVEL}` | 日志文本 | 打印日志，**不发送** | —— |
+| `excute_delete_message` | `{"message_id": str}` | **单段控制包**：调平台撤回 API，**不发送** | 见 §11.3 |
+| `excute_ban_user` | `{"user_id","group_id","duration"}` | 调平台禁言 API，**不发送** | 见 §11.4 |
 
 `markdown` / `buttons` / `template_*` 的详细适配见 [§6](./06-buttons-and-markdown.md)；
 `image` / `record` / `video` / `file` 见 [§7](./07-image-and-media.md)；`group` 见 [§8.1](./08-special-platforms.md)。
+
+## 5.8 撤回回执（`MessageSend.echo`）与控制包
+
+除上表的"内容段"，下发还有两类**非聊天**载荷，必须在 §5.1 的 recv 循环里**专门处理**，
+不要塞进 §5.2 的内容抽取：
+
+- **`MessageSend.echo`**：非空时，适配器发完真实消息**必须回传一条** `recall_message_id` 上行包
+  （带回 `echo` + 平台 msg_id），供插件 `bot.send(..., wait_recall=True)` 拿到出站 id。漏回会被 core
+  误判"不支持回执"而降级。
+- **`excute_delete_message` / `excute_ban_user` 控制包**：`content` 单段、对应插件 `bot.unsend` / `bot.ban`，
+  按 `bot_id` 调平台撤回/禁言 API，**绝不当普通消息发**（否则非 OneBot 平台会误发空消息）。
+
+三者的协议契约、各平台 API 分支、落地模式见 [§11](./11-meta-and-control.md)。
 </content>

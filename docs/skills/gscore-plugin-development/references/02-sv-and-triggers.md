@@ -141,3 +141,51 @@ async def my_handler(bot: Bot, ev: Event) -> None:
 > **`Bot` vs `_Bot` 提醒**：触发器拿到的 `bot: Bot` 是高层封装（含 `Event` 引用），
 > 提供 `send()` / `receive_resp()` / `target_send()` 等业务 API。框架内部连接管理用的
 > `_Bot` 是低层实现，**触发器代码绝不要直接 import `_Bot`**——详见 LLM.md §8。
+
+## 2.6 `on_meta`：监听平台元事件（进群 / 退群 / 戳一戳）
+
+上面八种触发器都基于**聊天消息的文本**匹配。要监听平台的**非消息事件**，用 `@sv.on_meta(event_name)`。
+标准元事件**只有三种**：`user_join_group`（进群）、`user_exit_group`（退群）、`poke`（戳一戳）。
+为平台统一考量，**除这三种外其他事件不做适配**（管理变更/禁言/撤回/加好友等不会有上报，订阅了也不触发）。
+这三种事件的 `data` 字段已由各官方适配器**跨平台统一**，插件可放心监听，无需写平台分支：
+
+```python
+sv = SV("群管理")
+
+@sv.on_meta("user_exit_group")
+async def _(bot: Bot, ev: Event) -> None:
+    uid = ev.get_meta("user_id")          # 便捷访问器, 等价 ev.meta_event_data.get(...)
+    gid = ev.get_meta("group_id")
+    await bot.send(f"{uid} 退群了")        # 交互式发送照常可用, 发往 ev 所在群/私聊
+
+# 一次订阅多个事件: 传 Tuple
+@sv.on_meta(("user_join_group", "user_exit_group"))
+async def _(bot: Bot, ev: Event) -> None:
+    await bot.send(f"{ev.meta_event_type}: {ev.get_meta('user_id')}")
+```
+
+**要点**：
+
+- `on_meta(event_name, block=False)`：`event_name` **不含** `meta-` 前缀，可传 `str` 或
+  `Tuple[str, ...]` 批量订阅。
+- 触发器内可用：`ev.meta_event_type`（事件名）、`ev.meta_event_data`（dict）、
+  `ev.get_meta(key, default=None)`（缺字段返回 default，不报错）。
+- meta 触发器**完整继承** SV/Plugins 的权限（pm）、黑白名单、area、enabled 限制——与命令路径同口径。
+- meta 走**独立分发路径**：不经文本/AI/历史/记忆/`command_start` 前缀剥离；普通消息**不会**误触发 meta 函数，
+  meta 事件也**不会**误触发普通触发器（双向隔离）。
+- **只订阅三种标准事件名**：`user_join_group` / `user_exit_group` / `poke`。其他事件名不做适配，
+  订阅了永远不会触发。
+
+**三种标准事件与 `data` 字段**（跨平台统一，id 值一律为 `str`）：
+
+| 事件名 | 触发时机 | 必有键 | 可选键 |
+|--------|---------|--------|--------|
+| `user_join_group` | 有人进群/进频道 | `user_id` `group_id` | `operator_id`（平台提供操作者时带） |
+| `user_exit_group` | 有人退群/被踢 | `user_id` `group_id` | `operator_id`（同上） |
+| `poke` | 戳一戳（群/私聊） | `user_id`(发起者) `target_id`(被戳者) | `group_id`（**仅群聊**有；私聊无此键，且被戳者即 bot 自身） |
+
+> 必有键可放心直接读；可选键用 `ev.get_meta(key)` 留好 `None` 判断（如 Discord/Telegram 不提供
+> `operator_id`）。个别平台会附加额外键（OneBot v11 的 `sub_type`、Milky 的 `invitor_id`），属平台特有
+> 补充，**跨平台插件不要依赖**。平台没有对应概念时不会触发（如 QQ 官方/Discord/Telegram/飞书无 `poke`）。
+> meta 事件的 `ev.sender` 为空 dict、`ev.msg_id` 为空串（上报即为空），**别**想着取昵称或做引用回复。
+> 协议与适配器落地细节见适配器开发 SKILL 的 [§11](../../gscore-adapter-development/references/11-meta-and-control.md)。
