@@ -8,7 +8,7 @@ from msgspec import json as msgjson
 from starlette.websockets import WebSocketState
 
 from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message, MessageSend, TaskContext
+from gsuid_core.models import Event, Message, MessageSend, TaskContext, MessageReceive
 from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
@@ -44,6 +44,13 @@ enable_forward: str = sp_config.get_config("EnableForwardMessage").data
 enable_buttons_platform = isb
 enable_markdown_platform = ism
 enable_Template_platform = isc
+
+# recall_message_id 回执等待上限（秒）。仅在 wait_recall=True 时生效；多帧共享同一窗口。
+# 响应正常的 adapter 一个 RTT 内即返回，此值只是缺失回执时的兜底超时。
+RECALL_WAIT_TIMEOUT: float = 10.0
+# 连续 N 次「整次调用一帧都没回执」后，将该连接标记为"不支持回执"，后续 wait_recall=True
+# 直接返回空结果不再等待；任意一帧成功回执即清零。避免旧 adapter 反复吃满超时。
+RECALL_DISABLE_AFTER_TIMEOUTS: int = 3
 
 
 def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
@@ -114,6 +121,15 @@ class _Bot:
         self._send_task: Optional[asyncio.Task] = None
         # 记录断连时间，用于重连时判断是否复用旧实例（避免内存泄漏）
         self._disconnected_at: Optional[float] = None
+        # ── recall_message_id 回执机制 ──
+        # echo -> Future[Optional[str]]，按连接隔离的等待登记表（逐帧登记）
+        self._recall_waiters: Dict[str, asyncio.Future] = {}
+        # 连接内单调自增的 echo 计数器（逐帧自增；连接内唯一即足够，比 uuid4 更省）
+        self._echo_seq: int = 0
+        # 能力探测缓存：None=未知 / True=支持 / False=已确认不支持
+        self._supports_recall: Optional[bool] = None
+        # 连续「整次调用零回执」计数，达到阈值后将 _supports_recall 置 False
+        self._recall_timeout_streak: int = 0
 
     def _add_bg_task(self, task: asyncio.Task) -> None:
         """将后台任务加入 bg_tasks，并注册完成时自动移除的回调。
@@ -171,6 +187,27 @@ class _Bot:
             except asyncio.QueueEmpty:
                 break
 
+    def resolve_recall(self, msg: MessageReceive) -> bool:
+        """若 msg 是 recall_message_id 回执则消费它并唤醒对应 future。
+
+        返回 True 表示这是回执控制消息（调用方应跳过正常消息处理）。
+        无论 echo 是否命中，只要 type 匹配就返回 True，防止回执误入消息管道。
+        """
+        content = msg.content
+        if not content or len(content) != 1:
+            return False
+        seg = content[0]
+        if seg.type != "recall_message_id":
+            return False
+        data = seg.data
+        if isinstance(data, dict) and "echo" in data and data["echo"] is not None:
+            fut = self._recall_waiters.pop(str(data["echo"]), None)
+            if fut is not None and not fut.done():
+                # id 归一为 str（OneBot 等平台的 message_id 为 int），保证返回元素类型恒为 str
+                _mid = data["id"] if "id" in data else None
+                fut.set_result(None if _mid is None else str(_mid))
+        return True
+
     def start_send_worker(self):
         """启动独立的发送 worker。
 
@@ -202,7 +239,8 @@ class _Bot:
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
-    ):
+        wait_recall: bool = False,
+    ) -> Optional[List[str]]:
         try:
             from gsuid_core.buildin_plugins.core_command.core_ai_control.state import (
                 is_scope_banned,
@@ -364,58 +402,152 @@ class _Bot:
             if _temp_mr:
                 message_result.append(_temp_mr)
 
-        for mr in message_result:
-            logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
-            if at_sender and sender_id:
-                if at_sender_pos == "消息最后":
-                    mr.append(MessageSegment.at(sender_id))
+        # ── 是否启用本次调用的 recall 回执 ──
+        # _recall_requested：用户确实请求 + WS 模式（非 HTTP）。决定返回 list 还是 None。
+        _recall_requested: bool = wait_recall and task_event is None
+        # _use_recall：在请求基础上，还要确有可发送帧 + 该连接未被判定为不支持，才真正登记 future。
+        _use_recall: bool = _recall_requested and bool(message_result) and self._supports_recall is not False
+        # 按帧登记，保持帧序（用于最终按序收集）
+        _recall_echos: List[str] = []
+        _recall_futs: List[asyncio.Future] = []
+
+        try:
+            for mr in message_result:
+                logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
+                if at_sender and sender_id:
+                    if at_sender_pos == "消息最后":
+                        mr.append(MessageSegment.at(sender_id))
+                    else:
+                        mr.insert(0, MessageSegment.at(sender_id))
+
+                if group_id:
+                    mr.append(Message("group", group_id))
+
+                # 本帧 echo：每帧各一，发前登记，避免回执先于登记到达的竞态
+                _echo: Optional[str] = None
+                if _use_recall:
+                    self._echo_seq += 1
+                    _echo = str(self._echo_seq)
+                    _fut: asyncio.Future = asyncio.get_running_loop().create_future()
+                    self._recall_waiters[_echo] = _fut
+                    _recall_echos.append(_echo)
+                    _recall_futs.append(_fut)
+
+                send = MessageSend(
+                    content=mr,
+                    bot_id=bot_id,
+                    bot_self_id=bot_self_id,
+                    target_type=target_type,
+                    target_id=target_id,
+                    msg_id=msg_id,
+                    echo=_echo,
+                )
+
+                local_val = await get_global_val(bot_id, bot_self_id)
+
+                local_val["send"] += 1
+
+                from gsuid_core.ai_core.memory.config import memory_config
+
+                enable_ai: bool = ai_config.get_config("enable").data
+                is_enable_memory: bool = ai_config.get_config("enable_memory").data
+                memory_mode: list[str] = memory_config.memory_mode
+                if enable_ai and is_enable_memory and "主动会话" in memory_mode:
+                    from gsuid_core.ai_core.memory import observe
+
+                    try:
+                        task = asyncio.create_task(
+                            observe(
+                                content=message_list_to_str(mr),
+                                speaker_id=f"__assistant_{bot_id}__",
+                                group_id=target_id if target_type == "group" else None,
+                                bot_self_id=bot_self_id,
+                                observer_blacklist=memory_config.observer_blacklist,
+                                message_type="group_msg" if target_type == "group" else "private_msg",
+                            )
+                        )
+                        self._add_bg_task(task)
+                    except Exception:
+                        pass  # Observer 失败不应影响主流程
+                # ============================================
+
+                logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
+                body = msgjson.encode(send)
+                # 通过发送队列串行化 WebSocket 发送，避免多任务并发写入
+                # 闭包不捕获 ws，执行时动态读取 self.bot，重连后自动使用新 ws
+
+                async def _do_send(body: bytes = body):
+                    if self.bot is not None:
+                        await self.bot.send_bytes(body)
+                    else:
+                        logger.warning("[_Bot] ws 未连接，消息丢弃")
+
+                if task_event:
+                    # HTTP 模式：仍走 send_dict
+                    self.send_dict[task_id] = send
+                    task_event.set()
                 else:
-                    mr.insert(0, MessageSegment.at(sender_id))
+                    # WS 模式：无论连没连都入队，worker 会等重连
+                    await self._enqueue_send(_do_send())
 
-            if group_id:
-                mr.append(Message("group", group_id))
+            # ── 等待回执（所有帧共享一个超时窗口）──
+            if not _recall_futs:
+                # 没登记任何 future：非 recall 路径、空消息、或连接已 latch 不支持。
+                # opt-in 时恒返回 list（此处为空），否则返回 None（与现状逐字节一致）。
+                return [] if _recall_requested else None
 
+            _, pending = await asyncio.wait(_recall_futs, timeout=RECALL_WAIT_TIMEOUT)
+            for _f in pending:
+                _f.cancel()
+
+            # ── 按帧序收集已到达的 id（过滤掉未回执 / 断连唤醒的 None 帧）──
+            ids: List[str] = []
+            for _f in _recall_futs:
+                if _f.done() and not _f.cancelled():
+                    _v = _f.result()
+                    if _v is not None:
+                        ids.append(_v)
+
+            # 能力探测：拿到任意真实 id 才算"支持回执"。断连会 set_result(None)，
+            # 不能据此误判为支持——否则 _supports_recall 永远停在 True，无法再 latch 为不支持。
+            if ids:
+                self._supports_recall = True
+                self._recall_timeout_streak = 0
+            else:
+                self._recall_timeout_streak += 1
+                if self._supports_recall is None and self._recall_timeout_streak >= RECALL_DISABLE_AFTER_TIMEOUTS:
+                    self._supports_recall = False
+                    logger.debug(f"[_Bot] {self.bot_id} 连续 {self._recall_timeout_streak} 次未回执，停用 recall 等待")
+            return ids
+        finally:
+            # 任何路径都清掉本次登记项，杜绝泄漏
+            for _e in _recall_echos:
+                self._recall_waiters.pop(_e, None)
+
+    async def unsend(
+        self,
+        message_id: Union[str, int, List[Union[str, int]]],
+        target_type: Literal["group", "direct", "channel", "sub_channel"],
+        target_id: Optional[str],
+        bot_id: str,
+        bot_self_id: str,
+    ) -> None:
+        """请求 adapter 撤回已发出的消息（fire-and-forget，无回执）。
+
+        每个 id 单独成包：content 为单个 Message(type="excute_delete_message", data="<id>")。
+        id 在 core 侧 str() 归一；与普通消息共用发送队列，保证与在途消息的相对顺序。
+        """
+        mids = message_id if isinstance(message_id, list) else [message_id]
+        for mid in mids:
             send = MessageSend(
-                content=mr,
+                content=[Message(type="excute_delete_message", data=str(mid))],
                 bot_id=bot_id,
                 bot_self_id=bot_self_id,
                 target_type=target_type,
                 target_id=target_id,
-                msg_id=msg_id,
             )
-
-            local_val = await get_global_val(bot_id, bot_self_id)
-
-            local_val["send"] += 1
-
-            from gsuid_core.ai_core.memory.config import memory_config
-
-            enable_ai: bool = ai_config.get_config("enable").data
-            is_enable_memory: bool = ai_config.get_config("enable_memory").data
-            memory_mode: list[str] = memory_config.memory_mode
-            if enable_ai and is_enable_memory and "主动会话" in memory_mode:
-                from gsuid_core.ai_core.memory import observe
-
-                try:
-                    task = asyncio.create_task(
-                        observe(
-                            content=message_list_to_str(mr),
-                            speaker_id=f"__assistant_{bot_id}__",
-                            group_id=target_id if target_type == "group" else None,
-                            bot_self_id=bot_self_id,
-                            observer_blacklist=memory_config.observer_blacklist,
-                            message_type="group_msg" if target_type == "group" else "private_msg",
-                        )
-                    )
-                    self._add_bg_task(task)
-                except Exception:
-                    pass  # Observer 失败不应影响主流程
-            # ============================================
-
-            logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
+            logger.info(f"[撤回消息to] {bot_id} - {target_type} - {target_id} - {mid}")
             body = msgjson.encode(send)
-            # 通过发送队列串行化 WebSocket 发送，避免多任务并发写入
-            # 闭包不捕获 ws，执行时动态读取 self.bot，重连后自动使用新 ws
 
             async def _do_send(body: bytes = body):
                 if self.bot is not None:
@@ -423,13 +555,7 @@ class _Bot:
                 else:
                     logger.warning("[_Bot] ws 未连接，消息丢弃")
 
-            if task_event:
-                # HTTP 模式：仍走 send_dict
-                self.send_dict[task_id] = send
-                task_event.set()
-            else:
-                # WS 模式：无论连没连都入队，worker 会等重连
-                await self._enqueue_send(_do_send())
+            await self._enqueue_send(_do_send())
 
     async def wait_task(
         self,
@@ -750,7 +876,8 @@ class Bot:
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
         extra_metadata: Optional[Dict[str, Any]] = None,
-    ):
+        wait_recall: bool = False,
+    ) -> Optional[List[str]]:
         return await self.bot.target_send(
             message,
             self.ev.user_type,
@@ -764,6 +891,38 @@ class Bot:
             self.ev.task_id,
             self.ev.task_event,
             extra_metadata=extra_metadata,
+            wait_recall=wait_recall,
+        )
+
+    async def unsend(
+        self,
+        message_id: Union[str, int, List[Union[str, int]], None],
+        target_type: Optional[Literal["group", "direct", "channel", "sub_channel"]] = None,
+        target_id: Optional[str] = None,
+    ) -> None:
+        """撤回 bot 已发出的消息。
+
+        :param message_id: 出站消息 id（或 id 列表），即 ``send(..., wait_recall=True)``
+            的返回值；传 ``None`` / 空列表时静默忽略，可直接透传 ``wait_recall`` 的结果。
+        :param target_type: 消息所在会话类型；缺省为当前事件所在会话。
+            撤回 ``target_send`` 发往其他会话的消息时需连同 ``target_id`` 一起显式传入。
+        :param target_id: 消息所在会话 id；仅在显式传入 ``target_type`` 时使用。
+        """
+        if message_id is None:
+            return
+        if self.ev.task_event is not None:
+            # HTTP 模式（/api/send_msg）无 adapter WS 连接，撤回请求无处投递
+            logger.debug("[unsend] HTTP 模式不支持撤回消息，已忽略")
+            return
+        if target_type is None:
+            target_type = self.ev.user_type
+            target_id = self.ev.user_id if self.ev.user_type == "direct" else self.ev.group_id
+        await self.bot.unsend(
+            message_id,
+            target_type,
+            target_id,
+            self.ev.real_bot_id,
+            self.bot_self_id,
         )
 
     async def target_send(
@@ -774,7 +933,8 @@ class Bot:
         at_sender: bool = False,
         sender_id: str = "",
         send_source_group: Optional[str] = None,
-    ):
+        wait_recall: bool = False,
+    ) -> Optional[List[str]]:
         return await self.bot.target_send(
             message,
             target_type,
@@ -785,6 +945,7 @@ class Bot:
             at_sender,
             sender_id,
             send_source_group,
+            wait_recall=wait_recall,
         )
 
 

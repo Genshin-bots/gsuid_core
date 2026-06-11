@@ -17,6 +17,7 @@ class Trigger:
             "file",
             "regex",
             "message",
+            "meta",
         ],
         keyword: str,
         func: Callable,
@@ -40,6 +41,8 @@ class Trigger:
                 return False
         if self.type == "file":
             return self._check_file(self.keyword, ev)
+        if self.type == "meta":
+            return self._check_meta(self.keyword, ev)
         return getattr(self, f"_check_{self.type}")(self.keyword, msg)
 
     def _check_prefix(self, prefix: str, msg: str) -> bool:
@@ -72,6 +75,10 @@ class Trigger:
             if ev.file_name and ev.file_name.split(".")[-1] == file_type:
                 return True
         return False
+
+    def _check_meta(self, event_name: str, ev: Event) -> bool:
+        # 事件名精确匹配；普通消息 meta_event_type 为 None 恒不相等，不会误触发
+        return ev.meta_event_type == event_name
 
     def _check_regex(self, pattern: str, msg: str) -> bool:
         if msg.startswith(self.prefix):

@@ -4,7 +4,7 @@ from copy import deepcopy
 from uuid import uuid4
 from typing import Dict, List, Tuple, Optional
 
-from gsuid_core.sv import SL
+from gsuid_core.sv import SL, SV
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
@@ -117,9 +117,129 @@ async def _flush_user_buffer_on_shutdown():
     logger.info("[GsCore] CoreUser/Group 缓冲区刷写完成")
 
 
+def _sv_authorized(_sv: SV, event: Event, user_pm: int) -> bool:
+    """复刻命令循环中的 Plugins/SV 级联鉴权（pm / 黑白名单 / area / enabled）。
+
+    全局 BlackList 由调用方在循环外统一判断，这里只做 plugin/sv 级。
+    命令路径与 meta 路径共用，保证两处鉴权口径一致、不漂移。
+    """
+    _plugins = _sv.plugins
+    if not _plugins.enabled:
+        return False
+    if user_pm > _plugins.pm:
+        return False
+    if event.group_id in _plugins.black_list or event.user_id in _plugins.black_list:
+        return False
+    _plugins_area = _plugins.area
+    if not (
+        _plugins_area == "SV"
+        or _plugins_area == "ALL"
+        or (event.user_type == "group" and _plugins_area == "GROUP")
+        or (event.user_type == "direct" and _plugins_area == "DIRECT")
+    ):
+        return False
+    if _plugins.white_list and _plugins.white_list != [""]:
+        if event.user_id not in _plugins.white_list and event.group_id not in _plugins.white_list:
+            return False
+    if not _sv.enabled:
+        return False
+    if user_pm > _sv.pm:
+        return False
+    if event.group_id in _sv.black_list or event.user_id in _sv.black_list:
+        return False
+    if not (
+        _sv.area == "ALL"
+        or _plugins_area == "ALL"
+        or (event.user_type == "group" and _sv.area == "GROUP")
+        or (event.user_type == "direct" and _sv.area == "DIRECT")
+    ):
+        return False
+    if _sv.white_list and _sv.white_list != [""]:
+        if event.user_id not in _sv.white_list and event.group_id not in _sv.white_list:
+            return False
+    return True
+
+
+def _extract_meta_segment(msg: MessageReceive) -> Optional[Message]:
+    """返回首个 type 以 'meta-' 开头的 content 段；无则 None。"""
+    for seg in msg.content:
+        if seg.type and seg.type.startswith("meta-"):
+            return seg
+    return None
+
+
+async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
+    """Meta 事件独立分发：鉴权口径与命令一致，但不走文本/AI/历史/记忆管道。"""
+    show_receive: bool = log_config.get_config("ShowReceive").data
+
+    # 1. MessageReceive → Event（meta 字段已在 msg_process 内填充并回填 user_id/group_id）
+    event = await msg_process(msg)
+    event.WS_BOT_ID = ws.bot_id
+    if event.meta_event_type is None:
+        # 理论不会发生（拦截已确认存在 meta 段）；防御性返回
+        return
+    if show_receive:
+        logger.info("[收到Meta事件]", event_payload=event)
+
+    # 2. 权限
+    event.user_pm = user_pm = await get_user_pml(event)
+
+    # 3. 全局黑名单（与命令路径同口径）
+    black_list: List[str] = sp_config.get_config("BlackList").data
+    if event.group_id in black_list or event.user_id in black_list:
+        return
+
+    # 4. 鉴权级联 + 仅匹配 meta 触发器
+    matched: Dict[Trigger, int] = {}
+    for _sv_name in SL.lst:
+        _sv = SL.lst[_sv_name]
+        if "meta" not in _sv.TL:
+            continue
+        if not _sv_authorized(_sv, event, user_pm):
+            continue
+        for _trigger in _sv.TL["meta"].values():
+            try:
+                if _trigger.check_command(event):
+                    matched[_trigger] = _sv.priority
+            except Exception:
+                logger.exception(f"[GsCore] meta trigger.check_command 异常: keyword={_trigger.keyword!r}")
+
+    if not matched:
+        return
+
+    # 5. 按优先级分发（与命令路径一致：deepcopy → Bot → TaskContext → 入队；支持 block）
+    for trigger, _ in sorted(matched.items(), key=lambda x: x[1]):
+        _event = deepcopy(event)
+        _event.task_id = str(uuid4())
+        _event.command = trigger.keyword  # 事件名，便于日志/追踪
+        bot = Bot(ws, _event)
+        logger.info("[Meta事件触发]", meta=[trigger.keyword, event.meta_event_data])
+        coro = trigger.func(bot, _event)
+        func_name = getattr(coro, "__qualname__", str(coro))
+        trace_ctx = TraceContext(
+            trace_id=_event.task_id,
+            short_id=_event.task_id[:8],
+            command=f"meta:{trigger.keyword}",
+            user_id=_event.user_id,
+            group_id=_event.group_id,
+            bot_id=_event.bot_id,
+            session_id=_event.session_id,
+            start_time=time.perf_counter(),
+            start_ts=time.time(),
+        )
+        task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm, trace_context=trace_ctx)
+        ws.queue.put_nowait(task_ctx)
+        if trigger.block:
+            break
+
+
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if not IS_HANDDLE:
         return
+
+    # ── Meta 事件最优先拦截：早于黑名单与一切常规处理，走独立分发路径 ──
+    if _extract_meta_segment(msg) is not None:
+        return await handle_meta_event(ws, msg)
 
     black_list: List[str] = sp_config.get_config("BlackList").data
     shield_list = sp_config.get_config("ShieldQQBot").data
@@ -389,40 +509,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if msg.group_id not in black_list and msg.user_id not in black_list:
         for _sv_name in SL.lst:
             _sv = SL.lst[_sv_name]
-            _plugins = _sv.plugins
-            if not _plugins.enabled:
+            if not _sv_authorized(_sv, event, user_pm):
                 continue
-            if user_pm > _plugins.pm:
-                continue
-            if msg.group_id in _plugins.black_list or msg.user_id in _plugins.black_list:
-                continue
-            _plugins_area = _plugins.area
-            if not (
-                _plugins_area == "SV"
-                or _plugins_area == "ALL"
-                or (event.user_type == "group" and _plugins_area == "GROUP")
-                or (event.user_type == "direct" and _plugins_area == "DIRECT")
-            ):
-                continue
-            if _plugins.white_list and _plugins.white_list != [""]:
-                if msg.user_id not in _plugins.white_list and msg.group_id not in _plugins.white_list:
-                    continue
-            if not _sv.enabled:
-                continue
-            if user_pm > _sv.pm:
-                continue
-            if msg.group_id in _sv.black_list or msg.user_id in _sv.black_list:
-                continue
-            if not (
-                _sv.area == "ALL"
-                or _plugins_area == "ALL"
-                or (event.user_type == "group" and _sv.area == "GROUP")
-                or (event.user_type == "direct" and _sv.area == "DIRECT")
-            ):
-                continue
-            if _sv.white_list and _sv.white_list != [""]:
-                if msg.user_id not in _sv.white_list and msg.group_id not in _sv.white_list:
-                    continue
 
             _priority = _sv.priority
             for _trigger_dict in _sv.TL.values():
@@ -676,6 +764,15 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.file_type = "url"
             else:
                 event.file_type = "base64"
+        elif _msg.type and _msg.type.startswith("meta-"):
+            event.meta_event_type = _msg.type[len("meta-") :]
+            if isinstance(_msg.data, dict):
+                event.meta_event_data = _msg.data
+                # 顶层未提供 user_id/group_id 时，从 data 回填，保证权限/黑白名单/area 可用
+                if not event.user_id and "user_id" in _msg.data and _msg.data["user_id"] is not None:
+                    event.user_id = str(_msg.data["user_id"])
+                if not event.group_id and "group_id" in _msg.data and _msg.data["group_id"] is not None:
+                    event.group_id = str(_msg.data["group_id"])
         _content.append(_msg)
     event.content = _content
     return event

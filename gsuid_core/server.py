@@ -558,6 +558,14 @@ class GsServer:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+            # 2.5 唤醒所有等待 recall 回执的 future（set_result(None)），避免插件协程挂起到超时；
+            # None 会在收集时被过滤 ⇒ 调用方拿到已到达的部分（可能为空 list）。并清空防止跨重连泄漏。
+            for _fut in list(bot._recall_waiters.values()):
+                if not _fut.done():
+                    _fut.set_result(None)
+            bot._recall_waiters.clear()
+            bot._recall_timeout_streak = 0
+
             # 3. 清理 Bot.instances 中属于该 bot_id 的条目
             session_ids_to_remove = [sid for sid, b in Bot.instances.items() if b.bot_id == bot_id]
             for sid in session_ids_to_remove:

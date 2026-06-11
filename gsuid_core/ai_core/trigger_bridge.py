@@ -90,8 +90,12 @@ class MockBot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
-    ) -> None:
-        """拦截 send：文本存入上下文返回给 AI，图片/音频/视频通过 RM 注册并返回资源 ID。"""
+        wait_recall: bool = False,
+    ) -> Optional[List[str]]:
+        """拦截 send：文本存入上下文返回给 AI，图片/音频/视频通过 RM 注册并返回资源 ID。
+
+        AI 上下文下不真正发送消息，故 wait_recall 被忽略、恒返回 None（无真实出站消息）。
+        """
         ctx = object.__getattribute__(self, "_ctx")
         if isinstance(message, bytes):
             # bytes 通常是图片数据，注册到 RM 并记录资源 ID
@@ -123,14 +127,16 @@ class MockBot:
                     else:
                         # 纯文字 Message，转为字符串存入返回值
                         ctx["bot_messages"].append(_message_to_text(message))
+        return None
 
     async def reply(
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
-    ) -> None:
+        wait_recall: bool = False,
+    ) -> Optional[List[str]]:
         """拦截 reply，行为与 send 相同。"""
-        await self.send(message, at_sender)
+        return await self.send(message, at_sender, wait_recall)
 
     async def send_option(
         self,

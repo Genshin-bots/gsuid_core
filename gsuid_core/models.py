@@ -79,6 +79,11 @@ class Event(MessageReceive):
     file_type: Optional[Literal["url", "base64"]] = None
     regex_group: Tuple[str, ...] = ()
     regex_dict: Dict[str, str] = {}
+    # ── Meta 事件 ──
+    # 事件名（去掉 "meta-" 前缀），普通消息为 None
+    meta_event_type: Optional[str] = None
+    # 事件数据（adapter 下发的 data dict），普通消息为空 dict
+    meta_event_data: Dict[str, Any] = {}
 
     def __hash__(self) -> int:
         """哈希：只基于会话标识字段，包含 WS_BOT_ID 与 bot_self_id 以区分不同 WS 连接和机器人账号。"""
@@ -113,6 +118,10 @@ class Event(MessageReceive):
         uid = self.user_id if self.user_id else "0"
         return f"{ws_bid}:{bid}:{bot_self_id}:private:{uid}"
 
+    def get_meta(self, key: str, default: Any = None) -> Any:
+        """便捷读取 meta 事件数据；非 meta 事件 meta_event_data 为空 dict，返回 default。"""
+        return self.meta_event_data.get(key, default)
+
 
 class MessageSend(Struct):
     bot_id: str = "Bot"
@@ -121,3 +130,4 @@ class MessageSend(Struct):
     target_type: Optional[str] = None
     target_id: Optional[str] = None
     content: Optional[List[Message]] = None
+    echo: Optional[str] = None  # 回执关联令牌；仅在请求 recall_message_id 时下发

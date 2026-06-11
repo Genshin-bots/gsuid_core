@@ -319,6 +319,7 @@ class SV:
             "file",
             "regex",
             "message",
+            "meta",
         ],
         keyword: Union[str, Tuple[str, ...]],
         block: bool = False,
@@ -481,6 +482,20 @@ class SV:
         if unique_id is None:
             unique_id = str(uuid.uuid4())
         return self._on("message", unique_id, block, to_me, prefix, to_ai=to_ai)
+
+    def on_meta(
+        self,
+        event_name: Union[str, Tuple[str, ...]],
+        block: bool = False,
+    ) -> Callable:
+        """注册 Meta 事件触发器（退群/加好友/戳一戳等平台通知类事件）。
+
+        :param event_name: 事件名（不含 "meta-" 前缀），如 "user_exit_group"；
+            可传元组批量订阅多个事件，如 ("user_join_group", "user_exit_group")。
+        :param block: 命中后是否阻断同事件的后续（低优先级）触发器。
+        """
+        # prefix=False：meta 事件名不参与命令前缀展开；to_me=False：meta 无 @ 语义
+        return self._on("meta", event_name, block=block, to_me=False, prefix=False)
 
 
 def get_plugin_prefixs(plugin_name: str) -> List[str]:

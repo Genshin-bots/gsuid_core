@@ -150,6 +150,9 @@ async def main():
                             # 使用 wait_for 添加超时，以便定期检查 shutdown_event
                             data = await asyncio.wait_for(websocket.receive_bytes(), timeout=1.0)
                             msg = msgjson.decode(data, type=MessageReceive)
+                            # 优先拦截 recall_message_id 回执，避免其进入正常消息管道
+                            if bot.resolve_recall(msg):
+                                continue
                             await handle_event(bot, msg)
                         except asyncio.TimeoutError:
                             continue
