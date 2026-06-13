@@ -43,7 +43,7 @@
 
 ## 配置项
 
-在 AI 配置（WebConsole → AI 配置）中新增以下配置项：
+在 WebConsole → AI 配置 → **MCP Server 配置** 中提供以下独立配置项（不再放在主 AI 配置中）：
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
@@ -121,7 +121,17 @@ async def send_stock_img(bot: Bot, ev: Event):
 在 MCP Server 中会注册为：
 - **工具名**: `send_stock_img`
 - **描述**: `查询指定股票或ETF的分时图/K线图。Args: text: 股票代码或名称，多个以空格分隔`
-- **参数**: `text: str` — 传递给触发器的文本
+- **参数**: `text: str` — 传递给触发器的文本；`image_id: str`、`audio_id: str` — 可选，传入已有资源 ID 作为参考输入
+
+## 返回值（文本与图片）
+
+工具调用的返回会按触发器的实际产出组装为 MCP content：
+
+- **纯文本**：触发器通过 `ai_return()` 或 `bot.send(文字)` 产出的文本，作为 `TextContent` 返回。
+- **图片**：触发器通过 `bot.send(图片)` 产出的图片，框架会取回其二进制并作为 **`ImageContent`** 一并返回，外部 MCP 客户端（Claude Desktop / Cursor 等）可**直接收到图片**，而非仅一段文字描述。
+- **音频 / 视频**：受外部客户端支持度限制，暂仍以「文字描述 + 资源 ID」形式返回。
+
+> 说明：图片二进制由框架内部的资源管理器（RM）临时持有（默认 TTL 30 分钟）。MCP 工具返回时即时取回并内联进 `ImageContent`，因此外部客户端无需、也无法再用资源 ID 二次回源。若图片在返回前已过期/解码失败，则该张图退回为文字提示，不影响整次调用的其余内容。
 
 ## 文件变更清单
 
@@ -129,7 +139,7 @@ async def send_stock_img(bot: Bot, ev: Event):
 |------|----------|------|
 | `gsuid_core/ai_core/mcp/server.py` | **新增** | MCP Server 核心实现 |
 | `gsuid_core/ai_core/trigger_bridge.py` | 修改 | 添加 `_MCP_TRIGGER_REGISTRY` 注册表 |
-| `gsuid_core/ai_core/configs/ai_config.py` | 修改 | 添加 MCP Server 配置项 |
+| `gsuid_core/ai_core/configs/ai_config.py` | 修改 | 将 MCP Server 配置项拆分为独立子配置 `MCP_SERVER_CONFIG` / `mcp_server_config` |
 | `gsuid_core/ai_core/mcp/__init__.py` | 修改 | 导出新模块 |
 | `docs/MCP_SERVER.md` | **新增** | 本文档 |
 

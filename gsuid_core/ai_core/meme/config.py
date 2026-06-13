@@ -31,6 +31,9 @@ MEME_TAG_INTERVAL_SEC: int = 3
 # 发送时排除最近 N 张已发送的图片
 MEME_RECENT_EXCLUDE_COUNT: int = 10
 
+# 每次检索的候选池大小（候选池内做加权随机采样，越大随机性/多样性越强）
+MEME_PICK_CANDIDATE_COUNT: int = 12
+
 # 单文件最大大小（KB），超过此大小的图片将被忽略
 MEME_MAX_FILE_KB: int = 512
 

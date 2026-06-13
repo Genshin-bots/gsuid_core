@@ -56,6 +56,8 @@ exec_list = [
     # C11 记忆生命周期：旧库 aimemedge 表补齐时效衰减相关列（向后兼容）
     "ALTER TABLE aimemedge ADD COLUMN decay_score FLOAT DEFAULT 1.0;",
     "ALTER TABLE aimemedge ADD COLUMN last_accessed TIMESTAMP DEFAULT NULL;",
+    # §3.2① Episode 冷热分集合：旧库 aimemepisode 表补齐归档标记列（向后兼容，默认热）
+    "ALTER TABLE aimemepisode ADD COLUMN is_archived BOOLEAN DEFAULT FALSE;",
     # Kanban 任务树字段（每条 ALTER 都是幂等的，失败 pass；旧库新加列即可向后兼容）
     "ALTER TABLE aiagenttask ADD COLUMN agent_profile VARCHAR DEFAULT '';",
     "ALTER TABLE aiagenttask ADD COLUMN parent_task_id VARCHAR DEFAULT NULL;",

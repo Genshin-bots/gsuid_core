@@ -10,7 +10,8 @@ MCP Server 模块 — 将框架的 to_ai 触发器对外暴露为 MCP 服务
 3. 使用 fastmcp.FastMCP 创建 MCP Server
 4. 根据配置选择 SSE（HTTP）或 stdio 传输协议启动服务
 
-配置项 (在 AI 配置中):
+配置项（独立的 MCP Server 子配置 `MCP_SERVER_CONFIG`，存储于
+`data/ai_core/mcp_server_config.json`，调用入口为 `mcp_server_config`）:
 - enable_mcp_server: 是否启用 MCP Server（默认 False）
 - mcp_server_transport: 传输协议 "sse" | "stdio"（默认 "sse"）
 - mcp_server_port: SSE 监听端口（默认 8766），监听地址复用框架 HOST 配置
@@ -23,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import AccessToken, AuthProvider
+from fastmcp.utilities.types import Image
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
@@ -33,6 +35,25 @@ from gsuid_core.ai_core.trigger_bridge import (
     _MCP_TRIGGER_REGISTRY,
     MockBot,
 )
+from gsuid_core.utils.resource_manager import RM
+
+
+def _sniff_image_format(data: bytes) -> str:
+    """从图片二进制的 magic bytes 推断格式，未知则默认 png。
+
+    供 MCP Server 把触发器产出的图片转成 MCP 图片 content 时填充 mime 用。
+    """
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:2] == b"BM":
+        return "bmp"
+    return "png"
 
 
 class BearerTokenAuth(AuthProvider):
@@ -135,7 +156,7 @@ def _build_mcp_tool_handler(
     trigger_type = trigger_info["trigger_type"]
     to_ai_doc = trigger_info["to_ai_doc"]
 
-    async def handler(text: str = "", image_id: str = "", audio_id: str = "") -> str:
+    async def handler(text: str = "", image_id: str = "", audio_id: str = ""):
         """MCP 工具处理函数：调用触发器并返回结果。
 
         Args:
@@ -144,7 +165,8 @@ def _build_mcp_tool_handler(
             audio_id: 可选，参考音频的资源ID
 
         Returns:
-            触发器执行结果的文本描述
+            纯文本（str），或在触发器产出图片时返回 文本 + 图片 的 content 列表
+            （FastMCP 会分别转成 TextContent / ImageContent 回传给外部客户端）。
         """
         import re
 
@@ -192,27 +214,44 @@ def _build_mcp_tool_handler(
             _AI_CALL_CONTEXT.reset(token)
 
         # 组装返回值
-        parts: List[str] = []
-        parts.extend(call_ctx["texts"])
-        parts.extend(call_ctx["bot_messages"])
+        # 文本部分：ai_return() 写入的文字 + bot.send 拦截到的文字
+        text_parts: List[str] = []
+        text_parts.extend(call_ctx["texts"])
+        text_parts.extend(call_ctx["bot_messages"])
 
-        if call_ctx["image_ids"]:
-            image_count = len(call_ctx["image_ids"])
-            id_list = ", ".join(call_ctx["image_ids"])
-            parts.append(f"[已生成 {image_count} 张图片，资源ID: {id_list}]")
+        # 图片部分：从 RM 取回二进制，转成 MCP 图片 content，外部客户端即可直接收到图片。
+        # 取回失败（如已过 TTL / 解码失败）则退回文字描述，绝不让单张图把整次调用炸掉。
+        image_blocks: List[Image] = []
+        for rid in call_ctx["image_ids"]:
+            try:
+                data = await RM.get(rid)
+                image_blocks.append(Image(data=data, format=_sniff_image_format(data)))
+            except Exception as e:
+                logger.warning(f"🌐 [MCP Server] 取回图片资源 {rid} 失败，退回文字描述: {e}")
+                text_parts.append(f"[图片资源 {rid} 取回失败: {e}]")
 
+        # 音频/视频：MCP 客户端对其支持参差，暂仍以文字描述 + 资源ID 返回
         if call_ctx.get("audio_ids"):
             audio_count = len(call_ctx["audio_ids"])
             id_list = ", ".join(call_ctx["audio_ids"])
-            parts.append(f"[已生成 {audio_count} 个音频，资源ID: {id_list}]")
+            text_parts.append(f"[已生成 {audio_count} 个音频，资源ID: {id_list}]")
 
         if call_ctx.get("video_ids"):
             video_count = len(call_ctx["video_ids"])
             id_list = ", ".join(call_ctx["video_ids"])
-            parts.append(f"[已生成 {video_count} 个视频，资源ID: {id_list}]")
+            text_parts.append(f"[已生成 {video_count} 个视频，资源ID: {id_list}]")
 
-        if parts:
-            return "\n".join(parts)
+        # 有图片：返回 文本 + 图片 的 content 列表（FastMCP 分别转成 TextContent / ImageContent）
+        if image_blocks:
+            blocks: List[Any] = []
+            if text_parts:
+                blocks.append("\n".join(text_parts))
+            blocks.extend(image_blocks)
+            return blocks
+
+        # 无图片：保持原有纯文本返回
+        if text_parts:
+            return "\n".join(text_parts)
 
         return f"✅ 命令 [{primary_keyword}] 已执行完成。"
 
@@ -271,17 +310,19 @@ async def _start_mcp_server() -> None:
     global _mcp_server
 
     from gsuid_core.config import core_config
-    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.configs.ai_config import (
+        mcp_server_config,
+    )
 
     # 检查是否启用
-    enable = ai_config.get_config("enable_mcp_server").data
+    enable = mcp_server_config.get_config("enable_mcp_server").data
     if not enable:
         logger.info("🌐 [MCP Server] MCP Server 未启用，跳过启动")
         return
 
-    transport = ai_config.get_config("mcp_server_transport").data
-    port = int(ai_config.get_config("mcp_server_port").data)
-    api_key = ai_config.get_config("mcp_server_api_key").data
+    transport = mcp_server_config.get_config("mcp_server_transport").data
+    port = int(mcp_server_config.get_config("mcp_server_port").data)
+    api_key = mcp_server_config.get_config("mcp_server_api_key").data
 
     # 复用框架的 HOST 配置
     core_host = core_config.get_config("HOST").lower()

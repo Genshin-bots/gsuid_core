@@ -5,14 +5,34 @@ AiMemeRecord 表情包主表，使用 SQLModel 直接定义。
 不继承 BaseIDModel，因为 meme_id 本身就是主键。
 """
 
+import json
 from typing import List, Optional, Sequence
 from datetime import datetime, timezone
 
 from sqlmodel import JSON, Field, Column, SQLModel, col, select
-from sqlalchemy import func
+from sqlalchemy import String, or_, cast, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.utils.database.base_models import with_session
+
+
+def _escape_like(text: str) -> str:
+    """转义 LIKE 模式中的特殊字符（配合 escape='\\\\' 使用）"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _keyword_like_patterns(keyword: str) -> List[str]:
+    """生成关键词在 JSON 列文本中可能出现的 LIKE 模式
+
+    JSON 列的存储形态取决于序列化配置：默认 json.dumps(ensure_ascii=True)
+    会把中文存成 \\uXXXX 转义；部分后端（如 PostgreSQL jsonb）存原文。
+    两种形态都生成模式，保证预过滤不漏。
+    """
+    patterns = [f"%{_escape_like(keyword)}%"]
+    escaped = json.dumps(keyword, ensure_ascii=True)[1:-1]
+    if escaped != keyword:
+        patterns.append(f"%{_escape_like(escaped)}%")
+    return patterns
 
 
 class AiMemeRecord(SQLModel, table=True):
@@ -364,6 +384,11 @@ class AiMemeRecord(SQLModel, table=True):
         folder_result = await session.execute(select(cls.folder, func.count()).group_by(cls.folder))
         folder_counts = {row[0]: row[1] for row in folder_result.all()}
 
+        # 各 persona_hint 数量
+        # persona_hint 是 folder 的语义对应（common / persona_{name} 之外还可能存历史空字符串）
+        persona_result = await session.execute(select(cls.persona_hint, func.count()).group_by(cls.persona_hint))
+        persona_counts = {row[0]: row[1] for row in persona_result.all()}
+
         # 总使用次数
         usage_result = await session.execute(select(func.coalesce(func.sum(cls.use_count), 0)))
         total_usage = usage_result.scalar() or 0
@@ -386,9 +411,44 @@ class AiMemeRecord(SQLModel, table=True):
             "total": total,
             "status_counts": status_counts,
             "folder_counts": folder_counts,
+            "persona_counts": persona_counts,
             "total_usage": total_usage,
             "top_memes": top_memes,
         }
+
+    @classmethod
+    @with_session
+    async def get_distinct_personas(
+        cls,
+        session: AsyncSession,
+    ) -> List[dict]:
+        """返回当前库内出现过的 persona_hint 分类及其表情包数量
+
+        返回项按数量降序、数量一致时按 persona_hint 升序：
+        [
+            {"persona_hint": "common", "count": 300, "folder": "common"},
+            {"persona_hint": "早柚",   "count": 100, "folder": "persona_早柚"},
+            ...
+        ]
+
+        幂等容错：会将空字符串归一为 "common"（与 folder ↔ persona_hint
+        双向一致规则一致），以便前端按 persona 分类做入口时不需要额外判断。
+        """
+        result = await session.execute(select(cls.persona_hint, func.count()).group_by(cls.persona_hint))
+        raw = {row[0] or "common": row[1] for row in result.all()}
+
+        items: List[dict] = []
+        for persona_hint, count in raw.items():
+            folder = "common" if persona_hint == "common" else f"persona_{persona_hint}"
+            items.append(
+                {
+                    "persona_hint": persona_hint,
+                    "count": count,
+                    "folder": folder,
+                }
+            )
+        items.sort(key=lambda x: (-x["count"], x["persona_hint"]))
+        return items
 
     @classmethod
     @with_session
@@ -429,6 +489,61 @@ class AiMemeRecord(SQLModel, table=True):
 
     @classmethod
     @with_session
+    async def get_by_persona(
+        cls,
+        session: AsyncSession,
+        persona_hint: str,
+        status: Optional[str] = None,
+        sort: str = "created_at_desc",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[Sequence["AiMemeRecord"], int]:
+        """按 persona_hint 获取记录列表，返回 (记录列表, 总数)
+
+        Args:
+            persona_hint: 归属人格标识（如 "common"、某 persona 名）。
+                与 folder 的对应关系：
+                - "common" → folder="common"
+                - 其余值   → folder=f"persona_{persona_hint}"
+                空字符串视为 "common"。
+            status: 可选的状态过滤
+            sort: 排序方式
+            page: 页码
+            page_size: 每页数量
+        """
+        persona_hint = persona_hint or "common"
+        if persona_hint == "common":
+            folder_value: Optional[str] = "common"
+        else:
+            folder_value = f"persona_{persona_hint}"
+
+        # 一次会话内构造两条语句，复用计算
+        stmt = select(cls).where(cls.folder == folder_value)
+        if status:
+            stmt = stmt.where(cls.status == status)
+        count_stmt = select(func.count()).select_from(cls).where(cls.folder == folder_value)
+        if status:
+            count_stmt = count_stmt.where(cls.status == status)
+
+        total_result = await session.execute(count_stmt)
+        total = total_result.scalar() or 0
+
+        if sort == "use_count_desc":
+            stmt = stmt.order_by(col(cls.use_count).desc())
+        elif sort == "use_count_asc":
+            stmt = stmt.order_by(col(cls.use_count).asc())
+        else:
+            stmt = stmt.order_by(col(cls.created_at).desc())
+
+        offset = (page - 1) * page_size
+        stmt = stmt.offset(offset).limit(page_size)
+
+        result = await session.execute(stmt)
+        records = result.scalars().all()
+        return records, total
+
+    @classmethod
+    @with_session
     async def search_by_tags(
         cls,
         session: AsyncSession,
@@ -442,7 +557,8 @@ class AiMemeRecord(SQLModel, table=True):
         1. emotion_tags / scene_tags / custom_tags 中包含任一关键词
         2. description 中包含任一关键词
 
-        使用 Python 端过滤，兼容所有数据库后端。
+        先用 SQL LIKE 做粗过滤（避免全表加载到内存），
+        再在 Python 端做精确校验，兼容所有数据库后端。
 
         Args:
             tags: 要匹配的关键词列表
@@ -461,10 +577,22 @@ class AiMemeRecord(SQLModel, table=True):
         if folder:
             stmt = stmt.where(cls.folder == folder)
 
+        # SQL 端 LIKE 粗过滤：description 直接匹配原文；
+        # JSON 标签列匹配原文与 \uXXXX 转义两种存储形态
+        like_conditions = []
+        for kw in tags:
+            raw_pattern = f"%{_escape_like(kw)}%"
+            like_conditions.append(col(cls.description).like(raw_pattern, escape="\\"))
+            for tag_col in (cls.emotion_tags, cls.scene_tags, cls.custom_tags):
+                for pattern in _keyword_like_patterns(kw):
+                    like_conditions.append(cast(tag_col, String).like(pattern, escape="\\"))
+        stmt = stmt.where(or_(*like_conditions))
+        stmt = stmt.order_by(col(cls.use_count).desc()).limit(max(limit * 20, 200))
+
         result = await session.execute(stmt)
         records = result.scalars().all()
 
-        # Python 端过滤：标签精确命中 或 description 包含关键词
+        # Python 端精确校验：标签精确命中 或 description 包含关键词
         matched: List["AiMemeRecord"] = []
         for record in records:
             all_tags = set(record.emotion_tags + record.scene_tags + record.custom_tags)

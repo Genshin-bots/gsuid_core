@@ -7,7 +7,8 @@ import json
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from fastapi import Query, Depends, Request
+from fastapi import Body, Query, Depends, Request
+from pydantic import Field, BaseModel
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.logger import (
@@ -17,8 +18,89 @@ from gsuid_core.logger import (
     read_log,
     get_all_log_path,
 )
+from gsuid_core.data_store import LOGS_CONFIG_PATH
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+
+# 可供用户选择持久化的日志级别集合（与 GET /api/logs/levels 中的真实 value 对齐）
+# 注意：不包含 "all" —— 它是前端 UI 标志，不是真实日志级别。
+LOG_LEVEL_VALUES: List[str] = [
+    "trace",
+    "debug",
+    "info",
+    "success",
+    "warning",
+    "error",
+    "critical",
+]
+
+# 默认日志配置（与前端文档保持一致）
+DEFAULT_LOGS_CONFIG: Dict = {
+    "visible_levels": ["debug", "info", "warning", "error"],
+}
+
+
+class LogsConfigRequest(BaseModel):
+    """日志控制台配置请求模型"""
+
+    visible_levels: List[str] = Field(default_factory=list)
+
+
+def _sanitize_visible_levels(values: Optional[List[str]]) -> List[str]:
+    """校验并清理 visible_levels：
+    - 仅保留 LOG_LEVEL_VALUES 集合内的小写字符串
+    - 保留用户提交顺序，去重
+    - 允许空列表（表示用户主动全不选）
+    """
+    if not values:
+        return []
+    seen: List[str] = []
+    seen_set: set = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        v = raw.strip().lower()
+        if not v or v == "all":
+            continue
+        if v not in LOG_LEVEL_VALUES:
+            continue
+        if v in seen_set:
+            continue
+        seen.append(v)
+        seen_set.add(v)
+    return seen
+
+
+def _merge_defaults(config: Optional[Dict]) -> Dict:
+    """将存储中的旧配置与当前默认配置合并，确保响应体始终包含完整字段集"""
+    if not isinstance(config, dict):
+        return dict(DEFAULT_LOGS_CONFIG)
+    merged = dict(DEFAULT_LOGS_CONFIG)
+    raw_levels = config.get("visible_levels")
+    merged["visible_levels"] = _sanitize_visible_levels(raw_levels)
+    return merged
+
+
+def load_logs_config() -> Optional[Dict]:
+    """Load logs console config from file"""
+    if LOGS_CONFIG_PATH.exists():
+        try:
+            with open(LOGS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+
+def save_logs_config(config: Dict) -> bool:
+    """Save logs console config to file"""
+    try:
+        LOGS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
 
 
 @app.get("/api/logs")
@@ -499,3 +581,40 @@ async def get_log_levels(_user: Dict = Depends(require_auth)):
             {"label": "CRITICAL", "value": "critical"},
         ],
     }
+
+
+@app.get("/api/logs/config")
+async def get_logs_config(
+    request: Request,
+    _user: Dict = Depends(require_auth),
+):
+    """获取用户保存的日志控制台配置（供前端持久化级别选择偏好使用）
+
+    读取时若存储中缺少字段或包含非法值，会回退到默认值，
+    确保响应体始终包含完整的 `visible_levels` 字段。
+    """
+    config = load_logs_config()
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": _merge_defaults(config),
+    }
+
+
+@app.put("/api/logs/config")
+async def save_logs_config_endpoint(
+    request: Request,
+    body: LogsConfigRequest = Body(default=LogsConfigRequest()),
+    _user: Dict = Depends(require_auth),
+):
+    """保存用户日志控制台配置
+
+    - `visible_levels` 必须是字符串数组，元素应为 `GET /api/logs/levels` 返回的合法 `value`
+      （除 `all` 外）。后端会做合法性校验，剔除不在白名单内的值。
+    - 数组可为空，表示用户主动全不选。
+    """
+    sanitized = _sanitize_visible_levels(body.visible_levels)
+    new_config = {"visible_levels": sanitized}
+    if save_logs_config(new_config):
+        return {"status": 0, "msg": "saved", "data": new_config}
+    return {"status": 1, "msg": "保存失败", "data": None}

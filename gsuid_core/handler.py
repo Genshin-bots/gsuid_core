@@ -264,10 +264,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
     if enable_ai and not ai_scope_banned:
         meme_task = asyncio.create_task(
-            observe_message_for_memes(
-                event,
-                "",
-            ),
+            observe_message_for_memes(event),
         )
         ws._add_bg_task(meme_task)
 

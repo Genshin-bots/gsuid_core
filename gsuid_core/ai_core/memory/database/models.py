@@ -15,7 +15,7 @@ from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Field, SQLModel, Relationship, col, select
-from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueConstraint, or_, insert
+from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueConstraint, or_, desc, func, exists, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import JSON
 
@@ -49,7 +49,11 @@ mem_category_entity_members = Table(
 class AIMemEpisode(SQLModel, table=True):
     """存储经聚合的对话片段，是所有记忆的原始素材。"""
 
-    __table_args__ = (Index("ix_mem_episode_scope_valid_at", "scope_key", "valid_at"),)
+    __table_args__ = (
+        Index("ix_mem_episode_scope_valid_at", "scope_key", "valid_at"),
+        # §3.2① 保留策略/冷热分集合：按 (scope, 冷热, 时间) 高效取降级/物理上限候选
+        Index("ix_mem_episode_scope_archived_valid", "scope_key", "is_archived", "valid_at"),
+    )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
     scope_key: str = Field(index=True, max_length=128)
@@ -58,6 +62,11 @@ class AIMemEpisode(SQLModel, table=True):
     valid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
+    # §3.2① 冷热分集合标记：is_archived=True 表示已降级为"冷"——其向量已迁出热集合
+    # memory_episodes（迁入冷集合 memory_episodes_cold），SQL 文本保留可审计。System-1
+    # 只查热集合，故冷 Episode 退出在线向量暴力扫描、不再抬高交互检索成本（缓解 P0-1/P0-2）。
+    # 旧库无此列，由 utils/database/startup.py 的 ALTER 语句补齐（默认 False）。
+    is_archived: bool = Field(default=False)
 
     mentioned_entities: List["AIMemEntity"] = Relationship(
         back_populates="episodes",
@@ -114,6 +123,143 @@ class AIMemEpisode(SQLModel, table=True):
             logger.warning(f"Episode vector upsert failed for {episode_id}: {e}")
 
         return episode
+
+    # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────
+    # Episode 是"每条放行消息都写"的无界增长主力（P0-2）。以下方法为生命周期 Worker
+    # 提供"降级（热→冷）"与"每 scope 物理上限"两级裁剪支持，纯规则、零 LLM。
+
+    @classmethod
+    @with_session
+    async def collect_episodes_to_demote(
+        cls,
+        session: AsyncSession,
+        hot_days: int,
+        hot_per_scope: int,
+    ) -> list[tuple[str, str]]:
+        """收集应从热集合降级为冷的 Episode（保留策略 = 引用 + 年龄 + 每 scope 最近 M 条）。
+
+        一条**热**（is_archived=False）Episode 满足任一即受保护、不降级：
+        ① 被存活 Entity 引用（mem_episode_entity_mentions 有关联，孤儿实体被 GC 时其
+           mention 行同步清理，故"有 mention"≈"被存活实体引用"）；
+        ② 年龄在 hot_days 内（valid_at 较新）；
+        ③ 属于本 scope 最近 hot_per_scope 条（按 valid_at 倒序）。
+        三者皆不满足的冷 Episode 才降级。返回 [(id, qdrant_id), ...]。
+
+        实现：只处理"非归档条数 > hot_per_scope"的 scope（其余 scope 全部落在最近 M 条内、
+        天然受保护）。"不在最近 M 条" ⟺ valid_at < 本 scope 第 M 新的 valid_at(recent_cutoff)；
+        与年龄边界 age_cutoff 取较早者 effective_cutoff（两者都是"早于 X"，合取即 < min）。
+        """
+        if hot_per_scope <= 0:
+            return []
+
+        age_cutoff = datetime.now(timezone.utc) - timedelta(days=hot_days)
+
+        scope_rows = await session.execute(
+            select(cls.scope_key, func.count())
+            .where(col(cls.is_archived).is_(False))
+            .group_by(cls.scope_key)
+            .having(func.count() > hot_per_scope)
+        )
+        over_scopes = [row[0] for row in scope_rows.all()]
+        if not over_scopes:
+            return []
+
+        mention_exists = exists().where(mem_episode_entity_mentions.c.episode_id == cls.id)
+
+        victims: list[tuple[str, str]] = []
+        for scope_key in over_scopes:
+            # 本 scope 第 hot_per_scope 新的非归档 Episode 的 valid_at（最近 M 条窗口下界）
+            boundary_row = await session.execute(
+                select(cls.valid_at)
+                .where(cls.scope_key == scope_key, col(cls.is_archived).is_(False))
+                .order_by(col(cls.valid_at).desc())
+                .offset(hot_per_scope - 1)
+                .limit(1)
+            )
+            recent_cutoff = boundary_row.scalar_one_or_none()
+            if recent_cutoff is None:
+                continue
+            # SQLite 取出的 datetime 可能是 naive，需补 UTC 后才能与 aware 的 age_cutoff 比较
+            if recent_cutoff.tzinfo is None:
+                recent_cutoff = recent_cutoff.replace(tzinfo=timezone.utc)
+            effective_cutoff = min(recent_cutoff, age_cutoff)
+
+            result = await session.execute(
+                select(cls.id, cls.qdrant_id).where(
+                    cls.scope_key == scope_key,
+                    col(cls.is_archived).is_(False),
+                    col(cls.valid_at) < effective_cutoff,
+                    ~mention_exists,
+                )
+            )
+            victims.extend((row[0], row[1] or row[0]) for row in result.all())
+        return victims
+
+    @classmethod
+    @with_session
+    async def mark_archived_by_ids(cls, session: AsyncSession, episode_ids: list[str]) -> int:
+        """把一批 Episode 标记为已归档（冷）。集合式单条 UPDATE。返回受影响行数。"""
+        if not episode_ids:
+            return 0
+        from sqlalchemy import update as _update
+
+        result = await session.execute(_update(cls).where(col(cls.id).in_(episode_ids)).values(is_archived=True))
+        return result.rowcount or 0
+
+    @classmethod
+    @with_session
+    async def collect_episode_overflow(
+        cls,
+        session: AsyncSession,
+        max_per_scope: int,
+    ) -> list[tuple[str, str]]:
+        """每 scope Episode 物理上限：对总条数超过 max_per_scope 的 scope，物理删除最老的
+        "已归档(冷)且无 Entity 引用"的 Episode，把 SQL 体量也钉在可控范围。
+
+        仅删冷且无引用者——热 Episode、被引用 Episode 受保护。返回 [(id, qdrant_id), ...]。
+        """
+        if max_per_scope <= 0:
+            return []
+        scope_rows = await session.execute(
+            select(cls.scope_key, func.count()).group_by(cls.scope_key).having(func.count() > max_per_scope)
+        )
+        over_scopes = [(row[0], row[1]) for row in scope_rows.all()]
+        if not over_scopes:
+            return []
+
+        mention_exists = exists().where(mem_episode_entity_mentions.c.episode_id == cls.id)
+
+        victims: list[tuple[str, str]] = []
+        for scope_key, count in over_scopes:
+            to_remove = count - max_per_scope
+            if to_remove <= 0:
+                continue
+            result = await session.execute(
+                select(cls.id, cls.qdrant_id)
+                .where(
+                    cls.scope_key == scope_key,
+                    col(cls.is_archived).is_(True),
+                    ~mention_exists,
+                )
+                .order_by(col(cls.valid_at).asc())
+                .limit(to_remove)
+            )
+            victims.extend((row[0], row[1] or row[0]) for row in result.all())
+        return victims
+
+    @classmethod
+    @with_session
+    async def purge_episodes_by_ids(cls, session: AsyncSession, episode_ids: list[str]) -> int:
+        """物理删除 Episode 并清理其 Episode-Entity 关联表。返回删除行数。"""
+        if not episode_ids:
+            return 0
+        from sqlalchemy import delete as _delete
+
+        await session.execute(
+            mem_episode_entity_mentions.delete().where(mem_episode_entity_mentions.c.episode_id.in_(episode_ids))
+        )
+        await session.execute(_delete(cls).where(col(cls.id).in_(episode_ids)))
+        return len(episode_ids)
 
 
 # ─────────────────────────────────────────────
@@ -427,6 +573,59 @@ class AIMemEntity(SQLModel, table=True):
 
     @classmethod
     @with_session
+    async def collect_capacity_overflow(
+        cls,
+        session: AsyncSession,
+        max_per_scope: int,
+    ) -> list[tuple[str, str, str]]:
+        """每 scope Entity 软上限（§3.2③，容量驱动裁剪）：对实体数超过 max_per_scope 的
+        scope，淘汰最弱的"非 speaker、无任何 edge"实体，把单群体量钉在可控范围。
+
+        - 仅回收无 edge 的非 speaker 实体：FK 安全、不牵连任何 fact，与孤儿 GC 同样无损召回，
+          区别仅在于由"容量"而非"10 天 TTL"触发，防止超活跃群在两次 GC 之间堆出海量噪声实体。
+        - speaker（群成员花名册）受保护——其生命周期由"说话人沉默 TTL"另行处理。
+        - 有 edge 的实体受保护——承载 fact，不能在不删边的前提下回收。
+        - salience 近似：updated_at 倒序为强（最近活跃），故在可回收集合中淘汰最旧的。
+
+        返回 [(id, scope_key, qdrant_id), ...]，供上层删 SQL / 删向量 / 递减分层图计数。
+        """
+        if max_per_scope <= 0:
+            return []
+
+        scope_rows = await session.execute(
+            select(cls.scope_key, func.count()).group_by(cls.scope_key).having(func.count() > max_per_scope)
+        )
+        over_scopes = [(row[0], row[1]) for row in scope_rows.all()]
+        if not over_scopes:
+            return []
+
+        has_edge = exists().where(
+            or_(
+                col(AIMemEdge.source_entity_id) == cls.id,
+                col(AIMemEdge.target_entity_id) == cls.id,
+            )
+        )
+
+        victims: list[tuple[str, str, str]] = []
+        for scope_key, count in over_scopes:
+            to_remove = count - max_per_scope
+            if to_remove <= 0:
+                continue
+            result = await session.execute(
+                select(cls.id, cls.scope_key, cls.qdrant_id)
+                .where(
+                    cls.scope_key == scope_key,
+                    col(cls.is_speaker).is_(False),
+                    ~has_edge,
+                )
+                .order_by(col(cls.updated_at).asc())
+                .limit(to_remove)
+            )
+            victims.extend((row[0], row[1], row[2] or row[0]) for row in result.all())
+        return victims
+
+    @classmethod
+    @with_session
     async def get_frequent_names(
         cls,
         session: AsyncSession,
@@ -558,22 +757,26 @@ class AIMemEdge(SQLModel, table=True):
         protect_mention_count: int = 3,
     ) -> int:
         """时效衰减（C11）：超过 stale_days 未被检索、且非高频提及的有效 Edge，
-        ``decay_score *= decay_factor``。返回受影响行数。"""
+        ``decay_score *= decay_factor``。返回受影响行数。
+
+        P1-1：因衰减是乘法、各待衰减行系数相同，用**单条集合式 UPDATE**完成
+        （``SET decay_score = coalesce(decay_score, 1.0) * factor WHERE ...``），
+        避免把数万~数十万条边加载进内存再逐行 UPDATE（旧实现是 O(N) 条单行 UPDATE，
+        在大表上极慢且长时间持锁）。coalesce 兜底旧库 NULL；不再在 SQL 里 round，
+        decay_score 仅用于检索加权，全精度浮点无副作用。"""
         from sqlalchemy import update as _update
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
         result = await session.execute(
-            select(cls).where(
+            _update(cls)
+            .where(
                 col(cls.invalid_at).is_(None),
                 col(cls.mention_count) < protect_mention_count,
                 or_(col(cls.last_accessed).is_(None), col(cls.last_accessed) < cutoff),
             )
+            .values(decay_score=func.coalesce(col(cls.decay_score), 1.0) * decay_factor)
         )
-        rows = list(result.scalars().all())
-        for edge in rows:
-            new_score = round((edge.decay_score or 1.0) * decay_factor, 4)
-            await session.execute(_update(cls).where(col(cls.id) == edge.id).values(decay_score=new_score))
-        return len(rows)
+        return result.rowcount or 0
 
     @classmethod
     @with_session
@@ -592,6 +795,49 @@ class AIMemEdge(SQLModel, table=True):
 
         await session.execute(_delete(cls).where(col(cls.qdrant_id).in_(edge_ids)))
         return len(edge_ids)
+
+    @classmethod
+    @with_session
+    async def collect_capacity_overflow(
+        cls,
+        session: AsyncSession,
+        max_per_scope: int,
+    ) -> list[str]:
+        """每 scope Edge 软上限（§3.2③，容量驱动裁剪）：对边数超过 max_per_scope 的 scope，
+        按 salience 降序保留 top-N，返回应被淘汰的长尾 Edge 的 qdrant_id 列表（供 SQL+向量删除）。
+
+        salience 纯由现成列计算、零 LLM，排序依次：有效边（invalid_at 为空）优先 →
+        mention_count（跨发言者佐证）→ decay_score（新鲜度）→ 最近访问/最近有效时间。
+        offset(max_per_scope) 之后的即为本 scope 最弱的长尾，被淘汰。这能防止一个超活跃群
+        把整库拖垮，也让向量检索的候选集与成本可预测。
+        """
+        if max_per_scope <= 0:
+            return []
+
+        scope_rows = await session.execute(
+            select(cls.scope_key, func.count()).group_by(cls.scope_key).having(func.count() > max_per_scope)
+        )
+        over_scopes = [row[0] for row in scope_rows.all()]
+        if not over_scopes:
+            return []
+
+        salience_order = (
+            desc(col(cls.invalid_at).is_(None)),
+            desc(col(cls.mention_count)),
+            desc(col(cls.decay_score)),
+            desc(func.coalesce(col(cls.last_accessed), col(cls.valid_at))),
+        )
+
+        victims: list[str] = []
+        for scope_key in over_scopes:
+            result = await session.execute(
+                select(cls.qdrant_id, cls.id)
+                .where(cls.scope_key == scope_key)
+                .order_by(*salience_order)
+                .offset(max_per_scope)
+            )
+            victims.extend((row[0] or row[1]) for row in result.all())
+        return victims
 
 
 # ─────────────────────────────────────────────

@@ -27,6 +27,7 @@ from .collections import (
     MEMORY_EDGES_COLLECTION,
     MEMORY_ENTITIES_COLLECTION,
     MEMORY_EPISODES_COLLECTION,
+    MEMORY_EPISODES_COLD_COLLECTION,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ _QDRANT_LOCKS: dict[str, asyncio.Lock] = {
     MEMORY_EPISODES_COLLECTION: asyncio.Lock(),
     MEMORY_ENTITIES_COLLECTION: asyncio.Lock(),
     MEMORY_EDGES_COLLECTION: asyncio.Lock(),
+    MEMORY_EPISODES_COLD_COLLECTION: asyncio.Lock(),
 }
 
 # 有界线程池：用于单条 _embed_async / _sparse_embed_async 调用
@@ -803,3 +805,111 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         )
 
     return entities
+
+
+# ─────────────────────────────────────────────
+# 生命周期裁剪 / 对账用向量操作（§3.2①、§2）
+# ─────────────────────────────────────────────
+
+
+async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:
+    """把一批 Episode 的向量从热集合 memory_episodes 迁移到冷集合 memory_episodes_cold，
+    再从热集合删除，使热集合规模可控（§3.2① 冷热分集合）。
+
+    迁移采用"取回热点向量 → 写入冷集合 → 从热集合删除"，不重新嵌入。即便冷集合写入失败，
+    也会从热集合删除（SQL 文本始终是冷归档的权威真值、可审计；最坏仅丢失冷向量的可检索性）。
+    返回**已成功从热集合删除**的 Episode id 列表——调用方据此回写 SQL is_archived，
+    确保"标记为冷"与"已退出热集合"严格一致；删除失败的批次保持热态，下次维护重试。
+    """
+    from qdrant_client.http.models import PointIdsList
+
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not episode_ids:
+        return []
+
+    evicted: list[str] = []
+    CHUNK = 256
+    for i in range(0, len(episode_ids), CHUNK):
+        batch = episode_ids[i : i + CHUNK]
+
+        # 1) 取回热点（含向量 + payload），用于原样迁入冷集合
+        records: list = []
+        try:
+            records = await client.retrieve(
+                collection_name=MEMORY_EPISODES_COLLECTION,
+                ids=list(batch),
+                with_payload=True,
+                with_vectors=True,
+            )
+        except Exception as e:
+            logger.warning(f"🧠 [Qdrant] 取回热 Episode 向量失败（将仅从热集合删除）: {e}")
+
+        # 2) 写入冷集合（best-effort，失败不阻断热集合删除）
+        points = [PointStruct(id=r.id, vector=r.vector, payload=r.payload or {}) for r in records if r.vector]
+        if points:
+            try:
+                async with _QDRANT_LOCKS[MEMORY_EPISODES_COLD_COLLECTION]:
+                    await client.upsert(collection_name=MEMORY_EPISODES_COLD_COLLECTION, points=points)
+            except Exception as e:
+                logger.warning(f"🧠 [Qdrant] 写入冷 Episode 集合失败（继续从热集合删除）: {e}")
+
+        # 3) 从热集合删除（这一步成功才算降级生效）
+        try:
+            await client.delete(
+                collection_name=MEMORY_EPISODES_COLLECTION,
+                points_selector=PointIdsList(points=list(batch)),
+            )
+            evicted.extend(batch)
+        except Exception as e:
+            logger.warning(f"🧠 [Qdrant] 从热 Episode 集合删除失败: {e}")
+
+    return evicted
+
+
+async def scroll_point_ids(collection_name: str, batch_size: int = 500):
+    """异步生成器：分页 scroll 指定 Collection 的全部 point id（不取 payload/vector）。
+
+    供 SQL↔Qdrant 对账任务逐页比对，避免一次性把全集 id 载入内存。
+    """
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None:
+        return
+
+    offset = None
+    while True:
+        try:
+            records, offset = await client.scroll(
+                collection_name=collection_name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+        except Exception as e:
+            logger.warning(f"🧠 [Qdrant] scroll {collection_name} 失败: {e}")
+            return
+        if records:
+            yield [str(r.id) for r in records]
+        if offset is None:
+            return
+
+
+async def delete_points_by_ids(collection_name: str, point_ids: list[str]) -> int:
+    """按 id 从指定 Collection 删除一批 point。返回请求删除的数量（失败返回 0）。"""
+    from qdrant_client.http.models import PointIdsList
+
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not point_ids:
+        return 0
+    try:
+        await client.delete(
+            collection_name=collection_name,
+            points_selector=PointIdsList(points=list(point_ids)),
+        )
+        return len(point_ids)
+    except Exception as e:
+        logger.warning(f"🧠 [Qdrant] 删除 {collection_name} {len(point_ids)} 个 point 失败: {e}")
+        return 0

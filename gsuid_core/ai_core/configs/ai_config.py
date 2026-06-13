@@ -104,6 +104,27 @@ AI_CONFIG: Dict[str, GSC] = {
         20,
         options=[9, 12, 20, 30],
     ),
+    "white_list": GsListStrConfig(
+        "白名单",
+        "指定白名单, 只有白名单中的用户才能使用AI服务",
+        [],
+        options=[],
+    ),
+    "black_list": GsListStrConfig(
+        "黑名单",
+        "指定黑名单, 黑名单中的用户将不能使用AI服务",
+        [],
+        options=[],
+    ),
+    "enable_deepseek_rp": GsBoolConfig(
+        "启用DS专属角色扮演模式",
+        "用于在思考模式下切换思维链风格, [文档](https://github.com/victorchen96/deepseek_v4_rolepaly_instruct/blob/main/README.md)",
+        False,
+    ),
+}
+
+
+MCP_SERVER_CONFIG: Dict[str, GSC] = {
     "enable_mcp_server": GsBoolConfig(
         "是否启用MCP Server",
         "是否将框架的to_ai触发器对外暴露为MCP Server, 启用后外部MCP客户端可通过SSE/stdio协议连接并调用所有触发器工具",
@@ -126,23 +147,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定Bearer Token认证密钥, 留空则不启用认证。外部客户端连接时需在请求头中携带 Authorization: Bearer <api_key>",
         "",
         options=[],
-    ),
-    "white_list": GsListStrConfig(
-        "白名单",
-        "指定白名单, 只有白名单中的用户才能使用AI服务",
-        [],
-        options=[],
-    ),
-    "black_list": GsListStrConfig(
-        "黑名单",
-        "指定黑名单, 黑名单中的用户将不能使用AI服务",
-        [],
-        options=[],
-    ),
-    "enable_deepseek_rp": GsBoolConfig(
-        "启用DS专属角色扮演模式",
-        "用于在思考模式下切换思维链风格, [文档](https://github.com/victorchen96/deepseek_v4_rolepaly_instruct/blob/main/README.md)",
-        False,
     ),
 }
 
@@ -518,4 +522,10 @@ qdrant_config = StringConfig(
     "GsCore AI Qdrant向量库配置",
     get_res_path("ai_core") / "qdrant_configs.json",
     QDRANT_CONFIG,
+)
+
+mcp_server_config = StringConfig(
+    "GsCore AI MCP Server配置",
+    get_res_path("ai_core") / "mcp_server_config.json",
+    MCP_SERVER_CONFIG,
 )

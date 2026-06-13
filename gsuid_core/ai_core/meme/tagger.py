@@ -255,9 +255,12 @@ def _extract_gif_second_frame_sync(image_data: bytes) -> Optional[bytes]:
         img.seek(1)
 
         # 转换为RGB（去掉透明通道）并保存为PNG
-        if img.mode in ("RGBA", "P"):
+        # P 模式先转 RGBA：直接拿调色板索引通道当 mask 会导致怪色
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        if img.mode == "RGBA":
             rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-            rgb_img.paste(img, mask=img.split()[-1] if img.mode == "P" else None)
+            rgb_img.paste(img, mask=img.split()[-1])
             img = rgb_img
         elif img.mode != "RGB":
             img = img.convert("RGB")
@@ -352,10 +355,33 @@ async def _tag_single(meme_id: str) -> None:
 
     # 更新标签
     persona_hint = tag_result["persona_hint"]
-    # 确定目标文件夹
-    target_folder = "common"
-    if persona_hint and persona_hint != "common":
-        target_folder = f"persona_{persona_hint}"
+
+    # 确定目标文件夹：仅 inbox 的图由 VLM persona_hint 决定归属；
+    # 已人工放置的图保留现有文件夹，避免打标静默覆盖用户的目录选择
+    if record.folder == "inbox":
+        target_folder = "common"
+        if persona_hint and persona_hint != "common":
+            target_folder = f"persona_{persona_hint}"
+    else:
+        target_folder = record.folder
+        if record.persona_hint:
+            persona_hint = record.persona_hint
+
+    # 先移动文件，成功后再置 tagged，避免出现"已 tagged 但滞留 inbox"
+    # 的不可检索状态（folder=inbox 的点任何 persona/common 过滤都搜不到）
+    if record.folder != target_folder:
+        moved = await MemeLibrary.move_file(meme_id, target_folder)
+        if not moved:
+            await MemeLibrary.update_tags(
+                meme_id=meme_id,
+                description=tag_result["description"],
+                emotion_tags=tag_result["emotion_tags"],
+                scene_tags=tag_result["scene_tags"],
+                persona_hint=persona_hint,
+            )
+            await MemeLibrary.mark_tag_failed(meme_id)
+            logger.warning(f"[Meme] 打标完成但移动文件失败，置为待人工处理: {meme_id}")
+            return
 
     await MemeLibrary.update_tags(
         meme_id=meme_id,
@@ -365,9 +391,6 @@ async def _tag_single(meme_id: str) -> None:
         persona_hint=persona_hint,
         status="tagged",
     )
-
-    # 移动文件到目标文件夹
-    await MemeLibrary.move_file(meme_id, target_folder)
 
     # 同步到 Qdrant
     record = await AiMemeRecord.get_by_meme_id(meme_id)

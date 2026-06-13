@@ -15,7 +15,7 @@ from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary, _read_file, get_memes_base_path
-from gsuid_core.ai_core.meme.selector import pick
+from gsuid_core.ai_core.meme.selector import PICK_COOLDOWN, PICK_EXHAUSTED, pick
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
@@ -50,7 +50,7 @@ async def send_meme(
     persona_name = _get_persona_for_event(ev)
 
     # 选择表情包
-    record = await pick(
+    record, reason = await pick(
         mood=mood,
         scene=scene,
         persona=persona_name,
@@ -58,7 +58,12 @@ async def send_meme(
     )
 
     if record is None:
-        return "未找到合适的表情包"
+        # 区分"现在不能发"和"库里没有"，避免 LLM 误判后无意义重试或向用户致歉
+        if reason == PICK_COOLDOWN:
+            return "表情包发送冷却中（库中可能有匹配的图），本次跳过即可，不要重试"
+        if reason == PICK_EXHAUSTED:
+            return "匹配的表情包最近都已发送过，本次跳过以避免重复，不要重试"
+        return "库中没有与该情绪/场景匹配的表情包"
 
     # 发送图片
     file_path = get_memes_base_path() / record.file_path

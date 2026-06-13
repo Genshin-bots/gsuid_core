@@ -6,7 +6,8 @@ MemeObserver 接入 handle_ai.py 消息预处理，
 
 import io
 import asyncio
-from typing import Set, List, Optional
+from typing import List, Optional, OrderedDict as TOrderedDict
+from collections import OrderedDict
 
 import httpx
 from PIL import Image
@@ -16,9 +17,18 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.meme.config import meme_config
 
-# URL 去重集合（已处理的URL不再下载）
-_processed_urls: Set[str] = set()
+# URL 去重缓存（已处理的URL不再下载）：有界 FIFO，避免长期运行无界增长
+_PROCESSED_URLS_MAX = 4096
+_processed_urls: TOrderedDict[str, None] = OrderedDict()
 _processed_lock = asyncio.Lock()
+
+
+def _mark_url_processed(url: str) -> None:
+    """记录已处理 URL，超过上限时淘汰最早的记录（调用方需持有 _processed_lock）"""
+    _processed_urls[url] = None
+    _processed_urls.move_to_end(url)
+    while len(_processed_urls) > _PROCESSED_URLS_MAX:
+        _processed_urls.popitem(last=False)
 
 
 def _extract_image_urls(ev: Event) -> List[str]:
@@ -96,16 +106,14 @@ def _get_image_dimensions(image_data: bytes) -> tuple[int, int]:
 
 async def observe_message_for_memes(
     ev: Event,
-    persona_name: str,
 ) -> None:
     """监听消息中的图片并异步入队
 
-    此函数在 handle_ai.py 的消息预处理阶段调用，
+    此函数在 handler.py 的消息预处理阶段调用，
     在 AI 调用之前执行，不阻塞主流程。
 
     Args:
         ev: 事件对象
-        persona_name: 当前 persona 名称
     """
     # 总开关检查
     if not meme_config.get_config("meme_enable").data:
@@ -154,13 +162,13 @@ async def _process_image(
         if url in _processed_urls:
             logger.debug(f"[Meme] URL 已处理过，跳过: {url}")
             return
-        _processed_urls.add(url)
+        _mark_url_processed(url)
 
     # 下载图片
     result = await _download_image(url)
     if result is None:
         async with _processed_lock:
-            _processed_urls.discard(url)
+            _processed_urls.pop(url, None)
         return
 
     image_data, file_mime = result

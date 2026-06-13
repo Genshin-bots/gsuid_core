@@ -230,12 +230,29 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 _provider: Union[EmbeddingProvider, None] = None
 
 
+def _build_local_provider() -> LocalEmbeddingProvider:
+    """构造内置本地（fastembed）provider"""
+    from gsuid_core.data_store import AI_CORE_PATH
+    from gsuid_core.ai_core.configs.ai_config import local_embedding_config
+
+    model_name = local_embedding_config.get_config("embedding_model_name").data
+    cache_dir = str(AI_CORE_PATH / "models_cache")
+    return LocalEmbeddingProvider(
+        model_name=model_name,
+        cache_dir=cache_dir,
+    )
+
+
 def get_embedding_provider() -> EmbeddingProvider:
     """获取当前嵌入模型提供方（全局单例）
 
     根据 ai_config 中的 embedding_provider 配置项决定使用哪个实现：
     - "local": 使用本地 fastembed 模型
     - "openai": 使用 OpenAI 兼容格式的远程 API
+    - 其他: 查询插件注册表（embedding_registry），由插件工厂构造
+
+    插件 provider 不可用时（插件被卸载/构造失败）降级回 local 并记录错误，
+    避免 RAG 初始化失败导致 AI 核心整体不可用。
 
     Returns:
         EmbeddingProvider 实例
@@ -248,10 +265,8 @@ def get_embedding_provider() -> EmbeddingProvider:
     if _provider is not None:
         return _provider
 
-    from gsuid_core.data_store import AI_CORE_PATH
     from gsuid_core.ai_core.configs.ai_config import (
         ai_config,
-        local_embedding_config,
         openai_embedding_config,
     )
 
@@ -261,12 +276,7 @@ def get_embedding_provider() -> EmbeddingProvider:
     provider_name = ai_config.get_config("embedding_provider").data
 
     if provider_name == "local":
-        model_name = local_embedding_config.get_config("embedding_model_name").data
-        cache_dir = str(AI_CORE_PATH / "models_cache")
-        _provider = LocalEmbeddingProvider(
-            model_name=model_name,
-            cache_dir=cache_dir,
-        )
+        _provider = _build_local_provider()
     elif provider_name == "openai":
         base_url = openai_embedding_config.get_config("base_url").data
         api_key_list = openai_embedding_config.get_config("api_key").data
@@ -282,7 +292,31 @@ def get_embedding_provider() -> EmbeddingProvider:
             dimension=dimension,
         )
     else:
-        raise ValueError(f"🧠 [Embedding] 不支持的嵌入模型提供方: '{provider_name}'，仅支持 'local' 或 'openai'")
+        from gsuid_core.ai_core.rag.embedding_registry import (
+            get_external_provider,
+            list_embedding_providers,
+        )
+
+        entry = get_external_provider(provider_name)
+        if entry is None:
+            # 配置指向的插件 provider 未注册（插件被卸载/加载失败）：
+            # 降级回 local，向量空间变化由维度迁移机制兜底，比 AI 核心整体瘫痪好
+            logger.error(
+                f"🧠 [Embedding] 嵌入提供方 '{provider_name}' 未注册"
+                f"（来源插件可能已卸载或加载失败），降级使用 local。"
+                f"可用 provider: {list_embedding_providers()}"
+            )
+            _provider = _build_local_provider()
+        else:
+            try:
+                _provider = entry.factory()
+                logger.info(f"🧠 [Embedding] 插件嵌入提供方已加载: {provider_name} (plugin={entry.plugin or '未知'})")
+            except Exception as e:
+                logger.error(
+                    f"🧠 [Embedding] 插件嵌入提供方 '{provider_name}' 构造失败"
+                    f"（plugin={entry.plugin or '未知'}）: {e}，降级使用 local"
+                )
+                _provider = _build_local_provider()
 
     return _provider
 

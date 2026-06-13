@@ -93,9 +93,12 @@ def get_rag_embed_batch_size() -> int:
     """按当前 embedding provider 返回 RAG 同步嵌入批大小。
 
     本地模型默认单条提交，避免一次大批量推理长时间占用 CPU；远程模型使用大批量减少 HTTP 往返。
+    插件注册的 provider 按其注册时声明的 kind（local/remote）判断。
     """
+    from gsuid_core.ai_core.rag.embedding_registry import is_local_kind
+
     provider_name = ai_config.get_config("embedding_provider").data
-    if provider_name == "local":
+    if is_local_kind(provider_name):
         return RAG_LOCAL_EMBED_BATCH_SIZE
     return RAG_REMOTE_EMBED_BATCH_SIZE
 

@@ -2,7 +2,7 @@
 Embedding Config APIs
 
 提供嵌入模型配置的 RESTful APIs
-支持查看和修改嵌入模型提供方（local/openai）及其配置
+支持查看和修改嵌入模型提供方（local/openai/插件注册的第三方）及其配置
 """
 
 from typing import Any, Dict
@@ -16,6 +16,10 @@ from gsuid_core.ai_core.configs.ai_config import (
     local_embedding_config,
     openai_embedding_config,
 )
+from gsuid_core.ai_core.rag.embedding_registry import (
+    list_external_providers,
+    list_embedding_providers,
+)
 
 
 def _string_config_to_dict(config: Any) -> Dict[str, Any]:
@@ -26,6 +30,24 @@ def _string_config_to_dict(config: Any) -> Dict[str, Any]:
         "data": config.data,
         "options": getattr(config, "options", []),
     }
+
+
+def _build_extra_providers() -> Dict[str, Any]:
+    """构建插件注册 provider 的摘要信息（与 local/openai 配置格式同构）"""
+    extra: Dict[str, Any] = {}
+    for name, entry in list_external_providers().items():
+        config_dict: Dict[str, Any] = {}
+        source = entry.config_source
+        if source is not None:
+            for key in source:  # StringConfig 可迭代其配置键
+                config_dict[key] = _string_config_to_dict(source.get_config(key))
+        extra[name] = {
+            "display_name": entry.display_name or name,
+            "plugin": entry.plugin,
+            "kind": entry.kind,
+            "config": config_dict,
+        }
+    return extra
 
 
 # ==================== 嵌入模型配置 ====================
@@ -46,7 +68,7 @@ async def get_embedding_provider(_: Dict = Depends(require_auth)) -> Dict:
         "msg": "ok",
         "data": {
             "provider": provider,
-            "available_providers": ["local", "openai"],
+            "available_providers": list_embedding_providers(),
         },
     }
 
@@ -57,16 +79,17 @@ async def set_embedding_provider(data: Dict, _: Dict = Depends(require_auth)) ->
     设置嵌入模型提供方
 
     Args:
-        data: {"provider": "local" | "openai"}
+        data: {"provider": "local" | "openai" | 插件注册的 provider 名}
 
     Returns:
         status: 0成功
     """
     provider = data.get("provider", "")
-    if provider not in ("local", "openai"):
+    available = list_embedding_providers()
+    if provider not in available:
         return {
             "status": 1,
-            "msg": f"不支持的嵌入模型提供方: '{provider}'，仅支持 'local' 或 'openai'",
+            "msg": f"不支持的嵌入模型提供方: '{provider}'，可用: {available}",
             "data": None,
         }
 
@@ -192,8 +215,10 @@ async def get_embedding_config_summary(_: Dict = Depends(require_auth)) -> Dict:
         "msg": "ok",
         "data": {
             "provider": provider,
-            "available_providers": ["local", "openai"],
+            "available_providers": list_embedding_providers(),
             "local_config": local_config,
             "openai_config": openai_config_dict,
+            # 插件注册的 provider（前端未跟进时静默忽略，向后兼容）
+            "extra_providers": _build_extra_providers(),
         },
     }

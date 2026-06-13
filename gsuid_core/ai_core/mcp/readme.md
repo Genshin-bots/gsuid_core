@@ -297,11 +297,13 @@ if is_mcp_provider(provider):
 
 将框架的 `to_ai` 触发器对外暴露为 MCP 服务。启用后，外部 MCP 客户端（如 Claude Desktop、Cursor 等）可通过 SSE 或 stdio 协议连接到本框架。
 
-**配置项:**
+**配置项（MCP Server 独立子配置）:**
 - `enable_mcp_server` — 是否启用 MCP Server（默认 False）
 - `mcp_server_transport` — 传输协议 `"sse"` | `"stdio"`（默认 `"sse"`）
 - `mcp_server_port` — SSE 监听端口（默认 8766）
 - `mcp_server_api_key` — Bearer Token 认证密钥（留空不认证）
+
+> 上述配置项已从主 AI 配置拆出，单独放在 `MCP_SERVER_CONFIG` 子配置中（持久化为 `data/ai_core/mcp_server_config.json`），调用入口为 `mcp_server_config` (`gsuid_core.ai_core.configs.ai_config`)。
 
 **核心函数:**
 

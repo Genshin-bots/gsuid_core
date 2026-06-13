@@ -87,6 +87,15 @@ class MemeFilter:
 
         daily_limit: int = MEME_DAILY_COLLECT_LIMIT
         today_str = date.today().isoformat()
+
+        # 内存计数缺失时（如进程重启后）从数据库回填，避免重启后限额重新计数
+        async with cls._lock:
+            need_seed = today_str not in cls._daily_counts.get(source_group, {})
+        if need_seed:
+            db_count = await AiMemeRecord.count_daily_by_group(source_group, today_str)
+            async with cls._lock:
+                cls._daily_counts.setdefault(source_group, {})[today_str] = db_count
+
         async with cls._lock:
             group_counts = cls._daily_counts.get(source_group, {})
             today_count = group_counts.get(today_str, 0)

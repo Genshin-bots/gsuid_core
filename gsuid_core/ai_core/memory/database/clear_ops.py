@@ -90,6 +90,7 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
             MEMORY_EDGES_COLLECTION,
             MEMORY_ENTITIES_COLLECTION,
             MEMORY_EPISODES_COLLECTION,
+            MEMORY_EPISODES_COLD_COLLECTION,
         )
 
         if client is None:
@@ -97,6 +98,7 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
 
         for collection in [
             MEMORY_EPISODES_COLLECTION,
+            MEMORY_EPISODES_COLD_COLLECTION,
             MEMORY_ENTITIES_COLLECTION,
             MEMORY_EDGES_COLLECTION,
         ]:

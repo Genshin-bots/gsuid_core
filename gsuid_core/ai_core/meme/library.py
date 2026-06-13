@@ -166,21 +166,36 @@ class MemeLibrary:
         new_relative_path = f"{target_folder}/{file_name}"
         new_path = base_path / new_relative_path
 
-        # 移动文件
-        if old_path.exists():
-            await _move_file(old_path, new_path)
-        elif not new_path.exists():
-            logger.warning(f"[Meme] 源文件不存在: {old_path}")
-            return False
+        # 移动文件（源与目标相同则视为已就位）
+        if old_path != new_path:
+            if old_path.exists():
+                await _move_file(old_path, new_path)
+            elif not new_path.exists():
+                logger.warning(f"[Meme] 源文件不存在: {old_path}")
+                return False
 
-        # 更新数据库
-        await AiMemeRecord.update_record(
-            meme_id,
-            {
-                "file_path": new_relative_path,
-                "folder": target_folder,
-            },
-        )
+        # 更新数据库：folder 是 persona 路由的代理，移动到 common/persona_* 时
+        # 同步更新 persona_hint，保证两者双向一致
+        update_data: dict = {
+            "file_path": new_relative_path,
+            "folder": target_folder,
+        }
+        if target_folder == "common":
+            update_data["persona_hint"] = "common"
+        elif target_folder.startswith("persona_"):
+            update_data["persona_hint"] = target_folder[len("persona_") :]
+        await AiMemeRecord.update_record(meme_id, update_data)
+
+        # 已入索引的记录必须重新同步 Qdrant，否则 payload 里的 folder 过期，
+        # persona 路由（按 folder 过滤）会继续命中旧文件夹
+        if record.status in ("tagged", "manual"):
+            updated = await AiMemeRecord.get_by_meme_id(meme_id)
+            if updated is not None:
+                try:
+                    await MemeLibrary.sync_to_qdrant(updated)
+                except Exception as e:
+                    logger.warning(f"[Meme] 移动后同步 Qdrant 失败: {meme_id}: {e}")
+
         logger.info(f"[Meme] 移动表情包 {meme_id} -> {target_folder}")
         return True
 
@@ -203,12 +218,11 @@ class MemeLibrary:
         if file_path.exists():
             await _unlink_file(file_path)
 
-        # 删除 Qdrant 向量（如果存在）
-        if record.qdrant_id:
-            try:
-                await _remove_from_qdrant(meme_id)
-            except Exception as e:
-                logger.warning(f"[Meme] 删除 Qdrant 向量失败: {e}")
+        # 删除 Qdrant 向量（无条件按 meme_id 过滤删点，兼顾 qdrant_id 缺失的历史数据）
+        try:
+            await _remove_from_qdrant(meme_id)
+        except Exception as e:
+            logger.warning(f"[Meme] 删除 Qdrant 向量失败: {e}")
 
         # 删除数据库记录
         await AiMemeRecord.delete_by_meme_id(meme_id)
@@ -287,6 +301,8 @@ class MemeLibrary:
                 "nsfw_score": nsfw_score,
             },
         )
+        # rejected 记录不应留在向量索引中
+        await MemeLibrary.remove_from_index(meme_id)
 
     @staticmethod
     async def search(
@@ -321,9 +337,11 @@ class MemeLibrary:
         """通过文本语义 + 标签精确匹配搜索表情包
 
         策略：
-        1. 将查询文本按空格拆分为关键词，尝试标签精确匹配
-        2. 同时进行向量语义检索
-        3. 标签精确匹配的结果优先返回，再补充向量检索结果（去重）
+        1. 将查询文本按空格拆分为关键词，做标签/描述精确匹配
+        2. 始终执行向量语义检索（description+tags 的语义近邻，
+           如"困"可命中"想睡觉"，不会被标签精确匹配短路）
+        3. 两路结果各占约一半名额合并去重，剩余名额互相回填，
+           保证语义结果始终进入候选池而非仅做兜底
 
         Args:
             query_text: 查询文本
@@ -337,30 +355,29 @@ class MemeLibrary:
         # 将查询文本拆分为关键词用于标签匹配
         keywords = [kw.strip() for kw in query_text.split() if kw.strip()]
 
-        # 标签精确匹配（优先级最高）
+        # 标签/描述精确匹配
         tag_results = await AiMemeRecord.search_by_tags(keywords, folder=folder, limit=top_k)
 
-        # 如果标签匹配已有足够结果，直接返回
-        if len(tag_results) >= top_k:
-            return tag_results[:top_k]
-
-        # 向量语义检索（补充标签匹配不足的部分）
+        # 向量语义检索（与标签匹配并行参与，不再被短路）
         vec_results = await _vector_search(query_text, folder, top_k, score_threshold)
 
-        # 合并结果：标签匹配优先，向量结果补充（去重）
+        # 合并去重：标签命中与向量命中各占约一半名额，剩余互相回填
         seen_ids: set[str] = set()
         merged: list[AiMemeRecord] = []
 
-        for record in tag_results:
-            if record.meme_id not in seen_ids:
+        def _take(records: Sequence[AiMemeRecord], quota: int) -> None:
+            for record in records:
+                if quota <= 0:
+                    return
+                if record.meme_id in seen_ids:
+                    continue
                 seen_ids.add(record.meme_id)
                 merged.append(record)
+                quota -= 1
 
-        for record in vec_results:
-            if record.meme_id not in seen_ids:
-                seen_ids.add(record.meme_id)
-                merged.append(record)
-
+        _take(tag_results, max(top_k // 2, 1))
+        _take(vec_results, top_k - len(merged))
+        _take(tag_results, top_k - len(merged))
         return merged[:top_k]
 
     @staticmethod
@@ -390,6 +407,16 @@ class MemeLibrary:
                     "qdrant_id": point_id,
                 },
             )
+
+    @staticmethod
+    async def remove_from_index(meme_id: str) -> None:
+        """从向量索引中移除表情包（用于状态变为不可检索时，如 rejected）"""
+        try:
+            await _remove_from_qdrant(meme_id)
+        except Exception as e:
+            logger.warning(f"[Meme] 从向量索引移除失败: {meme_id}: {e}")
+            return
+        await AiMemeRecord.update_record(meme_id, {"qdrant_id": ""})
 
 
 async def _vector_search(
@@ -433,6 +460,19 @@ async def _ensure_meme_collection() -> None:
                 )
                 should_reindex = True
             else:
+                # 既有 Collection 补建 payload 索引（幂等），覆盖历史部署缺少 meme_id 索引的情况
+                from qdrant_client.models import PayloadSchemaType
+
+                for field_name in ("folder", "status", "meme_id"):
+                    try:
+                        await client.create_payload_index(
+                            collection_name=MEME_COLLECTION_NAME,
+                            field_name=field_name,
+                            field_schema=PayloadSchemaType.KEYWORD,
+                        )
+                    except Exception as e:
+                        # 索引已存在或后端不支持，幂等场景下属预期
+                        logger.debug(f"[Meme] 跳过 payload 索引 {field_name}: {e}")
                 return
 
     if MEME_COLLECTION_NAME not in existing or should_reindex:
@@ -451,17 +491,14 @@ async def _ensure_meme_collection() -> None:
 
         if refreshed_client is None:
             raise RuntimeError("Qdrant client 重建后不可用")
-        # 为 folder 建立 payload 索引
-        await refreshed_client.create_payload_index(
-            collection_name=MEME_COLLECTION_NAME,
-            field_name="folder",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        await refreshed_client.create_payload_index(
-            collection_name=MEME_COLLECTION_NAME,
-            field_name="status",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
+        # 为 folder / status / meme_id 建立 payload 索引
+        # （meme_id 索引用于幂等 upsert 前按 meme_id 删点，避免全量扫描）
+        for field_name in ("folder", "status", "meme_id"):
+            await refreshed_client.create_payload_index(
+                collection_name=MEME_COLLECTION_NAME,
+                field_name=field_name,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
         logger.info(f"[Meme] 创建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}")
 
     if should_reindex:
@@ -540,16 +577,12 @@ async def _force_recreate_meme_collection() -> None:
 
     if refreshed_client is None:
         raise RuntimeError("Qdrant client 重建后不可用")
-    await refreshed_client.create_payload_index(
-        collection_name=MEME_COLLECTION_NAME,
-        field_name="folder",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await refreshed_client.create_payload_index(
-        collection_name=MEME_COLLECTION_NAME,
-        field_name="status",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
+    for field_name in ("folder", "status", "meme_id"):
+        await refreshed_client.create_payload_index(
+            collection_name=MEME_COLLECTION_NAME,
+            field_name=field_name,
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
     logger.info(f"[Meme] 已强制重建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}")
 
 
@@ -562,12 +595,15 @@ async def _upsert_to_qdrant(
     use_count: int,
     file_mime: str,
 ) -> Optional[str]:
-    """写入或更新 Qdrant 向量"""
-    import uuid
+    """写入或更新 Qdrant 向量
 
+    point id 由 meme_id 派生（UUID5），保证多次 sync 幂等覆盖同一个点，
+    不会随每次编辑/重打标产生重复向量点。upsert 前先按 meme_id 清理
+    旧点，自愈历史版本随机 UUID 留下的重复点。
+    """
     from qdrant_client.models import PointStruct
 
-    from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.base import client, get_point_id
 
     if client is None:
         return None
@@ -576,7 +612,13 @@ async def _upsert_to_qdrant(
     if vector is None:
         return None
 
-    point_id = str(uuid.uuid4())
+    # 清理该 meme 既有的全部向量点（含历史随机 UUID 重复点），失败不阻塞写入
+    try:
+        await _remove_from_qdrant(meme_id)
+    except Exception as e:
+        logger.warning(f"[Meme] 清理旧向量点失败（继续写入）: {meme_id}: {e}")
+
+    point_id = get_point_id(meme_id)
     point = PointStruct(
         id=point_id,
         vector=vector,
@@ -636,20 +678,23 @@ async def _search_qdrant(
     if client is None:
         return []
 
-    query_filter = None
+    # status 过滤无条件携带：索引中可能存在非 tagged/manual 的点
+    # （导入路径、历史遗留），不能依赖"只有可用状态才会被 sync"这一不变量
+    must_conditions = [
+        FieldCondition(
+            key="status",
+            match=MatchAny(any=["tagged", "manual"]),
+        ),
+    ]
     if folder:
-        query_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="folder",
-                    match=MatchValue(value=folder),
-                ),
-                FieldCondition(
-                    key="status",
-                    match=MatchAny(any=["tagged", "manual"]),
-                ),
-            ]
+        must_conditions.insert(
+            0,
+            FieldCondition(
+                key="folder",
+                match=MatchValue(value=folder),
+            ),
         )
+    query_filter = Filter(must=must_conditions)
 
     # 如果未指定阈值，从配置中读取
     if score_threshold is None:

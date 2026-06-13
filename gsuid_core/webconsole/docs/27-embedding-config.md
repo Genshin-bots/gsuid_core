@@ -1,8 +1,13 @@
 # 27. 嵌入模型配置 API - /api/embedding_config
 
-嵌入模型配置 API 用于管理嵌入模型提供方（local/openai）及其配置。支持在本地 fastembed 模型和 OpenAI 兼容格式的远程 API 之间自由切换。
+嵌入模型配置 API 用于管理嵌入模型提供方（local/openai/插件注册的第三方）及其配置。支持在本地 fastembed 模型和 OpenAI 兼容格式的远程 API 之间自由切换。
 
 > **架构说明**：嵌入模型提供方通过 `ai_config` 中的 `embedding_provider` 配置项控制。切换提供方后需要重启生效。本地和远程配置相互独立，互不影响。
+>
+> **插件扩展**：插件可通过 `gsuid_core.ai_core.rag.embedding_registry.register_embedding_provider`
+> 注册第三方 provider（如 `sentence_transformers`），注册后自动出现在 `available_providers`
+> 与 provider 下拉选项中；其配置项通过 27.7 的 `extra_providers` 字段返回，
+> 修改则走插件管理页（`/api/plugins` 通用配置渲染）。
 
 ---
 
@@ -32,8 +37,8 @@ Authorization: Bearer <token>
 **响应字段说明**：
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| provider | string | 当前嵌入模型提供方，`"local"` 或 `"openai"` |
-| available_providers | string[] | 可用的提供方列表 |
+| provider | string | 当前嵌入模型提供方，`"local"`、`"openai"` 或插件注册的 provider 名 |
+| available_providers | string[] | 可用的提供方列表（内置 + 插件注册，注册表驱动） |
 
 ---
 
@@ -57,7 +62,7 @@ Authorization: Bearer <token>
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| provider | string | 是 | 嵌入模型提供方，`"local"` 或 `"openai"` |
+| provider | string | 是 | 嵌入模型提供方，须在 `available_providers` 列表内 |
 
 **响应**：
 ```json
@@ -74,7 +79,7 @@ Authorization: Bearer <token>
 ```json
 {
     "status": 1,
-    "msg": "不支持的嵌入模型提供方: 'xxx'，仅支持 'local' 或 'openai'",
+    "msg": "不支持的嵌入模型提供方: 'xxx'，可用: ['local', 'openai', 'sentence_transformers']",
     "data": null
 }
 ```
@@ -277,9 +282,32 @@ Authorization: Bearer <token>
                 "data": "text-embedding-3-small",
                 "options": ["..."]
             }
+        },
+        "extra_providers": {
+            "sentence_transformers": {
+                "display_name": "SentenceTransformers (本地)",
+                "plugin": "STEmbedding",
+                "kind": "local",
+                "config": {
+                    "st_model_name": {
+                        "title": "模型名称",
+                        "desc": "...",
+                        "data": "BAAI/bge-m3",
+                        "options": []
+                    }
+                }
+            }
         }
     }
 }
 ```
+
+**`extra_providers` 字段说明**（插件注册的 provider，前端未跟进时可静默忽略）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| display_name | string | 展示名 |
+| plugin | string | 来源插件名 |
+| kind | string | `"local"`（本地推理）或 `"remote"`（远程 API） |
+| config | object | 该 provider 的配置项（与 `local_config`/`openai_config` 同构，只读展示；修改走插件管理页） |
 
 > **前端建议**：使用此接口一次性获取所有嵌入模型配置信息，减少请求次数。根据 `provider` 字段决定显示哪一组配置表单。

@@ -306,6 +306,86 @@ GET /api/logs/levels
 
 ---
 
+## 7.7.1 日志控制台配置
+
+用于跨设备/会话持久化用户在前端日志控制台选择的级别偏好（例如 `LogContext` 中选定的可见级别）。其工作模式与 [`ThemeContext`](../src/contexts/ThemeContext.tsx) 主题配置一致：读取时补默认值，写入时落盘到本地 JSON。
+
+### 字段说明
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `visible_levels` | `string[]` | 否 | `["debug", "info", "warning", "error"]` | 用户希望显示的日志级别 `value` 列表。空数组/缺省时由后端返回默认值。值必须落在 `GET /api/logs/levels` 返回的 `value` 集合中（不含 `all`，`all` 是前端 UI 标志，非真实级别）。 |
+
+> **存储位置**：`data/logs/configs/logs_config.json`（`gsuid_core.data_store.LOGS_CONFIG_PATH`），目录不存在时会自动创建。
+
+### 7.7.1.1 获取日志控制台配置
+
+```
+GET /api/logs/config
+```
+
+**认证**：需要（`Authorization` 头，参见 [01-auth.md](./01-auth.md)）
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "visible_levels": ["debug", "info", "warning", "error"]
+    }
+}
+```
+
+**说明**：
+- 读取时若存储中没有 `visible_levels`（旧版本后端持久化数据或新部署），返回时会自动补默认值 `["debug", "info", "warning", "error"]`，避免前端拿到 `undefined` 触发回退逻辑。
+- 存储中包含非法 `value`（如 `all`、未在 `GET /api/logs/levels` 中出现的字符串）时，会在响应时剔除，确保返回内容始终是合法集合的子集。
+
+### 7.7.1.2 保存日志控制台配置
+
+```
+PUT /api/logs/config
+```
+
+**认证**：需要（`Authorization` 头，参见 [01-auth.md](./01-auth.md)）
+
+**Content-Type**：`application/json`
+
+**请求体**：
+```json
+{
+    "visible_levels": ["debug", "info", "warning"]
+}
+```
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "saved",
+    "data": {
+        "visible_levels": ["debug", "info", "warning"]
+    }
+}
+```
+
+**字段约束**：
+- `visible_levels` 必须是 `string[]`，每个元素应是 `GET /api/logs/levels` 返回的合法 `value`（小写、不含 `all`）。
+- 后端会做合法性校验，剔除不在白名单内的值；数组可以为空（表示用户主动全不选）。
+- 不允许出现 `all` 这个特殊值（它是前端 UI 标志，非真实级别），后端会自动忽略。
+
+**错误码**：
+
+| `status` | `msg` | 场景 |
+| --- | --- | --- |
+| `0` | `ok` / `saved` | 成功 |
+| `1` | `保存失败` | 服务端写入磁盘失败 |
+| `401` | `unauthorized` | 未登录或 token 失效 |
+| `422` | （FastAPI 默认） | 请求体 JSON 格式不合法（缺 `visible_levels` 时回退为空数组） |
+| `500` | `internal error` | 服务端异常 |
+
+---
+
 ## 7.8 追踪日志 API
 
 > **适用范围**：仅追踪**命令执行路径**（用户发送 `/command` 或消息触发插件函数）。AI 核心路径（LLM 调用、tool use 等）有独立的 `ai_session_logs_api`，不走此追踪系统。

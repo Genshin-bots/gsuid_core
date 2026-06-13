@@ -15,7 +15,8 @@
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| GET | `/api/meme/list` | 列表查询 |
+| GET | `/api/meme/list` | 列表查询（支持 `folder` / `persona_hint` 过滤） |
+| GET | `/api/meme/personas` | 按人格分类列表（用于“按人格分类”入口） |
 | GET | `/api/meme/{meme_id}` | 获取单条记录详情 |
 | GET | `/api/meme/image/{meme_id}` | 获取原始图片文件 |
 | PUT | `/api/meme/{meme_id}` | 更新标签/描述/归属 |
@@ -23,7 +24,7 @@
 | DELETE | `/api/meme/{meme_id}` | 删除表情包（文件+记录） |
 | POST | `/api/meme/upload` | 手动上传表情包 |
 | POST | `/api/meme/{meme_id}/retag` | 重新触发 VLM 打标 |
-| GET | `/api/meme/stats` | 统计概览 |
+| GET | `/api/meme/stats` | 统计概览（包含 `persona_counts`） |
 | POST | `/api/meme/batch_delete` | 批量删除表情包 |
 | POST | `/api/meme/purge_rejected` | 清除所有已拒绝的表情包 |
 | POST | `/api/meme/batch_retag_pending` | 批量重新打标（待手动处理状态） |
@@ -44,12 +45,13 @@ GET /api/meme/list
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `folder` | string | 否 | - | 文件夹过滤，如 `common`, `persona_xxx` |
+| `folder` | string | 否 | - | 文件夹过滤，如 `common`, `persona_xxx`。与 `persona_hint` 互斥，**优先使用 `folder`** |
+| `persona_hint` | string | 否 | - | 按人格分类过滤，如 `common` 或某 persona 名（不含 `persona_` 前缀）。底层换算为 `common` / `persona_{name}` 后走 folder 查询路径。与 `folder` 互斥；为方便前端“按人格分类”入口使用 |
 | `status` | string | 否 | - | 状态过滤：`pending`, `tagged`, `manual`, `pending_manual`, `rejected` |
 | `sort` | string | 否 | `created_at_desc` | 排序方式：`created_at_desc`, `use_count_desc`, `use_count_asc` |
 | `page` | int | 否 | `1` | 页码 |
 | `page_size` | int | 否 | `20` | 每页数量 |
-| `q` | string | 否 | - | 搜索关键词（语义向量检索） |
+| `q` | string | 否 | - | 搜索关键词（语义向量检索）。与 `folder` / `persona_hint` 同时存在时，检索范围被限制在指定 folder 内，避免跨 persona 串味 |
 
 **响应**:
 
@@ -255,6 +257,10 @@ GET /api/meme/stats
             "persona_早柚": 100,
             "rejected": 10
         },
+        "persona_counts": {
+            "common": 300,
+            "早柚": 100
+        },
         "total_usage": 1234,
         "top_memes": [
             {
@@ -267,6 +273,42 @@ GET /api/meme/stats
     }
 }
 ```
+
+### 9a. 按人格分类列表（前端“按人格分类”入口）
+
+```
+GET /api/meme/personas
+```
+
+返回表情包库内出现过的所有人格分类及数量。按表情包数量降序、数量一致时按 `persona_hint` 升序。
+
+实用场景：前端管理页顶部提供一个“按人格分类”的过滤器 / 侧边栏。
+调用本接口拿到所有出现过的人格分类及其数量，再点击某项调用
+`GET /api/meme/list?persona_hint=...` 获取该人格下的表情包列表。
+
+**响应**:
+
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": [
+        {"persona_hint": "common", "count": 300, "folder": "common"},
+        {"persona_hint": "早柚",   "count": 100, "folder": "persona_早柚"}
+    ]
+}
+```
+
+**响应字段说明**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `persona_hint` | string | 人格标识。`common` 表示公共表情包；其余为人格名（不含 `persona_` 前缀） |
+| `count` | int | 该人格下的表情包总数 |
+| `folder` | string | 对应存储文件夹，`common` / `persona_{persona_hint}`。调用 `GET /api/meme/list?folder=...` 时可直接使用该字段 |
+
+> **幂等容错**：当数据库中出现历史遗留的空字符串 `persona_hint`（未被 `move_file` 收敛过）时，
+> 本接口会将其归一为 `common`，与 `folder ↔ persona_hint` 双向一致规则保持一致。
 
 ---
 
@@ -491,6 +533,13 @@ POST /api/meme/import
 | `file` | file | 是 | - | `.meme` 格式文件（ZIP） |
 | `skip_existing` | bool | 否 | `true` | 是否跳过已存在的表情包 |
 | `auto_tag` | bool | 否 | `false` | 是否对新导入的表情包触发 VLM 打标 |
+| `persona_hint` | string | 否 | `common` | 指定导入后的归属人格（如 `common` 或某 persona 名，不含 `persona_` 前缀）。会覆盖 metadata.json 中每条的 folder 与 persona_hint，使所有项落到该人格对应的 folder 下。前端可调 `GET /api/meme/personas` 拿到可选人格列表。缺省 `common` 代表通用表情包 |
+
+> **persona_hint 与 metadata.json 的优先级**：
+> - 不传 `persona_hint` → 使用 metadata.json 中每条原有的 `folder` / `persona_hint`（保持原导出语义）
+> - 传 `persona_hint` → 以后端推导的 folder 覆盖所有条目的 folder（不论 metadata 里原 foldr 是什么）
+> 后端负责保证 folder ↔ persona_hint 双向一致（与 `MemeLibrary.move_file` 同规则）。
+> 推荐流程：调 `GET /api/meme/personas` 拿到可选人格 → 调用方选取或新增人格后用 `POST /api/persona/create` / `POST /api/persona/add` 创建 → 调本接口上传 `.meme` 并传该 `persona_hint`。
 
 **响应**:
 
@@ -634,6 +683,8 @@ any → rejected (NSFW 或质量不达标)
 ## 前端页面设计要点
 
 1. **列表页**: 瀑布流图片网格，支持文件夹/状态过滤、排序（最新/发送次数）。每张卡片显示缩略图、简要描述、情绪标签、使用次数。支持关键字搜索（调用 `?q=xxx`）。支持多选模式，选中后可批量删除或批量导出。
+   - **按人格分类入口**（建议）：页面顶部调 `GET /api/meme/personas` 拿到人格分类侧边栏，点击某项后调 `GET /api/meme/list?persona_hint=xxx` 过滤列表。与 `folder` 参数互斥优先 `folder`；调用方根据 UX 选一个即可。
+   - **语义检索 + 人格过滤可叠加**：调 `?q=关键词&persona_hint=xxx` 可在指定人格下进行语义检索，避免跨 persona 串味。
 2. **详情面板**: 大图预览，可编辑描述、情绪标签、场景标签、自定义标签、Persona 归属。显示使用统计（次数、最后使用时间、群）。提供移动文件夹、重新打标、删除操作。
 3. **上传区**: 拖拽或点击上传，可选择目标文件夹，支持自动打标或手动输入标签。
 4. **统计概览**: 展示总图片数、AI 发送总次数、待打标数、各文件夹分布（图表）。Top 10 最常用表情包（图片+次数）。

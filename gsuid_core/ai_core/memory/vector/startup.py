@@ -12,6 +12,7 @@ from .collections import (
     MEMORY_EDGES_COLLECTION,
     MEMORY_ENTITIES_COLLECTION,
     MEMORY_EPISODES_COLLECTION,
+    MEMORY_EPISODES_COLD_COLLECTION,
 )
 
 
@@ -171,6 +172,67 @@ async def ensure_memory_collections():
                 logger.debug(f"🧠 [Memory] Qdrant Collection 已存在且配置正确: {name}")
         except Exception as e:
             logger.error(f"🧠 [Memory] 检查/重建 Collection {name} 失败: {e}")
+
+    # §3.2① 冷 Episode 归档集合：独立、轻量地确保存在（不参与上面的 payload 备份/重嵌入迁移）。
+    # 冷向量是从热集合迁移而来的派生数据，真值在 SQL；维度变更时直接重建为空即可，
+    # 后续降级会把新维度向量重新迁入，不影响任何记忆事实（SQL 文本完整保留）。
+    await _ensure_episode_cold_collection(existing, dimension, vector_config, sparse_config)
+
+
+async def _ensure_episode_cold_collection(
+    existing: set[str],
+    dimension: int,
+    vector_config,
+    sparse_config,
+) -> None:
+    """确保冷 Episode 集合 memory_episodes_cold 存在且维度匹配（不匹配则重建为空）。"""
+    from qdrant_client.models import PayloadSchemaType
+
+    from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.collection_migration import (
+        get_vector_size,
+        ensure_vector_on_disk,
+        force_recreate_collection,
+    )
+
+    if client is None:
+        return
+
+    name = MEMORY_EPISODES_COLD_COLLECTION
+    try:
+        need_create = name not in existing
+        if not need_create:
+            col_info = await client.get_collection(collection_name=name)
+            actual_size = get_vector_size(col_info.config.params.vectors, "dense")
+            if actual_size != dimension:
+                logger.warning(
+                    f"🧠 [Memory] 冷集合 {name} 维度不匹配(actual={actual_size}, expected={dimension})，"
+                    f"重建为空（冷向量为派生数据，SQL 文本不受影响）"
+                )
+                need_create = True
+
+        if need_create:
+            await force_recreate_collection(
+                collection_name=name,
+                vectors_config={"dense": vector_config},
+                sparse_vectors_config={"sparse": sparse_config},
+                on_disk_payload=True,
+            )
+            from gsuid_core.ai_core.rag.base import client as refreshed_client
+
+            if refreshed_client is None:
+                raise RuntimeError("Qdrant client 重建后不可用")
+            await refreshed_client.create_payload_index(
+                collection_name=name,
+                field_name="scope_key",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            logger.info(f"🧠 [Memory] 创建 Qdrant 冷 Episode 集合: {name}")
+        else:
+            await ensure_vector_on_disk(name, "dense")
+            logger.debug(f"🧠 [Memory] Qdrant 冷 Episode 集合已存在且配置正确: {name}")
+    except Exception as e:
+        logger.error(f"🧠 [Memory] 检查/重建冷 Episode 集合 {name} 失败: {e}")
 
 
 async def _reindex_memory_payloads(collection_name: str, payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:

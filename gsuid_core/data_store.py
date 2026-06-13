@@ -62,6 +62,9 @@ PLUGINS_CONFIGS_PATH = get_res_path("plugins_configs")
 # 主题配置路径 / Theme Config Path
 THEME_CONFIG_PATH = gs_data_path / "theme_config.json"
 
+# 日志控制台配置路径 / Logs Console Config Path
+LOGS_CONFIG_PATH = gs_data_path / "logs" / "configs" / "logs_config.json"
+
 # 网页控制台相关路径 / Web Console
 WEBCONSOLE_PATH = Path(__file__).parent / "webconsole"
 DIST_PATH = WEBCONSOLE_PATH / "dist"

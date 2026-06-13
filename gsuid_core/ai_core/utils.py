@@ -442,7 +442,7 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
         from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
 
         persona = _get_persona_for_event(ev)
-        record = await pick(
+        record, _reason = await pick(
             mood=mood,
             scene="",
             persona=persona,

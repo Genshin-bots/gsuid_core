@@ -40,6 +40,48 @@ class MemeUpdateRequest(BaseModel):
     scene_tags: Optional[List[str]] = Field(None, description="场景标签列表")
     custom_tags: Optional[List[str]] = Field(None, description="自定义标签列表")
     persona_hint: Optional[str] = Field(None, max_length=64, description="归属提示")
+    status: Optional[str] = Field(
+        None,
+        max_length=32,
+        description=(
+            "显式修改状态（如人工复核后从 rejected 恢复为 manual）；不传时 rejected 保持不变，其余状态置为 manual"
+        ),
+    )
+
+
+# 允许通过 API 显式设置的状态
+_VALID_MEME_STATUSES = ("pending", "tagged", "manual", "pending_manual", "rejected")
+# 可进入向量索引（可被检索）的状态
+_INDEXABLE_STATUSES = ("tagged", "manual")
+
+# 预保留的 meme_id 名：与 `/api/meme/...` 静态子路径同名
+# （例如 `/api/meme/personas`、`/api/meme/stats`）。用于在所有以 `{meme_id}`
+# 为路径参数的路由（详情/编辑/删除/移动/重打标/图片）中防御性阻断
+# 路由匹配顺序造成的静默吞招。与 mcp_config_api.py 的
+# `MCP_STATIC_ROUTES` 同源。
+# 实际优先依靠路由声明顺序（静态路由必须先于 `{meme_id}` 声明），
+# 本集合作为最后一道防线以防未来版本调整匹配策略。
+_RESERVED_MEME_IDS = frozenset(
+    {
+        "personas",
+        "list",
+        "stats",
+        "image",
+        "upload",
+        "export",
+        "import",
+        "batch_delete",
+        "purge_rejected",
+        "batch_retag_pending",
+    }
+)
+
+
+def _folder_for_persona(persona_hint: str) -> str:
+    """根据 persona_hint 推导归属文件夹（folder 是 persona 路由的代理）"""
+    if not persona_hint or persona_hint == "common":
+        return "common"
+    return f"persona_{persona_hint}"
 
 
 class MemeMoveRequest(BaseModel):
@@ -108,6 +150,7 @@ def _record_to_dict(record: AiMemeRecord) -> dict:
 @app.get("/api/meme/list")
 async def get_meme_list(
     folder: Optional[str] = None,
+    persona_hint: Optional[str] = None,
     status: Optional[str] = None,
     sort: str = "created_at_desc",
     page: int = 1,
@@ -119,30 +162,43 @@ async def get_meme_list(
     列表查询表情包
 
     Args:
-        folder: 文件夹过滤
+        folder: 文件夹过滤（如 `common` / `persona_xxx`），与 `persona_hint` 互斥，优先使用 `folder`
+        persona_hint: 按人格分类过滤（如 `common` / 某 persona 名）。
+            传 `persona_hint` 时，底层换算为对应 folder（`common` / `persona_{name}`）
+            走按人格查询路径；
         status: 状态过滤
         sort: 排序方式
         page: 页码
         page_size: 每页数量
-        q: 搜索关键词（语义向量检索）
+        q: 搜索关键词（语义向量检索）。与 `folder` / `persona_hint` 同时存在时，
+            检索结果会被限制在指定 folder 内，避免跨 persona 串味。
 
     Returns:
         status: 0成功，1失败
         data: 包含 records、total、page、page_size 的分页结果
     """
     try:
+        # folder 与 persona_hint 互斥优先：folder 优先；未给 folder 时按 persona_hint 换算
+        effective_folder = folder
+        if effective_folder is None and persona_hint is not None:
+            effective_folder = _folder_for_persona(persona_hint)
+
         if q:
             # 语义向量检索
-            records = await MemeLibrary.search_by_text(q, top_k=page_size * 5)
+            records = await MemeLibrary.search_by_text(
+                q,
+                folder=effective_folder,
+                top_k=page_size * 5,
+            )
             # 手动分页
             total = len(records)
             start = (page - 1) * page_size
             end = start + page_size
             page_records = records[start:end]
-        elif folder:
-            # 按文件夹查询
+        elif effective_folder:
+            # 按文件夹查询（folder 与 persona_hint 都路由到这里）
             page_records, total = await AiMemeRecord.get_by_folder(
-                folder=folder,
+                folder=effective_folder,
                 status=status,
                 sort=sort,
                 page=page,
@@ -174,6 +230,47 @@ async def get_meme_list(
 
 
 # ─────────────────────────────────────────────
+# 1b. 按人格分类列表（前端“按人格分类”入口用）
+# ─────────────────────────────────────────────
+#
+# 【路由顺序重要】本端点必须声明在 `/api/meme/{meme_id}` 之前。
+# Starlette / FastAPI 按声明顺序匹配路由，单段静态路径 `/api/meme/personas`
+# 如果声明在后，会被 `/api/meme/{meme_id}` 吞掉并被当作 `meme_id="personas"`
+# 去查询表情包记录，从而返回“表情包不存在”。同问题在 mcp_config_api.py
+# 中以 `MCP_STATIC_ROUTES` 白名单与路由顺序记录过。
+# （保留在 1b 节仅为可读性，实际位置是控制：声明顺序先于 2）
+
+
+@app.get("/api/meme/personas")
+async def get_meme_personas(
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    获取表情包库内的所有人格分类及数量
+
+    返回按表情包数量降序、人格名升序排列的列表：
+    [
+        {"persona_hint": "common", "count": 300, "folder": "common"},
+        {"persona_hint": "早柚",   "count": 100, "folder": "persona_早柚"},
+        ...
+    ]
+
+    实用场景：前端管理页顶部提供一个“按人格分类”的过滤器 / 侧边栏，
+    调用本接口拿到所有出现过的人格分类及其数量，再点击某项调用
+    `GET /api/meme/list?persona_hint=...` 获取该人格下的表情包列表。
+
+    Returns:
+        status: 0成功，1失败
+        data: 人格分类列表
+    """
+    try:
+        personas = await AiMemeRecord.get_distinct_personas()
+        return {"status": 0, "msg": "ok", "data": personas}
+    except Exception as e:
+        return {"status": 1, "msg": f"获取人格分类失败: {e}", "data": None}
+
+
+# ─────────────────────────────────────────────
 # 2. 获取单条记录详情
 # ─────────────────────────────────────────────
 
@@ -194,6 +291,13 @@ async def get_meme_detail(
         data: 表情包详情
     """
     try:
+        # 防御性保护：预保留名不当作 meme_id 查询
+        if meme_id in _RESERVED_MEME_IDS:
+            return {
+                "status": 1,
+                "msg": f"预保留路径名: {meme_id}（不属于任何表情包）",
+                "data": None,
+            }
         record = await AiMemeRecord.get_by_meme_id(meme_id)
         if not record:
             return {"status": 1, "msg": "表情包不存在", "data": None}
@@ -267,6 +371,10 @@ async def update_meme(
     """
     更新表情包标签/描述/归属
 
+    - 编辑 persona_hint 会联动移动文件到对应归属文件夹并重新同步向量索引
+      （检索按 folder 过滤，仅改 persona_hint 字段对检索无效）；
+    - rejected 状态不会因编辑标签被静默解除，恢复需显式传 status 字段。
+
     Args:
         meme_id: 表情包 ID
         req: 更新请求体
@@ -279,6 +387,16 @@ async def update_meme(
         if not record:
             return {"status": 1, "msg": "表情包不存在", "data": None}
 
+        # 状态变更必须显式：rejected（如 NSFW 被拒）的图编辑标签不再被静默提升
+        if req.status is not None:
+            if req.status not in _VALID_MEME_STATUSES:
+                return {"status": 1, "msg": f"无效的状态: {req.status}", "data": None}
+            new_status: Optional[str] = req.status
+        elif record.status == "rejected":
+            new_status = None
+        else:
+            new_status = "manual"
+
         success = await MemeLibrary.update_tags(
             meme_id=meme_id,
             description=req.description,
@@ -286,15 +404,34 @@ async def update_meme(
             scene_tags=req.scene_tags,
             custom_tags=req.custom_tags,
             persona_hint=req.persona_hint,
-            status="manual",
+            status=new_status,
         )
         if not success:
-            return {"status": 1, "msg": "更新失败", "data": None}
+            return {"status": 1, "msg": "更新失败（没有需要更新的字段）", "data": None}
 
-        # 同步到 Qdrant
-        updated_record = await AiMemeRecord.get_by_meme_id(meme_id)
-        if updated_record:
-            await MemeLibrary.sync_to_qdrant(updated_record)
+        final_status = new_status or record.status
+
+        if final_status == "rejected":
+            # 显式置为 rejected：移动到 rejected 文件夹并移出向量索引
+            if record.folder != "rejected":
+                await MemeLibrary.move_file(meme_id, "rejected")
+            await MemeLibrary.remove_from_index(meme_id)
+            return {"status": 0, "msg": "更新成功", "data": None}
+
+        if final_status in _INDEXABLE_STATUSES:
+            # persona_hint 编辑联动 folder；从 inbox/rejected 恢复的图也归位到归属文件夹
+            hint = req.persona_hint if req.persona_hint is not None else record.persona_hint
+            expected_folder = _folder_for_persona(hint)
+            persona_changed = req.persona_hint is not None and req.persona_hint != record.persona_hint
+            need_move = (persona_changed or record.folder in ("inbox", "rejected")) and record.folder != expected_folder
+            if need_move:
+                # move_file 内部会更新 persona_hint 并重新同步 Qdrant
+                await MemeLibrary.move_file(meme_id, expected_folder)
+            else:
+                # 未移动文件时补一次同步，保证最新标签/描述写入向量索引
+                updated_record = await AiMemeRecord.get_by_meme_id(meme_id)
+                if updated_record:
+                    await MemeLibrary.sync_to_qdrant(updated_record)
 
         return {"status": 0, "msg": "更新成功", "data": None}
     except Exception as e:
@@ -384,9 +521,13 @@ async def upload_meme(
     """
     手动上传表情包
 
+    指定的目标文件夹会被尊重：VLM 打标只补充描述/标签，
+    不会再按 persona_hint 把图移出用户指定的文件夹。
+    如需由 VLM 自动决定归属，请将 folder 设为 "inbox"。
+
     Args:
         file: 图片文件
-        folder: 目标文件夹
+        folder: 目标文件夹（"inbox" 表示交给 VLM 打标后自动归属）
         auto_tag: 是否自动触发 VLM 打标
 
     Returns:
@@ -419,6 +560,7 @@ async def upload_meme(
             return {"status": 1, "msg": "保存失败（可能已存在）", "data": None}
 
         # 如果指定了非 inbox 文件夹，移动过去
+        # （move_file 会同步推导 persona_hint，打标时不会再被 VLM 覆盖归属）
         if folder != "inbox":
             await MemeLibrary.move_file(record.meme_id, folder)
 
@@ -794,6 +936,16 @@ async def import_memes(
     file: UploadFile = File(..., description=".meme 格式文件"),
     skip_existing: bool = Form(True, description="是否跳过已存在的表情包"),
     auto_tag: bool = Form(False, description="是否对新导入的表情包触发 VLM 打标"),
+    persona_hint: str = Form(
+        "common",
+        max_length=64,
+        description=(
+            "指定导入后的归属人格（如 'common' 或某 persona 名，不含 'persona_' 前缀）。"
+            "会覆盖 metadata.json 中的 folder / persona_hint 字段，"
+            "使所有导入项落到该人格对应的 folder 下；缺省 'common' 代表通用表情包。"
+            "前端可调用 GET /api/meme/personas 拿到可选人格列表。"
+        ),
+    ),
     _: Dict = Depends(require_auth),
 ) -> Dict:
     """
@@ -808,13 +960,17 @@ async def import_memes(
       1. 解析 manifest.json 校验版本
       2. 读取 metadata.json 获取元数据
       3. 逐条处理：若 meme_id 已存在且 skip_existing=True 则跳过
-      4. 从 files/ 读取源文件，保存到对应 folder
+      4. 从 files/ 读取源文件，保存到 `persona_hint` 推导出的 folder（与
+         `MemeLibrary.move_file` 的 folder ↔ persona_hint 双向一致规则一致）
       5. 写入数据库记录，可选触发 VLM 打标
 
     Args:
         file: .meme 格式文件（ZIP）
         skip_existing: 是否跳过已存在的表情包
         auto_tag: 是否触发 VLM 打标
+        persona_hint: 导入后的归属人格标识，缺省 'common'；
+            会同时覆盖 metadata.json 中每条的 folder 与 persona_hint
+            （后端负责保证两者一致），以保证导入的项与 persona_hint 路由一致。
 
     Returns:
         status: 0成功，1部分失败
@@ -854,75 +1010,97 @@ async def import_memes(
 
             metadata_list = json.loads(zf.read(MEME_METADATA_FILE))
 
-            # ── 逐条导入 ──
+            # ── 解析全局 persona_hint：与 `_folder_for_persona` 保持一致
+            # （与 MemeLibrary.move_file 的 folder ↔ persona_hint
+            # 双向一致规则同源）。空字符串 / 缺省一律走 "common"。 ──
+            target_persona_hint = (persona_hint or "common").strip() or "common"
+            target_folder = _folder_for_persona(target_persona_hint)
+
+            # ── 逐条导入（每条独立保护，单条失败不中断整体导入） ──
             for meta in metadata_list:
                 meme_id = meta.get("meme_id", "")
                 if not meme_id:
                     failed_items.append({"meme_id": "", "reason": "缺少 meme_id"})
                     continue
 
-                # 检查是否已存在
-                if skip_existing and await AiMemeRecord.exists_by_meme_id(meme_id):
-                    skipped_ids.append(meme_id)
-                    continue
+                try:
+                    exists = await AiMemeRecord.exists_by_meme_id(meme_id)
+                    if exists and skip_existing:
+                        skipped_ids.append(meme_id)
+                        continue
 
-                # 读取源文件
-                file_name = Path(meta.get("file_path", "")).name
-                file_key = f"{MEME_FILES_DIR}/{file_name}"
-                if file_key not in zf.namelist():
-                    failed_items.append({"meme_id": meme_id, "reason": f"包中缺少源文件: {file_key}"})
-                    continue
+                    # 读取源文件
+                    file_name = Path(meta.get("file_path", "")).name
+                    file_key = f"{MEME_FILES_DIR}/{file_name}"
+                    if file_key not in zf.namelist():
+                        failed_items.append({"meme_id": meme_id, "reason": f"包中缺少源文件: {file_key}"})
+                        continue
 
-                image_data = zf.read(file_key)
-                file_mime = meta.get("file_mime", "image/jpeg")
-                width = meta.get("width", 0)
-                height = meta.get("height", 0)
-                folder = meta.get("folder", "inbox")
+                    image_data = zf.read(file_key)
+                    file_mime = meta.get("file_mime", "image/jpeg")
+                    width = meta.get("width", 0)
+                    height = meta.get("height", 0)
+                    # 优先级：表单传入的 persona_hint 推导的 folder > metadata.json 中的 folder
+                    # 避免“原导出处为 persona_A、却以 persona_B 导入”的不一致场景。
+                    folder = target_folder
 
-                # 保存文件到目标文件夹
-                target_folder_path = base_path / folder
-                target_folder_path.mkdir(parents=True, exist_ok=True)
+                    # 保存文件到目标文件夹
+                    target_folder_path = base_path / folder
+                    target_folder_path.mkdir(parents=True, exist_ok=True)
 
-                # 确定文件扩展名
-                ext = Path(file_name).suffix or ".jpg"
-                target_file_path = target_folder_path / f"{meme_id}{ext}"
-                target_file_path.write_bytes(image_data)
+                    # 确定文件扩展名
+                    ext = Path(file_name).suffix or ".jpg"
+                    target_file_path = target_folder_path / f"{meme_id}{ext}"
+                    target_file_path.write_bytes(image_data)
 
-                relative_path = f"{folder}/{meme_id}{ext}"
+                    relative_path = f"{folder}/{meme_id}{ext}"
 
-                # 创建数据库记录
-                record = AiMemeRecord(
-                    meme_id=meme_id,
-                    file_path=relative_path,
-                    file_size=len(image_data),
-                    file_mime=file_mime,
-                    width=width,
-                    height=height,
-                    source_group="import",
-                    folder=folder,
-                    persona_hint=meta.get("persona_hint", "common"),
-                    emotion_tags=meta.get("emotion_tags", []),
-                    scene_tags=meta.get("scene_tags", []),
-                    description=meta.get("description", ""),
-                    custom_tags=meta.get("custom_tags", []),
-                    status=meta.get("status", "manual"),
-                    nsfw_score=meta.get("nsfw_score", 0.0),
-                )
-                await AiMemeRecord.insert_record(record)
+                    # auto_tag 时直接以 pending 入库，避免"先按导入状态 sync、
+                    # 打标后再 sync"的双写与陈旧状态入索引
+                    status = "pending" if auto_tag else meta.get("status", "manual")
 
-                # 可选：触发 VLM 打标
-                if auto_tag:
-                    await AiMemeRecord.update_record(meme_id, {"status": "pending"})
-                    await enqueue_tag(meme_id)
+                    record_fields = {
+                        "file_path": relative_path,
+                        "file_size": len(image_data),
+                        "file_mime": file_mime,
+                        "width": width,
+                        "height": height,
+                        "source_group": "import",
+                        "folder": folder,
+                        "persona_hint": target_persona_hint,
+                        "emotion_tags": meta.get("emotion_tags", []),
+                        "scene_tags": meta.get("scene_tags", []),
+                        "description": meta.get("description", ""),
+                        "custom_tags": meta.get("custom_tags", []),
+                        "status": status,
+                        "nsfw_score": meta.get("nsfw_score", 0.0),
+                    }
 
-                # 同步到 Qdrant（如果有描述/标签）
-                if record.description or record.all_tags:
-                    try:
-                        await MemeLibrary.sync_to_qdrant(record)
-                    except Exception:
-                        pass  # Qdrant 同步失败不影响导入
+                    if exists:
+                        # skip_existing=False：覆盖更新既有记录，而非主键冲突中断
+                        await AiMemeRecord.update_record(meme_id, record_fields)
+                        record = await AiMemeRecord.get_by_meme_id(meme_id)
+                    else:
+                        record = AiMemeRecord(meme_id=meme_id, **record_fields)
+                        await AiMemeRecord.insert_record(record)
 
-                imported_ids.append(meme_id)
+                    if auto_tag:
+                        # 打标完成后由 tagger 统一同步向量索引
+                        await enqueue_tag(meme_id)
+                    elif (
+                        record is not None
+                        and record.status in _INDEXABLE_STATUSES
+                        and (record.description or record.all_tags)
+                    ):
+                        # 仅可检索状态入向量索引（rejected/pending 等不入）
+                        try:
+                            await MemeLibrary.sync_to_qdrant(record)
+                        except Exception:
+                            pass  # Qdrant 同步失败不影响导入
+
+                    imported_ids.append(meme_id)
+                except Exception as e:
+                    failed_items.append({"meme_id": meme_id, "reason": str(e)})
 
         return {
             "status": 0,

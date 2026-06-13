@@ -5,7 +5,8 @@ description: >
   "怎么用 to_ai"、"注册 ai_tools"、"写一个游戏查询插件"、"插件帮助怎么注册"、
   "能力代理/代理画像"、"怎么为触发器添加AI功能"、"几个触发器的差别在哪"、"数据库和配置项怎么添加"
   "如何把数据库表挂到网页控制台"、"PIL/htmlkit/playwright 哪个用哪个"、
-  "插件怎么挂自己的 HTTP 接口"、"插件怎么注册 FastAPI 路由"时触发此 SKILL。
+  "插件怎么挂自己的 HTTP 接口"、"插件怎么注册 FastAPI 路由"、
+  "怎么扩展 RAG 嵌入后端"、"注册自定义 Embedding Provider"时触发此 SKILL。
   对所有 GsCore Bot 插件开发任务都应优先读取此 SKILL。
 
   为 GsCore 机器人框架编写插件的完整指南。涵盖项目级目录规范（参照 ZZZeroUID / SayuStock）、
@@ -15,7 +16,8 @@ description: >
   （site.register_admin / GsAdminModel）、订阅系统（gs_subscribe）、定时任务、配置管理、
   帮助系统（register_help + get_new_help）、推荐的渲染范式（优先 PIL → htmlkit
   → playwright 兜底）、AI 工具集成（@ai_tools、to_ai、ai_return、create_agent）、
-  知识库 / 别名注册、启动钩子、to_ai 批量改造工作流、为插件挂 FastAPI 后端接口。
+  知识库 / 别名注册、启动钩子、to_ai 批量改造工作流、为插件挂 FastAPI 后端接口、
+  嵌入 Provider 注册表（插件扩展 RAG 嵌入后端）。
 ---
 
 # GsCore 插件开发完整指南（核心入口）
@@ -46,6 +48,7 @@ description: >
 | 十七 | 代码规范红线（禁止 try/except 兜底、cast、type:ignore、getattr/dict.get 兜底、同步阻塞函数） | [references/17-code-redlines.md](./references/17-code-redlines.md) |
 | 十八 | to_ai 批量改造工作流（背景、Step 0~4、完整股票 / 游戏示例、质量检查清单、Q&A） | [references/18-ai-trigger-migration.md](./references/18-ai-trigger-migration.md) |
 | 十九 | 为插件挂 FastAPI 后端接口（共享 app、鉴权、CRUD、命名规范、反模式） | [references/19-fastapi-plugin-api.md](./references/19-fastapi-plugin-api.md) |
+| 二十 | 嵌入 Provider 注册表（插件扩展 RAG 嵌入后端：懒 import、工厂模式、降级策略） | [references/20-embedding-provider-registry.md](./references/20-embedding-provider-registry.md) |
 
 ## 推荐开发流程（按需跳转）
 
@@ -65,8 +68,9 @@ description: >
    - 业务专业代理 → [十四、能力代理画像](./references/14-ai-capability-profile.md)
    - **批量改造已有触发器支持 AI** → [十八、to_ai 批量改造工作流](./references/18-ai-trigger-migration.md)
 10. **挂自己的 HTTP 后端接口**：看 [十九、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)——复用 `gsuid_core.webconsole.app_app.app`，3 行加一个接口。
-11. **遇到 API 缓存 / 限流 / 字体 / 错误码 / 推主人 / 批量播报** 等问题：直接看 [十六、常用工具模块速查](./references/16-common-utilities.md)。
-12. **写完代码**：用 [十七、代码规范红线](./references/17-code-redlines.md) 自查（try/except、cast、type:ignore、getattr 兜底、同步阻塞函数全部禁止）。
+11. **扩展 RAG 嵌入后端**：看 [二十、嵌入 Provider 注册表](./references/20-embedding-provider-registry.md)——用 `register_embedding_provider` 注册 `sentence_transformers` / `llama.cpp embedding` 等自定义 Provider，懒 import + 工厂模式，自动出现在 WebConsole 下拉选项。
+12. **遇到 API 缓存 / 限流 / 字体 / 错误码 / 推主人 / 批量播报** 等问题：直接看 [十六、常用工具模块速查](./references/16-common-utilities.md)。
+13. **写完代码**：用 [十七、代码规范红线](./references/17-code-redlines.md) 自查（try/except、cast、type:ignore、getattr 兜底、同步阻塞函数全部禁止）。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
@@ -84,11 +88,13 @@ description: >
 - **`to_ai` 改造三层**：触发器层 `to_ai="..."` + 数据/渲染层 `ai_return()` + 业务画像 `CapabilityAgentProfile`；详见 [§18.1](./references/18-ai-trigger-migration.md#181-背景你要做的事) 与 [§18.3 Step 0.4](./references/18-ai-trigger-migration.md#step-04-判断是否需要注册-capability-agent-画像)。
 - **`ai_return` 注入点 = 数据已拿到 / 图片未生成**：必须在数据层函数里，不能只在触发器层。详见 [§18.3 Step 3](./references/18-ai-trigger-migration.md#step-3逐层分析调用链找出数据层注入-ai_return)。
 - **插件 FastAPI = 共享 app + `Depends(require_auth)`**：从 `gsuid_core.webconsole.app_app import app` 即可挂自己的 `/api/<插件名>/...` 路由；详见 [§19.2](./references/19-fastapi-plugin-api.md#192-最简示例3-行代码加一个-get-接口) 与 [§19.3](./references/19-fastapi-plugin-api.md#193-加鉴权推荐-复用-require_auth)。
+- **嵌入 Provider 注册 = 懒 import + 工厂模式**：插件 `__init__.py` 顶层调用 `register_embedding_provider` 注册 `EmbeddingProviderEntry`，重依赖只能在 `factory` 内部 import；注册时序保证早于消费；配置指向的 Provider 不可用时框架自动降级回 `local` 并记录 error，不会导致 AI 核心整体不可用。详见 [§20](./references/20-embedding-provider-registry.md)。
 
 ## 关联文档（本 SKILL 文件夹内）
 
 - 触发器 → AI 迁移工作流：[§18、to_ai 批量改造](./references/18-ai-trigger-migration.md)
 - 插件挂后端 API：[§19、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)
+- 嵌入 Provider 注册：[§20、嵌入 Provider 注册表](./references/20-embedding-provider-registry.md)
 
 ## 关联文档（同仓库其他位置）
 

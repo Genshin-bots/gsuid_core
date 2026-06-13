@@ -256,7 +256,24 @@ def _check_embedding_config() -> Dict[str, Any]:
         except Exception as e:
             result["issues"].append(f"无法获取 OpenAI 嵌入配置: {str(e)}")
     else:
-        result["issues"].append(f"未知的嵌入提供方: {provider}")
+        # 插件注册的第三方 provider
+        from gsuid_core.ai_core.rag.embedding_registry import get_external_provider
+
+        entry = get_external_provider(provider)
+        if entry is None:
+            result["issues"].append(f"未知的嵌入提供方: {provider}（来源插件可能未加载，启动时将降级为 local）")
+        elif entry.check_config is not None:
+            try:
+                info = entry.check_config()
+                for key in ("configured", "model_name", "note"):
+                    if key in info:
+                        result[key] = info[key]
+                result["issues"].extend(info.get("issues", []))
+            except Exception as e:
+                result["issues"].append(f"插件嵌入提供方状态检查失败: {str(e)}")
+        else:
+            result["configured"] = True
+            result["note"] = f"使用插件嵌入提供方: {entry.display_name or provider}"
 
     if not result.get("note"):
         result["note"] = result["issues"][0] if result["issues"] else "未配置"
