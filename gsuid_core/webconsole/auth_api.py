@@ -13,7 +13,9 @@ from fastapi import File, Header, Request, UploadFile
 from sqlmodel import func, select
 
 from gsuid_core.config import core_config
+from gsuid_core.logger import logger
 from gsuid_core.data_store import gs_data_path
+from gsuid_core.security_manager import get_client_ip, auth_rate_limiter
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import verify_token, active_tokens, generate_token
 from gsuid_core.utils.database.auth_models import WebUser
@@ -37,12 +39,18 @@ def hash_password(password: str, salt: Optional[str] = None) -> str:
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    """验证密码"""
+    """验证密码（恒定时间比较，避免时序侧信道泄露）"""
     try:
-        salt, hash_value = stored_hash.split("$")
-        return hash_password(password, salt) == f"{salt}${hash_value}"
+        salt, _hash_value = stored_hash.split("$")
     except (ValueError, AttributeError):
         return False
+    computed = hash_password(password, salt)
+    return secrets.compare_digest(computed.encode(), stored_hash.encode())
+
+
+# 预计算的占位密码哈希：当登录邮箱不存在时仍执行一次等价的哈希校验，
+# 以抹平「用户存在 / 不存在」之间的响应时序差异，缓解用户枚举攻击。
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_hex(16))
 
 
 async def create_user_in_db(
@@ -90,6 +98,14 @@ async def api_login(request: Request, data: Dict):
         data: 包含 user 和 token 的对象
     """
 
+    # 限流：缓解暴力破解 / 凭据填充
+    client_ip = get_client_ip(request)
+    rate_key = f"login:{client_ip}"
+    allowed, retry_after = auth_rate_limiter.check(rate_key)
+    if not allowed:
+        logger.warning(f"🔒️ [网页控制台] 登录请求被限流: IP={client_ip}, 需等待 {retry_after}s")
+        return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
+
     email = data.get("email", "")
     password = data.get("password", "")
 
@@ -100,6 +116,8 @@ async def api_login(request: Request, data: Dict):
     user = await WebUser.get_user_by_email(email=email)
 
     if user and verify_password(password, user.password_hash):
+        # 登录成功，重置该 IP 的限流状态
+        auth_rate_limiter.record_success(rate_key)
         # Generate token
         token = generate_token(email)
 
@@ -130,6 +148,12 @@ async def api_login(request: Request, data: Dict):
             },
         }
 
+    # 邮箱不存在时也执行一次等价哈希校验，抹平时序差异（防用户枚举）
+    if not user:
+        verify_password(password, _DUMMY_PASSWORD_HASH)
+
+    auth_rate_limiter.record_failure(rate_key)
+    logger.info(f"🔒️ [网页控制台] 登录失败: IP={client_ip}, email={email}")
     return {"status": 1, "msg": "邮箱或密码错误"}
 
 
@@ -150,6 +174,14 @@ async def api_register(request: Request, data: Dict):
         data: 包含 user 和 token 的对象
     """
 
+    # 限流：注册码是唯一准入门槛，必须防止被无节制地暴力枚举
+    client_ip = get_client_ip(request)
+    rate_key = f"register:{client_ip}"
+    allowed, retry_after = auth_rate_limiter.check(rate_key)
+    if not allowed:
+        logger.warning(f"🔒️ [网页控制台] 注册请求被限流: IP={client_ip}, 需等待 {retry_after}s")
+        return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
+
     name = data.get("name", "")
     email = data.get("email", "")
     password = data.get("password", "")
@@ -159,9 +191,11 @@ async def api_register(request: Request, data: Dict):
     if not name or not email or not password or not register_code:
         return {"status": 1, "msg": "请填写所有必填项"}
 
-    # 验证注册码
+    # 验证注册码（恒定时间比较，错误时计入失败计数以触发封禁）
     expected_code = get_register_code()
-    if register_code != expected_code:
+    if not secrets.compare_digest(str(register_code).encode(), str(expected_code).encode()):
+        auth_rate_limiter.record_failure(rate_key)
+        logger.warning(f"🔒️ [网页控制台] 注册码错误: IP={client_ip}")
         return {"status": 1, "msg": "注册码错误"}
 
     # 检查邮箱格式
@@ -196,6 +230,8 @@ async def api_register(request: Request, data: Dict):
     )
 
     if user:
+        # 注册成功，重置该 IP 的限流状态
+        auth_rate_limiter.record_success(rate_key)
         # Generate token
         token = generate_token(email)
 
@@ -474,10 +510,19 @@ async def update_password(request: Request, data: Dict, authorization: str | Non
 
     user_email = user_data["user"]["email"]
 
+    # 限流：防止借助有效会话暴力枚举旧密码
+    rate_key = f"password:{user_email}"
+    allowed, retry_after = auth_rate_limiter.check(rate_key)
+    if not allowed:
+        return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
+
     # Verify old password
     user = await WebUser.get_user_by_email(email=user_email)
     if not user or not verify_password(old_password, user.password_hash):
+        auth_rate_limiter.record_failure(rate_key)
         return {"status": 1, "msg": "旧密码错误"}
+
+    auth_rate_limiter.record_success(rate_key)
 
     # Update password in database
     new_password_hash = hash_password(new_password)
