@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
 
 import aiofiles
+import msgspec
 import structlog
 from colorama import Fore, Style, init
 from structlog.dev import ConsoleRenderer
@@ -509,6 +510,36 @@ def reduce_message(messages: List[Message]):
     return mes
 
 
+def _shorten_b64(value: Optional[str]) -> Optional[str]:
+    """超长字符串(文件/图片 base64)只保留长度提示，避免整段写入日志。"""
+    if isinstance(value, str) and len(value) > 256:
+        return f"<{len(value)} chars omitted>"
+    return value
+
+
+def reduce_event_dict(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    """防止 Event / 超长字段被完整写入日志(file + console + collect 三个 sink 通用)。
+
+    文件上传触发器(on_file)下 ``get_command`` 返回的 Event 里 ``file`` 存着整份
+    base64，``logger.info("[命令触发]", command=message)`` 会把它原样落盘。这里统一裁剪。
+    """
+    for key, value in list(event_dict.items()):
+        if isinstance(value, Event):
+            try:
+                event_dict[key] = msgspec.structs.replace(
+                    value,
+                    task_event=None,
+                    content=reduce_message(value.content),
+                    file=_shorten_b64(value.file),
+                    image=_shorten_b64(value.image),
+                )
+            except Exception:
+                event_dict[key] = f"<Event uid={value.user_id} gid={value.group_id} cmd={value.command!r}>"
+        elif isinstance(value, str) and len(value) > 4096:
+            event_dict[key] = value[:256] + f"…<{len(value)} chars truncated>"
+    return event_dict
+
+
 def format_event_for_console(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     event: Optional[Event] = deepcopy(event_dict.get("event_payload"))
     if isinstance(event, Event):
@@ -664,6 +695,7 @@ def setup_logging():
         structlog.processors.StackInfoRenderer(),
         # structlog.processors.format_exc_info,
         structlog.processors.TimeStamper(fmt="%m-%d %H:%M:%S", utc=False),
+        reduce_event_dict,
     ]
 
     if IS_DEBUG_LOG:
