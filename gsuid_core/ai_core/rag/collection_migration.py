@@ -262,9 +262,18 @@ async def force_recreate_collection(
 
     recreate = getattr(client, "recreate_collection", None)
     if callable(recreate):
-        result = recreate(**kwargs)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = recreate(**kwargs)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as e:
+            # 并发重建竞争：另一路已用相同目标配置建好同名集合（同一维度迁移目标），
+            # 远程 Qdrant 返回 409 "already exists"。集合已存在即视为成功，避免启动因竞态崩溃；
+            # 其它错误照常抛出。
+            if "already exists" in str(e).lower() and await client.collection_exists(collection_name):
+                logger.warning(f"🧠 [Qdrant] Collection {collection_name} 已被并发重建创建，忽略 409 冲突")
+                return
+            raise
         logger.info(f"🧠 [Qdrant] 已强制重建 Collection: {collection_name}")
         return
 

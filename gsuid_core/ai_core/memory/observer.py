@@ -60,6 +60,61 @@ _HIGH_SIGNAL_RE = re.compile(
 # 情绪兜底：明显情绪词命中则至少 HIGH，便于后续安慰能召回背景
 _EMOTION_RE = re.compile(r"(难过|崩溃|害怕|开心|生气|伤心|沉船|破防|焦虑|抑郁|想哭|绝望|委屈|孤独)")
 
+# 纠错 / 偏好意图探测（纯规则零 LLM，**召回预过滤 + flush 时机**，非蒸馏门控）：命中表示
+# 用户**可能**在纠正/约束 Agent 的行为、工具调用或输出格式（如"不对，应该用竖图""以后别用
+# 这个接口""下次记得按我时区"）。仅在 enable_preference_memory 开启时被消费，命中则强制 HIGH
+# 价值（确保该条进 high_records、被实体抽取 LLM 看到）+ 触发即时 flush。
+# **是否真的蒸馏成偏好规则，已改由实体抽取 LLM 顺手判的 has_preference 标志位在摄入端裁决**
+# （worker._extract_and_upsert_from_episode Step 7.5），故此处正则可偏宽（误命中仅多一次
+# 强制 HIGH/提前 flush，无额外 LLM 成本），漏网的自然口吻纠正也能被 LLM 标志位兜回。
+#
+# 强触发分两类（见 detect_correction_intent）：
+# - _STRONG_CORRECTION_RE：**自带行为指向**的显式纠正/指令（"应该用/下次记得/以后别/改用…"
+#   / "传错/用错"等动词+错组合 / "记住…(行为词)"），单独命中即算。
+# - _AMBIGUOUS_CORRECTION_RE：**歧义词**（"错了/不对/不是这样"）单独命中**不算**——
+#   "我考试错了""他这么说不对我"等纯陈述会误命中，须叠加 _BEHAVIOR_DIRECTED_RE 二级门，
+#   与"记住/记得"弱触发同等处理（见 _WEAK_CORRECTION_RE）。
+_STRONG_CORRECTION_RE = re.compile(
+    r"(不是这样|不是这个|搞错|弄错|传错|用错|写错|记错"
+    r"|应该(用|是|改|设|填|为)|应当用|正确的(是|应该)|我说的是|我要的是|我想要的是"
+    r"|下次(记得|请|要|别|不要|用)|以后(别|不要|请|记得|都用|要用|改用)"
+    r"|别再|不要再|别用|不要用|改用|换成|改成"
+    r"|我(更)?(喜欢|讨厌|习惯|偏好)用"
+    r"|don'?t\s+use|should\s+(be|use)|next\s+time|remember\s+to)",
+    re.IGNORECASE,
+)
+# 歧义纠正词：单独命中易混入纯陈述（"算错了""话说错了""不对啊你"），须叠加行为指向二级门。
+_AMBIGUOUS_CORRECTION_RE = re.compile(r"(不对|错了)")
+
+# 弱触发："记住/记得/别忘了"极易混入纯陈述事实（"记住今天我生日"），单独命中**不算**纠错——
+# 须再叠加一道"是否指向助手行为/输出/工具/语义约定"的廉价二级门（命中二者才算）。
+_WEAK_CORRECTION_RE = re.compile(r"(记住|记得|别忘了|别忘)")
+_BEHAVIOR_DIRECTED_RE = re.compile(
+    r"(你|AI|助手|机器人|回复|输出|回答|格式|排版|语气|风格|调用|工具|接口|参数|搜索"
+    r"|画|生成|发送|时区|时间|日期|单位|语言|理解|按|用|别|不要|改|换|设|填|选)"
+)
+
+
+def detect_correction_intent(content: str) -> bool:
+    """纯规则探测一条消息是否含"纠正/偏好/规则要求"意图（零 LLM，召回预过滤）。
+
+    - **强触发**（``_STRONG_CORRECTION_RE``，自带行为指向的显式纠正/指令）单独命中即算。
+    - **歧义词**（``_AMBIGUOUS_CORRECTION_RE``，"不对/错了"）与**弱触发**（``_WEAK_CORRECTION_RE``，
+      "记住/记得"）均须叠加"指向助手行为/输出/工具/语义约定"的二级门（``_BEHAVIOR_DIRECTED_RE``），
+      避免"我考试错了""记住今天我生日"这类纯陈述被误判触发无谓的强制 HIGH/提前 flush。
+
+    误判成本仅一次强制 HIGH/提前 flush（无 LLM 成本，真正的蒸馏门控是实体抽取 LLM 的
+    has_preference），此处收紧只为削减无谓的优先 flush；真正的纠正即便此处漏判，长消息
+    仍会经实体抽取的 pref 标志位兜回。
+    """
+    if _STRONG_CORRECTION_RE.search(content):
+        return True
+    return bool(
+        (_AMBIGUOUS_CORRECTION_RE.search(content) or _WEAK_CORRECTION_RE.search(content))
+        and _BEHAVIOR_DIRECTED_RE.search(content)
+    )
+
+
 # 实体提示：含可能的专有名词 / 引号内容 / 较长描述，倾向 HIGH
 _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+[」』\"”]|[一-鿿]{6,})")
 
@@ -78,6 +133,7 @@ class ObservationRecord:
     timestamp: datetime
     message_type: str  # "group_msg" | "private_msg"
     value_tier: str = "HIGH"  # 记忆价值分级："HIGH"=完整抽取 / "LOW"=仅写 Episode
+    is_correction: bool = False  # 程序性记忆：是否命中纠错/偏好意图门控（仅偏好记忆开启时置位）
 
 
 def _is_repeat(scope_key: str, content: str) -> bool:
@@ -205,6 +261,7 @@ async def observe(
     from .scope import ScopeType, make_scope_key
 
     is_self_speech = speaker_id.startswith(_ASSISTANT_PREFIX)
+    is_correction = False
 
     if is_self_speech:
         # C6：Bot 发言路由到 SELF scope，轻量摄入（仅 Episode）
@@ -223,6 +280,11 @@ async def observe(
         if tier is None:
             return
         value_tier = tier
+        # 程序性记忆门控（默认开）：命中纠错/偏好意图 → 强制 HIGH（确保进 high_records
+        # 被偏好蒸馏消费）+ 标记 is_correction。纯规则、零 LLM，符合不变量 #1。
+        if memory_config.enable_preference_memory and detect_correction_intent(content):
+            is_correction = True
+            value_tier = "HIGH"
 
     record = ObservationRecord(
         raw_content=content,
@@ -232,6 +294,7 @@ async def observe(
         timestamp=datetime.now(timezone.utc),
         message_type=message_type,
         value_tier=value_tier,
+        is_correction=is_correction,
     )
 
     try:
@@ -250,6 +313,18 @@ async def observe(
             _observation_queue.put_nowait(record)
         except Exception:
             logger.warning("Memory observation queue overflow, dropping message")
+
+    # 纠错即时写快路径（受 enable_preference_memory 前置）：命中纠错的 scope 走优先 flush
+    # （带 debounce），让数分钟内的"下一次"请求即可召回纠错偏好，而非等 batch 大窗。
+    if is_correction and memory_config.preference_immediate_flush:
+        try:
+            from gsuid_core.ai_core.memory.startup import get_ingestion_worker
+
+            worker = get_ingestion_worker()
+            if worker is not None:
+                worker.request_priority_flush(scope_key)
+        except Exception as e:
+            logger.debug(f"🧠 [Memory] 纠错即时 flush 触发失败: {e}")
 
 
 def get_observation_queue() -> sync_queue.Queue:

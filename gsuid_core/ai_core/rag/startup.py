@@ -48,3 +48,10 @@ async def init_all():
 
     await sync_knowledge()
     await sync_images()
+
+    # 手动知识 SQL 真值源 ↔ Qdrant 向量对账：
+    # ① 回填旧的"仅 Qdrant"手动知识到 SQL；② 向量库丢失/换模型后从 SQL 重嵌缺失分片。
+    # 失败不影响启动（函数内自带兜底），数量一致时快速跳过。
+    from gsuid_core.ai_core.rag.knowledge import reconcile_manual_knowledge
+
+    await reconcile_manual_knowledge()

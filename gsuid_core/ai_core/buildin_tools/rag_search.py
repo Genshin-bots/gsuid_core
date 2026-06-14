@@ -46,21 +46,22 @@ async def search_knowledge(
         >>> results = await search_knowledge(ctx, "凯露的技能配置")
         >>> results = await search_knowledge(ctx, "角色培养", category="攻略", plugin="Genshin")
     """
+    # 过滤下推到 Qdrant 服务端（plugin/category 进 query_filter），而非取回 top-k 后客户端筛——
+    # 后者会因匹配项排在 top-k 之外被丢弃而召回偏少甚至为空（大知识库尤甚）。
     results: list[ScoredPoint] = await query_knowledge(
         query=query,
         limit=limit,
+        plugin_filter=[plugin] if plugin else None,
+        category_filter=category,
     )
 
+    # 注：知识库已升级为 Dense+BM25 混合检索，score 为 RRF 名次分（非余弦），
+    # 故不再按 score_threshold（余弦语义）硬筛，避免误杀；阈值参数保留兼容、当前不生效。
     knowledge_list = []
     for point in results:
         if point.payload:
             entry = dict(point.payload)
             entry["_score"] = point.score
-            # 按类别和插件过滤
-            if category and entry.get("category") != category:
-                continue
-            if plugin and entry.get("plugin") != plugin:
-                continue
             knowledge_list.append(entry)
 
     return str(knowledge_list)

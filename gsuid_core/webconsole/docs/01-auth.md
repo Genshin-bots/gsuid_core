@@ -1,5 +1,35 @@
 # 1. 认证 API - /api/auth
 
+> **传输安全**：登录 / 注册 / 改密接口**强制**使用应用层混合加密（X25519 + HKDF + AES-256-GCM），
+> 密码不会以明文出现在 HTTP 流量中。详见 [`docs/WEBCONSOLE_AUTH_ENCRYPTION.md`](../../../docs/WEBCONSOLE_AUTH_ENCRYPTION.md)。
+> 加密**无开关、不可关闭**：明文报文（或 `enc!=true`）一律被拒，前端必须先取公钥再提交加密报文。
+> 解密失败（畸形 / 重放 / 明文）会计入该 IP 的限流，连续异常将被临时封禁。
+
+## 1.0 获取认证加密公钥
+```
+GET /api/auth/pubkey
+```
+
+无需鉴权。前端在发起加密的登录/注册/改密请求前调用，获取服务端 X25519 公钥。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "key_id": "de6ab98a979b5656",
+        "alg": "x25519-aes256gcm",
+        "pubkey": "<base64 urlsafe 无 padding，32 字节 X25519 公钥>",
+        "fingerprint": "ddbca71e6bfa4ad2"
+    }
+}
+```
+
+加密报文格式与算法细节见 [`docs/WEBCONSOLE_AUTH_ENCRYPTION.md`](../../../docs/WEBCONSOLE_AUTH_ENCRYPTION.md)。
+
+---
+
 ## 1.1 用户登录
 ```
 POST /api/auth/login

@@ -96,6 +96,27 @@ class MemoryConfig:
     hiergraph_rebuild_interval_seconds: int = 172800
     """距上次重建超过此秒数时触发增量重建（默认 48h）"""
 
+    # ====== RF-Mem 双过程检索：回忆环内部超参（运行时字段，进阶可调） ======
+    # 总开关（enable_familiarity_routing / enable_recollection_path）与标定阈值
+    # （familiarity_theta_* / tau / lambda / probe_k）已上 MEMORY_CONFIG，见下方 @property。
+    # 以下回忆环内部超参较少需要按部署调整，保留为运行时字段（重启归位）。
+    recollection_beam: int = 3
+    """回忆环 beam 宽 B（论文 2~3）。"""
+
+    recollection_fanout: int = 2
+    """回忆环 fanout F（论文 1~2，过大稀释 precision）。"""
+
+    recollection_rounds: int = 3
+    """回忆环最大轮数 R（复杂度封顶）。"""
+
+    recollection_alpha: float = 0.5
+    """回忆环 query-质心混合系数 α（论文 0.3~0.6，极端 0/1 退化）。"""
+
+    # ====== 程序性 / 偏好记忆：即时 flush 去抖（运行时字段，进阶可调） ======
+    # 总开关 enable_preference_memory 与注入/裁剪阈值已上 MEMORY_CONFIG（见下方 @property）。
+    preference_flush_debounce_seconds: float = 60.0
+    """同一 scope 两次优先 flush 的最小间隔，防"连环纠正→flush 风暴"。"""
+
     @property
     def retrieval_top_k(self) -> int:
         """最终检索数量，可以提高检索精度但会增加性能开销"""
@@ -115,6 +136,84 @@ class MemoryConfig:
     def eval_mode(self) -> bool:
         """评测模式：启用后摄入时不自动触发分层图重建，由外部统一调用 rebuild_task"""
         return mrc.get_config("eval_mode").data
+
+    @property
+    def qdrant_provider(self) -> str:
+        """Qdrant 部署形态（local 嵌入式 / remote 远程）。
+
+        回忆环（enable_recollection_path）以此为前置——本地嵌入式 Qdrant 是 O(N) 暴力
+        扫描，多轮回忆会成倍放大检索成本，故仅 remote 时才允许启用回忆环。
+        """
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        return ai_config.get_config("qdrant_provider").data
+
+    # ====== RF-Mem 熟悉度路由 + 回忆环（已上 MEMORY_CONFIG，WebConsole 可调） ======
+    @property
+    def enable_familiarity_routing(self) -> bool:
+        """探针熟悉度路由总开关：开启后用一次纯向量探针的 s̄/熵 逐查询决定"检索多深"，
+        把 System-2 从"全局开关"降为"按不确定性触发"。关闭时不发探针、行为不变。"""
+        return mrc.get_config("enable_familiarity_routing").data
+
+    @property
+    def enable_recollection_path(self) -> bool:
+        """回忆环（System-1.5，零 LLM 的 KMeans+α-mix 向量深检索）开关。
+        仅在 enable_familiarity_routing 开启、System-2 实际未触发、且 qdrant_provider=remote
+        时才生效（本地嵌入式 Qdrant 是 O(N) 暴力扫，多轮回忆会成倍放大检索墙）。"""
+        return mrc.get_config("enable_recollection_path").data
+
+    @property
+    def familiarity_probe_k(self) -> int:
+        """探针候选数（论文 10~20 即稳，对齐 retrieval_top_k）。"""
+        return mrc.get_config("familiarity_probe_k").data
+
+    @property
+    def familiarity_lambda(self) -> float:
+        """温度 softmax 锐度 λ（论文 20~30，不敏感）。"""
+        return float(mrc.get_config("familiarity_lambda").data)
+
+    @property
+    def familiarity_theta_high(self) -> float:
+        """熟悉度上阈 θ_high（余弦语义，需按嵌入模型标定；s̄ ≥ 此值直接走浅检索）。"""
+        return float(mrc.get_config("familiarity_theta_high").data)
+
+    @property
+    def familiarity_theta_low(self) -> float:
+        """熟悉度下阈 θ_low（s̄ ≤ 此值走深检索）。"""
+        return float(mrc.get_config("familiarity_theta_low").data)
+
+    @property
+    def familiarity_tau(self) -> float:
+        """列表熵阈 τ（论文 0.2~0.25；中段由熵裁决，H > τ 走深检索）。"""
+        return float(mrc.get_config("familiarity_tau").data)
+
+    # ====== 程序性 / 偏好记忆（已上 MEMORY_CONFIG，WebConsole 可调；默认开） ======
+    @property
+    def enable_preference_memory(self) -> bool:
+        """程序性/偏好记忆总开关（默认开）：开启后纠错意图门控命中的批次会独立蒸馏偏好
+        规则写 AIMemPreference 表（SQL-only），并在检索时以强约束语气置顶注入。"""
+        return mrc.get_config("enable_preference_memory").data
+
+    @property
+    def preference_inject_budget_ratio(self) -> float:
+        """注入时偏好区块占记忆预算的比例（置顶、强约束）。"""
+        return float(mrc.get_config("preference_inject_budget_ratio").data)
+
+    @property
+    def preference_max_per_context(self) -> int:
+        """单个 target_context（能力域/工具）保留的活跃规则上限（生命周期裁剪用）。"""
+        return mrc.get_config("preference_max_per_context").data
+
+    @property
+    def preference_max_inject(self) -> int:
+        """单次注入的偏好规则条数总上限，防 Token 膨胀。"""
+        return mrc.get_config("preference_max_inject").data
+
+    @property
+    def preference_immediate_flush(self) -> bool:
+        """纠错命中即时写：命中纠错意图的 scope 走优先 flush 快路径（带 debounce），
+        让数分钟内的"下一次"请求即可召回，而非等 batch_interval_seconds 大窗。"""
+        return mrc.get_config("preference_immediate_flush").data
 
     @property
     def memory_mode(self) -> list[str]:

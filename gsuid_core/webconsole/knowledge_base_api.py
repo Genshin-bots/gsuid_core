@@ -5,21 +5,36 @@ AI Knowledge Base APIs
 手动添加的知识不会被启动时的插件同步流程检查、修改或删除。
 """
 
-from typing import Any, Dict
+import json
+import uuid
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import StreamingResponse
 
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.ai_core.rag.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from gsuid_core.ai_core.rag.knowledge import (
+    add_knowledge_document,
+    import_manual_knowledge,
     search_manual_knowledge,
+    delete_knowledge_document,
     get_manual_knowledge_list,
     add_manual_knowledge_to_db,
     get_manual_knowledge_detail,
+    iter_export_manual_knowledge,
     update_manual_knowledge_in_db,
+    deep_reconcile_manual_knowledge,
     delete_manual_knowledge_from_db,
 )
+
+# WebConsole 端点捕获的"合法运行时/DB 故障"：转成 status=1 返回前端，**不**包括编程错误
+# （KeyError/AttributeError/TypeError/NameError 等）——后者应冒泡到 FastAPI 500 处理器，
+# 避免被宽 except 吞掉、线上难以定位（见 CODE_REVIEW §4）。
+_RUNTIME_ERRORS = (SQLAlchemyError, OSError, ValueError)
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -40,12 +55,38 @@ class KnowledgeBaseUpdate(BaseModel):
     tags: list[str] = []
 
 
+class KnowledgeBulkImport(BaseModel):
+    """批量导入（服务端分片）请求模型
+
+    full_text 与 items 二选一：full_text 由服务端按 chunk_size/overlap 分片；
+    items 为客户端已分好的分片列表（每项含 content）。
+    """
+
+    title: str
+    doc_id: Optional[str] = None
+    full_text: Optional[str] = None
+    items: Optional[List[dict]] = None
+    tags: List[str] = []
+    plugin: str = "manual"
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
+    replace: bool = True
+
+
+class KnowledgeImportRecords(BaseModel):
+    """从导出件恢复手动知识的请求模型（records 或 jsonl 至少一个）"""
+
+    records: Optional[List[dict]] = None
+    jsonl: Optional[str] = None
+
+
 @app.get("/api/ai/knowledge/list")
 async def get_knowledge_base_list(
     offset: int = 0,
     limit: int = 20,
     source: str = "all",
     page: int = 1,
+    doc_id: Optional[str] = None,
     _: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
@@ -56,10 +97,14 @@ async def get_knowledge_base_list(
         limit: 每页数量，默认20
         source: 来源过滤，默认"all"表示所有知识，"plugin"只查插件添加的，"manual"只查手动添加的
         page: 页码，从1开始，例如page=2表示第二页（offset=20）
+        doc_id: 可选，仅列出某篇文档的分片（仅对 source=manual 生效）
 
     Returns:
         status: 0成功，1失败
         data: 包含知识列表、总数和分页信息
+
+    Note:
+        source=manual 走 SQL 真值源原生分页（offset 为 O(1)）；plugin/all 仍走 Qdrant scroll。
     """
     # 如果指定了page参数，计算offset
     if page > 1:
@@ -69,6 +114,7 @@ async def get_knowledge_base_list(
         offset=offset,
         limit=limit,
         source_filter=source,
+        doc_id=doc_id,
     )
 
     # 添加page信息到返回结果
@@ -262,3 +308,135 @@ async def delete_knowledge_base(
             "id": entity_id,
         },
     }
+
+
+# ─────────────────────────────────────────────
+# 批量导入 / 文档管理 / 备份导出导入
+# 设计见 plans/knowledge_base_bulk_import_assessment_20260614.md §5
+# ─────────────────────────────────────────────
+
+
+@app.post("/api/ai/knowledge/bulk")
+async def bulk_import_knowledge(
+    req: KnowledgeBulkImport,
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """批量导入一篇文档（服务端分片 + 批量嵌入 + 幂等入库）
+
+    用于把数十万字长文一次导入：服务端按 chunk_size/overlap 分片，每片单独成向量，
+    避免整段长文被嵌入模型按上限静默截断。同一 doc_id 重导即覆盖（幂等）。
+
+    请求体：full_text（整篇，服务端分片）与 items（已分片数组）二选一。
+
+    Returns:
+        data: {doc_id, total_chunks, written, skipped}
+    """
+    if not req.full_text and not req.items:
+        return {"status": 1, "msg": "full_text 与 items 至少提供一个", "data": None}
+
+    doc_id = (req.doc_id or "").strip() or uuid.uuid4().hex
+    try:
+        result = await add_knowledge_document(
+            doc_id=doc_id,
+            title=req.title,
+            full_text=req.full_text,
+            items=req.items,
+            tags=req.tags,
+            plugin=req.plugin,
+            chunk_size=req.chunk_size,
+            chunk_overlap=req.chunk_overlap,
+            replace=req.replace,
+        )
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"批量导入失败: {e}", "data": None}
+
+    return {"status": 0, "msg": "ok", "data": result}
+
+
+@app.delete("/api/ai/knowledge/doc/{doc_id}")
+async def delete_knowledge_doc(
+    doc_id: str,
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """删除整篇文档的全部分片（SQL 真值源 + Qdrant 向量）。"""
+    try:
+        result = await delete_knowledge_document(doc_id)
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"删除文档失败: {e}", "data": None}
+    return {"status": 0, "msg": "ok", "data": result}
+
+
+@app.get("/api/ai/knowledge/backup/export")
+async def export_knowledge_backup(
+    _: Dict = Depends(require_auth),
+):
+    """流式导出全部手动知识为 JSONL（每行一条），供用户级备份/迁移。
+
+    手动知识真值源为 SQL（AIKnowledgeChunk）；导出件可经 /backup/import 原样恢复。
+    """
+    return StreamingResponse(
+        iter_export_manual_knowledge(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": "attachment; filename=manual_knowledge.jsonl"},
+    )
+
+
+@app.post("/api/ai/knowledge/backup/import")
+async def import_knowledge_backup(
+    req: KnowledgeImportRecords,
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """从导出件恢复手动知识（SQL 真值源 + 重嵌入）。
+
+    请求体 records（dict 列表）或 jsonl（原始 JSONL 字符串）至少提供一个。
+
+    Returns:
+        data: {total, written, skipped}
+    """
+    records: List[dict] = req.records or []
+    if not records and req.jsonl:
+        for line in req.jsonl.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    records.append(obj)
+            except json.JSONDecodeError:
+                continue
+
+    if not records:
+        return {"status": 1, "msg": "records 或 jsonl 至少提供一个有效记录", "data": None}
+
+    try:
+        result = await import_manual_knowledge(records)
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"导入失败: {e}", "data": None}
+
+    return {"status": 0, "msg": "ok", "data": result}
+
+
+@app.post("/api/ai/knowledge/reconcile")
+async def reconcile_knowledge(
+    _: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """手动知识深度对账（运维入口）。
+
+    逐条比对手动知识的 SQL 真值源与 Qdrant 向量，修复"数量相等但内容分叉"的盲区：
+    - Qdrant 有 / SQL 无 → 回填 SQL；
+    - SQL 有 / Qdrant 无 → 从 SQL 重嵌入；
+    - 两侧 content_hash 不一致 → 以 SQL 为真值源重嵌覆盖。
+
+    比启动期的数量对账昂贵（全量 scroll + 全表读），建议在换嵌入模型 / 迁移 / 疑似数据
+    分叉时手动触发。
+
+    Returns:
+        data: {sql_total, qdrant_total, backfilled, reembedded_missing,
+               reembedded_mismatch, reembedded_written, consistent}
+    """
+    try:
+        result = await deep_reconcile_manual_knowledge()
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"深度对账失败: {e}", "data": None}
+    return {"status": 0, "msg": "ok", "data": result}

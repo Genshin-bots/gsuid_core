@@ -153,6 +153,7 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 | `AIMemCategory`               | `scope_key, name, summary, tag, layer, created_at, updated_at`                                                    | 分层语义图类目节点；`UniqueConstraint(scope_key, layer, name)`             |
 | `AIMemCategoryEdge`           | `parent_category_id, child_category_id`                                                                            | 类目↔类目层次关联（多对多）                                                  |
 | `AIMemHierarchicalGraphMeta`  | `scope_key, max_layer, last_rebuild_at, entity_count_at_last_rebuild, current_entity_count, group_summary_cache, group_summary_updated_at` | 每 scope 的分层图状态追踪 + 群摘要缓存                              |
+| `AIMemPreference`             | `scope_key, user_id, target_context, preference_rule, polarity(do/dont), is_correction, is_active, source_episode_id, mention_count, last_applied_at` | **程序性/偏好记忆规则**（"该/不该如何调工具/排版/选参数"）。**默认开**（`enable_preference_memory`，WebConsole 可关）；SQL-only **不写向量**；主存 `USER_GLOBAL`。复合索引 `(scope_key,target_context)` / `(scope_key,user_id)`。详见 [`docs/PROCEDURAL_PREFERENCE_AND_RFMEM_IMPLEMENTATION_20260614.md`](PROCEDURAL_PREFERENCE_AND_RFMEM_IMPLEMENTATION_20260614.md) |
 
 **两张多对多关联表**：
 - `mem_episode_entity_mentions(episode_id, entity_id)`：Episode 提及了哪些 Entity。
@@ -377,6 +378,25 @@ incremental_rebuild()
 
 > 注意：**entities 被检索/重排但不直接注入 Prompt**——它们通过 edges（事实）和 categories（大纲）间接发挥作用。这也是孤儿实体（无 edge）可安全回收的依据。
 
+### 6.4 RF-Mem 双过程检索：熟悉度路由 + 回忆环（**默认全关**）
+
+在 §6.2 并行启动 S1/S2 之前插入一层**零 LLM 的探针路由**（论文 `plans/2603.09250v1.pdf`：Recollection–Familiarity 双过程检索）。**默认关，关闭时检索行为逐字节不变。**
+
+- **探针**（`vector/ops.probe_episode_scores`）：对 `memory_episodes` 发一次**纯 dense、`score_threshold=0`** 查询取真实余弦分（不可与混合检索的 RRF 融合分混用）。
+- **信号 / 路由**（`retrieval/familiarity.py`）：`compute_familiarity_signal` 算均分 `s̄` + 温度 softmax 列表熵 `H`；`decide_route` 按论文 **Eq. 3 两阈值 + 熵裁决**（`s̄≥θ_high`→Familiarity；`s̄≤θ_low`→Recollection；中段 `H>τ`→Recollection）。
+- **路由只 gate 深检索，不动 System-1**：`effective_enable_system2 = enable_system2 AND route==Recollection`——高熟悉查询**抑制 System-2** 省 LLM；**永远受用户 `enable_system2` 总开关约束**。
+- **回忆环**（`recollection_search`，System-1.5）：仅当 `enable_recollection_path=True` **且** System-2 未实际触发 **且** `qdrant_provider=remote` 时跑。零 LLM 的 KMeans+α-mix 多轮深检索（论文 Algorithm 3，beam 按 `Σ<x',z_i>` 留 top-B），召回 Episode 再 `project_episodes_to_edges` **关系投影**成精准 Edge，与 S1 取并集统一进 Reranker。
+
+> **重要落地约束（见实现文档 §7.1）**：本库 System-1 永远先跑，故路由开启在**默认本地 Qdrant** 下仅是"按不确定性抑制 System-2"的**成本优化、不增召回**；论文式召回提升只在 **remote Qdrant + 开回忆环 + 阈值已标定** 三者同时满足时才出现。`familiarity_theta_*` 随嵌入模型/语料漂移，**放量前必须按 `embedding_provider` 标定**（实现文档 §7.4 给出标定程序），否则可能全路由深检索而增本。
+
+### 6.5 程序性 / 偏好记忆注入（**默认开**）
+
+`enable_preference_memory`（**默认开**，WebConsole 可关）开启时，`dual_route_retrieve` 额外 SQL 查 `AIMemPreference.get_active(scope_keys)`（O(log n) 复合索引 seek，不走向量），把活跃规则填入 `MemoryContext.preferences`；`to_prompt_text` 在**最前**渲染**置顶、强约束**区块 `【用户偏好/纠错 - 须严格遵守】`（独立小预算 `preference_inject_budget_ratio`）。命中规则后台 fire-and-forget 刷新 `last_applied_at`。写入端门控/蒸馏链路见实现文档 §2。**`preferences` 为空时不渲染**——绝大多数用户无偏好规则时本区块零成本。
+
+**选择性注入（默认开 → 不是每轮都注入）**：`dual_route_retrieve(inject_preferences, preference_contexts)`。`handle_ai` 按**意图门**（`intent=="闲聊"` 整轮跳过偏好）+ **能力域过滤**传参，能力域信号 = `_relevant_preference_contexts(query)` 子串近似 **∪ `session.get_assembled_capability_domains()`**（gs_agent 上一轮**实际装配**工具的能力域，精确"装配后回传"）。检索侧策略：**纠错规则与 `general` 永远注入**（紧扣"刚纠正完的下一轮"），软偏好仅当 `target_context` 命中本轮能力域才注入，避免每条回复都注入全部规则挤占预算/分散工具调用注意力。`preference_contexts=None` = 不过滤（旧行为）。
+
+**门控（写入端，实现文档 §2.2）**：蒸馏门控自 2026-06-14 由实体抽取 LLM 顺手判的 `has_preference` 标志位裁决（取代脆弱纯正则）；观察期纠错正则降级为"召回预过滤 + 即时 flush 时机"。
+
 ---
 
 ## 7. 生命周期维护
@@ -395,12 +415,13 @@ incremental_rebuild()
 | ⑥ **Entity 容量裁剪** | 实体数超每 scope 软上限的 scope，淘汰最弱的"非 speaker、无 edge"实体（FK 安全，复用孤儿回收路径） | `ENTITY_MAX_PER_SCOPE=50000` |
 | ⑦ **Episode 保留/降级** | **降级**：无 Entity 引用 + 超 `hot_days` + 超每 scope 最近 `hot_per_scope` 条的热 Episode，向量迁入冷集合 `memory_episodes_cold`、SQL 标记 `is_archived`（退出热检索）；**物理上限**：每 scope 总量超上限时物理删最老的"冷且无引用"Episode（SQL + 热/冷向量） | `EPISODE_HOT_DAYS=30, EPISODE_HOT_PER_SCOPE=2000, EPISODE_MAX_PER_SCOPE=20000` |
 | ⑧ **悬空向量对账** | 分页 `scroll` 各 Collection 的 point id，与 SQL 对应表 `qdrant_id` 集合比对，删除 SQL 已无对应行的悬空向量（删除半失败残留）。覆盖 episodes 热/冷集、entities、edges | `RECONCILE_SCROLL_BATCH=500` |
+| ⑨ **偏好规则裁剪**（默认开） | `enable_preference_memory` 开启时：每 `(scope, user, target_context)` 仅保留 salience 最高的 N 条活跃规则，其余**非纠错**规则软停用（`is_active=False`，纠错类受保护）。纯规则、零 LLM、SQL-only；关闭时 no-op | `preference_max_per_context=5` |
 
 > 顺序要点：遗忘 / Edge 裁剪在前——它们是孤儿实体的主要来源，故孤儿 GC（⑤）与 Entity 裁剪（⑥）紧随其后；对账（⑧）收尾，清理前序各步可能遗留的 SQL↔Qdrant 不一致。容量裁剪与 Episode 保留均为**容量驱动**（针对千人群超大 scope），与原有的**时间/访问驱动**衰减互补；阈值默认极大、对普通部署是 no-op。
 
 衰减结果在检索期被 `weight = compute_edge_confidence(mc, decay)` 加权消费，使活跃记忆始终优先。**注**：检索阶段 r2.3 之前 `reranker_score × decay_score` 双重加权；当前实现是 `compute_edge_confidence` 在 DB 侧一次性折算为 `weight`，与 Reranker 分数正交。
 
-**清空操作**（[`memory/database/clear_ops.py`](../gsuid_core/ai_core/memory/database/clear_ops.py)）：按 scope 精确 / 前缀 / 后缀匹配批量清空（群级、用户全局级、用户群内档案），同步删 SQL + Qdrant，支持 `dry_run`，对外通过 `clear_group_memories` / `clear_user_global_memories` / `clear_memories_for_scope_async` 三个函数暴露给 [`webconsole/ai_memory_api.py`](../gsuid_core/webconsole/ai_memory_api.py)。
+**清空操作**（[`memory/database/clear_ops.py`](../gsuid_core/ai_core/memory/database/clear_ops.py)）：按 scope 精确 / 前缀 / 后缀匹配批量清空（群级、用户全局级、用户群内档案），同步删 SQL + Qdrant，支持 `dry_run`，对外通过 `clear_group_memories` / `clear_user_global_memories` / `clear_memories_for_scope_async` 三个函数暴露给 [`webconsole/ai_memory_api.py`](../gsuid_core/webconsole/ai_memory_api.py)。**清空联动**：同 scope 的 `AIMemPreference` 行一并物理删除（SQL-only，返回 `deleted_preferences`），否则"清空用户记忆后旧偏好规则仍硬约束工具调用"。
 
 ---
 
@@ -431,6 +452,21 @@ incremental_rebuild()
 | `hiergraph_rebuild_ratio`           | **2.50** | Entity 增长触发比例（需 `delta >= 20` 才生效）                                                              |
 | `hiergraph_rebuild_interval_seconds`| **172800** | 重建时间窗（48h）                                                                                          |
 
+**RF-Mem 回忆环内部超参（运行时字段；总开关与标定阈值已上 `MEMORY_CONFIG`，见 §8.2）**：
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `recollection_beam` / `_fanout` / `_rounds` / `_alpha` | **3 / 2 / 3 / 0.5** | 回忆环 B / F / R / α（较少需按部署调整，保留为运行时字段） |
+
+**程序性 / 偏好记忆即时 flush 去抖（运行时字段；总开关与注入/裁剪阈值已上 `MEMORY_CONFIG`，见 §8.2）**：
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `preference_flush_debounce_seconds` | **60.0** | 即时 flush 的 per-scope debounce（防"连环纠正→flush 风暴"） |
+
+> 另：`memory_config.qdrant_provider`（只读 `@property`，转发 `ai_config`）作回忆环前置校验。
+> RF-Mem / 偏好记忆的总开关（`enable_familiarity_routing` / `enable_recollection_path` / `enable_preference_memory`）与标定阈值（`familiarity_theta_*` / `tau` / `lambda` / `probe_k`、`preference_*` 注入项）自 2026-06-14 起改为 `MEMORY_CONFIG` 项、WebConsole 可调，详见 §8.2。
+
 ### 8.2 `memory_config` 上的 `@property`（转发自 `ai_config.memory_config`）
 
 可由用户在 WebConsole 的"GsCore AI 记忆配置"分组修改，持久化到 `data/ai_core/memory_config.json`：
@@ -453,8 +489,21 @@ incremental_rebuild()
 | `hiergraph_node_summary_chars`      | **60**    | `GsIntConfig`（0/30/60/100）             | 每个待分类节点附带的实体摘要字符上限                                       |
 | `hiergraph_summary_delta`           | **50**    | `GsIntConfig`（50/100/200/500）          | 群摘要刷新的新增实体阈值；调大省 Token                                     |
 | `eval_mode`                         | **False** | `GsBoolConfig`                           | 评测模式：禁用 System-2 和 Rerank；摄入时不自动触发分层图重建，由外部 `rebuild_task` 统一触发 |
+| `enable_preference_memory`          | **True**  | `GsBoolConfig`                           | 程序性/偏好记忆总开关（**默认开**）；关闭后写入/蒸馏/注入/即时 flush 全部停用 |
+| `preference_max_inject`             | **12**    | `GsIntConfig`（5/8/12/20）               | 单次注入偏好条数上限 |
+| `preference_max_per_context`        | **5**     | `GsIntConfig`（3/5/8/12）                | 单 `target_context` 活跃规则上限（生命周期裁剪用） |
+| `preference_inject_budget_ratio`    | **0.10**  | `GsFloatConfig`（0.0~0.5）               | 偏好区块占注入预算比例（置顶、强约束） |
+| `preference_immediate_flush`        | **True**  | `GsBoolConfig`                           | 纠错命中即时 flush（受总开关前置） |
+| `enable_familiarity_routing`        | **False** | `GsBoolConfig`                           | RF-Mem 探针熟悉度路由总开关（关时不发探针、行为不变） |
+| `enable_recollection_path`          | **False** | `GsBoolConfig`                           | 回忆环开关（仅 `qdrant_provider=remote` + 路由判低熟悉 + System-2 未触发时生效） |
+| `familiarity_theta_high`            | **0.6**   | `GsFloatConfig`（0.0~1.0）               | 熟悉度上阈 θ_high（**余弦语义，须按嵌入模型标定**，见实现文档 §7.4） |
+| `familiarity_theta_low`             | **0.3**   | `GsFloatConfig`（0.0~1.0）               | 熟悉度下阈 θ_low（同上需标定） |
+| `familiarity_tau`                   | **0.22**  | `GsFloatConfig`（0.0~1.0）               | 列表熵阈 τ（中段由熵裁决；论文 0.2~0.25） |
+| `familiarity_lambda`                | **20.0**  | `GsFloatConfig`（1.0~100.0）             | 温度 softmax 锐度 λ（论文 20~30，不敏感） |
+| `familiarity_probe_k`               | **15**    | `GsIntConfig`（10/15/20/30）             | 探针候选数 |
 
 > **注意**：`enable_system2get` 是 ai_config 中的**真实配置键名**（早期文档中写的 `enable_system2` 是 `memory_config` 上的 `property` 名）；两者含义一致——后者只是前者的别名映射。
+> RF-Mem 回忆环内部超参（`recollection_beam/_fanout/_rounds/_alpha`）与即时 flush 去抖（`preference_flush_debounce_seconds`）仍为 §8.1 运行时字段，未上 WebConsole（较少需调整）。
 
 ### 8.3 代码内硬编码常量
 
@@ -522,7 +571,9 @@ incremental_rebuild()
 | [`memory/retrieval/types.py`](../gsuid_core/ai_core/memory/retrieval/types.py)     | TypedDict（Episode / Entity / Edge / Category / RetrievalMeta）                                     |
 | [`memory/retrieval/system1.py`](../gsuid_core/ai_core/memory/retrieval/system1.py) | 向量相似度检索 + One-hop 邻居扩展                                                                  |
 | [`memory/retrieval/system2.py`](../gsuid_core/ai_core/memory/retrieval/system2.py) | 分层图自顶向下遍历选择（含 Recursive CTE、深度熔断）                                                |
-| [`memory/retrieval/dual_route.py`](../gsuid_core/ai_core/memory/retrieval/dual_route.py) | 双路编排 + 并行 Reranker + `MemoryContext.to_prompt_text` + `compute_edge_confidence`           |
+| [`memory/retrieval/dual_route.py`](../gsuid_core/ai_core/memory/retrieval/dual_route.py) | 双路编排 + 并行 Reranker + `MemoryContext.to_prompt_text`（含偏好置顶区块）+ `compute_edge_confidence` + 探针路由/回忆环编排（RF-Mem，默认关）+ 偏好检索注入编排（默认开） |
+| [`memory/retrieval/familiarity.py`](../gsuid_core/ai_core/memory/retrieval/familiarity.py) | **RF-Mem（默认关）**：熟悉度信号 `compute_familiarity_signal` / 路由 `decide_route`（Eq. 3）/ 回忆环 `recollection_search`（KMeans+α-mix，beam 按 `Σ<x',z_i>` 留 top-B）/ 关系投影 `project_episodes_to_edges`；KMeans 走专用线程池 |
+| [`memory/ingestion/tool_trace.py`](../gsuid_core/ai_core/memory/ingestion/tool_trace.py) | **程序性记忆（默认开）**：按 user_id 分桶的有界 ring buffer，记近期工具调用轨迹供偏好蒸馏作背景（纯内存、TTL 过期、零持久化） |
 | [`memory/lifecycle/consolidation_worker.py`](../gsuid_core/ai_core/memory/lifecycle/consolidation_worker.py) | `run_lifecycle_maintenance`（巩固 / 衰减 / 遗忘 / Edge·Entity 容量裁剪 / 孤儿 GC / Episode 保留降级 / 悬空向量对账） |
 | [`memory/prompts/extraction.py`](../gsuid_core/ai_core/memory/prompts/extraction.py) | Entity/Edge 抽取 System + User prompt                                                            |
 | [`memory/prompts/categorization.py`](../gsuid_core/ai_core/memory/prompts/categorization.py) | 分层分类 System + User prompt（含 `LAYER_HINTS`）                                              |

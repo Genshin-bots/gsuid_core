@@ -4,7 +4,7 @@ Auth APIs
 """
 
 import secrets
-from typing import Dict, Optional
+from typing import Optional
 from hashlib import sha256
 from datetime import datetime, timedelta
 
@@ -18,11 +18,67 @@ from gsuid_core.data_store import gs_data_path
 from gsuid_core.security_manager import get_client_ip, auth_rate_limiter
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import verify_token, active_tokens, generate_token
+from gsuid_core.webconsole.auth_crypto import (
+    JsonObject,
+    AuthCryptoError,
+    auth_keystore,
+    maybe_decrypt_auth_body,
+)
 from gsuid_core.utils.database.auth_models import WebUser
 from gsuid_core.utils.database.base_models import async_maker
 
 # Avatar storage path
 AVATAR_PATH = gs_data_path / "avatars"
+
+# 报文「解密 / 传输层」失败时的提示：与「账户密码错误」刻意区分，给前端良好 UX。
+# 安全性：区分二者不额外泄露状态——加密握手是所有人都能完成的公开步骤，一旦解密成功走到
+# 业务校验，登录本就会返回「账户密码错误」；解密失败只发生在明文 / 篡改 / 重放 / 畸形报文上，
+# 那并非正常用户行为，明确提示「请求无效请刷新」反而帮正常用户排障（多为前端 bundle / 时钟问题）。
+_AUTH_DECRYPT_FAIL_MSG = "请求无效，请刷新页面后重试"
+
+
+def _str_field(data: JsonObject, key: str) -> str:
+    """从认证报文里安全取一个字符串字段。
+
+    解密后的字段经 ``JsonObject`` 类型表达为 ``JsonValue``（可能是 str/int/float/bool/
+    None/...）。认证流程下游（DB 查询、密码校验等）需要纯 ``str``：字段缺失或非字符串
+    一律按空串处理（随后的「字段为空」校验会拦截），避免类型层面的 ``JsonValue -> str``
+    不兼容。用 ``key in data`` 显式取值，不使用 ``dict.get`` 兜底。
+    """
+    if key not in data:
+        return ""
+    value = data[key]
+    return value if isinstance(value, str) else ""
+
+
+def _decrypt_auth_body(request: Request, data: JsonObject, scope: str) -> tuple[JsonObject | None, str]:
+    """登录 / 注册 / 改密共用的入口：强制解密加密报文（加密已是唯一形态，无开关）。
+
+    自带 **IP 维度限流防护**，封堵「用畸形 / 重放报文做 DoS 或探测」：
+    - 解密前先 ``check`` 该 IP 的解密限流窗口，已封禁直接返回错误，连 ECDH 都不做；
+    - 解密失败（明文报文 / 篡改 / 重放 / 格式错误）``record_failure`` 计入该 IP，连续超阈即封禁。
+
+    本限流与各 handler 的业务限流（``login:`` / ``register:`` / ``password:``）相互独立，
+    专管「传输 / 密码学层」的异常报文。``scope``（login / register / password）仅用于日志。
+
+    返回 ``(plain, err_msg)``：成功为 ``(明文字段dict, "")``；失败为 ``(None, 给前端的提示)``。
+    两类失败给**不同**提示以改善 UX：被解密前置限流封禁 → 「操作过于频繁」；报文本身无法解密
+    → 「请求无效」。调用方在 ``plain is None`` 时把 ``err_msg`` 原样回给前端即可。
+    """
+    client_ip = get_client_ip(request)
+    ip_key = f"authdec:{client_ip}"
+    allowed, retry_after = auth_rate_limiter.check(ip_key)
+    if not allowed:
+        # 被解密前置限流封禁：明确回「操作过于频繁」，避免与「请求无效」混淆误导正常用户
+        logger.warning(f"🔒️ [网页控制台] {scope} 解密前置限流: IP={client_ip}, 需等待 {retry_after}s")
+        return None, f"操作过于频繁，请在 {retry_after} 秒后重试"
+    try:
+        return maybe_decrypt_auth_body(data), ""
+    except AuthCryptoError as e:
+        # 解密失败计入 IP 维度限流：畸形 / 重放报文与认证失败同等对待，防 DoS / 探测
+        auth_rate_limiter.record_failure(ip_key)
+        logger.warning(f"🔒️ [网页控制台] {scope} 报文解密失败: IP={client_ip}, {e}")
+        return None, _AUTH_DECRYPT_FAIL_MSG
 
 
 def get_register_code() -> str:
@@ -82,21 +138,50 @@ async def get_admin_count() -> int:
         return result.scalar() or 0
 
 
+@app.get("/api/auth/pubkey")
+async def get_pubkey():
+    """
+    获取认证加密公钥
+
+    前端在发起登录 / 注册 / 改密请求前，先调用本接口获取服务端 X25519 公钥与
+    key_id，用于本地完成 ECDH 握手并加密报文（详见 ``auth_crypto`` 与前端加密
+    对接文档）。公钥是公开信息，无需鉴权。
+
+    Returns:
+        status: 0
+        data:
+            key_id: 公钥标识，提交加密报文时需原样回传
+            alg: "x25519-aes256gcm"
+            pubkey: 服务端公钥（base64 urlsafe 无 padding，32 字节原始 X25519 公钥）
+            fingerprint: 公钥指纹（SHA-256 前 16 字符），供管理员人工核对防 MITM
+    """
+    return {"status": 0, "msg": "ok", "data": auth_keystore.public_info()}
+
+
 @app.post("/api/auth/login")
-async def api_login(request: Request, data: Dict):
+async def api_login(request: Request, data: JsonObject):
     """
     用户登录接口
 
     验证邮箱和密码，成功则生成 24 小时有效的访问令牌。
 
+    报文为加密形态（强制）：``{"enc": true, "key_id", "client_pub", "iv", "ct"}``，
+    解密后字段为 ``{"email": "...", "password": "..."}``，详见 ``auth_crypto`` 与前端加密
+    对接文档（``webconsole/docs/01-auth.md``）。
+
     Args:
         request: FastAPI 请求对象
-        data: 包含 email 和 password 的字典
+        data: 加密报文
 
     Returns:
         status: 0成功，1失败
         data: 包含 user 和 token 的对象
     """
+
+    # 解密（强制加密）：失败回对应提示（限流 / 请求无效）。解密自带 IP 维度限流，畸形/重放报文会被计入封禁
+    plain, decrypt_err = _decrypt_auth_body(request, data, scope="login")
+    if plain is None:
+        return {"status": 1, "msg": decrypt_err}
 
     # 限流：缓解暴力破解 / 凭据填充
     client_ip = get_client_ip(request)
@@ -106,8 +191,8 @@ async def api_login(request: Request, data: Dict):
         logger.warning(f"🔒️ [网页控制台] 登录请求被限流: IP={client_ip}, 需等待 {retry_after}s")
         return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
 
-    email = data.get("email", "")
-    password = data.get("password", "")
+    email = _str_field(plain, "email")
+    password = _str_field(plain, "password")
 
     if not email or not password:
         return {"status": 1, "msg": "请输入邮箱和密码"}
@@ -154,25 +239,32 @@ async def api_login(request: Request, data: Dict):
 
     auth_rate_limiter.record_failure(rate_key)
     logger.info(f"🔒️ [网页控制台] 登录失败: IP={client_ip}, email={email}")
-    return {"status": 1, "msg": "邮箱或密码错误"}
+    return {"status": 1, "msg": "请检查账户密码是否输入正确"}
 
 
 @app.post("/api/auth/register")
-async def api_register(request: Request, data: Dict):
+async def api_register(request: Request, data: JsonObject):
     """
     用户注册接口
 
     创建新用户账号，需要提供有效的注册码。
     首位注册用户自动设为管理员。
 
+    报文为加密形态（强制），解密后字段为 name/email/password/register_code，详见 ``auth_crypto``。
+
     Args:
         request: FastAPI 请求对象
-        data: 包含 name、email、password、register_code 的字典
+        data: 加密报文
 
     Returns:
         status: 0成功，1失败
         data: 包含 user 和 token 的对象
     """
+
+    # 解密（强制加密）：失败回对应提示（限流 / 请求无效）。解密自带 IP 维度限流，畸形/重放报文会被计入封禁
+    plain, decrypt_err = _decrypt_auth_body(request, data, scope="register")
+    if plain is None:
+        return {"status": 1, "msg": decrypt_err}
 
     # 限流：注册码是唯一准入门槛，必须防止被无节制地暴力枚举
     client_ip = get_client_ip(request)
@@ -182,11 +274,11 @@ async def api_register(request: Request, data: Dict):
         logger.warning(f"🔒️ [网页控制台] 注册请求被限流: IP={client_ip}, 需等待 {retry_after}s")
         return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
 
-    name = data.get("name", "")
-    email = data.get("email", "")
-    password = data.get("password", "")
-    register_code = data.get("register_code", "")
-    is_admin = data.get("is_admin", False)
+    name = _str_field(plain, "name")
+    email = _str_field(plain, "email")
+    password = _str_field(plain, "password")
+    register_code = _str_field(plain, "register_code")
+    is_admin = bool(plain["is_admin"]) if "is_admin" in plain else False
 
     if not name or not email or not password or not register_code:
         return {"status": 1, "msg": "请填写所有必填项"}
@@ -440,7 +532,7 @@ async def get_avatar(request: Request, filename: str):
 
 
 @app.post("/api/auth/name")
-async def update_name(request: Request, data: Dict, authorization: str | None = Header(default=None)):
+async def update_name(request: Request, data: JsonObject, authorization: str | None = Header(default=None)):
     """
     更新用户名称
 
@@ -457,7 +549,7 @@ async def update_name(request: Request, data: Dict, authorization: str | None = 
     if not user_data:
         return {"status": 1, "msg": "未授权", "data": None}
 
-    name = data.get("name", "")
+    name = _str_field(data, "name")
     if not name or len(name.strip()) == 0:
         return {"status": 1, "msg": "用户名不能为空"}
 
@@ -480,15 +572,17 @@ async def update_name(request: Request, data: Dict, authorization: str | None = 
 
 
 @app.post("/api/auth/password")
-async def update_password(request: Request, data: Dict, authorization: str | None = Header(default=None)):
+async def update_password(request: Request, data: JsonObject, authorization: str | None = Header(default=None)):
     """
     更新用户密码
 
     需要验证旧密码后才能设置新密码。
 
+    报文为加密形态（强制），解密后字段为 old_password / new_password，详见 ``auth_crypto``。
+
     Args:
         request: FastAPI 请求对象
-        data: 包含 old_password 和 new_password 的字典
+        data: 加密报文
         authorization: Bearer 令牌
 
     Returns:
@@ -499,8 +593,13 @@ async def update_password(request: Request, data: Dict, authorization: str | Non
     if not user_data:
         return {"status": 1, "msg": "未授权", "data": None}
 
-    old_password = data.get("old_password", "")
-    new_password = data.get("new_password", "")
+    # 解密（强制加密）：失败回对应提示（限流 / 请求无效）。解密自带 IP 维度限流，畸形/重放报文会被计入封禁
+    plain, decrypt_err = _decrypt_auth_body(request, data, scope="password")
+    if plain is None:
+        return {"status": 1, "msg": decrypt_err}
+
+    old_password = _str_field(plain, "old_password")
+    new_password = _str_field(plain, "new_password")
 
     if not old_password or not new_password:
         return {"status": 1, "msg": "请输入旧密码和新密码"}

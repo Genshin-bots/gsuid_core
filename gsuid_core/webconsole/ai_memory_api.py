@@ -12,6 +12,7 @@ from fastapi import Depends
 from pydantic import Field, BaseModel
 from sqlmodel import col, func, delete, select
 from sqlalchemy import or_
+from sqlalchemy.exc import SQLAlchemyError
 
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
@@ -23,6 +24,7 @@ from gsuid_core.ai_core.memory.database.models import (
     AIMemEntity,
     AIMemEpisode,
     AIMemCategory,
+    AIMemPreference,
     AIMemCategoryEdge,
     mem_category_entity_members,
     mem_episode_entity_mentions,
@@ -33,6 +35,11 @@ from gsuid_core.ai_core.memory.database.clear_ops import (
     clear_memories_for_scope_async,
 )
 from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta, rebuild_task
+
+# WebConsole 端点捕获的"合法运行时/DB 故障"：这些应转成 status=1 返回给前端，
+# 而**不**包括编程错误（KeyError/AttributeError/TypeError/NameError 等）——后者应
+# 冒泡到 FastAPI 500 处理器，避免被宽 except 吞掉、线上难以定位（见 CODE_REVIEW §4）。
+_RUNTIME_ERRORS = (SQLAlchemyError, asyncio.TimeoutError, OSError, ValueError)
 
 # ─────────────────────────────────────────────
 # Pydantic 请求模型
@@ -84,6 +91,17 @@ class MemoryConfigUpdateRequest(BaseModel):
     hiergraph_rebuild_interval_seconds: Optional[int] = Field(default=None, ge=3600, le=604800)
 
 
+class PreferenceUpdateRequest(BaseModel):
+    """偏好规则人工纠偏请求（PATCH）"""
+
+    preference_rule: Optional[str] = Field(default=None, min_length=1, max_length=2000, description="规则正文")
+    polarity: Optional[str] = Field(default=None, description='极性 "do" / "dont"')
+    target_context: Optional[str] = Field(
+        default=None, max_length=128, description="绑定上下文（能力域/工具名/general）"
+    )
+    is_active: Optional[bool] = Field(default=None, description="启停（软停用而非删除，保留审计）")
+
+
 # ─────────────────────────────────────────────
 # 1. 记忆检索 API
 # ─────────────────────────────────────────────
@@ -133,11 +151,13 @@ async def search_memory(
                 "episodes": mem_ctx.episodes,
                 "entities": mem_ctx.entities,
                 "edges": mem_ctx.edges,
+                # 本次会命中并注入的偏好/纠错硬约束，便于控制台排查"为什么 Agent 还调错"
+                "preferences": mem_ctx.preferences,
                 "retrieval_meta": mem_ctx.retrieval_meta,
                 "prompt_text": mem_ctx.to_prompt_text(),
             },
         }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"记忆检索失败: {str(e)}",
@@ -222,7 +242,7 @@ async def list_episodes(
                     "page_size": page_size,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Episode 列表失败: {str(e)}",
@@ -282,7 +302,7 @@ async def get_episode_detail(
                     "mentioned_entities": mentioned_entities,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Episode 详情失败: {str(e)}",
@@ -324,14 +344,14 @@ async def delete_episode(
                         collection_name=MEMORY_EPISODES_COLLECTION,
                         points_selector=[episode.qdrant_id],
                     )
-            except Exception:
+            except _RUNTIME_ERRORS:
                 pass
 
             await session.delete(episode)
             await session.commit()
 
             return {"status": 0, "msg": "ok", "data": None}
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"删除 Episode 失败: {str(e)}",
@@ -430,7 +450,7 @@ async def list_entities(
                     "page_size": page_size,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Entity 列表失败: {str(e)}",
@@ -516,7 +536,7 @@ async def get_entity_detail(
                     "edges": edges,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Entity 详情失败: {str(e)}",
@@ -558,14 +578,14 @@ async def delete_entity(
                         collection_name=MEMORY_ENTITIES_COLLECTION,
                         points_selector=[entity.qdrant_id],
                     )
-            except Exception:
+            except _RUNTIME_ERRORS:
                 pass
 
             await session.delete(entity)
             await session.commit()
 
             return {"status": 0, "msg": "ok", "data": None}
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"删除 Entity 失败: {str(e)}",
@@ -667,7 +687,7 @@ async def list_edges(
                     "page_size": page_size,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Edge 列表失败: {str(e)}",
@@ -733,7 +753,7 @@ async def get_edge_detail(
                     "target_entity": target_entity,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Edge 详情失败: {str(e)}",
@@ -775,19 +795,194 @@ async def delete_edge(
                         collection_name=MEMORY_EDGES_COLLECTION,
                         points_selector=[edge.qdrant_id],
                     )
-            except Exception:
+            except _RUNTIME_ERRORS:
                 pass
 
             await session.delete(edge)
             await session.commit()
 
             return {"status": 0, "msg": "ok", "data": None}
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"删除 Edge 失败: {str(e)}",
             "data": None,
         }
+
+
+# ─────────────────────────────────────────────
+# 4.5 程序性 / 偏好记忆（Preference）治理 API
+# 偏好规则会硬约束工具调用，误抽的规则会持续误导 Agent，故人工治理比 Episode 更关键。
+# 偏好为 SQL-only（无向量），列表/详情/编辑/删除均只动 SQL。
+# ─────────────────────────────────────────────
+
+
+def _preference_to_dict(p: AIMemPreference) -> Dict:
+    """把 AIMemPreference 行序列化为 API 输出字典。"""
+    return {
+        "id": p.id,
+        "scope_key": p.scope_key,
+        "user_id": p.user_id,
+        "target_context": p.target_context,
+        "preference_rule": p.preference_rule,
+        "polarity": p.polarity,
+        "is_correction": p.is_correction,
+        "is_active": p.is_active,
+        "mention_count": p.mention_count,
+        "source_episode_id": p.source_episode_id,
+        "created_at": str(p.created_at) if p.created_at else None,
+        "updated_at": str(p.updated_at) if p.updated_at else None,
+        "last_applied_at": str(p.last_applied_at) if p.last_applied_at else None,
+    }
+
+
+@app.get("/api/ai/memory/preferences")
+async def list_preferences(
+    scope_key: Optional[str] = None,
+    user_id: Optional[str] = None,
+    target_context: Optional[str] = None,
+    is_correction: Optional[bool] = None,
+    polarity: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    all_scopes: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """获取程序性/偏好规则列表。
+
+    支持按 scope_key / user_id / target_context / is_correction / polarity / is_active 过滤，
+    分页返回（排序：纠错优先 → 高频强化 → 最近更新）。仅传 user_id 时自动按 USER_GLOBAL 取。
+    """
+    try:
+        actual_scope_key = scope_key
+        if not all_scopes and actual_scope_key is None and user_id is not None:
+            actual_scope_key = make_scope_key(ScopeType.USER_GLOBAL, user_id)
+
+        async with async_maker() as session:
+            query = select(AIMemPreference)
+            count_query = select(func.count()).select_from(AIMemPreference)
+
+            conditions = []
+            if actual_scope_key:
+                conditions.append(AIMemPreference.scope_key == actual_scope_key)
+            if user_id:
+                conditions.append(AIMemPreference.user_id == user_id)
+            if target_context:
+                conditions.append(AIMemPreference.target_context == target_context)
+            if is_correction is not None:
+                conditions.append(col(AIMemPreference.is_correction).is_(is_correction))
+            if polarity:
+                conditions.append(AIMemPreference.polarity == polarity)
+            if is_active is not None:
+                conditions.append(col(AIMemPreference.is_active).is_(is_active))
+            for cond in conditions:
+                query = query.where(cond)
+                count_query = count_query.where(cond)
+
+            total = (await session.execute(count_query)).scalar() or 0
+
+            query = (
+                query.order_by(
+                    col(AIMemPreference.is_correction).desc(),
+                    col(AIMemPreference.mention_count).desc(),
+                    col(AIMemPreference.updated_at).desc(),
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+            rows = (await session.execute(query)).scalars().all()
+            items = [_preference_to_dict(p) for p in rows]
+
+            return {
+                "status": 0,
+                "msg": "ok",
+                "data": {
+                    "items": items,
+                    "total": total,
+                    "page": page,
+                    "page_size": page_size,
+                },
+            }
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"获取偏好列表失败: {str(e)}", "data": None}
+
+
+@app.get("/api/ai/memory/preferences/{pref_id}")
+async def get_preference_detail(
+    pref_id: str,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """获取单条偏好规则详情（含 source_episode_id 溯源、mention_count、last_applied_at）。"""
+    try:
+        async with async_maker() as session:
+            result = await session.execute(select(AIMemPreference).where(AIMemPreference.id == pref_id))
+            pref = result.scalar_one_or_none()
+            if pref is None:
+                return {"status": 1, "msg": f"未找到偏好规则: {pref_id}", "data": None}
+            return {"status": 0, "msg": "ok", "data": _preference_to_dict(pref)}
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"获取偏好详情失败: {str(e)}", "data": None}
+
+
+@app.patch("/api/ai/memory/preferences/{pref_id}")
+async def update_preference(
+    pref_id: str,
+    req: PreferenceUpdateRequest,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """人工纠偏：改规则正文 / 极性 / 绑定上下文 / 启停（软停用而非删除，保留审计）。"""
+    from datetime import datetime, timezone
+
+    try:
+        async with async_maker() as session:
+            result = await session.execute(select(AIMemPreference).where(AIMemPreference.id == pref_id))
+            pref = result.scalar_one_or_none()
+            if pref is None:
+                return {"status": 1, "msg": f"未找到偏好规则: {pref_id}", "data": None}
+
+            changed = False
+            if req.preference_rule is not None:
+                pref.preference_rule = req.preference_rule.strip()
+                changed = True
+            if req.polarity is not None:
+                pref.polarity = "dont" if req.polarity == "dont" else "do"
+                changed = True
+            if req.target_context is not None:
+                pref.target_context = req.target_context.strip()[:128] or "general"
+                changed = True
+            if req.is_active is not None:
+                pref.is_active = req.is_active
+                changed = True
+
+            if changed:
+                pref.updated_at = datetime.now(timezone.utc)
+                session.add(pref)
+                await session.commit()
+                await session.refresh(pref)
+
+            return {"status": 0, "msg": "ok", "data": _preference_to_dict(pref)}
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"更新偏好规则失败: {str(e)}", "data": None}
+
+
+@app.delete("/api/ai/memory/preferences/{pref_id}")
+async def delete_preference(
+    pref_id: str,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """删除单条误抽的偏好规则（SQL-only，无向量需清理）。"""
+    try:
+        async with async_maker() as session:
+            result = await session.execute(select(AIMemPreference).where(AIMemPreference.id == pref_id))
+            pref = result.scalar_one_or_none()
+            if pref is None:
+                return {"status": 1, "msg": f"未找到偏好规则: {pref_id}", "data": None}
+            await session.delete(pref)
+            await session.commit()
+            return {"status": 0, "msg": "ok", "data": None}
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"删除偏好规则失败: {str(e)}", "data": None}
 
 
 # ─────────────────────────────────────────────
@@ -908,7 +1103,7 @@ async def list_categories(
                     "page_size": page_size,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Category 列表失败: {str(e)}",
@@ -998,7 +1193,7 @@ async def get_category_detail(
                     "member_entities": member_entities,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Category 详情失败: {str(e)}",
@@ -1069,7 +1264,7 @@ async def get_hiergraph_status(
                     ),
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取分层图状态失败: {str(e)}",
@@ -1117,7 +1312,7 @@ async def trigger_hiergraph_rebuild(
                 "message": "分层图重建任务已启动",
             },
         }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"触发分层图重建失败: {str(e)}",
@@ -1193,6 +1388,23 @@ async def get_memory_stats(
                 cat_query = cat_query.where(AIMemCategory.scope_key == actual_scope_key)
             category_count = (await session.execute(cat_query)).scalar() or 0
 
+            # 程序性/偏好规则统计（活跃规则数 + 纠错规则数）
+            pref_query = (
+                select(func.count()).select_from(AIMemPreference).where(col(AIMemPreference.is_active).is_(True))
+            )
+            if actual_scope_key:
+                pref_query = pref_query.where(AIMemPreference.scope_key == actual_scope_key)
+            preference_count = (await session.execute(pref_query)).scalar() or 0
+
+            pref_corr_query = (
+                select(func.count())
+                .select_from(AIMemPreference)
+                .where(col(AIMemPreference.is_active).is_(True), col(AIMemPreference.is_correction).is_(True))
+            )
+            if actual_scope_key:
+                pref_corr_query = pref_corr_query.where(AIMemPreference.scope_key == actual_scope_key)
+            preference_correction_count = (await session.execute(pref_corr_query)).scalar() or 0
+
             # Scope 列表（所有有记忆数据的 scope_key）
             scope_query = select(AIMemEpisode.scope_key).distinct()
             scope_result = await session.execute(scope_query)
@@ -1215,11 +1427,13 @@ async def get_memory_stats(
                     "edge_count": edge_count,
                     "active_edge_count": active_edge_count,
                     "category_count": category_count,
+                    "preference_count": preference_count,
+                    "preference_correction_count": preference_correction_count,
                     "observation_queue_size": queue_size,
                     "scope_keys": scope_keys,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取记忆统计失败: {str(e)}",
@@ -1265,9 +1479,22 @@ async def get_memory_config(
                 "max_layers": memory_config.max_layers,
                 "hiergraph_rebuild_ratio": memory_config.hiergraph_rebuild_ratio,
                 "hiergraph_rebuild_interval_seconds": memory_config.hiergraph_rebuild_interval_seconds,
+                # 程序性/偏好记忆 + RF-Mem（只读反射；经 MEMORY_CONFIG 持久化，于"记忆配置"分组调整）
+                "enable_preference_memory": memory_config.enable_preference_memory,
+                "preference_max_inject": memory_config.preference_max_inject,
+                "preference_max_per_context": memory_config.preference_max_per_context,
+                "preference_inject_budget_ratio": memory_config.preference_inject_budget_ratio,
+                "preference_immediate_flush": memory_config.preference_immediate_flush,
+                "enable_familiarity_routing": memory_config.enable_familiarity_routing,
+                "enable_recollection_path": memory_config.enable_recollection_path,
+                "familiarity_theta_high": memory_config.familiarity_theta_high,
+                "familiarity_theta_low": memory_config.familiarity_theta_low,
+                "familiarity_tau": memory_config.familiarity_tau,
+                "familiarity_lambda": memory_config.familiarity_lambda,
+                "familiarity_probe_k": memory_config.familiarity_probe_k,
             },
         }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取记忆配置失败: {str(e)}",
@@ -1321,9 +1548,22 @@ async def update_memory_config(
                 "max_layers": memory_config.max_layers,
                 "hiergraph_rebuild_ratio": memory_config.hiergraph_rebuild_ratio,
                 "hiergraph_rebuild_interval_seconds": memory_config.hiergraph_rebuild_interval_seconds,
+                # 程序性/偏好记忆 + RF-Mem（只读反射；经 MEMORY_CONFIG 持久化，于"记忆配置"分组调整）
+                "enable_preference_memory": memory_config.enable_preference_memory,
+                "preference_max_inject": memory_config.preference_max_inject,
+                "preference_max_per_context": memory_config.preference_max_per_context,
+                "preference_inject_budget_ratio": memory_config.preference_inject_budget_ratio,
+                "preference_immediate_flush": memory_config.preference_immediate_flush,
+                "enable_familiarity_routing": memory_config.enable_familiarity_routing,
+                "enable_recollection_path": memory_config.enable_recollection_path,
+                "familiarity_theta_high": memory_config.familiarity_theta_high,
+                "familiarity_theta_low": memory_config.familiarity_theta_low,
+                "familiarity_tau": memory_config.familiarity_tau,
+                "familiarity_lambda": memory_config.familiarity_lambda,
+                "familiarity_probe_k": memory_config.familiarity_probe_k,
             },
         }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"更新记忆配置失败: {str(e)}",
@@ -1406,7 +1646,7 @@ async def list_scopes(
                 "msg": "ok",
                 "data": scopes,
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"获取 Scope 列表失败: {str(e)}",
@@ -1485,9 +1725,9 @@ async def delete_scope_memory(
                                     must=[FieldCondition(key="scope_key", match=MatchValue(value=scope_key))]
                                 ),
                             )
-                        except Exception:
+                        except _RUNTIME_ERRORS:
                             pass
-            except Exception:
+            except _RUNTIME_ERRORS:
                 pass
 
             # 删除数据库记录（按依赖顺序）
@@ -1551,7 +1791,7 @@ async def delete_scope_memory(
                     "deleted_categories": cat_count,
                 },
             }
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         return {
             "status": 1,
             "msg": f"删除 Scope 记忆失败: {str(e)}",

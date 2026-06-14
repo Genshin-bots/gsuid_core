@@ -115,6 +115,9 @@ class ExtractedResult(TypedDict):
 
     entities: list[dict]
     edges: list[dict]
+    # 程序性偏好门控信号：实体抽取 LLM 顺手判定的"本批是否含针对助手未来行为的纠正/偏好"。
+    # 取代纯正则硬门控来决定是否触发第二次偏好蒸馏（仅 enable_preference_memory 时有意义）。
+    has_preference: bool
 
 
 class IngestionWorker:
@@ -142,6 +145,8 @@ class IngestionWorker:
         self._stop_event: asyncio.Event | None = None  # start() 时创建
         # 主循环上的后台任务句柄
         self._task: asyncio.Task | None = None
+        # 程序性记忆：纠错即时 flush 的 per-scope 上次触发时间（debounce 防 flush 风暴）
+        self._priority_flush_at: dict[str, float] = {}
 
     def start(self):
         """在当前（主）事件循环中启动后台摄入任务，立即返回。
@@ -262,6 +267,37 @@ class IngestionWorker:
         except Exception as e:
             logger.error(f"🧠 [Memory] IngestionWorker 停止时异常: {e}", exc_info=True)
         logger.info("🧠 [Memory] IngestionWorker 已停止")
+
+    def request_priority_flush(self, scope_key: str) -> None:
+        """纠错即时写快路径（程序性记忆 §4.3）：在主循环上调度一次该 scope 的优先 flush，
+        让数分钟内的"下一次"请求即可召回纠错偏好，而非等 batch_interval_seconds 大窗。
+
+        带 per-scope debounce（preference_flush_debounce_seconds）防"连环纠正→flush 风暴"。
+        由 observer.observe() 在纠错门控命中时调用（运行在主事件循环上）。
+        """
+        if not self._running:
+            return
+        now = time.time()
+        last = self._priority_flush_at[scope_key] if scope_key in self._priority_flush_at else 0.0
+        if now - last < memory_config.preference_flush_debounce_seconds:
+            return
+        self._priority_flush_at[scope_key] = now
+        asyncio.create_task(self._priority_flush(scope_key))
+
+    async def _priority_flush(self, scope_key: str):
+        """先把队列里待处理记录搬进 buffers（与 _consume_loop 同逻辑，确保刚入队的纠错记录
+        已落到 buffer），再 flush 目标 scope。"""
+        while not self._queue.empty():
+            try:
+                record: ObservationRecord = self._queue.get_nowait()
+                self._buffers[record.scope_key].append(record)
+                if record.scope_key not in self._last_flush:
+                    self._last_flush[record.scope_key] = time.time()
+            except sync_queue.Empty:
+                break
+        # 用 `in` 显式判定，避免 defaultdict 的 `[]` 访问副作用建空桶
+        if scope_key in self._buffers and self._buffers[scope_key] and scope_key not in self._flushing:
+            await self._flush(scope_key)
 
     async def _consume_loop(self):
         """从队列取消息，放入对应 scope_key 的缓冲区。
@@ -555,6 +591,23 @@ async def _extract_and_upsert_from_episode(
             if user_global_new_count > 0:
                 await increment_entity_count(user_global_scope, user_global_new_count)
 
+    # Step 7.5: 程序性/偏好记忆（默认开）——门控由实体抽取 LLM 顺手判定的 has_preference
+    # 决定（替代脆弱纯正则：既治"太宽"误触发、又治"太窄"漏自然口吻纠正）。命中才跑第二次、
+    # 带能力清单/工具轨迹的独立蒸馏 LLM（create_by=MemPreferenceExtraction，token 单独归账，
+    # 自带 try/except → 失败不连累已写入的 entity/edge）。观察期的纠错正则已降级为仅管"强制
+    # HIGH 让候选进抽取 + 触发即时 flush 时机"，不再门控本次蒸馏。
+    pref_signal = extracted["has_preference"] if "has_preference" in extracted else False
+    if memory_config.enable_preference_memory and pref_signal:
+        try:
+            await _extract_and_upsert_preferences(
+                high_records=high_records,
+                speaker_ids=speaker_ids,
+                scope_key=scope_key,
+                episode_id=episode.id,
+            )
+        except Exception as e:
+            logger.warning(f"🧠 [Memory] scope={scope_key} 偏好蒸馏失败（不影响其他记忆）: {e}")
+
     # Step 8: 触发分层图更新检查（评测模式下跳过，由外部统一触发）
     if not memory_config.eval_mode:
         await check_and_trigger_hierarchical_update(scope_key)
@@ -785,10 +838,14 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     # 逐片提取（串行，避免 LLM 并发过载）
     all_entities: list[dict] = []
     all_edges: list[dict] = []
+    has_preference = False
     for i, chunk in enumerate(chunks):
         result = await _llm_extract_single(chunk, scope_key)
         all_entities.extend(result["entities"])
         all_edges.extend(result["edges"])
+        # 任一分片判出偏好信号即视为整批命中（偏好往往集中在某一段对话）
+        if "has_preference" in result and result["has_preference"]:
+            has_preference = True
 
     # 按 name 去重 Entity（同名保留后出现的，信息更完整）
     seen_names: dict[str, dict] = {}
@@ -812,6 +869,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     return {
         "entities": list(seen_names.values()),
         "edges": list(seen_edges.values()),
+        "has_preference": has_preference,
     }
 
 
@@ -825,6 +883,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
     from gsuid_core.ai_core.memory.prompts.extraction import (
         ENTITY_EXTRACTION_USER,
         ENTITY_EXTRACTION_SYSTEM,
+        PREFERENCE_FLAG_INSTRUCTION,
     )
 
     MAX_CHARS = 10000
@@ -898,13 +957,21 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
                     }
                 )
 
-        return {"entities": entities, "edges": edges}
+        # 程序性偏好门控信号（仅在 system prompt 追加了判定指令时模型才会产出）：取顶层 pref
+        has_preference = bool(data["pref"]) if "pref" in data else False
+
+        return {"entities": entities, "edges": edges, "has_preference": has_preference}
 
     try:
+        # 偏好门控开启时，把"顺手判 pref"指令追加到 system 末尾（不动稳定前缀的实体抽取部分，
+        # 关闭时前缀与改动前逐字节一致），让实体抽取 LLM 替代脆弱正则决定是否触发偏好蒸馏。
+        system_prompt = ENTITY_EXTRACTION_SYSTEM
+        if memory_config.enable_preference_memory:
+            system_prompt = ENTITY_EXTRACTION_SYSTEM + PREFERENCE_FLAG_INSTRUCTION
         agent = create_agent(
             create_by="MemEntityExtraction",
             task_level="low",
-            system_prompt=ENTITY_EXTRACTION_SYSTEM,
+            system_prompt=system_prompt,
         )
         # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace
         raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
@@ -946,4 +1013,149 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         except Exception:
             pass
 
-    return {"entities": [], "edges": []}
+    return {"entities": [], "edges": [], "has_preference": False}
+
+
+# ─────────────────────────────────────────────
+# 程序性 / 偏好记忆蒸馏（独立 LLM 调用，纠错门控命中才触发）
+# 设计：plans/procedural_preference_memory_design_20260614.md §4
+# ─────────────────────────────────────────────
+
+# 单批最多写入的偏好规则数，防 LLM 过度产出
+_PREFERENCE_MAX_PER_BATCH = 8
+
+
+def _build_capability_section() -> str:
+    """构造【可用能力清单】片段：把真实注册的能力域 + 工具名喂给偏好蒸馏 LLM，
+    避免 target_context 被凭空编造（§4.1-a / §5.3）。无注册工具时返回空串。"""
+    from gsuid_core.ai_core.register import get_registered_tools
+
+    domains: set[str] = set()
+    tool_names: list[str] = []
+    try:
+        for cat_tools in get_registered_tools().values():
+            for name, tb in cat_tools.items():
+                tool_names.append(name)
+                if tb.capability_domain:
+                    domains.add(tb.capability_domain)
+    except Exception:
+        return ""
+    if not tool_names:
+        return ""
+
+    MAX = 1200
+    domain_line = "、".join(sorted(domains)) if domains else "（暂无）"
+    names_line = "、".join(tool_names)
+    return (
+        "<可用能力清单（ctx 必须从中精确选择，选不到填 general）>\n"
+        f"能力域：{domain_line[:MAX]}\n"
+        f"工具名：{names_line[:MAX]}\n"
+        "</可用能力清单>\n"
+    )
+
+
+async def _extract_and_upsert_preferences(
+    *,
+    high_records: list[ObservationRecord],
+    speaker_ids: list[str],
+    scope_key: str,
+    episode_id: str,
+) -> None:
+    """从命中纠错意图的批次独立蒸馏偏好规则，fan-out 写入各发言者的 USER_GLOBAL 偏好表。
+
+    - 输入：本批 HIGH records 折叠后的对话（保留 ``[speaker_id]`` 前缀供归属）+ 可用能力
+      清单 + 近期工具调用轨迹（纠错背景，§4.2）。
+    - 归属：默认归"提出纠正的发言者"个人（USER_GLOBAL:{uid}，跨群随用户），避免把一个人
+      的口味强加给全群（§10.2）。
+    - 写入：``AIMemPreference.upsert``（合并 / 极性反转 / 强化），SQL-only 不写向量。
+    """
+    from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.prompts.extraction import (
+        PREFERENCE_EXTRACTION_USER,
+        PREFERENCE_EXTRACTION_SYSTEM,
+    )
+    from gsuid_core.ai_core.memory.ingestion.tool_trace import get_recent_tool_calls
+
+    dialogue = _compact_high_records_dialogue(high_records)
+    if not dialogue.strip():
+        return
+
+    capability_section = _build_capability_section()
+
+    tool_calls = get_recent_tool_calls(speaker_ids, limit=6)
+    if tool_calls:
+        joined = "\n".join(f"- {t}" for t in tool_calls)
+        tool_trace_section = (
+            f"<助手近期工具调用（纠错背景，参数可能正是被纠正的对象）>\n{joined}\n</助手近期工具调用>\n"
+        )
+    else:
+        tool_trace_section = ""
+
+    prompt = PREFERENCE_EXTRACTION_USER.format(
+        capability_section=capability_section,
+        tool_trace_section=tool_trace_section,
+        dialogue_content=dialogue,
+    )
+
+    agent = create_agent(
+        create_by="MemPreferenceExtraction",
+        task_level="low",
+        is_subagent=True,
+        system_prompt=PREFERENCE_EXTRACTION_SYSTEM,
+    )
+    raw = await asyncio.wait_for(agent.run(prompt), timeout=120)
+    # 本调用未指定 output_type，agent.run 返回 str；非 str 直接 str() 兜底（不依赖 hasattr 探属性）
+    raw_text = raw if isinstance(raw, str) else str(raw)
+    data = extract_json_from_text(raw_text)
+    if isinstance(data, list):
+        data = next((item for item in data if isinstance(item, dict)), None)
+    if not isinstance(data, dict):
+        logger.debug(f"🧠 [Memory] 偏好蒸馏输出非 JSON 对象，跳过: {raw_text[:80]!r}")
+        return
+
+    raw_prefs = data["preferences"] if "preferences" in data and isinstance(data["preferences"], list) else []
+    if not raw_prefs:
+        return
+
+    # 归属兜底：取本批命中纠错的发言者作默认归属；valid_speakers 防 LLM 编造 by
+    correction_speakers = [r.speaker_id for r in high_records if r.is_correction]
+    default_by = correction_speakers[0] if correction_speakers else (speaker_ids[0] if speaker_ids else "")
+    valid_speakers = set(speaker_ids)
+
+    written = 0
+    for p in raw_prefs[:_PREFERENCE_MAX_PER_BATCH]:
+        if not isinstance(p, dict):
+            continue
+        rule = (p["rule"] if "rule" in p and isinstance(p["rule"], str) else "").strip()
+        if not rule:
+            continue
+        ctx_raw = p["ctx"] if "ctx" in p and isinstance(p["ctx"], str) and p["ctx"].strip() else "general"
+        target_context = ctx_raw.strip()[:128]
+        polarity = "dont" if (p["pol"] if "pol" in p else "do") == "dont" else "do"
+        is_corr = bool(p["corr"]) if "corr" in p else False
+        by = (p["by"] if "by" in p and isinstance(p["by"], str) else "").strip()
+        if by not in valid_speakers:
+            by = default_by
+        if not by:
+            continue
+        pref_scope = make_scope_key(ScopeType.USER_GLOBAL, by)
+        upsert_result = await AIMemPreference.upsert(
+            scope_key=pref_scope,
+            user_id=by,
+            target_context=target_context,
+            preference_rule=rule,
+            polarity=polarity,
+            is_correction=is_corr,
+            source_episode_id=episode_id,
+        )
+        # with_session 在 DB 抖动时吞异常返回 None；判空避免解包 TypeError 中断整批剩余偏好写入
+        if not upsert_result:
+            continue
+        new_id, _is_new = upsert_result
+        if new_id:
+            written += 1
+
+    if written:
+        logger.info(f"🧠 [Memory] scope={scope_key} 蒸馏并写入 {written} 条偏好规则")

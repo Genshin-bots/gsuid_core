@@ -5,10 +5,12 @@ AI Core 数据库模型模块
 复用 gsuid_core 的数据库基础设施。
 """
 
+import json
 import time
-from typing import List, Optional
+from typing import Any, Set, Dict, List, Tuple, Optional
 
-from sqlmodel import Field, col, and_, select, update
+from sqlmodel import Field, SQLModel, col, and_, delete, select, update
+from sqlalchemy import Text, Column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.logger import logger
@@ -428,3 +430,186 @@ class UserFavorability(BaseModel, table=True):
         except Exception as e:
             logger.exception(f"🧠 [UserFavorability] 获取高好感度用户失败: {e}")
             return []
+
+
+# 进程级建表标记：与全局 create_all 的启动时序解耦（RAG 初始化在后台线程，
+# 可能早于/晚于 create_all，故首次读写前自建表，参考 state_store._ensure_table）。
+_knowledge_table_ensured = False
+
+
+class AIKnowledgeChunk(SQLModel, table=True):
+    """手动知识库的 **SQL 真值源**（分片粒度，1 行 = 1 个 Qdrant point）。
+
+    背景：控制台手动知识历史上**只存在于 Qdrant**，无磁盘/SQL 真值源——换嵌入模型、
+    本地向量库目录损坏或迁移中断都可能永久丢数据；列表分页又因 Qdrant local 不支持
+    offset 而退化为 O(n) 全量 scroll。本表把手动知识的结构化内容沉到 SQL：
+
+    - **持久性**：向量库丢失后可从本表全量重嵌（见 ``rag/knowledge.reconcile_manual_knowledge``）。
+    - **分页**：列表/检索走 SQL 原生 offset/limit（治 P5）。
+    - **文档维度**：``doc_id`` 把一篇长文切出的多个分片聚合，支持整篇删除/导出（治 P3）。
+
+    插件知识（``source="plugin"``）的真值源是插件代码 + ``_ENTITIES``，不入本表。
+    """
+
+    __table_args__ = {"extend_existing": True}
+
+    # 逻辑 ID：文档分片为 ``{doc_id}#{chunk_index}``，单条手动知识为 uuid4。
+    # 与 Qdrant payload["id"] 一致；Qdrant point id = get_point_id(逻辑ID)（UUID5）。
+    id: str = Field(primary_key=True, max_length=160, title="逻辑ID")
+    doc_id: str = Field(default="", index=True, max_length=128, title="文档ID")
+    chunk_index: int = Field(default=0, title="分片序号")
+    title: str = Field(default="", max_length=512, title="标题")
+    content: str = Field(sa_column=Column(Text, nullable=False), title="正文")
+    tags: str = Field(default="[]", title="标签(JSON 字符串)")
+    source: str = Field(default="manual", index=True, max_length=32, title="来源")
+    plugin: str = Field(default="manual", max_length=64, title="所属插件/分组")
+    qdrant_id: str = Field(default="", index=True, max_length=64, title="向量点ID")
+    content_hash: str = Field(default="", max_length=64, title="内容哈希")
+    created_at: int = Field(default_factory=lambda: int(time.time()), title="创建时间戳")
+    updated_at: int = Field(default_factory=lambda: int(time.time()), title="更新时间戳")
+
+    # ───────── 序列化助手 ─────────
+    def tags_list(self) -> List[str]:
+        try:
+            v = json.loads(self.tags)
+            return [str(t) for t in v] if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def to_dict(self) -> Dict[str, Any]:
+        """API / 导出输出形状（兼容旧手动知识字段，附带 doc_id/chunk_index 扩展）。"""
+        return {
+            "id": self.id,
+            "doc_id": self.doc_id,
+            "chunk_index": self.chunk_index,
+            "plugin": self.plugin,
+            "title": self.title,
+            "content": self.content,
+            "tags": self.tags_list(),
+            "source": self.source,
+        }
+
+    # ───────── 建表（与启动时序解耦） ─────────
+    @classmethod
+    async def ensure_table(cls) -> None:
+        global _knowledge_table_ensured
+        if _knowledge_table_ensured:
+            return
+        try:
+            from gsuid_core.utils.database.base_models import engine
+
+            async with engine.begin() as conn:
+                await conn.run_sync(
+                    cls.metadata.create_all,
+                    tables=[cls.__table__],
+                    checkfirst=True,
+                )
+            _knowledge_table_ensured = True
+        except Exception as e:
+            logger.warning(f"🧠 [Knowledge] AIKnowledgeChunk 建表检查失败（将沿用既有表）: {e}")
+            _knowledge_table_ensured = True
+
+    # ───────── CRUD ─────────
+    @classmethod
+    async def upsert_many(cls, rows: List["AIKnowledgeChunk"]) -> int:
+        """按主键幂等 upsert（merge）一批分片，返回写入行数。"""
+        if not rows:
+            return 0
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            for row in rows:
+                await session.merge(row)
+            await session.commit()
+        return len(rows)
+
+    @classmethod
+    async def get_by_id(cls, entity_id: str) -> Optional["AIKnowledgeChunk"]:
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            result = await session.execute(select(cls).where(cls.id == entity_id))
+            return result.scalars().first()
+
+    @classmethod
+    async def list_page(
+        cls,
+        source: str = "manual",
+        doc_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List["AIKnowledgeChunk"], int]:
+        """SQL 原生分页（治 P5 的 O(n) scroll）。``source="all"`` 不限来源。"""
+        await cls.ensure_table()
+        from sqlalchemy import func
+
+        from gsuid_core.utils.database.base_models import async_maker
+
+        conds: List[Any] = []
+        if source and source != "all":
+            conds.append(cls.source == source)
+        if doc_id:
+            conds.append(cls.doc_id == doc_id)
+
+        async with async_maker() as session:
+            count_stmt = select(func.count()).select_from(cls)
+            list_stmt = select(cls)
+            for c in conds:
+                count_stmt = count_stmt.where(c)
+                list_stmt = list_stmt.where(c)
+            total = (await session.execute(count_stmt)).scalar() or 0
+            list_stmt = list_stmt.order_by(col(cls.doc_id), col(cls.chunk_index)).offset(offset).limit(limit)
+            rows = list((await session.execute(list_stmt)).scalars().all())
+            return rows, int(total)
+
+    @classmethod
+    async def iter_all(cls, source: str = "manual") -> List["AIKnowledgeChunk"]:
+        """取全部行（导出/对账用）。``source="all"`` 不限来源。"""
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            stmt = select(cls)
+            if source and source != "all":
+                stmt = stmt.where(cls.source == source)
+            return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    async def id_set(cls, source: str = "manual") -> Set[str]:
+        """取全部逻辑 ID 集合（对账：判断 Qdrant 里哪些点尚未沉到 SQL）。"""
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            stmt = select(cls.id)
+            if source and source != "all":
+                stmt = stmt.where(cls.source == source)
+            return {row[0] for row in (await session.execute(stmt)).all()}
+
+    @classmethod
+    async def delete_ids(cls, ids: List[str]) -> int:
+        if not ids:
+            return 0
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            await session.execute(delete(cls).where(col(cls.id).in_(ids)))
+            await session.commit()
+        return len(ids)
+
+    @classmethod
+    async def delete_doc(cls, doc_id: str) -> List[str]:
+        """删除整篇文档的全部分片，返回被删分片的 qdrant_id 列表（供清理向量）。"""
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            rows = (await session.execute(select(cls).where(cls.doc_id == doc_id))).scalars().all()
+            qids = [r.qdrant_id for r in rows if r.qdrant_id]
+            if rows:
+                await session.execute(delete(cls).where(cls.doc_id == doc_id))
+                await session.commit()
+            return qids

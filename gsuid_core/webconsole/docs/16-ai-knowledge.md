@@ -296,3 +296,161 @@ Authorization: Bearer <token>
 | data.results | array | 匹配的知识列表 |
 | data.count | integer | 匹配数量 |
 | data.query | string | 查询文本 |
+
+---
+
+## 16.7 批量导入（服务端分片，导入长文/数十万字）
+
+```
+POST /api/ai/knowledge/bulk
+```
+
+> 用于把长文（如手册、规则、剧本，乃至数十万字）一次导入。服务端会**自动分片**，每片单独
+> 向量化——避免整段长文被嵌入模型按上限（本地 `bge-small-zh-v1.5` 仅 512 token）静默截断、
+> 导致绝大部分内容不可检索。同一 `doc_id` 重复导入会**先清空旧分片再写**（幂等，不产生重复）。
+> 手动知识以 SQL（`AIKnowledgeChunk`）为真值源，向量库丢失/换模型后可自动从 SQL 重嵌恢复。
+
+**请求体**（`full_text` 与 `items` 二选一）：
+```json
+{
+    "title": "运营手册v3",
+    "doc_id": "handbook_v3",
+    "full_text": "……数十万字……",
+    "tags": ["运营"],
+    "plugin": "manual",
+    "chunk_size": 400,
+    "chunk_overlap": 60,
+    "replace": true
+}
+```
+
+**请求字段说明**：
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| title | string | 是 | - | 文档标题（多分片时每片标题追加"- 第N段"） |
+| doc_id | string | 否 | 自动生成 | 文档标识；同一 doc_id 重导即覆盖。建议显式传，便于按文档管理/清理 |
+| full_text | string | 否* | - | 整篇长文，服务端按 chunk_size/overlap 分片 |
+| items | array | 否* | - | 客户端已分好的分片数组，每项形如 `{"content": "..."}` |
+| tags | array | 否 | [] | 统一标签（所有分片共享） |
+| plugin | string | 否 | manual | 所属分组 |
+| chunk_size | integer | 否 | 400 | 单片最大字符数（50–4000）。本地默认模型建议 ≤400，远程大上下文模型可放宽 |
+| chunk_overlap | integer | 否 | 60 | 相邻片重叠字符数 |
+| replace | boolean | 否 | true | 先删除该 doc_id 旧分片再写，避免新版分片更少时残留孤儿分片 |
+
+> *：`full_text` 与 `items` 至少提供一个。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": { "doc_id": "handbook_v3", "total_chunks": 312, "written": 312, "skipped": 0 }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| total_chunks | 分片总数 |
+| written | 成功写入向量的分片数 |
+| skipped | 被嵌入端限流（413）跳过的分片数（仍保留在 SQL 真值源，下次启动对账时补嵌） |
+
+---
+
+## 16.8 删除整篇文档
+
+```
+DELETE /api/ai/knowledge/doc/{doc_id}
+```
+
+> 按 `doc_id` 删除该文档的全部分片（SQL 真值源 + Qdrant 向量）。用于"重导前清旧"或文档级清理。
+
+**响应**：
+```json
+{ "status": 0, "msg": "ok", "data": { "doc_id": "handbook_v3", "deleted_chunks": 312 } }
+```
+
+> 按 `doc_id` 浏览某篇文档的分片：`GET /api/ai/knowledge/list?source=manual&doc_id=handbook_v3`。
+> `source=manual` 的列表走 SQL 真值源原生分页（offset 为 O(1)，大库不再每页全量 scroll）。
+
+---
+
+## 16.9 导出备份（JSONL）
+
+```
+GET /api/ai/knowledge/backup/export
+```
+
+> 流式导出**全部手动知识**为 JSONL（每行一条 JSON），作为用户级备份/迁移件。
+> 响应为文件下载（`Content-Disposition: attachment; filename=manual_knowledge.jsonl`）。
+
+每行形如：
+```json
+{"id":"handbook_v3#0","doc_id":"handbook_v3","chunk_index":0,"plugin":"manual","title":"运营手册v3 - 第1段","content":"...","tags":["运营"],"source":"manual"}
+```
+
+---
+
+## 16.10 导入恢复（从备份）
+
+```
+POST /api/ai/knowledge/backup/import
+```
+
+> 从导出件恢复手动知识（写 SQL 真值源 + 重新嵌入入库）。`records` 与 `jsonl` 至少提供一个。
+
+**请求体**（二选一）：
+```json
+{ "records": [ {"id":"handbook_v3#0","title":"...","content":"...","tags":["运营"]} ] }
+```
+或
+```json
+{ "jsonl": "{\"id\":\"a#0\",\"content\":\"...\"}\n{\"id\":\"a#1\",\"content\":\"...\"}" }
+```
+
+**响应**：
+```json
+{ "status": 0, "msg": "ok", "data": { "total": 312, "written": 312, "skipped": 0 } }
+```
+
+> 提示：`id` 缺失时自动生成；带原 `id`/`doc_id` 则按主键幂等覆盖，可重复导入不产生重复。
+
+---
+
+## 16.11 深度对账（运维）
+
+```
+POST /api/ai/knowledge/reconcile
+```
+
+> 逐条比对手动知识的 **SQL 真值源**与 **Qdrant 向量**，修复启动期"按数量对账"覆盖不到的
+> "数量相等但内容分叉"盲区。建议在**换嵌入模型 / 迁移 / 疑似数据分叉**时手动触发。
+
+对账动作：
+- **Qdrant 有、SQL 无** → 回填 SQL（向量已在，不重嵌）；
+- **SQL 有、Qdrant 无** → 从 SQL 重嵌入；
+- **两侧都有但 `content_hash` 不一致** → 以 **SQL 为真值源**重嵌入覆盖 Qdrant 点。
+
+> ⚠️ 比启动期数量对账昂贵：需全量 `scroll` Qdrant 手动点 + 全表读 SQL + 必要时批量重嵌，
+> 大知识库耗时较长。非启动链路、不自动触发。
+
+**请求体**：无（POST 空体即可）。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "sql_total": 312,
+        "qdrant_total": 310,
+        "backfilled": 0,
+        "reembedded_missing": 2,
+        "reembedded_mismatch": 1,
+        "reembedded_written": 3,
+        "consistent": false
+    }
+}
+```
+
+> `consistent=true` 表示对账前两侧已完全一致（无回填、无重嵌）。`reembedded_written` 为本次实际
+> 写回 Qdrant 的分片数（缺失 + 哈希不一致）。RAG 未初始化时 `data` 为 `{"error": "..."}`。

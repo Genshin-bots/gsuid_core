@@ -658,6 +658,23 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 if should_respond:
                     trigger_type = "keyword"
 
+            # 免唤醒续聊窗口：硬触发（@/关键词/私聊）登记窗口起点；未硬触发时，
+            # 若该用户处于窗口内、且这条是群聊里没 @ 别人的普通发言，则按"软触发"放行。
+            # 软触发消息会在 handle_ai 里先过一道沉默门，与 AI 无关则不打扰（见 §问题三）。
+            soft_triggered = False
+            from gsuid_core.ai_core.followup_window import note_hard_trigger, in_followup_window
+            from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg
+
+            _fw = _ai_cfg.get_config("follow_up_window").data
+            _fmax = _ai_cfg.get_config("follow_up_max_total").data
+            if should_respond:
+                note_hard_trigger(session_id, event.user_id, _fw, _fmax)
+            elif _fw and event.group_id and not event.at_list:
+                if in_followup_window(session_id, event.user_id, _fw, _fmax):
+                    should_respond = True
+                    soft_triggered = True
+                    trigger_type = "followup"
+
             if not should_respond:
                 return
 
@@ -682,6 +699,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     Bot(ws, event),
                     event,
                     enqueue_ts=time.time(),
+                    soft_triggered=soft_triggered,
                 ),
                 name="handle_ai_chat",
                 priority=event.user_pm,

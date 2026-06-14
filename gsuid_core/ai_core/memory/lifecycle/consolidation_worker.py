@@ -313,6 +313,17 @@ async def _reconcile_dangling_vectors() -> int:
     return total
 
 
+async def _maintain_preferences() -> int:
+    """程序性/偏好记忆生命周期（默认开）：每个 (scope, user, target_context) 仅保留 salience
+    最高的 N 条活跃规则，其余**非纠错**规则软停用（纠错类受保护、衰减更慢）。纯规则、零 LLM。"""
+    from gsuid_core.ai_core.memory.config import memory_config
+    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+
+    if not memory_config.enable_preference_memory:
+        return 0
+    return await AIMemPreference.prune_per_context(max_per_context=memory_config.preference_max_per_context)
+
+
 async def run_lifecycle_maintenance() -> None:
     """记忆生命周期维护主入口（被 APScheduler 周期性调用）。"""
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -341,11 +352,13 @@ async def run_lifecycle_maintenance() -> None:
         ep_demoted, ep_purged = await _retain_episodes()
         # §2 收尾对账：清理 SQL 已删但 Qdrant 残留的悬空向量
         dangling = await _reconcile_dangling_vectors()
+        # 程序性/偏好记忆裁剪（默认开；关闭时为 no-op）
+        pref_pruned = await _maintain_preferences()
         logger.success(
             f"🧠 [Lifecycle] 维护完成：巩固 {consolidated} 条、衰减 {decayed} 条、"
             f"遗忘 {forgotten} 条、Edge 裁剪 {edge_trimmed} 条、回收孤儿实体 {orphan_entities} 个、"
             f"Entity 裁剪 {entity_trimmed} 个、Episode 降级 {ep_demoted} 条 / 物理删除 {ep_purged} 条、"
-            f"对账清理悬空向量 {dangling} 个"
+            f"对账清理悬空向量 {dangling} 个、偏好规则裁剪 {pref_pruned} 条"
         )
     except Exception as e:
         logger.exception(f"🧠 [Lifecycle] 记忆生命周期维护失败: {e}")

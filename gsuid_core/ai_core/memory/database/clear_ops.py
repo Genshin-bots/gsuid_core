@@ -16,6 +16,7 @@ from gsuid_core.ai_core.memory.database.models import (
     AIMemEntity,
     AIMemEpisode,
     AIMemCategory,
+    AIMemPreference,
     AIMemCategoryEdge,
     mem_category_entity_members,
     mem_episode_entity_mentions,
@@ -146,6 +147,11 @@ async def _delete_db_by_scope_keys(
             select(func.count()).select_from(AIMemCategory).where(col(AIMemCategory.scope_key).in_(scope_keys))
         )
     ).scalar() or 0
+    pref_count = (
+        await session.execute(
+            select(func.count()).select_from(AIMemPreference).where(col(AIMemPreference.scope_key).in_(scope_keys))
+        )
+    ).scalar() or 0
 
     # 1. Category 关联清理
     cat_ids_result = await session.execute(select(AIMemCategory.id).where(col(AIMemCategory.scope_key).in_(scope_keys)))
@@ -184,11 +190,16 @@ async def _delete_db_by_scope_keys(
         delete(AIMemHierarchicalGraphMeta).where(col(AIMemHierarchicalGraphMeta.scope_key).in_(scope_keys))
     )
 
+    # 6. 程序性/偏好记忆（SQL-only，无向量）：随 scope 一并清空，否则"清空用户记忆后
+    #    旧规则仍在硬约束工具调用"（设计 §9.3）。
+    await session.execute(delete(AIMemPreference).where(col(AIMemPreference.scope_key).in_(scope_keys)))
+
     return {
         "deleted_episodes": ep_count,
         "deleted_entities": ent_count,
         "deleted_edges": edge_count,
         "deleted_categories": cat_count,
+        "deleted_preferences": pref_count,
     }
 
 

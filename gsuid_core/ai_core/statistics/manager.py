@@ -195,7 +195,13 @@ class StatisticsManager:
         key = "should_speak_true" if should_speak else "should_speak_false"
         self._bot_state.heartbeats[group_id][key] += 1
 
-    def record_activity(self, group_id: str, user_id: str, ai_interaction_count=0, message_count=0):
+    def record_activity(
+        self,
+        group_id: str,
+        user_id: Optional[str],
+        ai_interaction_count: int,
+        message_count: int,
+    ):
         """记录用户活动"""
         key = f"{group_id}:{user_id}"
         self._bot_state.activities[key].update(ai_interaction=ai_interaction_count, message=message_count)
@@ -331,7 +337,7 @@ class StatisticsManager:
             },
             "trigger_distribution": {
                 k: {"count": agg_triggers.get(k, 0), "percentage": agg_triggers.get(k, 0) / total_triggers * 100}
-                for k in ["mention", "keyword", "heartbeat", "scheduled"]
+                for k in ["mention", "keyword", "followup", "heartbeat", "scheduled"]
             },
             "rag": {
                 "hit_count": self._rag["hit"],

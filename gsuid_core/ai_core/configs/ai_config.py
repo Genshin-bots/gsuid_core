@@ -7,6 +7,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsStrConfig,
     GsBoolConfig,
     GsDictConfig,
+    GsFloatConfig,
     GsListStrConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import GsDivider, StringConfig
@@ -120,6 +121,19 @@ AI_CONFIG: Dict[str, GSC] = {
         "启用DS专属角色扮演模式",
         "用于在思考模式下切换思维链风格, [文档](https://github.com/victorchen96/deepseek_v4_rolepaly_instruct/blob/main/README.md)",
         False,
+    ),
+    "follow_up_window": GsIntConfig(
+        "免唤醒续聊窗口(秒)",
+        "用户用@/关键词/私聊激活AI后, 在此秒数内该用户的后续群聊消息即使不带触发词也会进入AI(软触发); "
+        "窗口从最近一次硬触发起算, 续聊回复不会续期。设为0关闭该功能。软触发消息会先经过沉默门判定, 与AI无关则不打扰。",
+        60,
+        options=[0, 30, 60, 120, 180],
+    ),
+    "follow_up_max_total": GsIntConfig(
+        "免唤醒续聊总时长上限(秒)",
+        "免唤醒续聊从首次硬触发起算的总时长硬天花板, 即使期间用户反复@也不会无限延续, 超过后必须重新@/关键词唤醒。",
+        300,
+        options=[120, 300, 600, 900],
     ),
 }
 
@@ -451,6 +465,98 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "调大→摘要刷新更稀疏、更省 Token, 代价是摘要新鲜度下降",
         50,
         options=[50, 100, 200, 500],
+    ),
+    "MemoryProcedural": GsDivider(
+        "程序性 / 偏好记忆设置",
+        "程序性 / 偏好记忆设置",
+        "程序性 / 偏好记忆设置",
+    ),
+    "enable_preference_memory": GsBoolConfig(
+        "启用程序性/偏好记忆",
+        "开启后, 用户对助手行为/工具调用/输出格式的纠正与偏好(如'以后调画图用竖图')会被"
+        "蒸馏成程序性规则(SQL-only, 不写向量), 并在后续回复时以强约束语气置顶注入, 让助手遵守。"
+        "默认开启; 关闭后写入/蒸馏/注入/即时 flush 全部停用, 行为与未启用时一致",
+        True,
+    ),
+    "preference_max_inject": GsIntConfig(
+        "偏好单次注入条数上限",
+        "单次回复最多注入的偏好规则条数, 防止规则过多挤占注入预算、分散工具调用注意力",
+        12,
+        options=[5, 8, 12, 20],
+    ),
+    "preference_max_per_context": GsIntConfig(
+        "偏好单能力域保留上限",
+        "每个 target_context(能力域/工具)保留的活跃规则上限, 生命周期裁剪时超出的非纠错规则软停用",
+        5,
+        options=[3, 5, 8, 12],
+    ),
+    "preference_inject_budget_ratio": GsFloatConfig(
+        "偏好注入预算占比",
+        "偏好区块(置顶、强约束)占记忆注入字符预算的比例。调大可注入更多规则但挤占核心事实空间",
+        0.10,
+        min_value=0.0,
+        max_value=0.5,
+    ),
+    "preference_immediate_flush": GsBoolConfig(
+        "纠错命中即时写",
+        "命中纠错意图的 scope 走优先 flush 快路径(带去抖), 让数分钟内的'下一次'请求即可召回纠错偏好, "
+        "而非等聚合大窗。关闭则纠错偏好随常规摄入窗口落库",
+        True,
+    ),
+    "MemoryRFMem": GsDivider(
+        "RF-Mem 双过程检索设置(进阶)",
+        "RF-Mem 双过程检索设置(进阶)",
+        "RF-Mem 双过程检索设置(进阶)",
+    ),
+    "enable_familiarity_routing": GsBoolConfig(
+        "启用熟悉度路由",
+        "开启后用一次零 LLM 的向量探针(均分 s̄ + 列表熵)逐查询决定'检索多深', 把 System-2 从全局"
+        "开关降为'按不确定性触发': 熟悉的查询抑制 System-2 省 Token, 不确定的查询才放行深检索。"
+        "默认关; 阈值需按嵌入模型标定后再放量(见 MEMORY_SYSTEM 文档)",
+        False,
+    ),
+    "enable_recollection_path": GsBoolConfig(
+        "启用回忆环(仅 remote Qdrant)",
+        "回忆环是零 LLM 的 KMeans+α-mix 多轮向量深检索, 作为 System-2 关闭时的增召回替代。"
+        "仅在'启用熟悉度路由'开启、路由判低熟悉、System-2 未触发、且 qdrant_provider=remote 时生效"
+        "(本地嵌入式 Qdrant 是 O(N) 暴力扫, 多轮回忆会成倍放大检索成本, 故强制 remote)",
+        False,
+    ),
+    "familiarity_theta_high": GsFloatConfig(
+        "熟悉度上阈 θ_high",
+        "均分 s̄ ≥ 此值直接走浅检索(抑制 System-2)。余弦语义, 须按嵌入模型/语料离线标定"
+        "(论文英文模型经验值 0.6, 中文本地模型通常需平移; 建议取样本 s̄ 的 P75)",
+        0.6,
+        min_value=0.0,
+        max_value=1.0,
+    ),
+    "familiarity_theta_low": GsFloatConfig(
+        "熟悉度下阈 θ_low",
+        "均分 s̄ ≤ 此值直接走深检索。须按嵌入模型标定(论文经验值 0.3; 建议取样本 s̄ 的 P25)",
+        0.3,
+        min_value=0.0,
+        max_value=1.0,
+    ),
+    "familiarity_tau": GsFloatConfig(
+        "列表熵阈 τ",
+        "s̄ 落在上下阈之间时由列表熵 H 裁决: H > τ(候选分布越散越不确定)走深检索。"
+        "论文经验区间 0.2~0.25, > 0.35 会失去自适应",
+        0.22,
+        min_value=0.0,
+        max_value=1.0,
+    ),
+    "familiarity_lambda": GsFloatConfig(
+        "温度 softmax 锐度 λ",
+        "计算列表熵时对探针分数做温度 softmax 的锐度。论文 20~30, 不敏感, 一般无需调整",
+        20.0,
+        min_value=1.0,
+        max_value=100.0,
+    ),
+    "familiarity_probe_k": GsIntConfig(
+        "探针候选数 k",
+        "熟悉度探针拉取的候选 Episode 数(算 s̄/熵 用)。论文 10~20 即稳",
+        15,
+        options=[10, 15, 20, 30],
     ),
     "MemoryExtra": GsDivider(
         "记忆其他设置",

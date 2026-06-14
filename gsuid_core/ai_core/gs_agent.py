@@ -541,6 +541,10 @@ class GsCoreAIAgent:
         # L3 会话驻留：最近使用过的能力族 → 剩余可常驻轮数（每轮递减）。
         # 兜底"刚用过某能力、紧接着的追问语义却召不回该工具"的场景。
         self._recent_tool_families: dict[str, int] = {}
+        # 本轮实际装配（保底 + 附加）工具的能力域集合，run() 装配后回填。供 handle_ai
+        # 偏好注入做"精确能力域过滤"（只注入本轮可用工具相关的软偏好），见
+        # get_assembled_capability_domains()。
+        self._last_assembled_domains: set[str] = set()
         # L5 上下文增强检索：最近几轮用户原话，拼进工具向量检索 query，
         # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
         self._recent_user_texts: List[str] = []
@@ -560,6 +564,15 @@ class GsCoreAIAgent:
             create_by=create_by,
             is_subagent=is_subagent,
         )
+
+    def get_assembled_capability_domains(self) -> list[str]:
+        """返回**上一轮 run() 实际装配工具**的能力域列表（"装配后回传"）。
+
+        供 handle_ai 偏好注入做精确能力域过滤：相比按 query 子串近似匹配能力域，本集合是
+        gs_agent 真实装配（保底 + 状态驱动 + 会话驻留 + 向量召回族展开）后的工具能力域，
+        更贴合"本轮可用工具"。首轮（尚未装配）为空，handle_ai 据此退化为仅 query 近似。
+        """
+        return list(self._last_assembled_domains)
 
     def append_proactive_assistant_turn(
         self,
@@ -1010,6 +1023,15 @@ class GsCoreAIAgent:
         tools = list({obj.name: obj for obj in tools}.values())
         tool_names = [t.name for t in tools]
 
+        # 回填本轮装配工具的能力域，供 handle_ai 偏好注入精确过滤（"装配后回传"）：
+        # 把工具名映射回 capability_domain，handle_ai 据此只注入本轮可用工具相关的软偏好。
+        assembled_domains: set[str] = set()
+        for _tn in tool_names:
+            _tb = find_tool_base(_tn)
+            if _tb is not None and _tb.capability_domain:
+                assembled_domains.add(_tb.capability_domain)
+        self._last_assembled_domains = assembled_domains
+
         # 记录本次传给 AI 的工具列表
         self._session_logger.log_tools_list(tool_names)
 
@@ -1123,6 +1145,19 @@ class GsCoreAIAgent:
                                 logger.debug(f"[🔧 大模型请求调用工具]: 工具名称='{part.tool_name}', 参数={part.args}")
                                 _tool_call_list.append(part.tool_name)
                                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
+
+                                # 程序性记忆（默认开；关闭时零影响）：记一笔工具调用轨迹，供偏好蒸馏把
+                                # 用户的"参数传错了"蒸成带具体参数的规则（设计 §4.2）。仅在
+                                # enable_preference_memory 开启时写入有界 ring buffer。
+                                try:
+                                    from gsuid_core.ai_core.memory.config import memory_config as _mem_cfg
+
+                                    if _mem_cfg.enable_preference_memory and ev is not None:
+                                        from gsuid_core.ai_core.memory.ingestion.tool_trace import record_tool_call
+
+                                        record_tool_call(str(ev.user_id), part.tool_name, part.args)
+                                except Exception:
+                                    pass
 
                                 # 代码层前摇触发：耗时工具调用前，主动发送一句角色化台词，
                                 # 避免用户面对沉默等待。每次运行最多发送 N 句，防止刷屏。

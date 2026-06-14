@@ -36,7 +36,56 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
 )
 
 
+def _find_json_span(text: str) -> Optional[str]:
+    """从可能夹带散文/前后缀的文本里，按括号配平切出第一个完整的 JSON 对象或数组。
+
+    比正则 ``\\{.*\\}`` / ``\\[.*\\]`` 更稳：
+    - 能正确处理嵌套结构（正则非贪婪会在第一个 ``}`` 处截断、贪婪又会吞掉尾部散文）；
+    - 跳过字符串字面量内部的括号与转义，避免把 ``{"msg": "a}b"}`` 里的 ``}`` 当成结束。
+
+    找不到任何 ``{``/``[`` 起点时返回 ``None``；找到起点但括号未配平（输出被截断）时，
+    返回从起点到结尾的全部内容，交由 :func:`repair_json` 兜底补全。
+    """
+    start = next((i for i, ch in enumerate(text) if ch in "{["), None)
+    if start is None:
+        return None
+
+    opener = text[start]
+    closer = "}" if opener == "{" else "]"
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    # 起点之后括号始终未配平 → 多半是被截断的输出，整段交给 repair_json 补全
+    return text[start:]
+
+
 def extract_json_from_text(raw_text: str) -> dict | list:
+    """从模型自由文本里抽取 JSON，容忍 markdown 围栏与前后散文。
+
+    解析策略（先严后宽，避免 ``repair_json`` 改写本就合法的结构）：
+    1. 去掉 markdown 代码围栏（```json ... ``` 或裸 ``` ```）；
+    2. 用括号配平从散文里切出第一个完整 JSON（剥掉"好的，结果如下："这类寒暄/解释）；
+    3. 快路径：对候选串直接 ``json.loads``；
+    4. 慢路径：``repair_json`` 兜底（单引号 / 尾随逗号 / 漏引号 / 被截断的尾部等）。
+    """
     if not raw_text or not raw_text.strip():
         raise ValueError("Empty input text for JSON extraction")
 
@@ -49,27 +98,38 @@ def extract_json_from_text(raw_text: str) -> dict | list:
     if stripped.startswith("执行出错"):
         raise ValueError(f"Upstream agent returned error message, not JSON: {stripped[:80]}")
 
-    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw_text).strip()
-    cleaned = repair_json(cleaned)
-    if not cleaned or not cleaned.strip():
-        raise ValueError("JSON extraction yielded empty content after repair")
+    # 去掉 markdown 代码围栏：开围栏可带任意语言标注（```json / ```JSON / ``` ），统一剥掉
+    cleaned = re.sub(r"```[a-zA-Z]*\s*", "", raw_text)
+    cleaned = cleaned.replace("```", "").strip()
+    if not cleaned:
+        raise ValueError("JSON extraction yielded empty content after stripping fences")
 
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
-        if match:
-            stripped = match.group(0).strip()
-            cl = repair_json(stripped)
-            if not cl or not cl.strip():
-                raise ValueError("Fallback JSON extraction yielded empty content") from e
-            try:
-                data = json.loads(cl)
-            except json.JSONDecodeError as e2:
-                raise ValueError(f"Failed to parse JSON after fallback repair: {e2}") from e2
-        else:
-            raise ValueError(f"Failed to parse JSON: {e}") from e
-    return data
+    # 候选串：① 从散文里配平切出的第一个完整 JSON；② 去围栏后的整段。先 span 后整段，
+    # 让 span 优先剥掉模型在 JSON 前后写的解释/寒暄；两者都试以兼容纯 JSON 与夹带散文两种返回。
+    span = _find_json_span(cleaned)
+    candidates = [c for c in (span, cleaned) if c]
+
+    # 快路径：合法 JSON 直接 loads，不经 repair（json_repair 偶尔会改写本就合法的结构）
+    for cand in candidates:
+        try:
+            return json.loads(cand)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    # 慢路径：repair_json 兜底容错；它对无法修复的输入返回空串，过滤掉后再 loads
+    for cand in candidates:
+        try:
+            repaired = repair_json(cand)
+        except Exception:  # repair_json 理论上不抛，仍兜底防御
+            continue
+        if not repaired or not repaired.strip():
+            continue
+        try:
+            return json.loads(repaired)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    raise ValueError(f"Failed to parse JSON from text: {stripped[:120]!r}")
 
 
 async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 4000) -> str:

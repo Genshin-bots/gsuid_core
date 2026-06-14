@@ -84,7 +84,40 @@ def _should_retrieve_memory(query: str, intent: str, user_id: str) -> bool:
     return True
 
 
-async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = None):
+def _relevant_preference_contexts(query: str) -> list[str]:
+    """选择性偏好注入——按 query 文本匹配本轮可能相关的能力域 / 工具名（叠加 ``general`` 与纠错
+    规则由检索侧永远保留）。返回的集合作为 ``dual_route_retrieve(preference_contexts=...)`` 的
+    过滤依据，避免无关工具规则每轮都注入、挤占预算并分散工具调用注意力。
+
+    说明：这是 handle_ai 侧按 query 文本的**轻量近似**——能力域多为短中文词（如"文件""定时任务"），
+    按子串命中；工具名多为英文，按小写子串命中，覆盖"本轮新意图但工具尚未装配进池"的能力域。
+    调用方会再 **∪ gs_agent 上一轮实际装配工具的能力域**（``session.get_assembled_capability_domains()``，
+    精确"装配后回传"）后一并作为 ``preference_contexts`` 透传。返回空列表是合法的（表示本轮 query
+    未近似匹配到具体能力域，仅纠错 + general 规则、加上回传的装配能力域会注入）。
+    """
+    matched: set[str] = set()
+    try:
+        from gsuid_core.ai_core.register import get_registered_tools
+
+        q = query.lower()
+        for cat_tools in get_registered_tools().values():
+            for name, tb in cat_tools.items():
+                dom = tb.capability_domain
+                if dom and dom in query:
+                    matched.add(dom)
+                if name and name.lower() in q:
+                    matched.add(name)
+    except Exception as e:
+        logger.debug(f"🧠 [Memory] 计算偏好相关能力域失败，退化为仅纠错+general: {e}")
+    return list(matched)
+
+
+async def handle_ai_chat(
+    bot: Bot,
+    event: Event,
+    enqueue_ts: Optional[float] = None,
+    soft_triggered: bool = False,
+):
     """
     处理AI聊天逻辑的独立函数，用于异步队列执行，是全部AI逻辑的入口函数
 
@@ -196,6 +229,24 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
             session = await get_ai_session(event)
 
             # ============================================================
+            # 步骤 3.5: 免唤醒续聊·软触发沉默门
+            # 软触发（用户在续聊窗口内、未带触发词的群聊发言）先过一道轻量决策门，
+            # 判断"是否仍在跟我说话"。与 AI 无关则直接沉默——不进入后续记忆检索 +
+            # 主 Agent 多轮，省下主链路开销。硬触发（@/关键词/私聊）不走此门。
+            # ============================================================
+            if soft_triggered:
+                try:
+                    from gsuid_core.ai_core.heartbeat.decision import run_reactive_gate
+
+                    gate_history = history_manager.get_history(event, limit=15)
+                    if not await run_reactive_gate(event, gate_history, session.persona_name):
+                        logger.info("🧠 [GsCore][AI] 软触发沉默门判定与AI无关，保持沉默")
+                        return
+                    logger.info("🧠 [GsCore][AI] 软触发沉默门放行，按续聊处理")
+                except Exception as e:
+                    logger.debug(f"🧠 [GsCore][AI] 软触发沉默门异常，放行交主Agent兜底: {e}")
+
+            # ============================================================
             # 步骤 4: 准备用户消息（含好感度注入）
             # ============================================================
 
@@ -257,6 +308,16 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
                     logger.debug("🧠 [Memory] 命中寒暄门控，跳过双路检索")
                 else:
                     try:
+                        # 选择性偏好注入：意图门（纯闲聊不注入工具行为规则）+ 能力域过滤
+                        # （仅注入与本轮相关能力域匹配的软偏好；纠错/general 规则由检索侧永远保留）。
+                        # 能力域信号 = gs_agent 上一轮**实际装配**工具的能力域（精确，"装配后回传"）
+                        # ∪ 本轮 query 子串近似（覆盖本轮新意图、尚未装配进工具池的能力域）。
+                        _pref_inject = intent != "闲聊"
+                        _pref_contexts: Optional[list[str]] = None
+                        if _pref_inject:
+                            _ctx_set = set(_relevant_preference_contexts(query))
+                            _ctx_set.update(session.get_assembled_capability_domains())
+                            _pref_contexts = list(_ctx_set)
                         mem_ctx = await dual_route_retrieve(
                             query=query,
                             group_id=str(event.group_id or event.user_id),
@@ -264,6 +325,8 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
                             top_k=memory_config.retrieval_top_k,
                             enable_system2=memory_config.enable_system2,
                             enable_user_global=memory_config.enable_user_global_memory,
+                            inject_preferences=_pref_inject,
+                            preference_contexts=_pref_contexts,
                         )
                         # C4 预算优先级：主人相关记忆优先占用注入预算
                         from gsuid_core.config import core_config
@@ -433,6 +496,14 @@ async def handle_ai_chat(bot: Bot, event: Event, enqueue_ts: Optional[float] = N
                 context_parts.append(task_context_text)
             if memory_context_text:
                 context_parts.append(f"【长期记忆】\n{memory_context_text}")
+
+            # 软触发（免唤醒续聊）显式开放沉默：这条不一定是对你说的，无关就 <SILENCE>。
+            # 与硬触发（@/关键词/私聊）相反——硬触发是"明确在找你，必须回应"。
+            if soft_triggered:
+                context_parts.append(
+                    "（这条消息来自最近找你说过话的人，但**不一定是对你说的**——群里也可能在聊别的。"
+                    "如果这条与你无关、是在跟别人说话、或你没有合适的话接，请直接输出 <SILENCE> 保持沉默，不要硬接。）"
+                )
 
             full_context = "\n\n".join(context_parts)
 

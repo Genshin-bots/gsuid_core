@@ -20,6 +20,9 @@
 | **Edge** | 实体间关系/事实（Base Graph 第三层） | DB + Qdrant |
 | **Category** | 分层语义图节点（Hierarchical Graph） | DB |
 | **CategoryEdge** | Category 间层次关联 | DB |
+| **Preference** | 程序性/偏好规则（纠正 Agent 未来行为，如"调 `generate_image` 用竖图"），**硬约束**工具调用 | DB（SQL-only，无向量） |
+
+> **Preference 与上面 4 类的区别**：Episode/Entity/Edge/Category 是**陈述性记忆**（用户是谁、说过什么），并构成向量+图谱双路检索；**Preference 是程序性记忆**（该怎样为这个用户调工具/排版/选参数），SQL-only 扁平规则、不构成图谱、以**置顶强约束**注入。详见实现文档 [`docs/PROCEDURAL_PREFERENCE_AND_RFMEM_IMPLEMENTATION_20260614.md`](../../../docs/PROCEDURAL_PREFERENCE_AND_RFMEM_IMPLEMENTATION_20260614.md)。
 
 ### Scope Key 隔离体系
 
@@ -108,15 +111,27 @@ POST /api/ai/memory/search
                 "score": 0.85
             }
         ],
+        "preferences": [
+            {
+                "id": "uuid-string",
+                "target_context": "general",
+                "preference_rule": "调用生成图片类工具时默认用竖图",
+                "polarity": "do",
+                "is_correction": true,
+                "mention_count": 2
+            }
+        ],
         "retrieval_meta": {
             "s1_episodes": 8,
             "s2_episodes": 5,
             "scope_keys": ["group:789012"]
         },
-        "prompt_text": "【已知事实】\n• 实体间关系描述\n\n【历史对话片段】\n[2024-01-15] 对话片段内容..."
+        "prompt_text": "【用户偏好/纠错 - 须严格遵守】\n• [do] 调用生成图片类工具时默认用竖图\n\n【已知事实】\n• 实体间关系描述\n\n【历史对话片段】\n[2024-01-15] 对话片段内容..."
     }
 }
 ```
+
+> `preferences` 为**本次检索会命中并注入的程序性/偏好硬约束**（纠错规则与 `general` 通用规则永远注入，软偏好按本轮能力域过滤）。控制台据此排查"为什么 Agent 还调错工具"。规则治理见 [22.13–22.16](#2213-偏好规则列表)。该字段在 `enable_preference_memory` 关闭时为空数组。
 
 ---
 
@@ -585,7 +600,175 @@ GET /api/ai/memory/categories/{category_id}
 
 ---
 
-## 22.13 分层语义图状态
+## 22.13 偏好规则列表
+
+```
+GET /api/ai/memory/preferences
+```
+
+获取程序性/偏好规则列表，支持多维过滤与分页。排序：**纠错优先 → 高频强化 → 最近更新**。
+
+> 偏好规则会以**置顶强约束**注入对话、**硬约束**工具调用。误抽的规则会持续误导 Agent，故人工治理（核对/编辑/停用/删除）比 Episode 更关键。偏好为 **SQL-only（无向量）**，所有治理操作只动数据库。
+
+**Query 参数**:
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `scope_key` | string | 否 | - | 完整 Scope Key（偏好主存 `user_global:{uid}`，跨群随用户） |
+| `user_id` | string | 否 | - | 用户 ID；仅传 `user_id` 时自动按 `user_global:{user_id}` 推导 scope_key |
+| `target_context` | string | 否 | - | 绑定上下文：能力域/工具名，或 `general`（跨能力通用约定，永远注入） |
+| `is_correction` | bool | 否 | - | 是否为纠错规则（纠错类受保护、衰减更慢） |
+| `polarity` | string | 否 | - | 极性：`do`（应当） / `dont`（禁止） |
+| `is_active` | bool | 否 | - | 是否启用（软停用规则 `is_active=false`，保留审计） |
+| `all_scopes` | bool | 否 | false | 是否返回所有范围（忽略 scope_key/user_id 推导） |
+| `page` | int | 否 | 1 | 页码 |
+| `page_size` | int | 否 | 20 | 每页数量 |
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "items": [
+            {
+                "id": "uuid-string",
+                "scope_key": "user_global:12345",
+                "user_id": "12345",
+                "target_context": "general",
+                "preference_rule": "调用生成图片类工具时默认用竖图",
+                "polarity": "do",
+                "is_correction": true,
+                "is_active": true,
+                "mention_count": 2,
+                "source_episode_id": "uuid-string",
+                "created_at": "2026-06-14 10:30:00",
+                "updated_at": "2026-06-14 12:00:00",
+                "last_applied_at": "2026-06-14 12:30:00"
+            }
+        ],
+        "total": 7,
+        "page": 1,
+        "page_size": 20
+    }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `target_context` | 规则适用范围：具体能力域/工具名，或 `general`（风格/时区/单位/语言等横切约定，对所有相关请求生效） |
+| `polarity` | `do` = 应当这样做；`dont` = 禁止这样做 |
+| `is_correction` | 是否由用户纠正意图触发（纠错规则注入优先级最高、生命周期受保护） |
+| `mention_count` | 同一规则被重复强化的次数（越高越稳定） |
+| `source_episode_id` | 溯源：蒸馏出该规则的 Episode ID |
+| `last_applied_at` | 最近一次被检索命中并注入的时间（命中后台异步刷新） |
+
+---
+
+## 22.14 偏好规则详情
+
+```
+GET /api/ai/memory/preferences/{pref_id}
+```
+
+获取单条偏好规则详情（字段同列表项，含溯源 `source_episode_id`、强化计数 `mention_count`、最近应用时间 `last_applied_at`）。
+
+**路径参数**:
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `pref_id` | string | 偏好规则 ID |
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "id": "uuid-string",
+        "scope_key": "user_global:12345",
+        "user_id": "12345",
+        "target_context": "generate_image",
+        "preference_rule": "调用 generate_image 时默认使用竖图（9:16）",
+        "polarity": "do",
+        "is_correction": true,
+        "is_active": true,
+        "mention_count": 1,
+        "source_episode_id": "uuid-string",
+        "created_at": "2026-06-14 10:30:00",
+        "updated_at": "2026-06-14 10:30:00",
+        "last_applied_at": null
+    }
+}
+```
+
+---
+
+## 22.15 更新偏好规则（人工纠偏）
+
+```
+PATCH /api/ai/memory/preferences/{pref_id}
+```
+
+人工纠偏：修改规则正文 / 极性 / 绑定上下文 / 启停。**停用为软停用（`is_active=false`）而非删除，保留审计。** 仅更新请求中提供的字段。
+
+**路径参数**:
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `pref_id` | string | 偏好规则 ID |
+
+**请求体**:
+```json
+{
+    "preference_rule": "调用 generate_image 时默认使用竖图（9:16）",
+    "polarity": "do",
+    "target_context": "generate_image",
+    "is_active": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `preference_rule` | string | 否 | 规则正文，1-2000 字符 |
+| `polarity` | string | 否 | 极性 `do` / `dont`（非 `dont` 一律归一为 `do`） |
+| `target_context` | string | 否 | 绑定上下文（≤128 字符；为空时归为 `general`） |
+| `is_active` | bool | 否 | 启用 / 软停用 |
+
+> 至少提供一个可修改字段；任一字段变更都会刷新 `updated_at`。
+
+**响应**: 返回更新后的完整偏好规则对象（结构同 §22.14 详情）。
+
+---
+
+## 22.16 删除偏好规则
+
+```
+DELETE /api/ai/memory/preferences/{pref_id}
+```
+
+删除单条误抽的偏好规则。偏好为 SQL-only，无向量需清理。
+
+> 提示：误抽规则可优先用 §22.15 软停用（`is_active=false`）保留审计；确认无用再删除。
+
+**路径参数**:
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `pref_id` | string | 偏好规则 ID |
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": null
+}
+```
+
+---
+
+## 22.17 分层语义图状态
 
 ```
 GET /api/ai/memory/hiergraph/status
@@ -622,7 +805,7 @@ GET /api/ai/memory/hiergraph/status
 
 ---
 
-## 22.14 记忆统计
+## 22.18 记忆统计
 
 ```
 GET /api/ai/memory/stats
@@ -652,6 +835,8 @@ GET /api/ai/memory/stats
         "edge_count": 120,
         "active_edge_count": 100,
         "category_count": 30,
+        "preference_count": 7,
+        "preference_correction_count": 4,
         "observation_queue_size": 5,
         "scope_keys": ["group:789012", "group:345678", "user_global:12345"]
     }
@@ -666,12 +851,14 @@ GET /api/ai/memory/stats
 | `edge_count` | Edge 总数（含已失效） |
 | `active_edge_count` | 有效 Edge 数量（invalid_at 为空） |
 | `category_count` | Category 总数 |
+| `preference_count` | 活跃（`is_active=true`）程序性/偏好规则数量 |
+| `preference_correction_count` | 其中由纠错触发（`is_correction=true`）的规则数量 |
 | `observation_queue_size` | 当前观察队列中待处理的消息数量 |
 | `scope_keys` | 所有有记忆数据的 scope_key 列表 |
 
 ---
 
-## 22.15 获取记忆配置
+## 22.19 获取记忆配置
 
 ```
 GET /api/ai/memory/config
@@ -750,9 +937,38 @@ GET /api/ai/memory/config
 | `hiergraph_rebuild_ratio` | float | `1.10` | Entity 增长触发增量重建的比例 |
 | `hiergraph_rebuild_interval_seconds` | int | `86400` | 距上次重建触发增量重建的秒数 |
 
+#### 程序性 / 偏好记忆配置（默认开）
+
+> 自 2026-06-14 起，下列字段经 `MEMORY_CONFIG`（`@property` 转发）管理：在 WebConsole 的
+> **"GsCore AI 记忆配置 → 程序性/偏好记忆设置"** 分组调整并**持久化**到 `data/ai_core/memory_config.json`。
+> 本 `/api/ai/memory/config` 端点仅**只读反射**其当前值（GET 返回），**不能**经本端点的 PUT 修改。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enable_preference_memory` | bool | `true` | 程序性/偏好记忆总开关（**默认开**）；关闭后写入/蒸馏/注入/即时 flush 全部停用 |
+| `preference_max_inject` | int | `12` | 单次回复注入偏好规则条数上限 |
+| `preference_max_per_context` | int | `5` | 单能力域(`target_context`)保留的活跃规则上限（生命周期裁剪用） |
+| `preference_inject_budget_ratio` | float | `0.10` | 偏好区块占记忆注入字符预算的比例 |
+| `preference_immediate_flush` | bool | `true` | 纠错命中即时 flush（带去抖；受总开关前置） |
+
+#### RF-Mem 双过程检索配置（进阶，默认关）
+
+> 同上，经 **"RF-Mem 双过程检索设置(进阶)"** 分组持久化调整；本端点只读反射。
+> 阈值（`familiarity_theta_*` / `tau`）须按嵌入模型标定后再放量，回忆环额外要求 `qdrant_provider=remote`。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enable_familiarity_routing` | bool | `false` | 探针熟悉度路由总开关（关时不发探针、行为不变） |
+| `enable_recollection_path` | bool | `false` | 回忆环开关（仅 `qdrant_provider=remote` + 路由判低熟悉 + System-2 未触发时生效） |
+| `familiarity_theta_high` | float | `0.6` | 熟悉度上阈 θ_high（余弦语义，需标定） |
+| `familiarity_theta_low` | float | `0.3` | 熟悉度下阈 θ_low（需标定） |
+| `familiarity_tau` | float | `0.22` | 列表熵阈 τ（中段由熵裁决） |
+| `familiarity_lambda` | float | `20.0` | 温度 softmax 锐度 λ（不敏感） |
+| `familiarity_probe_k` | int | `15` | 探针候选数 |
+
 ---
 
-## 22.16 更新记忆配置
+## 22.20 更新记忆配置
 
 ```
 PUT /api/ai/memory/config
@@ -800,7 +1016,7 @@ PUT /api/ai/memory/config
 
 ---
 
-## 22.17 Scope 列表
+## 22.21 Scope 列表
 
 ```
 GET /api/ai/memory/scopes
@@ -838,7 +1054,7 @@ GET /api/ai/memory/scopes
 
 ---
 
-## 22.18 删除 Scope 记忆
+## 22.22 删除 Scope 记忆
 
 ```
 DELETE /api/ai/memory/scopes/{scope_key}
@@ -871,7 +1087,7 @@ DELETE /api/ai/memory/scopes/{scope_key}
 
 ---
 
-## 22.19 清空记忆（高级批量删除）
+## 22.23 清空记忆（高级批量删除）
 
 ```
 POST /api/ai/memory/clear
@@ -922,7 +1138,7 @@ POST /api/ai/memory/clear
 
 ---
 
-## 22.20 清空群记忆
+## 22.24 清空群记忆
 
 ```
 DELETE /api/ai/memory/groups/{group_id}/clear?include_user_in_group=true&dry_run=false
@@ -972,7 +1188,7 @@ DELETE /api/ai/memory/groups/{group_id}/clear?include_user_in_group=true&dry_run
 
 ---
 
-## 22.21 清空用户全局记忆
+## 22.25 清空用户全局记忆
 
 ```
 DELETE /api/ai/memory/users/{user_id}/global/clear?dry_run=false
@@ -1027,7 +1243,12 @@ DELETE /api/ai/memory/users/{user_id}/global/clear?dry_run=false
 | DELETE | `/api/ai/memory/edges/{edge_id}` | 删除 Edge |
 | GET | `/api/ai/memory/categories` | Category 列表 |
 | GET | `/api/ai/memory/categories/{category_id}` | Category 详情 |
+| GET | `/api/ai/memory/preferences` | 偏好规则列表 |
+| GET | `/api/ai/memory/preferences/{pref_id}` | 偏好规则详情 |
+| PATCH | `/api/ai/memory/preferences/{pref_id}` | 更新偏好规则（人工纠偏） |
+| DELETE | `/api/ai/memory/preferences/{pref_id}` | 删除偏好规则 |
 | GET | `/api/ai/memory/hiergraph/status` | 分层语义图状态 |
+| POST | `/api/ai/memory/hiergraph/rebuild` | 手动触发分层图重建 |
 | GET | `/api/ai/memory/stats` | 记忆统计 |
 | GET | `/api/ai/memory/config` | 获取记忆配置 |
 | PUT | `/api/ai/memory/config` | 更新记忆配置 |

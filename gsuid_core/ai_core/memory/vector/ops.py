@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, TypedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from qdrant_client.models import (
@@ -32,6 +32,22 @@ from .collections import (
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity, Episode
+
+
+class CandidatePoint(TypedDict):
+    """RF-Mem 回忆环 / 熟悉度探针 dense 检索返回的单个候选点。
+
+    抽成 TypedDict 替代裸 ``dict``：让 ``dense_search_episodes_with_vectors`` 的返回与
+    回忆环里 ``hits`` 的字段访问自文档化（id/vector/score/content/valid_at_ts/scope_key）。
+    """
+
+    id: str
+    vector: Optional[list[float]]  # 取不到 dense 向量时为 None
+    score: float
+    content: str
+    valid_at_ts: Optional[float]
+    scope_key: str
+
 
 # Qdrant 写入互斥锁：仅保护 upsert 写入操作，防止并发破坏向量索引长度同步。
 # 读取操作（_hybrid_search / search_*）不需要此锁，Qdrant 本身支持并发读。
@@ -805,6 +821,144 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         )
 
     return entities
+
+
+# ─────────────────────────────────────────────
+# RF-Mem 双过程检索：熟悉度探针 + 回忆环用向量操作
+# 设计：plans/rf_mem_dual_process_retrieval_assessment_20260614.md
+# ─────────────────────────────────────────────
+
+
+async def embed_query(text: str) -> list[float]:
+    """对查询文本做一次 dense 嵌入（供回忆环 α-mix 的 query 残差使用）。"""
+    return await _embed_async(text)
+
+
+async def probe_episode_scores(
+    query: str,
+    scope_keys: list[str],
+    k: int = 15,
+    query_vector: Optional[list[float]] = None,
+) -> list[float]:
+    """RF-Mem 熟悉度探针：对 memory_episodes（必要时含冷集 memory_episodes_cold）发一次
+    **纯 dense** 查询，取真实余弦分。
+
+    关键（评估 §5.1/§5.2）：现混合检索 `_hybrid_search_impl` 返回的是 RRF 融合分
+    （量级 ~1/(60+rank)≈0.016），与论文 θ 阈值的**余弦语义不可比**；且其默认
+    `score_threshold=0.3` 会先砍掉低分候选、扭曲"低熟悉度查询"的 s̄/熵。故探针走专用
+    纯 dense 查询、**score_threshold=0、不复用 RRF 那条线**。返回降序余弦分列表（可能短于 k）。
+
+    冷集补查：热集命中不足 k 时（用户有大量冷归档记忆、熟悉度被低估 → 过度路由 Recollection），
+    追加查询冷集补足候选，让 s̄/熵 基于更全的语义邻居计算。两集合并后按余弦降序取前 k。
+
+    ``query_vector``：已算好的 query dense 向量（回忆环复用探针时传入，省一次嵌入）；缺省则现算。
+    """
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not scope_keys:
+        return []
+
+    scope_filter = _scope_filter(scope_keys)
+    try:
+        # embedding 也放入 try：provider 未就绪等异常时降级为"无信号"，由路由保守走 Familiarity，
+        # 绝不让探针把异常冒泡到检索主链路。
+        query_dense = query_vector if query_vector else await _embed_async(query)
+        response = await client.query_points(
+            collection_name=MEMORY_EPISODES_COLLECTION,
+            query=query_dense,
+            using="dense",
+            query_filter=scope_filter,
+            limit=k,
+            with_payload=False,
+        )
+        scores = [p.score for p in response.points]
+
+        # 热集命中不足 k → 补查冷集（降级容错：冷集查询失败仅记 debug，不影响已得的热集分数）。
+        if len(scores) < k:
+            try:
+                cold_resp = await client.query_points(
+                    collection_name=MEMORY_EPISODES_COLD_COLLECTION,
+                    query=query_dense,
+                    using="dense",
+                    query_filter=scope_filter,
+                    limit=k,
+                    with_payload=False,
+                )
+                scores.extend(p.score for p in cold_resp.points)
+            except Exception as e:
+                logger.debug(f"🧠 [Qdrant] 熟悉度探针冷集补查失败（忽略，沿用热集分数）: {e}")
+
+        # 合并后按降序取前 k（两集各自已是降序，merge 后统一截断）
+        scores.sort(reverse=True)
+        return scores[:k]
+    except Exception as e:
+        logger.debug(f"🧠 [Qdrant] 熟悉度探针查询失败: {e}")
+        return []
+
+
+async def dense_search_episodes_with_vectors(
+    query_vector: list[float],
+    scope_keys: list[str],
+    top_n: int,
+    exclude_ids: Optional[set[str]] = None,
+) -> list[CandidatePoint]:
+    """以给定 dense 向量检索 memory_episodes，返回候选的 id / dense 向量 / 余弦分 / 内容。
+
+    供回忆环（KMeans 聚类需要候选向量、α-mix 需要质心）使用。score_threshold=0 取全谱。
+    返回元素形如 ``{"id", "vector", "score", "content", "valid_at_ts", "scope_key"}``；
+    取不到 dense 向量的候选其 ``vector`` 为 None（调用方据此跳过聚类，但仍可作为命中）。
+
+    ``exclude_ids``：检索侧去重——已命中的 Episode 经 ``must_not`` HasId 排除，避免每轮回忆把
+    top-N 槽位浪费在已见 Episode 上、稀释新覆盖（论文在检索侧排除 Seen）。
+    """
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not scope_keys or not query_vector:
+        return []
+
+    scope_filter = _scope_filter(scope_keys)
+    # 去重：把已见 Episode 作为 must_not HasId 叠加到 scope 过滤上（回忆环 seen 集很小，安全封顶）。
+    # 即便 scope_filter 为 None（未来可能出现"空 scope 全量检索 + 去重"的调用）也保证去重生效，
+    # 不让 must_not 因缺 scope 条件而静默失效。
+    if exclude_ids:
+        from qdrant_client.models import HasIdCondition
+
+        capped = list(exclude_ids)[:1024]
+        existing_must = scope_filter.must if scope_filter is not None else []
+        existing_must_not = list(scope_filter.must_not) if scope_filter is not None and scope_filter.must_not else []
+        existing_must_not.append(HasIdCondition(has_id=capped))
+        scope_filter = Filter(must=existing_must, must_not=existing_must_not)
+    try:
+        response = await client.query_points(
+            collection_name=MEMORY_EPISODES_COLLECTION,
+            query=list(query_vector),
+            using="dense",
+            query_filter=scope_filter,
+            limit=top_n,
+            with_payload=True,
+            with_vectors=["dense"],
+        )
+    except Exception as e:
+        logger.debug(f"🧠 [Qdrant] 回忆环 dense 检索失败: {e}")
+        return []
+
+    out: list[CandidatePoint] = []
+    for p in response.points:
+        vec: Optional[list[float]] = None
+        if isinstance(p.vector, dict) and "dense" in p.vector and isinstance(p.vector["dense"], list):
+            vec = p.vector["dense"]
+        payload = p.payload or {}
+        out.append(
+            {
+                "id": str(p.id),
+                "vector": vec,
+                "score": p.score,
+                "content": payload["content"] if "content" in payload else "",
+                "valid_at_ts": payload["valid_at_ts"] if "valid_at_ts" in payload else None,
+                "scope_key": payload["scope_key"] if "scope_key" in payload else "",
+            }
+        )
+    return out
 
 
 # ─────────────────────────────────────────────

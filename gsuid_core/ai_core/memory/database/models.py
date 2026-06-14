@@ -261,6 +261,24 @@ class AIMemEpisode(SQLModel, table=True):
         await session.execute(_delete(cls).where(col(cls.id).in_(episode_ids)))
         return len(episode_ids)
 
+    @classmethod
+    @with_session
+    async def get_mentioned_entity_ids(cls, session: AsyncSession, episode_ids: list[str]) -> list[str]:
+        """取一批 Episode 提及的全部 Entity ID（去重）。
+
+        供 RF-Mem 回忆环的"关系投影"使用：向量回忆找到的模糊 Episode 链 → 投影出
+        链上提及的实体 → 再反查精准 Edge 事实。见
+        plans/rf_mem_dual_process_retrieval_assessment_20260614.md §4.2。
+        """
+        if not episode_ids:
+            return []
+        result = await session.execute(
+            select(mem_episode_entity_mentions.c.entity_id)
+            .where(mem_episode_entity_mentions.c.episode_id.in_(episode_ids))
+            .distinct()
+        )
+        return [row[0] for row in result.all()]
+
 
 # ─────────────────────────────────────────────
 # Entity：提取出的实体节点（Base Graph 第二层）
@@ -645,6 +663,15 @@ class AIMemEntity(SQLModel, table=True):
         )
         return [row[0] for row in result.all()]
 
+    @classmethod
+    @with_session
+    async def get_names_by_ids(cls, session: AsyncSession, entity_ids: list[str]) -> dict[str, str]:
+        """批量取 {entity_id: name}（供 RF-Mem 关系投影补全 Edge 的 source/target 名称）。"""
+        if not entity_ids:
+            return {}
+        result = await session.execute(select(cls.id, cls.name).where(col(cls.id).in_(entity_ids)))
+        return {row[0]: row[1] for row in result.all()}
+
 
 # ─────────────────────────────────────────────
 # Edge：实体间的关系（Base Graph 第三层）
@@ -964,3 +991,210 @@ class AIMemCategory(SQLModel, table=True):
             .distinct()
         )
         return list(result.scalars().all())
+
+
+# ─────────────────────────────────────────────
+# 程序性 / 偏好记忆（Procedural / Preference Memory）
+# 设计：plans/procedural_preference_memory_design_20260614.md §3
+# 与 Episode/Entity/Edge 三层陈述性记忆正交：本表承载"针对 Agent 未来行为的
+# 程序性指令/纠错规程/偏好规则"（如"调 generate_image 用竖图""按用户时区"），
+# SQL-only 结构化真值、不写向量（精确召回比向量更快更准，避免向量模糊性与对账负担）。
+# ─────────────────────────────────────────────
+class AIMemPreference(SQLModel, table=True):
+    """程序性/偏好记忆规则。一条规则 = "在某 target_context 下，该/不该如何做"。
+
+    主存 USER_GLOBAL scope（偏好多为跨群用户特质，应随用户跨群生效）；群内专属
+    约定用 USER_IN_GROUP。检索主路径走 (scope_key, target_context) 复合索引精确取，
+    O(log n) 索引 seek，无需向量。
+    """
+
+    __table_args__ = (
+        # 检索主路径：按 (scope, target_context) 精确取规则
+        Index("ix_mem_pref_scope_target", "scope_key", "target_context"),
+        Index("ix_mem_pref_scope_user", "scope_key", "user_id"),
+    )
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+    scope_key: str = Field(index=True, max_length=128)
+    user_id: Optional[str] = Field(default=None, index=True, max_length=64)
+    # 绑定上下文：优先填 capability_domain（能力族，如"定时任务"/"网络搜索"），
+    # 其次具体 tool_name（如 generate_image），无可绑定时填 "general"（泛化/风格类）。
+    target_context: str = Field(default="general", index=True, max_length=128)
+    preference_rule: str = Field(sa_column=Column(Text, nullable=False))  # 规则正文（含触发条件）
+    polarity: str = Field(default="do", max_length=8)  # "do" / "dont"
+    is_correction: bool = Field(default=False)  # 是否由纠错产生（纠错类受保护、衰减更慢）
+    is_active: bool = Field(default=True)  # 软停用：WebConsole 可关掉误抽规则而不删（保留审计）
+    source_episode_id: Optional[str] = Field(default=None, max_length=36)  # 溯源
+    mention_count: int = Field(default=1)  # 被重复纠正/确认次数（强化用）
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_applied_at: Optional[datetime] = Field(default=None)  # 上次被成功注入/应用
+
+    @staticmethod
+    def _norm_rule(rule: str) -> str:
+        """规则归一化签名，用于跨批次去重 / 合并强化判定。"""
+        return rule.strip().lower().replace(" ", "")[:64]
+
+    @classmethod
+    @with_session
+    async def upsert(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        user_id: Optional[str],
+        target_context: str,
+        preference_rule: str,
+        polarity: str,
+        is_correction: bool,
+        source_episode_id: Optional[str] = None,
+    ) -> tuple[str, bool]:
+        """合并 / 覆盖 / 强化写入一条偏好规则。返回 ``(id, is_new)``。
+
+        - **语义等价**（同 (scope, user, target_context) + 同极性 + 同归一签名）→
+          ``mention_count += 1`` + 刷新 ``updated_at``（强化，复用 Edge 的 C1 归并思路），不新增行。
+        - **语义冲突**（同 target_context、极性相反）→ 旧的相反规则软停用（``is_active=False``），
+          以新规则为准（复用 Edge 极性反转思路）。
+        - **无等价** → 新建。
+        """
+        polarity = "dont" if polarity == "dont" else "do"
+        rule = (preference_rule or "").strip()
+        if not rule:
+            return "", False
+        sig = cls._norm_rule(rule)
+
+        result = await session.execute(
+            select(cls).where(
+                cls.scope_key == scope_key,
+                cls.target_context == target_context,
+                col(cls.is_active).is_(True),
+            )
+        )
+        existing = list(result.scalars().all())
+
+        # 1) 语义等价（同极性 + 同签名）→ 强化既有
+        for row in existing:
+            if row.polarity == polarity and cls._norm_rule(row.preference_rule) == sig:
+                row.mention_count += 1
+                row.updated_at = datetime.now(timezone.utc)
+                if is_correction:
+                    row.is_correction = True
+                session.add(row)
+                return row.id, False
+
+        # 2) 极性相反 → 软停用旧的相反规则（以新为准）
+        for row in existing:
+            if row.polarity != polarity and cls._norm_rule(row.preference_rule) == sig:
+                row.is_active = False
+                row.updated_at = datetime.now(timezone.utc)
+                session.add(row)
+
+        # 3) 新建
+        new_id = str(uuid.uuid4())
+        session.add(
+            cls(
+                id=new_id,
+                scope_key=scope_key,
+                user_id=user_id,
+                target_context=target_context or "general",
+                preference_rule=rule,
+                polarity=polarity,
+                is_correction=is_correction,
+                source_episode_id=source_episode_id,
+            )
+        )
+        return new_id, True
+
+    @classmethod
+    @with_session
+    async def get_active(
+        cls,
+        session: AsyncSession,
+        scope_keys: list[str],
+        target_contexts: Optional[list[str]] = None,
+        limit: int = 12,
+    ) -> list["AIMemPreference"]:
+        """取若干 scope 下的活跃偏好规则（注入用）。
+
+        排序：纠错类优先 → 高频强化优先 → 最近更新优先。可选按 target_contexts 过滤
+        （检索时只取与本轮工具能力域相关的规则）。
+        """
+        if not scope_keys:
+            return []
+        stmt = select(cls).where(col(cls.scope_key).in_(scope_keys), col(cls.is_active).is_(True))
+        if target_contexts:
+            stmt = stmt.where(col(cls.target_context).in_(target_contexts))
+        stmt = stmt.order_by(
+            desc(col(cls.is_correction)),
+            desc(col(cls.mention_count)),
+            desc(col(cls.updated_at)),
+        ).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def touch_applied(cls, session: AsyncSession, pref_ids: list[str]) -> None:
+        """把一批偏好标记为"刚被注入/应用"，刷新 last_applied_at（生命周期保护依据）。"""
+        if not pref_ids:
+            return
+        from sqlalchemy import update as _update
+
+        await session.execute(
+            _update(cls).where(col(cls.id).in_(pref_ids)).values(last_applied_at=datetime.now(timezone.utc))
+        )
+
+    @classmethod
+    @with_session
+    async def count_active(cls, session: AsyncSession, scope_keys: Optional[list[str]] = None) -> int:
+        """统计活跃偏好规则数（WebConsole stats 用）。"""
+        stmt = select(func.count()).select_from(cls).where(col(cls.is_active).is_(True))
+        if scope_keys:
+            stmt = stmt.where(col(cls.scope_key).in_(scope_keys))
+        result = await session.execute(stmt)
+        return result.scalar() or 0
+
+    @classmethod
+    @with_session
+    async def delete_by_scope_keys(cls, session: AsyncSession, scope_keys: list[str]) -> int:
+        """按 scope 物理删除偏好规则（供 clear_ops 清空联动；偏好无向量，仅删 SQL 行）。"""
+        if not scope_keys:
+            return 0
+        from sqlalchemy import delete as _delete
+
+        result = await session.execute(_delete(cls).where(col(cls.scope_key).in_(scope_keys)))
+        return result.rowcount or 0
+
+    @classmethod
+    @with_session
+    async def prune_per_context(cls, session: AsyncSession, max_per_context: int) -> int:
+        """生命周期裁剪：每个 (scope_key, user_id, target_context) 仅保留 salience 最高的
+        max_per_context 条活跃规则，其余**非纠错**规则软停用（纠错类受保护不裁）。返回停用条数。
+
+        salience：纠错类优先 → mention_count → 最近更新。纯规则、零 LLM。
+        """
+        if max_per_context <= 0:
+            return 0
+        result = await session.execute(
+            select(cls)
+            .where(col(cls.is_active).is_(True))
+            .order_by(
+                col(cls.scope_key),
+                col(cls.target_context),
+                desc(col(cls.is_correction)),
+                desc(col(cls.mention_count)),
+                desc(col(cls.updated_at)),
+            )
+        )
+        rows = list(result.scalars().all())
+        seen: dict[tuple[str, Optional[str], str], int] = {}
+        deactivated = 0
+        for row in rows:
+            key = (row.scope_key, row.user_id, row.target_context)
+            rank = seen[key] if key in seen else 0
+            seen[key] = rank + 1
+            if rank >= max_per_context and not row.is_correction:
+                row.is_active = False
+                row.updated_at = datetime.now(timezone.utc)
+                session.add(row)
+                deactivated += 1
+        return deactivated

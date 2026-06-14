@@ -7,7 +7,7 @@
 import re
 import time
 import asyncio
-from typing import TypeVar, Optional, Sequence
+from typing import TypeVar, Optional, Sequence, TypedDict
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,6 +19,22 @@ from gsuid_core.ai_core.memory.config import memory_config
 from .types import Edge, Entity, Episode, Category, RetrievalMeta
 from .system1 import System1Result, system1_search
 from .system2 import System2Result, system2_global_selection
+
+
+class PreferencePrompt(TypedDict):
+    """注入 Prompt 的单条偏好规则（``MemoryContext.preferences`` 的元素）。
+
+    抽成 TypedDict 替代裸 dict，让 ``to_prompt_text`` / 检索侧构造 / WebConsole 序列化
+    三处的字段访问自文档化，统一键名契约。
+    """
+
+    target_context: str
+    preference_rule: str
+    polarity: str  # "do" / "dont"
+    is_correction: bool
+    # 仅供 WebConsole search 接口透传（注入渲染不用）；检索侧构造时带，历史 dict 兼容缺省。
+    id: Optional[str]
+
 
 T = TypeVar("T", bound=dict)
 
@@ -32,6 +48,15 @@ _TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到
 # A-3：身份等价类 fact 的特征词。这类 fact 主语极易抽错（"谈论小C"会被固化成
 # "<说话人>本人是小C"），故①禁止用 source_name 强补主语 ②注入时统一标"待证"。
 _IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
+
+
+def _on_pref_task_done(t: "asyncio.Task") -> None:
+    """偏好 last_applied 刷新后台任务的回调：吞掉取消、记录异常，避免未捕获告警。"""
+    if t.cancelled():
+        return
+    exc = t.exception()
+    if exc is not None:
+        logger.warning(f"🧠 [Memory] 刷新 preference last_applied 后台任务异常: {exc}")
 
 
 async def _run_sync_rerank(
@@ -98,6 +123,9 @@ class MemoryContext:
     entities: list[Entity] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     categories: list[Category] = field(default_factory=list)
+    # 程序性/偏好记忆规则（SQL-only，须严格遵守的硬约束，置顶注入）。
+    # 字段契约见 PreferencePrompt（target_context / preference_rule / polarity / is_correction / id）。
+    preferences: list[PreferencePrompt] = field(default_factory=list)
     retrieval_meta: RetrievalMeta = field(
         default_factory=lambda: RetrievalMeta(s1_episodes=0, s2_episodes=0, scope_keys=[])
     )
@@ -135,6 +163,24 @@ class MemoryContext:
             return out
 
         parts: list[str] = []
+
+        # 程序性/偏好规则（最高优先级，置顶 + 强约束语气）：区别于"核心事实"的背景陈述，
+        # 这是针对 Agent 未来行为的硬约束（如"调 generate_image 用竖图"），必须让工具调用
+        # LLM 当作规则而非背景。占独立小预算，先于核心事实占用。
+        if self.preferences:
+            pref_budget = int(max_chars * memory_config.preference_inject_budget_ratio)
+            pref_lines: list[str] = []
+            for p in self.preferences[: memory_config.preference_max_inject]:
+                rule = (p["preference_rule"] if "preference_rule" in p else "").strip()
+                if not rule:
+                    continue
+                ctx_tag = (p["target_context"] if "target_context" in p else "") or ""
+                tag = f"[{ctx_tag}] " if ctx_tag and ctx_tag != "general" else ""
+                mark = "（纠正过）" if (p["is_correction"] if "is_correction" in p else False) else ""
+                pref_lines.append(f"• {tag}{rule}{mark}")
+            taken = _take(pref_lines, pref_budget)
+            if taken:
+                parts.append("【用户偏好/纠错 - 须严格遵守】\n" + "\n".join(taken))
 
         # 核心事实（最高优先级）
         if self.edges:
@@ -315,6 +361,8 @@ async def dual_route_retrieve(
     top_k: int = 20,
     enable_system2: bool = True,
     enable_user_global: bool = True,
+    inject_preferences: bool = True,
+    preference_contexts: Optional[list[str]] = None,
 ) -> MemoryContext:
     """双路检索主入口。在 handle_ai.py 中，AI 准备回复前调用此函数。
 
@@ -326,6 +374,11 @@ async def dual_route_retrieve(
         top_k:              最终返回的 Episode 数量上限
         enable_system2:     是否启用 System-2 全局选择（成本较高）
         enable_user_global: 是否联合查询用户跨群画像
+        inject_preferences: 是否注入程序性/偏好规则（意图门：纯闲聊轮可传 False 整轮跳过）
+        preference_contexts: 选择性注入——本轮相关的能力域/工具名集合。``None`` = 不过滤
+            （注入全部活跃规则，旧行为）；传入列表（可为空）则启用过滤：纠错规则与 ``general``
+            通用规则永远注入，其余非纠错规则仅当 ``target_context`` 命中本集合时才注入，避免
+            无关工具规则挤占预算、分散工具调用注意力。
     """
     scope_keys: list[str] = []
     group_scope = None
@@ -360,6 +413,26 @@ async def dual_route_retrieve(
     else:
         user_scope = None
 
+    # RF-Mem 熟悉度路由（默认关，零影响）：用一次零 LLM 的向量探针的 s̄/熵 逐查询决定
+    # "检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。路由只在"低熟悉/高
+    # 不确定"时才放行 System-2，且**永远受用户总开关约束**——用户关了 System-2 就永不
+    # 触发 LLM 深检索。关闭路由时 effective_enable_system2 == enable_system2，行为不变。
+    effective_enable_system2 = enable_system2
+    is_recollection_route = False
+    probe_vec: Optional[list[float]] = None
+    # P1：仅当探针结论会被消费时才发探针——System-2 开（可被熟悉度抑制）或回忆环可用
+    # （enable_recollection_path + remote Qdrant）。两者皆无时探针白跑一次 embedding+dense、
+    # 改变不了任何分支，直接短路省成本。
+    _probe_can_act = enable_system2 or (
+        memory_config.enable_recollection_path and memory_config.qdrant_provider == "remote"
+    )
+    if memory_config.enable_familiarity_routing and scope_keys and _probe_can_act:
+        from .familiarity import ROUTE_RECOLLECTION, probe_and_route
+
+        route, _signal, probe_vec = await probe_and_route(query, scope_keys)
+        is_recollection_route = route == ROUTE_RECOLLECTION
+        effective_enable_system2 = enable_system2 and is_recollection_route
+
     # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
     s1_task = asyncio.create_task(
         system1_search(
@@ -372,7 +445,7 @@ async def dual_route_retrieve(
     # System-2 对 group_scope 和 user_scope 都执行
     s2_tasks: list[asyncio.Task] = []
     s2_scope_keys: list[str] = []
-    if enable_system2:
+    if effective_enable_system2:
         if group_scope:
             s2_tasks.append(asyncio.create_task(system2_global_selection(query, group_scope)))
             s2_scope_keys.append(group_scope)
@@ -431,6 +504,39 @@ async def dual_route_retrieve(
     all_edges: list[Edge] = _merge_edges(s1.edges if s1 else [], s2_edges)
     all_categories: list[Category] = _merge_categories([], s2_categories)
 
+    # RF-Mem 回忆环（默认关，且仅 remote Qdrant）：当路由判为低熟悉、System-2 未实际触发
+    # 时，用零 LLM 的 KMeans+α-mix 向量回忆补召回，并把召回的 Episode 链**关系投影**成链上
+    # 精准 Edge 事实（与 System-1 独立 Edge 检索取并集、不替代）。本地嵌入式 Qdrant 下回忆
+    # 会成倍放大 O(N) 暴力扫，故强绑 qdrant_provider=remote。
+    if (
+        memory_config.enable_familiarity_routing
+        and memory_config.enable_recollection_path
+        and is_recollection_route
+        and not effective_enable_system2
+        and memory_config.qdrant_provider == "remote"
+        and scope_keys
+    ):
+        try:
+            from .familiarity import recollection_search, project_episodes_to_edges
+
+            recalled = await recollection_search(
+                query,
+                scope_keys,
+                top_k=top_k,
+                beam=memory_config.recollection_beam,
+                fanout=memory_config.recollection_fanout,
+                rounds=memory_config.recollection_rounds,
+                alpha=memory_config.recollection_alpha,
+                query_vector=probe_vec,  # 复用探针向量，省一次嵌入
+            )
+            if recalled:
+                all_episodes = _merge_episodes(all_episodes, recalled)
+                projected = await project_episodes_to_edges([e["id"] for e in recalled], scope_keys)
+                if projected:
+                    all_edges = _merge_edges(all_edges, projected)
+        except Exception as e:
+            logger.warning(f"🧠 [RF-Mem] 回忆环检索失败: {e}")
+
     # 类型隔离 Rerank（Type Isolation）：
     # Category 节点完全跳过 Reranker，给予固定最高优先级。
     # 原因：交叉编码器（Cross-Encoder）的打分强依赖文本字面重合度，
@@ -484,11 +590,63 @@ async def dual_route_retrieve(
         task = asyncio.create_task(_touch_edges_accessed())
         task.add_done_callback(_on_task_done)
 
+    # 程序性/偏好记忆（默认开）：SQL-only 取本 user/scope 下的活跃规则，置顶强约束注入。
+    # 选择性注入（意图门 + 能力域过滤）由 inject_preferences / preference_contexts 控制，避免
+    # 每条回复都注入全部规则。命中规则刷新 last_applied_at（生命周期保护依据），后台 fire-and-forget。
+    preference_items: list[PreferencePrompt] = []
+    if memory_config.enable_preference_memory and scope_keys and inject_preferences:
+        try:
+            from gsuid_core.ai_core.memory.database.models import AIMemPreference
+
+            # 过滤会先剔除部分行，故按相关能力域过滤时适当多取以免 cap 提前截断（偏好行本就有
+            # per_context 上限，总量小，over-fetch 廉价）；不过滤时按 cap 直接取。
+            fetch_limit = (
+                memory_config.preference_max_inject * 3
+                if preference_contexts is not None
+                else memory_config.preference_max_inject
+            )
+            pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
+            if preference_contexts is not None:
+                # 纠错规则与 general 永远保留（高价值、紧扣"刚纠正完的下一轮"场景）；
+                # 其余软偏好仅当 target_context 命中本轮相关能力域时保留。get_active 已按
+                # 纠错→高频→最近排序，过滤后再 cap 保持优先级。
+                ctx_set = set(preference_contexts)
+                pref_rows = [
+                    r
+                    for r in pref_rows
+                    if r.is_correction or r.target_context == "general" or r.target_context in ctx_set
+                ]
+            pref_rows = pref_rows[: memory_config.preference_max_inject]
+            preference_items = [
+                {
+                    "id": r.id,
+                    "target_context": r.target_context,
+                    "preference_rule": r.preference_rule,
+                    "polarity": r.polarity,
+                    "is_correction": r.is_correction,
+                }
+                for r in pref_rows
+            ]
+            if pref_rows:
+                pref_ids = [r.id for r in pref_rows]
+
+                async def _touch_prefs() -> None:
+                    try:
+                        await AIMemPreference.touch_applied(pref_ids)
+                    except Exception as _e:
+                        logger.debug(f"🧠 [Memory] 刷新 preference last_applied 失败: {_e}")
+
+                pref_task = asyncio.create_task(_touch_prefs())
+                pref_task.add_done_callback(_on_pref_task_done)
+        except Exception as e:
+            logger.warning(f"🧠 [Memory] 偏好检索失败: {e}")
+
     return MemoryContext(
         episodes=ranked_episodes,
         entities=ranked_entities,
         edges=ranked_edges,
         categories=ranked_categories,
+        preferences=preference_items,
         retrieval_meta={
             "s1_episodes": len(s1.episodes) if s1 else 0,
             "s2_episodes": sum(len(r.episodes) for r in s2_results),
