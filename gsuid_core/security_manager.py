@@ -85,10 +85,10 @@ class AuthRateLimiter:
         # key -> 封禁到期时间戳
         self._ban_until: DefaultDict[str, float] = defaultdict(float)
 
-        self.WINDOW = 60.0          # 滑动窗口长度（秒）
-        self.MAX_ATTEMPTS = 10      # 窗口内允许的最大请求次数
-        self.MAX_FAILURES = 5       # 触发封禁的连续失败次数
-        self.BAN_DURATION = 900.0   # 封禁时长（秒）
+        self.WINDOW = 60.0  # 滑动窗口长度（秒）
+        self.MAX_ATTEMPTS = 10  # 窗口内允许的最大请求次数
+        self.MAX_FAILURES = 5  # 触发封禁的连续失败次数
+        self.BAN_DURATION = 900.0  # 封禁时长（秒）
 
     def check(self, key: str) -> Tuple[bool, int]:
         """检查本次请求是否允许。

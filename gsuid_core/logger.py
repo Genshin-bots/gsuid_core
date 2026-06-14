@@ -12,8 +12,8 @@ from functools import wraps
 from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
 
-import aiofiles
 import msgspec
+import aiofiles
 import structlog
 from colorama import Fore, Style, init
 from structlog.dev import ConsoleRenderer
