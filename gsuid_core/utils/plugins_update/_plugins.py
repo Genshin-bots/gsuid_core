@@ -33,6 +33,41 @@ plugins_list: Dict[str, Dict[str, str]] = {}
 plugin_commit_versions: Dict[str, str] = {}
 
 
+def _is_mirror_not_synced_error(message: str) -> bool:
+    """
+    判断 git 错误是否表示镜像源（cnb/gitcode）尚未同步该插件。
+
+    典型现象：
+    - 镜像源仓库不存在：404 / "repository not found"
+    - 镜像源对未登录用户返回 401，触发 git 凭证提示，被 GIT_TERMINAL_PROMPT=0
+      抑制后报 "terminal prompts disabled" / "could not read username"
+    - 镜像源鉴权失败：403 / "authentication failed" / "permission denied"
+
+    此类错误代表「镜像源就是没这个仓库」，应当 fallback 到 GitHub 源。
+    网络抖动 / 超时 / DNS 等临时错误不在此列，避免无意义回退。
+    """
+    msg_lower = message.lower()
+    not_synced_keywords = (
+        "repository not found",
+        "not found",
+        " 404",
+        "(404)",
+        " 401",
+        "(401)",
+        " 403",
+        "(403)",
+        "authentication failed",
+        "permission denied",
+        "access denied",
+        "forbidden",
+        "credential",
+        "username",
+        "could not read",
+        "terminal prompts disabled",
+    )
+    return any(kw in msg_lower for kw in not_synced_keywords)
+
+
 def _parse_git_error(message: str, plugin_name: str, operation: str = "pull") -> List[str]:
     """
     解析 git 错误信息，返回用户友好的提示和解决方案。
@@ -386,11 +421,15 @@ async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
 
 
 async def install_plugins(plugins: Dict[str, str]) -> str:
+    from .git_async import git_set_remote_url
     from .git_mirror import SSH_GITHUB_TEMPLATE, _is_ssh_mode, _is_proxy_prefix
 
     git_mirror: str = core_plugins_config.get_config("GitMirror").data
 
     plugin_name = plugins["link"].split("/")[-1]
+
+    # 始终保留一份原始 GitHub URL 作为兜底，用于镜像源未同步时的回退
+    fallback_git_path = f"{plugins['link']}.git"
 
     # 使用 GitMirror 镜像源/代理/SSH
     if git_mirror:
@@ -402,17 +441,23 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
                 owner, repo = parts[-2], parts[-1]
                 git_path = SSH_GITHUB_TEMPLATE.format(owner=owner, repo=repo)
             else:
-                git_path = f"{plugins['link']}.git"
+                git_path = fallback_git_path
         elif _is_proxy_prefix(git_mirror):
-            # 代理前缀模式：{proxy_prefix}{full_github_url}
+            # 代理前缀模式：{proxy_prefix}{full_github_url}（仍指向 GitHub 源，无需 fallback）
             proxy_prefix = git_mirror.rstrip("/") + "/"
             git_path = f"{proxy_prefix}{plugins['link']}.git"
         else:
-            # 镜像模式：{mirror_prefix}/{repo_name}
+            # 镜像模式：{mirror_prefix}/{repo_name}（cnb/gitcode 可能未同步，需 fallback）
             mirror_prefix = git_mirror.rstrip("/")
             git_path = f"{mirror_prefix}/{plugin_name}"
     else:
-        git_path = f"{plugins['link']}.git"
+        git_path = fallback_git_path
+
+    # 仅当用户配置了「镜像模式」（cnb/gitcode）时才允许 fallback；
+    # 代理/SSH/默认 GitHub 模式路由目标都是 GitHub，不存在「镜像未同步」场景。
+    is_mirror_mode = bool(git_mirror) and not _is_ssh_mode(git_mirror) and not _is_proxy_prefix(git_mirror)
+    enable_mirror_fallback = is_mirror_mode and git_path != fallback_git_path
+
     logger.info(f"稍等...开始安装插件, 地址: {git_path}")
     path = PLUGINS_PATH / plugin_name
     if path.exists():
@@ -421,10 +466,38 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
     branch = plugins["branch"] if plugins["branch"] != "main" else None
 
     success, message = await git_clone(git_path, path, branch=branch, depth=1)
+    used_fallback = False
+    if not success and enable_mirror_fallback:
+        if _is_mirror_not_synced_error(message):
+            logger.warning(
+                f"[安装插件] 镜像源 {git_mirror} 暂未同步 {plugin_name}（git: {message[:120]}），"
+                f"自动回退到 GitHub 源: {fallback_git_path}"
+            )
+            success, message = await git_clone(fallback_git_path, path, branch=branch, depth=1)
+            used_fallback = True
+            if success:
+                # 把插件的 remote URL 也设回 GitHub 源，避免后续 update_from_git_async
+                # 又去走那个没同步的镜像导致再次失败
+                try:
+                    ok, set_msg = await git_set_remote_url(path, fallback_git_path)
+                    if ok:
+                        logger.info(f"[安装插件] 已将 {plugin_name} 的 remote URL 同步为 GitHub 源")
+                    else:
+                        logger.warning(f"[安装插件] 同步 {plugin_name} remote URL 失败: {set_msg}")
+                except Exception as e:
+                    logger.warning(f"[安装插件] 同步 {plugin_name} remote URL 异常: {e}")
+        else:
+            logger.info(f"[安装插件] 主源克隆失败但非「镜像未同步」类错误，不触发 fallback: {message[:120]}")
+
     if not success:
+        if used_fallback:
+            return f"❌ 插件{plugin_name}安装失败：镜像源 {git_mirror} 与 GitHub 源均不可用，最后错误: {message}"
         return f"❌ 插件{plugin_name}安装失败: {message}"
 
-    logger.info(f"插件{plugin_name}安装成功!")
+    if used_fallback:
+        logger.info(f"插件{plugin_name}安装成功!（已自动回退到 GitHub 源）")
+    else:
+        logger.info(f"插件{plugin_name}安装成功!")
     # 显式安装即视为「需要它」，直接 reload_plugin 真正加载（与网页端安装行为一致）。
     # reload_plugin 对从未加载过的插件等价于「首次加载」：清理步骤皆为空操作，
     # 第四步 import 加载、第五步跑其 @on_core_start，并经 gss.load_plugin 完成依赖检查。

@@ -33,7 +33,9 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
     使用 create_subprocess_exec 而非 create_subprocess_shell，
     避免 Windows cmd.exe 将 %an 等解释为环境变量，同时兼容所有平台。
 
-    设置 GIT_TERMINAL_PROMPT=0 防止 git 在需要凭证时弹出交互式提示导致卡死。
+    通过 GIT_TERMINAL_PROMPT=0 / GCM_INTERACTIVE=Never 阻止 Git / Windows
+    上的 Git Credential Manager (GCM) 在收到 401/403 时弹窗卡死流程。
+    如果需要凭证（如私有仓库），命令会立即失败并把错误冒泡给调用方。
 
     Args:
         repo_path: 仓库路径
@@ -48,9 +50,12 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
     logger.info(f"[Git Async] 执行命令: {cmd_str} @ {repo_path}")
 
     env = os.environ.copy()
+    # git 2.26+ 在收到 401/403 时不要走 terminal prompt（命令立即失败）
     env["GIT_TERMINAL_PROMPT"] = "0"
-    # 防止 credential helper 请求凭证导致阻塞
-    env["GIT_CREDENTIAL_HELPER"] = "cat"
+    # Windows 上 GCM 1.1.0+ 支持，关闭交互式凭证弹窗
+    env["GCM_INTERACTIVE"] = "Never"
+    # git 找不到 askpass 时回退到 echo，避免再次触发弹窗
+    env["GIT_ASKPASS"] = "echo"
     # 设置 HTTP 超时
     env["GIT_HTTP_TIMEOUT"] = "30"
     # 使用简单的 User-Agent 避免某些服务器拒绝
@@ -128,6 +133,12 @@ async def git_clone(
     """
     异步克隆 git 仓库。
 
+    关键：会在命令前注入 ``-c credential.helper= -c core.askPass=``，
+    **禁用**任何 credential helper（包括 Windows 上的 Git Credential Manager）。
+    这是为了在 cnb/gitcode 等镜像源未同步某个仓库（返回 401/403）时，
+    git 能直接失败而不是弹凭证窗把流程卡死——失败后由 install_plugins
+    根据错误信息判断是否 fallback 到 GitHub 原始源。
+
     Args:
         url: 仓库 URL
         target_path: 目标路径
@@ -138,7 +149,17 @@ async def git_clone(
     Returns:
         (success, message)
     """
-    args = ["clone", "--depth", str(depth)]
+    # -c credential.helper= 覆盖 git config 里的 helper（关键）
+    # -c core.askPass=     禁用 git 内置 askpass 回退
+    args = [
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.askPass=",
+        "clone",
+        "--depth",
+        str(depth),
+    ]
     if branch:
         args.extend(["--branch", branch])
     args.extend([url, str(target_path)])
