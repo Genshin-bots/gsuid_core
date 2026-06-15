@@ -33,6 +33,7 @@ async def ensure_memory_collections():
         scroll_all_payloads,
         ensure_vector_on_disk,
         remove_payload_backup,
+        ensure_payload_indexes,
         count_collection_points,
         force_recreate_collection,
         find_latest_payload_backup,
@@ -169,9 +170,22 @@ async def ensure_memory_collections():
             else:
                 for vector_name in _vector_names_for_collection(name):
                     await ensure_vector_on_disk(name, vector_name)
+                # 补齐 KEYWORD payload 索引：旧版/迁移/跨后端复制等场景下集合可能
+                # 缺失 `scope_key` 索引，远程 Qdrant 在 Hybrid 检索的 Filter 中使用
+                # `scope_key` 时会返回 400。ensure_payload_indexes 幂等（已存在则跳过），
+                # 远程失败会抛 RuntimeError 让 Hybrid 检索不陷入反复 400。
+                await ensure_payload_indexes(name, ["scope_key"])
                 logger.debug(f"🧠 [Memory] Qdrant Collection 已存在且配置正确: {name}")
         except Exception as e:
-            logger.error(f"🧠 [Memory] 检查/重建 Collection {name} 失败: {e}")
+            # RuntimeError 多为 ensure_payload_indexes / force_recreate_collection 在远程
+            # Qdrant 上抛出的"运维配置异常"（索引创建失败/权限/网络），属阻塞性问题——
+            # 升级为 critical 让运维在 log 里第一时间看到，但仍继续循环处理其它集合，
+            # 不让单个集合的异常拖垮整个 memory 初始化。运行时侧 _hybrid_search_impl
+            # 已通过 is_vector_structure_error 把"index required"降级为空结果，不会刷 error。
+            if isinstance(e, RuntimeError):
+                logger.critical(f"🧠 [Memory] Collection {name} 启动期配置异常，建议排查后重启: {e}")
+            else:
+                logger.error(f"🧠 [Memory] 检查/重建 Collection {name} 失败: {e}")
 
     # §3.2① 冷 Episode 归档集合：独立、轻量地确保存在（不参与上面的 payload 备份/重嵌入迁移）。
     # 冷向量是从热集合迁移而来的派生数据，真值在 SQL；维度变更时直接重建为空即可，
@@ -192,6 +206,7 @@ async def _ensure_episode_cold_collection(
     from gsuid_core.ai_core.rag.collection_migration import (
         get_vector_size,
         ensure_vector_on_disk,
+        ensure_payload_indexes,
         force_recreate_collection,
     )
 
@@ -230,9 +245,16 @@ async def _ensure_episode_cold_collection(
             logger.info(f"🧠 [Memory] 创建 Qdrant 冷 Episode 集合: {name}")
         else:
             await ensure_vector_on_disk(name, "dense")
+            # 同 ensure_memory_collections：已存在的冷集合也要补 KEYWORD 索引，
+            # 否则 Hybrid 检索按 scope_key 过滤时被远程 Qdrant 400 拒绝。
+            await ensure_payload_indexes(name, ["scope_key"])
             logger.debug(f"🧠 [Memory] Qdrant 冷 Episode 集合已存在且配置正确: {name}")
     except Exception as e:
-        logger.error(f"🧠 [Memory] 检查/重建冷 Episode 集合 {name} 失败: {e}")
+        # 与 ensure_memory_collections 一致：RuntimeError 视为运维配置异常，升级为 critical
+        if isinstance(e, RuntimeError):
+            logger.critical(f"🧠 [Memory] 冷 Episode 集合 {name} 启动期配置异常，建议排查后重启: {e}")
+        else:
+            logger.error(f"🧠 [Memory] 检查/重建冷 Episode 集合 {name} 失败: {e}")
 
 
 async def _reindex_memory_payloads(collection_name: str, payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:

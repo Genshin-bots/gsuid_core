@@ -55,3 +55,9 @@ async def init_all():
     from gsuid_core.ai_core.rag.knowledge import reconcile_manual_knowledge
 
     await reconcile_manual_knowledge()
+
+    # 把 docs/skills 下全部开发文档（references/*.md）挂载进知识库的保留来源 source="skill_doc"，
+    # 供能力代理用混合检索（dense+BM25）查阅。幂等：内容未变化时跳过，不会每次启动重复嵌入。
+    from gsuid_core.ai_core.rag.skills_kb import sync_skill_docs
+
+    await sync_skill_docs()

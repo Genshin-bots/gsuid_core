@@ -46,6 +46,12 @@ _GUIDE_MAX_CHARS: int = 24000
 # 框架插件开发指南（权威全文），供 read_plugin_dev_guide 按需读取。
 _SKILL_PATH: Path = Path(__file__).resolve().parents[3] / "docs" / "skills" / "gscore-plugin-development" / "SKILL.md"
 
+# SKILL 已重构为「主入口 SKILL.md（索引）+ references/ 子文档（正文）」结构：触发器 /
+# 数据库 / 配置 / 完整示例 等**正文都在 references/*.md 里**，SKILL.md 本身只剩目录索引。
+# read_plugin_dev_guide 必须把 references/ 一并纳入检索语料，否则按章节关键词查正文会全部
+# MISS（只能看到索引页的几个元标题），开发代理就拿不到权威写法、只能凭 prompt 内联知识硬写。
+_REFERENCES_DIR: Path = _SKILL_PATH.parent / "references"
+
 
 def _plugin_root() -> Path:
     """惰性返回 ``gsuid_core/plugins`` 根目录（与 ``server.PLUGIN_PATH`` 一致）。
@@ -1027,17 +1033,32 @@ def _extract_guide_section(text: str, section: str) -> str:
     return body
 
 
+def _guide_files() -> list[Path]:
+    """指南检索语料：``SKILL.md``（索引）+ ``references/*.md``（正文），按文件名稳定排序。
+
+    SKILL 重构后正文都在 references/ 子文档里，故必须把它们一并纳入。**逐文件**检索章节
+    （不把全部文件拼成一篇再抽取）——避免一篇末尾的章节越界 bleed 到下一篇开头。
+    """
+    files: list[Path] = []
+    if _SKILL_PATH.exists():
+        files.append(_SKILL_PATH)
+    if _REFERENCES_DIR.is_dir():
+        files.extend(sorted(_REFERENCES_DIR.glob("*.md")))
+    return files
+
+
 @ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
 async def read_plugin_dev_guide(
     ctx: RunContext[ToolContext],
     section: str = "",
 ) -> str:
     """
-    按需查阅 GsCore 插件开发权威指南（gscore-plugin-development SKILL 全文）。
+    按需查阅 GsCore 插件开发权威指南（gscore-plugin-development SKILL：索引 + references/ 子文档）。
 
-    指南极长，不要一次性全读。section 留空时返回「目录（全部章节标题）」，再按需传入
-    某个章节标题关键词（如 "触发器"、"数据库操作"、"AI 集成：to_ai"、"配置管理"、
-    "完整插件示例"）获取该章节正文。
+    指南极长且已拆成多篇子文档，不要一次性全读。section 留空时返回「目录（跨索引页与所有
+    references/ 子文档的章节标题）」，再按需传入某个章节标题关键词（如 "触发器"、"数据库"、
+    "配置"、"to_ai"、"完整插件示例"）获取该章节正文。关键词按**子串大小写不敏感**匹配标题，
+    命中第一个文件里的对应章节即返回。
 
     Args:
         ctx: 工具执行上下文
@@ -1046,24 +1067,94 @@ async def read_plugin_dev_guide(
     Returns:
         目录或指定章节正文；指南文件缺失 / 章节未命中时返回提示
     """
-    if not _SKILL_PATH.exists():
+    files = _guide_files()
+    if not files:
         return f"错误：未找到插件开发指南文件：{_SKILL_PATH}"
 
-    try:
-        text = _SKILL_PATH.read_text(encoding="utf-8")
-    except OSError as e:
-        return f"错误：读取指南失败：{e}"
-
     if not section.strip():
-        lines = text.splitlines()
+        # 跨 SKILL.md + 全部 references/*.md 汇总章节标题。目录只列到二级标题
+        # （章 + 节），避免 20 篇子文档把目录撑爆；更深的小节仍可被 section 关键词检索到。
         toc: list[str] = []
-        for idx, level in sorted(_heading_levels(lines).items()):
-            title = lines[idx].lstrip()[level:].strip()
-            if title and not title.startswith("目录"):
-                toc.append(f"{'  ' * (level - 1)}- {title}")
-        return "GsCore 插件开发指南目录（传 section=章节标题关键词 读正文）：\n" + "\n".join(toc)
+        for f in files:
+            try:
+                text = f.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            lines = text.splitlines()
+            for idx, level in sorted(_heading_levels(lines).items()):
+                if level > 2:
+                    continue
+                title = lines[idx].lstrip()[level:].strip()
+                if title and not title.startswith("目录"):
+                    toc.append(f"{'  ' * (level - 1)}- {title}")
+        return (
+            "GsCore 插件开发指南目录（传 section=章节标题关键词读正文，"
+            "如 触发器 / 数据库 / 配置 / to_ai / 完整插件示例）：\n" + "\n".join(toc)
+        )
 
-    body = _extract_guide_section(text, section)
-    if not body:
-        return f"未找到包含「{section}」的章节，请先用空 section 查目录确认标题。"
-    return body
+    # 逐文件查找首个命中章节关键词的子文档并返回其正文（不跨文件拼接，避免章节越界）。
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        body = _extract_guide_section(text, section)
+        if body:
+            return body
+    return f"未找到包含「{section}」的章节，请先用空 section 查目录确认标题。"
+
+
+@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
+async def search_skill_docs(
+    ctx: RunContext[ToolContext],
+    query: str,
+    skill: str = "",
+    limit: int = 8,
+) -> str:
+    """
+    语义检索 GsCore 开发文档知识库（**查文档的首选**，混合 dense+BM25 检索，精度高于关键词匹配）。
+
+    docs/skills 下全部开发文档已在框架启动时挂载进知识库。用**自然语言**描述你要查的写法 / 概念即可，
+    例如："怎么发图片并转成字节"、"数据库表怎么注册到网页控制台"、"on_regex 怎么取捕获组"、
+    "to_ai 和 ai_return 怎么配合"、"插件怎么挂 FastAPI 接口"。返回最相关的若干文档片段。
+
+    Args:
+        ctx: 工具执行上下文
+        query: 自然语言查询
+        skill: 可选，限定到某一份 skill（目录名）。写插件相关写法**强烈建议**传
+            ``skill="gscore-plugin-development"``，避免混入其它 skill；留空则检索全部已挂载 skill。
+        limit: 返回片段数（默认 8，最大 20）
+
+    Returns:
+        命中的文档片段（标题含 skill 名 + 正文）；知识库未就绪 / 无命中时提示改用 read_plugin_dev_guide
+    """
+    from gsuid_core.ai_core.rag.skills_kb import known_skill_names, search_skill_doc_chunks
+
+    query = (query or "").strip()
+    if not query:
+        return "错误：query 不能为空，请用自然语言描述要查的写法 / 概念。"
+
+    skill = (skill or "").strip()
+    skills = [skill] if skill else None
+    results = await search_skill_doc_chunks(query, skills=skills, limit=max(1, min(limit, 20)))
+    if not results:
+        # 知识库未就绪（AI 关闭 / Qdrant 不可用 / 文档尚未挂载）或确无命中 → 引导回退确定性阅读器。
+        avail = "、".join(known_skill_names()) or "（无）"
+        return (
+            f"知识库检索无结果（可能 RAG 未就绪、文档未挂载，或确无匹配；当前已挂载 skill：{avail}）。"
+            "写插件可改用 read_plugin_dev_guide：空 section 看目录，再用章节关键词"
+            "（如 触发器 / 数据库 / 配置 / to_ai / 完整插件示例）读整章正文。"
+        )
+
+    parts: list[str] = []
+    for i, point in enumerate(results, 1):
+        payload = point.payload or {}
+        title = str(payload.get("title") or "")
+        content = str(payload.get("content") or "")
+        parts.append(f"【片段 {i}｜{title}】\n{content}")
+    scope = f"（skill={skill}）" if skill else "（全部 skill）"
+    return (
+        f"开发文档检索命中 {len(parts)} 段{scope}（按相关度，dense+BM25 混合检索）：\n\n"
+        + "\n\n".join(parts)
+        + "\n\n（写插件要读某一整章完整内容时改用 read_plugin_dev_guide(section=章节关键词)。）"
+    )

@@ -25,6 +25,9 @@ _VECTOR_STRUCTURE_ERROR_SIGNATURES: tuple[str, ...] = (
     "wrong input: vector",
     "expected dim",
     "dense vector",  # named vector 结构缺失，如 "Dense vector dense is not found"
+    # 远程 Qdrant 缺失 payload 索引时拒绝 Filter：
+    # 与维度/结构异常同类，运维配置缺失而非代码 bug
+    "index required but not found",
 )
 
 

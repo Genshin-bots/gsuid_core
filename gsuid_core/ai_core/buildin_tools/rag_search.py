@@ -48,11 +48,16 @@ async def search_knowledge(
     """
     # 过滤下推到 Qdrant 服务端（plugin/category 进 query_filter），而非取回 top-k 后客户端筛——
     # 后者会因匹配项排在 top-k 之外被丢弃而召回偏少甚至为空（大知识库尤甚）。
+    # 排除 docs/skills 开发文档整类（source="skill_doc"）：它们只服务能力代理的专用检索，
+    # 不该在日常聊天 / 主人格保底 RAG 里被捞出来污染答非所问。按来源一处排除，覆盖全部 skill。
+    from gsuid_core.ai_core.rag.skills_kb import SKILLS_DOC_SOURCE
+
     results: list[ScoredPoint] = await query_knowledge(
         query=query,
         limit=limit,
         plugin_filter=[plugin] if plugin else None,
         category_filter=category,
+        exclude_sources=[SKILLS_DOC_SOURCE],
     )
 
     # 注：知识库已升级为 Dense+BM25 混合检索，score 为 RRF 名次分（非余弦），

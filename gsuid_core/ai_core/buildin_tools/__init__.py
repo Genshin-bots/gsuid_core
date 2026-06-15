@@ -131,7 +131,9 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``load_plugin_into_core``：复用 ``reload_plugin`` 把（全新 / 改动后的）插件热加载进框架
 - ``test_plugin_command``：**功能自测**——实跑插件某条命令（MockBot 拦截下发、只回收产出），
   回复主人前确认命令真能跑出预期结果
-- ``read_plugin_dev_guide``：按需查阅 ``gscore-plugin-development`` SKILL 全文（目录 / 章节）
+- ``search_skill_docs``：**查文档首选**——对启动时挂载进知识库的 docs/skills 全部开发文档做混合检索
+  （dense+BM25）；可选 ``skill=`` 限定到某一份（如 ``gscore-plugin-development``）
+- ``read_plugin_dev_guide``：确定性阅读 ``gscore-plugin-development`` SKILL（目录 / 整章，亦作 RAG 关闭时的兜底）
 
 ## 三、能力代理的"永远工具"
 
@@ -265,9 +267,11 @@ from gsuid_core.ai_core.buildin_tools.command_executor import execute_shell_comm
 from gsuid_core.ai_core.buildin_tools.plugin_developer import (
     scaffold_plugin,
     validate_plugin,
+    search_skill_docs,
     copy_to_plugin_dir,
     test_plugin_command,
     load_plugin_into_core,
+    pull_installed_plugin,
     read_plugin_dev_guide,
 )
 
@@ -347,9 +351,11 @@ __all__ = [
     # 插件开发工具（plugin_developer_agent 专用）
     "scaffold_plugin",
     "validate_plugin",
+    "pull_installed_plugin",
     "load_plugin_into_core",
     "test_plugin_command",
     "read_plugin_dev_guide",
+    "search_skill_docs",
     "copy_to_plugin_dir",
     # 通用持久状态存储工具
     "state_get",

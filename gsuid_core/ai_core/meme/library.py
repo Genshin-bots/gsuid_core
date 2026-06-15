@@ -10,6 +10,8 @@ from typing import List, Optional, Sequence
 from pathlib import Path
 from datetime import datetime, timezone
 
+from qdrant_client.models import Vector, Condition, SparseVector
+
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
@@ -310,19 +312,21 @@ class MemeLibrary:
         folder: Optional[str] = None,
         top_k: int = 5,
         score_threshold: Optional[float] = None,
+        query_sparse: Optional["SparseVector"] = None,
     ) -> Sequence[AiMemeRecord]:
-        """通过向量检索搜索表情包
+        """通过稀疏 + 稠密混合向量检索搜索表情包
 
         Args:
-            query_vector: 查询向量
+            query_vector: 查询稠密向量
             folder: 可选的文件夹过滤
             top_k: 返回数量
-            score_threshold: 最低相似度阈值，低于此值的结果将被过滤
+            score_threshold: 最低相似度阈值（仅作用于 dense 分支的余弦门）
+            query_sparse: 查询稀疏向量（BM25），None 时降级纯 dense
 
         Returns:
             匹配的 AiMemeRecord 列表
         """
-        meme_ids = await _search_qdrant(query_vector, folder, top_k, score_threshold)
+        meme_ids = await _search_qdrant(query_vector, query_sparse, folder, top_k, score_threshold)
         if not meme_ids:
             return []
         return await AiMemeRecord.search_by_ids(meme_ids)
@@ -425,20 +429,46 @@ async def _vector_search(
     top_k: int,
     score_threshold: Optional[float],
 ) -> Sequence[AiMemeRecord]:
-    """纯向量语义检索（内部辅助函数，供 search_by_text 调用）"""
+    """稀疏 + 稠密混合语义检索（内部辅助函数，供 search_by_text 调用）"""
+    from gsuid_core.ai_core.rag.sparse import sparse_embed_single
+
     query_vector = await _embed_text(query_text)
     if query_vector is None:
         return []
-    return await MemeLibrary.search(query_vector, folder, top_k, score_threshold)
+    query_sparse = await sparse_embed_single(query_text)
+    return await MemeLibrary.search(
+        query_vector,
+        folder,
+        top_k,
+        score_threshold,
+        query_sparse=query_sparse,
+    )
 
 
 # ── Qdrant 操作辅助函数 ──
 
 MEME_COLLECTION_NAME = "ai_meme"
+# 命名 dense 向量名（旧库为单一**无名**向量；改名即触发结构迁移，与知识库一致：
+# 旧无名集合取 "dense" 命名向量维度得到 None ≠ dimension → 判定不匹配 → 重建为命名 dense + 稀疏）
+MEME_DENSE_VECTOR = "dense"
+
+
+def _meme_vectors_config(dimension: int) -> dict:
+    """表情包 dense 命名向量配置。"""
+    from qdrant_client.models import Distance, VectorParams
+
+    return {MEME_DENSE_VECTOR: VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True)}
+
+
+def _meme_sparse_config() -> dict:
+    """表情包 BM25 稀疏向量配置（IDF 服务端加权，与知识库一致）。"""
+    from qdrant_client.models import Modifier, SparseVectorParams
+
+    return {"sparse": SparseVectorParams(modifier=Modifier.IDF)}
 
 
 async def _ensure_meme_collection() -> None:
-    """确保 ai_meme Collection 存在，并在嵌入维度变化时基于数据库记录重建索引。"""
+    """确保 ai_meme Collection 存在（命名 dense + BM25 稀疏），并在嵌入维度/结构变化时基于数据库记录重建索引。"""
     from gsuid_core.ai_core.rag.base import client, get_strict_dimension
     from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection, collection_vector_mismatched
 
@@ -450,8 +480,13 @@ async def _ensure_meme_collection() -> None:
     should_reindex = False
 
     if MEME_COLLECTION_NAME in existing:
-        if await collection_vector_mismatched(MEME_COLLECTION_NAME, dimension):
-            logger.warning(f"[Meme] Collection {MEME_COLLECTION_NAME} 维度变化，强制重建后基于数据库记录重建索引")
+        # 传 vector_name="dense" 同时覆盖两种迁移触发：① 维度变化（换嵌入模型）；
+        # ② 结构变化（旧库的单一**无名** dense → 命名 "dense" + sparse）。重嵌后即为命名+稀疏结构。
+        if await collection_vector_mismatched(MEME_COLLECTION_NAME, dimension, vector_name=MEME_DENSE_VECTOR):
+            logger.warning(
+                f"[Meme] Collection {MEME_COLLECTION_NAME} 维度/结构变化，"
+                "强制重建（命名 dense + BM25 稀疏）后基于数据库记录重建索引"
+            )
             should_reindex = True
         else:
             if await _meme_collection_needs_recovery():
@@ -476,15 +511,12 @@ async def _ensure_meme_collection() -> None:
                 return
 
     if MEME_COLLECTION_NAME not in existing or should_reindex:
-        from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
+        from qdrant_client.models import PayloadSchemaType
 
         await force_recreate_collection(
             collection_name=MEME_COLLECTION_NAME,
-            vectors_config=VectorParams(
-                size=dimension,
-                distance=Distance.COSINE,
-                on_disk=True,
-            ),
+            vectors_config=_meme_vectors_config(dimension),
+            sparse_vectors_config=_meme_sparse_config(),
             on_disk_payload=True,
         )
         from gsuid_core.ai_core.rag.base import client as refreshed_client
@@ -499,7 +531,9 @@ async def _ensure_meme_collection() -> None:
                 field_name=field_name,
                 field_schema=PayloadSchemaType.KEYWORD,
             )
-        logger.info(f"[Meme] 创建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}")
+        logger.info(
+            f"[Meme] 创建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}（命名 dense + BM25 稀疏）"
+        )
 
     if should_reindex:
         await _reindex_meme_collection_from_db()
@@ -554,8 +588,8 @@ async def _embed_text(text: str) -> Optional[List[float]]:
 
 
 async def _force_recreate_meme_collection() -> None:
-    """强制重建表情包 Collection，用于本地 Qdrant 旧维度 ndarray 残留自恢复。"""
-    from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
+    """强制重建表情包 Collection（命名 dense + BM25 稀疏），用于本地 Qdrant 旧维度 ndarray 残留自恢复。"""
+    from qdrant_client.models import PayloadSchemaType
 
     from gsuid_core.ai_core.rag.base import client, get_strict_dimension
     from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection
@@ -566,11 +600,8 @@ async def _force_recreate_meme_collection() -> None:
     dimension = get_strict_dimension()
     await force_recreate_collection(
         collection_name=MEME_COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=dimension,
-            distance=Distance.COSINE,
-            on_disk=True,
-        ),
+        vectors_config=_meme_vectors_config(dimension),
+        sparse_vectors_config=_meme_sparse_config(),
         on_disk_payload=True,
     )
     from gsuid_core.ai_core.rag.base import client as refreshed_client
@@ -601,9 +632,11 @@ async def _upsert_to_qdrant(
     不会随每次编辑/重打标产生重复向量点。upsert 前先按 meme_id 清理
     旧点，自愈历史版本随机 UUID 留下的重复点。
     """
+
     from qdrant_client.models import PointStruct
 
     from gsuid_core.ai_core.rag.base import client, get_point_id
+    from gsuid_core.ai_core.rag.sparse import sparse_embed_single
 
     if client is None:
         return None
@@ -612,6 +645,9 @@ async def _upsert_to_qdrant(
     if vector is None:
         return None
 
+    # BM25 稀疏向量（与 dense 一一对应；模型不可用时为 None → 仅写 dense，查询端自动降级）
+    sparse = await sparse_embed_single(content)
+
     # 清理该 meme 既有的全部向量点（含历史随机 UUID 重复点），失败不阻塞写入
     try:
         await _remove_from_qdrant(meme_id)
@@ -619,9 +655,14 @@ async def _upsert_to_qdrant(
         logger.warning(f"[Meme] 清理旧向量点失败（继续写入）: {meme_id}: {e}")
 
     point_id = get_point_id(meme_id)
+    # 命名向量：dense 必有，sparse 不可用时省略（查询端自动降级纯 dense）
+    # 以官方 Vector 作为值类型，精确对齐 PointStruct.vector 的 Dict[str, Vector] 分支
+    named_vector: dict[str, Vector] = {MEME_DENSE_VECTOR: vector}
+    if sparse is not None:
+        named_vector["sparse"] = sparse
     point = PointStruct(
         id=point_id,
-        vector=vector,
+        vector=named_vector,
         payload={
             "meme_id": meme_id,
             "folder": folder,
@@ -655,32 +696,47 @@ async def _upsert_to_qdrant(
 
 
 async def _search_qdrant(
-    query_vector: List[float],
+    query_dense: List[float],
+    query_sparse: Optional[SparseVector],
     folder: Optional[str],
     top_k: int,
     score_threshold: Optional[float] = None,
 ) -> List[str]:
-    """在 Qdrant 中搜索相似向量，返回 meme_id 列表
+    """在 Qdrant 中做稀疏 + 稠密混合检索，返回 meme_id 列表
+
+    - dense（语义近邻，带余弦阈值门，过滤语义噪声）+ sparse（BM25 词项召回）→ Qdrant 原生 RRF 融合。
+    - 稀疏不可用时自动降级纯 dense。
 
     Args:
-        query_vector: 查询向量
+        query_dense: 查询稠密向量
+        query_sparse: 查询稀疏向量（BM25），None 时降级纯 dense
         folder: 可选的文件夹过滤
         top_k: 返回数量
-        score_threshold: 最低相似度阈值，低于此值的结果将被过滤
+        score_threshold: 最低相似度阈值（仅作用于 dense 分支的余弦门）
 
     Returns:
         匹配的 meme_id 列表
     """
-    from qdrant_client.models import Filter, MatchAny, MatchValue, FieldCondition
+    from qdrant_client.models import (
+        Filter,
+        Fusion,
+        MatchAny,
+        Prefetch,
+        MatchValue,
+        FusionQuery,
+        FieldCondition,
+    )
 
     from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
 
     if client is None:
         return []
 
     # status 过滤无条件携带：索引中可能存在非 tagged/manual 的点
     # （导入路径、历史遗留），不能依赖"只有可用状态才会被 sync"这一不变量
-    must_conditions = [
+    # 以 Condition 作为元素类型，对齐 Filter.must 的 List[Condition] 分支
+    must_conditions: list[Condition] = [
         FieldCondition(
             key="status",
             match=MatchAny(any=["tagged", "manual"]),
@@ -702,14 +758,49 @@ async def _search_qdrant(
 
         score_threshold = meme_config.get_config("meme_search_threshold").data
 
-    response = await client.query_points(
-        collection_name=MEME_COLLECTION_NAME,
-        query=query_vector,
-        query_filter=query_filter,
-        limit=top_k,
-        score_threshold=score_threshold,
-        with_payload=True,
-    )
+    try:
+        if query_sparse is None:
+            # 稀疏不可用：纯 dense（命名向量需指定 using），保留余弦阈值相关性门
+            response = await client.query_points(
+                collection_name=MEME_COLLECTION_NAME,
+                query=query_dense,
+                using=MEME_DENSE_VECTOR,
+                query_filter=query_filter,
+                limit=top_k,
+                score_threshold=score_threshold,
+                with_payload=True,
+            )
+        else:
+            # 混合：阈值只下到 dense 分支——RRF 融合分是名次分而非余弦，不能再用余弦阈值硬筛；
+            # sparse 需词项重合方有分，本身即强相关召回，无需余弦门。
+            response = await client.query_points(
+                collection_name=MEME_COLLECTION_NAME,
+                prefetch=[
+                    Prefetch(
+                        query=query_dense,
+                        using=MEME_DENSE_VECTOR,
+                        filter=query_filter,
+                        score_threshold=score_threshold,
+                        limit=top_k * 2,
+                    ),
+                    Prefetch(
+                        query=query_sparse,
+                        using="sparse",
+                        filter=query_filter,
+                        limit=top_k * 2,
+                    ),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=top_k,
+                with_payload=True,
+            )
+    except Exception as e:
+        # 启动迁移尚未完成时，旧无名集合上的命名向量查询会抛结构错误：降级空结果，待重嵌后恢复
+        if is_vector_structure_error(str(e)):
+            logger.warning(f"[Meme] 集合向量结构异常（疑似迁移未完成），本次检索降级为空: {e}")
+            return []
+        raise
+
     return [r.payload["meme_id"] for r in response.points if r.payload and "meme_id" in r.payload]
 
 

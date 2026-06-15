@@ -573,15 +573,15 @@ async def _hybrid_search_edges(
     """搜索 Edge，并批量回填 source_name / target_name"""
     results = await _hybrid_search_impl(MEMORY_EDGES_COLLECTION, query, scope_keys, top_k)
 
-    # 收集所有 source/target entity ID，批量查询实体名称
+    # Qdrant payload 字段可能因迁移 / 手工 patch 缺失（即便正常路径全字段写入）。
+    # 按 LLM.md §1.4 显式用 `in` + isinstance 守卫后直接访问，不使用 .get / getattr 兜底，
+    # 也不使用 `dict[k] if k in d else default` 这类 .get 的同义改写。
     entity_ids: set[str] = set()
     for r in results:
-        source_id = r["source_entity_id"]
-        target_id = r["target_entity_id"]
-        if source_id:
-            entity_ids.add(source_id)
-        if target_id:
-            entity_ids.add(target_id)
+        if "source_entity_id" in r and isinstance(r["source_entity_id"], str):
+            entity_ids.add(r["source_entity_id"])
+        if "target_entity_id" in r and isinstance(r["target_entity_id"], str):
+            entity_ids.add(r["target_entity_id"])
 
     # 批量从 Qdrant 获取实体名称
     id_to_name: dict[str, str] = {}
@@ -597,26 +597,50 @@ async def _hybrid_search_edges(
                     with_vectors=False,
                 )
                 for er in entity_results:
-                    if er.payload and "name" in er.payload:
+                    if er.payload is not None and "name" in er.payload and isinstance(er.payload["name"], str):
                         id_to_name[str(er.id)] = er.payload["name"]
             except Exception as e:
                 logger.warning(f"🧠 [Qdrant] Edge 实体名称批量查询失败: {e}")
 
     edges: list["Edge"] = []
     for r in results:
-        source_id = r["source_entity_id"]
-        target_id = r["target_entity_id"]
+        # 按 LLM.md §1.4：所有 payload 字段显式 `in` + isinstance 守卫后直接访问
+        source_id: str = ""
+        if "source_entity_id" in r and isinstance(r["source_entity_id"], str):
+            source_id = r["source_entity_id"]
+        target_id: str = ""
+        if "target_entity_id" in r and isinstance(r["target_entity_id"], str):
+            target_id = r["target_entity_id"]
+        fact: str = ""
+        if "fact" in r and isinstance(r["fact"], str):
+            fact = r["fact"]
+        score: float = 0.0
+        if "score" in r and isinstance(r["score"], (int, float)):
+            score = float(r["score"])
+        invalid_at_ts: float | None = None
+        if "invalid_at_ts" in r:
+            value = r["invalid_at_ts"]
+            if isinstance(value, (int, float)) or value is None:
+                invalid_at_ts = value
+        # 按 LLM.md §1.4：dict lookup 也走显式分支，不写 `d[k] if k in d else ""` 兜底
+        source_name: str = ""
+        if source_id in id_to_name:
+            source_name = id_to_name[source_id]
+        target_name: str = ""
+        if target_id in id_to_name:
+            target_name = id_to_name[target_id]
+
         edges.append(
             {
                 "id": r["id"],
                 "source_id": source_id,
                 "target_id": target_id,
-                "source_name": id_to_name[source_id] if source_id in id_to_name else "",
-                "target_name": id_to_name[target_id] if target_id in id_to_name else "",
-                "fact": r["fact"],
+                "source_name": source_name,
+                "target_name": target_name,
+                "fact": fact,
                 "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
-                "score": r["score"],
-                "invalid_at_ts": r["invalid_at_ts"],
+                "score": score,
+                "invalid_at_ts": invalid_at_ts,
             }
         )
     return edges

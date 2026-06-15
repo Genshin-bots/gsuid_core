@@ -885,11 +885,14 @@ class IntentService:
                 try:
                     # 动态导入避免循环依赖
                     from ..rag import query_knowledge
+                    from ..rag.skills_kb import SKILLS_DOC_SOURCE
 
-                    # 试探性检索（只取Top 1，阈值稍高）
+                    # 试探性检索（只取Top 1，阈值稍高）。排除 docs/skills 开发文档整类——
+                    # 它们只服务能力代理，绝不能让普通消息因撞上它而被误判成"问答"。
                     hits = await query_knowledge(
                         query=text,
                         limit=1,
+                        exclude_sources=[SKILLS_DOC_SOURCE],
                     )
 
                     if hits and len(hits) > 0:

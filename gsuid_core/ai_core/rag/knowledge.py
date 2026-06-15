@@ -969,6 +969,8 @@ async def query_knowledge(
     limit: int = 5,
     plugin_filter: Optional[List[str]] = None,
     category_filter: Optional[str] = None,
+    exclude_plugins: Optional[List[str]] = None,
+    exclude_sources: Optional[List[str]] = None,
 ) -> List[ScoredPoint]:
     """查询知识库
 
@@ -977,6 +979,9 @@ async def query_knowledge(
         limit: 返回结果数量限制
         plugin_filter: 可选，按插件名过滤（任一命中）
         category_filter: 可选，按知识类别过滤
+        exclude_plugins: 可选，**排除**这些插件命名空间（must_not，任一命中即排除）。
+        exclude_sources: 可选，**排除**这些来源（must_not）。用于把整类保留文档挡在通用检索之外——
+            如 ``["skill_doc"]`` 把 docs/skills 开发文档整类挡在日常聊天 RAG 外，避免污染。
 
     Returns:
         匹配的知识点列表
@@ -1004,13 +1009,22 @@ async def query_knowledge(
     query_dense = _vectors[0]
     query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
-    # 构建过滤条件（服务端下推）：plugin 任一命中 + category 精确匹配
+    # 构建过滤条件（服务端下推）：plugin 任一命中 + category 精确匹配 + exclude_plugins 排除
     must_conditions: list = []
     if plugin_filter:
         must_conditions.append(FieldCondition(key="plugin", match=MatchAny(any=list(plugin_filter))))
     if category_filter:
         must_conditions.append(FieldCondition(key="category", match=MatchValue(value=category_filter)))
-    search_filter = Filter(must=must_conditions) if must_conditions else None
+    must_not_conditions: list = []
+    if exclude_plugins:
+        must_not_conditions.append(FieldCondition(key="plugin", match=MatchAny(any=list(exclude_plugins))))
+    if exclude_sources:
+        must_not_conditions.append(FieldCondition(key="source", match=MatchAny(any=list(exclude_sources))))
+    search_filter = (
+        Filter(must=must_conditions or None, must_not=must_not_conditions or None)
+        if (must_conditions or must_not_conditions)
+        else None
+    )
 
     try:
         if query_sparse is None:

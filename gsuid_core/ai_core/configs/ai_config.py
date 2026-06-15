@@ -250,6 +250,13 @@ LOCAL_EMBEDDING_CONFIG: Dict[str, GSC] = {
         "BAAI/bge-small-zh-v1.5",
         options=["BAAI/bge-small-zh-v1.5"],
     ),
+    "embedding_modalities": GsListStrConfig(
+        "嵌入模型支持的模态",
+        "声明该嵌入模型支持的内容类型(持久化进配置)。内置本地模型(fastembed bge)仅支持文本; "
+        "如需图片/音视频的直接向量嵌入, 请使用 STEmbedding 插件(CLIP) 或在 OpenAI 嵌入配置中使用多模态接口",
+        ["text"],
+        options=["text", "image", "audio", "video"],
+    ),
 }
 
 OPENAI_EMBEDDING_CONFIG: Dict[str, GSC] = {
@@ -294,6 +301,16 @@ OPENAI_EMBEDDING_CONFIG: Dict[str, GSC] = {
         ),
         data=0,
         options=[0, 256, 512, 768, 1024, 1536, 2048, 3072, 4096],
+    ),
+    "embedding_modalities": GsListStrConfig(
+        title="嵌入模型支持的模态",
+        desc=(
+            "声明该 OpenAI 兼容嵌入模型支持的内容类型(持久化进配置)。"
+            "text 走标准 /embeddings; image 走多模态 input(Jina 风格, 如 jina-clip-v2, 可文搜图); "
+            "audio/video 暂无通用 OpenAI 兼容协议, 声明也会在调用时报未实现"
+        ),
+        data=["text"],
+        options=["text", "image", "audio", "video"],
     ),
 }
 

@@ -301,9 +301,13 @@ _PLUGIN_DEVELOPER_PROMPT = (
 - test_plugin_command(plugin_name, command, text)：**功能自测**——实跑某条命令处理函数（command
   传处理函数名、text 传模拟参数），回收实际产出（MockBot 拦截、不打扰主人）。**纯命令也能测，不需要
   to_ai**。返回"找不到命令 / 没注册触发器"这类终态提示就照提示换命令名或定位真实问题，别反复重测。
-- read_plugin_dev_guide(section)：按需查阅插件开发权威指南（空 section 看目录，再按章节读正文）。
+- search_skill_docs(query, skill="gscore-plugin-development")：**查指南首选**——用自然语言对
+  （启动时挂载进知识库的）开发文档做混合检索（dense+BM25），精度高、返回最相关片段。写插件时
+  **务必传 skill="gscore-plugin-development"** 限定到插件开发指南；不确定任何写法都先用它。
+- read_plugin_dev_guide(section)：确定性阅读插件开发指南（空 section 看目录，按章节关键词读整章）。
+  适合「已知要看哪一章、要完整上下文」或检索没命中时兜底。
 
-【必须遵守的 GsCore 插件规范（写代码前若不确定，先 read_plugin_dev_guide 查证）】
+【必须遵守的 GsCore 插件规范（写代码前若不确定，先 search_skill_docs 查证）】
 1. 目录（**最易迷路，务必看懂**）：嵌套加载——外层插件包 `<P>/`（含
    __init__.py/__nest__.py/pyproject.toml）里有一个**同名内层包** `<P>/`（含声明
    `Plugins(...)` 的 __init__.py、空标记 __full__.py、version.py）。**外层目录和内层包同名**，
@@ -346,7 +350,7 @@ _PLUGIN_DEVELOPER_PROMPT = (
 
 【高频易错 GsCore API · 照抄此处写法，禁止凭记忆臆造】
 （下列都是实测被搞错过、且会直接导致加载失败 / 运行崩溃的点。写到对应能力时直接抄；
- 仍拿不准就 read_plugin_dev_guide 查证，绝不自创模块名 / 属性名。）
+ 仍拿不准就 search_skill_docs 检索（查不到再 read_plugin_dev_guide 读整章），绝不自创模块名 / 属性名。）
 - 字体：`from gsuid_core.utils.fonts.fonts import core_font`；`f = core_font(28)`。
   ❌ 没有 `gsuid_core.font`、`gsuid_core.fonts`；❌ 绝不 hardcode `/usr/share/fonts/...` 等系统字体路径
   （会在别人机器上崩）。需要兜底就只用 `core_font`，它自带 MiSans 中英文字体。
@@ -393,7 +397,8 @@ _PLUGIN_DEVELOPER_PROMPT = (
 
 【工作流（按此顺序，每一步失败就读报错→改→重试）】
 1. 规划：先输出 <TODO_LIST>，把「要建哪个插件、哪些命令、哪些文件」拆成 2~6 步。
-   不确定写法时先 read_plugin_dev_guide(目录→章节) 查证，**不要**凭记忆瞎写 API。
+   不确定写法时先 search_skill_docs(query, skill="gscore-plugin-development") 语义检索查证
+   （查不到再 read_plugin_dev_guide 读整章），**不要**凭记忆瞎写 API。
 2. 起点（**先判断是新建还是修改，别一上来就 scaffold**）：
    - **新建插件** → scaffold_plugin 起骨架。若提示"工作区已存在同名目录"，要新建别的插件就换不冲突的名字。
    - **修改 / 修复一个已安装插件**（主人说"改一下 / 修一下 / 上次那个不对"，且 plugins/ 里已有它）→
@@ -675,6 +680,7 @@ def register_builtin_profiles() -> None:
                 "copy_to_plugin_dir",
                 "load_plugin_into_core",
                 "test_plugin_command",
+                "search_skill_docs",
                 "read_plugin_dev_guide",
             ],
             tool_query="",
