@@ -49,4 +49,10 @@ SP_CONIFG: Dict[str, GSC] = {
             "全部拆成单独消息",
         ],
     ),
+    "CommandSemaphore": GsIntConfig(
+        "允许命令并发数量",
+        "允许命令同时并发数量, 过高可能挤占CPU",
+        25,
+        500,
+    ),
 }

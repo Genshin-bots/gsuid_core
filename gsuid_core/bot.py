@@ -40,6 +40,7 @@ isc: List = bm_config.get_config("SendTemplatePlatform").data
 istry: List = bm_config.get_config("TryTemplateForQQ").data
 
 enable_forward: str = sp_config.get_config("EnableForwardMessage").data
+command_semaphore: int = sp_config.get_config("CommandSemaphore").data
 
 enable_buttons_platform = isb
 enable_markdown_platform = ism
@@ -114,7 +115,7 @@ class _Bot:
         self.queue = asyncio.queues.PriorityQueue()
         self.send_dict = {}
         self.bg_tasks: set[asyncio.Task] = set()
-        self.sem = asyncio.Semaphore(10)
+        self.sem = asyncio.Semaphore(command_semaphore)
         self._shutdown_event: Optional[asyncio.Event] = None
         # 独立发送队列：所有 WebSocket 发送操作通过此队列串行化执行
         self._send_queue: asyncio.queues.Queue = asyncio.queues.Queue()
