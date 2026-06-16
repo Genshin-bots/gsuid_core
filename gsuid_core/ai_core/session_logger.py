@@ -211,6 +211,39 @@ def externalize_base64_images(text: str) -> str:
     return _DATAURI_IMAGE_RE.sub(_repl, text)
 
 
+def normalize_user_message_to_text(user_message: Any) -> str:
+    """把用户消息归一为「保留真实换行 + base64 已外置」的纯文本，供 user_input 日志使用。
+
+    - ``str``：原样（仅外置 base64）。
+    - ``list`` / ``tuple``（pydantic_ai 的 ``list[UserContent]``，模型支持图片时
+      gs_agent 传入的形态）：逐元素转文本——字符串元素保留原文（含真实换行），
+      ``ImageUrl`` 等带 ``url`` 字段的内容取其 url 单独成行——再用**真实换行** ``\n``
+      拼接。**绝不**用 ``str(list)``：那会用 Python repr 把字符串里的换行转义成字面
+      ``\n``（前端按纯文本渲染时无法换行），并把图片包成 ``ImageUrl(url='data:...')``
+      这样的噪声。
+    - 其他类型：退化为 ``str()``。
+
+    最后统一调用 ``externalize_base64_images``，确保任何形态里的 base64 图片都被落盘
+    为 ``images/<hash>.<ext>`` 引用（这是"base64 不写入日志"的兜底，且不依赖 repr 格式）。
+    """
+    if isinstance(user_message, str):
+        text = user_message
+    elif isinstance(user_message, (list, tuple)):
+        parts: List[str] = []
+        for item in user_message:
+            if isinstance(item, str):
+                parts.append(item)
+            else:
+                # ImageUrl / BinaryContent 等：优先取 url 字段（base64 DataURI 在此），
+                # 取不到再退化为 str(item)，交由 externalize_base64_images 兜底外置。
+                url = getattr(item, "url", None)
+                parts.append(url if isinstance(url, str) else str(item))
+        text = "\n".join(parts)
+    else:
+        text = str(user_message)
+    return externalize_base64_images(text)
+
+
 class AISessionLogger:
     """
     AI 会话日志记录器 —— ai_core 唯一的会话日志序列化器
@@ -412,8 +445,13 @@ class AISessionLogger:
 
         用户消息里的 base64 图片会被外置到 ``session_logs/images/`` 并替换为图片引用，
         避免 base64 把日志文件撑爆（外置文件随 ScheduledCleanLogDay 清理）。
+
+        当 user_message 是 ``list[UserContent]``（文本 + ImageUrl 混排，模型支持图片
+        时 gs_agent 传入的形态）时，由 ``normalize_user_message_to_text`` 逐元素归一，
+        **既保留文本里的真实换行**（不被 ``str(list)`` 的 repr 转义成字面 ``\n`` 而导致
+        前端无法换行），**又确保 base64 落盘为图片引用**（不依赖 ImageUrl 的 repr 格式）。
         """
-        self._add_entry("user_input", {"content": externalize_base64_images(str(user_message))})
+        self._add_entry("user_input", {"content": normalize_user_message_to_text(user_message)})
 
     def log_thinking(self, content: str) -> None:
         """记录模型思考过程"""
