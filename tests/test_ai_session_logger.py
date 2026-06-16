@@ -44,14 +44,17 @@ _EXPECTED_FILE_KEYS = {
 
 
 def _patch_paths(tmp: Path):
-    """把 main / subagent 日志目录重定向到临时目录（logger 按模块全局取路径）。"""
+    """把 main / subagent / images 目录重定向到临时目录（logger 按模块全局取路径）。"""
     main = tmp / "session_logs"
     sub = main / "subagents"
+    images = main / "images"
     main.mkdir(parents=True, exist_ok=True)
     sub.mkdir(parents=True, exist_ok=True)
+    images.mkdir(parents=True, exist_ok=True)
     sl.AI_SESSION_LOGS_PATH = main
     sl.AI_SUBAGENT_LOGS_PATH = sub
-    return main, sub
+    sl.AI_SESSION_IMAGES_PATH = images
+    return main, sub, images
 
 
 def test_window_resume_same_file():
@@ -130,7 +133,7 @@ def test_entry_whitelist_warns_but_records():
 def test_standalone_proactive_format_matches():
     """log_standalone_proactive 产出的文件结构与活跃 session 完全一致。"""
     with tempfile.TemporaryDirectory() as d:
-        main, _ = _patch_paths(Path(d))
+        main, _, _ = _patch_paths(Path(d))
         sid = "Bot::g::u-standalone"
 
         ok = AISessionLogger.log_standalone_proactive(
@@ -160,7 +163,7 @@ def test_standalone_proactive_format_matches():
 def test_clean_old_logs_disabled_when_zero():
     """days=0 → 不清理（即使文件很旧）。"""
     with tempfile.TemporaryDirectory() as d:
-        main, sub = _patch_paths(Path(d))
+        main, sub, _ = _patch_paths(Path(d))
         a = main / "a_1_x.json"
         b = sub / "b_1_x.json"
         a.write_text("{}", encoding="utf-8")
@@ -175,7 +178,7 @@ def test_clean_old_logs_disabled_when_zero():
 def test_clean_old_logs_removes_old_keeps_recent():
     """days>0 → 删除超过 X 天的文件（main + subagents），保留近期文件。"""
     with tempfile.TemporaryDirectory() as d:
-        main, sub = _patch_paths(Path(d))
+        main, sub, _ = _patch_paths(Path(d))
         old_file = main / "old_1_x.json"
         recent_file = main / "recent_1_x.json"
         sub_old = sub / "subold_1_x.json"
@@ -231,6 +234,101 @@ def test_run_markers_have_no_duplicated_payload():
         assert by["result"]["output"] == "最终答案"
         assert by["result"]["tool_calls"] == ["tool_a"]
         lg.close()
+
+
+# 一张合法的 1x1 PNG（base64），供图片外置测试使用
+_PNG_1X1_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+
+def test_user_input_externalizes_base64_image():
+    """user_input 里的 base64 图片被外置到 images 目录，日志里只留引用、不留 base64。"""
+    with tempfile.TemporaryDirectory() as d:
+        _, _, images = _patch_paths(Path(d))
+        lg = AISessionLogger(session_id="Bot::g::u-img", create_by="Chat")
+        data_uri = f"data:image/png;base64,{_PNG_1X1_B64}"
+        lg.log_user_input(f"【用户发言】\n看这张图 {data_uri}")
+
+        ui = next(e for e in lg.entries if e["type"] == "user_input")
+        content = ui["data"]["content"]
+        assert ";base64," not in content, "日志里不应再出现 base64 数据"
+        assert "[图片引用: images/" in content, "应替换为图片引用"
+        # 引用指向的文件真实存在于 images 目录
+        img_files = list(images.iterdir())
+        assert len(img_files) == 1, f"应外置 1 张图片，实际 {len(img_files)}"
+        assert img_files[0].suffix == ".png"
+        assert content.endswith(f"[图片引用: images/{img_files[0].name}]")
+        lg.close()
+
+
+def test_user_input_externalizes_image_in_list_repr():
+    """list 形式 user_message 的 repr（含 ImageUrl(url='data:...')）也能被外置。"""
+    with tempfile.TemporaryDirectory() as d:
+        _, _, images = _patch_paths(Path(d))
+        lg = AISessionLogger(session_id="Bot::g::u-imglist", create_by="Chat")
+        # 模拟 gs_agent 传入 list[UserContent] 后 str(...) 的形态
+        try:
+            from pydantic_ai.messages import ImageUrl
+
+            msg = ["【用户发言】\n你好", ImageUrl(url=f"data:image/png;base64,{_PNG_1X1_B64}")]
+        except Exception:
+            # 无 pydantic_ai 时退化为等价 repr 字符串，仍覆盖外置逻辑
+            msg = f"['【用户发言】\\n你好', ImageUrl(url='data:image/png;base64,{_PNG_1X1_B64}')]"
+        lg.log_user_input(msg)
+
+        content = next(e for e in lg.entries if e["type"] == "user_input")["data"]["content"]
+        assert ";base64," not in content, "list repr 里的 base64 也应被外置"
+        assert "[图片引用: images/" in content
+        assert len(list(images.iterdir())) == 1
+        lg.close()
+
+
+def test_externalize_dedups_same_image():
+    """同一张图（内容相同）外置后复用同一文件，按内容哈希去重。"""
+    with tempfile.TemporaryDirectory() as d:
+        _, _, images = _patch_paths(Path(d))
+        data_uri = f"data:image/png;base64,{_PNG_1X1_B64}"
+        ref1 = sl.externalize_base64_images(data_uri)
+        ref2 = sl.externalize_base64_images(data_uri)
+        assert ref1 == ref2, "相同内容应得到相同引用"
+        assert len(list(images.iterdir())) == 1, "相同图片只应落盘一份"
+
+
+def test_tool_call_and_return_externalize_base64_image():
+    """tool_call 参数 / tool_return 内容里的 base64 图片同样被外置（不依赖具体调用路径）。"""
+    with tempfile.TemporaryDirectory() as d:
+        _, _, images = _patch_paths(Path(d))
+        lg = AISessionLogger(session_id="Bot::g::u-tool", create_by="Chat")
+        data_uri = f"data:image/png;base64,{_PNG_1X1_B64}"
+
+        lg.log_tool_call("render_tool", {"image": data_uri}, "call_1")
+        lg.log_tool_return("render_tool", f"渲染完成 {data_uri}", "call_1")
+
+        call = next(e for e in lg.entries if e["type"] == "tool_call")
+        ret = next(e for e in lg.entries if e["type"] == "tool_return")
+        assert ";base64," not in call["data"]["args"], "tool_call 参数里不应残留 base64"
+        assert "[图片引用: images/" in call["data"]["args"]
+        assert ";base64," not in ret["data"]["content"], "tool_return 内容里不应残留 base64"
+        assert "[图片引用: images/" in ret["data"]["content"]
+        # 同一张图按内容哈希去重，三处（无 user_input）共用一份文件
+        assert len(list(images.iterdir())) == 1
+        lg.close()
+
+
+def test_clean_old_logs_removes_old_images():
+    """images 目录中的旧图片随 ScheduledCleanLogDay 一同清理，近期图片保留。"""
+    with tempfile.TemporaryDirectory() as d:
+        _, _, images = _patch_paths(Path(d))
+        old_img = images / "old_abcdef.png"
+        recent_img = images / "recent_abcdef.png"
+        old_img.write_bytes(b"\x89PNG_old")
+        recent_img.write_bytes(b"\x89PNG_recent")
+        old = time.time() - 30 * 86400
+        os.utime(old_img, (old, old))  # recent_img 保持当前 mtime
+
+        removed = sl.clean_old_session_logs(8)
+        assert removed == 1, f"应删除 1 张旧图片，实际 {removed}"
+        assert not old_img.exists()
+        assert recent_img.exists(), "8 天内的图片应保留"
 
 
 def _run_all():

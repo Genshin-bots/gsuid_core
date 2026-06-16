@@ -27,7 +27,6 @@ sv_core_backup = SV("Core备份", pm=0)
 
 DB_BACKUP = get_res_path(["GsCore", "database_backup"])
 
-CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
 backup_time: Tuple[int, int] = backup_config.get_config("backup_time").data
 backup_hour, backup_minute = backup_time
 
@@ -41,6 +40,7 @@ async def backup_path_files():
     """
     凌晨自动备份`备份管理`中的路径树
     """
+    CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
     copy_and_rebase_paths()
     logger.success("♻️ [早柚核心] 路径已备份!")
     remove_old_backups(int(CLEAN_DAY))
@@ -63,8 +63,12 @@ async def database_backup():
     # 懒加载：避免框架启动时即触碰 gsuid_core.ai_core 包
     from gsuid_core.ai_core.session_logger import clean_old_session_logs
 
+    CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
+
+    # 正常备份数据库等用户保存内容
     await backup_file(DB_PATH, DB_BACKUP)
     clean_log()
+
     # AI 会话日志也遵循 ScheduledCleanLogDay 清理（与框架日志同一配置；0 = 不清理）
     ai_clean_days = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 8
     clean_old_session_logs(ai_clean_days)

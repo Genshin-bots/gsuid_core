@@ -563,7 +563,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `system_prompt` | 系统提示词（唯一记录处） | content |
 | `run_start` | 单次 run 开始（纯标记） | （空，用户输入见 user_input） |
 | `run_end` | 单次 run 结束（纯标记） | （空，最终输出见 result） |
-| `user_input` | 用户输入（唯一记录处） | content |
+| `user_input` | 用户输入（唯一记录处） | content（含图片时见下方"图片外置"说明） |
 | `thinking` | 模型思考过程 | content |
 | `tool_call` | 工具调用请求 | tool_name, args, tool_call_id |
 | `tool_return` | 工具执行返回 | tool_name, content, tool_call_id |
@@ -575,6 +575,17 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `node_transition` | Agent 节点状态转换 | node_type (ModelRequestNode/CallToolsNode/End), details |
 | `agent_linked` | 关联 Agent 事件 | agent_type, session_id, session_uuid, persona_name, create_by, log_file, linked_at |
 | `proactive_emission` | 主动消息发射 | source, content, trigger_reason, generator_log_files |
+
+### 图片外置（user_input）
+
+用户消息里的 base64 图片**不内联进日志 JSON**——那会让单个日志文件膨胀到几 MB。
+`user_input` 的 `content` 在落盘前会把其中的 `data:image/...;base64,...` 按**内容哈希**
+去重外置到 `data/ai_core/session_logs/images/<hash>.<ext>`，`content` 里只保留
+`[图片引用: images/<hash>.<ext>]` 形式的引用。
+
+- 引用路径相对 `session_logs/` 根目录；前端如需展示原图，可据此拼接图片文件路径。
+- `images/` 目录与日志文件一样随 `ScheduledCleanLogDay` 定时清理；图片被引用（再次外置同一张图）时会刷新 mtime，仍在活跃日志里引用的图片不会被提前清掉。
+- 外置失败（极少数：解码/写盘异常）时退化为 `[图片: base64 <N> 字符, 外置失败]` 占位，**绝不**把超长 base64 原样写进日志。
 
 ### 列表条目额外字段
 
