@@ -51,6 +51,8 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``query_user_memory``（``database_query.py``）：查询用户多群组记忆 + 好感度（统一照会）
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
+- ``read_image``（``image_reader.py``）：按图片ID（``img_xxx`` / ``res_xxx`` / 直链）
+  取回群聊图片并转述为文字（群聊只给 Agent 图片ID、需看图时再读，保底常驻）
 - ``state_get`` / ``state_set`` / ``state_list``（``state_store/tools.py``）：
   高频通用持久键值状态（低频的 ``state_delete`` / ``state_append`` 已降为 ``common``，
   靠"持久状态"能力族按需召回）
@@ -79,6 +81,8 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``evaluate_agent_mesh_capability``（``planning/kanban_tools.py``，
   ``capability_domain="长期任务编排"``）：Kanban 任务树前置评估
 - ``search_image``（``rag_search.py``）：图片资源向量检索
+- ``get_user_avatar``（``avatar_tools.py``）：按用户ID取头像，注册 RM 后返回
+  ``img_xxx``（再交给 ``read_image`` 看 / ``send_message_by_ai`` 发）
 - ``update_self_note``（``self_info.py``）：写 self_note
   （``capability_domain="自我认知"``）
 - ``set_user_favorability``（``favorability_manager.py``）：绝对值设置好感度
@@ -226,6 +230,9 @@ from gsuid_core.ai_core.buildin_tools.rag_search import (
 # Web搜索工具 - 基于Tavily的web搜索
 from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool
 
+# 用户头像工具 - 按用户ID取头像并注册到RM，返回图片ID
+from gsuid_core.ai_core.buildin_tools.avatar_tools import get_user_avatar
+
 # 文件管理工具 - 读写执行文件和diff对比
 from gsuid_core.ai_core.buildin_tools.file_manager import (
     execute_file,
@@ -234,6 +241,9 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
     read_file_content,
     write_file_content,
 )
+
+# 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
+from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 
 # 数据库查询工具 - 查询用户数据（记忆/事实/好感度统一照会）
 from gsuid_core.ai_core.buildin_tools.database_query import (
@@ -299,6 +309,10 @@ __all__ = [
     # RAG检索工具
     "search_knowledge",
     "search_image",
+    # 图片读取工具（按ID取图转述，保底）
+    "read_image",
+    # 用户头像工具（按ID取头像，返回RM图片ID）
+    "get_user_avatar",
     # Web搜索工具
     "web_search_tool",
     # 网页抓取工具

@@ -319,9 +319,12 @@ async def prepare_content_payload(
     """
     准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
 
-    图片处理由 GsCoreAIAgent._execute_run 自动完成：
-    - 模型支持图片时直接传图
-    - 模型不支持图片时通过 understand_image 转述为文字
+    图片处理分两种模式（由 ai_config ``lazy_image_read`` 开关决定）：
+    - 惰性投喂（默认开启）：图片本体不进上下文，只把图片ID以文字透传给 AI；
+      AI 需要看图时再调用 ``read_image(图片ID)`` 按需读取。群聊图片多时显著省 Token。
+    - 直接投喂（关闭时，旧行为）：把图片物化为 ImageUrl 放进 content payload，
+      再由 ``GsCoreAIAgent._execute_run`` 处理（模型支持图片时直接传图，
+      不支持时通过 understand_image 转述为文字）。
 
     Args:
         ev: 事件对象
@@ -330,8 +333,14 @@ async def prepare_content_payload(
         favorability_zone: 好感度区间描述 (可选)
 
     Returns:
-        content payload 列表（可能包含 ImageUrl，由 _execute_run 自动处理）
+        content payload 列表（惰性模式仅含文本；直接模式可能含 ImageUrl）
     """
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    # 惰性图片投喂开关：群聊图片多时, 默认只透传图片ID, 由 AI 按需 read_image 读图,
+    # 避免一次性把大量图片塞进多模态上下文导致 Token 爆炸 / 注意力被稀释。
+    lazy_image_read = bool(ai_config.get_config("lazy_image_read").data)
+
     content_payload: list[UserContent] = []
 
     # 获取用户昵称
@@ -357,8 +366,16 @@ async def prepare_content_payload(
         text += ev.text.strip()
 
     # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
-    for i in ev.image_id_list:
-        text += f"\n--- 用户上传图片ID: {i} ---\n"
+    if ev.image_id_list:
+        if lazy_image_read:
+            # 惰性模式：只给图片ID + 一行调用指引，图片本体留在 RM，需要看时再 read_image
+            text += "\n--- 用户发送了图片(未展开, 需要查看内容时调用 read_image(图片ID)) ---"
+            for i in ev.image_id_list:
+                text += f"\n图片ID: {i}"
+            text += "\n"
+        else:
+            for i in ev.image_id_list:
+                text += f"\n--- 用户上传图片ID: {i} ---\n"
 
     if hasattr(ev, "audio_id") and ev.audio_id:
         text += f"\n--- 用户上传音频ID: {ev.audio_id} ---\n"
@@ -370,6 +387,11 @@ async def prepare_content_payload(
         text += f"\n--- 提及用户(@用户): {at} ---\n"
 
     content_payload.append(text)
+
+    # 惰性模式：图片只以 ID 形式存在（已在上方文本注明），不把本体喂进多模态上下文，
+    # 由 AI 调用 read_image 按需读取。直接跳过下方的图片物化。
+    if lazy_image_read:
+        return content_payload
 
     # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
     # 远程 URL（如 QQ 带 rkey 的临时链接）会在短时间内过期；一旦以原始

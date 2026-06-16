@@ -81,6 +81,13 @@ AI_CONFIG: Dict[str, GSC] = {
         "MCP",
         options=["MCP"],
     ),
+    "lazy_image_read": GsBoolConfig(
+        "图片按需读取(惰性投喂)",
+        "开启后, 用户发送的图片不再自动塞进多模态上下文, 只把图片ID透传给AI; "
+        "AI需要查看某张图时再调用 read_image(图片ID) 按需读取。"
+        "群聊图片多时可显著节省Token并减少注意力稀释; 关闭则恢复直接投喂图片本体(旧行为)。",
+        True,
+    ),
     "asr_provider": GsStrConfig(
         "语音识别服务提供方",
         "指定语音识别（ASR）服务提供方，用于将用户发送的语音消息转为文字",

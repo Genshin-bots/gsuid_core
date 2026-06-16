@@ -21,6 +21,8 @@ buildin_tools/
 ├── file_operations.py       # 文件操作工具（artifacts 路径内移动/复制/打包 zip）
 ├── get_time.py              # 日期时间工具
 ├── html_render_tools.py     # HTML/Markdown 渲染为图片
+├── image_reader.py          # 图片读取工具（按图片ID取回并转述为文字）
+├── avatar_tools.py          # 用户头像工具（按用户ID取头像，返回RM图片ID）
 ├── meme_tools.py            # 表情包工具（发送/收藏/搜索）
 ├── scheduler.py             # 定时任务管理工具
 ├── self_info.py             # 自我认知信息工具
@@ -46,6 +48,8 @@ buildin_tools/
 | file_operations.py | shutil / zipfile | artifacts 路径内文件移动/复制/打包 zip |
 | get_time.py | datetime | 日期时间获取 |
 | html_render_tools.py | pyrenderhtml / playwright | HTML/Markdown 渲染为图片 |
+| image_reader.py | ai_core.image_understand + RM | 按图片ID取回图片并转述为文字 |
+| avatar_tools.py | utils.image.image_tools + RM | 按用户ID取头像，注册RM返回图片ID |
 | meme_tools.py | ai_core.meme | 表情包发送/收藏/搜索 |
 | scheduler.py | APScheduler | 定时任务管理 |
 | self_info.py | ai_core.persona | 自我认知信息查询 |
@@ -124,6 +128,65 @@ results = await web_search(
 **返回：** 搜索结果列表，每条包含 `title`、`url`、`content`、`score` 字段
 
 **底层实现：** 直接引用 `ai_core.web_search.tavily_search`
+
+---
+
+### 图片读取工具 (image_reader.py)
+
+#### read_image()
+按图片ID取回一张图片并转述为文字内容。
+
+群聊里图片极多，框架默认只把图片本体存进 RM 资源池、用「图片ID」(`img_xxxxxxxx`)
+以文字形式透传给 Agent（不直接塞进多模态上下文，避免 Token 爆炸 / 注意力稀释）。
+当 Agent 需要真正"看清"某张图时再调用本工具读取。
+
+```python
+from gsuid_core.ai_core.buildin_tools import read_image
+
+desc = await read_image(ctx, "img_1a2b3c4d")
+desc = await read_image(ctx, "img_1a2b3c4d", question="图里这串报错是什么？")
+```
+
+**参数：**
+- `ctx`: 工具执行上下文
+- `image_id`: 图片资源ID，支持 `img_xxxxxxxx`（用户上传图）、`res_xxxxxxxx`
+  （能力代理产物）、`http(s)://` / `base64://` / `data:image/` 直链
+- `question`: 可选，想从图里知道什么，传入后描述会聚焦该问题
+
+**返回：** 图片内容的文字描述；图片不存在/已过期/非图片资源时返回中文错误说明
+
+**底层实现：** RM 取字节 → DataURI → `ai_core.image_understand.understand_image`
+（模型原生多模态优先，不支持时回退 MCP 转述模型，带 10 分钟短期缓存）。**分类
+`buildin`（保底常驻）**，保证 Agent 遇到图片ID 时总能读图。
+
+---
+
+### 用户头像工具 (avatar_tools.py)
+
+#### get_user_avatar()
+按用户ID取回头像，注册到 RM 资源池后返回图片ID。
+
+```python
+from gsuid_core.ai_core.buildin_tools import get_user_avatar
+
+result = await get_user_avatar(ctx)                 # 当前发言者头像
+result = await get_user_avatar(ctx, user_id="123")  # 指定用户头像
+```
+
+**参数：**
+- `ctx`: 工具执行上下文
+- `user_id`: 可选，目标用户ID。不传则取当前发言者；指定他人时 QQ 系平台
+  （onebot / qqgroup）可按任意 ID 取头像
+
+**返回：** 含资源ID（`img_xxxxxxxx`）及后续用法提示的说明文本；取不到时返回
+中文不支持/错误说明
+
+**后续消费：** 拿到 `img_xxx` 后，用 `read_image('img_xxx')` 看清头像内容，或用
+`send_message_by_ai(image_id='img_xxx')` 把头像发给用户。
+
+**底层实现：** 复用 `utils.image.image_tools` 的 `get_event_avatar` /
+`get_qq_avatar` / `get_qqgroup_avatar`，PIL → bytes → `RM.register`。分类 `common`
+（向量检索按需加载）。
 
 ---
 
