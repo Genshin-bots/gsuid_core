@@ -9,14 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from qdrant_client.models import (
     Filter,
-    Fusion,
+    Vector,
     Distance,
     MatchAny,
     Modifier,
-    Prefetch,
     MatchValue,
-    FusionQuery,
     PointStruct,
+    PointIdsList,
     SparseVector,
     VectorParams,
     FieldCondition,
@@ -55,6 +54,7 @@ from gsuid_core.ai_core.rag.collection_migration import (
     collection_vector_mismatched,
 )
 
+from .hybrid import hybrid_query
 from .reranker import rerank_results
 from .image_rag import build_image_text
 
@@ -167,7 +167,7 @@ def _build_named_point(
     ``vector`` 精确标注为命名向量映射（dense=list / sparse=SparseVector），对齐 Qdrant
     ``VectorStruct`` 的命名向量分支，无需 type:ignore。
     """
-    vector: Dict[str, Union[List[float], SparseVector]] = {KNOWLEDGE_DENSE_VECTOR: dense}
+    vector: Dict[str, Vector] = {KNOWLEDGE_DENSE_VECTOR: dense}
     if sparse is not None:
         vector["sparse"] = sparse
     return PointStruct(id=point_id, vector=vector, payload=payload)
@@ -599,7 +599,10 @@ async def delete_knowledge_document(doc_id: str) -> Dict[str, Any]:
             logger.debug(f"🧠 [Knowledge] 按 doc_id 删除向量失败，回退按点ID删除: {e}")
             if qids:
                 try:
-                    await client.delete(collection_name=KNOWLEDGE_COLLECTION_NAME, points_selector=qids)
+                    await client.delete(
+                        collection_name=KNOWLEDGE_COLLECTION_NAME,
+                        points_selector=PointIdsList(points=list(qids)),
+                    )
                 except Exception:
                     pass
 
@@ -995,7 +998,6 @@ async def query_knowledge(
     """
     from gsuid_core.ai_core.rag.base import client, embedding_model, is_enable_rerank
     from gsuid_core.ai_core.statistics import statistics_manager
-    from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
 
     if client is None or embedding_model is None:
         logger.warning("🧠 [Knowledge] AI功能未启用，无法查询知识")
@@ -1026,35 +1028,15 @@ async def query_knowledge(
         else None
     )
 
-    try:
-        if query_sparse is None:
-            # 稀疏不可用：纯 dense（命名向量需指定 using）
-            search_result = await client.query_points(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                query=query_dense,
-                using=KNOWLEDGE_DENSE_VECTOR,
-                limit=limit,
-                query_filter=search_filter,
-                with_payload=True,
-            )
-        else:
-            search_result = await client.query_points(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                prefetch=[
-                    Prefetch(query=query_dense, using=KNOWLEDGE_DENSE_VECTOR, filter=search_filter, limit=limit * 2),
-                    Prefetch(query=query_sparse, using="sparse", filter=search_filter, limit=limit * 2),
-                ],
-                query=FusionQuery(fusion=Fusion.RRF),
-                limit=limit,
-                with_payload=True,
-            )
-        results = search_result.points
-    except Exception as e:
-        # 启动迁移尚未完成时，旧无名集合上的命名向量查询会抛结构错误：降级空结果，待重嵌后恢复。
-        if is_vector_structure_error(str(e)):
-            logger.warning(f"🧠 [Knowledge] 集合向量结构异常（疑似迁移未完成），本次检索降级为空: {e}")
-            return []
-        raise
+    # 混合检索（Dense + Sparse RRF，稀疏不可用自动降级纯 dense，结构异常降级空结果）
+    results = await hybrid_query(
+        KNOWLEDGE_COLLECTION_NAME,
+        query_dense,
+        query_sparse,
+        limit=limit,
+        dense_using=KNOWLEDGE_DENSE_VECTOR,
+        query_filter=search_filter,
+    )
 
     # Rerank（如果启用）：交叉编码器在融合结果上重打分，与 RRF 互补
     if results and is_enable_rerank():
@@ -1356,7 +1338,6 @@ async def search_manual_knowledge(
         匹配的知识列表
     """
     from gsuid_core.ai_core.rag.base import client, embedding_model
-    from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
 
     if client is None or embedding_model is None:
         logger.warning("🧠 [Knowledge] AI功能未启用，无法搜索知识")
@@ -1374,35 +1355,18 @@ async def search_manual_knowledge(
     if source_filter != "all":
         search_filter = Filter(must=[FieldCondition(key="source", match=MatchValue(value=source_filter))])
 
-    try:
-        if query_sparse is None:
-            search_result = await client.query_points(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                query=query_dense,
-                using=KNOWLEDGE_DENSE_VECTOR,
-                limit=limit,
-                query_filter=search_filter,
-                with_payload=True,
-            )
-        else:
-            search_result = await client.query_points(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                prefetch=[
-                    Prefetch(query=query_dense, using=KNOWLEDGE_DENSE_VECTOR, filter=search_filter, limit=limit * 2),
-                    Prefetch(query=query_sparse, using="sparse", filter=search_filter, limit=limit * 2),
-                ],
-                query=FusionQuery(fusion=Fusion.RRF),
-                limit=limit,
-                with_payload=True,
-            )
-    except Exception as e:
-        if is_vector_structure_error(str(e)):
-            logger.warning(f"🧠 [Knowledge] 集合向量结构异常（疑似迁移未完成），本次搜索降级为空: {e}")
-            return []
-        raise
+    # 混合检索（Dense + Sparse RRF，稀疏不可用自动降级纯 dense，结构异常降级空结果）
+    search_points = await hybrid_query(
+        KNOWLEDGE_COLLECTION_NAME,
+        query_dense,
+        query_sparse,
+        limit=limit,
+        dense_using=KNOWLEDGE_DENSE_VECTOR,
+        query_filter=search_filter,
+    )
 
     results = []
-    for point in search_result.points:
+    for point in search_points:
         if point.payload:
             results.append(point.payload)
 

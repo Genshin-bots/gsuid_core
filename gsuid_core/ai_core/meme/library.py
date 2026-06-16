@@ -719,19 +719,12 @@ async def _search_qdrant(
     """
     from qdrant_client.models import (
         Filter,
-        Fusion,
         MatchAny,
-        Prefetch,
         MatchValue,
-        FusionQuery,
         FieldCondition,
     )
 
-    from gsuid_core.ai_core.rag.base import client
-    from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
-
-    if client is None:
-        return []
+    from gsuid_core.ai_core.rag.hybrid import hybrid_query
 
     # status 过滤无条件携带：索引中可能存在非 tagged/manual 的点
     # （导入路径、历史遗留），不能依赖"只有可用状态才会被 sync"这一不变量
@@ -758,50 +751,20 @@ async def _search_qdrant(
 
         score_threshold = meme_config.get_config("meme_search_threshold").data
 
-    try:
-        if query_sparse is None:
-            # 稀疏不可用：纯 dense（命名向量需指定 using），保留余弦阈值相关性门
-            response = await client.query_points(
-                collection_name=MEME_COLLECTION_NAME,
-                query=query_dense,
-                using=MEME_DENSE_VECTOR,
-                query_filter=query_filter,
-                limit=top_k,
-                score_threshold=score_threshold,
-                with_payload=True,
-            )
-        else:
-            # 混合：阈值只下到 dense 分支——RRF 融合分是名次分而非余弦，不能再用余弦阈值硬筛；
-            # sparse 需词项重合方有分，本身即强相关召回，无需余弦门。
-            response = await client.query_points(
-                collection_name=MEME_COLLECTION_NAME,
-                prefetch=[
-                    Prefetch(
-                        query=query_dense,
-                        using=MEME_DENSE_VECTOR,
-                        filter=query_filter,
-                        score_threshold=score_threshold,
-                        limit=top_k * 2,
-                    ),
-                    Prefetch(
-                        query=query_sparse,
-                        using="sparse",
-                        filter=query_filter,
-                        limit=top_k * 2,
-                    ),
-                ],
-                query=FusionQuery(fusion=Fusion.RRF),
-                limit=top_k,
-                with_payload=True,
-            )
-    except Exception as e:
-        # 启动迁移尚未完成时，旧无名集合上的命名向量查询会抛结构错误：降级空结果，待重嵌后恢复
-        if is_vector_structure_error(str(e)):
-            logger.warning(f"[Meme] 集合向量结构异常（疑似迁移未完成），本次检索降级为空: {e}")
-            return []
-        raise
+    # 混合检索：dense_score_threshold 只下到 dense 分支（RRF 名次分不可再用余弦阈值硬筛，
+    # sparse 词项重合即强相关无需余弦门）；稀疏不可用自动降级纯 dense、结构异常降级空结果，
+    # 均由 hybrid_query 统一处理。
+    points = await hybrid_query(
+        MEME_COLLECTION_NAME,
+        query_dense,
+        query_sparse,
+        limit=top_k,
+        dense_using=MEME_DENSE_VECTOR,
+        query_filter=query_filter,
+        dense_score_threshold=score_threshold,
+    )
 
-    return [r.payload["meme_id"] for r in response.points if r.payload and "meme_id" in r.payload]
+    return [r.payload["meme_id"] for r in points if r.payload and "meme_id" in r.payload]
 
 
 async def _remove_from_qdrant(meme_id: str) -> None:

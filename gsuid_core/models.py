@@ -50,7 +50,7 @@ class MessageReceive(Struct):
     msg_id: str = ""
     user_type: Literal["group", "direct", "channel", "sub_channel"] = "group"
     group_id: Optional[str] = None
-    user_id: Optional[str] = ""
+    user_id: str = ""
     sender: Dict[str, Any] = {}
     user_pm: int = 6
     content: List[Message] = []

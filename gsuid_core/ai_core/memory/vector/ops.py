@@ -5,16 +5,14 @@
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Optional, TypedDict
+from typing import TYPE_CHECKING, Optional, TypedDict, cast
 from concurrent.futures import ThreadPoolExecutor
 
 from qdrant_client.models import (
     Filter,
-    Fusion,
+    Vector,
     MatchAny,
-    Prefetch,
     MatchValue,
-    FusionQuery,
     PointStruct,
     SparseVector,
     FieldCondition,
@@ -22,6 +20,7 @@ from qdrant_client.models import (
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff
+from gsuid_core.ai_core.rag.hybrid import hybrid_query
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
@@ -328,19 +327,19 @@ async def upsert_entity_vector(
 
     # 2. 锁内写入 (防止并发破坏索引长度同步)
     # 构建 named vectors：name_dense + summary_dense + sparse
-    # 注意：pyright 对 dict[str, list[float]] 与 VectorStruct 的类型检查有误报，
-    # 但运行时 Qdrant client 能正确处理，因此使用 type: ignore 抑制误报
-    vector_data: dict[str, list[float] | SparseVector] = {
+    # 值类型标注为 Qdrant 的 Vector（dense=list / sparse=SparseVector 均其成员），
+    # 精确对齐 VectorStruct 的命名向量分支，无需 type: ignore。
+    vector_data: dict[str, Vector] = {
         "name_dense": name_vector,
         "summary_dense": summary_vector,
     }
     if sparse_vector is not None:
-        vector_data["sparse"] = sparse_vector  # type: ignore
+        vector_data["sparse"] = sparse_vector
 
     async with _QDRANT_LOCKS[MEMORY_ENTITIES_COLLECTION]:
         point = PointStruct(
             id=entity_id,
-            vector=vector_data,  # type: ignore
+            vector=vector_data,
             payload={
                 "name": name,
                 "summary": summary,
@@ -423,16 +422,16 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
     points = []
     for i, d in enumerate(entities_data):
         sv = sparse_vectors[i]
-        vector_data: dict[str, list[float] | SparseVector] = {
+        vector_data: dict[str, Vector] = {
             "name_dense": name_vectors[i],
             "summary_dense": summary_vectors[i],
         }
         if sv is not None:
-            vector_data["sparse"] = sv  # type: ignore
+            vector_data["sparse"] = sv
         points.append(
             PointStruct(
                 id=d["entity_id"],
-                vector=vector_data,  # type: ignore
+                vector=vector_data,
                 payload={
                     "name": d["name"],
                     "summary": d.get("summary", "") or "",
@@ -654,9 +653,16 @@ async def _hybrid_search_impl(
     score_threshold: float = 0.3,
     dense_vector_name: str = "dense",
 ) -> list[dict]:
-    """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合"""
+    """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合
+
+    检索机制（RRF 融合 / 稀疏降级纯 dense / 结构异常·索引崩溃降级空结果）统一走
+    ``rag.hybrid.hybrid_query``。本函数仅负责 scope 过滤、嵌入、阈值后筛与 dict 映射。
+    ``score_threshold`` 是对融合分的**后置过滤**（保持原语义），不下推到 dense 分支。
+    """
     from gsuid_core.ai_core.rag.base import client
 
+    # AI 未初始化（client/provider 同生命周期一起置位）时直接返回，避免 _embed_async 因
+    # provider 未就绪抛 RuntimeError（保持原 `client is None → []` 语义）。
     if client is None:
         return []
 
@@ -669,61 +675,18 @@ async def _hybrid_search_impl(
 
     scope_filter = _scope_filter(scope_keys)
 
-    try:
-        # 如果 sparse vector 不可用，回退到纯 dense search
-        if query_sparse is None:
-            response = await client.query_points(
-                collection_name=collection_name,
-                query=query_dense,
-                using=dense_vector_name,
-                query_filter=scope_filter,
-                limit=top_k,
-                with_payload=True,
-            )
-            results = [{"id": r.id, "score": r.score, **(r.payload or {})} for r in response.points]
-            if score_threshold > 0:
-                results = [r for r in results if r["score"] >= score_threshold]
-            return results
-
-        response = await client.query_points(
-            collection_name=collection_name,
-            prefetch=[
-                Prefetch(
-                    query=query_dense,
-                    using=dense_vector_name,
-                    filter=scope_filter,
-                    limit=top_k * 2,
-                ),
-                Prefetch(
-                    query=query_sparse,
-                    using="sparse",
-                    filter=scope_filter,
-                    limit=top_k * 2,
-                ),
-            ],
-            query=FusionQuery(fusion=Fusion.RRF),
-            limit=top_k,
-            with_payload=True,
-        )
-        results = [{"id": r.id, "score": r.score, **(r.payload or {})} for r in response.points]
-        if score_threshold > 0:
-            results = [r for r in results if r["score"] >= score_threshold]
-        return results
-    except IndexError as e:
-        logger.critical(f"🧠 [Qdrant] 索引崩溃: {e}。建议删除本地存储目录并重启。")
-        return []
-    except Exception as e:
-        from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
-
-        message = str(e)
-        if is_vector_structure_error(message):
-            logger.warning(
-                f"🧠 [Qdrant] Hybrid 检索检测到集合 {collection_name} 向量结构/维度异常，"
-                f"本次降级为空结果，等待启动迁移完成后恢复: {e}"
-            )
-        else:
-            logger.error(f"🧠 [Qdrant] Hybrid 检索异常: {e}")
-        return []
+    points = await hybrid_query(
+        collection_name,
+        query_dense,
+        query_sparse,
+        limit=top_k,
+        dense_using=dense_vector_name,
+        query_filter=scope_filter,
+    )
+    results = [{"id": r.id, "score": r.score, **(r.payload or {})} for r in points]
+    if score_threshold > 0:
+        results = [r for r in results if r["score"] >= score_threshold]
+    return results
 
 
 async def search_episodes(query: str, scope_keys: list[str], top_k: int = 10) -> list["Episode"]:
@@ -774,7 +737,8 @@ async def search_categorized_neighbors(
         if isinstance(vector, dict) and "summary_dense" in vector:
             dense = vector["summary_dense"]
             if isinstance(dense, list):
-                id_to_vector[str(point.id)] = dense
+                # summary_dense 恒为一维 dense；过滤出数值元素，排除多向量分支以对齐 list[float]
+                id_to_vector[str(point.id)] = [float(x) for x in dense if isinstance(x, (int, float))]
 
     neighbors: dict[str, list[tuple[str, float]]] = {}
     for entity_id, dense in id_to_vector.items():
@@ -945,11 +909,17 @@ async def dense_search_episodes_with_vectors(
     # 即便 scope_filter 为 None（未来可能出现"空 scope 全量检索 + 去重"的调用）也保证去重生效，
     # 不让 must_not 因缺 scope 条件而静默失效。
     if exclude_ids:
-        from qdrant_client.models import HasIdCondition
+        from qdrant_client.models import Condition, HasIdCondition, ExtendedPointId
 
-        capped = list(exclude_ids)[:1024]
+        # str id 是合法的 ExtendedPointId，但 qdrant stub 中 list 不变性令直传报错；
+        # must_not 的输出元素类型(含 tuple)亦宽于其入参所需的 List[Condition]——均用 cast 收口。
+        capped = cast("list[ExtendedPointId]", list(exclude_ids)[:1024])
         existing_must = scope_filter.must if scope_filter is not None else []
-        existing_must_not = list(scope_filter.must_not) if scope_filter is not None and scope_filter.must_not else []
+        existing_must_not = (
+            cast("list[Condition]", list(scope_filter.must_not))
+            if scope_filter is not None and scope_filter.must_not
+            else []
+        )
         existing_must_not.append(HasIdCondition(has_id=capped))
         scope_filter = Filter(must=existing_must, must_not=existing_must_not)
     try:
@@ -970,7 +940,8 @@ async def dense_search_episodes_with_vectors(
     for p in response.points:
         vec: Optional[list[float]] = None
         if isinstance(p.vector, dict) and "dense" in p.vector and isinstance(p.vector["dense"], list):
-            vec = p.vector["dense"]
+            # dense 恒为一维；过滤出数值元素，排除多向量分支以对齐 list[float]
+            vec = [float(x) for x in p.vector["dense"] if isinstance(x, (int, float))]
         payload = p.payload or {}
         out.append(
             {
