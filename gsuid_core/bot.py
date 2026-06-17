@@ -776,6 +776,7 @@ class Bot:
         sep: str = "\n",
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
+        at_sender: bool = False,
     ):
         return await self.receive_resp(
             reply,
@@ -786,6 +787,7 @@ class Bot:
             sep=sep,
             command_tips=command_tips,
             command_start_text=command_start_text,
+            at_sender=at_sender,
         )
 
     async def receive_resp(
@@ -799,6 +801,7 @@ class Bot:
         sep: str = "\n",
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
+        at_sender: bool = False,
     ) -> Optional[Event]:
         if option_list:
             if reply is None:
@@ -840,7 +843,7 @@ class Bot:
                 md = await to_markdown(_reply, _buttons, self.bot_id)
 
                 if self.ev.real_bot_id in enable_markdown_platform:
-                    await self.send(md)
+                    await self.send(md, at_sender)
                     success = True
 
                 if not success and istry and self.ev.real_bot_id in isc:
@@ -849,12 +852,12 @@ class Bot:
                         self.bot_self_id,
                     )
                     if self.ev.real_bot_id in enable_buttons_platform:
-                        await self.send(md)
+                        await self.send(md, at_sender)
                         success = True
                     elif custom_buttons and self.ev.command in custom_buttons:
                         btn_msg = custom_buttons[self.ev.command]
                         md.append(btn_msg)
-                        await self.send(md)
+                        await self.send(md, at_sender)
                         success = True
 
                     if not success:
@@ -863,13 +866,13 @@ class Bot:
                             p = parse_button(button_templates[custom_template_id])
                             if await check_same_buttons(p, fake_buttons):
                                 md.append(MessageSegment.template_buttons(custom_template_id))
-                                await self.send(md)
+                                await self.send(md, at_sender)
                                 success = True
                                 break
 
                 if not success and self.ev.real_bot_id in enable_buttons_platform:
                     _reply.append(MessageSegment.buttons(_buttons))
-                    await self.send(_reply)
+                    await self.send(_reply, at_sender)
                     success = True
 
             if not success and unsuported_platform:
@@ -891,14 +894,14 @@ class Bot:
                         f"\n{command_tips}\n" + sep.join([f"{command_start_text}{op}" for op in _options])
                     )
                 )
-                await self.send(_reply)
+                await self.send(_reply, at_sender)
                 success = True
 
             if not success:
-                await self.send(_reply)
+                await self.send(_reply, at_sender)
 
         elif reply:
-            await self.send(reply)
+            await self.send(reply, at_sender)
 
         if is_mutiply:
             # 标注uuid
