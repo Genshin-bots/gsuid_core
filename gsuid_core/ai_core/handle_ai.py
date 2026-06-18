@@ -245,6 +245,10 @@ async def handle_ai_chat(
                     logger.info("🧠 [GsCore][AI] 软触发沉默门放行，按续聊处理")
                 except Exception as e:
                     logger.debug(f"🧠 [GsCore][AI] 软触发沉默门异常，放行交主Agent兜底: {e}")
+                # 过沉默门（含异常兜底）后，把计时基准重置为「过门时刻」：门自身可能耗时十余秒的 LLM 决策，
+                # 不应被锁级 STALE_CHAT_REQUEST_TTL 计入，导致刚放行的续聊被误判为「过期请求」丢弃。
+                if enqueue_ts is not None:
+                    enqueue_ts = time.time()
 
             # ============================================================
             # 步骤 4: 准备用户消息（含好感度注入）
