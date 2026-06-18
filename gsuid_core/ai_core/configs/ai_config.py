@@ -378,9 +378,10 @@ QDRANT_CONFIG: Dict[str, GSC] = {
 MEMORY_CONFIG: Dict[str, GSC] = {
     "memory_mode": GsListStrConfig(
         "记忆路径",
-        "指定启用的记忆路径, 被动感知全部群友会话或只记住自己有参与的聊天记录",
+        "指定启用的记忆路径, 被动感知全部群友会话或只记住自己有参与的聊天记录; "
+        "「图片记忆」需与「被动感知」同时开启才生效, 开启后会静默读取群聊图片并转述入记忆(消耗视觉模型Token), 默认关闭",
         ["被动感知", "主动会话"],
-        options=["被动感知", "主动会话"],
+        options=["被动感知", "主动会话", "图片记忆"],
     ),
     "memory_session": GsStrConfig(
         "被动感知范围",

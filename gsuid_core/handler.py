@@ -367,10 +367,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 )
                 ws._add_bg_task(mem_task)
 
-            # C9 多模态摄入：高价值图片走独立队列，由 ImageUnderstandWorker
-            # 异步转述后再进主管道——纯入队、不阻塞当前消息处理。
-            # 文本门控之外，纯图片消息（无文字）也能进入此分支。
-            if should_observe and _img_urls:
+            # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选时才静默读图入记忆，
+            # 避免后台对每张群图都发起一次视觉模型调用（auto_ImageUnderstand_* 日志 + Token）。
+            if should_observe and _img_urls and "图片记忆" in memory_mode:
                 from gsuid_core.ai_core.memory.ingestion.multimodal import (
                     submit_image_observation,
                 )
