@@ -162,5 +162,7 @@ async def trans_adapter():
             try:
                 await session.execute(text(_t))
                 await session.commit()
-            except:  # noqa: E722
-                pass
+            except Exception as e:
+                # 单条失败必须 rollback, 否则事务被污染会导致其后语句被整体跳过
+                await session.rollback()
+                logger.debug(f"[数据库] 迁移语句跳过: {_t} ({e})")
