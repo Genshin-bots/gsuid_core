@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 from typing import Dict, List, Tuple, Union, TypeVar, Callable, Optional, Awaitable, cast, overload
+from pathlib import Path
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
@@ -84,6 +85,7 @@ def ai_tools(
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
+    visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 300.0,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
@@ -101,6 +103,13 @@ def ai_tools(
         capability_domain: 可选的能力域名称，如 "原神数据"、"网络搜索"。
             声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
             替代生硬的函数名罗列。未声明时按 category 兜底。
+        visible_when: 可选的"可见性谓词"（Phase 3 条件隐藏）。签名为
+            ``(ctx: RunContext[ToolContext]) -> bool | Awaitable[bool]``。
+            返回 False 时，本工具在**该 step**对模型隐藏（schema 都不下发），
+            从源头减少无关工具噪声。它在**每个 step**对每个工具求值，因此谓词
+            必须**廉价且为内存判定**（读 ev/bot/扩展字段即可，切忌每步查库/发网络）。
+            与 check_func 的区别：check_func 在"已调用"后拦截执行并回错误文案；
+            visible_when 在"是否展示"阶段决定模型能否看到该工具。判定抛异常时默认可见。
         timeout: 工具调用的最大等待时间（秒），默认 300 秒（5 分钟）。
             超时后工具返回错误字符串，agent 可继续而不会永久挂起。
             设为 None 表示不限制超时。
@@ -232,8 +241,25 @@ def ai_tools(
 
         wrapped_tool.__signature__ = sig.replace(parameters=new_params)
 
+        # 5.5 条件隐藏（Phase 3）：visible_when 谓词包装成 pydantic-ai 的 prepare 函数。
+        # prepare 在每个 step 被调用，返回 None 即本步不向模型暴露该工具。
+        prepare_fn = None
+        if visible_when is not None:
+
+            async def _prepare(ctx, tool_def, _pred=visible_when, _name=fn.__name__):
+                try:
+                    res = _pred(ctx)
+                    if inspect.isawaitable(res):
+                        res = await res
+                except Exception as e:
+                    logger.debug(f"🧠 [Register] 工具 [{_name}] visible_when 判定异常，默认可见: {e}")
+                    return tool_def
+                return tool_def if res else None
+
+            prepare_fn = _prepare
+
         # 6. 注册工具
-        tool_obj = Tool(wrapped_tool, takes_ctx=True)
+        tool_obj = Tool(wrapped_tool, takes_ctx=True, prepare=prepare_fn)
 
         # 获取插件名称
         plugin_name = _get_plugin_name_from_module(fn.__module__)
@@ -597,3 +623,67 @@ def get_image_entity(entity_id: str) -> Optional[ImageEntity]:
         if entity["id"] == entity_id:
             return entity
     return None
+
+
+def ai_skill(path: Union[str, Path], plugin: Optional[str] = None) -> None:
+    """注册插件 repo 内的 AI Skill 目录（运行时 Skill，非 docs/skills 开发文档）。
+
+    让插件作者把 Skill 随插件一起放在**自己仓库内**管理，无需手动把 skill 文件夹
+    挪进 ``data/ai_core/skills/`` 才能生效。注册的目录下可含一个或多个
+    ``<skill-name>/SKILL.md``（可选 ``scripts/*.py`` 与资源文件），框架会自动发现，
+    主人格 / 能力代理通过 ``list_skills`` / ``load_skill`` / ``run_skill_script`` 调用。
+
+    Skill 与 ``@ai_tools`` 工具的区别：``@ai_tools`` 是 Python 函数（按需向量检索装配）；
+    Skill 是 Markdown「带元数据的可执行操作」，由模型主动发现并加载。
+
+    Args:
+        path: 插件 repo 内的 skill 根目录，通常为
+            ``Path(__file__).parent / "skills"``。
+        plugin: 来源插件名；省略时自动从调用方模块路径推断。
+
+    用法（在插件 ``__init__.py`` 顶层调用，import 即注册）::
+
+        from pathlib import Path
+        from gsuid_core.ai_core.register import ai_skill
+
+        ai_skill(Path(__file__).parent / "skills")
+
+    目录结构示例::
+
+        MyPlugin/
+          skills/
+            my-skill/
+              SKILL.md          # 必须，含 frontmatter: name / description
+              scripts/run.py    # 可选，run_skill_script 调用
+
+    经 webconsole 查看时这些 skill 会被标记为 ``source="plugin"`` 且只读
+    （不可在控制台删除 / 改写），请在插件仓库内维护。
+    """
+    # 检查 AI 是否启用，未启用则跳过技能注册（与 ai_tools / ai_image 一致）
+    try:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        if not ai_config.get_config("enable").data:
+            return
+    except Exception:
+        pass
+
+    p = Path(path)
+
+    # 未显式传 plugin 时，从调用方模块路径推断插件名
+    if plugin is None:
+        try:
+            caller_module = inspect.stack()[1].frame.f_globals.get("__name__", "")
+        except Exception:
+            caller_module = ""
+        plugin = _get_plugin_name_from_module(caller_module)
+
+    from gsuid_core.ai_core.skills.operations import register_plugin_skill_directory
+
+    result = register_plugin_skill_directory(p.resolve(), plugin)
+    if result["status"] == 0:
+        logger.info(
+            f"🧠 [AI][Registry] Skill 目录注册成功（plugin={plugin}, count={result.get('count', 0)}）: {p.resolve()}"
+        )
+    else:
+        logger.warning(f"🧠 [AI][Registry] Skill 目录注册失败: {result['msg']}")

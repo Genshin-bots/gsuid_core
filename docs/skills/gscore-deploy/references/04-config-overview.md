@@ -131,7 +131,7 @@ core.py main()
         └─ 读 ai_config / openai_config / tavily_config / ...
 ```
 
-完整顺序：[`docs/startup.md`](../../../startup.md)。
+完整顺序：[`gscore-development §二、启动时序与生命周期`](../../gscore-development/references/02-startup-lifecycle.md)。
 
 ## 4.7 下一步
 

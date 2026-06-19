@@ -116,6 +116,22 @@ success = add_manual_knowledge(ManualKnowledgeBase(
 | 适用场景 | 插件固定知识 | 前端 API 动态添加 |
 | source 字段 | `"plugin"` | `"manual"` |
 
+### 6.3.1 知识 SQL 真值源 + 分片 + 对账（2026-06-15）
+
+手动知识不再仅存在于 Qdrant。新增 `AIKnowledgeChunk` 表 = **手动知识的 SQL 真值源**
+（1 行 = 1 个 Qdrant point），解决"换模型 / 目录损坏即永久丢失"。配套：
+
+- `rag/chunking.py` 长文分片（段落 → 句子 → 定长+重叠兜底），解决数十万字长文整段嵌入被模型
+  512 token 上限**静默截断**。
+- 两级对账：启动期数量对账 `reconcile_manual_knowledge()`（自动跑、轻量）；深度对账
+  `deep_reconcile_manual_knowledge()`（逐条按 `content_hash` 比对、**仅运维手动触发**）。
+- WebConsole 接口：`/api/ai/knowledge/bulk`、`/doc/{doc_id}`、`/backup/export`、`/backup/import`、
+  `/reconcile`（`knowledge_base_api.py`，见 `webconsole/docs/16-ai-knowledge.md`）。
+
+> 知识库检索已升级 **Dense + BM25 混合检索**（score 是 RRF 名次分**非余弦**），过滤条件下推到
+> Qdrant `query_filter`、移除按余弦阈值的硬筛。框架内部细节见
+> `docs/skills/gscore-development/references/10-rag-knowledge-embedding.md` §10.2-10.3。
+
 ## 6.4 `ai_alias` — 别名注册
 
 ### 入口

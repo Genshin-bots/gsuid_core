@@ -14,14 +14,30 @@ Skill 与 ``@ai_tools`` 工具的区别：
   操作"，主人格通过 ``list_skills`` 主动发现、``run_skill_script`` 调用。
 """
 
-from gsuid_core.ai_core.skills.resource import SKILLS_PATH, skills, skills_toolset
-from gsuid_core.ai_core.skills.operations import get_skill_markdown_path
+from gsuid_core.ai_core.skills.resource import (
+    SKILLS_PATH,
+    skills,
+    skills_toolset,
+    plugin_skill_dirs,
+    skill_source_plugin,
+)
+from gsuid_core.ai_core.skills.operations import (
+    is_plugin_skill,
+    get_skill_source,
+    get_skill_markdown_path,
+    register_plugin_skill_directory,
+)
 
 __all__ = [
-    # 路径
+    # 路径 / 状态
     "SKILLS_PATH",
     "skills_toolset",
     "skills",
+    "plugin_skill_dirs",
+    "skill_source_plugin",
     # 操作
     "get_skill_markdown_path",
+    "register_plugin_skill_directory",
+    "is_plugin_skill",
+    "get_skill_source",
 ]

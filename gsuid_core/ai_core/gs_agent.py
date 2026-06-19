@@ -49,6 +49,7 @@ from gsuid_core.ai_core.rag.tools import (
 from gsuid_core.ai_core.configs.models import get_model_for_task
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER, CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -58,6 +59,12 @@ _T = TypeVar("_T")
 _STICKY_FAMILY_TURNS = 3
 # L5 上下文增强检索：把最近多少轮用户原话拼进工具向量检索 query（含本轮）。
 _RECENT_TEXT_WINDOW = 3
+
+# 渐进式工具暴露总开关：开启后非闲聊轮额外挂 find_tools + RetrievableToolset，
+# 模型可推理中途按需检索并即时拿到工具；置 False 回退静态装配，闲聊轮恒不挂。
+ENABLE_PROGRESSIVE_TOOLS = True
+# 渐进式工具暴露的意图门：这些意图轮**不**挂 find_tools（高频/无工具需求，省一次潜在往返）。
+_PROGRESSIVE_TOOLS_SKIP_INTENTS = ("闲聊",)
 
 # 工具自动装配白名单：仅列表内 create_by 未显式传 tools 时走向量检索装配。
 # CapabilityAgent 自带显式 tools 故排除（见 runner.py）。
@@ -891,6 +898,9 @@ class GsCoreAIAgent:
         if tools is None:
             tools = []
 
+        # 渐进式工具暴露是否在本轮生效（仅自动装配 + 非闲聊轮）。决定是否挂 RetrievableToolset。
+        _expose_dynamic = False
+
         if self.create_by in _AGENTIC_CREATE_BY:
             if not tools:
                 qy = ""
@@ -969,9 +979,11 @@ class GsCoreAIAgent:
                     # 只排除已在保底池的 self/buildin；plugin_dev 等"委派专用"分类由
                     # search_tools 在检索层统一拦截（NON_SEARCHABLE_TOOL_CATEGORIES），
                     # 不必也不应在这里重复声明。
+                    # limit 由 8 降到 4：Reranker 精排后召回质量更高，少而准的种子
+                    # 再经 L4 能力族整族展开即可覆盖需求，避免每轮工具列表膨胀。
                     extra_tools += await search_tools(
                         query=search_query,
-                        limit=8,
+                        limit=4,
                         non_category=["self", "buildin"],
                     )
 
@@ -979,7 +991,7 @@ class GsCoreAIAgent:
                 # 召回族内任一工具即带出整族（剔除与保底重名/族内重复），
                 # 保证"能创建就能改/删"——如召回 add_once_task 即带出
                 # modify/cancel_scheduled_task，避免后续追问"改成后天"时无工具可调。
-                MAX_EXTRA_TOOLS = 16
+                MAX_EXTRA_TOOLS = 8
                 deduped_extra = expand_tools_to_families(
                     extra_tools,
                     exclude_names=core_names,
@@ -1002,6 +1014,19 @@ class GsCoreAIAgent:
                             logger.debug(
                                 f"🧠 [GsCoreAIAgent] 意图命中委派型画像 {deleg_pid}，注入 create_subagent 保障委派路径"
                             )
+
+                # 渐进式工具暴露：非闲聊轮注入 find_tools 并标记本轮挂 RetrievableToolset，
+                # 模型中途发现缺工具即可调 find_tools 现拉，下一步即可用。闲聊轮跳过。
+                if (
+                    ENABLE_PROGRESSIVE_TOOLS
+                    and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
+                    and not any(t.name == "find_tools" for t in tools)
+                ):
+                    ft = find_tool_base("find_tools")
+                    if ft is not None:
+                        tools.append(ft.tool)
+                        _expose_dynamic = True
+                        logger.debug("🧠 [GsCoreAIAgent] 已注入 find_tools，本轮启用渐进式工具暴露")
 
                 logger.debug(
                     f"🧠 [GsCoreAIAgent] 工具数量: {len(tools)} (保底 {len(core_tools)} + 附加 {len(deduped_extra)})"
@@ -1040,6 +1065,10 @@ class GsCoreAIAgent:
         # skills_toolset 仅挂载于 agentic + CapabilityAgent
         # （详见 _SKILLS_CREATE_BY）；后台调用不挂，避免白送 token 破坏缓存。
         _toolsets = [skills_toolset] if self.create_by in _SKILLS_CREATE_BY else []
+        # 启用渐进式暴露时挂 RetrievableToolset：每个 step 读 dynamic_tool_names 即时暴露命中工具。
+        # exclude_names 传静态已装配工具名，避免与 Agent(tools=...) 隐式 toolset 重名冲突。
+        if _expose_dynamic:
+            _toolsets = [*_toolsets, RetrievableToolset(exclude_names=set(tool_names))]
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,

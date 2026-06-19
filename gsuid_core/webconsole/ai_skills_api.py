@@ -14,6 +14,8 @@ from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.skills.resource import skills
 from gsuid_core.ai_core.skills.operations import (
     delete_skill,
+    is_plugin_skill,
+    get_skill_source,
     clone_skill_from_git,
     update_skill_markdown,
     get_skill_markdown_path,
@@ -44,6 +46,7 @@ async def get_ai_skills_list(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
     """
     skills_list: List[Dict[str, Any]] = []
     for name, skill in skills.items():
+        source, plugin = get_skill_source(name)
         skills_list.append(
             {
                 "name": skill.name,
@@ -53,6 +56,10 @@ async def get_ai_skills_list(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
                 "compatibility": skill.compatibility,
                 "uri": skill.uri,
                 "metadata": skill.metadata,
+                # 来源标记：plugin 来源的 skill 只读（由插件仓库维护）
+                "source": source,
+                "plugin": plugin,
+                "editable": source == "data",
             }
         )
 
@@ -92,6 +99,8 @@ async def get_ai_skill_detail(skill_name: str, _: Dict = Depends(require_auth)) 
             "data": None,
         }
 
+    source, plugin = get_skill_source(skill_name)
+
     # 序列化 resources 和 scripts
     resources_list: List[Dict[str, Any]] = []
     for resource in skill.resources:
@@ -126,6 +135,10 @@ async def get_ai_skill_detail(skill_name: str, _: Dict = Depends(require_auth)) 
             "metadata": skill.metadata,
             "resources": resources_list,
             "scripts": scripts_list,
+            # 来源标记：plugin 来源的 skill 只读（由插件仓库维护）
+            "source": source,
+            "plugin": plugin,
+            "editable": source == "data",
         },
     }
 
@@ -142,6 +155,12 @@ async def remove_ai_skill(skill_name: str, _: Dict = Depends(require_auth)) -> D
         status: 0成功，1失败
         msg: 操作结果信息
     """
+    if is_plugin_skill(skill_name):
+        plugin = get_skill_source(skill_name)[1]
+        return {
+            "status": 1,
+            "msg": f"该技能由插件 {plugin} 管理，请在其仓库内修改",
+        }
     result = delete_skill(skill_name)
     return result
 
@@ -233,5 +252,11 @@ async def update_ai_skill_markdown(
         status: 0成功，1失败
         msg: 操作结果信息
     """
+    if is_plugin_skill(skill_name):
+        plugin = get_skill_source(skill_name)[1]
+        return {
+            "status": 1,
+            "msg": f"该技能由插件 {plugin} 管理，请在其仓库内修改",
+        }
     result = update_skill_markdown(skill_name, body.content)
     return result

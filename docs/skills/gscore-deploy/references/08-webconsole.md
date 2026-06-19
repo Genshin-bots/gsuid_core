@@ -58,6 +58,11 @@ FastAPI `app` 暴露给所有 `webconsole/*.py` 路由模块。WebConsole 路由
 会以**明文**出现在传输层，存在同网段嗅探 / ISP 窥探 / 抓包回放风险。Core 提供
 **应用层加密**通道（ECDH + HKDF + AES-256-GCM），不依赖 HTTPS 证书。
 
+> ⚠️ **2026-06-15 起为强制、无开关、无明文兼容**：所有认证报文必须是加密形态
+> （`enc=true` + 握手字段），明文 / `enc!=true` 一律被 `AuthCryptoError` 拒绝；不再有
+> `REQUIRE_ENCRYPTED_AUTH` 配置。**部署 / 升级时务必确保前端 bundle 已落地加密实现**
+> （先取 `/api/auth/pubkey` 再提交加密报文），否则登录 / 注册 / 改密全部会被拒。
+
 源码：[`gsuid_core/webconsole/auth_crypto.py`](../../../gsuid_core/webconsole/auth_crypto.py)
 + [协议文档：`docs/WEBCONSOLE_AUTH_ENCRYPTION.md`](../../../WEBCONSOLE_AUTH_ENCRYPTION.md)（如果有）。
 

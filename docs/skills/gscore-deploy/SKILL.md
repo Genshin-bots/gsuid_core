@@ -94,8 +94,8 @@ description: >
 ## 关联文档（同仓库其他位置）
 
 - AI Agent 总架构：[`docs/AI_AGENT_ARCHITECTURE.md`](../../AI_AGENT_ARCHITECTURE.md)
-- AI 触发流程：[`docs/AI_TRIGGER_FLOW.md`](../../AI_TRIGGER_FLOW.md)
-- 启动流程：[`docs/startup.md`](../../startup.md)
+- AI 触发流程 / 框架开发：[`docs/skills/gscore-development/SKILL.md`](../gscore-development/SKILL.md)
+- 启动时序与生命周期：[`gscore-development §二`](../gscore-development/references/02-startup-lifecycle.md)
 - 记忆系统：[`docs/MEMORY_SYSTEM.md`](../../MEMORY_SYSTEM.md)
 - MCP Server：[`docs/MCP_SERVER.md`](../../MCP_SERVER.md)
 - LLM.md（Bot 内部连接管理红线）：仓库根目录 `docs/LLM.md`

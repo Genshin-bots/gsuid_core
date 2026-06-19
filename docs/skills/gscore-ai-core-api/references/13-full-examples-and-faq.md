@@ -265,7 +265,7 @@ RAG 知识库检索不再作为强制前置流程。`search_knowledge` 工具注
 
 ## 13.3 相关文档
 
-- [AI 触发流转文档](../../AI_TRIGGER_FLOW.md)
+- [gscore-development 框架开发指南](../../gscore-development/SKILL.md)
 - [WebConsole API 文档](../../../gsuid_core/webconsole/API.md)
 - [AI Agent 总架构](../../AI_AGENT_ARCHITECTURE.md)
 - [插件开发工作流指南](../gscore-plugin-development/SKILL.md)

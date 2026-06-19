@@ -11,7 +11,54 @@ from pydantic_ai import RunContext
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
-from gsuid_core.ai_core.rag.tools import search_tools
+from gsuid_core.ai_core.register import ai_tools
+from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
+
+
+# 不声明 capability_domain：find_tools 是单例 meta 工具，无能力族语义；声明了反而会被
+# L3 会话驻留按族带进随后数轮（含闲聊），破坏"闲聊轮零开销"。它的装配完全由意图门控制。
+@ai_tools(category="meta")
+async def find_tools(
+    ctx: RunContext[ToolContext],
+    need: str,
+) -> str:
+    """按需加载完成任务所缺的工具（渐进式工具暴露）。
+
+    当你发现当前可用工具里**没有**能完成用户需求的工具时，用一句话描述你需要的能力，
+    调用本工具。命中的相关工具会在**下一步**变为可直接调用——不要在本步假装调用它们，
+    先调用本工具把它们加载进来，再在后续步骤正式调用。
+
+    适用场景示例：
+    - 用户的追问语义太短、当前工具列表里找不到合适工具时（如澄清后回了个地名/时间）；
+    - 需要某类专门能力（查询某游戏数据、渲染图片、读写文件、查数据库等）但工具不在列。
+
+    Args:
+        ctx: 工具执行上下文。
+        need: 你需要的能力的自然语言描述，越具体越好（如"查询某城市的实时天气"）。
+
+    Returns:
+        本次加载到的工具清单；这些工具下一步即可调用。
+    """
+    try:
+        # Phase 3a 两段式·domain 粒度检索：先语义召回（含 Reranker 精排），再聚合到
+        # capability_domain 整族纳入，保证"能创建就能改/删"，加载到的工具语义连贯而非零散单点。
+        family_tools = await search_tools_by_domain(query=need, domain_limit=3, per_domain_limit=6)
+        if not family_tools:
+            return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
+
+        loaded_names = [t.name for t in family_tools]
+        ctx.deps.dynamic_tool_names.update(loaded_names)
+
+        logger.info(f"🧠 [find_tools] 为需求「{need[:40]}」动态加载 {len(loaded_names)} 个工具: {loaded_names}")
+        listing = "\n".join(f"- {name}" for name in loaded_names)
+        return f"✅ 已加载以下工具，下一步即可直接调用：\n{listing}"
+
+    except RuntimeError as e:
+        logger.warning(f"🧠 [find_tools] AI功能未启用: {e}")
+        return "⚠️ 工具检索功能未启用，无法动态加载工具。"
+    except Exception as e:
+        logger.error(f"🧠 [find_tools] 工具加载失败: {e}")
+        return f"⚠️ 工具加载失败: {str(e)}"
 
 
 # @ai_tools(category="buildin")

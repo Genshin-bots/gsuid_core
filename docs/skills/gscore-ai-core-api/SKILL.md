@@ -95,7 +95,7 @@ description: >
 - 插件开发工作流指南：[`docs/skills/gscore-plugin-development/SKILL.md`](../gscore-plugin-development/SKILL.md)
 - 适配器开发指南：[`docs/skills/gscore-adapter-development/SKILL.md`](../gscore-adapter-development/SKILL.md)
 - AI Agent 总架构：[`docs/AI_AGENT_ARCHITECTURE.md`](../../AI_AGENT_ARCHITECTURE.md)
-- AI 触发流程：[`docs/AI_TRIGGER_FLOW.md`](../../AI_TRIGGER_FLOW.md)
+- AI 触发流程 / 框架开发：[`docs/skills/gscore-development/SKILL.md`](../gscore-development/SKILL.md)
 - AI Session Logging：[`docs/AI_SESSION_LOGGING.md`](../../AI_SESSION_LOGGING.md)
 - 记忆系统详细：[`docs/MEMORY_SYSTEM.md`](../../MEMORY_SYSTEM.md)
 - 召回与元事件：[`docs/RECALL_AND_META_EVENTS.md`](../../RECALL_AND_META_EVENTS.md)

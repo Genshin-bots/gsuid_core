@@ -1,0 +1,194 @@
+# 七、工具注册表与 Agent 装配
+
+> **返回主入口**：[`../SKILL.md`](../SKILL.md) · **上一章**：[六、AI Session 路由与 Persona](./06-ai-session-and-persona.md) · **下一章**：[八、主动发言与任务编排](./08-heartbeat-scheduled-planning.md)
+
+本章讲 AI 工具是怎么注册的、主 Agent 每轮怎么决定带哪些工具、子 Agent 和主 Agent 工具集的
+差异，以及 2026-06 工具检索升级（Reranker 精排 + `find_tools` 渐进暴露 + `visible_when`
+条件隐藏）。这是 AI 链路里最容易"越改越乱"的地方，改前务必读完。
+
+## 7.1 工具注册表结构（`register.py`）
+
+```python
+# Dict[分类名, Dict[工具名, ToolBase]]
+_TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
+```
+
+`@ai_tools` 装饰器把 async 函数包成 pydantic-ai `Tool` 存进对应 category。
+
+```python
+@ai_tools(category="default", check_func=None, visible_when=None, **check_kwargs)
+async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
+```
+
+| 参数 | 说明 |
+|------|------|
+| `category` | 工具分类，决定加载方式（见 §7.2） |
+| `check_func` | 可选权限校验（同步/异步）。**已调用后**拦截执行并回错误文案 |
+| `visible_when` | 可选谓词 `(ctx)->bool`。**是否展示**阶段决定模型能否看到该工具（见 §7.6） |
+| `**check_kwargs` | 传给 check_func 的额外参数 |
+
+> **智能参数注入**：`@ai_tools` 自动分析函数签名，把 `RunContext[ToolContext]` / `Event` /
+> `Bot` 类型参数**自动注入、不暴露给 LLM**，并重写 `__signature__` 保证 PydanticAI schema 兼容。
+
+## 7.2 工具分类（category）与加载方式
+
+| 分类 | 加载方式 | 典型工具 |
+|------|----------|----------|
+| `self` | **保底**：无条件加载进主 Agent | 好感度增改、`send_message_by_ai`、`create_subagent`、`add_once_task`/`add_interval_task` |
+| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_*` |
+| `common` | 向量检索按需 | `search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类 |
+| `media` | 向量检索按需 | `render_html_to_image`、`render_markdown_to_image` |
+| `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
+| `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
+| `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`get_current_date` |
+| `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`（见 §7.5） |
+
+> **保底池完全由 category 决定，无硬编码名单**。`get_main_agent_tools()` 把 `self`+`buildin`
+> 两个分类全部无条件加载。插件想让某工具成为主 Agent 保底工具，注册时 `category="buildin"`。
+>
+> **安全隔离**：`self` 工具仅主 Agent（防子 Agent 直接操作用户数据）；`default` 工具（文件/
+> 系统命令）仅子 Agent。改 category 等于改安全边界，谨慎。
+
+## 7.3 主 Agent 三层工具池（`gs_agent.py::_execute_run`）
+
+主 Agent 每轮工具列表 = **保底池 + 语境池 + 查询池**，再叠加状态驱动与会话驻留：
+
+| 层 | 机制 | 作用 |
+|---|---|---|
+| L1 保底池 | `get_main_agent_tools()`：`self`+`buildin` 无条件加载 | 框架基础能力常驻 |
+| L2 状态驱动 | `get_state_driven_family_tools()`：按用户持久实体补能力族 | 跨轮追问定时任务/Kanban/record |
+| L3 会话驻留 | `_recent_tool_families`（sticky 3 轮） | 刚用过的族继续常驻数轮 |
+| 语境池 | `get_tools_by_context_tags()` | 群画像标签匹配工具（最多 8 个） |
+| L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族（"能建就能改/删"） |
+| L5 上文增强检索 | `_recent_user_texts` 拼进检索 query | "改成后天吧"借上文召回 |
+
+保底池全保留；语境 + 查询池合并去重后限制附加数量上限（`MAX_EXTRA_TOOLS`）。
+
+```python
+def get_main_agent_tools() -> ToolList:
+    """仅 self + buildin 分类，无条件加载。by_trigger 等不再无条件全载，避免插件膨胀
+    导致 100+ 工具列表浪费 Token 并降低 LLM 选工具准确率。"""
+async def search_tools(query, limit=4, category="all", non_category="", rerank=True) -> ToolList: ...
+def get_all_tools() -> Dict[str, ToolBase]: ...          # 平铺所有工具
+def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
+```
+
+## 7.4 主 / 子 Agent 工具集差异
+
+- **主 Agent**：保底（`self`+`buildin`）+ 语境 + 查询池（`search_tools(non_category=["self","buildin"])`
+  检索 `by_trigger`/`common`/`media`/`mcp`）。**不调 `default`**。
+- **子 Agent**（`create_subagent`）：`search_tools(non_category="self")`，加载 `buildin`/`common`/
+  `default`。**不调 `self`**。有 `max_iterations=3` 硬限制（防"思考→执行→报错→思考"死循环）。
+
+## 7.5 渐进式工具暴露：`find_tools` + `RetrievableToolset`（2026-06-19）
+
+**要解决的问题**：每轮按本轮用户消息静态检索装配工具，**跨轮澄清会漏召回**——
+"帮我查天气"→AI 反问"哪个城市"→用户"广州"，这轮只拿"广州"去检索，召不回天气工具。
+
+**做法**：利用 pydantic-ai 1.x 原生支持的**运行时动态工具集**（`AbstractToolset.get_tools(ctx)`
+每个 step 重新调用），让模型"调一次检索工具→下一步那些工具就真的可调用"。
+
+三个组成部分：
+
+1. **`ToolContext.dynamic_tool_names: Set[str]`**（`models.py`）——单轮共享集合（`ToolContext`
+   每轮新建，作用域天然是"单次 run"，轮末自然丢弃）。
+2. **`find_tools` meta-tool**（`buildin_tools/dynamic_tool_discovery.py`，`category="meta"`）——
+   模型发现缺工具时调用，内部 `search_tools_by_domain` 检索并把命中工具名写进
+   `ctx.deps.dynamic_tool_names`，返回简短清单。**不声明 `capability_domain`**（否则被 L3
+   sticky 带进随后闲聊轮，破坏"闲聊轮零开销"）。
+3. **`RetrievableToolset(AbstractToolset)`**（`dynamic_toolset.py`）——`get_tools(ctx)` 每个 step
+   读 `dynamic_tool_names`，逐名 `find_tool_base` + `prepare_tool_def` 解析成可调用工具；用
+   `exclude_names`（本轮静态已装配工具名）去重避免跨 toolset 重名冲突。
+
+**装配门控**（`gs_agent.py`）：
+
+```python
+ENABLE_PROGRESSIVE_TOOLS = True
+# 意图门：仅在 intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS（即非「闲聊」）注入 find_tools
+#         + 挂 RetrievableToolset；闲聊轮完全跳过（零开销）
+```
+
+`meta` 已加入 `NON_SEARCHABLE_TOOL_CATEGORIES`，`find_tools` **永不被向量检索召回**，只由
+gs_agent 按门控显式注入。
+
+一次 run 的时间线：
+
+```
+step1  工具列表 = 静态召回(L1–L5) + find_tools     模型缺"查天气"工具
+       ToolCall: find_tools(need="查询某城市实时天气")
+       工具体: search_tools_by_domain → dynamic_tool_names |= {get_weather,...}
+step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
+       ToolCall: get_weather(city="广州")   ← 同一轮内完成，无需用户再补话
+```
+
+> `find_tools` 是**安全网而非替代**：静态召回（L1–L5）仍处理常见场景，模型只在"静态召回没
+> 给到所需工具"时才调它。它依赖模型主动意识到"我缺工具"，弱模型可能不触发——所以**不能纯靠
+> 它**，保底/状态驱动仍在。总开关 `ENABLE_PROGRESSIVE_TOOLS=False` 即完全回退。
+
+## 7.6 条件隐藏：`visible_when`（2026-06-19）
+
+`@ai_tools` 的 `visible_when` 谓词被包成 pydantic-ai 的 `prepare` 函数挂到 `Tool(prepare=...)`。
+`prepare` 每个 step 对每个工具求值，返回 `None` 即本步对模型隐藏（schema 都不下发）。判定
+抛异常时**默认可见**。
+
+```python
+# 首个落地：execute_shell_command 加 visible_when=_shell_visible_to_admin
+# - 后台/能力代理（无 ev）→ True 不隐藏，交 check_func 执行期兜底（避免误伤能力代理）
+# - 交互式用户 → 仅管理员（ev.user_pm == 0）可见
+```
+
+| 机制 | 阶段 | 作用 |
+|------|------|------|
+| `check_func` | "已调用"后 | 拦截执行并回错误文案 |
+| `visible_when` | "是否展示" | 决定模型能否看到该工具 |
+
+二者纵深互补。
+
+> ⚠️ **约束**：`prepare` 每 step 对每个工具求值，`visible_when` 谓词**必须廉价、内存判定**，
+> 切忌每步查库/发网络。贵的前置条件走 L2 状态驱动（加载时判一次）。
+
+## 7.7 两段式 domain 检索（`search_tools_by_domain`）
+
+```python
+search_tools_by_domain(query, domain_limit=3, per_domain_limit=6, recall=12)
+```
+
+先语义召回（含 Reranker 精排）得到种子，再**聚合到 `capability_domain`**，取语义最靠前的至多
+`domain_limit` 个能力族**整族**纳入（未声明 domain 的种子按"单工具族"各占一名额）。以**能力族**
+为最小装配单位，保证"能建就能改/删"、避免半个族被截断；用 domain 数量（非工具总数）控规模。
+`find_tools` 用它作检索后端。
+
+> `search_tools(rerank=True)` 先粗召回 `_RERANK_RECALL_LIMIT=20` 个，过滤后用交叉编码 Reranker
+> 按「工具名+描述」精排再裁到 `limit`。Reranker 未启用/异常时降级回"按向量分数取前 limit"，
+> 行为与不接 Reranker 完全一致。主装配路径已降 limit（8→4、`MAX_EXTRA_TOOLS` 16→8）。
+
+## 7.8 触发器桥接工具（`by_trigger`）
+
+插件 `@sv.on_command(..., to_ai="...")` 声明非空 `to_ai`（作为 AI 工具 docstring）→ 插件加载时
+`_register_trigger_as_ai_tool()` 把触发器包成 AI 工具，注册到 `_TOOL_REGISTRY["by_trigger"]`，
+向量检索按需加载。
+
+AI 调用时：
+
+1. **权限检查**（与用户直接触发一致）：`plugins.enabled`/`sv.enabled`、`user_pm <= sv.pm`。
+   不足则返回错误文本给 AI（配置改后实时生效）。
+2. `MockBot` 代理 `bot.send`：图片→`RM.register()` 返回资源 ID；纯文本→收集为工具返回值；
+   `receive_resp` 返回 `None`（AI 不支持交互式等待）。
+3. 触发器内可 `ai_return()` 向 AI 返回纯文本中间结果。
+4. AI 据工具返回（文本摘要 + 资源 ID）决定是否 `send_message_by_ai(image_id=...)` 把图发给用户。
+
+> 详细 API（给插件作者）见 `gscore-ai-core-api` 的触发器桥接章。本章只描述框架侧机制。
+
+## 7.9 MCP 工具集成（`ai_core/mcp/`）
+
+启动时（`mcp/startup.py`）读 `data/ai_core/mcp_configs/*.json` 中 `enabled=true` 的配置 → 连
+MCP 服务器（fastmcp，stdio）→ `list_tools()` → 为每个工具动态建包装函数（解析 input_schema
+生成签名、注入 `RunContext[ToolContext]`）→ 注册到 `_TOOL_REGISTRY["mcp"]`（仅当
+`register_as_ai_tools=true`）。工具命名 `mcp_{server}_{tool}` 避免冲突。
+
+- **MCP 工具 ID 格式**：`{mcp_id} - {tool_name}`（如 `minimax - web_search`），用
+  `parse_mcp_tool_id` / `format_mcp_tool_id` 解析组装。
+- **通用调用**：`mcp_tool_caller.call_mcp_tool(mcp_tool_id, arguments)` 不需注册为 AI 工具即可
+  调；Web Search / Image Understand 走它。
+- **热重载**：`POST /api/ai/mcp/reload` 清掉已注册 MCP 工具、重读配置、重连重注册，无需重启。
+- **MCP Server**（`mcp/server.py`）：反向把本框架 `to_ai` 触发器对外暴露为 MCP 服务。

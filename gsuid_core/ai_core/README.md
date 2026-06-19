@@ -355,7 +355,7 @@ User → Trigger → handle_ai
 ## 相关上层文档
 
 - `docs/LLM.md` — 代码红线（**写代码前先读**）。
-- `docs/AI_TRIGGER_FLOW.md` — 触发链路图。
+- `docs/skills/gscore-development/SKILL.md` — 框架开发指南（触发链路 / 模块全景 / 已知坑）。
 - `docs/AGENT_MESH_COLLABORATION_PROPOSAL_20260521.md` — Kanban Agent Mesh 设计稿。
 - `plans/proactive_message_session_unification_20260529.md` — 主动消息统一会话/日志方案（**本次改造的源头**）。
 - `gsuid_core/ai_core/rag/README.md` / `persona/README.md` / `scheduled_task/README.md` / `buildin_tools/README.md` — 各子模块 README。

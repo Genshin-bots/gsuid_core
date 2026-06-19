@@ -144,3 +144,29 @@ observe(
 # 获取观察队列
 queue = get_observation_queue()
 ```
+
+### 8.2.5 偏好记忆（Procedural / Preference Memory，2026-06-15，默认开）
+
+与 Episode/Entity/Edge 三层**陈述性**记忆正交，新增 `AIMemPreference` 表（**SQL-only、不写
+向量**），承载"针对 Agent 未来行为的纠正 / 偏好规则"（如"以后画图用竖图""按我时区"），解决
+"纠正完下一轮又犯"。
+
+- **门控探测**：纯规则零 LLM 的 `detect_correction_intent()` 命中纠错意图 → 强制 HIGH + 即时
+  flush。
+- **蒸馏门控**：实体抽取 LLM 顺手判 `pref` 布尔位，命中才跑第二次独立蒸馏 LLM。
+- **注入**：检索时 SQL 精确取活跃规则、**置顶强约束**注入；`handle_ai` 按**意图门**（纯闲聊不
+  注入）+ **能力域过滤**传参（能力域 = query 子串近似 ∪ `session.get_assembled_capability_domains()`
+  上一轮实际装配工具的能力域）。纠错规则与 `general` 通用规则永远注入。
+- 框架内部链路，不需要插件手动调用；写入用 `AIMemPreference.upsert()`。
+
+> 框架内部实现细节（轨迹背景 `tool_trace`、生命周期裁剪、清空联动）见
+> `docs/skills/gscore-development/references/09-memory-system.md` §9.9。
+
+### 8.2.6 RF-Mem 双过程检索（2026-06-15，**默认关**）
+
+`memory/retrieval/familiarity.py` 接入"回忆-熟悉度双过程理论"：熟悉度探针（dense 查询取真实
+余弦分 → 均分 s̄ + 列表熵 H(p)，逐查询决定检索深度）+ 回忆环（零 LLM 的 KMeans + α-mix 多轮深
+检索，KMeans 走专用线程池不阻塞循环）。
+
+> ⚠️ **默认关**：阈值（`familiarity_theta_*` / `tau`）需按嵌入模型离线标定后再放量；回忆环强绑
+> `qdrant_provider=remote`。详见 `gscore-development` §9.10。

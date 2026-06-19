@@ -49,6 +49,7 @@ description: >
 | 十八 | to_ai 批量改造工作流（背景、Step 0~4、完整股票 / 游戏示例、质量检查清单、Q&A） | [references/18-ai-trigger-migration.md](./references/18-ai-trigger-migration.md) |
 | 十九 | 为插件挂 FastAPI 后端接口（共享 app、鉴权、CRUD、命名规范、反模式） | [references/19-fastapi-plugin-api.md](./references/19-fastapi-plugin-api.md) |
 | 二十 | 嵌入 Provider 注册表（插件扩展 RAG 嵌入后端：懒 import、工厂模式、降级策略） | [references/20-embedding-provider-registry.md](./references/20-embedding-provider-registry.md) |
+| 二十一 | AI 集成：在插件 repo 内管理 AI Skill（`ai_skill` 注册目录式 `SKILL.md` + 脚本/资源） | [references/21-ai-skill-registration.md](./references/21-ai-skill-registration.md) |
 
 ## 推荐开发流程（按需跳转）
 
@@ -66,6 +67,7 @@ description: >
    - 知识库 / 别名 → [十二、知识库与别名注册](./references/12-ai-knowledge-and-alias.md)
    - 临时 Agent 子任务 → [十三、`create_agent`](./references/13-ai-create-agent.md)
    - 业务专业代理 → [十四、能力代理画像](./references/14-ai-capability-profile.md)
+   - 随插件分发 Markdown「技能」（SKILL.md + 脚本/资源，模型 `list_skills`/`run_skill_script` 调用）→ [二十一、AI Skill 注册](./references/21-ai-skill-registration.md)
    - **批量改造已有触发器支持 AI** → [十八、to_ai 批量改造工作流](./references/18-ai-trigger-migration.md)
 10. **挂自己的 HTTP 后端接口**：看 [十九、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)——复用 `gsuid_core.webconsole.app_app.app`，3 行加一个接口。
 11. **扩展 RAG 嵌入后端**：看 [二十、嵌入 Provider 注册表](./references/20-embedding-provider-registry.md)——用 `register_embedding_provider` 注册 `sentence_transformers` / `llama.cpp embedding` 等自定义 Provider，懒 import + 工厂模式，自动出现在 WebConsole 下拉选项。
@@ -89,6 +91,7 @@ description: >
 - **`ai_return` 注入点 = 数据已拿到 / 图片未生成**：必须在数据层函数里，不能只在触发器层。详见 [§18.3 Step 3](./references/18-ai-trigger-migration.md#step-3逐层分析调用链找出数据层注入-ai_return)。
 - **插件 FastAPI = 共享 app + `Depends(require_auth)`**：从 `gsuid_core.webconsole.app_app import app` 即可挂自己的 `/api/<插件名>/...` 路由；详见 [§19.2](./references/19-fastapi-plugin-api.md#192-最简示例3-行代码加一个-get-接口) 与 [§19.3](./references/19-fastapi-plugin-api.md#193-加鉴权推荐-复用-require_auth)。
 - **嵌入 Provider 注册 = 懒 import + 工厂模式**：插件 `__init__.py` 顶层调用 `register_embedding_provider` 注册 `EmbeddingProviderEntry`，重依赖只能在 `factory` 内部 import；注册时序保证早于消费；配置指向的 Provider 不可用时框架自动降级回 `local` 并记录 error，不会导致 AI 核心整体不可用。详见 [§20](./references/20-embedding-provider-registry.md)。
+- **AI Skill 随插件走 = `ai_skill(目录)`**：插件 `__init__.py` 顶层一行 `ai_skill(Path(__file__).parent / "skills")` 即把 repo 内 `skills/<name>/SKILL.md`（+ 脚本/资源）注册为运行时技能，无需挪进 `data/ai_core/skills/`；webconsole 内标记 `source="plugin"` 且只读。注意「运行时 Skill」≠「`docs/skills` 开发文档 skill」。详见 [§21](./references/21-ai-skill-registration.md)。
 
 ## 关联文档（本 SKILL 文件夹内）
 
@@ -99,7 +102,7 @@ description: >
 ## 关联文档（同仓库其他位置）
 
 - AI Agent 总架构：[`docs/AI_AGENT_ARCHITECTURE.md`](../../AI_AGENT_ARCHITECTURE.md)
-- AI 触发流程：[`docs/AI_TRIGGER_FLOW.md`](../../AI_TRIGGER_FLOW.md)
+- AI 触发流程 / 框架开发：[`docs/skills/gscore-development/SKILL.md`](../gscore-development/SKILL.md)
 - LLM.md（Bot 内部连接管理红线）：仓库根目录 `docs/LLM.md`
 - AI Core API（给插件用）：[`docs/ai_core_api_for_plugins.md`](../../ai_core_api_for_plugins.md)
 - WebConsole 后端 API 设计：[`gsuid_core/webconsole/docs/README.md`](../../../gsuid_core/webconsole/docs/README.md)

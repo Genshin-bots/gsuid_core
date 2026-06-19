@@ -298,7 +298,9 @@ from gsuid_core.ai_core.buildin_tools.favorability_manager import (
 )
 
 # 动态工具发现 - 允许AI搜索和发现可能需要的新工具
+# find_tools 为已注册的 meta 工具（渐进式工具暴露），按需由 gs_agent 注入主 Agent。
 from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import (
+    find_tools,
     discover_tools,
     list_available_tools,
 )
@@ -360,6 +362,7 @@ __all__ = [
     "pause_scheduled_task",
     "resume_scheduled_task",
     # 动态工具发现
+    "find_tools",
     "discover_tools",
     "list_available_tools",
     # 插件开发工具（plugin_developer_agent 专用）

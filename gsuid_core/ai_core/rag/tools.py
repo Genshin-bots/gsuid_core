@@ -1,6 +1,7 @@
 """工具向量存储 - 管理工具的入库和检索"""
 
-from typing import TYPE_CHECKING, Any, Set, Dict, List, Union, Optional, Sequence
+import asyncio
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Optional, Sequence
 
 from qdrant_client.models import (
     Distance,
@@ -42,7 +43,60 @@ else:
 # 仅当调用方在 ``search_tools(category=...)`` 里**显式**点名该分类时才返回。
 # 背景：plugin_dev 工具一度被向量检索召回进主人格工具池，导致主人格绕过能力代理
 # "自己把插件写了"（还撞上迭代上限），故在检索层统一拦截。
-NON_SEARCHABLE_TOOL_CATEGORIES: frozenset[str] = frozenset({"plugin_dev"})
+NON_SEARCHABLE_TOOL_CATEGORIES: frozenset[str] = frozenset({"plugin_dev", "meta"})
+
+# 工具检索接 Reranker 时的"召回池"大小：向量先粗召回这么多候选，再交叉编码精排，
+# 最后裁到调用方要求的 limit。召回池越大、精排上限越准，但精排耗时随之上升。
+_RERANK_RECALL_LIMIT = 20
+
+
+async def _rerank_tool_candidates(
+    query: str,
+    candidates: List[Tuple[str, Any, float]],
+    top_k: int,
+) -> List[Tuple[str, Any, float]]:
+    """对向量召回的工具候选做 Reranker 二次精排，返回精排后的前 ``top_k`` 个。
+
+    与 ``rag.reranker.rerank_results`` 的区别：那个按知识条目的 ``title/content`` 组档，
+    本函数按工具的 ``name + description`` 组档。Reranker 未启用 / 候选不足 / 异常时，
+    一律退回"按向量分数取前 top_k"，保证降级后行为与未接 Reranker 完全一致。
+
+    Args:
+        query: 检索意图文本。
+        candidates: ``(工具名, ToolBase 或 Tool 对象, 向量分数)`` 列表，已按向量分数降序。
+        top_k: 精排后保留的数量。
+    """
+    if len(candidates) <= top_k:
+        return candidates[:top_k]
+
+    from gsuid_core.ai_core.rag.reranker import get_reranker
+
+    reranker = get_reranker()
+    if reranker is None:
+        return candidates[:top_k]
+
+    documents: List[str] = []
+    for name, obj, _ in candidates:
+        desc = getattr(obj, "description", "") or ""
+        documents.append(f"{name}\n{desc}")
+
+    try:
+        scores = await asyncio.to_thread(reranker.rerank, query, documents)
+    except Exception as e:
+        logger.warning(f"🧠 [Tools] Reranker 精排失败，退回向量分数排序: {e}")
+        return candidates[:top_k]
+
+    if len(scores) != len(candidates):
+        logger.warning("🧠 [Tools] Reranker 返回分数数量不匹配，退回向量分数排序")
+        return candidates[:top_k]
+
+    ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    reranked = [c for _, c in ranked[:top_k]]
+    logger.info(
+        f"🧠 [Tools] Reranker 精排: {len(candidates)} 候选 → 取前 {len(reranked)} "
+        f"({', '.join(n for n, _, _ in reranked)})"
+    )
+    return reranked
 
 
 async def init_tools_collection():
@@ -285,6 +339,63 @@ def expand_tools_to_families(
     return out
 
 
+async def search_tools_by_domain(
+    query: str,
+    domain_limit: int = 3,
+    per_domain_limit: int = 6,
+    recall: int = 12,
+) -> ToolList:
+    """两段式·domain 粒度工具检索（Phase 3a）。
+
+    先按语义召回（已含 Reranker 精排）得到若干种子工具，再**聚合到 capability_domain**：
+    取语义上最靠前的至多 ``domain_limit`` 个不同能力族，整族纳入（每族至多
+    ``per_domain_limit`` 个）；未声明 capability_domain 的种子按"单工具族"各占一个名额。
+
+    相比逐工具检索，本函数以"能力族"为最小装配单位，保证装配进来的工具语义连贯、
+    "能创建就能改/删"，同时用 domain 数量（而非工具总数）控制规模，避免半个族被截断。
+    主要供 ``find_tools`` meta-tool 在运行时按需拉取工具时使用。
+
+    Args:
+        query: 需要的能力的自然语言描述。
+        domain_limit: 最多纳入的能力族数量（含 domainless 单工具名额）。
+        per_domain_limit: 每个能力族最多纳入的工具数。
+        recall: 语义召回的种子工具数量（喂给 domain 聚合）。
+    """
+    from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
+
+    seeds = await search_tools(query=query, limit=recall, non_category=["self", "buildin", "meta"])
+
+    out: ToolList = []
+    seen_names: Set[str] = set()
+    selected_domains: Set[str] = set()
+    slots_used = 0
+
+    for seed in seeds:
+        if slots_used >= domain_limit:
+            break
+        tb = find_tool_base(seed.name)
+        dom = tb.capability_domain if tb else None
+        if dom:
+            if dom in selected_domains:
+                continue
+            selected_domains.add(dom)
+            slots_used += 1
+            members = get_tools_by_capability_domain(dom)[:per_domain_limit]
+            for m in members:
+                if m.name not in seen_names:
+                    seen_names.add(m.name)
+                    out.append(m.tool)
+        else:
+            if seed.name in seen_names:
+                continue
+            seen_names.add(seed.name)
+            out.append(seed)
+            slots_used += 1
+
+    logger.info(f"🧠 [Tools] 两段式 domain 检索: query='{query[:30]}' → {slots_used} 族/单工具, 共 {len(out)} 个工具")
+    return out
+
+
 def get_tools_by_context_tags(tags: List[str], max_count: int = 8) -> ToolList:
     """根据语境标签匹配工具（语境工具池）。
 
@@ -379,10 +490,15 @@ async def search_tools(
     non_category: Union[str, list[str]] = "",
     threshold: float = 0.38,
     debug: bool = False,
+    rerank: bool = True,
 ) -> ToolList:
     """根据自然语言意图检索关联工具
 
     category 和 non_category 不会同时生效, 且 non_category 优先级比 category 高
+
+    检索为两段式（接 Reranker 时）：先向量粗召回 ``_RERANK_RECALL_LIMIT`` 个候选，
+    再用交叉编码 Reranker 精排，最后裁到 ``limit``。Reranker 未启用时退化为
+    "向量分数取前 limit"，与历史行为一致。
 
     Args:
         query: 用户查询的自然语言描述
@@ -391,6 +507,7 @@ async def search_tools(
         non_category: 将不会在这个分类中找工具, 优先级比category高，可选值："self"、"buildin"、"common"，默认为空
         threshold: 相似度分数阈值，只有分数高于该值的工具才会被返回，默认为0.38
         debug: 是否启用调试模式，启用后会记录所有返回工具的分数（无论是否超过阈值），默认为False
+        rerank: 是否启用 Reranker 二次精排（默认开）。仅当系统已启用 rerank 功能时实际生效。
 
     Returns:
         匹配的工具列表
@@ -398,12 +515,19 @@ async def search_tools(
     Raises:
         RuntimeError: AI功能未启用时抛出
     """
-    from gsuid_core.ai_core.rag.base import client, embedding_model
+    from gsuid_core.ai_core.rag.base import client, embedding_model, is_enable_rerank
 
     if client is None or embedding_model is None:
         raise RuntimeError("AI功能未启用，无法搜索工具")
 
-    logger.info(f"🧠 [Tools] 正在查询: {query}, threshold={threshold}, limit={limit}, debug={debug}")
+    # 接 Reranker 时向量侧要多召回一些候选喂给精排；否则只取 limit 即可。
+    do_rerank = rerank and is_enable_rerank()
+    recall_limit = max(limit, _RERANK_RECALL_LIMIT) if do_rerank else limit
+
+    logger.info(
+        f"🧠 [Tools] 正在查询: {query}, threshold={threshold}, limit={limit}, "
+        f"recall={recall_limit}, rerank={do_rerank}, debug={debug}"
+    )
     vectors = list(await embedding_model.aembed([query]))
     if not vectors:
         logger.warning("🧠 [Tools] 嵌入模型返回空结果，跳过工具向量检索")
@@ -421,7 +545,7 @@ async def search_tools(
         return await client.query_points(
             collection_name=TOOLS_COLLECTION_NAME,
             query=list(query_vec),
-            limit=limit,
+            limit=recall_limit,
             score_threshold=threshold if threshold > 0 else None,
         )
 
@@ -500,18 +624,28 @@ async def search_tools(
             if hidden_name in all_tools_dict:
                 del all_tools_dict[hidden_name]
 
-    # 从 all_tools_dict 中筛选出 tool_names 中的工具
-    # all_tools_dict 的 value 是 ToolBase 对象（有 .tool 属性），也可能是 Tool 对象
-    tools = []
-    filtered_info = []
+    # 从 all_tools_dict 中筛选出 tool_names 中的候选（保持向量分数降序）。
+    # all_tools_dict 的 value 是 ToolBase 对象（有 .tool / .description），也可能是 Tool 对象。
+    candidates: List[Tuple[str, Any, float]] = []
     for tool_name in tool_names:
         if tool_name in all_tools_dict:
-            tool_obj = all_tools_dict[tool_name]
-            if hasattr(tool_obj, "tool"):
-                tools.append(tool_obj.tool)
-            else:
-                tools.append(tool_obj)
-            filtered_info.append(f"{tool_name}({score_map[tool_name]:.4f})")
+            candidates.append((tool_name, all_tools_dict[tool_name], score_map[tool_name]))
+
+    # 二次精排：向量粗召回的候选交给 Reranker 精排，裁到 limit。
+    # 未启用 Reranker 时该函数等价于"取前 limit"，与历史行为一致。
+    if do_rerank:
+        candidates = await _rerank_tool_candidates(query, candidates, limit)
+    else:
+        candidates = candidates[:limit]
+
+    tools = []
+    filtered_info = []
+    for tool_name, tool_obj, score in candidates:
+        if hasattr(tool_obj, "tool"):
+            tools.append(tool_obj.tool)
+        else:
+            tools.append(tool_obj)
+        filtered_info.append(f"{tool_name}({score:.4f})")
 
     logger.info(f"🧠 [Tools] 查询结果(category={category}): {', '.join(filtered_info)}")
 

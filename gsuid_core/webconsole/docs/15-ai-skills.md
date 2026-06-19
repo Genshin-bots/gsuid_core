@@ -27,7 +27,10 @@ Authorization: Bearer <token>
                 "uri": "F:\\gsuid_core\\data\\ai_core\\skills\\summarize",
                 "metadata": {
                     "homepage": "https://summarize.sh"
-                }
+                },
+                "source": "data",
+                "plugin": null,
+                "editable": true
             }
         ],
         "count": 1
@@ -48,6 +51,9 @@ Authorization: Bearer <token>
 | data.skills[].compatibility | string/null | 兼容性要求 |
 | data.skills[].uri | string | 技能目录路径 |
 | data.skills[].metadata | object | 技能元数据 |
+| data.skills[].source | string | 技能来源：`data`（data/ai_core/skills 目录）或 `plugin`（插件经 `ai_skill` 注册） |
+| data.skills[].plugin | string/null | 来源插件名（`source=plugin` 时有值，否则 null） |
+| data.skills[].editable | boolean | 是否可在控制台编辑/删除（仅 `data` 来源为 true；插件来源只读） |
 | data.count | integer | 技能总数 |
 
 ---
@@ -83,6 +89,9 @@ Authorization: Bearer <token>
         "metadata": {
             "homepage": "https://summarize.sh"
         },
+        "source": "data",
+        "plugin": null,
+        "editable": true,
         "resources": [
             {
                 "name": "_meta.json",
@@ -124,6 +133,9 @@ Authorization: Bearer <token>
 | data.scripts[].name | string | 脚本名称 |
 | data.scripts[].description | string/null | 脚本描述 |
 | data.scripts[].uri | string/null | 脚本路径 |
+| data.source | string | 技能来源：`data` 或 `plugin` |
+| data.plugin | string/null | 来源插件名（`source=plugin` 时有值） |
+| data.editable | boolean | 是否可在控制台编辑/删除（插件来源只读） |
 
 ---
 
@@ -158,6 +170,16 @@ Authorization: Bearer <token>
     "msg": "Skill 'xxx' not found"
 }
 ```
+
+**错误响应（插件注册的技能，只读）**：
+```json
+{
+    "status": 1,
+    "msg": "该技能由插件 MyPlugin 管理，请在其仓库内修改"
+}
+```
+
+> `source=plugin` 的技能由插件经 `ai_skill` 在其自身仓库内注册，控制台不可删除；请在插件仓库内维护。
 
 **响应字段说明**：
 | 字段 | 类型 | 说明 |
@@ -325,6 +347,16 @@ Authorization: Bearer <token>
     "msg": "Skill 'xxx' not found"
 }
 ```
+
+**错误响应（插件注册的技能，只读）**：
+```json
+{
+    "status": 1,
+    "msg": "该技能由插件 MyPlugin 管理，请在其仓库内修改"
+}
+```
+
+> `source=plugin` 的技能由插件经 `ai_skill` 在其自身仓库内注册，控制台不可改写；请在插件仓库内修改 `SKILL.md`。
 
 **响应字段说明**：
 | 字段 | 类型 | 说明 |

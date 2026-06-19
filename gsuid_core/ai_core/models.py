@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypedDict, NotRequired
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Optional, TypedDict, NotRequired
 from dataclasses import field, dataclass
 
 from gsuid_core.bot import Bot
@@ -23,6 +23,9 @@ class ToolContext:
     ev: Optional[Event] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     parent_session_id: Optional[str] = None
+    # 渐进式工具暴露：find_tools 本轮命中的工具名集合，RetrievableToolset 每 step 读它
+    # 解析成可调用工具。作用域为单次 run（ToolContext 每轮新建），轮末自然丢弃。
+    dynamic_tool_names: Set[str] = field(default_factory=set)
 
 
 class KnowledgeBase(TypedDict):
