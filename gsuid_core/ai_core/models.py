@@ -127,7 +127,13 @@ class LinkedAgentRecord(TypedDict):
 
 
 class SessionLogFileData(TypedDict):
-    """AI 会话日志文件的磁盘 JSON 结构（``AISessionLogger._build_data`` 唯一来源）"""
+    """AI 会话日志文件的磁盘 JSON 结构（``AISessionLogger._build_data`` 唯一来源）
+
+    字段顺序即落盘顺序：``entries`` 始终在最后，``type_counts`` 在 entries 之前预先
+    持久化，使 webconsole 能只读 entries 之前的元数据头构建摘要（见
+    ``ai_session_logs_api._read_log_header``）。``type_counts`` 标记为 ``NotRequired``
+    仅为兼容历史（升级前落盘）文件——新写入恒包含该字段。
+    """
 
     session_id: str
     session_uuid: str
@@ -138,9 +144,10 @@ class SessionLogFileData(TypedDict):
     updated_at: float
     ended_at: Optional[float]
     entry_count: int
-    entries: List[SessionLogEntry]
+    type_counts: NotRequired[Dict[str, int]]
     linked_agents: List[LinkedAgentRecord]
     linked_agent_count: int
+    entries: List[SessionLogEntry]
 
 
 class ToolBase:

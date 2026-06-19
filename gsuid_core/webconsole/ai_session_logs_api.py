@@ -186,12 +186,70 @@ _BASE_SUMMARY_CACHE: Dict[str, Tuple[Tuple[float, int], SessionLogSummary]] = {}
 # 用一把锁保护缓存的增删与遍历，避免 "dictionary changed size during iteration"。
 _CACHE_LOCK = threading.Lock()
 
+# 顶层 ``entries`` 键的字节标记：indent=2 下顶层键恒为换行+2 空格（更深层≥4 空格），
+# 且串内换行被转义，故不会误命中；CRLF 多出的 ``\r`` 由 _read_log_header 内 rstrip 去除。
+_ENTRIES_MARKER = b'\n  "entries":'
+# 正常元数据头（不含 entries）只有几 KB；超过此上限（如异常巨大的 linked_agents）
+# 放弃快速读取，回退完整解析。
+_HEADER_MAX_BYTES = 1 << 20  # 1 MB
+
+
+def _read_log_header(path: Path) -> Optional[Dict[str, Any]]:
+    """只读取日志文件 ``entries`` 之前的元数据头，避免解析庞大的 entries 数组。
+
+    新版 ``_build_data`` 把 ``entries`` 作为最后一个顶层字段写出，且预先持久化了
+    ``type_counts``，因此 entries 之前已包含构建摘要所需的全部字段。本函数按字节扫描到
+    顶层 ``"entries"`` 键即停止，把前缀重组为合法 JSON 解析，读取量为 O(头部大小) 而非
+    O(文件大小)——这是 2G 级日志下列表/概览/分类接口提速的关键。
+
+    返回 None 表示无法快速读取（旧格式 entries 非末位 / 头部过大 / 文件损坏），
+    由调用方回退到完整 ``json.load``。返回的 dict 是否为新格式由调用方按 ``type_counts``
+    是否存在判定（旧格式头部缺 type_counts 与 linked_agents）。
+    """
+    head: Optional[bytes] = None
+    try:
+        with open(path, "rb") as f:
+            buf = b""
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break  # 读到文件尾仍未命中标记（旧格式 entries 非末位等）
+                buf += chunk
+                idx = buf.find(_ENTRIES_MARKER)
+                if idx != -1:
+                    head = buf[:idx]
+                    break
+                if len(buf) > _HEADER_MAX_BYTES:
+                    return None
+    except OSError:
+        return None
+
+    if not head:
+        return None
+
+    # head 形如 ``{\n  "a": 1,\n  "b": 2,``（以上一字段的逗号结尾，CRLF 时末尾还带 \r），
+    # 去掉尾随空白与逗号、补 ``}`` 即为合法 JSON。
+    text = head.rstrip()
+    if text.endswith(b","):
+        text = text[:-1]
+    text += b"\n}"
+    try:
+        data = json.loads(text.decode("utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
 
 def _parse_log_file_base(path: Path) -> Optional[SessionLogSummary]:
     """解析日志文件为基础摘要（linked_agents 保持原始未 enrich），按 mtime+size 缓存。
 
     已结束的磁盘日志内容不再变化，首次解析后缓存；后续请求若文件未变则直接复用，
     避免重复读取 / JSON 解析 / entries 统计（这是列表接口的主要耗时来源）。
+
+    解析路径：优先 ``_read_log_header`` 头部快速读取（新格式：entries 末位 + 已持久化
+    type_counts），只读几 KB 即可；旧格式（升级前落盘）头部缺 type_counts，回退到完整
+    ``json.load`` 并遍历 entries 现算 type_counts，保证向后兼容（旧文件随 8 天日志保留
+    自然淘汰后，全部走快速路径）。
     """
     key = str(path)
     try:
@@ -207,24 +265,32 @@ def _parse_log_file_base(path: Path) -> Optional[SessionLogSummary]:
     if cached is not None and cached[0] == sig:
         return cached[1]
 
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data: SessionLogFileData = json.load(f)
-    except Exception:
-        return None
-    # 磁盘文件可能由历史版本写入、字段不全；按 _build_data 契约类型化读取，缺字段取默认
-    if not isinstance(data, dict) or "session_id" not in data or "created_at" not in data:
-        return None
+    # 1. 优先头部快速读取（新格式）：命中即拿到 type_counts / linked_agents，无需读 entries
+    header = _read_log_header(path)
+    data: Dict[str, Any]
+    type_counts: Dict[str, int]
+    if header is not None and "type_counts" in header and "session_id" in header and "created_at" in header:
+        data = header
+        tc = header.get("type_counts")
+        type_counts = tc if isinstance(tc, dict) else {}
+    else:
+        # 2. 回退完整解析（旧格式 / 头部不可用）：遍历 entries 现算 type_counts
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return None
+        # 磁盘文件可能由历史版本写入、字段不全；按 _build_data 契约类型化读取，缺字段取默认
+        if not isinstance(data, dict) or "session_id" not in data or "created_at" not in data:
+            return None
+        type_counts = {}
+        for entry in data.get("entries", []):
+            etype: str = entry.get("type", "unknown")
+            type_counts[etype] = type_counts.get(etype, 0) + 1
 
     created_at: float = data.get("created_at", 0)
     ended_at: Optional[float] = data.get("ended_at")
     updated_at: float = data.get("updated_at", 0)
-
-    # type_counts 未持久化，需遍历 entries 统计
-    type_counts: Dict[str, int] = {}
-    for entry in data.get("entries", []):
-        etype: str = entry.get("type", "unknown")
-        type_counts[etype] = type_counts.get(etype, 0) + 1
 
     duration: Optional[float] = (ended_at - created_at) if (ended_at and created_at) else None
     linked_agents: List[LinkedAgentRecord] = data.get("linked_agents", [])
@@ -547,6 +613,38 @@ def _build_unified_list() -> List[SessionLogSummary]:
     return results
 
 
+# 统一列表短期缓存：ai-history 一次加载会并发调用 list/overview/categories，各构建一次
+# 全量列表。极短 TTL 合并为一次构建；活跃会话状态至多滞后数秒，对日志看板可接受。
+
+_UNIFIED_CACHE_TTL: float = 3.0
+# (build_time, results)
+_unified_cache: Optional[Tuple[float, List[SessionLogSummary]]] = None
+# 仅用于"同一时刻多线程并发构建"的去重，避免三个接口各跑一遍全量构建。
+_UNIFIED_BUILD_LOCK = threading.Lock()
+
+
+def _build_unified_list_cached() -> List[SessionLogSummary]:
+    """带极短 TTL 的统一列表构建（供 list/overview/categories 共用）。
+
+    命中 TTL 内的缓存直接复用；未命中时加锁构建，并发的其他请求在锁内二次检查后
+    复用刚构建好的结果，确保一次页面加载只真正构建一次。返回结果只读共享（调用方
+    只做筛选/统计，不就地修改条目），故多接口复用同一份安全。
+    """
+    global _unified_cache
+    now = time.time()
+    cache = _unified_cache
+    if cache is not None and (now - cache[0]) < _UNIFIED_CACHE_TTL:
+        return cache[1]
+    with _UNIFIED_BUILD_LOCK:
+        # 二次检查：可能已被并发请求构建好
+        cache = _unified_cache
+        if cache is not None and (time.time() - cache[0]) < _UNIFIED_CACHE_TTL:
+            return cache[1]
+        results = _build_unified_list()
+        _unified_cache = (time.time(), results)
+        return results
+
+
 def _apply_filters(
     items: List[SessionLogSummary],
     session_id: Optional[str] = None,
@@ -774,9 +872,9 @@ async def list_session_logs(
         data: 日志列表及分页信息
     """
     try:
-        # _build_unified_list 涉及大量磁盘读取/JSON 解析，是同步阻塞操作；
-        # 放到线程池执行，避免冻结整个 asyncio 事件循环（影响其他请求/连接）。
-        unified = await run_in_threadpool(_build_unified_list)
+        # 同步阻塞（大量磁盘读取/JSON 解析）放线程池避免冻结事件循环；走极短 TTL 缓存把
+        # 一次页面加载的 list/overview/categories 三接口并发构建合并为一次。
+        unified = await run_in_threadpool(_build_unified_list_cached)
         filtered = _apply_filters(
             unified,
             session_id=session_id,
@@ -1123,7 +1221,7 @@ async def get_session_logs_overview(
         data: 统计概览
     """
     try:
-        unified = await run_in_threadpool(_build_unified_list)
+        unified = await run_in_threadpool(_build_unified_list_cached)
 
         today_str: str = datetime.now().strftime("%Y-%m-%d")
         today_count: int = 0
@@ -1214,8 +1312,8 @@ async def get_session_log_categories(
             total: 分类种类数
     """
     try:
-        # 与列表/概览接口一致，放线程池执行，避免阻塞事件循环。
-        unified = await run_in_threadpool(_build_unified_list)
+        # 与列表/概览接口一致，走带极短 TTL 的缓存并放线程池执行，避免阻塞事件循环。
+        unified = await run_in_threadpool(_build_unified_list_cached)
 
         stats: Dict[str, Dict[str, Any]] = {}
         group_counts: Dict[str, int] = {}
