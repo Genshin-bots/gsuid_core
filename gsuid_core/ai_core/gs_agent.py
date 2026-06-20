@@ -3,6 +3,7 @@ PydanticAI Agent 核心模块
 基于 pydantic_ai 实现的轻量级 Agent
 """
 
+import re
 import time
 import uuid
 import asyncio
@@ -27,7 +28,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     ModelResponsePart,
 )
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from gsuid_core.bot import Bot
@@ -100,6 +101,29 @@ _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
 # UsageLimitExceeded（思考轮数到顶，有专属兜底总结）不在重试范围内。
 _MAX_RUN_ATTEMPTS = 3
 _RUN_RETRY_DELAY = 3.0
+
+# 永久性 4xx 客户端错误（内容审核拦截 / 请求体过大 / 参数非法等）：重试必复现，应
+# fail-fast 不再重试。408（超时）/429（限流）虽是 4xx 但可重试，明确排除。
+_RETRYABLE_4XX = frozenset({408, 429})
+
+# 内容审核拦截特征词（各 provider 文案不一，取并集模糊判定）。仅用于友好文案与统计分类，
+# 不影响"是否重试"的判定。
+_CONTENT_REJECT_HINTS = ("sensitive", "content policy", "content_policy", "content_filter")
+# 内容审核错误码（如 MiniMax 1026）。按词边界匹配，避免误命中 request-id / 时间戳里的数字。
+_CONTENT_REJECT_CODES = ("1026",)
+
+
+def _is_non_retryable_model_error(e: BaseException) -> bool:
+    """该异常是否为"重试也必然复现"的永久性模型错误（4xx 客户端错误，排除 408/429）。"""
+    return isinstance(e, ModelHTTPError) and 400 <= e.status_code < 500 and e.status_code not in _RETRYABLE_4XX
+
+
+def _is_content_rejected(e: ModelHTTPError) -> bool:
+    """4xx 错误是否为"内容被模型安全 / 审核策略拒绝"（用于更友好的文案与统计分类）。"""
+    blob = (str(e.body or "") + " " + str(e)).lower()
+    if any(hint in blob for hint in _CONTENT_REJECT_HINTS):
+        return True
+    return any(re.search(rf"\b{code}\b", blob) for code in _CONTENT_REJECT_CODES)
 
 
 def _matched_delegation_only_profile(query: str) -> str:
@@ -837,13 +861,31 @@ class GsCoreAIAgent:
                     if stripped:
                         logger.warning(f"🧠 [GsCoreAIAgent] 图片下载失败，已从历史剥离 {stripped} 处过期远程图片")
 
-                if attempt < _MAX_RUN_ATTEMPTS:
+                # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast，
+                # 不再消耗剩余重试次数。
+                non_retryable = _is_non_retryable_model_error(e)
+
+                if attempt < _MAX_RUN_ATTEMPTS and not non_retryable:
                     logger.warning(
                         f"🧠 [PydanticAI] 核心请求第 {attempt}/{_MAX_RUN_ATTEMPTS} 次失败，"
                         f"{_RUN_RETRY_DELAY}s 后重试: {e}"
                     )
                     await asyncio.sleep(_RUN_RETRY_DELAY)
                     continue
+
+                # 永久性客户端错误是上游对本次输入的明确拒绝（非本服务 bug）：只打一行
+                # warning（不刷 traceback），按内容审核 / 其他客户端错误分类记账并返回友好文案。
+                if non_retryable:
+                    assert isinstance(e, ModelHTTPError)  # 见 _is_non_retryable_model_error
+                    if _is_content_rejected(e):
+                        logger.warning(f"🧠 [PydanticAI] 模型拒绝处理本次输入（内容审核 {e.status_code}）: {err_str}")
+                        statistics_manager.record_error(error_type="content_rejected")
+                        self._session_logger.log_error("content_rejected", err_str)
+                        return "执行出错: 内容被模型安全策略拒绝"
+                    logger.warning(f"🧠 [PydanticAI] 模型返回客户端错误（{e.status_code}，不重试）: {err_str}")
+                    statistics_manager.record_error(error_type="client_error")
+                    self._session_logger.log_error("client_error", err_str)
+                    return f"执行出错: {err_str}"
 
                 # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
                 if isinstance(e, httpx.TimeoutException):

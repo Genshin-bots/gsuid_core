@@ -1,0 +1,11 @@
+{
+  "mode": "light",
+  "style": "glassmorphism",
+  "color": "orchid",
+  "icon_color": "colored",
+  "background_image": "https://files.seeusercontent.com/2026/06/20/Jth9/aeb070e9498a448d60e76caddd36432b.jpg",
+  "blur_intensity": 8,
+  "card_opacity": 26,
+  "theme_preset": "default",
+  "language": "zh-CN"
+}

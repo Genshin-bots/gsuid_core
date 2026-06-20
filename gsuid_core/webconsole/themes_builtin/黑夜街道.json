@@ -1,0 +1,11 @@
+{
+  "mode": "dark",
+  "style": "glassmorphism",
+  "color": "blue",
+  "icon_color": "colored",
+  "background_image": "https://cdn.pixabay.com/photo/2024/05/26/15/27/anime-8788959_1280.jpg",
+  "blur_intensity": 7,
+  "card_opacity": 55,
+  "theme_preset": "shadcn",
+  "language": "zh-CN"
+}

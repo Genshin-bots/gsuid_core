@@ -214,6 +214,10 @@ async def understand_image(
             task_level=task_level,
             parent_session_id=parent_session_id,
         )
+        # 上游 agent 失败会返回 "执行出错: ..." 文案而非抛异常（见 gs_agent._execute_run），
+        # 不能缓存 / 流入记忆，按文档约定转 RuntimeError 让调用方各自走失败兜底。
+        if not desc or desc.startswith("执行出错"):
+            raise RuntimeError(f"原生多模态图片理解失败: {desc or '空结果'}")
         _understand_cache_put(cache_key, desc)
         return desc
 

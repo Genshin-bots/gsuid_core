@@ -1,0 +1,11 @@
+{
+  "mode": "light",
+  "style": "glassmorphism",
+  "color": "blue",
+  "icon_color": "colored",
+  "background_image": "https://api.paugram.com/wallpaper",
+  "blur_intensity": 8,
+  "card_opacity": 27,
+  "theme_preset": "default",
+  "language": "zh-CN"
+}

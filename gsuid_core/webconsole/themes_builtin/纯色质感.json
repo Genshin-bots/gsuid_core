@@ -1,0 +1,11 @@
+{
+  "mode": "light",
+  "style": "glassmorphism",
+  "color": "blue",
+  "icon_color": "colored",
+  "background_image": null,
+  "blur_intensity": 7,
+  "card_opacity": 55,
+  "theme_preset": "shadcn",
+  "language": "zh-CN"
+}

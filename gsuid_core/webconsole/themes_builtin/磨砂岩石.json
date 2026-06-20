@@ -1,0 +1,11 @@
+{
+  "mode": "dark",
+  "style": "glassmorphism",
+  "color": "blue",
+  "icon_color": "colored",
+  "background_image": "https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=1920&q=80",
+  "blur_intensity": 7,
+  "card_opacity": 55,
+  "theme_preset": "shadcn",
+  "language": "zh-CN"
+}

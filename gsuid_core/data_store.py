@@ -61,6 +61,7 @@ PLUGINS_CONFIGS_PATH = get_res_path("plugins_configs")
 
 # 主题配置路径 / Theme Config Path
 THEME_CONFIG_PATH = gs_data_path / "theme_config.json"
+THEME_CONFIGS_PATH = get_res_path(gs_data_path / "themes")
 
 # 日志控制台配置路径 / Logs Console Config Path
 LOGS_CONFIG_PATH = gs_data_path / "logs" / "configs" / "logs_config.json"
