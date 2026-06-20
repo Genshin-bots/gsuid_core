@@ -214,52 +214,59 @@ class StringConfig:
                 if not isinstance(stored, dict):
                     temp_config[key] = defalut_dict
                     continue
+                # key 集合一致不代表值类型合法; 不实测一次 decode 会陷入
+                # repair <-> decode 死循环 (RecursionError), 故非法条目直接重置。
+                try:
+                    msgjson.decode(msgjson.encode(stored), type=GSC)
+                except ValidationError:
+                    temp_config[key] = defalut_dict
+                    continue
                 if list(stored.keys()) == list(defalut_dict.keys()):
                     continue
                 else:
                     temp_config[key] = defalut_dict
 
-            # 旁路字段清理: 不属于 config_list 且不是 dict 的字段 (字符串 / 数字 /
-            # 列表) 一定不是 GSC 条目, 留着会让 update_config 再次 ValidationError
-            # 进入死循环。``repair_config`` 必须在每次调用中都至少推进一步, 否则
-            # update_config -> repair_config -> update_config 永不收敛。
-            #
-            # 保留"不在 config_list 但形如 dict"的字段 (可能是模板调整后遗留的
-            # 历史 GSC 条目, 应当让用户/迁移流程显式处理而不是静默丢弃)。
-            foreign_non_dict_keys = [
-                k for k, v in temp_config.items() if k not in self.config_list and not isinstance(v, dict)
-            ]
-            for k in foreign_non_dict_keys:
-                logger.warning(
-                    f"[配置][{self.config_name}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {type(temp_config[k]).__name__})"
-                )
+            # 旁路字段清理: 非 GSC 结构 (非 dict, 或 dict 但 decode 失败) 一律移除,
+            # 保证 repair 后必为合法 Dict[str, GSC]; 合法历史 GSC 条目仍保留待迁移。
+            foreign_keys = [k for k in temp_config if k not in self.config_list]
+            for k in foreign_keys:
+                v = temp_config[k]
+                if isinstance(v, dict):
+                    try:
+                        msgjson.decode(msgjson.encode(v), type=GSC)
+                        continue
+                    except ValidationError:
+                        pass
+                logger.warning(f"[配置][{self.config_name}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {type(v).__name__})")
                 temp_config.pop(k)
 
         with open(self.CONFIG_PATH, "w", encoding="UTF-8") as f:
             json.dump(temp_config, f, indent=4, ensure_ascii=False)
 
     def update_config(self):
-        is_error = False
-        # 打开config.json
-        try:
-            with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
-                d = f.read()
-        except UnicodeDecodeError:
-            with open(self.CONFIG_PATH, "r") as f:
-                d = f.read()
+        # 最多修复一次后重试 decode; repair_config 已保证收敛, 失败兜底重置默认,
+        # 杜绝 update_config <-> repair_config 无限递归 (RecursionError)。
+        for attempt in range(2):
+            # 打开config.json
+            try:
+                with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
+                    d = f.read()
+            except UnicodeDecodeError:
+                with open(self.CONFIG_PATH, "r") as f:
+                    d = f.read()
 
-        try:
-            self.config: Dict[str, GSC] = msgjson.decode(
-                d,
-                type=Dict[str, GSC],
-            )
-        except ValidationError:
-            self.repair_config()
-            is_error = True
-
-        if is_error:
-            self.update_config()
-            return
+            try:
+                self.config: Dict[str, GSC] = msgjson.decode(
+                    d,
+                    type=Dict[str, GSC],
+                )
+                break
+            except ValidationError:
+                if attempt == 0:
+                    self.repair_config()
+                else:
+                    logger.error(f"[配置][{self.config_name}] 修复后仍无法解析配置文件, 已重置为默认配置!")
+                    self.config = dict(self.config_list)
 
         # 对没有的值，添加默认值
         for key in self.config_list:
