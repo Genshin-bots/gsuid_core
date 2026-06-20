@@ -95,6 +95,12 @@ _FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
 # 每次运行最多发送的前摇数量，避免刷屏
 _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
 
+# 核心回复请求的瞬时失败重试：网络抖动 / 超时 / 5xx / 529 等多为可恢复故障，重试常能成功。
+# 至多尝试 _MAX_RUN_ATTEMPTS 次、每次失败后等待 _RUN_RETRY_DELAY 秒；逻辑性的
+# UsageLimitExceeded（思考轮数到顶，有专属兜底总结）不在重试范围内。
+_MAX_RUN_ATTEMPTS = 3
+_RUN_RETRY_DELAY = 3.0
+
 
 def _matched_delegation_only_profile(query: str) -> str:
     """用户意图是否命中某个"工具对主人格隐藏、只能委派"的能力代理画像。
@@ -799,8 +805,93 @@ class GsCoreAIAgent:
         intent: Optional[str] = None,
         has_active_task: bool = False,
     ) -> Union[str, Any]:
+        """核心回复请求的瞬时失败重试包装。
+
+        把单次执行交给 ``_execute_run_once``；网络/超时/5xx/529 等瞬时故障会以异常
+        冒泡到这里，等待 ``_RUN_RETRY_DELAY`` 秒后重试，至多 ``_MAX_RUN_ATTEMPTS`` 次，
+        全部失败才按异常类型记录统计并返回错误文案。``UsageLimitExceeded`` 已在
+        ``_execute_run_once`` 内走专属兜底总结、不会传到这里，故不会被重试。
+        每次重试都复用未被改写的 ``self.history``（成功后才追加），从干净状态重跑。
         """
-        实际执行 Agent 运行的内部方法
+        from gsuid_core.ai_core.statistics import statistics_manager
+
+        for attempt in range(1, _MAX_RUN_ATTEMPTS + 1):
+            try:
+                return await self._execute_run_once(
+                    user_message=user_message,
+                    bot=bot,
+                    ev=ev,
+                    rag_context=rag_context,
+                    tools=tools,
+                    return_mode=return_mode,
+                    output_type=output_type,
+                    intent=intent,
+                    has_active_task=has_active_task,
+                )
+            except Exception as e:
+                err_str = str(e)
+                # 自愈：过期远程图片导致的下载失败会让后续每轮都 500，先剥离历史里的
+                # 过期远程图片，让本次重试（及下一轮）用干净历史恢复。
+                if "download image" in err_str.lower():
+                    stripped = _strip_remote_images_from_history(self.history)
+                    if stripped:
+                        logger.warning(f"🧠 [GsCoreAIAgent] 图片下载失败，已从历史剥离 {stripped} 处过期远程图片")
+
+                if attempt < _MAX_RUN_ATTEMPTS:
+                    logger.warning(
+                        f"🧠 [PydanticAI] 核心请求第 {attempt}/{_MAX_RUN_ATTEMPTS} 次失败，"
+                        f"{_RUN_RETRY_DELAY}s 后重试: {e}"
+                    )
+                    await asyncio.sleep(_RUN_RETRY_DELAY)
+                    continue
+
+                # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
+                if isinstance(e, httpx.TimeoutException):
+                    logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 请求超时 {e}")
+                    statistics_manager.record_error(error_type="timeout")
+                    self._session_logger.log_error("timeout", err_str)
+                    return "执行出错: 请求超时"
+                if isinstance(e, httpx.HTTPError):
+                    low = err_str.lower()
+                    if "rate" in low or "429" in low or "limit" in low:
+                        logger.warning(f"🧠 [PydanticAI] Agent 运行异常: Rate Limit {e}")
+                        statistics_manager.record_error(error_type="rate_limit")
+                        self._session_logger.log_error("rate_limit", err_str)
+                    else:
+                        logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 网络错误 {e}")
+                        statistics_manager.record_error(error_type="network_error")
+                        self._session_logger.log_error("network_error", err_str)
+                    return f"执行出错: {err_str}"
+
+                logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
+                logger.exception("🧠 [PydanticAI] 异常详情:")
+                if "529" in err_str:
+                    statistics_manager.record_error(error_type="api_529_error")
+                else:
+                    statistics_manager.record_error(error_type="agent_error")
+                self._session_logger.log_error("agent_error", err_str)
+                return f"执行出错: {err_str}"
+
+        # range(1, _MAX_RUN_ATTEMPTS + 1) 至少一次循环，正常不可达
+        return "执行出错: 未知错误"
+
+    async def _execute_run_once(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot] = None,
+        ev: Optional[Event] = None,
+        rag_context: Optional[str] = None,
+        tools: Optional[ToolList] = None,
+        return_mode: Literal["always", "return", "by_bot"] = "by_bot",
+        output_type: Optional[type] = None,
+        intent: Optional[str] = None,
+        has_active_task: bool = False,
+    ) -> Union[str, Any]:
+        """
+        实际执行 Agent 运行的内部方法（单次尝试）
+
+        瞬时故障（超时/网络/5xx/529 等）**不在此捕获**，直接向上抛出由
+        ``_execute_run`` 统一重试；``UsageLimitExceeded`` 仍在此走专属兜底总结。
 
         Args:
             output_type: 当指定为某个 Pydantic 模型类时，利用 pydantic_ai 的
@@ -1330,6 +1421,21 @@ class GsCoreAIAgent:
                             cache_read_tokens,
                             cache_write_tokens,
                         )
+                        # 预算记账：仅交互式(带 ev)的 run 计入对应 Session 额度。
+                        # 子 Agent/后台调用无 ev，其 Token 只进全局统计、不占 Session 预算。
+                        if ev is not None:
+                            try:
+                                from gsuid_core.ai_core.budget import budget_manager
+
+                                await budget_manager.record_usage(
+                                    ev,
+                                    input_tokens,
+                                    output_tokens,
+                                    cache_read_tokens,
+                                    cache_write_tokens,
+                                )
+                            except Exception as _be:
+                                logger.debug(f"💰 [GsCoreAIAgent] 预算记账失败: {_be}")
                 except AttributeError as e:
                     # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
                     logger.info(f"📊 [GsCoreAIAgent] result.usage 访问失败: {e}")
@@ -1440,45 +1546,8 @@ class GsCoreAIAgent:
                     return ""
                 return fallback_error
 
-        except httpx.TimeoutException as e:
-            # HTTP 请求超时
-            logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 请求超时 {e}")
-            statistics_manager.record_error(error_type="timeout")
-            self._session_logger.log_error("timeout", str(e))
-            return "执行出错: 请求超时"
-
-        except httpx.HTTPError as e:
-            # 其他 HTTP 错误（网络相关）
-            error_str = str(e).lower()
-            if "rate" in error_str or "429" in error_str or "limit" in error_str:
-                logger.warning(f"🧠 [PydanticAI] Agent 运行异常: Rate Limit {e}")
-                statistics_manager.record_error(error_type="rate_limit")
-                self._session_logger.log_error("rate_limit", str(e))
-            else:
-                logger.warning(f"🧠 [PydanticAI] Agent 运行异常: 网络错误 {e}")
-                statistics_manager.record_error(error_type="network_error")
-                self._session_logger.log_error("network_error", str(e))
-            return f"执行出错: {str(e)}"
-
-        except Exception as e:
-            logger.error(f"🧠 [PydanticAI] Agent 运行异常: {e}")
-            logger.exception("🧠 [PydanticAI] 异常详情:")
-            err_str = str(e)
-            if "529" in err_str:
-                statistics_manager.record_error(error_type="api_529_error")
-            else:
-                statistics_manager.record_error(error_type="agent_error")
-            self._session_logger.log_error("agent_error", err_str)
-            # 自愈：推理端「Failed to download image」基本都是历史里残留了过期的
-            # 远程图片 URL，不清掉会导致之后每一轮重发都 500、整个会话卡死。这里把
-            # 历史中的过期远程图片剥离成文字占位，使下一轮能自动恢复。
-            if "download image" in err_str.lower():
-                stripped = _strip_remote_images_from_history(self.history)
-                if stripped:
-                    logger.warning(
-                        f"🧠 [GsCoreAIAgent] 图片下载失败，已从历史剥离 {stripped} 处过期远程图片，下一轮自动恢复"
-                    )
-            return f"执行出错: {str(e)}"
+        # 瞬时故障（超时/网络/5xx/529 等）一律不在此捕获，向上抛给 _execute_run
+        # 统一重试；download image 自愈与错误文案/统计也收敛到 _execute_run。
         finally:
             # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享），
             # 防止内存中 key 无限累积。session_id 缺失时跳过——本轮也没机会

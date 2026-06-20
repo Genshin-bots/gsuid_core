@@ -266,6 +266,59 @@ class CoreUser(BaseBotIDModel, table=True):
         ...
 ```
 
+### 3.5 SQLModel / SQLAlchemy 查询的类型安全写法
+
+ORM 查询是 `cast` / `type: ignore` / `getattr` 的重灾区。下面三条是**从根源消除**这些兜底的正确写法，
+违反 §1.2~1.4 去糊弄 basedpyright 的标红，先回到这里。
+
+#### 3.5.1 比较表达式一律用 `col()` 包裹列
+
+SQLModel 字段注解是 Python 类型（如 `created_at: int`），所以 `cls.created_at >= ts` 被类型检查器判为
+**`bool`**，传进 `where()` 会标红：`"bool" 不能赋值给 _ColumnExpressionArgument[bool]`。用 `col()` 把列
+还原成 `ColumnElement`，比较结果才是 `ColumnElement[bool]`：
+
+```python
+# ❌ 错误：cls.created_at >= ts 是 bool
+stmt = delete(cls).where(cls.created_at >= since_ts)
+
+# ✅ 正确：col() 包裹得到 ColumnElement[bool]
+stmt = delete(cls).where(col(cls.created_at) >= since_ts)
+```
+
+`where` / `order_by` / `group_by` / `!=` / `.is_(False)` **全部**适用。
+
+> 陷阱：`select(cls).where(cls.x == v)` 恰好**不报错**——SQLModel 的 `Select.where` 重载把 `bool` 也
+> 收进了 union；但 `delete()`/`update()` 是 SQLAlchemy 原生、`where` 严格只收 `ColumnElement[bool]` 就会
+> 报错。**不要依赖前者的宽松，一律 `col()` 包裹**，写法统一且不踩 DML 的坑。
+
+#### 3.5.2 `rowcount` 用 `isinstance(result, CursorResult)` 守卫
+
+`session.execute()` 静态返回 `Result[Any]`，**没有** `rowcount`（标红 `reportAttributeAccessIssue`）。但
+DML（`delete`/`update`）运行时真实返回的是 `CursorResult`。用类型守卫安全取值，而不是
+`cast(CursorResult, ...)` / `getattr(result, "rowcount", 0)` / `# type: ignore`：
+
+```python
+from sqlalchemy.engine import CursorResult
+
+result = await session.execute(delete(cls).where(col(cls.created_at) < before_ts))
+deleted = result.rowcount if isinstance(result, CursorResult) else 0
+```
+
+#### 3.5.3 不要把运行时变长列表 splat 进 `select()`
+
+`select(*cols, total)`（`cols` 是运行时按分支拼出来的 `list`）无法匹配 `select` 的重载
+（`No overloads for "select" match`），且 `row[i]` 退化成 `Any`、行下标全无类型。**按分支写出列数确定的
+`select()`**，结果类型收敛为 `Select[tuple[...]]`，行下标自动带类型：
+
+```python
+# ❌ 错误：变长 splat，select 无重载匹配、row 退化为 Any
+stmt = select(*group_cols, total).where(...)
+
+# ✅ 正确：列数确定 → Select[tuple[str, str, int]]，r[0]/r[1]/r[2] 有类型
+conds: List[ColumnElement[bool]] = [col(cls.created_at) >= since_ts]
+stmt = select(col(cls.group_id), col(cls.user_id), total).where(*conds)
+```
+
 ---
 
 ## 四、异步编程规范

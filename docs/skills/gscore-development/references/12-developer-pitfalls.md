@@ -99,6 +99,13 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 - 错误处理一致性：有 `bot` 时 `bot.send()` 发最终错误并 `return ""`；无 `bot` 时返回字符串由
   调用方处理——**避免"安抚消息 + 错误消息"双发**。
 
+**瞬时失败重试（核心回复请求）**：`_execute_run` 现为重试包装——单次执行落在 `_execute_run_once`，
+网络/超时/5xx/529 等瞬时故障以异常冒泡，等 `_RUN_RETRY_DELAY`(3s) 后重试，至多 `_MAX_RUN_ATTEMPTS`(3)
+次，全部失败才按异常类型记统计 + 返回 `执行出错: …`。每次重试复用**未被改写**的 `self.history`
+（成功才 `extend`），从干净状态重跑；`download image` 自愈在重试前剥离过期远程图片。
+`UsageLimitExceeded` 是**逻辑性**到顶（有 §12.8 兜底总结），在 `_execute_run_once` 内消化、
+**不参与重试**——改这块勿把它并进通用 `except` 重试分支。
+
 ## 12.9 Heartbeat 并发雪崩（D-2）
 
 巡检**必须**前置规则过滤（绝大多数会话不进 LLM）+ Semaphore(5) + 300s 超时。删掉前置过滤会
@@ -158,6 +165,11 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 - SQLModel 不写 `__tablename__`；数据库方法写类里、用 `@with_session`；Schema 升级走
   `on_core_start_before` 的 `exec_list`/`trans_adapter`（见 [§11](./11-statistics-webconsole-database.md)）。
 - AI 表要挂到受总开关控制的建表路径，不要无条件建。
+- **ORM 查询类型安全**（别用 `cast`/`type:ignore`/`getattr` 糊弄 basedpyright，见
+  [`docs/LLM.md`](../../../LLM.md) §3.5）：① `where`/`order_by`/`group_by` 里的列一律 `col()` 包裹
+  （`col(cls.x) >= v` 才是 `ColumnElement[bool]`，裸 `cls.x >= v` 是 `bool`，`delete()/update().where()`
+  会标红）；② `rowcount` 用 `isinstance(result, CursorResult)` 守卫取值；③ 不要 `select(*变长list)`，
+  按分支写列数确定的 `select()` 让结果收敛成 `Select[tuple[...]]`。
 
 ## 12.16 RAG / 知识库的约定
 

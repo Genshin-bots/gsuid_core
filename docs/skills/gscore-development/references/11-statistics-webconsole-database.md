@@ -54,7 +54,19 @@ async def example(_user: Dict = Depends(require_auth)): ...
 
 主要业务 API 文件：`persona_api.py`、`mcp_config_api.py`、`embedding_config_api.py`、
 `ai_scheduled_task_api.py`、`knowledge_base_api.py`、`ai_skills_api.py`、`agent_debug_api.py`
-（C10 可视化调试台：记忆图谱浏览/软删 Edge、Kanban 看板/步骤改写、self_model 查看修正）。
+（C10 可视化调试台：记忆图谱浏览/软删 Edge、Kanban 看板/步骤改写、self_model 查看修正）、
+`budget_api.py`（按 Session 的 Token 预算限制，见下）。
+
+### AI 预算限制子系统（`ai_core/budget/`）
+
+按 Session（`global`/`group`/`member`/`user` 四维度，与 Session ID 语义对齐：群聊全群共享、
+私聊按人）对 Token 设 **5h/天/周** 三档上限，支持白名单 + 主人豁免。三张表
+（`AIBudgetRule`/`AIBudgetWhitelist`/`AIBudgetUsageRecord`，受总开关控制建表，已登记进
+`AI_DATABASE_MODEL_MODULES`）。判定/记账走 `budget/manager.py::budget_manager`：
+拦截在 `handle_ai.py::handle_ai_chat` 调 LLM **前**（`check`），记账在
+`gs_agent.py::_execute_run` 记 Token **后**（`record_usage`，仅带 `ev` 的交互式 run）。
+全局策略在 `budget/config.py`（`budget_config.json`）。前端 API 见
+`webconsole/budget_api.py`（`/api/ai/budget/*`）与 `webconsole/docs/41-ai-budget.md`。
 
 > 插件也可复用 `gsuid_core.webconsole.app_app.app` 挂自己的 `/api/<插件名>/...` 路由 +
 > `Depends(require_auth)`。详见 `gscore-plugin-development` 的 FastAPI 插件 API 章。

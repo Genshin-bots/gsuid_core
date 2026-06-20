@@ -162,6 +162,31 @@ async def handle_ai_chat(
             query = event.raw_text
 
             # ============================================================
+            # 预算闸门：按 Session(群/成员/私聊) 校验 Token 额度，超额则在此早退，
+            # 省下后续记忆/分类/主 Agent 的全部开销。豁免(主人/白名单)直接放行。
+            # ============================================================
+            # 判定与「提示发送/早退」分离：check 失败 fail-open 放行；但一旦判定为超额，
+            # 早退必须无条件执行——发送提示失败不能让超额消息漏网继续走完整 AI 流程。
+            budget_decision = None
+            try:
+                from gsuid_core.ai_core.budget import budget_manager
+
+                budget_decision = await budget_manager.check(event)
+            except Exception as e:
+                logger.warning(f"💰 [GsCore][AI] 预算校验异常，放行本次消息: {e}")
+
+            if budget_decision is not None and not budget_decision.allowed:
+                logger.info(
+                    f"💰 [GsCore][AI] 预算超额拦截 ({budget_decision.block_scope_label}): {budget_decision.message}"
+                )
+                if budget_decision.notify and budget_decision.message and bot is not None:
+                    try:
+                        await bot.send(budget_decision.message)
+                    except Exception as e:
+                        logger.warning(f"💰 [GsCore][AI] 预算超额提示发送失败: {e}")
+                return
+
+            # ============================================================
             # 主动会话记忆 · 记录「触发者发言」
             # 能进入本函数即代表 AI 实际参与了交互，按「主动会话」语义需把触发者
             # 这条原话也写入记忆（Bot 自身回复由 bot.py 发送路径单独入队到 SELF scope）。

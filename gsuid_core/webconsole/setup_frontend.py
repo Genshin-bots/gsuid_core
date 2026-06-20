@@ -135,6 +135,8 @@ def _import_webconsole_apis() -> None:
 
     from gsuid_core.webconsole import (  # noqa: F401
         meme_api,
+        # AI 预算限制 webconsole 后端
+        budget_api,
         # Agent Mesh Kanban webconsole 后端
         kanban_api,
         persona_api,
