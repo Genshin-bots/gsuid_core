@@ -50,6 +50,19 @@ MAX_CONCURRENT_LLM_CALLS = 5    # 信号量
 INACTIVE_THRESHOLD_HOURS = 1    # 冷场阈值
 ```
 
+> **主人识别（巡检也会称呼「主人」）**：巡检的 system_prompt 是**裸人格**
+> （`ROLE_PLAYING_START + persona.md`，**不含** `SYSTEM_CONSTRAINTS` 里的主人名单），
+> 且巡检是"旁观扫群"、没有被动链路那种"当前说话人"，故早期只能用昵称称呼群友。
+> 现 `run_heartbeat` 用 `_build_masters_section(history)` 从 `core_config["masters"]` 筛出
+> **出现在本群历史里**的主人，拼成「【你的主人】…」注入决策/发言两个 user 模板的
+> `{masters_section}` 占位，使巡检在主人发言时也以「主人」相称。只列**在场**主人，
+> 避免塞一串与本群无关的 ID；无主人在场则该段为空、行为不变。
+>
+> 对比被动链路：它的 system_prompt 由 `build_persona_prompt` 组装、本就含
+> `SYSTEM_CONSTRAINTS` 的主人名单（见 [§06](./06-ai-session-and-persona.md)），且每轮还会用
+> `utils._build_relationship_description` 对"当前说话人"做主人高亮——所以被动链路天然会叫主人，
+> 巡检则需上面这段补偿。
+
 > ⚠️ **历史缺陷 D-2（必须保留的防护）**：原代码遍历所有活跃会话**串行**对每个会话调 LLM。
 > 100 个群 + 5 分钟间隔 = 每 5 分钟瞬间 100 次并发 LLM 请求，触发 Rate Limit + Token 破产。
 > 修复 = 前置规则过滤（绝大多数会话不进 LLM）+ Semaphore(5) + 300s 超时保护。**改巡检逻辑

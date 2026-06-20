@@ -2,9 +2,10 @@
 通用持久状态存储 - AI 工具
 
 向 Agent 暴露 state_get / state_set / state_delete / state_list / state_append 五个工具。
-其中高频的 state_set / state_get / state_list 为框架保底工具（任何 session 默认注入）；
-低频的 state_delete / state_append 降为检索池工具，靠能力族（持久状态）/ 会话驻留 / 向量检索
-按需召回——用到 KV 写读时整族带出，避免每轮闲聊都常驻 5 个 state_* 抬高 Token。
+其中 bootstrap 读写对 state_set / state_get 为框架保底工具（任何 session 默认注入）；
+低频的 state_list / state_delete / state_append 降为检索池工具，靠能力族（持久状态）/ 会话驻留 /
+向量检索按需召回——用到 KV 写读时整族带出，避免每轮闲聊都常驻 5 个 state_* 抬高 Token。
+（state_list 仅用于"任务初始化没"这类判断，频率低于 set/get，故不进保底。）
 """
 
 import json
@@ -143,7 +144,7 @@ async def state_delete(
         return f"删除失败: {e}"
 
 
-@ai_tools(category="buildin", capability_domain="持久状态")
+@ai_tools(category="common", capability_domain="持久状态")
 async def state_list(
     ctx: RunContext[ToolContext],
     prefix: str = "",

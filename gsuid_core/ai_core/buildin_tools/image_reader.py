@@ -29,6 +29,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.buildin_tools.visibility import context_has_image
 
 
 def _sniff_image_mime(data: bytes) -> str:
@@ -90,7 +91,7 @@ async def _resolve_image_to_url(image_id: str) -> Tuple[Optional[str], Optional[
     return _bytes_to_data_uri(data), None
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", visible_when=context_has_image)
 async def read_image(
     ctx: RunContext[ToolContext],
     image_id: str,

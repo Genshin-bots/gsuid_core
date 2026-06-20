@@ -19,6 +19,7 @@
 8. [风险与回滚](#8-风险与回滚)
 9. [验证情况](#9-验证情况)
 10. [附录 A：核心代码与调用链](#10-附录-a核心代码与调用链)
+11. [跟进（2026-06-20）：保底池条件隐藏](#11-跟进20260620保底池条件隐藏)
 
 ---
 
@@ -381,3 +382,59 @@ step2  get_tools:   RetrievableToolset 读集合 → 解析出可调用的 get_w
 注意 10.4 的 `RetrievableToolset` 里 `if not tool_def: continue` 复用的就是同一条
 `prepare` 链——动态暴露的工具同样受 `visible_when` 约束（如非管理员即便 `find_tools`
 拉到了 `execute_shell_command`，本步仍会被隐藏）。
+
+---
+
+## 11. 跟进（2026-06-20）：保底池条件隐藏
+
+### 11.1 背景
+
+Phase 1–3 只动了**附加池**（降 limit、`find_tools` 安全网、`visible_when` 首落地），
+**保底池（L1：`self` + `buildin`）一个都没减**——正是 §7「保底池没有激进砍小」的遗留。
+实测保底池 = `self`(4) + `buildin`(10) = **14 个无条件常驻**，叠加非闲聊轮的 `find_tools`
+与状态/语境/向量附加后，闲聊一句仍常挂 20+ 个 schema。本次把 Phase 3 的 `visible_when`
+机制**从附加池下沉到保底池**，给其中**窄场景常驻**工具按上下文条件隐藏。
+
+### 11.2 改动
+
+新增 `buildin_tools/visibility.py`，提供两个**廉价内存谓词**，挂到两个保底工具上
+（工具仍属保底、需要时立即出现，只是无关轮不下发 schema）：
+
+| 工具 | `visible_when` | 暴露条件 |
+|------|----------------|----------|
+| `read_image` | `context_has_image` | 当前轮 `ev` 有图片，或本轮上下文出现过 `img_*` / "图片ID" |
+| `web_fetch_tool` | `context_has_url` | `ev` 文本/附件是 URL，或本轮 run 消息里出现过 `http(s)://` |
+
+**关键正确性点**：`web_fetch` 的 URL **多来自 `web_search_tool` 的工具结果**（落在
+`ctx.messages` 里、不在 `ev` 文本）。若只看 `ev` 文本会在"搜完想抓取"时误隐藏 `web_fetch`
+（且 `visible_when` 同样作用于 `find_tools` 动态暴露，隐藏后连现拉都救不回）。故谓词通过
+`_iter_context_texts(ctx)` **连 `ctx.messages` 一起扫**，覆盖"用户贴链接"与"search→fetch"两条路径。
+
+谓词一律**偏可见**：拿不准就显示（误隐藏的代价远大于多显示一个），且 `register.py` 的
+`prepare` 包装在判定抛异常时默认可见，纵深兜底。
+
+### 11.3 效果与边界
+
+- **效果**：图片无关轮少下发 `read_image`、URL 无关轮少下发 `web_fetch_tool`。叠加下方
+  `state_list` 降级后，保底基数 14→**13**，典型闲聊/无图无 URL 轮实下发 ~11。
+- **`state_list` 降级（2026-06-20）**：`state_*` 五件套里 `state_set`/`state_get` 是 bootstrap
+  读写对、保留保底；`state_list` 仅用于"任务初始化没"这类判断、频率低于 set/get，已从 `buildin`
+  降到 `common`（仍带 `capability_domain="持久状态"`，真做 state 任务、召回到任一 state 工具时整族
+  带出）。`state_delete`/`state_append` 早已在 `common`。
+- **仍未做（留给后续 B/C 档）**：把 `get_self_info` / `get_self_persona_info` /
+  `query_user_memory` / `update_user_favorability` 等**移出保底、降级为按需检索**可再省 3~4 个，
+  但要靠 `find_tools` 现拉、对弱模型不稳，本次未做（与 §7「视模型能力再激进化」一致）。
+- **成本**：两个谓词每 step 各扫一次 `ev` + `ctx.messages`（短路命中即返），纯内存无 IO，
+  符合 §6.2 对 `visible_when` 「廉价、内存判定」的约束。
+
+### 11.4 验证
+
+- 三个改动文件 `ast.parse` 通过；谓词逻辑单测（URL：用户贴链接 / search 结果 / 无 URL / 无 ev /
+  附件 URL；图片：当前图 / 历史图片ID / 无图 / 无 ev）全部符合预期。
+- 真实 import 通过（无循环依赖）；`read_image` / `web_fetch_tool` 的 `Tool` 均已携带
+  `prepare`（visible_when 已挂上）。
+
+### 11.5 回滚
+
+移除对应工具 `@ai_tools(...)` 里的 `visible_when=` 参数即恢复"无条件常驻"；
+谓词模块 `visibility.py` 可独立保留不影响其它工具。

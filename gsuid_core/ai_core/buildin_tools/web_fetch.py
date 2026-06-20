@@ -10,9 +10,10 @@ from pydantic_ai import RunContext
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.web_fetch import fetch_webpage_as_markdown
+from gsuid_core.ai_core.buildin_tools.visibility import context_has_url
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", visible_when=context_has_url)
 async def web_fetch_tool(
     ctx: RunContext[ToolContext],
     url: str,

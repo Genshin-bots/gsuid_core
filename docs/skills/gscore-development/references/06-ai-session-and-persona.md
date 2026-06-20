@@ -44,6 +44,14 @@ async def get_ai_session(event: Event) -> GsCoreAIAgent:
 8. registry.set_ai_session(session_id, session)
 ```
 
+> **身份不变量（system_prompt 内，`persona/prompts.py::SYSTEM_CONSTRAINTS`）**：
+> **用户ID 仅供内部认人、绝不对外输出**。群聊靠 ID 区分发言人——历史经
+> `format_history_for_agent` 渲染成 `id(昵称)`、当前轮经 `_build_relationship_description`
+> 也带 `用户名(用户ID:…)`——但**回复对外只用昵称或已记的别名**（【群成员称呼】），
+> 既无昵称也无别名时用角色化泛称带过。ID 唯一允许出现在输出的场合是 `@用户ID` 语法
+> （由 `send_chat_result` 解析成真正的 @，见 [§04](./04-event-trigger-flow.md)）。原
+> 「说话者感知 / 人际关系感知」两段重复内容已合并为一段「当前状态感知」去重。
+
 ## 6.3 消息历史与 AI 会话已解耦（两个独立模块）
 
 | 模块 | 类 | 文件 | 职责 |

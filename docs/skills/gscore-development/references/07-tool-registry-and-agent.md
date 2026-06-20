@@ -35,8 +35,8 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
 | `self` | **保底**：无条件加载进主 Agent | 好感度增改、`send_message_by_ai`、`create_subagent`、`add_once_task`/`add_interval_task` |
-| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_*` |
-| `common` | 向量检索按需 | `search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类 |
+| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get` |
+| `common` | 向量检索按需 | `search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
 | `media` | 向量检索按需 | `render_html_to_image`、`render_markdown_to_image` |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
@@ -143,6 +143,14 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 | `visible_when` | "是否展示" | 决定模型能否看到该工具 |
 
 二者纵深互补。
+
+**保底池条件隐藏（2026-06-20）**：`visible_when` 已从附加池下沉到**保底池**里的窄场景常驻
+工具——`buildin_tools/visibility.py` 给 `read_image`（`context_has_image`）与 `web_fetch_tool`
+（`context_has_url`）各挂一个谓词：工具仍属 `buildin` 保底、需要时立即出现，但图片/URL 无关
+轮不下发其 schema，把保底实下发从 14 压到 ~12。两谓词都**连 `ctx.messages` 一起扫**（不只看
+`ev` 文本）——`web_fetch` 的 URL 常来自 `web_search_tool` 的**工具结果**，只看 `ev` 会在
+"search→fetch"时误隐藏（且 `visible_when` 同样作用于 `find_tools` 动态暴露，隐藏后现拉也救不回）。
+谓词一律**偏可见**。详见 [`docs/AI_CORE_TOOL_RETRIEVAL_UPGRADE_20260619.md`](../../../AI_CORE_TOOL_RETRIEVAL_UPGRADE_20260619.md) §11。
 
 > ⚠️ **约束**：`prepare` 每 step 对每个工具求值，`visible_when` 谓词**必须廉价、内存判定**，
 > 切忌每步查库/发网络。贵的前置条件走 L2 状态驱动（加载时判一次）。
