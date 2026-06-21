@@ -93,6 +93,23 @@ def _budget_scope_from_event(ev: Event) -> Tuple[str, str, str]:
     return (str(ev.group_id) if ev.group_id else "", str(ev.user_id), ev.bot_id or "")
 
 
+def set_budget_scope_context(scope: Optional[Tuple[str, str, str]]) -> contextvars.Token:
+    """为后台自主 LLM 调用设置「当前预算归属 scope」。
+
+    记忆摄入 / 群组认知等后台 worker 既不经 Event、也不显式 `bind_budget_scope`，其
+    `create_agent().run()` 默认落到「无归属」的全局统计、不计入任何 Session 额度。worker
+    在处理某 scope 的数据期间用本函数设置 contextvar，则其间所有 run 经 `_resolve_budget_scope`
+    回退到此 scope 记账（只记账、不触发闸门）。返回的 token 必须在结束时交回
+    `reset_budget_scope_context` 还原，避免泄漏到上层调用栈。
+    """
+    return _current_budget_scope.set(scope)
+
+
+def reset_budget_scope_context(token: contextvars.Token) -> None:
+    """还原 `set_budget_scope_context` 设置的 contextvar。"""
+    _current_budget_scope.reset(token)
+
+
 def _matched_delegation_only_profile(query: str) -> str:
     """用户意图是否命中某个"工具对主人格隐藏、只能委派"的能力代理画像。
 
@@ -660,6 +677,10 @@ class GsCoreAIAgent:
                         logger.warning(f"💰 [GsCoreAIAgent] 预算超额提示发送失败: {_se}")
                 return None if output_type is not None else ""
 
+        # 提前到 try 前设置归属 scope：使本次 run 期间未显式绑定 scope 的嵌套 LLM 调用（含
+        # _prepare_user_message 的图片理解）都按此记账；finally 还原，泄漏至多止于本 task。
+        _budget_scope_token = _current_budget_scope.set(_budget_scope) if _budget_scope is not None else None
+
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
         _pre_tool_sent: int = 0  # 本次运行已发送的前摇数量
         _thinking_segments: list[str] = []  # 累积本轮模型 thinking 文本，供意图-行为一致性检测
@@ -946,10 +967,6 @@ class GsCoreAIAgent:
         # _split_embedded_thinking）。thinking_tags 取自模型 profile，默认 ('<think>','</think>')。
         _thinking_tags: tuple[str, str] = self.model.profile.thinking_tags if self.model else ("<think>", "</think>")
 
-        # 把本次归属 scope 写入 contextvar，使在途 spawn 的嵌套子 agent 继承同一 scope 记账
-        # （决策：嵌套子 agent Token 归并到父会话 scope）。在 finally 还原，避免泄漏到上层。
-        _budget_scope_token = _current_budget_scope.set(_budget_scope) if _budget_scope is not None else None
-
         try:
             logger.info("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()...")
             logger.info(f"🧠 [GsCoreAIAgent] 当前 history: {len(self.history)}")
@@ -1178,15 +1195,8 @@ class GsCoreAIAgent:
                             cache_read_tokens=cache_read_tokens,
                             cache_write_tokens=cache_write_tokens,
                         )
-                        self._session_logger.log_token_usage(
-                            input_tokens,
-                            output_tokens,
-                            _model_name,
-                            cache_read_tokens,
-                            cache_write_tokens,
-                        )
-                        # 预算记账：可归属 scope 的 run（交互 / 巡检 / proactive / 嵌套子 agent）
-                        # 都计入对应 Session 额度；无 scope（_budget_scope=None）只进全局统计。
+                        # 预算记账：可归属 scope 的 run 计入对应 Session 额度，无 scope 只进全局
+                        # 统计。独立 try 且先于 session 日志，避免日志抛错把整笔记账一起跳过。
                         if _budget_scope is not None:
                             try:
                                 from gsuid_core.ai_core.budget import budget_manager
@@ -1202,7 +1212,17 @@ class GsCoreAIAgent:
                                     cache_write_tokens,
                                 )
                             except Exception as _be:
-                                logger.debug(f"💰 [GsCoreAIAgent] 预算记账失败: {_be}")
+                                logger.warning(f"💰 [GsCoreAIAgent] 预算记账失败: {_be}")
+                        try:
+                            self._session_logger.log_token_usage(
+                                input_tokens,
+                                output_tokens,
+                                _model_name,
+                                cache_read_tokens,
+                                cache_write_tokens,
+                            )
+                        except Exception as _le:
+                            logger.debug(f"📊 [GsCoreAIAgent] 写入 token 用量日志失败: {_le}")
                 except AttributeError as e:
                     # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
                     logger.info(f"📊 [GsCoreAIAgent] result.usage 访问失败: {e}")

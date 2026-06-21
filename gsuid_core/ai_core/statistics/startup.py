@@ -23,6 +23,12 @@ async def init_ai_core_statistics():
     statistics_manager._today = datetime.now().strftime("%Y-%m-%d")
     await statistics_manager._load_today_data_from_db()
 
+    # 预算用量账本与统计共用持久化生命周期：启动时把近 8 天流水回载入内存（此后闸门/看板
+    # 只读内存、不查库）。延迟导入避免与 budget→manager→aps 的模块级耦合。
+    from gsuid_core.ai_core.budget import budget_manager
+
+    await budget_manager.load_from_db()
+
 
 @scheduler.scheduled_job("cron", hour=0, minute=0)
 async def _scheduled_ai_core_reset():
@@ -51,4 +57,9 @@ async def shutdown_ai_core_statistics():
 
     logger.info("📊 [StatisticsManager] 准备持久化数据...")
     await statistics_manager._persist_all_stats_to_db()
+
+    # 关停前把预算用量内存增量落库，避免丢失最后一个持久化周期内的用量。
+    from gsuid_core.ai_core.budget import budget_manager
+
+    await budget_manager.flush()
     logger.info("📊 [StatisticsManager] 统计管理器已停止")

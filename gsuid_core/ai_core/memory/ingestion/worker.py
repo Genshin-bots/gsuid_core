@@ -17,7 +17,7 @@ import re
 import time
 import queue as sync_queue
 import asyncio
-from typing import TypedDict
+from typing import Tuple, Optional, TypedDict
 from collections import defaultdict
 
 from gsuid_core.logger import logger
@@ -431,11 +431,51 @@ def _record_entity_edge_stats(entity_count: int, edge_count: int):
         pass  # 统计上报失败不应影响主流程
 
 
+def _budget_scope_from_scope_key(scope_key: str) -> Optional[Tuple[str, str, str]]:
+    """把记忆 scope_key 映射为预算归属 scope (group_id, user_id, bot_id)。
+
+    group:<gid> → (gid, "", "")；user_global:<uid> → ("", uid, "")；
+    user_in_group:<uid>@<gid> → (gid, uid, "")；self:* 或未知 → None（Bot 自身记忆，
+    不归属任何用户/群额度）。bot_id 无法从 scope_key 还原，留空即可——群 / 全局规则照常
+    计入，仅不参与 bot 维度规则（后台记忆开销本就不该按平台细分）。
+    """
+    prefix, _, rest = scope_key.partition(":")
+    if not rest:
+        return None
+    if prefix == "group":
+        return (rest, "", "")
+    if prefix == "user_global":
+        return ("", rest, "")
+    if prefix == "user_in_group":
+        uid, sep, gid = rest.partition("@")
+        return (gid, uid, "") if sep else ("", uid, "")
+    return None
+
+
 async def _ingest_batch(
     records: list[ObservationRecord],
     scope_key: str,
 ):
     """核心摄入逻辑：将一批 ObservationRecord 转化为 Episode、Entity、Edge"""
+
+    # 把本批 scope 设为「当前预算归属」：实体抽取/偏好蒸馏等后台 LLM 调用不带 Event，靠此
+    # contextvar 把 Token 记入对应群/用户额度（只记账不触发闸门）；self/未知 scope 不归属。
+    from gsuid_core.ai_core.gs_agent import set_budget_scope_context, reset_budget_scope_context
+
+    _bscope = _budget_scope_from_scope_key(scope_key)
+    _btoken = set_budget_scope_context(_bscope) if _bscope is not None else None
+    try:
+        await _ingest_batch_inner(records, scope_key)
+    finally:
+        if _btoken is not None:
+            reset_budget_scope_context(_btoken)
+
+
+async def _ingest_batch_inner(
+    records: list[ObservationRecord],
+    scope_key: str,
+):
+    """实际摄入逻辑（被 _ingest_batch 包一层预算 scope contextvar 后调用）。"""
 
     # Step 1: 格式化对话文本（Episode 始终保存完整对话，含 LOW 价值消息）
     dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in records)

@@ -22,7 +22,6 @@ from gsuid_core.ai_core.budget.models import (
     WINDOW_KEYS,
     AIBudgetRule,
     AIBudgetWhitelist,
-    AIBudgetUsageRecord,
 )
 from gsuid_core.ai_core.budget.manager import RuleStatus, budget_manager
 
@@ -486,9 +485,10 @@ async def get_usage_ranking(
     if window not in WINDOW_KEYS:
         return {"status": 1, "msg": f"window 非法，应为 {WINDOW_KEYS} 之一", "data": None}
     since = int(time.time()) - _WINDOW_DEFAULT_SECONDS[window]
-    rows = await AIBudgetUsageRecord.top_consumers(
+    # 读内存账本（真值源），不查库。
+    rows = budget_manager.top_consumers(
         dimension=dimension,
-        since_ts=since,
+        since=since,
         limit=limit,
         bot_id=bot_id,
         include_exempt=include_exempt,
@@ -587,7 +587,8 @@ async def get_overview(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
 
     now = int(time.time())
     since_24h = now - 86400
-    total_24h = await AIBudgetUsageRecord.sum_tokens(since_24h)
+    # 全部读内存账本（真值源），不查库。
+    total_24h = budget_manager.usage_total(since_24h)
 
     blocked: List[Dict[str, Any]] = []
     for r in enabled_rules:
@@ -595,8 +596,8 @@ async def get_overview(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
         if status.blocked:
             blocked.append(_rule_status_to_dict(status))
 
-    top_groups = await AIBudgetUsageRecord.top_consumers("group", since_24h, limit=5)
-    top_users = await AIBudgetUsageRecord.top_consumers("user", since_24h, limit=5)
+    top_groups = budget_manager.top_consumers("group", since_24h, limit=5)
+    top_users = budget_manager.top_consumers("user", since_24h, limit=5)
 
     return {
         "status": 0,

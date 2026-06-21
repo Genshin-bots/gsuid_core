@@ -11,11 +11,14 @@
 """
 
 import time
-from typing import Dict, List, Tuple, Optional
+import asyncio
+from typing import Any, Dict, List, Tuple, Optional
 from datetime import datetime, timedelta
+from collections import defaultdict
 from dataclasses import field, asdict, dataclass
 
 from gsuid_core.aps import scheduler
+from gsuid_core.logger import logger
 
 from .config import budget_config, compute_billable_tokens
 from .models import WINDOW_KEYS, AIBudgetRule, AIBudgetWhitelist, AIBudgetUsageRecord
@@ -76,6 +79,27 @@ class BudgetDecision:
         return asdict(self)
 
 
+@dataclass
+class _UsageRow:
+    """内存账本里的一条用量流水（与持久化表 AIBudgetUsageRecord 同形）。
+
+    只存原始 token，计费量按当前 count_mode 在求和时现算——故改 count_mode 立即对历史
+    窗口生效，无需回填。`persisted` 标记是否已落库，flush 据此只写增量。
+    """
+
+    group_id: str
+    user_id: str
+    bot_id: str
+    session_id: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    exempt: bool
+    created_at: int
+    persisted: bool = False
+
+
 class _SafeFormat(dict):
     """str.format_map 用：缺失占位符返回空串而非抛 KeyError。"""
 
@@ -100,6 +124,13 @@ class BudgetManager:
         self._cache_ts: float = 0.0
         # session_id -> 上次超额提示时间戳（冷却防刷屏）
         self._notify_ts: Dict[str, float] = {}
+        # 用量内存账本——真值源：记账只 append（零 DB 竞争），闸门/看板一律读它、不查库。
+        # 启动由 load_from_db 回载，之后 flush 增量落库（详见两者 docstring）。
+        self._usage: List[_UsageRow] = []
+        # 标记内存是否已完成首次回载：未载完不许 flush，防止空内存把历史"增量"误判覆盖。
+        self._loaded: bool = False
+        # 串行化 flush / reset 对内存账本 + DB 的读写，杜绝并发重复落库（详见 flush docstring）。
+        self._persist_lock: asyncio.Lock = asyncio.Lock()
 
     # ==================== 缓存 ====================
 
@@ -229,8 +260,9 @@ class BudgetManager:
     # ==================== 状态计算 ====================
 
     async def _rule_status(self, rule: AIBudgetRule, now: int, include_exempt: bool, with_reset: bool) -> RuleStatus:
-        """按规则自身过滤器计算各窗口用量与是否超限。"""
+        """按规则自身过滤器计算各窗口用量与是否超限（全程读内存账本，不查库）。"""
         gid, uid, bid = self._rule_filter(rule)
+        mode = str(budget_config.get_config("count_mode").data)
         windows: List[WindowStatus] = []
         blocked = False
         for w in WINDOW_KEYS:
@@ -238,11 +270,11 @@ class BudgetManager:
             if limit <= 0:
                 continue
             since, fixed_reset = self._window_start(w, rule.period_mode, rule.short_window_hours, now)
-            used = await AIBudgetUsageRecord.sum_tokens(since, gid, uid, bid, include_exempt)
+            used = self._sum_usage(since, gid, uid, bid, include_exempt, mode)
             over = used >= limit
             reset_at = fixed_reset
             if reset_at is None and (over or with_reset):
-                earliest = await AIBudgetUsageRecord.earliest_ts_in_window(since, gid, uid, bid, include_exempt)
+                earliest = self._earliest_ts(since, gid, uid, bid, include_exempt)
                 if earliest is not None:
                     reset_at = earliest + self._window_seconds(w, rule.short_window_hours)
             windows.append(
@@ -371,29 +403,227 @@ class BudgetManager:
         cache_read_tokens: int,
         cache_write_tokens: int,
     ) -> None:
-        """按 scope 三元组记一笔用量流水。
+        """按 scope 三元组把一笔用量 append 进内存账本（真值源）。
 
         `gs_agent` 统一入口对所有可归属 scope 的 run（交互/巡检/proactive/经 contextvar
-        继承父 scope 的嵌套子 agent）都经此记账。预算关闭时也记，便于先观察再开启。
+        继承父 scope 的嵌套子 agent、后台记忆摄入）都经此记账；预算关闭时也记，便于先观察再
+        开启。只写内存、不查库——闸门/看板都读内存，落库由 `flush` 定时整批完成。
         """
-        mode = budget_config.get_config("count_mode").data
-        total = compute_billable_tokens(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, mode)
-        if total <= 0:
+        if input_tokens <= 0 and output_tokens <= 0 and cache_read_tokens <= 0 and cache_write_tokens <= 0:
             return
         exempt, _reason = await self._exempt_status(user_id, group_id, bot_id)
-        await AIBudgetUsageRecord.add_record(
-            bot_id=bot_id,
-            group_id=group_id,
-            user_id=user_id,
-            session_id=session_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
-            total_tokens=total,
-            exempt=exempt,
-            created_at=int(time.time()),
+        # await 之后无其它 await：append 相对其它协程原子，无需加锁。
+        self._usage.append(
+            _UsageRow(
+                group_id=group_id,
+                user_id=user_id,
+                bot_id=bot_id,
+                session_id=session_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                exempt=exempt,
+                created_at=int(time.time()),
+                persisted=False,
+            )
         )
+
+    # ==================== 内存账本读取 ====================
+
+    @staticmethod
+    def _row_matches(
+        row: "_UsageRow",
+        group_id: Optional[str],
+        user_id: Optional[str],
+        bot_id: Optional[str],
+        include_exempt: bool,
+    ) -> bool:
+        """内存账本过滤：group_id/user_id 传 None=该维度不过滤、""=精确匹配空串；
+        bot_id 非空才过滤平台；include_exempt=False 时剔除豁免记录。"""
+        if group_id is not None and row.group_id != group_id:
+            return False
+        if user_id is not None and row.user_id != user_id:
+            return False
+        if bot_id and row.bot_id != bot_id:
+            return False
+        if not include_exempt and row.exempt:
+            return False
+        return True
+
+    def _sum_usage(
+        self,
+        since: int,
+        group_id: Optional[str],
+        user_id: Optional[str],
+        bot_id: Optional[str],
+        include_exempt: bool,
+        count_mode: str,
+    ) -> int:
+        """内存账本中匹配过滤器、created_at>=since 的计费 Token 之和（按 count_mode 现算）。"""
+        total = 0
+        for r in self._usage:
+            if r.created_at < since or not self._row_matches(r, group_id, user_id, bot_id, include_exempt):
+                continue
+            total += compute_billable_tokens(
+                r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, count_mode
+            )
+        return total
+
+    def _earliest_ts(
+        self,
+        since: int,
+        group_id: Optional[str],
+        user_id: Optional[str],
+        bot_id: Optional[str],
+        include_exempt: bool,
+    ) -> Optional[int]:
+        """窗口内最早一条流水的时间戳（滚动窗口估算 reset_at 用）。"""
+        earliest: Optional[int] = None
+        for r in self._usage:
+            if r.created_at < since or not self._row_matches(r, group_id, user_id, bot_id, include_exempt):
+                continue
+            if earliest is None or r.created_at < earliest:
+                earliest = r.created_at
+        return earliest
+
+    def usage_total(
+        self,
+        since: int,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        bot_id: Optional[str] = None,
+        include_exempt: bool = True,
+    ) -> int:
+        """某过滤器在 [since, now] 的计费 Token 之和（看板 24h 总量等只读查询用，读内存）。"""
+        mode = str(budget_config.get_config("count_mode").data)
+        return self._sum_usage(since, group_id, user_id, bot_id, include_exempt, mode)
+
+    def top_consumers(
+        self,
+        dimension: str,
+        since: int,
+        limit: int = 20,
+        bot_id: Optional[str] = None,
+        include_exempt: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """按维度（group/user/member）聚合 Top 消费者（读内存账本）。"""
+        if dimension not in ("group", "user", "member"):
+            return []
+        mode = str(budget_config.get_config("count_mode").data)
+        sums: Dict[Tuple[str, ...], int] = defaultdict(int)
+        for r in self._usage:
+            if r.created_at < since:
+                continue
+            if bot_id and r.bot_id != bot_id:
+                continue
+            if not include_exempt and r.exempt:
+                continue
+            if dimension in ("group", "member") and r.group_id == "":
+                continue  # group/member 维度排除私聊(group_id 为空)噪声
+            if dimension == "group":
+                key: Tuple[str, ...] = (r.group_id,)
+            elif dimension == "user":
+                key = (r.user_id,)
+            else:
+                key = (r.group_id, r.user_id)
+            sums[key] += compute_billable_tokens(
+                r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, mode
+            )
+        ranked = sorted(sums.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        out: List[Dict[str, Any]] = []
+        for key, total in ranked:
+            if dimension == "group":
+                out.append({"group_id": key[0], "total_tokens": total})
+            elif dimension == "user":
+                out.append({"user_id": key[0], "total_tokens": total})
+            else:
+                out.append({"group_id": key[0], "user_id": key[1], "total_tokens": total})
+        return out
+
+    # ==================== 持久化生命周期（与统计模块共用，见 statistics.startup）====================
+
+    async def load_from_db(self) -> None:
+        """启动时把近 `_USAGE_RETENTION_DAYS` 天的流水回载入内存账本，此后只读内存。
+
+        幂等：仅首次（`_loaded` 为假）真正回载，重复调用直接返回，避免把已在内存的行与库里
+        同一批重复并入。慢的 DB 读放在锁外，仅内存并入与置位在锁内、与 flush/reset 互斥。
+        """
+        if self._loaded:
+            return
+        cutoff = int(time.time()) - _USAGE_RETENTION_DAYS * _DAY_SECONDS
+        # with_session 重试耗尽返回 None（不抛）；or [] 兜住，回载失败时按空账本继续。
+        rows = await AIBudgetUsageRecord.get_records_since(cutoff) or []
+        loaded = [
+            _UsageRow(
+                group_id=r.group_id,
+                user_id=r.user_id,
+                bot_id=r.bot_id,
+                session_id=r.session_id,
+                input_tokens=r.input_tokens,
+                output_tokens=r.output_tokens,
+                cache_read_tokens=r.cache_read_tokens,
+                cache_write_tokens=r.cache_write_tokens,
+                exempt=r.exempt,
+                created_at=r.created_at,
+                persisted=True,
+            )
+            for r in rows
+        ]
+        # 保留回载前可能已 append 的实时行（启动竞态），接在回载行之后；求和与顺序无关。
+        # 锁内并入并置位，与并发 flush/reset 互斥；双检 _loaded 防并发重复回载。
+        async with self._persist_lock:
+            if self._loaded:
+                return
+            self._usage = loaded + self._usage
+            self._loaded = True
+        logger.info(f"💰 [Budget] 已回载用量账本 {len(loaded)} 条")
+
+    async def flush(self) -> None:
+        """把内存中尚未落库（persisted=False）的用量整批写库，并就地淘汰过期行。
+
+        全程持 `_persist_lock`：持久节拍(每30min) / 关停 flush / 管理员 reset 若并发，两个
+        flush 可能在各自 await bulk_add 之间快照到同一批 persisted=False 行而重复写库，加锁
+        保证「快照→写库→标记 persisted」整体原子。
+
+        未完成回载前不落库（防空内存覆盖语义）。落库失败时 persisted 保持 False，下个周期
+        自动重试——绝不丢数据。闸门/看板始终读内存，不依赖本次是否成功。
+        """
+        if not self._loaded:
+            return
+        async with self._persist_lock:
+            mode = str(budget_config.get_config("count_mode").data)
+            dirty = [r for r in self._usage if not r.persisted]
+            if dirty:
+                payload = [
+                    {
+                        "bot_id": r.bot_id,
+                        "group_id": r.group_id,
+                        "user_id": r.user_id,
+                        "session_id": r.session_id,
+                        "input_tokens": r.input_tokens,
+                        "output_tokens": r.output_tokens,
+                        "cache_read_tokens": r.cache_read_tokens,
+                        "cache_write_tokens": r.cache_write_tokens,
+                        "total_tokens": compute_billable_tokens(
+                            r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, mode
+                        ),
+                        "exempt": r.exempt,
+                        "created_at": r.created_at,
+                    }
+                    for r in dirty
+                ]
+                ok = await AIBudgetUsageRecord.bulk_add(payload)
+                if ok:
+                    for r in dirty:
+                        r.persisted = True
+                else:
+                    # with_session 重试耗尽返回 None：保留 persisted=False，下个周期重试，绝不漏记。
+                    logger.warning(f"💰 [Budget] 用量落库失败，{len(dirty)} 条留待下次重试")
+            # 内存淘汰：账本最长只需保留 retention 窗（与 DB prune 同口径）
+            cutoff = int(time.time()) - _USAGE_RETENTION_DAYS * _DAY_SECONDS
+            if self._usage and self._usage[0].created_at < cutoff:
+                self._usage = [r for r in self._usage if r.created_at >= cutoff]
 
     async def reset_scope(
         self,
@@ -403,7 +633,7 @@ class BudgetManager:
         bot_id: str = "",
         window: str = "",
     ) -> int:
-        """清除某 scope 的用量流水（管理员手动放行）。window 留空=清全部。"""
+        """清除某 scope 的用量（管理员手动放行）：内存账本 + DB 双删。window 留空=清全部。"""
         gid, uid, bid = self._scope_filter(scope_type, scope_id, member_id, bot_id)
         if window in WINDOW_KEYS:
             short_hours = await self._scope_short_window_hours(scope_type, scope_id, member_id, bot_id)
@@ -411,7 +641,20 @@ class BudgetManager:
             since = int(time.time()) - secs
         else:
             since = 0
-        return await AIBudgetUsageRecord.delete_scope_usage(since, gid, uid, bid)
+        # 与 flush 同锁，避免并发 flush 把本次要删的行又写回库（内存清了、库里却复活）。
+        async with self._persist_lock:
+            # 内存：移除匹配行（include_exempt=True——手动放行应连豁免记录一并清掉）
+            before = len(self._usage)
+            self._usage = [
+                r for r in self._usage if not (r.created_at >= since and self._row_matches(r, gid, uid, bid, True))
+            ]
+            removed = before - len(self._usage)
+            # DB：同步删除，避免重启回载又把它们带回来
+            try:
+                await AIBudgetUsageRecord.delete_scope_usage(since, gid, uid, bid)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"💰 [Budget] 重置时删除 DB 流水失败（内存已清，重启或回载残留）: {e}")
+        return removed
 
     # ==================== 提示文案 / 冷却 ====================
 
@@ -457,9 +700,13 @@ def _is_master(user_id: str) -> bool:
 budget_manager = BudgetManager()
 
 
+# 用量落库复用统计模块的持久化生命周期（startup 调 load_from_db/flush、_persist_loop
+# 周期 flush）；本 job 只保留 DB 端过期清理，内存淘汰在 flush 内顺带完成。
+
+
 @scheduler.scheduled_job("cron", hour=4, minute=30)
 async def _budget_prune_job() -> None:
-    """每日清理过期用量流水（账本最长只需保留周窗）。"""
+    """每日清理 DB 中过期的用量流水（持久化后备最长只需保留周窗；内存淘汰在 flush 内完成）。"""
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:

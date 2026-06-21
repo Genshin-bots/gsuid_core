@@ -888,4 +888,9 @@ async def _persist_loop():
         return
 
     await statistics_manager._persist_all_stats_to_db()
+
+    # 预算用量内存账本共用本持久化节拍：把内存增量整批落库（闸门/看板读内存，不依赖此次成败）。
+    from gsuid_core.ai_core.budget import budget_manager
+
+    await budget_manager.flush()
     logger.info("📊 [StatisticsManager] 每30分钟定时持久化完成")
