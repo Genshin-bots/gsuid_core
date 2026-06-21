@@ -2,17 +2,36 @@ import re
 import json
 import base64
 import asyncio
-from typing import Any, Dict, Literal, Optional, Sequence
+from typing import Any, Set, Dict, List, Literal, Optional, Sequence
 
 import httpx
 from PIL import Image
 from json_repair import repair_json
-from pydantic_ai.messages import ImageUrl, UserContent
+from pydantic_ai.messages import (
+    ImageUrl,
+    TextPart,
+    UserContent,
+    ModelMessage,
+    ModelRequest,
+    ThinkingPart,
+    ToolCallPart,
+    ModelResponse,
+    ToolReturnPart,
+    UserPromptPart,
+    RetryPromptPart,
+    ModelResponsePart,
+)
+from pydantic_ai.exceptions import ModelHTTPError
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.segment import Message, MessageSegment
+from gsuid_core.ai_core.const import (
+    _RETRYABLE_4XX,
+    _CONTENT_REJECT_CODES,
+    _CONTENT_REJECT_HINTS,
+)
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
 
@@ -584,3 +603,301 @@ def _parse_at_segments(text: str) -> list[Message]:
         return [MessageSegment.text(text)]
 
     return segments
+
+
+# ======================================================================
+# GsCoreAIAgent 运行期的无状态消息/历史工具
+# 从 gs_agent.py 抽出：纯函数，只依赖 pydantic_ai 消息类型与 const 常量，不触碰
+# Agent 实例状态，便于复用与单测。gs_agent 按原名 import 回去使用。
+# ======================================================================
+
+
+def _is_non_retryable_model_error(e: BaseException) -> bool:
+    """该异常是否为"重试也必然复现"的永久性模型错误（4xx 客户端错误，排除 408/429）。"""
+    return isinstance(e, ModelHTTPError) and 400 <= e.status_code < 500 and e.status_code not in _RETRYABLE_4XX
+
+
+def _is_content_rejected(e: ModelHTTPError) -> bool:
+    """4xx 错误是否为"内容被模型安全 / 审核策略拒绝"（用于更友好的文案与统计分类）。"""
+    blob = (str(e.body or "") + " " + str(e)).lower()
+    if any(hint in blob for hint in _CONTENT_REJECT_HINTS):
+        return True
+    return any(re.search(rf"\b{code}\b", blob) for code in _CONTENT_REJECT_CODES)
+
+
+def _extract_run_context(history: List[ModelMessage], max_fact_len: int = 2000) -> str:
+    """从历史消息中提取"已知事实"和"模型推理片段"，按轮次组织。
+
+    相比只提取 ToolReturnPart，还保留 TextPart（LLM 中间推理），
+    因为这些推理有时本身就是有价值的结论。
+    """
+    sections: list[str] = []
+    round_num = 0
+
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            round_num += 1
+            texts: list[str] = []
+            calls: list[str] = []
+            for part in msg.parts:
+                if isinstance(part, TextPart) and part.content.strip():
+                    t = part.content.strip()
+                    if len(t) > 500:
+                        t = t[:500] + "...[截断]"
+                    texts.append(t)
+                elif isinstance(part, ToolCallPart):
+                    calls.append(part.tool_name)
+
+            if texts or calls:
+                header = f"【第{round_num}轮】"
+                if calls:
+                    header += f" 调用工具: {', '.join(calls)}"
+                if texts:
+                    header += "\n" + "\n".join(texts)
+                sections.append(header)
+
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    content = str(part.content).strip()
+                    if len(content) > max_fact_len:
+                        content = content[:max_fact_len] + f"\n...[截断, 共{len(content)}字符]"
+                    sections.append(f"  → [{part.tool_name}] 返回: {content}")
+
+    return "\n".join(sections) if sections else ""
+
+
+def _truncate_message_for_log(msg: Any, max_base64_len: int = 100) -> Any:
+    """
+    截断消息中的长 base64 数据，用于日志输出。
+
+    Args:
+        msg: 消息内容，可能是 str、ImageUrl 或其列表
+        max_base64_len: base64 数据最大显示长度
+
+    Returns:
+        截断后的消息副本
+    """
+    if isinstance(msg, str):
+        # 检查是否是 base64 DataURI
+        if ";base64," in msg and len(msg) > max_base64_len:
+            return f"{msg[:max_base64_len]}...[base64截断, 总长={len(msg)}]"
+        return msg
+    elif isinstance(msg, ImageUrl):
+        url = msg.url
+        if ";base64," in url and len(url) > max_base64_len:
+            return ImageUrl(url=f"{url[:max_base64_len]}...[base64截断, 总长={len(url)}]")
+        return msg
+    elif isinstance(msg, list):
+        return [_truncate_message_for_log(item, max_base64_len) for item in msg]
+    return msg
+
+
+def _truncate_history_with_tool_safety(
+    history: List[ModelMessage],
+    max_history: int,
+) -> List[ModelMessage]:
+    """
+    安全截断 history，确保保留的消息中 ToolCallPart 和 ToolReturnPart 完全配对。
+
+    问题：如果简单地从末尾截断 history，可能导致 ToolReturnPart 被保留
+    但其对应的 ToolCallPart 被丢弃（在被截断的前半部分），从而在下一轮请求时出现
+    "tool result's tool id not found" 错误。
+
+    解决策略：
+    1. 先做一次试探性截断：保留最后 max_history 条消息
+    2. 扫描截断结果，收集所有保留的 ToolReturnPart 的 tool_call_id
+    3. 扫描截断结果，收集所有保留的 ToolCallPart 的 tool_call_id
+    4. 如果有 return 找不到对应的 call，说明截断点切到了 tool call/return 对的中间
+    5. 向前移动截断点，直到所有保留的 return 都有对应的 call
+
+    Args:
+        history: 原始消息历史
+        max_history: 最大保留消息数
+
+    Returns:
+        截断后的安全消息历史
+    """
+    if len(history) <= max_history:
+        return history
+
+    # 从 max_history 开始，逐步扩大保留范围，直到 tool call/return 完全配对
+    truncate_index = len(history) - max_history
+
+    while truncate_index > 0:
+        truncated = history[truncate_index:]
+
+        # 收集截断结果中所有 ToolCallPart 的 tool_call_id
+        retained_call_ids: Set[str] = set()
+        # 收集截断结果中所有 ToolReturnPart 的 tool_call_id
+        retained_return_ids: Set[str] = set()
+
+        for msg in truncated:
+            if isinstance(msg, ModelResponse):
+                for part in msg.parts:
+                    if isinstance(part, ToolCallPart):
+                        retained_call_ids.add(part.tool_call_id)
+            elif isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    if isinstance(part, ToolReturnPart):
+                        retained_return_ids.add(part.tool_call_id)
+                    # RetryPromptPart 也是"工具结果型"消息：工具参数校验失败时
+                    # 由 PydanticAI 生成，同样带 tool_call_id、必须有配对的
+                    # ToolCallPart。tool_name 为 None 时是输出校验重试，不绑定
+                    # 具体工具调用，不计入。
+                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
+                        retained_return_ids.add(part.tool_call_id)
+
+        # 找出截断结果中的孤立 return（有 return 但没有对应的 call）
+        orphaned = retained_return_ids - retained_call_ids
+
+        if not orphaned:
+            # 所有保留的 return 都有对应的 call，截断安全
+            logger.debug(
+                f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(truncated)} (截断点: {truncate_index})"
+            )
+            return truncated
+
+        # 有孤立 return，需要向前移动截断点
+        # 找到所有孤立 return 所在的消息索引（相对于原始 history）
+        min_orphaned_idx = len(history)  # 初始化为最大值
+        for idx, msg in enumerate(history):
+            if idx < truncate_index:
+                continue  # 只看截断范围内的
+            if isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    tcid: Optional[str] = None
+                    if isinstance(part, ToolReturnPart):
+                        tcid = part.tool_call_id
+                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
+                        tcid = part.tool_call_id
+                    if tcid is not None and tcid in orphaned:
+                        min_orphaned_idx = min(min_orphaned_idx, idx)
+
+        # 向前移动截断点到孤立 return 之前，再留 2 条消息的缓冲
+        new_truncate_index = max(0, min_orphaned_idx - 2)
+        if new_truncate_index >= truncate_index:
+            # 安全阀：如果无法继续前移，直接保留全部历史
+            logger.warning(f"🧠 [GsCoreAIAgent] 无法安全截断 history，保留全部 {len(history)} 条")
+            return history
+
+        truncate_index = new_truncate_index
+
+    # truncate_index == 0，保留全部历史
+    logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(history)} (保留全部)")
+    return history
+
+
+def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]:
+    """丢弃所有找不到配对 ToolCallPart 的孤儿工具结果消息。
+
+    最终一致性兜底：即便 ``_truncate_history_with_tool_safety`` 逻辑正确，
+    历史里仍可能因并发 / 异常中断残留坏配对（孤儿 ToolReturnPart 或带
+    tool_name 的 RetryPromptPart）。本函数在 ``extract_history()`` 末尾被
+    无条件调用，保证送进 API 的 message_history 永远自洽——一次坏截断不会
+    让 session 永久不可用（"tool result's tool id not found" 400）。
+    """
+    call_ids: Set[str] = set()
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    call_ids.add(part.tool_call_id)
+
+    cleaned: List[ModelMessage] = []
+    for msg in history:
+        if isinstance(msg, ModelRequest):
+            kept_parts = []
+            for part in msg.parts:
+                # 复用同一个 isinstance 守卫：进入分支时 part 类型已被 mypy/Pyright
+                # 收窄为 ToolReturnPart / RetryPromptPart，两者都有 tool_call_id，
+                # 不需要 getattr 兜底（LLM.md §1.4）。
+                if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids:
+                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={part.tool_call_id}")
+                    continue
+                if (
+                    isinstance(part, RetryPromptPart)
+                    and part.tool_name is not None
+                    and part.tool_call_id not in call_ids
+                ):
+                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 RetryPromptPart: tool_call_id={part.tool_call_id}")
+                    continue
+                kept_parts.append(part)
+            if kept_parts:
+                msg.parts = kept_parts
+                cleaned.append(msg)
+            # parts 全被丢弃的空 ModelRequest 整条剔除
+        else:
+            cleaned.append(msg)
+    return cleaned
+
+
+def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
+    """把历史里残留的「远程图片 URL」剥离成文字占位，返回剥离处数量。
+
+    推理端报「Failed to download image」基本都是早先入历史的远程图片 URL
+    （如 QQ 带 rkey 的临时链接）已过期。不清掉的话，后续每一轮把它重发给
+    推理端都会 500，整个会话被永久卡死。这里把过期的远程 ``ImageUrl`` 替换为
+    文字占位，让下一轮自动恢复。base64 DataURI 不会过期，保留不动。
+    """
+    removed = 0
+    for msg in history:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, UserPromptPart):
+                continue
+            content = part.content
+            if isinstance(content, str):
+                continue
+            new_content: List[UserContent] = []
+            changed = False
+            for item in content:
+                if isinstance(item, ImageUrl) and item.url.startswith(("http://", "https://")):
+                    new_content.append("[图片已过期，无法再显示]")
+                    changed = True
+                    removed += 1
+                else:
+                    new_content.append(item)
+            if changed:
+                part.content = new_content
+    return removed
+
+
+def _split_embedded_thinking(
+    parts: Sequence[ModelResponsePart],
+    thinking_tags: tuple[str, str],
+) -> List[ModelResponsePart]:
+    """把 TextPart 里以 thinking_tags 包裹的内嵌思考重新拆成独立的 ThinkingPart。
+
+    流式请求下 pydantic_ai 只有在 ``<think>`` 作为独立 SSE chunk 到达时才会拆分思考
+    标签（见 _parts_manager.handle_text_delta）；MiniMax 等兼容网关不保证这一点，
+    导致 ``<think>...</think>`` 残留在 TextPart 里被原样发往 C 端，且思考内容拿不到
+    意图-行为一致性检测。这里按完整文本重新拆分，对齐非流式路径
+    （openai 模型的 split_content_into_text_and_thinking）的行为。非 TextPart 与不含
+    起始标签的 TextPart 原样透传。
+    """
+    start_tag, end_tag = thinking_tags
+    result: List[ModelResponsePart] = []
+    for part in parts:
+        if not isinstance(part, TextPart) or start_tag not in part.content:
+            result.append(part)
+            continue
+        content = part.content
+        start_index = content.find(start_tag)
+        while start_index >= 0:
+            before, content = content[:start_index], content[start_index + len(start_tag) :]
+            if before:
+                result.append(TextPart(content=before))
+            end_index = content.find(end_tag)
+            if end_index >= 0:
+                think, content = content[:end_index], content[end_index + len(end_tag) :]
+                result.append(ThinkingPart(content=think))
+            else:
+                # 缺少闭合标签：丢弃 <think> 起始标签，剩余内容按文本处理
+                result.append(TextPart(content=content))
+                content = ""
+            start_index = content.find(start_tag)
+        if content:
+            result.append(TextPart(content=content))
+    return result

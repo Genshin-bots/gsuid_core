@@ -260,11 +260,14 @@ async def run_heartbeat(
         session_id=decision_session_id,
         is_subagent=True,
     )
+    # 巡检属自主花费：绑定 scope 使其 Token 计入对应会话额度，并经 budget_gate 在超额时
+    # 直接掐断（决策：硬拦截），让预算成为真正的总成本上限。
+    decision_agent.bind_budget_scope(event)
     # 用本地变量记住 logger 引用，避免多分支重复读取 _session_logger 的 None 守卫；
     # SubAgent 用完即关，否则 30 分钟巡检间隔会不断堆 logger 后台任务。
     decision_logger = decision_agent._session_logger
     try:
-        result: str = await decision_agent.run(user_message=decision_user)
+        result: str = await decision_agent.run(user_message=decision_user, budget_gate=True)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 决策阶段出错: {e}")
         if decision_logger is not None:
@@ -341,9 +344,11 @@ async def run_heartbeat(
         session_id=output_session_id,
         is_subagent=True,
     )
+    # 与决策阶段一致：绑定 scope 记账 + 超额硬拦截。
+    output_agent.bind_budget_scope(event)
     output_logger = output_agent._session_logger
     try:
-        result = await output_agent.run(user_message=message_user)
+        result = await output_agent.run(user_message=message_user, budget_gate=True)
     except Exception as e:
         logger.exception(f"🫀 [Heartbeat] 生成阶段出错: {e}")
         if output_logger is not None:
@@ -411,6 +416,9 @@ async def run_reactive_gate(
             session_id=sid,
             is_subagent=True,
         )
+        # 续聊软门是 handle_ai 主链路前的轻量预过滤，主 Agent 自身已受闸门约束；这里只
+        # 绑定 scope 把它这点 Token 也记上，不再二次拦截（budget_gate 默认 False）。
+        agent.bind_budget_scope(event)
         gate_logger = agent._session_logger
         try:
             result = await agent.run(user_message=user_prompt)

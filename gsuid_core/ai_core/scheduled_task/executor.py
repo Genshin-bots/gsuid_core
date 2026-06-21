@@ -175,6 +175,8 @@ async def execute_scheduled_task(task_id: str) -> None:
                 bot=bot_instance,
                 ev=ev,
                 return_mode="return",
+                # 定时任务亦属自主花费：超额硬拦截（决策：autonomous 硬上限），ev 已带 scope。
+                budget_gate=True,
             )
         finally:
             if sub_agent_logger is not None:

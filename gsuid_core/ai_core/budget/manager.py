@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from dataclasses import field, asdict, dataclass
 
 from gsuid_core.aps import scheduler
-from gsuid_core.models import Event
 
 from .config import budget_config, compute_billable_tokens
 from .models import WINDOW_KEYS, AIBudgetRule, AIBudgetWhitelist, AIBudgetUsageRecord
@@ -348,30 +347,35 @@ class BudgetManager:
 
     # ==================== 拦截 / 记账 ====================
 
-    async def check(self, event: Event) -> BudgetDecision:
-        """消息处理前的预算闸门。拦截时填充 message/notify（含冷却）。"""
-        group_id = str(event.group_id) if event.group_id else ""
-        user_id = str(event.user_id)
-        bot_id = event.bot_id or ""
+    async def check_scope(self, group_id: str, user_id: str, bot_id: str, session_id: str) -> BudgetDecision:
+        """消息处理前的预算闸门（按 scope 三元组）。
+
+        被动交互(handle_ai)与自主入口(巡检/proactive/定时)的统一入口。
+        拦截时填充 message/notify（含按 session_id 的冷却）。
+        """
         decision = await self.evaluate(group_id, user_id, bot_id, with_reset=False)
         if decision.allowed:
             return decision
         decision.message = self._format_block_message(decision)
-        decision.notify = self._should_notify(event.session_id)
+        decision.notify = self._should_notify(session_id)
         return decision
 
-    async def record_usage(
+    async def record_usage_scope(
         self,
-        event: Event,
+        group_id: str,
+        user_id: str,
+        bot_id: str,
+        session_id: str,
         input_tokens: int,
         output_tokens: int,
         cache_read_tokens: int,
         cache_write_tokens: int,
     ) -> None:
-        """记一笔用量流水（预算关闭时也记，便于先观察再开启）。"""
-        group_id = str(event.group_id) if event.group_id else ""
-        user_id = str(event.user_id)
-        bot_id = event.bot_id or ""
+        """按 scope 三元组记一笔用量流水。
+
+        `gs_agent` 统一入口对所有可归属 scope 的 run（交互/巡检/proactive/经 contextvar
+        继承父 scope 的嵌套子 agent）都经此记账。预算关闭时也记，便于先观察再开启。
+        """
         mode = budget_config.get_config("count_mode").data
         total = compute_billable_tokens(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, mode)
         if total <= 0:
@@ -381,7 +385,7 @@ class BudgetManager:
             bot_id=bot_id,
             group_id=group_id,
             user_id=user_id,
-            session_id=event.session_id,
+            session_id=session_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,

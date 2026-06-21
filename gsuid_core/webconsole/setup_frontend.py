@@ -107,6 +107,8 @@ def _import_webconsole_apis() -> None:
         web_api,
         auth_api,
         logs_api,
+        # 品牌信息 webconsole 后端
+        brand_api,
         theme_api,
         # 追踪日志 webconsole 后端
         trace_api,

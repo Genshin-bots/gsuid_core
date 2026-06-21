@@ -3,15 +3,16 @@ PydanticAI Agent 核心模块
 基于 pydantic_ai 实现的轻量级 Agent
 """
 
-import re
 import time
 import uuid
 import asyncio
-from typing import Any, Set, List, Union, Literal, TypeVar, Optional, Sequence, overload
+import contextvars
+from typing import Any, List, Tuple, Union, Literal, TypeVar, Optional, Sequence, overload
 
 import httpx
 from pydantic_ai import Agent
 from pydantic_graph import End
+from sqlalchemy.exc import SQLAlchemyError
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.messages import (
@@ -19,14 +20,10 @@ from pydantic_ai.messages import (
     TextPart,
     UserContent,
     ModelMessage,
-    ModelRequest,
     ThinkingPart,
     ToolCallPart,
     ModelResponse,
     ToolReturnPart,
-    UserPromptPart,
-    RetryPromptPart,
-    ModelResponsePart,
 )
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -34,7 +31,33 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, materialize_image_url
+from gsuid_core.ai_core.const import (
+    _RUN_RETRY_DELAY,
+    _MAX_RUN_ATTEMPTS,
+    _SKILLS_CREATE_BY,
+    _AGENTIC_CREATE_BY,
+    _RECENT_TEXT_WINDOW,
+    _STICKY_FAMILY_TURNS,
+    STALE_CHAT_REQUEST_TTL,
+    _INTENT_TRIGGER_KEYWORDS,
+    ENABLE_PROGRESSIVE_TOOLS,
+    _FRAMEWORK_PRE_TOOL_EXPRESSIONS,
+    _PROGRESSIVE_TOOLS_SKIP_INTENTS,
+    _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN,
+)
+from gsuid_core.ai_core.utils import (
+    SILENCE_MARKERS,
+    send_chat_result,
+    _extract_run_context,
+    _is_content_rejected,
+    materialize_image_url,
+    _split_embedded_thinking,
+    _drop_orphan_tool_results,
+    _truncate_message_for_log,
+    _is_non_retryable_model_error,
+    _strip_remote_images_from_history,
+    _truncate_history_with_tool_safety,
+)
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
@@ -54,76 +77,20 @@ from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER, CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
+# 历史上 `from ...gs_agent import STALE_CHAT_REQUEST_TTL`（见 handle_ai）等公开常量经此
+# re-export 保持可用（现源头在 const.py），无需改动外部调用方。
 _T = TypeVar("_T")
 
-# L3 会话驻留：一个能力族被使用后，继续在随后多少轮里保持常驻（兜底紧邻的追问）。
-_STICKY_FAMILY_TURNS = 3
-# L5 上下文增强检索：把最近多少轮用户原话拼进工具向量检索 query（含本轮）。
-_RECENT_TEXT_WINDOW = 3
-
-# 渐进式工具暴露总开关：开启后非闲聊轮额外挂 find_tools + RetrievableToolset，
-# 模型可推理中途按需检索并即时拿到工具；置 False 回退静态装配，闲聊轮恒不挂。
-ENABLE_PROGRESSIVE_TOOLS = True
-# 渐进式工具暴露的意图门：这些意图轮**不**挂 find_tools（高频/无工具需求，省一次潜在往返）。
-_PROGRESSIVE_TOOLS_SKIP_INTENTS = ("闲聊",)
-
-# 工具自动装配白名单：仅列表内 create_by 未显式传 tools 时走向量检索装配。
-# CapabilityAgent 自带显式 tools 故排除（见 runner.py）。
-_AGENTIC_CREATE_BY = ("SubAgent", "Chat", "Agent", "AutoPlanner")
-
-# skills_toolset 挂载白名单：agentic + CapabilityAgent
-# （需 list_skills/run_skill_script）；名单外后台调用不挂，避免白送 token。
-_SKILLS_CREATE_BY = (*_AGENTIC_CREATE_BY, "CapabilityAgent")
-
-# 框架默认的工具前摇台词（仅针对耗时较长、用户需要被告知"正在做事"的工具）。
-# 这是框架级默认值，必须保持「人格中性」——不带任何特定 Persona 的口吻或语气，
-# 任何 Persona 都应能直接套用而不出戏。带角色个性的台词应由各 Persona 在
-# config.json 的 "pre_tool_expressions" 字段中覆盖（值为空字符串表示该工具
-# 无需前摇）。早柚等具体人格的专属台词请写在其 Persona 配置内，切勿写在此处。
-_FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
-    "web_search_tool": "稍等，我查一下相关信息…",
-    "search_knowledge": "让我先查一下资料…",
-    "web_fetch_tool": "我打开这个链接看看…",
-    "create_subagent": "这个任务我来安排处理…",
-    "render_html_to_image": "稍等，正在生成图片…",
-    "render_markdown_to_image": "稍等，正在生成图片…",
-    "generate_image": "稍等，正在生成图片，可能需要一点时间…",
-    "generate_video": "稍等，正在生成视频，这个会比较久，请耐心等待…",
-    "edit_image": "稍等，正在处理图片…",
-    "generate_music": "稍等，正在生成音乐…",
-}
-
-# 每次运行最多发送的前摇数量，避免刷屏
-_MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
-
-# 核心回复请求的瞬时失败重试：网络抖动 / 超时 / 5xx / 529 等多为可恢复故障，重试常能成功。
-# 至多尝试 _MAX_RUN_ATTEMPTS 次、每次失败后等待 _RUN_RETRY_DELAY 秒；逻辑性的
-# UsageLimitExceeded（思考轮数到顶，有专属兜底总结）不在重试范围内。
-_MAX_RUN_ATTEMPTS = 3
-_RUN_RETRY_DELAY = 3.0
-
-# 永久性 4xx 客户端错误（内容审核拦截 / 请求体过大 / 参数非法等）：重试必复现，应
-# fail-fast 不再重试。408（超时）/429（限流）虽是 4xx 但可重试，明确排除。
-_RETRYABLE_4XX = frozenset({408, 429})
-
-# 内容审核拦截特征词（各 provider 文案不一，取并集模糊判定）。仅用于友好文案与统计分类，
-# 不影响"是否重试"的判定。
-_CONTENT_REJECT_HINTS = ("sensitive", "content policy", "content_policy", "content_filter")
-# 内容审核错误码（如 MiniMax 1026）。按词边界匹配，避免误命中 request-id / 时间戳里的数字。
-_CONTENT_REJECT_CODES = ("1026",)
+# 父 run 把本次归属 scope 写入此 contextvar，途中 spawn 的嵌套子 agent 自动继承记账：
+# await 的子协程共享 Context、create_task 复制创建时 Context，两条 spawn 路径都覆盖。
+_current_budget_scope: contextvars.ContextVar[Optional[Tuple[str, str, str]]] = contextvars.ContextVar(
+    "gs_budget_scope", default=None
+)
 
 
-def _is_non_retryable_model_error(e: BaseException) -> bool:
-    """该异常是否为"重试也必然复现"的永久性模型错误（4xx 客户端错误，排除 408/429）。"""
-    return isinstance(e, ModelHTTPError) and 400 <= e.status_code < 500 and e.status_code not in _RETRYABLE_4XX
-
-
-def _is_content_rejected(e: ModelHTTPError) -> bool:
-    """4xx 错误是否为"内容被模型安全 / 审核策略拒绝"（用于更友好的文案与统计分类）。"""
-    blob = (str(e.body or "") + " " + str(e)).lower()
-    if any(hint in blob for hint in _CONTENT_REJECT_HINTS):
-        return True
-    return any(re.search(rf"\b{code}\b", blob) for code in _CONTENT_REJECT_CODES)
+def _budget_scope_from_event(ev: Event) -> Tuple[str, str, str]:
+    """从 Event 取预算 scope 三元组 (group_id, user_id, bot_id)。私聊 group_id 为空串。"""
+    return (str(ev.group_id) if ev.group_id else "", str(ev.user_id), ev.bot_id or "")
 
 
 def _matched_delegation_only_profile(query: str) -> str:
@@ -217,315 +184,6 @@ def _get_pre_tool_expression(persona_name: Optional[str], tool_name: str) -> Opt
     return None
 
 
-def _extract_run_context(history: List[ModelMessage], max_fact_len: int = 2000) -> str:
-    """从历史消息中提取"已知事实"和"模型推理片段"，按轮次组织。
-
-    相比只提取 ToolReturnPart，还保留 TextPart（LLM 中间推理），
-    因为这些推理有时本身就是有价值的结论。
-    """
-    sections: list[str] = []
-    round_num = 0
-
-    for msg in history:
-        if isinstance(msg, ModelResponse):
-            round_num += 1
-            texts: list[str] = []
-            calls: list[str] = []
-            for part in msg.parts:
-                if isinstance(part, TextPart) and part.content.strip():
-                    t = part.content.strip()
-                    if len(t) > 500:
-                        t = t[:500] + "...[截断]"
-                    texts.append(t)
-                elif isinstance(part, ToolCallPart):
-                    calls.append(part.tool_name)
-
-            if texts or calls:
-                header = f"【第{round_num}轮】"
-                if calls:
-                    header += f" 调用工具: {', '.join(calls)}"
-                if texts:
-                    header += "\n" + "\n".join(texts)
-                sections.append(header)
-
-        elif isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart):
-                    content = str(part.content).strip()
-                    if len(content) > max_fact_len:
-                        content = content[:max_fact_len] + f"\n...[截断, 共{len(content)}字符]"
-                    sections.append(f"  → [{part.tool_name}] 返回: {content}")
-
-    return "\n".join(sections) if sections else ""
-
-
-def _truncate_message_for_log(msg: Any, max_base64_len: int = 100) -> Any:
-    """
-    截断消息中的长 base64 数据，用于日志输出。
-
-    Args:
-        msg: 消息内容，可能是 str、ImageUrl 或其列表
-        max_base64_len: base64 数据最大显示长度
-
-    Returns:
-        截断后的消息副本
-    """
-    from pydantic_ai.messages import ImageUrl
-
-    if isinstance(msg, str):
-        # 检查是否是 base64 DataURI
-        if ";base64," in msg and len(msg) > max_base64_len:
-            return f"{msg[:max_base64_len]}...[base64截断, 总长={len(msg)}]"
-        return msg
-    elif isinstance(msg, ImageUrl):
-        url = msg.url
-        if ";base64," in url and len(url) > max_base64_len:
-            return ImageUrl(url=f"{url[:max_base64_len]}...[base64截断, 总长={len(url)}]")
-        return msg
-    elif isinstance(msg, list):
-        return [_truncate_message_for_log(item, max_base64_len) for item in msg]
-    return msg
-
-
-def _truncate_history_with_tool_safety(
-    history: List[ModelMessage],
-    max_history: int,
-) -> List[ModelMessage]:
-    """
-    安全截断 history，确保保留的消息中 ToolCallPart 和 ToolReturnPart 完全配对。
-
-    问题：如果简单地从末尾截断 history，可能导致 ToolReturnPart 被保留
-    但其对应的 ToolCallPart 被丢弃（在被截断的前半部分），从而在下一轮请求时出现
-    "tool result's tool id not found" 错误。
-
-    解决策略：
-    1. 先做一次试探性截断：保留最后 max_history 条消息
-    2. 扫描截断结果，收集所有保留的 ToolReturnPart 的 tool_call_id
-    3. 扫描截断结果，收集所有保留的 ToolCallPart 的 tool_call_id
-    4. 如果有 return 找不到对应的 call，说明截断点切到了 tool call/return 对的中间
-    5. 向前移动截断点，直到所有保留的 return 都有对应的 call
-
-    Args:
-        history: 原始消息历史
-        max_history: 最大保留消息数
-
-    Returns:
-        截断后的安全消息历史
-    """
-    if len(history) <= max_history:
-        return history
-
-    # 从 max_history 开始，逐步扩大保留范围，直到 tool call/return 完全配对
-    truncate_index = len(history) - max_history
-
-    while truncate_index > 0:
-        truncated = history[truncate_index:]
-
-        # 收集截断结果中所有 ToolCallPart 的 tool_call_id
-        retained_call_ids: Set[str] = set()
-        # 收集截断结果中所有 ToolReturnPart 的 tool_call_id
-        retained_return_ids: Set[str] = set()
-
-        for msg in truncated:
-            if isinstance(msg, ModelResponse):
-                for part in msg.parts:
-                    if isinstance(part, ToolCallPart):
-                        retained_call_ids.add(part.tool_call_id)
-            elif isinstance(msg, ModelRequest):
-                for part in msg.parts:
-                    if isinstance(part, ToolReturnPart):
-                        retained_return_ids.add(part.tool_call_id)
-                    # RetryPromptPart 也是"工具结果型"消息：工具参数校验失败时
-                    # 由 PydanticAI 生成，同样带 tool_call_id、必须有配对的
-                    # ToolCallPart。tool_name 为 None 时是输出校验重试，不绑定
-                    # 具体工具调用，不计入。
-                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
-                        retained_return_ids.add(part.tool_call_id)
-
-        # 找出截断结果中的孤立 return（有 return 但没有对应的 call）
-        orphaned = retained_return_ids - retained_call_ids
-
-        if not orphaned:
-            # 所有保留的 return 都有对应的 call，截断安全
-            logger.debug(
-                f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(truncated)} (截断点: {truncate_index})"
-            )
-            return truncated
-
-        # 有孤立 return，需要向前移动截断点
-        # 找到所有孤立 return 所在的消息索引（相对于原始 history）
-        min_orphaned_idx = len(history)  # 初始化为最大值
-        for idx, msg in enumerate(history):
-            if idx < truncate_index:
-                continue  # 只看截断范围内的
-            if isinstance(msg, ModelRequest):
-                for part in msg.parts:
-                    tcid: Optional[str] = None
-                    if isinstance(part, ToolReturnPart):
-                        tcid = part.tool_call_id
-                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
-                        tcid = part.tool_call_id
-                    if tcid is not None and tcid in orphaned:
-                        min_orphaned_idx = min(min_orphaned_idx, idx)
-
-        # 向前移动截断点到孤立 return 之前，再留 2 条消息的缓冲
-        new_truncate_index = max(0, min_orphaned_idx - 2)
-        if new_truncate_index >= truncate_index:
-            # 安全阀：如果无法继续前移，直接保留全部历史
-            logger.warning(f"🧠 [GsCoreAIAgent] 无法安全截断 history，保留全部 {len(history)} 条")
-            return history
-
-        truncate_index = new_truncate_index
-
-    # truncate_index == 0，保留全部历史
-    logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(history)} (保留全部)")
-    return history
-
-
-def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]:
-    """丢弃所有找不到配对 ToolCallPart 的孤儿工具结果消息。
-
-    最终一致性兜底：即便 ``_truncate_history_with_tool_safety`` 逻辑正确，
-    历史里仍可能因并发 / 异常中断残留坏配对（孤儿 ToolReturnPart 或带
-    tool_name 的 RetryPromptPart）。本函数在 ``extract_history()`` 末尾被
-    无条件调用，保证送进 API 的 message_history 永远自洽——一次坏截断不会
-    让 session 永久不可用（"tool result's tool id not found" 400）。
-    """
-    call_ids: Set[str] = set()
-    for msg in history:
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ToolCallPart):
-                    call_ids.add(part.tool_call_id)
-
-    cleaned: List[ModelMessage] = []
-    for msg in history:
-        if isinstance(msg, ModelRequest):
-            kept_parts = []
-            for part in msg.parts:
-                # 复用同一个 isinstance 守卫：进入分支时 part 类型已被 mypy/Pyright
-                # 收窄为 ToolReturnPart / RetryPromptPart，两者都有 tool_call_id，
-                # 不需要 getattr 兜底（LLM.md §1.4）。
-                if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids:
-                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={part.tool_call_id}")
-                    continue
-                if (
-                    isinstance(part, RetryPromptPart)
-                    and part.tool_name is not None
-                    and part.tool_call_id not in call_ids
-                ):
-                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 RetryPromptPart: tool_call_id={part.tool_call_id}")
-                    continue
-                kept_parts.append(part)
-            if kept_parts:
-                msg.parts = kept_parts
-                cleaned.append(msg)
-            # parts 全被丢弃的空 ModelRequest 整条剔除
-        else:
-            cleaned.append(msg)
-    return cleaned
-
-
-def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
-    """把历史里残留的「远程图片 URL」剥离成文字占位，返回剥离处数量。
-
-    推理端报「Failed to download image」基本都是早先入历史的远程图片 URL
-    （如 QQ 带 rkey 的临时链接）已过期。不清掉的话，后续每一轮把它重发给
-    推理端都会 500，整个会话被永久卡死。这里把过期的远程 ``ImageUrl`` 替换为
-    文字占位，让下一轮自动恢复。base64 DataURI 不会过期，保留不动。
-    """
-    removed = 0
-    for msg in history:
-        if not isinstance(msg, ModelRequest):
-            continue
-        for part in msg.parts:
-            if not isinstance(part, UserPromptPart):
-                continue
-            content = part.content
-            if isinstance(content, str):
-                continue
-            new_content: List[UserContent] = []
-            changed = False
-            for item in content:
-                if isinstance(item, ImageUrl) and item.url.startswith(("http://", "https://")):
-                    new_content.append("[图片已过期，无法再显示]")
-                    changed = True
-                    removed += 1
-                else:
-                    new_content.append(item)
-            if changed:
-                part.content = new_content
-    return removed
-
-
-def _split_embedded_thinking(
-    parts: Sequence[ModelResponsePart],
-    thinking_tags: tuple[str, str],
-) -> List[ModelResponsePart]:
-    """把 TextPart 里以 thinking_tags 包裹的内嵌思考重新拆成独立的 ThinkingPart。
-
-    流式请求下 pydantic_ai 只有在 ``<think>`` 作为独立 SSE chunk 到达时才会拆分思考
-    标签（见 _parts_manager.handle_text_delta）；MiniMax 等兼容网关不保证这一点，
-    导致 ``<think>...</think>`` 残留在 TextPart 里被原样发往 C 端，且思考内容拿不到
-    意图-行为一致性检测。这里按完整文本重新拆分，对齐非流式路径
-    （openai 模型的 split_content_into_text_and_thinking）的行为。非 TextPart 与不含
-    起始标签的 TextPart 原样透传。
-    """
-    start_tag, end_tag = thinking_tags
-    result: List[ModelResponsePart] = []
-    for part in parts:
-        if not isinstance(part, TextPart) or start_tag not in part.content:
-            result.append(part)
-            continue
-        content = part.content
-        start_index = content.find(start_tag)
-        while start_index >= 0:
-            before, content = content[:start_index], content[start_index + len(start_tag) :]
-            if before:
-                result.append(TextPart(content=before))
-            end_index = content.find(end_tag)
-            if end_index >= 0:
-                think, content = content[:end_index], content[end_index + len(end_tag) :]
-                result.append(ThinkingPart(content=think))
-            else:
-                # 缺少闭合标签：丢弃 <think> 起始标签，剩余内容按文本处理
-                result.append(TextPart(content=content))
-                content = ""
-            start_index = content.find(start_tag)
-        if content:
-            result.append(TextPart(content=content))
-    return result
-
-
-# 单轮意图-行为不一致检测关键词：thinking 里点名了某工具 / 任务编排意图
-# 却没真正调用——直接顶到阈值，下一轮立刻强制提醒。提到模块级避免每轮重建。
-_INTENT_TRIGGER_KEYWORDS: tuple[str, ...] = (
-    "register_kanban_task",
-    "evaluate_agent_mesh_capability",
-    "create_subagent",
-    "复合多代理任务",
-    "任务树",
-    "创建任务树",
-    "托管",
-    "委派",
-    # 「枚举时间点」思维信号——主人格想用 add_once_task 逐个时间点注册时，
-    # 本轮即便确实调用了 add_once_task，下一轮也强提醒走 register_kanban_task
-    # 的 recurring_trigger 路径。
-    "逐个时间点",
-    "逐一设置",
-    "每个时间点单独",
-    "为每个时间点",
-    "5个时间点",
-    "10个时间点",
-    "cron 的话需要写多个",
-    "需要写多个触发器",
-)
-
-# O-A 群聊队头阻塞防护：交互式回复在 _run_lock 上排队超过此秒数（话题大概率已翻篇）
-# 则丢弃本次回复，避免对早已结束的话题"过期答复"。仅作用于 create_by=="Chat" 的主对话。
-STALE_CHAT_REQUEST_TTL = 8.0
-
-
 class GsCoreAIAgent:
     """
     基于 PydanticAI 的 Agent 封装类
@@ -570,6 +228,9 @@ class GsCoreAIAgent:
             is_subagent = True
         self.session_id: str = session_id
         self.is_subagent: bool = is_subagent
+        # 预算归属 scope：(group_id, user_id, bot_id)。ev 缺失的自主入口经 bind_budget_scope
+        # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
+        self._budget_scope: Optional[Tuple[str, str, str]] = None
 
         # 连续无工具调用计数：连续多轮只输出文本、不调用任何工具时，
         # 下一轮注入强制提醒，防止 Agent 以角色无知为由持续推脱
@@ -789,6 +450,28 @@ class GsCoreAIAgent:
             logger.debug(f"🖼️ [ImageUnderstand] 图片描述二次摘要失败，使用原始描述: {e}")
         return description
 
+    def bind_budget_scope(self, ev: Optional[Event]) -> None:
+        """显式绑定本会话的预算归属 scope。
+
+        供 `ev` 缺失但仍应计入某 Session 额度的自主入口（巡检 / proactive / 用户绑定的
+        持久会话）使用：绑定后该 agent 的每次 run 都按此 scope 记账，并在 `budget_gate=True`
+        时受闸门约束。传 None 解除绑定。
+        """
+        self._budget_scope = _budget_scope_from_event(ev) if ev is not None else None
+
+    def _resolve_budget_scope(self, ev: Optional[Event]) -> Optional[Tuple[str, str, str]]:
+        """解析本次 run 的预算归属 scope。
+
+        优先级：显式 `ev` > 实例绑定（`_budget_scope`，巡检 / proactive / 用户绑定会话）>
+        contextvar（父 run 透传给在途嵌套子 agent）。全为空时返回 None——纯后台、无 scope
+        的调用只可能受 global 规则约束、不写 Session 账本。
+        """
+        if ev is not None:
+            return _budget_scope_from_event(ev)
+        if self._budget_scope is not None:
+            return self._budget_scope
+        return _current_budget_scope.get()
+
     @overload
     async def _execute_run(
         self,
@@ -801,6 +484,7 @@ class GsCoreAIAgent:
         output_type: None = None,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> str: ...
 
     @overload
@@ -815,6 +499,7 @@ class GsCoreAIAgent:
         output_type: type[_T] = ...,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> _T: ...
 
     async def _execute_run(
@@ -828,6 +513,7 @@ class GsCoreAIAgent:
         output_type: Optional[type] = None,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> Union[str, Any]:
         """核心回复请求的瞬时失败重试包装。
 
@@ -851,6 +537,7 @@ class GsCoreAIAgent:
                     output_type=output_type,
                     intent=intent,
                     has_active_task=has_active_task,
+                    budget_gate=budget_gate,
                 )
             except Exception as e:
                 err_str = str(e)
@@ -928,6 +615,7 @@ class GsCoreAIAgent:
         output_type: Optional[type] = None,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> Union[str, Any]:
         """
         实际执行 Agent 运行的内部方法（单次尝试）
@@ -939,8 +627,38 @@ class GsCoreAIAgent:
             output_type: 当指定为某个 Pydantic 模型类时，利用 pydantic_ai 的
                 output_type 特性，要求模型必须返回符合该模型结构的 JSON。
                 此时返回值为该 Pydantic 模型实例而非字符串。
+            budget_gate: 本次 run 是否为预算入口。True 时（巡检 / proactive / 定时等自主
+                调用）超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，
+                按默认 False 只记账不二次拦截；在途嵌套子 agent 同样默认 False（只记账）。
         """
         from gsuid_core.ai_core.statistics import statistics_manager
+
+        # ============ 预算闸门 + scope 解析（统一入口）============
+        # scope 用于记账与闸门：显式 ev > 实例绑定 > contextvar（父 run 透传）。
+        # 仅 budget_gate=True 的自主入口在此早退；放行/未启用/豁免均零额外开销。
+        _budget_scope = self._resolve_budget_scope(ev)
+        if budget_gate and _budget_scope is not None:
+            try:
+                from gsuid_core.ai_core.budget import budget_manager
+
+                _bd = await budget_manager.check_scope(
+                    _budget_scope[0], _budget_scope[1], _budget_scope[2], self.session_id
+                )
+            except SQLAlchemyError as _be:
+                logger.warning(f"💰 [GsCoreAIAgent] 预算校验 DB 异常，放行本次 run: {_be}")
+                _bd = None
+            except Exception as _be:
+                logger.exception(f"💰 [GsCoreAIAgent] 预算校验未知异常，放行本次 run: {_be}")
+                _bd = None
+            if _bd is not None and not _bd.allowed:
+                logger.info(f"💰 [GsCoreAIAgent] 预算超额拦截 create_by={self.create_by} ({_bd.block_scope_label})")
+                # 仅交互式（有 bot）且本次应提示时向用户发一句；自主后台（无 bot）静默掐断。
+                if bot is not None and _bd.notify and _bd.message:
+                    try:
+                        await bot.send(_bd.message)
+                    except Exception as _se:
+                        logger.warning(f"💰 [GsCoreAIAgent] 预算超额提示发送失败: {_se}")
+                return None if output_type is not None else ""
 
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
         _pre_tool_sent: int = 0  # 本次运行已发送的前摇数量
@@ -1228,6 +946,10 @@ class GsCoreAIAgent:
         # _split_embedded_thinking）。thinking_tags 取自模型 profile，默认 ('<think>','</think>')。
         _thinking_tags: tuple[str, str] = self.model.profile.thinking_tags if self.model else ("<think>", "</think>")
 
+        # 把本次归属 scope 写入 contextvar，使在途 spawn 的嵌套子 agent 继承同一 scope 记账
+        # （决策：嵌套子 agent Token 归并到父会话 scope）。在 finally 还原，避免泄漏到上层。
+        _budget_scope_token = _current_budget_scope.set(_budget_scope) if _budget_scope is not None else None
+
         try:
             logger.info("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()...")
             logger.info(f"🧠 [GsCoreAIAgent] 当前 history: {len(self.history)}")
@@ -1463,14 +1185,17 @@ class GsCoreAIAgent:
                             cache_read_tokens,
                             cache_write_tokens,
                         )
-                        # 预算记账：仅交互式(带 ev)的 run 计入对应 Session 额度。
-                        # 子 Agent/后台调用无 ev，其 Token 只进全局统计、不占 Session 预算。
-                        if ev is not None:
+                        # 预算记账：可归属 scope 的 run（交互 / 巡检 / proactive / 嵌套子 agent）
+                        # 都计入对应 Session 额度；无 scope（_budget_scope=None）只进全局统计。
+                        if _budget_scope is not None:
                             try:
                                 from gsuid_core.ai_core.budget import budget_manager
 
-                                await budget_manager.record_usage(
-                                    ev,
+                                await budget_manager.record_usage_scope(
+                                    _budget_scope[0],
+                                    _budget_scope[1],
+                                    _budget_scope[2],
+                                    self.session_id,
                                     input_tokens,
                                     output_tokens,
                                     cache_read_tokens,
@@ -1591,6 +1316,9 @@ class GsCoreAIAgent:
         # 瞬时故障（超时/网络/5xx/529 等）一律不在此捕获，向上抛给 _execute_run
         # 统一重试；download image 自愈与错误文案/统计也收敛到 _execute_run。
         finally:
+            # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
+            if _budget_scope_token is not None:
+                _current_budget_scope.reset(_budget_scope_token)
             # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享），
             # 防止内存中 key 无限累积。session_id 缺失时跳过——本轮也没机会
             # 写入计数。
@@ -1618,6 +1346,7 @@ class GsCoreAIAgent:
         enqueue_ts: Optional[float] = None,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> str: ...
 
     @overload
@@ -1633,6 +1362,7 @@ class GsCoreAIAgent:
         enqueue_ts: Optional[float] = None,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> _T: ...
 
     async def run(
@@ -1647,6 +1377,7 @@ class GsCoreAIAgent:
         enqueue_ts: Optional[float] = None,
         intent: Optional[str] = None,
         has_active_task: bool = False,
+        budget_gate: bool = False,
     ) -> Union[str, Any]:
         """
         运行 Agent 并返回结果
@@ -1665,6 +1396,9 @@ class GsCoreAIAgent:
                 决定是否把"长期任务编排 + 产物"能力族补进工具列表。
             intent: 本轮意图标签（闲聊/工具/问答）。当前工具装配不再据此精简（planning
                 已退出保底池、改由状态驱动 + 向量检索按需召回），保留参数仅作调用方兼容。
+            budget_gate: 本次 run 是否为预算入口。True（巡检 / proactive / 定时等自主调用）
+                时超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，按默认
+                False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
 
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
@@ -1690,6 +1424,7 @@ class GsCoreAIAgent:
                 output_type=output_type,
                 intent=intent,
                 has_active_task=has_active_task,
+                budget_gate=budget_gate,
             )
             logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
             return result

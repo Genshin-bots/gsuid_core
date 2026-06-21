@@ -71,5 +71,13 @@ WEBCONSOLE_PATH = Path(__file__).parent / "webconsole"
 DIST_PATH = WEBCONSOLE_PATH / "dist"
 DIST_EX_PATH = gs_data_path / "dist"
 
+# 品牌配置 / Brand
+# - BRAND_DIR: 用户上传 ICON 的存放目录
+# - BRAND_CONFIG_PATH: 品牌信息（title / subtitle）的 JSON 配置
+# - BRAND_ICON_PATH: 用户上传的自定义 ICON 文件路径（不存在则回退到 CORE_PATH/ICON.png）
+BRAND_DIR = get_res_path("brand")
+BRAND_CONFIG_PATH = PLUGINS_CONFIGS_PATH / "brand.json"
+BRAND_ICON_PATH = BRAND_DIR / "ICON.png"
+
 # AI / AI Core
 AI_CORE_PATH = get_res_path("ai_core")

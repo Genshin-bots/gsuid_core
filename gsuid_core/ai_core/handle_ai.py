@@ -18,6 +18,8 @@ import asyncio
 from typing import Optional
 from datetime import datetime
 
+from sqlalchemy.exc import SQLAlchemyError
+
 # 导入表情包模块以注册 on_core_shutdown 钩子和 @ai_tools
 import gsuid_core.ai_core.meme.startup  # noqa: F401
 import gsuid_core.ai_core.buildin_tools.meme_tools  # noqa: F401
@@ -162,18 +164,25 @@ async def handle_ai_chat(
             query = event.raw_text
 
             # ============================================================
-            # 预算闸门：按 Session(群/成员/私聊) 校验 Token 额度，超额则在此早退，
-            # 省下后续记忆/分类/主 Agent 的全部开销。豁免(主人/白名单)直接放行。
+            # 预算闸门（被动交互路径·前置短路）：校验 Session Token 额度，超额早退省下后续
+            # 记忆/分类/RAG/主 Agent 开销；豁免(主人/白名单)直接放行，check 异常 fail-open。
             # ============================================================
-            # 判定与「提示发送/早退」分离：check 失败 fail-open 放行；但一旦判定为超额，
-            # 早退必须无条件执行——发送提示失败不能让超额消息漏网继续走完整 AI 流程。
+            # 与 gs_agent 的 budget_gate 非双重拦截：此处前置拦过，下方 session.run 不传 gate
+            # 省一次冗余 DB 判定；那道只给无前置闸门的自主入口(巡检/proactive/定时)兜底。
             budget_decision = None
             try:
                 from gsuid_core.ai_core.budget import budget_manager
 
-                budget_decision = await budget_manager.check(event)
+                budget_decision = await budget_manager.check_scope(
+                    str(event.group_id) if event.group_id else "",
+                    str(event.user_id),
+                    event.bot_id or "",
+                    event.session_id,
+                )
+            except SQLAlchemyError as e:
+                logger.warning(f"💰 [GsCore][AI] 预算校验 DB 异常，放行本次消息: {e}")
             except Exception as e:
-                logger.warning(f"💰 [GsCore][AI] 预算校验异常，放行本次消息: {e}")
+                logger.exception(f"💰 [GsCore][AI] 预算校验未知异常，放行本次消息: {e}")
 
             if budget_decision is not None and not budget_decision.allowed:
                 logger.info(
@@ -184,6 +193,7 @@ async def handle_ai_chat(
                         await bot.send(budget_decision.message)
                     except Exception as e:
                         logger.warning(f"💰 [GsCore][AI] 预算超额提示发送失败: {e}")
+                # 提示尽力而为，发送失败也无条件早退，绝不放超额消息进完整 AI 流程。
                 return
 
             # ============================================================
@@ -542,6 +552,8 @@ async def handle_ai_chat(
             # 步骤 7: 调用 Agent 生成回复
             # Agent 会根据对话内容自主决定是否调用 search_knowledge 工具
             # ============================================================
+            # 故意不传 budget_gate（默认 False）：被动路径已在上方前置闸门拦过，这里只需
+            # gs_agent 按 ev 记账即可，避免对同一条消息再做一次冗余预算判定。
             chat_result = await session.run(
                 user_message=user_messages,
                 bot=bot,
