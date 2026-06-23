@@ -51,6 +51,10 @@ RES = get_res_path()
 
 image_res = get_res_path("IMAGE_TEMP")
 data_cache_path = get_res_path("DATA_CACHE_PATH")
+
+# core信息 缓存目录 / Core status image cache
+# 用文件 mtime 判定新鲜度，避免常驻大图在内存里
+CORE_STATUS_CACHE_DIR = get_res_path(["data_cache", "core_status"])
 backup_path = get_res_path("GsCore_BACKUP_PATH")
 gscore_data_path = get_res_path("GsCore")
 error_mark_path = get_res_path(["logs", "error_reports"])

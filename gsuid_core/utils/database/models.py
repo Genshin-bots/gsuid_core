@@ -1,7 +1,7 @@
 from typing import List, Type, Union, Optional, Sequence
 
 from sqlmodel import Field, Index, col, select, update
-from sqlalchemy import Row, UniqueConstraint, or_, delete
+from sqlalchemy import Row, UniqueConstraint, or_, func, delete, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.bot import Bot
@@ -158,6 +158,8 @@ class CoreUser(BaseBotIDModel, table=True):
             "user_name",
             name="record_coreuser",
         ),
+        Index("idx_user_id", "user_id"),
+        Index("idx_group_id", "group_id"),
         {"extend_existing": True},
     )
 
@@ -222,6 +224,16 @@ class CoreUser(BaseBotIDModel, table=True):
             data = [i.user_id for i in result]
             data = list(set(data))
         return data
+
+    @classmethod
+    @with_session
+    async def get_distinct_user_count(
+        cls,
+        session: AsyncSession,
+    ) -> int:
+        """获取 distinct user_id 数量，避免把全表加载到内存再 len()。"""
+        result = await session.execute(select(func.count(distinct(col(cls.user_id)))))
+        return int(result.scalar_one() or 0)
 
     @classmethod
     @with_session
@@ -316,6 +328,7 @@ class CoreGroup(BaseBotIDModel, table=True):
             "group_name",
             name="record_coregroup",
         ),
+        Index("idx_group_id", "group_id"),
         {"extend_existing": True},
     )
 
@@ -378,6 +391,16 @@ class CoreGroup(BaseBotIDModel, table=True):
             data = [i.group_id for i in result]
             data = list(set(data))
         return data
+
+    @classmethod
+    @with_session
+    async def get_distinct_group_count(
+        cls,
+        session: AsyncSession,
+    ) -> int:
+        """获取 distinct group_id 数量，避免把全表加载到内存再 len()。"""
+        result = await session.execute(select(func.count(distinct(col(cls.group_id)))))
+        return int(result.scalar_one() or 0)
 
     @classmethod
     @with_session

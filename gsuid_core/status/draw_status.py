@@ -1,6 +1,9 @@
+import os
+import re
+import time
 import asyncio
 import datetime
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple, Union, TypeVar, Optional
 from pathlib import Path
 
 from PIL import Image, ImageOps, ImageDraw
@@ -10,6 +13,7 @@ from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
+from gsuid_core.data_store import CORE_STATUS_CACHE_DIR
 from gsuid_core.utils.fonts.fonts import core_font
 from gsuid_core.help.draw_core_help import ICON
 from gsuid_core.utils.image.convert import convert_img, number_to_chinese
@@ -40,6 +44,76 @@ BLACK = (24, 24, 24)
 GREY = (101, 101, 101)
 SE_COLOR = (71, 71, 71)
 
+# 状态图磁盘缓存：core信息 60s 内重复触发直接返回缓存；插件回调 35s 超时保护。
+_DEFAULT_STATUS_CACHE_TTL = 60  # 单位秒；0 表示禁用
+_INVALID_PATH_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _get_status_cache_ttl() -> int:
+    """读 StatusCacheTTL 配置；类型/取值异常时回退默认。"""
+    try:
+        v = status_config.get_config("StatusCacheTTL").data
+        return max(0, int(v))
+    except (AttributeError, TypeError, ValueError):
+        return _DEFAULT_STATUS_CACHE_TTL
+
+
+def _cache_path(real_bot_id: str, bot_self_id: str) -> Path:
+    # 按 (real_bot_id, bot_self_id) 维度分缓存文件，避免多 bot 串味
+    safe = _INVALID_PATH_CHARS.sub(
+        "_",
+        f"{(real_bot_id or 'none')}_{(bot_self_id or 'none')}",
+    )
+    CORE_STATUS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CORE_STATUS_CACHE_DIR / f"core_status_{safe}.jpg"
+
+
+def _read_cache_if_fresh(
+    ttl: int,
+    real_bot_id: str,
+    bot_self_id: str,
+) -> Optional[bytes]:
+    """同步检查并读取缓存；只读 mtime + 文件，不进入事件循环。"""
+    if ttl <= 0:
+        return None
+    img_path = _cache_path(real_bot_id, bot_self_id)
+    try:
+        mtime = img_path.stat().st_mtime
+    except OSError:
+        return None
+    if (time.time() - mtime) >= ttl:
+        return None
+    try:
+        return img_path.read_bytes()
+    except OSError:
+        return None
+
+
+def _write_cache(res: bytes, real_bot_id: str, bot_self_id: str) -> None:
+    img_path = _cache_path(real_bot_id, bot_self_id)
+    # 写临时文件再原子替换，避免读到半截图
+    tmp = img_path.with_suffix(img_path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(res)
+        os.replace(tmp, img_path)
+    except OSError as e:
+        logger.warning(f"[core_status] 写入缓存失败: {e}")
+
+
+# asyncio.Lock：同一事件循环内串行化渲染，避免并发请求都进线程池。
+_status_render_lock = asyncio.Lock()
+
+
+T = TypeVar("T")
+
+
+def _or(value: T | None | BaseException, default: T) -> T:
+    """gather(return_exceptions=True) 返回异常/None 时回退 default；否则透传。"""
+    if isinstance(value, BaseException) or value is None:
+        logger.warning(f"[core_status] 子任务结果异常/空，回退默认: {value!r}")
+        return default
+    return value
+
 
 async def draw_title():
     title = Image.new("RGBA", (1400, 300))
@@ -62,11 +136,10 @@ async def draw_title():
     MAIN_TITLE: str = status_config.get_config("CustomName").data
     S_TITLE: str = status_config.get_config("CustomSubtitle").data
 
-    all_group = await CoreGroup.get_all_group()
-    all_user = await CoreUser.get_all_user_list()
-
-    all_group_num = len(all_group) if all_group else 0
-    all_user_num = len(all_user) if all_user else 0
+    all_group_num, all_user_num = await asyncio.gather(
+        CoreGroup.get_distinct_group_count(),
+        CoreUser.get_distinct_user_count(),
+    )
 
     x = get_font_x(core_font(40), MAIN_TITLE)
     title_draw.text(
@@ -289,14 +362,16 @@ async def draw_badge(
 async def draw_data_analysis1(
     bot_id: Optional[str],
     bot_self_id: Optional[str],
+    yesterday: Optional[CoreDataSummary] = None,
 ):
     local_val = gv.get_platform_val(bot_id, bot_self_id)
     data_bar = Image.new("RGBA", (1400, 200))
 
-    yesterday: Optional[CoreDataSummary] = await CoreDataSummary.get_yesterday_data(
-        bot_id=bot_id,
-        bot_self_id=bot_self_id,
-    )
+    if yesterday is None:
+        yesterday = await CoreDataSummary.get_yesterday_data(
+            bot_id=bot_id,
+            bot_self_id=bot_self_id,
+        )
     if not yesterday:
         yesterday = CoreDataSummary(bot_id="1", bot_self_id="2", date=datetime.datetime.now())
 
@@ -450,6 +525,20 @@ async def draw_hw():
     return img
 
 
+async def _safe_call_plugin_status(fn, plugin_name: str, status_key: str) -> str:
+    """调用插件注册的 status 回调，35s 超时保护。"""
+    try:
+        return await asyncio.wait_for(fn(), timeout=35.0)
+    except asyncio.TimeoutError:
+        logger.warning(f"[core_status] 插件 {plugin_name} 的状态回调 {status_key} 超时(>35s)")
+        return "超时"
+    # 插件回调是 3rd-party 边界，无法预知异常类型；用 Exception 而非 BaseException，
+    # 保证 CancelledError / KeyboardInterrupt / SystemExit 仍能向上传播
+    except Exception as e:
+        logger.error(f"调用插件 {plugin_name} 的状态函数时发生错误: {e}", exc_info=True)
+        return "未知"
+
+
 async def draw_plugins_status():
     plugins_num = len(plugins_status)
     plugins_h = 50 + plugins_num * 180
@@ -491,11 +580,11 @@ async def draw_plugins_status():
             )
 
             for indexj, j in enumerate(status):
-                try:
-                    _value = await status[j]()
-                except Exception as e:
-                    logger.error(f"调用插件 {i} 的状态函数时发生错误: {e}")
-                    _value = "未知"
+                _value = await _safe_call_plugin_status(
+                    status[j],
+                    i,
+                    j,
+                )
 
                 badge = await draw_badge(j, _value)
                 plugin_bar.paste(
@@ -669,9 +758,139 @@ async def draw_traffic_analysis():
     return data_bar
 
 
+# ───────────────────────── 入口 ─────────────────────────
+async def draw_status(ev: Event) -> bytes:
+    """
+    core信息 主入口。
+
+    1. 直接读磁盘缓存（命中即返回，不进 to_thread、不跑 DB、不渲染）
+    2. 否则抢 asyncio.Lock，单次渲染后落盘
+    """
+    ttl = _get_status_cache_ttl()
+    bot_id = ev.real_bot_id
+    bot_self_id = ev.bot_self_id
+    cached = await asyncio.to_thread(
+        _read_cache_if_fresh,
+        ttl,
+        bot_id,
+        bot_self_id,
+    )
+    if cached is not None:
+        return cached
+
+    async with _status_render_lock:
+        # 双重检查：拿到锁的协程先看下别人是否已经渲染过
+        cached = await asyncio.to_thread(
+            _read_cache_if_fresh,
+            ttl,
+            bot_id,
+            bot_self_id,
+        )
+        if cached is not None:
+            return cached
+
+        res = await _draw_status_uncached(ev)
+        await asyncio.to_thread(_write_cache, res, bot_id, bot_self_id)
+        return res
+
+
 @to_thread
-async def draw_status(ev: Event):
-    title = await draw_title()
+async def _draw_status_uncached(ev: Event):
+    """
+    实际渲染逻辑。仍然用 to_thread 避免阻塞主事件循环；
+    内部用 asyncio.gather 并行化 I/O 密集步骤。
+    """
+    # ── 阶段 1: I/O 密集的并行 fetch ──
+    # 六个独立数据源同时拉；任何一项异常不影响其他，阶段 3 入口再统一兜底
+    fetch_results = await asyncio.gather(
+        draw_title(),  # 2 个 COUNT
+        draw_hw(),  # 4 个系统信息
+        CoreDataAnalysis.calculate_dashboard_metrics(),  # 全局
+        CoreDataAnalysis.calculate_dashboard_metrics(  # 单 bot
+            ev.real_bot_id,
+            ev.bot_self_id,
+        ),
+        CoreDataSummary.get_day_trends(  # 趋势
+            ev.real_bot_id,
+            ev.bot_self_id,
+        ),
+        draw_plugins_status(),  # 各插件状态
+        return_exceptions=True,
+    )
+    (
+        title,
+        hw,
+        mdata,
+        ndata,
+        trends,
+        plugin_status_img,
+    ) = fetch_results
+
+    # ── 阶段 2: 拿到 yesterday 数据，再渲染两组 data_analysis1 ──
+    yesterday_single, yesterday_all = await asyncio.gather(
+        CoreDataSummary.get_yesterday_data(
+            bot_id=ev.real_bot_id,
+            bot_self_id=ev.bot_self_id,
+        ),
+        CoreDataSummary.get_yesterday_data(
+            bot_id=None,
+            bot_self_id=None,
+        ),
+        return_exceptions=True,
+    )
+
+    # gather 返回异常时给占位 CoreDataSummary，避免 draw_data_analysis1 内部重查
+    # 同一失败查询（仍按零值渲染图像，不阻塞后续阶段）
+    _dummy_yesterday = CoreDataSummary(
+        bot_id="1",
+        bot_self_id="2",
+        date=datetime.datetime.now(),
+    )
+    data_bar1_1 = await draw_data_analysis1(
+        ev.real_bot_id,
+        ev.bot_self_id,
+        yesterday=_or(yesterday_single, _dummy_yesterday),
+    )
+    data_bar1_2 = await draw_data_analysis1(
+        None,
+        None,
+        yesterday=_or(yesterday_all, _dummy_yesterday),
+    )
+
+    # ── 阶段 3 入口：把阶段 1 的 gather 结果统一兜底成下游可用的占位值 ──
+    # 异常项用 0 / 空图 / 占位 dict 替换，避免 paste/[] 操作崩溃
+    plugins_num = len(plugins_status)
+    plugins_h = 100 + plugins_num * 180
+
+    title = _or(title, Image.new("RGBA", (1400, 300), (0, 0, 0, 0)))
+    hw = _or(hw, Image.new("RGBA", (1400, 300), (0, 0, 0, 0)))
+    # draw_data_analysis2 访问 DAU/DAG/MAU/OutUser/NewGroup/DAU_MAU；CountVal 必填全键
+    _empty_metrics: CountVal = {
+        "DAU": "0",
+        "MAU": "0",
+        "DAU_MAU": "0",
+        "NewUser": "0",
+        "OutUser": "0",
+        "DAG": "0",
+        "MAG": "0",
+        "DAG_MAG": "0",
+        "NewGroup": "0",
+    }
+    mdata = _or(mdata, _empty_metrics)
+    ndata = _or(ndata, _empty_metrics)
+    _empty_trends: Dict[str, List[int]] = {
+        "all_bots_user_count": [0] * 46,
+        "all_bots_send": [0] * 46,
+        "bot_user_count": [0] * 46,
+        "bot_send": [0] * 46,
+    }
+    trends = _or(trends, _empty_trends)
+    plugin_status_img = _or(
+        plugin_status_img,
+        Image.new("RGBA", (1400, plugins_h), (0, 0, 0, 0)),
+    )
+
+    # ── 阶段 3: 纯 PIL 装配（gather 无效，串行即可；这些函数都是 async def，必须 await） ──
     bar1 = await draw_bar("服务器基础信息", "Base Info")
     bar2_1 = await draw_bar("机器人数据统计(单)", "Data Analysis")
     bar2_2 = await draw_bar("机器人数据统计(多)", "Data Analysis")
@@ -689,39 +908,12 @@ async def draw_status(ev: Event):
     )
     bar4 = await draw_bar("插件额外信息", "Extra Data")
 
-    mdata = await CoreDataAnalysis.calculate_dashboard_metrics()
-    ndata = await CoreDataAnalysis.calculate_dashboard_metrics(
-        ev.real_bot_id,
-        ev.bot_self_id,
-    )
-
-    hw = await draw_hw()
-
-    data_bar1_1 = await draw_data_analysis1(
-        ev.real_bot_id,
-        ev.bot_self_id,
-    )
-    data_bar1_2 = await draw_data_analysis1(
-        None,
-        None,
-    )
-
     data_bar2_1 = await draw_data_analysis2(ndata)
     data_bar2_2 = await draw_data_analysis2(mdata)
 
     traffic_bar = await draw_traffic_analysis()
 
-    trends = await CoreDataSummary.get_day_trends(
-        ev.real_bot_id,
-        ev.bot_self_id,
-    )
-
-    plugin_status_img = await draw_plugins_status()
-
     curve_img = await draw_curve_img(trends)
-
-    plugins_num = len(plugins_status)
-    plugins_h = 100 + plugins_num * 180
 
     img = await draw_bg(1400, 2778 + 150 + plugins_h + 310)
 

@@ -2,13 +2,18 @@ from typing import Dict
 
 from gsuid_core.data_store import get_res_path
 
-from .models import GSC, GsStrConfig, GsBoolConfig, GsImageConfig, GsListStrConfig
+from .models import GSC, GsIntConfig, GsStrConfig, GsBoolConfig, GsImageConfig, GsListStrConfig
 
 STATUS_CONIFG: Dict[str, GSC] = {
     "CustomBg": GsBoolConfig(
         "是否开启自定义背景",
         "开启路径位于GsCore/BG",
         False,
+    ),
+    "StatusCacheTTL": GsIntConfig(
+        "core信息 缓存秒数",
+        "0 表示禁用缓存(每次重新渲染); 单位秒, 默认 60",
+        60,
     ),
     "CustomIcon": GsBoolConfig(
         "是否开启自定义头像",

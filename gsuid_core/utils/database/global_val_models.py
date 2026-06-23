@@ -104,118 +104,93 @@ class CoreDataSummary(BaseIDModel, table=True):
         bot_self_id: Optional[str] = None,
     ) -> Dict[str, List[int]]:
         """
-        获取最近30天的数据趋势。
+        获取最近45天的数据趋势。
 
-        返回一个字典，包含四份数据列表：
-        1. all_bots_receive: 全平台所有机器人的每日接收数汇总列表。
-        2. all_bots_send: 全平台所有机器人的每日发送数汇总列表。
-        3. bot_receive: 指定机器人的每日接收数列表。
-        4. bot_send: 指定机器人的每日发送数列表。
+        返回一个字典，包含：
+        - 全平台 6 列 (receive/send/user_count/group_count/image/command)
+        - 指定机器人 6 列（仅当传入了 bot_id 或 bot_self_id）
+
+        优化：原实现跑两次查询（全平台聚合 + 指定机器人全量行），
+        合并为一次按 (date, bot_id, bot_self_id) 分组的聚合查询，
+        DB 往返从 2 次降到 1 次。
         """
-        # 1. 定义时间范围
         today = datetime.now().date()
         thirty_days_ago = today - timedelta(days=45)
         date_list = [thirty_days_ago + timedelta(days=i) for i in range(46)]
 
-        # --- 2. 准备两次查询 ---
-
-        # 查询1: 全平台汇总数据
-        agg_query = (
+        # 单次查询：按 (date, bot_id, bot_self_id) 聚合
+        query = (
             select(
                 col(cls.date),
-                func.sum(cls.receive).label("total_receive"),
-                func.sum(cls.send).label("total_send"),
-                func.sum(cls.user_count).label("total_user_count"),
-                func.sum(cls.group_count).label(
-                    "total_group_count",
-                ),  # type: ignore
-                func.sum(cls.image).label("total_image"),  # type: ignore
-                func.sum(cls.command).label("total_command"),  # type: ignore
+                col(cls.bot_id),
+                col(cls.bot_self_id),
+                func.coalesce(func.sum(cls.receive), 0),
+                func.coalesce(func.sum(cls.send), 0),
+                func.coalesce(func.sum(cls.user_count), 0),
+                func.coalesce(func.sum(cls.group_count), 0),
+                func.coalesce(func.sum(cls.image), 0),
+                func.coalesce(func.sum(cls.command), 0),
             )
             .where(cls.date >= thirty_days_ago)
-            .where(cls.date < today)  # 使用 < today 更精确
-            .group_by(col(cls.date))
+            .where(cls.date < today)
+            .group_by(col(cls.date), col(cls.bot_id), col(cls.bot_self_id))
             .order_by(col(cls.date))
         )
+        rows = (await session.execute(query)).all()
 
-        agg_rows = (await session.execute(agg_query)).all()
+        # 在 Python 里按日期分桶：全平台累加 + 单 bot 各自保留
+        total_by_date: Dict[Any, List[int]] = {}
+        bot_by_date: Dict[Any, List[int]] = {}
 
-        # 处理全平台汇总数据，填充缺失日期为0
-        agg_map = {row[0]: row for row in agg_rows}
-        all_bots_receive = []
-        all_bots_send = []
-        all_bots_user_count = []
-        all_bots_group_count = []
-        all_bots_image = []
-        all_bots_command = []
+        for date_val, row_bot_id, row_bot_self_id, recv, send, ucnt, gcnt, img, cmd in rows:
+            # 全平台汇总
+            bucket = total_by_date.setdefault(
+                date_val,
+                [0, 0, 0, 0, 0, 0],
+            )
+            bucket[0] += recv or 0
+            bucket[1] += send or 0
+            bucket[2] += ucnt or 0
+            bucket[3] += gcnt or 0
+            bucket[4] += img or 0
+            bucket[5] += cmd or 0
 
-        for d in date_list:
-            row = agg_map.get(d)
-            if row:
-                all_bots_receive.append(row[1] or 0)
-                all_bots_send.append(row[2] or 0)
-                all_bots_user_count.append(row[3] or 0)
-                all_bots_group_count.append(row[4] or 0)
-                all_bots_image.append(row[5] or 0)
-                all_bots_command.append(row[6] or 0)
-            else:
-                all_bots_receive.append(0)
-                all_bots_send.append(0)
-                all_bots_user_count.append(0)
-                all_bots_group_count.append(0)
-                all_bots_image.append(0)
-                all_bots_command.append(0)
+            # 指定机器人命中
+            if (bot_id is None or row_bot_id == bot_id) and (bot_self_id is None or row_bot_self_id == bot_self_id):
+                bot_by_date[date_val] = [
+                    recv or 0,
+                    send or 0,
+                    ucnt or 0,
+                    gcnt or 0,
+                    img or 0,
+                    cmd or 0,
+                ]
+
+        def fill(values_by_date: Dict[Any, List[int]], idx: int) -> List[int]:
+            return [(values_by_date[d][idx] if d in values_by_date else 0) for d in date_list]
 
         result = {
-            "all_bots_receive": all_bots_receive,
-            "all_bots_send": all_bots_send,
-            "all_bots_user_count": all_bots_user_count,
-            "all_bots_group_count": all_bots_group_count,
-            "all_bots_image": all_bots_image,
-            "all_bots_command": all_bots_command,
+            "all_bots_receive": fill(total_by_date, 0),
+            "all_bots_send": fill(total_by_date, 1),
+            "all_bots_user_count": fill(total_by_date, 2),
+            "all_bots_group_count": fill(total_by_date, 3),
+            "all_bots_image": fill(total_by_date, 4),
+            "all_bots_command": fill(total_by_date, 5),
         }
 
         if bot_id is None and bot_self_id is None:
             return result
 
-        # 查询2: 指定机器人数据
-        filtered_query = select(cls).where(cls.date >= thirty_days_ago).where(cls.date < today).order_by(col(cls.date))
-        # 动态添加过滤条件
-        if bot_id:
-            filtered_query = filtered_query.where(cls.bot_id == bot_id)
-        if bot_self_id:
-            filtered_query = filtered_query.where(cls.bot_self_id == bot_self_id)
-
-        filtered_rows = (await session.execute(filtered_query)).scalars().all()
-
-        # 处理指定机器人数据，填充缺失日期为0
-        filtered_map = {row.date: row for row in filtered_rows}
-        bot_receive = []
-        bot_send = []
-        bot_image = []
-        bot_command = []
-        bot_user_count = []
-        bot_group_count = []
-        for d in date_list:
-            row = filtered_map.get(d)
-            bot_receive.append(getattr(row, "receive", 0) if row else 0)
-            bot_send.append(getattr(row, "send", 0) if row else 0)
-            bot_image.append(getattr(row, "image", 0) if row else 0)
-            bot_command.append(getattr(row, "command", 0) if row else 0)
-            bot_user_count.append(getattr(row, "user_count", 0) if row else 0)
-            bot_group_count.append(getattr(row, "group_count", 0) if row else 0)
-
         result.update(
             {
-                "bot_receive": bot_receive,
-                "bot_send": bot_send,
-                "bot_image": bot_image,
-                "bot_command": bot_command,
-                "bot_user_count": bot_user_count,
-                "bot_group_count": bot_group_count,
+                "bot_receive": fill(bot_by_date, 0),
+                "bot_send": fill(bot_by_date, 1),
+                "bot_user_count": fill(bot_by_date, 2),
+                "bot_group_count": fill(bot_by_date, 3),
+                "bot_image": fill(bot_by_date, 4),
+                "bot_command": fill(bot_by_date, 5),
             }
         )
-
         return result
 
     @classmethod
