@@ -6,7 +6,8 @@ AI Memory APIs
 """
 
 import asyncio
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Tuple, Literal, Optional
+from datetime import datetime
 
 from fastapi import Depends
 from pydantic import Field, BaseModel
@@ -14,11 +15,21 @@ from sqlmodel import col, func, delete, select
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
+from gsuid_core.ai_core.memory import (
+    observe,
+    get_ingestion_worker,
+    parse_iso_or_unix_timestamp,
+)
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.base_models import async_maker
+from gsuid_core.webconsole._local_test_gate import (
+    LOCAL_TEST_MODE,
+    require_local_test,
+    require_auth_or_local_test,
+)
 from gsuid_core.ai_core.memory.database.models import (
     AIMemEdge,
     AIMemEntity,
@@ -55,6 +66,52 @@ class MemorySearchRequest(BaseModel):
     top_k: int = Field(default=10, ge=1, le=50, description="返回结果数量上限")
     enable_system2: bool = Field(default=True, description="是否启用 System-2 分层图遍历")
     enable_user_global: bool = Field(default=False, description="是否联合查询用户跨群画像")
+
+
+class BatchObserveTurn(BaseModel):
+    """批量摄入单条 turn"""
+
+    role: Literal["user", "assistant"] = Field(..., description="发言者角色")
+    content: str = Field(..., min_length=1, description="消息原文")
+    timestamp: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="可选时间戳（ISO8601 / Unix 数字），用于回填 BEAM-10M 等时序探针",
+    )
+
+
+class BatchObserveRequest(BaseModel):
+    """批量摄入请求（评测 / 回灌场景）。
+
+    与 ``/api/chat_with_history`` 行为上的差异：
+    - 不创建 Agent、不调用 LLM 生成回答，纯摄入；
+    - 接受 turn 级 ``timestamp`` 用于回填事件时间；
+    - 单次可投递大量 turn（受 ``_observation_queue`` maxsize=10000 约束，建议 < 5k/批）；
+    - 末尾可选 ``flush`` + ``trigger_rebuild``，二者均**同步等待**完成后才返回。
+
+    注意：
+    - 仅支持 ``scope_type=user_global | group``；``user_in_group`` 暂未对接。
+    - ``role=assistant`` 的 turn 会被路由到 ``self:{bot_id}`` SELF scope 走轻量摄入
+      （仅 Episode），与 ``scope_type`` 字段对应的 user_global/group scope 分开存储。
+    - 端点默认 404，需开启 ``GSUID_LOCAL_TEST_MODE=1`` 才能调用（与 chat_with_history 对齐）；
+      若设了 ``GSUID_LOCAL_TEST_TOKEN``，还需带 ``X-Local-Test-Token`` 请求头。
+    """
+
+    user_id: str = Field(..., min_length=1, max_length=64, description="用户 ID（user_global 场景的主键）")
+    scope_type: str = Field(
+        default="user_global",
+        description="scope 类型：user_global / group",
+    )
+    group_id: Optional[str] = Field(default=None, max_length=64, description="scope_type=group 时必填")
+    bot_self_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Bot 自 ID；为空时默认 'ai'；用于 SELF scope 与黑名单匹配",
+    )
+    observer_blacklist: Optional[List[str]] = Field(default=None, description="群组黑名单")
+    turns: List[BatchObserveTurn] = Field(..., min_length=1, description="待摄入 turn 列表")
+    flush: bool = Field(default=True, description="末尾是否调用 worker.flush_all() 同步等待摄入完成")
+    trigger_rebuild: bool = Field(default=False, description="flush 后是否同步等待 hiergraph 重建完成")
 
 
 class MemoryClearRequest(BaseModel):
@@ -161,6 +218,128 @@ async def search_memory(
         return {
             "status": 1,
             "msg": f"记忆检索失败: {str(e)}",
+            "data": None,
+        }
+
+
+# ─────────────────────────────────────────────
+# 1.5 批量摄入 API（评测 / 回灌专用，无需 web 控制台鉴权，但受 local-test 守卫保护）
+# ─────────────────────────────────────────────
+
+
+@app.post("/api/ai/memory/batch_observe", include_in_schema=LOCAL_TEST_MODE)
+async def batch_observe(
+    req: BatchObserveRequest,
+    _gate: None = Depends(require_local_test),
+) -> Dict[str, Any]:
+    """批量摄入多轮对话到记忆观测队列。
+
+    与 ``/api/chat_with_history`` 的差别：仅摄入，不创建 Agent、不调用 LLM、
+    不污染 ChatSession；适合 BEAM-10M / LongMemEval 等大批量回灌场景。
+
+    鉴权：默认 404，需开启 ``GSUID_LOCAL_TEST_MODE=1``（可选 ``GSUID_LOCAL_TEST_TOKEN``）。
+    与 ``/api/chat_with_history`` 共用同一守卫，避免生产环境被裸调。
+
+    Args:
+        req: BatchObserveRequest，详见 Pydantic 文档。
+
+    Returns:
+        status: 0 成功 / 1 失败
+        data: {observed, dropped, ts_failures, scope_key, flush, rebuild}
+    """
+    try:
+        # ``bot_self_id`` 仅用于 SELF scope 与黑名单匹配；评测场景通常不需要，
+        # 默认值 "ai" 足够。
+        bot_id = req.bot_self_id or "ai"
+        obs_blacklist = (
+            req.observer_blacklist
+            if req.observer_blacklist is not None
+            else list(memory_config.observer_blacklist or [])
+        )
+
+        # 一次性定出 scope_type / scope_id / group_id，并就地收窄 group_id 非空，
+        # 让后续 make_scope_key(scope_id: str) 不再吃到 ``str | None``
+        scope_norm = (req.scope_type or "user_global").lower()
+        if scope_norm == "group":
+            group_id = req.group_id
+            if not group_id:
+                return {
+                    "status": 1,
+                    "msg": "scope_type=group 时必须填写 group_id",
+                    "data": None,
+                }
+            scope_type = ScopeType.GROUP
+            scope_id = group_id
+        elif scope_norm == "user_global":
+            group_id = None
+            scope_type = ScopeType.USER_GLOBAL
+            scope_id = req.user_id
+        else:
+            return {
+                "status": 1,
+                "msg": f"非法 scope_type: {req.scope_type}（仅支持 user_global / group）",
+                "data": None,
+            }
+
+        # 解析每条 turn 的可选 timestamp，失败时累计 ts_failures（不静默吞）
+        parsed_turns: List[Tuple[BatchObserveTurn, Optional[datetime]]] = []
+        ts_failures = 0
+        for turn in req.turns:
+            ts_obj = parse_iso_or_unix_timestamp(turn.timestamp)
+            if turn.timestamp is not None and ts_obj is None:
+                ts_failures += 1
+            parsed_turns.append((turn, ts_obj))
+
+        observed = 0
+        dropped = 0
+        for turn, ts_obj in parsed_turns:
+            # Pydantic min_length=1 已拦截空 content，strip 仅清掉首尾空白
+            content = turn.content.strip()
+            if not content:
+                dropped += 1
+                continue
+            # role 已被 Pydantic Literal 收窄为 "user" | "assistant"
+            speaker_id = f"__assistant_{bot_id}__" if turn.role == "assistant" else str(req.user_id)
+
+            await observe(
+                content=content,
+                speaker_id=speaker_id,
+                group_id=group_id,
+                bot_self_id=bot_id,
+                observer_blacklist=obs_blacklist,
+                message_type="group_msg" if scope_type == ScopeType.GROUP else "private_msg",
+                timestamp=ts_obj,
+            )
+            observed += 1
+
+        scope_key = make_scope_key(scope_type, scope_id)
+
+        if req.flush:
+            worker = get_ingestion_worker()
+            if worker is not None:
+                await worker.flush_all()
+
+        if req.trigger_rebuild:
+            # 同步等待重建完成（与 flush 同步语义一致）：评测 probe 紧随其后，
+            # 用 create_task 会让检索早于建图完成而漏召回。仅评测端点，可放心阻塞。
+            await rebuild_task(scope_key)
+
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "observed": observed,
+                "dropped": dropped,
+                "ts_failures": ts_failures,
+                "scope_key": scope_key,
+                "flush": req.flush,
+                "rebuild": req.trigger_rebuild,
+            },
+        }
+    except _RUNTIME_ERRORS as e:
+        return {
+            "status": 1,
+            "msg": f"批量摄入失败: {str(e)}",
             "data": None,
         }
 
@@ -1276,7 +1455,7 @@ async def get_hiergraph_status(
 async def trigger_hiergraph_rebuild(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
-    _: Dict = Depends(require_auth),
+    _: Optional[Dict] = Depends(require_auth_or_local_test),
 ) -> Dict:
     """
     手动触发分层图重建（评测模式使用）
@@ -1869,7 +2048,7 @@ async def clear_group_memory(
 async def clear_user_global_memory(
     user_id: str,
     dry_run: bool = False,
-    _: Dict = Depends(require_auth),
+    _: Optional[Dict] = Depends(require_auth_or_local_test),
 ) -> Dict:
     """
     清空某个用户的跨群全局记忆画像

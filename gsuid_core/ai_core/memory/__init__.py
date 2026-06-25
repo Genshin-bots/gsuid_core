@@ -19,7 +19,12 @@ from .scope import ScopeType, make_scope_key
 from .config import memory_config
 from .startup import *  # noqa: F401, F403
 from .startup import get_ingestion_worker
-from .observer import ObservationRecord, observe, get_observation_queue
+from .observer import (
+    ObservationRecord,
+    observe,
+    get_observation_queue,
+    parse_iso_or_unix_timestamp,
+)
 from .database.clear_ops import (
     clear_group_memories,
     clear_user_global_memories,
@@ -34,6 +39,7 @@ __all__ = [
     "observe",
     "get_observation_queue",
     "ObservationRecord",
+    "parse_iso_or_unix_timestamp",
     "dual_route_retrieve",
     "MemoryContext",
     "get_ingestion_worker",

@@ -24,21 +24,27 @@ Chat With History API
 """
 
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
+
+from fastapi import Depends
 
 from gsuid_core.bot import _Bot
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
+from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+from gsuid_core.ai_core.memory.observer import parse_iso_or_unix_timestamp
+from gsuid_core.webconsole._local_test_gate import LOCAL_TEST_MODE, require_local_test
+from gsuid_core.ai_core.memory.ingestion.hiergraph import rebuild_task
 
 
-@app.post("/api/chat_with_history")
-async def chatWithHistory(req: Dict):
+@app.post("/api/chat_with_history", include_in_schema=LOCAL_TEST_MODE)
+async def chatWithHistory(
+    req: Dict,
+    _gate: Optional[None] = Depends(require_local_test),
+):
     """
-    带历史对话的 AI 聊天接口
+    带历史对话的 AI 聊天接口（仅本地测试，默认 404）。
     """
-
-    return None
-
     from gsuid_core.bot import Bot
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.memory.config import memory_config
@@ -57,6 +63,8 @@ async def chatWithHistory(req: Dict):
     # 请求级别的检索控制参数（可选，默认 None 表示使用全局配置）
     enable_observer_override = req.get("enable_observer")  # None/True/False
     enable_system2_override = req.get("enable_system2")  # None/True/False
+    # 请求级别的显式 rebuild 触发（与 batch_observe 行为对齐）
+    trigger_rebuild = bool(req.get("trigger_rebuild", False))
 
     if not message:
         return {"status_code": -101, "data": None, "error": "message is required"}
@@ -101,6 +109,9 @@ async def chatWithHistory(req: Dict):
                 else:
                     continue
 
+                # 评测侧 turn['timestamp'] → ISO8601 / Unix；非 str/数字内部已返回 None
+                ts_parsed = parse_iso_or_unix_timestamp(turn.get("timestamp"))
+
                 await observe(
                     content=content,
                     speaker_id=speaker,
@@ -108,6 +119,7 @@ async def chatWithHistory(req: Dict):
                     bot_self_id=bot_self_id_str,
                     observer_blacklist=obs_blacklist,
                     message_type=msg_type,
+                    timestamp=ts_parsed,
                 )
 
             # 同步等待摄入完成：立即 flush 所有 buffer
@@ -115,17 +127,13 @@ async def chatWithHistory(req: Dict):
             if worker is not None:
                 await worker.flush_all()
 
-            # 评测模式下手动触发分层图重建（延迟到全部摄入完成后统一重建）
-            if memory_config.eval_mode:
-                from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-                from gsuid_core.ai_core.memory.ingestion.hiergraph import rebuild_task
-
-                # 根据 user_id 生成 scope_key 并触发重建
+            # 评测模式或请求显式 trigger_rebuild 时手动触发分层图重建
+            if memory_config.eval_mode or trigger_rebuild:
                 scope_key = make_scope_key(
                     ScopeType.USER_GLOBAL if not group_id else ScopeType.GROUP,
-                    str(user_id) if group_id else str(user_id),
+                    str(group_id) if group_id else str(user_id),
                 )
-                logger.info(f"🧠 [Memory] 评测模式，手动触发分层图重建 scope_key={scope_key}")
+                logger.info(f"🧠 [Memory] 手动触发分层图重建 scope_key={scope_key}")
                 asyncio.create_task(rebuild_task(scope_key))
 
         agent = create_agent(
@@ -169,49 +177,12 @@ async def chatWithHistory(req: Dict):
         # 构建 RAG 上下文（历史对话 + 长期记忆）
         rag_context = ""
 
-        """
-        if history:
-            # 将 history 转为 HistoryManager 兼容的 MessageRecord 格式用于格式化
-            from gsuid_core.message_history import MessageRecord
-
-            history_records = []
-            for msg in agent.history:  # 直接遍历 agent.history
-                if isinstance(msg, ModelRequest):
-                    for part in cast(list, msg.parts):
-                        if isinstance(part, UserPromptPart):
-                            content = part.content
-                            if isinstance(content, str) and content:
-                                history_records.append(
-                                    MessageRecord(
-                                        role="user",
-                                        content=content,
-                                        user_id=user_id,
-                                    )
-                                )
-                elif isinstance(msg, ModelResponse):
-                    for part in cast(list, msg.parts):
-                        if isinstance(part, TextPart) and part.content:
-                            history_records.append(
-                                MessageRecord(
-                                    role="assistant",
-                                    content=part.content,
-                                    user_id="",
-                                )
-                            )
-
-            if history_records:
-                history_context = format_history_for_agent(
-                    history=history_records,
-                    current_user_id=user_id,
-                )
-                if history_context:
-                    rag_context = f"{history_context}\n"
-        """
-
         # 构建记忆上下文（基于 user_id / group_id 检索）
+        # 提前初始化以保证 enable_retrieval=False 分支下 memory_ctx 不为 unbound
         memory_context_text = ""
+        memory_ctx = ""
         if memory_config.enable_retrieval:
-            logger.info(f"[dual_route_retrieve] user_id={repr(str(user_id))}")
+            logger.info(f"[dual_route_retrieve] user_id={user_id}")
             # 优先使用请求级别的 override 值
             _enable_system2 = (
                 enable_system2_override if enable_system2_override is not None else memory_config.enable_system2

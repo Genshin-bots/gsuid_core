@@ -24,6 +24,63 @@ from dataclasses import dataclass
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
 
+# 评测侧时间戳格式表：ISO8601 / Unix / LongMemEval / BEAM-10M，全部失败兜底 None。
+# 与 eval/BEAM_10M/run_beam_eval.py:parse_time_anchor 对齐，保证两侧可互换。
+_TIMESTAMP_STRPTIME_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M",
+    "%Y/%m/%d %H:%M",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%B-%d-%Y",
+    "%b-%d-%Y",
+    "%d-%B-%Y",
+    "%d-%b-%Y",
+    # LongMemEval ``2023/05/30 (Tue) 23:40``：先剥 ``(Weekday)`` 再走 ``%Y/%m/%d %H:%M``。
+)
+_LONGMEMEVAL_WEEKDAY_RE = re.compile(r"\s*\([A-Za-z]{3,9}\)\s*")
+
+
+def parse_iso_or_unix_timestamp(raw: int | float | str | None) -> Optional[datetime]:
+    """ISO8601 / Unix / 评测时间戳 → datetime（强制 UTC）。
+
+    评测用统一入口：BEAM-10M ``time_anchor`` / LongMemEval ``question_date`` /
+    LongMemEval ``haystack_dates`` / chat_with_history ``turn.timestamp``。失败返回 None。
+    """
+    if isinstance(raw, bool):
+        # bool 是 int 的子类，必须先排除否则会被当 Unix 时间戳
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        except (OSError, ValueError, OverflowError):
+            return None
+    if isinstance(raw, str) and raw:
+        s = raw.strip()
+        if not s:
+            return None
+        # 1) ISO8601：``Z`` 换 ``+00:00`` 后 fromisoformat（不认 ``/``，留给 strptime）
+        s_iso = s.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(s_iso)
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        except (TypeError, ValueError, OSError):
+            pass
+        # 2) 非标准格式：剥掉 LongMemEval 的 ``(Weekday)`` 段后逐个 strptime
+        s_clean = _LONGMEMEVAL_WEEKDAY_RE.sub(" ", s).strip()
+        for fmt in _TIMESTAMP_STRPTIME_FORMATS:
+            try:
+                dt = datetime.strptime(s_clean, fmt)
+                return dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
+    return None
+
+
 # 全局消息队列（线程安全，支持跨线程通信）
 _observation_queue: sync_queue.Queue = sync_queue.Queue(maxsize=10_000)
 
@@ -60,20 +117,8 @@ _HIGH_SIGNAL_RE = re.compile(
 # 情绪兜底：明显情绪词命中则至少 HIGH，便于后续安慰能召回背景
 _EMOTION_RE = re.compile(r"(难过|崩溃|害怕|开心|生气|伤心|沉船|破防|焦虑|抑郁|想哭|绝望|委屈|孤独)")
 
-# 纠错 / 偏好意图探测（纯规则零 LLM，**召回预过滤 + flush 时机**，非蒸馏门控）：命中表示
-# 用户**可能**在纠正/约束 Agent 的行为、工具调用或输出格式（如"不对，应该用竖图""以后别用
-# 这个接口""下次记得按我时区"）。仅在 enable_preference_memory 开启时被消费，命中则强制 HIGH
-# 价值（确保该条进 high_records、被实体抽取 LLM 看到）+ 触发即时 flush。
-# **是否真的蒸馏成偏好规则，已改由实体抽取 LLM 顺手判的 has_preference 标志位在摄入端裁决**
-# （worker._extract_and_upsert_from_episode Step 7.5），故此处正则可偏宽（误命中仅多一次
-# 强制 HIGH/提前 flush，无额外 LLM 成本），漏网的自然口吻纠正也能被 LLM 标志位兜回。
-#
-# 强触发分两类（见 detect_correction_intent）：
-# - _STRONG_CORRECTION_RE：**自带行为指向**的显式纠正/指令（"应该用/下次记得/以后别/改用…"
-#   / "传错/用错"等动词+错组合 / "记住…(行为词)"），单独命中即算。
-# - _AMBIGUOUS_CORRECTION_RE：**歧义词**（"错了/不对/不是这样"）单独命中**不算**——
-#   "我考试错了""他这么说不对我"等纯陈述会误命中，须叠加 _BEHAVIOR_DIRECTED_RE 二级门，
-#   与"记住/记得"弱触发同等处理（见 _WEAK_CORRECTION_RE）。
+# 纠错 / 偏好意图探测（纯规则零 LLM，仅召回预过滤 + flush 时机，非蒸馏门控）。
+# 真正的偏好蒸馏由 worker._extract_and_upsert_from_episode 的 has_preference 标志位裁决。
 _STRONG_CORRECTION_RE = re.compile(
     r"(不是这样|不是这个|搞错|弄错|传错|用错|写错|记错"
     r"|应该(用|是|改|设|填|为)|应当用|正确的(是|应该)|我说的是|我要的是|我想要的是"
@@ -83,11 +128,8 @@ _STRONG_CORRECTION_RE = re.compile(
     r"|don'?t\s+use|should\s+(be|use)|next\s+time|remember\s+to)",
     re.IGNORECASE,
 )
-# 歧义纠正词：单独命中易混入纯陈述（"算错了""话说错了""不对啊你"），须叠加行为指向二级门。
+# 歧义/弱触发词：单独命中易混入纯陈述，须叠加 _BEHAVIOR_DIRECTED_RE 二级门才算纠错。
 _AMBIGUOUS_CORRECTION_RE = re.compile(r"(不对|错了)")
-
-# 弱触发："记住/记得/别忘了"极易混入纯陈述事实（"记住今天我生日"），单独命中**不算**纠错——
-# 须再叠加一道"是否指向助手行为/输出/工具/语义约定"的廉价二级门（命中二者才算）。
 _WEAK_CORRECTION_RE = re.compile(r"(记住|记得|别忘了|别忘)")
 _BEHAVIOR_DIRECTED_RE = re.compile(
     r"(你|AI|助手|机器人|回复|输出|回答|格式|排版|语气|风格|调用|工具|接口|参数|搜索"
@@ -249,6 +291,7 @@ async def observe(
     bot_self_id: str,
     observer_blacklist: list[str],
     message_type: str = "group_msg",
+    timestamp: Optional[datetime] = None,
 ) -> None:
     """向观察队列投递一条消息记录。
 
@@ -257,6 +300,10 @@ async def observe(
     Bot 自身发言（speaker_id 以 ``__assistant_`` 开头）会被路由到 SELF scope
     （``self:{bot_self_id}``）做轻量摄入：只写 Episode、value_tier=LOW，
     不进入群组事实图谱，从根源杜绝"Bot 戏言污染群记忆"（C6）。
+
+    ``timestamp`` 为 None 时使用 ``datetime.now(timezone.utc)``；非 None 时
+    透传到 ``AIMemEpisode.valid_at`` / Qdrant ``valid_at_ts``，用于 BEAM-10M 等
+    时序探针按 ``time_anchor`` 回填事件时间。
     """
     from .scope import ScopeType, make_scope_key
 
@@ -291,7 +338,7 @@ async def observe(
         speaker_id=speaker_id,
         group_id=group_id,
         scope_key=scope_key,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=timestamp if timestamp is not None else datetime.now(timezone.utc),
         message_type=message_type,
         value_tier=value_tier,
         is_correction=is_correction,
@@ -299,21 +346,22 @@ async def observe(
 
     try:
         _observation_queue.put_nowait(record)
-        # 上报观察入队统计
+        # 上报观察入队统计（统计上报失败不能影响主流程）
         try:
             from gsuid_core.ai_core.statistics import statistics_manager
 
             statistics_manager.record_memory_observation()
-        except Exception:
+        except (ImportError, AttributeError):
+            # statistics 模块未注册 / API 不存在
             pass
     except sync_queue.Full:
         # 队列满时丢弃最老的一条，保证新消息不丢失
         try:
             _observation_queue.get_nowait()
             _observation_queue.put_nowait(record)
-        except Exception:
-            logger.warning("Memory observation queue overflow, dropping message")
-
+        except sync_queue.Empty:
+            # 极端并发：get 与 put 之间被其它线程抢先；放弃本条
+            logger.warning("Memory observation queue race; dropping message")
     # 纠错即时写快路径（受 enable_preference_memory 前置）：命中纠错的 scope 走优先 flush
     # （带 debounce），让数分钟内的"下一次"请求即可召回纠错偏好，而非等 batch 大窗。
     if is_correction and memory_config.preference_immediate_flush:
@@ -323,7 +371,8 @@ async def observe(
             worker = get_ingestion_worker()
             if worker is not None:
                 worker.request_priority_flush(scope_key)
-        except Exception as e:
+        except (ImportError, AttributeError, RuntimeError) as e:
+            # worker 未启动 / API 变更 / 事件循环未就绪
             logger.debug(f"🧠 [Memory] 纠错即时 flush 触发失败: {e}")
 
 
