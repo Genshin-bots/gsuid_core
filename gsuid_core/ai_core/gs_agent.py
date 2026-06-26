@@ -263,6 +263,9 @@ class GsCoreAIAgent:
         # L5 上下文增强检索：最近几轮用户原话，拼进工具向量检索 query，
         # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
         self._recent_user_texts: List[str] = []
+        # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时
+        # 故障重试重发，会让 C 端收到两段相同的话。每个用户轮次在 _execute_run 重置。
+        self._run_sent_texts: set[str] = set()
 
         self.model = openai_chat_model
         if self.model is None:
@@ -541,6 +544,10 @@ class GsCoreAIAgent:
         每次重试都复用未被改写的 ``self.history``（成功后才追加），从干净状态重跑。
         """
         from gsuid_core.ai_core.statistics import statistics_manager
+
+        # 跨重试共享、按用户轮次重置：重试重跑 _execute_run_once 不会重发已送达的段；
+        # 新一轮 run 则允许合法地再说同样的话。
+        self._run_sent_texts = set()
 
         for attempt in range(1, _MAX_RUN_ATTEMPTS + 1):
             try:
@@ -1086,12 +1093,18 @@ class GsCoreAIAgent:
                                 self._session_logger.log_text_output(_text)
                                 if _text in SILENCE_MARKERS:
                                     logger.info(f"🧠 [GsCoreAIAgent] 检测到沉默标记 '{_text}'，跳过发送")
+                                elif _text in self._run_sent_texts:
+                                    # 本轮已发过完全相同的段：模型跨轮重复最终答复 / 重试重发，
+                                    # 跳过避免 C 端收到两段相同的话。
+                                    logger.debug(f"🧠 [GsCoreAIAgent] 跳过重复文本(本轮已发): {_text[:40]!r}")
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的
                                     # async context，触发 pydantic_graph 的 athrow/cancel scope
                                     # 错误。必须在循环体内吞掉发送侧的故障。
                                     try:
                                         await send_chat_result(bot, _text, ev=ev)
+                                        # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
+                                        self._run_sent_texts.add(_text)
                                     except Exception as _e:
                                         logger.debug(f"🧠 [GsCoreAIAgent] 文本发送失败: {_e}")
 

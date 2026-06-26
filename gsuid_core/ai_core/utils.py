@@ -454,6 +454,9 @@ def _strip_persona_markdown(text: str) -> str:
     if _looks_like_tool_table(text):
         return text
     text = re.sub(r"\*{1,3}([^*\n]+)\*{1,3}", r"\1", text)  # **x** / *x* → x
+    # 整行舞台旁白：整行仅一个 （…） 且括号内 ≥4 字（小说式动作/神态描写），连换行一起删。
+    # 阈值 4 放过 （笑）（误）（脸红） 这类真·口语 tone，只清"（眼睛弯成月牙）"式叙事旁白。
+    text = re.sub(r"(?m)^[ \t]*[（(][^（）()]{4,}[）)][ \t]*\n?", "", text)
     text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.M)  # 标题
     text = re.sub(r"^\s{0,3}[-*>]\s+", "", text, flags=re.M)  # 列表 / 引用
     return text
