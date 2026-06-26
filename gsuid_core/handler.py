@@ -531,18 +531,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         logger.trace("[命令触发] [on_message]", command=message)
         coro = trigger.func(bot, message)
         func_name = getattr(coro, "__qualname__", str(coro))
-        trace_ctx = TraceContext(
-            trace_id=_event.task_id,
-            short_id=_event.task_id[:8],
-            command=_event.command or trigger.keyword or "",
-            user_id=_event.user_id,
-            group_id=_event.group_id,
-            bot_id=_event.bot_id,
-            session_id=_event.session_id,
-            start_time=time.perf_counter(),
-            start_ts=time.time(),
-        )
-        task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm, trace_context=trace_ctx)
+        # on_message 被动监听每条消息必触发，挂 trace 会刷屏 [TraceStart]/[TraceEnd]
+        # 与 JSONL 归档，故仅命令触发器进追踪体系（#228）。
+        task_ctx = TaskContext(coro=coro, name=func_name, priority=_event.user_pm)
         ws.queue.put_nowait(task_ctx)
 
     if len(command_triggers) >= 1:
