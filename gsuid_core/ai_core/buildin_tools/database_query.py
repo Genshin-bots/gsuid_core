@@ -12,6 +12,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.database.models import UserFavorability
+from gsuid_core.ai_core.configs.ai_config import memory_config
 
 
 @ai_tools(category="buildin")
@@ -19,7 +20,7 @@ async def query_user_memory(
     ctx: RunContext[ToolContext],
     query: str = "",
     user_id: Optional[str] = None,
-    top_k: int = 20,
+    top_k: Optional[int] = None,
 ) -> str:
     """查询关于某个用户/当前对话的已知信息：相关记忆片段、已沉淀的事实，以及好感度。
 
@@ -33,7 +34,7 @@ async def query_user_memory(
         query: 想检索的内容（自然语言），如"上周做了什么""用户的口味偏好"。
             留空则返回该用户当前最相关的近期记忆与事实。
         user_id: 可选，指定用户ID，默认为当前对话用户。
-        top_k: 检索召回条数上限，默认 20。
+        top_k: 检索召回条数上限，留空(None)时取全局配置 query_tool_top_k。
 
     Returns:
         合并文本：相关记忆/事实 + 好感度概览。
@@ -42,6 +43,12 @@ async def query_user_memory(
         >>> await query_user_memory(ctx, query="上周聊过的旅行计划")
         >>> await query_user_memory(ctx)  # 我对当前用户都了解些什么
     """
+    if top_k is None:
+        top_k = memory_config.get_config("query_tool_top_k").data
+
+    if top_k is None:
+        top_k = 10
+
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
     # Event.user_id 为已声明字段，直接取；显式传入的 user_id 优先

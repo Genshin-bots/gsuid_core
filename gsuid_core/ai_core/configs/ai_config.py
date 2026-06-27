@@ -18,6 +18,11 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定是否启用AI服务",
         False,
     ),
+    "AgentBase": GsDivider(
+        "额外配置",
+        "额外配置",
+        "额外配置",
+    ),
     "hf_endpoint": GsStrConfig(
         "HuggingFace 服务器地址",
         "指定 HuggingFace 服务器地址",
@@ -106,12 +111,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "MCP",
         options=["MCP"],
     ),
-    "multi_agent_lenth": GsIntConfig(
-        "最多允许AI思考轮数",
-        "指定多轮思考调用工具的最大递归深度, 注意: 多轮对话会占用更多的token, 请根据实际情况调整",
-        20,
-        options=[9, 12, 20, 30],
-    ),
     "white_list": GsListStrConfig(
         "白名单",
         "指定白名单, 只有白名单中的用户才能使用AI服务",
@@ -123,11 +122,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定黑名单, 黑名单中的用户将不能使用AI服务",
         [],
         options=[],
-    ),
-    "enable_deepseek_rp": GsBoolConfig(
-        "启用DS专属角色扮演模式",
-        "用于在思考模式下切换思维链风格, [文档](https://github.com/victorchen96/deepseek_v4_rolepaly_instruct/blob/main/README.md)",
-        False,
     ),
     "follow_up_window": GsIntConfig(
         "免唤醒续聊窗口(秒)",
@@ -142,6 +136,87 @@ AI_CONFIG: Dict[str, GSC] = {
         "免唤醒续聊从首次硬触发起算的总时长硬天花板, 即使期间用户反复@也不会无限延续, 超过后必须重新@/关键词唤醒。",
         300,
         options=[120, 300, 600, 900],
+    ),
+    "spMode": GsDivider(
+        "Agent 特殊模式",
+        "Agent 特殊模式",
+        "Agent 特殊模式",
+    ),
+    "enable_deepseek_rp": GsBoolConfig(
+        "启用DS专属角色扮演模式",
+        "用于在思考模式下切换思维链风格, [文档](https://github.com/victorchen96/deepseek_v4_rolepaly_instruct/blob/main/README.md)",
+        False,
+    ),
+    "AgentTuning": GsDivider(
+        "Agent 运行调参",
+        "Agent 运行调参",
+        "Agent 运行调参",
+    ),
+    "multi_agent_lenth": GsIntConfig(
+        "最多允许AI思考轮数",
+        "指定多轮思考调用工具的最大递归深度, 注意: 多轮对话会占用更多的token, 请根据实际情况调整",
+        20,
+        options=[9, 12, 20, 30],
+    ),
+    "agent_max_tokens": GsIntConfig(
+        "主对话单次输出Token上限",
+        "主对话(及未显式指定的Agent)单次回复的最大输出Token数, 调大允许更长回复但更费Token",
+        16000,
+        options=[4000, 8000, 16000, 30000, 60000],
+    ),
+    "agent_max_history": GsIntConfig(
+        "对话历史保留条数",
+        "单会话注入模型的最大历史消息条数, 调大可记住更多上文但更费Token、也更易超出模型上下文",
+        15,
+        options=[10, 15, 20, 30, 50],
+    ),
+    "agent_max_run_attempts": GsIntConfig(
+        "核心请求重试次数",
+        "网络抖动/超时/5xx 等瞬时失败时核心回复请求的最大尝试次数(含首次)。内容审核等永久错误不重试",
+        3,
+        options=[1, 2, 3, 5],
+    ),
+    "agent_run_retry_delay": GsFloatConfig(
+        "核心请求重试间隔(秒)",
+        "两次重试之间的等待秒数",
+        3.0,
+        min_value=0.0,
+        max_value=30.0,
+    ),
+    "subagent_max_concurrency": GsIntConfig(
+        "子Agent最大并发数",
+        "同时运行的子Agent(create_subagent)数量上限, 防止并发过多拖垮推理端。修改后需重启生效",
+        3,
+        options=[1, 2, 3, 5, 8],
+    ),
+    "ToolTuning": GsDivider(
+        "工具检索装配调参",
+        "工具检索装配调参",
+        "工具检索装配调参",
+    ),
+    "tool_search_recall": GsIntConfig(
+        "工具向量召回种子数",
+        "每轮按用户消息向量检索装配工具时召回的种子数(再经能力族展开); 弱模型宜调小避免工具过多分散注意力",
+        4,
+        options=[2, 4, 6, 8, 10],
+    ),
+    "tool_extra_pool_max": GsIntConfig(
+        "附加工具池上限",
+        "每轮在保底工具之外, 附加(语境+向量召回)工具池经能力族展开后的总数上限",
+        8,
+        options=[4, 6, 8, 12, 16],
+    ),
+    "tool_context_window": GsIntConfig(
+        "工具检索上下文轮数",
+        "把最近多少轮用户原话拼进工具向量检索query(含本轮), 帮'改成后天吧'这类无独立语义的追问召回正确工具",
+        3,
+        options=[1, 2, 3, 5],
+    ),
+    "web_search_default_limit": GsIntConfig(
+        "Web搜索默认结果数",
+        "web_search_tool 未显式指定时返回的搜索结果条数默认值",
+        10,
+        options=[5, 10, 15, 20],
     ),
 }
 
@@ -400,6 +475,12 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "指定最终检索数量, 可以提高检索精度但会增加性能开销",
         15,
         options=[5, 10, 15, 20],
+    ),
+    "query_tool_top_k": GsIntConfig(
+        "记忆查询工具召回条数",
+        "query_user_memory 工具(主人格主动查记忆)未显式指定时的检索召回条数",
+        20,
+        options=[10, 15, 20, 30],
     ),
     "memory_inject_max_chars": GsIntConfig(
         "记忆注入字符预算",

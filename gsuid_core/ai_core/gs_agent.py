@@ -33,11 +33,8 @@ from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.const import (
-    _RUN_RETRY_DELAY,
-    _MAX_RUN_ATTEMPTS,
     _SKILLS_CREATE_BY,
     _AGENTIC_CREATE_BY,
-    _RECENT_TEXT_WINDOW,
     _STICKY_FAMILY_TURNS,
     STALE_CHAT_REQUEST_TTL,
     _INTENT_TRIGGER_KEYWORDS,
@@ -223,22 +220,25 @@ class GsCoreAIAgent:
         self,
         openai_chat_model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]] = None,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 30000,
+        max_tokens: Optional[int] = None,
         max_iterations: Optional[int] = None,
         persona_name: Optional[str] = None,
-        max_history: int = 20,
+        max_history: Optional[int] = None,
         create_by: str = "LLM",
         task_level: Literal["high", "low"] = "high",
         session_id: Optional[str] = None,
         is_subagent: bool = False,
     ):
+        # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
+        _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
+        _max_tokens: int = max_tokens if max_tokens is not None else ai_config.get_config("agent_max_tokens").data
         self.history: List[ModelMessage] = []
-        self.max_history = max_history
+        self.max_history = _max_history
         self.system_prompt = system_prompt
         self.persona_name = persona_name  # 用于热重载检查
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
-        self.max_tokens = max_tokens
+        self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
 
@@ -623,7 +623,7 @@ class GsCoreAIAgent:
         """核心回复请求的瞬时失败重试包装。
 
         把单次执行交给 ``_execute_run_once``；网络/超时/5xx/529 等瞬时故障会以异常
-        冒泡到这里，等待 ``_RUN_RETRY_DELAY`` 秒后重试，至多 ``_MAX_RUN_ATTEMPTS`` 次，
+        冒泡到这里，等待 ``agent_run_retry_delay`` 秒后重试，至多 ``agent_max_run_attempts`` 次，
         全部失败才按异常类型记录统计并返回错误文案。``UsageLimitExceeded`` 已在
         ``_execute_run_once`` 内走专属兜底总结、不会传到这里，故不会被重试。
         每次重试都复用未被改写的 ``self.history``（成功后才追加），从干净状态重跑。
@@ -634,7 +634,10 @@ class GsCoreAIAgent:
         # 新一轮 run 则允许合法地再说同样的话。
         self._run_sent_texts = set()
 
-        for attempt in range(1, _MAX_RUN_ATTEMPTS + 1):
+        max_attempts: int = ai_config.get_config("agent_max_run_attempts").data
+        retry_delay: float = ai_config.get_config("agent_run_retry_delay").data
+
+        for attempt in range(1, max_attempts + 1):
             try:
                 return await self._execute_run_once(
                     user_message=user_message,
@@ -661,12 +664,11 @@ class GsCoreAIAgent:
                 # 不再消耗剩余重试次数。
                 non_retryable = _is_non_retryable_model_error(e)
 
-                if attempt < _MAX_RUN_ATTEMPTS and not non_retryable:
+                if attempt < max_attempts and not non_retryable:
                     logger.warning(
-                        f"🧠 [PydanticAI] 核心请求第 {attempt}/{_MAX_RUN_ATTEMPTS} 次失败，"
-                        f"{_RUN_RETRY_DELAY}s 后重试: {e}"
+                        f"🧠 [PydanticAI] 核心请求第 {attempt}/{max_attempts} 次失败，{retry_delay}s 后重试: {e}"
                     )
-                    await asyncio.sleep(_RUN_RETRY_DELAY)
+                    await asyncio.sleep(retry_delay)
                     continue
 
                 # 永久性客户端错误是上游对本次输入的明确拒绝（非本服务 bug）：只打一行
@@ -710,7 +712,7 @@ class GsCoreAIAgent:
                 self._session_logger.log_error("agent_error", err_str)
                 return f"执行出错: {err_str}"
 
-        # range(1, _MAX_RUN_ATTEMPTS + 1) 至少一次循环，正常不可达
+        # range(1, max_attempts + 1) 至少一次循环，正常不可达
         return "执行出错: 未知错误"
 
     async def _execute_run_once(
@@ -943,11 +945,11 @@ class GsCoreAIAgent:
                     # 只排除已在保底池的 self/buildin；plugin_dev 等"委派专用"分类由
                     # search_tools 在检索层统一拦截（NON_SEARCHABLE_TOOL_CATEGORIES），
                     # 不必也不应在这里重复声明。
-                    # limit 由 8 降到 4：Reranker 精排后召回质量更高，少而准的种子
-                    # 再经 L4 能力族整族展开即可覆盖需求，避免每轮工具列表膨胀。
+                    # 召回种子数下沉为可配置（tool_search_recall，默认 4）：Reranker 精排后
+                    # 召回质量更高，少而准的种子再经 L4 能力族整族展开即可覆盖需求。
                     extra_tools += await search_tools(
                         query=search_query,
-                        limit=4,
+                        limit=ai_config.get_config("tool_search_recall").data,
                         non_category=["self", "buildin"],
                     )
 
@@ -955,11 +957,11 @@ class GsCoreAIAgent:
                 # 召回族内任一工具即带出整族（剔除与保底重名/族内重复），
                 # 保证"能创建就能改/删"——如召回 add_once_task 即带出
                 # modify/cancel_scheduled_task，避免后续追问"改成后天"时无工具可调。
-                MAX_EXTRA_TOOLS = 8
+                max_extra_tools: int = ai_config.get_config("tool_extra_pool_max").data
                 deduped_extra = expand_tools_to_families(
                     extra_tools,
                     exclude_names=core_names,
-                    max_tools=MAX_EXTRA_TOOLS,
+                    max_tools=max_extra_tools,
                 )
 
                 # 保底工具全部保留；附加工具池已在族展开时限量
@@ -998,7 +1000,8 @@ class GsCoreAIAgent:
 
                 # L5：记录本轮用户原话，供下一轮上下文增强检索（保留窗口内的"上文"）
                 if qy:
-                    keep = max(_RECENT_TEXT_WINDOW - 1, 0)
+                    _text_window: int = ai_config.get_config("tool_context_window").data
+                    keep = max(_text_window - 1, 0)
                     self._recent_user_texts.append(qy)
                     self._recent_user_texts = self._recent_user_texts[-keep:] if keep else []
             else:
@@ -1557,11 +1560,11 @@ class GsCoreAIAgent:
 # 工厂函数
 def create_agent(
     system_prompt: Optional[str] = None,
-    max_tokens: int = 30000,
+    max_tokens: Optional[int] = None,
     max_iterations: Optional[int] = None,
     persona_name: Optional[str] = None,
     create_by: str = "LLM",
-    max_history: int = 20,
+    max_history: Optional[int] = None,
     task_level: Literal["high", "low"] = "high",
     session_id: Optional[str] = None,
     is_subagent: bool = False,
@@ -1572,7 +1575,7 @@ def create_agent(
     Args:
         model_name: 模型名称
         system_prompt: 系统提示词
-        max_tokens: 最大输出 token 数
+        max_tokens: 最大输出 token 数，None 时使用全局配置默认值
         max_iterations: 最大迭代次数限制，None 时使用配置默认值
         persona_name: Persona 名称（用于热重载检测）
         task_level: 任务级别，"high"表示高级任务，"low"表示低级任务

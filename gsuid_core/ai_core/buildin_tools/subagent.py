@@ -33,6 +33,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
+from gsuid_core.ai_core.configs.ai_config import ai_config
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入，
 # 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
@@ -40,8 +41,17 @@ from gsuid_core.ai_core.session_registry import get_ai_session_registry
 # 子Agent最大迭代次数上限，防止死循环
 _SUBAGENT_MAX_ITERATIONS = 3
 
-# 全局限制：同时最多 3 个 Subagent 并发运行
-_subagent_semaphore = asyncio.Semaphore(3)
+# 全局并发上限信号量：首个子Agent调用时按配置 subagent_max_concurrency 懒创建并缓存。
+# 不在导入期读配置（此时配置可能未就绪）；改并发数需重启——给运行中的信号量改容量不安全。
+_subagent_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_subagent_semaphore() -> asyncio.Semaphore:
+    global _subagent_semaphore
+    if _subagent_semaphore is None:
+        _subagent_semaphore = asyncio.Semaphore(ai_config.get_config("subagent_max_concurrency").data)
+    return _subagent_semaphore
+
 
 # create_subagent(agent_profile=...) 转 Kanban 路径同步等待的超时（秒）
 # 主人格被这条工具阻塞，等代理跑完。超时后返回"任务仍在跑，到 webconsole 看进度"。
@@ -102,7 +112,7 @@ async def create_subagent(
 
     logger.info(f"🧠 [Subagent] 启动通用规划执行Agent，任务: {task[:50]}...")
 
-    async with _subagent_semaphore:
+    async with _get_subagent_semaphore():
         # 搜索工具
         tools = await search_tools(
             query=task,
