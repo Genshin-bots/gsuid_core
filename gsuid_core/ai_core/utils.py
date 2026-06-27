@@ -54,6 +54,66 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
     }
 )
 
+# 工具调用标记残留正则（弱模型 / 兼容网关把工具调用当普通文本输出），
+# 详见 _strip_tool_call_artifacts 的 docstring。
+# 成对块：含内部 JSON 参数整体删除
+_TOOL_CALL_BLOCK_PATTERN = re.compile(
+    r"<\s*tool_calls?\s*>.*?<\s*/\s*tool_calls?\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+# 未闭合起始标签：``<tool_call>`` 后紧跟 { / [，交 _strip_unclosed_tool_call_json 配平定界
+_TOOL_CALL_OPEN_TAG_PATTERN = re.compile(
+    r"<\s*tool_calls?\s*>\s*(?=[\[{])",
+    re.IGNORECASE,
+)
+# 残留的完整 / 半截标签碎片；缺前括号那条加 \b，避免切到 ``retool_calls>`` 之类词中
+_TOOL_CALL_TAG_PATTERN = re.compile(
+    r"<\s*/?\s*(?:no_)?tool_calls?\s*>"  # 完整标签 <tool_call> </tool_call> <no_tool_call>
+    r"|\b(?:no_)?tool_calls?\s*>"  # 缺前括号碎片 tool_call> / no_tool_call>
+    r"|<\s*/?\s*(?:no_)?tool_calls?",  # 缺后括号碎片 <tool_call / </tool_call
+    re.IGNORECASE,
+)
+
+
+def _strip_unclosed_tool_call_json(text: str) -> str:
+    """删除"未闭合 <tool_call> + JSON 参数"残留，按括号配平定界、不吞后续正文。
+
+    流式截断会留下 ``<tool_call>{partial`` 这类没有闭合标签的起始标签。用
+    :func:`_find_json_span` 按括号配平切出 JSON：配平（完整）时只删标签+JSON、保留其后
+    正文；不配平（真被截断）时才删到结尾——截断后本就没有后续正文。循环处理多处，每轮
+    至少删掉一个起始标签故必然收敛。
+    """
+    while True:
+        m = _TOOL_CALL_OPEN_TAG_PATTERN.search(text)
+        if m is None:
+            return text
+        json_start = m.end()
+        span = _find_json_span(text[json_start:])
+        if span is None:
+            return text
+        text = text[: m.start()] + text[json_start + len(span) :]
+
+
+def _strip_tool_call_artifacts(text: str) -> str:
+    """剥离泄漏到普通文本里的工具调用控制标记（及其 JSON 参数）残留。
+
+    弱模型 / OpenAI 兼容网关（MiniMax、部分开源模型）有时不走结构化 function calling，
+    而把工具调用以 Hermes/Qwen 风格标签写进文本：``<tool_call>{"name": ...}</tool_call>``；
+    网关解析失败或流式分片拆散标签时，整块乃至半截 ``<tool_call>`` / ``</tool_call>`` /
+    ``<no_tool_call>`` 就残留在 TextPart 里被原样发往 C 端（与 SILENCE_MARKERS 互补：后者
+    只命中整段恰好等于标记，这里处理嵌在文本中的残留）。
+
+    处理顺序：先删成对块（连内部 JSON），再按括号配平删未闭合起始标签+JSON，最后清残留
+    碎片。带 ``"tool_call" not in text`` 快路径，正常消息零正则开销。结构化 ToolCallPart 由
+    pydantic_ai 单独解析、不经过这里；这里只清"本应是工具调用却以文本泄漏"的残渣。
+    """
+    if "tool_call" not in text.lower():
+        return text
+    cleaned = _TOOL_CALL_BLOCK_PATTERN.sub("", text)
+    cleaned = _strip_unclosed_tool_call_json(cleaned)
+    cleaned = _TOOL_CALL_TAG_PATTERN.sub("", cleaned)
+    return cleaned
+
 
 def _find_json_span(text: str) -> Optional[str]:
     """从可能夹带散文/前后缀的文本里，按括号配平切出第一个完整的 JSON 对象或数组。
@@ -485,6 +545,10 @@ async def send_chat_result(
         logger.debug(f"[send_chat_result] 跳过特殊标记: {_trimmed!r}")
         return
 
+    # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts），
+    # 覆盖前摇 / 兜底总结 / 主动消息 / 子 Agent 转述等所有经本函数下发的路径。
+    text = _strip_tool_call_artifacts(text)
+
     # Trace 日志：记录原始输出
     logger.trace(f"[Meme] 原始输出: {text!r}")
 
@@ -904,3 +968,30 @@ def _split_embedded_thinking(
         if content:
             result.append(TextPart(content=content))
     return result
+
+
+def _sanitize_tool_call_artifacts_in_parts(
+    parts: Sequence[ModelResponsePart],
+) -> List[ModelResponsePart]:
+    """清除各 TextPart 泄漏的工具调用标记残留，并丢弃被清空的 TextPart。
+
+    与 :func:`_split_embedded_thinking` 配套，在其拆出内嵌 thinking 之后调用。整体替换
+    ``node.model_response.parts``，使 history、result.output、下发文本三处一并保持干净——
+    避免"这条没发但 history 里留着 <tool_call>，诱导模型下一轮继续这么输出"。
+
+    被清理为空的 TextPart 直接丢弃、不留空串污染 history；但当丢弃会使整条响应不剩任何
+    part 时（响应整段就是泄漏的工具调用），保留一个空 TextPart 占位，规避部分网关
+    "assistant 消息必须有内容"的报错。ToolCallPart / ThinkingPart 原样透传。
+    """
+    kept: List[ModelResponsePart] = []
+    for part in parts:
+        if isinstance(part, TextPart):
+            cleaned = _strip_tool_call_artifacts(part.content)
+            if cleaned != part.content:
+                if not cleaned.strip():
+                    continue  # 整段都是残留 → 丢弃，不留空串
+                part.content = cleaned
+        kept.append(part)
+    if not kept:
+        return [TextPart(content="")]
+    return kept

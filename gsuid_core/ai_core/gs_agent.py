@@ -58,6 +58,7 @@ from gsuid_core.ai_core.utils import (
     _is_non_retryable_model_error,
     _strip_remote_images_from_history,
     _truncate_history_with_tool_safety,
+    _sanitize_tool_call_artifacts_in_parts,
 )
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
@@ -1129,6 +1130,9 @@ class GsCoreAIAgent:
                         # 也补回意图-行为检测所需的 ThinkingPart。原地改写同一 model_response 对象，
                         # 故 history 与 result.output 一并保持干净；ToolCallPart 原样保留，工具执行不受影响。
                         node.model_response.parts = _split_embedded_thinking(node.model_response.parts, _thinking_tags)
+                        # 紧接着清除文本里泄漏的工具调用标记残留（弱模型 / 兼容网关常把工具
+                        # 调用以文本标签输出而非结构化 function calling），整体替换保持三处一致。
+                        node.model_response.parts = _sanitize_tool_call_artifacts_in_parts(node.model_response.parts)
 
                         # 遍历大模型返回的具体片段 (Parts)
                         for part in node.model_response.parts:
