@@ -18,7 +18,7 @@ import hashlib
 from typing import Union, Literal, Optional
 
 from pydantic_ai.messages import ImageUrl
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.logger import logger
@@ -93,7 +93,7 @@ def _understand_cache_put(key: str, value: str) -> None:
 
 def _resolve_native_image_model(
     task_level: Literal["high", "low"],
-) -> Optional[Union[OpenAIChatModel, AnthropicModel]]:
+) -> Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]]:
     """若指定级别的模型在 model_support 中声明了 image，则返回其原生模型实例。
 
     模型原生支持图片时，应直接用大模型的多模态能力（OpenAI / Anthropic 兼容请求）

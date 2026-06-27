@@ -26,7 +26,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.bot import Bot
@@ -74,6 +74,7 @@ from gsuid_core.ai_core.rag.tools import (
 from gsuid_core.ai_core.configs.models import (
     get_model_for_task,
     get_config_name_for_task,
+    get_model_fingerprint_for_task,
 )
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.utils.resource_manager import RM
@@ -219,7 +220,7 @@ class GsCoreAIAgent:
 
     def __init__(
         self,
-        openai_chat_model: Optional[OpenAIChatModel] = None,
+        openai_chat_model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 30000,
         max_iterations: Optional[int] = None,
@@ -271,13 +272,15 @@ class GsCoreAIAgent:
         # 故障重试重发，会让 C 端收到两段相同的话。每个用户轮次在 _execute_run 重置。
         self._run_sent_texts: set[str] = set()
 
-        self.model = openai_chat_model
-        # 记录本会话激活配置全名（provider++name），仅自动解析模型时记录；显式传 model 的
-        # 会话（如固定模型 SubAgent）保持 None 不参与热替换，详见 refresh_model_if_changed。
+        self.model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]] = openai_chat_model
+        # 记录本会话激活配置全名（provider++name）与内容指纹，仅自动解析模型时记录；显式传
+        # model 的会话（如固定模型 SubAgent）保持 None 不参与热替换，详见 refresh_model_if_changed。
         self.model_config_name: Optional[str] = None
+        self.model_config_fingerprint: Optional[str] = None
         if self.model is None:
             self.model = get_model_for_task(task_level)
             self.model_config_name = get_config_name_for_task(task_level)
+            self.model_config_fingerprint = get_model_fingerprint_for_task(task_level)
 
         # 初始化会话日志记录器：所有 Agent 恒有 logger（session_id 已在上方自动派生
         # 兜底），因此 _session_logger 非 Optional，run() 中不再需要 None 守卫。
@@ -350,7 +353,7 @@ class GsCoreAIAgent:
 
     @staticmethod
     async def _aclose_model(
-        model: Optional[Union[OpenAIChatModel, AnthropicModel]],
+        model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]],
     ) -> None:
         """关闭被丢弃模型的底层 HTTP 客户端，释放其独立 httpx 连接池。
 
@@ -369,11 +372,14 @@ class GsCoreAIAgent:
             logger.debug(f"🧠 [GsCoreAIAgent] 旧模型客户端关闭失败（忽略）: {e}")
 
     async def refresh_model_if_changed(self) -> bool:
-        """运行期检测：若本会话 task_level 对应的激活模型配置已切换，则就地热替换 self.model。
+        """运行期检测：本会话 task_level 对应的激活模型配置变化时，就地热替换 self.model。
 
-        解决"网页控制台切换高/低级任务模型后必须 coreclear 清空会话才生效"的问题：存活会话
-        在下一次 run 时即时换到新模型。与 Persona 热重载不同——换模型不应丢失对话历史，因此
-        这里**只替换模型对象、保留 self.history**（仅换"大脑"不换"记忆"），并关闭旧客户端释放连接池。
+        解决"网页控制台改模型后必须 coreclear 清空会话才生效"的问题：存活会话在下一次 run
+        时即时换到新模型。与 Persona 热重载不同——换模型不应丢失对话历史，因此这里**只替换
+        模型对象、保留 self.history**（仅换"大脑"不换"记忆"），并关闭旧客户端释放连接池。
+
+        变化判定用「全名 + 内容指纹」双键：既覆盖"切到另一个配置文件"（全名变），也覆盖
+        "原地改当前配置文件字段(含 request_method/base_url 等)"（全名不变但指纹变）。
 
         仅对"按 task_level 自动解析模型"的会话生效（``model_config_name`` 非 None）；显式绑定
         固定模型的会话（如后台 SubAgent）不受影响。新配置加载失败时沿用原模型，不打断会话。
@@ -385,8 +391,13 @@ class GsCoreAIAgent:
             return False
 
         current = get_config_name_for_task(self.task_level)
-        # 配置被清空（current 为空）或未变化时不动：避免把仍可用的会话打成不可用。
-        if not current or current == self.model_config_name:
+        # 配置被清空（current 为空）时不动：避免把仍可用的会话打成不可用。
+        if not current:
+            return False
+
+        current_fp = get_model_fingerprint_for_task(self.task_level)
+        # 全名与内容指纹都未变才视为无变化；任一变化都触发热替换。
+        if current == self.model_config_name and current_fp == self.model_config_fingerprint:
             return False
 
         # 仅捕获配置非法（空名/未知 provider）这一可预期失败：沿用原模型不打断会话；
@@ -395,7 +406,7 @@ class GsCoreAIAgent:
             new_model = get_model_for_task(self.task_level)
         except ValueError as e:
             logger.warning(
-                f"🧠 [GsCoreAIAgent] 检测到{self.task_level}级模型配置切换为 {current}，但加载失败，沿用原模型: {e}"
+                f"🧠 [GsCoreAIAgent] 检测到{self.task_level}级模型配置变更为 {current}，但加载失败，沿用原模型: {e}"
             )
             return False
 
@@ -403,9 +414,12 @@ class GsCoreAIAgent:
         old_model = self.model
         self.model = new_model
         self.model_config_name = current
+        self.model_config_fingerprint = current_fp
         await self._aclose_model(old_model)
+        # 全名变=换配置文件；全名同指纹变=原地改了当前配置文件字段。
+        change_desc = f"{old} → {current}" if old != current else f"{current}（配置内容已更新）"
         logger.info(
-            f"🧠 [GsCoreAIAgent] 检测到{self.task_level}级模型配置切换 {old} → {current}，"
+            f"🧠 [GsCoreAIAgent] 检测到{self.task_level}级模型配置变更 {change_desc}，"
             f"已为 Session {self.session_id} 热替换模型（保留对话历史，无需 coreclear）"
         )
         return True

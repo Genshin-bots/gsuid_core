@@ -9,10 +9,12 @@
 - 兼容旧格式: 不含 "++" 的名称默认按 "openai" provider 处理
 """
 
+import json
+import hashlib
 from typing import Union, Literal
 
 from pydantic_ai.settings import ModelSettings, ThinkingLevel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -21,11 +23,17 @@ from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 from .ai_config import ai_config
-from .openai_config import get_openai_config
-from .anthropic_config import get_anthropic_config
+from .openai_config import get_openai_config, get_openai_config_dict
+from .anthropic_config import get_anthropic_config, get_anthropic_config_dict
 
 # 配置名称分隔符
 PROVIDER_CONFIG_SEPARATOR = "++"
+
+# OpenAI 请求方式：chat_completions 走 /v1/chat/completions，responses 走 /v1/responses。
+RequestMethod = Literal["chat_completions", "responses"]
+
+# OpenAI 模型对象（两种端点对 gs_agent 接口完全一致，仅底层请求路径不同）。
+OpenAIModel = Union[OpenAIChatModel, OpenAIResponsesModel]
 
 
 def parse_provider_config_name(full_name: str) -> tuple[str, str]:
@@ -96,16 +104,29 @@ def to_thinking_level(value: str) -> ThinkingLevel:
     return THINKING_LEVEL_MAP[value]
 
 
-def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
+def to_request_method(value: str) -> RequestMethod:
+    """将配置中的 request_method 字符串归一为 RequestMethod，未知值回退 chat_completions。"""
+    if value == "responses":
+        return "responses"
+    if value != "chat_completions":
+        logger.warning(f"🧠 [GsCore] 未知的 request_method 配置: {value!r}, 已回退为 chat_completions")
+    return "chat_completions"
+
+
+def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel, RequestMethod]:
     oconfig = get_openai_config(config_name)
-    base_url, api_key, model_name, model_effort = (
+    base_url, api_key, model_name, model_effort, request_method = (
         oconfig.get_config("base_url").data,
         oconfig.get_config("api_key").data[0],
         oconfig.get_config("model_name").data,
         to_thinking_level(oconfig.get_config("model_effort").data),
+        to_request_method(oconfig.get_config("request_method").data),
     )
-    logger.info(f"🧠 [GsCore] 加载 OpenAI 配置: Name: {model_name}, URL: {base_url}, Key: ...{api_key[-4:]}")
-    return base_url, api_key, model_name, model_effort
+    logger.info(
+        f"🧠 [GsCore] 加载 OpenAI 配置: Name: {model_name}, URL: {base_url}, "
+        f"Key: ...{api_key[-4:]}, 请求方式: {request_method}"
+    )
+    return base_url, api_key, model_name, model_effort, request_method
 
 
 def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
@@ -120,21 +141,32 @@ def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, Think
     return base_url, api_key, model_name, model_effort
 
 
-def get_openai_chat_model_by_name(config_name: str) -> "OpenAIChatModel":
-    """根据配置名获取OpenAI Chat Model
+def get_openai_model_by_name(config_name: str) -> OpenAIModel:
+    """根据配置名获取 OpenAI 模型，按 request_method 选择端点。
+
+    chat_completions → OpenAIChatModel(/v1/chat/completions)；
+    responses → OpenAIResponsesModel(/v1/responses)。两者均接受同一 OpenAIProvider，
+    且对 gs_agent 暴露相同接口（client/model_name/system/profile/request_stream）。
 
     Args:
         config_name: 配置文件名（不含扩展名）
     """
-    base_url, api_key, model_name, model_effort = get_openai_config_by_name(config_name)
+    base_url, api_key, model_name, model_effort, request_method = get_openai_config_by_name(config_name)
+
+    provider = OpenAIProvider(api_key=api_key, base_url=base_url)
+    settings = ModelSettings(thinking=model_effort)
+
+    if request_method == "responses":
+        return OpenAIResponsesModel(
+            model_name=model_name,
+            provider=provider,
+            settings=settings,
+        )
 
     return OpenAIChatModel(
         model_name=model_name,
-        provider=OpenAIProvider(
-            api_key=api_key,
-            base_url=base_url,
-        ),
-        settings=ModelSettings(thinking=model_effort),
+        provider=provider,
+        settings=settings,
     )
 
 
@@ -187,7 +219,7 @@ def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfi
 
 def get_model_for_task(
     task_level: Literal["high", "low"],
-) -> Union[OpenAIChatModel, AnthropicModel]:
+) -> Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]:
     """根据任务级别获取对应的模型
 
     Args:
@@ -204,6 +236,30 @@ def get_model_for_task(
     provider, config_name = parse_provider_config_name(full_name)
 
     if provider == "openai":
-        return get_openai_chat_model_by_name(config_name)
+        return get_openai_model_by_name(config_name)
     else:
         return get_anthropic_chat_model_by_name(config_name)
+
+
+def get_model_fingerprint_for_task(task_level: Literal["high", "low"]) -> str:
+    """激活配置的内容指纹（含 request_method）。
+
+    全名相同但配置文件内字段被原地改动（如把 request_method 从 chat_completions 改为
+    responses、或改 base_url/model_name）时指纹随之变化，供存活会话据此热替换模型。
+    无配置时返回空串；取不到配置字典时退回全名，至少保住"切到别的配置文件"这条路径。
+    """
+    full_name = get_config_name_for_task(task_level)
+    if not full_name:
+        return ""
+
+    provider, config_name = parse_provider_config_name(full_name)
+    if provider == "openai":
+        config_dict = get_openai_config_dict(config_name)
+    else:
+        config_dict = get_anthropic_config_dict(config_name)
+
+    if not isinstance(config_dict, dict):
+        return full_name
+
+    payload = json.dumps(config_dict, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

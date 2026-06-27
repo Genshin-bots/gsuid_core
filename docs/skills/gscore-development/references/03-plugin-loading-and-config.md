@@ -161,8 +161,9 @@ def set_config(self, key, value):
 | `ai_mode` | ✅ | 下次消息处理 |
 | `keywords` | ✅ | 下次消息处理 |
 | `inspect_interval` | ⚠️ 需重启巡检 | API 里自动 `stop_for_persona` + `start_for_persona` |
-| `high_level_provider_config_name` / `low_level_provider_config_name`（切换高/低级任务模型） | ✅ | **存活会话下次 run 即时热替换**：`GsCoreAIAgent.refresh_model_if_changed()` 在 `run()` 内比对会话创建时记录的 `model_config_name` 与当前激活配置，变了就就地换 `self.model`（**保留对话历史**，并关闭旧模型 HTTP 客户端释放连接池），无需 `coreclear` |
-| `model_name`（同一配置内改模型名） | ✅ | 下次创建 Session（`create_agent()` 每次动态 `get_model_for_task()`）；存活会话切配置才热替换，改配置内字段仍需新建会话 |
+| `high_level_provider_config_name` / `low_level_provider_config_name`（切换高/低级任务模型） | ✅ | **存活会话下次 run 即时热替换**：`GsCoreAIAgent.refresh_model_if_changed()` 在 `run()` 内用「全名 + 内容指纹」双键比对（`model_config_name` + `model_config_fingerprint`），任一变了就就地换 `self.model`（**保留对话历史**，并关闭旧模型 HTTP 客户端释放连接池），无需 `coreclear` |
+| 同一配置文件内改字段（`model_name` / `base_url` / `model_effort` / `request_method`） | ✅ | 全名不变但内容指纹变（`get_model_fingerprint_for_task()` 对激活配置 dict 取 sha256），存活会话下次 run 同样热替换；新建 Session 则每次 `get_model_for_task()` 动态读最新 |
+| `request_method`（OpenAI 请求方式：`chat_completions` ↔ `responses`） | ✅ | 仅 OpenAI provider；`get_openai_model_by_name()` 据此构造 `OpenAIChatModel`(/v1/chat/completions) 或 `OpenAIResponsesModel`(/v1/responses)，对 Agent 接口一致，TTFT/TPS/工具调用/日志全部复用 |
 | Persona `system_prompt` | ✅ | 改 persona 文件后 mtime 检测自动重载（见 [§06](./06-ai-session-and-persona.md)） |
 
 > **写新配置项时的约定**：默认值放进对应 `setup_config()` / `CONFIG_DEFAULT`；只要消费侧

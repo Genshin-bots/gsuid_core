@@ -116,6 +116,15 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         data="enable",
         options=["enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
     ),
+    "request_method": GsStrConfig(
+        title="API请求方式",
+        desc=(
+            "OpenAI 接口风格: chat_completions(/v1/chat/completions, 通用兼容) 或 "
+            "responses(/v1/responses, 仅 OpenAI 官方及实现该端点的网关支持)"
+        ),
+        data="chat_completions",
+        options=["chat_completions", "responses"],
+    ),
 }
 
 

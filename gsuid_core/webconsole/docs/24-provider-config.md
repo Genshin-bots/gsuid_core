@@ -461,11 +461,16 @@ Authorization: Bearer <token>
                 "text-embedding-3-small",
                 "text-embedding-3-large"
             ],
-            "model_support": ["text", "image", "audio", "video"]
+            "model_support": ["text", "image", "audio", "video"],
+            "request_method": ["chat_completions", "responses"]
         }
     }
 }
 ```
+
+> **`request_method`（仅 openai provider）**：选择 OpenAI 接口风格。`chat_completions`
+> 走 `/v1/chat/completions`（通用兼容）；`responses` 走 `/v1/responses`（仅 OpenAI 官方及
+> 实现该端点的网关支持）。改动后存活会话下次 run 即热替换，无需 `coreclear`。
 
 ---
 
