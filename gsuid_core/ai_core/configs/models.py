@@ -167,8 +167,13 @@ def get_low_level_config_name() -> str:
     return ai_config.get_config("low_level_provider_config_name").data
 
 
+def get_config_name_for_task(task_level: Literal["high", "low"]) -> str:
+    """获取指定任务级别当前激活的配置全名（provider++name 格式）"""
+    return get_high_level_config_name() if task_level == "high" else get_low_level_config_name()
+
+
 def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfig:
-    full_name = get_high_level_config_name() if task_level == "high" else get_low_level_config_name()
+    full_name = get_config_name_for_task(task_level)
     if not full_name:
         raise ValueError("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！")
 
@@ -191,7 +196,7 @@ def get_model_for_task(
     Returns:
         对应的ChatModel实例
     """
-    full_name = get_high_level_config_name() if task_level == "high" else get_low_level_config_name()
+    full_name = get_config_name_for_task(task_level)
 
     if not full_name:
         raise ValueError("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！")

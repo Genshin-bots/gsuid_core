@@ -27,6 +27,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
@@ -70,7 +71,10 @@ from gsuid_core.ai_core.rag.tools import (
     expand_tools_to_families,
     get_tools_by_context_tags,
 )
-from gsuid_core.ai_core.configs.models import get_model_for_task
+from gsuid_core.ai_core.configs.models import (
+    get_model_for_task,
+    get_config_name_for_task,
+)
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
@@ -268,8 +272,12 @@ class GsCoreAIAgent:
         self._run_sent_texts: set[str] = set()
 
         self.model = openai_chat_model
+        # 记录本会话激活配置全名（provider++name），仅自动解析模型时记录；显式传 model 的
+        # 会话（如固定模型 SubAgent）保持 None 不参与热替换，详见 refresh_model_if_changed。
+        self.model_config_name: Optional[str] = None
         if self.model is None:
             self.model = get_model_for_task(task_level)
+            self.model_config_name = get_config_name_for_task(task_level)
 
         # 初始化会话日志记录器：所有 Agent 恒有 logger（session_id 已在上方自动派生
         # 兜底），因此 _session_logger 非 Optional，run() 中不再需要 None 守卫。
@@ -339,6 +347,68 @@ class GsCoreAIAgent:
         # 兜底：无论是否截断，都做一次孤儿工具结果清理，确保历史对 API 自洽
         self.history = _drop_orphan_tool_results(self.history)
         logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已处理至 {len(self.history)} 条")
+
+    @staticmethod
+    async def _aclose_model(
+        model: Optional[Union[OpenAIChatModel, AnthropicModel]],
+    ) -> None:
+        """关闭被丢弃模型的底层 HTTP 客户端，释放其独立 httpx 连接池。
+
+        热替换每次都新建一个持有独立 AsyncOpenAI/AsyncAnthropic 客户端的模型，旧模型若不
+        显式关闭，连接池会随会话存活长期堆积。仅在丢弃旧模型时调用，故对清理失败采取
+        best-effort 兜底（区别于 §1.1 针对的类型错误吞噬）：已成功的热替换不应被回收动作打断。
+        """
+        if model is None:
+            return
+        client = model.client
+        if client.is_closed():
+            return
+        try:
+            await client.close()
+        except Exception as e:
+            logger.debug(f"🧠 [GsCoreAIAgent] 旧模型客户端关闭失败（忽略）: {e}")
+
+    async def refresh_model_if_changed(self) -> bool:
+        """运行期检测：若本会话 task_level 对应的激活模型配置已切换，则就地热替换 self.model。
+
+        解决"网页控制台切换高/低级任务模型后必须 coreclear 清空会话才生效"的问题：存活会话
+        在下一次 run 时即时换到新模型。与 Persona 热重载不同——换模型不应丢失对话历史，因此
+        这里**只替换模型对象、保留 self.history**（仅换"大脑"不换"记忆"），并关闭旧客户端释放连接池。
+
+        仅对"按 task_level 自动解析模型"的会话生效（``model_config_name`` 非 None）；显式绑定
+        固定模型的会话（如后台 SubAgent）不受影响。新配置加载失败时沿用原模型，不打断会话。
+
+        Returns:
+            是否发生了热替换
+        """
+        if self.model_config_name is None:
+            return False
+
+        current = get_config_name_for_task(self.task_level)
+        # 配置被清空（current 为空）或未变化时不动：避免把仍可用的会话打成不可用。
+        if not current or current == self.model_config_name:
+            return False
+
+        # 仅捕获配置非法（空名/未知 provider）这一可预期失败：沿用原模型不打断会话；
+        # 其余意外错误照常抛出，符合 §1.1 不吞噬非预期异常。
+        try:
+            new_model = get_model_for_task(self.task_level)
+        except ValueError as e:
+            logger.warning(
+                f"🧠 [GsCoreAIAgent] 检测到{self.task_level}级模型配置切换为 {current}，但加载失败，沿用原模型: {e}"
+            )
+            return False
+
+        old = self.model_config_name
+        old_model = self.model
+        self.model = new_model
+        self.model_config_name = current
+        await self._aclose_model(old_model)
+        logger.info(
+            f"🧠 [GsCoreAIAgent] 检测到{self.task_level}级模型配置切换 {old} → {current}，"
+            f"已为 Session {self.session_id} 热替换模型（保留对话历史，无需 coreclear）"
+        )
+        return True
 
     async def _prepare_user_message(
         self,
@@ -1447,6 +1517,9 @@ class GsCoreAIAgent:
                 waited = time.time() - enqueue_ts
                 logger.info(f"🧠 [GsCoreAIAgent] 队列等待 {waited:.1f}s 超 TTL，丢弃过期请求，释放锁")
                 return "" if output_type is None else None
+            # 模型热切换：网页控制台切换高/低级任务模型后，存活会话在此即时热替换到新模型，
+            # 无需 coreclear 重置会话。覆盖所有 run 入口（交互/巡检/定时/主动发言）。
+            await self.refresh_model_if_changed()
             result = await self._execute_run(
                 user_message=user_message,
                 bot=bot,

@@ -161,7 +161,8 @@ def set_config(self, key, value):
 | `ai_mode` | ✅ | 下次消息处理 |
 | `keywords` | ✅ | 下次消息处理 |
 | `inspect_interval` | ⚠️ 需重启巡检 | API 里自动 `stop_for_persona` + `start_for_persona` |
-| `model_name` | ✅ | 下次创建 Session（`create_agent()` 每次动态 `get_openai_chat_model()`） |
+| `high_level_provider_config_name` / `low_level_provider_config_name`（切换高/低级任务模型） | ✅ | **存活会话下次 run 即时热替换**：`GsCoreAIAgent.refresh_model_if_changed()` 在 `run()` 内比对会话创建时记录的 `model_config_name` 与当前激活配置，变了就就地换 `self.model`（**保留对话历史**，并关闭旧模型 HTTP 客户端释放连接池），无需 `coreclear` |
+| `model_name`（同一配置内改模型名） | ✅ | 下次创建 Session（`create_agent()` 每次动态 `get_model_for_task()`）；存活会话切配置才热替换，改配置内字段仍需新建会话 |
 | Persona `system_prompt` | ✅ | 改 persona 文件后 mtime 检测自动重载（见 [§06](./06-ai-session-and-persona.md)） |
 
 > **写新配置项时的约定**：默认值放进对应 `setup_config()` / `CONFIG_DEFAULT`；只要消费侧
