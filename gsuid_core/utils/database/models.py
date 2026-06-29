@@ -159,7 +159,7 @@ class CoreUser(BaseBotIDModel, table=True):
             name="record_coreuser",
         ),
         Index("idx_user_id", "user_id"),
-        Index("idx_group_id", "group_id"),
+        Index("idx_coreuser_group_id", "group_id"),
         {"extend_existing": True},
     )
 
@@ -328,7 +328,7 @@ class CoreGroup(BaseBotIDModel, table=True):
             "group_name",
             name="record_coregroup",
         ),
-        Index("idx_group_id", "group_id"),
+        Index("idx_coregroup_group_id", "group_id"),
         {"extend_existing": True},
     )
 

@@ -32,11 +32,24 @@ AI_DATABASE_MODEL_MODULES = (
 
 
 exec_list = [
-    "CREATE INDEX idx_user_id ON coreuser (user_id);",
-    "CREATE INDEX idx_group_id ON coreuser (group_id);",
-    "CREATE INDEX idx_user_name ON coreuser (user_name);",
-    "CREATE INDEX idx_group_name ON coregroup (group_name);",
-    "CREATE INDEX idx_group_id ON coregroup (group_id);",
+    # 索引迁移：model 把 idx_group_id 重命名为带表前缀的 idx_core{user,group}_group_id
+    # create_all 不补老表索引；下方按方言给对应语法，不适用方言由 trans_adapter 吞错
+    "CREATE INDEX IF NOT EXISTS idx_coreuser_group_id ON coreuser (group_id);",
+    "CREATE INDEX IF NOT EXISTS idx_coregroup_group_id ON coregroup (group_id);",
+    # SQLite 全局唯一：一条 DROP 同时覆盖两表上的 idx_group_id
+    "DROP INDEX IF EXISTS idx_group_id;",
+    # MySQL 索引属于表：必须逐表 DROP
+    "ALTER TABLE coreuser DROP INDEX idx_group_id;",
+    "ALTER TABLE coregroup DROP INDEX idx_group_id;",
+    # PG 索引在 schema 下（绝大多数部署为 public）；两表共享同一索引名
+    "DROP INDEX IF EXISTS public.idx_group_id;",
+    # 孤儿索引清理：老 exec_list 留的 idx_user_name / idx_group_name，model 不再声明
+    "DROP INDEX IF EXISTS idx_user_name;",
+    "ALTER TABLE coreuser DROP INDEX idx_user_name;",
+    "DROP INDEX IF EXISTS public.idx_user_name;",
+    "DROP INDEX IF EXISTS idx_group_name;",
+    "ALTER TABLE coregroup DROP INDEX idx_group_name;",
+    "DROP INDEX IF EXISTS public.idx_group_name;",
     "ALTER TABLE Subscribe ADD COLUMN uid TEXT DEFAULT NULL;",
     "ALTER TABLE Subscribe ADD COLUMN WS_BOT_ID TEXT DEFAULT NULL;",
     "ALTER TABLE Subscribe ADD COLUMN extra_data TEXT DEFAULT NULL;",
