@@ -1174,4 +1174,164 @@ __all__ = [
     "artifact_get",
     "artifact_list",
     "artifact_get_recent",
+    "list_my_kanban_tasks",
+    "pause_my_kanban_tree",
+    "resume_my_kanban_tree",
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Owner 视角的 Kanban Introspect（list / pause / resume）
+# ─────────────────────────────────────────────────────────────────────
+
+
+@ai_tools(category="common", capability_domain="长期任务编排")
+async def list_my_kanban_tasks(
+    ctx: RunContext[ToolContext],
+    goal_filter: str = "",
+    status: str = "active",
+) -> str:
+    """列出当前 owner 名下的 Kanban 任务树（root 节点）。
+
+    用于：
+    - 主人格 / 能力代理 introspect 自己的长期任务；
+    - 命令"我有哪些任务在跑""暂停/恢复 AI 模拟盘"前的查表。
+
+    Args:
+        goal_filter: 按 goal 模糊过滤（子串匹配，留空返回全部）
+        status: "active"（默认；含 pending/running/paused/waiting_approval）
+                / "all"（含已结束）/ "failed" / "completed"
+
+    Returns:
+        Markdown 表格，含 ordinal / goal / status / 周期 / 进度
+    """
+    ev = ctx.deps.ev
+    if ev is None:
+        return "⚠️ 无法获取会话信息。"
+    owner = str(ev.user_id)
+    import re as _re
+
+    from .models import AIAgentTask
+
+    only_active = status == "active"
+    roots = await AIAgentTask.list_for_owner(owner, only_active=only_active, root_only=True)
+    if not roots:
+        return "ℹ️ 当前 owner 名下没有 Kanban 任务树。"
+
+    if goal_filter:
+        pat = _re.compile(_re.escape(goal_filter), _re.IGNORECASE)
+        roots = [r for r in roots if pat.search(r.goal or "")]
+
+    if status in ("failed", "completed"):
+        roots = [r for r in roots if r.status == status]
+
+    if not roots:
+        return f"ℹ️ 过滤后无任务（goal_filter={goal_filter!r}, status={status}）。"
+
+    lines = [f"📋 Kanban 任务树（owner={owner}，{len(roots)} 棵）：", ""]
+    lines.append("| # | goal | 状态 | 周期 | 错误 |")
+    lines.append("|---|------|------|------|------|")
+    for r in roots[:30]:
+        trig = (r.recurring_trigger or "-")[:24]
+        err = (r.failure_reason or "")[:40]
+        lines.append(f"| #{r.ordinal} | {(r.goal or '')[:50]} | {r.status} | {trig} | {err} |")
+    if len(roots) > 30:
+        lines.append(f"…还有 {len(roots) - 30} 棵未列出。")
+    return "\n".join(lines)
+
+
+@ai_tools(category="common", capability_domain="长期任务编排")
+async def pause_my_kanban_tree(
+    ctx: RunContext[ToolContext],
+    task_ref: str,
+    reason: str = "",
+) -> str:
+    """暂停当前 owner 的某棵 Kanban 周期树（disarm，不删除树）。
+
+    对一次性任务等价于 fail_task_tree；对周期模板会 disarm_template 让其
+    不再 fire，但任务树本身保留。
+
+    Args:
+        task_ref: 任务引用（同 respawn_subtask 的 subtask_ref；留空取最近一棵）
+        reason: 暂停原因
+    """
+    ev = ctx.deps.ev
+    if ev is None:
+        return "⚠️ 无法获取会话信息。"
+    target = await _resolve_subtask(ev, task_ref)
+    if target is None:
+        return f"⚠️ 找不到任务: {task_ref!r}"
+    root = await _resolve_root_from_subtask(target, ev)
+    if root is None:
+        return f"⚠️ 无法解析根任务: {task_ref!r}"
+
+    from . import kanban
+
+    # 周期模板 → disarm；一次性 → mark paused
+    if root.recurring_trigger:
+        ok = await kanban.disarm_template(root.id)
+        if ok:
+            return f"⏸️ 已暂停周期 Kanban 树【任务#{root.ordinal}｜{root.display_name}】：{reason or '无原因'}"
+        return f"⚠️ disarm 失败: 任务#{root.ordinal}"
+
+    # 一次性任务 → 改状态
+    from .models import AIAgentTask
+
+    await AIAgentTask.update_data_by_data(
+        select_data={"id": root.id},
+        update_data={"status": "paused", "failure_reason": reason or "paused by owner"},
+    )
+    return f"⏸️ 已暂停一次性任务【任务#{root.ordinal}｜{root.display_name}】"
+
+
+@ai_tools(category="common", capability_domain="长期任务编排")
+async def resume_my_kanban_tree(
+    ctx: RunContext[ToolContext],
+    task_ref: str,
+) -> str:
+    """恢复被暂停的 Kanban 任务树。
+
+    周期模板：arm_recurring_subtask 重挂 APScheduler
+    一次性任务：状态置回 pending（需要 respawn_subtask 重新派发）
+    """
+    ev = ctx.deps.ev
+    if ev is None:
+        return "⚠️ 无法获取会话信息。"
+    target = await _resolve_subtask(ev, task_ref)
+    if target is None:
+        return f"⚠️ 找不到任务: {task_ref!r}"
+    root = await _resolve_root_from_subtask(target, ev)
+    if root is None:
+        return f"⚠️ 无法解析根任务: {task_ref!r}"
+
+    from . import kanban
+
+    if root.recurring_trigger:
+        ok, msg = await kanban.arm_recurring_subtask(root, root.recurring_trigger)
+        if ok:
+            return f"▶️ 已恢复周期 Kanban 树【任务#{root.ordinal}｜{root.display_name}】"
+        return f"⚠️ arm 失败: {msg}"
+
+    from .models import AIAgentTask
+    from .kanban_executor import kick_root
+
+    await AIAgentTask.update_data_by_data(
+        select_data={"id": root.id},
+        update_data={"status": "pending", "failure_reason": ""},
+    )
+    import asyncio
+
+    asyncio.create_task(kick_root(root.id))
+    return f"▶️ 已重新派发一次性任务【任务#{root.ordinal}｜{root.display_name}】"
+
+
+async def _resolve_root_from_subtask(task: AIAgentTask, ev) -> Optional[AIAgentTask]:
+    """从子任务回溯根任务。"""
+    if task.node_kind == "root":
+        return task
+    root_id = task.root_task_id
+    if not root_id:
+        # fallback：取 owner 最近一棵 root
+        roots = await AIAgentTask.list_for_owner(str(ev.user_id), root_only=True)
+        return roots[0] if roots else None
+    return await AIAgentTask.get_by_id(root_id)
