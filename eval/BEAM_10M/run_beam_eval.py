@@ -121,10 +121,15 @@ USER_ID_TEMPLATE = "beam_eval_{conv_id}"
 # ─────────────────────────────────────────────
 
 
-def _read_parquet_rows(parquet_paths: List[str]) -> List[Dict[str, Any]]:
+def _read_parquet_rows(
+    parquet_paths: List[str],
+    columns: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """读取 parquet 文件，concat 成 List[Dict]。
 
     优先用 pyarrow（更快）；不可用时回退到 pandas。
+    ``columns`` 可做列裁剪：probe/judge 只需 ``probing_questions``，
+    跳过 ~12M token 的 ``chat``/``plans`` 列可把客户端峰值内存从 ~3.7GB 降到 ~百MB。
     """
     if not parquet_paths:
         raise FileNotFoundError(f"未找到 BEAM-10M parquet 文件，请检查路径: {parquet_paths}")
@@ -134,7 +139,7 @@ def _read_parquet_rows(parquet_paths: List[str]) -> List[Dict[str, Any]]:
 
         rows: List[Dict[str, Any]] = []
         for p in parquet_paths:
-            tbl = pq.read_table(p)
+            tbl = pq.read_table(p, columns=columns)
             rows.extend(tbl.to_pylist())
         return rows
     except ImportError:
@@ -142,12 +147,15 @@ def _read_parquet_rows(parquet_paths: List[str]) -> List[Dict[str, Any]]:
 
     import pandas as pd  # type: ignore
 
-    frames = [pd.read_parquet(p) for p in parquet_paths]
+    frames = [pd.read_parquet(p, columns=columns) for p in parquet_paths]
     df = pd.concat(frames, ignore_index=True)
     return df.to_dict(orient="records")
 
 
-def load_beam_dataset(parquet_glob: str = DEFAULT_PARQUET_GLOB) -> List[Dict[str, Any]]:
+def load_beam_dataset(
+    parquet_glob: str = DEFAULT_PARQUET_GLOB,
+    columns: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """加载 BEAM-10M 数据集。
 
     Args:
@@ -161,7 +169,7 @@ def load_beam_dataset(parquet_glob: str = DEFAULT_PARQUET_GLOB) -> List[Dict[str
 
     candidates = _glob.glob(parquet_glob) if any(c in parquet_glob for c in "*?[") else [parquet_glob]
     candidates = [c for c in candidates if c.endswith(".parquet") and os.path.isfile(c)]
-    rows = _read_parquet_rows(sorted(candidates))
+    rows = _read_parquet_rows(sorted(candidates), columns=columns)
 
     # 标准化：把 probing_questions 解析回 dict
     for idx, row in enumerate(rows):
@@ -437,6 +445,7 @@ async def cmd_probe(
     answers_file: str,
     timeout: float = DEFAULT_TIMEOUT,
     enable_observer: bool = False,
+    enable_system2: bool = True,
     resume: bool = True,
 ) -> str:
     """遍历 20 道探针题，逐条调 ``chat_with_history`` 收集回答。
@@ -499,7 +508,9 @@ async def cmd_probe(
                 message=question,
                 history=[],
                 enable_observer=enable_observer,
-                enable_system2=None,
+                # 评测已在摄入收尾触发分层图重建，探针显式开 System-2 以利用它：
+                # 事件排序/摘要/跨会话等聚合题靠类目自顶向下遍历召回，纯 System-1 向量召回不足。
+                enable_system2=enable_system2,
             )
 
             status_code = resp.get("status_code", -1)
@@ -538,7 +549,7 @@ async def cmd_judge(
     answers_file: str,
     judge_file: str,
     *,
-    timeout: float = 60.0,
+    timeout: float = 240.0,
     resume: bool = True,
 ) -> str:
     """用 rubric-based judge 给分，支持断点续跑。"""
@@ -721,7 +732,10 @@ async def main_async(args: argparse.Namespace) -> int:
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    if args.cmd in {"probe", "judge", "all", "ingest-plan", "ingest-batch", "clear"}:
+    if args.cmd in {"probe", "judge"}:
+        # probe/judge 只读探针题，列裁剪跳过 ~12M token 的 chat/plans（省 ~3.5GB 客户端内存）
+        rows = load_beam_dataset(args.data, columns=["probing_questions"])
+    elif args.cmd in {"all", "ingest-plan", "ingest-batch", "clear"}:
         rows = load_beam_dataset(args.data)
     else:
         rows = []

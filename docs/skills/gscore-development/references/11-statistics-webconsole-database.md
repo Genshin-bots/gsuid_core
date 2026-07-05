@@ -37,6 +37,13 @@ statistics/
 用法：直接用全局单例 `statistics_manager`，`record_token_usage(model_name, chat_type, ...)` /
 `record_latency` / `record_intent` / `record_trigger` / `record_memory_*` / `get_summary()`。
 
+**Token 数值来源与流式 usage 语义（2026-07-04）**：统计/预算的 token 数全部来自
+`gs_agent.py::_execute_run` 末尾的 `result.usage()`，其正确性取决于 pydantic_ai 对流式
+chunk usage 的累计方式。vLLM/SGLang 系网关（如 SiliconFlow）**每个 chunk 都带累计 usage**，
+默认逐 chunk 累加会令统计膨胀约 chunk 数倍（output 近似平方级）。已由 OpenAI 配置项
+`usage_stats_mode`（auto/incremental/cumulative）+ auto 模式在线探测修复，详见
+[§12.17 流式 usage 累计语义膨胀](./12-developer-pitfalls.md)。
+
 前端 API：`GET /api/ai/statistics/*`（summary / token-by-model / persona-leaderboard /
 active-users / trigger-distribution / intent-distribution / errors / heartbeat / rag / history）。
 
@@ -67,6 +74,11 @@ async def example(_user: Dict = Depends(require_auth)): ...
 `gs_agent.py::_execute_run` 记 Token **后**（`record_usage`，仅带 `ev` 的交互式 run）。
 全局策略在 `budget/config.py`（`budget_config.json`）。前端 API 见
 `webconsole/budget_api.py`（`/api/ai/budget/*`）与 `webconsole/docs/41-ai-budget.md`。
+
+> 预算记账与统计共享同一 usage 来源（`result.usage()`），自身不解析流式 usage，
+> 流式语义修复（§12.17）自动惠及预算。注意内存账本回载近 8 天
+> `AIBudgetUsageRecord`：修复前被膨胀的历史流水在滚动窗口内仍参与限额，
+> 必要时手工清理该表让用户额度立即恢复正常。
 
 > 插件也可复用 `gsuid_core.webconsole.app_app.app` 挂自己的 `/api/<插件名>/...` 路由 +
 > `Depends(require_auth)`。详见 `gscore-plugin-development` 的 FastAPI 插件 API 章。

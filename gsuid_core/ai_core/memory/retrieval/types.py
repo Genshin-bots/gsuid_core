@@ -35,6 +35,7 @@ class Edge(TypedDict):
     fact: str
     weight: float
     score: float
+    valid_at_ts: Optional[float]
     invalid_at_ts: Optional[float]
 
 

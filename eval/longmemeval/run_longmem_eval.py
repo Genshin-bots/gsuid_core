@@ -125,6 +125,7 @@ from eval.common import (  # noqa: E402
     load_json,
     load_eval_data,
     read_existing_ids,
+    call_batch_observe,
     judge_single_answer,
     simple_string_match,
     load_existing_answers,
@@ -190,6 +191,49 @@ def flatten_haystack_sessions(
     return history
 
 
+def flatten_haystack_with_dates(
+    haystack_sessions: List[List[Dict[str, str]]],
+    haystack_dates: List[str],
+) -> List[Dict[str, str]]:
+    """展平 haystack 并给每个 turn 附上其会话日期（ISO8601 timestamp 字段）。
+
+    LongMemEval 的 haystack_dates 形如 ``"2023/05/30 (Tue) 23:40"``，与
+    haystack_sessions 一一对应；temporal-reasoning / knowledge-update 两类题
+    依赖记忆片段的真实时间戳，摄入时必须带上。
+    """
+    from datetime import datetime, timedelta
+
+    turns: List[Dict[str, str]] = []
+    for i, session in enumerate(haystack_sessions):
+        if not isinstance(session, list):
+            continue
+        ts_iso = ""
+        if i < len(haystack_dates):
+            raw = str(haystack_dates[i])
+            # 去掉 "(Tue)" 这类星期注记后按 "YYYY/MM/DD HH:MM" 解析
+            cleaned = " ".join(p for p in raw.split() if not p.startswith("("))
+            for fmt in ("%Y/%m/%d %H:%M", "%Y/%m/%d"):
+                try:
+                    ts_iso = datetime.strptime(cleaned, fmt).isoformat()
+                    break
+                except ValueError:
+                    continue
+        base_dt = datetime.fromisoformat(ts_iso) if ts_iso else None
+        for j, turn in enumerate(session):
+            if not isinstance(turn, dict):
+                continue
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if not content or not isinstance(content, str) or role not in ("user", "assistant"):
+                continue
+            item = {"role": role, "content": content}
+            if base_dt is not None:
+                # 同一会话内 turn 依次 +1s，保持会话内顺序可排序
+                item["timestamp"] = (base_dt + timedelta(seconds=j)).isoformat()
+            turns.append(item)
+    return turns
+
+
 # ---------------------------------------------------------------------------
 # Phase A: 仅 System-1 检索 - 摄入+检索，不重建分层图
 # ---------------------------------------------------------------------------
@@ -203,6 +247,7 @@ async def run_phase_s1_only(
     end: Optional[int] = None,
     timeout: float = DEFAULT_TIMEOUT,
     resume: bool = False,
+    concurrency: int = 1,
 ) -> str:
     """
     Phase A: 仅 System-1 检索
@@ -212,6 +257,9 @@ async def run_phase_s1_only(
     2. 仅使用 System-1 向量检索（enable_system2=False）
     3. 保存到 answer_a.json
     4. 不触发分层图重建
+
+    并发安全性：每道题使用独立 user_id（eval_{question_id}），记忆 scope 相互隔离，
+    可安全并发；结果追加与落盘由 asyncio.Lock 串行化。
 
     Args:
         eval_data_path: 评估数据 JSON 文件路径
@@ -255,50 +303,71 @@ async def run_phase_s1_only(
             existing_results = []
 
     results: List[Dict[str, Any]] = list(existing_results)
+    save_lock = asyncio.Lock()
+    sem = asyncio.Semaphore(max(concurrency, 1))
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-        for idx, question_data in enumerate(eval_data):
-            try:
-                question_id = question_data["question_id"]
-                question = question_data["question"]
-                haystack_sessions = question_data.get("haystack_sessions", [])
-                history = flatten_haystack_sessions(haystack_sessions)
 
-                print(f"\n[PhaseA Question {idx}] ID: {question_id}")
+        async def _one(idx: int, question_data: Dict[str, Any]) -> None:
+            async with sem:
+                try:
+                    question_id = question_data["question_id"]
+                    question = question_data["question"]
+                    haystack_sessions = question_data.get("haystack_sessions", [])
+                    haystack_dates = question_data.get("haystack_dates", [])
+                    turns = flatten_haystack_with_dates(haystack_sessions, haystack_dates)
 
-                # enable_observer=True (摄入), enable_system2=False (仅System-1)
-                resp = await call_chat_with_history(
-                    client=client,
-                    base_url=base_url,
-                    user_id=f"eval_{question_id}",
-                    message=question,
-                    history=history,
-                    timeout=timeout,
-                    enable_observer=True,
-                    enable_system2=False,
-                )
+                    print(f"\n[PhaseA Question {idx}] ID: {question_id} ({len(turns)} turns)")
 
-                status_code = resp.get("status_code", -1)
-                agent_answer = ""
-                if status_code == 200:
-                    agent_answer = extract_text_from_response(resp.get("data"))
-                else:
-                    agent_answer = f"[ERROR] status_code={status_code}"
+                    # 摄入走 batch_observe（同步 flush、按 turn 切块直写 Episode，带时间戳）；
+                    # chat_with_history 的 observer 队列路径在 eval_mode 下不产 Episode（检索恒空）。
+                    obs = await call_batch_observe(
+                        client=client,
+                        base_url=base_url,
+                        user_id=f"eval_{question_id}",
+                        turns=turns,
+                        flush=True,
+                        timeout=timeout,
+                    )
+                    if obs.get("status") != 0:
+                        raise RuntimeError(f"batch_observe failed: {obs.get('msg')}")
 
-                result = {
-                    "question_id": question_id,
-                    "question": question,
-                    "standard_answer": question_data.get("answer", ""),
-                    "agent_answer": agent_answer,
-                    "status_code": status_code,
-                }
-                results.append(result)
+                    # enable_observer=False（已摄入），enable_system2=False (仅System-1)
+                    resp = await call_chat_with_history(
+                        client=client,
+                        base_url=base_url,
+                        user_id=f"eval_{question_id}",
+                        message=question,
+                        history=[],
+                        timeout=timeout,
+                        enable_observer=False,
+                        enable_system2=False,
+                    )
 
-                # 每次保存（断点续跑友好）
-                dump_json(answers_file, results)
+                    status_code = resp.get("status_code", -1)
+                    agent_answer = ""
+                    if status_code == 200:
+                        agent_answer = extract_text_from_response(resp.get("data"))
+                    else:
+                        agent_answer = f"[ERROR] status_code={status_code}"
 
-            except Exception as e:
-                print(f"  [ERROR] {e}")
+                    result = {
+                        "question_id": question_id,
+                        "question": question,
+                        "standard_answer": question_data.get("answer", ""),
+                        "agent_answer": agent_answer,
+                        "status_code": status_code,
+                    }
+                    # 追加与落盘串行化（断点续跑友好）
+                    async with save_lock:
+                        results.append(result)
+                        dump_json(answers_file, results)
+                    print(f"  [PhaseA {idx}] {question_id} done (status={status_code})")
+
+                except Exception as e:
+                    print(f"  [ERROR] idx={idx} {e}")
+
+        await asyncio.gather(*[_one(i, q) for i, q in enumerate(eval_data)])
 
     print(f"\n[PhaseA] 完成! 回答已保存至: {answers_file}")
     return answers_file
@@ -662,6 +731,7 @@ async def run_phase2(
     eval_data_path: Optional[str] = None,
     use_llm_judge: bool = True,
     timeout: float = 60.0,
+    concurrency: int = 1,
 ) -> str:
     """
     Phase 2: 评判回答，计算准确率
@@ -696,37 +766,44 @@ async def run_phase2(
     client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
 
     try:
+        # 并发评判：每题一次独立 LLM 调用，互不依赖；先并发收集 judge_result（保持原顺序），
+        # 统计与落盘在收集完成后串行执行，保证计数/打印与串行版一致。
+        sem = asyncio.Semaphore(max(concurrency, 1))
+
+        async def _judge_one(idx: int, answer_data: Dict[str, Any]) -> Dict[str, Any]:
+            agent_answer = answer_data.get("agent_answer", "")
+            if agent_answer.startswith("[ERROR]"):
+                return {"correct": False, "reason": "Agent 执行失败"}
+            if not use_llm_judge:
+                return {
+                    "correct": simple_string_match(answer_data.get("standard_answer", ""), agent_answer),
+                    "reason": "简单字符串匹配",
+                }
+            async with sem:
+                print(f"[Judge {idx}/{len(answers)}] ID: {answer_data.get('question_id', '')}")
+                return await judge_single_answer(
+                    client=client,
+                    base_url=base_url,
+                    question=answer_data.get("question", ""),
+                    standard_answer=answer_data.get("standard_answer", ""),
+                    agent_answer=agent_answer,
+                    timeout=timeout,
+                )
+
+        all_judges = await asyncio.gather(*[_judge_one(i, a) for i, a in enumerate(answers)])
+
         for idx, answer_data in enumerate(answers):
             question_id = answer_data.get("question_id", f"unknown_{idx}")
             question_type = answer_data.get("question_type", "unknown")
             question = answer_data.get("question", "")
             standard_answer = answer_data.get("standard_answer", "")
             agent_answer = answer_data.get("agent_answer", "")
-
-            print(f"\n[Judge {idx}/{len(answers)}] ID: {question_id}")
+            judge_result = all_judges[idx]
 
             # 执行失败的题目直接记为 error，不进入 wrong_count
             is_execution_error = agent_answer.startswith("[ERROR]")
             if is_execution_error:
-                judge_result: Dict[str, Any] = {
-                    "correct": False,
-                    "reason": "Agent 执行失败",
-                }
                 error_count += 1
-            elif use_llm_judge:
-                judge_result = await judge_single_answer(
-                    client=client,
-                    base_url=base_url,
-                    question=question,
-                    standard_answer=standard_answer,
-                    agent_answer=agent_answer,
-                    timeout=timeout,
-                )
-            else:
-                judge_result = {
-                    "correct": simple_string_match(standard_answer, agent_answer),
-                    "reason": "简单字符串匹配",
-                }
 
             is_correct = judge_result.get("correct", False)
             # error 题不计入 wrong_count（已记入 error_count），保证 correct+wrong+error == total
@@ -922,6 +999,12 @@ async def main():
         default=60.0,
         help="评判请求超时秒数 (默认: 60)",
     )
+    judge_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="并发评判数（每题独立 LLM 调用；默认 1 串行）",
+    )
 
     # ---- all 子命令 ----
     all_parser = subparsers.add_parser("all", help="一键运行 Phase 1 + Phase 2")
@@ -1014,6 +1097,12 @@ async def main():
         "--resume",
         action="store_true",
         help="增量更新模式",
+    )
+    run_s1_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="并发处理题目数（每题独立 user_id/scope，可安全并发；默认 1 串行）",
     )
 
     # ---- rebuild 子命令 ----
@@ -1111,6 +1200,7 @@ async def main():
             end=args.end,
             timeout=args.timeout,
             resume=args.resume,
+            concurrency=getattr(args, "concurrency", 1),
         )
 
     elif args.command == "rebuild":
@@ -1146,6 +1236,7 @@ async def main():
             output_dir=args.output_dir,
             use_llm_judge=not args.no_llm_judge,
             timeout=args.timeout,
+            concurrency=getattr(args, "concurrency", 1),
         )
 
     elif args.command == "all":

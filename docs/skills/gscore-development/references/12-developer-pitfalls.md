@@ -179,7 +179,38 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 - 手动知识以 `AIKnowledgeChunk`（SQL）为真值源；长文必须分片（`chunking.py`）避免 512 token
   静默截断；深度对账是运维手动入口、非自动（见 [§10](./10-rag-knowledge-embedding.md)）。
 
-## 12.17 历史缺陷速查表（D-1~D-21，全部已修复）
+## 12.17 流式 usage 累计语义膨胀（D-22，2026-07-04 修复）
+
+**踩坑**：部署者看板 token 消耗（58M/29M）比服务商实扣（~300K）虚高数十倍。根因不在统计/
+DB/前端，而在 usage 源头：vLLM/SGLang 系网关（SiliconFlow 等）流式响应**每个 chunk 都携带
+累计 usage**（prompt_tokens 恒定、completion_tokens 单调不减），而 pydantic_ai 默认按
+「仅最后 chunk 带 usage」的 OpenAI 标准语义逐 chunk 累加 → input ≈ 真实值×chunk 数、
+output 近似平方级膨胀。Moonshot/OpenAI/DeepSeek 官方等标准网关不受影响。
+
+**修复**（`ai_core/configs/models.py` + `openai_config/config_manager.py`）：
+
+- OpenAI 配置新增 `usage_stats_mode`：`auto`（默认）/ `incremental` / `cumulative`。
+- `auto` = 白名单（`_CUMULATIVE_USAGE_URL_KEYWORDS`）+ 进程内探测注册表
+  （`_detected_cumulative_urls`）预置 + **在线探测**：`AutoUsageOpenAIChatModel` 经
+  `_streamed_response_cls` 钩子挂 `_AutoUsageStreamedResponse`（覆写 pydantic_ai 文档
+  标明可覆写的 `_validate_response`），观测到第 2 个带 usage 的 chunk 且符合累计特征即
+  翻转 `openai_continuous_usage_stats`（该设置在流循环内逐 chunk 读取，翻转后「替换」
+  语义覆盖先前误加的和）；流结束**终局对账**——证据链完整则定格最后累计值，翻转后特征
+  破坏则用增量语义影子和回退，误判不丢数。探测当次请求的数值即已精确。
+
+**不变量（改动时不能破坏）**：
+
+1. 标准网关在 auto 下入库数值与旧行为**逐字节一致**（仅 1 个 usage chunk 永不触发翻转）。
+2. 请求参数 `stream_options.continuous_usage_stats` **仅显式配 cumulative 时发送**；auto 的
+   白名单/探测只作用于响应对象（构造时请求已发出），绝不改请求体——防网关拒收未知字段。
+3. 终局对账的注册表登记/告警以 `usage_seen >= 2` 为前提，预置命中的标准网关不得误记。
+4. 统计（`record_token_usage`/`record_hourly_performance`）、预算（`record_usage_scope`）、
+   session 日志共用 `result.usage()` 这一个源头，修 usage 语义只改 models.py，不要在
+   下游各自打补丁。
+5. 依赖 pydantic_ai（1.77.0）的 `_validate_response` / `_streamed_response_cls` 覆写钩子，
+   升级该库需回归验证探测逻辑。
+
+## 12.18 历史缺陷速查表（D-1~D-22，全部已修复）
 
 | ID | 模块 | 问题 | 详见 |
 |----|------|------|------|
@@ -194,8 +225,85 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 | D-12~D-19 | memory | 去重 key / 计数虚高 / N+1 / 并行化等 | §12.14 / [§09](./09-memory-system.md) |
 | D-20 | gs_agent | 强制总结偏离用户问题 | §12.8 |
 | D-21 | 全局 | AI 总开关关闭后仍跑 AI 逻辑 | §12.4 / [§02](./02-startup-lifecycle.md) |
+| D-22 | configs/models | 累计语义网关流式 usage 被逐 chunk 累加致统计膨胀数十倍 | §12.17 / [§11](./11-statistics-webconsole-database.md) |
 
-## 12.18 改完代码的自查清单
+## 12.19 记忆 / 嵌入的性能·内存瓶颈（2C2G 部署必读）
+
+排"记忆系统内存爆 / 摄入越来越慢"前先看这里，别错怪泄漏或 Qdrant：
+
+- **瓶颈是本地嵌入不是 LLM**：实测单条 ~491-turn haystack 嵌入 ~68s（CPU-bound）vs 作答 LLM ~8s。
+  摄入慢 / CPU 高几乎全在 fastembed ONNX。旋钮见 [§10.5.1](./10-rag-knowledge-embedding.md)：
+  `GSUID_EMBED_THREADS`（默认 `cpu//2`，别在 2 核机设）、`GSUID_EMBED_BATCH`（默认 64）、
+  `GSUID_EMBED_BATCH_WORKERS`（默认 `cpu//4`）。
+- **onnxruntime arena 只增不减**：一次大 batch 后不释放，**峰值即稳态**——`GSUID_EMBED_BATCH` 降峰值
+  是永久生效，不是压瞬时尖峰。这**不是泄漏**。
+- **空载 ~4.6GB 的大头是游戏插件（~4GB），不是记忆系统**（精简 core 无插件仅 ~624MB；嵌入模型
+  ~150MB 加载→单批 ~300–500MB）。排"记忆泄漏"先确认：跑测中 RSS 随题数**稳定不上行**（每题
+  episode/向量/session 逐题释放）就不是泄漏，只是启动斜坡到平台。
+- **Qdrant 随规模退化的是"共享集合上的过滤搜索速度"，不是内存**：向量 `on_disk=True`（memmap，
+  不进 RAM），只有 HNSW 图在 RAM 且亚 GB；但**所有 scope 共享一个 collection** 靠 `scope_key` 过滤，
+  总量涨到百万级后 filtered-HNSW 变慢（**这是"评测越跑越慢"根因**——上百 scope 堆一集合且不清理）。
+  生产靠冷热分集合 + 容量裁剪（[§09 / MEMORY_SYSTEM §7](./09-memory-system.md)）压住热集合；
+  **建议补 `valid_at_ts` payload 索引**（`vector/startup.py` 目前只建 `scope_key`），否则 `ts_range`
+  时间过滤随 scope 增大扫描变慢。详见 `MEMORY_SYSTEM.md` §3.2.2。
+- **2C2G 清单**：`embedding_provider=openai`（远程嵌入，消 CPU-bound + 最大动态内存）+
+  `enable_rerank=false`（本地 reranker ONNX 是另一大内存项）+ `qdrant_provider=remote` + 精简插件
+  → 空载可压到 ~0.6–1GB。本地全栈跑 2C2G 会周期打满核 + 逼近 2GB。
+
+## 12.20 大语料回灌 / 图谱评测的摄入架构（§14：Episode 粒度与抽取批次解耦）
+
+BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞穿原 `observe → worker` 摄入链路
+的两个隐性假设。**动 `batch_observe` / 摄入链路前必读**：
+
+- **坑①：巨型 Episode 召回恒空**。原链路按 `batch_max_size` 把连续消息拼成一条 Episode，大语料下
+  单条可达数十万字符。本地 bge-small 向量只覆盖头部 ~512 token、注入又被预算截断 → **问到具体
+  数字/版本永远召回不到**。
+- **坑②：抽取批次撞子超时丢图谱**。每批实体/边抽取一次 LLM 调用必撞 120s 子超时被丢 →
+  **0 entity / 0 edge**，System-1 图形同虚设。
+- **解法（评测/回灌专用，`eval_mode` / 新端点字段闸门保护，线上行为不变）**：
+  1. **Episode 粒度**：`AIMemEpisode.create_episodes_bulk` **每 turn 一条 granular Episode**（`_chunk_text`
+     按句子边界切 ≤900 字符、同 turn 块共享时间戳），纯嵌入零 LLM、可被 System-1 精确召回。
+  2. **抽取批次粒度**：`batch_observe(extract=true)` → `worker.extract_window` 把**连续若干 turn 拼成
+     抽取窗口**（字符/turn 数先到者收口），每窗口一次 LLM 抽取，复用
+     `_extract_and_upsert_from_episode` 全下游。**绝不**复活 observer 队列 + 80-turn 聚合。
+  3. **窗口宽松超时只跳过不丢整 plan**：`_run_extract_pass` 每窗口 `asyncio.wait_for`，超时/异常只
+     `stats["failed"]++`、不取消父任务（避开 pydantic_ai 跨 Context 取消报错）。
+- **valid_at 污染（生产也相关的时序坑）**：抽取写边时 `valid_at` 必须取**本窗口 turn 的最新对话
+  时间戳**（`extract_and_upsert_edges(valid_at=...)`），不传则落成**抽取时刻**，"同属性取最新值"类
+  时序推理被抽取顺序污染。`ObservationRecord.timestamp` 是必填 aware datetime，直接
+  `max((r.timestamp for r in records), default=None)`——**别用 `getattr`+`try/except` 兜底**（违反红线）。
+- **assistant 侧事实别丢**：`observe(force_scope_key=...)` / `batch_observe` 下 user 与 assistant **都**
+  按普通会话摄入到目标 scope 并参与抽取。回放语料里 assistant 是对话内容、非"本机 Bot 戏言"，
+  **不走 C6 SELF 轻量路由**，否则半数事实被跳过抽取、探针召回不到。
+- **SQLite 写并发**：窗口化并发多路写会撞 `UNIQUE(scope_key,name)` / `database is locked`。
+  `entity.py`/`edge.py` 用**乐观重试**（`IntegrityError`/`OperationalError` 退避 6 次）+
+  `eval_write_lock.eval_write_guard()`（`eval_mode` 下进程内写锁把快速写事务排队，LLM/嵌入仍锁外
+  并发）。线上按 scope 串行 flush、锁恒不竞争，行为不变。
+- **`write_episodes=False`**：对已摄入 Episode 的 scope 只补抽取，避免重复嵌入 6 万+ 条、规避高并发
+  重嵌入丢向量。**`trigger_rebuild=true` 仍同步 `await rebuild_task(scope_key)`**（曾被误删致静默
+  失效、响应谎报 `rebuild:true`，现已恢复）——rebuild 要在 episodes/实体/边都落库后才看得到最新图。
+- **注入侧配套**：`chat_with_history` 必须传 `to_prompt_text(max_chars=memory_config.memory_inject_max_chars)`
+  （默认 `2000` 只够 ~2 条 Episode，是长对话事实"检索到却答不出"的暗坑）；纯 episode-RAG（无图谱）时
+  `to_memory_text` / `to_prompt_text` 都要带上 episodes，否则 `memory` 字段恒空。
+
+驱动脚本见 `eval/BEAM_10M/ingest_graph.py`（逐 plan 断点续跑 + 统一 rebuild 轮询）/ `quick_eval.py`
+（复用已摄入记忆、调参后分钟级子集重测）。
+
+## 12.21 WebConsole 实时日志缓冲：有界 deque 的 SSE 游标陷阱
+
+`logger.log_history` 是 **`deque(maxlen=2000)`**（有界，防无界 list 在高吞吐下堆出数 GB 堆、RSS
+只涨不跌）。**改 `read_log`（`webconsole/logs_api.py` 的 SSE 实时日志源）时切记**：
+
+- **不能用绝对下标 `log_history[index]` 配单调 `index` 推进**。deque 写满 2000 后每次 append 淘汰最
+  左元素、`len` 封顶，`index` 越过 2000 即 `index <= len-1` 永假 → 该 SSE 连接**永久收不到新日志**
+  （`clean_log` 每 480s `.clear()` 也救不回，因 `len` 永不超过 maxlen）。这是有界化一度引入的回归。
+- **正解**：用模块级单调 `log_seq`（每条 append 自增），游标按序号定位
+  `log_history[len - (log_seq - cursor)]`，落后到被淘汰区间时跳到最旧可用条。序号与 deque 淘汰
+  解耦，写满后照常推送、`clear()` 后照常从新日志续推。
+- 同理，任何"按绝对位置消费有界 deque"的代码都有此陷阱；有界缓冲的消费者一律用**单调序号 + 落后
+  截断**，别用下标。
+
+## 12.22 改完代码的自查清单
 
 1. 类型：无 `try/except` 兜底（除不可信外部输入）、无 `cast`、无 `type:ignore`、无 `getattr/
    dict.get` 兜底，参数返回值全标注。

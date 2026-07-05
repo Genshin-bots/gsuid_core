@@ -52,6 +52,22 @@ AI_CONFIG: Dict[str, GSC] = {
         desc="指定用于低级任务(简单问答)的AI配置文件名称，格式为 'provider++config_name'（如 'openai++MiniMAX'）",
         data="",
     ),
+    "high_level_2nd_provider_config_name": GsStrConfig(
+        title="高级任务备用AI模型配置名称",
+        desc=(
+            "高级任务的兜底配置（格式同上）。当主配置不可用（限流/故障）或并发已满时，"
+            "请求自动切换到该配置；两个配置可同时并发工作实现负载均衡。留空则不启用"
+        ),
+        data="",
+    ),
+    "low_level_2nd_provider_config_name": GsStrConfig(
+        title="低级任务备用AI模型配置名称",
+        desc=(
+            "低级任务的兜底配置（格式同上）。当主配置不可用（限流/故障）或并发已满时，"
+            "请求自动切换到该配置；两个配置可同时并发工作实现负载均衡。留空则不启用"
+        ),
+        data="",
+    ),
     "embedding_provider": GsStrConfig(
         "嵌入模型服务提供方",
         "指定嵌入模型提供方",

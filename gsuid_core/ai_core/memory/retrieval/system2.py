@@ -205,7 +205,8 @@ class System2GlobalSelector:
                     "fact": ed.fact,
                     "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
                     "score": 0.0,
-                    "invalid_at_ts": None,
+                    "valid_at_ts": ed.valid_at.timestamp() if ed.valid_at else None,
+                    "invalid_at_ts": ed.invalid_at.timestamp() if ed.invalid_at else None,
                 }
                 for ed in edges
             ],

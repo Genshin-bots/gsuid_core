@@ -283,6 +283,7 @@ async def project_episodes_to_edges(episode_ids: list[str], scope_keys: list[str
                 "fact": e.fact,
                 "weight": 0.0,  # 占位：dual_route 据 mention_count/decay 富集
                 "score": 0.0,  # 占位：dual_route 的 Reranker 现场打相关性分
+                "valid_at_ts": e.valid_at.timestamp() if e.valid_at else None,
                 "invalid_at_ts": e.invalid_at.timestamp() if e.invalid_at else None,
             }
         )

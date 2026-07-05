@@ -24,7 +24,7 @@ description: >
   （双路检索 / Scope 隔离 / 摄入 / 分层图 / 偏好记忆 / RF-Mem / 生命周期 / 多模态）、
   RAG 知识库（SQL 真值源 + 对账 + 过滤下推）与嵌入 Provider、统计系统、网页控制台 API
   与认证加密、数据库基类与 AI 表 / 总开关、帮助系统，以及一份**已知坑与开发注意事项**
-  清单（D-1~D-21 历史缺陷 + 续聊/偏好/多进程/事件循环等踩坑点）。
+  清单（D-1~D-22 历史缺陷 + 续聊/偏好/多进程/事件循环等踩坑点）。
 ---
 
 # GsCore 框架开发与维护指南（核心入口）
@@ -62,7 +62,7 @@ description: >
 | 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem 双过程、记忆生命周期、多模态摄入） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账 + 批量导入、Dense+BM25 混合检索 + 过滤下推、嵌入 Provider 抽象层） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
-| 十二 | 已知坑与开发注意事项（D-1~D-21 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
+| 十二 | 已知坑与开发注意事项（D-1~D-22 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
 
 ## 推荐阅读顺序（按需跳转）
 

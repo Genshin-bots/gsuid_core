@@ -161,10 +161,14 @@ async def call_batch_observe(
     trigger_rebuild: bool = False,
     bot_self_id: Optional[str] = None,
     timeout: float = 300.0,
+    extra_payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """调用 ``POST /api/ai/memory/batch_observe``。
 
     ``turns`` 每项形如 ``{"role": "user"|"assistant", "content": "...", "timestamp": "ISO8601 可选"}``。
+
+    ``extra_payload``：合并进请求体的额外字段（§14 图谱评测用，如 ``extract`` /
+    ``write_episodes`` / ``extract_window_chars`` 等），让评测脚本无需逐字段加参数。
 
     返回::
 
@@ -182,6 +186,8 @@ async def call_batch_observe(
     }
     if bot_self_id:
         payload["bot_self_id"] = bot_self_id
+    if extra_payload:
+        payload.update(extra_payload)
 
     try:
         response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)

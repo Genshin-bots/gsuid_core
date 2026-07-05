@@ -88,7 +88,13 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
 - **Entity 两阶段去重**（`entity.py`）：Phase 1 精确名称匹配；未命中 Phase 2 Qdrant 向量相似，
   `similarity >= dedup_similarity_threshold(0.92)` 视为同一实体合并。
 - **Edge 冲突检测**（`edge.py`）：向量搜同源同目标已有 Edge，`< edge_conflict_threshold(0.88)`
-  判冲突，旧 Edge `invalid_at = now`。
+  判冲突，旧 Edge `invalid_at = now`。极性判定中英双语（`_NEGATION_MARKERS` + `_NEGATION_RE_EN`
+  词边界匹配），否则英文语料否定全漏检、C11 矛盾引擎从未触发。
+
+> 🟡 **大语料回灌 / 图谱评测走的是另一条摄入路径**（`batch_observe` 的 granular Episode + 窗口化
+> 抽取，与上面 `observe→worker` 的 80-turn 聚合**刻意解耦**）。动它前必读
+> [§12.20](./12-developer-pitfalls.md)：巨型 Episode 召回恒空、抽取批次撞子超时丢图谱、valid_at 落成
+> 抽取时刻污染时序、assistant 侧事实别丢、SQLite 并发写乐观重试 + `eval_write_guard` 等坑。
 
 > 🔴 **IngestionWorker 必须跑在主事件循环**（历史缺陷，必读 [§12](./12-developer-pitfalls.md)）。曾
 > 改成独立线程双事件循环（动机"避免 LLM 调用阻塞主循环"是**误判**——LLM 调用是 `await` 的纯

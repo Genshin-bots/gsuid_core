@@ -11,6 +11,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import OPENAI_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
     GSC,
+    GsIntConfig,
     GsStrConfig,
     GsListStrConfig,
 )
@@ -115,6 +116,26 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         desc="指定模型思考性能, 不同模型的标准不同，该选项并不保证能真实起效",
         data="enable",
         options=["enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
+    ),
+    "max_concurrency": GsIntConfig(
+        title="允许并发数",
+        desc=(
+            "该配置允许同时进行的LLM请求数(1~10)。并发占满后，新请求自动切换到"
+            "AI配置中的备用(2nd)配置，实现多 provider 同时工作与负载均衡"
+        ),
+        data=1,
+        max_value=10,
+        options=[1, 2, 3, 4, 5, 6, 8, 10],
+    ),
+    "usage_stats_mode": GsStrConfig(
+        title="流式Usage统计模式",
+        desc=(
+            "网关在流式响应中返回usage的方式: incremental(仅最后一个chunk带usage, OpenAI/Moonshot等标准行为) 或 "
+            "cumulative(每个chunk带累计usage, 如SiliconFlow/vLLM网关, 若按incremental累加会导致token统计膨胀数十倍)。"
+            "auto=已知网关按base_url识别+未知网关流式响应在线探测(推荐)"
+        ),
+        data="auto",
+        options=["auto", "incremental", "cumulative"],
     ),
     "request_method": GsStrConfig(
         title="API请求方式",

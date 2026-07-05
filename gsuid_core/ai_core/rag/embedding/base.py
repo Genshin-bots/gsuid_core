@@ -8,6 +8,7 @@
 未实现的模态默认抛 ``NotImplementedError``，调用方应先用 ``supports`` 判定。
 """
 
+import os
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Final
@@ -18,12 +19,19 @@ from gsuid_core.ai_core.rag.embedding.modality import EmbeddingModality
 # 有界线程池：用于将同步 CPU 计算（fastembed）移入线程池，避免阻塞事件循环
 _EMBED_EXECUTOR: Final = ThreadPoolExecutor(max_workers=4, thread_name_prefix="embed")
 
-# 批量 Embedding 专用单线程执行器：
-# FastEmbed 底层使用 ONNX Runtime，自带高度优化的多线程池（Rayon），
-# 会自动打满所有 CPU 核心。如果用多线程 Python 线程池包装批量调用，
-# 会导致线程过度订阅（Thread Oversubscription），反而比单线程更慢。
-# 因此批量调用使用 max_workers=1，确保 ONNX 独占 CPU 资源。
-_EMBED_BATCH_EXECUTOR: Final = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embed_batch")
+
+# 批量 Embedding worker 数。旧 max_workers=1 把并发摄入全串行是大批量主瓶颈；并发 N 路共享
+# 同一 session 实测快 1.76x（非过订阅）。按核数自适应（小机退 1），env 可覆盖 BATCH_WORKERS。
+def _resolve_batch_workers() -> int:
+    _env = os.getenv("GSUID_EMBED_BATCH_WORKERS")
+    if _env and _env.isdigit() and int(_env) > 0:
+        return int(_env)
+    return max(1, (os.cpu_count() or 4) // 4)
+
+
+_EMBED_BATCH_EXECUTOR: Final = ThreadPoolExecutor(
+    max_workers=_resolve_batch_workers(), thread_name_prefix="embed_batch"
+)
 
 
 class EmbeddingProvider(ABC):

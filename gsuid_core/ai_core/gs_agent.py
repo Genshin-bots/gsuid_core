@@ -71,6 +71,7 @@ from gsuid_core.ai_core.rag.tools import (
 )
 from gsuid_core.ai_core.configs.models import (
     get_model_for_task,
+    get_model_by_full_name,
     get_config_name_for_task,
     get_model_fingerprint_for_task,
 )
@@ -79,6 +80,10 @@ from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER, CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.provider_router import (
+    provider_router,
+    looks_like_provider_failure,
+)
 
 # 历史上 `from ...gs_agent import STALE_CHAT_REQUEST_TTL`（见 handle_ai）等公开常量经此
 # re-export 保持可用（现源头在 const.py），无需改动外部调用方。
@@ -1036,11 +1041,18 @@ class GsCoreAIAgent:
         # exclude_names 传静态已装配工具名，避免与 Agent(tools=...) 隐式 toolset 重名冲突。
         if _expose_dynamic:
             _toolsets = [*_toolsets, RetrievableToolset(exclude_names=set(tool_names))]
+        # eval_mode 下固定 temperature=0：记忆评测的答案须可复现，采样噪声会让
+        # 同一检索结果的得分跑次间 ±2-4 题波动，无法区分"改动有效"与"随机翻转"。
+        from gsuid_core.ai_core.memory.config import memory_config
+
+        _model_settings: dict = {"max_tokens": self.max_tokens}
+        if memory_config.eval_mode:
+            _model_settings["temperature"] = 0.0
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
             system_prompt=self.system_prompt or "你是一个智能助手, 简短的一句话回答问题即可。",
-            model_settings={"max_tokens": self.max_tokens},
+            model_settings=_model_settings,
             tools=tools,
             toolsets=_toolsets,
             retries=3,
@@ -1541,20 +1553,55 @@ class GsCoreAIAgent:
             # 模型热切换：网页控制台切换高/低级任务模型后，存活会话在此即时热替换到新模型，
             # 无需 coreclear 重置会话。覆盖所有 run 入口（交互/巡检/定时/主动发言）。
             await self.refresh_model_if_changed()
-            result = await self._execute_run(
-                user_message=user_message,
-                bot=bot,
-                ev=ev,
-                rag_context=rag_context,
-                tools=tools,
-                return_mode=return_mode,
-                output_type=output_type,
-                intent=intent,
-                has_active_task=has_active_task,
-                budget_gate=budget_gate,
-            )
-            logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
-            return result
+
+            async def _do_run():
+                return await self._execute_run(
+                    user_message=user_message,
+                    bot=bot,
+                    ev=ev,
+                    rag_context=rag_context,
+                    tools=tools,
+                    return_mode=return_mode,
+                    output_type=output_type,
+                    intent=intent,
+                    has_active_task=has_active_task,
+                    budget_gate=budget_gate,
+                )
+
+            # 显式绑定固定模型的会话（model_config_name 为 None）不参与 provider 路由
+            if self.model_config_name is None:
+                result = await _do_run()
+                logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
+                return result
+
+            # provider 路由：主配置并发满/冷却时切到备用(2nd)配置；请求命中
+            # provider 级故障（限流/连接）时给该配置冷却期并换路重试一次。
+            for _attempt in range(2):
+                async with provider_router.slot(self.task_level) as routed_name:
+                    temp_model = None
+                    orig_model = self.model
+                    if routed_name and routed_name != self.model_config_name:
+                        try:
+                            temp_model = get_model_by_full_name(routed_name)
+                            self.model = temp_model
+                        except Exception as e:
+                            logger.warning(f"🧠 [GsCoreAIAgent] 备用配置 {routed_name} 加载失败，沿用主配置: {e}")
+                            routed_name = self.model_config_name
+                    try:
+                        result = await _do_run()
+                        provider_router.mark_success(routed_name or self.model_config_name)
+                        logger.info("🧠 [GsCoreAIAgent] 执行完成，释放锁")
+                        return result
+                    except Exception as e:
+                        if _attempt == 0 and looks_like_provider_failure(str(e)):
+                            provider_router.mark_failure(routed_name or self.model_config_name)
+                            logger.warning(f"🧠 [GsCoreAIAgent] provider 级故障，换路重试: {e}")
+                            continue
+                        raise
+                    finally:
+                        if temp_model is not None:
+                            self.model = orig_model
+                            await self._aclose_model(temp_model)
 
 
 # 工厂函数

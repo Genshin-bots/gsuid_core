@@ -97,6 +97,30 @@ WebConsole API：`/api/embedding_config/*`（provider / local / openai / summary
 `webconsole/docs/27-embedding-config.md`。前端建议用 `GET .../summary` 一次取全部、按 `provider`
 字段决定显示哪组表单。
 
+### 10.5.1 本地嵌入的 CPU / 内存调优（`rag/embedding/local.py` + `base.py`）
+
+**本地嵌入（fastembed ONNX）是记忆摄入吞吐与 CPU 占用的主瓶颈，不是 LLM。** 实测单条
+~491-turn 的 haystack：**嵌入 ~68s（CPU-bound）vs 作答 LLM ~8s**（网络 I/O）——摄入慢/CPU 高
+几乎全在嵌入。三个 env 旋钮（都有 CPU-friendly 默认，大机可上调换吞吐）：
+
+| env | 默认 | 作用 |
+|-----|------|------|
+| `GSUID_EMBED_THREADS` | `max(1, cpu//2)` | fastembed ONNX intra-op 线程。旧默认 `min(cpu,8)` 会吃满全部核（小核机 CPU 常驻 100% 抢事件循环）；`cpu//2` 留一半余量，吞吐仅微降（bge-small 8→2 仅 1.37x） |
+| `GSUID_EMBED_BATCH` | `64` | 单次推断 batch_size。fastembed 默认 256 会把驻留内存冲到 ~500MB；64 降到 ~300MB（2C2G 主要省内存点） |
+| `GSUID_EMBED_BATCH_WORKERS` | `max(1, cpu//4)` | 批量执行器并行度（并发摄入的并行嵌入路数）。小机退 1 防过订阅 |
+
+**内存真相（排障必读）**：
+- **嵌入模型驻留 ~150MB（加载）→ 单批 ~300–500MB（含 onnxruntime arena + 中间张量）**；
+  batch_workers=N 时按 N 倍放大。
+- ⚠️ **onnxruntime 内存 arena 只增不减**：一次大 batch 后不释放，**峰值即稳态**——所以
+  `GSUID_EMBED_BATCH` 降峰值是**永久生效**而非只压瞬时尖峰。这不是内存泄漏。
+- **满配 core 空载 ~4.6GB 的大头是游戏插件（~4GB），不是嵌入**（精简 core 无插件仅 ~624MB）。
+  跑测中 RSS 随题数稳定不上行（每题 episode/向量/session 逐题释放），排"记忆泄漏"先看是不是插件基线。
+
+**2C2G / 小核机**：本地嵌入会周期性打满核，`embedding_provider=openai`（远程）几乎必选——
+既消 CPU-bound 瓶颈又去掉最大动态内存；配 reranker 关（`enable_rerank=false`，本地 reranker ONNX
+是另一大内存项）+ `qdrant_provider=remote`。**别在 2 核机设 `GSUID_EMBED_THREADS`**（默认 `cpu//2=1` 即对）。
+
 ## 10.6 周边 AI 接口
 
 | 模块 | 文件 | 说明 |

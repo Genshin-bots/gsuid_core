@@ -6,9 +6,10 @@ import asyncio
 import logging
 import datetime
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Protocol, Sequence, TypedDict, NotRequired
+from typing import Any, Dict, List, Deque, Optional, Protocol, Sequence, TypedDict, NotRequired
 from pathlib import Path
 from functools import wraps
+from collections import deque
 from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
 
@@ -24,7 +25,14 @@ from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message, TraceContext
 from gsuid_core.data_store import get_res_path, error_mark_path
 
-log_history: List[EventDict] = []
+# 内存日志缓冲（供 WebConsole SSE 实时日志用）。必须有上限：无界 list 在高吞吐场景
+# （如记忆评测，单请求可产生数百条含 30k+ 字符注入全文/思考链的日志）下，8 分钟清理
+# 周期内即可堆出数 GB Python 堆，且高水位不归还 OS，表现为服务 RSS 只涨不跌。
+LOG_HISTORY_MAXLEN = 2000
+log_history: Deque[EventDict] = deque(maxlen=LOG_HISTORY_MAXLEN)
+# SSE 游标用单调事件序号：log_history 是有界 deque，写满后左侧淘汰会让绝对下标漂移，
+# read_log 必须按序号（非下标）定位——否则缓冲写满 2000 条后 SSE 会永久错过新日志。
+log_seq: int = 0
 LOG_PATH = get_res_path() / "logs"
 IS_DEBUG_LOG: bool = False
 
@@ -624,7 +632,9 @@ def log_to_history(
     if s:
         s = f"\n{s}"
     _event_dict["gevent"] = str(event_dict["event"]) + s
+    global log_seq
     log_history.append(_event_dict)
+    log_seq += 1
     return event_dict
 
 
@@ -832,12 +842,18 @@ async def read_log(levels: Optional[List[str]] = None):
         levels: 允许的日志级别列表，如 ["DEBUG", "INFO", "ERROR"]。
                为空时不过滤，推送所有已缓冲的日志。
     """
-    index = 0
     # 将允许的级别统一转为小写 set，便于快速匹配
     allowed_levels: Optional[set] = set(ld.lower() for ld in levels) if levels else None
+    # 按单调序号推进（非 deque 下标）：deque 有界，写满后左侧淘汰会使下标漂移，用下标会
+    # 在缓冲写满 2000 条后永久错过新日志。cursor 落后到被淘汰区间时跳到最旧可用一条。
+    cursor = log_seq - len(log_history)  # 从当前缓冲最旧一条开始回放
     while True:
-        if index <= len(log_history) - 1:
-            ev = log_history[index]
+        if cursor < log_seq:
+            oldest = log_seq - len(log_history)
+            if cursor < oldest:
+                cursor = oldest
+            ev = log_history[len(log_history) - (log_seq - cursor)]
+            cursor += 1
             if ev:
                 level_str = str(ev.get("level", "")).lower()
                 if allowed_levels is None or level_str in allowed_levels:
@@ -848,16 +864,14 @@ async def read_log(levels: Optional[List[str]] = None):
                         "timestamp": ev["timestamp"],
                     }
                     yield f"data: {json.dumps(log_data)}\n\n"
-            index += 1
         else:
             await asyncio.sleep(1)
 
 
 async def clean_log():
-    global log_history
     while True:
         await asyncio.sleep(480)
-        log_history = []
+        log_history.clear()
 
 
 async def clean_trace_collector():

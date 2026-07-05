@@ -8,6 +8,7 @@ import re
 import time
 import asyncio
 from typing import TypeVar, Optional, Sequence, TypedDict
+from datetime import datetime
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -48,6 +49,97 @@ _TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到
 # A-3：身份等价类 fact 的特征词。这类 fact 主语极易抽错（"谈论小C"会被固化成
 # "<说话人>本人是小C"），故①禁止用 source_name 强补主语 ②注入时统一标"待证"。
 _IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
+
+
+def _edge_date_prefix(e: "Edge") -> str:
+    """edge 的 [YYYY-MM-DD] 日期前缀；无 valid_at_ts（旧数据/迁移缺失）返回空串。"""
+    ts = e["valid_at_ts"] if "valid_at_ts" in e else None
+    if not ts:
+        return ""
+    try:
+        return f"[{datetime.fromtimestamp(ts).strftime('%Y-%m-%d')}] "
+    except Exception:
+        return ""
+
+
+# 时间范围检索：query 中显式出现的日期（ISO / 中文 / 斜杠格式）。命中≥1 个日期视为
+# 时间锚定问题（"从X到Y依次…"、"X期间…"），语义相似检索对这类枚举/时序问题召回
+# 严重不足（相似度只召回字面相近片段，漏掉时间窗内大量相关片段），需按时间窗直查补召回。
+_QUERY_DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?")
+
+# 时序/枚举/总结类意图词：时间范围补召回只对这类问题有益（需要整段时间线覆盖）；
+# 对"某个时点的具体取值"类精确问题反而会稀释语义命中（BEAM 教训：带两个日期的
+# preference/knowledge_update 点查题被时间泛洪拖垮），故意图词与 ≥2 日期须同时满足。
+_TEMPORAL_INTENT_RE = re.compile(
+    r"(in order|sequence|chronolog|progress|summar|overview|evol|develop|timeline|history|"
+    r"依次|顺序|时间线|先后|经过|演变|变化|历程|总结|概述|回顾)",
+    re.IGNORECASE,
+)
+
+
+def _extract_time_range(query: str) -> Optional[tuple[datetime, datetime]]:
+    """从 query 中提取显式时间范围；无日期或解析失败返回 None。
+
+    仅当 query 含 ≥2 个日期 **且** 带时序/枚举/总结意图词才触发 → [最早, 最晚+1天]。
+    单个日期或纯点查（"X 那天的值是多少"）不触发：点查靠语义检索更准。
+    """
+    if not _TEMPORAL_INTENT_RE.search(query):
+        return None
+    dates: list[datetime] = []
+    for m in _QUERY_DATE_RE.finditer(query):
+        try:
+            dates.append(datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            continue
+    if len(set(dates)) < 2:
+        return None
+    from datetime import timedelta
+
+    return min(dates), max(dates) + timedelta(days=1)
+
+
+async def _fetch_temporal_episodes(
+    query: str,
+    scope_keys: list[str],
+    start: datetime,
+    end: datetime,
+    buckets: int = 6,
+    per_bucket: int = 8,
+) -> list[Episode]:
+    """时间分桶语义检索：把时间窗切成 buckets 段，每段内做带 valid_at_ts 过滤的
+    语义检索取 top per_bucket，合并去重后按时间升序返回。
+
+    大语料下时间窗内可能有上万条 Episode，均匀采样命中率≈0；纯语义检索则整窗
+    集中在少数高相似片段、漏掉时段中后段进展。分桶语义检索同时保证"相关"与
+    "整段时间线覆盖"。
+    """
+    from gsuid_core.ai_core.memory.vector.ops import search_episodes_in_range
+
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    span = (end_ts - start_ts) / max(buckets, 1)
+
+    async def _one_bucket(i: int) -> list[Episode]:
+        try:
+            return await search_episodes_in_range(
+                query,
+                scope_keys,
+                start_ts + i * span,
+                start_ts + (i + 1) * span,
+                top_k=per_bucket,
+            )
+        except Exception as e:
+            logger.debug(f"🧠 [Memory] 时间分桶检索 bucket={i} 失败: {e}")
+            return []
+
+    results = await asyncio.gather(*[_one_bucket(i) for i in range(buckets)])
+    seen: dict[str, Episode] = {}
+    for eps in results:
+        for ep in eps:
+            seen[ep["id"]] = ep
+    merged = list(seen.values())
+    merged.sort(key=lambda ep: ep["valid_at"] or "")
+    return merged
 
 
 def _on_pref_task_done(t: "asyncio.Task") -> None:
@@ -123,6 +215,9 @@ class MemoryContext:
     entities: list[Entity] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     categories: list[Category] = field(default_factory=list)
+    # C11 矛盾提示：命中边对应的 AIMemConflict 摘要。旧矛盾边已被软删除、检索不可见，
+    # 注入摘要让 Agent 知道该事实历史上存在相反陈述（应指出矛盾而非武断单侧结论）。
+    conflicts: list[str] = field(default_factory=list)
     # 程序性/偏好记忆规则（SQL-only，须严格遵守的硬约束，置顶注入）。
     # 字段契约见 PreferencePrompt（target_context / preference_rule / polarity / is_correction / id）。
     preferences: list[PreferencePrompt] = field(default_factory=list)
@@ -130,6 +225,9 @@ class MemoryContext:
         default_factory=lambda: RetrievalMeta(s1_episodes=0, s2_episodes=0, scope_keys=[])
     )
     retrieval_paths: list[list[dict]] = field(default_factory=list)  # System-2 检索路径
+    # 时间范围检索命中标记：query 含显式日期范围时置 True。此时问题是枚举/时序型，
+    # 时间线证据在 episodes 里，注入预算向片段倾斜（事实占比 55% → 30%）。
+    temporal_mode: bool = False
 
     def to_prompt_text(
         self,
@@ -184,7 +282,7 @@ class MemoryContext:
 
         # 核心事实（最高优先级）
         if self.edges:
-            fact_budget = int(max_chars * 0.55)
+            fact_budget = int(max_chars * (0.3 if self.temporal_mode else 0.55))
             edges = self.edges[: memory_config.search_edge_count]
 
             # C4 预算优先级：主人 edge 稳定上浮；A-5 降噪：事件型 trivia 下沉，
@@ -195,6 +293,17 @@ class MemoryContext:
                 return (is_priority, is_trivia)
 
             edges = sorted(edges, key=_edge_rank)
+
+            # C11 注入期矛盾兜底：同 (src,tgt) 命中边极性相反时双方标 ⚠️，
+            # 补摄入期矛盾引擎对共存矛盾边（旧数据/跨窗口）的漏检。
+            from gsuid_core.ai_core.memory.ingestion.edge import _fact_polarity
+
+            _pair_pol: dict[tuple, set] = {}
+            for e in edges:
+                key = (e["source_id"], e["target_id"])
+                _pair_pol.setdefault(key, set()).add(_fact_polarity(e["fact"] or ""))
+            conflicted_pairs = {k for k, v in _pair_pol.items() if len(v) > 1}
+
             # C11 后置拦截器：按 fact 归一化签名去重，避免近义重复事实挤占注入预算
             fact_lines: list[str] = []
             seen_facts: set = set()
@@ -215,10 +324,25 @@ class MemoryContext:
                 seen_facts.add(sig)
                 # 身份/称呼类事实极易抽错，加"待证"标注，避免被当成铁证盲信
                 _id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
-                fact_lines.append(f"• {'（记忆·待证）' if _id else ''}{fact}")
+                # 带上事实的记录日期：knowledge_update 类问题依赖"同一属性取最新值"，
+                # 没有时间戳时多值冲突的 edge 无从排序（BEAM §7 教训）
+                _dt = _edge_date_prefix(e)
+                _cf = "⚠️[与其他陈述矛盾] " if (e["source_id"], e["target_id"]) in conflicted_pairs else ""
+                fact_lines.append(f"• {_dt}{_cf}{'（记忆·待证）' if _id else ''}{fact}")
             taken = _take(fact_lines, fact_budget)
             if taken:
                 parts.append("【核心事实 - 与当前问题相关】\n" + "\n".join(taken))
+
+        # C11 矛盾提示：紧跟核心事实。历史上有过相反陈述的事实，Agent 应指出矛盾
+        # 并请用户澄清，而不是把（可能是误抽的）单侧最新值当作定论。
+        if self.conflicts:
+            conf_lines = [f"• {s[:300]}" for s in self.conflicts[:6]]
+            taken = _take(conf_lines, int(max_chars * 0.12))
+            if taken:
+                parts.append(
+                    "【矛盾记录 - 该话题存在相互冲突的历史陈述，回答涉及时请明确指出矛盾并请用户澄清哪个正确】\n"
+                    + "\n".join(taken)
+                )
 
         # 语义类目摘要（话题大纲）
         if self.categories:
@@ -229,13 +353,21 @@ class MemoryContext:
             if taken:
                 parts.append("【语义类目摘要】\n" + "\n".join(taken))
 
-        # 相关对话片段（只保留少量最相关轮次）
+        # 相关对话片段：吃掉前面区块（偏好/事实/类目）用剩的全部预算——纯 episode-RAG
+        # （无图谱时，如大语料回灌 / 评测）episodes 是唯一召回源，必须给足空间，否则被
+        # 旧的固定 30% + 3 条 × 200 字硬上限饿死（单条事实 200 字截断后召回到也答不出）。
         if self.episodes:
-            ep_budget = int(max_chars * 0.30)
-            ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content'][:200]}" for ep in self.episodes[:3]]
-            taken = _take(ep_lines, ep_budget)
-            if taken:
-                parts.append("【相关对话片段】\n" + "\n".join(taken))
+            used = sum(len(p) for p in parts) + 2 * len(parts)
+            ep_budget = max_chars - used
+            if ep_budget > 120:
+                eps = self.episodes
+                # temporal_mode（时间范围/时序问题）：单条内容上限压到 600 字，
+                # 让更多不同时段的片段进入预算（列表序=语义相关性优先，时间补位在尾）。
+                ep_cap = 600 if self.temporal_mode else 1000
+                ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content'][:ep_cap]}" for ep in eps]
+                taken = _take(ep_lines, ep_budget)
+                if taken:
+                    parts.append("【相关对话片段】\n" + "\n".join(taken))
 
         result = "\n\n".join(parts)
         if len(result) > max_chars:
@@ -243,7 +375,12 @@ class MemoryContext:
         return result
 
     def to_memory_text(self, max_chars: int = 24000) -> str:
-        """格式化为可注入 Memory 的记忆上下文文本"""
+        """格式化为可注入 Memory 的记忆上下文文本。
+
+        含【已知事实】(edges) + 【相关对话片段】(episodes)：纯 episode-RAG（无图谱）时
+        edges 为空，必须带上 episodes，否则该字段恒空（探针 ``memory`` 字段失真、且无图谱
+        部署召回到的对话片段无从注入）。
+        """
 
         parts: list[str] = []
 
@@ -252,9 +389,19 @@ class MemoryContext:
             for e in self.edges[: memory_config.search_edge_count]:
                 fact = _complete_fact_subject(e["fact"], e["source_name"])
                 if fact:
-                    fact_lines.append(f"• {fact}")
+                    fact_lines.append(f"• {_edge_date_prefix(e)}{fact}")
             facts_text = "\n".join(fact_lines)
             parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
+
+        if self.conflicts:
+            parts.append(
+                "【矛盾记录 - 存在相互冲突的历史陈述，回答涉及时请指出矛盾并请用户澄清】\n"
+                + "\n".join(f"• {s[:300]}" for s in self.conflicts[:6])
+            )
+
+        if self.episodes:
+            ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content']}" for ep in self.episodes]
+            parts.append("【相关对话片段】\n" + "\n".join(ep_lines))
 
         result = str("\n\n".join(parts))
         if len(result) > max_chars:
@@ -404,7 +551,10 @@ async def dual_route_retrieve(
         except Exception as e:
             logger.debug(f"🧠 [Memory] 别名展开失败: {e}")
 
-    if enable_user_global and user_id:
+    # 私聊 / 无群上下文（group_id 为空）：user_global 是该用户记忆的**主** scope（observer 对
+    # 私聊消息即写此处），必须检索，否则私聊与评测（group_id=None）召回恒空。群聊时则仅当
+    # enable_user_global 才把用户跨群画像并入群 scope。
+    if user_id and (not group_id or enable_user_global):
         user_scope = make_scope_key(
             ScopeType.USER_GLOBAL,
             user_id,
@@ -432,6 +582,13 @@ async def dual_route_retrieve(
         route, _signal, probe_vec = await probe_and_route(query, scope_keys)
         is_recollection_route = route == ROUTE_RECOLLECTION
         effective_enable_system2 = enable_system2 and is_recollection_route
+
+    # 时间范围补召回：query 显式含日期时按时间窗直查 Episode（与 S1/S2 并行），
+    # 解决枚举/时序类问题（"从X到Y依次…"）语义相似检索召回不足的问题。
+    time_range = _extract_time_range(query)
+    temporal_task: Optional[asyncio.Task] = None
+    if time_range and scope_keys:
+        temporal_task = asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, time_range[0], time_range[1]))
 
     # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
     s1_task = asyncio.create_task(
@@ -552,6 +709,28 @@ async def dual_route_retrieve(
     # Category 按 layer 降序排列（最抽象的在前），不经过 Reranker
     ranked_categories: list[Category] = sorted(all_categories, key=lambda c: c["layer"], reverse=True)
 
+    # 时间范围补召回结果：绕过 Reranker 直接并入（Reranker 按字面相似打分，会把时间窗
+    # 内低字面重合但时序上关键的片段踢掉）。合并后整体按时间升序，方便 LLM 重建时间线。
+    if temporal_task is not None:
+        try:
+            temporal_eps = await temporal_task
+            if temporal_eps:
+                # 语义命中在前（rerank 相关性序）、时间分桶结果补尾：BEAM 教训——重排为
+                # 时间序会把语义命中挤出注入预算，换进大量同时段但无关主题的片段。
+                # 语义头部截 20 条给时间补位留出预算空间；temporal 部分按时间轴均匀采样到
+                # 24 条——它是时间升序的，若超预算被尾部截断会恒丢时间窗后半段（BEAM eo__0
+                # 教训：rubric 后半段检查点全 miss）。片段自带日期戳，时序重建交给 LLM。
+                if len(temporal_eps) > 24:
+                    _step = len(temporal_eps) / 24
+                    temporal_eps = [temporal_eps[int(i * _step)] for i in range(24)]
+                ranked_episodes = _merge_episodes(ranked_episodes[:20], temporal_eps)
+                logger.info(
+                    f"🧠 [Memory] 时间范围补召回 {len(temporal_eps)} 条 Episode "
+                    f"({time_range[0]:%Y-%m-%d} ~ {time_range[1]:%Y-%m-%d})"
+                )
+        except Exception as e:
+            logger.warning(f"🧠 [Memory] 时间范围补召回失败: {e}")
+
     logger.info(
         f"🧠 [Memory] 共计 {len(all_episodes)} 条 Episode, {len(all_entities)} 个 Entity, "
         f"{len(all_edges)} 条 Edge, {len(all_categories)} 个 Category"
@@ -589,6 +768,26 @@ async def dual_route_retrieve(
 
         task = asyncio.create_task(_touch_edges_accessed())
         task.add_done_callback(_on_task_done)
+
+    # C11 矛盾提示：命中边的 (src,tgt) 若有 Conflict 记录，取摘要随上下文注入。
+    # 一次带索引 IN 查询（ix_mem_conflict_scope_sig），失败静默降级不影响检索。
+    conflict_summaries: list[str] = []
+    if ranked_edges and scope_keys:
+        try:
+            from gsuid_core.ai_core.memory.database.models import AIMemConflict
+
+            sigs = list(
+                {
+                    f"{e['source_id']}|{e['target_id']}"
+                    for e in ranked_edges[: memory_config.search_edge_count]
+                    if e["source_id"] and e["target_id"]
+                }
+            )
+            conflict_summaries = await AIMemConflict.get_by_signatures(scope_keys, sigs)
+            if conflict_summaries:
+                logger.info(f"🧠 [Memory] 矛盾提示命中 {len(conflict_summaries)} 条 Conflict 摘要")
+        except Exception as e:
+            logger.debug(f"🧠 [Memory] 矛盾提示查询失败: {e}")
 
     # 程序性/偏好记忆（默认开）：SQL-only 取本 user/scope 下的活跃规则，置顶强约束注入。
     # 选择性注入（意图门 + 能力域过滤）由 inject_preferences / preference_contexts 控制，避免
@@ -647,10 +846,12 @@ async def dual_route_retrieve(
         edges=ranked_edges,
         categories=ranked_categories,
         preferences=preference_items,
+        conflicts=conflict_summaries,
         retrieval_meta={
             "s1_episodes": len(s1.episodes) if s1 else 0,
             "s2_episodes": sum(len(r.episodes) for r in s2_results),
             "scope_keys": scope_keys,
         },
         retrieval_paths=s2_retrieval_paths,
+        temporal_mode=time_range is not None,
     )

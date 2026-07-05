@@ -173,6 +173,23 @@ Episode（原始对话片段）──提及──► Entity（实体节点）─
 - 检索默认走 **Hybrid（Dense + Sparse RRF 融合）**；Sparse 模型不可用时降级纯 Dense。
 - Collection 维度随嵌入模型自动检测；维度变更会导出 payload → 重建 → 重嵌入（迁移逻辑在 [`memory/vector/startup.py`](../gsuid_core/ai_core/memory/vector/startup.py)）。
 
+#### 3.2.2 规模扩展性与内存（实测，重要）
+
+创建参数（`startup.py`）：向量 **`on_disk=True`（memmap）**、payload **`on_disk_payload=True`**、
+HNSW 默认 `m=16 / ef_construct=100`、`indexing_threshold=10000`；**所有 scope 共享同一个 collection**，
+靠 `scope_key` payload 索引过滤。据此，"记忆实体增长"对各维度的真实影响：
+
+| 维度 | 行为 | 结论 |
+|---|---|---|
+| **内存(RAM)** | 向量在磁盘 memmap（不进 RAM，OS 缓存热页）、payload 在磁盘；**唯一随规模线性增长的是 HNSW 图**（`m=16` 链/点：50 万点≈数十 MB、百万级≈~百 MB、千万级才上 GB） | **不会像 in-memory 模式线性爆 RAM**；普通用户 scope 可忽略。想更省：把 `hnsw_config.on_disk=True` 让图也落盘（换延迟省 RAM，适合 2C2G） |
+| **插入** | HNSW O(log N)/点 + on_disk I/O；超 `indexing_threshold` 触发段 HNSW 构建 CPU 尖峰 | 生产每用户增量小→快；批量回灌 6 万+点才触发段优化尖峰 |
+| **搜索/召回** | HNSW O(log N)；**隐患是单一共享 collection**——所有 scope 挤一个 `memory_episodes`，靠 `scope_key` 过滤。总量到百万级后带过滤的 HNSW 在大图上跑（filtered-HNSW 退化）。召回由 `ef/m` 定、与 N 基本无关，`scope_key` 精确索引不损召回 | **速度**随共享集合总量退化、**召回**稳定；靠冷热分集合(§3.2①)+容量裁剪(§7)把热集合规模压住 |
+| **时间过滤检索** | `valid_at_ts` **无 payload 索引** → `ts_range` 范围过滤在候选内扫描，随 scope 增大变慢 | **生产建议补 `valid_at_ts` FLOAT range payload 索引**（`startup.py::ensure_payload_indexes` 目前只建了 `scope_key`） |
+
+> 一句话：**记忆实体增加对内存的压迫远小于直觉**（向量在磁盘、只有 HNSW 图在 RAM 且亚 GB）；真正
+> 随规模退化的是**共享集合上的过滤搜索速度**——它是"评测越跑越慢"的根因（评测把上百 scope 堆一个
+> 集合且不清理），生产靠生命周期维护(§7)+补 `valid_at_ts` 索引可控。
+
 ---
 
 ## 4. 写入链路：从消息到图谱
@@ -545,6 +562,21 @@ incremental_rebuild()
 | `embedding_provider`          | `local` | 嵌入模型服务提供方（`local` / `openai`），决定 Qdrant 写入路径 |
 | `rerank_provider`             | `local` | Rerank 服务提供方；`eval_mode=True` 时强制不用             |
 | `qdrant_provider`             | `local` | Qdrant 部署方式（`local` 嵌入式 / `remote` 远程）        |
+
+### 8.5 本地嵌入的 CPU / 内存 env（`rag/embedding/local.py`）
+
+**本地嵌入是摄入吞吐与 CPU 的主瓶颈（非 LLM）**，且 onnxruntime arena 只增不减（峰值即稳态）。
+三个 env 都有 CPU-friendly 默认，大机可上调换吞吐；详见
+[`skills 十.10.5.1`](skills/gscore-development/references/10-rag-knowledge-embedding.md)：
+
+| env | 默认 | 作用 |
+|-----|------|------|
+| `GSUID_EMBED_THREADS` | `max(1, cpu//2)` | ONNX intra-op 线程；旧 `min(cpu,8)` 会吃满全核（小机 CPU 常驻 100%） |
+| `GSUID_EMBED_BATCH` | `64` | 单次推断 batch；默认 256 驻留内存 ~500MB→64 约 ~300MB（2C2G 省内存点） |
+| `GSUID_EMBED_BATCH_WORKERS` | `max(1, cpu//4)` | 批量并行嵌入路数（小机退 1 防过订阅） |
+
+> 2C2G/小核机：本地嵌入会周期打满核，`embedding_provider=openai`（远程）几乎必选；**别在 2 核机
+> 设 `GSUID_EMBED_THREADS`**（默认 `cpu//2=1` 即对）。空载 ~4.6GB 大头是游戏插件不是嵌入（§3.2.2）。
 
 ---
 

@@ -81,7 +81,7 @@
 
 行为细节：
 
-- 每条 `role=assistant` 的 turn 把 `speaker_id` 前缀为 `__assistant_<bot_id>__`，自动走 SELF scope（与 `chat_with_history_api.py` 现有路由一致）；
+- `role=user` 与 `role=assistant` 的 turn **同样**摄入到 `scope_type` 对应的 user_global/group scope 并参与实体/边抽取（回放语料里的 assistant 是对话内容，不是本机 Bot 戏言，**不**走 C6 的 SELF 轻量路由；否则半数事实被丢进 `self:<bot_id>` 跳过抽取、探针召回不到 assistant 侧事实，BEAM 各事实类探针全线 FAIL）；
 - `timestamp` 缺省时退回 `datetime.now(timezone.utc)`，传入时直接写到 `ObservationRecord.timestamp`，再经摄入 worker 透传到 `AIMemEpisode.valid_at` + Qdrant 的 `valid_at_ts`，**对 event_ordering / temporal_reasoning 类探针至关重要**；
 - `flush=true` 同步调用 `worker.flush_all()`，让摄入立即可召回；
 - `trigger_rebuild=true` 异步触发 `rebuild_task(scope_key)`，可作为 "eval 收尾" 选项。

@@ -124,6 +124,68 @@ class AIMemEpisode(SQLModel, table=True):
 
         return episode
 
+    @classmethod
+    async def create_episodes_bulk(
+        cls,
+        scope_key: str,
+        items: list[dict],
+        *,
+        vector_chunk: int = 64,
+    ) -> int:
+        """批量创建 granular Episode（评测/回灌专用，每 turn 一条）。
+
+        与 ``create_episode`` 不同：不把整批对话拼成一条巨型 Episode（回灌大语料时
+        单条可达数十万字符，向量只覆盖头部 ~512 token、注入又被预算截断 → 召回恒空），
+        而是**每条 turn 一个细粒度 Episode**，单独 embedding、可被 System-1 精确召回。
+
+        ``items``：``[{"content": str, "speaker_ids": list[str], "valid_at": datetime}]``。
+        SQL 行批量 ``add_all`` 一次提交；向量按 ``vector_chunk`` 分块 batch embed 避免一次
+        embedding 上千条触发远程 413 / 本地 OOM。返回成功写入条数。
+        """
+        if not items:
+            return 0
+
+        episodes: list["AIMemEpisode"] = []
+        now = datetime.now(timezone.utc)
+        for it in items:
+            content = str(it["content"])
+            valid_at = it["valid_at"] if isinstance(it["valid_at"], datetime) else now
+            episode_id = str(uuid.uuid4())
+            episodes.append(
+                cls(
+                    id=episode_id,
+                    scope_key=scope_key,
+                    content=content,
+                    speaker_ids=list(it["speaker_ids"]) if it["speaker_ids"] else [],
+                    valid_at=valid_at,
+                    created_at=now,
+                    qdrant_id=episode_id,
+                )
+            )
+
+        async with async_maker() as session:
+            session.add_all(episodes)
+            await session.commit()
+
+        from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vectors_batch
+
+        written = 0
+        for i in range(0, len(episodes), vector_chunk):
+            chunk = episodes[i : i + vector_chunk]
+            payload = [
+                {
+                    "episode_id": ep.id,
+                    "content": ep.content,
+                    "scope_key": ep.scope_key,
+                    "valid_at_ts": ep.valid_at.timestamp(),
+                    "speaker_ids": ep.speaker_ids,
+                }
+                for ep in chunk
+            ]
+            await upsert_episode_vectors_batch(payload)
+            written += len(chunk)
+        return written
+
     # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────
     # Episode 是"每条放行消息都写"的无界增长主力（P0-2）。以下方法为生命周期 Worker
     # 提供"降级（热→冷）"与"每 scope 物理上限"两级裁剪支持，纯规则、零 LLM。
@@ -410,8 +472,17 @@ class AIMemEntity(SQLModel, table=True):
         # 阶段1：并行 Qdrant 相似度搜索（无 session 共享问题）
         # 阶段2：串行 SQL 查询确认（避免并发 session 问题）
         unmatched_names = [n for n in all_names if n not in existing_map]
+        from gsuid_core.ai_core.memory.config import memory_config as _mc
+
+        # §14 大规模回灌优化：eval_mode 下跳过"阶段2 向量语义去重"，仅保留阶段1 精确名称匹配。
+        # 背景：BEAM-10M 等技术语料的实体极细粒度（API 路径/配置项/价格各成一实体），实测
+        # 阶段2 每个未命中名称都要 embed+Qdrant 混合检索，在窗口化并发下成为主要耗时来源，
+        # 而真正被语义合并的实体仅约 8%（多为大小写变体）。eval 优先吞吐：精确名去重已足够，
+        # 把全量 10 plan 抽取从 ~15-20h 降到可控区间；线上链路（eval_mode=False）行为不变。
+        if unmatched_names and _mc.eval_mode:
+            unmatched_names = []
+
         if unmatched_names:
-            from gsuid_core.ai_core.memory.config import memory_config as _mc
             from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
 
             async def _hybrid_search_for_name(uname: str) -> tuple[str, list]:
@@ -907,6 +978,32 @@ class AIMemConflict(SQLModel, table=True):
                 summary=summary[:2000],
             )
         )
+
+    @classmethod
+    @with_session
+    async def get_by_signatures(
+        cls,
+        session: AsyncSession,
+        scope_keys: list[str],
+        signatures: list[str],
+        limit: int = 6,
+    ) -> list[str]:
+        """按 (scope, fact_signature) 取矛盾摘要，供检索期"矛盾提示"注入。
+
+        矛盾解决类问题（"我到底说过 A 还是 ¬A？"）的旧边已被 C11 软删除，检索只剩
+        单侧事实，Agent 无从察觉矛盾；这里把命中边对应的 Conflict 摘要带回，让
+        Agent 能"指出矛盾 + 请用户澄清"而不是武断给单一结论。
+        """
+        if not scope_keys or not signatures:
+            return []
+        result = await session.execute(
+            select(cls.summary)
+            .where(col(cls.scope_key).in_(scope_keys))
+            .where(col(cls.fact_signature).in_(signatures))
+            .order_by(col(cls.created_at).desc())
+            .limit(limit)
+        )
+        return [row[0] for row in result.all() if row[0]]
 
 
 # ─────────────────────────────────────────────

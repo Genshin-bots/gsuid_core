@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import json
+import asyncio
 from typing import Any, Dict, List
 
 import httpx
@@ -20,6 +21,39 @@ from .http_client import (
     call_chat_with_history,
     extract_text_from_response,
 )
+
+# 判定阶段的瞬时故障标记：agent 管线捕获 LLM 连接/限流错误后会把它当作正文文本返回
+# （HTTP 仍是 200），parse 不到 JSON 就默认判错——必须识别并重试，否则大批答卷被误判为 FAIL。
+_TRANSIENT_JUDGE_MARKERS = (
+    "connection error",
+    "执行出错",
+    "无法解析评判回复",
+    "rate limit",
+    "rate_limit",
+    "too many request",
+    "timed out",
+    "timeout",
+    "服务器繁忙",
+    "503",
+    "502",
+    "connection aborted",
+    "connection reset",
+)
+
+
+_JUDGE_MAX_RETRIES = 5
+_JUDGE_BACKOFF_BASE = 1.5
+
+
+def _is_transient_judge_failure(status_code: int, judge_text: str) -> bool:
+    """判定这次评判是否命中瞬时故障（应退避重试），而非模型给出的真实判决。"""
+    if status_code != 200:
+        return True
+    if not judge_text or not judge_text.strip():
+        return True
+    low = judge_text.lower()
+    return any(m in low for m in _TRANSIENT_JUDGE_MARKERS)
+
 
 # ─────────────────────────────────────────────
 # LongMemEval 风格：单一 PASS / FAIL
@@ -51,23 +85,29 @@ Agent 的回答: {agent_answer}
 请判断 Agent 的回答是否与标准答案语义一致，只输出 JSON:
 {{"correct": true/false, "reason": "判断理由"}}"""
 
-    resp = await call_chat_with_history(
-        client=client,
-        base_url=base_url,
-        user_id=user_id,
-        message=judge_prompt,
-        history=[],
-        timeout=timeout,
-    )
+    # 判分走 provider，高并发命中连接/限流时 agent 管线把错误当正文返回（HTTP 200），不重试
+    # 会被 parse 成 FAIL 大批误判——指数退避仅对瞬时故障重试，真实判决直接返回。
+    last_text = ""
+    last_status = -1
+    for attempt in range(_JUDGE_MAX_RETRIES):
+        resp = await call_chat_with_history(
+            client=client,
+            base_url=base_url,
+            user_id=user_id,
+            message=judge_prompt,
+            history=[],
+            timeout=timeout,
+        )
+        last_status = resp.get("status_code", -1)
+        last_text = extract_text_from_response(resp.get("data")) if last_status == 200 else ""
+        if not _is_transient_judge_failure(last_status, last_text):
+            return parse_judge_response(last_text)
+        if attempt < _JUDGE_MAX_RETRIES - 1:
+            await asyncio.sleep(_JUDGE_BACKOFF_BASE * (2**attempt))
 
-    status_code = resp.get("status_code", -1)
-    if status_code != 200:
-        error_msg = resp.get("error", "unknown")
-        return {"correct": False, "reason": f"评判请求失败: status={status_code}, error={error_msg}"}
-
-    raw_data = resp.get("data")
-    judge_text = extract_text_from_response(raw_data)
-    return parse_judge_response(judge_text)
+    # 重试耗尽：明确标记为瞬时故障，交由 runner 的 repair 标记重跑，不污染真实统计
+    detail = last_text.strip() or resp.get("error", "unknown")
+    return {"correct": False, "reason": f"评判请求失败(瞬时故障, 重试耗尽): status={last_status}, {detail[:120]}"}
 
 
 def parse_judge_response(text: str) -> Dict[str, Any]:

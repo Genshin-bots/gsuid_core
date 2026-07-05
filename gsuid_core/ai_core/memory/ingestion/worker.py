@@ -78,6 +78,48 @@ _NOISE_WORDS = frozenset(
 )
 
 
+# §14 低档 provider 故障转移环：额度/限流耗尽时按此顺序轮换。用户给定 3 家
+# {LongCat, MiniMax, 商汤科技}，但实测 MiniMax 额度已耗尽、LongCat-2.0-Preview 慢到撞 180s 超时，
+# 仅商汤科技 sensenova-flash-lite 又快又稳，故以它为主、其余为兜底（LongCat 置末，仅极端情况用）。
+# 改的是 in-memory ai_config，进程内生效、无需重启；仅作用于回灌期实体/边抽取的低档任务。
+# 主力 = MiniMax（用户说明：额度每 5h 重置、每窗口约 9M token，故是首选，全量需跨 2~3 个 5h 窗口
+# 续跑）。单元素 → 撞 429/额度时 _advance 为 no-op、只在 MiniMax 上退避重试，绝不自动切走（避免绕去
+# 慢/限流的备用 provider）。MiniMax 一个 5h 窗口额度用尽（429「用量上限」）时应**停下等下个窗口再续**
+# （驱动幂等续跑），而非在码内空转——见 docs/beam10m_memory_optimization.md §15。如需多家轮换，
+# 把 ["openai++商汤科技","openai++LongCat"] 加回本列表即可。
+_FAILOVER_LOW_PROVIDERS = ["openai++商汤科技"]
+# 撞限流后先在当前 provider 退避重试这么多次，仍失败才切下一家——避免单次抖动就切到慢/坏 provider。
+_FAILOVER_AFTER_ATTEMPTS = 4
+
+
+def _advance_low_provider(failed_provider: str) -> str:
+    """把低档任务 provider 轮换到 _FAILOVER 环的下一个。
+
+    只有当"当前 provider 仍等于刚失败的 provider"时才推进——asyncio 单线程内
+    check+set 间无 await、原子，故并发窗口同时撞限流也只推进一格（其余命中 no-op），
+    不会越级跳过 provider。返回推进后的 provider 名。
+    """
+    try:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        cfg = ai_config.get_config("low_level_provider_config_name")
+        cur = cfg.data
+        if cur != failed_provider:
+            return cur  # 已被其它窗口切走，不重复推进
+        try:
+            idx = _FAILOVER_LOW_PROVIDERS.index(cur)
+        except ValueError:
+            idx = -1
+        nxt = _FAILOVER_LOW_PROVIDERS[(idx + 1) % len(_FAILOVER_LOW_PROVIDERS)]
+        if nxt != cur:
+            cfg.data = nxt
+            logger.warning(f"🧠 [Memory] 低档 provider 限流/额度耗尽，故障转移: {cur} -> {nxt}")
+        return nxt
+    except Exception as e:
+        logger.warning(f"🧠 [Memory] provider 故障转移失败: {e}")
+        return failed_provider
+
+
 def _compact_high_records_dialogue(records: list[ObservationRecord]) -> str:
     """折叠抽取输入：剔除纯表情 / 标点 / 语气词等无实体信息行、合并相邻完全重复行，
     并把**连续同一发言者**的多条消息并成一轮（IM 常见的一句话拆多条），省去重复的
@@ -182,11 +224,15 @@ class IngestionWorker:
             except Exception as e:
                 logger.warning(f"🧠 [Memory] IngestionWorker 关闭前 flush 失败: {e}", exc_info=True)
 
-    async def flush_all(self):
+    async def flush_all(self, timeout: Optional[float] = 120.0):
         """立即将所有缓冲区 flush 到数据库。
 
         用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
-        最多等待 120 秒，超时则放弃（取消在单循环内传播，安全）。
+
+        ``timeout``：整体等待上限（秒）。live 链路（chat_with_history）默认 120s 防阻塞；
+        批量回灌（batch_observe 灌入上千 turn、数十批抽取）远超 120s，须由调用方放宽或传
+        ``None`` 表示不设整体上限（仍受每批 120s 子超时与调用方 HTTP 超时双重兜底，不会真无限）。
+        超时则放弃（取消在单循环内传播，安全）。
         """
         if not self._running or self._flush_lock is None:
             logger.warning("🧠 [Memory] IngestionWorker 未启动，跳过 flush_all")
@@ -194,9 +240,12 @@ class IngestionWorker:
 
         logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
         try:
-            await asyncio.wait_for(self._flush_all_inner(), timeout=120)
+            if timeout is None:
+                await self._flush_all_inner()
+            else:
+                await asyncio.wait_for(self._flush_all_inner(), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.error("🧠 [Memory] flush_all 超时（120秒），放弃等待")
+            logger.error(f"🧠 [Memory] flush_all 超时（{timeout}秒），放弃等待")
         except Exception as e:
             logger.error(f"🧠 [Memory] flush_all 异常: {e}", exc_info=True)
 
@@ -508,7 +557,7 @@ async def _ingest_batch_inner(
     # Episode，退回缓冲重试是安全的。
     try:
         await _extract_and_upsert_from_episode(
-            episode=episode,
+            episode_id=episode.id,
             high_records=high_records,
             speaker_ids=speaker_ids,
             scope_key=scope_key,
@@ -520,17 +569,56 @@ async def _ingest_batch_inner(
         )
 
 
+async def extract_window(
+    *,
+    scope_key: str,
+    records: list[ObservationRecord],
+    episode_id: str = "",
+) -> None:
+    """窗口化实体/边抽取（评测/回灌专用，§14.1 解耦 Episode 粒度与抽取批次粒度）。
+
+    Episode 粒度（granular，≤900 字符/条，由 ``create_episodes_bulk`` 单独写入并嵌入，
+    供 System-1 召回）与**抽取批次粒度**在此彻底解耦：本函数对**连续若干 turn 拼成的
+    一个窗口**做一次实体/边抽取，复用 ``_extract_and_upsert_from_episode`` 的全部下游
+    （``_llm_extract`` → ``extract_and_upsert_entities`` → ``extract_and_upsert_edges`` →
+    user_global 跨群属性 → 偏好蒸馏），把图谱写到同一 scope。
+
+    **绝不**创建巨型 Episode、**绝不**走 observer 队列 + worker 的 80-turn 聚合路径
+    （那正是 §4.3/§4.4 的"巨型 Episode + 抽取超时丢数据"坑）。
+
+    Args:
+        scope_key: 目标 scope（与 granular Episode 同 scope，探针检索此 scope 即可命中）。
+        records: 窗口内连续 turn 的 ObservationRecord（已是 HIGH 价值、含 is_correction）。
+        episode_id: 窗口关联的代表性 granular Episode id，用于
+            ``mem_episode_entity_mentions`` 的可解释性（空串则跳过关联，不影响图谱写入）。
+
+    调用方负责窗口级宽松超时与"跳过该窗口不丢整 plan"（见 §14.2）；本函数内部不再额外
+    取消父任务，避免 §4.4 的 pydantic_ai 跨 Context 取消报错。
+    """
+    if not records:
+        return
+    await _extract_and_upsert_from_episode(
+        episode_id=episode_id,
+        high_records=records,
+        speaker_ids=list({r.speaker_id for r in records}),
+        scope_key=scope_key,
+    )
+
+
 async def _extract_and_upsert_from_episode(
     *,
-    episode: "AIMemEpisode",
+    episode_id: str,
     high_records: list[ObservationRecord],
     speaker_ids: list[str],
     scope_key: str,
 ) -> None:
-    """从已持久化的 Episode 抽取实体/边并写入图谱（与 Episode 写入解耦的可失败阶段）。
+    """从一段对话（一条 Episode 或一个抽取窗口）抽取实体/边并写入图谱（可失败阶段）。
 
     N-2：调用方 ``_ingest_batch`` 在 try/except 内调用本函数。本阶段失败**不应**连累
     已写入的 Episode 被退回缓冲重试——Episode 无幂等键，重试会重复写入。
+
+    ``episode_id`` 仅用于 ``mem_episode_entity_mentions`` 关联与背景上下文排除，可为空串
+    （窗口化抽取时传入代表性 granular Episode id；空则跳过关联）。
     """
     # Step 3: 抽取仅使用 HIGH 价值消息，并在喂给 LLM 前折叠无实体信息行以省 Token（Fix-7）
     extract_dialogue = _compact_high_records_dialogue(high_records)
@@ -546,7 +634,7 @@ async def _extract_and_upsert_from_episode(
             scope_key,
             limit=background_count,
             max_content_chars=memory_config.background_episode_max_chars,
-            exclude_episode_id=episode.id,
+            exclude_episode_id=episode_id,
         )
         if recent_episodes:
             context_text = "\n".join(ep.content for ep in recent_episodes)
@@ -584,7 +672,7 @@ async def _extract_and_upsert_from_episode(
     entity_name_to_id, new_entity_count = await extract_and_upsert_entities(
         scope_key=scope_key,
         entities_data=extracted["entities"],
-        episode_id=episode.id,
+        episode_id=episode_id,
         speaker_ids=speaker_ids,
     )
 
@@ -599,11 +687,15 @@ async def _extract_and_upsert_from_episode(
     if new_entity_count > 0:
         await increment_entity_count(scope_key, new_entity_count)
 
-    # Step 5: Edge 写入
+    # Step 5: Edge 写入。valid_at 取本窗口 turn 的最新对话时间戳（回放语料的真实陈述
+    # 时间），而非抽取时刻——否则整个图谱的时序被抽取顺序覆盖（BEAM 复盘 §17 教训）。
+    # ObservationRecord.timestamp 是必填 aware datetime，直接取 max（无 record 时 None）。
+    stmt_ts = max((r.timestamp for r in high_records), default=None)
     await extract_and_upsert_edges(
         scope_key=scope_key,
         edges_data=extracted["edges"] if "edges" in extracted else [],
         entity_name_to_id=entity_name_to_id,
+        valid_at=stmt_ts,
     )
 
     # Step 7: user_global Scope 的跨群属性
@@ -624,7 +716,7 @@ async def _extract_and_upsert_from_episode(
             user_global_name_to_id, user_global_new_count = await extract_and_upsert_entities(
                 scope_key=user_global_scope,
                 entities_data=user_scoped_entities,
-                episode_id=episode.id,
+                episode_id=episode_id,
                 speaker_ids=[user_id],
             )
             # 增量更新 user_global scope 的 entity 计数（仅统计新建实体）
@@ -643,7 +735,7 @@ async def _extract_and_upsert_from_episode(
                 high_records=high_records,
                 speaker_ids=speaker_ids,
                 scope_key=scope_key,
-                episode_id=episode.id,
+                episode_id=episode_id,
             )
         except Exception as e:
             logger.warning(f"🧠 [Memory] scope={scope_key} 偏好蒸馏失败（不影响其他记忆）: {e}")
@@ -1008,14 +1100,41 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         system_prompt = ENTITY_EXTRACTION_SYSTEM
         if memory_config.enable_preference_memory:
             system_prompt = ENTITY_EXTRACTION_SYSTEM + PREFERENCE_FLAG_INSTRUCTION
-        agent = create_agent(
-            create_by="MemEntityExtraction",
-            task_level="low",
-            system_prompt=system_prompt,
-        )
-        # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace
-        raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
-        raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))
+        # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace。
+        # 限流退避 + 多 provider 故障转移（§14）：大规模并发回灌会撞上游 LLM 429（额度/限流），
+        # 上游把 429 作为**错误文本**返回（非异常），JSON 解析失败会被当"空抽取"静默丢窗口、污染
+        # 图谱。故先探测 429/额度文本：先在当前 provider 短退避重试，连撞则按 _FAILOVER 轮换低档
+        # provider（LongCat→MiniMax→商汤，见 _advance_low_provider）后用新 provider 重建 agent 重试。
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        raw_text = ""
+        for _rl_attempt in range(8):
+            _cur_prov = ai_config.get_config("low_level_provider_config_name").data
+            agent = create_agent(
+                create_by="MemEntityExtraction",
+                task_level="low",
+                system_prompt=system_prompt,
+            )
+            raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
+            raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))
+            _low = raw_text.lower()
+            _is_rl = (
+                "429" in raw_text
+                or "rate_limit" in _low
+                or "rate limit" in _low
+                or "too many request" in _low
+                or "用量上限" in raw_text
+                or "额度" in raw_text
+            )
+            if _is_rl and _rl_attempt < 7:
+                # 撞限流：先在当前 provider 退避重试（吸收瞬时抖动，live+eval 都做，是安全加固——
+                # 否则 429 会被当空抽取静默丢）。**仅 eval_mode** 才在连撞后轮换 provider：线上不应
+                # 因一次限流就自动改用户的 provider（_advance 会改 in-memory ai_config）。
+                if memory_config.eval_mode and _rl_attempt >= _FAILOVER_AFTER_ATTEMPTS:
+                    _advance_low_provider(_cur_prov)
+                await asyncio.sleep(min(1.5**_rl_attempt, 8))
+                continue
+            break
         data = extract_json_from_text(raw_text)
         # 模型偶尔把对象包进数组（extract_json_from_text 的解析兜底也会返回 list），
         # 与 heartbeat/decision 一致：取数组首个 dict 归一化；仍非 dict 则走下方

@@ -292,6 +292,8 @@ async def observe(
     observer_blacklist: list[str],
     message_type: str = "group_msg",
     timestamp: Optional[datetime] = None,
+    *,
+    force_scope_key: Optional[str] = None,
 ) -> None:
     """向观察队列投递一条消息记录。
 
@@ -304,10 +306,16 @@ async def observe(
     ``timestamp`` 为 None 时使用 ``datetime.now(timezone.utc)``；非 None 时
     透传到 ``AIMemEpisode.valid_at`` / Qdrant ``valid_at_ts``，用于 BEAM-10M 等
     时序探针按 ``time_anchor`` 回填事件时间。
+
+    ``force_scope_key``（评测/回灌专用）：显式指定目标 scope。给定时**所有** turn
+    （含 assistant）都按普通会话摄入到该 scope 并参与实体/边抽取，**不**走 C6 的
+    SELF 轻量路由——回放语料里的 assistant 是对话内容而非"本机 Bot 戏言"，半数事实
+    不应被丢进 ``self:`` 跳过抽取（否则探针召回不到 assistant 侧事实）。
     """
     from .scope import ScopeType, make_scope_key
 
-    is_self_speech = speaker_id.startswith(_ASSISTANT_PREFIX)
+    # force_scope_key 给定即视为评测回放：assistant 也当普通会话摄入，跳过 C6 SELF 路由
+    is_self_speech = force_scope_key is None and speaker_id.startswith(_ASSISTANT_PREFIX)
     is_correction = False
 
     if is_self_speech:
@@ -318,11 +326,14 @@ async def observe(
         scope_key = make_scope_key(ScopeType.SELF, bot_self_id)
         value_tier = "LOW"
     else:
-        # 普通用户消息：先按 GROUP / USER_GLOBAL 计算 scope，再过门控
-        scope_key = make_scope_key(
-            ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL,
-            group_id if group_id else speaker_id,
-        )
+        # 普通用户消息：先按 GROUP / USER_GLOBAL 计算 scope（force_scope_key 优先），再过门控
+        if force_scope_key is not None:
+            scope_key = force_scope_key
+        else:
+            scope_key = make_scope_key(
+                ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL,
+                group_id if group_id else speaker_id,
+            )
         tier = _gate(content, speaker_id, bot_self_id, observer_blacklist, group_id, scope_key)
         if tier is None:
             return

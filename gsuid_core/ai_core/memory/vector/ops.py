@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional, TypedDict, cast
 from concurrent.futures import ThreadPoolExecutor
 
 from qdrant_client.models import (
+    Range,
     Filter,
     Vector,
     MatchAny,
@@ -286,9 +287,12 @@ async def upsert_episode_vectors_batch(episodes_data: list[dict]):
 
     async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
         try:
+            # wait=True：同步等待写入落盘+索引后才返回（§5 教训：异步 upsert 在突发高并发写
+            # 下会静默丢向量，SQL 与 Qdrant 计数对不上）。略慢但杜绝"无报错丢一半"。
             await client.upsert(
                 collection_name=MEMORY_EPISODES_COLLECTION,
                 points=points,
+                wait=True,
             )
         except Exception as e:
             logger.error(f"🧠 [Qdrant] 批量写入 Episode 失败: {e}")
@@ -446,9 +450,11 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
     # 3. 锁内：一次性批量写入
     async with _QDRANT_LOCKS[MEMORY_ENTITIES_COLLECTION]:
         try:
+            # wait=True：同步确认写入，杜绝 §5 的"突发高并发静默丢向量"（SQL/Qdrant 计数失配）。
             await client.upsert(
                 collection_name=MEMORY_ENTITIES_COLLECTION,
                 points=points,
+                wait=True,
             )
         except Exception as e:
             logger.error(f"🧠 [Qdrant] 批量写入 Entity 失败: {e}")
@@ -501,9 +507,11 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
     # 3. 锁内：一次性批量写入
     async with _QDRANT_LOCKS[MEMORY_EDGES_COLLECTION]:
         try:
+            # wait=True：同步确认写入，杜绝 §5 的"突发高并发静默丢向量"（SQL/Qdrant 计数失配）。
             await client.upsert(
                 collection_name=MEMORY_EDGES_COLLECTION,
                 points=points,
+                wait=True,
             )
         except Exception as e:
             logger.error(f"🧠 [Qdrant] 批量写入 Edge 失败: {e}")
@@ -514,9 +522,10 @@ async def _hybrid_search_episodes(
     query: str,
     scope_keys: list[str],
     top_k: int = 10,
+    ts_range: Optional[tuple[float, float]] = None,
 ) -> list["Episode"]:
     """搜索 Episode"""
-    results = await _hybrid_search_impl(MEMORY_EPISODES_COLLECTION, query, scope_keys, top_k)
+    results = await _hybrid_search_impl(MEMORY_EPISODES_COLLECTION, query, scope_keys, top_k, ts_range=ts_range)
     episodes: list["Episode"] = []
     for r in results:
         # valid_at_ts 是存储的时间戳，需要转换为字符串格式
@@ -621,6 +630,11 @@ async def _hybrid_search_edges(
             value = r["invalid_at_ts"]
             if isinstance(value, (int, float)) or value is None:
                 invalid_at_ts = value
+        valid_at_ts: float | None = None
+        if "valid_at_ts" in r:
+            value = r["valid_at_ts"]
+            if isinstance(value, (int, float)) or value is None:
+                valid_at_ts = value
         # 按 LLM.md §1.4：dict lookup 也走显式分支，不写 `d[k] if k in d else ""` 兜底
         source_name: str = ""
         if source_id in id_to_name:
@@ -639,6 +653,7 @@ async def _hybrid_search_edges(
                 "fact": fact,
                 "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
                 "score": score,
+                "valid_at_ts": valid_at_ts,
                 "invalid_at_ts": invalid_at_ts,
             }
         )
@@ -652,6 +667,7 @@ async def _hybrid_search_impl(
     top_k: int = 10,
     score_threshold: float = 0.3,
     dense_vector_name: str = "dense",
+    ts_range: Optional[tuple[float, float]] = None,
 ) -> list[dict]:
     """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合
 
@@ -675,6 +691,20 @@ async def _hybrid_search_impl(
 
     scope_filter = _scope_filter(scope_keys)
 
+    # 时间范围过滤（valid_at_ts payload Range）：时间分桶语义检索用，
+    # 把"相关"和"落在指定时段"两个条件同时下推到 Qdrant。
+    if ts_range is not None:
+        ts_cond = FieldCondition(key="valid_at_ts", range=Range(gte=ts_range[0], lte=ts_range[1]))
+        if scope_filter is None:
+            scope_filter = Filter(must=[ts_cond])
+        else:
+            must = list(scope_filter.must) if isinstance(scope_filter.must, list) else [scope_filter.must]
+            scope_filter = Filter(must=[c for c in must if c is not None] + [ts_cond])
+
+    # 余弦门**只能**下推到 dense 分支（hybrid_query 的 dense_score_threshold）：混合检索时
+    # query_points 返回的是 RRF 名次分（~1/(60+rank)≈0.016），再用余弦阈值后筛会误杀全部命中
+    # （sparse 活跃时记忆召回恒空）。与 knowledge.py 一致——融合分不做余弦硬筛，相关性精排交给
+    # 上层 dual_route 的 Reranker（见 rag/hybrid.py 模块文档）。
     points = await hybrid_query(
         collection_name,
         query_dense,
@@ -682,15 +712,25 @@ async def _hybrid_search_impl(
         limit=top_k,
         dense_using=dense_vector_name,
         query_filter=scope_filter,
+        dense_score_threshold=score_threshold if score_threshold > 0 else None,
     )
     results = [{"id": r.id, "score": r.score, **(r.payload or {})} for r in points]
-    if score_threshold > 0:
-        results = [r for r in results if r["score"] >= score_threshold]
     return results
 
 
 async def search_episodes(query: str, scope_keys: list[str], top_k: int = 10) -> list["Episode"]:
     return await _hybrid_search_episodes(query, scope_keys, top_k)
+
+
+async def search_episodes_in_range(
+    query: str,
+    scope_keys: list[str],
+    start_ts: float,
+    end_ts: float,
+    top_k: int = 10,
+) -> list["Episode"]:
+    """带时间窗过滤的 Episode 语义检索（时间分桶补召回用）。"""
+    return await _hybrid_search_episodes(query, scope_keys, top_k, ts_range=(start_ts, end_ts))
 
 
 async def search_entities(query: str, scope_keys: list[str], top_k: int = 20) -> list["Entity"]:

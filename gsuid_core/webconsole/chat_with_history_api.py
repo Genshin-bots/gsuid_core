@@ -195,12 +195,47 @@ async def chatWithHistory(
                 enable_system2=_enable_system2,
                 enable_user_global=memory_config.enable_user_global_memory,
             )
-            memory_context_text = mem_ctx.to_prompt_text()
+            # 必须传入配置的注入预算：默认 max_chars=2000 只够 ~2 条 Episode，长对话回灌评测
+            # 下绝大多数事实落在预算外（与 handle_ai 对齐，由 memory_inject_max_chars 统一控制）。
+            memory_context_text = mem_ctx.to_prompt_text(max_chars=memory_config.memory_inject_max_chars)
             memory_ctx = mem_ctx.to_memory_text()
 
         if memory_context_text:
-            logger.info(f"🧠 [GsCore] 检索到长期记忆: {memory_context_text}")
-            rag_context = f"{rag_context}\n【长期记忆】\n{memory_context_text}\n"
+            # 只记摘要，不落全文：注入文本可达 30k+ 字符，全文进日志会撑爆内存日志缓冲
+            logger.info(f"🧠 [GsCore] 检索到长期记忆: {len(memory_context_text)} chars: {memory_context_text[:300]}...")
+            # 记忆使用准则（通用 memory-agent 行为，非针对性）：片段均带时间戳，回答时
+            # ① 同一属性有多个取值时以时间最新者为准；② 发现用户前后陈述矛盾要指出矛盾并请
+            # 其澄清，而非径直选一个；③ 优先引用记忆中的具体数字/版本/日期，不要泛泛而谈。
+            mem_guide = (
+                "[Memory-usage guidelines] The fragments below are timestamped. When answering:\n"
+                "1) For a question about a CURRENT/latest value where the same attribute has several "
+                "values over time, the user UPDATED it — answer with the MOST RECENT value; don't list "
+                "the historical ones. (This applies to a single attribute, NOT to summing/combining "
+                "figures from different projects/sources — there, use each source's relevant figure. "
+                "When summing, first check whether one figure is ALREADY a combined total covering the "
+                "others; if so report that total instead of double-counting.)\n"
+                "2) If the user made directly CONTRADICTORY statements (e.g. 'I always do X' vs 'I never "
+                "do X'), explicitly state that there is contradictory information and ask them to "
+                "clarify; do NOT silently pick one or downplay it as an exception.\n"
+                "3) Quote the exact number/version/date/price from the fragments; don't paraphrase.\n"
+                "3b) Dates on 【核心事实】 lines and timestamps on 【相关对话片段】 are both STATEMENT "
+                "times (when the user actually said it). Use them directly to decide which value is "
+                "'latest'; when a fact line and a conversation fragment disagree about the same "
+                "attribute, prefer the source with the later statement time.\n"
+                "4) If memory genuinely lacks the SPECIFIC thing asked, plainly say there is no such "
+                "information; don't pad with loosely-related content or speculate.\n"
+                "5) Do not infer a PERSON's background, qualifications or role solely from the "
+                "assistant's own past suggestions/praise (e.g. 'choose experienced reviewers like X' "
+                "does not establish X's expertise); for such personal attributes require an explicit "
+                "user statement, otherwise say the information is not available. All other content "
+                "(plans, numbers, task details) counts as evidence regardless of speaker.\n"
+                "6) When the user asks HOW to do a task (structure a calculation, write code, plan "
+                "something), ground your answer in THEIR remembered specifics — their actual providers, "
+                "prices, versions, latency/throughput targets from the fragments — as the working values, "
+                "instead of inventing placeholder numbers or generic examples.\n"
+                "7) Reply in the same language as the user's question.\n"
+            )
+            rag_context = f"{rag_context}\n{mem_guide}【长期记忆】\n{memory_context_text}\n"
 
         logger.info("启动问答")
 

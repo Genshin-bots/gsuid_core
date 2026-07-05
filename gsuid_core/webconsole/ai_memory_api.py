@@ -7,7 +7,7 @@ AI Memory APIs
 
 import asyncio
 from typing import Any, Dict, List, Tuple, Literal, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import Depends
 from pydantic import Field, BaseModel
@@ -15,9 +15,8 @@ from sqlmodel import col, func, delete, select
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
+from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory import (
-    observe,
-    get_ingestion_worker,
     parse_iso_or_unix_timestamp,
 )
 from gsuid_core.webconsole.app_app import app
@@ -91,8 +90,9 @@ class BatchObserveRequest(BaseModel):
 
     注意：
     - 仅支持 ``scope_type=user_global | group``；``user_in_group`` 暂未对接。
-    - ``role=assistant`` 的 turn 会被路由到 ``self:{bot_id}`` SELF scope 走轻量摄入
-      （仅 Episode），与 ``scope_type`` 字段对应的 user_global/group scope 分开存储。
+    - ``role=user`` 与 ``role=assistant`` 的 turn **同样**摄入到 ``scope_type`` 对应的
+      user_global/group scope 并参与实体/边抽取（回放语料里的 assistant 是对话内容，
+      不是本机 Bot 戏言，不走 C6 的 SELF 轻量路由——否则半数事实被跳过抽取、探针召回不到）。
     - 端点默认 404，需开启 ``GSUID_LOCAL_TEST_MODE=1`` 才能调用（与 chat_with_history 对齐）；
       若设了 ``GSUID_LOCAL_TEST_TOKEN``，还需带 ``X-Local-Test-Token`` 请求头。
     """
@@ -112,6 +112,53 @@ class BatchObserveRequest(BaseModel):
     turns: List[BatchObserveTurn] = Field(..., min_length=1, description="待摄入 turn 列表")
     flush: bool = Field(default=True, description="末尾是否调用 worker.flush_all() 同步等待摄入完成")
     trigger_rebuild: bool = Field(default=False, description="flush 后是否同步等待 hiergraph 重建完成")
+
+    # ── §14 全量图谱构建：Episode 粒度 / 抽取批次粒度解耦 ──────────
+    write_episodes: bool = Field(
+        default=True,
+        description=(
+            "是否写入 granular Episode（每 turn 一条小 Episode + 嵌入）。"
+            "图谱评测对已摄入 Episode 的 scope 只补抽取时可置 False，避免重复嵌入、"
+            "也规避 §5 的高并发重嵌入丢向量风险。"
+        ),
+    )
+    extract: bool = Field(
+        default=False,
+        description=(
+            "是否对本批 turn 做窗口化实体/边抽取（§14.1）。开启后按连续 turn 拼窗口、"
+            "每窗口一次 LLM 抽取，复用 worker._extract_and_upsert_from_episode 下游写实体/边；"
+            "**不**复活 observer 队列 + 80-turn 聚合路径。建议配 eval_mode=true，抽取后统一 rebuild。"
+        ),
+    )
+    extract_window_chars: int = Field(
+        default=12000,
+        ge=1000,
+        le=14000,
+        description="单个抽取窗口的字符上限（<_llm_extract 的 14000 单次阈值，保证一窗口一次 LLM 调用）",
+    )
+    extract_window_turns: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description="单个抽取窗口的最大 turn 数（与字符上限取先到者）",
+    )
+    extract_window_timeout: float = Field(
+        default=300.0,
+        ge=30.0,
+        le=1800.0,
+        description="单窗口抽取宽松超时（秒）。超时仅记录并跳过该窗口，不丢整 plan、不取消父任务（§14.2）",
+    )
+    extract_concurrency: int = Field(
+        default=0,
+        ge=0,
+        le=16,
+        description="窗口抽取并发上限；0 表示用 memory_config.llm_semaphore_limit",
+    )
+    extract_max_windows: int = Field(
+        default=0,
+        ge=0,
+        description="仅抽取前 N 个窗口（0=不限）；子集快速验证用，避免一上来就跑全量",
+    )
 
 
 class MemoryClearRequest(BaseModel):
@@ -226,6 +273,210 @@ async def search_memory(
 # 1.5 批量摄入 API（评测 / 回灌专用，无需 web 控制台鉴权，但受 local-test 守卫保护）
 # ─────────────────────────────────────────────
 
+# 回灌切块上限（字符）：本地 bge-small 嵌入截断在 512 token(~2000 字符)、且整条长 turn 的
+# 单向量会把具体事实稀释成"平均语义"。按句子边界打包到约 900 字符一块，保证每块完整入嵌入
+# 窗口、向量聚焦到局部事实，显著提升"问到具体数字/版本"类探针的召回。
+_INGEST_CHUNK_CHARS = 900
+
+_SENT_SPLIT_RE = __import__("re").compile(r"(?<=[。.!?！？\n])\s+")
+
+
+def _chunk_text(text: str, target: int = _INGEST_CHUNK_CHARS) -> List[str]:
+    """把一条长 turn 按句子边界打包成 ≤target 字符的块；过长的单句硬切。
+
+    不做重叠（重叠会引入重复块、稀释 reranker 候选）；短 turn 原样返回单块。
+    """
+    text = text.strip()
+    if len(text) <= target:
+        return [text] if text else []
+
+    chunks: List[str] = []
+    cur = ""
+    for piece in _SENT_SPLIT_RE.split(text):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if len(piece) > target:
+            # 超长单句（如代码块/无标点长串）：先收掉当前块，再硬切
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            for i in range(0, len(piece), target):
+                chunks.append(piece[i : i + target])
+            continue
+        if cur and len(cur) + 1 + len(piece) > target:
+            chunks.append(cur)
+            cur = piece
+        else:
+            cur = f"{cur} {piece}" if cur else piece
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+# ─────────────────────────────────────────────
+# §14.1 窗口化实体/边抽取（评测/回灌专用）
+# Episode 粒度（granular，由 create_episodes_bulk 写入）与抽取批次粒度在此解耦：
+# 把连续若干 turn 拼成"抽取窗口"，每窗口一次 LLM 抽取，复用 worker 的下游写实体/边。
+# 绝不复活 observer 队列 + worker 的 80-turn 聚合路径（§4.3/§4.4 的坑）。
+# ─────────────────────────────────────────────
+
+
+def _build_extraction_windows(
+    parsed_turns: List[Tuple[BatchObserveTurn, Optional[datetime]]],
+    *,
+    user_id: str,
+    scope_key: str,
+    max_chars: int,
+    max_turns: int,
+    now_default: datetime,
+    mark_correction: bool,
+) -> List[List["object"]]:
+    """把连续 turn 切成抽取窗口；每窗口是一组 ObservationRecord（HIGH 价值）。
+
+    窗口边界：累计字符数超过 ``max_chars`` 或 turn 数达 ``max_turns`` 即收口（取先到者）。
+    每条 record 的 ``valid_at`` 用 turn 时间戳（缺省退当前时间），供按 valid_at 找代表性
+    Episode 与时序探针；``is_correction`` 仅在偏好记忆开启时按纯规则探测（喂给偏好蒸馏门控）。
+    """
+    from gsuid_core.ai_core.memory.observer import ObservationRecord, detect_correction_intent
+
+    windows: List[List[object]] = []
+    cur: List[object] = []
+    cur_chars = 0
+    for turn, ts_obj in parsed_turns:
+        content = turn.content.strip()
+        if not content:
+            continue
+        speaker_id = "assistant" if turn.role == "assistant" else str(user_id)
+        ts = ts_obj if ts_obj is not None else now_default
+        is_corr = bool(mark_correction and detect_correction_intent(content))
+        rec = ObservationRecord(
+            raw_content=content,
+            speaker_id=speaker_id,
+            group_id=None,
+            scope_key=scope_key,
+            timestamp=ts,
+            message_type="private_msg",
+            value_tier="HIGH",
+            is_correction=is_corr,
+        )
+        if cur and (cur_chars + len(content) > max_chars or len(cur) >= max_turns):
+            windows.append(cur)
+            cur = []
+            cur_chars = 0
+        cur.append(rec)
+        cur_chars += len(content)
+    if cur:
+        windows.append(cur)
+    return windows
+
+
+async def _find_episode_id_in_range(scope_key: str, start_ts: datetime, end_ts: datetime) -> str:
+    """取本 scope 内 valid_at 落在 [start_ts, end_ts] 的最早一条 Episode id，作为窗口的
+    代表性 granular Episode（用于 mem_episode_entity_mentions 关联，保留可解释性）。无则返回空串。
+    """
+    try:
+        async with async_maker() as session:
+            result = await session.execute(
+                select(AIMemEpisode.id)
+                .where(
+                    AIMemEpisode.scope_key == scope_key,
+                    col(AIMemEpisode.valid_at) >= start_ts,
+                    col(AIMemEpisode.valid_at) <= end_ts,
+                )
+                .order_by(col(AIMemEpisode.valid_at).asc())
+                .limit(1)
+            )
+            row = result.scalar_one_or_none()
+            return str(row) if row else ""
+    except _RUNTIME_ERRORS:
+        return ""
+
+
+async def _count_entities_edges(scope_key: str) -> Tuple[int, int]:
+    """统计某 scope 当前的 Entity / Edge 数量（用于抽取前后差值上报）。"""
+    async with async_maker() as session:
+        ent = (
+            await session.execute(
+                select(func.count()).select_from(AIMemEntity).where(AIMemEntity.scope_key == scope_key)
+            )
+        ).scalar() or 0
+        edg = (
+            await session.execute(select(func.count()).select_from(AIMemEdge).where(AIMemEdge.scope_key == scope_key))
+        ).scalar() or 0
+    return int(ent), int(edg)
+
+
+async def _run_extract_pass(
+    parsed_turns: List[Tuple[BatchObserveTurn, Optional[datetime]]],
+    *,
+    user_id: str,
+    scope_key: str,
+    req: "BatchObserveRequest",
+    now_default: datetime,
+) -> Dict[str, Any]:
+    """对本批 turn 做窗口化抽取：构造窗口 → 限流并发 → 每窗口宽松超时 + 跳过不丢整 plan。
+
+    复用 worker.extract_window（其内部走 _extract_and_upsert_from_episode 全下游：实体/边/
+    user_global/偏好蒸馏）。返回窗口与实体/边增量统计，供断点续跑脚本逐 plan 校验。
+    """
+    from gsuid_core.ai_core.memory.ingestion.worker import extract_window
+
+    mark_correction = memory_config.enable_preference_memory
+    windows = _build_extraction_windows(
+        parsed_turns,
+        user_id=user_id,
+        scope_key=scope_key,
+        max_chars=req.extract_window_chars,
+        max_turns=req.extract_window_turns,
+        now_default=now_default,
+        mark_correction=mark_correction,
+    )
+    if req.extract_max_windows and req.extract_max_windows > 0:
+        windows = windows[: req.extract_max_windows]
+
+    ent_before, edge_before = await _count_entities_edges(scope_key)
+
+    concurrency = req.extract_concurrency or memory_config.llm_semaphore_limit
+    sem = asyncio.Semaphore(max(1, concurrency))
+    stats = {"done": 0, "failed": 0}
+
+    async def _run_one(recs: List[object]) -> None:
+        async with sem:
+            # 代表性 Episode：用窗口时间范围找一条已存在的 granular Episode 关联（可解释性）
+            timestamps = [r.timestamp for r in recs]  # type: ignore[attr-defined]
+            rep_id = await _find_episode_id_in_range(scope_key, min(timestamps), max(timestamps))
+            try:
+                await asyncio.wait_for(
+                    extract_window(scope_key=scope_key, records=recs, episode_id=rep_id),  # type: ignore[arg-type]
+                    timeout=req.extract_window_timeout,
+                )
+                stats["done"] += 1
+            except asyncio.TimeoutError:
+                stats["failed"] += 1
+                logger.warning(
+                    f"🧠 [Memory] scope={scope_key} 窗口抽取超时（{req.extract_window_timeout}s），跳过该窗口"
+                )
+            except Exception as e:  # noqa: BLE001 抽取窗口失败仅跳过，绝不丢整 plan（§14.2）
+                stats["failed"] += 1
+                logger.warning(f"🧠 [Memory] scope={scope_key} 窗口抽取失败（跳过该窗口）: {e}")
+
+    if windows:
+        await asyncio.gather(*[_run_one(w) for w in windows])
+
+    ent_after, edge_after = await _count_entities_edges(scope_key)
+    return {
+        "windows_total": len(windows),
+        "windows_done": stats["done"],
+        "windows_failed": stats["failed"],
+        "entities_before": ent_before,
+        "entities_after": ent_after,
+        "entities_added": ent_after - ent_before,
+        "edges_before": edge_before,
+        "edges_after": edge_after,
+        "edges_added": edge_after - edge_before,
+    }
+
 
 @app.post("/api/ai/memory/batch_observe", include_in_schema=LOCAL_TEST_MODE)
 async def batch_observe(
@@ -248,15 +499,6 @@ async def batch_observe(
         data: {observed, dropped, ts_failures, scope_key, flush, rebuild}
     """
     try:
-        # ``bot_self_id`` 仅用于 SELF scope 与黑名单匹配；评测场景通常不需要，
-        # 默认值 "ai" 足够。
-        bot_id = req.bot_self_id or "ai"
-        obs_blacklist = (
-            req.observer_blacklist
-            if req.observer_blacklist is not None
-            else list(memory_config.observer_blacklist or [])
-        )
-
         # 一次性定出 scope_type / scope_id / group_id，并就地收窄 group_id 非空，
         # 让后续 make_scope_key(scope_id: str) 不再吃到 ``str | None``
         scope_norm = (req.scope_type or "user_global").lower()
@@ -290,38 +532,60 @@ async def batch_observe(
                 ts_failures += 1
             parsed_turns.append((turn, ts_obj))
 
+        # 评测回放：user / assistant 两侧都是对话内容，统一落到目标 scope。提前算好
+        # scope_key，所有 turn 写入同一 scope（探针检索此 scope 时即可召回两侧事实）。
+        scope_key = make_scope_key(scope_type, scope_id)
+
+        # 细粒度摄入：**每 turn 一条小 Episode**（单独 embedding，可被 System-1 精确召回），
+        # 不走 observe 队列 + worker 的 80-turn 聚合。回灌大语料（单 plan ~1.2M token）若按
+        # batch_max_size 拼批，会生成数十万字符的巨型 Episode——向量只覆盖头部 ~512 token、
+        # 注入又被预算截断 → 召回恒空；且每批实体抽取必撞 120s 子超时被丢弃（0 entity/edge）。
+        # 故回灌期只写 granular Episode（纯 embedding、零 LLM、无超时），图谱抽取留给 live 链路。
         observed = 0
         dropped = 0
+        now_default = datetime.now(timezone.utc)
+        items: List[Dict[str, Any]] = []
         for turn, ts_obj in parsed_turns:
             # Pydantic min_length=1 已拦截空 content，strip 仅清掉首尾空白
             content = turn.content.strip()
             if not content:
                 dropped += 1
                 continue
-            # role 已被 Pydantic Literal 收窄为 "user" | "assistant"
-            speaker_id = f"__assistant_{bot_id}__" if turn.role == "assistant" else str(req.user_id)
-
-            await observe(
-                content=content,
-                speaker_id=speaker_id,
-                group_id=group_id,
-                bot_self_id=bot_id,
-                observer_blacklist=obs_blacklist,
-                message_type="group_msg" if scope_type == ScopeType.GROUP else "private_msg",
-                timestamp=ts_obj,
-            )
+            # role 已被 Pydantic Literal 收窄为 "user" | "assistant"；保留发言者标签供归属/可读
+            speaker_id = "assistant" if turn.role == "assistant" else str(req.user_id)
+            ts = ts_obj if ts_obj is not None else now_default
+            # 长 turn 切块：每块一条 Episode（同一 turn 的块共享时间戳），保证完整入嵌入窗口
+            for chunk in _chunk_text(content):
+                items.append(
+                    {
+                        "content": f"{speaker_id}: {chunk}",
+                        "speaker_ids": [speaker_id],
+                        "valid_at": ts,
+                    }
+                )
             observed += 1
 
-        scope_key = make_scope_key(scope_type, scope_id)
+        # 同步批量写入（SQL 一次提交 + 向量分块 batch embed）：返回时 Episode 已落 DB + Qdrant，
+        # 故 flush 语义天然满足。write_episodes=False 时（§14：对已摄入 Episode 的 scope 只补
+        # 抽取）跳过写入，避免重复嵌入 6 万+ Episode、也规避 §5 的高并发重嵌入丢向量风险。
+        if items and req.write_episodes:
+            await AIMemEpisode.create_episodes_bulk(scope_key, items)
 
-        if req.flush:
-            worker = get_ingestion_worker()
-            if worker is not None:
-                await worker.flush_all()
+        # §14.1 窗口化实体/边抽取：把连续 turn 拼窗口、每窗口一次 LLM 抽取写实体/边/偏好。
+        # eval_mode=true 时下游不每批触发分层图重建（由外部抽取全完成后统一 rebuild）。
+        extract_stats: Optional[Dict[str, Any]] = None
+        if req.extract:
+            extract_stats = await _run_extract_pass(
+                parsed_turns,
+                user_id=req.user_id,
+                scope_key=scope_key,
+                req=req,
+                now_default=now_default,
+            )
 
+        # trigger_rebuild：同步等待分层图重建。episodes 已同步落库、extract（若开）已写
+        # 实体/边，此时 rebuild 能看到最新图；评测 probe 紧随其后，异步重建会漏召回。
         if req.trigger_rebuild:
-            # 同步等待重建完成（与 flush 同步语义一致）：评测 probe 紧随其后，
-            # 用 create_task 会让检索早于建图完成而漏召回。仅评测端点，可放心阻塞。
             await rebuild_task(scope_key)
 
         return {
@@ -334,6 +598,8 @@ async def batch_observe(
                 "scope_key": scope_key,
                 "flush": req.flush,
                 "rebuild": req.trigger_rebuild,
+                "wrote_episodes": bool(items and req.write_episodes),
+                "extract": extract_stats,
             },
         }
     except _RUNTIME_ERRORS as e:
