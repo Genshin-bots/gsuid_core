@@ -8,7 +8,7 @@ AI 模块统计管理器
 
 import asyncio
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import Counter, defaultdict
 
 from gsuid_core.aps import scheduler
@@ -24,7 +24,7 @@ from gsuid_core.ai_core.statistics.models import (
     AIGroupUserActivityStats,
 )
 
-from .dataclass_models import BotState, LatencyStats, HourlyPerformanceEntry
+from .dataclass_models import BotState, TokenUsage, LatencyStats, HourlyPerformanceEntry
 
 # 小时级性能统计的内存缓冲 key: (date, hour, provider, model_name)
 HourlyPerfKey = tuple[str, int, str, str]
@@ -775,6 +775,124 @@ class StatisticsManager:
         except Exception as e:
             logger.warning(f"📊 [StatisticsManager] 查询历史统计失败: {e}")
             return None
+
+    async def get_token_usage_by_range(
+        self,
+        start_date: str,
+        end_date: str,
+        max_days: int = 366,
+    ) -> Dict[str, Any]:
+        """获取指定时间段（闭区间）的 Token 消耗统计。
+
+        逐日聚合 [start_date, end_date] 内的 Token 消耗, 返回:
+        - total: 整个时间段的四类 Token 总量及总和
+        - daily: 按天的 Token 趋势(用于折线/柱状图)
+        - by_model: 跨天聚合的按模型 Token 分布(用于占比图)
+
+        今日数据优先取内存实时值, 历史数据从数据库读取; 区间内无数据的日期
+        以 0 补齐, 保证 daily 序列连续。start_date > end_date 时自动交换。
+
+        Args:
+            start_date: 开始日期, 格式 "YYYY-MM-DD"
+            end_date: 结束日期, 格式 "YYYY-MM-DD"
+            max_days: 允许的最大跨度天数, 超出则截断到 max_days, 防止区间过大拖垮 DB
+
+        Returns:
+            聚合结果字典; 日期格式非法时抛出 ValueError, 由调用方处理。
+        """
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        if start > end:
+            start, end = end, start
+        # 截断超长区间: 保留靠近 end 的 max_days 天
+        if (end - start).days + 1 > max_days:
+            start = end - timedelta(days=max_days - 1)
+
+        daily: List[Dict[str, Any]] = []
+        # 按模型聚合: model -> TokenUsage
+        model_acc: Dict[str, TokenUsage] = defaultdict(TokenUsage)
+        total = TokenUsage()
+
+        cur = start
+        while cur <= end:
+            date_str = cur.strftime("%Y-%m-%d")
+            cur += timedelta(days=1)
+
+            if date_str == self._today:
+                # 今日: 内存实时数据(与 get_summary 同源)
+                b = self._bot_state
+                d_in = b.total_tokens["input"]
+                d_out = b.total_tokens["output"]
+                d_cr = b.total_tokens["cache_read"]
+                d_cw = b.total_tokens["cache_write"]
+                model_rows = [
+                    (m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+                    for m, u in b.token_by_model.items()
+                ]
+            else:
+                # 历史: 数据库。总量取 AIDailyStatistics, 按模型取 AITokenUsageByModel
+                stats = await AIDailyStatistics.get_daily_stats(date_str)
+                d_in = (stats.total_input_tokens or 0) if stats else 0
+                d_out = (stats.total_output_tokens or 0) if stats else 0
+                d_cr = (stats.total_cache_read_tokens or 0) if stats else 0
+                d_cw = (stats.total_cache_write_tokens or 0) if stats else 0
+                model_rows = [
+                    (
+                        t.model_name,
+                        t.input_tokens or 0,
+                        t.output_tokens or 0,
+                        t.cache_read_tokens or 0,
+                        t.cache_write_tokens or 0,
+                    )
+                    for t in await AITokenUsageByModel.get_daily_data(date_str)
+                ]
+
+            daily.append(
+                {
+                    "date": date_str,
+                    "input_tokens": d_in,
+                    "output_tokens": d_out,
+                    "cache_read_tokens": d_cr,
+                    "cache_write_tokens": d_cw,
+                    "total_tokens": d_in + d_out + d_cr + d_cw,
+                }
+            )
+            total.add(d_in, d_out, d_cr, d_cw)
+            for model_name, m_in, m_out, m_cr, m_cw in model_rows:
+                model_acc[model_name].add(m_in, m_out, m_cr, m_cw)
+
+        by_model = sorted(
+            [
+                {
+                    "model": model_name,
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_read_tokens": u.cache_read_tokens,
+                    "cache_write_tokens": u.cache_write_tokens,
+                    "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
+                }
+                for model_name, u in model_acc.items()
+            ],
+            key=lambda x: x["total_tokens"],
+            reverse=True,
+        )
+
+        return {
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d"),
+            "days": len(daily),
+            "total": {
+                "input_tokens": total.input_tokens,
+                "output_tokens": total.output_tokens,
+                "cache_read_tokens": total.cache_read_tokens,
+                "cache_write_tokens": total.cache_write_tokens,
+                "total_tokens": (
+                    total.input_tokens + total.output_tokens + total.cache_read_tokens + total.cache_write_tokens
+                ),
+            },
+            "daily": daily,
+            "by_model": by_model,
+        }
 
     def _daily_stats_to_dict(
         self,

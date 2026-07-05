@@ -151,7 +151,150 @@ GET /api/ai/statistics/token-by-model
 
 ---
 
-## 20.3 获取活跃用户/群组排行
+## 20.3 获取时间段 Token 消耗统计
+
+```
+GET /api/ai/statistics/token-by-range
+```
+
+对 `[start_date, end_date]` **闭区间**逐日聚合 Token 消耗，一次性返回时间段总量、按天趋势、按模型分布，适合直接渲染「近 N 天 Token 折线图 / 柱状图 + 模型占比饼图」。
+
+**Query 参数**:
+- `start_date`: 开始日期，格式 `YYYY-MM-DD`，默认 6 天前（即默认返回近 7 天）
+- `end_date`: 结束日期，格式 `YYYY-MM-DD`，默认今天
+
+**行为说明**:
+- 今日数据取内存实时值，历史数据从数据库读取，二者自动拼接
+- 区间内**无数据的日期以 0 补齐**，`daily` 序列连续，前端无需自行填充缺失日期
+- `start_date > end_date` 时自动交换；跨度超过 366 天时保留靠近 `end_date` 的 366 天
+- 日期格式非法时返回 `status: 1`，`msg` 为「日期格式错误，应为 YYYY-MM-DD」
+
+**字段说明**:
+- `total`: 整个时间段四类 Token 的总量，`total_tokens` = `input + output + cache_read + cache_write`
+- `daily`: 按天的 Token 明细数组（升序），每项含四类 Token 及当日 `total_tokens`，用于趋势图
+- `by_model`: 跨天聚合的按模型 Token 分布，按 `total_tokens` **降序**排列，用于占比图
+- `days`: `daily` 数组长度（实际聚合天数）
+- 四类 Token 互不重叠：`input_tokens` 为非缓存输入，`cache_read_tokens` / `cache_write_tokens` 为提示词缓存读写，因此可直接相加
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "start_date": "2024-01-09",
+        "end_date": "2024-01-15",
+        "days": 7,
+        "total": {
+            "input_tokens": 600000,
+            "output_tokens": 280000,
+            "cache_read_tokens": 30000,
+            "cache_write_tokens": 15000,
+            "total_tokens": 925000
+        },
+        "daily": [
+            {
+                "date": "2024-01-09",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "total_tokens": 0
+            },
+            {
+                "date": "2024-01-15",
+                "input_tokens": 300000,
+                "output_tokens": 150000,
+                "cache_read_tokens": 20000,
+                "cache_write_tokens": 10000,
+                "total_tokens": 480000
+            }
+        ],
+        "by_model": [
+            {
+                "model": "claude",
+                "input_tokens": 380000,
+                "output_tokens": 190000,
+                "cache_read_tokens": 20000,
+                "cache_write_tokens": 10000,
+                "total_tokens": 600000
+            },
+            {
+                "model": "gpt-4",
+                "input_tokens": 220000,
+                "output_tokens": 90000,
+                "cache_read_tokens": 10000,
+                "cache_write_tokens": 5000,
+                "total_tokens": 325000
+            }
+        ]
+    }
+}
+```
+
+**TypeScript 类型定义**:
+```typescript
+interface TokenBucket {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+}
+
+interface TokenRangeDaily extends TokenBucket {
+  date: string; // YYYY-MM-DD
+}
+
+interface TokenRangeByModel extends TokenBucket {
+  model: string;
+}
+
+interface TokenRangeData {
+  start_date: string;
+  end_date: string;
+  days: number;
+  total: TokenBucket;
+  daily: TokenRangeDaily[];
+  by_model: TokenRangeByModel[];
+}
+
+interface ApiResp<T> {
+  status: 0 | 1;
+  msg: string;
+  data: T | null;
+}
+```
+
+**前端调用示例**:
+```typescript
+// 拉取近 30 天的 Token 消耗趋势与模型分布
+async function fetchTokenRange(startDate?: string, endDate?: string) {
+  const params = new URLSearchParams();
+  if (startDate) params.set('start_date', startDate);
+  if (endDate) params.set('end_date', endDate);
+
+  const resp = await fetch(`/api/ai/statistics/token-by-range?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const json: ApiResp<TokenRangeData> = await resp.json();
+  if (json.status !== 0 || !json.data) throw new Error(json.msg);
+  return json.data;
+}
+
+// 折线图数据：按天总量趋势
+const data = await fetchTokenRange('2024-01-01', '2024-01-30');
+const trend = data.daily.map((d) => ({ x: d.date, y: d.total_tokens }));
+
+// 饼图数据：模型 Token 占比（by_model 已按 total_tokens 降序）
+const pie = data.by_model.map((m) => ({ name: m.model, value: m.total_tokens }));
+```
+
+> 与 `token-by-model`（单日、按模型）的区别：本接口是**跨天时间段**聚合，同时给出按天趋势与跨天模型分布，一次请求即可支撑时间段维度的看板；单日明细仍用 `summary` / `token-by-model`。
+
+---
+
+## 20.4 获取活跃用户/群组排行
 
 ```
 GET /api/ai/statistics/active-users
@@ -179,7 +322,7 @@ GET /api/ai/statistics/active-users
 
 ---
 
-## 20.4 获取触发方式占比
+## 20.5 获取触发方式占比
 
 ```
 GET /api/ai/statistics/trigger-distribution
@@ -203,7 +346,7 @@ GET /api/ai/statistics/trigger-distribution
 
 ---
 
-## 20.5 获取意图分布统计
+## 20.6 获取意图分布统计
 
 ```
 GET /api/ai/statistics/intent-distribution
@@ -227,7 +370,7 @@ GET /api/ai/statistics/intent-distribution
 
 ---
 
-## 20.6 获取错误统计
+## 20.7 获取错误统计
 
 ```
 GET /api/ai/statistics/errors
@@ -255,7 +398,7 @@ GET /api/ai/statistics/errors
 
 ---
 
-## 20.7 获取 Heartbeat 巡检统计
+## 20.8 获取 Heartbeat 巡检统计
 
 ```
 GET /api/ai/statistics/heartbeat
@@ -279,7 +422,7 @@ GET /api/ai/statistics/heartbeat
 
 ---
 
-## 20.8 获取 RAG 知识库效果统计
+## 20.9 获取 RAG 知识库效果统计
 
 ```
 GET /api/ai/statistics/rag
@@ -305,7 +448,7 @@ GET /api/ai/statistics/rag
 
 ---
 
-## 20.9 获取 RAG 文档命中统计
+## 20.10 获取 RAG 文档命中统计
 
 ```
 GET /api/ai/statistics/rag/documents
@@ -333,7 +476,7 @@ GET /api/ai/statistics/rag/documents
 
 ---
 
-## 20.10 获取历史统计数据
+## 20.11 获取历史统计数据
 
 ```
 GET /api/ai/statistics/history

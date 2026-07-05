@@ -102,6 +102,51 @@ async def get_token_usage_by_model(
         return {"status": 1, "msg": f"获取 Token 消耗失败: {str(e)}", "data": None}
 
 
+@app.get("/api/ai/statistics/token-by-range")
+async def get_token_usage_by_range(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    _: Dict = Depends(require_auth),
+) -> Dict:
+    """
+    获取指定时间段的 Token 消耗统计
+
+    对 [start_date, end_date] 闭区间逐日聚合，返回时间段总量、按天趋势
+    以及跨天的按模型分布。今日数据取内存实时值，历史数据从数据库读取，
+    区间内无数据的日期以 0 补齐，保证 daily 序列连续。
+
+    Args:
+        start_date: 开始日期，格式为 "YYYY-MM-DD"，默认为 6 天前（即默认近 7 天）
+        end_date: 结束日期，格式为 "YYYY-MM-DD"，默认为今天
+
+    Returns:
+        status: 0成功，1失败
+        data: 包含 total（总量）、daily（按天趋势）、by_model（按模型分布）的统计
+    """
+    try:
+        now = datetime.now()
+        if end_date is None:
+            end_date = now.strftime("%Y-%m-%d")
+        if start_date is None:
+            start_date = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+
+        # 校验日期格式，非法时返回友好错误
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            return {
+                "status": 1,
+                "msg": "日期格式错误，应为 YYYY-MM-DD",
+                "data": None,
+            }
+
+        result = await statistics_manager.get_token_usage_by_range(start_date, end_date)
+        return {"status": 0, "msg": "ok", "data": result}
+    except Exception as e:
+        return {"status": 1, "msg": f"获取时间段 Token 统计失败: {str(e)}", "data": None}
+
+
 @app.get("/api/ai/statistics/active-users")
 async def get_active_users(
     date: Optional[str] = None,

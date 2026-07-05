@@ -44,8 +44,10 @@ chunk usage 的累计方式。vLLM/SGLang 系网关（如 SiliconFlow）**每个
 `usage_stats_mode`（auto/incremental/cumulative）+ auto 模式在线探测修复，详见
 [§12.17 流式 usage 累计语义膨胀](./12-developer-pitfalls.md)。
 
-前端 API：`GET /api/ai/statistics/*`（summary / token-by-model / persona-leaderboard /
+前端 API：`GET /api/ai/statistics/*`（summary / token-by-model / token-by-range / persona-leaderboard /
 active-users / trigger-distribution / intent-distribution / errors / heartbeat / rag / history）。
+其中 `token-by-range?start_date&end_date` 对闭区间逐日聚合 Token（今日取内存、历史取 DB、缺日补 0），
+一次返回 total / daily 趋势 / by_model 分布，供时间段维度看板使用。
 
 ## 11.2 网页控制台（`gsuid_core/webconsole/`）
 
