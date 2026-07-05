@@ -233,12 +233,16 @@ POST /api/plugins/install
 }
 ```
 
+> ℹ️ **实际实现的插件商店接口位于 `/api/plugin-store/*`**（含商店列表、按 ID 安装、按 URL 安装、更新、卸载），详见 [43. 插件商店 API](./43-plugin-store.md)。本文档 §3.8 - §3.11 为早期占位说明，请以新文档为准。
+
 ---
 
 ## 3.9 卸载插件
 ```
 DELETE /api/plugins/{plugin_name}
 ```
+
+> ℹ️ 实际实现请使用 `DELETE /api/plugin-store/uninstall/{plugin_id}`，详见 [43. 插件商店 API §43.5](./43-plugin-store.md#435-卸载已安装插件)。
 
 ---
 
@@ -247,14 +251,7 @@ DELETE /api/plugins/{plugin_name}
 GET /api/plugins/market
 ```
 
-**响应**：
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": [...]
-}
-```
+> ℹ️ 实际实现请使用 `GET /api/plugin-store/list`，详见 [43. 插件商店 API §43.1](./43-plugin-store.md#431-获取插件商店列表)。
 
 ---
 
@@ -262,6 +259,8 @@ GET /api/plugins/market
 ```
 GET /api/plugins/{plugin_name}/update
 ```
+
+> ℹ️ 实际更新操作请使用 `POST /api/plugin-store/update/{plugin_id}` 或更细粒度的 [28. Git 版本管理 API §28.6 - §28.7](./28-git-update.md)。
 
 ---
 

@@ -171,6 +171,15 @@ from gsuid_core.ai_core.state_store import (
     record_summary,
 )
 
+# 命令执行器（主人专属 buildin）- 分析/审批/受管执行的系统命令通道
+# 靠 visible_when 对非主人隐藏；3 个审批类工具平时隐藏,仅 run_command 常驻主人可见。
+from gsuid_core.ai_core.command_exec.tools import (
+    run_command,
+    list_pending_commands,
+    check_command_available,
+    respond_command_approval,
+)
+
 # Kanban 任务编排工具 - 多代理协作任务树
 from gsuid_core.ai_core.planning.kanban_tools import (
     artifact_get,
@@ -323,6 +332,11 @@ __all__ = [
     "send_message_by_ai",
     # 命令执行工具
     "execute_shell_command",
+    # 命令执行器（主人专属 buildin）
+    "run_command",
+    "respond_command_approval",
+    "list_pending_commands",
+    "check_command_available",
     # 数据库查询工具
     "query_user_memory",
     # 好感度管理工具

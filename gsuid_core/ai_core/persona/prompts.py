@@ -11,6 +11,7 @@
 from typing import List
 
 from gsuid_core.config import core_config
+from gsuid_core.ai_core.command_exec.prompts import get_usage_prompt
 
 config_masters: List[str] = core_config.get_config("masters")
 
@@ -284,7 +285,7 @@ __MASTERS__（以逗号分隔）为机器人主人，拥有最高权限。
 # system_prompt 末尾（人设/合规 LITE 在前、工具规程在后）。曾尝试"按 intent 逐轮注入
 # 用户侧"，但 rag_context 会被 new_messages() 写进 history、在窗口内重复累积且丢失系统
 # 前缀缓存，故回退至 system_prompt 拼接（详见 processor.py 注释 / plans §10.1）。
-TOOL_ORCHESTRATION_CONSTRAINTS = """
+TOOL_ORCHESTRATION_CONSTRAINTS = f"""
 ## 决策逻辑
 
 ### 决策树（优先级严格从高到低，逐级判断）
@@ -501,6 +502,8 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
 - 当你想要使用`run_skill_script`工具调用技能之前, 你**必须**先调用`list_skills`获取当前可用技能
 - 如果`list_skills`返回空值, 则禁止调用`run_skill_script`
 - 在调用技能前优先检索其他可用工具（Tool）和知识库, 技能列表并非你的全部工具！
+
+{get_usage_prompt()}
 
 ---
 

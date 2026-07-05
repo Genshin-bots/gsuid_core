@@ -1006,6 +1006,94 @@ async def install_plugin(
         return {"status": 1, "msg": f"安装失败: {str(e)}"}
 
 
+@app.post("/api/plugin-store/install-url")
+async def install_plugin_from_url_api(
+    request: Request,
+    data: Dict = Body(...),
+    _user: Dict = Depends(require_auth),
+):
+    """
+    从 URL 安装插件（不走插件商店白名单）
+
+    接受前端传来的 git 仓库 URL，后端执行 ``git clone`` 把仓库克隆到
+    ``plugins/`` 目录，并通过 ``reload_plugin`` 真正加载插件。
+
+    适用场景：
+    - 安装未收录在插件商店中的自定义插件 / 内部仓库 / 第三方仓库
+    - 通过 URL 形式快速拉取指定插件
+
+    与 ``POST /api/plugin-store/install/{plugin_id}`` 的区别：
+    该接口接受 ``plugin_id``（必须在商店列表中）并由后端解析 URL；
+    本接口接受原始 URL，由后端从 URL 末段推导插件目录名。
+
+    Args:
+        request: FastAPI 请求对象
+        data: JSON body
+            - ``url`` (str, 必填): git 仓库 URL，支持 http(s) / ssh(scp)，
+              末尾 ``.git`` 后缀可选。
+              例如 ``https://github.com/owner/MyPlugin.git``、
+              ``git@github.com:owner/MyPlugin.git``。
+            - ``branch`` (str, 可选): 指定克隆分支，默认使用仓库默认分支。
+        _user: 认证用户信息
+
+    Returns:
+        status: 0 成功，1 失败
+        msg: 操作结果信息（成功以 ✅ 开头，失败以 ❌ 开头，
+             包含原始 git 错误信息，便于前端直接展示）
+
+    请求示例:
+        POST /api/plugin-store/install-url
+        Content-Type: application/json
+        {
+            "url": "https://github.com/KimigaiiWuyi/GenshinUID.git"
+        }
+
+    响应示例（成功）:
+        {
+            "status": 0,
+            "msg": "✅ 插件GenshinUID安装并加载成功!"
+        }
+
+    响应示例（已存在）:
+        {
+            "status": 1,
+            "msg": "❌ 该插件已经安装过了!"
+        }
+
+    响应示例（URL 非法）:
+        {
+            "status": 1,
+            "msg": "❌ URL 协议不支持, 当前仅支持 http://、https://、ssh://、git@ 开头的 git 仓库"
+        }
+
+    响应示例（网络/克隆失败）:
+        {
+            "status": 1,
+            "msg": "❌ 插件MyPlugin安装失败: 克隆失败: ..."
+        }
+    """
+    try:
+        from gsuid_core.utils.plugins_update._plugins import install_plugin_from_url
+
+        url = (data or {}).get("url")
+        branch = (data or {}).get("branch")
+
+        if not isinstance(url, str) or not url.strip():
+            return {"status": 1, "msg": "❌ 请提供有效的 git 仓库 URL"}
+
+        if branch is not None and not isinstance(branch, str):
+            return {"status": 1, "msg": "❌ branch 字段必须是字符串"}
+
+        # install_plugin_from_url 内部已完成「URL 校验 + clone + reload」，
+        # 失败信息统一以 ❌ 前缀标识。
+        result = await install_plugin_from_url(url, branch=branch)
+        if result.lstrip().startswith("❌"):
+            return {"status": 1, "msg": result}
+        return {"status": 0, "msg": result}
+    except Exception as e:
+        return {"status": 1, "msg": f"安装失败: {str(e)}"}
+
+
 @app.post("/api/plugin-store/update/{plugin_id}")
 async def update_plugin(request: Request, plugin_id: str, _user: Dict = Depends(require_auth)):
     """

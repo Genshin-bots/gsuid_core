@@ -86,6 +86,12 @@ async def _init_mcp_server():
     await init_mcp_server()
 
 
+async def _init_command_exec():
+    from gsuid_core.ai_core.command_exec.startup import init_command_exec
+
+    await init_command_exec()
+
+
 _AI_CORE_READY = False
 _AI_CORE_INITIALIZING = False
 _AI_CORE_READY_EVENT: Optional[asyncio.Event] = None
@@ -134,6 +140,7 @@ _INIT_STEPS = [
     ("Meme", _init_meme),
     ("统计", _init_statistics),
     ("MCP Server", _init_mcp_server),
+    ("命令执行", _init_command_exec),
 ]
 
 

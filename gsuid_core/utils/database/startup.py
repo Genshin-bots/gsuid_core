@@ -24,6 +24,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.statistics.models",
     "gsuid_core.ai_core.scheduled_task.models",
     "gsuid_core.ai_core.planning.models",
+    "gsuid_core.ai_core.command_exec.models",
     "gsuid_core.ai_core.budget.models",
     "gsuid_core.ai_core.memory.database.models",
     "gsuid_core.ai_core.memory.ingestion.hiergraph",

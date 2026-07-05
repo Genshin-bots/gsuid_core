@@ -514,6 +514,60 @@ async def install_plugin(plugin_name: str) -> str:
     return await install_plugins(url)
 
 
+async def install_plugin_from_url(url: str, branch: Optional[str] = None) -> str:
+    """
+    直接从用户提供的 git URL 安装插件（不走插件商店白名单）。
+
+    适用于安装未收录在插件商店中的自定义插件、内部仓库或第三方仓库。
+    复用 ``install_plugins`` 的 GitMirror 镜像 / fallback / reload 逻辑。
+
+    Args:
+        url: git 仓库 URL，支持 HTTP(S) / SSH(SCP) 两种格式
+             （如 ``https://github.com/owner/repo.git`` 、
+             ``git@github.com:owner/repo.git`` 或
+             ``https://gitcode.com/owner/repo``）。
+             末尾的 ``.git`` 后缀可选。
+        branch: 指定克隆的分支名称，可选；不传则使用仓库默认分支。
+
+    Returns:
+        人类可读的结果字符串（成功以 ✅ 开头，失败以 ❌ 开头）。
+    """
+    from .git_mirror import _extract_repo_name
+
+    # ── 1. 基础校验 ────────────────────────────────────────────
+    if not url or not isinstance(url, str):
+        return "❌ 请提供有效的 git 仓库 URL"
+
+    url = url.strip()
+    if not url:
+        return "❌ 请提供有效的 git 仓库 URL"
+
+    valid_prefixes = ("http://", "https://", "ssh://", "git@")
+    if not url.startswith(valid_prefixes):
+        return "❌ URL 协议不支持, 当前仅支持 http://、https://、ssh://、git@ 开头的 git 仓库"
+
+    # ── 2. 从 URL 提取仓库名作为插件目录名 ─────────────────────
+    plugin_name = _extract_repo_name(url)
+    if not plugin_name:
+        return "❌ 无法从 URL 中提取仓库名, 请检查 URL 是否合法"
+
+    # ── 3. 规范化 URL：去掉尾部斜杠和 .git 后缀，
+    #         install_plugins 会按 {link}.git 的格式重新拼装 ──
+    clean_url = url.rstrip("/")
+    if clean_url.endswith(".git"):
+        clean_url = clean_url[:-4]
+
+    # ── 4. 构造 install_plugins 期望的 dict 并复用其完整流程 ──
+    plugins_dict: Dict[str, str] = {
+        "link": clean_url,
+        # 不传 branch 时 install_plugins 会用 None, 走仓库默认分支
+        "branch": branch.strip() if branch and branch.strip() else "main",
+    }
+
+    logger.info(f"[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={plugins_dict['branch']}")
+    return await install_plugins(plugins_dict)
+
+
 async def check_plugins(plugin_name: str) -> Optional[Path]:
     path = PLUGINS_PATH / plugin_name
     if path.exists():

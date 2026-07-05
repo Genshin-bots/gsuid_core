@@ -25,3 +25,7 @@ AI_SESSION_LOGS_PATH = get_res_path(AI_CORE_PATH / "session_logs")
 AI_SUBAGENT_LOGS_PATH = get_res_path(AI_CORE_PATH / "session_logs" / "subagents")
 # AI Session 日志中外置的图片存放路径（独立子目录）
 AI_SESSION_IMAGES_PATH = get_res_path(AI_CORE_PATH / "session_logs" / "images")
+# 命令执行器模块根
+COMMAND_EXEC_PATH = get_res_path(AI_CORE_PATH / "command_exec")
+# 命令执行器受管工具链目录（自动补全装到这里,不动系统 PATH）
+TOOLCHAIN_PATH = get_res_path(AI_CORE_PATH / "command_exec" / "toolchain")

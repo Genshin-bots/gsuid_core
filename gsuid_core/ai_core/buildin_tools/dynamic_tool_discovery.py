@@ -17,7 +17,7 @@ from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
 
 # 不声明 capability_domain：find_tools 是单例 meta 工具，无能力族语义；声明了反而会被
 # L3 会话驻留按族带进随后数轮（含闲聊），破坏"闲聊轮零开销"。它的装配完全由意图门控制。
-@ai_tools(category="meta")
+@ai_tools(category="buildin")
 async def find_tools(
     ctx: RunContext[ToolContext],
     need: str,
