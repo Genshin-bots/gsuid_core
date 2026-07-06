@@ -144,6 +144,8 @@ def _format_subtask_prompt(
         "`record_append` / `record_update` 写入框架统一的 `record:<集合名>` 集合，"
         "**不要**只塞进 state_set 大 JSON 块或自己写文件——其它子任务读不到。"
         "\n- 最后简短返回结论（一段话即可），剩下的让主人格自己转译。"
+        "\n- 若本轮确实没有值得向主人播报的新进展（如决策全为观望/无变化），请在返回"
+        f"结论开头单独一行写 {KANBAN_NO_BROADCAST_MARK}——任务照常完成归档，但不推群打扰。"
     )
     parts.append(
         "【工作区】你的唯一可写目录是框架绑定的 Artifact Workspace，禁止写入项目根目录、系统临时目录或其它任务目录。"
@@ -348,6 +350,35 @@ async def _notify(
         logger.warning(f"📋 [Kanban] 任务 root=#{task.ordinal} 主动消息发送失败 / 被抑制")
 
 
+# ============================================================
+# 子任务播报静默信号
+# ============================================================
+# 能力代理在最终输出里以本标记单独成段/作行首前缀，声明"本轮没有值得播报的
+# 进展"——框架据此完成+归档但不推群（如模拟盘全 hold 不吭声，真买卖才冒泡）。
+KANBAN_NO_BROADCAST_MARK = "<<NO_BROADCAST>>"
+# 只认行首位置（大小写不敏感）：正文中途提及该字面串不触发静默、也不被剥离
+_NO_BROADCAST_PATTERN = re.compile(
+    rf"^[ \t]*{re.escape(KANBAN_NO_BROADCAST_MARK)}[ \t]*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
+    """剥离 ``<<NO_BROADCAST>>`` 静默标记，返回 ``(去标记后的文本, 是否静默)``。
+
+    大小写不敏感，但只认**行首**位置的标记（单独成段或作某行前缀）——避免正文
+    中途引用该字面串的合法产出（如解释本静默机制的任务）被误判静默、误洗归档文本。
+    命中后子任务照常完成，去标记后的文本仍作 artifact 归档（剥离后为空时由调用方
+    写占位说明留档），只是不走 relay/notify 推群。
+    """
+    if not raw or KANBAN_NO_BROADCAST_MARK.lower() not in raw.lower():
+        return raw, False
+    stripped, n = _NO_BROADCAST_PATTERN.subn("", raw)
+    if n == 0:
+        return raw, False
+    return stripped.strip(), True
+
+
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
     """派活单个子任务节点。"""
     lock = kanban.get_task_node_lock(child.id)
@@ -404,6 +435,12 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         finally:
             reset_plan_context(token)
 
+        # 3.5) 剥离静默标记：能力代理声明"本轮无值得播报"时，完成+归档但不推群
+        raw_result, no_broadcast = _strip_no_broadcast(raw_result)
+        if no_broadcast and not raw_result:
+            # 纯标记输出也要留档，下游依赖本节点 artifact 时不至于拿到空上游
+            raw_result = "（本轮无值得播报的进展）"
+
         # 4) 没产出 artifact 时用 raw_result 兜底写一份 text
         latest = await AIAgentTask.get_by_id(fresh.id)
         output_id = latest.output_artifact_id if latest and latest.output_artifact_id else ""
@@ -441,7 +478,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             await _notify_failure(root, fresh, raw_result[:1000])
         else:
             await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
-            if bot and raw_result:
+            if bot and raw_result and not no_broadcast:
                 spoken, relay_log_files = await _persona_relay(fresh, raw_result)
                 if spoken:
                     await _notify(
@@ -450,6 +487,10 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                         trigger_reason=f"subtask={fresh.display_name}",
                         generator_log_files=relay_log_files,
                     )
+            elif bot and no_broadcast:
+                logger.debug(
+                    f"📋 [Kanban] 子任务 {fresh.display_name} 声明静默（{KANBAN_NO_BROADCAST_MARK}），跳过推群"
+                )
 
 
 async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) -> None:

@@ -137,11 +137,9 @@ async def _recover_zombies_and_kick() -> None:
     from .kanban_executor import kick_root
 
     recovered = await recover_zombie_subtasks()
-    # 哪怕本次没有复活任何僵尸，也对所有 running / pending 根任务发一次 kick——
-    # 进程重启后内存锁丢失是安全的，重启后第一次推进会被 mark_subtask_running 的
-    # 条件 SQL 拦住不会双跑，但能把因主人格上次未发起 kick 而卡住的根任务接力推进。
-    if recovered <= 0:
-        return
+    # 无论是否复活过僵尸都无条件接力 kick 所有 running/pending 根任务（否则优雅重启后
+    # 无僵尸时 pending 树永远无人推进）；双跑由 mark_subtask_running 的条件 SQL 拦住
+    logger.info(f"📋 [Kanban] 启动期僵尸恢复 {recovered} 个，开始接力 kick 所有 running/pending 根任务")
     async with async_maker() as session:
         stmt = (
             select(AIAgentTask)

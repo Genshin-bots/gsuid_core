@@ -18,7 +18,9 @@ _PROGRESSIVE_TOOLS_SKIP_INTENTS = ("闲聊",)
 
 # 工具自动装配白名单：仅列表内 create_by 未显式传 tools 时走向量检索装配。
 # CapabilityAgent 自带显式 tools 故排除（见 runner.py）。
-_AGENTIC_CREATE_BY = ("SubAgent", "Chat", "Agent", "AutoPlanner")
+# ScheduledTask_Exec（scheduled_task/executor.py 的定时任务执行体）必须在列：
+# 否则装配层跳过它，定时任务代理拿不到任何工具只能空手而归（实测踩坑）。
+_AGENTIC_CREATE_BY = ("SubAgent", "Chat", "Agent", "AutoPlanner", "ScheduledTask_Exec")
 
 # skills_toolset 挂载白名单：agentic + CapabilityAgent
 # （需 list_skills/run_skill_script）；名单外后台调用不挂，避免白送 token。

@@ -87,13 +87,29 @@ class Event(MessageReceive):
 
     def __hash__(self) -> int:
         """哈希：只基于会话标识字段，包含 WS_BOT_ID 与 bot_self_id 以区分不同 WS 连接和机器人账号。"""
-        return hash((self.WS_BOT_ID, self.bot_id, self.bot_self_id, self.user_id, self.group_id, self.user_type))
+        return hash(
+            (
+                self.WS_BOT_ID,
+                self.bot_id,
+                self.bot_self_id,
+                self.user_id,
+                self.group_id,
+                self.user_type,
+            )
+        )
 
     def __eq__(self, other: object) -> bool:
         """等值比较：只比较会话标识字段，与 __hash__ 保持一致。"""
         if not isinstance(other, Event):
             return NotImplemented
-        return (self.WS_BOT_ID, self.bot_id, self.bot_self_id, self.user_id, self.group_id, self.user_type) == (
+        return (
+            self.WS_BOT_ID,
+            self.bot_id,
+            self.bot_self_id,
+            self.user_id,
+            self.group_id,
+            self.user_type,
+        ) == (
             other.WS_BOT_ID,
             other.bot_id,
             other.bot_self_id,

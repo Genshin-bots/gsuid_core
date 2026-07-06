@@ -34,7 +34,11 @@ Kanban 任务树本身是**一次性事件驱动**的——同一棵树跑完即
 """
 
 import re
-from typing import Tuple, Optional
+import inspect
+from typing import TYPE_CHECKING, Tuple, Callable, Optional
+
+if TYPE_CHECKING:
+    from .models import AIAgentTask
 
 from gsuid_core.aps import scheduler
 from gsuid_core.logger import logger
@@ -45,6 +49,73 @@ _JOB_PREFIX = "kanban_recurring_"
 _NOT_BEFORE_JOB_PREFIX = "kanban_not_before_"
 # 子任务级周期触发的 APScheduler job id 前缀；与根任务级模板隔离
 _SUBTASK_RECURRING_JOB_PREFIX = "kanban_subrecurring_"
+
+
+# 周期触发前置门（recurring gate）：按 agent_profile 注册的业务日历谓词，
+# 到点后先问 gate 再克隆/派代理。注册入口与完整语义见 register_recurring_gate。
+_RECURRING_GATES: dict[str, Callable[[], object]] = {}
+
+
+def register_recurring_gate(agent_profile: str, gate: Callable[[], object]) -> None:
+    """为某个能力代理画像注册周期触发前置门。
+
+    动机：cron 表达式只能表达"星期几/几点"，表达不了"A 股交易日""美股开盘"这类
+    业务日历。没有 gate 时，节假日到点照样克隆实例树 → 派能力代理 → LLM 醒来一句
+    "今天不开盘"再睡回去——纯浪费 token。``_fire_template`` / ``_fire_subtask_template``
+    在克隆之前先问 gate，返回 False 则本次静默跳过（不克隆、不派代理、不消耗任何
+    LLM token），下个 cron 周期再问。gate 抛异常按"放行"处理（fail-open——业务日历
+    服务挂了不应让任务永久停摆）。
+
+    之所以按 agent_profile 而不是 task_id 注册：profile 是稳定的能力语义（"这个代理
+    只应在交易时段醒来"），跨实例树、跨群、跨重启都成立，且无需给 AIAgentTask 加列。
+    注意根任务不挂画像（见 models.AIAgentTask.agent_profile），整树模板的 gate 判定
+    由 :func:`_tree_gates_allow` 汇总全体子任务的画像完成。
+
+    Args:
+        agent_profile: 能力代理画像 id（如 ``papertrade_decision_agent``）。
+        gate: 无参谓词，返回 bool（可为 async）。True=放行本次触发。
+    """
+    _RECURRING_GATES[agent_profile] = gate
+    logger.info(f"📋 [Kanban] 周期触发 gate 已注册：agent_profile={agent_profile}")
+
+
+async def _gate_allows(agent_profile: str) -> bool:
+    """查询 gate；未注册 / gate 异常均放行。
+
+    try/except 是对第三方插件回调的边界隔离（fail-open，日历服务挂了不停摆），
+    并非类型兜底；不属于 §1.1 禁止的异常吞噬场景。
+    """
+    gate = _RECURRING_GATES.get(agent_profile or "")
+    if gate is None:
+        return True
+    try:
+        result = gate()
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+    except Exception as e:
+        logger.warning(f"📋 [Kanban] 周期 gate 执行异常（按放行处理）profile={agent_profile}: {e}")
+        return True
+
+
+async def _tree_gates_allow(template_root: "AIAgentTask") -> bool:
+    """整树模板的前置门判定：任一子任务画像的 gate 拒绝即拦下整树。
+
+    根任务不分配画像（agent_profile 恒为空，见 models.AIAgentTask），直接拿根问
+    gate 永远放行、形同虚设；故取全体子任务的画像去重后逐一问。树内子任务通常
+    有依赖关系，被 gate 的环节缺席时整树本次运行没有意义，因而"任一拒绝即拦"。
+    """
+    from .kanban import _query_children
+
+    children = await _query_children(template_root.id)
+    profiles = {c.agent_profile for c in children if c.agent_profile}
+    if template_root.agent_profile:
+        profiles.add(template_root.agent_profile)
+    for profile in sorted(profiles):
+        if not await _gate_allows(profile):
+            logger.info(f"📋 [Kanban] 周期 gate 拒绝：profile={profile}")
+            return False
+    return True
 
 
 def _job_id(template_root_id: str) -> str:
@@ -134,6 +205,12 @@ async def _fire_template(template_root_id: str) -> None:
             logger.info(f"📋 [Kanban] 周期触发：模板 {template_root_id} 已过期，自动 disarm")
             await disarm_template(template_root_id)
             unschedule_template(template_root_id)
+            return
+
+        # 前置门：按树内子任务画像汇总问 gate（根不挂画像），业务日历不满足
+        # （如非交易时段）时静默跳过本次，不克隆、不派任何 LLM
+        if not await _tree_gates_allow(template):
+            logger.info(f"📋 [Kanban] 周期触发：模板 {template_root_id} 被 gate 拦截，本次跳过")
             return
 
         instance_root, _ = await clone_tree_for_fire(template)
@@ -328,6 +405,14 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
         if sub.recurring_until is not None and sub.recurring_until < datetime.now():
             logger.info(f"📋 [Kanban] 周期子任务 {subtask_id} 已过期，自动 disarm")
             await disarm_subtask_template(subtask_id)
+            return
+
+        # 前置门：业务日历不满足（如非交易时段/节假日）时静默跳过本次触发，
+        # 不克隆实例、不派能力代理；下个 cron 周期再判
+        if not await _gate_allows(sub.agent_profile):
+            logger.info(
+                f"📋 [Kanban] 周期子任务触发：{subtask_id} 被 gate 拦截（profile={sub.agent_profile}），本次跳过"
+            )
             return
 
         instance = await clone_subtask_for_fire(sub)

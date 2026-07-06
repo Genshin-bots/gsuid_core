@@ -357,26 +357,6 @@ class GsCoreAIAgent:
         self.history = _drop_orphan_tool_results(self.history)
         logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已处理至 {len(self.history)} 条")
 
-    @staticmethod
-    async def _aclose_model(
-        model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]],
-    ) -> None:
-        """关闭被丢弃模型的底层 HTTP 客户端，释放其独立 httpx 连接池。
-
-        热替换每次都新建一个持有独立 AsyncOpenAI/AsyncAnthropic 客户端的模型，旧模型若不
-        显式关闭，连接池会随会话存活长期堆积。仅在丢弃旧模型时调用，故对清理失败采取
-        best-effort 兜底（区别于 §1.1 针对的类型错误吞噬）：已成功的热替换不应被回收动作打断。
-        """
-        if model is None:
-            return
-        client = model.client
-        if client.is_closed():
-            return
-        try:
-            await client.close()
-        except Exception as e:
-            logger.debug(f"🧠 [GsCoreAIAgent] 旧模型客户端关闭失败（忽略）: {e}")
-
     async def refresh_model_if_changed(self) -> bool:
         """运行期检测：本会话 task_level 对应的激活模型配置变化时，就地热替换 self.model。
 
@@ -417,11 +397,11 @@ class GsCoreAIAgent:
             return False
 
         old = self.model_config_name
-        old_model = self.model
+        # 旧模型不关底层 client：本项目所有模型共享 pydantic-ai 进程级缓存 httpx 客户端，
+        # close 会拖垮全进程会话（曾致所有请求报 client has been closed），交给 GC 即可。
         self.model = new_model
         self.model_config_name = current
         self.model_config_fingerprint = current_fp
-        await self._aclose_model(old_model)
         # 全名变=换配置文件；全名同指纹变=原地改了当前配置文件字段。
         change_desc = f"{old} → {current}" if old != current else f"{current}（配置内容已更新）"
         logger.info(
@@ -1600,8 +1580,8 @@ class GsCoreAIAgent:
                         raise
                     finally:
                         if temp_model is not None:
+                            # 备用模型不关底层 client（共享缓存客户端，close 会拖垮全进程会话）
                             self.model = orig_model
-                            await self._aclose_model(temp_model)
 
 
 # 工厂函数

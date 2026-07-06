@@ -115,6 +115,37 @@ def _strip_tool_call_artifacts(text: str) -> str:
     return cleaned
 
 
+# 模型私有"回合/角色分隔" token（如 MiniMax 的 ]<]minimax[>[）经 OpenAI 兼容网关
+# 透传时偶尔泄漏进正文；新增一类模型的泄漏 token 时在此追加一条正则即可。
+_SPECIAL_TOKEN_PATTERNS = (
+    # 成对块（含中间角色名）：中段限 ≤32 字 ASCII 标识符，防定界符错配吞掉正文
+    re.compile(r"\]<\][A-Za-z0-9_.-]{0,32}\[>\["),
+    # 流式截断的半截 token 只会落在文本首/尾：锚定后正文中间的字面串不受影响
+    re.compile(r"\A[A-Za-z0-9_.-]{0,32}\[>\[|\]<\][A-Za-z0-9_.-]{0,32}\Z"),
+)
+# 命中任一特征子串才进正则（正常消息零开销）
+_SPECIAL_TOKEN_HINTS = ("]<]", "[>[")
+
+
+def _strip_special_control_tokens(text: str) -> str:
+    """剥离泄漏进正文的模型私有"回合/角色分隔"控制 token（如 MiniMax 的 ``]<]minimax[>[``）。
+
+    与 _strip_tool_call_artifacts（工具调用标记）、SILENCE_MARKERS（整段沉默标记）互补，
+    专管说话人/回合分隔符。带快路径：不含特征子串时零正则开销。成对块出现在任意位置都删；
+    半截定界符只可能由流式截断产生、必然落在文本首/尾，故第二条正则做了 ``\\A``/``\\Z``
+    锚定——正文中间偶然出现的字面 ``]<]`` / ``[>[``（如代码片段、正则示例）不会被误删。
+    真正剥离时打 warning，便于追查网关侧泄漏。
+    """
+    if not any(h in text for h in _SPECIAL_TOKEN_HINTS):
+        return text
+    cleaned = text
+    for pat in _SPECIAL_TOKEN_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    if cleaned != text:
+        logger.warning(f"[send] 剥离模型私有控制 token 残留（len {len(text)} → {len(cleaned)}）")
+    return cleaned
+
+
 def _find_json_span(text: str) -> Optional[str]:
     """从可能夹带散文/前后缀的文本里，按括号配平切出第一个完整的 JSON 对象或数组。
 
@@ -545,9 +576,12 @@ async def send_chat_result(
         logger.debug(f"[send_chat_result] 跳过特殊标记: {_trimmed!r}")
         return
 
-    # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts），
-    # 覆盖前摇 / 兜底总结 / 主动消息 / 子 Agent 转述等所有经本函数下发的路径。
+    # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
+    # 与模型私有的回合/角色分隔特殊 token（如 MiniMax 的 ]<]minimax[>[，详见
+    # _strip_special_control_tokens）。覆盖前摇 / 兜底总结 / 主动消息 / 子 Agent 转述等
+    # 所有经本函数下发的路径。
     text = _strip_tool_call_artifacts(text)
+    text = _strip_special_control_tokens(text)
 
     # Trace 日志：记录原始输出
     logger.trace(f"[Meme] 原始输出: {text!r}")
@@ -986,7 +1020,7 @@ def _sanitize_tool_call_artifacts_in_parts(
     kept: List[ModelResponsePart] = []
     for part in parts:
         if isinstance(part, TextPart):
-            cleaned = _strip_tool_call_artifacts(part.content)
+            cleaned = _strip_special_control_tokens(_strip_tool_call_artifacts(part.content))
             if cleaned != part.content:
                 if not cleaned.strip():
                     continue  # 整段都是残留 → 丢弃，不留空串
