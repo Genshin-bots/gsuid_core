@@ -90,6 +90,9 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
   记群成员称呼（受保护称谓仅 PM=0 可注册）
 - ``state_delete`` / ``state_append``（``state_store/tools.py``，
   ``capability_domain="持久状态"``）：低频持久键值删除 / 追加
+- ``install_skill``（``skill_installer.py``，``capability_domain="技能管理"``）：
+  从 git 仓库 / zip 直链 / SKILL.md 直链安装技能到 SKILLS_PATH 并热重载
+  （``check_pm`` 限主人 + ``visible_when`` 对非主人隐藏）
 - ``send_meme`` / ``collect_meme`` / ``search_meme``（``meme_tools.py``）：
   表情包发送 / 收藏 / 检索
 - ``list_scheduled_tasks`` / ``query_scheduled_task`` / ``modify_scheduled_task``
@@ -276,6 +279,9 @@ from gsuid_core.ai_core.buildin_tools.file_operations import (
     pack_to_zip,
 )
 
+# 技能安装工具 - 从 git/zip/SKILL.md 直链安装技能到 SKILLS_PATH 并热重载（限主人）
+from gsuid_core.ai_core.buildin_tools.skill_installer import install_skill
+
 # R2（C5 落地后）：移除 agent_mesh 的"假持久化" PersistentAgent 及其 4 个工具。
 # 跨天 / 步骤化长任务改由 ai_core/planning 的真持久化三表 + 定时唤醒承担。
 # 命令执行工具 - 执行系统命令
@@ -375,6 +381,8 @@ __all__ = [
     "cancel_scheduled_task",
     "pause_scheduled_task",
     "resume_scheduled_task",
+    # 技能安装工具（限主人）
+    "install_skill",
     # 动态工具发现
     "find_tools",
     "discover_tools",

@@ -6,6 +6,9 @@
 
 判定一律**偏可见**（拿不准就显示）：``visible_when`` 误隐藏会让模型够不到真正需要的工具，
 代价远大于多显示一个，故只在"确实没有任何线索"时才隐藏。
+
+另含 ``visible_to_admin``：管理员专属工具（execute_shell_command / install_skill 等）
+共用的"仅主人可见"谓词，与各自的 ``check_func=check_pm`` 执行期拦截互补。
 """
 
 from __future__ import annotations
@@ -45,6 +48,18 @@ def context_has_url(ctx: RunContext[ToolContext]) -> bool:
         if _URL_RE.search(text):
             return True
     return False
+
+
+def visible_to_admin(ctx: RunContext[ToolContext]) -> bool:
+    """管理员专属工具的 visible_when：对普通用户隐藏 schema，减少高危工具噪声。
+
+    无 ev（后台 / 能力代理）时不隐藏，交 check_func 执行期拦截，避免误伤显式装配方。
+    仅判 ``user_pm == 0``；需叠加开关 / 白名单等额外条件的（如 command_exec）自行实现。
+    """
+    ev = ctx.deps.ev if ctx.deps is not None else None
+    if ev is None:
+        return True
+    return ev.user_pm == 0
 
 
 def context_has_image(ctx: RunContext[ToolContext]) -> bool:

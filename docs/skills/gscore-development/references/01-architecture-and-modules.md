@@ -62,7 +62,7 @@ gsuid_core/ai_core/
 ├── self_cognition.py    # 自我认知 self_model 演化层（每轮注入【关于我自己】）
 ├── configs/             # ai_config 全局配置 + 配置数据模型
 ├── buildin_tools/       # 内建 AI 工具（见 §07）
-├── skills/              # 运行时 Skill 系统（list_skills / run_skill_script）
+├── skills/              # 运行时 Skill 系统（list_skills / run_skill_script + install_skill 统一安装/热重载）
 ├── classifier/          # 意图分类器（闲聊/工具/问答）
 ├── persona/             # Persona 角色系统（config/processor/prompts/mood/group_context）
 ├── heartbeat/           # 定时巡检（inspector + decision + dispatcher 主动消息网关）

@@ -189,11 +189,15 @@ Authorization: Bearer <token>
 
 ---
 
-## 15.4 从 Git 克隆 AI 技能
+## 15.4 安装 AI 技能（Git 仓库 / 压缩包直链 / SKILL.md 直链）
 
 ```
 POST /api/ai/skills/clone
 ```
+
+后端为 `ai_core/skills/operations.py::install_skill` 统一安装链路（AI 工具 `install_skill`
+共用同一函数）：来源先落临时目录并校验含 `SKILL.md` 才拷入 `data/ai_core/skills/`，
+支持一包多技能，安装完成自动热重载（`_rebuild_skills`），无需重启。
 
 **请求头**：
 ```
@@ -210,14 +214,15 @@ Authorization: Bearer <token>
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| git_url | string | 是 | Git 仓库 URL |
-| skill_name | string | 否 | 自定义技能名称，不提供则使用仓库名 |
+| git_url | string | 是 | 技能来源地址：Git 仓库（`.git`/主页均可）、zip/tar.gz 压缩包直链、SKILL.md 文件直链 |
+| skill_name | string | 否 | 自定义技能名。**仅当来源只含单个技能且其 SKILL.md 缺少 frontmatter `name` 时生效**——有 `name` 时以其为准（安装目录名必须与技能名一致，否则删除接口无法定位） |
 
 **响应（成功）**：
 ```json
 {
     "status": 0,
-    "msg": "Skill 'skill-repo' cloned successfully",
+    "msg": "已安装 1 个技能: skill-repo",
+    "skills": ["skill-repo"],
     "skill_name": "skill-repo"
 }
 ```
@@ -226,24 +231,31 @@ Authorization: Bearer <token>
 ```json
 {
     "status": 1,
-    "msg": "Skill 'xxx' already exists"
+    "msg": "技能已存在: xxx；如需覆盖更新请传 update=True"
 }
 ```
 
-**错误响应（Git 克隆失败）**：
+> 本 API 固定不覆盖已有技能（`update=False`）；覆盖更新语义目前仅 AI 工具 `install_skill`
+> 暴露（默认 `update=True`，安装/更新一体）。
+
+**错误响应（来源无效）**：
 ```json
 {
     "status": 1,
-    "msg": "Git clone failed: error message"
+    "msg": "来源内容中未找到任何 SKILL.md，不是有效的技能包，已放弃安装"
 }
 ```
+
+其他失败情形：`git clone 失败: ...`、`获取技能源失败: ...`（网络/解包异常）、
+`非法技能名: ...`（技能名含路径分隔符等）、URL 是普通网页且非 git 仓库。
 
 **响应字段说明**：
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | status | integer | 状态码，0表示成功，1表示失败 |
 | msg | string | 状态信息 |
-| skill_name | string | 克隆后的技能名称（仅成功时返回） |
+| skills | array | 本次安装的技能名列表（仅成功时返回；一包多技能时含全部） |
+| skill_name | string | 首个安装的技能名称（仅成功时返回） |
 
 ---
 

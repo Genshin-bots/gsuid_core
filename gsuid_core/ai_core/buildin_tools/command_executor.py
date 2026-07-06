@@ -18,6 +18,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.check_func import check_pm
+from gsuid_core.ai_core.buildin_tools.visibility import visible_to_admin
 
 # Windows 平台兼容：core.py 强制把事件循环切换为 WindowsSelectorEventLoopPolicy
 # 以规避 ProactorEventLoop 关闭 socket 时的 InvalidStateError。代价是 Selector
@@ -322,23 +323,7 @@ def _get_safe_environment() -> dict:
     return safe_env
 
 
-def _shell_visible_to_admin(ctx: "RunContext[ToolContext]") -> bool:
-    """条件隐藏谓词（Phase 3）：仅对交互式非管理员用户隐藏 execute_shell_command。
-
-    - 后台 / 能力代理场景（无 ev）：返回 True，不隐藏——交给 check_func 在执行期兜底，
-      避免误伤显式装配本工具的能力代理。
-    - 交互式用户：仅管理员（``user_pm == 0``）可见，从源头减少普通用户工具列表里的
-      高危工具噪声。check_pm 仍在执行期再次拦截，二者互补。
-
-    谓词为纯内存判定（只读 ev.user_pm），满足 visible_when "每步廉价求值"的要求。
-    """
-    ev = ctx.deps.ev if ctx.deps else None
-    if ev is None:
-        return True
-    return ev.user_pm == 0
-
-
-@ai_tools(check_func=check_pm, visible_when=_shell_visible_to_admin)
+@ai_tools(check_func=check_pm, visible_when=visible_to_admin)
 async def execute_shell_command(
     ctx: RunContext[ToolContext],
     command: str,

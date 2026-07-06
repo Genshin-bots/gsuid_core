@@ -4,6 +4,7 @@ AI Skills APIs
 提供 AI Skills 技能管理相关的 RESTful APIs，包括获取技能列表、详情、删除、克隆和更新等。
 """
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends
@@ -13,10 +14,11 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.skills.resource import skills
 from gsuid_core.ai_core.skills.operations import (
+    SkillInstallResult,
     delete_skill,
+    install_skill,
     is_plugin_skill,
     get_skill_source,
-    clone_skill_from_git,
     update_skill_markdown,
     get_skill_markdown_path,
 )
@@ -169,19 +171,20 @@ async def remove_ai_skill(skill_name: str, _: Dict = Depends(require_auth)) -> D
 async def clone_ai_skill(
     body: CloneSkillRequest,
     _: Dict = Depends(require_auth),
-) -> Dict[str, Any]:
+) -> SkillInstallResult:
     """
-    从 Git URL 克隆 AI 技能
+    从 Git 仓库 / zip 直链 / SKILL.md 直链安装 AI 技能
 
     Args:
-        body: 包含 git_url 和可选的 skill_name
+        body: 包含 git_url（任意受支持的来源地址）和可选的 skill_name
 
     Returns:
         status: 0成功，1失败
         msg: 操作结果信息
-        skill_name: 克隆后的技能名称（仅成功时返回）
+        skill_name: 安装后的技能名称（仅成功时返回）
     """
-    result = clone_skill_from_git(body.git_url, body.skill_name)
+    # git clone / 下载解包是阻塞 IO，放线程池避免卡事件循环
+    result = await asyncio.to_thread(install_skill, body.git_url, body.skill_name)
     return result
 
 

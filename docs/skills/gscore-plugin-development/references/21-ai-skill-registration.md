@@ -83,6 +83,10 @@ read_skill_resource("my-skill", "reference.md")
 若用户在 `data/ai_core/skills/` 放了同名 skill，会覆盖插件默认值（符合「用户自定义 > 插件默认」），
 且该 skill 在 webconsole 内被视为可编辑的 data skill。
 
+> data 目录的 skill 除手动放置外，还可经统一安装链路装入并自动热重载：webconsole
+> `POST /api/ai/skills/clone` 或主人专属 AI 工具 `install_skill`（支持 git 仓库 /
+> zip、tar 直链 / SKILL.md 直链），见框架侧 `gscore-development` §7.10。
+
 ## 21.5 WebConsole 行为（只读）
 
 插件注册的 skill 在 WebConsole AI Skills 管理页：

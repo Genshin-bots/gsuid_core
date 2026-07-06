@@ -22,6 +22,7 @@ from gsuid_core.ai_core.skills.resource import (
     skill_source_plugin,
 )
 from gsuid_core.ai_core.skills.operations import (
+    install_skill,
     is_plugin_skill,
     get_skill_source,
     get_skill_markdown_path,
@@ -36,6 +37,7 @@ __all__ = [
     "plugin_skill_dirs",
     "skill_source_plugin",
     # 操作
+    "install_skill",
     "get_skill_markdown_path",
     "register_plugin_skill_directory",
     "is_plugin_skill",
