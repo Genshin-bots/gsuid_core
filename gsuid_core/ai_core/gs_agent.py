@@ -968,15 +968,17 @@ class GsCoreAIAgent:
 
                 # 渐进式工具暴露：非闲聊轮注入 find_tools 并标记本轮挂 RetrievableToolset，
                 # 模型中途发现缺工具即可调 find_tools 现拉，下一步即可用。闲聊轮跳过。
-                if (
-                    ENABLE_PROGRESSIVE_TOOLS
-                    and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
-                    and not any(t.name == "find_tools" for t in tools)
-                ):
-                    ft = find_tool_base("find_tools")
-                    if ft is not None:
-                        tools.append(ft.tool)
+                if ENABLE_PROGRESSIVE_TOOLS and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
+                    if any(t.name == "find_tools" for t in tools):
+                        # find_tools 已被上游带入（显式传参 / 分类误配等）也必须挂动态
+                        # toolset——否则它加载的工具无人暴露，模型调了也白调（实测踩坑）。
                         _expose_dynamic = True
+                    else:
+                        ft = find_tool_base("find_tools")
+                        if ft is not None:
+                            tools.append(ft.tool)
+                            _expose_dynamic = True
+                    if _expose_dynamic:
                         logger.debug("🧠 [GsCoreAIAgent] 已注入 find_tools，本轮启用渐进式工具暴露")
 
                 logger.debug(

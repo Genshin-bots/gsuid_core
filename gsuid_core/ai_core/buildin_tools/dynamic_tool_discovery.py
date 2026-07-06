@@ -6,6 +6,7 @@
 """
 
 from typing import Optional
+from dataclasses import replace
 
 from pydantic_ai import RunContext
 
@@ -15,9 +16,9 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
 
 
-# 不声明 capability_domain：find_tools 是单例 meta 工具，无能力族语义；声明了反而会被
-# L3 会话驻留按族带进随后数轮（含闲聊），破坏"闲聊轮零开销"。它的装配完全由意图门控制。
-@ai_tools(category="buildin")
+# 不声明 capability_domain（会被 L3 按族驻留带进闲聊轮）；category 必须为 meta：
+# 落入 buildin 等保底分类会让渐进式暴露门控失效、加载的工具无人暴露（实测踩坑）。
+@ai_tools(category="meta")
 async def find_tools(
     ctx: RunContext[ToolContext],
     need: str,
@@ -46,7 +47,30 @@ async def find_tools(
         if not family_tools:
             return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
 
-        loaded_names = [t.name for t in family_tools]
+        # 检索层不感知 visible_when，须与暴露层同用 prepare_tool_def 预判：隐藏工具若照报
+        # "已加载"，模型按名调用必 Unknown tool 并反复重试（实测踩坑）。静默剔除，仅落日志。
+        loaded_names: list[str] = []
+        hidden_names: list[str] = []
+        for tool in family_tools:
+            run_ctx = replace(
+                ctx,
+                tool_name=tool.name,
+                retry=0,
+                max_retries=tool.max_retries if tool.max_retries is not None else 1,
+            )
+            try:
+                tool_def = await tool.prepare_tool_def(run_ctx)
+            except Exception as e:
+                logger.debug(f"🧠 [find_tools] 工具 {tool.name} prepare 失败，按不可用处理: {e}")
+                tool_def = None
+            (loaded_names if tool_def else hidden_names).append(tool.name)
+
+        if hidden_names:
+            logger.info(f"🧠 [find_tools] {len(hidden_names)} 个命中工具因 visible_when 不满足被剔除: {hidden_names}")
+        if not loaded_names:
+            # 与"检索无命中"同文案：不向模型泄露被隐藏工具的存在，避免诱导换措辞反复检索。
+            return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
+
         ctx.deps.dynamic_tool_names.update(loaded_names)
 
         logger.info(f"🧠 [find_tools] 为需求「{need[:40]}」动态加载 {len(loaded_names)} 个工具: {loaded_names}")

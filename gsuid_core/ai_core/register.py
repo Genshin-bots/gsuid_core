@@ -46,6 +46,10 @@ def _get_plugin_name_from_module(module_path: str) -> str:
 
 
 # --- 全局注册表和客户端 ---
+# 框架特权分类：self/buildin 无条件进保底池、meta 为 gs_agent 门控专用，仅核心代码可用；
+# 插件声明时重定向到 common——仍可被向量检索/语境池召回，但不进保底池、不碰门控。
+_CORE_ONLY_CATEGORIES = frozenset({"self", "buildin", "meta"})
+
 # 工具注册表: Dict[分类名, Dict[工具名, ToolBase]]
 _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
 _ENTITIES: List[Union[KnowledgePoint, KnowledgeBase, ImageEntity]] = []  # 来自插件注册的知识和图片
@@ -96,7 +100,9 @@ def ai_tools(
 
     Args:
         func: 被装饰的函数
-        category: 工具分类名称，默认 "default"。用于将工具放入不同的分类字典中
+        category: 工具分类名称，默认 "default"。用于将工具放入不同的分类字典中。
+            self/buildin/meta 为框架特权分类，仅核心代码可用；插件声明时会被
+            自动重定向到 common 注册（见 _CORE_ONLY_CATEGORIES）。
         check_func: 可选的权限校验函数
         context_tags: 可选的语境标签列表，如 ["原神", "游戏"]。
             声明后，框架会在匹配该语境的群聊中自动加载本工具（语境工具池）。
@@ -264,7 +270,17 @@ def ai_tools(
         # 获取插件名称
         plugin_name = _get_plugin_name_from_module(fn.__module__)
 
-        logger.debug(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {category})")
+        # 框架特权分类防护：非核心代码（plugins/ 或未知来源）注册 self/buildin/meta
+        # 时重定向到 common（见 _CORE_ONLY_CATEGORIES 注释）。
+        reg_category = category
+        if plugin_name != "core" and reg_category in _CORE_ONLY_CATEGORIES:
+            logger.warning(
+                f"🧠 [Register] 插件 [{plugin_name}] 的工具 [{fn.__name__}] 声明了框架特权分类 "
+                f"[{reg_category}]，已重定向到 [common] 注册"
+            )
+            reg_category = "common"
+
+        logger.debug(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {reg_category})")
 
         tool_base = ToolBase(
             name=fn.__name__,
@@ -276,9 +292,9 @@ def ai_tools(
         )
 
         # 根据 category 分类注册工具
-        if category not in _TOOL_REGISTRY:
-            _TOOL_REGISTRY[category] = {}
-        _TOOL_REGISTRY[category][fn.__name__] = tool_base
+        if reg_category not in _TOOL_REGISTRY:
+            _TOOL_REGISTRY[reg_category] = {}
+        _TOOL_REGISTRY[reg_category][fn.__name__] = tool_base
 
         return cast(F, wrapped_tool)
 
