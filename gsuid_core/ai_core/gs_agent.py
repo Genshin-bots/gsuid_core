@@ -85,8 +85,6 @@ from gsuid_core.ai_core.configs.provider_router import (
     looks_like_provider_failure,
 )
 
-# 历史上 `from ...gs_agent import STALE_CHAT_REQUEST_TTL`（见 handle_ai）等公开常量经此
-# re-export 保持可用（现源头在 const.py），无需改动外部调用方。
 _T = TypeVar("_T")
 
 # 父 run 把本次归属 scope 写入此 contextvar，途中 spawn 的嵌套子 agent 自动继承记账：
@@ -579,6 +577,7 @@ class GsCoreAIAgent:
         intent: Optional[str] = None,
         has_active_task: bool = False,
         budget_gate: bool = False,
+        suppress_intermediate_text: bool = False,
     ) -> str: ...
 
     @overload
@@ -594,6 +593,7 @@ class GsCoreAIAgent:
         intent: Optional[str] = None,
         has_active_task: bool = False,
         budget_gate: bool = False,
+        suppress_intermediate_text: bool = False,
     ) -> _T: ...
 
     async def _execute_run(
@@ -608,6 +608,7 @@ class GsCoreAIAgent:
         intent: Optional[str] = None,
         has_active_task: bool = False,
         budget_gate: bool = False,
+        suppress_intermediate_text: bool = False,
     ) -> Union[str, Any]:
         """核心回复请求的瞬时失败重试包装。
 
@@ -639,6 +640,7 @@ class GsCoreAIAgent:
                     intent=intent,
                     has_active_task=has_active_task,
                     budget_gate=budget_gate,
+                    suppress_intermediate_text=suppress_intermediate_text,
                 )
             except Exception as e:
                 err_str = str(e)
@@ -716,6 +718,7 @@ class GsCoreAIAgent:
         intent: Optional[str] = None,
         has_active_task: bool = False,
         budget_gate: bool = False,
+        suppress_intermediate_text: bool = False,
     ) -> Union[str, Any]:
         """
         实际执行 Agent 运行的内部方法（单次尝试）
@@ -730,6 +733,7 @@ class GsCoreAIAgent:
             budget_gate: 本次 run 是否为预算入口。True 时（巡检 / proactive / 定时等自主
                 调用）超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，
                 按默认 False 只记账不二次拦截；在途嵌套子 agent 同样默认 False（只记账）。
+            suppress_intermediate_text: True 时抑制工具调用前后的文本片段，只保留最终文本。
         """
         from gsuid_core.ai_core.statistics import statistics_manager
 
@@ -957,6 +961,7 @@ class GsCoreAIAgent:
                     # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
                     search_query = "\n".join([*self._recent_user_texts, qy]) if self._recent_user_texts else qy
                     logger.debug(f"🧠 [GsCoreAIAgent] 尝试搜索工具: {search_query}")
+
                     # 只排除已在保底池的 self/buildin；plugin_dev 等"委派专用"分类由
                     # search_tools 在检索层统一拦截（NON_SEARCHABLE_TOOL_CATEGORIES），
                     # 不必也不应在这里重复声明。
@@ -1057,9 +1062,11 @@ class GsCoreAIAgent:
         # 同一检索结果的得分跑次间 ±2-4 题波动，无法区分"改动有效"与"随机翻转"。
         from gsuid_core.ai_core.memory.config import memory_config
 
-        _model_settings: dict = {"max_tokens": self.max_tokens}
-        if memory_config.eval_mode:
-            _model_settings["temperature"] = 0.0
+        if self.model:
+            _model_settings = self.model.settings
+            if memory_config.eval_mode and _model_settings:
+                _model_settings["temperature"] = 0.0
+
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
@@ -1162,9 +1169,13 @@ class GsCoreAIAgent:
                         node.model_response.parts = _sanitize_tool_call_artifacts_in_parts(node.model_response.parts)
 
                         # 遍历大模型返回的具体片段 (Parts)
+                        # 本轮是否已出现工具调用：用于 suppress_intermediate_text 时判断
+                        # 当前响应中的文本是"中间碎碎念"还是"最终回复"。
+                        _saw_tool_call_this_turn = False
                         for part in node.model_response.parts:
                             # 拦截到模型即将调用工具
                             if isinstance(part, ToolCallPart):
+                                _saw_tool_call_this_turn = True
                                 logger.debug(f"[🔧 大模型请求调用工具]: 工具名称='{part.tool_name}', 参数={part.args}")
                                 _tool_call_list.append(part.tool_name)
                                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
@@ -1184,8 +1195,10 @@ class GsCoreAIAgent:
 
                                 # 代码层前摇触发：耗时工具调用前，主动发送一句角色化台词，
                                 # 避免用户面对沉默等待。每次运行最多发送 N 句，防止刷屏。
+                                # 对 suppress_intermediate_text 场景，前摇也属于中间噪声，一并抑制。
                                 if (
-                                    bot
+                                    not suppress_intermediate_text
+                                    and bot
                                     and return_mode in ["always", "by_bot"]
                                     and _pre_tool_sent < _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN
                                 ):
@@ -1212,13 +1225,17 @@ class GsCoreAIAgent:
                                     # 本轮已发过完全相同的段：模型跨轮重复最终答复 / 重试重发，
                                     # 跳过避免 C 端收到两段相同的话。
                                     logger.debug(f"🧠 [GsCoreAIAgent] 跳过重复文本(本轮已发): {_text[:40]!r}")
+                                elif suppress_intermediate_text and _saw_tool_call_this_turn:
+                                    # 工具调用前后伴随的文本属于中间步骤碎碎念，不发送给用户，
+                                    # 但仍记入 session log 供调试。
+                                    logger.debug(f"🧠 [GsCoreAIAgent] 抑制中间文本: {_text[:40]!r}")
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的
                                     # async context，触发 pydantic_graph 的 athrow/cancel scope
                                     # 错误。必须在循环体内吞掉发送侧的故障。
                                     try:
                                         await send_chat_result(bot, _text, ev=ev)
-                                        # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
+                                        # 发送成功才登记去重：发送失败的失败的段允许后续相同输出补发。
                                         self._run_sent_texts.add(_text)
                                     except Exception as _e:
                                         logger.debug(f"🧠 [GsCoreAIAgent] 文本发送失败: {_e}")
@@ -1526,6 +1543,7 @@ class GsCoreAIAgent:
         intent: Optional[str] = None,
         has_active_task: bool = False,
         budget_gate: bool = False,
+        suppress_intermediate_text: bool = False,
     ) -> Union[str, Any]:
         """
         运行 Agent 并返回结果
@@ -1547,6 +1565,9 @@ class GsCoreAIAgent:
             budget_gate: 本次 run 是否为预算入口。True（巡检 / proactive / 定时等自主调用）
                 时超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，按默认
                 False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
+            suppress_intermediate_text: True 时，本轮中**只要出现过 ToolCallPart**，其前后伴随的
+                文本片段和前摇台词都不会发送给用户，仅保留没有任何工具调用的最终文本回复。
+                用于画布 Agent 等多工具编排场景，避免中间步骤的碎碎念刷屏。
 
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
@@ -1578,6 +1599,7 @@ class GsCoreAIAgent:
                     intent=intent,
                     has_active_task=has_active_task,
                     budget_gate=budget_gate,
+                    suppress_intermediate_text=suppress_intermediate_text,
                 )
 
             # 显式绑定固定模型的会话（model_config_name 为 None）不参与 provider 路由

@@ -46,6 +46,10 @@ _PENDING_OPERATORS: set[str] = set()
 # 运行时状态，由前端 / 插件（如画布授权配置）经 set_full_access 维护。
 _FULL_ACCESS_USERS: set[str] = set()
 
+# 「完全访问」可插拔解析器：插件可按会话上下文提供更细粒度的判定
+# （如画布按 user × canvas 存储授权模式）。返回 None = 不表态，回落默认名单。
+_FULL_ACCESS_RESOLVER: Optional[Callable[[str, Optional[Event]], Optional[bool]]] = None
+
 # tool_call 策略门的一次性放行 grant：(user_id, tool_name) -> 过期时间戳
 _TOOL_GRANTS: Dict[Tuple[str, str], float] = {}
 _TOOL_GRANT_TTL = 600.0
@@ -73,7 +77,25 @@ def set_full_access(user_id: str, enabled: bool) -> None:
         _FULL_ACCESS_USERS.discard(str(user_id))
 
 
-def is_full_access(user_id: str) -> bool:
+def set_full_access_resolver(fn: Optional[Callable[[str, Optional[Event]], Optional[bool]]]) -> None:
+    """注册「完全访问」解析器（同步、廉价内存判定；返回 None 回落默认名单）。
+
+    供需要比"全局按用户"更细粒度的调用方使用——如画布插件按
+    user × canvas(=ev.group_id) 存储授权模式。传 None 可注销。
+    """
+    global _FULL_ACCESS_RESOLVER
+    _FULL_ACCESS_RESOLVER = fn
+
+
+def is_full_access(user_id: str, ev: Optional[Event] = None) -> bool:
+    if _FULL_ACCESS_RESOLVER is not None:
+        try:
+            verdict = _FULL_ACCESS_RESOLVER(str(user_id), ev)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"✅ [Approval] 完全访问解析器异常，回落默认名单: {e}")
+            verdict = None
+        if verdict is not None:
+            return verdict
     return str(user_id) in _FULL_ACCESS_USERS
 
 
@@ -108,7 +130,7 @@ async def submit(
     operator = operator_user_id or (str(ev.user_id) if ev is not None else "")
     session_id = origin_session_id or (ev.session_id if ev is not None else "")
     status = "pending"
-    if allow_full_access_exempt and audience == "user" and interaction == "approval" and is_full_access(operator):
+    if allow_full_access_exempt and audience == "user" and interaction == "approval" and is_full_access(operator, ev):
         status = "auto_approved"
     row = await AIApprovalRequest.add(
         request_id=_uuid.uuid4().hex,
@@ -282,7 +304,7 @@ async def tool_call_gate(ev: Optional[Event], tool_name: str, tier: str, args_re
         logger.debug(f"✅ [Approval] 工具 {tool_name} 无 ev 上下文，策略门放行（后台链路）")
         return None
     operator = str(ev.user_id)
-    if tier == "user" and is_full_access(operator):
+    if tier == "user" and is_full_access(operator, ev):
         await submit(
             category="tool_call",
             title=f"完全访问自动放行: {tool_name}",
