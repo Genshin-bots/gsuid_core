@@ -9,7 +9,7 @@ COMMAND_EXEC_USAGE_PROMPT = """\
 - 仅主人可用；只支持**单条简单命令**（不支持管道 `|`、重定向 `>`、命令链 `&&`/`;`、
   后台 `&`、命令替换 `$()`）。如需分步，请分多次调用 run_command。
 - 联网 / 安装类命令通常需要主人审批：先调用 run_command 提交，拿到审批编号后请主人
-  在对话里回复「同意」或「拒绝」，你再调用 respond_command_approval 转达（务必带上编号）。
+  在对话里回复「同意」或「拒绝」，你再调用 respond_approval 转达（务必带上编号）。
 - **无交互环境**：stdin 已关闭，所有命令必须携带非交互标志，否则会等不到输入而失败或空耗
   到超时——例如 `npm install -y`、`apt-get -y`、`pip --no-input`、`git ... --no-edit`、
   `curl -sS`。绝不要执行 `vim`/`top` 等需要 TTY 的常驻交互命令。

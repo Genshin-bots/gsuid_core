@@ -16,7 +16,7 @@
 失败处理：默认 ``notify_persona`` 策略——子任务失败时不级联整树失败，而是用人格
 口吻把 ``failure_reason`` 转告主人格，由主人格调 ``respawn_subtask`` /
 ``fail_task_tree`` 二选一；超过重派上限会自动挂为 ``waiting_approval``，由主人通过
-webconsole 或对话回复审批（``respond_subtask_approval``）。
+webconsole 或对话回复审批（统一转达工具 ``respond_approval``）。
 """
 
 import re

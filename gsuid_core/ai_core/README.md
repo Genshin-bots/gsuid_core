@@ -112,7 +112,7 @@
 |---|---|
 | `kanban.py` | 任务树的数据访问层（CRUD + 状态机），所有 SQL 操作集中在这里。 |
 | `kanban_executor.py` | 并发调度引擎：`execute_ready_tasks` / `kick_root` / `_run_one_task_node` / `_persona_relay`（人格转译）/ `_notify` / `_notify_failure`。**转译 + 失败播报全部走 emitter（source="kanban"）。** |
-| `kanban_tools.py` | 给主人格的 Kanban LLM 工具集：`register_kanban_task`、`respawn_subtask`、`fail_task_tree`、`respond_subtask_approval`、`evaluate_agent_mesh_capability` 等。 |
+| `kanban_tools.py` | 给主人格的 Kanban LLM 工具集：`register_kanban_task`、`respawn_subtask`、`fail_task_tree`、`evaluate_agent_mesh_capability` 等（审批转达统一走 `buildin_tools/approval_tools.py::respond_approval`）。 |
 | `recurring.py` | 周期任务模板的"to APScheduler"层：`arm` / `disarm` / `_fire_template` / `_fire_subtask_template`，每次到点 clone 一个执行实例并 `kick_root`。 |
 | `models.py` | `AIAgentTask` / `AIAgentArtifact` / `AIAgentTaskLog` 表。 |
 | `runtime.py` | `PlanRunContext` + `bind_plan_context / reset_plan_context`：把任务上下文按 contextvar 串到能力代理。 |
@@ -123,15 +123,28 @@
 
 ⚠️ Kanban 转译子 Agent **必须**启用 SubAgent 日志（`is_subagent=True`）；早期为避免噪声曾经禁用，但归一到 emitter 后必须保留以供审计——日志路径会通过 `generator_log_files` 挂到主 session 的 `linked_agents`。
 
-### `capability_agents/` — 能力代理（Kanban 子任务执行体）
+### `agent_node/` — AgentNode 统一节点层（2026-07-07）
+
+Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona 目录只读投影 +
+工具能力族 `dynamic`/`task_basics`/域族 + task-mode 交付边界叠加）。详见
+`docs/AGENT_NODE_UNIFICATION_20260707.md`。
+
+### `approval/` — 统一审批中心（2026-07-07）
+
+一张 `AIApprovalRequest` 表 + `submit`/`resolve` 两个动词 + category 领域回调
+（`command_exec` / `kanban_subtask` / `tool_call` / `agent_request`）。三个裁决
+入口（对话工具 `respond_approval`、`/api/ai/approvals`、Kanban 看板兼容端点）
+全部落到本模块；`@ai_tools(approval=...)` 是它的工具策略门。
+
+### `capability_agents/` — 能力代理（AgentNode task-mode 实例化）
 
 | 文件 | 职责 |
 |---|---|
-| `registry.py` | 把"能力画像（profile）"登记成全局表。 |
-| `profiles.py` | 内置画像（如 `research_agent / code_agent / chat_agent`）。 |
-| `runner.py` | **`run_capability_agent(profile_id, task, ev, bot, session_id_suffix)`**：被 Kanban 调度调用，执行一个子任务。会装相应工具池、绑 PlanRunContext、写 capability_agent 日志。返回结果或 `CAPABILITY_AGENT_ERROR_PREFIX` 开头的错误串。 |
+| `registry.py` | **插件兼容层**：旧 `CapabilityAgentProfile` dataclass + `register_capability_agent`（转注册到 agent_node，下个大版本移除）。 |
+| `profiles.py` | 内置节点（`research_agent / code_agent / internal_reporter / memory_curator / scheduler_assistant / plugin_developer_agent`），AgentNode 定义。 |
+| `runner.py` | **`run_capability_agent(profile_id, task, ev, bot, session_id_suffix)`**：task-mode 实例化——身份核+交付边界叠加、packs+白名单装配、全局任务档预算（`task_max_iterations/tokens`）、绑 PlanRunContext、写 capability_agent 日志。 |
 | `evaluator.py` | "evaluate_agent_mesh_capability" 工具的实现——告诉主人格当前任务谁能干。 |
-| `persistence.py` | 自定义画像持久化（`AICapabilityProfile` 表）。 |
+| `persistence.py` | webconsole 用户自建节点落盘 / 加载（v1 旧画像 JSON 自动迁移）。 |
 
 ### `memory/` — 记忆系统
 

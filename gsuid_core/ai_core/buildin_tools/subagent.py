@@ -262,19 +262,16 @@ async def _dispatch_transient_capability_agent(
     if ev is None:
         return "⚠️ 无法获取会话信息，create_subagent(transient=True) 派发失败。"
 
+    from gsuid_core.ai_core.agent_node import get_node, resolve_node
     from gsuid_core.ai_core.capability_agents.runner import (
         CAPABILITY_AGENT_ERROR_PREFIX,
         run_capability_agent,
     )
-    from gsuid_core.ai_core.capability_agents.registry import (
-        get_profile,
-        resolve_profile,
-    )
 
-    pid = resolve_profile(agent_profile)
-    profile = get_profile(pid)
+    pid = resolve_node(agent_profile)
+    profile = get_node(pid)
     if profile is None:
-        return f"⚠️ 能力代理画像不存在: {agent_profile}（解析为 {pid}）"
+        return f"⚠️ 能力代理节点不存在: {agent_profile}（解析为 {pid}）"
 
     logger.info(f"🧠 [Subagent] transient 模式直跑 profile={pid} task={task[:60]!r}")
     try:
@@ -325,15 +322,12 @@ async def _dispatch_via_kanban(
     if ev is None:
         return "⚠️ 无法获取会话信息，create_subagent 派发失败。"
 
-    from gsuid_core.ai_core.capability_agents.registry import (
-        get_profile,
-        resolve_profile,
-    )
+    from gsuid_core.ai_core.agent_node import get_node, resolve_node
 
-    pid = resolve_profile(agent_profile)
-    profile = get_profile(pid)
+    pid = resolve_node(agent_profile)
+    profile = get_node(pid)
     if profile is None:
-        return f"⚠️ 能力代理画像不存在: {agent_profile}（解析为 {pid}）"
+        return f"⚠️ 能力代理节点不存在: {agent_profile}（解析为 {pid}）"
 
     # 拼一个简短的根目标——用任务原文前 96 字，足够 evaluator / 看板辨识
     root_goal = task[:96].replace("\n", " ").strip() or f"{profile.display_name} 临时任务"

@@ -134,7 +134,7 @@ def _matched_delegation_only_profile(query: str) -> str:
         return ""
 
     from gsuid_core.ai_core.register import get_registered_tools
-    from gsuid_core.ai_core.capability_agents.registry import list_profiles
+    from gsuid_core.ai_core.agent_node import list_nodes
 
     registered = get_registered_tools()
     hidden_names: set[str] = set()
@@ -144,10 +144,10 @@ def _matched_delegation_only_profile(query: str) -> str:
     if not hidden_names:
         return ""
 
-    for profile in list_profiles():
-        matched = profile.profile_id.lower() in h or any(kw.lower() in h for kw in profile.match_keywords)
-        if matched and any(tn in hidden_names for tn in profile.tool_names):
-            return profile.profile_id
+    for node in list_nodes():
+        matched = node.node_id.lower() in h or any(kw.lower() in h for kw in node.match_keywords)
+        if matched and any(tn in hidden_names for tn in node.tool_names):
+            return node.node_id
     return ""
 
 
@@ -233,6 +233,7 @@ class GsCoreAIAgent:
         task_level: Literal["high", "low"] = "high",
         session_id: Optional[str] = None,
         is_subagent: bool = False,
+        dynamic_tools: Optional[bool] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -256,6 +257,9 @@ class GsCoreAIAgent:
             is_subagent = True
         self.session_id: str = session_id
         self.is_subagent: bool = is_subagent
+        # 五层自动装配（dynamic 能力族）开关：True=每轮装配并与显式 tools 合并；
+        # False=永不装配；None=沿用旧门（create_by ∈ _AGENTIC_CREATE_BY 且未传 tools）。
+        self.dynamic_tools: Optional[bool] = dynamic_tools
         # 预算归属 scope：(group_id, user_id, bot_id)。ev 缺失的自主入口经 bind_budget_scope
         # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
         self._budget_scope: Optional[Tuple[str, str, str]] = None
@@ -852,8 +856,14 @@ class GsCoreAIAgent:
         # 渐进式工具暴露是否在本轮生效（仅自动装配 + 非闲聊轮）。决定是否挂 RetrievableToolset。
         _expose_dynamic = False
 
-        if self.create_by in _AGENTIC_CREATE_BY:
-            if not tools:
+        # dynamic 能力族门：显式 True/False 优先；None 沿用旧门（agentic 且未传 tools）。
+        if self.dynamic_tools is not None:
+            _assemble = self.dynamic_tools
+        else:
+            _assemble = self.create_by in _AGENTIC_CREATE_BY and not tools
+
+        if _assemble or self.create_by in _AGENTIC_CREATE_BY:
+            if _assemble:
                 qy = ""
                 if isinstance(user_message, str):
                     qy = user_message
@@ -866,6 +876,26 @@ class GsCoreAIAgent:
                 # 15 个规划工具 schema 抬高 Token 并稀释工具选择精度。
                 core_tools = await get_main_agent_tools()
                 core_names = {t.name for t in core_tools}
+
+                # 调用方显式传入的基础工具（dynamic 节点的 packs+白名单）并入保底
+                for _bt in tools:
+                    if _bt.name not in core_names:
+                        core_names.add(_bt.name)
+                        core_tools.append(_bt)
+
+                # 节点显式白名单：persona 投影节点在 config.json 声明的 tool_names 并入保底
+                if self.persona_name:
+                    from gsuid_core.ai_core.agent_node import get_node as _get_agent_node
+
+                    _node = _get_agent_node(self.persona_name)
+                    if _node is not None and _node.tool_names:
+                        for _tn in _node.tool_names:
+                            if _tn in core_names:
+                                continue
+                            _tb = find_tool_base(_tn)
+                            if _tb is not None:
+                                core_names.add(_tn)
+                                core_tools.append(_tb.tool)
 
                 # 第 1.5 层：状态驱动工具池（L2）——用户已有持久实体时把对应能力族补进保底：
                 # 活跃 Kanban 任务→长期任务编排+产物族；未完成定时任务→定时任务族；
@@ -1597,6 +1627,7 @@ def create_agent(
     task_level: Literal["high", "low"] = "high",
     session_id: Optional[str] = None,
     is_subagent: bool = False,
+    dynamic_tools: Optional[bool] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -1610,6 +1641,7 @@ def create_agent(
         task_level: 任务级别，"high"表示高级任务，"low"表示低级任务
         session_id: 会话 ID，用于关联 session 日志
         is_subagent: 是否为 SubAgent，为 True 时日志存放于独立子目录
+        dynamic_tools: dynamic 能力族开关；None 沿用旧门（agentic 且未传 tools 才装配）
 
     Returns:
         PydanticAIAgent 实例
@@ -1629,6 +1661,7 @@ def create_agent(
         task_level=task_level,
         session_id=session_id,
         is_subagent=is_subagent,
+        dynamic_tools=dynamic_tools,
     )
 
 

@@ -43,7 +43,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 > ``query_user_memory`` 已改为 ``buildin``——见下文对应小节。
 
 ### 2.2 ``category="buildin"`` —— 主人格 + 能力代理都保底
-"任何任务都可能需要"的基础能力。能力代理实例化时也会通过 ``_ALWAYS_TOOLS`` 拿到大部分。
+"任何任务都可能需要"的基础能力。能力代理经 ``task_basics`` 能力族拿到大部分。
 
 - ``search_knowledge``（``rag_search.py``）：向量检索知识库
 - ``web_search_tool``（``web_search.py``）：Tavily web 搜索
@@ -62,9 +62,10 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 显著抬高 Token 并稀释工具选择精度。改由 ``tool_state_signals`` 按"用户名下的持久实体"
 精确召回 + ``search_tools()`` 向量检索按需加载（命中后按 ``capability_domain`` 整族展开）：
 
-- ``register_kanban_task`` / ``respawn_subtask`` / ``fail_task_tree`` /
-  ``respond_subtask_approval``（``planning/kanban_tools.py``，``capability_domain="长期任务编排"``）：
-  存在活跃(running/waiting_approval) Kanban 任务时随状态带出
+- ``register_kanban_task`` / ``respawn_subtask`` / ``fail_task_tree``
+  （``planning/kanban_tools.py``，``capability_domain="长期任务编排"``）：
+  存在活跃(running/waiting_approval) Kanban 任务时随状态带出；审批转达统一走
+  ``respond_approval``（``approval_tools.py``，全框架唯一审批转达入口）
 - ``artifact_put`` / ``artifact_get`` / ``artifact_list`` / ``artifact_get_recent``
   （``planning/kanban_tools.py``，``capability_domain="产物"``）：同上随活跃任务带出
   （兜底 A-1「追问产物原文必须能调 ``artifact_get_recent``」）
@@ -142,14 +143,13 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
   （dense+BM25）；可选 ``skill=`` 限定到某一份（如 ``gscore-plugin-development``）
 - ``read_plugin_dev_guide``：确定性阅读 ``gscore-plugin-development`` SKILL（目录 / 整章，亦作 RAG 关闭时的兜底）
 
-## 三、能力代理的"永远工具"
+## 三、能力代理的"任务基础族"
 
-``capability_agents/runner.py::_ALWAYS_TOOLS`` 是能力代理被实例化时框架无条件
-追加的工具白名单（即便画像 ``tool_names`` 忘写也不会丢这些基础能力）：
+``agent_node/tool_packs.py`` 的 ``task_basics`` 能力族（原 ``runner._ALWAYS_TOOLS``）
+是内置能力节点默认挂载的工具族（节点 ``tool_packs`` 声明，webconsole 可见可卸）：
 
-``artifact_put`` / ``artifact_get`` / ``artifact_list`` + ``state_set`` /
-``state_get`` / ``state_append`` / ``state_list`` + ``search_knowledge`` +
-``web_search_tool`` / ``web_fetch_tool``。
+``artifact_put`` / ``artifact_get`` / ``artifact_list`` + ``state_*`` +
+``record_*`` + ``search_knowledge`` + ``web_search_tool`` / ``web_fetch_tool``。
 
 注意：``send_message_by_ai`` 不在此列——能力代理只对主人格交付结果，由
 ``kanban_executor._persona_relay`` 用主人格口吻转译后送达，不持有"直接和主人对话"的下行通道。
@@ -178,9 +178,7 @@ from gsuid_core.ai_core.state_store import (
 # 靠 visible_when 对非主人隐藏；3 个审批类工具平时隐藏,仅 run_command 常驻主人可见。
 from gsuid_core.ai_core.command_exec.tools import (
     run_command,
-    list_pending_commands,
     check_command_available,
-    respond_command_approval,
 )
 
 # Kanban 任务编排工具 - 多代理协作任务树
@@ -192,7 +190,6 @@ from gsuid_core.ai_core.planning.kanban_tools import (
     respawn_subtask,
     artifact_get_recent,
     register_kanban_task,
-    respond_subtask_approval,
     evaluate_agent_mesh_capability,
 )
 
@@ -256,6 +253,15 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
 
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
+
+# 统一审批交互工具 - 全框架唯一的审批转达入口 + 审批能力族
+from gsuid_core.ai_core.buildin_tools.approval_tools import (
+    ask_user,
+    respond_approval,
+    request_user_approval,
+    list_pending_approvals,
+    request_master_approval,
+)
 
 # 数据库查询工具 - 查询用户数据（记忆/事实/好感度统一照会）
 from gsuid_core.ai_core.buildin_tools.database_query import (
@@ -340,9 +346,13 @@ __all__ = [
     "execute_shell_command",
     # 命令执行器（主人专属 buildin）
     "run_command",
-    "respond_command_approval",
-    "list_pending_commands",
     "check_command_available",
+    # 统一审批交互（审批中心 LLM 侧）
+    "respond_approval",
+    "list_pending_approvals",
+    "ask_user",
+    "request_user_approval",
+    "request_master_approval",
     # 数据库查询工具
     "query_user_memory",
     # 好感度管理工具
@@ -418,7 +428,6 @@ __all__ = [
     "register_kanban_task",
     "respawn_subtask",
     "fail_task_tree",
-    "respond_subtask_approval",
     "artifact_put",
     "artifact_get",
     "artifact_list",

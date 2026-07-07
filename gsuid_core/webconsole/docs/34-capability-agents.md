@@ -1,8 +1,15 @@
-# 能力代理画像 API - `/api/ai/capability-agents`
+# 能力代理节点 API - `/api/ai/capability-agents`
 
 > 后端实现：`gsuid_core/webconsole/capability_agents_api.py`
 >
-> 数据来源：`gsuid_core/ai_core/capability_agents/`（注册表 + 持久化模块）。
+> 数据来源：`gsuid_core/ai_core/agent_node/`（统一注册表）+
+> `capability_agents/persistence.py`（用户节点持久化）。
+
+> ⚠️ **v2 破坏性变更（2026-07-07，AgentNode 统一）**：字段 `profile_id`→`node_id`、
+> `system_prompt`→`prompt`；`max_iterations`/`max_tokens` 移除（预算统一走 AI 配置
+> `task_max_iterations`/`task_max_tokens`）；新增 `tool_packs`/`prompt_style`/
+> `boundary_override`；source 增加第四态 `persona`（persona 投影节点，只读）。
+> 详见 `docs/AGENT_NODE_UNIFICATION_20260707.md`。下文旧字段描述以该说明为准。
 
 ## 概念
 

@@ -91,6 +91,7 @@ def ai_tools(
     capability_domain: Optional[str] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 300.0,
+    approval: Optional[str] = None,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -119,6 +120,10 @@ def ai_tools(
         timeout: 工具调用的最大等待时间（秒），默认 300 秒（5 分钟）。
             超时后工具返回错误字符串，agent 可继续而不会永久挂起。
             设为 None 表示不限制超时。
+        approval: 可选的强制审批级别（"user" / "master"）。声明后每次调用先过
+            统一审批中心策略门：user 级可被「完全访问」豁免（照常留审计记录）、
+            master 级永不可豁免；无有效放行 grant 时拦截并自动提交审批请求，
+            批准后重新调用即执行（不依赖 LLM 自觉，防幻觉绕过）。
         **check_kwargs: 传递给 check_func 的额外参数
     """
 
@@ -187,6 +192,15 @@ def ai_tools(
 
                 if not is_passed:
                     return message
+
+            # 审批策略门：声明了 approval 级别的工具在执行前强制过审批中心
+            # （check_func 之后——权限不通过的调用不该触发审批请求）。
+            if approval in ("user", "master"):
+                from gsuid_core.ai_core.approval import tool_call_gate
+
+                gate_msg = await tool_call_gate(ctx.deps.ev, fn.__name__, approval, str(kwargs)[:2000])
+                if gate_msg is not None:
+                    return gate_msg
 
             # 复制一份 kwargs 以防修改原始引用
             call_kwargs = dict(kwargs)

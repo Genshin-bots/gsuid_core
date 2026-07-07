@@ -205,6 +205,19 @@ AI_CONFIG: Dict[str, GSC] = {
         3,
         options=[1, 2, 3, 5, 8],
     ),
+    # 任务档预算（AgentNode 统一后节点不再携带预算, 所有能力代理统一走这两项）
+    "task_max_iterations": GsIntConfig(
+        "任务代理最大思考轮数",
+        "能力代理(task-mode 节点)单次任务的最大工具调用轮数; 插件开发等重型任务不够用时全局调大",
+        30,
+        options=[12, 20, 30, 40, 60],
+    ),
+    "task_max_tokens": GsIntConfig(
+        "任务代理单次输出Token上限",
+        "能力代理(task-mode 节点)单次响应的最大输出Token数",
+        50000,
+        options=[20000, 35000, 50000, 60000],
+    ),
     "ToolTuning": GsDivider(
         "工具检索装配调参",
         "工具检索装配调参",

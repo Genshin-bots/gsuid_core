@@ -50,6 +50,13 @@ async def _init_scheduled_task():
     await init_scheduled_tasks()
 
 
+async def _init_approval():
+    from gsuid_core.ai_core.approval import prime_pending, register_builtin_categories
+
+    register_builtin_categories()
+    await prime_pending()
+
+
 async def _init_planning():
     from gsuid_core.ai_core.planning.startup import init_planning
 
@@ -133,6 +140,7 @@ async def wait_ai_core_ready(timeout: float = 300.0) -> bool:
 _INIT_STEPS = [
     ("RAG", _init_rag),
     ("Persona", _init_persona),
+    ("审批中心", _init_approval),
     ("定时任务", _init_scheduled_task),
     ("长任务编排", _init_planning),
     ("Memory", _init_memory),

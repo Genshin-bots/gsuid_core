@@ -667,7 +667,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
     """把工作区里开发好的插件装到 plugins/——**安装前必须经主人审批**，且绝不直接删同名旧目录。
 
     非阻塞：把当前 Kanban 任务挂为 waiting_approval 后立即返回（不等用户）；主人用
-    ``respond_subtask_approval`` 同意后框架重新调度本任务，重入时推进到下一步。
+    ``respond_approval`` 同意后框架重新调度本任务，重入时推进到下一步。
 
     安装策略（防误删，按 plugins/ 是否已有同名目录分流）：
     - **新建插件**（无同名目录）：一次审批通过后直接复制进 plugins/<name>。

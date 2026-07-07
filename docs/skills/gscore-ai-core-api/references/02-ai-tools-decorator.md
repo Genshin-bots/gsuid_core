@@ -15,6 +15,9 @@ def ai_tools(
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
+    visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
+    timeout: Optional[float] = 300.0,
+    approval: Optional[str] = None,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 ```
@@ -26,7 +29,10 @@ def ai_tools(
 | `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"self"` 为主Agent核心工具，`"buildin"` 为内置工具，`"common"` 为通用工具，`"default"` 为子Agent工具。详见 [§3 工具分类系统](./03-tool-categories.md) |
 | `check_func` | `Callable` | `None` | 可选的权限校验函数，签名为 `async def check(ev: Event) -> Tuple[bool, str]` |
 | `context_tags` | `List[str]` | `None` | 语境标签。声明后，框架会在匹配该语境的群聊中通过**语境工具池**自动加载本工具，无需依赖向量搜索命中 |
-| `capability_domain` | `str` | `None` | **（C3-d 新增）** 能力域名称（如 `"原神数据"`）。声明后框架会按 domain 聚合成自然语言能力清单，注入 Bot 的自我认知；未声明时按 `category` 兜底 |
+| `capability_domain` | `str` | `None` | **（C3-d 新增）** 能力域名称（如 `"原神数据"`）。声明后框架会按 domain 聚合成自然语言能力清单，注入 Bot 的自我认知；未声明时按 `category` 兜底。同时它也是一个可整族挂载的**工具能力族**名（AgentNode 的 `tool_packs` 可按此名整族装配） |
+| `visible_when` | `Callable` | `None` | 可见性谓词：每 step 求值，返回 False 时该工具 schema 不下发给模型（源头减噪）。必须是廉价内存判定 |
+| `timeout` | `float` | `300.0` | 工具单次执行超时秒数；超时返回错误字符串，Agent 可继续 |
+| `approval` | `str` | `None` | **强制审批级别**（`"user"` / `"master"`）。声明后每次调用先过统一审批中心策略门：无有效放行时自动提交审批并拦截，批准后重新调用即执行——不依赖 LLM 自觉。`"user"` 级可被「完全访问」豁免（照常留审计记录）；`"master"` 级永不可豁免。详见 [§7.10 审批与授权](./07-builtin-tools.md#710-审批与授权统一审批中心) |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
 
 > **语境工具池**：插件可通过 `context_tags` 声明工具的适用语境，例如：

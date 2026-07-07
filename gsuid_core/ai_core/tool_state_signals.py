@@ -38,7 +38,7 @@ from gsuid_core.ai_core.rag.tools import ToolList
 _MINIMAL_CHITCHAT_TOOLS: Set[str] = {
     # 长期任务编排：保留取消和审批回复（用户可能口头说"取消吧""我同意"）
     "fail_task_tree",
-    "respond_subtask_approval",
+    "respond_approval",
     # 产物：只保留查询类
     "artifact_get",
     "artifact_list",
@@ -81,7 +81,7 @@ async def get_state_driven_families(ev: Optional[Event], has_active_task: bool =
 
     判定依据是"用户名下确实存在的持久实体"，而非当前这句话的语义：
     - 有活跃(running/waiting_approval) Kanban 任务 → 长期任务编排 + 产物 两族
-      （主人格随时可能 fail_task_tree / respond_subtask_approval / 追问产物原文，
+      （主人格随时可能 fail_task_tree / respond_approval / 追问产物原文，
       即 A-1 要求"随时可调"的 artifact_get_recent）；
     - 有未完成(pending/paused)的定时任务 → 定时任务 族（改时间 / 取消 / 暂停…）；
     - 名下存在 record:* 结构化集合 → 结构化记录 族（随时可被追问读取 / 汇总）。

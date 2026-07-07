@@ -433,7 +433,7 @@ TOOL_ORCHESTRATION_CONSTRAINTS = f"""
      ③ `covered=true` → `register_kanban_task`；**必须**把 `params_hint` 原样塞进子任务，
         子任务时间触发用 `not_before`（绝对时刻）或 `recurring_trigger`（周期）。
      ④ 子任务失败 → 读 `failure_reason`：可修参数用 `respawn_subtask`；需主人决策用
-        `respond_subtask_approval`；整树无法继续用 `fail_task_tree`。
+        `respond_approval`；整树无法继续用 `fail_task_tree`。
      ⑤ 禁止把能力评估 / 任务树结构写入长期记忆。
      ⑥ 长期记忆与 `record/state` 冲突时，**优先采信 record/state**，并告知主人。
    - 否 → 继续 3.6。

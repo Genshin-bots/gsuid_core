@@ -459,9 +459,22 @@ async def approve_kanban_subtask(
     body: SubtaskApproveRequest,
     _: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
+    """兼容端点：内部统一转到审批中心（category=kanban_subtask）裁决。"""
     task = await AIAgentTask.get_by_id(task_id)
-    if task is None or task.node_kind != "subtask":
+    is_leaf_root = task is not None and task.node_kind == "root" and bool(task.agent_profile)
+    if task is None or (task.node_kind != "subtask" and not is_leaf_root):
         return {"status": 1, "msg": "子任务不存在", "data": None}
+
+    from gsuid_core.ai_core import approval as approval_center
+
+    rows = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task_id)
+    if rows:
+        msg = await approval_center.resolve_row(
+            rows[0], body.approved, resolver_user_id=approval_center.CONSOLE_RESOLVER, note=body.note
+        )
+        return {"status": 0, "msg": msg, "data": {"task_id": task_id}}
+
+    # 升级兼容：审批中心无票据（升级前遗留的 waiting_approval）→ 直接走领域动作
     ok, msg = await kanban.approve_subtask(task, body.approved, body.note)
     if ok and body.approved and task.root_task_id:
         import asyncio
@@ -529,21 +542,20 @@ async def trigger_capability_evaluation(
 @app.get("/api/ai/capability-agents/kanban-candidates")
 async def list_kanban_candidates(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
     """返回可用于 Kanban 任务树的代理列表（不含内部 capability_evaluator）。"""
-    from gsuid_core.ai_core.capability_agents import list_profiles
-    from gsuid_core.ai_core.capability_agents.persistence import get_profile_source
+    from gsuid_core.ai_core.agent_node import list_nodes
 
     out: List[Dict[str, Any]] = []
-    for p in list_profiles():
-        if p.profile_id == "capability_evaluator":
+    for p in list_nodes():
+        if p.node_id == "capability_evaluator":
             continue
         out.append(
             {
-                "profile_id": p.profile_id,
+                "node_id": p.node_id,
                 "display_name": p.display_name,
                 "when_to_use": p.when_to_use,
                 "match_keywords": p.match_keywords,
                 "tool_names": p.tool_names,
-                "source": get_profile_source(p.profile_id),
+                "source": p.source,
             }
         )
     return {"status": 0, "msg": "ok", "data": {"items": out, "count": len(out)}}

@@ -146,6 +146,8 @@ def _import_webconsole_apis() -> None:
         ai_memory_api,
         ai_skills_api,
         ai_wizard_api,
+        # 统一审批中心 webconsole 后端
+        approvals_api,
         artifacts_api,
         image_rag_api,
         workspace_api,

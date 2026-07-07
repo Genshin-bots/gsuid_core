@@ -48,7 +48,7 @@ async def create_subagent(
 - `agent_profile` 留空（默认）：根据 `task` 向量检索工具，用内置 Plan-and-Solve
   System Prompt 创建临时泛化子 Agent，执行并返回结果。
 - `agent_profile` 非空（自然语言描述，如"写代码""金融分析""调研"）：经
-  `resolve_profile` 解析到对应的**无人格能力代理**执行（见 [§7.8](#78-能力代理capability-agent)），执行/表达
+  `resolve_node` 解析到对应的**无人格能力节点**执行（见 [§7.8](#78-能力代理agentnode-task-mode-节点)），执行/表达
   分离，适合专业、易引发人格漂移的任务。
 
 ### `send_message_by_ai` — 主动发送消息
@@ -535,7 +535,7 @@ async def list_available_tools(
 | `register_kanban_task` | 注册一棵任务树（根 + N 子任务节点），事件驱动并发推进 |
 | `respawn_subtask` | 复活 failed 子任务（最多 3 次后强制转 waiting_approval） |
 | `fail_task_tree` | 明确终结整棵任务树 + 级联未完成子任务 |
-| `respond_subtask_approval` | 转达主人对 waiting_approval 子任务的同意 / 拒绝 |
+| `respond_approval` | **统一审批转达工具**（`buildin_tools/approval_tools.py`）：转达用户/主人对任何待审批请求（Kanban 子任务 / 命令执行 / 工具授权等）的同意 / 拒绝，见 [§7.10](#710-审批与授权统一审批中心) |
 | `artifact_put` / `artifact_get` / `artifact_list` | 任务树内 Artifact Hub 增 / 取 / 列 |
 | `artifact_get_recent` | 取根任务最近一份 artifact 原文，专给主人格追问溯源用 |
 
@@ -551,34 +551,41 @@ async def list_available_tools(
 
 **能力代理推进**：Kanban 调度器把每个子任务派给画像对应的**无人格能力代理**
 （`run_capability_agent`）执行，结果再经主人格 `_persona_relay` 转译后通知主人。
-`create_subagent` 也支持 `agent_profile` 参数（即时委派单步任务），见下方 [§7.8](#78-能力代理capability-agent)。
+`create_subagent` 也支持 `agent_profile` 参数（即时委派单步任务），见下方 [§7.8](#78-能力代理agentnode-task-mode-节点)。
 
 ---
 
-## 7.8 能力代理（Capability Agent）
+## 7.8 能力代理（AgentNode task-mode 节点）
 
-能力代理是**无人格**的专职执行角色，把「执行」从「人格表达」剥离：主人格只做
-识别派发 / 查进度 / 转译汇报，执行交给专职代理（不拒绝、不漂移）。现行多步任务
-统一由 Kanban 任务树承载：主人格先调 `evaluate_agent_mesh_capability` 评估画像覆盖，
-再调 `register_kanban_task` 创建根任务 + 子任务；每个子任务由 `agent_profile` 指定的
-能力代理推进，结果经 `_persona_relay` 用人格口吻回告。
+能力代理是**无人格**的专职执行节点，把「执行」从「人格表达」剥离：主人格只做
+识别派发 / 查进度 / 转译汇报，执行交给专职节点（不拒绝、不漂移）。框架内
+Persona 与能力代理**同构为一个 `AgentNode` 定义**（`gsuid_core.ai_core.agent_node`）：
+同一张 schema、同一个统一注册表；persona 目录被投影为 `source="persona"` 的只读
+节点，能力节点是 `builtin / plugin / user` 三态。运行模式不是节点属性——同一节点
+可被 session-mode（作交互入口）或 task-mode（被 Kanban 派活）实例化。
 
-框架内置 6 个通用画像：`research_agent` / `code_agent` / `aigc_creator` /
-`data_analyst` / `memory_curator` / `scheduler_assistant`。`capability_evaluator` 是内部
-专用画像，只服务 `evaluate_agent_mesh_capability`，插件不要引用或覆盖它。业务画像
-（如 `finance_agent`、`weather_agent`、`game_data_agent`）由插件自行注册。
+多步任务统一由 Kanban 任务树承载：主人格先调 `evaluate_agent_mesh_capability`
+评估节点覆盖，再调 `register_kanban_task` 创建根 + 子任务；每个子任务由
+`agent_profile`（即 `node_id`）指定的节点推进，结果经 `_persona_relay` 用人格
+口吻回告。
 
-### 7.8.1 插件创建并注册业务画像
+框架内置 6 个通用节点：`research_agent` / `code_agent` / `internal_reporter` /
+`memory_curator` / `scheduler_assistant` / `plugin_developer_agent`。
+`capability_evaluator` 是内部专用节点，只服务 `evaluate_agent_mesh_capability`，
+插件不要引用或覆盖它。业务节点（如 `stock_agent`、`weather_agent`）由插件自行注册。
 
-插件通常在自身启动模块或插件入口导入时注册画像。注册表是进程内存数据，后写覆盖
-前写：插件可注册新 `profile_id`，也可用同名 `profile_id` 覆盖内置画像；WebConsole
-用户画像启动加载后也可覆盖同名内置 / 插件画像。
+### 7.8.1 插件创建并注册业务节点
+
+插件通常在自身启动模块或插件入口导入时注册。注册表是进程内存数据，后写覆盖
+前写：插件可注册新 `node_id`，也可用同名覆盖内置节点；WebConsole 用户节点启动
+加载后也可覆盖同名内置 / 插件节点。
 
 ```python
 # plugins/SayuStock/startup.py
-from gsuid_core.ai_core.capability_agents import (
-    CapabilityAgentProfile,
-    register_capability_agent,
+from gsuid_core.ai_core.agent_node import (
+    TASK_BASICS_PACK,
+    AgentNode,
+    register_agent_node,
 )
 
 FINANCE_PROMPT = """你是一个严谨的「量化操盘代理」。你没有任何角色人格，
@@ -592,10 +599,10 @@ FINANCE_PROMPT = """你是一个严谨的「量化操盘代理」。你没有任
    - 资金流向：send_cloudmap_img（板块资金云图）
    - 市场情绪：get_vix_index（A 股 VIX）
 3. 决策必须基于工具数据：选股、加减仓、止损止盈都要回答清楚
-   “从哪个工具的哪段数据得到的结论”，禁止只凭 web_search 的新闻标题做决定。
+   "从哪个工具的哪段数据得到的结论"，禁止只凭 web_search 的新闻标题做决定。
 4. 在 Kanban 子任务中完成执行后，用 artifact_put 把主要产出登记成 res 句柄。
 5. 高风险动作（实盘下单 / 修改持仓）一律不自己执行，在交付摘要里显式列出
-   “需要主人决策的动作”，让主人格转告主人定夺。
+   "需要主人决策的动作"，让主人格转告主人定夺。
 
 【交付格式】
 ① 决定 / 推荐（简洁可执行）；
@@ -605,12 +612,13 @@ FINANCE_PROMPT = """你是一个严谨的「量化操盘代理」。你没有任
 
 
 def register_finance_agent() -> None:
-    register_capability_agent(CapabilityAgentProfile(
-        profile_id="finance_agent",
+    register_agent_node(AgentNode(
+        node_id="finance_agent",
         display_name="操盘助手",
         when_to_use="需要查行情、做仓位决策、每日复盘的金融任务",
-        system_prompt=FINANCE_PROMPT,
+        prompt=FINANCE_PROMPT,
         match_keywords=["炒股", "操盘", "股票", "金融", "行情", "选股"],
+        tool_packs=[TASK_BASICS_PACK],
         tool_names=[
             "send_stock_info",
             "send_my_stock",
@@ -620,9 +628,6 @@ def register_finance_agent() -> None:
             "get_vix_index",
             "send_cloudmap_img",
         ],
-        tool_query="",
-        max_iterations=25,
-        max_tokens=40000,
     ))
 
 
@@ -633,42 +638,49 @@ register_finance_agent()
 
 | 字段 | 插件应该怎么填 |
 |-----|----------------|
-| `profile_id` | 稳定唯一句柄，如 `finance_agent`；主人格 / Kanban 子任务会保存这个值 |
+| `node_id` | 稳定唯一句柄，如 `finance_agent`；主人格 / Kanban 子任务会保存这个值 |
 | `display_name` | 给用户和 WebConsole 看的名称 |
-| `when_to_use` | 一句话说明何时派给该画像，供评估代理和人工管理理解 |
-| `system_prompt` | 纯职能 Plan-and-Solve 提示词；禁止写人格口吻、好感度、角色扮演 |
-| `match_keywords` | 自然语言 hint 命中词，如主人格传 `agent_profile="操盘"` 时可解析到本画像 |
-| `tool_names` | 只写业务专业工具名；框架会额外附加 Artifact / state / search / web 等永远工具 |
-| `tool_query` | 可选的工具向量检索查询；已有明确白名单时可留空 |
-| `max_iterations` / `max_tokens` | 单次能力代理执行预算 |
+| `prompt` | 纯职能 Plan-and-Solve 提示词；禁止写人格口吻、好感度、角色扮演。**不要**手写"交付边界"段——task-mode 实例化时框架自动叠加（`compose_task_prompt`），特殊边界用 `boundary_override` 覆写 |
+| `prompt_style` | 能力节点保持默认 `"plain"`；`"roleplay"` 是 persona 投影节点专用 |
+| `when_to_use` | 一句话说明何时派给该节点，供评估代理和人工管理理解 |
+| `match_keywords` | 自然语言 hint 命中词，如主人格传 `agent_profile="操盘"` 时可解析到本节点 |
+| `tool_packs` | 工具能力族：`task_basics`（artifact/state/record/search/web 基础族，**建议必挂**）、`dynamic`（运行时五层自动装配）、或任意 `capability_domain` 族名 |
+| `tool_names` | 只写业务专业工具名；基础能力经 `task_basics` 族获得，不要重复写入 |
+| `tool_query` | 可选的工具向量检索查询；已有明确白名单时可留空（白名单为空 / 有 query 时按任务文本补一轮检索） |
+| `boundary_override` | 可选：覆写 task-mode 交付边界（空=框架默认"只向主人格交付、绝不直接发用户"） |
 
-`tool_names` 应只列插件提供的专业工具。框架会自动附加 `_ALWAYS_TOOLS`：
-`artifact_put` / `artifact_get` / `artifact_list`、`state_*`、`search_knowledge`、
-`web_search_tool` / `web_fetch_tool` 等基础能力；不要为了“保险”重复写入。
+> **预算不在节点上**：单次执行的 `max_iterations` / `max_tokens` 统一走 AI 配置的
+> `task_max_iterations` / `task_max_tokens`（全局任务档）。Token 消耗经预算 scope
+> 自动上溯到来源会话记账，受统一预算规则约束。
+>
+> **旧 API 兼容**：`register_capability_agent(CapabilityAgentProfile(...))`
+> （`profile_id` / `system_prompt` / `max_*` 旧字段名）仍可用——自动转换为
+> AgentNode 注册并打废弃 warning，`max_*` 被忽略；**将在下个大版本移除**，
+> 新代码请直接用上例的 `register_agent_node(AgentNode(...))`。
 
 ### 7.8.3 与 Kanban / `create_subagent` 的关系
 
 - 复合多步任务：主人格按决策树先调 `evaluate_agent_mesh_capability`，覆盖后调
-  `register_kanban_task`。子任务里的 `agent_profile` 必须是已注册画像，调度器运行时
-  才解析画像，因此插件晚于 `init_planning` 注册也可生效。
+  `register_kanban_task`。子任务里的 `agent_profile` 必须是已注册节点，调度器运行时
+  才解析节点，因此插件晚于 `init_planning` 注册也可生效。
 - 即时单步委派：`create_subagent` 仍支持 `agent_profile` 参数，适合马上执行的一次性
   专项任务；复杂依赖、并行、多产物任务应交给 Kanban。
-- 专业域诚实底线：如果插件未注册金融 / 医疗 / 法律等专业画像和工具，评估代理应返回
+- 专业域诚实底线：如果插件未注册金融 / 医疗 / 法律等专业节点和工具，评估代理应返回
   `covered=false`，主人格不得强行创建任务树；`research_agent` 也会避免只靠通用搜索给
   高风险专业建议。
 
-| API | 用途 |
+| API（`gsuid_core.ai_core.agent_node`） | 用途 |
 |-----|------|
-| `register_capability_agent(profile)` | 注册一个能力代理画像；同名后写覆盖前写 |
-| `unregister_capability_agent(profile_id)` | 从内存注册表移除一个画像；返回是否真的删了一项 |
-| `CapabilityAgentProfile` | 画像数据类 |
-| `resolve_profile(hint, default)` | 自然语言 hint → `profile_id` |
-| `get_profile(profile_id)` / `list_profiles()` | 查询注册表 |
-| `run_capability_agent(profile_id, task, ev, bot, ...)` | 实例化并运行一个能力代理；插件通常不直接调用，Kanban 调度器会调用 |
+| `register_agent_node(node)` | 注册一个节点；同 `node_id` 后写覆盖前写 |
+| `unregister_agent_node(node_id)` | 从注册表移除一个节点；返回是否真的删了一项 |
+| `AgentNode` | 统一节点数据类 |
+| `resolve_node(hint, default)` | 自然语言 hint → `node_id`（原 `resolve_profile` 语义） |
+| `get_node(node_id)` / `list_nodes(include_persona=False)` | 查询注册表（含 persona 投影回落） |
+| `register_tool_pack(name, tool_names)` | 注册一个可被 `tool_packs` 挂载的静态工具能力族 |
+| `run_capability_agent(node_id, task, ev, bot, ...)` | task-mode 实例化并运行一个节点（`gsuid_core.ai_core.capability_agents`）；插件通常不直接调用，Kanban 调度器会调用 |
 
-> ⚠️ **不要直接访问 `registry._PROFILES` 内部字典**——请使用
-> `register_capability_agent` / `unregister_capability_agent` / `get_profile` /
-> `list_profiles` 等公开 API，避免破坏 WebConsole 三态来源和用户画像覆盖流程。
+> ⚠️ **不要直接访问注册表内部字典**——请使用上表公开 API，避免破坏 WebConsole
+> 来源标记和用户节点覆盖流程。
 
 ---
 
@@ -717,3 +729,56 @@ await add_self_note(
 ```
 
 `bot_id` 缺失时退化到 `self:default` scope（多 bot 部署时建议显式传）。
+
+
+---
+
+## 7.10 审批与授权（统一审批中心）
+
+框架内所有审批（命令执行 / Kanban 子任务与插件安装 / 工具授权 / Agent 主动请求）
+统一由 `gsuid_core.ai_core.approval` 承载：一张 `AIApprovalRequest` 表 +
+`submit` / `resolve` 两个动词 + category 领域回调。三个裁决入口——对话工具
+`respond_approval`、webconsole `/api/ai/approvals/*`、Kanban 看板兼容端点——
+全部落到同一模块。
+
+三种审批 =（interaction × audience）三个合法组合：
+
+| 组合 | LLM 工具 | 语义 |
+|------|---------|------|
+| question × user | `ask_user(question, options, timeout_seconds, default_choice)` | 澄清提问（选项按钮 + 超时默认），无权限语义 |
+| approval × user | `request_user_approval(summary)` | 花**当前用户**自己的资源 / 积分前请求授权；可被「完全访问」豁免（照常留审计记录） |
+| approval × master | `request_master_approval(summary)` | 敏感权限请求**主人**；永不可豁免 |
+
+三个工具 `capability_domain="审批交互"`——任何节点可经
+`tool_packs=["审批交互"]` 或 `tool_names` 挂载。转达 / 列表工具
+`respond_approval` / `list_pending_approvals` 为 buildin 保底（仅有待审批时对
+模型可见），含"用户/主人亲口表态"证据闸门，Agent 无法替人拍板。
+
+### 7.10.1 工具策略门（推荐的接入方式）
+
+会产生消费 / 敏感副作用的插件工具，**声明一个参数即接入强制审批**：
+
+```python
+@ai_tools(category="common", approval="user")   # 或 approval="master"
+async def generate_video(ctx: RunContext[ToolContext], prompt: str) -> str:
+    """按提示词生成视频（消耗积分，需用户授权）"""
+    ...
+```
+
+调用时无有效放行 → 框架自动提交审批并拦截（返回"已提交 #xx，请转告并等回复"）；
+用户/主人经 `respond_approval` 批准后发放一次性放行 grant（10 分钟有效），Agent
+重新调用即执行。策略门在 `check_func` 之后执行，且不依赖 LLM 自觉。
+
+### 7.10.2 Python API（插件侧）
+
+| API（`gsuid_core.ai_core.approval`） | 用途 |
+|-----|------|
+| `set_full_access(user_id, enabled)` / `is_full_access(user_id)` | 维护「完全访问」豁免（如画布前端的授权配置开关）；只作用于 user 级 |
+| `submit(category, title, ev=..., audience=..., ref_key=..., payload=...)` | 提交一条审批 / 交互请求（返回落库行，含 `short_id`） |
+| `resolve(request_ref, approved, resolver_user_id, note, via)` | 裁决（含定位 + 裁决权校验 + 领域回调） |
+| `register_approval_category(name, on_resolve, ttl_seconds)` | 注册自定义审批领域：`on_resolve(row, approved, note) -> str` 承担"批准之后干什么" |
+| `has_pending(user_id)` | 内存快判是否可能有待审批（做 `visible_when` 谓词用） |
+
+> 内置 category：`command_exec`（执行 argv 快照）/ `kanban_subtask`（子任务回
+> pending + kick，插件安装审批同属此类）/ `tool_call`（策略门 grant）/
+> `agent_request`（Agent 主动请求）。插件自定义领域请避开这些名字。

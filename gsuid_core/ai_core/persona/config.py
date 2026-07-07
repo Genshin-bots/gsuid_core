@@ -56,6 +56,20 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    # AgentNode 同构：persona 投影节点的工具装配声明（GSC 模板 append-only 自动升级）
+    "tool_packs": GsListStrConfig(
+        "工具能力族",
+        "该人格挂载的工具能力族。dynamic=运行时五层自动装配（默认，与历史行为一致）；"
+        "task_basics=任务基础族；也可填 @ai_tools 声明的 capability_domain 族名",
+        ["dynamic"],
+        options=["dynamic", "task_basics"],
+    ),
+    "tool_names": GsListStrConfig(
+        "显式工具白名单",
+        "该人格额外常驻挂载的工具名（并入保底池，不经向量检索）。多个用换行分隔",
+        [],
+        options=[],
+    ),
 }
 
 

@@ -27,6 +27,9 @@ async def init_planning() -> None:
     # 导入即注册 Kanban LLM 工具
     import gsuid_core.ai_core.planning.kanban_tools  # noqa: F401
 
+    # 向统一审批中心注册 kanban_subtask 领域（插件安装审批同属此领域）
+    _register_kanban_approval_category()
+
     # 注册框架内置能力代理画像（6 个通用画像）
     try:
         from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
@@ -94,6 +97,42 @@ async def init_planning() -> None:
         logger.exception(f"📋 [Kanban] Artifact TTL 清理 job 注册失败: {e}")
 
     logger.info("📋 [Kanban] 任务编排层初始化完成")
+
+
+def _register_kanban_approval_category() -> None:
+    """kanban_subtask 审批领域：批准 → 子任务回 pending + kick_root；拒绝 → failed。
+
+    TTL 设 7 天：插件安装等审批可能隔夜才被主人处理，不能按命令级 30 分钟过期。
+    """
+    import asyncio
+
+    from gsuid_core.ai_core.approval import AIApprovalRequest, register_approval_category
+
+    from . import kanban
+    from .models import AIAgentTask
+
+    async def _on_resolve(req: AIApprovalRequest, approved: bool, note: str) -> str:
+        task = await AIAgentTask.get_by_id(req.ref_key)
+        if task is None:
+            return f"⚠️ 请求 #{req.short_id} 对应的子任务已不存在（可能已被清理）。"
+        ok, msg = await kanban.approve_subtask(task, approved, note)
+        if not ok:
+            return f"⚠️ {msg}"
+        if approved:
+            from .kanban_executor import kick_root
+
+            asyncio.create_task(kick_root(task.root_task_id or task.id))
+            # 批准 ≠ 完成：拦住人格在这一步就宣布"已搞定"（实测会话 fa7eef 踩坑）
+            return (
+                "✅ 已转达批准，专职助手已被重新调度、正在**继续执行剩余步骤**"
+                "（如插件的实际安装 → 热加载 → 功能自测，现在都还没完成）。\n"
+                "⚠️ 现在请只简短回主人「好的，正在装 / 正在继续」之类的话，**切勿**说"
+                "「已安装好 / 已搞定 / 现在能用了 / 测试通过」——这些都还没发生。等它真正"
+                "完成后框架会另发一条完成播报，到那时再如实转达。"
+            )
+        return f"🚫 已转达拒绝：子任务已标记 failed。{msg}"
+
+    register_approval_category("kanban_subtask", _on_resolve, ttl_seconds=7 * 86400)
 
 
 def _schedule_artifact_ttl_cleanup() -> None:

@@ -172,14 +172,22 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 > 修复 = 两个工具内分平台分支：Windows 走"同步 `subprocess.run` + `asyncio.to_thread`"，POSIX
 > 走原生 `asyncio.create_subprocess_exec`，timeout 转 `asyncio.TimeoutError` 保持上层契约。
 
-### HITL 人工审批
+### HITL 人工审批（已收编进统一审批中心，2026-07-07）
 
-子任务连续重派达 3 次（`DEFAULT_RESPAWN_LIMIT`）→ 自动 `waiting_approval`。两条审批通路：
+子任务连续重派达 3 次（`DEFAULT_RESPAWN_LIMIT`）→ 自动 `waiting_approval`，同时
+`kanban.request_subtask_approval` 向 **统一审批中心**（`ai_core/approval/`，
+category=`kanban_subtask`）提交票据；`waiting_approval` 状态从此是**派生视图**
+（看板 Blocked 列渲染用），账本 / 裁决 / 过期全在审批中心。三条审批通路殊途同归：
 
-1. **webconsole**：Kanban 看板 Blocked 列点卡片 → `POST /api/ai/kanban/subtasks/{id}/approve`。
-2. **对话回复**：主人对 bot 说"同意/拒绝"，主人格调
-   `respond_subtask_approval(approved, note, subtask_ref="")`。批准→子任务退回 `pending`；拒绝
-   →`failed`，主人格再决定 `fail_task_tree`。
+1. **对话回复**：主人说"同意/拒绝"，主人格调统一转达工具
+   `respond_approval(approved, request_ref, note)`（含"主人亲口表态"证据闸门）。
+2. **webconsole 通用**：`POST /api/ai/approvals/{request_id}/resolve`。
+3. **Kanban 看板兼容**：`POST /api/ai/kanban/subtasks/{id}/approve`（内部转中心）。
+
+批准→领域回调把子任务退回 `pending` 并 `kick_root`；拒绝→`failed`，主人格再决定
+`fail_task_tree`。插件安装审批（plugin_developer 多步状态机）同属此 category，
+断点续作链路不变。详见
+[`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../AGENT_NODE_UNIFICATION_20260707.md)。
 
 ### 追问溯源（决策树强制路径）
 
@@ -191,4 +199,4 @@ artifact 原文查回来，再用角色口吻转告主人。**严禁**自行 `we
 
 - `/api/ai/kanban/*`：5 列看板 / 详情 / 暂停 / 恢复 / 终止 / 审批 / 重派 / 评估触发（`webconsole/docs/35-kanban.md`）。
 - `/api/ai/artifacts/*` + `/api/ai/kanban/tasks/{id}/workspace/*`：Artifact Hub 与 Workspace 文件管理。
-- `/api/ai/capability-agents/*`：画像 CRUD（builtin/plugin/user 三态权限，`webconsole/docs/34-capability-agents.md`）。
+- `/api/ai/capability-agents/*`：AgentNode CRUD（builtin/plugin/user/persona 四态，字段已 v2 化，`webconsole/docs/34-capability-agents.md`）。

@@ -124,6 +124,13 @@ RESOURCE_PATH/persona/{persona_name}/
 | `target_groups` | List[str] | `[]` | 目标群聊 |
 | `inspect_interval` | int | `30` | 巡检间隔（分钟） |
 | `keywords` | List[str] | `[]` | 唤醒关键词 |
+| `tool_packs` | List[str] | `["dynamic"]` | 工具能力族（dynamic=五层自动装配 / task_basics / capability_domain 族名） |
+| `tool_names` | List[str] | `[]` | 显式工具白名单（并入保底池，不经向量检索） |
+
+> **AgentNode 同构（2026-07-07）**：每个 persona 目录经 `ai_core/agent_node/persona_proj.py`
+> 投影为 `source="persona"` 的只读 AgentNode（与能力代理同一注册表 / 同一 schema），
+> 按 persona.md / config.json 的 mtime 自动刷新；写路径仍是本节的 PersonaConfigManager。
+> 详见 [`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../AGENT_NODE_UNIFICATION_20260707.md)。
 
 - **ai_mode**：`提及应答` / `定时巡检` / `趣向捕捉(暂不可用)` / `困境救场(暂不可用)`
 - **scope**：`disabled`（不启用）/ `global`（对所有群启用，**全局唯一**）/ `specific`（仅

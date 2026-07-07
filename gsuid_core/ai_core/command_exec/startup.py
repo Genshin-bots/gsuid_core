@@ -22,21 +22,12 @@ async def init_command_exec() -> None:
     # 导入即触发 @ai_tools 注册（run_command 等）。
     import gsuid_core.ai_core.command_exec.tools  # noqa: F401
 
-    await _expire_stale_on_start()
+    # 向统一审批中心注册 command_exec 领域（账本/裁决/过期均在审批中心）
+    from gsuid_core.ai_core.command_exec.approval import register_command_approval_category
+
+    register_command_approval_category()
     _schedule_audit_ttl_cleanup()
     logger.info("🧰 [CommandExec] 初始化完成")
-
-
-async def _expire_stale_on_start() -> None:
-    from gsuid_core.ai_core.command_exec import approval
-    from gsuid_core.ai_core.command_exec.config import cfg_get
-    from gsuid_core.ai_core.command_exec.models import AICommandApproval
-
-    n = await AICommandApproval.expire_stale(int(cfg_get("approval_ttl_seconds")))
-    if n > 0:
-        logger.info(f"🧰 [CommandExec] 启动清理 {n} 条过期待审批")
-    # 回填内存可见性标记,让重启前遗留的有效 pending 仍能被 respond/list 工具看到。
-    await approval.prime_pending()
 
 
 def _schedule_audit_ttl_cleanup() -> None:

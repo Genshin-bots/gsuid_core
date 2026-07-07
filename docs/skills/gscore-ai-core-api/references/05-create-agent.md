@@ -11,12 +11,15 @@ from gsuid_core.ai_core.gs_agent import create_agent
 ```python
 def create_agent(
     system_prompt: Optional[str] = None,
-    max_tokens: int = 20000,
+    max_tokens: Optional[int] = None,
     max_iterations: Optional[int] = None,
     persona_name: Optional[str] = None,
     create_by: str = "LLM",
-    max_history: int = 20,
+    max_history: Optional[int] = None,
     task_level: Literal["high", "low"] = "high",
+    session_id: Optional[str] = None,
+    is_subagent: bool = False,
+    dynamic_tools: Optional[bool] = None,
 ) -> GsCoreAIAgent
 ```
 
@@ -25,12 +28,15 @@ def create_agent(
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `system_prompt` | `str` | `None` | 系统提示词 |
-| `max_tokens` | `int` | `20000` | 最大输出 token 数 |
-| `max_iterations` | `int` | `None` | 最大迭代次数，`None` 时使用配置默认值 |
-| `persona_name` | `str` | `None` | 绑定的 Persona 名称（用于热重载检测） |
-| `create_by` | `str` | `"LLM"` | 创建者标识，影响工具加载策略 |
-| `max_history` | `int` | `20` | 最大历史消息数 |
+| `max_tokens` | `int` | `None` | 最大输出 token 数；`None` 时用全局配置 `agent_max_tokens`（能力代理路径由 runner 统一传 `task_max_tokens`） |
+| `max_iterations` | `int` | `None` | 最大迭代次数；`None` 时用全局配置（能力代理路径由 runner 统一传 `task_max_iterations`） |
+| `persona_name` | `str` | `None` | 绑定的 Persona 名称（热重载检测；装配层也据此并入该 persona 节点的 `tool_names` 白名单） |
+| `create_by` | `str` | `"LLM"` | 创建者标识，影响工具加载策略与日志归类 |
+| `max_history` | `int` | `None` | 最大历史消息数；`None` 时用全局配置 `agent_max_history` |
 | `task_level` | `str` | `"high"` | 任务级别，`"high"` 或 `"low"`，用于选择对应模型配置 |
+| `session_id` | `str` | `None` | 会话 ID（关联 session 日志）；缺省自动派生一次性 subagent id |
+| `is_subagent` | `bool` | `False` | 为 True 时日志落独立子目录 |
+| `dynamic_tools` | `bool` | `None` | 五层自动装配（`dynamic` 工具能力族）开关：`True`=每轮装配并与显式 `tools` 合并；`False`=永不装配；`None`=沿用旧门（`create_by` 属 agentic 白名单且未传 `tools` 才装配） |
 
 **示例**：
 

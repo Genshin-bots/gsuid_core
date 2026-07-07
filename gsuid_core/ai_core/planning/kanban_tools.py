@@ -6,7 +6,7 @@
 - ``register_kanban_task``        ：注册任务树（强校验最近一次评估 covered=true）
 - ``respawn_subtask``             ：复活 failed 子任务（最多 N 次后强制审批）
 - ``fail_task_tree``              ：明确终结整树
-- ``respond_subtask_approval``    ：主人对 waiting_approval 子任务的同意 / 拒绝回传
+- 子任务审批转达已统一到 ``respond_approval``（buildin_tools/approval_tools.py）
 - ``artifact_put`` / ``artifact_get`` / ``artifact_list``：Artifact Hub 工具
 - ``artifact_get_recent``         ：取根任务最近一份 artifact 原文（追问溯源）
 
@@ -24,7 +24,6 @@ from pydantic import Field, BaseModel
 from pydantic_ai import RunContext
 
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import _is_master_user
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 
@@ -475,11 +474,11 @@ async def register_kanban_task(
         )
 
     # 2) 校验每个子任务 agent_profile 都已注册
-    from gsuid_core.ai_core.capability_agents.registry import get_profile
+    from gsuid_core.ai_core.agent_node import get_node
 
     invalid: List[str] = []
     for i, s in enumerate(subtasks):
-        if not s.agent_profile or get_profile(s.agent_profile) is None:
+        if not s.agent_profile or get_node(s.agent_profile) is None:
             invalid.append(f"#{i}({s.agent_profile or '空'})")
     if invalid:
         _record_register_reject(owner_id, "bad_args")
@@ -744,7 +743,7 @@ async def respawn_subtask(
         new_agent_profile: 改派给其它 profile（必须已注册）。
 
     超过 3 次重派会强制转 waiting_approval，请改用 webconsole 走主人审批，
-    或让主人在对话中明示同意 / 拒绝后调用 respond_subtask_approval。
+    或让主人在对话中明示同意 / 拒绝后调用 respond_approval。
     """
     ev = ctx.deps.ev
     if ev is None:
@@ -754,9 +753,9 @@ async def respawn_subtask(
         return f"⚠️ 找不到子任务: {subtask_ref}"
 
     if new_agent_profile:
-        from gsuid_core.ai_core.capability_agents.registry import get_profile
+        from gsuid_core.ai_core.agent_node import get_node
 
-        if get_profile(new_agent_profile) is None:
+        if get_node(new_agent_profile) is None:
             return f"⚠️ 改派的 agent_profile 未注册: {new_agent_profile}"
 
     ok, msg = await kanban.respawn_child_task(
@@ -806,160 +805,8 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
     return f"✅ 已终结整树【任务#{root.ordinal}｜{root.display_name}】：{reason}"
 
 
-# respond_subtask_approval 的「主人亲口表态」证据校验关键词。审批是人在环（human in
-# the loop）的信任闸门，本工具只负责【转达】主人的决定、绝不允许代理替主人拍板——故
-# 必须在**当前这条用户消息**里找到明确的同意 / 拒绝表达才放行。
-# 拒绝词优先匹配（"不同意" 含子串 "同意"，必须先判否定），且多用多字词避免误命中
-# （如不要裸 "别"，否则 "特别好" 会被误判为拒绝）。
-_APPROVE_WORDS = (
-    "同意",
-    "批准",
-    "可以",
-    "答应",
-    "准了",
-    "通过",
-    "去吧",
-    "装吧",
-    "安装吧",
-    "去装",
-    "可装",
-    "好的",
-    "好啊",
-    "好呀",
-    "行吧",
-    "没问题",
-    "允许",
-    "认可",
-    "ok",
-    "okay",
-    "yes",
-    "approve",
-    "go ahead",
-    "agree",
-)
-_REJECT_WORDS = (
-    "不同意",
-    "不批准",
-    "不可以",
-    "不行",
-    "不要",
-    "不用",
-    "别装",
-    "别安装",
-    "先别",
-    "拒绝",
-    "取消",
-    "算了",
-    "驳回",
-    "否决",
-    "不准",
-    "no",
-    "deny",
-    "reject",
-)
-
-
-@ai_tools(category="planning", capability_domain=_CAP)
-async def respond_subtask_approval(
-    ctx: RunContext[ToolContext],
-    approved: bool,
-    note: str = "",
-    subtask_ref: str = "",
-) -> str:
-    """转达主人对某个 waiting_approval 子任务的同意 / 拒绝。
-
-    当 Kanban 子任务因重派次数达上限或其它原因进入 waiting_approval、框架向主人
-    私信审批请求时，主人在对话中回复"同意"或"拒绝"，由你调用本工具把决定回传
-    给框架。
-
-    ⚠️ **这是人在环的审批闸门**：本工具只用于【转达主人**亲口**说的同意 / 拒绝】。
-    你**绝不能**替主人拍板——只有当主人在**当前这一轮对话**里明确表达了同意（"同意 /
-    可以 / 装吧"）或拒绝（"不要 / 拒绝 / 取消"）时才调用，且 ``approved`` 必须与主人
-    话里的意思一致。主人没表态时，请只把"插件已做好、正在等审批"转告主人并请其回复，
-    **不要**自己调用本工具放行。框架会校验当前用户消息里确有对应表态，伪造会被拒绝。
-
-    Args:
-        approved: True=同意（子任务退回 pending，进入调度），False=拒绝（子任务标 failed）。
-        note: 主人的附加说明。
-        subtask_ref: 当主人有多个待审批子任务时，用于定位的引用（形如 "炒股#sub2"）。
-    """
-    ev = ctx.deps.ev
-    if ev is None:
-        return "⚠️ 无法获取会话信息。"
-    owner = str(ev.user_id)
-
-    # ── 防"代理替主人伪造审批"闸门 ───────────────────────────────────────
-    # 实测会话 2df150：主人只说了"代码不对"，主人格却在同一轮 create_subagent 后紧接着
-    # respond_subtask_approval(approved=True) 把自己发起的安装请求放行了，完全绕过主人
-    # 审批。这里用**当前这条用户消息**当证据：必须出现明确的同意 / 拒绝表达，且与
-    # approved 一致，才放行；否则拒绝，逼代理回去等主人亲口表态。webconsole 审批走
-    # kanban.approve_subtask、不经本工具，不受影响。
-    user_msg = (ev.raw_text or ev.text or "").strip().lower()
-    said_reject = any(w in user_msg for w in _REJECT_WORDS)
-    said_approve = (not said_reject) and any(w in user_msg for w in _APPROVE_WORDS)
-    if approved and not said_approve:
-        return (
-            "⛔ 拒绝执行：不能替主人做审批决定。本工具只用于【转达主人亲口说的同意】，"
-            "而当前这条用户消息里没有「同意 / 可以 / 批准 / 装吧」之类的明确批准表达"
-            f"（原文：{user_msg[:60]!r}）。请**不要**自行 approved=True 放行安装——先把"
-            "「插件已开发好、正在等待安装审批」用你的口吻转告主人，并明确请主人回复同意"
-            "或拒绝；等主人**这一轮亲口**说了同意，再调用本工具。"
-        )
-    if (not approved) and not said_reject:
-        return (
-            "⛔ 拒绝执行：不能替主人做拒绝决定。本工具只用于【转达主人亲口说的拒绝】，"
-            "而当前这条用户消息里没有「拒绝 / 不要 / 取消」之类的明确拒绝表达"
-            f"（原文：{user_msg[:60]!r}）。主人没明确拒绝就别传 approved=False；如果主人"
-            "其实是同意，请改用 approved=True；都不是就等主人亲口表态再转达。"
-        )
-
-    # 解析待审批子任务：先按 ref 解析；否则取主人名下唯一的待审批子任务
-    target: Optional[AIAgentTask] = None
-    if subtask_ref:
-        target = await _resolve_subtask(ev, subtask_ref)
-        if target is None or target.status != "waiting_approval":
-            target = None
-
-    if target is None:
-        pending = await AIAgentTask.list_by_status("waiting_approval")
-        # 子任务 + 叶子根（自执行根任务）才有审批语义；普通根任务只是聚合节点，
-        # 不会单独进 waiting_approval。主人只能审批自己的任务（或 master 通行）。
-        mine = [
-            t
-            for t in pending
-            if (t.node_kind == "subtask" or (t.node_kind == "root" and t.agent_profile))
-            and (t.owner_user_id == owner or _is_master_user(owner))
-        ]
-        if not mine:
-            return "ℹ️ 当前没有等待你审批的子任务。"
-        if len(mine) > 1:
-            listing = "；".join(f"任务#{t.ordinal}｜{t.display_name}" for t in mine[:5])
-            return f"❓ 你有多个待审批子任务，请说明（subtask_ref）：{listing}"
-        target = mine[0]
-
-    ok, msg = await kanban.approve_subtask(target, approved, note)
-    if not ok:
-        return f"⚠️ {msg}"
-    if approved:
-        if target.root_task_id:
-            import asyncio
-
-            from .kanban_executor import kick_root
-
-            asyncio.create_task(kick_root(target.root_task_id))
-        # 关键：批准 ≠ 完成。批准只是把子任务退回调度、让专职助手**继续往下做**
-        # （如插件的实际安装 + 热加载 + 功能自测都还没发生）。必须显式拦住人格在
-        # 这一步就宣布"已搞定/能用了"——实测会话 fa7eef 主人一句"同意啦"后，人格
-        # 立刻回"天气插件已经装好了"，而此时安装/自测根本还没跑。真正完成后框架会
-        # 经 _persona_relay 另发一条独立的完成播报，到那时再如实转达。
-        return (
-            "✅ 已转达批准，专职助手已被重新调度、正在**继续执行剩余步骤**"
-            "（如插件的实际安装 → 热加载 → 功能自测，现在都还没完成）。\n"
-            "⚠️ 现在请只简短回主人「好的，正在装 / 正在继续」之类的话，**切勿**说"
-            "「已安装好 / 已搞定 / 现在能用了 / 测试通过」——这些都还没发生。等它真正"
-            "完成并自测通过，框架会再给你一条独立的完成播报，到时再如实转达结果。"
-        )
-    return f"✅ 已转达拒绝：{msg}"
+# 子任务审批的转达已统一到 buildin_tools/approval_tools.py::respond_approval
+# （统一审批中心 kanban_subtask 领域），本模块不再注册专用转达工具。
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1169,7 +1016,6 @@ __all__ = [
     "register_kanban_task",
     "respawn_subtask",
     "fail_task_tree",
-    "respond_subtask_approval",
     "artifact_put",
     "artifact_get",
     "artifact_list",

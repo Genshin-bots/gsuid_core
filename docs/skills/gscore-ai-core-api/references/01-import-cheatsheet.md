@@ -275,3 +275,47 @@ from gsuid_core.ai_core.scheduled_task import AIScheduledTask
 ```
 
 详见 [§9 Scheduled Task 定时任务](./09-scheduled-tasks.md)。
+
+## 1.11 AgentNode 统一节点层（能力代理 / 编排）
+
+```python
+from gsuid_core.ai_core.agent_node import (
+    AgentNode,                  # 统一节点数据类（persona 与能力代理同构）
+    register_agent_node,        # 注册节点（插件业务节点入口）
+    unregister_agent_node,      # 移除节点
+    get_node,                   # 按 node_id 查（含 persona 投影回落）
+    list_nodes,                 # 列出节点（include_persona=True 并入 persona 投影）
+    resolve_node,               # 自然语言 hint → node_id
+    TASK_BASICS_PACK,           # "task_basics" 工具能力族名（建议业务节点必挂）
+    DYNAMIC_PACK,               # "dynamic" 五层自动装配族名
+    register_tool_pack,         # 注册自定义静态工具能力族
+)
+
+# task-mode 运行入口（Kanban 调度器调用；插件一般不直接调）
+from gsuid_core.ai_core.capability_agents import run_capability_agent
+
+# 旧 API 兼容层（下个大版本移除，勿在新代码使用）
+from gsuid_core.ai_core.capability_agents import (
+    CapabilityAgentProfile,     # 【废弃】旧画像 dataclass（自动转 AgentNode）
+    register_capability_agent,  # 【废弃】兼容注册入口
+)
+```
+
+## 1.12 统一审批中心
+
+```python
+from gsuid_core.ai_core.approval import (
+    submit,                     # 提交审批 / 交互请求
+    resolve,                    # 裁决（定位 + 权限校验 + 领域回调）
+    register_approval_category, # 注册自定义审批领域（on_resolve 回调）
+    set_full_access,            # 「完全访问」豁免开关（仅 user 级 approval）
+    is_full_access,
+    has_pending,                # 内存快判（visible_when 谓词用）
+    AIApprovalRequest,          # 审批请求表模型
+)
+```
+
+LLM 侧配套工具（`buildin_tools/approval_tools.py`，随框架注册）：
+`respond_approval` / `list_pending_approvals`（统一转达 / 列表）、
+`ask_user` / `request_user_approval` / `request_master_approval`（审批交互能力族）。
+工具强制审批用 `@ai_tools(approval="user"|"master")` 声明，见 [§2](./02-ai-tools-decorator.md)。

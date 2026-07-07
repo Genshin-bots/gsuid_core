@@ -976,7 +976,11 @@ async def respawn_child_task(
 
 
 async def request_subtask_approval(task: AIAgentTask, approval_prompt: str) -> None:
-    """把子任务挂为 waiting_approval；同时把根任务也汇总到 waiting_approval。"""
+    """把子任务挂为 waiting_approval，并向统一审批中心提交一条 master 级请求。
+
+    ``waiting_approval`` 状态从此是**派生视图**（看板 Blocked 列渲染用）；
+    审批账本 / 裁决入口 / 过期统一在 ``ai_core.approval``。
+    """
     now = datetime.now()
     await AIAgentTask.update_data_by_data(
         select_data={"id": task.id},
@@ -987,6 +991,20 @@ async def request_subtask_approval(task: AIAgentTask, approval_prompt: str) -> N
         },
     )
     await AIAgentTaskLog.add_log(task.id, "approval", f"请求审批：{approval_prompt[:400]}")
+    from gsuid_core.ai_core import approval as approval_center
+
+    # 同一子任务重复挂起（重派再达上限等）不重复开票，复用现有 pending
+    existing = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task.id)
+    if not existing:
+        await approval_center.submit(
+            category="kanban_subtask",
+            title=f"任务#{task.ordinal}｜{task.display_name}：{approval_prompt[:400]}",
+            audience="master",
+            ref_key=task.id,
+            operator_user_id=task.owner_user_id,
+            origin_session_id=task.session_id or "",
+            payload={"task_id": task.id, "root_task_id": task.root_task_id or ""},
+        )
     if task.root_task_id:
         await refresh_root_status(task.root_task_id)
 
