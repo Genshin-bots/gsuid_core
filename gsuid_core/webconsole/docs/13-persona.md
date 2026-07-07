@@ -556,18 +556,8 @@ Authorization: Bearer <token>
 | inspect_interval | integer | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时有效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 唤醒关键词列表，当 ai_mode 包含"提及应答"时有效，消息包含这些关键词也会触发AI响应 |
 
-> **可选字段 `pre_tool_expressions`（工具前摇台词）**：可在角色的 `config.json` 中配置一个字典，
-> key 为工具名、value 为该工具调用前发送的角色化"前摇"台词（字符串或字符串列表，列表时随机取一句，
-> 空字符串表示该工具无需前摇）。未配置时框架对耗时工具（如 web 搜索、子 Agent）使用默认前摇台词。
-> 示例：
-> ```json
-> {
->     "pre_tool_expressions": {
->         "web_search_tool": ["唔…翻一下情报…", "哈欠…查一下吧…"],
->         "create_subagent": "呜呼影分身之术！"
->     }
-> }
-> ```
+> 历史字段 `pre_tool_expressions`（工具前摇台词）已废弃：框架不再播报固定台词，
+> 耗时工具前的告知改由 Agent 按系统约束用角色口吻自行组织。已有配置中的该字段会被忽略。
 
 **错误响应**（配置不存在）：
 ```json

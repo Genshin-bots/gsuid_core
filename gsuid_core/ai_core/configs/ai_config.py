@@ -186,6 +186,13 @@ AI_CONFIG: Dict[str, GSC] = {
         15,
         options=[10, 15, 20, 30, 50],
     ),
+    "suppress_intermediate_text": GsBoolConfig(
+        "抑制中间文本",
+        "开启后, 本轮出现过工具调用时其前后伴随的文本片段(中间步骤碎碎念)不发送给用户, 只保留"
+        "没有任何工具调用的最终回复, 避免多工具编排时刷屏。调用方显式传 suppress_intermediate_text=True 时"
+        "仍强制抑制。修改后即时生效",
+        True,
+    ),
     "agent_max_run_attempts": GsIntConfig(
         "核心请求重试次数",
         "网络抖动/超时/5xx 等瞬时失败时核心回复请求的最大尝试次数(含首次)。内容审核等永久错误不重试",
@@ -217,6 +224,46 @@ AI_CONFIG: Dict[str, GSC] = {
         "能力代理(task-mode 节点)单次响应的最大输出Token数",
         50000,
         options=[20000, 35000, 50000, 60000],
+    ),
+    # 安全防线（见 docs/SESSION_LOG_SECURITY_FINDINGS_20260707.md）
+    "SecurityGuard": GsDivider(
+        "安全防线",
+        "输出出戏防火墙 / 内容守卫 / 好感度约束",
+        "安全防线",
+    ),
+    "output_firewall_enable": GsBoolConfig(
+        "出戏防火墙",
+        "开启后, roleplay 人格的回复下发前强制过词库检测, 命中模型名/AI身份/系统术语即拦截并让Agent重说",
+        True,
+    ),
+    "output_firewall_extra_terms": GsListStrConfig(
+        "出戏防火墙补充禁词",
+        "部署者自定义的额外禁词(如自家模型名/供应商), 与内置词库合并, 规范化后匹配。多个用换行分隔",
+        [],
+        options=[],
+    ),
+    "content_guard_enable": GsBoolConfig(
+        "内容守卫",
+        "开启后, 群消息中疑似'伪造工具返回'的文本会被降权标注, 防止粘贴伪造结果注入",
+        True,
+    ),
+    "favor_floor": GsIntConfig(
+        "好感度下限",
+        "好感度可达的最小值(clamp), 防止越界无限下跌",
+        -100,
+        options=[-100, -50, -200],
+    ),
+    "favor_ceil": GsIntConfig(
+        "好感度上限",
+        "好感度可达的最大值(clamp), 防止越界无限上涨",
+        100,
+        options=[100, 150, 200],
+    ),
+    "favor_daily_decay": GsIntConfig(
+        "好感度每日衰减步长",
+        "每日让好感度向中性(0)回归的步长, 0=不衰减。使亲密需持续正向互动维持, 一次性刷分会随时间回落",
+        1,
+        options=[0, 1, 2, 3],
     ),
     "ToolTuning": GsDivider(
         "工具检索装配调参",

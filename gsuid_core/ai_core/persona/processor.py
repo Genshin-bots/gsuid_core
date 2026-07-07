@@ -31,7 +31,10 @@ async def build_persona_prompt(
         完整的角色扮演prompt字符串
     """
     persona_content = await load_persona(char_name)
-    current_time = await get_current_date()
+    # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定，跨会话 / resume
+    # 都能命中 provider 前缀缓存（§优化 O-2）。精确到分的当前时间已由 user_message 侧
+    # 的【当前时间】提供，AI 需要精确时点时从那里读，system_prompt 不必每次都变。
+    current_date = await get_current_date(format="%Y年%m月%d日")
 
     # E-4：SYSTEM_CONSTRAINTS（人设/合规/感知 LITE 部分）+ TOOL_ORCHESTRATION_CONSTRAINTS
     # （重型工具编排规程）共同构成系统约束。两者都放在 **system_prompt**——这是标准
@@ -41,7 +44,7 @@ async def build_persona_prompt(
     #  真正的"按 intent 分级"需 pydantic_ai 动态 system_prompt 支持，见 plans 文档 §10.1。）
     prompt = (
         f"{ROLE_PLAYING_START}\n{persona_content}\n{SYSTEM_CONSTRAINTS}\n"
-        f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前时间：{current_time}"
+        f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前日期：{current_date}"
     )
 
     # E-4（轻量版·人格收尾锚点）：上面的工具/任务规程篇幅远大于人设，会稀释角色。

@@ -758,6 +758,42 @@ async def update_persona_config(
             }
         results.append(f"keywords: {keywords}")
 
+    # 更新 tool_packs（如果提供）
+    if "tool_packs" in data:
+        tool_packs = data["tool_packs"]
+        if not isinstance(tool_packs, list):
+            return {
+                "status": 1,
+                "msg": "tool_packs 必须是列表",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_tool_packs(persona_name, [str(x) for x in tool_packs])
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"tool_packs: {tool_packs}")
+
+    # 更新 tool_names（如果提供）
+    if "tool_names" in data:
+        tool_names = data["tool_names"]
+        if not isinstance(tool_names, list):
+            return {
+                "status": 1,
+                "msg": "tool_names 必须是列表",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_tool_names(persona_name, [str(x) for x in tool_names])
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"tool_names: {tool_names}")
+
     # 返回更新后的配置
     updated_config = persona_config_manager.get_persona_config_dict(persona_name)
     return {

@@ -23,13 +23,17 @@ async def query_user_favorability(
 ### `update_user_favorability` — 更新用户好感度（增量）
 
 ```python
-@ai_tools(category="self")
+@ai_tools(category="self", capability_domain="用户档案")
 async def update_user_favorability(
     ctx: RunContext[ToolContext],
-    delta: int,                     # 好感度变化量（可为负数）
-    user_id: Optional[str] = None,
+    delta: int,   # 好感度变化量（可为负数），单次钳制到 ±3
 ) -> str
 ```
+
+> **安全收敛（2026-07-08，§A/§F）**：`user_id` 参数已**移除**——只作用于当前对话者，堵死
+> "注入诱导对第三方加减好感度"。附加约束：单次 `delta` 钳制 ±3；同一轮（turn_id）只生效
+> 一次；DB 层再按 `ai_config.favor_floor/ceil` 钳制总值，且每日 04:20 有向 0 的自然衰减 job。
+> **不要加回 `user_id` 参数**——对他人操作属管理动作，应走 master 专属工具。
 
 ### `create_subagent` — 创建子Agent
 
@@ -60,9 +64,14 @@ async def send_message_by_ai(
     message_type: Literal["text", "image"],  # 消息类型
     text: Optional[str] = None,              # 文本内容
     image_id: Optional[str] = None,          # 图片资源ID
-    user_id: Optional[str] = None,           # 指定目标用户ID（可选）
+    user_id: Optional[str] = None,           # 目标用户ID，默认当前对话者（§E.3）
 ) -> str
 ```
+
+> **出戏防火墙接入（2026-07-08，§D.4）**：`text` 发送前过
+> `output_firewall.gate_warn_once`——同轮首次命中返回重写警告（AI 据此重写重发）、同轮
+> 第二次仍命中则放行。改造此工具时**不要**破坏这个"提醒一次→重说→放行"语义，
+> 详见 [gscore-development §12.22](../../gscore-development/references/12-developer-pitfalls.md)。
 
 ### `add_once_task` — 添加一次性定时任务
 
@@ -87,6 +96,11 @@ async def add_interval_task(
     max_executions: int = 10,    # 最大执行次数（上限10）
 ) -> str
 ```
+
+> **低俗谐音/钓鱼防线（2026-07-08 定案）**：定时任务**不做**词库内容闸门（初版词库已评审
+> 移除：真实俚语覆盖率≈0 + 误杀严重）。防线在 system prompt 合规层——谐音"怀疑先验"+
+> "绝不为低俗/钓鱼内容调用任何工具"，详见
+> [gscore-development §12.22](../../gscore-development/references/12-developer-pitfalls.md)。
 
 ---
 
@@ -179,6 +193,11 @@ async def search_knowledge(
     score_threshold: float = 0.45,   # 相似度阈值（0~1）
 ) -> str
 ```
+
+> **不可信内容包裹（2026-07-08，§B.3-1）**：返回内容套 `content_guard.wrap_untrusted("knowledge", ...)`
+> 栅栏（知识库可被第三方插件写入，防间接 Prompt 注入）。`read_image` 的 OCR 描述同理
+> （`source="image_ocr"`，且带 45s 超时 + 一次重试）。**新写返回"外部/用户可控内容"的工具
+> 时应同样包裹**——`wrap_untrusted(source, body)` 的 source 见 `content_guard._UNTRUSTED_HINT`。
 
 ### `web_search_tool` — Web 搜索
 
@@ -300,13 +319,16 @@ async def get_self_persona_info(
 ### `set_user_favorability` — 设置用户好感度（绝对值）
 
 ```python
-@ai_tools(category="common")
+@ai_tools(category="common", capability_domain="用户档案", check_func=_set_favor_master_only)
 async def set_user_favorability(
     ctx: RunContext[ToolContext],
-    value: int,                     # 好感度绝对值
+    value: int,                     # 好感度绝对值（按 favor_floor/ceil 钳制）
     user_id: Optional[str] = None,
 ) -> str
 ```
+
+> **仅主人可用**（2026-07-08）：绝对值设定是管理动作，`check_func` 校验发起者为 master，
+> 普通用户调用返回拒绝文案。
 
 ### `send_meme` — 发送表情包
 

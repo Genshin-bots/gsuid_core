@@ -32,6 +32,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core import output_firewall
 from gsuid_core.ai_core.const import (
     _SKILLS_CREATE_BY,
     _AGENTIC_CREATE_BY,
@@ -39,13 +40,12 @@ from gsuid_core.ai_core.const import (
     STALE_CHAT_REQUEST_TTL,
     _INTENT_TRIGGER_KEYWORDS,
     ENABLE_PROGRESSIVE_TOOLS,
-    _FRAMEWORK_PRE_TOOL_EXPRESSIONS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
-    _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN,
 )
 from gsuid_core.ai_core.utils import (
     SILENCE_MARKERS,
     send_chat_result,
+    _relean_user_turn,
     _extract_run_context,
     _is_content_rejected,
     materialize_image_url,
@@ -147,64 +147,6 @@ def _matched_delegation_only_profile(query: str) -> str:
         if matched and any(tn in hidden_names for tn in node.tool_names):
             return node.node_id
     return ""
-
-
-# Persona 前摇配置缓存 {persona_name: dict}
-_persona_pre_tool_cache: dict[str, dict] = {}
-
-
-def invalidate_persona_pre_tool_cache(persona_name: Optional[str] = None) -> None:
-    """清理 persona 前摇台词缓存：``persona_name`` 为 None 清全部，否则只清一项。
-
-    A-6 修复：``_persona_pre_tool_cache`` 是模块级缓存、首次读取后不再回盘。persona
-    热重载（``ai_router`` 检测到目录 mtime 变化重建 session）时若不清缓存，改了
-    ``config.json`` 的 ``pre_tool_expressions`` 必须重启进程才生效。供 ``ai_router``
-    在热重载分支调用，与 ``invalidate_voice_anchor_cache`` 配套。
-    """
-    if persona_name is None:
-        _persona_pre_tool_cache.clear()
-        return
-    _persona_pre_tool_cache.pop(persona_name, None)
-
-
-def _get_pre_tool_expression(persona_name: Optional[str], tool_name: str) -> Optional[str]:
-    """获取某工具的前摇台词。
-
-    优先使用 Persona config.json 中的 "pre_tool_expressions" 配置，
-    否则回退到框架默认台词。返回 None 表示该工具不需要前摇。
-    """
-    persona_table: dict = {}
-    if persona_name:
-        if persona_name not in _persona_pre_tool_cache:
-            table: dict = {}
-            try:
-                import json
-
-                from gsuid_core.ai_core.resource import PERSONA_PATH
-
-                config_path = PERSONA_PATH / persona_name / "config.json"
-                if config_path.exists():
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                    if isinstance(cfg, dict) and "pre_tool_expressions" in cfg:
-                        raw = cfg["pre_tool_expressions"]
-                        if isinstance(raw, dict):
-                            table = raw
-            except Exception:
-                table = {}
-            _persona_pre_tool_cache[persona_name] = table
-        persona_table = _persona_pre_tool_cache[persona_name]
-
-    import random
-
-    for source in (persona_table, _FRAMEWORK_PRE_TOOL_EXPRESSIONS):
-        if tool_name in source:
-            value = source[tool_name]
-            if isinstance(value, list):
-                value = random.choice(value) if value else ""
-            value = str(value).strip()
-            return value or None
-    return None
 
 
 class GsCoreAIAgent:
@@ -706,6 +648,59 @@ class GsCoreAIAgent:
         # range(1, max_attempts + 1) 至少一次循环，正常不可达
         return "执行出错: 未知错误"
 
+    async def _ooc_rewrite_and_send(
+        self,
+        blocked: List[Tuple[str, output_firewall.FirewallHit]],
+        bot: Bot,
+        ev: Optional[Event],
+    ) -> None:
+        """出戏命中后的重说闭环（§D.4）：无工具轻量 Agent 带警告重写一次，产物直接放行。
+
+        误杀的代价只是多一次生成；重写本身失败才退到 ``PERSONA_FALLBACK_TEXT``。
+        重写后把 history 里被拦的原文换成重写版，防出戏原文被后续轮模仿。
+        """
+        original = "\n\n".join(text for text, _ in blocked)
+        first_hit = blocked[0][1]
+        rewrite_message = (
+            f"{output_firewall.build_rewrite_warning(first_hit)}\n\n"
+            f"【被拦下的原文】\n{original}\n\n"
+            "请保持原意、用你的角色口吻重写这段话，直接输出重写后的内容，不要解释。"
+        )
+        rewritten = ""
+        try:
+            _rewrite_agent = Agent(
+                model=self.model,
+                system_prompt=self.system_prompt or "你是一个智能助手。",
+                model_settings={"max_tokens": self.max_tokens},
+                tools=[],
+                toolsets=[],
+                retries=0,
+                output_type=str,
+            )
+            rewrite_result = await _rewrite_agent.run(
+                rewrite_message,
+                message_history=[],
+                usage_limits=UsageLimits(request_limit=1),
+            )
+            rewritten = str(rewrite_result.output).strip()
+        except Exception as e:
+            logger.warning(f"[OutputFirewall] 重说生成失败，使用角色化兜底: {e}")
+        if not rewritten or rewritten in SILENCE_MARKERS:
+            rewritten = output_firewall.PERSONA_FALLBACK_TEXT
+        self._session_logger.log_text_output(rewritten)
+        try:
+            await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
+            self._run_sent_texts.add(rewritten)
+        except Exception as e:
+            logger.debug(f"🧠 [GsCoreAIAgent] 重说发送失败: {e}")
+        blocked_texts = {text for text, _ in blocked}
+        for msg in reversed(self.history):
+            if not isinstance(msg, ModelResponse):
+                continue
+            for part in msg.parts:
+                if isinstance(part, TextPart) and part.content.strip() in blocked_texts:
+                    part.content = rewritten
+
     async def _execute_run_once(
         self,
         user_message: Union[str, Sequence[UserContent]],
@@ -736,6 +731,12 @@ class GsCoreAIAgent:
             suppress_intermediate_text: True 时抑制工具调用前后的文本片段，只保留最终文本。
         """
         from gsuid_core.ai_core.statistics import statistics_manager
+
+        # 抑制中间文本的默认值改由 ai_config 决定（网页控制台可改、即时生效，默认 True）；
+        # 保留形参供插件显式覆盖：调用方显式传 True 仍强制抑制，故取两者或值。
+        _suppress_intermediate_text = suppress_intermediate_text or bool(
+            ai_config.get_config("suppress_intermediate_text").data
+        )
 
         # ============ 预算闸门 + scope 解析（统一入口）============
         # scope 用于记账与闸门：显式 ev > 实例绑定 > contextvar（父 run 透传）。
@@ -769,7 +770,8 @@ class GsCoreAIAgent:
         _budget_scope_token = _current_budget_scope.set(_budget_scope) if _budget_scope is not None else None
 
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
-        _pre_tool_sent: int = 0  # 本次运行已发送的前摇数量
+        # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
+        _ooc_blocked: List[Tuple[str, output_firewall.FirewallHit]] = []
         _thinking_segments: list[str] = []  # 累积本轮模型 thinking 文本，供意图-行为一致性检测
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
@@ -809,6 +811,12 @@ class GsCoreAIAgent:
             final_user_message = await self._prepare_user_message(list(user_message))
         else:
             final_user_message = f"【用户发言】\n{user_message}"
+
+        # 只含用户真实发言+图片的精简版：run 后用它替换写入 history 的 user turn，
+        # 避免 rag_context 快照逐轮累积进持久历史（§优化 O-1）。
+        _lean_user_message: Union[str, List[UserContent]] = (
+            list(final_user_message) if isinstance(final_user_message, list) else final_user_message
+        )
 
         if rag_context:
             if isinstance(final_user_message, str):
@@ -865,6 +873,32 @@ class GsCoreAIAgent:
             _assemble = self.dynamic_tools
         else:
             _assemble = self.create_by in _AGENTIC_CREATE_BY and not tools
+
+        # persona 会话与其 AgentNode 声明同步：packs 去掉 dynamic 即关闭五层自动装配，
+        # 改为静态解析 packs + tool_names（与 task-mode 的 runner 同语义）。
+        if _assemble and self.dynamic_tools is None and self.persona_name:
+            from gsuid_core.ai_core.agent_node import (
+                get_node as _get_agent_node,
+                has_dynamic_pack,
+                resolve_pack_tool_names,
+            )
+
+            _pnode = _get_agent_node(self.persona_name)
+            if _pnode is not None and not has_dynamic_pack(_pnode.tool_packs):
+                _assemble = False
+                _static_names = list(dict.fromkeys(resolve_pack_tool_names(_pnode.tool_packs) + _pnode.tool_names))
+                _seen_names = {t.name for t in tools}
+                for _tn in _static_names:
+                    if _tn in _seen_names:
+                        continue
+                    _tb = find_tool_base(_tn)
+                    if _tb is not None:
+                        _seen_names.add(_tn)
+                        tools.append(_tb.tool)
+                logger.debug(
+                    f"🧠 [GsCoreAIAgent] persona「{self.persona_name}」未声明 dynamic 能力族，"
+                    f"按静态 packs+白名单装配 {len(tools)} 个工具"
+                )
 
         if _assemble or self.create_by in _AGENTIC_CREATE_BY:
             if _assemble:
@@ -1193,23 +1227,6 @@ class GsCoreAIAgent:
                                 except Exception:
                                     pass
 
-                                # 代码层前摇触发：耗时工具调用前，主动发送一句角色化台词，
-                                # 避免用户面对沉默等待。每次运行最多发送 N 句，防止刷屏。
-                                # 对 suppress_intermediate_text 场景，前摇也属于中间噪声，一并抑制。
-                                if (
-                                    not suppress_intermediate_text
-                                    and bot
-                                    and return_mode in ["always", "by_bot"]
-                                    and _pre_tool_sent < _MAX_PRE_TOOL_EXPRESSIONS_PER_RUN
-                                ):
-                                    pre_expr = _get_pre_tool_expression(self.persona_name, part.tool_name)
-                                    if pre_expr:
-                                        _pre_tool_sent += 1
-                                        try:
-                                            await send_chat_result(bot, pre_expr, ev=ev)
-                                        except Exception as _e:
-                                            logger.debug(f"🧠 [GsCoreAIAgent] 前摇发送失败: {_e}")
-
                             # 大模型直接输出文本
                             elif isinstance(part, TextPart):
                                 _text = part.content.strip()
@@ -1225,17 +1242,29 @@ class GsCoreAIAgent:
                                     # 本轮已发过完全相同的段：模型跨轮重复最终答复 / 重试重发，
                                     # 跳过避免 C 端收到两段相同的话。
                                     logger.debug(f"🧠 [GsCoreAIAgent] 跳过重复文本(本轮已发): {_text[:40]!r}")
-                                elif suppress_intermediate_text and _saw_tool_call_this_turn:
+                                elif _suppress_intermediate_text and _saw_tool_call_this_turn:
                                     # 工具调用前后伴随的文本属于中间步骤碎碎念，不发送给用户，
                                     # 但仍记入 session log 供调试。
                                     logger.debug(f"🧠 [GsCoreAIAgent] 抑制中间文本: {_text[:40]!r}")
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
+                                    # 出戏预检（§D.4）：命中不发送、记入 _ooc_blocked，
+                                    # iter 结束后走"提醒→重说→放行"闭环
+                                    _ooc_hit = (
+                                        output_firewall.check_ooc(_text) if output_firewall.is_enabled() else None
+                                    )
+                                    if _ooc_hit is not None:
+                                        logger.warning(
+                                            f"[OutputFirewall] 主输出命中出戏红线 "
+                                            f"{_ooc_hit.category}: {_ooc_hit.matched}，转重说"
+                                        )
+                                        _ooc_blocked.append((_text, _ooc_hit))
+                                        continue
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的
                                     # async context，触发 pydantic_graph 的 athrow/cancel scope
                                     # 错误。必须在循环体内吞掉发送侧的故障。
                                     try:
                                         await send_chat_result(bot, _text, ev=ev)
-                                        # 发送成功才登记去重：发送失败的失败的段允许后续相同输出补发。
+                                        # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
                                         self._run_sent_texts.add(_text)
                                     except Exception as _e:
                                         logger.debug(f"🧠 [GsCoreAIAgent] 文本发送失败: {_e}")
@@ -1287,7 +1316,15 @@ class GsCoreAIAgent:
             if result:
                 logger.info("🧠 [GsCoreAIAgent] _agent.iter() 执行成功!")
 
-                self.history.extend(result.new_messages())
+                # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 rag_context），
+                # 防止【历史对话】/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
+                _new_msgs = result.new_messages()
+                _relean_user_turn(_new_msgs, _lean_user_message)
+                self.history.extend(_new_msgs)
+
+                # 出戏重说闭环（§D.4）：被拦文本用警告提示重写一次，产物直接放行发送
+                if _ooc_blocked and bot and return_mode in ["always", "by_bot"]:
+                    await self._ooc_rewrite_and_send(_ooc_blocked, bot, ev)
 
                 # L3：记录本轮实际调用过的工具所属能力族，使其在随后数轮继续常驻，
                 # 兜底紧邻的同主题追问（语义本身可能召不回该工具）。
@@ -1566,7 +1603,7 @@ class GsCoreAIAgent:
                 时超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，按默认
                 False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
             suppress_intermediate_text: True 时，本轮中**只要出现过 ToolCallPart**，其前后伴随的
-                文本片段和前摇台词都不会发送给用户，仅保留没有任何工具调用的最终文本回复。
+                文本片段都不会发送给用户，仅保留没有任何工具调用的最终文本回复。
                 用于画布 Agent 等多工具编排场景，避免中间步骤的碎碎念刷屏。
 
         Returns:

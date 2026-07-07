@@ -93,6 +93,32 @@ async def _init_mcp_server():
     await init_mcp_server()
 
 
+async def _init_favor_decay():
+    """注册好感度每日衰减 job（§F.3-3）：每日 04:20 让好感度向中性回归一步。"""
+    from gsuid_core.aps import scheduler
+    from gsuid_core.ai_core.database import UserFavorability
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    async def _job() -> None:
+        step = ai_config.get_config("favor_daily_decay").data
+        if step <= 0:
+            return
+        n = await UserFavorability.decay_all_toward_neutral(step)
+        if n:
+            logger.info(f"🧠 [UserFavorability] 每日好感度衰减：{n} 行向中性回归 {step} 点")
+
+    scheduler.add_job(
+        func=_job,
+        trigger="cron",
+        hour=4,
+        minute=20,
+        id="ai_favorability_daily_decay",
+        name="好感度每日衰减（向中性回归）",
+        replace_existing=True,
+    )
+    logger.info("🧠 [UserFavorability] 好感度每日衰减 job 已注册（每日 04:20）")
+
+
 async def _init_command_exec():
     from gsuid_core.ai_core.command_exec.startup import init_command_exec
 
@@ -149,6 +175,7 @@ _INIT_STEPS = [
     ("统计", _init_statistics),
     ("MCP Server", _init_mcp_server),
     ("命令执行", _init_command_exec),
+    ("好感度衰减", _init_favor_decay),
 ]
 
 

@@ -62,11 +62,10 @@ def register_approval_category(name: str, on_resolve: ResolveHandler, ttl_second
 
 
 def is_master(user_id: str) -> bool:
-    """是否为机器人主人（读 core 配置 masters）。"""
-    from gsuid_core.config import core_config
+    """是否为机器人主人（委托全框架唯一实现 ``ai_core.utils._is_master_user``）。"""
+    from gsuid_core.ai_core.utils import _is_master_user
 
-    masters = core_config.get_config("masters") or []
-    return str(user_id) in [str(m) for m in masters]
+    return _is_master_user(user_id)
 
 
 def set_full_access(user_id: str, enabled: bool) -> None:
@@ -153,6 +152,40 @@ async def submit(
         _PENDING_OPERATORS.add(operator)
     logger.info(f"✅ [Approval] 提交请求 #{row.short_id} category={category} audience={audience} status={status}")
     return row
+
+
+async def log_question(
+    ev: Optional[Event],
+    question: str,
+    answer: str,
+    answered: bool,
+    category: str = "ask_user",
+) -> None:
+    """把一次澄清问答落账本（``interaction="question"``，提交即终态，无裁决语义）。
+
+    answered=True 落 ``approved``（resolved_note=用户回答）；超时落 ``expired``
+    （resolved_note=默认值或空）。让 ask_user 与审批共用同一条审计链。
+    """
+    operator = str(ev.user_id) if ev is not None else ""
+    await AIApprovalRequest.add(
+        request_id=_uuid.uuid4().hex,
+        short_id=secrets.token_hex(2),
+        interaction="question",
+        audience="user",
+        category=category,
+        origin_session_id=ev.session_id if ev is not None else "",
+        operator_user_id=operator,
+        bot_id=ev.bot_id if ev is not None else "",
+        bot_self_id=ev.bot_self_id if ev is not None else "",
+        user_type=ev.user_type if ev is not None else "direct",
+        group_id=ev.group_id if ev is not None else None,
+        title=question[:2000],
+        status="approved" if answered else "expired",
+        resolved_by=operator if answered else "",
+        resolved_note=answer[:2000],
+        resolved_via="chat",
+        resolved_at=int(time.time()),
+    )
 
 
 async def _refresh_pending(operator: str) -> None:
@@ -317,6 +350,14 @@ async def tool_call_gate(ev: Optional[Event], tool_name: str, tier: str, args_re
         return None
     if consume_tool_grant(operator, tool_name):
         return None
+    who = "主人" if tier == "master" else "当前用户"
+    # 同一 (operator, tool) 复用现有 pending：弱模型一轮内重试同一工具不重复开票
+    existing = await AIApprovalRequest.list_pending(operator_user_id=operator, category="tool_call", ref_key=tool_name)
+    if existing:
+        return (
+            f"⏳ 工具 `{tool_name}` 的审批 #{existing[0].short_id} 仍在等待{who}裁决，"
+            f"请勿重复调用；把这件事转告{who}并请其回复同意 / 拒绝。"
+        )
     row = await submit(
         category="tool_call",
         title=f"工具调用请求: {tool_name}（{args_repr[:120]}）",
@@ -325,7 +366,6 @@ async def tool_call_gate(ev: Optional[Event], tool_name: str, tier: str, args_re
         ref_key=tool_name,
         payload={"args": args_repr[:2000]},
     )
-    who = "主人" if tier == "master" else "当前用户"
     return (
         f"⏳ 工具 `{tool_name}` 需要{who}授权，已提交审批 #{row.short_id}。"
         f"请把这件事转告{who}并请其回复同意 / 拒绝；获批后重新调用本工具即可执行。"

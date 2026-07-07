@@ -21,6 +21,7 @@ from pydantic_ai import RunContext
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Message
+from gsuid_core.ai_core import output_firewall
 from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -108,7 +109,15 @@ async def send_message_by_ai(
     if not text and not image_id and not video_id and not audio_id:
         return "发送失败：text、image_id、video_id 和 audio_id 至少提供一个"
 
-    target_id = user_id or getattr(tool_ctx.ev, "user_id", None) or getattr(tool_ctx.ev, "散列id", None)
+    # 出戏防火墙（§D.4）：同轮首次命中 return 警告让模型重写重发；重写后仍命中则放行
+    if text and output_firewall.is_enabled():
+        warning = output_firewall.gate_warn_once(tool_ctx.extra, text)
+        if warning is not None:
+            return warning
+
+    # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
+    ev = tool_ctx.ev
+    target_id = user_id or (str(ev.user_id) if ev is not None else "")
 
     try:
         parts: List[Message] = []

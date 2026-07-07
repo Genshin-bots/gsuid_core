@@ -279,6 +279,54 @@ class PersonaConfigManager(ConfigSetManager):
         else:
             return False, "配置写入失败"
 
+    def set_tool_packs(self, persona_name: str, tool_packs: List[str]) -> tuple[bool, str]:
+        """
+        设置 Persona 挂载的工具能力族
+
+        不做注册表强校验：插件族可能晚于本次写入才注册，未知族由
+        resolve_pack_tool_names 在运行时记 warning 并跳过。
+
+        Args:
+            persona_name: Persona 名称
+            tool_packs: 能力族名列表（"dynamic" / "task_basics" / capability_domain 族名）
+
+        Returns:
+            (是否成功, 消息)
+        """
+        cleaned = list(dict.fromkeys(p.strip() for p in tool_packs if p.strip()))
+        config = self.get_config(persona_name)
+
+        success = config.set_config("tool_packs", cleaned)
+        if success:
+            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的工具能力族: {cleaned}")
+            return True, "ok"
+        else:
+            return False, "配置写入失败"
+
+    def set_tool_names(self, persona_name: str, tool_names: List[str]) -> tuple[bool, str]:
+        """
+        设置 Persona 的显式工具白名单
+
+        不校验工具是否已注册：gs_agent 装配层按名查 find_tool_base，
+        未注册的名字自然跳过（插件工具可能晚于本次写入才加载）。
+
+        Args:
+            persona_name: Persona 名称
+            tool_names: 工具名列表（并入保底池，不经向量检索）
+
+        Returns:
+            (是否成功, 消息)
+        """
+        cleaned = list(dict.fromkeys(n.strip() for n in tool_names if n.strip()))
+        config = self.get_config(persona_name)
+
+        success = config.set_config("tool_names", cleaned)
+        if success:
+            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的显式工具白名单: {cleaned}")
+            return True, "ok"
+        else:
+            return False, "配置写入失败"
+
     def get_persona_for_session(self, session_id: str) -> Optional[str]:
         """
         根据 Session ID 获取应该使用的 Persona
@@ -373,6 +421,8 @@ class PersonaConfigManager(ConfigSetManager):
             "target_groups": config.get_config("target_groups").data,
             "inspect_interval": config.get_config("inspect_interval").data,
             "keywords": config.get_config("keywords").data,
+            "tool_packs": config.get_config("tool_packs").data,
+            "tool_names": config.get_config("tool_names").data,
         }
 
     def delete_persona_config(self, persona_name: str) -> bool:

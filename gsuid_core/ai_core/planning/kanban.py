@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from sqlmodel import col, select, update
 from sqlalchemy import delete
+from sqlalchemy.engine import CursorResult
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import async_maker
@@ -738,7 +739,7 @@ async def mark_subtask_running(task: AIAgentTask) -> bool:
         )
         result = await session.execute(stmt)
         await session.commit()
-        return (getattr(result, "rowcount", 0) or 0) > 0
+        return (result.rowcount if isinstance(result, CursorResult) else 0) > 0
 
 
 async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = "") -> None:
@@ -938,14 +939,11 @@ async def respawn_child_task(
         return False, f"子任务当前状态 {task.status} 不可重派（仅 failed / waiting_approval）"
 
     if task.respawn_count >= respawn_limit:
-        await AIAgentTask.update_data_by_data(
-            select_data={"id": task.id},
-            update_data={"status": "waiting_approval", "updated_at": datetime.now()},
-        )
-        await AIAgentTaskLog.add_log(
-            task.id,
-            "approval",
-            f"重派次数达上限 {respawn_limit}，转为 waiting_approval 待主人审批",
+        # 走统一入口挂审批：开中心票据（幂等），否则对话侧 respond_approval 找不到该请求
+        await request_subtask_approval(
+            task,
+            f"重派次数达上限 {respawn_limit}，需主人裁决是否继续重试。"
+            f"最近失败原因：{(task.failure_reason or '（无记录）')[:300]}",
         )
         return False, f"重派次数达上限 {respawn_limit}，已转待审批"
 

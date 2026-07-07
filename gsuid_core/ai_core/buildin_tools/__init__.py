@@ -257,6 +257,7 @@ from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 # 统一审批交互工具 - 全框架唯一的审批转达入口 + 审批能力族
 from gsuid_core.ai_core.buildin_tools.approval_tools import (
     ask_user,
+    ask_user_form,
     respond_approval,
     request_user_approval,
     list_pending_approvals,
@@ -351,6 +352,7 @@ __all__ = [
     "respond_approval",
     "list_pending_approvals",
     "ask_user",
+    "ask_user_form",
     "request_user_approval",
     "request_master_approval",
     # 数据库查询工具

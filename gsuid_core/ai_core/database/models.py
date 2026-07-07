@@ -9,12 +9,25 @@ import json
 import time
 from typing import Any, Set, Dict, List, Tuple, Optional
 
-from sqlmodel import Field, SQLModel, col, and_, delete, select, update
+from sqlmodel import Field, SQLModel, col, and_, case, delete, select, update
 from sqlalchemy import Text, Column
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import BaseModel, with_session
+
+
+def _clamp_favor(value: int) -> int:
+    """把好感度钳制到 ai_config 的 favor_floor / favor_ceil（§F.3-1），防越界无限涨跌。
+
+    两项已在 AI_CONFIG 模板注册，get_config 未命中时自动补默认值，无需兜底。
+    """
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    floor: int = ai_config.get_config("favor_floor").data
+    ceil: int = ai_config.get_config("favor_ceil").data
+    return max(floor, min(ceil, value))
 
 
 class UserFavorability(BaseModel, table=True):
@@ -182,7 +195,8 @@ class UserFavorability(BaseModel, table=True):
             # 确保记录存在
             record = await cls.get_or_create_user_favorability(user_id, bot_id, user_name)
 
-            new_value = record.favorability + delta
+            # clamp 到配置上下限：防越界无限涨/跌（曾出现主人好感度 107 越过设计上限 100）
+            new_value = _clamp_favor(record.favorability + delta)
             stmt = (
                 update(cls)
                 .where(
@@ -236,6 +250,7 @@ class UserFavorability(BaseModel, table=True):
             # 确保记录存在
             record = await cls.get_or_create_user_favorability(user_id, bot_id, user_name)
 
+            clamped = _clamp_favor(value)
             stmt = (
                 update(cls)
                 .where(
@@ -245,7 +260,7 @@ class UserFavorability(BaseModel, table=True):
                     )
                 )
                 .values(
-                    favorability=value,
+                    favorability=clamped,
                     interaction_count=record.interaction_count + 1,
                     last_interaction_time=int(time.time()),
                 )
@@ -257,7 +272,7 @@ class UserFavorability(BaseModel, table=True):
                 await session.execute(stmt)
                 await session.commit()
 
-            logger.info(f"🧠 [UserFavorability] 设置用户 {user_id} 好感度: {value}")
+            logger.info(f"🧠 [UserFavorability] 设置用户 {user_id} 好感度: {clamped}")
             return True
         except Exception as e:
             logger.exception(f"🧠 [UserFavorability] 设置好感度失败: {e}")
@@ -430,6 +445,34 @@ class UserFavorability(BaseModel, table=True):
         except Exception as e:
             logger.exception(f"🧠 [UserFavorability] 获取高好感度用户失败: {e}")
             return []
+
+    @classmethod
+    @with_session
+    async def decay_all_toward_neutral(cls, session: AsyncSession, step: int) -> int:
+        """让所有用户好感度向中性(0)回归一个步长（§F.3-3，每日 job 调用）。
+
+        正值降 step、负值升 step、跨 0 直接归 0；``step<=0`` 不衰减。使亲密需要持续正向
+        互动维持，一次性刷分会随时间回落。返回受影响行数（近似，两条 UPDATE 之和）。
+        """
+        if step <= 0:
+            return 0
+        # 用 case 表达式（SQLite / PostgreSQL 均可移植；func.max/min 的 2 参标量形态在 PG 上是聚合，会报错）：
+        # 正值 favor>step → favor-step，否则(0<favor≤step)归 0；负值对称。跨 0 直接落 0。
+        dec = (
+            update(cls)
+            .where(col(cls.favorability) > 0)
+            .values(favorability=case((col(cls.favorability) > step, col(cls.favorability) - step), else_=0))
+        )
+        inc = (
+            update(cls)
+            .where(col(cls.favorability) < 0)
+            .values(favorability=case((col(cls.favorability) < -step, col(cls.favorability) + step), else_=0))
+        )
+        r1 = await session.execute(dec)
+        r2 = await session.execute(inc)
+        n1 = r1.rowcount if isinstance(r1, CursorResult) else 0
+        n2 = r2.rowcount if isinstance(r2, CursorResult) else 0
+        return n1 + n2
 
 
 # 进程级建表标记：与全局 create_all 的启动时序解耦（RAG 初始化在后台线程，

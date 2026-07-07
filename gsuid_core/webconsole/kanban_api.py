@@ -468,19 +468,24 @@ async def approve_kanban_subtask(
     from gsuid_core.ai_core import approval as approval_center
 
     rows = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task_id)
-    if rows:
-        msg = await approval_center.resolve_row(
-            rows[0], body.approved, resolver_user_id=approval_center.CONSOLE_RESOLVER, note=body.note
+    if not rows:
+        # 升级前遗留的无票据 waiting_approval：补开一张票再走统一裁决，账本不留暗路
+        if task.status != "waiting_approval":
+            return {"status": 1, "msg": f"子任务状态 {task.status} 不在待审批", "data": None}
+        row = await approval_center.submit(
+            category="kanban_subtask",
+            title=f"任务#{task.ordinal}｜{task.display_name}（webconsole 补票）",
+            audience="master",
+            ref_key=task_id,
+            operator_user_id=task.owner_user_id,
+            origin_session_id=task.session_id or "",
+            payload={"task_id": task_id, "root_task_id": task.root_task_id or ""},
         )
-        return {"status": 0, "msg": msg, "data": {"task_id": task_id}}
-
-    # 升级兼容：审批中心无票据（升级前遗留的 waiting_approval）→ 直接走领域动作
-    ok, msg = await kanban.approve_subtask(task, body.approved, body.note)
-    if ok and body.approved and task.root_task_id:
-        import asyncio
-
-        asyncio.create_task(kick_root(task.root_task_id))
-    return {"status": 0 if ok else 1, "msg": msg, "data": {"task_id": task_id}}
+        rows = [row]
+    msg = await approval_center.resolve_row(
+        rows[0], body.approved, resolver_user_id=approval_center.CONSOLE_RESOLVER, note=body.note
+    )
+    return {"status": 0, "msg": msg, "data": {"task_id": task_id}}
 
 
 @app.patch("/api/ai/kanban/subtasks/{task_id}")

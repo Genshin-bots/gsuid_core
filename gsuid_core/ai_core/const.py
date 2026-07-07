@@ -26,24 +26,6 @@ _AGENTIC_CREATE_BY = ("SubAgent", "Chat", "Agent", "AutoPlanner", "ScheduledTask
 # （需 list_skills/run_skill_script）；名单外后台调用不挂，避免白送 token。
 _SKILLS_CREATE_BY = (*_AGENTIC_CREATE_BY, "CapabilityAgent")
 
-# 框架默认的工具前摇台词（仅针对耗时工具），必须「人格中性」、任何 Persona 都能套用。
-# 带角色口吻的台词由各 Persona 在 config.json 的 "pre_tool_expressions" 覆盖（空串=不前摇）。
-_FRAMEWORK_PRE_TOOL_EXPRESSIONS: dict[str, str] = {
-    "web_search_tool": "稍等，我查一下相关信息…",
-    "search_knowledge": "让我先查一下资料…",
-    "web_fetch_tool": "我打开这个链接看看…",
-    "create_subagent": "这个任务我来安排处理…",
-    "render_html_to_image": "稍等，正在生成图片…",
-    "render_markdown_to_image": "稍等，正在生成图片…",
-    "generate_image": "稍等，正在生成图片，可能需要一点时间…",
-    "generate_video": "稍等，正在生成视频，这个会比较久，请耐心等待…",
-    "edit_image": "稍等，正在处理图片…",
-    "generate_music": "稍等，正在生成音乐…",
-}
-
-# 每次运行最多发送的前摇数量，避免刷屏
-_MAX_PRE_TOOL_EXPRESSIONS_PER_RUN = 2
-
 # 永久性 4xx 客户端错误（内容审核拦截 / 请求体过大 / 参数非法等）：重试必复现，应
 # fail-fast 不再重试。408（超时）/429（限流）虽是 4xx 但可重试，明确排除。
 _RETRYABLE_4XX = frozenset({408, 429})

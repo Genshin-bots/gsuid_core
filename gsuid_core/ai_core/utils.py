@@ -2,7 +2,7 @@ import re
 import json
 import base64
 import asyncio
-from typing import Any, Set, Dict, List, Literal, Optional, Sequence
+from typing import Any, Set, Dict, List, Union, Literal, Optional, Sequence
 
 import httpx
 from PIL import Image
@@ -374,14 +374,11 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
 
 
 def _is_master_user(user_id: str) -> bool:
-    """判断指定用户是否为机器人主人"""
-    try:
-        from gsuid_core.config import core_config
+    """判断指定用户是否为机器人主人（读 core 配置 masters，全框架唯一实现）。"""
+    from gsuid_core.config import core_config
 
-        masters = core_config.get_config("masters") or []
-        return str(user_id) in [str(m) for m in masters]
-    except Exception:
-        return False
+    masters = core_config.get_config("masters") or []
+    return str(user_id) in [str(m) for m in masters]
 
 
 def _build_relationship_description(
@@ -473,7 +470,16 @@ async def prepare_content_payload(
     if not ev.text:
         text += "用户没有发送文本内容。"
     else:
-        text += ev.text.strip()
+        # 输入侧安全标注（§B.3-2）：伪造工具返回降权。只加标注、不改原意；
+        # 受 content_guard_enable 开关控制。低俗/钓鱼防线在 system prompt 合规层。
+        body = ev.text.strip()
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        if ai_config.get_config("content_guard_enable").data:
+            from gsuid_core.ai_core.content_guard import annotate_untrusted_message
+
+            body = annotate_untrusted_message(body)
+        text += body
 
     # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
     if ev.image_id_list:
@@ -558,6 +564,7 @@ async def send_chat_result(
     text: str,
     ev: Event | None = None,
     extra_metadata: Optional[Dict[str, Any]] = None,
+    ooc_check: bool = True,
 ) -> None:
     """
     解析并发送聊天结果，支持：
@@ -566,6 +573,8 @@ async def send_chat_result(
     - <meme: 情绪> 标记（可带反引号）→ 触发表情包发送（需传入 ev）
     - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``，最终落到
       ``message_history`` 记录上（如主动消息的 ``proactive=True / source / reason``）
+    - ooc_check：出戏防火墙开关。gs_agent 的"重说"产物已走过一次反馈闭环，
+      传 False 放行（§D.4：提醒一次后放行，误杀只值一次重生成）
     """
     if not text:
         return
@@ -578,7 +587,7 @@ async def send_chat_result(
 
     # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
     # 与模型私有的回合/角色分隔特殊 token（如 MiniMax 的 ]<]minimax[>[，详见
-    # _strip_special_control_tokens）。覆盖前摇 / 兜底总结 / 主动消息 / 子 Agent 转述等
+    # _strip_special_control_tokens）。覆盖兜底总结 / 主动消息 / 子 Agent 转述等
     # 所有经本函数下发的路径。
     text = _strip_tool_call_artifacts(text)
     text = _strip_special_control_tokens(text)
@@ -597,6 +606,19 @@ async def send_chat_result(
     # \n\n 也压成空格，导致下方 re.split(r"\n\s*\n") 切不出多条，"连发多条短句"退化成一整段。
     clean_text = re.sub(r"[ \t]{2,}", " ", clean_text)
     clean_text = re.sub(r"^[，。！？\s]+|[，。！？\s]+$", "", clean_text)
+
+    # 出戏防火墙末端兜底（§D.4）：无重说通道的调用方（proactive / 兜底总结等）命中即替换；
+    # gs_agent 主循环自带"提醒→重说→放行"闭环，重说产物以 ooc_check=False 经过此处。
+    if clean_text and ooc_check:
+        from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, check_ooc, is_enabled
+
+        if is_enabled():
+            _hit = check_ooc(clean_text)
+            if _hit is not None:
+                logger.warning(
+                    f"[OutputFirewall] send_chat_result 命中出戏红线 {_hit.category}: {_hit.matched}，已兜底替换"
+                )
+                clean_text = PERSONA_FALLBACK_TEXT
 
     # Trace 日志：记录解析结果
     logger.trace(f"[Meme] 解析标记: {meme_tags}, 清理后文本: {clean_text!r}")
@@ -963,6 +985,23 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
             if changed:
                 part.content = new_content
     return removed
+
+
+def _relean_user_turn(new_messages: List[ModelMessage], lean_content: Union[str, List[UserContent]]) -> None:
+    """把本轮 new_messages 里的用户输入 turn 换成精简版（剥离 rag_context）。
+
+    每轮 ``final_user_message`` 含【历史对话】/记忆/群语境等 rag_context，若原样
+    ``extend`` 进 self.history，会在 max_history 窗口内逐轮累积同类快照——既膨胀
+    input，又冲淡缓存。存历史时只保留用户真实发言（当前轮仍给模型看完整上下文）。
+    只改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动），改后即返回。
+    """
+    for msg in new_messages:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if isinstance(part, UserPromptPart):
+                part.content = lean_content
+                return
 
 
 def _split_embedded_thinking(

@@ -69,7 +69,12 @@ async def search_knowledge(
             entry["_score"] = point.score
             knowledge_list.append(entry)
 
-    return str(knowledge_list)
+    if not knowledge_list:
+        return "未找到匹配的知识库内容。"
+    # 知识库内容可能由第三方插件写入，套不可信栅栏（§B.3-1）：栅栏内的指令/身份声明只当数据
+    from gsuid_core.ai_core.content_guard import wrap_untrusted
+
+    return wrap_untrusted("knowledge", str(knowledge_list))
 
 
 @ai_tools(category="common")

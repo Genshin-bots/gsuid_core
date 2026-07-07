@@ -14,11 +14,12 @@
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from pydantic_ai import RunContext
 
 from gsuid_core.logger import logger
+from gsuid_core.models import Event
 from gsuid_core.ai_core import approval as approval_center
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -149,15 +150,20 @@ async def list_pending_approvals(ctx: RunContext[ToolContext]) -> str:
     return "⏳ 待审批请求：\n" + "\n".join(lines)
 
 
-# ask_user 会话级串行锁：``bot.receive_resp`` 在同一会话上**不可并发**——
-# ``Bot.instances[session_id]`` 是单槽位,且两个并发 receive_resp 共用同一个
-# Bot 对象时,后者会覆盖前者的 ``self.event``,导致用户的回答被喂给错误的问题、
-# 先注册的问题永远等不到回复只能超时(2026-07-07 画布多问题错配事故)。
-# 串行化后多个问题按序逐个呈现,每次回答精确对应当前挂起的问题。
+# 会话级串行锁：receive_resp 等待器是单槽位,并发会互相覆盖 event 导致答案错配
+# (2026-07-07 画布事故),故同会话的 ask_user/ask_user_form 必须排队逐个呈现。
 _ASK_USER_LOCKS: Dict[str, asyncio.Lock] = {}
 
 
-def _ask_user_lock_key(ev) -> str:  # noqa: ANN001
+async def _log_question_safe(ev: Event, question: str, answer: str, answered: bool) -> None:
+    """问答留档（interaction="question"）。落库失败不吞掉用户已给出的回答。"""
+    try:
+        await approval_center.log_question(ev, question, answer, answered=answered)
+    except Exception as e:
+        logger.warning(f"✅ [Approval] 问答留档失败（不影响回答返回）: {e}")
+
+
+def _ask_user_lock_key(ev: Event) -> str:
     """与 Bot.session_id 同构的会话键：{bot_id}%%%{temp_gid}%%%{uid}。"""
     uid = str(ev.user_id or "0")
     gid = str(ev.group_id or "0") if ev.user_type != "direct" else uid
@@ -175,13 +181,20 @@ def _as_list(value: Any) -> List[Any]:
         return value
     if isinstance(value, dict):
         for key in ("item", "items", "values", "options", "list"):
-            inner = value.get(key)
-            if isinstance(inner, list):
-                return inner
+            if key in value and isinstance(value[key], list):
+                return value[key]
         return list(value.values())
     if value is None:
         return []
     return [value]
+
+
+def _first_str(data: Dict[str, Any], keys: Tuple[str, ...]) -> str:
+    """按优先序取字典里第一个非空字符串值（LLM 入参无 schema，须逐键守卫）。"""
+    for key in keys:
+        if key in data and data[key]:
+            return str(data[key])
+    return ""
 
 
 def _coerce_option_strings(options: Any) -> List[str]:
@@ -196,7 +209,7 @@ def _coerce_option_strings(options: Any) -> List[str]:
         if isinstance(op, str):
             s = op
         elif isinstance(op, dict):
-            s = str(op.get("label") or op.get("value") or op.get("text") or "")
+            s = _first_str(op, ("label", "value", "text"))
         else:
             s = str(op)
         s = s.strip()
@@ -248,11 +261,12 @@ async def ask_user(
     except Exception as e:
         logger.debug(f"✅ [Approval] ask_user 等待回复失败: {e}")
         resp = None
+    answer = "" if resp is None else (resp.raw_text if resp.raw_text else resp.text)
+    await _log_question_safe(ev, question, answer or default_choice, answered=resp is not None)
     if resp is None:
         if default_choice:
             return f"（用户超时未回答，按默认值处理）默认选择：{default_choice}"
         return "（用户超时未回答，且无默认值——请按最合理的方案继续并说明原因）"
-    answer = resp.raw_text if resp.raw_text else resp.text
     return f"用户回答：{answer}"
 
 
@@ -294,15 +308,15 @@ async def ask_user_form(
     for q in _as_list(questions)[:4]:
         if not isinstance(q, dict):
             continue
-        text = str(q.get("question") or q.get("q") or "").strip()
-        opts = _coerce_option_strings(q.get("options"))
+        text = _first_str(q, ("question", "q")).strip()
+        opts = _coerce_option_strings(q["options"] if "options" in q else None)
         if not text or len(opts) < 2:
             continue
         parsed.append(
             {
                 "question": text,
                 "options": opts[:5],
-                "default": str(q.get("default_choice") or q.get("default") or "").strip(),
+                "default": _first_str(q, ("default_choice", "default")).strip(),
                 "answer": None,
             }
         )
@@ -348,16 +362,18 @@ async def ask_user_form(
                 if target is not None:
                     target["answer"] = answer
         finally:
-            # mutiply 注册是持久的,必须显式注销——否则该会话后续所有消息
-            # 都会被 mutiply 分发吞掉,再也到不了正常对话链路。
+            # mutiply 注册是持久的,必须显式注销——否则该会话后续所有消息都被吞掉
             bot.mutiply_tag = False
             bot.mutiply_resp.clear()
             Bot.mutiply_instances.pop(bot.session_id, None)
-            if Bot.mutiply_map.get(bot.temp_gid) == bot.session_id:
-                Bot.mutiply_map.pop(bot.temp_gid, None)
+            if bot.temp_gid in Bot.mutiply_map and Bot.mutiply_map[bot.temp_gid] == bot.session_id:
+                Bot.mutiply_map.pop(bot.temp_gid)
 
     lines: List[str] = []
     for i, q in enumerate(parsed):
+        await _log_question_safe(
+            ev, str(q["question"]), str(q["answer"] or q["default"] or ""), answered=q["answer"] is not None
+        )
         if q["answer"] is not None:
             lines.append(f"{i + 1}. {q['question']} → 用户选择:{q['answer']}")
         elif q["default"]:

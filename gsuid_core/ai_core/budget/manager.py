@@ -689,11 +689,10 @@ class BudgetManager:
 
 
 def _is_master(user_id: str) -> bool:
-    """是否为机器人主人（读 core 配置 masters）。"""
-    from gsuid_core.config import core_config
+    """是否为机器人主人（委托全框架唯一实现 ``ai_core.utils._is_master_user``）。"""
+    from gsuid_core.ai_core.utils import _is_master_user
 
-    masters = core_config.get_config("masters") or []
-    return str(user_id) in [str(m) for m in masters]
+    return _is_master_user(user_id)
 
 
 # 全局单例
