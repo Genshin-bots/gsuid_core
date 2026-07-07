@@ -91,6 +91,10 @@ _FAILOVER_LOW_PROVIDERS = ["openai++商汤科技"]
 # 撞限流后先在当前 provider 退避重试这么多次，仍失败才切下一家——避免单次抖动就切到慢/坏 provider。
 _FAILOVER_AFTER_ATTEMPTS = 4
 
+# 退出前 flush 的整体上限（秒）：flush 对每个缓冲 scope 串行做 LLM 抽取，不设上限会把
+# core_shutdown_execute 卡住数十秒、拖住重启子进程拉起。
+_SHUTDOWN_FLUSH_TIMEOUT = 20.0
+
 
 def _advance_low_provider(failed_provider: str) -> str:
     """把低档任务 provider 轮换到 _FAILOVER 环的下一个。
@@ -217,10 +221,16 @@ class IngestionWorker:
                     task.cancel()
             await asyncio.gather(consume_task, flush_timer_task, return_exceptions=True)
 
-            # 退出前尽量落盘已缓冲数据；失败只记录日志，避免关闭流程卡死。
+            # 退出前 best-effort 落盘缓冲数据，加硬超时防其拖住关闭/重启（见 _SHUTDOWN_FLUSH_TIMEOUT）。
+            # stop() 的 cancel() 已被上方 gather 消费，wait_for 可正常计时，原取消在 finally 后续传。
             try:
                 if self._buffers or not self._queue.empty():
-                    await self._flush_all_inner()
+                    await asyncio.wait_for(self._flush_all_inner(), timeout=_SHUTDOWN_FLUSH_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"🧠 [Memory] IngestionWorker 关闭前 flush 超时（{_SHUTDOWN_FLUSH_TIMEOUT}s），"
+                    "放弃余下 scope 以保证及时关闭/重启"
+                )
             except Exception as e:
                 logger.warning(f"🧠 [Memory] IngestionWorker 关闭前 flush 失败: {e}", exc_info=True)
 
