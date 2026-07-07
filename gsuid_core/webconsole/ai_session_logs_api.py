@@ -14,7 +14,6 @@ from pathlib import Path
 from datetime import datetime
 
 from fastapi import Depends
-from pydantic import Field, BaseModel
 from fastapi.concurrency import run_in_threadpool
 
 from gsuid_core.logger import logger
@@ -79,24 +78,6 @@ class SessionLogDetail(SessionLogSummary, total=False):
     """Session 日志详情（含完整 entries）"""
 
     entries: List[SessionLogEntry]
-
-
-# ─────────────────────────────────────────────
-# Pydantic 请求模型
-# ─────────────────────────────────────────────
-
-
-class SessionLogsFilterRequest(BaseModel):
-    """Session 日志筛选请求"""
-
-    session_id: Optional[str] = Field(None, description="按 session_id 精确筛选")
-    create_by: Optional[str] = Field(None, description="按创建来源筛选 (Chat/SubAgent/BuildPersona/LLM)")
-    persona_name: Optional[str] = Field(None, description="按 Persona 名称筛选")
-    is_active: Optional[bool] = Field(None, description="按是否活跃筛选 (true=仅活跃, false=仅已结束)")
-    date_from: Optional[str] = Field(None, description="起始日期 YYYY-MM-DD")
-    date_to: Optional[str] = Field(None, description="结束日期 YYYY-MM-DD")
-    limit: int = Field(default=50, ge=1, le=200, description="返回数量限制")
-    offset: int = Field(default=0, ge=0, description="偏移量")
 
 
 # ─────────────────────────────────────────────
@@ -653,9 +634,17 @@ def _apply_filters(
     is_active: Optional[bool] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> List[SessionLogSummary]:
-    """对统一列表应用筛选条件"""
+    """对统一列表应用筛选条件
+
+    ``session_id`` 为精确匹配（供程序化调用）；``search`` 为大小写不敏感的模糊搜索，
+    跨 session_id / file_name / persona_name 做子串匹配（前端搜索框用它，能搜到诸如
+    ``capagent_..._developer_...`` 这类以文件名体现的“标题”）。
+    """
     results: List[SessionLogSummary] = []
+
+    search_lc: Optional[str] = search.strip().lower() if search and search.strip() else None
 
     for item in items:
         if session_id and item["session_id"] != session_id:
@@ -666,6 +655,13 @@ def _apply_filters(
             continue
         if is_active is not None and item["is_active"] != is_active:
             continue
+
+        if search_lc:
+            # 跨可读字段子串匹配：session_id / file_name（子 Agent 日志的标题来源）/
+            # persona_name。用 \n 拼接，避免含空格的关键词跨字段边界误命中。
+            haystack = "\n".join((item["session_id"], item["file_name"] or "", item["persona_name"] or "")).lower()
+            if search_lc not in haystack:
+                continue
 
         if date_from or date_to:
             created_str: Optional[str] = item["created_at_str"]
@@ -841,6 +837,7 @@ def _categorize_create_by(create_by: Optional[str]) -> Dict[str, str]:
 @app.get("/api/ai/session_logs")
 async def list_session_logs(
     session_id: Optional[str] = None,
+    search: Optional[str] = None,
     create_by: Optional[str] = None,
     persona_name: Optional[str] = None,
     is_active: Optional[bool] = None,
@@ -859,6 +856,7 @@ async def list_session_logs(
 
     Args:
         session_id: 按 session_id 精确筛选
+        search: 模糊搜索关键词（大小写不敏感，跨 session_id/file_name/persona_name 子串匹配）
         create_by: 按创建来源筛选
         persona_name: 按 Persona 名称筛选
         is_active: 按是否活跃筛选 (true=仅活跃, false=仅已结束)
@@ -878,6 +876,7 @@ async def list_session_logs(
         filtered = _apply_filters(
             unified,
             session_id=session_id,
+            search=search,
             create_by=create_by,
             persona_name=persona_name,
             is_active=is_active,
