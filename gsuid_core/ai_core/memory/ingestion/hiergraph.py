@@ -626,6 +626,7 @@ class HierarchicalGraphBuilder:
                 create_by="MemCategorization",
                 system_prompt=CATEGORIZATION_SYSTEM_PROMPT,
                 task_level="low",
+                scope_key=self.scope_key,
             )
             # 不传 output_type，让模型直接输出 JSON，不产生 thinking trace
             raw = await asyncio.wait_for(
@@ -1011,6 +1012,7 @@ class HierarchicalGraphBuilder:
             agent = create_agent(
                 create_by="MemGroupSummary",
                 task_level="low",
+                scope_key=self.scope_key,
             )
             summary = (await asyncio.wait_for(agent.run(prompt), timeout=180))[:500]
         except asyncio.TimeoutError:

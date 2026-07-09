@@ -1124,6 +1124,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
                 create_by="MemEntityExtraction",
                 task_level="low",
                 system_prompt=system_prompt,
+                scope_key=scope_key,
             )
             raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
             raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))
@@ -1273,6 +1274,7 @@ async def _extract_and_upsert_preferences(
         task_level="low",
         is_subagent=True,
         system_prompt=PREFERENCE_EXTRACTION_SYSTEM,
+        scope_key=scope_key,
     )
     raw = await asyncio.wait_for(agent.run(prompt), timeout=120)
     # 本调用未指定 output_type，agent.run 返回 str；非 str 直接 str() 兜底（不依赖 hasattr 探属性）

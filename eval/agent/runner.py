@@ -73,25 +73,40 @@ def _scan_log_by_user(user_id: str, since: float, wait: float) -> Optional[dict]
 async def run_once(
     client: httpx.AsyncClient, base_url: str, case: dict, run_idx: int, wait: float = 75.0, timeout: float = 200.0
 ) -> Trace:
-    """驱动一次 run，返回结构化 Trace（失败/超时返回带 error 的 Trace，计为该 run 失败）。"""
+    """驱动一次 run，返回结构化 Trace（失败/超时返回带 error 的 Trace，计为该 run 失败）。
+
+    agent 评测**必须**带 ``enable_tools=True`` 才走真实工具装配（否则跑的是无工具的
+    记忆评测 agent）；case 可用 ``persona`` 覆盖人格（默认早柚），``enable_tools`` 显式关掉。
+    端到端 latency（HTTP 往返墙钟）填进 Trace，供 ``max_latency`` verifier 抓死循环/挂起。
+    """
     uid = f"eval_{case['id']}_{run_idx}_{uuid.uuid4().hex[:6]}"
     since = time.time()
+    # persona 默认早柚（全局默认人格会暴露 AI 身份，非角色，评测须显式指定）；
+    # 允许 case 传 persona: null 显式关人格（judge/通用助手场景）。
+    persona = case["persona"] if "persona" in case else "早柚"
+    enable_tools = case.get("enable_tools", True)
     resp = await call_chat_with_history(
         client,
         base_url=base_url,
         user_id=uid,
         message=case["message"],
         history=case.get("history", []),
-        persona_name=case.get("persona"),
+        persona_name=persona,
         enable_observer=False,
+        enable_tools=enable_tools,
         timeout=timeout,  # 评测隔离：默认不写记忆
     )
+    latency = time.time() - since
+    delivered = resp.get("data") if isinstance(resp.get("data"), str) else ""
     if resp.get("error"):
-        return Trace(error=f"api:{resp.get('error')}")
+        return Trace(error=f"api:{resp.get('error')}", latency=latency)
 
     # A 模式：端点已返回 trace / session_id
     if isinstance(resp.get("trace"), dict):
-        return parse_session_log(resp["trace"])
+        tr = parse_session_log(resp["trace"])
+        tr.latency = latency
+        tr.returned_text = delivered or ""
+        return tr
     doc = None
     session_id = resp.get("session_id")
     if session_id:
@@ -103,10 +118,152 @@ async def run_once(
     if doc is None:  # B 模式兜底（阻塞轮询放线程池，避免卡事件循环）
         doc = await asyncio.to_thread(_scan_log_by_user, uid, since, wait)
     if doc is None:
-        return Trace(error="session_log_not_found（建议按 README 让端点返回 session_id/trace）")
-    return parse_session_log(doc)
+        # 拿不到轨迹但拿到了文本 data：退化成"纯文本 Trace"，让 final_* / judge 类断言仍可判，
+        # 只有工具类断言会因无轨迹而失败（比整条判 error 更能反映真实回复）。
+        if delivered:
+            return Trace(final_text=delivered, returned_text=delivered, latency=latency)
+        return Trace(error="session_log_not_found（建议按 README 让端点返回 session_id/trace）", latency=latency)
+    tr = parse_session_log(doc)
+    tr.latency = latency
+    tr.returned_text = delivered or ""
+    return tr
 
 
 async def run_case(client: httpx.AsyncClient, base_url: str, case: dict, k: int, wait: float = 75.0) -> list[Trace]:
     # 同一 case 的 k 次 run 串行（pass^k 要独立采样；避免并发抢同一 user 的日志关联）
     return [await run_once(client, base_url, case, i, wait) for i in range(k)]
+
+
+# ───────────────────────── 批量 B 模式（快得多） ─────────────────────────
+# 交接文档第 2 节：session_log 空闲≥60s（POLL 15s）才落盘；逐条 run 各等一次 ≈ 1min/run，
+# 100+ 例 × k 会拖到数小时。批量模式：一次性 fire 全部 run（并发≤3）→ 全部返回后**只等一次**
+# flush → 一趟扫盘按唯一 user_id 关联。每 run user_id 唯一 → session 文件天然不冲突。
+
+
+async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
+    uid = f"eval_{case['id']}_{run_idx}_{uuid.uuid4().hex[:6]}"
+    queued = time.time()
+    persona = case["persona"] if "persona" in case else "早柚"
+    enable_tools = case.get("enable_tools", True)
+    async with sem:
+        # ⚠️ latency 从**拿到并发槽后**起算——端点同步阻塞到 agent 跑完，这段才是单次 agent
+        # 运行的真实耗时（供 max_latency 抓死循环/挂起）。若从 queued 起算会把"等信号量排队"
+        # 的时间算进去（426 run / concurrency 3 时队尾能等几分钟），令 max_latency 全线误判。
+        call_start = time.time()
+        resp = await call_chat_with_history(
+            client,
+            base_url=base_url,
+            user_id=uid,
+            message=case["message"],
+            history=case.get("history", []),
+            persona_name=persona,
+            enable_observer=False,
+            enable_tools=enable_tools,
+            timeout=timeout,
+        )
+        latency = time.time() - call_start
+    return {"case_id": case["id"], "run_idx": run_idx, "uid": uid, "since": queued, "resp": resp, "latency": latency}
+
+
+def _scan_all_logs(uids: set, since: float) -> dict:
+    """一趟扫 session_logs，返回 {uid: doc}（优先含 result/run_end 的完整轨迹）。"""
+    out: dict = {}
+    for p in glob.glob(str(SESSION_LOG_DIR / "*.json")):
+        pp = Path(p)
+        try:
+            if pp.stat().st_mtime < since - 2:
+                continue
+            doc = json.loads(pp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        blob = json.dumps(doc, ensure_ascii=False)
+        types = {e.get("type") for e in doc.get("entries", [])}
+        complete = ("result" in types) or ("run_end" in types)
+        for uid in uids:
+            if uid in blob:
+                if uid not in out or complete:
+                    out[uid] = doc
+                break
+    return out
+
+
+def _trace_from_fired(f: dict, doc) -> Trace:
+    resp = f["resp"]
+    # HTTP data = 出戏防火墙 scrub 之后、用户真正看到的交付文本（内容断言判它）
+    delivered = resp.get("data") if isinstance(resp.get("data"), str) else ""
+    if doc is not None:
+        tr = parse_session_log(doc)  # session_log = 工具轨迹 + 原始(pre-scrub) final_text
+        tr.latency = f["latency"]
+        tr.returned_text = delivered or ""
+        return tr
+    if resp.get("error"):
+        return Trace(error=f"api:{resp.get('error')}", latency=f["latency"])
+    if delivered:
+        # 拿到交付文本但没扫到轨迹：退化成纯文本 Trace（final_*/judge 可判；工具类断言必失败）
+        return Trace(final_text=delivered, returned_text=delivered, latency=f["latency"])
+    return Trace(error="session_log_not_found", latency=f["latency"])
+
+
+async def run_suite_batch(
+    client: httpx.AsyncClient,
+    base_url: str,
+    cases: list[dict],
+    default_k: int,
+    wait: float = 85.0,
+    concurrency: int = 3,
+    timeout: float = 220.0,
+    rescans: int = 4,
+    rescan_gap: float = 15.0,
+    force_k: bool = False,
+) -> dict:
+    """批量跑整套 → {case_id: [Trace, ...]}（按 run_idx 有序）。
+
+    per-case ``k`` 覆盖 default_k（除非 ``force_k`` — 冒烟时 CLI --k 硬覆盖全部）。fire 全部 run
+    （并发受 ``concurrency`` 限）→ 只等一次 ``wait`` 让日志落盘 → 一趟扫盘；仍缺的 uid 再补扫
+    ``rescans`` 次（每次隔 ``rescan_gap``）。
+    """
+    sem = asyncio.Semaphore(concurrency)
+    specs: list[tuple[dict, int]] = []
+    for c in cases:
+        ck = default_k if force_k else int(c.get("k", default_k))
+        for i in range(ck):
+            specs.append((c, i))
+
+    earliest = time.time()
+    total = len(specs)
+    print(f"[batch] firing {total} runs (concurrency={concurrency})…", flush=True)
+
+    done = 0
+
+    async def _fire_and_tick(c, i):
+        nonlocal done
+        f = await _fire_run(client, base_url, c, i, sem, timeout)
+        done += 1
+        err = f["resp"].get("error")
+        if done % 10 == 0 or err:
+            tag = f"ERR({err})" if err else "ok"
+            print(
+                f"[batch] fired {done}/{total}  last={f['case_id']}#{f['run_idx']} {f['latency']:.0f}s {tag}",
+                flush=True,
+            )
+        return f
+
+    fired = await asyncio.gather(*[_fire_and_tick(c, i) for c, i in specs])
+    print(f"[batch] all {total} fired; waiting {wait:.0f}s for session_log flush…", flush=True)
+
+    # 只等一次让日志 flush（空闲≥60s 才落盘），再一趟扫盘；缺失的补扫
+    await asyncio.sleep(wait)
+    all_uids = {f["uid"] for f in fired}
+    docs = await asyncio.to_thread(_scan_all_logs, all_uids, earliest)
+    for _ in range(rescans):
+        missing = {u for u in all_uids if u not in docs}
+        if not missing:
+            break
+        await asyncio.sleep(rescan_gap)
+        docs.update(await asyncio.to_thread(_scan_all_logs, missing, earliest))
+
+    per_case: dict = {}
+    for f in fired:
+        tr = _trace_from_fired(f, docs.get(f["uid"]))
+        per_case.setdefault(f["case_id"], []).append((f["run_idx"], tr))
+    return {cid: [t for _, t in sorted(runs)] for cid, runs in per_case.items()}

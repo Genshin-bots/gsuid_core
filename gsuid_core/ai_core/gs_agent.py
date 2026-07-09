@@ -149,6 +149,29 @@ def _matched_delegation_only_profile(query: str) -> str:
     return ""
 
 
+# scope_key（记忆 scope，见 memory/scope.py）→ 可嵌进 session_id 的一段指向标识：
+# group:789012 → group-789012 / user_global:12345 → uglobal-12345 /
+# user_in_group:u@g → uingroup-u@g / self:x → self-x。用短码而非原 scope_type，避免
+# user_global/user_in_group 自带的下划线破坏 session_id 的 "_" 分词。前端据此显示"针对哪个群/用户"。
+_SCOPE_SEG_CODE: dict = {
+    "group": "group",
+    "user_global": "uglobal",
+    "user_in_group": "uingroup",
+    "self": "self",
+}
+
+
+def _scope_id_segment(scope_key: Optional[str]) -> str:
+    """把 scope_key 压成 session_id 里的一段（无法解析 / 未提供时返回空串）。"""
+    if not scope_key:
+        return ""
+    prefix, _, rest = scope_key.partition(":")
+    code = _SCOPE_SEG_CODE.get(prefix)
+    if not code or not rest:
+        return ""
+    return f"{code}-{rest}"
+
+
 class GsCoreAIAgent:
     """
     基于 PydanticAI 的 Agent 封装类
@@ -174,6 +197,7 @@ class GsCoreAIAgent:
         session_id: Optional[str] = None,
         is_subagent: bool = False,
         dynamic_tools: Optional[bool] = None,
+        scope_key: Optional[str] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -193,7 +217,11 @@ class GsCoreAIAgent:
         # 调用）自动派生一个一次性 subagent id——这样"所有调用来源都写 session log"
         # 在结构上得到保证，无法被某个来源遗漏。详见 docs/AI_SESSION_LOGGING.md。
         if session_id is None:
-            session_id = f"auto_{create_by}_{uuid.uuid4().hex[:8]}"
+            # 传了 scope_key 的后台调用（记忆抽取 / 归类 / 群摘要 / 节点选择等）把"针对哪个群/用户"
+            # 编进 id，让 webconsole 能显示指向，而不再是一串无差别的 auto_XXX_hash。
+            _seg = _scope_id_segment(scope_key)
+            _suffix = uuid.uuid4().hex[:8]
+            session_id = f"auto_{create_by}_{_seg}_{_suffix}" if _seg else f"auto_{create_by}_{_suffix}"
             is_subagent = True
         self.session_id: str = session_id
         self.is_subagent: bool = is_subagent
@@ -1703,6 +1731,7 @@ def create_agent(
     session_id: Optional[str] = None,
     is_subagent: bool = False,
     dynamic_tools: Optional[bool] = None,
+    scope_key: Optional[str] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -1717,6 +1746,8 @@ def create_agent(
         session_id: 会话 ID，用于关联 session 日志
         is_subagent: 是否为 SubAgent，为 True 时日志存放于独立子目录
         dynamic_tools: dynamic 能力族开关；None 沿用旧门（agentic 且未传 tools 才装配）
+        scope_key: 记忆 scope（group:xxx / user_global:xxx 等）。仅在未显式给 session_id 的
+            后台调用时生效——把"针对哪个群/用户"编进自动派生的 auto_ session_id，供 webconsole 展示指向
 
     Returns:
         PydanticAIAgent 实例
@@ -1737,6 +1768,7 @@ def create_agent(
         session_id=session_id,
         is_subagent=is_subagent,
         dynamic_tools=dynamic_tools,
+        scope_key=scope_key,
     )
 
 

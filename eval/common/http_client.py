@@ -53,6 +53,7 @@ async def call_chat_with_history(
     enable_system2: Optional[bool] = None,
     bot_id: str = "HTTP",
     group_id: Optional[str] = None,
+    enable_tools: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """调用 ``/api/chat_with_history`` 接口。
 
@@ -89,6 +90,10 @@ async def call_chat_with_history(
         payload["enable_observer"] = enable_observer
     if enable_system2 is not None:
         payload["enable_system2"] = enable_system2
+    # agent 评测专用：True → 端点 create_agent(dynamic_tools=True) 走真实工具装配。
+    # 默认 None 不入 payload，记忆评测行为不变（非破坏性）。
+    if enable_tools is not None:
+        payload["enable_tools"] = enable_tools
 
     try:
         response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)

@@ -251,6 +251,7 @@ class System2GlobalSelector:
             agent = create_agent(
                 create_by="MemNodeSelection",
                 task_level="low",
+                scope_key=self.scope_key,
             )
             # 不传 output_type，让模型直接输出 JSON
             raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
