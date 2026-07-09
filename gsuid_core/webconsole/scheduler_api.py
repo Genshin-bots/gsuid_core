@@ -3,7 +3,7 @@ Scheduler APIs
 提供调度器相关的 RESTful APIs
 """
 
-from typing import Dict
+from typing import Any, Dict
 from datetime import datetime
 
 from fastapi import Depends, Request
@@ -11,6 +11,8 @@ from fastapi import Depends, Request
 from gsuid_core.aps import scheduler, _get_trigger_description
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+
+from ._api_tags import SCHEDULER
 
 
 def get_job_description(job) -> str:
@@ -35,8 +37,8 @@ def get_trigger_description(job) -> str:
         return str(job.trigger)
 
 
-@app.get("/api/scheduler/jobs")
-async def get_scheduler_jobs(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/scheduler/jobs", summary="获取任务列表", tags=SCHEDULER)
+async def get_scheduler_jobs(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取所有计划任务列表
 
@@ -76,8 +78,8 @@ async def get_scheduler_jobs(request: Request, _user: Dict = Depends(require_aut
     return {"status": 0, "msg": "ok", "data": jobs}
 
 
-@app.post("/api/scheduler/jobs/{job_id}/run")
-async def run_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
+@app.post("/api/scheduler/jobs/{job_id}/run", summary="手动触发任务", tags=SCHEDULER)
+async def run_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     手动触发计划任务
 
@@ -102,8 +104,8 @@ async def run_scheduler_job(request: Request, job_id: str, _user: Dict = Depends
     return {"status": 1, "msg": "调度器未启动"}
 
 
-@app.delete("/api/scheduler/jobs/{job_id}")
-async def delete_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
+@app.delete("/api/scheduler/jobs/{job_id}", summary="删除任务", tags=SCHEDULER)
+async def delete_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     删除计划任务
 
@@ -123,8 +125,8 @@ async def delete_scheduler_job(request: Request, job_id: str, _user: Dict = Depe
     return {"status": 1, "msg": "调度器未启动"}
 
 
-@app.post("/api/scheduler/jobs/{job_id}/pause")
-async def pause_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
+@app.post("/api/scheduler/jobs/{job_id}/pause", summary="暂停任务", tags=SCHEDULER)
+async def pause_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     暂停计划任务
 
@@ -147,8 +149,8 @@ async def pause_scheduler_job(request: Request, job_id: str, _user: Dict = Depen
     return {"status": 1, "msg": "调度器未启动"}
 
 
-@app.post("/api/scheduler/jobs/{job_id}/resume")
-async def resume_scheduler_job(request: Request, job_id: str, _user: Dict = Depends(require_auth)):
+@app.post("/api/scheduler/jobs/{job_id}/resume", summary="恢复任务", tags=SCHEDULER)
+async def resume_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     恢复已暂停的计划任务
 

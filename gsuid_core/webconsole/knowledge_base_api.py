@@ -31,6 +31,8 @@ from gsuid_core.ai_core.rag.knowledge import (
     delete_manual_knowledge_from_db,
 )
 
+from ._api_tags import KNOWLEDGE
+
 # WebConsole 端点捕获的"合法运行时/DB 故障"：转成 status=1 返回前端，**不**包括编程错误
 # （KeyError/AttributeError/TypeError/NameError 等）——后者应冒泡到 FastAPI 500 处理器，
 # 避免被宽 except 吞掉、线上难以定位（见 CODE_REVIEW §4）。
@@ -65,7 +67,7 @@ class KnowledgeBulkImport(BaseModel):
     title: str
     doc_id: Optional[str] = None
     full_text: Optional[str] = None
-    items: Optional[List[dict]] = None
+    items: Optional[List[Dict[str, Any]]] = None
     tags: List[str] = []
     plugin: str = "manual"
     chunk_size: int = DEFAULT_CHUNK_SIZE
@@ -76,18 +78,18 @@ class KnowledgeBulkImport(BaseModel):
 class KnowledgeImportRecords(BaseModel):
     """从导出件恢复手动知识的请求模型（records 或 jsonl 至少一个）"""
 
-    records: Optional[List[dict]] = None
+    records: Optional[List[Dict[str, Any]]] = None
     jsonl: Optional[str] = None
 
 
-@app.get("/api/ai/knowledge/list")
+@app.get("/api/ai/knowledge/list", summary="获取知识库列表（分页）", tags=KNOWLEDGE)
 async def get_knowledge_base_list(
     offset: int = 0,
     limit: int = 20,
     source: str = "all",
     page: int = 1,
     doc_id: Optional[str] = None,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取知识库列表（分页）
@@ -128,12 +130,12 @@ async def get_knowledge_base_list(
     }
 
 
-@app.get("/api/ai/knowledge/search")
+@app.get("/api/ai/knowledge/search", summary="搜索知识", tags=KNOWLEDGE)
 async def search_knowledge_base(
     query: str,
     limit: int = 10,
     source: str = "all",
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     搜索知识库
@@ -160,10 +162,10 @@ async def search_knowledge_base(
     }
 
 
-@app.get("/api/ai/knowledge/{entity_id}")
+@app.get("/api/ai/knowledge/{entity_id}", summary="获取知识详情", tags=KNOWLEDGE)
 async def get_knowledge_base_detail(
     entity_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取指定知识库条目的详细信息
@@ -191,10 +193,10 @@ async def get_knowledge_base_detail(
     }
 
 
-@app.post("/api/ai/knowledge")
+@app.post("/api/ai/knowledge", summary="新增知识", tags=KNOWLEDGE)
 async def create_knowledge_base(
     knowledge: KnowledgeBaseCreate,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     新增手动知识库条目
@@ -234,11 +236,11 @@ async def create_knowledge_base(
     }
 
 
-@app.put("/api/ai/knowledge/{entity_id}")
+@app.put("/api/ai/knowledge/{entity_id}", summary="更新知识", tags=KNOWLEDGE)
 async def update_knowledge_base(
     entity_id: str,
     updates: KnowledgeBaseUpdate,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     更新手动添加的知识库条目
@@ -275,10 +277,10 @@ async def update_knowledge_base(
     }
 
 
-@app.delete("/api/ai/knowledge/{entity_id}")
+@app.delete("/api/ai/knowledge/{entity_id}", summary="删除知识", tags=KNOWLEDGE)
 async def delete_knowledge_base(
     entity_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     删除手动添加的知识库条目
@@ -316,10 +318,10 @@ async def delete_knowledge_base(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/ai/knowledge/bulk")
+@app.post("/api/ai/knowledge/bulk", summary="批量导入（服务端分片，导入长文/数十万字）", tags=KNOWLEDGE)
 async def bulk_import_knowledge(
     req: KnowledgeBulkImport,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """批量导入一篇文档（服务端分片 + 批量嵌入 + 幂等入库）
 
@@ -353,10 +355,10 @@ async def bulk_import_knowledge(
     return {"status": 0, "msg": "ok", "data": result}
 
 
-@app.delete("/api/ai/knowledge/doc/{doc_id}")
+@app.delete("/api/ai/knowledge/doc/{doc_id}", summary="删除整篇文档", tags=KNOWLEDGE)
 async def delete_knowledge_doc(
     doc_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """删除整篇文档的全部分片（SQL 真值源 + Qdrant 向量）。"""
     try:
@@ -366,9 +368,9 @@ async def delete_knowledge_doc(
     return {"status": 0, "msg": "ok", "data": result}
 
 
-@app.get("/api/ai/knowledge/backup/export")
+@app.get("/api/ai/knowledge/backup/export", summary="导出备份（JSONL）", tags=KNOWLEDGE)
 async def export_knowledge_backup(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """流式导出全部手动知识为 JSONL（每行一条），供用户级备份/迁移。
 
@@ -381,10 +383,10 @@ async def export_knowledge_backup(
     )
 
 
-@app.post("/api/ai/knowledge/backup/import")
+@app.post("/api/ai/knowledge/backup/import", summary="导入恢复（从备份）", tags=KNOWLEDGE)
 async def import_knowledge_backup(
     req: KnowledgeImportRecords,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """从导出件恢复手动知识（SQL 真值源 + 重嵌入）。
 
@@ -393,7 +395,7 @@ async def import_knowledge_backup(
     Returns:
         data: {total, written, skipped}
     """
-    records: List[dict] = req.records or []
+    records: List[Dict[str, Any]] = req.records or []
     if not records and req.jsonl:
         for line in req.jsonl.splitlines():
             line = line.strip()
@@ -417,9 +419,9 @@ async def import_knowledge_backup(
     return {"status": 0, "msg": "ok", "data": result}
 
 
-@app.post("/api/ai/knowledge/reconcile")
+@app.post("/api/ai/knowledge/reconcile", summary="深度对账（运维）", tags=KNOWLEDGE)
 async def reconcile_knowledge(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """手动知识深度对账（运维入口）。
 

@@ -37,6 +37,8 @@ from gsuid_core.ai_core.capability_agents import (
     delete_user_profile,
 )
 
+from ._api_tags import CAPABILITY_AGENTS
+
 # node_id 命名规范：英数下划线，1~64 字符，字母开头。
 _NODE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
@@ -80,9 +82,9 @@ class PatchNodeRequest(BaseModel):
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/capability-agents/list")
+@app.get("/api/ai/capability-agents/list", summary="列表", tags=CAPABILITY_AGENTS)
 async def list_capability_agents(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     source: Optional[str] = Query(None, description="按来源筛选：builtin / plugin / user / persona"),
 ) -> Dict[str, Any]:
     """列出所有节点（含来源标记）。``source=persona`` 时列 persona 投影节点。"""
@@ -95,10 +97,10 @@ async def list_capability_agents(
     return {"status": 0, "msg": "ok", "data": {"items": items, "count": len(items)}}
 
 
-@app.get("/api/ai/capability-agents/{node_id}")
+@app.get("/api/ai/capability-agents/{node_id}", summary="详情", tags=CAPABILITY_AGENTS)
 async def get_capability_agent_detail(
     node_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """获取单个节点详情。"""
     dto = get_profile_as_dto(node_id)
@@ -107,10 +109,10 @@ async def get_capability_agent_detail(
     return {"status": 0, "msg": "ok", "data": dto}
 
 
-@app.post("/api/ai/capability-agents")
+@app.post("/api/ai/capability-agents", summary="新建", tags=CAPABILITY_AGENTS)
 async def create_capability_agent(
     body: CreateNodeRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """新建一个用户自定义节点（写入磁盘 + 统一注册表）。
 
@@ -158,11 +160,11 @@ async def create_capability_agent(
     return {"status": 0, "msg": "ok", "data": get_profile_as_dto(node.node_id)}
 
 
-@app.patch("/api/ai/capability-agents/{node_id}")
+@app.patch("/api/ai/capability-agents/{node_id}", summary="编辑", tags=CAPABILITY_AGENTS)
 async def patch_capability_agent(
     node_id: str,
     body: PatchNodeRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """编辑一个**用户自建**节点。builtin / plugin / persona 节点拒绝修改。"""
     source = get_profile_source(node_id)
@@ -200,10 +202,10 @@ async def patch_capability_agent(
     return {"status": 0, "msg": "ok", "data": get_profile_as_dto(node_id)}
 
 
-@app.delete("/api/ai/capability-agents/{node_id}")
+@app.delete("/api/ai/capability-agents/{node_id}", summary="删除", tags=CAPABILITY_AGENTS)
 async def delete_capability_agent(
     node_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """删除一个**用户自建**节点（同时清磁盘文件 + 统一注册表）。"""
     source = get_profile_source(node_id)
@@ -221,9 +223,9 @@ async def delete_capability_agent(
     return {"status": 0, "msg": "ok", "data": {"node_id": node_id}}
 
 
-@app.get("/api/ai/capability-agents/_tools/available")
+@app.get("/api/ai/capability-agents/_tools/available", summary="可挂载工具枚举", tags=CAPABILITY_AGENTS)
 async def list_available_tools_for_profiles(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """枚举所有可挂载到节点的工具名，前端做 tool_names 多选框时用。"""
     from gsuid_core.ai_core.register import get_registered_tools

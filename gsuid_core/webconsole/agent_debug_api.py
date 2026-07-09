@@ -21,6 +21,8 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.database.base_models import async_maker
 
+from ._api_tags import AGENT_DEBUG
+
 
 def _ok(data: Any) -> Dict[str, Any]:
     return {"status": 0, "msg": "success", "data": data}
@@ -33,12 +35,12 @@ def _err(msg: str) -> Dict[str, Any]:
 # ──────────────────────────── Memory Graph View ────────────────────────────
 
 
-@app.get("/api/agent_debug/memory/edges")
+@app.get("/api/agent_debug/memory/edges", summary="列出记忆图谱边", tags=AGENT_DEBUG)
 async def list_memory_edges(
     scope_key: str = Query(..., description="作用域 key，如 group:789012"),
     include_invalid: bool = Query(False, description="是否含已软删除 Edge"),
     limit: int = Query(200, le=1000),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """列出某 scope 的知识图谱 Edge（Memory Graph View）。"""
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
@@ -68,10 +70,10 @@ async def list_memory_edges(
     )
 
 
-@app.post("/api/agent_debug/memory/edge/{edge_id}/invalidate")
+@app.post("/api/agent_debug/memory/edge/{edge_id}/invalidate", summary="作废记忆边", tags=AGENT_DEBUG)
 async def invalidate_memory_edge(
     edge_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """软删除一条错误 Edge（设 invalid_at），不物理删除。"""
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
@@ -86,11 +88,11 @@ async def invalidate_memory_edge(
     return _ok({"edge_id": edge_id})
 
 
-@app.get("/api/agent_debug/memory/conflicts")
+@app.get("/api/agent_debug/memory/conflicts", summary="列出记忆冲突", tags=AGENT_DEBUG)
 async def list_memory_conflicts(
     scope_key: str = Query(...),
     limit: int = Query(100, le=500),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """列出某 scope 的记忆矛盾记录（C11 Contradiction）。"""
     from gsuid_core.ai_core.memory.database.models import AIMemConflict
@@ -125,11 +127,11 @@ async def list_memory_conflicts(
 # 任务调试看板：只列任务节点与日志，详细的 Kanban 操作走 /api/ai/kanban/*。
 
 
-@app.get("/api/agent_debug/tasks")
+@app.get("/api/agent_debug/tasks", summary="列出 Agent 任务", tags=AGENT_DEBUG)
 async def list_agent_tasks(
     status: Optional[str] = Query(None, description="按状态过滤"),
     limit: int = Query(100, le=500),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """看板式列出所有任务节点（含根 + 子任务）。"""
     from gsuid_core.ai_core.planning.models import AIAgentTask
@@ -160,10 +162,10 @@ async def list_agent_tasks(
     )
 
 
-@app.get("/api/agent_debug/tasks/{task_id}")
+@app.get("/api/agent_debug/tasks/{task_id}", summary="获取 Agent 任务详情", tags=AGENT_DEBUG)
 async def get_agent_task_detail(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """任务节点详情：主记录 + 同树子任务 + 执行日志。"""
     from gsuid_core.ai_core.planning import kanban
@@ -228,10 +230,10 @@ async def get_agent_task_detail(
     )
 
 
-@app.post("/api/agent_debug/tasks/{task_id}/abort")
+@app.post("/api/agent_debug/tasks/{task_id}/abort", summary="中止 Agent 任务", tags=AGENT_DEBUG)
 async def abort_agent_task(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """管理员手动终止一个任务节点（不级联子任务；整树终结请走 /api/ai/kanban/tasks/{id}/fail）。"""
     from gsuid_core.ai_core.planning import kanban
@@ -243,10 +245,10 @@ async def abort_agent_task(
 # ─────────────────────── Persona Evolution Inspector ───────────────────────
 
 
-@app.get("/api/agent_debug/self_model")
+@app.get("/api/agent_debug/self_model", summary="获取自我模型", tags=AGENT_DEBUG)
 async def get_self_model_api(
     bot_id: str = Query("default"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """查看 self_model 演化层（承诺 / 偏好 / 反思）。"""
     from gsuid_core.ai_core.self_cognition import get_self_model
@@ -261,10 +263,10 @@ class SelfModelEditRequest(BaseModel):
     items: List[str]
 
 
-@app.post("/api/agent_debug/self_model")
+@app.post("/api/agent_debug/self_model", summary="设置自我模型", tags=AGENT_DEBUG)
 async def set_self_model_api(
     body: SelfModelEditRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """人工修正跑偏的 self_model 字段（整字段覆盖）。"""
     from gsuid_core.ai_core.self_cognition import _FIELDS, overwrite_self_model_field

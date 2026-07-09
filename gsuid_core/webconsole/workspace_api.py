@@ -24,6 +24,8 @@ from gsuid_core.ai_core.planning.workspace import (
     register_workspace_artifacts,
 )
 
+from ._api_tags import WORKSPACE
+
 
 def _safe_relpath(workspace: Path, requested: str) -> Path:
     """安全把请求路径解析回 workspace 子树内（防穿越）。"""
@@ -35,10 +37,10 @@ def _safe_relpath(workspace: Path, requested: str) -> Path:
     return full
 
 
-@app.get("/api/ai/kanban/tasks/{task_id}/workspace/files")
+@app.get("/api/ai/kanban/tasks/{task_id}/workspace/files", summary="列出工作区文件", tags=WORKSPACE)
 async def list_workspace_files(
     task_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None:
@@ -65,10 +67,10 @@ async def list_workspace_files(
     return {"status": 0, "msg": "ok", "data": {"workspace": str(ws), "files": files}}
 
 
-@app.get("/api/ai/kanban/tasks/{task_id}/workspace/files/raw")
+@app.get("/api/ai/kanban/tasks/{task_id}/workspace/files/raw", summary="下载单文件", tags=WORKSPACE)
 async def download_workspace_file(
     task_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     path: str = Query(..., description="workspace 相对路径"),
 ):
     task = await AIAgentTask.get_by_id(task_id)
@@ -84,10 +86,10 @@ async def download_workspace_file(
     return FileResponse(full, filename=full.name)
 
 
-@app.post("/api/ai/kanban/tasks/{task_id}/workspace/import")
+@app.post("/api/ai/kanban/tasks/{task_id}/workspace/import", summary="上传文件到 workspace", tags=WORKSPACE)
 async def upload_workspace_file(
     task_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     upload: UploadFile = File(...),
     sub_path: str = Query("", description="存放到 workspace 下的子目录（可空）"),
 ) -> Dict[str, Any]:
@@ -137,11 +139,11 @@ class ApplyPatchRequest(BaseModel):
     mime: str = "text/x-patch"
 
 
-@app.post("/api/ai/kanban/tasks/{task_id}/workspace/apply-patch")
+@app.post("/api/ai/kanban/tasks/{task_id}/workspace/apply-patch", summary="提交 patch（待人审）", tags=WORKSPACE)
 async def submit_workspace_patch(
     task_id: str,
     body: ApplyPatchRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None:

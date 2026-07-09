@@ -35,6 +35,8 @@ from gsuid_core.ai_core.configs.anthropic_config import (
     list_available_anthropic_configs,
 )
 
+from ._api_tags import PROVIDER_CONFIG
+
 
 def _string_config_to_dict(config: Any) -> Dict[str, Any]:
     """将 StringConfig 对象转换为字典用于 JSON 序列化"""
@@ -54,7 +56,7 @@ def _get_manager_and_config(provider: str) -> tuple[Any, Any]:
         return anthropic_manager, get_anthropic_config
 
 
-def _validate_config_name_no_plus(config_name: str) -> Dict | None:
+def _validate_config_name_no_plus(config_name: str) -> Dict[str, Any] | None:
     """
     验证配置名称不包含 "+" 号。
 
@@ -152,8 +154,8 @@ def _build_all_configs_summary() -> Dict[str, Any]:
 # ==================== Provider 管理 ====================
 
 
-@app.get("/api/provider_config/providers")
-async def get_provider_list(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/provider_config/providers", summary="获取 Provider 列表", tags=PROVIDER_CONFIG)
+async def get_provider_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取支持的 provider 列表
 
@@ -195,11 +197,11 @@ async def get_provider_list(_: Dict = Depends(require_auth)) -> Dict:
 # ==================== 高级/低级任务配置 ====================
 
 
-@app.get("/api/provider_config/task_config/{task_level}")
+@app.get("/api/provider_config/task_config/{task_level}", summary="获取任务级别配置", tags=PROVIDER_CONFIG)
 async def get_task_config(
     task_level: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取高级或低级任务的配置详情
 
@@ -258,12 +260,12 @@ async def get_task_config(
         }
 
 
-@app.post("/api/provider_config/task_config/{task_level}")
+@app.post("/api/provider_config/task_config/{task_level}", summary="设置任务级别配置", tags=PROVIDER_CONFIG)
 async def set_task_config(
     task_level: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     设置高级或低级任务的配置
 
@@ -341,11 +343,11 @@ async def set_task_config(
         }
 
 
-@app.delete("/api/provider_config/task_config/{task_level}")
+@app.delete("/api/provider_config/task_config/{task_level}", summary="清除任务级别配置", tags=PROVIDER_CONFIG)
 async def clear_task_config(
     task_level: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     清除高级或低级任务的配置（将配置名置空）
 
@@ -393,8 +395,8 @@ async def clear_task_config(
 # ==================== 统一配置管理（不区分 provider） ====================
 
 
-@app.get("/api/provider_config/all_configs")
-async def get_all_configs(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/provider_config/all_configs", summary="获取所有配置摘要", tags=PROVIDER_CONFIG)
+async def get_all_configs(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取所有配置（不区分 provider）
 
@@ -414,11 +416,11 @@ async def get_all_configs(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.get("/api/provider_config/config/{provider}/options")
+@app.get("/api/provider_config/config/{provider}/options", summary="获取配置可选项", tags=PROVIDER_CONFIG)
 async def get_config_options(
     provider: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定 provider 的配置可选项
 
@@ -457,12 +459,12 @@ async def get_config_options(
     }
 
 
-@app.get("/api/provider_config/config/{provider}/{config_name}")
+@app.get("/api/provider_config/config/{provider}/{config_name}", summary="获取配置详情", tags=PROVIDER_CONFIG)
 async def get_config_detail(
     provider: str,
     config_name: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定配置的详细信息
 
@@ -517,13 +519,13 @@ async def get_config_detail(
         }
 
 
-@app.post("/api/provider_config/config/{provider}/{config_name}")
+@app.post("/api/provider_config/config/{provider}/{config_name}", summary="创建或更新配置", tags=PROVIDER_CONFIG)
 async def create_or_update_config(
     provider: str,
     config_name: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     创建或更新配置文件
 
@@ -592,12 +594,16 @@ async def create_or_update_config(
         }
 
 
-@app.post("/api/provider_config/config/{provider}/{config_name}/create_default")
+@app.post(
+    "/api/provider_config/config/{provider}/{config_name}/create_default",
+    summary="创建默认配置",
+    tags=PROVIDER_CONFIG,
+)
 async def create_default_config(
     provider: str,
     config_name: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     创建使用默认配置的新的配置文件
 
@@ -640,12 +646,12 @@ async def create_default_config(
         }
 
 
-@app.delete("/api/provider_config/config/{provider}/{config_name}")
+@app.delete("/api/provider_config/config/{provider}/{config_name}", summary="删除配置", tags=PROVIDER_CONFIG)
 async def delete_config(
     provider: str,
     config_name: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除配置文件
 

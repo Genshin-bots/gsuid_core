@@ -6,7 +6,7 @@ AI Memory APIs
 """
 
 import asyncio
-from typing import Any, Dict, List, Tuple, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Literal, Optional
 from datetime import datetime, timezone
 
 from fastapi import Depends
@@ -45,6 +45,11 @@ from gsuid_core.ai_core.memory.database.clear_ops import (
     clear_memories_for_scope_async,
 )
 from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta, rebuild_task
+
+from ._api_tags import AI_MEMORY
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
 
 # WebConsole 端点捕获的"合法运行时/DB 故障"：这些应转成 status=1 返回给前端，
 # 而**不**包括编程错误（KeyError/AttributeError/TypeError/NameError 等）——后者应
@@ -211,11 +216,11 @@ class PreferenceUpdateRequest(BaseModel):
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/ai/memory/search")
+@app.post("/api/ai/memory/search", summary="记忆双路检索", tags=AI_MEMORY)
 async def search_memory(
     req: MemorySearchRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     记忆双路检索
 
@@ -331,7 +336,7 @@ def _build_extraction_windows(
     max_turns: int,
     now_default: datetime,
     mark_correction: bool,
-) -> List[List["object"]]:
+) -> List[List["ObservationRecord"]]:
     """把连续 turn 切成抽取窗口；每窗口是一组 ObservationRecord（HIGH 价值）。
 
     窗口边界：累计字符数超过 ``max_chars`` 或 turn 数达 ``max_turns`` 即收口（取先到者）。
@@ -340,8 +345,8 @@ def _build_extraction_windows(
     """
     from gsuid_core.ai_core.memory.observer import ObservationRecord, detect_correction_intent
 
-    windows: List[List[object]] = []
-    cur: List[object] = []
+    windows: List[List["ObservationRecord"]] = []
+    cur: List["ObservationRecord"] = []
     cur_chars = 0
     for turn, ts_obj in parsed_turns:
         content = turn.content.strip()
@@ -441,14 +446,14 @@ async def _run_extract_pass(
     sem = asyncio.Semaphore(max(1, concurrency))
     stats = {"done": 0, "failed": 0}
 
-    async def _run_one(recs: List[object]) -> None:
+    async def _run_one(recs: List["ObservationRecord"]) -> None:
         async with sem:
             # 代表性 Episode：用窗口时间范围找一条已存在的 granular Episode 关联（可解释性）
-            timestamps = [r.timestamp for r in recs]  # type: ignore[attr-defined]
+            timestamps = [r.timestamp for r in recs]
             rep_id = await _find_episode_id_in_range(scope_key, min(timestamps), max(timestamps))
             try:
                 await asyncio.wait_for(
-                    extract_window(scope_key=scope_key, records=recs, episode_id=rep_id),  # type: ignore[arg-type]
+                    extract_window(scope_key=scope_key, records=recs, episode_id=rep_id),
                     timeout=req.extract_window_timeout,
                 )
                 stats["done"] += 1
@@ -478,7 +483,7 @@ async def _run_extract_pass(
     }
 
 
-@app.post("/api/ai/memory/batch_observe", include_in_schema=LOCAL_TEST_MODE)
+@app.post("/api/ai/memory/batch_observe", include_in_schema=LOCAL_TEST_MODE, summary="批量写入记忆观察", tags=AI_MEMORY)
 async def batch_observe(
     req: BatchObserveRequest,
     _gate: None = Depends(require_local_test),
@@ -615,15 +620,15 @@ async def batch_observe(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/episodes")
+@app.get("/api/ai/memory/episodes", summary="Episode 列表", tags=AI_MEMORY)
 async def list_episodes(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
     all_scopes: bool = False,
     page: int = 1,
     page_size: int = 20,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 Episode（对话片段）列表
 
@@ -695,11 +700,11 @@ async def list_episodes(
         }
 
 
-@app.get("/api/ai/memory/episodes/{episode_id}")
+@app.get("/api/ai/memory/episodes/{episode_id}", summary="Episode 详情", tags=AI_MEMORY)
 async def get_episode_detail(
     episode_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取单个 Episode 详情
 
@@ -755,11 +760,11 @@ async def get_episode_detail(
         }
 
 
-@app.delete("/api/ai/memory/episodes/{episode_id}")
+@app.delete("/api/ai/memory/episodes/{episode_id}", summary="删除 Episode", tags=AI_MEMORY)
 async def delete_episode(
     episode_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除单个 Episode
 
@@ -809,7 +814,7 @@ async def delete_episode(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/entities")
+@app.get("/api/ai/memory/entities", summary="Entity 列表", tags=AI_MEMORY)
 async def list_entities(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
@@ -818,8 +823,8 @@ async def list_entities(
     search: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 Entity（实体节点）列表
 
@@ -903,11 +908,11 @@ async def list_entities(
         }
 
 
-@app.get("/api/ai/memory/entities/{entity_id}")
+@app.get("/api/ai/memory/entities/{entity_id}", summary="Entity 详情", tags=AI_MEMORY)
 async def get_entity_detail(
     entity_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取单个 Entity 详情
 
@@ -989,11 +994,11 @@ async def get_entity_detail(
         }
 
 
-@app.delete("/api/ai/memory/entities/{entity_id}")
+@app.delete("/api/ai/memory/entities/{entity_id}", summary="删除 Entity", tags=AI_MEMORY)
 async def delete_entity(
     entity_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除单个 Entity
 
@@ -1043,7 +1048,7 @@ async def delete_entity(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/edges")
+@app.get("/api/ai/memory/edges", summary="Edge 列表", tags=AI_MEMORY)
 async def list_edges(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
@@ -1051,8 +1056,8 @@ async def list_edges(
     entity_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 Edge（实体关系）列表
 
@@ -1140,11 +1145,11 @@ async def list_edges(
         }
 
 
-@app.get("/api/ai/memory/edges/{edge_id}")
+@app.get("/api/ai/memory/edges/{edge_id}", summary="Edge 详情", tags=AI_MEMORY)
 async def get_edge_detail(
     edge_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取单个 Edge 详情
 
@@ -1206,11 +1211,11 @@ async def get_edge_detail(
         }
 
 
-@app.delete("/api/ai/memory/edges/{edge_id}")
+@app.delete("/api/ai/memory/edges/{edge_id}", summary="删除 Edge", tags=AI_MEMORY)
 async def delete_edge(
     edge_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除单个 Edge
 
@@ -1262,7 +1267,7 @@ async def delete_edge(
 # ─────────────────────────────────────────────
 
 
-def _preference_to_dict(p: AIMemPreference) -> Dict:
+def _preference_to_dict(p: AIMemPreference) -> Dict[str, Any]:
     """把 AIMemPreference 行序列化为 API 输出字典。"""
     return {
         "id": p.id,
@@ -1281,7 +1286,7 @@ def _preference_to_dict(p: AIMemPreference) -> Dict:
     }
 
 
-@app.get("/api/ai/memory/preferences")
+@app.get("/api/ai/memory/preferences", summary="偏好规则列表", tags=AI_MEMORY)
 async def list_preferences(
     scope_key: Optional[str] = None,
     user_id: Optional[str] = None,
@@ -1292,8 +1297,8 @@ async def list_preferences(
     all_scopes: bool = False,
     page: int = 1,
     page_size: int = 20,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """获取程序性/偏好规则列表。
 
     支持按 scope_key / user_id / target_context / is_correction / polarity / is_active 过滤，
@@ -1353,11 +1358,11 @@ async def list_preferences(
         return {"status": 1, "msg": f"获取偏好列表失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/memory/preferences/{pref_id}")
+@app.get("/api/ai/memory/preferences/{pref_id}", summary="偏好规则详情", tags=AI_MEMORY)
 async def get_preference_detail(
     pref_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """获取单条偏好规则详情（含 source_episode_id 溯源、mention_count、last_applied_at）。"""
     try:
         async with async_maker() as session:
@@ -1370,12 +1375,12 @@ async def get_preference_detail(
         return {"status": 1, "msg": f"获取偏好详情失败: {str(e)}", "data": None}
 
 
-@app.patch("/api/ai/memory/preferences/{pref_id}")
+@app.patch("/api/ai/memory/preferences/{pref_id}", summary="更新偏好规则（人工纠偏）", tags=AI_MEMORY)
 async def update_preference(
     pref_id: str,
     req: PreferenceUpdateRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """人工纠偏：改规则正文 / 极性 / 绑定上下文 / 启停（软停用而非删除，保留审计）。"""
     from datetime import datetime, timezone
 
@@ -1411,11 +1416,11 @@ async def update_preference(
         return {"status": 1, "msg": f"更新偏好规则失败: {str(e)}", "data": None}
 
 
-@app.delete("/api/ai/memory/preferences/{pref_id}")
+@app.delete("/api/ai/memory/preferences/{pref_id}", summary="删除偏好规则", tags=AI_MEMORY)
 async def delete_preference(
     pref_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """删除单条误抽的偏好规则（SQL-only，无向量需清理）。"""
     try:
         async with async_maker() as session:
@@ -1435,7 +1440,7 @@ async def delete_preference(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/categories")
+@app.get("/api/ai/memory/categories", summary="Category 列表", tags=AI_MEMORY)
 async def list_categories(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
@@ -1443,8 +1448,8 @@ async def list_categories(
     layer: Optional[int] = None,
     page: int = 1,
     page_size: int = 20,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 Category（分层语义图节点）列表
 
@@ -1556,11 +1561,11 @@ async def list_categories(
         }
 
 
-@app.get("/api/ai/memory/categories/{category_id}")
+@app.get("/api/ai/memory/categories/{category_id}", summary="Category 详情", tags=AI_MEMORY)
 async def get_category_detail(
     category_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取单个 Category 详情
 
@@ -1646,12 +1651,12 @@ async def get_category_detail(
         }
 
 
-@app.get("/api/ai/memory/hiergraph/status")
+@app.get("/api/ai/memory/hiergraph/status", summary="分层语义图状态", tags=AI_MEMORY)
 async def get_hiergraph_status(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取分层语义图构建状态
 
@@ -1717,12 +1722,12 @@ async def get_hiergraph_status(
         }
 
 
-@app.post("/api/ai/memory/hiergraph/rebuild")
+@app.post("/api/ai/memory/hiergraph/rebuild", summary="重建分层记忆图谱", tags=AI_MEMORY)
 async def trigger_hiergraph_rebuild(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
-    _: Optional[Dict] = Depends(require_auth_or_local_test),
-) -> Dict:
+    _: Optional[Dict[str, Any]] = Depends(require_auth_or_local_test),
+) -> Dict[str, Any]:
     """
     手动触发分层图重建（评测模式使用）
 
@@ -1770,12 +1775,12 @@ async def trigger_hiergraph_rebuild(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/stats")
+@app.get("/api/ai/memory/stats", summary="记忆统计", tags=AI_MEMORY)
 async def get_memory_stats(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取记忆系统统计数据
 
@@ -1891,10 +1896,10 @@ async def get_memory_stats(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/config")
+@app.get("/api/ai/memory/config", summary="获取记忆配置", tags=AI_MEMORY)
 async def get_memory_config(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取记忆系统当前配置
 
@@ -1947,11 +1952,11 @@ async def get_memory_config(
         }
 
 
-@app.put("/api/ai/memory/config")
+@app.put("/api/ai/memory/config", summary="更新记忆配置", tags=AI_MEMORY)
 async def update_memory_config(
     req: MemoryConfigUpdateRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     更新记忆系统配置
 
@@ -2021,10 +2026,10 @@ async def update_memory_config(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/memory/scopes")
+@app.get("/api/ai/memory/scopes", summary="Scope 列表", tags=AI_MEMORY)
 async def list_scopes(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取所有有记忆数据的 Scope Key 列表
 
@@ -2104,11 +2109,11 @@ async def list_scopes(
 # ─────────────────────────────────────────────
 
 
-@app.delete("/api/ai/memory/scopes/{scope_key}")
+@app.delete("/api/ai/memory/scopes/{scope_key}", summary="删除 Scope 记忆", tags=AI_MEMORY)
 async def delete_scope_memory(
     scope_key: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除指定 Scope 下的所有记忆数据
 
@@ -2249,11 +2254,11 @@ async def delete_scope_memory(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/ai/memory/clear")
+@app.post("/api/ai/memory/clear", summary="清空记忆（高级批量删除）", tags=AI_MEMORY)
 async def clear_memory(
     req: MemoryClearRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     清空指定 Scope 下的所有记忆数据（支持精确匹配或前缀模糊匹配）
 
@@ -2275,13 +2280,13 @@ async def clear_memory(
     return result
 
 
-@app.delete("/api/ai/memory/groups/{group_id}/clear")
+@app.delete("/api/ai/memory/groups/{group_id}/clear", summary="清空群记忆", tags=AI_MEMORY)
 async def clear_group_memory(
     group_id: str,
     include_user_in_group: bool = True,
     dry_run: bool = False,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     清空某个群的全部记忆
 
@@ -2310,12 +2315,12 @@ async def clear_group_memory(
     return result
 
 
-@app.delete("/api/ai/memory/users/{user_id}/global/clear")
+@app.delete("/api/ai/memory/users/{user_id}/global/clear", summary="清空用户全局记忆", tags=AI_MEMORY)
 async def clear_user_global_memory(
     user_id: str,
     dry_run: bool = False,
-    _: Optional[Dict] = Depends(require_auth_or_local_test),
-) -> Dict:
+    _: Optional[Dict[str, Any]] = Depends(require_auth_or_local_test),
+) -> Dict[str, Any]:
     """
     清空某个用户的跨群全局记忆画像
 

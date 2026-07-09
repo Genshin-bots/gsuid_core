@@ -27,6 +27,8 @@ from gsuid_core.ai_core.planning.models import (
 from gsuid_core.ai_core.planning.workspace import task_workspace_root
 from gsuid_core.ai_core.planning.kanban_executor import kick_root
 
+from ._api_tags import KANBAN
+
 # ─────────────────────────────────────────────
 # Request models
 # ─────────────────────────────────────────────
@@ -123,9 +125,9 @@ def _log_dict(log: AIAgentTaskLog) -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/kanban/board")
+@app.get("/api/ai/kanban/board", summary="看板（5 列聚合视图）", tags=KANBAN)
 async def get_kanban_board(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     scope_key: Optional[str] = Query(None),
     bot_id: Optional[str] = Query(None),
     group_id: Optional[str] = Query(None),
@@ -178,10 +180,10 @@ async def get_kanban_board(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/kanban/tasks/{task_id}")
+@app.get("/api/ai/kanban/tasks/{task_id}", summary="任务详情", tags=KANBAN)
 async def get_kanban_task_detail(
     task_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     log_limit: int = Query(200, ge=1, le=2000),
 ) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
@@ -262,10 +264,10 @@ def _artifact_card(a: AIAgentArtifact) -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/ai/kanban/tasks")
+@app.post("/api/ai/kanban/tasks", summary="管理端直接创建任务树（绕过 LLM 评估）", tags=KANBAN)
 async def admin_create_kanban_task(
     body: KanbanCreateRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """管理端绕过 LLM 评估直接创建任务树（用于演示 / 调试）。
 
@@ -302,8 +304,8 @@ async def admin_create_kanban_task(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/ai/kanban/tasks/{task_id}/pause")
-async def pause_kanban_task(task_id: str, _: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.post("/api/ai/kanban/tasks/{task_id}/pause", summary="暂停看板任务", tags=KANBAN)
+async def pause_kanban_task(task_id: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None:
         return {"status": 1, "msg": "任务不存在", "data": None}
@@ -315,8 +317,8 @@ async def pause_kanban_task(task_id: str, _: Dict = Depends(require_auth)) -> Di
     }
 
 
-@app.post("/api/ai/kanban/tasks/{task_id}/resume")
-async def resume_kanban_task(task_id: str, _: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.post("/api/ai/kanban/tasks/{task_id}/resume", summary="恢复看板任务", tags=KANBAN)
+async def resume_kanban_task(task_id: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None:
         return {"status": 1, "msg": "任务不存在", "data": None}
@@ -329,11 +331,11 @@ async def resume_kanban_task(task_id: str, _: Dict = Depends(require_auth)) -> D
     return {"status": 0, "msg": "ok", "data": {"task_id": task_id, "status": "running"}}
 
 
-@app.post("/api/ai/kanban/tasks/{task_id}/fail")
+@app.post("/api/ai/kanban/tasks/{task_id}/fail", summary="标记看板任务失败", tags=KANBAN)
 async def fail_kanban_task(
     task_id: str,
     body: TaskFailRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None:
@@ -352,12 +354,12 @@ async def fail_kanban_task(
     return {"status": 0, "msg": "ok", "data": {"task_id": task_id, "status": "failed"}}
 
 
-@app.delete("/api/ai/kanban/tasks/{task_id}/hard")
+@app.delete("/api/ai/kanban/tasks/{task_id}/hard", summary="hard delete 查询参数", tags=KANBAN)
 async def hard_delete_kanban_task(
     task_id: str,
     delete_files: bool = Query(True, description="是否同时删除 data/ai_core/artifacts 下的 workspace / payload 文件"),
     include_instances: bool = Query(False, description="删除周期模板时是否同时删除它克隆出的历史实例树"),
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """硬删除 Kanban 任务树。
 
@@ -373,9 +375,9 @@ async def hard_delete_kanban_task(
     return {"status": 0 if ok else 1, "msg": msg, "data": stats or None}
 
 
-@app.delete("/api/ai/kanban/tasks")
+@app.delete("/api/ai/kanban/tasks", summary="批量删除（按分类选择）", tags=KANBAN)
 async def bulk_delete_kanban_tasks(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     scope_key: Optional[str] = Query(None, description="作用域筛选"),
     bot_id: Optional[str] = Query(None, description="关联 bot 筛选"),
     group_id: Optional[str] = Query(None, description="群号筛选"),
@@ -431,11 +433,11 @@ async def bulk_delete_kanban_tasks(
     }
 
 
-@app.post("/api/ai/kanban/subtasks/{task_id}/respawn")
+@app.post("/api/ai/kanban/subtasks/{task_id}/respawn", summary="重建看板子任务", tags=KANBAN)
 async def respawn_kanban_subtask(
     task_id: str,
     body: SubtaskRespawnRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None or task.node_kind != "subtask":
@@ -453,11 +455,11 @@ async def respawn_kanban_subtask(
     return {"status": 0 if ok else 1, "msg": msg, "data": {"task_id": task_id}}
 
 
-@app.post("/api/ai/kanban/subtasks/{task_id}/approve")
+@app.post("/api/ai/kanban/subtasks/{task_id}/approve", summary="批准看板子任务", tags=KANBAN)
 async def approve_kanban_subtask(
     task_id: str,
     body: SubtaskApproveRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """兼容端点：内部统一转到审批中心（category=kanban_subtask）裁决。"""
     task = await AIAgentTask.get_by_id(task_id)
@@ -488,11 +490,11 @@ async def approve_kanban_subtask(
     return {"status": 0, "msg": msg, "data": {"task_id": task_id}}
 
 
-@app.patch("/api/ai/kanban/subtasks/{task_id}")
+@app.patch("/api/ai/kanban/subtasks/{task_id}", summary="更新看板子任务", tags=KANBAN)
 async def patch_kanban_subtask(
     task_id: str,
     body: SubtaskPatchRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     task = await AIAgentTask.get_by_id(task_id)
     if task is None or task.node_kind != "subtask":
@@ -526,10 +528,10 @@ class EvaluateMeshRequest(BaseModel):
     persona_name: str = ""
 
 
-@app.post("/api/ai/capability-agents/evaluate-mesh")
+@app.post("/api/ai/capability-agents/evaluate-mesh", summary="触发评估", tags=KANBAN)
 async def trigger_capability_evaluation(
     body: EvaluateMeshRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """前端"测试评估覆盖"按钮触发——一次性跑 capability_evaluator 并返回结果。"""
     from gsuid_core.ai_core.capability_agents.evaluator import evaluate_capability
@@ -544,8 +546,8 @@ async def trigger_capability_evaluation(
     return {"status": 0, "msg": "ok", "data": result.to_dict()}
 
 
-@app.get("/api/ai/capability-agents/kanban-candidates")
-async def list_kanban_candidates(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/capability-agents/kanban-candidates", summary="可用代理候选", tags=KANBAN)
+async def list_kanban_candidates(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """返回可用于 Kanban 任务树的代理列表（不含内部 capability_evaluator）。"""
     from gsuid_core.ai_core.agent_node import list_nodes
 

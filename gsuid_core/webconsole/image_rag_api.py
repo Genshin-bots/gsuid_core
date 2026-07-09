@@ -24,6 +24,8 @@ from gsuid_core.ai_core.rag.image_rag import (
     get_image_path_by_query,
 )
 
+from ._api_tags import IMAGE_RAG
+
 
 class ImageSearchRequest(BaseModel):
     """图片搜索请求模型"""
@@ -43,13 +45,13 @@ class ImageCreateRequest(BaseModel):
     content: str = ""
 
 
-@app.get("/api/ai/images/list")
+@app.get("/api/ai/images/list", summary="获取图片列表（分页）", tags=IMAGE_RAG)
 async def get_image_rag_list(
     offset: int = 0,
     limit: int = 20,
     plugin: Optional[str] = None,
     page: int = 1,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取图片列表（分页）
@@ -88,12 +90,12 @@ async def get_image_rag_list(
     }
 
 
-@app.get("/api/ai/images/search")
+@app.get("/api/ai/images/search", summary="搜索图片", tags=IMAGE_RAG)
 async def search_image_rag(
     query: str,
     limit: int = 10,
     plugin: Optional[str] = None,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     搜索图片
@@ -143,11 +145,11 @@ async def search_image_rag(
     }
 
 
-@app.get("/api/ai/images/path")
+@app.get("/api/ai/images/path", summary="获取最佳匹配图片路径", tags=IMAGE_RAG)
 async def get_image_path(
     query: str,
     plugin: Optional[str] = None,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取最佳匹配的图片路径
@@ -185,10 +187,10 @@ async def get_image_path(
     }
 
 
-@app.delete("/api/ai/images/{entity_id}")
+@app.delete("/api/ai/images/{entity_id}", summary="删除图片", tags=IMAGE_RAG)
 async def delete_image_rag(
     entity_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     删除图片
@@ -220,10 +222,10 @@ async def delete_image_rag(
     }
 
 
-@app.post("/api/ai/images/upload")
+@app.post("/api/ai/images/upload", summary="上传图片", tags=IMAGE_RAG)
 async def upload_image(
     file: UploadFile = File(...),
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     上传图片到 local_embedding_images 目录
@@ -269,14 +271,14 @@ async def upload_image(
         }
 
 
-@app.post("/api/ai/images")
+@app.post("/api/ai/images", summary="创建图片实体（入库）", tags=IMAGE_RAG)
 async def create_image_entity(
     id: Optional[str] = Form(None),
     plugin: str = Form("manual"),
     path: str = Form(...),
     tags: str = Form(...),
     content: str = Form(""),
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     创建图片实体并入库

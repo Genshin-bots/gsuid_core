@@ -24,7 +24,7 @@ Chat With History API
 """
 
 import asyncio
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import Depends
 
@@ -36,10 +36,12 @@ from gsuid_core.ai_core.memory.observer import parse_iso_or_unix_timestamp
 from gsuid_core.webconsole._local_test_gate import LOCAL_TEST_MODE, require_local_test
 from gsuid_core.ai_core.memory.ingestion.hiergraph import rebuild_task
 
+from ._api_tags import CHAT
 
-@app.post("/api/chat_with_history", include_in_schema=LOCAL_TEST_MODE)
+
+@app.post("/api/chat_with_history", include_in_schema=LOCAL_TEST_MODE, summary="带历史的对话", tags=CHAT)
 async def chatWithHistory(
-    req: Dict,
+    req: Dict[str, Any],
     _gate: Optional[None] = Depends(require_local_test),
 ):
     """

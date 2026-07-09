@@ -32,6 +32,8 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.plugins_update.api import CORE_PATH
 
+from ._api_tags import BRAND
+
 # ============================================================
 # 默认品牌信息
 # ============================================================
@@ -157,7 +159,7 @@ def _resolve_icon_info() -> Dict[str, str]:
 # ============================================================
 
 
-@app.get("/api/brand")
+@app.get("/api/brand", summary="获取品牌信息", tags=BRAND)
 async def get_brand(request: Request):
     """获取品牌信息（公开接口，无需鉴权）。
 
@@ -191,11 +193,11 @@ async def get_brand(request: Request):
     }
 
 
-@app.post("/api/brand")
+@app.post("/api/brand", summary="更新品牌信息（标题 / 副标题）", tags=BRAND)
 async def update_brand(
     request: Request,
     payload: BrandUpdateRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """更新品牌 title / subtitle（需要鉴权）。
 
@@ -217,11 +219,11 @@ async def update_brand(
     }
 
 
-@app.post("/api/brand/icon")
+@app.post("/api/brand/icon", summary="上传品牌 ICON", tags=BRAND)
 async def upload_brand_icon(
     request: Request,
     icon: UploadFile = File(..., description="PNG 格式，≤ 2MB"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """上传品牌 ICON（multipart，PNG，≤ 2MB，需要鉴权）。
 
@@ -291,10 +293,10 @@ async def upload_brand_icon(
     }
 
 
-@app.delete("/api/brand/icon")
+@app.delete("/api/brand/icon", summary="删除品牌 ICON", tags=BRAND)
 async def delete_brand_icon(
     request: Request,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """删除用户上传的 ICON，回退到默认 CORE_PATH/ICON.png（需要鉴权）。"""
     if not BRAND_ICON_PATH.exists() or not BRAND_ICON_PATH.is_file():
@@ -322,7 +324,7 @@ async def delete_brand_icon(
     }
 
 
-@app.get("/api/brand/icon")
+@app.get("/api/brand/icon", summary="获取品牌 ICON", tags=BRAND)
 async def get_brand_icon(request: Request):
     """获取当前品牌 ICON（公开接口）。
 

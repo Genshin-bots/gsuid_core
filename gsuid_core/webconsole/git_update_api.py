@@ -24,6 +24,8 @@ from gsuid_core.utils.plugins_update.git_update import (
     get_all_plugins_status,
 )
 
+from ._api_tags import GIT_UPDATE
+
 
 def _format_commit(commit: CommitInfo) -> Dict[str, str]:
     """将 CommitInfo 转换为前端友好的字典"""
@@ -52,10 +54,10 @@ def _format_status(status: GitStatusInfo) -> Dict[str, Any]:
 # ====================
 
 
-@app.get("/api/git-update/status")
+@app.get("/api/git-update/status", summary="获取所有插件的 Git 状态", tags=GIT_UPDATE)
 async def get_plugins_git_status(
     request: Request,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取所有插件（含 core 本体）的 git 状态信息
@@ -80,11 +82,11 @@ async def get_plugins_git_status(
     }
 
 
-@app.get("/api/git-update/status/{plugin_name}")
+@app.get("/api/git-update/status/{plugin_name}", summary="获取单个插件的 Git 状态", tags=GIT_UPDATE)
 async def get_plugin_git_status(
     request: Request,
     plugin_name: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取单个插件的 git 状态信息
@@ -121,12 +123,12 @@ async def get_plugin_git_status(
     }
 
 
-@app.get("/api/git-update/commits/{plugin_name}")
+@app.get("/api/git-update/commits/{plugin_name}", summary="获取远程 Commit 列表", tags=GIT_UPDATE)
 async def get_plugin_remote_commits(
     request: Request,
     plugin_name: str,
     max_count: int = 50,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取插件的远程 commit 列表
@@ -179,12 +181,12 @@ async def get_plugin_remote_commits(
     }
 
 
-@app.get("/api/git-update/local-commits/{plugin_name}")
+@app.get("/api/git-update/local-commits/{plugin_name}", summary="获取本地 Commit 历史", tags=GIT_UPDATE)
 async def get_plugin_local_commits(
     request: Request,
     plugin_name: str,
     max_count: int = 50,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取插件的本地 commit 历史
@@ -232,12 +234,12 @@ async def get_plugin_local_commits(
     }
 
 
-@app.post("/api/git-update/checkout/{plugin_name}")
+@app.post("/api/git-update/checkout/{plugin_name}", summary="回退到指定 Commit", tags=GIT_UPDATE)
 async def checkout_plugin_commit(
     request: Request,
     plugin_name: str,
     commit_hash: str = Body(..., embed=True),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     回退插件到指定 commit
@@ -275,11 +277,11 @@ async def checkout_plugin_commit(
     }
 
 
-@app.post("/api/git-update/force-update/{plugin_name}")
+@app.post("/api/git-update/force-update/{plugin_name}", summary="强制更新", tags=GIT_UPDATE)
 async def force_update_plugin(
     request: Request,
     plugin_name: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     强制更新插件
@@ -324,11 +326,11 @@ async def force_update_plugin(
     }
 
 
-@app.post("/api/git-update/update/{plugin_name}")
+@app.post("/api/git-update/update/{plugin_name}", summary="普通更新单个插件", tags=GIT_UPDATE)
 async def update_plugin(
     request: Request,
     plugin_name: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新单个插件到最新
@@ -373,10 +375,10 @@ async def update_plugin(
     }
 
 
-@app.post("/api/git-update/update-all")
+@app.post("/api/git-update/update-all", summary="一键更新全部插件", tags=GIT_UPDATE)
 async def update_all_plugins(
     request: Request,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     一次性更新全部插件到最新

@@ -6,7 +6,7 @@ Message APIs
 
 import asyncio
 from io import BytesIO
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from datetime import datetime
 
@@ -23,13 +23,15 @@ from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
+from ._api_tags import MESSAGE
+
 # 图片清理配置
 is_clean_pic = pic_upload_config.get_config("EnableCleanPicSrv").data
 pic_expire_time = pic_upload_config.get_config("ScheduledCleanPicSrv").data
 
 
-@app.post("/api/BatchPush")
-async def batch_push(request: Request, data: Dict, _: Dict = Depends(require_auth)):
+@app.post("/api/BatchPush", summary="批量推送", tags=MESSAGE)
+async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] = Depends(require_auth)):
     """
     批量消息推送接口
     支持解析 HTML（提取 <p> 和 <img>），并向特定 Bot 下的
@@ -41,15 +43,18 @@ async def batch_push(request: Request, data: Dict, _: Dict = Depends(require_aut
     soup = BeautifulSoup(send_msg, "lxml")
 
     msg: List[Message] = []
-    text_list: List[Tag] = list(soup.find_all("p"))  # type: ignore
+    text_list: List[Tag] = list(soup.find_all("p"))
     for text in text_list:
         msg.append(MessageSegment.text(str(text)[3:-4] + "\n"))
 
-    img_tag: List[Tag] = list(soup.find_all("img"))  # type: ignore
+    img_tag: List[Tag] = list(soup.find_all("img"))
     for img in img_tag:
-        src: str = img.get("src")  # type: ignore
-        width: str = img.get("width")  # type: ignore
-        height: str = img.get("height")  # type: ignore
+        src = img.get("src")
+        width = img.get("width")
+        height = img.get("height")
+        # bs4 属性取值为 str | list[str] | None，非 str（缺失/多值）直接跳过该图
+        if not (isinstance(src, str) and isinstance(width, str) and isinstance(height, str)):
+            continue
 
         base64_data = "base64://" + src.split(",")[-1]
 
@@ -130,14 +135,14 @@ async def batch_push(request: Request, data: Dict, _: Dict = Depends(require_aut
 # ===================
 
 
-@app.post("/api/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}")
+@app.post("/api/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}", summary="通用图片上传", tags=MESSAGE)
 async def upload_image(
     request: Request,
     UPLOAD_PATH: str,
     file: UploadFile,
     filename: Optional[str] = None,
     suffix: Optional[str] = None,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """
     通用图片文件上传接口
@@ -168,13 +173,13 @@ async def upload_image(
     return {"status": 0, "msg": "上传成功", "data": {"filename": file_name}}
 
 
-@app.get("/api/getImage/{suffix}/{filename}/{IMAGE_PATH:path}")
+@app.get("/api/getImage/{suffix}/{filename}/{IMAGE_PATH:path}", summary="通用图片读取", tags=MESSAGE)
 async def get_image(
     request: Request,
     IMAGE_PATH: str,
     filename: str,
     suffix: str = "str",
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """
     通用图片文件读取接口
@@ -205,7 +210,7 @@ async def delete_image(image_path: Path):
 
 
 @app.head("/api/image/{image_id}")
-@app.get("/api/image/{image_id}")
+@app.get("/api/image/{image_id}", summary="图片资源读取（阅后即焚）", tags=MESSAGE)
 async def get_resource_image(
     image_id: str,
     background_tasks: BackgroundTasks,

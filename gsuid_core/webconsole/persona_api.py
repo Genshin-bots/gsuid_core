@@ -5,7 +5,7 @@ Persona APIs
 """
 
 import base64
-from typing import Dict
+from typing import Any, Dict
 
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -32,6 +32,8 @@ from gsuid_core.ai_core.persona.models import (
     validate_image_type,
 )
 
+from ._api_tags import PERSONA
+
 # 音频MIME类型映射
 AUDIO_MIME_TYPES = {
     ".mp3": "audio/mpeg",
@@ -42,8 +44,8 @@ AUDIO_MIME_TYPES = {
 }
 
 
-@app.get("/api/persona/list")
-async def get_persona_list(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/persona/list", summary="获取角色列表", tags=PERSONA)
+async def get_persona_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取所有可用的 Persona 角色列表
 
@@ -65,8 +67,8 @@ async def get_persona_list(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.get("/api/persona/{persona_name}")
-async def get_persona_detail(persona_name: str, _: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/persona/{persona_name}", summary="获取角色详情", tags=PERSONA)
+async def get_persona_detail(persona_name: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取指定 Persona 角色的详细信息
 
@@ -97,12 +99,12 @@ async def get_persona_detail(persona_name: str, _: Dict = Depends(require_auth))
         }
 
 
-@app.put("/api/persona/{persona_name}/content")
+@app.put("/api/persona/{persona_name}/content", summary="更新角色内容", tags=PERSONA)
 async def update_persona_content(
     persona_name: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     更新角色 Markdown 内容
 
@@ -152,8 +154,8 @@ async def update_persona_content(
         }
 
 
-@app.get("/api/persona/{persona_name}/avatar")
-async def get_persona_avatar(persona_name: str, _: Dict = Depends(require_auth)) -> FileResponse:
+@app.get("/api/persona/{persona_name}/avatar", summary="获取角色头像", tags=PERSONA)
+async def get_persona_avatar(persona_name: str, _: Dict[str, Any] = Depends(require_auth)) -> FileResponse:
     """
     获取角色头像图片
 
@@ -170,8 +172,8 @@ async def get_persona_avatar(persona_name: str, _: Dict = Depends(require_auth))
     return FileResponse(avatar_path, media_type="image/png")
 
 
-@app.get("/api/persona/{persona_name}/image")
-async def get_persona_image(persona_name: str, _: Dict = Depends(require_auth)) -> FileResponse:
+@app.get("/api/persona/{persona_name}/image", summary="获取角色立绘", tags=PERSONA)
+async def get_persona_image(persona_name: str, _: Dict[str, Any] = Depends(require_auth)) -> FileResponse:
     """
     获取角色立绘图片
 
@@ -188,8 +190,8 @@ async def get_persona_image(persona_name: str, _: Dict = Depends(require_auth)) 
     return FileResponse(image_path, media_type="image/png")
 
 
-@app.get("/api/persona/{persona_name}/audio")
-async def get_persona_audio(persona_name: str, _: Dict = Depends(require_auth)) -> FileResponse:
+@app.get("/api/persona/{persona_name}/audio", summary="获取角色音频", tags=PERSONA)
+async def get_persona_audio(persona_name: str, _: Dict[str, Any] = Depends(require_auth)) -> FileResponse:
     """
     获取角色音频文件
 
@@ -206,12 +208,12 @@ async def get_persona_audio(persona_name: str, _: Dict = Depends(require_auth)) 
     return FileResponse(audio_path, media_type="audio/mpeg")
 
 
-@app.post("/api/persona/{persona_name}/avatar")
+@app.post("/api/persona/{persona_name}/avatar", summary="上传角色头像", tags=PERSONA)
 async def upload_persona_avatar(
     persona_name: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     上传角色头像图片
 
@@ -283,12 +285,12 @@ async def upload_persona_avatar(
         }
 
 
-@app.post("/api/persona/{persona_name}/image")
+@app.post("/api/persona/{persona_name}/image", summary="上传角色立绘", tags=PERSONA)
 async def upload_persona_image(
     persona_name: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     上传角色立绘图片
 
@@ -360,12 +362,12 @@ async def upload_persona_image(
         }
 
 
-@app.post("/api/persona/{persona_name}/audio")
+@app.post("/api/persona/{persona_name}/audio", summary="上传角色音频", tags=PERSONA)
 async def upload_persona_audio(
     persona_name: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     上传角色音频文件
 
@@ -448,11 +450,11 @@ async def upload_persona_audio(
         }
 
 
-@app.post("/api/persona/create")
+@app.post("/api/persona/create", summary="创建新角色", tags=PERSONA)
 async def create_persona(
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     创建新角色
 
@@ -501,11 +503,11 @@ async def create_persona(
         }
 
 
-@app.post("/api/persona/add")
+@app.post("/api/persona/add", summary="直接添加角色", tags=PERSONA)
 async def add_persona(
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     直接添加新角色（简单模式）
 
@@ -563,11 +565,11 @@ async def add_persona(
         }
 
 
-@app.delete("/api/persona/{persona_name}")
+@app.delete("/api/persona/{persona_name}", summary="删除角色", tags=PERSONA)
 async def remove_persona(
     persona_name: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除角色
 
@@ -597,11 +599,11 @@ async def remove_persona(
 # ==================== Persona 配置管理 API ====================
 
 
-@app.get("/api/persona/{persona_name}/config")
+@app.get("/api/persona/{persona_name}/config", summary="获取角色配置", tags=PERSONA)
 async def get_persona_config(
     persona_name: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定 Persona 的配置
 
@@ -627,12 +629,12 @@ async def get_persona_config(
     }
 
 
-@app.put("/api/persona/{persona_name}/config")
+@app.put("/api/persona/{persona_name}/config", summary="更新角色配置", tags=PERSONA)
 async def update_persona_config(
     persona_name: str,
-    data: Dict,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     更新指定 Persona 的配置
 
@@ -803,8 +805,8 @@ async def update_persona_config(
     }
 
 
-@app.get("/api/persona/config/global")
-async def get_global_persona(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/persona/config/global", summary="获取全局启用的角色", tags=PERSONA)
+async def get_global_persona(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取当前配置为全局启用的 Persona
 
@@ -820,8 +822,8 @@ async def get_global_persona(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.get("/api/persona/config/all")
-async def get_all_persona_configs(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/persona/config/all", summary="获取所有角色配置", tags=PERSONA)
+async def get_all_persona_configs(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取所有 Persona 的配置
 

@@ -5,7 +5,7 @@ AI Statistics APIs
 包括 Token 消耗、费用估算、延迟统计、意图分布、Heartbeat 决策等。
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime, timedelta
 
 from fastapi import Depends
@@ -14,12 +14,14 @@ from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import AI_STATS
 
-@app.get("/api/ai/statistics/summary")
+
+@app.get("/api/ai/statistics/summary", summary="获取统计数据摘要", tags=AI_STATS)
 async def get_ai_statistics_summary(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 AI 统计数据摘要
 
@@ -69,11 +71,11 @@ async def get_ai_statistics_summary(
         }
 
 
-@app.get("/api/ai/statistics/token-by-model")
+@app.get("/api/ai/statistics/token-by-model", summary="获取按模型分组的 Token 消耗", tags=AI_STATS)
 async def get_token_usage_by_model(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取按模型分组的 Token 消耗统计
 
@@ -102,12 +104,12 @@ async def get_token_usage_by_model(
         return {"status": 1, "msg": f"获取 Token 消耗失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/token-by-range")
+@app.get("/api/ai/statistics/token-by-range", summary="获取时间段 Token 消耗统计", tags=AI_STATS)
 async def get_token_usage_by_range(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定时间段的 Token 消耗统计
 
@@ -147,12 +149,12 @@ async def get_token_usage_by_range(
         return {"status": 1, "msg": f"获取时间段 Token 统计失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/active-users")
+@app.get("/api/ai/statistics/active-users", summary="获取活跃用户/群组排行", tags=AI_STATS)
 async def get_active_users(
     date: Optional[str] = None,
     limit: int = 20,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取活跃用户/群组排行
 
@@ -182,11 +184,11 @@ async def get_active_users(
         return {"status": 1, "msg": f"获取活跃用户失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/trigger-distribution")
+@app.get("/api/ai/statistics/trigger-distribution", summary="获取触发方式占比", tags=AI_STATS)
 async def get_trigger_distribution(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取触发方式占比
 
@@ -215,11 +217,11 @@ async def get_trigger_distribution(
         return {"status": 1, "msg": f"获取触发方式失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/intent-distribution")
+@app.get("/api/ai/statistics/intent-distribution", summary="获取意图分布统计", tags=AI_STATS)
 async def get_intent_distribution(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取意图分布统计
 
@@ -248,11 +250,11 @@ async def get_intent_distribution(
         return {"status": 1, "msg": f"获取意图分布失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/errors")
+@app.get("/api/ai/statistics/errors", summary="获取错误统计", tags=AI_STATS)
 async def get_error_stats(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取错误统计
 
@@ -281,11 +283,11 @@ async def get_error_stats(
         return {"status": 1, "msg": f"获取错误统计失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/heartbeat")
+@app.get("/api/ai/statistics/heartbeat", summary="获取 Heartbeat 巡检统计", tags=AI_STATS)
 async def get_heartbeat_stats(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 Heartbeat 巡检统计
 
@@ -314,11 +316,11 @@ async def get_heartbeat_stats(
         return {"status": 1, "msg": f"获取 Heartbeat 统计失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/rag")
+@app.get("/api/ai/statistics/rag", summary="获取 RAG 知识库效果统计", tags=AI_STATS)
 async def get_rag_stats(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 RAG 知识库效果统计
 
@@ -349,10 +351,10 @@ async def get_rag_stats(
         return {"status": 1, "msg": f"获取 RAG 统计失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/rag/documents")
+@app.get("/api/ai/statistics/rag/documents", summary="获取 RAG 文档命中统计", tags=AI_STATS)
 async def get_rag_document_stats(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 RAG 文档命中统计
 
@@ -369,11 +371,11 @@ async def get_rag_document_stats(
         return {"status": 1, "msg": f"获取 RAG 文档统计失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/statistics/history")
+@app.get("/api/ai/statistics/history", summary="获取历史统计数据", tags=AI_STATS)
 async def get_statistics_history(
     days: int = 7,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取历史统计数据
 

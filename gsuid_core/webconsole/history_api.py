@@ -8,13 +8,15 @@ History Manager APIs
 仅会跳过 AI 会话相关的增强信息（如 AI 会话对象、persona 等）。
 """
 
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from fastapi import File, Form, Depends, UploadFile
 
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+
+from ._api_tags import HISTORY
 
 
 def _is_ai_enabled() -> bool:
@@ -52,8 +54,8 @@ def _parse_session_id(
     return None
 
 
-@app.get("/api/history/sessions")
-async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/history/sessions", summary="获取所有 Session 列表", tags=HISTORY)
+async def list_sessions(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取所有活跃的session列表
 
@@ -148,12 +150,12 @@ async def list_sessions(_: Dict = Depends(require_auth)) -> Dict:
         }
 
 
-@app.get("/api/history/{session_id}")
+@app.get("/api/history/{session_id}", summary="获取指定 Session 的历史记录", tags=HISTORY)
 async def get_session_history(
     session_id: str,
     format_type: str = "text",
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定session的历史记录
 
@@ -259,12 +261,12 @@ async def get_session_history(
         }
 
 
-@app.delete("/api/history/{session_id}")
+@app.delete("/api/history/{session_id}", summary="清空指定 Session 的历史记录", tags=HISTORY)
 async def clear_session_history(
     session_id: str,
     delete_session: bool = False,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     清空指定session的历史记录
 
@@ -363,11 +365,11 @@ async def clear_session_history(
         }
 
 
-@app.get("/api/history/{session_id}/persona")
+@app.get("/api/history/{session_id}/persona", summary="获取指定 Session 的 Persona 内容", tags=HISTORY)
 async def get_session_persona(
     session_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定session当前使用的persona内容
 
@@ -443,8 +445,8 @@ async def get_session_persona(
         }
 
 
-@app.get("/api/history/stats")
-async def get_history_stats(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/history/stats", summary="获取历史管理器统计信息", tags=HISTORY)
+async def get_history_stats(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取历史管理器的统计信息
 
@@ -486,15 +488,15 @@ async def get_history_stats(_: Dict = Depends(require_auth)) -> Dict:
         }
 
 
-@app.post("/api/history/{session_id}/send")
+@app.post("/api/history/{session_id}/send", summary="向指定 Session 发送消息", tags=HISTORY)
 async def send_message_to_session(
     session_id: str,
     message: str = Form(""),
     image_urls: List[str] = Form(default=[]),
     images: List[UploadFile] = File(default=[]),
     at_sender: bool = Form(False),
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     向指定 session 发送一条消息（支持文本 / 图片 / 图文混排）
 

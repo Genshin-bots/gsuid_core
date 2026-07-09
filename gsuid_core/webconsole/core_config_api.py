@@ -3,7 +3,7 @@ Core Config APIs
 提供核心配置相关的 RESTful APIs
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from fastapi import Depends, Request
 
@@ -11,9 +11,11 @@ from gsuid_core.config import CONFIG_DEFAULT, core_config
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import CORE_CONFIG
 
-@app.get("/api/core/config")
-async def get_core_config(request: Request, _user: Dict = Depends(require_auth)):
+
+@app.get("/api/core/config", summary="获取核心配置", tags=CORE_CONFIG)
+async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取核心配置
 
@@ -41,8 +43,8 @@ async def get_core_config(request: Request, _user: Dict = Depends(require_auth))
     return {"status": 0, "msg": "ok", "data": result}
 
 
-@app.post("/api/core/config")
-async def set_core_config(request: Request, data: Dict, _user: Dict = Depends(require_auth)):
+@app.post("/api/core/config", summary="保存核心配置", tags=CORE_CONFIG)
+async def set_core_config(request: Request, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)):
     """
     保存核心配置
 

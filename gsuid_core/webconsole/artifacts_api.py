@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from fastapi import Query, Depends
+from sqlmodel import col
 from sqlalchemy import delete
 from fastapi.responses import FileResponse
 
@@ -17,6 +18,8 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.planning.models import AIAgentArtifact
 from gsuid_core.utils.database.base_models import async_maker
+
+from ._api_tags import ARTIFACTS
 
 
 def _artifact_dict(a: AIAgentArtifact) -> Dict[str, Any]:
@@ -38,9 +41,9 @@ def _artifact_dict(a: AIAgentArtifact) -> Dict[str, Any]:
     }
 
 
-@app.get("/api/ai/artifacts")
+@app.get("/api/ai/artifacts", summary="列表", tags=ARTIFACTS)
 async def list_artifacts(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     root_task_id: Optional[str] = Query(None),
     task_id: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
@@ -57,10 +60,10 @@ async def list_artifacts(
     }
 
 
-@app.get("/api/ai/artifacts/{res_id}")
+@app.get("/api/ai/artifacts/{res_id}", summary="详情 + 预览", tags=ARTIFACTS)
 async def get_artifact_detail(
     res_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
@@ -76,10 +79,10 @@ async def get_artifact_detail(
     return {"status": 0, "msg": "ok", "data": detail}
 
 
-@app.get("/api/ai/artifacts/{res_id}/raw")
+@app.get("/api/ai/artifacts/{res_id}/raw", summary="下载原始 payload", tags=ARTIFACTS)
 async def download_artifact_raw(
     res_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None or not art.payload_path:
@@ -90,10 +93,10 @@ async def download_artifact_raw(
     return FileResponse(p, media_type=art.mime or "application/octet-stream")
 
 
-@app.delete("/api/ai/artifacts/{res_id}")
+@app.delete("/api/ai/artifacts/{res_id}", summary="删除", tags=ARTIFACTS)
 async def delete_artifact(
     res_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
@@ -107,15 +110,15 @@ async def delete_artifact(
         except OSError:
             pass
     async with async_maker() as session:
-        await session.execute(delete(AIAgentArtifact).where(AIAgentArtifact.id == res_id))
+        await session.execute(delete(AIAgentArtifact).where(col(AIAgentArtifact.id) == res_id))
         await session.commit()
     return {"status": 0, "msg": "ok", "data": {"res_id": res_id}}
 
 
-@app.post("/api/ai/artifacts/{res_id}/extend-ttl")
+@app.post("/api/ai/artifacts/{res_id}/extend-ttl", summary="延长 TTL", tags=ARTIFACTS)
 async def extend_artifact_ttl(
     res_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     days: int = Query(30, ge=1, le=365),
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)

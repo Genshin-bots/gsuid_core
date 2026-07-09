@@ -9,8 +9,10 @@ from fastapi.responses import FileResponse
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.utils.plugins_update.api import CORE_PATH, PLUGINS_PATH
 
+from ._api_tags import PLUGIN_ICON
 
-@app.get("/api/plugins/icon/{plugin_name}")
+
+@app.get("/api/plugins/icon/{plugin_name}", summary="获取插件 ICON 图片", tags=PLUGIN_ICON)
 async def get_plugin_icon(request: Request, plugin_name: str):
     """
     获取指定插件的 ICON 图片

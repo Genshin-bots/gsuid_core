@@ -21,6 +21,8 @@ from gsuid_core.ai_core.rag.embedding_registry import (
     list_embedding_providers,
 )
 
+from ._api_tags import EMBEDDING_CONFIG
+
 
 def _string_config_to_dict(config: Any) -> Dict[str, Any]:
     """将 StringConfig 对象转换为字典用于 JSON 序列化"""
@@ -53,8 +55,8 @@ def _build_extra_providers() -> Dict[str, Any]:
 # ==================== 嵌入模型配置 ====================
 
 
-@app.get("/api/embedding_config/provider")
-async def get_embedding_provider(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/embedding_config/provider", summary="获取当前嵌入模型提供方", tags=EMBEDDING_CONFIG)
+async def get_embedding_provider(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取当前嵌入模型提供方
 
@@ -73,8 +75,8 @@ async def get_embedding_provider(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.post("/api/embedding_config/provider")
-async def set_embedding_provider(data: Dict, _: Dict = Depends(require_auth)) -> Dict:
+@app.post("/api/embedding_config/provider", summary="设置嵌入模型提供方", tags=EMBEDDING_CONFIG)
+async def set_embedding_provider(data: Dict[str, Any], _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     设置嵌入模型提供方
 
@@ -107,8 +109,8 @@ async def set_embedding_provider(data: Dict, _: Dict = Depends(require_auth)) ->
     }
 
 
-@app.get("/api/embedding_config/local")
-async def get_local_embedding_config(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/embedding_config/local", summary="获取本地嵌入模型配置", tags=EMBEDDING_CONFIG)
+async def get_local_embedding_config(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取本地嵌入模型配置
 
@@ -127,8 +129,8 @@ async def get_local_embedding_config(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.post("/api/embedding_config/local")
-async def set_local_embedding_config(data: Dict, _: Dict = Depends(require_auth)) -> Dict:
+@app.post("/api/embedding_config/local", summary="保存本地嵌入模型配置", tags=EMBEDDING_CONFIG)
+async def set_local_embedding_config(data: Dict[str, Any], _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     保存本地嵌入模型配置
 
@@ -148,8 +150,8 @@ async def set_local_embedding_config(data: Dict, _: Dict = Depends(require_auth)
     }
 
 
-@app.get("/api/embedding_config/openai")
-async def get_openai_embedding_config(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/embedding_config/openai", summary="获取 OpenAI 嵌入模型配置", tags=EMBEDDING_CONFIG)
+async def get_openai_embedding_config(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取 OpenAI 嵌入模型配置
 
@@ -168,8 +170,10 @@ async def get_openai_embedding_config(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.post("/api/embedding_config/openai")
-async def set_openai_embedding_config(data: Dict, _: Dict = Depends(require_auth)) -> Dict:
+@app.post("/api/embedding_config/openai", summary="保存 OpenAI 嵌入模型配置", tags=EMBEDDING_CONFIG)
+async def set_openai_embedding_config(
+    data: Dict[str, Any], _: Dict[str, Any] = Depends(require_auth)
+) -> Dict[str, Any]:
     """
     保存 OpenAI 嵌入模型配置
 
@@ -189,8 +193,8 @@ async def set_openai_embedding_config(data: Dict, _: Dict = Depends(require_auth
     }
 
 
-@app.get("/api/embedding_config/summary")
-async def get_embedding_config_summary(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/embedding_config/summary", summary="获取嵌入模型配置摘要", tags=EMBEDDING_CONFIG)
+async def get_embedding_config_summary(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取嵌入模型配置摘要（一次性获取所有信息）
 

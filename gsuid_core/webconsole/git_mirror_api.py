@@ -19,11 +19,13 @@ from gsuid_core.utils.plugins_update.git_mirror import (
     get_current_mirror_config,
 )
 
+from ._api_tags import GIT_MIRROR
 
-@app.get("/api/git-mirror/info")
+
+@app.get("/api/git-mirror/info", summary="获取 Git 镜像信息", tags=GIT_MIRROR)
 async def get_git_mirror_info(
     request: Request,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取所有插件的 Git 镜像信息
@@ -57,11 +59,11 @@ async def get_git_mirror_info(
     }
 
 
-@app.post("/api/git-mirror/set-all")
+@app.post("/api/git-mirror/set-all", summary="批量设置所有插件的镜像源", tags=GIT_MIRROR)
 async def set_all_mirror(
     request: Request,
     mirror_prefix: str = Body(..., embed=True),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     批量设置所有插件的 Git 镜像源
@@ -119,12 +121,12 @@ async def set_all_mirror(
     }
 
 
-@app.post("/api/git-mirror/set-plugin/{plugin_name}")
+@app.post("/api/git-mirror/set-plugin/{plugin_name}", summary="设置单个插件的镜像源", tags=GIT_MIRROR)
 async def set_single_plugin_mirror(
     request: Request,
     plugin_name: str,
     mirror_prefix: str = Body(..., embed=True),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     设置单个插件的 Git 镜像源
@@ -174,10 +176,10 @@ async def set_single_plugin_mirror(
     }
 
 
-@app.get("/api/git-mirror/available")
+@app.get("/api/git-mirror/available", summary="获取可用镜像源列表", tags=GIT_MIRROR)
 async def get_available_mirror_list(
     request: Request,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取所有可用的 Git 镜像源选项

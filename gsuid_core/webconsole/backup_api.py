@@ -3,7 +3,7 @@ Backup APIs
 提供备份管理相关的 RESTful APIs
 """
 
-from typing import Dict
+from typing import Any, Dict
 from pathlib import Path
 from datetime import datetime
 
@@ -15,9 +15,11 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.backup.backup_core import backup_config, copy_and_rebase_paths
 
+from ._api_tags import BACKUP
 
-@app.get("/api/backup/files")
-async def get_backup_files(request: Request, _user: Dict = Depends(require_auth)):
+
+@app.get("/api/backup/files", summary="获取备份文件列表", tags=BACKUP)
+async def get_backup_files(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取所有备份文件列表
 
@@ -48,8 +50,8 @@ async def get_backup_files(request: Request, _user: Dict = Depends(require_auth)
     return {"status": 0, "msg": "ok", "data": backup_files}
 
 
-@app.post("/api/backup/create")
-async def create_backup(request: Request, _user: Dict = Depends(require_auth)):
+@app.post("/api/backup/create", summary="创建备份", tags=BACKUP)
+async def create_backup(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     创建新的备份文件
 
@@ -70,8 +72,8 @@ async def create_backup(request: Request, _user: Dict = Depends(require_auth)):
     return {"status": 0, "msg": "备份创建成功"}
 
 
-@app.delete("/api/backup/{file_id}")
-async def delete_backup(request: Request, file_id: str, _user: Dict = Depends(require_auth)):
+@app.delete("/api/backup/{file_id}", summary="删除备份文件", tags=BACKUP)
+async def delete_backup(request: Request, file_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     删除指定的备份文件
 
@@ -95,8 +97,8 @@ async def delete_backup(request: Request, file_id: str, _user: Dict = Depends(re
         return {"status": 1, "msg": f"删除失败: {str(e)}"}
 
 
-@app.get("/api/backup/download")
-async def download_backup(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/backup/download", summary="下载备份文件", tags=BACKUP)
+async def download_backup(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     下载备份文件
 
@@ -130,8 +132,8 @@ async def download_backup(request: Request, _user: Dict = Depends(require_auth))
         return Response(content, media_type="application/octet-stream", headers=headers)
 
 
-@app.get("/api/backup/config")
-async def get_backup_config(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/backup/config", summary="获取备份配置", tags=BACKUP)
+async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取备份配置信息
 
@@ -165,8 +167,8 @@ async def get_backup_config(request: Request, _user: Dict = Depends(require_auth
     return {"status": 0, "msg": "ok", "data": raw_config}
 
 
-@app.post("/api/backup/config")
-async def set_backup_config(request: Request, data: Dict, _user: Dict = Depends(require_auth)):
+@app.post("/api/backup/config", summary="保存备份配置", tags=BACKUP)
+async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)):
     """
     保存备份配置信息
 
@@ -182,8 +184,8 @@ async def set_backup_config(request: Request, data: Dict, _user: Dict = Depends(
         msg: 配置保存结果信息
     """
     backup_time = data.get("backup_time", "")
-    backup_dir: list = data.get("backup_dir", [])
-    backup_method: list = data.get("backup_method", [])
+    backup_dir: list[str] = data.get("backup_dir", [])
+    backup_method: list[str] = data.get("backup_method", [])
     webdav_url: str = data.get("webdav_url", "")
     webdav_username: str = data.get("webdav_username", "")
     webdav_password: str = data.get("webdav_password", "")
@@ -212,8 +214,8 @@ async def set_backup_config(request: Request, data: Dict, _user: Dict = Depends(
     return {"status": 0, "msg": "备份配置已保存"}
 
 
-@app.get("/api/backup/file-tree")
-async def get_backup_file_tree(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/backup/file-tree", summary="获取备份文件树", tags=BACKUP)
+async def get_backup_file_tree(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取文件树用于备份选择
 

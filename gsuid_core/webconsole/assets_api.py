@@ -4,7 +4,7 @@ Assets APIs
 """
 
 import base64
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from pathlib import Path
 
 from fastapi import Depends, HTTPException
@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import ASSETS
+
 
 class UploadRequest(BaseModel):
     image: str  # Base64 string
@@ -22,10 +24,10 @@ class UploadRequest(BaseModel):
     target_filename: Optional[str] = None
 
 
-@app.post("/api/assets/upload")
+@app.post("/api/assets/upload", summary="上传图片", tags=ASSETS)
 async def upload_asset(
     data: UploadRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     上传图片并返回本地绝对路径和预览URL
@@ -87,8 +89,8 @@ async def upload_asset(
         return {"status": 1, "msg": f"上传失败: {str(e)}"}
 
 
-@app.get("/api/assets/preview")
-async def preview_asset(path: str, _user: Dict = Depends(require_auth)):
+@app.get("/api/assets/preview", summary="预览图片", tags=ASSETS)
+async def preview_asset(path: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     预览本地图片
 
@@ -152,8 +154,8 @@ async def preview_asset(path: str, _user: Dict = Depends(require_auth)):
         raise HTTPException(status_code=400, detail=f"预览失败: {str(e)}")
 
 
-@app.delete("/api/assets/delete")
-async def delete_asset(path: str, _user: Dict = Depends(require_auth)):
+@app.delete("/api/assets/delete", summary="删除图片", tags=ASSETS)
+async def delete_asset(path: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     删除本地图片
 

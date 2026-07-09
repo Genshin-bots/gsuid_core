@@ -47,6 +47,8 @@ from gsuid_core.ai_core.state_store.store import (
 from gsuid_core.ai_core.state_store.models import AIPersistentState
 from gsuid_core.utils.database.base_models import async_maker
 
+from ._api_tags import STATE_STORE
+
 # 批量删除单次请求上限：防止前端误传一个无界列表把整表打空
 _BATCH_DELETE_MAX = 500
 
@@ -111,9 +113,9 @@ def _safe_json_decode(raw: Optional[str]) -> Any:
         return raw
 
 
-@app.get("/api/ai/state-store/scopes")
+@app.get("/api/ai/state-store/scopes", summary="列出所有 scope", tags=STATE_STORE)
 async def list_state_scopes(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """列出所有出现过的 scope，按 key 数倒序排序。
 
@@ -132,9 +134,9 @@ async def list_state_scopes(
     return {"status": 0, "msg": "ok", "data": {"scopes": scopes, "count": len(scopes)}}
 
 
-@app.get("/api/ai/state-store/keys")
+@app.get("/api/ai/state-store/keys", summary="列出某 scope 下的 keys", tags=STATE_STORE)
 async def list_state_keys(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     scope: str = Query(..., description="scope 字符串，如 user:user_web_01 / group:1779024006344 / global"),
     prefix: str = Query("", description="可选 state_key 前缀过滤（如 'record:' 仅列结构化集合）"),
     include_expired: bool = Query(False, description="是否包含已过期 key（默认排除）"),
@@ -163,9 +165,9 @@ async def list_state_keys(
     return {"status": 0, "msg": "ok", "data": {"items": items, "count": len(items)}}
 
 
-@app.get("/api/ai/state-store/get")
+@app.get("/api/ai/state-store/get", summary="取单条 (scope, state_key) 的完整 value", tags=STATE_STORE)
 async def get_state_entry(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     scope: str = Query(..., description="scope 字符串"),
     state_key: str = Query(..., description="state_key 全名（含 record:/state_/_ 等前缀）"),
 ) -> Dict[str, Any]:
@@ -185,9 +187,9 @@ async def get_state_entry(
     return {"status": 0, "msg": "ok", "data": _entry_dict(row, include_value=True)}
 
 
-@app.get("/api/ai/state-store/records")
+@app.get("/api/ai/state-store/records", summary="`record_*` 集合分页展开", tags=STATE_STORE)
 async def list_record_collection(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     scope: str = Query(..., description="scope 字符串"),
     collection: str = Query(..., description="record 集合名（不含 'record:' 前缀，如 'stock:account'）"),
     limit: int = Query(50, ge=1, le=500, description="返回记录数上限"),
@@ -251,9 +253,9 @@ async def list_record_collection(
     }
 
 
-@app.delete("/api/ai/state-store/entry")
+@app.delete("/api/ai/state-store/entry", summary="删除单条 (scope, state_key)（兜底清理用）", tags=STATE_STORE)
 async def delete_state_entry(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     scope: str = Query(..., description="scope 字符串"),
     state_key: str = Query(..., description="state_key 全名"),
 ) -> Dict[str, Any]:
@@ -291,10 +293,10 @@ class BatchDeleteRequest(BaseModel):
     state_keys: List[str] = Field(default_factory=list)
 
 
-@app.post("/api/ai/state-store/entries/batch-delete")
+@app.post("/api/ai/state-store/entries/batch-delete", summary="批量删除条目", tags=STATE_STORE)
 async def batch_delete_state_entries(
     body: BatchDeleteRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """批量删除多条 (scope, state_key)——用于前端"勾选多行 → 一键删除"。
 
@@ -313,7 +315,7 @@ async def batch_delete_state_entries(
     """
     # 合并两种填法 → 去重后的 (scope, state_key) 列表
     targets: List[Tuple[str, str]] = []
-    seen: set = set()
+    seen: set[Tuple[str, str]] = set()
     for e in body.entries:
         scope_ = e.scope
         sk = e.state_key
@@ -353,7 +355,7 @@ async def batch_delete_state_entries(
             sa_tuple(col(AIPersistentState.scope), col(AIPersistentState.state_key)).in_(targets)
         )
         existing_rows = (await session.execute(stmt)).all()
-        existing: set = {(r[0], r[1]) for r in existing_rows}
+        existing: set[Tuple[str, str]] = {(r[0], r[1]) for r in existing_rows}
 
         if existing:
             # 单条 SQL 一次性删除全部命中行——避免逐条往返

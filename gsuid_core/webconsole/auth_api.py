@@ -27,6 +27,8 @@ from gsuid_core.webconsole.auth_crypto import (
 from gsuid_core.utils.database.auth_models import WebUser
 from gsuid_core.utils.database.base_models import async_maker
 
+from ._api_tags import AUTH
+
 # Avatar storage path
 AVATAR_PATH = gs_data_path / "avatars"
 
@@ -138,7 +140,7 @@ async def get_admin_count() -> int:
         return result.scalar() or 0
 
 
-@app.get("/api/auth/pubkey")
+@app.get("/api/auth/pubkey", summary="获取认证加密公钥", tags=AUTH)
 async def get_pubkey():
     """
     获取认证加密公钥
@@ -158,7 +160,7 @@ async def get_pubkey():
     return {"status": 0, "msg": "ok", "data": auth_keystore.public_info()}
 
 
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", summary="用户登录", tags=AUTH)
 async def api_login(request: Request, data: JsonObject):
     """
     用户登录接口
@@ -242,7 +244,7 @@ async def api_login(request: Request, data: JsonObject):
     return {"status": 1, "msg": "请检查账户密码是否输入正确"}
 
 
-@app.post("/api/auth/register")
+@app.post("/api/auth/register", summary="用户注册", tags=AUTH)
 async def api_register(request: Request, data: JsonObject):
     """
     用户注册接口
@@ -357,7 +359,7 @@ async def api_register(request: Request, data: JsonObject):
     return {"status": 1, "msg": "注册失败，请稍后重试"}
 
 
-@app.get("/api/auth/admin/exists")
+@app.get("/api/auth/admin/exists", summary="检查管理员是否存在", tags=AUTH)
 async def check_admin_exists(request: Request):
     """
     检查管理员是否已存在
@@ -375,7 +377,7 @@ async def check_admin_exists(request: Request):
     return {"status": 0, "msg": "查询成功", "data": {"is_admin_exist": is_admin_exist}}
 
 
-@app.post("/api/auth/logout")
+@app.post("/api/auth/logout", summary="退出登录", tags=AUTH)
 async def api_logout(request: Request, authorization: str | None = Header(default=None)):
     """
     用户登出接口
@@ -397,7 +399,7 @@ async def api_logout(request: Request, authorization: str | None = Header(defaul
     return {"status": 0, "msg": "已退出登录"}
 
 
-@app.get("/api/auth/me")
+@app.get("/api/auth/me", summary="获取当前用户信息", tags=AUTH)
 async def get_current_user(request: Request, authorization: str | None = Header(default=None)):
     """
     获取当前用户信息
@@ -431,7 +433,7 @@ async def get_current_user(request: Request, authorization: str | None = Header(
     }
 
 
-@app.post("/api/auth/avatar")
+@app.post("/api/auth/avatar", summary="上传用户头像", tags=AUTH)
 async def upload_avatar(
     avatar: UploadFile = File(...),
     authorization: str | None = Header(default=None),
@@ -491,7 +493,7 @@ async def upload_avatar(
         return {"status": 1, "msg": "头像上传失败"}
 
 
-@app.get("/api/auth/avatar/{filename}")
+@app.get("/api/auth/avatar/{filename}", summary="获取用户头像文件", tags=AUTH)
 async def get_avatar(request: Request, filename: str):
     """
     获取用户头像文件
@@ -531,7 +533,7 @@ async def get_avatar(request: Request, filename: str):
         return {"status": 1, "msg": "获取头像失败"}
 
 
-@app.post("/api/auth/name")
+@app.post("/api/auth/name", summary="更新用户名称", tags=AUTH)
 async def update_name(request: Request, data: JsonObject, authorization: str | None = Header(default=None)):
     """
     更新用户名称
@@ -571,7 +573,7 @@ async def update_name(request: Request, data: JsonObject, authorization: str | N
     return {"status": 1, "msg": "用户名更新失败"}
 
 
-@app.post("/api/auth/password")
+@app.post("/api/auth/password", summary="修改用户密码", tags=AUTH)
 async def update_password(request: Request, data: JsonObject, authorization: str | None = Header(default=None)):
     """
     更新用户密码

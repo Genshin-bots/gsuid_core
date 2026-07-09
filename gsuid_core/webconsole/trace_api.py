@@ -3,7 +3,7 @@ Trace APIs
 提供追踪日志相关的 RESTful APIs
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime
 
 from fastapi import Depends
@@ -18,12 +18,14 @@ from gsuid_core.trace_archive import (
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import TRACE
 
-@app.get("/api/traces")
+
+@app.get("/api/traces", summary="获取追踪列表（统一入口）", tags=TRACE)
 async def get_traces(
     date: Optional[str] = None,
     limit: int = 500,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """获取追踪列表（统一入口）
 
@@ -37,7 +39,7 @@ async def get_traces(
         date = datetime.now().strftime("%Y-%m-%d")
 
     # 1. 先放 JSONL 记录（completed 数据更完整）
-    merged: Dict[str, Dict] = {}
+    merged: Dict[str, Dict[str, Any]] = {}
     for record in list_traces_from_jsonl(date, limit):
         merged[record["trace_id"]] = record
 
@@ -64,10 +66,10 @@ async def get_traces(
 
 # 注意：本路由必须声明在 `/api/traces/{trace_id}` **之前**，否则 FastAPI 会把
 # "daily_counts" 当作 trace_id 匹配到详情路由（返回 404）。固定路径优先于路径参数。
-@app.get("/api/traces/daily_counts")
+@app.get("/api/traces/daily_counts", summary="获取每日命令数（日历选择器）", tags=TRACE)
 async def get_trace_daily_counts(
     days: int = 60,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """近 N 天每天的命令数——供前端日历选择器判断哪些日期可点击。
 
@@ -81,11 +83,11 @@ async def get_trace_daily_counts(
     return {"status": 0, "msg": "ok", "data": daily_trace_counts(days)}
 
 
-@app.get("/api/traces/{trace_id}")
+@app.get("/api/traces/{trace_id}", summary="获取追踪详情", tags=TRACE)
 async def get_trace_detail(
     trace_id: str,
     date: Optional[str] = None,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """获取指定追踪的完整日志
 

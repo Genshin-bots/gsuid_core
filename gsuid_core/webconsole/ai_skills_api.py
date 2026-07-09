@@ -23,6 +23,8 @@ from gsuid_core.ai_core.skills.operations import (
     get_skill_markdown_path,
 )
 
+from ._api_tags import AI_SKILLS
+
 
 class CloneSkillRequest(BaseModel):
     """克隆技能请求模型"""
@@ -37,8 +39,8 @@ class UpdateMarkdownRequest(BaseModel):
     content: str
 
 
-@app.get("/api/ai/skills/list")
-async def get_ai_skills_list(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/skills/list", summary="获取 AI 技能列表", tags=AI_SKILLS)
+async def get_ai_skills_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取所有已注册的 AI 技能列表
 
@@ -80,8 +82,8 @@ async def get_ai_skills_list(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
     }
 
 
-@app.get("/api/ai/skills/{skill_name}")
-async def get_ai_skill_detail(skill_name: str, _: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/skills/{skill_name}", summary="获取指定技能详情", tags=AI_SKILLS)
+async def get_ai_skill_detail(skill_name: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取指定 AI 技能的详细信息
 
@@ -145,8 +147,8 @@ async def get_ai_skill_detail(skill_name: str, _: Dict = Depends(require_auth)) 
     }
 
 
-@app.delete("/api/ai/skills/{skill_name}")
-async def remove_ai_skill(skill_name: str, _: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.delete("/api/ai/skills/{skill_name}", summary="删除 AI 技能", tags=AI_SKILLS)
+async def remove_ai_skill(skill_name: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     删除指定的 AI 技能（删除整个文件夹）
 
@@ -167,10 +169,10 @@ async def remove_ai_skill(skill_name: str, _: Dict = Depends(require_auth)) -> D
     return result
 
 
-@app.post("/api/ai/skills/clone")
+@app.post("/api/ai/skills/clone", summary="安装 AI 技能（Git 仓库 / 压缩包直链 / SKILL.md 直链）", tags=AI_SKILLS)
 async def clone_ai_skill(
     body: CloneSkillRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> SkillInstallResult:
     """
     从 Git 仓库 / zip 直链 / SKILL.md 直链安装 AI 技能
@@ -188,10 +190,10 @@ async def clone_ai_skill(
     return result
 
 
-@app.get("/api/ai/skills/{skill_name}/markdown")
+@app.get("/api/ai/skills/{skill_name}/markdown", summary="获取 AI 技能 Markdown 内容", tags=AI_SKILLS)
 async def get_ai_skill_markdown(
     skill_name: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取指定技能的 markdown 文件内容
@@ -238,11 +240,11 @@ async def get_ai_skill_markdown(
         }
 
 
-@app.put("/api/ai/skills/{skill_name}/markdown")
+@app.put("/api/ai/skills/{skill_name}/markdown", summary="更新 AI 技能 Markdown 内容", tags=AI_SKILLS)
 async def update_ai_skill_markdown(
     skill_name: str,
     body: UpdateMarkdownRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     更新指定技能的 markdown 文件内容

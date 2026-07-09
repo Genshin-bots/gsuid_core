@@ -21,9 +21,11 @@ from gsuid_core.utils.database.admin_api import (
 )
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH
 
+from ._api_tags import DATABASE
 
-@app.get("/api/database/plugins")
-async def get_database_plugins(request: Request, _user: Dict = Depends(require_auth)):
+
+@app.get("/api/database/plugins", summary="获取所有插件数据库", tags=DATABASE)
+async def get_database_plugins(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取所有插件及其数据库信息
 
@@ -74,8 +76,8 @@ async def get_database_plugins(request: Request, _user: Dict = Depends(require_a
         return {"status": 1, "msg": str(e), "data": []}
 
 
-@app.get("/api/database/{plugin_id}/tables")
-async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/database/{plugin_id}/tables", summary="获取插件表信息", tags=DATABASE)
+async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取指定插件的数据库表列表
 
@@ -104,8 +106,8 @@ async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict = Depe
         return {"status": 1, "msg": str(e), "data": {}}
 
 
-@app.get("/api/database/table/{table_name}")
-async def get_table_metadata(table_name: str, request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/database/table/{table_name}", summary="获取表元数据", tags=DATABASE)
+async def get_table_metadata(table_name: str, request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取数据表元数据
 
@@ -136,7 +138,7 @@ async def get_table_metadata(table_name: str, request: Request, _user: Dict = De
         return {"status": 1, "msg": str(e), "data": None}
 
 
-@app.get("/api/database/table/{table_name}/data")
+@app.get("/api/database/table/{table_name}/data", summary="获取表数据（分页）", tags=DATABASE)
 async def get_table_data_api(
     table_name: str,
     page: int = 1,
@@ -145,7 +147,7 @@ async def get_table_data_api(
     search_columns: str = "",
     filter_columns: str = "",
     filter_values: str = "",
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取数据表分页数据
@@ -188,11 +190,11 @@ async def get_table_data_api(
         return {"status": 1, "msg": str(e), "data": {"items": [], "total": 0, "page": page, "per_page": per_page}}
 
 
-@app.post("/api/database/table/{table_name}/data")
+@app.post("/api/database/table/{table_name}/data", summary="创建记录", tags=DATABASE)
 async def create_record_api(
     table_name: str,
-    data: Dict = Body(...),
-    _user: Dict = Depends(require_auth),
+    data: Dict[str, Any] = Body(...),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     创建新记录
@@ -220,12 +222,12 @@ async def create_record_api(
         return {"status": 1, "msg": str(e), "data": None}
 
 
-@app.put("/api/database/table/{table_name}/data/{record_id}")
+@app.put("/api/database/table/{table_name}/data/{record_id}", summary="更新记录", tags=DATABASE)
 async def update_record_api(
     table_name: str,
     record_id: str,
-    data: Dict = Body(...),
-    _user: Dict = Depends(require_auth),
+    data: Dict[str, Any] = Body(...),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新记录
@@ -263,11 +265,11 @@ async def update_record_api(
         return {"status": 1, "msg": str(e), "data": None}
 
 
-@app.delete("/api/database/table/{table_name}/data/{record_id}")
+@app.delete("/api/database/table/{table_name}/data/{record_id}", summary="删除记录", tags=DATABASE)
 async def delete_record_api(
     table_name: str,
     record_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     删除记录

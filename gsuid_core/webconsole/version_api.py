@@ -17,6 +17,8 @@ from gsuid_core.gss import gss
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import VERSION
+
 
 def _safe_version(module_name: str) -> str:
     """安全获取已安装模块的版本号"""
@@ -66,8 +68,8 @@ def _get_active_bot_infos() -> List[Dict[str, Any]]:
     return bots
 
 
-@app.get("/api/version/bots")
-async def get_active_bots(_user: Dict = Depends(require_auth)):
+@app.get("/api/version/bots", summary="获取当前 active_bot 列表与数量", tags=VERSION)
+async def get_active_bots(_user: Dict[str, Any] = Depends(require_auth)):
     """
     获取当前 gss.active_bot 中的 Bot 列表和数量
 
@@ -90,8 +92,8 @@ async def get_active_bots(_user: Dict = Depends(require_auth)):
     }
 
 
-@app.get("/api/version/bots/count")
-async def get_active_bot_count(_user: Dict = Depends(require_auth)):
+@app.get("/api/version/bots/count", summary="获取当前 active_bot 数量", tags=VERSION)
+async def get_active_bot_count(_user: Dict[str, Any] = Depends(require_auth)):
     """
     获取当前 gss.active_bot 中的 Bot 数量
 
@@ -111,8 +113,8 @@ async def get_active_bot_count(_user: Dict = Depends(require_auth)):
     }
 
 
-@app.get("/api/version/bots/names")
-async def get_active_bot_names(_user: Dict = Depends(require_auth)):
+@app.get("/api/version/bots/names", summary="获取当前 active_bot 名称列表", tags=VERSION)
+async def get_active_bot_names(_user: Dict[str, Any] = Depends(require_auth)):
     """
     获取当前 gss.active_bot 中的 Bot 名称列表
 
@@ -132,8 +134,8 @@ async def get_active_bot_names(_user: Dict = Depends(require_auth)):
     }
 
 
-@app.get("/api/version")
-async def get_version(_user: Dict = Depends(require_auth)):
+@app.get("/api/version", summary="获取框架版本与后端环境信息", tags=VERSION)
+async def get_version(_user: Dict[str, Any] = Depends(require_auth)):
     """
     获取框架当前版本和后端环境信息
 

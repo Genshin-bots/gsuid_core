@@ -4,7 +4,7 @@ AI Tools APIs
 提供 AI 工具管理相关的 RESTful APIs，包括获取工具列表等。
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Query, Depends
 
@@ -12,13 +12,15 @@ from gsuid_core.ai_core.register import get_all_tools, get_registered_tools
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import AI_TOOLS
 
-@app.get("/api/ai/tools/list")
+
+@app.get("/api/ai/tools/list", summary="获取 AI 工具列表", tags=AI_TOOLS)
 async def get_ai_tools_list(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     category: Optional[str] = Query(None, description="按分类筛选，如 'self', 'buildin', 'default', 'common'"),
     plugin: Optional[str] = Query(None, description="按插件名称筛选，如 'core', 'GenshinUID'"),
-) -> Dict:
+) -> Dict[str, Any]:
     """
     获取所有已注册的 AI 工具列表
 
@@ -38,11 +40,11 @@ async def get_ai_tools_list(
     tools_by_category = get_registered_tools()
 
     # 构建完整工具列表（包含分类和插件信息）
-    tools_list: List[Dict] = []
-    by_category: Dict[str, List[Dict]] = {}
-    by_plugin: Dict[str, List[Dict]] = {}
-    categories_set: set = set()
-    plugins_set: set = set()
+    tools_list: List[Dict[str, Any]] = []
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    by_plugin: Dict[str, List[Dict[str, Any]]] = {}
+    categories_set: set[str] = set()
+    plugins_set: set[str] = set()
 
     for cat_name, cat_tools in tools_by_category.items():
         by_category[cat_name] = []
@@ -95,8 +97,8 @@ async def get_ai_tools_list(
     }
 
 
-@app.get("/api/ai/tools/categories")
-async def get_ai_tools_categories(_: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/ai/tools/categories", summary="获取工具分类列表", tags=AI_TOOLS)
+async def get_ai_tools_categories(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取所有工具分类列表
 
@@ -124,8 +126,8 @@ async def get_ai_tools_categories(_: Dict = Depends(require_auth)) -> Dict:
     }
 
 
-@app.get("/api/ai/tools/{tool_name}")
-async def get_ai_tool_detail(tool_name: str, _: Dict = Depends(require_auth)) -> Dict:
+@app.get("/api/ai/tools/{tool_name}", summary="获取指定工具详情", tags=AI_TOOLS)
+async def get_ai_tool_detail(tool_name: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取指定 AI 工具的详细信息
 

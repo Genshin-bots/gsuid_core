@@ -4,7 +4,7 @@ Logs APIs
 """
 
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from fastapi import Body, Query, Depends, Request
@@ -22,6 +22,8 @@ from gsuid_core.data_store import LOGS_CONFIG_PATH
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import LOGS
+
 # 可供用户选择持久化的日志级别集合（与 GET /api/logs/levels 中的真实 value 对齐）
 # 注意：不包含 "all" —— 它是前端 UI 标志，不是真实日志级别。
 LOG_LEVEL_VALUES: List[str] = [
@@ -35,7 +37,7 @@ LOG_LEVEL_VALUES: List[str] = [
 ]
 
 # 默认日志配置（与前端文档保持一致）
-DEFAULT_LOGS_CONFIG: Dict = {
+DEFAULT_LOGS_CONFIG: Dict[str, Any] = {
     "visible_levels": ["debug", "info", "warning", "error"],
 }
 
@@ -55,7 +57,7 @@ def _sanitize_visible_levels(values: Optional[List[str]]) -> List[str]:
     if not values:
         return []
     seen: List[str] = []
-    seen_set: set = set()
+    seen_set: set[str] = set()
     for raw in values:
         if not isinstance(raw, str):
             continue
@@ -71,7 +73,7 @@ def _sanitize_visible_levels(values: Optional[List[str]]) -> List[str]:
     return seen
 
 
-def _merge_defaults(config: Optional[Dict]) -> Dict:
+def _merge_defaults(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """将存储中的旧配置与当前默认配置合并，确保响应体始终包含完整字段集"""
     if not isinstance(config, dict):
         return dict(DEFAULT_LOGS_CONFIG)
@@ -81,7 +83,7 @@ def _merge_defaults(config: Optional[Dict]) -> Dict:
     return merged
 
 
-def load_logs_config() -> Optional[Dict]:
+def load_logs_config() -> Optional[Dict[str, Any]]:
     """Load logs console config from file"""
     if LOGS_CONFIG_PATH.exists():
         try:
@@ -92,7 +94,7 @@ def load_logs_config() -> Optional[Dict]:
     return None
 
 
-def save_logs_config(config: Dict) -> bool:
+def save_logs_config(config: Dict[str, Any]) -> bool:
     """Save logs console config to file"""
     try:
         LOGS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +105,7 @@ def save_logs_config(config: Dict) -> bool:
         return False
 
 
-@app.get("/api/logs")
+@app.get("/api/logs", summary="获取日志列表", tags=LOGS)
 async def get_logs(
     request: Request,
     date: Optional[str] = None,
@@ -114,7 +116,7 @@ async def get_logs(
     search: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取日志列表
@@ -254,9 +256,9 @@ async def get_logs(
     }
 
 
-@app.get("/api/logs/available-dates")
+@app.get("/api/logs/available-dates", summary="获取可用日期列表", tags=LOGS)
 async def get_available_log_dates(
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取所有存在日志文件的日期列表，用于前端日历选择器标记可选择的日期
@@ -273,8 +275,8 @@ async def get_available_log_dates(
     return {"status": 0, "msg": "ok", "data": available_dates}
 
 
-@app.get("/api/logs/sources")
-async def get_log_sources(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/logs/sources", summary="获取日志来源", tags=LOGS)
+async def get_log_sources(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取可用的日志来源列表
 
@@ -289,7 +291,7 @@ async def get_log_sources(request: Request, _user: Dict = Depends(require_auth))
     }
 
 
-@app.get("/api/logs/stats")
+@app.get("/api/logs/stats", summary="获取日志统计", tags=LOGS)
 async def get_log_stats(
     request: Request,
     date: Optional[str] = None,
@@ -299,7 +301,7 @@ async def get_log_stats(
     source: Optional[str] = None,
     search: Optional[str] = None,
     per_page: int = 100,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取日志统计信息
@@ -446,14 +448,14 @@ async def get_log_stats(
         }
 
 
-@app.get("/api/logs/context")
+@app.get("/api/logs/context", summary="获取日志上下文", tags=LOGS)
 async def get_log_context(
     request: Request,
     log_id: int,
     date: str,
     before: int = 10,
     after: int = 10,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取指定日志前后的上下文日志
@@ -516,7 +518,7 @@ async def get_log_context(
         "fatal": "error",
     }
 
-    def format_context_log(log: LogEntry) -> Dict:
+    def format_context_log(log: LogEntry) -> Dict[str, Any]:
         raw_level = log["日志等级"].lower()
         mapped_level = level_mapping[raw_level] if raw_level in level_mapping else "info"
         message = log["内容"]
@@ -547,10 +549,10 @@ async def get_log_context(
     }
 
 
-@app.get("/api/logs/stream")
+@app.get("/api/logs/stream", summary="实时日志流", tags=LOGS)
 async def stream_logs(
     level: Optional[List[str]] = Query(default=["DEBUG", "INFO", "ERROR"]),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """Stream real-time logs using Server-Sent Events
 
@@ -564,8 +566,8 @@ async def stream_logs(
     return StreamingResponse(read_log(levels=level), media_type="text/event-stream")
 
 
-@app.get("/api/logs/levels")
-async def get_log_levels(_user: Dict = Depends(require_auth)):
+@app.get("/api/logs/levels", summary="获取可用日志级别", tags=LOGS)
+async def get_log_levels(_user: Dict[str, Any] = Depends(require_auth)):
     """获取可用的日志级别列表（供前端实时日志级别切换使用）"""
     return {
         "status": 0,
@@ -583,10 +585,10 @@ async def get_log_levels(_user: Dict = Depends(require_auth)):
     }
 
 
-@app.get("/api/logs/config")
+@app.get("/api/logs/config", summary="获取日志控制台配置", tags=LOGS)
 async def get_logs_config(
     request: Request,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """获取用户保存的日志控制台配置（供前端持久化级别选择偏好使用）
 
@@ -601,11 +603,11 @@ async def get_logs_config(
     }
 
 
-@app.put("/api/logs/config")
+@app.put("/api/logs/config", summary="保存日志控制台配置", tags=LOGS)
 async def save_logs_config_endpoint(
     request: Request,
     body: LogsConfigRequest = Body(default=LogsConfigRequest()),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """保存用户日志控制台配置
 

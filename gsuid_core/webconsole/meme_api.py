@@ -9,7 +9,7 @@ Meme Management APIs
 import io
 import json
 import zipfile
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -26,6 +26,8 @@ from gsuid_core.ai_core.meme.library import (
     get_memes_base_path,
 )
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+from ._api_tags import MEME
 
 # ─────────────────────────────────────────────
 # Pydantic 请求模型
@@ -115,7 +117,7 @@ MEME_FILES_DIR = "files"
 # ─────────────────────────────────────────────
 
 
-def _record_to_dict(record: AiMemeRecord) -> dict:
+def _record_to_dict(record: AiMemeRecord) -> Dict[str, Any]:
     """将 AiMemeRecord 转换为 API 响应字典"""
     return {
         "meme_id": record.meme_id,
@@ -147,7 +149,7 @@ def _record_to_dict(record: AiMemeRecord) -> dict:
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/meme/list")
+@app.get("/api/meme/list", summary="列表查询", tags=MEME)
 async def get_meme_list(
     folder: Optional[str] = None,
     persona_hint: Optional[str] = None,
@@ -156,8 +158,8 @@ async def get_meme_list(
     page: int = 1,
     page_size: int = 20,
     q: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     列表查询表情包
 
@@ -241,10 +243,10 @@ async def get_meme_list(
 # （保留在 1b 节仅为可读性，实际位置是控制：声明顺序先于 2）
 
 
-@app.get("/api/meme/personas")
+@app.get("/api/meme/personas", summary="a. 按人格分类列表（前端“按人格分类”入口）", tags=MEME)
 async def get_meme_personas(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取表情包库内的所有人格分类及数量
 
@@ -275,11 +277,11 @@ async def get_meme_personas(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/meme/{meme_id}")
+@app.get("/api/meme/{meme_id}", summary="获取单条记录详情", tags=MEME)
 async def get_meme_detail(
     meme_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取单条表情包详情
 
@@ -312,10 +314,10 @@ async def get_meme_detail(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/meme/image/{meme_id}")
+@app.get("/api/meme/image/{meme_id}", summary="获取原始图片文件", tags=MEME)
 async def get_meme_image(
     meme_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> StreamingResponse:
     """
     获取原始图片文件
@@ -362,12 +364,12 @@ async def get_meme_image(
 # ─────────────────────────────────────────────
 
 
-@app.put("/api/meme/{meme_id}")
+@app.put("/api/meme/{meme_id}", summary="更新标签/描述/归属", tags=MEME)
 async def update_meme(
     meme_id: str,
     req: MemeUpdateRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     更新表情包标签/描述/归属
 
@@ -443,12 +445,12 @@ async def update_meme(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/{meme_id}/move")
+@app.post("/api/meme/{meme_id}/move", summary="移动表情包到目标文件夹", tags=MEME)
 async def move_meme(
     meme_id: str,
     req: MemeMoveRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     移动表情包到目标文件夹
 
@@ -478,11 +480,11 @@ async def move_meme(
 # ─────────────────────────────────────────────
 
 
-@app.delete("/api/meme/{meme_id}")
+@app.delete("/api/meme/{meme_id}", summary="删除表情包", tags=MEME)
 async def delete_meme(
     meme_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     删除表情包（文件+记录）
 
@@ -511,13 +513,13 @@ async def delete_meme(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/upload")
+@app.post("/api/meme/upload", summary="手动上传表情包", tags=MEME)
 async def upload_meme(
     file: UploadFile = File(...),
     folder: str = Form("common"),
     auto_tag: bool = Form(True),
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     手动上传表情包
 
@@ -585,11 +587,11 @@ async def upload_meme(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/{meme_id}/retag")
+@app.post("/api/meme/{meme_id}/retag", summary="重新触发 VLM 打标", tags=MEME)
 async def retag_meme(
     meme_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     重新触发 VLM 打标
 
@@ -627,10 +629,10 @@ async def retag_meme(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/meme/stats")
+@app.get("/api/meme/stats", summary="统计概览", tags=MEME)
 async def get_meme_stats(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取表情包统计概览
 
@@ -650,11 +652,11 @@ async def get_meme_stats(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/batch_delete")
+@app.post("/api/meme/batch_delete", summary="批量删除表情包", tags=MEME)
 async def batch_delete_memes(
     req: MemeBatchDeleteRequest,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     批量删除表情包（文件+记录）
 
@@ -666,7 +668,7 @@ async def batch_delete_memes(
         data: 包含成功/失败详情
     """
     success_ids: List[str] = []
-    failed_ids: List[dict] = []
+    failed_ids: List[Dict[str, Any]] = []
 
     for meme_id in req.meme_ids:
         try:
@@ -702,10 +704,10 @@ async def batch_delete_memes(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/purge_rejected")
+@app.post("/api/meme/purge_rejected", summary="b. 清除所有已拒绝的表情包", tags=MEME)
 async def purge_rejected_memes(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     批量删除所有状态为 rejected 的表情包（源文件+数据库记录+Qdrant 向量）
 
@@ -721,7 +723,7 @@ async def purge_rejected_memes(
             return {"status": 0, "msg": "没有已拒绝的表情包", "data": {"purged_count": 0, "failed": []}}
 
         success_ids: List[str] = []
-        failed_items: List[dict] = []
+        failed_items: List[Dict[str, Any]] = []
 
         for record in records:
             try:
@@ -754,10 +756,10 @@ async def purge_rejected_memes(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/batch_retag_pending")
+@app.post("/api/meme/batch_retag_pending", summary="c. 批量重新打标（待手动处理状态）", tags=MEME)
 async def batch_retag_pending(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     批量重新触发 VLM 打标，针对所有状态为 pending_manual 的表情包
 
@@ -791,7 +793,7 @@ async def batch_retag_pending(
             }
 
         success_ids: List[str] = []
-        failed_items: List[dict] = []
+        failed_items: List[Dict[str, Any]] = []
 
         for record in records:
             try:
@@ -824,7 +826,7 @@ async def batch_retag_pending(
 # ─────────────────────────────────────────────
 
 
-def _record_to_export_dict(record: AiMemeRecord) -> dict:
+def _record_to_export_dict(record: AiMemeRecord) -> Dict[str, Any]:
     """将 AiMemeRecord 转换为导出用的字典（去除运行时字段）"""
     return {
         "meme_id": record.meme_id,
@@ -844,10 +846,10 @@ def _record_to_export_dict(record: AiMemeRecord) -> dict:
     }
 
 
-@app.post("/api/meme/export")
+@app.post("/api/meme/export", summary="批量导出表情包（.meme 格式）", tags=MEME)
 async def export_memes(
     req: MemeBatchExportRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> StreamingResponse:
     """
     批量导出表情包为 .meme 格式文件（实际为 ZIP）
@@ -931,7 +933,7 @@ async def export_memes(
 # ─────────────────────────────────────────────
 
 
-@app.post("/api/meme/import")
+@app.post("/api/meme/import", summary="导入 .meme 格式文件", tags=MEME)
 async def import_memes(
     file: UploadFile = File(..., description=".meme 格式文件"),
     skip_existing: bool = Form(True, description="是否跳过已存在的表情包"),
@@ -946,8 +948,8 @@ async def import_memes(
             "前端可调用 GET /api/meme/personas 拿到可选人格列表。"
         ),
     ),
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     导入 .meme 格式表情包文件
 
@@ -985,7 +987,7 @@ async def import_memes(
 
         imported_ids: List[str] = []
         skipped_ids: List[str] = []
-        failed_items: List[dict] = []
+        failed_items: List[Dict[str, Any]] = []
 
         base_path = get_memes_base_path()
 
@@ -1059,7 +1061,7 @@ async def import_memes(
                     # 打标后再 sync"的双写与陈旧状态入索引
                     status = "pending" if auto_tag else meta.get("status", "manual")
 
-                    record_fields = {
+                    record_fields: Dict[str, Any] = {
                         "file_path": relative_path,
                         "file_size": len(image_data),
                         "file_mime": file_mime,

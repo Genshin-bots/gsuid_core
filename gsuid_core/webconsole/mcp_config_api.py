@@ -22,6 +22,8 @@ from gsuid_core.ai_core.mcp.mcp_presets import MCP_PRESETS
 from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition, mcp_config_manager
 from gsuid_core.utils.plugins_config.models import GsStrConfig
 
+from ._api_tags import MCP_CONFIG
+
 
 class MCPToolDefinitionModel(BaseModel):
     """MCP 工具定义模型"""
@@ -124,9 +126,9 @@ class MCPConfigUpdate(BaseModel):
     tool_permissions: Optional[Dict[str, int]] = None
 
 
-@app.get("/api/ai/mcp/list")
+@app.get("/api/ai/mcp/list", summary="获取 MCP 配置列表", tags=MCP_CONFIG)
 async def get_mcp_configs_list(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取所有 MCP 配置列表
@@ -146,9 +148,9 @@ async def get_mcp_configs_list(
     }
 
 
-@app.get("/api/ai/mcp/presets")
+@app.get("/api/ai/mcp/presets", summary="获取 MCP 预设配置", tags=MCP_CONFIG)
 async def get_mcp_presets(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取 MCP 预设配置列表
@@ -174,10 +176,10 @@ async def get_mcp_presets(
 MCP_STATIC_ROUTES = frozenset({"list", "presets", "discover", "import", "reload"})
 
 
-@app.get("/api/ai/mcp/{config_id}")
+@app.get("/api/ai/mcp/{config_id}", summary="获取 MCP 配置详情", tags=MCP_CONFIG)
 async def get_mcp_config_detail(
     config_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取指定 MCP 配置的详细信息
@@ -214,10 +216,10 @@ async def get_mcp_config_detail(
     }
 
 
-@app.post("/api/ai/mcp")
+@app.post("/api/ai/mcp", summary="创建 MCP 配置", tags=MCP_CONFIG)
 async def create_mcp_config(
     body: MCPConfigCreate,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     创建新的 MCP 配置
@@ -296,11 +298,11 @@ async def create_mcp_config(
     }
 
 
-@app.put("/api/ai/mcp/{config_id}")
+@app.put("/api/ai/mcp/{config_id}", summary="更新 MCP 配置", tags=MCP_CONFIG)
 async def update_mcp_config(
     config_id: str,
     body: MCPConfigUpdate,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     更新 MCP 配置
@@ -345,10 +347,10 @@ async def update_mcp_config(
     }
 
 
-@app.delete("/api/ai/mcp/{config_id}")
+@app.delete("/api/ai/mcp/{config_id}", summary="删除 MCP 配置", tags=MCP_CONFIG)
 async def delete_mcp_config(
     config_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     删除 MCP 配置
@@ -381,10 +383,10 @@ async def delete_mcp_config(
     }
 
 
-@app.post("/api/ai/mcp/{config_id}/toggle")
+@app.post("/api/ai/mcp/{config_id}/toggle", summary="切换启用/禁用状态", tags=MCP_CONFIG)
 async def toggle_mcp_config(
     config_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     切换 MCP 配置的启用/禁用状态
@@ -433,9 +435,9 @@ async def toggle_mcp_config(
     }
 
 
-@app.post("/api/ai/mcp/reload")
+@app.post("/api/ai/mcp/reload", summary="热重载所有配置", tags=MCP_CONFIG)
 async def reload_mcp_configs(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     热重载所有 MCP 配置并重新注册工具
@@ -476,10 +478,10 @@ async def reload_mcp_configs(
     }
 
 
-@app.get("/api/ai/mcp/{config_id}/tools")
+@app.get("/api/ai/mcp/{config_id}/tools", summary="从已配置服务器发现工具", tags=MCP_CONFIG)
 async def discover_mcp_tools(
     config_id: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     从已配置的 MCP 服务器发现可用工具列表
@@ -558,10 +560,10 @@ class MCPDiscoverRequest(BaseModel):
     headers: Dict[str, str] = {}  # SSE HTTP 请求头
 
 
-@app.post("/api/ai/mcp/tools/discover")
+@app.post("/api/ai/mcp/tools/discover", summary="从临时配置发现工具", tags=MCP_CONFIG)
 async def discover_tools_from_temp_config(
     body: MCPDiscoverRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     从临时 MCP 配置发现可用工具（不保存配置）
@@ -621,10 +623,10 @@ class MCPImportRequest(BaseModel):
     json_config: str  # 粘贴的 JSON 配置
 
 
-@app.post("/api/ai/mcp/tools/import")
+@app.post("/api/ai/mcp/tools/import", summary="从 JSON 配置导入 MCP 服务器", tags=MCP_CONFIG)
 async def import_mcp_from_json(
     body: MCPImportRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     从 JSON 配置导入 MCP 服务器
@@ -761,9 +763,9 @@ async def import_mcp_from_json(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/ai/mcp-tools-config/list")
+@app.get("/api/ai/mcp-tools-config/list", summary="获取 MCP 工具配置列表", tags=MCP_CONFIG)
 async def get_mcp_tools_config_list(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取 MCP 工具配置列表
@@ -798,10 +800,10 @@ async def get_mcp_tools_config_list(
     }
 
 
-@app.get("/api/ai/mcp-tools-config/{item_key}")
+@app.get("/api/ai/mcp-tools-config/{item_key}", summary="获取指定 MCP 工具配置详情", tags=MCP_CONFIG)
 async def get_mcp_tools_config_detail(
     item_key: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取指定 MCP 工具配置项的详情（含 details 参数映射）
@@ -843,11 +845,11 @@ class MCPToolDetailsUpdate(BaseModel):
     details: Optional[Dict[str, Any]] = None
 
 
-@app.put("/api/ai/mcp-tools-config/{item_key}")
+@app.put("/api/ai/mcp-tools-config/{item_key}", summary="更新 MCP 工具配置（含 details 参数映射）", tags=MCP_CONFIG)
 async def update_mcp_tools_config(
     item_key: str,
     body: MCPToolDetailsUpdate,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     更新指定 MCP 工具配置项（含 details 参数映射）

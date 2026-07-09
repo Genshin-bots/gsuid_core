@@ -8,7 +8,7 @@ Theme APIs
 """
 
 import json
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 
 from fastapi import Depends, Request, HTTPException
@@ -19,8 +19,10 @@ from gsuid_core.data_store import THEME_CONFIG_PATH, THEME_CONFIGS_PATH
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import THEME
+
 # 默认主题配置（与前端文档保持一致）
-DEFAULT_THEME_CONFIG: Dict = {
+DEFAULT_THEME_CONFIG: Dict[str, Any] = {
     "mode": "dark",
     "style": "glassmorphism",
     "color": "red",
@@ -79,7 +81,7 @@ class ThemePresetApplyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
 
 
-def _merge_defaults(config: Optional[Dict]) -> Dict:
+def _merge_defaults(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """将存储中的旧配置与当前默认配置合并，补齐缺失字段（如 card_opacity）"""
     if not isinstance(config, dict):
         return dict(DEFAULT_THEME_CONFIG)
@@ -92,7 +94,7 @@ def _merge_defaults(config: Optional[Dict]) -> Dict:
     return merged
 
 
-def load_theme_config() -> dict | None:
+def load_theme_config() -> Dict[str, Any] | None:
     """Load theme config from file"""
     if THEME_CONFIG_PATH.exists():
         try:
@@ -103,7 +105,7 @@ def load_theme_config() -> dict | None:
     return None
 
 
-def save_theme_config(config: dict) -> bool:
+def save_theme_config(config: Dict[str, Any]) -> bool:
     """Save theme config to file"""
     try:
         THEME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +116,7 @@ def save_theme_config(config: dict) -> bool:
         return False
 
 
-def _clamp_config_dict(config_dict: Dict) -> Dict:
+def _clamp_config_dict(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """对传入字典中的整数字段做二次夹紧，防止 Pydantic 校验被绕过。"""
     if not isinstance(config_dict.get("blur_intensity"), int):
         config_dict["blur_intensity"] = DEFAULT_THEME_CONFIG["blur_intensity"]
@@ -216,7 +218,7 @@ def _is_builtin_reserved(name: str) -> bool:
     return safe_name in list_builtin_preset_names()
 
 
-def _read_preset_file(path: Path) -> Tuple[Optional[Dict], bool]:
+def _read_preset_file(path: Path) -> Tuple[Optional[Dict[str, Any]], bool]:
     """从给定路径读取预设 JSON。返回 ``(merged_config, valid)``。
 
     - ``valid=False`` 时 ``merged_config`` 为 None（文件损坏）。
@@ -233,11 +235,11 @@ def _read_preset_file(path: Path) -> Tuple[Optional[Dict], bool]:
 def _describe_preset(
     name: str,
     path: Path,
-    active_merged: Dict,
+    active_merged: Dict[str, Any],
     is_builtin: bool,
-    merged_config: Optional[Dict],
+    merged_config: Optional[Dict[str, Any]],
     valid: bool,
-) -> Dict:
+) -> Dict[str, Any]:
     """构造列表接口返回的单条记录。
 
     ``merged_config`` 已由 ``_read_preset_file`` 合并过默认值：
@@ -249,7 +251,7 @@ def _describe_preset(
     except OSError:
         stat = None
     is_active = valid and merged_config is not None and merged_config == active_merged
-    record: Dict = {
+    record: Dict[str, Any] = {
         "name": name,
         "filename": path.name,
         # 内置主题暴露相对位置便于前端在调试面板中区分来源
@@ -266,7 +268,7 @@ def _describe_preset(
     return record
 
 
-def list_theme_presets() -> List[Dict]:
+def list_theme_presets() -> List[Dict[str, Any]]:
     """枚举所有主题预设（内置 + 用户），合并返回。
 
     返回结构：
@@ -285,7 +287,7 @@ def list_theme_presets() -> List[Dict]:
     active = load_theme_config() or {}
     active_merged = _merge_defaults(active)
 
-    entries: Dict[str, Dict] = {}
+    entries: Dict[str, Dict[str, Any]] = {}
 
     # 1) 内置主题
     for name in list_builtin_preset_names():
@@ -318,7 +320,7 @@ def list_theme_presets() -> List[Dict]:
     return list(entries.values())
 
 
-def read_theme_preset(name: str) -> Dict:
+def read_theme_preset(name: str) -> Dict[str, Any]:
     """读取指定名称的预设；内置优先，用户目录兜底；都不存在时抛 404。
 
     返回的 dict 已与默认值合并，调用方可直接写入活动配置或返回前端。
@@ -326,7 +328,7 @@ def read_theme_preset(name: str) -> Dict:
     builtin_path = _builtin_preset_path(name)
     if builtin_path is not None:
         payload, valid = _read_preset_file(builtin_path)
-        if not valid:
+        if not valid or payload is None:
             raise HTTPException(status_code=500, detail=f"内置主题 '{name}' 损坏")
         return payload
 
@@ -334,12 +336,12 @@ def read_theme_preset(name: str) -> Dict:
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail=f"主题预设 '{name}' 不存在")
     payload, valid = _read_preset_file(target)
-    if not valid:
+    if not valid or payload is None:
         raise HTTPException(status_code=500, detail=f"读取预设失败: '{name}' 内容不是合法 JSON")
     return payload
 
 
-@app.get("/api/theme/config")
+@app.get("/api/theme/config", summary="获取主题配置", tags=THEME)
 async def get_theme_config(
     request: Request,
 ):
@@ -358,11 +360,11 @@ async def get_theme_config(
     }
 
 
-@app.post("/api/theme/config")
+@app.post("/api/theme/config", summary="保存主题配置", tags=THEME)
 async def save_theme_config_endpoint(
     request: Request,
     config: ThemeConfigRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """Save theme configuration"""
     config_dict = config.model_dump()
@@ -379,7 +381,7 @@ async def save_theme_config_endpoint(
 # ==================== 主题预设（保存/列表/应用/删除） ====================
 
 
-@app.get("/api/theme/presets")
+@app.get("/api/theme/presets", summary="获取主题预设列表", tags=THEME)
 async def get_theme_presets(
     request: Request,
 ):
@@ -399,11 +401,11 @@ async def get_theme_presets(
     }
 
 
-@app.post("/api/theme/presets/save")
+@app.post("/api/theme/presets/save", summary="保存主题预设", tags=THEME)
 async def save_theme_preset(
     request: Request,
     payload: ThemePresetSaveRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """保存主题预设。
 
@@ -459,11 +461,11 @@ async def save_theme_preset(
     }
 
 
-@app.post("/api/theme/presets/apply")
+@app.post("/api/theme/presets/apply", summary="应用主题预设", tags=THEME)
 async def apply_theme_preset(
     request: Request,
     payload: ThemePresetApplyRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """应用主题预设：将命名预设的内容写入当前活动主题配置（theme_config.json）。"""
     # read_theme_preset 内部已校验路径与存在性；非法 / 不存在 / 损坏统一转 status=1 信封
@@ -487,10 +489,10 @@ async def apply_theme_preset(
     return {"status": 1, "msg": "应用失败"}
 
 
-@app.delete("/api/theme/presets/{name}")
+@app.delete("/api/theme/presets/{name}", summary="删除主题预设", tags=THEME)
 async def delete_theme_preset(
     name: str,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ):
     """删除指定主题预设。
 

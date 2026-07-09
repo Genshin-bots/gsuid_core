@@ -4,7 +4,7 @@ Dashboard APIs
 """
 
 import asyncio
-from typing import Dict, Sequence
+from typing import Any, Dict, Sequence
 from datetime import date as dt_date, datetime, timedelta
 
 from fastapi import Depends, Request
@@ -12,6 +12,8 @@ from fastapi import Depends, Request
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import TEMP_DICT, require_auth
 from gsuid_core.utils.database.global_val_models import DataType, CoreDataSummary, CoreDataAnalysis
+
+from ._api_tags import DASHBOARD
 
 
 def simplify_regex_command(command: str) -> str:
@@ -68,8 +70,8 @@ def simplify_regex_command(command: str) -> str:
     return command
 
 
-@app.get("/api/dashboard/metrics")
-async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Dict = Depends(require_auth)):
+@app.get("/api/dashboard/metrics", summary="获取关键指标", tags=DASHBOARD)
+async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取 Dashboard 的关键指标数据
 
@@ -136,8 +138,8 @@ async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Di
         }
 
 
-@app.get("/api/dashboard/commands")
-async def get_dashboard_commands(request: Request, bot_id: str = "all", _user: Dict = Depends(require_auth)):
+@app.get("/api/dashboard/commands", summary="获取命令统计", tags=DASHBOARD)
+async def get_dashboard_commands(request: Request, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取最近 30 天的命令使用统计
 
@@ -185,8 +187,10 @@ async def get_dashboard_commands(request: Request, bot_id: str = "all", _user: D
     return {"status": 0, "msg": "ok", "data": data}
 
 
-@app.get("/api/dashboard/users-groups")
-async def get_dashboard_users_groups(request: Request, bot_id: str = "all", _user: Dict = Depends(require_auth)):
+@app.get("/api/dashboard/users-groups", summary="获取用户群组数据", tags=DASHBOARD)
+async def get_dashboard_users_groups(
+    request: Request, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)
+):
     """
     获取最近 30 天的用户和群组数据
 
@@ -234,8 +238,10 @@ async def get_dashboard_users_groups(request: Request, bot_id: str = "all", _use
     return {"status": 0, "msg": "ok", "data": data}
 
 
-@app.get("/api/dashboard/daily/commands")
-async def get_daily_commands(request: Request, date: str, bot_id: str = "all", _user: Dict = Depends(require_auth)):
+@app.get("/api/dashboard/daily/commands", summary="每日命令使用统计", tags=DASHBOARD)
+async def get_daily_commands(
+    request: Request, date: str, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)
+):
     """
     获取指定日期的命令使用统计
 
@@ -316,9 +322,9 @@ async def get_daily_commands(request: Request, date: str, bot_id: str = "all", _
         }
 
 
-@app.get("/api/dashboard/daily/group-triggers")
+@app.get("/api/dashboard/daily/group-triggers", summary="每日群触发统计", tags=DASHBOARD)
 async def get_daily_group_triggers(
-    request: Request, date: str, bot_id: str = "all", _user: Dict = Depends(require_auth)
+    request: Request, date: str, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)
 ):
     """
     获取指定日期的群组命令触发统计
@@ -399,9 +405,9 @@ async def get_daily_group_triggers(
         }
 
 
-@app.get("/api/dashboard/daily/personal-triggers")
+@app.get("/api/dashboard/daily/personal-triggers", summary="每日个人触发统计", tags=DASHBOARD)
 async def get_daily_personal_triggers(
-    request: Request, date: str, bot_id: str = "all", _user: Dict = Depends(require_auth)
+    request: Request, date: str, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)
 ):
     """
     获取指定日期的个人命令触发统计
@@ -482,8 +488,8 @@ async def get_daily_personal_triggers(
         }
 
 
-@app.get("/api/dashboard/bots")
-async def get_dashboard_bots(_user: Dict = Depends(require_auth)):
+@app.get("/api/dashboard/bots", summary="获取 Bot 列表", tags=DASHBOARD)
+async def get_dashboard_bots(_user: Dict[str, Any] = Depends(require_auth)):
     """
     获取所有可用的 Bot 列表
 

@@ -35,6 +35,8 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
+from ._api_tags import AI_SESSION_LOGS
+
 if TYPE_CHECKING:
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
     from gsuid_core.ai_core.session_logger import AISessionLogger
@@ -233,7 +235,9 @@ def _load_persist_cache() -> None:
         for key, val in raw.items():
             try:
                 mtime, size, summary = val
-                if isinstance(summary, dict):
+                # 守卫 val[2] 而非 summary：isinstance(summary, dict) 会把 summary
+                # narrow 成 dict 破坏 SessionLogSummary 赋值；从 JSON 载入的 summary 保持 Any。
+                if isinstance(val[2], dict):
                     _BASE_SUMMARY_CACHE[key] = ((float(mtime), int(size)), summary)
                     loaded += 1
             except Exception:
@@ -452,7 +456,7 @@ def _index_from_bases(bases: List[SessionLogSummary]) -> LogIndex:
     return by_sid_uuid, latest_by_sid
 
 
-def _prune_base_cache(valid_keys: set) -> None:
+def _prune_base_cache(valid_keys: set[str]) -> None:
     """移除缓存中已不存在（被清理）的日志文件条目，避免长期运行内存无界增长。"""
     global _cache_dirty
     with _CACHE_LOCK:
@@ -698,7 +702,7 @@ def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLog
             type_counts[k] = type_counts.get(k, 0) + v
 
     # 合并去重 linked_agents（按 session_id + session_uuid + linked_at）
-    seen: set = set()
+    seen: set[Tuple[Any, Any, Any]] = set()
     merged_linked: List[LinkedAgentRecord] = []
     for s in segs:
         for a in s["linked_agents"]:
@@ -764,7 +768,7 @@ def _build_unified_list() -> List[SessionLogSummary]:
     """
     registry = get_ai_session_registry()
     sessions = registry.get_all_ai_sessions()
-    memory_session_ids: set = set(sessions.keys())  # 内存中真正活跃的 session_id 集合
+    memory_session_ids: set[str] = set(sessions.keys())  # 内存中真正活跃的 session_id 集合
 
     # 1. 解析磁盘文件为「单分段」摘要（mtime 缓存 + sidecar 持久化；scandir 给出 stat，命中缓存
     #    连文件都不开），并构建查找索引供 linked_agent enrich 做 O(1) 命中。
@@ -1059,7 +1063,7 @@ def _categorize_create_by(create_by: Optional[str]) -> Dict[str, str]:
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/session_logs")
+@app.get("/api/ai/session_logs", summary="列出会话日志", tags=AI_SESSION_LOGS)
 async def list_session_logs(
     session_id: Optional[str] = None,
     search: Optional[str] = None,
@@ -1070,8 +1074,8 @@ async def list_session_logs(
     date_to: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 AI Session 日志列表（统一合并内存活跃 + 磁盘持久化，去重）
 
@@ -1139,7 +1143,7 @@ async def list_session_logs(
 def _handle_detail_request(
     session_id: str,
     session_uuid: Optional[str] = None,
-) -> Dict:
+) -> Dict[str, Any]:
     """日志详情请求的统一处理逻辑，供多个路由复用"""
     try:
         data = _find_log_by_session_id_and_uuid(session_id, session_uuid)
@@ -1160,12 +1164,12 @@ def _handle_detail_request(
         }
 
 
-@app.get("/api/ai/session_logs/detail")
+@app.get("/api/ai/session_logs/detail", summary="a. 查询参数版（推荐）", tags=AI_SESSION_LOGS)
 async def get_session_log_detail_by_query(
     session_id: str,
     session_uuid: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定 Session 实例的日志详情（查询参数版，推荐）
 
@@ -1187,11 +1191,11 @@ async def get_session_log_detail_by_query(
     return _handle_detail_request(session_id, session_uuid)
 
 
-@app.get("/api/ai/session_logs/{session_id}/detail")
+@app.get("/api/ai/session_logs/{session_id}/detail", summary="获取会话日志详情", tags=AI_SESSION_LOGS)
 async def get_session_log_detail(
     session_id: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定 Session 实例的日志详情（路径参数版）
 
@@ -1208,12 +1212,16 @@ async def get_session_log_detail(
     return _handle_detail_request(session_id, None)
 
 
-@app.get("/api/ai/session_logs/{session_id}/{session_uuid}/detail")
+@app.get(
+    "/api/ai/session_logs/{session_id}/{session_uuid}/detail",
+    summary="获取会话日志详情(带 UUID)",
+    tags=AI_SESSION_LOGS,
+)
 async def get_session_log_detail_with_uuid(
     session_id: str,
     session_uuid: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定 Session 实例的日志详情（路径参数版，含 UUID）
 
@@ -1230,11 +1238,11 @@ async def get_session_log_detail_with_uuid(
     return _handle_detail_request(session_id, session_uuid)
 
 
-@app.get("/api/ai/session_logs/{rest:path}/detail")
+@app.get("/api/ai/session_logs/{rest:path}/detail", summary="获取会话日志详情", tags=AI_SESSION_LOGS)
 async def get_session_log_detail_catch_all(
     rest: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     日志详情 catch-all 路由（处理 URL 中含连续斜杠等边缘情况）
 
@@ -1265,11 +1273,11 @@ async def get_session_log_detail_catch_all(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/session_logs/file/{file_name}")
+@app.get("/api/ai/session_logs/file/{file_name}", summary="按文件名获取会话日志", tags=AI_SESSION_LOGS)
 async def get_session_log_by_file(
     file_name: str,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     按文件名获取单个持久化日志详情（调试用）
 
@@ -1325,12 +1333,12 @@ async def get_session_log_by_file(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/session_logs/{session_id}/linked_agents")
+@app.get("/api/ai/session_logs/{session_id}/linked_agents", summary="获取会话关联 Agent", tags=AI_SESSION_LOGS)
 async def get_session_linked_agents(
     session_id: str,
     agent_type: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定 Session 关联的 Agent 列表
 
@@ -1431,10 +1439,10 @@ async def get_session_linked_agents(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/session_logs/stats/overview")
+@app.get("/api/ai/session_logs/stats/overview", summary="会话日志统计概览", tags=AI_SESSION_LOGS)
 async def get_session_logs_overview(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取 Session 日志统计概览
 
@@ -1509,10 +1517,10 @@ async def get_session_logs_overview(
 # ─────────────────────────────────────────────
 
 
-@app.get("/api/ai/session_logs/categories")
+@app.get("/api/ai/session_logs/categories", summary="获取会话日志分类", tags=AI_SESSION_LOGS)
 async def get_session_log_categories(
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取当前后台日志的会话分类（按来源 create_by 聚合）
 
@@ -1545,7 +1553,7 @@ async def get_session_log_categories(
         for item in unified:
             cb: str = item["create_by"] or "Unknown"
             meta = _categorize_create_by(cb)
-            entry = stats.get(cb)
+            entry: Optional[Dict[str, Any]] = stats.get(cb)
             if entry is None:
                 entry = {**meta, "count": 0, "active_count": 0, "subagent_count": 0}
                 stats[cb] = entry

@@ -15,6 +15,8 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
 
+from ._api_tags import AI_SCHED
+
 # ============ Request Models ============
 
 
@@ -41,7 +43,7 @@ class ModifyTaskRequest(BaseModel):
 
 def task_to_dict(task: AIScheduledTask) -> Dict[str, Any]:
     """将 AIScheduledTask 转换为字典"""
-    result = {
+    result: Dict[str, Any] = {
         "task_id": task.task_id,
         "task_type": task.task_type,
         "user_id": task.user_id,
@@ -75,12 +77,12 @@ def task_to_dict(task: AIScheduledTask) -> Dict[str, Any]:
 # ============ APIs ============
 
 
-@app.get("/api/ai/scheduled_tasks")
+@app.get("/api/ai/scheduled_tasks", summary="获取任务列表", tags=AI_SCHED)
 async def get_scheduled_tasks(
     user_id: Optional[str] = Query(None, description="按用户ID筛选"),
     status: Optional[str] = Query(None, description="按状态筛选"),
     task_type: Optional[str] = Query(None, description="按任务类型筛选"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取 AI 定时任务列表
@@ -110,10 +112,10 @@ async def get_scheduled_tasks(
     }
 
 
-@app.get("/api/ai/scheduled_tasks/{task_id}")
+@app.get("/api/ai/scheduled_tasks/{task_id}", summary="获取任务详情", tags=AI_SCHED)
 async def get_scheduled_task(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取指定任务的详细信息
@@ -141,10 +143,10 @@ async def get_scheduled_task(
     }
 
 
-@app.post("/api/ai/scheduled_tasks")
+@app.post("/api/ai/scheduled_tasks", summary="创建任务", tags=AI_SCHED)
 async def create_scheduled_task(
     body: AddTaskRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     创建新的 AI 定时任务
@@ -168,7 +170,7 @@ async def create_scheduled_task(
                 return {"status": 1, "msg": "循环任务需要提供 interval_type 和 interval_value", "data": None}
 
         # 构建任务信息
-        task_info = {
+        task_info: Dict[str, Any] = {
             "task_id": f"manual_task_{datetime.now().strftime('%Y%m%d%H%M%S')}",
             "bot_id": "webconsole",
             "user_id": "webconsole_user",
@@ -218,11 +220,11 @@ async def create_scheduled_task(
         return {"status": 1, "msg": f"创建任务失败: {str(e)}", "data": None}
 
 
-@app.put("/api/ai/scheduled_tasks/{task_id}")
+@app.put("/api/ai/scheduled_tasks/{task_id}", summary="修改任务", tags=AI_SCHED)
 async def modify_scheduled_task(
     task_id: str,
     body: ModifyTaskRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     修改 AI 定时任务
@@ -265,10 +267,10 @@ async def modify_scheduled_task(
         return {"status": 1, "msg": f"修改任务失败: {str(e)}", "data": None}
 
 
-@app.delete("/api/ai/scheduled_tasks/{task_id}")
+@app.delete("/api/ai/scheduled_tasks/{task_id}", summary="软删除任务（保留历史）", tags=AI_SCHED)
 async def delete_scheduled_task(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     软删除 AI 定时任务（保留历史记录）
@@ -304,10 +306,10 @@ async def delete_scheduled_task(
         return {"status": 1, "msg": f"删除任务失败: {str(e)}", "data": None}
 
 
-@app.delete("/api/ai/scheduled_tasks/{task_id}/hard")
+@app.delete("/api/ai/scheduled_tasks/{task_id}/hard", summary="硬删除任务（彻底移除）", tags=AI_SCHED)
 async def hard_delete_scheduled_task(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     硬删除 AI 定时任务（彻底从数据库移除）
@@ -340,13 +342,13 @@ async def hard_delete_scheduled_task(
         return {"status": 1, "msg": f"硬删除任务失败: {str(e)}", "data": None}
 
 
-@app.delete("/api/ai/scheduled_tasks")
+@app.delete("/api/ai/scheduled_tasks", summary="批量清空任务（按筛选条件硬删除）", tags=AI_SCHED)
 async def clear_scheduled_tasks(
     user_id: Optional[str] = Query(None, description="按用户ID过滤"),
     status: Optional[str] = Query(None, description="按状态过滤（如 cancelled/failed/executed）"),
     task_type: Optional[str] = Query(None, description="按任务类型过滤（once/interval）"),
     confirm: bool = Query(False, description="必须显式传 true 才会执行清空，防误删"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     批量硬删除 AI 定时任务（支持按筛选条件清空或全部清空）
@@ -412,10 +414,10 @@ async def clear_scheduled_tasks(
         return {"status": 1, "msg": f"批量删除失败: {str(e)}", "data": None}
 
 
-@app.post("/api/ai/scheduled_tasks/{task_id}/pause")
+@app.post("/api/ai/scheduled_tasks/{task_id}/pause", summary="暂停任务", tags=AI_SCHED)
 async def pause_scheduled_task(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     暂停 AI 定时任务（仅循环任务）
@@ -458,10 +460,10 @@ async def pause_scheduled_task(
         return {"status": 1, "msg": f"暂停任务失败: {str(e)}", "data": None}
 
 
-@app.post("/api/ai/scheduled_tasks/{task_id}/resume")
+@app.post("/api/ai/scheduled_tasks/{task_id}/resume", summary="恢复任务", tags=AI_SCHED)
 async def resume_scheduled_task(
     task_id: str,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     恢复已暂停的 AI 定时任务
@@ -516,9 +518,9 @@ async def resume_scheduled_task(
         return {"status": 1, "msg": f"恢复任务失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/scheduled_tasks/stats/overview")
+@app.get("/api/ai/scheduled_tasks/stats/overview", summary="获取任务统计", tags=AI_SCHED)
 async def get_scheduled_tasks_stats(
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     获取 AI 定时任务统计概览

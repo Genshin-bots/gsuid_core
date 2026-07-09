@@ -21,6 +21,8 @@ from gsuid_core.ai_core.configs.ai_config import (
     tavily_config,
 )
 
+from ._api_tags import AI_WIZARD
+
 
 def _check_model_vision_support(provider: str, config_name: str) -> Dict[str, Any]:
     """
@@ -513,8 +515,8 @@ def _analyze_missing_configs(wizard_data: Dict[str, Any]) -> List[Dict[str, Any]
 # ==================== AI 配置向导 API ====================
 
 
-@app.get("/api/ai/wizard/status")
-async def get_ai_wizard_status(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/wizard/status", summary="获取 AI 配置向导状态", tags=AI_WIZARD)
+async def get_ai_wizard_status(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取 AI 配置状态向导数据
 
@@ -732,8 +734,8 @@ async def get_ai_wizard_status(_: Dict = Depends(require_auth)) -> Dict[str, Any
     }
 
 
-@app.get("/api/ai/wizard/checklist")
-async def get_ai_wizard_checklist(_: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/wizard/checklist", summary="获取 AI 配置检查清单", tags=AI_WIZARD)
+async def get_ai_wizard_checklist(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """
     获取 AI 配置检查清单（简化版）
 

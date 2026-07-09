@@ -3,7 +3,7 @@ System APIs
 提供系统信息相关的 RESTful APIs
 """
 
-from typing import Dict
+from typing import Any, Dict
 
 from fastapi import Depends, Request
 
@@ -11,9 +11,11 @@ from gsuid_core.handler import IS_HANDDLE, set_handle
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import SYSTEM
 
-@app.get("/api/system/info")
-async def get_system_info(request: Request, _user: Dict = Depends(require_auth)):
+
+@app.get("/api/system/info", summary="获取系统信息", tags=SYSTEM)
+async def get_system_info(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取系统信息
 
@@ -40,7 +42,7 @@ async def get_system_info(request: Request, _user: Dict = Depends(require_auth))
     }
 
 
-@app.get("/api/system/health")
+@app.get("/api/system/health", summary="健康检查", tags=SYSTEM)
 async def health_check():
     """
     健康检查接口
@@ -65,8 +67,8 @@ async def health_check():
     }
 
 
-@app.post("/api/system/restart")
-async def restart_core(_user: Dict = Depends(require_auth)):
+@app.post("/api/system/restart", summary="重启核心服务", tags=SYSTEM)
+async def restart_core(_user: Dict[str, Any] = Depends(require_auth)):
     """
     重启核心服务
 
@@ -91,8 +93,8 @@ async def restart_core(_user: Dict = Depends(require_auth)):
     }
 
 
-@app.post("/api/system/stop")
-async def stop_core(_user: Dict = Depends(require_auth)):
+@app.post("/api/system/stop", summary="停止核心服务", tags=SYSTEM)
+async def stop_core(_user: Dict[str, Any] = Depends(require_auth)):
     """
     停止核心服务
 
@@ -113,8 +115,8 @@ async def stop_core(_user: Dict = Depends(require_auth)):
     }
 
 
-@app.post("/api/system/resume")
-async def resume_core(_user: Dict = Depends(require_auth)):
+@app.post("/api/system/resume", summary="恢复核心服务", tags=SYSTEM)
+async def resume_core(_user: Dict[str, Any] = Depends(require_auth)):
     """
     恢复核心服务
 

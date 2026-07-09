@@ -29,6 +29,8 @@ from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_plugin_co
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
 from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
 
+from ._api_tags import PLUGINS, FRAMEWORK_CONFIG
+
 # ====================
 # 辅助函数
 # ====================
@@ -60,7 +62,7 @@ def _group_item_values(item: Dict[str, GSC]) -> Dict[str, Any]:
     return out
 
 
-def _build_config_item(config: GSC) -> Dict:
+def _build_config_item(config: GSC) -> Dict[str, Any]:
     """构建单个配置项的响应数据"""
     config_type = type(config).__name__.replace("Config", "").lower()
 
@@ -140,8 +142,8 @@ def _build_config_item(config: GSC) -> Dict:
 # ====================
 
 
-@app.get("/api/plugins/list")
-async def get_plugins_list(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/plugins/list", summary="获取插件列表", tags=PLUGINS)
+async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取所有已加载插件的列表（轻量级接口）
 
@@ -174,8 +176,8 @@ async def get_plugins_list(request: Request, _user: Dict = Depends(require_auth)
     return {"status": 0, "msg": "ok", "data": tasks}
 
 
-@app.get("/api/plugins/{plugin_name}")
-async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict = Depends(require_auth)):
+@app.get("/api/plugins/{plugin_name}", summary="获取插件详情", tags=PLUGINS)
+async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取单个插件的完整信息
 
@@ -378,11 +380,11 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict = De
 # ====================
 
 
-@app.get("/api/framework-config/list")
+@app.get("/api/framework-config/list", summary="获取框架配置列表", tags=FRAMEWORK_CONFIG)
 async def get_framework_config_list(
     request: Request,
     prefix: str = Query(default="GsCore", description="配置名称前缀筛选，默认为 GsCore"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     获取所有框架配置的列表（轻量级接口）
@@ -416,8 +418,10 @@ async def get_framework_config_list(
     return {"status": 0, "msg": "ok", "data": tasks}
 
 
-@app.get("/api/framework-config/{config_name}")
-async def get_framework_config_detail(request: Request, config_name: str, _user: Dict = Depends(require_auth)):
+@app.get("/api/framework-config/{config_name}", summary="获取框架配置详情", tags=FRAMEWORK_CONFIG)
+async def get_framework_config_detail(
+    request: Request, config_name: str, _user: Dict[str, Any] = Depends(require_auth)
+):
     """
     获取单个框架配置的完整信息
 
@@ -464,9 +468,9 @@ async def get_framework_config_detail(request: Request, config_name: str, _user:
     }
 
 
-@app.post("/api/framework-config/{config_name}")
+@app.post("/api/framework-config/{config_name}", summary="更新框架配置", tags=FRAMEWORK_CONFIG)
 async def update_framework_config(
-    request: Request, config_name: str, data: Dict = Body(...), _user: Dict = Depends(require_auth)
+    request: Request, config_name: str, data: Dict[str, Any] = Body(...), _user: Dict[str, Any] = Depends(require_auth)
 ):
     """
     更新框架配置
@@ -510,13 +514,13 @@ async def update_framework_config(
     return {"status": 0, "msg": "配置已保存"}
 
 
-@app.post("/api/framework-config/{config_name}/item/{item_name}")
+@app.post("/api/framework-config/{config_name}/item/{item_name}", summary="更新框架配置项", tags=FRAMEWORK_CONFIG)
 async def update_framework_config_item(
     request: Request,
     config_name: str,
     item_name: str,
     value: Any = Body(..., embed=True),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新单个框架配置项
@@ -559,8 +563,10 @@ async def update_framework_config_item(
         return {"status": 1, "msg": f"配置项写入异常: {str(e)}"}
 
 
-@app.post("/api/plugins/{plugin_name}")
-async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _user: Dict = Depends(require_auth)):
+@app.post("/api/plugins/{plugin_name}", summary="更新插件配置", tags=PLUGINS)
+async def update_plugin_config(
+    request: Request, plugin_name: str, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)
+):
     """
     更新插件配置
 
@@ -630,14 +636,14 @@ async def update_plugin_config(request: Request, plugin_name: str, data: Dict, _
     return {"status": 0, "msg": "配置已保存"}
 
 
-@app.post("/api/plugins/{plugin_name}/config/{config_name}/{item_name}")
+@app.post("/api/plugins/{plugin_name}/config/{config_name}/{item_name}", summary="更新单个配置项", tags=PLUGINS)
 async def update_plugin_config_item(
     request: Request,
     plugin_name: str,
     config_name: str,
     item_name: str,
     value: Any = Body(...),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新单个插件配置项
@@ -676,9 +682,9 @@ async def update_plugin_config_item(
     return {"status": 1, "msg": "未找到可更新的配置项"}
 
 
-@app.post("/api/plugins/{plugin_name}/service")
+@app.post("/api/plugins/{plugin_name}/service", summary="更新插件服务配置", tags=PLUGINS)
 async def update_plugin_service_config(
-    request: Request, plugin_name: str, data: Dict, _user: Dict = Depends(require_auth)
+    request: Request, plugin_name: str, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)
 ):
     """
     更新插件服务配置
@@ -724,13 +730,13 @@ async def update_plugin_service_config(
     return {"status": 0, "msg": "服务配置已保存"}
 
 
-@app.post("/api/plugins/{plugin_name}/service/{field_name}")
+@app.post("/api/plugins/{plugin_name}/service/{field_name}", summary="更新插件服务字段", tags=PLUGINS)
 async def update_plugin_service_field(
     request: Request,
     plugin_name: str,
     field_name: str,
     value: Any = Body(...),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新插件服务配置的单个字段
@@ -790,9 +796,13 @@ async def update_plugin_service_field(
     return {"status": 0, "msg": "服务配置已保存"}
 
 
-@app.post("/api/plugins/{plugin_name}/sv/{sv_name}")
+@app.post("/api/plugins/{plugin_name}/sv/{sv_name}", summary="更新服务(SV)配置", tags=PLUGINS)
 async def update_sv_config(
-    request: Request, plugin_name: str, sv_name: str, data: Dict, _user: Dict = Depends(require_auth)
+    request: Request,
+    plugin_name: str,
+    sv_name: str,
+    data: Dict[str, Any],
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新单个服务配置
@@ -827,14 +837,14 @@ async def update_sv_config(
     return {"status": 0, "msg": "服务配置已保存"}
 
 
-@app.post("/api/plugins/{plugin_name}/sv/{sv_name}/{field_name}")
+@app.post("/api/plugins/{plugin_name}/sv/{sv_name}/{field_name}", summary="更新服务(SV)字段", tags=PLUGINS)
 async def update_sv_field(
     request: Request,
     plugin_name: str,
     sv_name: str,
     field_name: str,
     value: Any = Body(...),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     更新单个服务配置的单个字段
@@ -870,8 +880,10 @@ async def update_sv_field(
     return {"status": 0, "msg": "服务配置已保存"}
 
 
-@app.post("/api/plugins/{plugin_name}/toggle")
-async def toggle_plugin(request: Request, plugin_name: str, enabled: bool, _user: Dict = Depends(require_auth)):
+@app.post("/api/plugins/{plugin_name}/toggle", summary="切换插件开关", tags=PLUGINS)
+async def toggle_plugin(
+    request: Request, plugin_name: str, enabled: bool, _user: Dict[str, Any] = Depends(require_auth)
+):
     """
     启用或禁用插件
 
@@ -889,8 +901,8 @@ async def toggle_plugin(request: Request, plugin_name: str, enabled: bool, _user
     return {"status": 0, "msg": f"插件已{'启用' if enabled else '禁用'}"}
 
 
-@app.post("/api/plugins/{plugin_name}/reload")
-async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict = Depends(require_auth)):
+@app.post("/api/plugins/{plugin_name}/reload", summary="重新加载插件", tags=PLUGINS)
+async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     重新加载指定插件
 
@@ -914,8 +926,8 @@ async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict = De
 # ===================
 
 
-@app.get("/api/plugin-store/list")
-async def get_plugin_store_list(request: Request, _user: Dict = Depends(require_auth)):
+@app.get("/api/plugin-store/list", summary="获取插件商店列表", tags=PLUGINS)
+async def get_plugin_store_list(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
     """
     获取远程插件商店的插件列表
 
@@ -1001,9 +1013,9 @@ async def get_plugin_store_list(request: Request, _user: Dict = Depends(require_
         return {"status": 1, "msg": f"获取插件列表失败: {str(e)}", "data": []}
 
 
-@app.post("/api/plugin-store/install/{plugin_id}")
+@app.post("/api/plugin-store/install/{plugin_id}", summary="通过插件 ID 安装（插件商店白名单）", tags=PLUGINS)
 async def install_plugin(
-    request: Request, plugin_id: str, repo_url: str = Body(embed=True), _user: Dict = Depends(require_auth)
+    request: Request, plugin_id: str, repo_url: str = Body(embed=True), _user: Dict[str, Any] = Depends(require_auth)
 ):
     """
     从商店安装插件
@@ -1031,11 +1043,11 @@ async def install_plugin(
         return {"status": 1, "msg": f"安装失败: {str(e)}"}
 
 
-@app.post("/api/plugin-store/install-url")
+@app.post("/api/plugin-store/install-url", summary="通过 URL 安装（任意 git 仓库） ⭐", tags=PLUGINS)
 async def install_plugin_from_url_api(
     request: Request,
-    data: Dict = Body(...),
-    _user: Dict = Depends(require_auth),
+    data: Dict[str, Any] = Body(...),
+    _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
     从 URL 安装插件（不走插件商店白名单）
@@ -1119,8 +1131,8 @@ async def install_plugin_from_url_api(
         return {"status": 1, "msg": f"安装失败: {str(e)}"}
 
 
-@app.post("/api/plugin-store/update/{plugin_id}")
-async def update_plugin(request: Request, plugin_id: str, _user: Dict = Depends(require_auth)):
+@app.post("/api/plugin-store/update/{plugin_id}", summary="更新已安装插件", tags=PLUGINS)
+async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     更新已安装的插件
 
@@ -1146,8 +1158,8 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict = Depends(
         return {"status": 1, "msg": f"更新失败: {str(e)}"}
 
 
-@app.delete("/api/plugin-store/uninstall/{plugin_id}")
-async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict = Depends(require_auth)):
+@app.delete("/api/plugin-store/uninstall/{plugin_id}", summary="卸载已安装插件", tags=PLUGINS)
+async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
     卸载已安装的插件
 

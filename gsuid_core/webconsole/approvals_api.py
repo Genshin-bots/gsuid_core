@@ -17,6 +17,8 @@ from gsuid_core.ai_core import approval as approval_center
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
+from ._api_tags import APPROVALS
+
 
 class ResolveRequest(BaseModel):
     approved: bool
@@ -43,9 +45,9 @@ def _row_to_dict(r: "approval_center.AIApprovalRequest") -> Dict[str, Any]:
     }
 
 
-@app.get("/api/ai/approvals/list")
+@app.get("/api/ai/approvals/list", summary="列出审批请求", tags=APPROVALS)
 async def list_approvals(
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
     status: str = Query("pending", description="pending=仅待审批；all=近期全部（含已裁决）"),
 ) -> Dict[str, Any]:
     """列出审批请求。"""
@@ -58,11 +60,11 @@ async def list_approvals(
     return {"status": 0, "msg": "ok", "data": {"items": items, "count": len(items)}}
 
 
-@app.post("/api/ai/approvals/{request_id}/resolve")
+@app.post("/api/ai/approvals/{request_id}/resolve", summary="处理审批请求", tags=APPROVALS)
 async def resolve_approval(
     request_id: str,
     body: ResolveRequest,
-    _: Dict = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """裁决一条审批请求（控制台登录后等同主人权限）。"""
     row = await approval_center.AIApprovalRequest.get_by_request_id(request_id)

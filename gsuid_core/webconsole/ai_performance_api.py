@@ -5,7 +5,7 @@ AI Performance APIs
 包括 TTFT、TPS、Token 消耗、工具调用次数等按小时聚合的统计。
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime, timedelta
 
 from fastapi import Depends
@@ -15,12 +15,14 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.statistics.models import AIHourlyPerformance
 
+from ._api_tags import AI_PERF
 
-@app.get("/api/ai/performance/hourly")
+
+@app.get("/api/ai/performance/hourly", summary="获取单日小时级性能统计", tags=AI_PERF)
 async def get_hourly_performance(
     date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取按小时分组的 AI 性能统计
 
@@ -48,12 +50,12 @@ async def get_hourly_performance(
         }
 
 
-@app.get("/api/ai/performance/hourly/range")
+@app.get("/api/ai/performance/hourly/range", summary="获取日期范围小时级性能统计", tags=AI_PERF)
 async def get_hourly_performance_range(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    _: Dict = Depends(require_auth),
-) -> Dict:
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
     """
     获取指定日期范围的小时级性能统计
 

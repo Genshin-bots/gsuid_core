@@ -25,6 +25,8 @@ from gsuid_core.ai_core.budget.models import (
 )
 from gsuid_core.ai_core.budget.manager import RuleStatus, budget_manager
 
+from ._api_tags import BUDGET
+
 _PERIOD_MODES = ("rolling", "fixed")
 _DIMENSIONS = ("group", "user", "member")
 # 各窗口默认时长（秒），用量排行/快速求和用
@@ -202,16 +204,16 @@ def _validate_rule_fields(
 # ============ 全局配置 ============
 
 
-@app.get("/api/ai/budget/config")
-async def get_budget_config(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/budget/config", summary="获取全局配置", tags=BUDGET)
+async def get_budget_config(_user: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """获取预算系统全局配置。"""
     return {"status": 0, "msg": "ok", "data": _config_to_dict()}
 
 
-@app.put("/api/ai/budget/config")
+@app.put("/api/ai/budget/config", summary="更新全局配置", tags=BUDGET)
 async def update_budget_config(
     body: ConfigUpdateRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """更新预算系统全局配置（部分更新，带类型/取值校验）。"""
     updates = body.model_dump(exclude_none=True)
@@ -240,13 +242,13 @@ async def update_budget_config(
 # ============ 规则 ============
 
 
-@app.get("/api/ai/budget/rules")
+@app.get("/api/ai/budget/rules", summary="规则列表", tags=BUDGET)
 async def list_rules(
     scope_type: Optional[str] = Query(None, description="按维度筛选 global/group/member/user"),
     enabled: Optional[bool] = Query(None, description="按启用状态筛选"),
     q: Optional[str] = Query(None, description="按名称/对象ID模糊筛选"),
     with_usage: bool = Query(False, description="是否附带每条规则的实时用量状态"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """获取预算规则列表，可选附带实时用量。"""
     rules = await AIBudgetRule.get_all_rules()
@@ -268,10 +270,10 @@ async def list_rules(
     return {"status": 0, "msg": "ok", "data": data}
 
 
-@app.post("/api/ai/budget/rules")
+@app.post("/api/ai/budget/rules", summary="创建规则", tags=BUDGET)
 async def create_rule(
     body: CreateRuleRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """创建一条预算规则。"""
     err = _validate_rule_fields(
@@ -305,10 +307,10 @@ async def create_rule(
     return {"status": 0, "msg": "规则已创建", "data": _rule_to_dict(rule) if rule else {"id": rule_id}}
 
 
-@app.get("/api/ai/budget/rules/{rule_id}")
+@app.get("/api/ai/budget/rules/{rule_id}", summary="规则详情（含实时用量）", tags=BUDGET)
 async def get_rule(
     rule_id: int,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """获取单条规则详情（含实时用量状态）。"""
     rule = await AIBudgetRule.get_rule(rule_id)
@@ -320,11 +322,11 @@ async def get_rule(
     return {"status": 0, "msg": "ok", "data": item}
 
 
-@app.put("/api/ai/budget/rules/{rule_id}")
+@app.put("/api/ai/budget/rules/{rule_id}", summary="更新规则", tags=BUDGET)
 async def update_rule(
     rule_id: int,
     body: UpdateRuleRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """更新一条规则（部分字段）。"""
     rule = await AIBudgetRule.get_rule(rule_id)
@@ -360,10 +362,10 @@ async def update_rule(
     return {"status": 0, "msg": "规则已更新", "data": _rule_to_dict(updated) if updated else None}
 
 
-@app.post("/api/ai/budget/rules/{rule_id}/toggle")
+@app.post("/api/ai/budget/rules/{rule_id}/toggle", summary="启用/停用规则（快捷开关）", tags=BUDGET)
 async def toggle_rule(
     rule_id: int,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """快速启用/停用一条规则。"""
     rule = await AIBudgetRule.get_rule(rule_id)
@@ -378,10 +380,10 @@ async def toggle_rule(
     return {"status": 0, "msg": "已启用" if new_state else "已停用", "data": {"id": rule_id, "enabled": new_state}}
 
 
-@app.delete("/api/ai/budget/rules/{rule_id}")
+@app.delete("/api/ai/budget/rules/{rule_id}", summary="删除规则", tags=BUDGET)
 async def delete_rule(
     rule_id: int,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """删除一条规则。"""
     rule = await AIBudgetRule.get_rule(rule_id)
@@ -395,11 +397,11 @@ async def delete_rule(
 # ============ 白名单 ============
 
 
-@app.get("/api/ai/budget/whitelist")
+@app.get("/api/ai/budget/whitelist", summary="白名单列表", tags=BUDGET)
 async def list_whitelist(
     user_id: Optional[str] = Query(None, description="按用户ID筛选"),
     group_id: Optional[str] = Query(None, description="按群号筛选"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """获取白名单列表。"""
     entries = await AIBudgetWhitelist.get_all_entries()
@@ -410,10 +412,10 @@ async def list_whitelist(
     return {"status": 0, "msg": "ok", "data": [_whitelist_to_dict(e) for e in entries]}
 
 
-@app.post("/api/ai/budget/whitelist")
+@app.post("/api/ai/budget/whitelist", summary="新增白名单", tags=BUDGET)
 async def create_whitelist(
     body: CreateWhitelistRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """新增一条白名单（user_id 必填；group_id 为空表示全局豁免）。"""
     if not body.user_id.strip():
@@ -431,11 +433,11 @@ async def create_whitelist(
     return {"status": 0, "msg": "白名单已添加", "data": _whitelist_to_dict(entry) if entry else {"id": entry_id}}
 
 
-@app.put("/api/ai/budget/whitelist/{entry_id}")
+@app.put("/api/ai/budget/whitelist/{entry_id}", summary="更新 / 删除白名单", tags=BUDGET)
 async def update_whitelist(
     entry_id: int,
     body: UpdateWhitelistRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """更新一条白名单。"""
     entry = await AIBudgetWhitelist.get_entry(entry_id)
@@ -453,10 +455,10 @@ async def update_whitelist(
     return {"status": 0, "msg": "白名单已更新", "data": _whitelist_to_dict(updated) if updated else None}
 
 
-@app.delete("/api/ai/budget/whitelist/{entry_id}")
+@app.delete("/api/ai/budget/whitelist/{entry_id}", summary="更新 / 删除白名单", tags=BUDGET)
 async def delete_whitelist(
     entry_id: int,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """删除一条白名单。"""
     entry = await AIBudgetWhitelist.get_entry(entry_id)
@@ -470,14 +472,14 @@ async def delete_whitelist(
 # ============ 用量 / 监控 ============
 
 
-@app.get("/api/ai/budget/usage")
+@app.get("/api/ai/budget/usage", summary="用量排行（Top 消费者）", tags=BUDGET)
 async def get_usage_ranking(
     dimension: str = Query("group", description="聚合维度 group/user/member"),
     window: str = Query("day", description="统计窗口 short/day/week"),
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
     bot_id: Optional[str] = Query(None, description="按平台过滤"),
     include_exempt: bool = Query(True, description="是否包含豁免用户的用量"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """按维度统计某窗口内的 Top 消费者（用量排行）。"""
     if dimension not in _DIMENSIONS:
@@ -500,13 +502,13 @@ async def get_usage_ranking(
     }
 
 
-@app.get("/api/ai/budget/usage/scope")
+@app.get("/api/ai/budget/usage/scope", summary="查看某 scope 的逐窗口用量", tags=BUDGET)
 async def get_scope_usage(
     scope_type: str = Query(..., description="维度 global/group/member/user"),
     scope_id: str = Query("", description="群号或用户号"),
     member_id: str = Query("", description="member 维度的群内用户号"),
     bot_id: str = Query("", description="平台（可选）"),
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """查看某 scope 的逐窗口用量/上限/剩余/恢复时间（含所有适用规则）。"""
     if scope_type not in SCOPE_TYPES:
@@ -537,10 +539,10 @@ async def get_scope_usage(
     }
 
 
-@app.post("/api/ai/budget/check")
+@app.post("/api/ai/budget/check", summary="干跑预演（诊断「为什么被限」）", tags=BUDGET)
 async def dry_run_check(
     body: CheckRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """干跑：预演「某用户在某会话发消息」是否会被预算拦截，返回完整原因明细。
 
@@ -553,10 +555,10 @@ async def dry_run_check(
     return {"status": 0, "msg": "ok", "data": data}
 
 
-@app.post("/api/ai/budget/reset")
+@app.post("/api/ai/budget/reset", summary="手动放行（清除用量）", tags=BUDGET)
 async def reset_scope_usage(
     body: ResetRequest,
-    _user: Dict = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """手动清除某 scope 的用量流水（立即放行）。window 留空=清全部。"""
     if body.scope_type not in SCOPE_TYPES:
@@ -578,8 +580,8 @@ async def reset_scope_usage(
     return {"status": 0, "msg": f"已清除 {deleted} 条用量记录", "data": {"deleted": deleted}}
 
 
-@app.get("/api/ai/budget/overview")
-async def get_overview(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
+@app.get("/api/ai/budget/overview", summary="看板汇总", tags=BUDGET)
+async def get_overview(_user: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
     """看板汇总：开关、规则/白名单数、近 24h 总 Token、当前超限规则、Top 消费者。"""
     rules = await AIBudgetRule.get_all_rules()
     whitelist = await AIBudgetWhitelist.get_all_entries()
