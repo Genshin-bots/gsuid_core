@@ -142,6 +142,17 @@ class GsColorConfig(GsConfig, tag=True):
     data: str
 
 
+class GsRepeatGroupConfig(GsConfig, tag=True):
+    """可重复配置组：data 每项是一组子配置(Dict[str, GSC], 与整份插件配置同构),
+    template 是新增一项的原型/默认。可再嵌套本类型。前端复用逐项渲染器递归渲染。
+    """
+
+    # "GSC" 为字符串前向引用: GSC 在本类之后定义, msgspec 加载时惰性解析。
+    data: List[Dict[str, "GSC"]]
+    template: Dict[str, "GSC"]
+    secret: bool = False
+
+
 @deprecated("GsTimeConfig 已废弃，请使用 GsTimeRConfig 代替")
 class GsTimeConfig(GsConfig, tag=True):
     """deprecated/已废弃"""
@@ -166,5 +177,6 @@ GSC = Union[
     GsDateConfig,
     GsTimeRangeConfig,
     GsColorConfig,
+    GsRepeatGroupConfig,
     GsTimeConfig,
 ]

@@ -126,6 +126,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsDateConfig,         # 日期配置 (YYYY-MM-DD)
     GsTimeRangeConfig,    # 时间范围配置 (如 08:00-20:00)
     GsColorConfig,        # 颜色配置 (HEX 如 #FFFFFF 或 RGBA)
+    GsRepeatGroupConfig,  # 可重复配置组 (data 为记录列表, 需指定 template 原型)
 )
 # 联合类型 GSC = Union[上述所有类型]
 # ⚠️ GsTimeConfig 已废弃，请使用 GsTimeRConfig 代替
@@ -152,5 +153,93 @@ from gsuid_core.utils.plugins_config.models import (
 | `GsDateConfig` | 日期 | `datetime.date` | `secret` |
 | `GsTimeRangeConfig` | 时间范围 | `Tuple[Tuple[int,int], Tuple[int,int]]` | `secret` |
 | `GsColorConfig` | 颜色 | `str` | — |
+| `GsRepeatGroupConfig` | 可重复配置组 | `List[Dict[str, GSC]]` | `template: Dict[str, GSC]`, `secret` |
 
 > 所有配置类型继承自 `GsConfig(msgspec.Struct)`，必须包含 `title`、`desc` 字段。除 `GsDivider` 和 `GsColorConfig` 外，均支持 `secret: bool` 字段用于敏感信息脱敏。
+
+## 4.6 可重复配置组 `GsRepeatGroupConfig`
+
+用于「同一组字段可重复出现任意多次」的场景，如多个 Webhook 通知目标、多条定时推送规则、多个账号等。前端渲染为一个可**增删条目**的列表，每个条目内部再递归渲染 `template` 定义的子配置。
+
+- `template: Dict[str, GSC]`：一条记录的字段原型 / 默认值，**由代码所有**；用户新增一条时以它为模板。
+- `data: List[Dict[str, GSC]]`：用户实际填写的每条记录，每条都与 `template` 同构。
+- 可嵌套：`template` 里的某个字段本身也能是 `GsRepeatGroupConfig`，实现「组里再套组」。
+
+### 定义
+
+```python
+from typing import Dict
+from gsuid_core.utils.plugins_config.models import (
+    GSC,
+    GsStrConfig,
+    GsBoolConfig,
+    GsRepeatGroupConfig,
+)
+
+CONFIG_DEFAULT: Dict[str, GSC] = {
+    "webhooks": GsRepeatGroupConfig(
+        title="Webhook 通知目标",
+        desc="可添加多个通知目标，逐条推送",
+        data=[],  # 初始无记录，让用户在前端自行新增
+        template={
+            "name": GsStrConfig(title="名称", desc="备注名", data=""),
+            "url": GsStrConfig(title="地址", desc="Webhook URL", data=""),
+            "enable": GsBoolConfig(title="启用", desc="是否推送到此目标", data=True),
+        },
+    ),
+}
+```
+
+> `template` 里每个字段就是普通 GSC，可用任意配置类型（含 `GsDivider` 分割线）。`data` 通常初始化为 `[]`。
+
+### 读取
+
+`data` 是**记录列表**，每条记录是「字段名 → GSC 对象」的字典，读取值仍需 `.data`：
+
+```python
+group = my_config.get_config("webhooks")   # GsRepeatGroupConfig
+for item in group.data:                     # item: Dict[str, GSC]
+    name: str = item["name"].data
+    url: str = item["url"].data
+    if item["enable"].data:                 # bool
+        await push(url, ...)
+```
+
+### 修改
+
+`set_config` 接收**原始值列表**——每条是「字段名 → 原始值」的字典（**不是 GSC 对象**）。核心会用 `template` 自动重建成完整结构并持久化：
+
+```python
+my_config.set_config("webhooks", [
+    {"name": "群通知", "url": "https://a.com/hook", "enable": True},
+    {"name": "备用",   "url": "https://b.com/hook", "enable": False},
+])
+```
+
+> - 传入 dict 里的字段值会直接写入对应子配置的 `.data`，因此值类型要与该字段的 `data` 类型一致（布尔字段传 `bool` 等）。缺失字段用 `template` 默认值补齐，多余的键忽略，非 dict 项被丢弃。
+> - 与顶层 `set_config` 不同，组内叶子字段**不做类型转换**（不会像 `GsDateConfig` 那样把字符串自动转 `date`）。若组内用到 `GsTimeRConfig` / `GsDateConfig` 等，请传入其 `.data` 对应的原生形式。
+
+### 嵌套组
+
+`template` 里的字段可再是 `GsRepeatGroupConfig`，读取 / 修改按相同规则递归——嵌套字段的值同样是**记录列表**：
+
+```python
+"rules": GsRepeatGroupConfig(
+    title="推送规则", desc="每个规则可绑定多个时间点",
+    data=[],
+    template={
+        "keyword": GsStrConfig(title="关键词", desc="", data=""),
+        "times": GsRepeatGroupConfig(
+            title="时间点", desc="", data=[],
+            template={"at": GsStrConfig(title="时刻", desc="HH:MM", data="")},
+        ),
+    },
+),
+
+# 修改：嵌套字段的值是列表
+my_config.set_config("rules", [
+    {"keyword": "签到", "times": [{"at": "08:00"}, {"at": "20:00"}]},
+])
+```
+
+> **模板由代码所有**：每次加载配置时，核心会用代码里的 `template` 覆盖存量模板，并对用户已有的每条记录做一次「向模板对齐」——自动补齐新增字段、重置类型不符字段、保留已填数据。因此后续给 `template` 增删字段是安全的，老数据不会丢。

@@ -23,6 +23,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsListStrConfig,
     GsFileUploadConfig,
     GsFilesUploadConfig,
+    GsRepeatGroupConfig,
 )
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_plugin_commit, get_local_plugins_list
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
@@ -46,9 +47,33 @@ def _read_plugin_icon(plugin_name: str) -> Optional[str]:
     return icon_base64
 
 
+def _group_item_values(item: Dict[str, GSC]) -> Dict[str, Any]:
+    """把一组 Dict[str, GSC] 抽成 {字段->值}(前端只需值); 嵌套组递归成值列表。"""
+    out: Dict[str, Any] = {}
+    for key, field in item.items():
+        if isinstance(field, GsRepeatGroupConfig):
+            out[key] = [_group_item_values(sub) for sub in field.data]
+        elif isinstance(field, GsDivider):
+            continue
+        else:
+            out[key] = field.data
+    return out
+
+
 def _build_config_item(config: GSC) -> Dict:
     """构建单个配置项的响应数据"""
     config_type = type(config).__name__.replace("Config", "").lower()
+
+    # GsRepeatGroupConfig: template 给字段描述(递归 _build_config_item), value 给各项的值
+    if isinstance(config, GsRepeatGroupConfig):
+        return {
+            "type": config_type,
+            "title": config.title,
+            "desc": config.desc,
+            "value": [_group_item_values(row) for row in config.data],
+            "default": [],
+            "template": {k: _build_config_item(v) for k, v in config.template.items()},
+        }
 
     # GsDivider 作为前端分割线，data 为可选标题
     if isinstance(config, GsDivider):

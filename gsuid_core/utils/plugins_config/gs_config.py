@@ -2,6 +2,7 @@ import sys
 import json
 import datetime
 from abc import ABC
+from copy import deepcopy
 from typing import Any, Dict, List, Union
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .models import (
     GsTimeRConfig,
     GsListStrConfig,
     GsTimeRangeConfig,
+    GsRepeatGroupConfig,
 )
 from .sp_config import SP_CONIFG
 from .log_config import LOG_CONFIG
@@ -35,6 +37,62 @@ from .database_config import DATABASE_CONIFG
 from .send_pic_config import SEND_PIC_CONIFG
 from .pic_server_config import PIC_UPLOAD_CONIFG
 from .buttons_and_markdown_config import BM_CONIFG_DEFAULT
+
+
+def reconcile_config(
+    stored: Dict[str, GSC],
+    default: Dict[str, GSC],
+    *,
+    config_name: str = "",
+) -> Dict[str, GSC]:
+    """把已存配置向默认模板对齐(递归)。非破坏: 缺项补默认、类型不符仅该项重置、
+    孤儿键保留; GsRepeatGroupConfig 的每个 data 项再对 template 递归调和。"""
+    result: Dict[str, GSC] = {}
+    for key, dft in default.items():
+        if key not in stored:
+            result[key] = deepcopy(dft)
+            continue
+        cur = stored[key]
+        if type(cur) is not type(dft):
+            logger.warning(
+                f"[配置][{config_name}] 配置项 {key} 类型不一致 "
+                f"({type(cur).__name__} -> {type(dft).__name__}), 已重置为默认值"
+            )
+            result[key] = deepcopy(dft)
+            continue
+        # 同类型: 刷新代码侧元数据, 保留用户 data
+        if isinstance(cur, (GsStrConfig, GsListStrConfig)) and isinstance(dft, (GsStrConfig, GsListStrConfig)):
+            cur.options = dft.options
+        cur.title = dft.title
+        cur.desc = dft.desc
+        # secret 字段并非所有类型都有 (GsDivider / GsColorConfig 无), 条件访问防 AttributeError
+        if not isinstance(cur, (GsDivider, GsColorConfig)) and not isinstance(dft, (GsDivider, GsColorConfig)):
+            cur.secret = dft.secret
+        # 递归分支: 组模板由代码所有(覆盖), data 每项对 template 再调和
+        if isinstance(cur, GsRepeatGroupConfig) and isinstance(dft, GsRepeatGroupConfig):
+            cur.template = deepcopy(dft.template)
+            cur.data = [reconcile_config(item, dft.template, config_name=config_name) for item in cur.data]
+        result[key] = cur
+    # 孤儿键(默认里没有)保留, 与旧行为一致, 不静默丢用户数据
+    for key, val in stored.items():
+        if key not in default:
+            result[key] = val
+    return result
+
+
+def _rebuild_group_item(raw: Dict[str, Any], template: Dict[str, GSC]) -> Dict[str, GSC]:
+    """用前端回传的值 raw(字段名->值) + template 重建一组 Dict[str, GSC]。
+    嵌套 GsRepeatGroupConfig 递归重建; 其余叶子把值写进 .data。"""
+    out: Dict[str, GSC] = {}
+    for key, field in template.items():
+        proto = deepcopy(field)
+        if isinstance(proto, GsRepeatGroupConfig) and isinstance(field, GsRepeatGroupConfig):
+            sub_raw = raw[key] if key in raw and isinstance(raw[key], list) else []
+            proto.data = [_rebuild_group_item(r, field.template) for r in sub_raw if isinstance(r, dict)]
+        elif not isinstance(proto, GsDivider) and key in raw:
+            proto.data = raw[key]
+        out[key] = proto
+    return out
 
 
 class StringConfig:
@@ -268,38 +326,8 @@ class StringConfig:
                     logger.error(f"[配置][{self.config_name}] 修复后仍无法解析配置文件, 已重置为默认配置!")
                     self.config = dict(self.config_list)
 
-        # 对没有的值，添加默认值
-        for key in self.config_list:
-            _defalut = self.config_list[key]
-            if key not in self.config:
-                self.config[key] = _defalut
-            else:
-                # 检查配置项类型是否一致
-                stored_type = type(self.config[key])
-                expected_type = type(_defalut)
-
-                if stored_type != expected_type:
-                    logger.warning(
-                        f"[配置][{self.config_name}] 配置项 {key} 类型不一致 "
-                        f"({stored_type.__name__} -> {expected_type.__name__}), "
-                        f"已重置为默认值"
-                    )
-                    self.config[key] = _defalut
-                else:
-                    stored = self.config[key]
-                    if isinstance(_defalut, (GsStrConfig, GsListStrConfig)) and isinstance(
-                        stored, (GsStrConfig, GsListStrConfig)
-                    ):
-                        stored.options = _defalut.options
-
-                    stored.title = _defalut.title
-                    stored.desc = _defalut.desc
-                    # secret 字段并非所有配置类型都有 (GsDivider / GsColorConfig 无该字段),
-                    # 不能无条件访问, 否则 msgspec slots 会抛 AttributeError
-                    if not isinstance(stored, (GsDivider, GsColorConfig)) and not isinstance(
-                        _defalut, (GsDivider, GsColorConfig)
-                    ):
-                        stored.secret = _defalut.secret
+        # 逐键调和: 补默认 / 类型不符重置 / 刷新元数据; GsRepeatGroupConfig 递归(见函数)
+        self.config = reconcile_config(self.config, self.config_list, config_name=self.config_name)
 
         """
         # 对默认值没有的值，直接删除
@@ -341,6 +369,12 @@ class StringConfig:
         if key in self.config_list:
             item = self.config[key]
             temp = item.data
+            # 组配置: 前端回传 List[{字段->值}], 用 template 重建成 List[Dict[str, GSC]]。
+            # 必须先于下方通用 list==list 分支, 否则会把裸值直接塞进 data 破坏结构。
+            if isinstance(item, GsRepeatGroupConfig) and isinstance(value, list):
+                item.data = [_rebuild_group_item(r, item.template) for r in value if isinstance(r, dict)]
+                self.write_config()
+                return True
             if type(value) == type(temp):  # noqa: E721
                 # 设置值
                 self.config[key].data = value  # type: ignore

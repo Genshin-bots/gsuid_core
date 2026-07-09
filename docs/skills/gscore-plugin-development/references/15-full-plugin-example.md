@@ -175,8 +175,10 @@ MYGAME_CONFIG = StringConfig("MyGameUID", CONFIG_PATH, CONFIG_DEFAULT)
 > | `GsDateConfig` | 日期 | `datetime.date` | `secret` |
 > | `GsTimeRangeConfig` | 时间范围 | `Tuple[Tuple[int,int], Tuple[int,int]]` | `secret` |
 > | `GsColorConfig` | 颜色 | `str` | — |
+> | `GsRepeatGroupConfig` | 可重复配置组 | `List[Dict[str, GSC]]` | `template`, `secret` |
 >
 > 所有配置类型继承自 `GsConfig(msgspec.Struct)`，必须包含 `title`、`desc` 字段。除 `GsDivider` 和 `GsColorConfig` 外，均支持 `secret` 字段。⚠️ `GsTimeConfig` 已废弃，请使用 `GsTimeRConfig`。
+> `GsRepeatGroupConfig`（可重复配置组，`data` 为记录列表 + `template` 原型）用法详见 [四、配置管理 §4.6](04-config-management.md#46-可重复配置组-gsrepeatgroupconfig)。
 
 ## 15.5 `MyGameUID/mygameuid_roleinfo/draw_roleinfo.py`
 

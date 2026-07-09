@@ -209,7 +209,7 @@ from gsuid_core.utils.plugins_config.models import (
     GSC, GsStrConfig, GsBoolConfig, GsIntConfig, GsFloatConfig,
     GsListStrConfig, GsListConfig, GsDictConfig, GsImageConfig,
     GsTimeRConfig, GsDivider, GsFileUploadConfig, GsFilesUploadConfig,
-    GsDateConfig, GsTimeRangeConfig, GsColorConfig,
+    GsDateConfig, GsTimeRangeConfig, GsColorConfig, GsRepeatGroupConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
