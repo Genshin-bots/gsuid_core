@@ -158,3 +158,15 @@ class CoreUser(BaseBotIDModel, table=True):
 
 > 框架侧改帮助系统时注意：帮助数据是插件在模块加载期登记的（与触发器同期，见 [§03](./03-plugin-loading-and-config.md)
 > 的 `cached_import`），渲染走图片渲染范式（PIL → htmlkit → playwright）。
+
+## 11.6 AI 会话日志：逻辑会话链（chain）分段 + `history_reset`（2026-07-08 重构）
+
+`ai_core/session_logger.py`（唯一会话日志序列化器）+ `webconsole/ai_session_logs_api.py`（`/api/ai/session_logs`）。**物理文件 ≠ 逻辑会话**：
+
+- **物理分段**：单文件仍按 `MAX_ENTRIES_PER_FILE`（500 → **2000**）滚动，纯为限单文件体积/活跃会话内存。
+- **逻辑会话链**：同一会话窗口内滚动出的多分段共享稳定 `chain_id`（`segment_index` 递增、`prev_segment` 指上一段），写在文件头（`entries` 之前，保持头部快速读取契约）。**滚动不再 seed 复制上下文**——连续性由 chain 归并承载。
+- **API 归并**：`_build_unified_list` 先合并「单分段」（内存覆盖磁盘同 uuid + is_active 修正），再**按 `chain_id` 归并成一张卡片**（条数/类型计数求和、linked_agents 跨段去重、身份取最新段），卡片附有序 `segments[]`；详情仍以**单分段**为粒度，前端按 `segments` 懒加载拼接。**旧文件无 chain_id → 回退 `session_uuid`（各自一张卡片），无需迁移**。
+- **`history_reset` entry**（`data.reason` 区分子类型，前端画不同色块）：`user_clear`（`/clear`、`清空会话`）、`persona_switch`（`人格切换`，带 `persona_name`）、`auto_compact`（`gs_agent.extract_history` 超长自动裁剪，带 `before`/`after`）。它是**时间线内**重置标记，**不**触发新分段。接线点：`core_command/core_ai_control`（前两者，在 `remove_ai_session` **之前**打标）、`gs_agent.extract_history`（后者，仅真正裁剪时打）。
+- **红线**：改文件头字段务必保持 `entries` 在最后；新增 entry 类型必须登记进 `SESSION_ENTRY_TYPES`。
+
+> 详见 `webconsole/docs/23-ai-session-logs.md`（API 契约）与 `docs/AI_SESSION_LOG_CHAIN_AND_WATERFALL_20260708.md`（交接文档）。前端瀑布见 gsuid_hub `gshub-development` §8.7。

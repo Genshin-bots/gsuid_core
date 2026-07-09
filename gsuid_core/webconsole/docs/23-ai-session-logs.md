@@ -1,6 +1,8 @@
 ﻿# AI Session Logs API - /api/ai/session_logs
 
-提供 AI Agent 会话执行日志的查询接口。**统一合并内存活跃会话 + 磁盘持久化日志，按 session_uuid 去重**，前端只需调用一个列表接口即可获取完整历史，无需区分活跃/持久化。
+提供 AI Agent 会话执行日志的查询接口。**统一合并内存活跃会话 + 磁盘持久化日志，按 `chain_id` 归并成「逻辑会话链」卡片**，前端只需调用一个列表接口即可获取完整历史，无需区分活跃/持久化，也无需感知物理分段。
+
+> **逻辑会话链（chain）与分段（segment）**：一条会话窗口内的日志，因单文件体积/条数上限（`MAX_ENTRIES_PER_FILE`，见 `session_logger.py`）会滚动到多个**物理分段文件**，它们共享同一 `chain_id`（`segment_index` 递增、`prev_segment` 指向上一分段）。列表接口按 `chain_id` 把多个分段**归并为一张卡片**（聚合条数/时长/关联 Agent），并在卡片上附 `segments[]` 有序分段元数据；详情接口仍以**单分段**为粒度返回，前端按 `segments` 顺序**懒加载并拼接**成完整时间线。分段对用户不可见——这消除了旧「按 500 条硬切、一段会话散成多张卡片」的中断感。**向后兼容**：升级前落盘的旧文件无 `chain_id`，读取时以其 `session_uuid` 兜底为独立一条链（每个旧文件各自成一张卡片），随 8 天日志清理自然淘汰。
 
 ---
 
@@ -54,12 +56,16 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| session_id | string | Session ID（如 `ws-onebot:onebot:bot_001:group:123456`） |
-| session_uuid | string | Session 实例 UUID |
+| session_id | string | Session ID（如 `ws-onebot:onebot:bot_001:group:123456`），取链内最新分段 |
+| session_uuid | string | 最新分段的实例 UUID（物理身份，每分段不同） |
+| chain_id | string | **逻辑会话链标识**（同链多分段共享，列表按此归并）；旧文件缺失时回退为 `session_uuid` |
+| segment_index | int | 最新分段在链中的序号（0 起） |
+| segment_count | int | 链内分段总数（绝大多数会话为 1） |
+| segments | array | 链内各分段的有序轻量元数据（见下表），供前端按序懒加载/拼接各分段详情 |
 | persona_name | string | Persona 名称 |
-| create_by | string | 创建来源（Chat/SubAgent/BuildPersona/LLM） |
+| create_by | string | 创建来源（Chat/SubAgent/BuildPersona/LLM），取最新分段 |
 | is_subagent | bool | 是否为子 Agent |
-| created_at | float | 创建时间（Unix 时间戳） |
+| created_at | float | 链创建时间 = 各分段最早（Unix 时间戳） |
 | created_at_str | string | 创建时间格式化字符串 |
 | updated_at | float | 最后更新时间（Unix 时间戳） |
 | updated_at_str | string | 最后更新时间格式化字符串 |
@@ -73,6 +79,24 @@
 | file_name | string \| null | 持久化文件名 |
 | linked_agents | array | 关联的 Agent 列表（见下表） |
 | linked_agent_count | int | 关联 Agent 数量 |
+
+> `entry_count` / `type_counts` 为**链内各分段求和**；`updated_at` 取最新分段；`ended_at` / `is_active` 由**最新分段**决定（链是否仍在写）；`duration_seconds` = 链结束 − 链创建（活跃则用当前时间近似）。
+
+**segments 条目字段说明（SegmentMeta）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| segment_index | int | 分段序号（0 起，升序即时间顺序） |
+| session_uuid | string \| null | 该分段实例 UUID（用于精确定位分段详情） |
+| session_id | string | 该分段的 Session ID |
+| file_name | string \| null | 该分段的持久化文件名 |
+| entry_count | int | 该分段条数 |
+| created_at / updated_at | float | 该分段创建/更新时间 |
+| ended_at | float \| null | 该分段结束时间 |
+| is_active | bool | 该分段是否仍活跃（仅最新分段可能为 true） |
+| source | string | `"memory"`（内存活跃分段）或 `"disk"`（磁盘分段） |
+
+> **前端如何取某分段详情**：`source === "memory"` 的（最新活跃）分段用真实 `session_id` + `session_uuid` 调详情接口取实时数据；`"disk"` 分段用 `file_name` 去掉 `.json` 的 stem 作 `session_id` 调详情接口（O(1) 命中）。按 `segment_index` 升序拼接各分段的 `entries` 即完整时间线。
 
 **linked_agents 条目字段说明**：
 
@@ -575,6 +599,27 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `node_transition` | Agent 节点状态转换 | node_type (ModelRequestNode/CallToolsNode/End), details |
 | `agent_linked` | 关联 Agent 事件 | agent_type, session_id, session_uuid, persona_name, create_by, log_file, linked_at |
 | `proactive_emission` | 主动消息发射 | source, content, trigger_reason, generator_log_files |
+| `history_reset` | 历史重置事件（供前端时间线画独立色块） | reason（子类型）+ 各子类型附加字段（见下） |
+| `mode_change` | 交互模式变化（主动 ↔ 被动，供前端画「模式变化」tag） | `mode`（新模式）/ `from`（上一模式） |
+
+**`history_reset` 的 `reason` 子类型**（前端按其画不同色块，几类行为标记不同）：
+
+| reason | 触发时机 | data 附加字段 | 建议色 |
+|--------|----------|---------------|--------|
+| `user_clear` | 用户 `/clear`、`清空会话`（清空历史 + 重置 AI Session，最强重置） | — | 红（醒目） |
+| `persona_switch` | `persona`、`人格切换`（当前会话丢弃、按新人格重建） | `persona_name`（新人格） | 紫 |
+| `auto_compact` | Agent 超长历史自动裁剪（`extract_history`） | `before` / `after`（裁剪前后条数） | 灰（低调） |
+
+> `history_reset` 表示「会话仍在继续、但上下文被有意重置/压缩」的**时间线内**标记，**不**代表日志分段结束（分段仅按体积/条数滚动）。
+
+**`mode_change` 的 `mode` 子类型**（仅在**模式翻转**时落一条，权威来源；前端在两模式边界画分隔 tag）：
+
+| mode | 触发时机 | data 附加字段 | 建议色 |
+|------|----------|---------------|--------|
+| `reactive` | 用户发话触发的 run（`log_run_start`），此前为主动模式 | `from`（上一模式，如 `proactive`） | 蓝（被动/进入被动聊天） |
+| `proactive` | Heartbeat/定时/看板/工具主动发言（`log_proactive_emission`），此前为被动模式 | `from`（如 `reactive`） | 粉（主动/转为主动发言） |
+
+> 只在「已知模式 → 另一模式」翻转时打标（首次设定不打）；续写/滚动/重启时由 `_infer_mode_from_entries` 从既有 entries 重建当前模式，跨分段不误判。subagent 无模式概念、不打标。前端若日志无 `mode_change`（旧日志）则回退为按顶层项 kind 推断，二者同一套渲染。
 
 ### 图片外置（user_input）
 
@@ -603,11 +648,13 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 
 列表接口内部执行以下合并逻辑：
 
-1. **收集内存活跃会话**：遍历 `AISessionRegistry._ai_sessions`，从每个 `GsCoreAIAgent._session_logger` 提取摘要
-2. **收集磁盘持久化文件**：扫描 `data/ai_core/session_logs/*.json` 和 `data/ai_core/session_logs/subagents/*.json`，解析每个文件
-3. **按 session_uuid 去重**：同一 session_uuid 在内存和磁盘中都存在时，**优先使用内存版本**（数据更新）
-4. **修正 is_active**：磁盘上 `ended_at` 为 null 的 session 不一定仍活跃，只有在内存 registry 中真正存在的 session 才是活跃的
+1. **收集磁盘持久化分段**：扫描 `data/ai_core/session_logs/*.json` 和 `data/ai_core/session_logs/subagents/*.json`，解析每个文件为「单分段」摘要（带 mtime 缓存 + 头部快速读取）
+2. **收集内存活跃会话的当前分段**：遍历 `AISessionRegistry._ai_sessions`，从每个 `GsCoreAIAgent._session_logger` 提取当前分段摘要
+3. **按 session_uuid 合并单分段**：同一 session_uuid 在内存和磁盘中都存在时，**优先使用内存版本**（数据更新）；磁盘分段做 `is_active` 修正（`ended_at` 为 null 但不在内存 registry 中的视为已结束）
+4. **按 chain_id 归并为链卡片**：把同一 `chain_id` 的多个分段聚合成一张卡片（条数/类型计数求和、时长取整段、`linked_agents` 跨分段去重合并、身份取最新分段），并附有序 `segments[]`
 5. **按 created_at 倒序排列**
+
+> 单分段会话（`segment_count === 1`，含全部旧格式文件）归并后行为与旧版一致——每张卡片仍对应一个 `session_uuid`。
 
 ### 前端使用建议
 
@@ -651,10 +698,16 @@ const url = `/api/ai/session_logs/detail?session_id=${encodeURIComponent(agent.s
 - **result**: 高亮总结卡片
 - **error**: 红色警告卡片
 - **node_transition**: 节点流转指示器（可选，用于调试视图）
-- **agent_linked**: 关联 Agent 标记（可点击跳转）
-- **proactive_emission**: 主动消息标记（按 source 分类高亮）
+- **agent_linked**: 关联 Agent 标记（可点击/展开子 Agent 子轨迹）
+- **proactive_emission**: 主动消息标记（按 source 分类高亮；展开显示 source/触发原因/正文）
+- **history_reset**: 历史重置分隔条（按 `data.reason` 画不同色块：`user_clear` 红 / `persona_switch` 紫 / `auto_compact` 灰）
+- **mode_change**: 交互模式变化 tag（`reactive` 蓝「进入被动聊天」/ `proactive` 粉「转为主动发言」，居中虚线细条）
+
+> 瀑布视图里模型响应按「对话(ModelRequestNode/CallToolsNode) → 思考过程/文本输出」嵌套一层；`run`/`chat` 默认展开、子 Agent 懒加载。
 
 通过按时间顺序排列 entries，可以清晰还原 AI Agent 的完整思考与执行链路。
+
+> **当前前端实现（gsuid_hub `AIHistoryPage` + `TraceWaterfall`）**：详情视图已从「聊天气泡时间线」重构为 **Logfire 式 Trace 瀑布**——把扁平 entries 重建为 span 树（`run_start`→`run_end` = 一个「Agent 运行」span，其内 `ModelRequestNode` = 「对话 <model>」span，`tool_call`+`tool_return` 按 `tool_call_id` 配对 = 工具 span，`sub_agent` 的 `agent_linked` = 可展开的子 Agent 子瀑布），每行密排展示「时间 · 缩进+展开 · 图标+标签 · token 徽章(Σ↗↙) · 甘特条 · 时长」，点击展开看内容/子 span。`history_reset` 提升为顶层醒目色块。
 
 ### 查找优先级
 

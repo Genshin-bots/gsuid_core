@@ -90,8 +90,14 @@ async def clear_ai_session(bot: Bot, ev: Event):
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
     session_id = ev.session_id
+    registry = get_ai_session_registry()
+    # 在移除会话（会 close logger、写 session_ended）之前，先往当前会话日志打一个
+    # history_reset(user_clear) 标记，供 webconsole 时间线画独立色块区分「用户清空」。
+    session = registry.get_ai_session(session_id)
+    if session is not None:
+        session._session_logger.log_history_reset("user_clear")
     history_deleted = get_history_manager().clear_history(ev)
-    ai_deleted = get_ai_session_registry().remove_ai_session(session_id)
+    ai_deleted = registry.remove_ai_session(session_id)
     logger.info(f"[Core AI控制] 清空会话: {session_id}, history={history_deleted}, ai_session={ai_deleted}")
     await bot.send("✅ [Core AI控制] 已清空当前会话历史，并重置当前 AI Session。")
 
@@ -115,8 +121,13 @@ async def switch_persona(bot: Bot, ev: Event):
 
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
+    registry = get_ai_session_registry()
+    # 移除会话前先打 history_reset(persona_switch) 标记（带新人格名），供前端时间线区分色块。
+    session = registry.get_ai_session(session_id)
+    if session is not None:
+        session._session_logger.log_history_reset("persona_switch", {"persona_name": persona_name})
     set_persona_override(session_id, persona_name)
-    get_ai_session_registry().remove_ai_session(session_id)
+    registry.remove_ai_session(session_id)
     logger.info(f"[Core AI控制] 当前会话人格热切换: {session_id} -> {persona_name}")
     await bot.send(f"✅ [Core AI控制] 当前会话已切换人格为「{persona_name}」，后续 AI 配置将按该人格即时生效。")
 

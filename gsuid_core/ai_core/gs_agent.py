@@ -292,13 +292,20 @@ class GsCoreAIAgent:
             self.history = []
             return
 
-        if len(self.history) > self.max_history:
+        before: int = len(self.history)
+        truncated: bool = before > self.max_history
+        if truncated:
             self.history = _truncate_history_with_tool_safety(
                 self.history,
                 self.max_history,
             )
         # 兜底：无论是否截断，都做一次孤儿工具结果清理，确保历史对 API 自洽
         self.history = _drop_orphan_tool_results(self.history)
+        after: int = len(self.history)
+        # 仅「因超长主动裁剪且确有条目被丢弃」才打 auto_compact（供 webconsole 画独立色块）；
+        # 纯孤儿清理属结构性整理、stateless 模式每轮清空，均不打标以免噪声。
+        if truncated and after < before:
+            self._session_logger.log_history_reset("auto_compact", {"before": before, "after": after})
         logger.debug(f"🧠 [GsCoreAIAgent] 历史记录已处理至 {len(self.history)} 条")
 
     async def refresh_model_if_changed(self) -> bool:

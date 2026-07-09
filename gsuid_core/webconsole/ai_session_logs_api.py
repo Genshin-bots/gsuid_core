@@ -6,10 +6,22 @@ AI Session Logs APIs
 便于前端渲染 AI 调用历史栈，清晰展示每一步结果。
 """
 
+import os
 import json
 import time
 import threading
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Literal, Optional, Sequence, TypedDict
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Tuple,
+    Literal,
+    Optional,
+    Sequence,
+    TypedDict,
+    NotRequired,
+)
 from pathlib import Path
 from datetime import datetime
 
@@ -48,14 +60,38 @@ class LinkedAgentEnriched(LinkedAgentRecord, total=False):
     source: Literal["memory", "disk", "unavailable"]
 
 
+class SegmentMeta(TypedDict):
+    """逻辑会话链中单个分段的轻量元数据（供前端按 segment_index 顺序懒加载各分段详情）。"""
+
+    segment_index: int
+    session_uuid: Optional[str]
+    session_id: str
+    file_name: Optional[str]
+    entry_count: int
+    created_at: float
+    updated_at: float
+    ended_at: Optional[float]
+    is_active: bool
+    source: str
+
+
 class SessionLogSummary(TypedDict):
-    """Session 日志摘要"""
+    """Session 日志摘要。
+
+    列表接口返回的是**逻辑会话链（chain）**级别的卡片：一条链（同一会话窗口内，因体积/条数
+    滚动出的多个物理分段）在列表里只呈现一张卡片。``chain_id`` / ``segment_index`` 描述链身份，
+    ``segment_count`` / ``segments`` 供前端把各分段详情按序拼接/懒加载。单分段会话（绝大多数）
+    ``segment_count == 1``，行为与旧版一致。
+    """
 
     session_id: str
     session_uuid: Optional[str]
     persona_name: Optional[str]
     create_by: Optional[str]
     is_subagent: bool
+    # 逻辑会话链身份（同链多分段共享 chain_id）；旧格式文件缺失时以 session_uuid 兜底。
+    chain_id: str
+    segment_index: int
     created_at: float
     created_at_str: Optional[str]
     updated_at: float
@@ -72,6 +108,9 @@ class SessionLogSummary(TypedDict):
     # 的子类型）；字段按基类 LinkedAgentRecord 协变声明，两者皆可赋入（仅读取，不就地改）。
     linked_agents: Sequence[LinkedAgentRecord]
     linked_agent_count: int
+    # 以下仅在「链卡片」（分组后的列表条目）上出现；中间态的单分段摘要不带，故 NotRequired。
+    segment_count: NotRequired[int]
+    segments: NotRequired[List[SegmentMeta]]
 
 
 class SessionLogDetail(SessionLogSummary, total=False):
@@ -122,6 +161,8 @@ def _build_summary_from_memory(
         "persona_name": logger_obj.persona_name,
         "create_by": logger_obj.create_by,
         "is_subagent": logger_obj.is_subagent,
+        "chain_id": logger_obj.chain_id or logger_obj.session_uuid,
+        "segment_index": logger_obj.segment_index,
         "created_at": created_at,
         "created_at_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at else None,
         "updated_at": updated_at,
@@ -166,6 +207,87 @@ _BASE_SUMMARY_CACHE: Dict[str, Tuple[Tuple[float, int], SessionLogSummary]] = {}
 # 列表/概览接口经 run_in_threadpool 执行，可能多线程并发读写上面的全局缓存；
 # 用一把锁保护缓存的增删与遍历，避免 "dictionary changed size during iteration"。
 _CACHE_LOCK = threading.Lock()
+
+# 内存缓存仅进程内有效，重启后首建列表要重读所有日志头部（几万 subagent ≈ 8s，即列表卡顿根因）；
+# 已结束日志不再变，故把 (mtime,size)+摘要 落到 session_logs 之外的 sidecar 跨进程复用、只解析变化文件。
+_PERSIST_CACHE_PATH: Path = AI_SESSION_LOGS_PATH.parent / "session_logs_summary_cache.json"
+_cache_loaded: bool = False  # 是否已尝试从磁盘载入持久化缓存（进程内仅一次）
+_cache_dirty: bool = False  # 自上次持久化以来内存缓存是否有增删/刷新
+
+
+def _load_persist_cache() -> None:
+    """进程内首次构建列表前，从 sidecar 文件载入历史摘要缓存（失败则静默从空开始）。"""
+    global _cache_loaded
+    if _cache_loaded:
+        return
+    _cache_loaded = True  # 无论成功与否都只尝试一次，避免反复读损坏文件
+    try:
+        with open(_PERSIST_CACHE_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return
+    if not isinstance(raw, dict):
+        return
+    loaded = 0
+    with _CACHE_LOCK:
+        for key, val in raw.items():
+            try:
+                mtime, size, summary = val
+                if isinstance(summary, dict):
+                    _BASE_SUMMARY_CACHE[key] = ((float(mtime), int(size)), summary)
+                    loaded += 1
+            except Exception:
+                continue
+    logger.info(f"📝 [SessionLogsAPI] 从持久化缓存载入 {loaded} 条日志摘要（跳过重复解析）")
+
+
+def _save_persist_cache() -> None:
+    """把内存摘要缓存原子写回 sidecar 文件；仅在有增删/刷新（dirty）时才真正写盘。"""
+    global _cache_dirty
+    if not _cache_dirty:
+        return
+    with _CACHE_LOCK:
+        snapshot = [(k, sig[0], sig[1], summary) for k, (sig, summary) in _BASE_SUMMARY_CACHE.items()]
+        _cache_dirty = False
+    try:
+        payload = {k: [mtime, size, summary] for (k, mtime, size, summary) in snapshot}
+        tmp = _PERSIST_CACHE_PATH.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, _PERSIST_CACHE_PATH)
+    except Exception as e:
+        logger.warning(f"📝 [SessionLogsAPI] 持久化日志摘要缓存失败（不影响功能）: {e}")
+
+
+def _iter_log_files_with_stat(include_subagents: bool = True) -> List[Tuple[Path, os.stat_result]]:
+    """用 os.scandir 一次性拿到文件名 + stat（Windows 上 stat 由目录枚举直接返回、无需逐文件
+    额外 syscall），避免几万文件时上万次独立 ``path.stat()`` 拖慢列表构建（实测 0.55s→0.08s）。
+
+    返回 (path, stat)，便于把 stat 透传给 ``_parse_log_file_base``——缓存命中时连文件都不必打开。
+    """
+    out: List[Tuple[Path, os.stat_result]] = []
+    dirs: List[Path] = [AI_SESSION_LOGS_PATH]
+    if include_subagents:
+        dirs.append(AI_SUBAGENT_LOGS_PATH)
+    for base in dirs:
+        if not base.exists():
+            continue
+        try:
+            with os.scandir(base) as it:
+                for entry in it:
+                    if not entry.name.endswith(".json"):
+                        continue
+                    try:
+                        if not entry.is_file():
+                            continue
+                        st = entry.stat()  # scandir 已缓存 stat（Windows 无额外 syscall）
+                    except OSError:
+                        continue
+                    out.append((Path(entry.path), st))
+        except OSError:
+            continue
+    return out
+
 
 # 顶层 ``entries`` 键的字节标记：indent=2 下顶层键恒为换行+2 空格（更深层≥4 空格），
 # 且串内换行被转义，故不会误命中；CRLF 多出的 ``\r`` 由 _read_log_header 内 rstrip 去除。
@@ -221,24 +343,29 @@ def _read_log_header(path: Path) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _parse_log_file_base(path: Path) -> Optional[SessionLogSummary]:
+def _parse_log_file_base(path: Path, st: Optional[os.stat_result] = None) -> Optional[SessionLogSummary]:
     """解析日志文件为基础摘要（linked_agents 保持原始未 enrich），按 mtime+size 缓存。
 
-    已结束的磁盘日志内容不再变化，首次解析后缓存；后续请求若文件未变则直接复用，
-    避免重复读取 / JSON 解析 / entries 统计（这是列表接口的主要耗时来源）。
+    已结束的磁盘日志内容不再变化，首次解析后缓存（并随 sidecar 持久化跨进程复用）；
+    后续请求若文件未变则直接复用，避免重复读取 / JSON 解析 / entries 统计（列表接口主耗时）。
+
+    ``st`` 可由调用方（``_iter_log_files_with_stat``）透传，命中缓存时连 ``path.stat()`` 都省去。
 
     解析路径：优先 ``_read_log_header`` 头部快速读取（新格式：entries 末位 + 已持久化
     type_counts），只读几 KB 即可；旧格式（升级前落盘）头部缺 type_counts，回退到完整
     ``json.load`` 并遍历 entries 现算 type_counts，保证向后兼容（旧文件随 8 天日志保留
     自然淘汰后，全部走快速路径）。
     """
+    global _cache_dirty
     key = str(path)
-    try:
-        st = path.stat()
-    except OSError:
-        with _CACHE_LOCK:
-            _BASE_SUMMARY_CACHE.pop(key, None)
-        return None
+    if st is None:
+        try:
+            st = path.stat()
+        except OSError:
+            with _CACHE_LOCK:
+                if _BASE_SUMMARY_CACHE.pop(key, None) is not None:
+                    _cache_dirty = True
+            return None
 
     sig: Tuple[float, int] = (st.st_mtime, st.st_size)
     with _CACHE_LOCK:
@@ -276,12 +403,16 @@ def _parse_log_file_base(path: Path) -> Optional[SessionLogSummary]:
     duration: Optional[float] = (ended_at - created_at) if (ended_at and created_at) else None
     linked_agents: List[LinkedAgentRecord] = data.get("linked_agents", [])
 
+    session_uuid_val: Optional[str] = data.get("session_uuid")
     summary: SessionLogSummary = {
         "session_id": data.get("session_id", ""),
-        "session_uuid": data.get("session_uuid"),
+        "session_uuid": session_uuid_val,
         "persona_name": data.get("persona_name"),
         "create_by": data.get("create_by"),
         "is_subagent": data.get("is_subagent", False),
+        # 旧格式文件缺 chain_id → 以 session_uuid 兜底为独立一条链（见 session_logger 模块 docstring）
+        "chain_id": data.get("chain_id") or session_uuid_val or "",
+        "segment_index": data.get("segment_index", 0),
         "created_at": created_at,
         "created_at_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at else None,
         "updated_at": updated_at,
@@ -300,6 +431,7 @@ def _parse_log_file_base(path: Path) -> Optional[SessionLogSummary]:
     }
     with _CACHE_LOCK:
         _BASE_SUMMARY_CACHE[key] = (sig, summary)
+        _cache_dirty = True
     return summary
 
 
@@ -322,6 +454,7 @@ def _index_from_bases(bases: List[SessionLogSummary]) -> LogIndex:
 
 def _prune_base_cache(valid_keys: set) -> None:
     """移除缓存中已不存在（被清理）的日志文件条目，避免长期运行内存无界增长。"""
+    global _cache_dirty
     with _CACHE_LOCK:
         if len(_BASE_SUMMARY_CACHE) <= len(valid_keys):
             return
@@ -329,6 +462,8 @@ def _prune_base_cache(valid_keys: set) -> None:
         stale_keys = [k for k in _BASE_SUMMARY_CACHE if k not in valid_keys]
         for k in stale_keys:
             _BASE_SUMMARY_CACHE.pop(k, None)
+        if stale_keys:
+            _cache_dirty = True
 
 
 def _build_log_index() -> LogIndex:
@@ -336,11 +471,13 @@ def _build_log_index() -> LogIndex:
 
     供单会话详情类接口即时使用；列表接口会复用一次性构建好的索引。
     """
+    _load_persist_cache()
     bases: List[SessionLogSummary] = []
-    for path in _list_log_files():
-        base = _parse_log_file_base(path)
+    for path, st in _iter_log_files_with_stat():
+        base = _parse_log_file_base(path, st)
         if base is not None:
             bases.append(base)
+    _save_persist_cache()
     return _index_from_bases(bases)
 
 
@@ -520,51 +657,141 @@ def _list_log_files(include_subagents: bool = True) -> List[Path]:
     return files
 
 
+def _seg_meta(s: SessionLogSummary) -> SegmentMeta:
+    """从单分段摘要抽取链分段元数据（供前端按 segment_index 顺序懒加载各分段详情）。"""
+    return {
+        "segment_index": s["segment_index"],
+        "session_uuid": s["session_uuid"],
+        "session_id": s["session_id"],
+        "file_name": s["file_name"],
+        "entry_count": s["entry_count"],
+        "created_at": s["created_at"],
+        "updated_at": s["updated_at"],
+        "ended_at": s["ended_at"],
+        "is_active": s["is_active"],
+        "source": s["source"],
+    }
+
+
+def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLogSummary:
+    """把同一 chain_id 的多个分段摘要聚合成一张「逻辑会话链卡片」。
+
+    ``segs`` 已按 (segment_index, created_at) 升序。聚合口径：
+    - created_at 取最早、updated_at 取最新；
+    - is_active = 最新分段是否活跃（链是否仍在写）；ended_at 据此取（活跃则 None）；
+    - entry_count 求和、type_counts 逐类型求和；
+    - linked_agents 跨分段合并去重（各分段已各自 enrich）；
+    - 身份字段（session_id / persona_name / create_by / is_subagent / file_name / session_uuid /
+      segment_index）取**最新分段**（会话末态更能代表当前，如人格切换后的 create_by）。
+    """
+    latest = segs[-1]
+
+    created_at = min(s["created_at"] for s in segs)
+    updated_at = max(s["updated_at"] for s in segs)
+    is_active = latest["is_active"]
+    ended_at: Optional[float] = None if is_active else latest["ended_at"]
+
+    entry_count = sum(s["entry_count"] for s in segs)
+    type_counts: Dict[str, int] = {}
+    for s in segs:
+        for k, v in s["type_counts"].items():
+            type_counts[k] = type_counts.get(k, 0) + v
+
+    # 合并去重 linked_agents（按 session_id + session_uuid + linked_at）
+    seen: set = set()
+    merged_linked: List[LinkedAgentRecord] = []
+    for s in segs:
+        for a in s["linked_agents"]:
+            k = (a.get("session_id"), a.get("session_uuid"), a.get("linked_at"))
+            if k in seen:
+                continue
+            seen.add(k)
+            merged_linked.append(a)
+
+    duration: Optional[float] = None
+    if ended_at and created_at:
+        duration = ended_at - created_at
+    elif created_at:
+        duration = time.time() - created_at
+
+    return {
+        "session_id": latest["session_id"],
+        "session_uuid": latest["session_uuid"],
+        "persona_name": latest["persona_name"],
+        "create_by": latest["create_by"],
+        "is_subagent": latest["is_subagent"],
+        "chain_id": chain_id,
+        "segment_index": latest["segment_index"],
+        "created_at": created_at,
+        "created_at_str": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at else None,
+        "updated_at": updated_at,
+        "updated_at_str": datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S") if updated_at else None,
+        "ended_at": ended_at,
+        "ended_at_str": datetime.fromtimestamp(ended_at).strftime("%Y-%m-%d %H:%M:%S") if ended_at else None,
+        "duration_seconds": round(duration, 2) if duration else None,
+        "entry_count": entry_count,
+        "type_counts": type_counts,
+        "is_active": is_active,
+        "source": latest["source"],
+        "file_name": latest["file_name"],
+        "linked_agents": merged_linked,
+        "linked_agent_count": len(merged_linked),
+        "segment_count": len(segs),
+        "segments": [_seg_meta(s) for s in segs],
+    }
+
+
+def _group_segments_into_chains(segments: List[SessionLogSummary]) -> List[SessionLogSummary]:
+    """把一组「单分段」摘要按 chain_id 分组、聚合成链卡片列表。"""
+    by_chain: Dict[str, List[SessionLogSummary]] = {}
+    for s in segments:
+        cid = s.get("chain_id") or s.get("session_uuid") or s.get("file_name") or ""
+        by_chain.setdefault(cid, []).append(s)
+    cards: List[SessionLogSummary] = []
+    for cid, segs in by_chain.items():
+        segs.sort(key=lambda x: (x["segment_index"], x["created_at"]))
+        cards.append(_aggregate_chain(cid, segs))
+    return cards
+
+
 def _build_unified_list() -> List[SessionLogSummary]:
     """
-    构建统一的日志列表：合并内存活跃会话 + 磁盘持久化文件，按 session_uuid 去重
+    构建统一的**逻辑会话链**列表：合并内存活跃会话 + 磁盘持久化分段，按 chain_id 归并。
 
-    去重规则：同一 session_uuid 在内存和磁盘中都存在时，优先使用内存版本（更新）
+    一条会话窗口内因体积/条数滚动出的多个物理分段（同一 chain_id）在列表里合并为**一张卡片**，
+    聚合其条数/时长/关联 Agent，并附 ``segments`` 供前端按序懒加载各分段详情——分段对用户不可见，
+    消除旧「按条数硬切、一段会话散成多张卡片」的中断感。同一 session_uuid 在内存/磁盘都有时优先内存版。
     """
     registry = get_ai_session_registry()
     sessions = registry.get_all_ai_sessions()
     memory_session_ids: set = set(sessions.keys())  # 内存中真正活跃的 session_id 集合
 
-    # 1. 解析磁盘文件为基础摘要（带 mtime 缓存），并构建一次性查找索引
-    #    （索引供 linked_agent enrich 做 O(1) 命中，避免逐 agent 全目录扫描）
-    disk_files = _list_log_files()
+    # 1. 解析磁盘文件为「单分段」摘要（mtime 缓存 + sidecar 持久化；scandir 给出 stat，命中缓存
+    #    连文件都不开），并构建查找索引供 linked_agent enrich 做 O(1) 命中。
+    _load_persist_cache()
+    disk_entries = _iter_log_files_with_stat()
     disk_bases: List[SessionLogSummary] = []
-    for path in disk_files:
-        base = _parse_log_file_base(path)
+    for path, st in disk_entries:
+        base = _parse_log_file_base(path, st)
         if base is not None:
             disk_bases.append(base)
-    _prune_base_cache({str(p) for p in disk_files})
+    _prune_base_cache({str(p) for p, _ in disk_entries})
+    _save_persist_cache()  # 仅在本次有新增/变更/清理时才真正写盘
     index: LogIndex = _index_from_bases(disk_bases)
 
-    # 2. 收集内存中活跃 Session（linked_agents 复用同一索引 enrich）
-    memory_map: Dict[str, SessionLogSummary] = {}  # session_uuid -> summary
+    # 2. 收集内存活跃 Session 的当前分段（linked_agents 复用同一索引 enrich）
+    memory_segs: Dict[str, SessionLogSummary] = {}  # session_uuid -> 分段摘要
     for sid, session in sessions.items():
         summary = _build_summary_from_memory(sid, session, index)
-        uuid_val = summary["session_uuid"]
-        memory_map[uuid_val or sid] = summary
+        memory_segs[summary["session_uuid"] or sid] = summary
 
-    # 3. 磁盘摘要按 session_uuid 去重（同一 uuid 多份时取 updated_at 最新）
-    disk_map: Dict[str, SessionLogSummary] = {}
+    # 3. 合并「单分段」：磁盘分段按 session_uuid 去重 + is_active 校正 + enrich，内存分段覆盖
+    seg_by_uuid: Dict[str, SessionLogSummary] = {}
     for base in disk_bases:
-        uuid_val: Optional[str] = base["session_uuid"]
-        key = uuid_val or base["file_name"] or ""
-        existing = disk_map.get(key)
-        if existing is None or base["updated_at"] > existing["updated_at"]:
-            disk_map[key] = base
-
-    # 4. 合并去重：先磁盘（含 is_active 校正 + linked_agents enrich），内存版本覆盖
-    unified: Dict[str, SessionLogSummary] = {}
-    for key, base in disk_map.items():
+        key = base["session_uuid"] or base["file_name"] or ""
         item = base.copy()  # 浅拷贝，避免污染缓存中的基础摘要
-        # 修正 is_active：磁盘上 ended_at 为 null 的 session 不一定仍活跃，
-        # 只有在内存 registry 中真正存在的 session 才是活跃的。
-        # （AISessionLogger 定时落盘不写 ended_at，只有 close() 才写；
-        #  进程重启后旧 session 不在内存中，应视为已结束。）
+        # 修正 is_active：磁盘 ended_at 为 null 的分段未必仍活跃，只有内存 registry 中存在的才活跃
+        # （定时落盘不写 ended_at、仅 close() 写；重启后旧 session 不在内存，应视为已结束）。
         sid = item["session_id"] or ""
         if item["is_active"] and sid not in memory_session_ids:
             item["is_active"] = False
@@ -576,22 +803,17 @@ def _build_unified_list() -> List[SessionLogSummary]:
             created = item["created_at"]
             if ea and created:
                 item["duration_seconds"] = round(ea - created, 2)
-        # enrich linked_agents（O(1)/条，复用索引）
         item["linked_agents"] = _enrich_linked_agents_list(item["linked_agents"], index, registry)
-        unified[key] = item
+        existing = seg_by_uuid.get(key)
+        if existing is None or item["updated_at"] > existing["updated_at"]:
+            seg_by_uuid[key] = item
+    # 内存分段覆盖磁盘同 uuid 分段（内存更新）
+    for key, summary in memory_segs.items():
+        seg_by_uuid[key] = summary
 
-    # 内存版本覆盖磁盘版本（同一 session_uuid）
-    for key, summary in memory_map.items():
-        unified[key] = summary
-
-    # 5. 按 created_at 倒序排列
-    results = sorted(
-        unified.values(),
-        key=lambda x: x["created_at"],
-        reverse=True,
-    )
-
-    return results
+    # 4. 按 chain_id 归并为链卡片，按 created_at 倒序
+    chains = _group_segments_into_chains(list(seg_by_uuid.values()))
+    return sorted(chains, key=lambda x: x["created_at"], reverse=True)
 
 
 # 统一列表短期缓存：ai-history 一次加载会并发调用 list/overview/categories，各构建一次
@@ -724,6 +946,9 @@ def _find_log_by_session_id_and_uuid(
                 "persona_name": logger_obj.persona_name,
                 "create_by": logger_obj.create_by,
                 "is_subagent": logger_obj.is_subagent,
+                "chain_id": logger_obj.chain_id or mem_uuid,
+                "segment_index": logger_obj.segment_index,
+                "prev_segment": logger_obj.prev_segment,
                 "created_at": logger_obj.created_at,
                 "updated_at": logger_obj.updated_at,
                 "ended_at": mem_ended_at,
