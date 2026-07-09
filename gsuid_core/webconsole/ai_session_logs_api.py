@@ -1026,13 +1026,16 @@ _CREATE_BY_CATALOG: Dict[str, Tuple[str, str, str]] = {
     "BuildPersona": ("人格构建", "构建 / 更新 AI 人格设定", "persona"),
     "Heartbeat_Decision": ("心跳决策", "心跳机制判断是否主动发言", "heartbeat"),
     "Heartbeat_Output": ("心跳输出", "心跳机制生成主动发言内容", "heartbeat"),
+    "Reactive_Gate": ("续聊沉默门", "判断是否继续搭话还是保持沉默的软闸门", "heartbeat"),
     "MemeTagger": ("表情包打标", "为表情包生成描述与标签", "meme"),
     "MemCategorization": ("记忆分类", "对记忆进行分层图谱分类", "memory"),
     "MemGroupSummary": ("群记忆摘要", "生成群组级记忆摘要", "memory"),
     "MemEntityExtraction": ("记忆实体抽取", "从对话中抽取记忆实体", "memory"),
+    "MemPreferenceExtraction": ("记忆偏好抽取", "从对话中抽取用户偏好", "memory"),
     "MemNodeSelection": ("记忆节点选择", "System-2 全局记忆节点选择", "memory"),
     "Kanban_Relay": ("看板中继", "看板任务的中继执行", "kanban"),
     "ScheduledTask_Exec": ("定时任务执行", "定时任务触发的 AI 执行", "scheduled"),
+    "CoreAIControlBTW": ("核心 AI 指令", "核心命令直接触发的一次性 AI 任务", "chat"),
 }
 
 # 前缀匹配：create_by 动态拼接的来源（如 Proactive_heartbeat / Proactive_tool）

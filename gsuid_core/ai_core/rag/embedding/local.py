@@ -5,27 +5,46 @@ import os
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
 
-# fastembed ONNX intra-op 线程。默认 min(cpu,8) 会吃满全部核（小核机 CPU 常驻 100% 抢事件
-# 循环）；改 cpu//2 留一半余量，吞吐仅微降（bge-small 8→2 仅 1.37x），GSUID_EMBED_THREADS 可覆盖。
-_DEFAULT_EMBED_THREADS = max(1, (os.cpu_count() or 2) // 2)
+# 本地嵌入的 CPU/内存旋钮兜底默认值：刻意与 CPU 核数解耦、取「省内存」低值。
+# 关键背景：本地嵌入走 fastembed→onnxruntime，其 CPU 内存 arena 大小由「并发峰值」决定、
+# 且只增不减（峰值即进程内存地板）。实测同一个 bge-small(90MB) 8 路并发可撑到 ~5.4GB 常驻，
+# 单路 threads=2/batch=32 仅 ~0.63GB。故旧默认 threads=cpu//2 会让核越多、内存地板越高——
+# 大机反而更吃内存。现改为「低固定值」，大机想换吞吐再显式调高（配置或环境变量）。
+# 面向 2C2G 小机的默认：threads=1 在 2 核上只吃一个核、把另一个核留给事件循环
+# （避免嵌入抢占导致 Bot 卡顿）；batch=16 进一步压 onnxruntime 内存峰值。大机想换吞吐
+# 在 WebConsole「嵌入模型配置」或用 GSUID_EMBED_* 环境变量上调即可。
+_FALLBACK_EMBED_THREADS = 1
+_FALLBACK_EMBED_BATCH = 16
 
-# fastembed 单次推断 batch_size。默认 256 使大批量摄入驻留内存冲到 ~500MB 且并发按 N 倍放大；
-# 降到 64（实测峰值 ~300MB）是 2C2G 主要省内存点，GSUID_EMBED_BATCH 可覆盖换吞吐。
-_DEFAULT_EMBED_BATCH = 64
+
+def _config_int(key: str) -> "int | None":
+    """读取 local_embedding_config 的整数配置项；异常或非正数一律返回 None（回退兜底常量）。
+
+    延迟 import 避免与配置模块的循环依赖；try/except 保证配置文件缺键/损坏时不炸初始化。
+    """
+    try:
+        from gsuid_core.ai_core.configs.ai_config import local_embedding_config
+
+        val = int(local_embedding_config.get_config(key).data)
+        return val if val > 0 else None
+    except Exception:
+        return None
 
 
 def _resolve_threads() -> int:
+    # 优先级：环境变量 GSUID_EMBED_THREADS > WebConsole 配置 embed_threads > 兜底低值。
     env = os.getenv("GSUID_EMBED_THREADS")
     if env and env.isdigit() and int(env) > 0:
         return int(env)
-    return _DEFAULT_EMBED_THREADS
+    return _config_int("embed_threads") or _FALLBACK_EMBED_THREADS
 
 
 def _resolve_batch_size() -> int:
+    # 优先级：环境变量 GSUID_EMBED_BATCH > WebConsole 配置 embed_batch_size > 兜底低值。
     env = os.getenv("GSUID_EMBED_BATCH")
     if env and env.isdigit() and int(env) > 0:
         return int(env)
-    return _DEFAULT_EMBED_BATCH
+    return _config_int("embed_batch_size") or _FALLBACK_EMBED_BATCH
 
 
 class LocalEmbeddingProvider(EmbeddingProvider):

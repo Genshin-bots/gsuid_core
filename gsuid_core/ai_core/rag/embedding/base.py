@@ -20,13 +20,27 @@ from gsuid_core.ai_core.rag.embedding.modality import EmbeddingModality
 _EMBED_EXECUTOR: Final = ThreadPoolExecutor(max_workers=4, thread_name_prefix="embed")
 
 
-# 批量 Embedding worker 数。旧 max_workers=1 把并发摄入全串行是大批量主瓶颈；并发 N 路共享
-# 同一 session 实测快 1.76x（非过订阅）。按核数自适应（小机退 1），env 可覆盖 BATCH_WORKERS。
+# 批量 Embedding worker 数。>1 会让并发 N 路嵌入同时喂进共享的 onnxruntime session，
+# 使其 CPU 内存 arena 按 ~N 倍放大且只增不减（峰值即进程内存地板）——这是生产 core 进程
+# 内存最大头（实测 bge-small 8 路并发 ~5.4GB 常驻）。故默认取最低值 1（串行、最省内存）、
+# 不再随核数(旧默认 cpu//4)放大；大机换吞吐再显式调高。
+# 优先级：环境变量 GSUID_EMBED_BATCH_WORKERS > WebConsole 配置 embed_batch_workers > 兜底 1。
+_FALLBACK_EMBED_BATCH_WORKERS = 1
+
+
 def _resolve_batch_workers() -> int:
     _env = os.getenv("GSUID_EMBED_BATCH_WORKERS")
     if _env and _env.isdigit() and int(_env) > 0:
         return int(_env)
-    return max(1, (os.cpu_count() or 4) // 4)
+    try:
+        from gsuid_core.ai_core.configs.ai_config import local_embedding_config
+
+        val = int(local_embedding_config.get_config("embed_batch_workers").data)
+        if val > 0:
+            return val
+    except Exception:
+        pass
+    return _FALLBACK_EMBED_BATCH_WORKERS
 
 
 _EMBED_BATCH_EXECUTOR: Final = ThreadPoolExecutor(

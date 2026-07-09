@@ -138,6 +138,9 @@ async def chatWithHistory(
                 logger.info(f"🧠 [Memory] 手动触发分层图重建 scope_key={scope_key}")
                 asyncio.create_task(rebuild_task(scope_key))
 
+        # 评测侧可显式要求装配真实工具集（agent 能力评测用）；默认 None 保持记忆评测的
+        # 无工具行为不变（非破坏性）。dynamic_tools=True → gs_agent 走 L1–L5 真实工具装配。
+        _enable_tools = bool(req.get("enable_tools", False))
         agent = create_agent(
             system_prompt="你是一个智能助手，请根据对话历史回答用户的问题。",
             persona_name=persona_name,
@@ -145,6 +148,7 @@ async def chatWithHistory(
             max_history=0,
             task_level="high",
             session_id=f"test_{user_id}",
+            dynamic_tools=True if _enable_tools else None,
         )
 
         if history:

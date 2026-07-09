@@ -1436,6 +1436,15 @@ class GsCoreAIAgent:
 
                 if return_mode in ["by_bot"] and bot and ev:
                     return ""
+                # 出戏兜底（§D.4）：run() 的返回值供**无 bot 发送通道**的消费方使用
+                # （chat_with_history API、任何直接读取 output 的调用方）——send 路径的出戏
+                # 重说闭环（_ooc_rewrite_and_send）只作用于 bot 发送，不覆盖返回值。这里对
+                # 返回值做末端兜底 scrub：命中模型名/AI身份/系统术语即整体替换为角色化兜底，
+                # 保证任何消费方拿到的 output 都不泄露出戏内容。roleplay tier；plain 节点自动放行。
+                if result_msg and output_firewall.is_enabled():
+                    result_msg, _ooc_scrubbed = output_firewall.scrub_or_fallback(result_msg)
+                    if _ooc_scrubbed:
+                        logger.warning("[OutputFirewall] run() 返回值命中出戏红线，已兜底替换为角色化文本")
                 return result_msg
 
             # result 为空时的默认返回值
