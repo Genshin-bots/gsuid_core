@@ -7,6 +7,7 @@ from fastapi import WebSocket
 from msgspec import json as msgjson
 from starlette.websockets import WebSocketState
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message, MessageSend, TaskContext, MessageReceive
 from gsuid_core.segment import (
@@ -161,19 +162,19 @@ class _Bot:
                         self._send_queue.task_done()
                     else:
                         # ws 断了，先 task_done 抵消本次 get，再 put 重新入队
-                        logger.warning("[_Bot] ws 未连接，消息暂存等待重连...")
+                        logger.warning(t("log.bot.ws_not_connected_pending"))
                         self._send_queue.task_done()
                         await self._send_queue.put(coro)
                         await asyncio.sleep(2.0)
                 except Exception as e:
-                    logger.exception(f"[_Bot] 发送任务异常: {e}")
+                    logger.exception(t("log.bot.send_task_fail", error=e))
                     self._send_queue.task_done()
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception(f"[_Bot] 发送 worker 异常: {e}")
+                logger.exception(t("log.bot.send_worker_fail", error=e))
 
     def clear_send_queue(self) -> None:
         """清空发送队列中所有待发送的任务。
@@ -223,7 +224,7 @@ class _Bot:
         """
         if self._send_task is None or self._send_task.done():
             self._send_task = asyncio.create_task(self._send_worker())
-            logger.debug(f"[_Bot] {self.bot_id} 发送 worker 已启动")
+            logger.debug(t("log.bot.send_worker_started", bot_id=self.bot_id))
 
     async def _enqueue_send(self, coro):
         """将发送任务加入发送队列。
@@ -263,10 +264,10 @@ class _Bot:
                 target_id=target_id,
             )
             if scope_key and is_scope_banned(scope_key):
-                logger.debug(f"[Core AI控制] 当前会话范围处于禁言状态，拦截发送: {scope_key}")
+                logger.debug(t("log.bot.scope_muted", scope_key=scope_key))
                 return
         except Exception as e:
-            logger.debug(f"[Core AI控制] 禁言状态检查失败，继续发送: {e}")
+            logger.debug(t("log.bot.mute_check_fail", error=e))
 
         # 记录 bot 回复到历史记录
         try:
@@ -346,7 +347,7 @@ class _Bot:
                     metadata=metadata,
                 )
         except Exception as e:
-            logger.debug(f"🧠 [GsCore][Bot] 记录历史记录失败: {e}")
+            logger.debug(t("log.bot.record_history_fail", error=e))
 
         _message = await convert_message(
             message,
@@ -421,7 +422,7 @@ class _Bot:
 
         try:
             for mr in message_result:
-                logger.trace("[GsCore][即将发送消息]", messages=_truncate_for_log(mr))
+                logger.trace(t("log.bot.about_to_send"), messages=_truncate_for_log(mr))
                 if at_sender and sender_id:
                     if at_sender_pos == "消息最后":
                         mr.append(MessageSegment.at(sender_id))
@@ -479,7 +480,7 @@ class _Bot:
                         pass  # Observer 失败不应影响主流程
                 # ============================================
 
-                logger.info(f"[发送消息to] {bot_id} - {target_type} - {target_id}")
+                logger.info(t("log.bot.send_to", bot_id=bot_id, target_type=target_type, target_id=target_id))
                 body = msgjson.encode(send)
                 # 通过发送队列串行化 WebSocket 发送，避免多任务并发写入
                 # 闭包不捕获 ws，执行时动态读取 self.bot，重连后自动使用新 ws
@@ -488,7 +489,7 @@ class _Bot:
                     if self.bot is not None:
                         await self.bot.send_bytes(body)
                     else:
-                        logger.warning("[_Bot] ws 未连接，消息丢弃")
+                        logger.warning(t("log.bot.ws_not_connected_drop"))
 
                 if task_event:
                     # HTTP 模式：仍走 send_dict
@@ -528,7 +529,13 @@ class _Bot:
                 self._recall_timeout_streak += 1
                 if self._supports_recall is None and self._recall_timeout_streak >= RECALL_DISABLE_AFTER_TIMEOUTS:
                     self._supports_recall = False
-                    logger.debug(f"[_Bot] {self.bot_id} 连续 {self._recall_timeout_streak} 次未回执，停用 recall 等待")
+                    logger.debug(
+                        t(
+                            "log.bot.recall_disabled",
+                            bot_id=self.bot_id,
+                            streak=self._recall_timeout_streak,
+                        )
+                    )
             return ids
         finally:
             # 任何路径都清掉本次登记项，杜绝泄漏
@@ -569,7 +576,15 @@ class _Bot:
             target_id=target_id,
         )
         logger.info(
-            f"[禁言用户to] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}"
+            t(
+                "log.bot.ban_to",
+                bot_id=bot_id,
+                target_type=target_type,
+                target_id=target_id,
+                group_id=group_id,
+                user_id=user_id,
+                duration=duration,
+            )
         )
         body = msgjson.encode(send)
 
@@ -577,7 +592,7 @@ class _Bot:
             if self.bot is not None:
                 await self.bot.send_bytes(body)
             else:
-                logger.warning("[_Bot] ws 未连接，消息丢弃")
+                logger.warning(t("log.bot.ws_not_connected_drop"))
 
         await self._enqueue_send(_do_send())
 
@@ -604,14 +619,14 @@ class _Bot:
                 target_type=target_type,
                 target_id=target_id,
             )
-            logger.info(f"[撤回消息to] {bot_id} - {target_type} - {target_id} - {mid}")
+            logger.info(t("log.bot.recall_to", bot_id=bot_id, target_type=target_type, target_id=target_id, mid=mid))
             body = msgjson.encode(send)
 
             async def _do_send(body: bytes = body):
                 if self.bot is not None:
                     await self.bot.send_bytes(body)
                 else:
-                    logger.warning("[_Bot] ws 未连接，消息丢弃")
+                    logger.warning(t("log.bot.ws_not_connected_drop"))
 
             await self._enqueue_send(_do_send())
 
@@ -630,7 +645,7 @@ class _Bot:
         wait_time = start_exec_time - ctx.create_time
 
         if wait_time > 5.0:
-            logger.warning(f"[排队警告] 函数 {ctx.name} 等待了 {wait_time:.2f}s 才开始执行")
+            logger.warning(t("log.bot.queue_wait", name=ctx.name, wait_time=wait_time))
 
         # ── 启动追踪并绑定上下文 ──
         trace_ctx = getattr(ctx, "trace_context", None)
@@ -648,10 +663,10 @@ class _Bot:
             bot_traffic["req"] += 1
             bot_traffic["max_qps"] = max(bot_traffic["max_qps"], bot_traffic["req"])
             func_name = getattr(ctx, "name")
-            logger.trace(f"[核心执行] 函数 {func_name} 开始执行")
+            logger.trace(t("log.bot.exec_start", func_name=func_name))
             await ctx.coro
         except Exception:
-            logger.exception(f"[核心执行异常] 函数 {func_name} 执行发生未捕获异常")
+            logger.exception(t("log.bot.exec_fail", func_name=func_name))
         finally:
             # ── 清除追踪上下文并完成追踪 ──
             if trace_ctx is not None:
@@ -712,6 +727,22 @@ class Bot:
         self.receive_tag = False
         self.mutiply_tag = False
         self.mutiply_resp: List[Event] = []
+        # 当前用户语言缓存（懒解析，一次事件内复用），见 get_lang()
+        self._lang: Optional[str] = None
+
+    async def get_lang(self) -> str:
+        """当前用户语言：用户自定义 > 全局 LANGUAGE；结果缓存到本 Bot 实例。"""
+        if self._lang is None:
+            from gsuid_core.utils.database.models import CoreUser
+
+            self._lang = await CoreUser.get_user_lang(self.ev.user_id)
+        return self._lang
+
+    async def t(self, key: str, **params: Any) -> str:
+        """按当前用户语言翻译「发给用户看」的文案（用户自定义 > 全局 LANGUAGE）。"""
+        from gsuid_core.i18n import t as _t
+
+        return _t(key, lang=await self.get_lang(), **params)
 
     @classmethod
     def get_instances(cls):
@@ -729,7 +760,7 @@ class Bot:
         try:
             await asyncio.wait_for(self.event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.warning(f"[等待回复超时] 等待回复{self.event}超时, 超时时间: {timeout}s")
+            logger.warning(t("log.bot.wait_reply_timeout", event=self.event, timeout=timeout))
             return None
 
         self.receive_tag = False
@@ -972,7 +1003,7 @@ class Bot:
         :param target_id: 会话 id；仅在显式传入 ``target_type`` 时使用。
         """
         if self.ev.task_event is not None:
-            logger.debug("[ban] HTTP 模式不支持禁言操作，已忽略")
+            logger.debug(t("log.bot.ban_http_unsupported"))
             return
         if target_type is None:
             target_type = self.ev.user_type
@@ -1004,7 +1035,7 @@ class Bot:
             return
         if self.ev.task_event is not None:
             # HTTP 模式（/api/send_msg）无 adapter WS 连接，撤回请求无处投递
-            logger.debug("[unsend] HTTP 模式不支持撤回消息，已忽略")
+            logger.debug(t("log.bot.unsend_http_unsupported"))
             return
         if target_type is None:
             target_type = self.ev.user_type
@@ -1052,4 +1083,4 @@ def call_bot():
                 return value
         frame = frame.f_back
 
-    raise ValueError("[GsCore] 当前Session中未找到可用Bot实例...")
+    raise ValueError(t("[GsCore] 当前Session中未找到可用Bot实例..."))

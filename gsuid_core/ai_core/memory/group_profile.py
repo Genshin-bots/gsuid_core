@@ -13,6 +13,7 @@ state_key 为记忆系统的 scope_key（如 "group:929275476"）。
 from typing import Any, Dict, List, TypedDict
 from datetime import datetime
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
 # 群组画像在 state_store 中的 scope。
@@ -152,7 +153,9 @@ async def record_term_mappings(scope_key: str, mappings: Dict[str, str]) -> None
         return profile
 
     await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
-    logger.debug(f"🧠 [GroupProfile] {scope_key} 词汇映射已更新: {mappings}")
+    logger.debug(
+        i18n_t("🧠 [GroupProfile] {scope_key} 词汇映射已更新: {mappings}", scope_key=scope_key, mappings=mappings)
+    )
 
 
 async def record_entity_tags(scope_key: str, tags: List[str]) -> None:
@@ -233,7 +236,14 @@ async def record_member_alias(scope_key: str, alias: str, user_id: str) -> List[
 
     new_profile = await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
     result = new_profile["member_alias_ids"].get(alias, [user_id])
-    logger.debug(f"🧠 [GroupProfile] {scope_key} 群成员称呼已更新: {alias} = {result}")
+    logger.debug(
+        i18n_t(
+            "🧠 [GroupProfile] {scope_key} 群成员称呼已更新: {alias} = {result}",
+            scope_key=scope_key,
+            alias=alias,
+            result=result,
+        )
+    )
     return result
 
 

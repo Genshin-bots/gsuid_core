@@ -5,6 +5,7 @@ from typing import Final, Union
 
 import httpx
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
 from gsuid_core.ai_core.rag.embedding.modality import EmbeddingModality
@@ -42,8 +43,10 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         dropped = declared - self._IMPLEMENTED_MODALITIES
         if dropped:
             logger.warning(
-                "🧠 [Embedding] OpenAI 嵌入提供方声明了暂不支持的模态 "
-                f"{[m.value for m in dropped]}，已忽略（当前仅支持 text/image）"
+                t(
+                    "🧠 [Embedding] OpenAI 嵌入提供方声明了暂不支持的模态 {p0}，已忽略（当前仅支持 text/image）",
+                    p0=[m.value for m in dropped],
+                )
             )
 
         # 维度来源优先级：用户配置 > 已知映射 > 首次调用 API 时推断
@@ -53,9 +56,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             self._dim = self.KNOWN_DIMENSIONS[model_name]
 
         logger.info(
-            f"🧠 [Embedding] OpenAI 嵌入模型已配置: {model_name}, "
-            f"URL: {base_url}, 维度: {self._dim or '(首次调用时推断)'}, "
-            f"模态: {[m.value for m in self._modalities]}"
+            t(
+                "🧠 [Embedding] OpenAI 嵌入模型已配置: {model_name}, URL: {base_url}, 维度: {p0}, 模态: {p1}",
+                model_name=model_name,
+                base_url=base_url,
+                p0=self._dim or "(首次调用时推断)",
+                p1=[m.value for m in self._modalities],
+            )
         )
 
     @property
@@ -75,20 +82,29 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         for index, vector in enumerate(vectors):
             if len(vector) != actual_dim:
                 raise ValueError(
-                    f"OpenAI 嵌入模型返回的第 {index} 个向量维度不一致: "
-                    f"actual={len(vector)}, expected_batch_dim={actual_dim}"
+                    t(
+                        "OpenAI 嵌入模型返回的第 {index} 个向量维度不一致:"
+                        " actual={p0}, expected_batch_dim={actual_dim}",
+                        index=index,
+                        p0=len(vector),
+                        actual_dim=actual_dim,
+                    )
                 )
 
         if self._dim == 0:
             self._dim = actual_dim
-            logger.info(f"🧠 [Embedding] 从 API 响应推断嵌入维度: {self._dim}")
+            logger.info(t("🧠 [Embedding] 从 API 响应推断嵌入维度: {p0}", p0=self._dim))
             return
 
         if actual_dim != self._dim:
             raise ValueError(
-                "OpenAI 嵌入模型实际返回维度与配置不一致: "
-                f"actual={actual_dim}, configured={self._dim}。"
-                "请修正 openai_embedding_config.json 中的 dimension，或设为 0 自动推断。"
+                t(
+                    "OpenAI 嵌入模型实际返回维度与配置不一致:"
+                    " actual={actual_dim}, configured={p0}。请修正 openai_embedding_config.json"
+                    " 中的 dimension，或设为 0 自动推断。",
+                    actual_dim=actual_dim,
+                    p0=self._dim,
+                )
             )
 
     def _call_api(self, texts: list[str]) -> list[list[float]]:

@@ -3,6 +3,7 @@ import time
 from typing import Any, List, Optional
 from datetime import datetime
 
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import SILENCE_MARKERS, extract_json_from_text
@@ -125,7 +126,7 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
             if row:
                 return f"\n\n【群组历史摘要】\n{row}"
     except Exception as e:
-        logger.debug(f"🫀 [Heartbeat] 获取群组摘要失败: {e}")
+        logger.debug(t("🫀 [Heartbeat] 获取群组摘要失败: {e}", e=e))
 
     return ""
 
@@ -188,18 +189,18 @@ async def run_heartbeat(
         交给 ``emit_proactive_message`` 挂到主 session 的 ``linked_agents`` 上。
     """
     if not history:
-        logger.debug("🫀 [Heartbeat] 无历史记录，跳过")
+        logger.debug(t("🫀 [Heartbeat] 无历史记录，跳过"))
         return None
 
     if not persona_name:
-        logger.warning("🫀 [Heartbeat] 无法获取角色名称，跳过")
+        logger.warning(t("🫀 [Heartbeat] 无法获取角色名称，跳过"))
         return None
 
     # 决策阶段只使用纯人设（角色扮演开始 + 角色资料），
     # 避免完整的 system_prompt 中的工具调用规范、<SILENCE> 规则等执行层约束污染决策。
     persona_content = await load_persona(persona_name)
     if not persona_content:
-        logger.warning("🫀 [Heartbeat] 无法加载角色资料，跳过")
+        logger.warning(t("🫀 [Heartbeat] 无法加载角色资料，跳过"))
         return None
 
     # 决策阶段用压缩版人格（仅 Identity / Style / Tone / Presence 四要素），
@@ -276,7 +277,7 @@ async def run_heartbeat(
     try:
         result: str = await decision_agent.run(user_message=decision_user, budget_gate=True)
     except Exception as e:
-        logger.exception(f"🫀 [Heartbeat] 决策阶段出错: {e}")
+        logger.exception(t("🫀 [Heartbeat] 决策阶段出错: {e}", e=e))
         if decision_logger is not None:
             generator_log_files.append(str(decision_logger._file_path))
             decision_logger.close()
@@ -287,28 +288,28 @@ async def run_heartbeat(
         decision_logger.close()
 
     if not result:
-        logger.debug("🫀 [Heartbeat] 决策阶段无返回，跳过")
+        logger.debug(t("🫀 [Heartbeat] 决策阶段无返回，跳过"))
         return None
 
     # 模型输出 <SILENCE> 或 <end_turn> 表示选择不发言，直接跳过
     if result.strip() in SILENCE_MARKERS:
-        logger.debug("🫀 [Heartbeat] 模型输出沉默标记，保持沉默")
+        logger.debug(t("🫀 [Heartbeat] 模型输出沉默标记，保持沉默"))
         return None
 
     try:
         decision = extract_json_from_text(result)
     except (json.JSONDecodeError, ValueError) as e:
-        logger.warning(f"🫀 [Heartbeat] 决策结果 JSON 解析失败: {e}, raw={result!r}")
+        logger.warning(t("🫀 [Heartbeat] 决策结果 JSON 解析失败: {e}, raw={result}", e=e, result=repr(result)))
         return None
 
     # 模型可能把决策对象包进数组（如 [{...}]），取首个 dict 归一化，非 dict 判为解析失败
     if isinstance(decision, list):
         decision = next((item for item in decision if isinstance(item, dict)), None)
     if not isinstance(decision, dict):
-        logger.warning(f"🫀 [Heartbeat] 决策结果不是预期的对象结构，跳过: raw={result!r}")
+        logger.warning(t("🫀 [Heartbeat] 决策结果不是预期的对象结构，跳过: raw={result}", result=repr(result)))
         return None
     if "mood" not in decision or "should_speak" not in decision:
-        logger.warning(f"🫀 [Heartbeat] 决策对象缺少必要字段，跳过: raw={result!r}")
+        logger.warning(t("🫀 [Heartbeat] 决策对象缺少必要字段，跳过: raw={result}", result=repr(result)))
         return None
 
     mood: str = decision["mood"]
@@ -324,13 +325,13 @@ async def run_heartbeat(
             should_speak=should_speak,
         )
     except Exception as e:
-        logger.warning(f"📊 [Heartbeat] 记录决策统计失败: {e}")
+        logger.warning(t("📊 [Heartbeat] 记录决策统计失败: {e}", e=e))
 
     if not should_speak:
-        logger.debug(f"🫀 [Heartbeat] 🤫 保持沉默: {mood} ({event})")
+        logger.debug(t("🫀 [Heartbeat] 🤫 保持沉默: {mood} ({event})", mood=mood, event=event))
         return None
 
-    logger.info(f"🫀 [Heartbeat] 💡 决定插话: {mood} ({event})")
+    logger.info(t("🫀 [Heartbeat] 💡 决定插话: {mood} ({event})", mood=mood, event=event))
 
     # ----------------------------------------------------------------
     # 阶段二：生成发言
@@ -357,7 +358,7 @@ async def run_heartbeat(
     try:
         result = await output_agent.run(user_message=message_user, budget_gate=True)
     except Exception as e:
-        logger.exception(f"🫀 [Heartbeat] 生成阶段出错: {e}")
+        logger.exception(t("🫀 [Heartbeat] 生成阶段出错: {e}", e=e))
         if output_logger is not None:
             generator_log_files.append(str(output_logger._file_path))
             output_logger.close()
@@ -368,11 +369,11 @@ async def run_heartbeat(
         output_logger.close()
 
     if not result or not result.strip():
-        logger.debug("🫀 [Heartbeat] 生成阶段无返回")
+        logger.debug(t("🫀 [Heartbeat] 生成阶段无返回"))
         return None
 
     message: str = _strip_message_quotes(result)
-    logger.info(f"🫀 [Heartbeat] 主动发言: {message!r}")
+    logger.info(t("🫀 [Heartbeat] 主动发言: {message}", message=repr(message)))
     return mood, message, generator_log_files
 
 
@@ -437,7 +438,7 @@ async def run_reactive_gate(
         # 本门未指定 output_type，用 isinstance 守卫而非依赖隐式 AttributeError 兜底。
         # 模型给了输出却不是合法 str → 判不出指向，按默认沉默处理（非真异常，不放行）。
         if not isinstance(result, str):
-            logger.debug(f"🫧 [ReactiveGate] 返回非 str（{type(result).__name__}），默认沉默")
+            logger.debug(t("🫧 [ReactiveGate] 返回非 str（{p0}），默认沉默", p0=type(result).__name__))
             return False
         if not result or result.strip() in SILENCE_MARKERS:
             return False
@@ -446,17 +447,17 @@ async def run_reactive_gate(
         try:
             decision = extract_json_from_text(result)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.debug(f"🫧 [ReactiveGate] 决策 JSON 解析失败，默认沉默: {e}, raw={result[:80]!r}")
+            logger.debug(t("🫧 [ReactiveGate] 决策 JSON 解析失败，默认沉默: {e}, raw={p0}", e=e, p0=repr(result[:80])))
             return False
         if isinstance(decision, list):
             decision = next((item for item in decision if isinstance(item, dict)), None)
         if not isinstance(decision, dict) or "should_speak" not in decision:
-            logger.debug("🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默")
+            logger.debug(t("🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默"))
             return False
         should = bool(decision["should_speak"])
         reason = decision["reason"] if "reason" in decision else None
         logger.debug(f"🫧 [ReactiveGate] should_speak={should} reason={reason!r}")
         return should
     except Exception as e:
-        logger.debug(f"🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}")
+        logger.debug(t("🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}", e=e))
         return True

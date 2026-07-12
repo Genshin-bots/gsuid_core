@@ -2,6 +2,7 @@ import random
 import asyncio
 from typing import Dict, List
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.api.mys_api import mys_api
@@ -20,7 +21,15 @@ GAME_NAME_MAP = {
 async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
     sign_title = f"[{game_name}] [签到]"
     error_msg = get_error(retcode)
-    logger.warning(f"{sign_title} {uid} 出错, 错误码{retcode}, 错误消息{error_msg}!")
+    logger.warning(
+        t(
+            "{sign_title} {uid} 出错, 错误码{retcode}, 错误消息{error_msg}!",
+            sign_title=sign_title,
+            uid=uid,
+            retcode=retcode,
+            error_msg=error_msg,
+        )
+    )
     if retcode == 10001 or retcode == -100:
         ck = await GsUser.get_user_cookie_by_uid(uid, game_name)
         if ck:
@@ -31,7 +40,7 @@ async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
 async def sign_in(uid: str, game_name: str = "gs") -> str:
     _gn = GAME_NAME_MAP.get(game_name, "未知游戏")
     sign_title = f"[{_gn}] [签到]"
-    logger.info(f"{sign_title} {uid} 开始执行签到")
+    logger.info(t("{sign_title} {uid} 开始执行签到", sign_title=sign_title, uid=uid))
     is_os = mys_api.check_os(uid, game_name)
     # 获得签到信息
     sign_info = await mys_api.get_sign_info(uid, game_name)
@@ -40,7 +49,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
         return await sign_error(uid, sign_info, game_name)
     # 检测是否已签到
     if sign_info["is_sign"]:
-        logger.info(f"{sign_title} {uid} 该用户今日已签到,跳过...")
+        logger.info(t("{sign_title} {uid} 该用户今日已签到,跳过...", sign_title=sign_title, uid=uid))
         day_of_month = int(sign_info["today"].split("-")[-1])
         signed_count = int(sign_info["total_sign_day"])
         sign_missed = day_of_month - signed_count
@@ -66,36 +75,57 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                         Header["x-rpc-challenge"] = ch
                         Header["x-rpc-validate"] = vl
                         Header["x-rpc-seccode"] = f"{vl}|jordan"
-                        logger.info(f"{sign_title} {uid} 已获取验证码, 等待时间{delay}秒")
+                        logger.info(
+                            t(
+                                "{sign_title} {uid} 已获取验证码, 等待时间{delay}秒",
+                                sign_title=sign_title,
+                                uid=uid,
+                                delay=delay,
+                            )
+                        )
                         await asyncio.sleep(delay)
                     else:
                         delay = 605 + random.randint(1, 120)
-                        logger.info(f"{sign_title} {uid} 未获取验证码,等待{delay}秒后重试...")
+                        logger.info(
+                            t(
+                                "{sign_title} {uid} 未获取验证码,等待{delay}秒后重试...",
+                                sign_title=sign_title,
+                                uid=uid,
+                                delay=delay,
+                            )
+                        )
                         await asyncio.sleep(delay)
                     continue
                 else:
-                    logger.info("配置文件暂未开启[跳过无感验证],跳过本次签到任务...")
+                    logger.info(t("配置文件暂未开启[跳过无感验证],跳过本次签到任务..."))
                 return "签到失败...出现验证码!"
             # 成功签到!
             else:
                 if index == 0:
-                    logger.info(f"{sign_title} {uid} 该用户无校验码!")
+                    logger.info(t("{sign_title} {uid} 该用户无校验码!", sign_title=sign_title, uid=uid))
                 else:
-                    logger.info(f"{sign_title} [无感验证] {uid} 该用户重试 {index} 次验证成功!")
+                    logger.info(
+                        t(
+                            "{sign_title} [无感验证] {uid} 该用户重试 {index} 次验证成功!",
+                            sign_title=sign_title,
+                            uid=uid,
+                            index=index,
+                        )
+                    )
                 break
         elif is_os and (sign_data["code"] == "ok"):
             # 国际服签到无risk_code字段
-            logger.info(f"[国际服签到] {uid} 签到成功!")
+            logger.info(t("[国际服签到] {uid} 签到成功!", uid=uid))
             break
         else:
             # 重试超过阈值
-            logger.warning("{sign_title} 超过请求阈值...")
+            logger.warning(t("{sign_title} 超过请求阈值..."))
             vl_hint = "❌签到失败...出现验证码!"
             return f"{vl_hint}"
     # 签到失败
     else:
         im = "❌签到失败!"
-        logger.warning(f"{sign_title} UID{uid} 签到失败, 结果: {im}")
+        logger.warning(t("{sign_title} UID{uid} 签到失败, 结果: {im}", sign_title=sign_title, uid=uid, im=im))
         return im
     # 获取签到列表
     sign_list = await mys_api.get_sign_list(uid, game_name)
@@ -119,7 +149,15 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
         sign_missed -= 1
     sign_missed = sign_info.get("sign_cnt_missed") or sign_missed
     im = f"{mes_im}!\n{get_im}\n🚨本月漏签次数：{sign_missed}"
-    logger.info(f"✅ {sign_title} UID{uid} 签到完成!\n📝结果: {mes_im}\n🚨漏签次数: {sign_missed}")
+    logger.info(
+        t(
+            "✅ {sign_title} UID{uid} 签到完成!\n📝结果: {mes_im}\n🚨漏签次数: {sign_missed}",
+            sign_title=sign_title,
+            uid=uid,
+            mes_im=mes_im,
+            sign_missed=sign_missed,
+        )
+    )
     return im
 
 
@@ -180,7 +218,7 @@ async def daily_sign(game_name: str):
             uid_list.append(_uid)
             user_list.append(user)
 
-    logger.info(f"[{game_name}] [全部重签] [UID列表] {uid_list}")
+    logger.info(t("[{game_name}] [全部重签] [UID列表] {uid_list}", game_name=game_name, uid_list=uid_list))
     for user in user_list:
         tasks.append(
             single_daily_sign(
@@ -202,7 +240,14 @@ async def daily_sign(game_name: str):
         if len(tasks) >= 1:
             await asyncio.gather(*tasks)
             delay = 30 + random.randint(3, 35)
-            logger.info(f"[{game_name}] [签到] 已签到{len(tasks)}个用户, 等待{delay}秒进行下一次签到")
+            logger.info(
+                t(
+                    "[{game_name}] [签到] 已签到{p0}个用户, 等待{delay}秒进行下一次签到",
+                    game_name=game_name,
+                    p0=len(tasks),
+                    delay=delay,
+                )
+            )
             tasks.clear()
             await asyncio.sleep(delay)
     await asyncio.gather(*tasks)

@@ -15,7 +15,8 @@ import certifi
 from aiohttp import TCPConnector
 from async_timeout import timeout
 
-from gsuid_core.bot import call_bot
+from gsuid_core.bot import Bot, call_bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER, SR_SERVER, ZZZ_SERVER
 from gsuid_core.utils.database.models import GsUID, GsUser
@@ -236,10 +237,10 @@ class BaseMysApi:
             data=body,
         )
         if not isinstance(res, Dict):
-            logger.error(f"获取fp连接失败{res}")
+            logger.error(t("获取fp连接失败{res}", res=res))
             return random_hex(13).lower()
         elif res["data"]["code"] != 200:
-            logger.error(f"获取fp参数不正确{res['data']['msg']}")
+            logger.error(t("获取fp参数不正确{p0}", p0=res["data"]["msg"]))
             return random_hex(13).lower()
         else:
             return res["data"]["device_fp"]
@@ -378,7 +379,7 @@ class BaseMysApi:
         if app_cookie is None:
             app_cookie = await self.get_stoken(uid)
             if app_cookie is None:
-                return logger.warning("设备登录流程错误...")
+                return logger.warning(t("设备登录流程错误..."))
 
         if fp is None:
             fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
@@ -405,10 +406,10 @@ class BaseMysApi:
         if params:
             params = {k: str(v).lower() if isinstance(v, bool) else v for k, v in params.items()}
 
-        logger.debug(f"[米游社请求] BaseUrl: {base_url}")
-        logger.debug(f"[米游社请求] Url: {url}")
-        logger.debug(f"[米游社请求] Params: {params}")
-        logger.debug(f"[米游社请求] Data: {data}")
+        logger.debug(t("[米游社请求] BaseUrl: {base_url}", base_url=base_url))
+        logger.debug(t("[米游社请求] Url: {url}", url=url))
+        logger.debug(t("[米游社请求] Params: {params}", params=params))
+        logger.debug(t("[米游社请求] Data: {data}", data=data))
 
         proxy = None
 
@@ -464,7 +465,7 @@ class BaseMysApi:
                             f"{mys_version}"
                         )
                 except asyncio.TimeoutError:
-                    logger.warning("[mhy_request] 获取DFP超时, 未知原因...")
+                    logger.warning(t("[mhy_request] 获取DFP超时, 未知原因..."))
 
             logger.debug(header)
 
@@ -481,10 +482,14 @@ class BaseMysApi:
                     ) as resp:
                         raw_data = await resp.json()
                 except aiohttp.ClientConnectionError:
-                    await call_bot().send("[mys_request] 请求连接错误...")
+                    _bot: Bot = call_bot()
+                    await _bot.send(await _bot.t("[mys_request] 请求连接错误..."))
                     continue
                 except Exception as e:
-                    await call_bot().send(f"[mys_request] 请求错误, 请联系Bot主人检查控制台! 错误信息: {str(e)}")
+                    _bot = call_bot()
+                    await _bot.send(
+                        await _bot.t("[mys_request] 请求错误, 请联系Bot主人检查控制台! 错误信息: {e}", e=str(e))
+                    )
                     continue
 
                 logger.debug(raw_data)
@@ -527,7 +532,7 @@ class BaseMysApi:
                             q = ""
                         header["DS"] = get_ds_token(q, data)
 
-                    logger.debug(f"[米游社请求] Header: {header}")
+                    logger.debug(t("[米游社请求] Header: {header}", header=header))
                 elif retcode != 0:
                     return retcode
                 else:

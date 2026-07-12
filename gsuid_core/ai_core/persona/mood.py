@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Dict, Optional, TypedDict
 from dataclasses import field, dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 
@@ -271,9 +272,14 @@ async def update_mood(
     _mood_states[key] = new_state
 
     logger.debug(
-        f"🎭 [Mood] {persona_name}@{group_id}: "
-        f"{new_state.mood.value} (强度: {new_state.intensity:.2f}, "
-        f"触发: {trigger or 'N/A'})"
+        t(
+            "🎭 [Mood] {persona_name}@{group_id}: {p0} (强度: {p1:.2f}, 触发: {p2})",
+            persona_name=persona_name,
+            group_id=group_id,
+            p0=new_state.mood.value,
+            p1=new_state.intensity,
+            p2=trigger or "N/A",
+        )
     )
 
     return new_state
@@ -288,7 +294,7 @@ async def reset_mood(persona_name: str, group_id: str) -> None:
     """
     key = _make_mood_key(persona_name, group_id)
     _mood_states.pop(key, None)
-    logger.debug(f"🎭 [Mood] {persona_name}@{group_id}: 情绪已重置")
+    logger.debug(t("🎭 [Mood] {persona_name}@{group_id}: 情绪已重置", persona_name=persona_name, group_id=group_id))
 
 
 def get_all_mood_states() -> Dict[str, MoodState]:

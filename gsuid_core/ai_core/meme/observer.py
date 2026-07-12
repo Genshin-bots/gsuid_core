@@ -12,6 +12,7 @@ from collections import OrderedDict
 import httpx
 from PIL import Image
 
+from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
@@ -64,10 +65,10 @@ async def _download_image(url: str) -> Optional[tuple[bytes, str]]:
         (图片数据, MIME 类型) 或 None
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
-        logger.debug(f"[Meme] 开始下载图片: {url}")
+        logger.debug(t("[Meme] 开始下载图片: {url}", url=url))
         response = await client.get(url)
         if response.status_code != 200:
-            logger.debug(f"[Meme] 图片下载失败: {url}")
+            logger.debug(t("[Meme] 图片下载失败: {url}", url=url))
             return None
 
         content_type = response.headers.get("content-type", "")
@@ -125,16 +126,16 @@ async def observe_message_for_memes(
     if not ev.group_id:
         return
 
-    logger.trace(f"[Meme] 观察消息: 群: {ev.group_id}, 用户: {ev.user_id}")
+    logger.trace(t("[Meme] 观察消息: 群: {p0}, 用户: {p1}", p0=ev.group_id, p1=ev.user_id))
 
     # 提取图片 URL
     image_urls = _extract_image_urls(ev)
     if not image_urls:
-        logger.trace("[Meme] 消息中未找到图片 URL! 跳过处理")
+        logger.trace(t("[Meme] 消息中未找到图片 URL! 跳过处理"))
         return
 
     # 限制每次最多处理 5 张图片
-    logger.info(f"[Meme] 发现 {len(image_urls)} 张图片，准备处理（最多5张）")
+    logger.info(t("[Meme] 发现 {p0} 张图片，准备处理（最多5张）", p0=len(image_urls)))
     for url in image_urls[:5]:
         await _process_image(
             url=url,
@@ -160,7 +161,7 @@ async def _process_image(
     # URL 去重检查
     async with _processed_lock:
         if url in _processed_urls:
-            logger.debug(f"[Meme] URL 已处理过，跳过: {url}")
+            logger.debug(t("[Meme] URL 已处理过，跳过: {url}", url=url))
             return
         _mark_url_processed(url)
 
@@ -175,7 +176,15 @@ async def _process_image(
 
     # 获取图片尺寸（通过 to_thread 异步化）
     width, height = await _get_image_dimensions(image_data)
-    logger.info(f"[Meme] 下载图片成功，URL: {url}, MIME: {file_mime}, 尺寸: {width}x{height}")
+    logger.info(
+        t(
+            "[Meme] 下载图片成功，URL: {url}, MIME: {file_mime}, 尺寸: {width}x{height}",
+            url=url,
+            file_mime=file_mime,
+            width=width,
+            height=height,
+        )
+    )
 
     # 入队过滤
     await MemeFilter.enqueue(

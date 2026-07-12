@@ -25,6 +25,7 @@ import asyncio
 from typing import List, Tuple, Optional
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.proactive import emit_proactive_message
@@ -169,7 +170,7 @@ async def _build_resume_hint(child: AIAgentTask) -> str:
 
         return await install_resume_hint_for_task(child.id)
     except Exception as e:
-        logger.debug(f"📋 [Kanban] 构造断点续作提示失败: {e}")
+        logger.debug(t("📋 [Kanban] 构造断点续作提示失败: {e}", e=e))
         return ""
 
 
@@ -313,7 +314,7 @@ async def _persona_relay(
         # 避免把能力代理的原始代码 / 数据当播报正文发给用户。
         return spoken.strip() or _sanitize_for_user(raw_result), relay_log_files
     except Exception as e:
-        logger.debug(f"📋 [Kanban] 人格转译失败，去代码兜底播报: {e}")
+        logger.debug(t("📋 [Kanban] 人格转译失败，去代码兜底播报: {e}", e=e))
         return _sanitize_for_user(raw_result), relay_log_files
     finally:
         # 无论成功 / 异常，关闭转译 SubAgent logger；relay_log_files 在
@@ -347,7 +348,7 @@ async def _notify(
         suppress_when_heartbeat_recent=False,
     )
     if not sent:
-        logger.warning(f"📋 [Kanban] 任务 root=#{task.ordinal} 主动消息发送失败 / 被抑制")
+        logger.warning(t("📋 [Kanban] 任务 root=#{p0} 主动消息发送失败 / 被抑制", p0=task.ordinal))
 
 
 # ============================================================
@@ -428,7 +429,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                 session_id_suffix=f"kanban_{root.id[:6]}_{fresh.id[:6]}",
             )
         except Exception as e:
-            logger.exception(f"📋 [Kanban] 子任务执行抛出异常: {e}")
+            logger.exception(t("📋 [Kanban] 子任务执行抛出异常: {e}", e=e))
             await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
             await _notify_failure(root, fresh, str(e))
             return
@@ -489,7 +490,11 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                     )
             elif bot and no_broadcast:
                 logger.debug(
-                    f"📋 [Kanban] 子任务 {fresh.display_name} 声明静默（{KANBAN_NO_BROADCAST_MARK}），跳过推群"
+                    t(
+                        "📋 [Kanban] 子任务 {p0} 声明静默（{KANBAN_NO_BROADCAST_MARK}），跳过推群",
+                        p0=fresh.display_name,
+                        KANBAN_NO_BROADCAST_MARK=KANBAN_NO_BROADCAST_MARK,
+                    )
                 )
 
 
@@ -540,13 +545,24 @@ async def execute_ready_tasks(root_task_id: str) -> None:
     if root.status in ("completed", "failed", "cancelled"):
         return
     if root.recurring_trigger and root.recurring_status == "armed":
-        logger.debug(f"📋 [Kanban] 跳过模板根的直接调度 root={root_task_id}（应由 _fire_template 克隆实例后再调度）")
+        logger.debug(
+            t(
+                "📋 [Kanban] 跳过模板根的直接调度 root={root_task_id}（应由 _fire_template 克隆实例后再调度）",
+                root_task_id=root_task_id,
+            )
+        )
         return
 
     # 叶子根：直接把 root 当作单一执行节点派出
     if kanban.is_leaf_root(root, len(children)):
         if root.status == "pending":
-            logger.info(f"📋 [Kanban] 调度叶子根 root={root_task_id} profile={root.agent_profile}")
+            logger.info(
+                t(
+                    "📋 [Kanban] 调度叶子根 root={root_task_id} profile={p0}",
+                    root_task_id=root_task_id,
+                    p0=root.agent_profile,
+                )
+            )
             await _run_one_task_node(root, root)
         # 叶子根状态由 _run_one_task_node 自己写完，不需要 refresh_root_status
         return
@@ -562,7 +578,9 @@ async def execute_ready_tasks(root_task_id: str) -> None:
         await kanban.refresh_root_status(root_task_id)
         return
 
-    logger.info(f"📋 [Kanban] 调度回合 root={root_task_id} 可跑子任务 {len(ready)} 个")
+    logger.info(
+        t("📋 [Kanban] 调度回合 root={root_task_id} 可跑子任务 {p0} 个", root_task_id=root_task_id, p0=len(ready))
+    )
     runners = [_run_one_task_node(root, c) for c in ready]
     await asyncio.gather(*runners, return_exceptions=True)
     await kanban.refresh_root_status(root_task_id)
@@ -590,9 +608,13 @@ async def _maybe_arm_recurring_subtasks(
         try:
             ok, msg = await kanban.arm_recurring_subtask(tpl, tpl.recurring_trigger or "")
             if not ok:
-                logger.warning(f"📋 [Kanban] 周期子任务 arm 失败 subtask={tpl.id} root={root.id}: {msg}")
+                logger.warning(
+                    t("📋 [Kanban] 周期子任务 arm 失败 subtask={p0} root={p1}: {msg}", p0=tpl.id, p1=root.id, msg=msg)
+                )
         except Exception as e:
-            logger.exception(f"📋 [Kanban] 周期子任务 arm 抛出异常 subtask={tpl.id} root={root.id}: {e}")
+            logger.exception(
+                t("📋 [Kanban] 周期子任务 arm 抛出异常 subtask={p0} root={p1}: {e}", p0=tpl.id, p1=root.id, e=e)
+            )
 
 
 async def _schedule_continuation(root_task_id: str, depth: int) -> None:
@@ -617,5 +639,5 @@ async def kick_root(root_task_id: str) -> None:
     try:
         await execute_ready_tasks(root_task_id)
     except Exception as e:
-        logger.exception(f"📋 [Kanban] kick_root 异常: {e}")
+        logger.exception(t("📋 [Kanban] kick_root 异常: {e}", e=e))
         await AIAgentTaskLog.add_log(root_task_id, "decision", f"调度异常：{type(e).__name__}: {e}")

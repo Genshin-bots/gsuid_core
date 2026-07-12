@@ -55,6 +55,7 @@ from typing import Any
 from pathlib import Path
 from dataclasses import field, dataclass
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import MCP_CONFIGS_PATH
 
@@ -238,7 +239,11 @@ def parse_mcp_tool_id(mcp_tool_id: str) -> tuple[str, str]:
     """
     if MCP_TOOL_ID_SEPARATOR not in mcp_tool_id:
         raise ValueError(
-            f"无效的 MCP 工具 ID 格式: '{mcp_tool_id}'，期望格式为 '{{mcp_id}}{MCP_TOOL_ID_SEPARATOR}{{tool_name}}'"
+            i18n_t(
+                "无效的 MCP 工具 ID 格式: '{mcp_tool_id}'，期望格式为 '{{mcp_id}}{MCP_TOOL_ID_SEPARATOR}{{tool_name}}'",
+                mcp_tool_id=mcp_tool_id,
+                MCP_TOOL_ID_SEPARATOR=MCP_TOOL_ID_SEPARATOR,
+            )
         )
 
     parts = mcp_tool_id.split(MCP_TOOL_ID_SEPARATOR, 1)
@@ -286,7 +291,9 @@ class MCPConfigManager:
                     data = json.load(f)
                 self._cache[config_id] = MCPConfig.from_dict(data)
             except Exception as e:
-                logger.error(f"🔌 [MCP Config] 加载配置文件失败: {config_file}, 错误: {e}")
+                logger.error(
+                    i18n_t("🔌 [MCP Config] 加载配置文件失败: {config_file}, 错误: {e}", config_file=config_file, e=e)
+                )
 
     def list_configs(self) -> list[dict[str, Any]]:
         """
@@ -411,10 +418,10 @@ class MCPConfigManager:
             with open(config_path, "w", encoding="UTF-8") as f:
                 json.dump(config.to_dict(), f, indent=4, ensure_ascii=False)
             self._cache[config_id] = config
-            logger.info(f"🔌 [MCP Config] 创建配置: {config_id}")
+            logger.info(i18n_t("🔌 [MCP Config] 创建配置: {config_id}", config_id=config_id))
             return True, "ok"
         except Exception as e:
-            logger.error(f"🔌 [MCP Config] 创建配置失败: {config_id}, 错误: {e}")
+            logger.error(i18n_t("🔌 [MCP Config] 创建配置失败: {config_id}, 错误: {e}", config_id=config_id, e=e))
             return False, str(e)
 
     def update_config(self, config_id: str, updates: dict[str, Any]) -> tuple[bool, str]:
@@ -445,10 +452,10 @@ class MCPConfigManager:
             with open(config_path, "w", encoding="UTF-8") as f:
                 json.dump(updated_config.to_dict(), f, indent=4, ensure_ascii=False)
             self._cache[config_id] = updated_config
-            logger.info(f"🔌 [MCP Config] 更新配置: {config_id}")
+            logger.info(i18n_t("🔌 [MCP Config] 更新配置: {config_id}", config_id=config_id))
             return True, "ok"
         except Exception as e:
-            logger.error(f"🔌 [MCP Config] 更新配置失败: {config_id}, 错误: {e}")
+            logger.error(i18n_t("🔌 [MCP Config] 更新配置失败: {config_id}, 错误: {e}", config_id=config_id, e=e))
             return False, str(e)
 
     def delete_config(self, config_id: str) -> tuple[bool, str]:
@@ -468,16 +475,16 @@ class MCPConfigManager:
         try:
             config_path.unlink()
             del self._cache[config_id]
-            logger.info(f"🔌 [MCP Config] 删除配置: {config_id}")
+            logger.info(i18n_t("🔌 [MCP Config] 删除配置: {config_id}", config_id=config_id))
             return True, "ok"
         except Exception as e:
-            logger.error(f"🔌 [MCP Config] 删除配置失败: {config_id}, 错误: {e}")
+            logger.error(i18n_t("🔌 [MCP Config] 删除配置失败: {config_id}, 错误: {e}", config_id=config_id, e=e))
             return False, str(e)
 
     def reload(self) -> None:
         """重新加载所有配置文件"""
         self._load_all()
-        logger.info(f"🔌 [MCP Config] 重新加载完成，共 {len(self._cache)} 个配置")
+        logger.info(i18n_t("🔌 [MCP Config] 重新加载完成，共 {p0} 个配置", p0=len(self._cache)))
 
 
 # 全局单例

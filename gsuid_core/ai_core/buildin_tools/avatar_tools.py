@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Optional
 import httpx
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
@@ -65,7 +66,7 @@ async def _resolve_avatar_image(ev: Event, target_user_id: Optional[str]) -> "Op
         try:
             return await get_qq_avatar(target)
         except (httpx.HTTPError, OSError) as e:
-            logger.debug(f"🧠 [BuildinTools] get_user_avatar qlogo 兜底失败: {e}")
+            logger.debug(t("🧠 [BuildinTools] get_user_avatar qlogo 兜底失败: {e}", e=e))
             return None
     return None
 
@@ -110,7 +111,7 @@ async def get_user_avatar(
     try:
         img = await _resolve_avatar_image(ev, clean_user_id)
     except (httpx.HTTPError, OSError) as e:
-        logger.exception(f"🧠 [BuildinTools] get_user_avatar 获取用户 {target} 头像失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] get_user_avatar 获取用户 {target} 头像失败: {e}", target=target, e=e))
         return f"❌ 获取头像失败: {e}"
 
     if img is None:
@@ -119,11 +120,17 @@ async def get_user_avatar(
     try:
         data: bytes = await convert_img(img)  # PIL.Image → bytes（JPEG 编码）
     except OSError as e:
-        logger.exception(f"🧠 [BuildinTools] get_user_avatar 头像编码失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] get_user_avatar 头像编码失败: {e}", e=e))
         return f"❌ 头像编码失败: {e}"
 
     resource_id = RM.register(data)
-    logger.info(f"🧠 [BuildinTools] get_user_avatar: 用户 {target} 头像已注册到 RM: {resource_id}")
+    logger.info(
+        t(
+            "🧠 [BuildinTools] get_user_avatar: 用户 {target} 头像已注册到 RM: {resource_id}",
+            target=target,
+            resource_id=resource_id,
+        )
+    )
     return (
         f"已获取用户 {target} 的头像，资源ID: {resource_id}。\n"
         f"· 想看清头像内容 → read_image('{resource_id}')\n"

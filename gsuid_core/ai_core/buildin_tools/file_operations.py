@@ -15,6 +15,7 @@ from pathlib import Path
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -104,11 +105,18 @@ async def move_file(
 
         shutil.move(str(safe_src), str(safe_dst))
         size = safe_dst.stat().st_size
-        logger.info(f"🧠 [BuildinTools] 文件移动成功: {source_path} → {destination_path} ({_format_size(size)})")
+        logger.info(
+            t(
+                "🧠 [BuildinTools] 文件移动成功: {source_path} → {destination_path} ({p0})",
+                source_path=source_path,
+                destination_path=destination_path,
+                p0=_format_size(size),
+            )
+        )
         return f"文件移动成功: {source_path} → {destination_path} ({_format_size(size)})"
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 文件移动失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 文件移动失败: {e}", e=e))
         return f"错误：文件移动失败: {str(e)}"
 
 
@@ -162,11 +170,18 @@ async def copy_file(
 
         shutil.copy2(str(safe_src), str(safe_dst))
         size = safe_dst.stat().st_size
-        logger.info(f"🧠 [BuildinTools] 文件复制成功: {source_path} → {destination_path} ({_format_size(size)})")
+        logger.info(
+            t(
+                "🧠 [BuildinTools] 文件复制成功: {source_path} → {destination_path} ({p0})",
+                source_path=source_path,
+                destination_path=destination_path,
+                p0=_format_size(size),
+            )
+        )
         return f"文件复制成功: {source_path} → {destination_path} ({_format_size(size)})"
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 文件复制失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 文件复制失败: {e}", e=e))
         return f"错误：文件复制失败: {str(e)}"
 
 
@@ -243,11 +258,18 @@ async def pack_to_zip(
                             file_count += 1
 
         zip_size = safe_zip.stat().st_size
-        logger.info(f"🧠 [BuildinTools] zip 打包成功: {zip_path} (共 {file_count} 个文件, {_format_size(zip_size)})")
+        logger.info(
+            t(
+                "🧠 [BuildinTools] zip 打包成功: {zip_path} (共 {file_count} 个文件, {p0})",
+                zip_path=zip_path,
+                file_count=file_count,
+                p0=_format_size(zip_size),
+            )
+        )
         return f"zip 打包成功: {zip_path}\n包含文件数: {file_count}\n压缩包大小: {_format_size(zip_size)}"
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] zip 打包失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] zip 打包失败: {e}", e=e))
         # 清理可能不完整的 zip 文件
         if safe_zip.exists():
             try:

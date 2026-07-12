@@ -5,6 +5,7 @@ from itertools import groupby
 
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.server import _module_cache
 
@@ -47,7 +48,7 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
     必须在重新 import 之前调用 —— 带固定 id 的定时任务若不先清, 重新注册会撞
     ConflictingIdError 导致整个插件重载失败。三段各自独立 try/except, 互不影响。
     """
-    logger.debug(f"🧹 [GsCore] 开始清理插件 {plugin_name} 的全局注册状态...")
+    logger.debug(i18n_t("🧹 [GsCore] 开始清理插件 {plugin_name} 的全局注册状态...", plugin_name=plugin_name))
 
     # ① APScheduler 定时任务 + 监听器
     try:
@@ -65,10 +66,29 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
                 except JobLookupError:
                     pass
                 except Exception as e:
-                    logger.warning(f"🧹 [GsCore] 移除插件 {plugin_name} 的旧定时任务 {job.id} 失败: {e}")
+                    logger.warning(
+                        i18n_t(
+                            "🧹 [GsCore] 移除插件 {plugin_name} 的旧定时任务 {p0} 失败: {e}",
+                            plugin_name=plugin_name,
+                            p0=job.id,
+                            e=e,
+                        )
+                    )
         if removed_jobs:
-            logger.info(f"🧹 [GsCore] 已清理插件 {plugin_name} 的 {len(removed_jobs)} 个旧定时任务")
-            logger.debug(f"🧹 [GsCore] {plugin_name} 被清理的定时任务 id: {removed_jobs}")
+            logger.info(
+                i18n_t(
+                    "🧹 [GsCore] 已清理插件 {plugin_name} 的 {p0} 个旧定时任务",
+                    plugin_name=plugin_name,
+                    p0=len(removed_jobs),
+                )
+            )
+            logger.debug(
+                i18n_t(
+                    "🧹 [GsCore] {plugin_name} 被清理的定时任务 id: {removed_jobs}",
+                    plugin_name=plugin_name,
+                    removed_jobs=removed_jobs,
+                )
+            )
 
         # 监听器: _listeners 私有属性仅用于枚举, 移除走公开的 remove_listener
         removed_listeners = 0
@@ -78,11 +98,25 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
                     scheduler.remove_listener(cb)
                     removed_listeners += 1
                 except Exception as e:
-                    logger.warning(f"🧹 [GsCore] 移除插件 {plugin_name} 的旧 scheduler 监听器失败: {e}")
+                    logger.warning(
+                        i18n_t(
+                            "🧹 [GsCore] 移除插件 {plugin_name} 的旧 scheduler 监听器失败: {e}",
+                            plugin_name=plugin_name,
+                            e=e,
+                        )
+                    )
         if removed_listeners:
-            logger.info(f"🧹 [GsCore] 已清理插件 {plugin_name} 的 {removed_listeners} 个旧 scheduler 监听器")
+            logger.info(
+                i18n_t(
+                    "🧹 [GsCore] 已清理插件 {plugin_name} 的 {removed_listeners} 个旧 scheduler 监听器",
+                    plugin_name=plugin_name,
+                    removed_listeners=removed_listeners,
+                )
+            )
     except Exception as e:
-        logger.warning(f"🧹 [GsCore] 清理插件 {plugin_name} 的定时任务/监听器时异常: {e}")
+        logger.warning(
+            i18n_t("🧹 [GsCore] 清理插件 {plugin_name} 的定时任务/监听器时异常: {e}", plugin_name=plugin_name, e=e)
+        )
 
     # ② 生命周期 Hook 集合 (on_core_start / on_core_start_before / on_core_shutdown)
     try:
@@ -98,9 +132,17 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
             hook_set -= stale  # 原地差集; stale 取自集合内的同一批对象, 精确移除
             removed_hooks += len(stale)
         if removed_hooks:
-            logger.info(f"🧹 [GsCore] 已清理插件 {plugin_name} 的 {removed_hooks} 个旧生命周期 Hook")
+            logger.info(
+                i18n_t(
+                    "🧹 [GsCore] 已清理插件 {plugin_name} 的 {removed_hooks} 个旧生命周期 Hook",
+                    plugin_name=plugin_name,
+                    removed_hooks=removed_hooks,
+                )
+            )
     except Exception as e:
-        logger.warning(f"🧹 [GsCore] 清理插件 {plugin_name} 的生命周期 Hook 时异常: {e}")
+        logger.warning(
+            i18n_t("🧹 [GsCore] 清理插件 {plugin_name} 的生命周期 Hook 时异常: {e}", plugin_name=plugin_name, e=e)
+        )
 
     # ③ FastAPI web 路由 / 挂载
     try:
@@ -109,10 +151,18 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
         original = list(app.router.routes)
         kept = [r for r in original if not _belongs_to_plugin(_route_owner_module(r), plugin_name)]
         if len(kept) != len(original):
-            logger.info(f"🧹 [GsCore] 已清理插件 {plugin_name} 的 {len(original) - len(kept)} 条旧 web 路由/挂载")
+            logger.info(
+                i18n_t(
+                    "🧹 [GsCore] 已清理插件 {plugin_name} 的 {p0} 条旧 web 路由/挂载",
+                    plugin_name=plugin_name,
+                    p0=len(original) - len(kept),
+                )
+            )
             app.router.routes[:] = kept  # 原地替换, 保留列表引用; 无 .endpoint/.app 归属的条目自动保留
     except Exception as e:
-        logger.warning(f"🧹 [GsCore] 清理插件 {plugin_name} 的 web 路由时异常: {e}")
+        logger.warning(
+            i18n_t("🧹 [GsCore] 清理插件 {plugin_name} 的 web 路由时异常: {e}", plugin_name=plugin_name, e=e)
+        )
 
 
 def _snapshot_plugin_route_anchor(plugin_name: str) -> Optional[int]:
@@ -160,9 +210,16 @@ def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> 
         insert_at = min(anchor, len(rest))
         # 单次切片赋值替代 pop+insert 序列, 在事件循环主线程里逻辑上原子
         routes[:] = rest[:insert_at] + owned + rest[insert_at:]
-        logger.debug(f"🧹 [GsCore] 已将插件 {plugin_name} 的 {len(owned)} 条新路由回插到 index {insert_at}")
+        logger.debug(
+            i18n_t(
+                "🧹 [GsCore] 已将插件 {plugin_name} 的 {p0} 条新路由回插到 index {insert_at}",
+                plugin_name=plugin_name,
+                p0=len(owned),
+                insert_at=insert_at,
+            )
+        )
     except Exception as e:
-        logger.warning(f"🧹 [GsCore] 回插插件 {plugin_name} 路由位置时异常: {e}")
+        logger.warning(i18n_t("🧹 [GsCore] 回插插件 {plugin_name} 路由位置时异常: {e}", plugin_name=plugin_name, e=e))
 
 
 def _discard_start_task(plugin_name: str, task: asyncio.Task) -> None:
@@ -186,18 +243,32 @@ def _run_plugin_start_hooks(plugin_name: str) -> None:
             h for h in core_start_def if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
         )
         if not plugin_hooks:
-            logger.debug(f"♻ [GsCore] 插件 {plugin_name} 无 @on_core_start hook, 跳过启动 Hook 重跑")
+            logger.debug(
+                i18n_t(
+                    "♻ [GsCore] 插件 {plugin_name} 无 @on_core_start hook, 跳过启动 Hook 重跑", plugin_name=plugin_name
+                )
+            )
             return
 
         async def _runner():
-            logger.info(f"♻ [GsCore] 重载后执行插件 {plugin_name} 的启动 Hook ({len(plugin_hooks)} 个)...")
+            logger.info(
+                i18n_t(
+                    "♻ [GsCore] 重载后执行插件 {plugin_name} 的启动 Hook ({p0} 个)...",
+                    plugin_name=plugin_name,
+                    p0=len(plugin_hooks),
+                )
+            )
             failed = 0
             # 按 priority 分组, 组内并发、组间串行 (与 core_start_execute 一致)
             for priority, group in groupby(plugin_hooks, key=lambda h: h.priority):
                 group_hooks = list(group)
                 logger.debug(
-                    f"♻ [GsCore] 执行插件 {plugin_name} 优先级 {priority} 的启动 Hook: "
-                    f"{[getattr(h.func, '__qualname__', h.func) for h in group_hooks]}"
+                    i18n_t(
+                        "♻ [GsCore] 执行插件 {plugin_name} 优先级 {priority} 的启动 Hook: {p0}",
+                        plugin_name=plugin_name,
+                        priority=priority,
+                        p0=[getattr(h.func, "__qualname__", h.func) for h in group_hooks],
+                    )
                 )
                 results = await asyncio.gather(
                     *[
@@ -210,34 +281,50 @@ def _run_plugin_start_hooks(plugin_name: str) -> None:
                     if isinstance(res, BaseException) and not isinstance(res, asyncio.CancelledError):
                         failed += 1
                         logger.warning(
-                            f"♻ [GsCore] 插件 {plugin_name} 启动 Hook "
-                            f"{getattr(h.func, '__qualname__', h.func)} 执行异常: {res!r}"
+                            i18n_t(
+                                "♻ [GsCore] 插件 {plugin_name} 启动 Hook {p0} 执行异常: {res}",
+                                plugin_name=plugin_name,
+                                p0=getattr(h.func, "__qualname__", h.func),
+                                res=repr(res),
+                            )
                         )
             if failed:
-                logger.warning(f"♻ [GsCore] 插件 {plugin_name} 启动 Hook 执行完成, {failed} 个异常")
+                logger.warning(
+                    i18n_t(
+                        "♻ [GsCore] 插件 {plugin_name} 启动 Hook 执行完成, {failed} 个异常",
+                        plugin_name=plugin_name,
+                        failed=failed,
+                    )
+                )
             else:
-                logger.success(f"♻ [GsCore] 插件 {plugin_name} 启动 Hook 执行完成")
+                logger.success(i18n_t("♻ [GsCore] 插件 {plugin_name} 启动 Hook 执行完成", plugin_name=plugin_name))
 
         # 快速重载场景: 取消上一轮还没跑完的
         old = _plugin_start_tasks.get(plugin_name)
         if old is not None and not old.done():
-            logger.debug(f"♻ [GsCore] 取消插件 {plugin_name} 上一轮未完成的启动 Hook 任务")
+            logger.debug(
+                i18n_t("♻ [GsCore] 取消插件 {plugin_name} 上一轮未完成的启动 Hook 任务", plugin_name=plugin_name)
+            )
             old.cancel()
 
         try:
             task = asyncio.get_running_loop().create_task(_runner())
         except RuntimeError:
-            logger.warning(f"♻ [GsCore] 无运行中的事件循环, 插件 {plugin_name} 的启动 Hook 未执行")
+            logger.warning(
+                i18n_t("♻ [GsCore] 无运行中的事件循环, 插件 {plugin_name} 的启动 Hook 未执行", plugin_name=plugin_name)
+            )
             return
         # 保留引用防止任务被 GC; 完成后从句柄表摘除
         _plugin_start_tasks[plugin_name] = task
         task.add_done_callback(lambda t: _discard_start_task(plugin_name, t))
     except Exception as e:
-        logger.warning(f"♻ [GsCore] 调度插件 {plugin_name} 的启动 Hook 时异常: {e}")
+        logger.warning(
+            i18n_t("♻ [GsCore] 调度插件 {plugin_name} 的启动 Hook 时异常: {e}", plugin_name=plugin_name, e=e)
+        )
 
 
 def reload_plugin(plugin_name: str) -> str:
-    logger.info(f"🔔 正在重载插件 {plugin_name}...")
+    logger.info(i18n_t("🔔 正在重载插件 {plugin_name}...", plugin_name=plugin_name))
 
     # ──────────────────────────────────────────
     # 第一步：收集该插件下所有 SV 和 Plugins 对象
@@ -270,8 +357,12 @@ def reload_plugin(plugin_name: str) -> str:
     for k in stale_cache:
         _module_cache.pop(k, None)
     logger.debug(
-        f"🔔 [GsCore] 插件 {plugin_name} 已清理 {len(stale_modules)} 个 sys.modules 条目、"
-        f"{len(stale_cache)} 个 _module_cache 条目"
+        i18n_t(
+            "🔔 [GsCore] 插件 {plugin_name} 已清理 {p0} 个 sys.modules 条目、{p1} 个 _module_cache 条目",
+            plugin_name=plugin_name,
+            p0=len(stale_modules),
+            p1=len(stale_cache),
+        )
     )
 
     # ──────────────────────────────────────────
@@ -296,7 +387,7 @@ def reload_plugin(plugin_name: str) -> str:
         try:
             gss.cached_import(module_name, filepath, _type)
         except Exception as e:
-            logger.exception(f"❌ 重载模块 {module_name} 失败: {e}")
+            logger.exception(i18n_t("❌ 重载模块 {module_name} 失败: {e}", module_name=module_name, e=e))
             return f"❌ 重载失败: {e}"
 
     # ──────────────────────────────────────────
@@ -310,5 +401,5 @@ def reload_plugin(plugin_name: str) -> str:
     # ──────────────────────────────────────────
     _run_plugin_start_hooks(plugin_name)
 
-    logger.success(f"✨ 已重载插件 {plugin_name}")
+    logger.success(i18n_t("✨ 已重载插件 {plugin_name}", plugin_name=plugin_name))
     return f"✨ 已重载插件 {plugin_name}!"

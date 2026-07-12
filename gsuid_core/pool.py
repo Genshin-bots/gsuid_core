@@ -9,6 +9,8 @@ import importlib
 from typing import Any, TypeVar, Callable, Awaitable, Coroutine, ParamSpec, cast, overload
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
+from gsuid_core.i18n import t
+
 T = TypeVar("T")
 P = ParamSpec("P")
 
@@ -27,7 +29,7 @@ def _process_pool_initializer() -> None:
             err = ctypes.get_errno()
             raise OSError(err, os.strerror(err))
     except Exception as e:
-        logging.getLogger("gsuid_core").warning(f"[pool] PR_SET_PDEATHSIG 设置失败: {e}")
+        logging.getLogger("gsuid_core").warning(t("[pool] PR_SET_PDEATHSIG 设置失败: {e}", e=e))
 
 
 _executor = ThreadPoolExecutor(max_workers=10)

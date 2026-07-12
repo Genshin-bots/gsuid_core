@@ -5,6 +5,7 @@ Web Search 公共 API 模块
 外部模块应通过本模块的函数调用搜索，无需关心底层搜索引擎的实现细节。
 """
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.utils import (
     get_mcp_tool_id,
@@ -83,7 +84,7 @@ def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> l
         data = json.loads(cleaned)
     except json.JSONDecodeError:
         # 非 JSON：兜底透传（限长），而不是返回空让模型误以为“搜不到”
-        logger.debug(f"🌐 [WebSearch][MCP] 非 JSON 返回，按原文透传 ({len(cleaned)} 字)")
+        logger.debug(t("🌐 [WebSearch][MCP] 非 JSON 返回，按原文透传 ({p0} 字)", p0=len(cleaned)))
         return [
             {
                 "title": "",
@@ -94,7 +95,7 @@ def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> l
         ]
 
     # 调试日志：打印原始返回数据
-    logger.debug(f"🌐 [WebSearch][MCP] 结构化返回: {cleaned[:500]}...")
+    logger.debug(t("🌐 [WebSearch][MCP] 结构化返回: {p0}...", p0=cleaned[:500]))
 
     # 尝试解析为结果列表
     # MiniMax MCP 返回格式可能是 {"organic": [...]} 或 {"results": [...]} 或直接是 [...]

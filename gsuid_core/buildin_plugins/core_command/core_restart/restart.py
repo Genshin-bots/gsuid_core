@@ -5,13 +5,14 @@ import subprocess
 from typing import Optional
 from pathlib import Path
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.server import core_shutdown_execute
 from gsuid_core.version import __version__
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.startup_info import core_startup_info
-from gsuid_core.utils.database.models import Subscribe
+from gsuid_core.utils.database.models import CoreUser, Subscribe
 from gsuid_core.utils.plugins_update.utils import check_start_tool
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -28,7 +29,7 @@ def get_restart_command():
     is_use_custom_restart_command = core_plugins_config.get_config("is_use_custom_restart_command").data
     if is_use_custom_restart_command:
         restart_command = core_plugins_config.get_config("restart_command").data
-        logger.info(f"[Core重启] 使用自定义重启命令: {restart_command}")
+        logger.info(t("[Core重启] 使用自定义重启命令: {restart_command}", restart_command=restart_command))
         return restart_command
     else:
         tool = check_start_tool()
@@ -42,7 +43,7 @@ def get_restart_command():
             command = "python -m gsuid_core.core"
         else:
             command = "python -m gsuid_core.core"
-        logger.info(f"[Core重启] 使用默认重启命令: {command}")
+        logger.info(t("[Core重启] 使用默认重启命令: {command}", command=command))
         return command
 
 
@@ -108,9 +109,11 @@ async def restart_message():
         now_timestamp = time.time()
         now_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_timestamp))
         data = datas[0]
+        # 推送给主人，按主人的语言偏好（用户自定义 > 全局）
+        lang = await CoreUser.get_user_lang(data.user_id)
         duration_msg = ""
         if core_startup_info.duration is not None:
-            duration_msg = f"\n耗时: {core_startup_info.duration:.2f}s"
+            duration_msg = t("\n耗时: {p0:.2f}s", lang=lang, p0=core_startup_info.duration)
             if data.extra_message:
                 try:
                     shutdown_timestamp = time.mktime(time.strptime(data.extra_message, "%Y-%m-%d %H:%M:%S"))
@@ -119,8 +122,15 @@ async def restart_message():
                 except ValueError:
                     pass
         await data.send(
-            f"🚀 重启完成!\n关机时间: {data.extra_message}\n重启时间: {now_time}{duration_msg}\n版本: {__version__}"
+            t(
+                "🚀 重启完成!\n关机时间: {extra_message}\n重启时间: {now_time}{duration_msg}\n版本: {version}",
+                lang=lang,
+                extra_message=data.extra_message,
+                now_time=now_time,
+                duration_msg=duration_msg,
+                version=__version__,
+            )
         )
         await Subscribe.delete_row(task_name="[早柚核心] Restart")
     else:
-        logger.warning("[Core重启] 没有找到[Core重启]的订阅, 无推送消息！")
+        logger.warning(t("[Core重启] 没有找到[Core重启]的订阅, 无推送消息！"))

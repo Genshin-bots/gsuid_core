@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from sqlmodel import col, and_, delete, select, update
 from sqlalchemy.exc import IntegrityError
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .models import AIPersistentState
@@ -49,7 +50,7 @@ async def _ensure_table() -> None:
             )
         _table_ensured = True
     except Exception as e:
-        logger.warning(f"🗄️ [StateStore] 建表检查失败（将沿用既有表）: {e}")
+        logger.warning(t("🗄️ [StateStore] 建表检查失败（将沿用既有表）: {e}", e=e))
         _table_ensured = True
 
 
@@ -76,7 +77,7 @@ async def _fetch(scope: str, state_key: str) -> Optional[AIPersistentState]:
         if record.expire_at is not None and record.expire_at < _now():
             await session.execute(delete(AIPersistentState).where(col(AIPersistentState.id) == record.id))
             await session.commit()
-            logger.debug(f"🗄️ [StateStore] 状态已过期并清理: {scope} / {state_key}")
+            logger.debug(t("🗄️ [StateStore] 状态已过期并清理: {scope} / {state_key}", scope=scope, state_key=state_key))
             return None
 
         return record
@@ -138,10 +139,17 @@ async def state_set_value(
                 await session.commit()
                 new_version = record.version
 
-        logger.debug(f"🗄️ [StateStore] 写入: {scope} / {state_key} (v{new_version})")
+        logger.debug(
+            t(
+                "🗄️ [StateStore] 写入: {scope} / {state_key} (v{new_version})",
+                scope=scope,
+                state_key=state_key,
+                new_version=new_version,
+            )
+        )
         return new_version
 
-    raise RuntimeError(f"state_set_value 并发写入重试耗尽: {scope} / {state_key}")
+    raise RuntimeError(t("state_set_value 并发写入重试耗尽: {scope} / {state_key}", scope=scope, state_key=state_key))
 
 
 async def state_get_value(scope: str, state_key: str) -> Optional[Any]:
@@ -175,7 +183,7 @@ async def state_delete_value(scope: str, state_key: str) -> bool:
         await session.execute(delete(AIPersistentState).where(col(AIPersistentState.id) == record.id))
         await session.commit()
 
-    logger.debug(f"🗄️ [StateStore] 删除: {scope} / {state_key}")
+    logger.debug(t("🗄️ [StateStore] 删除: {scope} / {state_key}", scope=scope, state_key=state_key))
     return True
 
 
@@ -290,10 +298,23 @@ async def state_mutate(
                 # version 已被其他并发写入推进，重试
 
         logger.debug(
-            f"🗄️ [StateStore] state_mutate 乐观锁冲突，重试 ({attempt + 1}/{_APPEND_MAX_RETRY}): {scope} / {state_key}"
+            t(
+                "🗄️ [StateStore] state_mutate 乐观锁冲突，重试 ({p0}/{_APPEND_MAX_RETRY}): {scope} / {state_key}",
+                p0=attempt + 1,
+                _APPEND_MAX_RETRY=_APPEND_MAX_RETRY,
+                scope=scope,
+                state_key=state_key,
+            )
         )
 
-    raise RuntimeError(f"state_mutate 乐观锁重试 {_APPEND_MAX_RETRY} 次仍失败: {scope} / {state_key}")
+    raise RuntimeError(
+        t(
+            "state_mutate 乐观锁重试 {_APPEND_MAX_RETRY} 次仍失败: {scope} / {state_key}",
+            _APPEND_MAX_RETRY=_APPEND_MAX_RETRY,
+            scope=scope,
+            state_key=state_key,
+        )
+    )
 
 
 async def state_append_item(

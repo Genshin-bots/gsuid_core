@@ -12,6 +12,7 @@ import aiofiles
 from fastapi import File, Header, Request, UploadFile
 from sqlmodel import func, select
 
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.data_store import gs_data_path
@@ -72,14 +73,23 @@ def _decrypt_auth_body(request: Request, data: JsonObject, scope: str) -> tuple[
     allowed, retry_after = auth_rate_limiter.check(ip_key)
     if not allowed:
         # 被解密前置限流封禁：明确回「操作过于频繁」，避免与「请求无效」混淆误导正常用户
-        logger.warning(f"🔒️ [网页控制台] {scope} 解密前置限流: IP={client_ip}, 需等待 {retry_after}s")
+        logger.warning(
+            t(
+                "🔒️ [网页控制台] {scope} 解密前置限流: IP={client_ip}, 需等待 {retry_after}s",
+                scope=scope,
+                client_ip=client_ip,
+                retry_after=retry_after,
+            )
+        )
         return None, f"操作过于频繁，请在 {retry_after} 秒后重试"
     try:
         return maybe_decrypt_auth_body(data), ""
     except AuthCryptoError as e:
         # 解密失败计入 IP 维度限流：畸形 / 重放报文与认证失败同等对待，防 DoS / 探测
         auth_rate_limiter.record_failure(ip_key)
-        logger.warning(f"🔒️ [网页控制台] {scope} 报文解密失败: IP={client_ip}, {e}")
+        logger.warning(
+            t("🔒️ [网页控制台] {scope} 报文解密失败: IP={client_ip}, {e}", scope=scope, client_ip=client_ip, e=e)
+        )
         return None, _AUTH_DECRYPT_FAIL_MSG
 
 
@@ -190,7 +200,13 @@ async def api_login(request: Request, data: JsonObject):
     rate_key = f"login:{client_ip}"
     allowed, retry_after = auth_rate_limiter.check(rate_key)
     if not allowed:
-        logger.warning(f"🔒️ [网页控制台] 登录请求被限流: IP={client_ip}, 需等待 {retry_after}s")
+        logger.warning(
+            t(
+                "🔒️ [网页控制台] 登录请求被限流: IP={client_ip}, 需等待 {retry_after}s",
+                client_ip=client_ip,
+                retry_after=retry_after,
+            )
+        )
         return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
 
     email = _str_field(plain, "email")
@@ -240,7 +256,7 @@ async def api_login(request: Request, data: JsonObject):
         verify_password(password, _DUMMY_PASSWORD_HASH)
 
     auth_rate_limiter.record_failure(rate_key)
-    logger.info(f"🔒️ [网页控制台] 登录失败: IP={client_ip}, email={email}")
+    logger.info(t("🔒️ [网页控制台] 登录失败: IP={client_ip}, email={email}", client_ip=client_ip, email=email))
     return {"status": 1, "msg": "请检查账户密码是否输入正确"}
 
 
@@ -273,7 +289,13 @@ async def api_register(request: Request, data: JsonObject):
     rate_key = f"register:{client_ip}"
     allowed, retry_after = auth_rate_limiter.check(rate_key)
     if not allowed:
-        logger.warning(f"🔒️ [网页控制台] 注册请求被限流: IP={client_ip}, 需等待 {retry_after}s")
+        logger.warning(
+            t(
+                "🔒️ [网页控制台] 注册请求被限流: IP={client_ip}, 需等待 {retry_after}s",
+                client_ip=client_ip,
+                retry_after=retry_after,
+            )
+        )
         return {"status": 1, "msg": f"操作过于频繁，请在 {retry_after} 秒后重试"}
 
     name = _str_field(plain, "name")
@@ -289,7 +311,7 @@ async def api_register(request: Request, data: JsonObject):
     expected_code = get_register_code()
     if not secrets.compare_digest(str(register_code).encode(), str(expected_code).encode()):
         auth_rate_limiter.record_failure(rate_key)
-        logger.warning(f"🔒️ [网页控制台] 注册码错误: IP={client_ip}")
+        logger.warning(t("🔒️ [网页控制台] 注册码错误: IP={client_ip}", client_ip=client_ip))
         return {"status": 1, "msg": "注册码错误"}
 
     # 检查邮箱格式

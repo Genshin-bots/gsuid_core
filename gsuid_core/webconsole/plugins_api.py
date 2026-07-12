@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import Body, Query, Depends, Request
 
 from gsuid_core.sv import SL
+from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.plugins_config.models import (
@@ -504,9 +505,11 @@ async def update_framework_config(
             if result:
                 is_success = True
             else:
-                logger.warning(f"[框架配置][{config_name}] 配置项 {key} 写入失败")
+                logger.warning(t("[框架配置][{config_name}] 配置项 {key} 写入失败", config_name=config_name, key=key))
         except Exception as e:
-            logger.error(f"[框架配置][{config_name}] 配置项 {key} 写入异常: {e}")
+            logger.error(
+                t("[框架配置][{config_name}] 配置项 {key} 写入异常: {e}", config_name=config_name, key=key, e=e)
+            )
 
     if not is_success:
         return {"status": 1, "msg": "部分或全部配置项保存失败"}
@@ -556,10 +559,19 @@ async def update_framework_config_item(
         if result:
             return {"status": 0, "msg": "配置项已保存"}
         else:
-            logger.warning(f"[框架配置][{config_name}] 配置项 {item_name} 写入失败")
+            logger.warning(
+                t("[框架配置][{config_name}] 配置项 {item_name} 写入失败", config_name=config_name, item_name=item_name)
+            )
             return {"status": 1, "msg": "配置项写入失败"}
     except Exception as e:
-        logger.error(f"[框架配置][{config_name}] 配置项 {item_name} 写入异常: {e}")
+        logger.error(
+            t(
+                "[框架配置][{config_name}] 配置项 {item_name} 写入异常: {e}",
+                config_name=config_name,
+                item_name=item_name,
+                e=e,
+            )
+        )
         return {"status": 1, "msg": f"配置项写入异常: {str(e)}"}
 
 

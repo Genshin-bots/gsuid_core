@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from collections import deque
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
 
@@ -266,19 +267,19 @@ def _gate(
         return None
     # 命令回显检测（bot 侧报错回显）
     if _COMMAND_ECHO_RE.search(stripped):
-        logger.trace(f"🧠 [Observer] 命中命令回显过滤，丢弃: {stripped[:30]}")
+        logger.trace(t("🧠 [Observer] 命中命令回显过滤，丢弃: {p0}", p0=stripped[:30]))
         return None
     # 用户命令 / typo 命令检测（用户侧指令原文）：不进记忆抽取，避免废弃指令噪声污染召回
     if _looks_like_command(stripped):
-        logger.trace(f"🧠 [Observer] 命中用户命令/typo 过滤，丢弃: {stripped[:30]}")
+        logger.trace(t("🧠 [Observer] 命中用户命令/typo 过滤，丢弃: {p0}", p0=stripped[:30]))
         return None
     # 注入特征检测
     if _INJECTION_RE.search(stripped):
-        logger.trace(f"🧠 [Observer] 命中注入特征过滤，丢弃: {stripped[:30]}")
+        logger.trace(t("🧠 [Observer] 命中注入特征过滤，丢弃: {p0}", p0=stripped[:30]))
         return None
     # 复读 / 刷屏检测
     if _is_repeat(scope_key, stripped):
-        logger.trace(f"🧠 [Observer] 命中复读过滤，丢弃: {stripped[:30]}")
+        logger.trace(t("🧠 [Observer] 命中复读过滤，丢弃: {p0}", p0=stripped[:30]))
         return None
     # 重要性分级（不再因 len < 5 直接丢弃，改由分级后置校验）
     return _classify_value_tier(stripped, memory_config.extraction_value_gate)
@@ -384,7 +385,7 @@ async def observe(
                 worker.request_priority_flush(scope_key)
         except (ImportError, AttributeError, RuntimeError) as e:
             # worker 未启动 / API 变更 / 事件循环未就绪
-            logger.debug(f"🧠 [Memory] 纠错即时 flush 触发失败: {e}")
+            logger.debug(t("🧠 [Memory] 纠错即时 flush 触发失败: {e}", e=e))
 
 
 def get_observation_queue() -> sync_queue.Queue:

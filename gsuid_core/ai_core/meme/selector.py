@@ -9,6 +9,7 @@ import time
 import random
 from typing import Dict, List, Tuple, Optional, Sequence
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary
@@ -85,7 +86,7 @@ async def pick(
     """
     # 冷却检查
     if _is_on_cooldown(session_id):
-        logger.debug(f"[Meme] 会话 {session_id} 在冷却中，跳过发送")
+        logger.debug(t("[Meme] 会话 {session_id} 在冷却中，跳过发送", session_id=session_id))
         return None, PICK_COOLDOWN
 
     # 排除最近已发的图片
@@ -118,7 +119,13 @@ async def pick(
                 _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
                 return record, PICK_OK
             # 检索无可用结果 → 不降级到随机，继续检查下一个 folder
-            logger.debug(f"[Meme] 检索无可用结果: folder={folder}, query={query_text!r}")
+            logger.debug(
+                t(
+                    "[Meme] 检索无可用结果: folder={folder}, query={query_text}",
+                    folder=folder,
+                    query_text=repr(query_text),
+                )
+            )
             continue
 
         # 仅当无查询文本时才降级：随机选取
@@ -135,7 +142,14 @@ async def pick(
             _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
             return record, PICK_OK
 
-    logger.debug(f"[Meme] 未找到匹配的表情包: mood={mood}, scene={scene}, persona={persona}")
+    logger.debug(
+        t(
+            "[Meme] 未找到匹配的表情包: mood={mood}, scene={scene}, persona={persona}",
+            mood=mood,
+            scene=scene,
+            persona=persona,
+        )
+    )
     return None, PICK_EXHAUSTED if had_candidates else PICK_NO_MATCH
 
 

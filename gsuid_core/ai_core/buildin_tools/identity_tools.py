@@ -11,6 +11,7 @@ from typing import Optional
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -98,7 +99,14 @@ async def remember_user_alias(
     # 规范化后比对，避免「主　人」「ＡＤＭＩＮ」这类混淆绕过 denylist
     caller_pm = ev.user_pm if ev is not None else 6
     if _normalize_alias_for_guard(alias) in _PROTECTED_NORMALIZED and caller_pm != 0:
-        logger.warning(f"🧠 [Identity] 用户{target_id}(pm={caller_pm}) 试图注册受保护称谓「{alias}」，已拒绝")
+        logger.warning(
+            t(
+                "🧠 [Identity] 用户{target_id}(pm={caller_pm}) 试图注册受保护称谓「{alias}」，已拒绝",
+                target_id=target_id,
+                caller_pm=caller_pm,
+                alias=alias,
+            )
+        )
         return f"操作失败：称呼「{alias}」为受保护称谓，只有主人（PM=0）才能注册，当前用户权限等级为 {caller_pm}"
 
     try:
@@ -107,7 +115,15 @@ async def remember_user_alias(
 
         scope_key = make_scope_key(ScopeType.GROUP, str(group_id))
         ids = await record_member_alias(scope_key, alias, str(target_id))
-        logger.info(f"🧠 [Identity] {scope_key} 记住称呼: {alias} = 用户{target_id}（候选 {ids}）")
+        logger.info(
+            t(
+                "🧠 [Identity] {scope_key} 记住称呼: {alias} = 用户{target_id}（候选 {ids}）",
+                scope_key=scope_key,
+                alias=alias,
+                target_id=target_id,
+                ids=ids,
+            )
+        )
         others = [uid for uid in ids if uid != str(target_id)]
         if others:
             # 该称呼此前还指过别人——如实告知存在同名，避免误以为唯一绑定
@@ -118,5 +134,5 @@ async def remember_user_alias(
             )
         return f"已记住：{alias} = 用户{target_id}"
     except Exception as e:
-        logger.exception(f"🧠 [Identity] 记忆称呼失败: {e}")
+        logger.exception(t("🧠 [Identity] 记忆称呼失败: {e}", e=e))
         return f"操作失败：{e}"

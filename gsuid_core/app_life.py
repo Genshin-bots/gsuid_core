@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger, clean_log, clean_trace_collector
 from gsuid_core.server import core_start_execute, core_shutdown_execute, core_start_before_execute
 from gsuid_core.shutdown import shutdown_event
@@ -24,7 +25,7 @@ async def lifespan(app: FastAPI):
         try:
             await setup_frontend_b()
         except Exception as e:
-            logger.exception(f"💻 [网页控制台] 后台初始化失败: {e}")
+            logger.exception(t("💻 [网页控制台] 后台初始化失败: {e}", e=e))
 
     asyncio.create_task(_bgsetup_frontend_b())
 
@@ -38,7 +39,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("[GsCore] 开始关闭流程，设置 shutdown_event...")
+    logger.info(t("[GsCore] 开始关闭流程，设置 shutdown_event..."))
     shutdown_event.set()
 
     await shutdown_scheduler()

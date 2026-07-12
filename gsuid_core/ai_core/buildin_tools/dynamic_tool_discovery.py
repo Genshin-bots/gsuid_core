@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -61,27 +62,40 @@ async def find_tools(
             try:
                 tool_def = await tool.prepare_tool_def(run_ctx)
             except Exception as e:
-                logger.debug(f"🧠 [find_tools] 工具 {tool.name} prepare 失败，按不可用处理: {e}")
+                logger.debug(t("🧠 [find_tools] 工具 {p0} prepare 失败，按不可用处理: {e}", p0=tool.name, e=e))
                 tool_def = None
             (loaded_names if tool_def else hidden_names).append(tool.name)
 
         if hidden_names:
-            logger.info(f"🧠 [find_tools] {len(hidden_names)} 个命中工具因 visible_when 不满足被剔除: {hidden_names}")
+            logger.info(
+                t(
+                    "🧠 [find_tools] {p0} 个命中工具因 visible_when 不满足被剔除: {hidden_names}",
+                    p0=len(hidden_names),
+                    hidden_names=hidden_names,
+                )
+            )
         if not loaded_names:
             # 与"检索无命中"同文案：不向模型泄露被隐藏工具的存在，避免诱导换措辞反复检索。
             return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
 
         ctx.deps.dynamic_tool_names.update(loaded_names)
 
-        logger.info(f"🧠 [find_tools] 为需求「{need[:40]}」动态加载 {len(loaded_names)} 个工具: {loaded_names}")
+        logger.info(
+            t(
+                "🧠 [find_tools] 为需求「{p0}」动态加载 {p1} 个工具: {loaded_names}",
+                p0=need[:40],
+                p1=len(loaded_names),
+                loaded_names=loaded_names,
+            )
+        )
         listing = "\n".join(f"- {name}" for name in loaded_names)
         return f"✅ 已加载以下工具，下一步即可直接调用：\n{listing}"
 
     except RuntimeError as e:
-        logger.warning(f"🧠 [find_tools] AI功能未启用: {e}")
+        logger.warning(t("🧠 [find_tools] AI功能未启用: {e}", e=e))
         return "⚠️ 工具检索功能未启用，无法动态加载工具。"
     except Exception as e:
-        logger.error(f"🧠 [find_tools] 工具加载失败: {e}")
+        logger.error(t("🧠 [find_tools] 工具加载失败: {e}", e=e))
         return f"⚠️ 工具加载失败: {str(e)}"
 
 
@@ -137,15 +151,17 @@ async def discover_tools(
 
         result_parts.append("\n提示: 如果需要使用上述工具，请调整回答，说明该任务需要调用特定工具才能完成。")
 
-        logger.info(f"🧠 [DynamicToolDiscovery] 发现 {len(discovered_tools)} 个工具用于任务: {task[:50]}")
+        logger.info(
+            t("🧠 [DynamicToolDiscovery] 发现 {p0} 个工具用于任务: {p1}", p0=len(discovered_tools), p1=task[:50])
+        )
         return "\n".join(result_parts)
 
     except RuntimeError as e:
         # AI功能未启用
-        logger.warning(f"🧠 [DynamicToolDiscovery] AI功能未启用: {e}")
+        logger.warning(t("🧠 [DynamicToolDiscovery] AI功能未启用: {e}", e=e))
         return "⚠️ AI工具搜索功能未启用，无法发现新工具。"
     except Exception as e:
-        logger.error(f"🧠 [DynamicToolDiscovery] 工具发现失败: {e}")
+        logger.error(t("🧠 [DynamicToolDiscovery] 工具发现失败: {e}", e=e))
         return f"⚠️ 工具发现失败: {str(e)}"
 
 
@@ -205,5 +221,5 @@ async def list_available_tools(
         return "\n".join(result_parts)
 
     except Exception as e:
-        logger.error(f"🧠 [ListAvailableTools] 获取工具列表失败: {e}")
+        logger.error(t("🧠 [ListAvailableTools] 获取工具列表失败: {e}", e=e))
         return f"⚠️ 获取工具列表失败: {str(e)}"

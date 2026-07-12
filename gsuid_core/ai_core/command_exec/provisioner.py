@@ -22,6 +22,7 @@ from dataclasses import field, dataclass
 
 import httpx
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.command_exec.config import cfg_get
@@ -162,7 +163,7 @@ async def _download_and_install(
             return True, "工具链已就位(跨进程复用)", existing
 
         url = _build_url(recipe, os_norm, arch, ext)
-        logger.info(f"🧰 [Provision] 下载 {recipe.tool} v{recipe.version} ← {url}")
+        logger.info(t("🧰 [Provision] 下载 {p0} v{p1} ← {url}", p0=recipe.tool, p1=recipe.version, url=url))
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / f"pkg.{ext}"
             digest = await _download(url, archive)
@@ -176,7 +177,9 @@ async def _download_and_install(
                 shutil.rmtree(final_dir, ignore_errors=True)
             os.replace(str(extracted_bin.parent), str(final_dir))
         bin_path = final_dir / recipe.bin_subdir
-        logger.success(f"🧰 [Provision] {recipe.tool} v{recipe.version} 安装完成 → {bin_path}")
+        logger.success(
+            t("🧰 [Provision] {p0} v{p1} 安装完成 → {bin_path}", p0=recipe.tool, p1=recipe.version, bin_path=bin_path)
+        )
         return True, "安装完成", bin_path
     finally:
         _release_file_lock(lock_fd, lock_path)

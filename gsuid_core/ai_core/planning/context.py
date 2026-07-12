@@ -9,6 +9,7 @@
 fail_task_tree 重建（参见 docs/AI_AGENT_ARCHITECTURE.md §3.5 持久化产物交付判据）。
 """
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
 from . import kanban as kanban_manager
@@ -39,7 +40,7 @@ async def build_task_context(user_id: str) -> str:
     try:
         tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
     except Exception as e:
-        logger.debug(f"📋 [Kanban] 任务上下文注入失败: {e}")
+        logger.debug(i18n_t("📋 [Kanban] 任务上下文注入失败: {e}", e=e))
         return ""
     if not tasks:
         return ""
@@ -57,7 +58,7 @@ async def build_task_context(user_id: str) -> str:
         try:
             _, children = await kanban_manager.get_task_tree(t.id)
         except Exception as e:
-            logger.debug(f"📋 [Kanban] 拉子任务摘要失败 root={t.id}: {e}")
+            logger.debug(i18n_t("📋 [Kanban] 拉子任务摘要失败 root={p0}: {e}", p0=t.id, e=e))
             children = []
         if not children:
             continue

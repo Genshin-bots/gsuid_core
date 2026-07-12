@@ -12,6 +12,7 @@ from datetime import datetime
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.rag.reranker import RerankerProvider, get_reranker
@@ -129,7 +130,7 @@ async def _fetch_temporal_episodes(
                 top_k=per_bucket,
             )
         except Exception as e:
-            logger.debug(f"🧠 [Memory] 时间分桶检索 bucket={i} 失败: {e}")
+            logger.debug(i18n_t("🧠 [Memory] 时间分桶检索 bucket={i} 失败: {e}", i=i, e=e))
             return []
 
     results = await asyncio.gather(*[_one_bucket(i) for i in range(buckets)])
@@ -148,7 +149,7 @@ def _on_pref_task_done(t: "asyncio.Task") -> None:
         return
     exc = t.exception()
     if exc is not None:
-        logger.warning(f"🧠 [Memory] 刷新 preference last_applied 后台任务异常: {exc}")
+        logger.warning(i18n_t("🧠 [Memory] 刷新 preference last_applied 后台任务异常: {exc}", exc=exc))
 
 
 async def _run_sync_rerank(
@@ -451,7 +452,7 @@ async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list
     texts = [item["content"] for item in items]
     scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
-        logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
+        logger.warning(i18n_t("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank"))
         return items[:top_k]
     ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:top_k]]
@@ -468,7 +469,7 @@ async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[
     texts = [item["summary"] for item in items]
     scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
-        logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
+        logger.warning(i18n_t("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank"))
         return items[:top_k]
     ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:top_k]]
@@ -489,7 +490,7 @@ async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]
     texts = [item["fact"] for item in items]
     scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
-        logger.warning("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank")
+        logger.warning(i18n_t("🧠 [Memory] Reranker scores 长度不一致，跳过 Rerank"))
         return items[:top_k]
     ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
     kept: list[Edge] = []
@@ -546,10 +547,14 @@ async def dual_route_retrieve(
             mappings = await get_term_mappings(group_scope)
             expanded = expand_query_with_aliases(query, mappings)
             if expanded != query:
-                logger.debug(f"🧠 [Memory] query 别名展开: {query!r} -> {expanded!r}")
+                logger.debug(
+                    i18n_t(
+                        "🧠 [Memory] query 别名展开: {query} -> {expanded}", query=repr(query), expanded=repr(expanded)
+                    )
+                )
                 query = expanded
         except Exception as e:
-            logger.debug(f"🧠 [Memory] 别名展开失败: {e}")
+            logger.debug(i18n_t("🧠 [Memory] 别名展开失败: {e}", e=e))
 
     # 私聊 / 无群上下文（group_id 为空）：user_global 是该用户记忆的**主** scope（observer 对
     # 私聊消息即写此处），必须检索，否则私聊与评测（group_id=None）召回恒空。群聊时则仅当
@@ -617,7 +622,7 @@ async def dual_route_retrieve(
     # 处理 System-1 结果
     s1_raw = all_results[0]
     if isinstance(s1_raw, Exception):
-        logger.error(f"🧠 [Memory] System-1 检索失败: {s1_raw}")
+        logger.error(i18n_t("🧠 [Memory] System-1 检索失败: {s1_raw}", s1_raw=s1_raw))
         s1: System1Result = System1Result()
     else:
         s1 = s1_raw  # type: ignore[assignment]
@@ -625,18 +630,32 @@ async def dual_route_retrieve(
     s2_results: list[System2Result] = []
     for i, raw_result in enumerate(all_results[1:], start=1):
         if isinstance(raw_result, Exception):
-            logger.error(f"🧠 [Memory] System-2 检索失败 (scope={s2_scope_keys[i - 1]}): {raw_result}")
+            logger.error(
+                i18n_t(
+                    "🧠 [Memory] System-2 检索失败 (scope={p0}): {raw_result}",
+                    p0=s2_scope_keys[i - 1],
+                    raw_result=raw_result,
+                )
+            )
         elif isinstance(raw_result, System2Result):
             s2_results.append(raw_result)
             logger.debug(
-                f"🧠 [Memory] System-2 检索完成 (scope={s2_scope_keys[i - 1]})，"
-                f"共 {len(raw_result.episodes)} 条 Episode, "
-                f"{len(raw_result.selected_entities)} 个 Entity, {len(raw_result.edges)} 条 Edge"
+                i18n_t(
+                    "🧠 [Memory] System-2 检索完成 (scope={p0})，共 {p1} 条 Episode, {p2} 个 Entity, {p3} 条 Edge",
+                    p0=s2_scope_keys[i - 1],
+                    p1=len(raw_result.episodes),
+                    p2=len(raw_result.selected_entities),
+                    p3=len(raw_result.edges),
+                )
             )
 
     logger.debug(
-        f"🧠 [Memory] System-1 检索完成，共 {len(s1.episodes)} 条 Episode, "
-        f"{len(s1.entities)} 个 Entity, {len(s1.edges)} 条 Edge"
+        i18n_t(
+            "🧠 [Memory] System-1 检索完成，共 {p0} 条 Episode, {p1} 个 Entity, {p2} 条 Edge",
+            p0=len(s1.episodes),
+            p1=len(s1.entities),
+            p2=len(s1.edges),
+        )
     )
 
     # 合并去重（多个 S2 结果之间也要去重）
@@ -692,7 +711,7 @@ async def dual_route_retrieve(
                 if projected:
                     all_edges = _merge_edges(all_edges, projected)
         except Exception as e:
-            logger.warning(f"🧠 [RF-Mem] 回忆环检索失败: {e}")
+            logger.warning(i18n_t("🧠 [RF-Mem] 回忆环检索失败: {e}", e=e))
 
     # 类型隔离 Rerank（Type Isolation）：
     # Category 节点完全跳过 Reranker，给予固定最高优先级。
@@ -725,15 +744,24 @@ async def dual_route_retrieve(
                     temporal_eps = [temporal_eps[int(i * _step)] for i in range(24)]
                 ranked_episodes = _merge_episodes(ranked_episodes[:20], temporal_eps)
                 logger.info(
-                    f"🧠 [Memory] 时间范围补召回 {len(temporal_eps)} 条 Episode "
-                    f"({time_range[0]:%Y-%m-%d} ~ {time_range[1]:%Y-%m-%d})"
+                    i18n_t(
+                        "🧠 [Memory] 时间范围补召回 {p0} 条 Episode ({p1:%Y-%m-%d} ~ {p2:%Y-%m-%d})",
+                        p0=len(temporal_eps),
+                        p1=time_range[0],
+                        p2=time_range[1],
+                    )
                 )
         except Exception as e:
-            logger.warning(f"🧠 [Memory] 时间范围补召回失败: {e}")
+            logger.warning(i18n_t("🧠 [Memory] 时间范围补召回失败: {e}", e=e))
 
     logger.info(
-        f"🧠 [Memory] 共计 {len(all_episodes)} 条 Episode, {len(all_entities)} 个 Entity, "
-        f"{len(all_edges)} 条 Edge, {len(all_categories)} 个 Category"
+        i18n_t(
+            "🧠 [Memory] 共计 {p0} 条 Episode, {p1} 个 Entity, {p2} 条 Edge, {p3} 个 Category",
+            p0=len(all_episodes),
+            p1=len(all_entities),
+            p2=len(all_edges),
+            p3=len(all_categories),
+        )
     )
 
     # C11：把本次命中的 Edge 标记为"刚被检索"，刷新 last_accessed 供衰减 Worker 判定。
@@ -757,14 +785,14 @@ async def dual_route_retrieve(
             try:
                 await AIMemEdge.touch_accessed(edge_ids)
             except Exception as _e:
-                logger.debug(f"🧠 [Memory] 刷新 edge last_accessed 失败: {_e}")
+                logger.debug(i18n_t("🧠 [Memory] 刷新 edge last_accessed 失败: {_e}", _e=_e))
 
         def _on_task_done(t):
             if t.cancelled():
                 return
             exc = t.exception()
             if exc is not None:
-                logger.warning(f"🧠 [Memory] 刷新 edge last_accessed 后台任务异常: {exc}")
+                logger.warning(i18n_t("🧠 [Memory] 刷新 edge last_accessed 后台任务异常: {exc}", exc=exc))
 
         task = asyncio.create_task(_touch_edges_accessed())
         task.add_done_callback(_on_task_done)
@@ -785,9 +813,9 @@ async def dual_route_retrieve(
             )
             conflict_summaries = await AIMemConflict.get_by_signatures(scope_keys, sigs)
             if conflict_summaries:
-                logger.info(f"🧠 [Memory] 矛盾提示命中 {len(conflict_summaries)} 条 Conflict 摘要")
+                logger.info(i18n_t("🧠 [Memory] 矛盾提示命中 {p0} 条 Conflict 摘要", p0=len(conflict_summaries)))
         except Exception as e:
-            logger.debug(f"🧠 [Memory] 矛盾提示查询失败: {e}")
+            logger.debug(i18n_t("🧠 [Memory] 矛盾提示查询失败: {e}", e=e))
 
     # 程序性/偏好记忆（默认开）：SQL-only 取本 user/scope 下的活跃规则，置顶强约束注入。
     # 选择性注入（意图门 + 能力域过滤）由 inject_preferences / preference_contexts 控制，避免
@@ -833,12 +861,12 @@ async def dual_route_retrieve(
                     try:
                         await AIMemPreference.touch_applied(pref_ids)
                     except Exception as _e:
-                        logger.debug(f"🧠 [Memory] 刷新 preference last_applied 失败: {_e}")
+                        logger.debug(i18n_t("🧠 [Memory] 刷新 preference last_applied 失败: {_e}", _e=_e))
 
                 pref_task = asyncio.create_task(_touch_prefs())
                 pref_task.add_done_callback(_on_pref_task_done)
         except Exception as e:
-            logger.warning(f"🧠 [Memory] 偏好检索失败: {e}")
+            logger.warning(i18n_t("🧠 [Memory] 偏好检索失败: {e}", e=e))
 
     return MemoryContext(
         episodes=ranked_episodes,

@@ -13,6 +13,7 @@ Git Update 工具模块
 from typing import List, Optional, TypedDict
 from pathlib import Path
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .api import CORE_PATH, PLUGINS_PATH
@@ -86,7 +87,7 @@ async def get_current_commit(repo_path: Path) -> Optional[CommitInfo]:
     )
 
     if returncode != 0 or not stdout:
-        logger.warning(f"[Git Update] 获取当前 commit 失败: {stderr}")
+        logger.warning(t("[Git Update] 获取当前 commit 失败: {stderr}", stderr=stderr))
         return None
 
     return _parse_commit_line(stdout)
@@ -130,7 +131,7 @@ async def get_remote_commits(
     # 尝试 fetch 获取最新远程信息，失败则使用本地缓存
     success, message = await git_fetch(repo_path)
     if not success:
-        logger.warning(f"[Git Update] git fetch 失败（将使用本地缓存的远程 ref）: {message}")
+        logger.warning(t("[Git Update] git fetch 失败（将使用本地缓存的远程 ref）: {message}", message=message))
 
     # 获取当前分支
     branch = await git_get_current_branch(repo_path)
@@ -145,7 +146,7 @@ async def get_remote_commits(
     )
 
     if returncode != 0 or not stdout:
-        logger.warning(f"[Git Update] 获取远程 commit 列表失败: {stderr}")
+        logger.warning(t("[Git Update] 获取远程 commit 列表失败: {stderr}", stderr=stderr))
         return []
 
     commits: List[CommitInfo] = []
@@ -185,7 +186,7 @@ async def get_local_commits(
     )
 
     if returncode != 0 or not stdout:
-        logger.warning(f"[Git Update] 获取本地 commit 列表失败: {stderr}")
+        logger.warning(t("[Git Update] 获取本地 commit 列表失败: {stderr}", stderr=stderr))
         return []
 
     commits: List[CommitInfo] = []
@@ -261,10 +262,10 @@ async def checkout_commit(repo_path: Path, commit_hash: str) -> tuple[bool, str]
     success, msg = await git_reset_hard(repo_path, commit_hash)
 
     if not success:
-        logger.warning(f"[Git Update] reset --hard 失败: {msg}")
+        logger.warning(t("[Git Update] reset --hard 失败: {msg}", msg=msg))
         return False, f"reset --hard 失败: {msg}"
 
-    logger.info(f"[Git Update] 已回退到 commit: {commit_hash}")
+    logger.info(t("[Git Update] 已回退到 commit: {commit_hash}", commit_hash=commit_hash))
     return True, f"已回退到 commit: {commit_hash[:7]}"
 
 
@@ -296,13 +297,13 @@ async def force_update(repo_path: Path) -> tuple[bool, str]:
     # git reset --hard origin/{branch}
     success, message = await git_reset_hard(repo_path, f"origin/{branch}")
     if not success:
-        logger.warning(f"[Git Update] git reset --hard 失败: {message}")
+        logger.warning(t("[Git Update] git reset --hard 失败: {message}", message=message))
         return False, f"git reset --hard 失败: {message}"
 
     # git pull
     success, message = await git_pull(repo_path)
     if not success:
-        logger.warning(f"[Git Update] git pull 失败: {message}")
+        logger.warning(t("[Git Update] git pull 失败: {message}", message=message))
         return False, f"git pull 失败: {message}"
 
     # 获取更新后的 commit 信息
@@ -340,7 +341,7 @@ async def update(repo_path: Path) -> tuple[bool, str]:
     # 执行 git pull
     success, message = await git_pull(repo_path)
     if not success:
-        logger.warning(f"[Git Update] git pull 失败: {message}")
+        logger.warning(t("[Git Update] git pull 失败: {message}", message=message))
         return False, f"git pull 失败: {message}"
 
     # 获取更新后的 commit 信息

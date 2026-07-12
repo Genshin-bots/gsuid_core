@@ -18,6 +18,7 @@ from fastmcp import Client
 from fastmcp.client.transports import SSETransport, StdioTransport
 
 from mcp.types import TextContent, ImageContent, ResourceLink, EmbeddedResource
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 
@@ -106,7 +107,7 @@ class MCPClient:
         transport_type = self._detect_transport()
 
         if transport_type == "sse":
-            logger.debug(f"🔌 [MCP][{self.name}] 使用 SSE 传输，URL: {self.url}")
+            logger.debug(t("🔌 [MCP][{p0}] 使用 SSE 传输，URL: {p1}", p0=self.name, p1=self.url))
             return SSETransport(
                 url=self.url,
                 headers=self.headers if self.headers else None,
@@ -153,7 +154,7 @@ class MCPClient:
         transport = self._create_transport()
         client = Client(transport)
 
-        logger.info(f"🔌 [MCP][{self.name}] 正在连接服务器并获取工具列表...")
+        logger.info(t("🔌 [MCP][{p0}] 正在连接服务器并获取工具列表...", p0=self.name))
 
         async with client:
             raw_tools = await client.list_tools()
@@ -169,7 +170,7 @@ class MCPClient:
                 )
             )
 
-        logger.info(f"🔌 [MCP][{self.name}] 获取到 {len(tools)} 个工具")
+        logger.info(t("🔌 [MCP][{p0}] 获取到 {p1} 个工具", p0=self.name, p1=len(tools)))
         return tools
 
     async def call_tool(
@@ -195,7 +196,14 @@ class MCPClient:
 
         # 截断过长的参数值，避免 base64 等大段数据污染日志
         truncated_args = self._truncate_args(arguments)
-        logger.info(f"🔌 [MCP][{self.name}] 调用工具: {tool_name}, 参数: {truncated_args}")
+        logger.info(
+            t(
+                "🔌 [MCP][{p0}] 调用工具: {tool_name}, 参数: {truncated_args}",
+                p0=self.name,
+                tool_name=tool_name,
+                truncated_args=truncated_args,
+            )
+        )
 
         async with client:
             result = await client.call_tool(
@@ -227,9 +235,13 @@ class MCPClient:
         )
 
         logger.info(
-            f"🔌 [MCP][{self.name}] 工具 {tool_name} 调用完成, "
-            f"is_error={tool_result.is_error}, "
-            f"内容长度={len(tool_result.text)}"
+            t(
+                "🔌 [MCP][{p0}] 工具 {tool_name} 调用完成, is_error={p1}, 内容长度={p2}",
+                p0=self.name,
+                tool_name=tool_name,
+                p1=tool_result.is_error,
+                p2=len(tool_result.text),
+            )
         )
 
         return tool_result

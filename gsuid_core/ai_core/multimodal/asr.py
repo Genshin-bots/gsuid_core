@@ -9,6 +9,7 @@
     text = await transcribe_audio(audio_data=b"...", format="ogg")
 """
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.utils import (
     get_mcp_tool_id,
@@ -77,5 +78,5 @@ async def transcribe_audio(
             cleanup_tempfile(audio_path, "🎤 [ASR]")
 
     # 未知 provider
-    logger.warning(f"🎤 [ASR] 未知的提供方 '{provider}'，仅支持 MCP")
-    raise RuntimeError(f"ASR 不支持该提供方: {provider}")
+    logger.warning(t("🎤 [ASR] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    raise RuntimeError(t("ASR 不支持该提供方: {provider}", provider=provider))

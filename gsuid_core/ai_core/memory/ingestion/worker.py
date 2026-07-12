@@ -20,6 +20,7 @@ import asyncio
 from typing import Tuple, Optional, TypedDict
 from collections import defaultdict
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.memory.observer import ObservationRecord, get_observation_queue
@@ -117,10 +118,12 @@ def _advance_low_provider(failed_provider: str) -> str:
         nxt = _FAILOVER_LOW_PROVIDERS[(idx + 1) % len(_FAILOVER_LOW_PROVIDERS)]
         if nxt != cur:
             cfg.data = nxt
-            logger.warning(f"🧠 [Memory] 低档 provider 限流/额度耗尽，故障转移: {cur} -> {nxt}")
+            logger.warning(
+                i18n_t("🧠 [Memory] 低档 provider 限流/额度耗尽，故障转移: {cur} -> {nxt}", cur=cur, nxt=nxt)
+            )
         return nxt
     except Exception as e:
-        logger.warning(f"🧠 [Memory] provider 故障转移失败: {e}")
+        logger.warning(i18n_t("🧠 [Memory] provider 故障转移失败: {e}", e=e))
         return failed_provider
 
 
@@ -200,7 +203,7 @@ class IngestionWorker:
         必须在主事件循环运行中调用（init_memory_system 满足此条件）。
         """
         if self._running:
-            logger.info("🧠 [Memory] IngestionWorker 已在运行，跳过重复启动")
+            logger.info(i18n_t("🧠 [Memory] IngestionWorker 已在运行，跳过重复启动"))
             return
         self._llm_semaphore = asyncio.Semaphore(memory_config.llm_semaphore_limit)
         self._flush_lock = asyncio.Lock()
@@ -228,11 +231,14 @@ class IngestionWorker:
                     await asyncio.wait_for(self._flush_all_inner(), timeout=_SHUTDOWN_FLUSH_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.warning(
-                    f"🧠 [Memory] IngestionWorker 关闭前 flush 超时（{_SHUTDOWN_FLUSH_TIMEOUT}s），"
-                    "放弃余下 scope 以保证及时关闭/重启"
+                    i18n_t(
+                        "🧠 [Memory] IngestionWorker 关闭前 flush 超时（{_SHUTDOWN_FLUSH_TIMEOUT}s），"
+                        "放弃余下 scope 以保证及时关闭/重启",
+                        _SHUTDOWN_FLUSH_TIMEOUT=_SHUTDOWN_FLUSH_TIMEOUT,
+                    )
                 )
             except Exception as e:
-                logger.warning(f"🧠 [Memory] IngestionWorker 关闭前 flush 失败: {e}", exc_info=True)
+                logger.warning(i18n_t("🧠 [Memory] IngestionWorker 关闭前 flush 失败: {e}", e=e), exc_info=True)
 
     async def flush_all(self, timeout: Optional[float] = 120.0):
         """立即将所有缓冲区 flush 到数据库。
@@ -245,19 +251,19 @@ class IngestionWorker:
         超时则放弃（取消在单循环内传播，安全）。
         """
         if not self._running or self._flush_lock is None:
-            logger.warning("🧠 [Memory] IngestionWorker 未启动，跳过 flush_all")
+            logger.warning(i18n_t("🧠 [Memory] IngestionWorker 未启动，跳过 flush_all"))
             return
 
-        logger.info("🧠 [Memory] 开始强行同步记忆数据到数据库...")
+        logger.info(i18n_t("🧠 [Memory] 开始强行同步记忆数据到数据库..."))
         try:
             if timeout is None:
                 await self._flush_all_inner()
             else:
                 await asyncio.wait_for(self._flush_all_inner(), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.error(f"🧠 [Memory] flush_all 超时（{timeout}秒），放弃等待")
+            logger.error(i18n_t("🧠 [Memory] flush_all 超时（{timeout}秒），放弃等待", timeout=timeout))
         except Exception as e:
-            logger.error(f"🧠 [Memory] flush_all 异常: {e}", exc_info=True)
+            logger.error(i18n_t("🧠 [Memory] flush_all 异常: {e}", e=e), exc_info=True)
 
     async def _flush_all_inner(self):
         """flush_all 核心逻辑"""
@@ -272,11 +278,13 @@ class IngestionWorker:
                     break
 
             # flush buffers
-            logger.info(f"🧠 [Memory] 开始同步记忆条数{len(self._buffers)}")
+            logger.info(i18n_t("🧠 [Memory] 开始同步记忆条数{p0}", p0=len(self._buffers)))
             scope_keys = list(self._buffers.keys())
             for scope_key in scope_keys:
                 while scope_key in self._flushing:
-                    logger.debug(f"🧠 [Memory] scope={scope_key} 正在 flush 中，等待 0.1s...")
+                    logger.debug(
+                        i18n_t("🧠 [Memory] scope={scope_key} 正在 flush 中，等待 0.1s...", scope_key=scope_key)
+                    )
                     await asyncio.sleep(0.1)
                 if self._buffers.get(scope_key):
                     await self._flush(scope_key)
@@ -297,9 +305,9 @@ class IngestionWorker:
                     await self._flush(scope_key)
 
             if memory_config.eval_mode:
-                logger.info("🧠 [Memory] 评测模式，跳过 flush_all 中的分层图重建")
+                logger.info(i18n_t("🧠 [Memory] 评测模式，跳过 flush_all 中的分层图重建"))
             else:
-                logger.info("🧠 [Memory] flush_all 完成，分层图将在后台异步重建")
+                logger.info(i18n_t("🧠 [Memory] flush_all 完成，分层图将在后台异步重建"))
 
     async def stop(self):
         """停止后台消费循环并等待退出（含关闭前 flush）。
@@ -324,8 +332,8 @@ class IngestionWorker:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"🧠 [Memory] IngestionWorker 停止时异常: {e}", exc_info=True)
-        logger.info("🧠 [Memory] IngestionWorker 已停止")
+            logger.error(i18n_t("🧠 [Memory] IngestionWorker 停止时异常: {e}", e=e), exc_info=True)
+        logger.info(i18n_t("🧠 [Memory] IngestionWorker 已停止"))
 
     def request_priority_flush(self, scope_key: str) -> None:
         """纠错即时写快路径（程序性记忆 §4.3）：在主循环上调度一次该 scope 的优先 flush，
@@ -415,7 +423,7 @@ class IngestionWorker:
         """将缓冲区中的消息批量处理"""
         # Bug-01 修复：使用 _flushing 标记避免重复创建 flush 任务
         if scope_key in self._flushing:
-            logger.debug(f"🧠 [Memory] scope={scope_key} 正在 flush 中，跳过")
+            logger.debug(i18n_t("🧠 [Memory] scope={scope_key} 正在 flush 中，跳过", scope_key=scope_key))
             return
 
         self._flushing.add(scope_key)
@@ -429,7 +437,14 @@ class IngestionWorker:
         async with self._llm_semaphore:
             batch_size = memory_config.batch_max_size
             batches = [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
-            logger.info(f"🧠 [Memory] scope={scope_key} 共 {len(records)} 条，分 {len(batches)} 批处理")
+            logger.info(
+                i18n_t(
+                    "🧠 [Memory] scope={scope_key} 共 {p0} 条，分 {p1} 批处理",
+                    scope_key=scope_key,
+                    p0=len(records),
+                    p1=len(batches),
+                )
+            )
             try:
                 for idx, batch in enumerate(batches):
                     # P0: 对每批摄入添加超时保护，防止 LLM 调用无限阻塞
@@ -440,7 +455,9 @@ class IngestionWorker:
                         )
                         _record_ingestion_stats(len(batch), success=True)
                     except asyncio.TimeoutError:
-                        logger.warning(f"🧠 [Memory] scope={scope_key} 批次摄入超时（120秒），跳过")
+                        logger.warning(
+                            i18n_t("🧠 [Memory] scope={scope_key} 批次摄入超时（120秒），跳过", scope_key=scope_key)
+                        )
                         _record_ingestion_stats(len(batch), success=False)
                     except Exception as e:
                         # A-5 修复：以"批"为最小重试单位。原代码用外层 try/except 捕获，
@@ -455,7 +472,12 @@ class IngestionWorker:
                         remaining = [r for b in batches[idx:] for r in b]
                         self._buffers[scope_key].extend(remaining)
                         logger.warning(
-                            f"🧠 [Memory] scope={scope_key} 第 {idx + 1} 批起 {len(remaining)} 条退回缓冲，等待重试"
+                            i18n_t(
+                                "🧠 [Memory] scope={scope_key} 第 {p0} 批起 {p1} 条退回缓冲，等待重试",
+                                scope_key=scope_key,
+                                p0=idx + 1,
+                                p1=len(remaining),
+                            )
                         )
                         _record_ingestion_stats(len(remaining), success=False)
                         break
@@ -555,7 +577,13 @@ async def _ingest_batch_inner(
     is_self_scope = scope_key.startswith("self:")
     high_records = [r for r in records if getattr(r, "value_tier", "HIGH") == "HIGH"]
     if is_self_scope or not high_records:
-        logger.debug(f"🧠 [Memory] scope={scope_key} 本批 {len(records)} 条为 LOW/SELF，仅写 Episode 跳过抽取")
+        logger.debug(
+            i18n_t(
+                "🧠 [Memory] scope={scope_key} 本批 {p0} 条为 LOW/SELF，仅写 Episode 跳过抽取",
+                scope_key=scope_key,
+                p0=len(records),
+            )
+        )
         return
 
     # Step 3+：实体/边抽取与图谱写入（best-effort 富集）。
@@ -574,8 +602,13 @@ async def _ingest_batch_inner(
         )
     except Exception as e:
         logger.warning(
-            f"🧠 [Memory] scope={scope_key} Episode {episode.id} 抽取阶段失败"
-            f"（Episode 已持久化，不退回重试以免重复写入）: {e}"
+            i18n_t(
+                "🧠 [Memory] scope={scope_key} Episode {p0} 抽取阶段失败"
+                "（Episode 已持久化，不退回重试以免重复写入）: {e}",
+                scope_key=scope_key,
+                p0=episode.id,
+                e=e,
+            )
         )
 
 
@@ -633,7 +666,7 @@ async def _extract_and_upsert_from_episode(
     # Step 3: 抽取仅使用 HIGH 价值消息，并在喂给 LLM 前折叠无实体信息行以省 Token（Fix-7）
     extract_dialogue = _compact_high_records_dialogue(high_records)
     if not extract_dialogue.strip():
-        logger.debug(f"🧠 [Memory] scope={scope_key} 抽取文本折叠后为空，跳过 LLM 抽取")
+        logger.debug(i18n_t("🧠 [Memory] scope={scope_key} 抽取文本折叠后为空，跳过 LLM 抽取", scope_key=scope_key))
         return
 
     # 拼接近期背景上下文（Fix-1）：数量与单条字符上限均可在控制台配置，
@@ -677,7 +710,7 @@ async def _extract_and_upsert_from_episode(
         if all_tags:
             await record_entity_tags(scope_key, all_tags)
     except Exception as e:
-        logger.debug(f"🧠 [Memory] 群组画像更新失败: {e}")
+        logger.debug(i18n_t("🧠 [Memory] 群组画像更新失败: {e}", e=e))
 
     entity_name_to_id, new_entity_count = await extract_and_upsert_entities(
         scope_key=scope_key,
@@ -748,7 +781,9 @@ async def _extract_and_upsert_from_episode(
                 episode_id=episode_id,
             )
         except Exception as e:
-            logger.warning(f"🧠 [Memory] scope={scope_key} 偏好蒸馏失败（不影响其他记忆）: {e}")
+            logger.warning(
+                i18n_t("🧠 [Memory] scope={scope_key} 偏好蒸馏失败（不影响其他记忆）: {e}", scope_key=scope_key, e=e)
+            )
 
     # Step 8: 触发分层图更新检查（评测模式下跳过，由外部统一触发）
     if not memory_config.eval_mode:
@@ -855,7 +890,7 @@ def _apply_alias_redirection(extracted: ExtractedResult) -> dict[str, str]:
 
     extracted["entities"] = kept
     if resolved:
-        logger.debug(f"🧠 [Memory] 别名重定向: {resolved}")
+        logger.debug(i18n_t("🧠 [Memory] 别名重定向: {resolved}", resolved=resolved))
     return resolved
 
 
@@ -906,13 +941,13 @@ async def _build_known_context(scope_key: str, dialogue: str) -> str:
             if alias and formal:
                 candidates[alias] = formal
     except Exception as e:
-        logger.debug(f"🧠 [Memory] 读取 term_mappings 失败: {e}")
+        logger.debug(i18n_t("🧠 [Memory] 读取 term_mappings 失败: {e}", e=e))
     try:
         for alias, formals in get_aliases_for_scope().items():
             if alias and formals and alias not in candidates:
                 candidates[alias] = formals[0]
     except Exception as e:
-        logger.debug(f"🧠 [Memory] 读取 ai_alias 注册表失败: {e}")
+        logger.debug(i18n_t("🧠 [Memory] 读取 ai_alias 注册表失败: {e}", e=e))
 
     # 2. L0 字面命中过滤：只保留本批对话出现的别名，不足 5 条时补高频兜底
     hit: dict[str, str] = {a: f for a, f in candidates.items() if a in dialogue}
@@ -938,7 +973,7 @@ async def _build_known_context(scope_key: str, dialogue: str) -> str:
         if named:
             entity_section = f"已存在实体：{('、'.join(named))[:MAX_BLOCK_CHARS]}\n"
     except Exception as e:
-        logger.debug(f"🧠 [Memory] 读取高频实体失败: {e}")
+        logger.debug(i18n_t("🧠 [Memory] 读取高频实体失败: {e}", e=e))
 
     if not alias_section and not entity_section:
         return ""
@@ -975,7 +1010,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     if current_chunk_lines:
         chunks.append("\n".join(current_chunk_lines))
 
-    logger.info(f"🧠 [Memory] dialogue 过长 ({len(dialogue)} 字符)，分为 {len(chunks)} 片提取")
+    logger.info(i18n_t("🧠 [Memory] dialogue 过长 ({p0} 字符)，分为 {p1} 片提取", p0=len(dialogue), p1=len(chunks)))
 
     # 逐片提取（串行，避免 LLM 并发过载）
     all_entities: list[dict] = []
@@ -1283,7 +1318,7 @@ async def _extract_and_upsert_preferences(
     if isinstance(data, list):
         data = next((item for item in data if isinstance(item, dict)), None)
     if not isinstance(data, dict):
-        logger.debug(f"🧠 [Memory] 偏好蒸馏输出非 JSON 对象，跳过: {raw_text[:80]!r}")
+        logger.debug(i18n_t("🧠 [Memory] 偏好蒸馏输出非 JSON 对象，跳过: {p0}", p0=repr(raw_text[:80])))
         return
 
     raw_prefs = data["preferences"] if "preferences" in data and isinstance(data["preferences"], list) else []
@@ -1329,4 +1364,8 @@ async def _extract_and_upsert_preferences(
             written += 1
 
     if written:
-        logger.info(f"🧠 [Memory] scope={scope_key} 蒸馏并写入 {written} 条偏好规则")
+        logger.info(
+            i18n_t(
+                "🧠 [Memory] scope={scope_key} 蒸馏并写入 {written} 条偏好规则", scope_key=scope_key, written=written
+            )
+        )

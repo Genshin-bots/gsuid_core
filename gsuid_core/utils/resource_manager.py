@@ -5,6 +5,7 @@ from typing import Dict, Union, Optional
 
 from PIL import Image
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
@@ -86,7 +87,7 @@ class ResourceManager:
         result = self._store.get(resource_id)
 
         if result is None:
-            raise ValueError(f"找不到资源 ID: {resource_id}")
+            raise ValueError(t("找不到资源 ID: {resource_id}", resource_id=resource_id))
 
         data, _ = result
         if isinstance(data, str):
@@ -94,7 +95,7 @@ class ResourceManager:
                 data = await change_ev_image_to_bytes(data)
             except ValueError as e:
                 # base64 解码失败等转换错误，包装为更明确的异常信息
-                raise ValueError(f"资源ID: {resource_id} 数据转换失败: {e}")
+                raise ValueError(t("资源ID: {resource_id} 数据转换失败: {e}", resource_id=resource_id, e=e))
         return data
 
     async def start_cleanup_loop(self) -> None:
@@ -105,7 +106,11 @@ class ResourceManager:
         self._cleanup_running = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info(
-            f"🗑️ [ResourceManager] TTL 清理任务已启动 (TTL: {self._ttl_seconds}s, 间隔: {self._cleanup_interval}s)"
+            t(
+                "🗑️ [ResourceManager] TTL 清理任务已启动 (TTL: {p0}s, 间隔: {p1}s)",
+                p0=self._ttl_seconds,
+                p1=self._cleanup_interval,
+            )
         )
 
     async def stop_cleanup_loop(self) -> None:
@@ -145,7 +150,9 @@ class ResourceManager:
             del self._store[rid]
 
         if expired_ids:
-            logger.debug(f"🗑️ [ResourceManager] 已清理 {len(expired_ids)} 个过期资源，剩余 {len(self._store)} 个")
+            logger.debug(
+                t("🗑️ [ResourceManager] 已清理 {p0} 个过期资源，剩余 {p1} 个", p0=len(expired_ids), p1=len(self._store))
+            )
 
         return len(expired_ids)
 

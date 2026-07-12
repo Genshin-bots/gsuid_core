@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import Field, BaseModel
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -872,8 +873,10 @@ async def artifact_put(
         # 错误用法预警：同时传 payload + file_path 时只走 file_path 分支
         if payload:
             logger.warning(
-                "📋 [Kanban] artifact_put 同时收到 payload 和 file_path，"
-                "按 file_path 模式登记真实文件，payload 会被丢弃。"
+                i18n_t(
+                    "📋 [Kanban] artifact_put 同时收到 payload 和 file_path，"
+                    "按 file_path 模式登记真实文件，payload 会被丢弃。"
+                )
             )
 
     art = await put_artifact(
@@ -916,7 +919,11 @@ async def artifact_get(
         return f"⚠️ artifact 不存在: {res_id}"
     if plan_ctx is not None and plan_ctx.root_task_id and art.root_task_id != plan_ctx.root_task_id:
         logger.warning(
-            f"📋 [Kanban] 拒绝跨树读取 artifact: req_root={plan_ctx.root_task_id} art_root={art.root_task_id}"
+            i18n_t(
+                "📋 [Kanban] 拒绝跨树读取 artifact: req_root={p0} art_root={p1}",
+                p0=plan_ctx.root_task_id,
+                p1=art.root_task_id,
+            )
         )
         return "⚠️ 该 artifact 属于其它任务树，跨树读取被拒绝。"
     return _format_artifact(art)

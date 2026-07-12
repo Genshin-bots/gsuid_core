@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pathlib import Path
 
 from gsuid_core.bot import Bot, _Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import send_chat_result
@@ -163,14 +164,26 @@ async def emit_proactive_message(
 
     # 1) C8 防撞车——仅 Heartbeat 自己受抑制；task / kanban / tool 不在乎上次刚发过什么。
     if suppress_when_heartbeat_recent and dispatcher.should_suppress_heartbeat(target_key):
-        logger.debug(f"[ProactiveEmitter] C8 抑制 source={source} target={target_key}（近期已有主动输出）")
+        logger.debug(
+            t(
+                "[ProactiveEmitter] C8 抑制 source={source} target={target_key}（近期已有主动输出）",
+                source=source,
+                target_key=target_key,
+            )
+        )
         return False
 
     # 2) 解析 Bot 实例
     if bot is None:
         _bot = _resolve_active_bot(event)
         if _bot is None:
-            logger.warning(f"[ProactiveEmitter] 无可用 Bot，主动消息发送失败 source={source} target={target_key}")
+            logger.warning(
+                t(
+                    "[ProactiveEmitter] 无可用 Bot，主动消息发送失败 source={source} target={target_key}",
+                    source=source,
+                    target_key=target_key,
+                )
+            )
             return False
         bot = Bot(_bot, event)
 
@@ -202,5 +215,12 @@ async def emit_proactive_message(
     summary: str = message if source == "scheduled_task" else ""
     dispatcher.register_send(target_key, legacy_source, summary)
 
-    logger.info(f"[ProactiveEmitter] 已发送 source={source} target={target_key} reason={trigger_reason!r}")
+    logger.info(
+        t(
+            "[ProactiveEmitter] 已发送 source={source} target={target_key} reason={trigger_reason}",
+            source=source,
+            target_key=target_key,
+            trigger_reason=repr(trigger_reason),
+        )
+    )
     return True

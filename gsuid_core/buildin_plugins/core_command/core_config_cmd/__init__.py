@@ -73,7 +73,7 @@ async def show_config(bot: Bot, ev: Event):
     if not raw:
         names = sorted(all_config_names())
         if not names:
-            await bot.send("暂无可配置插件")
+            await bot.send(await bot.t("暂无可配置插件"))
             return
         msg = f"提示: {p}查看配置 <插件名>\n\n"
         await bot.send(msg + render_config_list(names))
@@ -81,7 +81,7 @@ async def show_config(bot: Bot, ev: Event):
 
     matched = await _resolve_config_name(raw)
     if matched is None:
-        await bot.send(f"未找到 [{raw}] 的配置, {hint('查看配置')}")
+        await bot.send(await bot.t("未找到 [{raw}] 的配置, {p0}", raw=raw, p0=hint("查看配置")))
         return
 
     plugin_name, rest = matched
@@ -93,12 +93,16 @@ async def show_config(bot: Bot, ev: Event):
 
     result = find_config_item(plugin_name, rest)
     if result is None:
-        await bot.send(f"未找到配置项 [{rest}], {hint(f'查看配置 {plugin_name}')}")
+        await bot.send(await bot.t("未找到配置项 [{rest}], {p0}", rest=rest, p0=hint(f"查看配置 {plugin_name}")))
         return
 
     cfg, item = result
     if is_skip_type(item):
-        await bot.send(f"[{plugin_name}] {rest} 为 Dict/Image 类型, 请使用 WebConsole 修改")
+        await bot.send(
+            await bot.t(
+                "[{plugin_name}] {rest} 为 Dict/Image 类型, 请使用 WebConsole 修改", plugin_name=plugin_name, rest=rest
+            )
+        )
         return
     msg = f"提示: {p}设置配置 {plugin_name} {rest} <值>\n\n"
     await bot.send(msg + render_config_detail(plugin_name, rest, cfg, item))
@@ -109,24 +113,24 @@ async def set_config(bot: Bot, ev: Event):
     raw = ev.text.strip()
 
     if not raw:
-        await bot.send(f"格式: {prefix()}设置配置 <插件名> <配置键> <值>")
+        await bot.send(await bot.t("格式: {p0}设置配置 <插件名> <配置键> <值>", p0=prefix()))
         return
 
     matched = await _resolve_config_name(raw)
     if matched is None:
-        await bot.send(f"未找到配置, {hint('查看配置')}")
+        await bot.send(await bot.t("未找到配置, {p0}", p0=hint("查看配置")))
         return
 
     plugin_name, rest = matched
     parts = rest.split(None, 1)
     if len(parts) < 2:
-        await bot.send(f"格式: {prefix()}设置配置 <插件名> <配置键> <值>")
+        await bot.send(await bot.t("格式: {p0}设置配置 <插件名> <配置键> <值>", p0=prefix()))
         return
 
     key, raw_value = parts
     found = find_config_item(plugin_name, key)
     if found is None:
-        await bot.send(f"未找到配置项 [{key}]")
+        await bot.send(await bot.t("未找到配置项 [{key}]", key=key))
         return
 
     cfg, _ = found
@@ -148,7 +152,7 @@ async def show_plugin(bot: Bot, ev: Event):
 
     plugin_name = await resolve_plugin(raw)
     if plugin_name is None:
-        await bot.send(f"未找到插件 [{raw}], {hint('查看插件')}")
+        await bot.send(await bot.t("未找到插件 [{raw}], {p0}", raw=raw, p0=hint("查看插件")))
         return
 
     detail = render_plugin_detail(plugin_name, SL.plugins[plugin_name])
@@ -160,13 +164,19 @@ async def show_plugin(bot: Bot, ev: Event):
 async def set_plugin(bot: Bot, ev: Event):
     args = ev.text.strip().split(None, 2)
     if len(args) < 3:
-        await bot.send(f"格式: {prefix()}设置插件 <插件名> <参数> <值>\n可用参数: {PLUGIN_PARAMS}")
+        await bot.send(
+            await bot.t(
+                "格式: {p0}设置插件 <插件名> <参数> <值>\n可用参数: {PLUGIN_PARAMS}",
+                p0=prefix(),
+                PLUGIN_PARAMS=PLUGIN_PARAMS,
+            )
+        )
         return
 
     raw_plugin, param, raw_value = args
     plugin_name = await resolve_plugin(raw_plugin)
     if plugin_name is None:
-        await bot.send(f"未找到插件 [{raw_plugin}]")
+        await bot.send(await bot.t("未找到插件 [{raw_plugin}]", raw_plugin=raw_plugin))
         return
 
     await bot.send(
@@ -209,20 +219,24 @@ async def show_sv(bot: Bot, ev: Event):
         await bot.send(msg + render_sv_list(plugin_name))
         return
 
-    await bot.send(f"未找到命令或插件 [{raw}], {hint('查看命令')}")
+    await bot.send(await bot.t("未找到命令或插件 [{raw}], {p0}", raw=raw, p0=hint("查看命令")))
 
 
 @sv_core_config_cmd.on_command("设置命令", block=True)
 async def set_sv(bot: Bot, ev: Event):
     args = ev.text.strip().split(None, 2)
     if len(args) < 3:
-        await bot.send(f"格式: {prefix()}设置命令 <命令名> <参数> <值>\n可用参数: {SV_PARAMS}")
+        await bot.send(
+            await bot.t(
+                "格式: {p0}设置命令 <命令名> <参数> <值>\n可用参数: {SV_PARAMS}", p0=prefix(), SV_PARAMS=SV_PARAMS
+            )
+        )
         return
 
     sv_name, param, raw_value = args
     sv_name, sv = resolve_sv(sv_name)
     if sv is None:
-        await bot.send(f"未找到命令 [{sv_name}]")
+        await bot.send(await bot.t("未找到命令 [{sv_name}]", sv_name=sv_name))
         return
 
     await bot.send(

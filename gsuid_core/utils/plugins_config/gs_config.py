@@ -9,6 +9,7 @@ from pathlib import Path
 from msgspec import ValidationError, json as msgjson, to_builtins
 from boltons.fileutils import atomic_save
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import RES, CONFIGS_PATH
 
@@ -55,8 +56,13 @@ def reconcile_config(
         cur = stored[key]
         if type(cur) is not type(dft):
             logger.warning(
-                f"[配置][{config_name}] 配置项 {key} 类型不一致 "
-                f"({type(cur).__name__} -> {type(dft).__name__}), 已重置为默认值"
+                t(
+                    "[配置][{config_name}] 配置项 {key} 类型不一致 ({p0} -> {p1}), 已重置为默认值",
+                    config_name=config_name,
+                    key=key,
+                    p0=type(cur).__name__,
+                    p1=type(dft).__name__,
+                )
             )
             result[key] = deepcopy(dft)
             continue
@@ -180,7 +186,9 @@ class StringConfig:
         """
         # 如果新路径已存在配置文件，则不进行迁移
         if new_path.exists():
-            logger.info(f"[配置][{self.config_name}] 目标配置文件已存在，跳过从 {old_path} 迁移")
+            logger.info(
+                t("[配置][{p0}] 目标配置文件已存在，跳过从 {old_path} 迁移", p0=self.config_name, old_path=old_path)
+            )
             return
 
         # 确保目标目录存在
@@ -198,9 +206,16 @@ class StringConfig:
             # 删除旧文件
             old_path.unlink()
 
-            logger.info(f"[配置][{self.config_name}] 配置文件已从 {old_path} 迁移到 {new_path}")
+            logger.info(
+                t(
+                    "[配置][{p0}] 配置文件已从 {old_path} 迁移到 {new_path}",
+                    p0=self.config_name,
+                    old_path=old_path,
+                    new_path=new_path,
+                )
+            )
         except Exception as e:
-            logger.error(f"[配置][{self.config_name}] 配置文件迁移失败: {e}")
+            logger.error(t("[配置][{p0}] 配置文件迁移失败: {e}", p0=self.config_name, e=e))
 
     def _get_caller_plugin_name(self):
         try:
@@ -254,11 +269,11 @@ class StringConfig:
             if file:
                 file.write(msgjson.format(msgjson.encode(self.config), indent=4))
             else:
-                logger.error("写入配置文件失败!")
+                logger.error(t("写入配置文件失败!"))
 
     def repair_config(self):
         with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
-            logger.warning(f"[配置][{self.config_name}] 配置文件格式有变动, 已重置...")
+            logger.warning(t("[配置][{p0}] 配置文件格式有变动, 已重置...", p0=self.config_name))
             # 打开self.CONFIG_PATH，用json加载
             temp_config: Dict[str, Any] = json.load(f)
 
@@ -295,7 +310,14 @@ class StringConfig:
                         continue
                     except ValidationError:
                         pass
-                logger.warning(f"[配置][{self.config_name}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {type(v).__name__})")
+                logger.warning(
+                    t(
+                        "[配置][{p0}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {p1})",
+                        p0=self.config_name,
+                        k=k,
+                        p1=type(v).__name__,
+                    )
+                )
                 temp_config.pop(k)
 
         with open(self.CONFIG_PATH, "w", encoding="UTF-8") as f:
@@ -323,7 +345,7 @@ class StringConfig:
                 if attempt == 0:
                     self.repair_config()
                 else:
-                    logger.error(f"[配置][{self.config_name}] 修复后仍无法解析配置文件, 已重置为默认配置!")
+                    logger.error(t("[配置][{p0}] 修复后仍无法解析配置文件, 已重置为默认配置!", p0=self.config_name))
                     self.config = dict(self.config_list)
 
         # 逐键调和: 补默认 / 类型不符重置 / 刷新元数据; GsRepeatGroupConfig 递归(见函数)
@@ -346,11 +368,15 @@ class StringConfig:
         if key in self.config:
             return self.config[key]
         elif key in self.config_list:
-            logger.info(f"[配置][{self.config_name}] 配置项 {key} 不存在, 但是默认配置存在, 已更新...")
+            logger.info(
+                t("[配置][{p0}] 配置项 {key} 不存在, 但是默认配置存在, 已更新...", p0=self.config_name, key=key)
+            )
             self.update_config()
             return self.config[key]
         else:
-            logger.warning(f"[配置][{self.config_name}] 配置项 {key} 不存在也没有配置, 返回默认参数...")
+            logger.warning(
+                t("[配置][{p0}] 配置项 {key} 不存在也没有配置, 返回默认参数...", p0=self.config_name, key=key)
+            )
             if default_value is None:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
@@ -392,7 +418,14 @@ class StringConfig:
                 try:
                     item.data = ((int(start[0]), int(start[1])), (int(end[0]), int(end[1])))
                 except (ValueError, TypeError, IndexError):
-                    logger.warning(f"[配置][{self.config_name}] 配置项 {key} 时间范围格式非法 '{value}', 停止写入...")
+                    logger.warning(
+                        t(
+                            "[配置][{p0}] 配置项 {key} 时间范围格式非法 '{value}', 停止写入...",
+                            p0=self.config_name,
+                            key=key,
+                            value=value,
+                        )
+                    )
                     return False
                 self.write_config()
                 return True
@@ -406,12 +439,19 @@ class StringConfig:
                 try:
                     item.data = datetime.date.fromisoformat(value)
                 except ValueError:
-                    logger.warning(f"[配置][{self.config_name}] 配置项 {key} 日期格式非法 '{value}', 停止写入...")
+                    logger.warning(
+                        t(
+                            "[配置][{p0}] 配置项 {key} 日期格式非法 '{value}', 停止写入...",
+                            p0=self.config_name,
+                            key=key,
+                            value=value,
+                        )
+                    )
                     return False
                 self.write_config()
                 return True
             else:
-                logger.warning(f"[配置][{self.config_name}] 配置项 {key} 写入类型不正确, 停止写入...")
+                logger.warning(t("[配置][{p0}] 配置项 {key} 写入类型不正确, 停止写入...", p0=self.config_name, key=key))
                 return False
         else:
             return False
@@ -440,7 +480,14 @@ class StringConfig:
                     # 既然转移成功了，就从旧配置里物理删除它
                     old_config.config.pop(key)
                     old_changed = True
-                    logger.info(f"[配置迁移] 已将配置项 [{key}] 从 {old_config.config_name} 转移至 {self.config_name}")
+                    logger.info(
+                        t(
+                            "[配置迁移] 已将配置项 [{key}] 从 {p0} 转移至 {p1}",
+                            key=key,
+                            p0=old_config.config_name,
+                            p1=self.config_name,
+                        )
+                    )
 
             # 如果旧配置被掏空了某些键，保存旧配置
             if old_changed:
@@ -700,7 +747,7 @@ class ConfigSetManager(ABC):
 
         self.get_config(config_name)
         # 初始化默认配置会创建文件
-        logger.info(f"已创建默认配置: {config_name}")
+        logger.info(t("已创建默认配置: {config_name}", config_name=config_name))
         return True
 
     def delete(self, config_name: str) -> bool:
@@ -727,10 +774,10 @@ class ConfigSetManager(ABC):
 
             if config_name in self._cache:
                 del self._cache[config_name]
-            logger.info(f"已删除配置: {config_name}")
+            logger.info(t("已删除配置: {config_name}", config_name=config_name))
             return True
         except Exception as e:
-            logger.error(f"删除配置 '{config_name}' 失败: {e}")
+            logger.error(t("删除配置 '{config_name}' 失败: {e}", config_name=config_name, e=e))
             return False
 
     def clear_cache(self) -> None:

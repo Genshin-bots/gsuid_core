@@ -21,6 +21,7 @@ from pydantic_ai.messages import ImageUrl
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.anthropic import AnthropicModel
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.utils import (
     get_mcp_tool_id,
@@ -201,13 +202,13 @@ async def understand_image(
     cache_key = _img_cache_key(image_url)
     cached = _understand_cache_get(cache_key)
     if cached:
-        logger.debug("🖼️ [ImageUnderstand] 命中图片理解缓存，跳过重复解析")
+        logger.debug(t("🖼️ [ImageUnderstand] 命中图片理解缓存，跳过重复解析"))
         return cached
 
     # 优先：当前模型原生支持图片时，直接走大模型多模态，无需配置转述模型(MCP)
     native_model = _resolve_native_image_model(task_level)
     if native_model is not None:
-        logger.debug("🖼️ [ImageUnderstand] 当前模型原生支持图片，使用大模型多模态能力转述")
+        logger.debug(t("🖼️ [ImageUnderstand] 当前模型原生支持图片，使用大模型多模态能力转述"))
         desc = await _understand_image_native(
             image_url,
             prompt,
@@ -217,7 +218,7 @@ async def understand_image(
         # 上游 agent 失败会返回 "执行出错: ..." 文案而非抛异常（见 gs_agent._execute_run），
         # 不能缓存 / 流入记忆，按文档约定转 RuntimeError 让调用方各自走失败兜底。
         if not desc or desc.startswith("执行出错"):
-            raise RuntimeError(f"原生多模态图片理解失败: {desc or '空结果'}")
+            raise RuntimeError(t("原生多模态图片理解失败: {p0}", p0=desc or "空结果"))
         _understand_cache_put(cache_key, desc)
         return desc
 
@@ -246,5 +247,5 @@ async def understand_image(
                 cleanup_tempfile(image_source, "🖼️ [ImageUnderstand]")
 
     # 未知 provider
-    logger.warning(f"🖼️ [ImageUnderstand] 未知的提供方 '{provider}'，仅支持 MCP")
-    raise RuntimeError(f"Image Understand 不支持该提供方: {provider}")
+    logger.warning(t("🖼️ [ImageUnderstand] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    raise RuntimeError(t("Image Understand 不支持该提供方: {provider}", provider=provider))

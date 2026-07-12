@@ -9,6 +9,7 @@ from functools import wraps
 import aiofiles
 from PIL import Image
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.image.convert import convert_img, convert_img_sync
@@ -45,7 +46,7 @@ def gs_cache(expire_time=3600):
                 result = _value = None
                 WILL_DELETE = []
 
-                logger.trace(f"{func.__name__} 开始缓存...")
+                logger.trace(t("{p0} 开始缓存...", p0=func.__name__))
                 logger.trace(CACHE)
 
                 for key in CACHE:
@@ -53,7 +54,7 @@ def gs_cache(expire_time=3600):
                     if time_key - key <= expire_time:
                         if file_key in value:
                             _value = value[file_key]
-                            logger.trace(f"{func.__name__} 命中缓存 {_value}")
+                            logger.trace(t("{p0} 命中缓存 {_value}", p0=func.__name__, _value=_value))
                             break
                     else:
                         WILL_DELETE.append(key)
@@ -91,7 +92,7 @@ def gs_cache(expire_time=3600):
                     if file_key not in CACHE[time_key]:
                         CACHE[time_key][file_key] = cache_target
 
-                    logger.trace(f"{func.__name__} 进入缓存...")
+                    logger.trace(t("{p0} 进入缓存...", p0=func.__name__))
 
                 return result
 
@@ -119,7 +120,7 @@ def gs_cache(expire_time=3600):
                 result = _value = None
                 WILL_DELETE = []
 
-                logger.trace(f"{func.__name__} 开始缓存...")
+                logger.trace(t("{p0} 开始缓存...", p0=func.__name__))
                 logger.trace(CACHE)
 
                 for key in CACHE:
@@ -127,7 +128,7 @@ def gs_cache(expire_time=3600):
                     if time_key - key <= expire_time:
                         if file_key in value:
                             _value = value[file_key]
-                            logger.trace(f"{func.__name__} 命中缓存 {_value}")
+                            logger.trace(t("{p0} 命中缓存 {_value}", p0=func.__name__, _value=_value))
                             break
                     else:
                         WILL_DELETE.append(key)
@@ -165,7 +166,7 @@ def gs_cache(expire_time=3600):
                     if file_key not in CACHE[time_key]:
                         CACHE[time_key][file_key] = cache_target
 
-                    logger.trace(f"{func.__name__} 进入缓存...")
+                    logger.trace(t("{p0} 进入缓存...", p0=func.__name__))
 
                 return result
 

@@ -19,6 +19,7 @@ from typing import Optional
 from collections import deque
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 # 独立的多模态摄入队列（与文本 observation_queue 物理隔离）
@@ -109,7 +110,7 @@ def submit_image_observation(
             _multimodal_queue.put_nowait(record)
             submitted += 1
         except asyncio.QueueFull:
-            logger.debug("🧠 [Multimodal] 队列已满，丢弃图片观察记录")
+            logger.debug(t("🧠 [Multimodal] 队列已满，丢弃图片观察记录"))
             break
     return submitted
 
@@ -131,7 +132,7 @@ class ImageUnderstandWorker:
             return
         self._running = True
         self._task = asyncio.create_task(self._loop())
-        logger.info("🧠 [Multimodal] ImageUnderstandWorker 已启动")
+        logger.info(t("🧠 [Multimodal] ImageUnderstandWorker 已启动"))
 
     async def stop(self) -> None:
         self._running = False
@@ -164,7 +165,7 @@ class ImageUnderstandWorker:
                     prompt="简要描述这张图片的核心内容，若含文字/数字请一并转述。",
                 )
             except Exception as e:
-                logger.debug(f"🧠 [Multimodal] 图片理解失败（已忽略）: {e}")
+                logger.debug(t("🧠 [Multimodal] 图片理解失败（已忽略）: {e}", e=e))
                 return
 
             desc = (desc or "").strip()
@@ -185,7 +186,7 @@ class ImageUnderstandWorker:
                     message_type=record.message_type,
                 )
             except Exception as e:
-                logger.debug(f"🧠 [Multimodal] 转述记录入队失败: {e}")
+                logger.debug(t("🧠 [Multimodal] 转述记录入队失败: {e}", e=e))
 
 
 _worker: Optional[ImageUnderstandWorker] = None

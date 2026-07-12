@@ -21,6 +21,7 @@ self_model 结构（存于 state_store）::
 
 from typing import Any, Dict, List, Optional
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 
@@ -81,7 +82,7 @@ async def add_self_note(
     from gsuid_core.ai_core.state_store import state_mutate
 
     if field not in _FIELDS:
-        logger.warning(f"🪞 [SelfCognition] 非法 self_model 字段: {field}")
+        logger.warning(i18n_t("🪞 [SelfCognition] 非法 self_model 字段: {field}", field=field))
         return False
     content = (content or "").strip()
     if not content:
@@ -94,7 +95,7 @@ async def add_self_note(
     from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
 
     if field == "preferences_learned" and is_persistent_style_rule(content):
-        logger.warning(f"🪞 [SelfCognition] 拒绝把持久说话规矩写入偏好（疑似漂移注入）: {content[:60]}")
+        logger.warning(i18n_t("🪞 [SelfCognition] 拒绝把持久说话规矩写入偏好（疑似漂移注入）: {p0}", p0=content[:60]))
         return False
 
     def _mutate(current: Any) -> Dict[str, List[str]]:
@@ -109,7 +110,14 @@ async def add_self_note(
         return model
 
     await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
-    logger.debug(f"🪞 [SelfCognition] {bot_id} self_model.{field} 追加: {content}")
+    logger.debug(
+        i18n_t(
+            "🪞 [SelfCognition] {bot_id} self_model.{field} 追加: {content}",
+            bot_id=bot_id,
+            field=field,
+            content=content,
+        )
+    )
     return True
 
 
@@ -134,7 +142,7 @@ async def overwrite_self_model_field(
     from gsuid_core.ai_core.state_store import state_mutate
 
     if field not in _FIELDS:
-        logger.warning(f"🪞 [SelfCognition] 非法 self_model 字段: {field}")
+        logger.warning(i18n_t("🪞 [SelfCognition] 非法 self_model 字段: {field}", field=field))
         return False
     cleaned: List[str] = []
     for raw in items:
@@ -149,7 +157,14 @@ async def overwrite_self_model_field(
         return model
 
     await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
-    logger.info(f"🪞 [SelfCognition] {bot_id} self_model.{field} 被整字段覆盖（{len(cleaned)} 条）")
+    logger.info(
+        i18n_t(
+            "🪞 [SelfCognition] {bot_id} self_model.{field} 被整字段覆盖（{p0} 条）",
+            bot_id=bot_id,
+            field=field,
+            p0=len(cleaned),
+        )
+    )
     return True
 
 
@@ -182,7 +197,7 @@ async def retrieve_self_episodes(bot_id: str, limit: int = 3) -> str:
             )
             rows = list(result.scalars().all())
     except Exception as e:
-        logger.debug(f"🪞 [SelfCognition] 自我情景记忆检索失败: {e}")
+        logger.debug(i18n_t("🪞 [SelfCognition] 自我情景记忆检索失败: {e}", e=e))
         return ""
 
     if not rows:

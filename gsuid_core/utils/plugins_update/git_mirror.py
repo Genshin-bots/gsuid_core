@@ -15,6 +15,7 @@ Git Mirror 工具模块
 from typing import Dict, List, Optional, TypedDict
 from pathlib import Path
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -434,10 +435,17 @@ async def set_plugin_mirror(
     # 执行 git remote set-url
     success, msg = await git_set_remote_url(plugin_path, new_url)
     if not success:
-        logger.error(f"[Git镜像] 设置 {plugin_name} remote URL 失败: {msg}")
+        logger.error(t("[Git镜像] 设置 {plugin_name} remote URL 失败: {msg}", plugin_name=plugin_name, msg=msg))
         return False, f"{plugin_name}: 设置失败 - {msg}"
 
-    logger.info(f"[Git镜像] {plugin_name}: {current_url} -> {new_url}")
+    logger.info(
+        t(
+            "[Git镜像] {plugin_name}: {current_url} -> {new_url}",
+            plugin_name=plugin_name,
+            current_url=current_url,
+            new_url=new_url,
+        )
+    )
     return True, f"{plugin_name}: {current_url} -> {new_url}"
 
 

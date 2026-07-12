@@ -3,6 +3,7 @@
 import asyncio
 from typing import Callable, Awaitable
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.register import get_all_tools
 from gsuid_core.ai_core.rag.tools import sync_tools
@@ -15,7 +16,7 @@ async def init_all():
     """初始化RAG模块的所有组件"""
     # 检查AI总开关
     if not ai_config.get_config("enable").data:
-        logger.info("🧠 [RAG] AI总开关已关闭，跳过RAG模块初始化")
+        logger.info(t("🧠 [RAG] AI总开关已关闭，跳过RAG模块初始化"))
         return
 
     # 0. 提前下载所有模型到缓存目录
@@ -49,7 +50,15 @@ async def init_all():
             except Exception as e:
                 if i == attempts:
                     raise
-                logger.warning(f"🧠 [RAG] {name} 第{i}次失败({type(e).__name__})，{delay}s 后重试")
+                logger.warning(
+                    t(
+                        "🧠 [RAG] {name} 第{i}次失败({p0})，{delay}s 后重试",
+                        name=name,
+                        i=i,
+                        p0=type(e).__name__,
+                        delay=delay,
+                    )
+                )
                 await asyncio.sleep(delay)
 
     from . import init_image_collection, init_tools_collection, init_knowledge_collection
@@ -60,7 +69,7 @@ async def init_all():
 
     all_tools = get_all_tools()
     await sync_tools(all_tools)
-    logger.info(f"🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {len(all_tools)}")
+    logger.info(t("🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {p0}", p0=len(all_tools)))
 
     from . import sync_images, sync_knowledge
 

@@ -18,6 +18,7 @@ import time
 import asyncio
 from typing import Optional
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
 
@@ -105,7 +106,7 @@ async def _init_favor_decay():
             return
         n = await UserFavorability.decay_all_toward_neutral(step)
         if n:
-            logger.info(f"🧠 [UserFavorability] 每日好感度衰减：{n} 行向中性回归 {step} 点")
+            logger.info(t("🧠 [UserFavorability] 每日好感度衰减：{n} 行向中性回归 {step} 点", n=n, step=step))
 
     scheduler.add_job(
         func=_job,
@@ -116,7 +117,7 @@ async def _init_favor_decay():
         name="好感度每日衰减（向中性回归）",
         replace_existing=True,
     )
-    logger.info("🧠 [UserFavorability] 好感度每日衰减 job 已注册（每日 04:20）")
+    logger.info(t("🧠 [UserFavorability] 好感度每日衰减 job 已注册（每日 04:20）"))
 
 
 async def _init_command_exec():
@@ -190,7 +191,7 @@ async def init_ai_core():
     # 下面的状态判断与 _AI_CORE_INITIALIZING 置位之间不存在 await，asyncio 协作式调度下
     # 是原子的；后到的协程会在首个 await 让出后看到标记并直接退出，从而保证整条初始化串行。
     if _AI_CORE_READY or _AI_CORE_INITIALIZING:
-        logger.debug("🧠 [AI Core] 初始化已在进行或已完成，跳过本次重复触发")
+        logger.debug(t("🧠 [AI Core] 初始化已在进行或已完成，跳过本次重复触发"))
         return
 
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -200,14 +201,14 @@ async def init_ai_core():
         _AI_CORE_READY = True
         _AI_CORE_INITIALIZING = False
         _get_ready_event().set()
-        logger.info("🧠 [AI Core] AI总开关已关闭，跳过 AI 重依赖导入与子系统初始化")
+        logger.info(t("🧠 [AI Core] AI总开关已关闭，跳过 AI 重依赖导入与子系统初始化"))
         return
 
     _AI_CORE_READY = False
     _AI_CORE_INITIALIZING = True
     _get_ready_event().clear()
     start = time.time()
-    logger.info("🧠 [AI Core] 开始后台初始化 AI 核心...")
+    logger.info(t("🧠 [AI Core] 开始后台初始化 AI 核心..."))
 
     # 触发 AI 重依赖导入（sklearn / sentence-transformers / buildin_tools 等）。
     # 放到独立线程执行，避免同步 import 冻住事件循环、阻塞 WS 服务启动。
@@ -215,12 +216,12 @@ async def init_ai_core():
     try:
         await asyncio.to_thread(_import_ai_heavy_deps)
     except Exception as e:
-        logger.exception(f"🧠 [AI Core] AI 重依赖导入失败, 初始化中止: {e}")
+        logger.exception(t("🧠 [AI Core] AI 重依赖导入失败, 初始化中止: {e}", e=e))
         _AI_CORE_INITIALIZING = False
         _get_ready_event().set()
         return
 
-    logger.debug(f"🧠 [AI Core] AI 重依赖导入完成, 耗时: {time.time() - import_start:.2f}秒")
+    logger.debug(t("🧠 [AI Core] AI 重依赖导入完成, 耗时: {p0:.2f}秒", p0=time.time() - import_start))
 
     # 按依赖顺序依次初始化各子系统，单个失败不影响后续步骤；但 AI Core 只有全部步骤成功才标记 ready。
     init_failed = False
@@ -228,27 +229,36 @@ async def init_ai_core():
         for name, step in _INIT_STEPS:
             step_start = time.time()
             try:
-                logger.info(f"🧠 [AI Core] 开始初始化 {name}...")
+                logger.info(t("🧠 [AI Core] 开始初始化 {name}...", name=name))
                 step_task = asyncio.create_task(step())
                 while not step_task.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(step_task), timeout=60.0)
                     except asyncio.TimeoutError:
                         logger.warning(
-                            f"🧠 [AI Core] {name} 初始化仍在执行中，已耗时: {time.time() - step_start:.2f}秒"
+                            t(
+                                "🧠 [AI Core] {name} 初始化仍在执行中，已耗时: {p0:.2f}秒",
+                                name=name,
+                                p0=time.time() - step_start,
+                            )
                         )
                 await step_task
-                logger.info(f"🧠 [AI Core] {name} 初始化完成, 耗时: {time.time() - step_start:.2f}秒")
+                logger.info(
+                    t("🧠 [AI Core] {name} 初始化完成, 耗时: {p0:.2f}秒", name=name, p0=time.time() - step_start)
+                )
             except Exception as e:
                 init_failed = True
-                logger.exception(f"🧠 [AI Core] {name} 初始化失败: {e}")
+                logger.exception(t("🧠 [AI Core] {name} 初始化失败: {e}", name=name, e=e))
 
         if init_failed:
             logger.warning(
-                f"🧠 [AI Core] AI 核心初始化存在失败步骤，总耗时: {time.time() - start:.2f}秒，暂不接收 AI 会话"
+                t(
+                    "🧠 [AI Core] AI 核心初始化存在失败步骤，总耗时: {p0:.2f}秒，暂不接收 AI 会话",
+                    p0=time.time() - start,
+                )
             )
         else:
-            logger.success(f"🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {time.time() - start:.2f}秒")
+            logger.success(t("🧠 [AI Core] AI 核心初始化全部完成, 总耗时: {p0:.2f}秒", p0=time.time() - start))
     finally:
         _AI_CORE_READY = not init_failed
         _AI_CORE_INITIALIZING = False
@@ -272,9 +282,9 @@ async def close_qdrant_client_on_shutdown() -> None:
             return
         await client.close()
         rag_base.client = None
-        logger.info("🧠 [AI Core] 已关闭 Qdrant client，释放本地向量库文件锁")
+        logger.info(t("🧠 [AI Core] 已关闭 Qdrant client，释放本地向量库文件锁"))
     except Exception as e:
-        logger.debug(f"🧠 [AI Core] 关闭 Qdrant client 失败(可忽略): {e}")
+        logger.debug(t("🧠 [AI Core] 关闭 Qdrant client 失败(可忽略): {e}", e=e))
 
 
 @on_core_shutdown
@@ -291,6 +301,6 @@ async def flush_ai_sessions_on_shutdown() -> None:
         await registry.stop_cleanup_loop()
         closed = registry.shutdown_all()
         if closed:
-            logger.info(f"📝 [AISessionLogger] 关闭流程已持久化 {closed} 个活跃会话")
+            logger.info(t("📝 [AISessionLogger] 关闭流程已持久化 {closed} 个活跃会话", closed=closed))
     except Exception as e:  # noqa: BLE001
-        logger.exception(f"📝 [AISessionLogger] 关闭流程持久化失败: {e}")
+        logger.exception(t("📝 [AISessionLogger] 关闭流程持久化失败: {e}", e=e))

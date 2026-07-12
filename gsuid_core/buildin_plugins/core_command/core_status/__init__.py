@@ -4,6 +4,7 @@ import gsuid_core.global_val as gv
 from gsuid_core.sv import SV
 from gsuid_core.aps import scheduler
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.global_val import BotTraffic
@@ -56,10 +57,10 @@ async def _u_clear_and_save_global_val_all():
 
     gv.bot_traffic.update(new_data)
 
-    logger.success("[早柚核心] 状态已清空!")
+    logger.success(t("[早柚核心] 状态已清空!"))
 
     await count_group_user()
-    logger.success("[早柚核心] 状态已保存!")
+    logger.success(t("[早柚核心] 状态已保存!"))
 
 
 # 每隔10分钟执行一次save_all_global_val，但凌晨0点不执行
@@ -69,7 +70,7 @@ async def _scheduled_save_global_val_all():
 
     await gv.save_all_global_val(0)
     await gv.save_bot_max_qps()
-    logger.success("[早柚核心] 状态已同步!")
+    logger.success(t("[早柚核心] 状态已同步!"))
 
 
 @sv_core_status.on_fullmatch(
@@ -79,7 +80,7 @@ async def _scheduled_save_global_val_all():
     )
 )
 async def send_core_info_msg(bot: Bot, ev: Event):
-    logger.info("开始执行 早柚核心 [信息]")
+    logger.info(t("开始执行 早柚核心 [信息]"))
     await bot.send(await draw_status(ev))
 
 
@@ -90,7 +91,7 @@ async def send_core_status_msg(bot: Bot, ev: Event):
         _day = int(day)
     else:
         _day = None
-    logger.info("开始执行 早柚核心 [状态]")
+    logger.info(t("开始执行 早柚核心 [状态]"))
     local_val = await gv.get_global_val(
         ev.real_bot_id,
         ev.bot_self_id,
@@ -113,7 +114,7 @@ async def send_core_status_msg(bot: Bot, ev: Event):
             )
         )
     else:
-        await bot.send("暂未存在当天的记录...")
+        await bot.send(await bot.t("暂未存在当天的记录..."))
 
 
 async def get_now_req():

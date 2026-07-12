@@ -10,6 +10,7 @@ from pathlib import Path
 import msgspec
 from PIL import Image
 
+from gsuid_core.i18n import t
 from gsuid_core.models import Message
 from gsuid_core.data_store import image_res
 from gsuid_core.global_val import get_global_val
@@ -453,7 +454,7 @@ async def markdown_to_template_markdown(
                 if _t:
                     t_values = list(_t.values())[-1]
 
-                    logger.debug(f"[GsCore] MD模板发送使用模板{t_values[0]}")
+                    logger.debug(t("[GsCore] MD模板发送使用模板{p0}", p0=t_values[0]))
                     logger.debug(t_values[1])
 
                     _message.extend(
@@ -463,10 +464,10 @@ async def markdown_to_template_markdown(
                         )
                     )
                 else:
-                    logger.warning("[GsCore] MD模板无匹配！将以正常消息发送...")
+                    logger.warning(t("[GsCore] MD模板无匹配！将以正常消息发送..."))
                     _message.append(m)
             else:
-                logger.warning("[GsCore] 未配置MD模板！将以正常消息发送...")
+                logger.warning(t("[GsCore] 未配置MD模板！将以正常消息发送..."))
                 _message.append(m)
         else:
             _message.append(m)
@@ -499,8 +500,10 @@ async def to_markdown(
                     url = m.data.replace("link://", "")
                     if not size:
                         logger.warning(
-                            "[to_markdown] 你传入了URL图片但并未规定图片大小，"
-                            "请在消息列表中额外传入MessageSegment.image_size()!"
+                            t(
+                                "[to_markdown] 你传入了URL图片但并未规定图片大小，"
+                                "请在消息列表中额外传入MessageSegment.image_size()!"
+                            )
                         )
                 elif m.data.startswith("base64://"):
                     url = await _image_to_url(m.data, send_type, m)

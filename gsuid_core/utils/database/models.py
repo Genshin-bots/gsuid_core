@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.bot import Bot
 from gsuid_core.gss import gss
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message
 from gsuid_core.message_models import ButtonType
@@ -92,7 +93,13 @@ class Subscribe(BaseModel, table=True):
                 found = False
                 for ws_bot_id, _bot in gss.active_bot.items():
                     if _bot.bot_id == self.bot_id:
-                        logger.info(f"[订阅] WS_BOT_ID {self.WS_BOT_ID} 已失效，自动切换到 {ws_bot_id}")
+                        logger.info(
+                            t(
+                                "[订阅] WS_BOT_ID {p0} 已失效，自动切换到 {ws_bot_id}",
+                                p0=self.WS_BOT_ID,
+                                ws_bot_id=ws_bot_id,
+                            )
+                        )
                         # 更新数据库中的 WS_BOT_ID
                         self.WS_BOT_ID = ws_bot_id
                         await self.update_data(
@@ -105,7 +112,7 @@ class Subscribe(BaseModel, table=True):
                         found = True
                         break
                 if not found:
-                    logger.error(f"[订阅] 机器人{self.WS_BOT_ID}不存在, 该消息无法发送!")
+                    logger.error(t("[订阅] 机器人{p0}不存在, 该消息无法发送!", p0=self.WS_BOT_ID))
                     return -1
         else:
             for bot_id in gss.active_bot:
@@ -167,6 +174,42 @@ class CoreUser(BaseBotIDModel, table=True):
     group_id: Optional[str] = Field(default=None, title="群号")
     user_name: Optional[str] = Field(default="1", title="用户名")
     user_icon: Optional[str] = Field(default="1", title="用户头像")
+    # i18n 用户语言偏好（Lang 枚举值, 如 zh-cn / en）；None 表示跟随全局 LANGUAGE
+    language: Optional[str] = Field(default=None, title="用户语言")
+
+    @classmethod
+    async def get_user_lang(
+        cls,
+        user_id: str,
+        bot_id: Optional[str] = None,
+    ) -> str:
+        """获取某用户的语言偏好（i18n 快捷方法）。
+
+        用户表 language 有效则用之，否则回落部署者侧全局 LANGUAGE。
+        """
+        from gsuid_core.i18n import get_lang, is_supported
+
+        if bot_id is None:
+            data = await cls.base_select_data(user_id=user_id)
+        else:
+            data = await cls.base_select_data(user_id=user_id, bot_id=bot_id)
+        lang = data.language if data is not None else None
+        if lang is not None and is_supported(lang):
+            return lang
+        return get_lang()
+
+    @classmethod
+    async def set_user_lang(
+        cls,
+        user_id: str,
+        bot_id: str,
+        language: Optional[str],
+    ) -> int:
+        """设置某用户的语言偏好；language 为 None 表示清除、跟随全局。"""
+        return await cls.update_data_by_xx(
+            {"user_id": user_id, "bot_id": bot_id},
+            language=language,
+        )
 
     @classmethod
     @with_session
@@ -176,7 +219,7 @@ class CoreUser(BaseBotIDModel, table=True):
         results = await session.execute(statement)
         all_rows: Sequence[Row] = results.all()
 
-        logger.info(f"[clean_repeat_user] 共查询到 {len(all_rows)} 条记录")
+        logger.info(t("[clean_repeat_user] 共查询到 {p0} 条记录", p0=len(all_rows)))
 
         seen = set()
         to_delete_ids = []
@@ -197,7 +240,7 @@ class CoreUser(BaseBotIDModel, table=True):
             for i in range(0, len(to_delete_ids), batch_size):
                 batch = to_delete_ids[i : i + batch_size]
                 await session.execute(delete(cls).where(col(cls.id).in_(batch)))
-                logger.info(f"[clean_repeat_user] 已删除 {len(batch)} 条重复记录")
+                logger.info(t("[clean_repeat_user] 已删除 {p0} 条重复记录", p0=len(batch)))
 
             await session.commit()
 
@@ -344,7 +387,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         results = await session.execute(statement)
         all_rows = results.all()
 
-        logger.info(f"[clean_repeat_group] 共查询到 {len(all_rows)} 条记录")
+        logger.info(t("[clean_repeat_group] 共查询到 {p0} 条记录", p0=len(all_rows)))
 
         seen = set()
         to_delete_ids = []
@@ -364,7 +407,7 @@ class CoreGroup(BaseBotIDModel, table=True):
             for i in range(0, len(to_delete_ids), batch_size):
                 batch = to_delete_ids[i : i + batch_size]
                 await session.execute(delete(cls).where(col(cls.id).in_(batch)))
-                logger.info(f"[clean_repeat_group] 已删除 {len(batch)} 条重复记录")
+                logger.info(t("[clean_repeat_group] 已删除 {p0} 条重复记录", p0=len(batch)))
 
             await session.commit()
 

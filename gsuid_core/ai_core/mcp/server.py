@@ -27,6 +27,7 @@ from fastmcp.server.auth import AccessToken, AuthProvider
 from fastmcp.utilities.types import Image
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.server import on_core_shutdown
@@ -91,7 +92,7 @@ class BearerTokenAuth(AuthProvider):
                 scopes=["mcp:tools"],
             )
 
-        logger.warning("🌐 [MCP Server] Bearer Token 验证失败")
+        logger.warning(t("🌐 [MCP Server] Bearer Token 验证失败"))
         return None
 
 
@@ -205,10 +206,18 @@ def _build_mcp_tool_handler(
         mock = MockBot(mock_bot, call_ctx)
 
         try:
-            logger.info(f"🌐 [MCP Server] 调用触发器 [{primary_keyword}], text={text!r}")
+            logger.info(
+                t(
+                    "🌐 [MCP Server] 调用触发器 [{primary_keyword}], text={text}",
+                    primary_keyword=primary_keyword,
+                    text=repr(text),
+                )
+            )
             await func(mock, fake_ev)
         except Exception as e:
-            logger.error(f"🌐 [MCP Server] 触发器 [{primary_keyword}] 执行异常: {e}")
+            logger.error(
+                t("🌐 [MCP Server] 触发器 [{primary_keyword}] 执行异常: {e}", primary_keyword=primary_keyword, e=e)
+            )
             return f"❌ 触发器执行异常: {e}"
         finally:
             _AI_CALL_CONTEXT.reset(token)
@@ -227,7 +236,7 @@ def _build_mcp_tool_handler(
                 data = await RM.get(rid)
                 image_blocks.append(Image(data=data, format=_sniff_image_format(data)))
             except Exception as e:
-                logger.warning(f"🌐 [MCP Server] 取回图片资源 {rid} 失败，退回文字描述: {e}")
+                logger.warning(t("🌐 [MCP Server] 取回图片资源 {rid} 失败，退回文字描述: {e}", rid=rid, e=e))
                 text_parts.append(f"[图片资源 {rid} 取回失败: {e}]")
 
         # 音频/视频：MCP 客户端对其支持参差，暂仍以文字描述 + 资源ID 返回
@@ -284,7 +293,7 @@ def _create_mcp_server(auth: Optional[BearerTokenAuth] = None) -> FastMCP:
 
     trigger_registry = _MCP_TRIGGER_REGISTRY
     if not trigger_registry:
-        logger.warning("🌐 [MCP Server] 没有发现任何 to_ai 触发器，MCP Server 将不注册任何工具")
+        logger.warning(t("🌐 [MCP Server] 没有发现任何 to_ai 触发器，MCP Server 将不注册任何工具"))
         return server
 
     registered_count = 0
@@ -294,14 +303,23 @@ def _create_mcp_server(auth: Optional[BearerTokenAuth] = None) -> FastMCP:
             server.tool(handler)
             registered_count += 1
             logger.debug(
-                f"🌐 [MCP Server] 注册工具: {tool_name} "
-                f"(触发器: {trigger_info['primary_keyword']}, "
-                f"插件: {trigger_info['plugin_name']})"
+                t(
+                    "🌐 [MCP Server] 注册工具: {tool_name} (触发器: {p0}, 插件: {p1})",
+                    tool_name=tool_name,
+                    p0=trigger_info["primary_keyword"],
+                    p1=trigger_info["plugin_name"],
+                )
             )
         except Exception as e:
-            logger.error(f"🌐 [MCP Server] 注册工具 {tool_name} 失败: {e}")
+            logger.error(t("🌐 [MCP Server] 注册工具 {tool_name} 失败: {e}", tool_name=tool_name, e=e))
 
-    logger.info(f"🌐 [MCP Server] 已注册 {registered_count}/{len(trigger_registry)} 个触发器工具")
+    logger.info(
+        t(
+            "🌐 [MCP Server] 已注册 {registered_count}/{p0} 个触发器工具",
+            registered_count=registered_count,
+            p0=len(trigger_registry),
+        )
+    )
     return server
 
 
@@ -317,7 +335,7 @@ async def _start_mcp_server() -> None:
     # 检查是否启用
     enable = mcp_server_config.get_config("enable_mcp_server").data
     if not enable:
-        logger.info("🌐 [MCP Server] MCP Server 未启用，跳过启动")
+        logger.info(t("🌐 [MCP Server] MCP Server 未启用，跳过启动"))
         return
 
     transport = mcp_server_config.get_config("mcp_server_transport").data
@@ -335,15 +353,15 @@ async def _start_mcp_server() -> None:
     auth: Optional[BearerTokenAuth] = None
     if api_key:
         auth = BearerTokenAuth(api_key)
-        logger.info("🌐 [MCP Server] 已启用 Bearer Token 认证")
+        logger.info(t("🌐 [MCP Server] 已启用 Bearer Token 认证"))
     else:
-        logger.warning("🌐 [MCP Server] 未配置 API Key，MCP Server 不启用认证")
+        logger.warning(t("🌐 [MCP Server] 未配置 API Key，MCP Server 不启用认证"))
 
     # 创建服务器并注册工具
     _mcp_server = _create_mcp_server(auth=auth)
 
     if transport == "sse":
-        logger.info(f"🌐 [MCP Server] 启动 SSE 模式 MCP Server @ {host}:{port}")
+        logger.info(t("🌐 [MCP Server] 启动 SSE 模式 MCP Server @ {host}:{port}", host=host, port=port))
         try:
             await _mcp_server.run_async(
                 transport="sse",
@@ -351,15 +369,15 @@ async def _start_mcp_server() -> None:
                 port=port,
             )
         except Exception as e:
-            logger.error(f"🌐 [MCP Server] MCP Server 启动失败: {e}")
+            logger.error(t("🌐 [MCP Server] MCP Server 启动失败: {e}", e=e))
     elif transport == "stdio":
-        logger.info("🌐 [MCP Server] 启动 stdio 模式 MCP Server")
+        logger.info(t("🌐 [MCP Server] 启动 stdio 模式 MCP Server"))
         try:
             await _mcp_server.run_async(transport="stdio")
         except Exception as e:
-            logger.error(f"🌐 [MCP Server] MCP Server 启动失败: {e}")
+            logger.error(t("🌐 [MCP Server] MCP Server 启动失败: {e}", e=e))
     else:
-        logger.error(f"🌐 [MCP Server] 不支持的传输协议: {transport}")
+        logger.error(t("🌐 [MCP Server] 不支持的传输协议: {transport}", transport=transport))
 
 
 async def _shutdown_mcp_server() -> None:
@@ -370,11 +388,11 @@ async def _shutdown_mcp_server() -> None:
         _server_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _server_task
-        logger.info("🌐 [MCP Server] MCP Server 任务已取消")
+        logger.info(t("🌐 [MCP Server] MCP Server 任务已取消"))
 
     _mcp_server = None
     _server_task = None
-    logger.info("🌐 [MCP Server] MCP Server 已关闭")
+    logger.info(t("🌐 [MCP Server] MCP Server 已关闭"))
 
 
 def get_mcp_server() -> Optional[FastMCP]:
@@ -395,7 +413,7 @@ async def init_mcp_server():
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:
-        logger.info("🔌 [MCP] AI总开关已关闭，跳过MCP Server启动")
+        logger.info(t("🔌 [MCP] AI总开关已关闭，跳过MCP Server启动"))
         return
 
     global _server_task

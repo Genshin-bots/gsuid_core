@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.segment import Message
 from gsuid_core.ai_core.utils import handle_tool_result
@@ -187,7 +188,7 @@ def ai_tools(
                 elif isinstance(check_result, Tuple):
                     is_passed, message = check_result[0], check_result[1]
                 else:
-                    logger.warning("🧠 [Register] @ai_tools 装饰器 check_func 存在问题, 请开发者检查...")
+                    logger.warning(t("🧠 [Register] @ai_tools 装饰器 check_func 存在问题, 请开发者检查..."))
                     return "@ai_tools 装饰器 check_func 存在问题, 请开发者检查"
 
                 if not is_passed:
@@ -223,7 +224,13 @@ def ai_tools(
                 raw_result = await asyncio.wait_for(_call(), timeout=timeout)
             except asyncio.TimeoutError:
                 timeout_sec = int(timeout) if timeout is not None else 0
-                logger.warning(f"🧠 [Register] 工具 [{fn.__name__}] 执行超时（>{timeout_sec}s），已中断")
+                logger.warning(
+                    t(
+                        "🧠 [Register] 工具 [{p0}] 执行超时（>{timeout_sec}s），已中断",
+                        p0=fn.__name__,
+                        timeout_sec=timeout_sec,
+                    )
+                )
                 return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
 
             # 处理并返回结果
@@ -272,7 +279,9 @@ def ai_tools(
                     if inspect.isawaitable(res):
                         res = await res
                 except Exception as e:
-                    logger.debug(f"🧠 [Register] 工具 [{_name}] visible_when 判定异常，默认可见: {e}")
+                    logger.debug(
+                        t("🧠 [Register] 工具 [{_name}] visible_when 判定异常，默认可见: {e}", _name=_name, e=e)
+                    )
                     return tool_def
                 return tool_def if res else None
 
@@ -289,12 +298,23 @@ def ai_tools(
         reg_category = category
         if plugin_name != "core" and reg_category in _CORE_ONLY_CATEGORIES:
             logger.warning(
-                f"🧠 [Register] 插件 [{plugin_name}] 的工具 [{fn.__name__}] 声明了框架特权分类 "
-                f"[{reg_category}]，已重定向到 [common] 注册"
+                t(
+                    "🧠 [Register] 插件 [{plugin_name}] 的工具 [{p0}] 声明了框架特权分类"
+                    " [{reg_category}]，已重定向到 [common] 注册",
+                    plugin_name=plugin_name,
+                    p0=fn.__name__,
+                    reg_category=reg_category,
+                )
             )
             reg_category = "common"
 
-        logger.debug(f"🧠 [Register] @ai_tools 装饰器执行，注册工具: {fn.__name__} (分类: {reg_category})")
+        logger.debug(
+            t(
+                "🧠 [Register] @ai_tools 装饰器执行，注册工具: {p0} (分类: {reg_category})",
+                p0=fn.__name__,
+                reg_category=reg_category,
+            )
+        )
 
         tool_base = ToolBase(
             name=fn.__name__,
@@ -713,7 +733,12 @@ def ai_skill(path: Union[str, Path], plugin: Optional[str] = None) -> None:
     result = register_plugin_skill_directory(p.resolve(), plugin)
     if result["status"] == 0:
         logger.info(
-            f"🧠 [AI][Registry] Skill 目录注册成功（plugin={plugin}, count={result.get('count', 0)}）: {p.resolve()}"
+            t(
+                "🧠 [AI][Registry] Skill 目录注册成功（plugin={plugin}, count={p0}）: {p1}",
+                plugin=plugin,
+                p0=result.get("count", 0),
+                p1=p.resolve(),
+            )
         )
     else:
-        logger.warning(f"🧠 [AI][Registry] Skill 目录注册失败: {result['msg']}")
+        logger.warning(t("🧠 [AI][Registry] Skill 目录注册失败: {p0}", p0=result["msg"]))

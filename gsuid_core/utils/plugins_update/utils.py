@@ -2,6 +2,7 @@ from typing import List
 
 import psutil
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -16,7 +17,7 @@ def get_command_chain() -> List[str]:
             cmd_chain.extend(process.cmdline())
             process = process.parent()
         except Exception as e:
-            logger.warning(f"获取命令链失败...{e}")
+            logger.warning(t("获取命令链失败...{e}", e=e))
             break
     return cmd_chain
 
@@ -25,7 +26,7 @@ def check_start_tool(is_pip: bool = False):
     command_chain = get_command_chain()
     command_chain = [command.lower() for command in command_chain]
     command_chain_str = " ".join(command_chain)
-    logger.debug(f"[检测启动工具] 命令链: {command_chain}")
+    logger.debug(t("[检测启动工具] 命令链: {command_chain}", command_chain=command_chain))
 
     PDM = "pdm"
     POETRY = "poetry"
@@ -65,5 +66,5 @@ def check_start_tool(is_pip: bool = False):
     else:
         command = OTHER
 
-    logger.debug(f"[检测启动工具] 最终命令: {command}")
+    logger.debug(t("[检测启动工具] 最终命令: {command}", command=command))
     return command

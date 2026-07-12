@@ -16,6 +16,7 @@ from fastapi import Query, Depends
 from pydantic import BaseModel
 from sqlmodel import col, select
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
@@ -84,7 +85,7 @@ async def invalidate_memory_edge(
             return _err("Edge 不存在")
         edge.invalid_at = datetime.now(timezone.utc)
         await session.commit()
-    logger.info(f"💻 [AgentDebug] 管理员软删除 Edge: {edge_id}")
+    logger.info(i18n_t("💻 [AgentDebug] 管理员软删除 Edge: {edge_id}", edge_id=edge_id))
     return _ok({"edge_id": edge_id})
 
 

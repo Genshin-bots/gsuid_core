@@ -17,6 +17,7 @@ import re
 import asyncio
 from typing import List, Tuple, Optional
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
@@ -41,7 +42,7 @@ async def fetch_favorability(user_id: str, bot_id: str) -> Optional[int]:
         if user_data:
             return user_data.favorability
     except Exception as e:
-        logger.debug(f"🧠 [ContextAssembly] 好感度查询失败，降级为无注入: {e}")
+        logger.debug(t("🧠 [ContextAssembly] 好感度查询失败，降级为无注入: {e}", e=e))
     return None
 
 
@@ -72,7 +73,7 @@ async def build_stable_context(event: Event) -> str:
     results = await asyncio.gather(_self_model_block(), _group_profile_block(), return_exceptions=True)
     for name, r in zip(("self_model 稳定块", "群画像稳定块"), results):
         if isinstance(r, BaseException):
-            logger.debug(f"🪞 [ContextAssembly] {name}注入失败: {r}")
+            logger.debug(t("🪞 [ContextAssembly] {name}注入失败: {r}", name=name, r=r))
         elif r:
             parts.append(r)
 
@@ -136,7 +137,7 @@ async def assemble_dynamic_context(
             if mood_desc:
                 context_parts.append(f"（{mood_desc}。）")
         except Exception as e:
-            logger.debug(f"🎭 [Mood] 情绪描述获取失败: {e}")
+            logger.debug(t("🎭 [Mood] 情绪描述获取失败: {e}", e=e))
 
     # C3-a/c: per-user 关系行（群聊共享 session，关系随当前对话者变化，不能冻进共享前缀）
     self_episode_text = ""
@@ -150,7 +151,7 @@ async def assemble_dynamic_context(
         if _SELF_RECALL_RE.search(query):
             self_episode_text = await retrieve_self_episodes(bot_id)
     except Exception as e:
-        logger.debug(f"🪞 [SelfCognition] 关系上下文注入失败: {e}")
+        logger.debug(t("🪞 [SelfCognition] 关系上下文注入失败: {e}", e=e))
 
     # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
     # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一行紧凑口吻自述。
@@ -167,7 +168,7 @@ async def assemble_dynamic_context(
                     "该回应的回应、该办的事照办，不拿角色性格当拒绝或敷衍的理由）"
                 )
         except Exception as e:
-            logger.debug(f"🧠 [ContextAssembly] 人格口吻锚点注入失败: {e}")
+            logger.debug(t("🧠 [ContextAssembly] 人格口吻锚点注入失败: {e}", e=e))
 
     if self_episode_text:
         context_parts.append(self_episode_text)
@@ -182,7 +183,7 @@ async def assemble_dynamic_context(
         if task_context_text:
             context_parts.append(task_context_text)
     except Exception as e:
-        logger.debug(f"📋 [Planning] 长任务上下文注入失败: {e}")
+        logger.debug(t("📋 [Planning] 长任务上下文注入失败: {e}", e=e))
 
     if memory_context_text:
         guide = f"{memory_guide}" if memory_guide else ""

@@ -7,6 +7,7 @@ OpenAI 配置管理器模块
 
 from typing import Any, Dict, Optional
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import OPENAI_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
@@ -229,10 +230,12 @@ class OpenAIConfigManager(ConfigSetManager):
             if old_name in self._cache:
                 del self._cache[old_name]
 
-            logger.info(f"[OpenAIConfig] 已重命名配置文件: {old_name} -> {new_name}")
+            logger.info(
+                t("[OpenAIConfig] 已重命名配置文件: {old_name} -> {new_name}", old_name=old_name, new_name=new_name)
+            )
             return True, "ok"
         except Exception as e:
-            logger.error(f"[OpenAIConfig] 重命名配置文件失败: {e}")
+            logger.error(t("[OpenAIConfig] 重命名配置文件失败: {e}", e=e))
             return False, str(e)
 
 

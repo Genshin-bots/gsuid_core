@@ -11,6 +11,8 @@ from models import Message, MessageReceive
 from msgspec import json as msgjson
 from websockets.exceptions import ConnectionClosedError
 
+from gsuid_core.i18n import t
+
 sys.path.append("..")
 
 # 配置参数
@@ -41,9 +43,9 @@ class GsBenchmarkClient:
     async def async_connect(cls, IP: str = "localhost", PORT: Union[str, int] = "8765"):
         self = cls()
         self.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot"
-        print(f"[-] 正在连接至 {self.ws_url} ...")
+        print(t("[-] 正在连接至 {p0} ...", p0=self.ws_url))
         self.ws = await websockets.client.connect(self.ws_url, max_size=2**25, open_timeout=30, ping_interval=None)
-        print("[+] 连接成功！准备开始基准测试")
+        print(t("[+] 连接成功！准备开始基准测试"))
         return self
 
     async def recv_loop(self):
@@ -69,12 +71,12 @@ class GsBenchmarkClient:
 
         except ConnectionClosedError:
             if self.running:
-                print("[!] 连接意外断开")
+                print(t("[!] 连接意外断开"))
                 # 如果断连，强制触发结束，避免主程序死锁
                 self.finish_event.set()
         except Exception as e:
             if self.running:
-                print(f"[!] 接收循环异常: {e}")
+                print(t("[!] 接收循环异常: {e}", e=e))
 
     async def generate_random_msg(self, index):
         """生成随机测试消息"""
@@ -96,7 +98,13 @@ class GsBenchmarkClient:
         return msgjson.encode(msg)
 
     async def run_benchmark(self):
-        print(f"[*] 开始测试：计划在 {TARGET_DURATION} 秒内发送 {TOTAL_REQUESTS} 条消息...")
+        print(
+            t(
+                "[*] 开始测试：计划在 {TARGET_DURATION} 秒内发送 {TOTAL_REQUESTS} 条消息...",
+                TARGET_DURATION=TARGET_DURATION,
+                TOTAL_REQUESTS=TOTAL_REQUESTS,
+            )
+        )
 
         start_time = time.perf_counter()
 
@@ -113,10 +121,10 @@ class GsBenchmarkClient:
             await asyncio.sleep(sleep_time)
 
             if (i + 1) % 100 == 0:
-                print(f"    -> 已发送: {i + 1}/{TOTAL_REQUESTS}")
+                print(t("    -> 已发送: {p0}/{TOTAL_REQUESTS}", p0=i + 1, TOTAL_REQUESTS=TOTAL_REQUESTS))
 
         send_duration = time.perf_counter() - start_time
-        print(f"[*] 发送完毕，耗时 {send_duration:.2f}s。等待剩余响应...")
+        print(t("[*] 发送完毕，耗时 {send_duration:.2f}s。等待剩余响应...", send_duration=send_duration))
         return send_duration
 
     async def start(self):
@@ -131,7 +139,12 @@ class GsBenchmarkClient:
                 # 等待 finish_event 被 set，或者超时
                 await asyncio.wait_for(self.finish_event.wait(), timeout=WAIT_TIMEOUT)
             except asyncio.TimeoutError:
-                print(f"[!] 等待响应超时 (超过 {WAIT_TIMEOUT}秒)，部分消息可能未收到或服务器处理积压。")
+                print(
+                    t(
+                        "[!] 等待响应超时 (超过 {WAIT_TIMEOUT}秒)，部分消息可能未收到或服务器处理积压。",
+                        WAIT_TIMEOUT=WAIT_TIMEOUT,
+                    )
+                )
 
             # 3. 打印详细报告
             self.print_report()
@@ -147,14 +160,14 @@ class GsBenchmarkClient:
 
     def print_report(self):
         print("\n" + "=" * 40)
-        print("          基准测试报告")
+        print(t("          基准测试报告"))
         print("=" * 40)
 
         # 基础数据
         lost_count = TOTAL_REQUESTS - self.recv_count
-        print(f"请求总数 : {TOTAL_REQUESTS}")
-        print(f"成功接收 : {self.recv_count}")
-        print(f"丢包/未回: {lost_count} ({lost_count / TOTAL_REQUESTS * 100:.1f}%)")
+        print(t("请求总数 : {TOTAL_REQUESTS}", TOTAL_REQUESTS=TOTAL_REQUESTS))
+        print(t("成功接收 : {p0}", p0=self.recv_count))
+        print(t("丢包/未回: {lost_count} ({p0:.1f}%)", lost_count=lost_count, p0=lost_count / TOTAL_REQUESTS * 100))
 
         if self.latencies:
             # 延迟统计
@@ -169,14 +182,14 @@ class GsBenchmarkClient:
             # 这是一个近似值，如果需要更精确的吞吐量，可以记录 total_time
 
             print("-" * 40)
-            print("延迟统计 (Latency):")
-            print(f"  平均 (Avg) : {avg_lat:.2f} ms")
-            print(f"  中位 (Med) : {median_lat:.2f} ms")
+            print(t("延迟统计 (Latency):"))
+            print(t("  平均 (Avg) : {avg_lat:.2f} ms", avg_lat=avg_lat))
+            print(t("  中位 (Med) : {median_lat:.2f} ms", median_lat=median_lat))
             print(f"  P95 Line   : {p95_lat:.2f} ms")
-            print(f"  最小 (Min) : {min_lat:.2f} ms")
-            print(f"  最大 (Max) : {max_lat:.2f} ms")
+            print(t("  最小 (Min) : {min_lat:.2f} ms", min_lat=min_lat))
+            print(t("  最大 (Max) : {max_lat:.2f} ms", max_lat=max_lat))
         else:
-            print("[-] 未收集到延迟数据 (未收到任何响应)")
+            print(t("[-] 未收集到延迟数据 (未收到任何响应)"))
 
         print("=" * 40)
 
@@ -186,9 +199,9 @@ async def main():
         client = await GsBenchmarkClient.async_connect()
         await client.start()
     except OSError as e:
-        print(f"[X] 无法连接到服务器: {e}")
+        print(t("[X] 无法连接到服务器: {e}", e=e))
     except Exception as e:
-        print(f"[X] 发生错误: {e}")
+        print(t("[X] 发生错误: {e}", e=e))
 
 
 if __name__ == "__main__":

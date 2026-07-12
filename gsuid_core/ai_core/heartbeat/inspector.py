@@ -15,6 +15,8 @@ import asyncio
 from typing import Any, List, Tuple, Optional
 from datetime import datetime, timedelta
 
+from gsuid_core.i18n import t
+
 # 延迟导入避免循环依赖
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
@@ -60,7 +62,7 @@ class HeartbeatInspector:
 
             # 检查是否启用了定时巡检模式
             if "定时巡检" not in ai_mode:
-                logger.debug(f"🫀 [Heartbeat] {persona_name} 未启用定时巡检模式")
+                logger.debug(t("🫀 [Heartbeat] {persona_name} 未启用定时巡检模式", persona_name=persona_name))
                 return False
 
             job_id = f"ai_heartbeat_inspector_{persona_name}"
@@ -74,10 +76,16 @@ class HeartbeatInspector:
                 kwargs={"persona_name": persona_name},
             )
             self._scheduled_jobs[persona_name] = job_id
-            logger.info(f"🫀 [Heartbeat] {persona_name} 定时巡检已启动，每 {inspect_interval} 分钟执行一次")
+            logger.info(
+                t(
+                    "🫀 [Heartbeat] {persona_name} 定时巡检已启动，每 {inspect_interval} 分钟执行一次",
+                    persona_name=persona_name,
+                    inspect_interval=inspect_interval,
+                )
+            )
             return True
         except Exception as e:
-            logger.exception(f"🫀 [Heartbeat] {persona_name} 启动巡检器失败: {e}")
+            logger.exception(t("🫀 [Heartbeat] {persona_name} 启动巡检器失败: {e}", persona_name=persona_name, e=e))
             return False
 
     def stop_for_persona(self, persona_name: str) -> bool:
@@ -92,10 +100,10 @@ class HeartbeatInspector:
             job_id = self._scheduled_jobs[persona_name]
             scheduler.remove_job(job_id)
             del self._scheduled_jobs[persona_name]
-            logger.info(f"🫀 [Heartbeat] {persona_name} 定时巡检已停止")
+            logger.info(t("🫀 [Heartbeat] {persona_name} 定时巡检已停止", persona_name=persona_name))
             return True
         except Exception as e:
-            logger.exception(f"🫀 [Heartbeat] {persona_name} 停止巡检器失败: {e}")
+            logger.exception(t("🫀 [Heartbeat] {persona_name} 停止巡检器失败: {e}", persona_name=persona_name, e=e))
             return False
 
     def start_all(self) -> bool:
@@ -107,7 +115,7 @@ class HeartbeatInspector:
         from gsuid_core.ai_core.configs.ai_config import ai_config
 
         if not ai_config.get_config("enable").data:
-            logger.info("🫀 [Heartbeat] AI总开关已关闭，跳过定时巡检启动")
+            logger.info(t("🫀 [Heartbeat] AI总开关已关闭，跳过定时巡检启动"))
             return False
 
         # 获取所有启用了定时巡检的 persona
@@ -127,12 +135,12 @@ class HeartbeatInspector:
             self.stop_for_persona(persona_name)
 
         self._running = False
-        logger.info("🫀[Heartbeat] 所有定时巡检已停止")
+        logger.info(t("🫀[Heartbeat] 所有定时巡检已停止"))
         return True
 
     async def _inspect_all_sessions_for_persona(self, persona_name: str) -> None:
         """巡检所有与指定 persona 相关的会话"""
-        logger.info(f"🫀 [Heartbeat] {persona_name} 开始定时巡检...")
+        logger.info(t("🫀 [Heartbeat] {persona_name} 开始定时巡检...", persona_name=persona_name))
 
         # 获取该 persona 配置的 target_groups
         config = persona_config_manager.get_config(persona_name)
@@ -143,10 +151,12 @@ class HeartbeatInspector:
         sessions = self._history_manager.list_sessions()
 
         if not sessions:
-            logger.debug(f"🫀 [Heartbeat] {persona_name} 无活跃会话，跳过")
+            logger.debug(t("🫀 [Heartbeat] {persona_name} 无活跃会话，跳过", persona_name=persona_name))
             return
 
-        logger.info(f"🫀[Heartbeat] {persona_name} 发现 {len(sessions)} 个活跃会话待检查")
+        logger.info(
+            t("🫀[Heartbeat] {persona_name} 发现 {p0} 个活跃会话待检查", persona_name=persona_name, p0=len(sessions))
+        )
 
         # 使用信号量控制并发 LLM 调用数量
         tasks = []
@@ -158,7 +168,13 @@ class HeartbeatInspector:
             # 前置规则过滤：快速判断是否需要巡检
             should_check, skip_reason = self._pre_check_session(session_key)
             if not should_check:
-                logger.debug(f"🫀 [Heartbeat] 跳过 {session_key}: {skip_reason}")
+                logger.debug(
+                    t(
+                        "🫀 [Heartbeat] 跳过 {session_key}: {skip_reason}",
+                        session_key=session_key,
+                        skip_reason=skip_reason,
+                    )
+                )
                 continue
 
             # 创建带信号量限制的任务
@@ -173,9 +189,9 @@ class HeartbeatInspector:
                     timeout=300,  # 5分钟超时
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"🫀 [Heartbeat] {persona_name} 巡检超时，已取消剩余任务")
+                logger.warning(t("🫀 [Heartbeat] {persona_name} 巡检超时，已取消剩余任务", persona_name=persona_name))
 
-        logger.info(f"🫀 [Heartbeat] {persona_name} 定时巡检完成")
+        logger.info(t("🫀 [Heartbeat] {persona_name} 定时巡检完成", persona_name=persona_name))
 
     async def _inspect_session_with_semaphore(self, event: Event, persona_name: str) -> None:
         """带信号量控制的会话巡检"""
@@ -185,7 +201,14 @@ class HeartbeatInspector:
                 # 防并发风暴：每次检查完一个群，稍微歇息1秒
                 await asyncio.sleep(1)
             except Exception as e:
-                logger.exception(f"🫀[Heartbeat] {persona_name} 巡检会话 {event} 出错: {e}")
+                logger.exception(
+                    t(
+                        "🫀[Heartbeat] {persona_name} 巡检会话 {event} 出错: {e}",
+                        persona_name=persona_name,
+                        event=event,
+                        e=e,
+                    )
+                )
 
     def _pre_check_session(self, event: Event) -> Tuple[bool, str]:
         """
@@ -277,7 +300,7 @@ class HeartbeatInspector:
         from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
 
         if is_scope_banned(event.session_id):
-            logger.debug(f"🫀 [Heartbeat] 会话 {event.session_id} 处于 AI 禁言状态，跳过巡检")
+            logger.debug(t("🫀 [Heartbeat] 会话 {p0} 处于 AI 禁言状态，跳过巡检", p0=event.session_id))
             return
 
         # 1. 获取历史记录（使用 history 模块的全部消息，不再限制时间窗口）
@@ -305,7 +328,7 @@ class HeartbeatInspector:
         session_id: str = event.session_id
         session_persona_name: Optional[str] = persona_config_manager.get_persona_for_session(session_id)
         if not session_persona_name:
-            logger.debug(f"🫀 [Heartbeat] 会话 {event} 没有配置 persona")
+            logger.debug(t("🫀 [Heartbeat] 会话 {event} 没有配置 persona", event=event))
             return
 
         # 4. 决策阶段 (隐形 Sub-Agent)
@@ -321,7 +344,7 @@ class HeartbeatInspector:
             extra_context=merge_ctx,
         )
         if not meta:
-            logger.debug(f"🫀 [Heartbeat] 会话 {event} 文本生成为空，放弃发送")
+            logger.debug(t("🫀 [Heartbeat] 会话 {event} 文本生成为空，放弃发送", event=event))
             return
         mood, message, generator_log_files = meta
 

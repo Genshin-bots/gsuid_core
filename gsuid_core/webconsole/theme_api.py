@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import Depends, Request, HTTPException
 from pydantic import Field, BaseModel
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import THEME_CONFIG_PATH, THEME_CONFIGS_PATH
 from gsuid_core.webconsole.app_app import app
@@ -34,12 +35,12 @@ DEFAULT_THEME_CONFIG: Dict[str, Any] = {
     "language": "zh-CN",
     # 侧边栏布局：floating=悬浮卡片 / docked=贴边分栏 / line=仅分割线
     "sidebar_layout": "floating",
-    # 圆角强度（px，写入 CSS --radius；0=直角，24=默认 1.5rem 观感）
-    "border_radius": 24,
-    # UI 字号缩放（百分比，100=浏览器默认）
-    "ui_scale": 100,
-    # 阴影强度（百分比 0-200 → 前端 CSS --shadow-strength 0-2；0=关闭阴影）
-    "shadow_intensity": 100,
+    # 圆角强度（px，写入 CSS --radius；0=直角，默认 8=轻微圆角）
+    "border_radius": 8,
+    # UI 字号缩放（百分比，100=浏览器默认；默认 97=略微紧凑）
+    "ui_scale": 97,
+    # 阴影强度（百分比 0-200 → 前端 CSS --shadow-strength 0-2；0=关闭阴影，默认 55=轻阴影）
+    "shadow_intensity": 55,
     # 侧边栏默认是否收起（仅图标模式）
     "sidebar_default_collapsed": False,
 }
@@ -74,11 +75,11 @@ class ThemeConfigRequest(BaseModel):
     # 侧边栏布局：floating=悬浮卡片 / docked=贴边分栏 / line=仅分割线
     sidebar_layout: str = Field(default="floating")
     # 圆角强度（px → CSS --radius）
-    border_radius: int = Field(default=24, ge=0, le=32)
+    border_radius: int = Field(default=8, ge=0, le=32)
     # UI 字号缩放百分比
-    ui_scale: int = Field(default=100, ge=85, le=120)
-    # 阴影强度百分比（0=关闭，100=默认，200=加倍）
-    shadow_intensity: int = Field(default=100, ge=0, le=200)
+    ui_scale: int = Field(default=97, ge=85, le=120)
+    # 阴影强度百分比（0=关闭，55=默认轻阴影，200=加倍）
+    shadow_intensity: int = Field(default=55, ge=0, le=200)
     # 侧边栏默认收起
     sidebar_default_collapsed: bool = Field(default=False)
 
@@ -496,7 +497,7 @@ async def save_theme_preset(
         with open(target, "w", encoding="utf-8") as f:
             json.dump(config_dict, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        logger.exception(f"[Theme] 保存主题预设失败: {e}")
+        logger.exception(t("[Theme] 保存主题预设失败: {e}", e=e))
         return {"status": 1, "msg": f"保存失败: {e}"}
 
     return {
@@ -565,7 +566,7 @@ async def delete_theme_preset(
     try:
         target.unlink()
     except Exception as e:
-        logger.exception(f"[Theme] 删除主题预设失败: {e}")
+        logger.exception(t("[Theme] 删除主题预设失败: {e}", e=e))
         return {"status": 1, "msg": f"删除失败: {e}"}
     return {
         "status": 0,

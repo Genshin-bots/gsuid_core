@@ -20,6 +20,7 @@ import asyncio
 from typing import Dict, Literal
 from contextlib import asynccontextmanager
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .models import (
@@ -62,7 +63,13 @@ class ProviderRouter:
         if not full_name:
             return
         self._slot(full_name).unavailable_until = time.time() + cooldown
-        logger.warning(f"🧠 [ProviderRouter] 配置 {full_name} 标记为不可用，冷却 {cooldown:.0f}s")
+        logger.warning(
+            t(
+                "🧠 [ProviderRouter] 配置 {full_name} 标记为不可用，冷却 {cooldown:.0f}s",
+                full_name=full_name,
+                cooldown=cooldown,
+            )
+        )
 
     def mark_success(self, full_name: str) -> None:
         """请求成功即解除冷却（provider 已恢复，不必等满冷却期）"""
@@ -101,14 +108,19 @@ class ProviderRouter:
                 slot.in_flight += 1
                 if chosen != primary:
                     logger.info(
-                        f"🧠 [ProviderRouter] {task_level} 级请求路由至备用配置 {chosen} "
-                        f"(主配置 {primary} 并发满/冷却中)"
+                        t(
+                            "🧠 [ProviderRouter] {task_level} 级请求路由至备用配置"
+                            " {chosen} (主配置 {primary} 并发满/冷却中)",
+                            task_level=task_level,
+                            chosen=chosen,
+                            primary=primary,
+                        )
                     )
                 return chosen
             if time.time() >= deadline:
                 slot = self._slot(primary)
                 slot.in_flight += 1
-                logger.warning(f"🧠 [ProviderRouter] 等待槽位超时，强制走主配置 {primary}")
+                logger.warning(t("🧠 [ProviderRouter] 等待槽位超时，强制走主配置 {primary}", primary=primary))
                 return primary
             await asyncio.sleep(_POLL_INTERVAL)
 

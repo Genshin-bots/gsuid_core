@@ -9,6 +9,8 @@ from pathlib import Path
 
 import aiofiles
 
+from gsuid_core.i18n import t
+
 from .models import PersonaFiles, PersonaMetadata
 from ..resource import PERSONA_PATH
 
@@ -69,7 +71,7 @@ class Persona:
             return "你是一个智能助手，简短的一句话回答问题即可。"
 
         if not self.exists():
-            raise FileNotFoundError(f"Persona '{self.name}' 不存在")
+            raise FileNotFoundError(t("Persona '{p0}' 不存在", p0=self.name))
 
         async with aiofiles.open(str(self._files.markdown_path), "r", encoding="utf-8") as f:
             return await f.read()

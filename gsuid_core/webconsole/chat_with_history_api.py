@@ -16,6 +16,7 @@ from fastapi import Depends
 from pydantic import BaseModel, ConfigDict
 
 from gsuid_core.bot import _Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
@@ -156,7 +157,7 @@ async def chatWithHistory(
                     ScopeType.USER_GLOBAL if not group_id else ScopeType.GROUP,
                     str(group_id) if group_id else str(user_id),
                 )
-                logger.info(f"🧠 [Memory] 手动触发分层图重建 scope_key={scope_key}")
+                logger.info(t("🧠 [Memory] 手动触发分层图重建 scope_key={scope_key}", scope_key=scope_key))
                 asyncio.create_task(rebuild_task(scope_key))
 
         # 评测侧可显式要求装配真实工具集（agent 能力评测用）；默认 None 保持记忆评测的
@@ -179,7 +180,12 @@ async def chatWithHistory(
             if Persona(persona_name).exists() or persona_name == "智能助手":
                 _sys_prompt = await build_session_system_prompt(event, persona_name)
             else:
-                logger.warning(f"[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词")
+                logger.warning(
+                    t(
+                        "[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词",
+                        persona_name=persona_name,
+                    )
+                )
         agent = create_agent(
             system_prompt=_sys_prompt,
             persona_name=persona_name,
@@ -249,7 +255,13 @@ async def chatWithHistory(
         mem_guide = ""
         if memory_context_text:
             # 只记摘要，不落全文：注入文本可达 30k+ 字符，全文进日志会撑爆内存日志缓冲
-            logger.info(f"🧠 [GsCore] 检索到长期记忆: {len(memory_context_text)} chars: {memory_context_text[:300]}...")
+            logger.info(
+                t(
+                    "🧠 [GsCore] 检索到长期记忆: {p0} chars: {p1}...",
+                    p0=len(memory_context_text),
+                    p1=memory_context_text[:300],
+                )
+            )
             # 记忆使用准则（通用 memory-agent 行为，非针对性）：片段均带时间戳，回答时
             # ① 同一属性有多个取值时以时间最新者为准；② 发现用户前后陈述矛盾要指出矛盾并请
             # 其澄清，而非径直选一个；③ 优先引用记忆中的具体数字/版本/日期，不要泛泛而谈。
@@ -301,7 +313,7 @@ async def chatWithHistory(
             memory_guide=mem_guide,
         )
 
-        logger.info("启动问答")
+        logger.info(t("启动问答"))
 
         # 调用 Agent（传入 event 和 rag_context）
         result = await agent.run(
@@ -319,6 +331,6 @@ async def chatWithHistory(
             return {"status_code": -100, "data": None}
 
     except Exception as e:
-        logger.error(f"🧠 [GsCore][chat_with_history] 异常: {e}")
-        logger.exception("🧠 [GsCore][chat_with_history] 异常详情:")
+        logger.error(t("🧠 [GsCore][chat_with_history] 异常: {e}", e=e))
+        logger.exception(t("🧠 [GsCore][chat_with_history] 异常详情:"))
         return {"status_code": -102, "data": None, "error": str(e)}

@@ -7,6 +7,7 @@
 > 不参与任何 LLM 推理 / 记忆 / 检索链路。
 """
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.register import get_aliases_for_scope
 
@@ -35,5 +36,5 @@ def normalize_query(text: str) -> str:
 
     新代码请改用 `command_alias_normalizer`。
     """
-    logger.trace("🧠 [Normalize] normalize_query 已降级为命令层 fallback，建议改用 command_alias_normalizer")
+    logger.trace(t("🧠 [Normalize] normalize_query 已降级为命令层 fallback，建议改用 command_alias_normalizer"))
     return command_alias_normalizer(text)

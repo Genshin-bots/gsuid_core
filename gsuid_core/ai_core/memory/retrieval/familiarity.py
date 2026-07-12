@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 if TYPE_CHECKING:
@@ -315,6 +316,12 @@ async def probe_and_route(
         tau=memory_config.familiarity_tau,
     )
     logger.debug(
-        f"🧠 [RF-Mem] 探针路由: route={route} s̄={signal.mean_score:.4f} H={signal.entropy:.4f} k={signal.probe_count}"
+        t(
+            "🧠 [RF-Mem] 探针路由: route={route} s̄={p0:.4f} H={p1:.4f} k={p2}",
+            route=route,
+            p0=signal.mean_score,
+            p1=signal.entropy,
+            p2=signal.probe_count,
+        )
     )
     return route, signal, (query_vector or None)

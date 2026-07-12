@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import gsuid_core.ai_core.meme.startup  # noqa: F401
 import gsuid_core.ai_core.buildin_tools.meme_tools  # noqa: F401
 from gsuid_core.bot import Bot, _Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, prepare_content_payload
@@ -109,7 +110,7 @@ def _relevant_preference_contexts(query: str) -> list[str]:
                 if name and name.lower() in q:
                     matched.add(name)
     except Exception as e:
-        logger.debug(f"🧠 [Memory] 计算偏好相关能力域失败，退化为仅纠错+general: {e}")
+        logger.debug(t("🧠 [Memory] 计算偏好相关能力域失败，退化为仅纠错+general: {e}", e=e))
     return list(matched)
 
 
@@ -139,25 +140,25 @@ async def handle_ai_chat(
         event: Event事件对象，包含用户输入和相关上下文
     """
     if not ai_config.get_config("enable").data:
-        logger.debug("🧠 [GsCore][AI] AI服务未启用，跳过处理")
+        logger.debug(t("🧠 [GsCore][AI] AI服务未启用，跳过处理"))
         return
 
     try:
         from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
 
         if not is_ai_core_ready():
-            logger.info("🧠 [GsCore][AI] AI Core 正在初始化/迁移，等待初始化完成后再处理本次消息...")
+            logger.info(t("🧠 [GsCore][AI] AI Core 正在初始化/迁移，等待初始化完成后再处理本次消息..."))
             if not await wait_ai_core_ready(timeout=300.0):
-                logger.warning("🧠 [GsCore][AI] AI Core 初始化等待超时，跳过本次消息以避免查询未完成迁移的向量库")
+                logger.warning(t("🧠 [GsCore][AI] AI Core 初始化等待超时，跳过本次消息以避免查询未完成迁移的向量库"))
                 return
     except Exception as e:
-        logger.warning(f"🧠 [GsCore][AI] 检查 AI Core 初始化状态失败，继续降级处理: {e}")
+        logger.warning(t("🧠 [GsCore][AI] 检查 AI Core 初始化状态失败，继续降级处理: {e}", e=e))
 
     async with _ai_semaphore:
         # O-A 早退：拿到全局并发信号量时若已排队过久（全局过载场景），话题大概率已翻篇，
         # 直接放弃，省下后续分类 / 记忆检索等开销。锁级别的二次防护见 gs_agent.run。
         if enqueue_ts is not None and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL:
-            logger.info(f"🧠 [GsCore][AI] 队列等待 {time.time() - enqueue_ts:.1f}s 超 TTL，丢弃过期请求")
+            logger.info(t("🧠 [GsCore][AI] 队列等待 {p0:.1f}s 超 TTL，丢弃过期请求", p0=time.time() - enqueue_ts))
             return
         try:
             query = event.raw_text
@@ -179,19 +180,23 @@ async def handle_ai_chat(
                     event.session_id,
                 )
             except SQLAlchemyError as e:
-                logger.warning(f"💰 [GsCore][AI] 预算校验 DB 异常，放行本次消息: {e}")
+                logger.warning(t("💰 [GsCore][AI] 预算校验 DB 异常，放行本次消息: {e}", e=e))
             except Exception as e:
-                logger.exception(f"💰 [GsCore][AI] 预算校验未知异常，放行本次消息: {e}")
+                logger.exception(t("💰 [GsCore][AI] 预算校验未知异常，放行本次消息: {e}", e=e))
 
             if budget_decision is not None and not budget_decision.allowed:
                 logger.info(
-                    f"💰 [GsCore][AI] 预算超额拦截 ({budget_decision.block_scope_label}): {budget_decision.message}"
+                    t(
+                        "💰 [GsCore][AI] 预算超额拦截 ({p0}): {p1}",
+                        p0=budget_decision.block_scope_label,
+                        p1=budget_decision.message,
+                    )
                 )
                 if budget_decision.notify and budget_decision.message and bot is not None:
                     try:
                         await bot.send(budget_decision.message)
                     except Exception as e:
-                        logger.warning(f"💰 [GsCore][AI] 预算超额提示发送失败: {e}")
+                        logger.warning(t("💰 [GsCore][AI] 预算超额提示发送失败: {e}", e=e))
                 # 提示尽力而为，发送失败也无条件早退，绝不放超额消息进完整 AI 流程。
                 return
 
@@ -221,7 +226,7 @@ async def handle_ai_chat(
                         message_type="group_msg" if event.group_id else "private_msg",
                     )
             except Exception as e:
-                logger.debug(f"🧠 [Memory] 主动会话触发者发言入队失败: {e}")
+                logger.debug(t("🧠 [Memory] 主动会话触发者发言入队失败: {e}", e=e))
 
             # ============================================================
             # 步骤 1: 双层长度防护（D-10 修复）
@@ -230,7 +235,13 @@ async def handle_ai_chat(
 
             if raw_text_len > ABSOLUTE_MAX_LENGTH:
                 # 第一层：绝对上限，硬截断，防止把超大文本传给子Agent导致Token爆炸
-                logger.warning(f"🧠 [GsCore][AI] 文本超出绝对上限 ({raw_text_len} > {ABSOLUTE_MAX_LENGTH})，执行硬截断")
+                logger.warning(
+                    t(
+                        "🧠 [GsCore][AI] 文本超出绝对上限 ({raw_text_len} > {ABSOLUTE_MAX_LENGTH})，执行硬截断",
+                        raw_text_len=raw_text_len,
+                        ABSOLUTE_MAX_LENGTH=ABSOLUTE_MAX_LENGTH,
+                    )
+                )
                 query = query[:ABSOLUTE_MAX_LENGTH] + "...[文本过长，已自动截断]"
                 event.raw_text = query  # 同步到 event
 
@@ -239,7 +250,7 @@ async def handle_ai_chat(
             # ============================================================
             res = await classifier_service.predict_async(query)
             intent = res["intent"]
-            logger.debug(f"🧠 [GsCore][AI] 意图识别结果: {res}")
+            logger.debug(t("🧠 [GsCore][AI] 意图识别结果: {res}", res=res))
 
             # 记录意图统计和活跃用户
             statistics_manager.record_intent(intent=intent)
@@ -251,11 +262,11 @@ async def handle_ai_chat(
             )
 
             if intent == "闲聊":
-                logger.info("🧠 [GsCore][AI] 闲聊模式")
+                logger.info(t("🧠 [GsCore][AI] 闲聊模式"))
             elif intent == "工具":
-                logger.info("🧠 [GsCore][AI] 工具模式")
+                logger.info(t("🧠 [GsCore][AI] 工具模式"))
             elif intent == "问答":
-                logger.info("🧠 [GsCore][AI] 问答模式")
+                logger.info(t("🧠 [GsCore][AI] 问答模式"))
 
             # ============================================================
             # 步骤 3: 获取 AI Session
@@ -274,11 +285,11 @@ async def handle_ai_chat(
 
                     gate_history = history_manager.get_history(event, limit=15)
                     if not await run_reactive_gate(event, gate_history, session.persona_name):
-                        logger.info("🧠 [GsCore][AI] 软触发沉默门判定与AI无关，保持沉默")
+                        logger.info(t("🧠 [GsCore][AI] 软触发沉默门判定与AI无关，保持沉默"))
                         return
-                    logger.info("🧠 [GsCore][AI] 软触发沉默门放行，按续聊处理")
+                    logger.info(t("🧠 [GsCore][AI] 软触发沉默门放行，按续聊处理"))
                 except Exception as e:
-                    logger.debug(f"🧠 [GsCore][AI] 软触发沉默门异常，放行交主Agent兜底: {e}")
+                    logger.debug(t("🧠 [GsCore][AI] 软触发沉默门异常，放行交主Agent兜底: {e}", e=e))
                 # 过沉默门（含异常兜底）后，把计时基准重置为「过门时刻」：门自身可能耗时十余秒的 LLM 决策，
                 # 不应被锁级 STALE_CHAT_REQUEST_TTL 计入，导致刚放行的续聊被误判为「过期请求」丢弃。
                 if enqueue_ts is not None:
@@ -301,7 +312,7 @@ async def handle_ai_chat(
             # 第二层：智能摘要（在安全范围内对长文本进行摘要）
             # Bug-03修复：摘要时保留上下文头，只替换正文部分
             if len(event.raw_text) > MAX_SUMMARY_LENGTH:
-                logger.info(f"🧠 [GsCore][AI] 检测到长文本 ({len(event.raw_text)} 字符)，开始摘要...")
+                logger.info(t("🧠 [GsCore][AI] 检测到长文本 ({p0} 字符)，开始摘要...", p0=len(event.raw_text)))
 
                 summarized = await create_subagent(
                     ctx=None,  # type: ignore
@@ -317,7 +328,7 @@ async def handle_ai_chat(
                         user_messages[0] = header + summarized + "\n[注：原始消息已摘要]"
                     else:
                         user_messages[0] = summarized
-                logger.info(f"🧠 [GsCore][AI] 摘要完成，摘要长度: {len(summarized)} 字符")
+                logger.info(t("🧠 [GsCore][AI] 摘要完成，摘要长度: {p0} 字符", p0=len(summarized)))
 
             # Bug-04修复：时间注入移到摘要之后（无论是否摘要都需要）
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -334,7 +345,7 @@ async def handle_ai_chat(
                 # C4 寒暄门控：纯寒暄（短+闲聊+无实体/情绪/回指）跳过双路检索，
                 # 节省向量搜索 + Reranker 开销；其余情况照常检索。
                 if not _should_retrieve_memory(query, intent, str(event.user_id)):
-                    logger.debug("🧠 [Memory] 命中寒暄门控，跳过双路检索")
+                    logger.debug(t("🧠 [Memory] 命中寒暄门控，跳过双路检索"))
                 else:
                     try:
                         # 选择性偏好注入：意图门（纯闲聊不注入工具行为规则）+ 能力域过滤
@@ -365,14 +376,14 @@ async def handle_ai_chat(
                             max_chars=memory_config.memory_inject_max_chars,
                             priority_speakers=masters_set or None,
                         )
-                        logger.debug(f"🧠 [Memory] 检索到记忆上下文 ({len(memory_context_text)} 字符)")
+                        logger.debug(t("🧠 [Memory] 检索到记忆上下文 ({p0} 字符)", p0=len(memory_context_text)))
                         # 上报记忆检索统计
                         try:
                             statistics_manager.record_memory_retrieval()
                         except Exception:
                             pass
                     except Exception as e:
-                        logger.warning(f"🧠 [Memory] 记忆检索失败: {e}")
+                        logger.warning(t("🧠 [Memory] 记忆检索失败: {e}", e=e))
 
             # ============================================================
             # 步骤 6: 历史记录上下文
@@ -422,7 +433,7 @@ async def handle_ai_chat(
 
                 if history_context:
                     rag_context = f"【历史对话】\n{history_context}\n"
-                    logger.debug(f"🧠 [GsCore][AI] 已加载 {len(history)} 条历史消息")
+                    logger.debug(t("🧠 [GsCore][AI] 已加载 {p0} 条历史消息", p0=len(history)))
 
             # ============================================================
             # 每轮动态上下文装配（历史/情绪/关系行/口吻锚点/自我情景/长任务/记忆/软触发）
@@ -465,11 +476,11 @@ async def handle_ai_chat(
                 # 拦截沉默信号
                 result_text = chat_result if isinstance(chat_result, str) else str(chat_result)
                 if result_text.strip() in SILENCE_MARKERS:
-                    logger.info("🧠 [GsCore][AI] 角色选择沉默，不发送回复")
+                    logger.info(t("🧠 [GsCore][AI] 角色选择沉默，不发送回复"))
                     # 情绪仍然正常更新，只是不发消息
                 else:
                     await send_chat_result(bot, chat_result, ev=event)
-                    logger.info(f"🧠 [GsCore][AI] 回复已发送 (模式: {intent})")
+                    logger.info(t("🧠 [GsCore][AI] 回复已发送 (模式: {intent})", intent=intent))
 
             # ============================================================
             # 步骤 9: 更新 Persona 情绪状态（异步，不阻塞主流程）
@@ -508,11 +519,11 @@ async def handle_ai_chat(
                     underlying._add_bg_task(mood_task)
                 else:
                     logger.warning(
-                        "🧠 [GsCore][AI] 无法获取 _Bot 实例，mood_task 未被注册到 bg_tasks，可能导致 Task 游离"
+                        t("🧠 [GsCore][AI] 无法获取 _Bot 实例，mood_task 未被注册到 bg_tasks，可能导致 Task 游离")
                     )
 
         except Exception as e:
-            logger.exception(f"🧠 [GsCore][AI] 聊天异常: {e}")
+            logger.exception(t("🧠 [GsCore][AI] 聊天异常: {e}", e=e))
 
 
 async def _update_persona_mood(
@@ -568,4 +579,4 @@ async def _update_persona_mood(
             await update_mood(persona_name, group_id, "neutral", 0.05, "")
 
     except Exception as e:
-        logger.debug(f"🎭 [Mood] 情绪更新失败: {e}")
+        logger.debug(t("🎭 [Mood] 情绪更新失败: {e}", e=e))

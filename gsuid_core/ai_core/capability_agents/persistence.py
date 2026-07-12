@@ -16,6 +16,7 @@ import json
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 from pathlib import Path
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.agent_node import (
     TASK_BASICS_PACK,
@@ -129,7 +130,7 @@ def save_user_profile(node: AgentNode) -> Path:
     import os
 
     os.replace(tmp_path, path)
-    logger.info(f"🤖 [CapabilityAgent] 已落盘用户节点: {node.node_id} → {path.name}")
+    logger.info(t("🤖 [CapabilityAgent] 已落盘用户节点: {p0} → {p1}", p0=node.node_id, p1=path.name))
     return path
 
 
@@ -141,7 +142,7 @@ def delete_user_profile(node_id: str) -> bool:
     if path.exists():
         path.unlink()
     unregister_agent_node(node_id)
-    logger.info(f"🤖 [CapabilityAgent] 已删除用户节点: {node_id}")
+    logger.info(t("🤖 [CapabilityAgent] 已删除用户节点: {node_id}", node_id=node_id))
     return True
 
 
@@ -158,18 +159,18 @@ def load_user_profiles() -> int:
             with path.open("r", encoding="utf-8") as f:
                 dto = json.load(f)
             if not isinstance(dto, dict):
-                logger.warning(f"🤖 [CapabilityAgent] 跳过不合法节点文件: {path.name}")
+                logger.warning(t("🤖 [CapabilityAgent] 跳过不合法节点文件: {p0}", p0=path.name))
                 continue
             node = _dto_to_node(dto)
             if node is None:
-                logger.warning(f"🤖 [CapabilityAgent] 跳过缺 id 的节点文件: {path.name}")
+                logger.warning(t("🤖 [CapabilityAgent] 跳过缺 id 的节点文件: {p0}", p0=path.name))
                 continue
             register_agent_node(node)
             count += 1
         except (OSError, json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"🤖 [CapabilityAgent] 加载用户节点失败: {path.name}: {e}")
+            logger.warning(t("🤖 [CapabilityAgent] 加载用户节点失败: {p0}: {e}", p0=path.name, e=e))
     if count:
-        logger.info(f"🤖 [CapabilityAgent] 启动加载用户节点: {count} 个")
+        logger.info(t("🤖 [CapabilityAgent] 启动加载用户节点: {count} 个", count=count))
     return count
 
 

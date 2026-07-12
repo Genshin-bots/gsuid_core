@@ -8,6 +8,7 @@ from typing import Optional
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -71,9 +72,15 @@ async def query_user_memory(
         )
         mem_text = mem_ctx.to_prompt_text(max_chars=2000)
         parts.append(mem_text.strip() if (mem_text and mem_text.strip()) else "（暂无相关记忆/事实）")
-        logger.info(f"🧠 [BuildinTools] query_user_memory 检索用户 {target_id}: query={query!r}")
+        logger.info(
+            t(
+                "🧠 [BuildinTools] query_user_memory 检索用户 {target_id}: query={query}",
+                target_id=target_id,
+                query=repr(query),
+            )
+        )
     except Exception as e:
-        logger.warning(f"🧠 [BuildinTools] 记忆检索失败: {e}")
+        logger.warning(t("🧠 [BuildinTools] 记忆检索失败: {e}", e=e))
         parts.append("（记忆检索暂不可用）")
 
     # 2) 好感度（吸收原 query_user_favorability）
@@ -89,6 +96,6 @@ async def query_user_memory(
         else:
             parts.append(f"【好感度】用户 {target_id}：陌生（0）")
     except Exception as e:
-        logger.debug(f"🧠 [BuildinTools] 好感度查询失败: {e}")
+        logger.debug(t("🧠 [BuildinTools] 好感度查询失败: {e}", e=e))
 
     return "\n\n".join(parts)

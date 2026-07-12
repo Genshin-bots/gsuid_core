@@ -11,6 +11,7 @@
 
 from typing import Dict, List
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 DYNAMIC_PACK = "dynamic"
@@ -43,10 +44,10 @@ _STATIC_PACKS: Dict[str, List[str]] = {TASK_BASICS_PACK: list(_TASK_BASICS_TOOLS
 def register_tool_pack(pack_name: str, tool_names: List[str]) -> None:
     """注册 / 覆盖一个静态能力族（插件可注册自己的族，同名后写覆盖）。"""
     if not pack_name or pack_name == DYNAMIC_PACK:
-        logger.warning(f"🧩 [ToolPack] 非法能力族名: {pack_name!r}，已忽略")
+        logger.warning(t("🧩 [ToolPack] 非法能力族名: {pack_name}，已忽略", pack_name=repr(pack_name)))
         return
     _STATIC_PACKS[pack_name] = list(tool_names)
-    logger.info(f"🧩 [ToolPack] 注册能力族: {pack_name}（{len(tool_names)} 个工具）")
+    logger.info(t("🧩 [ToolPack] 注册能力族: {pack_name}（{p0} 个工具）", pack_name=pack_name, p0=len(tool_names)))
 
 
 def has_dynamic_pack(packs: List[str]) -> bool:
@@ -72,5 +73,5 @@ def resolve_pack_tool_names(packs: List[str]) -> List[str]:
         if domain_tools:
             names.extend(tb.name for tb in domain_tools)
             continue
-        logger.warning(f"🧩 [ToolPack] 未知能力族: {pack!r}（既非静态族也非 capability_domain）")
+        logger.warning(t("🧩 [ToolPack] 未知能力族: {pack}（既非静态族也非 capability_domain）", pack=repr(pack)))
     return list(dict.fromkeys(names))

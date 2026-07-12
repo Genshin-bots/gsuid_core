@@ -11,6 +11,7 @@
 
 import os
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.utils import (
     get_mcp_tool_id,
@@ -106,7 +107,9 @@ async def extract_document_content(
     ext = _get_file_extension(filename)
 
     if ext not in SUPPORTED_DOCUMENT_FORMATS:
-        raise ValueError(f"不支持的文档格式: {ext}。支持的格式: {', '.join(SUPPORTED_DOCUMENT_FORMATS.keys())}")
+        raise ValueError(
+            t("不支持的文档格式: {ext}。支持的格式: {p0}", ext=ext, p0=", ".join(SUPPORTED_DOCUMENT_FORMATS.keys()))
+        )
 
     # 纯文本文件直接读取
     if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html"):
@@ -135,5 +138,5 @@ async def extract_document_content(
             cleanup_tempfile(file_path, "📄 [Document]")
 
     # 未知 provider
-    logger.warning(f"📄 [Document] 未知的提供方 '{provider}'，仅支持 MCP")
-    raise RuntimeError(f"文档提取不支持该提供方: {provider}")
+    logger.warning(t("📄 [Document] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    raise RuntimeError(t("文档提取不支持该提供方: {provider}", provider=provider))

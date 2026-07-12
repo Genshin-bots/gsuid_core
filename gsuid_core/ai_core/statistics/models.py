@@ -23,6 +23,7 @@ from sqlmodel import Field, col, and_, select
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import BaseIDModel, with_session
 
@@ -139,7 +140,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIDailyStatistics] 更新统计数据失败: {e}")
+            logger.exception(t("📊 [AIDailyStatistics] 更新统计数据失败: {e}", e=e))
             return False
 
 
@@ -226,7 +227,7 @@ class AITokenUsageByType(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [AITokenUsageByType] 更新Token消耗失败: {e}")
+            logger.exception(t("📊 [AITokenUsageByType] 更新Token消耗失败: {e}", e=e))
             return False
 
 
@@ -313,7 +314,7 @@ class AITokenUsageByModel(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [AITokenUsageByModel] 更新Token消耗失败: {e}")
+            logger.exception(t("📊 [AITokenUsageByModel] 更新Token消耗失败: {e}", e=e))
             return False
 
 
@@ -397,7 +398,7 @@ class AIGroupUserActivityStats(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIGroupUserActivityStats] 更新活跃统计失败: {e}")
+            logger.exception(t("📊 [AIGroupUserActivityStats] 更新活跃统计失败: {e}", e=e))
             return False
 
 
@@ -477,7 +478,7 @@ class AIHeartbeatMetrics(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIHeartbeatMetrics] 更新Heartbeat决策失败: {e}")
+            logger.exception(t("📊 [AIHeartbeatMetrics] 更新Heartbeat决策失败: {e}", e=e))
             return False
 
 
@@ -515,7 +516,7 @@ class AIRAGMissStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(date=date, miss_count=1)
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIRAGMissStatistics] 更新RAG未命中统计失败: {e}")
+            logger.exception(t("📊 [AIRAGMissStatistics] 更新RAG未命中统计失败: {e}", e=e))
             return False
 
     @classmethod
@@ -533,7 +534,7 @@ class AIRAGMissStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(date=date, hit_count=hit_count, miss_count=miss_count)
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIRAGMissStatistics] 更新RAG统计失败: {e}")
+            logger.exception(t("📊 [AIRAGMissStatistics] 更新RAG统计失败: {e}", e=e))
             return False
 
 
@@ -578,7 +579,7 @@ class AIRAGDocumentStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(document_name=document_name, hit_count=1)
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}")
+            logger.exception(t("📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}", e=e))
             return False
 
     @classmethod
@@ -596,7 +597,7 @@ class AIRAGDocumentStatistics(BaseIDModel, table=True):
                 await cls.full_insert_data(document_name=document_name, hit_count=hit_count)
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}")
+            logger.exception(t("📊 [AIRAGDocumentStatistics] 更新RAG命中统计失败: {e}", e=e))
             return False
 
 
@@ -790,5 +791,5 @@ class AIHourlyPerformance(BaseIDModel, table=True):
                 )
             return True
         except Exception as e:
-            logger.exception(f"📊 [AIHourlyPerformance] 更新小时性能统计失败: {e}")
+            logger.exception(t("📊 [AIHourlyPerformance] 更新小时性能统计失败: {e}", e=e))
             return False

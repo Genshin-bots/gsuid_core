@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 from concurrent.futures import ThreadPoolExecutor
 
+from gsuid_core.i18n import t
 from gsuid_core.ai_core.rag.embedding.modality import EmbeddingModality
 
 # 有界线程池：用于将同步 CPU 计算（fastembed）移入线程池，避免阻塞事件循环
@@ -119,7 +120,7 @@ class EmbeddingProvider(ABC):
 
     def embed_image_sync(self, images: list[bytes]) -> list[list[float]]:
         """同步批量图片嵌入；不支持图片的 provider 抛 NotImplementedError。"""
-        raise NotImplementedError(f"{type(self).__name__} 不支持图片嵌入（embed_image_sync 未实现）")
+        raise NotImplementedError(t("{p0} 不支持图片嵌入（embed_image_sync 未实现）", p0=type(self).__name__))
 
     def embed_image_single_sync(self, image: bytes) -> list[float]:
         return self.embed_image_sync([image])[0]
@@ -136,7 +137,7 @@ class EmbeddingProvider(ABC):
 
     def embed_audio_sync(self, clips: list[bytes]) -> list[list[float]]:
         """同步批量音频嵌入；不支持音频的 provider 抛 NotImplementedError。"""
-        raise NotImplementedError(f"{type(self).__name__} 不支持音频嵌入（embed_audio_sync 未实现）")
+        raise NotImplementedError(t("{p0} 不支持音频嵌入（embed_audio_sync 未实现）", p0=type(self).__name__))
 
     def embed_audio_single_sync(self, clip: bytes) -> list[float]:
         return self.embed_audio_sync([clip])[0]
@@ -153,7 +154,7 @@ class EmbeddingProvider(ABC):
 
     def embed_video_sync(self, clips: list[bytes]) -> list[list[float]]:
         """同步批量视频嵌入；不支持视频的 provider 抛 NotImplementedError。"""
-        raise NotImplementedError(f"{type(self).__name__} 不支持视频嵌入（embed_video_sync 未实现）")
+        raise NotImplementedError(t("{p0} 不支持视频嵌入（embed_video_sync 未实现）", p0=type(self).__name__))
 
     def embed_video_single_sync(self, clip: bytes) -> list[float]:
         return self.embed_video_sync([clip])[0]
@@ -180,7 +181,7 @@ class EmbeddingProvider(ABC):
             return await self.embed_audio(items)
         if modality is EmbeddingModality.VIDEO:
             return await self.embed_video(items)
-        raise ValueError(f"embed_media 不接受模态 {modality}（文本请调用 embed()）")
+        raise ValueError(t("embed_media 不接受模态 {modality}（文本请调用 embed()）", modality=modality))
 
     async def embed_media_single(self, modality: "EmbeddingModality", item: bytes) -> list[float]:
         results = await self.embed_media(modality, [item])

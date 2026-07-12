@@ -21,6 +21,7 @@ from structlog.dev import ConsoleRenderer
 from structlog.types import EventDict, Processor, WrappedLogger
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message, TraceContext
 from gsuid_core.data_store import get_res_path, error_mark_path
@@ -150,7 +151,13 @@ class TraceCollector:
             write_trace_meta(ctx.trace_id, ctx, status="running", log_count=0)
         except Exception as e:
             _slg = structlog.get_logger("GsCore")
-            _slg.error(f"❌ [TraceCollector] JSONL running 标记写入失败 trace_id={ctx.trace_id}: {e}")
+            _slg.error(
+                t(
+                    "❌ [TraceCollector] JSONL running 标记写入失败 trace_id={trace_id}: {e}",
+                    trace_id=ctx.trace_id,
+                    e=e,
+                )
+            )
 
     def _drop(self, trace_id: str) -> None:
         """从内存中彻底移除一个追踪（两张表一起清，避免残留）"""
@@ -221,9 +228,13 @@ class TraceCollector:
         self._last_capacity_warn = now
         _slg = structlog.get_logger("GsCore")
         _slg.warning(
-            f"[TraceCollector] 执行中追踪数达上限 {self._max_traces}，"
-            f"已强制回收 {sacrificed} 条活跃追踪以保证内存上界；"
-            f"通常意味着大量命令异常退出未正常结束追踪，请排查；如属正常高并发可调大 max_traces"
+            t(
+                "[TraceCollector] 执行中追踪数达上限 {max_traces}，"
+                "已强制回收 {sacrificed} 条活跃追踪以保证内存上界；"
+                "通常意味着大量命令异常退出未正常结束追踪，请排查；如属正常高并发可调大 max_traces",
+                max_traces=self._max_traces,
+                sacrificed=sacrificed,
+            )
         )
 
     def collect(self, event_dict: EventDict) -> None:
@@ -292,7 +303,7 @@ class TraceCollector:
             )
             _slg.info(trace_end_event, trace_id=trace_id)
         except Exception as e:
-            _slg.error(f"❌ [TraceCollector] JSONL 归档失败 trace_id={trace_id}: {e}")
+            _slg.error(t("❌ [TraceCollector] JSONL 归档失败 trace_id={trace_id}: {e}", trace_id=trace_id, e=e))
         finally:
             # 无论归档成败都从内存移除，避免追踪滞留导致泄漏
             self._drop(trace_id)
@@ -888,9 +899,9 @@ async def clean_trace_collector():
             if collector is not None:
                 dropped = collector.reclaim_stale()
                 if dropped:
-                    logger.debug(f"🧹 [TraceCollector] 定时回收僵死追踪 {dropped} 条")
+                    logger.debug(t("🧹 [TraceCollector] 定时回收僵死追踪 {dropped} 条", dropped=dropped))
         except Exception as e:
-            logger.warning(f"[TraceCollector] 定时回收异常: {e}")
+            logger.warning(t("[TraceCollector] 定时回收异常: {e}", e=e))
 
 
 def handle_exceptions(async_function):
@@ -899,7 +910,7 @@ def handle_exceptions(async_function):
         try:
             return await async_function(*args, **kwargs)
         except Exception as e:
-            logger.exception("[错误发生] %s: %s", async_function.__name__, e)
+            logger.exception(t("[错误发生] %s: %s"), async_function.__name__, e)
             return None
 
     return wrapper

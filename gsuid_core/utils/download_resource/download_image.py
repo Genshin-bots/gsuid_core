@@ -7,6 +7,7 @@ from PIL import Image, UnidentifiedImageError
 from aiohttp.client import ClientSession
 from aiohttp.client_exceptions import ClientConnectorError
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 
@@ -27,20 +28,20 @@ async def get_image(
                 return img.resize(size)
             return img
         except UnidentifiedImageError:
-            logger.warning(f"[GsCore]{name}已存在文件读取失败, 尝试重新下载...")
+            logger.warning(t("[GsCore]{name}已存在文件读取失败, 尝试重新下载...", name=name))
 
     async with ClientSession() as sess:
         try:
-            logger.info(f"[GsCore]开始下载: {name} | 地址: {url}")
+            logger.info(t("[GsCore]开始下载: {name} | 地址: {url}", name=name, url=url))
             async with sess.get(url) as res:
                 if res.status == 200:
                     content = await res.read()
-                    logger.info(f"[GsCore]下载成功: {name}")
+                    logger.info(t("[GsCore]下载成功: {name}", name=name))
                 else:
-                    logger.warning(f"[GsCore]{name}下载失败")
+                    logger.warning(t("[GsCore]{name}下载失败", name=name))
                     return Image.new("RGBA", (256, 256))
         except ClientConnectorError:
-            logger.warning(f"[GsCore]{name}下载失败")
+            logger.warning(t("[GsCore]{name}下载失败", name=name))
             return Image.new("RGBA", (256, 256))
 
     async with aiofiles.open(path / name, "wb") as f:

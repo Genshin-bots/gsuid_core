@@ -67,6 +67,7 @@ async def main():
 
     start_time = time.time()
 
+    from gsuid_core.i18n import t
     from gsuid_core.logger import logger
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.utils.database.base_models import init_database
@@ -76,7 +77,7 @@ async def main():
     os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
     os.environ["HF_ENDPOINT"] = hf_endpoint
 
-    logger.info(f"🧠 [GsCore] 切换HF地址，地址: {hf_endpoint}")
+    logger.info(t("log.core.hf_switch", hf_endpoint=hf_endpoint))
 
     await init_database()
 
@@ -120,21 +121,21 @@ async def main():
         token = websocket.query_params.get("token")
 
         if sec_manager.is_banned(client_host):
-            logger.warning(f"🔒️ [GsCore] 拒绝来自已封禁 IP 的连接: {client_host}")
+            logger.warning(t("log.core.reject_banned_ip", client_host=client_host))
             await websocket.close(code=1008)  # Policy Violation
             return
 
         if not sec_manager.is_trusted(client_host):
             if not WS_SECRET_TOKEN:
-                logger.warning("🔒️ [GsCore] 未配置WS_TOKEN，所有外网连接将被拒绝！")
+                logger.warning(t("log.core.no_ws_token"))
                 await websocket.close(code=1008)
                 return
 
             if token != WS_SECRET_TOKEN:
                 sec_manager.record_failure(client_host)
-                logger.warning(f"🚨 [GsCore] 非法访问拒绝: IP={client_host}, BotID={bot_id}")
+                logger.warning(t("log.core.illegal_access", client_host=client_host, bot_id=bot_id))
                 count = sec_manager.status[client_host].failed_count
-                logger.warning(f"🚨 [GsCore] Token 错误!剩余尝试次数: {5 - count}")
+                logger.warning(t("log.core.token_error", remaining=5 - count))
                 await websocket.close(code=1008)
                 return
             else:
@@ -161,7 +162,7 @@ async def main():
                         except (ConnectionResetError, ConnectionAbortedError):
                             # Windows ProactorEventLoop: 客户端异常断开时抛出
                             # [WinError 995] 由于线程退出或应用程序请求，已中止 I/O 操作
-                            logger.debug(f"[GsCore] WebSocket 连接被重置: {bot_id}")
+                            logger.debug(t("log.core.ws_reset", bot_id=bot_id))
                             break
                 except CancelledError:
                     pass
@@ -174,7 +175,7 @@ async def main():
                 except CancelledError:
                     pass
 
-            logger.info("[GsCore] 启动WS服务中...")
+            logger.info(t("log.core.ws_starting"))
             # 任一结束(通常是 start 断连返回)即取消另一个, 避免 _process 残留消费同一队列
             process_task = asyncio.create_task(process())
             start_task = asyncio.create_task(start())
@@ -222,7 +223,7 @@ async def main():
     loop = asyncio.get_event_loop()
 
     def set_shutdown_event():
-        logger.info("[GsCore] 收到关闭信号，正在设置 shutdown_event...")
+        logger.info(t("log.core.shutdown_signal"))
         shutdown_event.set()
 
     try:
@@ -230,7 +231,7 @@ async def main():
             loop.add_signal_handler(sig, set_shutdown_event)
     except NotImplementedError:
         # Windows 不支持 add_signal_handler，仅依赖 uvicorn 的信号处理
-        logger.debug("[GsCore] 当前平台不支持 add_signal_handler，将依赖 uvicorn 的关闭流程")
+        logger.debug(t("log.core.no_signal_handler"))
 
     server = uvicorn.Server(config)
     end_time = time.time()
@@ -243,8 +244,15 @@ async def main():
     trigger_count = sum(len(sv.TL) for sv in SL.lst.values())
     plugin_count = len(SL.plugins)
     sv_count = len(SL.lst)
-    logger.success(f"🚀 [GsCore] 启动完成, 耗时: {duration:.2f}s, 版本: {__version__}")
-    logger.success(f"📦 插件: {plugin_count} | 🛠️ 服务: {sv_count} | ⚡ 触发器: {trigger_count}")
+    logger.success(t("log.core.startup_done", duration=duration, version=__version__))
+    logger.success(
+        t(
+            "log.core.startup_counts",
+            plugin_count=plugin_count,
+            sv_count=sv_count,
+            trigger_count=trigger_count,
+        )
+    )
 
     # AI 核心统计（仅在 AI 功能启用时显示）
     try:
@@ -263,11 +271,16 @@ async def main():
             config_count = openai_config_count + anthropic_config_count
 
             logger.success(
-                f"🧠 AI工具: {ai_tool_count} | 🔗 Trigger工具: {trigger_ai_tool_count} | "
-                f"🎭 人格: {persona_count} | 📋 配置文件: {config_count}"
+                t(
+                    "log.core.ai_counts",
+                    ai_tool_count=ai_tool_count,
+                    trigger_ai_tool_count=trigger_ai_tool_count,
+                    persona_count=persona_count,
+                    config_count=config_count,
+                )
             )
     except Exception as e:
-        logger.debug(f"🧠 [GsCore] AI 核心统计输出失败: {e}")
+        logger.debug(t("log.core.ai_stats_fail", error=e))
 
     await server.serve()
 

@@ -8,6 +8,7 @@ from typing import Literal
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -68,12 +69,12 @@ async def render_html_to_image(
         )
 
         # 转换为base64格式
-        logger.info(f"🧠 [BuildinTools] HTML渲染成功，图片长度: {len(image_bytes)} bytes")
+        logger.info(t("🧠 [BuildinTools] HTML渲染成功，图片长度: {p0} bytes", p0=len(image_bytes)))
 
         return image_bytes
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] HTML渲染失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] HTML渲染失败: {e}", e=e))
         return f"渲染失败：{str(e)}"
 
 
@@ -116,10 +117,10 @@ async def render_markdown_to_image(
         )
 
         # 转换为base64格式
-        logger.info(f"🧠 [BuildinTools] Markdown渲染成功，图片长度: {len(image_bytes)} bytes")
+        logger.info(t("🧠 [BuildinTools] Markdown渲染成功，图片长度: {p0} bytes", p0=len(image_bytes)))
 
         return image_bytes
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] Markdown渲染失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] Markdown渲染失败: {e}", e=e))
         return f"渲染失败：{str(e)}"

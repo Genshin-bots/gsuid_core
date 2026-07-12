@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from qdrant_client.models import SparseVector
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
 # BM25 稀疏嵌入专用单线程执行器
@@ -39,7 +40,7 @@ def _ensure_jieba() -> bool:
         jieba.setLogLevel(logging.WARNING)
         _jieba_state = True
     except Exception as e:
-        logger.warning(f"🧠 [Sparse] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}")
+        logger.warning(i18n_t("🧠 [Sparse] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}", e=e))
         _jieba_state = False
     return _jieba_state
 
@@ -69,7 +70,7 @@ def sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVector]]:
         results = list(model.embed(seg_texts))
         return [SparseVector(indices=r.indices.tolist(), values=r.values.tolist()) for r in results]
     except Exception as e:
-        logger.warning(f"🧠 [Sparse] BM25 稀疏嵌入失败，本批降级纯 dense: {e}")
+        logger.warning(i18n_t("🧠 [Sparse] BM25 稀疏嵌入失败，本批降级纯 dense: {e}", e=e))
         return [None] * len(texts)
 
 

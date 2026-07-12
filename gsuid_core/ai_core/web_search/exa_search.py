@@ -10,6 +10,7 @@ from typing import Optional
 
 from exa_py import AsyncExa
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.configs.ai_config import exa_config
 
@@ -111,7 +112,7 @@ async def exa_search(
     api_key_pool = _get_api_key_pool()
 
     if not api_key_pool:
-        logger.warning("🌐 [WebSearch] Exa API Key 未配置，跳过搜索")
+        logger.warning(t("🌐 [WebSearch] Exa API Key 未配置，跳过搜索"))
         return []
 
     if max_results is None:
@@ -137,12 +138,12 @@ async def exa_search(
                 api_key=api_key,
             )
 
-            logger.info(f"🌐 [WebSearch][Exa] 搜索: {query}, 返回 {len(results)} 条结果")
+            logger.info(t("🌐 [WebSearch][Exa] 搜索: {query}, 返回 {p0} 条结果", query=query, p0=len(results)))
             return results
 
         except Exception:
-            logger.warning(f"🌐 [WebSearch][Exa] api_key ...{api_key[-4:]} 失败，尝试下一个")
+            logger.warning(t("🌐 [WebSearch][Exa] api_key ...{p0} 失败，尝试下一个", p0=api_key[-4:]))
             continue
 
-    logger.error("🌐 [WebSearch][Exa] 所有 api_key 均失败")
+    logger.error(t("🌐 [WebSearch][Exa] 所有 api_key 均失败"))
     return []

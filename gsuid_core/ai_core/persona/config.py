@@ -12,6 +12,7 @@ Persona 配置管理模块
 from typing import Dict, List, Optional
 from pathlib import Path
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.models import (
     GSC,
@@ -185,7 +186,9 @@ class PersonaConfigManager(ConfigSetManager):
         # 设置配置
         success = config.set_config("scope", scope)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的启用范围: {scope}")
+            logger.info(
+                t("[PersonaConfig] 已更新 '{persona_name}' 的启用范围: {scope}", persona_name=persona_name, scope=scope)
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -205,7 +208,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         success = config.set_config("target_groups", target_groups)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的目标群聊: {target_groups}")
+            logger.info(
+                t(
+                    "[PersonaConfig] 已更新 '{persona_name}' 的目标群聊: {target_groups}",
+                    persona_name=persona_name,
+                    target_groups=target_groups,
+                )
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -231,7 +240,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         success = config.set_config("ai_mode", ai_mode)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的 AI 模式: {ai_mode}")
+            logger.info(
+                t(
+                    "[PersonaConfig] 已更新 '{persona_name}' 的 AI 模式: {ai_mode}",
+                    persona_name=persona_name,
+                    ai_mode=ai_mode,
+                )
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -254,7 +269,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         success = config.set_config("inspect_interval", inspect_interval)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的巡检间隔: {inspect_interval} 分钟")
+            logger.info(
+                t(
+                    "[PersonaConfig] 已更新 '{persona_name}' 的巡检间隔: {inspect_interval} 分钟",
+                    persona_name=persona_name,
+                    inspect_interval=inspect_interval,
+                )
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -274,7 +295,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         success = config.set_config("keywords", keywords)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的唤醒关键词: {keywords}")
+            logger.info(
+                t(
+                    "[PersonaConfig] 已更新 '{persona_name}' 的唤醒关键词: {keywords}",
+                    persona_name=persona_name,
+                    keywords=keywords,
+                )
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -298,7 +325,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         success = config.set_config("tool_packs", cleaned)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的工具能力族: {cleaned}")
+            logger.info(
+                t(
+                    "[PersonaConfig] 已更新 '{persona_name}' 的工具能力族: {cleaned}",
+                    persona_name=persona_name,
+                    cleaned=cleaned,
+                )
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -322,7 +355,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         success = config.set_config("tool_names", cleaned)
         if success:
-            logger.info(f"[PersonaConfig] 已更新 '{persona_name}' 的显式工具白名单: {cleaned}")
+            logger.info(
+                t(
+                    "[PersonaConfig] 已更新 '{persona_name}' 的显式工具白名单: {cleaned}",
+                    persona_name=persona_name,
+                    cleaned=cleaned,
+                )
+            )
             return True, "ok"
         else:
             return False, "配置写入失败"
@@ -442,10 +481,12 @@ class PersonaConfigManager(ConfigSetManager):
         if config_path.exists():
             try:
                 config_path.unlink()
-                logger.info(f"[PersonaConfig] 已删除 '{persona_name}' 的配置文件")
+                logger.info(t("[PersonaConfig] 已删除 '{persona_name}' 的配置文件", persona_name=persona_name))
                 return True
             except Exception as e:
-                logger.error(f"[PersonaConfig] 删除 '{persona_name}' 的配置文件失败: {e}")
+                logger.error(
+                    t("[PersonaConfig] 删除 '{persona_name}' 的配置文件失败: {e}", persona_name=persona_name, e=e)
+                )
                 return False
         return True
 

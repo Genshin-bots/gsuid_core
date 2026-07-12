@@ -1,3 +1,4 @@
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import PERSONA_PATH
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -19,7 +20,7 @@ async def init_default_personas():
     ``config.json``, 旁路字段会触发死循环)。
     """
     if not ai_config.get_config("enable").data:
-        logger.info("🧠 [Persona] AI总开关已关闭，跳过默认Persona初始化")
+        logger.info(t("🧠 [Persona] AI总开关已关闭，跳过默认Persona初始化"))
         return
 
     persona = Persona("早柚")
@@ -36,4 +37,4 @@ async def init_default_personas():
                 migrate_voice_anchor_from_config(persona_dir.name)
             except Exception as e:
                 # 单个 persona 迁移失败不影响其它 persona, 仅记日志
-                logger.warning(f"🧠 [Persona] '{persona_dir.name}' voice_anchor 迁移异常, 跳过: {e}")
+                logger.warning(t("🧠 [Persona] '{p0}' voice_anchor 迁移异常, 跳过: {e}", p0=persona_dir.name, e=e))

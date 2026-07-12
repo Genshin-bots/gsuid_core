@@ -7,6 +7,7 @@
 import json
 from typing import TYPE_CHECKING, List, Optional
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.command_exec.config import cfg_get
@@ -99,5 +100,5 @@ async def cleanup_expired() -> int:
     """删早于 TTL 的低风险审计（高危 / provision 永久留存）。返回删除行数。"""
     n = await AICommandAudit.delete_expired(int(cfg_get("audit_ttl_days")))
     if n > 0:
-        logger.info(f"🧰 [CommandExec] TTL 清理删除 {n} 条低风险审计")
+        logger.info(t("🧰 [CommandExec] TTL 清理删除 {n} 条低风险审计", n=n))
     return n

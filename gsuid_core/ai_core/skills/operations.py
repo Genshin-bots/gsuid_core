@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from pydantic_ai_skills import SkillsToolset
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.skills.resource import (
     SKILLS_PATH,
@@ -91,7 +92,7 @@ def register_plugin_skill_directory(path: Path, plugin: str) -> dict:
     abspath = path.resolve()
 
     if not abspath.is_dir():
-        logger.warning(f"🧠 [Skills] ai_skill 目标目录不存在，跳过: {abspath}")
+        logger.warning(t("🧠 [Skills] ai_skill 目标目录不存在，跳过: {abspath}", abspath=abspath))
         return {
             "status": 1,
             "msg": f"Skill directory not found: {abspath}",

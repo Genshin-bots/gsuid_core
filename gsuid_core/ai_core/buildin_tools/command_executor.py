@@ -14,6 +14,7 @@ from pathlib import Path
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -378,14 +379,14 @@ async def execute_shell_command(
     # 危险命令检测
     is_dangerous, reason = _is_dangerous_command(command)
     if is_dangerous:
-        logger.warning(f"🧠 [BuildinTools] 拒绝执行危险命令: {command[:100]}... 原因: {reason}")
+        logger.warning(t("🧠 [BuildinTools] 拒绝执行危险命令: {p0}... 原因: {reason}", p0=command[:100], reason=reason))
         return f"执行失败：{reason}"
 
     # 强制使用 shlex（移除 use_shlex=False 的选项以提高安全性）
     try:
         cmd_list = shlex.split(command)
     except ValueError as e:
-        logger.warning(f"🧠 [BuildinTools] 命令解析失败: {e}")
+        logger.warning(t("🧠 [BuildinTools] 命令解析失败: {e}", e=e))
         return f"执行失败：命令解析错误 - {str(e)}"
 
     if not cmd_list:
@@ -426,9 +427,11 @@ async def execute_shell_command(
 
         work_path = FILE_PATH
         work_path.mkdir(parents=True, exist_ok=True)
-        logger.warning(f"🧠 [BuildinTools] 命令未指定 work_dir 且无任务上下文，兜底为 {work_path}")
+        logger.warning(
+            t("🧠 [BuildinTools] 命令未指定 work_dir 且无任务上下文，兜底为 {work_path}", work_path=work_path)
+        )
 
-    logger.info(f"🧠 [BuildinTools] 执行命令: {command[:100]}... 工作目录: {work_path}")
+    logger.info(t("🧠 [BuildinTools] 执行命令: {p0}... 工作目录: {work_path}", p0=command[:100], work_path=work_path))
 
     # 使用清理后的环境变量
     env = _get_safe_environment()
@@ -452,16 +455,16 @@ async def execute_shell_command(
         else:
             stdout_bytes, returncode = await _run_subprocess_async(cmd_list, str(work_path), env, timeout, max_output)
     except asyncio.TimeoutError:
-        logger.warning(f"🧠 [BuildinTools] 命令执行超时: {timeout}秒")
+        logger.warning(t("🧠 [BuildinTools] 命令执行超时: {timeout}秒", timeout=timeout))
         return f"执行失败：命令超时 (超过 {timeout} 秒)"
     except FileNotFoundError:
-        logger.warning(f"🧠 [BuildinTools] 命令未找到: {cmd_list[0]}")
+        logger.warning(t("🧠 [BuildinTools] 命令未找到: {p0}", p0=cmd_list[0]))
         return f"执行失败：命令未找到 '{cmd_list[0]}'"
     except PermissionError:
-        logger.warning(f"🧠 [BuildinTools] 权限不足: {command[:100]}")
+        logger.warning(t("🧠 [BuildinTools] 权限不足: {p0}", p0=command[:100]))
         return "执行失败：权限不足"
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 命令执行异常: {e}")
+        logger.exception(t("🧠 [BuildinTools] 命令执行异常: {e}", e=e))
         return f"执行失败：{type(e).__name__}: {str(e)}"
 
     output = stdout_bytes.decode("utf-8", errors="replace").strip()
@@ -473,9 +476,9 @@ async def execute_shell_command(
         await _register_workspace_changes(work_path, pre_snapshot)
 
     if returncode == 0:
-        logger.info(f"🧠 [BuildinTools] 命令执行成功 (返回码: 0, 输出长度: {len(stdout_bytes)})")
+        logger.info(t("🧠 [BuildinTools] 命令执行成功 (返回码: 0, 输出长度: {p0})", p0=len(stdout_bytes)))
         return output if output else "命令执行成功，无输出"
-    logger.warning(f"🧠 [BuildinTools] 命令执行完成 (返回码: {returncode})")
+    logger.warning(t("🧠 [BuildinTools] 命令执行完成 (返回码: {returncode})", returncode=returncode))
     return f"[返回码: {returncode}]\n{output}" if output else f"命令执行完成 (返回码: {returncode})"
 
 
@@ -504,7 +507,7 @@ async def _run_subprocess_async(
             try:
                 process.terminate()
             except Exception as kill_err:
-                logger.error(f"🧠 [BuildinTools] 强制终止失败: {kill_err}")
+                logger.error(t("🧠 [BuildinTools] 强制终止失败: {kill_err}", kill_err=kill_err))
         raise
     if len(stdout) > max_output:
         stdout = stdout[:max_output]
@@ -592,4 +595,4 @@ async def _register_workspace_changes(workspace: Path, before_snapshot: dict) ->
     except ImportError:
         return
     except Exception as e:
-        logger.debug(f"🧠 [BuildinTools] workspace 变更登记失败: {e}")
+        logger.debug(t("🧠 [BuildinTools] workspace 变更登记失败: {e}", e=e))

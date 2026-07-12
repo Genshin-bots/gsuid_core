@@ -7,6 +7,7 @@ Anthropic 配置管理器模块
 
 from typing import Any, Dict, List
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import ANTHROPIC_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
@@ -177,10 +178,12 @@ class AnthropicConfigManager(ConfigSetManager):
             for key, value in config_data.items():
                 new_config.set_config(key, value)
 
-            logger.info(f"已将 Anthropic 配置文件从 '{old_name}' 重命名为 '{new_name}'")
+            logger.info(
+                t("已将 Anthropic 配置文件从 '{old_name}' 重命名为 '{new_name}'", old_name=old_name, new_name=new_name)
+            )
             return True, "ok"
         except Exception as e:
-            logger.error(f"重命名 Anthropic 配置失败: {e}")
+            logger.error(t("重命名 Anthropic 配置失败: {e}", e=e))
             return False, str(e)
 
 

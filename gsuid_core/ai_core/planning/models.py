@@ -22,6 +22,7 @@ from sqlalchemy import Text, Column
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import JSON
 
+from gsuid_core.i18n import t
 from gsuid_core.utils.database.base_models import with_session
 
 # 任务状态：``waiting_approval`` 用于把"审批挂起"与"主人手动暂停"区分开，
@@ -422,5 +423,5 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
 
         del_stmt = sql_delete(cls).where(col(cls.expires_at).is_not(None)).where(col(cls.expires_at) < cut)
         await session.execute(del_stmt)
-        _logger.info(f"📦 [Kanban] Artifact TTL 清理: 删除 {len(expired)} 条过期记录")
+        _logger.info(t("📦 [Kanban] Artifact TTL 清理: 删除 {p0} 条过期记录", p0=len(expired)))
         return len(expired)

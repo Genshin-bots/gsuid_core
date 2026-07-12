@@ -6,6 +6,7 @@ from typing import Any, List, Optional, Protocol
 import httpx
 from qdrant_client.http.models.models import ScoredPoint
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.configs.ai_config import rerank_model_config
 
@@ -26,14 +27,14 @@ class LocalRerankerProvider:
     def __init__(self, model_name: str):
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-        logger.info(f"🧠 [Reranker] 正在加载本地Reranker模型: {model_name}")
+        logger.info(t("🧠 [Reranker] 正在加载本地Reranker模型: {model_name}", model_name=model_name))
         self._model = TextCrossEncoder(
             model_name=model_name,
             cache_dir=str(RERANK_MODELS_CACHE),
             threads=2,
             local_files_only=True,
         )
-        logger.info("🧠 [Reranker] 本地Reranker模型加载完成")
+        logger.info(t("🧠 [Reranker] 本地Reranker模型加载完成"))
 
     def rerank(self, query: str, documents: list[str]) -> list[float]:
         return [float(score) for score in self._model.rerank(query, documents)]
@@ -46,7 +47,9 @@ class RemoteRerankerProvider:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model_name = model_name
-        logger.info(f"🧠 [Reranker] 远程Reranker已配置: {model_name}, URL: {self._base_url}")
+        logger.info(
+            t("🧠 [Reranker] 远程Reranker已配置: {model_name}, URL: {p0}", model_name=model_name, p0=self._base_url)
+        )
 
     def _build_url(self) -> str:
         """构造 rerank endpoint，兼容用户填写 base URL 或完整 /rerank endpoint。"""
@@ -83,7 +86,7 @@ class RemoteRerankerProvider:
         scores = [0.0] * document_count
         raw_results = data.get("results") or data.get("data") or []
         if not isinstance(raw_results, list):
-            raise ValueError("远程 Rerank API 响应中缺少 results/data 列表")
+            raise ValueError(t("远程 Rerank API 响应中缺少 results/data 列表"))
 
         for fallback_index, item in enumerate(raw_results):
             if not isinstance(item, dict):
@@ -113,7 +116,7 @@ def get_reranker() -> Optional[RerankerProvider]:
         return None
 
     if not is_enable_rerank():
-        logger.info("🧠 [Reranker] Rerank功能未启用，将跳过加载Reranker模型")
+        logger.info(t("🧠 [Reranker] Rerank功能未启用，将跳过加载Reranker模型"))
         return None
 
     if _reranker is None:
@@ -128,13 +131,13 @@ def get_reranker() -> Optional[RerankerProvider]:
                 base_url = rerank_model_config.get_config("base_url").data
                 api_key_list = rerank_model_config.get_config("api_key").data
                 if not api_key_list:
-                    raise ValueError("Rerank API 密钥不能为空，请在配置中至少设置一个 api_key")
+                    raise ValueError(t("Rerank API 密钥不能为空，请在配置中至少设置一个 api_key"))
                 api_key = api_key_list[0]
                 _reranker = RemoteRerankerProvider(base_url, api_key, model_name)
             else:
-                raise ValueError(f"不支持的 Reranker 提供方: {provider}")
+                raise ValueError(t("不支持的 Reranker 提供方: {provider}", provider=provider))
         except Exception as e:
-            logger.exception(f"🧠 [Reranker] 加载Reranker失败: {e}")
+            logger.exception(t("🧠 [Reranker] 加载Reranker失败: {e}", e=e))
             _reranker = None
 
     return _reranker
@@ -157,7 +160,7 @@ async def rerank_results(
 
     reranker = get_reranker()
     if reranker is None:
-        logger.debug("🧠 [Reranker] 功能未启用，跳过重排序")
+        logger.debug(t("🧠 [Reranker] 功能未启用，跳过重排序"))
         return results[:top_k]
 
     try:
@@ -175,25 +178,25 @@ async def rerank_results(
                 valid_results.append(r)
 
         if not documents:
-            logger.debug("🧠 [Reranker] 无有效文档内容，跳过重排序")
+            logger.debug(t("🧠 [Reranker] 无有效文档内容，跳过重排序"))
             return results[:top_k]
 
-        logger.info(f"🧠 [Reranker] 开始对 {len(documents)} 个结果进行重排序...")
+        logger.info(t("🧠 [Reranker] 开始对 {p0} 个结果进行重排序...", p0=len(documents)))
 
         scores = await asyncio.to_thread(reranker.rerank, query, documents)
         if len(scores) != len(valid_results):
-            logger.warning("🧠 [Reranker] 返回分数数量与文档数量不一致，跳过重排序")
+            logger.warning(t("🧠 [Reranker] 返回分数数量与文档数量不一致，跳过重排序"))
             return results[:top_k]
 
         scored_results = list(zip(scores, valid_results))
         scored_results.sort(key=lambda x: x[0], reverse=True)
         reranked_results = [r for _, r in scored_results[:top_k]]
 
-        logger.info(f"🧠 [Reranker] 重排序完成，返回前 {len(reranked_results)} 个结果")
-        logger.debug(f"🧠 [Reranker] 重排序后的结果: {[r for r in reranked_results]}")
+        logger.info(t("🧠 [Reranker] 重排序完成，返回前 {p0} 个结果", p0=len(reranked_results)))
+        logger.debug(t("🧠 [Reranker] 重排序后的结果: {p0}", p0=[r for r in reranked_results]))
 
         return reranked_results
 
     except Exception as e:
-        logger.exception(f"🧠 [Reranker] 重排序失败: {e}，返回原始结果")
+        logger.exception(t("🧠 [Reranker] 重排序失败: {e}，返回原始结果", e=e))
         return results[:top_k]

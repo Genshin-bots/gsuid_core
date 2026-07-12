@@ -16,6 +16,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message
 from gsuid_core.ai_core.models import ToolContext
@@ -410,7 +411,9 @@ def _register_trigger_as_ai_tool(
         try:
             await func(mock_bot, fake_ev)
         except Exception as e:
-            logger.exception(f"🧠 [Trigger→AI] 触发器 [{primary_keyword}] 执行异常: {e}")
+            logger.exception(
+                t("🧠 [Trigger→AI] 触发器 [{primary_keyword}] 执行异常: {e}", primary_keyword=primary_keyword, e=e)
+            )
             return f"❌ 执行命令 [{primary_keyword}] 时发生错误: {e}。请尝试其他方式或检查输入参数。"
         finally:
             _AI_CALL_CONTEXT.reset(token)
@@ -513,8 +516,13 @@ def _register_trigger_as_ai_tool(
 
     _TOOL_REGISTRY["by_trigger"][tool_func_name] = tool_base
     logger.debug(
-        f"🧠 [Trigger→AI] 触发器 [{primary_keyword}] 的函数 [{tool_func_name}] "
-        f"已注册为 AI 工具 (分类: by_trigger, 插件: {plugin_name})"
+        t(
+            "🧠 [Trigger→AI] 触发器 [{primary_keyword}] 的函数 [{tool_func_name}]"
+            " 已注册为 AI 工具 (分类: by_trigger, 插件: {plugin_name})",
+            primary_keyword=primary_keyword,
+            tool_func_name=tool_func_name,
+            plugin_name=plugin_name,
+        )
     )
 
     # 同时注册到 MCP 触发器注册表，供 MCP Server 模块使用

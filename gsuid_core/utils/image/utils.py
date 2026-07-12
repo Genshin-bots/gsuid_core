@@ -3,11 +3,12 @@ from io import BytesIO
 import httpx
 from PIL import Image
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 
 async def sget(url: str):
-    logger.info(f"[Sget] 开始下载内容: {url}")
+    logger.info(t("[Sget] 开始下载内容: {url}", url=url))
     async with httpx.AsyncClient(timeout=None) as client:
         resp = await client.get(url=url)
         return resp

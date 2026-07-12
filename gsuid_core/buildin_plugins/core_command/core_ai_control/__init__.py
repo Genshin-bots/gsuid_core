@@ -9,6 +9,7 @@ from datetime import datetime
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
@@ -98,8 +99,15 @@ async def clear_ai_session(bot: Bot, ev: Event):
         session._session_logger.log_history_reset("user_clear")
     history_deleted = get_history_manager().clear_history(ev)
     ai_deleted = registry.remove_ai_session(session_id)
-    logger.info(f"[Core AI控制] 清空会话: {session_id}, history={history_deleted}, ai_session={ai_deleted}")
-    await bot.send("✅ [Core AI控制] 已清空当前会话历史，并重置当前 AI Session。")
+    logger.info(
+        t(
+            "[Core AI控制] 清空会话: {session_id}, history={history_deleted}, ai_session={ai_deleted}",
+            session_id=session_id,
+            history_deleted=history_deleted,
+            ai_deleted=ai_deleted,
+        )
+    )
+    await bot.send(await bot.t("✅ [Core AI控制] 已清空当前会话历史，并重置当前 AI Session。"))
 
 
 @sv_core_ai_control.on_command(("persona", "人格切换"), block=True)
@@ -128,8 +136,19 @@ async def switch_persona(bot: Bot, ev: Event):
         session._session_logger.log_history_reset("persona_switch", {"persona_name": persona_name})
     set_persona_override(session_id, persona_name)
     registry.remove_ai_session(session_id)
-    logger.info(f"[Core AI控制] 当前会话人格热切换: {session_id} -> {persona_name}")
-    await bot.send(f"✅ [Core AI控制] 当前会话已切换人格为「{persona_name}」，后续 AI 配置将按该人格即时生效。")
+    logger.info(
+        t(
+            "[Core AI控制] 当前会话人格热切换: {session_id} -> {persona_name}",
+            session_id=session_id,
+            persona_name=persona_name,
+        )
+    )
+    await bot.send(
+        await bot.t(
+            "✅ [Core AI控制] 当前会话已切换人格为「{persona_name}」，后续 AI 配置将按该人格即时生效。",
+            persona_name=persona_name,
+        )
+    )
 
 
 @sv_core_ai_control.on_command(("btw", "顺便一提"), block=True)
@@ -137,7 +156,7 @@ async def run_ephemeral_agent(bot: Bot, ev: Event):
     """创建无人格、无历史的新 Agent 完成本次请求。"""
     task = ev.text.strip()
     if not task:
-        await bot.send("❌ [Core AI控制] 请在 btw / 顺便一提 后填写要让新 Agent 完成的内容。")
+        await bot.send(await bot.t("❌ [Core AI控制] 请在 btw / 顺便一提 后填写要让新 Agent 完成的内容。"))
         return
 
     from gsuid_core.ai_core.gs_agent import create_agent
@@ -156,7 +175,7 @@ async def run_ephemeral_agent(bot: Bot, ev: Event):
     )
     registry = get_ai_session_registry()
     registry.set_ai_session(session_id, agent)
-    logger.info(f"[Core AI控制] 启动 BTW 临时 Agent: {session_id}")
+    logger.info(t("[Core AI控制] 启动 BTW 临时 Agent: {session_id}", session_id=session_id))
     try:
         result = await agent.run(
             user_message=task,
@@ -179,14 +198,19 @@ async def ban_ai_scope(bot: Bot, ev: Event):
     seconds = _parse_duration(ev.text)
     seconds = max(1, min(seconds, 30 * 86400))
     await bot.send(
-        f"✅ [Core AI控制] 即将禁言当前会话范围 {_format_seconds(seconds)}。"
-        "期间 Bot 不会在此范围发送消息，也不会触发 AI API。"
+        await bot.t(
+            "✅ [Core AI控制] 即将禁言当前会话范围 {p0}。期间 Bot 不会在此范围发送消息，也不会触发 AI API。",
+            p0=_format_seconds(seconds),
+        )
     )
     expire_at = ban_scope(ev.session_id, seconds)
     logger.info(
-        "[Core AI控制] 当前会话范围禁言: "
-        f"{ev.session_id}, seconds={seconds}, "
-        f"expire_at={datetime.fromtimestamp(expire_at)}"
+        t(
+            "[Core AI控制] 当前会话范围禁言: {p0}, seconds={seconds}, expire_at={p1}",
+            p0=ev.session_id,
+            seconds=seconds,
+            p1=datetime.fromtimestamp(expire_at),
+        )
     )
 
 
@@ -195,6 +219,8 @@ async def show_ban_status(bot: Bot, ev: Event):
     """查看当前范围 AI 禁言状态。"""
     remaining = get_ban_remaining(ev.session_id)
     if remaining <= 0:
-        await bot.send("✅ [Core AI控制] 当前会话范围未处于禁言状态。")
+        await bot.send(await bot.t("✅ [Core AI控制] 当前会话范围未处于禁言状态。"))
         return
-    await bot.send(f"⏳ [Core AI控制] 当前会话范围仍处于禁言状态，剩余 {_format_seconds(remaining)}。")
+    await bot.send(
+        await bot.t("⏳ [Core AI控制] 当前会话范围仍处于禁言状态，剩余 {p0}。", p0=_format_seconds(remaining))
+    )

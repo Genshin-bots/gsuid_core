@@ -28,6 +28,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
@@ -69,7 +70,12 @@ def parse_provider_config_name(full_name: str) -> tuple[str, str]:
     if PROVIDER_CONFIG_SEPARATOR in full_name:
         provider, config_name = full_name.split(PROVIDER_CONFIG_SEPARATOR, 1)
         if provider not in ("openai", "anthropic"):
-            raise ValueError(f"🧠 [GsCore][AI] 不支持的 provider 类型: '{provider}'，仅支持 'openai' 或 'anthropic'")
+            raise ValueError(
+                t(
+                    "🧠 [GsCore][AI] 不支持的 provider 类型: '{provider}'，仅支持 'openai' 或 'anthropic'",
+                    provider=provider,
+                )
+            )
         return provider, config_name
 
     # 兼容旧格式：不含 "++" 的名称默认按 openai 处理
@@ -108,7 +114,7 @@ THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
 def to_thinking_level(value: str) -> ThinkingLevel:
     """将配置中的 model_effort 字符串转换为 pydantic_ai 的 ThinkingLevel"""
     if value not in THINKING_LEVEL_MAP:
-        logger.warning(f"🧠 [GsCore] 未知的 model_effort 配置: {value!r}, 已回退为 enable")
+        logger.warning(t("🧠 [GsCore] 未知的 model_effort 配置: {value}, 已回退为 enable", value=repr(value)))
         return True
     return THINKING_LEVEL_MAP[value]
 
@@ -118,7 +124,9 @@ def to_request_method(value: str) -> RequestMethod:
     if value == "responses":
         return "responses"
     if value != "chat_completions":
-        logger.warning(f"🧠 [GsCore] 未知的 request_method 配置: {value!r}, 已回退为 chat_completions")
+        logger.warning(
+            t("🧠 [GsCore] 未知的 request_method 配置: {value}, 已回退为 chat_completions", value=repr(value))
+        )
     return "chat_completions"
 
 
@@ -141,7 +149,7 @@ def _resolve_continuous_usage(base_url: str, mode: str) -> bool:
     if mode == "incremental":
         return False
     if mode != "auto":
-        logger.warning(f"🧠 [GsCore] 未知的 usage_stats_mode 配置: {mode!r}, 已回退为 auto")
+        logger.warning(t("🧠 [GsCore] 未知的 usage_stats_mode 配置: {mode}, 已回退为 auto", mode=repr(mode)))
     if base_url in _detected_cumulative_urls:
         return True
     return any(kw in base_url for kw in _CUMULATIVE_USAGE_URL_KEYWORDS)
@@ -227,18 +235,26 @@ class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
             if usage_seen >= 2 and self._provider_url not in _detected_cumulative_urls:
                 _detected_cumulative_urls.add(self._provider_url)
                 logger.warning(
-                    f"🧠 [GsCore] 探测并确认网关 {self._provider_url} 流式 usage 为累计语义 "
-                    + f"(全流 {usage_seen} 个 usage chunk 均符合 prompt 恒定 + completion 单调), "
-                    + "已按「取最后值」结算防止 token 统计膨胀。"
-                    + "可在该 OpenAI 配置中将 usage_stats_mode 显式设为 cumulative 固化此结果"
+                    t(
+                        "🧠 [GsCore] 探测并确认网关 {provider_url} 流式 usage 为累计语义 "
+                        "(全流 {usage_seen} 个 usage chunk 均符合 prompt 恒定 + completion 单调), "
+                        "已按「取最后值」结算防止 token 统计膨胀。"
+                        "可在该 OpenAI 配置中将 usage_stats_mode 显式设为 cumulative 固化此结果",
+                        provider_url=self._provider_url,
+                        usage_seen=usage_seen,
+                    )
                 )
         else:
             # 翻转后证据链断裂(非累计语义): 用影子和回退增量解释, 误判不丢数
             self._usage = shadow_sum
             logger.warning(
-                f"🧠 [GsCore] 网关 {self._provider_url} 出现多个 usage chunk 但不符合累计特征, "
-                + f"已按增量语义回退结算 (共 {usage_seen} 个 usage chunk)。"
-                + "若统计仍异常, 请显式设置该配置的 usage_stats_mode"
+                t(
+                    "🧠 [GsCore] 网关 {provider_url} 出现多个 usage chunk 但不符合累计特征, "
+                    "已按增量语义回退结算 (共 {usage_seen} 个 usage chunk)。"
+                    "若统计仍异常, 请显式设置该配置的 usage_stats_mode",
+                    provider_url=self._provider_url,
+                    usage_seen=usage_seen,
+                )
             )
 
 
@@ -265,8 +281,15 @@ def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, Thinking
     usage_stats_mode = str(oconfig.get_config("usage_stats_mode").data)
     continuous_usage = _resolve_continuous_usage(base_url, usage_stats_mode)
     logger.info(
-        f"🧠 [GsCore] 加载 OpenAI 配置: Name: {model_name}, URL: {base_url}, "
-        f"Key: ...{api_key[-4:]}, 请求方式: {request_method}" + (", 流式usage: cumulative" if continuous_usage else "")
+        t(
+            "🧠 [GsCore] 加载 OpenAI 配置: Name: {model_name}, URL: {base_url}, "
+            "Key: ...{key_tail}, 请求方式: {request_method}{usage_suffix}",
+            model_name=model_name,
+            base_url=base_url,
+            key_tail=api_key[-4:],
+            request_method=request_method,
+            usage_suffix=(", 流式usage: cumulative" if continuous_usage else ""),
+        )
     )
     return base_url, api_key, model_name, model_effort, request_method, continuous_usage, usage_stats_mode
 
@@ -279,7 +302,14 @@ def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, Think
         aconfig.get_config("model_name").data,
         to_thinking_level(aconfig.get_config("model_effort").data),
     )
-    logger.info(f"🧠 [GsCore] 加载 Anthropic 配置: Name: {model_name}, URL: {base_url}, Key: ...{api_key[-4:]}")
+    logger.info(
+        t(
+            "🧠 [GsCore] 加载 Anthropic 配置: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+            model_name=model_name,
+            base_url=base_url,
+            p0=api_key[-4:],
+        )
+    )
     return base_url, api_key, model_name, model_effort
 
 
@@ -328,7 +358,14 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
     """
     base_url, api_key, model_name, model_effort = get_anthropic_config_by_name(config_name)
 
-    logger.info(f"🧠 [GsCore] 加载 Anthropic 模型: Name: {model_name}, URL: {base_url}, Key: ...{api_key[-4:]}")
+    logger.info(
+        t(
+            "🧠 [GsCore] 加载 Anthropic 模型: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+            model_name=model_name,
+            base_url=base_url,
+            p0=api_key[-4:],
+        )
+    )
 
     return AnthropicModel(
         model_name=model_name,
@@ -386,7 +423,7 @@ def get_model_by_full_name(full_name: str) -> Union[OpenAIChatModel, OpenAIRespo
 def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfig:
     full_name = get_config_name_for_task(task_level)
     if not full_name:
-        raise ValueError("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！")
+        raise ValueError(t("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！"))
 
     provider, config_name = parse_provider_config_name(full_name)
 
@@ -410,7 +447,7 @@ def get_model_for_task(
     full_name = get_config_name_for_task(task_level)
 
     if not full_name:
-        raise ValueError("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！")
+        raise ValueError(t("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！"))
 
     provider, config_name = parse_provider_config_name(full_name)
 

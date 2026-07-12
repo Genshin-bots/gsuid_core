@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Union
 from bs4 import BeautifulSoup, element
 from PIL import Image, ImageDraw
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.error_reply import get_error
 from gsuid_core.utils.fonts.fonts import core_font as cf
@@ -15,11 +16,11 @@ from ...api.mys_api import mys_api
 
 
 async def get_post_img(post_id: str) -> Union[str, bytes]:
-    logger.info("[GsCore] 正在尝试获取米游社帖子...")
+    logger.info(t("[GsCore] 正在尝试获取米游社帖子..."))
     data = await mys_api.get_bbs_post_detail(post_id)
     if isinstance(data, int):
         return get_error(data)
-    logger.success("[GsCore] 获取米游社帖子成功!进入处理流程...")
+    logger.success(t("[GsCore] 获取米游社帖子成功!进入处理流程..."))
     post = data["post"]["post"]["content"]
     soup = BeautifulSoup(post, "lxml")
     img = await soup_to_img(soup)
@@ -34,7 +35,7 @@ async def process_tag(
     space = 15
     _type = _data = None
 
-    logger.trace(f"[GsCore] 正在处理TAG: {tag.name}")
+    logger.trace(t("[GsCore] 正在处理TAG: {p0}", p0=tag.name))
 
     if tag.name == "img":
         img_url = tag.get("src")
@@ -92,14 +93,14 @@ async def soup_to_img(soup: BeautifulSoup):
     point = 0
     div = get_div()
 
-    logger.info("[GsCore] 开始解析帖子内容...")
+    logger.info(t("[GsCore] 开始解析帖子内容..."))
     for tag in soup.descendants:
         point, elements = await process_tag(
             elements,
             point,
             tag,  # type: ignore
         )
-    logger.success("[GsCore] 帖子解析完成!进入图片处理流程...")
+    logger.success(t("[GsCore] 帖子解析完成!进入图片处理流程..."))
 
     img = Image.new("RGB", (1000, point), (255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -125,6 +126,6 @@ async def soup_to_img(soup: BeautifulSoup):
         elif i["type"] == "div":
             img.paste(div, (0, i["pos"]), div)
 
-    logger.success("[GsCore] 图片处理完成!")
+    logger.success(t("[GsCore] 图片处理完成!"))
 
     return await convert_img(img)

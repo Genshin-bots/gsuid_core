@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.command_exec.config import cfg_get
 
@@ -118,7 +119,7 @@ def resolve_argv0(argv: List[str], env: Dict[str, str]) -> tuple[List[str], bool
     .cmd/.bat 会隐式经 cmd.exe（BatBadBut CVE-2024-24576）→ 打 is_batch 高危标记。
     """
     if not argv:
-        raise FileNotFoundError("空命令")
+        raise FileNotFoundError(t("空命令"))
     resolved = shutil.which(argv[0], path=env.get("PATH"))
     if resolved is None:
         raise FileNotFoundError(argv[0])
@@ -213,7 +214,9 @@ async def run_argv(
     timeout = max(1, min(timeout, cfg_get("max_timeout")))
     env = build_safe_env(extra_path)
     resolved_argv, is_batch = resolve_argv0(argv, env)
-    logger.info(f"🧰 [CommandExec] 执行: {resolved_argv[0]} (cwd={cwd}, batch={is_batch})")
+    logger.info(
+        t("🧰 [CommandExec] 执行: {p0} (cwd={cwd}, batch={is_batch})", p0=resolved_argv[0], cwd=cwd, is_batch=is_batch)
+    )
     if _IS_WINDOWS:
         raw, code = await _run_in_thread(resolved_argv, cwd, env, timeout, max_output)
     else:

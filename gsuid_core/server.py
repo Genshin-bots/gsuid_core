@@ -19,6 +19,7 @@ from fastapi import WebSocket
 try:
     from packaging.requirements import Requirement
 except ImportError:
+    # 引导期依赖缺失提示：早于 i18n 导入，保持纯中文
     print("正在安装必要依赖 'packaging'...")
     subprocess.check_call([sys.executable, "-m", "ensurepip"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "packaging"])
@@ -26,6 +27,7 @@ except ImportError:
 
 
 from gsuid_core.bot import _Bot
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config, plugin_config_store
 from gsuid_core.logger import logger
 from gsuid_core.gs_logger import GsLogger
@@ -155,7 +157,7 @@ async def core_start_before_execute():
     try:
         sorted_defs = sorted(core_start_before_def)
         logger.info(
-            "♻ [GsCore] 执行启动前Hook函数中！",
+            t("log.server.run_before_hooks"),
             [hook.func.__name__ for hook in sorted_defs],
         )
         # 按优先级分组
@@ -175,7 +177,7 @@ async def core_start_execute():
     try:
         sorted_defs = sorted(core_start_def)
         logger.info(
-            "♻ [GsCore] 执行启动Hook函数中！",
+            t("log.server.run_start_hooks"),
             [hook.func.__name__ for hook in sorted_defs],
         )
         # 按优先级分组
@@ -195,7 +197,7 @@ async def core_shutdown_execute():
     try:
         sorted_defs = sorted(core_shutdown_def)
         logger.info(
-            "♻ [GsCore] 执行启动Hook函数中！",
+            t("log.server.run_shutdown_hooks"),
             [hook.func.__name__ for hook in sorted_defs],
         )
         # 按优先级分组
@@ -287,14 +289,14 @@ class GsServer:
             plugin = PLUGIN_PATH / plugin
 
         if not plugin.exists():
-            logger.warning(f"[更新] ❌ 插件{plugin.name}不存在!")
+            logger.warning(t("log.server.plugin_not_exist", plugin_name=plugin.name))
             return f"❌ 插件{plugin.name}不存在!"
 
         plugin_parent = plugin.parent.name
         if plugin.stem.startswith("_"):
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
-        logger.debug(f"🔜 导入{plugin.stem}中...")
+        logger.debug(t("log.server.importing_plugin", stem=plugin.stem))
         logger.trace("===============")
         try:
             module_list = []
@@ -344,7 +346,7 @@ class GsServer:
                 ]
             return module_list
         except Exception as e:
-            logger.error(f"❌ 插件{plugin.name}加载失败!: {e}")
+            logger.error(t("log.server.plugin_load_fail", plugin_name=plugin.name, error=e))
             return f"❌ 插件{plugin.name}加载失败"
 
     def cached_import(self, module_name: str, filepath: Path, _type: str):
@@ -357,7 +359,7 @@ class GsServer:
         if module_name in sys.modules:
             module = sys.modules[module_name]
             _module_cache[module_name] = module
-            logger.trace(f"🌱 模块{filepath.parent.stem}已加载, 复用缓存")
+            logger.trace(t("log.server.module_cached", stem=filepath.parent.stem))
             return module
 
         start_time = time.time()
@@ -382,21 +384,21 @@ class GsServer:
 
         if _type == "plugin":
             name = filepath.parent.stem
-            logger.success(f"✅ 插件{name}导入成功! 耗时: {duration:.2f}秒")
+            logger.success(t("log.server.plugin_imported", name=name, duration=duration))
         elif _type == "single":
             name = filepath.stem
-            logger.success(f"✅ 插件{name}导入成功! 耗时: {duration:.2f}秒")
+            logger.success(t("log.server.plugin_imported", name=name, duration=duration))
         else:
             name = filepath.parent.stem
             if _type != "full":
-                logger.trace(f"🌱 模块{name}导入成功! 耗时: {duration:.2f}秒")
+                logger.trace(t("log.server.module_imported", name=name, duration=duration))
         _import_durations.append((name, duration))
 
         _module_cache[module_name] = module
         return module
 
     async def load_plugins(self, dev_mode: bool = False):
-        logger.info("💖 [早柚核心]开始加载插件...")
+        logger.info(t("log.server.load_start"))
         _load_start = time.time()
         refresh_installed_dependencies()
         # fix: path append
@@ -421,7 +423,7 @@ class GsServer:
             if isinstance(d, str):
                 continue
             all_plugins.extend(d)
-        logger.info(f"🔍 [早柚核心] 插件发现与依赖检查完成, 耗时: {time.time() - _discover_start:.2f}秒")
+        logger.info(t("log.server.discover_done", elapsed=time.time() - _discover_start))
 
         # 阶段二：合并安装所有插件收集到的缺失依赖（一次性 pip 调用）
         flush_pending_installs()
@@ -433,22 +435,22 @@ class GsServer:
             try:
                 self.cached_import(module_name, filepath, _type)
             except Exception as e:
-                logger.exception(f"❌ 插件{filepath.stem}导入失败, 错误代码: {e}")
+                logger.exception(t("log.server.plugin_import_fail", stem=filepath.stem, error=e))
                 continue
-        logger.info(f"📥 [早柚核心] 插件模块导入完成, 耗时: {time.time() - _import_start:.2f}秒")
+        logger.info(t("log.server.import_done", elapsed=time.time() - _import_start))
 
         # 启动耗时归因：输出导入最慢的插件 Top 10
         if _import_durations:
             top = sorted(_import_durations, key=lambda x: x[1], reverse=True)[:10]
             total = sum(d for _, d in _import_durations)
-            logger.info(f"🐢 [早柚核心] 共导入 {len(_import_durations)} 个模块, 累计 {total:.2f}秒, 最慢 Top 10:")
+            logger.info(t("log.server.import_slow_header", count=len(_import_durations), total=total))
             for name, dur in top:
-                logger.info(f"    ⏱️ {dur:6.2f}秒  {name}")
+                logger.info(t("log.server.import_slow_item", dur=dur, name=name))
 
         plugin_config_store.save_all()
         core_config.lazy_write_config()
 
-        logger.success(f"💖 [早柚核心] 插件加载完成! 总耗时: {time.time() - _load_start:.2f}秒")
+        logger.success(t("log.server.load_done", elapsed=time.time() - _load_start))
 
     async def connect(self, websocket: WebSocket, bot_id: str) -> _Bot:
         await websocket.accept()
@@ -459,7 +461,7 @@ class GsServer:
             disconnected_at: Optional[float] = getattr(bot, "_disconnected_at", None)
             # 若断连超过 5 分钟或 _disconnected_at 异常为 None，丢弃旧实例避免内存泄漏
             if disconnected_at is None or time.time() - disconnected_at > 300:
-                logger.warning(f"{bot_id} 断连超过 5 分钟，丢弃旧 Bot 重新创建")
+                logger.warning(t("log.server.bot_timeout_recreate", bot_id=bot_id))
                 # 先 cancel 旧 send_task，防止孤儿 Task 持续运行
                 if bot._send_task and not bot._send_task.done():
                     bot._send_task.cancel()
@@ -471,7 +473,7 @@ class GsServer:
                 bot = _Bot(bot_id, websocket)
                 bot.start_send_worker()
                 self.active_bot[bot_id] = bot
-                logger.info(f"{bot_id} 首次连接（旧实例已超时丢弃）")
+                logger.info(t("log.server.bot_first_after_timeout", bot_id=bot_id))
             else:
                 # 重连：复用旧 Bot 实例，只替换 WebSocket
                 # _do_send 闭包已改为动态读取 self.bot，无需清空队列
@@ -479,13 +481,13 @@ class GsServer:
                 bot.logger = GsLogger(bot_id, websocket)
                 bot._disconnected_at = None
                 bot.start_send_worker()
-                logger.info(f"{bot_id} 重连，复用旧 Bot 实例，队列中剩余消息将继续发送")
+                logger.info(t("log.server.bot_reconnect", bot_id=bot_id))
         else:
             # 首次连接：新建 Bot
             bot = _Bot(bot_id, websocket)
             bot.start_send_worker()  # 启动独立的发送 worker，串行化 WebSocket 写入
             self.active_bot[bot_id] = bot
-            logger.info(f"{bot_id} 首次连接")
+            logger.info(t("log.server.bot_first", bot_id=bot_id))
 
         try:
             # fix: 正确处理同步和异步回调，并等待 gather
@@ -498,7 +500,7 @@ class GsServer:
                     try:
                         func()
                     except Exception as e:
-                        logger.error(f"Hooks执行错误: {e}")
+                        logger.error(t("log.server.hook_exec_fail", error=e))
 
             if tasks:
                 await asyncio.gather(*tasks)
@@ -549,12 +551,12 @@ class GsServer:
             bot._disconnected_at = time.time()
 
             # 2. 取消所有后台任务并等待其真正结束
-            tasks_to_cancel = [t for t in bot.bg_tasks if not t.done()]
-            for t in tasks_to_cancel:
-                t.cancel()
-            for t in tasks_to_cancel:
+            tasks_to_cancel = [_t for _t in bot.bg_tasks if not _t.done()]
+            for _t in tasks_to_cancel:
+                _t.cancel()
+            for _t in tasks_to_cancel:
                 try:
-                    await t
+                    await _t
                 except (asyncio.CancelledError, Exception):
                     pass
 
@@ -582,14 +584,11 @@ class GsServer:
             for gid in map_keys_to_remove:
                 del Bot.mutiply_map[gid]
             if mutiply_ids_to_remove and not map_keys_to_remove:
-                logger.warning(
-                    f"[disconnect] mutiply_instances 已清理 {len(mutiply_ids_to_remove)} 条，"
-                    f"但 mutiply_map 中未找到对应映射，map 可能泄漏"
-                )
+                logger.warning(t("log.server.mutiply_map_leak", count=len(mutiply_ids_to_remove)))
 
             # 不再删除 active_bot[bot_id]，保留实例等待重连
 
-        logger.warning(f"{bot_id} 已断开，Bot 实例保留等待重连")
+        logger.warning(t("log.server.bot_disconnect_keep", bot_id=bot_id))
 
     async def send(self, message: str, bot_id: str):
         if bot_id in self.active_ws:
@@ -623,7 +622,7 @@ def check_pyproject(pyproject: Path):
                 file_content = file_content.replace("extend-exclude = '''", "").replace("'''", "", 1)
             toml_data = toml.loads(file_content)
     except Exception as e:
-        logger.error(f"❌ 解析 pyproject.toml 失败: {pyproject}, 错误: {e}")
+        logger.error(t("log.server.pyproject_parse_fail", pyproject=pyproject, error=e))
         return
 
     if not (auto_install_dep or auto_update_dep):
@@ -634,7 +633,7 @@ def check_pyproject(pyproject: Path):
         dependencies = toml_data["project"].get("dependencies", [])
         sp_dep = toml_data["project"].get("gscore_auto_update_dep", [])
         if sp_dep:
-            logger.debug("📄 [安装/更新依赖] 特殊依赖列表如下：")
+            logger.debug(t("log.server.special_dep_header"))
             logger.debug(sp_dep)
             process_dependencies(sp_dep, update=True)
 
@@ -664,7 +663,7 @@ def check_pyproject(pyproject: Path):
                     dependencies.append(f"{k}{v}")
 
     if dependencies:
-        logger.trace(f"发现依赖: {dependencies}")
+        logger.trace(t("log.server.deps_found", dependencies=dependencies))
         process_dependencies(dependencies, update=auto_update_dep)
 
 
@@ -686,7 +685,7 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
 
             # 未安装 -> 加入待安装队列
             if req_name not in installed_dependencies:
-                logger.info(f"[依赖管理] 未安装依赖: {req_name} (原始需求: {req.name})")
+                logger.info(t("log.server.dep_missing", req_name=req_name, raw=req.name))
                 _pending_install.append(dep_str)
                 continue
 
@@ -694,13 +693,20 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
             if update:
                 installed_ver = installed_dependencies[req_name]
                 if installed_ver not in req.specifier:
-                    logger.info(f"[依赖管理] 依赖版本不匹配: {req_name} (当前: {installed_ver}, 需要: {req.specifier})")
+                    logger.info(
+                        t(
+                            "log.server.dep_version_mismatch",
+                            req_name=req_name,
+                            installed_ver=installed_ver,
+                            specifier=req.specifier,
+                        )
+                    )
                     _pending_update.append(dep_str)
                 else:
-                    logger.trace(f"[依赖管理] {req_name} 已满足 (当前: {installed_ver})")
+                    logger.trace(t("log.server.dep_satisfied", req_name=req_name, installed_ver=installed_ver))
 
         except Exception as e:
-            logger.warning(f"无法解析依赖字符串 '{dep_str}': {e}")
+            logger.warning(t("log.server.dep_parse_fail", dep_str=dep_str, error=e))
 
 
 def flush_pending_installs():
@@ -722,11 +728,11 @@ def flush_pending_installs():
     _pending_update = []
 
     if install_list:
-        logger.info(f"📦 [依赖管理] 合并安装 {len(install_list)} 个缺失依赖: {install_list}")
+        logger.info(t("log.server.dep_install_batch", count=len(install_list), install_list=install_list))
         install_packages(install_list, upgrade=False)
 
     if update_list:
-        logger.info(f"📦 [依赖管理] 合并更新 {len(update_list)} 个依赖: {update_list}")
+        logger.info(t("log.server.dep_update_batch", count=len(update_list), update_list=update_list))
         install_packages(update_list, upgrade=True)
 
 
@@ -734,7 +740,7 @@ def install_packages(packages: List[str], upgrade: bool = False):
     if not packages:
         return
 
-    logger.info(f"🚀 [安装/更新依赖] 开始安装以下包: {packages}")
+    logger.info(t("log.server.install_start", packages=packages))
 
     # 定义镜像源列表 (名称, URL)
     # 顺序: 阿里 -> 字节 -> 清华 -> 官方
@@ -757,7 +763,7 @@ def install_packages(packages: List[str], upgrade: bool = False):
 
     # 轮询尝试
     for mirror_name, mirror_url in mirrors:
-        logger.info(f"⏳ [安装/更新依赖] 正在尝试使用 [{mirror_name}] ...")
+        logger.info(t("log.server.install_trying_mirror", mirror_name=mirror_name))
 
         # 组装完整命令，加入 -i 参数
         cmd = base_cmd + ["-i", mirror_url]
@@ -773,14 +779,14 @@ def install_packages(packages: List[str], upgrade: bool = False):
             execute_cmd(cmd)
 
         if retcode == 0:
-            logger.info(f"✅ [安装/更新依赖] 使用 [{mirror_name}] 安装成功!")
+            logger.info(t("log.server.install_mirror_ok", mirror_name=mirror_name))
             install_success = True
             break  # 安装成功，跳出循环
         else:
-            logger.warning(f"⚠️ [安装/更新依赖] 使用 [{mirror_name}] 安装失败，准备尝试下一个源...")
+            logger.warning(t("log.server.install_mirror_fail", mirror_name=mirror_name))
 
     if not install_success:
-        logger.error("❌ [安装/更新依赖] 所有源均尝试失败，请检查网络或包名是否正确。")
+        logger.error(t("log.server.install_all_fail"))
 
     # 刷新依赖状态
     refresh_installed_dependencies()
@@ -791,21 +797,21 @@ def execute_cmd(cmd_list: List[str]):
     fix: 使用 list 传参且 shell=False，防止命令注入
     """
     cmd_str = " ".join(cmd_list)
-    logger.info(f"[CMD执行] {cmd_str}")
+    logger.info(t("log.server.cmd_exec", cmd_str=cmd_str))
 
     try:
         # shell=False 是安全的默认值
         result = subprocess.run(cmd_list, capture_output=True, text=True, shell=False)
         if result.returncode == 0:
-            logger.success("[CMD执行] 成功!")
+            logger.success(t("log.server.cmd_success"))
             return 0, result.stdout
         else:
-            logger.warning(f"[CMD执行] 失败 (Code {result.returncode})")
+            logger.warning(t("log.server.cmd_fail", code=result.returncode))
             logger.warning(f"Stderr: {result.stderr}")
 
             return result.returncode, result.stderr
     except Exception as e:
-        logger.exception(f"[CMD执行] 发生异常: {e}")
+        logger.exception(t("log.server.cmd_exception", error=e))
         return -1, str(e)
 
 
@@ -830,7 +836,7 @@ def refresh_installed_dependencies():
                 # 关键修复：存入字典时也使用规范化名字
                 deps[normalize_name(name)] = version
     except Exception as e:
-        logger.error(f"读取已安装包列表失败: {e}")
+        logger.error(t("log.server.read_installed_fail", error=e))
 
     installed_dependencies = deps
     return installed_dependencies

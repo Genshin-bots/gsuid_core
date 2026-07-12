@@ -16,6 +16,7 @@ from sqlmodel import Field, col, delete, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import BaseIDModel, with_session
 
@@ -196,5 +197,5 @@ class AIBudgetUsageRecord(BaseIDModel, table=True):
         result = await session.execute(delete(cls).where(col(cls.created_at) < before_ts))
         deleted = result.rowcount if isinstance(result, CursorResult) else 0
         if deleted:
-            logger.info(f"💰 [Budget] 清理过期用量流水 {deleted} 条")
+            logger.info(t("💰 [Budget] 清理过期用量流水 {deleted} 条", deleted=deleted))
         return deleted

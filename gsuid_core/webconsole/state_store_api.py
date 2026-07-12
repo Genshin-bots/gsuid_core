@@ -36,6 +36,7 @@ from pydantic import Field, BaseModel
 from sqlmodel import col, func, select
 from sqlalchemy import delete as sa_delete, tuple_ as sa_tuple
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
@@ -267,7 +268,7 @@ async def delete_state_entry(
     deleted = await state_delete_value(scope, state_key)
     if not deleted:
         return {"status": 1, "msg": f"key 不存在: {scope}/{state_key}", "data": None}
-    logger.info(f"🗄️ [StateStore-API] 删除 entry: {scope}/{state_key}")
+    logger.info(t("🗄️ [StateStore-API] 删除 entry: {scope}/{state_key}", scope=scope, state_key=state_key))
     return {"status": 0, "msg": "ok", "data": {"scope": scope, "state_key": state_key}}
 
 
@@ -384,7 +385,12 @@ async def batch_delete_state_entries(
             not_found_count += 1
 
     logger.info(
-        f"🗄️ [StateStore-API] 批量删除: requested={len(targets)} deleted={deleted_count} not_found={not_found_count}"
+        t(
+            "🗄️ [StateStore-API] 批量删除: requested={p0} deleted={deleted_count} not_found={not_found_count}",
+            p0=len(targets),
+            deleted_count=deleted_count,
+            not_found_count=not_found_count,
+        )
     )
     return {
         "status": 0,

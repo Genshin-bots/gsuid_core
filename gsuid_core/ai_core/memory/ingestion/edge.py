@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from sqlmodel import col, select
 from sqlalchemy.exc import OperationalError
 
+from gsuid_core.i18n import t
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.memory.vector.ops import search_edges, upsert_edge_vectors_batch
 from gsuid_core.utils.database.base_models import async_maker
@@ -231,11 +232,22 @@ async def extract_and_upsert_edges(
             if _attempt < 5:
                 await asyncio.sleep(0.1 * (_attempt + 1))
                 continue
-            logger.warning(f"🧠 [Memory] scope={scope_key} Edge 写入重试 6 次仍失败（database locked），跳过本窗口边")
+            logger.warning(
+                t(
+                    "🧠 [Memory] scope={scope_key} Edge 写入重试 6 次仍失败（database locked），跳过本窗口边",
+                    scope_key=scope_key,
+                )
+            )
             return
 
     if merged_count:
-        logger.info(f"🧠 [Memory] scope={scope_key} Edge 归并 {merged_count} 条重复事实")
+        logger.info(
+            t(
+                "🧠 [Memory] scope={scope_key} Edge 归并 {merged_count} 条重复事实",
+                scope_key=scope_key,
+                merged_count=merged_count,
+            )
+        )
 
     # 批量写入所有 Qdrant 向量（无锁并发计算 + 单次批量加锁写入）
     if edges_vector_data:

@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 import aiofiles
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.client import MCPToolResult
 from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
@@ -73,7 +74,13 @@ def get_mcp_tool_id(config_key: str, feature_name: str) -> str:
     mcp_tool_id = get_mcp_tool_id_optional(config_key)
 
     if not mcp_tool_id:
-        raise RuntimeError(f"{feature_name} MCP 工具未配置，请前往 AI 配置页面设置 {config_key}")
+        raise RuntimeError(
+            t(
+                "{feature_name} MCP 工具未配置，请前往 AI 配置页面设置 {config_key}",
+                feature_name=feature_name,
+                config_key=config_key,
+            )
+        )
 
     return mcp_tool_id
 
@@ -227,7 +234,7 @@ async def call_mcp_tool_checked(
     result = await call_mcp_tool(mcp_tool_id=mcp_tool_id, arguments=arguments)
 
     if result.is_error:
-        raise RuntimeError(f"{feature_name} MCP 调用失败: {result.text}")
+        raise RuntimeError(t("{feature_name} MCP 调用失败: {p0}", feature_name=feature_name, p0=result.text))
 
     return result
 
@@ -265,7 +272,7 @@ async def save_binary_to_tempfile(
         await f.write(data)
 
     if log_prefix:
-        logger.debug(f"{log_prefix} 已保存数据到临时文件: {temp_path}")
+        logger.debug(t("{log_prefix} 已保存数据到临时文件: {temp_path}", log_prefix=log_prefix, temp_path=temp_path))
 
     return temp_path
 
@@ -298,10 +305,10 @@ def cleanup_tempfile(path: str, log_prefix: str = "") -> None:
     try:
         os.unlink(path)
         if log_prefix:
-            logger.debug(f"{log_prefix} 已删除临时文件: {path}")
+            logger.debug(t("{log_prefix} 已删除临时文件: {path}", log_prefix=log_prefix, path=path))
     except OSError as e:
         if log_prefix:
-            logger.warning(f"{log_prefix} 删除临时文件失败: {e}")
+            logger.warning(t("{log_prefix} 删除临时文件失败: {e}", log_prefix=log_prefix, e=e))
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +374,7 @@ async def parse_binary_result(
             if len(decoded) > min_size:
                 return decoded
 
-    raise RuntimeError(f"无法解析 MCP 返回结果: {result_text[:200]}")
+    raise RuntimeError(t("无法解析 MCP 返回结果: {p0}", p0=result_text[:200]))
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +425,7 @@ async def save_data_uri_to_tempfile(
         ... )
     """
     if ";base64," not in data_uri:
-        raise ValueError(f"无效的 DataURI 格式（缺少 ;base64,）: {data_uri[:100]}")
+        raise ValueError(t("无效的 DataURI 格式（缺少 ;base64,）: {p0}", p0=data_uri[:100]))
 
     header, b64_data = data_uri.split(";base64,", 1)
     mime_type = header.replace("data:", "")

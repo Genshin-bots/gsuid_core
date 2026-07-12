@@ -38,6 +38,7 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets.abstract import ToolsetTool, AbstractToolset
 from pydantic_ai.toolsets.function import FunctionToolsetTool
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import find_tool_base
@@ -79,7 +80,7 @@ class RetrievableToolset(AbstractToolset[ToolContext]):
             try:
                 tool_def = await tool.prepare_tool_def(run_context)
             except Exception as e:
-                logger.debug(f"🧠 [RetrievableToolset] 工具 {name} prepare 失败，跳过: {e}")
+                logger.debug(t("🧠 [RetrievableToolset] 工具 {name} prepare 失败，跳过: {e}", name=name, e=e))
                 continue
             if not tool_def:
                 # 工具自身的 prepare/visible_when 判定本步不暴露（Phase 3 条件隐藏）。
@@ -98,7 +99,7 @@ class RetrievableToolset(AbstractToolset[ToolContext]):
                 timeout=tool_def.timeout,
             )
         if out:
-            logger.debug(f"🧠 [RetrievableToolset] 本步动态暴露 {len(out)} 个工具: {list(out)}")
+            logger.debug(t("🧠 [RetrievableToolset] 本步动态暴露 {p0} 个工具: {p1}", p0=len(out), p1=list(out)))
         return out
 
     async def call_tool(

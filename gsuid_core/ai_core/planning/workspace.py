@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 
 from sqlmodel import col, func, select
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH, get_res_path
 from gsuid_core.utils.database.base_models import async_maker
@@ -155,7 +156,14 @@ async def record_violation(
         "workspace_violation",
         f"工作区越界拒绝：{detail}"[:4000],
     )
-    logger.warning(f"📋 [Kanban] 工作区越界 task={task_id} root={root_task_id}: {detail[:200]}")
+    logger.warning(
+        t(
+            "📋 [Kanban] 工作区越界 task={task_id} root={root_task_id}: {p0}",
+            task_id=task_id,
+            root_task_id=root_task_id,
+            p0=detail[:200],
+        )
+    )
     # 统计同一子任务的越界次数，达上限直接升级 fail
     async with async_maker() as session:
         stmt = (
@@ -334,7 +342,7 @@ async def put_artifact(
             return None
         # 安全闸刀：登记的文件必须落在 workspace 内（避免登记越界路径，绕过沙盒）
         if not _is_inside(src, workspace):
-            logger.warning(f"📋 [Kanban] artifact_put 拒绝登记越界文件: {src} 不在 workspace 内")
+            logger.warning(t("📋 [Kanban] artifact_put 拒绝登记越界文件: {src} 不在 workspace 内", src=src))
             return None
         suffix = src.suffix.lower()
         resolved_mime = mime or _EXT_TO_MIME.get(suffix, "application/octet-stream")

@@ -10,6 +10,7 @@ persona 目录投影为一个 ``source="persona"`` 的 AgentNode 供统一注册
 from typing import Dict, Tuple, Optional
 from pathlib import Path
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .models import AgentNode
@@ -75,7 +76,7 @@ def get_persona_node(persona_name: str) -> Optional[AgentNode]:
         _PROJECTION_CACHE.pop(persona_name, None)
         return None
     _PROJECTION_CACHE[persona_name] = (md_mtime, cfg_mtime, node)
-    logger.debug(f"🧩 [AgentNode] persona 投影已刷新: {persona_name}")
+    logger.debug(t("🧩 [AgentNode] persona 投影已刷新: {persona_name}", persona_name=persona_name))
     return node
 
 

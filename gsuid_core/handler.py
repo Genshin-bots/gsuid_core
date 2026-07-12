@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Optional
 
 from gsuid_core.sv import SL, SV
 from gsuid_core.bot import Bot, _Bot
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message, TaskContext, TraceContext, MessageReceive
@@ -67,12 +68,12 @@ async def _flush_user_group_buffer():
         try:
             await CoreUser.insert_user(rbi, uid, gid, nick, avatar)
         except Exception as e:
-            logger.warning(f"[GsCore] 缓冲 CoreUser 写入失败: {e}")
+            logger.warning(t("log.handler.buffer_coreuser_fail", error=e))
     for rbi, gid in g_pending:
         try:
             await CoreGroup.insert_group(rbi, gid)
         except Exception as e:
-            logger.warning(f"[GsCore] 缓冲 CoreGroup 写入失败: {e}")
+            logger.warning(t("log.handler.buffer_coregroup_fail", error=e))
 
 
 async def _user_flush_loop():
@@ -86,7 +87,7 @@ async def _user_flush_loop():
         try:
             await _flush_user_group_buffer()
         except Exception as e:
-            logger.warning(f"[GsCore] CoreUser/Group 缓冲刷写循环异常: {e}")
+            logger.warning(t("log.handler.buffer_flush_loop_fail", error=e))
 
 
 def _ensure_flush_task_started():
@@ -104,7 +105,7 @@ async def _flush_user_buffer_on_shutdown():
     """退出前最后一次刷写, 防止丢数据."""
     if not _BUFFERED_USER_WRITES:
         return
-    logger.info("[GsCore] 退出前停止 CoreUser/Group 缓冲刷写循环...")
+    logger.info(t("log.handler.buffer_stop"))
     _user_flush_shutdown_event.set()
     global _user_flush_task
     if _user_flush_task is not None:
@@ -112,9 +113,9 @@ async def _flush_user_buffer_on_shutdown():
             await asyncio.wait_for(_user_flush_task, timeout=30)
         except asyncio.TimeoutError:
             _user_flush_task.cancel()
-    logger.info("[GsCore] 刷写 CoreUser/Group 缓冲区...")
+    logger.info(t("log.handler.buffer_flushing"))
     await _flush_user_group_buffer()
-    logger.info("[GsCore] CoreUser/Group 缓冲区刷写完成")
+    logger.info(t("log.handler.buffer_flushed"))
 
 
 def _sv_authorized(_sv: SV, event: Event, user_pm: int) -> bool:
@@ -179,7 +180,7 @@ async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
         # 理论不会发生（拦截已确认存在 meta 段）；防御性返回
         return
     if show_receive:
-        logger.info("[收到Meta事件]", event_payload=event)
+        logger.info(t("log.handler.meta_received"), event_payload=event)
 
     # 2. 权限
     event.user_pm = user_pm = await get_user_pml(event)
@@ -202,7 +203,7 @@ async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
                 if _trigger.check_command(event):
                     matched[_trigger] = _sv.priority
             except Exception:
-                logger.exception(f"[GsCore] meta trigger.check_command 异常: keyword={_trigger.keyword!r}")
+                logger.exception(t("log.handler.meta_check_fail", keyword=repr(_trigger.keyword)))
 
     if not matched:
         return
@@ -213,7 +214,7 @@ async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
         _event.task_id = str(uuid4())
         _event.command = trigger.keyword  # 事件名，便于日志/追踪
         bot = Bot(ws, _event)
-        logger.info("[Meta事件触发]", meta=[trigger.keyword, event.meta_event_data])
+        logger.info(t("log.handler.meta_triggered"), meta=[trigger.keyword, event.meta_event_data])
         coro = trigger.func(bot, _event)
         func_name = getattr(coro, "__qualname__", str(coro))
         trace_ctx = TraceContext(
@@ -253,7 +254,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     event = await msg_process(msg)
     event.WS_BOT_ID = ws.bot_id
     if show_receive:
-        logger.info("[收到事件]", event_payload=event)
+        logger.info(t("log.handler.event_received"), event_payload=event)
 
     from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
 
@@ -484,7 +485,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         msg.user_id,
         same_user_cd,
     ):
-        logger.trace(f"[GsCore][触发相同消息CD] 忽略{msg.user_id}该消息!")
+        logger.trace(t("log.handler.same_msg_cd", user_id=msg.user_id))
         return
 
     is_start = False
@@ -517,7 +518,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                             valid_event[_trigger] = _priority
                     except Exception:
                         logger.exception(
-                            f"[GsCore] trigger.check_command 异常: type={_trigger.type} keyword={_trigger.keyword!r}"
+                            t(
+                                "log.handler.check_command_fail",
+                                type=_trigger.type,
+                                keyword=repr(_trigger.keyword),
+                            )
                         )
 
     command_triggers = {t: p for t, p in valid_event.items() if t.type != "message"}
@@ -529,7 +534,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         _event.task_id = str(uuid4())
         bot = Bot(ws, _event)
         await count_data(event, trigger)
-        logger.trace("[命令触发] [on_message]", command=message)
+        logger.trace(t("log.handler.cmd_on_message"), command=message)
         coro = trigger.func(bot, message)
         func_name = getattr(coro, "__qualname__", str(coro))
         # on_message 被动监听每条消息必触发，挂 trace 会刷屏 [TraceStart]/[TraceEnd]
@@ -541,7 +546,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if event.at:
             for shield_id in shield_list:
                 if event.at.startswith(shield_id):
-                    logger.warning("消息中疑似包含@机器人的消息, 停止响应本消息内容")
+                    logger.warning(t("log.handler.at_bot_shield"))
                     return
 
         sorted_event = sorted(
@@ -562,10 +567,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             await count_data(event, trigger)
 
             logger.info(
-                "[命令触发]",
+                t("log.handler.cmd_triggered"),
                 trigger=[_event.raw_text, trigger.type, trigger.keyword],
             )
-            logger.info("[命令触发]", command=message)
+            logger.info(t("log.handler.cmd_triggered"), command=message)
 
             coro = trigger.func(bot, message)
             func_name = getattr(coro, "__qualname__", str(coro))
@@ -675,9 +680,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             if not is_ai_core_ready():
                 if is_ai_core_initializing():
-                    logger.info("🧠 [GsCore][AI] AI Core 正在初始化/迁移，暂不将本次消息加入 AI 会话队列")
+                    logger.info(t("log.handler.ai_initializing"))
                 else:
-                    logger.warning("🧠 [GsCore][AI] AI Core 初始化未完成或存在失败步骤，跳过本次 AI 会话")
+                    logger.warning(t("log.handler.ai_init_incomplete"))
                 return
 
             # 记录触发方式统计（trigger_type 已在上方按 mention/keyword 定型，

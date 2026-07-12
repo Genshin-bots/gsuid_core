@@ -1,6 +1,7 @@
 from gsuid_core.sv import SV
 from gsuid_core.aps import scheduler
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Tuple
 from gsuid_core.data_store import get_res_path
@@ -42,16 +43,16 @@ async def backup_path_files():
     """
     CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
     copy_and_rebase_paths()
-    logger.success("♻️ [早柚核心] 路径已备份!")
+    logger.success(t("♻️ [早柚核心] 路径已备份!"))
     remove_old_backups(int(CLEAN_DAY))
-    logger.success(f"♻️ [早柚核心] 已删除超过 {CLEAN_DAY} 天的备份文件!")
+    logger.success(t("♻️ [早柚核心] 已删除超过 {CLEAN_DAY} 天的备份文件!", CLEAN_DAY=CLEAN_DAY))
 
 
 @sv_core_backup.on_fullmatch("强制执行文件备份")
 async def get_fullmatch_msg(bot: Bot, ev: Event):
-    await bot.send("♻️ 正在进行[强制执行文件备份]")
+    await bot.send(await bot.t("♻️ 正在进行[强制执行文件备份]"))
     await backup_path_files()
-    await bot.send("♻️ [强制执行文件备份] 成功！")
+    await bot.send(await bot.t("♻️ [强制执行文件备份] 成功！"))
 
 
 @scheduler.scheduled_job("cron", hour=0, minute=3)
@@ -72,7 +73,7 @@ async def database_backup():
     # AI 会话日志也遵循 ScheduledCleanLogDay 清理（与框架日志同一配置；0 = 不清理）
     ai_clean_days = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 8
     clean_old_session_logs(ai_clean_days)
-    logger.success("♻️ [早柚核心] 数据库已备份!")
+    logger.success(t("♻️ [早柚核心] 数据库已备份!"))
 
 
 @scheduler.scheduled_job("cron", hour=0, minute=2)
@@ -84,7 +85,7 @@ async def clear_cache():
     await GsCache.delete_all_cache(GsUser)
     await CoreDataSummary.delete_outdate()
     await CoreDataAnalysis.delete_outdate()
-    logger.success("♻️ [早柚核心] 缓存已清除!")
+    logger.success(t("♻️ [早柚核心] 缓存已清除!"))
 
 
 # 清除重复user和group
@@ -96,7 +97,7 @@ async def delete_core_user_group():
 
     await CoreUser.clean_repeat_user()
     await CoreGroup.clean_repeat_group()
-    logger.success("♻️ [早柚核心] 重复用户和群组已清除!")
+    logger.success(t("♻️ [早柚核心] 重复用户和群组已清除!"))
 
 
 @sv_core_clean.on_fullmatch(
@@ -104,6 +105,6 @@ async def delete_core_user_group():
     block=True,
 )
 async def send_core_master_help_msg(bot: Bot, ev: Event):
-    logger.info("♻️ [早柚核心] 开始执行[清除数据库]")
+    logger.info(t("♻️ [早柚核心] 开始执行[清除数据库]"))
     await delete_core_user_group()
-    await bot.send("♻️ 操作已成功完成! 该操作不会影响现有数据!")
+    await bot.send(await bot.t("♻️ 操作已成功完成! 该操作不会影响现有数据!"))

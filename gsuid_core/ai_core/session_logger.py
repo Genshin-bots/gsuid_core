@@ -100,6 +100,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypedDict
 from pathlib import Path
 from datetime import datetime
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import (
     AI_SESSION_LOGS_PATH,
@@ -242,7 +243,7 @@ def _save_base64_image(mime_subtype: str, b64_data: str) -> Optional[str]:
             with open(fpath, "wb") as f:
                 f.write(raw)
     except Exception as e:
-        logger.warning(f"📝 [AISessionLogger] 图片外置落盘失败，退化为截断: {e}")
+        logger.warning(t("📝 [AISessionLogger] 图片外置落盘失败，退化为截断: {e}", e=e))
         return None
     return f"images/{filename}"
 
@@ -427,8 +428,14 @@ class AISessionLogger:
             # 给弃写的旧文件补 ended_at 并刷新表头，否则它在 webconsole 里会永远显示"活跃"
             self._finalize_stale_log(resumed, resumed_path)
             logger.info(
-                f"📝 [AISessionLogger] 旧分段已达 {MAX_ENTRIES_PER_FILE} 条上限，"
-                f"滚动到同链新分段(seg {self.segment_index}): {resumed_path.name} -> {self._file_path.name}"
+                t(
+                    "📝 [AISessionLogger] 旧分段已达 {MAX_ENTRIES_PER_FILE} 条上限，"
+                    "滚动到同链新分段(seg {p0}): {p1} -> {p2}",
+                    MAX_ENTRIES_PER_FILE=MAX_ENTRIES_PER_FILE,
+                    p0=self.segment_index,
+                    p1=resumed_path.name,
+                    p2=self._file_path.name,
+                )
             )
         else:
             # C) 全新创建
@@ -561,7 +568,7 @@ class AISessionLogger:
         try:
             _atomic_dump_json(data, path)
         except Exception as e:
-            logger.warning(f"📝 [AISessionLogger] 旧日志收尾写盘失败（不影响新段）: {path.name}: {e}")
+            logger.warning(t("📝 [AISessionLogger] 旧日志收尾写盘失败（不影响新段）: {p0}: {e}", p0=path.name, e=e))
 
     def _roll_to_new_file(self) -> None:
         """当前分段条数达上限时，收尾旧分段并切换到同链的新分段（不再 seed 复制上下文）。
@@ -595,8 +602,14 @@ class AISessionLogger:
             self._last_full_persisted_at = 0.0
             self._persisted_entry_count = 0
             logger.info(
-                f"📝 [AISessionLogger] 分段达 {MAX_ENTRIES_PER_FILE} 条上限，"
-                f"滚动到同链新分段(seg {self.segment_index}): {old_name} -> {self._file_path.name}"
+                t(
+                    "📝 [AISessionLogger] 分段达 {MAX_ENTRIES_PER_FILE} 条上限，"
+                    "滚动到同链新分段(seg {p0}): {old_name} -> {p1}",
+                    MAX_ENTRIES_PER_FILE=MAX_ENTRIES_PER_FILE,
+                    p0=self.segment_index,
+                    old_name=old_name,
+                    p1=self._file_path.name,
+                )
             )
         finally:
             self._rolling = False
@@ -612,8 +625,12 @@ class AISessionLogger:
             return
         if entry_type not in SESSION_ENTRY_TYPES:
             logger.warning(
-                f"📝 [AISessionLogger] 未登记的 entry 类型 '{entry_type}'，"
-                f"请在 SESSION_ENTRY_TYPES 中登记（session_id={self.session_id}）"
+                t(
+                    "📝 [AISessionLogger] 未登记的 entry 类型 '{entry_type}'，"
+                    "请在 SESSION_ENTRY_TYPES 中登记（session_id={p0}）",
+                    entry_type=entry_type,
+                    p0=self.session_id,
+                )
             )
         self.entries.append(
             {
@@ -870,7 +887,7 @@ class AISessionLogger:
             generator_log_files=generator_log_files,
         )
         standalone.close()
-        logger.info(f"📝 [AISessionLogger] 主动消息已持久化到磁盘: {standalone._file_path.name}")
+        logger.info(t("📝 [AISessionLogger] 主动消息已持久化到磁盘: {p0}", p0=standalone._file_path.name))
         return True
 
     def link_agent(
@@ -911,7 +928,13 @@ class AISessionLogger:
         self._add_entry("agent_linked", dict(link_record))
         self.updated_at = time.time()
         logger.debug(
-            f"📝 [AISessionLogger] 关联 Agent: {agent_type} session_id={agent_session_id}, uuid={agent_session_uuid}"
+            t(
+                "📝 [AISessionLogger] 关联 Agent: {agent_type}"
+                " session_id={agent_session_id}, uuid={agent_session_uuid}",
+                agent_type=agent_type,
+                agent_session_id=agent_session_id,
+                agent_session_uuid=agent_session_uuid,
+            )
         )
 
     @property
@@ -1023,8 +1046,12 @@ class AISessionLogger:
         self._last_persisted_at = time.time()
 
         logger.debug(
-            f"📝 [AISessionLogger] 持久化日志: {self._file_path.name} "
-            f"({len(self.entries)} 条, {'整写' if need_full else '增量'})"
+            t(
+                "📝 [AISessionLogger] 持久化日志: {p0} ({p1} 条, {p2})",
+                p0=self._file_path.name,
+                p1=len(self.entries),
+                p2="整写" if need_full else "增量",
+            )
         )
 
     def _append_entries_to_disk(self, new_entries: List["SessionLogEntry"]) -> bool:
@@ -1061,7 +1088,7 @@ class AISessionLogger:
                 f.truncate()
             return True
         except Exception as e:
-            logger.warning(f"📝 [AISessionLogger] 增量追加失败，回退整写: {e}")
+            logger.warning(t("📝 [AISessionLogger] 增量追加失败，回退整写: {e}", e=e))
             return False
 
     def _build_data(self) -> "SessionLogFileData":
@@ -1118,7 +1145,7 @@ class AISessionLogger:
 
         # 收尾整写：刷新表头 + 落 ended_at（force_full 绕过"无新增即跳过"的短路）
         self._persist_sync(force_full=True)
-        logger.info(f"📝 [AISessionLogger] 会话日志已关闭并持久化: {self._file_path.name}")
+        logger.info(t("📝 [AISessionLogger] 会话日志已关闭并持久化: {p0}", p0=self._file_path.name))
 
     def __del__(self) -> None:
         """析构时兜底持久化（若未显式调用 close）"""
@@ -1177,5 +1204,7 @@ def clean_old_session_logs(days: int) -> int:
                 continue
 
     if removed:
-        logger.info(f"📝 [AISessionLogger] 已清理 {removed} 个超过 {days} 天的会话日志/图片文件")
+        logger.info(
+            t("📝 [AISessionLogger] 已清理 {removed} 个超过 {days} 天的会话日志/图片文件", removed=removed, days=days)
+        )
     return removed

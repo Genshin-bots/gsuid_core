@@ -15,8 +15,10 @@ try:
         init_fontconfig,
     )
 except ImportError as e:
+    # 引导期依赖缺失提示：早于 i18n 导入，保持纯中文
     print(f"缺少 htmlkit 库，请先安装：pip install pyrenderhtml, {e}")
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 # fontconfig 初始化状态
@@ -57,10 +59,10 @@ def init_html_fontconfig(
             fontconfig_use_mmap=fontconfig_use_mmap,
         )
         _fontconfig_initialized = True
-        logger.info("🖼️ [HTMLRender] fontconfig 初始化成功")
+        logger.info(t("🖼️ [HTMLRender] fontconfig 初始化成功"))
         return True
     except Exception as e:
-        logger.exception(f"🖼️ [HTMLRender] fontconfig 初始化失败: {e}")
+        logger.exception(t("🖼️ [HTMLRender] fontconfig 初始化失败: {e}", e=e))
         return False
 
 

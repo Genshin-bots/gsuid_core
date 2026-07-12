@@ -7,6 +7,7 @@
 
 from typing import Any
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.client import MCPClient, MCPToolResult
 from gsuid_core.ai_core.mcp.config_manager import parse_mcp_tool_id, mcp_config_manager
@@ -34,12 +35,12 @@ async def call_mcp_tool(
     try:
         mcp_id, tool_name = parse_mcp_tool_id(mcp_tool_id)
     except ValueError as e:
-        raise ValueError(f"无效的 MCP 工具 ID: {mcp_tool_id}, 错误: {e}")
+        raise ValueError(t("无效的 MCP 工具 ID: {mcp_tool_id}, 错误: {e}", mcp_tool_id=mcp_tool_id, e=e))
 
     # 获取 MCP 配置
     config = mcp_config_manager.get_config(mcp_id)
     if not config:
-        raise RuntimeError(f"MCP 配置 '{mcp_id}' 不存在，请检查配置")
+        raise RuntimeError(t("MCP 配置 '{mcp_id}' 不存在，请检查配置", mcp_id=mcp_id))
 
     # 构建 MCP 客户端（自动根据 transport 选择 stdio / sse）
     client = MCPClient(
@@ -53,7 +54,14 @@ async def call_mcp_tool(
 
     # 记录调用参数（截断过长的值）
     truncated_args = _truncate_args(arguments)
-    logger.info(f"🔌 [MCP] 调用 {config.name}.{tool_name}, 参数: {truncated_args}")
+    logger.info(
+        t(
+            "🔌 [MCP] 调用 {p0}.{tool_name}, 参数: {truncated_args}",
+            p0=config.name,
+            tool_name=tool_name,
+            truncated_args=truncated_args,
+        )
+    )
 
     # 调用工具
     result = await client.call_tool(tool_name=tool_name, arguments=arguments)

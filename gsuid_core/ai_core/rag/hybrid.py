@@ -28,6 +28,7 @@ from qdrant_client.models import (
 )
 from qdrant_client.http.models.models import ScoredPoint
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 
@@ -118,14 +119,24 @@ async def hybrid_query(
             )
     except IndexError as e:
         # 本地 Qdrant 索引长度不同步会抛 IndexError，是存储级损坏，非业务错误。
-        logger.critical(f"🧠 [Hybrid] 集合 {collection_name} 本地索引崩溃: {e}。建议删除本地存储目录并重启。")
+        logger.critical(
+            t(
+                "🧠 [Hybrid] 集合 {collection_name} 本地索引崩溃: {e}。建议删除本地存储目录并重启。",
+                collection_name=collection_name,
+                e=e,
+            )
+        )
         return []
     except Exception as e:
         # 启动迁移尚未完成时，旧无名集合上的命名向量查询会抛结构错误：降级空结果，待重嵌后恢复。
         # 仅对"向量结构/维度异常"降级，其余异常照常抛出（不做无差别兜底）。
         if is_vector_structure_error(str(e)):
             logger.warning(
-                f"🧠 [Hybrid] 集合 {collection_name} 向量结构/维度异常（疑似迁移未完成），本次检索降级为空: {e}"
+                t(
+                    "🧠 [Hybrid] 集合 {collection_name} 向量结构/维度异常（疑似迁移未完成），本次检索降级为空: {e}",
+                    collection_name=collection_name,
+                    e=e,
+                )
             )
             return []
         raise

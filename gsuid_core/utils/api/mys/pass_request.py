@@ -4,6 +4,7 @@ from typing import Dict, Tuple, Union, Optional
 import certifi
 from aiohttp import TCPConnector, ClientSession, ContentTypeError
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import pass_config
 
@@ -53,7 +54,7 @@ class PassMysApi(BaseMysApi):
         return validate, ch
 
     async def _upass(self, header: Dict, is_bbs: bool = False) -> str:
-        logger.info("[upass] 进入处理...")
+        logger.info(t("[upass] 进入处理..."))
         if is_bbs:
             raw_data = await self.get_bbs_upass_link(header)
         else:
@@ -68,7 +69,7 @@ class PassMysApi(BaseMysApi):
         if vl:
             await self.get_header_and_vl(header, ch, vl, is_bbs)
             if ch:
-                logger.info(f"[upass] 获取ch -> {ch}")
+                logger.info(t("[upass] 获取ch -> {ch}", ch=ch))
                 return ch
             else:
                 return ""

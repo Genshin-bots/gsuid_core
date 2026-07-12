@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Query, Depends
 from pydantic import Field, BaseModel
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.agent_node import (
     TASK_BASICS_PACK,
@@ -154,8 +155,11 @@ async def create_capability_agent(
     register_agent_node(node)
     save_user_profile(node)
     logger.info(
-        f"🤖 [CapabilityAgent] webconsole 新建用户节点: {node.node_id}"
-        f"（{'基于 ' + body.base if body.base else '无模板'}）"
+        t(
+            "🤖 [CapabilityAgent] webconsole 新建用户节点: {p0}（{p1}）",
+            p0=node.node_id,
+            p1="基于 " + body.base if body.base else "无模板",
+        )
     )
     return {"status": 0, "msg": "ok", "data": get_profile_as_dto(node.node_id)}
 

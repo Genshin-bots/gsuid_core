@@ -29,6 +29,7 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.rag.tools import ToolList
@@ -89,7 +90,7 @@ async def _ensure_adhoc_workspace(node_id: str, ev: Optional[Event]):
         # ensure_workspace 不再按 agent_profile 分子目录，传 node_id 仅作历史兼容
         workspace = ensure_workspace(adhoc_root_id, adhoc_task_id, agent_profile=node_id)
     except OSError as e:
-        logger.error(f"🤖 [CapabilityAgent] 创建 ad-hoc workspace 失败: {e}；放弃绑定（落 FILE_PATH 兜底）")
+        logger.error(i18n_t("🤖 [CapabilityAgent] 创建 ad-hoc workspace 失败: {e}；放弃绑定（落 FILE_PATH 兜底）", e=e))
         yield None
         return
 
@@ -102,7 +103,14 @@ async def _ensure_adhoc_workspace(node_id: str, ev: Optional[Event]):
         agent_profile=node_id,
     )
     token = bind_plan_context(ctx)
-    logger.info(f"🤖 [CapabilityAgent] 建立 ad-hoc workspace: {workspace} (adhoc_root={adhoc_root_id}, node={node_id})")
+    logger.info(
+        i18n_t(
+            "🤖 [CapabilityAgent] 建立 ad-hoc workspace: {workspace} (adhoc_root={adhoc_root_id}, node={node_id})",
+            workspace=workspace,
+            adhoc_root_id=adhoc_root_id,
+            node_id=node_id,
+        )
+    )
     try:
         yield ctx
     finally:
@@ -146,7 +154,7 @@ async def run_capability_agent(
             seen = {t.name for t in tools}
             tools += [t for t in extra if t.name not in seen]
         except Exception as e:
-            logger.debug(f"🤖 [CapabilityAgent] 工具检索失败: {e}")
+            logger.debug(i18n_t("🤖 [CapabilityAgent] 工具检索失败: {e}", e=e))
 
     session_id = f"capagent_{node.node_id}_{session_id_suffix or 'adhoc'}"
 
@@ -164,8 +172,14 @@ async def run_capability_agent(
             dynamic_tools=True if has_dynamic_pack(node.tool_packs) else None,
         )
         logger.info(
-            f"🤖 [CapabilityAgent] 启动「{node.display_name}」({node.node_id})，"
-            f"工具 {len(tools)} 个，workspace={ws_label}，任务: {task[:50]}..."
+            i18n_t(
+                "🤖 [CapabilityAgent] 启动「{p0}」({p1})，工具 {p2} 个，workspace={ws_label}，任务: {p3}...",
+                p0=node.display_name,
+                p1=node.node_id,
+                p2=len(tools),
+                ws_label=ws_label,
+                p3=task[:50],
+            )
         )
         try:
             result = await agent.run(
@@ -177,7 +191,7 @@ async def run_capability_agent(
             )
             return str(result)
         except Exception as e:
-            logger.error(f"🤖 [CapabilityAgent] 「{node.node_id}」执行失败: {e}")
+            logger.error(i18n_t("🤖 [CapabilityAgent] 「{p0}」执行失败: {e}", p0=node.node_id, e=e))
             return f"{CAPABILITY_AGENT_ERROR_PREFIX}: {e}"
         finally:
             session_logger = agent._session_logger

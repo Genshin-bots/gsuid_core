@@ -43,6 +43,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
 )
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 if TYPE_CHECKING:
@@ -99,7 +100,7 @@ def _b64decode(raw: str) -> bytes:
         try:
             return base64.b64decode(raw + pad)
         except Exception:
-            raise AuthCryptoError(f"base64 解码失败: {e}") from e
+            raise AuthCryptoError(t("base64 解码失败: {e}", e=e)) from e
 
 
 class AuthKeyStore:
@@ -125,7 +126,9 @@ class AuthKeyStore:
         )
 
         fp = self.fingerprint(self._current_pub_bytes)
-        logger.info(f"🔒️ [网页控制台] 认证加密密钥已生成 key_id={self._current_key_id} pubkey_fingerprint={fp}")
+        logger.info(
+            t("🔒️ [网页控制台] 认证加密密钥已生成 key_id={p0} pubkey_fingerprint={fp}", p0=self._current_key_id, fp=fp)
+        )
 
     @staticmethod
     def fingerprint(pub_bytes: bytes) -> str:
@@ -172,19 +175,21 @@ class AuthKeyStore:
             format=serialization.PublicFormat.Raw,
         )
         fp = self.fingerprint(self._current_pub_bytes)
-        logger.info(f"🔒️ [网页控制台] 认证加密密钥已轮换 key_id={self._current_key_id} pubkey_fingerprint={fp}")
+        logger.info(
+            t("🔒️ [网页控制台] 认证加密密钥已轮换 key_id={p0} pubkey_fingerprint={fp}", p0=self._current_key_id, fp=fp)
+        )
 
     def derive_key(self, key_id: str, client_pub_b64: str) -> bytes:
         """用服务端私钥 + 客户端公钥做 ECDH + HKDF，派生 32B 对称密钥。"""
         priv = self._priv_for(key_id)
         if priv is None:
-            raise AuthCryptoError(f"未知或已失效的 key_id: {key_id}")
+            raise AuthCryptoError(t("未知或已失效的 key_id: {key_id}", key_id=key_id))
 
         client_pub_raw = _b64decode(client_pub_b64)
         try:
             client_pub = X25519PublicKey.from_public_bytes(client_pub_raw)
         except Exception as e:  # noqa: BLE001 - 公钥字节非法的统一兜底
-            raise AuthCryptoError("客户端公钥格式非法") from e
+            raise AuthCryptoError(t("客户端公钥格式非法")) from e
 
         shared = priv.exchange(client_pub)
         return HKDF(
@@ -209,7 +214,7 @@ class AuthKeyStore:
         """
         enc_flag = body["enc"] if "enc" in body else None
         if enc_flag is not True:
-            raise AuthCryptoError("非加密报文（缺少 enc 标志）")
+            raise AuthCryptoError(t("非加密报文（缺少 enc 标志）"))
 
         key_id_raw = body["key_id"] if "key_id" in body else None
         client_pub_raw = body["client_pub"] if "client_pub" in body else None
@@ -227,7 +232,7 @@ class AuthKeyStore:
             and iv_b64_raw
             and ct_b64_raw
         ):
-            raise AuthCryptoError("加密报文字段不完整或类型非法")
+            raise AuthCryptoError(t("加密报文字段不完整或类型非法"))
 
         key_id: str = key_id_raw
         client_pub: str = client_pub_raw
@@ -242,25 +247,25 @@ class AuthKeyStore:
         except AuthCryptoError:
             raise
         except InvalidTag:
-            raise AuthCryptoError("AES-GCM 认证失败（密钥不匹配或数据被篡改）")
+            raise AuthCryptoError(t("AES-GCM 认证失败（密钥不匹配或数据被篡改）"))
         except Exception as e:  # noqa: BLE001 - 解密阶段各类异常的统一兜底
-            raise AuthCryptoError(f"解密失败: {e}") from e
+            raise AuthCryptoError(t("解密失败: {e}", e=e)) from e
 
         try:
             loaded = _parse_json_object(plaintext.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            raise AuthCryptoError(f"解密后 JSON 解析失败: {e}") from e
+            raise AuthCryptoError(t("解密后 JSON 解析失败: {e}", e=e)) from e
 
         if not isinstance(loaded, dict):
-            raise AuthCryptoError("解密后载荷不是 JSON 对象")
+            raise AuthCryptoError(t("解密后载荷不是 JSON 对象"))
         payload: JsonObject = cast(JsonObject, loaded)
 
         # 防重放：载荷必须带 ts，且落在容忍窗口内
         ts = payload["ts"] if "ts" in payload else None
         if not isinstance(ts, (int, float)) or isinstance(ts, bool):
-            raise AuthCryptoError("缺少有效的 ts 时间戳")
+            raise AuthCryptoError(t("缺少有效的 ts 时间戳"))
         if abs(time.time() - ts) > TS_TOLERANCE_SECONDS:
-            raise AuthCryptoError("时间戳超出容忍窗口（疑似重放）")
+            raise AuthCryptoError(t("时间戳超出容忍窗口（疑似重放）"))
 
         return payload
 
@@ -280,7 +285,7 @@ def maybe_decrypt_auth_body(data: Mapping[str, JsonValue]) -> JsonObject:
     enc_flag = data["enc"] if "enc" in data else None
     if enc_flag is True:
         return auth_keystore.decrypt_payload(data)
-    raise AuthCryptoError("认证报文必须加密提交（enc=true）")
+    raise AuthCryptoError(t("认证报文必须加密提交（enc=true）"))
 
 
 def register_key_rotation_job() -> None:
@@ -300,9 +305,14 @@ def register_key_rotation_job() -> None:
             id="webconsole_auth_key_rotation",
             replace_existing=True,
         )
-        logger.info(f"🔒️ [网页控制台] 认证密钥轮换定时任务已注册（每 {KEY_ROTATION_INTERVAL_HOURS}h）")
+        logger.info(
+            t(
+                "🔒️ [网页控制台] 认证密钥轮换定时任务已注册（每 {KEY_ROTATION_INTERVAL_HOURS}h）",
+                KEY_ROTATION_INTERVAL_HOURS=KEY_ROTATION_INTERVAL_HOURS,
+            )
+        )
     except Exception as e:
-        logger.warning(f"🔒️ [网页控制台] 认证密钥轮换任务注册失败（不影响认证）: {e}")
+        logger.warning(t("🔒️ [网页控制台] 认证密钥轮换任务注册失败（不影响认证）: {e}", e=e))
 
 
 # 模块导入即登记轮换任务（与框架既有"模块级 scheduler.add_job"一致；replace_existing 保证

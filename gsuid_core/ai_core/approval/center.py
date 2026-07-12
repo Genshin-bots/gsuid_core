@@ -19,6 +19,7 @@ import secrets
 from typing import Any, Dict, List, Tuple, Callable, Optional, Awaitable
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
@@ -58,7 +59,7 @@ _TOOL_GRANT_TTL = 600.0
 def register_approval_category(name: str, on_resolve: ResolveHandler, ttl_seconds: int = 1800) -> None:
     """注册一个审批领域（同名后写覆盖）。"""
     _CATEGORIES[name] = ApprovalCategory(name=name, on_resolve=on_resolve, ttl_seconds=ttl_seconds)
-    logger.debug(f"✅ [Approval] 注册审批领域: {name} (ttl={ttl_seconds}s)")
+    logger.debug(t("✅ [Approval] 注册审批领域: {name} (ttl={ttl_seconds}s)", name=name, ttl_seconds=ttl_seconds))
 
 
 def is_master(user_id: str) -> bool:
@@ -91,7 +92,7 @@ def is_full_access(user_id: str, ev: Optional[Event] = None) -> bool:
         try:
             verdict = _FULL_ACCESS_RESOLVER(str(user_id), ev)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"✅ [Approval] 完全访问解析器异常，回落默认名单: {e}")
+            logger.debug(t("✅ [Approval] 完全访问解析器异常，回落默认名单: {e}", e=e))
             verdict = None
         if verdict is not None:
             return verdict
@@ -150,7 +151,15 @@ async def submit(
     )
     if status == "pending" and operator:
         _PENDING_OPERATORS.add(operator)
-    logger.info(f"✅ [Approval] 提交请求 #{row.short_id} category={category} audience={audience} status={status}")
+    logger.info(
+        t(
+            "✅ [Approval] 提交请求 #{p0} category={category} audience={audience} status={status}",
+            p0=row.short_id,
+            category=category,
+            audience=audience,
+            status=status,
+        )
+    )
     return row
 
 
@@ -201,7 +210,7 @@ async def expire_stale() -> None:
     for cat in _CATEGORIES.values():
         n = await AIApprovalRequest.expire_stale(cat.name, cat.ttl_seconds)
         if n:
-            logger.info(f"✅ [Approval] category={cat.name} 过期清理 {n} 条")
+            logger.info(t("✅ [Approval] category={p0} 过期清理 {n} 条", p0=cat.name, n=n))
 
 
 # webconsole 裁决身份：已过控制台登录认证，等同主人权限
@@ -285,12 +294,12 @@ async def resolve_row(
     await _refresh_pending(row.operator_user_id)
     cat = _CATEGORIES.get(row.category)
     if cat is None:
-        logger.warning(f"✅ [Approval] 请求 #{row.short_id} 的领域 {row.category} 未注册回调，仅落状态")
+        logger.warning(t("✅ [Approval] 请求 #{p0} 的领域 {p1} 未注册回调，仅落状态", p0=row.short_id, p1=row.category))
         return f"{'✅ 已批准' if approved else '🚫 已拒绝'} #{row.short_id}（该领域无后续动作）。"
     try:
         return await cat.on_resolve(row, approved, note)
     except Exception as e:
-        logger.exception(f"✅ [Approval] 领域回调 {row.category} 执行异常: {e}")
+        logger.exception(t("✅ [Approval] 领域回调 {p0} 执行异常: {e}", p0=row.category, e=e))
         return f"⚠️ 裁决已记录（#{row.short_id} {'批准' if approved else '拒绝'}），但后续动作执行失败：{e}"
 
 
@@ -334,7 +343,7 @@ async def tool_call_gate(ev: Optional[Event], tool_name: str, tier: str, args_re
     后台链路的权限由各自 check_func 承担。
     """
     if ev is None:
-        logger.debug(f"✅ [Approval] 工具 {tool_name} 无 ev 上下文，策略门放行（后台链路）")
+        logger.debug(t("✅ [Approval] 工具 {tool_name} 无 ev 上下文，策略门放行（后台链路）", tool_name=tool_name))
         return None
     operator = str(ev.user_id)
     if tier == "user" and is_full_access(operator, ev):

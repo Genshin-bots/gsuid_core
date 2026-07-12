@@ -12,6 +12,8 @@ from websockets.exceptions import ConnectionClosedError
 sys.path.append("..")
 from segment import MessageSegment  # noqa: E402
 
+from gsuid_core.i18n import t
+
 
 class GsClient:
     @classmethod
@@ -23,11 +25,11 @@ class GsClient:
     ):
         self = GsClient()
         cls.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot?token={WS_TOKEN}"
-        print(f"连接至WS链接{self.ws_url}...")
+        print(t("连接至WS链接{p0}...", p0=self.ws_url))
         cls.ws = await websockets.client.connect(  # type: ignore
             cls.ws_url, max_size=2**25, open_timeout=30
         )
-        print("已成功链接！")
+        print(t("已成功链接！"))
         return self
 
     async def recv_msg(self):
@@ -35,7 +37,7 @@ class GsClient:
             async for message in self.ws:
                 print(msgjson.decode(message, type=MessageSend))
         except ConnectionClosedError:
-            print("断开连接...等待5秒，尝试重连中...")
+            print(t("断开连接...等待5秒，尝试重连中..."))
             await asyncio.sleep(5)
             client = await self.async_connect()
             await client.start()

@@ -23,6 +23,7 @@ import time
 from typing import Any, Dict, List, Optional
 from dataclasses import field, asdict, dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.agent_node import AgentNode, list_nodes, register_agent_node
 
@@ -200,8 +201,12 @@ def get_recent_evaluation(
             best, best_score = r, score
     if best is not None and best_score >= fuzzy_min_overlap:
         logger.debug(
-            f"📋 [Kanban] evaluator 模糊匹配命中: overlap={best_score:.2f} "
-            f"owner={owner_user_id} target={user_goal[:30]!r}"
+            t(
+                "📋 [Kanban] evaluator 模糊匹配命中: overlap={best_score:.2f} owner={owner_user_id} target={p0}",
+                best_score=best_score,
+                owner_user_id=owner_user_id,
+                p0=repr(user_goal[:30]),
+            )
         )
         return best
     return None
@@ -453,8 +458,12 @@ def _parse_evaluator_output(
             decoder = json.JSONDecoder()
             data, end_idx = decoder.raw_decode(candidate)
             logger.warning(
-                f"📋 [Kanban] evaluator 输出有冗余字符，已取首个 JSON 对象"
-                f"（{end_idx}/{len(candidate)} bytes）；原错误：{e}"
+                t(
+                    "📋 [Kanban] evaluator 输出有冗余字符，已取首个 JSON 对象（{end_idx}/{p0} bytes）；原错误：{e}",
+                    end_idx=end_idx,
+                    p0=len(candidate),
+                    e=e,
+                )
             )
         except (ValueError, json.JSONDecodeError) as e2:
             return CapabilityEvaluationResult(
@@ -568,7 +577,7 @@ async def evaluate_capability(
         try:
             raw = await _run_evaluator_once(user_message, owner_user_id, extra_system)
         except Exception as e:
-            logger.exception(f"📋 [Kanban] 能力评估代理执行失败 attempt={attempt}: {e}")
+            logger.exception(t("📋 [Kanban] 能力评估代理执行失败 attempt={attempt}: {e}", attempt=attempt, e=e))
             last_result = CapabilityEvaluationResult(
                 covered=False,
                 risk_notes=[f"评估代理执行抛出异常：{type(e).__name__}: {e}"],
@@ -583,18 +592,27 @@ async def evaluate_capability(
             # 解析成功（或返回 covered=false 但是模型真这么判定）→ 接受
             record_evaluation(result)
             logger.info(
-                f"📋 [Kanban] 能力评估完成 owner={owner_user_id}"
-                f" covered={result.covered} attempt={attempt}"
-                f" subtasks={len(result.suggested_subtasks)}"
-                f" missing={result.missing_capabilities}"
+                t(
+                    "📋 [Kanban] 能力评估完成 owner={owner_user_id} covered={p0}"
+                    " attempt={attempt} subtasks={p1} missing={p2}",
+                    owner_user_id=owner_user_id,
+                    p0=result.covered,
+                    attempt=attempt,
+                    p1=len(result.suggested_subtasks),
+                    p2=result.missing_capabilities,
+                )
             )
             return result
         # 解析失败 → 留 last_result 以备重试用完后兜底
         last_result = result
         logger.warning(
-            f"📋 [Kanban] 能力评估解析失败 owner={owner_user_id} attempt={attempt}"
-            f"，将{'重试' if attempt < _EVAL_MAX_ATTEMPTS else '放弃'}。"
-            f"原始片段：{last_raw[:200]!r}"
+            t(
+                "📋 [Kanban] 能力评估解析失败 owner={owner_user_id} attempt={attempt}，将{p0}。原始片段：{p1}",
+                owner_user_id=owner_user_id,
+                attempt=attempt,
+                p0="重试" if attempt < _EVAL_MAX_ATTEMPTS else "放弃",
+                p1=repr(last_raw[:200]),
+            )
         )
 
     # 所有 attempt 都失败：返回最近一份失败结果（covered=false + 提示）

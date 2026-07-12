@@ -3,6 +3,7 @@ import platform
 
 import psutil
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 # --- 优化后的异步函数 ---
@@ -28,7 +29,7 @@ async def get_cpu_info():
         try:
             cpu_name = platform.processor() or "Unknown CPU"
         except Exception as e:
-            logger.error(f"获取CPU名称失败: {e}")
+            logger.error(t("获取CPU名称失败: {e}", e=e))
             cpu_name = "Unknown CPU"
 
     # 简化名称处理
@@ -137,7 +138,7 @@ async def get_network_info():
                     speed_max = float(line) / 1e6  # 转换为 Mbps
                     break
     except Exception as e:
-        logger.exception(f"获取最大网络带宽失败: {e}")
+        logger.exception(t("获取最大网络带宽失败: {e}", e=e))
 
     usage_percent = min(round((speed_current / speed_max) * 100, 1), 100) if speed_max > 0 else 0
     return {

@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from fastapi import Depends, Request
 
-from gsuid_core.config import CONFIG_DEFAULT, core_config
+from gsuid_core.config import CONFIG_DEFAULT, CONFIG_OPTIONS, core_config
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -41,6 +41,18 @@ async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(requ
             result[key] = CONFIG_DEFAULT[key]
 
     return {"status": 0, "msg": "ok", "data": result}
+
+
+@app.get("/api/core/config/options", summary="获取核心配置项的可选值元数据", tags=CORE_CONFIG)
+async def get_core_config_options(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+    """获取核心配置中「枚举类」配置项的控件类型 + 可选值 + 展示标签。
+
+    这些项在 config.py 的 CORE_CONFIG 里用 SelectOption 与默认值一处声明（如 LANGUAGE、
+    嵌套的 log.level / log.output，嵌套 key 以 "_" 扁平化为 log_level 等）；
+    新增此类「只能从固定集合选值」的配置只需在后端加一行 SelectOption，前端零改动自动渲染。
+    """
+    data = {key: opt.resolve() for key, opt in CONFIG_OPTIONS.items()}
+    return {"status": 0, "msg": "ok", "data": data}
 
 
 @app.post("/api/core/config", summary="保存核心配置", tags=CORE_CONFIG)

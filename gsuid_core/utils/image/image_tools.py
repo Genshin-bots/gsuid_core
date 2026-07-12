@@ -11,6 +11,7 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from httpx import get
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.data_store import get_res_path
@@ -152,7 +153,7 @@ async def change_ev_image_to_bytes(
                     base64_str = item.replace("data:image/jpeg;base64,", "")
                     result_list.append(base64.b64decode(base64_str))
                 else:
-                    logger.warning(f"图片格式可能错误: {item}")
+                    logger.warning(t("图片格式可能错误: {item}", item=item))
                     result_list.append(item.encode())
     else:
         return None

@@ -26,6 +26,7 @@ from pydantic import Field, BaseModel
 from boltons.fileutils import atomic_save
 from fastapi.responses import FileResponse
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import BRAND_ICON_PATH, BRAND_CONFIG_PATH
 from gsuid_core.webconsole.app_app import app
@@ -94,11 +95,11 @@ def _read_brand_config() -> Dict[str, Any]:
             stored = json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         # 配置损坏不阻断启动，回退到默认配置
-        logger.warning(f"[Brand] 读取 brand.json 失败，使用默认配置: {e}")
+        logger.warning(t("[Brand] 读取 brand.json 失败，使用默认配置: {e}", e=e))
         return dict(DEFAULT_BRAND)
     except Exception as e:
         # 保底：非预期异常也不能让读取崩掉，回退默认
-        logger.exception(f"[Brand] 读取 brand.json 未知错误，使用默认配置: {e}")
+        logger.exception(t("[Brand] 读取 brand.json 未知错误，使用默认配置: {e}", e=e))
         return dict(DEFAULT_BRAND)
 
     merged: Dict[str, Any] = dict(DEFAULT_BRAND)
@@ -122,16 +123,16 @@ def _write_brand_config(data: Dict[str, Any]) -> bool:
             file_perms=0o644,
         ) as file:
             if not file:
-                raise RuntimeError("写入 brand.json 失败: atomic_save 返回 None")
+                raise RuntimeError(t("写入 brand.json 失败: atomic_save 返回 None"))
             json_str = json.dumps(data, indent=2, ensure_ascii=False)
             file.write(json_str.encode("utf-8"))
         return True
     except (OSError, RuntimeError) as e:
-        logger.warning(f"[Brand] 写入 brand.json 失败: {e}")
+        logger.warning(t("[Brand] 写入 brand.json 失败: {e}", e=e))
         return False
     except Exception as e:
         # 保底：序列化/权限等非预期异常也不能让请求 500
-        logger.exception(f"[Brand] 写入 brand.json 未知错误: {e}")
+        logger.exception(t("[Brand] 写入 brand.json 未知错误: {e}", e=e))
         return False
 
 
@@ -244,11 +245,11 @@ async def upload_brand_icon(
     try:
         content = await icon.read()
     except OSError as e:
-        logger.warning(f"[Brand] 读取上传 ICON 失败: {e}")
+        logger.warning(t("[Brand] 读取上传 ICON 失败: {e}", e=e))
         return {"status": 1, "msg": f"读取上传文件失败: {e}"}
     except Exception as e:
         # 保底：客户端断连等非预期异常也返回错误而非 500
-        logger.exception(f"[Brand] 读取上传 ICON 未知错误: {e}")
+        logger.exception(t("[Brand] 读取上传 ICON 未知错误: {e}", e=e))
         return {"status": 1, "msg": f"读取上传文件失败: {e}"}
 
     size = len(content)
@@ -272,14 +273,14 @@ async def upload_brand_icon(
             file_perms=0o644,
         ) as file:
             if not file:
-                raise RuntimeError("atomic_save 返回 None")
+                raise RuntimeError(t("atomic_save 返回 None"))
             file.write(content)
     except (OSError, RuntimeError) as e:
-        logger.warning(f"[Brand] 写入 ICON 失败: {e}")
+        logger.warning(t("[Brand] 写入 ICON 失败: {e}", e=e))
         return {"status": 1, "msg": f"保存 ICON 失败: {e}"}
     except Exception as e:
         # 保底：非预期异常也返回错误而非 500
-        logger.exception(f"[Brand] 写入 ICON 未知错误: {e}")
+        logger.exception(t("[Brand] 写入 ICON 未知错误: {e}", e=e))
         return {"status": 1, "msg": f"保存 ICON 失败: {e}"}
 
     return {
@@ -310,11 +311,11 @@ async def delete_brand_icon(
     try:
         BRAND_ICON_PATH.unlink()
     except OSError as e:
-        logger.warning(f"[Brand] 删除 ICON 失败: {e}")
+        logger.warning(t("[Brand] 删除 ICON 失败: {e}", e=e))
         return {"status": 1, "msg": f"删除 ICON 失败: {e}"}
     except Exception as e:
         # 保底：非预期异常也返回错误而非 500
-        logger.exception(f"[Brand] 删除 ICON 未知错误: {e}")
+        logger.exception(t("[Brand] 删除 ICON 未知错误: {e}", e=e))
         return {"status": 1, "msg": f"删除 ICON 失败: {e}"}
 
     return {

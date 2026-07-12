@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -45,7 +46,7 @@ def _collection_key(collection: str) -> str:
     """把集合名标准化为存储键。空集合名直接报错由调用方捕获。"""
     name = (collection or "").strip()
     if not name:
-        raise ValueError("collection 名称不能为空")
+        raise ValueError(t("collection 名称不能为空"))
     return f"{_KEY_PREFIX}{name}"
 
 
@@ -71,20 +72,22 @@ def _parse_payload(payload: str) -> Dict[str, Any]:
     obj = json.loads(payload)
     if isinstance(obj, list):
         raise ValueError(
-            "payload 不能是 JSON 数组——一条 record 必须是 JSON 对象（dict）。\n"
-            "如果你想表达「建一个空集合」，**不需要预创建**：record 集合是按需建的，"
-            "第一次 record_append / record_put 时框架自动初始化。\n"
-            "如果你确实要存一条「含 list 字段的记录」，把它包成 dict："
-            '`{"items": [...]}` 再传。'
+            t(
+                "payload 不能是 JSON 数组——一条 record 必须是 JSON 对象（dict）。\n"
+                "如果你想表达「建一个空集合」，**不需要预创建**：record 集合是按需建的，\n"
+                "第一次 record_append / record_put 时框架自动初始化。\n"
+                '如果你确实要存一条「含 list 字段的记录」，把它包成 dict：`{"items": [...]}` 再传。'
+            )
         )
     if not isinstance(obj, dict):
-        raise ValueError(f"payload 必须是 JSON 对象（dict）；收到类型: {type(obj).__name__}")
+        raise ValueError(t("payload 必须是 JSON 对象（dict）；收到类型: {p0}", p0=type(obj).__name__))
     if not obj:
         raise ValueError(
-            "payload 不能是空对象 {}——空 record 没有持久化意义。\n"
-            "如果你想「占位」或「标记集合已建」，至少填一个标志字段（如 "
-            '`{"_inited_at": "<ISO 时间>"}`）；但更常见的做法是**根本不预创建**——'
-            "集合按需创建，首次 record_append / record_put 时自动初始化。"
+            t(
+                "payload 不能是空对象 {}——空 record 没有持久化意义。\n"
+                '如果你想「占位」或「标记集合已建」，至少填一个标志字段（如 `{"_inited_at": "<ISO 时间>"}`）；\n'
+                "但更常见的做法是**根本不预创建**——集合按需创建，首次 record_append / record_put 时自动初始化。"
+            )
         )
     return obj
 
@@ -140,7 +143,7 @@ async def record_put(
     try:
         await state_mutate(real_scope, key, _writer, ttl_days=ttl_days)
     except Exception as e:
-        logger.exception(f"📒 [RecordStore] record_put 失败: {e}")
+        logger.exception(t("📒 [RecordStore] record_put 失败: {e}", e=e))
         return f"写入失败: {e}"
     return f"ok rid={rid}"
 
@@ -285,7 +288,7 @@ async def record_append(
     try:
         await state_mutate(real_scope, key, _writer, ttl_days=ttl_days)
     except Exception as e:
-        logger.exception(f"📒 [RecordStore] record_append 失败: {e}")
+        logger.exception(t("📒 [RecordStore] record_append 失败: {e}", e=e))
         return f"写入失败: {e}"
     return f"ok rid={chosen['rid']}"
 
@@ -343,7 +346,7 @@ async def record_update(
     try:
         await state_mutate(real_scope, key, _writer)
     except Exception as e:
-        logger.exception(f"📒 [RecordStore] record_update 失败: {e}")
+        logger.exception(t("📒 [RecordStore] record_update 失败: {e}", e=e))
         return f"更新失败: {e}"
     return "updated" if flag["hit"] else "not_found"
 
@@ -384,7 +387,7 @@ async def record_delete(
     try:
         await state_mutate(real_scope, key, _deleter)
     except Exception as e:
-        logger.exception(f"📒 [RecordStore] record_delete 失败: {e}")
+        logger.exception(t("📒 [RecordStore] record_delete 失败: {e}", e=e))
         return f"删除失败: {e}"
     return "deleted" if deleted_flag["hit"] else "not_found"
 

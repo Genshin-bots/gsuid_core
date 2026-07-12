@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.utils.fonts.fonts import core_font
@@ -64,7 +65,7 @@ def _convert_img_sync(
     img: Union[Image.Image, str, Path, bytes],
     is_base64: bool = False,
 ):
-    logger.info("🚀 [GsCore] 处理图片中....")
+    logger.info(t("🚀 [GsCore] 处理图片中...."))
 
     if isinstance(img, Image.Image):
         if img.format == "GIF":
@@ -89,7 +90,7 @@ def _convert_img_sync(
         with open(Path(img), "rb") as fp:
             img = fp.read()
 
-    logger.success("[GsCore] 图片处理完成！")
+    logger.success(t("[GsCore] 图片处理完成！"))
 
     return f"base64://{b64encode(img).decode()}"
 
@@ -98,7 +99,7 @@ def convert_img_sync(
     img: Union[Image.Image, str, Path, bytes],
     is_base64: bool = False,
 ):
-    logger.info("🚀 [GsCore] 处理图片中....")
+    logger.info(t("🚀 [GsCore] 处理图片中...."))
 
     if isinstance(img, Image.Image):
         if img.format == "GIF":
@@ -123,7 +124,7 @@ def convert_img_sync(
         with open(Path(img), "rb") as fp:
             img = fp.read()
 
-    logger.success("[GsCore] 图片处理完成！")
+    logger.success(t("[GsCore] 图片处理完成！"))
 
     return f"base64://{b64encode(img).decode()}"
 

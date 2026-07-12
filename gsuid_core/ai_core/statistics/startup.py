@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from gsuid_core.aps import scheduler
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.statistics import statistics_manager
@@ -37,13 +38,13 @@ async def _scheduled_ai_core_reset():
     if not ai_config.get_config("enable").data:
         return
 
-    logger.info("📊 [StatisticsManager] 日期变更, 执行每日重置")
+    logger.info(t("📊 [StatisticsManager] 日期变更, 执行每日重置"))
 
     # 走原子方法: 持久化 → 清空 → 切日期 全程在 _persist_lock 内完成,
     # 避免与 _persist_loop (同样 cron 0 0 重叠触发) 出现 "空状态覆盖 Day N" 的竞态。
     await statistics_manager.persist_and_reset_daily()
 
-    logger.success(f"📊 [StatisticsManager] 每日重置完成，新日期: {statistics_manager._today}")
+    logger.success(t("📊 [StatisticsManager] 每日重置完成，新日期: {p0}", p0=statistics_manager._today))
 
 
 @on_core_shutdown
@@ -52,14 +53,14 @@ async def shutdown_ai_core_statistics():
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:
-        logger.info("📊 [StatisticsManager] AI总开关已关闭，跳过统计持久化")
+        logger.info(t("📊 [StatisticsManager] AI总开关已关闭，跳过统计持久化"))
         return
 
-    logger.info("📊 [StatisticsManager] 准备持久化数据...")
+    logger.info(t("📊 [StatisticsManager] 准备持久化数据..."))
     await statistics_manager._persist_all_stats_to_db()
 
     # 关停前把预算用量内存增量落库，避免丢失最后一个持久化周期内的用量。
     from gsuid_core.ai_core.budget import budget_manager
 
     await budget_manager.flush()
-    logger.info("📊 [StatisticsManager] 统计管理器已停止")
+    logger.info(t("📊 [StatisticsManager] 统计管理器已停止"))

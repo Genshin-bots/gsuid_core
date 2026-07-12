@@ -4,6 +4,7 @@ from io import BytesIO
 import aioboto3
 import aioboto3.session
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
@@ -32,7 +33,7 @@ class S3:
             "s3",
             endpoint_url=END_POINT,
         ) as s3:  # type: ignore
-            logger.info("[S3 / upload] 开始上传...")
+            logger.info(t("[S3 / upload] 开始上传..."))
 
             data = await s3.put_object(
                 Bucket=self.bucket_id,
@@ -49,7 +50,7 @@ class S3:
             )
 
             logger.debug(data)
-            logger.info("[S3 / upload] 上传成功！")
+            logger.info(t("[S3 / upload] 上传成功！"))
             if is_auto_delete:
                 asyncio.create_task(self.delete(key))
 
@@ -65,7 +66,7 @@ class S3:
             "s3",
             endpoint_url=END_POINT,
         ) as s3:  # type: ignore
-            logger.info("[S3 / delete] 开始删除...")
+            logger.info(t("[S3 / delete] 开始删除..."))
             data = await s3.delete_object(Bucket=self.bucket_id, Key=file_key)
             logger.debug(data)
-            logger.info("[S3 / delete] 删除成功！")
+            logger.info(t("[S3 / delete] 删除成功！"))

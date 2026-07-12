@@ -5,6 +5,7 @@ from typing import Dict, List
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_models import Button
@@ -28,14 +29,14 @@ sv_data_manger = SV("用户数据管理", pm=0)
 
 @sv_core_user_config.on_fullmatch(("刷新全部CK", "刷新全部ck"), block=True)
 async def send_refresh_all_ck_msg(bot: Bot, ev: Event):
-    logger.info("开始执行[刷新全部CK]")
+    logger.info(i18n_t("开始执行[刷新全部CK]"))
     im = await get_ck_by_all_stoken(ev.bot_id)
     await bot.send(im)
 
 
 @sv_core_user_add.on_fullmatch(("刷新CK", "刷新ck"), block=True)
 async def send_refresh_ck_msg(bot: Bot, ev: Event):
-    logger.info("开始执行[刷新CK]")
+    logger.info(i18n_t("开始执行[刷新CK]"))
     im = await get_ck_by_stoken(ev.bot_id, ev.user_id)
     await bot.send(im)
 
@@ -150,12 +151,14 @@ async def _send_help(bot: Bot, im):
 @sv_core_user_qrcode_login.on_fullmatch(("扫码登陆", "扫码登录"), block=True, prefix=False)
 @sv_core_user_qrcode_login.on_fullmatch(("扫码登陆", "扫码登录"), block=True)
 async def send_qrcode_login(bot: Bot, ev: Event):
-    logger.info("开始执行[扫码登陆]")
+    logger.info(i18n_t("开始执行[扫码登陆]"))
     uid_list = await get_all_bind_uid(ev.bot_id, ev.user_id)
     if any(uid_list):
         im = await qrcode_login(bot, ev, ev.user_id)
     else:
-        return await bot.send("您还没有绑定原神/星铁/绝区零/崩坏3的UID！\n请先检查对应插件的帮助说明绑定任一UID...")
+        return await bot.send(
+            await bot.t("您还没有绑定原神/星铁/绝区零/崩坏3的UID！\n请先检查对应插件的帮助说明绑定任一UID...")
+        )
 
     if not im:
         return
@@ -196,7 +199,7 @@ async def send_add_device_msg(bot: Bot, ev: Event):
     try:
         data: Dict[str, str] = json.loads(ev.text.strip())
     except:  # noqa:E722
-        return await bot.send("绑定格式错误...")
+        return await bot.send(await bot.t("绑定格式错误..."))
 
     fp, device_id, device_info = await deal_fp(data)
 
@@ -221,4 +224,4 @@ async def send_add_device_msg(bot: Bot, ev: Event):
                     device_info,
                     user.cookie,
                 )
-    await bot.send("设备绑定成功!")
+    await bot.send(await bot.t("设备绑定成功!"))

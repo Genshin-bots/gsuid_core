@@ -2,8 +2,9 @@ import json
 import time
 import shutil
 import secrets
-from typing import Any, Set, Dict, List, Union, Literal, overload
+from typing import Any, Set, Dict, List, Tuple, Union, Literal, Callable, Optional, Sequence, overload
 from pathlib import Path
+from dataclasses import dataclass
 
 from boltons.fileutils import atomic_save
 
@@ -18,9 +19,49 @@ def _generate_register_code() -> str:
     return secrets.token_hex(16)
 
 
-CONFIG_DEFAULT = {
+# 一个可选项：直接写值（标签=值），或 (值, 展示标签) 二元组（如 ("zh-cn", "简体中文")）。
+Choice = Union[str, Tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class SelectOption:
+    """「只能从固定集合中选值」的核心配置项（前端渲染为下拉/候选多选）。
+
+    直接写进下面的 CORE_CONFIG 即「默认值 + 可选项一处声明」，前端零改动自动渲染：
+    - 静态可选值写 choices，动态可选值（如随已加载语言变化）写 provider，两者形状一致：
+      每项是值本身或 (值, 展示标签)。
+    - multi=True 表示值为列表、可从候选中多选（如 log.output）。
+    """
+
+    default: Any
+    choices: Sequence[Choice] = ()
+    provider: Optional[Callable[[], Sequence[Choice]]] = None
+    multi: bool = False
+
+    def resolve(self) -> Dict[str, Any]:
+        """归一化为 WebConsole 下发的元数据：{type, options, labels}。"""
+        pairs = [(c, c) if isinstance(c, str) else c for c in (self.provider() if self.provider else self.choices)]
+        return {
+            "type": "multiselect" if self.multi else "strictselect",
+            "options": [value for value, _ in pairs],
+            "labels": {value: label for value, label in pairs},
+        }
+
+
+def _language_choices() -> List[Tuple[str, str]]:
+    # 运行时局部导入 i18n，避免 config <-> i18n 模块级循环依赖
+    from gsuid_core.i18n import lang_display_name, available_language_codes
+
+    return [(code, lang_display_name(code)) for code in available_language_codes()]
+
+
+# 核心配置单一声明源：普通项直接写默认值；「只能选」的项写 SelectOption（默认值+可选项一处写），
+# 嵌套字典内同样生效（如 log.level）。
+CORE_CONFIG: Dict[str, Any] = {
     "HOST": "localhost",
     "PORT": "8765",
+    # 部署者侧框架文案语言（i18n 回落基准）：默认值 + 可选项就在这一处
+    "LANGUAGE": SelectOption("zh-cn", provider=_language_choices),
     "ENABLE_HTTP": False,
     "WS_TOKEN": "",
     "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1"],
@@ -29,10 +70,9 @@ CONFIG_DEFAULT = {
     "REGISTER_CODE": _generate_register_code(),
     "misfire_grace_time": 90,
     "log": {
-        "level": "INFO",
-        "output": ["stdout", "stderr", "file"],
+        "level": SelectOption("INFO", ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
+        "output": SelectOption(["stdout", "stderr", "file"], ["stdout", "stderr", "file"], multi=True),
         "module": False,
-        # ...
     },
     "enable_empty_start": True,
     "command_start": [],
@@ -40,11 +80,41 @@ CONFIG_DEFAULT = {
     "sv": {},
 }
 
-STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN", "REGISTER_CODE"]
+
+def _unwrap_defaults(node: Any) -> Any:
+    """把声明树中的 SelectOption 展开为其默认值，得到纯默认值结构。"""
+    if isinstance(node, SelectOption):
+        return node.default
+    if isinstance(node, dict):
+        return {k: _unwrap_defaults(v) for k, v in node.items()}
+    return node
+
+
+def _collect_selects(node: Dict[str, Any], prefix: str = "") -> Dict[str, SelectOption]:
+    """收集声明树中全部 SelectOption。
+
+    嵌套 key 用 "_" 扁平化（log.level -> "log_level"），与 WebConsole 前端的字段命名对齐。
+    """
+    found: Dict[str, SelectOption] = {}
+    for k, v in node.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, SelectOption):
+            found[key] = v
+        elif isinstance(v, dict):
+            found.update(_collect_selects(v, f"{key}_"))
+    return found
+
+
+# 派生：纯默认值字典（现有全部消费者照旧读它）+ 下拉可选项表（供 WebConsole 下发）。
+CONFIG_DEFAULT: Dict[str, Any] = _unwrap_defaults(CORE_CONFIG)
+CONFIG_OPTIONS: Dict[str, SelectOption] = _collect_selects(CORE_CONFIG)
+
+STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN", "REGISTER_CODE", "LANGUAGE"]
 INT_CONFIG = Literal["misfire_grace_time"]
 LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS"]
 DICT_CONFIG = Literal["sv", "log"]
 BOOL_CONFIG = Literal["enable_empty_start", "ENABLE_HTTP", "buffered_user_writes"]
+
 
 plugins_sample = {
     "name": "",

@@ -7,6 +7,7 @@ Provider 配置管理器模块
 
 from typing import Any, Dict, Literal, Optional
 
+from gsuid_core.i18n import t
 from gsuid_core.ai_core.configs.openai_config import (
     get_openai_config as _get_openai_config,
     openai_config_manager as _openai_config_manager,
@@ -34,7 +35,7 @@ def get_provider_config_manager(provider: Literal["openai", "anthropic"]):
     elif provider == "anthropic":
         return _anthropic_config_manager
     else:
-        raise ValueError(f"不支持的 provider 类型: {provider}")
+        raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def get_provider_config(
@@ -56,7 +57,7 @@ def get_provider_config(
     elif provider == "anthropic":
         return _get_anthropic_config(config_name)
     else:
-        raise ValueError(f"不支持的 provider 类型: {provider}")
+        raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def get_provider_config_dict(
@@ -78,7 +79,7 @@ def get_provider_config_dict(
     elif provider == "anthropic":
         return _get_anthropic_config_dict(config_name)
     else:
-        raise ValueError(f"不支持的 provider 类型: {provider}")
+        raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def list_available_provider_configs(

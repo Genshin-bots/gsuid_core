@@ -2,6 +2,7 @@
 
 import os
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
 
@@ -68,8 +69,13 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         test_vec = list(self._model.embed(["test"]))[0]
         self._dim = len(test_vec)
         logger.info(
-            f"🧠 [Embedding] 本地嵌入模型已加载: {model_name}, 维度: {self._dim}, "
-            f"threads={threads}, batch_size={self._batch_size}"
+            t(
+                "🧠 [Embedding] 本地嵌入模型已加载: {model_name}, 维度: {p0}, threads={threads}, batch_size={p1}",
+                model_name=model_name,
+                p0=self._dim,
+                threads=threads,
+                p1=self._batch_size,
+            )
         )
 
     @property

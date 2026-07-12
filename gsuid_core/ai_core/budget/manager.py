@@ -18,6 +18,7 @@ from collections import defaultdict
 from dataclasses import field, asdict, dataclass
 
 from gsuid_core.aps import scheduler
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .config import budget_config, compute_billable_tokens
@@ -577,7 +578,7 @@ class BudgetManager:
                 return
             self._usage = loaded + self._usage
             self._loaded = True
-        logger.info(f"💰 [Budget] 已回载用量账本 {len(loaded)} 条")
+        logger.info(t("💰 [Budget] 已回载用量账本 {p0} 条", p0=len(loaded)))
 
     async def flush(self) -> None:
         """把内存中尚未落库（persisted=False）的用量整批写库，并就地淘汰过期行。
@@ -619,7 +620,7 @@ class BudgetManager:
                         r.persisted = True
                 else:
                     # with_session 重试耗尽返回 None：保留 persisted=False，下个周期重试，绝不漏记。
-                    logger.warning(f"💰 [Budget] 用量落库失败，{len(dirty)} 条留待下次重试")
+                    logger.warning(t("💰 [Budget] 用量落库失败，{p0} 条留待下次重试", p0=len(dirty)))
             # 内存淘汰：账本最长只需保留 retention 窗（与 DB prune 同口径）
             cutoff = int(time.time()) - _USAGE_RETENTION_DAYS * _DAY_SECONDS
             if self._usage and self._usage[0].created_at < cutoff:
@@ -653,7 +654,7 @@ class BudgetManager:
             try:
                 await AIBudgetUsageRecord.delete_scope_usage(since, gid, uid, bid)
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"💰 [Budget] 重置时删除 DB 流水失败（内存已清，重启或回载残留）: {e}")
+                logger.warning(t("💰 [Budget] 重置时删除 DB 流水失败（内存已清，重启或回载残留）: {e}", e=e))
         return removed
 
     # ==================== 提示文案 / 冷却 ====================

@@ -9,6 +9,7 @@
 from typing import Sequence
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.segment import MessageSegment
@@ -68,7 +69,7 @@ async def send_meme(
     # 发送图片
     file_path = get_memes_base_path() / record.file_path
     if not file_path.exists():
-        logger.warning(f"[Meme] 表情包文件不存在: {file_path}")
+        logger.warning(t("[Meme] 表情包文件不存在: {file_path}", file_path=file_path))
         return "表情包文件不存在"
 
     image_data = await _read_file(file_path)
@@ -83,7 +84,15 @@ async def send_meme(
     # 记录使用
     await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
 
-    logger.info(f"[Meme] 发送表情包: {record.meme_id} (mood={mood}, scene={scene}, persona={persona_name})")
+    logger.info(
+        t(
+            "[Meme] 发送表情包: {p0} (mood={mood}, scene={scene}, persona={persona_name})",
+            p0=record.meme_id,
+            mood=mood,
+            scene=scene,
+            persona_name=persona_name,
+        )
+    )
     return f"已发送表情包: {record.description or record.meme_id}"
 
 

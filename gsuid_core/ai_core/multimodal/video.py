@@ -16,6 +16,7 @@ import base64
 
 import aiofiles
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.utils import (
     get_mcp_tool_id,
@@ -85,8 +86,8 @@ async def extract_video_frames(
         finally:
             cleanup_tempfile(video_path, "🎬 [Video]")
 
-    logger.warning(f"🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP")
-    raise RuntimeError(f"视频帧提取不支持该提供方: {provider}")
+    logger.warning(t("🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    raise RuntimeError(t("视频帧提取不支持该提供方: {provider}", provider=provider))
 
 
 async def understand_video(
@@ -144,7 +145,7 @@ async def understand_video(
                 cleanup_tempfile(video_path)
 
         # 方案2: 提取关键帧 + 图片理解
-        logger.info(f"🎬 [Video] 使用关键帧提取 + 图片理解方案，提取 {max_frames} 帧")
+        logger.info(t("🎬 [Video] 使用关键帧提取 + 图片理解方案，提取 {max_frames} 帧", max_frames=max_frames))
         frames = await extract_video_frames(video_data, video_format, max_frames)
 
         if not frames:
@@ -165,14 +166,14 @@ async def understand_video(
                 )
                 descriptions.append(f"帧{idx + 1}: {desc}")
             except Exception as e:
-                logger.error(f"🎬 [Video] 帧 {idx + 1} 理解失败: {e}")
+                logger.error(t("🎬 [Video] 帧 {p0} 理解失败: {e}", p0=idx + 1, e=e))
                 descriptions.append(f"帧{idx + 1}: [理解失败]")
 
         combined = "\n".join(descriptions)
         return f"【视频关键帧分析】\n{combined}"
 
-    logger.warning(f"🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP")
-    raise RuntimeError(f"视频理解不支持该提供方: {provider}")
+    logger.warning(t("🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    raise RuntimeError(t("视频理解不支持该提供方: {provider}", provider=provider))
 
 
 async def _parse_frames_result(result_text: str) -> list[bytes]:
@@ -209,7 +210,7 @@ async def _parse_frames_result(result_text: str) -> list[bytes]:
                     result.append(decoded)
             if result:
                 return result
-        raise RuntimeError(f"JSON 数组格式但无有效帧数据: {result_text[:200]}")
+        raise RuntimeError(t("JSON 数组格式但无有效帧数据: {p0}", p0=result_text[:200]))
 
     # 情况2: 每行一个文件路径
     lines = stripped.split("\n")
@@ -223,4 +224,4 @@ async def _parse_frames_result(result_text: str) -> list[bytes]:
     if result:
         return result
 
-    raise RuntimeError(f"无法解析视频帧提取结果: {result_text[:200]}")
+    raise RuntimeError(t("无法解析视频帧提取结果: {p0}", p0=result_text[:200]))

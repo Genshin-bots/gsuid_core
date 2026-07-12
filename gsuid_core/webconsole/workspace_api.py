@@ -15,6 +15,7 @@ from fastapi import File, Query, Depends, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
+from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact
@@ -33,7 +34,7 @@ def _safe_relpath(workspace: Path, requested: str) -> Path:
 
     full = (workspace / os.path.normpath(requested)).resolve()
     if not str(full).startswith(str(workspace.resolve())):
-        raise PermissionError("越界路径")
+        raise PermissionError(t("越界路径"))
     return full
 
 

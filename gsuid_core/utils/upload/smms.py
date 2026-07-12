@@ -4,6 +4,7 @@ from io import BytesIO
 from aiohttp import ClientTimeout
 from aiohttp.client import ClientSession
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
@@ -29,7 +30,7 @@ class SMMS:
                 headers=self.header,
                 timeout=ClientTimeout(total=300),
             ) as resp:
-                logger.info("[sm.ms / upload] 开始删除...")
+                logger.info(t("[sm.ms / upload] 开始删除..."))
                 raw_data = await resp.json()
                 logger.debug(f"[sm.ms / delete] {raw_data}")
 
@@ -42,7 +43,7 @@ class SMMS:
                 data={"smfile": files.getvalue()},
                 timeout=ClientTimeout(total=300),
             ) as resp:
-                logger.info("[sm.ms / upload] 开始上传...")
+                logger.info(t("[sm.ms / upload] 开始上传..."))
                 raw_data = await resp.json()
                 logger.debug(f"[sm.ms / upload] {raw_data}")
                 if raw_data["success"]:
@@ -51,11 +52,11 @@ class SMMS:
                         asyncio.create_task(self.delete(data["hash"]))
                     return data["url"]
                 elif "code" in raw_data and raw_data["code"] == "image_repeated":
-                    logger.info("[sm.ms / upload] 图片已存在!")
+                    logger.info(t("[sm.ms / upload] 图片已存在!"))
                     if "images" in raw_data:
                         return raw_data["images"]
                     if "url" in raw_data:
                         return raw_data["url"]
-                    logger.info("[sm.ms / upload] 图片获取失败!")
+                    logger.info(t("[sm.ms / upload] 图片获取失败!"))
                 else:
-                    logger.info("[sm.ms / upload] 上传失败!")
+                    logger.info(t("[sm.ms / upload] 上传失败!"))

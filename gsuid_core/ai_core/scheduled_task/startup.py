@@ -4,6 +4,7 @@ Scheduled Task 启动模块
 在系统启动时重新加载待执行任务，在系统关闭时清理已完成任务。
 """
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -19,14 +20,14 @@ async def init_scheduled_tasks():
     如果 AI 总开关关闭，则跳过加载。
     """
     if not ai_config.get_config("enable").data:
-        logger.info("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务加载")
+        logger.info(t("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务加载"))
         return
 
     try:
         count = await reload_pending_tasks()
-        logger.info(f"✅ [ScheduledTask] 定时任务调度器初始化完成，加载了 {count} 个待执行任务")
+        logger.info(t("✅ [ScheduledTask] 定时任务调度器初始化完成，加载了 {count} 个待执行任务", count=count))
     except Exception as e:
-        logger.error(f"❌ [ScheduledTask] 定时任务调度器初始化失败: {e}")
+        logger.error(t("❌ [ScheduledTask] 定时任务调度器初始化失败: {e}", e=e))
 
 
 @on_core_shutdown
@@ -38,11 +39,11 @@ async def shutdown_scheduled_tasks():
     避免重启后重复触发已完成的任务。
     """
     if not ai_config.get_config("enable").data:
-        logger.info("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务关闭清理")
+        logger.info(t("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务关闭清理"))
         return
 
     try:
         count = await cleanup_completed_tasks()
-        logger.info(f"✅ [ScheduledTask] 定时任务调度器关闭完成，清理了 {count} 个已完成任务")
+        logger.info(t("✅ [ScheduledTask] 定时任务调度器关闭完成，清理了 {count} 个已完成任务", count=count))
     except Exception as e:
-        logger.error(f"❌ [ScheduledTask] 定时任务调度器关闭失败: {e}")
+        logger.error(t("❌ [ScheduledTask] 定时任务调度器关闭失败: {e}", e=e))

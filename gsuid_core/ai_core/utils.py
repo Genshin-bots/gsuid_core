@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.exceptions import ModelHTTPError
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.segment import Message, MessageSegment
@@ -142,7 +143,7 @@ def _strip_special_control_tokens(text: str) -> str:
     for pat in _SPECIAL_TOKEN_PATTERNS:
         cleaned = pat.sub("", cleaned)
     if cleaned != text:
-        logger.warning(f"[send] 剥离模型私有控制 token 残留（len {len(text)} → {len(cleaned)}）")
+        logger.warning(i18n_t("[send] 剥离模型私有控制 token 残留（len {p0} → {p1}）", p0=len(text), p1=len(cleaned)))
     return cleaned
 
 
@@ -364,12 +365,14 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
         if not mime.startswith("image/"):
             mime = _guess_image_mime(raw)
         b64 = base64.b64encode(data).decode("ascii")
-        logger.debug(f"🖼️ [GsCoreAI] 远程图片已物化为 base64 DataURI ({mime}, {len(data)} bytes)")
+        logger.debug(
+            i18n_t("🖼️ [GsCoreAI] 远程图片已物化为 base64 DataURI ({mime}, {p0} bytes)", mime=mime, p0=len(data))
+        )
         return f"data:{mime};base64,{b64}"
     except Exception as e:
         if strict:
-            raise RuntimeError(f"远程图片下载失败，无法物化为 base64: {raw[:120]} ({e})") from e
-        logger.warning(f"🖼️ [GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}")
+            raise RuntimeError(i18n_t("远程图片下载失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
+        logger.warning(i18n_t("🖼️ [GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}", e=e))
         return raw
 
 
@@ -523,11 +526,13 @@ async def prepare_content_payload(
             try:
                 url = await materialize_image_url(i, strict=True)
             except Exception as e:
-                logger.warning(f"🖼️ [GsCoreAI] 图片物化失败（URL 可能已过期），跳过图片: {i[:120]} ({e})")
+                logger.warning(
+                    i18n_t("🖼️ [GsCoreAI] 图片物化失败（URL 可能已过期），跳过图片: {p0} ({e})", p0=i[:120], e=e)
+                )
                 continue
             content_payload.append(ImageUrl(url=url))
         else:
-            logger.warning(f"无法处理图片ID: {i}")
+            logger.warning(i18n_t("无法处理图片ID: {i}", i=i))
 
     return content_payload
 
@@ -587,7 +592,7 @@ async def send_chat_result(
     # 过滤模型输出的特殊控制标记（如 <end_turn>），避免发送给用户
     _trimmed = text.strip()
     if _trimmed in SILENCE_MARKERS:
-        logger.debug(f"[send_chat_result] 跳过特殊标记: {_trimmed!r}")
+        logger.debug(i18n_t("[send_chat_result] 跳过特殊标记: {_trimmed}", _trimmed=repr(_trimmed)))
         return
 
     # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
@@ -598,7 +603,7 @@ async def send_chat_result(
     text = _strip_special_control_tokens(text)
 
     # Trace 日志：记录原始输出
-    logger.trace(f"[Meme] 原始输出: {text!r}")
+    logger.trace(i18n_t("[Meme] 原始输出: {text}", text=repr(text)))
 
     # 解析表情包标记
     meme_tags: list[str] = MEME_TAG_PATTERN.findall(text)
@@ -623,12 +628,20 @@ async def send_chat_result(
             _hit = check_ooc(clean_text, user_text=_user_text)
             if _hit is not None:
                 logger.warning(
-                    f"[OutputFirewall] send_chat_result 命中出戏红线 {_hit.category}: {_hit.matched}，已兜底替换"
+                    i18n_t(
+                        "[OutputFirewall] send_chat_result 命中出戏红线 {p0}: {p1}，已兜底替换",
+                        p0=_hit.category,
+                        p1=_hit.matched,
+                    )
                 )
                 clean_text = PERSONA_FALLBACK_TEXT
 
     # Trace 日志：记录解析结果
-    logger.trace(f"[Meme] 解析标记: {meme_tags}, 清理后文本: {clean_text!r}")
+    logger.trace(
+        i18n_t(
+            "[Meme] 解析标记: {meme_tags}, 清理后文本: {clean_text}", meme_tags=meme_tags, clean_text=repr(clean_text)
+        )
+    )
 
     if not clean_text:
         # 没有纯文本时，如果有表情包标记且有 ev，直接发图片
@@ -684,16 +697,16 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
 
         file_path = get_memes_base_path() / record.file_path
         if not file_path.exists():
-            logger.debug(f"[Meme] 表情包文件不存在: {file_path}")
+            logger.debug(i18n_t("[Meme] 表情包文件不存在: {file_path}", file_path=file_path))
             return
 
         image_data = await _read_file(file_path)
         img_b64 = await convert_img(image_data)
         await bot.send(MessageSegment.image(img_b64))
         await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
-        logger.info(f"[Meme] 标记触发表情包: {record.meme_id} (mood={mood})")
+        logger.info(i18n_t("[Meme] 标记触发表情包: {p0} (mood={mood})", p0=record.meme_id, mood=mood))
     except Exception as e:
-        logger.debug(f"[Meme] 标记发送失败: {e}")
+        logger.debug(i18n_t("[Meme] 标记发送失败: {e}", e=e))
 
 
 def _parse_at_segments(text: str) -> list[Message]:
@@ -884,7 +897,12 @@ def _truncate_history_with_tool_safety(
         if not orphaned:
             # 所有保留的 return 都有对应的 call，截断安全
             logger.debug(
-                f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(truncated)} (截断点: {truncate_index})"
+                i18n_t(
+                    "🧠 [GsCoreAIAgent] 安全截断 history: {p0} -> {p1} (截断点: {truncate_index})",
+                    p0=len(history),
+                    p1=len(truncated),
+                    truncate_index=truncate_index,
+                )
             )
             return truncated
 
@@ -908,13 +926,13 @@ def _truncate_history_with_tool_safety(
         new_truncate_index = max(0, min_orphaned_idx - 2)
         if new_truncate_index >= truncate_index:
             # 安全阀：如果无法继续前移，直接保留全部历史
-            logger.warning(f"🧠 [GsCoreAIAgent] 无法安全截断 history，保留全部 {len(history)} 条")
+            logger.warning(i18n_t("🧠 [GsCoreAIAgent] 无法安全截断 history，保留全部 {p0} 条", p0=len(history)))
             return history
 
         truncate_index = new_truncate_index
 
     # truncate_index == 0，保留全部历史
-    logger.debug(f"🧠 [GsCoreAIAgent] 安全截断 history: {len(history)} -> {len(history)} (保留全部)")
+    logger.debug(i18n_t("🧠 [GsCoreAIAgent] 安全截断 history: {p0} -> {p0} (保留全部)", p0=len(history)))
     return history
 
 
@@ -943,14 +961,18 @@ def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]
                 # 收窄为 ToolReturnPart / RetryPromptPart，两者都有 tool_call_id，
                 # 不需要 getattr 兜底（LLM.md §1.4）。
                 if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids:
-                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={part.tool_call_id}")
+                    logger.warning(
+                        i18n_t("🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={p0}", p0=part.tool_call_id)
+                    )
                     continue
                 if (
                     isinstance(part, RetryPromptPart)
                     and part.tool_name is not None
                     and part.tool_call_id not in call_ids
                 ):
-                    logger.warning(f"🧠 [GsCoreAIAgent] 丢弃孤儿 RetryPromptPart: tool_call_id={part.tool_call_id}")
+                    logger.warning(
+                        i18n_t("🧠 [GsCoreAIAgent] 丢弃孤儿 RetryPromptPart: tool_call_id={p0}", p0=part.tool_call_id)
+                    )
                     continue
                 kept_parts.append(part)
             if kept_parts:

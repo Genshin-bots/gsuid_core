@@ -15,6 +15,7 @@ import re
 from typing import Any, Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.content_guard import normalize_for_match
 
@@ -243,11 +244,11 @@ def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Opt
     turn_id = str(extra.get("turn_id", ""))
     warn_key = f"ooc_warned:{turn_id}"
     if turn_id and extra.get(warn_key):
-        logger.warning(f"[OutputFirewall] 重写后仍命中 {hit.category}: {hit.matched}，本轮放行")
+        logger.warning(t("[OutputFirewall] 重写后仍命中 {p0}: {p1}，本轮放行", p0=hit.category, p1=hit.matched))
         return None
     if turn_id:
         extra[warn_key] = True
-    logger.warning(f"[OutputFirewall] 命中出戏红线 {hit.category}: {hit.matched}，要求重写")
+    logger.warning(t("[OutputFirewall] 命中出戏红线 {p0}: {p1}，要求重写", p0=hit.category, p1=hit.matched))
     return build_rewrite_warning(hit)
 
 

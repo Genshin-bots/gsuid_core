@@ -2,6 +2,7 @@ import re
 import json
 from typing import Dict, List, TypedDict
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Message
 from gsuid_core.data_store import get_res_path
@@ -113,5 +114,5 @@ try:
             custom_buttons[custom_button.stem] = Message(type="buttons", data=button_data["custom_button"])
 
 except Exception as e:
-    logger.warning("[启动] [加载模板] 加载失败...检查模板文件..")
+    logger.warning(t("[启动] [加载模板] 加载失败...检查模板文件.."))
     logger.error(e)

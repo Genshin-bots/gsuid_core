@@ -23,6 +23,7 @@ from qdrant_client.models import (
 )
 from qdrant_client.http.models.models import ScoredPoint
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import KnowledgeBase, ManualKnowledgeBase
 from gsuid_core.ai_core.rag.base import (
@@ -105,7 +106,7 @@ def _ensure_jieba() -> bool:
         jieba.setLogLevel(logging.WARNING)  # 抑制首次 "Building prefix dict..." info
         _jieba_state = True
     except Exception as e:
-        logger.warning(f"🧠 [Knowledge] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}")
+        logger.warning(i18n_t("🧠 [Knowledge] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}", e=e))
         _jieba_state = False
     return _jieba_state
 
@@ -144,7 +145,7 @@ def _knowledge_sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVecto
         results = list(model.embed(seg_texts))
         return [SparseVector(indices=r.indices.tolist(), values=r.values.tolist()) for r in results]
     except Exception as e:
-        logger.warning(f"🧠 [Knowledge] BM25 稀疏嵌入失败，本批降级纯 dense: {e}")
+        logger.warning(i18n_t("🧠 [Knowledge] BM25 稀疏嵌入失败，本批降级纯 dense: {e}", e=e))
         return [None] * len(texts)
 
 
@@ -240,17 +241,24 @@ async def _init_knowledge_collection_impl():
                 prior_backup = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
                 if len(prior_backup) > len(payload_backup):
                     logger.warning(
-                        f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 实时 payload"
-                        f"({len(payload_backup)}) 少于历史迁移备份({len(prior_backup)})，"
-                        f"疑似上次迁移已清空但未完成，改用备份恢复"
+                        i18n_t(
+                            "🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 实时 payload({p0})"
+                            " 少于历史迁移备份({p1})，疑似上次迁移已清空但未完成，改用备份恢复",
+                            KNOWLEDGE_COLLECTION_NAME=KNOWLEDGE_COLLECTION_NAME,
+                            p0=len(payload_backup),
+                            p1=len(prior_backup),
+                        )
                     )
                     payload_backup = prior_backup
                     backup_path = latest_backup_path
             if backup_path is None:
                 backup_path = await save_payload_backup(KNOWLEDGE_COLLECTION_NAME, payload_backup)
             logger.warning(
-                f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 维度变化，"
-                f"导出 {len(payload_backup)} 条 payload 后强制重建并重嵌入"
+                i18n_t(
+                    "🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 维度变化，导出 {p0} 条 payload 后强制重建并重嵌入",
+                    KNOWLEDGE_COLLECTION_NAME=KNOWLEDGE_COLLECTION_NAME,
+                    p0=len(payload_backup),
+                )
             )
             need_recreate = True
         elif latest_backup_path is not None:
@@ -261,8 +269,13 @@ async def _init_knowledge_collection_impl():
                 backup_path = latest_backup_path
                 need_recreate = True
                 logger.warning(
-                    f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 疑似上次迁移未完成"
-                    f"(points={point_count}, backup={len(backup_payloads)})，将强制重建并继续恢复"
+                    i18n_t(
+                        "🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 疑似上次迁移未完成"
+                        "(points={point_count}, backup={p0})，将强制重建并继续恢复",
+                        KNOWLEDGE_COLLECTION_NAME=KNOWLEDGE_COLLECTION_NAME,
+                        point_count=point_count,
+                        p0=len(backup_payloads),
+                    )
                 )
             else:
                 await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME, KNOWLEDGE_DENSE_VECTOR)
@@ -273,13 +286,21 @@ async def _init_knowledge_collection_impl():
         backup_path = latest_backup_path
         if payload_backup:
             logger.warning(
-                f"🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 不存在但发现未完成迁移备份，"
-                f"将重建 Collection 并恢复 {len(payload_backup)} 条 payload"
+                i18n_t(
+                    "🧠 [Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 不存在但发现未完成迁移备份，"
+                    "将重建 Collection 并恢复 {p0} 条 payload",
+                    KNOWLEDGE_COLLECTION_NAME=KNOWLEDGE_COLLECTION_NAME,
+                    p0=len(payload_backup),
+                )
             )
 
     if need_recreate:
         logger.info(
-            f"🧠 [Knowledge] 强制重建集合: {KNOWLEDGE_COLLECTION_NAME}, 维度: {dimension}（命名 dense + BM25 稀疏）"
+            i18n_t(
+                "🧠 [Knowledge] 强制重建集合: {KNOWLEDGE_COLLECTION_NAME}, 维度: {dimension}（命名 dense + BM25 稀疏）",
+                KNOWLEDGE_COLLECTION_NAME=KNOWLEDGE_COLLECTION_NAME,
+                dimension=dimension,
+            )
         )
         await force_recreate_collection(
             collection_name=KNOWLEDGE_COLLECTION_NAME,
@@ -293,7 +314,11 @@ async def _init_knowledge_collection_impl():
             await _reindex_knowledge_payloads(payload_backup)
         except Exception as e:
             logger.error(
-                f"🧠 [Knowledge] 维度迁移重嵌入失败，迁移备份已保留，下次启动将自动继续恢复: {backup_path}, {e}"
+                i18n_t(
+                    "🧠 [Knowledge] 维度迁移重嵌入失败，迁移备份已保留，下次启动将自动继续恢复: {backup_path}, {e}",
+                    backup_path=backup_path,
+                    e=e,
+                )
             )
             raise
         remove_payload_backup(backup_path, KNOWLEDGE_COLLECTION_NAME)
@@ -326,7 +351,9 @@ async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, 
                 text_to_embed = build_knowledge_text(payload)  # type: ignore[arg-type]
             else:
                 skipped += 1
-                logger.warning(f"🧠 [Knowledge] 无法识别旧 payload 类型，已跳过: point_id={point_id}")
+                logger.warning(
+                    i18n_t("🧠 [Knowledge] 无法识别旧 payload 类型，已跳过: point_id={point_id}", point_id=point_id)
+                )
                 continue
             if not text_to_embed.strip():
                 skipped += 1
@@ -334,7 +361,7 @@ async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, 
             prepared.append((point_id, payload, text_to_embed))
         except Exception as e:
             skipped += 1
-            logger.warning(f"🧠 [Knowledge] 准备旧 payload 重嵌入失败，已跳过: {e}")
+            logger.warning(i18n_t("🧠 [Knowledge] 准备旧 payload 重嵌入失败，已跳过: {e}", e=e))
 
     # 重嵌为命名 dense + BM25 稀疏向量（与新集合结构一致）
     points_to_upsert = await _compute_knowledge_points(prepared)
@@ -342,7 +369,13 @@ async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, 
 
     if points_to_upsert:
         await _upsert_knowledge_points(points_to_upsert)
-    logger.info(f"🧠 [Knowledge] 维度/结构迁移重嵌入完成: {len(points_to_upsert)} 条，跳过 {skipped} 条")
+    logger.info(
+        i18n_t(
+            "🧠 [Knowledge] 维度/结构迁移重嵌入完成: {p0} 条，跳过 {skipped} 条",
+            p0=len(points_to_upsert),
+            skipped=skipped,
+        )
+    )
 
 
 async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Optional[int] = None) -> None:
@@ -357,7 +390,7 @@ async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Option
     async def _do_upsert(batch):
         c = client
         if c is None:
-            raise RuntimeError("Qdrant client 不可用")
+            raise RuntimeError(i18n_t("Qdrant client 不可用"))
         await c.upsert(collection_name=KNOWLEDGE_COLLECTION_NAME, points=batch)
 
     try:
@@ -366,7 +399,7 @@ async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Option
         message = str(e)
         if "broadcast input array" not in message and "not aligned" not in message and "dim" not in message:
             raise
-        logger.warning(f"🧠 [Knowledge] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}")
+        logger.warning(i18n_t("🧠 [Knowledge] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}", e=e))
         await force_recreate_collection(
             collection_name=KNOWLEDGE_COLLECTION_NAME,
             vectors_config=_knowledge_vectors_config(get_strict_dimension()),
@@ -376,7 +409,7 @@ async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Option
         from gsuid_core.ai_core.rag.base import client as refreshed_client
 
         if refreshed_client is None:
-            raise RuntimeError("Qdrant client 重建后不可用")
+            raise RuntimeError(i18n_t("Qdrant client 重建后不可用"))
 
         async def _do_upsert_after_recreate(batch):
             await refreshed_client.upsert(collection_name=KNOWLEDGE_COLLECTION_NAME, points=batch)
@@ -492,7 +525,7 @@ async def _embed_and_upsert_chunks(rows: List[AIKnowledgeChunk]) -> tuple[int, i
     if not rows:
         return 0, 0
     if client is None or embedding_model is None:
-        logger.warning("🧠 [Knowledge] RAG 未初始化，无法写入知识分片")
+        logger.warning(i18n_t("🧠 [Knowledge] RAG 未初始化，无法写入知识分片"))
         return 0, len(rows)
 
     for r in rows:
@@ -578,7 +611,15 @@ async def add_knowledge_document(
         )
 
     written, skipped = await _embed_and_upsert_chunks(rows)
-    logger.info(f"🧠 [Knowledge] 文档导入 doc_id={doc_id}: 分片 {len(rows)}，写入 {written}，跳过 {skipped}")
+    logger.info(
+        i18n_t(
+            "🧠 [Knowledge] 文档导入 doc_id={doc_id}: 分片 {p0}，写入 {written}，跳过 {skipped}",
+            doc_id=doc_id,
+            p0=len(rows),
+            written=written,
+            skipped=skipped,
+        )
+    )
     return {"doc_id": doc_id, "total_chunks": len(rows), "written": written, "skipped": skipped}
 
 
@@ -596,7 +637,7 @@ async def delete_knowledge_document(doc_id: str) -> Dict[str, Any]:
                 points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]),
             )
         except Exception as e:
-            logger.debug(f"🧠 [Knowledge] 按 doc_id 删除向量失败，回退按点ID删除: {e}")
+            logger.debug(i18n_t("🧠 [Knowledge] 按 doc_id 删除向量失败，回退按点ID删除: {e}", e=e))
             if qids:
                 try:
                     await client.delete(
@@ -638,7 +679,14 @@ async def import_manual_knowledge(records: List[dict]) -> Dict[str, Any]:
     if not rows:
         return {"total": 0, "written": 0, "skipped": 0}
     written, skipped = await _embed_and_upsert_chunks(rows)
-    logger.info(f"🧠 [Knowledge] 导入手动知识: 总 {len(rows)}，写入 {written}，跳过 {skipped}")
+    logger.info(
+        i18n_t(
+            "🧠 [Knowledge] 导入手动知识: 总 {p0}，写入 {written}，跳过 {skipped}",
+            p0=len(rows),
+            written=written,
+            skipped=skipped,
+        )
+    )
     return {"total": len(rows), "written": written, "skipped": skipped}
 
 
@@ -672,7 +720,7 @@ async def _backfill_qdrant_manual_to_sql(sql_ids: set) -> int:
 
     if backfilled:
         await AIKnowledgeChunk.upsert_many(backfilled)
-        logger.info(f"🧠 [Knowledge] 回填旧手动知识到 SQL 真值源: {len(backfilled)} 条")
+        logger.info(i18n_t("🧠 [Knowledge] 回填旧手动知识到 SQL 真值源: {p0} 条", p0=len(backfilled)))
     return len(backfilled)
 
 
@@ -702,7 +750,7 @@ async def _reembed_missing_sql_chunks() -> int:
             )
             found_ids = {str(p.id) for p in found}
         except Exception as e:
-            logger.warning(f"🧠 [Knowledge] 探测分片向量存在性失败: {e}")
+            logger.warning(i18n_t("🧠 [Knowledge] 探测分片向量存在性失败: {e}", e=e))
             return 0
         for r, qid in zip(chunk, qids):
             if str(qid) not in found_ids:
@@ -710,7 +758,13 @@ async def _reembed_missing_sql_chunks() -> int:
 
     if missing:
         written, skipped = await _embed_and_upsert_chunks(missing)
-        logger.info(f"🧠 [Knowledge] 从 SQL 真值源重嵌入缺失分片: 写入 {written}，跳过 {skipped}")
+        logger.info(
+            i18n_t(
+                "🧠 [Knowledge] 从 SQL 真值源重嵌入缺失分片: 写入 {written}，跳过 {skipped}",
+                written=written,
+                skipped=skipped,
+            )
+        )
         return written
     return 0
 
@@ -736,7 +790,7 @@ async def reconcile_manual_knowledge() -> None:
                 )
             ).count
         except Exception as e:
-            logger.debug(f"🧠 [Knowledge] 统计 Qdrant 手动知识数失败，跳过对账: {e}")
+            logger.debug(i18n_t("🧠 [Knowledge] 统计 Qdrant 手动知识数失败，跳过对账: {e}", e=e))
             return
 
         sql_ids = await AIKnowledgeChunk.id_set("manual")
@@ -745,7 +799,7 @@ async def reconcile_manual_knowledge() -> None:
         elif manual_count < len(sql_ids):
             await _reembed_missing_sql_chunks()
     except Exception as e:
-        logger.warning(f"🧠 [Knowledge] 手动知识对账失败（不影响启动）: {e}")
+        logger.warning(i18n_t("🧠 [Knowledge] 手动知识对账失败（不影响启动）: {e}", e=e))
 
 
 async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
@@ -824,7 +878,7 @@ async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
         "reembedded_written": reembedded_written,
         "consistent": consistent,
     }
-    logger.info(f"🧠 [Knowledge] 深度对账完成: {report}")
+    logger.info(i18n_t("🧠 [Knowledge] 深度对账完成: {report}", report=report))
     return report
 
 
@@ -843,11 +897,11 @@ async def sync_knowledge():
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:
-        logger.debug("🧠 [Knowledge] AI功能未启用，跳过同步")
+        logger.debug(i18n_t("🧠 [Knowledge] AI功能未启用，跳过同步"))
         return
 
     if rag_base.client is None or rag_base.embedding_model is None:
-        logger.info("🧠 [Knowledge] AI 已启用但 RAG 尚未初始化，尝试懒初始化 Embedding/Qdrant 后同步")
+        logger.info(i18n_t("🧠 [Knowledge] AI 已启用但 RAG 尚未初始化，尝试懒初始化 Embedding/Qdrant 后同步"))
         await asyncio.to_thread(init_embedding_model)
         await ensure_embedding_dimension()
         await init_knowledge_collection()
@@ -855,10 +909,10 @@ async def sync_knowledge():
     client = rag_base.client
     embedding_model = rag_base.embedding_model
     if client is None or embedding_model is None:
-        logger.warning("🧠 [Knowledge] RAG client 或 embedding_model 未初始化，暂跳过同步")
+        logger.warning(i18n_t("🧠 [Knowledge] RAG client 或 embedding_model 未初始化，暂跳过同步"))
         return
 
-    logger.info("🧠 [Knowledge] 开始同步知识库...")
+    logger.info(i18n_t("🧠 [Knowledge] 开始同步知识库..."))
 
     # 1. 获取现有数据（仅插件来源的知识，用于同步检查）
     # 手动添加的知识不会被此同步流程删除
@@ -893,14 +947,14 @@ async def sync_knowledge():
     local_ids = set()
     pending_items: list[tuple[str, dict, str, str, str]] = []
 
-    logger.info(f"🧠 [Knowledge] 插件注册知识数量: {len(_ENTITIES)}")
+    logger.info(i18n_t("🧠 [Knowledge] 插件注册知识数量: {p0}", p0=len(_ENTITIES)))
     last_scan_progress_log = time.monotonic()
     for index, knowledge in enumerate(_ENTITIES, start=1):
         if index % 200 == 0:
             await asyncio.sleep(0)
         now = time.monotonic()
         if now - last_scan_progress_log >= 30.0 or index == len(_ENTITIES):
-            logger.info(f"🧠 [Knowledge] 扫描插件知识进度: {index}/{len(_ENTITIES)}")
+            logger.info(i18n_t("🧠 [Knowledge] 扫描插件知识进度: {index}/{p0}", index=index, p0=len(_ENTITIES)))
             last_scan_progress_log = now
 
         id_str = knowledge["id"]
@@ -928,7 +982,7 @@ async def sync_knowledge():
             pending_items.append((id_str, payload, text_to_embed, log_prefix, log_name))
 
     if pending_items:
-        logger.info(f"🧠 [Knowledge] 需要新增/更新 {len(pending_items)} 条，开始批量嵌入...")
+        logger.info(i18n_t("🧠 [Knowledge] 需要新增/更新 {p0} 条，开始批量嵌入...", p0=len(pending_items)))
 
     async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
         return list(await embedding_model.aembed(list(texts)))
@@ -945,13 +999,21 @@ async def sync_knowledge():
         if vector is None:
             continue
         action_str = "新增" if id_str not in existing_knowledge else "更新"
-        logger.info(f"🧠 [{log_prefix}] [{payload.get('plugin')}] [{action_str}] 知识: {log_name}")
+        logger.info(
+            i18n_t(
+                "🧠 [{log_prefix}] [{p0}] [{action_str}] 知识: {log_name}",
+                log_prefix=log_prefix,
+                p0=payload.get("plugin"),
+                action_str=action_str,
+                log_name=log_name,
+            )
+        )
         sv = sparse_vectors[i] if i < len(sparse_vectors) else None
         points_to_upsert.append(_build_named_point(get_point_id(id_str), list(vector), sv, payload))
 
     # 3. 执行更新
     if points_to_upsert:
-        logger.info(f"🧠 [Knowledge] 写入 {len(points_to_upsert)} 个知识点...")
+        logger.info(i18n_t("🧠 [Knowledge] 写入 {p0} 个知识点...", p0=len(points_to_upsert)))
         await _upsert_knowledge_points(points_to_upsert)
 
     # 4. 清理已删除的插件知识（手动添加的知识不会被删除）
@@ -960,7 +1022,7 @@ async def sync_knowledge():
             existing_knowledge[id_str]["id"] for id_str in existing_knowledge.keys() if id_str not in local_ids
         ]
         if ids_to_delete:
-            logger.info(f"🧠 [Knowledge] 删除 {len(ids_to_delete)} 个已移除的插件知识...")
+            logger.info(i18n_t("🧠 [Knowledge] 删除 {p0} 个已移除的插件知识...", p0=len(ids_to_delete)))
             await client.delete(
                 collection_name=KNOWLEDGE_COLLECTION_NAME,
                 points_selector=ids_to_delete,
@@ -1000,13 +1062,13 @@ async def query_knowledge(
     from gsuid_core.ai_core.statistics import statistics_manager
 
     if client is None or embedding_model is None:
-        logger.warning("🧠 [Knowledge] AI功能未启用，无法查询知识")
+        logger.warning(i18n_t("🧠 [Knowledge] AI功能未启用，无法查询知识"))
         return []
 
     # 生成查询向量（dense 必有，sparse 可选）
     _vectors = list(await embedding_model.aembed([query]))
     if not _vectors:
-        logger.warning("🧠 [Knowledge] 嵌入模型返回空结果，无法查询知识")
+        logger.warning(i18n_t("🧠 [Knowledge] 嵌入模型返回空结果，无法查询知识"))
         return []
     query_dense = _vectors[0]
     query_sparse = (await _sparse_embed_batch_async([query]))[0]
@@ -1065,14 +1127,14 @@ async def sync_manual_knowledge():
     from gsuid_core.ai_core.register import get_manual_entities
 
     if client is None or embedding_model is None:
-        logger.debug("🧠 [Knowledge] AI功能未启用，跳过手动知识同步")
+        logger.debug(i18n_t("🧠 [Knowledge] AI功能未启用，跳过手动知识同步"))
         return
 
-    logger.info("🧠 [Knowledge] 开始同步手动添加的知识...")
+    logger.info(i18n_t("🧠 [Knowledge] 开始同步手动添加的知识..."))
 
     manual_entities = get_manual_entities()
     if not manual_entities:
-        logger.info("🧠 [Knowledge] 没有手动添加的知识需要同步")
+        logger.info(i18n_t("🧠 [Knowledge] 没有手动添加的知识需要同步"))
         return
 
     items: list[tuple] = []
@@ -1085,7 +1147,7 @@ async def sync_manual_knowledge():
     # dense + BM25 稀疏命名向量（与集合结构一致）
     points_to_upsert = await _compute_knowledge_points(items)
     if points_to_upsert:
-        logger.info(f"🧠 [Knowledge] 写入 {len(points_to_upsert)} 个手动知识...")
+        logger.info(i18n_t("🧠 [Knowledge] 写入 {p0} 个手动知识...", p0=len(points_to_upsert)))
         await _upsert_knowledge_points(points_to_upsert)
 
 
@@ -1121,7 +1183,7 @@ async def add_manual_knowledge_to_db(knowledge: Dict[str, Any]) -> bool:
     )
     written, _ = await _embed_and_upsert_chunks([row])
     if written:
-        logger.info(f"🧠 [Knowledge] 手动添加知识: {title}")
+        logger.info(i18n_t("🧠 [Knowledge] 手动添加知识: {title}", title=title))
     return written > 0
 
 
@@ -1144,7 +1206,7 @@ async def update_manual_knowledge_in_db(entity_id: str, updates: dict) -> bool:
     if row is None:
         existing = await get_manual_knowledge_detail(entity_id)
         if existing is None:
-            logger.warning(f"🧠 [Knowledge] 要更新的手动知识不存在: {entity_id}")
+            logger.warning(i18n_t("🧠 [Knowledge] 要更新的手动知识不存在: {entity_id}", entity_id=entity_id))
             return False
         row = _row_from_payload(dict(existing))
 
@@ -1164,7 +1226,7 @@ async def update_manual_knowledge_in_db(entity_id: str, updates: dict) -> bool:
 
     written, _ = await _embed_and_upsert_chunks([row])
     if written:
-        logger.info(f"🧠 [Knowledge] 手动更新知识: {entity_id}")
+        logger.info(i18n_t("🧠 [Knowledge] 手动更新知识: {entity_id}", entity_id=entity_id))
     return written > 0
 
 
@@ -1183,7 +1245,7 @@ async def delete_manual_knowledge_from_db(entity_id: str) -> bool:
     await AIKnowledgeChunk.delete_ids([entity_id])
 
     if client is None:
-        logger.warning("🧠 [Knowledge] AI功能未启用，无法删除向量")
+        logger.warning(i18n_t("🧠 [Knowledge] AI功能未启用，无法删除向量"))
         return False
 
     point_id = get_point_id(entity_id)
@@ -1191,7 +1253,7 @@ async def delete_manual_knowledge_from_db(entity_id: str) -> bool:
         collection_name=KNOWLEDGE_COLLECTION_NAME,
         points_selector=[point_id],
     )
-    logger.info(f"🧠 [Knowledge] 手动删除知识: {entity_id}")
+    logger.info(i18n_t("🧠 [Knowledge] 手动删除知识: {entity_id}", entity_id=entity_id))
     return True
 
 
@@ -1232,7 +1294,7 @@ async def get_manual_knowledge_list(
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
-        logger.warning("🧠 [Knowledge] AI功能未启用，无法获取知识列表")
+        logger.warning(i18n_t("🧠 [Knowledge] AI功能未启用，无法获取知识列表"))
         return {"list": [], "total": 0}
 
     # 如果 source_filter 不是 "all"，则按来源过滤
@@ -1306,7 +1368,7 @@ async def get_manual_knowledge_detail(entity_id: str) -> Optional[Dict[str, Any]
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
-        logger.warning("🧠 [Knowledge] AI功能未启用，无法获取知识详情")
+        logger.warning(i18n_t("🧠 [Knowledge] AI功能未启用，无法获取知识详情"))
         return None
 
     records, _ = await client.scroll(
@@ -1340,7 +1402,7 @@ async def search_manual_knowledge(
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
-        logger.warning("🧠 [Knowledge] AI功能未启用，无法搜索知识")
+        logger.warning(i18n_t("🧠 [Knowledge] AI功能未启用，无法搜索知识"))
         return []
 
     # 生成查询向量（dense + 可选 sparse）

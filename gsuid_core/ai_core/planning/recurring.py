@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from .models import AIAgentTask
 
 from gsuid_core.aps import scheduler
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 _JOB_PREFIX = "kanban_recurring_"
@@ -76,7 +77,7 @@ def register_recurring_gate(agent_profile: str, gate: Callable[[], object]) -> N
         gate: 无参谓词，返回 bool（可为 async）。True=放行本次触发。
     """
     _RECURRING_GATES[agent_profile] = gate
-    logger.info(f"📋 [Kanban] 周期触发 gate 已注册：agent_profile={agent_profile}")
+    logger.info(t("📋 [Kanban] 周期触发 gate 已注册：agent_profile={agent_profile}", agent_profile=agent_profile))
 
 
 async def _gate_allows(agent_profile: str) -> bool:
@@ -94,7 +95,13 @@ async def _gate_allows(agent_profile: str) -> bool:
             result = await result
         return bool(result)
     except Exception as e:
-        logger.warning(f"📋 [Kanban] 周期 gate 执行异常（按放行处理）profile={agent_profile}: {e}")
+        logger.warning(
+            t(
+                "📋 [Kanban] 周期 gate 执行异常（按放行处理）profile={agent_profile}: {e}",
+                agent_profile=agent_profile,
+                e=e,
+            )
+        )
         return True
 
 
@@ -113,7 +120,7 @@ async def _tree_gates_allow(template_root: "AIAgentTask") -> bool:
         profiles.add(template_root.agent_profile)
     for profile in sorted(profiles):
         if not await _gate_allows(profile):
-            logger.info(f"📋 [Kanban] 周期 gate 拒绝：profile={profile}")
+            logger.info(t("📋 [Kanban] 周期 gate 拒绝：profile={profile}", profile=profile))
             return False
     return True
 
@@ -145,9 +152,9 @@ def parse_trigger_spec(spec: str) -> Tuple[str, dict]:
         try:
             seconds = int(rest)
         except ValueError as e:
-            raise ValueError(f"interval 必须是整数秒：{e}") from e
+            raise ValueError(t("interval 必须是整数秒：{e}", e=e)) from e
         if seconds < 60:
-            raise ValueError("interval 最小 60 秒（防过密触发）")
+            raise ValueError(t("interval 最小 60 秒（防过密触发）"))
         return "interval", {"seconds": seconds}
     if text.startswith("cron:"):
         rest = text[len("cron:") :].strip()
@@ -170,8 +177,8 @@ def parse_trigger_spec(spec: str) -> Tuple[str, dict]:
                 "day": day,
                 "month": month,
             }
-        raise ValueError("cron 表达式需要 4 或 5 段：'<minute> <hour> <day> <month> [day_of_week]'")
-    raise ValueError(f"recurring_trigger 必须以 'interval:' 或 'cron:' 开头，收到：{spec!r}")
+        raise ValueError(t("cron 表达式需要 4 或 5 段：'<minute> <hour> <day> <month> [day_of_week]'"))
+    raise ValueError(t("recurring_trigger 必须以 'interval:' 或 'cron:' 开头，收到：{spec}", spec=repr(spec)))
 
 
 async def _fire_template(template_root_id: str) -> None:
@@ -194,15 +201,28 @@ async def _fire_template(template_root_id: str) -> None:
 
         template = await AIAgentTask.get_by_id(template_root_id)
         if template is None:
-            logger.warning(f"📋 [Kanban] 周期触发：模板 {template_root_id} 不存在，取消 job")
+            logger.warning(
+                t("📋 [Kanban] 周期触发：模板 {template_root_id} 不存在，取消 job", template_root_id=template_root_id)
+            )
             unschedule_template(template_root_id)
             return
         if template.recurring_status != "armed":
-            logger.info(f"📋 [Kanban] 周期触发：模板 {template_root_id} 状态={template.recurring_status}，跳过")
+            logger.info(
+                t(
+                    "📋 [Kanban] 周期触发：模板 {template_root_id} 状态={p0}，跳过",
+                    template_root_id=template_root_id,
+                    p0=template.recurring_status,
+                )
+            )
             unschedule_template(template_root_id)
             return
         if template.recurring_until is not None and template.recurring_until < datetime.now():
-            logger.info(f"📋 [Kanban] 周期触发：模板 {template_root_id} 已过期，自动 disarm")
+            logger.info(
+                t(
+                    "📋 [Kanban] 周期触发：模板 {template_root_id} 已过期，自动 disarm",
+                    template_root_id=template_root_id,
+                )
+            )
             await disarm_template(template_root_id)
             unschedule_template(template_root_id)
             return
@@ -210,13 +230,20 @@ async def _fire_template(template_root_id: str) -> None:
         # 前置门：按树内子任务画像汇总问 gate（根不挂画像），业务日历不满足
         # （如非交易时段）时静默跳过本次，不克隆、不派任何 LLM
         if not await _tree_gates_allow(template):
-            logger.info(f"📋 [Kanban] 周期触发：模板 {template_root_id} 被 gate 拦截，本次跳过")
+            logger.info(
+                t(
+                    "📋 [Kanban] 周期触发：模板 {template_root_id} 被 gate 拦截，本次跳过",
+                    template_root_id=template_root_id,
+                )
+            )
             return
 
         instance_root, _ = await clone_tree_for_fire(template)
         await kick_root(instance_root.id)
     except Exception as e:
-        logger.exception(f"📋 [Kanban] 周期触发异常 template={template_root_id}: {e}")
+        logger.exception(
+            t("📋 [Kanban] 周期触发异常 template={template_root_id}: {e}", template_root_id=template_root_id, e=e)
+        )
 
 
 def schedule_template(
@@ -238,7 +265,9 @@ def schedule_template(
     try:
         trigger_type, kwargs = parse_trigger_spec(trigger_spec)
     except ValueError as e:
-        logger.error(f"📋 [Kanban] 周期模板挂载失败 template={template_root_id}: {e}")
+        logger.error(
+            t("📋 [Kanban] 周期模板挂载失败 template={template_root_id}: {e}", template_root_id=template_root_id, e=e)
+        )
         return False
 
     if end_date:
@@ -256,9 +285,22 @@ def schedule_template(
             **kwargs,
         )
     except Exception as e:
-        logger.exception(f"📋 [Kanban] APScheduler add_job 失败 template={template_root_id}: {e}")
+        logger.exception(
+            t(
+                "📋 [Kanban] APScheduler add_job 失败 template={template_root_id}: {e}",
+                template_root_id=template_root_id,
+                e=e,
+            )
+        )
         return False
-    logger.info(f"📋 [Kanban] 周期模板已挂载 template={template_root_id} trigger={trigger_type} kwargs={kwargs}")
+    logger.info(
+        t(
+            "📋 [Kanban] 周期模板已挂载 template={template_root_id} trigger={trigger_type} kwargs={kwargs}",
+            template_root_id=template_root_id,
+            trigger_type=trigger_type,
+            kwargs=kwargs,
+        )
+    )
     return True
 
 
@@ -269,7 +311,7 @@ def unschedule_template(template_root_id: str) -> bool:
         scheduler.remove_job(job_id)
         return True
     except Exception as e:
-        logger.debug(f"📋 [Kanban] 摘除周期 job 跳过（可能本就不存在）: {e}")
+        logger.debug(t("📋 [Kanban] 摘除周期 job 跳过（可能本就不存在）: {e}", e=e))
         return False
 
 
@@ -286,7 +328,13 @@ async def restore_armed_templates() -> int:
         if schedule_template(tpl.id, tpl.recurring_trigger, end_date=end_date_iso):
             restored += 1
     if templates:
-        logger.info(f"📋 [Kanban] 启动期周期模板恢复：候选 {len(templates)} 个，挂载成功 {restored} 个")
+        logger.info(
+            t(
+                "📋 [Kanban] 启动期周期模板恢复：候选 {p0} 个，挂载成功 {restored} 个",
+                p0=len(templates),
+                restored=restored,
+            )
+        )
     return restored
 
 
@@ -307,15 +355,27 @@ async def _fire_not_before(subtask_id: str, root_task_id: str) -> None:
 
         sub = await AIAgentTask.get_by_id(subtask_id)
         if sub is None:
-            logger.debug(f"📋 [Kanban] not_before 唤醒：子任务 {subtask_id} 不存在，跳过")
+            logger.debug(t("📋 [Kanban] not_before 唤醒：子任务 {subtask_id} 不存在，跳过", subtask_id=subtask_id))
             return
         if sub.status != "pending":
-            logger.debug(f"📋 [Kanban] not_before 唤醒：子任务 {subtask_id} 状态={sub.status}，已不需要再叫醒")
+            logger.debug(
+                t(
+                    "📋 [Kanban] not_before 唤醒：子任务 {subtask_id} 状态={p0}，已不需要再叫醒",
+                    subtask_id=subtask_id,
+                    p0=sub.status,
+                )
+            )
             return
-        logger.info(f"📋 [Kanban] not_before 到点 → kick_root subtask={subtask_id} root={root_task_id}")
+        logger.info(
+            t(
+                "📋 [Kanban] not_before 到点 → kick_root subtask={subtask_id} root={root_task_id}",
+                subtask_id=subtask_id,
+                root_task_id=root_task_id,
+            )
+        )
         await kick_root(root_task_id)
     except Exception as e:
-        logger.exception(f"📋 [Kanban] not_before 唤醒异常 subtask={subtask_id}: {e}")
+        logger.exception(t("📋 [Kanban] not_before 唤醒异常 subtask={subtask_id}: {e}", subtask_id=subtask_id, e=e))
 
 
 def schedule_not_before_wakeup(
@@ -356,10 +416,21 @@ def schedule_not_before_wakeup(
             args=[subtask_id, root_task_id],
         )
     except Exception as e:
-        logger.exception(f"📋 [Kanban] 子任务 not_before APScheduler add_job 失败 subtask={subtask_id}: {e}")
+        logger.exception(
+            t(
+                "📋 [Kanban] 子任务 not_before APScheduler add_job 失败 subtask={subtask_id}: {e}",
+                subtask_id=subtask_id,
+                e=e,
+            )
+        )
         return False
     logger.info(
-        f"📋 [Kanban] not_before 已挂载 subtask={subtask_id} root={root_task_id} fire_at={not_before.isoformat()}"
+        t(
+            "📋 [Kanban] not_before 已挂载 subtask={subtask_id} root={root_task_id} fire_at={p0}",
+            subtask_id=subtask_id,
+            root_task_id=root_task_id,
+            p0=not_before.isoformat(),
+        )
     )
     return True
 
@@ -392,18 +463,24 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
 
         sub = await AIAgentTask.get_by_id(subtask_id)
         if sub is None:
-            logger.warning(f"📋 [Kanban] 周期子任务触发：模板 {subtask_id} 不存在，取消 job")
+            logger.warning(t("📋 [Kanban] 周期子任务触发：模板 {subtask_id} 不存在，取消 job", subtask_id=subtask_id))
             unschedule_subtask_template(subtask_id)
             return
         if sub.recurring_status != "armed":
-            logger.info(f"📋 [Kanban] 周期子任务触发：模板 {subtask_id} 状态={sub.recurring_status}，跳过")
+            logger.info(
+                t(
+                    "📋 [Kanban] 周期子任务触发：模板 {subtask_id} 状态={p0}，跳过",
+                    subtask_id=subtask_id,
+                    p0=sub.recurring_status,
+                )
+            )
             unschedule_subtask_template(subtask_id)
             return
         # 模板自身过期 → disarm
         from datetime import datetime
 
         if sub.recurring_until is not None and sub.recurring_until < datetime.now():
-            logger.info(f"📋 [Kanban] 周期子任务 {subtask_id} 已过期，自动 disarm")
+            logger.info(t("📋 [Kanban] 周期子任务 {subtask_id} 已过期，自动 disarm", subtask_id=subtask_id))
             await disarm_subtask_template(subtask_id)
             return
 
@@ -411,7 +488,11 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
         # 不克隆实例、不派能力代理；下个 cron 周期再判
         if not await _gate_allows(sub.agent_profile):
             logger.info(
-                f"📋 [Kanban] 周期子任务触发：{subtask_id} 被 gate 拦截（profile={sub.agent_profile}），本次跳过"
+                t(
+                    "📋 [Kanban] 周期子任务触发：{subtask_id} 被 gate 拦截（profile={p0}），本次跳过",
+                    subtask_id=subtask_id,
+                    p0=sub.agent_profile,
+                )
             )
             return
 
@@ -420,7 +501,7 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
             return
         await kick_root(root_task_id)
     except Exception as e:
-        logger.exception(f"📋 [Kanban] 周期子任务触发异常 subtask={subtask_id}: {e}")
+        logger.exception(t("📋 [Kanban] 周期子任务触发异常 subtask={subtask_id}: {e}", subtask_id=subtask_id, e=e))
 
 
 def schedule_subtask_template(
@@ -444,7 +525,7 @@ def schedule_subtask_template(
     try:
         trigger_type, kwargs = parse_trigger_spec(trigger_spec)
     except ValueError as e:
-        logger.error(f"📋 [Kanban] 周期子任务挂载失败 subtask={subtask_id}: {e}")
+        logger.error(t("📋 [Kanban] 周期子任务挂载失败 subtask={subtask_id}: {e}", subtask_id=subtask_id, e=e))
         return False
 
     if end_date:
@@ -462,10 +543,19 @@ def schedule_subtask_template(
             **kwargs,
         )
     except Exception as e:
-        logger.exception(f"📋 [Kanban] APScheduler add_job 失败 subtask={subtask_id}: {e}")
+        logger.exception(
+            t("📋 [Kanban] APScheduler add_job 失败 subtask={subtask_id}: {e}", subtask_id=subtask_id, e=e)
+        )
         return False
     logger.info(
-        f"📋 [Kanban] 周期子任务已挂载 subtask={subtask_id} root={root_task_id} trigger={trigger_type} kwargs={kwargs}"
+        t(
+            "📋 [Kanban] 周期子任务已挂载 subtask={subtask_id} root={root_task_id}"
+            " trigger={trigger_type} kwargs={kwargs}",
+            subtask_id=subtask_id,
+            root_task_id=root_task_id,
+            trigger_type=trigger_type,
+            kwargs=kwargs,
+        )
     )
     return True
 
@@ -477,7 +567,7 @@ def unschedule_subtask_template(subtask_id: str) -> bool:
         scheduler.remove_job(job_id)
         return True
     except Exception as e:
-        logger.debug(f"📋 [Kanban] 摘除周期子任务 job 跳过（可能本就不存在）: {e}")
+        logger.debug(t("📋 [Kanban] 摘除周期子任务 job 跳过（可能本就不存在）: {e}", e=e))
         return False
 
 
@@ -494,7 +584,13 @@ async def restore_armed_subtask_templates() -> int:
         if schedule_subtask_template(tpl.id, tpl.root_task_id, tpl.recurring_trigger, end_date=end_date_iso):
             restored += 1
     if templates:
-        logger.info(f"📋 [Kanban] 启动期周期子任务恢复：候选 {len(templates)} 个，挂载成功 {restored} 个")
+        logger.info(
+            t(
+                "📋 [Kanban] 启动期周期子任务恢复：候选 {p0} 个，挂载成功 {restored} 个",
+                p0=len(templates),
+                restored=restored,
+            )
+        )
     return restored
 
 
@@ -531,5 +627,11 @@ async def restore_pending_not_before_wakeups() -> int:
         if schedule_not_before_wakeup(s.id, s.root_task_id, s.not_before):
             restored += 1
     if subs:
-        logger.info(f"📋 [Kanban] 启动期 not_before 唤醒恢复：候选 {len(subs)} 个，挂载 {restored} 个")
+        logger.info(
+            t(
+                "📋 [Kanban] 启动期 not_before 唤醒恢复：候选 {p0} 个，挂载 {restored} 个",
+                p0=len(subs),
+                restored=restored,
+            )
+        )
     return restored

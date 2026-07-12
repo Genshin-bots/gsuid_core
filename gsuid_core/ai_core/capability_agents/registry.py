@@ -14,6 +14,7 @@ AgentNode, register_agent_node``。本兼容层将在下一个大版本移除。
 from typing import List, Union
 from dataclasses import field, dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, register_agent_node
 
@@ -55,7 +56,10 @@ def register_capability_agent(profile: Union[CapabilityAgentProfile, AgentNode])
         register_agent_node(profile)
         return
     logger.warning(
-        f"🤖 [CapabilityAgent] CapabilityAgentProfile 已废弃（{profile.profile_id}），"
-        "请迁移到 agent_node.AgentNode + register_agent_node（预算字段已被忽略）"
+        t(
+            "🤖 [CapabilityAgent] CapabilityAgentProfile 已废弃（{p0}），请迁移到"
+            " agent_node.AgentNode + register_agent_node（预算字段已被忽略）",
+            p0=profile.profile_id,
+        )
     )
     register_agent_node(_profile_to_node(profile))

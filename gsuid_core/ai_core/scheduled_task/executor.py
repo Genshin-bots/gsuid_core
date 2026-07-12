@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from pytz import timezone
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
@@ -79,16 +80,16 @@ async def execute_scheduled_task(task_id: str) -> None:
 
     # 检查AI总开关
     if not ai_config.get_config("enable").data:
-        logger.info(f"⏰ [ScheduledTask] AI总开关已关闭，跳过执行定时任务: {task_id}")
+        logger.info(t("⏰ [ScheduledTask] AI总开关已关闭，跳过执行定时任务: {task_id}", task_id=task_id))
         return
 
-    logger.info(f"⏰ [ScheduledTask] 开始执行定时任务: {task_id}")
+    logger.info(t("⏰ [ScheduledTask] 开始执行定时任务: {task_id}", task_id=task_id))
 
     # 1. 从数据库读取任务信息
     tasks = await AIScheduledTask.select_rows(task_id=task_id)
 
     if not tasks:
-        logger.error(f"❌ [ScheduledTask] 任务不存在: {task_id}")
+        logger.error(t("❌ [ScheduledTask] 任务不存在: {task_id}", task_id=task_id))
         return
 
     task = tasks[0]
@@ -97,7 +98,11 @@ async def execute_scheduled_task(task_id: str) -> None:
 
     if task.status not in ("pending", "paused"):
         logger.warning(
-            f"⚠️ [ScheduledTask] 任务状态非 pending/paused，跳过执行: task_id={task_id}, status={task.status}"
+            t(
+                "⚠️ [ScheduledTask] 任务状态非 pending/paused，跳过执行: task_id={task_id}, status={p0}",
+                task_id=task_id,
+                p0=task.status,
+            )
         )
         return
 
@@ -119,7 +124,7 @@ async def execute_scheduled_task(task_id: str) -> None:
             BOT = gss.active_bot[task.WS_BOT_ID]
             bot_instance = Bot(BOT, ev)
         else:
-            logger.error(f"[ScheduledTask] 机器人{task.WS_BOT_ID}不存在!")
+            logger.error(t("[ScheduledTask] 机器人{p0}不存在!", p0=task.WS_BOT_ID))
     else:
         for bot_id in gss.active_bot:
             BOT = gss.active_bot[bot_id]
@@ -136,7 +141,11 @@ async def execute_scheduled_task(task_id: str) -> None:
         from gsuid_core.ai_core.statistics.manager import statistics_manager
 
         logger.info(
-            f"🧠 [ScheduledTask] 启动定时任务 SubAgent: session_id={task.session_id}, persona={task.persona_name}"
+            t(
+                "🧠 [ScheduledTask] 启动定时任务 SubAgent: session_id={p0}, persona={p1}",
+                p0=task.session_id,
+                p1=task.persona_name,
+            )
         )
 
         # 记录触发方式为 scheduled
@@ -216,7 +225,12 @@ async def execute_scheduled_task(task_id: str) -> None:
                     },
                 )
                 logger.info(
-                    f"✅ [ScheduledTask] 循环任务执行完毕（已达最大次数）: task_id={task_id}, 执行了 {current_exec} 次"
+                    t(
+                        "✅ [ScheduledTask] 循环任务执行完毕（已达最大次数）:"
+                        " task_id={task_id}, 执行了 {current_exec} 次",
+                        task_id=task_id,
+                        current_exec=current_exec,
+                    )
                 )
             else:
                 # 更新下次执行时间
@@ -249,8 +263,14 @@ async def execute_scheduled_task(task_id: str) -> None:
                     },
                 )
                 logger.info(
-                    f"🔄 [ScheduledTask] 循环任务执行成功: task_id={task_id}, "
-                    f"第 {current_exec}/{max_exec} 次, 下次执行: {next_run}"
+                    t(
+                        "🔄 [ScheduledTask] 循环任务执行成功: task_id={task_id},"
+                        " 第 {current_exec}/{max_exec} 次, 下次执行: {next_run}",
+                        task_id=task_id,
+                        current_exec=current_exec,
+                        max_exec=max_exec,
+                        next_run=next_run,
+                    )
                 )
         else:
             # 一次性任务
@@ -279,14 +299,16 @@ async def execute_scheduled_task(task_id: str) -> None:
                 suppress_when_heartbeat_recent=False,
             )
             if sent:
-                logger.info(f"✅ [ScheduledTask] 任务执行成功并已推送: task_id={task_id}")
+                logger.info(t("✅ [ScheduledTask] 任务执行成功并已推送: task_id={task_id}", task_id=task_id))
             else:
-                logger.warning(f"⚠️ [ScheduledTask] 任务结果发送被抑制 / Bot 不可用: task_id={task_id}")
+                logger.warning(
+                    t("⚠️ [ScheduledTask] 任务结果发送被抑制 / Bot 不可用: task_id={task_id}", task_id=task_id)
+                )
         else:
-            logger.warning(f"⚠️ [ScheduledTask] 任务结果为空，未推送: task_id={task_id}")
+            logger.warning(t("⚠️ [ScheduledTask] 任务结果为空，未推送: task_id={task_id}", task_id=task_id))
 
     except Exception as e:
-        logger.error(f"❌ [ScheduledTask] 任务执行失败: {task_id}, error={e}")
+        logger.error(t("❌ [ScheduledTask] 任务执行失败: {task_id}, error={e}", task_id=task_id, e=e))
 
         # 更新任务状态为失败；同时把失败信息写入 last_result_summary，
         # 否则循环任务下次执行会读到上一次"成功"的过期摘要，无从得知上次已失败。
@@ -337,7 +359,14 @@ async def reload_pending_tasks() -> int:
         )
         overdue_idx += 1
         count += 1
-        logger.info(f"⏰ [ScheduledTask] 已到期的{kind}排入错峰补偿: {task_id}, ~{delay:.0f}s 后执行")
+        logger.info(
+            t(
+                "⏰ [ScheduledTask] 已到期的{kind}排入错峰补偿: {task_id}, ~{delay:.0f}s 后执行",
+                kind=kind,
+                task_id=task_id,
+                delay=delay,
+            )
+        )
 
     for task_data in tasks:
         task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
@@ -359,7 +388,13 @@ async def reload_pending_tasks() -> int:
                     replace_existing=True,
                 )
                 count += 1
-                logger.info(f"📋 [ScheduledTask] 重新加载循环任务: {task.task_id}, 下次执行: {task.next_run_time}")
+                logger.info(
+                    t(
+                        "📋 [ScheduledTask] 重新加载循环任务: {p0}, 下次执行: {p1}",
+                        p0=task.task_id,
+                        p1=task.next_run_time,
+                    )
+                )
             else:
                 # 已到执行时间或未设置：排进错峰补偿窗口（而非立即执行，防惊群 B1）
                 _schedule_overdue(task.task_id, "循环任务")
@@ -381,9 +416,21 @@ async def reload_pending_tasks() -> int:
                     replace_existing=True,
                 )
                 count += 1
-                logger.info(f"📋 [ScheduledTask] 重新加载一次性任务: {task.task_id}, 触发时间: {task.trigger_time}")
+                logger.info(
+                    t(
+                        "📋 [ScheduledTask] 重新加载一次性任务: {p0}, 触发时间: {p1}",
+                        p0=task.task_id,
+                        p1=task.trigger_time,
+                    )
+                )
 
-    logger.info(f"✅ [ScheduledTask] 共重新加载 {count} 个待执行任务（其中 {overdue_idx} 个已到期→错峰补偿）")
+    logger.info(
+        t(
+            "✅ [ScheduledTask] 共重新加载 {count} 个待执行任务（其中 {overdue_idx} 个已到期→错峰补偿）",
+            count=count,
+            overdue_idx=overdue_idx,
+        )
+    )
     return count
 
 
@@ -411,7 +458,9 @@ async def cleanup_completed_tasks() -> int:
             if scheduler.get_job(task.task_id):
                 scheduler.remove_job(task.task_id)
                 cleaned_count += 1
-                logger.info(f"🧹 [ScheduledTask] 清理已完成任务: {task.task_id}, status={task.status}")
+                logger.info(t("🧹 [ScheduledTask] 清理已完成任务: {p0}, status={p1}", p0=task.task_id, p1=task.status))
 
-    logger.info(f"✅ [ScheduledTask] 共清理 {cleaned_count} 个已完成任务的 APScheduler job")
+    logger.info(
+        t("✅ [ScheduledTask] 共清理 {cleaned_count} 个已完成任务的 APScheduler job", cleaned_count=cleaned_count)
+    )
     return cleaned_count

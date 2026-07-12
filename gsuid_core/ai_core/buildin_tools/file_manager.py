@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -83,7 +84,7 @@ async def read_file_content(
             return f"错误：路径不是文件: {file_path}"
 
         content = safe_path.read_text(encoding="utf-8")
-        logger.info(f"🧠 [BuildinTools] 读取文件成功: {file_path}")
+        logger.info(t("🧠 [BuildinTools] 读取文件成功: {file_path}", file_path=file_path))
         return content
 
     except UnicodeDecodeError:
@@ -94,7 +95,7 @@ async def read_file_content(
         except Exception:
             return f"错误：文件编码不支持，请确保文件为文本格式: {file_path}"
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 读取文件失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 读取文件失败: {e}", e=e))
         return f"错误：读取文件失败: {str(e)}"
 
 
@@ -140,7 +141,7 @@ async def write_file_content(
         safe_path.parent.mkdir(parents=True, exist_ok=True)
 
         safe_path.write_text(content, encoding="utf-8")
-        logger.info(f"🧠 [BuildinTools] 写入文件成功: {file_path}")
+        logger.info(t("🧠 [BuildinTools] 写入文件成功: {file_path}", file_path=file_path))
         # v2 · Kanban：写入完成后立刻把新文件登记为 workspace_file artifact，
         # 让主人格 artifact_list / 看板工作区视图能立即看到中间代码。否则会回到
         # 实测会话 a5696b00 的状态：code_agent 写了 .py 文件但主人格只看到 .png，
@@ -149,7 +150,7 @@ async def write_file_content(
         return f"成功写入文件: {file_path}"
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 写入文件失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 写入文件失败: {e}", e=e))
         return f"错误：写入文件失败: {str(e)}"
 
 
@@ -186,7 +187,7 @@ async def _register_single_workspace_file(path: Path) -> None:
     except ImportError:
         return
     except Exception as e:
-        logger.debug(f"🧠 [BuildinTools] workspace_file artifact 自动登记失败: {e}")
+        logger.debug(t("🧠 [BuildinTools] workspace_file artifact 自动登记失败: {e}", e=e))
 
 
 def _resolve_exec_cwd(fallback: Path) -> Path:
@@ -305,7 +306,7 @@ async def execute_file(
         exec_cwd_path = _resolve_exec_cwd(FILE_PATH)
         exec_cwd = str(exec_cwd_path)
 
-        logger.info(f"🧠 [BuildinTools] 执行文件: {' '.join(cmd)} cwd={exec_cwd}")
+        logger.info(t("🧠 [BuildinTools] 执行文件: {p0} cwd={exec_cwd}", p0=" ".join(cmd), exec_cwd=exec_cwd))
 
         # 执行前快照 workspace（仅当 cwd 是任务的 workspace 时——非任务上下文跑
         # FILE_PATH 沙盒不登记 artifact）
@@ -352,7 +353,7 @@ async def execute_file(
                             parent_task_id=None,
                         )
             except Exception as e:
-                logger.debug(f"🧠 [BuildinTools] execute_file workspace 扫描失败: {e}")
+                logger.debug(t("🧠 [BuildinTools] execute_file workspace 扫描失败: {e}", e=e))
 
         result_parts = []
         if stdout:
@@ -364,13 +365,13 @@ async def execute_file(
 
         result = "\n".join(result_parts) if result_parts else "命令执行完成，无输出"
 
-        logger.info(f"🧠 [BuildinTools] 文件执行完成，退出码: {returncode}")
+        logger.info(t("🧠 [BuildinTools] 文件执行完成，退出码: {returncode}", returncode=returncode))
         return result
 
     except FileNotFoundError as e:
         return f"错误：执行器未找到，请确保系统已安装 Python 或相关执行环境: {str(e)}"
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 执行文件失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 执行文件失败: {e}", e=e))
         return f"错误：执行文件失败: {str(e)}"
 
 
@@ -465,13 +466,19 @@ async def diff_file_content(
         diff_content = "".join(diff)
 
         if diff_content:
-            logger.info(f"🧠 [BuildinTools] 文件差异对比完成: {file_path_1} vs {file_path_2}")
+            logger.info(
+                t(
+                    "🧠 [BuildinTools] 文件差异对比完成: {file_path_1} vs {file_path_2}",
+                    file_path_1=file_path_1,
+                    file_path_2=file_path_2,
+                )
+            )
             return f"文件差异 ({file_path_1} → {file_path_2}):\n\n{diff_content}"
         else:
             return f"文件 {file_path_1} 和 {file_path_2} 内容相同"
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 文件对比失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 文件对比失败: {e}", e=e))
         return f"错误：文件对比失败: {str(e)}"
 
 
@@ -519,9 +526,9 @@ async def list_directory(
         if not entries:
             return f"目录 {dir_path} 为空"
 
-        logger.info(f"🧠 [BuildinTools] 列出目录: {dir_path}")
+        logger.info(t("🧠 [BuildinTools] 列出目录: {dir_path}", dir_path=dir_path))
         return f"目录 {dir_path or '/'} 内容:\n\n" + "\n".join(entries)
 
     except Exception as e:
-        logger.exception(f"🧠 [BuildinTools] 列出目录失败: {e}")
+        logger.exception(t("🧠 [BuildinTools] 列出目录失败: {e}", e=e))
         return f"错误：列出目录失败: {str(e)}"

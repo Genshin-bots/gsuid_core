@@ -15,6 +15,7 @@ from sqlmodel import col, func, delete, select
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory import (
     parse_iso_or_unix_timestamp,
@@ -460,11 +461,17 @@ async def _run_extract_pass(
             except asyncio.TimeoutError:
                 stats["failed"] += 1
                 logger.warning(
-                    f"🧠 [Memory] scope={scope_key} 窗口抽取超时（{req.extract_window_timeout}s），跳过该窗口"
+                    t(
+                        "🧠 [Memory] scope={scope_key} 窗口抽取超时（{p0}s），跳过该窗口",
+                        scope_key=scope_key,
+                        p0=req.extract_window_timeout,
+                    )
                 )
             except Exception as e:  # noqa: BLE001 抽取窗口失败仅跳过，绝不丢整 plan（§14.2）
                 stats["failed"] += 1
-                logger.warning(f"🧠 [Memory] scope={scope_key} 窗口抽取失败（跳过该窗口）: {e}")
+                logger.warning(
+                    t("🧠 [Memory] scope={scope_key} 窗口抽取失败（跳过该窗口）: {e}", scope_key=scope_key, e=e)
+                )
 
     if windows:
         await asyncio.gather(*[_run_one(w) for w in windows])

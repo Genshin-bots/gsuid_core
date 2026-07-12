@@ -8,6 +8,7 @@ from pathlib import Path
 from functools import wraps
 
 from gsuid_core.bot import Bot
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config, plugins_sample, plugin_config_store
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
@@ -37,7 +38,7 @@ def modify_func(func):
             result = await func(bot, event)
             return result
         except Exception as e:
-            logger.error(f"[SV] {event.command} 执行时出现错误!")
+            logger.error(t("[SV] {p0} 执行时出现错误!", p0=event.command))
             logger.exception(e)
         finally:
             instancess = Bot.get_instances()
@@ -167,7 +168,7 @@ class SV:
         white_list: List = [],
     ):
         if not self.is_initialized:
-            logger.trace(f"【{name}】模块初始化中...")
+            logger.trace(t("【{name}】模块初始化中...", name=name))
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器
@@ -363,7 +364,7 @@ class SV:
                                 block,
                                 to_me,
                             )
-                            logger.trace(f"载入{type}触发器【{_pk}】!")
+                            logger.trace(t("载入{type}触发器【{_pk}】!", type=type, _pk=_pk))
                     else:
                         self.TL[type][_k] = Trigger(
                             type,
@@ -373,7 +374,7 @@ class SV:
                             block,
                             to_me,
                         )
-                        logger.trace(f"载入{type}触发器【{_k}】!")
+                        logger.trace(t("载入{type}触发器【{_k}】!", type=type, _k=_k))
 
             # 声明 to_ai 时注册为 AI 工具；懒加载 + enable 网关，避免 sv 在 AI 关闭时拉入 pydantic_ai
             if to_ai.strip():
@@ -502,7 +503,7 @@ class SV:
 def get_plugin_prefixs(plugin_name: str) -> List[str]:
     plugin = SL.plugins.get(plugin_name)
     if plugin is None:
-        raise ValueError(f"插件{plugin_name}不存在!")
+        raise ValueError(t("插件{plugin_name}不存在!", plugin_name=plugin_name))
     return plugin.prefix
 
 
@@ -513,7 +514,7 @@ def get_plugin_prefix(plugin_name: str) -> str:
 def get_plugin_force_prefixs(plugin_name: str) -> List[str]:
     plugin = SL.plugins.get(plugin_name)
     if plugin is None:
-        raise ValueError(f"插件{plugin_name}不存在!")
+        raise ValueError(t("插件{plugin_name}不存在!", plugin_name=plugin_name))
     return plugin.force_prefix
 
 
@@ -524,7 +525,7 @@ def get_plugin_force_prefix(plugin_name: str) -> str:
 def get_plugin_available_prefix(plugin_name: str) -> str:
     plugin = SL.plugins.get(plugin_name)
     if plugin is None:
-        raise ValueError(f"插件{plugin_name}不存在!")
+        raise ValueError(t("插件{plugin_name}不存在!", plugin_name=plugin_name))
     if not plugin.disable_force_prefix and plugin.force_prefix:
         return plugin.force_prefix[0]
     elif plugin.disable_force_prefix and plugin.prefix:

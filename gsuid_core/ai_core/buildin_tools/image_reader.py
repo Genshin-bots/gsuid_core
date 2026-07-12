@@ -26,6 +26,7 @@ from typing import Tuple, Optional
 import httpx
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -153,13 +154,22 @@ async def read_image(
             break
         except (RuntimeError, httpx.HTTPError, asyncio.TimeoutError) as e:
             last_err = e
-            logger.warning(f"🧠 [BuildinTools] read_image 第 {attempt} 次读取 {image_id} 失败: {e}")
+            logger.warning(
+                t(
+                    "🧠 [BuildinTools] read_image 第 {attempt} 次读取 {image_id} 失败: {e}",
+                    attempt=attempt,
+                    image_id=image_id,
+                    e=e,
+                )
+            )
     if last_err is not None:
         return f"❌ 图片读取失败（已重试）：{last_err}"
 
     description = (description or "").strip()
     if not description:
         return f"⚠️ 图片 {image_id} 已读取，但未能解析出有效内容。"
-    logger.info(f"🧠 [BuildinTools] read_image 已读取图片 {image_id}（描述 {len(description)} 字）")
+    logger.info(
+        t("🧠 [BuildinTools] read_image 已读取图片 {image_id}（描述 {p0} 字）", image_id=image_id, p0=len(description))
+    )
     # 图片 OCR 出的文字可能含诱导性指令，套不可信栅栏（§B.3-1），模型对栅栏内内容只当数据
     return f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)

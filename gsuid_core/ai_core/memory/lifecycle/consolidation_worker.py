@@ -14,6 +14,7 @@
 始终优先。整个流程不依赖 LLM——纯规则 / 数值运算，可安全后台执行。
 """
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
 # 衰减判定：超过此天数未被检索则衰减
@@ -95,7 +96,7 @@ async def _forget() -> int:
                 points_selector=PointIdsList(points=qdrant_point_ids),
             )
     except Exception as e:
-        logger.warning(f"🧠 [Lifecycle] Qdrant Edge 向量删除失败（SQL 已删）: {e}")
+        logger.warning(i18n_t("🧠 [Lifecycle] Qdrant Edge 向量删除失败（SQL 已删）: {e}", e=e))
     return len(forgotten_ids)
 
 
@@ -142,7 +143,7 @@ async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
                     points_selector=PointIdsList(points=point_ids),
                 )
         except Exception as e:
-            logger.warning(f"🧠 [Lifecycle] Qdrant Entity 向量删除失败（SQL 已删）: {e}")
+            logger.warning(i18n_t("🧠 [Lifecycle] Qdrant Entity 向量删除失败（SQL 已删）: {e}", e=e))
 
         total += len(entity_ids)
 
@@ -163,7 +164,7 @@ async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
                 )
             await session.commit()
     except Exception as e:
-        logger.warning(f"🧠 [Lifecycle] 递减分层图实体计数失败（不影响下次重建自愈）: {e}")
+        logger.warning(i18n_t("🧠 [Lifecycle] 递减分层图实体计数失败（不影响下次重建自愈）: {e}", e=e))
 
     return total
 
@@ -303,7 +304,7 @@ async def _reconcile_dangling_vectors() -> int:
                 existing = await _filter_existing_qdrant_ids(model, page_ids)
                 dangling.extend(pid for pid in page_ids if pid not in existing)
         except Exception as e:
-            logger.warning(f"🧠 [Lifecycle] 对账扫描 {collection} 失败: {e}")
+            logger.warning(i18n_t("🧠 [Lifecycle] 对账扫描 {collection} 失败: {e}", collection=collection, e=e))
             continue
 
         # scroll 完成后再删，避免删除影响游标
@@ -333,7 +334,7 @@ async def run_lifecycle_maintenance() -> None:
 
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
-    logger.info("🧠 [Lifecycle] 开始记忆生命周期维护...")
+    logger.info(i18n_t("🧠 [Lifecycle] 开始记忆生命周期维护..."))
     try:
         consolidated = await _consolidate()
         decayed = await AIMemEdge.apply_decay(
@@ -355,10 +356,23 @@ async def run_lifecycle_maintenance() -> None:
         # 程序性/偏好记忆裁剪（默认开；关闭时为 no-op）
         pref_pruned = await _maintain_preferences()
         logger.success(
-            f"🧠 [Lifecycle] 维护完成：巩固 {consolidated} 条、衰减 {decayed} 条、"
-            f"遗忘 {forgotten} 条、Edge 裁剪 {edge_trimmed} 条、回收孤儿实体 {orphan_entities} 个、"
-            f"Entity 裁剪 {entity_trimmed} 个、Episode 降级 {ep_demoted} 条 / 物理删除 {ep_purged} 条、"
-            f"对账清理悬空向量 {dangling} 个、偏好规则裁剪 {pref_pruned} 条"
+            i18n_t(
+                "🧠 [Lifecycle] 维护完成：巩固 {consolidated} 条、衰减 {decayed} 条、"
+                "遗忘 {forgotten} 条、Edge 裁剪 {edge_trimmed} 条、回收孤儿实体 {orphan_entities} 个、"
+                "Entity 裁剪 {entity_trimmed} 个、Episode 降级 {ep_demoted} 条 /"
+                " 物理删除 {ep_purged} 条、对账清理悬空向量 {dangling} 个、"
+                "偏好规则裁剪 {pref_pruned} 条",
+                consolidated=consolidated,
+                decayed=decayed,
+                forgotten=forgotten,
+                edge_trimmed=edge_trimmed,
+                orphan_entities=orphan_entities,
+                entity_trimmed=entity_trimmed,
+                ep_demoted=ep_demoted,
+                ep_purged=ep_purged,
+                dangling=dangling,
+                pref_pruned=pref_pruned,
+            )
         )
     except Exception as e:
-        logger.exception(f"🧠 [Lifecycle] 记忆生命周期维护失败: {e}")
+        logger.exception(i18n_t("🧠 [Lifecycle] 记忆生命周期维护失败: {e}", e=e))

@@ -44,6 +44,7 @@ from typing import (
 )
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 if TYPE_CHECKING:
@@ -114,11 +115,16 @@ def register_embedding_provider(entry: EmbeddingProviderEntry) -> None:
         ValueError: 注册名与内置 provider 冲突
     """
     if entry.name in BUILTIN_PROVIDERS:
-        raise ValueError(f"嵌入 Provider 注册名 '{entry.name}' 与内置 provider 冲突")
+        raise ValueError(t("嵌入 Provider 注册名 '{p0}' 与内置 provider 冲突", p0=entry.name))
     _EXTERNAL_PROVIDERS[entry.name] = entry
     _append_provider_option(entry.name)
     logger.info(
-        f"🧠 [Embedding] 已注册插件嵌入 Provider: {entry.name} (kind={entry.kind}, plugin={entry.plugin or '未知'})"
+        t(
+            "🧠 [Embedding] 已注册插件嵌入 Provider: {p0} (kind={p1}, plugin={p2})",
+            p0=entry.name,
+            p1=entry.kind,
+            p2=entry.plugin or "未知",
+        )
     )
 
 

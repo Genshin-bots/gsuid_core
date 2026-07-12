@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Query, Depends
 from pydantic import BaseModel
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
@@ -617,4 +618,4 @@ async def get_overview(_user: Dict[str, Any] = Depends(require_auth)) -> Dict[st
     }
 
 
-logger.info("💰 [WebConsole] AI 预算限制 API 已注册 (/api/ai/budget)")
+logger.info(t("💰 [WebConsole] AI 预算限制 API 已注册 (/api/ai/budget)"))

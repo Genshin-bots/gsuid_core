@@ -7,6 +7,7 @@ import httpx
 import aiofiles
 from aiohttp.client import ClientSession
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 
@@ -17,7 +18,7 @@ async def download(
     sess: Union[ClientSession, httpx.AsyncClient, None] = None,
     tag: str = "",
 ):
-    logger.info(f"{tag} 开始下载 {name} 图片...")
+    logger.info(t("{tag} 开始下载 {name} 图片...", tag=tag, name=name))
     logger.info(f"{tag} URL: {url}")
     if sess is None:
         sess = httpx.AsyncClient()
@@ -35,13 +36,13 @@ async def download(
         if retcode == 200:
             async with aiofiles.open(path / name, "wb") as f:
                 await f.write(content)
-            logger.success(f"{tag} {name} 下载完成！")
+            logger.success(t("{tag} {name} 下载完成！", tag=tag, name=name))
         else:
-            logger.warning(f"{tag} {name} 下载失败！错误码{retcode}")
+            logger.warning(t("{tag} {name} 下载失败！错误码{retcode}", tag=tag, name=name, retcode=retcode))
         return retcode
     except Exception as e:
         logger.error(e)
-        logger.warning(f"{tag} {name} 下载失败！")
+        logger.warning(t("{tag} {name} 下载失败！", tag=tag, name=name))
 
 
 async def get_data_from_url(url: str, path: Path, expire_sec: Optional[float] = None) -> Dict:

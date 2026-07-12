@@ -11,6 +11,7 @@ from typing import Optional
 
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import async_maker
 
@@ -68,8 +69,13 @@ async def extract_and_upsert_entities(
                 await asyncio.sleep(0.1 * (attempt + 1))
                 continue
             logger.warning(
-                f"🧠 [Memory] scope={scope_key} 实体写入重试 {_ENTITY_UPSERT_MAX_RETRY} 次仍失败"
-                f"（{type(_e).__name__}），跳过本窗口实体（不影响其它窗口）"
+                t(
+                    "🧠 [Memory] scope={scope_key} 实体写入重试 {_ENTITY_UPSERT_MAX_RETRY}"
+                    " 次仍失败（{p0}），跳过本窗口实体（不影响其它窗口）",
+                    scope_key=scope_key,
+                    _ENTITY_UPSERT_MAX_RETRY=_ENTITY_UPSERT_MAX_RETRY,
+                    p0=type(_e).__name__,
+                )
             )
             return {}, 0
 

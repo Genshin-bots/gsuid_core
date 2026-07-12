@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.expression import func, null, true
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.plugins_config.gs_config import database_config
@@ -109,7 +110,7 @@ async def init_database():
         if _db_initialized:
             return
 
-        logger.info("📀 [数据库] 开始初始化...")
+        logger.info(i18n_t("📀 [数据库] 开始初始化..."))
 
         try:
             if _db_type == "sqlite":
@@ -151,7 +152,7 @@ async def init_database():
                             t2 = "CHARACTER SET utf8mb4 COLLATE "
                             t3 = "utf8mb4_unicode_ci"
                             conn.execute(text(t1 + t2 + t3))
-                            logger.success(f"[MySQL] 数据库 {db_name} 创建成功或已存在!")
+                            logger.success(i18n_t("[MySQL] 数据库 {db_name} 创建成功或已存在!", db_name=db_name))
                     elif _db_type == "postgresql":
                         try:
                             server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
@@ -163,11 +164,11 @@ async def init_database():
                         except exc.ProgrammingError as e:
                             if "already exists" in str(e) or "已经存在" in str(e):
                                 pass
-                        logger.success(f"[PostgreSQL] 数据库 {db_name} 创建成功或已存在!")
+                        logger.success(i18n_t("[PostgreSQL] 数据库 {db_name} 创建成功或已存在!", db_name=db_name))
                 finally:
                     if server_engine:
                         server_engine.dispose()
-                        logger.info("[数据库] 临时数据库连接已释放!")
+                        logger.info(i18n_t("[数据库] 临时数据库连接已释放!"))
 
                 # db_config['poolclass'] = NullPool
                 finally_url = f"{base_url}{db_url}{db_name}"
@@ -182,8 +183,8 @@ async def init_database():
 
             _db_initialized = True
         except Exception as e:  # noqa: E722
-            logger.exception(f"[GsCore] [数据库] 连接失败: {e}")
-            raise ValueError(f"[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!")
+            logger.exception(i18n_t("[GsCore] [数据库] 连接失败: {e}", e=e))
+            raise ValueError(i18n_t("[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!", base_url=base_url))
 
 
 def with_session(
@@ -207,12 +208,12 @@ def with_session(
                         return data
             except OperationalError as e:
                 if "unable to open database file" in str(e):
-                    logger.error("[数据库] 数据库无法打开，停止重试")
+                    logger.error(i18n_t("[数据库] 数据库无法打开，停止重试"))
                     break
-                logger.warning(f"[数据库] 第 {attempt + 1} 次重试失败: {e}")
+                logger.warning(i18n_t("[数据库] 第 {p0} 次重试失败: {e}", p0=attempt + 1, e=e))
                 await asyncio.sleep(0.5 * (2**attempt))  # 指数退避
             except Exception as e:
-                logger.exception(f"[数据库] 第 {attempt + 1} 次重试失败: {e}")
+                logger.exception(i18n_t("[数据库] 第 {p0} 次重试失败: {e}", p0=attempt + 1, e=e))
                 await asyncio.sleep(0.5 * (2**attempt))
 
     return wrapper  # type: ignore
@@ -335,7 +336,7 @@ class BaseIDModel(SQLModel):
             update_dict = {col: getattr(stmt.inserted, col) for col in update_key}
             update_stmt = stmt.on_duplicate_key_update(**update_dict)
         else:
-            raise ValueError(f"[GsCore] [数据库] 不支持 {_db_type} 数据库!")
+            raise ValueError(i18n_t("[GsCore] [数据库] 不支持 {_db_type} 数据库!", _db_type=_db_type))
 
         await session.execute(update_stmt, values_to_insert)
 
@@ -445,7 +446,7 @@ class BaseIDModel(SQLModel):
             🔸`int`: 如为1则删除成功，否则删除失败(数据不存在)
         """
         row_data = await cls.select_rows(**data)
-        logger.trace(f"[GsCore数据库] 即将删除{row_data}")
+        logger.trace(i18n_t("[GsCore数据库] 即将删除{row_data}", row_data=row_data))
         if row_data:
             for row in row_data:
                 await session.delete(row)
@@ -485,7 +486,7 @@ class BaseIDModel(SQLModel):
             stmt = stmt.distinct()
         result = await session.execute(stmt)
         data = result.scalars().all()
-        logger.trace(f"[GsCore数据库] 选择 {data}")
+        logger.trace(i18n_t("[GsCore数据库] 选择 {data}", data=data))
         return data
 
     @classmethod

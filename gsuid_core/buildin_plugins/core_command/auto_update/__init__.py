@@ -1,4 +1,5 @@
 from gsuid_core.aps import scheduler
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.message import send_msg_to_master
 from gsuid_core.utils.plugins_update._plugins import update_all_plugins
@@ -21,7 +22,7 @@ async def update_core_at_night():
     """每天凌晨执行，自动更新早柚核心"""
 
     if config.get_config("AutoUpdateCore").data:
-        logger.info("[Core自动任务] 开始更新 [早柚核心]")
+        logger.info(t("[Core自动任务] 开始更新 [早柚核心]"))
         _log = await update_core()
         if IS_NOTIFY:
             await send_msg_to_master(_log)
@@ -33,7 +34,7 @@ async def update_all_plugins_at_night():
     """每天凌晨执行，自动更新全部插件, 然后发送给主人"""
 
     if config.get_config("AutoUpdatePlugins").data:
-        logger.info("[Core自动任务] 开始更新 [插件目录]")
+        logger.info(t("[Core自动任务] 开始更新 [插件目录]"))
         _log = await update_all_plugins()
         if IS_NOTIFY:
             await send_msg_to_master(_log)
@@ -45,5 +46,5 @@ async def auto_restart_at_night():
     """每天凌晨执行，自动重启早柚核心"""
 
     if config.get_config("AutoRestartCore").data:
-        logger.info("[Core自动任务] 开始执行 [自动重启]")
+        logger.info(t("[Core自动任务] 开始执行 [自动重启]"))
         await restart_core()

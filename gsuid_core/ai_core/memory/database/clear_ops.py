@@ -9,6 +9,7 @@ from typing import Optional
 from sqlmodel import col, func, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.database.models import (
@@ -111,7 +112,7 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(f"[clear_memories] Qdrant 向量删除异常: {e}")
+        logger.warning(t("[clear_memories] Qdrant 向量删除异常: {e}", e=e))
 
 
 async def _delete_db_by_scope_keys(
@@ -304,7 +305,7 @@ async def clear_memories_for_scope_async(
             },
         }
     except Exception as e:
-        logger.error(f"[clear_memories] 清理记忆失败: {e}")
+        logger.error(t("[clear_memories] 清理记忆失败: {e}", e=e))
         return {
             "status": 1,
             "msg": f"清理记忆失败: {str(e)}",
@@ -422,7 +423,7 @@ async def clear_group_memories(
             },
         }
     except Exception as e:
-        logger.error(f"[clear_group_memories] 清空群记忆失败: {e}")
+        logger.error(t("[clear_group_memories] 清空群记忆失败: {e}", e=e))
         return {
             "status": 1,
             "msg": f"清空群记忆失败: {str(e)}",
@@ -449,7 +450,7 @@ async def clear_user_global_memories(
         scope_key = make_scope_key(ScopeType.USER_GLOBAL, user_id)
         return await clear_memories_for_scope_async(scope_key=scope_key, dry_run=dry_run)
     except Exception as e:
-        logger.error(f"[clear_user_global_memories] 清空用户全局记忆失败: {e}")
+        logger.error(t("[clear_user_global_memories] 清空用户全局记忆失败: {e}", e=e))
         return {
             "status": 1,
             "msg": f"清空用户全局记忆失败: {str(e)}",

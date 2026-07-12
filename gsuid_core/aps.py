@@ -6,6 +6,7 @@ from msgspec import Meta
 from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 
@@ -39,14 +40,14 @@ scheduler.configure(options)
 async def start_scheduler():
     if not scheduler.running:
         scheduler.start()
-        logger.info("⏲ [定时器系统] 定时任务启动成功！")
+        logger.info(t("⏲ [定时器系统] 定时任务启动成功！"))
 
 
 async def shutdown_scheduler():
     if scheduler.running:
         # 使用 wait=False 避免阻塞等待正在执行的任务
         scheduler.shutdown(wait=False)
-        logger.info("⌛ [定时器系统] 程序关闭！定时任务结束！")
+        logger.info(t("⌛ [定时器系统] 程序关闭！定时任务结束！"))
 
 
 def remove_repeat_job():
@@ -60,7 +61,7 @@ def remove_repeat_job():
             if source_i == source_j:
                 scheduler.remove_job(i.id)
             else:
-                logger.warning(f"发现重复函数名定时任务{i.name}, 移除该任务...")
+                logger.warning(t("发现重复函数名定时任务{p0}, 移除该任务...", p0=i.name))
                 scheduler.remove_job(i.id)
 
     del repeat_jobs
@@ -312,7 +313,13 @@ async def add_scheduled_job(
     # 验证 trigger_type
     valid_trigger_types = ["date", "interval", "cron"]
     if trigger_type not in valid_trigger_types:
-        logger.error(f"[定时器系统] 无效的触发器类型: {trigger_type}，仅支持 {valid_trigger_types}")
+        logger.error(
+            t(
+                "[定时器系统] 无效的触发器类型: {trigger_type}，仅支持 {valid_trigger_types}",
+                trigger_type=trigger_type,
+                valid_trigger_types=valid_trigger_types,
+            )
+        )
         return None
 
     # 生成 job_id 如果没有提供
@@ -326,7 +333,7 @@ async def add_scheduled_job(
     try:
         if trigger_type == "date":
             if run_date is None:
-                logger.error("[定时器系统] DateTrigger 必须提供 run_date 参数")
+                logger.error(t("[定时器系统] DateTrigger 必须提供 run_date 参数"))
                 return None
             # 如果是字符串，尝试转换为 datetime
             run_date_dt = datetime.fromisoformat(run_date) if isinstance(run_date, str) else run_date
@@ -372,7 +379,7 @@ async def add_scheduled_job(
             trigger = CronTrigger(**cron_fields)
 
     except Exception as e:
-        logger.error(f"[定时器系统] 创建触发器失败: {e}")
+        logger.error(t("[定时器系统] 创建触发器失败: {e}", e=e))
         return None
 
     # 添加任务到调度器
@@ -385,10 +392,15 @@ async def add_scheduled_job(
             replace_existing=replace_existing,
         )
         logger.info(
-            f"[定时器系统] 成功添加定时任务: {job_id} ({job_name or '未命名'}) - {_get_trigger_description(trigger)}"
+            t(
+                "[定时器系统] 成功添加定时任务: {job_id} ({p0}) - {p1}",
+                job_id=job_id,
+                p0=job_name or "未命名",
+                p1=_get_trigger_description(trigger),
+            )
         )
         return job
 
     except Exception as e:
-        logger.error(f"[定时器系统] 添加定时任务失败: {e}")
+        logger.error(t("[定时器系统] 添加定时任务失败: {e}", e=e))
         return None

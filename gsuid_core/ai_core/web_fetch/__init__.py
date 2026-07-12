@@ -10,6 +10,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 # 默认请求头，模拟浏览器访问
@@ -51,9 +52,9 @@ async def fetch_webpage_as_markdown(
         aiohttp.ClientError: 网络请求错误
     """
     if not url.startswith(("http://", "https://")):
-        raise ValueError(f"无效的 URL: {url}，必须以 http:// 或 https:// 开头")
+        raise ValueError(t("无效的 URL: {url}，必须以 http:// 或 https:// 开头", url=url))
 
-    logger.info(f"🌐 [WebFetch] 正在抓取网页: {url}")
+    logger.info(t("🌐 [WebFetch] 正在抓取网页: {url}", url=url))
 
     try:
         async with aiohttp.ClientSession(
@@ -62,18 +63,20 @@ async def fetch_webpage_as_markdown(
         ) as session:
             async with session.get(url) as response:
                 if response.status != 200:
-                    raise ValueError(f"请求失败，状态码: {response.status}，URL: {url}")
+                    raise ValueError(t("请求失败，状态码: {p0}，URL: {url}", p0=response.status, url=url))
 
                 # 检查 Content-Type，确保是 HTML 页面
                 content_type = response.content_type or ""
                 if "text" not in content_type and "html" not in content_type:
-                    raise ValueError(f"不支持的内容类型: {content_type}，仅支持 HTML/文本页面")
+                    raise ValueError(
+                        t("不支持的内容类型: {content_type}，仅支持 HTML/文本页面", content_type=content_type)
+                    )
 
                 html_content = await response.text()
 
     except aiohttp.ClientError as e:
-        logger.error(f"🌐 [WebFetch] 网络请求失败: {url}, 错误: {e}")
-        raise ValueError(f"网络请求失败: {e}") from e
+        logger.error(t("🌐 [WebFetch] 网络请求失败: {url}, 错误: {e}", url=url, e=e))
+        raise ValueError(t("网络请求失败: {e}", e=e)) from e
 
     # 使用 BeautifulSoup 清理 HTML，完全移除无关标签及其内容
     try:
@@ -113,8 +116,8 @@ async def fetch_webpage_as_markdown(
         cleaned_html = str(main_content)
 
     except Exception as e:
-        logger.error(f"🌐 [WebFetch] HTML 清理失败: {url}, 错误: {e}")
-        raise ValueError(f"HTML 清理失败: {e}") from e
+        logger.error(t("🌐 [WebFetch] HTML 清理失败: {url}, 错误: {e}", url=url, e=e))
+        raise ValueError(t("HTML 清理失败: {e}", e=e)) from e
 
     # 使用 markdownify 将清理后的 HTML 转换为 Markdown
     try:
@@ -124,8 +127,8 @@ async def fetch_webpage_as_markdown(
             bullets="-",  # 使用 - 作为列表符号
         )
     except Exception as e:
-        logger.error(f"🌐 [WebFetch] HTML 转 Markdown 失败: {url}, 错误: {e}")
-        raise ValueError(f"HTML 转 Markdown 失败: {e}") from e
+        logger.error(t("🌐 [WebFetch] HTML 转 Markdown 失败: {url}, 错误: {e}", url=url, e=e))
+        raise ValueError(t("HTML 转 Markdown 失败: {e}", e=e)) from e
 
     # 清理多余的空行
     lines = markdown_content.split("\n")
@@ -146,9 +149,16 @@ async def fetch_webpage_as_markdown(
     # 截断过长的内容
     if len(result) > max_length:
         result = result[:max_length] + "\n\n...(内容已截断)"
-        logger.warning(f"🌐 [WebFetch] 内容过长已截断: {url}, 原始长度: {len(markdown_content)}, 截断至: {max_length}")
+        logger.warning(
+            t(
+                "🌐 [WebFetch] 内容过长已截断: {url}, 原始长度: {p0}, 截断至: {max_length}",
+                url=url,
+                p0=len(markdown_content),
+                max_length=max_length,
+            )
+        )
 
-    logger.info(f"🌐 [WebFetch] 抓取完成: {url}, Markdown 长度: {len(result)} 字符")
+    logger.info(t("🌐 [WebFetch] 抓取完成: {url}, Markdown 长度: {p0} 字符", url=url, p0=len(result)))
 
     return result
 

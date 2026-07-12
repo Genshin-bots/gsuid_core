@@ -27,6 +27,7 @@
 
 from typing import Set, List, Optional
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.register import get_tools_by_capability_domain
@@ -143,5 +144,5 @@ async def get_state_driven_family_tools(
             seen.add(tb.name)
             out.append(tb.tool)
     if out:
-        logger.debug(f"🧠 [ToolState] 状态驱动补充能力族 {domains}，新增 {len(out)} 个工具")
+        logger.debug(t("🧠 [ToolState] 状态驱动补充能力族 {domains}，新增 {p0} 个工具", domains=domains, p0=len(out)))
     return out

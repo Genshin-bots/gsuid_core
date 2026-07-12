@@ -28,6 +28,7 @@ from typing import Optional
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -110,7 +111,7 @@ async def create_subagent(
     if agent_profile:
         return await _dispatch_via_kanban(ctx, task, agent_profile)
 
-    logger.info(f"🧠 [Subagent] 启动通用规划执行Agent，任务: {task[:50]}...")
+    logger.info(i18n_t("🧠 [Subagent] 启动通用规划执行Agent，任务: {p0}...", p0=task[:50]))
 
     async with _get_subagent_semaphore():
         # 搜索工具
@@ -121,7 +122,7 @@ async def create_subagent(
         )
         # 子Agent不能再创建子Agent，防止递归爆炸
         tools = [t for t in tools if t.name != "create_subagent"]
-        logger.debug(f"🧠 [Subagent] 工具列表: {[tool.name for tool in tools]}")
+        logger.debug(i18n_t("🧠 [Subagent] 工具列表: {p0}", p0=[tool.name for tool in tools]))
 
         # ✨ 内置一个 Plan-and-Solve System Prompt
         system_prompt = """
@@ -204,11 +205,17 @@ async def create_subagent(
                             log_file=parent_log_file,
                         )
                         logger.info(
-                            f"🧠 [Subagent] 建立 Agent 关联: {parent_session_id}({parent_logger.session_uuid}) "
-                            f"-> {subagent_session_id}({sub_logger.session_uuid})"
+                            i18n_t(
+                                "🧠 [Subagent] 建立 Agent 关联: {parent_session_id}({p0})"
+                                " -> {subagent_session_id}({p1})",
+                                parent_session_id=parent_session_id,
+                                p0=parent_logger.session_uuid,
+                                subagent_session_id=subagent_session_id,
+                                p1=sub_logger.session_uuid,
+                            )
                         )
         except Exception as link_err:
-            logger.warning(f"🧠 [Subagent] 建立 Agent 关联失败（非致命）: {link_err}")
+            logger.warning(i18n_t("🧠 [Subagent] 建立 Agent 关联失败（非致命）: {link_err}", link_err=link_err))
 
         try:
             # 直接把任务扔给它，它会被 system_prompt 逼着去先列 TODO list
@@ -223,7 +230,7 @@ async def create_subagent(
             return f"【子Agent规划并执行完毕，交付结果如下】\n\n{result}"
 
         except Exception as e:
-            logger.error(f"❌[Subagent] 执行失败: {e}")
+            logger.error(i18n_t("❌[Subagent] 执行失败: {e}", e=e))
             return f"⚠️ 复杂任务执行失败，子Agent崩溃: {str(e)}"
         finally:
             # SubAgent 执行完毕（无论成功或异常），确保日志落盘并从 AISessionRegistry 移除。
@@ -273,7 +280,7 @@ async def _dispatch_transient_capability_agent(
     if profile is None:
         return f"⚠️ 能力代理节点不存在: {agent_profile}（解析为 {pid}）"
 
-    logger.info(f"🧠 [Subagent] transient 模式直跑 profile={pid} task={task[:60]!r}")
+    logger.info(i18n_t("🧠 [Subagent] transient 模式直跑 profile={pid} task={p0}", pid=pid, p0=repr(task[:60])))
     try:
         # runner._ensure_adhoc_workspace contextmanager 会在无 plan_ctx 时建临时
         # ad-hoc workspace；这里直接调 run_capability_agent，让 runner 自己处理。
@@ -285,7 +292,7 @@ async def _dispatch_transient_capability_agent(
             session_id_suffix=f"transient_{pid}",
         )
     except Exception as e:
-        logger.exception(f"🧠 [Subagent] transient 代理执行异常: {e}")
+        logger.exception(i18n_t("🧠 [Subagent] transient 代理执行异常: {e}", e=e))
         return f"⚠️ {pid} 临时代理执行失败: {type(e).__name__}: {e}"
 
     prefix_note = (
@@ -372,7 +379,13 @@ async def _dispatch_via_kanban(
     )
 
     logger.info(
-        f"🧠 [Subagent] 转 Kanban 叶子根：root#{root.ordinal} id={root.id[:6]} profile={pid} task={task[:60]!r}"
+        i18n_t(
+            "🧠 [Subagent] 转 Kanban 叶子根：root#{p0} id={p1} profile={pid} task={p2}",
+            p0=root.ordinal,
+            p1=root.id[:6],
+            pid=pid,
+            p2=repr(task[:60]),
+        )
     )
     asyncio.create_task(kick_root(root.id))
 
