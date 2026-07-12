@@ -38,6 +38,11 @@ RF-Mem 双过程检索 + 生命周期 + 多模态摄入。
 > `self:{bot_id}` 做轻量摄入（仅 Episode、不抽 Entity/Edge），杜绝"Bot 戏言污染群记忆"。
 > 隔离靠 SQL `WHERE scope_key = ?` + Qdrant payload filter。
 
+> **会话默认 scope 用 `scope_key_for_conversation(group_id, user_id)`**（2026-07-12 新增）：
+> "群→`group:` / 私聊→`user_global:`" 的三元式曾在 ai_router/subagent/kanban_tools/observer
+> 各复制一份——摄入与检索两侧映射不一致会让命名空间悄然分裂（群画像"无故消失"且无报错）。
+> 新代码一律调 helper；三处旧复制（subagent/kanban_tools/observer）待统一。
+
 ## 9.3 Observer 观察者管道（`memory/observer.py`）
 
 通过 `queue.Queue`（**线程安全**，非 `asyncio.Queue`）传递观察记录。

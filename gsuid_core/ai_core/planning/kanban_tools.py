@@ -49,6 +49,9 @@ _REGISTER_KANBAN_LIMIT_IN_WINDOW = 5
 # _FUZZY_MIN_OVERLAP）时，本次调用**不计入** rate-limit 窗口；否则计入。
 # 用于解决"主人格按 evaluator 输出顺序串行建多棵相关树时被无辜限流"的常见错杀。
 _REGISTER_KANBAN_SAME_EVAL_EXEMPT = True
+# same-eval 放宽上限（不再无限豁免）：合法多树够用，但 register→fail→register 失败环
+# 实测 9~11 次必被此上限钉死。修复前 same-eval 会跳过上限且不记时间戳→永久旁路（见 README B2）。
+_REGISTER_KANBAN_SAME_EVAL_LIMIT = 8
 
 # 限流诊断：每次 register 返回拒绝时把"原因短码"塞进 owner 的最近原因栈，
 # 触发硬限流时按高频原因给出对症诊断（之前文案硬编码"recurring_trigger 反复传 null"
@@ -357,15 +360,18 @@ async def register_kanban_task(
 
     # 先尝试模糊匹配命中的 eval（用于判断本次 register 是否豁免限流）
     matched_eval_for_rate_check = get_recent_evaluation(owner_id, goal)
-    same_eval_exempt = _REGISTER_KANBAN_SAME_EVAL_EXEMPT and matched_eval_for_rate_check is not None
+    same_eval = _REGISTER_KANBAN_SAME_EVAL_EXEMPT and matched_eval_for_rate_check is not None
+    # 修复 B2：same-eval 改为「放宽上限」而非「完全豁免」，且无论是否 same-eval 都照常记入
+    # 窗口——否则失败环借"每次 evaluate 刷新一条模糊匹配"永久旁路计数。
+    effective_limit = _REGISTER_KANBAN_SAME_EVAL_LIMIT if same_eval else _REGISTER_KANBAN_LIMIT_IN_WINDOW
 
-    if not same_eval_exempt and len(history) >= _REGISTER_KANBAN_LIMIT_IN_WINDOW:
+    if len(history) >= effective_limit:
         _REGISTER_KANBAN_RECENT[owner_id] = history  # 清理过期
         diag = _diagnose_register_loop(owner_id)
         return (
             f"⚠️ 你已在 {int(_REGISTER_KANBAN_WINDOW_SEC)} 秒内调用 "
             f"register_kanban_task {len(history)} 次，超过 "
-            f"{_REGISTER_KANBAN_LIMIT_IN_WINDOW} 次硬上限——这通常是因为参数有问题"
+            f"{effective_limit} 次上限——这通常是因为参数有问题"
             "导致 register-fail 循环。\n\n"
             f"{diag}\n\n"
             "通用提示：(1) 如果只想修已存在子任务参数请改用 `respawn_subtask` 或 "
@@ -375,10 +381,9 @@ async def register_kanban_task(
             "`recurring_trigger`（KanbanSubtaskSpec.recurring_trigger 字段）——一棵树"
             "包完整生命周期，不需要拆多棵树。"
         )
-    # 同 eval 豁免命中时不写入历史；否则记入
-    if not same_eval_exempt:
-        history.append(now)
-        _REGISTER_KANBAN_RECENT[owner_id] = history
+    # 关键修复：无论 same-eval 与否都记入窗口（豁免不再跳过计数）
+    history.append(now)
+    _REGISTER_KANBAN_RECENT[owner_id] = history
 
     eval_result = matched_eval_for_rate_check or get_recent_evaluation(owner_id, goal)
     if eval_result is None:

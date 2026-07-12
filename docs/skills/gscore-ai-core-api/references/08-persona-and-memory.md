@@ -42,13 +42,20 @@ class Persona(TypedDict):
 ```python
 from gsuid_core.ai_core.persona import build_persona_prompt
 
-# 构建完整的 persona 提示词
+# 构建完整的 persona 提示词（真实签名，2026-07-12 起）
 prompt = await build_persona_prompt(
-    persona_name="my_persona",
-    user_name="用户",
-    context="当前对话上下文"
+    "my_persona",                    # char_name：角色名
+    mood_key=None,                   # 主聊天链路不传（mood 每轮在 user 侧注入，进 system 会
+                                     # 双写且打掉 provider 前缀缓存）；插件一次性 prompt 可传
+    group_description=None,          # 群聊简介/画像（可选）
+    extra_stable_context=None,       # 慢变稳定前缀（self_model 自述 + 群画像，O-3；
+                                     # 主链路由 context_assembly.build_session_system_prompt 组装）
 )
 ```
+
+> 主聊天链路请勿手工调用本函数拼 system prompt——统一走
+> `context_assembly.build_session_system_prompt(event, persona_name)`（生产/评测端点同源，
+> 见 `gscore-development` §6.7.1），否则装配漂移。
 
 ### 8.1.4 Persona 资源管理
 

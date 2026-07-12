@@ -62,7 +62,7 @@ description: >
 | 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem 双过程、记忆生命周期、多模态摄入） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账 + 批量导入、Dense+BM25 混合检索 + 过滤下推、嵌入 Provider 抽象层） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
-| 十二 | 已知坑与开发注意事项（D-1~D-22 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
+| 十二 | 已知坑与开发注意事项（D-1~D-22 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、§12.22b~d 输入/输出防线精度面·定时任务 misfire·交互脚手架不变量、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
 
 ## 推荐阅读顺序（按需跳转）
 
@@ -85,6 +85,7 @@ description: >
 - **记忆与发言决策正交**：即使 Persona 纯静默，Observer 仍在后台积累记忆。摄入门控 100% 纯规则零 LLM。`IngestionWorker` 现已回归**主事件循环后台 task**（独立线程双循环曾击穿 Proactor 导致 WS 全断，已废弃）。详见 [§09](./references/09-memory-system.md)、[§12](./references/12-developer-pitfalls.md)。
 - **配置写入即时持久化 + 多数热重载**：`StringConfig.set_config` 改内存后立即 `write_config` 落盘，大多数 AI 配置"下次消息处理即生效"；`inspect_interval` 是例外（需重启该 persona 的巡检 job，代码已自动 stop+start）。详见 [§03](./references/03-plugin-loading-and-config.md)。
 - **SQLModel 不写 `__tablename__`**：表名 = 类名全小写。数据库方法写在模型类里、用 `@with_session`。Schema 变更走 `on_core_start_before` 的 `exec_list`/`trans_adapter`。详见 [§11](./references/11-statistics-webconsole-database.md)。
+- **上下文装配单源 + 交互脚手架（2026-07-12 起）**：system prompt 与每轮动态注入的唯一装配点是 `ai_core/context_assembly.py`（生产 `handle_ai` 与评测端点同源消费，禁止在入口手工拼接）；`ai_core/interaction_scaffold.py` 是 C-1~C-3 交互脚手架（省略跟进/漂移预算/寻址前置门），判据只许结构/语言学范畴、长度类判定必须过 `extract_message_body`。详见 [§06](./references/06-ai-session-and-persona.md) 6.7 与 [§12](./references/12-developer-pitfalls.md) 12.22d。
 
 ## 关联文档（同仓库其他位置）
 

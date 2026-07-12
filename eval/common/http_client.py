@@ -54,6 +54,7 @@ async def call_chat_with_history(
     bot_id: str = "HTTP",
     group_id: Optional[str] = None,
     enable_tools: Optional[bool] = None,
+    max_history: Optional[int] = None,
 ) -> Dict[str, Any]:
     """调用 ``/api/chat_with_history`` 接口。
 
@@ -94,6 +95,9 @@ async def call_chat_with_history(
     # 默认 None 不入 payload，记忆评测行为不变（非破坏性）。
     if enable_tools is not None:
         payload["enable_tools"] = enable_tools
+    # 让端点把请求 history 真正喂进模型上下文（默认 None 不入 payload，端点仍按 0 = 原记忆评测行为）
+    if max_history is not None:
+        payload["max_history"] = max_history
 
     try:
         response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)

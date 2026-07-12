@@ -45,3 +45,14 @@ def make_scope_key(scope_type: ScopeType, scope_id: str, secondary_id: str = "")
     if scope_type == ScopeType.USER_IN_GROUP:
         return f"{scope_type.value}:{scope_id}@{secondary_id}"
     return f"{scope_type.value}:{scope_id}"
+
+
+def scope_key_for_conversation(group_id: "str | None", user_id: str) -> str:
+    """会话默认 scope：群聊→group:{gid}，私聊→user_global:{uid}。
+
+    摄入（observer）与检索/注入两侧必须用同一映射，否则命名空间悄然分裂——
+    此前该三元式在 ai_router/subagent/kanban_tools/observer 各复制一份，统一收敛到这里。
+    """
+    if group_id:
+        return make_scope_key(ScopeType.GROUP, str(group_id))
+    return make_scope_key(ScopeType.USER_GLOBAL, str(user_id))

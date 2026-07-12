@@ -110,8 +110,13 @@ MIN_INTERVAL_SECONDS = 300        # 循环最小间隔 5 分钟
 `session.run()` 执行 → 按类型更新状态（循环则 +`current_executions`、重算 `next_run_time`、
 重注册）→ 记 `record_trigger("scheduled")` → 推送结果。
 
-`reload_pending_tasks()`（启动时）：查所有 `pending`，一次性任务过期则立即执行/未过期重注册；
-循环任务按 `next_run_time` 处理。状态机：`pending ⇄ paused`，`→ cancelled/executed`。
+`reload_pending_tasks()`（启动时）：查所有 `pending`，未过期的重注册；**已过期的不再立即执行**
+（2026-07-12 起，防启动惊群 B1）——排进「错峰 + 抖动」补偿窗口：`_OVERDUE_BASE_DELAY`(20s)
+起步、`_OVERDUE_SPACING`(8s) 错峰、序号超出 `_OVERDUE_MAX_WINDOW`(1800s) 时**取模回卷**
+均匀铺满窗口（不要改回 `min()` 截断——那会把溢出任务全钉在窗口边界同一时刻重造惊群）。
+补偿 job 显式传 `misfire_grace_time=None`：全局默认 90s（`aps.py`），启动卡顿超过它会
+**静默丢弃** date job、任务永滞 pending。循环任务按 `next_run_time` 处理。
+状态机：`pending ⇄ paused`，`→ cancelled/executed`。
 
 > 执行器开头同样要查 AI 总开关（D-21）。
 

@@ -32,6 +32,16 @@ DEFAULT_THEME_CONFIG: Dict[str, Any] = {
     "card_opacity": 25,
     "theme_preset": "default",
     "language": "zh-CN",
+    # 侧边栏布局：floating=悬浮卡片 / docked=贴边分栏 / line=仅分割线
+    "sidebar_layout": "floating",
+    # 圆角强度（px，写入 CSS --radius；0=直角，24=默认 1.5rem 观感）
+    "border_radius": 24,
+    # UI 字号缩放（百分比，100=浏览器默认）
+    "ui_scale": 100,
+    # 阴影强度（百分比 0-200 → 前端 CSS --shadow-strength 0-2；0=关闭阴影）
+    "shadow_intensity": 100,
+    # 侧边栏默认是否收起（仅图标模式）
+    "sidebar_default_collapsed": False,
 }
 
 # 主题预设文件名最大长度（按 Unicode 字符数计，而不是字节数；
@@ -61,6 +71,16 @@ class ThemeConfigRequest(BaseModel):
     card_opacity: int = Field(default=25, ge=0, le=100)
     theme_preset: str = Field(default="default")
     language: str = Field(default="zh-CN")
+    # 侧边栏布局：floating=悬浮卡片 / docked=贴边分栏 / line=仅分割线
+    sidebar_layout: str = Field(default="floating")
+    # 圆角强度（px → CSS --radius）
+    border_radius: int = Field(default=24, ge=0, le=32)
+    # UI 字号缩放百分比
+    ui_scale: int = Field(default=100, ge=85, le=120)
+    # 阴影强度百分比（0=关闭，100=默认，200=加倍）
+    shadow_intensity: int = Field(default=100, ge=0, le=200)
+    # 侧边栏默认收起
+    sidebar_default_collapsed: bool = Field(default=False)
 
 
 class ThemePresetSaveRequest(BaseModel):
@@ -124,6 +144,35 @@ def _clamp_config_dict(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         config_dict["card_opacity"] = DEFAULT_THEME_CONFIG["card_opacity"]
     config_dict["blur_intensity"] = max(0, min(24, config_dict["blur_intensity"]))
     config_dict["card_opacity"] = max(0, min(100, config_dict["card_opacity"]))
+    # 侧边栏布局白名单校验
+    if config_dict.get("sidebar_layout") not in {"floating", "docked", "line"}:
+        config_dict["sidebar_layout"] = DEFAULT_THEME_CONFIG["sidebar_layout"]
+    # 圆角 / 字号缩放
+    if not isinstance(config_dict.get("border_radius"), int):
+        config_dict["border_radius"] = DEFAULT_THEME_CONFIG["border_radius"]
+    if not isinstance(config_dict.get("ui_scale"), int):
+        config_dict["ui_scale"] = DEFAULT_THEME_CONFIG["ui_scale"]
+    config_dict["border_radius"] = max(0, min(32, config_dict["border_radius"]))
+    config_dict["ui_scale"] = max(85, min(120, config_dict["ui_scale"]))
+    # 阴影强度
+    if not isinstance(config_dict.get("shadow_intensity"), int):
+        config_dict["shadow_intensity"] = DEFAULT_THEME_CONFIG["shadow_intensity"]
+    config_dict["shadow_intensity"] = max(0, min(200, config_dict["shadow_intensity"]))
+    # 布尔字段规范化（兼容旧 JSON 里写成 0/1 的情况）
+    collapsed = config_dict.get("sidebar_default_collapsed")
+    if isinstance(collapsed, bool):
+        pass
+    elif isinstance(collapsed, (int, float)):
+        config_dict["sidebar_default_collapsed"] = bool(collapsed)
+    elif isinstance(collapsed, str):
+        config_dict["sidebar_default_collapsed"] = collapsed.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    else:
+        config_dict["sidebar_default_collapsed"] = DEFAULT_THEME_CONFIG["sidebar_default_collapsed"]
     return config_dict
 
 

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
 import uuid
@@ -55,7 +56,12 @@ def make_env_judge():
             timeout=60,
         )
         r.raise_for_status()
-        txt = r.json()["choices"][0]["message"]["content"].strip().upper()
+        txt = r.json()["choices"][0]["message"]["content"].strip()
+        # 思考模型（MiniMax-M3 等）content 以 <think>…</think> 开头，startswith 会把一切判 FAIL
+        txt = re.sub(r"<think>.*?</think>", "", txt, flags=re.DOTALL).strip().upper()
+        m = re.findall(r"\b(PASS|FAIL)\b", txt)
+        if m:
+            return m[-1] == "PASS"
         return txt.startswith("PASS")
 
     return judge
@@ -212,7 +218,8 @@ def main() -> int:
     ap.add_argument(
         "--only", default="", help="只跑 id 含这些子串(逗号分隔任一匹配)的用例（冒烟用，如 --only ooc_,args_）"
     )
-    ap.add_argument("--limit", type=int, default=0, help="只跑前 N 例（冒烟用，0=不限）")
+    ap.add_argument("--limit", type=int, default=0, help="只跑 N 例（冒烟/分块用，0=不限）")
+    ap.add_argument("--offset", type=int, default=0, help="跳过前 N 例（配合 --limit 做可续跑的分块全量）")
     ap.add_argument("--out", default=str(Path(__file__).parent / "results" / "report.json"))
     args = ap.parse_args()
 
@@ -231,6 +238,8 @@ def main() -> int:
     if args.only:
         subs = [s.strip() for s in args.only.split(",") if s.strip()]
         active = [c for c in active if any(s in c["id"] for s in subs)]
+    if args.offset > 0:
+        active = active[args.offset :]
     if args.limit > 0:
         active = active[: args.limit]
 

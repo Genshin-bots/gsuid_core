@@ -17,6 +17,7 @@ execute_scheduled_task 定时执行器
 """
 
 import time
+import random
 from typing import Optional
 from datetime import datetime, timedelta
 
@@ -29,6 +30,13 @@ from gsuid_core.models import Event
 from .models import AIScheduledTask
 
 TZ_SHANGHAI = timezone("Asia/Shanghai")
+
+# 修复 B1「启动惊群」：已过期任务原先逐个立即执行会瞬时打满 provider（每个拉起子 agent）。
+# 改为排进近未来「错峰 + 抖动」补偿窗口，把「立即全部执行」变成「限流补偿」。
+_OVERDUE_BASE_DELAY = 20.0  # 秒：启动后先等这么久再补跑第一个（让 core 起稳）
+_OVERDUE_SPACING = 8.0  # 秒：相邻补偿任务的基础错峰间隔
+_OVERDUE_JITTER = 5.0  # 秒：叠加 [0, JITTER) 随机抖动，进一步打散
+_OVERDUE_MAX_WINDOW = 1800.0  # 秒：补偿窗口上限（30 分钟内摊完，堆再多也不无限后延）
 
 
 def _ensure_aware(dt: datetime | None) -> datetime | None:
@@ -308,6 +316,29 @@ async def reload_pending_tasks() -> int:
     tasks = await AIScheduledTask.select_rows(status="pending")
 
     count = 0
+    overdue_idx = 0  # 已过期任务的补偿序号——用于错峰排期，防启动惊群（B1）
+
+    def _schedule_overdue(task_id: str, kind: str) -> None:
+        """把一个已过期任务排进近未来的错峰 + 抖动补偿窗口（不再立即执行）。"""
+        nonlocal overdue_idx, count
+        # 超出窗口的序号取模回卷——min 截断会把 idx≥222 的任务全钉在 1800s 同一时刻重造惊群
+        spread = (overdue_idx * _OVERDUE_SPACING) % (_OVERDUE_MAX_WINDOW - _OVERDUE_BASE_DELAY)
+        delay = _OVERDUE_BASE_DELAY + spread + random.uniform(0, _OVERDUE_JITTER)
+        run_date = datetime.now(TZ_SHANGHAI) + timedelta(seconds=delay)
+        scheduler.add_job(
+            func=execute_scheduled_task,
+            trigger="date",
+            run_date=run_date,
+            args=[task_id],
+            id=task_id,
+            replace_existing=True,
+            # 全局默认 misfire_grace_time=90s：启动卡顿>90s 会静默丢弃补偿 job（任务永滞 pending）
+            misfire_grace_time=None,
+        )
+        overdue_idx += 1
+        count += 1
+        logger.info(f"⏰ [ScheduledTask] 已到期的{kind}排入错峰补偿: {task_id}, ~{delay:.0f}s 后执行")
+
     for task_data in tasks:
         task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
 
@@ -330,17 +361,15 @@ async def reload_pending_tasks() -> int:
                 count += 1
                 logger.info(f"📋 [ScheduledTask] 重新加载循环任务: {task.task_id}, 下次执行: {task.next_run_time}")
             else:
-                # 已到执行时间或未设置，先执行一次
-                logger.info(f"⏰ [ScheduledTask] 发现已到期的循环任务，立即执行: {task.task_id}")
-                await execute_scheduled_task(task.task_id)
+                # 已到执行时间或未设置：排进错峰补偿窗口（而非立即执行，防惊群 B1）
+                _schedule_overdue(task.task_id, "循环任务")
 
         else:
             # 一次性任务
             trigger = _ensure_aware(task.trigger_time)
             if trigger and trigger <= datetime.now(TZ_SHANGHAI):
-                # 立即执行
-                logger.info(f"⏰ [ScheduledTask] 发现已到期的一次性任务，立即执行: {task.task_id}")
-                await execute_scheduled_task(task.task_id)
+                # 已到期：排进错峰补偿窗口（而非立即执行，防惊群 B1）
+                _schedule_overdue(task.task_id, "一次性任务")
             elif trigger:
                 # 重新注册到调度器
                 scheduler.add_job(
@@ -354,7 +383,7 @@ async def reload_pending_tasks() -> int:
                 count += 1
                 logger.info(f"📋 [ScheduledTask] 重新加载一次性任务: {task.task_id}, 触发时间: {task.trigger_time}")
 
-    logger.info(f"✅ [ScheduledTask] 共重新加载 {count} 个待执行任务")
+    logger.info(f"✅ [ScheduledTask] 共重新加载 {count} 个待执行任务（其中 {overdue_idx} 个已到期→错峰补偿）")
     return count
 
 

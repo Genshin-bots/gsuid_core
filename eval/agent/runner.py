@@ -26,6 +26,10 @@ from eval.common.http_client import call_chat_with_history
 
 SESSION_LOG_DIR = Path("data/ai_core/session_logs")
 
+# agent 评测靠请求 history 做多轮上下文；端点默认 max_history=0 会清空它（extract_history），
+# 故显式传正值让端点把 history 真正喂进模型上下文（case 可用 max_history 覆盖）。
+AGENT_EVAL_MAX_HISTORY = 30
+
 
 def _find_log_by_session_id(session_id: str) -> Optional[dict]:
     f = SESSION_LOG_DIR / f"{session_id}.json"
@@ -94,6 +98,7 @@ async def run_once(
         persona_name=persona,
         enable_observer=False,
         enable_tools=enable_tools,
+        max_history=int(case.get("max_history", AGENT_EVAL_MAX_HISTORY)),
         timeout=timeout,  # 评测隔离：默认不写记忆
     )
     latency = time.time() - since
@@ -146,6 +151,23 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
     persona = case["persona"] if "persona" in case else "早柚"
     enable_tools = case.get("enable_tools", True)
     async with sem:
+        # setup（可选）：跨轮 modify/cancel 类用例需要**真实的既有任务**才能被"定位并修改"。
+        # 合成 history 里写"已设好"却从未真调工具落库 → 评测里根本无任务可改（假失败）。
+        # 这里先按 setup 里的消息真跑一遍（同 uid，工具落 DB），主消息再借状态池定位到它，
+        # 与生产"先建后改"完全一致。setup 结果不参与打分。
+        for _su in case.get("setup", []) or []:
+            await call_chat_with_history(
+                client,
+                base_url=base_url,
+                user_id=uid,
+                message=_su["message"] if isinstance(_su, dict) else str(_su),
+                history=[],
+                persona_name=persona,
+                enable_observer=False,
+                enable_tools=enable_tools,
+                max_history=0,
+                timeout=timeout,
+            )
         # ⚠️ latency 从**拿到并发槽后**起算——端点同步阻塞到 agent 跑完，这段才是单次 agent
         # 运行的真实耗时（供 max_latency 抓死循环/挂起）。若从 queued 起算会把"等信号量排队"
         # 的时间算进去（426 run / concurrency 3 时队尾能等几分钟），令 max_latency 全线误判。
@@ -159,6 +181,7 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
             persona_name=persona,
             enable_observer=False,
             enable_tools=enable_tools,
+            max_history=int(case.get("max_history", AGENT_EVAL_MAX_HISTORY)),
             timeout=timeout,
         )
         latency = time.time() - call_start

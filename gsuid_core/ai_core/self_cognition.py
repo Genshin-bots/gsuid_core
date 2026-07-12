@@ -88,6 +88,15 @@ async def add_self_note(
         return False
     content = content[:_MAX_NOTE_CHARS]
 
+    # 写入闸（防注入持久化）：「立持久说话规矩」（"以后每句加xx/结尾带xx/换风格说话"）
+    # 是漂移攻击的典型载荷——存进 bot 级 self_model 会让单轮防住的攻击跨会话、跨用户
+    # 永久生效（实测已发生：uwu 风格要求被记成了"学到的偏好"）。判据复用 C-2 结构判据。
+    from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
+
+    if field == "preferences_learned" and is_persistent_style_rule(content):
+        logger.warning(f"🪞 [SelfCognition] 拒绝把持久说话规矩写入偏好（疑似漂移注入）: {content[:60]}")
+        return False
+
     def _mutate(current: Any) -> Dict[str, List[str]]:
         model = _normalize_self_model(current)
         items = model[field]
@@ -265,34 +274,45 @@ def _relationship_line(user_id: str, favorability: Optional[int]) -> str:
 
 async def build_self_cognition_context(
     bot_id: str,
-    user_id: str,
+    user_id: str = "",
     favorability: Optional[int] = None,
     scope_key: Optional[str] = None,
+    include_relationship: bool = True,
 ) -> str:
-    """构造每轮动态注入的自我认知上下文段（C3-a）。
+    """构造自我认知上下文段（C3-a）。
 
-    内容 = 演化层 self_model 摘要 + 当前对话者关系 + 能力域清单。
-    **不写入 persona 目录、不进 system_prompt**——由 handle_ai 拼进 user message 侧。
+    内容 = 演化层 self_model 摘要（bot/scope 级，稳定）+ 当前对话者关系（per-user）。
+
+    ``include_relationship``（§优化 O-3 缓存）：
+      - True（默认，per-turn 注入）：含关系行；关系随当前对话者/好感度变化。
+      - False（建 session 时进 system_prompt）：仅 self_model 块、**不含**关系行——
+        群聊 session 整群共享，关系是 per-user 的、不能冻进共享前缀，由
+        ``build_relationship_context`` 每轮单独注入 user 侧。
 
     Args:
         bot_id:       机器人 ID
-        user_id:      当前对话者 ID
+        user_id:      当前对话者 ID（include_relationship=False 时不需要）
         favorability: 当前对话者好感度（由 handle_ai 查询后传入）
         scope_key:    本轮对话所在 scope（如 ``group:xxx`` / ``user_global:xxx``）。
             提供时，``recurring_topics`` 会优先从该 scope 的 group_profile 标签累计
             实时计算（top 5）——比静态 self_model.recurring_topics 更贴近当前会话。
-            两者都没数据时跳过该行。
 
     Returns:
         可直接注入的文本块；无任何可注入内容时返回空串。
     """
     model = await get_self_model(bot_id)
-    lines: List[str] = ["【关于我自己（本轮动态注入，仅供参考）】"]
+    lines: List[str] = ["【关于我自己（仅供参考）】"]
 
     if model["commitments"]:
         lines.append(f"我的承诺: {'；'.join(model['commitments'][-5:])}")
     if model["preferences_learned"]:
         lines.append(f"我学到的偏好: {'；'.join(model['preferences_learned'][-5:])}")
+        # 免疫条款：self_model 是 bot 级共享状态，"偏好"可能来自别的群友/早已过时——
+        # 实测旧印象会被拿来拒绝眼前用户的明确请求（"你说过不用设提醒"张冠李戴）。
+        lines.append(
+            "（这些旧印象仅供参考：可能过时、也可能只属于某个特定的人——"
+            "当前对话者**此刻的明确请求永远优先**，绝不拿旧印象当拒绝眼前请求的理由）"
+        )
 
     # recurring_topics：先尝试用本 scope 的 group_profile 累计 tag 实时计算
     # （由 memory.ingestion.worker._ingest_batch 中的 record_entity_tags 维护），
@@ -306,12 +326,22 @@ async def build_self_cognition_context(
     if model["self_notes"]:
         lines.append(f"我最近的反思: {'；'.join(model['self_notes'][-3:])}")
 
-    lines.append(_relationship_line(user_id, favorability))
+    if include_relationship:
+        lines.append(_relationship_line(user_id, favorability))
 
     # 不再注入"我的能力域: planning / mcp / 子任务工具…"等工程语汇——每轮复读会把
     # 角色重塑成"工具系统"，是出戏主因。能调什么工具由 tools schema 承担，不进自述。
 
-    # 仅有标题行 + 关系行（无演化数据）时仍值得注入关系信息
+    # 只剩标题行（无演化数据、又不含关系）时无可注入内容
     if len(lines) <= 1:
         return ""
     return "\n".join(lines)
+
+
+def build_relationship_context(user_id: str, favorability: Optional[int]) -> str:
+    """当前对话者关系（per-user，每轮注入 user 侧）。
+
+    self_model 块随 session 固化进 system_prompt（缓存友好），但关系是 per-user 的，
+    群聊共享 session 下必须每轮按当前对话者单独给出——括号包裹暗示是背景感知。
+    """
+    return f"（{_relationship_line(user_id, favorability)}）"

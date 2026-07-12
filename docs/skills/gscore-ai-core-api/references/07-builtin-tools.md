@@ -710,8 +710,17 @@ register_finance_agent()
 
 实现：`gsuid_core/ai_core/self_cognition.py`。存储：`state_store` 表，
 scope = `self:{bot_id}`，state_key = `self_model`，value 为 4 字段字典。
-每轮对话由 `handle_ai` 调用 `build_self_cognition_context` 拼成"【关于我自己】"段
-注入到 **用户消息侧**（不进 system_prompt，避免 prompt cache 抖动）。
+
+**注入位置（2026-07 O-3 起，两段分离，勿按旧描述改代码）**：
+- self_model 自述块（4 字段，慢变、bot/scope 级）：`build_self_cognition_context(bot_id,
+  scope_key, include_relationship=False)` → `ai_router` 建 session 时固化进 **system_prompt
+  稳定前缀**（跨轮命中 provider 缓存，活跃会话按 TTL 原地刷新，见 `gscore-development` §6.7.1）。
+- 当前对话者关系行（per-user）：`build_relationship_context(user_id, favorability)` →
+  `handle_ai` **每轮注入用户消息侧**（群共享 session，关系随对话者变、不能冻进共享前缀）。
+
+签名：`build_self_cognition_context` 的 `user_id` 现为可选（`include_relationship=False`
+时不需要），`include_relationship` 默认 True 保持旧调用兼容——旧插件若直接调它取"含关系
+的整段"仍可用，但生产链路已改走上面两段分离的方式。
 
 ### 7.9.1 四个字段语义
 

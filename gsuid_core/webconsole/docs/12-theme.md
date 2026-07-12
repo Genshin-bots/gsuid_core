@@ -15,8 +15,16 @@
 | `card_opacity` | number | **是（新增）** | `25` | 卡片不透明度（百分比 0-100），同时作用于纯色/毛玻璃 |
 | `theme_preset` | string | 是 | `default` | 主题预设：`default` / `shadcn` |
 | `language` | string | 是 | `zh-CN` | 前端语言：`zh-CN` / `en-US` / `ja-JP` |
+| `sidebar_layout` | string | 是 | `floating` | 侧边栏布局：`floating`（悬浮卡片）/ `docked`（贴边分栏）/ `line`（仅分割线） |
+| `border_radius` | number | 是 | `24` | 全局圆角强度（px，0–32），写入 CSS `--radius` |
+| `ui_scale` | number | 是 | `100` | UI 字号缩放百分比（85–120），作用于 `html` font-size |
+| `sidebar_default_collapsed` | boolean | 是 | `false` | 侧边栏默认是否收起为仅图标 |
 
 > ⚠️ **新增字段 `card_opacity`**（number，范围 0-100，可选；缺省时回退到 25）。前端 `/api/theme/config` 持久化时已带该字段，缺它将导致前端透明度无法跨设备/会话保留。
+>
+> ⚠️ **字段 `sidebar_layout`**（string，`floating` | `docked` | `line`，缺省 `floating`）。旧配置无此字段时读取会自动补默认值。
+>
+> ⚠️ **新增字段 `border_radius` / `ui_scale` / `sidebar_default_collapsed`**：旧配置缺失时读取会补默认值（24 / 100 / false）。
 
 ---
 
@@ -42,13 +50,18 @@ GET /api/theme/config
         "blur_intensity": 12,
         "card_opacity": 25,
         "theme_preset": "default",
-        "language": "zh-CN"
+        "language": "zh-CN",
+        "sidebar_layout": "floating",
+        "border_radius": 24,
+        "ui_scale": 100,
+        "sidebar_default_collapsed": false
     }
 }
 ```
 
 **说明**：
 - 读取时若存储中没有 `card_opacity`（旧版本后端持久化的数据），返回时会自动补默认值 `25`，避免前端拿到 `undefined` 触发回退逻辑。
+- 读取时若存储中没有 `sidebar_layout` / `border_radius` / `ui_scale` / `sidebar_default_collapsed`，返回时会自动补默认值。
 - 其他缺失字段同样会与默认值合并，确保响应体始终包含完整字段集。
 
 ---
@@ -74,7 +87,11 @@ POST /api/theme/config
     "blur_intensity": 16,
     "card_opacity": 50,
     "theme_preset": "default",
-    "language": "zh-CN"
+    "language": "zh-CN",
+    "sidebar_layout": "floating",
+    "border_radius": 24,
+    "ui_scale": 100,
+    "sidebar_default_collapsed": false
 }
 ```
 

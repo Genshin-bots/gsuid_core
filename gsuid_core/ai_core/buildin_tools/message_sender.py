@@ -111,7 +111,8 @@ async def send_message_by_ai(
 
     # 出戏防火墙（§D.4）：同轮首次命中 return 警告让模型重写重发；重写后仍命中则放行
     if text and output_firewall.is_enabled():
-        warning = output_firewall.gate_warn_once(tool_ctx.extra, text)
+        _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
+        warning = output_firewall.gate_warn_once(tool_ctx.extra, text, user_text=_ev_text)
         if warning is not None:
             return warning
 

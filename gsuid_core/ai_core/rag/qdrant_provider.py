@@ -95,7 +95,9 @@ def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
             logger.warning("🧠 [Qdrant] 已选择远程模式但未配置 url，回退到本地嵌入式 Qdrant")
             return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))
         logger.info(f"🧠 [Qdrant] 使用远程 Qdrant 服务: {url}")
-        return AsyncQdrantClient(url=url, api_key=api_key)
+        # 默认 5s 在启动高负载窗口会对瞬时调用误报 ReadTimeout，
+        # 导致 RAG 步骤判失败、进程"暂不接收 AI 会话"；放宽容忍启动尖峰。
+        return AsyncQdrantClient(url=url, api_key=api_key, timeout=30)
 
     logger.info(f"🧠 [Qdrant] 使用本地嵌入式 Qdrant: {LOCAL_QDRANT_DB_PATH}")
     return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))

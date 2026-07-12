@@ -85,6 +85,25 @@ async def example(_user: Dict = Depends(require_auth)): ...
 > 插件也可复用 `gsuid_core.webconsole.app_app.app` 挂自己的 `/api/<插件名>/...` 路由 +
 > `Depends(require_auth)`。详见 `gscore-plugin-development` 的 FastAPI 插件 API 章。
 
+### 评测端点 `/api/chat_with_history`（本地测试专用，默认 404）
+
+`chat_with_history_api.py`，受 `_local_test_gate` 控制。记忆评测与 agent 评测共用，
+2026-07-12 起的关键语义：
+
+- `max_history`（默认 0）：0 = 记忆评测原行为（history 只走 observe→记忆检索，不进模型
+  上下文）；agent 评测传正值（runner 默认 30）让注入的 history 真正喂进上下文。
+- `persona_name`：存在则用真实人设 system_prompt；**不存在时回退通用助手 + warning**，
+  不再 `FileNotFoundError` → -102（一个拼写错误曾让整批评测像 core 挂了）。
+- 输入侧防线与生产对齐：当前消息与 history 的 user 轮都过 `annotate_untrusted_message`
+  （受 `content_guard_enable` 控）。**注意作用点**：标注只喂给 Agent（`agent_message`），
+  raw `message` 保留给记忆检索 query / event——别把标注后的文本回灌进检索。
+- **装配已与生产同源（§5.3 落地，2026-07-12 第四轮）**：system prompt 走
+  `context_assembly.build_session_system_prompt`（persona + 稳定前缀；无群故无群画像块），
+  每轮动态注入（情绪/关系行/口吻锚点/自我情景/长任务/长期记忆）走
+  `assemble_dynamic_context`——与 handle_ai 消费同一函数，顺序契约由
+  `tests/test_context_assembly.py` 源码级+功能级双锁防再漂移。改 handle_ai 装配段
+  必须改 `context_assembly`，不许在入口手工拼接。
+
 ### 配置/巡检的热重载特殊处理
 
 `PUT /api/persona/{name}/config` 更新配置时：改 `ai_mode` 含"定时巡检"→ `start_heartbeat_inspector()`；

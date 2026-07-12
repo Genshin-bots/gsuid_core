@@ -9,6 +9,7 @@ AI 会话对象由 AISessionRegistry 管理，消息历史由通用 message_hist
 - Persona Prompt 热重载 (检测配置文件修改时间)
 """
 
+import time
 from typing import Optional
 
 from gsuid_core.config import core_config
@@ -21,10 +22,10 @@ from gsuid_core.message_history import get_history_manager
 # AI 会话对象注册表
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-from .persona import build_persona_prompt, persona_config_manager
+from .persona import persona_config_manager
 from .gs_agent import GsCoreAIAgent, create_agent
 from .resource import PERSONA_PATH
-from .persona.group_context import get_group_context
+from .context_assembly import build_session_system_prompt
 
 # Persona 文件的 mtime 缓存，用于检测热重载
 _persona_mtime_cache: dict[str, float] = {}
@@ -78,6 +79,25 @@ def _get_persona_mtime(persona_name: str) -> float:
         if f.is_file():
             newest_mtime = max(newest_mtime, f.stat().st_mtime)
     return newest_mtime
+
+
+# 稳定前缀刷新周期（秒）：活跃会话永不空闲回收（IDLE_THRESHOLD 只清不活跃的），
+# 群画像/self_model 会随对话持续演化——按 TTL 原地重建 system_prompt，无须销毁会话。
+_STABLE_PROMPT_TTL = 1800.0
+
+
+async def _maybe_refresh_stable_prompt(session: GsCoreAIAgent, event: Event, persona_name: str) -> None:
+    """活跃会话的稳定前缀 TTL 刷新：只换 ``session.system_prompt`` 字符串，历史/状态不动。
+
+    每次 run 都会用最新 system_prompt 重建 pydantic-ai Agent，故原地换串即可生效；
+    代价是每 TTL 一次 provider 前缀缓存失效，与 provider 缓存 TTL 同量级、可接受。
+    """
+    if time.time() - session.system_prompt_built_at < _STABLE_PROMPT_TTL:
+        return
+    session.system_prompt_built_at = time.time()
+
+    session.system_prompt = await build_session_system_prompt(event, persona_name)
+    logger.debug(f"🧠 [AI Router] 稳定前缀 TTL 刷新完成: {session.session_id}")
 
 
 def _check_persona_changed(session: GsCoreAIAgent, persona_name: str) -> bool:
@@ -171,6 +191,8 @@ async def _get_or_create_ai_session(
             invalidate_voice_anchor_cache(persona_name)
             session = None
         else:
+            if persona_name:
+                await _maybe_refresh_stable_prompt(session, event, persona_name)
             return session
 
     # 创建新 Session
@@ -178,20 +200,9 @@ async def _get_or_create_ai_session(
     if persona_name is None:
         raise ValueError(f"没有为 session {session_id} 配置 persona")
 
-    # 获取群聊上下文（群聊适应性）
-    group_description = ""
-    if event.group_id:
-        group_description = await get_group_context(
-            group_id=event.group_id,
-        )
-
-    # 情绪隔离 key：群聊用 group_id，私聊用 user_id
-    mood_key = event.group_id if event.group_id else event.user_id
-    base_persona = await build_persona_prompt(
-        persona_name,
-        mood_key=mood_key,
-        group_description=group_description or None,
-    )
+    # O-3：persona + 群简介 + 慢变稳定前缀（self_model/群画像）→ system_prompt，
+    # 装配统一走 context_assembly（评测端点同源）；活跃会话由 _maybe_refresh_stable_prompt 按 TTL 刷新。
+    base_persona = await build_session_system_prompt(event, persona_name)
     _persona_mtime_cache[persona_name] = _get_persona_mtime(persona_name)
 
     session = create_agent(

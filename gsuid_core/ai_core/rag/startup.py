@@ -1,6 +1,7 @@
 """RAG模块初始化"""
 
 import asyncio
+from typing import Callable, Awaitable
 
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.register import get_all_tools
@@ -33,12 +34,29 @@ async def init_all():
     # 1.5 启动阶段严格解析真实嵌入维度，避免未知维度时创建错误的 Qdrant Collection
     await ensure_embedding_dimension()
 
-    # 2. 初始化工具、知识和图片集合
+    # 2. 初始化工具、知识和图片集合。三个 init 均幂等；启动高负载窗口下 Qdrant
+    # 偶发短暂不响应（ReadTimeout）会把 RAG 步骤判死，故对瞬时故障有限次重试。
+    async def _init_with_retry(
+        name: str,
+        fn: Callable[[], Awaitable[None]],
+        attempts: int = 3,
+        delay: float = 8.0,
+    ) -> None:
+        for i in range(1, attempts + 1):
+            try:
+                await fn()
+                return
+            except Exception as e:
+                if i == attempts:
+                    raise
+                logger.warning(f"🧠 [RAG] {name} 第{i}次失败({type(e).__name__})，{delay}s 后重试")
+                await asyncio.sleep(delay)
+
     from . import init_image_collection, init_tools_collection, init_knowledge_collection
 
-    await init_tools_collection()
-    await init_knowledge_collection()
-    await init_image_collection()
+    await _init_with_retry("init_tools_collection", init_tools_collection)
+    await _init_with_retry("init_knowledge_collection", init_knowledge_collection)
+    await _init_with_retry("init_image_collection", init_image_collection)
 
     all_tools = get_all_tools()
     await sync_tools(all_tools)

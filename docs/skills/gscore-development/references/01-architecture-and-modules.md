@@ -59,7 +59,9 @@ gsuid_core/ai_core/
 ├── trigger_bridge.py    # 触发器→AI 工具桥接（MockBot / ai_return / send_message_by_ai）
 ├── followup_window.py   # 免唤醒续聊软触发窗口（进程内存 + TTL 惰性清理）
 ├── utils.py             # extract_json_from_text / send_chat_result / SILENCE_MARKERS …
-├── self_cognition.py    # 自我认知 self_model 演化层（每轮注入【关于我自己】）
+├── self_cognition.py    # 自我认知 self_model 演化层（自述块随 session 进稳定前缀；关系行每轮注入，见 §06）
+├── interaction_scaffold.py  # 交互脚手架 C-1~C-3：省略跟进/漂移预算/寻址前置门 + extract_message_body（见 §12.22d）
+├── context_assembly.py  # 上下文装配共享层：session system prompt + 每轮动态注入的唯一定义（生产/评测端点同源，见 §06/§11）
 ├── configs/             # ai_config 全局配置 + 配置数据模型
 ├── buildin_tools/       # 内建 AI 工具（见 §07）
 ├── skills/              # 运行时 Skill 系统（list_skills / run_skill_script + install_skill 统一安装/热重载）

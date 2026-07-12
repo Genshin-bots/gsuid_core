@@ -39,7 +39,8 @@ async def get_ai_session(event: Event) -> GsCoreAIAgent:
 4. 已有 → 检查 _check_persona_changed()，变了则热重载（移除旧 + 重建）
 5. 无/需重建 → get_persona_for_session() 取 persona_name
    └── 返回 None → raise ValueError（没配 persona，不该进到这）
-6. build_persona_prompt(persona_name) 构建 system_prompt
+6. context_assembly.build_session_system_prompt(event, persona_name) 构建 system_prompt
+   （persona + 群简介 + 稳定前缀；评测端点 chat_with_history 同源消费，§5.3 装配统一）
 7. create_agent(system_prompt, persona_name, create_by="Chat")
 8. registry.set_ai_session(session_id, session)
 ```
@@ -160,6 +161,36 @@ RESOURCE_PATH/persona/{persona_name}/
 |------|------|------|
 | 情绪状态机 | `persona/mood.py` | 角色情绪状态 |
 | 群聊适应性 | `persona/group_context.py` | 按群画像调整口吻 |
-| 自我认知 | `ai_core/self_cognition.py` | `self_model` 演化层（`commitments`/`preferences_learned`/`recurring_topics`/`self_notes`），每轮 `build_self_cognition_context` 拼"【关于我自己】"注入到**用户消息侧**（不进 system_prompt，避免 prompt cache 抖动） |
+| 自我认知 | `ai_core/self_cognition.py` | `self_model` 演化层（`commitments`/`preferences_learned`/`recurring_topics`/`self_notes`）。**O-3 之后（2026-07）注入拆成两半**：self_model 自述块（bot/scope 级慢变）随 session 固化进 **system_prompt 稳定前缀**（`context_assembly.build_stable_context`，含群画像/词汇映射）；per-user 的关系行由 `build_relationship_context` **每轮注入用户消息侧**（群共享 session，关系随对话者变、不能冻进共享前缀）——每轮动态注入的顺序唯一定义在 `context_assembly.assemble_dynamic_context`（handle_ai 与评测端点共同消费） |
 
 > `voice_anchor` 是逐轮口吻锚点（旁路字段），Persona 启动迁移会处理它。
+
+### 6.7.1 O-3 稳定前缀与 TTL 刷新（2026-07-12 起）
+
+慢变上下文（self_model 自述 + 群画像/词汇映射）建 session 时经 `build_persona_prompt` 的
+`extra_stable_context` 参数固化进 system_prompt（装配入口统一为
+`context_assembly.build_session_system_prompt`），跨轮命中 provider 前缀缓存。关键约束：
+
+- **活跃会话永不被 IDLE_THRESHOLD 回收**（它只清不活跃的），稳定前缀会无限期陈旧——
+  由 `ai_router._maybe_refresh_stable_prompt` 在缓存命中分支按 `_STABLE_PROMPT_TTL`
+  （1800s）**原地重建 `session.system_prompt` 字符串**刷新。之所以能原地换：pydantic-ai
+  `Agent` 在每次 `_execute_run_once` 都用 `self.system_prompt` 重建，字符串换了下一轮即生效，
+  **无须销毁会话 / 不丢历史**。刷新时刻记在 `GsCoreAIAgent.system_prompt_built_at`。
+- 改这条链路时别把 per-user 数据（关系/情绪/好感度）塞进稳定前缀——群聊 session 整群共享。
+- **mood 不进 session system prompt**（`build_session_system_prompt` 不传 `mood_key`）：
+  mood 每轮已经 `assemble_dynamic_context` 注入 user 侧，再进 system 是双写且最多滞后一个
+  TTL；更关键的是 mood 常变会让 TTL 刷新必然改串、白白打掉 provider 前缀缓存——不含 mood
+  时画像/自述未变的刷新产出逐字节相同的串，缓存自然保持。`build_persona_prompt` 的
+  `mood_key` 参数仅保留给插件/一次性 prompt 场景。
+- 后续方向：TTL 是兜底，理想是 group_profile/self_model 加版本戳做数据驱动失效
+  （见 `docs/AI_CORE_CHANGE_REVIEW_20260712.md` §5.2）。
+
+### 6.7.2 历史渲染的两条新语义（`history_format.py`，2026-07-12 起）
+
+- `at_list` 渲染为「@了用户: id(昵称)（@的是这位用户，不是你）」——前提是入库层
+  （`handler.msg_process`）已把 @Bot 转成 `is_tome`、不进 at_list（该比较已做 str 归一化，
+  改适配器时保持 at 段 data 可 str 化）。
+- 同一用户在合并窗口（`ai_config.history_merge_window`，默认 120s）内的连发合并为一个
+  发言块；窗口**锚定组内首条**而非相邻两条——链式相邻比较会让长独白无限合并成只有首条
+  时间戳的巨块，heartbeat 的时效判断（"你刚刚才说过话"）会被带偏。改合并逻辑时保持
+  "块跨度有上限"这个不变式。

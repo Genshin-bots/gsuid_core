@@ -2,7 +2,7 @@ import re
 import json
 import base64
 import asyncio
-from typing import Any, Set, Dict, List, Union, Literal, Optional, Sequence
+from typing import Any, Set, Dict, List, Tuple, Union, Literal, Optional, Sequence
 
 import httpx
 from PIL import Image
@@ -459,10 +459,13 @@ async def prepare_content_payload(
     relationship_desc = _build_relationship_description(favorability, nickname, str(ev.user_id))
     current_turn_header = f"{relationship_desc}\n"
 
-    # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）
+    # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）。
+    # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它，别在此写字面量）
+    from gsuid_core.ai_core.interaction_scaffold import DIRECT_MARKER, AT_OTHER_MARKER
+
     is_at_me = getattr(ev, "is_tome", False) or (ev.user_type == "direct")
     if is_at_me:
-        current_turn_header += "（直接找你说的）\n"
+        current_turn_header += f"{DIRECT_MARKER}\n"
 
     current_turn_header += "--- 消息 ---\n"
 
@@ -499,8 +502,10 @@ async def prepare_content_payload(
     for i in getattr(ev, "audio_id_list", []):
         text += f"\n--- 用户上传音频ID: {i} ---\n"
 
+    # @Bot 自己在入库层已转成 is_tome（见 handler.msg_process），at_list 里只会有
+    # 别的用户——显式标注，防止模型把"@某人+提问"误读成在叫自己。
     for at in ev.at_list:
-        text += f"\n--- 提及用户(@用户): {at} ---\n"
+        text += f"\n--- @了用户: {at}{AT_OTHER_MARKER} ---\n"
 
     content_payload.append(text)
 
@@ -613,7 +618,9 @@ async def send_chat_result(
         from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, check_ooc, is_enabled
 
         if is_enabled():
-            _hit = check_ooc(clean_text)
+            # 短答门需要来话上下文：身份追问下的超短直答才算泄露（见 check_ooc docstring）
+            _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
+            _hit = check_ooc(clean_text, user_text=_user_text)
             if _hit is not None:
                 logger.warning(
                     f"[OutputFirewall] send_chat_result 命中出戏红线 {_hit.category}: {_hit.matched}，已兜底替换"
@@ -987,21 +994,35 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
     return removed
 
 
-def _relean_user_turn(new_messages: List[ModelMessage], lean_content: Union[str, List[UserContent]]) -> None:
+def _relean_user_turn(
+    new_messages: List[ModelMessage],
+    lean_content: Union[str, List[UserContent]],
+    strip_hint_texts: Tuple[str, ...] = (),
+) -> None:
     """把本轮 new_messages 里的用户输入 turn 换成精简版（剥离 rag_context）。
 
     每轮 ``final_user_message`` 含【历史对话】/记忆/群语境等 rag_context，若原样
     ``extend`` 进 self.history，会在 max_history 窗口内逐轮累积同类快照——既膨胀
     input，又冲淡缓存。存历史时只保留用户真实发言（当前轮仍给模型看完整上下文）。
-    只改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动），改后即返回。
+    改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动）；``strip_hint_texts``
+    是框架 run 中途注入的提示常量（如 C-4 墙钟 nudge，挂在**后续** ModelRequest 上、
+    首条替换够不着）——按内容精确匹配从持久历史里剥掉，防提示噪声跨轮累积。
     """
+    leaned = False
     for msg in new_messages:
         if not isinstance(msg, ModelRequest):
             continue
+        kept_parts = []
         for part in msg.parts:
             if isinstance(part, UserPromptPart):
-                part.content = lean_content
-                return
+                if not leaned:
+                    part.content = lean_content
+                    leaned = True
+                elif isinstance(part.content, str) and part.content in strip_hint_texts:
+                    continue
+            kept_parts.append(part)
+        if len(kept_parts) != len(msg.parts):
+            msg.parts = kept_parts
 
 
 def _split_embedded_thinking(

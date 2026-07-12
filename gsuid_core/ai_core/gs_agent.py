@@ -3,6 +3,7 @@ PydanticAI Agent 核心模块
 基于 pydantic_ai 实现的轻量级 Agent
 """
 
+import re
 import time
 import uuid
 import asyncio
@@ -20,10 +21,12 @@ from pydantic_ai.messages import (
     TextPart,
     UserContent,
     ModelMessage,
+    ModelRequest,
     ThinkingPart,
     ToolCallPart,
     ModelResponse,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
@@ -32,7 +35,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core import output_firewall
+from gsuid_core.ai_core import output_firewall, interaction_scaffold
 from gsuid_core.ai_core.const import (
     _SKILLS_CREATE_BY,
     _AGENTIC_CREATE_BY,
@@ -114,6 +117,66 @@ def set_budget_scope_context(scope: Optional[Tuple[str, str, str]]) -> contextva
 def reset_budget_scope_context(token: contextvars.Token) -> None:
     """还原 `set_budget_scope_context` 设置的 contextvar。"""
     _current_budget_scope.reset(token)
+
+
+# 假完成闸——**结构判据**：动作完成声明 + 本轮零工具调用。声明的识别只用
+# 闭类完成动词 + 第一人称施动锚点（语言学范畴，非某个评测域的词表）；不做天气/股价等
+# **数据域**词表——数据编造的防线在 prompt 合规层，域词表是对测试集的过拟合（已移除）。
+_FAKE_DONE_RE = re.compile(
+    r"已经?(帮你|给你|为您?)?[^，。！？,不没难]{0,6}?(设置|设好|改|修改|取消|删除|删掉|暂停|调整|安排)"
+    r"|(帮你|给你|为你)[^，。！？]{0,6}(设|改|删|取消|暂停|安排|定|订)好了"
+    r"|^[^，。！？]{0,4}[，,]?\s*(改成|改到|改为|换成|定在)[^。！？]{0,16}(提醒|叫你|喊你|通知)"
+)
+# "搞定/弄好"是生活化动词（角色闲聊"我搞定了午饭"合法）——该支须同句出现可工具化名词才算
+_FAKE_DONE_TASK_NOUN_RE = re.compile(r"提醒|闹钟|任务|日程|定时|预约|待办|计划|通知|订阅")
+_FAKE_DONE_CASUAL_RE = re.compile(r"(我|已经?|帮你|给你)[^，。！？]{0,4}(搞定|办好|弄好|安排上)了")
+# 疑问/揣测句排除：向用户提问（"你安排好了吗"）或不确定表述不是完成声明
+_FAKE_DONE_QUESTION_RE = re.compile(
+    r"[吗嘛么呢？?]|没有?$|不知道|不清楚|不确定|要不要|帮你查|我?查查|应该|大概|可能|好像"
+)
+# 第三人称转述排除：声明前紧邻 他/她/你/群主… = 转述别人（或用户自己）做完的事，不是自称执行
+_FAKE_DONE_THIRD_SUBJ_RE = re.compile(
+    r"(他|她|它|人家|你|大家|群主|管理员|老板|客服|官方|系统)\s*(说|讲|表示|好像|应该)?\s*$"
+)
+
+
+def _claims_fake_done(text: str) -> bool:
+    """按句判定"动作完成声明"：命中声明、且该句无疑问/揣测语气、且非第三人称转述才算。"""
+    for sent in re.split(r"[。！!\n；;]", text):
+        if not sent or _FAKE_DONE_QUESTION_RE.search(sent):
+            continue
+        m = _FAKE_DONE_RE.search(sent)
+        if m is None:
+            c = _FAKE_DONE_CASUAL_RE.search(sent)
+            if c is not None and _FAKE_DONE_TASK_NOUN_RE.search(sent):
+                m = c
+        if m is not None and not _FAKE_DONE_THIRD_SUBJ_RE.search(sent[: m.start()]):
+            return True
+    return False
+
+
+def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Union[str, List["UserContent"]]:
+    """向 user message（str 或 content 列表）尾部追加一段文本（拷贝后追加，不改原对象）。"""
+    if isinstance(message, str):
+        return message + text
+    out = list(message)
+    out.append(text)
+    return out
+
+
+# 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）
+_INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST")
+# C-4 墙钟软预算阈值走 ai_config `scaffold_wall_clock_budget`（秒），可在线调
+_WALL_CLOCK_NUDGE = (
+    "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复，"
+    "不要再发起任何新的工具调用；信息不全就如实说明现状，绝不编造。）"
+)
+
+_FAKE_DONE_NUDGE = (
+    "（系统校验：你上一条回复声称已完成某个操作，但本轮没有任何工具调用记录，该声明是编造的。"
+    "现在立即调用对应工具真正执行（改/取消既有安排先用列表类工具定位目标）；若确实做不到，"
+    "就如实向用户说明「刚才说错了，还没有做」。绝不允许再输出不带工具调用支撑的完成话术。）"
+)
 
 
 def _matched_delegation_only_profile(query: str) -> str:
@@ -205,6 +268,8 @@ class GsCoreAIAgent:
         self.history: List[ModelMessage] = []
         self.max_history = _max_history
         self.system_prompt = system_prompt
+        # 稳定前缀构建时刻：ai_router 按 TTL 原地刷新 system_prompt（O-3 慢变上下文防僵化）
+        self.system_prompt_built_at: float = time.time()
         self.persona_name = persona_name  # 用于热重载检查
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
@@ -249,6 +314,9 @@ class GsCoreAIAgent:
         # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时
         # 故障重试重发，会让 C 端收到两段相同的话。每个用户轮次在 _execute_run 重置。
         self._run_sent_texts: set[str] = set()
+        # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
+        # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
+        self._last_drift_push_count: int = 0
 
         self.model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]] = openai_chat_model
         # 记录本会话激活配置全名（provider++name）与内容指纹，仅自动解析模型时记录；显式传
@@ -736,6 +804,31 @@ class GsCoreAIAgent:
                 if isinstance(part, TextPart) and part.content.strip() in blocked_texts:
                     part.content = rewritten
 
+    def _scrub_fake_done_history(self, fabricated_texts: set[str]) -> None:
+        """纠正重跑成功后的历史外科（假完成闸收尾）：删掉纠正 nudge 的 user turn 与
+        被暂扣未发出的编造声明，让持久历史 = 原始用户消息 + 纠正后的真实回复——与
+        用户实际所见一致，也防编造话术 /「（系统校验…」句式被后续轮模仿。
+        只扫尾部本轮产物；编造声明按 stripped 文本精确匹配，零误删。
+        """
+        tail = self.history[-8:]
+        kept: List[ModelMessage] = []
+        for msg in tail:
+            if isinstance(msg, ModelRequest) and any(
+                isinstance(p, UserPromptPart) and isinstance(p.content, str) and _FAKE_DONE_NUDGE in p.content
+                for p in msg.parts
+            ):
+                continue
+            if isinstance(msg, ModelResponse):
+                parts = [
+                    p for p in msg.parts if not (isinstance(p, TextPart) and p.content.strip() in fabricated_texts)
+                ]
+                if not parts:
+                    continue
+                if len(parts) != len(msg.parts):
+                    msg.parts = parts
+            kept.append(msg)
+        self.history[-8:] = kept
+
     async def _execute_run_once(
         self,
         user_message: Union[str, Sequence[UserContent]],
@@ -749,6 +842,7 @@ class GsCoreAIAgent:
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
+        fake_done_retry: bool = False,
     ) -> Union[str, Any]:
         """
         实际执行 Agent 运行的内部方法（单次尝试）
@@ -764,6 +858,8 @@ class GsCoreAIAgent:
                 调用）超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，
                 按默认 False 只记账不二次拦截；在途嵌套子 agent 同样默认 False（只记账）。
             suppress_intermediate_text: True 时抑制工具调用前后的文本片段，只保留最终文本。
+            fake_done_retry: 本次是否为假完成闸的纠正重跑（护栏随调用栈传递而非实例状态，
+                避免共享 session 并发 run 间互相压制闸门 / 复位遗漏）。
         """
         from gsuid_core.ai_core.statistics import statistics_manager
 
@@ -805,8 +901,11 @@ class GsCoreAIAgent:
         _budget_scope_token = _current_budget_scope.set(_budget_scope) if _budget_scope is not None else None
 
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
+        _wall_nudged = False  # C-4 墙钟软预算：每 run 至多注入一次收敛提示
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         _ooc_blocked: List[Tuple[str, output_firewall.FirewallHit]] = []
+        # 假完成预检暂扣的文本段：声明完成但至今零工具——iter 后按"动作是否真发生"补发或纠正
+        _fab_blocked: list[str] = []
         _thinking_segments: list[str] = []  # 累积本轮模型 thinking 文本，供意图-行为一致性检测
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
@@ -854,11 +953,7 @@ class GsCoreAIAgent:
         )
 
         if rag_context:
-            if isinstance(final_user_message, str):
-                final_user_message = f"{final_user_message}\n\n{rag_context}"
-            elif isinstance(final_user_message, list):
-                final_user_message = list(final_user_message)
-                final_user_message.append(f"\n\n{rag_context}")
+            final_user_message = _append_user_text(final_user_message, f"\n\n{rag_context}")
             logger.info("🧠[GsCoreAIAgent] 已添加 RAG 上下文")
 
         # DS 专属角色扮演模式（inner_os）：仅在 Chat 模式首轮 user_message 末尾追加
@@ -882,12 +977,56 @@ class GsCoreAIAgent:
                 "选择最合适的工具调用，或明确说明为何确实无工具可用——禁止以角色"
                 "不懂为由跳过工具。"
             )
-            if isinstance(final_user_message, str):
-                final_user_message += no_tool_reminder
-            elif isinstance(final_user_message, list):
-                final_user_message = list(final_user_message)
-                final_user_message.append(no_tool_reminder)
+            final_user_message = _append_user_text(final_user_message, no_tool_reminder)
             logger.debug("🧠 [GsCoreAIAgent] 已注入连续无工具调用强制提醒")
+
+        # ── 交互脚手架（C-1/C-2/C-3，见 interaction_scaffold）：仅交互式主 Agent 生效 ──
+        _addr_gated = False
+        _followup_detected = False
+        if self.create_by in _INTERACTIVE_CREATE_BY:
+            # 只看**当前消息**（含本轮 @ 标注），绝不用 final_user_message——后者已拼进
+            # rag_context（历史+记忆），历史里的 @别人标注与助手自称会污染寻址/自称判定。
+            # last_user_question 就是 user_message 的纯文本拼接（上方已算），别重复 join。
+            _cur_text = last_user_question
+            _probe = ev.raw_text if ev is not None and ev.raw_text else last_user_question
+            _is_tome = bool(ev.is_tome) if ev is not None else False
+            _recent = interaction_scaffold.recent_history_texts(self.history)
+            # 触发阈值可配置（ai_config），默认值按评测分布标定，上线后按生产日志重标
+            _followup_maxlen = int(ai_config.get_config("scaffold_followup_max_len").data)
+            _ambient_maxlen = int(ai_config.get_config("scaffold_ambient_max_len").data)
+            _hints: list[str] = []
+            _addr_gated = interaction_scaffold.addressed_to_someone_else(
+                _cur_text, self.persona_name or "", _is_tome
+            ) or interaction_scaffold.ambient_followup_to_other(
+                _cur_text, _recent, self.persona_name or "", _is_tome, max_len=_ambient_maxlen
+            )
+            if _addr_gated:
+                _hints.append(interaction_scaffold.ADDRESS_GATE_HINT)
+                logger.info("🧭 [Scaffold] C-3 寻址门：这条不是冲你来的（@别人/催被@者），本轮砍掉工具集")
+            elif _probe:
+                _ellipsis = interaction_scaffold.detect_ellipsis_followup(
+                    _probe,
+                    _recent,
+                    recent_tool_call=interaction_scaffold.has_recent_tool_call(self.history),
+                    max_len=_followup_maxlen,
+                )
+                if _ellipsis or interaction_scaffold.references_task_management(_cur_text):
+                    _followup_detected = True  # 用于下方补调度族工具
+                    if _ellipsis:
+                        _hints.append(interaction_scaffold.FOLLOWUP_HINT)
+                        logger.debug("🧭 [Scaffold] C-1 省略式跟进提示已注入")
+                # C-2 漂移预算：累积 ≥2 且比上轮**增加**才注入——单次 push 交 prompt 层
+                # 既有条款（模型单轮守得住），提醒只针对连续软磨；不增加不重复唠叨。
+                # speaker_id 让计数只累计同一说话人（群里两人各提一次意见≠一人连续软磨）。
+                _pushes = interaction_scaffold.count_style_pushes(
+                    _probe, _recent, speaker_id=str(ev.user_id) if ev is not None else ""
+                )
+                if _pushes >= 2 and _pushes > self._last_drift_push_count:
+                    _hints.append(interaction_scaffold.DRIFT_REMINDER)
+                    logger.debug(f"🧭 [Scaffold] C-2 漂移预算提醒已注入（累积 {_pushes} 次）")
+                self._last_drift_push_count = _pushes
+            for _h in _hints:
+                final_user_message = _append_user_text(final_user_message, _h)
 
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(final_user_message)
@@ -935,7 +1074,10 @@ class GsCoreAIAgent:
                     f"按静态 packs+白名单装配 {len(tools)} 个工具"
                 )
 
-        if _assemble or self.create_by in _AGENTIC_CREATE_BY:
+        if _addr_gated:
+            # C-3 装配层硬约束：@的是别人 → 本轮零工具（含 send_message_by_ai / find_tools）
+            tools = []
+        elif _assemble or self.create_by in _AGENTIC_CREATE_BY:
             if _assemble:
                 qy = ""
                 if isinstance(user_message, str):
@@ -985,6 +1127,18 @@ class GsCoreAIAgent:
                         core_names.update(t.name for t in state_tools)
                 except Exception as e:
                     logger.debug(f"🧠 [GsCoreAIAgent] 状态驱动工具池加载失败: {e}")
+
+                # C-1 跟进保障：检测到"改成/取消那个/再查"类省略跟进时，把「定时任务」族
+                # （list/modify/cancel/pause…）强制补进池——上一轮的动作目标可能建在别的
+                # session、或本 agent 召不回，followup 文本本身又无调度语义（向量检索抓不到），
+                # 没有这些工具模型只能凭空"已改/已取消"。与 tool_state_signals 状态池互补。
+                if _followup_detected:
+                    for _dom in ("定时任务", "长期任务编排"):
+                        for _tb in get_tools_by_capability_domain(_dom):
+                            if _tb.name not in core_names:
+                                core_names.add(_tb.name)
+                                core_tools.append(_tb.tool)
+                    logger.debug("🧭 [Scaffold] C-1 已补充定时任务/编排族工具供省略跟进定位")
 
                 # 第 1.6 层：会话驻留工具池（L3）——最近几轮用过的能力族继续常驻数轮，
                 # 兜底"刚用过某能力、紧接着的追问语义却召不回该工具"（如改完别名又口头追加）。
@@ -1122,7 +1276,7 @@ class GsCoreAIAgent:
         # output_type 默认为 str（返回文本），指定 Pydantic 模型时强制返回结构化 JSON
         # skills_toolset 仅挂载于 agentic + CapabilityAgent
         # （详见 _SKILLS_CREATE_BY）；后台调用不挂，避免白送 token 破坏缓存。
-        _toolsets = [skills_toolset] if self.create_by in _SKILLS_CREATE_BY else []
+        _toolsets = [skills_toolset] if self.create_by in _SKILLS_CREATE_BY and not _addr_gated else []
         # 启用渐进式暴露时挂 RetrievableToolset：每个 step 读 dynamic_tool_names 即时暴露命中工具。
         # exclude_names 传静态已装配工具名，避免与 Agent(tools=...) 隐式 toolset 重名冲突。
         if _expose_dynamic:
@@ -1179,6 +1333,20 @@ class GsCoreAIAgent:
                         logger.debug("🧠 [GsCoreAIAgent] ⚡ 触发节点: ModelRequestNode")
 
                         self._session_logger.log_node_transition("ModelRequestNode")
+
+                        # C-4 墙钟软预算：交互式 run 超时后，请求前注入收敛提示（只注入一次），
+                        # 让模型停止发起新工具轮、用已有信息作答——治多步任务的延迟长尾。
+                        if (
+                            not _wall_nudged
+                            and self.create_by in _INTERACTIVE_CREATE_BY
+                            and (time.time() - start_time)
+                            > float(ai_config.get_config("scaffold_wall_clock_budget").data)
+                        ):
+                            node.request.parts = [*node.request.parts, UserPromptPart(content=_WALL_CLOCK_NUDGE)]
+                            _wall_nudged = True
+                            logger.info(
+                                f"⏱️ [GsCoreAIAgent] 墙钟软预算已超（{time.time() - start_time:.0f}s），注入收敛提示"
+                            )
 
                         for part in node.request.parts:
                             if isinstance(part, ToolReturnPart):
@@ -1285,7 +1453,12 @@ class GsCoreAIAgent:
                                     # 出戏预检（§D.4）：命中不发送、记入 _ooc_blocked，
                                     # iter 结束后走"提醒→重说→放行"闭环
                                     _ooc_hit = (
-                                        output_firewall.check_ooc(_text) if output_firewall.is_enabled() else None
+                                        output_firewall.check_ooc(
+                                            _text,
+                                            user_text=ev.raw_text if ev is not None and ev.raw_text else "",
+                                        )
+                                        if output_firewall.is_enabled()
+                                        else None
                                     )
                                     if _ooc_hit is not None:
                                         logger.warning(
@@ -1293,6 +1466,13 @@ class GsCoreAIAgent:
                                             f"{_ooc_hit.category}: {_ooc_hit.matched}，转重说"
                                         )
                                         _ooc_blocked.append((_text, _ooc_hit))
+                                        continue
+                                    # 假完成预检（结构判据：完成声明 + 本轮至今零工具调用）：
+                                    # 暂扣不发——后续真调了工具则属真话补发，零工具则纠正重跑
+                                    _fab_gate_on = not fake_done_retry and not _tool_call_list and bool(tool_names)
+                                    if _fab_gate_on and _claims_fake_done(_text):
+                                        logger.warning(f"🧠 [FakeDoneGate] 零工具完成声明，暂扣待核: {_text[:40]!r}")
+                                        _fab_blocked.append(_text)
                                         continue
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的
                                     # async context，触发 pydantic_graph 的 athrow/cancel scope
@@ -1353,8 +1533,9 @@ class GsCoreAIAgent:
 
                 # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 rag_context），
                 # 防止【历史对话】/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
+                # C-4 墙钟 nudge 挂在 run 中途的后续请求上，一并从持久历史剥离。
                 _new_msgs = result.new_messages()
-                _relean_user_turn(_new_msgs, _lean_user_message)
+                _relean_user_turn(_new_msgs, _lean_user_message, strip_hint_texts=(_WALL_CLOCK_NUDGE,))
                 self.history.extend(_new_msgs)
 
                 # 出戏重说闭环（§D.4）：被拦文本用警告提示重写一次，产物直接放行发送
@@ -1462,6 +1643,62 @@ class GsCoreAIAgent:
                 self._session_logger.log_run_end()
                 self._session_logger.log_result(result_msg, _tool_call_list)
 
+                # 假完成结算（结构判据收口）。两种情形：
+                # ① 声明先行、动作后至（本轮终有工具调用）：暂扣文本属真话，补发；
+                # ② 本轮零工具：以内部纠正消息重跑一次逼真执行/如实改口；重跑失败则补发原文兜底
+                #   （不比旧行为差——旧行为就是把该声明直接发出去）。
+                async def _resend_fab_blocked() -> None:
+                    for _bt in _fab_blocked:
+                        if _bt in self._run_sent_texts:
+                            continue
+                        try:
+                            if bot is None:
+                                logger.warning("🧠 [FakeDoneGate] 暂扣文本补发失败：Bot对象不可用")
+                                continue
+                            await send_chat_result(bot, _bt, ev=ev)
+                            self._run_sent_texts.add(_bt)
+                        except Exception as _se:
+                            logger.debug(f"🧠 [FakeDoneGate] 暂扣文本补发失败: {_se}")
+
+                if _fab_blocked and _tool_call_list and bot and return_mode in ["always", "by_bot"]:
+                    logger.info("🧠 [FakeDoneGate] 完成声明后续有工具调用支撑，补发暂扣文本")
+                    await _resend_fab_blocked()
+                elif (
+                    result_msg
+                    and not _tool_call_list
+                    and tool_names
+                    and not fake_done_retry
+                    and (_fab_blocked or _claims_fake_done(result_msg))
+                ):
+                    logger.warning("🧠 [FakeDoneGate] 零工具调用却声称已完成动作，追加纠正重跑")
+                    try:
+                        corrected = await self._execute_run_once(
+                            user_message=_FAKE_DONE_NUDGE,
+                            bot=bot,
+                            ev=ev,
+                            tools=tools,
+                            return_mode=return_mode,
+                            intent=intent,
+                            has_active_task=has_active_task,
+                            suppress_intermediate_text=suppress_intermediate_text,
+                            fake_done_retry=True,
+                        )
+                    except Exception as _fe:
+                        # 纠正 pass 是增强路径，失败不影响原结果返回；暂扣文本补发防"整轮沉默"
+                        logger.warning(f"🧠 [FakeDoneGate] 纠正重跑失败，沿用原结果: {_fe}")
+                        corrected = None
+                        if _fab_blocked and bot and return_mode in ["always", "by_bot"]:
+                            await _resend_fab_blocked()
+                    if isinstance(corrected, str) and corrected.strip():
+                        # 纠正成功：从持久历史剥掉 nudge user turn 与暂扣未发的编造声明
+                        # （用户从没见过它们，留着只会被后续轮模仿）。重跑失败走上面的
+                        # 补发兜底时不清理——那时原文真的发出去了，历史须与所见一致。
+                        _fabricated = {t.strip() for t in _fab_blocked}
+                        if _claims_fake_done(result_msg):
+                            _fabricated.add(result_msg.strip())
+                        result_msg = corrected.strip()
+                        self._scrub_fake_done_history(_fabricated)
+
                 if return_mode in ["by_bot"] and bot and ev:
                     return ""
                 # 出戏兜底（§D.4）：run() 的返回值供**无 bot 发送通道**的消费方使用
@@ -1470,7 +1707,9 @@ class GsCoreAIAgent:
                 # 返回值做末端兜底 scrub：命中模型名/AI身份/系统术语即整体替换为角色化兜底，
                 # 保证任何消费方拿到的 output 都不泄露出戏内容。roleplay tier；plain 节点自动放行。
                 if result_msg and output_firewall.is_enabled():
-                    result_msg, _ooc_scrubbed = output_firewall.scrub_or_fallback(result_msg)
+                    result_msg, _ooc_scrubbed = output_firewall.scrub_or_fallback(
+                        result_msg, user_text=ev.raw_text if ev is not None and ev.raw_text else ""
+                    )
                     if _ooc_scrubbed:
                         logger.warning("[OutputFirewall] run() 返回值命中出戏红线，已兜底替换为角色化文本")
                 return result_msg

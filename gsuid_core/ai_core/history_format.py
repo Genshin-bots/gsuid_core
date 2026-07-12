@@ -153,6 +153,15 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
         return f"{msg_dt.year}年{msg_dt.month}月{msg_dt.day}日 {time_str}"
 
 
+# 同一用户连发多段消息的合并窗口（秒）：窗口内的相邻同人消息在历史里合并为
+# 一个发言块，让"@某人"+"醒了吗"这类拆条连发对模型呈现为一句完整的话。
+# 窗口值唯一来源是 ai_config `history_merge_window`（可在线调）。
+def _merge_window() -> float:
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    return float(ai_config.get_config("history_merge_window").data)
+
+
 def format_history_for_agent(
     history: List[MessageRecord],
     current_user_id: Optional[str] = None,
@@ -179,6 +188,11 @@ def format_history_for_agent(
         - AI 回复中的 @数字 保持原样透传，让模型感知自己之前的 @ 行为
         - 跳过 role=system 的记录
         - current_user_id 的最后一条 user 消息作为"当前消息"置于历史之前
+        - at_list 渲染为「@了用户 xxx——@的是TA不是你」：入库层（handler.msg_process）
+          已把 @Bot 自己转成 is_tome、不进 at_list，故历史里的 @ 一定指向别人，
+          可放心标注，防止模型把"@某人 + 醒了吗"误认为在叫自己
+        - 同一用户在合并窗口（ai_config `history_merge_window`）内连发的相邻消息
+          合并为一个发言块，帮助模型把拆条连发读成一句完整的话
 
     Args:
         history: 消息记录列表（时间正序）
@@ -229,19 +243,35 @@ def format_history_for_agent(
         return user_id
 
     # ----------------------------------------------------------------
+    # 2b. 昵称解析表：user_id → 最近一次出现的昵称（供 @目标 显示人话名字）
+    # ----------------------------------------------------------------
+    name_map: Dict[str, str] = {}
+    for r in history:
+        if r.role == "user" and r.user_name:
+            name_map[str(r.user_id)] = r.user_name
+
+    # ----------------------------------------------------------------
     # 3. 格式化单条记录为文本块
     # ----------------------------------------------------------------
-    def _format_record(record: MessageRecord, label: str) -> List[str]:
+    def _record_body(record: MessageRecord) -> List[str]:
+        """单条记录的正文（不含说话人头行），供独立/合并两种渲染复用。"""
         block: List[str] = []
-
-        ts_str = _format_timestamp(record.timestamp, ref_ts)
-        block.append(f"{label} [{ts_str}]：")
 
         content = record.content.strip()
         if content:
             block.append(f'"{content}"')
 
         metadata = record.metadata or {}
+
+        # @用户列表：入库层已保证 @Bot 自己不进 at_list（转成 is_tome），
+        # 历史里的 @ 必然指向别的用户——显式标注，防止"@某人+醒了吗"被误读成叫自己。
+        # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它）
+        from gsuid_core.ai_core.interaction_scaffold import AT_OTHER_MARKER
+
+        for at_id in metadata.get("at_list", []):
+            at_key = str(at_id)
+            at_label = _user_label(at_key, name_map[at_key] if at_key in name_map else None)
+            block.append(f"--- @了用户: {at_label}{AT_OTHER_MARKER} ———")
 
         # 单张图片
         image_id = metadata.get("image_id")
@@ -251,10 +281,6 @@ def format_history_for_agent(
         # 多张图片
         for img_id in metadata.get("image_id_list", []):
             block.append(f"--- 用户上传图片ID: {img_id} ———")
-
-        # @用户列表
-        for at_id in metadata.get("at_list", []):
-            block.append(f"--- 提及用户(@用户): {at_id} ———")
 
         # 音频ID
         audio_id = metadata.get("audio_id")
@@ -266,7 +292,14 @@ def format_history_for_agent(
         if file_id:
             block.append(f"--- 用户上传文件ID: {file_id} ———")
 
-        block.append("")  # 消息间空行
+        return block
+
+    def _render_block(records: List[MessageRecord], label: str) -> List[str]:
+        """一组（≥1 条）记录渲染为一个发言块：头行（首条时间戳）+ 逐条正文 + 空行。"""
+        block = [f"{label} [{_format_timestamp(records[0].timestamp, ref_ts)}]："]
+        for rec in records:
+            block.extend(_record_body(rec))
+        block.append("")
         return block
 
     # ----------------------------------------------------------------
@@ -281,16 +314,11 @@ def format_history_for_agent(
         name = current_user_name or current_record.user_name
         base_label = _user_label(current_user_id, name)
         label = f"当前用户ID: {base_label}"
-        output.extend(_format_record(current_record, label))
+        output.extend(_render_block([current_record], label))
 
-    # 4b. 历史对话分隔线 + 其余记录
-    history_lines: List[str] = []
-    for i, record in enumerate(history):
-        if record.role == "system":
-            continue
-        if i == current_record_index:
-            continue
-
+    # 4b. 历史对话分隔线 + 其余记录。
+    # 同一用户在合并窗口内的相邻消息合并成一个发言块（拆条连发 → 一句完整的话）。
+    def _make_label(record: MessageRecord) -> str:
         if record.role == "assistant":
             # Fix-04: AI 回复增加回复对象标签
             reply_to = None
@@ -300,13 +328,42 @@ def format_history_for_agent(
                 reply_name = record.metadata.get("reply_to_user_name")
             if reply_to:
                 target = f"{reply_to}({reply_name})" if reply_name else reply_to
-                label = f"AI→{target}"
-            else:
-                label = "AI"
-        else:
-            label = _user_label(record.user_id, record.user_name)
+                return f"AI→{target}"
+            return "AI"
+        return _user_label(record.user_id, record.user_name)
 
-        history_lines.extend(_format_record(record, label))
+    history_lines: List[str] = []
+    pending_group: List[MessageRecord] = []  # 当前累积的同人连发消息组
+    merge_window = _merge_window()
+
+    def _flush_group() -> None:
+        if not pending_group:
+            return
+        history_lines.extend(_render_block(pending_group, _make_label(pending_group[0])))
+        pending_group.clear()
+
+    for i, record in enumerate(history):
+        if record.role == "system":
+            continue
+        if i == current_record_index:
+            continue
+
+        # 窗口锚定组内**首条**而非前一条：链式相邻比较会让"每分钟一条"的长独白无限合并成
+        # 一个只有首条时间戳的巨块，heartbeat 会把最新消息误判成半小时前说的。
+        if (
+            pending_group
+            and record.role == "user"
+            and pending_group[-1].role == "user"
+            and str(record.user_id) == str(pending_group[-1].user_id)
+            and 0 <= record.timestamp - pending_group[0].timestamp <= merge_window
+        ):
+            pending_group.append(record)
+            continue
+
+        _flush_group()
+        pending_group.append(record)
+
+    _flush_group()
 
     if history_lines:
         output.append("【历史对话】")

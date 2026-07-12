@@ -34,10 +34,11 @@ from gsuid_core.ai_core.ai_router import (
 )
 from gsuid_core.ai_core.classifier import classifier_service
 from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.persona.mood import update_mood, get_mood_description
+from gsuid_core.ai_core.persona.mood import update_mood
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.ai_core.database.models import UserFavorability
+from gsuid_core.ai_core.context_assembly import fetch_favorability, assemble_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
@@ -59,8 +60,6 @@ _FORCE_RETRIEVE_RE = re.compile(
 )
 # C4 / C3-c：明显情绪词，命中则强制检索（避免错过用户昨日事件背景）
 _EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤心|焦虑|想哭|绝望|委屈|孤独)")
-# C3-c 自我情景记忆召回触发词：用户回指 Bot 自己曾经的言行
-_SELF_RECALL_RE = re.compile(r"(你之前|你上次|你不是说|你说过|你还记得|你刚才说|你答应)")
 # 可能含实体的特征（英文词 / 引号内容 / 长串中文）
 _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
 
@@ -290,18 +289,9 @@ async def handle_ai_chat(
             # ============================================================
 
             # 查询当前用户好感度（从外部存储，非模型推断）
-            favorability: Optional[int] = None
-            try:
-                # Bot.bot_id 是已声明字段；handle_ai 链路 bot 通常非 None
-                bot_id = bot.bot_id if bot is not None else ""
-                user_data = await UserFavorability.get_user_favorability(
-                    user_id=str(event.user_id),
-                    bot_id=bot_id,
-                )
-                if user_data:
-                    favorability = user_data.favorability
-            except Exception as e:
-                logger.debug(f"🧠 [GsCore][AI] 好感度查询失败，降级为无注入: {e}")
+            # Bot.bot_id 是已声明字段；handle_ai 链路 bot 通常非 None
+            bot_id = bot.bot_id if bot is not None else ""
+            favorability = await fetch_favorability(str(event.user_id), bot_id)
 
             user_messages = await prepare_content_payload(
                 event,
@@ -435,118 +425,23 @@ async def handle_ai_chat(
                     logger.debug(f"🧠 [GsCore][AI] 已加载 {len(history)} 条历史消息")
 
             # ============================================================
-            # Fix-03: 获取当前情绪状态描述并注入上下文
+            # 每轮动态上下文装配（历史/情绪/关系行/口吻锚点/自我情景/长任务/记忆/软触发）
+            # 顺序唯一定义在 context_assembly.assemble_dynamic_context——评测端点同源消费，
+            # 保证"评测测到的上下文结构 = 生产结构"（§5.3 装配统一）。
+            # 群画像/self_model 已在建 session 时固化进 system_prompt（§O-3），不在此重复。
             # ============================================================
             mood_key = str(event.group_id) if event.group_id else str(event.user_id)
-            mood_desc = ""
-            if session.persona_name:
-                try:
-                    mood_desc = await get_mood_description(session.persona_name, mood_key)
-                except Exception as e:
-                    logger.debug(f"🎭 [Mood] 情绪描述获取失败: {e}")
-
-            # 群组语境注入（群组画像：主要话题 + 词汇映射表）
-            # 让 Agent 直接知道"深渊"在本群指什么、某个外号对应哪个角色
-            group_context_text = ""
-            if event.group_id:
-                try:
-                    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-                    from gsuid_core.ai_core.memory.group_profile import format_context_injection
-
-                    group_context_text = await format_context_injection(
-                        make_scope_key(ScopeType.GROUP, str(event.group_id))
-                    )
-                except Exception as e:
-                    logger.debug(f"🧠 [GsCore][AI] 群组语境注入失败: {e}")
-
-            # ============================================================
-            # C3-a/c: 自我认知动态注入
-            # 演化层 self_model + 关系 + 能力域，每轮独立拼接到 user message 侧，
-            # 绝不写入 persona 目录文件（约束 1：规避热重载滚动销毁会话）。
-            # ============================================================
-            self_cognition_text = ""
-            self_episode_text = ""
-            try:
-                from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-                from gsuid_core.ai_core.self_cognition import (
-                    retrieve_self_episodes,
-                    build_self_cognition_context,
-                )
-
-                # Bot.bot_id 是已声明字段，直接访问；handle_ai 链路 bot 通常非 None
-                bot_id_for_self = bot.bot_id if bot is not None else ""
-                # scope_key：让 self_cognition 能用 group_profile 的累计 tag 实时
-                # 计算"反复出现的话题"。无 group_id 时退回 user_global scope。
-                cognition_scope = make_scope_key(
-                    ScopeType.GROUP if event.group_id else ScopeType.USER_GLOBAL,
-                    str(event.group_id) if event.group_id else str(event.user_id),
-                )
-                self_cognition_text = await build_self_cognition_context(
-                    bot_id=bot_id_for_self,
-                    user_id=str(event.user_id),
-                    favorability=favorability,
-                    scope_key=cognition_scope,
-                )
-                # C3-c: 用户回指 Bot 自己曾经的言行时，召回自我情景记忆
-                if _SELF_RECALL_RE.search(query):
-                    self_episode_text = await retrieve_self_episodes(bot_id_for_self)
-            except Exception as e:
-                logger.debug(f"🪞 [SelfCognition] 自我认知注入失败: {e}")
-
-            # ============================================================
-            # C5: 长任务进度动态注入
-            # 注入当前用户的活跃长任务摘要（仅短序号、无 UUID），
-            # 让用户可追问"那个任务怎么样了"，Agent 也不对自己在跑的长任务失明。
-            # ============================================================
-            task_context_text = ""
-            has_actionable = False
-            try:
-                from gsuid_core.ai_core.planning.context import build_task_context, has_actionable_task
-
-                task_context_text = await build_task_context(str(event.user_id))
-                has_actionable = await has_actionable_task(str(event.user_id))
-            except Exception as e:
-                logger.debug(f"📋 [Planning] 长任务上下文注入失败: {e}")
-
-            # 组装完整上下文
-            context_parts = []
-            if rag_context:
-                context_parts.append(rag_context)
-            if group_context_text:
-                context_parts.append(group_context_text)
-            # Prompt-2.5: 用括号包裹情绪状态，暗示这是内心状态而非对话指令
-            if mood_desc:
-                context_parts.append(f"（{mood_desc}。）")
-            if self_cognition_text:
-                context_parts.append(self_cognition_text)
-            # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
-            # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一行紧凑口吻自述。
-            try:
-                from gsuid_core.ai_core.persona import get_voice_anchor
-
-                voice_anchor = get_voice_anchor(session.persona_name) if session.persona_name else ""
-                if voice_anchor:
-                    context_parts.append(f"（口吻锚点：{voice_anchor}）")
-            except Exception as e:
-                logger.debug(f"🧠 [GsCore][AI] 人格口吻锚点注入失败: {e}")
-            if self_episode_text:
-                context_parts.append(self_episode_text)
-            if task_context_text:
-                context_parts.append(task_context_text)
-            if memory_context_text:
-                context_parts.append(f"【长期记忆】\n{memory_context_text}")
-
-            # 软触发（免唤醒续聊）默认偏沉默：这条没 @ 你，按"路过"处理，仅明确接续才回应。
-            # 与硬触发（@/关键词/私聊）相反——硬触发是"明确在找你，必须回应"。
-            if soft_triggered:
-                context_parts.append(
-                    "（**续聊软触发**：这条来自最近找过你的人，但**没有 @ 你**，默认按'路过'处理。"
-                    "只有当它明显在接着你们刚才的话题（追问 / 补充 / 直接回应你）时才回应；"
-                    "若是泛泛感慨、像在跟群里别人说、或换了与你无关的新话题，请直接输出 <SILENCE> 保持沉默。"
-                    "拿不准时优先沉默，不要为了续上话而硬接。）"
-                )
-
-            full_context = "\n\n".join(context_parts)
+            full_context, has_actionable = await assemble_dynamic_context(
+                query=query,
+                user_id=str(event.user_id),
+                bot_id=bot_id,
+                persona_name=session.persona_name,
+                mood_key=mood_key,
+                favorability=favorability,
+                history_context=rag_context,
+                memory_context_text=memory_context_text,
+                soft_triggered=soft_triggered,
+            )
 
             # ============================================================
             # 步骤 7: 调用 Agent 生成回复

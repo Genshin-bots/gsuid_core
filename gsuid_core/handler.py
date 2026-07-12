@@ -273,7 +273,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # `if event.raw_text and event.raw_text.strip():` 包住，导致 `_has_text` 在块内
     # 恒为 True，纯图片消息（无文字）永远进不了 `submit_image_observation` 分支——
     # C9"高价值图片走独立队列异步转述"对纯图片消息形同死代码。现把"图片观察"提到
-    # 文本门控之外：历史记录仍只在有文本时写，图片摄入则对纯图片消息也可达。
+    # 文本门控之外：历史记录在有文本或 @ 时写，图片摄入则对纯图片消息也可达。
     _has_text = bool(event.raw_text and event.raw_text.strip())
     # B-5 修复：event.image 通常已是 image_list 最后一项，dict.fromkeys 去重避免
     # 同一张图被重复提交给 submit_image_observation。
@@ -281,8 +281,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         dict.fromkeys(img for img in ([event.image] + list(event.image_list or [])) if isinstance(img, str) and img)
     )
 
-    # 记录用户消息到历史记录（仅在有文本时）
-    if _has_text:
+    # 纯 @ 消息（at 段无文字）也须入历史：否则 @ 目标从历史里凭空消失，
+    # AI/Heartbeat 会把紧随其后的「醒了吗」误认为在叫自己（生产实测误判）。
+    if _has_text or event.at_list:
         # 获取用户昵称
         user_name = None
         if event.sender and "nickname" in event.sender:
@@ -743,7 +744,9 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.is_tome = True
             """
         elif _msg.type == "at":
-            if event.bot_self_id == _msg.data:
+            # str 归一化：适配器可能给 int 型 at 目标，不归一会让 @Bot 落进 at_list，
+            # 下游"@的不是你"标注（history_format/utils）就会反向压制真正的 @Bot 消息
+            if str(_msg.data) == str(event.bot_self_id):
                 event.is_tome = True
                 continue
             else:
