@@ -74,6 +74,8 @@ LOGS_CONFIG_PATH = gs_data_path / "logs" / "configs" / "logs_config.json"
 WEBCONSOLE_PATH = Path(__file__).parent / "webconsole"
 DIST_PATH = WEBCONSOLE_PATH / "dist"
 DIST_EX_PATH = gs_data_path / "dist"
+# 网页控制台登录会话持久化文件（只存令牌摘要，重启后会话仍有效）
+WEB_SESSIONS_PATH = gs_data_path / "webconsole_sessions.json"
 
 # 品牌配置 / Brand
 # - BRAND_DIR: 用户上传 ICON 的存放目录

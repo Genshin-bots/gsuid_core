@@ -6,7 +6,6 @@ Auth APIs
 import secrets
 from typing import Optional
 from hashlib import sha256
-from datetime import datetime, timedelta
 
 import aiofiles
 from fastapi import File, Header, Request, UploadFile
@@ -18,13 +17,14 @@ from gsuid_core.logger import logger
 from gsuid_core.data_store import gs_data_path
 from gsuid_core.security_manager import get_client_ip, auth_rate_limiter
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import verify_token, active_tokens, generate_token
+from gsuid_core.webconsole.web_api import verify_token
 from gsuid_core.webconsole.auth_crypto import (
     JsonObject,
     AuthCryptoError,
     auth_keystore,
     maybe_decrypt_auth_body,
 )
+from gsuid_core.webconsole.session_store import session_store
 from gsuid_core.utils.database.auth_models import WebUser
 from gsuid_core.utils.database.base_models import async_maker
 
@@ -175,7 +175,9 @@ async def api_login(request: Request, data: JsonObject):
     """
     用户登录接口
 
-    验证邮箱和密码，成功则生成 24 小时有效的访问令牌。
+    验证邮箱和密码，成功则生成 48 小时有效的访问令牌（持久化，后端重启不失效）。
+    同账号并发会话数受核心配置 ``web_max_sessions`` 限制（默认 1 = 单点登录，
+    新登录会踢掉最旧的会话）。
 
     报文为加密形态（强制）：``{"enc": true, "key_id", "client_pub", "iv", "ct"}``，
     解密后字段为 ``{"email": "...", "password": "..."}``，详见 ``auth_crypto`` 与前端加密
@@ -221,20 +223,16 @@ async def api_login(request: Request, data: JsonObject):
     if user and verify_password(password, user.password_hash):
         # 登录成功，重置该 IP 的限流状态
         auth_rate_limiter.record_success(rate_key)
-        # Generate token
-        token = generate_token(email)
-
-        # Store token
-        active_tokens[token] = {
-            "user": {
+        # 创建持久化会话（48h 有效，超出 web_max_sessions 的最旧会话被踢下线）
+        token = session_store.create(
+            {
                 "id": str(user.id),
                 "email": user.email,
                 "name": user.name,
                 "role": user.role,
                 "avatar": user.avatar,
-            },
-            "expires": datetime.now() + timedelta(hours=24),
-        }
+            }
+        )
 
         return {
             "status": 0,
@@ -348,20 +346,16 @@ async def api_register(request: Request, data: JsonObject):
     if user:
         # 注册成功，重置该 IP 的限流状态
         auth_rate_limiter.record_success(rate_key)
-        # Generate token
-        token = generate_token(email)
-
-        # Store token
-        active_tokens[token] = {
-            "user": {
+        # 创建持久化会话（48h 有效）
+        token = session_store.create(
+            {
                 "id": str(user.id),
                 "email": user.email,
                 "name": user.name,
                 "role": user.role,
                 "avatar": user.avatar,
-            },
-            "expires": datetime.now() + timedelta(hours=24),
-        }
+            }
+        )
 
         return {
             "status": 0,
@@ -415,9 +409,7 @@ async def api_logout(request: Request, authorization: str | None = Header(defaul
         msg: 操作结果信息
     """
     if authorization and authorization.startswith("Bearer "):
-        token = authorization[7:]
-        if token in active_tokens:
-            del active_tokens[token]
+        session_store.revoke(authorization[7:])
     return {"status": 0, "msg": "已退出登录"}
 
 
@@ -502,10 +494,8 @@ async def upload_avatar(
         avatar_url = f"/api/auth/avatar/{filename}"
         await WebUser.update_avatar(email=user_email, avatar_url=avatar_url)
 
-        # Update in active_tokens
-        for token, data in active_tokens.items():
-            if data["user"]["email"] == user_email:
-                data["user"]["avatar"] = avatar_url
+        # 同步该账号所有在线会话中缓存的头像
+        session_store.update_user_fields(user_email, avatar=avatar_url)
 
         return {"status": 0, "msg": "头像上传成功", "data": {"avatar": avatar_url}}
     except Exception as e:
@@ -585,10 +575,8 @@ async def update_name(request: Request, data: JsonObject, authorization: str | N
     # Update name in database
     result = await WebUser.update_name(email=user_email, name=name.strip())
     if result == 0:
-        # Update in active_tokens
-        for token, tdata in active_tokens.items():
-            if tdata["user"]["email"] == user_email:
-                tdata["user"]["name"] = name.strip()
+        # 同步该账号所有在线会话中缓存的用户名
+        session_store.update_user_fields(user_email, name=name.strip())
 
         return {"status": 0, "msg": "用户名更新成功", "data": {"name": name.strip()}}
 

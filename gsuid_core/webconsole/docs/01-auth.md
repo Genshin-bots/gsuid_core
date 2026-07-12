@@ -56,10 +56,14 @@ POST /api/auth/login
             "role": "admin",
             "avatar": null
         },
-        "token": "email:hash"
+        "token": "<不透明随机令牌>"
     }
 }
 ```
+
+**会话语义**：
+- 令牌自登录时刻起 **48 小时**有效；会话持久化在 `data/webconsole_sessions.json`（只存 sha256 摘要），后端重启不掉线。
+- 同账号并发会话数由核心配置 `web_max_sessions` 控制（默认 `1` = 单点登录）：新登录成功后，超出限制的最旧会话被踢下线（其下次请求返回 401）。
 
 ---
 

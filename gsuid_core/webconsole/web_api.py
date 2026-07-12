@@ -8,52 +8,30 @@ Provides RESTful APIs for the React frontend
 - 本文件作为聚合文件，统一导入并注册所有路由
 """
 
-import hashlib
-import secrets
 from typing import Any, Dict, Optional
-from datetime import datetime
 
 from fastapi import Header
 from pydantic import BaseModel
 
-from gsuid_core.config import core_config
+from gsuid_core.webconsole.session_store import SessionRecord, session_store
 
-# In-memory token storage (in production, use database)
-active_tokens: Dict[str, Dict[str, Any]] = {}
 TEMP_DICT: Dict[str, Dict[str, Any]] = {}
 
 
-def generate_token(username: str) -> str:
-    """Generate a simple token for a user"""
-    TOKEN_SECRET = core_config.get_config("REGISTER_CODE")
-    random_part = secrets.token_hex(16)
-    token_input = f"{username}:{random_part}:{TOKEN_SECRET}"
-    token_hash = hashlib.sha256(token_input.encode()).hexdigest()
-    return f"{username}:{token_hash}"
+def verify_token(authorization: str | None = None, token: str | None = None) -> Optional[SessionRecord]:
+    """Verify token from Authorization header or query parameter
 
-
-def verify_token(authorization: str | None = None, token: str | None = None) -> Optional[Dict[str, Any]]:
-    """Verify token from Authorization header or query parameter"""
-    if not authorization and not token:
-        return None
-
+    会话由 session_store 管理：持久化（重启不掉线）+ 48h 有效期 + 并发数限制。
+    """
     # Use token from query parameter if provided
     if token:
         auth_token = token
-    elif authorization:
-        # Check Bearer token format
-        if not authorization.startswith("Bearer "):
-            return None
-
+    elif authorization and authorization.startswith("Bearer "):
         auth_token = authorization[7:]  # Remove "Bearer " prefix
+    else:
+        return None
 
-    if auth_token in active_tokens:
-        token_data = active_tokens[auth_token]
-        # Check if token is still valid (24h expiry)
-        if datetime.now() < token_data["expires"]:
-            return token_data
-
-    return None
+    return session_store.verify(auth_token)
 
 
 def require_auth(authorization: str | None = Header(default=None), token: str | None = None):
