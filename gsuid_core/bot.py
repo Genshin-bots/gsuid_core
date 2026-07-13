@@ -738,7 +738,7 @@ class Bot:
             self._lang = await CoreUser.get_user_lang(self.ev.user_id)
         return self._lang
 
-    async def t(self, key: str, **params: Any) -> str:
+    async def t(self, key: str, /, **params: Any) -> str:
         """按当前用户语言翻译「发给用户看」的文案（用户自定义 > 全局 LANGUAGE）。"""
         from gsuid_core.i18n import t as _t
 

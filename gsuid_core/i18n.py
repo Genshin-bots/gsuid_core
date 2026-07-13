@@ -45,10 +45,11 @@ def get_lang() -> str:
     return lang if lang in _catalogs else DEFAULT_LANG
 
 
-def t(key: str, lang: Optional[str] = None, **params: object) -> str:
+def t(key: str, /, lang: Optional[str] = None, **params: object) -> str:
     """按 key 取词条并以具名占位符填充。
 
     缺 key 回落 key 本身（显式可见、便于排查），不吞异常、不打断主链路。
+    key 为仅限位置参数，避免与同名占位符（如 {key}）冲突。
     """
     use_lang = lang if (lang and lang in _catalogs) else get_lang()
     if use_lang in _catalogs:
