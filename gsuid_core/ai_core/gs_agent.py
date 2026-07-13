@@ -8,7 +8,7 @@ import time
 import uuid
 import asyncio
 import contextvars
-from typing import Any, List, Tuple, Union, Literal, TypeVar, Optional, Sequence, overload
+from typing import Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
 
 import httpx
 from pydantic_ai import Agent
@@ -36,7 +36,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core import output_firewall, interaction_scaffold
+from gsuid_core.ai_core import wall_clock, output_firewall, interaction_scaffold
 from gsuid_core.ai_core.const import (
     _SKILLS_CREATE_BY,
     _AGENTIC_CREATE_BY,
@@ -167,6 +167,9 @@ def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Un
 
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）
 _INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST")
+
+# on_trace 轨迹事件类型：模型推理段 / 工具调用（见 GsCoreAIAgent._emit_trace）
+TraceKind = Literal["thinking", "tool"]
 # C-4 墙钟软预算阈值走 ai_config `scaffold_wall_clock_budget`（秒），可在线调
 _WALL_CLOCK_NUDGE = (
     "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复，"
@@ -262,6 +265,8 @@ class GsCoreAIAgent:
         is_subagent: bool = False,
         dynamic_tools: Optional[bool] = None,
         scope_key: Optional[str] = None,
+        wall_clock_budget: Optional[float] = None,
+        on_trace: Optional[Callable[[TraceKind, str], None]] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -276,6 +281,12 @@ class GsCoreAIAgent:
         self._run_lock = asyncio.Lock()
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
+        # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
+        # 长流程入口（画布编排等，一轮几十次工具调用 + 等人确认）必须放宽，否则永远跑不到终态。
+        self.wall_clock_budget = wall_clock_budget
+        # 轨迹观察者：让宿主（画布前端的"思考过程"折叠块等）看见模型推理与工具调用，
+        # 不必去翻 session log。None = 不观察（零开销）；契约见 _emit_trace。
+        self.on_trace = on_trace
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
 
         self.create_by = create_by
@@ -340,6 +351,24 @@ class GsCoreAIAgent:
             create_by=create_by,
             is_subagent=is_subagent,
         )
+
+    def _emit_trace(self, kind: TraceKind, text: str) -> None:
+        """把模型思考 / 工具调用轨迹推给观察者（``on_trace``）。
+
+        ``kind="tool"`` 的 text 形如 ``"<工具名>|<参数JSON>"``。
+
+        宿主可据此把"Agent 在想什么、调了什么工具"实时呈现给用户（画布前端的
+        「思考过程」折叠块就是消费方），而不必去翻 session log 文件。
+
+        观察者是**旁路**：任何异常都吞掉并降级为 debug 日志——展示用的钩子
+        绝不能把一次真实的 Agent run 带崩。
+        """
+        if self.on_trace is None or not text:
+            return
+        try:
+            self.on_trace(kind, text)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"🧠 [GsCoreAIAgent] on_trace 观察者异常（已忽略）: {e}")
 
     def get_assembled_capability_domains(self) -> list[str]:
         """返回**上一轮 run() 实际装配工具**的能力域列表（"装配后回传"）。
@@ -965,6 +994,9 @@ class GsCoreAIAgent:
 
         # 记录开始时间用于延迟统计
         start_time = time.time()
+        # C-4 墙钟时钟：ask_user 等"挂起等人"的时段记进 excluded，判定预算时扣除。
+        # token 在 finally 还原，否则嵌套 run（图片理解/subagent）会顶掉本 run 的时钟。
+        _wall_clock, _wall_clock_token = wall_clock.install_clock()
 
         logger.info(i18n_t("🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======"))
         # turn_id：本轮 run 的唯一标识，写入 ToolContext.extra 供子工具读取（如
@@ -1400,18 +1432,24 @@ class GsCoreAIAgent:
 
                         # C-4 墙钟软预算：交互式 run 超时后，请求前注入收敛提示（只注入一次），
                         # 让模型停止发起新工具轮、用已有信息作答——治多步任务的延迟长尾。
+                        _wall_budget = (
+                            self.wall_clock_budget
+                            if self.wall_clock_budget is not None
+                            else float(ai_config.get_config("scaffold_wall_clock_budget").data)
+                        )
+                        _wall_elapsed = time.time() - start_time - wall_clock.excluded_seconds(_wall_clock)
                         if (
                             not _wall_nudged
+                            and _wall_budget > 0
                             and self.create_by in _INTERACTIVE_CREATE_BY
-                            and (time.time() - start_time)
-                            > float(ai_config.get_config("scaffold_wall_clock_budget").data)
+                            and _wall_elapsed > _wall_budget
                         ):
                             node.request.parts = [*node.request.parts, UserPromptPart(content=_WALL_CLOCK_NUDGE)]
                             _wall_nudged = True
                             logger.info(
                                 i18n_t(
                                     "⏱️ [GsCoreAIAgent] 墙钟软预算已超（{p0:.0f}s），注入收敛提示",
-                                    p0=time.time() - start_time,
+                                    p0=_wall_elapsed,
                                 )
                             )
 
@@ -1496,6 +1534,7 @@ class GsCoreAIAgent:
                                 )
                                 _tool_call_list.append(part.tool_name)
                                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
+                                self._emit_trace("tool", f"{part.tool_name}|{part.args_as_json_str()}")
 
                                 # 程序性记忆（默认开；关闭时零影响）：记一笔工具调用轨迹，供偏好蒸馏把
                                 # 用户的"参数传错了"蒸成带具体参数的规则（设计 §4.2）。仅在
@@ -1581,8 +1620,7 @@ class GsCoreAIAgent:
                                 if _thinking:
                                     _thinking_segments.append(_thinking)
                                 self._session_logger.log_thinking(_thinking)
-                                if bot and _thinking:
-                                    pass
+                                self._emit_trace("thinking", _thinking)
 
                         # 结算本轮模型请求的性能统计：
                         # TTFT = 请求发起 → 首个流式 event；生成耗时 = 首个 → 最后一个 event；
@@ -1902,6 +1940,8 @@ class GsCoreAIAgent:
             # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
             if _budget_scope_token is not None:
                 _current_budget_scope.reset(_budget_scope_token)
+            # 同理还原墙钟时钟：嵌套 run 结束后父 run 必须拿回自己的累加器。
+            wall_clock.uninstall_clock(_wall_clock_token)
             # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享），
             # 防止内存中 key 无限累积。session_id 缺失时跳过——本轮也没机会
             # 写入计数。
@@ -2077,6 +2117,8 @@ def create_agent(
     is_subagent: bool = False,
     dynamic_tools: Optional[bool] = None,
     scope_key: Optional[str] = None,
+    wall_clock_budget: Optional[float] = None,
+    on_trace: Optional[Callable[[str, str], None]] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -2093,6 +2135,12 @@ def create_agent(
         dynamic_tools: dynamic 能力族开关；None 沿用旧门（agentic 且未传 tools 才装配）
         scope_key: 记忆 scope（group:xxx / user_global:xxx 等）。仅在未显式给 session_id 的
             后台调用时生效——把"针对哪个群/用户"编进自动派生的 auto_ session_id，供 webconsole 展示指向
+        wall_clock_budget: C-4 墙钟软预算(秒)覆写。None=沿用全局 scaffold_wall_clock_budget(默认 45s，
+            按聊天回复标定)；<=0=关闭软预算。长流程编排入口（一轮几十次工具调用、还要等人确认）
+            必须显式放宽，否则会在半途被"停止新工具轮"提示逼停
+        on_trace: 轨迹观察者 `on_trace(kind, text)`，kind ∈ {"thinking","tool"}（tool 的 text 为
+            `"<工具名>|<参数JSON>"`）。宿主用它把模型推理与工具调用实时呈现给用户
+            （如画布前端的「思考过程」折叠块）。旁路钩子，异常会被吞掉，不影响 run
 
     Returns:
         PydanticAIAgent 实例
@@ -2114,6 +2162,8 @@ def create_agent(
         is_subagent=is_subagent,
         dynamic_tools=dynamic_tools,
         scope_key=scope_key,
+        wall_clock_budget=wall_clock_budget,
+        on_trace=on_trace,
     )
 
 
