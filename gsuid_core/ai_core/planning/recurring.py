@@ -27,7 +27,8 @@ Kanban 任务树本身是**一次性事件驱动**的——同一棵树跑完即
 
 - ``"interval:<seconds>"``：每隔 N 秒触发一次（N ≥ 60，防过密）；
 - ``"cron:<minute> <hour> <day> <month> <day_of_week>"``：标准 5 段 cron 表达式，
-  字段语义与 APScheduler 的 ``CronTrigger`` 一致；不写 day_of_week 时按全周计算。
+  **星期字段按标准 crontab 语义**（0/7=周日、1=周一 … 6=周六），由
+  :func:`_normalize_cron_dow` 翻译成 APScheduler 的编号；不写 day_of_week 时按全周计算。
 
 例：``"interval:1800"``（每 30 分钟）、``"cron:30 9 * * 1-5"``
 （周一至周五 9:30 触发一次）。
@@ -137,8 +138,80 @@ def _subtask_recurring_job_id(subtask_id: str) -> str:
     return f"{_SUBTASK_RECURRING_JOB_PREFIX}{subtask_id}"
 
 
+_WEEKDAY_NAME = "mon|tue|wed|thu|fri|sat|sun"
+_WEEKDAY_NAME_RE = re.compile(rf"(?:{_WEEKDAY_NAME})(?:-(?:{_WEEKDAY_NAME}))?", re.IGNORECASE)
+
+
+def _dow_token_bounds(body: str, has_step: bool) -> Tuple[int, int]:
+    """解析星期字段里单个 token 的取值区间（标准 cron 编号，含端点）。"""
+    text = body.strip()
+    if text in ("", "*"):
+        return 0, 7
+    if "-" in text:
+        head, _, tail = text.partition("-")
+        return _dow_int(head), _dow_int(tail)
+    first = _dow_int(text)
+    # crontab 语义："2/2" 等价 "2-6/2"，单值带步长时右端开到周六
+    return (first, 6) if has_step else (first, first)
+
+
+def _dow_int(text: str) -> int:
+    try:
+        value = int(text.strip())
+    except ValueError as e:
+        raise ValueError(t("cron 星期字段必须是 0-7 的数字或英文名，收到：{p0}", p0=repr(text))) from e
+    if not 0 <= value <= 7:
+        raise ValueError(t("cron 星期字段超出 0-7 范围：{p0}", p0=value))
+    return value
+
+
+def _normalize_cron_dow(dow: str) -> str:
+    """把标准 crontab 的星期编号翻译成 APScheduler 的星期编号。
+
+    标准 crontab 是 0/7=周日、1=周一 … 6=周六；APScheduler 的 ``CronTrigger`` 却是
+    0=周一 … 6=周日。不翻译的话，主人格按常识写下的 ``1-5``（本意周一至周五）会被
+    APScheduler 读成周二至周六——周一永远不触发、周六白白唤醒一次。本函数把整个字段
+    展开成显式的 APScheduler 编号列表，避免范围/步长在两套编号间错位。
+    """
+    text = (dow or "").strip()
+    if not text or text == "*":
+        return "*"
+    if re.search(r"[A-Za-z]", text):
+        # mon-fri 这类英文名两套编号语义一致，校验拼写后原样透传
+        for token in text.split(","):
+            if not _WEEKDAY_NAME_RE.fullmatch(token.strip()):
+                raise ValueError(t("cron 星期字段的英文名非法：{p0}", p0=repr(token)))
+        return text
+
+    aps_days: set[int] = set()
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        body, sep, step_text = token.partition("/")
+        try:
+            step = int(step_text) if sep else 1
+        except ValueError as e:
+            raise ValueError(t("cron 星期字段步长必须是整数：{p0}", p0=repr(token))) from e
+        if step < 1:
+            raise ValueError(t("cron 星期字段步长必须 ≥ 1：{p0}", p0=repr(token)))
+
+        first, last = _dow_token_bounds(body, bool(sep))
+        span = list(range(first, last + 1)) if first <= last else [*range(first, 8), *range(0, last + 1)]
+        for std in span[::step]:
+            # 先把 7 折回 0（同为周日），再按 周一=0 的 APScheduler 编号平移
+            aps_days.add((std % 7 + 6) % 7)
+
+    if len(aps_days) == 7:
+        return "*"
+    return ",".join(str(d) for d in sorted(aps_days))
+
+
 def parse_trigger_spec(spec: str) -> Tuple[str, dict]:
     """把 recurring_trigger 字符串解析为 APScheduler 的 trigger_type + 参数 dict。
+
+    cron 的星期字段按标准 crontab 语义解释（见 :func:`_normalize_cron_dow`），
+    输出的 ``day_of_week`` 已翻译为 APScheduler 编号，可直接喂给 ``add_job``。
 
     Returns:
         (trigger_type, kwargs)：trigger_type ∈ {"interval", "cron"}
@@ -166,7 +239,7 @@ def parse_trigger_spec(spec: str) -> Tuple[str, dict]:
                 "hour": hour,
                 "day": day,
                 "month": month,
-                "day_of_week": dow,
+                "day_of_week": _normalize_cron_dow(dow),
             }
         if len(parts) == 4:
             # 兼容省略 day_of_week
@@ -496,6 +569,13 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
             )
             return
 
+        logger.info(
+            t(
+                "📋 [Kanban] 周期子任务开火 subtask={subtask_id} profile={p0}",
+                subtask_id=subtask_id,
+                p0=sub.agent_profile,
+            )
+        )
         instance = await clone_subtask_for_fire(sub)
         if instance is None:
             return
