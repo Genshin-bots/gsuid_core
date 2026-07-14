@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from gsuid_core.aps import start_scheduler, shutdown_scheduler
 from gsuid_core.i18n import t
-from gsuid_core.logger import logger, clean_log, clean_trace_collector
+from gsuid_core.logger import logger, clean_trace_collector
 from gsuid_core.server import core_start_execute, core_shutdown_execute, core_start_before_execute
 from gsuid_core.shutdown import shutdown_event
 
@@ -34,7 +34,8 @@ async def lifespan(app: FastAPI):
     # deprecate
     # await trans_global_val()
 
-    asyncio.create_task(clean_log())
+    # 日志缓冲不再需要周期性清空：内存已由 LOG_HISTORY_MAXLEN + LOG_HISTORY_MAX_CHARS
+    # 在 append 时按需淘汰保证有界；清空只会抹掉网页控制台的回放积压（见 logger.clean_log）
     asyncio.create_task(clean_trace_collector())
 
     yield

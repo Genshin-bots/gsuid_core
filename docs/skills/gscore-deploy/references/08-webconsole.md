@@ -11,7 +11,8 @@ WebConsole 是 GsCore 自带的**网页管理后台**，从 [`commit f903e3`](ht
 1. 启动前钩子（数据库迁移、global_val 加载）
 2. `setup_frontend_b()`（后台异步，缺 dist 时从 CDN 拉）
 3. `start_scheduler()`（定时任务）
-4. `clean_log()` / `clean_trace_collector()`（后台异步）
+4. `clean_trace_collector()`（后台异步；`clean_log()` 已废除，日志缓冲改为 append 时按
+   条数/字符数上限淘汰，不再周期性清空）
 
 [`gsuid_core/webconsole/app_app.py`](../../../gsuid_core/webconsole/app_app.py) 把
 FastAPI `app` 暴露给所有 `webconsole/*.py` 路由模块。WebConsole 路由分类见

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import datetime
 from copy import deepcopy
-from typing import Any, Dict, List, Deque, Optional, Protocol, Sequence, TypedDict, NotRequired
+from typing import Any, Set, Dict, List, Deque, Optional, Protocol, Sequence, TypedDict, NotRequired, AsyncGenerator
 from pathlib import Path
 from functools import wraps
 from collections import deque
@@ -26,11 +26,29 @@ from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message, TraceContext
 from gsuid_core.data_store import get_res_path, error_mark_path
 
-# 内存日志缓冲（供 WebConsole SSE 实时日志用）。必须有上限：无界 list 在高吞吐场景
-# （如记忆评测，单请求可产生数百条含 30k+ 字符注入全文/思考链的日志）下，8 分钟清理
-# 周期内即可堆出数 GB Python 堆，且高水位不归还 OS，表现为服务 RSS 只涨不跌。
+# WebConsole SSE 实时日志缓冲。必须有界：无界缓冲在高吞吐下（单请求数百条长日志）能堆出
+# 数 GB 堆且高水位不归还 OS。上限设计与 clean_log 的废除详见 12-developer-pitfalls §12.21。
 LOG_HISTORY_MAXLEN = 2000
-log_history: Deque[EventDict] = deque(maxlen=LOG_HISTORY_MAXLEN)
+LOG_HISTORY_MAX_CHARS = 8_000_000  # 兜底硬顶，正常负载（总量百 KB 量级）不触发
+# SSE 空闲心跳间隔（秒），需小于反向代理的读超时（nginx proxy_read_timeout 默认 60s）
+SSE_KEEPALIVE_SEC = 15
+
+
+@dataclass(slots=True)
+class LogRecord:
+    """SSE 缓冲里的一条日志：只留渲染所需的三个字符串。
+
+    不存 EventDict 本身——那会让缓冲长期持有 Event / 消息列表等原始对象的引用（正是 RSS
+    只涨不跌的来源），且字符预算也算不准（渲染后的 gevent 才是真正要推给前端的字节）。
+    """
+
+    level: str
+    gevent: str
+    timestamp: str
+
+
+log_history: Deque[LogRecord] = deque(maxlen=LOG_HISTORY_MAXLEN)
+log_history_chars: int = 0  # 缓冲内 gevent 总字符数，用于 MAX_CHARS 预算淘汰
 # SSE 游标用单调事件序号：log_history 是有界 deque，写满后左侧淘汰会让绝对下标漂移，
 # read_log 必须按序号（非下标）定位——否则缓冲写满 2000 条后 SSE 会永久错过新日志。
 log_seq: int = 0
@@ -609,44 +627,56 @@ def colorize_brackets_processor(logger: WrappedLogger, method_name: str, event_d
     return event_dict
 
 
-def safe_deepcopy_eventdict(event_dict: EventDict) -> EventDict:
-    sanitized_dict: EventDict = {}
-
-    for key, value in event_dict.items():
-        try:
-            sanitized_dict[key] = deepcopy(value)
-        except TypeError:
-            try:
-                sanitized_dict[key] = str(value)
-            except Exception as e:
-                sanitized_dict[key] = f"<Unstringable object of type {type(value).__name__}, error: {e}>"
-
-    return sanitized_dict
-
-
 def log_to_history(
     logger: WrappedLogger,
     method_name: str,
     event_dict: EventDict,
 ) -> EventDict:
-    try:
-        _event_dict = deepcopy(event_dict)
-    except Exception:
-        _event_dict = safe_deepcopy_eventdict(event_dict)
+    """把当前日志渲染成一条 LogRecord 压入 SSE 缓冲（collect 链专用，不改动 event_dict）。
 
-    s = ""
-    for g in _event_dict:
-        if g not in ["event", "timestamp", "level"]:
-            s += f"{g}={event_dict[g]}, "
+    event / level / timestamp 三键由 shared_processors 的 add_log_level、TimeStamper 保证存在。
+    """
+    extra = ", ".join(f"{k}={event_dict[k]}" for k in event_dict if k not in ("event", "timestamp", "level"))
+    gevent = str(event_dict["event"])
+    if extra:
+        gevent += f"\n{extra}"
 
-    s = s.rstrip(", ")
-    if s:
-        s = f"\n{s}"
-    _event_dict["gevent"] = str(event_dict["event"]) + s
-    global log_seq
-    log_history.append(_event_dict)
-    log_seq += 1
+    _history_append(
+        LogRecord(
+            level=str(event_dict["level"]),
+            gevent=gevent,
+            timestamp=str(event_dict["timestamp"]),
+        )
+    )
     return event_dict
+
+
+def _history_popleft() -> None:
+    """淘汰最旧一条并同步字符账（左侧淘汰不动 log_seq，read_log 的 oldest 天然兼容）。"""
+    global log_history_chars
+    log_history_chars -= len(log_history.popleft().gevent)
+
+
+def _history_append(record: LogRecord) -> None:
+    """把一条日志压入 SSE 缓冲，并维持条数 / 字符数双上限。
+
+    全程同步无 await，故 log_history / log_history_chars / log_seq 三者对 read_log 永远
+    是一致快照；log_seq 只增不减（read_log 的游标是单调序号，序号回退会让在线连接静默）。
+    """
+    global log_seq, log_history_chars
+
+    # deque 写满时先显式 popleft：交给 maxlen 静默淘汰会漏记账，字符数只增不减
+    if len(log_history) == LOG_HISTORY_MAXLEN:
+        _history_popleft()
+
+    log_history.append(record)
+    log_history_chars += len(record.gevent)
+    log_seq += 1
+
+    # 字符预算兜底（正常负载不触发）。至少保留一条：免得单条就超预算的日志把缓冲淘空，
+    # 那会让控制台回放变空——正是我们要根除的"一片空白"。
+    while log_history_chars > LOG_HISTORY_MAX_CHARS and len(log_history) > 1:
+        _history_popleft()
 
 
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -845,44 +875,77 @@ logger: TraceCapableLogger = structlog.get_logger("GsCore")
 trace_collector = _init_trace_collector()
 
 
-async def read_log(levels: Optional[List[str]] = None):
+async def read_log(
+    levels: Optional[List[str]] = None,
+    last_event_id: Optional[str] = None,
+) -> AsyncGenerator[str, None]:
     """
     SSE 实时日志生成器。
 
     Args:
         levels: 允许的日志级别列表，如 ["DEBUG", "INFO", "ERROR"]。
                为空时不过滤，推送所有已缓冲的日志。
+        last_event_id: 上次收到的 SSE ``id:``（即 log_seq 序号）。有值则从该序号之后续传，
+               避免把整个缓冲重放一遍——前端 allLogsRef 重连时不清空，重放即刷屏重复。
+               无值（首次连接 / 刷新）才从缓冲最旧一条回放，好让页面立刻有历史可看。
     """
     # 将允许的级别统一转为小写 set，便于快速匹配
-    allowed_levels: Optional[set] = set(ld.lower() for ld in levels) if levels else None
+    allowed_levels: Optional[Set[str]] = set(ld.lower() for ld in levels) if levels else None
     # 按单调序号推进（非 deque 下标）：deque 有界，写满后左侧淘汰会使下标漂移，用下标会
     # 在缓冲写满 2000 条后永久错过新日志。cursor 落后到被淘汰区间时跳到最旧可用一条。
-    cursor = log_seq - len(log_history)  # 从当前缓冲最旧一条开始回放
+    cursor = log_seq - len(log_history)  # 默认：从当前缓冲最旧一条开始回放
+    # 只认落在**本进程**序号区间内的 id：脏值 / core 重启后 log_seq 归零而浏览器仍揣着上个
+    # 进程的大 id，都退回"从最旧回放"——否则游标被钉死在"只收未来日志"，重启后控制台永远
+    # 刷不出已缓冲的启动日志。断太久、断点已被淘汰的情况由循环里的 oldest 截断兜底。
+    if last_event_id is not None and last_event_id.isdecimal():
+        lid = int(last_event_id)  # isdecimal 保证非负且 int() 不会抛
+        if lid < log_seq:
+            cursor = lid + 1
+
+    last_sent = time.monotonic()
     while True:
-        if cursor < log_seq:
-            oldest = log_seq - len(log_history)
-            if cursor < oldest:
-                cursor = oldest
-            ev = log_history[len(log_history) - (log_seq - cursor)]
+        # seq/size 必须一起快照后再算下标：本协程会在下面的 yield 处挂起（等客户端收字节），
+        # 挂起期间左侧淘汰会改变 deque 长度而 log_seq 不变（序号必须单调，否则在线读者的
+        # cursor 会永久大于 log_seq 而静默）。快照后 size==0 ⇒ oldest==seq ⇒ cursor 被抬到
+        # seq ⇒ 走等待分支，不会再对空 deque 取下标。
+        seq = log_seq
+        size = len(log_history)
+        oldest = seq - size
+        if cursor < oldest:
+            cursor = oldest  # 落后到已淘汰区间，跳到最旧可用一条
+        if cursor < seq:
+            record = log_history[size - (seq - cursor)]
+            ev_id = cursor  # 这条日志的单调序号，随 SSE id: 回传给浏览器
             cursor += 1
-            if ev:
-                level_str = str(ev.get("level", "")).lower()
-                if allowed_levels is None or level_str in allowed_levels:
-                    log_data = {
-                        "level": ev["level"].upper(),
-                        "message": ev["gevent"],
-                        "message_type": "html",
-                        "timestamp": ev["timestamp"],
-                    }
-                    yield f"data: {json.dumps(log_data)}\n\n"
-        else:
-            await asyncio.sleep(1)
+            level_str = record.level.lower()
+            if allowed_levels is not None and level_str not in allowed_levels:
+                continue  # 被级别过滤：不产出字节，故意不刷新 last_sent（否则心跳会饿死）
+            log_data = {
+                "level": level_str.upper(),
+                "message": record.gevent,
+                "message_type": "html",
+                "timestamp": record.timestamp,
+            }
+            yield f"id: {ev_id}\ndata: {json.dumps(log_data)}\n\n"
+            last_sent = time.monotonic()
+            continue
+
+        await asyncio.sleep(1)
+        # 心跳按"上次流出字节"计时，而非按空闲轮次：级别过滤下日志可以一直在消费却一条都
+        # 不推（如只订阅 ERROR 而满屏 DEBUG），零字节同样会被反代（nginx 默认 60s）掐断。
+        # 以 ":" 开头的是 SSE 注释行，EventSource 会忽略，不进 onmessage。
+        if time.monotonic() - last_sent >= SSE_KEEPALIVE_SEC:
+            yield ": keepalive\n\n"
+            last_sent = time.monotonic()
 
 
-async def clean_log():
-    while True:
-        await asyncio.sleep(480)
-        log_history.clear()
+async def clean_log() -> None:
+    """已废弃的空实现，仅为兼容外部 import 而保留，勿再挂 task。
+
+    原实现每 480s 清空 log_history，会抹掉网页控制台的回放积压（重挂载即一片空白）。缓冲现
+    由 LOG_HISTORY_MAXLEN + LOG_HISTORY_MAX_CHARS 在 append 时淘汰保证有界，无需周期清空。
+    """
+    return
 
 
 async def clean_trace_collector():

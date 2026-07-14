@@ -551,7 +551,9 @@ async def get_log_context(
 
 @app.get("/api/logs/stream", summary="实时日志流", tags=LOGS)
 async def stream_logs(
+    request: Request,
     level: Optional[List[str]] = Query(default=["DEBUG", "INFO", "ERROR"]),
+    last_event_id: Optional[str] = Query(default=None, description="断点续传：上次收到的 SSE id"),
     _user: Dict[str, Any] = Depends(require_auth),
 ):
     """Stream real-time logs using Server-Sent Events
@@ -560,10 +562,21 @@ async def stream_logs(
         level: 允许推送的日志级别列表，如 ["DEBUG", "INFO", "ERROR"]。
                默认为 ["DEBUG", "INFO", "ERROR"]；传 ["all"] 时推送全部级别日志。
                支持重复参数，如 ?level=DEBUG&level=INFO&level=ERROR。
+        last_event_id: 上次收到的 SSE ``id:``，从该序号之后续传，不传则回放整个缓冲。
+
+    续传必须同时支持请求头与查询参数：``Last-Event-ID`` 头只在 EventSource **自身**自动重连
+    时由浏览器带上；前端 onerror 后 ``close()`` + 新建连接（ConsolePage 即如此）不带该头。
     """
     if level and "all" in [ld.lower() for ld in level]:
         level = None
-    return StreamingResponse(read_log(levels=level), media_type="text/event-stream")
+    # 头优先（浏览器原生重连的权威来源），查询参数兜底（前端手动重建连接时用）
+    resume_from = request.headers.get("last-event-id") or last_event_id
+    return StreamingResponse(
+        read_log(levels=level, last_event_id=resume_from),
+        media_type="text/event-stream",
+        # 反代不得缓冲 SSE（nginx 默认会攒够 buffer 才吐，实时日志会一卡一卡地成批到达）
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/logs/levels", summary="获取可用日志级别", tags=LOGS)
