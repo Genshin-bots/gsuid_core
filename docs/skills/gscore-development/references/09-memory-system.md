@@ -43,6 +43,17 @@ RF-Mem 双过程检索 + 生命周期 + 多模态摄入。
 > 各复制一份——摄入与检索两侧映射不一致会让命名空间悄然分裂（群画像"无故消失"且无报错）。
 > 新代码一律调 helper；三处旧复制（subagent/kanban_tools/observer）待统一。
 
+> 🔴 **调用点回退 `group_id` 会直接击穿这套 scope 语义**（2026-07-15 修）。
+> `observe()` / `dual_route_retrieve()` 按 **`GROUP if group_id else USER_GLOBAL`** 分支定 scope，
+> 所以**私聊必须传 `group_id=None`**。而 `handler.py` / `handle_ai.py` 的 **4 个**调用点都写着
+> `group_id=str(event.group_id or event.user_id)`——私聊时 group_id 变成非空的 user_id，
+> 记忆被写进一个谁也不认的幻影 `group:{user_id}`。
+>
+> 下游**全都按"私聊 group_id=None"设计**（`AIMemPreference` 写死「主存 USER_GLOBAL」、
+> `dual_route_retrieve` 注释着「私聊 → user_global 是主 scope」），**只有调用点在回退**——
+> 于是偏好记忆永远为空。四处已统一传 `None`，`tests/test_memory_ingestion_durability.py`
+> 用 AST 锁死该写法不得复活。
+
 ## 9.3 Observer 观察者管道（`memory/observer.py`）
 
 通过 `queue.Queue`（**线程安全**，非 `asyncio.Queue`）传递观察记录。
@@ -78,14 +89,25 @@ class ObservationRecord:
 
 ## 9.4 Ingestion 摄入引擎（`memory/ingestion/`）
 
-`IngestionWorker`（`worker.py`）从队列消费，按 `scope_key` 分组缓冲，满足时间窗或数量阈值时
-flush。
+`IngestionWorker`（`worker.py`）从队列消费，按 `scope_key` 分组缓冲，命中任一出口即 flush。
+**flush 是唯一的落库时机，缓冲区在进程内存里**——出口设计直接决定"崩一次丢多少"。
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `batch_interval_seconds` | 1800（30min） | 聚合窗口，超时强制 flush |
-| `batch_max_size` | 30 | 单次最大聚合条数 |
-| `llm_semaphore_limit` | 2 | 并发 LLM 上限 |
+| `idle_flush_seconds` | 180 | **静默落库**：该 scope 静默这么久即 flush（0=关） |
+| `batch_interval_seconds` | 7200（2h） | 聚合窗口**上限**，刷屏 scope 的兜底出口 |
+| `batch_max_size` | 80 | 单次最大聚合条数 |
+| `llm_semaphore_limit` | 3 | 并发 LLM 上限 |
+
+> 🔴 **落库必须与攒批解耦**（2026-07-15）。旧实现只有「攒满 80 条」「距上次 flush 满 2 小时」
+> 两个出口，于是一段几轮的对话要在**内存里躺两小时**，core 一重启就永久消失。实测生产库里
+> **真实 QQ 流量的 Episode 数为 0**——能持久化的全部来自 webconsole / 评测端点，因为只有
+> `chat_with_history` 与 `batch_observe` 显式调了 `worker.flush_all()`。
+>
+> `idle_flush_seconds` 按**「对话静默」而非固定周期**触发：对话进行中一直有新消息 → 不算静默
+> → 不 flush，**批量抽取效率不受影响**；对话结束 3 分钟后落库，最长在险时间 2h → 3min。
+> 新增任何"先攒后落"的缓冲时先问一句：**进程被 kill -9 会丢多少？** 攒批是为了省 LLM 调用，
+> 不是为了省磁盘。
 
 Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities()`（两阶段去重）→
 `extract_and_upsert_edges()`（冲突检测）→ user_global 跨群属性 → `check_and_trigger_hierarchical_update()`。
@@ -174,9 +196,18 @@ class MemoryContext:
   传错了"蒸成带具体参数的规则。
 - **写入**：`AIMemPreference.upsert()`（语义等价强化 / 极性反转软停用 / 新建）。
 - **注入**（`retrieval/dual_route.py`）：检索时 SQL 精确取活跃规则，**置顶强约束**注入。
-- **选择性注入（精确能力域过滤）**：`handle_ai` 按**意图门**（纯闲聊不注入）+ **能力域过滤**
-  传参；能力域信号 = `_relevant_preference_contexts(query)` 子串近似 **∪**
-  `session.get_assembled_capability_domains()`。纠错规则与 `general` 通用规则**永远注入**。
+- **选择性注入 = 能力域过滤，不是整轮开关**（2026-07-15 修正）：`handle_ai` **恒传**
+  `inject_preferences=True`，靠 `preference_contexts` 控制注什么——非闲聊轮传本轮相关能力域
+  （`_relevant_preference_contexts(query)` 子串近似 **∪** `session.get_assembled_capability_domains()`），
+  **闲聊轮传空 list**。检索侧的过滤恒保留 `is_correction` 与 `target_context == "general"`，
+  于是风格类偏好在闲聊轮照常生效，只有工具行为规则被剔除。
+
+> 🔴 **别再用意图门整轮关闭偏好注入**（本文档曾同时写着"纯闲聊不注入"与"general 永远注入"，
+> 这两句不可能同时成立）。旧代码 `inject_preferences = intent != "闲聊"` 在**上游**就跳过了
+> 偏好查询，检索侧"general 永远保留"的设计**根本没机会执行**；叠加意图分类器把
+> "帮我查一下长离的练度"误判成闲聊（实测 conf=0.8），**偏好几乎从未被参考过**。
+> 而"回复保持简短"这类 `general` 风格偏好，恰恰**最该在闲聊轮生效**。
+> 回归锁：`tests/test_output_linebreaks_and_preference_gate.py`。
 - **生命周期**（`lifecycle/consolidation_worker.py`）：按 salience 裁剪，纠错类受保护。
 - **清空联动**（`clear_ops.py`）：清空用户记忆一并删偏好规则。
 
@@ -227,7 +258,12 @@ Observer Hook 检测到图片 → `submit_image_observation` 纯规则过滤（U
 全局单例 `memory_config = MemoryConfig()`。要点：`observer_enabled`(True) /
 `observer_blacklist` / `ingestion_enabled`(True) / `enable_retrieval`(True) /
 `enable_system2`(True) / `enable_user_global_memory`(False) / `retrieval_top_k`(10) /
-`dedup_similarity_threshold`(0.92) / `edge_conflict_threshold`(0.88)。
+`dedup_similarity_threshold`(0.92) / `edge_conflict_threshold`(0.88) /
+`idle_flush_seconds`(180，静默落库，见 [§9.4](#94-ingestion-摄入引擎-memoryingestion))。
+
+> ⚠️ **本表是 dataclass 字段默认值，不是配置文件里的值**。`batch_max_size` /
+> `batch_interval_seconds` 等**不在** `data/ai_core/memory_config.json` 里，改默认值要改代码。
+> 这份表历史上与代码漂移过（文档写 1800/30，代码是 7200/80）——**以 `memory/config.py` 为准**。
 
 记忆运行统计集成在 AI Statistics（`record_memory_*`，7 项指标进 `AIDailyStatistics`，见
 [§11](./11-statistics-webconsole-database.md)）。

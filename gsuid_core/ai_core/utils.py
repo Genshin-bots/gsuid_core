@@ -551,6 +551,35 @@ def _looks_like_tool_table(text: str) -> bool:
     return False
 
 
+_HTML_BR_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
+# 代码块 / 行内代码：用户可能正是在问 HTML 标签本身，这些区域不许动
+_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
+
+
+def _normalize_html_linebreaks(text: str) -> str:
+    """把模型吐出的 ``<br>`` 系列标签还原成真正的换行。
+
+    模型会用 ``<br>`` 代替换行——框架自己的 prompt 里就大量使用尖括号标记
+    （``<example>`` / ``<meme: 困>`` / ``<SILENCE>``），模型被这种"这里可以打标记"的
+    语境带偏。IM 不渲染 HTML，用户看到的是字面的 ``xxx<br><br>xxx``。
+
+    更要命的是 `send_chat_result` 靠 ``\\n\\s*\\n`` **拆分多条消息**：``<br>`` 会让这个
+    拆分**完全失效**，人格卡里"连发 2-3 条短消息"退化成一整段带标签的怪文本。
+    还原成换行后，模型的原意（换行 / 连发多条）自然恢复。
+    """
+    if not _HTML_BR_RE.search(text):
+        return text
+
+    parts: list[str] = []
+    last = 0
+    for m in _CODE_SPAN_RE.finditer(text):
+        parts.append(_HTML_BR_RE.sub("\n", text[last : m.start()]))
+        parts.append(m.group(0))
+        last = m.end()
+    parts.append(_HTML_BR_RE.sub("\n", text[last:]))
+    return "".join(parts)
+
+
 def _strip_persona_markdown(text: str) -> str:
     """剥离闲聊/人格回复里的 markdown 与 ``*动作*`` 旁白（B-2）。
 
@@ -601,6 +630,8 @@ async def send_chat_result(
     # 所有经本函数下发的路径。
     text = _strip_tool_call_artifacts(text)
     text = _strip_special_control_tokens(text)
+    # 必须在按 \n\n 拆多条之前做：<br> 会让"连发多条短消息"的拆分完全失效
+    text = _normalize_html_linebreaks(text)
 
     # Trace 日志：记录原始输出
     logger.trace(i18n_t("[Meme] 原始输出: {text}", text=repr(text)))

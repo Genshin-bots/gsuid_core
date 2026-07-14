@@ -53,7 +53,8 @@ gsuid_core/ai_core/
 ├── ai_router.py         # Session 路由（get_ai_session / Persona 热重载检测）
 ├── session_registry.py  # AISessionRegistry：GsCoreAIAgent 对象注册表 + 空闲清理
 ├── gs_agent.py          # GsCoreAIAgent：Agent 实现、工具装配、_prepare_user_message 图片处理
-├── register.py          # @ai_tools 装饰器 + _TOOL_REGISTRY 工具注册表 + visible_when
+├── register.py          # @ai_tools 装饰器 + _TOOL_REGISTRY 工具注册表 + visible_when + ai_alias/ai_entity
+├── entity_index.py      # 实体身份索引 surface(正式名/别名)→插件，供 L0 实体路由确定性定插件（见 [§7.3b](./07-tool-registry-and-agent.md)）
 ├── models.py            # ToolContext / ToolBase / 数据模型（含 dynamic_tool_names）
 ├── dynamic_toolset.py   # RetrievableToolset：pydantic-ai 运行时动态工具集（find_tools 闭环）
 ├── trigger_bridge.py    # 触发器→AI 工具桥接（MockBot / ai_return / send_message_by_ai）

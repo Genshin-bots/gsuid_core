@@ -316,9 +316,23 @@ def ai_tools(
             )
         )
 
+        # docstring 是工具**唯一**的向量检索文本（入库文本 = name + description），
+        # 缺失即等同于"注册了一个永远召不回的工具"，必须吵出来而不是静默注册。
+        tool_description = (wrapped_tool.__doc__ or "").strip()
+        if not tool_description:
+            logger.warning(
+                t(
+                    "🧠 [Register] 工具 [{p0}]（来源 {plugin_name}）没有 docstring，向量检索只剩"
+                    " 函数名、几乎不可能被召回。常见成因：docstring 被写在了函数体首条语句"
+                    "（如 logger 调用）之后，那样它只是个普通字符串表达式，不是 docstring。",
+                    p0=fn.__name__,
+                    plugin_name=plugin_name,
+                )
+            )
+
         tool_base = ToolBase(
             name=fn.__name__,
-            description=(wrapped_tool.__doc__ or "").strip(),
+            description=tool_description,
             plugin=plugin_name,
             tool=tool_obj,
             context_tags=context_tags,
@@ -429,7 +443,30 @@ def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global"):
         if name not in formals:
             formals.append(name)
 
+    # 同步进实体身份索引（纯增量，_ALIASES 行为不变——memory 消费方依赖 global scope）。
+    # 正式名本身不是 _ALIASES 的键（只有别名是），这里一并登记，否则"玄翎秧秧"查不到。
+    _index_entity_surfaces(name, alias)
+
     logger.trace(f"🧠 [AI][Registry] Registered aliases for {name} (scope={scope}): {alias}")
+
+
+def _index_entity_surfaces(name: str, alias: List[str]) -> None:
+    """把正式名 + 别名登记到 `entity_index`，插件归属取自**调用方所在模块**。
+
+    `ai_alias` 是普通函数（不是装饰器），拿不到 `fn.__module__`，只能回溯调用栈。
+    """
+    from gsuid_core.ai_core.entity_index import register_entity_surface
+
+    frame = inspect.currentframe()
+    caller = frame.f_back.f_back if frame is not None and frame.f_back is not None else None
+    module_name = ""
+    if caller is not None and "__name__" in caller.f_globals:
+        module_name = str(caller.f_globals["__name__"])
+
+    plugin = _get_plugin_name_from_module(module_name)
+    register_entity_surface(name, name, plugin)
+    for a in alias:
+        register_entity_surface(a, name, plugin)
 
 
 def get_aliases_for_scope(scope: str = "global") -> Dict[str, List[str]]:

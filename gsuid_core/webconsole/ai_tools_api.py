@@ -7,10 +7,12 @@ AI Tools APIs
 from typing import Any, Dict, List, Optional
 
 from fastapi import Query, Depends
+from pydantic import BaseModel
 
-from gsuid_core.ai_core.register import get_all_tools, get_registered_tools
+from gsuid_core.ai_core.register import get_all_tools, find_tool_base, get_registered_tools
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole._local_test_gate import LOCAL_TEST_MODE, require_local_test
 
 from ._api_tags import AI_TOOLS
 
@@ -166,3 +168,95 @@ async def get_ai_tool_detail(tool_name: str, _: Dict[str, Any] = Depends(require
             "category": tool_category,
         },
     }
+
+
+class AssemblePreviewRequest(BaseModel):
+    """工具装配预览请求（工具选择评测用）。"""
+
+    query: str = ""
+
+
+@app.post(
+    "/api/ai/tools/assemble_preview",
+    include_in_schema=LOCAL_TEST_MODE,
+    summary="预览某条 query 会装配出哪些工具（评测用）",
+    tags=AI_TOOLS,
+)
+async def assemble_tools_preview(
+    body: AssemblePreviewRequest,
+    _gate: Optional[None] = Depends(require_local_test),
+) -> Dict[str, Any]:
+    """跑真实的附加池装配链路（向量召回 → 能力族展开），返回本轮会给模型的工具。
+
+    供 `eval/tool_selection` 量化 Pool Recall——它必须打**真实运行中的 core**：
+    工具注册表只有在完整启动序（含插件启动钩子）之后才是全的，
+    单独 `load_plugins()` 拿到的注册表是残缺的（XW 的 AI-RAG 走的是启动钩子）。
+    默认 404，仅 `GSUID_LOCAL_TEST_MODE=1` 时放行。
+    """
+    from gsuid_core.ai_core.rag.tools import (
+        get_main_agent_tools,
+        expand_tools_to_families,
+        search_tools_with_entity_routing,
+    )
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    recall: int = ai_config.get_config("tool_search_recall").data
+    max_extra: int = ai_config.get_config("tool_extra_pool_max").data
+
+    core_tools = await get_main_agent_tools()
+    core_names = {t.name for t in core_tools}
+
+    # 必须与 gs_agent 走同一条装配路径（含 L0 实体路由），否则评测测的不是生产行为。
+    # 单轮预览没有历史，route_text 与 query 同为本条消息。
+    seeds = await search_tools_with_entity_routing(
+        query=body.query,
+        route_text=body.query,
+        limit=recall,
+        non_category=["self", "buildin"],
+    )
+    pool = expand_tools_to_families(seeds, exclude_names=core_names, max_tools=max_extra)
+
+    def _plugin_of(name: str) -> str:
+        tb = find_tool_base(name)
+        if tb is None:
+            return "unknown"
+        return tb.plugin
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "query": body.query,
+            "seeds": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in seeds],
+            "pool": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in pool],
+            "core_pool_size": len(core_names),
+            "recall": recall,
+            "max_extra": max_extra,
+        },
+    }
+
+
+# 路径**不能**放在 /api/ai/tools/ 下：会被更早注册的 GET /api/ai/tools/{tool_name}
+# 抢先匹配（把 entity_index 当成工具名）。
+@app.get(
+    "/api/ai/entity_index",
+    include_in_schema=LOCAL_TEST_MODE,
+    summary="导出实体身份索引（评测用）",
+    tags=AI_TOOLS,
+)
+async def dump_entity_index(
+    _gate: Optional[None] = Depends(require_local_test),
+) -> Dict[str, Any]:
+    """导出 surface → 插件的实体身份索引。
+
+    评测的 ground truth 必须来自**运行中的 core**：插件的实体注册有的走 import 期
+    （`ai_alias`），有的走启动钩子（XW 的 AI-RAG），评测进程单独 `load_plugins()`
+    只能拿到前者，据此生成的用例会漏掉一半插件。默认 404。
+    """
+    from gsuid_core.ai_core.entity_index import get_entity_index
+
+    entries = [
+        {"surface": surface, "plugins": ref.plugins, "ambiguous": ref.is_ambiguous}
+        for surface, ref in get_entity_index().items()
+    ]
+    return {"status": 0, "msg": "ok", "data": {"count": len(entries), "entries": entries}}

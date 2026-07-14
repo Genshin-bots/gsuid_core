@@ -503,6 +503,136 @@ gate 误判的代价只能是"本该有工具却没给"，绝不能是"本该沉
 `tests/test_interaction_scaffold.py` 补真实 payload 形态的用例锁（参考
 `test_length_gates_on_production_payload`）。
 
+## 12.22e 工具召不回的四层坑（2026-07-15 生产事故复盘）
+
+现象：用户问「看下我玄翎秧秧面板」（鸣潮角色），AI 全程只调 `nte_*`（异环）工具，
+`find_tools` 捞回来的也清一色是异环——**鸣潮工具一个都没进过工具列表**。四层原因叠加，
+每一层单独看都"不致命"，合起来就把一个插件彻底变成了隐形。
+
+**🔴 一、docstring 写错位置 = 注册了一个永远召不回的工具（零运行时症状）**
+
+工具入库向量的文本是 `f"{name}\n{description}"`（`rag/tools.py`），而 `description`
+**只**来自 docstring。XW 的 5 个面板工具把 docstring 写在了函数体第一条语句
+（`logger.info(...)`）**之后**——那样它只是个普通字符串表达式，`__doc__` 是 `None`，
+向量里只剩一个英文函数名，中文提问永远召不回。**注册成功、日志无异常、调用也正常**，
+唯独检索不到。`@ai_tools` 现已在 docstring 为空时 `logger.warning`，
+`tests/test_ai_tool_docstrings.py` 用 AST 扫全仓兜底。
+
+**🔴 二、插件写 `category="self"` 会被降级，不是保底**
+
+`self`/`buildin`/`meta` 是**框架特权分类**，插件声明时 `register.py` 会重定向到 `common`
+（见 `_CORE_ONLY_CATEGORIES`）。插件工具因此**必须**靠向量检索召回——一旦踩了坑一，
+就彻底没救。插件想被稳定召回，靠的是**好 docstring + `capability_domain` + `context_tags`**，
+不是抢 `self`。
+
+**🔴 三、能力族展开曾是"赢家通吃"**
+
+`expand_tools_to_families` 旧实现：排名第一的族整族展开后一旦占满预算就 `break`。
+`异环面板` 族有 9 个成员 > 附加池上限 8（`tool_extra_pool_max`），于是它**独占整个附加池**，
+后面所有候选族（包括鸣潮的面板工具）连被看一眼的机会都没有。现改为：排名第一的族照旧
+整族纳入（不回退），放不下的族**跳过而非中断**，并给**落选的种子**逐个补**兜底席位**
+（至多 `_SEED_SEATS=4` 个，宁可小幅超预算）。
+
+> **席位必须发给"种子"而不是"族"**（这一版差点写错）：只按族发席位，会把同族里排名靠后的
+> 种子一并丢掉，**跨能力族的提问就会缺工具**——"看看我练度 + 这角色怎么提升"同时命中
+> 「鸣潮面板」「鸣潮资料库」两族，资料库族整族放不下时只补 1 个席位，第 2、3 个种子
+> （专武推荐等）就没了。种子是本轮的语义命中，一个都不该被大族挤掉。
+
+**新增能力族时留意族大小**——族大于附加池上限时，它在旧逻辑下会挤掉所有人。反过来，
+**单领域部署根本不必付这份检索开销**：persona `config.json` 的 `tool_packs` 可直接写
+`capability_domain` 名，整族无条件常驻保底池（见 [§7.3](./07-tool-registry-and-agent.md)）。
+
+**🔴 四、评测期配置遗留污染生产（本次真正的元凶，也是最容易复发的一类）**
+
+`data/ai_core/local_embedding_config.json` 的 `embedding_model_name` 当时是
+`BAAI/bge-small-en-v1.5`——**英文模型**。它是 2026-07-06 那轮英文语料记忆评测特意改的
+（见 `docs/CHANGELOG_memory_eval_20260706.md` §A.1.5，同批还有 `enable_rerank=false`），
+评测结束后**没改回来**。后果：**所有中文向量检索（工具 / 记忆 / 知识库）都退化成噪声**——
+同一句中文 query，正确工具在英文模型下排 #40/58、在中文模型（框架默认，且是唯一合法
+option）下排 **#1**；英文模型的相似度全挤在 0.058 的窄带里，`nte_explore` 能排在
+`nte_character` 前面。
+
+> **教训**：`data/ai_core/*.json` 是运行期配置、**不进 git**，评测为了跑分改的值不会被
+> code review 拦住，也没有任何告警。**评测改了哪些运行期配置，必须在评测结束后逐条改回**，
+> 并且改动本身要写进 changelog（这次幸好写了，否则根本查不出来）。排查"检索质量突然变差"
+> 类问题时，**先确认嵌入模型和语料语言是否匹配**，再去怀疑业务代码。
+>
+> 切换嵌入模型会改向量维度（384 ↔ 512），重启时所有 Qdrant 集合维度不匹配 → 自动
+> `force_recreate` + 从 payload 重嵌入（不丢数据，但启动会重跑全量嵌入，2C2G 上很慢）。
+
+## 12.22f 记忆一条都没存下来的两个坑（2026-07-15 排查）
+
+现象：生产库里**真实 QQ 流量的 Episode 数为 0**，偏好记忆表 46 条全是评测数据。
+两个独立 bug 叠加，各自都不致命，合起来让整个记忆链路对真实用户**完全失效**。
+
+**🔴 一、flush 是唯一的落库时机，而缓冲区在进程内存里**
+
+`IngestionWorker` 把观察攒进 `self._buffers`（进程内存），旧实现只有两个落库出口：
+攒满 `batch_max_size`(80) 条，或距上次 flush 满 `batch_interval_seconds`(**2 小时**)。
+于是一段几轮的对话要在内存里躺两小时——core 在这期间重启/被强杀，这段记忆**永久消失**。
+
+**能持久化的 Episode 全部来自 webconsole / 评测端点**，因为只有 `chat_with_history`
+与 `batch_observe` 显式调了 `worker.flush_all()`；真实 WS/QQ 链路从不主动 flush。
+排查时这个分布本身就是最强线索：**"只有走 API 的数据活下来了"= 落库依赖显式 flush**。
+
+现已新增 `idle_flush_seconds`(默认 180)：**按「对话静默」而非固定周期触发**——对话进行中
+一直有新消息 → 不算静默 → 不 flush，抽取仍是整段一次调用，**批量效率不受影响**；
+对话结束 3 分钟后落库，记忆的最长在险时间从 2 小时降到 3 分钟。
+`batch_interval_seconds` 退化为刷屏 scope 的兜底上限。
+
+> 新增任何"先攒后落"的缓冲时，先问一句：**进程被 kill -9 会丢多少？** 攒批是为了省
+> LLM 调用，不是为了省磁盘——落库和攒批应该解耦。
+
+**🔴 二、`group_id or user_id` 把私聊记忆写进了 group scope**
+
+`handler.py` / `handle_ai.py` 的 **4 个**调用点都写着：
+
+```python
+group_id=str(event.group_id or event.user_id)   # ← 私聊时 group_id 变成 user_id
+```
+
+而 `observer.py` 按 `ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL` 定 scope，
+**非空就走 GROUP**。于是私聊记忆落进 `group:{user_id}`。而：
+
+- `AIMemPreference` 的 docstring 写死「**主存 USER_GLOBAL scope**」；
+- `dual_route_retrieve` 注释着「私聊（group_id 为空）→ **user_global 是该用户记忆的主 scope**」。
+
+**下游全都按"私聊 group_id=None"设计，只有调用点在回退**——写入落到一个谁也不认的
+幻影 scope，偏好记忆因此永远为空。四处已统一改为私聊传 `None`，
+`tests/test_memory_ingestion_durability.py` 用 AST 锁死该写法不得复活
+（检测器只认 `X.group_id or X.user_id` 形态，不误伤黑名单的 `in ... or ... in ...`）。
+
+## 12.22g 两条方法论教训（2026-07-15，比具体 bug 更值钱）
+
+**🔴 一、测装配 / 注册表的评测，必须打「真实运行中的 core」**
+
+第一版工具选择评测写成了**进程内**跑 `gss.load_plugins()`，结果注册表只有 **51 个工具**
+（真实 core 里有 303）、实体索引缺一半插件，跑出来 Pool Recall 20%——**数字全是假的**。
+
+根因：**插件的注册有两条路径**——`@ai_tools` / `ai_alias` 在 **import 期**注册，而不少插件
+（如 XW 的 AI-RAG）走的是**启动钩子**（`on_core_start` → 资源下载完再 `reload_ai_rag()`）。
+`load_plugins()` 只做 import，拿到的是**残缺注册表**。
+
+> 凡是依赖"注册表全不全"的评测/脚本，一律通过 HTTP 打运行中的 core
+> （`eval/tool_selection/` 的 `assemble_preview` / `entity_index` 两个 local-test 端点即为此
+> 而设，默认 404，需 `GSUID_LOCAL_TEST_MODE=1`）。**别在进程内重建世界。**
+
+**🔴 二、门控要做「过滤」，不要做「整轮开关」**
+
+偏好注入曾用 `inject_preferences = intent != "闲聊"` 整轮关闭。这道门在**上游**跳过了整个
+偏好查询，导致检索侧"`general` / 纠错规则永远保留"的设计**根本没机会执行**——文档里两句话
+自相矛盾了几个月都没人发现，因为**没有任何报错**。
+
+正确形态是**传空的过滤条件**（`preference_contexts=[]`），让下游那道**本就存在**的过滤自己
+决定留什么。同理适用于任何"某某轮次不要 XX"的需求：
+
+> **能用"缩小候选集"表达的，就不要用"整条链路跳过"表达。** 前者让下游的不变量继续生效，
+> 后者会把下游所有精心设计的兜底一起废掉，且**静默失效**。
+>
+> 这个 bug 还叠加了第二层：意图分类器把"帮我查一下长离的练度好不好"判成**闲聊**（conf 0.8）。
+> **任何挂在 `intent` 上的门控都要问一句：分类器错判时，代价是什么？** 若代价是"整个能力
+> 静默消失"，那这个门控的形态就是错的。（`find_tools` 的渐进暴露也挂在同一个意图门上。）
+
 ## 12.23 改完代码的自查清单
 
 1. 类型：无 `try/except` 兜底（除不可信外部输入）、无 `cast`、无 `type:ignore`、无 `getattr/

@@ -62,7 +62,34 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族（"能建就能改/删"） |
 | L5 上文增强检索 | `_recent_user_texts` 拼进检索 query | "改成后天吧"借上文召回 |
 
-保底池全保留；语境 + 查询池合并去重后限制附加数量上限（`MAX_EXTRA_TOOLS`）。
+保底池全保留；语境 + 查询池合并去重后限制附加数量上限（`tool_extra_pool_max`，默认 8）。
+
+> **L4 族展开的公平性（2026-07-15 修）**：`expand_tools_to_families` 曾是**赢家通吃**——
+> 排名第一的族整族展开占满预算后直接 `break`。`异环面板` 族 9 个成员 > 上限 8，于是它独占
+> 整个附加池，鸣潮的同类面板工具永远进不了列表，AI 只能拿异环工具硬答"玄翎秧秧面板"。
+> 现在的规则：① 排名第一的族仍整族纳入（最匹配的能力必须完整可用）；② 后续族放不下整族
+> 时**跳过而非中断**，让更小的族补齐剩余预算；③ 展开后仍未进池的**种子**逐个补进来
+> （**种子兜底席位**，至多 `_SEED_SEATS=4` 个）——宁可小幅超预算。
+>
+> **席位发给"种子"而不是"族"**：种子是本轮的语义命中，一个都不该被大族挤掉。若只按族发
+> 席位，**跨能力族的提问会缺工具**——"看看我练度 + 这角色怎么提升"同时命中「鸣潮面板」与
+> 「鸣潮资料库」两族，资料库族整族放不下时只补 1 个席位，它命中的第 2、3 个种子
+> （如 `get_char_signature_weapon_wuwa` 专武推荐）就被丢了。
+>
+> **注册新能力族时注意族大小**：族成员数超过附加池上限（`tool_extra_pool_max`）会挤压其他族。
+> 不变量与回归用例见 `tests/test_tool_family_expansion.py`（含"新实现 ⊇ 旧实现"超集断言、
+> 跨族提问用例）。
+>
+> **单领域部署不必付检索开销**：persona `config.json` 的 `tool_packs` 可以直接写
+> `capability_domain` 名（`tool_packs.py::resolve_pack_tool_names` 会解析），整族**无条件常驻**
+> 保底池——纯鸣潮 bot 写 `"tool_packs": ["鸣潮面板"]` 即可，零向量检索、零族展开。
+> 群维度则用 `context_tags` + 语境池（L2）。
+
+> ⚠️ **工具能被召回的前提是它有 docstring**。入库向量文本 = `name + "\n" + description`，
+> 而 `description` **只**来自 docstring；docstring 若被写在函数体首条语句之后（如
+> `logger.info(...)` 之后）就只是个普通字符串表达式，`__doc__` 为 `None`，该工具**注册成功
+> 但永远召不回**且零运行时症状。`@ai_tools` 现会对空 docstring 告警，详见
+> [§12.22e](./12-developer-pitfalls.md)。
 
 ```python
 def get_main_agent_tools() -> ToolList:
@@ -72,6 +99,37 @@ async def search_tools(query, limit=4, category="all", non_category="", rerank=T
 def get_all_tools() -> Dict[str, ToolBase]: ...          # 平铺所有工具
 def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
 ```
+
+## 7.3b L0 实体路由：确定性定插件，嵌入只做插件内细选（2026-07-15）
+
+**嵌入做「实体 → 插件」的路由是方向性错误**：「玄翎秧秧属于鸣潮」是**世界知识，不是文本
+相似度**，嵌入学不会——除非把 60 个角色名全写进 docstring（不可扩展）。实测（`eval/tool_selection`
+基线，350 例）跨插件路由准确率只有 **49.7%**，跟掷硬币差不多："tartaglia面板"（原神达达利亚）
+能召回一池子异环工具。每多一个游戏插件，「面板/角色/练度」的近义工具簇就多一层碰撞。
+
+`search_tools_with_entity_routing`（`rag/tools.py`）把这一步变成**确定性查表**：
+先查 `ai_core/entity_index.py` 的实体身份索引拿到插件归属，再把该插件的工具提到种子队列
+前面，让嵌入只负责"插件内选哪个工具"（scope 从 1000+ 缩到几十，这是它擅长的）。
+
+**效果**：Pool Recall 74.9% → **99.7%**，Top-Seed 49.7% → **99.7%**。
+
+**保守不变量**（路由是加分项，不接管召回）：
+
+- **无实体命中 / 命中归属歧义 → 行为与普通 `search_tools` 完全一致**（有测试逐字节锁死，
+  这是它敢上生产的前提）；
+- 只按**当前消息**路由，不吃 L5 拼进来的历史原话——否则"上轮问长离、这轮设提醒"会被
+  上轮实体劫持（跨轮延续由 L3 会话驻留负责）；
+- 至少留 1 个种子名额给通用最佳匹配；
+- 命中插件的工具被语义阈值砍光时才撤阈值重捞（插件归属已确定性确认，不必再让一个
+  按模型标定的阈值否决它）。
+
+> ⚠️ **实体索引的护栏不是防御性编程，是必需品**：真实注册表里有 `日` `月` `春` `夏` 这类
+> **单字别名**和 `xx` `dj` `ly` 这类 ASCII 缩写，不设防会让几乎每条中文消息都误路由。
+> 详见 `entity_index.py` 模块 docstring 与 `tests/test_entity_index.py`。
+>
+> 另一个坑：ASCII 词边界**不能用 `\b`**——Python 正则的 `\w` 把 CJK 也算单词字符，于是
+> `\btartaglia\b` 在 `"tartaglia面板"` 里**匹配不上**，所有"英文别名+中文"的提问会静默漏掉
+> 路由。必须用显式 ASCII 字符类断言。这个 bug 单测差点放过去，是评测抓到的。
 
 ## 7.4 主 / 子 Agent 工具集差异
 
@@ -269,3 +327,24 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 > 原"工具前摇台词"机制（`_FRAMEWORK_PRE_TOOL_EXPRESSIONS` + persona `pre_tool_expressions`）
 > 已整体移除：耗时工具前的告知由 prompt 条款驱动 Agent 自行组织语言，框架不再替 AI 说
 > 固定话（历史上两次硬编码人格台词事故的根治，见 §12.22）。
+
+## 7.13 `send_chat_result` 的文本归一化链（`ai_core/utils.py`）
+
+**所有**下发给用户的 AI 文本都经 `send_chat_result`。它在发送前按序做：
+
+`_strip_tool_call_artifacts`（工具调用标记残留）→ `_strip_special_control_tokens`（模型私有
+回合/角色 token，如 MiniMax 的 `]<]minimax[>[`）→ **`_normalize_html_linebreaks`**（`<br>` → `\n`）
+→ meme 标记解析 → `_strip_persona_markdown`（IM 不渲染 markdown）→ 出戏防火墙兜底 →
+按 `\n\s*\n`（**空行**）拆成多条消息下发。
+
+> 🔴 **`<br>` 归一化必须在按空行拆条之前**（2026-07-15 新增）。模型会用 `<br>` 代替换行——
+> **框架自己的 prompt 里就大量使用尖括号标记**（`<example>` / `<meme: 困>` / `<SILENCE>`），
+> 模型被"这里可以打标记"的语境带偏。危害不止"用户看到字面的 `xxx<br><br>xxx`"：
+> **拆多条消息靠的是空行**，`<br>` 让这个拆分**完全失效**，人格卡里"连发 2-3 条短消息"
+> 退化成一整段带标签的怪文本。归一化后 `<br><br>` → `\n\n` → 正确拆两条，模型原意自然恢复。
+>
+> 代码块 / 行内代码**原样保留**——用户可能正是在问 HTML 标签本身。
+> 回归锁：`tests/test_output_linebreaks_and_preference_gate.py`。
+
+> 新增任何"模型输出后处理"一律加在这条链里，**不要**在各调用方各写一份——
+> proactive / 兜底总结 / 子 Agent 转述等所有路径都经此函数下发。

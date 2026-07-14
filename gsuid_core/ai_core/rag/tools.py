@@ -315,10 +315,91 @@ _SELF_CATEGORY_WHITELIST: Set[str] = {
 }
 
 
+# 族展开后，最多为"落选的种子"补多少个兜底席位（见 expand_tools_to_families）。
+_SEED_SEATS: int = 4
+
+# 实体路由命中插件后，向量宽召回多少个候选用于在该插件内做细选。
+_ENTITY_ROUTE_RECALL: int = 20
+# 命中插件在宽召回里一个工具都没有时，撤掉阈值后的**深召回**宽度。只在兜底路径上跑，
+# 拉大它是为了修「查一下{X}的资料」这类：插件确定，但它的工具在 300+ 池里排不进 top-20。
+_ENTITY_ROUTE_DEEP_RECALL: int = 60
+
+
+def _tool_plugin(tool_name: str) -> str:
+    from gsuid_core.ai_core.register import find_tool_base
+
+    tool_base = find_tool_base(tool_name)
+    if tool_base is None:
+        return ""
+    return tool_base.plugin
+
+
+async def search_tools_with_entity_routing(
+    query: str,
+    route_text: str,
+    limit: int,
+    non_category: Union[str, list[str]] = "",
+    threshold: float = 0.38,
+) -> ToolList:
+    """两级召回：实体身份**确定性**定插件，向量检索在插件内做细选（L0）。
+
+    「玄翎秧秧属于鸣潮」是**世界知识，不是文本相似度**——嵌入学不会。实测跨插件路由
+    准确率只有 ~50%（`eval/tool_selection`），"tartaglia面板"（原神）能召回一池子异环
+    工具。本函数先查 `entity_index` 拿到确定的插件归属，再把该插件的工具提到种子队列
+    前面，让嵌入只负责"插件内选哪个工具"（scope 从上千缩到几十，它擅长）。
+
+    保守规则：
+    - **没有实体命中 / 命中归属歧义** → 行为与普通 `search_tools` **完全一致**（零影响）；
+    - 只按**当前消息**路由，不吃 L5 拼进来的历史原话——否则"上轮问长离、这轮设提醒"
+      会被上轮的实体劫持（跨轮延续由 L3 会话驻留负责，不该由实体路由兜）；
+    - 至少留 1 个种子名额给通用最佳匹配，实体路由是**加分项**，不接管整个召回。
+    """
+    from gsuid_core.ai_core.entity_index import plugins_in_text
+
+    routed = plugins_in_text(route_text)
+    if not routed:
+        return await search_tools(query=query, limit=limit, non_category=non_category, threshold=threshold)
+
+    wide = await search_tools(query=query, limit=_ENTITY_ROUTE_RECALL, non_category=non_category, threshold=threshold)
+    hits = [t for t in wide if _tool_plugin(t.name) in routed]
+
+    # 命中插件一个工具都没进宽召回（被阈值砍掉了）→ 撤掉阈值再捞一次。
+    # 插件归属已由实体索引**确定性**确认，不必再让一个按模型标定的语义阈值来否决它。
+    if not hits:
+        deep = await search_tools(
+            query=query, limit=_ENTITY_ROUTE_DEEP_RECALL, non_category=non_category, threshold=0.0
+        )
+        hits = [t for t in deep if _tool_plugin(t.name) in routed]
+
+    if not hits:
+        logger.debug(i18n_t("🧠 [Tools] 实体路由命中插件 {routed}，但该插件无工具可召回", routed=routed))
+        return wide[:limit]
+
+    max_routed = max(1, limit - 1)
+    hit_names = {t.name for t in hits[:max_routed]}
+    seeds: ToolList = list(hits[:max_routed])
+    for tool in wide:
+        if len(seeds) >= limit:
+            break
+        if tool.name not in hit_names:
+            seeds.append(tool)
+
+    logger.debug(
+        i18n_t(
+            "🧠 [Tools] 实体路由: {route_text!r} → 插件 {routed}，前置 {p0} 个种子",
+            route_text=route_text,
+            routed=routed,
+            p0=len(hit_names),
+        )
+    )
+    return seeds[:limit]
+
+
 def expand_tools_to_families(
     seed_tools: ToolList,
     exclude_names: Optional[Set[str]] = None,
     max_tools: int = 16,
+    seed_seats: int = _SEED_SEATS,
 ) -> ToolList:
     """把召回到的"种子"工具按能力族（capability_domain）整族展开（L4）。
 
@@ -327,31 +408,65 @@ def expand_tools_to_families(
     解决"单条消息语义召回只能捞到一个工具、后续追问改不了"的问题。
 
     规则：
-    - 整族要么全进、要么不进，避免把一个族截断成半个；
-    - 跨族去重，并排除 ``exclude_names``（通常是保底池工具名，避免重复）；
-    - 总数受 ``max_tools`` 约束。未声明 capability_domain 的工具视为单工具族。
+
+    - **整族要么全进、要么不进**，避免把一个族截断成半个。排名第一的族即使超出
+      ``max_tools`` 也整族纳入——它是本轮语义最匹配的能力，必须完整可用。
+    - 后续族放不下整族时**跳过**（继续看下一个族），不再中断整个循环，
+      让排在后面的小族仍有机会补齐剩余预算。
+    - **种子兜底席位**：族展开后仍未进池的**种子**，逐个补进来（至多 ``seed_seats`` 个），
+      宁可小幅超预算。种子是本轮的语义命中，**一个都不该被大族挤掉**：
+      ① 跨族提问（"看看我练度 + 这角色怎么提升"）要同时用到面板族与资料库族的工具，
+      资料库族整族放不下时，它命中的那几个种子必须仍然可用；
+      ② 否则超大族会独占附加池——``异环面板`` 族 9 个成员 > 上限 8，展开后预算耗尽，
+      鸣潮的面板工具永远召不回，AI 只能拿异环工具硬答"玄翎秧秧面板"。
+    - 跨族去重，并排除 ``exclude_names``（通常是保底池工具名，避免重复）。
+      未声明 capability_domain 的工具视为单工具族。
     """
-    from gsuid_core.ai_core.register import get_family_members
+    from gsuid_core.ai_core.register import find_tool_base, get_family_members
 
     seen: Set[str] = set(exclude_names or set())
-    out: ToolList = []
+
+    # 按种子次序归组：同族只归一次，避免同一个族被多个种子重复展开。
+    families: List[Tuple["Tool[ToolContext]", ToolList]] = []
+    grouped: Set[str] = set()
     for seed in seed_tools:
         # seed 与 tb.tool 都是 pydantic_ai 的 Tool，name 恒为 str
         if seed.name in seen:
             continue
-        family = get_family_members(seed.name)
-        family_tools = [tb.tool for tb in family] if family else [seed]
+        tool_base = find_tool_base(seed.name)
+        domain = tool_base.capability_domain if tool_base is not None else ""
+        family_key = domain if domain else seed.name
+        if family_key in grouped:
+            continue
+        grouped.add(family_key)
+        members = get_family_members(seed.name)
+        family_tools: ToolList = [tb.tool for tb in members] if members else [seed]
+        families.append((seed, family_tools))
+
+    out: ToolList = []
+    for _, family_tools in families:
         new_members = [ft for ft in family_tools if ft.name not in seen]
         if not new_members:
             continue
-        # 整族不可截断：放不下整族且已有内容时停止累加
+        # out 为空 = 排名第一的族：不看预算整族纳入（与旧行为一致，不回退）。
         if out and len(out) + len(new_members) > max_tools:
-            break
+            continue
         for ft in new_members:
             seen.add(ft.name)
             out.append(ft)
-        if len(out) >= max_tools:
+
+    # 席位发给"种子"而非"族"：只发给族，会把同族里排名靠后的种子一并丢掉——
+    # 跨族提问（练度 + 怎么提升）恰恰需要资料库族里的第 2、3 个种子。
+    seats = 0
+    for seed in seed_tools:
+        if seats >= seed_seats:
             break
+        if seed.name in seen:
+            continue
+        seen.add(seed.name)
+        out.append(seed)
+        seats += 1
+
     return out
 
 

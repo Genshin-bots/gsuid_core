@@ -5,6 +5,9 @@ description: >
   "消息从进来到 AI 回复经过了哪些步骤"、"触发器是怎么匹配的"、
   "handle_event / handle_ai_chat 干了什么"、"AI Session 怎么路由 / 怎么隔离"、
   "工具注册表 / 渐进式工具加载 / find_tools 是怎么回事"、
+  "AI 为什么召不回某个插件的工具 / 工具选错插件 / 实体路由"、
+  "记忆没存下来 / 偏好记忆为空 / 私聊记忆 scope 不对"、
+  "AI 回复里出现 \<br\> / 输出文本归一化"、
   "Heartbeat 定时巡检 / 免唤醒续聊怎么实现"、"记忆系统 / 偏好记忆 / 双路检索原理"、
   "RAG 知识库 SQL 真值源 / 嵌入 Provider"、"定时任务 / Kanban 长任务编排"、
   "启动钩子 on_core_start(_before) / init_ai_core 顺序"、"配置系统 / 配置热重载"、
@@ -57,12 +60,12 @@ description: >
 | 四 | 事件处理与触发器流转（`handle_event` 13 步、触发器匹配、命令 vs AI 分流、AI 触发条件、长度/并发防护） | [references/04-event-trigger-flow.md](./references/04-event-trigger-flow.md) |
 | 五 | Bot 三类（`_Bot` 底层 / `Bot` 高层 / `MockBot` AI 代理、连接管理与 5 分钟重连复用、发送队列串行化） | [references/05-bot-classes.md](./references/05-bot-classes.md) |
 | 六 | AI Session 路由与 Persona（`ai_router`、Session ID 设计、`AISessionRegistry`、内存保护、Persona 热重载 + Persona 配置系统） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |
-| 七 | 工具注册表与 Agent 装配（`@ai_tools`/`_TOOL_REGISTRY`、三层工具池、Reranker 精排 + `find_tools` 渐进暴露 + `visible_when` 条件隐藏、主/子 Agent、MCP、运行时 Skill 统一安装链路 `install_skill`） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
+| 七 | 工具注册表与 Agent 装配（`@ai_tools`/`_TOOL_REGISTRY`、三层工具池、**L0 实体路由**、族展开公平性、Reranker 精排 + `find_tools` 渐进暴露 + `visible_when` 条件隐藏、主/子 Agent、MCP、`install_skill`、**`send_chat_result` 文本归一化链**） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
 | 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊软触发、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
-| 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem 双过程、记忆生命周期、多模态摄入） | [references/09-memory-system.md](./references/09-memory-system.md) |
+| 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion + **落库可靠性 `idle_flush_seconds`**、分层语义图、偏好记忆 + **注入门控形态**、RF-Mem 双过程、记忆生命周期、多模态摄入） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账 + 批量导入、Dense+BM25 混合检索 + 过滤下推、嵌入 Provider 抽象层） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
-| 十二 | 已知坑与开发注意事项（D-1~D-22 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、§12.22b~d 输入/输出防线精度面·定时任务 misfire·交互脚手架不变量、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
+| 十二 | 已知坑与开发注意事项（D-1~D-22 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、§12.22b~d 输入/输出防线精度面·定时任务 misfire·交互脚手架不变量、**§12.22e 工具召不回的四层坑**、**§12.22f 记忆一条都没存下来**、**§12.22g 两条方法论教训**、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
 
 ## 推荐阅读顺序（按需跳转）
 
@@ -82,6 +85,10 @@ description: >
 - **Session ID 群聊不含 user_id**：群聊 `…:group:{group_id}`、私聊 `…:private:{user_id}`。群内所有用户共享同一 Session 与记忆，避免"群里每个人各聊各的"。`HistoryManager` 群聊时把 `user_id` 置空保证同群共享 deque。详见 [§06](./references/06-ai-session-and-persona.md)。
 - **`_Bot` ≠ `Bot`（高频混淆点）**：`_Bot`（底层连接，key 是 `WS_BOT_ID`）/ `Bot`（包 `_Bot`+`Event`，插件用）/ `MockBot`（AI 调触发器时拦截 `send` 收集返回）。`gss.active_bot` 的 key 是 `WS_BOT_ID` 不是平台 `bot_id`。详见 [§05](./references/05-bot-classes.md)。
 - **保底池由 category 决定**：`self`+`buildin` 无条件加载进主 Agent，无硬编码名单；`common`/`media`/`by_trigger`/`mcp` 走向量检索按需加载；`default` 是子 Agent 专属。再叠加 Reranker 精排、`find_tools` 渐进暴露（非闲聊轮）、`visible_when` 条件隐藏。详见 [§07](./references/07-tool-registry-and-agent.md)。
+- **工具能被召回的前提是它有 docstring**：入库向量 = `name + "\n" + description`，而 `description` **只**来自 docstring。docstring 写在函数体首条语句之后（如 `logger.info(...)` 之后）就只是个普通字符串表达式，`__doc__` 为 `None`——工具**注册成功但永远召不回**，且零运行时症状。详见 [§7.3](./references/07-tool-registry-and-agent.md)、[§12.22e](./references/12-developer-pitfalls.md)。
+- **「实体 → 插件」的路由不能交给嵌入**（L0 实体路由，2026-07-15）：「玄翎秧秧属于鸣潮」是**世界知识不是文本相似度**，实测跨插件路由准确率仅 ~50%。`entity_index.py` 用插件注册的别名/实体做**确定性查表**定插件，嵌入只负责"插件内选哪个工具"。Pool Recall 74.9%→99.7%。详见 [§7.3b](./references/07-tool-registry-and-agent.md)。
+- **记忆的 flush 是唯一落库时机，缓冲区在进程内存**：只有"攒满 80 条 / 满 2 小时"两个出口时，一段对话要在内存里躺两小时，core 一重启就永久消失（实测生产真实流量 Episode 数曾为 **0**）。现由 `idle_flush_seconds`（对话静默即落库）兜住。详见 [§9.4](./references/09-memory-system.md)、[§12.22f](./references/12-developer-pitfalls.md)。
+- **私聊的记忆 scope 是 `user_global:` 不是 `group:`**：`observe()`/`dual_route_retrieve()` 按 `GROUP if group_id else USER_GLOBAL` 分支，**私聊必须传 `group_id=None`**。调用点写 `event.group_id or event.user_id` 会让私聊掉进幻影 `group:{user_id}`，偏好记忆（只存 USER_GLOBAL）因此永远为空。详见 [§9.2](./references/09-memory-system.md)。
 - **记忆与发言决策正交**：即使 Persona 纯静默，Observer 仍在后台积累记忆。摄入门控 100% 纯规则零 LLM。`IngestionWorker` 现已回归**主事件循环后台 task**（独立线程双循环曾击穿 Proactor 导致 WS 全断，已废弃）。详见 [§09](./references/09-memory-system.md)、[§12](./references/12-developer-pitfalls.md)。
 - **配置写入即时持久化 + 多数热重载**：`StringConfig.set_config` 改内存后立即 `write_config` 落盘，大多数 AI 配置"下次消息处理即生效"；`inspect_interval` 是例外（需重启该 persona 的巡检 job，代码已自动 stop+start）。详见 [§03](./references/03-plugin-loading-and-config.md)。
 - **SQLModel 不写 `__tablename__`**：表名 = 类名全小写。数据库方法写在模型类里、用 `@with_session`。Schema 变更走 `on_core_start_before` 的 `exec_list`/`trans_adapter`。详见 [§11](./references/11-statistics-webconsole-database.md)。

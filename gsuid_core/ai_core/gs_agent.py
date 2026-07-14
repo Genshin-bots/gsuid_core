@@ -67,11 +67,11 @@ from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_
 from gsuid_core.ai_core.rag.tools import (
     NON_SEARCHABLE_TOOL_CATEGORIES,
     ToolList,
-    search_tools,
     get_main_agent_tools,
     get_scope_context_tags,
     expand_tools_to_families,
     get_tools_by_context_tags,
+    search_tools_with_entity_routing,
 )
 from gsuid_core.ai_core.configs.models import (
     get_model_for_task,
@@ -1277,8 +1277,11 @@ class GsCoreAIAgent:
                     # 不必也不应在这里重复声明。
                     # 召回种子数下沉为可配置（tool_search_recall，默认 4）：Reranker 精排后
                     # 召回质量更高，少而准的种子再经 L4 能力族整族展开即可覆盖需求。
-                    extra_tools += await search_tools(
+                    # L0 实体路由的 route_text 只传当前消息 qy，不传 L5 拼过的 search_query——
+                    # 否则"上轮问长离、这轮设提醒"会被上轮实体劫持（跨轮延续归 L3 驻留管）
+                    extra_tools += await search_tools_with_entity_routing(
                         query=search_query,
+                        route_text=qy,
                         limit=ai_config.get_config("tool_search_recall").data,
                         non_category=["self", "buildin"],
                     )

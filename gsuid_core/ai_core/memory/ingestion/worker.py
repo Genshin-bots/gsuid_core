@@ -184,6 +184,8 @@ class IngestionWorker:
         self._buffers: dict[str, list[ObservationRecord]] = defaultdict(list)
         # {scope_key: last_flush_time}
         self._last_flush: dict[str, float] = {}
+        # {scope_key: 最后一条消息入缓冲的时间}——供 idle_flush_seconds 判「对话安静了」
+        self._last_activity: dict[str, float] = {}
         # {scope_key: True} 标记某个 scope_key 正在 flush 中，避免重复创建 flush 任务
         self._flushing: set[str] = set()
         self._llm_semaphore: asyncio.Semaphore | None = None  # start() 时创建
@@ -376,6 +378,7 @@ class IngestionWorker:
             try:
                 record: ObservationRecord = self._queue.get_nowait()
                 self._buffers[record.scope_key].append(record)
+                self._last_activity[record.scope_key] = time.time()
 
                 # 首次入队时初始化 _last_flush 为当前时间，
                 # 避免新 scope_key 的 last=0 导致 timer 条件 (now-0 >> interval) 恒成立，
@@ -401,7 +404,7 @@ class IngestionWorker:
                 raise
 
     async def _flush_timer_loop(self):
-        """定期检查所有缓冲区，超时的强制 flush"""
+        """定期检查所有缓冲区，命中「对话已静默」或「聚合窗口到顶」的 flush。"""
         while self._running:
             if self._stop_event is not None:
                 try:
@@ -413,11 +416,29 @@ class IngestionWorker:
                 await asyncio.sleep(30)  # 每30秒检查一轮
             now = time.time()
             for scope_key in list(self._buffers.keys()):
-                last = self._last_flush.get(scope_key, 0)
-                # 只在有数据且该 scope_key 没有正在 flush 时才触发
-                if self._buffers[scope_key] and (now - last) >= memory_config.batch_interval_seconds:
-                    if scope_key not in self._flushing:
-                        asyncio.create_task(self._flush(scope_key))
+                if not self._buffers[scope_key] or scope_key in self._flushing:
+                    continue
+                if self._should_flush_on_timer(scope_key, now):
+                    asyncio.create_task(self._flush(scope_key))
+
+    def _should_flush_on_timer(self, scope_key: str, now: float) -> bool:
+        """定时器该不该把这个 scope 落库。
+
+        两个出口：
+        - **静默落库**（`idle_flush_seconds`）：对话安静下来就落。flush 是唯一的落库时机、
+          缓冲区在进程内存里，只靠 2 小时的聚合窗口意味着一段对话要在内存里躺两小时，
+          core 一重启就永久丢失（实测生产库真实 QQ 流量 Episode 数为 0）。按「静默」而非
+          固定周期触发，对话进行中不打断批量，抽取调用次数基本不变。
+        - **窗口到顶**（`batch_interval_seconds`）：长时间持续刷屏的 scope 兜底落一次。
+        """
+        idle_seconds = memory_config.idle_flush_seconds
+        if idle_seconds > 0:
+            last_activity = self._last_activity[scope_key] if scope_key in self._last_activity else 0.0
+            if last_activity and (now - last_activity) >= idle_seconds:
+                return True
+
+        last_flush = self._last_flush[scope_key] if scope_key in self._last_flush else 0.0
+        return (now - last_flush) >= memory_config.batch_interval_seconds
 
     async def _flush(self, scope_key: str):
         """将缓冲区中的消息批量处理"""

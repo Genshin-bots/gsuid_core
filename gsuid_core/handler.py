@@ -361,7 +361,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     observe(
                         content=event.raw_text,
                         speaker_id=str(event.user_id),
-                        group_id=str(event.group_id or event.user_id),
+                        # 私聊必须 None：observer 按 `GROUP if group_id else USER_GLOBAL` 定 scope，
+                        # 回退成 user_id 会把私聊写进 group:，而偏好只存 USER_GLOBAL → 永远存不进去
+                        group_id=str(event.group_id) if event.group_id else None,
                         bot_self_id=str(event.bot_self_id),
                         observer_blacklist=memory_config.observer_blacklist,
                         message_type="group_msg" if event.group_id else "private_msg",
@@ -379,7 +381,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 submit_image_observation(
                     image_urls=_img_urls,
                     speaker_id=str(event.user_id),
-                    group_id=str(event.group_id or event.user_id),
+                    # 私聊传 None（理由同上文的 observe 调用点）
+                    group_id=str(event.group_id) if event.group_id else None,
                     bot_self_id=str(event.bot_self_id),
                     observer_blacklist=memory_config.observer_blacklist,
                     message_type="group_msg" if event.group_id else "private_msg",

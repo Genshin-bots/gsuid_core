@@ -220,7 +220,9 @@ async def handle_ai_chat(
                     await observe(
                         content=event.raw_text,
                         speaker_id=str(event.user_id),
-                        group_id=str(event.group_id or event.user_id),
+                        # 私聊必须 None：回退成 user_id 会落进 group: scope，
+                        # 而偏好只存 USER_GLOBAL（同 handler.py 的被动感知调用点）
+                        group_id=str(event.group_id) if event.group_id else None,
                         bot_self_id=str(event.bot_self_id),
                         observer_blacklist=memory_config.observer_blacklist,
                         message_type="group_msg" if event.group_id else "private_msg",
@@ -348,19 +350,20 @@ async def handle_ai_chat(
                     logger.debug(t("🧠 [Memory] 命中寒暄门控，跳过双路检索"))
                 else:
                     try:
-                        # 选择性偏好注入：意图门（纯闲聊不注入工具行为规则）+ 能力域过滤
-                        # （仅注入与本轮相关能力域匹配的软偏好；纠错/general 规则由检索侧永远保留）。
-                        # 能力域信号 = gs_agent 上一轮**实际装配**工具的能力域（精确，"装配后回传"）
-                        # ∪ 本轮 query 子串近似（覆盖本轮新意图、尚未装配进工具池的能力域）。
-                        _pref_inject = intent != "闲聊"
-                        _pref_contexts: Optional[list[str]] = None
-                        if _pref_inject:
+                        # 偏好注入是**能力域过滤**不是整轮开关：闲聊轮传空 contexts，检索侧只留
+                        # general/纠错（曾整轮关掉，风格偏好在最该生效的闲聊轮反而被跳过）。
+                        _pref_contexts: list[str] = []
+                        if intent != "闲聊":
+                            # 能力域 = 上轮实际装配工具的域（装配后回传）∪ 本轮 query 子串近似
                             _ctx_set = set(_relevant_preference_contexts(query))
                             _ctx_set.update(session.get_assembled_capability_domains())
                             _pref_contexts = list(_ctx_set)
+                        _pref_inject = True
                         mem_ctx = await dual_route_retrieve(
                             query=query,
-                            group_id=str(event.group_id or event.user_id),
+                            # 私聊必须 None：dual_route 按「group_id 空 → user_global 是主 scope」
+                            # 设计，回退成 user_id 只会去查一个空的幻影 group:{user_id}
+                            group_id=str(event.group_id) if event.group_id else None,
                             user_id=str(event.user_id),
                             top_k=memory_config.retrieval_top_k,
                             enable_system2=memory_config.enable_system2,
