@@ -350,7 +350,11 @@ async def _dispatch_via_kanban(
     from gsuid_core.ai_core.planning import kanban
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
     from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
-    from gsuid_core.ai_core.planning.kanban_executor import kick_root
+    from gsuid_core.ai_core.planning.kanban_executor import (
+        kick_root,
+        mark_interactive_relay_root,
+        discard_interactive_relay_root,
+    )
 
     scope_key = make_scope_key(
         ScopeType.GROUP if ev.group_id else ScopeType.USER_GLOBAL,
@@ -387,6 +391,9 @@ async def _dispatch_via_kanban(
             p2=repr(task[:60]),
         )
     )
+    # 登记为"主人格转述"：交互式派发下，执行体（kanban_executor）**不自动推群**，
+    # 由下面轮询拿到结论后回执给主人格、主人格转述一次，避免同一结论推两遍刷屏。
+    mark_interactive_relay_root(root.id)
     asyncio.create_task(kick_root(root.id))
 
     # 同步等待根任务进终态（轮询）
@@ -403,12 +410,15 @@ async def _dispatch_via_kanban(
             break
 
     if final is None:
+        # 主人格侧放弃等待、不会转述了 → 撤销静默登记，让执行体完成时照常推群兜底，
+        # 否则这条任务的结论会既没被主人格转述、也没被执行体播报，彻底"消失"。
+        discard_interactive_relay_root(root.id)
         return (
             f"⏳ 任务仍在执行中（已等待 {int(waited)}s 超时）。\n"
             f"Kanban 任务: 任务#{root.ordinal}｜{root.display_name}\n"
             f"任务 id（前 8 位）: {root.id[:8]}\n"
             "可到 webconsole 看板查看实时进度；事后追问产物用 "
-            "`artifact_get_recent` 即可（已绑定本任务树）。"
+            "`artifact_get_recent` 即可（已绑定本任务树）。任务完成时会自动推群告知。"
         )
 
     # 抓 artifact（最新一份用作产物展示）
@@ -446,19 +456,22 @@ async def _dispatch_via_kanban(
         if primary_handle:
             parts.append(
                 f"💡 主要产物句柄: `{primary_handle}`"
-                "（要发图直接 send_message_by_ai(image_id=该句柄)；"
-                "kanban_executor 已经用人格口吻转译播报过一次，主人通常已收到）"
+                "（如需把图片 / 文件发给用户，调用 send_message_by_ai(image_id=该句柄)——"
+                "**只在参数里用这个句柄，绝不要把 res_/img_ 句柄本身写进给用户看的话里**）"
             )
     else:
         parts.append("（本任务无显式 artifact 登记）")
 
-    # 文本结论：从 inline 文本 artifact 里抓一段给主人格做"事后追问"参考。
-    # 真实图片 / 落盘文件已经被 _persona_relay 自动转译播报过，主人通常已收到。
+    # 文本结论：交互式派发下执行体**不再自动推群**，这段结论要由主人格**亲自转述一次**
+    # 给用户（用角色口吻、简明扼要，别照搬）。以下摘要就是你要转述的内容来源。
     text_excerpt = ""
     for a in arts:
         if a.payload_inline:
             text_excerpt = a.payload_inline[:1200]
             break
     if text_excerpt:
-        parts.append(f"\n代理文本结论摘要:\n{text_excerpt}")
+        parts.append(
+            "\n⬇️ 下面是代理的结论，请你用角色口吻**转述给用户**（这不是给你自己看的备忘，"
+            "用户还没看到；转述时不要提任何 res_/任务 id）：\n" + text_excerpt
+        )
     return "\n".join(parts)

@@ -20,14 +20,18 @@
 """
 
 import ast
-from typing import List
+import asyncio
+from typing import List, Optional
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gsuid_core.ai_core.utils import (
+    _strip_resource_handles,
     _normalize_html_linebreaks,
     _should_render_markdown_image,
+    _resolve_and_deliver_leaked_handles,
 )
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -174,6 +178,24 @@ def test_code_block_is_kept_as_text_not_rendered(_md_image_cfg) -> None:
     assert _should_render_markdown_image(code) is False
 
 
+def test_bold_headers_and_numbered_list_render_as_image(_md_image_cfg) -> None:
+    """agent 研报常用「整行粗体小标题 / 编号建议」而非表格或 # 标题——也必须命中出图。
+
+    还原 session ...644256 里药明康德那条被拆成 ~8 段的回复（有粗体小标题 + 编号列表，无表格）。
+    """
+    _md_image_cfg(min_chars=80)
+    report = (
+        "呼…睡眼惺忪看完了，简单说：\n\n"
+        "**当前价**\n\n昨天收盘 131.36，离主人定的 135 还差 3 块多。\n\n"
+        "**技术面**\n\n均线多头排列，MACD 金叉，但三个超买灯亮着，135 就是布林上轨压力位。\n\n"
+        "**早柚的建议**\n\n"
+        "1. 想严格 135 出 → 分两批：130-131 先出一半，剩下等 135 摸上轨再卖\n"
+        "2. 要是长线持有 → 135 不必全卖，减 30-50% 底仓继续拿\n"
+        "3. 今天午盘冲到 133-134 别贪，先出点"
+    )
+    assert _should_render_markdown_image(report) is True
+
+
 def test_disabled_config_never_renders(_md_image_cfg) -> None:
     """总开关关掉时，再长的研报也不出图（回退到原拆条行为）。"""
     _md_image_cfg(enabled=False)
@@ -183,6 +205,109 @@ def test_disabled_config_never_renders(_md_image_cfg) -> None:
         "三、结论\n\n分批建仓，不追高，破位就走。"
     )
     assert _should_render_markdown_image(report) is False
+
+
+# ── 四、内部资源句柄不许泄漏给用户（`_strip_resource_handles`）────────────
+#
+# create_subagent / kanban 回执带 `res_deb5b2e0d2a4` 这类句柄供主人格发图；弱模型有时把
+# 句柄本身写进正文（"放那里面了 res_xxx 自己看吧"），用户看到一串没意义的内部 ID 又出戏。
+
+
+def test_leaked_res_handle_is_stripped() -> None:
+    out = _strip_resource_handles("详细的放那里面了 res_deb5b2e0d2a4 自己看吧 我去睡了")
+    assert "res_deb5b2e0d2a4" not in out
+    assert "res_" not in out
+    assert "自己看吧" in out  # 只抹句柄，不动其余正文
+
+
+def test_all_real_prefixes_are_stripped() -> None:
+    """前缀须与 RM/artifact 实际生成对齐：img_/aud_/vid_（RM）、res_（artifact）。
+
+    锁死回归：曾误写成 rec_/video_（并漏掉 vid_），导致视频句柄漏给用户。
+    """
+    for prefix, raw in (
+        ("res_", "看这个 `res_abc123def456` 好吧"),
+        ("img_", "图在 img_00ff8821 里"),
+        ("aud_", "音频 aud_deadbeef 听"),
+        ("vid_", "视频 vid_0a1b2c3d 看"),
+    ):
+        out = _strip_resource_handles(raw)
+        assert prefix not in out, f"漏了前缀 {prefix}: {raw!r} -> {out!r}"
+
+
+def test_normal_text_untouched_by_handle_strip() -> None:
+    """不含 res_/img_ 前缀的正常正文零改动（快路径）。"""
+    txt = "昨天收盘 131.36，离 135 还差 3 块多，午盘可能摸到…zzz"
+    assert _strip_resource_handles(txt) == txt
+
+
+# ── 五、句柄泄漏时"补发真实资源"而非留下断链引用（`_resolve_and_deliver_leaked_handles`）──
+#
+# 光删 ID 会把"详细的放那里面了 res_xxx 自己看吧"变成指向空气的破碎引用（图片句柄更糟：
+# 用户啥也没收到）。正确做法：把句柄所指资源补发出去，让"…自己看…"有实物；拿不到才纯抹除。
+
+
+class _FakeBot:
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    async def send(self, msg, extra_metadata=None) -> None:  # noqa: ANN001
+        self.sent.append(msg)
+
+
+class _FakeArtifact:
+    def __init__(self, payload_path: Optional[str] = None, mime: str = "", payload_inline: Optional[str] = None):
+        self.payload_path = payload_path
+        self.mime = mime
+        self.payload_inline = payload_inline
+
+
+def _patch_artifact(monkeypatch, art) -> AsyncMock:
+    mock = AsyncMock(return_value=art)
+    monkeypatch.setattr("gsuid_core.ai_core.planning.models.AIAgentArtifact.get_by_id", mock)
+    return mock
+
+
+def test_handle_always_stripped_from_returned_text(monkeypatch) -> None:
+    """铁律：无论能否补发，返回文本里绝不残留 res_/img_ 句柄。"""
+    _patch_artifact(monkeypatch, None)  # 解析不到
+    bot = _FakeBot()
+    out = asyncio.run(_resolve_and_deliver_leaked_handles("详细的放那里面了 res_deb5b2e0d2a4 自己看吧 我去睡了", bot))
+    assert "res_deb5b2e0d2a4" not in out and "res_" not in out
+    assert bot.sent == []  # 解析不到 → 不补发
+
+
+def test_long_relayed_text_only_strips_no_redelivery(monkeypatch) -> None:
+    """正文已够长（模型其实已把结论讲清楚）→ 只抹句柄，绝不重复补发资源。"""
+    mock = _patch_artifact(monkeypatch, _FakeArtifact(payload_inline="重复内容"))
+    bot = _FakeBot()
+    long_body = "药明康德昨天收盘 131.36，离主人定的 135 还差 3 块多。" * 6  # ≥120 字
+    out = asyncio.run(_resolve_and_deliver_leaked_handles(long_body + " res_abc12345", bot))
+    assert "res_abc12345" not in out
+    assert bot.sent == []  # 长正文不补发
+    mock.assert_not_called()  # 长正文压根不去解析
+
+
+def test_lazy_pointer_to_image_artifact_delivers_image(monkeypatch, tmp_path) -> None:
+    """短指路 + 图片 artifact → 把图发出去，剩下的短句成为图注（不再是断链引用）。"""
+    img = tmp_path / "report.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+    _patch_artifact(monkeypatch, _FakeArtifact(payload_path=str(img), mime="image/png"))
+    bot = _FakeBot()
+    out = asyncio.run(_resolve_and_deliver_leaked_handles("都画好了 res_deadbeef01 自己看吧", bot))
+    assert "res_deadbeef01" not in out
+    assert len(bot.sent) == 1 and getattr(bot.sent[0], "type", None) == "image", "应把图片补发出去"
+
+
+def test_lazy_pointer_to_text_artifact_inlines_content(monkeypatch) -> None:
+    """短指路 + 纯文本 artifact → 把内容并进正文（走后续管线出图），让'自己看'有实物。"""
+    report = "药明康德 603259 分析：昨收 131.36，离 135 仅 2.8%，三个超买信号亮起，135 是布林上轨压力位。"
+    _patch_artifact(monkeypatch, _FakeArtifact(payload_inline=report))
+    bot = _FakeBot()
+    out = asyncio.run(_resolve_and_deliver_leaked_handles("详细的放那里面了 res_cafe1234 自己看吧", bot))
+    assert "res_cafe1234" not in out
+    assert report in out, "文本 artifact 内容应并进正文"
+    assert bot.sent == []  # 文本 artifact 不作为图片补发
 
 
 def _src(rel: str) -> str:

@@ -147,6 +147,100 @@ def _strip_special_control_tokens(text: str) -> str:
     return cleaned
 
 
+# 内部资源句柄（纯内部寻址 ID，绝不该进正文；允许前后包反引号）。前缀须与实际生成对齐：
+# resource_manager.py 出 img_/aud_/vid_（8 位 hex）、models.py 出 res_（12 位 hex）。
+_RESOURCE_HANDLE_RE = re.compile(r"`*\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b`*")
+_RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_")
+
+
+def _strip_resource_handles(text: str) -> str:
+    """剥离泄漏进用户可见文本里的内部资源句柄（``res_xxx`` / ``img_xxx`` 等）。
+
+    ``create_subagent`` / kanban 完成回执会带 ``res_deb5b2e0d2a4`` 这类句柄，供主人格用
+    ``send_message_by_ai(image_id=res_xxx)`` 发图 / 发文件。弱模型有时不发内容、反而把
+    **句柄本身**写进正文（"详细的放那里面了 res_xxx 自己看吧"）——用户看到一串没意义的
+    内部 ID，既无用又出戏。这些句柄是纯内部寻址、用户永远不该看到，命中即抹掉。
+
+    带特征子串快路径：正常消息（不含 ``res_``/``img_`` 等前缀）零正则开销。
+    """
+    if not any(h in text for h in _RESOURCE_HANDLE_HINTS):
+        return text
+    cleaned = _RESOURCE_HANDLE_RE.sub("", text)
+    if cleaned != text:
+        logger.warning(i18n_t("[send] 剥离泄漏的内部资源句柄（res_/img_ 等），避免向用户暴露内部 ID"))
+    return cleaned
+
+
+async def _resolve_and_deliver_leaked_handles(
+    text: str,
+    bot: Bot,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """处理泄漏进正文的资源句柄：尽量把它**指向的真实资源交付出去**，而不是简单删掉句柄
+    留下"详细的放那里面了 …… 自己看吧"这种指向空气的破碎引用——那样对用户反而更莫名其妙
+    （尤其图片句柄：模型压根没发图，删了 ID 用户就啥也没有）。
+
+    仅当正文除句柄外**基本只剩一句短指路**（模型偷懒只甩了个句柄、没真正把内容讲出来）时才补发：
+      - 图片 artifact（``res_`` 落盘 image/* 或 ``img_`` RM）→ 直接把图发出去，剩下的短句成为自然图注；
+      - 纯文本 artifact（``res_`` inline）→ 把内容并进正文，走后续管线（够长会自动出图），让"自己看"有实物。
+    若正文本身已经够长（模型其实已把结论讲清楚、只是顺带提了句柄）→ 只抹句柄、不重复交付。
+    解析失败 / 拿不到资源 / 非图片文件 → 退回"只抹句柄"。全程 try/except，绝不因补发失败阻断发送。
+
+    **无论如何都保证句柄被抹除**（返回值里不含任何 res_/img_ 句柄），补发只是"尽力而为"的增强。
+    """
+    if not any(h in text for h in _RESOURCE_HANDLE_HINTS):
+        return text
+
+    handles: list[str] = []
+    for m in _RESOURCE_HANDLE_RE.finditer(text):
+        h = m.group(0).strip("`")
+        if h not in handles:
+            handles.append(h)
+    if not handles:
+        return text
+
+    # 抹句柄后的"周围正文"——最终要返回、并可能补进内容的基底（复用纯抹除原语 + 压空格）
+    stripped = re.sub(r"[ \t]{2,}", " ", _strip_resource_handles(text)).strip()
+
+    # 正文本身已够长（≥120 字）→ 模型已把内容讲清楚，只是顺带提了句柄 → 不重复交付
+    if bot is None or len(stripped) >= 120:
+        return stripped
+
+    from gsuid_core.utils.resource_manager import RM
+
+    inline_texts: list[str] = []
+    for h in handles:
+        try:
+            if h.startswith("res_"):
+                from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+                art = await AIAgentArtifact.get_by_id(h)
+                if art is None:
+                    continue
+                if art.payload_path and (art.mime or "").startswith("image/"):
+                    from pathlib import Path
+
+                    p = Path(art.payload_path)
+                    if p.exists():
+                        await bot.send(MessageSegment.image(p.read_bytes()), extra_metadata=extra_metadata)
+                        logger.info(i18n_t("[send] 泄漏句柄 {h} 已解析为图片补发", h=h))
+                elif art.payload_inline and art.payload_inline.strip():
+                    inline_texts.append(art.payload_inline.strip())
+                # 非图片落盘文件：不当图片发（会坏），仅抹句柄
+            elif h.startswith("img_"):
+                await bot.send(MessageSegment.image(await RM.get(h)), extra_metadata=extra_metadata)
+                logger.info(i18n_t("[send] 泄漏句柄 {h} 已解析为图片补发", h=h))
+            # aud_/vid_：极少见于泄漏，仅抹句柄不补发（避免过度耦合）
+        except Exception as e:
+            logger.debug(i18n_t("[send] 泄漏句柄 {h} 无法解析，仅抹除: {e}", h=h, e=e))
+
+    if inline_texts:
+        # 把文本 artifact 内容并进正文，交给后续管线（够长自动出图），让"…自己看…"有实际内容
+        joiner = "\n\n" if stripped else ""
+        stripped = (stripped + joiner + "\n\n".join(inline_texts)).strip()
+    return stripped
+
+
 def _find_json_span(text: str) -> Optional[str]:
     """从可能夹带散文/前后缀的文本里，按括号配平切出第一个完整的 JSON 对象或数组。
 
@@ -603,6 +697,11 @@ _MD_HEADER_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
 _MD_HR_RE = re.compile(r"(?m)^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
 # markdown 表格行（一行含 ≥3 个竖线，即 ≥2 个单元格）
 _MD_TABLE_ROW_RE = re.compile(r"\|.*\|.*\|")
+# 整行粗体小标题（如 ``**一、技术面**`` / ``**当前价：**``）——agent 研报常用它代替 # 标题
+_MD_BOLD_HEADER_RE = re.compile(r"(?m)^\s{0,3}\*\*[^*\n]{1,40}\*\*[：:]?\s*$")
+# 编号列表项（1. / 1、 / 1) 开头）、无序列表项（- / * / • 开头，后须跟空格+内容）
+_MD_NUM_LIST_RE = re.compile(r"(?m)^\s{0,3}\d+[.、)]\s+\S")
+_MD_BULLET_RE = re.compile(r"(?m)^\s{0,3}[-*•]\s+\S")
 
 
 def _has_markdown_table(text: str) -> bool:
@@ -626,8 +725,10 @@ def _should_render_markdown_image(text: str) -> bool:
     判定**刻意保守**，只在"确实是文档"时命中，绝不误伤日常连发短句：
       - 必须够长（≥ ``markdown_image_min_chars``）；
       - 且拆分后 ≥3 段（单段短文没有出图必要）；
-      - 且含明确 markdown 结构信号：表格、≥2 个 ATX 标题、或（水平分割线 且 ≥1 个标题）。
-    仅靠"多个空行段落"绝不命中——纯口语连发短句没有表格 / 标题。
+      - 且含明确结构信号：**表格** / ≥2 个 ATX 标题 / ≥2 个整行粗体小标题 /
+        编号列表≥2 项 / 无序列表≥3 项 /（水平分割线 且 ≥1 个标题）。
+    仅靠"多个空行段落"绝不命中——纯口语连发短句没有表格 / 标题 / 列表。
+    （agent 研报常用 ``**粗体小标题** + 编号建议`` 而非 markdown 表格/# 标题，故一并纳入。）
     代码块**不**触发出图：用户往往要复制代码，保留文本行为（见 ``_has_markdown_table``）。
     """
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -652,6 +753,13 @@ def _should_render_markdown_image(text: str) -> bool:
         return True
     # 只有水平分割线时，要求同时有至少一个标题，避免把"用 --- 随手分段的闲聊"误判
     if header_count >= 1 and _MD_HR_RE.search(text) is not None:
+        return True
+    # 无 # 标题/表格，但用「整行粗体小标题」或「编号/无序列表」组织的长文——同样是"文档"
+    if len(_MD_BOLD_HEADER_RE.findall(text)) >= 2:
+        return True
+    if len(_MD_NUM_LIST_RE.findall(text)) >= 2:
+        return True
+    if len(_MD_BULLET_RE.findall(text)) >= 3:
         return True
     return False
 
@@ -717,6 +825,9 @@ async def send_chat_result(
     # 所有经本函数下发的路径。
     text = _strip_tool_call_artifacts(text)
     text = _strip_special_control_tokens(text)
+    # 泄漏进正文的资源句柄（res_/img_ 等）：尽量补发所指资源、否则抹除（详见函数）。
+    # 放在拆条/出图之前，让文本与出图两条路径都拿到干净正文。
+    text = await _resolve_and_deliver_leaked_handles(text, bot, extra_metadata)
     # 必须在按 \n\n 拆多条之前做：<br> 会让"连发多条短消息"的拆分完全失效
     text = _normalize_html_linebreaks(text)
 
@@ -771,10 +882,8 @@ async def send_chat_result(
             await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
         return
 
-    # —— 长 markdown 整篇出图（防群聊刷屏，2026-07-15）——
-    # 结构化长 markdown（表格 / 多标题）若按空行拆条会连发几十条刷屏，且 IM 不渲染 markdown。
-    # 命中即整篇渲染成一张图片下发，替代拆条；渲染失败自动降级回下面的拆条逻辑。
-    # 用未剥离 markdown 的 md_source 渲染；OOC 兜底命中时（clean_text 已被替换成短兜底文本）不出图。
+    # 长 markdown 整篇出图（防拆条刷屏，2026-07-15）：用未剥离的 md_source 渲染，失败降级回拆条。
+    # OOC 兜底命中时（clean_text 已换成短兜底文本）不出图。判据/开关见 _should_render_markdown_image。
     if not _ooc_replaced and _should_render_markdown_image(md_source):
         if await _try_render_markdown_image(md_source, bot, extra_metadata):
             if meme_tags and ev is not None:

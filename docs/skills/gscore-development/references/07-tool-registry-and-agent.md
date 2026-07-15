@@ -333,10 +333,23 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 **所有**下发给用户的 AI 文本都经 `send_chat_result`。它在发送前按序做：
 
 `_strip_tool_call_artifacts`（工具调用标记残留）→ `_strip_special_control_tokens`（模型私有
-回合/角色 token，如 MiniMax 的 `]<]minimax[>[`）→ **`_normalize_html_linebreaks`**（`<br>` → `\n`）
+回合/角色 token，如 MiniMax 的 `]<]minimax[>[`）→ **`_resolve_and_deliver_leaked_handles`**（内部资源
+句柄 `res_/img_/...`：补发所指资源 + 抹句柄）→ **`_normalize_html_linebreaks`**（`<br>` → `\n`）
 → meme 标记解析 → `_strip_persona_markdown`（IM 不渲染 markdown）→ 出戏防火墙兜底 →
 **`_should_render_markdown_image` 判定：结构化长 markdown → 整篇渲染成一张图片下发** →
 （未命中出图时）按 `\n\s*\n`（**空行**）拆成多条消息下发。
+
+> 🧹 **内部资源句柄不许泄漏给用户——且要"补发"而非"留断链"**（`_resolve_and_deliver_leaked_handles`，
+> 2026-07-15）。`create_subagent` / kanban 回执带 `res_deb5b2e0d2a4` 这类句柄，供主人格
+> `send_message_by_ai(image_id=res_xxx)` 发图 / 发文件。弱模型有时**不发内容、反而把句柄本身写进
+> 正文**（"详细的放那里面了 res_xxx 自己看吧"）。**光删 ID 反而更怪**——剩下"放那里面了…自己看"
+> 指向空气；图片句柄更糟：模型压根没发图，删了 ID 用户啥也没有。故：**当正文除句柄外只剩一句短
+> 指路（<120 字，说明模型没真正交付内容）时，把句柄所指资源补发出去**——图片 artifact（`res_` 落盘
+> image/* 或 `img_` RM）直接发图、短句成图注；纯文本 artifact（`res_` inline）把内容并进正文走后续
+> 管线（够长自动出图）。正文本身已够长（模型已讲清楚）或资源拿不到 → 退回纯抹除（`_strip_resource_handles`）。
+> **铁律**：无论能否补发，返回文本**绝不残留句柄**；补发全程 try/except，绝不因失败阻断发送。
+> ⚠️ 这是**兜底网**；根因（`create_subagent` 双份播报 + 回执诱导偷懒）已在 §8 从源头修（回执改成
+> "请你转述给用户"、executor 对交互式派发静默），修好后本网极少触发。
 
 > 🖼️ **长 markdown 整篇出图**（2026-07-15 新增，配置 `render_long_markdown_as_image`，默认开）。
 > 空行拆条本是人格"连发 2-3 条短消息"的能力，但 agent 的长研报 / 报告（多标题 + 表格 +
@@ -344,9 +357,11 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 > `send_chat_result` 在拆条前先判定：命中"结构化长 markdown"就用 `render_md_to_bytes` 把
 > **整篇**（用未剥 markdown 的 `md_source`，不是被 `_strip_persona_markdown` 毁过的 `clean_text`）
 > 渲染成一张图片下发，替代拆条；渲染失败**优雅降级**回拆条。判定**刻意保守**（`_should_render_markdown_image`）：
-> 须够长（`markdown_image_min_chars`，默认 210）+ 拆分后 ≥3 段 + 含明确结构信号（表格 / ≥2 个
-> ATX 标题 / 水平线且 ≥1 标题）——**纯口语连发短句、单段短文、代码块**都不命中（代码块要可复制，
-> 保留文本行为）。OOC 兜底命中时（`clean_text` 已被替换成短兜底文本）也不出图。
+> 须够长（`markdown_image_min_chars`，默认 210）+ 拆分后 ≥3 段 + 含明确结构信号——**表格 / ≥2 个
+> ATX 标题 / ≥2 个整行粗体小标题（`**一、xxx**`）/ 编号列表 ≥2 项 / 无序列表 ≥3 项 / 水平线且 ≥1 标题**。
+> （agent 研报常用 `**粗体小标题** + 编号建议` 而非 markdown 表格 / `#` 标题，故一并纳入——否则像
+> session ...644256 药明康德那条会被拆成 ~8 段。）**纯口语连发短句、单段短文、代码块**都不命中
+> （代码块要可复制，保留文本行为）。OOC 兜底命中时（`clean_text` 已被替换成短兜底文本）也不出图。
 > 阈值 / 宽度 / 开关见 `ai_config`（`OutputRendering` 分组）。回归锁同下。
 
 > 🔴 **`<br>` 归一化必须在按空行拆条之前**（2026-07-15 新增）。模型会用 `<br>` 代替换行——

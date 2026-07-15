@@ -167,6 +167,19 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 漂移。`run_capability_agent` 按子任务 `agent_profile` 唤醒**无人格能力代理**（不拒绝、不漂移），
 结果经 `_persona_relay` 用人格口吻转译后通知主人。
 
+> 🔁 **交互式 `create_subagent` 不许双份播报**（2026-07-15 修）。`create_subagent(agent_profile=...)`
+> 走 `_dispatch_via_kanban` 建**叶子根**、`kick_root` 后**同步轮询等完成**，再把结论回执给主人格、
+> 由主人格**亲自转述一次**。但 executor 的 `_run_one_task_node` 完成时**也**会 `_persona_relay`+`_notify`
+> 自动推群 → 同一份结论推两遍刷屏（实测 session ...644256：executor 转译播报 + 主人格 relay）。
+> 修复 = **执行体静默登记**：`_dispatch_via_kanban` 把 leaf-root 的 `root.id` 登进
+> `_INTERACTIVE_RELAY_ROOTS`（`mark_interactive_relay_root`），executor 在终态判定处 `_consume_interactive_relay`
+> **读即弃**地命中 → `no_broadcast=True`，完成/失败/审批分支一律不推群，交给主人格转述。
+> 无竞态关键：只有"任务已进终态"时 executor 才消费；主人格侧**等待超时**（`final is None`）会
+> `discard_interactive_relay_root` 撤销登记，让后台完成时的 executor 照常推群兜底（否则结论既没被
+> 转述、也没被播报，彻底消失）。**后台 kanban 定时 tick**（无主人格在场）从不登记 → 照常自动播报，
+> 行为不变。回执文案也改成"请你转述给用户"并显式禁止把 `res_/img_` 句柄写进给用户看的话
+> （配合 `send_chat_result._strip_resource_handles` 双保险，见 [§7.13](./07-tool-registry-and-agent.md)）。
+
 内置 6 画像：`research_agent` / `code_agent` / `aigc_creator` / `data_analyst` /
 `memory_curator` / `scheduler_assistant` + 内部 `capability_evaluator`。业务画像（如
 `finance_agent`）由插件注册（`source` 三态 builtin/plugin/user，用户画像落

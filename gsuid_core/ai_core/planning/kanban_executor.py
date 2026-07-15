@@ -380,6 +380,29 @@ def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
     return stripped.strip(), True
 
 
+# 交互式 create_subagent 的"执行体静默"登记（leaf-root root_task_id）：主人格亲自转述、执行体不推群，
+# 避免双份播报。进程内 set 即可；消费/超时兜底的无竞态语义见 references/08 §能力代理。
+_INTERACTIVE_RELAY_ROOTS: set[str] = set()
+
+
+def mark_interactive_relay_root(root_id: str) -> None:
+    """登记一个"由主人格转述、执行体静默"的交互式 create_subagent 叶子根。"""
+    _INTERACTIVE_RELAY_ROOTS.add(root_id)
+
+
+def discard_interactive_relay_root(root_id: str) -> None:
+    """撤销登记（如主人格侧等待超时、决定不再转述 → 执行体恢复自动推群兜底）。"""
+    _INTERACTIVE_RELAY_ROOTS.discard(root_id)
+
+
+def _consume_interactive_relay(root_id: str) -> bool:
+    """读即弃：若该 root 登记为"主人格转述"，返回 True 并移除登记（本次消费掉）。"""
+    if root_id in _INTERACTIVE_RELAY_ROOTS:
+        _INTERACTIVE_RELAY_ROOTS.discard(root_id)
+        return True
+    return False
+
+
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
     """派活单个子任务节点。"""
     lock = kanban.get_task_node_lock(child.id)
@@ -431,7 +454,10 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         except Exception as e:
             logger.exception(t("📋 [Kanban] 子任务执行抛出异常: {e}", e=e))
             await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
-            await _notify_failure(root, fresh, str(e))
+            # 交互式派发：失败也由主人格据回执转述，执行体不重复推群（消费须在 mark 之后，
+            # 保证与 dispatcher 超时兜底一致——见下方各终态分支的同款说明）
+            if not _consume_interactive_relay(root.id):
+                await _notify_failure(root, fresh, str(e))
             return
         finally:
             reset_plan_context(token)
@@ -461,9 +487,13 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             CAPABILITY_AGENT_ERROR_PREFIX,
         )
 
+        # 交互式派发：主人格亲自转述、执行体静默。不丢不重的关键是**落终态后**消费（无 await 紧跟
+        # mark）——看到终态就转述→消费 True 静默；超时先 discard→消费 False 兜底推群。
+
         # 5a) 安装审批：copy_to_plugin_dir 已把任务挂为 waiting_approval，转译审批请求且不落终态
         if latest is not None and latest.status == "waiting_approval":
-            if bot:
+            silent = _consume_interactive_relay(root.id) or no_broadcast
+            if bot and not silent:
                 spoken, relay_log_files = await _persona_relay(
                     fresh, latest.failure_reason or raw_result, is_approval_request=True
                 )
@@ -476,10 +506,13 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                     )
         elif (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
             await kanban.mark_subtask_failed(fresh, raw_result[:1000])
-            await _notify_failure(root, fresh, raw_result[:1000])
+            silent = _consume_interactive_relay(root.id) or no_broadcast
+            if not silent:
+                await _notify_failure(root, fresh, raw_result[:1000])
         else:
             await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
-            if bot and raw_result and not no_broadcast:
+            silent = _consume_interactive_relay(root.id) or no_broadcast
+            if bot and raw_result and not silent:
                 spoken, relay_log_files = await _persona_relay(fresh, raw_result)
                 if spoken:
                     await _notify(
