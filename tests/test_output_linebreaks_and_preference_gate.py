@@ -23,7 +23,12 @@ import ast
 from typing import List
 from pathlib import Path
 
-from gsuid_core.ai_core.utils import _normalize_html_linebreaks
+import pytest
+
+from gsuid_core.ai_core.utils import (
+    _normalize_html_linebreaks,
+    _should_render_markdown_image,
+)
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -76,6 +81,108 @@ def test_text_without_br_is_returned_untouched() -> None:
 
 
 # ── 二、偏好注入不得被意图门整轮关闭 ───────────────────────────────
+
+
+# ── 三、长 markdown 整篇出图（`_should_render_markdown_image`）────────────
+#
+# send_chat_result 默认按空行拆多条下发——这是人格"连发 2-3 条短消息"的能力，但 agent
+# 的长研报（多标题 + 表格）会被拆成几十条刷屏。命中"结构化长 markdown"才整篇出图，
+# 判定必须**保守**：绝不能把日常连发短句误判成文档去渲染。
+
+
+@pytest.fixture
+def _md_image_cfg(monkeypatch):
+    """把出图相关配置钉成确定值，让判定测试不受部署 config 影响。"""
+
+    def _pin(enabled: bool = True, min_chars: int = 210):
+        from gsuid_core.ai_core.configs import ai_config as _m
+
+        class _C:
+            def __init__(self, v):
+                self.data = v
+
+        vals = {
+            "render_long_markdown_as_image": enabled,
+            "markdown_image_min_chars": min_chars,
+            "markdown_image_max_width": 760,
+        }
+        monkeypatch.setattr(_m.ai_config, "get_config", lambda k: _C(vals[k]))
+
+    return _pin
+
+
+def test_long_report_with_table_renders_as_image(_md_image_cfg) -> None:
+    """带表格的研报应命中出图（否则会被拆成几十条刷屏）。此处 min_chars 压低以隔离"结构信号"判定。"""
+    _md_image_cfg(min_chars=80)
+    report = (
+        "早柚看盘 东鹏饮料\n\n"
+        "一、技术面快照\n\n"
+        "| 维度 | 数据 | 解读 |\n|---|---|---|\n"
+        "| 现价 | 123.95 | 已从研报价大跌 |\n| MA60 | 137.18 | 还在头顶 |\n\n"
+        "二、基本面\n\n营收 208 亿，同比 +31.8%，净利 44 亿。\n\n"
+        "三、建仓方案\n\n分批建仓，第一笔现价 1/3，跌到下轨再加。"
+    )
+    assert _should_render_markdown_image(report) is True
+
+
+def test_multiple_headers_render_as_image(_md_image_cfg) -> None:
+    """没有表格但有 ≥2 个 markdown 标题的文档也应出图（min_chars 压低以隔离结构判定）。"""
+    _md_image_cfg(min_chars=80)
+    doc = (
+        "# 8 月主线研报\n\n先说大局：内需 + 新质生产力是主基调，7 月底还有一次会议。\n\n"
+        "## 一、业绩线\n\n8 月中报密集披露，重点看净利同比 +30% 且环比加速的。\n\n"
+        "## 二、算力线\n\nCPO / 光模块 / HBM 仍是机构共识，别追高只低吸龙头。"
+    )
+    assert _should_render_markdown_image(doc) is True
+
+
+def test_casual_multiline_chat_is_not_rendered(_md_image_cfg) -> None:
+    """人格"连发 2-3 条短消息"绝不能被误判成文档去出图（核心不变量）。"""
+    _md_image_cfg()
+    casual = "呼…早上好…\n\n给你留了一半位置\n\n一起睡吧 这样才能长高 别让巫女姐姐发现"
+    assert _should_render_markdown_image(casual) is False
+
+
+def test_dash_separated_chat_without_headers_is_not_rendered(_md_image_cfg) -> None:
+    """随手用 `---` 分段但没有标题/表格的闲聊不算文档。"""
+    _md_image_cfg()
+    txt = "唔…这题好麻烦…\n\n---\n\n算了直接说结论\n\n买点在下面 自己看 别问了 我要睡了…zzz"
+    assert _should_render_markdown_image(txt) is False
+
+
+def test_short_structured_text_is_not_rendered(_md_image_cfg) -> None:
+    """够结构化但太短（低于 min_chars）不出图，避免把小回复也变图片。"""
+    _md_image_cfg(min_chars=210)
+    short = "对比：\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n就这样。"
+    assert _should_render_markdown_image(short) is False
+
+
+def test_code_block_is_kept_as_text_not_rendered(_md_image_cfg) -> None:
+    """长代码答复**不**出图——用户要复制代码，图片没法选中（只表格/标题才触发）。"""
+    _md_image_cfg(min_chars=80)
+    code = (
+        "给你写好了：\n\n"
+        "```python\n"
+        "def fib(n):\n"
+        "    a, b = 0, 1\n"
+        "    for _ in range(n):\n"
+        "        a, b = b, a + b\n"
+        "    return a\n"
+        "```\n\n"
+        "直接抄走就行，跑一下看看对不对。"
+    )
+    assert _should_render_markdown_image(code) is False
+
+
+def test_disabled_config_never_renders(_md_image_cfg) -> None:
+    """总开关关掉时，再长的研报也不出图（回退到原拆条行为）。"""
+    _md_image_cfg(enabled=False)
+    report = (
+        "一、技术面\n\n| 维度 | 数据 |\n|---|---|\n| 现价 | 123 |\n\n"
+        "二、基本面\n\n营收同比 +31.8%，净利 +32.7%，连续高增长，值得关注。\n\n"
+        "三、结论\n\n分批建仓，不追高，破位就走。"
+    )
+    assert _should_render_markdown_image(report) is False
 
 
 def _src(rel: str) -> str:

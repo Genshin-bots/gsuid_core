@@ -266,6 +266,30 @@ AI_CONFIG: Dict[str, GSC] = {
         1,
         options=[0, 1, 2, 3],
     ),
+    "OutputRendering": GsDivider(
+        "长文本呈现",
+        "长 markdown 整篇出图, 防止 agent 长研报按空行拆成几十条刷屏群聊",
+        "长文本呈现",
+    ),
+    "render_long_markdown_as_image": GsBoolConfig(
+        "长markdown整篇出图",
+        "开启后, 结构化的长 markdown 回复(含表格/多标题/代码块)会整篇渲染成一张图片下发, "
+        "替代按空行拆成几十条消息逐条刷屏(IM 也不渲染 markdown)。判定刻意保守, "
+        "不影响人格'连发2-3条短消息'的日常闲聊(纯口语无表格/标题不会命中)",
+        True,
+    ),
+    "markdown_image_min_chars": GsIntConfig(
+        "整篇出图最小字符数",
+        "文本短于该字符数一律不出图(仍按空行拆条连发), 避免把简短回复也变成图片",
+        210,
+        options=[150, 210, 300, 500, 800],
+    ),
+    "markdown_image_max_width": GsIntConfig(
+        "整篇出图最大宽度",
+        "长 markdown 渲染成图片时的最大宽度(像素); 表格列很多时可调大",
+        760,
+        options=[600, 760, 900, 1080],
+    ),
     "ToolTuning": GsDivider(
         "工具检索装配调参",
         "工具检索装配调参",

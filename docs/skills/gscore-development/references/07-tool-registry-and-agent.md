@@ -335,7 +335,19 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 `_strip_tool_call_artifacts`（工具调用标记残留）→ `_strip_special_control_tokens`（模型私有
 回合/角色 token，如 MiniMax 的 `]<]minimax[>[`）→ **`_normalize_html_linebreaks`**（`<br>` → `\n`）
 → meme 标记解析 → `_strip_persona_markdown`（IM 不渲染 markdown）→ 出戏防火墙兜底 →
-按 `\n\s*\n`（**空行**）拆成多条消息下发。
+**`_should_render_markdown_image` 判定：结构化长 markdown → 整篇渲染成一张图片下发** →
+（未命中出图时）按 `\n\s*\n`（**空行**）拆成多条消息下发。
+
+> 🖼️ **长 markdown 整篇出图**（2026-07-15 新增，配置 `render_long_markdown_as_image`，默认开）。
+> 空行拆条本是人格"连发 2-3 条短消息"的能力，但 agent 的长研报 / 报告（多标题 + 表格 +
+> 分隔线）会被拆成**几十条刷屏**，且 IM 不渲染 markdown、满屏字面 `**` / `|` 极难看。
+> `send_chat_result` 在拆条前先判定：命中"结构化长 markdown"就用 `render_md_to_bytes` 把
+> **整篇**（用未剥 markdown 的 `md_source`，不是被 `_strip_persona_markdown` 毁过的 `clean_text`）
+> 渲染成一张图片下发，替代拆条；渲染失败**优雅降级**回拆条。判定**刻意保守**（`_should_render_markdown_image`）：
+> 须够长（`markdown_image_min_chars`，默认 210）+ 拆分后 ≥3 段 + 含明确结构信号（表格 / ≥2 个
+> ATX 标题 / 水平线且 ≥1 标题）——**纯口语连发短句、单段短文、代码块**都不命中（代码块要可复制，
+> 保留文本行为）。OOC 兜底命中时（`clean_text` 已被替换成短兜底文本）也不出图。
+> 阈值 / 宽度 / 开关见 `ai_config`（`OutputRendering` 分组）。回归锁同下。
 
 > 🔴 **`<br>` 归一化必须在按空行拆条之前**（2026-07-15 新增）。模型会用 `<br>` 代替换行——
 > **框架自己的 prompt 里就大量使用尖括号标记**（`<example>` / `<meme: 困>` / `<SILENCE>`），

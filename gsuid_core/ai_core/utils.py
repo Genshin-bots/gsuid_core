@@ -598,6 +598,93 @@ def _strip_persona_markdown(text: str) -> str:
     return text
 
 
+# 长 markdown 整篇出图的结构信号：ATX 标题（# ~ ######）、纯水平分割线（--- / *** / ___）
+_MD_HEADER_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
+_MD_HR_RE = re.compile(r"(?m)^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
+# markdown 表格行（一行含 ≥3 个竖线，即 ≥2 个单元格）
+_MD_TABLE_ROW_RE = re.compile(r"\|.*\|.*\|")
+
+
+def _has_markdown_table(text: str) -> bool:
+    """是否含 markdown 表格。
+
+    **刻意不含代码块**（与 ``_looks_like_tool_table`` 的区别）：代码块用户往往要**复制**，
+    出成图片反而不能选中，故长代码答复保留原有"文本"行为，不纳入整篇出图。
+    """
+    if _MD_TABLE_ROW_RE.search(text) is None:
+        return False
+    return ("---" in text) or (text.count("|") >= 4)
+
+
+def _should_render_markdown_image(text: str) -> bool:
+    """判断一段 AI 输出是否是"结构化长 markdown 文档"，值得整篇渲染成一张图片下发。
+
+    动机：``send_chat_result`` 默认按空行（``\\n\\n``）把文本拆成多条消息逐条下发——这本是
+    人格"连发 2-3 条短消息"的能力，但 agent 产出的长研报 / 报告（多标题 + 表格 + 分隔线）
+    会因此被拆成几十条刷屏，且 IM 不渲染 markdown，用户看到的是满屏字面 ``**`` / ``|``。
+
+    判定**刻意保守**，只在"确实是文档"时命中，绝不误伤日常连发短句：
+      - 必须够长（≥ ``markdown_image_min_chars``）；
+      - 且拆分后 ≥3 段（单段短文没有出图必要）；
+      - 且含明确 markdown 结构信号：表格、≥2 个 ATX 标题、或（水平分割线 且 ≥1 个标题）。
+    仅靠"多个空行段落"绝不命中——纯口语连发短句没有表格 / 标题。
+    代码块**不**触发出图：用户往往要复制代码，保留文本行为（见 ``_has_markdown_table``）。
+    """
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("render_long_markdown_as_image").data:
+        return False
+
+    min_chars: int = ai_config.get_config("markdown_image_min_chars").data
+    if len(text) < max(int(min_chars), 1):
+        return False
+
+    blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
+    if len(blocks) < 3:
+        return False
+
+    # 表格：最强的"这是文档"信号（IM 不渲染 markdown，表格文本尤其难看）
+    if _has_markdown_table(text):
+        return True
+
+    header_count = len(_MD_HEADER_RE.findall(text))
+    if header_count >= 2:
+        return True
+    # 只有水平分割线时，要求同时有至少一个标题，避免把"用 --- 随手分段的闲聊"误判
+    if header_count >= 1 and _MD_HR_RE.search(text) is not None:
+        return True
+    return False
+
+
+async def _try_render_markdown_image(
+    md: str,
+    bot: Bot,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """把整篇 markdown 渲染成一张图片下发。
+
+    成功返回 ``True``；渲染失败返回 ``False``，由调用方**优雅降级**回按空行拆条的原逻辑
+    （宁可刷屏也不要丢消息）。
+    """
+    from gsuid_core.utils.html_render import render_md_to_bytes
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    max_width: int = ai_config.get_config("markdown_image_max_width").data
+    try:
+        image_bytes = await render_md_to_bytes(
+            md=md,
+            max_width=int(max_width),
+            image_format="jpeg",
+        )
+    except Exception as e:
+        logger.warning(i18n_t("[send_chat_result] 长 markdown 出图失败，降级为文本拆条: {e}", e=e))
+        return False
+
+    await bot.send(MessageSegment.image(image_bytes), extra_metadata=extra_metadata)
+    logger.info(i18n_t("[send_chat_result] 长 markdown 已整篇渲染为图片下发 ({p0} bytes)", p0=len(image_bytes)))
+    return True
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -638,10 +725,12 @@ async def send_chat_result(
 
     # 解析表情包标记
     meme_tags: list[str] = MEME_TAG_PATTERN.findall(text)
-    clean_text: str = MEME_TAG_PATTERN.sub("", text).strip()
+    # 去掉 meme 标记但**保留 markdown** 的正文原文：供"长 markdown 整篇出图"判定与渲染
+    # （_strip_persona_markdown 会毁掉表格/标题，出图必须用这份未剥离的原文）。
+    md_source: str = MEME_TAG_PATTERN.sub("", text).strip()
 
     # 闲聊/人格回复剥离 markdown 与 *动作* 旁白（工具表格/代码块自动豁免，见该函数）。
-    clean_text = _strip_persona_markdown(clean_text)
+    clean_text: str = _strip_persona_markdown(md_source)
 
     # 清理标记残留的多余空格/标点。只压"空格/制表符"、保留换行——原 \s{2,} 会把
     # \n\n 也压成空格，导致下方 re.split(r"\n\s*\n") 切不出多条，"连发多条短句"退化成一整段。
@@ -650,6 +739,7 @@ async def send_chat_result(
 
     # 出戏防火墙末端兜底（§D.4）：无重说通道的调用方（proactive / 兜底总结等）命中即替换；
     # gs_agent 主循环自带"提醒→重说→放行"闭环，重说产物以 ooc_check=False 经过此处。
+    _ooc_replaced = False
     if clean_text and ooc_check:
         from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, check_ooc, is_enabled
 
@@ -666,6 +756,7 @@ async def send_chat_result(
                     )
                 )
                 clean_text = PERSONA_FALLBACK_TEXT
+                _ooc_replaced = True
 
     # Trace 日志：记录解析结果
     logger.trace(
@@ -679,6 +770,16 @@ async def send_chat_result(
         if meme_tags and ev is not None:
             await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
         return
+
+    # —— 长 markdown 整篇出图（防群聊刷屏，2026-07-15）——
+    # 结构化长 markdown（表格 / 多标题）若按空行拆条会连发几十条刷屏，且 IM 不渲染 markdown。
+    # 命中即整篇渲染成一张图片下发，替代拆条；渲染失败自动降级回下面的拆条逻辑。
+    # 用未剥离 markdown 的 md_source 渲染；OOC 兜底命中时（clean_text 已被替换成短兜底文本）不出图。
+    if not _ooc_replaced and _should_render_markdown_image(md_source):
+        if await _try_render_markdown_image(md_source, bot, extra_metadata):
+            if meme_tags and ev is not None:
+                await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
+            return
 
     # 按换行分割为多条消息
     blocks = re.split(r"\n\s*\n", clean_text)
