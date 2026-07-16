@@ -16,7 +16,7 @@
 
 | 段 | 字段 | 说明 |
 |---|---|---|
-| identity | `node_id` / `display_name` / `prompt` / `prompt_style` | `prompt` 即原 persona.md 正文或原 `system_prompt`；`prompt_style="roleplay"` 时 session 装配走人格链路，`"plain"` 时用 lite 约束集（`compose_plain_session_prompt`，为画布类专属入口预留） |
+| identity | `node_id` / `display_name` / `prompt` / `prompt_style` | `prompt` 即原 persona.md 正文或原 `system_prompt`；`prompt_style="roleplay"` 时 session 装配走人格链路，`"plain"` 时用 lite 约束集（`compose_plain_session_prompt`，为画布/各种前端专门类专属入口预留） |
 | routing | `when_to_use` / `match_keywords` | 委派 / 编排层消费（`resolve_node` 关键词路由） |
 | tools | `tool_packs` / `tool_names` / `tool_query` | 能力族 + 显式白名单 + 检索补充词（见 §二） |
 | task | `boundary_override` | task-mode 交付边界覆写（空=框架默认 `DELIVERY_BOUNDARY`） |

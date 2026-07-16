@@ -56,6 +56,17 @@ class ManualKnowledgeBase(TypedDict):
     source: str  # 固定为 "manual"
 
 
+class ManualKnowledgeUpdate(TypedDict, total=False):
+    """``update_manual_knowledge`` 的增量更新字段（id/source 传入也会被丢弃）"""
+
+    id: str
+    plugin: str
+    title: str
+    content: str
+    tags: List[str]
+    source: str
+
+
 class ImageEntity(TypedDict):
     """图片实体类型 - 用于RAG图片检索
 
@@ -91,7 +102,8 @@ class ModelInfo(TypedDict):
 class FunctionDef(TypedDict):
     name: str
     description: str
-    parameters: Dict
+    # JSON Schema 对象（OpenAI function-calling 的 parameters 字段）
+    parameters: Dict[str, object]
 
 
 class ToolDef(TypedDict):

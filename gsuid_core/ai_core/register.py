@@ -3,7 +3,7 @@ import inspect
 from typing import Dict, List, Tuple, Union, TypeVar, Callable, Optional, Awaitable, cast, overload
 from pathlib import Path
 
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, ToolReturn
 from pydantic_ai.tools import Tool
 
 from gsuid_core.i18n import t
@@ -12,9 +12,12 @@ from gsuid_core.segment import Message
 from gsuid_core.ai_core.utils import handle_tool_result
 from gsuid_core.ai_core.models import ToolContext
 
-from .models import ToolBase, ImageEntity, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase
+from .models import ToolBase, ImageEntity, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase, ManualKnowledgeUpdate
 
-F = TypeVar("F", bound=Callable[..., Awaitable[Union[str, Message, bytes]]])
+# 工具函数返回契约：str/Message/bytes 经 handle_tool_result 序列化；
+# ToolReturn 原样透传 pydantic_ai（多模态内容注入会话，如 read_image 直投）
+ToolFunc = Callable[..., Awaitable[Union[str, Message, bytes, ToolReturn]]]
+F = TypeVar("F", bound=ToolFunc)
 
 # 定义 check_func 的类型 - 支持同步和异步函数
 CheckFunc = Callable[..., Union[Tuple[bool, str], Awaitable[Tuple[bool, str]]]]
@@ -83,7 +86,7 @@ def ai_tools(
 
 
 def ai_tools(
-    func: Optional[Callable] = None,
+    func: Optional[ToolFunc] = None,
     /,
     *,
     category: str = "default",
@@ -212,7 +215,7 @@ def ai_tools(
                     call_kwargs[param_name] = ctx.deps.bot
 
             # ===== 智能传参 =====
-            async def _call() -> Union[str, Message, bytes]:
+            async def _call() -> Union[str, Message, bytes, ToolReturn]:
                 if func_takes_run_context:
                     return await fn(ctx, *args, **call_kwargs)
                 elif func_takes_tool_context:
@@ -232,6 +235,11 @@ def ai_tools(
                     )
                 )
                 return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
+
+            # ToolReturn 原样透传给 pydantic_ai（多模态内容注入会话，如 read_image 直投图片）。
+            # 走 handle_tool_result 会被兜底 str() 成 dataclass repr——模型只会看到裸 base64 文本
+            if isinstance(raw_result, ToolReturn):
+                return raw_result
 
             # 处理并返回结果
             result = await handle_tool_result(ctx.deps.bot, raw_result)
@@ -266,7 +274,8 @@ def ai_tools(
                 continue
             new_params.append(p)
 
-        wrapped_tool.__signature__ = sig.replace(parameters=new_params)
+        # 函数对象运行时支持 __signature__（inspect 协议），但 FunctionType 静态无此属性
+        setattr(wrapped_tool, "__signature__", sig.replace(parameters=new_params))
 
         # 5.5 条件隐藏（Phase 3）：visible_when 谓词包装成 pydantic-ai 的 prepare 函数。
         # prepare 在每个 step 被调用，返回 None 即本步不向模型暴露该工具。
@@ -590,7 +599,7 @@ def add_manual_knowledge(entity: ManualKnowledgeBase) -> bool:
     return True
 
 
-def update_manual_knowledge(entity_id: str, updates: dict) -> bool:
+def update_manual_knowledge(entity_id: str, updates: ManualKnowledgeUpdate) -> bool:
     """
     更新手动添加的知识库条目。
 

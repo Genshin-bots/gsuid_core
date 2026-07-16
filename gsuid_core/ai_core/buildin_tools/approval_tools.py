@@ -153,7 +153,7 @@ async def list_pending_approvals(ctx: RunContext[ToolContext]) -> str:
 
 
 # 会话级串行锁：receive_resp 等待器是单槽位,并发会互相覆盖 event 导致答案错配
-# (2026-07-07 画布事故),故同会话的 ask_user/ask_user_form 必须排队逐个呈现。
+# (2026-07-07 ) 同会话的 ask_user/ask_user_form 必须排队逐个呈现。
 _ASK_USER_LOCKS: Dict[str, asyncio.Lock] = {}
 
 

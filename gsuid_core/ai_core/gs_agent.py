@@ -282,9 +282,9 @@ class GsCoreAIAgent:
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
-        # 长流程入口（画布编排等，一轮几十次工具调用 + 等人确认）必须放宽，否则永远跑不到终态。
+        # 长流程入口（画布编排/Agent编排等，一轮几十次工具调用 + 等人确认）必须放宽，否则永远跑不到终态。
         self.wall_clock_budget = wall_clock_budget
-        # 轨迹观察者：让宿主（画布前端的"思考过程"折叠块等）看见模型推理与工具调用，
+        # 轨迹观察者：让宿主（画布/Agent编排前端的"思考过程"折叠块等）看见模型推理与工具调用，
         # 不必去翻 session log。None = 不观察（零开销）；契约见 _emit_trace。
         self.on_trace = on_trace
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
