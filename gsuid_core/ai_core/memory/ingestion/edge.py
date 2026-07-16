@@ -21,6 +21,14 @@ from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemConflict
 
 logger = logging.getLogger(__name__)
 
+# §6 残句拦截：句末裸言说/认知动词=缺宾语的悬空谓语（"用户X提到"），摄入/注入两侧共用。
+# 动名兼类词（讨论/回复/评价…）须带体标记"了/过"才判悬空，防误杀名词用法（评审修复 F13）。
+_DANGLING_FACT_RE = re.compile(
+    r"(?:(?:提到|提及|被提及|表示|认为|觉得|提出|指出|强调|透露|说道|谈到|聊到|说起|问到|询问|说)[了过]?"
+    r"|(?:讨论|谈论|回复|回应|回答|评价|分享|补充|吐槽|感叹)[了过])"
+    r"[。.!！?？…]?$"
+)
+
 # C11 矛盾检测：否定极性标记词。两条同 src/tgt 的高相似 fact 若极性相反，
 # 视为"语义矛盾"而非"重复陈述"——按时效以新事实为准，旧事实软删除并记录冲突。
 _NEGATION_MARKERS = ("不", "没", "无", "非", "别", "讨厌", "拒绝", "反对", "停止")
@@ -120,6 +128,11 @@ async def extract_and_upsert_edges(
         target_name = edge_data["target"] if "target" in edge_data else ""
         fact = edge_data["fact"].strip() if "fact" in edge_data and edge_data["fact"] else ""
         if not fact:
+            continue
+        # §6 残句拦截（摄入侧）：悬空谓语结尾的 fact（"用户X提到"）零信息量，
+        # 不入库——与注入侧同判据，源头止血。
+        if _DANGLING_FACT_RE.search(fact):
+            logger.debug(t("🧠 [Memory] 摄入拦截残句 fact: {fact}", fact=fact))
             continue
         source_id = entity_name_to_id[source_name] if source_name in entity_name_to_id else None
         target_id = entity_name_to_id[target_name] if target_name in entity_name_to_id else None

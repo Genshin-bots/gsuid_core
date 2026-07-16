@@ -133,7 +133,13 @@ async def _understand_image_native(
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
     agent = create_agent(
-        system_prompt="你是一个图片理解助手，只输出对图片内容的客观描述，不要输出多余的解释或寒暄。",
+        # §21 不确定性表述：主体/动作/方向类判断易反（生产实录把"狗打猫"读成"猫踩狗"
+        # 且口吻笃定被用户当场纠正），要求对拿不准的判断使用"看起来像/可能是"。
+        system_prompt=(
+            "你是一个图片理解助手，只输出对图片内容的客观描述，不要输出多余的解释或寒暄。"
+            "对主体身份、动作方向、人物关系等易误判的内容，若不完全确定，"
+            "用「看起来像/可能是」表述，不要给出笃定的断言；文字内容按原样转录。"
+        ),
         max_tokens=1024,
         max_iterations=1,
         create_by="ImageUnderstand",

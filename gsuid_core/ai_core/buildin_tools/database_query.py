@@ -70,7 +70,11 @@ async def query_user_memory(
             group_id=str(group_id) if group_id else str(target_id),
             top_k=top_k,
         )
-        mem_text = mem_ctx.to_prompt_text(max_chars=2000)
+        # §7 隐私门：当事人=发起本次查询的说话人；无事件上下文（后台）时 None=默认全拦
+        mem_text = mem_ctx.to_prompt_text(
+            max_chars=2000,
+            current_speaker_ids={str(ev.user_id)} if ev is not None and ev.user_id else None,
+        )
         parts.append(mem_text.strip() if (mem_text and mem_text.strip()) else "（暂无相关记忆/事实）")
         logger.info(
             t(

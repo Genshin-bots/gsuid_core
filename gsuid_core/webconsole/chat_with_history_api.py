@@ -249,7 +249,11 @@ async def chatWithHistory(
             )
             # 必须传入配置的注入预算：默认 max_chars=2000 只够 ~2 条 Episode，长对话回灌评测
             # 下绝大多数事实落在预算外（与 handle_ai 对齐，由 memory_inject_max_chars 统一控制）。
-            memory_context_text = mem_ctx.to_prompt_text(max_chars=memory_config.memory_inject_max_chars)
+            # §7 隐私门与 handle_ai 对齐：当事人=本次请求的 user_id（评审修复 F7）
+            memory_context_text = mem_ctx.to_prompt_text(
+                max_chars=memory_config.memory_inject_max_chars,
+                current_speaker_ids={str(user_id)},
+            )
             memory_ctx = mem_ctx.to_memory_text()
 
         mem_guide = ""
@@ -307,6 +311,7 @@ async def chatWithHistory(
             bot_id=bot_id,
             persona_name=persona_name,
             mood_key=str(user_id),
+            group_id=str(group_id) if group_id else None,
             favorability=_favor,
             history_context="",
             memory_context_text=memory_context_text,

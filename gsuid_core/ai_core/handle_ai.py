@@ -27,7 +27,15 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import SILENCE_MARKERS, send_chat_result, prepare_content_payload
+from gsuid_core.ai_core.utils import (
+    NO_RESULT_TEXT,
+    SILENCE_MARKERS,
+    ERROR_RESULT_PREFIX,
+    send_chat_result,
+    prepare_content_payload,
+    sanitize_error_for_user,
+    has_model_visible_content,
+)
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL
 from gsuid_core.ai_core.ai_router import (
@@ -248,6 +256,15 @@ async def handle_ai_chat(
                 event.raw_text = query  # 同步到 event
 
             # ============================================================
+            # 步骤 1.5: 空内容前置门（§17）——纯表情/戳一戳等无内容消息不值得
+            # 走完整装配换一个 <SILENCE>。判据与 payload 构建同源（评审修复 E10）。
+            # ============================================================
+            _is_at_me = bool(event.is_tome) or event.user_type == "direct"
+            if not query.strip() and not has_model_visible_content(event) and not _is_at_me:
+                logger.info(t("🧠 [GsCore][AI] 空内容消息（无模型可见内容且未@我），前置静默跳过"))
+                return
+
+            # ============================================================
             # 步骤 2: 意图识别
             # ============================================================
             res = await classifier_service.predict_async(query)
@@ -378,6 +395,8 @@ async def handle_ai_chat(
                         memory_context_text = mem_ctx.to_prompt_text(
                             max_chars=memory_config.memory_inject_max_chars,
                             priority_speakers=masters_set or None,
+                            # §7 第三方隐私拦截：敏感事实仅当事人在场才注入
+                            current_speaker_ids={str(event.user_id)},
                         )
                         logger.debug(t("🧠 [Memory] 检索到记忆上下文 ({p0} 字符)", p0=len(memory_context_text)))
                         # 上报记忆检索统计
@@ -451,6 +470,7 @@ async def handle_ai_chat(
                 bot_id=bot_id,
                 persona_name=session.persona_name,
                 mood_key=mood_key,
+                group_id=str(event.group_id) if event.group_id else None,
                 favorability=favorability,
                 history_context=rag_context,
                 memory_context_text=memory_context_text,
@@ -474,13 +494,18 @@ async def handle_ai_chat(
                 has_active_task=has_actionable,  # O-D 是否有需要即时介入的 Kanban 任务
             )
 
-            # 步骤 8: 发送回复
+            # 步骤 8: 发送回复。结果只分类一次，步骤 9 的好感度门复用同一判定（评审修复 G3）
+            result_text = chat_result if isinstance(chat_result, str) else str(chat_result or "")
+            _is_silence = bool(result_text) and result_text.strip() in SILENCE_MARKERS
+            _is_error = result_text.startswith(ERROR_RESULT_PREFIX) or result_text == NO_RESULT_TEXT
             if chat_result:
-                # 拦截沉默信号
-                result_text = chat_result if isinstance(chat_result, str) else str(chat_result)
-                if result_text.strip() in SILENCE_MARKERS:
+                if _is_silence:
                     logger.info(t("🧠 [GsCore][AI] 角色选择沉默，不发送回复"))
                     # 情绪仍然正常更新，只是不发消息
+                elif _is_error:
+                    # 失败必须让用户可感知，但原始错误串含 provider body 等内部细节，脱敏后发送
+                    logger.warning(t("🧠 [GsCore][AI] 本轮执行失败，向用户发送脱敏兜底文案: {r}", r=result_text[:200]))
+                    await send_chat_result(bot, sanitize_error_for_user(result_text), ev=event)
                 else:
                     await send_chat_result(bot, chat_result, ev=event)
                     logger.info(t("🧠 [GsCore][AI] 回复已发送 (模式: {intent})", intent=intent))
@@ -494,10 +519,13 @@ async def handle_ai_chat(
                 mood_key = str(event.group_id) if event.group_id else str(event.user_id)
                 from gsuid_core.ai_core.utils import _is_master_user
 
-                # 好感度被动累积：每次有效互动微增(+1)，让熟人随时间自然升档，
-                # 触发 persona 的"熟人短句连发"寄存器（好感度 50-100）。
-                # update_favorability 内部已兜底（失败仅返回 False 并记日志），无需再包 try。
-                await UserFavorability.update_favorability(str(event.user_id), bot.bot_id, 1)
+                # 好感度只在有效互动时 +1（§16）：静默/失败/准失败轮不加分。by_bot 成功轮
+                # run 返回空串，须以 last_run_sent_visible_reply 判"说过话"（评审修复 F1）。
+                _effective = not _is_error and (
+                    session.last_run_sent_visible_reply or (bool(result_text) and not _is_silence)
+                )
+                if _effective:
+                    await UserFavorability.update_favorability(str(event.user_id), bot.bot_id, 1)
 
                 mood_task = asyncio.create_task(
                     _update_persona_mood(

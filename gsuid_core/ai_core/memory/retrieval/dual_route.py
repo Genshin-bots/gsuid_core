@@ -16,11 +16,19 @@ from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.rag.reranker import RerankerProvider, get_reranker
+from gsuid_core.ai_core.content_guard import wrap_untrusted
 from gsuid_core.ai_core.memory.config import memory_config
+
+# §6 残句拦截判据定义在摄入侧，注入侧兜底复用同一常量（"用户X提到"悬空谓语垃圾）
+from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
 
 from .types import Edge, Entity, Episode, Category, RetrievalMeta
 from .system1 import System1Result, system1_search
 from .system2 import System2Result, system2_global_selection
+
+# untrusted 栅栏自身的字符开销：episodes 预算与终装配截断都要预留它，
+# 否则 </untrusted> 闭合标签会被尾截断切掉（评审修复 F9）
+_UNTRUSTED_WRAP_OVERHEAD = len(wrap_untrusted("memory_recall", ""))
 
 
 class PreferencePrompt(TypedDict):
@@ -50,6 +58,56 @@ _TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到
 # A-3：身份等价类 fact 的特征词。这类 fact 主语极易抽错（"谈论小C"会被固化成
 # "<说话人>本人是小C"），故①禁止用 source_name 强补主语 ②注入时统一标"待证"。
 _IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
+
+# §7 第三方隐私拦截：婚恋/财务/健康/联络四**类目**的敏感事实仅当事人在场才注入；
+# 词表按类目组织（非个案关键词），部署者可经 memory_sensitive_extra_terms 扩展。
+_SENSITIVE_FACT_RE = re.compile(
+    r"催婚|相亲|离婚|分手|出轨|怀孕|堕胎|"  # 婚恋
+    r"工资|薪资|月薪|年薪|收入|欠钱|欠款|负债|贷款|房贷|房租|"  # 财务
+    r"抑郁|焦虑症|生病|住院|确诊|病历|"  # 健康
+    r"住址|家庭地址|身份证|手机号|电话号|银行卡"  # 联络/证件
+)
+
+
+def _get_sensitive_extra_terms() -> list[str]:
+    """部署者扩展敏感词（memory_sensitive_extra_terms）。入口取一次供整轮复用（评审修复 E17）。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    extra = ai_config.get_config("memory_sensitive_extra_terms").data
+    if isinstance(extra, list):
+        return [str(w).strip() for w in extra if str(w).strip()]
+    return []
+
+
+def _sensitive_fact_hit(fact: str, extra_terms: Sequence[str] = ()) -> bool:
+    """内置敏感类目词表 + 部署者扩展词表任一命中。
+
+    匹配前过 normalize_for_match（与 output_firewall 同款防拆字/零宽规避，评审修复 F5-reuse）。
+    """
+    from gsuid_core.ai_core.content_guard import normalize_for_match
+
+    normalized = normalize_for_match(fact)
+    if _SENSITIVE_FACT_RE.search(normalized) or _SENSITIVE_FACT_RE.search(fact):
+        return True
+    return any(w in fact or w in normalized for w in extra_terms)
+
+
+def _fact_mentions_speaker(edge: "Edge", speaker_ids: set) -> bool:
+    """该 edge 是否以当前说话人为主语/当事人（source_name 或 fact 文本含其标识）。
+
+    数字 ID 按整串边界匹配：短 QQ 号是别人长号的子串时不得误判在场（评审修复 E6）。
+    """
+    blob = f"{edge['source_name'] or ''}|{edge['fact'] or ''}"
+    for sid in speaker_ids:
+        s = str(sid).strip()
+        if not s:
+            continue
+        if s.isdigit():
+            if re.search(rf"(?<!\d){re.escape(s)}(?!\d)", blob):
+                return True
+        elif s in blob:
+            return True
+    return False
 
 
 def _edge_date_prefix(e: "Edge") -> str:
@@ -234,6 +292,7 @@ class MemoryContext:
         self,
         max_chars: int = 2000,
         priority_speakers: Optional[set] = None,
+        current_speaker_ids: Optional[set] = None,
     ) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本。
 
@@ -248,6 +307,9 @@ class MemoryContext:
             max_chars: 注入预算字符数
             priority_speakers: C4 预算优先级——这些发言者（如主人）相关的 edge
                 会被稳定上浮到核心事实区块最前，优先占用预算。
+            current_speaker_ids: 当前说话人的标识集合（user_id/昵称）。§7 第三方隐私
+                拦截为**默认拒绝**：不传（后台/工具路径）时敏感类目一律不注入，
+                只有敏感事实主语含说话人标识才放行（评审修复 F7）。
         """
 
         def _take(items: list[str], budget: int) -> list[str]:
@@ -262,6 +324,7 @@ class MemoryContext:
             return out
 
         parts: list[str] = []
+        pref_block: Optional[str] = None
 
         # 程序性/偏好规则（最高优先级，置顶 + 强约束语气）：区别于"核心事实"的背景陈述，
         # 这是针对 Agent 未来行为的硬约束（如"调 generate_image 用竖图"），必须让工具调用
@@ -279,7 +342,13 @@ class MemoryContext:
                 pref_lines.append(f"• {tag}{rule}{mark}")
             taken = _take(pref_lines, pref_budget)
             if taken:
-                parts.append("【用户偏好/纠错 - 须严格遵守】\n" + "\n".join(taken))
+                # §9 仲裁语：旧规则常缺触发条件（"不要提及睡觉"），模型会自行猜测适用面
+                # 并在完全无关场合套用/合理化——显式钉住"按字面最小范围理解"。
+                # 偏好块独立变量而非事后按标题前缀分拣：措辞变更不得静默改变防线归属（评审修复 G2）
+                pref_block = (
+                    "【用户偏好/纠错 - 须严格遵守】"
+                    "（各规则按其触发条件适用；未写明条件的按字面最小范围理解，不扩大化）\n" + "\n".join(taken)
+                )
 
         # 核心事实（最高优先级）
         if self.edges:
@@ -309,6 +378,7 @@ class MemoryContext:
             fact_lines: list[str] = []
             seen_facts: set = set()
             now_ts = time.time()
+            _extra_sensitive = _get_sensitive_extra_terms()
             for e in edges:
                 # 过滤已失效边（invalid_at_ts 过期）与低置信边（weight 低于阈值）
                 invalid_at = e["invalid_at_ts"]
@@ -318,6 +388,15 @@ class MemoryContext:
                     continue
                 fact = _complete_fact_subject(e["fact"], e["source_name"])
                 if not fact:
+                    continue
+                # §6 残句拦截：悬空谓语结尾（"用户X提到"）零信息量，不进注入预算
+                if _DANGLING_FACT_RE.search(fact):
+                    continue
+                # §7 第三方隐私默认拒绝：敏感事实仅当事人在场才注入；未传 speaker
+                # 的路径（后台/工具）一律拦截，防调用点遗漏成为旁路（评审修复 F7）
+                if _sensitive_fact_hit(fact, _extra_sensitive) and not (
+                    current_speaker_ids and _fact_mentions_speaker(e, current_speaker_ids)
+                ):
                     continue
                 sig = fact.strip().lower().replace(" ", "")[:24]
                 if sig in seen_facts:
@@ -330,6 +409,10 @@ class MemoryContext:
                 _dt = _edge_date_prefix(e)
                 _cf = "⚠️[与其他陈述矛盾] " if (e["source_id"], e["target_id"]) in conflicted_pairs else ""
                 fact_lines.append(f"• {_dt}{_cf}{'（记忆·待证）' if _id else ''}{fact}")
+                # §25(4) 条数硬上限（可配 fact_max_inject，与字符预算双限取严）：
+                # 够数即停，剩余 edge 不再白做加工（评审修复 E17/F7-cfg）
+                if len(fact_lines) >= memory_config.fact_max_inject:
+                    break
             taken = _take(fact_lines, fact_budget)
             if taken:
                 parts.append("【核心事实 - 与当前问题相关】\n" + "\n".join(taken))
@@ -358,7 +441,10 @@ class MemoryContext:
         # （无图谱时，如大语料回灌 / 评测）episodes 是唯一召回源，必须给足空间，否则被
         # 旧的固定 30% + 3 条 × 200 字硬上限饿死（单条事实 200 字截断后召回到也答不出）。
         if self.episodes:
-            used = sum(len(p) for p in parts) + 2 * len(parts)
+            # 预算须扣除偏好块与 untrusted 栅栏开销，否则终装配必超 max_chars、
+            # 闭合标签被尾截断切掉（评审修复 F9）
+            _pref_used = (len(pref_block) + 2) if pref_block else 0
+            used = sum(len(p) for p in parts) + 2 * len(parts) + _pref_used + _UNTRUSTED_WRAP_OVERHEAD
             ep_budget = max_chars - used
             if ep_budget > 120:
                 eps = self.episodes
@@ -370,10 +456,22 @@ class MemoryContext:
                 if taken:
                     parts.append("【相关对话片段】\n" + "\n".join(taken))
 
-        result = "\n\n".join(parts)
-        if len(result) > max_chars:
-            result = result[:max_chars] + "\n...[记忆已截断]"
-        return result
+        # §8 注入防线对齐：偏好保持裸注入可执行（写入端有闸）；其余召回统一 untrusted
+        # 栅栏——复用 content_guard.wrap_untrusted，栅栏格式全通道唯一定义（评审修复 F9）。
+        blocks: list[str] = [pref_block] if pref_block else []
+        if parts:
+            recall_text = "\n\n".join(parts)
+            # 截断在包装**之前**并预留栅栏开销：</untrusted> 永不被尾截断切掉——
+            # 不闭合的栅栏会把其后的正常上下文拖进"不可信"语义区（评审修复 F9）
+            _marker = "\n...[记忆已截断]"
+            _budget = max_chars - ((len(pref_block) + 2) if pref_block else 0) - _UNTRUSTED_WRAP_OVERHEAD
+            if _budget <= len(_marker):
+                recall_text = ""
+            elif len(recall_text) > _budget:
+                recall_text = recall_text[: _budget - len(_marker)] + _marker
+            if recall_text:
+                blocks.append(wrap_untrusted("memory_recall", recall_text))
+        return "\n\n".join(blocks)
 
     def to_memory_text(self, max_chars: int = 24000) -> str:
         """格式化为可注入 Memory 的记忆上下文文本。

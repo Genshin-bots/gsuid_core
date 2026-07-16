@@ -145,6 +145,11 @@ class MemoryConfig:
         return mrc.get_config("memory_inject_max_chars").data
 
     @property
+    def fact_max_inject(self) -> int:
+        """单次注入的核心事实条数上限（与字符预算双限取严，§25(4)）。"""
+        return mrc.get_config("fact_max_inject").data
+
+    @property
     def enable_system2(self) -> bool:
         """是否启用 System-2 全局选择（成本较高，可按需关闭）"""
         return mrc.get_config("enable_system2get").data

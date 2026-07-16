@@ -110,6 +110,7 @@ async def assemble_dynamic_context(
     bot_id: str,
     persona_name: Optional[str],
     mood_key: str,
+    group_id: Optional[str] = None,
     favorability: Optional[int] = None,
     history_context: str = "",
     memory_context_text: str = "",
@@ -178,8 +179,10 @@ async def assemble_dynamic_context(
     try:
         from gsuid_core.ai_core.planning.context import build_task_context, has_actionable_task
 
-        task_context_text = await build_task_context(user_id)
-        has_actionable = await has_actionable_task(user_id)
+        # §24 跨群脱敏：显式 group_id 判群（不借 mood_key 哨兵反推，评审修复 E14）；
+        # has_actionable 同口径过滤，防他群任务在本群挂载 kanban 工具族（评审修复 E15）
+        task_context_text = await build_task_context(user_id, current_group_id=group_id)
+        has_actionable = await has_actionable_task(user_id, current_group_id=group_id)
         if task_context_text:
             context_parts.append(task_context_text)
     except Exception as e:

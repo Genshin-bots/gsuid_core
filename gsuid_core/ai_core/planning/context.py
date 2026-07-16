@@ -9,6 +9,8 @@
 fail_task_tree 重建（参见 docs/AI_AGENT_ARCHITECTURE.md §3.5 持久化产物交付判据）。
 """
 
+from typing import Optional
+
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
@@ -35,8 +37,13 @@ def _status_cn(s: str) -> str:
     return _STATUS_CN[s] if s in _STATUS_CN else s
 
 
-async def build_task_context(user_id: str) -> str:
-    """构造当前用户活跃根任务的注入文本块（含每个根下子任务状态摘要）。"""
+async def build_task_context(user_id: str, current_group_id: Optional[str] = None) -> str:
+    """构造当前用户活跃根任务的注入文本块（含每个根下子任务状态摘要）。
+
+    §24 跨群脱敏：任务按 user 维度归属，但 A 群的任务详情（群号/任务名）注入
+    B 群上下文后可能被模型复述外泄。传入 ``current_group_id`` 时，非本群任务
+    只汇总为一行脱敏计数，不展开细节。
+    """
     try:
         tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
     except Exception as e:
@@ -45,7 +52,20 @@ async def build_task_context(user_id: str) -> str:
     if not tasks:
         return ""
 
+    other_scope_count = 0
+    if current_group_id is not None:
+        visible: list = []
+        for t in tasks:
+            # 私聊任务（group_id 空）对群同样是"其他会话"：详情不进群上下文（评审修复 F12）
+            if str(t.group_id or "") != str(current_group_id):
+                other_scope_count += 1
+            else:
+                visible.append(t)
+        tasks = visible
+
     lines = ["【你正在为对方推进的 Kanban 任务（可被追问，无需 ID）】"]
+    if other_scope_count:
+        lines.append(f"（另有 {other_scope_count} 个任务在其他会话推进中——细节不属于本群，被问到也只说这一句）")
     for t in tasks[:_MAX_INJECT]:
         upd = t.updated_at.strftime("%m-%d %H:%M") if t.updated_at else ""
         status_cn = _status_cn(t.status)
@@ -78,7 +98,7 @@ async def build_task_context(user_id: str) -> str:
     return "\n".join(lines)
 
 
-async def has_actionable_task(user_id: str) -> bool:
+async def has_actionable_task(user_id: str, current_group_id: Optional[str] = None) -> bool:
     """判断用户是否有需要主人格即时介入的 Kanban 任务。
 
     与 ``build_task_context`` 的"只要活跃就注入"不同，本函数只关心
@@ -86,10 +106,15 @@ async def has_actionable_task(user_id: str) -> bool:
     随时可能需要 fail_task_tree / respond_approval。
     ``pending`` / ``paused``（如十几天后的周期模板）不触发，避免闲聊
     时无谓挂载 15 个 planning 工具。
+
+    传入 ``current_group_id`` 时只统计当前群的任务：他群/私聊任务不在本群
+    触发 kanban 工具族挂载，防经工具通道旁路 §24 脱敏（评审修复 E15）。
     """
     try:
         tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
     except Exception:
         return False
+    if current_group_id is not None:
+        tasks = [t for t in tasks if str(t.group_id or "") == str(current_group_id)]
     actionable_statuses = {"running", "waiting_approval"}
     return any(t.status in actionable_statuses for t in tasks)

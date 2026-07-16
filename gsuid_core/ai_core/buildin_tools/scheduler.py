@@ -44,6 +44,9 @@ TZ_SHANGHAI = timezone("Asia/Shanghai")
 # 安全限制
 MAX_PENDING_TASKS_PER_USER = 20
 MAX_EXECUTION_LIMIT = 150
+
+# list_scheduled_tasks 详列条数上限：活跃群全量任务会撑爆当轮上下文（评审修复 H5）
+_LIST_TASKS_MAX_SHOWN = 20
 MIN_INTERVAL_SECONDS = 300
 
 # 单轮节流：防止主人格用 add_once_task 逐时间点枚举周期任务。
@@ -467,13 +470,14 @@ async def list_scheduled_tasks(
     ctx: RunContext[ToolContext],
 ) -> str:
     """
-    列出我创建的所有定时任务
+    列出定时任务（群聊=本群全部任务+我自己在别处设的任务，私聊=本人任务）
 
-    当用户想查看、列出自己设置过的定时任务、提醒、循环任务时调用此工具。
-    触发场景如"我有哪些定时任务""看看我的提醒""我设了什么任务""任务列表"。
+    当用户想查看、列出定时任务、提醒、循环任务，或想知道某条提醒是谁设置的时
+    调用此工具。触发场景如"我有哪些定时任务""看看我的提醒""任务列表"
+    "这个提醒是谁要的""谁设置的这个任务""这条提醒哪来的"。
 
     Returns:
-        当前用户的全部任务列表，含每个任务的 ID、类型、状态、下次执行时间
+        活跃任务列表（含 ID、发起用户、类型、状态、下次执行时间）；已结束任务只给计数
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -481,16 +485,29 @@ async def list_scheduled_tasks(
         return "⚠️ 无法获取事件信息"
 
     try:
-        tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
+        # 群聊 = 本群任务（"这提醒谁要的"须能看到别人建的，§5）∪ 提问者自己的全部任务
+        # （私聊/它群建的提醒也必须查得到，评审修复 F11）；私聊 = 本人任务。
+        own_tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
+        group_tasks = await AIScheduledTask.select_rows(group_id=ev.group_id) if ev.group_id else []
 
-        if not tasks:
-            return "📋 您还没有创建任何定时任务"
-
-        lines = ["📋 您的定时任务列表：\n", "=" * 50]
-
-        for task_data in tasks:
+        merged: dict[str, AIScheduledTask] = {}
+        for task_data in [*(group_tasks or []), *(own_tasks or [])]:
             task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
+            merged[task.task_id] = task
 
+        if not merged:
+            return "📋 还没有任何定时任务"
+
+        # 只详列活跃任务、加条数上限：长期活跃群的全量历史任务会把当轮上下文撑爆
+        # （工具返回入史截断救不了当轮，评审修复 H5）。
+        all_tasks = list(merged.values())
+        active = [tk for tk in all_tasks if tk.status in ("pending", "paused")]
+        inactive_count = len(all_tasks) - len(active)
+        shown = active[:_LIST_TASKS_MAX_SHOWN]
+
+        lines = ["📋 定时任务列表：\n", "=" * 50]
+
+        for task in shown:
             status_emoji = {
                 "pending": "⏳",
                 "paused": "⏸️",
@@ -500,6 +517,10 @@ async def list_scheduled_tasks(
             }.get(task.status, "❓")
 
             lines.append(f"\n{status_emoji} 任务ID: {task.task_id}")
+            # @形态而非裸号：出口的 @数字→at 转换能接住，防裸 QQ 号直出群聊（评审修复 E7）
+            lines.append(f"   发起用户: @{task.user_id}")
+            if ev.group_id and str(task.group_id or "") != str(ev.group_id):
+                lines.append("   （在其他会话设置）")
             lines.append(f"   类型: {'🔄 循环' if task.task_type == 'interval' else '⏰ 一次性'}")
             lines.append(f"   状态: {task.status}")
 
@@ -525,6 +546,10 @@ async def list_scheduled_tasks(
                 prompt = prompt[:30] + "..."
             lines.append(f"   内容: {prompt}")
 
+        if len(active) > len(shown):
+            lines.append(f"\n（另有 {len(active) - len(shown)} 个活跃任务未展开）")
+        if inactive_count:
+            lines.append(f"\n（另有 {inactive_count} 个已结束/已取消任务，可凭任务 ID 用 query_scheduled_task 查询）")
         lines.append("\n" + "=" * 50)
         return "\n".join(lines)
 
@@ -539,10 +564,11 @@ async def query_scheduled_task(
     task_id: str,
 ) -> str:
     """
-    查看某个定时任务的详细信息
+    查看某个定时任务的详细信息（含发起用户，可回答"这是谁设的"）
 
     当用户想了解某个具体任务的完整情况时调用此工具，触发场景如
-    "这个任务什么时候执行""任务 xxx 的详情""那个提醒还在吗"。
+    "这个任务什么时候执行""任务 xxx 的详情""那个提醒还在吗"
+    "这条提醒是谁设置的"（群消息尾注里的 任务ID 可直接传入）。
 
     Args:
         ctx: 工具执行上下文
@@ -564,7 +590,9 @@ async def query_scheduled_task(
     if not isinstance(task, AIScheduledTask):
         task = AIScheduledTask(**task)
 
-    if task.user_id != ev.user_id:
+    # 同群成员可读（回答"这提醒是谁的"），写操作仍只允许任务发起人（见 modify/cancel 等）
+    same_group = bool(ev.group_id) and task.group_id == ev.group_id
+    if task.user_id != ev.user_id and not same_group:
         return "⚠️ 无权操作此任务"
 
     status_emoji = {
@@ -579,6 +607,7 @@ async def query_scheduled_task(
         f"{status_emoji} 任务详情",
         "=" * 50,
         f"📋 任务ID: {task.task_id}",
+        f"👤 发起用户: @{task.user_id}",
         f"🔖 类型: {'🔄 循环任务' if task.task_type == 'interval' else '⏰ 一次性任务'}",
         f"📊 状态: {task.status}",
         f"📝 任务内容: {task.task_prompt}",

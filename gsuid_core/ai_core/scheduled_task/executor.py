@@ -57,6 +57,18 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
 # 安全限制：最大循环执行次数
 MAX_EXECUTION_LIMIT = 150
 
+# 中性执行者 prompt：任务执行体不注入 persona。生产事故（plans/prod_session_review §4）：
+# persona 的"想说就说"压过任务里的静默条款，价格无事件时仍向群里播报"继续睡zzz"。
+SCHEDULED_TASK_EXECUTOR_PROMPT = (
+    "你是定时任务执行器（不是角色扮演）。你收到的任务指令来自用户先前的预约。\n"
+    "执行规则（优先级最高，覆盖任何风格要求）：\n"
+    "1. 任务指令中的发送条件/静默条款是硬约束：条件不满足时只输出 <SILENCE>，"
+    "不输出任何其他内容。\n"
+    "2. 需要发送时，你的输出就是将直接发给用户的消息本体：中性、简洁、信息完整，"
+    "不扮演角色、不加语气词。\n"
+    "3. 不要输出解释、执行过程或任务状态说明。"
+)
+
 
 async def execute_scheduled_task(task_id: str) -> None:
     """
@@ -135,7 +147,7 @@ async def execute_scheduled_task(task_id: str) -> None:
     #    与旧路径的区别：**任务 prompt 不再被当作 user_message 喂给真用户主
     #    session**——主用户 session 不再被伪 user_input"【定时任务执行】..."污染。
     try:
-        from gsuid_core.ai_core.persona import build_persona_prompt
+        from gsuid_core.ai_core.utils import NO_RESULT_TEXT, SILENCE_MARKERS, ERROR_RESULT_PREFIX
         from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
         from gsuid_core.ai_core.proactive import emit_proactive_message
         from gsuid_core.ai_core.statistics.manager import statistics_manager
@@ -165,16 +177,13 @@ async def execute_scheduled_task(task_id: str) -> None:
             f"\n\n任务内容：{task.task_prompt}{context_block}"
         )
 
-        # 用任务对应 persona 构造 SubAgent；session_id 独立于真用户 session，
-        # 任务 prompt 只在 SubAgent 内当 user_message 出现。
+        # 中性执行体：不注入 persona（"发不发"的判定必须在无人格上下文中做，
+        # 见 plans/prod_session_review §4）。session_id 独立于真用户 session。
         exec_session_id = f"sched_task_{task.task_id}_{int(time.time())}"
-        persona_prompt = ""
-        if task.persona_name:
-            persona_prompt = await build_persona_prompt(task.persona_name)
 
         sub_agent: GsCoreAIAgent = create_agent(
-            system_prompt=persona_prompt or None,
-            persona_name=task.persona_name or None,
+            system_prompt=SCHEDULED_TASK_EXECUTOR_PROMPT,
+            persona_name=None,
             create_by="ScheduledTask_Exec",
             session_id=exec_session_id,
             is_subagent=True,
@@ -288,10 +297,36 @@ async def execute_scheduled_task(task_id: str) -> None:
         #    bot.send / message_history (proactive metadata) / 主 session 同步
         #    （append_proactive_assistant_turn → pydantic_ai 历史 + proactive_emission
         #    entry）/ C8 网关 register_send。
-        if result:
+        result_stripped = str(result).strip() if result else ""
+        # 静默闸用包含判定：弱模型常给 <SILENCE> 加附言，整串精确匹配会被穿透（评审修复 E1）
+        if result_stripped and any(m in result_stripped for m in SILENCE_MARKERS):
+            logger.info(t("🤫 [ScheduledTask] 任务判定静默，不推送: task_id={task_id}", task_id=task_id))
+        elif result_stripped.startswith(ERROR_RESULT_PREFIX) or result_stripped == NO_RESULT_TEXT:
+            # 失败结果不得原样播报（原始串含 provider body 等内部细节，评审修复 F5）
+            logger.warning(
+                t(
+                    "⚠️ [ScheduledTask] 任务执行失败，播报脱敏文案: task_id={task_id} {r}",
+                    task_id=task_id,
+                    r=result_stripped[:200],
+                )
+            )
+            fail_text = f"这次的定时任务没能执行成功，稍后再让我试试吧\n⏰ 定时任务 {task_id}"
+            await emit_proactive_message(
+                event=ev,
+                message=fail_text,
+                source="scheduled_task",
+                trigger_reason=f"task_id={task_id}",
+                generator_log_files=sub_agent_log_files,
+                bot=bot_instance,
+                suppress_when_heartbeat_recent=False,
+            )
+        elif result_stripped:
+            # 溯源尾注（§5）。不用整行（…）形态——send_chat_result 的人设净化会把
+            # "整行仅括号"当舞台旁白删除，尾注会静默丢失（评审修复 F4）。
+            message_with_source = f"{result_stripped}\n⏰ 定时任务 {task_id}"
             sent = await emit_proactive_message(
                 event=ev,
-                message=str(result),
+                message=message_with_source,
                 source="scheduled_task",
                 trigger_reason=f"task_id={task_id}",
                 generator_log_files=sub_agent_log_files,

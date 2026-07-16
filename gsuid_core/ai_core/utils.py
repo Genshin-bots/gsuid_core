@@ -56,6 +56,24 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
     }
 )
 
+# run 失败返回值协议：生产端(gs_agent)与全部消费端(handle_ai/executor/sanitize)引用
+# 同一组常量做前缀/子串判断，文案微调不再让嗅探点静默失效（评审修复 E11）。
+ERROR_RESULT_PREFIX = "执行出错"
+ERROR_CONTENT_REJECTED = "内容被模型安全策略拒绝"
+ERROR_TIMEOUT_TEXT = "请求超时"
+NO_RESULT_TEXT = "Agent 执行完成，但未返回有效结果"
+
+
+def has_model_visible_content(ev: Event) -> bool:
+    """该消息是否含模型可见内容——判据与 prepare_content_payload 的模态清单同源。
+
+    空内容前置门(§17)只应拦"纯表情/戳一戳"类消息；新增模态时改这里而非各调用点。
+    """
+    if ev.text and ev.text.strip():
+        return True
+    return bool(ev.image_id_list or ev.audio_id or ev.audio_id_list or ev.file)
+
+
 # 工具调用标记残留正则（弱模型 / 兼容网关把工具调用当普通文本输出），
 # 详见 _strip_tool_call_artifacts 的 docstring。
 # 成对块：含内部 JSON 参数整体删除
@@ -811,6 +829,76 @@ def _should_render_markdown_image(text: str) -> bool:
     return False
 
 
+# <report> 制品块：persona 台词与"资料内容"两通道分离的输出契约（§1 OOC 制品化）。
+# 块内是中性口吻 markdown，渲染成"资料图片"发出；块外才是角色台词。
+# title 同时接受双/单引号（LLM 引号漂移高发，评审修复 E2）：g1=双引号 title，g2=单引号，g3=body。
+_REPORT_BLOCK_RE = re.compile(
+    r"<report(?:\s+title=(?:\"([^\"\n]*)\"|'([^'\n]*)'))?\s*>(.*?)</report\s*>",
+    re.S | re.I,
+)
+
+# 孤儿 report 标签（未闭合/嵌套残留）：内容保留走长 markdown 兜底，字面标签串不下发给用户
+_REPORT_TAG_ORPHAN_RE = re.compile(r"</?report(?:\s[^>\n]*)?>", re.I)
+
+
+def _report_block_title(match: "re.Match[str]") -> str:
+    return ((match.group(1) or match.group(2)) or "").strip()
+
+
+# 制品图片统一脚注：数据时点提醒 + 免责声明（§3 合规垫层——不依赖任何用户偏好记忆）
+_REPORT_FOOTER_TEMPLATE = "\n\n---\n\n> 🤖 AI 生成资料 · 数据可能滞后 · 仅供参考，不构成投资等任何决策建议 · {ts}"
+
+
+def _report_footer() -> str:
+    import datetime
+
+    return _REPORT_FOOTER_TEMPLATE.format(ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+
+def _extract_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """分离 ``<report>`` 制品块与角色台词正文。
+
+    Returns:
+        (剩余台词文本, [(title, markdown), ...])。未闭合的 report 标签不匹配，
+        内容留在正文里走既有"长 markdown 出图"兜底，不会丢内容。
+    """
+    reports: List[Tuple[str, str]] = []
+
+    def _collect(match: "re.Match[str]") -> str:
+        title = _report_block_title(match)
+        body = match.group(3).strip()
+        if body:
+            reports.append((title, body))
+        return ""
+
+    remaining = _REPORT_BLOCK_RE.sub(_collect, text)
+    remaining = _REPORT_TAG_ORPHAN_RE.sub("", remaining)
+    return remaining.strip(), reports
+
+
+async def _send_report_images(
+    reports: List[Tuple[str, str]],
+    bot: Bot,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """把 report 制品块逐个渲染为中性资料图片发出；渲染失败降级为原文文本。"""
+    from gsuid_core.utils.html_render import render_md_to_bytes
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    max_width: int = ai_config.get_config("markdown_image_max_width").data
+    for title, body in reports:
+        md = f"# {title}\n\n{body}" if title else body
+        md = f"{md}{_report_footer()}"
+        try:
+            image_bytes = await render_md_to_bytes(md=md, max_width=int(max_width), image_format="jpeg")
+        except Exception as e:
+            logger.warning(i18n_t("[send_chat_result] report 制品渲染失败，降级为文本: {e}", e=e))
+            await bot.send(MessageSegment.text(md), extra_metadata=extra_metadata)
+            continue
+        await bot.send(MessageSegment.image(image_bytes), extra_metadata=extra_metadata)
+        logger.info(i18n_t("[send_chat_result] report 制品已渲染为资料图片 ({p0} bytes)", p0=len(image_bytes)))
+
+
 async def _try_render_markdown_image(
     md: str,
     bot: Bot,
@@ -827,7 +915,8 @@ async def _try_render_markdown_image(
     max_width: int = ai_config.get_config("markdown_image_max_width").data
     try:
         image_bytes = await render_md_to_bytes(
-            md=md,
+            # 未走 <report> 契约的长研报兜底同样带脚注（数据时点 + 免责，§3 合规垫层）
+            md=f"{md}{_report_footer()}",
             max_width=int(max_width),
             image_format="jpeg",
         )
@@ -878,6 +967,10 @@ async def send_chat_result(
     # 必须在按 \n\n 拆多条之前做：<br> 会让"连发多条短消息"的拆分完全失效
     text = _normalize_html_linebreaks(text)
 
+    # <report> 制品块两通道分离（§1 OOC 制品化）：块内容渲染为中性资料图片，
+    # 块外才是角色台词，走后续净化/拆条。台词发完后统一补发资料图。
+    text, report_blocks = _extract_report_blocks(text)
+
     # Trace 日志：记录原始输出
     logger.trace(i18n_t("[Meme] 原始输出: {text}", text=repr(text)))
 
@@ -898,13 +991,13 @@ async def send_chat_result(
     # 出戏防火墙末端兜底（§D.4）：无重说通道的调用方（proactive / 兜底总结等）命中即替换；
     # gs_agent 主循环自带"提醒→重说→放行"闭环，重说产物以 ooc_check=False 经过此处。
     _ooc_replaced = False
-    if clean_text and ooc_check:
+    if (clean_text or report_blocks) and ooc_check:
         from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, check_ooc, is_enabled
 
         if is_enabled():
             # 短答门需要来话上下文：身份追问下的超短直答才算泄露（见 check_ooc docstring）
             _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-            _hit = check_ooc(clean_text, user_text=_user_text)
+            _hit = check_ooc(clean_text, user_text=_user_text) if clean_text else None
             if _hit is not None:
                 logger.warning(
                     i18n_t(
@@ -915,6 +1008,30 @@ async def send_chat_result(
                 )
                 clean_text = PERSONA_FALLBACK_TEXT
                 _ooc_replaced = True
+            # report 块与台词同权过末端防火墙：制品通道不能成为资金红线/出戏红线的
+            # 旁路（评审修复 F3），命中的块整块丢弃（proactive 路径无重说通道）。
+            if report_blocks:
+                _kept_blocks: List[Tuple[str, str]] = []
+                for _r_title, _r_body in report_blocks:
+                    _r_hit = check_ooc(_r_body, user_text=_user_text)
+                    if _r_hit is None:
+                        _kept_blocks.append((_r_title, _r_body))
+                    else:
+                        logger.warning(
+                            i18n_t(
+                                "[OutputFirewall] report 制品块命中红线 {p0}: {p1}，整块拦截不发",
+                                p0=_r_hit.category,
+                                p1=_r_hit.matched,
+                            )
+                        )
+                report_blocks = _kept_blocks
+
+    async def _send_trailing_artifacts() -> None:
+        # 所有出口共用的尾声：先补发资料图，再发表情包——新增返回路径不得绕过（评审修复 G5）
+        if report_blocks:
+            await _send_report_images(report_blocks, bot, extra_metadata)
+        if meme_tags and ev is not None:
+            await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
 
     # Trace 日志：记录解析结果
     logger.trace(
@@ -924,17 +1041,15 @@ async def send_chat_result(
     )
 
     if not clean_text:
-        # 没有纯文本时，如果有表情包标记且有 ev，直接发图片
-        if meme_tags and ev is not None:
-            await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
+        # 没有台词也要把资料图/表情包发出去（模型可能只产出 report 块）
+        await _send_trailing_artifacts()
         return
 
     # 长 markdown 整篇出图（防拆条刷屏，2026-07-15）：用未剥离的 md_source 渲染，失败降级回拆条。
     # OOC 兜底命中时（clean_text 已换成短兜底文本）不出图。判据/开关见 _should_render_markdown_image。
     if not _ooc_replaced and _should_render_markdown_image(md_source):
         if await _try_render_markdown_image(md_source, bot, extra_metadata):
-            if meme_tags and ev is not None:
-                await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
+            await _send_trailing_artifacts()
             return
 
     # 按换行分割为多条消息
@@ -955,9 +1070,8 @@ async def send_chat_result(
 
         await bot.send(segments, extra_metadata=extra_metadata)
 
-    # 发送表情包（如有）
-    if meme_tags and ev is not None:
-        await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
+    # 台词发完补发资料图（<report> 制品），再发表情包
+    await _send_trailing_artifacts()
 
 
 async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
@@ -1304,6 +1418,71 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
     return removed
 
 
+# §25(5) 工具返回入史上限：本轮模型已消费过完整返回，持久历史里只需可引用的摘要。
+# web_search/stock_financials 等大返回原文滚进历史是 run 内 token 近似 O(N²) 的来源。
+_TOOL_RETURN_HISTORY_MAX = 4000
+_TOOL_RETURN_HEAD = 3200
+_TOOL_RETURN_TAIL = 400
+
+
+def _truncate_tool_returns_in_history(messages: List[ModelMessage]) -> int:
+    """把将持久化的超长 ToolReturnPart 内容截断为「头 + 省略标记 + 尾」，返回截断数。
+
+    只影响写入 self.history 的副本语义（原地改 part.content）；当前轮模型看到的
+    仍是完整返回。头尾保留让后续轮还能引用结论与末尾的状态行。
+    """
+    truncated = 0
+    for msg in messages:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, ToolReturnPart) or not isinstance(part.content, str):
+                continue
+            content = part.content
+            if len(content) <= _TOOL_RETURN_HISTORY_MAX:
+                continue
+            omitted = len(content) - _TOOL_RETURN_HEAD - _TOOL_RETURN_TAIL
+            head, tail = content[:_TOOL_RETURN_HEAD], content[-_TOOL_RETURN_TAIL:]
+            part.content = f"{head}\n…[工具返回过长，入史省略 {omitted} 字符]…\n{tail}"
+            truncated += 1
+    return truncated
+
+
+def _compact_report_blocks_in_history(
+    messages: List[ModelMessage],
+    sent_texts: Optional[Set[str]] = None,
+) -> int:
+    """把将持久化的 assistant 文本里的 ``<report>`` 块替换为占位符，返回替换数。
+
+    资料图已发出，正文无需留在 self.history：既省 token，又切断"模型每轮看到
+    自己在念研报 → 研报腔固化为人格语气"的自我强化回路（§1 漂移固化）。
+    占位符保留标题，后续轮仍能引用"我刚发过什么资料"。
+
+    ``sent_texts``：本轮实际发送成功的原始文本集合（gs_agent._run_sent_texts）。
+    给定时只压缩「确实发出去过」的 part——被拦截/暂扣/发送失败的文本不得谎称
+    已发资料图（评审修复 E5）。
+    """
+
+    def _placeholder(match: "re.Match[str]") -> str:
+        title = _report_block_title(match) or "分析资料"
+        return f"【已发资料图：{title}】"
+
+    replaced = 0
+    for msg in messages:
+        if not isinstance(msg, ModelResponse):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, TextPart) or "<report" not in part.content.lower():
+                continue
+            if sent_texts is not None and part.content.strip() not in sent_texts:
+                continue
+            new_content = _REPORT_BLOCK_RE.sub(_placeholder, part.content)
+            if new_content != part.content:
+                part.content = new_content
+                replaced += 1
+    return replaced
+
+
 def _relean_user_turn(
     new_messages: List[ModelMessage],
     lean_content: Union[str, List[UserContent]],
@@ -1372,6 +1551,82 @@ def _split_embedded_thinking(
         if content:
             result.append(TextPart(content=content))
     return result
+
+
+def _canonicalize_tool_call_args_in_parts(
+    parts: Sequence[ModelResponsePart],
+) -> List[ModelResponsePart]:
+    """把 ToolCallPart 的字符串参数 json 解析后重序列化（规范化 + 去重复键）。
+
+    弱模型退化输出会产生重复键参数串（如 ``"args": {}`` 重复上百次）：本地
+    ``json.loads`` 视为合法（后键覆盖），但 pydantic_ai 会把**原始串**回放给
+    provider，部分网关（MiniMax）对重复键直接 400 且被判为不可重试，导致整个
+    run 静默死亡（见 plans/prod_session_review §2）。解析失败的参数原样保留，
+    交由 pydantic_ai 的工具参数校验 → 模型重试流程处理。原地改写 part.args，
+    使工具执行、history 回放、session 日志三处一致。
+    """
+    for part in parts:
+        if not isinstance(part, ToolCallPart):
+            continue
+        if not isinstance(part.args, str) or not part.args.strip():
+            continue
+        # 只在检测到真实重复键时才改写：正常紧凑 JSON 保持原字节（历史与模型输出
+        # 一致），也不刷屏告警淹没真正的退化信号（评审修复 F15）。
+        dup_found: List[bool] = []
+
+        def _pairs_hook(
+            pairs: List[Tuple[str, Any]],
+            _dup: List[bool] = dup_found,
+        ) -> Dict[str, Any]:
+            if len(pairs) != len({k for k, _ in pairs}):
+                _dup.append(True)
+            return dict(pairs)
+
+        try:
+            parsed = json.loads(part.args, object_pairs_hook=_pairs_hook)
+        except ValueError:
+            continue
+        if not dup_found:
+            continue
+        canonical = json.dumps(parsed, ensure_ascii=False)
+        if canonical != part.args:
+            logger.warning(
+                i18n_t(
+                    "🧠 [GsCoreAIAgent] 工具 {p0} 参数含重复键，已规范化（原始 {p1} 字符 → {p2} 字符）",
+                    p0=part.tool_name,
+                    p1=len(part.args),
+                    p2=len(canonical),
+                )
+            )
+            part.args = canonical
+    return list(parts)
+
+
+def _is_retryable_client_error(e: BaseException) -> bool:
+    """永久性 4xx 中「非内容审核拒绝」的那部分是否值得一次干净历史重试。
+
+    模型退化产生的畸形请求（如重复键工具参数）是**随机性**的：从未被污染的
+    self.history 重跑大概率成功；而内容审核拒绝是确定性的，重试必复现。
+    """
+    return isinstance(e, ModelHTTPError) and _is_non_retryable_model_error(e) and not _is_content_rejected(e)
+
+
+def sanitize_error_for_user(result_text: str) -> str:
+    """把 ``执行出错: <内部细节>`` 转成不泄漏内部细节的用户可见短文案。
+
+    原始错误串含 provider body / model_name / tool_call_id 等内部信息，直接发进
+    群聊既难看又泄漏实现；完整细节已由 log_error 落日志，用户侧只需要知道失败了。
+    """
+    if result_text == NO_RESULT_TEXT:
+        return "这条消息我处理失败了，稍后再试一次吧"
+    if not result_text.startswith(ERROR_RESULT_PREFIX):
+        return result_text
+    # 文案不得是整行（…）形态：_strip_persona_markdown 会把整行括号当舞台旁白删除（评审修复 F2）
+    if ERROR_CONTENT_REJECTED in result_text:
+        return "这条消息触发了内容安全策略，我没法处理"
+    if ERROR_TIMEOUT_TEXT in result_text:
+        return "刚才网络太慢处理超时了，稍后再试试吧"
+    return "这条消息我处理失败了，稍后再试一次吧"
 
 
 def _sanitize_tool_call_artifacts_in_parts(

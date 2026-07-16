@@ -243,6 +243,13 @@ AI_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    "memory_sensitive_extra_terms": GsListStrConfig(
+        "第三方隐私记忆补充敏感词",
+        "部署者自定义的额外敏感词(按社群语境扩展), 与内置婚恋/财务/健康/联络类词库合并: "
+        "命中的记忆事实仅在当事人本人在场时注入。多个用换行分隔",
+        [],
+        options=[],
+    ),
     "content_guard_enable": GsBoolConfig(
         "内容守卫",
         "开启后, 群消息中疑似'伪造工具返回'的文本会被降权标注, 防止粘贴伪造结果注入",
@@ -743,6 +750,12 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "单次回复最多注入的偏好规则条数, 防止规则过多挤占注入预算、分散工具调用注意力",
         12,
         options=[5, 8, 12, 20],
+    ),
+    "fact_max_inject": GsIntConfig(
+        "核心事实单次注入条数上限",
+        "单次回复最多注入的核心事实条数; 字符预算对短垃圾行不设防, 条数与字符双限取严(§25(4))",
+        12,
+        options=[6, 12, 20, 30],
     ),
     "preference_max_per_context": GsIntConfig(
         "偏好单能力域保留上限",

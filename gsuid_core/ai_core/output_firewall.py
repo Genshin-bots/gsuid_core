@@ -133,6 +133,60 @@ _IDENTITY_PROBE_RE = re.compile(
 # 中文群聊高频生活词）。省主语支本就锚定句首/标点后，切分后 ^ 锚点语义不变。
 _CLAUSE_SPLIT_RE = re.compile(r"[。！？!?\n；;，,]")
 
+# §12 资金红线：AI 没有任何支付能力，"声称已完成转账"是欺骗（生产事故：被社工出
+# "明明发过去了…信号不好"圆谎链）。判据同小句共现（精度优先）：金钱语汇 × 完成时转账动词。
+# v\d 加字母/数字边界防匹配版本号（v2ray/v2.1，评审修复 F10 误杀面）。
+_MONEY_TERM_RE = re.compile(
+    r"钱|款项|红包|转账|打款|汇款|(?<![a-z0-9])v\d{1,4}(?![\d.a-z])|\d+\s*[块元]|微信支付|支付宝",
+    re.IGNORECASE,
+)
+# 完成时转账动词：转/汇/付 单字即强交易语义；打/发 泛化面大（打游戏/发文件），须带
+# 方向后缀（打过去了/发给你了）才算；"红包发了"单独成支。
+_TRANSFER_DONE_RE = re.compile(
+    r"(?:已经?|刚刚?|明明|都)?(?:(?:转|汇|付)(?:过去|给你|完|出去|款)?|(?:打|发)(?:过去|给你|完|出去|款))了"
+    r"|红包[^\n，。！？!?；;]{0,4}发了|发了[^\n，。！？!?；;]{0,2}红包"
+)
+# 代向第三方发起资金请求（@某人 要钱）：@数字 与"要钱语汇"同条消息即命中。
+_AT_FUND_REQUEST_RE = re.compile(
+    r"@\d{5,}[^\n]{0,40}?(?:能不能|求|给|发|来个?|支援)[^\n]{0,10}?(?:v\d{1,4}(?![\d.a-z])|红包|\d+\s*[块元]|点?钱)",
+    re.IGNORECASE,
+)
+
+# 来话侧催款语境（形态②）：强句式单独即足（"没收到/收到了吗"保留——生产事故就是裸句催款），
+# 误杀面由输出侧转账动词收紧承担（发/打必须带方向后缀，见 _TRANSFER_DONE_RE）。
+_FUND_DEMAND_STRONG_RE = re.compile(
+    r"钱呢|红包呢|没收到|收到了?吗|转了吗|付了吗|打钱|(?<![a-z0-9])v\d{1,4}(?![\d.a-z])|打过?来|转过?来",
+    re.IGNORECASE,
+)
+_FUND_DEMAND_FORM_RE = re.compile(r"呢|了吗|过?来|快点|还不")
+
+
+def _fund_demand_context(user_text: str) -> bool:
+    """来话是否构成催款语境：强句式直接命中，或金钱语汇×催讨句式同小句共现。"""
+    if _FUND_DEMAND_STRONG_RE.search(user_text):
+        return True
+    for seg in _CLAUSE_SPLIT_RE.split(user_text):
+        if seg and _MONEY_TERM_RE.search(seg) and _FUND_DEMAND_FORM_RE.search(seg):
+            return True
+    return False
+
+
+def _fund_claim_hit(text: str, user_text: str = "") -> Optional[str]:
+    """声称已付款 / 代向第三方要钱，命中返回描述（§12 资金红线）。
+
+    三种形态：①金钱语汇×完成时转账动词同小句（"钱已经转过去了"）；
+    ②来话在催款、输出用完成时转账动词应答（"明明发过去了"答"钱呢"）；
+    ③@第三方 索要钱财（"@123456 能不能v50"）。
+    """
+    if _AT_FUND_REQUEST_RE.search(text):
+        return "代向第三方索要钱财"
+    for seg in _CLAUSE_SPLIT_RE.split(text):
+        if seg and _MONEY_TERM_RE.search(seg) and _TRANSFER_DONE_RE.search(seg):
+            return "声称已完成转账/付款"
+    if user_text and _fund_demand_context(user_text) and _TRANSFER_DONE_RE.search(text):
+        return "催款语境下声称已付款"
+    return None
+
 
 def _self_bound_model_leak(text: str, extra_terms: Tuple[str, ...]) -> bool:
     """存在某个小句同时命中「自绑定句式」与「模型词或'由…开发'归属」才算泄露。
@@ -191,6 +245,10 @@ def check_ooc(text: str, tier: str = "roleplay", user_text: str = "") -> Optiona
     _probing = bool(user_text) and _IDENTITY_PROBE_RE.search(user_text) is not None
     if _probing and _AI_ADMIT_RE.search(text):
         return FirewallHit(category="ai_selfref", matched=["AI自指(认领)"])
+    # §12 资金红线：声称已付款 / 代向第三方要钱（AI 无支付能力，假装完成=欺骗）
+    _fund = _fund_claim_hit(text, user_text)
+    if _fund is not None:
+        return FirewallHit(category="fund_claim", matched=[_fund])
     if model_hits or _MODEL_ATTRIB_RE.search(text):
         # 精度门：裸词/"由…开发"须与自绑定句式**同小句**共现、或身份追问下的超短直答
         # （"MiniMax 呀"）才算泄露；长文本第三方提及（AI 新闻摘要/讨论）放行。
@@ -218,8 +276,20 @@ def is_enabled() -> bool:
     return bool(ai_config.get_config("output_firewall_enable").data)
 
 
+# 不可放行类别：重写后仍命中不得放行（身份词漏放代价=出戏；资金欺骗漏放代价=事故），
+# gate_warn_once 与 gs_agent 重说闭环共同引用（评审修复 F10 穿透面）。
+NEVER_RELEASE_CATEGORIES: frozenset = frozenset({"fund_claim"})
+
+
 def build_rewrite_warning(hit: FirewallHit) -> str:
-    """给模型的重说警告（工具 return / 反馈注入共用）。"""
+    """给模型的重说警告（工具 return / 反馈注入共用），按类别给针对性整改指引。"""
+    if hit.category == "fund_claim":
+        return (
+            f"⛔ 你要发送的内容命中资金红线【命中：{'、'.join(hit.matched[:4])}】。"
+            "你没有任何支付能力：重写时**不得声称已转账 / 已付款 / 已发红包**，"
+            "也不得代任何人答应出钱或向第三方要钱——用角色口吻明确拒绝或岔开话题，"
+            "直接输出重写后的内容。"
+        )
     return (
         f"⛔ 你要发送的内容命中出戏红线【类别：{hit.category}，命中：{'、'.join(hit.matched[:4])}】，"
         "会破坏角色扮演。请用【纯角色口吻】重写这条消息，去掉任何模型名 / AI 身份 / 系统术语 / "
@@ -244,6 +314,12 @@ def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Opt
     turn_id = str(extra.get("turn_id", ""))
     warn_key = f"ooc_warned:{turn_id}"
     if turn_id and extra.get(warn_key):
+        if hit.category in NEVER_RELEASE_CATEGORIES:
+            # 资金欺骗类不放行：持续要求重写，直到产出不命中的版本（评审修复 F10）
+            logger.warning(
+                t("[OutputFirewall] 不可放行类别仍命中 {p0}: {p1}，继续拦截", p0=hit.category, p1=hit.matched)
+            )
+            return build_rewrite_warning(hit)
         logger.warning(t("[OutputFirewall] 重写后仍命中 {p0}: {p1}，本轮放行", p0=hit.category, p1=hit.matched))
         return None
     if turn_id:

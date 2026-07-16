@@ -52,7 +52,11 @@ from gsuid_core.ai_core.const import (
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
 from gsuid_core.ai_core.utils import (
+    NO_RESULT_TEXT,
     SILENCE_MARKERS,
+    ERROR_TIMEOUT_TEXT,
+    ERROR_RESULT_PREFIX,
+    ERROR_CONTENT_REJECTED,
     send_chat_result,
     _relean_user_turn,
     fetch_video_bytes,
@@ -62,9 +66,13 @@ from gsuid_core.ai_core.utils import (
     _split_embedded_thinking,
     _drop_orphan_tool_results,
     _truncate_message_for_log,
+    _is_retryable_client_error,
     _is_non_retryable_model_error,
+    _compact_report_blocks_in_history,
     _strip_remote_images_from_history,
+    _truncate_tool_returns_in_history,
     _truncate_history_with_tool_safety,
+    _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
 )
 from gsuid_core.ai_core.models import ToolContext
@@ -96,6 +104,10 @@ from gsuid_core.ai_core.configs.provider_router import (
 )
 
 _T = TypeVar("_T")
+
+# 历史裁剪低水位比例：超过 max_history 时一次裁到 max_history * 该比例。
+# 裁剪间隔内历史头部字节稳定，provider 前缀缓存可连续命中（§25 方案 2）。
+_HISTORY_TRIM_RATIO = 0.6
 
 # 父 run 把本次归属 scope 写入此 contextvar，途中 spawn 的嵌套子 agent 自动继承记账：
 # await 的子协程共享 Context、create_task 复制创建时 Context，两条 spawn 路径都覆盖。
@@ -332,6 +344,9 @@ class GsCoreAIAgent:
         # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时
         # 故障重试重发，会让 C 端收到两段相同的话。每个用户轮次在 _execute_run 重置。
         self._run_sent_texts: set[str] = set()
+        # 最近一次 attempt 内已执行的工具名（与 _execute_run_once 的局部列表同引用）：
+        # 干净历史重试前用于提示"重跑可能重复工具副作用"（评审修复 F14）。
+        self._last_attempt_tool_calls: List[str] = []
         # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
         # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
         self._last_drift_push_count: int = 0
@@ -357,6 +372,15 @@ class GsCoreAIAgent:
             create_by=create_by,
             is_subagent=is_subagent,
         )
+
+    @property
+    def last_run_sent_visible_reply(self) -> bool:
+        """本轮 run 是否已向用户发出过可见文本。
+
+        by_bot 模式成功时 run 返回空串，调用方（如 handle_ai 的好感度有效互动判定）
+        不能以返回值判断"本轮说过话"，须读本属性（评审修复 F1）。
+        """
+        return bool(self._run_sent_texts)
 
     def _emit_trace(self, kind: TraceKind, text: str) -> None:
         """把模型思考 / 工具调用轨迹推给观察者（``on_trace``）。
@@ -427,9 +451,12 @@ class GsCoreAIAgent:
         before: int = len(self.history)
         truncated: bool = before > self.max_history
         if truncated:
+            # 高低水位惰性裁剪：超过 max_history 才裁、一次裁到低水位。旧行为"超 1 条裁 1 条"
+            # 让历史头部每轮都变，provider 前缀缓存永不命中（§25 命中率卡 54% 的直接原因）。
+            low_target: int = max(1, int(self.max_history * _HISTORY_TRIM_RATIO))
             self.history = _truncate_history_with_tool_safety(
                 self.history,
-                self.max_history,
+                low_target,
             )
         # 兜底：无论是否截断，都做一次孤儿工具结果清理，确保历史对 API 自洽
         self.history = _drop_orphan_tool_results(self.history)
@@ -588,9 +615,7 @@ class GsCoreAIAgent:
                     logger.warning(
                         i18n_t("🎬 [GsCoreAIAgent] 模型声明了 video 却未声明 image，抽帧兼容不可用，视频已忽略")
                     )
-                    result.append(
-                        f"--- 视频{video_idx}: [当前模型不支持图片，无法用抽帧方式分析该视频] ---"
-                    )
+                    result.append(f"--- 视频{video_idx}: [当前模型不支持图片，无法用抽帧方式分析该视频] ---")
                     continue
 
                 from gsuid_core.ai_core.multimodal.frame_extract import extract_frames_ffmpeg
@@ -598,9 +623,7 @@ class GsCoreAIAgent:
                 data, mime = await self._video_item_to_bytes(item)
                 video_format = mime.split("/")[-1] or "mp4"
                 frames = await extract_frames_ffmpeg(data, video_format=video_format, interval_seconds=2.0)
-                result.append(
-                    f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---"
-                )
+                result.append(f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---")
                 for frame in frames:
                     b64 = base64.b64encode(frame).decode("ascii")
                     result.append(ImageUrl(url=f"data:image/jpeg;base64,{b64}"))
@@ -843,7 +866,20 @@ class GsCoreAIAgent:
         max_attempts: int = ai_config.get_config("agent_max_run_attempts").data
         retry_delay: float = ai_config.get_config("agent_run_retry_delay").data
 
-        for attempt in range(1, max_attempts + 1):
+        # 非内容审核的 4xx 允许一次干净历史重试：模型退化产生的畸形请求是随机性的，
+        # 从未被污染的 self.history 重跑大概率成功（见 plans/prod_session_review §2）。
+        client_error_retry_used = False
+
+        def _fail(text: str) -> str:
+            # 错误路径也要闭合 run：否则 session 日志留下悬空 run_start（webconsole 无法渲染结束）
+            self._session_logger.log_run_end()
+            self._session_logger.log_result(text, [])
+            return text
+
+        attempt = 0
+        total_attempts = max_attempts
+        while attempt < total_attempts:
+            attempt += 1
             try:
                 return await self._execute_run_once(
                     user_message=user_message,
@@ -876,7 +912,28 @@ class GsCoreAIAgent:
                 # 不再消耗剩余重试次数。
                 non_retryable = _is_non_retryable_model_error(e)
 
-                if attempt < max_attempts and not non_retryable:
+                # 例外：非内容审核的 4xx 给一次干净历史重试（模型退化畸形请求是随机性的）
+                if non_retryable and not client_error_retry_used and _is_retryable_client_error(e):
+                    client_error_retry_used = True
+                    # 不占常规重试预算：末次 attempt 命中时也真的会重跑（评审修复 F6）
+                    total_attempts += 1
+                    if self._last_attempt_tool_calls:
+                        logger.warning(
+                            i18n_t(
+                                "🧠 [PydanticAI] 失败前已执行工具 {p0}，干净重试可能重复其副作用",
+                                p0=", ".join(self._last_attempt_tool_calls),
+                            )
+                        )
+                    logger.warning(
+                        i18n_t(
+                            "🧠 [PydanticAI] 客户端错误疑似模型退化输出，从干净历史重试一次: {e}",
+                            e=e,
+                        )
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+
+                if attempt < total_attempts and not non_retryable:
                     logger.warning(
                         i18n_t(
                             "🧠 [PydanticAI] 核心请求第 {attempt}/{max_attempts} 次失败，{retry_delay}s 后重试: {e}",
@@ -903,7 +960,7 @@ class GsCoreAIAgent:
                         )
                         statistics_manager.record_error(error_type="content_rejected")
                         self._session_logger.log_error("content_rejected", err_str)
-                        return "执行出错: 内容被模型安全策略拒绝"
+                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
                     logger.warning(
                         i18n_t(
                             "🧠 [PydanticAI] 模型返回客户端错误（{p0}，不重试）: {err_str}",
@@ -913,14 +970,14 @@ class GsCoreAIAgent:
                     )
                     statistics_manager.record_error(error_type="client_error")
                     self._session_logger.log_error("client_error", err_str)
-                    return f"执行出错: {err_str}"
+                    return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                 # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
                 if isinstance(e, httpx.TimeoutException):
                     logger.warning(i18n_t("🧠 [PydanticAI] Agent 运行异常: 请求超时 {e}", e=e))
                     statistics_manager.record_error(error_type="timeout")
                     self._session_logger.log_error("timeout", err_str)
-                    return "执行出错: 请求超时"
+                    return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
                 if isinstance(e, httpx.HTTPError):
                     low = err_str.lower()
                     if "rate" in low or "429" in low or "limit" in low:
@@ -931,7 +988,7 @@ class GsCoreAIAgent:
                         logger.warning(i18n_t("🧠 [PydanticAI] Agent 运行异常: 网络错误 {e}", e=e))
                         statistics_manager.record_error(error_type="network_error")
                         self._session_logger.log_error("network_error", err_str)
-                    return f"执行出错: {err_str}"
+                    return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                 logger.error(i18n_t("🧠 [PydanticAI] Agent 运行异常: {e}", e=e))
                 logger.exception(i18n_t("🧠 [PydanticAI] 异常详情:"))
@@ -940,10 +997,10 @@ class GsCoreAIAgent:
                 else:
                     statistics_manager.record_error(error_type="agent_error")
                 self._session_logger.log_error("agent_error", err_str)
-                return f"执行出错: {err_str}"
+                return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
-        # range(1, max_attempts + 1) 至少一次循环，正常不可达
-        return "执行出错: 未知错误"
+        # while 至少执行一次循环，正常不可达；兜底也必须闭合 run（评审修复 F6）
+        return _fail(f"{ERROR_RESULT_PREFIX}: 未知错误")
 
     async def _ooc_rewrite_and_send(
         self,
@@ -984,6 +1041,14 @@ class GsCoreAIAgent:
             logger.warning(i18n_t("[OutputFirewall] 重说生成失败，使用角色化兜底: {e}", e=e))
         if not rewritten or rewritten in SILENCE_MARKERS:
             rewritten = output_firewall.PERSONA_FALLBACK_TEXT
+        # 不可放行类别（fund_claim 等）：重写产物必须复检，仍命中则角色化兜底——
+        # "重写一次即放行"对资金欺骗类红线就是穿透面（评审修复 F10）。
+        if first_hit.category in output_firewall.NEVER_RELEASE_CATEGORIES:
+            _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
+            _recheck = output_firewall.check_ooc(rewritten, user_text=_user_text)
+            if _recheck is not None and _recheck.category in output_firewall.NEVER_RELEASE_CATEGORIES:
+                logger.warning(i18n_t("[OutputFirewall] 重写产物仍命中不可放行类别，已改用角色化兜底"))
+                rewritten = output_firewall.PERSONA_FALLBACK_TEXT
         self._session_logger.log_text_output(rewritten)
         try:
             await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
@@ -1101,6 +1166,8 @@ class GsCoreAIAgent:
         _budget_scope_token = _current_budget_scope.set(_budget_scope) if _budget_scope is not None else None
 
         _tool_call_list: list[str] = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
+        # 同引用暴露给 _execute_run 的干净重试分支：判断失败前是否已有工具副作用（F14）
+        self._last_attempt_tool_calls = _tool_call_list
         _wall_nudged = False  # C-4 墙钟软预算：每 run 至多注入一次收敛提示
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         _ooc_blocked: List[Tuple[str, output_firewall.FirewallHit]] = []
@@ -1131,7 +1198,9 @@ class GsCoreAIAgent:
         context = ToolContext(
             bot=bot,
             ev=ev,
-            extra={"turn_id": turn_id},
+            # run_sent_texts 同引用透传：send_message_by_ai 等工具内发送路径与主循环
+            # 共用同一去重集合，干净历史重试不再重复发送相同文本（评审修复 F14）
+            extra={"turn_id": turn_id, "run_sent_texts": self._run_sent_texts},
             parent_session_id=self.session_id,
         )
 
@@ -1169,8 +1238,13 @@ class GsCoreAIAgent:
             final_user_message = f"{final_user_message}{INNER_OS_MARKER}"
             logger.info(i18n_t("🧠[GsCoreAIAgent] 已注入 DS 角色扮演 Marker（首轮 Chat）"))
 
-        # 连续无工具调用检测：连续两轮以上只推脱不调工具时，注入强制提醒
-        if self.create_by in ["Chat", "Agent"] and self._consecutive_no_tool_rounds >= 2:
+        # 连续无工具调用检测：连续两轮只推脱不调工具时注入强制提醒。闲聊类意图豁免（§15），
+        # 豁免口径唯一定义在 _PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。
+        if (
+            self.create_by in ["Chat", "Agent"]
+            and self._consecutive_no_tool_rounds >= 2
+            and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
+        ):
             no_tool_reminder = (
                 "\n\n【⚠️ 系统检测】你已连续多轮未调用任何工具，"
                 "当前用户问题可能尚未得到有效回答。"
@@ -1389,7 +1463,9 @@ class GsCoreAIAgent:
                 # 第三层：查询工具池——基于 query 的向量搜索。只排除已在保底池的
                 # self / buildin 分类；planning 工具不再保底，必须保留在向量检索里按需
                 # 召回（"闲聊里临时要记账/建任务/查产物"靠这一层 + L4 族展开拿到）。
-                if qy:
+                # 闲聊轮跳过（§25(3)）：闲聊召回是纯噪声且工具集逐轮抖动会打掉 tools 段
+                # 前缀缓存；与渐进暴露豁免同口径，真需求由保底/状态/驻留池兜住。
+                if qy and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
                     # L5 上下文增强检索：把最近几轮用户原话拼进检索 query，
                     # 让"改成后天吧"这类无独立语义的追问也能借上文召回到正确工具族。
                     search_query = "\n".join([*self._recent_user_texts, qy]) if self._recent_user_texts else qy
@@ -1420,7 +1496,10 @@ class GsCoreAIAgent:
                     max_tools=max_extra_tools,
                 )
 
-                # 保底工具全部保留；附加工具池已在族展开时限量
+                # §25(3) 工具序稳定化：两段各自按名排序，集合不变时 tools 数组字节级稳定、
+                # 前缀缓存不再因装配顺序漂移失效；相关性排序只影响限量，进请求体后无语义。
+                core_tools.sort(key=lambda _t: _t.name)
+                deduped_extra.sort(key=lambda _t: _t.name)
                 tools = core_tools + deduped_extra
 
                 # 委派保障：意图命中"工具对主人格隐藏、只能委派"的能力代理（如
@@ -1658,6 +1737,8 @@ class GsCoreAIAgent:
                         # 紧接着清除文本里泄漏的工具调用标记残留（弱模型 / 兼容网关常把工具
                         # 调用以文本标签输出而非结构化 function calling），整体替换保持三处一致。
                         node.model_response.parts = _sanitize_tool_call_artifacts_in_parts(node.model_response.parts)
+                        # 规范化工具参数（去重复键）：防退化参数串回放时被网关 400（§12.22 事故 #2）
+                        node.model_response.parts = _canonicalize_tool_call_args_in_parts(node.model_response.parts)
 
                         # 遍历大模型返回的具体片段 (Parts)
                         # 本轮是否已出现工具调用：用于 suppress_intermediate_text 时判断
@@ -1807,6 +1888,8 @@ class GsCoreAIAgent:
                 # C-4 墙钟 nudge 挂在 run 中途的后续请求上，一并从持久历史剥离。
                 _new_msgs = result.new_messages()
                 _relean_user_turn(_new_msgs, _lean_user_message, strip_hint_texts=(_WALL_CLOCK_NUDGE,))
+                # 超长工具返回截断为头+尾摘要（§25(5)）：本轮已消费完整返回，历史无需原文
+                _truncate_tool_returns_in_history(_new_msgs)
                 self.history.extend(_new_msgs)
 
                 # 出戏重说闭环（§D.4）：被拦文本用警告提示重写一次，产物直接放行发送
@@ -1822,8 +1905,9 @@ class GsCoreAIAgent:
                         if _dom:
                             self._recent_tool_families[_dom] = _STICKY_FAMILY_TURNS
 
-                # 更新连续无工具调用计数（仅对交互式主 Agent 生效）
-                if self.create_by in ["Chat", "Agent"]:
+                # 更新连续无工具调用计数（仅对交互式主 Agent 生效）。闲聊类意图不计数（§15），
+                # 豁免口径与注入门同源：_PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。
+                if self.create_by in ["Chat", "Agent"] and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
                     if _tool_call_list:
                         self._consecutive_no_tool_rounds = 0
                     else:
@@ -1977,6 +2061,10 @@ class GsCoreAIAgent:
                         result_msg = corrected.strip()
                         self._scrub_fake_done_history(_fabricated)
 
+                # <report> 制品正文换占位符（§1 漂移固化）。必须在出戏外科/假完成收尾之后
+                # （二者按原文精确匹配 part），且只压缩真正发出过的 part（评审修复 E4/E5）
+                _compact_report_blocks_in_history(_new_msgs, sent_texts=self._run_sent_texts)
+
                 if return_mode in ["by_bot"] and bot and ev:
                     return ""
                 # 出戏兜底（§D.4）：run() 的返回值供**无 bot 发送通道**的消费方使用
@@ -1992,8 +2080,8 @@ class GsCoreAIAgent:
                         logger.warning(i18n_t("[OutputFirewall] run() 返回值命中出戏红线，已兜底替换为角色化文本"))
                 return result_msg
 
-            # result 为空时的默认返回值
-            return "Agent 执行完成，但未返回有效结果"
+            # result 为空时的默认返回值（常量：handle_ai 好感度门等消费端按它识别准失败轮）
+            return NO_RESULT_TEXT
 
         except UsageLimitExceeded:
             # 达到限制后的处理逻辑

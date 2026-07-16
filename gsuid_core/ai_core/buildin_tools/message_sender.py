@@ -107,6 +107,10 @@ async def send_message_by_ai(
     表示该媒体已由框架自动发送给用户，**无需再调用本工具重复发送**。
     本工具仅用于主动补充发送文字说明或追加媒体时使用。
 
+    **资源 ID 必须来自上下文**：image_id / video_id / audio_id 只能填本轮对话中
+    实际出现过的 ID（如 `img_xxxxxxxx`），**禁止自行构造或猜测**——凭空编造的 ID
+    必然发送失败（§13 生产实录：编造 32 位 hex ID 被拒）。没有可用资源就只发 text。
+
     Args:
         ctx: 工具执行上下文（包含bot和ev对象）
         text: 文本内容，可选
@@ -253,7 +257,16 @@ async def send_message_by_ai(
         if text:
             from gsuid_core.ai_core.utils import send_chat_result
 
-            await send_chat_result(bot, text, ev=ev, ooc_check=False)
+            # run 级发送去重（与 gs_agent 主循环共用 extra 里的同一集合）：干净历史重试 /
+            # 模型重复调用不再把同一段话发两遍，媒体不受影响（评审修复 F14）
+            _sent_registry = tool_ctx.extra["run_sent_texts"] if "run_sent_texts" in tool_ctx.extra else None
+            if isinstance(_sent_registry, set) and text.strip() in _sent_registry:
+                logger.info(t("🧠 [BuildinTools] 相同文本本轮已发送过，跳过重复发送（run 级去重）"))
+                text = ""
+            else:
+                await send_chat_result(bot, text, ev=ev, ooc_check=False)
+                if isinstance(_sent_registry, set):
+                    _sent_registry.add(text.strip())
         if media_parts:
             await bot.send(media_parts if len(media_parts) > 1 else media_parts[0])
 
