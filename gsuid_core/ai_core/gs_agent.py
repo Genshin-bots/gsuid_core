@@ -6,6 +6,7 @@ PydanticAI Agent 核心模块
 import re
 import time
 import uuid
+import base64
 import asyncio
 import contextvars
 from typing import Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
@@ -19,15 +20,19 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.messages import (
     ImageUrl,
     TextPart,
+    VideoUrl,
     UserContent,
     ModelMessage,
     ModelRequest,
     ThinkingPart,
     ToolCallPart,
+    UploadedFile,
+    BinaryContent,
     ModelResponse,
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -50,6 +55,7 @@ from gsuid_core.ai_core.utils import (
     SILENCE_MARKERS,
     send_chat_result,
     _relean_user_turn,
+    fetch_video_bytes,
     _extract_run_context,
     _is_content_rejected,
     materialize_image_url,
@@ -497,14 +503,128 @@ class GsCoreAIAgent:
         )
         return True
 
+    @staticmethod
+    def _is_video_item(item: UserContent) -> bool:
+        """内容项是否为视频（VideoUrl 或视频类 BinaryContent）。"""
+        if isinstance(item, VideoUrl):
+            return True
+        return isinstance(item, BinaryContent) and str(item.media_type or "").startswith("video/")
+
+    async def _video_item_to_bytes(self, item: UserContent) -> tuple[bytes, str]:
+        """视频内容项 → (字节, mime)。"""
+        if isinstance(item, BinaryContent):
+            return item.data, str(item.media_type or "video/mp4")
+        assert isinstance(item, VideoUrl)
+        return await fetch_video_bytes(item.url)
+
+    async def _prepare_video_content(
+        self,
+        content_list: list[UserContent],
+        model_support: str,
+    ) -> list[UserContent]:
+        """视频内容项的三分支兼容处理（在图片分支**之前**执行）。
+
+        pydantic_ai 的 OpenAI/Anthropic 模型不接受 VideoUrl——若原样留在
+        message_history 里，请求时直接抛错且每轮重发都会复现。因此视频项必须
+        在入历史前就地转换为该 provider 可消费的形式：
+
+        - **gemini + 支持 video**：经 Gemini File API 上传到 Google 服务器，
+          转为 ``UploadedFile(file_id=<file_uri>, provider_name="google-gla")``
+          按引用传递（文件在 Google 侧保留 48h，超长会话中过期后重发会报错）；
+          已是 Files API URI 的 VideoUrl 直接转引用，不重复上传。
+        - **非 gemini + 支持 video（且支持 image）**：本地 ffmpeg 每 2 秒抽一帧，
+          转成 ImageUrl(base64 DataURI) 列表塞进 messages（帧数上限见
+          ``frame_extract.DEFAULT_MAX_FRAMES``，超限等距采样）。
+        - **不支持 video**：替换为文本占位说明，模型至少知道"这里有个视频"。
+
+        任一视频处理失败只影响该视频（替换为失败说明文本），不阻断整条消息。
+        """
+        if not any(self._is_video_item(item) for item in content_list):
+            return content_list
+
+        from gsuid_core.ai_core.configs.models import get_provider_for_task
+        from gsuid_core.ai_core.multimodal.gemini_files import (
+            is_gemini_file_uri,
+            upload_media_for_task,
+        )
+
+        provider = get_provider_for_task(self.task_level)
+        supports_video = "video" in model_support
+        supports_image = "image" in model_support
+
+        result: list[UserContent] = []
+        video_idx = 0
+        for item in content_list:
+            if not self._is_video_item(item):
+                result.append(item)
+                continue
+            video_idx += 1
+
+            if not supports_video:
+                logger.warning(
+                    i18n_t("🎬 [GsCoreAIAgent] 当前模型未声明视频分析能力(model_support 不含 video)，视频已忽略")
+                )
+                result.append(f"--- 视频{video_idx}: [当前模型不支持视频分析，无法查看该视频内容] ---")
+                continue
+
+            try:
+                if provider == "gemini":
+                    # ⚠️ media_type 必传：Files API URI 无扩展名，pydantic_ai 猜不出
+                    # mime 会按 application/octet-stream 发送，Gemini 直接 400
+                    # (2026-07-16 实测: "Unsupported MIME type: application/octet-stream")
+                    if isinstance(item, VideoUrl) and is_gemini_file_uri(item.url):
+                        # 已是 Files API 引用：直接转 UploadedFile，不重复上传
+                        result.append(
+                            UploadedFile(file_id=item.url, provider_name="google-gla", media_type="video/mp4")
+                        )
+                        continue
+                    data, mime = await self._video_item_to_bytes(item)
+                    file_uri = await upload_media_for_task(data, mime, self.task_level)
+                    result.append(UploadedFile(file_id=file_uri, provider_name="google-gla", media_type=mime))
+                    continue
+
+                # 非 gemini：抽帧兼容路径要求模型至少能看图
+                if not supports_image:
+                    logger.warning(
+                        i18n_t("🎬 [GsCoreAIAgent] 模型声明了 video 却未声明 image，抽帧兼容不可用，视频已忽略")
+                    )
+                    result.append(
+                        f"--- 视频{video_idx}: [当前模型不支持图片，无法用抽帧方式分析该视频] ---"
+                    )
+                    continue
+
+                from gsuid_core.ai_core.multimodal.frame_extract import extract_frames_ffmpeg
+
+                data, mime = await self._video_item_to_bytes(item)
+                video_format = mime.split("/")[-1] or "mp4"
+                frames = await extract_frames_ffmpeg(data, video_format=video_format, interval_seconds=2.0)
+                result.append(
+                    f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---"
+                )
+                for frame in frames:
+                    b64 = base64.b64encode(frame).decode("ascii")
+                    result.append(ImageUrl(url=f"data:image/jpeg;base64,{b64}"))
+                logger.info(
+                    i18n_t(
+                        "🎬 [GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（当前模型非 gemini）",
+                        p0=video_idx,
+                        p1=len(frames),
+                    )
+                )
+            except Exception as e:
+                logger.error(i18n_t("🎬 [GsCoreAIAgent] 视频{p0} 处理失败: {e}", p0=video_idx, e=e))
+                result.append(f"--- 视频{video_idx}: [视频处理失败: {e}] ---")
+        return result
+
     async def _prepare_user_message(
         self,
         content_list: list[UserContent],
     ) -> Union[str, list[UserContent]]:
-        """处理用户消息中的图片内容
+        """处理用户消息中的图片/视频内容
 
-        当 user_message 为 Sequence[UserContent] 时，检查其中是否包含 ImageUrl。
-        如果包含，根据当前模型的 model_support 配置决定：
+        当 user_message 为 Sequence[UserContent] 时，检查其中是否包含多模态内容。
+        视频项先经 :meth:`_prepare_video_content` 三分支转换（gemini 直传 /
+        抽帧兼容 / 占位说明）；随后根据当前模型的 model_support 配置处理图片：
         - 模型支持图片：保留 ImageUrl，返回 list[UserContent]
         - 模型不支持图片：调用 understand_image 将图片转述为文本，合并到文本消息中
 
@@ -519,6 +639,9 @@ class GsCoreAIAgent:
 
         model_config = get_model_config_for_task(self.task_level)
         model_support: str = model_config.get_config("model_support").data
+
+        # 视频先行转换——OpenAI/Anthropic 模型不接受 VideoUrl，必须在入历史前处理掉
+        content_list = await self._prepare_video_content(content_list, model_support)
 
         # 分离文本和图片
         text_parts: list[str] = []
@@ -1413,7 +1536,23 @@ class GsCoreAIAgent:
         _provider: str = self.model.system if self.model else "unknown"
         # 流式响应下需手动按完整文本重新拆分内嵌 <think> 标签（见
         # _split_embedded_thinking）。thinking_tags 取自模型 profile，默认 ('<think>','</think>')。
-        _thinking_tags: tuple[str, str] = self.model.profile.thinking_tags if self.model else ("<think>", "</think>")
+        # 防御：profile 理论上恒为 ModelProfile，但线上出现过
+        # "'dict' object has no attribute 'thinking_tags'" 炸整轮 run 的报告——
+        # 这里改为类型守卫 + 取证日志，异常形态只降级为默认标签，不再中断对话。
+        _thinking_tags: tuple[str, str] = ("<think>", "</think>")
+        if self.model is not None:
+            _profile_obj = self.model.profile
+            if isinstance(_profile_obj, ModelProfile):
+                _thinking_tags = _profile_obj.thinking_tags
+            else:
+                logger.error(
+                    i18n_t(
+                        "🧠 [GsCoreAIAgent] 模型 profile 类型异常(取证): type={p0}, model={p1}, repr={p2}",
+                        p0=type(_profile_obj).__name__,
+                        p1=_model_name,
+                        p2=repr(_profile_obj)[:300],
+                    )
+                )
 
         try:
             logger.info(i18n_t("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()..."))

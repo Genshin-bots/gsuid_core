@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import base64
@@ -468,6 +469,52 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
             raise RuntimeError(i18n_t("远程图片下载失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
         logger.warning(i18n_t("🖼️ [GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}", e=e))
         return raw
+
+
+# 单个视频的字节数上限(MB), 防止超大视频把内存打爆; 可用环境变量覆盖
+VIDEO_MAX_MB = int(os.environ.get("GSCORE_VIDEO_MAX_MB", "200"))
+
+
+async def fetch_video_bytes(url: str) -> tuple[bytes, str]:
+    """把视频标识解析为 ``(字节, mime)``。
+
+    供多模态消息装配使用（见 ``gs_agent._prepare_video_content``）:
+
+    - ``data:video/...;base64,`` DataURI → 直接解码；
+    - http(s) URL → 下载（体积上限 ``VIDEO_MAX_MB``，超限抛错）；
+    - 其余形式不支持（Gemini Files API 引用应在调用方短路，不该走到这里）。
+
+    Raises:
+        RuntimeError: 无法识别的标识 / 下载失败 / 体积超限。
+    """
+    if url.startswith("data:"):
+        header, _, b64 = url.partition(",")
+        mime = header[5:].split(";")[0].strip().lower() or "video/mp4"
+        return base64.b64decode(b64), mime
+
+    if not url.startswith(("http://", "https://")):
+        raise RuntimeError(i18n_t("🎬 [GsCoreAI] 无法识别的视频标识: {p0}", p0=url[:120]))
+
+    limit = VIDEO_MAX_MB * 1024 * 1024
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0), follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.content
+    except httpx.HTTPError as e:
+        raise RuntimeError(i18n_t("🎬 [GsCoreAI] 视频下载失败: {p0} ({e})", p0=url[:120], e=e)) from e
+    if len(data) > limit:
+        raise RuntimeError(
+            i18n_t(
+                "🎬 [GsCoreAI] 视频体积 {size:.1f}MB 超过上限 {limit}MB",
+                size=len(data) / 1024 / 1024,
+                limit=VIDEO_MAX_MB,
+            )
+        )
+    mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+    if not mime.startswith("video/"):
+        mime = "video/mp4"
+    return data, mime
 
 
 def _is_master_user(user_id: str) -> bool:

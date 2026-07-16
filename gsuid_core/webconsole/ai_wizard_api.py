@@ -29,7 +29,7 @@ def _check_model_vision_support(provider: str, config_name: str) -> Dict[str, An
     检查模型是否支持视觉/图片理解
 
     Args:
-        provider: 提供商类型 (openai/anthropic)
+        provider: 提供商类型 (openai/anthropic/gemini)
         config_name: 配置名称
 
     Returns:
@@ -51,6 +51,10 @@ def _check_model_vision_support(provider: str, config_name: str) -> Dict[str, An
             from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
 
             config = get_anthropic_config(config_name)
+        elif provider == "gemini":
+            from gsuid_core.ai_core.configs.gemini_config import get_gemini_config
+
+            config = get_gemini_config(config_name)
         else:
             return {
                 "supported": False,
@@ -608,18 +612,11 @@ async def get_ai_wizard_status(_: Dict[str, Any] = Depends(require_auth)) -> Dic
             "full_name": high_level_full_name,
         }
         try:
-            if provider == "openai":
-                from gsuid_core.ai_core.configs.openai_config import get_openai_config
+            from gsuid_core.ai_core.configs.provider_config_manager import get_provider_config
 
-                config = get_openai_config(config_name)
-                if config:
-                    high_level_model["model_name"] = config.get_config("model_name").data
-            elif provider == "anthropic":
-                from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
-
-                config = get_anthropic_config(config_name)
-                if config:
-                    high_level_model["model_name"] = config.get_config("model_name").data
+            config = get_provider_config(provider, config_name)
+            if config:
+                high_level_model["model_name"] = config.get_config("model_name").data
         except Exception:
             pass
 
@@ -634,18 +631,11 @@ async def get_ai_wizard_status(_: Dict[str, Any] = Depends(require_auth)) -> Dic
             "full_name": low_level_full_name,
         }
         try:
-            if provider == "openai":
-                from gsuid_core.ai_core.configs.openai_config import get_openai_config
+            from gsuid_core.ai_core.configs.provider_config_manager import get_provider_config
 
-                config = get_openai_config(config_name)
-                if config:
-                    low_level_model["model_name"] = config.get_config("model_name").data
-            elif provider == "anthropic":
-                from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
-
-                config = get_anthropic_config(config_name)
-                if config:
-                    low_level_model["model_name"] = config.get_config("model_name").data
+            config = get_provider_config(provider, config_name)
+            if config:
+                low_level_model["model_name"] = config.get_config("model_name").data
         except Exception:
             pass
 

@@ -15,6 +15,8 @@ MEM_DB_URL = str(MEM_PATH / "memory.db")
 OPENAI_CONFIGS_PATH = get_res_path(AI_CORE_PATH / "openai_config")
 # Anthropic配置文件目录 - 存放多个anthropic兼容格式的配置文件
 ANTHROPIC_CONFIGS_PATH = get_res_path(AI_CORE_PATH / "anthropic_config")
+# Gemini配置文件目录 - 存放多个Gemini(Google GenAI)兼容格式的配置文件
+GEMINI_CONFIGS_PATH = get_res_path(AI_CORE_PATH / "gemini_config")
 # MCP配置文件目录 - 存放用户自定义的MCP服务器配置
 MCP_CONFIGS_PATH = get_res_path(AI_CORE_PATH / "mcp_configs")
 # 杂项路径

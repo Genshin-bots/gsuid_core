@@ -2,10 +2,10 @@
 Provider Config APIs
 
 提供 Provider 配置的 RESTful APIs
-统一管理 OpenAI 和 Anthropic 格式的配置，支持高级/低级任务配置切换
+统一管理 OpenAI / Anthropic / Gemini 格式的配置，支持高级/低级任务配置切换
 
 配置名称格式: "provider++config_name" (例如 "openai++MiniMAX")
-- provider: "openai" 或 "anthropic"
+- provider: "openai" / "anthropic" / "gemini"
 - config_name: 配置文件名称
 - 分隔符: "++"
 - 兼容旧格式: 不含 "++" 的名称默认按 "openai" provider 处理
@@ -18,10 +18,17 @@ from fastapi import Depends
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.configs.models import (
+    SUPPORTED_PROVIDERS,
     parse_provider_config_name,
     format_provider_config_name,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.gemini_config import (
+    get_gemini_config,
+    gemini_config_manager as gemini_manager,
+    create_default_gemini_config,
+    list_available_gemini_configs,
+)
 from gsuid_core.ai_core.configs.openai_config import (
     get_openai_config,
     openai_config_manager as openai_manager,
@@ -52,8 +59,19 @@ def _get_manager_and_config(provider: str) -> tuple[Any, Any]:
     """根据 provider 类型获取对应的 manager 和 config 获取函数"""
     if provider == "openai":
         return openai_manager, get_openai_config
+    elif provider == "gemini":
+        return gemini_manager, get_gemini_config
     else:
         return anthropic_manager, get_anthropic_config
+
+
+def _unsupported_provider_error(provider: str) -> Dict[str, Any]:
+    """统一的「不支持的 provider」错误响应"""
+    return {
+        "status": 1,
+        "msg": f"不支持的 provider 类型: {provider}",
+        "data": None,
+    }
 
 
 def _validate_config_name_no_plus(config_name: str) -> Dict[str, Any] | None:
@@ -87,62 +105,35 @@ def _build_all_configs_summary() -> Dict[str, Any]:
     Returns:
         包含所有配置摘要的字典
     """
-    openai_configs = list_available_openai_configs()
-    anthropic_configs = list_available_anthropic_configs()
-
     all_summaries: list[Dict[str, Any]] = []
 
-    for name in openai_configs:
-        full_name = format_provider_config_name("openai", name)
-        try:
-            config = get_openai_config(name)
-            model_name = config.get_config("model_name").data
-            base_url = config.get_config("base_url").data
-            all_summaries.append(
-                {
-                    "name": full_name,
-                    "provider": "openai",
-                    "config_name": name,
-                    "model_name": model_name,
-                    "base_url": base_url,
-                }
-            )
-        except Exception:
-            all_summaries.append(
-                {
-                    "name": full_name,
-                    "provider": "openai",
-                    "config_name": name,
-                    "model_name": "未知",
-                    "base_url": "未知",
-                }
-            )
-
-    for name in anthropic_configs:
-        full_name = format_provider_config_name("anthropic", name)
-        try:
-            config = get_anthropic_config(name)
-            model_name = config.get_config("model_name").data
-            base_url = config.get_config("base_url").data
-            all_summaries.append(
-                {
-                    "name": full_name,
-                    "provider": "anthropic",
-                    "config_name": name,
-                    "model_name": model_name,
-                    "base_url": base_url,
-                }
-            )
-        except Exception:
-            all_summaries.append(
-                {
-                    "name": full_name,
-                    "provider": "anthropic",
-                    "config_name": name,
-                    "model_name": "未知",
-                    "base_url": "未知",
-                }
-            )
+    for provider in SUPPORTED_PROVIDERS:
+        manager, config_func = _get_manager_and_config(provider)
+        for name in manager.list_available():
+            full_name = format_provider_config_name(provider, name)
+            try:
+                config = config_func(name)
+                model_name = config.get_config("model_name").data
+                base_url = config.get_config("base_url").data
+                all_summaries.append(
+                    {
+                        "name": full_name,
+                        "provider": provider,
+                        "config_name": name,
+                        "model_name": model_name,
+                        "base_url": base_url,
+                    }
+                )
+            except Exception:
+                all_summaries.append(
+                    {
+                        "name": full_name,
+                        "provider": provider,
+                        "config_name": name,
+                        "model_name": "未知",
+                        "base_url": "未知",
+                    }
+                )
 
     return {
         "configs": all_summaries,
@@ -165,10 +156,12 @@ async def get_provider_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[s
     """
     openai_configs = list_available_openai_configs()
     anthropic_configs = list_available_anthropic_configs()
+    gemini_configs = list_available_gemini_configs()
 
     # 返回 provider++name 格式的配置名称列表
     openai_full_names = [format_provider_config_name("openai", name) for name in openai_configs]
     anthropic_full_names = [format_provider_config_name("anthropic", name) for name in anthropic_configs]
+    gemini_full_names = [format_provider_config_name("gemini", name) for name in gemini_configs]
 
     return {
         "status": 0,
@@ -177,7 +170,7 @@ async def get_provider_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[s
             "providers": [
                 {
                     "id": "openai",
-                    "name": "OpenAI 兼容格式",
+                    "name": "OpenAI 格式",
                     "description": "支持 OpenAI、Azure、第三方兼容 API",
                     "config_count": len(openai_configs),
                     "configs": openai_full_names,
@@ -188,6 +181,13 @@ async def get_provider_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[s
                     "description": "支持 Claude 系列模型",
                     "config_count": len(anthropic_configs),
                     "configs": anthropic_full_names,
+                },
+                {
+                    "id": "gemini",
+                    "name": "Gemini 格式",
+                    "description": "支持 Google Gemini 系列模型 (GenAI 原生格式)",
+                    "config_count": len(gemini_configs),
+                    "configs": gemini_full_names,
                 },
             ],
         },
@@ -425,18 +425,14 @@ async def get_config_options(
     获取指定 provider 的配置可选项
 
     Args:
-        provider: provider 类型 (openai/anthropic)
+        provider: provider 类型 (openai/anthropic/gemini)
 
     Returns:
         status: 0成功
         data: 各配置项的可选项
     """
-    if provider not in ["openai", "anthropic"]:
-        return {
-            "status": 1,
-            "msg": f"不支持的 provider 类型: {provider}",
-            "data": None,
-        }
+    if provider not in SUPPORTED_PROVIDERS:
+        return _unsupported_provider_error(provider)
 
     manager, _ = _get_manager_and_config(provider)
 
@@ -469,19 +465,15 @@ async def get_config_detail(
     获取指定配置的详细信息
 
     Args:
-        provider: provider 类型 (openai/anthropic)
+        provider: provider 类型 (openai/anthropic/gemini)
         config_name: 配置文件名（不含 provider 前缀）
 
     Returns:
         status: 0成功，1失败
         data: 配置详情
     """
-    if provider not in ["openai", "anthropic"]:
-        return {
-            "status": 1,
-            "msg": f"不支持的 provider 类型: {provider}",
-            "data": None,
-        }
+    if provider not in SUPPORTED_PROVIDERS:
+        return _unsupported_provider_error(provider)
 
     try:
         manager, config_func = _get_manager_and_config(provider)
@@ -530,19 +522,15 @@ async def create_or_update_config(
     创建或更新配置文件
 
     Args:
-        provider: provider 类型 (openai/anthropic)
+        provider: provider 类型 (openai/anthropic/gemini)
         config_name: 配置文件名（不含 provider 前缀，不允许包含 '+' 字符）
         data: 配置数据 {"config": {...}}
 
     Returns:
         status: 0成功，1失败
     """
-    if provider not in ["openai", "anthropic"]:
-        return {
-            "status": 1,
-            "msg": f"不支持的 provider 类型: {provider}",
-            "data": None,
-        }
+    if provider not in SUPPORTED_PROVIDERS:
+        return _unsupported_provider_error(provider)
 
     # 拒绝配置名称包含 + 号的请求
     plus_error = _validate_config_name_no_plus(config_name)
@@ -608,18 +596,14 @@ async def create_default_config(
     创建使用默认配置的新的配置文件
 
     Args:
-        provider: provider 类型 (openai/anthropic)
+        provider: provider 类型 (openai/anthropic/gemini)
         config_name: 配置文件名（不允许包含 '+' 字符）
 
     Returns:
         status: 0成功，1失败
     """
-    if provider not in ["openai", "anthropic"]:
-        return {
-            "status": 1,
-            "msg": f"不支持的 provider 类型: {provider}",
-            "data": None,
-        }
+    if provider not in SUPPORTED_PROVIDERS:
+        return _unsupported_provider_error(provider)
 
     # 拒绝配置名称包含 + 号的请求
     plus_error = _validate_config_name_no_plus(config_name)
@@ -628,6 +612,8 @@ async def create_default_config(
 
     if provider == "openai":
         success = create_default_openai_config(config_name)
+    elif provider == "gemini":
+        success = create_default_gemini_config(config_name)
     else:
         success = create_default_anthropic_config(config_name)
 
@@ -656,18 +642,14 @@ async def delete_config(
     删除配置文件
 
     Args:
-        provider: provider 类型 (openai/anthropic)
+        provider: provider 类型 (openai/anthropic/gemini)
         config_name: 配置文件名（不含 provider 前缀）
 
     Returns:
         status: 0成功，1失败
     """
-    if provider not in ["openai", "anthropic"]:
-        return {
-            "status": 1,
-            "msg": f"不支持的 provider 类型: {provider}",
-            "data": None,
-        }
+    if provider not in SUPPORTED_PROVIDERS:
+        return _unsupported_provider_error(provider)
 
     manager, _ = _get_manager_and_config(provider)
 

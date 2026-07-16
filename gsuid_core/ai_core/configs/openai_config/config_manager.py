@@ -147,6 +147,16 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         data="chat_completions",
         options=["chat_completions", "responses"],
     ),
+    "send_back_thinking": GsStrConfig(
+        title="思考回传",
+        desc=(
+            "多轮对话时是否把历史里的模型思考内容回传给模型(仅 chat_completions 生效): "
+            "auto=pydantic_ai 默认(思考以 <think></think> 标签或厂商字段回发, 部分中转网关会因此报错); "
+            "off=完全不回传思考内容(遇网关兼容问题时选它, 对话质量几乎无影响)"
+        ),
+        data="auto",
+        options=["auto", "off"],
+    ),
 }
 
 

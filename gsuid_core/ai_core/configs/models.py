@@ -3,15 +3,19 @@
 提供LLM和嵌入的共享适配器，供mem、gs_agent等模块复用。
 
 配置名称格式: "provider++config_name" (例如 "openai++MiniMAX")
-- provider: "openai" 或 "anthropic"
+- provider: "openai" / "anthropic" / "gemini"
 - config_name: 配置文件名称
 - 分隔符: "++"
 - 兼容旧格式: 不含 "++" 的名称默认按 "openai" provider 处理
+
+Gemini 说明: 走 pydantic_ai 的 GoogleModel(Google GenAI 原生格式), 依赖可选包
+``google-genai``(pydantic-ai-slim 的 ``google`` extra)。缺依赖时仅 gemini 配置
+不可用, 不影响 openai/anthropic —— 因此 GoogleModel 采用**延迟导入**。
 """
 
 import json
 import hashlib
-from typing import Union, Literal, final
+from typing import TYPE_CHECKING, Union, Literal, final
 from collections.abc import AsyncIterator
 from typing_extensions import override
 
@@ -33,11 +37,21 @@ from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 from .ai_config import ai_config
+from .gemini_config import get_gemini_config, get_gemini_config_dict
 from .openai_config import get_openai_config, get_openai_config_dict
 from .anthropic_config import get_anthropic_config, get_anthropic_config_dict
 
+if TYPE_CHECKING:
+    from pydantic_ai.models.google import GoogleModel
+
 # 配置名称分隔符
 PROVIDER_CONFIG_SEPARATOR = "++"
+
+# 受支持的 provider 类型（webconsole API 与配置解析共用一份定义）
+SUPPORTED_PROVIDERS: tuple[str, ...] = ("openai", "anthropic", "gemini")
+
+# 任一 provider 构建出的模型对象（gemini 为延迟导入，注解用前向引用）
+AnyModel = Union["OpenAIChatModel", "OpenAIResponsesModel", "AnthropicModel", "GoogleModel"]
 
 # OpenAI 请求方式：chat_completions 走 /v1/chat/completions，responses 走 /v1/responses。
 RequestMethod = Literal["chat_completions", "responses"]
@@ -56,7 +70,7 @@ def parse_provider_config_name(full_name: str) -> tuple[str, str]:
 
     Returns:
         (provider, config_name) 元组
-        - provider: "openai" 或 "anthropic"
+        - provider: "openai" / "anthropic" / "gemini"
         - config_name: 实际配置文件名称
 
     Examples:
@@ -64,16 +78,19 @@ def parse_provider_config_name(full_name: str) -> tuple[str, str]:
         ('openai', 'MiniMAX')
         >>> parse_provider_config_name("anthropic++Claude")
         ('anthropic', 'Claude')
+        >>> parse_provider_config_name("gemini++Gemini")
+        ('gemini', 'Gemini')
         >>> parse_provider_config_name("MiniMAX")  # 兼容旧格式
         ('openai', 'MiniMAX')
     """
     if PROVIDER_CONFIG_SEPARATOR in full_name:
         provider, config_name = full_name.split(PROVIDER_CONFIG_SEPARATOR, 1)
-        if provider not in ("openai", "anthropic"):
+        if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(
                 t(
-                    "🧠 [GsCore][AI] 不支持的 provider 类型: '{provider}'，仅支持 'openai' 或 'anthropic'",
+                    "🧠 [GsCore][AI] 不支持的 provider 类型: '{provider}'，仅支持 {supported}",
                     provider=provider,
+                    supported=" / ".join(SUPPORTED_PROVIDERS),
                 )
             )
         return provider, config_name
@@ -87,7 +104,7 @@ def format_provider_config_name(provider: str, config_name: str) -> str:
     将 provider 和 config_name 格式化为 "provider++config_name" 格式。
 
     Args:
-        provider: "openai" 或 "anthropic"
+        provider: "openai" / "anthropic" / "gemini"
         config_name: 配置文件名称
 
     Returns:
@@ -329,6 +346,21 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
 
     provider = OpenAIProvider(api_key=api_key, base_url=base_url)
 
+    # 思考回传开关(send_back_thinking=off):多轮对话时不把历史 ThinkingPart 以
+    # <think> 标签/厂商字段回发给模型 —— 部分中转网关对回发格式不兼容会 4xx/5xx。
+    # 通过 profile 覆写实现(openai_chat_send_back_thinking_parts=False 是
+    # pydantic_ai 的官方开关);旧配置文件缺该 key 时自动补默认值 "auto"。
+    send_back_thinking = str(get_openai_config(config_name).get_config("send_back_thinking").data)
+    profile_spec = None
+    if send_back_thinking == "off":
+        from dataclasses import replace as _dc_replace
+
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+        def profile_spec(name: str, _provider: OpenAIProvider = provider):
+            base = OpenAIModelProfile.from_profile(_provider.model_profile(name))
+            return _dc_replace(base, openai_chat_send_back_thinking_parts=False)
+
     if request_method == "responses":
         return OpenAIResponsesModel(
             model_name=model_name,
@@ -342,6 +374,7 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     return model_cls(
         model_name=model_name,
         provider=provider,
+        profile=profile_spec,
         # 请求参数 stream_options.continuous_usage_stats 仅在部署者显式声明
         # cumulative 时发送; auto 的白名单/探测只作用于响应侧, 不改请求体
         settings=OpenAIChatModelSettings(
@@ -377,6 +410,80 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
     )
 
 
+#: Gemini 官方 API 地址。base_url 等于它时不传给 SDK(用 SDK 内建默认,
+#: 避免 URL 拼接/尾斜杠差异带来 404;浏览器直接访问根路径 404 是正常现象)
+GEMINI_OFFICIAL_BASE_URL = "https://generativelanguage.googleapis.com"
+
+
+def normalize_gemini_base_url(base_url: str) -> str:
+    """官方默认地址归一为空串(SDK 用内建默认);中转地址原样返回。"""
+    if base_url.strip().rstrip("/") == GEMINI_OFFICIAL_BASE_URL:
+        return ""
+    return base_url.strip()
+
+
+def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
+    gconfig = get_gemini_config(config_name)
+    api_keys = gconfig.get_config("api_key").data
+    if not api_keys or not str(api_keys[0]).strip():
+        raise ValueError(
+            t("🧠 [GsCore] Gemini 配置 {config_name} 未填写 api_key, 请前往网页控制台填写", config_name=config_name)
+        )
+    base_url, api_key, model_name, model_effort = (
+        gconfig.get_config("base_url").data,
+        str(api_keys[0]).strip(),
+        gconfig.get_config("model_name").data,
+        to_thinking_level(gconfig.get_config("model_effort").data),
+    )
+    logger.info(
+        t(
+            "🧠 [GsCore] 加载 Gemini 配置: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+            model_name=model_name,
+            base_url=base_url,
+            p0=api_key[-4:],
+        )
+    )
+    return base_url, api_key, model_name, model_effort
+
+
+def get_gemini_model_by_name(config_name: str) -> "GoogleModel":
+    """根据配置名获取 Gemini(Google GenAI 原生格式)模型。
+
+    依赖可选包 ``google-genai``——延迟导入，缺依赖时只有 gemini 配置报错，
+    不拖垮 openai/anthropic 的模型构建（本模块被 ai_core 启动链路 import）。
+
+    Args:
+        config_name: 配置文件名（不含扩展名）
+
+    Raises:
+        RuntimeError: 未安装 ``google-genai`` 依赖。
+    """
+    try:
+        from pydantic_ai.models.google import GoogleModel
+        from pydantic_ai.providers.google import GoogleProvider
+    except ImportError as e:
+        raise RuntimeError(
+            t(
+                "🧠 [GsCore] 使用 Gemini 配置需要安装 google-genai 依赖: "
+                'pip install "pydantic-ai-slim[google]" (原始错误: {e})',
+                e=e,
+            )
+        ) from e
+
+    base_url, api_key, model_name, model_effort = get_gemini_config_by_name(config_name)
+
+    # 官方地址走 SDK 内建默认;仅中转地址才显式传 base_url
+    normalized = normalize_gemini_base_url(base_url)
+    provider = (
+        GoogleProvider(api_key=api_key, base_url=normalized) if normalized else GoogleProvider(api_key=api_key)
+    )
+    return GoogleModel(
+        model_name=model_name,
+        provider=provider,
+        settings=ModelSettings(thinking=model_effort),
+    )
+
+
 def get_high_level_config_name() -> str:
     """获取高级任务配置文件名（provider++name 格式）"""
     return ai_config.get_config("high_level_provider_config_name").data
@@ -405,19 +512,30 @@ def get_max_concurrency_for_config(full_name: str) -> int:
     """读取配置文件的允许并发数，缺失/异常回退 1，并 clamp 到 [1, 10]"""
     try:
         provider, config_name = parse_provider_config_name(full_name)
-        cfg = get_openai_config(config_name) if provider == "openai" else get_anthropic_config(config_name)
+        cfg = _get_provider_string_config(provider, config_name)
         val = int(cfg.get_config("max_concurrency").data)
     except Exception:
         return 1
     return max(1, min(10, val))
 
 
-def get_model_by_full_name(full_name: str) -> Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]:
+def _get_provider_string_config(provider: str, config_name: str) -> StringConfig:
+    """按 provider 取对应配置文件的 StringConfig（三 provider 唯一分派点）"""
+    if provider == "openai":
+        return get_openai_config(config_name)
+    if provider == "anthropic":
+        return get_anthropic_config(config_name)
+    return get_gemini_config(config_name)
+
+
+def get_model_by_full_name(full_name: str) -> AnyModel:
     """按 provider++name 全名直接构建模型（供 provider 路由按需构建主/备模型）"""
     provider, config_name = parse_provider_config_name(full_name)
     if provider == "openai":
         return get_openai_model_by_name(config_name)
-    return get_anthropic_chat_model_by_name(config_name)
+    if provider == "anthropic":
+        return get_anthropic_chat_model_by_name(config_name)
+    return get_gemini_model_by_name(config_name)
 
 
 def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfig:
@@ -426,16 +544,24 @@ def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfi
         raise ValueError(t("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！"))
 
     provider, config_name = parse_provider_config_name(full_name)
+    return _get_provider_string_config(provider, config_name)
 
-    if provider == "openai":
-        return get_openai_config(config_name)
-    else:
-        return get_anthropic_config(config_name)
+
+def get_provider_for_task(task_level: Literal["high", "low"]) -> str:
+    """获取指定任务级别当前激活配置的 provider 类型（"openai"/"anthropic"/"gemini"）。
+
+    未设置配置时返回空串——调用方（如多模态分支）应视为"非 gemini"处理。
+    """
+    full_name = get_config_name_for_task(task_level)
+    if not full_name:
+        return ""
+    provider, _ = parse_provider_config_name(full_name)
+    return provider
 
 
 def get_model_for_task(
     task_level: Literal["high", "low"],
-) -> Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]:
+) -> AnyModel:
     """根据任务级别获取对应的模型
 
     Args:
@@ -449,12 +575,7 @@ def get_model_for_task(
     if not full_name:
         raise ValueError(t("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！"))
 
-    provider, config_name = parse_provider_config_name(full_name)
-
-    if provider == "openai":
-        return get_openai_model_by_name(config_name)
-    else:
-        return get_anthropic_chat_model_by_name(config_name)
+    return get_model_by_full_name(full_name)
 
 
 def get_model_fingerprint_for_task(task_level: Literal["high", "low"]) -> str:
@@ -471,8 +592,10 @@ def get_model_fingerprint_for_task(task_level: Literal["high", "low"]) -> str:
     provider, config_name = parse_provider_config_name(full_name)
     if provider == "openai":
         config_dict = get_openai_config_dict(config_name)
-    else:
+    elif provider == "anthropic":
         config_dict = get_anthropic_config_dict(config_name)
+    else:
+        config_dict = get_gemini_config_dict(config_name)
 
     if not isinstance(config_dict, dict):
         return full_name

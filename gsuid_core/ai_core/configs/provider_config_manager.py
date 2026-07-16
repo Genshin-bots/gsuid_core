@@ -1,13 +1,18 @@
 """
 Provider 配置管理器模块
 
-统一管理 OpenAI 和 Anthropic 配置文件的读取、写入和热切换。
+统一管理 OpenAI / Anthropic / Gemini 配置文件的读取、写入和热切换。
 提供通用的接口来获取不同 provider 的配置。
 """
 
 from typing import Any, Dict, Literal, Optional
 
 from gsuid_core.i18n import t
+from gsuid_core.ai_core.configs.gemini_config import (
+    get_gemini_config as _get_gemini_config,
+    gemini_config_manager as _gemini_config_manager,
+    get_gemini_config_dict as _get_gemini_config_dict,
+)
 from gsuid_core.ai_core.configs.openai_config import (
     get_openai_config as _get_openai_config,
     openai_config_manager as _openai_config_manager,
@@ -19,8 +24,10 @@ from gsuid_core.ai_core.configs.anthropic_config import (
     get_anthropic_config_dict as _get_anthropic_config_dict,
 )
 
+ProviderType = Literal["openai", "anthropic", "gemini"]  # 供调用方类型标注;函数参数收 str,运行时校验
 
-def get_provider_config_manager(provider: Literal["openai", "anthropic"]):
+
+def get_provider_config_manager(provider: str):
     """
     根据 provider 类型获取对应的配置管理器
 
@@ -34,12 +41,14 @@ def get_provider_config_manager(provider: Literal["openai", "anthropic"]):
         return _openai_config_manager
     elif provider == "anthropic":
         return _anthropic_config_manager
+    elif provider == "gemini":
+        return _gemini_config_manager
     else:
         raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def get_provider_config(
-    provider: Literal["openai", "anthropic"],
+    provider: str,
     config_name: str,
 ) -> Any:
     """
@@ -56,12 +65,14 @@ def get_provider_config(
         return _get_openai_config(config_name)
     elif provider == "anthropic":
         return _get_anthropic_config(config_name)
+    elif provider == "gemini":
+        return _get_gemini_config(config_name)
     else:
         raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def get_provider_config_dict(
-    provider: Literal["openai", "anthropic"],
+    provider: str,
     config_name: str,
 ) -> Optional[Dict[str, Any]]:
     """
@@ -78,12 +89,14 @@ def get_provider_config_dict(
         return _get_openai_config_dict(config_name)
     elif provider == "anthropic":
         return _get_anthropic_config_dict(config_name)
+    elif provider == "gemini":
+        return _get_gemini_config_dict(config_name)
     else:
         raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def list_available_provider_configs(
-    provider: Literal["openai", "anthropic"],
+    provider: str,
 ) -> list[str]:
     """
     列出所有可用的 provider 配置文件
@@ -99,7 +112,7 @@ def list_available_provider_configs(
 
 
 def create_default_provider_config(
-    provider: Literal["openai", "anthropic"],
+    provider: str,
     config_name: str,
 ) -> bool:
     """
