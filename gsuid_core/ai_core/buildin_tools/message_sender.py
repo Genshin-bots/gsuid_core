@@ -13,7 +13,7 @@
 3. ``http://`` / ``https://`` / ``base64://``——直接走 ``MessageSegment.image``。
 """
 
-from typing import TYPE_CHECKING, List, Union, Optional, cast
+from typing import TYPE_CHECKING, Dict, List, Tuple, Union, Optional
 from pathlib import Path
 
 from pydantic_ai import RunContext
@@ -30,6 +30,29 @@ from gsuid_core.utils.resource_manager import RM
 
 if TYPE_CHECKING:
     pass
+
+
+# 单轮节流：弱模型常把 send_message_by_ai 当回复通道一轮连发好几条刷屏。与 scheduler.py
+# add_once_task 同构，key=(session_id, turn_id)，超限直接拒发、提示改用正文输出。
+PER_TURN_SEND_MESSAGE_LIMIT = 2
+_PER_TURN_SEND_MESSAGE_COUNT: Dict[Tuple[str, str], int] = {}
+
+
+def _get_send_throttle_key(ctx: RunContext[ToolContext]) -> Optional[Tuple[str, str]]:
+    """构造 (session_id, turn_id) 节流键；缺 ev / turn_id 时跳过节流（返回 None）。"""
+    tool_ctx: ToolContext = ctx.deps
+    ev = tool_ctx.ev
+    if ev is None:
+        return None
+    turn_id = tool_ctx.extra.get("turn_id") if tool_ctx.extra else None
+    if not turn_id:
+        return None
+    return (str(ev.session_id), str(turn_id))
+
+
+def clear_turn_send_throttle(session_id: str, turn_id: str) -> None:
+    """回合结束时清理本轮的 send_message_by_ai 计数（由 gs_agent finally 调用）。"""
+    _PER_TURN_SEND_MESSAGE_COUNT.pop((str(session_id), str(turn_id)), None)
 
 
 async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
@@ -112,6 +135,15 @@ async def send_message_by_ai(
     if not text and not image_id and not video_id and not audio_id:
         return "发送失败：text、image_id、video_id 和 audio_id 至少提供一个"
 
+    # 单轮节流：超过 PER_TURN_SEND_MESSAGE_LIMIT 直接拒发，把模型推回"正文输出"这条正道
+    throttle_key = _get_send_throttle_key(ctx)
+    if throttle_key is not None and _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) >= PER_TURN_SEND_MESSAGE_LIMIT:
+        return (
+            f"⚠️ 本轮你已用 send_message_by_ai 主动发过 {PER_TURN_SEND_MESSAGE_LIMIT} 条了。"
+            "它**不是常规回复通道**——接下来想对用户说的话，**直接作为你的回复正文输出**即可"
+            "（框架会自动发出，并自动处理换行分条 / 长文转图）。本轮请勿再调用本工具。"
+        )
+
     # 出戏防火墙（§D.4）：同轮首次命中 return 警告让模型重写重发；重写后仍命中则放行
     if text and output_firewall.is_enabled():
         _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
@@ -124,13 +156,11 @@ async def send_message_by_ai(
     target_id = user_id or (str(ev.user_id) if ev is not None else "")
 
     try:
-        parts: List[Message] = []
-        if text:
-            parts.append(MessageSegment.text(text))
+        media_parts: List[Message] = []
         if image_id:
             # 资源ID（如 img_xxxxxxxx 走 RM，res_xxxxxxxx 走 Kanban artifact 后转 RM）
             if image_id.startswith("http") or image_id.startswith("base64://"):
-                parts.append(MessageSegment.image(image_id))
+                media_parts.append(MessageSegment.image(image_id))
             elif image_id.startswith("res_"):
                 # Kanban artifact 句柄：从 AIAgentArtifact 解析 → 转 RM → 发送
                 # 这一段是 §3.6 "主人格透明发送能力代理产物"的实现基础——主人格
@@ -146,7 +176,7 @@ async def send_message_by_ai(
                     )
                     try:
                         img_data = await RM.get(image_id)
-                        parts.append(MessageSegment.image(img_data))
+                        media_parts.append(MessageSegment.image(img_data))
                     except ValueError as e:
                         logger.warning(
                             t("🧠 [BuildinTools] RM.get({image_id}) 抛出 ValueError: {e}", image_id=image_id, e=e)
@@ -169,7 +199,7 @@ async def send_message_by_ai(
                             new_rm_id=new_rm_id,
                         )
                     )
-                    parts.append(MessageSegment.image(kanban_payload))
+                    media_parts.append(MessageSegment.image(kanban_payload))
                 else:
                     # inline 文本 artifact：不是图片，提示主人格用 text 参数发
                     return (
@@ -181,7 +211,7 @@ async def send_message_by_ai(
                     logger.debug(t("🧠 [BuildinTools] 调用 RM.get('{image_id}')", image_id=image_id))
                     img_data = await RM.get(image_id)
                     logger.debug(t("🧠 [BuildinTools] RM.get 成功, img_data type={p0}", p0=type(img_data)))
-                    parts.append(MessageSegment.image(img_data))
+                    media_parts.append(MessageSegment.image(img_data))
                 except ValueError as e:
                     logger.warning(
                         t("🧠 [BuildinTools] RM.get({image_id}) 抛出 ValueError: {e}", image_id=image_id, e=e)
@@ -197,7 +227,7 @@ async def send_message_by_ai(
                 logger.debug(t("🧠 [BuildinTools] 调用 RM.get('{video_id}')", video_id=video_id))
                 video_data = await RM.get(video_id)
                 logger.debug(t("🧠 [BuildinTools] RM.get 成功, video_data type={p0}", p0=type(video_data)))
-                parts.append(MessageSegment.video(video_data))
+                media_parts.append(MessageSegment.video(video_data))
             except ValueError as e:
                 logger.warning(t("🧠 [BuildinTools] RM.get({video_id}) 抛出 ValueError: {e}", video_id=video_id, e=e))
                 if "找不到资源" in str(e):
@@ -210,7 +240,7 @@ async def send_message_by_ai(
                 logger.debug(t("🧠 [BuildinTools] 调用 RM.get('{audio_id}')", audio_id=audio_id))
                 audio_data = await RM.get(audio_id)
                 logger.debug(t("🧠 [BuildinTools] RM.get 成功, audio_data type={p0}", p0=type(audio_data)))
-                parts.append(MessageSegment.record(audio_data))
+                media_parts.append(MessageSegment.record(audio_data))
             except ValueError as e:
                 logger.warning(t("🧠 [BuildinTools] RM.get({audio_id}) 抛出 ValueError: {e}", audio_id=audio_id, e=e))
                 if "找不到资源" in str(e):
@@ -218,10 +248,18 @@ async def send_message_by_ai(
                 else:
                     return f"❌ 资源ID: {audio_id} 数据转换失败: {e}"
 
-        if len(parts) == 1:
-            await bot.send(parts[0])
-        else:
-            await bot.send(cast(Message, parts))
+        # 文本走统一 send_chat_result（剥 markdown / 长文转图 / 拆条 / @解析），别裸 bot.send
+        # 把 **加粗** 刷进群；ooc_check=False：入口已 gate_warn_once 过，这里只做归一化。
+        if text:
+            from gsuid_core.ai_core.utils import send_chat_result
+
+            await send_chat_result(bot, text, ev=ev, ooc_check=False)
+        if media_parts:
+            await bot.send(media_parts if len(media_parts) > 1 else media_parts[0])
+
+        # 计数放在真正发出之后：媒体解析报错的早退不占额度
+        if throttle_key is not None:
+            _PER_TURN_SEND_MESSAGE_COUNT[throttle_key] = _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) + 1
 
         content_desc = []
         if text:

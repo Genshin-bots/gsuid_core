@@ -1952,10 +1952,14 @@ class GsCoreAIAgent:
                 from gsuid_core.ai_core.buildin_tools.scheduler import (
                     clear_turn_throttle,
                 )
+                from gsuid_core.ai_core.buildin_tools.message_sender import (
+                    clear_turn_send_throttle,
+                )
 
                 sess = ev.session_id if ev is not None else None
                 if sess:
                     clear_turn_throttle(str(sess), turn_id)
+                    clear_turn_send_throttle(str(sess), turn_id)
             except Exception as _e:
                 logger.debug(i18n_t("🧠 [GsCoreAIAgent] 清理单轮节流计数失败: {_e}", _e=_e))
 

@@ -339,6 +339,15 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 **`_should_render_markdown_image` 判定：结构化长 markdown → 整篇渲染成一张图片下发** →
 （未命中出图时）按 `\n\s*\n`（**空行**）拆成多条消息下发。
 
+> 📨 **`send_message_by_ai` 的文本也必须走这条链 + 单轮硬限流**（2026-07-15，对应 session
+> ...914411529 早柚"狂飙 + 刷 markdown"）。此工具原来是**裸 `bot.send(MessageSegment.text)`**，
+> 绕过整条归一化——弱模型把它当**回复通道**一轮连发 3-4 条，`**加粗**` / 研报排版 / emoji 原样
+> 刷进群，且刚加的"长 markdown 出图"对它一次不生效。双修：① 文本改走 `send_chat_result(...,
+> ooc_check=False)`（出戏防火墙已在工具入口 `gate_warn_once` 过一轮，此处只做归一化），媒体
+> 仍 `bot.send`；② 加 `PER_TURN_SEND_MESSAGE_LIMIT`（=2）单轮节流（与 `scheduler.py`
+> `add_once_task` 同构，key=`(session_id, turn_id)`，`gs_agent` finally `clear_turn_send_throttle`），
+> 超限直接拒发并提示"改用正文输出"。回归锁 `tests/test_send_message_by_ai_guard.py`。
+
 > 🧹 **内部资源句柄不许泄漏给用户——且要"补发"而非"留断链"**（`_resolve_and_deliver_leaked_handles`，
 > 2026-07-15）。`create_subagent` / kanban 回执带 `res_deb5b2e0d2a4` 这类句柄，供主人格
 > `send_message_by_ai(image_id=res_xxx)` 发图 / 发文件。弱模型有时**不发内容、反而把句柄本身写进
