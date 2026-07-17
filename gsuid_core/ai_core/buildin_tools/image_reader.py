@@ -27,7 +27,7 @@ import asyncio
 from typing import Literal
 
 import httpx
-from pydantic_ai import ImageUrl, RunContext, ToolReturn
+from pydantic_ai import BinaryContent, ImageUrl, RunContext, ToolReturn
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -102,23 +102,30 @@ async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
     return _bytes_to_data_uri(data), None
 
 
-def _current_model_supports_image(parent_session_id: str | None) -> bool:
-    """当前主 Agent 的模型（按其 task_level）是否在 ``model_support`` 里声明了 image。
-
-    读图有两条路：主模型**支持多模态**时应把图直接塞回会话让它原生看（无损、省一次调用）；
-    不支持时才退回 ``understand_image`` 把图**转述成文字**。这里判定走哪条。
-    task_level 从父 session 取（拿不到默认 high，与 understand_image 默认一致）。
-    """
-    task_level: Literal["high", "low"] = "high"
+def _current_task_level(parent_session_id: str | None) -> Literal["high", "low"]:
+    """取当前主 Agent 的 task_level（从父 session 取；拿不到默认 high）。"""
     try:
         if parent_session_id:
             from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
             sess = get_ai_session_registry().get_ai_session(parent_session_id)
             if sess is not None:
-                task_level = sess.task_level
+                return sess.task_level
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"🧠 [BuildinTools] read_image 取 task_level 失败，按 high 处理: {e}")
+    return "high"
+
+
+def _current_model_supports_image(parent_session_id: str | None) -> bool:
+    """当前主 Agent 的模型（按其 task_level）是否在 ``model_support`` 里声明了 image。
+
+    读图有两条路：主模型**支持多模态**时应把图直接塞回会话让它原生看（无损、省一次调用）；
+    不支持时才退回 ``understand_image`` 把图**转述成文字**。这里判定走哪条。
+    """
+    try:
         from gsuid_core.ai_core.configs.models import get_model_config_for_task
 
+        task_level = _current_task_level(parent_session_id)
         support: object = get_model_config_for_task(task_level).get_config("model_support").data
         return isinstance(support, (list, str)) and "image" in support
     except Exception as e:  # noqa: BLE001 - 判定失败按「不支持」处理，退回文字转述更安全
@@ -126,20 +133,50 @@ def _current_model_supports_image(parent_session_id: str | None) -> bool:
         return False
 
 
-def _to_tool_image_content(image_url: str) -> list[ImageUrl] | None:
-    """把已解析的 image_url 转成可**注入会话**的多模态内容（``ImageUrl``）。
+def _current_provider(parent_session_id: str | None) -> str:
+    """当前主 Agent 激活配置的 provider（"openai" / "anthropic" / "gemini"；判定失败按 openai）。"""
+    try:
+        from gsuid_core.ai_core.configs.models import (
+            get_config_name_for_task,
+            parse_provider_config_name,
+        )
 
-    统一走 ``ImageUrl``（``data:image/…;base64,…`` / ``http(s)://…`` / 由 ``base64://``
-    归一化来的 DataURI）——这与框架「直接投喂」路径（``prepare_content_payload`` 直投模式
-    把图物化成 ``ImageUrl``）完全一致，是已知能被多模态模型正确当图片消费的形态。
-    （曾用 ``BinaryContent``，但 MiniMax 侧把它当成**裸二进制文本**收到、看不成图，
-    2026-07-16：模型自述「only getting the raw binary JPEG/PNG data」。）
+        task_level = _current_task_level(parent_session_id)
+        return parse_provider_config_name(get_config_name_for_task(task_level))[0]
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"🧠 [BuildinTools] read_image 判定主模型 provider 失败，按 openai 处理: {e}")
+        return "openai"
+
+
+def _to_tool_image_content(image_url: str, provider: str = "openai") -> list[ImageUrl | BinaryContent] | None:
+    """把已解析的 image_url 转成可**注入会话**的多模态内容，按 provider 选形态。
+
+    - ``http(s)://`` → 一律 ``ImageUrl``（各 provider 都能消费；Gemini 侧由
+      pydantic-ai ``download_item`` 下载后转 inline_data）。
+    - DataURI（``data:image/…;base64,…`` / 由 ``base64://`` 归一化而来）分两派：
+      * **gemini / anthropic** → 解码成 ``BinaryContent``。它们的 ``ImageUrl`` 路径
+        会走 ``download_item``，其 SSRF 防护只放行 http/https，DataURI 直接抛
+        「URL protocol "data" is not allowed」把整轮 run 打死（2026-07-17 画布事故）；
+        而 ``BinaryContent`` 映射为 Gemini inline_data / Anthropic base64 source，原生支持。
+      * **openai 兼容**（如 MiniMax）→ 保持 ``ImageUrl(data:…)``。曾试过 ``BinaryContent``，
+        MiniMax 把它当**裸二进制文本**收到、看不成图（2026-07-16：模型自述
+        「only getting the raw binary JPEG/PNG data」）。
     无法归一化 → None，让上层退回文字转述兜底。
     """
     url = image_url
     if url.startswith("base64://"):
         url = f"data:image/png;base64,{url[9:]}"
-    if url.startswith(("http://", "https://", "data:image/")):
+    if url.startswith(("http://", "https://")):
+        return [ImageUrl(url=url)]
+    if url.startswith("data:image/"):
+        if provider in ("gemini", "anthropic"):
+            try:
+                header, b64 = url.split(",", 1)
+                mime = header[5:].split(";", 1)[0].strip() or "image/png"
+                return [BinaryContent(data=base64.b64decode(b64), media_type=mime)]
+            except Exception as e:  # noqa: BLE001 - 坏 DataURI → 退回文字转述兜底
+                logger.warning(f"🧠 [BuildinTools] read_image DataURI 解码失败，退回文字转述: {e}")
+                return None
         return [ImageUrl(url=url)]
     return None
 
@@ -185,7 +222,7 @@ async def read_image(
     # 子代理）：省一次模型调用、不受其超时约束、且不把画面降维成文字（拆版式/看排版尤其
     # 吃亏文字转述）。惰性投喂仍保留——只是「按需读」这一下从「转述」升级成「直接看」。
     if _current_model_supports_image(ctx.deps.parent_session_id):
-        injected = _to_tool_image_content(image_url)
+        injected = _to_tool_image_content(image_url, provider=_current_provider(ctx.deps.parent_session_id))
         if injected is not None:
             logger.info(t("🧠 [BuildinTools] read_image 直投图片 {image_id} 给多模态主模型", image_id=image_id))
             return ToolReturn(

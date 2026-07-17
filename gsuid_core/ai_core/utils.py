@@ -679,6 +679,16 @@ async def prepare_content_payload(
     # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
     # 远程 URL（如 QQ 带 rkey 的临时链接）会在短时间内过期；一旦以原始
     # URL 形式存入 message_history，后续每轮重发都会让推理端 400/500。
+    # 物化产物是 DataURI —— Gemini/Anthropic 的 ImageUrl(data:) 会被 pydantic-ai
+    # download_item 的 SSRF 防护拒掉（Only http/https），须按 provider 选
+    # BinaryContent / ImageUrl（同 read_image 直投，2026-07-17 画布事故）。
+    from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
+    from gsuid_core.ai_core.configs.models import get_config_name_for_task, parse_provider_config_name
+
+    try:
+        provider = parse_provider_config_name(get_config_name_for_task(task_level))[0]
+    except Exception:  # noqa: BLE001 - 判定失败按 openai（旧行为：一律 ImageUrl）
+        provider = "openai"
     for i in ev.image_list:
         if isinstance(i, str):
             # strict=True：远程图片下载失败直接抛出，跳过该图片而非把过期 URL 塞进历史
@@ -689,7 +699,11 @@ async def prepare_content_payload(
                     i18n_t("🖼️ [GsCoreAI] 图片物化失败（URL 可能已过期），跳过图片: {p0} ({e})", p0=i[:120], e=e)
                 )
                 continue
-            content_payload.append(ImageUrl(url=url))
+            injected = _to_tool_image_content(url, provider=provider)
+            if injected:
+                content_payload.extend(injected)
+            else:
+                logger.warning(i18n_t("无法处理图片ID: {i}", i=i))
         else:
             logger.warning(i18n_t("无法处理图片ID: {i}", i=i))
 
