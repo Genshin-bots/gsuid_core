@@ -277,9 +277,9 @@ async def get_event_avatar(ev: Event, avatar_path: Optional[Path] = None) -> Ima
         avatar_url: str = ev.sender["avatar"]
         if avatar_url.startswith(("http", "https")):
             try:
-                content = (await sget(avatar_url)).content
+                content = (await sget(avatar_url, use_cache=True)).content
                 img = Image.open(BytesIO(content)).convert("RGBA")
-            except Exception:
+            except (httpx.HTTPError, OSError, TimeoutError):
                 img = None
 
     if img is None and ev.bot_id == "onebot" and not ev.sender:
@@ -486,13 +486,21 @@ def easy_alpha_composite(im: Image.Image, im_paste: Image.Image, pos=(0, 0), dir
     return base
 
 
-async def get_qq_avatar(qid: Optional[Union[int, str]] = None, avatar_url: Optional[str] = None) -> Image.Image:
+async def get_qq_avatar(
+    qid: Optional[Union[int, str]] = None,
+    avatar_url: Optional[str] = None,
+) -> Optional[Image.Image]:
     if qid:
         avatar_url = f"http://q1.qlogo.cn/g?b=qq&nk={qid}&s=640"
     elif avatar_url is None:
         avatar_url = "https://q1.qlogo.cn/g?b=qq&nk=3399214199&s=640"
-    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert("RGBA")
-    return char_pic
+    try:
+        resp = await sget(avatar_url, use_cache=True)
+        char_pic = Image.open(BytesIO(resp.content)).convert("RGBA")
+        return char_pic
+    except (httpx.HTTPError, OSError, TimeoutError) as e:
+        logger.warning(t("[头像下载失败] 使用默认头像: {url}, 错误: {error}", url=avatar_url, error=e))
+        return None
 
 
 async def get_qqgroup_avatar(
@@ -503,8 +511,13 @@ async def get_qqgroup_avatar(
     if not qid or not bot_id:
         return None
     avatar_url = f"https://q.qlogo.cn/qqapp/{bot_id}/{qid}/100"
-    char_pic = Image.open(BytesIO((await sget(avatar_url)).content)).convert("RGBA")
-    return char_pic
+    try:
+        resp = await sget(avatar_url, use_cache=True)
+        char_pic = Image.open(BytesIO(resp.content)).convert("RGBA")
+        return char_pic
+    except (httpx.HTTPError, OSError, TimeoutError) as e:
+        logger.warning(t("[群头像下载失败] 使用默认头像: {url}, 错误: {error}", url=avatar_url, error=e))
+        return None
 
 
 async def draw_pic_with_ring(

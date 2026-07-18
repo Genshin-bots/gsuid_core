@@ -34,8 +34,6 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
-from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
@@ -89,6 +87,7 @@ from gsuid_core.ai_core.rag.tools import (
     search_tools_with_entity_routing,
 )
 from gsuid_core.ai_core.configs.models import (
+    AnyModel,
     get_model_for_task,
     get_model_by_full_name,
     get_config_name_for_task,
@@ -272,7 +271,7 @@ class GsCoreAIAgent:
 
     def __init__(
         self,
-        openai_chat_model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]] = None,
+        openai_chat_model: Optional[AnyModel] = None,
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         max_iterations: Optional[int] = None,
@@ -352,7 +351,7 @@ class GsCoreAIAgent:
         # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
         self._last_drift_push_count: int = 0
 
-        self.model: Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]] = openai_chat_model
+        self.model: Optional[AnyModel] = openai_chat_model
         # 记录本会话激活配置全名（provider++name）与内容指纹，仅自动解析模型时记录；显式传
         # model 的会话（如固定模型 SubAgent）保持 None 不参与热替换，详见 refresh_model_if_changed。
         self.model_config_name: Optional[str] = None
