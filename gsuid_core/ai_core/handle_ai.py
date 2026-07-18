@@ -32,9 +32,12 @@ from gsuid_core.ai_core.utils import (
     SILENCE_MARKERS,
     ERROR_RESULT_PREFIX,
     send_chat_result,
+    classify_error_type,
     prepare_content_payload,
     sanitize_error_for_user,
     has_model_visible_content,
+    notify_master_of_agent_error,
+    notify_master_of_budget_block,
 )
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL
@@ -200,11 +203,18 @@ async def handle_ai_chat(
                         p1=budget_decision.message,
                     )
                 )
-                if budget_decision.notify and budget_decision.message and bot is not None:
-                    try:
-                        await bot.send(budget_decision.message)
-                    except Exception as e:
-                        logger.warning(t("💰 [GsCore][AI] 预算超额提示发送失败: {e}", e=e))
+                if bot is not None:
+                    if budget_decision.notify and budget_decision.message:
+                        try:
+                            await bot.send(budget_decision.message)
+                        except Exception as e:
+                            logger.warning(t("💰 [GsCore][AI] 预算超额提示发送失败: {e}", e=e))
+                    # 主人告警独立于用户提示：即使 notify=False 也让运维感知拦截事件
+                    await notify_master_of_budget_block(
+                        bot=bot,
+                        ev=event,
+                        decision=budget_decision,
+                    )
                 # 提示尽力而为，发送失败也无条件早退，绝不放超额消息进完整 AI 流程。
                 return
 
@@ -505,7 +515,19 @@ async def handle_ai_chat(
                 elif _is_error:
                     # 失败必须让用户可感知，但原始错误串含 provider body 等内部细节，脱敏后发送
                     logger.warning(t("🧠 [GsCore][AI] 本轮执行失败，向用户发送脱敏兜底文案: {r}", r=result_text[:200]))
-                    await send_chat_result(bot, sanitize_error_for_user(result_text), ev=event)
+                    user_facing = sanitize_error_for_user(result_text)
+                    try:
+                        await send_chat_result(bot, user_facing, ev=event)
+                    except Exception as e:
+                        logger.warning(t("🧠 [GsCore][AI] 脱敏兜底文案发送失败: {e}", e=e))
+                    # 与用户通知解耦：即使发送失败也把详情同步给主人，便于排查
+                    await notify_master_of_agent_error(
+                        bot=bot,
+                        ev=event,
+                        error_type=classify_error_type(result_text),
+                        result_text=result_text,
+                        user_facing=user_facing,
+                    )
                 else:
                     await send_chat_result(bot, chat_result, ev=event)
                     logger.info(t("🧠 [GsCore][AI] 回复已发送 (模式: {intent})", intent=intent))

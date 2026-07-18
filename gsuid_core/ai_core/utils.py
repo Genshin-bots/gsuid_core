@@ -3,7 +3,7 @@ import re
 import json
 import base64
 import asyncio
-from typing import Any, Set, Dict, List, Tuple, Union, Literal, Optional, Sequence
+from typing import Any, Set, Dict, List, Tuple, Union, Literal, Optional, Protocol, Sequence
 
 import httpx
 from PIL import Image
@@ -682,8 +682,8 @@ async def prepare_content_payload(
     # 物化产物是 DataURI —— Gemini/Anthropic 的 ImageUrl(data:) 会被 pydantic-ai
     # download_item 的 SSRF 防护拒掉（Only http/https），须按 provider 选
     # BinaryContent / ImageUrl（同 read_image 直投，2026-07-17 画布事故）。
-    from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
     from gsuid_core.ai_core.configs.models import get_config_name_for_task, parse_provider_config_name
+    from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
 
     try:
         provider = parse_provider_config_name(get_config_name_for_task(task_level))[0]
@@ -1641,6 +1641,200 @@ def sanitize_error_for_user(result_text: str) -> str:
     if ERROR_TIMEOUT_TEXT in result_text:
         return "刚才网络太慢处理超时了，稍后再试试吧"
     return "这条消息我处理失败了，稍后再试一次吧"
+
+
+# Agent 失败类型分类标签 —— 仅供 notify_master_of_agent_error 私聊主人时使用，
+# 与 sanitize_error_for_user 共用同一组常量做嗅探，保证两处判断永远一致。
+_ERROR_TYPE_LABEL_NO_RESULT = "无有效结果"
+_ERROR_TYPE_LABEL_CONTENT = "内容安全"
+_ERROR_TYPE_LABEL_TIMEOUT = "超时"
+_ERROR_TYPE_LABEL_OTHER = "其他错误"
+_ERROR_TYPE_LABEL_UNKNOWN = "未知"
+
+
+# 私聊主人 DM 的字段截断长度 —— 用户原文与原始错误都不宜过长
+_MASTER_DM_RAW_TEXT_MAX = 200
+_MASTER_DM_RESULT_MAX = 500
+
+
+class _MasterDMTarget(Protocol):
+    """能向指定目标发送私聊/群消息的最小接口。"""
+
+    async def target_send(
+        self,
+        message: Union[Message, List[Message], str, bytes, List[str]],
+        target_type: Literal["group", "direct", "channel", "sub_channel"],
+        target_id: Optional[str],
+        at_sender: bool = False,
+        sender_id: str = "",
+        send_source_group: Optional[str] = None,
+        wait_recall: bool = False,
+    ) -> Optional[List[str]]: ...
+
+
+class _MasterDMEvent(Protocol):
+    """主人 DM 所需的事件字段子集。"""
+
+    @property
+    def session_id(self) -> str: ...
+    @property
+    def user_id(self) -> str: ...
+    @property
+    def group_id(self) -> Optional[str]: ...
+    @property
+    def bot_id(self) -> str: ...
+    @property
+    def raw_text(self) -> str: ...
+
+
+def classify_error_type(result_text: str) -> str:
+    """把 agent run 返回的错误串归类成给主人看的中文标签。"""
+    if result_text == NO_RESULT_TEXT:
+        return _ERROR_TYPE_LABEL_NO_RESULT
+    if not result_text.startswith(ERROR_RESULT_PREFIX):
+        return _ERROR_TYPE_LABEL_UNKNOWN
+    if ERROR_CONTENT_REJECTED in result_text:
+        return _ERROR_TYPE_LABEL_CONTENT
+    if ERROR_TIMEOUT_TEXT in result_text:
+        return _ERROR_TYPE_LABEL_TIMEOUT
+    return _ERROR_TYPE_LABEL_OTHER
+
+
+def _build_agent_error_report(
+    *,
+    session_id: str,
+    user_id: str,
+    group_id: Optional[str],
+    bot_id: str,
+    error_type: str,
+    result_text: str,
+    user_facing: str,
+    raw_text: str,
+) -> str:
+    """构造给主人的「AI 执行失败」结构化小报告。"""
+    group_label = group_id if group_id else "私聊"
+    truncated_raw = raw_text.strip()
+    if len(truncated_raw) > _MASTER_DM_RAW_TEXT_MAX:
+        truncated_raw = truncated_raw[:_MASTER_DM_RAW_TEXT_MAX] + "..."
+    truncated_err = result_text.strip()
+    if len(truncated_err) > _MASTER_DM_RESULT_MAX:
+        truncated_err = truncated_err[:_MASTER_DM_RESULT_MAX] + "..."
+    return (
+        "[AI 执行失败]\n"
+        f"• 会话: {session_id}\n"
+        f"• 用户: {user_id} (群: {group_label})\n"
+        f"• Bot: {bot_id}\n"
+        f"• 类型: {error_type}\n"
+        f"• 用户看到: {user_facing}\n"
+        f"• 原始错误: {truncated_err}\n"
+        f"• 用户原文: {truncated_raw}"
+    )
+
+
+def _build_budget_block_report(
+    *,
+    session_id: str,
+    user_id: str,
+    group_id: Optional[str],
+    bot_id: str,
+    block_scope_label: str,
+    raw_text: str,
+) -> str:
+    """构造给主人的「AI 预算超额拦截」结构化小报告。"""
+    group_label = group_id if group_id else "私聊"
+    truncated_raw = raw_text.strip()
+    if len(truncated_raw) > _MASTER_DM_RAW_TEXT_MAX:
+        truncated_raw = truncated_raw[:_MASTER_DM_RAW_TEXT_MAX] + "..."
+    return (
+        "[AI 预算超额拦截]\n"
+        f"• 会话: {session_id}\n"
+        f"• 用户: {user_id} (群: {group_label})\n"
+        f"• Bot: {bot_id}\n"
+        f"• 拦截维度: {block_scope_label}\n"
+        f"• 用户原文: {truncated_raw}"
+    )
+
+
+async def _dispatch_master_dm(
+    bot: _MasterDMTarget,
+    report: str,
+    masters: List[str],
+    log_prefix: str,
+) -> None:
+    """把 ``report`` 私聊发给每个主人；单个主人失败不影响其他主人。"""
+    for master_id in masters:
+        master_id = str(master_id)
+        if not master_id:
+            continue
+        try:
+            await bot.target_send(report, "direct", target_id=master_id)
+        except Exception as e:
+            logger.warning(
+                i18n_t(
+                    "{p0} 主人通知发送失败 ({master_id}): {e}",
+                    p0=log_prefix,
+                    master_id=master_id,
+                    e=e,
+                )
+            )
+
+
+async def notify_master_of_agent_error(
+    bot: _MasterDMTarget,
+    ev: _MasterDMEvent,
+    *,
+    error_type: str,
+    result_text: str,
+    user_facing: str,
+) -> None:
+    """Agent run 失败后，把结构化错误报告私聊发给每个主人。
+
+    未配置 ``masters`` 时 no-op；单个主人 DM 失败被吞掉，不污染主流程。
+    """
+    from gsuid_core.config import core_config
+
+    masters: List[str] = [str(m) for m in (core_config.get_config("masters") or [])]
+    if not masters:
+        return
+    report = _build_agent_error_report(
+        session_id=ev.session_id,
+        user_id=ev.user_id,
+        group_id=ev.group_id,
+        bot_id=ev.bot_id,
+        error_type=error_type,
+        result_text=result_text,
+        user_facing=user_facing,
+        raw_text=ev.raw_text,
+    )
+    await _dispatch_master_dm(bot, report, masters, log_prefix="🧠 [GsCore][AI]")
+
+
+async def notify_master_of_budget_block(
+    bot: _MasterDMTarget,
+    ev: _MasterDMEvent,
+    *,
+    decision: Any,
+) -> None:
+    """预算超额拦截时，把结构化告警私聊发给每个主人。
+
+    ``decision`` 避免在 utils.py 顶层 import ``BudgetDecision``，防止与 budget 子模块
+    循环 import；调用方保证传入的是该 dataclass 实例。
+    """
+    from gsuid_core.config import core_config
+
+    masters: List[str] = [str(m) for m in (core_config.get_config("masters") or [])]
+    if not masters:
+        return
+    block_scope_label = str(decision.block_scope_label or "")
+    report = _build_budget_block_report(
+        session_id=ev.session_id,
+        user_id=ev.user_id,
+        group_id=ev.group_id,
+        bot_id=ev.bot_id,
+        block_scope_label=block_scope_label,
+        raw_text=ev.raw_text,
+    )
+    await _dispatch_master_dm(bot, report, masters, log_prefix="💰 [GsCore][AI]")
 
 
 def _sanitize_tool_call_artifacts_in_parts(

@@ -68,6 +68,7 @@ from gsuid_core.ai_core.utils import (
     _truncate_message_for_log,
     _is_retryable_client_error,
     _is_non_retryable_model_error,
+    notify_master_of_budget_block,
     _compact_report_blocks_in_history,
     _strip_remote_images_from_history,
     _truncate_tool_returns_in_history,
@@ -1153,12 +1154,19 @@ class GsCoreAIAgent:
                         p1=_bd.block_scope_label,
                     )
                 )
-                # 仅交互式（有 bot）且本次应提示时向用户发一句；自主后台（无 bot）静默掐断。
-                if bot is not None and _bd.notify and _bd.message:
-                    try:
-                        await bot.send(_bd.message)
-                    except Exception as _se:
-                        logger.warning(i18n_t("💰 [GsCoreAIAgent] 预算超额提示发送失败: {_se}", _se=_se))
+                # 仅交互式（有 bot + ev）时处理用户提示与主人告警；自主后台静默掐断。
+                if bot is not None and ev is not None:
+                    if _bd.notify and _bd.message:
+                        try:
+                            await bot.send(_bd.message)
+                        except Exception as _se:
+                            logger.warning(i18n_t("💰 [GsCoreAIAgent] 预算超额提示发送失败: {_se}", _se=_se))
+                    # 主人告警独立于用户提示：运行层拦截也同步给主人，便于与会话层闸区分开排查
+                    await notify_master_of_budget_block(
+                        bot=bot,
+                        ev=ev,
+                        decision=_bd,
+                    )
                 return None if output_type is not None else ""
 
         # 提前到 try 前设置归属 scope：使本次 run 期间未显式绑定 scope 的嵌套 LLM 调用（含
