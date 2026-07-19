@@ -398,7 +398,7 @@ class GsCoreAIAgent:
         try:
             self.on_trace(kind, text)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"🧠 [GsCoreAIAgent] on_trace 观察者异常（已忽略）: {e}")
+            logger.debug(i18n_t("log.ai_agent.on_trace_observer_fail", error=str(e)))
 
     def get_assembled_capability_domains(self) -> list[str]:
         """返回**上一轮 run() 实际装配工具**的能力域列表（"装配后回传"）。
@@ -1863,7 +1863,7 @@ class GsCoreAIAgent:
                             _generation_time = _last_event_at - _first_event_at
                             if _req_usage.output_tokens > 0 and _generation_time > 0:
                                 _tps = round(_req_usage.output_tokens / _generation_time, 2)
-                            logger.debug(f"⏱️ [GsCoreAIAgent] TTFT: {_ttft_ms:.2f} ms, TPS: {_tps:.2f} tokens/s")
+                            logger.debug(i18n_t("log.ai_agent.ttft_tps", ttft_ms=_ttft_ms, tps=_tps))
                         statistics_manager.record_hourly_performance(
                             provider=_provider,
                             model_name=_model_name,
@@ -2110,7 +2110,7 @@ class GsCoreAIAgent:
 
             # 安抚用户
             if bot:
-                await bot.send(await bot.t("⏳ 思考链过长，正在根据已有线索为你整理最终结论..."))
+                await bot.send(await bot.t("log.ai_agent.chain_too_long_summary"))
 
             # ✨ 【关键点2】发起"强制总结"请求
             try:

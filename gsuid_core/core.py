@@ -22,15 +22,13 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 # from gsuid_core.utils.database.startup import exec_list  # noqa: E402
 
-ASCII_FONT = f"""
+ASCII_FONT = r"""
 .------..------..------..------..------..------..------.
 |G.--. ||S.--. ||-.--. ||C.--. ||O.--. ||R.--. ||E.--. |
 | :/\: || :/\: || (\/) || :/\: || :/\: || :(): || (\/) |
 | :\/: || :\/: || :\/: || :\/: || :\/: || ()() || :\/: |
 | '--'G|| '--'S|| '--'-|| '--'C|| '--'O|| '--'R|| '--'E|
 `------'`------'`------'`------'`------'`------'`------'
-
-          🌱 [早柚核心] 已启动! 版本 {__version__} ！
 """  # noqa: W605
 
 
@@ -235,7 +233,7 @@ async def main():
 
     server = uvicorn.Server(config)
     end_time = time.time()
-    logger.success(ASCII_FONT)
+    logger.success(t("log.core.startup_banner", ascii_font=ASCII_FONT, version=__version__))
     duration = round(end_time - start_time, 2)
     core_startup_info.duration = duration
 

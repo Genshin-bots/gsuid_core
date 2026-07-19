@@ -10,6 +10,7 @@ from typing import Optional
 
 from pydantic_ai import RunContext
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import _is_master_user
@@ -75,7 +76,14 @@ async def update_user_favorability(ctx: RunContext[ToolContext], delta: int) -> 
     new_value = record.favorability if record else "?"
     action = "增加" if delta > 0 else "减少"
     result = f"已对用户 {target_id} {action} {abs(delta)} 点好感度（当前: {new_value}）"
-    logger.info(f"🧠 [BuildinTools] {result}")
+    logger.info(
+        i18n_t(
+            "log.buildin.favor_update",
+            target_id=target_id,
+            delta=delta,
+            new_value=new_value,
+        )
+    )
     return result
 
 
@@ -111,5 +119,5 @@ async def set_user_favorability(
     if not success:
         return "操作失败：设置好感度失败"
     result = f"已将用户 {target_id} 的好感度设置为 {value}（已按上下限钳制）"
-    logger.info(f"🧠 [BuildinTools] {result}")
+    logger.info(i18n_t("log.buildin.favor_set", target_id=target_id, value=value))
     return result

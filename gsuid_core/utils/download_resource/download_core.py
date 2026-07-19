@@ -124,16 +124,16 @@ async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
         response = await client.get(url)
         return response.read()
     except httpx.HTTPStatusError as exc:
-        logger.warning(f"HTTP error occurred while fetching {url}: {exc}")
+        logger.warning(t("log.resource_download.http_error", url=url, error=exc))
         return b""
     except httpx.ConnectError as exc:
-        logger.warning(f"Connect error occurred while fetching {url}: {exc}")
+        logger.warning(t("log.resource_download.connect_error", url=url, error=exc))
         return b""
     except httpx.UnsupportedProtocol as exc:
-        logger.warning(f"Unsupported protocol error occurred while fetching {url}: {exc}")
+        logger.warning(t("log.resource_download.unsupported_protocol", url=url, error=exc))
         return b""
     except httpx.RequestError as exc:
-        logger.warning(f"Request error occurred while fetching {url}: {exc}")
+        logger.warning(t("log.resource_download.request_error", url=url, error=exc))
         return b""
 
 

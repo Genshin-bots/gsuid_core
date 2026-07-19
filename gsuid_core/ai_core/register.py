@@ -456,7 +456,7 @@ def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global"):
     # 正式名本身不是 _ALIASES 的键（只有别名是），这里一并登记，否则"玄翎秧秧"查不到。
     _index_entity_surfaces(name, alias)
 
-    logger.trace(f"🧠 [AI][Registry] Registered aliases for {name} (scope={scope}): {alias}")
+    logger.trace(t("log.ai_registry.aliases_registered", name=name, scope=scope, alias=list(alias)))
 
 
 def _index_entity_surfaces(name: str, alias: List[str]) -> None:
@@ -545,7 +545,7 @@ def ai_entity(entity: Union[KnowledgePoint, KnowledgeBase]):
     # 自动添加 source="plugin" 标识，表示来自插件注册
     entity["source"] = "plugin"
     _ENTITIES.append(entity)
-    logger.trace(f"🧠 [AI][Registry] Entity registered (plugin): {entity['title']}")
+    logger.trace(t("log.ai_registry.entity_registered_plugin", title=entity["title"]))
 
 
 def add_manual_knowledge(entity: ManualKnowledgeBase) -> bool:
@@ -589,13 +589,13 @@ def add_manual_knowledge(entity: ManualKnowledgeBase) -> bool:
     # 检查是否已存在相同 id
     for existing in _MANUAL_ENTITIES:
         if existing["id"] == entity["id"]:
-            logger.warning(f"🧠 [AI][Registry] Manual entity already exists: {entity['id']}")
+            logger.warning(t("log.ai_registry.manual_entity_exists", entity_id=entity["id"]))
             return False
 
     # 确保 source 为 "manual"
     entity["source"] = "manual"
     _MANUAL_ENTITIES.append(entity)
-    logger.trace(f"🧠 [AI][Registry] Manual entity added: {entity['title']}")
+    logger.trace(t("log.ai_registry.manual_entity_added", title=entity["title"]))
     return True
 
 
@@ -616,7 +616,7 @@ def update_manual_knowledge(entity_id: str, updates: ManualKnowledgeUpdate) -> b
             updates.pop("id", None)
             updates.pop("source", None)
             _MANUAL_ENTITIES[i].update(updates)
-            logger.trace(f"🧠 [AI][Registry] Manual entity updated: {entity_id}")
+            logger.trace(t("log.ai_registry.manual_entity_updated", entity_id=entity_id))
             return True
     return False
 
@@ -634,7 +634,7 @@ def delete_manual_knowledge(entity_id: str) -> bool:
     for i, existing in enumerate(_MANUAL_ENTITIES):
         if existing["id"] == entity_id:
             _MANUAL_ENTITIES.pop(i)
-            logger.trace(f"🧠 [AI][Registry] Manual entity deleted: {entity_id}")
+            logger.trace(t("log.ai_registry.manual_entity_deleted", entity_id=entity_id))
             return True
     return False
 
@@ -705,7 +705,7 @@ def ai_image(entity: ImageEntity):
     entity["source"] = "plugin"
     _ENTITIES.append(entity)
     _IMAGE_ENTITIES.append(entity)
-    logger.trace(f"🧠 [AI][Registry] Image registered: {entity.get('tags', [])}")
+    logger.trace(t("log.ai_registry.image_registered", tags=list(entity["tags"])))
 
 
 def get_image_entities() -> List[ImageEntity]:

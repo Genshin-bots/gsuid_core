@@ -44,7 +44,7 @@ class PassMysApi(BaseMysApi):
                                 msg = data["info"]
                             else:
                                 msg = f"错误码{data['code']}, 请检查API是否配置正确"
-                            logger.info(f"[upass] {msg}")
+                            logger.info(t("log.upass.response_error", message=msg))
                             return None, None
                         validate = data["data"]["validate"]
                         ch = data["data"]["challenge"]

@@ -25,6 +25,7 @@ import re
 from typing import Dict, List, Tuple, Optional
 from dataclasses import field, dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 # CJK surface 至少 2 字、ASCII surface 至少 3 字才允许入索引（见模块 docstring）。
@@ -154,7 +155,7 @@ def plugins_in_text(text: str) -> List[str]:
     plugins: List[str] = []
     for ref in find_entities_in_text(text):
         if ref.is_ambiguous:
-            logger.trace(f"🧠 [EntityIndex] surface {ref.surface!r} 归属歧义 {ref.plugins}，不路由")
+            logger.trace(t("log.entity_index.ambiguous_skip", surface=ref.surface, plugins=list(ref.plugins)))
             continue
         for plugin in ref.plugins:
             if plugin not in plugins:

@@ -562,7 +562,7 @@ async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[
         return []
     reranker = get_reranker()
     if reranker is None:
-        logger.warning("Reranker not available, falling back to top-k truncation")
+        logger.warning(i18n_t("log.memory.reranker_unavailable"))
         return items[:top_k]
     texts = [item["summary"] for item in items]
     scores = list(await _run_sync_rerank(reranker, query, texts))

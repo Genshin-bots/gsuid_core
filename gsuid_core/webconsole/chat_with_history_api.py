@@ -69,7 +69,7 @@ async def chatWithHistory(
     _bot = _Bot("HTTP")
 
     user_id = req.user_id
-    logger.info(f"[chat_with_history] received user_id={repr(user_id)}")
+    logger.info(t("log.webconsole.chat_received_user", user_id=repr(user_id)))
     message = req.message
     history = req.history
     persona_name = req.persona_name
@@ -234,7 +234,7 @@ async def chatWithHistory(
         memory_context_text = ""
         memory_ctx = ""
         if memory_config.enable_retrieval:
-            logger.info(f"[dual_route_retrieve] user_id={user_id}")
+            logger.info(t("log.webconsole.chat_dual_route_retrieve", user_id=user_id))
             # 优先使用请求级别的 override 值
             _enable_system2 = (
                 enable_system2_override if enable_system2_override is not None else memory_config.enable_system2

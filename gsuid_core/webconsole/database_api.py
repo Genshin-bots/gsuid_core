@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from fastapi import Body, Depends, Request
 
+from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.utils.database.admin_api import (
@@ -72,7 +73,7 @@ async def get_database_plugins(request: Request, _user: Dict[str, Any] = Depends
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to get database plugins: {e}")
+        logger.error(t("log.webconsole.database_plugins_fail", error=e))
         return {"status": 1, "msg": str(e), "data": []}
 
 
@@ -102,7 +103,7 @@ async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict[str, A
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to get plugin tables: {e}")
+        logger.error(t("log.webconsole.database_tables_fail", error=e))
         return {"status": 1, "msg": str(e), "data": {}}
 
 
@@ -134,7 +135,7 @@ async def get_table_metadata(table_name: str, request: Request, _user: Dict[str,
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to get table metadata: {e}")
+        logger.error(t("log.webconsole.database_metadata_fail", error=e))
         return {"status": 1, "msg": str(e), "data": None}
 
 
@@ -186,7 +187,7 @@ async def get_table_data_api(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to get table data: {e}")
+        logger.error(t("log.webconsole.database_data_fail", error=e))
         return {"status": 1, "msg": str(e), "data": {"items": [], "total": 0, "page": page, "per_page": per_page}}
 
 
@@ -218,7 +219,7 @@ async def create_record_api(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to create record: {e}")
+        logger.error(t("log.webconsole.database_create_fail", error=e))
         return {"status": 1, "msg": str(e), "data": None}
 
 
@@ -261,7 +262,7 @@ async def update_record_api(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to update record: {e}")
+        logger.error(t("log.webconsole.database_update_fail", error=e))
         return {"status": 1, "msg": str(e), "data": None}
 
 
@@ -302,5 +303,5 @@ async def delete_record_api(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.error(f"Failed to delete record: {e}")
+        logger.error(t("log.webconsole.database_delete_fail", error=e))
         return {"status": 1, "msg": str(e), "data": None}

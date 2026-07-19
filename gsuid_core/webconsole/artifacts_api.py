@@ -7,13 +7,14 @@
 
 from typing import Any, Dict, Optional
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 from fastapi import Query, Depends
 from sqlmodel import col
 from sqlalchemy import delete
 from fastapi.responses import FileResponse
 
+from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.planning.models import AIAgentArtifact
@@ -46,13 +47,40 @@ async def list_artifacts(
     _: Dict[str, Any] = Depends(require_auth),
     root_task_id: Optional[str] = Query(None),
     task_id: Optional[str] = Query(None),
+    scope: Optional[str] = Query(None, description="传 `all` 走全局浏览分支"),
+    limit: int = Query(500, ge=1, le=2000),
+    include_expired: bool = Query(False),
 ) -> Dict[str, Any]:
+    """列出 Artifact。三种调用方式：
+    - `?task_id=<task_id>`：列出某 task 自己的 artifacts
+    - `?root_task_id=<root_id>`：列出某 root 树下的所有 artifacts
+    - `?scope=all`：全局按时间倒序浏览（`/ai-artifacts` 页用）
+    其余无参调用保持原契约：返回 status=1 要求提供过滤条件。
+    `include_expired=False`：仅列未过期；`=True`：列全部。
+    """
     if task_id:
         items = await AIAgentArtifact.list_for_task(task_id)
+        items = items[:limit]
     elif root_task_id:
         items = await AIAgentArtifact.list_for_root(root_task_id)
+        items = items[:limit]
+    elif scope == "all":
+        # 全局浏览分支：按 created_at 倒序拉最近 N 条
+        from sqlmodel import select
+
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            stmt = select(AIAgentArtifact).order_by(col(AIAgentArtifact.created_at).desc()).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+        items = list(rows)
     else:
-        return {"status": 1, "msg": "必须提供 root_task_id 或 task_id", "data": None}
+        return {"status": 1, "msg": t("log.webconsole.artifact.require_filter"), "data": None}
+
+    if not include_expired:
+        now = datetime.now(timezone.utc)
+        items = [it for it in items if (it.expires_at is None or it.expires_at > now)]
+
     return {
         "status": 0,
         "msg": "ok",
@@ -67,7 +95,7 @@ async def get_artifact_detail(
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
-        return {"status": 1, "msg": f"artifact {res_id} 不存在", "data": None}
+        return {"status": 1, "msg": t("log.webconsole.artifact.not_found", res_id=res_id), "data": None}
     payload_preview: Optional[str] = art.payload_inline
     if not payload_preview and art.payload_path:
         try:
@@ -86,10 +114,10 @@ async def download_artifact_raw(
 ):
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None or not art.payload_path:
-        return {"status": 1, "msg": "无可下载的 payload_path", "data": None}
+        return {"status": 1, "msg": t("log.webconsole.artifact.no_payload_path"), "data": None}
     p = Path(art.payload_path)
     if not p.exists():
-        return {"status": 1, "msg": "落盘文件不存在", "data": None}
+        return {"status": 1, "msg": t("log.webconsole.artifact.file_not_found"), "data": None}
     return FileResponse(p, media_type=art.mime or "application/octet-stream")
 
 
@@ -100,7 +128,7 @@ async def delete_artifact(
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
-        return {"status": 1, "msg": "不存在", "data": None}
+        return {"status": 1, "msg": t("log.webconsole.artifact.not_found", res_id=res_id), "data": None}
     # 文件落盘的尝试删除
     if art.payload_path:
         try:
@@ -123,7 +151,7 @@ async def extend_artifact_ttl(
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
-        return {"status": 1, "msg": "不存在", "data": None}
+        return {"status": 1, "msg": t("log.webconsole.artifact.not_found", res_id=res_id), "data": None}
     new_expire = datetime.now() + timedelta(days=days)
     await AIAgentArtifact.update_data_by_data(select_data={"id": res_id}, update_data={"expires_at": new_expire})
     return {"status": 0, "msg": "ok", "data": {"res_id": res_id, "expires_at": new_expire.isoformat()}}

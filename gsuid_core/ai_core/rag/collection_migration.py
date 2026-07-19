@@ -379,7 +379,7 @@ async def ensure_payload_indexes(
         col_info = await client.get_collection(collection_name=collection_name)
         existing_indexes = col_info.payload_schema or {}
     except Exception as e:
-        message = f"🧠 [Qdrant] 获取集合 {collection_name} 信息失败，无法确认 payload 索引: {e}"
+        message = t("log.qdrant.get_collection_fail", collection_name=collection_name, error=str(e))
         if is_local_client:
             logger.warning(message)
             return
@@ -396,13 +396,13 @@ async def ensure_payload_indexes(
             )
             logger.info(
                 t(
-                    "🧠 [Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}",
+                    "log.qdrant.keyword_index_created",
                     collection_name=collection_name,
                     field=field,
                 )
             )
         except Exception as e:
-            message = f"🧠 [Qdrant] 为集合 {collection_name} 创建 keyword 索引 {field} 失败: {e}"
+            message = t("log.qdrant.keyword_index_fail", collection_name=collection_name, field=field, error=str(e))
             if is_local_client:
                 logger.warning(message)
                 continue

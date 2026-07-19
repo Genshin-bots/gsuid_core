@@ -32,7 +32,7 @@ class CUSTOM:
             ) as resp:
                 logger.info(t("[custom / upload] 开始上传..."))
                 raw_data = await resp.json()
-                logger.debug(f"[custom / upload] {raw_data}")
+                logger.debug(t("log.upload.custom_response", response=raw_data))
                 if raw_data and "image_info_array" in raw_data[0]:
                     data = raw_data[0]["image_info_array"]
                     if is_auto_delete:

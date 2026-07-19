@@ -92,16 +92,21 @@ async def extract_and_upsert_entities(
                     if attempt < 2:
                         delay = 0.5 * (2**attempt)  # 指数退避: 0.5s, 1s
                         logger.warning(
-                            f"[Qdrant] Entity vector batch upsert failed (retry {attempt + 1}/3, wait {delay}s): {e}"
+                            t(
+                                "log.memory.entity_vector_batch_retry",
+                                attempt=attempt + 1,
+                                delay=delay,
+                                error=str(e),
+                            )
                         )
                         await asyncio.sleep(delay)
                     else:
-                        logger.error(f"[Qdrant] Entity vector batch upsert failed after 3 retries: {e}")
+                        logger.error(t("log.memory.entity_vector_batch_fail", error=str(e)))
                         return False
 
         try:
             await asyncio.wait_for(_upsert_with_retry(), timeout=30.0)
         except asyncio.TimeoutError:
-            logger.error("[Qdrant] Entity vector batch upsert global timeout (30s)")
+            logger.error(t("log.memory.entity_vector_batch_timeout"))
 
     return name_to_id, new_entity_count

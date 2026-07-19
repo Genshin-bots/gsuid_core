@@ -69,7 +69,7 @@ def image_to_base64(image: ImageInput) -> str:
                                 elif img.format == "PNG":
                                     mime_type = "image/png"
                         except Exception as e:
-                            logger.error(f"[img2b64] Error guessing image format: {e}")
+                            logger.error(t("log.image.base64_guess_format_fail", error=e))
                             pass
                     else:
                         raise FileNotFoundError(f"[img2b64] Image not found: {path}")
@@ -88,7 +88,7 @@ def image_to_base64(image: ImageInput) -> str:
                     elif img.format == "PNG":
                         mime_type = "image/png"
             except Exception as e:
-                logger.error(f"[img2b64] Error guessing image format: {e}")
+                logger.error(t("log.image.base64_guess_format_fail", error=e))
                 pass
 
         else:
@@ -98,7 +98,7 @@ def image_to_base64(image: ImageInput) -> str:
         return f"data:{mime_type};base64,{base64_data}"
 
     except Exception as e:
-        logger.error(f"[img2b64] Error processing image: {e}")
+        logger.error(t("log.image.base64_process_fail", error=e))
         return ""
 
 

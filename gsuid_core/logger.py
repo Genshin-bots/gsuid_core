@@ -74,6 +74,9 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
     一个会自动使用 YYYY-MM-DD.log 作为文件名的日志处理器。
     """
 
+    # 父类 stream 未显式标注，子类声明 Optional 以安全赋 None
+    stream: Optional[Any]
+
     def __init__(self, log_dir, backupCount=0, encoding="utf-8"):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +101,7 @@ class DailyNamedFileHandler(TimedRotatingFileHandler):
         """在午夜执行轮转。"""
         if self.stream:
             self.stream.close()
-            self.stream = None  # type: ignore
+            self.stream = None
 
         self.baseFilename = self._get_dated_filename()
 
@@ -158,7 +161,12 @@ class TraceCollector:
         self._traces[ctx.trace_id] = []
         self._trace_meta[ctx.trace_id] = ctx
 
-        trace_start_event = f"📝 [TraceStart] trace_id={ctx.trace_id} command={ctx.command} user_id={ctx.user_id}"
+        trace_start_event = t(
+            "log.logger.trace_start_event",
+            trace_id=ctx.trace_id,
+            command=ctx.command,
+            user_id=ctx.user_id,
+        )
         _slg = structlog.get_logger("GsCore")
         _slg.info(trace_start_event, trace_id=ctx.trace_id)
 
@@ -316,8 +324,12 @@ class TraceCollector:
             from gsuid_core.trace_archive import write_trace_meta
 
             write_trace_meta(trace_id, meta, status="completed", log_count=log_count, duration_ms=duration_ms)
-            trace_end_event = (
-                f"🏁 [TraceEnd] trace_id={trace_id} command={meta.command} duration={duration_ms}ms logs={log_count}"
+            trace_end_event = t(
+                "log.logger.trace_end_event",
+                trace_id=trace_id,
+                command=meta.command,
+                duration_ms=duration_ms,
+                log_count=log_count,
             )
             _slg.info(trace_end_event, trace_id=trace_id)
         except Exception as e:
@@ -694,7 +706,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
     # 使用 .critical() 或 .exception() 记录异常
     # 将 exc_info 参数设置为异常信息元组，structlog 会自动处理它
-    logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
+    logger.critical(t("log.logger.unhandled_exception"), exc_info=(exc_type, exc_value, exc_traceback))
 
 
 def setup_logging():
@@ -973,7 +985,7 @@ def handle_exceptions(async_function):
         try:
             return await async_function(*args, **kwargs)
         except Exception as e:
-            logger.exception(t("[错误发生] %s: %s"), async_function.__name__, e)
+            logger.exception(t("log.logger.exception_handler", name=async_function.__name__, error=str(e)))
             return None
 
     return wrapper

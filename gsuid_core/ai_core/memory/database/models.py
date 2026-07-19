@@ -19,6 +19,7 @@ from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueCon
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import JSON
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vector
 from gsuid_core.utils.database.base_models import async_maker, with_session
@@ -120,7 +121,7 @@ class AIMemEpisode(SQLModel, table=True):
                 speaker_ids=speaker_ids,
             )
         except Exception as e:
-            logger.warning(f"Episode vector upsert failed for {episode_id}: {e}")
+            logger.warning(t("log.memory.episode_vector_upsert_fail", episode_id=episode_id, error=str(e)))
 
         return episode
 

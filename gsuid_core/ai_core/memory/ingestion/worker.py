@@ -487,7 +487,13 @@ class IngestionWorker:
                         # 现仅把"从当前失败批起、尚未成功处理"的剩余批次退回缓冲，
                         # 已成功批次绝不重摄。
                         logger.error(
-                            f"Ingestion failed for {scope_key} (batch {idx + 1}/{len(batches)}): {e}",
+                            i18n_t(
+                                "log.memory.ingestion_batch_fail",
+                                scope_key=scope_key,
+                                batch_idx=idx + 1,
+                                batch_total=len(batches),
+                                error=str(e),
+                            ),
                             exc_info=True,
                         )
                         remaining = [r for b in batches[idx:] for r in b]
@@ -1213,7 +1219,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         return _restore_keys(data)
 
     except asyncio.TimeoutError:
-        logger.warning(f"🧠 [Memory] LLM extraction timeout for {scope_key}")
+        logger.warning(i18n_t("log.memory.extraction_timeout", scope_key=scope_key))
         try:
             from gsuid_core.ai_core.statistics import statistics_manager
 
@@ -1223,7 +1229,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
     except ValueError as e:
         # 上游 agent 返回空/非 JSON 时 extract_json_from_text 抛 ValueError，
         # 这是预期内的"模型输出不可用"，只 warning，不打 stack trace
-        logger.warning(f"🧠 [Memory] LLM output not parseable as JSON: {e}")
+        logger.warning(i18n_t("log.memory.extraction_not_json", error=str(e)))
         try:
             from gsuid_core.ai_core.statistics import statistics_manager
 
@@ -1231,7 +1237,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         except Exception:
             pass
     except Exception as e:
-        logger.error(f"🧠 [Memory] LLM extraction failed: {e}", exc_info=True)
+        logger.error(i18n_t("log.memory.extraction_fail", error=str(e)), exc_info=True)
         try:
             from gsuid_core.ai_core.statistics import statistics_manager
 

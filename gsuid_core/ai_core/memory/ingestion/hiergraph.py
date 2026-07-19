@@ -173,7 +173,7 @@ async def rebuild_task(scope_key: str) -> None:
             await builder.incremental_rebuild()
         except Exception as e:
             logger.error(
-                f"Hierarchical graph rebuild failed for {scope_key}: {e}",
+                t("log.memory.hiergraph_rebuild_fail", scope_key=scope_key, error=str(e)),
                 exc_info=True,
             )
 
@@ -1066,10 +1066,10 @@ class HierarchicalGraphBuilder:
             )
             summary = (await asyncio.wait_for(agent.run(prompt), timeout=180))[:500]
         except asyncio.TimeoutError:
-            logger.warning(f"🧠 [HierGraph] Group summary LLM timeout for {self.scope_key}")
+            logger.warning(t("log.memory.hiergraph_summary_timeout", scope_key=self.scope_key))
             return
         except Exception as e:
-            logger.warning(f"🧠 [HierGraph] Group summary generation failed for {self.scope_key}: {e}")
+            logger.warning(t("log.memory.hiergraph_summary_fail", scope_key=self.scope_key, error=str(e)))
             return
 
         if not summary:

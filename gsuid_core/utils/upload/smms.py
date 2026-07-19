@@ -32,7 +32,7 @@ class SMMS:
             ) as resp:
                 logger.info(t("[sm.ms / upload] 开始删除..."))
                 raw_data = await resp.json()
-                logger.debug(f"[sm.ms / delete] {raw_data}")
+                logger.debug(t("log.upload.smms_delete_response", response=raw_data))
 
     async def upload(self, file_name: str, files: BytesIO):
         async with ClientSession() as client:
@@ -45,7 +45,7 @@ class SMMS:
             ) as resp:
                 logger.info(t("[sm.ms / upload] 开始上传..."))
                 raw_data = await resp.json()
-                logger.debug(f"[sm.ms / upload] {raw_data}")
+                logger.debug(t("log.upload.smms_upload_response", response=raw_data))
                 if raw_data["success"]:
                     data = raw_data["data"]
                     if is_auto_delete:

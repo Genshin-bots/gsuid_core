@@ -353,7 +353,7 @@ async def run_heartbeat(
     should_speak: bool = bool(decision["should_speak"])
     context_hook = decision["context_hook"] if "context_hook" in decision else ""
 
-    logger.debug(f"🫀 [Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}")
+    logger.debug(t("log.heartbeat.decision", should_speak=should_speak, mood=mood, context_hook=context_hook))
 
     try:
         statistics_manager.record_trigger(trigger_type="heartbeat")
@@ -490,12 +490,12 @@ async def run_reactive_gate(
         if isinstance(decision, list):
             decision = next((item for item in decision if isinstance(item, dict)), None)
         if not isinstance(decision, dict) or "should_speak" not in decision:
-            logger.debug(t("🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默"))
+            logger.debug(t("log.heartbeat.reactive_decision_missing"))
             return False
         should = bool(decision["should_speak"])
         reason = decision["reason"] if "reason" in decision else None
-        logger.debug(f"🫧 [ReactiveGate] should_speak={should} reason={reason!r}")
+        logger.debug(t("log.heartbeat.reactive_decision", should=should, reason=reason))
         return should
     except Exception as e:
-        logger.debug(t("🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}", e=e))
+        logger.debug(t("log.heartbeat.reactive_gate_error", e=e))
         return True

@@ -497,12 +497,12 @@ async def upload_avatar(
         # 同步该账号所有在线会话中缓存的头像
         session_store.update_user_fields(user_email, avatar=avatar_url)
 
-        return {"status": 0, "msg": "头像上传成功", "data": {"avatar": avatar_url}}
+        return {"status": 0, "msg": t("log.webconsole.auth_avatar_upload_success"), "data": {"avatar": avatar_url}}
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to upload avatar: {e}")
-        return {"status": 1, "msg": "头像上传失败"}
+        logger.warning(t("log.webconsole.auth_avatar_upload_fail", error=e))
+        return {"status": 1, "msg": t("log.webconsole.auth_avatar_upload_fail_msg")}
 
 
 @app.get("/api/auth/avatar/{filename}", summary="获取用户头像文件", tags=AUTH)
@@ -519,7 +519,7 @@ async def get_avatar(request: Request, filename: str):
     """
     file_path = AVATAR_PATH / filename
     if not file_path.exists():
-        return {"status": 1, "msg": "头像不存在"}
+        return {"status": 1, "msg": t("log.webconsole.auth_avatar_not_found")}
 
     try:
         async with aiofiles.open(file_path, "rb") as f:
@@ -541,8 +541,8 @@ async def get_avatar(request: Request, filename: str):
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to get avatar: {e}")
-        return {"status": 1, "msg": "获取头像失败"}
+        logger.warning(t("log.webconsole.auth_avatar_get_fail", error=e))
+        return {"status": 1, "msg": t("log.webconsole.auth_avatar_get_fail_msg")}
 
 
 @app.post("/api/auth/name", summary="更新用户名称", tags=AUTH)

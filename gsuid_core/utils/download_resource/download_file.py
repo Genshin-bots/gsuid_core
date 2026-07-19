@@ -19,7 +19,7 @@ async def download(
     tag: str = "",
 ):
     logger.info(t("{tag} 开始下载 {name} 图片...", tag=tag, name=name))
-    logger.info(f"{tag} URL: {url}")
+    logger.info(t("log.resource_download.file_url", tag=tag, url=url))
     if sess is None:
         sess = httpx.AsyncClient()
 

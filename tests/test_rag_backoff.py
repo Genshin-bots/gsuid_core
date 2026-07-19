@@ -1,5 +1,7 @@
 """RAG 远程 Embedding / Qdrant Upsert 413 退避重试策略的单元测试"""
 
+from unittest.mock import patch
+
 import pytest
 
 from gsuid_core.ai_core.rag.base import (
@@ -21,6 +23,13 @@ def _reset_global_cache():
     yield
     _base._cached_embed_bs = 0
     _base._cached_upsert_bs = 0
+
+
+@pytest.fixture(autouse=True)
+def _force_zh_cn_language():
+    """锁定测试语言为 zh-cn，避免运行机 LANGUAGE 配置影响错误消息断言。"""
+    with patch("gsuid_core.i18n.get_lang", return_value="zh-cn"):
+        yield
 
 
 # ======================== _is_413_error ========================
@@ -195,7 +204,7 @@ class TestEmbedTextsWithBackoff:
             return [[1.0]]  # 只返回 1 个
 
         texts = ["a", "b", "c"]
-        with pytest.raises(RuntimeError, match="批量嵌入返回数量异常"):
+        with pytest.raises(RuntimeError, match="expected"):
             await embed_texts_with_backoff(texts, fake_embed, initial_batch_size=10, log_tag="Test")
 
     @pytest.mark.anyio

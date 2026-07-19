@@ -297,7 +297,7 @@ class GsServer:
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
         logger.debug(t("log.server.importing_plugin", stem=plugin.stem))
-        logger.trace("===============")
+        logger.trace(t("log.server.plugin_import_separator"))
         try:
             module_list = []
             if plugin.is_dir():
@@ -807,7 +807,7 @@ def execute_cmd(cmd_list: List[str]):
             return 0, result.stdout
         else:
             logger.warning(t("log.server.cmd_fail", code=result.returncode))
-            logger.warning(f"Stderr: {result.stderr}")
+            logger.warning(t("log.server.cmd_stderr", stderr=result.stderr))
 
             return result.returncode, result.stderr
     except Exception as e:

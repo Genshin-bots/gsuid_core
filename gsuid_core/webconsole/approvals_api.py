@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from fastapi import Query, Depends
 from pydantic import BaseModel
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import approval as approval_center
 from gsuid_core.webconsole.app_app import app
@@ -78,4 +79,4 @@ async def resolve_approval(
     return {"status": 0, "msg": msg, "data": _row_to_dict(row)}
 
 
-logger.debug("✅ [Approval] WebAPI /api/ai/approvals/* registered.")
+logger.debug(t("log.webconsole.approvals_registered"))

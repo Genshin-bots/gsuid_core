@@ -9,6 +9,7 @@ from datetime import date as dt_date, datetime, timedelta
 
 from fastapi import Depends, Request
 
+from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import TEMP_DICT, require_auth
 from gsuid_core.utils.database.global_val_models import DataType, CoreDataSummary, CoreDataAnalysis
@@ -119,7 +120,7 @@ async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Di
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to fetch dashboard metrics: {e}")
+        logger.warning(t("log.webconsole.dashboard_metrics_fail", error=e))
         # Fallback to mock data if no real data
         return {
             "status": 0,
@@ -314,7 +315,7 @@ async def get_daily_commands(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.exception(f"Failed to fetch daily commands: {e}")
+        logger.exception(t("log.webconsole.dashboard_daily_commands_fail", error=e))
         return {
             "status": 0,
             "msg": "ok",
@@ -397,7 +398,7 @@ async def get_daily_group_triggers(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to fetch daily group triggers: {e}")
+        logger.warning(t("log.webconsole.dashboard_daily_group_triggers_fail", error=e))
         return {
             "status": 0,
             "msg": "ok",
@@ -480,7 +481,7 @@ async def get_daily_personal_triggers(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to fetch daily personal triggers: {e}")
+        logger.warning(t("log.webconsole.dashboard_daily_personal_triggers_fail", error=e))
         return {
             "status": 0,
             "msg": "ok",
@@ -532,7 +533,7 @@ async def get_dashboard_bots(_user: Dict[str, Any] = Depends(require_auth)):
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to fetch bot list: {e}")
+        logger.warning(t("log.webconsole.dashboard_bot_list_fail", error=e))
         return {
             "status": 0,
             "msg": "ok",

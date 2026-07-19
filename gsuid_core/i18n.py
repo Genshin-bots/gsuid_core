@@ -14,6 +14,7 @@ class Lang(str, Enum):
 
     ZH_CN = "zh-cn"
     EN = "en"
+    JA = "ja"
 
 
 DEFAULT_LANG: str = Lang.ZH_CN.value

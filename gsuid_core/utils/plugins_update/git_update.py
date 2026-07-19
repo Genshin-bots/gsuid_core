@@ -313,7 +313,7 @@ async def force_update(repo_path: Path) -> tuple[bool, str]:
     else:
         message = "强制更新成功"
 
-    logger.info(f"[Git Update] {message}")
+    logger.info(t("log.git_update.force_update_result", message=message))
     return True, message
 
 
@@ -351,7 +351,7 @@ async def update(repo_path: Path) -> tuple[bool, str]:
     else:
         message = "更新成功"
 
-    logger.info(f"[Git Update] {message}")
+    logger.info(t("log.git_update.update_result", message=message))
     return True, message
 
 

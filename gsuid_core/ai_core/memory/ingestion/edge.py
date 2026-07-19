@@ -267,4 +267,4 @@ async def extract_and_upsert_edges(
         try:
             await upsert_edge_vectors_batch(edges_vector_data)
         except Exception as e:
-            logger.warning(f"Edge vector batch upsert failed: {e}")
+            logger.warning(t("log.memory.edge_vector_batch_fail", error=str(e)))

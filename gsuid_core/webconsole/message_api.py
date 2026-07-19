@@ -16,6 +16,7 @@ from fastapi import Depends, Request, Response, UploadFile, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.gss import gss
+from gsuid_core.i18n import t
 from gsuid_core.segment import Message, MessageSegment
 from gsuid_core.data_store import image_res
 from gsuid_core.webconsole.app_app import app
@@ -127,7 +128,65 @@ async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] =
                         "",
                     )
 
-    return {"status": 0, "msg": "推送成功！", "data": "推送成功！"}
+    return {"status": 0, "msg": t("log.webconsole.batch_push.success"), "data": t("log.webconsole.batch_push.success")}
+
+
+@app.get(
+    "/api/BatchPush/targets",
+    summary="拉取批量推送可选目标",
+    tags=MESSAGE,
+)
+async def batch_push_targets(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """为 /batch-push 前端页面提供可选目标：
+    - `bots`：当前所有 active_bot（仅展示 WS_BOT_ID）
+    - `groups`：所有 CoreGroup（按 bot_id 聚合）
+    - `users`：所有 CoreUser（按 bot_id 聚合；附 user_id）
+    `value` 形如 `g:{group_id}|{bot_id}` / `u:{user_id}|{bot_id}`，
+    由前端拼接后提交给 /api/BatchPush。两组首位为 `ALLGROUP` / `ALLUSER` 宏。
+    """
+    bots: List[Dict[str, Any]] = [{"bot_id": ws_bot_id, "name": str(ws_bot_id)} for ws_bot_id in (gss.active_bot or {})]
+
+    groups: List[Dict[str, Any]] = []
+    all_group = await CoreGroup.get_all_group()
+    if all_group:
+        seen = set()
+        for g in all_group:
+            key = (g.bot_id, g.group_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.append(
+                {
+                    "bot_id": g.bot_id,
+                    "label": f"{g.bot_id} · {g.group_id}",
+                    "value": f"g:{g.group_id}|{g.bot_id}",
+                }
+            )
+
+    users: List[Dict[str, Any]] = []
+    all_user = await CoreUser.get_all_user()
+    if all_user:
+        seen = set()
+        for u in all_user:
+            key = (u.bot_id, u.user_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            users.append(
+                {
+                    "bot_id": u.bot_id,
+                    "label": f"{u.bot_id} · {u.user_id}",
+                    "value": f"u:{u.user_id}|{u.bot_id}",
+                }
+            )
+
+    # 两组首位放 ALL* 宏，前端识别为"全部群/全部用户"
+    groups.insert(0, {"bot_id": "", "label": t("log.webconsole.batch_push.all_groups"), "value": "ALLGROUP"})
+    users.insert(0, {"bot_id": "", "label": t("log.webconsole.batch_push.all_users"), "value": "ALLUSER"})
+
+    return {"status": 0, "msg": "ok", "data": {"bots": bots, "groups": groups, "users": users}}
 
 
 # ===================

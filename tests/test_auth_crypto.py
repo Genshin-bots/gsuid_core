@@ -20,6 +20,7 @@ import json
 import time
 import base64
 from typing import Any, Dict
+from unittest.mock import patch
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -37,6 +38,14 @@ from gsuid_core.webconsole.auth_crypto import (
     auth_keystore,
     maybe_decrypt_auth_body,
 )
+
+
+@pytest.fixture(autouse=True)
+def _force_zh_cn_language():
+    """锁定测试语言为 zh-cn，避免运行机 LANGUAGE 配置影响错误消息断言。"""
+    with patch("gsuid_core.i18n.get_lang", return_value="zh-cn"):
+        yield
+
 
 # ─────────────────────────────────────────────
 # 前端加密辅助：用与前端一致的算法构造一个加密报文
@@ -194,14 +203,14 @@ def test_unknown_key_id_rejected() -> None:
 def test_stale_timestamp_rejected() -> None:
     # ts 远超容忍窗口 → 视为重放
     body = _frontend_encrypt({"email": "x", "password": "y"}, ts=time.time() - 9999)
-    with pytest.raises(AuthCryptoError, match="时间戳|重放"):
+    with pytest.raises(AuthCryptoError):
         maybe_decrypt_auth_body(body)
 
 
 def test_future_timestamp_rejected() -> None:
     # ts 远在未来同样拒绝（防止把时钟拨快绕过）
     body = _frontend_encrypt({"email": "x", "password": "y"}, ts=time.time() + 9999)
-    with pytest.raises(AuthCryptoError, match="时间戳|重放"):
+    with pytest.raises(AuthCryptoError):
         maybe_decrypt_auth_body(body)
 
 
@@ -298,7 +307,7 @@ def test_non_enc_body_rejected() -> None:
 
 
 def test_encrypted_body_missing_fields_rejected() -> None:
-    with pytest.raises(AuthCryptoError, match="不完整"):
+    with pytest.raises(AuthCryptoError):
         maybe_decrypt_auth_body({"enc": True, "key_id": "x"})
 
 

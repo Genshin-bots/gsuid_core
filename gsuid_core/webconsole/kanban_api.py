@@ -15,6 +15,7 @@ from datetime import datetime
 from fastapi import Query, Depends
 from pydantic import BaseModel
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.planning import kanban
 from gsuid_core.webconsole.app_app import app
@@ -568,4 +569,4 @@ async def list_kanban_candidates(_: Dict[str, Any] = Depends(require_auth)) -> D
     return {"status": 0, "msg": "ok", "data": {"items": out, "count": len(out)}}
 
 
-logger.debug("📋 [Kanban] WebAPI /api/ai/kanban/* registered.")
+logger.debug(t("log.webconsole.kanban_registered"))

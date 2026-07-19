@@ -55,8 +55,8 @@ class S3:
                 asyncio.create_task(self.delete(key))
 
         path = f"{END_POINT}/{self.bucket_id}/{key}"
-        logger.debug(f"[S3 / upload] PATH: {path}")
-        logger.debug(f"[S3 / upload] URL: {url}")
+        logger.debug(t("log.upload.s3_path", path=path))
+        logger.debug(t("log.upload.s3_url", url=url))
 
         return url
 

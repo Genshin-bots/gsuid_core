@@ -12,6 +12,7 @@ from sqlmodel import col, select
 from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import async_maker, with_session
 from gsuid_core.ai_core.memory.database.models import (
@@ -110,7 +111,7 @@ class System2GlobalSelector:
             try:
                 selected, shortcut_all = await self._llm_select_nodes(query, current)
             except LLMNodeSelectionError as e:
-                logger.warning(f"LLM node selection failed at layer {layer}, aborting System-2: {e}")
+                logger.warning(i18n_t("log.memory.system2_layer_fail", layer=layer, error=str(e)))
                 return System2Result()
 
             # 记录本层选中的 Category 构建检索路径
@@ -261,10 +262,10 @@ class System2GlobalSelector:
             selections = _restore_keys(data if isinstance(data, list) else [])
 
         except asyncio.TimeoutError:
-            logger.warning("LLM node selection timeout")
+            logger.warning(i18n_t("log.memory.system2_llm_timeout"))
             raise LLMNodeSelectionError("LLM node selection timeout after 180s")
         except Exception as e:
-            logger.warning(f"LLM node selection failed: {e}")
+            logger.warning(i18n_t("log.memory.system2_llm_fail", error=str(e)))
             raise LLMNodeSelectionError(f"LLM node selection failed: {e}")
 
         id_to_cat = {c.id: c for c in candidates}

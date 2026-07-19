@@ -119,7 +119,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
             break
         else:
             # 重试超过阈值
-            logger.warning(t("{sign_title} 超过请求阈值..."))
+            logger.warning(t("{sign_title} 超过请求阈值...", sign_title=sign_title))
             vl_hint = "❌签到失败...出现验证码!"
             return f"{vl_hint}"
     # 签到失败

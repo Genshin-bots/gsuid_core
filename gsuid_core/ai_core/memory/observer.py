@@ -373,7 +373,7 @@ async def observe(
             _observation_queue.put_nowait(record)
         except sync_queue.Empty:
             # 极端并发：get 与 put 之间被其它线程抢先；放弃本条
-            logger.warning("Memory observation queue race; dropping message")
+            logger.warning(t("log.memory.observation_queue_race"))
     # 纠错即时写快路径（受 enable_preference_memory 前置）：命中纠错的 scope 走优先 flush
     # （带 debounce），让数分钟内的"下一次"请求即可召回纠错偏好，而非等 batch 大窗。
     if is_correction and memory_config.preference_immediate_flush:

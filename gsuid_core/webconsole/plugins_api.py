@@ -1021,7 +1021,7 @@ async def get_plugin_store_list(request: Request, _user: Dict[str, Any] = Depend
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(f"Failed to fetch plugin store list: {e}")
+        logger.warning(t("log.webconsole.plugin_store_fail", error=e))
         return {"status": 1, "msg": f"获取插件列表失败: {str(e)}", "data": []}
 
 

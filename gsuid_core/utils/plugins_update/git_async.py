@@ -142,11 +142,16 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
             )
         )
         if stderr_str:
-            logger.warning(f"[Git Async] stderr: {stderr_str}")
+            logger.warning(t("log.git_async.stderr", stderr=stderr_str))
     else:
         logger.success(t("[Git Async] 命令成功: {cmd_str} @ {repo_path}", cmd_str=cmd_str, repo_path=repo_path))
         if stdout_str:
-            logger.debug(f"[Git Async] stdout: {stdout_str[:200]}{'...' if len(stdout_str) > 200 else ''}")
+            logger.debug(
+                t(
+                    "log.git_async.stdout",
+                    stdout=f"{stdout_str[:200]}{'...' if len(stdout_str) > 200 else ''}",
+                )
+            )
 
     return (returncode, stdout_str, stderr_str)
 

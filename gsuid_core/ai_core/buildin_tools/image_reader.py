@@ -27,7 +27,7 @@ import asyncio
 from typing import Literal
 
 import httpx
-from pydantic_ai import BinaryContent, ImageUrl, RunContext, ToolReturn
+from pydantic_ai import ImageUrl, RunContext, ToolReturn, BinaryContent
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -112,7 +112,7 @@ def _current_task_level(parent_session_id: str | None) -> Literal["high", "low"]
             if sess is not None:
                 return sess.task_level
     except Exception as e:  # noqa: BLE001
-        logger.debug(f"🧠 [BuildinTools] read_image 取 task_level 失败，按 high 处理: {e}")
+        logger.debug(t("log.buildin.image_reader_task_level_fail", error=str(e)))
     return "high"
 
 
@@ -129,7 +129,7 @@ def _current_model_supports_image(parent_session_id: str | None) -> bool:
         support: object = get_model_config_for_task(task_level).get_config("model_support").data
         return isinstance(support, (list, str)) and "image" in support
     except Exception as e:  # noqa: BLE001 - 判定失败按「不支持」处理，退回文字转述更安全
-        logger.debug(f"🧠 [BuildinTools] read_image 判定主模型多模态失败，按不支持处理: {e}")
+        logger.debug(t("log.buildin.image_reader_image_support_fail", error=str(e)))
         return False
 
 
@@ -144,7 +144,7 @@ def _current_provider(parent_session_id: str | None) -> str:
         task_level = _current_task_level(parent_session_id)
         return parse_provider_config_name(get_config_name_for_task(task_level))[0]
     except Exception as e:  # noqa: BLE001
-        logger.debug(f"🧠 [BuildinTools] read_image 判定主模型 provider 失败，按 openai 处理: {e}")
+        logger.debug(t("log.buildin.image_reader_provider_fail", error=str(e)))
         return "openai"
 
 
@@ -175,7 +175,7 @@ def _to_tool_image_content(image_url: str, provider: str = "openai") -> list[Ima
                 mime = header[5:].split(";", 1)[0].strip() or "image/png"
                 return [BinaryContent(data=base64.b64decode(b64), media_type=mime)]
             except Exception as e:  # noqa: BLE001 - 坏 DataURI → 退回文字转述兜底
-                logger.warning(f"🧠 [BuildinTools] read_image DataURI 解码失败，退回文字转述: {e}")
+                logger.warning(t("log.buildin.image_reader_datauri_fail", error=str(e)))
                 return None
         return [ImageUrl(url=url)]
     return None
