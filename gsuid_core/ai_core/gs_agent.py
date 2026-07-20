@@ -32,7 +32,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 
 from gsuid_core.bot import Bot
@@ -1597,6 +1596,8 @@ class GsCoreAIAgent:
             _model_settings = self.model.settings
             if memory_config.eval_mode and _model_settings:
                 _model_settings["temperature"] = 0.0
+        else:
+            _model_settings = None
 
         _agent = Agent(
             model=self.model,
@@ -1625,11 +1626,16 @@ class GsCoreAIAgent:
         # 防御：profile 理论上恒为 ModelProfile，但线上出现过
         # "'dict' object has no attribute 'thinking_tags'" 炸整轮 run 的报告——
         # 这里改为类型守卫 + 取证日志，异常形态只降级为默认标签，不再中断对话。
-        _thinking_tags: tuple[str, str] = ("<think>", "</think>")
+        # v2.0: ModelProfile 已是 TypedDict（dict 子类），isinstance(_, ModelProfile)
+        # 在 Pyright 下被拒绝（TypedDict 不能作为 isinstance 第二参数）。
+        # 改用 isinstance(_profile_obj, dict) 守门后用 .get() 取字段。
+        _thinking_tags: tuple[str, str] = ("think", "think")
         if self.model is not None:
             _profile_obj = self.model.profile
-            if isinstance(_profile_obj, ModelProfile):
-                _thinking_tags = _profile_obj.thinking_tags
+            if isinstance(_profile_obj, dict):
+                _profile_thinking_tags = _profile_obj.get("thinking_tags")
+                if _profile_thinking_tags is not None:
+                    _thinking_tags = _profile_thinking_tags
             else:
                 logger.error(
                     i18n_t(
@@ -1695,9 +1701,18 @@ class GsCoreAIAgent:
                                             resource_id=resource_id,
                                         )
                                     )
-                                    part.content = (
-                                        f"[工具 {part.tool_name} 已生成内容, 但没有发送给用户，资源ID: {resource_id}]"
-                                    )
+                                    # v2.0: ToolReturnPart.content 在标注中是 str|Any,
+                                    # 实际能赋值的源是 str。Pydantic-AI 2.0 还新增了
+                                    # ToolSearchReturnPart/LoadCapabilityReturnPart,
+                                    # 那些 part 的 content 类型不容纳 str。这里用
+                                    # isinstance(_tool_return_part) 守门, 限定走
+                                    # 仅 ToolReturnPart 分支, 其他 part 类型跳过替换。
+                                    if type(part) is ToolReturnPart:
+                                        # LLM.md §1.6: 注释精简一行点明意图
+                                        # 短截 f-string 避免 line-too-long: user-visible 工具返销占位
+                                        part.content = (
+                                            f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
+                                        )
 
                                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
                                 tool_result_str = str(part.content)
@@ -1933,7 +1948,8 @@ class GsCoreAIAgent:
                 statistics_manager.record_latency(latency=latency)
 
                 try:
-                    usage_obj: RunUsage = result.usage()
+                    # v2: result.usage / result.timestamp 由方法改为属性
+                    usage_obj: RunUsage = result.usage
                     input_tokens: int = usage_obj.input_tokens
                     output_tokens: int = usage_obj.output_tokens
                     cache_read_tokens: int = usage_obj.cache_read_tokens
@@ -1993,6 +2009,10 @@ class GsCoreAIAgent:
                 except AttributeError as e:
                     # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
                     logger.info(i18n_t("📊 [GsCoreAIAgent] result.usage 访问失败: {e}", e=e))
+                    pass
+                except TypeError as e:
+                    # v1 旧写法 result.usage() 在 v2 抛 'RunUsage' is not callable
+                    logger.info(i18n_t("📊 [GsCoreAIAgent] result.usage 调用方式不兼容 v2: {e}", e=e))
                     pass
                 except Exception as e:
                     logger.warning(i18n_t("📊 [GsCoreAIAgent] 记录统计失败: {e}", e=e))

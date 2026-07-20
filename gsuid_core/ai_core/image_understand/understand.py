@@ -15,11 +15,9 @@ Image Understand 公共 API 模块
 
 import time
 import hashlib
-from typing import Union, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic_ai.messages import ImageUrl
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
-from pydantic_ai.models.anthropic import AnthropicModel
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -33,6 +31,7 @@ from gsuid_core.ai_core.mcp.utils import (
     prepare_source_for_mcp,
 )
 from gsuid_core.ai_core.configs.models import (
+    AnyModel,
     get_model_for_task,
     get_model_config_for_task,
 )
@@ -94,11 +93,13 @@ def _understand_cache_put(key: str, value: str) -> None:
 
 def _resolve_native_image_model(
     task_level: Literal["high", "low"],
-) -> Optional[Union[OpenAIChatModel, OpenAIResponsesModel, AnthropicModel]]:
+) -> AnyModel | None:
     """若指定级别的模型在 model_support 中声明了 image，则返回其原生模型实例。
 
     模型原生支持图片时，应直接用大模型的多模态能力（OpenAI / Anthropic 兼容请求）
     转述图片，无需再单独配置图片转述模型（MCP）。不支持时返回 None，交由 MCP 兜底。
+    返回类型扩大到 AnyModel（含 GoogleModel）：当前仅由调用方 if isinstance 区分
+    OpenAI/Anthropic 三家；gemini 多模态原生支持存在但本函数未直接走, 后续可扩展。
     """
     model_config = get_model_config_for_task(task_level)
     model_support = model_config.get_config("model_support").data

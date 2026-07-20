@@ -1,8 +1,9 @@
 import json
 import asyncio
 from io import BytesIO
+from typing import Dict
 
-from aiohttp.client import ClientSession
+from aiohttp.client import ClientSession, ClientTimeout
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -16,7 +17,9 @@ _header: str = pic_upload_config.get_config("custom_header").data
 
 class CUSTOM:
     def __init__(self, _header: str = _header) -> None:
-        self.header = json.dumps(_header)
+        # aiohttp.request(headers=) 期望 LooseHeaders | None, 必须用 dict;
+        # 旧实现 json.dumps 后把字符串塞给 aiohttp 是隐患, 改存 dict。
+        self.header: Dict[str, str] = json.loads(_header) if isinstance(_header, str) else _header
 
     async def delete(self):
         logger.warning(t("[custom / upload] 未实现delete..."))
@@ -28,7 +31,7 @@ class CUSTOM:
                 url=URL,
                 headers=self.header,
                 data={"file": files.getvalue()},
-                timeout=300,
+                timeout=ClientTimeout(total=300),
             ) as resp:
                 logger.info(t("[custom / upload] 开始上传..."))
                 raw_data = await resp.json()

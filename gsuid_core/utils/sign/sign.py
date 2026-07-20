@@ -1,6 +1,7 @@
 import random
 import asyncio
 from typing import Dict, List
+from collections.abc import Sequence
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -202,7 +203,7 @@ async def daily_sign(game_name: str):
     tasks = []
     private_msgs = {}
     group_msgs = {}
-    _user_list: List[GsUser] = await GsUser.get_all_user()
+    _user_list: Sequence[GsUser] = await GsUser.get_all_user()
     uid_list = []
     user_list: List[GsUser] = []
     for user in _user_list:

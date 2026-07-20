@@ -151,8 +151,8 @@ async def download_atag_file(
         url += "/"
 
     if endpoint not in EPATH_MAP:
-        if endpoint.endswith("/"):
-            _endpoint = endpoint[:-1]
+        # 默认不改; 仅当用户填了尾斜杠时才裁掉, 避免 EPATH_MAP 误匹。
+        _endpoint = endpoint[:-1] if endpoint.endswith("/") else endpoint
         _et = _endpoint.rsplit("/", 1)
         _e = _et[0]
         _t = _et[1]

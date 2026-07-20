@@ -495,9 +495,15 @@ def _register_trigger_as_ai_tool(
             default="",
         ),
     ]
-    _ai_tool_wrapper.__signature__ = inspect.Signature(
-        parameters=new_params,
-        return_annotation=str,
+    # FunctionType 静态无 __signature__ 字段; 改 setattr 动态写入, pyright 不再标红
+    # （与 register.py 的 @ai_tools 装饰器同款写法保持一致）。
+    setattr(
+        _ai_tool_wrapper,
+        "__signature__",
+        inspect.Signature(
+            parameters=new_params,
+            return_annotation=str,
+        ),
     )
 
     # 注册到 PydanticAI Tool

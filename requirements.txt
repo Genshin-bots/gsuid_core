@@ -131,16 +131,18 @@ annotated-types==0.7.0 \
     # via
     #   gsuid-core
     #   pydantic
-anthropic==0.97.0 \
-    --hash=sha256:021e79fd8e21e90ad94dc5ba2bbbd8b1599f424f5b1fab6c06204009cab764be \
-    --hash=sha256:8a1a472dfabcfc0c52ff6a3eecf724ac7e07107a2f6e2367be55ceb42f5d5613
+anthropic==0.117.0 \
+    --hash=sha256:451a0a6905f11dff7663d13e4ee5dbf909eb8942b1d049803c7b937a13ac47ec \
+    --hash=sha256:98107f2b76439641e0ae2a1754087534b8f178dbab99d6eb1bc4b7bc8c744496
     # via pydantic-ai-slim
 anyio==4.12.1 \
     --hash=sha256:41cfcc3a4c85d3f05c932da7c26d0201ac36f72abd4435ba90d0464a3ffed703 \
     --hash=sha256:d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c
     # via
     #   anthropic
+    #   google-genai
     #   httpx
+    #   httpx2
     #   mcp
     #   openai
     #   py-key-value-aio
@@ -453,6 +455,7 @@ distro==1.9.0 \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
     # via
     #   anthropic
+    #   google-genai
     #   openai
 dnspython==2.8.0 \
     --hash=sha256:01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af \
@@ -607,9 +610,9 @@ fsspec==2026.1.0 \
     --hash=sha256:cb76aa913c2285a3b49bdd5fc55b1d7c708d7208126b60f2eb8194fe1b4cbdcc \
     --hash=sha256:e987cb0496a0d81bba3a9d1cee62922fb395e7d4c3b575e57f547953334fe07b
     # via huggingface-hub
-genai-prices==0.0.56 \
-    --hash=sha256:ac24b16a84d0ab97539bfa48dfa4649689de8e3ce71c12ebacef29efb1998045 \
-    --hash=sha256:dbe86be8f3f556bed1b72209ed36851fec8b01793b3b220f42921a4e7da945f6
+genai-prices==0.0.71 \
+    --hash=sha256:1d13111563af2b1ce43ccfacf77b7ac3216ad704c644408a56e11b181fe0d128 \
+    --hash=sha256:de4db34ec38404f9ef383cb1ab29e204d16ccf27071af0b16d5747ee7affe36b
     # via pydantic-ai-slim
 google-ai-generativelanguage==0.6.15 \
     --hash=sha256:5a03ef86377aa184ffef3662ca28f19eeee158733e45d7947982eb953c6ebb6c \
@@ -626,19 +629,24 @@ google-api-python-client==2.188.0 \
     --hash=sha256:3cad1b68f9d48b82b93d77927e8370a6f43f33d97848242601f14a93a1c70ef5 \
     --hash=sha256:5c469db6614f071009e3e5bb8b6aeeccae3beb3647fa9c6cd97f0d551edde0b6
     # via google-generativeai
-google-auth==2.48.0 \
-    --hash=sha256:2e2a537873d449434252a9632c28bfc268b0adb1e53f9fb62afc5333a975903f \
-    --hash=sha256:4f7e706b0cd3208a3d940a19a822c37a476ddba5450156c3e6624a71f7c841ce
+google-auth==2.55.2 \
+    --hash=sha256:97ae7790ff740f2bc9db60eb864a7804f4ac19f5f02c38b3d942f2fea6e9b9ae \
+    --hash=sha256:d715f265f2cafc6a5f1bf0dc19870d20e3119f6f6682785a250bce3d03d38a3b
     # via
     #   google-ai-generativelanguage
     #   google-api-core
     #   google-api-python-client
     #   google-auth-httplib2
+    #   google-genai
     #   google-generativeai
 google-auth-httplib2==0.3.0 \
     --hash=sha256:177898a0175252480d5ed916aeea183c2df87c1f9c26705d74ae6b951c268b0b \
     --hash=sha256:426167e5df066e3f5a0fc7ea18768c08e7296046594ce4c8c409c2457dd1f776
     # via google-api-python-client
+google-genai==2.12.0 \
+    --hash=sha256:6271c1d37a47e5cffe97d5b0a012353f00733ef43e514c07fb3490f942e337f0 \
+    --hash=sha256:d383b7a158cb45b457a6924c69b3856409cd999564592527911d290cde83cc30
+    # via pydantic-ai-slim
 google-generativeai==0.8.6 \
     --hash=sha256:37a0eaaa95e5bbf888828e20a4a1b2c196cc9527d194706e58a68ff388aeb0fa
     # via gsuid-core
@@ -759,6 +767,7 @@ h11==0.16.0 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
     # via
     #   httpcore
+    #   httpcore2
     #   uvicorn
 h2==4.3.0 \
     --hash=sha256:6c59efe4323fa18b47a632221a1888bd7fde6249819beda254aeca909f221bf1 \
@@ -798,6 +807,10 @@ httpcore==1.0.9 \
     # via
     #   exa-py
     #   httpx
+httpcore2==2.3.0 \
+    --hash=sha256:07327e251560960eea8e969d92d4c6a325feb13cca39e25340731336c3baf924 \
+    --hash=sha256:477e9e334f74e5240dcac002e890580f36a57d40ff0fb14cc9655731d23b8415
+    # via httpx2
 httplib2==0.31.2 \
     --hash=sha256:385e0869d7397484f4eab426197a4c020b606edd43372492337c0b4010ae5d24 \
     --hash=sha256:dbf0c2fa3862acf3c55c078ea9c0bc4481d7dc5117cae71be9514912cf9f8349
@@ -811,7 +824,7 @@ httpx==0.28.1 \
     #   anthropic
     #   exa-py
     #   fastmcp
-    #   genai-prices
+    #   google-genai
     #   gsuid-core
     #   huggingface-hub
     #   mcp
@@ -824,6 +837,10 @@ httpx-sse==0.4.3 \
     --hash=sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc \
     --hash=sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d
     # via mcp
+httpx2==2.3.0 \
+    --hash=sha256:227e7c41d95a76d4077a52640564132777215fc3394e07b66a3116c33d668fa9 \
+    --hash=sha256:6f393663bdf6dbe7fe90118e3eb5b2bd024a675cae0390ac08cec9198812d8b7
+    # via genai-prices
 huggingface-hub==1.3.5 \
     --hash=sha256:8045aca8ddab35d937138f3c386c6d43a275f53437c5c64cdc9aa8408653b4ed \
     --hash=sha256:fe332d7f86a8af874768452295c22cd3f37730fb2463cf6cc3295e26036f8ef9
@@ -841,6 +858,7 @@ idna==3.11 \
     #   anyio
     #   email-validator
     #   httpx
+    #   httpx2
     #   requests
     #   yarl
 importlib-metadata==8.7.1 \
@@ -1595,9 +1613,9 @@ onnxruntime==1.26.0 \
     # via
     #   fastembed
     #   gsuid-core
-openai==2.30.0 \
-    --hash=sha256:92f7661c990bda4b22a941806c83eabe4896c3094465030dd882a71abe80c885 \
-    --hash=sha256:9a5ae616888eb2748ec5e0c5b955a51592e0b201a11f4262db920f2a78c5231d
+openai==2.46.0 \
+    --hash=sha256:0421e0735ac41451cad894af4cddf0435bfbf8cbc538ac0e15b3c062f2ddc06a \
+    --hash=sha256:672381db55efb3a1e2610f29304c130cccdd0b319bace4d492b2443cb64c1e7c
     # via
     #   exa-py
     #   gsuid-core
@@ -1906,9 +1924,7 @@ py-rust-stemmers==0.1.5 \
 pyasn1==0.6.2 \
     --hash=sha256:1eb26d860996a18e9b6ed05e7aae0e9fc21619fcee6af91cca9bad4fbea224bf \
     --hash=sha256:9b59a2b25ba7e4f8197db7686c09fb33e658b98339fadb826e9512629017833b
-    # via
-    #   pyasn1-modules
-    #   rsa
+    # via pyasn1-modules
 pyasn1-modules==0.4.2 \
     --hash=sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a \
     --hash=sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6
@@ -1926,6 +1942,7 @@ pydantic==2.12.5 \
     #   fastapi
     #   fastmcp
     #   genai-prices
+    #   google-genai
     #   google-generativeai
     #   gsuid-core
     #   mcp
@@ -1940,9 +1957,9 @@ pydantic-ai-skills==0.6.0 \
     --hash=sha256:76aa54f5ad91e104205251a9b350c9e5ec69f76ef9d183c942ad3830a37fed7c \
     --hash=sha256:8a583336bf5df3f920aaf5c01a6b34ce5de6d470699240f9af7518ee8b3b447f
     # via gsuid-core
-pydantic-ai-slim==1.72.0 \
-    --hash=sha256:ccb84a890347571e6e3927ff49363aa98a3a5bbfdc42de2c8d3be9f673bbccc6 \
-    --hash=sha256:feb409a37a868eae300adc6110ed455b74f45e80c37094dd6926b36585c761e1
+pydantic-ai-slim==2.13.0 \
+    --hash=sha256:3d5f4e5012dc0a4b0e9f76268ce8afd734191b48dbccbf221ac7d030d9e8fcae \
+    --hash=sha256:b56b4bf2d5bfcadc0f83a5da16c750b013a2d79cebc2170501ed82435acf39f1
     # via
     #   gsuid-core
     #   pydantic-ai-skills
@@ -2035,9 +2052,9 @@ pydantic-core==2.41.5 \
     --hash=sha256:f31d95a179f8d64d90f6831d71fa93290893a33148d890ba15de25642c5d075b \
     --hash=sha256:f41a7489d32336dbf2199c8c0a215390a751c5b014c2c1c5366e817202e9cdf7
     # via pydantic
-pydantic-graph==1.72.0 \
-    --hash=sha256:8970cc4cd4ba396976d4b4aa0ba5dcc9a0efeeac01a1a9253c7a8d90a4590046 \
-    --hash=sha256:d1c953d7395ff53b74c3e3b8b4cfac8d8ba06d32fc656ebae9363b2ade8598b0
+pydantic-graph==2.13.0 \
+    --hash=sha256:0b77975fef41c993744d06f6e56c49afdbfedb23e8984fe46b2f962dcf90f556 \
+    --hash=sha256:65c51707c36fcc146d2d4130ed26c3186803419b126f72709b77181d0bb0e82e
     # via pydantic-ai-slim
 pydantic-settings==2.12.0 \
     --hash=sha256:005538ef951e3c2a68e1c08b292b5f2e71490def8589d4221b95dab00dafcfd0 \
@@ -2319,6 +2336,8 @@ requests==2.32.5 \
     #   exa-py
     #   fastembed
     #   google-api-core
+    #   google-auth
+    #   google-genai
     #   tavily-python
     #   tiktoken
 rich==14.3.1 \
@@ -2438,10 +2457,6 @@ rpds-py==0.30.0 \
     # via
     #   jsonschema
     #   referencing
-rsa==4.9.1 \
-    --hash=sha256:68635866661c6836b8d39430f97a996acbd61bfa49406748ea243539fe239762 \
-    --hash=sha256:e7bdbfdb5497da4c07dfd35530e1a902659db6ff241e39d9953cad06ebd0ae75
-    # via google-auth
 s3transfer==0.10.4 \
     --hash=sha256:244a76a24355363a68164241438de1b72f8781664920260c48465896b712a41e \
     --hash=sha256:29edc09801743c21eb5ecbc617a152df41d3c287f67b615f73e5f750583666a7
@@ -2571,6 +2586,7 @@ sniffio==1.3.1 \
     --hash=sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc
     # via
     #   anthropic
+    #   google-genai
     #   openai
 soupsieve==2.8.3 \
     --hash=sha256:3267f1eeea4251fb42728b6dfb746edc9acaffc4a45b27e19450b676586e8349 \
@@ -2640,6 +2656,10 @@ tavily-python==0.7.23 \
     --hash=sha256:3b92232e0e29ab68898b765f281bb4f2c650b02210b64affbc48e15292e96161 \
     --hash=sha256:52ef85c44b926bce3f257570cd32bc1bd4db54666acf3105617f27411a59e188
     # via gsuid-core
+tenacity==9.1.4 \
+    --hash=sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55 \
+    --hash=sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a
+    # via google-genai
 threadpoolctl==3.6.0 \
     --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb \
     --hash=sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e
@@ -2722,6 +2742,12 @@ tqdm==4.67.2 \
     #   google-generativeai
     #   huggingface-hub
     #   openai
+truststore==0.10.4 \
+    --hash=sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301 \
+    --hash=sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981
+    # via
+    #   httpcore2
+    #   httpx2
 typer-slim==0.21.1 \
     --hash=sha256:6e6c31047f171ac93cc5a973c9e617dbc5ab2bddc4d0a3135dc161b4e2020e0d \
     --hash=sha256:73495dd08c2d0940d611c5a8c04e91c2a0a98600cbd4ee19192255a233b6dbfd
@@ -2737,6 +2763,7 @@ typing-extensions==4.15.0 \
     #   exa-py
     #   exceptiongroup
     #   fastapi
+    #   google-genai
     #   google-generativeai
     #   grpcio
     #   huggingface-hub
@@ -2926,6 +2953,7 @@ websockets==16.0 \
     --hash=sha256:fd3cb4adb94a2a6e2b7c0d8d05cb94e6f1c81a0cf9dc2694fb65c7e8d94c42e4
     # via
     #   fastmcp
+    #   google-genai
     #   gsuid-core
 win32-setctime==1.2.0 ; sys_platform == 'win32' \
     --hash=sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390 \

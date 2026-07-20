@@ -235,7 +235,7 @@ docker pull docker.cnb.cool/gscore-mirror/gsuid_core:latest
 | Tag | 说明 |
 |-----|------|
 | `latest` | 最新稳定版 |
-| `:x.y.z` | 指定版本（如 `:0.10.5`） |
+| `:x.y.z` | 指定版本（如 `:0.10.6`） |
 | `gscore-mirror/gsuid_core/gscore-uv-3.12:latest` | 仅基础镜像（Python+uv+playwright+chromium+字体），不含 GsCore 代码（挂载模式用） |
 
 ## 12.8 常见错误

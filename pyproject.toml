@@ -54,7 +54,7 @@ dependencies = [
     "tiktoken>=0.12.0",
     "python-multipart>=0.0.22",
     "tavily-python>=0.7.23",
-    "pydantic-ai-slim[anthropic,google,openai]>=1.72.0",
+    "pydantic-ai-slim[anthropic,google,openai]>=2.13.0",
     "pydantic-ai-skills>=0.6.0",
     "json-repair>=0.59.4",
     "exa-py>=2.12.1",
@@ -65,7 +65,7 @@ dependencies = [
     "markdown-it-py>=4.2.0",
 ]
 name = "gsuid-core"
-version = "0.10.5"
+version = "0.10.6"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 

@@ -1450,7 +1450,10 @@ def _truncate_tool_returns_in_history(messages: List[ModelMessage]) -> int:
         if not isinstance(msg, ModelRequest):
             continue
         for part in msg.parts:
-            if not isinstance(part, ToolReturnPart) or not isinstance(part.content, str):
+            # v2.0 新增 ToolSearchReturnPart/LoadCapabilityReturnPart 等 part 类型,
+            # 那些的 content 不容许赋值 str。type(part) is ToolReturnPart 是
+            # 精确类型守门（子类不影响, 与 gs_agent 同步做法）。
+            if type(part) is not ToolReturnPart or not isinstance(part.content, str):
                 continue
             content = part.content
             if len(content) <= _TOOL_RETURN_HISTORY_MAX:

@@ -11,19 +11,24 @@
 Gemini 说明: 走 pydantic_ai 的 GoogleModel(Google GenAI 原生格式), 依赖可选包
 ``google-genai``(pydantic-ai-slim 的 ``google`` extra)。缺依赖时仅 gemini 配置
 不可用, 不影响 openai/anthropic —— 因此 GoogleModel 采用**延迟导入**。
+
+pydantic-ai 升级: ModelProfile 在 2.0 起改 `TypedDict`, ``from_profile`` 和
+``dataclasses.replace`` 都已移除; ``profile=`` 参数也由 ``(name) -> Profile``
+改为 ``(default_profile) -> Profile``(框架把已解析的默认 profile 喂过来)。
 """
 
 import json
 import hashlib
 from typing import TYPE_CHECKING, Union, Literal, final
 from functools import lru_cache
-from collections.abc import AsyncIterator
+from collections.abc import Callable, AsyncIterator
 from typing_extensions import override
 
 import httpx
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionChunk
 from pydantic_ai.usage import RequestUsage
+from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.settings import ModelSettings, ThinkingLevel
 from pydantic_ai.models.openai import (
     OpenAIChatModel,
@@ -377,15 +382,17 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     # 通过 profile 覆写实现(openai_chat_send_back_thinking_parts=False 是
     # pydantic_ai 的官方开关);旧配置文件缺该 key 时自动补默认值 "auto"。
     send_back_thinking = str(get_openai_config(config_name).get_config("send_back_thinking").data)
-    profile_spec = None
     if send_back_thinking == "off":
-        from dataclasses import replace as _dc_replace
-
         from pydantic_ai.profiles.openai import OpenAIModelProfile
 
-        def profile_spec(name: str, _provider: OpenAIProvider = provider):
-            base = OpenAIModelProfile.from_profile(_provider.model_profile(name))
-            return _dc_replace(base, openai_chat_send_back_thinking_parts=False)
+        def _overlay_send_back_off(default: ModelProfile) -> ModelProfile:
+            # v2: profile 已是 TypedDict, 直接用 merge_profile 叠加 OpenAI 专属字段
+            return merge_profile(default, OpenAIModelProfile(openai_chat_send_back_thinking_parts=False))
+
+        profile_spec: Callable[[ModelProfile], ModelProfile] = _overlay_send_back_off
+    else:
+        # 默认走 identity: 不叠加任何字段, 行为与 send_back_thinking=auto/on 一致
+        profile_spec: Callable[[ModelProfile], ModelProfile] = lambda default: default  # noqa: E731
 
     if request_method == "responses":
         return OpenAIResponsesModel(

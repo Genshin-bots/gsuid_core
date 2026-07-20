@@ -7,6 +7,7 @@ HTML渲染工具模块
 
 from typing import Optional
 
+# 工具函数, 没有 htmlkit 时回退到 raises 的 stub, 调用方就不会拿到 undefined name。
 try:
     from htmlkit import (
         md_to_pic,
@@ -17,6 +18,17 @@ try:
 except ImportError as e:
     # 引导期依赖缺失提示：早于 i18n 导入，保持纯中文
     print(f"缺少 htmlkit 库，请先安装：pip install pyrenderhtml, {e}")
+
+    def _missing_dependency(name: str):
+        def _raise(*args: object, **kwargs: object) -> object:
+            raise RuntimeError(f"html_render.{name} 调用失败: htmlkit 未安装。请先安装: pip install pyrenderhtml")
+
+        return _raise
+
+    md_to_pic = _missing_dependency("md_to_pic")
+    html_to_pic = _missing_dependency("html_to_pic")
+    text_to_pic = _missing_dependency("text_to_pic")
+    init_fontconfig = _missing_dependency("init_fontconfig")
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger

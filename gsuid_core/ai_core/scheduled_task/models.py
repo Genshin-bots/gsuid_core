@@ -103,22 +103,3 @@ class AIScheduledTask(BaseBotIDModel, table=True):
     current_executions: Optional[int] = Field(title="当前执行次数", default=0)
     start_time: Optional[datetime] = Field(title="开始时间", default=None)
     next_run_time: Optional[datetime] = Field(title="下次执行时间", default=None, index=True)
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "task_id": "scheduled_task_abc123",
-                "task_type": "once",
-                "user_id": "user_001",
-                "group_id": None,
-                "bot_self_id": "123456",
-                "user_type": "direct",
-                "WS_BOT_ID": None,
-                "persona_name": "default",
-                "session_id": "ws-onebot:onebot:bot_001:private:user_001",
-                "trigger_time": "2024-05-15 06:30:00",
-                "task_prompt": "查询英伟达(NVDA)的实时股价和最新新闻并总结",
-                "status": "pending",
-                "created_at": "2024-05-14 22:00:00",
-            }
-        }

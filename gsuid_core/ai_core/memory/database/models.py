@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Field, SQLModel, Relationship, col, select
 from sqlalchemy import Text, Index, Table, Column, String, ForeignKey, UniqueConstraint, or_, desc, func, exists, insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import JSON
 
@@ -267,7 +268,9 @@ class AIMemEpisode(SQLModel, table=True):
         from sqlalchemy import update as _update
 
         result = await session.execute(_update(cls).where(col(cls.id).in_(episode_ids)).values(is_archived=True))
-        return result.rowcount or 0
+        # LLM.md §3.5.2: session.execute 静态返回 Result[Any], 无 rowcount;
+        # DML 实际返回 CursorResult。用 isinstance 守门取 rowcount, 不依赖 cast。
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_session
@@ -875,7 +878,8 @@ class AIMemEdge(SQLModel, table=True):
             )
             .values(decay_score=func.coalesce(col(cls.decay_score), 1.0) * decay_factor)
         )
-        return result.rowcount or 0
+        # LLM.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_session
@@ -1260,7 +1264,8 @@ class AIMemPreference(SQLModel, table=True):
         from sqlalchemy import delete as _delete
 
         result = await session.execute(_delete(cls).where(col(cls.scope_key).in_(scope_keys)))
-        return result.rowcount or 0
+        # LLM.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_session

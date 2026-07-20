@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from sqlmodel import col, and_, delete, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.engine import CursorResult
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -43,9 +44,12 @@ async def _ensure_table() -> None:
         from gsuid_core.utils.database.base_models import engine
 
         async with engine.begin() as conn:
+            # sqlmodel.pyi 未在 class 上声明 ``__table__``/``__tablename__`` 时为
+            # InstrumentedAttribute[Unknown]（数据库字段）, 不被 metadata.tables[str] 接收;
+            # 这里显式硬编码 SQL 表名（见 LLM.md §3.1.1 全小写表名）绕开 stub。
             await conn.run_sync(
                 AIPersistentState.metadata.create_all,
-                tables=[AIPersistentState.__table__],
+                tables=[AIPersistentState.metadata.tables["aipersistentstate"]],
                 checkfirst=True,
             )
         _table_ensured = True
@@ -293,7 +297,8 @@ async def state_mutate(
                 )
                 result = await session.execute(upd)
                 await session.commit()
-                if result.rowcount == 1:
+                # LLM.md §3.5.2: rowcount 仅对 CursorResult 暴露, isinstance 守门
+                if isinstance(result, CursorResult) and result.rowcount == 1:
                     return new_value
                 # version 已被其他并发写入推进，重试
 

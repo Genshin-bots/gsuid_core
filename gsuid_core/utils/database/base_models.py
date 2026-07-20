@@ -17,7 +17,7 @@ from typing_extensions import ParamSpec, Concatenate
 from sqlmodel import Field, SQLModel, col, and_, delete, select, update
 from sqlalchemy import MetaData, exc, text, event, inspect, create_engine
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -142,8 +142,8 @@ async def init_database():
                         "isolation_level": "AUTOCOMMIT",
                     }
                 )
+                server_engine: Engine | None = None
                 try:
-                    server_engine = None
                     if _db_type == "mysql":
                         server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
 
@@ -154,8 +154,8 @@ async def init_database():
                             conn.execute(text(t1 + t2 + t3))
                             logger.success(i18n_t("[MySQL] 数据库 {db_name} 创建成功或已存在!", db_name=db_name))
                     elif _db_type == "postgresql":
+                        server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
                         try:
-                            server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
                             with server_engine.connect() as conn:
                                 t = f"CREATE DATABASE {db_name} WITH ENCODING "
                                 t2 = "'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE "
@@ -164,6 +164,8 @@ async def init_database():
                         except exc.ProgrammingError as e:
                             if "already exists" in str(e) or "已经存在" in str(e):
                                 pass
+                            else:
+                                raise
                         logger.success(i18n_t("[PostgreSQL] 数据库 {db_name} 创建成功或已存在!", db_name=db_name))
                 finally:
                     if server_engine:

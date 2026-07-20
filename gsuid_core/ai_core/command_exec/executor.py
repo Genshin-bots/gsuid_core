@@ -140,7 +140,16 @@ def clip(text: str, head: int = 500, tail: int = 2000) -> str:
 
 
 def _posix_preexec(timeout: int) -> None:
-    """POSIX 资源限制：CPU 时间 / 地址空间 / 文件大小 / 子进程数。"""
+    """POSIX 资源限制：CPU 时间 / 地址空间 / 文件大小 / 子进程数。
+
+    resource 模块的 RLIMIT_* 常量在 Windows 不存在（POSIX-only）。用 sys 平台
+    分支包裹, 让 Windows 路径在静态类型层完全不出现 resource.* 名（pyright
+    不会再标红 LL 08）；运行时早退。
+    """
+    import sys
+
+    if sys.platform == "win32":
+        return
     import resource
 
     resource.setrlimit(resource.RLIMIT_CPU, (timeout + 5, timeout + 10))

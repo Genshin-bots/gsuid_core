@@ -841,12 +841,18 @@ async def dual_route_retrieve(
                     _step = len(temporal_eps) / 24
                     temporal_eps = [temporal_eps[int(i * _step)] for i in range(24)]
                 ranked_episodes = _merge_episodes(ranked_episodes[:20], temporal_eps)
+                # temporal_task 与 time_range 同生命周期; 局部展开帮助 pyright
+                # 把 time_range 收窄到非 None tuple[datetime, datetime]。
+                if time_range is not None:
+                    _t_start, _t_end = time_range
+                else:
+                    _t_start, _t_end = None, None
                 logger.info(
                     i18n_t(
                         "🧠 [Memory] 时间范围补召回 {p0} 条 Episode ({p1:%Y-%m-%d} ~ {p2:%Y-%m-%d})",
                         p0=len(temporal_eps),
-                        p1=time_range[0],
-                        p2=time_range[1],
+                        p1=_t_start,
+                        p2=_t_end,
                     )
                 )
         except Exception as e:

@@ -143,6 +143,7 @@ class BaseMysApi:
         return data
 
     def check_os(self, uid: str, game_name: str = "gs") -> bool:
+        is_os = False
         if game_name == "gs" or game_name == "sr":
             is_os = False if int(str(uid)[0]) < 6 else True
         elif game_name == "zzz":

@@ -122,7 +122,8 @@ def _kmeans_clusters(vectors: list[list[float]], k: int) -> list[tuple[list[floa
     data = np.asarray(vectors, dtype=np.float64)
     if k == 1:
         return [(data.mean(axis=0).tolist(), list(vectors))]
-    labels = KMeans(n_clusters=k, n_init=1, random_state=0).fit_predict(data)
+    # sklearn 1.8+: n_init 由 int=10 改为 str="auto", 整型被拒。
+    labels = KMeans(n_clusters=k, n_init="auto", random_state=0).fit_predict(data)
     out: list[tuple[list[float], list[list[float]]]] = []
     for ci in range(k):
         members = [vectors[i] for i in range(len(vectors)) if labels[i] == ci]

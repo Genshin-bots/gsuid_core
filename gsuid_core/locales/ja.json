@@ -903,6 +903,7 @@
     "📊 [AITokenUsageByType] 更新Token消耗失败: {e}": "📊 [AITokenUsageByType] Token 使用量の更新に失敗した: {e}",
     "📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}": "📊 [GsCoreAIAgent] トークン消費: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",
     "📊 [GsCoreAIAgent] result.usage 访问失败: {e}": "📊 [GsCoreAIAgent] result.usage へのアクセスに失敗しました: {e}",
+    "📊 [GsCoreAIAgent] result.usage 调用方式不兼容 v2: {e}": "📊 [GsCoreAIAgent] result.usage の呼び出し方が v2 と互換性がありません: {e}",
     "📊 [GsCoreAIAgent] 写入 token 用量日志失败: {_le}": "📊 [GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}",
     "📊 [GsCoreAIAgent] 记录统计失败: {e}": "📊 [GsCoreAIAgent] 統計の記録に失敗しました: {e}",
     "📊 [Heartbeat] 记录决策统计失败: {e}": "📊 [Heartbeat] 判断統計の記録に失敗した: {e}",

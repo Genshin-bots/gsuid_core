@@ -153,7 +153,9 @@ def _build_mcp_tool_function(
     mcp_tool_wrapper.__qualname__ = f"mcp.{client.name}.{tool_name}"
     mcp_tool_wrapper.__module__ = "gsuid_core.ai_core.mcp.startup"
     mcp_tool_wrapper.__annotations__ = annotations
-    mcp_tool_wrapper.__signature__ = inspect.Signature(parameters=params)
+    # mcp_tool_wrapper 是 FunctionType, 静态类型无 __signature__ 字段;
+    # setattr 动态写入，pyright 不再标红（与 register.py 一致）。
+    setattr(mcp_tool_wrapper, "__signature__", inspect.Signature(parameters=params))
 
     return mcp_tool_wrapper
 

@@ -7,7 +7,8 @@ AI Core 数据库模型模块
 
 import json
 import time
-from typing import Any, Set, Dict, List, Tuple, Optional
+from typing import Any, Set, Dict, List, Optional
+from collections.abc import Sequence
 
 from sqlmodel import Field, SQLModel, col, and_, case, delete, select, update
 from sqlalchemy import Text, Column
@@ -552,9 +553,12 @@ class AIKnowledgeChunk(SQLModel, table=True):
             from gsuid_core.utils.database.base_models import engine
 
             async with engine.begin() as conn:
+                # sqlmodel.pyi 把 ``__tablename__`` 标为 InstrumentedAttribute,
+                # 不被 metadata.tables[str] 接受。SQLModel 自动以小写类名为表名,
+                # 这里显式硬编码, 跳过 stub 噪音, 与 LLM.md §3.1.1 命名前缀一致。
                 await conn.run_sync(
                     cls.metadata.create_all,
-                    tables=[cls.__table__],
+                    tables=[cls.metadata.tables["aichunk"]],
                     checkfirst=True,
                 )
             _knowledge_table_ensured = True
@@ -593,7 +597,7 @@ class AIKnowledgeChunk(SQLModel, table=True):
         doc_id: Optional[str] = None,
         offset: int = 0,
         limit: int = 20,
-    ) -> Tuple[List["AIKnowledgeChunk"], int]:
+    ) -> tuple[Sequence["AIKnowledgeChunk"], int]:
         """SQL 原生分页（治 P5 的 O(n) scroll）。``source="all"`` 不限来源。"""
         await cls.ensure_table()
         from sqlalchemy import func
@@ -663,6 +667,8 @@ class AIKnowledgeChunk(SQLModel, table=True):
             rows = (await session.execute(select(cls).where(cls.doc_id == doc_id))).scalars().all()
             qids = [r.qdrant_id for r in rows if r.qdrant_id]
             if rows:
-                await session.execute(delete(cls).where(cls.doc_id == doc_id))
+                # LLM.md §3.5.1: 比较表达式一律用 col() 包裹列
+                # (delete 是 SQLAlchemy 原生, where() 严格只收 ColumnElement[bool])。
+                await session.execute(delete(cls).where(col(cls.doc_id) == doc_id))
                 await session.commit()
             return qids

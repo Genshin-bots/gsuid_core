@@ -313,31 +313,30 @@ class Domain(TypedDict):
     version: str
 
 
-class Piece(TypedDict):
+class Piece(TypedDict, total=False):  # total=False: 各子类会覆写 relicText
     name: str
     relicType: str
-    relicText: str
     description: str
     story: str
 
 
-class PieceFlower(Piece):
+class PieceFlower(Piece, total=False):
     relicText: Literal["生之花"]
 
 
-class PiecePlume(Piece):
+class PiecePlume(Piece, total=False):
     relicText: Literal["死之羽"]
 
 
-class PieceSands(Piece):
+class PieceSands(Piece, total=False):
     relicText: Literal["时之沙"]
 
 
-class PieceGoblet(Piece):
+class PieceGoblet(Piece, total=False):
     relicText: Literal["空之杯"]
 
 
-class PieceCirclet(Piece):
+class PieceCirclet(Piece, total=False):
     relicText: Literal["理之冠"]
 
 

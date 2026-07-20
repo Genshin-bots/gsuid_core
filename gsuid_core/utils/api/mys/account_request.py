@@ -35,6 +35,9 @@ class AccountMysApi(PassMysApi):
     """
 
     HYP_VERSION = "1.3.3.182"
+    # 米游社全球化/国内化 proxy 配置: 实例可覆盖, 类型强制为 str|None 防止拼错键。
+    Gproxy: Optional[str] = None
+    Nproxy: Optional[str] = None
 
     @staticmethod
     def _hyp_qrcode_header(device_id: str) -> Dict[str, str]:

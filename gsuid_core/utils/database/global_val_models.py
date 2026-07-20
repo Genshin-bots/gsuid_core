@@ -5,6 +5,7 @@ from datetime import date as ymddate, datetime, timedelta
 from sqlmodel import Field, Index, col, func, delete, select
 from sqlalchemy import UniqueConstraint, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.selectable import Select
 
 from .base_models import BaseIDModel, with_session
 
@@ -119,11 +120,17 @@ class CoreDataSummary(BaseIDModel, table=True):
         date_list = [thirty_days_ago + timedelta(days=i) for i in range(46)]
 
         # 单次查询：按 (date, bot_id, bot_self_id) 聚合
-        query = (
+        # SQLAlchemy 2.0 select() 静态只给 1..10 列 overload, 9 列恰好匹配;
+        # 实际 pyright 报 col/Mapped 类型不匹配 overload 形参；分两步构造更稳:
+        #   1. select() 只接 3 个分组维度列, 拿到 Select[Tuple[date, str, str]];
+        #   2. add_columns() 链式追加 6 个汇总列, 走增量化 overload。
+        query: Select = (
             select(
                 col(cls.date),
                 col(cls.bot_id),
                 col(cls.bot_self_id),
+            )
+            .add_columns(
                 func.coalesce(func.sum(cls.receive), 0),
                 func.coalesce(func.sum(cls.send), 0),
                 func.coalesce(func.sum(cls.user_count), 0),
@@ -131,8 +138,8 @@ class CoreDataSummary(BaseIDModel, table=True):
                 func.coalesce(func.sum(cls.image), 0),
                 func.coalesce(func.sum(cls.command), 0),
             )
-            .where(cls.date >= thirty_days_ago)
-            .where(cls.date < today)
+            .where(col(cls.date) >= thirty_days_ago)
+            .where(col(cls.date) < today)
             .group_by(col(cls.date), col(cls.bot_id), col(cls.bot_self_id))
             .order_by(col(cls.date))
         )

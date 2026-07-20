@@ -903,6 +903,7 @@
     "📊 [AITokenUsageByType] 更新Token消耗失败: {e}": "📊 [AITokenUsageByType] 更新Token消耗失败: {e}",
     "📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}": "📊 [GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",
     "📊 [GsCoreAIAgent] result.usage 访问失败: {e}": "📊 [GsCoreAIAgent] result.usage 访问失败: {e}",
+    "📊 [GsCoreAIAgent] result.usage 调用方式不兼容 v2: {e}": "📊 [GsCoreAIAgent] result.usage 调用方式不兼容 v2: {e}",
     "📊 [GsCoreAIAgent] 写入 token 用量日志失败: {_le}": "📊 [GsCoreAIAgent] 写入 token 用量日志失败: {_le}",
     "📊 [GsCoreAIAgent] 记录统计失败: {e}": "📊 [GsCoreAIAgent] 记录统计失败: {e}",
     "📊 [Heartbeat] 记录决策统计失败: {e}": "📊 [Heartbeat] 记录决策统计失败: {e}",

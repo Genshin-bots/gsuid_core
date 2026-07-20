@@ -6,8 +6,9 @@ from __future__ import annotations
 
 from typing import Dict, Union, Optional
 
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup
 from httpx import AsyncClient
+from bs4.element import NavigableString
 
 from ..utils import _HEADER
 
