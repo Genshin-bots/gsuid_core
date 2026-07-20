@@ -79,7 +79,19 @@ async def list_artifacts(
 
     if not include_expired:
         now = datetime.now(timezone.utc)
-        items = [it for it in items if (it.expires_at is None or it.expires_at > now)]
+
+        def _is_fresh(it: AIAgentArtifact) -> bool:
+            e = it.expires_at
+            if e is None:
+                return True
+            # DB 驱动返回的 datetime 默认是 offset-naive（无 tzinfo），
+            # 与 offset-aware 的 `now` 直接比较会抛 TypeError。
+            # 统一按 UTC 处理：naive 视为 UTC、aware 保持原 tz。
+            if e.tzinfo is None:
+                e = e.replace(tzinfo=timezone.utc)
+            return e > now
+
+        items = [it for it in items if _is_fresh(it)]
 
     return {
         "status": 0,

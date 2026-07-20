@@ -12,7 +12,7 @@ from datetime import datetime
 
 import aiofiles
 from PIL import Image
-from fastapi import Depends, Request, Response, UploadFile, BackgroundTasks
+from fastapi import Query, Depends, Request, Response, UploadFile, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from gsuid_core.gss import gss
@@ -133,60 +133,110 @@ async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] =
 
 @app.get(
     "/api/BatchPush/targets",
-    summary="拉取批量推送可选目标",
+    summary="拉取批量推送可选目标（分页+筛选）",
     tags=MESSAGE,
 )
 async def batch_push_targets(
     _: Dict[str, Any] = Depends(require_auth),
+    bot_id: Optional[str] = Query(None, description="按 bot_id 过滤（空=全部）"),
+    kind: Optional[str] = Query(None, description="类型筛选：all | group | user（默认 all）"),
+    q: Optional[str] = Query(None, description="模糊搜索，匹配 label 或 value（不区分大小写）"),
+    limit: int = Query(200, ge=1, le=1000, description="单页大小（1-1000）"),
+    offset: int = Query(0, ge=0, description="页偏移"),
 ) -> Dict[str, Any]:
-    """为 /batch-push 前端页面提供可选目标：
+    """为 /batch-push 前端页面提供可选目标（分页+筛选）。
+
+    返回：
     - `bots`：当前所有 active_bot（仅展示 WS_BOT_ID）
-    - `groups`：所有 CoreGroup（按 bot_id 聚合）
-    - `users`：所有 CoreUser（按 bot_id 聚合；附 user_id）
-    `value` 形如 `g:{group_id}|{bot_id}` / `u:{user_id}|{bot_id}`，
-    由前端拼接后提交给 /api/BatchPush。两组首位为 `ALLGROUP` / `ALLUSER` 宏。
+    - `items`：当前筛选条件下、按 (kind, bot_id, id) 稳定排序后的目标分页
+    - `total` / `has_more`：用于前端分页 UI
+
+    每条 item：
+    - `kind`：`group` / `user` / `macro`
+    - `bot_id`：所属 bot（宏为空字符串）
+    - `label`：人类可读标签
+    - `value`：后端拼接的 `g:{group_id}|{bot_id}` / `u:{user_id}|{bot_id}` 宏
+
+    ALLGROUP / ALLUSER 宏仅在 `bot_id` 未指定时、`offset == 0` 时按需返回一次。
+    在带 bot_id 过滤时隐藏宏（宏会展开到所有 bot，与当前筛选范围冲突）。
     """
     bots: List[Dict[str, Any]] = [{"bot_id": ws_bot_id, "name": str(ws_bot_id)} for ws_bot_id in (gss.active_bot or {})]
 
-    groups: List[Dict[str, Any]] = []
+    # ---- 构建 groups / users 列表（去重 + 可选 bot_id / q 过滤）----
+    group_items: List[Dict[str, Any]] = []
+    q_lower = q.lower() if q else None
     all_group = await CoreGroup.get_all_group()
     if all_group:
-        seen = set()
+        seen: set = set()
         for g in all_group:
+            if bot_id and g.bot_id != bot_id:
+                continue
             key = (g.bot_id, g.group_id)
             if key in seen:
                 continue
+            label = f"{g.bot_id} · {g.group_id}"
+            value = f"g:{g.group_id}|{g.bot_id}"
+            if q_lower and q_lower not in label.lower() and q_lower not in value.lower():
+                continue
             seen.add(key)
-            groups.append(
-                {
-                    "bot_id": g.bot_id,
-                    "label": f"{g.bot_id} · {g.group_id}",
-                    "value": f"g:{g.group_id}|{g.bot_id}",
-                }
-            )
+            group_items.append({"kind": "group", "bot_id": g.bot_id, "label": label, "value": value})
+    # 稳定排序：(bot_id, value)；后端无 created_at 字段，按 value 升序足够稳定
+    group_items.sort(key=lambda x: (x["bot_id"], x["value"]))
 
-    users: List[Dict[str, Any]] = []
+    user_items: List[Dict[str, Any]] = []
     all_user = await CoreUser.get_all_user()
     if all_user:
         seen = set()
         for u in all_user:
+            if bot_id and u.bot_id != bot_id:
+                continue
             key = (u.bot_id, u.user_id)
             if key in seen:
                 continue
+            label = f"{u.bot_id} · {u.user_id}"
+            value = f"u:{u.user_id}|{u.bot_id}"
+            if q_lower and q_lower not in label.lower() and q_lower not in value.lower():
+                continue
             seen.add(key)
-            users.append(
-                {
-                    "bot_id": u.bot_id,
-                    "label": f"{u.bot_id} · {u.user_id}",
-                    "value": f"u:{u.user_id}|{u.bot_id}",
-                }
-            )
+            user_items.append({"kind": "user", "bot_id": u.bot_id, "label": label, "value": value})
+    user_items.sort(key=lambda x: (x["bot_id"], x["value"]))
 
-    # 两组首位放 ALL* 宏，前端识别为"全部群/全部用户"
-    groups.insert(0, {"bot_id": "", "label": t("log.webconsole.batch_push.all_groups"), "value": "ALLGROUP"})
-    users.insert(0, {"bot_id": "", "label": t("log.webconsole.batch_push.all_users"), "value": "ALLUSER"})
+    # ---- 宏只在「无 bot 筛选 + 第一页」按 kind 返回一次----
+    macros: List[Dict[str, Any]] = []
+    if not bot_id and offset == 0:
+        all_groups_label = t("log.webconsole.batch_push.all_groups")
+        all_users_label = t("log.webconsole.batch_push.all_users")
+        if kind in (None, "all", "group"):
+            if not q_lower or q_lower in all_groups_label.lower():
+                macros.append({"kind": "macro", "bot_id": "", "label": all_groups_label, "value": "ALLGROUP"})
+        if kind in (None, "all", "user"):
+            if not q_lower or q_lower in all_users_label.lower():
+                macros.append({"kind": "macro", "bot_id": "", "label": all_users_label, "value": "ALLUSER"})
 
-    return {"status": 0, "msg": "ok", "data": {"bots": bots, "groups": groups, "users": users}}
+    # ---- 按 kind 拼接 + 分页----
+    if kind == "group":
+        all_items = macros + group_items
+    elif kind == "user":
+        all_items = macros + user_items
+    else:
+        all_items = macros + group_items + user_items
+
+    total = len(all_items)
+    page_items = all_items[offset : offset + limit]
+    has_more = (offset + limit) < total
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "bots": bots,
+            "items": page_items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": has_more,
+        },
+    }
 
 
 # ===================
