@@ -44,12 +44,14 @@ async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] =
     soup = BeautifulSoup(send_msg, "lxml")
 
     msg: List[Message] = []
-    text_list: List[Tag] = list(soup.find_all("p"))
+    text_list = list(soup.find_all("p"))
     for text in text_list:
         msg.append(MessageSegment.text(str(text)[3:-4] + "\n"))
 
-    img_tag: List[Tag] = list(soup.find_all("img"))
+    img_tag = list(soup.find_all("img"))
     for img in img_tag:
+        if not isinstance(img, Tag):
+            continue
         src = img.get("src")
         width = img.get("width")
         height = img.get("height")

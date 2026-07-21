@@ -195,7 +195,8 @@ async def recollection_search(
         # 收集本轮所有候选分支及其打分（论文 Algorithm 3 line 14），轮末统一保留 top-B 为新 beam。
         scored_branches: list[tuple[float, np.ndarray]] = []
         for x in beams:
-            candidates = await dense_search_episodes_with_vectors(x.tolist(), scope_keys, top_n, exclude_ids=seen_ids)
+            query_vec = [float(v) for v in x]
+            candidates = await dense_search_episodes_with_vectors(query_vec, scope_keys, top_n, exclude_ids=seen_ids)
             if not candidates:
                 continue
             for c in candidates:

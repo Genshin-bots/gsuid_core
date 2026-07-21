@@ -116,6 +116,7 @@ async def assemble_dynamic_context(
     memory_context_text: str = "",
     memory_guide: str = "",
     soft_triggered: bool = False,
+    intent: str = "",
 ) -> Tuple[str, bool]:
     """每轮 user 侧动态注入的唯一顺序定义。返回 ``(full_context, has_actionable_task)``。
 
@@ -155,7 +156,10 @@ async def assemble_dynamic_context(
         logger.debug(t("🪞 [SelfCognition] 关系上下文注入失败: {e}", e=e))
 
     # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
-    # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一行紧凑口吻自述。
+    # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一段紧凑角色快照。
+    #
+    # OOC 修复 5.4：从 ~50 字的"口吻锚点"升级为 ~200 字的"角色快照"，
+    # 增加长度约束、格式约束、信息密度约束，对抗工具语境的语域污染。
     if persona_name:
         try:
             from gsuid_core.ai_core.persona import get_voice_anchor
@@ -165,7 +169,11 @@ async def assemble_dynamic_context(
                 # 口吻/行为分离：锚点只约束语气——实测"慵懒"会从语气渗漏成行为
                 # （以困/懒为由拒设提醒、对直接请求敷衍），框架层显式钉住边界。
                 context_parts.append(
-                    f"（口吻锚点：{voice_anchor}——口吻只决定**怎么说**，不决定**做不做**："
+                    f"（角色快照：{voice_anchor}。"
+                    "回复约束：①角色台词用碎片化短句，结构化数据放<report>块；"
+                    "②角色台词中禁止表格、编号列表、加粗标题；"
+                    "③查到10分只说3分，剩下的让report块承载；"
+                    "④口吻只决定**怎么说**，不决定**做不做**："
                     "该回应的回应、该办的事照办，不拿角色性格当拒绝或敷衍的理由）"
                 )
         except Exception as e:
@@ -196,5 +204,13 @@ async def assemble_dynamic_context(
     # 与硬触发（@/关键词/私聊）相反——硬触发是"明确在找你，必须回应"。
     if soft_triggered:
         context_parts.append(SOFT_TRIGGER_NOTE)
+
+    # OOC 修复 5.7：群聊语域隔离——闲聊轮注入语域切换提示，
+    # 切断前面专业讨论对闲聊语境的污染。
+    if intent == "闲聊" and persona_name:
+        context_parts.append(
+            "（当前是熟人闲聊，不是工作/分析场景。回到角色最自然的状态——"
+            "短句、语气词、不展开分析、不列数据。刚才的专业讨论是别人的事，跟你无关。）"
+        )
 
     return "\n\n".join(context_parts), has_actionable

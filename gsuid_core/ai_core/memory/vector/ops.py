@@ -149,8 +149,8 @@ def _sparse_embed(text: str) -> Optional[SparseVector]:
     try:
         result = list(model.embed([text]))[0]
         return SparseVector(
-            indices=result.indices.tolist(),
-            values=result.values.tolist(),
+            indices=[int(i) for i in result.indices],
+            values=[float(v) for v in result.values],
         )
     except Exception as e:
         logger.warning(t("🧠 [Memory] Sparse embedding 失败: {e}", e=e))
@@ -190,13 +190,14 @@ def _sparse_embed_batch(texts: list[str]) -> list[Optional[SparseVector]]:
     try:
         # 尝试使用批量接口
         results = list(model.embed(texts))
-        return [
+        vectors: list[Optional[SparseVector]] = [
             SparseVector(
-                indices=result.indices.tolist(),
-                values=result.values.tolist(),
+                indices=[int(i) for i in result.indices],
+                values=[float(v) for v in result.values],
             )
             for result in results
         ]
+        return vectors
     except TypeError:
         # 模型不支持批量接口，降级为逐条调用
         _sparse_degrade_count += 1

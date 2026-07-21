@@ -6,10 +6,10 @@ import statistics
 from typing import Union
 from collections import deque
 
-import websockets.client
 from models import Message, MessageReceive
 from msgspec import json as msgjson
 from websockets.exceptions import ConnectionClosedError
+from websockets.asyncio.client import ClientConnection, connect as ws_connect
 
 from gsuid_core.i18n import t
 
@@ -27,7 +27,7 @@ MAX_JITTER = AVG_INTERVAL * 2
 
 class GsBenchmarkClient:
     def __init__(self):
-        self.ws = None
+        self.ws: ClientConnection | None = None
         self.ws_url = ""
         self.recv_count = 0
         self.running = True
@@ -44,12 +44,13 @@ class GsBenchmarkClient:
         self = cls()
         self.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot"
         print(t("[-] 正在连接至 {p0} ...", p0=self.ws_url))
-        self.ws = await websockets.client.connect(self.ws_url, max_size=2**25, open_timeout=30, ping_interval=None)
+        self.ws = await ws_connect(self.ws_url, max_size=2**25, open_timeout=30, ping_interval=None)
         print(t("[+] 连接成功！准备开始基准测试"))
         return self
 
     async def recv_loop(self):
         """后台接收任务"""
+        assert self.ws is not None
         try:
             async for _ in self.ws:
                 recv_time = time.perf_counter()
@@ -98,6 +99,7 @@ class GsBenchmarkClient:
         return msgjson.encode(msg)
 
     async def run_benchmark(self):
+        assert self.ws is not None
         print(
             t(
                 "[*] 开始测试：计划在 {TARGET_DURATION} 秒内发送 {TOTAL_REQUESTS} 条消息...",
@@ -151,7 +153,8 @@ class GsBenchmarkClient:
 
         finally:
             self.running = False
-            await self.ws.close()
+            if self.ws is not None:
+                await self.ws.close()
             recv_task.cancel()
             try:
                 await recv_task

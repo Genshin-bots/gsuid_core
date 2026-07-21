@@ -74,6 +74,46 @@ def _scan_log_by_user(user_id: str, since: float, wait: float) -> Optional[dict]
     return None
 
 
+async def _run_warmup_turns(
+    client: httpx.AsyncClient,
+    base_url: str,
+    uid: str,
+    case: dict,
+    persona: str | None,
+    timeout: float,
+) -> list[dict[str, str]]:
+    """执行 warmup_turns：逐轮发消息并积累模型真实回复为 history。
+
+    用于长对话 OOC 评测——让模型自己的输出逐轮回灌上下文，
+    模拟真实多轮漂移（纯合成 history 测不到这个）。
+    warmup 阶段默认关工具（warmup_tools 可覆盖），加速且避免外部依赖。
+    """
+    history: list[dict[str, str]] = list(case.get("history", []))
+    wt_enable = case.get("warmup_tools", False)
+    max_hist = int(case.get("max_history", AGENT_EVAL_MAX_HISTORY))
+    for wt in case.get("warmup_turns", []):
+        msg = wt if isinstance(wt, str) else str(wt.get("message", ""))
+        if not msg:
+            continue
+        wt_resp = await call_chat_with_history(
+            client,
+            base_url=base_url,
+            user_id=uid,
+            message=msg,
+            history=history,
+            persona_name=persona,
+            enable_observer=False,
+            enable_tools=wt_enable,
+            max_history=max_hist,
+            timeout=timeout,
+        )
+        wt_text = wt_resp.get("data") if isinstance(wt_resp.get("data"), str) else ""
+        history.append({"role": "user", "content": msg})
+        if wt_text:
+            history.append({"role": "assistant", "content": wt_text})
+    return history
+
+
 async def run_once(
     client: httpx.AsyncClient, base_url: str, case: dict, run_idx: int, wait: float = 75.0, timeout: float = 200.0
 ) -> Trace:
@@ -82,6 +122,7 @@ async def run_once(
     agent 评测**必须**带 ``enable_tools=True`` 才走真实工具装配（否则跑的是无工具的
     记忆评测 agent）；case 可用 ``persona`` 覆盖人格（默认早柚），``enable_tools`` 显式关掉。
     端到端 latency（HTTP 往返墙钟）填进 Trace，供 ``max_latency`` verifier 抓死循环/挂起。
+    支持 ``warmup_turns``：先逐轮发真实对话积累上下文，再发 probe message 打分。
     """
     uid = f"eval_{case['id']}_{run_idx}_{uuid.uuid4().hex[:6]}"
     since = time.time()
@@ -89,12 +130,26 @@ async def run_once(
     # 允许 case 传 persona: null 显式关人格（judge/通用助手场景）。
     persona = case["persona"] if "persona" in case else "早柚"
     enable_tools = case.get("enable_tools", True)
+
+    # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测用）
+    if case.get("warmup_turns"):
+        history = await _run_warmup_turns(
+            client,
+            base_url,
+            uid,
+            case,
+            persona,
+            timeout,
+        )
+    else:
+        history = case.get("history", [])
+
     resp = await call_chat_with_history(
         client,
         base_url=base_url,
         user_id=uid,
         message=case["message"],
-        history=case.get("history", []),
+        history=history,
         persona_name=persona,
         enable_observer=False,
         enable_tools=enable_tools,
@@ -168,6 +223,19 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
                 max_history=0,
                 timeout=timeout,
             )
+        # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测）；
+        # 不计入 probe latency，仅为主消息构建多轮上下文。
+        if case.get("warmup_turns"):
+            history = await _run_warmup_turns(
+                client,
+                base_url,
+                uid,
+                case,
+                persona,
+                timeout,
+            )
+        else:
+            history = case.get("history", [])
         # ⚠️ latency 从**拿到并发槽后**起算——端点同步阻塞到 agent 跑完，这段才是单次 agent
         # 运行的真实耗时（供 max_latency 抓死循环/挂起）。若从 queued 起算会把"等信号量排队"
         # 的时间算进去（426 run / concurrency 3 时队尾能等几分钟），令 max_latency 全线误判。
@@ -177,7 +245,7 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
             base_url=base_url,
             user_id=uid,
             message=case["message"],
-            history=case.get("history", []),
+            history=history,
             persona_name=persona,
             enable_observer=False,
             enable_tools=enable_tools,

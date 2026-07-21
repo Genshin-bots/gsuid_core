@@ -143,7 +143,10 @@ def _knowledge_sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVecto
     try:
         seg_texts = [_jieba_segment(t) for t in texts]
         results = list(model.embed(seg_texts))
-        return [SparseVector(indices=r.indices.tolist(), values=r.values.tolist()) for r in results]
+        vectors: List[Optional[SparseVector]] = [
+            SparseVector(indices=[int(i) for i in r.indices], values=[float(v) for v in r.values]) for r in results
+        ]
+        return vectors
     except Exception as e:
         logger.warning(i18n_t("🧠 [Knowledge] BM25 稀疏嵌入失败，本批降级纯 dense: {e}", e=e))
         return [None] * len(texts)

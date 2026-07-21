@@ -1438,24 +1438,72 @@ _TOOL_RETURN_HISTORY_MAX = 4000
 _TOOL_RETURN_HEAD = 3200
 _TOOL_RETURN_TAIL = 400
 
+# OOC 修复 5.2：结构化数据工具返回的入史摘要阈值。
+# 高密度结构化 JSON（金融指标、持仓列表等）即使低于
+# _TOOL_RETURN_HISTORY_MAX，也会污染主人格语域 → OOC。
+# 检测基于内容结构（JSON 字段密度），不基于工具名——适配所有工具。
+_PROFESSIONAL_TOOL_SUMMARY_MAX = 300
+
+
+def _looks_like_structured_data(content: str) -> bool:
+    """内容是否为高密度结构化数据（JSON dict、字段多、数值占比高）。
+
+    基于内容结构判断，不依赖工具名——任何返回结构化数据的工具
+    都会被检测到，无需维护工具名白名单。
+    """
+    stripped = content.strip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict) or len(data) < 5:
+        return False
+    numeric = sum(1 for v in data.values() if isinstance(v, (int, float)))
+    return numeric / len(data) > 0.4
+
+
+def _summarize_structured_data(content: str) -> str:
+    """结构化数据通用摘要：保留头部关键信息，省略其余。"""
+    if len(content) <= _PROFESSIONAL_TOOL_SUMMARY_MAX:
+        return content
+    head = content[:200]
+    return f"{head}…[结构化数据已摘要，完整返回仅当前轮可见]…"
+
 
 def _truncate_tool_returns_in_history(messages: List[ModelMessage]) -> int:
-    """把将持久化的超长 ToolReturnPart 内容截断为「头 + 省略标记 + 尾」，返回截断数。
+    """把将持久化的 ToolReturnPart 内容截断/摘要，返回处理数。
 
-    只影响写入 self.history 的副本语义（原地改 part.content）；当前轮模型看到的
-    仍是完整返回。头尾保留让后续轮还能引用结论与末尾的状态行。
+    只影响写入 self.history 的副本语义（原地改 part.content）；
+    当前轮模型看到的仍是完整返回。
+
+    OOC 修复 5.2：两层处理——
+    1. 高密度结构化数据（基于内容检测，不依赖工具名）：
+       无论长度都摘要，切断专业语域对主人格上下文的污染。
+    2. 其他工具：超过 _TOOL_RETURN_HISTORY_MAX 做头+尾截断。
     """
     truncated = 0
     for msg in messages:
         if not isinstance(msg, ModelRequest):
             continue
         for part in msg.parts:
-            # v2.0 新增 ToolSearchReturnPart/LoadCapabilityReturnPart 等 part 类型,
-            # 那些的 content 不容许赋值 str。type(part) is ToolReturnPart 是
-            # 精确类型守门（子类不影响, 与 gs_agent 同步做法）。
+            # v2.0 新增 ToolSearchReturnPart 等 part 类型，
+            # 那些的 content 不容许赋值 str。type(part) is
+            # ToolReturnPart 是精确类型守门（子类不影响）。
             if type(part) is not ToolReturnPart or not isinstance(part.content, str):
                 continue
             content = part.content
+
+            # 层 1：结构化数据 → 基于内容检测，无论长度都摘要
+            if _looks_like_structured_data(content):
+                new_content = _summarize_structured_data(content)
+                if new_content != content:
+                    part.content = new_content
+                    truncated += 1
+                continue
+
+            # 层 2：其他工具 → 超长截断
             if len(content) <= _TOOL_RETURN_HISTORY_MAX:
                 continue
             omitted = len(content) - _TOOL_RETURN_HEAD - _TOOL_RETURN_TAIL

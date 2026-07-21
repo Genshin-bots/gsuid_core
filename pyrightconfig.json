@@ -1,0 +1,1 @@
+{"typeCheckingMode": "basic", "extraPaths": ["gsuid_core"], "pythonVersion": "3.11", "venvPath": ".", "venv": ".venv", "include": ["gsuid_core", "eval", "tests"], "exclude": ["**/node_modules", "**/__pycache__", ".venv", "data", "gsuid_core/plugins"]}

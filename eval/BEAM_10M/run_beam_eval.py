@@ -149,7 +149,8 @@ def _read_parquet_rows(
 
     frames = [pd.read_parquet(p, columns=columns) for p in parquet_paths]
     df = pd.concat(frames, ignore_index=True)
-    return df.to_dict(orient="records")
+    raw_records: List[Dict[str, Any]] = [{str(k): v for k, v in row.items()} for row in df.to_dict(orient="records")]
+    return raw_records
 
 
 def load_beam_dataset(

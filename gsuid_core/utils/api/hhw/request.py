@@ -6,9 +6,8 @@ from __future__ import annotations
 
 from typing import Dict, Union, Optional
 
-from bs4 import BeautifulSoup
+from bs4 import Tag, BeautifulSoup
 from httpx import AsyncClient
-from bs4.element import NavigableString
 
 from ..utils import _HEADER
 
@@ -24,7 +23,7 @@ async def get_abyss_review(raw_data: bytes, _id: Union[str, int], floor: Union[s
     bs = BeautifulSoup(raw_data, "lxml")
     data = bs.find("section", {"id": f"Variant #{_id}"})
 
-    if data is None or isinstance(data, NavigableString):
+    if not isinstance(data, Tag):
         return None
 
     floor_data = data.find_all("td")
@@ -33,7 +32,10 @@ async def get_abyss_review(raw_data: bytes, _id: Union[str, int], floor: Union[s
     for index, td in enumerate(floor_data):
         temp = []
         if "Monsters" in td.text:
-            monsters = floor_data[index + 1].find_all("a")
+            next_td = floor_data[index + 1]
+            if not isinstance(next_td, Tag):
+                continue
+            monsters = next_td.find_all("a")
             for monster in monsters:
                 if monster.text:
                     temp.append(monster.text)

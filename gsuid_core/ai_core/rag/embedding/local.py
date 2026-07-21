@@ -84,7 +84,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
     def embed_sync(self, texts: list[str]) -> list[list[float]]:
         # 显式限制 batch_size 控制驻留内存峰值（2C2G 关键）；fastembed 内部按此分批。
-        return [v.tolist() for v in self._model.embed(texts, batch_size=self._batch_size)]
+        return [[float(x) for x in v] for v in self._model.embed(texts, batch_size=self._batch_size)]
 
     def embed_single_sync(self, text: str) -> list[float]:
-        return list(self._model.embed([text]))[0].tolist()
+        return [float(x) for x in next(iter(self._model.embed([text])))]

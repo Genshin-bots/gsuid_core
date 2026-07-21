@@ -882,6 +882,7 @@ async def _draw_status_uncached(ev: Event):
         "MAG": "0",
         "DAG_MAG": "0",
         "NewGroup": "0",
+        "OutGroup": "0",
     }
     mdata = _or(mdata, _empty_metrics)
     ndata = _or(ndata, _empty_metrics)

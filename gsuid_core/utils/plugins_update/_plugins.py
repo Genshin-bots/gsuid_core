@@ -245,7 +245,7 @@ async def uninstall_plugin(path: Path):
         except PermissionError:
             # 尝试使用onerror回调处理被锁定的文件
             try:
-                shutil.rmtree(path, onexc=onerror)
+                shutil.rmtree(path, onerror=onerror)
                 if path.exists():
                     # 仍存在则尝试手动删除
                     _try_manual_delete(path)

@@ -233,11 +233,92 @@ def _matched_delegation_only_profile(query: str) -> str:
     return ""
 
 
+def _pool_overlaps_capability_agent(tool_names_in_pool: set[str]) -> str:
+    """当前工具池是否包含某个已注册能力代理（非 persona）覆盖的专业域工具。
+
+    返回命中的 ``node_id``；无命中返回 ``""``。
+
+    背景（OOC 分析 RC-0）：stock_indicators / papertrade_* 等专业工具直接在主人格
+    工具池中可调用，但 TOOL_ORCHESTRATION_CONSTRAINTS §3.1 要求 B 类查询（需要分析/
+    推荐/评估）必须委派给 create_subagent(agent_profile=...)。旧逻辑只在
+    NON_SEARCHABLE_TOOL_CATEGORIES 命中时注入 create_subagent，导致专业域工具
+    在池中但委派入口缺失——模型被迫直接调用，金融 JSON 污染主人格上下文 → OOC。
+
+    本函数扩展委派保障：只要池中有能力代理覆盖的工具，就注入 create_subagent，
+    让模型可以按 §3.1 自主决定直接调还是委派。代价仅 +1 个工具 schema。
+    """
+    if not tool_names_in_pool:
+        return ""
+
+    from gsuid_core.ai_core.agent_node import list_nodes, resolve_pack_tool_names
+
+    for node in list_nodes():
+        # 跳过 persona 投影和内部评估器——它们不是可委派的能力代理
+        if node.source == "persona" or node.node_id == "capability_evaluator":
+            continue
+        # 该能力代理的工具集（packs 展开 + 显式白名单）
+        agent_tool_names = set(resolve_pack_tool_names(node.tool_packs) + node.tool_names)
+        if not agent_tool_names:
+            continue
+        overlap = agent_tool_names & tool_names_in_pool
+        if overlap:
+            return node.node_id
+    return ""
+
+
+# OOC 修复 5.5：角色锚定消息提取
+# 结构化格式特征（markdown 表格、编号列表、加粗标题）——命中即非"在角色内"
+_STRUCTURED_FORMAT_RE = re.compile(
+    r"^\s*\|.*\|.*\|"  # markdown 表格行
+    r"|^\s*\d+[\.\)、]\s"  # 编号列表
+    r"|^\s*\*\*[^*]+\*\*\s*[:：]?"  # 加粗标题
+    r"|^\s*[-•]\s+\*\*",  # 加粗列表项
+    re.MULTILINE,
+)
+
+
+def _extract_character_anchors(history: list[ModelMessage], count: int = 2) -> list[ModelMessage]:
+    """从历史中提取最早的、最符合角色设定的 assistant 文本回复作为"锚定消息"。
+
+    选择标准（轻量规则，无 LLM）：
+    - 是 ModelResponse 且包含 TextPart（非纯 ToolCallPart）
+    - 文本长度 ≤ 150 字（角色短句）
+    - 不含结构化格式（表格/编号/加粗标题）
+    - 优先选择含语气词/省略号/角色动作描写的回复
+
+    返回最多 ``count`` 条 ModelResponse 消息（保持原始顺序）。
+    """
+    from pydantic_ai.messages import TextPart as _TP, ModelResponse as _MR
+
+    anchors = []
+    for msg in history:
+        if len(anchors) >= count:
+            break
+        if not isinstance(msg, _MR):
+            continue
+        # 提取文本内容
+        text_parts = [p.content for p in msg.parts if isinstance(p, _TP) and p.content.strip()]
+        if not text_parts:
+            continue
+        text = text_parts[0]
+        # 跳过过长回复（OOC 特征）
+        if len(text) > 150:
+            continue
+        # 跳过含结构化格式的回复
+        if _STRUCTURED_FORMAT_RE.search(text):
+            continue
+        # 跳过 <SILENCE> 和系统标记
+        if text.strip() in ("<SILENCE>", ""):
+            continue
+        anchors.append(msg)
+    return anchors
+
+
 # scope_key（记忆 scope，见 memory/scope.py）→ 可嵌进 session_id 的一段指向标识：
 # group:789012 → group-789012 / user_global:12345 → uglobal-12345 /
 # user_in_group:u@g → uingroup-u@g / self:x → self-x。用短码而非原 scope_type，避免
 # user_global/user_in_group 自带的下划线破坏 session_id 的 "_" 分词。前端据此显示"针对哪个群/用户"。
-_SCOPE_SEG_CODE: dict = {
+_SCOPE_SEG_CODE: dict[str, str] = {
     "group": "group",
     "user_global": "uglobal",
     "user_in_group": "uingroup",
@@ -453,10 +534,33 @@ class GsCoreAIAgent:
             # 高低水位惰性裁剪：超过 max_history 才裁、一次裁到低水位。旧行为"超 1 条裁 1 条"
             # 让历史头部每轮都变，provider 前缀缓存永不命中（§25 命中率卡 54% 的直接原因）。
             low_target: int = max(1, int(self.max_history * _HISTORY_TRIM_RATIO))
+
+            # OOC 修复 5.5：compact 时保留 1-2 条"角色锚定消息"（最早的、最符合人设的
+            # assistant 文本回复）。早期在角色内的回复被丢弃后，模型失去"我应该是这样
+            # 说话的"示例，OOC 正反馈循环加速。保留锚定消息打断这个循环。
+            _anchor_msgs: list[ModelMessage] = []
+            if self.persona_name:
+                _anchor_msgs = _extract_character_anchors(self.history, count=2)
+
             self.history = _truncate_history_with_tool_safety(
                 self.history,
                 low_target,
             )
+
+            # 将锚定消息插回历史头部（截断后的最早消息之前）
+            if _anchor_msgs:
+                # 去重：如果锚定消息已经在截断后的历史中，不重复插入
+                _existing_ids = {id(m) for m in self.history}
+                _to_insert = [m for m in _anchor_msgs if id(m) not in _existing_ids]
+                if _to_insert:
+                    self.history = _to_insert + self.history
+                    logger.debug(
+                        i18n_t(
+                            "🧠 [GsCoreAIAgent] compact 保留 {p0} 条角色锚定消息",
+                            p0=len(_to_insert),
+                        )
+                    )
+
         # 兜底：无论是否截断，都做一次孤儿工具结果清理，确保历史对 API 自洽
         self.history = _drop_orphan_tool_results(self.history)
         after: int = len(self.history)
@@ -1512,15 +1616,31 @@ class GsCoreAIAgent:
                 # plugin_developer_agent）时，确保 create_subagent 在池里。否则主人格
                 # 既够不到那些工具、又没有委派入口，只能放弃或拿碎片工具硬拼。只补
                 # create_subagent 本身（不做能力族展开），代价仅 +1 个工具 schema。
+                #
+                # v2 扩展（OOC 修复 RC-0）：当工具池包含已注册能力代理覆盖的专业域
+                # 工具（如 stock_indicators / papertrade_*）时，也注入 create_subagent。
+                # 旧逻辑只在 NON_SEARCHABLE_TOOL_CATEGORIES 命中时注入，导致专业域
+                # 工具在池中但委派入口缺失——模型被迫直接调用，金融 JSON 污染主人格
+                # 上下文 → OOC。现在让模型可以按 §3.1 自主决定直接调还是委派。
                 if qy:
+                    _need_subagent = False
                     deleg_pid = _matched_delegation_only_profile(qy)
-                    if deleg_pid and not any(t.name == "create_subagent" for t in tools):
+                    if deleg_pid:
+                        _need_subagent = True
+                    else:
+                        # 扩展：池中工具与能力代理覆盖范围有交集 → 注入委派入口
+                        _pool_names = {t.name for t in tools}
+                        _domain_pid = _pool_overlaps_capability_agent(_pool_names)
+                        if _domain_pid:
+                            _need_subagent = True
+                            deleg_pid = _domain_pid
+                    if _need_subagent and not any(t.name == "create_subagent" for t in tools):
                         cs = find_tool_base("create_subagent")
                         if cs is not None:
                             tools.append(cs.tool)
                             logger.debug(
                                 i18n_t(
-                                    "🧠 [GsCoreAIAgent] 意图命中委派型画像 {deleg_pid}，"
+                                    "🧠 [GsCoreAIAgent] 委派保障：命中能力代理 {deleg_pid}，"
                                     "注入 create_subagent 保障委派路径",
                                     deleg_pid=deleg_pid,
                                 )

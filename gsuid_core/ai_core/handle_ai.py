@@ -485,6 +485,7 @@ async def handle_ai_chat(
                 history_context=rag_context,
                 memory_context_text=memory_context_text,
                 soft_triggered=soft_triggered,
+                intent=intent,
             )
 
             # ============================================================
