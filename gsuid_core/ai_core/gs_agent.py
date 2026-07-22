@@ -2470,6 +2470,22 @@ class GsCoreAIAgent:
                             routed_name = self.model_config_name
                     try:
                         result = await _do_run()
+                        # 内层重试耗尽后返回错误字符串（非异常）：若为 provider 级故障
+                        # （限流/连接/5xx），标记冷却并换路重试，而非直接返回错误给用户。
+                        if (
+                            _attempt == 0
+                            and isinstance(result, str)
+                            and result.startswith(ERROR_RESULT_PREFIX)
+                            and looks_like_provider_failure(result)
+                        ):
+                            provider_router.mark_failure(routed_name or self.model_config_name)
+                            logger.warning(
+                                i18n_t(
+                                    "🧠 [GsCoreAIAgent] provider 级故障(内层重试耗尽)，换路重试: {r}",
+                                    r=result[:200],
+                                )
+                            )
+                            continue
                         provider_router.mark_success(routed_name or self.model_config_name)
                         logger.info(i18n_t("🧠 [GsCoreAIAgent] 执行完成，释放锁"))
                         return result
