@@ -566,6 +566,21 @@ def _shorten_b64(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def auto_exc_info_processor(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    """error/critical/exception 级别且当前处于 except 块内时，自动补上 exc_info。
+
+    解决 ``logger.error(t("...: {e}", e=e))`` 只捕获 str(e) 而丢失完整 traceback 的问题：
+    调用方无需显式传 exc_info=True，只要日志调用发生在 except 块内，堆栈就会被自动采集，
+    终端 ConsoleRenderer / 文件 format_exc_info / 网页控制台 log_to_history 均可消费。
+    已有 exc_info 键时不覆盖（调用方显式传入优先）。
+    """
+    if method_name in ("error", "critical", "exception") and "exc_info" not in event_dict:
+        exc_info = sys.exc_info()
+        if exc_info[0] is not None:
+            event_dict["exc_info"] = exc_info
+    return event_dict
+
+
 def reduce_event_dict(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     """防止 Event / 超长字段被完整写入日志(file + console + collect 三个 sink 通用)。
 
@@ -755,6 +770,7 @@ def setup_logging():
     shared_processors: List[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
+        auto_exc_info_processor,
         structlog.processors.StackInfoRenderer(),
         # structlog.processors.format_exc_info,
         structlog.processors.TimeStamper(fmt="%m-%d %H:%M:%S", utc=False),
@@ -810,6 +826,7 @@ def setup_logging():
     # --- 内存收集 handler（全级别，用于 SSE 实时日志）---
     collect_processors: Sequence[Processor] = shared_processors + [
         trace_collect_processor,
+        structlog.processors.format_exc_info,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
         log_to_history,
         structlog.processors.JSONRenderer(ensure_ascii=False),
