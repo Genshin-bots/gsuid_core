@@ -210,11 +210,7 @@ def serialize_cookie(cookie_data: Dict[str, str]) -> str:
 
 
 def get_persist_cookie_data(simp_dict: SimpleCookie) -> Dict[str, str]:
-    return {
-        key: morsel.value
-        for key, morsel in simp_dict.items()
-        if key in persist_cookie_keys and morsel.value
-    }
+    return {key: morsel.value for key, morsel in simp_dict.items() if key in persist_cookie_keys and morsel.value}
 
 
 def is_overseas_account(

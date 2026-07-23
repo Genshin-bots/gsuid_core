@@ -15,8 +15,8 @@ from .tools import (
     random_hex,
     mys_version,
     random_text,
-    get_web_ds_token,
     generate_os_ds,
+    get_web_ds_token,
     generate_passport_ds,
 )
 from .models import (
