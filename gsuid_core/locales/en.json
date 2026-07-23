@@ -1862,5 +1862,17 @@
     "log.logger.exception_handler": "[Error] {name}: {error}",
     "log.heartbeat.reactive_gate_error": "🫧 [ReactiveGate] Reactive gate error, falling back to main agent: {e}",
     "log.heartbeat.reactive_decision_missing": "🫧 [ReactiveGate] decision lacks valid should_speak, defaulting to silence",
-    "log.webconsole.artifact.file_not_found": "File not found on disk"
+    "log.webconsole.artifact.file_not_found": "File not found on disk",
+    "🧠 [ContextAssembly] 工具规程注入失败: {e}": "🧠 [ContextAssembly] Tool-procedure injection failed: {e}",
+    "🧠 [GsCoreAIAgent] provider 路由: task_level={task_level}, primary={primary}, secondary={secondary}": "🧠 [GsCoreAIAgent] provider routing: task_level={task_level}, primary={primary}, secondary={secondary}",
+    "🧠 [GsCoreAIAgent] 第 {attempt} 次尝试, 路由到配置: {routed_name}": "🧠 [GsCoreAIAgent] Attempt {attempt}, routed to config: {routed_name}",
+    "🧠 [GsCoreAIAgent] _do_run 返回: is_str={is_str}, is_error={is_error}, is_provider_failure={is_failure}, attempt={attempt}": "🧠 [GsCoreAIAgent] _do_run returned: is_str={is_str}, is_error={is_error}, is_provider_failure={is_failure}, attempt={attempt}",
+    "🧠 [GsCoreAIAgent] 委派保障：注入 create_subagent（deleg={deleg_pid}）": "🧠 [GsCoreAIAgent] Delegation safeguard: injecting create_subagent (deleg={deleg_pid})",
+    "🧠 [GsCoreAIAgent] 主人格剥离能力代理专属工具 {n} 个: {names}": "🧠 [GsCoreAIAgent] Main persona stripped {n} capability-agent-only tools: {names}",
+    "🫧 [ReactiveGate] 规则预筛: {pre}": "🫧 [ReactiveGate] Rule pre-filter: {pre}",
+    "[send_chat_result] 拦截错误消息: {text}": "[send_chat_result] Intercepted error message: {text}",
+    "[数据库] with_session 未知失败": "[Database] Unknown with_session failure",
+    "[数据库] 连接池耗尽/超时，停止重试: {e}": "[Database] Connection pool exhausted/timed out; stopping retries: {e}",
+    "[数据库] 重试耗尽仍失败: {e}": "[Database] Still failing after retries exhausted: {e}",
+    "log.webconsole.dashboard_daily_command_counts_fail": "Failed to fetch daily command counts: {error}"
 }

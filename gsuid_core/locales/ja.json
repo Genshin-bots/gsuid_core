@@ -1862,5 +1862,17 @@
     "log.logger.exception_handler": "[エラー発生] {name}: {error}",
     "log.heartbeat.reactive_gate_error": "🫧 [ReactiveGate] 反応型ゲートでエラー、メインエージェントにフォールバック: {e}",
     "log.heartbeat.reactive_decision_missing": "🫧 [ReactiveGate] 決定に有効な should_speak がありません、デフォルトで沈黙",
-    "log.webconsole.artifact.file_not_found": "ディスク上にファイルが見つかりません"
+    "log.webconsole.artifact.file_not_found": "ディスク上にファイルが見つかりません",
+    "🧠 [ContextAssembly] 工具规程注入失败: {e}": "🧠 [ContextAssembly] ツール手順の注入に失敗しました: {e}",
+    "🧠 [GsCoreAIAgent] provider 路由: task_level={task_level}, primary={primary}, secondary={secondary}": "🧠 [GsCoreAIAgent] provider ルーティング: task_level={task_level}, primary={primary}, secondary={secondary}",
+    "🧠 [GsCoreAIAgent] 第 {attempt} 次尝试, 路由到配置: {routed_name}": "🧠 [GsCoreAIAgent] 第 {attempt} 回試行、設定へルーティング: {routed_name}",
+    "🧠 [GsCoreAIAgent] _do_run 返回: is_str={is_str}, is_error={is_error}, is_provider_failure={is_failure}, attempt={attempt}": "🧠 [GsCoreAIAgent] _do_run の戻り: is_str={is_str}, is_error={is_error}, is_provider_failure={is_failure}, attempt={attempt}",
+    "🧠 [GsCoreAIAgent] 委派保障：注入 create_subagent（deleg={deleg_pid}）": "🧠 [GsCoreAIAgent] 委譲保障: create_subagent を注入（deleg={deleg_pid}）",
+    "🧠 [GsCoreAIAgent] 主人格剥离能力代理专属工具 {n} 个: {names}": "🧠 [GsCoreAIAgent] 主ペルソナから能力エージェント専用ツールを {n} 件除去: {names}",
+    "🫧 [ReactiveGate] 规则预筛: {pre}": "🫧 [ReactiveGate] ルール事前フィルタ: {pre}",
+    "[send_chat_result] 拦截错误消息: {text}": "[send_chat_result] エラーメッセージを遮断しました: {text}",
+    "[数据库] with_session 未知失败": "[データベース] with_session の不明な失敗",
+    "[数据库] 连接池耗尽/超时，停止重试: {e}": "[データベース] 接続プール枯渇/タイムアウトのためリトライを停止します: {e}",
+    "[数据库] 重试耗尽仍失败: {e}": "[データベース] リトライを使い果たしても失敗: {e}",
+    "log.webconsole.dashboard_daily_command_counts_fail": "日次コマンド件数の取得に失敗しました: {error}"
 }

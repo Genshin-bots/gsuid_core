@@ -98,12 +98,17 @@ async def ops_sessions(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
     registry = get_ai_session_registry()
     hm = get_history_manager()
     sessions = registry.get_all_ai_sessions()
+    # HistoryManager 没有 get_session_meta；用 get_all_sessions_info 按 session_id 查 last_access
+    try:
+        all_session_info = hm.get_all_sessions_info()
+    except Exception:
+        all_session_info = {}
     items: List[Dict[str, Any]] = []
     now = time.time()
     for sid, agent in sessions.items():
         last_access = None
         try:
-            meta = hm.get_session_meta(sid) if hasattr(hm, "get_session_meta") else None
+            meta = all_session_info.get(sid)
             if isinstance(meta, dict):
                 last_access = meta.get("last_access") or meta.get("last_access_time")
         except Exception:
@@ -442,7 +447,8 @@ async def ops_tool_topology(
     persona_name: Optional[str] = None,
     _user: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
-    from gsuid_core.ai_core.register import get_main_agent_tools, get_registered_tools
+    from gsuid_core.ai_core.register import get_registered_tools
+    from gsuid_core.ai_core.rag.tools import get_main_agent_tools
     from gsuid_core.ai_core.persona.config import persona_config_manager
 
     core_tools = await get_main_agent_tools()
@@ -670,7 +676,8 @@ async def ops_plugins_diagnostics(_user: Dict = Depends(require_auth)) -> Dict[s
             enabled = bool(cfg.get("enabled", True))
         except Exception:
             pass
-        sv = cfg.get("sv") if isinstance(cfg.get("sv"), dict) else {}
+        raw_sv = cfg.get("sv")
+        sv: Dict[str, Any] = raw_sv if isinstance(raw_sv, dict) else {}
         items.append(
             {
                 "name": name,

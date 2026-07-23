@@ -1862,5 +1862,17 @@
     "log.logger.exception_handler": "[错误发生] {name}: {error}",
     "log.heartbeat.reactive_gate_error": "🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}",
     "log.heartbeat.reactive_decision_missing": "🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默",
-    "log.webconsole.artifact.file_not_found": "落盘文件不存在"
+    "log.webconsole.artifact.file_not_found": "落盘文件不存在",
+    "🧠 [ContextAssembly] 工具规程注入失败: {e}": "🧠 [ContextAssembly] 工具规程注入失败: {e}",
+    "🧠 [GsCoreAIAgent] provider 路由: task_level={task_level}, primary={primary}, secondary={secondary}": "🧠 [GsCoreAIAgent] provider 路由: task_level={task_level}, primary={primary}, secondary={secondary}",
+    "🧠 [GsCoreAIAgent] 第 {attempt} 次尝试, 路由到配置: {routed_name}": "🧠 [GsCoreAIAgent] 第 {attempt} 次尝试, 路由到配置: {routed_name}",
+    "🧠 [GsCoreAIAgent] _do_run 返回: is_str={is_str}, is_error={is_error}, is_provider_failure={is_failure}, attempt={attempt}": "🧠 [GsCoreAIAgent] _do_run 返回: is_str={is_str}, is_error={is_error}, is_provider_failure={is_failure}, attempt={attempt}",
+    "🧠 [GsCoreAIAgent] 委派保障：注入 create_subagent（deleg={deleg_pid}）": "🧠 [GsCoreAIAgent] 委派保障：注入 create_subagent（deleg={deleg_pid}）",
+    "🧠 [GsCoreAIAgent] 主人格剥离能力代理专属工具 {n} 个: {names}": "🧠 [GsCoreAIAgent] 主人格剥离能力代理专属工具 {n} 个: {names}",
+    "🫧 [ReactiveGate] 规则预筛: {pre}": "🫧 [ReactiveGate] 规则预筛: {pre}",
+    "[send_chat_result] 拦截错误消息: {text}": "[send_chat_result] 拦截错误消息: {text}",
+    "[数据库] with_session 未知失败": "[数据库] with_session 未知失败",
+    "[数据库] 连接池耗尽/超时，停止重试: {e}": "[数据库] 连接池耗尽/超时，停止重试: {e}",
+    "[数据库] 重试耗尽仍失败: {e}": "[数据库] 重试耗尽仍失败: {e}",
+    "log.webconsole.dashboard_daily_command_counts_fail": "获取每日命令计数失败: {error}"
 }
