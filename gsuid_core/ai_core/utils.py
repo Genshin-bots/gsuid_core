@@ -854,6 +854,9 @@ _REPORT_BLOCK_RE = re.compile(
 # 孤儿 report 标签（未闭合/嵌套残留）：内容保留走长 markdown 兜底，字面标签串不下发给用户
 _REPORT_TAG_ORPHAN_RE = re.compile(r"</?report(?:\s[^>\n]*)?>", re.I)
 
+# LLM API 错误消息安全网（proactive 等绕过 handle_ai 错误分类的路径兜底）
+_ERROR_OUTPUT_RE = re.compile(r"执行出错[:：]|status_code:\s*\d{3}|Traceback|rate_limit|APIError|TimeoutError")
+
 
 def _report_block_title(match: "re.Match[str]") -> str:
     return ((match.group(1) or match.group(2)) or "").strip()
@@ -867,6 +870,188 @@ def _report_footer() -> str:
     import datetime
 
     return _REPORT_FOOTER_TEMPLATE.format(ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+
+# --- 通用结构化数据拦截（反格式漂移兜底） ---
+# 不依赖包装格式名，基于内容密度判断。无论 ```report、裸JSON、制表线表格，
+# 只要内容本身是结构化数据就能拦截。
+
+_FENCED_CODE_BLOCK_RE = re.compile(r"```(\w*)\s*\n(.*?)```", re.S)
+_STRUCTURED_BLOCK_MIN_CHARS = 80
+_REAL_CODE_LANGS = frozenset(
+    {
+        "python",
+        "py",
+        "js",
+        "javascript",
+        "ts",
+        "typescript",
+        "bash",
+        "sh",
+        "shell",
+        "sql",
+        "html",
+        "css",
+        "java",
+        "go",
+        "rust",
+        "c",
+        "cpp",
+    }
+)
+# 真代码特征关键词：含这些词的段落视为可执行代码，不拦截
+_CODE_KEYWORDS_RE = re.compile(r"\b(def|class|import|from|function|var|const|let|return|if|else|for|while|switch)\b")
+# 制表线字符集
+_TABLE_CHARS = frozenset("─│┌┐└┘├┤┬┴┼╔╗╚╝║═")
+
+
+def _is_structured_content(body: str) -> bool:
+    """判断内容是否为结构化数据（而非可执行代码）。"""
+    stripped = body.strip()
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, dict) and len(data) >= 5:
+                return True
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            data = json.loads(repair_json(stripped))
+            if isinstance(data, dict) and len(data) >= 5:
+                return True
+        except (json.JSONDecodeError, ValueError):
+            pass
+    if body.count("─") >= 3 or body.count("│") >= 3:
+        return True
+    kv_lines = [ln for ln in body.split("\n") if re.match(r"^\s*\S+[:：]\s*\S", ln)]
+    if len(kv_lines) >= 5:
+        return True
+    return False
+
+
+def _structural_density(paragraph: str) -> float:
+    """计算段落的结构化密度分数（0.0~1.0）。
+
+    综合多个信号：JSON 字符密度、制表线密度、key:value 行比例、数字密度。
+    分数越高越可能是结构化数据而非角色台词。
+    """
+    if not paragraph or len(paragraph) < 40:
+        return 0.0
+    # 真代码豁免
+    if _CODE_KEYWORDS_RE.search(paragraph):
+        return 0.0
+    lines = paragraph.split("\n")
+    total_chars = len(paragraph)
+    score = 0.0
+    # 信号 1：JSON 字符密度（{ } " : 占比）
+    json_chars = sum(1 for c in paragraph if c in '{}":,')
+    if total_chars > 0:
+        json_ratio = json_chars / total_chars
+        if json_ratio > 0.08:
+            score += min(json_ratio * 3, 0.4)
+    # 信号 2：制表线字符密度
+    table_chars = sum(1 for c in paragraph if c in _TABLE_CHARS)
+    if total_chars > 0:
+        table_ratio = table_chars / total_chars
+        if table_ratio > 0.03:
+            score += min(table_ratio * 5, 0.4)
+    # 信号 3：key:value 行比例
+    kv_lines = sum(1 for ln in lines if re.match(r"^\s*\S+[:：]\s*\S", ln))
+    if len(lines) >= 3:
+        kv_ratio = kv_lines / len(lines)
+        if kv_ratio > 0.5:
+            score += min(kv_ratio * 0.4, 0.3)
+    # 信号 4：多行 + 数字密集（数据表特征）
+    if len(lines) >= 5:
+        digit_lines = sum(1 for ln in lines if re.search(r"\d+\.?\d*", ln))
+        if digit_lines / len(lines) > 0.5:
+            score += 0.15
+    return score
+
+
+# 密度阈值：超过此值视为结构化数据
+_DENSITY_THRESHOLD = 0.35
+
+
+def _infer_block_title(body: str) -> str:
+    """从结构化数据内容推断标题。"""
+    stripped = body.strip()
+    if stripped.startswith("{"):
+        data: dict = {}
+        try:
+            data = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            try:
+                data = json.loads(repair_json(stripped))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if isinstance(data, dict):
+            for key in ("stock", "title", "name", "ETF", "etf"):
+                if key in data:
+                    return str(data[key])
+    first_line = body.strip().split("\n")[0].strip()
+    if len(first_line) <= 40:
+        return first_line
+    return "分析资料"
+
+
+def _extract_embedded_structured_blocks(
+    text: str,
+) -> Tuple[str, List[Tuple[str, str]]]:
+    """从文本中提取结构化数据块。两阶段：fence 提取 + 段落密度分析。
+
+    阶段 1：提取 fenced code blocks 中的结构化数据（快速路径）。
+    阶段 2：对剩余文本做段落级密度分析，拦截裸结构化数据。
+    """
+    reports: List[Tuple[str, str]] = []
+
+    # 阶段 1：fence 提取（覆盖 ```report / ```data / ```json 等）
+    def _try_extract_fence(match: "re.Match[str]") -> str:
+        lang = match.group(1).strip().lower()
+        body = match.group(2).strip()
+        if lang in _REAL_CODE_LANGS:
+            return match.group(0)
+        if not _is_structured_content(body):
+            return match.group(0)
+        if len(body) < _STRUCTURED_BLOCK_MIN_CHARS and not body.strip().startswith("{"):
+            return match.group(0)
+        reports.append((_infer_block_title(body), body))
+        return ""
+
+    remaining = _FENCED_CODE_BLOCK_RE.sub(_try_extract_fence, text)
+
+    # 阶段 2：段落密度分析（拦截裸 JSON / 裸表格 / 裸 key:value 列表）
+    paragraphs = re.split(r"(\n\s*\n)", remaining)
+    kept_parts: List[str] = []
+    for part in paragraphs:
+        stripped = part.strip()
+        if not stripped or part.isspace():
+            kept_parts.append(part)
+            continue
+        density = _structural_density(stripped)
+        # 高密度无条件拦截；中密度需满足最小长度
+        if density >= 0.5 or (density >= _DENSITY_THRESHOLD and len(stripped) >= _STRUCTURED_BLOCK_MIN_CHARS):
+            reports.append((_infer_block_title(stripped), stripped))
+        else:
+            kept_parts.append(part)
+
+    remaining = "".join(kept_parts)
+
+    # 兜底：括号配平提取裸 JSON（密度分析可能因前后缀文本拉低分数）
+    span = _find_json_span(remaining)
+    if span is not None and len(span) >= _STRUCTURED_BLOCK_MIN_CHARS:
+        try:
+            data = json.loads(span)
+        except (json.JSONDecodeError, ValueError):
+            try:
+                data = json.loads(repair_json(span))
+            except (json.JSONDecodeError, ValueError):
+                data = None
+        if isinstance(data, dict) and len(data) >= 5:
+            reports.append((_infer_block_title(span), span))
+            remaining = remaining.replace(span, "").strip()
+
+    return remaining.strip(), reports
 
 
 def _extract_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -969,6 +1154,11 @@ async def send_chat_result(
         logger.debug(i18n_t("[send_chat_result] 跳过特殊标记: {_trimmed}", _trimmed=repr(_trimmed)))
         return
 
+    # 拦截 LLM API 错误消息（429/超时等），角色化替换后下发
+    if _ERROR_OUTPUT_RE.search(text):
+        logger.warning(i18n_t("[send_chat_result] 拦截错误消息: {text}", text=text[:100]))
+        text = "唔…脑子转不动了…等下再说…zzz…"
+
     # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
     # 与模型私有的回合/角色分隔特殊 token（如 MiniMax 的 ]<]minimax[>[，详见
     # _strip_special_control_tokens）。覆盖兜底总结 / 主动消息 / 子 Agent 转述等
@@ -984,6 +1174,9 @@ async def send_chat_result(
     # <report> 制品块两通道分离（§1 OOC 制品化）：块内容渲染为中性资料图片，
     # 块外才是角色台词，走后续净化/拆条。台词发完后统一补发资料图。
     text, report_blocks = _extract_report_blocks(text)
+    # 通用结构化数据拦截：```report/```data/裸JSON 等非标格式兜底提取
+    text, embedded_blocks = _extract_embedded_structured_blocks(text)
+    report_blocks = embedded_blocks + report_blocks
 
     # Trace 日志：记录原始输出
     logger.trace(i18n_t("[Meme] 原始输出: {text}", text=repr(text)))
@@ -1517,35 +1710,59 @@ def _compact_report_blocks_in_history(
     messages: List[ModelMessage],
     sent_texts: Optional[Set[str]] = None,
 ) -> int:
-    """把将持久化的 assistant 文本里的 ``<report>`` 块替换为占位符，返回替换数。
+    """把 assistant 文本里的结构化制品块**完全删除**，标题记入 ModelResponse.metadata。
 
-    资料图已发出，正文无需留在 self.history：既省 token，又切断"模型每轮看到
-    自己在念研报 → 研报腔固化为人格语气"的自我强化回路（§1 漂移固化）。
-    占位符保留标题，后续轮仍能引用"我刚发过什么资料"。
+    与旧方案（替换为占位符文本）的区别：模型在历史中看不到任何"已发资料图"
+    字样的文本，因此不可能模仿。标题通过 metadata 传递给下一轮的
+    assemble_dynamic_context，以 user 侧系统注释的形式告知模型。
 
     ``sent_texts``：本轮实际发送成功的原始文本集合（gs_agent._run_sent_texts）。
     给定时只压缩「确实发出去过」的 part——被拦截/暂扣/发送失败的文本不得谎称
     已发资料图（评审修复 E5）。
     """
-
-    def _placeholder(match: "re.Match[str]") -> str:
-        title = _report_block_title(match) or "分析资料"
-        return f"【已发资料图：{title}】"
-
     replaced = 0
     for msg in messages:
         if not isinstance(msg, ModelResponse):
             continue
+        titles: List[str] = []
         for part in msg.parts:
-            if not isinstance(part, TextPart) or "<report" not in part.content.lower():
+            if not isinstance(part, TextPart):
+                continue
+            has_report_tag = "<report" in part.content.lower()
+            has_code_block = "```" in part.content
+            if not has_report_tag and not has_code_block:
                 continue
             if sent_texts is not None and part.content.strip() not in sent_texts:
                 continue
-            new_content = _REPORT_BLOCK_RE.sub(_placeholder, part.content)
+            new_content = part.content
+            if has_report_tag:
+                for m in _REPORT_BLOCK_RE.finditer(new_content):
+                    titles.append(_report_block_title(m) or "分析资料")
+                new_content = _REPORT_BLOCK_RE.sub("", new_content)
+            if has_code_block:
+                new_content = _FENCED_CODE_BLOCK_RE.sub(lambda m: _code_block_to_metadata(m, titles), new_content)
             if new_content != part.content:
-                part.content = new_content
+                part.content = new_content.strip()
                 replaced += 1
+        if titles:
+            existing = msg.metadata or {}
+            existing["sent_reports"] = titles
+            msg.metadata = existing
     return replaced
+
+
+def _code_block_to_metadata(match: "re.Match[str]", titles: List[str]) -> str:
+    """fence 代码块若为结构化数据则删除并记录标题，否则原样保留。"""
+    lang = match.group(1).strip().lower()
+    body = match.group(2).strip()
+    if lang in _REAL_CODE_LANGS:
+        return match.group(0)
+    if not _is_structured_content(body):
+        return match.group(0)
+    if len(body) < _STRUCTURED_BLOCK_MIN_CHARS and not body.strip().startswith("{"):
+        return match.group(0)
+    titles.append(_infer_block_title(body))
+    return ""
 
 
 def _relean_user_turn(

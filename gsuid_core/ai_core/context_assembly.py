@@ -117,6 +117,8 @@ async def assemble_dynamic_context(
     memory_guide: str = "",
     soft_triggered: bool = False,
     intent: str = "",
+    recent_report_titles: Tuple[str, ...] = (),
+    prev_turn_used_tools: bool = False,
 ) -> Tuple[str, bool]:
     """每轮 user 侧动态注入的唯一顺序定义。返回 ``(full_context, has_actionable_task)``。
 
@@ -205,9 +207,13 @@ async def assemble_dynamic_context(
     if soft_triggered:
         context_parts.append(SOFT_TRIGGER_NOTE)
 
-    # OOC 修复 5.7：群聊语域隔离——闲聊轮注入语域切换提示，
-    # 切断前面专业讨论对闲聊语境的污染。
-    if intent == "闲聊" and persona_name:
+    # 上一轮发出的资料图标题（来自 ModelResponse.metadata，非文本占位符）
+    if recent_report_titles:
+        titles_str = "、".join(recent_report_titles[-3:])
+        context_parts.append(f"（上一轮你发出了资料图：{titles_str}。用户可能追问图片内容。）")
+
+    # 语域隔离：基于上一轮是否实际调用了工具（事实判断，非关键词匹配）
+    if intent == "闲聊" and persona_name and not prev_turn_used_tools:
         context_parts.append(
             "（当前是熟人闲聊，不是工作/分析场景。回到角色最自然的状态——"
             "短句、语气词、不展开分析、不列数据。刚才的专业讨论是别人的事，跟你无关。）"

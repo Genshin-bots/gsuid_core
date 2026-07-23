@@ -15,10 +15,11 @@ AI聊天处理模块
 import re
 import time
 import asyncio
-from typing import Optional
+from typing import Tuple, Optional
 from datetime import datetime
 
 from sqlalchemy.exc import SQLAlchemyError
+from pydantic_ai.messages import ToolCallPart, ModelResponse
 
 # 导入表情包模块以注册 on_core_shutdown 钩子和 @ai_tools
 import gsuid_core.ai_core.meme.startup  # noqa: F401
@@ -473,6 +474,17 @@ async def handle_ai_chat(
             # 保证"评测测到的上下文结构 = 生产结构"（§5.3 装配统一）。
             # 群画像/self_model 已在建 session 时固化进 system_prompt（§O-3），不在此重复。
             # ============================================================
+            # 从 session.history 的 metadata 提取上轮资料图标题 + 是否用过工具
+            _recent_report_titles: Tuple[str, ...] = ()
+            _prev_turn_used_tools = False
+            for _msg in reversed(session.history):
+                if isinstance(_msg, ModelResponse):
+                    _meta = _msg.metadata
+                    if _meta and "sent_reports" in _meta:
+                        _recent_report_titles = tuple(_meta["sent_reports"])
+                    _prev_turn_used_tools = any(isinstance(p, ToolCallPart) for p in _msg.parts)
+                    break
+
             mood_key = str(event.group_id) if event.group_id else str(event.user_id)
             full_context, has_actionable = await assemble_dynamic_context(
                 query=query,
@@ -486,6 +498,8 @@ async def handle_ai_chat(
                 memory_context_text=memory_context_text,
                 soft_triggered=soft_triggered,
                 intent=intent,
+                recent_report_titles=_recent_report_titles,
+                prev_turn_used_tools=_prev_turn_used_tools,
             )
 
             # ============================================================
