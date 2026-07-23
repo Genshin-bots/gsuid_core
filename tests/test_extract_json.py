@@ -184,6 +184,7 @@ def test_unicode_preserved() -> None:
     # 中文内容不应被 repair_json 转义成 \uXXXX（ensure_ascii 问题）
     raw = '{"msg": "你好世界"}'
     result = extract_json_from_text(raw)
+    assert isinstance(result, dict)
     assert result["msg"] == "你好世界"
 
 

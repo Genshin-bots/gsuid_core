@@ -4,7 +4,7 @@ import random
 import asyncio
 import logging
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 from joblib import dump, load
@@ -21,9 +21,59 @@ AI_PATH = get_res_path("ai_core")
 
 MODEL_PATH = AI_PATH / "intent_classifier_v5.2.joblib"
 
-# ==========================================
+# 省略式跟进：单句无独立语义，必须靠上文才知道动作（语言学闭类 + 极短回指）
+_ELLIPSIS_FOLLOWUP_RE = re.compile(
+    r"^(然后呢|那呢|还有呢|接着呢|后来呢|结果呢|怎么样了|怎么了|呢{1,2}|继续|还有吗|"
+    r"取消|不要了|那个呢|这个呢)[\s\W]*$"
+    r"|^(改成|改为|改到|换成).{0,16}$",
+    re.I,
+)
+
+
+def _is_ellipsis_followup(text: str) -> bool:
+    """当前句是否为「必须接上文才有动作」的省略跟进。"""
+    t = (text or "").strip()
+    if not t or len(t) > 24:
+        return False
+    if _ELLIPSIS_FOLLOWUP_RE.match(t):
+        return True
+    # 极短回指：「呢？」「咋样」「怎样了」；不含「是吗/可以吗」（纯确认，非未完成动作）
+    return bool(re.fullmatch(r".{0,4}(呢|咋样|怎样)[？?！!\s]*", t))
+
+
+class _UserTurnRecord(Protocol):
+    role: str
+    user_id: str
+    content: str
+
+
+def collect_prior_user_turns(
+    records: Sequence[_UserTurnRecord],
+    current_user_id: str,
+    *,
+    max_turns: int = 4,
+) -> list[str]:
+    """从 MessageRecord 列表提取同一用户的近期原文（旧→新，不含本轮未入库句）。"""
+    out: list[str] = []
+    for rec in records:
+        role = rec.role
+        uid = str(rec.user_id or "")
+        content = rec.content
+        if role != "user" or not isinstance(content, str) or not content.strip():
+            continue
+        if uid and current_user_id and uid != str(current_user_id):
+            continue
+        # 去掉过长 payload 头，只取消息体
+        body = content
+        if "--- 消息 ---" in body:
+            body = body.split("--- 消息 ---", 1)[-1]
+        body = body.split("【当前时间】")[0].strip()
+        if body:
+            out.append(body)
+    return out[-max_turns:]
+
+
 # 0. 环境静默设置 (Jieba)
-# ==========================================
 jieba_logger = logging.getLogger("jieba")
 jieba_logger.setLevel(logging.CRITICAL)
 jieba_logger.propagate = False
@@ -49,9 +99,7 @@ import jieba.posseg as pseg  # noqa: E402
 sys.stdout = _old_stdout
 sys.stderr = _old_stderr
 
-# ==========================================
 # 1. 扩充词典定义
-# ==========================================
 
 # [工具触发] 动作：查询、查看
 CHECK_VERBS = {
@@ -118,6 +166,7 @@ EDIT_VERBS = {
 }
 
 # [工具触发] 对象：功能、数据、面板
+# 纪律：不收录任何业务插件专属域词（由插件工具描述召回，不进框架意图词表）。
 FUNCTIONAL_NOUNS = {
     "面板",
     "数据",
@@ -127,14 +176,7 @@ FUNCTIONAL_NOUNS = {
     "榜单",
     "记录",
     "战绩",
-    "股价",
-    "走势",
-    "行情",
     "价格",
-    "汇率",
-    "大盘",
-    "金价",
-    "油价",
     "气温",
     "天气",
     "配置",
@@ -153,15 +195,8 @@ FUNCTIONAL_NOUNS = {
     "库存",
     "余额",
     "声骸",
-    "面板",
-    "数据",
-    "属性",
-    "排行",
-    "排行榜",
-    "倍率",
     "伤害",
     "乘区",
-    "数值",
 }
 
 # [工具触发] 对象：媒体（图、音、视）
@@ -399,9 +434,7 @@ def sync_entities_to_jieba():
 init_jieba()
 
 
-# ==========================================
 # 2. 特征工程与数据处理
-# ==========================================
 
 
 class ItemSelector(BaseEstimator, TransformerMixin):
@@ -560,7 +593,7 @@ class IntentService:
                 X_raw.append(text.replace(" ", ""))
                 y.append("工具")
 
-        entities = ["雷神", "原神", "纳指", "A股", "钟离", "火神", "这个", "那张", "上一个"]
+        entities = ["雷神", "原神", "钟离", "火神", "这个", "那张", "上一个", "那个"]
 
         # --- 1. 工具 (Tool) ---
         check_patterns = [
@@ -593,8 +626,7 @@ class IntentService:
             "在这张 <MEDIA> 下面 <EDIT> 两个 <E_OBJ>",
         ]
 
-        # --- 2. 问答 (QA) ---
-        # 严格限制：必须是明确的“知识查询”
+        # --- 2. 问答 (QA) --- 严格限制：必须是明确的“知识查询”
         qa_patterns = [
             "<QUERY> <KNOW> 的 <KNOW> 是 <KNOW>",
             "带 <KNOW> 的 <KNOW> 有 <QUERY>",
@@ -615,23 +647,22 @@ class IntentService:
             "查查 <ENT> 的 <KNOW>",
         ]
 
-        # --- 3. 闲聊 (Chat) ---
+        # 3. 闲聊 (Chat)
         # 重点增强：功能名词 + 负面状态 = 闲聊 (对抗工具误判)
-        # 重点增强：主观询问 = 闲聊 (对抗问答误判)
         chat_patterns = [
             "<SELF> 是 <QUERY>",  # 你是谁
             "<SELF> <QUERY> <ENT>",  # 你喜欢雷神吗
             "<SELF> 在 <QUERY>",  # 你在干嘛
             "<SELF> <STATE>",  # 我好难
             "<ENT> <STATE>",  # 深渊太难了
-            "<ENT> <NEG> <STATE>",  # 股票不亏
+            "<ENT> <NEG> <STATE>",  # 实体不差
             "<NEG> <CHECK>",  # 别查了
             "<NEG> <GEN>",  # 不要画
-            "为什么 <STATE>",  # 为什么亏死
+            "为什么 <STATE>",  # 为什么难过
             "<STATE>",  # 笑死 / 救命
             "<FUNC> <STATE>",  # 面板好丑
-            "<FUNC> <NEG> <STATE>",  # 走势不好
-            "<FUNC> <QUERY>",  # 股价咋样 (询问状态而非查询数据，偏闲聊，但也可能模糊)
+            "<FUNC> <NEG> <STATE>",  # 数据不好
+            "<FUNC> <QUERY>",  # 数据咋样（询问状态而非查询，偏闲聊）
             "<SELF> 的 <OPINION> 是 <QUERY>",  # 你的看法是什么
             "<QUERY> 是 <OPINION>",  # 什么是看法
             "这是 <QUERY>",  # 这是什么 (短语视为闲聊)
@@ -738,7 +769,6 @@ class IntentService:
 
         # 规则：显式的生成指令拦截
         # 只要包含：(生成/画/做/制作/来个) + (音乐/歌/语音/图/视频/画)
-        # 即使后面跟着很长的情绪化内容，也直接判定为工具
         if re.search(
             r"^(我|帮我)?(想要|要|求|跪求|来|整|搞)(一|两|三|\d+)?(张|个|首|段|份).{0,10}(图|画|照片|视频|语音|歌|代码|文案)",
             text,
@@ -752,7 +782,7 @@ class IntentService:
             return {"intent": "工具", "conf": 0.98, "reason": "Rule: Task With Content"}
 
         # --- 保持之前的闲聊拦截规则 ---
-        has_func = re.search(r"(面板|数据|战绩|排行|走势|股价|行情|价格|配置|装备|评分)", text)
+        has_func = re.search(r"(面板|数据|战绩|排行|价格|配置|装备|评分)", text)
         has_state = re.search(r"(丑|亏|烂|差|崩|难看|垃圾|离谱|恶心|高|低|麻|药丸|贵|便宜)", text)
         has_check = re.search(r"(查|看|找|搜|分析|计算|显示|获取|调用)", text)
         if has_func and has_state and not has_check:
@@ -766,7 +796,6 @@ class IntentService:
 
         # 规则 1.3: 极短的代词指代询问 -> 闲聊
         # 解决 "这是什么", "那是什么鬼"
-        # 逻辑：这/那 + 是 + 什么/啥 (且没有其他具体实体)
         if re.search(r"^(这|那|它)(是|个)?(什么|啥|鬼)[?？]*$", text):
             return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: Vague Query"}
 
@@ -783,8 +812,8 @@ class IntentService:
         ):
             return {"intent": "工具", "conf": 0.99, "reason": "Rule: Complex Edit Command"}
 
-        # 增加判断：如果有“查/看” + “名词”，基本是工具
-        if re.search(r"(查|看|找|搜|分析|计算|显示).{0,8}(面板|数据|战绩|排行|榜|走势|股价|天气|配置|运势|记录)", text):
+        # 增加判断：如果有“查/看” + “名词”，基本是工具（通用数据对象，不含业务插件域词）
+        if re.search(r"(查|看|找|搜|分析|计算|显示).{0,8}(面板|数据|战绩|排行|榜|天气|配置|运势|记录|详情|状态)", text):
             return {"intent": "工具", "conf": 0.98, "reason": "Rule: Check Data"}
 
         if re.search(r"^(调用|打开|启动|运行).{1,10}", text):
@@ -858,10 +887,90 @@ class IntentService:
         except Exception as e:
             return {"text": text, "intent": "Error", "conf": 0.0, "reason": str(e)}
 
-    async def predict_async(self, text: str) -> Dict[str, Any]:
-        """异步预测意图（带向量检索兜底）"""
+    async def predict_async(
+        self,
+        text: str,
+        *,
+        prior_user_turns: Optional[list[str]] = None,
+        prev_turn_used_tools: bool = False,
+    ) -> Dict[str, Any]:
+        """异步预测意图（带同用户上下文 + 向量检索兜底）。
+
+        低成本分类器单句能力有限，**不能只喂当前句**。流程：
+
+        1. 短句 / 省略跟进 + 有同用户上文 → **优先**用「近期用户原文 + 当前句」拼接再判；
+        2. 单句先判为闲聊时，再用拼接兜底一次（ContextJoin）；
+        3. 省略式跟进 +（上轮真用过工具 **或** 上文用户句本身是工具/问答）→ 结构升级为工具。
+
+        闲聊意图本身仍允许轻量工具（装配侧 LITE + 保底/驻留），本函数只负责别把
+        「然后呢」这类跟进误判成纯寒暄而砍掉工具/规程。
+        """
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(self.executor, self._sync_predict, text)
+        text_s = (text or "").strip()
+        priors = [p.strip() for p in (prior_user_turns or []) if p and p.strip()]
+        is_short = len(text_s) <= 24
+        is_ellipsis = _is_ellipsis_followup(text_s)
+
+        def _keep_current_text(r: Dict[str, Any], reason_prefix: str) -> Dict[str, Any]:
+            return {
+                "text": text,
+                "intent": r.get("intent", "闲聊"),
+                "conf": r.get("conf", 0.0),
+                "reason": f"{reason_prefix}:{r.get('reason', 'Model')}",
+            }
+
+        # ① 短句/省略：先拼同用户上下文再判（主路径，不是事后补丁）
+        result: Dict[str, Any]
+        if priors and (is_short or is_ellipsis):
+            joined = "\n".join([*priors[-3:], text_s])
+            result = _keep_current_text(
+                await loop.run_in_executor(self.executor, self._sync_predict, joined),
+                "ContextPrimary",
+            )
+            # 拼接仍偏闲聊时，再单判当前句；若单句更像工具/问答则采用（如整段拼接被旧寒暄稀释）
+            if result.get("intent") == "闲聊":
+                solo = await loop.run_in_executor(self.executor, self._sync_predict, text_s)
+                if solo.get("intent") in ("工具", "问答") and float(solo.get("conf") or 0) >= 0.55:
+                    result = {
+                        "text": text,
+                        "intent": solo["intent"],
+                        "conf": solo["conf"],
+                        "reason": f"SoloOverride:{solo.get('reason', 'Model')}",
+                    }
+        else:
+            result = await loop.run_in_executor(self.executor, self._sync_predict, text_s)
+
+        # ② 长句先判闲聊时：用「上轮用户句 + 当前句」再跑一遍
+        if result.get("intent") == "闲聊" and priors and not (is_short or is_ellipsis):
+            joined = "\n".join([*priors[-2:], text_s])
+            result2 = await loop.run_in_executor(self.executor, self._sync_predict, joined)
+            if result2.get("intent") in ("工具", "问答") and float(result2.get("conf") or 0) >= 0.45:
+                result = _keep_current_text(result2, "ContextJoin")
+
+        # ③ 结构：省略跟进不得当纯寒暄
+        if result.get("intent") == "闲聊" and is_ellipsis:
+            if prev_turn_used_tools:
+                result = {
+                    "text": text,
+                    "intent": "工具",
+                    "conf": 0.92,
+                    "reason": "Structural: ellipsis follow-up after tools",
+                }
+            elif priors:
+                # 上轮 Agent 可能最终只吐了文本（ToolCall 不在最后一条 ModelResponse），
+                prior_toolish = False
+                for p in reversed(priors[-3:]):
+                    pr = await loop.run_in_executor(self.executor, self._sync_predict, p)
+                    if pr.get("intent") in ("工具", "问答") and float(pr.get("conf") or 0) >= 0.5:
+                        prior_toolish = True
+                        break
+                if prior_toolish:
+                    result = {
+                        "text": text,
+                        "intent": "工具",
+                        "conf": 0.9,
+                        "reason": "Structural: ellipsis after prior toolish user turns",
+                    }
 
         # 向量优先策略：如果模型判定为闲聊，但置信度不高，且包含疑问词
         # 则试探性检索向量库，看是否有相关知识
@@ -888,8 +997,7 @@ class IntentService:
                     from ..rag import query_knowledge
                     from ..rag.skills_kb import SKILLS_DOC_SOURCE
 
-                    # 试探性检索（只取Top 1，阈值稍高）。排除 docs/skills 开发文档整类——
-                    # 它们只服务能力代理，绝不能让普通消息因撞上它而被误判成"问答"。
+                    # 试探性检索（只取Top 1，阈值稍高）。
                     hits = await query_knowledge(
                         query=text,
                         limit=1,
@@ -915,9 +1023,7 @@ class IntentService:
         return result
 
 
-# ==========================================
 # 测试代码 (直接运行此文件可看效果)
-# ==========================================
 async def benchmark(service: IntentService):
     test_cases = [
         # --- 工具类 (新需求) ---
@@ -950,7 +1056,7 @@ async def benchmark(service: IntentService):
         "笑死我了",  # 闲聊
         "深渊好难打",  # 闲聊
         "面板太丑了",  # 闲聊
-        "股票亏麻了",  # 闲聊
+        "面板亏麻了",  # 闲聊
         "卧槽怎么回事",  # 闲聊
         "这是什么",  # 闲聊
         "不要查",  # 闲聊

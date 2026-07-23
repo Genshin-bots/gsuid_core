@@ -77,6 +77,45 @@ def note_hard_trigger(session_id: str, user_id: str, window_seconds: int, max_to
     _maybe_gc(window_seconds)
 
 
+def list_active_windows(
+    window_seconds: int,
+    max_total_seconds: int,
+) -> list[dict]:
+    """列出当前进程内仍有效的续聊窗口（控制台只读视图）。
+
+    返回字段：
+    - session_id / user_id
+    - burst_start / last_hard_ts（unix 秒）
+    - age_since_hard / age_since_burst
+    - remaining_window / remaining_ceiling
+    - active（是否仍满足 in_followup_window）
+    """
+    now = time.time()
+    out: list[dict] = []
+    for k, st in list(_states.items()):
+        if "::" not in k:
+            continue
+        session_id, user_id = k.split("::", 1)
+        age_hard = now - st.last_hard_ts
+        age_burst = now - st.burst_start
+        active = window_seconds > 0 and age_burst <= max_total_seconds and age_hard <= window_seconds
+        out.append(
+            {
+                "session_id": session_id,
+                "user_id": user_id,
+                "burst_start": st.burst_start,
+                "last_hard_ts": st.last_hard_ts,
+                "age_since_hard": round(age_hard, 1),
+                "age_since_burst": round(age_burst, 1),
+                "remaining_window": max(0.0, round(window_seconds - age_hard, 1)),
+                "remaining_ceiling": max(0.0, round(max_total_seconds - age_burst, 1)),
+                "active": active,
+            }
+        )
+    out.sort(key=lambda x: x["last_hard_ts"], reverse=True)
+    return out
+
+
 def in_followup_window(session_id: str, user_id: str, window_seconds: int, max_total_seconds: int) -> bool:
     """该用户当前是否处于免唤醒续聊窗口内（软触发是否成立）。
 

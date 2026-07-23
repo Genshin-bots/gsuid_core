@@ -270,8 +270,10 @@ def _patch_artifact(monkeypatch, art) -> AsyncMock:
 
 def test_handle_always_stripped_from_returned_text(monkeypatch) -> None:
     """铁律：无论能否补发，返回文本里绝不残留 res_/img_ 句柄。"""
+    from typing import Any
+
     _patch_artifact(monkeypatch, None)  # 解析不到
-    bot = _FakeBot()
+    bot: Any = _FakeBot()
     out = asyncio.run(_resolve_and_deliver_leaked_handles("详细的放那里面了 res_deb5b2e0d2a4 自己看吧 我去睡了", bot))
     assert "res_deb5b2e0d2a4" not in out and "res_" not in out
     assert bot.sent == []  # 解析不到 → 不补发
@@ -279,8 +281,10 @@ def test_handle_always_stripped_from_returned_text(monkeypatch) -> None:
 
 def test_long_relayed_text_only_strips_no_redelivery(monkeypatch) -> None:
     """正文已够长（模型其实已把结论讲清楚）→ 只抹句柄，绝不重复补发资源。"""
+    from typing import Any
+
     mock = _patch_artifact(monkeypatch, _FakeArtifact(payload_inline="重复内容"))
-    bot = _FakeBot()
+    bot: Any = _FakeBot()
     long_body = "药明康德昨天收盘 131.36，离主人定的 135 还差 3 块多。" * 6  # ≥120 字
     out = asyncio.run(_resolve_and_deliver_leaked_handles(long_body + " res_abc12345", bot))
     assert "res_abc12345" not in out
@@ -290,10 +294,12 @@ def test_long_relayed_text_only_strips_no_redelivery(monkeypatch) -> None:
 
 def test_lazy_pointer_to_image_artifact_delivers_image(monkeypatch, tmp_path) -> None:
     """短指路 + 图片 artifact → 把图发出去，剩下的短句成为图注（不再是断链引用）。"""
+    from typing import Any
+
     img = tmp_path / "report.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
     _patch_artifact(monkeypatch, _FakeArtifact(payload_path=str(img), mime="image/png"))
-    bot = _FakeBot()
+    bot: Any = _FakeBot()
     out = asyncio.run(_resolve_and_deliver_leaked_handles("都画好了 res_deadbeef01 自己看吧", bot))
     assert "res_deadbeef01" not in out
     assert len(bot.sent) == 1 and getattr(bot.sent[0], "type", None) == "image", "应把图片补发出去"
@@ -301,9 +307,11 @@ def test_lazy_pointer_to_image_artifact_delivers_image(monkeypatch, tmp_path) ->
 
 def test_lazy_pointer_to_text_artifact_inlines_content(monkeypatch) -> None:
     """短指路 + 纯文本 artifact → 把内容并进正文（走后续管线出图），让'自己看'有实物。"""
+    from typing import Any
+
     report = "药明康德 603259 分析：昨收 131.36，离 135 仅 2.8%，三个超买信号亮起，135 是布林上轨压力位。"
     _patch_artifact(monkeypatch, _FakeArtifact(payload_inline=report))
-    bot = _FakeBot()
+    bot: Any = _FakeBot()
     out = asyncio.run(_resolve_and_deliver_leaked_handles("详细的放那里面了 res_cafe1234 自己看吧", bot))
     assert "res_cafe1234" not in out
     assert report in out, "文本 artifact 内容应并进正文"

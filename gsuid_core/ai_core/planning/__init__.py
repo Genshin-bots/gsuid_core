@@ -6,7 +6,7 @@
 - ``kanban``         : 任务树 manager——创建 / 查询 / 状态汇总 / 失败 / 重派 / 审批 / 暂停恢复。
 - ``kanban_executor``: 任务树并发调度执行器（``execute_ready_tasks`` / ``kick_root``）。
 - ``kanban_tools``   : 暴露给主人格 LLM 的 Kanban 工具（注册 / 重派 / 审批 / artifact 增查）。
-- ``resolver``       : 自然语言任务引用解析（"那个炒股任务" → 根任务），框架代管真实 ID。
+- ``resolver``       : 自然语言任务引用解析（"那个周报任务" → 根任务），框架代管真实 ID。
 - ``runtime``        : 单次执行的 PlanRunContext 绑定（任务 / 工作区 / 画像）。
 - ``workspace``      : Artifact Workspace 路径守卫与登记。
 - ``context``        : 每轮动态注入"当前用户的根任务摘要"，让主人可追问进度。

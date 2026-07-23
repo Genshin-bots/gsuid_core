@@ -151,6 +151,39 @@ GET /api/ai/statistics/token-by-model
 
 ---
 
+## 20.2.1 近 N 天每日 Token（日历选择器）
+
+```
+GET /api/ai/statistics/daily-token-counts?days=60
+```
+
+供 `/ai-statistics` 日期选择器在每个日期格下展示 **input token**（前端可压缩为 `3M`）；`input_tokens == 0` 的日期可禁用。
+
+**Query**：
+- `days`：回溯天数，默认 60，夹取 `[1, 366]`
+
+**行为**：
+- 历史日读 `AIDailyStatistics`；**今日优先内存实时**
+- 区间内无数据的日期补 0，序列连续
+
+**响应**：
+```json
+{
+  "status": 0,
+  "msg": "ok",
+  "data": [
+    {
+      "date": "2026-07-01",
+      "input_tokens": 3200000,
+      "output_tokens": 410000,
+      "total_tokens": 3610000
+    }
+  ]
+}
+```
+
+---
+
 ## 20.3 获取时间段 Token 消耗统计
 
 ```

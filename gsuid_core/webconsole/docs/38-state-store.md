@@ -17,7 +17,7 @@
 | 字段 | 说明 |
 |------|------|
 | `scope` | 数据隔离范围。代理工具默认按事件来源分组：`user:<user_id>` / `group:<group_id>` / `global` |
-| `state_key` | 业务键名。`state_*` 直接命名；`record_*` 工具自动加 `record:` 前缀（如 `record:stock:account`） |
+| `state_key` | 业务键名。`state_*` 直接命名；`record_*` 工具自动加 `record:` 前缀（如 `record:myplugin:account`） |
 | `value` | JSON 序列化后的 value（字符串/数字/列表/字典） |
 | `version` | 乐观锁版本号（`record_*` 写入累加） |
 | `expire_at` | 可选 TTL；为空 = 永久 |
@@ -75,7 +75,7 @@ GET /api/ai/state-store/keys?scope=user:user_web_01[&prefix=record:&include_expi
     "items": [
       {
         "scope": "user:user_web_01",
-        "state_key": "record:stock:account",
+        "state_key": "record:myplugin:account",
         "version": 4,
         "size_bytes": 412,
         "created_at": "2026-05-24T21:32:23",
@@ -83,7 +83,7 @@ GET /api/ai/state-store/keys?scope=user:user_web_01[&prefix=record:&include_expi
         "expire_at": null,
         "value_type": "dict",            // dict / list / scalar / null / string
         "is_record_collection": true,    // 以 record: 开头时 true
-        "record_collection_name": "stock:account"
+        "record_collection_name": "myplugin:account"
       },
       {
         "scope": "user:user_web_01",
@@ -144,7 +144,7 @@ GET /api/ai/state-store/records?scope=...&collection=...[&limit=50&offset=0&wher
 | 参数 | 说明 |
 |------|------|
 | `scope` | 必填，scope 字符串 |
-| `collection` | 必填，**不含 `record:` 前缀**——如 `stock:account` / `daily_checkin` / `study_plan` |
+| `collection` | 必填，**不含 `record:` 前缀**——如 `myplugin:account` / `daily_checkin` / `study_plan` |
 | `limit` | 默认 50，最大 500 |
 | `offset` | 偏移量（分页） |
 | `where_field` / `where_value` | 可选字段相等过滤（与 `record_list` LLM 工具同语义） |
@@ -162,7 +162,7 @@ JSON 字典。本端点把字典拍平成 `[{_rid: ..., **payload}, ...]` 给前
         "_rid": "main_account",
         "balance": 300000,
         "initial_balance": 300000,
-        "asset_type": "virtual_stock_portfolio",
+        "asset_type": "virtual_account",
         "created_at": "2026-05-24T21:32:23",
         "status": "active"
       }
@@ -170,7 +170,7 @@ JSON 字典。本端点把字典拍平成 `[{_rid: ..., **payload}, ...]` 给前
     "total": 1,
     "limit": 50,
     "offset": 0,
-    "collection": "stock:account",
+    "collection": "myplugin:account",
     "scope": "user:user_web_01"
   }
 }
@@ -243,7 +243,7 @@ Content-Type: application/json
 ```jsonc
 {
   "scope": "user:user_web_01",
-  "state_keys": ["self_notes", "record:stock:account", "record:study_plan"]
+  "state_keys": ["self_notes", "record:myplugin:account", "record:study_plan"]
 }
 ```
 
@@ -266,7 +266,7 @@ Content-Type: application/json
     "not_found_count": 1,
     "results": [
       {"scope": "user:user_web_01", "state_key": "self_notes",         "deleted": true,  "reason": null},
-      {"scope": "user:user_web_01", "state_key": "record:stock:account","deleted": true,  "reason": null},
+      {"scope": "user:user_web_01", "state_key": "record:myplugin:account","deleted": true,  "reason": null},
       {"scope": "user:user_web_01", "state_key": "record:study_plan",  "deleted": false, "reason": "not_found"}
     ]
   }
@@ -295,7 +295,7 @@ UI 建议：
 - **Artifact API**（`/api/ai/artifacts/*`）：看具体产物——回答"那张图 / 那段
   报告原文长什么样？"
 - **State Store API**（本组，`/api/ai/state-store/*`）：看代理维护的持久化业务
-  状态——回答"虚拟账户余额是多少？持仓里有几只股票？打卡了几天？"
+  状态——回答"虚拟账户余额是多少？名单里有几条？打卡了几天？"
 
 三组 API 一起覆盖了"代理人格做事 → 产物可追溯 + 业务状态可查"的完整可见性。
 

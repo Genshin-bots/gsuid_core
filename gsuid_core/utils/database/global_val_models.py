@@ -121,9 +121,6 @@ class CoreDataSummary(BaseIDModel, table=True):
 
         # 单次查询：按 (date, bot_id, bot_self_id) 聚合
         # SQLAlchemy 2.0 select() 静态只给 1..10 列 overload, 9 列恰好匹配;
-        # 实际 pyright 报 col/Mapped 类型不匹配 overload 形参；分两步构造更稳:
-        #   1. select() 只接 3 个分组维度列, 拿到 Select[Tuple[date, str, str]];
-        #   2. add_columns() 链式追加 6 个汇总列, 走增量化 overload。
         query: Select = (
             select(
                 col(cls.date),
@@ -396,6 +393,45 @@ class CoreDataAnalysis(BaseIDModel, table=True):
 
         r = await session.execute(result)
         return r.scalars().all()
+
+    @classmethod
+    @with_session
+    async def get_daily_command_totals(
+        cls,
+        session: AsyncSession,
+        start_date: ymddate,
+        end_date: ymddate,
+        bot_id: Optional[str] = None,
+        bot_self_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """按日汇总 USER 指令次数（与 /daily/commands 图表口径一致，避免 group 双计）。
+
+        Returns:
+            ``{"YYYY-MM-DD": total_count, ...}``，仅含库中有记录的日期。
+        """
+        query = (
+            select(col(cls.date), func.coalesce(func.sum(cls.command_count), 0))
+            .where(
+                cls.date >= start_date,
+                cls.date <= end_date,
+                cls.data_type == DataType.USER,
+            )
+            .group_by(col(cls.date))
+        )
+        if bot_id:
+            query = query.where(cls.bot_id == bot_id)
+        if bot_self_id:
+            query = query.where(cls.bot_self_id == bot_self_id)
+
+        rows = (await session.execute(query)).all()
+        out: Dict[str, int] = {}
+        for d, total in rows:
+            if isinstance(d, ymddate):
+                key = d.strftime("%Y-%m-%d")
+            else:
+                key = str(d)[:10]
+            out[key] = int(total or 0)
+        return out
 
     @classmethod
     @with_session

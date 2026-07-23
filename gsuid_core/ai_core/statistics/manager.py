@@ -55,14 +55,10 @@ class StatisticsManager:
         self._today: str = datetime.now().strftime("%Y-%m-%d")
         self._rag: Dict[str, Any] = {"hit": 0, "miss": 0, "documents": {}}
         # Why: 启动期 _persist_loop (cron */30 + misfire补偿) 可能在 _load_today_data_from_db
-        #      完成前抢先 fire, 把空的 _bot_state 写回 DB, 抹掉当日 AIDailyStatistics 的 total_*,
-        #      却保留 by_model/by_type 表 (空 dict 走 batch_insert 直接 return), 造成
-        #      total < sum(by_model) = sum(by_type) 的永久偏差。用 _loaded 闸门确保
-        #      "未加载完毕一律不许 persist"。
+        # 完成前抢先 fire, 把空的 _bot_state 写回 DB, 抹掉当日 AIDailyStatistics 的 total_*,
         self._loaded: bool = False
         # Why: _persist_loop 与日切 _scheduled_ai_core_reset 在 00:00 会同时触发;
-        #      reset 内 "持久化 → 清空 → 切日期" 三步若被并发 persist 切片, 可能把空状态
-        #      回写到当日 Day N 行。用同一把锁串行化 persist / 日切, 保证原子性。
+        # reset 内 "持久化 → 清空 → 切日期" 三步若被并发 persist 切片, 可能把空状态
         self._persist_lock: asyncio.Lock = asyncio.Lock()
         # 小时级性能统计（内存缓冲, 只保留尚未持久化的增量）
         # key: (date, hour, provider, model_name)
@@ -699,6 +695,57 @@ class StatisticsManager:
             logger.warning(i18n_t("📊 [StatisticsManager] 查询小时性能统计失败: {e}", e=e))
             return []
 
+    async def get_daily_token_counts(self, days: int = 60) -> List[Dict[str, Any]]:
+        """近 N 天每日 input/output token 汇总，供日历选择器展示。
+
+        返回按日期升序的 ``[{date, input_tokens, output_tokens, total_tokens}, ...]``，
+        无数据的日期补 0；今日优先读内存实时值。
+        """
+        days = max(1, min(int(days or 60), 366))
+        today = datetime.now().date()
+        start = today - timedelta(days=days - 1)
+        start_s = start.strftime("%Y-%m-%d")
+        end_s = today.strftime("%Y-%m-%d")
+
+        by_date: Dict[str, Dict[str, int]] = {}
+        try:
+            rows = await AIDailyStatistics.get_stats_between(start_s, end_s)
+            for row in rows:
+                key = str(row.date)[:10]
+                by_date[key] = {
+                    "input_tokens": int(row.total_input_tokens or 0),
+                    "output_tokens": int(row.total_output_tokens or 0),
+                }
+        except Exception:
+            # DB 不可用时仍返回连续 0 序列
+            pass
+
+        # 今日覆盖为内存实时
+        today_s = self._today
+        if today_s:
+            b = self._bot_state
+            by_date[today_s] = {
+                "input_tokens": int(b.total_tokens.get("input", 0) or 0),
+                "output_tokens": int(b.total_tokens.get("output", 0) or 0),
+            }
+
+        result: List[Dict[str, Any]] = []
+        for offset in range(days - 1, -1, -1):
+            d = today - timedelta(days=offset)
+            key = d.strftime("%Y-%m-%d")
+            bucket = by_date.get(key) or {"input_tokens": 0, "output_tokens": 0}
+            inp = int(bucket.get("input_tokens", 0) or 0)
+            out = int(bucket.get("output_tokens", 0) or 0)
+            result.append(
+                {
+                    "date": key,
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "total_tokens": inp + out,
+                }
+            )
+        return result
+
     async def get_summary_by_date(self, date: str) -> Optional[Dict[str, Any]]:
         """从数据库获取指定日期的统计摘要"""
         try:
@@ -727,8 +774,7 @@ class StatisticsManager:
             ]
 
             # 获取按类型分组的 Token 消耗数据
-            # 注意: 字段名统一为 `type`, 与 get_summary() 中今日内存数据的 by_type 保持一致,
-            #       避免前端 AIStatisticsPage.tsx 的 TokenByType 接口拿到 `chat_type` 时回落成 "Unknown"。
+            # 避免前端 AIStatisticsPage.tsx 的 TokenByType 接口拿到 `chat_type` 时回落成 "Unknown"。
             token_by_type_data = await AITokenUsageByType.get_daily_data(date)
             by_type = [
                 {

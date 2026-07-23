@@ -25,8 +25,7 @@ from sqlalchemy.dialects.postgresql import JSON
 from gsuid_core.i18n import t
 from gsuid_core.utils.database.base_models import with_session
 
-# 任务状态：``waiting_approval`` 用于把"审批挂起"与"主人手动暂停"区分开，
-# 避免同一个 paused 同时表示两种语义
+# 任务状态：``waiting_approval`` 用于把"审批挂起"与"主人手动暂停"区分开， 避免同一个 paused 同时表示两种语义
 TASK_STATUSES = (
     "pending",
     "running",
@@ -109,8 +108,6 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
     session_id: str = Field(default="", max_length=256)
     # 派活时的用户权限等级（与 Event.user_pm 对齐，越小权限越高，0=主人）。
     # 必须随任务持久化：Kanban 执行体由 _build_event 重建 Event 后，pm 门控工具
-    # （check_pm，如 plugin_dev 全家）要靠它判定主人身份；不存就退回默认 6（非管理员），
-    # 导致主人派出的子代理被自家工具拒绝（实测：pm=0 主人无法让代理写插件）。
     user_pm: int = Field(default=6)
 
     # 授权播报白名单（群号 / 用户号列表）；空表示仅回送 owner
@@ -120,7 +117,6 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
 
     # 根任务的兜底心跳间隔（秒）；默认 0 = 不挂任何定时器。
     # 当前 Kanban 调度入口完全由 ``kick_root`` 驱动；该字段仅保留给 webconsole
-    # 展示与未来潜在的定时心跳扩展使用。
     interval_seconds: int = Field(default=0)
 
     created_at: datetime = Field(default_factory=datetime.now)
@@ -128,9 +124,8 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
     # 心跳时间，崩溃恢复判定僵尸任务的依据（``recover_zombie_subtasks``）
     last_heartbeat_at: Optional[datetime] = Field(default=None)
 
-    # ── Kanban 任务树字段 ────────────────────────────
+    # Kanban 任务树字段
     # 根任务：parent_task_id=None / root_task_id=自身 id / node_kind="root"
-    # 子任务：parent_task_id=根 id / root_task_id=根 id / node_kind="subtask"
 
     parent_task_id: Optional[str] = Field(default=None, index=True, max_length=36)
     root_task_id: str = Field(default="", index=True, max_length=36)
@@ -151,37 +146,20 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
     failure_policy: str = Field(default="notify_persona", max_length=32)
     # 工作区策略：artifact_only（默认） 或 unrestricted
     workspace_policy: str = Field(default="artifact_only", max_length=32)
-    # 子任务级别"最早可执行时间"——绝对时间。``get_ready_child_tasks`` 会把
-    # ``not_before > now`` 的子任务过滤掉，调度时不派活；到点后下一次 ``kick_root``
-    # 会自然把它们拉起。诞生原因：实测会话 b8cf57ca 主人要"虚拟盘开盘时段每整点
-    # 看盘"，单子任务被立刻派出（凌晨 4 点跑了一次），完全无视市场时间。新增字段
-    # 让主人格在 ``register_kanban_task`` 时直接传 ``not_before`` 实现"等开盘""等
-    # 主人下班"等延后语义，与周期模板（``recurring_trigger`` 多次开火）正交。
+    # 子任务级别"最早可执行时间"——绝对时间。
+    # 到点后下一次 ``kick_root``
     not_before: Optional[datetime] = Field(default=None)
 
-    # ── 周期触发字段 ─────────────────────────────────────────
-    # recurring_trigger 形如：
-    #   "interval:<seconds>"          —— 每隔 N 秒触发一次
-    #   "cron:<minute> <hour> <dom> <mon> <dow>"  —— 标准 5 段 cron
-    # 为空表示一次性任务（默认行为）。
-    #
-    # 既支持**根任务级**周期（整棵树克隆——保留用于"任意时刻独立跑一棵新树"的
-    # 老用法），也支持**子任务级**周期（一棵树内某个子任务到点克隆出一个执行实例
-    # 子任务）。新设计推崇子任务级周期：让"持久化状态 + 周期更新 + 最终汇总"
-    # 形态的任务用**一棵树**表达（init / recurring / final 子任务），告别旧版
+    # 周期触发字段
     # 必须拆"三棵树"的笨拙折中。
     recurring_trigger: Optional[str] = Field(default=None, max_length=128)
     # 周期任务的失效时间；为空表示永远生效，直到主人手动 disarm。
     recurring_until: Optional[datetime] = Field(default=None)
     # template_root_id：指向"模板根任务"。模板自身值=None；克隆出的实例值=模板根 id。
-    # 模板根的 status 永远停留在 pending，从不真正执行——它只是"开火时被克隆"的样板。
     # 仅根任务级周期使用；子任务级周期走 template_subtask_id。
     template_root_id: Optional[str] = Field(default=None, max_length=36, index=True)
     # template_subtask_id：与 template_root_id 对称——指向"模板子任务"。
     # 模板子任务 (recurring_trigger 非空 + node_kind="subtask") 自身值=None；
-    # 克隆出的执行实例子任务值=模板子任务 id。每次开火，框架在同一棵任务树下
-    # 新建一个执行实例子任务行（dependency_task_ids 留空，立即 ready），
-    # 模板子任务自身保持 armed 不变，``fire_count`` 累加。
     template_subtask_id: Optional[str] = Field(default=None, max_length=36, index=True)
     # 周期状态：armed=已挂上 APScheduler；disarmed=主人手动停止/recurring_until 到期；
     # 空=非周期任务。模板子任务长期处于 armed，执行实例子任务此字段保持空。
@@ -394,10 +372,6 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
 
         # 先清理落盘 payload；删失败时记日志但不阻塞行删除——arifact 在 webconsole
         # 上看到行被删了但磁盘还留着，比"DB 删一半"风险更可控。
-        # 新存储模型下 payload_path 都指向 workspace 内文件，多个 artifact 行可能
-        # 共享同一文件（例如同一 PNG 同时被自动登记为 workspace_file 和被
-        # `artifact_put(file_path=)` 登记为 output）——按路径去重，避免 missing_ok
-        # 的二次 unlink 把日志刷脏。
         from gsuid_core.logger import logger as _logger
 
         seen_paths: set = set()

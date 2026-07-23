@@ -104,6 +104,38 @@ async def get_token_usage_by_model(
         return {"status": 1, "msg": f"获取 Token 消耗失败: {str(e)}", "data": None}
 
 
+@app.get(
+    "/api/ai/statistics/daily-token-counts",
+    summary="近 N 天每日 Token 数（日历）",
+    tags=AI_STATS,
+)
+async def get_daily_token_counts(
+    days: int = 60,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """近 N 天每日 input/output token 汇总——供 AI 统计页日期选择器展示。
+
+    Query:
+    - ``days``: 回溯天数，默认 60，夹取到 [1, 366]
+
+    ``data`` 为按日期升序列表，每项::
+
+        {date, input_tokens, output_tokens, total_tokens}
+
+    ``input_tokens == 0`` 表示当天无 AI 用量，日历上可禁用。今日读内存实时值。
+    """
+    try:
+        days = max(1, min(int(days or 60), 366))
+        data = await statistics_manager.get_daily_token_counts(days)
+        return {"status": 0, "msg": "ok", "data": data}
+    except Exception as e:
+        return {
+            "status": 1,
+            "msg": f"获取每日 Token 统计失败: {str(e)}",
+            "data": [],
+        }
+
+
 @app.get("/api/ai/statistics/token-by-range", summary="获取时间段 Token 消耗统计", tags=AI_STATS)
 async def get_token_usage_by_range(
     start_date: Optional[str] = None,

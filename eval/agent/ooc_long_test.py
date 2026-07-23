@@ -66,6 +66,8 @@ class TurnResult:
     tone_density: float  # 语气词密度
     ooc_density: float  # OOC 指标词密度
     has_structured: bool  # 含表格/编号/加粗
+    has_raw_leak: bool  # 用户可见层仍有 ```report / 已发资料图
+    raw_had_fence: bool  # 模型原始输出含制品 fence（send 前）
     latency_s: float
 
 
@@ -100,6 +102,23 @@ def has_structured_format(text: str) -> bool:
         if stripped.startswith("**") and stripped.endswith("**"):
             return True
     return False
+
+
+def has_raw_artifact_leak(text: str) -> bool:
+    """用户可见层泄漏：```report/data/json 或假「已发资料图」声明。"""
+    if "已发资料图" in text:
+        return True
+    if "```report" in text or "```data" in text or "```json" in text:
+        return True
+    return False
+
+
+def simulate_send_pipeline(text: str) -> str:
+    """模拟 send 侧两通道分离后的用户可见台词。"""
+    from gsuid_core.ai_core.utils import _split_speech_and_artifacts
+
+    speech, _ = _split_speech_and_artifacts(text)
+    return speech.strip()
 
 
 # ─── 对话脚本 ───────────────────────────────────────────────────────────────
@@ -277,7 +296,7 @@ async def run_long_session_test():
     history: List[dict] = []
 
     async with httpx.AsyncClient(
-        timeout=180.0,
+        timeout=httpx.Timeout(600.0, connect=30.0),
         headers={"X-Local-Test-Token": TOKEN},
     ) as client:
         for i, turn in enumerate(script):
@@ -295,6 +314,9 @@ async def run_long_session_test():
                 f"【当前时间】2026-07-22 {10 + turn_num // 60:02d}:{turn_num % 60:02d}"
             )
 
+            # 股票密集阶段开工具（触发 report 格式漂移）；闲聊阶段关工具压成本
+            use_tools = phase in ("stock_intensive", "mixed_stability")
+
             t0 = time.perf_counter()
             try:
                 resp = await client.post(
@@ -303,7 +325,7 @@ async def run_long_session_test():
                         "user_id": USER_ID,
                         "message": formatted_msg,
                         "persona_name": PERSONA,
-                        "enable_tools": False,  # 先不用工具，纯测语域漂移
+                        "enable_tools": use_tools,
                         "max_history": MAX_HISTORY,
                         "history": history,
                     },
@@ -312,7 +334,7 @@ async def run_long_session_test():
 
                 if resp.status_code == 200:
                     data = resp.json()
-                    reply = data.get("data", "") or ""
+                    raw_reply = data.get("data", "") or ""
                 elif resp.status_code == 502:
                     print("\n❌ 502: LLM provider 未配置，无法继续测试")
                     sys.exit(1)
@@ -323,6 +345,11 @@ async def run_long_session_test():
             except Exception as e:
                 print(f"\n❌ 请求失败 (turn {turn_num}): {e}")
                 sys.exit(1)
+
+            # API 返回 raw 模型输出；用户可见层需过 send 拦截链（与生产对齐）
+            raw_had_fence = has_raw_artifact_leak(raw_reply)
+            reply = simulate_send_pipeline(raw_reply) if raw_reply else ""
+            visible_leak = has_raw_artifact_leak(reply)
 
             # 记录结果
             tone_d = compute_tone_density(reply)
@@ -338,14 +365,19 @@ async def run_long_session_test():
                 tone_density=tone_d,
                 ooc_density=ooc_d,
                 has_structured=structured,
+                has_raw_leak=visible_leak,
+                raw_had_fence=raw_had_fence,
                 latency_s=latency,
             )
             report.turns.append(result)
 
-            # 更新 history
+            # history 存用户可见版（模拟生产 compact，避免 ```report 回灌教坏模型）
             history.append({"role": "user", "content": formatted_msg})
             if reply:
                 history.append({"role": "assistant", "content": reply})
+            elif raw_reply:
+                # 纯 report 无台词时存短占位，避免空 assistant turn
+                history.append({"role": "assistant", "content": "（资料图已发出）"})
 
             # 每 10 轮打印一次阶段摘要
             if turn_num % 10 == 0:
@@ -354,11 +386,14 @@ async def run_long_session_test():
                 avg_tone = sum(t.tone_density for t in phase_turns) / len(phase_turns)
                 avg_ooc = sum(t.ooc_density for t in phase_turns) / len(phase_turns)
                 struct_rate = sum(1 for t in phase_turns if t.has_structured) / len(phase_turns)
+                leak_rate = sum(1 for t in phase_turns if t.has_raw_leak) / len(phase_turns)
+                fence_rate = sum(1 for t in phase_turns if t.raw_had_fence) / len(phase_turns)
 
                 print(
                     f"  [{turn_num:3d}/{total_turns}] {phase:20s} | "
                     f"avg_len={avg_len:6.0f} | tone={avg_tone:.2f} | "
                     f"ooc={avg_ooc:.2f} | struct={struct_rate:.0%} | "
+                    f"leak={leak_rate:.0%} | raw_fence={fence_rate:.0%} | "
                     f"latency={latency:.1f}s"
                 )
 
@@ -367,13 +402,24 @@ async def run_long_session_test():
                     "avg_tone": avg_tone,
                     "avg_ooc": avg_ooc,
                     "struct_rate": struct_rate,
+                    "leak_rate": leak_rate,
+                    "fence_rate": fence_rate,
                 }
 
             # 每轮打印简短状态
             if turn_num % 10 != 0:
-                status = "✓" if tone_d > 0 and ooc_d == 0 else ("⚠" if ooc_d > 0 else "·")
+                if visible_leak:
+                    status = "🔴"
+                elif tone_d > 0 and ooc_d == 0:
+                    status = "✓"
+                elif ooc_d > 0:
+                    status = "⚠"
+                else:
+                    status = "·"
+                fence_tag = " [raw_fence]" if raw_had_fence else ""
                 print(
-                    f"  [{turn_num:3d}] {status} len={len(reply):4d} tone={tone_d:.2f} ooc={ooc_d:.2f} | {reply[:50]}"
+                    f"  [{turn_num:3d}] {status} len={len(reply):4d} tone={tone_d:.2f} "
+                    f"ooc={ooc_d:.2f}{fence_tag} | {reply[:50]}"
                 )
 
     # ─── 最终报告 ───
@@ -386,22 +432,37 @@ async def run_long_session_test():
         phases.setdefault(t.phase, []).append(t)
 
     ooc_detected = False
+    leak_turns = [t for t in report.turns if t.has_raw_leak]
+    if leak_turns:
+        ooc_detected = True
+        print(f"  🔴 用户可见层制品泄漏: {len(leak_turns)} 轮仍含 ```report/已发资料图")
+        for t in leak_turns[:5]:
+            print(f"      turn {t.turn}: {t.reply[:80]}")
+
     for phase_name, turns in phases.items():
         avg_len = sum(t.reply_len for t in turns) / len(turns)
         avg_tone = sum(t.tone_density for t in turns) / len(turns)
         avg_ooc = sum(t.ooc_density for t in turns) / len(turns)
         struct_rate = sum(1 for t in turns if t.has_structured) / len(turns)
+        leak_rate = sum(1 for t in turns if t.has_raw_leak) / len(turns)
+        fence_rate = sum(1 for t in turns if t.raw_had_fence) / len(turns)
 
         # OOC 判定：语气词密度 < 0.1 且回复长度 > 200 且 OOC 词密度 > 0
         is_ooc = avg_tone < 0.1 and avg_len > 200 and avg_ooc > 0.05
-        if is_ooc:
+        if is_ooc or leak_rate > 0:
             ooc_detected = True
 
-        status = "🔴 OOC" if is_ooc else ("🟡 轻微" if avg_ooc > 0.02 or struct_rate > 0.2 else "🟢 OK")
+        if is_ooc or leak_rate > 0:
+            status = "🔴 OOC"
+        elif avg_ooc > 0.02 or struct_rate > 0.2:
+            status = "🟡 轻微"
+        else:
+            status = "🟢 OK"
         print(
             f"  {status} | {phase_name:20s} | n={len(turns):2d} | "
             f"avg_len={avg_len:6.0f} | tone={avg_tone:.3f} | "
-            f"ooc={avg_ooc:.3f} | struct={struct_rate:.0%}"
+            f"ooc={avg_ooc:.3f} | struct={struct_rate:.0%} | "
+            f"leak={leak_rate:.0%} | raw_fence={fence_rate:.0%}"
         )
 
     # 关键对比：baseline vs stock vs switch
@@ -443,6 +504,8 @@ async def run_long_session_test():
                         "tone_density": round(t.tone_density, 4),
                         "ooc_density": round(t.ooc_density, 4),
                         "has_structured": t.has_structured,
+                        "has_raw_leak": t.has_raw_leak,
+                        "raw_had_fence": t.raw_had_fence,
                         "latency_s": round(t.latency_s, 2),
                         "reply_preview": t.reply[:100],
                     }
@@ -450,13 +513,13 @@ async def run_long_session_test():
                 ],
                 "phase_summaries": report.phase_summaries,
                 "ooc_detected": ooc_detected,
+                "leak_count": len(leak_turns),
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
     print(f"\n  详细结果已保存: {output_path}")
-
     return not ooc_detected
 
 

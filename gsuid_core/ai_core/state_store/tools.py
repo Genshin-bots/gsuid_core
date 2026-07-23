@@ -70,7 +70,7 @@ async def state_set(
     这些数据在会话结束后依然存在，可在后续对话或定时任务中读回。
 
     Args:
-        key: 键名，建议格式 "插件名:业务名"，如 "stock:portfolio"
+        key: 键名，建议格式 "插件名:业务名"，如 "myplugin:progress"
         value: 要保存的值，传入 JSON 字符串（对象/数组/数字/字符串均可）
         scope: 数据隔离范围。"auto"=按当前会话自动判断（群聊/私聊）；
                也可显式传入 "user:用户ID"、"group:群ID"、"global"
@@ -154,7 +154,7 @@ async def state_list(
     """
     列出某个范围下的所有持久化状态键。
 
-    用于确认某项任务是否已初始化（如检查 "stock:" 下是否已有账户）。
+    用于确认某项任务是否已初始化（如检查某插件前缀下是否已有键）。
 
     Args:
         prefix: 可选，只返回以此前缀开头的键

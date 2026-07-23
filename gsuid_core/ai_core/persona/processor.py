@@ -6,7 +6,7 @@
 """
 
 from .mood import get_mood_description
-from .prompts import ROLE_PLAYING_START, SYSTEM_CONSTRAINTS, TOOL_ORCHESTRATION_CONSTRAINTS
+from .prompts import ROLE_PLAYING_START, SYSTEM_CONSTRAINTS
 from .resource import load_persona
 from ..buildin_tools import get_current_date
 
@@ -41,29 +41,19 @@ async def build_persona_prompt(
     persona_content = await load_persona(char_name)
     # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定，跨会话 / resume
     # 都能命中 provider 前缀缓存（§优化 O-2）。精确到分的当前时间已由 user_message 侧
-    # 的【当前时间】提供，AI 需要精确时点时从那里读，system_prompt 不必每次都变。
     current_date = await get_current_date(format="%Y年%m月%d日")
 
-    # E-4：SYSTEM_CONSTRAINTS（人设/合规/感知 LITE 部分）+ TOOL_ORCHESTRATION_CONSTRAINTS
-    # （重型工具编排规程）共同构成系统约束。两者都放在 **system_prompt**——这是标准
-    # 指令的正确位置：作为稳定前缀可被 prompt 缓存命中、且不会污染滚动对话历史。
-    # （曾尝试"按 intent 把重型规程逐轮注入 user 侧"，但 rag_context 会被 new_messages()
-    #  写进 history、在 max_history 窗口内重复累积、并丢失系统前缀缓存——故回退到此。
-    #  真正的"按 intent 分级"需 pydantic_ai 动态 system_prompt 支持，见 plans 文档 §10.1。）
-    prompt = (
-        f"{ROLE_PLAYING_START}\n{persona_content}\n{SYSTEM_CONSTRAINTS}\n"
-        f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前日期：{current_date}"
-    )
+    # 稳定前缀只放人设 + 合规 LITE（可跨轮缓存）。重型 TOOL_ORCHESTRATION 改由 assemble_dynamic_context 在非闲聊轮注入
+    # user 侧；_relean_user_turn 会剥 rag
+    prompt = f"{ROLE_PLAYING_START}\n{persona_content}\n{SYSTEM_CONSTRAINTS}\n当前日期：{current_date}"
 
-    # E-4（轻量版·人格收尾锚点）：上面的工具/任务规程篇幅远大于人设，会稀释角色。
-    # 利用"近因效应"在结尾再钉一遍人格优先级——工具规程只决定"做不做"，
-    # 角色口吻决定"怎么说"。这是对冲稀释的低风险手段，不改变指令位置。
+    # 近因锚点：system 末尾钉人格（工具规程不在此，避免闲聊稀释）
     prompt += (
         "\n\n---\n\n## 最后提醒（最高权重）\n"
         f"你首先是「{char_name}」这个活生生的人，其次才是会用工具的助手。\n"
-        "- 工具规程只决定**做不做**，你的口吻决定**怎么说**——两者不冲突\n"
-        "- 无论调了多少工具、看了多少数据，开口时永远是角色的声音\n"
-        "- 短句、语气词、碎片化——这是你的本能，不是表演\n"
+        "- 口吻决定**怎么说**；该办的事照办，不拿性格当拒绝理由\n"
+        "- 无论是否调过工具，开口永远是角色的声音\n"
+        "- 短句、语气词、碎片化——这是本能，不是表演\n"
         "- 结构化数据放 <report> 块，角色台词里禁止表格/编号/加粗标题\n"
         "- 查到 10 分只说 3 分，剩下的让 report 块承载\n"
         "- 日常闲聊回到角色本身，绝不暴露任何'机器/工具/系统/模型'的痕迹"

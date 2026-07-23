@@ -29,9 +29,8 @@ _AI_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, list]]] = contextvar
     "_AI_CALL_CONTEXT", default=None
 )
 
-# ─── MCP Trigger Registry ────────────────────────────────────────────────────
+# MCP Trigger Registry
 # 存储所有带 to_ai 的触发器的原始信息，供 MCP Server 模块使用
-# 格式: {tool_name: {func, keyword, to_ai_doc, sv, trigger_type}}
 _MCP_TRIGGER_REGISTRY: Dict[str, Dict[str, Any]] = {}
 
 
@@ -49,17 +48,16 @@ def ai_return(text: str) -> None:
 
         from gsuid_core.ai_core.trigger_bridge import ai_return
 
-        @sv.on_command("个股", to_ai=\"\"\"
-        查询指定股票或ETF的分时图/K线图。
+        @sv.on_command("天气", to_ai=\"\"\"
+        查询指定城市的天气。
         Args:
-            text: 股票代码或名称，多个以空格分隔，可选前缀 '日k'/'周k'/'月k'，
-                  例如 "证券ETF" 或 "日k 证券ETF 白酒ETF"
+            text: 城市名，例如 "上海" 或 "北京"
         \"\"\")
-        async def send_stock_img(bot: Bot, ev: Event):
+        async def send_weather(bot: Bot, ev: Event):
             content = ev.text.strip()
             if not content:
-                ai_return("请提供股票代码，例如：证券ETF")
-                return await bot.send("请后跟股票代码使用")
+                ai_return("请提供城市名，例如：上海")
+                return await bot.send("请后跟城市名使用")
             ...
     """
     ctx = _AI_CALL_CONTEXT.get()
@@ -359,8 +357,6 @@ def _register_trigger_as_ai_tool(
         assert ev is not None, "触发器 AI 工具调用时 ev 不能为 None"
 
         # 权限检查：AI 调用时也需要遵守与用户直接触发相同的权限限制
-        # user_pm: 0=master, 1=superuser, 2=群主/管理员, 3=普通用户
-        # pm: 要求的最低权限等级，数值越小权限越高
         # 注意：运行时读取 sv/plugins 的当前状态，而非注册时快照
         if not sv.plugins.enabled:
             return "❌ 该插件已禁用。"

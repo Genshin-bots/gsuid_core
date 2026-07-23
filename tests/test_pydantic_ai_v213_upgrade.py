@@ -110,6 +110,7 @@ def test_openai_model_profile_construction_returns_dict() -> None:
 
     profile = OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
     assert isinstance(profile, dict)
+    assert "openai_chat_send_back_thinking_parts" in profile
     assert profile["openai_chat_send_back_thinking_parts"] is False
 
 
@@ -122,8 +123,9 @@ def test_merge_profile_overlay_preserves_baseline() -> None:
     overlay = OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
     merged = merge_profile(base, overlay)
 
-    assert merged["supports_tools"] is True
-    assert merged["supports_json_schema_output"] is True
+    assert "supports_tools" in merged and merged["supports_tools"] is True
+    assert "supports_json_schema_output" in merged and merged["supports_json_schema_output"] is True
+    assert "openai_chat_send_back_thinking_parts" in merged
     assert merged["openai_chat_send_back_thinking_parts"] is False
 
 
@@ -142,8 +144,7 @@ def test_model_profile_callable_signature_v2() -> None:
     """
     import collections.abc as _abc
 
-    from pydantic_ai.models import ModelProfileSpec
-    from pydantic_ai.profiles import ModelProfile
+    from pydantic_ai.profiles import ModelProfile, ModelProfileSpec
 
     args = getattr(ModelProfileSpec, "__args__", ())
     callable_branch = next(

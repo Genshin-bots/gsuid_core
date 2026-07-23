@@ -31,6 +31,7 @@ class CloneSkillRequest(BaseModel):
 
     git_url: str
     skill_name: Optional[str] = None
+    update: bool = False
 
 
 class UpdateMarkdownRequest(BaseModel):
@@ -186,7 +187,7 @@ async def clone_ai_skill(
         skill_name: 安装后的技能名称（仅成功时返回）
     """
     # git clone / 下载解包是阻塞 IO，放线程池避免卡事件循环
-    result = await asyncio.to_thread(install_skill, body.git_url, body.skill_name)
+    result = await asyncio.to_thread(install_skill, body.git_url, body.skill_name, body.update)
     return result
 
 

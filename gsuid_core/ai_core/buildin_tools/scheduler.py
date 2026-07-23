@@ -7,7 +7,7 @@
 ## 任务类型
 
 1. **一次性任务 (once)**: 在指定时间点执行一次，适用于"明天叫我起床"、"周五提醒我交报告"等场景。
-2. **循环任务 (interval)**: 按固定间隔重复执行，适用于"每半小时查一下股价"、"每天早上发天气预报"等场景。
+2. **循环任务 (interval)**: 按固定间隔重复执行，适用于"每半小时提醒我喝水"、"每天早上发天气预报"等场景。
 
 ## 安全限制
 
@@ -51,7 +51,6 @@ MIN_INTERVAL_SECONDS = 300
 
 # 单轮节流：防止主人格用 add_once_task 逐时间点枚举周期任务。
 # Key: (session_id, turn_id) — turn_id 由 gs_agent._execute_run 写入
-# ToolContext.extra["turn_id"]。Value: 本轮已成功创建的 add_once_task 计数。
 PER_TURN_ONCE_TASK_LIMIT = 2
 _PER_TURN_ONCE_TASK_COUNT: Dict[Tuple[str, str], int] = {}
 
@@ -141,7 +140,7 @@ async def add_once_task(
         ... )
 
     **何时不该用本工具**：
-    - 涉及"决策 / 分析 / 复盘 / 持仓 / 账本" → 走 register_kanban_task
+    - 涉及"决策 / 分析 / 复盘 / 账本 / 多步持久化" → 走 register_kanban_task
     - 同一意图需要 3+ 个时间点触发 → 走 add_interval_task 或
       register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")
     - 单轮调用本工具不得超过 2 次（硬约束，第 3 次直接拒绝）
@@ -254,13 +253,13 @@ async def add_interval_task(
     添加循环任务
 
     按固定间隔重复执行任务。当用户需要定期执行某个任务时调用此工具，
-    例如"每半小时查一下股价"、"每天早上发天气预报"、"每天下午3点30分查xxx"。
+    例如"每半小时提醒我喝水"、"每天早上发天气预报"、"每天下午3点30分查xxx"。
 
     循环任务会按照设定的时间间隔重复执行，达到最大执行次数后自动结束。
     系统安全限制：最大执行 150 次，最小间隔 5 分钟。
 
     **何时不该用本工具**：
-    - 任务包含"决策 / 多代理协作 / 持仓记账 / 周期复盘"——这些属于多步任务，
+    - 任务包含"决策 / 多代理协作 / 周期复盘 / 持久化记账"——这些属于多步任务，
       应走 register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")，
       而不是把多步流程塞进 task_prompt。
     - task_prompt 写得超过 2 个步骤（"先 A 再 B 再 C 再写日志再汇报"），
@@ -281,12 +280,12 @@ async def add_interval_task(
         操作结果信息，包含任务ID供后续查询/暂停/取消使用
 
     Examples:
-        # 用户说"每半小时帮我查一下英伟达的股价"
+        # 用户说"每半小时提醒我站起来活动一下"
         >>> await add_interval_task(
         ...     ctx,
         ...     interval_value=30,
         ...     interval_type="minutes",
-        ...     task_prompt="查询英伟达(NVDA)的当前股价，如果涨跌幅超过2%则提醒用户。",
+        ...     task_prompt="提醒用户站起来活动一下，语气简短友好。",
         ...     max_executions=10,
         ... )
 

@@ -74,6 +74,11 @@ async def find_tools(
                     hidden_names=hidden_names,
                 )
             )
+        # 主人格交互轮：能力代理专属工具不得经 find_tools 回灌（与静态池剥离同口径）
+        blocked = ctx.deps.blocked_tool_names
+        if blocked:
+            loaded_names = [n for n in loaded_names if n not in blocked]
+
         if not loaded_names:
             # 与"检索无命中"同文案：不向模型泄露被隐藏工具的存在，避免诱导换措辞反复检索。
             return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"

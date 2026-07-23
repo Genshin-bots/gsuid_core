@@ -74,9 +74,7 @@ def has_model_visible_content(ev: Event) -> bool:
     return bool(ev.image_id_list or ev.audio_id or ev.audio_id_list or ev.file)
 
 
-# 工具调用标记残留正则（弱模型 / 兼容网关把工具调用当普通文本输出），
-# 详见 _strip_tool_call_artifacts 的 docstring。
-# 成对块：含内部 JSON 参数整体删除
+# 工具调用标记残留正则（弱模型 / 兼容网关把工具调用当普通文本输出）， 详见 _strip_tool_call_artifacts 的 docstring。
 _TOOL_CALL_BLOCK_PATTERN = re.compile(
     r"<\s*tool_calls?\s*>.*?<\s*/\s*tool_calls?\s*>",
     re.IGNORECASE | re.DOTALL,
@@ -166,8 +164,8 @@ def _strip_special_control_tokens(text: str) -> str:
     return cleaned
 
 
-# 内部资源句柄（纯内部寻址 ID，绝不该进正文；允许前后包反引号）。前缀须与实际生成对齐：
-# resource_manager.py 出 img_/aud_/vid_（8 位 hex）、models.py 出 res_（12 位 hex）。
+# 内部资源句柄（纯内部寻址 ID，绝不该进正文；
+# hex）、models.py 出 res_（12 位 hex）。
 _RESOURCE_HANDLE_RE = re.compile(r"`*\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b`*")
 _RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_")
 
@@ -328,8 +326,8 @@ def extract_json_from_text(raw_text: str) -> dict | list:
     if not cleaned:
         raise ValueError("JSON extraction yielded empty content after stripping fences")
 
-    # 候选串：① 从散文里配平切出的第一个完整 JSON；② 去围栏后的整段。先 span 后整段，
-    # 让 span 优先剥掉模型在 JSON 前后写的解释/寒暄；两者都试以兼容纯 JSON 与夹带散文两种返回。
+    # 候选串：① 从散文里配平切出的第一个完整 JSON；
+    # 两者都试以兼容纯 JSON 与夹带散文两种返回。
     span = _find_json_span(cleaned)
     candidates = [c for c in (span, cleaned) if c]
 
@@ -671,17 +669,12 @@ async def prepare_content_payload(
 
     content_payload.append(text)
 
-    # 惰性模式：图片只以 ID 形式存在（已在上方文本注明），不把本体喂进多模态上下文，
-    # 由 AI 调用 read_image 按需读取。直接跳过下方的图片物化。
+    # 惰性模式：图片只以 ID 形式存在（已在上方文本注明），不把本体喂进多模态上下文， 由 AI 调用 read_image 按需读取。
     if lazy_image_read:
         return content_payload
 
     # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
     # 远程 URL（如 QQ 带 rkey 的临时链接）会在短时间内过期；一旦以原始
-    # URL 形式存入 message_history，后续每轮重发都会让推理端 400/500。
-    # 物化产物是 DataURI —— Gemini/Anthropic 的 ImageUrl(data:) 会被 pydantic-ai
-    # download_item 的 SSRF 防护拒掉（Only http/https），须按 provider 选
-    # BinaryContent / ImageUrl（同 read_image 直投，2026-07-17 画布事故）。
     from gsuid_core.ai_core.configs.models import get_config_name_for_task, parse_provider_config_name
     from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
 
@@ -845,7 +838,6 @@ def _should_render_markdown_image(text: str) -> bool:
 
 # <report> 制品块：persona 台词与"资料内容"两通道分离的输出契约（§1 OOC 制品化）。
 # 块内是中性口吻 markdown，渲染成"资料图片"发出；块外才是角色台词。
-# title 同时接受双/单引号（LLM 引号漂移高发，评审修复 E2）：g1=双引号 title，g2=单引号，g3=body。
 _REPORT_BLOCK_RE = re.compile(
     r"<report(?:\s+title=(?:\"([^\"\n]*)\"|'([^'\n]*)'))?\s*>(.*?)</report\s*>",
     re.S | re.I,
@@ -872,96 +864,74 @@ def _report_footer() -> str:
     return _REPORT_FOOTER_TEMPLATE.format(ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 
-# --- 通用结构化数据拦截（反格式漂移兜底） ---
-# 不依赖包装格式名，基于内容密度判断。无论 ```report、裸JSON、制表线表格，
-# 只要内容本身是结构化数据就能拦截。
+# 结构化数据两通道（内容形态检测，不认包装名 / 不认域关键词）
+# 流程：闭合 fence → 未闭合 fence → 段落密度 → 裸 JSON 配平。
 
-_FENCED_CODE_BLOCK_RE = re.compile(r"```(\w*)\s*\n(.*?)```", re.S)
+_FENCED_CODE_BLOCK_RE = re.compile(r"```(\w*)[ \t]*\r?\n?(.*?)```", re.S)
+# 任意未闭合 fence（截断输出）：位置先验同闭合 fence，仍看 body 是否结构化
+_OPEN_FENCE_RE = re.compile(r"```(\w*)[ \t]*\r?\n([\s\S]+)$")
 _STRUCTURED_BLOCK_MIN_CHARS = 80
-_REAL_CODE_LANGS = frozenset(
-    {
-        "python",
-        "py",
-        "js",
-        "javascript",
-        "ts",
-        "typescript",
-        "bash",
-        "sh",
-        "shell",
-        "sql",
-        "html",
-        "css",
-        "java",
-        "go",
-        "rust",
-        "c",
-        "cpp",
-    }
-)
-# 真代码特征关键词：含这些词的段落视为可执行代码，不拦截
-_CODE_KEYWORDS_RE = re.compile(r"\b(def|class|import|from|function|var|const|let|return|if|else|for|while|switch)\b")
-# 制表线字符集
 _TABLE_CHARS = frozenset("─│┌┐└┘├┤┬┴┼╔╗╚╝║═")
+_DENSITY_THRESHOLD = 0.30
 
 
-def _is_structured_content(body: str) -> bool:
-    """判断内容是否为结构化数据（而非可执行代码）。"""
+def _parse_json_dict(body: str) -> Optional[dict]:
+    """尝试把文本解析为 dict（含 repair）；失败返回 None。"""
     stripped = body.strip()
-    if stripped.startswith("{"):
-        try:
-            data = json.loads(stripped)
-            if isinstance(data, dict) and len(data) >= 5:
-                return True
-        except (json.JSONDecodeError, ValueError):
-            pass
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
         try:
             data = json.loads(repair_json(stripped))
-            if isinstance(data, dict) and len(data) >= 5:
-                return True
         except (json.JSONDecodeError, ValueError):
-            pass
+            return None
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def _is_structured_content(body: str, *, min_keys: int = 3) -> bool:
+    """body 是否呈数据形态（可解析 JSON dict / 制表线 / 多行 key:value）。"""
+    stripped = body.strip()
+    data = _parse_json_dict(stripped)
+    if data is not None and len(data) >= min_keys:
+        return True
     if body.count("─") >= 3 or body.count("│") >= 3:
         return True
     kv_lines = [ln for ln in body.split("\n") if re.match(r"^\s*\S+[:：]\s*\S", ln)]
-    if len(kv_lines) >= 5:
+    if len(kv_lines) >= 4:
         return True
     return False
 
 
 def _structural_density(paragraph: str) -> float:
-    """计算段落的结构化密度分数（0.0~1.0）。
-
-    综合多个信号：JSON 字符密度、制表线密度、key:value 行比例、数字密度。
-    分数越高越可能是结构化数据而非角色台词。
-    """
+    """段落结构化密度 0~1：JSON 字符 / 制表线 / kv 行 / 数字行占比，无域词表。"""
     if not paragraph or len(paragraph) < 40:
         return 0.0
-    # 真代码豁免
-    if _CODE_KEYWORDS_RE.search(paragraph):
-        return 0.0
+    # 已是合法 JSON dict → 最高先验（可执行代码极少是纯 dict 字面量段落）
+    data = _parse_json_dict(paragraph)
+    if data is not None and len(data) >= 2:
+        return 1.0
     lines = paragraph.split("\n")
     total_chars = len(paragraph)
     score = 0.0
-    # 信号 1：JSON 字符密度（{ } " : 占比）
     json_chars = sum(1 for c in paragraph if c in '{}":,')
     if total_chars > 0:
         json_ratio = json_chars / total_chars
         if json_ratio > 0.08:
             score += min(json_ratio * 3, 0.4)
-    # 信号 2：制表线字符密度
     table_chars = sum(1 for c in paragraph if c in _TABLE_CHARS)
     if total_chars > 0:
         table_ratio = table_chars / total_chars
         if table_ratio > 0.03:
             score += min(table_ratio * 5, 0.4)
-    # 信号 3：key:value 行比例
     kv_lines = sum(1 for ln in lines if re.match(r"^\s*\S+[:：]\s*\S", ln))
     if len(lines) >= 3:
         kv_ratio = kv_lines / len(lines)
         if kv_ratio > 0.5:
             score += min(kv_ratio * 0.4, 0.3)
-    # 信号 4：多行 + 数字密集（数据表特征）
     if len(lines) >= 5:
         digit_lines = sum(1 for ln in lines if re.search(r"\d+\.?\d*", ln))
         if digit_lines / len(lines) > 0.5:
@@ -969,58 +939,89 @@ def _structural_density(paragraph: str) -> float:
     return score
 
 
-# 密度阈值：超过此值视为结构化数据
-_DENSITY_THRESHOLD = 0.35
-
-
 def _infer_block_title(body: str) -> str:
-    """从结构化数据内容推断标题。"""
+    """从数据形态推断标题：优先短字符串值，否则首行，否则默认。"""
     stripped = body.strip()
-    if stripped.startswith("{"):
-        data: dict = {}
-        try:
-            data = json.loads(stripped)
-        except (json.JSONDecodeError, ValueError):
-            try:
-                data = json.loads(repair_json(stripped))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        if isinstance(data, dict):
-            for key in ("stock", "title", "name", "ETF", "etf"):
-                if key in data:
-                    return str(data[key])
-    first_line = body.strip().split("\n")[0].strip()
-    if len(first_line) <= 40:
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```\w*\s*", "", stripped).strip()
+    data = _parse_json_dict(stripped)
+    if data is not None:
+        for v in data.values():
+            if isinstance(v, str) and 0 < len(v.strip()) <= 40:
+                return v.strip()
+        for k in data:
+            if isinstance(k, str) and k:
+                return k[:40]
+    first_line = stripped.split("\n")[0].strip()
+    if first_line and first_line not in "{[" and len(first_line) <= 40:
         return first_line
     return "分析资料"
+
+
+def _fence_body_is_data(body: str) -> bool:
+    """围栏内 body 是否应进制品通道。
+
+    围栏是位置先验（模型把数据装进 fence 时 lang 名不可信），阈值比裸文本更松：
+    JSON ≥2 键即可；或密度/制表线达标。
+    """
+    if not body.strip():
+        return False
+    if _is_structured_content(body, min_keys=2):
+        return True
+    if len(body) >= _STRUCTURED_BLOCK_MIN_CHARS and _structural_density(body) >= _DENSITY_THRESHOLD:
+        return True
+    return False
 
 
 def _extract_embedded_structured_blocks(
     text: str,
 ) -> Tuple[str, List[Tuple[str, str]]]:
-    """从文本中提取结构化数据块。两阶段：fence 提取 + 段落密度分析。
-
-    阶段 1：提取 fenced code blocks 中的结构化数据（快速路径）。
-    阶段 2：对剩余文本做段落级密度分析，拦截裸结构化数据。
-    """
+    """按内容形态抽出数据块，与包装名无关（```report / 裸 JSON / 制表线均可）。"""
     reports: List[Tuple[str, str]] = []
 
-    # 阶段 1：fence 提取（覆盖 ```report / ```data / ```json 等）
     def _try_extract_fence(match: "re.Match[str]") -> str:
-        lang = match.group(1).strip().lower()
         body = match.group(2).strip()
-        if lang in _REAL_CODE_LANGS:
-            return match.group(0)
-        if not _is_structured_content(body):
-            return match.group(0)
-        if len(body) < _STRUCTURED_BLOCK_MIN_CHARS and not body.strip().startswith("{"):
+        if not _fence_body_is_data(body):
             return match.group(0)
         reports.append((_infer_block_title(body), body))
         return ""
 
     remaining = _FENCED_CODE_BLOCK_RE.sub(_try_extract_fence, text)
 
-    # 阶段 2：段落密度分析（拦截裸 JSON / 裸表格 / 裸 key:value 列表）
+    def _open_fence_data_and_tail(body: str) -> Optional[Tuple[str, str]]:
+        """未闭合 fence：只切数据前缀，尾部台词回 speech。无数据形态则 None。"""
+        stripped = body.strip()
+        if not stripped:
+            return None
+        span = _find_json_span(stripped)
+        if span is not None and _fence_body_is_data(span):
+            idx = body.find(span)
+            if idx < 0:
+                idx = 0
+            tail = body[idx + len(span) :]
+            return span, tail
+        # 空白分段：首段是表/kv 数据、尾段低密度台词
+        parts = re.split(r"\n\s*\n", body, maxsplit=1)
+        if len(parts) == 2 and _fence_body_is_data(parts[0]) and _structural_density(parts[1]) < 0.25:
+            return parts[0].strip(), parts[1]
+        if _fence_body_is_data(body):
+            return stripped, ""
+        return None
+
+    def _try_open_fence(match: "re.Match[str]") -> str:
+        body = match.group(2)
+        # 体内还有闭合围栏 → 已由 _FENCED_CODE_BLOCK_RE 处理，勿当截断 fence 再切
+        if "```" in body:
+            return match.group(0)
+        split = _open_fence_data_and_tail(body)
+        if split is None:
+            return match.group(0)
+        data_part, tail = split
+        reports.append((_infer_block_title(data_part), data_part))
+        return tail
+
+    remaining = _OPEN_FENCE_RE.sub(_try_open_fence, remaining)
+
     paragraphs = re.split(r"(\n\s*\n)", remaining)
     kept_parts: List[str] = []
     for part in paragraphs:
@@ -1029,29 +1030,33 @@ def _extract_embedded_structured_blocks(
             kept_parts.append(part)
             continue
         density = _structural_density(stripped)
-        # 高密度无条件拦截；中密度需满足最小长度
-        if density >= 0.5 or (density >= _DENSITY_THRESHOLD and len(stripped) >= _STRUCTURED_BLOCK_MIN_CHARS):
+        json_hit = _is_structured_content(stripped, min_keys=3) and stripped.startswith("{")
+        if (
+            density >= 0.5
+            or (density >= _DENSITY_THRESHOLD and len(stripped) >= _STRUCTURED_BLOCK_MIN_CHARS)
+            or (json_hit and len(stripped) >= _STRUCTURED_BLOCK_MIN_CHARS)
+        ):
             reports.append((_infer_block_title(stripped), stripped))
         else:
             kept_parts.append(part)
 
     remaining = "".join(kept_parts)
 
-    # 兜底：括号配平提取裸 JSON（密度分析可能因前后缀文本拉低分数）
     span = _find_json_span(remaining)
     if span is not None and len(span) >= _STRUCTURED_BLOCK_MIN_CHARS:
-        try:
-            data = json.loads(span)
-        except (json.JSONDecodeError, ValueError):
-            try:
-                data = json.loads(repair_json(span))
-            except (json.JSONDecodeError, ValueError):
-                data = None
-        if isinstance(data, dict) and len(data) >= 5:
+        data = _parse_json_dict(span)
+        if data is not None and len(data) >= 3:
             reports.append((_infer_block_title(span), span))
             remaining = remaining.replace(span, "").strip()
 
     return remaining.strip(), reports
+
+
+def _split_speech_and_artifacts(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """发送/入史共用的两通道分离：XML report + 内容形态结构化块。"""
+    speech, xml_blocks = _extract_report_blocks(text)
+    speech, embedded = _extract_embedded_structured_blocks(speech)
+    return speech, embedded + xml_blocks
 
 
 def _extract_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -1160,9 +1165,7 @@ async def send_chat_result(
         text = "唔…脑子转不动了…等下再说…zzz…"
 
     # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
-    # 与模型私有的回合/角色分隔特殊 token（如 MiniMax 的 ]<]minimax[>[，详见
-    # _strip_special_control_tokens）。覆盖兜底总结 / 主动消息 / 子 Agent 转述等
-    # 所有经本函数下发的路径。
+    # MiniMax 的 ]<]minimax[>[，详见
     text = _strip_tool_call_artifacts(text)
     text = _strip_special_control_tokens(text)
     # 泄漏进正文的资源句柄（res_/img_ 等）：尽量补发所指资源、否则抹除（详见函数）。
@@ -1171,12 +1174,8 @@ async def send_chat_result(
     # 必须在按 \n\n 拆多条之前做：<br> 会让"连发多条短消息"的拆分完全失效
     text = _normalize_html_linebreaks(text)
 
-    # <report> 制品块两通道分离（§1 OOC 制品化）：块内容渲染为中性资料图片，
-    # 块外才是角色台词，走后续净化/拆条。台词发完后统一补发资料图。
-    text, report_blocks = _extract_report_blocks(text)
-    # 通用结构化数据拦截：```report/```data/裸JSON 等非标格式兜底提取
-    text, embedded_blocks = _extract_embedded_structured_blocks(text)
-    report_blocks = embedded_blocks + report_blocks
+    # 两通道分离（§1）：数据形态进制品图，剩余才是角色台词。不认包装格式名。
+    text, report_blocks = _split_speech_and_artifacts(text)
 
     # Trace 日志：记录原始输出
     logger.trace(i18n_t("[Meme] 原始输出: {text}", text=repr(text)))
@@ -1190,8 +1189,8 @@ async def send_chat_result(
     # 闲聊/人格回复剥离 markdown 与 *动作* 旁白（工具表格/代码块自动豁免，见该函数）。
     clean_text: str = _strip_persona_markdown(md_source)
 
-    # 清理标记残留的多余空格/标点。只压"空格/制表符"、保留换行——原 \s{2,} 会把
-    # \n\n 也压成空格，导致下方 re.split(r"\n\s*\n") 切不出多条，"连发多条短句"退化成一整段。
+    # 清理标记残留的多余空格/标点。只压"空格/制表符"、保留换行——原 \s{2,} 会把 \n\n 也压成空格
+    # 导致下方 re.split(r"\n\s*\n") 切不出多条 "连发多条短句"退化成一整段。
     clean_text = re.sub(r"[ \t]{2,}", " ", clean_text)
     clean_text = re.sub(r"^[，。！？\s]+|[，。！？\s]+$", "", clean_text)
 
@@ -1215,8 +1214,7 @@ async def send_chat_result(
                 )
                 clean_text = PERSONA_FALLBACK_TEXT
                 _ooc_replaced = True
-            # report 块与台词同权过末端防火墙：制品通道不能成为资金红线/出戏红线的
-            # 旁路（评审修复 F3），命中的块整块丢弃（proactive 路径无重说通道）。
+            # report 块与台词同权过末端防火墙：制品通道不能成为资金红线/出戏红线的 旁路（评审修复 F3），
             if report_blocks:
                 _kept_blocks: List[Tuple[str, str]] = []
                 for _r_title, _r_body in report_blocks:
@@ -1357,11 +1355,8 @@ def _parse_at_segments(text: str) -> list[Message]:
     return segments
 
 
-# ======================================================================
 # GsCoreAIAgent 运行期的无状态消息/历史工具
 # 从 gs_agent.py 抽出：纯函数，只依赖 pydantic_ai 消息类型与 const 常量，不触碰
-# Agent 实例状态，便于复用与单测。gs_agent 按原名 import 回去使用。
-# ======================================================================
 
 
 def _is_non_retryable_model_error(e: BaseException) -> bool:
@@ -1493,10 +1488,7 @@ def _truncate_history_with_tool_safety(
                 for part in msg.parts:
                     if isinstance(part, ToolReturnPart):
                         retained_return_ids.add(part.tool_call_id)
-                    # RetryPromptPart 也是"工具结果型"消息：工具参数校验失败时
-                    # 由 PydanticAI 生成，同样带 tool_call_id、必须有配对的
-                    # ToolCallPart。tool_name 为 None 时是输出校验重试，不绑定
-                    # 具体工具调用，不计入。
+                    # RetryPromptPart 也是"工具结果型"消息：工具参数校验失败时 由 PydanticAI 生成，
                     elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
                         retained_return_ids.add(part.tool_call_id)
 
@@ -1566,9 +1558,8 @@ def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]
         if isinstance(msg, ModelRequest):
             kept_parts = []
             for part in msg.parts:
-                # 复用同一个 isinstance 守卫：进入分支时 part 类型已被 mypy/Pyright
-                # 收窄为 ToolReturnPart / RetryPromptPart，两者都有 tool_call_id，
-                # 不需要 getattr 兜底（LLM.md §1.4）。
+                # 复用同一个 isinstance 守卫：进入分支时 part 类型已被 mypy/Pyright 收窄为 ToolReturnPart /
+                # 两者都有 tool_call_id
                 if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids:
                     logger.warning(
                         i18n_t("🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={p0}", p0=part.tool_call_id)
@@ -1626,15 +1617,12 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
 
 
 # §25(5) 工具返回入史上限：本轮模型已消费过完整返回，持久历史里只需可引用的摘要。
-# web_search/stock_financials 等大返回原文滚进历史是 run 内 token 近似 O(N²) 的来源。
+# web_search 等大返回原文滚进历史是 run 内 token 近似 O(N²) 的来源。
 _TOOL_RETURN_HISTORY_MAX = 4000
 _TOOL_RETURN_HEAD = 3200
 _TOOL_RETURN_TAIL = 400
 
-# OOC 修复 5.2：结构化数据工具返回的入史摘要阈值。
-# 高密度结构化 JSON（金融指标、持仓列表等）即使低于
-# _TOOL_RETURN_HISTORY_MAX，也会污染主人格语域 → OOC。
-# 检测基于内容结构（JSON 字段密度），不基于工具名——适配所有工具。
+# OOC 修复 5.2：结构化数据工具返回的入史摘要阈值。 高密度结构化 JSON（指标表、列表类 payload 等）即使低于
 _PROFESSIONAL_TOOL_SUMMARY_MAX = 300
 
 
@@ -1681,9 +1669,7 @@ def _truncate_tool_returns_in_history(messages: List[ModelMessage]) -> int:
         if not isinstance(msg, ModelRequest):
             continue
         for part in msg.parts:
-            # v2.0 新增 ToolSearchReturnPart 等 part 类型，
-            # 那些的 content 不容许赋值 str。type(part) is
-            # ToolReturnPart 是精确类型守门（子类不影响）。
+            # v2.0 新增 ToolSearchReturnPart 等 part 类型， 那些的 content 不容许赋值 str。type(part) is
             if type(part) is not ToolReturnPart or not isinstance(part.content, str):
                 continue
             content = part.content
@@ -1707,66 +1693,45 @@ def _truncate_tool_returns_in_history(messages: List[ModelMessage]) -> int:
 
 
 def _compact_report_blocks_in_history(
-    messages: List[ModelMessage],
+    messages: Sequence[ModelMessage],
     sent_texts: Optional[Set[str]] = None,
 ) -> int:
-    """把 assistant 文本里的结构化制品块**完全删除**，标题记入 ModelResponse.metadata。
+    """历史里抹掉结构化数据块，切断格式漂移正反馈。
 
-    与旧方案（替换为占位符文本）的区别：模型在历史中看不到任何"已发资料图"
-    字样的文本，因此不可能模仿。标题通过 metadata 传递给下一轮的
-    assemble_dynamic_context，以 user 侧系统注释的形式告知模型。
-
-    ``sent_texts``：本轮实际发送成功的原始文本集合（gs_agent._run_sent_texts）。
-    给定时只压缩「确实发出去过」的 part——被拦截/暂扣/发送失败的文本不得谎称
-    已发资料图（评审修复 E5）。
+    流程（两步分离，避免 E5 与「教坏模型」打架）：
+    1. **所有** assistant TextPart 都做两通道分离——数据块从历史删除，只留台词。
+       不依赖是否发送成功：未发出的 ```report 留在 history 一样会教模型再写。
+    2. ``sent_reports`` metadata **仅**在 part 原文属于 ``sent_texts`` 时写入
+       （用户侧「上一轮发了资料图」注释不得谎报；return 模式 / 暂扣未发不写）。
     """
     replaced = 0
     for msg in messages:
         if not isinstance(msg, ModelResponse):
             continue
-        titles: List[str] = []
+        sent_titles: List[str] = []
         for part in msg.parts:
             if not isinstance(part, TextPart):
                 continue
-            has_report_tag = "<report" in part.content.lower()
-            has_code_block = "```" in part.content
-            if not has_report_tag and not has_code_block:
+            original = part.content
+            if not original or ("<" not in original and "```" not in original and "{" not in original):
                 continue
-            if sent_texts is not None and part.content.strip() not in sent_texts:
+            speech, blocks = _split_speech_and_artifacts(original)
+            if speech == original and not blocks:
                 continue
-            new_content = part.content
-            if has_report_tag:
-                for m in _REPORT_BLOCK_RE.finditer(new_content):
-                    titles.append(_report_block_title(m) or "分析资料")
-                new_content = _REPORT_BLOCK_RE.sub("", new_content)
-            if has_code_block:
-                new_content = _FENCED_CODE_BLOCK_RE.sub(lambda m: _code_block_to_metadata(m, titles), new_content)
-            if new_content != part.content:
-                part.content = new_content.strip()
-                replaced += 1
-        if titles:
+            part.content = speech.strip()
+            replaced += 1
+            was_sent = sent_texts is None or original.strip() in sent_texts
+            if was_sent and blocks:
+                sent_titles.extend(title or "分析资料" for title, _ in blocks)
+        if sent_titles:
             existing = msg.metadata or {}
-            existing["sent_reports"] = titles
+            existing["sent_reports"] = sent_titles
             msg.metadata = existing
     return replaced
 
 
-def _code_block_to_metadata(match: "re.Match[str]", titles: List[str]) -> str:
-    """fence 代码块若为结构化数据则删除并记录标题，否则原样保留。"""
-    lang = match.group(1).strip().lower()
-    body = match.group(2).strip()
-    if lang in _REAL_CODE_LANGS:
-        return match.group(0)
-    if not _is_structured_content(body):
-        return match.group(0)
-    if len(body) < _STRUCTURED_BLOCK_MIN_CHARS and not body.strip().startswith("{"):
-        return match.group(0)
-    titles.append(_infer_block_title(body))
-    return ""
-
-
 def _relean_user_turn(
-    new_messages: List[ModelMessage],
+    new_messages: Sequence[ModelMessage],
     lean_content: Union[str, List[UserContent]],
     strip_hint_texts: Tuple[str, ...] = (),
 ) -> None:
@@ -1911,7 +1876,7 @@ def sanitize_error_for_user(result_text: str) -> str:
     return "这条消息我处理失败了，稍后再试一次吧"
 
 
-# Agent 失败类型分类标签 —— 仅供 notify_master_of_agent_error 私聊主人时使用，
+# Agent 失败类型分类标签 —— 仅供 notify_master_of_agent_error 私聊主人时使用
 # 与 sanitize_error_for_user 共用同一组常量做嗅探，保证两处判断永远一致。
 _ERROR_TYPE_LABEL_NO_RESULT = "无有效结果"
 _ERROR_TYPE_LABEL_CONTENT = "内容安全"

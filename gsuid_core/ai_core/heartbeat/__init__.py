@@ -21,7 +21,7 @@
   不依赖定时器。
 
 三者职责互不重叠；要做"每天 8 点发问候"应用 ``scheduled_task``，要做
-"有时主动关心一下主人"用 ``heartbeat``，要做"30 天虚拟盘运营"走 ``planning``。
+"有时主动关心一下主人"用 ``heartbeat``，要做"30 天周期运营任务"走 ``planning``。
 """
 
 from .decision import run_heartbeat

@@ -32,8 +32,8 @@ GET /api/ai/scheduled_tasks
             "user_type": "direct",
             "persona_name": "default",
             "session_id": "ws-onebot:onebot:bot_001:private:user_001",
-            "task_prompt": "帮我关注股市行情",
-            "structured_context": "{\"state_key\": \"stock:portfolio\"}",
+            "task_prompt": "帮我关注任务进度",
+            "structured_context": "{\"state_key\": \"myplugin:progress\"}",
             "last_result_summary": "上次巡检：账户余额 98500，持仓 2 支",
             "status": "pending",
             "created_at": "2024-05-14T22:00:00",
@@ -72,8 +72,8 @@ GET /api/ai/scheduled_tasks/{task_id}
         "user_type": "direct",
         "persona_name": "default",
         "session_id": "ws-onebot:onebot:bot_001:private:user_001",
-        "task_prompt": "帮我关注股市行情",
-        "structured_context": "{\"state_key\": \"stock:portfolio\"}",
+        "task_prompt": "帮我关注任务进度",
+        "structured_context": "{\"state_key\": \"myplugin:progress\"}",
         "last_result_summary": "上次巡检：账户余额 98500，持仓 2 支",
         "status": "pending",
         "created_at": "2024-05-14T22:00:00",
@@ -102,7 +102,7 @@ POST /api/ai/scheduled_tasks
     "task_type": "interval",
     "interval_type": "minutes",
     "interval_value": 30,
-    "task_prompt": "帮我关注股市行情",
+    "task_prompt": "帮我关注任务进度",
     "max_executions": 10
 }
 ```
@@ -112,7 +112,7 @@ POST /api/ai/scheduled_tasks
 {
     "task_type": "once",
     "run_time": "2024-05-15 06:30:00",
-    "task_prompt": "查询英伟达股价"
+    "task_prompt": "查询今天天气"
 }
 ```
 

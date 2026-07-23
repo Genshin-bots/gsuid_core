@@ -12,7 +12,7 @@
 """
 
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Sequence
 
 from pydantic_ai.messages import (
     TextPart,
@@ -79,8 +79,7 @@ _FOLLOWUP_VERB_RE = re.compile(
 )
 _FOLLOWUP_THAT_RE = re.compile(r"^那[^。！？，,]{1,8}呢[？?]?$")
 # 上一轮语境存在"可被跟进的动作"：安排类实体词或查询/确认话术。
-# 泛化纪律：不收数据域词（天气/股价…）——"上一轮有动作"的强证据是真实工具调用
-# （has_recent_tool_call），名词表只兜跨 session 等拿不到轨迹的场景。
+# 泛化纪律：不收业务数据域词——"上一轮有动作"的强证据是真实工具调用
 _PRIOR_ACTION_RE = re.compile(r"提醒|闹钟|任务|日程|定时|预约|待办|订阅|设好|记下|安排|查")
 # 省略式跟进的最长字数（超过=有独立语义的实质发言）；默认值，可被 ai_config 覆盖
 FOLLOWUP_MAXLEN_DEFAULT = 24
@@ -93,7 +92,7 @@ FOLLOWUP_HINT = (
 )
 
 
-def has_recent_tool_call(history: List[ModelMessage], limit: int = 6) -> bool:
+def has_recent_tool_call(history: Sequence[ModelMessage], limit: int = 6) -> bool:
     """近几条助手消息里是否有真实工具调用——「上一轮存在可跟进动作」的结构证据。
 
     比 `_PRIOR_ACTION_RE` 名词表更强也更泛化（覆盖任何数据域），名词表退为
@@ -150,7 +149,6 @@ _PERSIST_QUANT_RE = re.compile(
 )
 # 人设核心档：改说话方式/自称/人设/语言/格式——这是漂移攻击面，计入 push。
 # 称呼偏好（叫我X/给你起昵称）**不在此**：那是正常群社交，由人设层自行决定接不接
-# （见 persona/prompts.py「人设不漂移」条款的例外说明），单独出现绝不算攻击。
 _STYLE_CORE_RE = re.compile(
     r"说话|口吻|口癖|语气|腔调?|敬语|自称|开场白?|开头|结尾|结束语|前缀|后缀|"
     r"每句(话)?(都|先)|都要?[加带说]|emoji|表情符?号?|换.{0,3}语言|英文|中文|日语|方言|"
@@ -199,10 +197,7 @@ def count_style_pushes(current_text: str, recent: List[Tuple[str, str]], speaker
     return n
 
 
-# ── C-3 寻址前置门 ─────────────────────────────────────────────────
-# @ 标注文案的**唯一**定义点：utils.prepare_content_payload / history_format 渲染、
-# 本模块的 C-3 判定都 import 这两个常量。任何一处改字面量都会让寻址门静默失效，
-# 故禁止在别处重复该字符串（tests/test_interaction_scaffold.py 有源码级断言锁）。
+# C-3 寻址前置门 @ 标注文案的**唯一**定义点：utils.prepare_content_payload / history_format 渲染
 AT_OTHER_MARKER = "（@的是这位用户，不是你）"
 DIRECT_MARKER = "（直接找你说的）"
 
@@ -235,8 +230,8 @@ def addressed_to_someone_else(message_text: str, persona_name: str, is_tome: boo
     return True
 
 
-# 跨轮 ambient 催促：上一条（同一说话人）@ 了别人、本条是短促追问（"醒了吗""人呢"）——
-# 生产实测的误判源（@Pikababy + 醒了吗 被当成叫自己）。当前消息无 @ 标注，C-3 主门抓不到。
+# 跨轮 ambient 催促：上一条（同一说话人）@ 了别人、
+# 当前消息无 @ 标注，C-3 主门抓不到。
 AMBIENT_MAXLEN_DEFAULT = 20
 
 

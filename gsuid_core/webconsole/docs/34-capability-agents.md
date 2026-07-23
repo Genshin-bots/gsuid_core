@@ -87,13 +87,13 @@ POST /api/ai/capability-agents
 
 ```json
 {
-  "profile_id": "finance_agent",
-  "display_name": "操盘助手",
-  "when_to_use": "需要查行情、做仓位决策、每日复盘的金融任务",
-  "system_prompt": "你是一个严谨的量化操盘代理……",
-  "match_keywords": ["炒股", "操盘", "股票", "金融", "行情"],
-  "tool_names": ["send_stock_info", "send_my_stock", "get_vix_index"],
-  "tool_query": "股票行情 仓位",
+  "profile_id": "domain_agent",
+  "display_name": "领域助手",
+  "when_to_use": "需要调用某业务插件工具做查询与复盘的任务",
+  "system_prompt": "你是一个严谨的领域数据代理……",
+  "match_keywords": ["查询", "分析", "复盘"],
+  "tool_names": ["example_query_tool", "example_list_tool"],
+  "tool_query": "领域 查询",
   "max_iterations": 25,
   "max_tokens": 40000,
   "base": "research_agent"
@@ -109,7 +109,7 @@ POST /api/ai/capability-agents
 | `system_prompt` | ✅ | 纯职能 Plan-and-Solve 提示词，**禁止角色化语言** |
 | `tool_names` | ✗ | 显式工具白名单（按工具名挂载） |
 | `tool_query` | ✗ | 留空且 `tool_names` 非空 → 不做向量补充；为空时按 task 文本补充 |
-| `match_keywords` | ✗ | AI 主人格用 `agent_profile="操盘"` 这类自然语言时的解析关键字 |
+| `match_keywords` | ✗ | AI 主人格用自然语言描述画像时的解析关键字 |
 | `base` | ✗ | 以哪个已存在画像（builtin / plugin / user 都行）为模板复制字段，本请求未填的字段自动 fallback 到 base |
 
 **新建逻辑**：
@@ -162,10 +162,10 @@ GET /api/ai/capability-agents/_tools/available
     "count": 67,
     "items": [
       {
-        "name": "send_stock_info",
-        "description": "查询股票实时行情...",
+        "name": "example_query_tool",
+        "description": "查询某业务插件的数据...",
         "category": "default",
-        "plugin": "SayuStock"
+        "plugin": "ExamplePlugin"
       },
       ...
     ]
@@ -201,13 +201,13 @@ GET /api/ai/capability-agents/_tools/available
 
 ### 7.3 复制模板工作流
 
-主要场景：**插件没注册业务画像时，管理员手工兜底**。例如 SayuStock 还没注册
-`finance_agent`，管理员可以：
+主要场景：**插件没注册业务画像时，管理员手工兜底**。例如某业务插件还没注册
+`domain_agent`，管理员可以：
 
 1. 列表页选 `research_agent`（builtin），点「以此为模板新建」；
 2. 在新建表单里：
-   - `profile_id` 填 `finance_agent`；
-   - 在 `tool_names` 里勾选 `send_stock_info` / `send_my_stock` / `get_vix_index` 等股票工具；
-   - 改 `system_prompt`，强调"金融决策必须基于工具数据，不允许只靠 web_search 标题"；
+   - `profile_id` 填 `domain_agent`；
+   - 在 `tool_names` 里勾选该插件暴露的业务工具；
+   - 改 `system_prompt`，强调"专业结论必须基于工具数据，不允许只靠 web_search 标题"；
 3. 保存——主人格在通过 `evaluate_agent_mesh_capability` / `register_kanban_task`
-   拆任务时，可以把 `finance_agent` 直接分配给子任务。
+   拆任务时，可以把 `domain_agent` 直接分配给子任务。

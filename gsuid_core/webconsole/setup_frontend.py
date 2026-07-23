@@ -161,6 +161,8 @@ def _import_webconsole_apis() -> None:
         ai_performance_api,
         knowledge_base_api,
         ai_session_logs_api,
+        # 运维诊断中心（Bot/Session/触发回放/配置快照等）
+        ops_diagnostics_api,
         provider_config_api,
         embedding_config_api,
         ai_scheduled_task_api,
@@ -185,8 +187,6 @@ async def setup_frontend_b():
     from gsuid_core.webconsole.app_app import app
 
     # 导入所有 webconsole API 模块以注册路由。
-    # 这些模块部分会拉起 AI 核心等重依赖，原先在插件加载阶段同步执行严重阻塞启动，
-    # 现移至此处（由后台任务调用），不阻塞 WS 服务。
     try:
         _import_webconsole_apis()
     except Exception as e:

@@ -57,6 +57,7 @@ def test_text_routes_through_send_chat_result_and_not_raw_send():
     assert "消息已发送" in result
     # 文本必须经 send_chat_result（markdown 归一化在其中），且不走裸 bot.send
     assert scr.await_count == 1
+    assert scr.await_args is not None
     assert scr.await_args.args[1] == "**【赢家】** 贝莱德 +8%\n- 阿里 +4%"
     assert scr.await_args.kwargs["ooc_check"] is False
     assert bot.send.await_count == 0

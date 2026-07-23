@@ -2,7 +2,7 @@
 
 C8（plans/agent_design_review.md 建议二）：Heartbeat 定时巡检与定时任务播报
 共用同一 APScheduler 实例（`gsuid_core.aps.scheduler`），但彼此完全不感知，
-可能在数分钟内连发两条互不相关的主动消息（如"炒股战报 + 闲聊打招呼"），
+可能在数分钟内连发两条互不相关的主动消息（如"任务进度 + 闲聊打招呼"），
 严重破坏拟人感。
 
 本网关作为框架层的"主动输出协调器"——所有主动发送（Heartbeat / 定时任务）

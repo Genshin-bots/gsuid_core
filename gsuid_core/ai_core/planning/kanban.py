@@ -53,9 +53,7 @@ def get_root_refresh_lock(root_task_id: str) -> asyncio.Lock:
     return lock
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 创建：任务树
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def create_kanban_tree(
@@ -123,8 +121,6 @@ async def create_kanban_tree(
 
     # 子任务级周期触发的依赖关系硬约束：禁止任何子任务 depends_on 周期子任务。
     # 周期子任务永不"完成"（armed 持续到 recurring_until 才 disarm），下游若依赖
-    # 它 = 永远等待 = 死锁。用 not_before + recurring_until 错开时间来表达"汇总
-    # 子任务等周期结束后再跑"的语义。
     recurring_indexes = {i for i, spec in enumerate(subtasks) if (spec.get("recurring_trigger") or "").strip()}
     if recurring_indexes:
         for spec in subtasks:
@@ -207,10 +203,8 @@ async def create_kanban_tree(
             display_name=str(spec.get("description") or "")[:64] or display_name,
             interval_seconds=0,
             agent_profile=str(spec.get("agent_profile") or "").strip(),
-            # 周期子任务模板自身不进 ready 队列；首次依赖满足时由调度器 arm（详见
-            # ``executor._maybe_arm_recurring_subtasks``）。注册时直接挂上 APScheduler
-            # 还会把"立即触发一次"和"等下个 cron 时点"语义混在一起，让主人格难以
-            # 判断；统一用"依赖满足才 arm"路径，arm 成功才进 APScheduler。
+            # 周期子任务模板自身不进 ready 队列；
+            # 注册时直接挂上 APScheduler
             status="pending",
             node_kind="subtask",
             parent_task_id=root.id,
@@ -256,9 +250,7 @@ async def create_kanban_tree(
     return root, children
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 周期触发：模板克隆
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def clone_tree_for_fire(
@@ -312,7 +304,6 @@ async def clone_tree_for_fire(
     for tpl_child in template_children:
         # 注意：模板上的 not_before 是绝对时间，克隆到实例时通常已经过期；
         # 周期模板自身的 cron 表达式已经决定了"什么时候开火"，子任务级再叠 not_before
-        # 没意义。这里**不复制 not_before**，所有实例子任务都立即可调度。
         new_child = await AIAgentTask.create_task(
             goal=tpl_child.goal,
             owner_user_id=tpl_child.owner_user_id,
@@ -577,9 +568,7 @@ async def disarm_template(template_root_id: str) -> bool:
     return True
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 查询：任务树
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def _query_children(root_task_id: str) -> List[AIAgentTask]:
@@ -660,7 +649,7 @@ def get_ready_child_tasks(
     2. dependency_task_ids 全部为 completed / skipped（或依赖项是已 armed 的周期模板，
        见 ``deps_satisfied_for``）；
     3. 根任务不在 paused / failed / cancelled / waiting_approval；
-    4. ``not_before`` 字段为空或 ≤ ``now``——支持"等开盘 / 等下班"等延后语义；
+    4. ``not_before`` 字段为空或 ≤ ``now``——支持"等上班 / 等下班"等延后语义；
     5. 当前子任务的 task_node_lock 未被占（执行器层自行加锁防并发）。
     6. **排除周期子任务模板本身**（``recurring_trigger`` 非空且 ``template_subtask_id``
        为空——模板不直接派活，由调度器单独走 arm 路径挂 APScheduler）。
@@ -673,7 +662,7 @@ def get_ready_child_tasks(
         if c.status != "pending":
             continue
         if is_recurring_subtask_template(c):
-            # 周期子任务模板：依赖未满足时仍在 pending；依赖刚满足时也不进 ready，
+            # 周期子任务模板：依赖未满足时仍在 pending；依赖刚满足时也不进 ready
             # 由 ``kanban_executor._maybe_arm_recurring_subtasks`` 转 armed 挂 APScheduler。
             continue
         if not deps_satisfied_for(c, children):
@@ -737,9 +726,7 @@ def compute_kanban_column(task: AIAgentTask, deps_satisfied: bool = True) -> str
     return "target"
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 状态机：mark_subtask_running / completed / failed
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def mark_subtask_running(task: AIAgentTask) -> bool:
@@ -810,9 +797,7 @@ def _drop_subtask_recurring_job(subtask_id: str) -> None:
         pass
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 根任务状态汇总
-# ─────────────────────────────────────────────────────────────────────
 
 
 def is_leaf_root(root: AIAgentTask, children_count: int) -> bool:
@@ -854,7 +839,6 @@ async def refresh_root_status(root_task_id: str) -> Optional[str]:
             new_status = root.status
         elif has_armed_recurring and any(s in ("pending", "running", "waiting_approval", "paused") for s in statuses):
             # 周期子任务模板存在且还有正在跑/等待的兄弟节点 → 保持 running
-            # （即便所有"非周期子任务"已 completed，整棵树也不算结束）。
             # 注意：周期模板自身 status 永远是 pending，不计入"全 completed"判断。
             new_status = "running"
         elif all(s in ("completed", "skipped") for s in statuses):
@@ -886,9 +870,7 @@ async def refresh_root_status(root_task_id: str) -> Optional[str]:
         return new_status
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 任务级状态操作：暂停 / 恢复 / 终止（webconsole 与主人格句柄都走这里）
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def pause_task(task_id: str) -> bool:
@@ -937,9 +919,7 @@ async def abort_task(task_id: str, reason: str) -> None:
     logger.info(t("📋 [Kanban] 任务 {task_id} 已终止：{reason}", task_id=task_id, reason=reason))
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 失败处理：重派 / 审批 / 整树失败
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def respawn_child_task(
@@ -1334,9 +1314,7 @@ async def bulk_delete_task_trees(
     return deleted, failed, total_stats
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 崩溃恢复
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def recover_zombie_subtasks(stale_minutes: int = 15) -> int:
@@ -1389,9 +1367,7 @@ async def recover_zombie_subtasks(stale_minutes: int = 15) -> int:
     return len(zombies)
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 查询辅助：列出全部根任务（看板视图）
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def list_root_tasks(

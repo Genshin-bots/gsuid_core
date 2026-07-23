@@ -10,7 +10,7 @@ Scheduled Task 模块
 3. 通过 get_ai_session 加载 persona 和 session 执行任务
 
 使用流程：
-1. 用户请求预约任务，如"明天早上6点帮我查一下英伟达的股价"
+1. 用户请求预约任务，如"明天早上6点帮我查一下天气"
 2. 主 Agent 调用 add_once_task / add_interval_task 工具（位于 buildin_tools/scheduler.py）
 3. 系统将任务存入数据库，并注册到 APScheduler
 4. 时间到达时，execute_scheduled_task 被触发

@@ -19,7 +19,7 @@
 1. 主人格 prompt 由 ``processor.build_persona_prompt`` 一次性拼装：人设
    + ``SYSTEM_CONSTRAINTS`` 决策树 + 自我认知 + 上下文摘要。
 2. 决策树关键分支（``prompts.py``）：
-   - §3.1  专业域强制委派：遇到证券 / 天气 / 代码 / 内部周报等专业问题必须
+   - §3.1  专业域强制委派：遇到清单内能力代理覆盖的专业问题必须
            走 ``create_subagent`` 或 ``register_kanban_task``，不允许自己用
            工具池 + ``web_search`` 拼答案。
    - §3.4  ``scheduled_task`` ↔ ``Kanban`` 边界：单步周期用 ``add_interval_task``；

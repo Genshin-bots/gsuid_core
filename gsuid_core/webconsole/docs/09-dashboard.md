@@ -89,3 +89,33 @@ GET /api/dashboard/active-time
 ```
 
 **响应**：24小时各时段活跃度数据
+
+---
+
+## 9.6 近 N 天每日命令总数（日历选择器）
+
+```
+GET /api/dashboard/daily/command-counts?days=60&bot_id=all
+```
+
+供 Dashboard 日期选择器在每个日期格下展示命令数；`count == 0` 的日期前端应禁用，避免点进空详情。
+
+**Query**：
+- `days`：回溯天数，默认 60，夹取 `[1, 366]`
+- `bot_id`：`all` 或 `bot_self_id:bot_id`
+
+**口径**：仅汇总 `DataType.USER` 的 `command_count`（与 `/daily/commands` 一致，避免 group 双计）。
+
+**响应**：
+```json
+{
+  "status": 0,
+  "msg": "ok",
+  "data": [
+    { "date": "2026-07-01", "count": 128 },
+    { "date": "2026-07-02", "count": 0 }
+  ]
+}
+```
+
+`data` 按日期升序、连续补 0。

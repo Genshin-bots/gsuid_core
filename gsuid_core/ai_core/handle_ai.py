@@ -167,20 +167,15 @@ async def handle_ai_chat(
         logger.warning(t("🧠 [GsCore][AI] 检查 AI Core 初始化状态失败，继续降级处理: {e}", e=e))
 
     async with _ai_semaphore:
-        # O-A 早退：拿到全局并发信号量时若已排队过久（全局过载场景），话题大概率已翻篇，
-        # 直接放弃，省下后续分类 / 记忆检索等开销。锁级别的二次防护见 gs_agent.run。
+        # O-A 早退：拿到全局并发信号量时若已排队过久（全局过载场景），话题大概率已翻篇， 直接放弃，
         if enqueue_ts is not None and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL:
             logger.info(t("🧠 [GsCore][AI] 队列等待 {p0:.1f}s 超 TTL，丢弃过期请求", p0=time.time() - enqueue_ts))
             return
         try:
             query = event.raw_text
 
-            # ============================================================
             # 预算闸门（被动交互路径·前置短路）：校验 Session Token 额度，超额早退省下后续
             # 记忆/分类/RAG/主 Agent 开销；豁免(主人/白名单)直接放行，check 异常 fail-open。
-            # ============================================================
-            # 与 gs_agent 的 budget_gate 非双重拦截：此处前置拦过，下方 session.run 不传 gate
-            # 省一次冗余 DB 判定；那道只给无前置闸门的自主入口(巡检/proactive/定时)兜底。
             budget_decision = None
             try:
                 from gsuid_core.ai_core.budget import budget_manager
@@ -219,14 +214,7 @@ async def handle_ai_chat(
                 # 提示尽力而为，发送失败也无条件早退，绝不放超额消息进完整 AI 流程。
                 return
 
-            # ============================================================
-            # 主动会话记忆 · 记录「触发者发言」
-            # 能进入本函数即代表 AI 实际参与了交互，按「主动会话」语义需把触发者
-            # 这条原话也写入记忆（Bot 自身回复由 bot.py 发送路径单独入队到 SELF scope）。
-            # 去重：若同时开启「被动感知」，该消息已在 handler.py 入口处入队过一次，
-            # 此处必须跳过，避免同一条触发消息被二次写入记忆。
-            # observe() 内部走与被动感知一致的纯规则门控 / scope 计算，无 LLM 调用。
-            # ============================================================
+            # 主动会话：入队触发者原话；被动感知已写过则跳过，防双写
             try:
                 _memory_mode = memory_config.memory_mode
                 if (
@@ -239,8 +227,7 @@ async def handle_ai_chat(
                     await observe(
                         content=event.raw_text,
                         speaker_id=str(event.user_id),
-                        # 私聊必须 None：回退成 user_id 会落进 group: scope，
-                        # 而偏好只存 USER_GLOBAL（同 handler.py 的被动感知调用点）
+                        # 私聊 group_id 必须 None，否则会误进 group: scope
                         group_id=str(event.group_id) if event.group_id else None,
                         bot_self_id=str(event.bot_self_id),
                         observer_blacklist=memory_config.observer_blacklist,
@@ -249,9 +236,7 @@ async def handle_ai_chat(
             except Exception as e:
                 logger.debug(t("🧠 [Memory] 主动会话触发者发言入队失败: {e}", e=e))
 
-            # ============================================================
             # 步骤 1: 双层长度防护（D-10 修复）
-            # ============================================================
             raw_text_len = len(query)
 
             if raw_text_len > ABSOLUTE_MAX_LENGTH:
@@ -266,19 +251,42 @@ async def handle_ai_chat(
                 query = query[:ABSOLUTE_MAX_LENGTH] + "...[文本过长，已自动截断]"
                 event.raw_text = query  # 同步到 event
 
-            # ============================================================
-            # 步骤 1.5: 空内容前置门（§17）——纯表情/戳一戳等无内容消息不值得
-            # 走完整装配换一个 <SILENCE>。判据与 payload 构建同源（评审修复 E10）。
-            # ============================================================
+            # 空内容前置门：无可见内容且未@我则静默（与 payload 同源）
             _is_at_me = bool(event.is_tome) or event.user_type == "direct"
             if not query.strip() and not has_model_visible_content(event) and not _is_at_me:
                 logger.info(t("🧠 [GsCore][AI] 空内容消息（无模型可见内容且未@我），前置静默跳过"))
                 return
 
-            # ============================================================
-            # 步骤 2: 意图识别
-            # ============================================================
-            res = await classifier_service.predict_async(query)
+            # 步骤 2: 获取 AI Session（意图分类需要上轮是否用过工具）
+            session = await get_ai_session(event)
+
+            # 意图：同用户先验 + 近几轮是否真用过工具（勿只看当前句）
+            from gsuid_core.ai_core.classifier.mode_classifier import collect_prior_user_turns
+
+            _prev_turn_used_tools = False
+            _assistant_seen = 0
+            for _msg in reversed(session.history):
+                if not isinstance(_msg, ModelResponse):
+                    continue
+                if any(isinstance(p, ToolCallPart) for p in _msg.parts):
+                    _prev_turn_used_tools = True
+                    break
+                _assistant_seen += 1
+                if _assistant_seen >= 6:
+                    break
+
+            _hist_for_intent = history_manager.get_history(event, limit=30)
+            # handler 已把本轮用户句入库，prior 须去掉与 query 相同的末条
+            _prior_user = collect_prior_user_turns(_hist_for_intent, str(event.user_id), max_turns=5)
+            _qstrip = query.strip()
+            if _prior_user and _prior_user[-1].strip() == _qstrip:
+                _prior_user = _prior_user[:-1]
+            _prior_user = _prior_user[-4:]
+            res = await classifier_service.predict_async(
+                query,
+                prior_user_turns=_prior_user,
+                prev_turn_used_tools=_prev_turn_used_tools,
+            )
             intent = res["intent"]
             logger.debug(t("🧠 [GsCore][AI] 意图识别结果: {res}", res=res))
 
@@ -298,17 +306,7 @@ async def handle_ai_chat(
             elif intent == "问答":
                 logger.info(t("🧠 [GsCore][AI] 问答模式"))
 
-            # ============================================================
-            # 步骤 3: 获取 AI Session
-            # ============================================================
-            session = await get_ai_session(event)
-
-            # ============================================================
-            # 步骤 3.5: 免唤醒续聊·软触发沉默门
-            # 软触发（用户在续聊窗口内、未带触发词的群聊发言）先过一道轻量决策门，
-            # 判断"是否仍在跟我说话"。与 AI 无关则直接沉默——不进入后续记忆检索 +
-            # 主 Agent 多轮，省下主链路开销。硬触发（@/关键词/私聊）不走此门。
-            # ============================================================
+            # 软触发沉默门：过门后重置 enqueue_ts，避免门耗时被算进过期 TTL
             if soft_triggered:
                 try:
                     from gsuid_core.ai_core.heartbeat.decision import run_reactive_gate
@@ -320,14 +318,10 @@ async def handle_ai_chat(
                     logger.info(t("🧠 [GsCore][AI] 软触发沉默门放行，按续聊处理"))
                 except Exception as e:
                     logger.debug(t("🧠 [GsCore][AI] 软触发沉默门异常，放行交主Agent兜底: {e}", e=e))
-                # 过沉默门（含异常兜底）后，把计时基准重置为「过门时刻」：门自身可能耗时十余秒的 LLM 决策，
-                # 不应被锁级 STALE_CHAT_REQUEST_TTL 计入，导致刚放行的续聊被误判为「过期请求」丢弃。
                 if enqueue_ts is not None:
                     enqueue_ts = time.time()
 
-            # ============================================================
             # 步骤 4: 准备用户消息（含好感度注入）
-            # ============================================================
 
             # 查询当前用户好感度（从外部存储，非模型推断）
             # Bot.bot_id 是已声明字段；handle_ai 链路 bot 通常非 None
@@ -365,15 +359,12 @@ async def handle_ai_chat(
             if isinstance(user_messages, list) and len(user_messages) > 0 and isinstance(user_messages[0], str):
                 user_messages[0] += f"\n【当前时间】{current_time}"
 
-            # ============================================================
             # 步骤 5: 记忆上下文（Memory Retrieval）
             # 基于群组/用户ID检索相关记忆，用于个性化响应
-            # ============================================================
             memory_context_text = ""
             is_enable_memory: bool = ai_config.get_config("enable_memory").data
             if is_enable_memory and memory_config.enable_retrieval:
-                # C4 寒暄门控：纯寒暄（短+闲聊+无实体/情绪/回指）跳过双路检索，
-                # 节省向量搜索 + Reranker 开销；其余情况照常检索。
+                # C4 寒暄门控：纯寒暄（短+闲聊+无实体/情绪/回指）跳过双路检索， 节省向量搜索 + Reranker 开销；
                 if not _should_retrieve_memory(query, intent, str(event.user_id)):
                     logger.debug(t("🧠 [Memory] 命中寒暄门控，跳过双路检索"))
                 else:
@@ -418,27 +409,19 @@ async def handle_ai_chat(
                     except Exception as e:
                         logger.warning(t("🧠 [Memory] 记忆检索失败: {e}", e=e))
 
-            # ============================================================
             # 步骤 6: 历史记录上下文
             # 注意：RAG 知识库检索已移除为强制前置步骤（D-11 修复）
-            # 主Agent通过 search_knowledge 工具按需决定是否检索知识库。
-            # 这样可以避免无谓的检索延迟（如用户只是说"你好"时不触发RAG）。
-            # ============================================================
             rag_context: str = ""
 
             # 获取群聊历史记录并格式化为上下文
             # 获取最近的历史记录（最多30条）
-            # 注意：当前消息已在 handler.py 中记录到历史，通过 user_messages 单独传递给AI
-            # 所以这里获取历史时排除最后一条（即当前消息），避免重复
             raw_history = history_manager.get_history(event, limit=30)
 
             # 排除最后一条（当前用户刚发的消息），避免与 user_messages 重复
             history = raw_history[:-1] if raw_history else []
 
-            # ============================================================
             # Fix-06: 当前用户优先的历史窗口过滤
             # 保证当前用户的最近消息一定在窗口内
-            # ============================================================
             if history:
                 current_user_id = str(event.user_id)
                 CURRENT_USER_MIN_RECORDS = 5  # 当前用户至少保留5条
@@ -468,21 +451,13 @@ async def handle_ai_chat(
                     rag_context = f"【历史对话】\n{history_context}\n"
                     logger.debug(t("🧠 [GsCore][AI] 已加载 {p0} 条历史消息", p0=len(history)))
 
-            # ============================================================
-            # 每轮动态上下文装配（历史/情绪/关系行/口吻锚点/自我情景/长任务/记忆/软触发）
-            # 顺序唯一定义在 context_assembly.assemble_dynamic_context——评测端点同源消费，
-            # 保证"评测测到的上下文结构 = 生产结构"（§5.3 装配统一）。
-            # 群画像/self_model 已在建 session 时固化进 system_prompt（§O-3），不在此重复。
-            # ============================================================
-            # 从 session.history 的 metadata 提取上轮资料图标题 + 是否用过工具
+            # 动态上下文统一走 assemble_dynamic_context（评测与生产同源）
             _recent_report_titles: Tuple[str, ...] = ()
-            _prev_turn_used_tools = False
             for _msg in reversed(session.history):
                 if isinstance(_msg, ModelResponse):
                     _meta = _msg.metadata
                     if _meta and "sent_reports" in _meta:
                         _recent_report_titles = tuple(_meta["sent_reports"])
-                    _prev_turn_used_tools = any(isinstance(p, ToolCallPart) for p in _msg.parts)
                     break
 
             mood_key = str(event.group_id) if event.group_id else str(event.user_id)
@@ -502,12 +477,8 @@ async def handle_ai_chat(
                 prev_turn_used_tools=_prev_turn_used_tools,
             )
 
-            # ============================================================
             # 步骤 7: 调用 Agent 生成回复
             # Agent 会根据对话内容自主决定是否调用 search_knowledge 工具
-            # ============================================================
-            # 故意不传 budget_gate（默认 False）：被动路径已在上方前置闸门拦过，这里只需
-            # gs_agent 按 ev 记账即可，避免对同一条消息再做一次冗余预算判定。
             chat_result = await session.run(
                 user_message=user_messages,
                 bot=bot,
@@ -547,17 +518,12 @@ async def handle_ai_chat(
                     await send_chat_result(bot, chat_result, ev=event)
                     logger.info(t("🧠 [GsCore][AI] 回复已发送 (模式: {intent})", intent=intent))
 
-            # ============================================================
-            # 步骤 9: 更新 Persona 情绪状态（异步，不阻塞主流程）
-            # 根据用户消息内容推断情绪事件类型
-            # 群聊使用 group_id，私聊使用 user_id 作为情绪隔离 key
-            # ============================================================
+            # 情绪与好感：仅有效互动加分（静默/失败不加）
             if session.persona_name:
                 mood_key = str(event.group_id) if event.group_id else str(event.user_id)
                 from gsuid_core.ai_core.utils import _is_master_user
 
-                # 好感度只在有效互动时 +1（§16）：静默/失败/准失败轮不加分。by_bot 成功轮
-                # run 返回空串，须以 last_run_sent_visible_reply 判"说过话"（评审修复 F1）。
+                # by_bot 成功时 run 返回空串，用 last_run_sent_visible_reply 判说过话
                 _effective = not _is_error and (
                     session.last_run_sent_visible_reply or (bool(result_text) and not _is_silence)
                 )
@@ -573,7 +539,6 @@ async def handle_ai_chat(
                     )
                 )
                 # 安全获取底层 _Bot 实例，兼容 Bot 和 MockBot
-                # 注意：先判断 Bot（更具体的子类），再判断 _Bot（更宽泛的父类），
                 # 防止 Bot 继承 _Bot 时 _Bot 分支先匹配导致 underlying 为 Bot 实例
                 underlying: _Bot | None = None
                 if isinstance(bot, Bot):

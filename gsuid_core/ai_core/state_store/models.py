@@ -20,7 +20,7 @@ class AIPersistentState(SQLModel, table=True):
 
     字段说明：
     - scope: 数据隔离范围，如 "user:123"、"group:456"、"private:xxx"、"global"
-    - state_key: 业务键名，建议格式 "插件名:业务名"，如 "stock:portfolio"
+    - state_key: 业务键名，建议格式 "插件名:业务名"，如 "myplugin:progress"
     - value: JSON 序列化后的值（字符串、数字、列表、字典均可）
     - version: 乐观锁版本号，每次写入自增
     - expire_at: 可选的过期时间，为空表示永久保留

@@ -3,7 +3,7 @@
 设计意图
 --------
 Kanban 任务树本身是**一次性事件驱动**的——同一棵树跑完即结束，不会复用。
-但用户常有"每个开盘日每半小时让你看盘并买卖、30 天后结算"这种**周期性、
+但用户常有"每个工作日每半小时检查一次、30 天后结算"这种**周期性、
 跨多日的多步任务**。在过去框架只能退化为两条路：
 
 1. 主人格挂一个 ``add_interval_task``，每次唤醒手动 ``register_kanban_task``——
@@ -18,7 +18,7 @@ Kanban 任务树本身是**一次性事件驱动**的——同一棵树跑完即
 - 每次到点，桥接器调 ``clone_tree_for_fire`` 复制一棵全新实例树并立刻
   ``kick_root`` 推进，实例树跑完即完结；
 - 模板永远不被真正调度，只是被克隆的样板；
-- 跨实例的持久化（账户/持仓/流水）走 ``record_*`` 工具——模板生命周期与
+- 跨实例的持久化（账本/流水/名单）走 ``record_*`` 工具——模板生命周期与
   数据生命周期解耦。
 
 支持的触发格式
@@ -61,20 +61,21 @@ _RECURRING_GATES: dict[str, Callable[[], object]] = {}
 def register_recurring_gate(agent_profile: str, gate: Callable[[], object]) -> None:
     """为某个能力代理画像注册周期触发前置门。
 
-    动机：cron 表达式只能表达"星期几/几点"，表达不了"A 股交易日""美股开盘"这类
-    业务日历。没有 gate 时，节假日到点照样克隆实例树 → 派能力代理 → LLM 醒来一句
-    "今天不开盘"再睡回去——纯浪费 token。``_fire_template`` / ``_fire_subtask_template``
-    在克隆之前先问 gate，返回 False 则本次静默跳过（不克隆、不派代理、不消耗任何
-    LLM token），下个 cron 周期再问。gate 抛异常按"放行"处理（fail-open——业务日历
-    服务挂了不应让任务永久停摆）。
+    动机：cron 表达式只能表达"星期几/几点"，表达不了"行业营业日 / 节假日休息"
+    这类业务日历。没有 gate 时，休息日到点照样克隆实例树 → 派能力代理 → LLM
+    醒来发现今天不该执行再睡回去——纯浪费 token。``_fire_template`` /
+    ``_fire_subtask_template`` 在克隆之前先问 gate，返回 False 则本次静默跳过
+    （不克隆、不派代理、不消耗任何 LLM token），下个 cron 周期再问。gate 抛异常
+    按"放行"处理（fail-open——业务日历服务挂了不应让任务永久停摆）。
 
     之所以按 agent_profile 而不是 task_id 注册：profile 是稳定的能力语义（"这个代理
-    只应在交易时段醒来"），跨实例树、跨群、跨重启都成立，且无需给 AIAgentTask 加列。
+    只应在业务营业时段醒来"），跨实例树、跨群、跨重启都成立，且无需给 AIAgentTask
+    加列。
     注意根任务不挂画像（见 models.AIAgentTask.agent_profile），整树模板的 gate 判定
     由 :func:`_tree_gates_allow` 汇总全体子任务的画像完成。
 
     Args:
-        agent_profile: 能力代理画像 id（如 ``papertrade_decision_agent``）。
+        agent_profile: 能力代理画像 id（须为已注册的 node_id）。
         gate: 无参谓词，返回 bool（可为 async）。True=放行本次触发。
     """
     _RECURRING_GATES[agent_profile] = gate
@@ -411,9 +412,7 @@ async def restore_armed_templates() -> int:
     return restored
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 子任务级 not_before 唤醒
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def _fire_not_before(subtask_id: str, root_task_id: str) -> None:
@@ -518,9 +517,7 @@ def unschedule_not_before_wakeup(subtask_id: str) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 子任务级 recurring 触发桥
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:

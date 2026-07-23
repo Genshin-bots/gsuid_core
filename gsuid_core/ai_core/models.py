@@ -26,6 +26,8 @@ class ToolContext:
     # 渐进式工具暴露：find_tools 本轮命中的工具名集合，RetrievableToolset 每 step 读它
     # 解析成可调用工具。作用域为单次 run（ToolContext 每轮新建），轮末自然丢弃。
     dynamic_tool_names: Set[str] = field(default_factory=set)
+    # 主人格交互轮：能力代理专属工具名。find_tools / RetrievableToolset 均不得回灌。
+    blocked_tool_names: Set[str] = field(default_factory=set)
 
 
 class KnowledgeBase(TypedDict):
@@ -111,14 +113,8 @@ class ToolDef(TypedDict):
     function: FunctionDef
 
 
-# ─────────────────────────────────────────────
 # AI 会话日志序列化结构
-#
 # 这三个 TypedDict 是 ``AISessionLogger`` 落盘格式的唯一类型来源
-# （对应 session_logger.py 的 ``_add_entry`` / ``link_agent`` / ``_build_data``）。
-# webconsole 的日志 API 读取磁盘 JSON 与内存 logger 时复用它们，
-# 使全部字段可追踪到实时类型，无需 getattr / dict.get 兜底。
-# ─────────────────────────────────────────────
 
 
 class SessionLogEntry(TypedDict):

@@ -83,6 +83,8 @@ class _FakeBot:
 
 @pytest.mark.anyio
 async def test_report_block_hits_firewall_before_render(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typing import Any
+
     import gsuid_core.utils.html_render as html_render
     import gsuid_core.ai_core.output_firewall as fw
     from gsuid_core.ai_core.utils import send_chat_result
@@ -96,7 +98,7 @@ async def test_report_block_hits_firewall_before_render(monkeypatch: pytest.Monk
     monkeypatch.setattr(html_render, "render_md_to_bytes", fake_render)
     monkeypatch.setattr(fw, "is_enabled", lambda: True)
 
-    bot = _FakeBot()
+    bot: Any = _FakeBot()
     text = '看图～\n\n<report title="转账说明">钱已经转过去了，请查收</report>'
     await send_chat_result(bot, text, ev=None)
 
@@ -107,6 +109,8 @@ async def test_report_block_hits_firewall_before_render(monkeypatch: pytest.Monk
 
 @pytest.mark.anyio
 async def test_clean_report_block_still_rendered(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typing import Any
+
     import gsuid_core.utils.html_render as html_render
     from gsuid_core.ai_core.utils import send_chat_result
 
@@ -118,7 +122,7 @@ async def test_clean_report_block_still_rendered(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(html_render, "render_md_to_bytes", fake_render)
 
-    bot = _FakeBot()
+    bot: Any = _FakeBot()
     text = '帮你整理好了～\n\n<report title="方案对比">| 维度 | A | B |</report>'
     await send_chat_result(bot, text, ev=None)
 
@@ -151,18 +155,24 @@ def test_unclosed_report_tag_not_shown_to_user() -> None:
 
 
 def test_compact_report_blocks_respects_sent_gate() -> None:
+    # 全量抹数据块（防教坏）；sent_reports 仅对真正发出的 part 写入 metadata
     sent_text = '预热一下<report title="A">正文A</report>'
     unsent_text = '被拦下的<report title="B">正文B</report>'
-    msgs = [
+    msgs: list = [
         ModelResponse(parts=[TextPart(content=sent_text)]),
         ModelResponse(parts=[TextPart(content=unsent_text)]),
     ]
     replaced = _compact_report_blocks_in_history(msgs, sent_texts={sent_text})
-    assert replaced == 1
+    assert replaced == 2
     first = msgs[0].parts[0]
     second = msgs[1].parts[0]
-    assert isinstance(first, TextPart) and "已发资料图：A" in first.content
-    assert isinstance(second, TextPart) and "正文B" in second.content  # 没发出去就不许谎称已发
+    assert isinstance(first, TextPart)
+    assert "正文A" not in first.content and "预热一下" in first.content
+    assert msgs[0].metadata is not None and "sent_reports" in msgs[0].metadata
+    assert "A" in msgs[0].metadata["sent_reports"]
+    assert isinstance(second, TextPart)
+    assert "正文B" not in second.content  # 未发送也抹结构，防教坏
+    assert not msgs[1].metadata or "sent_reports" not in (msgs[1].metadata or {})
 
 
 def test_compact_runs_after_history_surgery() -> None:
@@ -236,7 +246,9 @@ async def test_clean_retry_on_last_attempt_reruns_and_closes(monkeypatch: pytest
 
     monkeypatch.setattr(ga.ai_config, "get_config", fake_get)
 
-    agent = object.__new__(ga.GsCoreAIAgent)
+    from typing import Any
+
+    agent: Any = object.__new__(ga.GsCoreAIAgent)
     agent._run_sent_texts = set()
     agent._last_attempt_tool_calls = ["send_message_by_ai"]
     fake_logger = _FakeSessionLogger()
@@ -245,7 +257,7 @@ async def test_clean_retry_on_last_attempt_reruns_and_closes(monkeypatch: pytest
     calls = {"n": 0}
     err = ModelHTTPError(status_code=400, model_name="m", body={"message": "invalid function arguments"})
 
-    async def fake_once(**kwargs):
+    async def fake_once(**kwargs: Any) -> str:
         calls["n"] += 1
         raise err
 
@@ -281,17 +293,22 @@ def test_dangling_fact_regex_spares_noun_usage() -> None:
 # ─────────────────────────────────────────────
 
 
-def _edge_dict(source_name: str, fact: str) -> dict:
-    return {
+def _edge_dict(source_name: str, fact: str):
+    from gsuid_core.ai_core.memory.retrieval.types import Edge
+
+    edge: Edge = {
+        "id": "e1",
+        "source_id": "s",
+        "target_id": "t",
         "source_name": source_name,
         "target_name": "t",
         "fact": fact,
-        "source_id": "s",
-        "target_id": "t",
         "weight": 1.0,
-        "invalid_at_ts": None,
+        "score": 1.0,
         "valid_at_ts": None,
+        "invalid_at_ts": None,
     }
+    return edge
 
 
 def test_fact_mentions_speaker_uses_digit_boundary() -> None:
@@ -303,9 +320,19 @@ def test_fact_mentions_speaker_uses_digit_boundary() -> None:
 
 
 def test_untrusted_fence_closed_under_budget_pressure() -> None:
+    from gsuid_core.ai_core.memory.retrieval.types import Episode
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
-    episodes = [{"content": "长" * 400, "valid_at": "2026-07-16T12:00:00"} for _ in range(8)]
+    episodes = [
+        Episode(
+            id=f"ep{i}",
+            content="长" * 400,
+            valid_at="2026-07-16T12:00:00",
+            scope_key="g1",
+            embedding=[],
+        )
+        for i in range(8)
+    ]
     text = MemoryContext(episodes=episodes).to_prompt_text(max_chars=600)
     assert "<untrusted" in text
     assert text.rstrip().endswith("</untrusted>")  # 闭合标签永不被尾截断切掉

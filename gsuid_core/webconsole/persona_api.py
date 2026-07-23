@@ -842,3 +842,44 @@ async def get_all_persona_configs(_: Dict[str, Any] = Depends(require_auth)) -> 
         "msg": "ok",
         "data": configs,
     }
+
+
+@app.get("/api/persona/heartbeat/status", summary="Heartbeat 巡检运行态", tags=PERSONA)
+async def get_heartbeat_status(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+    """返回每个 Persona 的 Heartbeat 巡检 job 是否已注册，以及配置侧是否启用定时巡检。"""
+    try:
+        from gsuid_core.ai_core.heartbeat.inspector import get_inspector
+
+        inspector = get_inspector()
+        scheduled = set(getattr(inspector, "_scheduled_jobs", {}) or {})
+        items = []
+        for persona_name in list_available_personas():
+            cfg = persona_config_manager.get_persona_config_dict(persona_name) or {}
+            ai_mode = cfg.get("ai_mode") or []
+            if isinstance(ai_mode, dict):
+                ai_mode = ai_mode.get("value") or ai_mode.get("data") or []
+            inspect_interval = cfg.get("inspect_interval")
+            if isinstance(inspect_interval, dict):
+                inspect_interval = inspect_interval.get("value") or inspect_interval.get("data")
+            enabled = "定时巡检" in (ai_mode if isinstance(ai_mode, list) else [])
+            job_id = (getattr(inspector, "_scheduled_jobs", {}) or {}).get(persona_name)
+            items.append(
+                {
+                    "persona_name": persona_name,
+                    "enabled": enabled,
+                    "inspect_interval": inspect_interval,
+                    "job_registered": persona_name in scheduled,
+                    "job_id": job_id,
+                }
+            )
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "inspector_running": bool(getattr(inspector, "is_running", False)),
+                "items": items,
+                "count": len(items),
+            },
+        }
+    except Exception as e:
+        return {"status": 1, "msg": f"获取 Heartbeat 状态失败: {e}", "data": None}

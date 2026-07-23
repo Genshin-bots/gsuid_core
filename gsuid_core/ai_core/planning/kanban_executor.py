@@ -119,7 +119,6 @@ def _format_subtask_prompt(
     if child.params_override:
         # JSON 而非 Python repr——避免 dict 渲染成 {'k': 'v'} 让 LLM 误以为是
         # Python 字面量；JSON 格式更接近代理实际要往 record_put / state_set 里塞
-        # 的字符串内容，可直接抄写。
         try:
             params_json = _json.dumps(child.params_override, ensure_ascii=False, indent=2)
         except (TypeError, ValueError):
@@ -141,7 +140,7 @@ def _format_subtask_prompt(
         "主人格之后 `send_message_by_ai(image_id=res_xxx)` 时只有真实文件 artifact "
         "才能被发出去。"
         '\n- 纯文本结论 / 报告正文：`artifact_put(payload="...", summary="...")`。'
-        "\n- 持久化业务数据（账户、持仓、流水、签到名单等）：用 `record_put` / "
+        "\n- 持久化业务数据（签到名单、流水、任务条目等）：用 `record_put` / "
         "`record_append` / `record_update` 写入框架统一的 `record:<集合名>` 集合，"
         "**不要**只塞进 state_set 大 JSON 块或自己写文件——其它子任务读不到。"
         "\n- 最后简短返回结论（一段话即可），剩下的让主人格自己转译。"
@@ -311,14 +310,13 @@ async def _persona_relay(
             return_mode="return",
         )
         # 人格转译正常产出直接用；仅"转译为空"的兜底退路对 raw_result 做去代码处理，
-        # 避免把能力代理的原始代码 / 数据当播报正文发给用户。
         return spoken.strip() or _sanitize_for_user(raw_result), relay_log_files
     except Exception as e:
         logger.debug(t("📋 [Kanban] 人格转译失败，去代码兜底播报: {e}", e=e))
         return _sanitize_for_user(raw_result), relay_log_files
     finally:
-        # 无论成功 / 异常，关闭转译 SubAgent logger；relay_log_files 在
-        # return 表达式求值后才被 append（list 是引用，append 对返回值同样可见）。
+        # 无论成功 / 异常，关闭转译 SubAgent logger；relay_log_files 在 return 表达式求值后才被 append（list 是引用
+        # append 对返回值同样可见）。
         if relay_logger is not None:
             relay_log_files.append(str(relay_logger._file_path))
             relay_logger.close()
@@ -351,11 +349,7 @@ async def _notify(
         logger.warning(t("📋 [Kanban] 任务 root=#{p0} 主动消息发送失败 / 被抑制", p0=task.ordinal))
 
 
-# ============================================================
-# 子任务播报静默信号
-# ============================================================
-# 能力代理在最终输出里以本标记单独成段/作行首前缀，声明"本轮没有值得播报的
-# 进展"——框架据此完成+归档但不推群（如模拟盘全 hold 不吭声，真买卖才冒泡）。
+# 子任务播报静默信号 能力代理在最终输出里以本标记单独成段/作行首前缀，声明"本轮没有值得播报的
 KANBAN_NO_BROADCAST_MARK = "<<NO_BROADCAST>>"
 # 只认行首位置（大小写不敏感）：正文中途提及该字面串不触发静默、也不被剥离
 _NO_BROADCAST_PATTERN = re.compile(
@@ -380,8 +374,8 @@ def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
     return stripped.strip(), True
 
 
-# 交互式 create_subagent 的"执行体静默"登记（leaf-root root_task_id）：主人格亲自转述、执行体不推群，
-# 避免双份播报。进程内 set 即可；消费/超时兜底的无竞态语义见 references/08 §能力代理。
+# 交互式 create_subagent 的"执行体静默"登记（leaf-root root_task_id）：主人格亲自转述、执行体不推群， 避免双份播报。
+# 进程内 set 即可；消费/超时兜底的无竞态语义见 references/08 §能力代理。
 _INTERACTIVE_RELAY_ROOTS: set[str] = set()
 
 
@@ -455,7 +449,6 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             logger.exception(t("📋 [Kanban] 子任务执行抛出异常: {e}", e=e))
             await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
             # 交互式派发：失败也由主人格据回执转述，执行体不重复推群（消费须在 mark 之后，
-            # 保证与 dispatcher 超时兜底一致——见下方各终态分支的同款说明）
             if not _consume_interactive_relay(root.id):
                 await _notify_failure(root, fresh, str(e))
             return
@@ -600,10 +593,7 @@ async def execute_ready_tasks(root_task_id: str) -> None:
         # 叶子根状态由 _run_one_task_node 自己写完，不需要 refresh_root_status
         return
 
-    # 先把"依赖已满足、可以 arm"的周期子任务模板挂到 APScheduler——
-    # 这一步对一棵新树第一次 kick 时把 init 子任务派出去后立刻生效，
-    # arm 完成后周期子任务**不**进 ready 队列（由 get_ready_child_tasks 排除），
-    # 后续 fire 由 APScheduler 触发 → clone 一个新的执行实例子任务进入 ready。
+    # 先把"依赖已满足、可以 arm"的周期子任务模板挂到 APScheduler—— 这一步对一棵新树第一次 kick 时把 init
     await _maybe_arm_recurring_subtasks(root, children)
 
     ready = kanban.get_ready_child_tasks(children, root_status=root.status)

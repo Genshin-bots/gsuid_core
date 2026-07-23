@@ -16,7 +16,7 @@ AI Core Statistics 数据库模型
 """
 
 import time
-from typing import Any, Optional
+from typing import Any, List, Optional
 from datetime import datetime
 
 from sqlmodel import Field, col, and_, select
@@ -114,6 +114,19 @@ class AIDailyStatistics(BaseIDModel, table=True):
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
         return result.scalars().first()
+
+    @classmethod
+    @with_session
+    async def get_stats_between(
+        cls,
+        session: AsyncSession,
+        start_date: str,
+        end_date: str,
+    ) -> List["AIDailyStatistics"]:
+        """闭区间 [start_date, end_date] 内全部日聚合行（按 date 升序）。"""
+        stmt = select(cls).where(and_(cls.date >= start_date, cls.date <= end_date)).order_by(cls.date.asc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
 
     @classmethod
     @with_session

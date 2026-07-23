@@ -34,7 +34,7 @@ def _make_agent(max_history: int) -> Any:
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
     # 只构造到能测 extract_history 的程度：绕过 __init__（避免模型/工具装配）
-    agent = object.__new__(GsCoreAIAgent)
+    agent: Any = object.__new__(GsCoreAIAgent)
     agent.max_history = max_history
 
     class _NullLogger:

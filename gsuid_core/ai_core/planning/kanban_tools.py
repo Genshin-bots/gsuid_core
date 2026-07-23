@@ -42,36 +42,23 @@ _REGISTER_KANBAN_RECENT: Dict[str, List[float]] = {}
 _REGISTER_KANBAN_WINDOW_SEC = 60.0
 # 上限从 3 提到 5：每分钟 5 次仍能拦住"模型卡住反复重试"的死循环，但允许主人格
 # 在「子任务级 recurring 没合上的过渡期」一次性创建 2-3 棵相关任务树（如旧版"三棵
-# 树"模式临时存在的兼容场景）。同 evaluation 命中且语义合法的连续 register 不再
-# 误判为循环（见 ``_REGISTER_KANBAN_SAME_EVAL_EXEMPT``）。
 _REGISTER_KANBAN_LIMIT_IN_WINDOW = 5
-# "同 evaluation 短窗内的合法连续 register" 豁免：当一次 evaluate 已经成功命中、
+# "同 evaluation 短窗内的合法连续 register" 豁免：当一次 evaluate 已经成功命中
 # 当前 register 的 goal 跟最近一次 evaluate 重叠率超过阈值（沿用 evaluator 的
-# _FUZZY_MIN_OVERLAP）时，本次调用**不计入** rate-limit 窗口；否则计入。
-# 用于解决"主人格按 evaluator 输出顺序串行建多棵相关树时被无辜限流"的常见错杀。
 _REGISTER_KANBAN_SAME_EVAL_EXEMPT = True
 # same-eval 放宽上限（不再无限豁免）：合法多树够用，但 register→fail→register 失败环
 # 实测 9~11 次必被此上限钉死。修复前 same-eval 会跳过上限且不记时间戳→永久旁路（见 README B2）。
 _REGISTER_KANBAN_SAME_EVAL_LIMIT = 8
 
-# 限流诊断：每次 register 返回拒绝时把"原因短码"塞进 owner 的最近原因栈，
+# 限流诊断：每次 register 返回拒绝时把"原因短码"塞进 owner 的最近原因栈
 # 触发硬限流时按高频原因给出对症诊断（之前文案硬编码"recurring_trigger 反复传 null"
-# 误导主人格——实测 17ed4f85 真正原因是 evaluator 解析失败）。
-# 短码集合：
-#   "eval_miss"       - 找不到匹配的近期 evaluate（含模糊匹配失败）
-#   "eval_failed"     - 最近 evaluate covered=false
-#   "dup_active_root" - 同主题活跃根任务已存在
-#   "recurring_miss"  - goal 含周期意图但 recurring_trigger=None 且无 not_before
-#   "bad_args"        - 子任务字段非法（agent_profile 未注册 / not_before 非 ISO）
 _REGISTER_KANBAN_REJECT_REASONS: Dict[str, List[str]] = {}
 _REGISTER_KANBAN_REASON_KEEP = 6  # 每 owner 最多保留最近 N 条原因短码
 
 # 周期意图关键词：goal 含这些字眼但 recurring_trigger=None 时回警告
 # 不强制阻塞——主人 / 一次性"30 天后给我总账"也合法（一次性兜底）
-# 关键词是**域无关**的——既匹配通用日常表述（每天 / 每周一），也匹配各行业
-# 习惯说法（每开盘 / 每节课 / 每班次）；新增其它领域常见词只需追加 alt。
 _RECURRING_HINTS_RE = re.compile(
-    r"(每天|每日|每周|每月|每隔|每开盘|每节|每班|每场|每轮|"
+    r"(每天|每日|每周|每月|每隔|每营业日|每工作日|每节|每班|每场|每轮|"
     r"每[一二三四五六七八九十0-9]+(分钟|小时|天|周)|"
     r"持续\s*\d+\s*(天|周|月)|每.{0,6}次|周期|定时|recurring|每.{0,4}触发|每.{0,4}执行|"
     r"cron)",
@@ -184,9 +171,7 @@ class KanbanSubtaskSpec(BaseModel):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 能力评估
-# ─────────────────────────────────────────────────────────────────────
 
 
 @ai_tools(category="common", capability_domain=_CAP)
@@ -242,9 +227,7 @@ async def evaluate_agent_mesh_capability(
     return json.dumps(result.to_dict(), ensure_ascii=False)
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 注册任务树
-# ─────────────────────────────────────────────────────────────────────
 
 
 @ai_tools(category="planning", capability_domain=_CAP)
@@ -281,9 +264,7 @@ async def register_kanban_task(
 
     **周期触发示范**（最容易被错走 add_once_task 枚举的场景）：
 
-        # 「持久化状态 + 周期更新 + 最终汇总」三棵树模板（与具体业务无关）：
-        # ⓐ 一次性初始化主集合 → ⓑ 周期模板每个触发点执行一次更新 → ⓒ 截止日
-        # 一次性汇总。cron 表达式按用户描述的时段写，下例只是示意结构。
+        # 「持久化状态 + 周期更新 + 最终汇总」三棵树模板（与具体业务无关）： ⓐ 一次性初始化主集合 → ⓑ
 
         register_kanban_task(  # ⓐ 一次性：建好任务要维护的 record 主集合
             goal="<任务简称> 状态初始化",
@@ -313,21 +294,20 @@ async def register_kanban_task(
             ],
         )
         # ⚠ 禁忌：① 把"初始化"塞进周期模板——每次开火都会清空主集合；
-        #         ② 用 20 个 add_once_task 枚举每个触发点——撞 20 个任务硬上限；
-        #         ③ 在主人格侧自己写决策循环——必须用 Kanban 周期模板由框架克隆。
+        # ② 用 20 个 add_once_task 枚举每个触发点——撞 20 个任务硬上限；
 
     Args:
         goal: 任务树总目标。
         subtasks: 子任务描述列表（KanbanSubtaskSpec 结构）。
         broadcast_to_group: 是否允许把进展播报到当前群。
         recurring_trigger: 周期触发规则，留空表示一次性任务。**只要用户描述含
-            "每 / 每天 / 每隔 / 每开盘日 / 持续 N 天"等周期意图，必须传本字段**——
+            "每 / 每天 / 每隔 / 每工作日 / 持续 N 天"等周期意图，必须传本字段**——
             不要外挂 add_once_task / add_interval_task。格式：
             - ``"interval:<seconds>"``（最小 60 秒，防过密）
             - ``"cron:<minute> <hour> <day> <month> <day_of_week>"``（标准 5 段 cron）
         recurring_until: 周期模式下的失效时间（ISO 字符串，如 "2026-06-21T15:00:00"）；
             留空表示不过期，需主人手动 disarm。
-        confirm_one_shot: **跳过周期意图强校验的逃生口**。当 goal 含 "每天 / 每开盘 /
+        confirm_one_shot: **跳过周期意图强校验的逃生口**。当 goal 含 "每天 / 每工作日 /
             每隔" 等周期关键词、但你确认就是要"立刻一次性"执行（如"现在演示一次每日
             体检流程"）、且你不需要周期托管时，传 True 跳过强校验。**绝大多数情况
             下不要传 True**——周期任务一律应当走 `recurring_trigger`；只是想延迟
@@ -343,10 +323,6 @@ async def register_kanban_task(
 
     # 0) 循环防护：60 秒内同 owner 调用本工具 ≥ N 次直接拒绝（默认 5）。
     # 用户案例（2026-05-24 session 7a29c54d）显示主人格因模型 schema 误解反复
-    # register_kanban_task(recurring_trigger=None) → fail_task_tree → 再 register，
-    # 框架必须把闸刀拉死，否则一直产生孤儿子任务 + 大量 relay 会话日志。
-    # 但"同一次 evaluation 触发的多次合法 register"（如串行建几棵相关任务树）
-    # 不应计入窗口——见下方 same-eval 豁免逻辑。
     owner_id = str(ev.user_id)
     now = time.time()
     history = [t for t in _REGISTER_KANBAN_RECENT.get(owner_id, []) if now - t <= _REGISTER_KANBAN_WINDOW_SEC]
@@ -410,10 +386,8 @@ async def register_kanban_task(
             "禁止创建任务树。请如实告诉主人缺什么。"
         )
 
-    # 1.5) 重复根任务防护：owner 名下若已存在"活跃且 goal 文本高重叠"的根任务，
-    # 直接拒绝新建，引导主人格走 respawn / fail_task_tree。实测会话 b8cf57ca 一次
-    # 对话里连开了任务#1（3 子任务）和任务#5（1 子任务）两棵同主题长期任务树，
-    # 任务#5 是任务#1 的子集；主人看到看板时有两条根条目，状态错乱。
+    # 1.5) 重复根任务防护：owner 名下若已存在"活跃且 goal 文本高重叠"的根任务， 直接拒绝新建，
+    # 实测会话 b8cf57ca 一次
     own_toks = _tokenize_for_overlap(goal)
     if own_toks:
         active_roots = await AIAgentTask.list_for_owner(owner_id, only_active=True, root_only=True)
@@ -438,16 +412,8 @@ async def register_kanban_task(
                     "请等周期触发或在 webconsole 手动 kick。"
                 )
 
-    # 1.6) 周期意图强校验：goal 含周期关键词，但根级 recurring_trigger=None、
-    # 所有子任务也都没带 `not_before`、且没有任何子任务带 `recurring_trigger` 时
-    # ——直接拒绝。早先版本仅给软警告就允许创建，导致实测会话 17ed4f85 中
-    # "虚拟盘每日看盘"在周日（非开盘日）被立刻派给 stock_agent 执行了一次错误
-    # 交易决策。
-    # 这里通用拦截"看起来要周期执行但忘了表达周期"的所有领域（股票 / 健康打卡 /
-    # 学习计划 / 销售追踪等都受益）。**新版子任务级 `recurring_trigger`** 也算合法
-    # 表达——只要任意子任务带 recurring_trigger 即视为已配置周期，不再拒绝。
-    # 主人格如果确实想"立刻一次性"演示一次周期任务的单轮流程，应显式传
-    # `confirm_one_shot=True` 跳过校验。
+    # 1.6) 周期意图强校验：goal 含周期关键词，但根级 recurring_trigger=None、 所有子任务也都没带 `not_before`
+    # 且没有任何子任务带 `recurring_trigger` 时
     _has_subtask_recurring = any((s.recurring_trigger or "").strip() for s in subtasks)
     if (
         not recurring_trigger
@@ -458,7 +424,7 @@ async def register_kanban_task(
     ):
         _record_register_reject(owner_id, "recurring_miss")
         return (
-            "⚠️ goal 含周期意图关键词（每天 / 每隔 / 每开盘 / 持续 N 天 / cron 等），"
+            "⚠️ goal 含周期意图关键词（每天 / 每隔 / 每工作日 / 持续 N 天 / cron 等），"
             "但 `recurring_trigger=None`、也没有任何子任务带 `recurring_trigger`、"
             "且每个子任务都没设 `not_before`——这棵树会**立刻**派出所有子任务执行"
             "**一次**，与你描述的周期语义不符。\n\n"
@@ -641,7 +607,6 @@ async def register_kanban_task(
 
     # 4.5) 子任务级 not_before 唤醒：把"未到点"的子任务挂上 APScheduler 单次
     # 定时器，到点 kick_root 一次。本根任务下多个子任务有 not_before 时每个都挂
-    # 一个独立 job，按各自时间点轮流唤醒，互不影响。
     for child in children:
         if child.not_before is not None:
             schedule_not_before_wakeup(child.id, root.id, child.not_before)
@@ -687,9 +652,7 @@ async def register_kanban_task(
     return text
 
 
-# ─────────────────────────────────────────────────────────────────────
 # 重派 / 整树失败 / 审批
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def _resolve_subtask(ev, subtask_ref: str) -> Optional[AIAgentTask]:
@@ -743,7 +706,7 @@ async def respawn_subtask(
     """复活某个 failed 子任务并重派执行。
 
     Args:
-        subtask_ref: 子任务引用句柄；形如 "炒股周报#sub2" 或 "#sub2"（默认取最近根任务）。
+        subtask_ref: 子任务引用句柄；形如 "周报任务#sub2" 或 "#sub2"（默认取最近根任务）。
         new_description: 修正后的任务描述（覆盖原 goal）。
         new_params: 修正后的参数（覆盖 params_override）。
         new_agent_profile: 改派给其它 profile（必须已注册）。
@@ -784,7 +747,7 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
     """主人格明确判断整棵任务树不应继续时调用：根任务 failed + 级联 failed 未完成子任务。
 
     Args:
-        task_ref_text: 任务自然语言引用（如 "炒股周报""第3个"）。
+        task_ref_text: 任务自然语言引用（如 "周报任务""第3个"）。
         reason: 终结原因，会写入 failure_reason 与日志。
     """
     ev = ctx.deps.ev
@@ -815,9 +778,7 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
 # （统一审批中心 kanban_subtask 领域），本模块不再注册专用转达工具。
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Artifact Hub 工具
-# ─────────────────────────────────────────────────────────────────────
 
 
 @ai_tools(category="planning", capability_domain="产物")
@@ -985,9 +946,7 @@ async def artifact_get_recent(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
 # helpers
-# ─────────────────────────────────────────────────────────────────────
 
 
 async def _resolve_root_task_id(ctx: RunContext[ToolContext], task_ref_text: str) -> Optional[str]:
@@ -1038,9 +997,7 @@ __all__ = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Owner 视角的 Kanban Introspect（list / pause / resume）
-# ─────────────────────────────────────────────────────────────────────
 
 
 @ai_tools(category="common", capability_domain="长期任务编排")

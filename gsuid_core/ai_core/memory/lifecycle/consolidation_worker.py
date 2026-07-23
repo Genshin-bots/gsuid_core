@@ -325,12 +325,24 @@ async def _maintain_preferences() -> int:
     return await AIMemPreference.prune_per_context(max_per_context=memory_config.preference_max_per_context)
 
 
+# 最近一次生命周期维护报告（进程内存，供控制台读取）
+_LAST_LIFECYCLE_REPORT: dict | None = None
+
+
+def get_last_lifecycle_report() -> dict | None:
+    """返回最近一次 run_lifecycle_maintenance 的汇总（可能为 None）。"""
+    return _LAST_LIFECYCLE_REPORT
+
+
 async def run_lifecycle_maintenance() -> None:
     """记忆生命周期维护主入口（被 APScheduler 周期性调用）。"""
+    global _LAST_LIFECYCLE_REPORT
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if not ai_config.get_config("enable").data:
         return
+
+    import time as _time
 
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
@@ -355,6 +367,20 @@ async def run_lifecycle_maintenance() -> None:
         dangling = await _reconcile_dangling_vectors()
         # 程序性/偏好记忆裁剪（默认开；关闭时为 no-op）
         pref_pruned = await _maintain_preferences()
+        _LAST_LIFECYCLE_REPORT = {
+            "finished_at": _time.time(),
+            "consolidated": consolidated,
+            "decayed": decayed,
+            "forgotten": forgotten,
+            "edge_trimmed": edge_trimmed,
+            "orphan_entities": orphan_entities,
+            "entity_trimmed": entity_trimmed,
+            "episodes_demoted": ep_demoted,
+            "episodes_purged": ep_purged,
+            "dangling_vectors": dangling,
+            "preferences_pruned": pref_pruned,
+            "ok": True,
+        }
         logger.success(
             i18n_t(
                 "🧠 [Lifecycle] 维护完成：巩固 {consolidated} 条、衰减 {decayed} 条、"
@@ -375,4 +401,9 @@ async def run_lifecycle_maintenance() -> None:
             )
         )
     except Exception as e:
+        _LAST_LIFECYCLE_REPORT = {
+            "finished_at": _time.time(),
+            "ok": False,
+            "error": str(e),
+        }
         logger.exception(i18n_t("🧠 [Lifecycle] 记忆生命周期维护失败: {e}", e=e))

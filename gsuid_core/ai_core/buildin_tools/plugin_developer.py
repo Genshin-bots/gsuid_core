@@ -49,8 +49,6 @@ _SKILL_PATH: Path = Path(__file__).resolve().parents[3] / "docs" / "skills" / "g
 
 # SKILL 已重构为「主入口 SKILL.md（索引）+ references/ 子文档（正文）」结构：触发器 /
 # 数据库 / 配置 / 完整示例 等**正文都在 references/*.md 里**，SKILL.md 本身只剩目录索引。
-# read_plugin_dev_guide 必须把 references/ 一并纳入检索语料，否则按章节关键词查正文会全部
-# MISS（只能看到索引页的几个元标题），开发代理就拿不到权威写法、只能凭 prompt 内联知识硬写。
 _REFERENCES_DIR: Path = _SKILL_PATH.parent / "references"
 
 
@@ -174,7 +172,7 @@ def _skeleton_files(
 ) -> Dict[str, str]:
     """生成嵌套加载模式插件骨架的 ``{相对路径: 文件内容}`` 映射。
 
-    参照 ZZZeroUID / SayuStock：外层插件包 + 内层同名 Python 包。
+    参照成熟插件（如 ZZZeroUID）：外层插件包 + 内层同名 Python 包。
     """
     show_name = display_name or plugin_name
     desc = description or f"{show_name} —— 由插件开发代理生成的 GsCore 插件"
@@ -289,7 +287,6 @@ async def scaffold_plugin(
 
     # 已安装同名插件拦截：plugins/ 里已有同名插件、但工作区还没有它时，**绝不**用空骨架
     # 覆盖式重写——那会把主人现有的实现整个丢掉（实测会话 2df150：主人让"改"，代理却
-    # 在全新空工作区里 scaffold 重写了一遍）。改成引导先 pull 进工作区在原代码上修改。
     installed_name = _existing_plugin_dirname(plugin_name)
     installed_dir = (_plugin_root() / installed_name).resolve()
     if installed_dir.exists() and _is_plugin_child(installed_dir):
@@ -493,11 +490,8 @@ def _pick_staging_name(plugin_name: str) -> Optional[str]:
     return None
 
 
-# ── 安装状态账本 ────────────────────────────────────────────────────────────
+# 安装状态账本
 # 安装是非阻塞的多步审批流程，跨"任务挂起 waiting_approval → 主人批准 → 重新调度"会
-# 多次重入 copy_to_plugin_dir。状态必须持久化才能在重入时恢复——落在 Kanban 任务日志
-# (event_type="decision") 里当作机器账本：发起每步审批前先写一条 req-* 标记，安装/暂存
-# 成功后写 staged|/installed 标记。这些标记**不进**审批播报（审批文案另走 failure_reason）。
 _LEDGER = "🧩dev|"
 
 
@@ -838,9 +832,8 @@ async def load_plugin_into_core(
     """
     plugin_name = _existing_plugin_dirname(plugin_name)
 
-    # 工作区有该插件代码时：仅在"本会话已完成安装"后才同步工作区→plugins/ 再重载（消除"改工作区
-    # 却重载旧 plugins/"的死循环）。未安装就直接 load 会被拦下——避免绕开 copy_to_plugin_dir 的
-    # 审批与"覆盖更新不直接删旧目录"流程去 rmtree 同名旧目录。
+    # 工作区有该插件代码时：仅在"本会话已完成安装"后才同步工作区→plugins/ 再重载（消除"改工作区 却重载旧
+    # 未安装就直接 load 会被拦下——避免绕开 copy_to_plugin_dir 的
     ws, _ = _resolve_in_workspace(plugin_name, "")
     if ws is not None and ws.exists() and any(ws.rglob("*.py")):
         if not _is_installed(await _task_logs(), plugin_name):
@@ -858,8 +851,8 @@ async def load_plugin_into_core(
     from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
 
     logger.info(t("🧩 [PluginDev] 请求热加载插件 {plugin_name}", plugin_name=plugin_name))
-    # reload_plugin 内部用 get_running_loop().create_task 重跑启动 Hook，必须在
-    # 事件循环线程内同步调用（与 core重载插件 命令同链路），不可丢进 to_thread。
+    # reload_plugin 内部用 get_running_loop().create_task 重跑启动 Hook
+    # 必须在 事件循环线程内同步调用（与 core重载插件 命令同链路），不可丢进 to_thread。
     return reload_plugin(plugin_name)
 
 
@@ -954,8 +947,6 @@ async def test_plugin_command(
             fake_ev.raw_text = f"{trig.prefix}{trig.keyword}{text}".strip()
         # 关键：实跑**未包装**的原处理函数（__wrapped__），而非 SV 的 modify_func 包装。
         # 后者用 try/except 吞掉一切异常只打日志、返回 None——会让本自测把"处理函数内
-        # 真实崩溃"（如 ev.original_message 不存在）误报成"命令已执行但无产出"，导致带病
-        # 交付。直接跑原函数，异常会冒泡到下面的 except、如实回报给开发代理。
         raw_func = getattr(trig.func, "__wrapped__", trig.func)
         logger.info(
             t(

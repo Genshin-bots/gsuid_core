@@ -4,7 +4,7 @@
 设计意图
 --------
 扁平的 ``state_*`` KV（一个键一个值）足以表达"账户余额=10万"这种单字段状态，
-但当代理需要持久化「持仓表」「交易流水」「报名名单」「投票记录」这类**多条结构化
+但当代理需要持久化「报名名单」「投票记录」「任务条目」这类**多条结构化
 记录**时，KV 就力不从心：
 
 - 用 ``state_append`` 追加 JSON 块：只能整块读、整块写，无法按 id 更新单条；
@@ -15,15 +15,15 @@
 所有写操作走 ``state_mutate`` 的乐观锁，并发安全；读操作支持简单的 where 过滤、
 排序、分页与基础聚合。
 
-这一层**不引入任何业务术语**（不知道"账户/持仓/流水/股票/积分"），任何插件或
-代理都可以在它之上自由构造"虚拟账本""任务清单""签到记录"等持久化结构。
+这一层**不引入任何业务术语**（不知道具体插件领域词），任何插件或
+代理都可以在它之上自由构造"任务清单""签到记录""报名表"等持久化结构。
 
 存储模型
 --------
 每个集合是 ``AIPersistentState`` 里的一行，``state_key`` 形如
 ``record:<collection_name>``，``value`` 是 ``{record_id: payload_dict}`` 的 JSON。
 适用规模 ≤ 数千条记录；超出后单条写入仍是 O(N)，建议代理在业务上分片
-（如按日期拆 ``record:trade_log:202605``）。
+（如按日期拆 ``record:checkin:202605``）。
 """
 
 import json
@@ -66,7 +66,7 @@ def _resolve_scope(ctx: RunContext[ToolContext], scope: Optional[str]) -> str:
 def _parse_payload(payload: str) -> Dict[str, Any]:
     """payload 必须是 JSON 对象。非对象直接抛错，避免代理把字符串塞进去。
 
-    特别地：当代理误把"空流水""空持仓"等当成一条 `record_put(payload="[]" / "{}")`
+    特别地：当代理误把"空名单""空条目"等当成一条 `record_put(payload="[]" / "{}")`
     去预创建集合时，给出对应纠错指引——record_* 集合是按需创建，不需要先建空容器。
     """
     obj = json.loads(payload)
@@ -113,12 +113,12 @@ async def record_put(
     """
     向一个具名集合写入一条结构化记录（不存在则创建，存在则覆盖整条 payload）。
 
-    适合用来持久化"账户、持仓、交易流水、签到名单、投票记录"等结构化数据。
+    适合用来持久化"签到名单、投票记录、任务条目"等结构化数据。
     集合本身是按需创建的，无需先声明 schema。
 
     Args:
-        collection: 集合名，建议带业务前缀如 "stock:account" / "stock:trade_log"
-        payload: 记录内容，必须是 JSON 对象字符串，如 `{"price": 12.3, "qty": 100}`
+        collection: 集合名，建议带业务前缀如 "myplugin:items" / "myplugin:events"
+        payload: 记录内容，必须是 JSON 对象字符串，如 `{"name": "item", "qty": 1}`
         record_id: 记录的唯一 ID；留空时自动生成 UUID，原样返回给调用方
         scope: 数据隔离范围。"auto"=按当前会话自动判断；可显式传 "user:xx"/"group:yy"/"global"
         ttl_days: 整个集合的保留天数（不是单条），不填则永久保留
@@ -308,7 +308,7 @@ async def record_update(
     - ``record_put``：整条 payload 覆盖，patch 没提到的字段会丢。
     - ``record_update``：浅合并；patch 里的字段会覆盖旧字段，其它字段保留。
 
-    适合"持仓数量变了 / 余额变了 / 状态字段切换"这类只改部分字段的场景。
+    适合"数量变了 / 余额变了 / 状态字段切换"这类只改部分字段的场景。
     记录不存在时返回 "not_found"，不会创建新记录——要创建请用 ``record_put``。
 
     Args:

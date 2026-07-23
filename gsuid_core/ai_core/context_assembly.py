@@ -159,17 +159,13 @@ async def assemble_dynamic_context(
 
     # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
     # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一段紧凑角色快照。
-    #
-    # OOC 修复 5.4：从 ~50 字的"口吻锚点"升级为 ~200 字的"角色快照"，
-    # 增加长度约束、格式约束、信息密度约束，对抗工具语境的语域污染。
     if persona_name:
         try:
             from gsuid_core.ai_core.persona import get_voice_anchor
 
             voice_anchor = get_voice_anchor(persona_name)
             if voice_anchor:
-                # 口吻/行为分离：锚点只约束语气——实测"慵懒"会从语气渗漏成行为
-                # （以困/懒为由拒设提醒、对直接请求敷衍），框架层显式钉住边界。
+                # 口吻/行为分离：锚点只约束语气——实测"慵懒"会从语气渗漏成行为 （以困/懒为由拒设提醒、
                 context_parts.append(
                     f"（角色快照：{voice_anchor}。"
                     "回复约束：①角色台词用碎片化短句，结构化数据放<report>块；"
@@ -202,21 +198,34 @@ async def assemble_dynamic_context(
         guide = f"{memory_guide}" if memory_guide else ""
         context_parts.append(f"{guide}【长期记忆】\n{memory_context_text}")
 
-    # 软触发（免唤醒续聊）默认偏沉默：这条没 @ 你，按"路过"处理，仅明确接续才回应。
-    # 与硬触发（@/关键词/私聊）相反——硬触发是"明确在找你，必须回应"。
-    if soft_triggered:
-        context_parts.append(SOFT_TRIGGER_NOTE)
+    # 工具规程分级注入（须在软触发之前；_relean 剥离，不进持久 history）： 闲聊 → LITE（轻工具 + 省略跟进）；
+    try:
+        from gsuid_core.ai_core.persona.prompts import (
+            TOOL_ORCHESTRATION_LITE,
+            TOOL_ORCHESTRATION_CONSTRAINTS,
+        )
+
+        if intent != "闲聊" or prev_turn_used_tools or has_actionable:
+            context_parts.append(TOOL_ORCHESTRATION_CONSTRAINTS.strip())
+        else:
+            context_parts.append(TOOL_ORCHESTRATION_LITE.strip())
+    except Exception as e:
+        logger.debug(t("🧠 [ContextAssembly] 工具规程注入失败: {e}", e=e))
 
     # 上一轮发出的资料图标题（来自 ModelResponse.metadata，非文本占位符）
     if recent_report_titles:
         titles_str = "、".join(recent_report_titles[-3:])
         context_parts.append(f"（上一轮你发出了资料图：{titles_str}。用户可能追问图片内容。）")
 
-    # 语域隔离：基于上一轮是否实际调用了工具（事实判断，非关键词匹配）
+    # 语域隔离：只约束「怎么说」，绝不禁止「做不做」。
     if intent == "闲聊" and persona_name and not prev_turn_used_tools:
         context_parts.append(
-            "（当前是熟人闲聊，不是工作/分析场景。回到角色最自然的状态——"
-            "短句、语气词、不展开分析、不列数据。刚才的专业讨论是别人的事，跟你无关。）"
+            "（当前偏闲聊。口吻回到角色最自然的状态——短句、语气词；"
+            "口吻只决定怎么说，不决定做不做：该查的仍查、该办的仍办，数据走 report 通道。）"
         )
+
+    # 软触发须最后：近因效应下「默认路过」要压过前面所有上下文
+    if soft_triggered:
+        context_parts.append(SOFT_TRIGGER_NOTE)
 
     return "\n\n".join(context_parts), has_actionable

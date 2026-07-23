@@ -48,8 +48,6 @@ async def init_planning() -> None:
         logger.exception(t("📋 [Kanban] 能力评估代理注册失败: {e}", e=e))
 
     # webconsole 后端依赖：把磁盘上的用户自建画像挂回内存注册表。
-    # 必须在 register_builtin_profiles 之后——同名时让用户版本覆盖内置版本，
-    # 让前端"复制内置画像再改一改"的工作流可行。
     try:
         from gsuid_core.ai_core.capability_agents.persistence import load_user_profiles
 
@@ -71,7 +69,7 @@ async def init_planning() -> None:
     except Exception as e:
         logger.exception(t("📋 [Kanban] 周期模板恢复失败: {e}", e=e))
 
-    # 启动期 not_before 子任务唤醒恢复：进程重启后 APScheduler 内存表丢失，
+    # 启动期 not_before 子任务唤醒恢复：进程重启后 APScheduler 内存表丢失
     # 重新把数据库里所有 pending 且未到期的子任务 not_before 挂回去。
     try:
         from .recurring import restore_pending_not_before_wakeups
@@ -81,7 +79,6 @@ async def init_planning() -> None:
         logger.exception(t("📋 [Kanban] not_before 唤醒恢复失败: {e}", e=e))
 
     # 启动期周期子任务模板恢复：所有 armed 周期子任务重新挂回 APScheduler，
-    # 让"管虚拟盘一个月""每日打卡 30 天"等长生命周期任务跨进程重启依然推进。
     try:
         from .recurring import restore_armed_subtask_templates
 
@@ -91,7 +88,6 @@ async def init_planning() -> None:
 
     # Artifact TTL 清理：每天 4:00 跑一次，删除 expires_at < now 的过期 artifact。
     # TTL 默认 30 天，由 workspace.put_artifact 在登记时写入；过期清理含落盘
-    # 文件删除，详见 AIAgentArtifact.delete_expired。
     try:
         _schedule_artifact_ttl_cleanup()
     except Exception as e:
@@ -177,8 +173,8 @@ async def _recover_zombies_and_kick() -> None:
     from .kanban_executor import kick_root
 
     recovered = await recover_zombie_subtasks()
-    # 无论是否复活过僵尸都无条件接力 kick 所有 running/pending 根任务（否则优雅重启后
-    # 无僵尸时 pending 树永远无人推进）；双跑由 mark_subtask_running 的条件 SQL 拦住
+    # 无论是否复活过僵尸都无条件接力 kick 所有 running/pending 根任务（否则优雅重启后 无僵尸时 pending
+    # 双跑由 mark_subtask_running 的条件 SQL 拦住
     logger.info(
         t("📋 [Kanban] 启动期僵尸恢复 {recovered} 个，开始接力 kick 所有 running/pending 根任务", recovered=recovered)
     )

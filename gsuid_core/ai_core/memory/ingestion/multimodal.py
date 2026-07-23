@@ -192,6 +192,23 @@ class ImageUnderstandWorker:
 _worker: Optional[ImageUnderstandWorker] = None
 
 
+def get_multimodal_health() -> dict:
+    """多模态摄入健康度快照（控制台只读）。"""
+    worker = get_multimodal_worker()
+    return {
+        "queue_size": _multimodal_queue.qsize(),
+        "queue_max": _MM_QUEUE_MAX,
+        "queue_utilization": round(_multimodal_queue.qsize() / max(1, _MM_QUEUE_MAX), 4),
+        "worker_running": bool(worker and worker._running),
+        "understand_concurrency": _UNDERSTAND_CONCURRENCY,
+        "rate_window_seconds": _RATE_WINDOW_SECONDS,
+        "rate_max_per_window": _RATE_MAX_PER_WINDOW,
+        "tracked_scopes": len(_scope_image_times),
+        "recent_url_scopes": len(_recent_urls),
+        "min_desc_len": _MIN_DESC_LEN,
+    }
+
+
 def get_multimodal_worker() -> Optional[ImageUnderstandWorker]:
     return _worker
 

@@ -52,14 +52,11 @@ from ._api_tags import AI_MEMORY
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.observer import ObservationRecord
 
-# WebConsole 端点捕获的"合法运行时/DB 故障"：这些应转成 status=1 返回给前端，
+# WebConsole 端点捕获的"合法运行时/DB 故障"：这些应转成 status=1 返回给前端
 # 而**不**包括编程错误（KeyError/AttributeError/TypeError/NameError 等）——后者应
-# 冒泡到 FastAPI 500 处理器，避免被宽 except 吞掉、线上难以定位（见 CODE_REVIEW §4）。
 _RUNTIME_ERRORS = (SQLAlchemyError, asyncio.TimeoutError, OSError, ValueError)
 
-# ─────────────────────────────────────────────
 # Pydantic 请求模型
-# ─────────────────────────────────────────────
 
 
 class MemorySearchRequest(BaseModel):
@@ -188,6 +185,12 @@ class MemoryConfigUpdateRequest(BaseModel):
     batch_interval_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
     batch_max_size: Optional[int] = Field(default=None, ge=5, le=100)
     llm_semaphore_limit: Optional[int] = Field(default=None, ge=1, le=10)
+    idle_flush_seconds: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=86400,
+        description="对话静默多久后 flush 落库；0=关闭静默落库",
+    )
     enable_retrieval: Optional[bool] = None
     enable_system2: Optional[bool] = None
     enable_user_global_memory: Optional[bool] = None
@@ -212,9 +215,7 @@ class PreferenceUpdateRequest(BaseModel):
     is_active: Optional[bool] = Field(default=None, description="启停（软停用而非删除，保留审计）")
 
 
-# ─────────────────────────────────────────────
 # 1. 记忆检索 API
-# ─────────────────────────────────────────────
 
 
 @app.post("/api/ai/memory/search", summary="记忆双路检索", tags=AI_MEMORY)
@@ -275,13 +276,10 @@ async def search_memory(
         }
 
 
-# ─────────────────────────────────────────────
 # 1.5 批量摄入 API（评测 / 回灌专用，无需 web 控制台鉴权，但受 local-test 守卫保护）
-# ─────────────────────────────────────────────
 
-# 回灌切块上限（字符）：本地 bge-small 嵌入截断在 512 token(~2000 字符)、且整条长 turn 的
-# 单向量会把具体事实稀释成"平均语义"。按句子边界打包到约 900 字符一块，保证每块完整入嵌入
-# 窗口、向量聚焦到局部事实，显著提升"问到具体数字/版本"类探针的召回。
+# 回灌切块上限（字符）：本地 bge-small 嵌入截断在 512 token(~2000 字符)、
+# 按句子边界打包到约 900 字符一块，保证每块完整入嵌入
 _INGEST_CHUNK_CHARS = 900
 
 _SENT_SPLIT_RE = __import__("re").compile(r"(?<=[。.!?！？\n])\s+")
@@ -320,12 +318,7 @@ def _chunk_text(text: str, target: int = _INGEST_CHUNK_CHARS) -> List[str]:
     return chunks
 
 
-# ─────────────────────────────────────────────
-# §14.1 窗口化实体/边抽取（评测/回灌专用）
-# Episode 粒度（granular，由 create_episodes_bulk 写入）与抽取批次粒度在此解耦：
-# 把连续若干 turn 拼成"抽取窗口"，每窗口一次 LLM 抽取，复用 worker 的下游写实体/边。
-# 绝不复活 observer 队列 + worker 的 80-turn 聚合路径（§4.3/§4.4 的坑）。
-# ─────────────────────────────────────────────
+# §14.1 窗口化实体/边抽取（评测/回灌专用） Episode 粒度（granular，由 create_episodes_bulk 写入）与抽取批次粒度在此解耦
 
 
 def _build_extraction_windows(
@@ -511,7 +504,7 @@ async def batch_observe(
         data: {observed, dropped, ts_failures, scope_key, flush, rebuild}
     """
     try:
-        # 一次性定出 scope_type / scope_id / group_id，并就地收窄 group_id 非空，
+        # 一次性定出 scope_type / scope_id / group_id，并就地收窄 group_id 非空
         # 让后续 make_scope_key(scope_id: str) 不再吃到 ``str | None``
         scope_norm = (req.scope_type or "user_global").lower()
         if scope_norm == "group":
@@ -548,11 +541,8 @@ async def batch_observe(
         # scope_key，所有 turn 写入同一 scope（探针检索此 scope 时即可召回两侧事实）。
         scope_key = make_scope_key(scope_type, scope_id)
 
-        # 细粒度摄入：**每 turn 一条小 Episode**（单独 embedding，可被 System-1 精确召回），
+        # 细粒度摄入：**每 turn 一条小 Episode**（单独 embedding，可被 System-1 精确召回）
         # 不走 observe 队列 + worker 的 80-turn 聚合。回灌大语料（单 plan ~1.2M token）若按
-        # batch_max_size 拼批，会生成数十万字符的巨型 Episode——向量只覆盖头部 ~512 token、
-        # 注入又被预算截断 → 召回恒空；且每批实体抽取必撞 120s 子超时被丢弃（0 entity/edge）。
-        # 故回灌期只写 granular Episode（纯 embedding、零 LLM、无超时），图谱抽取留给 live 链路。
         observed = 0
         dropped = 0
         now_default = datetime.now(timezone.utc)
@@ -577,9 +567,8 @@ async def batch_observe(
                 )
             observed += 1
 
-        # 同步批量写入（SQL 一次提交 + 向量分块 batch embed）：返回时 Episode 已落 DB + Qdrant，
-        # 故 flush 语义天然满足。write_episodes=False 时（§14：对已摄入 Episode 的 scope 只补
-        # 抽取）跳过写入，避免重复嵌入 6 万+ Episode、也规避 §5 的高并发重嵌入丢向量风险。
+        # 同步批量写入（SQL 一次提交 + 向量分块 batch embed）：返回时 Episode 已落 DB + Qdrant， 故 flush 语义天然满足。
+        # write_episodes=False 时（§14：对已摄入 Episode 的 scope 只补
         if items and req.write_episodes:
             await AIMemEpisode.create_episodes_bulk(scope_key, items)
 
@@ -622,9 +611,7 @@ async def batch_observe(
         }
 
 
-# ─────────────────────────────────────────────
 # 2. Episode 浏览 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/episodes", summary="Episode 列表", tags=AI_MEMORY)
@@ -816,9 +803,7 @@ async def delete_episode(
         }
 
 
-# ─────────────────────────────────────────────
 # 3. Entity 浏览 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/entities", summary="Entity 列表", tags=AI_MEMORY)
@@ -1050,9 +1035,7 @@ async def delete_entity(
         }
 
 
-# ─────────────────────────────────────────────
 # 4. Edge 浏览 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/edges", summary="Edge 列表", tags=AI_MEMORY)
@@ -1267,11 +1250,8 @@ async def delete_edge(
         }
 
 
-# ─────────────────────────────────────────────
 # 4.5 程序性 / 偏好记忆（Preference）治理 API
 # 偏好规则会硬约束工具调用，误抽的规则会持续误导 Agent，故人工治理比 Episode 更关键。
-# 偏好为 SQL-only（无向量），列表/详情/编辑/删除均只动 SQL。
-# ─────────────────────────────────────────────
 
 
 def _preference_to_dict(p: AIMemPreference) -> Dict[str, Any]:
@@ -1442,9 +1422,7 @@ async def delete_preference(
         return {"status": 1, "msg": f"删除偏好规则失败: {str(e)}", "data": None}
 
 
-# ─────────────────────────────────────────────
 # 5. 分层语义图（Category）浏览 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/categories", summary="Category 列表", tags=AI_MEMORY)
@@ -1777,9 +1755,7 @@ async def trigger_hiergraph_rebuild(
         }
 
 
-# ─────────────────────────────────────────────
 # 6. 记忆统计 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/stats", summary="记忆统计", tags=AI_MEMORY)
@@ -1898,9 +1874,7 @@ async def get_memory_stats(
         }
 
 
-# ─────────────────────────────────────────────
 # 7. 配置管理 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/config", summary="获取记忆配置", tags=AI_MEMORY)
@@ -1925,6 +1899,7 @@ async def get_memory_config(
                 "batch_interval_seconds": memory_config.batch_interval_seconds,
                 "batch_max_size": memory_config.batch_max_size,
                 "llm_semaphore_limit": memory_config.llm_semaphore_limit,
+                "idle_flush_seconds": getattr(memory_config, "idle_flush_seconds", 180),
                 "enable_retrieval": memory_config.enable_retrieval,
                 "enable_system2": memory_config.enable_system2,
                 "enable_user_global_memory": memory_config.enable_user_global_memory,
@@ -1994,6 +1969,7 @@ async def update_memory_config(
                 "batch_interval_seconds": memory_config.batch_interval_seconds,
                 "batch_max_size": memory_config.batch_max_size,
                 "llm_semaphore_limit": memory_config.llm_semaphore_limit,
+                "idle_flush_seconds": getattr(memory_config, "idle_flush_seconds", 180),
                 "enable_retrieval": memory_config.enable_retrieval,
                 "enable_system2": memory_config.enable_system2,
                 "enable_user_global_memory": memory_config.enable_user_global_memory,
@@ -2028,9 +2004,7 @@ async def update_memory_config(
         }
 
 
-# ─────────────────────────────────────────────
 # 8. Scope 浏览 API
-# ─────────────────────────────────────────────
 
 
 @app.get("/api/ai/memory/scopes", summary="Scope 列表", tags=AI_MEMORY)
@@ -2111,9 +2085,7 @@ async def list_scopes(
         }
 
 
-# ─────────────────────────────────────────────
 # 9. 批量删除 API
-# ─────────────────────────────────────────────
 
 
 @app.delete("/api/ai/memory/scopes/{scope_key}", summary="删除 Scope 记忆", tags=AI_MEMORY)
@@ -2256,9 +2228,7 @@ async def delete_scope_memory(
         }
 
 
-# ─────────────────────────────────────────────
 # 10. 清空记忆 API（高级批量删除）
-# ─────────────────────────────────────────────
 
 
 @app.post("/api/ai/memory/clear", summary="清空记忆（高级批量删除）", tags=AI_MEMORY)

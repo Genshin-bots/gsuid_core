@@ -210,6 +210,7 @@ def test_respawn_limit_opens_center_ticket():
         ok, msg = _run(kanban.respawn_child_task(task, respawn_limit=3))
     assert not ok and "待审批" in msg
     mock_req.assert_awaited_once()
+    assert mock_req.await_args is not None
     prompt = mock_req.await_args.args[1]
     assert "重派次数达上限" in prompt and "API 连续超时" in prompt
     print("[OK] respawn 达上限走 request_subtask_approval（开票+挂起统一入口）")

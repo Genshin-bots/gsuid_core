@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from gsuid_core.ai_core.register import get_all_tools, find_tool_base, get_registered_tools
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
-from gsuid_core.webconsole._local_test_gate import LOCAL_TEST_MODE, require_local_test
+from gsuid_core.webconsole._local_test_gate import require_auth_or_local_test
 
 from ._api_tags import AI_TOOLS
 
@@ -178,20 +178,17 @@ class AssemblePreviewRequest(BaseModel):
 
 @app.post(
     "/api/ai/tools/assemble_preview",
-    include_in_schema=LOCAL_TEST_MODE,
-    summary="预览某条 query 会装配出哪些工具（评测用）",
+    summary="预览某条 query 会装配出哪些工具",
     tags=AI_TOOLS,
 )
 async def assemble_tools_preview(
     body: AssemblePreviewRequest,
-    _gate: Optional[None] = Depends(require_local_test),
+    _auth: Any = Depends(require_auth_or_local_test),
 ) -> Dict[str, Any]:
     """跑真实的附加池装配链路（向量召回 → 能力族展开），返回本轮会给模型的工具。
 
-    供 `eval/tool_selection` 量化 Pool Recall——它必须打**真实运行中的 core**：
-    工具注册表只有在完整启动序（含插件启动钩子）之后才是全的，
-    单独 `load_plugins()` 拿到的注册表是残缺的（XW 的 AI-RAG 走的是启动钩子）。
-    默认 404，仅 `GSUID_LOCAL_TEST_MODE=1` 时放行。
+    供控制台诊断与 `eval/tool_selection` 量化 Pool Recall。
+    鉴权：webconsole Bearer **或** local-test 模式。
     """
     from gsuid_core.ai_core.rag.tools import (
         get_main_agent_tools,
@@ -240,18 +237,15 @@ async def assemble_tools_preview(
 # 抢先匹配（把 entity_index 当成工具名）。
 @app.get(
     "/api/ai/entity_index",
-    include_in_schema=LOCAL_TEST_MODE,
-    summary="导出实体身份索引（评测用）",
+    summary="导出实体身份索引",
     tags=AI_TOOLS,
 )
 async def dump_entity_index(
-    _gate: Optional[None] = Depends(require_local_test),
+    _auth: Any = Depends(require_auth_or_local_test),
 ) -> Dict[str, Any]:
     """导出 surface → 插件的实体身份索引。
 
-    评测的 ground truth 必须来自**运行中的 core**：插件的实体注册有的走 import 期
-    （`ai_alias`），有的走启动钩子（XW 的 AI-RAG），评测进程单独 `load_plugins()`
-    只能拿到前者，据此生成的用例会漏掉一半插件。默认 404。
+    控制台诊断与评测 ground truth 共用。鉴权：webconsole Bearer **或** local-test。
     """
     from gsuid_core.ai_core.entity_index import get_entity_index
 

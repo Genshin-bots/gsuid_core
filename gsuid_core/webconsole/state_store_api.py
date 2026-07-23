@@ -192,7 +192,7 @@ async def get_state_entry(
 async def list_record_collection(
     _: Dict[str, Any] = Depends(require_auth),
     scope: str = Query(..., description="scope 字符串"),
-    collection: str = Query(..., description="record 集合名（不含 'record:' 前缀，如 'stock:account'）"),
+    collection: str = Query(..., description="record 集合名（不含 'record:' 前缀，如 'myplugin:items'）"),
     limit: int = Query(50, ge=1, le=500, description="返回记录数上限"),
     offset: int = Query(0, ge=0, description="偏移量（用于分页）"),
     where_field: str = Query("", description="可选字段名过滤"),
