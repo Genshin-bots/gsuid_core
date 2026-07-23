@@ -25,9 +25,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,  # type: ignore
     create_async_engine,
 )
-
-# from sqlalchemy.pool import NullPool
-# from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.expression import func, null, true
 
@@ -114,10 +112,16 @@ async def init_database():
 
         try:
             if _db_type == "sqlite":
+                # ⚠️ SQLAlchemy 2.0 对「文件型」sqlite+aiosqlite 的默认池是
+                # AsyncAdaptedQueuePool(size=5, max_overflow=10, timeout=30)，
+                # 并不是历史文档里写的 NullPool。canvas / 生成任务 / collab 高并发下
+                # 很容易打满 15 槽 → QueuePool timeout 雪崩(2026-07 线上事故)。
+                # SQLite 单写者本就串行，用 QueuePool 只会让连接在等锁时占着槽。
+                # 显式 NullPool：每次 checkout 新建连接，并发上限交给下方 semaphore。
                 db_config.update(
                     {
                         "connect_args": {"check_same_thread": False},
-                        # 'poolclass': StaticPool,
+                        "poolclass": NullPool,
                     }
                 )
                 engine = create_async_engine(f"{base_url}{db_url}", **db_config)
@@ -128,11 +132,14 @@ async def init_database():
                     cursor = dbapi_connection.cursor()
                     cursor.execute("PRAGMA journal_mode=WAL")
                     cursor.execute("PRAGMA synchronous=NORMAL")
-                    cursor.execute("PRAGMA busy_timeout=5000")
+                    # 5s 太短：大图落盘/大 BLOB 快照写时其它连接会立刻 OperationalError
+                    # 再被 with_session 重试放大；15s 给写者一点喘息。
+                    cursor.execute("PRAGMA busy_timeout=15000")
                     cursor.close()
-                    # logger.debug("PRAGMAs set for new connection.")
 
-                sqlite_semaphore = asyncio.Semaphore(20)
+                # 并发 session 上限：原先 20 > QueuePool 的 15，信号量比池还松。
+                # NullPool 下信号量才是真正闸门；8 对单写 SQLite 更稳。
+                sqlite_semaphore = asyncio.Semaphore(8)
             else:
                 db_config.update(
                     {
@@ -189,12 +196,38 @@ async def init_database():
             raise ValueError(i18n_t("[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!", base_url=base_url))
 
 
+def _is_pool_timeout(err: BaseException) -> bool:
+    """连接池耗尽 / checkout 超时：重试只会让等待雪崩，必须立即失败。"""
+    if isinstance(err, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    # sqlalchemy.exc.TimeoutError 在多数版本是 builtins.TimeoutError 子类；
+    # 保险起见再按文案识别 QueuePool 报错。
+    msg = str(err)
+    return "QueuePool limit" in msg or "connection timed out" in msg
+
+
+def _is_transient_db_error(err: BaseException) -> bool:
+    """仅对 SQLite 锁竞争 / 瞬时 I/O 做有限重试。"""
+    if not isinstance(err, OperationalError):
+        return False
+    msg = str(err).lower()
+    if "unable to open database file" in msg:
+        return False
+    return (
+        "database is locked" in msg
+        or "database table is locked" in msg
+        or "busy" in msg
+        or "disk i/o error" in msg
+    )
+
+
 def with_session(
     func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
 ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
     @wraps(func)
     async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
         max_retries = 3
+        last_err: BaseException | None = None
         for attempt in range(max_retries):
             try:
                 if sqlite_semaphore:
@@ -208,15 +241,37 @@ def with_session(
                         data = await func(self, session, *args, **kwargs)
                         await session.commit()
                         return data
-            except OperationalError as e:
-                if "unable to open database file" in str(e):
-                    logger.error(i18n_t("[数据库] 数据库无法打开，停止重试"))
-                    break
-                logger.warning(i18n_t("[数据库] 第 {p0} 次重试失败: {e}", p0=attempt + 1, e=e))
-                await asyncio.sleep(0.5 * (2**attempt))  # 指数退避
             except Exception as e:
-                logger.exception(i18n_t("[数据库] 第 {p0} 次重试失败: {e}", p0=attempt + 1, e=e))
-                await asyncio.sleep(0.5 * (2**attempt))
+                last_err = e
+                if _is_pool_timeout(e):
+                    logger.error(
+                        i18n_t(
+                            "[数据库] 连接池耗尽/超时，停止重试: {e}",
+                            e=e,
+                        )
+                    )
+                    raise
+                if isinstance(e, OperationalError) and "unable to open database file" in str(e):
+                    logger.error(i18n_t("[数据库] 数据库无法打开，停止重试"))
+                    raise
+                if _is_transient_db_error(e) and attempt < max_retries - 1:
+                    logger.warning(
+                        i18n_t("[数据库] 第 {p0} 次重试失败: {e}", p0=attempt + 1, e=e)
+                    )
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                # 业务异常 / 不可恢复：直接抛，禁止静默 return None
+                if attempt >= max_retries - 1 and _is_transient_db_error(e):
+                    logger.error(
+                        i18n_t("[数据库] 重试耗尽仍失败: {e}", e=e),
+                        exc_info=True,
+                    )
+                raise
+
+        # 理论上到不了这里；兜底保证不返回 None
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError(i18n_t("[数据库] with_session 未知失败"))
 
     return wrapper  # type: ignore
 

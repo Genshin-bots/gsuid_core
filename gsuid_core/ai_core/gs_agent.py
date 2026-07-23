@@ -90,6 +90,7 @@ from gsuid_core.ai_core.configs.models import (
     get_model_for_task,
     get_model_by_full_name,
     get_config_name_for_task,
+    get_2nd_config_name_for_task,
     get_model_fingerprint_for_task,
 )
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
@@ -2451,8 +2452,25 @@ class GsCoreAIAgent:
 
             # provider 路由：主配置并发满/冷却时切到备用(2nd)配置；请求命中
             # provider 级故障（限流/连接）时给该配置冷却期并换路重试一次。
+            _primary_cfg = get_config_name_for_task(self.task_level)
+            _secondary_cfg = get_2nd_config_name_for_task(self.task_level)
+            logger.debug(
+                i18n_t(
+                    "🧠 [GsCoreAIAgent] provider 路由: task_level={task_level}, primary={primary}, secondary={secondary}",
+                    task_level=self.task_level,
+                    primary=_primary_cfg,
+                    secondary=_secondary_cfg or "(未配置)",
+                )
+            )
             for _attempt in range(2):
                 async with provider_router.slot(self.task_level) as routed_name:
+                    logger.debug(
+                        i18n_t(
+                            "🧠 [GsCoreAIAgent] 第 {attempt} 次尝试, 路由到配置: {routed_name}",
+                            attempt=_attempt + 1,
+                            routed_name=routed_name,
+                        )
+                    )
                     temp_model = None
                     orig_model = self.model
                     if routed_name and routed_name != self.model_config_name:
@@ -2472,11 +2490,20 @@ class GsCoreAIAgent:
                         result = await _do_run()
                         # 内层重试耗尽后返回错误字符串（非异常）：若为 provider 级故障
                         # （限流/连接/5xx），标记冷却并换路重试，而非直接返回错误给用户。
+                        _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
+                        _is_provider_failure = _is_error_str and looks_like_provider_failure(result)
+                        logger.debug(
+                            i18n_t(
+                                "🧠 [GsCoreAIAgent] _do_run 返回: is_str={is_str}, is_error={is_error}, is_provider_failure={is_fails}, attempt={attempt}",
+                                is_str=isinstance(result, str),
+                                is_error=_is_error_str,
+                                is_failure=_is_provider_failure,
+                                attempt=_attempt,
+                            )
+                        )
                         if (
                             _attempt == 0
-                            and isinstance(result, str)
-                            and result.startswith(ERROR_RESULT_PREFIX)
-                            and looks_like_provider_failure(result)
+                            and _is_provider_failure
                         ):
                             provider_router.mark_failure(routed_name or self.model_config_name)
                             logger.warning(
