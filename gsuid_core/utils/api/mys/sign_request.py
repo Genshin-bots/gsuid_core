@@ -95,11 +95,14 @@ class SignMysApi(BBSMysApi):
         ck = await self.get_ck(uid, "OWNER", game_name)
         if ck is None:
             return -51
-        header = {"Cookie": ck}
+        header = deepcopy(self._HEADER_OS) if is_os else {"Cookie": ck}
+        header["Cookie"] = ck
         params = {"act_id": act_id, "lang": "zh-cn"}
 
         if is_os:
             header["DS"] = generate_os_ds()
+            header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
+            header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
         else:
             header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
@@ -126,7 +129,8 @@ class SignMysApi(BBSMysApi):
         ck = await self.get_ck(uid, "OWNER", game_name)
         if ck is None:
             return -51
-        header = {"Cookie": ck}
+        header = deepcopy(self._HEADER_OS) if is_os else {"Cookie": ck}
+        header["Cookie"] = ck
         params = {
             "act_id": _ACT_ID[game_name][server_id],
             "lang": "zh-cn",
@@ -136,6 +140,8 @@ class SignMysApi(BBSMysApi):
 
         if is_os:
             header["DS"] = generate_os_ds()
+            header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
+            header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
         else:
             header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
@@ -223,7 +229,8 @@ class SignMysApi(BBSMysApi):
         else:
             HEADER = deepcopy(self._HEADER_OS)
             HEADER["Cookie"] = ck
-            HEADER["x-rpc-device_id"] = random_hex(32)
+            HEADER["x-rpc-device_id"] = await self.get_user_device_id(uid, "gs")
+            HEADER["x-rpc-device_fp"] = await self.get_user_fp(uid, "gs")
             HEADER["DS"] = generate_os_ds()
             data = await self._mys_request(
                 url=self.MAPI["MONTHLY_AWARD_URL_OS"],

@@ -6,6 +6,7 @@ import time
 import uuid
 import random
 import asyncio
+import hashlib
 from abc import abstractmethod
 from string import digits
 from typing import Any, Dict, Tuple, Union, Literal, Optional, overload
@@ -45,8 +46,13 @@ class BaseMysApi:
     }
     _HEADER_OS = {
         "x-rpc-app_version": "1.5.0",
-        "x-rpc-client_type": "4",
+        "x-rpc-client_type": "5",
         "x-rpc-language": "zh-cn",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/111.0.5563.116 Safari/537.36"
+        ),
     }
     MAPI = _API
     is_sr = False
@@ -166,6 +172,15 @@ class BaseMysApi:
     def get_device_id(self) -> str:
         device_id = str(uuid.uuid4()).lower()
         return device_id
+
+    @staticmethod
+    def get_overseas_device_id(account_id: str) -> str:
+        return str(uuid.uuid3(uuid.NAMESPACE_URL, str(account_id))).lower()
+
+    @classmethod
+    def get_overseas_device_fp(cls, account_id: str) -> str:
+        device_id = cls.get_overseas_device_id(account_id)
+        return hashlib.md5(device_id.encode()).hexdigest()[:13]  # noqa: S324
 
     def generate_random_fp(self, length: int = 13) -> str:
         char = digits + "abcdef"
@@ -292,6 +307,7 @@ class BaseMysApi:
         cookie: Optional[str] = None,
         game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
+        request_game_name = game_name
         if isinstance(uid, bool):
             is_os = uid
             server_id = (
@@ -300,6 +316,8 @@ class BaseMysApi:
         else:
             server_id = self.RECOGNIZE_SERVER.get(uid[0])
             is_os = False if int(uid[0]) < 6 else True
+            if is_os and request_game_name is None:
+                request_game_name = "sr" if self.is_sr else "gs"
         ex_params = "&".join([f"{k}={v}" for k, v in params.items()])
         if is_os:
             _URL = self.MAPI[f"{URL}_OS"]
@@ -313,7 +331,7 @@ class BaseMysApi:
         if cookie is not None:
             HEADER["Cookie"] = cookie
         elif "Cookie" not in HEADER and isinstance(uid, str):
-            ck = await self.get_ck(uid, "RANDOM", game_name)
+            ck = await self.get_ck(uid, "RANDOM", request_game_name)
             if ck is None:
                 return -51
             HEADER["Cookie"] = ck
@@ -323,7 +341,7 @@ class BaseMysApi:
             header=HEADER,
             params=params if params else {"role_id": uid, "server": server_id},
             use_proxy=True if is_os else False,
-            game_name=game_name,
+            game_name=request_game_name,
         )
         return data
 
@@ -412,7 +430,10 @@ class BaseMysApi:
         logger.debug(t("[米游社请求] Params: {params}", params=params))
         logger.debug(t("[米游社请求] Data: {data}", data=data))
 
-        proxy = None
+        if use_proxy:
+            proxy = getattr(self, "Gproxy", None)
+        else:
+            proxy = getattr(self, "Nproxy", None)
 
         if not base_url:
             base_url = None
@@ -437,7 +458,17 @@ class BaseMysApi:
 
             if uid is not None:
                 try:
-                    if "x-rpc-device_fp" not in header or "x-rpc-device_id" not in header:
+                    if game_name == "account":
+                        account_id = str(uid)
+                        header.setdefault(
+                            "x-rpc-device_id",
+                            self.get_overseas_device_id(account_id),
+                        )
+                        header.setdefault(
+                            "x-rpc-device_fp",
+                            self.get_overseas_device_fp(account_id),
+                        )
+                    elif "x-rpc-device_fp" not in header or "x-rpc-device_id" not in header:
                         async with timeout(5):
                             device_id = await self.get_user_device_id(
                                 uid,
@@ -531,7 +562,10 @@ class BaseMysApi:
                             )
                         else:
                             q = ""
-                        header["DS"] = get_ds_token(q, data)
+                        if header.get("x-rpc-app_version") == "1.5.0":
+                            header["DS"] = generate_os_ds()
+                        else:
+                            header["DS"] = get_ds_token(q, data)
 
                     logger.debug(t("[米游社请求] Header: {header}", header=header))
                 elif retcode != 0:

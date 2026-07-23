@@ -6,7 +6,9 @@ BBS_URL = "https://bbs-api.mihoyo.com"
 HK4_URL = "https://hk4e-api.mihoyo.com"
 NEW_BBS_URL = "https://bbs-api.miyoushe.com"
 
-ACCOUNT_URL_OS = "https://api-account-os.hoyoverse.com"
+ACCOUNT_URL_OS = "https://api-account-sg.hoyoverse.com"
+PASSPORT_MA_URL_OS = "https://passport-api-sg.hoyoverse.com/account/ma-passport"
+PUBLIC_API_OS = "https://sg-public-api.hoyoverse.com"
 GS_BASE_OS = "https://api-os-takumi.mihoyo.com"
 RECORD_BASE_OS = "https://bbs-api-os.hoyolab.com"
 BBS_URL_OS = "https://bbs-api-os.hoyolab.com"
@@ -16,7 +18,7 @@ SIGN_SR_BASE_OS = "https://sg-public-api.hoyolab.com"
 ACT_URL_OS = "https://sg-hk4e-api.hoyoverse.com"
 
 HK4E_LOGIN_URL = f"{GS_BASE}/common/badge/v1/login/account"
-HK4E_LOGIN_URL_OS = f"{GS_BASE_OS}/common/badge/v1/login/account"
+HK4E_LOGIN_URL_OS = f"{PUBLIC_API_OS}/common/badge/v1/login/account"
 
 BBS_TASKLIST = f"{BBS_URL}/apihub/sapi/getUserMissionsState"
 
@@ -42,14 +44,18 @@ BBS_VERIFY_URL = f"{NEW_BBS_URL}/misc/api/verifyVerification"
 # 通过LoginTicket获取Stoken
 GET_STOKEN_URL = f"{GS_BASE}/auth/api/getMultiTokenByLoginTicket"
 # 国际服
-GET_STOKEN_URL_OS = f"{ACCOUNT_URL_OS}/account/auth/api/getMultiTokenByLoginTicket"
+GET_STOKEN_URL_OS = f"{GS_BASE_OS}/auth/api/getMultiTokenByLoginTicket"
 # 通过Stoken获取Cookie_token
 GET_COOKIE_TOKEN_URL = f"{PASSPORT_URL}/account/auth/api/getCookieAccountInfoBySToken"
+GET_COOKIE_TOKEN_URL_OS = f"{ACCOUNT_URL_OS}/account/auth/api/getCookieAccountInfoBySToken"
+# 国际服通过Stoken一次获取Stoken、LToken和CookieToken
+GET_ALL_TOKEN_BY_STOKEN_OS = f"{PUBLIC_API_OS}/account/ma-passport/token/getBySToken"
 # 通过Stoken获取AuthKey
 GET_AUTHKEY_URL = f"{GS_BASE}/binding/api/genAuthKey"
+GET_AUTHKEY_URL_OS = f"{PUBLIC_API_OS}/binding/api/genAuthKey"
 # 通过AuthKey获取gachalogs
 GET_GACHA_LOG_URL = "https://public-operation-hk4e.mihoyo.com/gacha_info/api/getGachaLog"
-GET_GACHA_LOG_URL_OS = f"{HK4_URL_OS}/gacha_info/api/getGachaLog"
+GET_GACHA_LOG_URL_OS = "https://public-operation-hk4e-sg.hoyoverse.com/gacha_info/api/getGachaLog"
 # 通过GameToken获取Stoken
 GET_STOKEN = f"{PASSPORT_URL}/account/ma-cn-session/app/getTokenByGameToken"
 # 创建登录URL
@@ -84,7 +90,7 @@ DAILY_NOTE_URL = f"{RECORD_BASE}/game_record/app/genshin/api/dailyNote"
 DAILY_NOTE_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/dailyNote"
 # 每月札记
 MONTHLY_AWARD_URL = f"{HK4_URL}/event/ys_ledger/monthInfo"
-MONTHLY_AWARD_URL_OS = f"{HK4_URL_OS}/event/ysledgeros/month_info"
+MONTHLY_AWARD_URL_OS = f"{SIGN_BASE_OS}/event/ysledgeros/month_info"
 # 获取角色基本信息
 PLAYER_INFO_URL = f"{RECORD_BASE}/game_record/app/genshin/api/index"
 PLAYER_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/index"
@@ -93,14 +99,18 @@ PLAYER_ABYSS_INFO_URL = f"{RECORD_BASE}/game_record/app/genshin/api/spiralAbyss"
 PLAYER_ABYSS_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/spiralAbyss"
 # 获取详细角色信息
 PLAYER_DETAIL_INFO_URL = f"{RECORD_BASE}/game_record/app/genshin/api/character/list"
-PLAYER_DETAIL_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/character"
+PLAYER_DETAIL_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/character/detail"
+PLAYER_CHARACTER_LIST_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/character/list"
 # 天赋计算器API 获取天赋等级信息
 CALCULATE_INFO_URL = f"{GS_BASE}/event/e20200928calculate/v1/sync/avatar/detail"
-CALCULATE_INFO_URL_OS = "https://sg-public-api.hoyoverse.com/event/calculateos/sync/avatar/detail"
+CALCULATE_INFO_URL_OS = "https://sg-public-api.hoyolab.com/event/e20200928calculate/v1/sync/avatar/detail"
 # 新版素材计算器
 COMPUTE_URL = f"{GS_BASE}/event/e20200928calculate/v3/batch_compute"
+COMPUTE_URL_OS = "https://sg-public-api.hoyolab.com/event/e20200928calculate/v3/batch_compute"
 POETRY_ABYSS_URL = f"{RECORD_BASE}/game_record/app/genshin/api/role_combat"
+POETRY_ABYSS_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/role_combat"
 ACHI_URL = f"{RECORD_BASE}/game_record/app/genshin/api/achievement"
+ACHI_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/achievement"
 
 # 获取米游社内的角色信息 mysid -> uid
 MIHOYO_BBS_PLAYER_INFO_URL = f"{RECORD_BASE}/game_record/card/wapi/getGameRecordCard"
@@ -110,7 +120,7 @@ MIHOYO_BBS_PLAYER_INFO_URL_OS = f"{RECORD_BASE_OS}/game_record/card/wapi/getGame
 GCG_INFO = f"{RECORD_BASE}/game_record/app/genshin/api/gcg/basicInfo"
 GCG_INFO_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/gcg/basicInfo"
 GCG_DECK_URL = f"{RECORD_BASE}/game_record/app/genshin/api/gcg/deckList"
-GCG_DECK_URL_OS = f"{RECORD_BASE_OS}/game_record/app/genshin/api/gcg/deckList"
+GCG_DECK_URL_OS = f"{RECORD_BASE_OS}/game_record/genshin/api/gcg/deckList"
 
 # 获取注册时间API 绘忆星辰
 REG_TIME = f"{HK4_URL}/event/e20220928anniversary/game_data?"
