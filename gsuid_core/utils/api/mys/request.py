@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 from copy import deepcopy
-from typing import Dict, List, Union, Optional, cast
+from typing import Dict, List, Union, Literal, Optional, cast
 
 from gsuid_core.utils.cache import gs_cache
 
@@ -82,17 +82,22 @@ class MysApi(SignMysApi):
     @gs_cache(3600)
     async def get_achievement_info(self, uid: str) -> Union[List[AchievementData], int]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
-        HEADER = deepcopy(self._HEADER)
+        is_os = self.check_os(uid, "gs")
+        HEADER = deepcopy(self._HEADER_OS if is_os else self._HEADER)
         ck = await self.get_ck(uid, "OWNER")
         if ck is None:
             return -51
         HEADER["Cookie"] = ck
+        if is_os:
+            HEADER["DS"] = generate_os_ds()
 
         data = await self._mys_request(
-            self.MAPI["ACHI_URL"],
+            self.MAPI["ACHI_URL_OS"] if is_os else self.MAPI["ACHI_URL"],
             "POST",
             HEADER,
             data={"role_id": uid, "server": server_id},
+            use_proxy=is_os,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             if "retcode" in data:
@@ -126,7 +131,8 @@ class MysApi(SignMysApi):
     @gs_cache(360)
     async def get_poetry_abyss_data(self, uid: str) -> Union[PoetryAbyssDatas, int]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
-        HEADER = deepcopy(self._HEADER)
+        is_os = self.check_os(uid, "gs")
+        HEADER = deepcopy(self._HEADER_OS if is_os else self._HEADER)
         ck = await self.get_ck(uid, "OWNER")
         if ck is None:
             return -51
@@ -136,16 +142,76 @@ class MysApi(SignMysApi):
             "role_id": uid,
             "need_detail": True,
         }
-        HEADER["DS"] = get_ds_token("&".join([f"{k}={v}" for k, v in params.items()]))
+        if is_os:
+            HEADER["DS"] = generate_os_ds()
+        else:
+            HEADER["DS"] = get_ds_token("&".join([f"{k}={v}" for k, v in params.items()]))
         data = await self._mys_request(
-            self.MAPI["POETRY_ABYSS_URL"],
+            self.MAPI["POETRY_ABYSS_URL_OS"] if is_os else self.MAPI["POETRY_ABYSS_URL"],
             "GET",
             HEADER,
             params,
+            use_proxy=is_os,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(PoetryAbyssDatas, data["data"])
         return data
+
+    async def _request_character_list(
+        self,
+        uid: str,
+        ck: str,
+    ) -> Union[Dict, int]:
+        server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
+        header = deepcopy(self._HEADER_OS)
+        header["Cookie"] = ck
+        header["DS"] = generate_os_ds()
+        data = await self._mys_request(
+            self.MAPI["PLAYER_CHARACTER_LIST_URL_OS"],
+            "POST",
+            header,
+            data={
+                "role_id": uid,
+                "server": server_id,
+            },
+            use_proxy=True,
+            game_name="gs",
+        )
+        if isinstance(data, Dict):
+            data = cast(Dict, data["data"])
+        return data
+
+    @gs_cache(360)
+    async def get_character_list(
+        self,
+        uid: str,
+        mode: Literal["OWNER", "RANDOM"] = "RANDOM",
+    ) -> Union[Dict, int]:
+        """获取国际服账号拥有的完整角色列表。"""
+        ck = await self.get_ck(uid, mode)
+        if ck is None:
+            return -51
+        return await self._request_character_list(uid, ck)
+
+    @staticmethod
+    def _normalize_character_list(data: Dict) -> CharDetailData:
+        """将国际服嵌套角色详情转换为国服角色列表结构。"""
+        characters = []
+        for raw_character in data.get("list", []):
+            base = raw_character.get("base")
+            if not isinstance(base, Dict):
+                characters.append(raw_character)
+                continue
+
+            character = dict(base)
+            character["weapon"] = raw_character.get("weapon") or base.get("weapon", {})
+            character["reliquaries"] = raw_character.get("relics", [])
+            character["constellations"] = raw_character.get("constellations", [])
+            character["costumes"] = raw_character.get("costumes", [])
+            character["card_image"] = base.get("image", "")
+            characters.append(character)
+        return {"list": characters}
 
     @gs_cache(360)
     async def get_character(
@@ -180,20 +246,12 @@ class MysApi(SignMysApi):
                 },
             )
         else:
-            HEADER = deepcopy(self._HEADER_OS)
-            HEADER["Cookie"] = ck
-            HEADER["DS"] = generate_os_ds()
-            data = await self._mys_request(
-                self.MAPI["PLAYER_DETAIL_INFO_URL_OS"],
-                "POST",
-                HEADER,
-                data={
-                    "character_ids": character_ids,
-                    "role_id": uid,
-                    "server": server_id,
-                },
-                use_proxy=True,
-            )
+            # 国际服返回 {base, weapon, relics, ...} 的嵌套详情结构，
+            # 角色列表绘图仍需要国服接口使用的扁平结构。
+            data = await self._request_character_list(uid, ck)
+            if isinstance(data, Dict):
+                return self._normalize_character_list(data)
+            return data
         if isinstance(data, Dict):
             data = cast(CharDetailData, data["data"])
         return data
@@ -224,14 +282,24 @@ class MysApi(SignMysApi):
         if ck is None:
             return -51
 
-        header = deepcopy(self._HEADER)
+        is_os = self.check_os(uid, "gs")
+        header = deepcopy(self._HEADER_OS if is_os else self._HEADER)
         header["Cookie"] = ck
+        if is_os:
+            header["DS"] = generate_os_ds()
         data = {
             "items": items,
             "region": server_id,
             "uid": uid,
         }
-        raw_data = await self._mys_request(self.MAPI["COMPUTE_URL"], "POST", header, data=data)
+        raw_data = await self._mys_request(
+            self.MAPI["COMPUTE_URL_OS"] if is_os else self.MAPI["COMPUTE_URL"],
+            "POST",
+            header,
+            data=data,
+            use_proxy=is_os,
+            game_name="gs",
+        )
         if isinstance(raw_data, Dict):
             raw_data = cast(ComputeData, raw_data["data"])
         return raw_data
@@ -250,6 +318,7 @@ class MysApi(SignMysApi):
             is_os,
             {"uid": mys_id},
             {"Cookie": cookie},
+            game_name="account",
         )
         if isinstance(data, Dict):
             data = cast(List[MysGame], data["data"]["list"])
@@ -262,16 +331,20 @@ class MysApi(SignMysApi):
         page: int = 1,
         end_id: str = "0",
     ) -> Union[int, GachaLog]:
-        server_id = "cn_qd01" if uid[0] == "5" else "cn_gf01"
+        is_os = self.check_os(uid, "gs")
+        server_id = self.RECOGNIZE_SERVER.get(uid[0], "cn_gf01")
         authkey_rawdata = await self.get_authkey_by_cookie(uid)
         if isinstance(authkey_rawdata, int):
             return authkey_rawdata
         authkey = authkey_rawdata["authkey"]
-        url = self.MAPI["GET_GACHA_LOG_URL"]
+        url = self.MAPI["GET_GACHA_LOG_URL_OS"] if is_os else self.MAPI["GET_GACHA_LOG_URL"]
+        header = deepcopy(self._HEADER_OS if is_os else self._HEADER)
+        if is_os:
+            header["DS"] = generate_os_ds()
         data = await self._mys_request(
             url=url,
             method="GET",
-            header=self._HEADER,
+            header=header,
             params={
                 "authkey_ver": "1",
                 "sign_type": "2",
@@ -284,12 +357,14 @@ class MysApi(SignMysApi):
                 "plat_type": "ios",
                 "region": server_id,
                 "authkey": authkey,
-                "game_biz": "hk4e_cn",
+                "game_biz": "hk4e_global" if is_os else "hk4e_cn",
                 "gacha_type": gacha_type,
                 "page": page,
                 "size": "20",
                 "end_id": end_id,
             },
+            use_proxy=is_os,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(GachaLog, data["data"])

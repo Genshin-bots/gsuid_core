@@ -6,7 +6,7 @@ import uuid
 import random
 from copy import deepcopy
 from string import digits, ascii_letters
-from typing import Dict, Union, Optional, cast
+from typing import Any, Dict, Union, Optional, cast
 from http.cookies import SimpleCookie
 
 from aiohttp import ClientSession, ClientTimeout
@@ -16,6 +16,7 @@ from .tools import (
     mys_version,
     random_text,
     get_web_ds_token,
+    generate_os_ds,
     generate_passport_ds,
 )
 from .models import (
@@ -140,8 +141,15 @@ class AccountMysApi(PassMysApi):
         return data
 
     async def get_cookie_token_by_stoken(
-        self, stoken: str, mys_id: str, full_sk: Optional[str] = None
+        self,
+        stoken: str,
+        mys_id: str,
+        full_sk: Optional[str] = None,
+        is_os: bool = False,
     ) -> Union[CookieTokenInfo, int]:
+        if is_os:
+            return await self.get_all_token_by_stoken_os(stoken, mys_id, full_sk)
+
         HEADER = deepcopy(self._HEADER)
         params = {
             "stoken": stoken,
@@ -170,28 +178,122 @@ class AccountMysApi(PassMysApi):
             data = cast(CookieTokenInfo, data["data"])
         return data
 
-    async def get_stoken_by_login_ticket(self, lt: str, mys_id: str) -> Union[LoginTicketInfo, int]:
+    async def get_all_token_by_stoken_os(
+        self,
+        stoken: str,
+        mys_id: str,
+        full_sk: Optional[str] = None,
+    ) -> Union[CookieTokenInfo, int]:
+        """国际服通过Stoken一次换取Stoken、LToken和CookieToken。"""
+        header = deepcopy(self._HEADER_OS)
+        header["x-rpc-app_id"] = "c9oqaq3s3gu8"
+        header["DS"] = generate_os_ds()
+        header["x-rpc-device_id"] = self.get_overseas_device_id(mys_id)
+        header["x-rpc-device_fp"] = self.get_overseas_device_fp(mys_id)
+        if full_sk:
+            header["Cookie"] = full_sk
+            simp_dict = SimpleCookie(full_sk)
+            if not stoken:
+                for key in ("stoken", "stoken_v2"):
+                    if key in simp_dict:
+                        stoken = simp_dict[key].value
+                        break
+        else:
+            header["Cookie"] = f"stuid={mys_id};stoken={stoken}"
+
         data = await self._mys_request(
-            url=self.MAPI["GET_STOKEN_URL"],
-            method="GET",
-            header=self._HEADER,
-            params={
-                "login_ticket": lt,
-                "token_types": "3",
-                "uid": mys_id,
-            },
+            url=self.MAPI["GET_ALL_TOKEN_BY_STOKEN_OS"],
+            method="POST",
+            header=header,
+            data={"dst_token_types": [1, 2, 4]},
+            use_proxy=True,
+            game_name="account",
         )
-        if isinstance(data, int):
+        if not isinstance(data, Dict):
+            return data
+
+        raw_data: Dict[str, Any] = data.get("data") or {}
+        token_map = {
+            token.get("token_type"): token.get("token", "")
+            for token in raw_data.get("tokens", [])
+            if token.get("token_type") in {1, 2, 4}
+        }
+        stoken = token_map.get(1) or stoken
+        ltoken = token_map.get(2, "")
+        cookie_token = token_map.get(4, "")
+        if not cookie_token:
+            return -999
+
+        mid = str((raw_data.get("user_info") or {}).get("mid") or "")
+        cookies: Dict[str, str] = {
+            "stuid": str(mys_id),
+            "stoken": stoken,
+        }
+        if mid:
+            cookies["mid"] = mid
+
+        if ltoken:
+            if ltoken.startswith("v2_"):
+                cookies["ltoken_v2"] = ltoken
+                cookies["ltuid_v2"] = str(mys_id)
+                if mid:
+                    cookies["ltmid_v2"] = mid
+            else:
+                cookies["ltoken"] = ltoken
+                cookies["ltuid"] = str(mys_id)
+
+        cookie_token_name = "cookie_token_v2" if cookie_token.startswith("v2_") else "cookie_token"
+        cookies[cookie_token_name] = cookie_token
+        if cookie_token_name == "cookie_token_v2":
+            cookies["account_id_v2"] = str(mys_id)
+            if mid:
+                cookies["account_mid_v2"] = mid
+        else:
+            cookies["account_id"] = str(mys_id)
+
+        return {
+            "uid": str(mys_id),
+            "cookie_token": cookie_token,
+            "cookie_token_name": cookie_token_name,
+            "cookies": cookies,
+        }
+
+    async def get_stoken_by_login_ticket(
+        self,
+        lt: str,
+        mys_id: str,
+        is_os: Optional[bool] = None,
+    ) -> Union[LoginTicketInfo, int]:
+        if is_os is True:
+            urls = (self.MAPI["GET_STOKEN_URL_OS"],)
+        elif is_os is False:
+            urls = (self.MAPI["GET_STOKEN_URL"],)
+        else:
+            urls = (
+                self.MAPI["GET_STOKEN_URL"],
+                self.MAPI["GET_STOKEN_URL_OS"],
+            )
+
+        data: Union[Dict, int] = -999
+        for url in urls:
+            is_overseas_url = url == self.MAPI["GET_STOKEN_URL_OS"]
+            header = deepcopy(self._HEADER_OS if is_overseas_url else self._HEADER)
+            if is_overseas_url:
+                header["DS"] = generate_os_ds()
             data = await self._mys_request(
-                url=self.MAPI["GET_STOKEN_URL_OS"],
+                url=url,
                 method="GET",
-                header=self._HEADER,
+                header=header,
                 params={
                     "login_ticket": lt,
                     "token_types": "3",
                     "uid": mys_id,
                 },
+                use_proxy=is_overseas_url,
+                game_name="account",
             )
+            if isinstance(data, Dict):
+                break
         if isinstance(data, Dict):
             data = cast(LoginTicketInfo, data["data"])
         return data
@@ -231,24 +333,38 @@ class AccountMysApi(PassMysApi):
     ) -> Union[AuthKeyInfo, int]:
         if not server_id:
             server_id = self.RECOGNIZE_SERVER.get(str(uid)[0], "cn_gf01")
-        HEADER = deepcopy(self._HEADER)
+        is_os = self.check_os(uid, "gs")
+        if is_os:
+            game_biz = "hk4e_global"
+            HEADER = deepcopy(self._HEADER_OS)
+            HEADER["DS"] = generate_os_ds()
+            device_id = await self.get_user_device_id(uid, "gs")
+            device_fp = await self.get_user_fp(uid, "gs")
+            if device_id:
+                HEADER["x-rpc-device_id"] = device_id
+            if device_fp:
+                HEADER["x-rpc-device_fp"] = device_fp
+        else:
+            HEADER = deepcopy(self._HEADER)
+            HEADER["DS"] = get_web_ds_token(True)
+
         stoken = await self.get_stoken(uid)
         if stoken is None:
             return -51
         HEADER["Cookie"] = stoken
-        HEADER["DS"] = get_web_ds_token(True)
-        HEADER["User-Agent"] = "okhttp/4.8.0"
-        HEADER["x-rpc-app_version"] = mys_version
-        HEADER["x-rpc-sys_version"] = "12"
-        HEADER["x-rpc-client_type"] = "5"
-        HEADER["x-rpc-channel"] = "mihoyo"
-        HEADER["x-rpc-device_id"] = random_hex(32)
-        HEADER["x-rpc-device_name"] = random_text(random.randint(1, 10))
-        HEADER["x-rpc-device_model"] = "Mi 10"
-        HEADER["Referer"] = "https://app.mihoyo.com"
-        HEADER["Host"] = "api-takumi.mihoyo.com"
+        if not is_os:
+            HEADER["User-Agent"] = "okhttp/4.8.0"
+            HEADER["x-rpc-app_version"] = mys_version
+            HEADER["x-rpc-sys_version"] = "12"
+            HEADER["x-rpc-client_type"] = "5"
+            HEADER["x-rpc-channel"] = "mihoyo"
+            HEADER["x-rpc-device_id"] = random_hex(32)
+            HEADER["x-rpc-device_name"] = random_text(random.randint(1, 10))
+            HEADER["x-rpc-device_model"] = "Mi 10"
+            HEADER["Referer"] = "https://app.mihoyo.com"
+            HEADER["Host"] = "api-takumi.mihoyo.com"
         data = await self._mys_request(
-            url=self.MAPI["GET_AUTHKEY_URL"],
+            url=self.MAPI["GET_AUTHKEY_URL_OS"] if is_os else self.MAPI["GET_AUTHKEY_URL"],
             method="POST",
             header=HEADER,
             data={
@@ -257,6 +373,8 @@ class AccountMysApi(PassMysApi):
                 "game_uid": uid,
                 "region": server_id,
             },
+            use_proxy=is_os,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(AuthKeyInfo, data["data"])
@@ -283,6 +401,14 @@ class AccountMysApi(PassMysApi):
         else:
             url = self.MAPI["HK4E_LOGIN_URL_OS"]
             data["game_biz"] = "hk4e_global"
+            header.update(deepcopy(self._HEADER_OS))
+            header["DS"] = generate_os_ds()
+            device_id = await self.get_user_device_id(uid, "gs")
+            device_fp = await self.get_user_fp(uid, "gs")
+            if device_id:
+                header["x-rpc-device_id"] = device_id
+            if device_fp:
+                header["x-rpc-device_fp"] = device_fp
             use_proxy = True
 
         if use_proxy and self.Gproxy:

@@ -392,6 +392,8 @@ class CharDetailData(TypedDict):
 class CookieTokenInfo(TypedDict):
     uid: str
     cookie_token: str
+    cookie_token_name: NotRequired[str]
+    cookies: NotRequired[Dict[str, str]]
 
 
 class StokenInfo(TypedDict):

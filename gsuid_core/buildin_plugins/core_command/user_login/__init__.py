@@ -94,7 +94,17 @@ async def send_check_stoken(bot: Bot, ev: Event):
     invalid_user: List[GsUser] = []
     for user in user_list:
         if user.stoken and user.mys_id:
-            mys_data = await mys_api.get_cookie_token_by_stoken("", user.mys_id, user.stoken)
+            is_os = bool(
+                (user.uid and mys_api.check_os(user.uid, "gs"))
+                or (user.sr_uid and mys_api.check_os(user.sr_uid, "sr"))
+                or (user.zzz_uid and mys_api.check_os(user.zzz_uid, "zzz"))
+            )
+            mys_data = await mys_api.get_cookie_token_by_stoken(
+                "",
+                user.mys_id,
+                user.stoken,
+                is_os=is_os,
+            )
             if isinstance(mys_data, int) and user.uid:
                 await GsUser.update_data_by_uid(user.uid, ev.bot_id, stoken=None)
                 invalid_user.append(user)
