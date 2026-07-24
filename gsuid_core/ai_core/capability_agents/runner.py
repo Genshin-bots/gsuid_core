@@ -127,7 +127,8 @@ async def run_capability_agent(
     """按 node_id 实例化一个 task-mode 节点并同步运行，返回其交付结果（纯文本）。
 
     - 系统提示词 = 节点身份核 + 交付边界叠加层（persona_name=None，无人格）。
-    - 工具：packs + 白名单显式传入；节点声明 ``dynamic`` 族时 gs_agent 逐轮
+    - 工具：packs + 白名单为保底；**始终**再按 task（及可选 tool_query）向量检索
+      增补专业工具并做能力族展开。节点声明 ``dynamic`` 族时 gs_agent 逐轮
       五层装配并与显式工具合并。
     - return_mode="return"：文本不直接下发给用户；工具内 bot.send（如 HITL
       审批通知）仍生效。
@@ -141,20 +142,48 @@ async def run_capability_agent(
         return f"⚠️ 能力代理节点不存在: {profile_id}"
 
     tools = _resolve_tools(node)
-    # tool_names 为空 / 声明了 tool_query 时，按 tool_query 或 task 再补一轮向量检索
-    if node.tool_query or not node.tool_names:
-        try:
-            from gsuid_core.ai_core.rag.tools import search_tools
+    # 始终按 task（+ 可选 tool_query）补一轮向量检索，再经能力族展开。
+    # 旧逻辑：仅当 tool_names 为空或声明了 tool_query 才检索——导致像 internal_reporter
+    # 这种"有静态白名单"的画像被锁死在 state/record，无法获取数据
+    # 新语义：packs + tool_names 是保底；task 相关专业工具作为增补，不因白名单关闭检索。
+    try:
+        from gsuid_core.ai_core.rag.tools import search_tools, expand_tools_to_families
 
-            extra = await search_tools(
-                query=node.tool_query or task,
-                limit=8,
+        tq = (node.tool_query or "").strip()
+        task_text = (task or "").strip()
+        if tq and task_text:
+            search_query = f"{tq}\n{task_text}"
+        else:
+            search_query = tq or task_text
+
+        if search_query:
+            recall = int(ai_config.get_config("tool_search_recall").data or 8)
+            max_extra = int(ai_config.get_config("tool_extra_pool_max").data or 8)
+            seeds = await search_tools(
+                query=search_query,
+                limit=max(recall, 8),
                 non_category="self",
             )
+            # 能力代理禁止再委派，避免递归爆炸
+            seeds = [t for t in seeds if t.name != "create_subagent"]
             seen = {t.name for t in tools}
-            tools += [t for t in extra if t.name not in seen]
-        except Exception as e:
-            logger.debug(i18n_t("🤖 [CapabilityAgent] 工具检索失败: {e}", e=e))
+            extra = expand_tools_to_families(
+                seeds,
+                exclude_names=seen,
+                max_tools=max_extra,
+            )
+            if extra:
+                tools = tools + extra
+                logger.info(
+                    i18n_t(
+                        "🤖 [CapabilityAgent] task 工具补检索: +{n} 个 (query={q!r} → {names})",
+                        n=len(extra),
+                        q=search_query[:60],
+                        names=[t.name for t in extra][:12],
+                    )
+                )
+    except Exception as e:
+        logger.debug(i18n_t("🤖 [CapabilityAgent] 工具检索失败: {e}", e=e))
 
     session_id = f"capagent_{node.node_id}_{session_id_suffix or 'adhoc'}"
 

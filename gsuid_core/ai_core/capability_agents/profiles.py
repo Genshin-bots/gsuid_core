@@ -465,19 +465,18 @@ def register_builtin_profiles() -> None:
             prompt=_INTERNAL_REPORTER_PROMPT,
             when_to_use=(
                 "只查框架内部库（用户记忆 / 好感度 / record_* 集合 / 定时任务）后渲染"
-                "Markdown 报告的任务；周报、对比、复盘、内部数据结算等。不查 web，"
+                "Markdown 报告的任务；周报、对比、内部数据结算等。不查 web，"
                 "不跑代码，不维护记忆。"
+                "不含模拟盘/股票持仓盈亏——那些走 papertrade_reporter_agent 等业务画像。"
             ),
             match_keywords=[
                 "周报",
                 "月报",
-                "复盘",
                 "统计",
                 "对比",
                 "趋势",
                 "盘点",
                 "结算",
-                "收益率",
                 "报表",
                 "整理数据",
             ],
