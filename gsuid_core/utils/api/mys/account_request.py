@@ -11,6 +11,19 @@ from http.cookies import SimpleCookie
 
 from aiohttp import ClientSession, ClientTimeout
 
+from .api import (
+    HK4E_LOGIN,
+    GET_AUTHKEY,
+    CHECK_QRCODE,
+    CREATE_QRCODE,
+    CHECK_QRCODE_HYP,
+    GET_COOKIE_TOKEN,
+    CREATE_QRCODE_HYP,
+    GET_ALL_TOKEN_BY_STOKEN,
+    GET_STOKEN_BY_GAME_TOKEN,
+    GET_STOKEN_BY_LOGIN_TICKET,
+    GET_COOKIE_TOKEN_BY_GAME_TOKEN,
+)
 from .tools import (
     random_hex,
     mys_version,
@@ -36,9 +49,6 @@ class AccountMysApi(PassMysApi):
     """
 
     HYP_VERSION = "1.3.3.182"
-    # 米游社全球化/国内化 proxy 配置: 实例可覆盖, 类型强制为 str|None 防止拼错键。
-    Gproxy: Optional[str] = None
-    Nproxy: Optional[str] = None
 
     @staticmethod
     def _hyp_qrcode_header(device_id: str) -> Dict[str, str]:
@@ -51,7 +61,7 @@ class AccountMysApi(PassMysApi):
 
     async def get_cookie_token(self, token: str, uid: str) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
-            self.MAPI["GET_COOKIE_TOKEN_BY_GAME_TOKEN"],
+            GET_COOKIE_TOKEN_BY_GAME_TOKEN.get(),
             "GET",
             params={
                 "game_token": token,
@@ -66,7 +76,7 @@ class AccountMysApi(PassMysApi):
         device_id: str = "".join(random.choices(ascii_letters + digits, k=64))
         app_id: str = "2"
         data = await self._mys_request(
-            self.MAPI["CREATE_QRCODE"],
+            CREATE_QRCODE.get(),
             "POST",
             header={},
             data={"app_id": app_id, "device": device_id},
@@ -85,7 +95,7 @@ class AccountMysApi(PassMysApi):
     async def create_hyp_qrcode_url(self) -> Union[Dict, int]:
         device_id = uuid.uuid4().hex + uuid.uuid4().hex
         data = await self._mys_request(
-            self.MAPI["CREATE_QRCODE_HYP"],
+            CREATE_QRCODE_HYP.get(),
             "POST",
             header=self._hyp_qrcode_header(device_id),
             data={},
@@ -100,7 +110,7 @@ class AccountMysApi(PassMysApi):
 
     async def check_qrcode(self, app_id: str, ticket: str, device: str) -> Union[QrCodeStatus, int]:
         data = await self._mys_request(
-            self.MAPI["CHECK_QRCODE"],
+            CHECK_QRCODE.get(),
             "POST",
             data={
                 "app_id": app_id,
@@ -118,7 +128,7 @@ class AccountMysApi(PassMysApi):
         device_id: str,
     ) -> Union[HypQrCodeStatus, int]:
         data = await self._mys_request(
-            self.MAPI["CHECK_QRCODE_HYP"],
+            CHECK_QRCODE_HYP.get(),
             "POST",
             header=self._hyp_qrcode_header(device_id),
             data={"ticket": ticket},
@@ -129,7 +139,7 @@ class AccountMysApi(PassMysApi):
 
     async def get_cookie_token_by_game_token(self, token: str, uid: str) -> Union[CookieTokenInfo, int]:
         data = await self._mys_request(
-            self.MAPI["GET_COOKIE_TOKEN_BY_GAME_TOKEN"],
+            GET_COOKIE_TOKEN_BY_GAME_TOKEN.get(),
             "GET",
             params={
                 "game_token": token,
@@ -140,16 +150,12 @@ class AccountMysApi(PassMysApi):
             data = cast(CookieTokenInfo, data["data"])
         return data
 
-    async def get_cookie_token_by_stoken(
+    async def get_cookie_token_by_stoken_cn(
         self,
         stoken: str,
         mys_id: str,
         full_sk: Optional[str] = None,
-        is_os: bool = False,
     ) -> Union[CookieTokenInfo, int]:
-        if is_os:
-            return await self.get_all_token_by_stoken_os(stoken, mys_id, full_sk)
-
         HEADER = deepcopy(self._HEADER)
         params = {
             "stoken": stoken,
@@ -169,7 +175,7 @@ class AccountMysApi(PassMysApi):
         else:
             HEADER["Cookie"] = f"stuid={mys_id};stoken={stoken}"
         data = await self._mys_request(
-            url=self.MAPI["GET_COOKIE_TOKEN_URL"],
+            url=GET_COOKIE_TOKEN.get(),
             method="GET",
             header=HEADER,
             params=params,
@@ -177,6 +183,18 @@ class AccountMysApi(PassMysApi):
         if isinstance(data, Dict):
             data = cast(CookieTokenInfo, data["data"])
         return data
+
+    async def get_cookie_token_by_stoken(
+        self,
+        stoken: str,
+        mys_id: str,
+        full_sk: Optional[str] = None,
+        is_os: bool = False,
+    ) -> Union[CookieTokenInfo, int]:
+        if is_os:
+            return await self.get_all_token_by_stoken_os(stoken, mys_id, full_sk)
+        else:
+            return await self.get_cookie_token_by_stoken_cn(stoken, mys_id, full_sk)
 
     async def get_all_token_by_stoken_os(
         self,
@@ -202,7 +220,7 @@ class AccountMysApi(PassMysApi):
             header["Cookie"] = f"stuid={mys_id};stoken={stoken}"
 
         data = await self._mys_request(
-            url=self.MAPI["GET_ALL_TOKEN_BY_STOKEN_OS"],
+            url=GET_ALL_TOKEN_BY_STOKEN.get(True),
             method="POST",
             header=header,
             data={"dst_token_types": [1, 2, 4]},
@@ -265,18 +283,17 @@ class AccountMysApi(PassMysApi):
         is_os: Optional[bool] = None,
     ) -> Union[LoginTicketInfo, int]:
         if is_os is True:
-            urls = (self.MAPI["GET_STOKEN_URL_OS"],)
+            targets = ((GET_STOKEN_BY_LOGIN_TICKET.get(True), True),)
         elif is_os is False:
-            urls = (self.MAPI["GET_STOKEN_URL"],)
+            targets = ((GET_STOKEN_BY_LOGIN_TICKET.get(False), False),)
         else:
-            urls = (
-                self.MAPI["GET_STOKEN_URL"],
-                self.MAPI["GET_STOKEN_URL_OS"],
+            targets = (
+                (GET_STOKEN_BY_LOGIN_TICKET.get(False), False),
+                (GET_STOKEN_BY_LOGIN_TICKET.get(True), True),
             )
 
-        data: Union[Dict, int] = -999
-        for url in urls:
-            is_overseas_url = url == self.MAPI["GET_STOKEN_URL_OS"]
+        data = -999
+        for url, is_overseas_url in targets:
             header = deepcopy(self._HEADER_OS if is_overseas_url else self._HEADER)
             if is_overseas_url:
                 header["DS"] = generate_os_ds()
@@ -304,7 +321,7 @@ class AccountMysApi(PassMysApi):
             "game_token": game_token,
         }
         data = await self._mys_request(
-            self.MAPI["GET_STOKEN"],
+            GET_STOKEN_BY_GAME_TOKEN.get(),
             "POST",
             {
                 "x-rpc-app_version": "2.41.0",
@@ -364,7 +381,7 @@ class AccountMysApi(PassMysApi):
             HEADER["Referer"] = "https://app.mihoyo.com"
             HEADER["Host"] = "api-takumi.mihoyo.com"
         data = await self._mys_request(
-            url=self.MAPI["GET_AUTHKEY_URL_OS"] if is_os else self.MAPI["GET_AUTHKEY_URL"],
+            url=GET_AUTHKEY.get(is_os),
             method="POST",
             header=HEADER,
             data={
@@ -389,7 +406,6 @@ class AccountMysApi(PassMysApi):
             "Referer": "https://webstatic.mihoyo.com/",
             "Origin": "https://webstatic.mihoyo.com",
         }
-        use_proxy = False
         data = {
             "game_biz": "hk4e_cn",
             "lang": "zh-cn",
@@ -397,9 +413,9 @@ class AccountMysApi(PassMysApi):
             "region": f"{server_id}",
         }
         if int(str(uid)[0]) < 6:
-            url = self.MAPI["HK4E_LOGIN_URL"]
+            url = HK4E_LOGIN.get()
         else:
-            url = self.MAPI["HK4E_LOGIN_URL_OS"]
+            url = HK4E_LOGIN.get(True)
             data["game_biz"] = "hk4e_global"
             header.update(deepcopy(self._HEADER_OS))
             header["DS"] = generate_os_ds()
@@ -409,14 +425,6 @@ class AccountMysApi(PassMysApi):
                 header["x-rpc-device_id"] = device_id
             if device_fp:
                 header["x-rpc-device_fp"] = device_fp
-            use_proxy = True
-
-        if use_proxy and self.Gproxy:
-            proxy = self.Gproxy
-        elif self.Nproxy and not use_proxy:
-            proxy = self.Nproxy
-        else:
-            proxy = None
 
         async with ClientSession() as client:
             async with client.request(
@@ -424,7 +432,6 @@ class AccountMysApi(PassMysApi):
                 url=url,
                 headers=header,
                 json=data,
-                proxy=proxy,
                 timeout=ClientTimeout(total=300),
             ) as resp:
                 raw_data = await resp.json()

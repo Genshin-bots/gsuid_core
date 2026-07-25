@@ -23,8 +23,20 @@ from gsuid_core.utils.database.utils import SERVER as RECOGNIZE_SERVER, SR_SERVE
 from gsuid_core.utils.database.models import GsUID, GsUser
 from gsuid_core.utils.plugins_config.gs_config import pass_config
 
-from .api import _API
-from .tools import random_hex, mys_version, get_ds_token, generate_os_ds, generate_passport_ds
+from .api import (
+    GET_FP,
+    SAVE_DEVICE,
+    DEVICE_LOGIN,
+    ApiEndpoint,
+)
+from .tools import (
+    random_hex,
+    mys_version,
+    get_ds_token,
+    generate_os_ds,
+    get_web_ds_token,
+    generate_passport_ds,
+)
 
 _DEAD_CODE = [10035, 5003, 10041, 1034]
 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -54,7 +66,6 @@ class BaseMysApi:
             "Chrome/111.0.5563.116 Safari/537.36"
         ),
     }
-    MAPI = _API
     is_sr = False
     RECOGNIZE_SERVER = RECOGNIZE_SERVER
     chs = {}
@@ -114,7 +125,7 @@ class BaseMysApi:
         uid = await self.get_uid(uid, game_name)
         return await GsUser.get_user_stoken_by_uid(uid, game_name)
 
-    async def get_user_fp(self, uid: str, game_name: Optional[str] = None) -> Optional[str]:
+    async def get_user_fp(self, uid: str, game_name: Optional[str] = None) -> str:
         uid = await self.get_uid(uid, game_name)
         data = await GsUser.get_user_attr_by_uid(
             uid,
@@ -132,7 +143,7 @@ class BaseMysApi:
             )
         return data
 
-    async def get_user_device_id(self, uid: str, game_name: Optional[str] = None) -> Optional[str]:
+    async def get_user_device_id(self, uid: str, game_name: Optional[str] = None) -> str:
         uid = await self.get_uid(uid, game_name)
         data = await GsUser.get_user_attr_by_uid(
             uid,
@@ -180,7 +191,7 @@ class BaseMysApi:
     @classmethod
     def get_overseas_device_fp(cls, account_id: str) -> str:
         device_id = cls.get_overseas_device_id(account_id)
-        return hashlib.md5(device_id.encode()).hexdigest()[:13]  # noqa: S324
+        return hashlib.md5(device_id.encode()).hexdigest()[:13]
 
     def generate_random_fp(self, length: int = 13) -> str:
         char = digits + "abcdef"
@@ -247,7 +258,7 @@ class BaseMysApi:
 
         HEADER = copy.deepcopy(self._HEADER)
         res = await self._mys_request(
-            url=self.MAPI["GET_FP_URL"],
+            url=GET_FP.get(),
             method="POST",
             header=HEADER,
             data=body,
@@ -285,79 +296,178 @@ class BaseMysApi:
         HEADER["Cookie"] = cookie
 
         await self._mys_request(
-            url=self.MAPI["DEVICE_LOGIN"],
+            url=DEVICE_LOGIN.get(),
             method="POST",
             header=HEADER,
             data=body,
         )
 
         await self._mys_request(
-            url=self.MAPI["SAVE_DEVICE"],
+            url=SAVE_DEVICE.get(),
             method="POST",
             header=HEADER,
             data=body,
         )
 
-    async def simple_mys_req(
+    async def endpoint_request(
         self,
-        URL: str,
-        uid: Union[str, bool],
-        params: Dict = {},  # noqa: B006
-        header: Dict = {},  # noqa: B006
+        endpoint: ApiEndpoint,
+        uid: str,
+        *,
+        method: Literal["GET", "POST"] = "GET",
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        header: Optional[Dict[str, Any]] = None,
         cookie: Optional[str] = None,
-        game_name: Optional[str] = None,
+        cookie_mode: Literal["OWNER", "RANDOM"] = "OWNER",
+        cookie_type: Literal["cookie", "stoken"] = "cookie",
+        game_name: str = "gs",
+        ds_mode: Literal["auto", "web", "none"] = "auto",
+        ds_q: Optional[str] = None,
+        ds_body: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict, int]:
-        request_game_name = game_name
-        if isinstance(uid, bool):
-            is_os = uid
-            server_id = (
-                ("cn_qd01" if is_os else "cn_gf01") if not self.is_sr else ("prod_gf_cn" if is_os else "prod_gf_cn")
-            )
-        else:
-            server_id = self.RECOGNIZE_SERVER.get(uid[0])
-            is_os = False if int(uid[0]) < 6 else True
-            if is_os and request_game_name is None:
-                request_game_name = "sr" if self.is_sr else "gs"
-        ex_params = "&".join([f"{k}={v}" for k, v in params.items()])
-        if is_os:
-            _URL = self.MAPI[f"{URL}_OS"]
-            HEADER = copy.deepcopy(self._HEADER_OS)
-            HEADER["DS"] = generate_os_ds()
-        else:
-            _URL = self.MAPI[URL]
-            HEADER = copy.deepcopy(self._HEADER)
-            HEADER["DS"] = get_ds_token(ex_params if ex_params else f"role_id={uid}&server={server_id}")
-        HEADER.update(header)
+        """对 ``ApiEndpoint`` 发起一次带鉴权上下文的米游社请求。
+
+        封装国服/国际服差异与样板逻辑，业务方法只需关心「调哪个 endpoint、
+        传什么参数」，而不必重复拼 header / Cookie / DS / URL。
+
+        处理顺序大致为：
+
+        1. 用 ``check_os(uid, game_name)`` 判断区服；
+        2. 选择 ``_HEADER`` 或 ``_HEADER_OS``；
+        3. 注入 Cookie（显式传入 / 库内 cookie / stoken）；
+        4. 按 ``ds_mode`` 写入 ``DS``；
+        5. 合并调用方 ``header``；
+        6. ``url = endpoint.get(is_os)``，交给 ``_mys_request``。
+
+        Args:
+            endpoint: 成对的 CN/OS 地址（见 ``api.ApiEndpoint``）。
+            uid: 游戏 UID 或账号相关 id；用于区服判断与取 Cookie。
+            method: HTTP 方法，默认 ``GET``。
+            params: Query 参数。
+            data: JSON body（POST 等）；部分 GET 也会带 body。
+            header: 额外请求头，最后合并进默认 header（可覆盖 DS 等）。
+            cookie: 若给定则直接使用，不再查库。
+            cookie_mode: 查库取 cookie 时用 ``OWNER`` 还是 ``RANDOM``。
+            cookie_type:
+                - ``cookie``: ``get_ck``
+                - ``stoken``: ``get_stoken``（如桌面小组件）
+            game_name: 游戏维度，影响区服与 Cookie 查询（``gs`` / ``sr`` / ``zzz`` 等）。
+            ds_mode:
+                - ``auto``: 国际服用 ``generate_os_ds``；国服用
+                  ``get_ds_token(ds_q 或 params 拼串, ds_body 或 data)``
+                - ``web``: ``get_web_ds_token(True)``
+                - ``none``: 不自动写 DS（可在 ``header`` 里自行设置）
+            ds_q: 国服 DS 的 query 串；为 ``None`` 时由 ``params`` 自动拼接。
+            ds_body: 国服 DS 签名用的 body；为 ``None`` 时用 ``data``。
+
+        Returns:
+            成功时为米游社 JSON（``dict``，通常含 ``retcode`` / ``data``）；
+            失败时为错误码 ``int``（如 ``-51`` 无 Cookie，或上游 ``retcode``）。
+
+        Note:
+            底层 ``use_proxy`` 仍会随国际服传入，是否真正走代理取决于
+            ``_mys_request`` 的实现（当前可能尚未接线）。
+        """
+        is_os = self.check_os(uid, game_name)
+        HEADER = copy.deepcopy(self._HEADER_OS if is_os else self._HEADER)
+
         if cookie is not None:
             HEADER["Cookie"] = cookie
-        elif "Cookie" not in HEADER and isinstance(uid, str):
-            ck = await self.get_ck(uid, "RANDOM", request_game_name)
+        else:
+            if cookie_type == "stoken":
+                ck = await self.get_stoken(uid, game_name)
+            else:
+                ck = await self.get_ck(uid, cookie_mode, game_name)
             if ck is None:
                 return -51
             HEADER["Cookie"] = ck
-        data = await self._mys_request(
-            url=_URL,
-            method="GET",
+
+        if ds_mode == "web":
+            HEADER["DS"] = get_web_ds_token(True)
+        elif ds_mode == "auto":
+            if is_os:
+                HEADER["DS"] = generate_os_ds()
+            else:
+                if ds_q is not None:
+                    q = ds_q
+                elif params:
+                    q = "&".join(f"{k}={v}" for k, v in params.items())
+                else:
+                    q = ""
+                body = ds_body if ds_body is not None else data
+                HEADER["DS"] = get_ds_token(q, body)
+
+        if header:
+            HEADER.update(header)
+
+        return await self._mys_request(
+            url=endpoint.get(is_os),
+            method=method,
             header=HEADER,
-            params=params if params else {"role_id": uid, "server": server_id},
-            use_proxy=True if is_os else False,
-            game_name=request_game_name,
+            params=params,
+            data=data,
+            use_proxy=is_os,
+            game_name=game_name,
         )
-        return data
+
+    async def simple_mys_req(
+        self,
+        endpoint: ApiEndpoint,
+        uid: Union[str, bool],
+        params: Dict = {},
+        header: Dict = {},
+        cookie: Optional[str] = None,
+        game_name: Optional[str] = None,
+    ) -> Union[Dict, int]:
+        if isinstance(uid, bool):
+            # 特殊：uid 为 bool 表示 is_os（如米游社账号查询）
+            is_os = uid
+            game = game_name or ("sr" if self.is_sr else "gs")
+            HEADER = copy.deepcopy(self._HEADER_OS if is_os else self._HEADER)
+            if is_os:
+                HEADER["DS"] = generate_os_ds()
+            else:
+                ex_params = "&".join(f"{k}={v}" for k, v in params.items())
+                HEADER["DS"] = get_ds_token(ex_params)
+            HEADER.update(header)
+            if cookie is not None:
+                HEADER["Cookie"] = cookie
+            return await self._mys_request(
+                url=endpoint.get(is_os),
+                method="GET",
+                header=HEADER,
+                params=params,
+                use_proxy=is_os,
+                game_name=game,
+            )
+
+        game = game_name or ("sr" if self.is_sr else "gs")
+        server_id = self.get_server_id(uid, game)
+        req_params = params if params else {"role_id": uid, "server": server_id}
+        return await self.endpoint_request(
+            endpoint,
+            uid,
+            method="GET",
+            params=req_params,
+            header=header or None,
+            cookie=cookie,
+            cookie_mode="RANDOM",
+            game_name=game,
+        )
 
     async def _mys_req_get(
         self,
-        url: str,
+        endpoint: ApiEndpoint,
         is_os: bool,
         params: Dict,
         header: Optional[Dict] = None,
     ) -> Union[Dict, int]:
+        _URL = endpoint.get(is_os)
         if is_os:
-            _URL = self.MAPI[f"{url}_OS"]
             HEADER = copy.deepcopy(self._HEADER_OS)
             use_proxy = True
         else:
-            _URL = self.MAPI[url]
             HEADER = copy.deepcopy(self._HEADER)
             use_proxy = False
         if header:
@@ -429,11 +539,6 @@ class BaseMysApi:
         logger.debug(t("[米游社请求] Url: {url}", url=url))
         logger.debug(t("[米游社请求] Params: {params}", params=params))
         logger.debug(t("[米游社请求] Data: {data}", data=data))
-
-        if use_proxy:
-            proxy = getattr(self, "Gproxy", None)
-        else:
-            proxy = getattr(self, "Nproxy", None)
 
         if not base_url:
             base_url = None
@@ -510,7 +615,6 @@ class BaseMysApi:
                         params=params,
                         json=data,
                         timeout=aiohttp.ClientTimeout(total=time_out),
-                        proxy=proxy,
                     ) as resp:
                         raw_data = await resp.json()
                 except aiohttp.ClientConnectionError:

@@ -1445,7 +1445,11 @@ class User(BaseModel):
 
     @classmethod
     @with_session
-    async def get_all_user(cls: Type[T_User], session: AsyncSession, without_error: bool = True):
+    async def get_all_user(
+        cls: Type[T_User],
+        session: AsyncSession,
+        without_error: bool = True,
+    ) -> Sequence[T_User]:
         """📝简单介绍:
 
             基础`User`类的扩展方法, 获取到全部的数据列表

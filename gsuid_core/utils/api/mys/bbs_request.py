@@ -5,6 +5,7 @@
 from copy import deepcopy
 from typing import Dict, List, Union, cast
 
+from .api import RECEIVE, CALENDAR, REG_TIME, BBS_DETAIL, BBS_COLLECTION
 from .tools import get_web_ds_token
 from .models import RegTime, PostDraw, PostDetail, RolesCalendar
 from .topup_request import TopupMysApi
@@ -12,7 +13,7 @@ from .topup_request import TopupMysApi
 
 class BBSMysApi(TopupMysApi):
     async def get_bbs_post_detail(self, post_id: str):
-        url: str = self.MAPI["BBS_DETAIL_URL"].format(post_id)
+        url: str = BBS_DETAIL.format(post_id)
         header = deepcopy(self._HEADER)
         header["DS"] = get_web_ds_token(web=True)
         data = await self._mys_request(url, "GET", header)
@@ -22,7 +23,7 @@ class BBSMysApi(TopupMysApi):
             return data
 
     async def get_bbs_collection(self, collection_id: str, gids: str = "2"):
-        url: str = self.MAPI["BBS_COLLECTION_URL"]
+        url: str = BBS_COLLECTION.get()
         header = deepcopy(self._HEADER)
         header["DS"] = get_web_ds_token(web=True)
         data = await self._mys_request(
@@ -53,7 +54,7 @@ class BBSMysApi(TopupMysApi):
             "badge_region": self.RECOGNIZE_SERVER.get(uid[0]),
         }
         data = await self.simple_mys_req(
-            "REG_TIME",
+            REG_TIME,
             uid,
             params,
             {"Cookie": f"{hk4e_token};{ck_token}" if int(uid[0]) <= 5 else {}},
@@ -79,7 +80,7 @@ class BBSMysApi(TopupMysApi):
             "activity_id": 20220301153521,
             "year": 2023,
         }
-        data = await self._mys_request(self.MAPI["CALENDAR_URL"], "GET", header, params)
+        data = await self._mys_request(CALENDAR.get(), "GET", header, params)
         if isinstance(data, Dict):
             return cast(RolesCalendar, data["data"])
         return data
@@ -93,7 +94,7 @@ class BBSMysApi(TopupMysApi):
         header = {}
         header["Cookie"] = f"{ck};{hk4e_token}"
         data = await self._mys_request(
-            self.MAPI["RECEIVE_URL"],
+            RECEIVE.get(),
             "POST",
             header,
             {
