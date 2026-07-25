@@ -1133,6 +1133,7 @@
     "🤖 [CapabilityAgent] 加载用户节点失败: {p0}: {e}": "🤖 [CapabilityAgent] Failed to load user node: {p0}: {e}",
     "🤖 [CapabilityAgent] 启动「{p0}」({p1})，工具 {p2} 个，workspace={ws_label}，任务: {p3}...": "🤖 [CapabilityAgent] Starting \"{p0}\" ({p1}), {p2} tools, workspace={ws_label}, task: {p3}...",
     "🤖 [CapabilityAgent] 启动加载用户节点: {count} 个": "🤖 [CapabilityAgent] Loading {count} user nodes on startup",
+    "🤖 [CapabilityAgent] task 工具补检索: +{n} 个 (query={q!r} → {names})": "🤖 [CapabilityAgent] task tool backfill: +{n} (query={q!r} → {names})",
     "🤖 [CapabilityAgent] 工具检索失败: {e}": "🤖 [CapabilityAgent] Tool retrieval failed: {e}",
     "🤖 [CapabilityAgent] 已删除用户节点: {node_id}": "🤖 [CapabilityAgent] User node deleted: {node_id}",
     "🤖 [CapabilityAgent] 已落盘用户节点: {p0} → {p1}": "🤖 [CapabilityAgent] User node persisted: {p0} → {p1}",

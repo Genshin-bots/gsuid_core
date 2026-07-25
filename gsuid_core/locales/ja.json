@@ -1133,6 +1133,7 @@
     "🤖 [CapabilityAgent] 加载用户节点失败: {p0}: {e}": "🤖 [CapabilityAgent] ユーザーノードの読み込みに失敗: {p0}: {e}",
     "🤖 [CapabilityAgent] 启动「{p0}」({p1})，工具 {p2} 个，workspace={ws_label}，任务: {p3}...": "🤖 [CapabilityAgent] 「{p0}」({p1}) を起動、ツール {p2} 個、workspace={ws_label}、タスク: {p3}...",
     "🤖 [CapabilityAgent] 启动加载用户节点: {count} 个": "🤖 [CapabilityAgent] 起動時に {count} 個のユーザーノードを読み込み",
+    "🤖 [CapabilityAgent] task 工具补检索: +{n} 个 (query={q!r} → {names})": "🤖 [CapabilityAgent] task ツール補完検索: +{n} 個 (query={q!r} → {names})",
     "🤖 [CapabilityAgent] 工具检索失败: {e}": "🤖 [CapabilityAgent] ツール検索に失敗: {e}",
     "🤖 [CapabilityAgent] 已删除用户节点: {node_id}": "🤖 [CapabilityAgent] ユーザーノードを削除した: {node_id}",
     "🤖 [CapabilityAgent] 已落盘用户节点: {p0} → {p1}": "🤖 [CapabilityAgent] ユーザーノードを永続化した: {p0} → {p1}",
