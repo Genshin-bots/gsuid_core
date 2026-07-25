@@ -6,19 +6,18 @@ from copy import deepcopy
 from typing import Dict, Union, cast
 
 from .api import (
+    SIGN,
     GS_BASE,
-    SIGN_URL,
-    SIGN_URL_OS,
+    SIGN_SR,
+    SIGN_INFO,
+    SIGN_LIST,
     SIGN_BASE_OS,
-    SIGN_INFO_URL,
-    SIGN_LIST_URL,
-    SIGN_URL_SR_OS,
-    SIGN_INFO_SR_OS,
-    SIGN_LIST_SR_OS,
+    SIGN_INFO_SR,
+    SIGN_LIST_SR,
+    MONTHLY_AWARD,
+    SIGN_INFO_ZZZ,
     SIGN_SR_BASE_OS,
-    SIGN_INFO_URL_OS,
-    SIGN_LIST_URL_OS,
-    SIGN_ZZZ_INFO_URL,
+    ApiEndpoint,
 )
 from .tools import random_hex, generate_os_ds, get_web_ds_token
 from .models import MysSign, SignInfo, SignList, MonthlyAward
@@ -61,22 +60,22 @@ _BASE_URL = {
     "zzz": {"os": SIGN_BASE_OS, "cn": GS_BASE},
 }
 
-_SIGN_END_POINT = {
-    "gs": {"os": SIGN_URL_OS, "cn": SIGN_URL},
-    "sr": {"os": SIGN_URL_SR_OS, "cn": SIGN_URL},
-    "zzz": {"os": SIGN_URL_OS, "cn": SIGN_URL},
+_SIGN_END_POINT: dict[str, ApiEndpoint] = {
+    "gs": SIGN,
+    "sr": SIGN_SR,
+    "zzz": SIGN,
 }
 
-_SIGN_INFO_END_POINT = {
-    "gs": {"os": SIGN_INFO_URL_OS, "cn": SIGN_INFO_URL},
-    "sr": {"os": SIGN_INFO_SR_OS, "cn": SIGN_INFO_URL},
-    "zzz": {"os": SIGN_INFO_URL_OS, "cn": SIGN_ZZZ_INFO_URL},
+_SIGN_INFO_END_POINT: dict[str, ApiEndpoint] = {
+    "gs": SIGN_INFO,
+    "sr": SIGN_INFO_SR,
+    "zzz": SIGN_INFO_ZZZ,
 }
 
-_SIGN_LIST_END_POINT = {
-    "gs": {"os": SIGN_LIST_URL_OS, "cn": SIGN_LIST_URL},
-    "sr": {"os": SIGN_LIST_SR_OS, "cn": SIGN_LIST_URL},
-    "zzz": {"os": SIGN_LIST_URL_OS, "cn": SIGN_LIST_URL},
+_SIGN_LIST_END_POINT: dict[str, ApiEndpoint] = {
+    "gs": SIGN_LIST,
+    "sr": SIGN_LIST_SR,
+    "zzz": SIGN_LIST,
 }
 
 
@@ -89,17 +88,20 @@ class SignMysApi(BBSMysApi):
     ) -> Union[SignList, int]:
         is_os = self.check_os(uid, game_name)
         base_url = _BASE_URL[game_name]["os" if is_os else "cn"]
-        end_point = _SIGN_LIST_END_POINT[game_name]["os" if is_os else "cn"]
+        end_point = _SIGN_LIST_END_POINT[game_name].get(is_os)
         server_id = self.get_server_id(uid, game_name)
         act_id = _ACT_ID[game_name][server_id]
         ck = await self.get_ck(uid, "OWNER", game_name)
         if ck is None:
             return -51
-        header = {"Cookie": ck}
+        header = deepcopy(self._HEADER_OS) if is_os else {"Cookie": ck}
+        header["Cookie"] = ck
         params = {"act_id": act_id, "lang": "zh-cn"}
 
         if is_os:
             header["DS"] = generate_os_ds()
+            header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
+            header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
         else:
             header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
@@ -122,11 +124,12 @@ class SignMysApi(BBSMysApi):
         is_os = self.check_os(uid, game_name)
         server_id = self.get_server_id(uid, game_name)
         base_url = _BASE_URL[game_name]["os" if is_os else "cn"]
-        end_point = _SIGN_INFO_END_POINT[game_name]["os" if is_os else "cn"]
+        end_point = _SIGN_INFO_END_POINT[game_name].get(is_os)
         ck = await self.get_ck(uid, "OWNER", game_name)
         if ck is None:
             return -51
-        header = {"Cookie": ck}
+        header = deepcopy(self._HEADER_OS) if is_os else {"Cookie": ck}
+        header["Cookie"] = ck
         params = {
             "act_id": _ACT_ID[game_name][server_id],
             "lang": "zh-cn",
@@ -136,6 +139,8 @@ class SignMysApi(BBSMysApi):
 
         if is_os:
             header["DS"] = generate_os_ds()
+            header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
+            header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
         else:
             header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
@@ -154,7 +159,7 @@ class SignMysApi(BBSMysApi):
         is_os = self.check_os(uid, game_name)
         server_id = self.get_server_id(uid, game_name)
         base_url = _BASE_URL[game_name]["os" if is_os else "cn"]
-        end_point = _SIGN_END_POINT[game_name]["os" if is_os else "cn"]
+        end_point = _SIGN_END_POINT[game_name].get(is_os)
         data = {
             "act_id": _ACT_ID[game_name][server_id],
             "lang": "zh-cn",
@@ -205,7 +210,7 @@ class SignMysApi(BBSMysApi):
             HEADER["DS"] = get_web_ds_token(True)
             HEADER["x-rpc-device_id"] = random_hex(32)
             data = await self._mys_request(
-                url=self.MAPI["MONTHLY_AWARD_URL"],
+                url=MONTHLY_AWARD.get(),
                 method="GET",
                 header=HEADER,
                 params={
@@ -223,10 +228,11 @@ class SignMysApi(BBSMysApi):
         else:
             HEADER = deepcopy(self._HEADER_OS)
             HEADER["Cookie"] = ck
-            HEADER["x-rpc-device_id"] = random_hex(32)
+            HEADER["x-rpc-device_id"] = await self.get_user_device_id(uid, "gs")
+            HEADER["x-rpc-device_fp"] = await self.get_user_fp(uid, "gs")
             HEADER["DS"] = generate_os_ds()
             data = await self._mys_request(
-                url=self.MAPI["MONTHLY_AWARD_URL_OS"],
+                url=MONTHLY_AWARD.get(True),
                 method="GET",
                 header=HEADER,
                 params={

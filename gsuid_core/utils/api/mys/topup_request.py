@@ -2,6 +2,7 @@ import uuid
 from copy import deepcopy
 from typing import List, Union, Literal, cast
 
+from .api import CHECK_ORDER, FETCH_GOODS, CREATE_ORDER
 from .tools import gen_payment_sign
 from .models import MysGoods, MysOrder, MysOrderCheck
 from .account_request import AccountMysApi
@@ -19,7 +20,7 @@ class TopupMysApi(AccountMysApi):
             "account": "1",
         }
         resp = await self._mys_request(
-            url=self.MAPI["fetchGoodsurl"],
+            url=FETCH_GOODS.get(),
             method="POST",
             data=data,
         )
@@ -72,7 +73,7 @@ class TopupMysApi(AccountMysApi):
         HEADER["x-rpc-device_id"] = device_id
         HEADER["x-rpc-client_type"] = "4"
         resp = await self._mys_request(
-            url=self.MAPI["CreateOrderurl"],
+            url=CREATE_ORDER.get(),
             method="POST",
             header=HEADER,
             data=data,
@@ -94,7 +95,7 @@ class TopupMysApi(AccountMysApi):
             "uid": uid,
         }
         resp = await self._mys_request(
-            url=self.MAPI["CheckOrderurl"],
+            url=CHECK_ORDER.get(),
             method="GET",
             header=HEADER,
             params=data,

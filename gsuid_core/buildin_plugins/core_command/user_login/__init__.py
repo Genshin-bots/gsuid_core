@@ -1,7 +1,7 @@
 import json
 import random
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
@@ -90,11 +90,21 @@ async def send_check_cookie(bot: Bot, ev: Event):
 
 @sv_data_manger.on_fullmatch(("校验全部Stoken"), block=True)
 async def send_check_stoken(bot: Bot, ev: Event):
-    user_list = await GsUser.get_all_user()
+    user_list: Sequence[GsUser] = await GsUser.get_all_user()
     invalid_user: List[GsUser] = []
     for user in user_list:
         if user.stoken and user.mys_id:
-            mys_data = await mys_api.get_cookie_token_by_stoken("", user.mys_id, user.stoken)
+            is_os = bool(
+                (user.uid and mys_api.check_os(user.uid, "gs"))
+                or (user.sr_uid and mys_api.check_os(user.sr_uid, "sr"))
+                or (user.zzz_uid and mys_api.check_os(user.zzz_uid, "zzz"))
+            )
+            mys_data = await mys_api.get_cookie_token_by_stoken(
+                "",
+                user.mys_id,
+                user.stoken,
+                is_os=is_os,
+            )
             if isinstance(mys_data, int) and user.uid:
                 await GsUser.update_data_by_uid(user.uid, ev.bot_id, stoken=None)
                 invalid_user.append(user)
