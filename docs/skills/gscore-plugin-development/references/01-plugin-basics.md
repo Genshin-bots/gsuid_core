@@ -22,7 +22,7 @@ gsuid_core/plugins/MyPlugin/                 ← 插件根目录（仓库名）
     │   └── __init__.py
     ├── myplugin_roleinfo/                   ← 业务子模块
     │   ├── __init__.py
-    │   ├── draw_roleinfo.py                 ← 图片渲染层（PIL / htmlkit）
+    │   ├── draw_roleinfo.py                 ← 图片渲染层（PIL / pytakumi）
     │   └── texture2d/                       ← 子模块专属静态资源
     ├── myplugin_help/                       ← 帮助子模块
     │   ├── __init__.py
@@ -117,9 +117,9 @@ dependencies = [
     "httpx>=0.24.0",
     "pillow>=9.0.0",
     "aiofiles>=23.0.0",
-    # 仅当需要 HTML 渲染时（详见第九章）
-    # "pyrenderhtml>=0.0.5",
-    # 仅当 PIL / htmlkit 都不够时
+    # 仅当需要 HTML 渲染时（详见第九章；Core 已内置 pytakumi，一般无需重复声明）
+    # "pytakumi>=0.1.0",
+    # 仅当 PIL / pytakumi 都不够时
     # "playwright>=1.49.0",
 ]
 ```

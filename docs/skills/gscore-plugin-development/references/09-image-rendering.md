@@ -8,12 +8,12 @@ GsCore 中**首选 PIL 直接绘图**——可控、轻量、无外部依赖、�
 | 档位 | 库 | 适用场景 | 主要缺点 |
 |------|----|---------|---------|
 | **① PIL（首选）** | `Pillow` + `gsuid_core.utils.image.image_tools` | 角色面板 / 卡片 / 排行榜 / 半结构化展示 | 排版手写、长文本麻烦 |
-| **② htmlkit（推荐）** | `gsuid_core.utils.html_render.render_html_to_bytes / render_md_to_bytes` | Markdown 报告 / 表格 / 简单 HTML | 不能跑 JS、不渲染 SVG 动画 |
+| **② pytakumi（推荐）** | `gsuid_core.utils.html_render.render_html_to_bytes / render_md_to_bytes` | Markdown 报告 / 表格 / 简单 HTML | 不能跑 JS、非完整浏览器 CSS |
 | **③ playwright（兜底）** | `playwright.async_api.async_playwright` | 需要 JS / Plotly / ECharts / 图表交互的复杂可视化 | 启动重、依赖 chromium、首次需 `playwright install` |
 
 > **决策口诀**：
 > - 能用 PIL 拼出来的，就不要走 HTML。
-> - 能用 htmlkit 渲染纯 HTML / Markdown 的，就不要拉 playwright。
+> - 能用 pytakumi 渲染纯 HTML / Markdown 的，就不要拉 playwright。
 > - 只有"非 JS 引擎渲染不出来"的图（K线、云图、3D Plotly）才上 playwright，并显式声明
 >   `playwright>=1.49.0` 依赖、写明用户需手动 `playwright install`。
 
@@ -56,9 +56,10 @@ async def render_role_card(uid: str, name: str, data: dict) -> bytes:
 
 **用 `core_font(size)` 拿字体**（自动选用框架预置的中英文兜底字体），不要 hardcode 字体路径。
 
-## 9.3 htmlkit 范式（推荐）
+## 9.3 pytakumi 范式（推荐）
 
-适合一次性、不需要交互的 Markdown 报告 / 简单 HTML 卡片。**框架已封装**，直接 import 用：
+适合一次性、不需要交互的 Markdown 报告 / 简单 HTML 卡片。**框架已封装**，直接 import 用
+（底层是 [pytakumi](https://pypi.org/project/pytakumi/)，无 headless 浏览器）：
 
 ```python
 from gsuid_core.utils.html_render import (
@@ -92,12 +93,14 @@ async def render_dashboard(html: str) -> bytes:
 
 `pyproject.toml` 中显式声明依赖：
 ```toml
-dependencies = ["pyrenderhtml>=0.0.5"]
+dependencies = ["pytakumi>=0.1.0"]
 ```
+
+框架会自动注册内置 `MiSans` 中文字体；一般插件无需再管 fontconfig。
 
 ## 9.4 playwright 范式（兜底）
 
-只在 PIL / htmlkit 都不够用时才上 playwright（K 线 / 云图 / Plotly / ECharts 等）。
+只在 PIL / pytakumi 都不够用时才上 playwright（K 线 / 云图 / Plotly / ECharts 等）。
 参考 `SayuStock/SayuStock/utils/image.py`：
 
 ```python

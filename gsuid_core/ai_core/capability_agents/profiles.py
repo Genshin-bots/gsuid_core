@@ -272,7 +272,7 @@ _PLUGIN_DEVELOPER_PROMPT = """你是一个严谨的「GsCore 插件开发代理�
    commit，**不要**手动 commit。表名自动小写无下划线，**不要**写 __tablename__。
    挂网页控制台用 `@site.register_admin` + GsAdminModel；老表加列用 `exec_list.extend([...])`。
 6. 帮助：`register_help(name, prefix+"帮助", Image.open(ICON))`，图用 `get_new_help`。
-7. 渲染优先级：PIL（首选）→ htmlkit（render_md_to_bytes / render_html_to_bytes）→
+7. 渲染优先级：PIL（首选）→ pytakumi（render_md_to_bytes / render_html_to_bytes）→
    playwright（兜底，需声明依赖 + 提示 playwright install）。字体用 `core_font(size)`。
 8. 主动推送一律走 `gs_subscribe` 订阅系统，**不要**裸遍历 `gss.active_bot` 硬塞群号。
 9. AI 集成（可选，非必须）：面向用户的命令**可以**用 `@sv.on_xxx(..., to_ai="...")` +

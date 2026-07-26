@@ -1,4 +1,7 @@
 {
-  "log.htmlrender.fontconfig_initialization": "[HTMLRender] fontconfig の初期化に失敗: {e}",
-  "log.htmlrender.fontconfig_initialized": "[HTMLRender] fontconfig の初期化に成功"
+  "log.htmlrender.fontconfig_initialization": "[HTMLRender] レンダラーの初期化に失敗: {e}",
+  "log.htmlrender.fontconfig_initialized": "[HTMLRender] レンダラーの初期化に成功",
+  "log.htmlrender.renderer_initialization": "[HTMLRender] レンダラーの初期化に失敗: {e}",
+  "log.htmlrender.renderer_initialized": "[HTMLRender] レンダラー初期化成功、フォント: {fonts}",
+  "log.htmlrender.font_register_failed": "[HTMLRender] フォント登録に失敗: {e}"
 }

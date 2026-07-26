@@ -85,8 +85,9 @@ GsCore 的依赖由 [`pyproject.toml`](../../../pyproject.toml) 描述，安装�
 
 ## 1.4 Playwright 与 Chromium（可选）
 
-Core 内置 HTML 渲染管线（`pyhtmlrender` / `playwright`）。源码裸跑首次启动会**自动
-下载 Chromium**（约 130MB），慢的话可手动加速：
+Core 内置 HTML 渲染管线（`pytakumi` 负责纯 HTML/Markdown 出图；`playwright` 作
+JS/复杂图表兜底）。源码裸跑首次启动若走 playwright 路径会**自动下载 Chromium**
+（约 130MB），慢的话可手动加速：
 
 ```sh
 # 单独触发浏览器下载
