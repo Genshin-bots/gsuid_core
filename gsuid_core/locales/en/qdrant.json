@@ -1,0 +1,5 @@
+{
+  "log.qdrant.get_collection_fail": "[Qdrant] Failed to fetch collection {collection_name} info; cannot verify payload indexes: {error}",
+  "log.qdrant.keyword_index_created": "[Qdrant] Created keyword index on collection {collection_name}: {field}",
+  "log.qdrant.keyword_index_fail": "[Qdrant] Failed to create keyword index {field} on collection {collection_name}: {error}"
+}

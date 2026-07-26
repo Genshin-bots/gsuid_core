@@ -158,7 +158,7 @@ async def record_violation(
     )
     logger.warning(
         t(
-            "📋 [Kanban] 工作区越界 task={task_id} root={root_task_id}: {p0}",
+            "log.ai.kanban_workspace_boundary_violation",
             task_id=task_id,
             root_task_id=root_task_id,
             p0=detail[:200],
@@ -342,7 +342,7 @@ async def put_artifact(
             return None
         # 安全闸刀：登记的文件必须落在 workspace 内（避免登记越界路径，绕过沙盒）
         if not _is_inside(src, workspace):
-            logger.warning(t("📋 [Kanban] artifact_put 拒绝登记越界文件: {src} 不在 workspace 内", src=src))
+            logger.warning(t("log.ai.kanban_artifact_put_refused_register", src=src))
             return None
         suffix = src.suffix.lower()
         resolved_mime = mime or _EXT_TO_MIME.get(suffix, "application/octet-stream")

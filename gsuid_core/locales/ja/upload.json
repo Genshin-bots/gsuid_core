@@ -1,0 +1,19 @@
+{
+  "log.upload.custom_response": "[custom / upload] {response}",
+  "log.upload.custom_upload_delete_implemented": "[custom / upload] delete は未実装...",
+  "log.upload.custom_upload_event": "[custom / upload] アップロード開始...",
+  "log.upload.custom_upload_fail_failed": "[custom / upload] アップロード失敗！",
+  "log.upload.s3_delete_deletion": "[S3 / delete] 削除開始...",
+  "log.upload.s3_delete_deletion_succeeded": "[S3 / delete] 削除成功！",
+  "log.upload.s3_upload_ok_succeeded": "[S3 / upload] アップロード成功！",
+  "log.upload.s3_upload_path_load": "[S3 / upload] PATH: {path}",
+  "log.upload.s3_upload_start_starting": "[S3 / upload] アップロード開始...",
+  "log.upload.s3_upload_url_load": "[S3 / upload] URL: {url}",
+  "log.upload.sm_ms_upload_deletion": "[sm.ms / upload] 削除開始...",
+  "log.upload.sm_ms_upload_event": "[sm.ms / upload] アップロード開始...",
+  "log.upload.sm_ms_upload_fail_failed": "[sm.ms / upload] アップロード失敗！",
+  "log.upload.sm_ms_upload_image_exists": "[sm.ms / upload] 画像はすでに存在する！",
+  "log.upload.sm_ms_upload_retrieve_image": "[sm.ms / upload] 画像の取得に失敗！",
+  "log.upload.smms_delete_response": "[sm.ms / delete] {response}",
+  "log.upload.smms_upload_response": "[sm.ms / upload] {response}"
+}

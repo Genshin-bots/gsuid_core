@@ -1,0 +1,3 @@
+{
+  "log.ambr.ambrrequest_url_method_params": "[AmbrRequest] {url} {method} {params} {data}"
+}

@@ -54,7 +54,7 @@ async def fetch_webpage_as_markdown(
     if not url.startswith(("http://", "https://")):
         raise ValueError(t("无效的 URL: {url}，必须以 http:// 或 https:// 开头", url=url))
 
-    logger.info(t("🌐 [WebFetch] 正在抓取网页: {url}", url=url))
+    logger.info(t("log.ai.webfetch_url_fetching_webpage", url=url))
 
     try:
         async with aiohttp.ClientSession(
@@ -75,7 +75,7 @@ async def fetch_webpage_as_markdown(
                 html_content = await response.text()
 
     except aiohttp.ClientError as e:
-        logger.error(t("🌐 [WebFetch] 网络请求失败: {url}, 错误: {e}", url=url, e=e))
+        logger.error(t("log.ai.webfetch_network_request_url_fail", url=url, e=e))
         raise ValueError(t("网络请求失败: {e}", e=e)) from e
 
     # 使用 BeautifulSoup 清理 HTML，完全移除无关标签及其内容
@@ -116,7 +116,7 @@ async def fetch_webpage_as_markdown(
         cleaned_html = str(main_content)
 
     except Exception as e:
-        logger.error(t("🌐 [WebFetch] HTML 清理失败: {url}, 错误: {e}", url=url, e=e))
+        logger.error(t("log.ai.webfetch_html_cleanup_url_fail", url=url, e=e))
         raise ValueError(t("HTML 清理失败: {e}", e=e)) from e
 
     # 使用 markdownify 将清理后的 HTML 转换为 Markdown
@@ -127,7 +127,7 @@ async def fetch_webpage_as_markdown(
             bullets="-",  # 使用 - 作为列表符号
         )
     except Exception as e:
-        logger.error(t("🌐 [WebFetch] HTML 转 Markdown 失败: {url}, 错误: {e}", url=url, e=e))
+        logger.error(t("log.ai.webfetch_html_markdown_conversion_fail", url=url, e=e))
         raise ValueError(t("HTML 转 Markdown 失败: {e}", e=e)) from e
 
     # 清理多余的空行
@@ -151,14 +151,14 @@ async def fetch_webpage_as_markdown(
         result = result[:max_length] + "\n\n...(内容已截断)"
         logger.warning(
             t(
-                "🌐 [WebFetch] 内容过长已截断: {url}, 原始长度: {p0}, 截断至: {max_length}",
+                "log.ai.webfetch_content_long_truncated",
                 url=url,
                 p0=len(markdown_content),
                 max_length=max_length,
             )
         )
 
-    logger.info(t("🌐 [WebFetch] 抓取完成: {url}, Markdown 长度: {p0} 字符", url=url, p0=len(result)))
+    logger.info(t("log.ai.webfetch_fetch_url_markdown_ok", url=url, p0=len(result)))
 
     return result
 

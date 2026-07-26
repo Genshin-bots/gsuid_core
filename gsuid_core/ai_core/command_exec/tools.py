@@ -66,7 +66,7 @@ async def _execute_and_report(ev: Optional[Event], plan: CommandPlan, timeout: i
         return f"❌ 执行失败：{err}"
     await audit.log(ev, plan, Decision.ALLOW, "", result=result)
     if cfg_get("notify_master_on_exec"):
-        logger.info(t("🧰 [CommandExec] 自动放行执行完成: {p0}", p0=plan.raw))
+        logger.info(t("log.ai.commandexec_auto_allow", p0=plan.raw))
     return _format_result(plan.raw, result)
 
 

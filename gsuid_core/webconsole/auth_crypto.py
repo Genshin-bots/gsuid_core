@@ -126,9 +126,7 @@ class AuthKeyStore:
         )
 
         fp = self.fingerprint(self._current_pub_bytes)
-        logger.info(
-            t("🔒️ [网页控制台] 认证加密密钥已生成 key_id={p0} pubkey_fingerprint={fp}", p0=self._current_key_id, fp=fp)
-        )
+        logger.info(t("log.webconsole.authentication_encryption_key_generated", p0=self._current_key_id, fp=fp))
 
     @staticmethod
     def fingerprint(pub_bytes: bytes) -> str:
@@ -175,9 +173,7 @@ class AuthKeyStore:
             format=serialization.PublicFormat.Raw,
         )
         fp = self.fingerprint(self._current_pub_bytes)
-        logger.info(
-            t("🔒️ [网页控制台] 认证加密密钥已轮换 key_id={p0} pubkey_fingerprint={fp}", p0=self._current_key_id, fp=fp)
-        )
+        logger.info(t("log.webconsole.authentication_encryption_key_rotated", p0=self._current_key_id, fp=fp))
 
     def derive_key(self, key_id: str, client_pub_b64: str) -> bytes:
         """用服务端私钥 + 客户端公钥做 ECDH + HKDF，派生 32B 对称密钥。"""
@@ -307,12 +303,12 @@ def register_key_rotation_job() -> None:
         )
         logger.info(
             t(
-                "🔒️ [网页控制台] 认证密钥轮换定时任务已注册（每 {KEY_ROTATION_INTERVAL_HOURS}h）",
+                "log.webconsole.key_rotation_interval_hours",
                 KEY_ROTATION_INTERVAL_HOURS=KEY_ROTATION_INTERVAL_HOURS,
             )
         )
     except Exception as e:
-        logger.warning(t("🔒️ [网页控制台] 认证密钥轮换任务注册失败（不影响认证）: {e}", e=e))
+        logger.warning(t("log.webconsole.register_authentication_key_rotation_fail", e=e))
 
 
 # 模块导入即登记轮换任务（与框架既有"模块级 scheduler.add_job"一致；replace_existing 保证

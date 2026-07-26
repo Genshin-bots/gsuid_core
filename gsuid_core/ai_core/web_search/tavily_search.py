@@ -156,7 +156,7 @@ async def tavily_search(
     api_key_pool = _get_api_key_pool()
 
     if not api_key_pool:
-        logger.warning(t("🌐 [WebSearch] Tavily API Key 未配置，跳过搜索"))
+        logger.warning(t("log.ai.websearch_tavily_api_key_skip"))
         return []
 
     if max_results is None:
@@ -181,14 +181,14 @@ async def tavily_search(
                 api_key=api_key,
             )
 
-            logger.info(t("🌐 [WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果", query=query, p0=len(results)))
+            logger.info(t("log.ai.websearch_tavily_search_query", query=query, p0=len(results)))
             return results
 
         except Exception:
-            logger.warning(t("🌐 [WebSearch][Tavily] api_key ...{p0} 失败，尝试下一个", p0=api_key[-4:]))
+            logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:]))
             continue
 
-    logger.error(t("🌐 [WebSearch][Tavily] 所有 api_key 均失败"))
+    logger.error(t("log.ai.websearch_tavily_api_keys"))
     return []
 
 
@@ -212,7 +212,7 @@ async def tavily_search_with_context(
     api_key_pool = _get_api_key_pool()
 
     if not api_key_pool:
-        logger.warning(t("🌐 [WebSearch] Tavily API Key 未配置，跳过搜索"))
+        logger.warning(t("log.ai.websearch_tavily_api_key_skip"))
         return {"results": [], "answer": None}
 
     tried_keys = set()
@@ -233,7 +233,7 @@ async def tavily_search_with_context(
 
             logger.info(
                 t(
-                    "🌐 [WebSearch][Tavily] 带上下文搜索: {query}, 返回 {p0} 条结果",
+                    "log.ai.websearch_tavily_search_context",
                     query=query,
                     p0=len(result["results"]),
                 )
@@ -241,8 +241,8 @@ async def tavily_search_with_context(
             return result
 
         except Exception:
-            logger.warning(t("🌐 [WebSearch][Tavily] api_key ...{p0} 失败，尝试下一个", p0=api_key[-4:]))
+            logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:]))
             continue
 
-    logger.error(t("🌐 [WebSearch][Tavily] 所有 api_key 均失败"))
+    logger.error(t("log.ai.websearch_tavily_api_keys"))
     return {"results": [], "answer": None}

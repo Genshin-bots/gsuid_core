@@ -11,13 +11,13 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 
 async def init_command_exec() -> None:
     if not ai_config.get_config("enable").data:
-        logger.info(t("🧰 [CommandExec] AI总开关已关闭,跳过命令执行器初始化"))
+        logger.info(t("log.ai.commandexec_master_switch_skipping"))
         return
 
     from gsuid_core.ai_core.command_exec.config import command_exec_config
 
     if not command_exec_config.get_config("enable").data:
-        logger.info(t("🧰 [CommandExec] 未启用,跳过（可在 WebConsole 开启）"))
+        logger.info(t("log.ai.commandexec_enabled_skipping_webconsole"))
         return
 
     # 导入即触发 @ai_tools 注册（run_command 等）。
@@ -28,7 +28,7 @@ async def init_command_exec() -> None:
 
     register_command_approval_category()
     _schedule_audit_ttl_cleanup()
-    logger.info(t("🧰 [CommandExec] 初始化完成"))
+    logger.info(t("log.ai.commandexec_initialization"))
 
 
 def _schedule_audit_ttl_cleanup() -> None:
@@ -40,7 +40,7 @@ def _schedule_audit_ttl_cleanup() -> None:
         try:
             await audit.cleanup_expired()
         except Exception as e:
-            logger.exception(t("🧰 [CommandExec] 审计 TTL 清理失败: {e}", e=e))
+            logger.exception(t("log.ai.commandexec_audit_ttl_cleanup", e=e))
 
     scheduler.add_job(
         func=_job,
@@ -51,4 +51,4 @@ def _schedule_audit_ttl_cleanup() -> None:
         name="命令执行审计 TTL 清理（每日 04:30）",
         replace_existing=True,
     )
-    logger.info(t("🧰 [CommandExec] 审计 TTL 清理 job 已注册（每日 04:30）"))
+    logger.info(t("log.ai.commandexec_audit_ttl_cleanup_register"))

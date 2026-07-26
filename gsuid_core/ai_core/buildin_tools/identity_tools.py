@@ -101,7 +101,7 @@ async def remember_user_alias(
     if _normalize_alias_for_guard(alias) in _PROTECTED_NORMALIZED and caller_pm != 0:
         logger.warning(
             t(
-                "🧠 [Identity] 用户{target_id}(pm={caller_pm}) 试图注册受保护称谓「{alias}」，已拒绝",
+                "log.ai.identity_user_target_id_pm",
                 target_id=target_id,
                 caller_pm=caller_pm,
                 alias=alias,
@@ -117,7 +117,7 @@ async def remember_user_alias(
         ids = await record_member_alias(scope_key, alias, str(target_id))
         logger.info(
             t(
-                "🧠 [Identity] {scope_key} 记住称呼: {alias} = 用户{target_id}（候选 {ids}）",
+                "log.ai.identity_scope_key_remember",
                 scope_key=scope_key,
                 alias=alias,
                 target_id=target_id,
@@ -134,5 +134,5 @@ async def remember_user_alias(
             )
         return f"已记住：{alias} = 用户{target_id}"
     except Exception as e:
-        logger.exception(t("🧠 [Identity] 记忆称呼失败: {e}", e=e))
+        logger.exception(t("log.ai.identity_remember_alias", e=e))
         return f"操作失败：{e}"

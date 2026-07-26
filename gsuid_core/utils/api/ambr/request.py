@@ -252,7 +252,7 @@ async def _ambr_request(
 ) -> Optional[AnyDict]:
     logger.debug(
         t(
-            "log.ambr.request",
+            "log.ambr.ambrrequest_url_method_params",
             url=url,
             method=method,
             params=params,

@@ -51,7 +51,7 @@ async def sget(url: str, use_cache: bool = False) -> httpx.Response:
         if cached is not None:
             return cached
 
-    logger.info(t("[Sget] 开始下载内容: {url}", url=url))
+    logger.info(t("log.image.sget_content_download_url", url=url))
     timeout = httpx.Timeout(
         connect=_SGET_CONNECT_TIMEOUT,
         read=_SGET_READ_TIMEOUT,

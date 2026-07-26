@@ -1,0 +1,16 @@
+{
+  "log.image.base64_guess_format_fail": "[img2b64] Error guessing image format: {error}",
+  "log.image.base64_process_fail": "[img2b64] Error processing image: {error}",
+  "log.image.gscore_attempting_retrieve_miyoushe": "[GsCore] Attempting to retrieve Miyoushe post...",
+  "log.image.gscore_miyoushe_post_retrieved_ok": "[GsCore] Miyoushe post retrieved successfully! Starting processing...",
+  "log.image.gscore_parse_post_content": "[GsCore] Starting to parse post content...",
+  "log.image.gscore_post_parsing_processing": "[GsCore] Post parsing complete! Starting image processing...",
+  "log.image.gscore_processing": "[GsCore] Image processing complete!",
+  "log.image.gscore_processing_2": "[GsCore] Image processing complete!",
+  "log.image.gscore_processing_image": "[GsCore] Processing image....",
+  "log.image.gscore_processing_tag": "[GsCore] Processing TAG: {p0}",
+  "log.image.item_error": "Image format may be incorrect: {item}",
+  "log.image.sget_content_download_url": "[Sget] Starting content download: {url}",
+  "log.image.url_error_download_fail": "[Avatar Download Failed] Using default avatar: {url}, error: {error}",
+  "log.image.url_error_download_fail_2": "[Group Avatar Download Failed] Using default avatar: {url}, error: {error}"
+}

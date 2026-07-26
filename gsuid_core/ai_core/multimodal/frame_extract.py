@@ -114,7 +114,7 @@ async def extract_frames_ffmpeg(
 
         logger.info(
             t(
-                "🎬 [FrameExtract] 抽帧完成: 每 {interval}s 一帧, 共 {n} 帧(上限 {limit})",
+                "log.ai.frameextract_frame_extraction_interval_ok",
                 interval=interval,
                 n=len(frames),
                 limit=limit,

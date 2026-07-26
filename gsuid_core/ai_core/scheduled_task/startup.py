@@ -20,14 +20,14 @@ async def init_scheduled_tasks():
     如果 AI 总开关关闭，则跳过加载。
     """
     if not ai_config.get_config("enable").data:
-        logger.info(t("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务加载"))
+        logger.info(t("log.scheduler.skip_load_task_master_ai_switch"))
         return
 
     try:
         count = await reload_pending_tasks()
-        logger.info(t("✅ [ScheduledTask] 定时任务调度器初始化完成，加载了 {count} 个待执行任务", count=count))
+        logger.info(t("log.scheduler.sched_scheduled_task_initialization", count=count))
     except Exception as e:
-        logger.error(t("❌ [ScheduledTask] 定时任务调度器初始化失败: {e}", e=e))
+        logger.error(t("log.scheduler.sched_scheduled_task_initialization_fail", e=e))
 
 
 @on_core_shutdown
@@ -39,11 +39,11 @@ async def shutdown_scheduled_tasks():
     避免重启后重复触发已完成的任务。
     """
     if not ai_config.get_config("enable").data:
-        logger.info(t("⏰ [ScheduledTask] AI总开关已关闭，跳过定时任务关闭清理"))
+        logger.info(t("log.scheduler.sched_master_ai_switch_skipping"))
         return
 
     try:
         count = await cleanup_completed_tasks()
-        logger.info(t("✅ [ScheduledTask] 定时任务调度器关闭完成，清理了 {count} 个已完成任务", count=count))
+        logger.info(t("log.scheduler.sched_scheduled_task_shutdown", count=count))
     except Exception as e:
-        logger.error(t("❌ [ScheduledTask] 定时任务调度器关闭失败: {e}", e=e))
+        logger.error(t("log.scheduler.sched_scheduled_task_shutdown_2", e=e))

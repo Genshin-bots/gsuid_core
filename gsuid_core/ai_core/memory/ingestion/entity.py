@@ -70,8 +70,7 @@ async def extract_and_upsert_entities(
                 continue
             logger.warning(
                 t(
-                    "🧠 [Memory] scope={scope_key} 实体写入重试 {_ENTITY_UPSERT_MAX_RETRY}"
-                    " 次仍失败（{p0}），跳过本窗口实体（不影响其它窗口）",
+                    "log.memory.scope_key_entity_upsert",
                     scope_key=scope_key,
                     _ENTITY_UPSERT_MAX_RETRY=_ENTITY_UPSERT_MAX_RETRY,
                     p0=type(_e).__name__,

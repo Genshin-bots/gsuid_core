@@ -407,6 +407,10 @@ def _collect_logger_violations(parsed: _ParsedSource) -> Tuple[List[str], int]:
             )
             if not is_static_key:
                 violations.append(f"L{node.lineno}: logger 中的 t() 必须使用静态字符串 key: {ast.unparse(node)}")
+                continue
+            key = source.args[0].value
+            if not re.match(r"^log\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$", key):
+                violations.append(f"L{node.lineno}: logger t() key 必须为 log.<module>.<semantic>，实际: {key!r}")
     return violations, count
 
 
@@ -437,7 +441,7 @@ def _reject_duplicate_keys(pairs: List[Tuple[str, object]]) -> Dict[str, object]
     return result
 
 
-def _load_catalog(path: Path) -> Dict[str, str]:
+def _load_catalog_file(path: Path) -> Dict[str, str]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
@@ -453,7 +457,22 @@ def _load_catalog(path: Path) -> Dict[str, str]:
 
 
 def _load_catalogs() -> Dict[str, Dict[str, str]]:
-    return {path.stem: _load_catalog(path) for path in sorted(_LOCALES.glob("*.json"))}
+    """支持 ``locales/<lang>/*.json`` 目录布局；兼容遗留单文件 ``locales/<lang>.json``。"""
+    catalogs: Dict[str, Dict[str, str]] = {}
+    if not _LOCALES.is_dir():
+        return catalogs
+    for path in sorted(_LOCALES.iterdir()):
+        if path.is_dir() and not path.name.startswith((".", "_")):
+            merged: Dict[str, str] = {}
+            for f in sorted(path.glob("*.json")):
+                part = _load_catalog_file(f)
+                overlap = set(merged) & set(part)
+                assert not overlap, f"{path.name}/ 模块间重复 key: {sorted(overlap)[:20]}"
+                merged.update(part)
+            catalogs[path.name] = merged
+        elif path.is_file() and path.suffix == ".json":
+            catalogs[path.stem] = _load_catalog_file(path)
+    return catalogs
 
 
 def _placeholder_signature(text: str) -> Tuple[Counter, Counter]:
@@ -490,7 +509,7 @@ logger.warning(message)
 stdlib_logger = logging.getLogger(__name__)
 stdlib_logger.error("stdlib literal")
 struct_logger = structlog.get_logger("test")
-struct_logger.info(i18n_t("log.good"))
+struct_logger.info(i18n_t("log.good.ok"))
 logger.exception(error)
 """
     )
@@ -499,7 +518,7 @@ logger.exception(error)
     assert len(violations) == 5
     assert any("trace literal" in item for item in violations)
     assert any("logger.warning(message)" in item for item in violations)
-    assert not any("log.good" in item for item in violations)
+    assert not any("log.good.ok" in item for item in violations)
 
 
 def test_all_framework_logger_messages_use_i18n() -> None:
@@ -518,9 +537,15 @@ def test_all_framework_logger_messages_use_i18n() -> None:
 
 def test_locale_files_match_declared_languages() -> None:
     declared = _declared_languages()
-    files = {path.stem for path in _LOCALES.glob("*.json")}
-    assert declared == files, (
-        f"Lang 与 locale 文件不一致：仅 Lang={sorted(declared - files)}，仅文件={sorted(files - declared)}"
+    # 语言目录 或 遗留单文件
+    found: Set[str] = set()
+    for path in _LOCALES.iterdir():
+        if path.name.startswith((".", "_")):
+            continue
+        if path.is_dir() or (path.is_file() and path.suffix == ".json"):
+            found.add(path.stem if path.is_file() else path.name)
+    assert declared == found, (
+        f"Lang 与 locale 布局不一致：仅 Lang={sorted(declared - found)}，仅磁盘={sorted(found - declared)}"
     )
 
 
@@ -528,7 +553,7 @@ def test_locale_catalogs_have_identical_keys_and_placeholders() -> None:
     catalogs = _load_catalogs()
     assert catalogs, "未找到 locale JSON"
     reference_lang = "zh-cn"
-    assert reference_lang in catalogs, "缺少基准语言 zh-cn.json"
+    assert reference_lang in catalogs, "缺少基准语言 zh-cn/"
     reference = catalogs[reference_lang]
     offenders: List[str] = []
 
@@ -579,3 +604,68 @@ def test_static_i18n_keys_exist_and_format_kwargs_are_complete() -> None:
 def test_duplicate_locale_key_detector_is_active() -> None:
     with pytest.raises(ValueError, match="重复 key"):
         json.loads('{"same": "first", "same": "second"}', object_pairs_hook=_reject_duplicate_keys)
+
+
+def test_log_keys_get_module_emoji_assembly() -> None:
+    from gsuid_core.i18n import t, load_catalogs, ensure_log_emoji, starts_with_emoji
+
+    load_catalogs()
+    catalogs = _load_catalogs()
+    sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.server.")), None)
+    assert sample is not None
+    text = t(sample, lang="zh-cn")
+    assert starts_with_emoji(text) or text == sample
+    # 无 emoji 的 value 应被装配
+    assert ensure_log_emoji("log.meme.foo", "hello").startswith("🎭")
+
+
+def test_msg_keys_do_not_get_log_emoji() -> None:
+    """HTTP/API 用户文案使用 msg.*，不得被 ensure_log_emoji 加前缀。"""
+    from gsuid_core.i18n import t, load_catalogs, starts_with_emoji
+
+    load_catalogs()
+    catalogs = _load_catalogs()
+    msg_keys = [k for k in catalogs["zh-cn"] if k.startswith("msg.")]
+    assert msg_keys, "应存在 msg.* 词条（API 文案命名空间）"
+    for key in msg_keys:
+        text = t(key, lang="zh-cn", **{name: "x" for name in _placeholder_names(catalogs["zh-cn"][key])})
+        assert not starts_with_emoji(text), f"{key} 不应带日志 emoji: {text!r}"
+
+
+def _placeholder_names(template: str) -> list[str]:
+    return [m.group(1) for m in _BRACE_FIELD_RE.finditer(template)]
+
+
+def test_plugin_locales_register_without_touching_framework_dir() -> None:
+    """插件词条只存在于插件目录，由 register 摄入，不得写入框架 locales。"""
+    from gsuid_core.i18n import (
+        t,
+        load_catalogs,
+        plugin_locale_key_count,
+        unregister_plugin_locales,
+        discover_and_register_plugin_locales,
+    )
+
+    plugin_root = _SRC / "plugins" / "GenshinUID"
+    locales = plugin_root / "locales"
+    assert locales.is_dir(), "GenshinUID 应自带 locales/"
+    # 框架 locales 不得出现 genshinuid 专有 key 文件污染（仅运行时合并）
+    for lang_dir in _LOCALES.iterdir():
+        if not lang_dir.is_dir():
+            continue
+        for f in lang_dir.glob("*.json"):
+            data = json.loads(f.read_text(encoding="utf-8"))
+            bad = [k for k in data if k.startswith("log.genshinuid.")]
+            assert not bad, f"框架 {f} 不应含插件词条: {bad[:5]}"
+
+    load_catalogs()
+    unregister_plugin_locales("GenshinUID")
+    n = discover_and_register_plugin_locales(plugin_root, "GenshinUID")
+    assert n > 0
+    assert plugin_locale_key_count("GenshinUID") > 0
+    # 任取插件 key
+    sample_path = locales / "zh-cn" / "logs.json"
+    keys = json.loads(sample_path.read_text(encoding="utf-8"))
+    sample = next(iter(keys))
+    assert t(sample, lang="zh-cn")
+    unregister_plugin_locales("GenshinUID")

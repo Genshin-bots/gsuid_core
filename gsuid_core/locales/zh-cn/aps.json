@@ -1,0 +1,10 @@
+{
+  "log.aps.create_fail": "[定时器系统] 创建触发器失败: {e}",
+  "log.aps.datetrigger_run_date": "[定时器系统] DateTrigger 必须提供 run_date 参数",
+  "log.aps.found_duplicate_named_scheduled": "发现重复函数名定时任务{p0}, 移除该任务...",
+  "log.aps.scheduler_add_scheduled_task_fail": "[定时器系统] 添加定时任务失败: {e}",
+  "log.aps.scheduler_ok": "[定时器系统] 定时任务启动成功！",
+  "log.aps.scheduler_scheduled_task_added_ok": "[定时器系统] 成功添加定时任务: {job_id} ({p0}) - {p1}",
+  "log.aps.scheduler_shutting_scheduled_tasks": "[定时器系统] 程序关闭！定时任务结束！",
+  "log.aps.trigger_type_valid_types": "[定时器系统] 无效的触发器类型: {trigger_type}，仅支持 {valid_trigger_types}"
+}

@@ -138,10 +138,10 @@ class UserFavorability(BaseModel, table=True):
                 )
             )
             await session.commit()
-            logger.info(i18n_t("🧠 [UserFavorability] 创建用户好感度记录: {user_id}", user_id=user_id))
+            logger.info(i18n_t("log.ai.userfavorability_created_user_favorability_creat", user_id=user_id))
             return 1
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 创建用户好感度记录失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_create_user_favorability_fail", e=e))
             return 0
 
     @classmethod
@@ -224,7 +224,7 @@ class UserFavorability(BaseModel, table=True):
             # 显式工具路径（favorability_manager）另有自己的 info 结果日志。
             logger.debug(
                 i18n_t(
-                    "🧠 [UserFavorability] 更新用户 {user_id} 好感度: {p0} -> {new_value}",
+                    "log.ai.userfavorability_updated_user_id_update",
                     user_id=user_id,
                     p0=record.favorability,
                     new_value=new_value,
@@ -232,7 +232,7 @@ class UserFavorability(BaseModel, table=True):
             )
             return True
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 更新好感度失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_update_favorability", e=e))
             return False
 
     @classmethod
@@ -281,12 +281,10 @@ class UserFavorability(BaseModel, table=True):
                 await session.execute(stmt)
                 await session.commit()
 
-            logger.info(
-                i18n_t("🧠 [UserFavorability] 设置用户 {user_id} 好感度: {clamped}", user_id=user_id, clamped=clamped)
-            )
+            logger.info(i18n_t("log.ai.userfavorability_set_user_id", user_id=user_id, clamped=clamped))
             return True
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 设置好感度失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_set_favorability", e=e))
             return False
 
     @classmethod
@@ -334,7 +332,7 @@ class UserFavorability(BaseModel, table=True):
 
             return True
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 更新交互次数失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_update_interaction", e=e))
             return False
 
     @classmethod
@@ -374,7 +372,7 @@ class UserFavorability(BaseModel, table=True):
 
             return True
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 更新记忆条数失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_update_memory_entry", e=e))
             return False
 
     @classmethod
@@ -400,7 +398,7 @@ class UserFavorability(BaseModel, table=True):
 
             return await cls.update_memory_count(user_id, bot_id, record.memory_count + 1)
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 增加记忆条数失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_increment_memory_entry", e=e))
             return False
 
     @classmethod
@@ -426,7 +424,7 @@ class UserFavorability(BaseModel, table=True):
             records = result.scalars().all()
             return list(records)
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 获取所有用户好感度失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_get_user_favorability", e=e))
             return []
 
     @classmethod
@@ -454,7 +452,7 @@ class UserFavorability(BaseModel, table=True):
             records = result.scalars().all()
             return list(records)
         except Exception as e:
-            logger.exception(i18n_t("🧠 [UserFavorability] 获取高好感度用户失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.userfavorability_get_high_favorability_fail", e=e))
             return []
 
     @classmethod
@@ -563,7 +561,7 @@ class AIKnowledgeChunk(SQLModel, table=True):
                 )
             _knowledge_table_ensured = True
         except Exception as e:
-            logger.warning(i18n_t("🧠 [Knowledge] AIKnowledgeChunk 建表检查失败（将沿用既有表）: {e}", e=e))
+            logger.warning(i18n_t("log.ai.kb_aiknowledgechunk_table_check_fail", e=e))
             _knowledge_table_ensured = True
 
     # ───────── CRUD ─────────

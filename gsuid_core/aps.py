@@ -40,14 +40,14 @@ scheduler.configure(options)
 async def start_scheduler():
     if not scheduler.running:
         scheduler.start()
-        logger.info(t("⏲ [定时器系统] 定时任务启动成功！"))
+        logger.info(t("log.aps.scheduler_ok"))
 
 
 async def shutdown_scheduler():
     if scheduler.running:
         # 使用 wait=False 避免阻塞等待正在执行的任务
         scheduler.shutdown(wait=False)
-        logger.info(t("⌛ [定时器系统] 程序关闭！定时任务结束！"))
+        logger.info(t("log.aps.scheduler_shutting_scheduled_tasks"))
 
 
 def remove_repeat_job():
@@ -61,7 +61,7 @@ def remove_repeat_job():
             if source_i == source_j:
                 scheduler.remove_job(i.id)
             else:
-                logger.warning(t("发现重复函数名定时任务{p0}, 移除该任务...", p0=i.name))
+                logger.warning(t("log.aps.found_duplicate_named_scheduled", p0=i.name))
                 scheduler.remove_job(i.id)
 
     del repeat_jobs
@@ -315,7 +315,7 @@ async def add_scheduled_job(
     if trigger_type not in valid_trigger_types:
         logger.error(
             t(
-                "[定时器系统] 无效的触发器类型: {trigger_type}，仅支持 {valid_trigger_types}",
+                "log.aps.trigger_type_valid_types",
                 trigger_type=trigger_type,
                 valid_trigger_types=valid_trigger_types,
             )
@@ -333,7 +333,7 @@ async def add_scheduled_job(
     try:
         if trigger_type == "date":
             if run_date is None:
-                logger.error(t("[定时器系统] DateTrigger 必须提供 run_date 参数"))
+                logger.error(t("log.aps.datetrigger_run_date"))
                 return None
             # 如果是字符串，尝试转换为 datetime
             run_date_dt = datetime.fromisoformat(run_date) if isinstance(run_date, str) else run_date
@@ -379,7 +379,7 @@ async def add_scheduled_job(
             trigger = CronTrigger(**cron_fields)
 
     except Exception as e:
-        logger.error(t("[定时器系统] 创建触发器失败: {e}", e=e))
+        logger.error(t("log.aps.create_fail", e=e))
         return None
 
     # 添加任务到调度器
@@ -393,7 +393,7 @@ async def add_scheduled_job(
         )
         logger.info(
             t(
-                "[定时器系统] 成功添加定时任务: {job_id} ({p0}) - {p1}",
+                "log.aps.scheduler_scheduled_task_added_ok",
                 job_id=job_id,
                 p0=job_name or "未命名",
                 p1=_get_trigger_description(trigger),
@@ -402,5 +402,5 @@ async def add_scheduled_job(
         return job
 
     except Exception as e:
-        logger.error(t("[定时器系统] 添加定时任务失败: {e}", e=e))
+        logger.error(t("log.aps.scheduler_add_scheduled_task_fail", e=e))
         return None

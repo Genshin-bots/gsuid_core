@@ -68,7 +68,7 @@ async def init_image_collection():
             backup_path = await save_payload_backup(IMAGE_COLLECTION_NAME, payload_backup)
             logger.warning(
                 i18n_t(
-                    "🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 维度变化，导出 {p0} 条 payload 后强制重建并重嵌入",
+                    "log.rag.imagerag_collection_image_name_load",
                     IMAGE_COLLECTION_NAME=IMAGE_COLLECTION_NAME,
                     p0=len(payload_backup),
                 )
@@ -83,8 +83,7 @@ async def init_image_collection():
                 need_recreate = True
                 logger.warning(
                     i18n_t(
-                        "🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 疑似上次迁移未完成"
-                        "(points={point_count}, backup={p0})，将强制重建并继续恢复",
+                        "log.rag.imagerag_image_collection_name_ok_2",
                         IMAGE_COLLECTION_NAME=IMAGE_COLLECTION_NAME,
                         point_count=point_count,
                         p0=len(backup_payloads),
@@ -100,8 +99,7 @@ async def init_image_collection():
         if payload_backup:
             logger.warning(
                 i18n_t(
-                    "🧠 [ImageRAG] 集合 {IMAGE_COLLECTION_NAME} 不存在但发现未完成迁移备份，"
-                    "将重建 Collection 并恢复 {p0} 条 payload",
+                    "log.rag.imagerag_image_collection_name_ok",
                     IMAGE_COLLECTION_NAME=IMAGE_COLLECTION_NAME,
                     p0=len(payload_backup),
                 )
@@ -110,7 +108,7 @@ async def init_image_collection():
     if need_recreate:
         logger.info(
             i18n_t(
-                "🧠 [ImageRAG] 强制重建集合: {IMAGE_COLLECTION_NAME}, 维度: {dimension}",
+                "log.rag.imagerag_force_rebuild_collection",
                 IMAGE_COLLECTION_NAME=IMAGE_COLLECTION_NAME,
                 dimension=dimension,
             )
@@ -127,7 +125,7 @@ async def init_image_collection():
         except Exception as e:
             logger.error(
                 i18n_t(
-                    "🧠 [ImageRAG] 维度迁移重嵌入失败，迁移备份已保留，下次启动将自动继续恢复: {backup_path}, {e}",
+                    "log.rag.imagerag_dimension_migration_embedding_fail",
                     backup_path=backup_path,
                     e=e,
                 )
@@ -170,7 +168,7 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
             prepared.append((point_id, dict(payload), text_to_embed))
         except Exception as e:
             skipped += 1
-            logger.warning(i18n_t("🧠 [ImageRAG] 准备旧 payload 重嵌入失败，已跳过: {e}", e=e))
+            logger.warning(i18n_t("log.rag.imagerag_prepare_payload_embedding_fail", e=e))
 
     points_to_upsert: list[PointStruct] = []
 
@@ -191,7 +189,7 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
             points_to_upsert.append(PointStruct(id=point_id, vector=list(vec), payload=payload))
     except Exception as e:
         skipped += len(prepared)
-        logger.warning(i18n_t("🧠 [ImageRAG] 批量重嵌入旧 payload 失败，已跳过 {p0} 条: {e}", p0=len(prepared), e=e))
+        logger.warning(i18n_t("log.rag.imagerag_batch_embedding_payload_fail", p0=len(prepared), e=e))
 
     if points_to_upsert:
 
@@ -205,7 +203,7 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
 
             if not is_vector_structure_error(str(e)):
                 raise
-            logger.warning(i18n_t("🧠 [ImageRAG] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}", e=e))
+            logger.warning(i18n_t("log.rag.imagerag_write_local_qdrant_retry", e=e))
             await force_recreate_collection(
                 collection_name=IMAGE_COLLECTION_NAME,
                 vectors_config=VectorParams(size=get_strict_dimension(), distance=Distance.COSINE, on_disk=True),
@@ -214,17 +212,13 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
             from gsuid_core.ai_core.rag.base import client as refreshed_client
 
             if refreshed_client is None:
-                raise RuntimeError(i18n_t("Qdrant client 重建后不可用"))
+                raise RuntimeError(i18n_t("log.meme.qdrant_client"))
 
             async def _do_upsert_after_recreate(batch):
                 await refreshed_client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=batch)
 
             await upsert_points_with_backoff(points_to_upsert, _do_upsert_after_recreate, log_tag="ImageRAG")
-    logger.info(
-        i18n_t(
-            "🧠 [ImageRAG] 维度迁移重嵌入完成: {p0} 条，跳过 {skipped} 条", p0=len(points_to_upsert), skipped=skipped
-        )
-    )
+    logger.info(i18n_t("log.rag.imagerag_dimension_migration_embedding_ok", p0=len(points_to_upsert), skipped=skipped))
 
 
 def build_image_text(entity: ImageEntity) -> str:
@@ -260,10 +254,10 @@ async def sync_images():
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
-        logger.debug(i18n_t("🧠 [ImageRAG] AI功能未启用，跳过同步"))
+        logger.debug(i18n_t("log.rag.imagerag_ai_feature_enabled_skip"))
         return
 
-    logger.info(i18n_t("🧠 [ImageRAG] 开始同步图片库..."))
+    logger.info(i18n_t("log.rag.imagerag_image_library_sync"))
 
     # 1. 获取现有图片数据
     existing_images: Dict[str, Dict] = {}
@@ -298,7 +292,7 @@ async def sync_images():
     # 筛选图片实体（通过检查是否有 path 字段来判断）
     image_entities = [e for e in _ENTITIES if isinstance(e, dict) and "path" in e]
 
-    logger.info(i18n_t("🧠 [ImageRAG] 插件注册图片数量: {p0}", p0=len(image_entities)))
+    logger.info(i18n_t("log.rag.imagerag_number_images_registered_register", p0=len(image_entities)))
 
     last_scan_progress_log = time.monotonic()
     for index, image in enumerate(image_entities, start=1):
@@ -306,13 +300,13 @@ async def sync_images():
             await asyncio.sleep(0)
         now = time.monotonic()
         if now - last_scan_progress_log >= 30.0 or index == len(image_entities):
-            logger.info(i18n_t("🧠 [ImageRAG] 扫描插件图片进度: {index}/{p0}", index=index, p0=len(image_entities)))
+            logger.info(i18n_t("log.rag.imagerag_scanning_plugin_images", index=index, p0=len(image_entities)))
             last_scan_progress_log = now
 
         # 获取并验证 id
         raw_id = image.get("id")
         if not isinstance(raw_id, str) or not raw_id:
-            logger.warning(i18n_t("🧠 [ImageRAG] 跳过无效图片实体: 缺少有效的 id 字段"))
+            logger.warning(i18n_t("log.rag.imagerag_skipping_invalid_image_skip"))
             continue
         id_str: str = raw_id
         local_ids.add(id_str)
@@ -358,7 +352,7 @@ async def sync_images():
             pending_items.append((id_str, payload, text_to_embed, plugin_name, tags, is_new))
 
     if pending_items:
-        logger.info(i18n_t("🧠 [ImageRAG] 需要新增/更新 {p0} 个图片，开始批量嵌入...", p0=len(pending_items)))
+        logger.info(i18n_t("log.rag.imagerag_need_add_update_images", p0=len(pending_items)))
 
     async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
         return list(await embedding_model.aembed(list(texts)))
@@ -375,7 +369,7 @@ async def sync_images():
         action_str = "新增" if is_new else "更新"
         logger.info(
             i18n_t(
-                "🧠 [ImageRAG] [{plugin_name}] [{action_str}] 图片: {tags}",
+                "log.rag.imagerag_plugin_name_action_str",
                 plugin_name=plugin_name,
                 action_str=action_str,
                 tags=tags,
@@ -391,7 +385,7 @@ async def sync_images():
 
     # 3. 执行更新
     if points_to_upsert:
-        logger.info(i18n_t("🧠 [ImageRAG] 写入 {p0} 个图片...", p0=len(points_to_upsert)))
+        logger.info(i18n_t("log.rag.imagerag_writing_images", p0=len(points_to_upsert)))
 
         async def _do_upsert(batch):
             await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=batch)
@@ -402,7 +396,7 @@ async def sync_images():
     if local_ids:
         ids_to_delete = [existing_images[id_str]["id"] for id_str in existing_images.keys() if id_str not in local_ids]
         if ids_to_delete:
-            logger.info(i18n_t("🧠 [ImageRAG] 删除 {p0} 个已移除的图片...", p0=len(ids_to_delete)))
+            logger.info(i18n_t("log.rag.imagerag_deleting_removed_images", p0=len(ids_to_delete)))
             await client.delete(
                 collection_name=IMAGE_COLLECTION_NAME,
                 points_selector=ids_to_delete,
@@ -429,13 +423,13 @@ async def search_images(
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
-        logger.warning(i18n_t("🧠 [ImageRAG] AI功能未启用，无法搜索图片"))
+        logger.warning(i18n_t("log.rag.imagerag_ai_feature_enabled"))
         return []
 
     # 生成查询向量
     _vectors = list(await embedding_model.aembed([query]))
     if not _vectors:
-        logger.warning(i18n_t("🧠 [ImageRAG] 嵌入模型返回空结果，无法搜索图片"))
+        logger.warning(i18n_t("log.rag.imagerag_embedding_empty_result"))
         return []
     query_vector = _vectors[0]
 
@@ -503,14 +497,14 @@ def load_image_from_path(path: str) -> Optional[Any]:
     try:
         image_path = Path(path)
         if not image_path.exists():
-            logger.warning(i18n_t("🧠 [ImageRAG] 图片文件不存在: {path}", path=path))
+            logger.warning(i18n_t("log.rag.imagerag_image_file_exist_path", path=path))
             return None
 
         # 使用 MessageSegment.image 创建图片消息
         return MessageSegment.image(path)
 
     except Exception as e:
-        logger.error(i18n_t("🧠 [ImageRAG] 加载图片失败: {path}, 错误: {e}", path=path, e=e))
+        logger.error(i18n_t("log.rag.imagerag_load_image_path_fail", path=path, e=e))
         return None
 
 
@@ -537,7 +531,7 @@ async def search_and_load_image(
     path = await get_image_path_by_query(query, plugin_filter)
 
     if not path:
-        logger.debug(i18n_t("🧠 [ImageRAG] 未找到匹配图片: {query}", query=query))
+        logger.debug(i18n_t("log.rag.imagerag_matching_image_found", query=query))
         return None
 
     return load_image_from_path(path)
@@ -561,7 +555,7 @@ async def get_image_list(
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
-        logger.warning(i18n_t("🧠 [ImageRAG] AI功能未启用，无法获取图片列表"))
+        logger.warning(i18n_t("log.rag.imagerag_ai_feature_enabled_2"))
         return {"list": [], "total": 0}
 
     # 构建过滤条件
@@ -639,7 +633,7 @@ async def delete_image_from_db(entity_id: str) -> bool:
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
-        logger.warning(i18n_t("🧠 [ImageRAG] AI功能未启用，无法删除图片"))
+        logger.warning(i18n_t("log.rag.imagerag_ai_feature_enabled_delete"))
         return False
 
     point_id = get_point_id(entity_id)
@@ -647,7 +641,7 @@ async def delete_image_from_db(entity_id: str) -> bool:
         collection_name=IMAGE_COLLECTION_NAME,
         points_selector=[point_id],
     )
-    logger.info(i18n_t("🧠 [ImageRAG] 删除图片: {entity_id}", entity_id=entity_id))
+    logger.info(i18n_t("log.rag.imagerag_delete_image_entity_id", entity_id=entity_id))
     return True
 
 
@@ -663,12 +657,12 @@ async def add_manual_image_to_db(image: dict) -> bool:
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
-        logger.warning(i18n_t("🧠 [ImageRAG] AI功能未启用，无法添加手动图片"))
+        logger.warning(i18n_t("log.rag.imagerag_ai_feature_enabled_create"))
         return False
 
     id_str = image.get("id")
     if not isinstance(id_str, str) or not id_str:
-        logger.warning(i18n_t("🧠 [ImageRAG] 添加手动图片失败: 缺少有效的 id 字段"))
+        logger.warning(i18n_t("log.rag.imagerag_add_manual_image_fail"))
         return False
 
     # 确保 source 为 manual
@@ -700,5 +694,5 @@ async def add_manual_image_to_db(image: dict) -> bool:
     )
 
     await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=[point])
-    logger.info(i18n_t("🧠 [ImageRAG] 手动添加图片: {p0}", p0=image.get("tags", [])))
+    logger.info(i18n_t("log.rag.imagerag_manually_add_image", p0=image.get("tags", [])))
     return True

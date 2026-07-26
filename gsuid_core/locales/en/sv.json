@@ -1,0 +1,6 @@
+{
+  "log.sv.error_occurred_executing": "[SV] Error occurred while executing {p0}!",
+  "log.sv.name_module_initializing": "[{name}] Module initializing...",
+  "log.sv.type_trigger_k_load": "Loaded {type} trigger [{_k}]!",
+  "log.sv.type_trigger_pk_load": "Loaded {type} trigger [{_pk}]!"
+}

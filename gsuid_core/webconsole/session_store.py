@@ -103,7 +103,7 @@ class SessionStore:
             with open(WEB_SESSIONS_PATH, "r", encoding="utf-8") as f:
                 raw = json.load(f)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-            logger.warning(t("[网页控制台] 会话文件损坏, 已忽略: {e}", e=e))
+            logger.warning(t("log.webconsole.session_file_corrupted_ignore_skip", e=e))
             return
         if not isinstance(raw, dict):
             return
@@ -128,7 +128,7 @@ class SessionStore:
                 if f:
                     f.write(json.dumps(self._sessions, indent=2, ensure_ascii=False).encode("utf-8"))
         except OSError as e:
-            logger.warning(t("[网页控制台] 会话文件写入失败: {e}", e=e))
+            logger.warning(t("log.webconsole.write_fail", e=e))
 
     # ---------- 会话生命周期 ----------
 

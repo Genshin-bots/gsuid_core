@@ -253,7 +253,7 @@ def _collect_admin_models() -> Dict[str, List[DatabaseTableInfo]]:
 
         logger.trace(
             t(
-                "log.db_admin.table_added",
+                "log.db_admin.adding_table_name_page_create",
                 table_name=table_name,
                 page_title=page_title,
                 plugin_name=plugin_id,
@@ -311,7 +311,7 @@ def _collect_admin_models() -> Dict[str, List[DatabaseTableInfo]]:
 
                     logger.trace(
                         t(
-                            "log.db_admin.table_added",
+                            "log.db_admin.adding_table_name_page_create",
                             table_name=table_name,
                             page_title=page_title,
                             plugin_name=plugin_name,
@@ -326,12 +326,12 @@ def _collect_admin_models() -> Dict[str, List[DatabaseTableInfo]]:
         logger.error(t("log.db_admin.plugins_page_fail", error=e))
 
     """
-    logger.debug("\nFinal collection results:")
-    logger.debug(f"Collected {len(plugin_tables)} plugins: {list(plugin_tables.keys())}")
+    logger.debug("🐛 \nFinal collection results:")
+    logger.debug(f"🔌 Collected {len(plugin_tables)} plugins: {list(plugin_tables.keys())}")
     for pid, tables in plugin_tables.items():
-        logger.debug(f"  Plugin {pid}: {len(tables)} tables")
+        logger.debug(f"  🔌 Plugin {pid}: {len(tables)} tables")
         for table in tables:
-            logger.debug(f"    - {table.table_title} ({table.table_name})")
+            logger.debug(f"    🐛 - {table.table_title} ({table.table_name})")
     """
 
     return plugin_tables

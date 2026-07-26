@@ -193,7 +193,7 @@ def get_recent_evaluation(
     if best is not None and best_score >= fuzzy_min_overlap:
         logger.debug(
             t(
-                "📋 [Kanban] evaluator 模糊匹配命中: overlap={best_score:.2f} owner={owner_user_id} target={p0}",
+                "log.ai.kanban_evaluator_fuzzy_match_hit",
                 best_score=best_score,
                 owner_user_id=owner_user_id,
                 p0=repr(user_goal[:30]),
@@ -449,7 +449,7 @@ def _parse_evaluator_output(
             data, end_idx = decoder.raw_decode(candidate)
             logger.warning(
                 t(
-                    "📋 [Kanban] evaluator 输出有冗余字符，已取首个 JSON 对象（{end_idx}/{p0} bytes）；原错误：{e}",
+                    "log.ai.kanban_evaluator_output_redundant_fail",
                     end_idx=end_idx,
                     p0=len(candidate),
                     e=e,
@@ -566,7 +566,7 @@ async def evaluate_capability(
         try:
             raw = await _run_evaluator_once(user_message, owner_user_id, extra_system)
         except Exception as e:
-            logger.exception(t("📋 [Kanban] 能力评估代理执行失败 attempt={attempt}: {e}", attempt=attempt, e=e))
+            logger.exception(t("log.ai.kanban_capability_evaluation_agent_fail", attempt=attempt, e=e))
             last_result = CapabilityEvaluationResult(
                 covered=False,
                 risk_notes=[f"评估代理执行抛出异常：{type(e).__name__}: {e}"],
@@ -582,8 +582,7 @@ async def evaluate_capability(
             record_evaluation(result)
             logger.info(
                 t(
-                    "📋 [Kanban] 能力评估完成 owner={owner_user_id} covered={p0}"
-                    " attempt={attempt} subtasks={p1} missing={p2}",
+                    "log.ai.kanban_capability_evaluation_owner_ok",
                     owner_user_id=owner_user_id,
                     p0=result.covered,
                     attempt=attempt,
@@ -596,7 +595,7 @@ async def evaluate_capability(
         last_result = result
         logger.warning(
             t(
-                "📋 [Kanban] 能力评估解析失败 owner={owner_user_id} attempt={attempt}，将{p0}。原始片段：{p1}",
+                "log.ai.kanban_capability_evaluation_parsing_fail",
                 owner_user_id=owner_user_id,
                 attempt=attempt,
                 p0="重试" if attempt < _EVAL_MAX_ATTEMPTS else "放弃",

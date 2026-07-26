@@ -1,0 +1,4 @@
+{
+  "log.resourcemanager.cleaned_expired_resources_remaining": "[ResourceManager] Cleaned up {p0} expired resources; {p1} remaining",
+  "log.resourcemanager.ttl_cleanup_task_interval": "[ResourceManager] TTL cleanup task started (TTL: {p0}s, interval: {p1}s)"
+}

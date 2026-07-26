@@ -54,7 +54,7 @@ async def _provision_and_retry(
     ok, msg, bin_path = await ensure(missing, ev)
     if not ok or bin_path is None:
         return None, f"命令未找到 '{missing}'：{msg}"
-    logger.info(t("🧰 [CommandExec] 已补全 '{missing}' → {bin_path}，重试执行", missing=missing, bin_path=bin_path))
+    logger.info(t("log.ai.commandexec_resolved_missing_bin_retry", missing=missing, bin_path=bin_path))
     try:
         return await run_argv(argv, cwd, timeout, max_output, extra_path=str(bin_path)), ""
     except FileNotFoundError:

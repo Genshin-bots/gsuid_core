@@ -56,7 +56,7 @@ async def call_mcp_tool(
     truncated_args = _truncate_args(arguments)
     logger.info(
         t(
-            "🔌 [MCP] 调用 {p0}.{tool_name}, 参数: {truncated_args}",
+            "log.mcp.calling_name_args_truncated",
             p0=config.name,
             tool_name=tool_name,
             truncated_args=truncated_args,

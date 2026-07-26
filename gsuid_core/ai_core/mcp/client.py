@@ -107,7 +107,7 @@ class MCPClient:
         transport_type = self._detect_transport()
 
         if transport_type == "sse":
-            logger.debug(t("🔌 [MCP][{p0}] 使用 SSE 传输，URL: {p1}", p0=self.name, p1=self.url))
+            logger.debug(t("log.mcp.sse_transport_url", p0=self.name, p1=self.url))
             return SSETransport(
                 url=self.url,
                 headers=self.headers if self.headers else None,
@@ -154,7 +154,7 @@ class MCPClient:
         transport = self._create_transport()
         client = Client(transport)
 
-        logger.info(t("🔌 [MCP][{p0}] 正在连接服务器并获取工具列表...", p0=self.name))
+        logger.info(t("log.mcp.connecting_server_fetching_list", p0=self.name))
 
         async with client:
             raw_tools = await client.list_tools()
@@ -170,7 +170,7 @@ class MCPClient:
                 )
             )
 
-        logger.info(t("🔌 [MCP][{p0}] 获取到 {p1} 个工具", p0=self.name, p1=len(tools)))
+        logger.info(t("log.mcp.tool_fetched_tools", p0=self.name, p1=len(tools)))
         return tools
 
     async def call_tool(
@@ -198,7 +198,7 @@ class MCPClient:
         truncated_args = self._truncate_args(arguments)
         logger.info(
             t(
-                "🔌 [MCP][{p0}] 调用工具: {tool_name}, 参数: {truncated_args}",
+                "log.mcp.calling_name_args_truncated_2",
                 p0=self.name,
                 tool_name=tool_name,
                 truncated_args=truncated_args,
@@ -236,7 +236,7 @@ class MCPClient:
 
         logger.info(
             t(
-                "🔌 [MCP][{p0}] 工具 {tool_name} 调用完成, is_error={p1}, 内容长度={p2}",
+                "log.mcp.name_call_fail_content",
                 p0=self.name,
                 tool_name=tool_name,
                 p1=tool_result.is_error,

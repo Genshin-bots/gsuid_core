@@ -1,0 +1,5 @@
+{
+  "log.cache.entering_event": "{p0} キャッシュに入る...",
+  "log.cache.hit_value": "{p0} キャッシュヒット {_value}",
+  "log.cache.start_event": "{p0} キャッシュを開始..."
+}

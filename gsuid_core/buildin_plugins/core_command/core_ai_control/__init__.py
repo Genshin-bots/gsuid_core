@@ -101,7 +101,7 @@ async def clear_ai_session(bot: Bot, ev: Event):
     ai_deleted = registry.remove_ai_session(session_id)
     logger.info(
         t(
-            "[Core AI控制] 清空会话: {session_id}, history={history_deleted}, ai_session={ai_deleted}",
+            "log.core.core_ai_control_session_id_history_delete",
             session_id=session_id,
             history_deleted=history_deleted,
             ai_deleted=ai_deleted,
@@ -138,7 +138,7 @@ async def switch_persona(bot: Bot, ev: Event):
     registry.remove_ai_session(session_id)
     logger.info(
         t(
-            "[Core AI控制] 当前会话人格热切换: {session_id} -> {persona_name}",
+            "log.core.core_ai_control_hot_swapping_persona",
             session_id=session_id,
             persona_name=persona_name,
         )
@@ -175,7 +175,7 @@ async def run_ephemeral_agent(bot: Bot, ev: Event):
     )
     registry = get_ai_session_registry()
     registry.set_ai_session(session_id, agent)
-    logger.info(t("[Core AI控制] 启动 BTW 临时 Agent: {session_id}", session_id=session_id))
+    logger.info(t("log.core.core_ai_control_btw_temporary_agent_start", session_id=session_id))
     try:
         result = await agent.run(
             user_message=task,
@@ -206,7 +206,7 @@ async def ban_ai_scope(bot: Bot, ev: Event):
     expire_at = ban_scope(ev.session_id, seconds)
     logger.info(
         t(
-            "[Core AI控制] 当前会话范围禁言: {p0}, seconds={seconds}, expire_at={p1}",
+            "log.core.core_ai_control_scope_mute_session",
             p0=ev.session_id,
             seconds=seconds,
             p1=datetime.fromtimestamp(expire_at),

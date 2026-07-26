@@ -428,7 +428,7 @@ def sync_entities_to_jieba():
             jieba.add_word(category, tag="n_know")
 
     if entity_count > 0:
-        logger.info(t("[AI] 已同步 {entity_count} 个实体到Jieba词典", entity_count=entity_count))
+        logger.info(t("log.ai.synced_entity_entities_jieba", entity_count=entity_count))
 
 
 init_jieba()
@@ -544,13 +544,13 @@ class IntentService:
                 self.model = load(self.model_path)
                 # 检查是否包含所有需要的分类
                 if len(self.model.classes_) < 3:
-                    logger.warning(t("[AI] 模型类别不足，重新训练..."))
+                    logger.warning(t("log.ai.insufficient_categories_retraining"))
                     need_train = True
                 else:
-                    logger.info(t("[AI] 意图识别模型已加载: {p0}", p0=self.model_path))
+                    logger.info(t("log.ai.intent_recognition", p0=self.model_path))
                     need_train = False
             except Exception as e:
-                logger.error(t("[AI] 模型加载失败: {e}", e=e))
+                logger.error(t("log.ai.fail_event", e=e))
                 need_train = True
 
         if need_train:
@@ -717,7 +717,7 @@ class IntentService:
         return X_raw, y
 
     def train(self):
-        logger.info(t("[AI] 开始训练新版意图模型 (v5 - 优化闲聊误判)..."))
+        logger.info(t("log.ai.train_intent_v5_optimizing"))
         X_raw, y = self._generate_enhanced_data()
         X_abstract = [smart_abstraction(text) for text in X_raw]
         X_train_dict = {"raw": X_raw, "abs": X_abstract}
@@ -762,7 +762,7 @@ class IntentService:
         pipeline.fit(X_train_dict, y)
         dump(pipeline, self.model_path)
         self.model = pipeline
-        logger.info(t("[AI] 模型训练完成。保存至: {p0}", p0=self.model_path))
+        logger.info(t("log.ai.training_saved", p0=self.model_path))
 
     def _rule_based_check(self, text: str) -> Optional[Dict[str, Any]]:
         text = text.strip()
@@ -854,7 +854,7 @@ class IntentService:
                 sync_entities_to_jieba()
                 self._entities_synced = True
             except Exception as e:
-                logger.warning(t("[AI] 实体同步失败: {e}", e=e))
+                logger.warning(t("log.ai.ai_sync_fail_entity_failed", e=e))
 
         rule_result = self._rule_based_check(text)
         if rule_result:
@@ -1011,14 +1011,14 @@ class IntentService:
 
                         logger.info(
                             t(
-                                "[AI] 向量兜底命中: {text} -> {p0}",
+                                "log.ai.vector_fallback_hit_text",
                                 text=text,
                                 p0=hits[0].payload.get("title", "Unknown"),
                             )
                         )
                         return {"text": text, "intent": "问答", "conf": round(hits[0].score, 4), "reason": "VectorHit"}
                 except Exception as e:
-                    logger.trace(t("[AI] 向量兜底检索失败: {e}", e=e))
+                    logger.trace(t("log.ai.vector_fallback_retrieval", e=e))
 
         return result
 

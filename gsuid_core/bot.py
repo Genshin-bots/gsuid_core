@@ -481,7 +481,14 @@ class _Bot:
                         pass  # Observer 失败不应影响主流程
                 # ============================================
 
-                logger.info(t("log.bot.send_to", bot_id=bot_id, target_type=target_type, target_id=target_id))
+                logger.info(
+                    t(
+                        "log.bot.sendmsgto_id_target_type_send",
+                        bot_id=bot_id,
+                        target_type=target_type,
+                        target_id=target_id,
+                    )
+                )
                 body = msgjson.encode(send)
                 # 通过发送队列串行化 WebSocket 发送，避免多任务并发写入
                 # 闭包不捕获 ws，执行时动态读取 self.bot，重连后自动使用新 ws
@@ -578,7 +585,7 @@ class _Bot:
         )
         logger.info(
             t(
-                "log.bot.ban_to",
+                "log.bot.banuserto_id_target_type",
                 bot_id=bot_id,
                 target_type=target_type,
                 target_id=target_id,

@@ -1,0 +1,4 @@
+{
+  "log.resourcemanager.cleaned_expired_resources_remaining": "[ResourceManager] 期限切れリソースを {p0} 件クリーンアップ、残り {p1} 件",
+  "log.resourcemanager.ttl_cleanup_task_interval": "[ResourceManager] TTL クリーンアップタスクを開始（TTL: {p0}s, 間隔: {p1}s）"
+}

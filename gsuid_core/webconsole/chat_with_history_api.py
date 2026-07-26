@@ -157,7 +157,7 @@ async def chatWithHistory(
                     ScopeType.USER_GLOBAL if not group_id else ScopeType.GROUP,
                     str(group_id) if group_id else str(user_id),
                 )
-                logger.info(t("🧠 [Memory] 手动触发分层图重建 scope_key={scope_key}", scope_key=scope_key))
+                logger.info(t("log.webconsole.memory_manually_triggered_hierarchical", scope_key=scope_key))
                 asyncio.create_task(rebuild_task(scope_key))
 
         # 评测侧可显式要求装配真实工具集（agent 能力评测用）；默认 None 保持记忆评测的
@@ -182,7 +182,7 @@ async def chatWithHistory(
             else:
                 logger.warning(
                     t(
-                        "[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词",
+                        "log.webconsole.chat_with_history_persona_name_exist",
                         persona_name=persona_name,
                     )
                 )
@@ -261,7 +261,7 @@ async def chatWithHistory(
             # 只记摘要，不落全文：注入文本可达 30k+ 字符，全文进日志会撑爆内存日志缓冲
             logger.info(
                 t(
-                    "🧠 [GsCore] 检索到长期记忆: {p0} chars: {p1}...",
+                    "log.webconsole.gscore_retrieved_long_term",
                     p0=len(memory_context_text),
                     p1=memory_context_text[:300],
                 )
@@ -318,7 +318,7 @@ async def chatWithHistory(
             memory_guide=mem_guide,
         )
 
-        logger.info(t("启动问答"))
+        logger.info(t("log.webconsole.start_event"))
 
         # 调用 Agent（传入 event 和 rag_context）
         result = await agent.run(
@@ -336,6 +336,6 @@ async def chatWithHistory(
             return {"status_code": -100, "data": None}
 
     except Exception as e:
-        logger.error(t("🧠 [GsCore][chat_with_history] 异常: {e}", e=e))
-        logger.exception(t("🧠 [GsCore][chat_with_history] 异常详情:"))
+        logger.error(t("log.webconsole.gscore_exception_chat_history", e=e))
+        logger.exception(t("log.webconsole.gscore_history_fail_details"))
         return {"status_code": -102, "data": None, "error": str(e)}

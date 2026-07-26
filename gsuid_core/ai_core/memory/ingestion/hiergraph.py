@@ -150,8 +150,7 @@ def _get_rebuild_lock(scope_key: str) -> asyncio.Lock:
                 fallback_key = next(iter(_rebuild_locks))
                 logger.warning(
                     t(
-                        "🧠 [HierGraph] _rebuild_locks 已达上限 {_MAX_REBUILD_LOCKS}"
-                        " 且全部被持有，scope_key={scope_key} 将复用 {fallback_key} 的锁",
+                        "log.memory.hier_rebuild_locks_max_scope",
                         _MAX_REBUILD_LOCKS=_MAX_REBUILD_LOCKS,
                         scope_key=scope_key,
                         fallback_key=fallback_key,
@@ -199,7 +198,7 @@ class HierarchicalGraphBuilder:
         if total_entities < min_entities:
             logger.debug(
                 t(
-                    "🧠 [HierGraph] scope={p0} entity={total_entities}<{min_entities}，跳过分层图构建",
+                    "log.memory.hier_scope_entity_total_entities",
                     p0=self.scope_key,
                     total_entities=total_entities,
                     min_entities=min_entities,
@@ -227,7 +226,7 @@ class HierarchicalGraphBuilder:
 
         logger.info(
             t(
-                "🧠 [HierGraph] 开始增量重建，本轮处理未分配 Entity 数: {n}{capped_suffix}",
+                "log.memory.hier_incremental_rebuild_unassigned_start",
                 n=len(unassigned),
                 capped_suffix=("（已达单轮上限，结束后将继续清理 backlog）" if capped else ""),
             )
@@ -244,7 +243,7 @@ class HierarchicalGraphBuilder:
             assignments = await self._llm_categorize(residual, existing_layer1, layer=1)
             logger.info(
                 t(
-                    "🧠 [HierGraph] Layer 1 分类完成（残余 {p0}/{p1} 交 LLM），耗时 {p2:.1f}s",
+                    "log.memory.hier_layer_classification_remaining_ok",
                     p0=len(residual),
                     p1=len(unassigned),
                     p2=time.time() - layer_start,
@@ -264,9 +263,7 @@ class HierarchicalGraphBuilder:
             # 如果上层节点数太少，没有必要再抽象
             if len(prev_layer) < self._min_children() * 2:
                 # 节点数刚好够一个 category，直接 break 而不是让 LLM 硬凑
-                logger.debug(
-                    t("🧠 [HierGraph] layer {layer} 节点数 {p0} 过少，停止向上构建", layer=layer, p0=len(prev_layer))
-                )
+                logger.debug(t("log.memory.hier_layer_nodes_stopping_upward", layer=layer, p0=len(prev_layer)))
                 break
 
             existing_upper = await self._get_categories_by_layer(layer)
@@ -289,7 +286,7 @@ class HierarchicalGraphBuilder:
             upper_assignments = await self._llm_categorize(unparented_children, existing_upper, layer=layer)
             logger.info(
                 t(
-                    "🧠 [HierGraph] Layer {layer} 分类完成（增量 {p0} 节点），耗时 {p1:.1f}s",
+                    "log.memory.hier_layer_classification_incremental_ok",
                     layer=layer,
                     p0=len(unparented_children),
                     p1=time.time() - layer_start,
@@ -308,8 +305,7 @@ class HierarchicalGraphBuilder:
             if total_this_layer >= total_prev_layer:
                 logger.info(
                     t(
-                        "🧠 [HierGraph] layer {layer} 违反 node count reduction rule"
-                        " ({total_this_layer} >= {total_prev_layer})，终止构建",
+                        "log.memory.hier_layer_node_reduction_rule",
                         layer=layer,
                         total_this_layer=total_this_layer,
                         total_prev_layer=total_prev_layer,
@@ -337,8 +333,8 @@ class HierarchicalGraphBuilder:
         if should_regen_summary:
             await self._update_group_summary_cache(valid_prev_layer)
         else:
-            logger.debug(t("🧠 [HierGraph] scope={p0} group_summary 无显著变化，跳过重算", p0=self.scope_key))
-        logger.info(t("🧠 [HierGraph] 增量重建完成，总耗时 {p0:.1f}s", p0=time.time() - total_start))
+            logger.debug(t("log.memory.hier_scope_group_summary_skip", p0=self.scope_key))
+        logger.info(t("log.memory.hier_incremental_rebuild", p0=time.time() - total_start))
 
         # #3 backlog 续清：本轮达单轮上限说明仍有未归类实体，结束后再调度一次重建。
         # rebuild_task 内有锁：本轮锁释放后新任务才执行；backlog 单调递减，必然收敛。
@@ -494,7 +490,7 @@ class HierarchicalGraphBuilder:
         if assigned_ids:
             logger.info(
                 t(
-                    "🧠 [HierGraph] 向量预分配 {p0} 个实体直接归类（跳过 LLM），残余 {p1} 个交 LLM",
+                    "log.memory.hier_vector_preassignment_directly_skip",
                     p0=len(assigned_ids),
                     p1=len(residual),
                 )
@@ -572,7 +568,7 @@ class HierarchicalGraphBuilder:
         # 分批处理，修正 indexes 偏移
         logger.info(
             t(
-                "🧠 [HierGraph] Layer {layer} 节点数 {p0} 超过上限 {BATCH_SIZE}，分 {p1} 批处理",
+                "log.memory.hier_layer_nodes_exceeding_limit",
                 layer=layer,
                 p0=len(entities),
                 BATCH_SIZE=BATCH_SIZE,
@@ -704,9 +700,9 @@ class HierarchicalGraphBuilder:
             return result
 
         except asyncio.TimeoutError:
-            logger.warning(t("[HierGraph] layer {layer} LLM 超时（90s）", layer=layer))
+            logger.warning(t("log.memory.hier_layer_llm", layer=layer))
         except Exception as e:
-            logger.warning(t("[HierGraph] layer {layer} LLM 调用失败: {e}", layer=layer, e=e))
+            logger.warning(t("log.memory.hiergraph_layer_llm_fail", layer=layer, e=e))
 
         # 兜底：每个未分类节点单独成为一个 Category（论文 Section 2.2 例外规则）
         # "An exception is made for nodes that cannot be naturally merged with others;
@@ -724,7 +720,7 @@ class HierarchicalGraphBuilder:
             )
         logger.info(
             t(
-                "[HierGraph] layer {layer} 使用兜底策略：{p0} 个节点单独成 Category",
+                "log.memory.hiergraph_node_layer_category",
                 layer=layer,
                 p0=len(fallback_assignments),
             )
@@ -763,7 +759,7 @@ class HierarchicalGraphBuilder:
                 if reassigned_indexes:
                     logger.info(
                         t(
-                            "[HierGraph] Layer-1 Speaker强制归类：{p0} 个实体的speaker索引添加到 Speaker Category",
+                            "log.memory.hiergraph_layer_speaker_category",
                             p0=len(reassigned_indexes),
                         )
                     )
@@ -846,7 +842,7 @@ class HierarchicalGraphBuilder:
                     # Bug-04 修复：索引超出范围时记录警告，避免隐性数据丢失
                     logger.warning(
                         t(
-                            "[HierGraph] Layer {layer} 分类索引 {idx} 超出范围 (entities={p0})，category={p1}，已跳过",
+                            "log.memory.hier_layer_idx_entities_category",
                             layer=layer,
                             idx=idx,
                             p0=len(entities),

@@ -33,7 +33,7 @@ class S3:
             "s3",
             endpoint_url=END_POINT,
         ) as s3:  # type: ignore
-            logger.info(t("[S3 / upload] 开始上传..."))
+            logger.info(t("log.upload.s3_upload_start_starting"))
 
             data = await s3.put_object(
                 Bucket=self.bucket_id,
@@ -50,13 +50,13 @@ class S3:
             )
 
             logger.debug(data)
-            logger.info(t("[S3 / upload] 上传成功！"))
+            logger.info(t("log.upload.s3_upload_ok_succeeded"))
             if is_auto_delete:
                 asyncio.create_task(self.delete(key))
 
         path = f"{END_POINT}/{self.bucket_id}/{key}"
-        logger.debug(t("log.upload.s3_path", path=path))
-        logger.debug(t("log.upload.s3_url", url=url))
+        logger.debug(t("log.upload.s3_upload_path_load", path=path))
+        logger.debug(t("log.upload.s3_upload_url_load", url=url))
 
         return url
 
@@ -66,7 +66,7 @@ class S3:
             "s3",
             endpoint_url=END_POINT,
         ) as s3:  # type: ignore
-            logger.info(t("[S3 / delete] 开始删除..."))
+            logger.info(t("log.upload.s3_delete_deletion"))
             data = await s3.delete_object(Bucket=self.bucket_id, Key=file_key)
             logger.debug(data)
-            logger.info(t("[S3 / delete] 删除成功！"))
+            logger.info(t("log.upload.s3_delete_deletion_succeeded"))

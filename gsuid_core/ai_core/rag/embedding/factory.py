@@ -34,8 +34,7 @@ def _build_local_provider() -> LocalEmbeddingProvider:
     if extra:
         logger.warning(
             t(
-                "🧠 [Embedding] 内置本地嵌入(fastembed)仅支持文本，已忽略声明的额外模态 {p0}；"
-                "图片请用 STEmbedding 插件(CLIP) 或 OpenAI 多模态接口",
+                "log.rag.embedding_fastembed_stembedding_clip_skip",
                 p0=[m.value for m in extra],
             )
         )
@@ -74,7 +73,7 @@ def get_embedding_provider() -> EmbeddingProvider:
     )
 
     if not ai_config.get_config("enable").data:
-        raise RuntimeError(t("AI 功能未启用，无法获取嵌入模型提供方"))
+        raise RuntimeError(t("log.rag.model_ai"))
 
     provider_name = ai_config.get_config("embedding_provider").data
 
@@ -84,7 +83,7 @@ def get_embedding_provider() -> EmbeddingProvider:
         base_url = openai_embedding_config.get_config("base_url").data
         api_key_list = openai_embedding_config.get_config("api_key").data
         if not api_key_list:
-            raise ValueError(t("OpenAI 嵌入模型 API 密钥不能为空，请在配置中至少设置一个 api_key"))
+            raise ValueError(t("log.rag.openai_api_key"))
         api_key = api_key_list[0]
         model_name = openai_embedding_config.get_config("embedding_model").data
         dimension = openai_embedding_config.get_config("dimension").data
@@ -108,8 +107,7 @@ def get_embedding_provider() -> EmbeddingProvider:
             # 降级回 local，向量空间变化由维度迁移机制兜底，比 AI 核心整体瘫痪好
             logger.error(
                 t(
-                    "🧠 [Embedding] 嵌入提供方 '{provider_name}' 未注册（来源插件可能已卸载或加载失败），"
-                    "降级使用 local。可用 provider: {p0}",
+                    "log.rag.embedding_provider_name_local",
                     provider_name=provider_name,
                     p0=list_embedding_providers(),
                 )
@@ -120,7 +118,7 @@ def get_embedding_provider() -> EmbeddingProvider:
                 _provider = entry.factory()
                 logger.info(
                     t(
-                        "🧠 [Embedding] 插件嵌入提供方已加载: {provider_name} (plugin={p0})",
+                        "log.rag.embedding_plugin_provider_name_2",
                         provider_name=provider_name,
                         p0=entry.plugin or "未知",
                     )
@@ -128,7 +126,7 @@ def get_embedding_provider() -> EmbeddingProvider:
             except Exception as e:
                 logger.error(
                     t(
-                        "🧠 [Embedding] 插件嵌入提供方 '{provider_name}' 构造失败（plugin={p0}）: {e}，降级使用 local",
+                        "log.rag.embedding_plugin_provider_name",
                         provider_name=provider_name,
                         p0=entry.plugin or "未知",
                         e=e,

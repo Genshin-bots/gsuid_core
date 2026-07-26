@@ -1,0 +1,9 @@
+{
+  "log.ai_registry.aliases_registered": "[AI][Registry] 已为 {name} 注册别名（scope={scope}）: {alias}",
+  "log.ai_registry.entity_registered_plugin": "[AI][Registry] 已注册插件实体: {title}",
+  "log.ai_registry.image_registered": "[AI][Registry] 已注册图片: {tags}",
+  "log.ai_registry.manual_entity": "[AI][Registry] 已添加手动实体: {title}",
+  "log.ai_registry.manual_entity_deleted": "[AI][Registry] 已删除手动实体: {entity_id}",
+  "log.ai_registry.manual_entity_exists": "[AI][Registry] 手动实体已存在: {entity_id}",
+  "log.ai_registry.manual_entity_updated": "[AI][Registry] 已更新手动实体: {entity_id}"
+}

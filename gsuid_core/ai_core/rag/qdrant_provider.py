@@ -93,16 +93,14 @@ def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
     if provider == PROVIDER_REMOTE:
         url, api_key = get_remote_connection()
         if not url:
-            logger.warning(t("🧠 [Qdrant] 已选择远程模式但未配置 url，回退到本地嵌入式 Qdrant"))
+            logger.warning(t("log.rag.qdrant_remote_mode_selected_url"))
             return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))
-        logger.info(t("🧠 [Qdrant] 使用远程 Qdrant 服务: {url}", url=url))
+        logger.info(t("log.rag.qdrant_remote_service_url", url=url))
         # 默认 5s 在启动高负载窗口会对瞬时调用误报 ReadTimeout，
         # 导致 RAG 步骤判失败、进程"暂不接收 AI 会话"；放宽容忍启动尖峰。
         return AsyncQdrantClient(url=url, api_key=api_key, timeout=30)
 
-    logger.info(
-        t("🧠 [Qdrant] 使用本地嵌入式 Qdrant: {LOCAL_QDRANT_DB_PATH}", LOCAL_QDRANT_DB_PATH=LOCAL_QDRANT_DB_PATH)
-    )
+    logger.info(t("log.rag.qdrant_local_embedded_db", LOCAL_QDRANT_DB_PATH=LOCAL_QDRANT_DB_PATH))
     return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))
 
 
@@ -115,7 +113,7 @@ def _write_provider_state(provider: str) -> None:
             encoding="utf-8",
         )
     except OSError as e:
-        logger.warning(t("🧠 [Qdrant] 写入 provider 状态文件失败: {e}", e=e))
+        logger.warning(t("log.rag.qdrant_write_provider_status_fail", e=e))
 
 
 def get_last_provider() -> str:
@@ -130,7 +128,7 @@ def get_last_provider() -> str:
     try:
         data = json.loads(_PROVIDER_STATE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        logger.warning(t("🧠 [Qdrant] 读取 provider 状态文件失败: {e}", e=e))
+        logger.warning(t("log.rag.qdrant_read_provider_status_file", e=e))
         return PROVIDER_LOCAL
     raw = data["provider"] if isinstance(data, dict) and "provider" in data else ""
     last = str(raw).strip().lower()
@@ -179,13 +177,13 @@ async def _copy_collection(source: AsyncQdrantClient, target: AsyncQdrantClient,
             except Exception as e:
                 logger.warning(
                     t(
-                        "🧠 [Qdrant] 迁移 Collection {name} 的 payload 索引 {field_name} 失败: {e}",
+                        "log.rag.qdrant_migrate_collection_name_fail",
                         name=name,
                         field_name=field_name,
                         e=e,
                     )
                 )
-        logger.info(t("🧠 [Qdrant] 迁移创建 Collection: {name}", name=name))
+        logger.info(t("log.rag.qdrant_migration_creating_collection_create", name=name))
 
     copied = 0
     next_offset = None
@@ -200,7 +198,7 @@ async def _copy_collection(source: AsyncQdrantClient, target: AsyncQdrantClient,
         points: list[PointStruct] = []
         for r in records:
             if r.vector is None:
-                logger.debug(t("🧠 [Qdrant] Collection {name} point {p0} 无向量，跳过迁移", name=name, p0=r.id))
+                logger.debug(t("log.rag.qdrant_collection_name_point_skip", name=name, p0=r.id))
                 continue
             points.append(PointStruct(id=r.id, vector=_to_input_vector(r.vector), payload=r.payload))
         if points:
@@ -242,7 +240,7 @@ async def _build_source_with_lock_retry(
                 delay = base_delay * (i + 1)
                 logger.warning(
                     t(
-                        "🧠 [Qdrant] 迁移源(本地)被其它实例占用，{delay:.0f}s 后重试 ({p0}/{attempts}): {e}",
+                        "log.rag.qdrant_migration_source_local_retry",
                         delay=delay,
                         p0=i + 1,
                         attempts=attempts,
@@ -284,14 +282,14 @@ async def migrate_qdrant_if_provider_changed() -> None:
     if current == PROVIDER_REMOTE:
         url, _ = get_remote_connection()
         if not url:
-            logger.warning(t("🧠 [Qdrant] qdrant_provider=remote 但未配置 url，实际仍使用本地，跳过迁移"))
+            logger.warning(t("log.rag.qdrant_provider_remote_url"))
             return
 
     # 源是 remote 但 url 缺失：无法连接旧后端读取历史数据，放弃迁移并对齐状态避免反复尝试。
     if last == PROVIDER_REMOTE:
         url, _ = get_remote_connection()
         if not url:
-            logger.warning(t("🧠 [Qdrant] 旧后端为 remote 但缺少连接配置，无法迁移历史数据，已对齐状态"))
+            logger.warning(t("log.rag.qdrant_backend_remote_missing"))
             _write_provider_state(current)
             return
 
@@ -299,12 +297,12 @@ async def migrate_qdrant_if_provider_changed() -> None:
 
     target = rag_base.client
     if target is None:
-        logger.warning(t("🧠 [Qdrant] 全局 client 尚未初始化，跳过本次迁移"))
+        logger.warning(t("log.rag.qdrant_global_client_initialized_skip"))
         return
 
     logger.info(
         t(
-            "🧠 [Qdrant] 检测到向量库后端切换: {last} -> {current}，开始迁移历史数据(保留原数据)...",
+            "log.rag.qdrant_vector_database_backend_start",
             last=last,
             current=current,
         )
@@ -313,13 +311,7 @@ async def migrate_qdrant_if_provider_changed() -> None:
         source = await _build_source_with_lock_retry(last)
     except RuntimeError as e:
         if _is_lock_conflict(e):
-            logger.error(
-                t(
-                    "🧠 [Qdrant] 本地向量库目录被另一个 Qdrant 实例占用，无法读取历史数据进行迁移。"
-                    "常见原因：仍有第二个 gsuid_core 进程在运行(“重启”只会结束当前进程，不会结束重复实例)。"
-                    "本次迁移已跳过(状态未对齐)，处理掉冲突进程后下次启动会自动重试。"
-                )
-            )
+            logger.error(t("log.rag.qdrant_gsuid_core"))
             return
         raise
     failed = False
@@ -328,37 +320,35 @@ async def migrate_qdrant_if_provider_changed() -> None:
         try:
             collections = (await source.get_collections()).collections
         except Exception as e:
-            logger.error(t("🧠 [Qdrant] 读取旧后端 Collection 列表失败，迁移中止(下次启动重试): {e}", e=e))
+            logger.error(t("log.rag.qdrant_read_backend_collection_fail", e=e))
             return
 
         for col in collections:
             try:
                 n = await _copy_collection(source, target, col.name)
                 total += n
-                logger.info(t("🧠 [Qdrant] Collection {p0} 迁移完成: {n} 条", p0=col.name, n=n))
+                logger.info(t("log.rag.qdrant_collection_migration_items", p0=col.name, n=n))
             except Exception as e:
                 failed = True
-                logger.error(t("🧠 [Qdrant] Collection {p0} 迁移失败(下次启动重试): {e}", p0=col.name, e=e))
+                logger.error(t("log.rag.qdrant_collection_migration_retry_fail", p0=col.name, e=e))
 
         if failed:
             logger.warning(
                 t(
-                    "🧠 [Qdrant] 向量库迁移存在失败 Collection，已迁移 {total} 条，状态未对齐，下次启动将重试",
+                    "log.rag.qdrant_vector_database_migration_fail",
                     total=total,
                 )
             )
         else:
             _write_provider_state(current)
-            logger.success(
-                t("🧠 [Qdrant] 向量库迁移完成: 共 {total} 条，源后端({last})数据已保留", total=total, last=last)
-            )
+            logger.success(t("log.rag.qdrant_vector_database_migration_ok", total=total, last=last))
     finally:
         # 释放源客户端：local 源会释放本地文件锁，remote 源会关闭 HTTP 连接。
         # 清理失败不影响迁移结果，仅记录 debug，避免在 finally 中抛出掩盖主流程异常。
         try:
             await source.close()
         except Exception as e:
-            logger.debug(t("🧠 [Qdrant] 关闭源客户端时出现异常(可忽略): {e}", e=e))
+            logger.debug(t("log.rag.qdrant_closing_source_client_fail", e=e))
         # close() 不会清空已载入内存的向量/payload，主动断引用 + GC，
         # 避免本地大库迁移完成后内存仍占用到下次重启才释放。
         _release_qdrant_client_memory(source)

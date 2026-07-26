@@ -1,0 +1,6 @@
+{
+  "log.heartbeat.reactive_decision": "[ReactiveGate] should_speak={should} reason={reason!r}",
+  "log.heartbeat.reactive_decision_missing": "[ReactiveGate] 决策缺合法 should_speak，默认沉默",
+  "log.heartbeat.reactive_gate_error": "[ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}",
+  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}"
+}

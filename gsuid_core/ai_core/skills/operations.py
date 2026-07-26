@@ -92,7 +92,7 @@ def register_plugin_skill_directory(path: Path, plugin: str) -> dict:
     abspath = path.resolve()
 
     if not abspath.is_dir():
-        logger.warning(t("🧠 [Skills] ai_skill 目标目录不存在，跳过: {abspath}", abspath=abspath))
+        logger.warning(t("log.ai.skills_skill_target_directory", abspath=abspath))
         return {
             "status": 1,
             "msg": f"Skill directory not found: {abspath}",

@@ -65,7 +65,7 @@ def _convert_img_sync(
     img: Union[Image.Image, str, Path, bytes],
     is_base64: bool = False,
 ):
-    logger.info(t("🚀 [GsCore] 处理图片中...."))
+    logger.info(t("log.image.gscore_processing_image"))
 
     if isinstance(img, Image.Image):
         if img.format == "GIF":
@@ -90,7 +90,7 @@ def _convert_img_sync(
         with open(Path(img), "rb") as fp:
             img = fp.read()
 
-    logger.success(t("[GsCore] 图片处理完成！"))
+    logger.success(t("log.image.gscore_processing_2"))
 
     return f"base64://{b64encode(img).decode()}"
 
@@ -99,7 +99,7 @@ def convert_img_sync(
     img: Union[Image.Image, str, Path, bytes],
     is_base64: bool = False,
 ):
-    logger.info(t("🚀 [GsCore] 处理图片中...."))
+    logger.info(t("log.image.gscore_processing_image"))
 
     if isinstance(img, Image.Image):
         if img.format == "GIF":
@@ -124,7 +124,7 @@ def convert_img_sync(
         with open(Path(img), "rb") as fp:
             img = fp.read()
 
-    logger.success(t("[GsCore] 图片处理完成！"))
+    logger.success(t("log.image.gscore_processing_2"))
 
     return f"base64://{b64encode(img).decode()}"
 

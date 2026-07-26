@@ -86,7 +86,7 @@ async def pick(
     """
     # 冷却检查
     if _is_on_cooldown(session_id):
-        logger.debug(t("[Meme] 会话 {session_id} 在冷却中，跳过发送", session_id=session_id))
+        logger.debug(t("log.meme.session_id_cooling_skipping", session_id=session_id))
         return None, PICK_COOLDOWN
 
     # 排除最近已发的图片
@@ -121,7 +121,7 @@ async def pick(
             # 检索无可用结果 → 不降级到随机，继续检查下一个 folder
             logger.debug(
                 t(
-                    "[Meme] 检索无可用结果: folder={folder}, query={query_text}",
+                    "log.meme.available_search_results_folder",
                     folder=folder,
                     query_text=repr(query_text),
                 )
@@ -144,7 +144,7 @@ async def pick(
 
     logger.debug(
         t(
-            "[Meme] 未找到匹配的表情包: mood={mood}, scene={scene}, persona={persona}",
+            "log.meme.matching_found_mood",
             mood=mood,
             scene=scene,
             persona=persona,

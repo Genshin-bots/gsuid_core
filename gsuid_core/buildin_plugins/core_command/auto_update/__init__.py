@@ -22,7 +22,7 @@ async def update_core_at_night():
     """每天凌晨执行，自动更新早柚核心"""
 
     if config.get_config("AutoUpdateCore").data:
-        logger.info(t("[Core自动任务] 开始更新 [早柚核心]"))
+        logger.info(t("log.core.core_auto_task_update_gscore"))
         _log = await update_core()
         if IS_NOTIFY:
             await send_msg_to_master(_log)
@@ -34,7 +34,7 @@ async def update_all_plugins_at_night():
     """每天凌晨执行，自动更新全部插件, 然后发送给主人"""
 
     if config.get_config("AutoUpdatePlugins").data:
-        logger.info(t("[Core自动任务] 开始更新 [插件目录]"))
+        logger.info(t("log.core.core_auto_task_update_plugin_directory_start"))
         _log = await update_all_plugins()
         if IS_NOTIFY:
             await send_msg_to_master(_log)
@@ -46,5 +46,5 @@ async def auto_restart_at_night():
     """每天凌晨执行，自动重启早柚核心"""
 
     if config.get_config("AutoRestartCore").data:
-        logger.info(t("[Core自动任务] 开始执行 [自动重启]"))
+        logger.info(t("log.core.core_auto_task_restart"))
         await restart_core()

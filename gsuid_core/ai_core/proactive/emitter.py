@@ -166,7 +166,7 @@ async def emit_proactive_message(
     if suppress_when_heartbeat_recent and dispatcher.should_suppress_heartbeat(target_key):
         logger.debug(
             t(
-                "[ProactiveEmitter] C8 抑制 source={source} target={target_key}（近期已有主动输出）",
+                "log.ai.proactiveemitter_c8_suppressed_source",
                 source=source,
                 target_key=target_key,
             )
@@ -179,7 +179,7 @@ async def emit_proactive_message(
         if _bot is None:
             logger.warning(
                 t(
-                    "[ProactiveEmitter] 无可用 Bot，主动消息发送失败 source={source} target={target_key}",
+                    "log.ai.proactiveemitter_available_bot_proactive_fail",
                     source=source,
                     target_key=target_key,
                 )
@@ -217,7 +217,7 @@ async def emit_proactive_message(
 
     logger.info(
         t(
-            "[ProactiveEmitter] 已发送 source={source} target={target_key} reason={trigger_reason}",
+            "log.ai.proactiveemitter_source_target_key_send",
             source=source,
             target_key=target_key,
             trigger_reason=repr(trigger_reason),

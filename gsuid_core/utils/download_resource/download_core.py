@@ -27,15 +27,13 @@ def _sync_check_url(tag: str, url: str):
             response = client.get(url)
             elapsed_time = time.time() - start_time
             if response.status_code == 200 and "Index of /" in response.text:
-                logger.debug(
-                    t("⌛ [测速] {tag} {url} 延时: {elapsed_time}", tag=tag, url=url, elapsed_time=elapsed_time)
-                )
+                logger.debug(t("log.download.tag_url_elapsed_time", tag=tag, url=url, elapsed_time=elapsed_time))
                 return tag, url, elapsed_time
             else:
-                logger.info(t("⚠  {tag} {url} 未超时但失效...", tag=tag, url=url))
+                logger.info(t("log.download.tag_url_timeout", tag=tag, url=url))
                 return tag, url, float("inf")
     except Exception as e:
-        logger.debug(t("⚠  {tag} {url} 连接失败: {p0}", tag=tag, url=url, p0=type(e).__name__))
+        logger.debug(t("log.download.fail_tag_url_connection_failed", tag=tag, url=url, p0=type(e).__name__))
         return tag, url, float("inf")
 
 
@@ -50,7 +48,7 @@ def _blocking_find_fastest(urls: Dict[str, str]):
         for f in not_done:
             f.cancel()
         if not_done:
-            logger.warning(t("[测速] {p0} 个节点测速超时，使用已完成结果", p0=len(not_done)))
+            logger.warning(t("log.download.speed_test_nodes_timeout_results_fail", p0=len(not_done)))
 
     fastest_tag, fastest_url, fastest_time = "", "", float("inf")
     for f in done:
@@ -84,7 +82,7 @@ async def check_speed():
     # 第一个到达的协程负责测速
     if not NOW_SPEED_TEST:
         NOW_SPEED_TEST = True
-        logger.info(t("[GsCore资源下载]测速中..."))
+        logger.info(t("log.download.gscore_download_testing_speed"))
 
         URL_LIB = {
             "[CNJS]": "http://cn-js-nj-1.lcf.icu:13214",
@@ -106,9 +104,9 @@ async def check_speed():
         NOW_SPEED_TEST = False
 
         if TAG:
-            logger.info(t("🚀 最快资源站: {TAG} {BASE_URL}", TAG=TAG, BASE_URL=BASE_URL))
+            logger.info(t("log.download.tag_base_url", TAG=TAG, BASE_URL=BASE_URL))
         else:
-            logger.warning(t("[测速] 未找到可用资源站，资源下载功能将不可用"))
+            logger.warning(t("log.download.speed_test_available_resource_source_fail"))
 
         return TAG, BASE_URL
 
@@ -170,18 +168,18 @@ async def download_atag_file(
     content_bs = BeautifulSoup(base_data, "lxml")
     pre_data_list = content_bs.find_all("pre")
     if not pre_data_list:
-        logger.warning(t("{TAG} {endpoint} 页面中未找到 <pre> 标签!", TAG=TAG, endpoint=endpoint))
+        logger.warning(t("log.download.tag_endpoint_pre", TAG=TAG, endpoint=endpoint))
         return
     pre_data = pre_data_list[0]
     from bs4 import Tag
 
     if not isinstance(pre_data, Tag):
-        logger.warning(t("{TAG} {endpoint} <pre> 标签不是有效的 Tag 对象!", TAG=TAG, endpoint=endpoint))
+        logger.warning(t("log.download.tag_endpoint_pre_2", TAG=TAG, endpoint=endpoint))
         return
     data_list = pre_data.find_all("a")
     size_list = [i for i in content_bs.strings]
 
-    logger.trace(t("{TAG} 数据库 {endpoint} 中存在 {p0} 个内容!", TAG=TAG, endpoint=endpoint, p0=len(data_list)))
+    logger.trace(t("log.download.tag_database_endpoint_contains", TAG=TAG, endpoint=endpoint, p0=len(data_list)))
 
     temp_num = 0
     size_temp = 0
@@ -220,7 +218,7 @@ async def download_atag_file(
         if not file_path.exists() or not os.stat(file_path).st_size or not is_diff:
             logger.info(
                 t(
-                    "{TAG} {plugin_name} 开始下载 {endpoint}/{name}",
+                    "log.download.tag_plugin_name",
                     TAG=TAG,
                     plugin_name=plugin_name,
                     endpoint=endpoint,
@@ -239,11 +237,9 @@ async def download_atag_file(
         TASKS.clear()
 
     if temp_num == 0:
-        logger.trace(t("{TAG} 数据库 {endpoint} 无需下载!", TAG=TAG, endpoint=endpoint))
+        logger.trace(t("log.download.tag_endpoint_download", TAG=TAG, endpoint=endpoint))
     else:
-        logger.success(
-            t("{TAG}数据库 {endpoint} 已下载{temp_num}个内容!", TAG=TAG, endpoint=endpoint, temp_num=temp_num)
-        )
+        logger.success(t("log.download.tag_endpoint_temp_num_download", TAG=TAG, endpoint=endpoint, temp_num=temp_num))
     temp_num = 0
 
 
@@ -276,4 +272,4 @@ async def download_all_file(
             n += 1
 
         if n == len(EPATH_MAP):
-            logger.success(t("🍱 [资源检查] 插件 {plugin_name} 资源库已是最新!", plugin_name=plugin_name))
+            logger.success(t("log.download.plugin_name", plugin_name=plugin_name))

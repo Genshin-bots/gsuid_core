@@ -1,0 +1,10 @@
+{
+  "log.aps.create_fail": "[Scheduler] Failed to create trigger: {e}",
+  "log.aps.datetrigger_run_date": "[Scheduler] DateTrigger requires a run_date parameter",
+  "log.aps.found_duplicate_named_scheduled": "Found duplicate-named scheduled task {p0}, removing it...",
+  "log.aps.scheduler_add_scheduled_task_fail": "[Scheduler] Failed to add scheduled task: {e}",
+  "log.aps.scheduler_ok": "[Scheduler] Scheduler started successfully!",
+  "log.aps.scheduler_scheduled_task_added_ok": "[Scheduler] Scheduled task added: {job_id} ({p0}) - {p1}",
+  "log.aps.scheduler_shutting_scheduled_tasks": "[Scheduler] Shutting down! Scheduled tasks stopped!",
+  "log.aps.trigger_type_valid_types": "[Scheduler] Invalid trigger type: {trigger_type}, only {valid_trigger_types} supported"
+}

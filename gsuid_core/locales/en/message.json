@@ -1,0 +1,10 @@
+{
+  "log.message.gid_fail_error": "[Push] Push to group {gid} failed! Error: {e}",
+  "log.message.master_id_fail": "[Push Message to Owner] master_id is not configured; push failed!",
+  "log.message.push_group_ok": "[Push] Group-message push complete!",
+  "log.message.push_message_to_owne_task_start": "[Push Message to Owner] Task started...",
+  "log.message.push_private_ok": "[Push] Private-message push complete!",
+  "log.message.push_task": "[Push] Task finished!",
+  "log.message.push_task_start": "[Push] Task started...",
+  "log.message.qid_fail_error": "[Push] Private-message push to {qid} failed! Error: {e}"
+}

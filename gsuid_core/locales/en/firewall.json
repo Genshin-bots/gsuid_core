@@ -1,0 +1,5 @@
+{
+  "log.firewall.hit_ooc_red_line": "[OutputFirewall] Hit OOC red line {p0}: {p1}; rewrite required",
+  "log.firewall.non_releasable_category_hit": "[OutputFirewall] Non-releasable category still hit {p0}: {p1}; continuing to block",
+  "log.firewall.rewrite_hit": "[OutputFirewall] After rewrite still hit {p0}: {p1}; releasing this turn"
+}

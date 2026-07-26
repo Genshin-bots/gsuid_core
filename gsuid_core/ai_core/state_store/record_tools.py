@@ -143,7 +143,7 @@ async def record_put(
     try:
         await state_mutate(real_scope, key, _writer, ttl_days=ttl_days)
     except Exception as e:
-        logger.exception(t("📒 [RecordStore] record_put 失败: {e}", e=e))
+        logger.exception(t("log.ai.recordstore_record_put", e=e))
         return f"写入失败: {e}"
     return f"ok rid={rid}"
 
@@ -288,7 +288,7 @@ async def record_append(
     try:
         await state_mutate(real_scope, key, _writer, ttl_days=ttl_days)
     except Exception as e:
-        logger.exception(t("📒 [RecordStore] record_append 失败: {e}", e=e))
+        logger.exception(t("log.ai.recordstore_record_append", e=e))
         return f"写入失败: {e}"
     return f"ok rid={chosen['rid']}"
 
@@ -346,7 +346,7 @@ async def record_update(
     try:
         await state_mutate(real_scope, key, _writer)
     except Exception as e:
-        logger.exception(t("📒 [RecordStore] record_update 失败: {e}", e=e))
+        logger.exception(t("log.ai.recordstore_record_update", e=e))
         return f"更新失败: {e}"
     return "updated" if flag["hit"] else "not_found"
 
@@ -387,7 +387,7 @@ async def record_delete(
     try:
         await state_mutate(real_scope, key, _deleter)
     except Exception as e:
-        logger.exception(t("📒 [RecordStore] record_delete 失败: {e}", e=e))
+        logger.exception(t("log.ai.recordstore_record_delete", e=e))
         return f"删除失败: {e}"
     return "deleted" if deleted_flag["hit"] else "not_found"
 

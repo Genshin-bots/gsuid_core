@@ -178,12 +178,10 @@ class AnthropicConfigManager(ConfigSetManager):
             for key, value in config_data.items():
                 new_config.set_config(key, value)
 
-            logger.info(
-                t("已将 Anthropic 配置文件从 '{old_name}' 重命名为 '{new_name}'", old_name=old_name, new_name=new_name)
-            )
+            logger.info(t("log.ai.anthropic_old_name_new", old_name=old_name, new_name=new_name))
             return True, "ok"
         except Exception as e:
-            logger.error(t("重命名 Anthropic 配置失败: {e}", e=e))
+            logger.error(t("log.ai.anthropic_fail", e=e))
             return False, str(e)
 
 

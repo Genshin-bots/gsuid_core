@@ -1,0 +1,8 @@
+{
+  "log.buildin.favor_set": "[BuildinTools] 已将用户 {target_id} 的好感度设置为 {value}（已按上下限钳制）",
+  "log.buildin.favor_update": "[BuildinTools] 已调整用户 {target_id} 的好感度 {delta:+d} 点（当前: {new_value}）",
+  "log.buildin.image_reader_datauri_fail": "[BuildinTools] read_image DataURI 解码失败，退回文字转述: {error}",
+  "log.buildin.image_reader_provider_fail": "[BuildinTools] read_image 判定主模型 provider 失败，按 openai 处理: {error}",
+  "log.buildin.image_reader_support_fail": "[BuildinTools] read_image 判定主模型多模态失败，按不支持处理: {error}",
+  "log.buildin.image_reader_task_level_fail": "[BuildinTools] read_image 获取 task_level 失败，按 high 处理: {error}"
+}

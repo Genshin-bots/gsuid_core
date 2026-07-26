@@ -29,7 +29,7 @@ def get_restart_command():
     is_use_custom_restart_command = core_plugins_config.get_config("is_use_custom_restart_command").data
     if is_use_custom_restart_command:
         restart_command = core_plugins_config.get_config("restart_command").data
-        logger.info(t("[Core重启] 使用自定义重启命令: {restart_command}", restart_command=restart_command))
+        logger.info(t("log.core.core_restart_custom_command_start", restart_command=restart_command))
         return restart_command
     else:
         tool = check_start_tool()
@@ -43,7 +43,7 @@ def get_restart_command():
             command = "python -m gsuid_core.core"
         else:
             command = "python -m gsuid_core.core"
-        logger.info(t("[Core重启] 使用默认重启命令: {command}", command=command))
+        logger.info(t("log.core.core_restart_default_command_start", command=command))
         return command
 
 
@@ -133,4 +133,4 @@ async def restart_message():
         )
         await Subscribe.delete_row(task_name="[早柚核心] Restart")
     else:
-        logger.warning(t("[Core重启] 没有找到[Core重启]的订阅, 无推送消息！"))
+        logger.warning(t("log.core.core_restart_subscription_found_start"))

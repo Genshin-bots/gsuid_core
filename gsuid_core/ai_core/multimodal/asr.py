@@ -78,5 +78,5 @@ async def transcribe_audio(
             cleanup_tempfile(audio_path, "🎤 [ASR]")
 
     # 未知 provider
-    logger.warning(t("🎤 [ASR] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    logger.warning(t("log.ai.asr_provider_mcp_supported", provider=provider))
     raise RuntimeError(t("ASR 不支持该提供方: {provider}", provider=provider))

@@ -69,12 +69,12 @@ async def render_html_to_image(
         )
 
         # 转换为base64格式
-        logger.info(t("🧠 [BuildinTools] HTML渲染成功，图片长度: {p0} bytes", p0=len(image_bytes)))
+        logger.info(t("log.ai.buildintools_html_rendering_succeeded_ok", p0=len(image_bytes)))
 
         return image_bytes
 
     except Exception as e:
-        logger.exception(t("🧠 [BuildinTools] HTML渲染失败: {e}", e=e))
+        logger.exception(t("log.ai.buildintools_html_rendering", e=e))
         return f"渲染失败：{str(e)}"
 
 
@@ -117,10 +117,10 @@ async def render_markdown_to_image(
         )
 
         # 转换为base64格式
-        logger.info(t("🧠 [BuildinTools] Markdown渲染成功，图片长度: {p0} bytes", p0=len(image_bytes)))
+        logger.info(t("log.ai.buildintools_markdown_rendering_succeeded_ok", p0=len(image_bytes)))
 
         return image_bytes
 
     except Exception as e:
-        logger.exception(t("🧠 [BuildinTools] Markdown渲染失败: {e}", e=e))
+        logger.exception(t("log.ai.buildintools_markdown_rendering", e=e))
         return f"渲染失败：{str(e)}"

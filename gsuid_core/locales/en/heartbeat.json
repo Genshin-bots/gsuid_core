@@ -1,0 +1,6 @@
+{
+  "log.heartbeat.reactive_decision": "[ReactiveGate] should_speak={should} reason={reason!r}",
+  "log.heartbeat.reactive_decision_missing": "[ReactiveGate] decision lacks valid should_speak, defaulting to silence",
+  "log.heartbeat.reactive_gate_error": "[ReactiveGate] Reactive gate error, falling back to main agent: {e}",
+  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}"
+}

@@ -1,0 +1,7 @@
+{
+  "log.resource_download.connect_error": "获取 {url} 时发生连接错误: {error}",
+  "log.resource_download.http_error": "获取 {url} 时发生 HTTP 错误: {error}",
+  "log.resource_download.request_error": "获取 {url} 时发生请求错误: {error}",
+  "log.resource_download.tag_url": "ℹ️ {tag} URL: {url}",
+  "log.resource_download.unsupported_protocol": "获取 {url} 时发生不支持的协议错误: {error}"
+}

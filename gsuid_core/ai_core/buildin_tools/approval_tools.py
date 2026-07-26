@@ -162,7 +162,7 @@ async def _log_question_safe(ev: Event, question: str, answer: str, answered: bo
     try:
         await approval_center.log_question(ev, question, answer, answered=answered)
     except Exception as e:
-        logger.warning(t("✅ [Approval] 问答留档失败（不影响回答返回）: {e}", e=e))
+        logger.warning(t("log.ai.approval_archival_affect_answer_fail", e=e))
 
 
 def _ask_user_lock_key(ev: Event) -> str:
@@ -262,7 +262,7 @@ async def ask_user(
             else:
                 resp = await bot.receive_resp(question, timeout=timeout)
     except Exception as e:
-        logger.debug(t("✅ [Approval] ask_user 等待回复失败: {e}", e=e))
+        logger.debug(t("log.ai.approval_ask_user_waiting", e=e))
         resp = None
     answer = "" if resp is None else (resp.raw_text if resp.raw_text else resp.text)
     await _log_question_safe(ev, question, answer or default_choice, answered=resp is not None)

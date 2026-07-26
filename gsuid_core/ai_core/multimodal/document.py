@@ -138,5 +138,5 @@ async def extract_document_content(
             cleanup_tempfile(file_path, "📄 [Document]")
 
     # 未知 provider
-    logger.warning(t("📄 [Document] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    logger.warning(t("log.ai.document_provider_mcp_supported", provider=provider))
     raise RuntimeError(t("文档提取不支持该提供方: {provider}", provider=provider))

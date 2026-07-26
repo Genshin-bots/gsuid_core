@@ -48,7 +48,7 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
         超时时返回 (-999, "", "timeout")
     """
     cmd_str = " ".join(["git", *args])
-    logger.info(t("[Git Async] 执行命令: {cmd_str} @ {repo_path}", cmd_str=cmd_str, repo_path=repo_path))
+    logger.info(t("log.plugin.git_async_running_command_cmd", cmd_str=cmd_str, repo_path=repo_path))
 
     env = os.environ.copy()
     # git 2.26+ 在收到 401/403 时不要走 terminal prompt（命令立即失败）
@@ -80,7 +80,7 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
         except asyncio.TimeoutError:
             logger.warning(
                 t(
-                    "[Git Async] 命令超时({timeout}s): {cmd_str} @ {repo_path}",
+                    "log.plugin.git_async_command_timeout_cmd_fail",
                     timeout=timeout,
                     cmd_str=cmd_str,
                     repo_path=repo_path,
@@ -101,7 +101,7 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
         # 这里退化为在线程中执行同步 subprocess.run，避免接口 500 且无需重启进程。
         logger.warning(
             t(
-                "[Git Async] 当前事件循环不支持异步子进程，切换到线程执行: {cmd_str} @ {repo_path}",
+                "log.plugin.git_async_event_loop_asynchronous",
                 cmd_str=cmd_str,
                 repo_path=repo_path,
             )
@@ -120,7 +120,7 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
         except subprocess.TimeoutExpired:
             logger.warning(
                 t(
-                    "[Git Async] 命令超时({timeout}s): {cmd_str} @ {repo_path}",
+                    "log.plugin.git_async_command_timeout_cmd_fail",
                     timeout=timeout,
                     cmd_str=cmd_str,
                     repo_path=repo_path,
@@ -135,20 +135,20 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
     if returncode != 0:
         logger.warning(
             t(
-                "[Git Async] 命令失败(returncode={returncode}): {cmd_str} @ {repo_path}",
+                "log.plugin.git_async_command_returncode_cmd_fail",
                 returncode=returncode,
                 cmd_str=cmd_str,
                 repo_path=repo_path,
             )
         )
         if stderr_str:
-            logger.warning(t("log.git_async.stderr", stderr=stderr_str))
+            logger.warning(t("log.git_async.stderr_event", stderr=stderr_str))
     else:
-        logger.success(t("[Git Async] 命令成功: {cmd_str} @ {repo_path}", cmd_str=cmd_str, repo_path=repo_path))
+        logger.success(t("log.plugin.git_async_command_succeeded_cmd_ok", cmd_str=cmd_str, repo_path=repo_path))
         if stdout_str:
             logger.debug(
                 t(
-                    "log.git_async.stdout",
+                    "log.git_async.stdout_event",
                     stdout=f"{stdout_str[:200]}{'...' if len(stdout_str) > 200 else ''}",
                 )
             )
@@ -203,10 +203,10 @@ async def git_clone(
         return False, f"克隆超时({timeout}s)，可能需要 git 凭证或网络问题: {url}"
 
     if returncode != 0:
-        logger.error(t("[Git Async] clone 失败: {stderr}", stderr=stderr))
+        logger.error(t("log.plugin.git_async_clone_stderr", stderr=stderr))
         return False, f"克隆失败: {stderr}"
 
-    logger.info(t("[Git Async] clone 成功: {url} -> {target_path}", url=url, target_path=target_path))
+    logger.info(t("log.plugin.git_async_clone_succeeded_url_ok", url=url, target_path=target_path))
     return True, "克隆成功"
 
 
@@ -227,7 +227,7 @@ async def git_fetch(repo_path: Path, timeout: int = GIT_TIMEOUT) -> tuple[bool, 
         return False, f"fetch 超时({timeout}s)，可能需要 git 凭证"
 
     if returncode != 0:
-        logger.warning(t("[Git Async] fetch 失败: {stderr}", stderr=stderr))
+        logger.warning(t("log.plugin.git_async_fetch_stderr", stderr=stderr))
         return False, f"fetch 失败: {stderr}"
 
     return True, "fetch 成功"
@@ -250,7 +250,7 @@ async def git_pull(repo_path: Path, timeout: int = GIT_TIMEOUT) -> tuple[bool, s
         return False, f"pull 超时({timeout}s)，可能需要 git 凭证"
 
     if returncode != 0:
-        logger.warning(t("[Git Async] pull 失败: {stderr}", stderr=stderr))
+        logger.warning(t("log.plugin.git_async_pull_stderr", stderr=stderr))
         return False, f"pull 失败: {stderr}"
 
     return True, stdout
@@ -270,7 +270,7 @@ async def git_reset_hard(repo_path: Path, target: str = "HEAD") -> tuple[bool, s
     returncode, _, stderr = await run_git(repo_path, "reset", "--hard", target)
 
     if returncode != 0:
-        logger.warning(t("[Git Async] reset --hard 失败: {stderr}", stderr=stderr))
+        logger.warning(t("log.plugin.git_async_reset_hard_stderr", stderr=stderr))
         return False, f"reset --hard 失败: {stderr}"
 
     return True, f"已重置到 {target}"
@@ -289,7 +289,7 @@ async def git_clean_xdf(repo_path: Path) -> tuple[bool, str]:
     returncode, _, stderr = await run_git(repo_path, "clean", "-xdf")
 
     if returncode != 0:
-        logger.warning(t("[Git Async] clean -xdf 失败: {stderr}", stderr=stderr))
+        logger.warning(t("log.plugin.git_async_clean_xdf_stderr", stderr=stderr))
         return False, f"clean -xdf 失败: {stderr}"
 
     return True, "clean 完成"
@@ -328,7 +328,7 @@ async def git_set_remote_url(repo_path: Path, url: str) -> tuple[bool, str]:
     returncode, _, stderr = await run_git(repo_path, "remote", "set-url", "origin", url)
 
     if returncode != 0:
-        logger.error(t("[Git Async] set-url 失败: {stderr}", stderr=stderr))
+        logger.error(t("log.plugin.git_async_set_url_stderr", stderr=stderr))
         return False, f"设置 remote URL 失败: {stderr}"
 
     return True, f"已设置 remote URL: {url}"

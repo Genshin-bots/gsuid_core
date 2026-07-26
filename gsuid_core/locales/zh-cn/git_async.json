@@ -1,0 +1,4 @@
+{
+  "log.git_async.stderr_event": "[Git Async] stderr: {stderr}",
+  "log.git_async.stdout_event": "[Git Async] stdout: {stdout}"
+}

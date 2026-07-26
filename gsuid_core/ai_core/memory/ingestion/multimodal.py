@@ -110,7 +110,7 @@ def submit_image_observation(
             _multimodal_queue.put_nowait(record)
             submitted += 1
         except asyncio.QueueFull:
-            logger.debug(t("🧠 [Multimodal] 队列已满，丢弃图片观察记录"))
+            logger.debug(t("log.memory.multimodal_queue_full_discarding"))
             break
     return submitted
 
@@ -132,7 +132,7 @@ class ImageUnderstandWorker:
             return
         self._running = True
         self._task = asyncio.create_task(self._loop())
-        logger.info(t("🧠 [Multimodal] ImageUnderstandWorker 已启动"))
+        logger.info(t("log.memory.multimodal_imageunderstandworker_started"))
 
     async def stop(self) -> None:
         self._running = False
@@ -165,7 +165,7 @@ class ImageUnderstandWorker:
                     prompt="简要描述这张图片的核心内容，若含文字/数字请一并转述。",
                 )
             except Exception as e:
-                logger.debug(t("🧠 [Multimodal] 图片理解失败（已忽略）: {e}", e=e))
+                logger.debug(t("log.memory.multimodal_image_understanding_ignore", e=e))
                 return
 
             desc = (desc or "").strip()
@@ -186,7 +186,7 @@ class ImageUnderstandWorker:
                     message_type=record.message_type,
                 )
             except Exception as e:
-                logger.debug(t("🧠 [Multimodal] 转述记录入队失败: {e}", e=e))
+                logger.debug(t("log.memory.multimodal_enqueue_paraphrase_record", e=e))
 
 
 _worker: Optional[ImageUnderstandWorker] = None

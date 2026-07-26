@@ -1,0 +1,15 @@
+{
+  "log.db_admin.adding_table_name_page_create": "テーブル {table_name}（{page_title}）をプラグイン {plugin_name} に追加しています",
+  "log.db_admin.admin_count": "管理モデルが合計 {count} 件見つかりました",
+  "log.db_admin.collect_start": "管理モデルを収集中...",
+  "log.db_admin.create_record_fail": "レコードの作成中にエラーが発生しました: {error}",
+  "log.db_admin.delete_record_fail": "レコードの削除中にエラーが発生しました: {error}",
+  "log.db_admin.extract_columns_fail": "モデル {model_name} からカラム情報を抽出中にエラーが発生しました: {error}",
+  "log.db_admin.get_table_data_fail": "テーブルデータの取得中にエラーが発生しました: {error}",
+  "log.db_admin.import_mount_app_fail": "mount_app のインポート中にエラーが発生しました: {error}",
+  "log.db_admin.model_found": "GsAdminModel を検出しました: {admin_name}、モデル {model_name}",
+  "log.db_admin.plugin_admins": "プラグイン {plugin_name} の管理モデル {admin_count} 件を処理中です",
+  "log.db_admin.plugins_page_fail": "site.plugins_page の処理中にエラーが発生しました: {error}",
+  "log.db_admin.plugins_page_start": "site.plugins_page のプラグイン {plugin_count} 件を処理中です",
+  "log.db_admin.update_record_fail": "レコードの更新中にエラーが発生しました: {error}"
+}

@@ -35,7 +35,7 @@ async def reset_web_password(bot: Bot, ev: Event):
                 if user_pw == pw:
                     await bot.send(await bot.t("确认码输入成功!即将开始重置密码...."))
                     im = await drop_web_table()
-                    logger.info(t("[core清除网页控制台密码]结束!"))
+                    logger.info(t("log.webconsole.core_done"))
                     await bot.send(im)
                 else:
                     await bot.send(await bot.t("确认码输入错误!已取消操作!"))

@@ -22,7 +22,7 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 async def init_planning() -> None:
     """初始化 Kanban 任务编排层。"""
     if not ai_config.get_config("enable").data:
-        logger.info(t("📋 [Kanban] AI总开关已关闭，跳过任务编排层初始化"))
+        logger.info(t("log.ai.kanban_master_switch_skipping"))
         return
 
     # 导入即注册 Kanban LLM 工具
@@ -37,7 +37,7 @@ async def init_planning() -> None:
 
         register_builtin_profiles()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] 能力代理画像注册失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_register_capability_agent_fail", e=e))
 
     # 内部能力评估代理（仅 evaluate_agent_mesh_capability 工具内部使用）
     try:
@@ -45,7 +45,7 @@ async def init_planning() -> None:
 
         register_capability_evaluator()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] 能力评估代理注册失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_register_capability_evaluation_fail", e=e))
 
     # webconsole 后端依赖：把磁盘上的用户自建画像挂回内存注册表。
     try:
@@ -53,13 +53,13 @@ async def init_planning() -> None:
 
         load_user_profiles()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] 用户自建能力代理画像加载失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_load_user_created_fail", e=e))
 
     # 启动期僵尸子任务恢复
     try:
         await _recover_zombies_and_kick()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] 子任务崩溃恢复失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_subtask_crash_recovery", e=e))
 
     # 启动期周期模板恢复：把 armed 模板重新挂到 APScheduler
     try:
@@ -67,7 +67,7 @@ async def init_planning() -> None:
 
         await restore_armed_templates()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] 周期模板恢复失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_recurring_template_recovery", e=e))
 
     # 启动期 not_before 子任务唤醒恢复：进程重启后 APScheduler 内存表丢失
     # 重新把数据库里所有 pending 且未到期的子任务 not_before 挂回去。
@@ -76,7 +76,7 @@ async def init_planning() -> None:
 
         await restore_pending_not_before_wakeups()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] not_before 唤醒恢复失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_wake_recovery", e=e))
 
     # 启动期周期子任务模板恢复：所有 armed 周期子任务重新挂回 APScheduler，
     try:
@@ -84,16 +84,16 @@ async def init_planning() -> None:
 
         await restore_armed_subtask_templates()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] 周期子任务模板恢复失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_recurring_subtask_template_fail", e=e))
 
     # Artifact TTL 清理：每天 4:00 跑一次，删除 expires_at < now 的过期 artifact。
     # TTL 默认 30 天，由 workspace.put_artifact 在登记时写入；过期清理含落盘
     try:
         _schedule_artifact_ttl_cleanup()
     except Exception as e:
-        logger.exception(t("📋 [Kanban] Artifact TTL 清理 job 注册失败: {e}", e=e))
+        logger.exception(t("log.ai.kanban_register_artifact_ttl_fail", e=e))
 
-    logger.info(t("📋 [Kanban] 任务编排层初始化完成"))
+    logger.info(t("log.ai.kanban_task_orchestration_layer_ok"))
 
 
 def _register_kanban_approval_category() -> None:
@@ -147,9 +147,9 @@ def _schedule_artifact_ttl_cleanup() -> None:
         try:
             n = await AIAgentArtifact.delete_expired()
             if n > 0:
-                logger.info(t("📋 [Kanban] 每日 TTL 清理删除 {n} 条过期 artifact", n=n))
+                logger.info(t("log.ai.kanban_daily_ttl_cleanup_deleted", n=n))
         except Exception as e:
-            logger.exception(t("📋 [Kanban] TTL 清理 job 执行失败: {e}", e=e))
+            logger.exception(t("log.ai.kanban_ttl_cleanup_job", e=e))
 
     scheduler.add_job(
         func=_job,
@@ -160,7 +160,7 @@ def _schedule_artifact_ttl_cleanup() -> None:
         name="Kanban Artifact TTL 清理（每日 4:00）",
         replace_existing=True,
     )
-    logger.info(t("📋 [Kanban] Artifact TTL 清理 job 已注册（每日 04:00）"))
+    logger.info(t("log.ai.kanban_artifact_ttl_cleanup_job"))
 
 
 async def _recover_zombies_and_kick() -> None:
@@ -175,9 +175,7 @@ async def _recover_zombies_and_kick() -> None:
     recovered = await recover_zombie_subtasks()
     # 无论是否复活过僵尸都无条件接力 kick 所有 running/pending 根任务（否则优雅重启后 无僵尸时 pending
     # 双跑由 mark_subtask_running 的条件 SQL 拦住
-    logger.info(
-        t("📋 [Kanban] 启动期僵尸恢复 {recovered} 个，开始接力 kick 所有 running/pending 根任务", recovered=recovered)
-    )
+    logger.info(t("log.ai.kanban_recovered_zombie_tasks_start", recovered=recovered))
     async with async_maker() as session:
         stmt = (
             select(AIAgentTask)

@@ -1,0 +1,21 @@
+{
+  "log.bot.about_to_send": "[GsCore][送信予定]",
+  "log.bot.ban_http_unsupported": "[ban] HTTP モードでは禁止操作はサポートされていません、無視されました",
+  "log.bot.banuserto_id_target_type": "[ユーザー禁止] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}",
+  "log.bot.exec_fail": "[コア実行エラー] 関数 {func_name} の実行中に未捕捉の例外が発生しました",
+  "log.bot.exec_start": "[コア実行] 関数 {func_name} の実行を開始しました",
+  "log.bot.mute_check_fail": "[Core AI 制御] ミュート状態の確認に失敗しました、送信を続行します: {error}",
+  "log.bot.queue_wait": "[キュー警告] 関数 {name} は {wait_time:.2f}秒 待機してから開始しました",
+  "log.bot.recall_disabled": "[_Bot] {bot_id} が連続 {streak} 回 ack を受信しなかったため、recall 待機を無効化しました",
+  "log.bot.recall_to": "[メッセージ取り消し] {bot_id} - {target_type} - {target_id} - {mid}",
+  "log.bot.record_history_fail": "[GsCore][Bot] 履歴の記録に失敗しました: {error}",
+  "log.bot.scope_muted": "[Core AI 制御] 現在のセッションスコープがミュート状態のため、送信をインターセプトしました: {scope_key}",
+  "log.bot.send_task_fail": "[_Bot] 送信タスクで例外: {error}",
+  "log.bot.send_worker_fail": "[_Bot] 送信 worker で例外: {error}",
+  "log.bot.send_worker_started": "[_Bot] {bot_id} 送信 worker が起動しました",
+  "log.bot.sendmsgto_id_target_type_send": "[メッセージ送信先] {bot_id} - {target_type} - {target_id}",
+  "log.bot.unsend_http_unsupported": "[unsend] HTTP モードではメッセージ取り消しはサポートされていません、無視されました",
+  "log.bot.wait_reply_timeout": "[返信待機タイムアウト] 返信 {event} の待機がタイムアウトしました、タイムアウト時間: {timeout}秒",
+  "log.bot.ws_not_connected_drop": "[_Bot] ws 未接続、メッセージを破棄しました",
+  "log.bot.ws_not_connected_pending": "[_Bot] ws 未接続、メッセージは再接続待ちでキューに入れられました..."
+}

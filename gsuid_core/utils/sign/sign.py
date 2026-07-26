@@ -24,7 +24,7 @@ async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
     error_msg = get_error(retcode)
     logger.warning(
         t(
-            "{sign_title} {uid} 出错, 错误码{retcode}, 错误消息{error_msg}!",
+            "log.sign.sign_title_uid_retcode_error",
             sign_title=sign_title,
             uid=uid,
             retcode=retcode,
@@ -41,7 +41,7 @@ async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
 async def sign_in(uid: str, game_name: str = "gs") -> str:
     _gn = GAME_NAME_MAP.get(game_name, "未知游戏")
     sign_title = f"[{_gn}] [签到]"
-    logger.info(t("{sign_title} {uid} 开始执行签到", sign_title=sign_title, uid=uid))
+    logger.info(t("log.sign.sign_title_uid", sign_title=sign_title, uid=uid))
     is_os = mys_api.check_os(uid, game_name)
     # 获得签到信息
     sign_info = await mys_api.get_sign_info(uid, game_name)
@@ -50,7 +50,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
         return await sign_error(uid, sign_info, game_name)
     # 检测是否已签到
     if sign_info["is_sign"]:
-        logger.info(t("{sign_title} {uid} 该用户今日已签到,跳过...", sign_title=sign_title, uid=uid))
+        logger.info(t("log.sign.sign_title_uid_4", sign_title=sign_title, uid=uid))
         day_of_month = int(sign_info["today"].split("-")[-1])
         signed_count = int(sign_info["total_sign_day"])
         sign_missed = day_of_month - signed_count
@@ -78,7 +78,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                         Header["x-rpc-seccode"] = f"{vl}|jordan"
                         logger.info(
                             t(
-                                "{sign_title} {uid} 已获取验证码, 等待时间{delay}秒",
+                                "log.sign.sign_title_uid_delay",
                                 sign_title=sign_title,
                                 uid=uid,
                                 delay=delay,
@@ -89,7 +89,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                         delay = 605 + random.randint(1, 120)
                         logger.info(
                             t(
-                                "{sign_title} {uid} 未获取验证码,等待{delay}秒后重试...",
+                                "log.sign.sign_title_uid_delay_3",
                                 sign_title=sign_title,
                                 uid=uid,
                                 delay=delay,
@@ -98,16 +98,16 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                         await asyncio.sleep(delay)
                     continue
                 else:
-                    logger.info(t("配置文件暂未开启[跳过无感验证],跳过本次签到任务..."))
+                    logger.info(t("log.sign.config_skip"))
                 return "签到失败...出现验证码!"
             # 成功签到!
             else:
                 if index == 0:
-                    logger.info(t("{sign_title} {uid} 该用户无校验码!", sign_title=sign_title, uid=uid))
+                    logger.info(t("log.sign.sign_title_uid_3", sign_title=sign_title, uid=uid))
                 else:
                     logger.info(
                         t(
-                            "{sign_title} [无感验证] {uid} 该用户重试 {index} 次验证成功!",
+                            "log.sign.sign_title_uid_index",
                             sign_title=sign_title,
                             uid=uid,
                             index=index,
@@ -116,17 +116,17 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                 break
         elif is_os and (sign_data["code"] == "ok"):
             # 国际服签到无risk_code字段
-            logger.info(t("[国际服签到] {uid} 签到成功!", uid=uid))
+            logger.info(t("log.sign.international_server_uid_checked_ok", uid=uid))
             break
         else:
             # 重试超过阈值
-            logger.warning(t("{sign_title} 超过请求阈值...", sign_title=sign_title))
+            logger.warning(t("log.sign.sign_title", sign_title=sign_title))
             vl_hint = "❌签到失败...出现验证码!"
             return f"{vl_hint}"
     # 签到失败
     else:
         im = "❌签到失败!"
-        logger.warning(t("{sign_title} UID{uid} 签到失败, 结果: {im}", sign_title=sign_title, uid=uid, im=im))
+        logger.warning(t("log.sign.sign_title_uid_im", sign_title=sign_title, uid=uid, im=im))
         return im
     # 获取签到列表
     sign_list = await mys_api.get_sign_list(uid, game_name)
@@ -152,7 +152,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
     im = f"{mes_im}!\n{get_im}\n🚨本月漏签次数：{sign_missed}"
     logger.info(
         t(
-            "✅ {sign_title} UID{uid} 签到完成!\n📝结果: {mes_im}\n🚨漏签次数: {sign_missed}",
+            "log.sign.sign_title_uid_mes_done",
             sign_title=sign_title,
             uid=uid,
             mes_im=mes_im,
@@ -219,7 +219,7 @@ async def daily_sign(game_name: str):
             uid_list.append(_uid)
             user_list.append(user)
 
-    logger.info(t("[{game_name}] [全部重签] [UID列表] {uid_list}", game_name=game_name, uid_list=uid_list))
+    logger.info(t("log.sign.game_name_uid_list", game_name=game_name, uid_list=uid_list))
     for user in user_list:
         tasks.append(
             single_daily_sign(
@@ -243,7 +243,7 @@ async def daily_sign(game_name: str):
             delay = 30 + random.randint(3, 35)
             logger.info(
                 t(
-                    "[{game_name}] [签到] 已签到{p0}个用户, 等待{delay}秒进行下一次签到",
+                    "log.sign.game_name_delay",
                     game_name=game_name,
                     p0=len(tasks),
                     delay=delay,

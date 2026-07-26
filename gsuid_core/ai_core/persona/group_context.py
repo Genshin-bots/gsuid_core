@@ -86,7 +86,7 @@ async def _get_group_name(group_id: str) -> Optional[str]:
         if group is not None and group.group_name and group.group_name != "1":
             return str(group.group_name)
     except Exception as e:
-        logger.debug(t("🏠 [GroupContext] 从数据库获取群聊名称失败: {e}", e=e))
+        logger.debug(t("log.persona.groupcontext_get_group_name_fail", e=e))
 
     return None
 
@@ -115,7 +115,7 @@ async def _get_group_summary_from_memory(group_id: str) -> Optional[str]:
             return str(meta.group_summary_cache)
 
     except Exception as e:
-        logger.debug(t("🏠 [GroupContext] 获取群聊画像摘要失败: {e}", e=e))
+        logger.debug(t("log.persona.groupcontext_get_group_profile_fail", e=e))
 
     return None
 

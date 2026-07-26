@@ -1,0 +1,4 @@
+{
+  "log.resourcemanager.cleaned_expired_resources_remaining": "[ResourceManager] 已清理 {p0} 个过期资源，剩余 {p1} 个",
+  "log.resourcemanager.ttl_cleanup_task_interval": "[ResourceManager] TTL 清理任务已启动 (TTL: {p0}s, 间隔: {p1}s)"
+}

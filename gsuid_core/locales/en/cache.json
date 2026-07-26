@@ -1,0 +1,5 @@
+{
+  "log.cache.entering_event": "{p0} Entering cache...",
+  "log.cache.hit_value": "{p0} Cache hit: {_value}",
+  "log.cache.start_event": "{p0} Starting cache..."
+}

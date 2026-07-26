@@ -16,7 +16,7 @@ async def init_all():
     """初始化RAG模块的所有组件"""
     # 检查AI总开关
     if not ai_config.get_config("enable").data:
-        logger.info(t("🧠 [RAG] AI总开关已关闭，跳过RAG模块初始化"))
+        logger.info(t("log.rag.init_skip_ai_master_switch_off"))
         return
 
     # 0. 提前下载所有模型到缓存目录
@@ -52,7 +52,7 @@ async def init_all():
                     raise
                 logger.warning(
                     t(
-                        "🧠 [RAG] {name} 第{i}次失败({p0})，{delay}s 后重试",
+                        "log.rag.name_th_retrying_delay",
                         name=name,
                         i=i,
                         p0=type(e).__name__,
@@ -69,7 +69,7 @@ async def init_all():
 
     all_tools = get_all_tools()
     await sync_tools(all_tools)
-    logger.info(t("🧠 [Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {p0}", p0=len(all_tools)))
+    logger.info(t("log.rag.tools_buildin_imported_registry", p0=len(all_tools)))
 
     from . import sync_images, sync_knowledge
 

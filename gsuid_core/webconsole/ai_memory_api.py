@@ -455,16 +455,14 @@ async def _run_extract_pass(
                 stats["failed"] += 1
                 logger.warning(
                     t(
-                        "🧠 [Memory] scope={scope_key} 窗口抽取超时（{p0}s），跳过该窗口",
+                        "log.webconsole.memory_scope_key_window_fail_2",
                         scope_key=scope_key,
                         p0=req.extract_window_timeout,
                     )
                 )
             except Exception as e:  # noqa: BLE001 抽取窗口失败仅跳过，绝不丢整 plan（§14.2）
                 stats["failed"] += 1
-                logger.warning(
-                    t("🧠 [Memory] scope={scope_key} 窗口抽取失败（跳过该窗口）: {e}", scope_key=scope_key, e=e)
-                )
+                logger.warning(t("log.webconsole.memory_scope_key_window_fail", scope_key=scope_key, e=e))
 
     if windows:
         await asyncio.gather(*[_run_one(w) for w in windows])

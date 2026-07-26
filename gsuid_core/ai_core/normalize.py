@@ -36,5 +36,5 @@ def normalize_query(text: str) -> str:
 
     新代码请改用 `command_alias_normalizer`。
     """
-    logger.trace(t("🧠 [Normalize] normalize_query 已降级为命令层 fallback，建议改用 command_alias_normalizer"))
+    logger.trace(t("log.ai.normalize_query_downgraded_command"))
     return command_alias_normalizer(text)

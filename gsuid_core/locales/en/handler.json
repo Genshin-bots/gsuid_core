@@ -1,0 +1,19 @@
+{
+  "log.handler.ai_init_incomplete": "[GsCore][AI] AI Core init incomplete or has failed steps; skipping this AI session",
+  "log.handler.ai_initializing": "[GsCore][AI] AI Core is initializing/migrating; not enqueuing this message into the AI session queue yet",
+  "log.handler.at_bot_shield": "Message appears to @ another bot; stopping response to this message",
+  "log.handler.buffer_coregroup_fail": "[GsCore] Buffered CoreGroup write failed: {error}",
+  "log.handler.buffer_coreuser_fail": "[GsCore] Buffered CoreUser write failed: {error}",
+  "log.handler.buffer_flush_loop_fail": "[GsCore] CoreUser/Group buffer flush loop error: {error}",
+  "log.handler.buffer_flushed": "[GsCore] CoreUser/Group buffer flush complete",
+  "log.handler.buffer_flushing": "[GsCore] Flushing CoreUser/Group buffer...",
+  "log.handler.buffer_stop": "[GsCore] Stopping CoreUser/Group buffer flush loop before exit...",
+  "log.handler.check_command_fail": "[GsCore] trigger.check_command error: type={type} keyword={keyword}",
+  "log.handler.cmd_on_message": "[Command Triggered] [on_message]",
+  "log.handler.cmd_triggered": "[Command Triggered]",
+  "log.handler.event_received": "[Event Received]",
+  "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command error: keyword={keyword}",
+  "log.handler.meta_received": "[Meta Event Received]",
+  "log.handler.meta_triggered": "[Meta Event Triggered]",
+  "log.handler.same_msg_cd": "[GsCore][SameMsgCD] Ignoring this message from {user_id}!"
+}

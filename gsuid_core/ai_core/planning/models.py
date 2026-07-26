@@ -397,5 +397,5 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
 
         del_stmt = sql_delete(cls).where(col(cls.expires_at).is_not(None)).where(col(cls.expires_at) < cut)
         await session.execute(del_stmt)
-        _logger.info(t("📦 [Kanban] Artifact TTL 清理: 删除 {p0} 条过期记录", p0=len(expired)))
+        _logger.info(t("log.ai.kanban_artifact_ttl_cleanup_delete", p0=len(expired)))
         return len(expired)

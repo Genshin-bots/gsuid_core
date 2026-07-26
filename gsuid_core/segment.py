@@ -454,7 +454,7 @@ async def markdown_to_template_markdown(
                 if _t:
                     t_values = list(_t.values())[-1]
 
-                    logger.debug(t("[GsCore] MD模板发送使用模板{p0}", p0=t_values[0]))
+                    logger.debug(t("log.segment.gscore_send_md_template_sending", p0=t_values[0]))
                     logger.debug(t_values[1])
 
                     _message.extend(
@@ -464,10 +464,10 @@ async def markdown_to_template_markdown(
                         )
                     )
                 else:
-                    logger.warning(t("[GsCore] MD模板无匹配！将以正常消息发送..."))
+                    logger.warning(t("log.segment.gscore_matching_md_template_send"))
                     _message.append(m)
             else:
-                logger.warning(t("[GsCore] 未配置MD模板！将以正常消息发送..."))
+                logger.warning(t("log.segment.gscore_md_template_configured_send"))
                 _message.append(m)
         else:
             _message.append(m)
@@ -499,12 +499,7 @@ async def to_markdown(
                 if m.data.startswith("link://"):
                     url = m.data.replace("link://", "")
                     if not size:
-                        logger.warning(
-                            t(
-                                "[to_markdown] 你传入了URL图片但并未规定图片大小，"
-                                "请在消息列表中额外传入MessageSegment.image_size()!"
-                            )
-                        )
+                        logger.warning(t("log.segment.to_markdown_url_messagesegment_image"))
                 elif m.data.startswith("base64://"):
                     url = await _image_to_url(m.data, send_type, m)
 

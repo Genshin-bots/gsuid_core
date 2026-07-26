@@ -153,9 +153,7 @@ async def record_term_mappings(scope_key: str, mappings: Dict[str, str]) -> None
         return profile
 
     await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
-    logger.debug(
-        i18n_t("🧠 [GroupProfile] {scope_key} 词汇映射已更新: {mappings}", scope_key=scope_key, mappings=mappings)
-    )
+    logger.debug(i18n_t("log.memory.groupprofile_scope_key_vocabulary_update", scope_key=scope_key, mappings=mappings))
 
 
 async def record_entity_tags(scope_key: str, tags: List[str]) -> None:
@@ -238,7 +236,7 @@ async def record_member_alias(scope_key: str, alias: str, user_id: str) -> List[
     result = new_profile["member_alias_ids"].get(alias, [user_id])
     logger.debug(
         i18n_t(
-            "🧠 [GroupProfile] {scope_key} 群成员称呼已更新: {alias} = {result}",
+            "log.memory.groupprofile_scope_key_group_create",
             scope_key=scope_key,
             alias=alias,
             result=result,

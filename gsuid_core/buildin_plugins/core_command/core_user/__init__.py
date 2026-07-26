@@ -14,15 +14,15 @@ core_user_msg = SV("core信息确认")
 
 @core_user_info.on_fullmatch(("绑定信息"), block=True)
 async def send_bind_card(bot: Bot, ev: Event):
-    logger.info(t("开始执行[查询用户绑定状态]"))
+    logger.info(t("log.core.query_user_binding_status_start"))
     im = await get_user_card(ev.bot_id, ev)
-    logger.info(t("[查询用户绑定状态]完成!等待图片发送中..."))
+    logger.info(t("log.core.query_user_binding_s_waiting_image_ok"))
     await bot.send(im)
 
 
 @core_user_msg.on_fullmatch(("给我发消息"), block=True)
 async def send_direct_msg(bot: Bot, ev: Event):
-    logger.info(t("开始执行[给我发消息]"))
+    logger.info(t("log.core.me_start"))
     messages = [
         Message("at", ev.user_id),
         Message("text", "这是一条被动消息！"),

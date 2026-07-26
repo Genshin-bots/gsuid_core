@@ -1,0 +1,21 @@
+{
+  "log.bot.about_to_send": "[GsCore][About To Send]",
+  "log.bot.ban_http_unsupported": "[ban] Ban is not supported in HTTP mode; ignored",
+  "log.bot.banuserto_id_target_type": "[BanUserTo] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}",
+  "log.bot.exec_fail": "[CoreExecError] Uncaught exception while running function {func_name}",
+  "log.bot.exec_start": "[CoreExec] Function {func_name} started",
+  "log.bot.mute_check_fail": "[Core AI Control] Mute-state check failed; sending anyway: {error}",
+  "log.bot.queue_wait": "[QueueWarning] Function {name} waited {wait_time:.2f}s before starting",
+  "log.bot.recall_disabled": "[_Bot] {bot_id} received no ack {streak} times in a row; disabling recall wait",
+  "log.bot.recall_to": "[RecallMsgTo] {bot_id} - {target_type} - {target_id} - {mid}",
+  "log.bot.record_history_fail": "[GsCore][Bot] Failed to record history: {error}",
+  "log.bot.scope_muted": "[Core AI Control] Session scope is muted; intercepting send: {scope_key}",
+  "log.bot.send_task_fail": "[_Bot] Send task error: {error}",
+  "log.bot.send_worker_fail": "[_Bot] Send worker error: {error}",
+  "log.bot.send_worker_started": "[_Bot] {bot_id} send worker started",
+  "log.bot.sendmsgto_id_target_type_send": "[SendMsgTo] {bot_id} - {target_type} - {target_id}",
+  "log.bot.unsend_http_unsupported": "[unsend] Recall is not supported in HTTP mode; ignored",
+  "log.bot.wait_reply_timeout": "[WaitReplyTimeout] Timed out waiting for reply {event}, timeout: {timeout}s",
+  "log.bot.ws_not_connected_drop": "[_Bot] ws not connected; message dropped",
+  "log.bot.ws_not_connected_pending": "[_Bot] ws not connected; message queued, waiting for reconnect..."
+}

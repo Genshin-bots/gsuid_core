@@ -57,7 +57,7 @@ def reconcile_config(
         if type(cur) is not type(dft):
             logger.warning(
                 t(
-                    "[配置][{config_name}] 配置项 {key} 类型不一致 ({p0} -> {p1}), 已重置为默认值",
+                    "log.config.name_type_mismatch",
                     config_name=config_name,
                     key=key,
                     p0=type(cur).__name__,
@@ -186,9 +186,7 @@ class StringConfig:
         """
         # 如果新路径已存在配置文件，则不进行迁移
         if new_path.exists():
-            logger.info(
-                t("[配置][{p0}] 目标配置文件已存在，跳过从 {old_path} 迁移", p0=self.config_name, old_path=old_path)
-            )
+            logger.info(t("log.config.target_configuration_file_exists_skip", p0=self.config_name, old_path=old_path))
             return
 
         # 确保目标目录存在
@@ -208,14 +206,14 @@ class StringConfig:
 
             logger.info(
                 t(
-                    "[配置][{p0}] 配置文件已从 {old_path} 迁移到 {new_path}",
+                    "log.config.configuration_file_migrated_path",
                     p0=self.config_name,
                     old_path=old_path,
                     new_path=new_path,
                 )
             )
         except Exception as e:
-            logger.error(t("[配置][{p0}] 配置文件迁移失败: {e}", p0=self.config_name, e=e))
+            logger.error(t("log.config.configuration_file_migration_fail", p0=self.config_name, e=e))
 
     def _get_caller_plugin_name(self):
         try:
@@ -269,11 +267,11 @@ class StringConfig:
             if file:
                 file.write(msgjson.format(msgjson.encode(self.config), indent=4))
             else:
-                logger.error(t("写入配置文件失败!"))
+                logger.error(t("log.config.write_fail"))
 
     def repair_config(self):
         with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:
-            logger.warning(t("[配置][{p0}] 配置文件格式有变动, 已重置...", p0=self.config_name))
+            logger.warning(t("log.config.configuration_file_format_changed", p0=self.config_name))
             # 打开self.CONFIG_PATH，用json加载
             temp_config: Dict[str, Any] = json.load(f)
 
@@ -312,7 +310,7 @@ class StringConfig:
                         pass
                 logger.warning(
                     t(
-                        "[配置][{p0}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {p1})",
+                        "log.config.removed_bypass_field_conform",
                         p0=self.config_name,
                         k=k,
                         p1=type(v).__name__,
@@ -345,7 +343,7 @@ class StringConfig:
                 if attempt == 0:
                     self.repair_config()
                 else:
-                    logger.error(t("[配置][{p0}] 修复后仍无法解析配置文件, 已重置为默认配置!", p0=self.config_name))
+                    logger.error(t("log.config.configuration_file_cannot_parsed", p0=self.config_name))
                     self.config = dict(self.config_list)
 
         # 逐键调和: 补默认 / 类型不符重置 / 刷新元数据; GsRepeatGroupConfig 递归(见函数)
@@ -368,15 +366,11 @@ class StringConfig:
         if key in self.config:
             return self.config[key]
         elif key in self.config_list:
-            logger.info(
-                t("[配置][{p0}] 配置项 {key} 不存在, 但是默认配置存在, 已更新...", p0=self.config_name, key=key)
-            )
+            logger.info(t("log.config.configuration_item_key_exist_update", p0=self.config_name, key=key))
             self.update_config()
             return self.config[key]
         else:
-            logger.warning(
-                t("[配置][{p0}] 配置项 {key} 不存在也没有配置, 返回默认参数...", p0=self.config_name, key=key)
-            )
+            logger.warning(t("log.config.configuration_item_key_exist", p0=self.config_name, key=key))
             if default_value is None:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
@@ -420,7 +414,7 @@ class StringConfig:
                 except (ValueError, TypeError, IndexError):
                     logger.warning(
                         t(
-                            "[配置][{p0}] 配置项 {key} 时间范围格式非法 '{value}', 停止写入...",
+                            "log.config.invalid_time_range_format",
                             p0=self.config_name,
                             key=key,
                             value=value,
@@ -441,7 +435,7 @@ class StringConfig:
                 except ValueError:
                     logger.warning(
                         t(
-                            "[配置][{p0}] 配置项 {key} 日期格式非法 '{value}', 停止写入...",
+                            "log.config.invalid_date_format_value",
                             p0=self.config_name,
                             key=key,
                             value=value,
@@ -451,7 +445,7 @@ class StringConfig:
                 self.write_config()
                 return True
             else:
-                logger.warning(t("[配置][{p0}] 配置项 {key} 写入类型不正确, 停止写入...", p0=self.config_name, key=key))
+                logger.warning(t("log.config.incorrect_write_type_configuration", p0=self.config_name, key=key))
                 return False
         else:
             return False
@@ -482,7 +476,7 @@ class StringConfig:
                     old_changed = True
                     logger.info(
                         t(
-                            "[配置迁移] 已将配置项 [{key}] 从 {p0} 转移至 {p1}",
+                            "log.config.config_migration_moved_configuration_item",
                             key=key,
                             p0=old_config.config_name,
                             p1=self.config_name,
@@ -747,7 +741,7 @@ class ConfigSetManager(ABC):
 
         self.get_config(config_name)
         # 初始化默认配置会创建文件
-        logger.info(t("已创建默认配置: {config_name}", config_name=config_name))
+        logger.info(t("log.config.config_name_create", config_name=config_name))
         return True
 
     def delete(self, config_name: str) -> bool:
@@ -774,10 +768,10 @@ class ConfigSetManager(ABC):
 
             if config_name in self._cache:
                 del self._cache[config_name]
-            logger.info(t("已删除配置: {config_name}", config_name=config_name))
+            logger.info(t("log.config.config_name_delete", config_name=config_name))
             return True
         except Exception as e:
-            logger.error(t("删除配置 '{config_name}' 失败: {e}", config_name=config_name, e=e))
+            logger.error(t("log.config.config_name_delete_fail", config_name=config_name, e=e))
             return False
 
     def clear_cache(self) -> None:

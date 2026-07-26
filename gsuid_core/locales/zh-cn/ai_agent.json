@@ -1,0 +1,5 @@
+{
+  "log.ai_agent.chain_too_long_summary": "思考链过长，正在根据已有线索为你整理最终结论...",
+  "log.ai_agent.on_trace_observer_fail": "[GsCoreAIAgent] on_trace 观察者异常（已忽略）: {error}",
+  "log.ai_agent.ttft_ms_tps_tokens_ok": "[GsCoreAIAgent] TTFT: {ttft_ms:.2f} ms, TPS: {tps:.2f} tokens/s"
+}

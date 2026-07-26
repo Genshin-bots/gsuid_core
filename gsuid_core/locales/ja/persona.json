@@ -1,0 +1,23 @@
+{
+  "log.persona.groupcontext_get_group_name_fail": "[GroupContext] データベースからのグループ名取得に失敗: {e}",
+  "log.persona.groupcontext_get_group_profile_fail": "[GroupContext] グループプロファイル概要の取得に失敗: {e}",
+  "log.persona.init_skip_ai_master_switch_off": "[Persona] AI 全体スイッチがオフのため、デフォルト Persona の初期化をスキップ",
+  "log.persona.migrated_name_voice": "[Persona] '{persona_name}' の voice_anchor を config.json から {_VOICE_ANCHOR_FILENAME} へ移行した",
+  "log.persona.mood_name_group_id": "[Mood] {persona_name}@{group_id}: {p0}（強度: {p1:.2f}、トリガー: {p2}）",
+  "log.persona.mood_persona_name_group_id_reset": "[Mood] {persona_name}@{group_id}: 気分をリセットした",
+  "log.persona.personaconfig_delete_name_config": "[PersonaConfig] '{persona_name}' の設定ファイルの削除に失敗: {e}",
+  "log.persona.personaconfig_deleted_name_config": "[PersonaConfig] '{persona_name}' の設定ファイルを削除した",
+  "log.persona.personaconfig_updated_name_ai": "[PersonaConfig] '{persona_name}' の AI モードを更新した: {ai_mode}",
+  "log.persona.personaconfig_updated_name_capability": "[PersonaConfig] '{persona_name}' のツール能力パックを更新した: {cleaned}",
+  "log.persona.personaconfig_updated_name_enabled": "[PersonaConfig] '{persona_name}' の有効化スコープを更新した: {scope}",
+  "log.persona.personaconfig_updated_name_explicit": "[PersonaConfig] '{persona_name}' の明示的ツールホワイトリストを更新した: {cleaned}",
+  "log.persona.personaconfig_updated_name_inspection": "[PersonaConfig] '{persona_name}' の巡検間隔を更新した: {inspect_interval} 分",
+  "log.persona.personaconfig_updated_name_target": "[PersonaConfig] '{persona_name}' の対象グループを更新した: {target_groups}",
+  "log.persona.personaconfig_updated_name_wake": "[PersonaConfig] '{persona_name}' のウェイクキーワードを更新した: {keywords}",
+  "log.persona.read_cfg_path_skipping": "[Persona] {cfg_path} の読み込みに失敗、voice_anchor の移行をスキップ: {e}",
+  "log.persona.read_md_path": "[Persona] {md_path} の読み込みに失敗: {e}",
+  "log.persona.read_txt_path": "[Persona] {txt_path} の読み込みに失敗: {e}",
+  "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor の移行で例外、スキップ: {e}",
+  "log.persona.write_path": "[Persona] {path} への書き戻しに失敗: {e}",
+  "log.persona.write_txt_path_keeping": "[Persona] {txt_path} への書き出しに失敗、古いフィールドを保持: {e}"
+}

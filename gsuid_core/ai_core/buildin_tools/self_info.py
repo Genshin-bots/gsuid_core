@@ -63,7 +63,7 @@ async def get_self_persona_info(
                 del config_data["introduction"]
             return json.dumps(config_data, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(t("❌ [SelfInfo] 读取config.json失败: {e}", e=e))
+            logger.error(t("log.ai.selfinfo_read_config_json", e=e))
             return f"⚠️ 读取配置失败: {str(e)}"
 
     elif info_type == "image":
@@ -73,10 +73,10 @@ async def get_self_persona_info(
         try:
             data = image_path.read_bytes()
             resource_id = RM.register(data)
-            logger.debug(t("🧠 [SelfInfo] 立绘已注册到RM: {resource_id}", resource_id=resource_id))
+            logger.debug(t("log.ai.selfinfo_standee_registered_rm_register", resource_id=resource_id))
             return f"{resource_id}（立绘图片，可直接作为 image_id 传给 edit_image）"
         except Exception as e:
-            logger.error(t("❌ [SelfInfo] 注册立绘到RM失败: {e}", e=e))
+            logger.error(t("log.ai.selfinfo_register_standee_rm", e=e))
             return f"⚠️ 立绘读取失败: {e}"
 
     elif info_type == "avatar":
@@ -86,10 +86,10 @@ async def get_self_persona_info(
         try:
             data = avatar_path.read_bytes()
             resource_id = RM.register(data)
-            logger.debug(t("🧠 [SelfInfo] 头像已注册到RM: {resource_id}", resource_id=resource_id))
+            logger.debug(t("log.ai.selfinfo_avatar_registered_rm_register", resource_id=resource_id))
             return f"{resource_id}（头像图片，可直接作为 image_id 传给 edit_image）"
         except Exception as e:
-            logger.error(t("❌ [SelfInfo] 注册头像到RM失败: {e}", e=e))
+            logger.error(t("log.ai.selfinfo_register_avatar_rm", e=e))
             return f"⚠️ 头像读取失败: {e}"
 
     elif info_type == "audio":
@@ -99,10 +99,10 @@ async def get_self_persona_info(
         try:
             data = audio_path.read_bytes()
             resource_id = RM.register(data)
-            logger.debug(t("🧠 [SelfInfo] 音频已注册到RM: {resource_id}", resource_id=resource_id))
+            logger.debug(t("log.ai.selfinfo_audio_registered_rm_register", resource_id=resource_id))
             return f"{resource_id}（音频文件）"
         except Exception as e:
-            logger.error(t("❌ [SelfInfo] 注册音频到RM失败: {e}", e=e))
+            logger.error(t("log.ai.selfinfo_register_audio_rm", e=e))
             return f"⚠️ 音频读取失败: {e}"
 
     else:

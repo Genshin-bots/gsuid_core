@@ -1,0 +1,8 @@
+{
+  "log.status.core_status_callback_key_plugin": "[core_status] 插件 {plugin_name} 的状态回调 {status_key} 超时(>35s)",
+  "log.status.core_status_subtask_result_abnormal_fail": "[core_status] 子任务结果异常/空，回退默认: {value}",
+  "log.status.core_status_write_cache": "[core_status] 写入缓存失败: {e}",
+  "log.status.get_cpu_name_fail": "获取CPU名称失败: {e}",
+  "log.status.get_maximum_network_bandwidth_fail": "获取最大网络带宽失败: {e}",
+  "log.status.plugin_name_error": "调用插件 {plugin_name} 的状态函数时发生错误: {e}"
+}

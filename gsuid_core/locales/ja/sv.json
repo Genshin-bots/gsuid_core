@@ -1,0 +1,6 @@
+{
+  "log.sv.error_occurred_executing": "[SV] {p0} の実行中にエラーが発生しました！",
+  "log.sv.name_module_initializing": "【{name}】モジュールを初期化しています...",
+  "log.sv.type_trigger_k_load": "{type} トリガー【{_k}】を読み込みました！",
+  "log.sv.type_trigger_pk_load": "{type} トリガー【{_pk}】を読み込みました！"
+}

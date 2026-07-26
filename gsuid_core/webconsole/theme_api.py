@@ -497,7 +497,7 @@ async def save_theme_preset(
         with open(target, "w", encoding="utf-8") as f:
             json.dump(config_dict, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        logger.exception(t("[Theme] 保存主题预设失败: {e}", e=e))
+        logger.exception(t("log.webconsole.theme_save_preset", e=e))
         return {"status": 1, "msg": f"保存失败: {e}"}
 
     return {
@@ -566,7 +566,7 @@ async def delete_theme_preset(
     try:
         target.unlink()
     except Exception as e:
-        logger.exception(t("[Theme] 删除主题预设失败: {e}", e=e))
+        logger.exception(t("log.webconsole.theme_delete_preset", e=e))
         return {"status": 1, "msg": f"删除失败: {e}"}
     return {
         "status": 0,

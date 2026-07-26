@@ -144,5 +144,5 @@ async def get_state_driven_family_tools(
             seen.add(tb.name)
             out.append(tb.tool)
     if out:
-        logger.debug(t("🧠 [ToolState] 状态驱动补充能力族 {domains}，新增 {p0} 个工具", domains=domains, p0=len(out)))
+        logger.debug(t("log.ai.toolstate_state_driven_supplementary_create", domains=domains, p0=len(out)))
     return out

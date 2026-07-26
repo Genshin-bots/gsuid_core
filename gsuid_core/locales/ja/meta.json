@@ -1,0 +1,8 @@
+{
+  "ai.output_language_directive": "これらの指示の言語に関わらず、常に日本語でユーザーに返信してください。",
+  "cmd.cooldown": "⏳ コマンドのクールダウン中です。少し時間をおいて再度お試しください。",
+  "lang.name": "日本語",
+  "perm.denied": "❌ このコマンドを実行する権限がありません。",
+  "server.bot_connected": "🔌 [接続] ボット {bot_id} が接続されました",
+  "server.bot_disconnected": "🔌 [切断] ボット {bot_id} が切断されました"
+}

@@ -1,0 +1,9 @@
+{
+  "log.cookie.add_ck_im_create": "ℹ️ [添加CK] {im}",
+  "log.cookie.login_qr_code_confirmed": "[登录]二维码已确认",
+  "log.cookie.login_qr_code_expired": "[登录]二维码已过期",
+  "log.cookie.login_qr_code_scanned": "[登录]二维码已扫描",
+  "log.cookie.login_qr_code_status": "[登录]未知二维码状态: {p0}",
+  "log.cookie.stoken_fail": "[登录]stoken获取失败",
+  "log.cookie.stoken_ok": "[登录]stoken获取成功"
+}

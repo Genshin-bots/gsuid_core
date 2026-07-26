@@ -76,7 +76,7 @@ def get_persona_node(persona_name: str) -> Optional[AgentNode]:
         _PROJECTION_CACHE.pop(persona_name, None)
         return None
     _PROJECTION_CACHE[persona_name] = (md_mtime, cfg_mtime, node)
-    logger.debug(t("🧩 [AgentNode] persona 投影已刷新: {persona_name}", persona_name=persona_name))
+    logger.debug(t("log.ai.agentnode_persona_projection_refreshed", persona_name=persona_name))
     return node
 
 

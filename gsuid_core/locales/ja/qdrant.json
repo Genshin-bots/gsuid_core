@@ -1,0 +1,5 @@
+{
+  "log.qdrant.get_collection_fail": "[Qdrant] コレクション {collection_name} の情報取得に失敗したため、payload インデックスを確認できません: {error}",
+  "log.qdrant.keyword_index_created": "[Qdrant] コレクション {collection_name} に keyword インデックスを作成しました: {field}",
+  "log.qdrant.keyword_index_fail": "[Qdrant] コレクション {collection_name} に keyword インデックス {field} を作成できませんでした: {error}"
+}

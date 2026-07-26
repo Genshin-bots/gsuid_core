@@ -160,7 +160,7 @@ def _strip_special_control_tokens(text: str) -> str:
     for pat in _SPECIAL_TOKEN_PATTERNS:
         cleaned = pat.sub("", cleaned)
     if cleaned != text:
-        logger.warning(i18n_t("[send] 剥离模型私有控制 token 残留（len {p0} → {p1}）", p0=len(text), p1=len(cleaned)))
+        logger.warning(i18n_t("log.ai.send_stripped_residual_private_ok", p0=len(text), p1=len(cleaned)))
     return cleaned
 
 
@@ -184,7 +184,7 @@ def _strip_resource_handles(text: str) -> str:
         return text
     cleaned = _RESOURCE_HANDLE_RE.sub("", text)
     if cleaned != text:
-        logger.warning(i18n_t("[send] 剥离泄漏的内部资源句柄（res_/img_ 等），避免向用户暴露内部 ID"))
+        logger.warning(i18n_t("log.ai.send_stripped_leaked_internal"))
     return cleaned
 
 
@@ -240,16 +240,16 @@ async def _resolve_and_deliver_leaked_handles(
                     p = Path(art.payload_path)
                     if p.exists():
                         await bot.send(MessageSegment.image(p.read_bytes()), extra_metadata=extra_metadata)
-                        logger.info(i18n_t("[send] 泄漏句柄 {h} 已解析为图片补发", h=h))
+                        logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
                 elif art.payload_inline and art.payload_inline.strip():
                     inline_texts.append(art.payload_inline.strip())
                 # 非图片落盘文件：不当图片发（会坏），仅抹句柄
             elif h.startswith("img_"):
                 await bot.send(MessageSegment.image(await RM.get(h)), extra_metadata=extra_metadata)
-                logger.info(i18n_t("[send] 泄漏句柄 {h} 已解析为图片补发", h=h))
+                logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
             # aud_/vid_：极少见于泄漏，仅抹句柄不补发（避免过度耦合）
         except Exception as e:
-            logger.debug(i18n_t("[send] 泄漏句柄 {h} 无法解析，仅抹除: {e}", h=h, e=e))
+            logger.debug(i18n_t("log.ai.send_leaked_handle_could_not", h=h, e=e))
 
     if inline_texts:
         # 把文本 artifact 内容并进正文，交给后续管线（够长自动出图），让"…自己看…"有实际内容
@@ -476,14 +476,12 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
         if not mime.startswith("image/"):
             mime = _guess_image_mime(raw)
         b64 = base64.b64encode(data).decode("ascii")
-        logger.debug(
-            i18n_t("🖼️ [GsCoreAI] 远程图片已物化为 base64 DataURI ({mime}, {p0} bytes)", mime=mime, p0=len(data))
-        )
+        logger.debug(i18n_t("log.ai.gscoreai_remote_image_materialized", mime=mime, p0=len(data)))
         return f"data:{mime};base64,{b64}"
     except Exception as e:
         if strict:
             raise RuntimeError(i18n_t("远程图片下载失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
-        logger.warning(i18n_t("🖼️ [GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}", e=e))
+        logger.warning(i18n_t("log.ai.gscoreai_convert_remote_image_fail", e=e))
         return raw
 
 
@@ -688,17 +686,15 @@ async def prepare_content_payload(
             try:
                 url = await materialize_image_url(i, strict=True)
             except Exception as e:
-                logger.warning(
-                    i18n_t("🖼️ [GsCoreAI] 图片物化失败（URL 可能已过期），跳过图片: {p0} ({e})", p0=i[:120], e=e)
-                )
+                logger.warning(i18n_t("log.ai.gscoreai_image_materialization_url_fail", p0=i[:120], e=e))
                 continue
             injected = _to_tool_image_content(url, provider=provider)
             if injected:
                 content_payload.extend(injected)
             else:
-                logger.warning(i18n_t("无法处理图片ID: {i}", i=i))
+                logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
         else:
-            logger.warning(i18n_t("无法处理图片ID: {i}", i=i))
+            logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
 
     return content_payload
 
@@ -1096,11 +1092,11 @@ async def _send_report_images(
         try:
             image_bytes = await render_md_to_bytes(md=md, max_width=int(max_width), image_format="jpeg")
         except Exception as e:
-            logger.warning(i18n_t("[send_chat_result] report 制品渲染失败，降级为文本: {e}", e=e))
+            logger.warning(i18n_t("log.ai.send_chat_result_render_report_artifact_fail", e=e))
             await bot.send(MessageSegment.text(md), extra_metadata=extra_metadata)
             continue
         await bot.send(MessageSegment.image(image_bytes), extra_metadata=extra_metadata)
-        logger.info(i18n_t("[send_chat_result] report 制品已渲染为资料图片 ({p0} bytes)", p0=len(image_bytes)))
+        logger.info(i18n_t("log.ai.send_chat_result_report_artifact", p0=len(image_bytes)))
 
 
 async def _try_render_markdown_image(
@@ -1125,11 +1121,11 @@ async def _try_render_markdown_image(
             image_format="jpeg",
         )
     except Exception as e:
-        logger.warning(i18n_t("[send_chat_result] 长 markdown 出图失败，降级为文本拆条: {e}", e=e))
+        logger.warning(i18n_t("log.ai.send_chat_result_render_long_markdown_fail", e=e))
         return False
 
     await bot.send(MessageSegment.image(image_bytes), extra_metadata=extra_metadata)
-    logger.info(i18n_t("[send_chat_result] 长 markdown 已整篇渲染为图片下发 ({p0} bytes)", p0=len(image_bytes)))
+    logger.info(i18n_t("log.ai.send_chat_result_long_markdown_rendered", p0=len(image_bytes)))
     return True
 
 
@@ -1156,12 +1152,12 @@ async def send_chat_result(
     # 过滤模型输出的特殊控制标记（如 <end_turn>），避免发送给用户
     _trimmed = text.strip()
     if _trimmed in SILENCE_MARKERS:
-        logger.debug(i18n_t("[send_chat_result] 跳过特殊标记: {_trimmed}", _trimmed=repr(_trimmed)))
+        logger.debug(i18n_t("log.ai.send_chat_result_special_trimmed_skip", _trimmed=repr(_trimmed)))
         return
 
     # 拦截 LLM API 错误消息（429/超时等），角色化替换后下发
     if _ERROR_OUTPUT_RE.search(text):
-        logger.warning(i18n_t("[send_chat_result] 拦截错误消息: {text}", text=text[:100]))
+        logger.warning(i18n_t("log.ai.send_chat_result_intercepted_fail", text=text[:100]))
         text = "唔…脑子转不动了…等下再说…zzz…"
 
     # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
@@ -1178,7 +1174,7 @@ async def send_chat_result(
     text, report_blocks = _split_speech_and_artifacts(text)
 
     # Trace 日志：记录原始输出
-    logger.trace(i18n_t("[Meme] 原始输出: {text}", text=repr(text)))
+    logger.trace(i18n_t("log.ai.meme_text_raw_output", text=repr(text)))
 
     # 解析表情包标记
     meme_tags: list[str] = MEME_TAG_PATTERN.findall(text)
@@ -1207,7 +1203,7 @@ async def send_chat_result(
             if _hit is not None:
                 logger.warning(
                     i18n_t(
-                        "[OutputFirewall] send_chat_result 命中出戏红线 {p0}: {p1}，已兜底替换",
+                        "log.ai.firewall_result_hit_ooc_red",
                         p0=_hit.category,
                         p1=_hit.matched,
                     )
@@ -1224,7 +1220,7 @@ async def send_chat_result(
                     else:
                         logger.warning(
                             i18n_t(
-                                "[OutputFirewall] report 制品块命中红线 {p0}: {p1}，整块拦截不发",
+                                "log.ai.firewall_report_artifact_block",
                                 p0=_r_hit.category,
                                 p1=_r_hit.matched,
                             )
@@ -1239,11 +1235,7 @@ async def send_chat_result(
             await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
 
     # Trace 日志：记录解析结果
-    logger.trace(
-        i18n_t(
-            "[Meme] 解析标记: {meme_tags}, 清理后文本: {clean_text}", meme_tags=meme_tags, clean_text=repr(clean_text)
-        )
-    )
+    logger.trace(i18n_t("log.ai.meme_parsed_tags_cleaned", meme_tags=meme_tags, clean_text=repr(clean_text)))
 
     if not clean_text:
         # 没有台词也要把资料图/表情包发出去（模型可能只产出 report 块）
@@ -1304,16 +1296,16 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
 
         file_path = get_memes_base_path() / record.file_path
         if not file_path.exists():
-            logger.debug(i18n_t("[Meme] 表情包文件不存在: {file_path}", file_path=file_path))
+            logger.debug(i18n_t("log.ai.meme_file_exist_path", file_path=file_path))
             return
 
         image_data = await _read_file(file_path)
         img_b64 = await convert_img(image_data)
         await bot.send(MessageSegment.image(img_b64))
         await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
-        logger.info(i18n_t("[Meme] 标记触发表情包: {p0} (mood={mood})", p0=record.meme_id, mood=mood))
+        logger.info(i18n_t("log.ai.meme_tag_triggered_mood", p0=record.meme_id, mood=mood))
     except Exception as e:
-        logger.debug(i18n_t("[Meme] 标记发送失败: {e}", e=e))
+        logger.debug(i18n_t("log.ai.meme_tag_fail", e=e))
 
 
 def _parse_at_segments(text: str) -> list[Message]:
@@ -1499,7 +1491,7 @@ def _truncate_history_with_tool_safety(
             # 所有保留的 return 都有对应的 call，截断安全
             logger.debug(
                 i18n_t(
-                    "🧠 [GsCoreAIAgent] 安全截断 history: {p0} -> {p1} (截断点: {truncate_index})",
+                    "log.ai.safe_truncation_history_cutoff",
                     p0=len(history),
                     p1=len(truncated),
                     truncate_index=truncate_index,
@@ -1527,13 +1519,13 @@ def _truncate_history_with_tool_safety(
         new_truncate_index = max(0, min_orphaned_idx - 2)
         if new_truncate_index >= truncate_index:
             # 安全阀：如果无法继续前移，直接保留全部历史
-            logger.warning(i18n_t("🧠 [GsCoreAIAgent] 无法安全截断 history，保留全部 {p0} 条", p0=len(history)))
+            logger.warning(i18n_t("log.ai.cannot_safely_truncate_history", p0=len(history)))
             return history
 
         truncate_index = new_truncate_index
 
     # truncate_index == 0，保留全部历史
-    logger.debug(i18n_t("🧠 [GsCoreAIAgent] 安全截断 history: {p0} -> {p0} (保留全部)", p0=len(history)))
+    logger.debug(i18n_t("log.ai.safe_truncation_history_kept", p0=len(history)))
     return history
 
 
@@ -1561,18 +1553,14 @@ def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]
                 # 复用同一个 isinstance 守卫：进入分支时 part 类型已被 mypy/Pyright 收窄为 ToolReturnPart /
                 # 两者都有 tool_call_id
                 if isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids:
-                    logger.warning(
-                        i18n_t("🧠 [GsCoreAIAgent] 丢弃孤儿 ToolReturnPart: tool_call_id={p0}", p0=part.tool_call_id)
-                    )
+                    logger.warning(i18n_t("log.ai.dropping_orphan_toolreturnpart_call", p0=part.tool_call_id))
                     continue
                 if (
                     isinstance(part, RetryPromptPart)
                     and part.tool_name is not None
                     and part.tool_call_id not in call_ids
                 ):
-                    logger.warning(
-                        i18n_t("🧠 [GsCoreAIAgent] 丢弃孤儿 RetryPromptPart: tool_call_id={p0}", p0=part.tool_call_id)
-                    )
+                    logger.warning(i18n_t("log.ai.dropping_orphan_retrypromptpart_call", p0=part.tool_call_id))
                     continue
                 kept_parts.append(part)
             if kept_parts:
@@ -1839,7 +1827,7 @@ def _canonicalize_tool_call_args_in_parts(
         if canonical != part.args:
             logger.warning(
                 i18n_t(
-                    "🧠 [GsCoreAIAgent] 工具 {p0} 参数含重复键，已规范化（原始 {p1} 字符 → {p2} 字符）",
+                    "log.ai.args_duplicate_keys_normalized",
                     p0=part.tool_name,
                     p1=len(part.args),
                     p2=len(canonical),
@@ -2004,7 +1992,7 @@ async def _dispatch_master_dm(
         except Exception as e:
             logger.warning(
                 i18n_t(
-                    "{p0} 主人通知发送失败 ({master_id}): {e}",
+                    "log.ai.master_notification_id_fail",
                     p0=log_prefix,
                     master_id=master_id,
                     e=e,

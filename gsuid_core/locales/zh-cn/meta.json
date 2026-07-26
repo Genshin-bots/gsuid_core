@@ -1,0 +1,8 @@
+{
+  "ai.output_language_directive": "始终用简体中文回复用户。",
+  "cmd.cooldown": "⏳ 命令冷却中, 请稍后再试",
+  "lang.name": "简体中文",
+  "perm.denied": "❌ 你没有权限执行该命令",
+  "server.bot_connected": "🔌 [连接] Bot {bot_id} 已连接",
+  "server.bot_disconnected": "🔌 [断开] Bot {bot_id} 已断开"
+}

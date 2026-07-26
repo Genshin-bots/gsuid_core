@@ -618,4 +618,4 @@ async def get_overview(_user: Dict[str, Any] = Depends(require_auth)) -> Dict[st
     }
 
 
-logger.info(t("💰 [WebConsole] AI 预算限制 API 已注册 (/api/ai/budget)"))
+logger.info(t("log.webconsole.ai_budget_limit_api"))

@@ -1,0 +1,5 @@
+{
+  "log.firewall.hit_ooc_red_line": "[OutputFirewall] キャラ崩壊のレッドライン {p0} に該当: {p1}。書き直しが必要です",
+  "log.firewall.non_releasable_category_hit": "[OutputFirewall] リリース不可カテゴリが {p0} に該当: {p1}。引き続きブロックします",
+  "log.firewall.rewrite_hit": "[OutputFirewall] 書き直し後も {p0} に該当: {p1}。今回は通過させます"
+}

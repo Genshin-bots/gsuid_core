@@ -505,11 +505,9 @@ async def update_framework_config(
             if result:
                 is_success = True
             else:
-                logger.warning(t("[框架配置][{config_name}] 配置项 {key} 写入失败", config_name=config_name, key=key))
+                logger.warning(t("log.webconsole.config_name_key_write_fail", config_name=config_name, key=key))
         except Exception as e:
-            logger.error(
-                t("[框架配置][{config_name}] 配置项 {key} 写入异常: {e}", config_name=config_name, key=key, e=e)
-            )
+            logger.error(t("log.webconsole.config_name_key_write_exception", config_name=config_name, key=key, e=e))
 
     if not is_success:
         return {"status": 1, "msg": "部分或全部配置项保存失败"}
@@ -560,13 +558,13 @@ async def update_framework_config_item(
             return {"status": 0, "msg": "配置项已保存"}
         else:
             logger.warning(
-                t("[框架配置][{config_name}] 配置项 {item_name} 写入失败", config_name=config_name, item_name=item_name)
+                t("log.webconsole.config_name_item_write_fail", config_name=config_name, item_name=item_name)
             )
             return {"status": 1, "msg": "配置项写入失败"}
     except Exception as e:
         logger.error(
             t(
-                "[框架配置][{config_name}] 配置项 {item_name} 写入异常: {e}",
+                "log.webconsole.framework_config_name_writing_fail",
                 config_name=config_name,
                 item_name=item_name,
                 e=e,

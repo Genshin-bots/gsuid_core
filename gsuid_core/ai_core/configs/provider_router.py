@@ -65,7 +65,7 @@ class ProviderRouter:
         self._slot(full_name).unavailable_until = time.time() + cooldown
         logger.warning(
             t(
-                "🧠 [ProviderRouter] 配置 {full_name} 标记为不可用，冷却 {cooldown:.0f}s",
+                "log.ai.providerrouter_config_full_name_fail",
                 full_name=full_name,
                 cooldown=cooldown,
             )
@@ -109,8 +109,7 @@ class ProviderRouter:
                 if chosen != primary:
                     logger.info(
                         t(
-                            "🧠 [ProviderRouter] {task_level} 级请求路由至备用配置"
-                            " {chosen} (主配置 {primary} 并发满/冷却中)",
+                            "log.ai.providerrouter_task_level_chosen",
                             task_level=task_level,
                             chosen=chosen,
                             primary=primary,
@@ -120,7 +119,7 @@ class ProviderRouter:
             if time.time() >= deadline:
                 slot = self._slot(primary)
                 slot.in_flight += 1
-                logger.warning(t("🧠 [ProviderRouter] 等待槽位超时，强制走主配置 {primary}", primary=primary))
+                logger.warning(t("log.ai.providerrouter_wait_slot_timeout_fail", primary=primary))
                 return primary
             await asyncio.sleep(_POLL_INTERVAL)
 

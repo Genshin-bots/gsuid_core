@@ -9,7 +9,7 @@ from .models import BoardCastMsgDict
 
 
 async def send_board_cast_msg(msgs: BoardCastMsgDict):
-    logger.info(t("🚀 [推送] 任务启动..."))
+    logger.info(t("log.message.push_task_start"))
     private_msg_list = msgs["private_msg_dict"]
     group_msg_list = msgs["group_msg_dict"]
     # 执行私聊推送
@@ -26,9 +26,9 @@ async def send_board_cast_msg(msgs: BoardCastMsgDict):
                         "",
                     )
         except Exception as e:
-            logger.warning(t("💥 [推送] {qid} 私聊推送失败!错误信息:{e}", qid=qid, e=e))
+            logger.warning(t("log.message.qid_fail_error", qid=qid, e=e))
         await asyncio.sleep(0.5)
-    logger.info(t("✅ [推送] 私聊推送完成!"))
+    logger.info(t("log.message.push_private_ok"))
 
     # 执行群聊推送
     for gid in group_msg_list:
@@ -43,7 +43,7 @@ async def send_board_cast_msg(msgs: BoardCastMsgDict):
                     "",
                 )
         except Exception as e:
-            logger.warning(t("💥 [推送] 群 {gid} 推送失败!错误信息:{e}", gid=gid, e=e))
+            logger.warning(t("log.message.gid_fail_error", gid=gid, e=e))
         await asyncio.sleep(0.5 + random.randint(1, 3))
-    logger.info(t("✅ [推送] 群聊推送完成!"))
-    logger.info(t("✅ [推送] 任务结束!"))
+    logger.info(t("log.message.push_group_ok"))
+    logger.info(t("log.message.push_task"))

@@ -81,7 +81,7 @@ def _get_session_info(ev) -> tuple[Optional[str], Optional[str]]:
 
         persona_name = persona_config_manager.get_persona_for_session(session_id)
     except Exception as e:
-        logger.warning(i18n_t("⚠️ [ScheduledTask] 获取 persona_name 失败: {e}", e=e))
+        logger.warning(i18n_t("log.ai.sched_get_persona_name", e=e))
     return session_id, persona_name
 
 
@@ -236,7 +236,7 @@ async def add_once_task(
         return f"✅ 一次性任务添加成功！\n📋 任务ID：{task_id}\n📅 执行时间：{run_time}\n📝 任务内容：{task_prompt}"
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 添加任务失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_add_task", e=e))
         return f"⚠️ 添加任务失败: {str(e)}"
 
 
@@ -457,7 +457,7 @@ async def add_interval_task(
             )
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 添加任务失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_add_task", e=e))
         return f"⚠️ 添加任务失败: {str(e)}"
 
 
@@ -553,7 +553,7 @@ async def list_scheduled_tasks(
         return "\n".join(lines)
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 查询任务列表失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_query_task_list", e=e))
         return f"⚠️ 查询任务列表失败: {str(e)}"
 
 
@@ -740,7 +740,7 @@ async def modify_scheduled_task(
         return f"✅ 任务已修改！\n📋 任务ID：{task_id}\n📝 更新内容：{', '.join(changes)}"
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 修改任务失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_modify_task", e=e))
         return f"⚠️ 修改任务失败: {str(e)}"
 
 
@@ -835,7 +835,7 @@ async def cancel_scheduled_task(
         return f"✅ 任务已取消！\n📋 任务ID：{task_id}"
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 取消任务失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_fail_cancel_task_failed", e=e))
         return f"⚠️ 取消任务失败: {str(e)}"
 
 
@@ -895,7 +895,7 @@ async def pause_scheduled_task(
         return f"✅ 任务已暂停！\n📋 任务ID：{task_id}"
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 暂停任务失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_fail_pause_task_failed", e=e))
         return f"⚠️ 暂停任务失败: {str(e)}"
 
 
@@ -965,5 +965,5 @@ async def resume_scheduled_task(
         return f"✅ 任务已恢复！\n📋 任务ID：{task_id}"
 
     except Exception as e:
-        logger.error(i18n_t("❌ [ScheduledTask] 恢复任务失败: {e}", e=e))
+        logger.error(i18n_t("log.ai.sched_fail_resume_task_failed", e=e))
         return f"⚠️ 恢复任务失败: {str(e)}"

@@ -132,7 +132,7 @@ async def refresh_ck_by_uid_list(
 
 async def deal_ck(bot_id: str, mes: str, user_id: str, mode: str = "PIC"):
     im = await _deal_ck(bot_id, mes, user_id)
-    logger.debug(t("[添加CK] {im}", im=im))
+    logger.debug(t("log.cookie.add_ck_im_create", im=im))
     img, status = await _deal_ck_to_pic(im)
     if mode == "PIC":
         return img, status
@@ -359,69 +359,66 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     else:
         account_cookie = f"account_id={account_id};cookie_token={cookie_token}"
 
-    try:
-        mys_data = await mys_api.get_mihoyo_bbs_info(
-            account_id,
-            account_cookie,
-            is_os,
-        )
-        # 剔除除了原神之外的其他游戏
-        gs_uid_list: List[str] = []
-        sr_uid_list: List[str] = []
-        zzz_uid_list: List[str] = []
-        wd_uid_list: List[str] = []
-        bb_uid_list: List[str] = []
-        bbb_uid_list: List[str] = []
-        if isinstance(mys_data, List):
-            for i in mys_data:
-                if i["game_id"] == 2:
-                    uid_bind = i["game_role_id"]
-                    gs_uid_list.append(uid_bind)
-                elif i["game_id"] == 6:
-                    sr_uid_bind = i["game_role_id"]
-                    sr_uid_list.append(sr_uid_bind)
-                elif i["game_id"] == 8:
-                    zzz_uid_bind = i["game_role_id"]
-                    zzz_uid_list.append(zzz_uid_bind)
-                elif i["game_id"] == 4:
-                    wd_uid_bind = i["game_role_id"]
-                    wd_uid_list.append(wd_uid_bind)
-                elif i["game_id"] == 3:
-                    bb_uid_bind = i["game_role_id"]
-                    bb_uid_list.append(bb_uid_bind)
-                elif i["game_id"] == 1:
-                    bbb_uid_bind = i["game_role_id"]
-                    bbb_uid_list.append(bbb_uid_bind)
+    mys_data = await mys_api.get_mihoyo_bbs_info(
+        account_id,
+        account_cookie,
+        is_os,
+    )
+    # 剔除除了原神之外的其他游戏
+    gs_uid_list: List[str] = []
+    sr_uid_list: List[str] = []
+    zzz_uid_list: List[str] = []
+    wd_uid_list: List[str] = []
+    bb_uid_list: List[str] = []
+    bbb_uid_list: List[str] = []
+    if isinstance(mys_data, List):
+        for i in mys_data:
+            if i["game_id"] == 2:
+                uid_bind = i["game_role_id"]
+                gs_uid_list.append(uid_bind)
+            elif i["game_id"] == 6:
+                sr_uid_bind = i["game_role_id"]
+                sr_uid_list.append(sr_uid_bind)
+            elif i["game_id"] == 8:
+                zzz_uid_bind = i["game_role_id"]
+                zzz_uid_list.append(zzz_uid_bind)
+            elif i["game_id"] == 4:
+                wd_uid_bind = i["game_role_id"]
+                wd_uid_list.append(wd_uid_bind)
+            elif i["game_id"] == 3:
+                bb_uid_bind = i["game_role_id"]
+                bb_uid_list.append(bb_uid_bind)
+            elif i["game_id"] == 1:
+                bbb_uid_bind = i["game_role_id"]
+                bbb_uid_list.append(bbb_uid_bind)
 
-            bind_dict = {
-                "gs": (uid_bind, gs_uid_list),
-                "sr": (sr_uid_bind, sr_uid_list),
-                "zzz": (zzz_uid_bind, zzz_uid_list),
-                "wd": (wd_uid_bind, wd_uid_list),
-                "bb": (bb_uid_bind, bb_uid_list),
-                "bbb": (bbb_uid_bind, bbb_uid_list),
-            }
-            for game_name in bind_dict:
-                _uid = bind_dict[game_name][0]
-                if _uid:
-                    bind_dict[game_name][1].pop()
-                    _uid_list = bind_dict[game_name][1][:4]
+        bind_dict = {
+            "gs": (uid_bind, gs_uid_list),
+            "sr": (sr_uid_bind, sr_uid_list),
+            "zzz": (zzz_uid_bind, zzz_uid_list),
+            "wd": (wd_uid_bind, wd_uid_list),
+            "bb": (bb_uid_bind, bb_uid_list),
+            "bbb": (bbb_uid_bind, bbb_uid_list),
+        }
+        for game_name in bind_dict:
+            _uid = bind_dict[game_name][0]
+            if _uid:
+                bind_dict[game_name][1].pop()
+                _uid_list = bind_dict[game_name][1][:4]
 
-                    insert_dict = {}
-                    for _i, _luid in enumerate(_uid_list):
-                        insert_dict[f"uid_{_i}"] = _luid
+                insert_dict = {}
+                for _i, _luid in enumerate(_uid_list):
+                    insert_dict[f"uid_{_i}"] = _luid
 
-                    _uid_exist = await GsUID.uid_exist(_uid, game_name)
-                    if _uid_exist and insert_dict:
-                        await GsUID.update_data(_uid_exist, game_name, **insert_dict)
-                    else:
-                        await GsUID.full_insert_data(main_uid=_uid, game_name=game_name, **insert_dict)
+                _uid_exist = await GsUID.uid_exist(_uid, game_name)
+                if _uid_exist and insert_dict:
+                    await GsUID.update_data(_uid_exist, game_name, **insert_dict)
+                else:
+                    await GsUID.full_insert_data(main_uid=_uid, game_name=game_name, **insert_dict)
 
-            else:
-                if not (uid_bind or sr_uid_bind or zzz_uid_bind or wd_uid_bind or bb_uid_bind or bbb_uid_bind):
-                    return f"你的米游社账号{account_id}尚未绑定游戏账号,请前往米游社操作！"
-    except Exception:
-        pass
+        else:
+            if not (uid_bind or sr_uid_bind or zzz_uid_bind or wd_uid_bind or bb_uid_bind or bbb_uid_bind):
+                return f"你的米游社账号{account_id}尚未绑定游戏账号,请前往米游社操作！"
 
     if uid_bind:
         await GsCache.refresh_cache(uid_bind)

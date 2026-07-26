@@ -65,10 +65,10 @@ async def _download_image(url: str) -> Optional[tuple[bytes, str]]:
         (图片数据, MIME 类型) 或 None
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
-        logger.debug(t("[Meme] 开始下载图片: {url}", url=url))
+        logger.debug(t("log.meme.image_download_url_2", url=url))
         response = await client.get(url)
         if response.status_code != 200:
-            logger.debug(t("[Meme] 图片下载失败: {url}", url=url))
+            logger.debug(t("log.meme.image_download_url", url=url))
             return None
 
         content_type = response.headers.get("content-type", "")
@@ -126,16 +126,16 @@ async def observe_message_for_memes(
     if not ev.group_id:
         return
 
-    logger.trace(t("[Meme] 观察消息: 群: {p0}, 用户: {p1}", p0=ev.group_id, p1=ev.user_id))
+    logger.trace(t("log.meme.msg_observed_message_group_user", p0=ev.group_id, p1=ev.user_id))
 
     # 提取图片 URL
     image_urls = _extract_image_urls(ev)
     if not image_urls:
-        logger.trace(t("[Meme] 消息中未找到图片 URL! 跳过处理"))
+        logger.trace(t("log.meme.image_url_found_skipping"))
         return
 
     # 限制每次最多处理 5 张图片
-    logger.info(t("[Meme] 发现 {p0} 张图片，准备处理（最多5张）", p0=len(image_urls)))
+    logger.info(t("log.meme.found_images_ready_process", p0=len(image_urls)))
     for url in image_urls[:5]:
         await _process_image(
             url=url,
@@ -161,7 +161,7 @@ async def _process_image(
     # URL 去重检查
     async with _processed_lock:
         if url in _processed_urls:
-            logger.debug(t("[Meme] URL 已处理过，跳过: {url}", url=url))
+            logger.debug(t("log.meme.url_processed_skipping", url=url))
             return
         _mark_url_processed(url)
 
@@ -178,7 +178,7 @@ async def _process_image(
     width, height = await _get_image_dimensions(image_data)
     logger.info(
         t(
-            "[Meme] 下载图片成功，URL: {url}, MIME: {file_mime}, 尺寸: {width}x{height}",
+            "log.meme.image_download_succeeded_url",
             url=url,
             file_mime=file_mime,
             width=width,

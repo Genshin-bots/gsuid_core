@@ -22,7 +22,7 @@ class CUSTOM:
         self.header: Dict[str, str] = json.loads(_header) if isinstance(_header, str) else _header
 
     async def delete(self):
-        logger.warning(t("[custom / upload] 未实现delete..."))
+        logger.warning(t("log.upload.custom_upload_delete_implemented"))
 
     async def upload(self, file_name: str, files: BytesIO):
         async with ClientSession() as client:
@@ -33,7 +33,7 @@ class CUSTOM:
                 data={"file": files.getvalue()},
                 timeout=ClientTimeout(total=300),
             ) as resp:
-                logger.info(t("[custom / upload] 开始上传..."))
+                logger.info(t("log.upload.custom_upload_event"))
                 raw_data = await resp.json()
                 logger.debug(t("log.upload.custom_response", response=raw_data))
                 if raw_data and "image_info_array" in raw_data[0]:
@@ -42,4 +42,4 @@ class CUSTOM:
                         asyncio.create_task(self.delete())
                     return data["url"]
                 else:
-                    logger.info(t("[custom / upload] 上传失败!"))
+                    logger.info(t("log.upload.custom_upload_fail_failed"))

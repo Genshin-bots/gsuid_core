@@ -197,5 +197,5 @@ class AIBudgetUsageRecord(BaseIDModel, table=True):
         result = await session.execute(delete(cls).where(col(cls.created_at) < before_ts))
         deleted = result.rowcount if isinstance(result, CursorResult) else 0
         if deleted:
-            logger.info(t("💰 [Budget] 清理过期用量流水 {deleted} 条", deleted=deleted))
+            logger.info(t("log.ai.budget_cleaned_expired_usage_delete", deleted=deleted))
         return deleted

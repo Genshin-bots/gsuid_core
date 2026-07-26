@@ -1,0 +1,15 @@
+{
+  "log.db_admin.adding_table_name_page_create": "Adding table {table_name} ({page_title}) to plugin {plugin_name}",
+  "log.db_admin.admin_count": "Total admin models found: {count}",
+  "log.db_admin.collect_start": "Collecting admin models...",
+  "log.db_admin.create_record_fail": "Error creating record: {error}",
+  "log.db_admin.delete_record_fail": "Error deleting record: {error}",
+  "log.db_admin.extract_columns_fail": "Error extracting columns from model {model_name}: {error}",
+  "log.db_admin.get_table_data_fail": "Error getting table data: {error}",
+  "log.db_admin.import_mount_app_fail": "Error importing mount_app: {error}",
+  "log.db_admin.model_found": "Found GsAdminModel: {admin_name} with model {model_name}",
+  "log.db_admin.plugin_admins": "Processing plugin {plugin_name} with {admin_count} admin models",
+  "log.db_admin.plugins_page_fail": "Error processing site.plugins_page: {error}",
+  "log.db_admin.plugins_page_start": "Processing site.plugins_page: {plugin_count} plugins",
+  "log.db_admin.update_record_fail": "Error updating record: {error}"
+}

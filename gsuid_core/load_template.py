@@ -114,5 +114,5 @@ try:
             custom_buttons[custom_button.stem] = Message(type="buttons", data=button_data["custom_button"])
 
 except Exception as e:
-    logger.warning(t("[启动] [加载模板] 加载失败...检查模板文件.."))
+    logger.warning(t("log.core.start_load"))
     logger.error(e)

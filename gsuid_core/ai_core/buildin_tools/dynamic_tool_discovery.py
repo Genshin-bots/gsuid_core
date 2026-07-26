@@ -62,14 +62,14 @@ async def find_tools(
             try:
                 tool_def = await tool.prepare_tool_def(run_ctx)
             except Exception as e:
-                logger.debug(t("🧠 [find_tools] 工具 {p0} prepare 失败，按不可用处理: {e}", p0=tool.name, e=e))
+                logger.debug(t("log.ai.find_tools_prepare_treated_unavailable_fail", p0=tool.name, e=e))
                 tool_def = None
             (loaded_names if tool_def else hidden_names).append(tool.name)
 
         if hidden_names:
             logger.info(
                 t(
-                    "🧠 [find_tools] {p0} 个命中工具因 visible_when 不满足被剔除: {hidden_names}",
+                    "log.ai.find_tools_matched_excluded",
                     p0=len(hidden_names),
                     hidden_names=hidden_names,
                 )
@@ -87,7 +87,7 @@ async def find_tools(
 
         logger.info(
             t(
-                "🧠 [find_tools] 为需求「{p0}」动态加载 {p1} 个工具: {loaded_names}",
+                "log.ai.find_tools_dynamically_requirement_load",
                 p0=need[:40],
                 p1=len(loaded_names),
                 loaded_names=loaded_names,
@@ -97,10 +97,10 @@ async def find_tools(
         return f"✅ 已加载以下工具，下一步即可直接调用：\n{listing}"
 
     except RuntimeError as e:
-        logger.warning(t("🧠 [find_tools] AI功能未启用: {e}", e=e))
+        logger.warning(t("log.ai.find_tools_feature_enabled", e=e))
         return "⚠️ 工具检索功能未启用，无法动态加载工具。"
     except Exception as e:
-        logger.error(t("🧠 [find_tools] 工具加载失败: {e}", e=e))
+        logger.error(t("log.ai.find_tools_event", e=e))
         return f"⚠️ 工具加载失败: {str(e)}"
 
 
@@ -156,17 +156,15 @@ async def discover_tools(
 
         result_parts.append("\n提示: 如果需要使用上述工具，请调整回答，说明该任务需要调用特定工具才能完成。")
 
-        logger.info(
-            t("🧠 [DynamicToolDiscovery] 发现 {p0} 个工具用于任务: {p1}", p0=len(discovered_tools), p1=task[:50])
-        )
+        logger.info(t("log.ai.tooldisc_found_tools_task", p0=len(discovered_tools), p1=task[:50]))
         return "\n".join(result_parts)
 
     except RuntimeError as e:
         # AI功能未启用
-        logger.warning(t("🧠 [DynamicToolDiscovery] AI功能未启用: {e}", e=e))
+        logger.warning(t("log.ai.tooldisc_feature_enabled", e=e))
         return "⚠️ AI工具搜索功能未启用，无法发现新工具。"
     except Exception as e:
-        logger.error(t("🧠 [DynamicToolDiscovery] 工具发现失败: {e}", e=e))
+        logger.error(t("log.ai.tooldisc_discovery", e=e))
         return f"⚠️ 工具发现失败: {str(e)}"
 
 
@@ -226,5 +224,5 @@ async def list_available_tools(
         return "\n".join(result_parts)
 
     except Exception as e:
-        logger.error(t("🧠 [ListAvailableTools] 获取工具列表失败: {e}", e=e))
+        logger.error(t("log.ai.listavailabletools_get_list", e=e))
         return f"⚠️ 获取工具列表失败: {str(e)}"

@@ -1,0 +1,16 @@
+{
+  "log.image.base64_guess_format_fail": "[img2b64] 画像形式の推測に失敗しました: {error}",
+  "log.image.base64_process_fail": "[img2b64] 画像の処理に失敗しました: {error}",
+  "log.image.gscore_attempting_retrieve_miyoushe": "[GsCore] 米游社の投稿取得を試行中...",
+  "log.image.gscore_miyoushe_post_retrieved_ok": "[GsCore] 米游社の投稿取得に成功！処理フローを開始...",
+  "log.image.gscore_parse_post_content": "[GsCore] 投稿内容の解析を開始...",
+  "log.image.gscore_post_parsing_processing": "[GsCore] 投稿の解析が完了！画像処理フローを開始...",
+  "log.image.gscore_processing": "[GsCore] 画像処理が完了！",
+  "log.image.gscore_processing_2": "[GsCore] 画像処理が完了した！",
+  "log.image.gscore_processing_image": "[GsCore] 画像を処理中....",
+  "log.image.gscore_processing_tag": "[GsCore] TAG を処理中: {p0}",
+  "log.image.item_error": "画像形式が正しくない可能性がある: {item}",
+  "log.image.sget_content_download_url": "[Sget] コンテンツのダウンロードを開始: {url}",
+  "log.image.url_error_download_fail": "[アバターのダウンロード失敗] デフォルトのアバターを使用: {url}, エラー: {error}",
+  "log.image.url_error_download_fail_2": "[グループアバターのダウンロード失敗] デフォルトのアバターを使用: {url}, エラー: {error}"
+}

@@ -1,0 +1,13 @@
+{
+  "log.mys.baseurl_base_url": "[米游社リクエスト] BaseUrl: {base_url}",
+  "log.mys.device_login_flow_fail": "デバイスログインフローエラー...",
+  "log.mys.fp_res_connect_fail": "fp 取得時の接続に失敗: {res}",
+  "log.mys.incorrect_parameters_obtaining_fp": "ℹ️ fp 取得時のパラメータが不正: {p0}",
+  "log.mys.mhy_request_timeout_obtaining_dfp_fail": "[mhy_request] DFP の取得が不明な理由でタイムアウト...",
+  "log.mys.miyoushe_request_data": "[米游社リクエスト] Data: {data}",
+  "log.mys.miyoushe_request_header": "[米游社リクエスト] Header: {header}",
+  "log.mys.miyoushe_request_params": "[米游社リクエスト] Params: {params}",
+  "log.mys.miyoushe_request_url": "[米游社リクエスト] Url: {url}",
+  "log.mys.upass_ch_obtained": "[upass] ch を取得 -> {ch}",
+  "log.mys.upass_starting_processing": "[upass] 処理開始..."
+}

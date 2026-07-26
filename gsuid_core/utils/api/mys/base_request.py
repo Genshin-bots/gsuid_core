@@ -264,10 +264,10 @@ class BaseMysApi:
             data=body,
         )
         if not isinstance(res, Dict):
-            logger.error(t("获取fp连接失败{res}", res=res))
+            logger.error(t("log.mys.fp_res_connect_fail", res=res))
             return random_hex(13).lower()
         elif res["data"]["code"] != 200:
-            logger.error(t("获取fp参数不正确{p0}", p0=res["data"]["msg"]))
+            logger.error(t("log.mys.incorrect_parameters_obtaining_fp", p0=res["data"]["msg"]))
             return random_hex(13).lower()
         else:
             return res["data"]["device_fp"]
@@ -414,34 +414,16 @@ class BaseMysApi:
     async def simple_mys_req(
         self,
         endpoint: ApiEndpoint,
-        uid: Union[str, bool],
+        uid: str,
         params: Dict = {},
         header: Dict = {},
         cookie: Optional[str] = None,
         game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
-        if isinstance(uid, bool):
-            # 特殊：uid 为 bool 表示 is_os（如米游社账号查询）
-            is_os = uid
-            game = game_name or ("sr" if self.is_sr else "gs")
-            HEADER = copy.deepcopy(self._HEADER_OS if is_os else self._HEADER)
-            if is_os:
-                HEADER["DS"] = generate_os_ds()
-            else:
-                ex_params = "&".join(f"{k}={v}" for k, v in params.items())
-                HEADER["DS"] = get_ds_token(ex_params)
-            HEADER.update(header)
-            if cookie is not None:
-                HEADER["Cookie"] = cookie
-            return await self._mys_request(
-                url=endpoint.get(is_os),
-                method="GET",
-                header=HEADER,
-                params=params,
-                use_proxy=is_os,
-                game_name=game,
-            )
+        """按游戏 UID 发起 GET 请求（自动判区服、拼 role_id/server）。
 
+        无游戏 UID、需显式指定区服时，请用 ``simple_mys_req_by_region``。
+        """
         game = game_name or ("sr" if self.is_sr else "gs")
         server_id = self.get_server_id(uid, game)
         req_params = params if params else {"role_id": uid, "server": server_id}
@@ -453,6 +435,40 @@ class BaseMysApi:
             header=header or None,
             cookie=cookie,
             cookie_mode="RANDOM",
+            game_name=game,
+        )
+
+    async def simple_mys_req_by_region(
+        self,
+        endpoint: ApiEndpoint,
+        is_os: bool,
+        params: Dict = {},
+        header: Dict = {},
+        cookie: Optional[str] = None,
+        game_name: Optional[str] = None,
+    ) -> Union[Dict, int]:
+        """按显式区服发起 GET 请求（不依赖游戏 UID 自动判服）。
+
+        用于米游社账号查询等场景：没有可 ``check_os`` 的游戏 UID，
+        由调用方通过 ``is_os`` 指定国服（``False``）或国际服（``True``），
+        并自行提供 Cookie（``cookie`` 或 ``header``）。
+        """
+        game = game_name or ("sr" if self.is_sr else "gs")
+        HEADER = copy.deepcopy(self._HEADER_OS if is_os else self._HEADER)
+        if is_os:
+            HEADER["DS"] = generate_os_ds()
+        else:
+            ex_params = "&".join(f"{k}={v}" for k, v in params.items())
+            HEADER["DS"] = get_ds_token(ex_params)
+        HEADER.update(header)
+        if cookie is not None:
+            HEADER["Cookie"] = cookie
+        return await self._mys_request(
+            url=endpoint.get(is_os),
+            method="GET",
+            header=HEADER,
+            params=params,
+            use_proxy=is_os,
             game_name=game,
         )
 
@@ -508,7 +524,7 @@ class BaseMysApi:
         if app_cookie is None:
             app_cookie = await self.get_stoken(uid)
             if app_cookie is None:
-                return logger.warning(t("设备登录流程错误..."))
+                return logger.warning(t("log.mys.device_login_flow_fail"))
 
         if fp is None:
             fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
@@ -535,10 +551,10 @@ class BaseMysApi:
         if params:
             params = {k: str(v).lower() if isinstance(v, bool) else v for k, v in params.items()}
 
-        logger.debug(t("[米游社请求] BaseUrl: {base_url}", base_url=base_url))
-        logger.debug(t("[米游社请求] Url: {url}", url=url))
-        logger.debug(t("[米游社请求] Params: {params}", params=params))
-        logger.debug(t("[米游社请求] Data: {data}", data=data))
+        logger.debug(t("log.mys.baseurl_base_url", base_url=base_url))
+        logger.debug(t("log.mys.miyoushe_request_url", url=url))
+        logger.debug(t("log.mys.miyoushe_request_params", params=params))
+        logger.debug(t("log.mys.miyoushe_request_data", data=data))
 
         if not base_url:
             base_url = None
@@ -602,7 +618,7 @@ class BaseMysApi:
                             f"{mys_version}"
                         )
                 except asyncio.TimeoutError:
-                    logger.warning(t("[mhy_request] 获取DFP超时, 未知原因..."))
+                    logger.warning(t("log.mys.mhy_request_timeout_obtaining_dfp_fail"))
 
             logger.debug(header)
 
@@ -671,7 +687,7 @@ class BaseMysApi:
                         else:
                             header["DS"] = get_ds_token(q, data)
 
-                    logger.debug(t("[米游社请求] Header: {header}", header=header))
+                    logger.debug(t("log.mys.miyoushe_request_header", header=header))
                 elif retcode != 0:
                     return retcode
                 else:

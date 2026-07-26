@@ -265,7 +265,7 @@ def migrate_voice_anchor_from_config(persona_name: str) -> bool:
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        logger.debug(t("🧠 [Persona] 读取 {cfg_path} 失败, 跳过 voice_anchor 迁移: {e}", cfg_path=cfg_path, e=e))
+        logger.debug(t("log.persona.read_cfg_path_skipping", cfg_path=cfg_path, e=e))
         return False
 
     if not isinstance(cfg, dict) or "voice_anchor" not in cfg:
@@ -282,7 +282,7 @@ def migrate_voice_anchor_from_config(persona_name: str) -> bool:
                 f.write(raw.strip())
             wrote_txt = True
         except OSError as e:
-            logger.warning(t("🧠 [Persona] 写出 {txt_path} 失败, 保留旧字段: {e}", txt_path=txt_path, e=e))
+            logger.warning(t("log.persona.write_txt_path_keeping", txt_path=txt_path, e=e))
             # 写 txt 失败就不要继续删 JSON 字段, 留着等下次迁移
             return False
 
@@ -293,7 +293,7 @@ def migrate_voice_anchor_from_config(persona_name: str) -> bool:
     if wrote_txt:
         logger.info(
             t(
-                "🧠 [Persona] 已将 '{persona_name}' 的 voice_anchor 从 config.json 迁出到 {_VOICE_ANCHOR_FILENAME}",
+                "log.persona.migrated_name_voice",
                 persona_name=persona_name,
                 _VOICE_ANCHOR_FILENAME=_VOICE_ANCHOR_FILENAME,
             )
@@ -311,7 +311,7 @@ def _write_json_atomic(path: Path, data: dict) -> None:
             json.dump(data, f, indent=4, ensure_ascii=False)
         os.replace(tmp_path, path)
     except OSError as e:
-        logger.warning(t("🧠 [Persona] 写回 {path} 失败: {e}", path=path, e=e))
+        logger.warning(t("log.persona.write_path", path=path, e=e))
         if tmp_path.exists():
             try:
                 tmp_path.unlink()
@@ -344,7 +344,7 @@ def _load_voice_anchor_from_disk(persona_name: str) -> str:
             if raw:
                 return raw
         except OSError as e:
-            logger.debug(t("🧠 [Persona] 读取 {txt_path} 失败: {e}", txt_path=txt_path, e=e))
+            logger.debug(t("log.persona.read_txt_path", txt_path=txt_path, e=e))
 
     # 2. persona.md 正则兜底
     md_path = persona_dir / "persona.md"
@@ -354,7 +354,7 @@ def _load_voice_anchor_from_disk(persona_name: str) -> str:
         with open(md_path, "r", encoding="utf-8") as f:
             md_text = f.read()
     except OSError as e:
-        logger.debug(t("🧠 [Persona] 读取 {md_path} 失败: {e}", md_path=md_path, e=e))
+        logger.debug(t("log.persona.read_md_path", md_path=md_path, e=e))
         return ""
     return _extract_voice_anchor_from_persona(md_text)
 

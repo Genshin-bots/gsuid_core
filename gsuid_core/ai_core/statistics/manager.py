@@ -360,7 +360,7 @@ class StatisticsManager:
         """从数据库加载今日数据"""
         try:
             today = self._today
-            logger.info(i18n_t("📊 [StatisticsManager] 正在从数据库加载 {today} 的统计数据", today=today))
+            logger.info(i18n_t("log.ai.statisticsmanager_statistics_today_database_load", today=today))
 
             # 1. 加载 AIDailyStatistics
             stats = await AIDailyStatistics.get_daily_stats(today)
@@ -449,9 +449,9 @@ class StatisticsManager:
             # 所有维度都加载完毕才开闸放行 persist; 任一步抛异常会跳过本行,
             # _loaded 保持 False, 让后续 _persist_loop 主动跳过以保护历史数据。
             self._loaded = True
-            logger.info(i18n_t("📊 [StatisticsManager] 成功加载今日统计数据"))
+            logger.info(i18n_t("log.ai.statisticsmanager_today_statistics"))
         except Exception as e:
-            logger.exception(i18n_t("📊 [StatisticsManager] 加载今日数据失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.statisticsmanager_load_today_data", e=e))
 
     async def _persist_all_stats_to_db(self):
         """将所有统计数据持久化到数据库。
@@ -460,7 +460,7 @@ class StatisticsManager:
         - 与日切 reset 共用 _persist_lock, 保证原子性。
         """
         if not self._loaded:
-            logger.warning(i18n_t("📊 [StatisticsManager] 尚未完成今日数据加载, 跳过本次持久化以防覆盖历史数据"))
+            logger.warning(i18n_t("log.ai.statisticsmanager_today_data_skipping_ok"))
             return
         async with self._persist_lock:
             await self._persist_stats()
@@ -478,7 +478,7 @@ class StatisticsManager:
                 await self._persist_stats()
                 await self._persist_rag_stats()
             else:
-                logger.warning(i18n_t("📊 [StatisticsManager] 日切时尚未完成加载, 跳过当日持久化"))
+                logger.warning(i18n_t("log.ai.statisticsmanager_day_rollover_skipping_ok"))
             self._reset_daily_counters()
             self._today = datetime.now().strftime("%Y-%m-%d")
 
@@ -498,7 +498,7 @@ class StatisticsManager:
             for doc_name, count in doc_counter.items():
                 await AIRAGDocumentStatistics.upsert_rag_hit_count(doc_name, count)
         except Exception as e:
-            logger.exception(i18n_t("📊 [StatisticsManager] 持久化 RAG 统计失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.statisticsmanager_persist_rag_statistics", e=e))
 
     def get_rag_document_stats(self) -> List[Dict[str, Any]]:
         """获取 RAG 文档命中统计"""
@@ -628,7 +628,7 @@ class StatisticsManager:
             await self._persist_hourly_performance()
 
         except Exception as e:
-            logger.exception(i18n_t("📊 [StatisticsManager] 持久化统计数据失败: {e}", e=e))
+            logger.exception(i18n_t("log.ai.statisticsmanager_persist_statistics", e=e))
 
     async def _persist_hourly_performance(self):
         """持久化小时级性能统计到数据库
@@ -664,7 +664,7 @@ class StatisticsManager:
             )
             if not ok:
                 self._hourly_perf[key].merge(entry)
-                logger.warning(i18n_t("📊 [StatisticsManager] 小时性能统计落库失败, 增量已回滚至缓冲: {key}", key=key))
+                logger.warning(i18n_t("log.ai.statisticsmanager_write_hourly_performance_fail", key=key))
 
     async def get_hourly_performance_by_date(self, date: str) -> List[Dict[str, Any]]:
         """获取指定日期的小时级性能统计（DB 基线 + 内存未持久化增量合并）"""
@@ -692,7 +692,7 @@ class StatisticsManager:
                 item["providers"].sort(key=lambda p: (p["provider"], p["model"]))
             return sorted(result.values(), key=lambda x: x["hour"])
         except Exception as e:
-            logger.warning(i18n_t("📊 [StatisticsManager] 查询小时性能统计失败: {e}", e=e))
+            logger.warning(i18n_t("log.ai.statisticsmanager_query_hourly_performance_fail", e=e))
             return []
 
     async def get_daily_token_counts(self, days: int = 60) -> List[Dict[str, Any]]:
@@ -820,7 +820,7 @@ class StatisticsManager:
                 heartbeat,
             )
         except Exception as e:
-            logger.warning(i18n_t("📊 [StatisticsManager] 查询历史统计失败: {e}", e=e))
+            logger.warning(i18n_t("log.ai.statisticsmanager_query_historical_statistics_fa", e=e))
             return None
 
     async def get_token_usage_by_range(
@@ -1058,4 +1058,4 @@ async def _persist_loop():
     from gsuid_core.ai_core.budget import budget_manager
 
     await budget_manager.flush()
-    logger.info(i18n_t("📊 [StatisticsManager] 每30分钟定时持久化完成"))
+    logger.info(i18n_t("log.ai.statisticsmanager_scheduled_persistence_minutes"))

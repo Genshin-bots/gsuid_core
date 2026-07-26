@@ -595,7 +595,7 @@ class GsCoreAIAgent:
                     self.history = _to_insert + self.history
                     logger.debug(
                         i18n_t(
-                            "🧠 [GsCoreAIAgent] compact 保留 {p0} 条角色锚定消息",
+                            "log.agent.compact_retained",
                             p0=len(_to_insert),
                         )
                     )
@@ -607,7 +607,7 @@ class GsCoreAIAgent:
         # 纯孤儿清理属结构性整理、stateless 模式每轮清空，均不打标以免噪声。
         if truncated and after < before:
             self._session_logger.log_history_reset("auto_compact", {"before": before, "after": after})
-        logger.debug(i18n_t("🧠 [GsCoreAIAgent] 历史记录已处理至 {p0} 条", p0=len(self.history)))
+        logger.debug(i18n_t("log.agent.history_processed_entries", p0=len(self.history)))
 
     async def refresh_model_if_changed(self) -> bool:
         """运行期检测：本会话 task_level 对应的激活模型配置变化时，就地热替换 self.model。
@@ -645,7 +645,7 @@ class GsCoreAIAgent:
         except ValueError as e:
             logger.warning(
                 i18n_t(
-                    "🧠 [GsCoreAIAgent] 检测到{p0}级模型配置变更为 {current}，但加载失败，沿用原模型: {e}",
+                    "log.agent.level_config_change_load",
                     p0=self.task_level,
                     current=current,
                     e=e,
@@ -663,8 +663,7 @@ class GsCoreAIAgent:
         change_desc = f"{old} → {current}" if old != current else f"{current}（配置内容已更新）"
         logger.info(
             i18n_t(
-                "🧠 [GsCoreAIAgent] 检测到{p0}级模型配置变更 {change_desc}，"
-                "已为 Session {p1} 热替换模型（保留对话历史，无需 coreclear）",
+                "log.agent.level_config_change_desc",
                 p0=self.task_level,
                 change_desc=change_desc,
                 p1=self.session_id,
@@ -730,9 +729,7 @@ class GsCoreAIAgent:
             video_idx += 1
 
             if not supports_video:
-                logger.warning(
-                    i18n_t("🎬 [GsCoreAIAgent] 当前模型未声明视频分析能力(model_support 不含 video)，视频已忽略")
-                )
+                logger.warning(i18n_t("log.agent.declare_video_analysis_capability"))
                 result.append(f"--- 视频{video_idx}: [当前模型不支持视频分析，无法查看该视频内容] ---")
                 continue
 
@@ -753,9 +750,7 @@ class GsCoreAIAgent:
 
                 # 非 gemini：抽帧兼容路径要求模型至少能看图
                 if not supports_image:
-                    logger.warning(
-                        i18n_t("🎬 [GsCoreAIAgent] 模型声明了 video 却未声明 image，抽帧兼容不可用，视频已忽略")
-                    )
+                    logger.warning(i18n_t("log.agent.declared_video_image_frame"))
                     result.append(f"--- 视频{video_idx}: [当前模型不支持图片，无法用抽帧方式分析该视频] ---")
                     continue
 
@@ -770,13 +765,13 @@ class GsCoreAIAgent:
                     result.append(ImageUrl(url=f"data:image/jpeg;base64,{b64}"))
                 logger.info(
                     i18n_t(
-                        "🎬 [GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（当前模型非 gemini）",
+                        "log.agent.video_frame_sampled_images",
                         p0=video_idx,
                         p1=len(frames),
                     )
                 )
             except Exception as e:
-                logger.error(i18n_t("🎬 [GsCoreAIAgent] 视频{p0} 处理失败: {e}", p0=video_idx, e=e))
+                logger.error(i18n_t("log.agent.process_video", p0=video_idx, e=e))
                 result.append(f"--- 视频{video_idx}: [视频处理失败: {e}] ---")
         return result
 
@@ -827,9 +822,7 @@ class GsCoreAIAgent:
                     # 若物化失败（仍为 http(s) URL），跳过该图片，避免把过期
                     url = await materialize_image_url(item.url)
                     if url.startswith(("http://", "https://")):
-                        logger.warning(
-                            i18n_t("🖼️ [GsCoreAIAgent] 图片入历史前物化失败，跳过该图片: {p0}", p0=item.url[:120])
-                        )
+                        logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
                         continue
                     result.append(ImageUrl(url=url))
                 else:
@@ -838,9 +831,7 @@ class GsCoreAIAgent:
 
         # 模型不支持图片，调用图片理解模块转述
         if image_urls:
-            logger.info(
-                i18n_t("🖼️ [ImageUnderstand] 当前模型不支持图片，开始图片理解转述，共 {p0} 张图片", p0=len(image_urls))
-            )
+            logger.info(i18n_t("log.agent.imgund_images_image_paraphrasing", p0=len(image_urls)))
             # 用户问题：用于把冗长的图片描述按需精简到与问题相关的部分
             user_question = "\n".join(text_parts).strip()
             descriptions: list[str] = []
@@ -850,7 +841,7 @@ class GsCoreAIAgent:
                     description = await self._summarize_image_description(description, user_question)
                     descriptions.append(f"图片{idx + 1}: {description}")
                 except Exception as e:
-                    logger.error(i18n_t("🖼️ [ImageUnderstand] 图片 {p0} 理解失败: {e}", p0=idx + 1, e=e))
+                    logger.error(i18n_t("log.agent.imgund_understand_image", p0=idx + 1, e=e))
                     descriptions.append(f"图片{idx + 1}: [图片理解失败]")
 
             if descriptions:
@@ -906,14 +897,10 @@ class GsCoreAIAgent:
                 )
                 summary_agent._session_logger.close()
             if summary:
-                logger.debug(
-                    i18n_t(
-                        "🖼️ [ImageUnderstand] 图片描述二次摘要: {p0} -> {p1} 字符", p0=len(description), p1=len(summary)
-                    )
-                )
+                logger.debug(i18n_t("log.agent.imgund_image_description_second", p0=len(description), p1=len(summary)))
                 return summary
         except Exception as e:
-            logger.debug(i18n_t("🖼️ [ImageUnderstand] 图片描述二次摘要失败，使用原始描述: {e}", e=e))
+            logger.debug(i18n_t("log.agent.imgund_image_description_second_fail", e=e))
         return description
 
     def bind_budget_scope(self, ev: Optional[Event]) -> None:
@@ -1037,7 +1024,7 @@ class GsCoreAIAgent:
                     if stripped:
                         logger.warning(
                             i18n_t(
-                                "🧠 [GsCoreAIAgent] 图片下载失败，已从历史剥离 {stripped} 处过期远程图片",
+                                "log.agent.image_download_stripped_expired",
                                 stripped=stripped,
                             )
                         )
@@ -1053,13 +1040,13 @@ class GsCoreAIAgent:
                     if self._last_attempt_tool_calls:
                         logger.warning(
                             i18n_t(
-                                "🧠 [PydanticAI] 失败前已执行工具 {p0}，干净重试可能重复其副作用",
+                                "log.agent.pydanticai_tools_clean_retry_fail",
                                 p0=", ".join(self._last_attempt_tool_calls),
                             )
                         )
                     logger.warning(
                         i18n_t(
-                            "🧠 [PydanticAI] 客户端错误疑似模型退化输出，从干净历史重试一次: {e}",
+                            "log.agent.pydanticai_client_suspected_degraded_fail",
                             e=e,
                         )
                     )
@@ -1069,7 +1056,7 @@ class GsCoreAIAgent:
                 if attempt < total_attempts and not non_retryable:
                     logger.warning(
                         i18n_t(
-                            "🧠 [PydanticAI] 核心请求第 {attempt}/{max_attempts} 次失败，{retry_delay}s 后重试: {e}",
+                            "log.agent.pydanticai_core_request_attempt_fail",
                             attempt=attempt,
                             max_attempts=max_attempts,
                             retry_delay=retry_delay,
@@ -1086,7 +1073,7 @@ class GsCoreAIAgent:
                     if _is_content_rejected(e):
                         logger.warning(
                             i18n_t(
-                                "🧠 [PydanticAI] 模型拒绝处理本次输入（内容审核 {p0}）: {err_str}",
+                                "log.agent.pydanticai_refused_process_input",
                                 p0=e.status_code,
                                 err_str=err_str,
                             )
@@ -1096,7 +1083,7 @@ class GsCoreAIAgent:
                         return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
                     logger.warning(
                         i18n_t(
-                            "🧠 [PydanticAI] 模型返回客户端错误（{p0}，不重试）: {err_str}",
+                            "log.agent.pydanticai_client_fail_retry_err",
                             p0=e.status_code,
                             err_str=err_str,
                         )
@@ -1107,24 +1094,24 @@ class GsCoreAIAgent:
 
                 # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
                 if isinstance(e, httpx.TimeoutException):
-                    logger.warning(i18n_t("🧠 [PydanticAI] Agent 运行异常: 请求超时 {e}", e=e))
+                    logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
                     statistics_manager.record_error(error_type="timeout")
                     self._session_logger.log_error("timeout", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
                 if isinstance(e, httpx.HTTPError):
                     low = err_str.lower()
                     if "rate" in low or "429" in low or "limit" in low:
-                        logger.warning(i18n_t("🧠 [PydanticAI] Agent 运行异常: Rate Limit {e}", e=e))
+                        logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
                         statistics_manager.record_error(error_type="rate_limit")
                         self._session_logger.log_error("rate_limit", err_str)
                     else:
-                        logger.warning(i18n_t("🧠 [PydanticAI] Agent 运行异常: 网络错误 {e}", e=e))
+                        logger.warning(i18n_t("log.agent.pydanticai_run_fail_network", e=e))
                         statistics_manager.record_error(error_type="network_error")
                         self._session_logger.log_error("network_error", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
-                logger.error(i18n_t("🧠 [PydanticAI] Agent 运行异常: {e}", e=e))
-                logger.exception(i18n_t("🧠 [PydanticAI] 异常详情:"))
+                logger.error(i18n_t("log.agent.pydanticai_run_fail", e=e))
+                logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
                 if "529" in err_str:
                     statistics_manager.record_error(error_type="api_529_error")
                 else:
@@ -1171,7 +1158,7 @@ class GsCoreAIAgent:
             )
             rewritten = str(rewrite_result.output).strip()
         except Exception as e:
-            logger.warning(i18n_t("[OutputFirewall] 重说生成失败，使用角色化兜底: {e}", e=e))
+            logger.warning(i18n_t("log.agent.firewall_regeneration_fallback", e=e))
         if not rewritten or rewritten in SILENCE_MARKERS:
             rewritten = output_firewall.PERSONA_FALLBACK_TEXT
         # 不可放行类别（fund_claim 等）：重写产物必须复检，
@@ -1179,14 +1166,14 @@ class GsCoreAIAgent:
             _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
             _recheck = output_firewall.check_ooc(rewritten, user_text=_user_text)
             if _recheck is not None and _recheck.category in output_firewall.NEVER_RELEASE_CATEGORIES:
-                logger.warning(i18n_t("[OutputFirewall] 重写产物仍命中不可放行类别，已改用角色化兜底"))
+                logger.warning(i18n_t("log.agent.firewall_rewrite_output_hit_non"))
                 rewritten = output_firewall.PERSONA_FALLBACK_TEXT
         self._session_logger.log_text_output(rewritten)
         try:
             await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
             self._run_sent_texts.add(rewritten)
         except Exception as e:
-            logger.debug(i18n_t("🧠 [GsCoreAIAgent] 重说发送失败: {e}", e=e))
+            logger.debug(i18n_t("log.agent.agent_event", e=e))
         blocked_texts = {text for text, _ in blocked}
         for msg in reversed(self.history):
             if not isinstance(msg, ModelResponse):
@@ -1271,15 +1258,15 @@ class GsCoreAIAgent:
                     _budget_scope[0], _budget_scope[1], _budget_scope[2], self.session_id
                 )
             except SQLAlchemyError as _be:
-                logger.warning(i18n_t("💰 [GsCoreAIAgent] 预算校验 DB 异常，放行本次 run: {_be}", _be=_be))
+                logger.warning(i18n_t("log.agent.budget_check_db_fail", _be=_be))
                 _bd = None
             except Exception as _be:
-                logger.exception(i18n_t("💰 [GsCoreAIAgent] 预算校验未知异常，放行本次 run: {_be}", _be=_be))
+                logger.exception(i18n_t("log.agent.budget_check_fail_allowing", _be=_be))
                 _bd = None
             if _bd is not None and not _bd.allowed:
                 logger.info(
                     i18n_t(
-                        "💰 [GsCoreAIAgent] 预算超额拦截 create_by={p0} ({p1})",
+                        "log.agent.budget_exceeded_intercepted_create",
                         p0=self.create_by,
                         p1=_bd.block_scope_label,
                     )
@@ -1290,7 +1277,7 @@ class GsCoreAIAgent:
                         try:
                             await bot.send(_bd.message)
                         except Exception as _se:
-                            logger.warning(i18n_t("💰 [GsCoreAIAgent] 预算超额提示发送失败: {_se}", _se=_se))
+                            logger.warning(i18n_t("log.agent.budget_exceeded_notice_se", _se=_se))
                     # 主人告警独立于用户提示：运行层拦截也同步给主人，便于与会话层闸区分开排查
                     await notify_master_of_budget_block(
                         bot=bot,
@@ -1326,7 +1313,7 @@ class GsCoreAIAgent:
         # token 在 finally 还原，否则嵌套 run（图片理解/subagent）会顶掉本 run 的时钟。
         _wall_clock, _wall_clock_token = wall_clock.install_clock()
 
-        logger.info(i18n_t("🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======"))
+        logger.info(i18n_t("log.agent.run_start_started"))
         # turn_id：本轮 run 的唯一标识，写入 ToolContext.extra 供子工具读取（如 scheduler.py 的 add_once_task
         # 单轮节流计数）。回合结束 finally 清理。
         turn_id = uuid.uuid4().hex
@@ -1365,7 +1352,7 @@ class GsCoreAIAgent:
 
         if rag_context:
             final_user_message = _append_user_text(final_user_message, f"\n\n{rag_context}")
-            logger.info(i18n_t("🧠[GsCoreAIAgent] 已添加 RAG 上下文"))
+            logger.info(i18n_t("log.agent.added_rag_context"))
 
         # DS 专属角色扮演模式（inner_os）：仅在 Chat 模式首轮 user_message 末尾追加
         if (
@@ -1375,7 +1362,7 @@ class GsCoreAIAgent:
             and isinstance(final_user_message, str)
         ):
             final_user_message = f"{final_user_message}{INNER_OS_MARKER}"
-            logger.info(i18n_t("🧠[GsCoreAIAgent] 已注入 DS 角色扮演 Marker（首轮 Chat）"))
+            logger.info(i18n_t("log.agent.ds_inject"))
 
         # 连续无工具调用检测：连续两轮只推脱不调工具时注入强制提醒。闲聊类意图豁免（§15）
         # 豁免口径唯一定义在 _PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。
@@ -1394,7 +1381,7 @@ class GsCoreAIAgent:
                 "不懂为由跳过工具。"
             )
             final_user_message = _append_user_text(final_user_message, no_tool_reminder)
-            logger.debug(i18n_t("🧠 [GsCoreAIAgent] 已注入连续无工具调用强制提醒"))
+            logger.debug(i18n_t("log.agent.forced_nudge_consecutive_turns"))
 
         # ── 交互脚手架（C-1/C-2/C-3，见 interaction_scaffold）：仅交互式主 Agent 生效 ──
         _addr_gated = False
@@ -1417,7 +1404,7 @@ class GsCoreAIAgent:
             )
             if _addr_gated:
                 _hints.append(interaction_scaffold.ADDRESS_GATE_HINT)
-                logger.info(i18n_t("🧭 [Scaffold] C-3 寻址门：这条不是冲你来的（@别人/催被@者），本轮砍掉工具集"))
+                logger.info(i18n_t("log.agent.scaffold_addressing_gate_directed_create"))
             elif _probe:
                 _ellipsis = interaction_scaffold.detect_ellipsis_followup(
                     _probe,
@@ -1429,7 +1416,7 @@ class GsCoreAIAgent:
                     _followup_detected = True  # 用于下方补调度族工具
                     if _ellipsis:
                         _hints.append(interaction_scaffold.FOLLOWUP_HINT)
-                        logger.debug(i18n_t("🧭 [Scaffold] C-1 省略式跟进提示已注入"))
+                        logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
                 # C-2 漂移预算：累积 ≥2 且比上轮**增加**才注入——单次 push 交 prompt 层
                 # 既有条款（模型单轮守得住），提醒只针对连续软磨；不增加不重复唠叨。
                 _pushes = interaction_scaffold.count_style_pushes(
@@ -1437,14 +1424,14 @@ class GsCoreAIAgent:
                 )
                 if _pushes >= 2 and _pushes > self._last_drift_push_count:
                     _hints.append(interaction_scaffold.DRIFT_REMINDER)
-                    logger.debug(i18n_t("🧭 [Scaffold] C-2 漂移预算提醒已注入（累积 {_pushes} 次）", _pushes=_pushes))
+                    logger.debug(i18n_t("log.agent.scaffold_drift_budget_reminder_inject", _pushes=_pushes))
                 self._last_drift_push_count = _pushes
             for _h in _hints:
                 final_user_message = _append_user_text(final_user_message, _h)
 
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(final_user_message)
-        logger.trace(i18n_t("🧠[GsCoreAIAgent] 用户消息: {truncated_msg}", truncated_msg=truncated_msg))
+        logger.trace(i18n_t("log.agent.user_truncated_msg", truncated_msg=truncated_msg))
 
         # 记录用户输入到 session logger
         self._session_logger.log_run_start()
@@ -1485,7 +1472,7 @@ class GsCoreAIAgent:
                         tools.append(_tb.tool)
                 logger.debug(
                     i18n_t(
-                        "🧠 [GsCoreAIAgent] persona「{p0}」未声明 dynamic 能力族，按静态 packs+白名单装配 {p1} 个工具",
+                        "log.agent.persona_declare_dynamic_capability",
                         p0=self.persona_name,
                         p1=len(tools),
                     )
@@ -1538,7 +1525,7 @@ class GsCoreAIAgent:
                         core_tools = core_tools + state_tools
                         core_names.update(t.name for t in state_tools)
                 except Exception as e:
-                    logger.debug(i18n_t("🧠 [GsCoreAIAgent] 状态驱动工具池加载失败: {e}", e=e))
+                    logger.debug(i18n_t("log.agent.load_state_driven_pool", e=e))
 
                 # C-1 跟进保障：检测到"改成/取消那个/再查"类省略跟进时，
                 if _followup_detected:
@@ -1547,7 +1534,7 @@ class GsCoreAIAgent:
                             if _tb.name not in core_names:
                                 core_names.add(_tb.name)
                                 core_tools.append(_tb.tool)
-                    logger.debug(i18n_t("🧭 [Scaffold] C-1 已补充定时任务/编排族工具供省略跟进定位"))
+                    logger.debug(i18n_t("log.agent.scaffold_supplemented_scheduled_task"))
 
                 # 第 1.6 层：会话驻留工具池（L3）——最近几轮用过的能力族继续常驻数轮，
                 if self._recent_tool_families:
@@ -1579,19 +1566,19 @@ class GsCoreAIAgent:
                                 extra_tools += ctx_tools
                                 logger.debug(
                                     i18n_t(
-                                        "🧠 [GsCoreAIAgent] 语境工具池加载 {p0} 个工具 (语境标签: {ctx_tags})",
+                                        "log.agent.contextual_pool_context_tags",
                                         p0=len(ctx_tools),
                                         ctx_tags=ctx_tags,
                                     )
                                 )
                     except Exception as e:
-                        logger.debug(i18n_t("🧠 [GsCoreAIAgent] 语境工具池加载失败: {e}", e=e))
+                        logger.debug(i18n_t("log.agent.load_contextual_pool", e=e))
 
                 # 第三层：查询工具池——基于 query 的向量搜索。只排除已在保底池的 self / buildin 分类；
                 if qy and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
                     # L5 上下文增强检索：把最近几轮用户原话拼进检索 query，
                     search_query = "\n".join([*self._recent_user_texts, qy]) if self._recent_user_texts else qy
-                    logger.debug(i18n_t("🧠 [GsCoreAIAgent] 尝试搜索工具: {search_query}", search_query=search_query))
+                    logger.debug(i18n_t("log.agent.attempting_search_tools_query", search_query=search_query))
 
                     # 只排除已在保底池的 self/buildin；plugin_dev 等"委派专用"分类由
                     # 否则"上轮问长离、这轮设提醒"会被上轮实体劫持（跨轮延续归 L3 驻留管）
@@ -1627,7 +1614,7 @@ class GsCoreAIAgent:
                             _did_strip_exclusive = True
                             logger.info(
                                 i18n_t(
-                                    "🧠 [GsCoreAIAgent] 主人格剥离能力代理专属工具 {n} 个: {names}",
+                                    "log.agent.main_persona_stripped_capability",
                                     n=len(_stripped),
                                     names=sorted(_stripped)[:12],
                                 )
@@ -1651,7 +1638,7 @@ class GsCoreAIAgent:
                         tools.append(cs.tool)
                         logger.debug(
                             i18n_t(
-                                "🧠 [GsCoreAIAgent] 委派保障：注入 create_subagent（deleg={deleg_pid}）",
+                                "log.agent.delegation_safeguard_create_subagent",
                                 deleg_pid=deleg_pid or "exclusive_strip",
                             )
                         )
@@ -1669,11 +1656,11 @@ class GsCoreAIAgent:
                             tools.append(ft.tool)
                             _expose_dynamic = True
                     if _expose_dynamic:
-                        logger.debug(i18n_t("🧠 [GsCoreAIAgent] 已注入 find_tools，本轮启用渐进式工具暴露"))
+                        logger.debug(i18n_t("log.agent.find_tools_progressive_exposure"))
 
                 logger.debug(
                     i18n_t(
-                        "🧠 [GsCoreAIAgent] 工具数量: {p0} (保底 {p1} + 附加 {p2})",
+                        "log.agent.tool_count_baseline_extra",
                         p0=len(tools),
                         p1=len(core_tools),
                         p2=len(deduped_extra),
@@ -1687,11 +1674,11 @@ class GsCoreAIAgent:
                     self._recent_user_texts.append(qy)
                     self._recent_user_texts = self._recent_user_texts[-keep:] if keep else []
             else:
-                logger.debug(i18n_t("🧠 [GsCoreAIAgent] 传入Tools列表: {p0}，已传入参数", p0=len(tools)))
+                logger.debug(i18n_t("log.agent.passed_tools_list_arguments", p0=len(tools)))
         else:
-            logger.debug(i18n_t("🧠 [GsCoreAIAgent] 不搜索工具"))
+            logger.debug(i18n_t("log.agent.skip_tool_search_searching_tools"))
 
-        logger.debug(i18n_t("🧠 [GsCoreAIAgent] 工具列表: {p0}", p0=[tool.name for tool in tools]))
+        logger.debug(i18n_t("log.agent.tool_list", p0=[tool.name for tool in tools]))
 
         # 最终去重（兼容外部直接传入 tools 的情况）
         tools = list({obj.name: obj for obj in tools}.values())
@@ -1767,7 +1754,7 @@ class GsCoreAIAgent:
             else:
                 logger.error(
                     i18n_t(
-                        "🧠 [GsCoreAIAgent] 模型 profile 类型异常(取证): type={p0}, model={p1}, repr={p2}",
+                        "log.agent.abnormal_profile_type_forensics",
                         p0=type(_profile_obj).__name__,
                         p1=_model_name,
                         p2=repr(_profile_obj)[:300],
@@ -1775,8 +1762,8 @@ class GsCoreAIAgent:
                 )
 
         try:
-            logger.info(i18n_t("🧠 [GsCoreAIAgent] 开始执行 _agent.iter()..."))
-            logger.info(i18n_t("🧠 [GsCoreAIAgent] 当前 history: {p0}", p0=len(self.history)))
+            logger.info(i18n_t("log.agent.iter_start"))
+            logger.info(i18n_t("log.agent.current_history", p0=len(self.history)))
 
             async with _agent.iter(
                 final_user_message,
@@ -1788,7 +1775,7 @@ class GsCoreAIAgent:
                 async for node in agent_run:
                     # 1. 发起大模型请求前的处理
                     if isinstance(node, ModelRequestNode):
-                        logger.debug(i18n_t("🧠 [GsCoreAIAgent] ⚡ 触发节点: ModelRequestNode"))
+                        logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
                         self._session_logger.log_node_transition("ModelRequestNode")
 
@@ -1809,7 +1796,7 @@ class GsCoreAIAgent:
                             _wall_nudged = True
                             logger.info(
                                 i18n_t(
-                                    "⏱️ [GsCoreAIAgent] 墙钟软预算已超（{p0:.0f}s），注入收敛提示",
+                                    "log.agent.wall_clock_soft_budget",
                                     p0=_wall_elapsed,
                                 )
                             )
@@ -1825,7 +1812,7 @@ class GsCoreAIAgent:
                                     resource_id = RM.register(part.content)
                                     logger.info(
                                         i18n_t(
-                                            "🧠 [GsCoreAIAgent] 工具 [{p0}] 返回内容，已注册资源ID [{resource_id}]",
+                                            "log.agent.content_registered_resource_id",
                                             p0=part.tool_name,
                                             resource_id=resource_id,
                                         )
@@ -1863,7 +1850,7 @@ class GsCoreAIAgent:
                                     tool_result_str = tool_result_str[:200] + f"...[截断, 共{len(tool_result_str)}字符]"
                                 logger.debug(
                                     i18n_t(
-                                        "[✅ 工具执行完毕]: 工具名称='{p0}', 结果给到Agent={tool_result_str}",
+                                        "log.agent.tool_execution_compl_name_result_passed_ok",
                                         p0=part.tool_name,
                                         tool_result_str=tool_result_str,
                                     )
@@ -1884,7 +1871,7 @@ class GsCoreAIAgent:
                                 UserPromptPart(content=_POST_TOOL_OUTPUT_CONTRACT),
                             ]
 
-                        logger.debug(i18n_t("🧠  ▶ [发起请求]: 正在等待大模型思考..."))
+                        logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
                         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
                         _req_start = time.perf_counter()
                         _first_event_at = None
@@ -1898,7 +1885,7 @@ class GsCoreAIAgent:
                     # 2. 获取到大模型响应，准备调用工具或者输出文本 这里使用了 isinstance
                     # Pyright 就能明确知道此时 node 是 CallToolsNode 拥有 model_response 属性
                     elif isinstance(node, CallToolsNode):
-                        logger.debug(i18n_t("🧠 [GsCoreAIAgent] ⚡ 触发节点: CallToolsNode"))
+                        logger.debug(i18n_t("log.agent.trigger_node_calltoolsnode"))
 
                         self._session_logger.log_node_transition("CallToolsNode")
 
@@ -1919,7 +1906,7 @@ class GsCoreAIAgent:
                                 _saw_tool_call_this_turn = True
                                 logger.debug(
                                     i18n_t(
-                                        "[🔧 大模型请求调用工具]: 工具名称='{p0}', 参数={p1}",
+                                        "log.agent.llm_requests_tool_name_args",
                                         p0=part.tool_name,
                                         p1=part.args,
                                     )
@@ -1945,20 +1932,16 @@ class GsCoreAIAgent:
                                 # 拆出 <think> 后只剩空白的文本片段（如纯思考+工具调用轮）， 既无需打印也无需下发，
                                 if not _text:
                                     continue
-                                logger.debug(i18n_t("🧠 [大模型文本]: {_text}", _text=_text))
+                                logger.debug(i18n_t("log.agent.llm_text", _text=_text))
                                 self._session_logger.log_text_output(_text)
                                 if _text in SILENCE_MARKERS:
-                                    logger.info(
-                                        i18n_t("🧠 [GsCoreAIAgent] 检测到沉默标记 '{_text}'，跳过发送", _text=_text)
-                                    )
+                                    logger.info(i18n_t("log.agent.silent_skipping_text", _text=_text))
                                 elif _text in self._run_sent_texts:
                                     # 本轮已发过完全相同的段：模型跨轮重复最终答复 / 重试重发，
-                                    logger.debug(
-                                        i18n_t("🧠 [GsCoreAIAgent] 跳过重复文本(本轮已发): {p0}", p0=repr(_text[:40]))
-                                    )
+                                    logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                                 elif _suppress_intermediate_text and _saw_tool_call_this_turn:
                                     # 工具调用前后伴随的文本属于中间步骤碎碎念，不发送给用户，
-                                    logger.debug(i18n_t("🧠 [GsCoreAIAgent] 抑制中间文本: {p0}", p0=repr(_text[:40])))
+                                    logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
                                     # 出戏预检（§D.4）：命中不发送、记入 _ooc_blocked，
                                     _ooc_hit = (
@@ -1972,7 +1955,7 @@ class GsCoreAIAgent:
                                     if _ooc_hit is not None:
                                         logger.warning(
                                             i18n_t(
-                                                "[OutputFirewall] 主输出命中出戏红线 {p0}: {p1}，转重说",
+                                                "log.agent.firewall_main_output_hit_ooc",
                                                 p0=_ooc_hit.category,
                                                 p1=_ooc_hit.matched,
                                             )
@@ -1983,9 +1966,7 @@ class GsCoreAIAgent:
                                     _fab_gate_on = not fake_done_retry and not _tool_call_list and bool(tool_names)
                                     if _fab_gate_on and _claims_fake_done(_text):
                                         logger.warning(
-                                            i18n_t(
-                                                "🧠 [FakeDoneGate] 零工具完成声明，暂扣待核: {p0}", p0=repr(_text[:40])
-                                            )
+                                            i18n_t("log.agent.fakedone_zero_claim_pending_ok", p0=repr(_text[:40]))
                                         )
                                         _fab_blocked.append(_text)
                                         continue
@@ -1996,11 +1977,11 @@ class GsCoreAIAgent:
                                         # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
                                         self._run_sent_texts.add(_text)
                                     except Exception as _e:
-                                        logger.debug(i18n_t("🧠 [GsCoreAIAgent] 文本发送失败: {_e}", _e=_e))
+                                        logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
 
                             elif isinstance(part, ThinkingPart):
                                 _thinking = part.content.strip()
-                                logger.debug(i18n_t("🧠 [大模型思考]: {_thinking}", _thinking=_thinking))
+                                logger.debug(i18n_t("log.agent.llm_thinking", _thinking=_thinking))
                                 if _thinking:
                                     _thinking_segments.append(_thinking)
                                 self._session_logger.log_thinking(_thinking)
@@ -2015,7 +1996,7 @@ class GsCoreAIAgent:
                             _generation_time = _last_event_at - _first_event_at
                             if _req_usage.output_tokens > 0 and _generation_time > 0:
                                 _tps = round(_req_usage.output_tokens / _generation_time, 2)
-                            logger.debug(i18n_t("log.ai_agent.ttft_tps", ttft_ms=_ttft_ms, tps=_tps))
+                            logger.debug(i18n_t("log.ai_agent.ttft_ms_tps_tokens_ok", ttft_ms=_ttft_ms, tps=_tps))
                         statistics_manager.record_hourly_performance(
                             provider=_provider,
                             model_name=_model_name,
@@ -2033,14 +2014,14 @@ class GsCoreAIAgent:
 
                     # 3. 运行结束节点
                     elif isinstance(node, End):
-                        logger.debug(i18n_t("🧠 [GsCoreAIAgent] ⚡ 触发节点: End"))
-                        logger.debug(i18n_t("  ✅ [运行结束]: 最终结果生成完毕"))
+                        logger.debug(i18n_t("log.agent.node_trigger_end"))
+                        logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
                         self._session_logger.log_node_transition("End")
 
             # 遍历完成后，直接从 agent_run 中获取最终结果
             result = agent_run.result
             if result:
-                logger.info(i18n_t("🧠 [GsCoreAIAgent] _agent.iter() 执行成功!"))
+                logger.info(i18n_t("log.agent.iter_ok"))
 
                 # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 rag_context）
                 # 防止【历史对话】/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
@@ -2074,7 +2055,7 @@ class GsCoreAIAgent:
                         thinking_blob = "\n".join(_thinking_segments)
                         if thinking_blob and any(kw in thinking_blob for kw in _INTENT_TRIGGER_KEYWORDS):
                             self._consecutive_no_tool_rounds = max(self._consecutive_no_tool_rounds, 2)
-                            logger.debug(i18n_t("🧠 [GsCoreAIAgent] 检测到意图-行为不一致，下一轮将强制提醒"))
+                            logger.debug(i18n_t("log.agent.intent_action_mismatch_force"))
 
                 # 记录 Token 使用量和延迟统计
                 # 记录响应延迟
@@ -2091,9 +2072,7 @@ class GsCoreAIAgent:
 
                     logger.info(
                         i18n_t(
-                            "📊 [GsCoreAIAgent] Token消耗: input={input_tokens},"
-                            " output={output_tokens}, cache_read={cache_read_tokens},"
-                            " cache_write={cache_write_tokens}",
+                            "log.agent.token_usage_input_tokens",
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                             cache_read_tokens=cache_read_tokens,
@@ -2129,7 +2108,7 @@ class GsCoreAIAgent:
                                     cache_write_tokens,
                                 )
                             except Exception as _be:
-                                logger.warning(i18n_t("💰 [GsCoreAIAgent] 预算记账失败: {_be}", _be=_be))
+                                logger.warning(i18n_t("log.agent.budget_fail", _be=_be))
                         try:
                             self._session_logger.log_token_usage(
                                 input_tokens,
@@ -2139,17 +2118,17 @@ class GsCoreAIAgent:
                                 cache_write_tokens,
                             )
                         except Exception as _le:
-                            logger.debug(i18n_t("📊 [GsCoreAIAgent] 写入 token 用量日志失败: {_le}", _le=_le))
+                            logger.debug(i18n_t("log.agent.write_token_usage_log", _le=_le))
                 except AttributeError as e:
                     # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
-                    logger.info(i18n_t("📊 [GsCoreAIAgent] result.usage 访问失败: {e}", e=e))
+                    logger.info(i18n_t("log.agent.access_result_usage", e=e))
                     pass
                 except TypeError as e:
                     # v1 旧写法 result.usage() 在 v2 抛 'RunUsage' is not callable
-                    logger.info(i18n_t("📊 [GsCoreAIAgent] result.usage 调用方式不兼容 v2: {e}", e=e))
+                    logger.info(i18n_t("log.agent.result_usage_call_style", e=e))
                     pass
                 except Exception as e:
-                    logger.warning(i18n_t("📊 [GsCoreAIAgent] 记录统计失败: {e}", e=e))
+                    logger.warning(i18n_t("log.agent.record_statistics", e=e))
 
                 # 当 return_model 指定时，直接返回 Pydantic 模型实例
                 if output_type is not None:
@@ -2161,7 +2140,7 @@ class GsCoreAIAgent:
                 result_msg = str(result.output).strip()
                 # 工具调用列表只进调试日志，不追加到用户可见消息
                 if _tool_call_list:
-                    logger.debug(i18n_t("🔧 [本次工具调用] {p0}", p0=", ".join(_tool_call_list)))
+                    logger.debug(i18n_t("log.agent.current_tool_call_event", p0=", ".join(_tool_call_list)))
 
                 self._session_logger.log_run_end()
                 self._session_logger.log_result(result_msg, _tool_call_list)
@@ -2173,15 +2152,15 @@ class GsCoreAIAgent:
                             continue
                         try:
                             if bot is None:
-                                logger.warning(i18n_t("🧠 [FakeDoneGate] 暂扣文本补发失败：Bot对象不可用"))
+                                logger.warning(i18n_t("log.agent.fakedone_bot_object_unavailable"))
                                 continue
                             await send_chat_result(bot, _bt, ev=ev)
                             self._run_sent_texts.add(_bt)
                         except Exception as _se:
-                            logger.debug(i18n_t("🧠 [FakeDoneGate] 暂扣文本补发失败: {_se}", _se=_se))
+                            logger.debug(i18n_t("log.agent.fakedone_se", _se=_se))
 
                 if _fab_blocked and _tool_call_list and bot and return_mode in ["always", "by_bot"]:
-                    logger.info(i18n_t("🧠 [FakeDoneGate] 完成声明后续有工具调用支撑，补发暂扣文本"))
+                    logger.info(i18n_t("log.agent.fakedone_claim"))
                     await _resend_fab_blocked()
                 elif (
                     result_msg
@@ -2190,7 +2169,7 @@ class GsCoreAIAgent:
                     and not fake_done_retry
                     and (_fab_blocked or _claims_fake_done(result_msg))
                 ):
-                    logger.warning(i18n_t("🧠 [FakeDoneGate] 零工具调用却声称已完成动作，追加纠正重跑"))
+                    logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
                     try:
                         corrected = await self._execute_run_once(
                             user_message=_FAKE_DONE_NUDGE,
@@ -2205,7 +2184,7 @@ class GsCoreAIAgent:
                         )
                     except Exception as _fe:
                         # 纠正 pass 是增强路径，失败不影响原结果返回；暂扣文本补发防"整轮沉默"
-                        logger.warning(i18n_t("🧠 [FakeDoneGate] 纠正重跑失败，沿用原结果: {_fe}", _fe=_fe))
+                        logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
                         corrected = None
                         if _fab_blocked and bot and return_mode in ["always", "by_bot"]:
                             await _resend_fab_blocked()
@@ -2229,7 +2208,7 @@ class GsCoreAIAgent:
                         result_msg, user_text=ev.raw_text if ev is not None and ev.raw_text else ""
                     )
                     if _ooc_scrubbed:
-                        logger.warning(i18n_t("[OutputFirewall] run() 返回值命中出戏红线，已兜底替换为角色化文本"))
+                        logger.warning(i18n_t("log.agent.firewall_run_return_value_hit"))
                 return result_msg
 
             # result 为空时的默认返回值（常量：handle_ai 好感度门等消费端按它识别准失败轮）
@@ -2237,7 +2216,7 @@ class GsCoreAIAgent:
 
         except UsageLimitExceeded:
             # 达到限制后的处理逻辑
-            logger.warning(i18n_t("🧠 [PydanticAI] Agent 达到最高思考轮数限制 {p0}", p0=limits.request_limit))
+            logger.warning(i18n_t("log.agent.pydanticai_reached_maximum_thinking", p0=limits.request_limit))
             statistics_manager.record_error(error_type="usage_limit")
             self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {limits.request_limit}")
 
@@ -2302,7 +2281,7 @@ class GsCoreAIAgent:
                 return ""
 
             except Exception as e:
-                logger.error(i18n_t("🧠 [PydanticAI] 强制总结失败: {e}", e=e))
+                logger.error(i18n_t("log.agent.pydanticai_forced_summary", e=e))
                 self._session_logger.log_error("fallback_failed", str(e))
                 fallback_error = (
                     "⚠️ 问题较复杂，现有信息不足以给出准确答案。可以尝试提高思维链长度，或换个方式描述问题。"
@@ -2334,7 +2313,7 @@ class GsCoreAIAgent:
                     clear_turn_throttle(str(sess), turn_id)
                     clear_turn_send_throttle(str(sess), turn_id)
             except Exception as _e:
-                logger.debug(i18n_t("🧠 [GsCoreAIAgent] 清理单轮节流计数失败: {_e}", _e=_e))
+                logger.debug(i18n_t("log.agent.clear_counter", _e=_e))
 
     @overload
     async def run(
@@ -2411,7 +2390,7 @@ class GsCoreAIAgent:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
         """
         async with self._run_lock:
-            logger.info(i18n_t("🧠 [GsCoreAIAgent] 获取到执行锁，开始执行..."))
+            logger.info(i18n_t("log.agent.acquired_lock"))
             # O-A 群聊队头阻塞防护：拿到锁时若已排队过久（话题大概率翻篇），丢弃过期回复。
             if (
                 enqueue_ts is not None
@@ -2419,9 +2398,7 @@ class GsCoreAIAgent:
                 and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL
             ):
                 waited = time.time() - enqueue_ts
-                logger.info(
-                    i18n_t("🧠 [GsCoreAIAgent] 队列等待 {waited:.1f}s 超 TTL，丢弃过期请求，释放锁", waited=waited)
-                )
+                logger.info(i18n_t("log.agent.queue_wait_waited_exceeded", waited=waited))
                 return "" if output_type is None else None
             # 模型热切换：网页控制台切换高/低级任务模型后，存活会话在此即时热替换到新模型， 无需 coreclear 重置会话。
             await self.refresh_model_if_changed()
@@ -2444,7 +2421,7 @@ class GsCoreAIAgent:
             # 显式绑定固定模型的会话（model_config_name 为 None）不参与 provider 路由
             if self.model_config_name is None:
                 result = await _do_run()
-                logger.info(i18n_t("🧠 [GsCoreAIAgent] 执行完成，释放锁"))
+                logger.info(i18n_t("log.agent.lock_ok"))
                 return result
 
             # provider 路由：主配置并发满/冷却时切到备用(2nd)配置；请求命中
@@ -2453,8 +2430,7 @@ class GsCoreAIAgent:
             _secondary_cfg = get_2nd_config_name_for_task(self.task_level)
             logger.debug(
                 i18n_t(
-                    "🧠 [GsCoreAIAgent] provider 路由: task_level={task_level}, "
-                    "primary={primary}, secondary={secondary}",
+                    "log.agent.provider_routing_task_level",
                     task_level=self.task_level,
                     primary=_primary_cfg,
                     secondary=_secondary_cfg or "(未配置)",
@@ -2464,7 +2440,7 @@ class GsCoreAIAgent:
                 async with provider_router.slot(self.task_level) as routed_name:
                     logger.debug(
                         i18n_t(
-                            "🧠 [GsCoreAIAgent] 第 {attempt} 次尝试, 路由到配置: {routed_name}",
+                            "log.agent.attempt_routed_config_name",
                             attempt=_attempt + 1,
                             routed_name=routed_name,
                         )
@@ -2478,7 +2454,7 @@ class GsCoreAIAgent:
                         except Exception as e:
                             logger.warning(
                                 i18n_t(
-                                    "🧠 [GsCoreAIAgent] 备用配置 {routed_name} 加载失败，沿用主配置: {e}",
+                                    "log.agent.backup_config_routed_name",
                                     routed_name=routed_name,
                                     e=e,
                                 )
@@ -2492,9 +2468,7 @@ class GsCoreAIAgent:
                         _is_provider_failure = _is_error_str and looks_like_provider_failure(result)
                         logger.debug(
                             i18n_t(
-                                "🧠 [GsCoreAIAgent] _do_run 返回: is_str={is_str}, "
-                                "is_error={is_error}, is_provider_failure={is_failure}, "
-                                "attempt={attempt}",
+                                "log.agent.run_str_fail_provider",
                                 is_str=isinstance(result, str),
                                 is_error=_is_error_str,
                                 is_failure=_is_provider_failure,
@@ -2505,18 +2479,18 @@ class GsCoreAIAgent:
                             provider_router.mark_failure(routed_name or self.model_config_name)
                             logger.warning(
                                 i18n_t(
-                                    "🧠 [GsCoreAIAgent] provider 级故障(内层重试耗尽)，换路重试: {r}",
+                                    "log.agent.provider_level_inner_retries",
                                     r=result[:200],
                                 )
                             )
                             continue
                         provider_router.mark_success(routed_name or self.model_config_name)
-                        logger.info(i18n_t("🧠 [GsCoreAIAgent] 执行完成，释放锁"))
+                        logger.info(i18n_t("log.agent.lock_ok"))
                         return result
                     except Exception as e:
                         if _attempt == 0 and looks_like_provider_failure(str(e)):
                             provider_router.mark_failure(routed_name or self.model_config_name)
-                            logger.warning(i18n_t("🧠 [GsCoreAIAgent] provider 级故障，换路重试: {e}", e=e))
+                            logger.warning(i18n_t("log.agent.provider_level_switching_route", e=e))
                             continue
                         raise
                     finally:

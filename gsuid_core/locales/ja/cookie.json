@@ -1,0 +1,9 @@
+{
+  "log.cookie.add_ck_im_create": "ℹ️ [CK を追加] {im}",
+  "log.cookie.login_qr_code_confirmed": "[ログイン] QR コードが確認された",
+  "log.cookie.login_qr_code_expired": "[ログイン] QR コードの有効期限が切れた",
+  "log.cookie.login_qr_code_scanned": "[ログイン] QR コードがスキャンされた",
+  "log.cookie.login_qr_code_status": "[ログイン] 不明な QR コードステータス: {p0}",
+  "log.cookie.stoken_fail": "[ログイン] stoken の取得に失敗",
+  "log.cookie.stoken_ok": "[ログイン] stoken の取得に成功"
+}

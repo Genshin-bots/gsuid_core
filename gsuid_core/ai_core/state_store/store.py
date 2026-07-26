@@ -54,7 +54,7 @@ async def _ensure_table() -> None:
             )
         _table_ensured = True
     except Exception as e:
-        logger.warning(t("🗄️ [StateStore] 建表检查失败（将沿用既有表）: {e}", e=e))
+        logger.warning(t("log.ai.state_table_check_use_existing", e=e))
         _table_ensured = True
 
 
@@ -81,7 +81,7 @@ async def _fetch(scope: str, state_key: str) -> Optional[AIPersistentState]:
         if record.expire_at is not None and record.expire_at < _now():
             await session.execute(delete(AIPersistentState).where(col(AIPersistentState.id) == record.id))
             await session.commit()
-            logger.debug(t("🗄️ [StateStore] 状态已过期并清理: {scope} / {state_key}", scope=scope, state_key=state_key))
+            logger.debug(t("log.ai.state_expired_cleaned_scope", scope=scope, state_key=state_key))
             return None
 
         return record
@@ -145,7 +145,7 @@ async def state_set_value(
 
         logger.debug(
             t(
-                "🗄️ [StateStore] 写入: {scope} / {state_key} (v{new_version})",
+                "log.ai.state_wrote_scope_key",
                 scope=scope,
                 state_key=state_key,
                 new_version=new_version,
@@ -187,7 +187,7 @@ async def state_delete_value(scope: str, state_key: str) -> bool:
         await session.execute(delete(AIPersistentState).where(col(AIPersistentState.id) == record.id))
         await session.commit()
 
-    logger.debug(t("🗄️ [StateStore] 删除: {scope} / {state_key}", scope=scope, state_key=state_key))
+    logger.debug(t("log.ai.state_deleted_scope_key", scope=scope, state_key=state_key))
     return True
 
 
@@ -304,7 +304,7 @@ async def state_mutate(
 
         logger.debug(
             t(
-                "🗄️ [StateStore] state_mutate 乐观锁冲突，重试 ({p0}/{_APPEND_MAX_RETRY}): {scope} / {state_key}",
+                "log.ai.state_mutate_optimistic_lock",
                 p0=attempt + 1,
                 _APPEND_MAX_RETRY=_APPEND_MAX_RETRY,
                 scope=scope,

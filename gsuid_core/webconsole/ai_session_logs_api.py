@@ -243,7 +243,7 @@ def _load_persist_cache() -> None:
                     loaded += 1
             except Exception:
                 continue
-    logger.info(t("📝 [SessionLogsAPI] 从持久化缓存载入 {loaded} 条日志摘要（跳过重复解析）", loaded=loaded))
+    logger.info(t("log.webconsole.sesslog_log_summaries_persistent_skip", loaded=loaded))
 
 
 def _save_persist_cache() -> None:
@@ -261,7 +261,7 @@ def _save_persist_cache() -> None:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, _PERSIST_CACHE_PATH)
     except Exception as e:
-        logger.warning(t("📝 [SessionLogsAPI] 持久化日志摘要缓存失败（不影响功能）: {e}", e=e))
+        logger.warning(t("log.webconsole.sesslog_persist_log_summary_fail", e=e))
 
 
 def _iter_log_files_with_stat(include_subagents: bool = True) -> List[Tuple[Path, os.stat_result]]:
@@ -1131,7 +1131,7 @@ async def list_session_logs(
             },
         }
     except Exception as e:
-        logger.error(t("📝 [SessionLogsAPI] 获取日志列表失败: {e}", e=e))
+        logger.error(t("log.webconsole.sesslog_retrieve_log_list", e=e))
         return {
             "status": 1,
             "msg": f"获取日志列表失败: {str(e)}",
@@ -1160,7 +1160,7 @@ def _handle_detail_request(
 
         return {"status": 0, "msg": "ok", "data": data}
     except Exception as e:
-        logger.error(t("📝 [SessionLogsAPI] 获取日志详情失败: {e}", e=e))
+        logger.error(t("log.webconsole.sesslog_retrieve_log_details", e=e))
         return {
             "status": 1,
             "msg": f"获取日志详情失败: {str(e)}",
@@ -1324,7 +1324,7 @@ async def get_session_log_by_file(
 
         return {"status": 0, "msg": "ok", "data": resp}
     except Exception as e:
-        logger.error(t("📝 [SessionLogsAPI] 获取日志文件失败: {e}", e=e))
+        logger.error(t("log.webconsole.sesslog_retrieve_log_file", e=e))
         return {
             "status": 1,
             "msg": f"获取日志文件失败: {str(e)}",
@@ -1430,7 +1430,7 @@ async def get_session_linked_agents(
             },
         }
     except Exception as e:
-        logger.error(t("📝 [SessionLogsAPI] 获取关联 Agent 失败: {e}", e=e))
+        logger.error(t("log.webconsole.sesslog_retrieve_associated_agent", e=e))
         return {
             "status": 1,
             "msg": f"获取关联 Agent 失败: {str(e)}",
@@ -1508,7 +1508,7 @@ async def get_session_logs_overview(
             },
         }
     except Exception as e:
-        logger.error(t("📝 [SessionLogsAPI] 获取日志统计失败: {e}", e=e))
+        logger.error(t("log.webconsole.sesslog_retrieve_log_statistics", e=e))
         return {
             "status": 1,
             "msg": f"获取日志统计失败: {str(e)}",
@@ -1580,7 +1580,7 @@ async def get_session_log_categories(
             },
         }
     except Exception as e:
-        logger.error(t("📝 [SessionLogsAPI] 获取日志分类失败: {e}", e=e))
+        logger.error(t("log.webconsole.sesslog_retrieve_log_categories", e=e))
         return {
             "status": 1,
             "msg": f"获取日志分类失败: {str(e)}",

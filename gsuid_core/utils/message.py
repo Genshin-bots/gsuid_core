@@ -20,9 +20,9 @@ async def send_msg_to_master(
 ):
     master_id = core_config.get_config("masters")
     if not master_id:
-        logger.warning(t("[推送主人消息] 未配置master_id, 推送失败!"))
+        logger.warning(t("log.message.master_id_fail"))
         return
-    logger.info(t("[推送主人消息] 任务启动..."))
+    logger.info(t("log.message.push_message_to_owne_task_start"))
     datas = await gs_subscribe.get_subscribe("主人用户")
     if datas:
         seen: set = set()

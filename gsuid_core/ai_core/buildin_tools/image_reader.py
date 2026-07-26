@@ -129,7 +129,7 @@ def _current_model_supports_image(parent_session_id: str | None) -> bool:
         support: object = get_model_config_for_task(task_level).get_config("model_support").data
         return isinstance(support, (list, str)) and "image" in support
     except Exception as e:  # noqa: BLE001 - 判定失败按「不支持」处理，退回文字转述更安全
-        logger.debug(t("log.buildin.image_reader_image_support_fail", error=str(e)))
+        logger.debug(t("log.buildin.image_reader_support_fail", error=str(e)))
         return False
 
 
@@ -224,7 +224,7 @@ async def read_image(
     if _current_model_supports_image(ctx.deps.parent_session_id):
         injected = _to_tool_image_content(image_url, provider=_current_provider(ctx.deps.parent_session_id))
         if injected is not None:
-            logger.info(t("🧠 [BuildinTools] read_image 直投图片 {image_id} 给多模态主模型", image_id=image_id))
+            logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
             return ToolReturn(
                 return_value=f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。",
                 content=injected,
@@ -254,7 +254,7 @@ async def read_image(
             last_err = e
             logger.warning(
                 t(
-                    "🧠 [BuildinTools] read_image 第 {attempt} 次读取 {image_id} 失败: {e}",
+                    "log.ai.buildintools_read_image_attempt_fail",
                     attempt=attempt,
                     image_id=image_id,
                     e=e,
@@ -266,8 +266,6 @@ async def read_image(
     description = (description or "").strip()
     if not description:
         return f"⚠️ 图片 {image_id} 已读取，但未能解析出有效内容。"
-    logger.info(
-        t("🧠 [BuildinTools] read_image 已读取图片 {image_id}（描述 {p0} 字）", image_id=image_id, p0=len(description))
-    )
+    logger.info(t("log.ai.buildintools_read_image_id", image_id=image_id, p0=len(description)))
     # 图片 OCR 出的文字可能含诱导性指令，套不可信栅栏（§B.3-1），模型对栅栏内内容只当数据
     return f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)

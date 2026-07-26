@@ -69,7 +69,7 @@ async def send_meme(
     # 发送图片
     file_path = get_memes_base_path() / record.file_path
     if not file_path.exists():
-        logger.warning(t("[Meme] 表情包文件不存在: {file_path}", file_path=file_path))
+        logger.warning(t("log.ai.meme_file_path", file_path=file_path))
         return "表情包文件不存在"
 
     image_data = await _read_file(file_path)
@@ -86,7 +86,7 @@ async def send_meme(
 
     logger.info(
         t(
-            "[Meme] 发送表情包: {p0} (mood={mood}, scene={scene}, persona={persona_name})",
+            "log.ai.meme_mood_scene_persona",
             p0=record.meme_id,
             mood=mood,
             scene=scene,

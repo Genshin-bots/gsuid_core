@@ -75,7 +75,7 @@ def _decrypt_auth_body(request: Request, data: JsonObject, scope: str) -> tuple[
         # 被解密前置限流封禁：明确回「操作过于频繁」，避免与「请求无效」混淆误导正常用户
         logger.warning(
             t(
-                "🔒️ [网页控制台] {scope} 解密前置限流: IP={client_ip}, 需等待 {retry_after}s",
+                "log.webconsole.scope_ip_client_retry",
                 scope=scope,
                 client_ip=client_ip,
                 retry_after=retry_after,
@@ -87,9 +87,7 @@ def _decrypt_auth_body(request: Request, data: JsonObject, scope: str) -> tuple[
     except AuthCryptoError as e:
         # 解密失败计入 IP 维度限流：畸形 / 重放报文与认证失败同等对待，防 DoS / 探测
         auth_rate_limiter.record_failure(ip_key)
-        logger.warning(
-            t("🔒️ [网页控制台] {scope} 报文解密失败: IP={client_ip}, {e}", scope=scope, client_ip=client_ip, e=e)
-        )
+        logger.warning(t("log.webconsole.scope_ip_client_fail", scope=scope, client_ip=client_ip, e=e))
         return None, _AUTH_DECRYPT_FAIL_MSG
 
 
@@ -204,7 +202,7 @@ async def api_login(request: Request, data: JsonObject):
     if not allowed:
         logger.warning(
             t(
-                "🔒️ [网页控制台] 登录请求被限流: IP={client_ip}, 需等待 {retry_after}s",
+                "log.webconsole.ip_client_retry_after",
                 client_ip=client_ip,
                 retry_after=retry_after,
             )
@@ -254,7 +252,7 @@ async def api_login(request: Request, data: JsonObject):
         verify_password(password, _DUMMY_PASSWORD_HASH)
 
     auth_rate_limiter.record_failure(rate_key)
-    logger.info(t("🔒️ [网页控制台] 登录失败: IP={client_ip}, email={email}", client_ip=client_ip, email=email))
+    logger.info(t("log.webconsole.ip_client_email_fail", client_ip=client_ip, email=email))
     return {"status": 1, "msg": "请检查账户密码是否输入正确"}
 
 
@@ -289,7 +287,7 @@ async def api_register(request: Request, data: JsonObject):
     if not allowed:
         logger.warning(
             t(
-                "🔒️ [网页控制台] 注册请求被限流: IP={client_ip}, 需等待 {retry_after}s",
+                "log.webconsole.ip_client_retry_after_2",
                 client_ip=client_ip,
                 retry_after=retry_after,
             )
@@ -309,7 +307,7 @@ async def api_register(request: Request, data: JsonObject):
     expected_code = get_register_code()
     if not secrets.compare_digest(str(register_code).encode(), str(expected_code).encode()):
         auth_rate_limiter.record_failure(rate_key)
-        logger.warning(t("🔒️ [网页控制台] 注册码错误: IP={client_ip}", client_ip=client_ip))
+        logger.warning(t("log.webconsole.ip_client_error", client_ip=client_ip))
         return {"status": 1, "msg": "注册码错误"}
 
     # 检查邮箱格式
@@ -497,12 +495,12 @@ async def upload_avatar(
         # 同步该账号所有在线会话中缓存的头像
         session_store.update_user_fields(user_email, avatar=avatar_url)
 
-        return {"status": 0, "msg": t("log.webconsole.auth_avatar_upload_success"), "data": {"avatar": avatar_url}}
+        return {"status": 0, "msg": t("msg.webconsole.auth_avatar_upload_success"), "data": {"avatar": avatar_url}}
     except Exception as e:
         from gsuid_core.logger import logger
 
         logger.warning(t("log.webconsole.auth_avatar_upload_fail", error=e))
-        return {"status": 1, "msg": t("log.webconsole.auth_avatar_upload_fail_msg")}
+        return {"status": 1, "msg": t("msg.webconsole.auth_avatar_upload_fail_msg")}
 
 
 @app.get("/api/auth/avatar/{filename}", summary="获取用户头像文件", tags=AUTH)
@@ -519,7 +517,7 @@ async def get_avatar(request: Request, filename: str):
     """
     file_path = AVATAR_PATH / filename
     if not file_path.exists():
-        return {"status": 1, "msg": t("log.webconsole.auth_avatar_not_found")}
+        return {"status": 1, "msg": t("msg.webconsole.auth_avatar_not_found")}
 
     try:
         async with aiofiles.open(file_path, "rb") as f:
@@ -542,7 +540,7 @@ async def get_avatar(request: Request, filename: str):
         from gsuid_core.logger import logger
 
         logger.warning(t("log.webconsole.auth_avatar_get_fail", error=e))
-        return {"status": 1, "msg": t("log.webconsole.auth_avatar_get_fail_msg")}
+        return {"status": 1, "msg": t("msg.webconsole.auth_avatar_get_fail_msg")}
 
 
 @app.post("/api/auth/name", summary="更新用户名称", tags=AUTH)

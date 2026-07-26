@@ -55,7 +55,7 @@ class PassMysApi(BaseMysApi):
         return validate, ch
 
     async def _upass(self, header: Dict, is_bbs: bool = False) -> str:
-        logger.info(t("[upass] 进入处理..."))
+        logger.info(t("log.mys.upass_starting_processing"))
         if is_bbs:
             raw_data = await self.get_bbs_upass_link(header)
         else:
@@ -70,7 +70,7 @@ class PassMysApi(BaseMysApi):
         if vl:
             await self.get_header_and_vl(header, ch, vl, is_bbs)
             if ch:
-                logger.info(t("[upass] 获取ch -> {ch}", ch=ch))
+                logger.info(t("log.mys.upass_ch_obtained", ch=ch))
                 return ch
             else:
                 return ""

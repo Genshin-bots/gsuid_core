@@ -86,7 +86,7 @@ async def extract_video_frames(
         finally:
             cleanup_tempfile(video_path, "🎬 [Video]")
 
-    logger.warning(t("🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    logger.warning(t("log.ai.video_provider_mcp_supported", provider=provider))
     raise RuntimeError(t("视频帧提取不支持该提供方: {provider}", provider=provider))
 
 
@@ -145,7 +145,7 @@ async def understand_video(
                 cleanup_tempfile(video_path)
 
         # 方案2: 提取关键帧 + 图片理解
-        logger.info(t("🎬 [Video] 使用关键帧提取 + 图片理解方案，提取 {max_frames} 帧", max_frames=max_frames))
+        logger.info(t("log.ai.video_keyframe_extraction_image", max_frames=max_frames))
         frames = await extract_video_frames(video_data, video_format, max_frames)
 
         if not frames:
@@ -166,13 +166,13 @@ async def understand_video(
                 )
                 descriptions.append(f"帧{idx + 1}: {desc}")
             except Exception as e:
-                logger.error(t("🎬 [Video] 帧 {p0} 理解失败: {e}", p0=idx + 1, e=e))
+                logger.error(t("log.ai.video_frame_understanding", p0=idx + 1, e=e))
                 descriptions.append(f"帧{idx + 1}: [理解失败]")
 
         combined = "\n".join(descriptions)
         return f"【视频关键帧分析】\n{combined}"
 
-    logger.warning(t("🎬 [Video] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    logger.warning(t("log.ai.video_provider_mcp_supported", provider=provider))
     raise RuntimeError(t("视频理解不支持该提供方: {provider}", provider=provider))
 
 

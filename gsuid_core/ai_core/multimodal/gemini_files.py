@@ -76,7 +76,7 @@ async def upload_media_to_gemini(
     name = uploaded.name or ""
     logger.info(
         t(
-            "🎬 [GeminiFiles] 已上传 {size:.1f}MB ({mime}) → {name}, 等待处理...",
+            "log.ai.geminifiles_uploaded_size_mb_load",
             size=len(data) / 1024 / 1024,
             mime=mime_type,
             name=name,
@@ -100,7 +100,7 @@ async def upload_media_to_gemini(
     if not file.uri:
         raise RuntimeError(t("🎬 [GeminiFiles] 文件 {name} 无 URI 返回", name=name))
 
-    logger.info(t("🎬 [GeminiFiles] 文件就绪: {uri}", uri=file.uri))
+    logger.info(t("log.ai.geminifiles_uri_file_ready", uri=file.uri))
     return file.uri
 
 

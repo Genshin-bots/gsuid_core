@@ -1,0 +1,13 @@
+{
+  "log.mys.baseurl_base_url": "[Miyoushe Request] BaseUrl: {base_url}",
+  "log.mys.device_login_flow_fail": "Device login flow error...",
+  "log.mys.fp_res_connect_fail": "Connection failed while obtaining fp: {res}",
+  "log.mys.incorrect_parameters_obtaining_fp": "ℹ️ Incorrect parameters while obtaining fp: {p0}",
+  "log.mys.mhy_request_timeout_obtaining_dfp_fail": "[mhy_request] Timed out while obtaining DFP for an unknown reason...",
+  "log.mys.miyoushe_request_data": "[Miyoushe Request] Data: {data}",
+  "log.mys.miyoushe_request_header": "[Miyoushe Request] Header: {header}",
+  "log.mys.miyoushe_request_params": "[Miyoushe Request] Params: {params}",
+  "log.mys.miyoushe_request_url": "[Miyoushe Request] Url: {url}",
+  "log.mys.upass_ch_obtained": "[upass] Obtained ch -> {ch}",
+  "log.mys.upass_starting_processing": "[upass] Starting processing..."
+}

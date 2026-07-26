@@ -27,9 +27,9 @@ except ImportError:
 
 
 from gsuid_core.bot import _Bot
-from gsuid_core.i18n import t
+from gsuid_core.i18n import t, discover_and_register_plugin_locales
 from gsuid_core.config import core_config, plugin_config_store
-from gsuid_core.logger import logger
+from gsuid_core.logger import logger, hl_plugin
 from gsuid_core.gs_logger import GsLogger
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -296,9 +296,21 @@ class GsServer:
         if plugin.stem.startswith("_"):
             return f'插件{plugin.name}包含"_", 跳过加载!'
 
-        logger.debug(t("log.server.importing_plugin", stem=plugin.stem))
+        logger.debug(t("log.server.importing_plugin", stem=hl_plugin(plugin.stem)))
         logger.trace(t("log.server.plugin_import_separator"))
         try:
+            # 插件一等公民 i18n：在 import 前摄入 plugins/<Name>/locales/
+            # 词条不得进入框架 gsuid_core/locales，仅运行时合并。
+            if plugin.is_dir():
+                n_loc = discover_and_register_plugin_locales(plugin, plugin.stem)
+                if n_loc:
+                    logger.debug(
+                        t(
+                            "log.server.plugin_locales_loaded",
+                            name=hl_plugin(plugin.stem),
+                            count=n_loc,
+                        )
+                    )
             module_list = []
             if plugin.is_dir():
                 plugin_path = plugin / "__init__.py"
@@ -384,14 +396,14 @@ class GsServer:
 
         if _type == "plugin":
             name = filepath.parent.stem
-            logger.success(t("log.server.plugin_imported", name=name, duration=duration))
+            logger.success(t("log.server.plugin_imported", name=hl_plugin(name), duration=duration))
         elif _type == "single":
             name = filepath.stem
-            logger.success(t("log.server.plugin_imported", name=name, duration=duration))
+            logger.success(t("log.server.plugin_imported", name=hl_plugin(name), duration=duration))
         else:
             name = filepath.parent.stem
             if _type != "full":
-                logger.trace(t("log.server.module_imported", name=name, duration=duration))
+                logger.trace(t("log.server.module_imported", name=hl_plugin(name), duration=duration))
         _import_durations.append((name, duration))
 
         _module_cache[module_name] = module
@@ -445,7 +457,7 @@ class GsServer:
             total = sum(d for _, d in _import_durations)
             logger.info(t("log.server.import_slow_header", count=len(_import_durations), total=total))
             for name, dur in top:
-                logger.info(t("log.server.import_slow_item", dur=dur, name=name))
+                logger.info(t("log.server.import_slow_item", dur=dur, name=hl_plugin(name)))
 
         plugin_config_store.save_all()
         core_config.lazy_write_config()
@@ -797,7 +809,7 @@ def execute_cmd(cmd_list: List[str]):
     fix: 使用 list 传参且 shell=False，防止命令注入
     """
     cmd_str = " ".join(cmd_list)
-    logger.info(t("log.server.cmd_exec", cmd_str=cmd_str))
+    logger.info(t("log.server.cmd_str_cmd_str", cmd_str=cmd_str))
 
     try:
         # shell=False 是安全的默认值
@@ -806,7 +818,7 @@ def execute_cmd(cmd_list: List[str]):
             logger.success(t("log.server.cmd_success"))
             return 0, result.stdout
         else:
-            logger.warning(t("log.server.cmd_fail", code=result.returncode))
+            logger.warning(t("log.server.cmd_code_fail", code=result.returncode))
             logger.warning(t("log.server.cmd_stderr", stderr=result.stderr))
 
             return result.returncode, result.stderr

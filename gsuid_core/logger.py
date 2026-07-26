@@ -2,6 +2,7 @@ import re
 import sys
 import json
 import time
+import zlib
 import asyncio
 import logging
 import datetime
@@ -17,11 +18,11 @@ import msgspec
 import aiofiles
 import structlog
 from colorama import Fore, Style, init
-from structlog.dev import ConsoleRenderer
+from structlog.dev import Column, ConsoleRenderer, KeyValueColumnFormatter
 from structlog.types import EventDict, Processor, WrappedLogger
 from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
-from gsuid_core.i18n import t
+from gsuid_core.i18n import LOG_MODULE_EMOJI, t, starts_with_emoji
 from gsuid_core.config import core_config
 from gsuid_core.models import Event, Message, TraceContext
 from gsuid_core.data_store import get_res_path, error_mark_path
@@ -179,7 +180,7 @@ class TraceCollector:
             _slg = structlog.get_logger("GsCore")
             _slg.error(
                 t(
-                    "❌ [TraceCollector] JSONL running 标记写入失败 trace_id={trace_id}: {e}",
+                    "log.logger.trace_jsonl_running_write",
                     trace_id=ctx.trace_id,
                     e=e,
                 )
@@ -255,9 +256,7 @@ class TraceCollector:
         _slg = structlog.get_logger("GsCore")
         _slg.warning(
             t(
-                "[TraceCollector] 执行中追踪数达上限 {max_traces}，"
-                "已强制回收 {sacrificed} 条活跃追踪以保证内存上界；"
-                "通常意味着大量命令异常退出未正常结束追踪，请排查；如属正常高并发可调大 max_traces",
+                "log.logger.trace_max_traces_sacrificed",
                 max_traces=self._max_traces,
                 sacrificed=sacrificed,
             )
@@ -333,7 +332,7 @@ class TraceCollector:
             )
             _slg.info(trace_end_event, trace_id=trace_id)
         except Exception as e:
-            _slg.error(t("❌ [TraceCollector] JSONL 归档失败 trace_id={trace_id}: {e}", trace_id=trace_id, e=e))
+            _slg.error(t("log.logger.trace_jsonl_archive_id", trace_id=trace_id, e=e))
         finally:
             # 无论归档成败都从内存移除，避免追踪滞留导致泄漏
             self._drop(trace_id)
@@ -629,29 +628,269 @@ def format_event_for_console(logger: WrappedLogger, method_name: str, event_dict
 
 
 def colorize_brackets_processor(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
-    """
-    一个后处理器，用于给 event 字符串中所有被 [] 包围的部分上色。
-    """
+    """给 event 正文里原有的 [Tag] 上柔和彩色（品红系），不碰 level/插件列。"""
     event = event_dict.get("event", "")
-
-    # 如果事件内容是字符串类型
     if isinstance(event, str):
-        # 定义我们想要的"橙色" (亮黄色在大多数终端中看起来像橙色)
-        orange_color = Style.BRIGHT + Fore.LIGHTMAGENTA_EX
-
-        # 使用正则表达式查找所有 [anything] 模式，并用颜色代码包裹它们
-        # re.sub() 可以接受一个函数作为替换参数，这里用 lambda 更简洁
-        # (\[.*?\]) -> 匹配一个完整的 [...] 块，并捕获它
-        colored_event = re.sub(
+        tag_style = Style.BRIGHT + Fore.LIGHTMAGENTA_EX
+        event_dict["event"] = re.sub(
             r"(\[.*?\])",
-            lambda match: f"{orange_color}{match.group(1)}{Style.RESET_ALL}",
+            lambda match: f"{tag_style}{match.group(1)}{Style.RESET_ALL}",
             event,
         )
-
-        # 将修改后的、带颜色的字符串放回 event_dict
-        event_dict["event"] = colored_event
-
     return event_dict
+
+
+# =============================================================================
+# 控制台标签：等级 [info] / 来源 {SayuCore|Plugin} / hl_plugin 正文标记
+# =============================================================================
+
+_CORE_ORIGIN_LABEL = "SayuCore"
+_CORE_ORIGIN_ALIASES: frozenset = frozenset({"core", "sayucore", "SayuCore", "gscore", "GsCore"})
+_LEVEL_PAD_NAMES: tuple[str, ...] = (
+    "trace",
+    "debug",
+    "info",
+    "success",
+    "warning",
+    "error",
+    "critical",
+)
+_LEVEL_PAD_WIDTH: int = max(len(n) for n in _LEVEL_PAD_NAMES)
+_PLUGIN_PAD_WIDTH: int = 18
+
+_LEVEL_FORE: Dict[str, str] = {
+    "trace": Fore.MAGENTA,
+    "debug": Fore.CYAN,
+    "info": Fore.BLUE,
+    "success": Style.BRIGHT + Fore.GREEN,
+    "warning": Fore.YELLOW,
+    "warn": Fore.YELLOW,
+    "error": Fore.RED,
+    "critical": Style.BRIGHT + Fore.RED,
+    "exception": Fore.RED,
+    "fatal": Style.BRIGHT + Fore.RED,
+    "notset": Style.DIM + Fore.WHITE,
+}
+
+_PLUGIN_FORE_PALETTE: tuple[str, ...] = (
+    Fore.CYAN,
+    Fore.BLUE,
+    Fore.GREEN,
+    Fore.MAGENTA,
+    Fore.YELLOW,
+    Fore.LIGHTCYAN_EX,
+    Fore.LIGHTBLUE_EX,
+    Fore.LIGHTGREEN_EX,
+    Fore.LIGHTMAGENTA_EX,
+    Fore.LIGHTYELLOW_EX,
+    Style.BRIGHT + Fore.CYAN,
+    Style.BRIGHT + Fore.GREEN,
+)
+_CORE_FORE = Style.DIM + Fore.WHITE
+_PLUGIN_MARK_RE = re.compile(r"⟦([^⟧]+)⟧")
+_PLUGIN_FROM_PATH_CACHE: Dict[str, str] = {}
+_PLUGIN_DIR_MARKERS: frozenset = frozenset({"plugins", "buildin_plugins"})
+
+
+def _normalize_origin_label(name: str) -> str:
+    raw = (name or "").strip()
+    if not raw:
+        return _CORE_ORIGIN_LABEL
+    if raw in _CORE_ORIGIN_ALIASES or raw.lower() in {"core", "sayucore", "gscore"}:
+        return _CORE_ORIGIN_LABEL
+    return raw
+
+
+def _pad_label(text: str, width: Optional[int]) -> str:
+    if width is None or width <= 0:
+        return text
+    if len(text) > width:
+        return text[: max(1, width - 1)] + "…"
+    return f"{text:<{width}}"
+
+
+def _plugin_fore(name: str) -> str:
+    label = _normalize_origin_label(name)
+    if label == _CORE_ORIGIN_LABEL:
+        return _CORE_FORE
+    idx = zlib.crc32(label.encode("utf-8")) % len(_PLUGIN_FORE_PALETTE)
+    return _PLUGIN_FORE_PALETTE[idx]
+
+
+def _render_console_tag(
+    text: str,
+    *,
+    kind: str,
+    pad_width: Optional[int] = None,
+    color: Optional[str] = None,
+) -> str:
+    label = _normalize_origin_label(text) if kind == "plugin" else ((text or "").strip() or "info")
+    body = _pad_label(label, pad_width)
+    if color is None:
+        if kind == "level":
+            color = _LEVEL_FORE.get(label, Fore.WHITE)
+        else:
+            color = _plugin_fore(label)
+    if kind == "level":
+        return f"[{color}{body}{Style.RESET_ALL}]"
+    return f"{{{color}{body}{Style.RESET_ALL}}}"
+
+
+def format_plugin_name_badge(name: str, *, pad_width: Optional[int] = None) -> str:
+    return _render_console_tag(_normalize_origin_label(name), kind="plugin", pad_width=pad_width)
+
+
+def format_origin_badge(name: str) -> str:
+    return format_plugin_name_badge(_normalize_origin_label(name), pad_width=_PLUGIN_PAD_WIDTH)
+
+
+def hl_plugin(name: str) -> str:
+    """插件名高亮标记，供日志参数使用。"""
+    return f"⟦{name}⟧"
+
+
+def strip_plugin_marks(text: str) -> str:
+    return _PLUGIN_MARK_RE.sub(r"\1", text)
+
+
+def highlight_plugin_processor(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    event = event_dict.get("event", "")
+    if isinstance(event, str) and "⟦" in event:
+        event_dict["event"] = _PLUGIN_MARK_RE.sub(
+            lambda m: format_plugin_name_badge(m.group(1)),
+            event,
+        )
+    return event_dict
+
+
+def resolve_plugin_from_pathname(pathname: str) -> str:
+    """路径 → 插件名：plugins/<name> 或 buildin_plugins/<name>；否则 SayuCore。"""
+    cached = _PLUGIN_FROM_PATH_CACHE.get(pathname)
+    if cached is not None:
+        return cached
+    plugin = _CORE_ORIGIN_LABEL
+    try:
+        parts = Path(pathname).parts
+    except Exception:
+        _PLUGIN_FROM_PATH_CACHE[pathname] = _CORE_ORIGIN_LABEL
+        return _CORE_ORIGIN_LABEL
+    for i, part in enumerate(parts):
+        if part not in _PLUGIN_DIR_MARKERS or i + 1 >= len(parts):
+            continue
+        name = parts[i + 1]
+        if name == "__pycache__":
+            break
+        if name.endswith(".py"):
+            name = name[:-3]
+        if name:
+            plugin = name
+        break
+    _PLUGIN_FROM_PATH_CACHE[pathname] = plugin
+    return plugin
+
+
+def add_plugin_origin_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
+    pathname = event_dict.get("pathname")
+    if not isinstance(pathname, str) or not pathname:
+        event_dict.pop("pathname", None)
+        event_dict["plugin"] = _CORE_ORIGIN_LABEL
+        return event_dict
+    event_dict["plugin"] = resolve_plugin_from_pathname(pathname)
+    if not IS_DEBUG_LOG:
+        event_dict.pop("pathname", None)
+    return event_dict
+
+
+def emoji_for_origin(plugin_name: str) -> str:
+    """按来源插件名取 emoji；框架本体用 core，未知插件默认 🔌。"""
+    label = _normalize_origin_label(plugin_name)
+    if label == _CORE_ORIGIN_LABEL:
+        return LOG_MODULE_EMOJI.get("core") or "🌱"
+    key = label.lower().replace("-", "_").replace(" ", "_")
+    return LOG_MODULE_EMOJI.get(key) or LOG_MODULE_EMOJI.get("plugin") or "🔌"
+
+
+def ensure_event_emoji_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
+    """所有 logger 正文统一补前导 emoji（不依赖 t()）。
+
+    - 已有前导 emoji → 不动（含 ``t("log.*")`` 已装配的）
+    - 优先用 ``plugin`` 来源列（plugins / buildin_plugins 解析结果）
+    - 无来源时回落 misc
+    挂在 shared 链，控制台 / 文件 / SSE 一致。
+    """
+    event = event_dict.get("event")
+    if not isinstance(event, str) or not event.strip():
+        return event_dict
+    if starts_with_emoji(event):
+        return event_dict
+    plugin = event_dict.get("plugin")
+    if isinstance(plugin, str) and plugin.strip():
+        emoji = emoji_for_origin(plugin)
+    else:
+        emoji = LOG_MODULE_EMOJI.get("misc") or "ℹ️"
+    event_dict["event"] = f"{emoji} {event}"
+    return event_dict
+
+
+def _format_level_badge(_key: str, value: object) -> str:
+    return _render_console_tag(str(value), kind="level", pad_width=_LEVEL_PAD_WIDTH)
+
+
+def _format_plugin_badge(_key: str, value: object) -> str:
+    return format_origin_badge("" if value is None else str(value))
+
+
+def _console_value_repr(val: object) -> str:
+    return val if isinstance(val, str) else repr(val)
+
+
+def _build_console_renderer() -> ConsoleRenderer:
+    reset = Style.RESET_ALL
+    logger_name_formatter = KeyValueColumnFormatter(
+        key_style=None,
+        value_style=Style.BRIGHT + Fore.BLUE,
+        reset_style=reset,
+        value_repr=str,
+        prefix="[",
+        postfix="]",
+    )
+    return ConsoleRenderer(
+        exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False),
+        columns=[
+            Column(
+                "timestamp",
+                KeyValueColumnFormatter(
+                    key_style=None,
+                    value_style=Style.DIM,
+                    reset_style=reset,
+                    value_repr=str,
+                ),
+            ),
+            Column("level", _format_level_badge),
+            Column("plugin", _format_plugin_badge),
+            Column(
+                "event",
+                KeyValueColumnFormatter(
+                    key_style=None,
+                    value_style=Style.BRIGHT,
+                    reset_style=reset,
+                    value_repr=str,
+                    width=30,
+                ),
+            ),
+            Column("logger", logger_name_formatter),
+            Column("logger_name", logger_name_formatter),
+            Column(
+                "",
+                KeyValueColumnFormatter(
+                    key_style=Fore.CYAN,
+                    value_style=Fore.MAGENTA,
+                    reset_style=reset,
+                    value_repr=_console_value_repr,
+                ),
+            ),
+        ],
+    )
 
 
 def log_to_history(
@@ -664,9 +903,9 @@ def log_to_history(
     event / level / timestamp 三键由 shared_processors 的 add_log_level、TimeStamper 保证存在。
     """
     extra = ", ".join(f"{k}={event_dict[k]}" for k in event_dict if k not in ("event", "timestamp", "level"))
-    gevent = str(event_dict["event"])
+    gevent = strip_plugin_marks(str(event_dict["event"]))
     if extra:
-        gevent += f"\n{extra}"
+        gevent += f"\n{strip_plugin_marks(extra)}"
 
     _history_append(
         LogRecord(
@@ -753,63 +992,55 @@ def setup_logging():
     LEVEL: str = log_config.get("level", "INFO").upper()
     logger_list: List[str] = log_config.get("output", ["stdout", "stderr", "file"])
 
-    final_level_styles = ConsoleRenderer.get_default_level_styles()
-    level_styles = {
-        # '级别名称的小写形式': colorama样式
-        "trace": Fore.MAGENTA,  # 洋红色
-        "debug": Fore.CYAN,  # 青色 (覆盖默认)
-        "info": Fore.BLUE,  # 蓝色 (覆盖默认)
-        "success": Style.BRIGHT + Fore.GREEN,  # 亮绿色
-        "warning": Fore.YELLOW,  # 黄色 (保持默认)
-        "error": Fore.RED,  # 红色 (保持默认)
-        "critical": Style.BRIGHT + Fore.RED,  # 亮红色 (保持默认)
-    }
-    final_level_styles.update(level_styles)
-
     # 定义所有处理器链共享的基础部分
+    # pathname→plugin 与 emoji 装配放在 shared：不依赖 t()，插件裸日志也会加前缀；
+    # 控制台 / 文件 JSON / SSE 三端一致。
+    _callsite_params = {CallsiteParameter.PATHNAME}
+    if IS_DEBUG_LOG:
+        _callsite_params = {
+            CallsiteParameter.PATHNAME,
+            CallsiteParameter.LINENO,
+            CallsiteParameter.FUNC_NAME,
+        }
     shared_processors: List[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         auto_exc_info_processor,
         structlog.processors.StackInfoRenderer(),
-        # structlog.processors.format_exc_info,
         structlog.processors.TimeStamper(fmt="%m-%d %H:%M:%S", utc=False),
         reduce_event_dict,
+        CallsiteParameterAdder(
+            _callsite_params,
+            additional_ignores=["gsuid_core.logger"],
+        ),
+        add_plugin_origin_processor,
+        ensure_event_emoji_processor,
     ]
 
-    if IS_DEBUG_LOG:
-        shared_processors.append(
-            CallsiteParameterAdder(
-                {
-                    CallsiteParameter.PATHNAME,  # 文件路径
-                    CallsiteParameter.LINENO,  # 行号
-                    CallsiteParameter.FUNC_NAME,  # 函数名
-                }
-            )
-        )
+    def _strip_plugin_marks_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
+        event = event_dict.get("event")
+        if isinstance(event, str) and "⟦" in event:
+            event_dict["event"] = strip_plugin_marks(event)
+        return event_dict
 
     # --- 文件处理链 ---
     file_processors: Sequence[Processor] = shared_processors + [
         structlog.dev.set_exc_info,
         structlog.processors.format_exc_info,
         save_error_report_processor,
+        _strip_plugin_marks_processor,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
         structlog.processors.JSONRenderer(ensure_ascii=False),
     ]
 
-    # --- 控制台处理链 ---
+    # --- 控制台处理链（来源列 / 着色；plugin 已在 shared 写入）---
     console_processors: Sequence[Processor] = shared_processors + [
         format_trace_id_processor,
         colorize_brackets_processor,
+        highlight_plugin_processor,
         format_event_for_console,
         structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-        structlog.dev.ConsoleRenderer(
-            colors=True,
-            level_styles=final_level_styles,
-            exception_formatter=structlog.dev.RichTracebackFormatter(
-                show_locals=False,
-            ),
-        ),
+        _build_console_renderer(),
     ]
 
     if IS_DEBUG_LOG:
@@ -991,9 +1222,9 @@ async def clean_trace_collector():
             if collector is not None:
                 dropped = collector.reclaim_stale()
                 if dropped:
-                    logger.debug(t("🧹 [TraceCollector] 定时回收僵死追踪 {dropped} 条", dropped=dropped))
+                    logger.debug(t("log.logger.trace_scheduled_reclamation_removed_delete", dropped=dropped))
         except Exception as e:
-            logger.warning(t("[TraceCollector] 定时回收异常: {e}", e=e))
+            logger.warning(t("log.logger.tracecollector_exception", e=e))
 
 
 def handle_exceptions(async_function):

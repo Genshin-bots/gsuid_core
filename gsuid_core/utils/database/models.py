@@ -95,7 +95,7 @@ class Subscribe(BaseModel, table=True):
                     if _bot.bot_id == self.bot_id:
                         logger.info(
                             t(
-                                "[订阅] WS_BOT_ID {p0} 已失效，自动切换到 {ws_bot_id}",
+                                "log.database.subscription_ws_bot_id_invalid",
                                 p0=self.WS_BOT_ID,
                                 ws_bot_id=ws_bot_id,
                             )
@@ -112,7 +112,7 @@ class Subscribe(BaseModel, table=True):
                         found = True
                         break
                 if not found:
-                    logger.error(t("[订阅] 机器人{p0}不存在, 该消息无法发送!", p0=self.WS_BOT_ID))
+                    logger.error(t("log.database.subscription_bot_exist_cannot_send", p0=self.WS_BOT_ID))
                     return -1
         else:
             for bot_id in gss.active_bot:
@@ -219,7 +219,7 @@ class CoreUser(BaseBotIDModel, table=True):
         results = await session.execute(statement)
         all_rows: Sequence[Row] = results.all()
 
-        logger.info(t("[clean_repeat_user] 共查询到 {p0} 条记录", p0=len(all_rows)))
+        logger.info(t("log.database.clean_repeat_user_found_records_total_cleanup", p0=len(all_rows)))
 
         seen = set()
         to_delete_ids = []
@@ -240,7 +240,7 @@ class CoreUser(BaseBotIDModel, table=True):
             for i in range(0, len(to_delete_ids), batch_size):
                 batch = to_delete_ids[i : i + batch_size]
                 await session.execute(delete(cls).where(col(cls.id).in_(batch)))
-                logger.info(t("[clean_repeat_user] 已删除 {p0} 条重复记录", p0=len(batch)))
+                logger.info(t("log.database.clean_repeat_user_deleted_duplicate", p0=len(batch)))
 
             await session.commit()
 
@@ -387,7 +387,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         results = await session.execute(statement)
         all_rows = results.all()
 
-        logger.info(t("[clean_repeat_group] 共查询到 {p0} 条记录", p0=len(all_rows)))
+        logger.info(t("log.database.clean_repeat_group_found_records_total_cleanup", p0=len(all_rows)))
 
         seen = set()
         to_delete_ids = []
@@ -407,7 +407,7 @@ class CoreGroup(BaseBotIDModel, table=True):
             for i in range(0, len(to_delete_ids), batch_size):
                 batch = to_delete_ids[i : i + batch_size]
                 await session.execute(delete(cls).where(col(cls.id).in_(batch)))
-                logger.info(t("[clean_repeat_group] 已删除 {p0} 条重复记录", p0=len(batch)))
+                logger.info(t("log.database.clean_repeat_group_deleted_duplicate", p0=len(batch)))
 
             await session.commit()
 

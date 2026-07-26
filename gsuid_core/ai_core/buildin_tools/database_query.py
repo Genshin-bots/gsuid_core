@@ -78,13 +78,13 @@ async def query_user_memory(
         parts.append(mem_text.strip() if (mem_text and mem_text.strip()) else "（暂无相关记忆/事实）")
         logger.info(
             t(
-                "🧠 [BuildinTools] query_user_memory 检索用户 {target_id}: query={query}",
+                "log.ai.buildintools_query_user_memory",
                 target_id=target_id,
                 query=repr(query),
             )
         )
     except Exception as e:
-        logger.warning(t("🧠 [BuildinTools] 记忆检索失败: {e}", e=e))
+        logger.warning(t("log.ai.buildintools_memory_retrieval", e=e))
         parts.append("（记忆检索暂不可用）")
 
     # 2) 好感度（吸收原 query_user_favorability）
@@ -100,6 +100,6 @@ async def query_user_memory(
         else:
             parts.append(f"【好感度】用户 {target_id}：陌生（0）")
     except Exception as e:
-        logger.debug(t("🧠 [BuildinTools] 好感度查询失败: {e}", e=e))
+        logger.debug(t("log.ai.buildintools_favorability_query", e=e))
 
     return "\n\n".join(parts)

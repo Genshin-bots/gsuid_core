@@ -1,0 +1,19 @@
+{
+  "log.handler.ai_init_incomplete": "[GsCore][AI] AI Core の初期化が完了していないか、失敗したステップがあるため、今回の AI セッションをスキップします",
+  "log.handler.ai_initializing": "[GsCore][AI] AI Core が初期化/移行中のため、今回のメッセージを AI セッションキューに追加しません",
+  "log.handler.at_bot_shield": "メッセージ内に他のボットへの @ が含まれているようです。このメッセージへの応答を停止します",
+  "log.handler.buffer_coregroup_fail": "[GsCore] バッファ CoreGroup 書き込み失敗: {error}",
+  "log.handler.buffer_coreuser_fail": "[GsCore] バッファ CoreUser 書き込み失敗: {error}",
+  "log.handler.buffer_flush_loop_fail": "[GsCore] CoreUser/Group バッファフラッシュループで例外が発生しました: {error}",
+  "log.handler.buffer_flushed": "[GsCore] CoreUser/Group バッファのフラッシュが完了しました",
+  "log.handler.buffer_flushing": "[GsCore] CoreUser/Group バッファをフラッシュしています...",
+  "log.handler.buffer_stop": "[GsCore] 終了前に CoreUser/Group バッファフラッシュループを停止しています...",
+  "log.handler.check_command_fail": "[GsCore] trigger.check_command で例外: type={type} keyword={keyword}",
+  "log.handler.cmd_on_message": "[コマンド発火] [on_message]",
+  "log.handler.cmd_triggered": "[コマンド発火]",
+  "log.handler.event_received": "[イベント受信]",
+  "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command で例外: keyword={keyword}",
+  "log.handler.meta_received": "[Meta イベント受信]",
+  "log.handler.meta_triggered": "[Meta イベント発火]",
+  "log.handler.same_msg_cd": "[GsCore][同一メッセージCD] {user_id} のメッセージを無視します！"
+}

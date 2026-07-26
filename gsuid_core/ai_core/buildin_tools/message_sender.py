@@ -78,9 +78,7 @@ async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
         p = Path(art.payload_path)
         if p.exists():
             return p.read_bytes()
-        logger.debug(
-            t("🧠 [BuildinTools] Kanban artifact {res_id} 落盘路径不存在: {p0}", res_id=res_id, p0=art.payload_path)
-        )
+        logger.debug(t("log.ai.buildintools_kanban_artifact_res", res_id=res_id, p0=art.payload_path))
         return None
     if art.payload_inline:
         # inline payload 通常是 ≤4KB 文本（代码 / JSON 摘要），不是图片字节
@@ -133,7 +131,7 @@ async def send_message_by_ai(
     bot: Optional[Bot] = tool_ctx.bot
 
     if bot is None:
-        logger.warning(t("🧠 [BuildinTools] send_message_by_ai: Bot对象为空，无法发送消息"))
+        logger.warning(t("log.ai.buildintools_bot_object_empty"))
         return "发送失败：Bot对象不可用"
 
     if not text and not image_id and not video_id and not audio_id:
@@ -174,7 +172,7 @@ async def send_message_by_ai(
                     # 兜底：仍可能是用户上传时被框架登记成 RM 但前缀写成 res_ 的情况
                     logger.debug(
                         t(
-                            "🧠 [BuildinTools] Kanban artifact 解析失败，回退尝试 RM.get('{image_id}')",
+                            "log.ai.buildintools_kanban_artifact_parsing_fail",
                             image_id=image_id,
                         )
                     )
@@ -182,9 +180,7 @@ async def send_message_by_ai(
                         img_data = await RM.get(image_id)
                         media_parts.append(MessageSegment.image(img_data))
                     except ValueError as e:
-                        logger.warning(
-                            t("🧠 [BuildinTools] RM.get({image_id}) 抛出 ValueError: {e}", image_id=image_id, e=e)
-                        )
+                        logger.warning(t("log.ai.buildintools_rm_get_image_id", image_id=image_id, e=e))
                         if "找不到资源" in str(e):
                             return (
                                 f"❌ 找不到资源ID: {image_id}（既不在 Kanban artifact 表，"
@@ -197,8 +193,7 @@ async def send_message_by_ai(
                     new_rm_id = RM.register(kanban_payload)
                     logger.info(
                         t(
-                            "🧠 [BuildinTools] send_message_by_ai: Kanban artifact"
-                            " {image_id} → 自动注册成 RM 资源 {new_rm_id}",
+                            "log.ai.buildintools_kanban_artifact_image",
                             image_id=image_id,
                             new_rm_id=new_rm_id,
                         )
@@ -212,14 +207,12 @@ async def send_message_by_ai(
                     )
             else:
                 try:
-                    logger.debug(t("🧠 [BuildinTools] 调用 RM.get('{image_id}')", image_id=image_id))
+                    logger.debug(t("log.ai.buildintools_calling_rm_get_2", image_id=image_id))
                     img_data = await RM.get(image_id)
-                    logger.debug(t("🧠 [BuildinTools] RM.get 成功, img_data type={p0}", p0=type(img_data)))
+                    logger.debug(t("log.ai.buildintools_rm_get_succeeded_ok_2", p0=type(img_data)))
                     media_parts.append(MessageSegment.image(img_data))
                 except ValueError as e:
-                    logger.warning(
-                        t("🧠 [BuildinTools] RM.get({image_id}) 抛出 ValueError: {e}", image_id=image_id, e=e)
-                    )
+                    logger.warning(t("log.ai.buildintools_rm_get_image_id", image_id=image_id, e=e))
                     # 区分"资源不存在"和"资源转换失败"
                     if "找不到资源" in str(e):
                         return f"❌ 找不到资源ID: {image_id}，可能已过期或ID不正确。"
@@ -228,12 +221,12 @@ async def send_message_by_ai(
 
         if video_id:
             try:
-                logger.debug(t("🧠 [BuildinTools] 调用 RM.get('{video_id}')", video_id=video_id))
+                logger.debug(t("log.ai.buildintools_calling_rm_get_3", video_id=video_id))
                 video_data = await RM.get(video_id)
-                logger.debug(t("🧠 [BuildinTools] RM.get 成功, video_data type={p0}", p0=type(video_data)))
+                logger.debug(t("log.ai.buildintools_rm_get_succeeded_ok_3", p0=type(video_data)))
                 media_parts.append(MessageSegment.video(video_data))
             except ValueError as e:
-                logger.warning(t("🧠 [BuildinTools] RM.get({video_id}) 抛出 ValueError: {e}", video_id=video_id, e=e))
+                logger.warning(t("log.ai.buildintools_rm_get_video_id", video_id=video_id, e=e))
                 if "找不到资源" in str(e):
                     return f"❌ 找不到资源ID: {video_id}，可能已过期或ID不正确。"
                 else:
@@ -241,12 +234,12 @@ async def send_message_by_ai(
 
         if audio_id:
             try:
-                logger.debug(t("🧠 [BuildinTools] 调用 RM.get('{audio_id}')", audio_id=audio_id))
+                logger.debug(t("log.ai.buildintools_calling_rm_get", audio_id=audio_id))
                 audio_data = await RM.get(audio_id)
-                logger.debug(t("🧠 [BuildinTools] RM.get 成功, audio_data type={p0}", p0=type(audio_data)))
+                logger.debug(t("log.ai.buildintools_rm_get_succeeded_ok", p0=type(audio_data)))
                 media_parts.append(MessageSegment.record(audio_data))
             except ValueError as e:
-                logger.warning(t("🧠 [BuildinTools] RM.get({audio_id}) 抛出 ValueError: {e}", audio_id=audio_id, e=e))
+                logger.warning(t("log.ai.buildintools_rm_get_audio_id", audio_id=audio_id, e=e))
                 if "找不到资源" in str(e):
                     return f"❌ 找不到资源ID: {audio_id}，可能已过期或ID不正确。"
                 else:
@@ -261,7 +254,7 @@ async def send_message_by_ai(
             # 模型重复调用不再把同一段话发两遍，媒体不受影响（评审修复 F14）
             _sent_registry = tool_ctx.extra["run_sent_texts"] if "run_sent_texts" in tool_ctx.extra else None
             if isinstance(_sent_registry, set) and text.strip() in _sent_registry:
-                logger.info(t("🧠 [BuildinTools] 相同文本本轮已发送过，跳过重复发送（run 级去重）"))
+                logger.info(t("log.ai.buildintools_skipping_duplicate_run_skip"))
                 text = ""
             else:
                 await send_chat_result(bot, text, ev=ev, ooc_check=False)
@@ -283,7 +276,7 @@ async def send_message_by_ai(
             content_desc.append(f"视频({video_id})")
         if audio_id:
             content_desc.append(f"音频({audio_id})")
-        logger.info(t("🧠 [BuildinTools] 发送 {p0} 给用户 {target_id}", p0="+".join(content_desc), target_id=target_id))
+        logger.info(t("log.ai.buildintools_user_target_id", p0="+".join(content_desc), target_id=target_id))
 
         # §8.1：工具本质上仍然是"框架在 LLM run 外注入到用户会话"的主动输出
         # ——若拿得到调用方所在的主 session，把发出去的文本同步追加进该
@@ -302,5 +295,5 @@ async def send_message_by_ai(
         return f"消息已发送给用户 {target_id}"
 
     except Exception as e:
-        logger.exception(t("🧠 [BuildinTools] send_message_by_ai 发送消息失败: {e}", e=e))
+        logger.exception(t("log.ai.buildintools_event", e=e))
         return f"发送失败：{str(e)}"

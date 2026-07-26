@@ -1,0 +1,6 @@
+{
+  "log.heartbeat.reactive_decision": "[ReactiveGate] should_speak={should} reason={reason!r}",
+  "log.heartbeat.reactive_decision_missing": "[ReactiveGate] 決定に有効な should_speak がありません、デフォルトで沈黙",
+  "log.heartbeat.reactive_gate_error": "[ReactiveGate] 反応型ゲートでエラー、メインエージェントにフォールバック: {e}",
+  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}"
+}

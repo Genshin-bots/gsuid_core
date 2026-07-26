@@ -84,18 +84,18 @@ async def _rerank_tool_candidates(
     try:
         scores = await asyncio.to_thread(reranker.rerank, query, documents)
     except Exception as e:
-        logger.warning(i18n_t("🧠 [Tools] Reranker 精排失败，退回向量分数排序: {e}", e=e))
+        logger.warning(i18n_t("log.rag.tools_reranker_rerank_falling_fail", e=e))
         return candidates[:top_k]
 
     if len(scores) != len(candidates):
-        logger.warning(i18n_t("🧠 [Tools] Reranker 返回分数数量不匹配，退回向量分数排序"))
+        logger.warning(i18n_t("log.rag.tools_reranker_score_mismatch"))
         return candidates[:top_k]
 
     ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
     reranked = [c for _, c in ranked[:top_k]]
     logger.info(
         i18n_t(
-            "🧠 [Tools] Reranker 精排: {p0} 候选 → 取前 {p1} ({p2})",
+            "log.rag.tools_reranker_rerank_candidates",
             p0=len(candidates),
             p1=len(reranked),
             p2=", ".join((n for n, _, _ in reranked)),
@@ -118,7 +118,7 @@ async def init_tools_collection():
         if await collection_vector_mismatched(TOOLS_COLLECTION_NAME, dimension):
             logger.warning(
                 i18n_t(
-                    "🧠 [Tools] 集合 {TOOLS_COLLECTION_NAME} 维度变化，强制重建后由 sync_tools 自动重建",
+                    "log.rag.tools_collection_name_dimension",
                     TOOLS_COLLECTION_NAME=TOOLS_COLLECTION_NAME,
                 )
             )
@@ -128,7 +128,7 @@ async def init_tools_collection():
 
     logger.info(
         i18n_t(
-            "🧠 [Tools] 初始化新集合: {TOOLS_COLLECTION_NAME}, 维度: {dimension}",
+            "log.rag.tools_initializing_collection_name",
             TOOLS_COLLECTION_NAME=TOOLS_COLLECTION_NAME,
             dimension=dimension,
         )
@@ -149,10 +149,10 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
-        logger.debug(i18n_t("🧠 [Tools] AI功能未启用，跳过工具同步"))
+        logger.debug(i18n_t("log.rag.tools_skip_sync_tool_ai_feature"))
         return
 
-    logger.info(i18n_t("🧠 [Tools] 开始同步工具库..."))
+    logger.info(i18n_t("log.rag.tools_library_sync"))
 
     # 1. 获取向量库中现有工具
     existing_tools: Dict[str, dict] = {}
@@ -201,7 +201,7 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
             pending_items.append((tool_name, payload, desc_and_name))
 
     if pending_items:
-        logger.info(i18n_t("🧠 [Tools] 需要新增/更新 {p0} 个工具，开始批量嵌入...", p0=len(pending_items)))
+        logger.info(i18n_t("log.rag.tools_start_update_tool_need_add", p0=len(pending_items)))
 
     async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
         return list(await embedding_model.aembed(list(texts)))
@@ -216,7 +216,7 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         if vector is None:
             continue
         action_str = "新增" if tool_name not in existing_tools else "更新"
-        logger.info(i18n_t("🧠 [Tools] [{action_str}] 工具: {tool_name}", action_str=action_str, tool_name=tool_name))
+        logger.info(i18n_t("log.rag.tools_action_str_name", action_str=action_str, tool_name=tool_name))
         points_to_upsert.append(
             PointStruct(
                 id=get_point_id(tool_name),
@@ -227,7 +227,7 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
 
     # 3. 执行更新
     if points_to_upsert:
-        logger.info(i18n_t("🧠 [Tools] 写入 {p0} 个工具...", p0=len(points_to_upsert)))
+        logger.info(i18n_t("log.rag.tools_write_tool_writing", p0=len(points_to_upsert)))
         await _upsert_tool_points(points_to_upsert)
 
     # 4. 清理已删除的工具
@@ -240,11 +240,11 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
                 collection_name=TOOLS_COLLECTION_NAME,
                 points_selector=ids_to_delete,
             )
-            logger.info(i18n_t("🧠 [Tools] 清理 {p0} 个已删除的工具", p0=len(ids_to_delete)))
+            logger.info(i18n_t("log.rag.tools_cleaning_deleted", p0=len(ids_to_delete)))
     else:
-        logger.info(i18n_t("🧠 [Tools] 本地工具为空，跳过清理步骤"))
+        logger.info(i18n_t("log.rag.tools_local_empty_skipping"))
 
-    logger.info(i18n_t("🧠 [Tools] 工具同步完成"))
+    logger.info(i18n_t("log.rag.tools_sync_done_tool_complete"))
 
 
 async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None = None) -> None:
@@ -268,7 +268,7 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
         message = str(e)
         if "broadcast input array" not in message and "not aligned" not in message and "dim" not in message:
             raise
-        logger.warning(i18n_t("🧠 [Tools] 写入检测到本地 Qdrant 旧维度残留，强制重建集合后重试: {e}", e=e))
+        logger.warning(i18n_t("log.rag.tools_write_local_qdrant_retry", e=e))
         await force_recreate_collection(
             collection_name=TOOLS_COLLECTION_NAME,
             vectors_config=VectorParams(size=get_strict_dimension(), distance=Distance.COSINE, on_disk=True),
@@ -372,7 +372,7 @@ async def search_tools_with_entity_routing(
         hits = [t for t in deep if _tool_plugin(t.name) in routed]
 
     if not hits:
-        logger.debug(i18n_t("🧠 [Tools] 实体路由命中插件 {routed}，但该插件无工具可召回", routed=routed))
+        logger.debug(i18n_t("log.rag.tools_entity_routing_hit_plugin", routed=routed))
         return wide[:limit]
 
     max_routed = max(1, limit - 1)
@@ -386,7 +386,7 @@ async def search_tools_with_entity_routing(
 
     logger.debug(
         i18n_t(
-            "🧠 [Tools] 实体路由: {route_text!r} → 插件 {routed}，前置 {p0} 个种子",
+            "log.rag.tools_entity_routing_route",
             route_text=route_text,
             routed=routed,
             p0=len(hit_names),
@@ -525,7 +525,7 @@ async def search_tools_by_domain(
 
     logger.info(
         i18n_t(
-            "🧠 [Tools] 两段式 domain 检索: query='{p0}' → {slots_used} 族/单工具, 共 {p1} 个工具",
+            "log.rag.tools_two_stage_domain_retrieval",
             p0=query[:30],
             slots_used=slots_used,
             p1=len(out),
@@ -574,7 +574,7 @@ async def get_scope_context_tags(scope_key: str) -> List[str]:
 
         return await get_context_tags(scope_key)
     except Exception as e:
-        logger.debug(i18n_t("🧠 [Tools] 读取语境标签失败: {e}", e=e))
+        logger.debug(i18n_t("log.rag.tools_read_context_tag", e=e))
         return []
 
 
@@ -616,14 +616,14 @@ async def get_main_agent_tools(query: str = "", exclude_categories: Optional[Lis
         if skipped:
             logger.debug(
                 i18n_t(
-                    "🧠 [Tools] 保底分类 [{cat}] 加载 {loaded} 个工具，过滤掉 {skipped} 个非白名单工具",
+                    "log.rag.tools_fallback_category_cat_2",
                     cat=cat,
                     loaded=loaded,
                     skipped=skipped,
                 )
             )
         else:
-            logger.debug(i18n_t("🧠 [Tools] 保底分类 [{cat}] 加载 {loaded} 个工具", cat=cat, loaded=loaded))
+            logger.debug(i18n_t("log.rag.tools_fallback_category_cat", cat=cat, loaded=loaded))
 
     return result_tools
 
@@ -671,8 +671,7 @@ async def search_tools(
 
     logger.info(
         i18n_t(
-            "🧠 [Tools] 正在查询: {query}, threshold={threshold}, limit={limit},"
-            " recall={recall_limit}, rerank={do_rerank}, debug={debug}",
+            "log.rag.tools_querying_query_threshold",
             query=query,
             threshold=threshold,
             limit=limit,
@@ -683,7 +682,7 @@ async def search_tools(
     )
     vectors = list(await embedding_model.aembed([query]))
     if not vectors:
-        logger.warning(i18n_t("🧠 [Tools] 嵌入模型返回空结果，跳过工具向量检索"))
+        logger.warning(i18n_t("log.rag.tools_embedding_empty_result_skip"))
         return []
     query_vec = vectors[0]
 
@@ -708,7 +707,7 @@ async def search_tools(
         from .collection_migration import is_vector_structure_error
 
         if is_vector_structure_error(str(e)):
-            logger.warning(i18n_t("🧠 [Tools] 工具集合向量维度异常，尝试重建并重新同步: {e}", e=e))
+            logger.warning(i18n_t("log.rag.tools_collection_vector_dimension_fail", e=e))
             try:
                 await client.delete_collection(collection_name=TOOLS_COLLECTION_NAME)
             except Exception:
@@ -718,12 +717,10 @@ async def search_tools(
             try:
                 response = await _query_tools()
             except Exception as retry_e:
-                logger.warning(
-                    i18n_t("🧠 [Tools] 工具集合重建后仍查询失败，跳过向量工具检索: {retry_e}", retry_e=retry_e)
-                )
+                logger.warning(i18n_t("log.rag.tools_collection_fails_query_fail", retry_e=retry_e))
                 return []
         else:
-            logger.warning(i18n_t("🧠 [Tools] 工具向量检索失败，跳过向量工具检索: {e}", e=e))
+            logger.warning(i18n_t("log.rag.tools_vector_retrieval_skipping", e=e))
             return []
 
     tool_names: List[str] = []
@@ -744,7 +741,7 @@ async def search_tools(
                 all_scores_info.append(f"{name}={score:.4f}")
 
     if debug:
-        logger.debug(i18n_t("🧠 [Tools] 向量搜索所有工具分数(debug): {p0}", p0=", ".join(all_scores_info)))
+        logger.debug(i18n_t("log.rag.tools_vector_search_scores_debug", p0=", ".join(all_scores_info)))
 
     # 根据 category/non_category 过滤工具（non_category 优先级高于 category）
     all_tools_cag = get_registered_tools()
@@ -802,8 +799,6 @@ async def search_tools(
             tools.append(tool_obj)
         filtered_info.append(f"{tool_name}({score:.4f})")
 
-    logger.info(
-        i18n_t("🧠 [Tools] 查询结果(category={category}): {p0}", category=category, p0=", ".join(filtered_info))
-    )
+    logger.info(i18n_t("log.rag.tools_query_result_category", category=category, p0=", ".join(filtered_info)))
 
     return tools

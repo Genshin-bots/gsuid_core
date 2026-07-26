@@ -75,7 +75,7 @@ async def list_artifacts(
             rows = (await session.execute(stmt)).scalars().all()
         items = list(rows)
     else:
-        return {"status": 1, "msg": t("log.webconsole.artifact.require_filter"), "data": None}
+        return {"status": 1, "msg": t("msg.webconsole.artifact.require_filter"), "data": None}
 
     if not include_expired:
         now = datetime.now(timezone.utc)
@@ -107,7 +107,7 @@ async def get_artifact_detail(
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
-        return {"status": 1, "msg": t("log.webconsole.artifact.not_found", res_id=res_id), "data": None}
+        return {"status": 1, "msg": t("msg.webconsole.artifact.not_found", res_id=res_id), "data": None}
     payload_preview: Optional[str] = art.payload_inline
     if not payload_preview and art.payload_path:
         try:
@@ -126,10 +126,10 @@ async def download_artifact_raw(
 ):
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None or not art.payload_path:
-        return {"status": 1, "msg": t("log.webconsole.artifact.no_payload_path"), "data": None}
+        return {"status": 1, "msg": t("msg.webconsole.artifact.no_payload_path"), "data": None}
     p = Path(art.payload_path)
     if not p.exists():
-        return {"status": 1, "msg": t("log.webconsole.artifact.file_not_found"), "data": None}
+        return {"status": 1, "msg": t("msg.webconsole.artifact.file_not_found"), "data": None}
     return FileResponse(p, media_type=art.mime or "application/octet-stream")
 
 
@@ -140,7 +140,7 @@ async def delete_artifact(
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
-        return {"status": 1, "msg": t("log.webconsole.artifact.not_found", res_id=res_id), "data": None}
+        return {"status": 1, "msg": t("msg.webconsole.artifact.not_found", res_id=res_id), "data": None}
     # 文件落盘的尝试删除
     if art.payload_path:
         try:
@@ -163,7 +163,7 @@ async def extend_artifact_ttl(
 ) -> Dict[str, Any]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
-        return {"status": 1, "msg": t("log.webconsole.artifact.not_found", res_id=res_id), "data": None}
+        return {"status": 1, "msg": t("msg.webconsole.artifact.not_found", res_id=res_id), "data": None}
     new_expire = datetime.now() + timedelta(days=days)
     await AIAgentArtifact.update_data_by_data(select_data={"id": res_id}, update_data={"expires_at": new_expire})
     return {"status": 0, "msg": "ok", "data": {"res_id": res_id, "expires_at": new_expire.isoformat()}}

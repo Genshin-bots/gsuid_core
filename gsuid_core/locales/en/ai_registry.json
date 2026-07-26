@@ -1,0 +1,9 @@
+{
+  "log.ai_registry.aliases_registered": "[AI][Registry] Registered aliases for {name} (scope={scope}): {alias}",
+  "log.ai_registry.entity_registered_plugin": "[AI][Registry] Entity registered (plugin): {title}",
+  "log.ai_registry.image_registered": "[AI][Registry] Image registered: {tags}",
+  "log.ai_registry.manual_entity": "[AI][Registry] Manual entity added: {title}",
+  "log.ai_registry.manual_entity_deleted": "[AI][Registry] Manual entity deleted: {entity_id}",
+  "log.ai_registry.manual_entity_exists": "[AI][Registry] Manual entity already exists: {entity_id}",
+  "log.ai_registry.manual_entity_updated": "[AI][Registry] Manual entity updated: {entity_id}"
+}

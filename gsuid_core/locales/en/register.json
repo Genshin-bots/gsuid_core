@@ -1,0 +1,10 @@
+{
+  "log.register.ai_registry_skill_directory_fail": "[AI][Registry] Skill directory registration failed: {p0}",
+  "log.register.ai_registry_skill_directory_ok": "[AI][Registry] Skill directory registered (plugin={plugin}, count={p0}): {p1}",
+  "log.register.ai_tools_decorator_check": "[Register] @ai_tools decorator check_func has an issue, please review...",
+  "log.register.missing_docstring_plugin_name": "[Register] [{p0}] missing docstring ({plugin_name}), hard to retrieve",
+  "log.register.name_visible_check_errored": "[Register] Tool [{_name}] visible_when check errored, defaulting to visible: {e}",
+  "log.register.plugin_name_privileged_category": "[Register] {plugin_name} tool [{p0}] privileged category [{reg_category}] → common",
+  "log.register.reg_category": "[Register] +{p0} ({reg_category})",
+  "log.register.timeout_sec_aborted": "[Register] Tool [{p0}] execution timed out (>{timeout_sec}s), aborted"
+}

@@ -1,0 +1,6 @@
+{
+  "log.segment.gscore_matching_md_template_send": "[GsCore] 一致する MD テンプレートがありません！通常メッセージとして送信します...",
+  "log.segment.gscore_md_template_configured_send": "[GsCore] MD テンプレートが設定されていません！通常メッセージとして送信します...",
+  "log.segment.gscore_send_md_template_sending": "[GsCore] MD テンプレート送信でテンプレート {p0} を使用します",
+  "log.segment.to_markdown_url_messagesegment_image": "[to_markdown] 你传入了URL图片但并未规定图片大小，请在消息列表中额外传入MessageSegment.image_size()!"
+}

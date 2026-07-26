@@ -279,7 +279,7 @@ async def get_daily_command_counts(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.exception(t("log.webconsole.dashboard_daily_command_counts_fail", error=e))
+        logger.exception(t("log.webconsole.fetch_daily_command_counts", error=e))
         # 降级：仍返回连续日期，count=0，避免前端日历空白
         today = datetime.now().date()
         data = []
@@ -448,7 +448,7 @@ async def get_daily_group_triggers(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(t("log.webconsole.dashboard_daily_group_triggers_fail", error=e))
+        logger.warning(t("log.webconsole.fetch_daily_group_triggers", error=e))
         return {
             "status": 0,
             "msg": "ok",
@@ -531,7 +531,7 @@ async def get_daily_personal_triggers(
     except Exception as e:
         from gsuid_core.logger import logger
 
-        logger.warning(t("log.webconsole.dashboard_daily_personal_triggers_fail", error=e))
+        logger.warning(t("log.webconsole.fetch_daily_personal_triggers", error=e))
         return {
             "status": 0,
             "msg": "ok",

@@ -1,0 +1,10 @@
+{
+  "log.message.gid_fail_error": "[推送] 群 {gid} 推送失败!错误信息:{e}",
+  "log.message.master_id_fail": "[推送主人消息] 未配置master_id, 推送失败!",
+  "log.message.push_group_ok": "[推送] 群聊推送完成!",
+  "log.message.push_message_to_owne_task_start": "[推送主人消息] 任务启动...",
+  "log.message.push_private_ok": "[推送] 私聊推送完成!",
+  "log.message.push_task": "[推送] 任务结束!",
+  "log.message.push_task_start": "[推送] 任务启动...",
+  "log.message.qid_fail_error": "[推送] {qid} 私聊推送失败!错误信息:{e}"
+}

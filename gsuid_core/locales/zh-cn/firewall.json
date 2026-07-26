@@ -1,0 +1,5 @@
+{
+  "log.firewall.hit_ooc_red_line": "[OutputFirewall] 命中出戏红线 {p0}: {p1}，要求重写",
+  "log.firewall.non_releasable_category_hit": "[OutputFirewall] 不可放行类别仍命中 {p0}: {p1}，继续拦截",
+  "log.firewall.rewrite_hit": "[OutputFirewall] 重写后仍命中 {p0}: {p1}，本轮放行"
+}

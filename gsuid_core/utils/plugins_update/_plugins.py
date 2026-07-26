@@ -283,7 +283,7 @@ def _try_manual_delete(path: Path):
 def run_install(path: Optional[Path] = None) -> int:
     tools = check_start_tool()
     if tools == "python":
-        logger.warning(t("你使用的是PIP环境, 无需进行 PDM/Poetry install!"))
+        logger.warning(t("log.plugin.pip_pdm_poetry_install"))
         return -200
 
     if path is None:
@@ -361,13 +361,13 @@ async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
 async def refresh_list() -> List[str]:
     refresh_list = []
     async with aiohttp.ClientSession() as session:
-        logger.trace(t("稍等...开始刷新插件列表, 地址: {plugins_lib}", plugins_lib=plugins_lib))
+        logger.trace(t("log.plugin.plugins_lib", plugins_lib=plugins_lib))
         async with session.get(plugins_lib) as resp:
             _plugins_list: Dict[str, Dict[str, Dict[str, str]]] = await resp.json()
             for i in _plugins_list["plugins"]:
                 if i.lower() not in plugins_list:
                     refresh_list.append(i)
-                    logger.debug(t("[刷新插件列表] 列表新增插件 {i}", i=i))
+                    logger.debug(t("log.plugin.event_info", i=i))
                 plugins_list[i.lower()] = _plugins_list["plugins"][i]
     return refresh_list
 
@@ -459,7 +459,7 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
     is_mirror_mode = bool(git_mirror) and not _is_ssh_mode(git_mirror) and not _is_proxy_prefix(git_mirror)
     enable_mirror_fallback = is_mirror_mode and git_path != fallback_git_path
 
-    logger.info(t("稍等...开始安装插件, 地址: {git_path}", git_path=git_path))
+    logger.info(t("log.plugin.git_path_git_path_start", git_path=git_path))
     path = PLUGINS_PATH / plugin_name
     if path.exists():
         return "❌ 该插件已经安装过了!"
@@ -472,8 +472,7 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         if _is_mirror_not_synced_error(message):
             logger.warning(
                 t(
-                    "[安装插件] 镜像源 {git_mirror} 暂未同步 {plugin_name}"
-                    "（git: {p0}），自动回退到 GitHub 源: {fallback_git_path}",
+                    "log.plugin.git_mirror_plugin_name",
                     git_mirror=git_mirror,
                     plugin_name=plugin_name,
                     p0=message[:120],
@@ -488,23 +487,19 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
                 try:
                     ok, set_msg = await git_set_remote_url(path, fallback_git_path)
                     if ok:
-                        logger.info(
-                            t("[安装插件] 已将 {plugin_name} 的 remote URL 同步为 GitHub 源", plugin_name=plugin_name)
-                        )
+                        logger.info(t("log.plugin.plugin_name_remote_url_github", plugin_name=plugin_name))
                     else:
                         logger.warning(
                             t(
-                                "[安装插件] 同步 {plugin_name} remote URL 失败: {set_msg}",
+                                "log.plugin.plugin_name_remote_url_set",
                                 plugin_name=plugin_name,
                                 set_msg=set_msg,
                             )
                         )
                 except Exception as e:
-                    logger.warning(
-                        t("[安装插件] 同步 {plugin_name} remote URL 异常: {e}", plugin_name=plugin_name, e=e)
-                    )
+                    logger.warning(t("log.plugin.plugin_name_remote_url", plugin_name=plugin_name, e=e))
         else:
-            logger.info(t("[安装插件] 主源克隆失败但非「镜像未同步」类错误，不触发 fallback: {p0}", p0=message[:120]))
+            logger.info(t("log.plugin.fail_error_sync_fallback", p0=message[:120]))
 
     if not success:
         if used_fallback:
@@ -512,9 +507,9 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         return f"❌ 插件{plugin_name}安装失败: {message}"
 
     if used_fallback:
-        logger.info(t("插件{plugin_name}安装成功!（已自动回退到 GitHub 源）", plugin_name=plugin_name))
+        logger.info(t("log.plugin.plugin_name_github", plugin_name=plugin_name))
     else:
-        logger.info(t("插件{plugin_name}安装成功!", plugin_name=plugin_name))
+        logger.info(t("log.plugin.plugin_name_2", plugin_name=plugin_name))
     # 显式安装即视为「需要它」，直接 reload_plugin 真正加载（与网页端安装行为一致）。
     # reload_plugin 对从未加载过的插件等价于「首次加载」：清理步骤皆为空操作，
     # 第四步 import 加载、第五步跑其 @on_core_start，并经 gss.load_plugin 完成依赖检查。
@@ -583,7 +578,7 @@ async def install_plugin_from_url(url: str, branch: Optional[str] = None) -> str
 
     logger.info(
         t(
-            "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}",
+            "log.plugin.url_name_branch",
             url=url,
             plugin_name=plugin_name,
             p0=plugins_dict["branch"],
@@ -639,7 +634,7 @@ async def async_check_plugins(plugin_name: str):
             else:
                 return 1
         except Exception as e:
-            logger.warning(t("检查插件 {plugin_name} 状态异常: {p0}", plugin_name=plugin_name, p0=str(e)))
+            logger.warning(t("log.plugin.name_plugin", plugin_name=plugin_name, p0=str(e)))
             return 0
     return 3
 
@@ -699,22 +694,22 @@ async def update_from_git_async(
         checked = await check_plugins(repo_like)
         plugin_name = repo_like
         if not checked:
-            logger.warning(t("[更新] 更新失败, 该插件不存在!"))
+            logger.warning(t("log.plugin.missing_update_fail"))
             return ["更新失败, 不存在该插件!"]
         repo_path = checked
 
     # 验证是否是有效的 git 仓库
     if not await git_is_valid_repo(repo_path):
-        logger.warning(t("[更新] 更新失败, 非有效Repo路径!"))
+        logger.warning(t("log.plugin.update_fail"))
         return ["更新失败, 该路径并不是一个有效的GitRepo路径, 请使用`git clone`安装插件..."]
 
-    logger.info(t("[更新] 准备更新 [{plugin_name}], 更新等级为{level}", plugin_name=plugin_name, level=level))
+    logger.info(t("log.plugin.plugin_name_level", plugin_name=plugin_name, level=level))
 
     # 先执行 git fetch
-    logger.info(t("[更新][{plugin_name}] 正在执行 git fetch", plugin_name=plugin_name))
+    logger.info(t("log.plugin.plugin_name_git_fetch", plugin_name=plugin_name))
     success, message = await git_fetch(repo_path)
     if not success:
-        logger.warning(t("[更新] 执行 git fetch 失败...{message}!", message=message))
+        logger.warning(t("log.plugin.git_fetch_message", message=message))
         return _parse_git_error(message, plugin_name, operation="fetch")
 
     # 获取当前分支
@@ -730,8 +725,8 @@ async def update_from_git_async(
 
     # level >= 2: 强行强制更新 - clean -xdf
     if level >= 2:
-        logger.warning(t("[更新][{plugin_name}] 正在执行 git clean --xdf", plugin_name=plugin_name))
-        logger.warning(t("[更新] 你有 2 秒钟的时间中断该操作..."))
+        logger.warning(t("log.plugin.plugin_name_git_clean_xdf", plugin_name=plugin_name))
+        logger.warning(t("log.plugin.update_event"))
         if plugin_name == "早柚核心":
             return ["更新失败, 禁止强行强制更新核心..."]
         await asyncio.sleep(2)
@@ -739,16 +734,16 @@ async def update_from_git_async(
 
     # level >= 1: 强制更新 - reset --hard
     if level >= 1:
-        logger.warning(t("[更新][{plugin_name}] 正在执行 git reset --hard", plugin_name=plugin_name))
+        logger.warning(t("log.plugin.plugin_name_git_reset_hard", plugin_name=plugin_name))
         await git_reset_hard(repo_path)
 
     # 执行 git pull
     success, pull_message = await git_pull(repo_path)
     if not success:
-        logger.warning(t("[更新] 更新失败...{pull_message}!", pull_message=pull_message))
+        logger.warning(t("log.plugin.pull_message", pull_message=pull_message))
         return _parse_git_error(pull_message, plugin_name, operation="pull")
 
-    logger.info(t("[更新][{plugin_name}] {pull_message}", plugin_name=plugin_name, pull_message=pull_message))
+    logger.info(t("log.plugin.plugin_name_pull_message", plugin_name=plugin_name, pull_message=pull_message))
 
     # 构建更新日志
     log_list: List[str] = []
@@ -849,7 +844,7 @@ async def _init_plugin_commit_versions() -> None:
                 if commit:
                     plugin_commit_versions[plugin_dir.name.lower()] = commit
 
-    logger.info(t("[Git] 已初始化插件 commit 版本信息，共 {p0} 个", p0=len(plugin_commit_versions)))
+    logger.info(t("log.plugin.git_init_plugin_commit", p0=len(plugin_commit_versions)))
 
 
 # 注册到 on_core_start 钩子，优先级最高

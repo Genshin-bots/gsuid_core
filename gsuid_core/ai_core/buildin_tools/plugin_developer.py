@@ -308,12 +308,10 @@ async def scaffold_plugin(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
     except OSError as e:
-        logger.exception(t("🧩 [PluginDev] 脚手架插件 {plugin_name} 失败: {e}", plugin_name=plugin_name, e=e))
+        logger.exception(t("log.ai.plugindev_scaffolding_plugin_name", plugin_name=plugin_name, e=e))
         return f"错误：脚手架失败：{e}"
 
-    logger.info(
-        t("🧩 [PluginDev] 已在工作区脚手架插件 {plugin_name}（{p0} 个文件）", plugin_name=plugin_name, p0=len(files))
-    )
+    logger.info(t("log.ai.plugindev_scaffolded_plugin_name", plugin_name=plugin_name, p0=len(files)))
     listing = "\n".join(f"  - {plugin_name}/{p}" for p in files)
     biz = f"{plugin_name}/{plugin_name}/main/__init__.py"
     return (
@@ -368,13 +366,11 @@ async def pull_installed_plugin(ctx: RunContext[ToolContext], plugin_name: str) 
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     except OSError as e:
-        logger.exception(t("🧩 [PluginDev] 拉取已安装插件 {real_name} 失败: {e}", real_name=real_name, e=e))
+        logger.exception(t("log.ai.plugindev_pulling_installed_plugin_fail", real_name=real_name, e=e))
         return f"错误：拉取已安装插件失败：{e}"
 
     files = sorted(str(p.relative_to(root)).replace("\\", "/") for p in dest.rglob("*") if p.is_file())
-    logger.info(
-        t("🧩 [PluginDev] 已把已安装插件 {real_name} 拉进工作区（{p0} 个文件）", real_name=real_name, p0=len(files))
-    )
+    logger.info(t("log.ai.plugindev_pulled_installed_plugin", real_name=real_name, p0=len(files)))
     listing = "\n".join(f"  - {p}" for p in files[:40])
     more = f"\n  …还有 {len(files) - 40} 个文件未列出" if len(files) > 40 else ""
     return (
@@ -439,14 +435,14 @@ def _physical_install(src: Path, dest: Path) -> Optional[str]:
     开发期不代为搬运 / 备份用户数据。
     """
     if not _is_plugin_child(dest):
-        logger.error(t("🧩 [PluginDev] 安装目标越界，拒绝写入: {dest}", dest=dest))
+        logger.error(t("log.ai.plugindev_install_target_bounds", dest=dest))
         return f"错误：安装目标非法（必须是 plugins/ 的直接子目录）：{dest}"
     try:
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     except OSError as e:
-        logger.exception(t("🧩 [PluginDev] 安装插件 {p0} 失败: {e}", p0=dest.name, e=e))
+        logger.exception(t("log.ai.plugindev_installing_plugin", p0=dest.name, e=e))
         return f"错误：复制到 plugins/ 失败：{e}"
     return None
 
@@ -458,14 +454,14 @@ def _finalize_update(dest: Path, staged: Path) -> Optional[str]:
     在案**的旧目录，绝不波及其它插件；改名是同盘 rename，无额外副本。
     """
     if not _is_plugin_child(dest) or not _is_plugin_child(staged):
-        logger.error(t("🧩 [PluginDev] 收尾路径越界，拒绝: dest={dest} staged={staged}", dest=dest, staged=staged))
+        logger.error(t("log.ai.plugindev_finalize_path_bounds", dest=dest, staged=staged))
         return "错误：收尾路径非法（dest / 暂存目录都必须是 plugins/ 的直接子目录）。"
     try:
         if dest.exists():
             shutil.rmtree(dest)
         shutil.move(str(staged), str(dest))
     except OSError as e:
-        logger.exception(t("🧩 [PluginDev] 收尾更新 {p0} 失败: {e}", p0=dest.name, e=e))
+        logger.exception(t("log.ai.plugindev_finalize_update", p0=dest.name, e=e))
         return f"错误：删除旧目录 / 改名失败：{e}"
     return None
 
@@ -656,7 +652,7 @@ async def _request_overwrite_stage(task, plugin_name: str) -> str:
     )
     logger.info(
         t(
-            "🧩 [PluginDev] 插件 {plugin_name}（覆盖更新）发起第一步安装审批，临时名 {staging_name}",
+            "log.ai.plugindev_plugin_name_overwrite_update",
             plugin_name=plugin_name,
             staging_name=staging_name,
         )
@@ -715,7 +711,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
         sync_err = _physical_install(src, dest)
         if sync_err:
             return sync_err
-        logger.info(t("🧩 [PluginDev] 重新同步已安装插件 {plugin_name} → plugins/", plugin_name=plugin_name))
+        logger.info(t("log.ai.plugindev_syncing_installed_plugin", plugin_name=plugin_name))
         return (
             f"✅ 「{plugin_name}」最新代码已重新同步进 plugins/{plugin_name}/（本会话已审批过，无需再审批）。\n"
             "下一步：load_plugin_into_core 重载，再 test_plugin_command 自测。"
@@ -734,7 +730,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
         await _record(_mark(plugin_name, "installed"))
         logger.info(
             t(
-                "🧩 [PluginDev] 覆盖更新收尾完成：删旧目录并把 {staged_name} 改回 {plugin_name}",
+                "log.ai.plugindev_overwrite_update_finalize_ok",
                 staged_name=staged_name,
                 plugin_name=plugin_name,
             )
@@ -759,7 +755,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
         await request_subtask_approval(task, _delete_approval_prompt(plugin_name, staging_name))
         logger.info(
             t(
-                "🧩 [PluginDev] 插件 {plugin_name} 以临时名 {staging_name} 暂存完成，发起删除旧目录审批",
+                "log.ai.plugindev_plugin_name_staged_ok",
                 plugin_name=plugin_name,
                 staging_name=staging_name,
             )
@@ -772,7 +768,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
             # 审批窗口内冒出了同名目录：为避免 rmtree 误删，改走"覆盖更新"安全流程并重新审批
             logger.info(
                 t(
-                    "🧩 [PluginDev] 插件 {plugin_name} 新建审批期间出现同名目录，转覆盖更新安全流程",
+                    "log.ai.plugindev_name_directory_plugin_update",
                     plugin_name=plugin_name,
                 )
             )
@@ -781,7 +777,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
         if install_err:
             return install_err
         await _record(_mark(plugin_name, "installed"))
-        logger.info(t("🧩 [PluginDev] 已新建安装插件 {plugin_name} 到 plugins/", plugin_name=plugin_name))
+        logger.info(t("log.ai.plugindev_newly_installed_plugin", plugin_name=plugin_name))
         return (
             f"✅ 「{plugin_name}」已安装到 plugins/{plugin_name}/。\n"
             "下一步：load_plugin_into_core 加载，再 test_plugin_command 自测。"
@@ -797,9 +793,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
     if not dest.exists():
         await _record(_mark(plugin_name, "req-install"))
         await request_subtask_approval(task, f"插件「{plugin_name}」（新建插件）已在工作区开发完成，请求安装到框架。")
-        logger.info(
-            t("🧩 [PluginDev] 插件 {plugin_name}（新建）发起安装审批，挂起任务等待主人", plugin_name=plugin_name)
-        )
+        logger.info(t("log.ai.plugindev_plugin_name_initiated", plugin_name=plugin_name))
         return (
             f"已发起安装审批：插件「{plugin_name}」（新建插件）正在等待主人同意，请立即停止后续操作；"
             "主人同意后框架会自动重新调度你完成安装与自测。"
@@ -850,7 +844,7 @@ async def load_plugin_into_core(
 
     from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
 
-    logger.info(t("🧩 [PluginDev] 请求热加载插件 {plugin_name}", plugin_name=plugin_name))
+    logger.info(t("log.ai.plugindev_requesting_hot_reload_load", plugin_name=plugin_name))
     # reload_plugin 内部用 get_running_loop().create_task 重跑启动 Hook
     # 必须在 事件循环线程内同步调用（与 core重载插件 命令同链路），不可丢进 to_thread。
     return reload_plugin(plugin_name)
@@ -909,7 +903,7 @@ async def test_plugin_command(
     if command in plugin_ai_tools:
         logger.info(
             t(
-                "🧩 [PluginDev] 自测 to_ai 命令 {plugin_name}.{command}(text={text})",
+                "log.ai.plugindev_self_test_command",
                 plugin_name=plugin_name,
                 command=command,
                 text=repr(text),
@@ -918,7 +912,7 @@ async def test_plugin_command(
         try:
             result = await plugin_ai_tools[command].tool.function(ctx, text=text)
         except Exception as e:
-            logger.exception(t("🧩 [PluginDev] 自测命令 {command} 抛异常: {e}", command=command, e=e))
+            logger.exception(t("log.ai.plugindev_self_test_command_fail", command=command, e=e))
             return f"❌ 自测命令 [{command}] 抛出异常：{type(e).__name__}: {e}（请据此改代码后重新加载再测）"
         return f"【命令 {command}(text={text!r}) 实跑结果】\n{result}"
 
@@ -950,7 +944,7 @@ async def test_plugin_command(
         raw_func = getattr(trig.func, "__wrapped__", trig.func)
         logger.info(
             t(
-                "🧩 [PluginDev] 自测纯命令 {plugin_name}.{command}(text={text})",
+                "log.ai.plugindev_self_test_pure_command",
                 plugin_name=plugin_name,
                 command=command,
                 text=repr(text),
@@ -959,7 +953,7 @@ async def test_plugin_command(
         try:
             result = await run_trigger_via_mockbot(ctx.deps.bot, fake_ev, raw_func)
         except Exception as e:
-            logger.exception(t("🧩 [PluginDev] 自测命令 {command} 抛异常: {e}", command=command, e=e))
+            logger.exception(t("log.ai.plugindev_self_test_command_fail", command=command, e=e))
             return (
                 f"❌ 自测命令 [{command}] 抛出异常：{type(e).__name__}: {e}"
                 "（这是处理函数内的真实 bug，请据此改代码后重新加载再测，别当成功交付）"

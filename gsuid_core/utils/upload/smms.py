@@ -30,7 +30,7 @@ class SMMS:
                 headers=self.header,
                 timeout=ClientTimeout(total=300),
             ) as resp:
-                logger.info(t("[sm.ms / upload] 开始删除..."))
+                logger.info(t("log.upload.sm_ms_upload_deletion"))
                 raw_data = await resp.json()
                 logger.debug(t("log.upload.smms_delete_response", response=raw_data))
 
@@ -43,7 +43,7 @@ class SMMS:
                 data={"smfile": files.getvalue()},
                 timeout=ClientTimeout(total=300),
             ) as resp:
-                logger.info(t("[sm.ms / upload] 开始上传..."))
+                logger.info(t("log.upload.sm_ms_upload_event"))
                 raw_data = await resp.json()
                 logger.debug(t("log.upload.smms_upload_response", response=raw_data))
                 if raw_data["success"]:
@@ -52,11 +52,11 @@ class SMMS:
                         asyncio.create_task(self.delete(data["hash"]))
                     return data["url"]
                 elif "code" in raw_data and raw_data["code"] == "image_repeated":
-                    logger.info(t("[sm.ms / upload] 图片已存在!"))
+                    logger.info(t("log.upload.sm_ms_upload_image_exists"))
                     if "images" in raw_data:
                         return raw_data["images"]
                     if "url" in raw_data:
                         return raw_data["url"]
-                    logger.info(t("[sm.ms / upload] 图片获取失败!"))
+                    logger.info(t("log.upload.sm_ms_upload_retrieve_image"))
                 else:
-                    logger.info(t("[sm.ms / upload] 上传失败!"))
+                    logger.info(t("log.upload.sm_ms_upload_fail_failed"))

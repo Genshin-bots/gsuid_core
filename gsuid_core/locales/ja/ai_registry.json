@@ -1,0 +1,9 @@
+{
+  "log.ai_registry.aliases_registered": "[AI][Registry] {name} のエイリアスを登録しました（scope={scope}）: {alias}",
+  "log.ai_registry.entity_registered_plugin": "[AI][Registry] プラグインエンティティを登録しました: {title}",
+  "log.ai_registry.image_registered": "[AI][Registry] 画像を登録しました: {tags}",
+  "log.ai_registry.manual_entity": "[AI][Registry] 手動エンティティを追加しました: {title}",
+  "log.ai_registry.manual_entity_deleted": "[AI][Registry] 手動エンティティを削除しました: {entity_id}",
+  "log.ai_registry.manual_entity_exists": "[AI][Registry] 手動エンティティは既に存在します: {entity_id}",
+  "log.ai_registry.manual_entity_updated": "[AI][Registry] 手動エンティティを更新しました: {entity_id}"
+}

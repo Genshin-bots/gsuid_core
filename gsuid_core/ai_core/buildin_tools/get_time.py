@@ -75,9 +75,9 @@ async def get_current_date(
 ) -> str:
     try:
         result = await _get_current_date_impl(format)
-        logger.info(t("🧠 [BuildinTools] 获取当前日期: {result}", result=result))
+        logger.info(t("log.ai.buildintools_getting_date_result", result=result))
         return result
 
     except Exception as e:
-        logger.exception(t("🧠 [BuildinTools] 获取日期失败: {e}", e=e))
+        logger.exception(t("log.ai.buildintools_get_date", e=e))
         return f"获取日期失败：{str(e)}"

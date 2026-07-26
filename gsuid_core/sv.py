@@ -38,7 +38,7 @@ def modify_func(func):
             result = await func(bot, event)
             return result
         except Exception as e:
-            logger.error(t("[SV] {p0} 执行时出现错误!", p0=event.command))
+            logger.error(t("log.sv.error_occurred_executing", p0=event.command))
             logger.exception(e)
         finally:
             instancess = Bot.get_instances()
@@ -168,7 +168,7 @@ class SV:
         white_list: List = [],
     ):
         if not self.is_initialized:
-            logger.trace(t("【{name}】模块初始化中...", name=name))
+            logger.trace(t("log.sv.name_module_initializing", name=name))
             # sv名称，重复的sv名称将被并入一个sv里
             self.name: str = name
             # sv内包含的触发器
@@ -364,7 +364,7 @@ class SV:
                                 block,
                                 to_me,
                             )
-                            logger.trace(t("载入{type}触发器【{_pk}】!", type=type, _pk=_pk))
+                            logger.trace(t("log.sv.type_trigger_pk_load", type=type, _pk=_pk))
                     else:
                         self.TL[type][_k] = Trigger(
                             type,
@@ -374,7 +374,7 @@ class SV:
                             block,
                             to_me,
                         )
-                        logger.trace(t("载入{type}触发器【{_k}】!", type=type, _k=_k))
+                        logger.trace(t("log.sv.type_trigger_k_load", type=type, _k=_k))
 
             # 声明 to_ai 时注册为 AI 工具；懒加载 + enable 网关，避免 sv 在 AI 关闭时拉入 pydantic_ai
             if to_ai.strip():

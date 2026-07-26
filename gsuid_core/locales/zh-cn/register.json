@@ -1,0 +1,10 @@
+{
+  "log.register.ai_registry_skill_directory_fail": "[AI][Registry] Skill 目录注册失败: {p0}",
+  "log.register.ai_registry_skill_directory_ok": "[AI][Registry] Skill 目录注册成功（plugin={plugin}, count={p0}）: {p1}",
+  "log.register.ai_tools_decorator_check": "[Register] @ai_tools 装饰器 check_func 存在问题, 请开发者检查...",
+  "log.register.missing_docstring_plugin_name": "[Register] [{p0}] 缺 docstring（{plugin_name}），几乎无法被向量召回",
+  "log.register.name_visible_check_errored": "[Register] 工具 [{_name}] visible_when 判定异常，默认可见: {e}",
+  "log.register.plugin_name_privileged_category": "[Register] {plugin_name} 工具 [{p0}] 特权分类 [{reg_category}] → common",
+  "log.register.reg_category": "[Register] +{p0} ({reg_category})",
+  "log.register.timeout_sec_aborted": "[Register] 工具 [{p0}] 执行超时（>{timeout_sec}s），已中断"
+}

@@ -39,12 +39,12 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: 
     final_backup_dir = backup_path / f"{file_id}-{date_str}"
 
     if final_backup_dir.exists():
-        logger.warning(t("备份目录已存在: {final_backup_dir}", final_backup_dir=final_backup_dir))
+        logger.warning(t("log.backup.final_backup_dir", final_backup_dir=final_backup_dir))
         # 确认一下这个目录是否是backup_path开头的
         if not final_backup_dir.is_relative_to(backup_path):
             logger.warning(
                 t(
-                    "目录 {final_backup_dir} 不是 {backup_path} 的子目录，跳过删除。",
+                    "log.backup.directory_final_dir",
                     final_backup_dir=final_backup_dir,
                     backup_path=backup_path,
                 )
@@ -56,10 +56,10 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: 
 
     try:
         final_backup_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(t("已确保备份目录存在: {final_backup_dir}", final_backup_dir=final_backup_dir))
+        logger.info(t("log.backup.final_backup_dir_2", final_backup_dir=final_backup_dir))
 
     except Exception as e:
-        logger.info(t("创建备份目录失败: {e}", e=e))
+        logger.info(t("log.backup.create_fail", e=e))
         return -5
 
     # 4. 遍历并复制路径
@@ -72,36 +72,32 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: 
             if src_path.is_file():
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_path)
-                logger.success(
-                    t("♻️ [早柚核心] 已复制文件: {src_path} -> {dest_path}", src_path=src_path, dest_path=dest_path)
-                )
+                logger.success(t("log.backup.src_path_dest", src_path=src_path, dest_path=dest_path))
 
             elif src_path.is_dir():
                 shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
-                logger.success(
-                    t("♻️ [早柚核心] 已复制目录: {src_path} -> {dest_path}", src_path=src_path, dest_path=dest_path)
-                )
+                logger.success(t("log.backup.src_path_dest_2", src_path=src_path, dest_path=dest_path))
 
             else:
-                logger.success(t("♻️ [早柚核心] 跳过非文件/非目录路径: {src_path}", src_path=src_path))
+                logger.success(t("log.backup.src_path_skip", src_path=src_path))
 
         except ValueError:
             logger.warning(
                 t(
-                    "♻️ [早柚核心] 路径 '{src_path}' 不包含前缀 '{prefix_to_remove}'，跳过。",
+                    "log.backup.src_path_prefix_to_remove_skip",
                     src_path=src_path,
                     prefix_to_remove=prefix_to_remove,
                 )
             )
         except Exception as e:
-            logger.warning(t("♻️ [早柚核心] 复制 '{src_path}' 时发生错误: {e}", src_path=src_path, e=e))
+            logger.warning(t("log.backup.src_path_error", src_path=src_path, e=e))
 
     # 最后, 打zip压缩包
     try:
         shutil.make_archive(str(final_backup_dir), "zip", final_backup_dir)
-        logger.success(t("已压缩备份目录: {final_backup_dir}.zip", final_backup_dir=final_backup_dir))
+        logger.success(t("log.backup.final_backup_dir_zip", final_backup_dir=final_backup_dir))
     except Exception as e:
-        logger.warning(t("压缩备份目录失败: {e}", e=e))
+        logger.warning(t("log.backup.compress_directory_fail", e=e))
         return -10
 
     return 0
@@ -115,13 +111,13 @@ def remove_old_backups(days: int = 30) -> int:
     :return: 被删除的文件/目录数量。
     """
     if not backup_path.exists():
-        logger.warning(t("备份目录不存在: {backup_path}，跳过清理。", backup_path=backup_path))
+        logger.warning(t("log.backup.backup_path_skip", backup_path=backup_path))
         return 0
 
     current_time = datetime.now()
     deleted_count = 0
 
-    logger.info(t("开始清理超过 {days} 天的备份文件...", days=days))
+    logger.info(t("log.backup.days_start", days=days))
 
     # 遍历备份目录下的所有项目
     for item in backup_path.iterdir():
@@ -151,18 +147,20 @@ def remove_old_backups(days: int = 30) -> int:
             try:
                 if item.is_file():
                     item.unlink()  # 删除文件 (通常是 .zip)
-                    logger.info(t("🗑️ [早柚核心] 已删除过期备份文件: {p0} ({p1}天前)", p0=item.name, p1=time_delta.days))
+                    logger.info(t("log.backup.sayu_core_deleted_expired_file", p0=item.name, p1=time_delta.days))
                 elif item.is_dir():
                     shutil.rmtree(item)  # 删除目录 (如果存在未压缩的残留目录)
-                    logger.info(t("🗑️ [早柚核心] 已删除过期备份目录: {p0} ({p1}天前)", p0=item.name, p1=time_delta.days))
+                    logger.info(
+                        t("log.backup.sayu_core_deleted_expired_directory_delete", p0=item.name, p1=time_delta.days)
+                    )
 
                 deleted_count += 1
             except Exception as e:
-                logger.warning(t("❌ 删除 {p0} 失败: {e}", p0=item.name, e=e))
+                logger.warning(t("log.backup.delete_fail_2", p0=item.name, e=e))
 
     if deleted_count > 0:
-        logger.success(t("✅ 清理完成，共删除 {deleted_count} 个过期备份。", deleted_count=deleted_count))
+        logger.success(t("log.backup.deleted_count_done_delete", deleted_count=deleted_count))
     else:
-        logger.info(t("✨ 没有发现需要删除的过期备份。"))
+        logger.info(t("log.backup.expired_backups_found_deletion_delete"))
 
     return deleted_count

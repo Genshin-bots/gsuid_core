@@ -268,7 +268,7 @@ async def delete_state_entry(
     deleted = await state_delete_value(scope, state_key)
     if not deleted:
         return {"status": 1, "msg": f"key 不存在: {scope}/{state_key}", "data": None}
-    logger.info(t("🗄️ [StateStore-API] 删除 entry: {scope}/{state_key}", scope=scope, state_key=state_key))
+    logger.info(t("log.webconsole.statestore_api_deleted_entry_scope_delete", scope=scope, state_key=state_key))
     return {"status": 0, "msg": "ok", "data": {"scope": scope, "state_key": state_key}}
 
 
@@ -386,7 +386,7 @@ async def batch_delete_state_entries(
 
     logger.info(
         t(
-            "🗄️ [StateStore-API] 批量删除: requested={p0} deleted={deleted_count} not_found={not_found_count}",
+            "log.webconsole.statestore_api_batch_deletion_requested_delete",
             p0=len(targets),
             deleted_count=deleted_count,
             not_found_count=not_found_count,

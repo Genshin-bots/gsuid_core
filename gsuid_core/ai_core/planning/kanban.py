@@ -241,7 +241,7 @@ async def create_kanban_tree(
     )
     logger.info(
         t(
-            "📋 [Kanban] 创建任务树 root=#{p0} {p1}（{p2} 子任务）",
+            "log.ai.kanban_created_task_tree_root",
             p0=root.ordinal,
             p1=root.display_name,
             p2=len(children),
@@ -357,7 +357,7 @@ async def clone_tree_for_fire(
     )
     logger.info(
         t(
-            "📋 [Kanban] 周期触发: 模板 root={p0} 第 {p1} 次开火，克隆实例 root={p2}",
+            "log.ai.kanban_recurring_trigger_template_2",
             p0=template_root.id,
             p1=template_root.fire_count + 1,
             p2=instance_root.id,
@@ -476,7 +476,7 @@ async def clone_subtask_for_fire(template: AIAgentTask) -> Optional[AIAgentTask]
     )
     logger.info(
         t(
-            "📋 [Kanban] 周期子任务: 模板 subtask={p0} 第 {p1} 次开火 → 实例 subtask={p2} root={p3}",
+            "log.ai.kanban_recurring_subtask_template",
             p0=fresh.id,
             p1=fresh.fire_count + 1,
             p2=new_child.id,
@@ -525,9 +525,7 @@ async def arm_recurring_subtask(template: AIAgentTask, trigger_spec: str) -> Tup
         "decision",
         f"周期子任务 armed: trigger={trigger_spec}",
     )
-    logger.info(
-        t("📋 [Kanban] 周期子任务 armed subtask={p0} trigger={trigger_spec}", p0=template.id, trigger_spec=trigger_spec)
-    )
+    logger.info(t("log.ai.kanban_recurring_subtask_armed_2", p0=template.id, trigger_spec=trigger_spec))
     return True, "armed"
 
 
@@ -887,7 +885,7 @@ async def pause_task(task_id: str) -> bool:
         update_data={"status": "paused", "updated_at": now},
     )
     await AIAgentTaskLog.add_log(task_id, "decision", "任务已被主人暂停")
-    logger.info(t("📋 [Kanban] 任务 {task_id} 已暂停", task_id=task_id))
+    logger.info(t("log.ai.kanban_task_id_paused", task_id=task_id))
     return True
 
 
@@ -902,7 +900,7 @@ async def resume_task(task_id: str) -> bool:
         update_data={"status": "running", "updated_at": now},
     )
     await AIAgentTaskLog.add_log(task_id, "decision", "任务已被主人恢复")
-    logger.info(t("📋 [Kanban] 任务 {task_id} 已恢复", task_id=task_id))
+    logger.info(t("log.ai.kanban_task_id_resumed", task_id=task_id))
     return True
 
 
@@ -916,7 +914,7 @@ async def abort_task(task_id: str, reason: str) -> None:
     await AIAgentTaskLog.add_log(task_id, "decision", f"任务终止：{reason}")
     _drop_not_before_job(task_id)
     _drop_subtask_recurring_job(task_id)
-    logger.info(t("📋 [Kanban] 任务 {task_id} 已终止：{reason}", task_id=task_id, reason=reason))
+    logger.info(t("log.ai.kanban_task_id_terminated_reason", task_id=task_id, reason=reason))
 
 
 # 失败处理：重派 / 审批 / 整树失败
@@ -1076,9 +1074,7 @@ async def fail_task_tree(root_task_id: str, reason: str) -> bool:
             )
             _drop_subtask_recurring_job(c.id)
     await AIAgentTaskLog.add_log(root.id, "decision", f"整棵任务树被终结：{reason} | 级联失败 {cascaded} 子任务")
-    logger.info(
-        t("📋 [Kanban] 整树失败 root={root_task_id} cascaded={cascaded}", root_task_id=root_task_id, cascaded=cascaded)
-    )
+    logger.info(t("log.ai.kanban_entire_tree_root_task", root_task_id=root_task_id, cascaded=cascaded))
     return True
 
 
@@ -1148,7 +1144,7 @@ async def hard_delete_task_tree(
                 if unschedule_template(r.id):
                     stats["unscheduled_jobs"] += 1
     except Exception as e:
-        logger.warning(t("📋 [Kanban] 硬删除前摘除周期 job 失败 task={task_id}: {e}", task_id=task_id, e=e))
+        logger.warning(t("log.ai.kanban_remove_recurring_job_hard", task_id=task_id, e=e))
 
     # 删除前把所有子任务的 not_before + 周期子任务 APScheduler job 也摘掉
     try:
@@ -1166,7 +1162,7 @@ async def hard_delete_task_tree(
     except Exception as e:
         logger.warning(
             t(
-                "📋 [Kanban] 硬删除前摘除 not_before/subtask-recurring job 失败 task={task_id}: {e}",
+                "log.ai.kanban_remove_subtask_recurring_fail",
                 task_id=task_id,
                 e=e,
             )
@@ -1225,7 +1221,7 @@ async def hard_delete_task_tree(
                 except OSError:
                     pass
         except Exception as e:
-            logger.warning(t("📋 [Kanban] 硬删除任务文件失败 task={task_id}: {e}", task_id=task_id, e=e))
+            logger.warning(t("log.ai.kanban_hard_delete_task_files", task_id=task_id, e=e))
 
     for tid in all_task_ids:
         _TASK_NODE_LOCKS.pop(tid, None)
@@ -1233,7 +1229,7 @@ async def hard_delete_task_tree(
         _ROOT_REFRESH_LOCKS.pop(rid, None)
 
     logger.info(
-        t("📋 [Kanban] 硬删除任务树 root=%s requested=%s tasks=%s logs=%s artifacts=%s dirs=%s"),
+        t("log.ai.kanban_hard_deleted_task_tree"),
         root.id,
         task_id,
         stats["tasks_deleted"],
@@ -1302,7 +1298,7 @@ async def bulk_delete_task_trees(
             total_stats["failed_root_ids"].append(root.id)
 
     logger.info(
-        t("📋 [Kanban] 批量删除完成 matched=%s deleted=%s failed=%s tasks=%s logs=%s artifacts=%s dirs=%s"),
+        t("log.ai.kanban_batch_deletion_matched_fail"),
         len(roots),
         deleted,
         failed,
@@ -1363,7 +1359,7 @@ async def recover_zombie_subtasks(stale_minutes: int = 15) -> int:
             "decision",
             f"崩溃恢复：running {kind_label}已重置为 pending（心跳超时）",
         )
-    logger.info(t("📋 [Kanban] 崩溃恢复：复活 {p0} 个僵尸任务", p0=len(zombies)))
+    logger.info(t("log.ai.kanban_crash_recovery_revived", p0=len(zombies)))
     return len(zombies)
 
 

@@ -47,7 +47,7 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
     try:
         tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
     except Exception as e:
-        logger.debug(i18n_t("📋 [Kanban] 任务上下文注入失败: {e}", e=e))
+        logger.debug(i18n_t("log.ai.kanban_inject_task_context", e=e))
         return ""
     if not tasks:
         return ""
@@ -78,7 +78,7 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
         try:
             _, children = await kanban_manager.get_task_tree(t.id)
         except Exception as e:
-            logger.debug(i18n_t("📋 [Kanban] 拉子任务摘要失败 root={p0}: {e}", p0=t.id, e=e))
+            logger.debug(i18n_t("log.ai.kanban_fetch_subtask_summaries_fail", p0=t.id, e=e))
             children = []
         if not children:
             continue

@@ -66,7 +66,7 @@ async def _resolve_avatar_image(ev: Event, target_user_id: Optional[str]) -> "Op
         try:
             return await get_qq_avatar(target)
         except (httpx.HTTPError, OSError) as e:
-            logger.debug(t("🧠 [BuildinTools] get_user_avatar qlogo 兜底失败: {e}", e=e))
+            logger.debug(t("log.ai.buildintools_get_user_avatar_fail_3", e=e))
             return None
     return None
 
@@ -111,7 +111,7 @@ async def get_user_avatar(
     try:
         img = await _resolve_avatar_image(ev, clean_user_id)
     except (httpx.HTTPError, OSError) as e:
-        logger.exception(t("🧠 [BuildinTools] get_user_avatar 获取用户 {target} 头像失败: {e}", target=target, e=e))
+        logger.exception(t("log.ai.buildintools_get_user_avatar_fail_2", target=target, e=e))
         return f"❌ 获取头像失败: {e}"
 
     if img is None:
@@ -120,13 +120,13 @@ async def get_user_avatar(
     try:
         data: bytes = await convert_img(img)  # PIL.Image → bytes（JPEG 编码）
     except OSError as e:
-        logger.exception(t("🧠 [BuildinTools] get_user_avatar 头像编码失败: {e}", e=e))
+        logger.exception(t("log.ai.buildintools_get_user_avatar_fail", e=e))
         return f"❌ 头像编码失败: {e}"
 
     resource_id = RM.register(data)
     logger.info(
         t(
-            "🧠 [BuildinTools] get_user_avatar: 用户 {target} 头像已注册到 RM: {resource_id}",
+            "log.ai.buildintools_get_user_avatar_register",
             target=target,
             resource_id=resource_id,
         )

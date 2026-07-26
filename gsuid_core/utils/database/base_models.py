@@ -17,6 +17,7 @@ from typing_extensions import ParamSpec, Concatenate
 from sqlmodel import Field, SQLModel, col, and_, delete, select, update
 from sqlalchemy import MetaData, exc, text, event, inspect, create_engine
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
 from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.ext.asyncio import (
@@ -25,7 +26,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,  # type: ignore
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.expression import func, null, true
 
@@ -108,7 +108,7 @@ async def init_database():
         if _db_initialized:
             return
 
-        logger.info(i18n_t("📀 [数据库] 开始初始化..."))
+        logger.info(i18n_t("log.database.init_start"))
 
         try:
             if _db_type == "sqlite":
@@ -159,7 +159,7 @@ async def init_database():
                             t2 = "CHARACTER SET utf8mb4 COLLATE "
                             t3 = "utf8mb4_unicode_ci"
                             conn.execute(text(t1 + t2 + t3))
-                            logger.success(i18n_t("[MySQL] 数据库 {db_name} 创建成功或已存在!", db_name=db_name))
+                            logger.success(i18n_t("log.database.mysql_ok_create_database_db_name", db_name=db_name))
                     elif _db_type == "postgresql":
                         server_engine = create_engine(f"{sync_url}{db_url}", **db_config)
                         try:
@@ -173,11 +173,11 @@ async def init_database():
                                 pass
                             else:
                                 raise
-                        logger.success(i18n_t("[PostgreSQL] 数据库 {db_name} 创建成功或已存在!", db_name=db_name))
+                        logger.success(i18n_t("log.database.postgresql_db_name_created", db_name=db_name))
                 finally:
                     if server_engine:
                         server_engine.dispose()
-                        logger.info(i18n_t("[数据库] 临时数据库连接已释放!"))
+                        logger.info(i18n_t("log.database.temporary_connection"))
 
                 # db_config['poolclass'] = NullPool
                 finally_url = f"{base_url}{db_url}{db_name}"
@@ -192,7 +192,7 @@ async def init_database():
 
             _db_initialized = True
         except Exception as e:  # noqa: E722
-            logger.exception(i18n_t("[GsCore] [数据库] 连接失败: {e}", e=e))
+            logger.exception(i18n_t("log.database.gscore_connection", e=e))
             raise ValueError(i18n_t("[GsCore] [数据库] [{base_url}] 连接失败, 请检查配置文件!", base_url=base_url))
 
 
@@ -213,12 +213,7 @@ def _is_transient_db_error(err: BaseException) -> bool:
     msg = str(err).lower()
     if "unable to open database file" in msg:
         return False
-    return (
-        "database is locked" in msg
-        or "database table is locked" in msg
-        or "busy" in msg
-        or "disk i/o error" in msg
-    )
+    return "database is locked" in msg or "database table is locked" in msg or "busy" in msg or "disk i/o error" in msg
 
 
 def with_session(
@@ -246,24 +241,22 @@ def with_session(
                 if _is_pool_timeout(e):
                     logger.error(
                         i18n_t(
-                            "[数据库] 连接池耗尽/超时，停止重试: {e}",
+                            "log.database.connect_timeout_stop",
                             e=e,
                         )
                     )
                     raise
                 if isinstance(e, OperationalError) and "unable to open database file" in str(e):
-                    logger.error(i18n_t("[数据库] 数据库无法打开，停止重试"))
+                    logger.error(i18n_t("log.database.stop_retry"))
                     raise
                 if _is_transient_db_error(e) and attempt < max_retries - 1:
-                    logger.warning(
-                        i18n_t("[数据库] 第 {p0} 次重试失败: {e}", p0=attempt + 1, e=e)
-                    )
+                    logger.warning(i18n_t("log.database.retry_fail_2", p0=attempt + 1, e=e))
                     await asyncio.sleep(0.5 * (2**attempt))
                     continue
                 # 业务异常 / 不可恢复：直接抛，禁止静默 return None
                 if attempt >= max_retries - 1 and _is_transient_db_error(e):
                     logger.error(
-                        i18n_t("[数据库] 重试耗尽仍失败: {e}", e=e),
+                        i18n_t("log.database.retry_fail", e=e),
                         exc_info=True,
                     )
                 raise
@@ -503,7 +496,7 @@ class BaseIDModel(SQLModel):
             🔸`int`: 如为1则删除成功，否则删除失败(数据不存在)
         """
         row_data = await cls.select_rows(**data)
-        logger.trace(i18n_t("[GsCore数据库] 即将删除{row_data}", row_data=row_data))
+        logger.trace(i18n_t("log.database.gscore_db_delete_row_data", row_data=row_data))
         if row_data:
             for row in row_data:
                 await session.delete(row)
@@ -543,7 +536,7 @@ class BaseIDModel(SQLModel):
             stmt = stmt.distinct()
         result = await session.execute(stmt)
         data = result.scalars().all()
-        logger.trace(i18n_t("[GsCore数据库] 选择 {data}", data=data))
+        logger.trace(i18n_t("log.database.gscore_data_selected", data=data))
         return data
 
     @classmethod

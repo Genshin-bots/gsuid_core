@@ -291,9 +291,7 @@ class MCPConfigManager:
                     data = json.load(f)
                 self._cache[config_id] = MCPConfig.from_dict(data)
             except Exception as e:
-                logger.error(
-                    i18n_t("🔌 [MCP Config] 加载配置文件失败: {config_file}, 错误: {e}", config_file=config_file, e=e)
-                )
+                logger.error(i18n_t("log.mcp.mcp_config_load_configuration_file_fail", config_file=config_file, e=e))
 
     def list_configs(self) -> list[dict[str, Any]]:
         """
@@ -418,10 +416,10 @@ class MCPConfigManager:
             with open(config_path, "w", encoding="UTF-8") as f:
                 json.dump(config.to_dict(), f, indent=4, ensure_ascii=False)
             self._cache[config_id] = config
-            logger.info(i18n_t("🔌 [MCP Config] 创建配置: {config_id}", config_id=config_id))
+            logger.info(i18n_t("log.mcp.mcp_config_configuration_id_create", config_id=config_id))
             return True, "ok"
         except Exception as e:
-            logger.error(i18n_t("🔌 [MCP Config] 创建配置失败: {config_id}, 错误: {e}", config_id=config_id, e=e))
+            logger.error(i18n_t("log.mcp.mcp_config_create_configuration_fail", config_id=config_id, e=e))
             return False, str(e)
 
     def update_config(self, config_id: str, updates: dict[str, Any]) -> tuple[bool, str]:
@@ -452,10 +450,10 @@ class MCPConfigManager:
             with open(config_path, "w", encoding="UTF-8") as f:
                 json.dump(updated_config.to_dict(), f, indent=4, ensure_ascii=False)
             self._cache[config_id] = updated_config
-            logger.info(i18n_t("🔌 [MCP Config] 更新配置: {config_id}", config_id=config_id))
+            logger.info(i18n_t("log.mcp.mcp_config_configuration_id_update", config_id=config_id))
             return True, "ok"
         except Exception as e:
-            logger.error(i18n_t("🔌 [MCP Config] 更新配置失败: {config_id}, 错误: {e}", config_id=config_id, e=e))
+            logger.error(i18n_t("log.mcp.mcp_config_update_configuration_fail", config_id=config_id, e=e))
             return False, str(e)
 
     def delete_config(self, config_id: str) -> tuple[bool, str]:
@@ -475,16 +473,16 @@ class MCPConfigManager:
         try:
             config_path.unlink()
             del self._cache[config_id]
-            logger.info(i18n_t("🔌 [MCP Config] 删除配置: {config_id}", config_id=config_id))
+            logger.info(i18n_t("log.mcp.mcp_config_configuration_id_delete", config_id=config_id))
             return True, "ok"
         except Exception as e:
-            logger.error(i18n_t("🔌 [MCP Config] 删除配置失败: {config_id}, 错误: {e}", config_id=config_id, e=e))
+            logger.error(i18n_t("log.mcp.mcp_config_delete_configuration_fail", config_id=config_id, e=e))
             return False, str(e)
 
     def reload(self) -> None:
         """重新加载所有配置文件"""
         self._load_all()
-        logger.info(i18n_t("🔌 [MCP Config] 重新加载完成，共 {p0} 个配置", p0=len(self._cache)))
+        logger.info(i18n_t("log.mcp.mcp_config_reload_configurations_total_ok", p0=len(self._cache)))
 
 
 # 全局单例

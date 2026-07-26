@@ -28,20 +28,20 @@ async def get_image(
                 return img.resize(size)
             return img
         except UnidentifiedImageError:
-            logger.warning(t("[GsCore]{name}已存在文件读取失败, 尝试重新下载...", name=name))
+            logger.warning(t("log.download.gscore_existing_file_name_read", name=name))
 
     async with ClientSession() as sess:
         try:
-            logger.info(t("[GsCore]开始下载: {name} | 地址: {url}", name=name, url=url))
+            logger.info(t("log.download.gscore_name_url", name=name, url=url))
             async with sess.get(url) as res:
                 if res.status == 200:
                     content = await res.read()
-                    logger.info(t("[GsCore]下载成功: {name}", name=name))
+                    logger.info(t("log.download.gscore_succeeded_name", name=name))
                 else:
-                    logger.warning(t("[GsCore]{name}下载失败", name=name))
+                    logger.warning(t("log.download.gscore_fail_name_download_failed", name=name))
                     return Image.new("RGBA", (256, 256))
         except ClientConnectorError:
-            logger.warning(t("[GsCore]{name}下载失败", name=name))
+            logger.warning(t("log.download.gscore_fail_name_download_failed", name=name))
             return Image.new("RGBA", (256, 256))
 
     async with aiofiles.open(path / name, "wb") as f:

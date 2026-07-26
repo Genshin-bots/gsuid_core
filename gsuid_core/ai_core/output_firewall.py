@@ -316,15 +316,13 @@ def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Opt
     if turn_id and extra.get(warn_key):
         if hit.category in NEVER_RELEASE_CATEGORIES:
             # 资金欺骗类不放行：持续要求重写，直到产出不命中的版本（评审修复 F10）
-            logger.warning(
-                t("[OutputFirewall] 不可放行类别仍命中 {p0}: {p1}，继续拦截", p0=hit.category, p1=hit.matched)
-            )
+            logger.warning(t("log.firewall.non_releasable_category_hit", p0=hit.category, p1=hit.matched))
             return build_rewrite_warning(hit)
-        logger.warning(t("[OutputFirewall] 重写后仍命中 {p0}: {p1}，本轮放行", p0=hit.category, p1=hit.matched))
+        logger.warning(t("log.firewall.rewrite_hit", p0=hit.category, p1=hit.matched))
         return None
     if turn_id:
         extra[warn_key] = True
-    logger.warning(t("[OutputFirewall] 命中出戏红线 {p0}: {p1}，要求重写", p0=hit.category, p1=hit.matched))
+    logger.warning(t("log.firewall.hit_ooc_red_line", p0=hit.category, p1=hit.matched))
     return build_rewrite_warning(hit)
 
 

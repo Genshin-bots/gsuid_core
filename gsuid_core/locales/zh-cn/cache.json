@@ -1,0 +1,5 @@
+{
+  "log.cache.entering_event": "{p0} 进入缓存...",
+  "log.cache.hit_value": "{p0} 命中缓存 {_value}",
+  "log.cache.start_event": "{p0} 开始缓存..."
+}

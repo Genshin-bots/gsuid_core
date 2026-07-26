@@ -18,8 +18,8 @@ async def download(
     sess: Union[ClientSession, httpx.AsyncClient, None] = None,
     tag: str = "",
 ):
-    logger.info(t("{tag} 开始下载 {name} 图片...", tag=tag, name=name))
-    logger.info(t("log.resource_download.file_url", tag=tag, url=url))
+    logger.info(t("log.download.tag_name_start_download", tag=tag, name=name))
+    logger.info(t("log.resource_download.tag_url", tag=tag, url=url))
     if sess is None:
         sess = httpx.AsyncClient()
 
@@ -36,13 +36,13 @@ async def download(
         if retcode == 200:
             async with aiofiles.open(path / name, "wb") as f:
                 await f.write(content)
-            logger.success(t("{tag} {name} 下载完成！", tag=tag, name=name))
+            logger.success(t("log.download.tag_name_download_done", tag=tag, name=name))
         else:
-            logger.warning(t("{tag} {name} 下载失败！错误码{retcode}", tag=tag, name=name, retcode=retcode))
+            logger.warning(t("log.download.tag_name_fail", tag=tag, name=name, retcode=retcode))
         return retcode
     except Exception as e:
         logger.error(e)
-        logger.warning(t("{tag} {name} 下载失败！", tag=tag, name=name))
+        logger.warning(t("log.download.tag_name_download_fail", tag=tag, name=name))
 
 
 async def get_data_from_url(url: str, path: Path, expire_sec: Optional[float] = None) -> Dict:

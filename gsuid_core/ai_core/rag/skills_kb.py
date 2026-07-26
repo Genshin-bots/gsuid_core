@@ -241,7 +241,7 @@ async def _skill_docs_point_count() -> int:
         )
         return result.count
     except Exception as e:
-        logger.debug(t("🧠 [SkillsKB] 统计 skill_doc 点数失败（按非空处理）: {e}", e=e))
+        logger.debug(t("log.rag.skillskb_skill_doc_points_fail", e=e))
         return -1
 
 
@@ -256,10 +256,10 @@ async def sync_skill_docs() -> None:
 
     skills = _discover_skill_docs()
     if not skills:
-        logger.warning(t("🧠 [SkillsKB] 未发现任何 skill 文档，跳过挂载: {_SKILLS_ROOT}", _SKILLS_ROOT=_SKILLS_ROOT))
+        logger.warning(t("log.rag.skillskb_skill_documents_found_skip", _SKILLS_ROOT=_SKILLS_ROOT))
         return
     if client is None or embedding_model is None:
-        logger.debug(t("🧠 [SkillsKB] RAG 未就绪，跳过 skill 文档挂载"))
+        logger.debug(t("log.rag.skillskb_ready_skipping_skill"))
         return
 
     # 现存 skill_doc 分片：doc_id -> 已存内容哈希（取自分片 tags 里的 _srchash:）
@@ -285,7 +285,7 @@ async def sync_skill_docs() -> None:
             try:
                 text = f.read_text(encoding="utf-8")
             except OSError as e:
-                logger.warning(t("🧠 [SkillsKB] 读取文档失败，跳过: {skill}/{p0}: {e}", skill=skill, p0=f.name, e=e))
+                logger.warning(t("log.rag.skillskb_read_document_skipping_fail", skill=skill, p0=f.name, e=e))
                 continue
             doc_id = _doc_id_for(skill, f)
             desired_doc_ids.add(doc_id)
@@ -315,8 +315,7 @@ async def sync_skill_docs() -> None:
     if changed or stale:
         logger.info(
             t(
-                "🧠 [SkillsKB] skill 文档挂载完成：更新 {changed} 篇、清理 {p0} 篇"
-                "（{p1} 个 skill / 共 {total_files} 篇文档）",
+                "log.rag.skillskb_skill_changed_total_ok",
                 changed=changed,
                 p0=len(stale),
                 p1=len(skills),
@@ -326,7 +325,7 @@ async def sync_skill_docs() -> None:
     else:
         logger.debug(
             t(
-                "🧠 [SkillsKB] skill 文档已是最新（{p0} 个 skill / {total_files} 篇），跳过重嵌",
+                "log.rag.skillskb_skill_documents_date_skip",
                 p0=len(skills),
                 total_files=total_files,
             )

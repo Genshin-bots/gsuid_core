@@ -1,0 +1,19 @@
+{
+  "log.upload.custom_response": "[custom / upload] {response}",
+  "log.upload.custom_upload_delete_implemented": "[custom / upload] 未实现delete...",
+  "log.upload.custom_upload_event": "[custom / upload] 开始上传...",
+  "log.upload.custom_upload_fail_failed": "[custom / upload] 上传失败!",
+  "log.upload.s3_delete_deletion": "[S3 / delete] 开始删除...",
+  "log.upload.s3_delete_deletion_succeeded": "[S3 / delete] 删除成功！",
+  "log.upload.s3_upload_ok_succeeded": "[S3 / upload] 上传成功！",
+  "log.upload.s3_upload_path_load": "[S3 / upload] PATH: {path}",
+  "log.upload.s3_upload_start_starting": "[S3 / upload] 开始上传...",
+  "log.upload.s3_upload_url_load": "[S3 / upload] URL: {url}",
+  "log.upload.sm_ms_upload_deletion": "[sm.ms / upload] 开始删除...",
+  "log.upload.sm_ms_upload_event": "[sm.ms / upload] 开始上传...",
+  "log.upload.sm_ms_upload_fail_failed": "[sm.ms / upload] 上传失败!",
+  "log.upload.sm_ms_upload_image_exists": "[sm.ms / upload] 图片已存在!",
+  "log.upload.sm_ms_upload_retrieve_image": "[sm.ms / upload] 图片获取失败!",
+  "log.upload.smms_delete_response": "[sm.ms / delete] {response}",
+  "log.upload.smms_upload_response": "[sm.ms / upload] {response}"
+}

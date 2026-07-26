@@ -112,7 +112,7 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(t("[clear_memories] Qdrant 向量删除异常: {e}", e=e))
+        logger.warning(t("log.memory.clear_memories_deleting_qdrant_vectors_fail", e=e))
 
 
 async def _delete_db_by_scope_keys(
@@ -305,7 +305,7 @@ async def clear_memories_for_scope_async(
             },
         }
     except Exception as e:
-        logger.error(t("[clear_memories] 清理记忆失败: {e}", e=e))
+        logger.error(t("log.memory.clear_memories", e=e))
         return {
             "status": 1,
             "msg": f"清理记忆失败: {str(e)}",
@@ -423,7 +423,7 @@ async def clear_group_memories(
             },
         }
     except Exception as e:
-        logger.error(t("[clear_group_memories] 清空群记忆失败: {e}", e=e))
+        logger.error(t("log.memory.clear_group_memories_fail", e=e))
         return {
             "status": 1,
             "msg": f"清空群记忆失败: {str(e)}",
@@ -450,7 +450,7 @@ async def clear_user_global_memories(
         scope_key = make_scope_key(ScopeType.USER_GLOBAL, user_id)
         return await clear_memories_for_scope_async(scope_key=scope_key, dry_run=dry_run)
     except Exception as e:
-        logger.error(t("[clear_user_global_memories] 清空用户全局记忆失败: {e}", e=e))
+        logger.error(t("log.memory.clear_user_global_me_fail", e=e))
         return {
             "status": 1,
             "msg": f"清空用户全局记忆失败: {str(e)}",

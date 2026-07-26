@@ -1,0 +1,3 @@
+{
+  "log.pool.pr_set_pdeathsig_setup": "[pool] PR_SET_PDEATHSIG の設定に失敗しました: {e}"
+}

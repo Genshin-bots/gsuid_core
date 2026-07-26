@@ -41,13 +41,13 @@ async def ensure_memory_collections():
     )
 
     if client is None:
-        logger.debug(t("🧠 [Memory] RAG 未启用，跳过记忆 Collection 初始化"))
+        logger.debug(t("log.memory.rag_disabled_skipping"))
         return
 
     try:
         existing = {c.name for c in (await client.get_collections()).collections}
     except Exception as e:
-        logger.warning(t("🧠 [Memory] 获取 Qdrant Collection 列表失败: {e}", e=e))
+        logger.warning(t("log.memory.get_qdrant_collection_list", e=e))
         return
 
     from qdrant_client.models import (
@@ -94,8 +94,7 @@ async def ensure_memory_collections():
                 if need_reindex_from_backup:
                     logger.warning(
                         t(
-                            "🧠 [Memory] Collection {name} 不存在但发现未完成迁移备份，"
-                            "将重建 Collection 并恢复 {p0} 条 payload",
+                            "log.memory.collection_name_payload_2",
                             name=name,
                             p0=len(payload_backup),
                         )
@@ -117,8 +116,7 @@ async def ensure_memory_collections():
                         if len(prior_backup) > len(payload_backup):
                             logger.warning(
                                 t(
-                                    "🧠 [Memory] Collection {name} 实时 payload({p0}) 少于历史迁移备份({p1})，"
-                                    "疑似上次迁移已清空但未完成，改用备份恢复",
+                                    "log.memory.collection_name_payload",
                                     name=name,
                                     p0=len(payload_backup),
                                     p1=len(prior_backup),
@@ -130,9 +128,7 @@ async def ensure_memory_collections():
                         backup_path = await save_payload_backup(name, payload_backup)
                     logger.warning(
                         t(
-                            "🧠 [Memory] Collection {name} 向量配置/维度不匹配"
-                            "(actual={vector_sizes}, expected={dimension})，"
-                            "导出 {p0} 条 payload 后强制重建并重嵌入...",
+                            "log.memory.collection_name_actual_vector",
                             name=name,
                             vector_sizes=vector_sizes,
                             dimension=dimension,
@@ -151,8 +147,7 @@ async def ensure_memory_collections():
                         need_reindex_from_backup = True
                         logger.warning(
                             t(
-                                "🧠 [Memory] Collection {name} 可能处于上次迁移未完成状态"
-                                "(points={point_count}, backup={p0})，将强制重建并继续恢复...",
+                                "log.memory.collection_name_points_point",
                                 name=name,
                                 point_count=point_count,
                                 p0=len(backup_payloads),
@@ -169,21 +164,20 @@ async def ensure_memory_collections():
                 from gsuid_core.ai_core.rag.base import client as refreshed_client
 
                 if refreshed_client is None:
-                    raise RuntimeError(t("Qdrant client 重建后不可用"))
+                    raise RuntimeError(t("log.meme.qdrant_client"))
                 await refreshed_client.create_payload_index(
                     collection_name=name,
                     field_name="scope_key",
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
-                logger.info(t("🧠 [Memory] 创建 Qdrant Collection: {name}", name=name))
+                logger.info(t("log.memory.creating_qdrant_collection_name", name=name))
                 if payload_backup:
                     try:
                         await _reindex_memory_payloads(name, payload_backup)
                     except Exception as reindex_e:
                         logger.error(
                             t(
-                                "🧠 [Memory] Collection {name} 重嵌入失败，迁移备份已保留，"
-                                "下次启动将自动继续恢复: {backup_path}, {reindex_e}",
+                                "log.memory.collection_name_backup_path",
                                 name=name,
                                 backup_path=backup_path,
                                 reindex_e=reindex_e,
@@ -192,7 +186,7 @@ async def ensure_memory_collections():
                         raise
                     remove_payload_backup(backup_path, name)
                 elif need_reindex_from_backup:
-                    logger.warning(t("🧠 [Memory] Collection {name} 标记为备份恢复，但备份为空，跳过恢复", name=name))
+                    logger.warning(t("log.memory.collection_name_marked_backup", name=name))
             else:
                 for vector_name in _vector_names_for_collection(name):
                     await ensure_vector_on_disk(name, vector_name)
@@ -201,7 +195,7 @@ async def ensure_memory_collections():
                 # `scope_key` 时会返回 400。ensure_payload_indexes 幂等（已存在则跳过），
                 # 远程失败会抛 RuntimeError 让 Hybrid 检索不陷入反复 400。
                 await ensure_payload_indexes(name, ["scope_key"])
-                logger.debug(t("🧠 [Memory] Qdrant Collection 已存在且配置正确: {name}", name=name))
+                logger.debug(t("log.memory.qdrant_collection_exists_configured", name=name))
         except Exception as e:
             # RuntimeError 多为 ensure_payload_indexes / force_recreate_collection 在远程
             # Qdrant 上抛出的"运维配置异常"（索引创建失败/权限/网络），属阻塞性问题——
@@ -209,9 +203,9 @@ async def ensure_memory_collections():
             # 不让单个集合的异常拖垮整个 memory 初始化。运行时侧 _hybrid_search_impl
             # 已通过 is_vector_structure_error 把"index required"降级为空结果，不会刷 error。
             if isinstance(e, RuntimeError):
-                logger.critical(t("🧠 [Memory] Collection {name} 启动期配置异常，建议排查后重启: {e}", name=name, e=e))
+                logger.critical(t("log.memory.collection_name_invalid_startup", name=name, e=e))
             else:
-                logger.error(t("🧠 [Memory] 检查/重建 Collection {name} 失败: {e}", name=name, e=e))
+                logger.error(t("log.memory.check_rebuild_collection_name", name=name, e=e))
 
     # §3.2① 冷 Episode 归档集合：独立、轻量地确保存在（不参与上面的 payload 备份/重嵌入迁移）。
     # 冷向量是从热集合迁移而来的派生数据，真值在 SQL；维度变更时直接重建为空即可，
@@ -248,9 +242,7 @@ async def _ensure_episode_cold_collection(
             if actual_size != dimension:
                 logger.warning(
                     t(
-                        "🧠 [Memory] 冷集合 {name} 维度不匹配"
-                        "(actual={actual_size}, expected={dimension})，"
-                        "重建为空（冷向量为派生数据，SQL 文本不受影响）",
+                        "log.memory.name_actual_size_expected",
                         name=name,
                         actual_size=actual_size,
                         dimension=dimension,
@@ -268,25 +260,25 @@ async def _ensure_episode_cold_collection(
             from gsuid_core.ai_core.rag.base import client as refreshed_client
 
             if refreshed_client is None:
-                raise RuntimeError(t("Qdrant client 重建后不可用"))
+                raise RuntimeError(t("log.meme.qdrant_client"))
             await refreshed_client.create_payload_index(
                 collection_name=name,
                 field_name="scope_key",
                 field_schema=PayloadSchemaType.KEYWORD,
             )
-            logger.info(t("🧠 [Memory] 创建 Qdrant 冷 Episode 集合: {name}", name=name))
+            logger.info(t("log.memory.creating_qdrant_cold_episode", name=name))
         else:
             await ensure_vector_on_disk(name, "dense")
             # 同 ensure_memory_collections：已存在的冷集合也要补 KEYWORD 索引，
             # 否则 Hybrid 检索按 scope_key 过滤时被远程 Qdrant 400 拒绝。
             await ensure_payload_indexes(name, ["scope_key"])
-            logger.debug(t("🧠 [Memory] Qdrant 冷 Episode 集合已存在且配置正确: {name}", name=name))
+            logger.debug(t("log.memory.qdrant_cold_episode_collection", name=name))
     except Exception as e:
         # 与 ensure_memory_collections 一致：RuntimeError 视为运维配置异常，升级为 critical
         if isinstance(e, RuntimeError):
-            logger.critical(t("🧠 [Memory] 冷 Episode 集合 {name} 启动期配置异常，建议排查后重启: {e}", name=name, e=e))
+            logger.critical(t("log.memory.cold_episode_collection_name", name=name, e=e))
         else:
-            logger.error(t("🧠 [Memory] 检查/重建冷 Episode 集合 {name} 失败: {e}", name=name, e=e))
+            logger.error(t("log.memory.check_rebuild_cold_episode", name=name, e=e))
 
 
 async def _reindex_memory_payloads(collection_name: str, payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
@@ -320,9 +312,7 @@ async def _reindex_memory_episodes(payload_backup: list[tuple[Any, dict[str, Any
         )
 
     await upsert_episode_vectors_batch(episodes_data)
-    logger.info(
-        t("🧠 [Memory] Episode 维度迁移完成: {p0} 条，跳过 {skipped} 条", p0=len(episodes_data), skipped=skipped)
-    )
+    logger.info(t("log.memory.episode_dimension_migration_migrated", p0=len(episodes_data), skipped=skipped))
 
 
 async def _reindex_memory_entities(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
@@ -351,9 +341,7 @@ async def _reindex_memory_entities(payload_backup: list[tuple[Any, dict[str, Any
         )
 
     await upsert_entity_vectors_batch(entities_data)
-    logger.info(
-        t("🧠 [Memory] Entity 维度迁移完成: {p0} 条，跳过 {skipped} 条", p0=len(entities_data), skipped=skipped)
-    )
+    logger.info(t("log.memory.entity_dimension_migration_migrated", p0=len(entities_data), skipped=skipped))
 
 
 async def _reindex_memory_edges(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
@@ -379,4 +367,4 @@ async def _reindex_memory_edges(payload_backup: list[tuple[Any, dict[str, Any]]]
         )
 
     await upsert_edge_vectors_batch(edges_data)
-    logger.info(t("🧠 [Memory] Edge 维度迁移完成: {p0} 条，跳过 {skipped} 条", p0=len(edges_data), skipped=skipped))
+    logger.info(t("log.memory.edge_dimension_migration_migrated", p0=len(edges_data), skipped=skipped))

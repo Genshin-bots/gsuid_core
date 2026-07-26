@@ -1,0 +1,4 @@
+{
+  "log.git_update.force_update_result": "[Git Update] {message}",
+  "log.git_update.update_result": "[Git Update] {message}"
+}

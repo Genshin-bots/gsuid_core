@@ -30,7 +30,7 @@ async def send_core_reload_msg(bot: Bot, ev: Event):
         return
     # 和 core更新 共用别名逻辑：支持别名 / 大小写不敏感
     plugin_name = await resolve_plugin_name(plugin_name)
-    logger.info(t("🔔 开始执行 [重载] {plugin_name}", plugin_name=plugin_name))
+    logger.info(t("log.core.plugin_name_start", plugin_name=plugin_name))
     await bot.send(await bot.t("🔔 正在尝试重载插件{plugin_name}...", plugin_name=plugin_name))
     retcode = reload_plugin(plugin_name)
     await bot.send(retcode)
@@ -38,7 +38,7 @@ async def send_core_reload_msg(bot: Bot, ev: Event):
 
 @sv_core_config.on_command(("更新", "强制更新"), block=True)
 async def send_core_update_msg(bot: Bot, ev: Event):
-    logger.info(t("开始执行[更新] 早柚核心"))
+    logger.info(t("log.core.start_update"))
     if "强制" in ev.command:
         level = 1
     else:
@@ -59,7 +59,7 @@ async def send_core_update_msg(bot: Bot, ev: Event):
 
 @sv_core_config.on_command(("设置镜像"), block=True)
 async def send_core_set_mirror(bot: Bot, ev: Event):
-    logger.info(t("开始执行[设置镜像]"))
+    logger.info(t("log.core.set_mirror_start"))
     mirror_input = ev.text.strip() if ev.text else ""
 
     # 支持快捷名称
@@ -99,7 +99,7 @@ async def send_core_set_mirror(bot: Bot, ev: Event):
 
 @sv_core_config.on_command(("应用镜像"), block=True)
 async def send_core_apply_mirror(bot: Bot, ev: Event):
-    logger.info(t("开始执行[应用镜像]"))
+    logger.info(t("log.core.apply_mirror_start"))
     mirror_input = ev.text.strip() if ev.text else ""
 
     # 支持快捷名称
@@ -131,7 +131,7 @@ async def send_core_apply_mirror(bot: Bot, ev: Event):
 
 @sv_core_config.on_fullmatch(("更新依赖"), block=True)
 async def send_core_poetry_install(bot: Bot, ev: Event):
-    logger.info(t("开始执行[更新] 早柚核心依赖"))
+    logger.info(t("log.core.start_update_2"))
     if not hasattr(asyncio, "to_thread"):
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor() as executor:
@@ -154,7 +154,7 @@ async def send_core_poetry_install(bot: Bot, ev: Event):
     block=True,
 )
 async def send_core_all_update_msg(bot: Bot, ev: Event):
-    logger.info(t("开始执行[更新] 全部更新"))
+    logger.info(t("log.core.start_update_3"))
 
     if "强制" in ev.command:
         level = 1

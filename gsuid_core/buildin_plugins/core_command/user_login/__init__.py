@@ -29,14 +29,14 @@ sv_data_manger = SV("用户数据管理", pm=0)
 
 @sv_core_user_config.on_fullmatch(("刷新全部CK", "刷新全部ck"), block=True)
 async def send_refresh_all_ck_msg(bot: Bot, ev: Event):
-    logger.info(i18n_t("开始执行[刷新全部CK]"))
+    logger.info(i18n_t("log.core.ck_start_refresh_2"))
     im = await get_ck_by_all_stoken(ev.bot_id)
     await bot.send(im)
 
 
 @sv_core_user_add.on_fullmatch(("刷新CK", "刷新ck"), block=True)
 async def send_refresh_ck_msg(bot: Bot, ev: Event):
-    logger.info(i18n_t("开始执行[刷新CK]"))
+    logger.info(i18n_t("log.core.ck_start_refresh"))
     im = await get_ck_by_stoken(ev.bot_id, ev.user_id)
     await bot.send(im)
 
@@ -161,7 +161,7 @@ async def _send_help(bot: Bot, im):
 @sv_core_user_qrcode_login.on_fullmatch(("扫码登陆", "扫码登录"), block=True, prefix=False)
 @sv_core_user_qrcode_login.on_fullmatch(("扫码登陆", "扫码登录"), block=True)
 async def send_qrcode_login(bot: Bot, ev: Event):
-    logger.info(i18n_t("开始执行[扫码登陆]"))
+    logger.info(i18n_t("log.core.qr_code_login_start"))
     uid_list = await get_all_bind_uid(ev.bot_id, ev.user_id)
     if any(uid_list):
         im = await qrcode_login(bot, ev, ev.user_id)

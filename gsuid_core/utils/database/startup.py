@@ -135,15 +135,13 @@ def import_database_models() -> None:
         if ai_config.get_config("enable").data:
             modules.extend(AI_DATABASE_MODEL_MODULES)
     except Exception as e:
-        logger.warning(t("[数据库] 读取 AI 配置失败，将仅创建核心表: {e}", e=e))
+        logger.warning(t("log.database.ai_read_fail_create", e=e))
 
     for module_name in modules:
         try:
             importlib.import_module(module_name)
         except Exception as e:
-            logger.warning(
-                t("[数据库] 导入模型模块失败: {module_name}, 跳过对应表创建: {e}", module_name=module_name, e=e)
-            )
+            logger.warning(t("log.database.module_name_import_fail_skip", module_name=module_name, e=e))
 
 
 async def ensure_core_database_tables() -> None:
@@ -155,20 +153,20 @@ async def ensure_core_database_tables() -> None:
     import_database_models()
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
-    logger.info(t("[数据库] 核心数据库表创建成功!"))
+    logger.info(t("log.database.create_ok"))
 
 
 @on_core_start_before(priority=-100)
 async def move_database():
     old_path = get_res_path().parent / "GsData.db"
     if old_path.exists() and not DB_PATH.exists():
-        logger.warning(t("检测到主目录存在旧版数据库, 迁移中...该log只会看到一次..."))
+        logger.warning(t("log.database.log_migrate"))
         move(old_path, db_url)
-        logger.warning(t("迁移完成！"))
+        logger.warning(t("log.database.migrate_done"))
 
     for i in global_val_path.glob("*.json"):
         i.unlink()
-        logger.warning(t("删除历史统计记录..."))
+        logger.warning(t("log.database.deleting_historical_statistics_records_delete"))
 
 
 @on_core_start_before(priority=-90)

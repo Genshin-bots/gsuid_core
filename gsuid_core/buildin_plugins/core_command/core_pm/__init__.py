@@ -23,7 +23,7 @@ sv_pm_core_config = SV("Core权限管理", pm=0)
     block=True,
 )
 async def add_blacklist_msg(bot: Bot, ev: Event):
-    logger.info(t("[Core权限管理] {p0} {p1}", p0=ev.command, p1=ev.text))
+    logger.info(t("log.core.permission_manageme", p0=ev.command, p1=ev.text))
     is_ban = ev.command in ["封禁", "加入黑名单", "拉黑"]
     ban_k = "移除" if is_ban else "重新给予"
 
@@ -51,7 +51,7 @@ async def add_blacklist_msg(bot: Bot, ev: Event):
 
     logger.info(
         t(
-            "[Core权限管理] {p0} {p1} {ban_k} {p2}",
+            "log.core.permission_manageme_ban_k",
             p0=ev.command,
             p1=plugin.name if plugin else "全局",
             ban_k=ban_k,

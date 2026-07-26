@@ -121,7 +121,7 @@ async def hybrid_query(
         # 本地 Qdrant 索引长度不同步会抛 IndexError，是存储级损坏，非业务错误。
         logger.critical(
             t(
-                "🧠 [Hybrid] 集合 {collection_name} 本地索引崩溃: {e}。建议删除本地存储目录并重启。",
+                "log.rag.hybrid_collection_name_local_start",
                 collection_name=collection_name,
                 e=e,
             )
@@ -133,7 +133,7 @@ async def hybrid_query(
         if is_vector_structure_error(str(e)):
             logger.warning(
                 t(
-                    "🧠 [Hybrid] 集合 {collection_name} 向量结构/维度异常（疑似迁移未完成），本次检索降级为空: {e}",
+                    "log.rag.hybrid_collection_name_vector_fail",
                     collection_name=collection_name,
                     e=e,
                 )

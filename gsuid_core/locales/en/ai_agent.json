@@ -1,0 +1,5 @@
+{
+  "log.ai_agent.chain_too_long_summary": "The thinking chain is too long; organizing the final answer based on available clues...",
+  "log.ai_agent.on_trace_observer_fail": "[GsCoreAIAgent] on_trace observer raised an exception (ignored): {error}",
+  "log.ai_agent.ttft_ms_tps_tokens_ok": "[GsCoreAIAgent] TTFT: {ttft_ms:.2f} ms, TPS: {tps:.2f} tokens/s"
+}

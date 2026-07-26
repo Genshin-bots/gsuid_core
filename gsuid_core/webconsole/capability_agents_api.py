@@ -156,7 +156,7 @@ async def create_capability_agent(
     save_user_profile(node)
     logger.info(
         t(
-            "🤖 [CapabilityAgent] webconsole 新建用户节点: {p0}（{p1}）",
+            "log.webconsole.cap_created_user_node",
             p0=node.node_id,
             p1="基于 " + body.base if body.base else "无模板",
         )

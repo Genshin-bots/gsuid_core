@@ -1,0 +1,7 @@
+{
+  "log.resource_download.connect_error": "{url} の取得中に接続エラーが発生しました: {error}",
+  "log.resource_download.http_error": "{url} の取得中に HTTP エラーが発生しました: {error}",
+  "log.resource_download.request_error": "{url} の取得中にリクエストエラーが発生しました: {error}",
+  "log.resource_download.tag_url": "ℹ️ {tag} URL: {url}",
+  "log.resource_download.unsupported_protocol": "{url} の取得中に未対応プロトコルのエラーが発生しました: {error}"
+}

@@ -1,0 +1,6 @@
+{
+  "log.sv.error_occurred_executing": "[SV] {p0} 执行时出现错误!",
+  "log.sv.name_module_initializing": "【{name}】模块初始化中...",
+  "log.sv.type_trigger_k_load": "载入{type}触发器【{_k}】!",
+  "log.sv.type_trigger_pk_load": "载入{type}触发器【{_pk}】!"
+}

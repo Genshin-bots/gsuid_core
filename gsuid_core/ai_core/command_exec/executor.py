@@ -223,9 +223,7 @@ async def run_argv(
     timeout = max(1, min(timeout, cfg_get("max_timeout")))
     env = build_safe_env(extra_path)
     resolved_argv, is_batch = resolve_argv0(argv, env)
-    logger.info(
-        t("🧰 [CommandExec] 执行: {p0} (cwd={cwd}, batch={is_batch})", p0=resolved_argv[0], cwd=cwd, is_batch=is_batch)
-    )
+    logger.info(t("log.ai.commandexec_cwd_batch_is", p0=resolved_argv[0], cwd=cwd, is_batch=is_batch))
     if _IS_WINDOWS:
         raw, code = await _run_in_thread(resolved_argv, cwd, env, timeout, max_output)
     else:

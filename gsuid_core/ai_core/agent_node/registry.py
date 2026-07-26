@@ -21,12 +21,10 @@ _NODES: Dict[str, AgentNode] = {}
 def register_agent_node(node: AgentNode) -> None:
     """注册一个节点。同 node_id 后写覆盖前写（插件可覆盖内置）。"""
     if not node.node_id:
-        logger.warning(t("🧩 [AgentNode] node_id 为空，已忽略"))
+        logger.warning(t("log.ai.agentnode_node_id_empty_ignore"))
         return
     _NODES[node.node_id] = node
-    logger.info(
-        t("🧩 [AgentNode] 注册节点: {p0} ({p1}, source={p2})", p0=node.node_id, p1=node.display_name, p2=node.source)
-    )
+    logger.info(t("log.ai.agentnode_registered_node_source", p0=node.node_id, p1=node.display_name, p2=node.source))
 
 
 def unregister_agent_node(node_id: str) -> bool:

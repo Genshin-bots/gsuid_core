@@ -319,7 +319,7 @@ async def probe_and_route(
     )
     logger.debug(
         t(
-            "🧠 [RF-Mem] 探针路由: route={route} s̄={p0:.4f} H={p1:.4f} k={p2}",
+            "log.memory.rf_mem_route_probe_routing",
             route=route,
             p0=signal.mean_score,
             p1=signal.entropy,

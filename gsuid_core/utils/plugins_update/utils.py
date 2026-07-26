@@ -17,7 +17,7 @@ def get_command_chain() -> List[str]:
             cmd_chain.extend(process.cmdline())
             process = process.parent()
         except Exception as e:
-            logger.warning(t("获取命令链失败...{e}", e=e))
+            logger.warning(t("log.plugin.get_command_chain_fail", e=e))
             break
     return cmd_chain
 
@@ -26,7 +26,7 @@ def check_start_tool(is_pip: bool = False):
     command_chain = get_command_chain()
     command_chain = [command.lower() for command in command_chain]
     command_chain_str = " ".join(command_chain)
-    logger.debug(t("[检测启动工具] 命令链: {command_chain}", command_chain=command_chain))
+    logger.debug(t("log.plugin.command_chain_start", command_chain=command_chain))
 
     PDM = "pdm"
     POETRY = "poetry"
@@ -66,5 +66,5 @@ def check_start_tool(is_pip: bool = False):
     else:
         command = OTHER
 
-    logger.debug(t("[检测启动工具] 最终命令: {command}", command=command))
+    logger.debug(t("log.plugin.command_start", command=command))
     return command

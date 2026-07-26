@@ -71,10 +71,10 @@ def init_html_fontconfig(
             fontconfig_use_mmap=fontconfig_use_mmap,
         )
         _fontconfig_initialized = True
-        logger.info(t("🖼️ [HTMLRender] fontconfig 初始化成功"))
+        logger.info(t("log.htmlrender.fontconfig_initialized"))
         return True
     except Exception as e:
-        logger.exception(t("🖼️ [HTMLRender] fontconfig 初始化失败: {e}", e=e))
+        logger.exception(t("log.htmlrender.fontconfig_initialization", e=e))
         return False
 
 

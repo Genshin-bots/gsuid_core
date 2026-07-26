@@ -1,0 +1,19 @@
+{
+  "log.handler.ai_init_incomplete": "[GsCore][AI] AI Core 初始化未完成或存在失败步骤，跳过本次 AI 会话",
+  "log.handler.ai_initializing": "[GsCore][AI] AI Core 正在初始化/迁移，暂不将本次消息加入 AI 会话队列",
+  "log.handler.at_bot_shield": "消息中疑似包含@机器人的消息, 停止响应本消息内容",
+  "log.handler.buffer_coregroup_fail": "[GsCore] 缓冲 CoreGroup 写入失败: {error}",
+  "log.handler.buffer_coreuser_fail": "[GsCore] 缓冲 CoreUser 写入失败: {error}",
+  "log.handler.buffer_flush_loop_fail": "[GsCore] CoreUser/Group 缓冲刷写循环异常: {error}",
+  "log.handler.buffer_flushed": "[GsCore] CoreUser/Group 缓冲区刷写完成",
+  "log.handler.buffer_flushing": "[GsCore] 刷写 CoreUser/Group 缓冲区...",
+  "log.handler.buffer_stop": "[GsCore] 退出前停止 CoreUser/Group 缓冲刷写循环...",
+  "log.handler.check_command_fail": "[GsCore] trigger.check_command 异常: type={type} keyword={keyword}",
+  "log.handler.cmd_on_message": "[命令触发] [on_message]",
+  "log.handler.cmd_triggered": "[命令触发]",
+  "log.handler.event_received": "[收到事件]",
+  "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command 异常: keyword={keyword}",
+  "log.handler.meta_received": "[收到Meta事件]",
+  "log.handler.meta_triggered": "[Meta事件触发]",
+  "log.handler.same_msg_cd": "[GsCore][触发相同消息CD] 忽略{user_id}该消息!"
+}

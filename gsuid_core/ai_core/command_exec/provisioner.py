@@ -163,7 +163,7 @@ async def _download_and_install(
             return True, "工具链已就位(跨进程复用)", existing
 
         url = _build_url(recipe, os_norm, arch, ext)
-        logger.info(t("🧰 [Provision] 下载 {p0} v{p1} ← {url}", p0=recipe.tool, p1=recipe.version, url=url))
+        logger.info(t("log.ai.provision_downloading_url", p0=recipe.tool, p1=recipe.version, url=url))
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / f"pkg.{ext}"
             digest = await _download(url, archive)
@@ -178,7 +178,7 @@ async def _download_and_install(
             os.replace(str(extracted_bin.parent), str(final_dir))
         bin_path = final_dir / recipe.bin_subdir
         logger.success(
-            t("🧰 [Provision] {p0} v{p1} 安装完成 → {bin_path}", p0=recipe.tool, p1=recipe.version, bin_path=bin_path)
+            t("log.ai.provision_installation_bin_path", p0=recipe.tool, p1=recipe.version, bin_path=bin_path)
         )
         return True, "安装完成", bin_path
     finally:

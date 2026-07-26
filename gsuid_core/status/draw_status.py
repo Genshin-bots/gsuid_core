@@ -98,7 +98,7 @@ def _write_cache(res: bytes, real_bot_id: str, bot_self_id: str) -> None:
         tmp.write_bytes(res)
         os.replace(tmp, img_path)
     except OSError as e:
-        logger.warning(t("[core_status] 写入缓存失败: {e}", e=e))
+        logger.warning(t("log.status.core_status_write_cache", e=e))
 
 
 # asyncio.Lock：同一事件循环内串行化渲染，避免并发请求都进线程池。
@@ -111,7 +111,7 @@ T = TypeVar("T")
 def _or(value: T | None | BaseException, default: T) -> T:
     """gather(return_exceptions=True) 返回异常/None 时回退 default；否则透传。"""
     if isinstance(value, BaseException) or value is None:
-        logger.warning(t("[core_status] 子任务结果异常/空，回退默认: {value}", value=repr(value)))
+        logger.warning(t("log.status.core_status_subtask_result_abnormal_fail", value=repr(value)))
         return default
     return value
 
@@ -533,7 +533,7 @@ async def _safe_call_plugin_status(fn, plugin_name: str, status_key: str) -> str
     except asyncio.TimeoutError:
         logger.warning(
             t(
-                "[core_status] 插件 {plugin_name} 的状态回调 {status_key} 超时(>35s)",
+                "log.status.core_status_callback_key_plugin",
                 plugin_name=plugin_name,
                 status_key=status_key,
             )
@@ -542,7 +542,7 @@ async def _safe_call_plugin_status(fn, plugin_name: str, status_key: str) -> str
     # 插件回调是 3rd-party 边界，无法预知异常类型；用 Exception 而非 BaseException，
     # 保证 CancelledError / KeyboardInterrupt / SystemExit 仍能向上传播
     except Exception as e:
-        logger.error(t("调用插件 {plugin_name} 的状态函数时发生错误: {e}", plugin_name=plugin_name, e=e), exc_info=True)
+        logger.error(t("log.status.plugin_name_error", plugin_name=plugin_name, e=e), exc_info=True)
         return "未知"
 
 

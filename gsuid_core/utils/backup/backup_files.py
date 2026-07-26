@@ -15,7 +15,7 @@ def clean_log():
     for i in LOG_PATH.glob("*.log"):
         try:
             if i.stat().st_mtime < (datetime.datetime.now() - datetime.timedelta(days=day)).timestamp():
-                logger.warning(t("清理日志文件 {p0}", p0=i.name))
+                logger.warning(t("log.backup.cleaning_log_file_cleanup", p0=i.name))
                 i.unlink()
         except FileNotFoundError:
             pass
@@ -60,9 +60,9 @@ async def backup_file(file_path: Path, backup_path: Path, backup_day: int = 5):
 
     if os.path.exists(end_day_backup):
         os.remove(end_day_backup)
-        logger.warning(t("♻️ [备份核心] 已删除失效备份 {end_day_backup}", end_day_backup=end_day_backup))
+        logger.warning(t("log.backup.end_day_backup_delete", end_day_backup=end_day_backup))
 
-    logger.success(t("✅ [备份核心] 已成功备份 {backup}", backup=backup))
+    logger.success(t("log.backup.backup_ok", backup=backup))
 
 
 def clear_path_all_file(path: Path, pattern: str = "*"):
@@ -71,9 +71,9 @@ def clear_path_all_file(path: Path, pattern: str = "*"):
             try:
                 f.unlink()
             except OSError as e:
-                logger.warning(t("💥 [备份核心] 删除文件 {f} 失败！", f=f))
+                logger.warning(t("log.backup.delete_fail", f=f))
                 logger.error(e.strerror)
-        logger.success(t("🚧 [备份核心] 清空路径 {path} 成功！", path=path))
+        logger.success(t("log.backup.backup_core_path_ok", path=path))
     except Exception as e:
-        logger.warning(t("💥 [备份核心] 清空路径 {path} 失败！", path=path))
+        logger.warning(t("log.backup.path_fail", path=path))
         logger.error(e)

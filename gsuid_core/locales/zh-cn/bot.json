@@ -1,0 +1,21 @@
+{
+  "log.bot.about_to_send": "[GsCore][即将发送消息]",
+  "log.bot.ban_http_unsupported": "[ban] HTTP 模式不支持禁言操作，已忽略",
+  "log.bot.banuserto_id_target_type": "[禁言用户to] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}",
+  "log.bot.exec_fail": "[核心执行异常] 函数 {func_name} 执行发生未捕获异常",
+  "log.bot.exec_start": "[核心执行] 函数 {func_name} 开始执行",
+  "log.bot.mute_check_fail": "[Core AI控制] 禁言状态检查失败，继续发送: {error}",
+  "log.bot.queue_wait": "[排队警告] 函数 {name} 等待了 {wait_time:.2f}s 才开始执行",
+  "log.bot.recall_disabled": "[_Bot] {bot_id} 连续 {streak} 次未回执，停用 recall 等待",
+  "log.bot.recall_to": "[撤回消息to] {bot_id} - {target_type} - {target_id} - {mid}",
+  "log.bot.record_history_fail": "[GsCore][Bot] 记录历史记录失败: {error}",
+  "log.bot.scope_muted": "[Core AI控制] 当前会话范围处于禁言状态，拦截发送: {scope_key}",
+  "log.bot.send_task_fail": "[_Bot] 发送任务异常: {error}",
+  "log.bot.send_worker_fail": "[_Bot] 发送 worker 异常: {error}",
+  "log.bot.send_worker_started": "[_Bot] {bot_id} 发送 worker 已启动",
+  "log.bot.sendmsgto_id_target_type_send": "[发送消息to] {bot_id} - {target_type} - {target_id}",
+  "log.bot.unsend_http_unsupported": "[unsend] HTTP 模式不支持撤回消息，已忽略",
+  "log.bot.wait_reply_timeout": "[等待回复超时] 等待回复{event}超时, 超时时间: {timeout}s",
+  "log.bot.ws_not_connected_drop": "[_Bot] ws 未连接，消息丢弃",
+  "log.bot.ws_not_connected_pending": "[_Bot] ws 未连接，消息暂存等待重连..."
+}

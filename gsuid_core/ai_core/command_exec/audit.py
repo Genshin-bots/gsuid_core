@@ -100,5 +100,5 @@ async def cleanup_expired() -> int:
     """删早于 TTL 的低风险审计（高危 / provision 永久留存）。返回删除行数。"""
     n = await AICommandAudit.delete_expired(int(cfg_get("audit_ttl_days")))
     if n > 0:
-        logger.info(t("🧰 [CommandExec] TTL 清理删除 {n} 条低风险审计", n=n))
+        logger.info(t("log.ai.commandexec_ttl_cleanup_removed_delete", n=n))
     return n

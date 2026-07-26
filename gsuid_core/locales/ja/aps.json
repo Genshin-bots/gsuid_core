@@ -1,0 +1,10 @@
+{
+  "log.aps.create_fail": "[スケジューラ] トリガーの作成に失敗しました: {e}",
+  "log.aps.datetrigger_run_date": "[スケジューラ] DateTrigger には run_date パラメータが必要です",
+  "log.aps.found_duplicate_named_scheduled": "関数名が重複したスケジュールタスク {p0} を検出しました。このタスクを削除しています...",
+  "log.aps.scheduler_add_scheduled_task_fail": "[スケジューラ] スケジュールタスクの追加に失敗しました: {e}",
+  "log.aps.scheduler_ok": "[スケジューラ] スケジュールタスクの起動に成功しました！",
+  "log.aps.scheduler_scheduled_task_added_ok": "[スケジューラ] スケジュールタスクを正常に追加しました: {job_id} ({p0}) - {p1}",
+  "log.aps.scheduler_shutting_scheduled_tasks": "[スケジューラ] プログラムをシャットダウンします！スケジュールタスクを停止しました！",
+  "log.aps.trigger_type_valid_types": "[スケジューラ] 無効なトリガータイプです: {trigger_type}。サポートされているのは {valid_trigger_types} のみです"
+}

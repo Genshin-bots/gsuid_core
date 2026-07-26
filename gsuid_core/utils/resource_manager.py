@@ -107,7 +107,7 @@ class ResourceManager:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info(
             t(
-                "🗑️ [ResourceManager] TTL 清理任务已启动 (TTL: {p0}s, 间隔: {p1}s)",
+                "log.resourcemanager.ttl_cleanup_task_interval",
                 p0=self._ttl_seconds,
                 p1=self._cleanup_interval,
             )
@@ -151,7 +151,7 @@ class ResourceManager:
 
         if expired_ids:
             logger.debug(
-                t("🗑️ [ResourceManager] 已清理 {p0} 个过期资源，剩余 {p1} 个", p0=len(expired_ids), p1=len(self._store))
+                t("log.resourcemanager.cleaned_expired_resources_remaining", p0=len(expired_ids), p1=len(self._store))
             )
 
         return len(expired_ids)

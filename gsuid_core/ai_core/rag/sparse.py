@@ -40,7 +40,7 @@ def _ensure_jieba() -> bool:
         jieba.setLogLevel(logging.WARNING)
         _jieba_state = True
     except Exception as e:
-        logger.warning(i18n_t("🧠 [Sparse] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}", e=e))
+        logger.warning(i18n_t("log.rag.sparse_jieba_unavailable_bm25_fail", e=e))
         _jieba_state = False
     return _jieba_state
 
@@ -73,7 +73,7 @@ def sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVector]]:
         ]
         return vectors
     except Exception as e:
-        logger.warning(i18n_t("🧠 [Sparse] BM25 稀疏嵌入失败，本批降级纯 dense: {e}", e=e))
+        logger.warning(i18n_t("log.rag.sparse_bm25_embedding_batch", e=e))
         return [None] * len(texts)
 
 

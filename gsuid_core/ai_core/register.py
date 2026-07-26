@@ -191,7 +191,7 @@ def ai_tools(
                 elif isinstance(check_result, Tuple):
                     is_passed, message = check_result[0], check_result[1]
                 else:
-                    logger.warning(t("🧠 [Register] @ai_tools 装饰器 check_func 存在问题, 请开发者检查..."))
+                    logger.warning(t("log.register.ai_tools_decorator_check"))
                     return "@ai_tools 装饰器 check_func 存在问题, 请开发者检查"
 
                 if not is_passed:
@@ -229,7 +229,7 @@ def ai_tools(
                 timeout_sec = int(timeout) if timeout is not None else 0
                 logger.warning(
                     t(
-                        "🧠 [Register] 工具 [{p0}] 执行超时（>{timeout_sec}s），已中断",
+                        "log.register.timeout_sec_aborted",
                         p0=fn.__name__,
                         timeout_sec=timeout_sec,
                     )
@@ -288,9 +288,7 @@ def ai_tools(
                     if inspect.isawaitable(res):
                         res = await res
                 except Exception as e:
-                    logger.debug(
-                        t("🧠 [Register] 工具 [{_name}] visible_when 判定异常，默认可见: {e}", _name=_name, e=e)
-                    )
+                    logger.debug(t("log.register.name_visible_check_errored", _name=_name, e=e))
                     return tool_def
                 return tool_def if res else None
 
@@ -305,12 +303,13 @@ def ai_tools(
         # 框架特权分类防护：非核心代码（plugins/ 或未知来源）注册 self/buildin/meta
         # 时重定向到 common（见 _CORE_ONLY_CATEGORIES 注释）。
         reg_category = category
+        from gsuid_core.logger import hl_plugin
+
         if plugin_name != "core" and reg_category in _CORE_ONLY_CATEGORIES:
             logger.warning(
                 t(
-                    "🧠 [Register] 插件 [{plugin_name}] 的工具 [{p0}] 声明了框架特权分类"
-                    " [{reg_category}]，已重定向到 [common] 注册",
-                    plugin_name=plugin_name,
+                    "log.register.plugin_name_privileged_category",
+                    plugin_name=hl_plugin(plugin_name),
                     p0=fn.__name__,
                     reg_category=reg_category,
                 )
@@ -319,7 +318,7 @@ def ai_tools(
 
         logger.debug(
             t(
-                "🧠 [Register] @ai_tools 装饰器执行，注册工具: {p0} (分类: {reg_category})",
+                "log.register.reg_category",
                 p0=fn.__name__,
                 reg_category=reg_category,
             )
@@ -331,11 +330,9 @@ def ai_tools(
         if not tool_description:
             logger.warning(
                 t(
-                    "🧠 [Register] 工具 [{p0}]（来源 {plugin_name}）没有 docstring，向量检索只剩"
-                    " 函数名、几乎不可能被召回。常见成因：docstring 被写在了函数体首条语句"
-                    "（如 logger 调用）之后，那样它只是个普通字符串表达式，不是 docstring。",
+                    "log.register.missing_docstring_plugin_name",
                     p0=fn.__name__,
-                    plugin_name=plugin_name,
+                    plugin_name=hl_plugin(plugin_name),
                 )
             )
 
@@ -595,7 +592,7 @@ def add_manual_knowledge(entity: ManualKnowledgeBase) -> bool:
     # 确保 source 为 "manual"
     entity["source"] = "manual"
     _MANUAL_ENTITIES.append(entity)
-    logger.trace(t("log.ai_registry.manual_entity_added", title=entity["title"]))
+    logger.trace(t("log.ai_registry.manual_entity", title=entity["title"]))
     return True
 
 
@@ -780,11 +777,11 @@ def ai_skill(path: Union[str, Path], plugin: Optional[str] = None) -> None:
     if result["status"] == 0:
         logger.info(
             t(
-                "🧠 [AI][Registry] Skill 目录注册成功（plugin={plugin}, count={p0}）: {p1}",
+                "log.register.ai_registry_skill_directory_ok",
                 plugin=plugin,
                 p0=result.get("count", 0),
                 p1=p.resolve(),
             )
         )
     else:
-        logger.warning(t("🧠 [AI][Registry] Skill 目录注册失败: {p0}", p0=result["msg"]))
+        logger.warning(t("log.register.ai_registry_skill_directory_fail", p0=result["msg"]))

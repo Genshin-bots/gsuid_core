@@ -130,7 +130,7 @@ async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] =
                         "",
                     )
 
-    return {"status": 0, "msg": t("log.webconsole.batch_push.success"), "data": t("log.webconsole.batch_push.success")}
+    return {"status": 0, "msg": t("msg.webconsole.batch_push.success"), "data": t("msg.webconsole.batch_push.success")}
 
 
 @app.get(
@@ -206,8 +206,8 @@ async def batch_push_targets(
     # ---- 宏只在「无 bot 筛选 + 第一页」按 kind 返回一次----
     macros: List[Dict[str, Any]] = []
     if not bot_id and offset == 0:
-        all_groups_label = t("log.webconsole.batch_push.all_groups")
-        all_users_label = t("log.webconsole.batch_push.all_users")
+        all_groups_label = t("msg.webconsole.batch_push.all_groups")
+        all_users_label = t("msg.webconsole.batch_push.all_users")
         if kind in (None, "all", "group"):
             if not q_lower or q_lower in all_groups_label.lower():
                 macros.append({"kind": "macro", "bot_id": "", "label": all_groups_label, "value": "ALLGROUP"})

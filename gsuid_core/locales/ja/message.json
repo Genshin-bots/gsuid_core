@@ -1,0 +1,10 @@
+{
+  "log.message.gid_fail_error": "[プッシュ] グループ {gid} へのプッシュに失敗！エラー情報: {e}",
+  "log.message.master_id_fail": "[管理者へのメッセージ送信] master_id が未設定のため、送信失敗！",
+  "log.message.push_group_ok": "[プッシュ] グループチャットへのプッシュが完了した！",
+  "log.message.push_message_to_owne_task_start": "[管理者へのメッセージ送信] タスク開始...",
+  "log.message.push_private_ok": "[プッシュ] 個人チャットへのプッシュが完了した！",
+  "log.message.push_task": "[プッシュ] タスク終了！",
+  "log.message.push_task_start": "[プッシュ] タスク開始...",
+  "log.message.qid_fail_error": "[プッシュ] {qid} への個人チャットプッシュに失敗！エラー情報: {e}"
+}

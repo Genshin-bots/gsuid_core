@@ -108,7 +108,7 @@ class MemeLibrary:
 
         # 检查是否已存在
         if await AiMemeRecord.exists_by_meme_id(meme_id):
-            logger.debug(t("[Meme] 图片已存在，跳过: {meme_id}", meme_id=meme_id))
+            logger.debug(t("log.meme.skip_image_id_meme", meme_id=meme_id))
             return None
 
         # 确定文件扩展名
@@ -141,7 +141,7 @@ class MemeLibrary:
         await AiMemeRecord.insert_record(record)
         logger.info(
             t(
-                "[Meme] 新表情包入库: {meme_id} ({width}x{height}, {file_mime})",
+                "log.meme.id_width_height",
                 meme_id=meme_id,
                 width=width,
                 height=height,
@@ -182,7 +182,7 @@ class MemeLibrary:
             if old_path.exists():
                 await _move_file(old_path, new_path)
             elif not new_path.exists():
-                logger.warning(t("[Meme] 源文件不存在: {old_path}", old_path=old_path))
+                logger.warning(t("log.meme.path_old_path", old_path=old_path))
                 return False
 
         # 更新数据库：folder 是 persona 路由的代理，移动到 common/persona_* 时
@@ -205,9 +205,9 @@ class MemeLibrary:
                 try:
                     await MemeLibrary.sync_to_qdrant(updated)
                 except Exception as e:
-                    logger.warning(t("[Meme] 移动后同步 Qdrant 失败: {meme_id}: {e}", meme_id=meme_id, e=e))
+                    logger.warning(t("log.meme.qdrant_id", meme_id=meme_id, e=e))
 
-        logger.info(t("[Meme] 移动表情包 {meme_id} -> {target_folder}", meme_id=meme_id, target_folder=target_folder))
+        logger.info(t("log.meme.id_target_folder", meme_id=meme_id, target_folder=target_folder))
         return True
 
     @staticmethod
@@ -233,11 +233,11 @@ class MemeLibrary:
         try:
             await _remove_from_qdrant(meme_id)
         except Exception as e:
-            logger.warning(t("[Meme] 删除 Qdrant 向量失败: {e}", e=e))
+            logger.warning(t("log.meme.meme_qdrant_fail_delete_vector", e=e))
 
         # 删除数据库记录
         await AiMemeRecord.delete_by_meme_id(meme_id)
-        logger.info(t("[Meme] 删除表情包: {meme_id}", meme_id=meme_id))
+        logger.info(t("log.meme.meme_id_delete_2", meme_id=meme_id))
         return True
 
     @staticmethod
@@ -427,7 +427,7 @@ class MemeLibrary:
         try:
             await _remove_from_qdrant(meme_id)
         except Exception as e:
-            logger.warning(t("[Meme] 从向量索引移除失败: {meme_id}: {e}", meme_id=meme_id, e=e))
+            logger.warning(t("log.meme.fail_vector_meme_id", meme_id=meme_id, e=e))
             return
         await AiMemeRecord.update_record(meme_id, {"qdrant_id": ""})
 
@@ -494,8 +494,7 @@ async def _ensure_meme_collection() -> None:
         if await collection_vector_mismatched(MEME_COLLECTION_NAME, dimension, vector_name=MEME_DENSE_VECTOR):
             logger.warning(
                 t(
-                    "[Meme] Collection {MEME_COLLECTION_NAME} 维度/结构变化，强制重建"
-                    "（命名 dense + BM25 稀疏）后基于数据库记录重建索引",
+                    "log.meme.collection_name_dense_2",
                     MEME_COLLECTION_NAME=MEME_COLLECTION_NAME,
                 )
             )
@@ -504,7 +503,7 @@ async def _ensure_meme_collection() -> None:
             if await _meme_collection_needs_recovery():
                 logger.warning(
                     t(
-                        "[Meme] Collection {MEME_COLLECTION_NAME} 疑似上次迁移/同步未完成，强制重建后从数据库恢复索引",
+                        "log.meme.collection_name",
                         MEME_COLLECTION_NAME=MEME_COLLECTION_NAME,
                     )
                 )
@@ -522,7 +521,7 @@ async def _ensure_meme_collection() -> None:
                         )
                     except Exception as e:
                         # 索引已存在或后端不支持，幂等场景下属预期
-                        logger.debug(t("[Meme] 跳过 payload 索引 {field_name}: {e}", field_name=field_name, e=e))
+                        logger.debug(t("log.meme.payload_field_name", field_name=field_name, e=e))
                 return
 
     if MEME_COLLECTION_NAME not in existing or should_reindex:
@@ -537,7 +536,7 @@ async def _ensure_meme_collection() -> None:
         from gsuid_core.ai_core.rag.base import client as refreshed_client
 
         if refreshed_client is None:
-            raise RuntimeError(t("Qdrant client 重建后不可用"))
+            raise RuntimeError(t("log.meme.qdrant_client"))
         # 为 folder / status / meme_id 建立 payload 索引
         # （meme_id 索引用于幂等 upsert 前按 meme_id 删点，避免全量扫描）
         for field_name in ("folder", "status", "meme_id"):
@@ -548,7 +547,7 @@ async def _ensure_meme_collection() -> None:
             )
         logger.info(
             t(
-                "[Meme] 创建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}（命名 dense + BM25 稀疏）",
+                "log.meme.qdrant_collection_name",
                 MEME_COLLECTION_NAME=MEME_COLLECTION_NAME,
                 dimension=dimension,
             )
@@ -590,11 +589,11 @@ async def _reindex_meme_collection_from_db() -> None:
             restored += 1
         except Exception as e:
             skipped += 1
-            logger.warning(t("[Meme] 重建表情包向量索引失败，已跳过 {p0}: {e}", p0=record.meme_id, e=e))
+            logger.warning(t("log.meme.fail_skip_vector", p0=record.meme_id, e=e))
 
-    logger.info(t("[Meme] 维度迁移重建索引完成: {restored} 条，跳过 {skipped} 条", restored=restored, skipped=skipped))
+    logger.info(t("log.meme.restored_skip_skipped", restored=restored, skipped=skipped))
     if records and restored == 0:
-        raise RuntimeError(t("Meme 维度迁移未恢复任何索引，保留重试状态并等待下次启动继续恢复"))
+        raise RuntimeError(t("log.meme.resume_migrate_retry"))
 
 
 async def _embed_text(text: str) -> Optional[List[float]]:
@@ -626,7 +625,7 @@ async def _force_recreate_meme_collection() -> None:
     from gsuid_core.ai_core.rag.base import client as refreshed_client
 
     if refreshed_client is None:
-        raise RuntimeError(t("Qdrant client 重建后不可用"))
+        raise RuntimeError(t("log.meme.qdrant_client"))
     for field_name in ("folder", "status", "meme_id"):
         await refreshed_client.create_payload_index(
             collection_name=MEME_COLLECTION_NAME,
@@ -635,7 +634,7 @@ async def _force_recreate_meme_collection() -> None:
         )
     logger.info(
         t(
-            "[Meme] 已强制重建 Qdrant Collection: {MEME_COLLECTION_NAME}, 维度: {dimension}",
+            "log.meme.qdrant_collection_name_2",
             MEME_COLLECTION_NAME=MEME_COLLECTION_NAME,
             dimension=dimension,
         )
@@ -677,7 +676,7 @@ async def _upsert_to_qdrant(
     try:
         await _remove_from_qdrant(meme_id)
     except Exception as e:
-        logger.warning(t("[Meme] 清理旧向量点失败（继续写入）: {meme_id}: {e}", meme_id=meme_id, e=e))
+        logger.warning(t("log.meme.fail_cleanup_write_vector", meme_id=meme_id, e=e))
 
     point_id = get_point_id(meme_id)
     # 命名向量：dense 必有，sparse 不可用时省略（查询端自动降级纯 dense）
@@ -707,12 +706,12 @@ async def _upsert_to_qdrant(
 
         if not is_vector_structure_error(str(e)):
             raise
-        logger.warning(t("[Meme] Qdrant 写入检测到向量维度残留，强制重建 Collection 后重试: {e}", e=e))
+        logger.warning(t("log.meme.qdrant_collection", e=e))
         await _force_recreate_meme_collection()
         from gsuid_core.ai_core.rag.base import client as refreshed_client
 
         if refreshed_client is None:
-            raise RuntimeError(t("Qdrant client 重建后不可用"))
+            raise RuntimeError(t("log.meme.qdrant_client"))
         await refreshed_client.upsert(
             collection_name=MEME_COLLECTION_NAME,
             points=[point],

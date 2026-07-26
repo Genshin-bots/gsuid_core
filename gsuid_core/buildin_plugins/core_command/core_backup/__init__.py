@@ -43,9 +43,9 @@ async def backup_path_files():
     """
     CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
     copy_and_rebase_paths()
-    logger.success(t("♻️ [早柚核心] 路径已备份!"))
+    logger.success(t("log.core.gscore_path"))
     remove_old_backups(int(CLEAN_DAY))
-    logger.success(t("♻️ [早柚核心] 已删除超过 {CLEAN_DAY} 天的备份文件!", CLEAN_DAY=CLEAN_DAY))
+    logger.success(t("log.core.clean_day_delete", CLEAN_DAY=CLEAN_DAY))
 
 
 @sv_core_backup.on_fullmatch("强制执行文件备份")
@@ -73,7 +73,7 @@ async def database_backup():
     # AI 会话日志也遵循 ScheduledCleanLogDay 清理（与框架日志同一配置；0 = 不清理）
     ai_clean_days = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 8
     clean_old_session_logs(ai_clean_days)
-    logger.success(t("♻️ [早柚核心] 数据库已备份!"))
+    logger.success(t("log.core.gscore_database"))
 
 
 @scheduler.scheduled_job("cron", hour=0, minute=2)
@@ -85,7 +85,7 @@ async def clear_cache():
     await GsCache.delete_all_cache(GsUser)
     await CoreDataSummary.delete_outdate()
     await CoreDataAnalysis.delete_outdate()
-    logger.success(t("♻️ [早柚核心] 缓存已清除!"))
+    logger.success(t("log.core.gscore_cache_cleanup"))
 
 
 # 清除重复user和group
@@ -97,7 +97,7 @@ async def delete_core_user_group():
 
     await CoreUser.clean_repeat_user()
     await CoreGroup.clean_repeat_group()
-    logger.success(t("♻️ [早柚核心] 重复用户和群组已清除!"))
+    logger.success(t("log.core.gscore_duplicate_users_groups_cleanup"))
 
 
 @sv_core_clean.on_fullmatch(
@@ -105,6 +105,6 @@ async def delete_core_user_group():
     block=True,
 )
 async def send_core_master_help_msg(bot: Bot, ev: Event):
-    logger.info(t("♻️ [早柚核心] 开始执行[清除数据库]"))
+    logger.info(t("log.core.gscore_clear_database_start"))
     await delete_core_user_group()
     await bot.send(await bot.t("♻️ 操作已成功完成! 该操作不会影响现有数据!"))

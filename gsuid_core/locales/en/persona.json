@@ -1,0 +1,23 @@
+{
+  "log.persona.groupcontext_get_group_name_fail": "[GroupContext] Failed to get group name from database: {e}",
+  "log.persona.groupcontext_get_group_profile_fail": "[GroupContext] Failed to get group profile summary: {e}",
+  "log.persona.init_skip_ai_master_switch_off": "[Persona] AI master switch is off, skipping default Persona initialization",
+  "log.persona.migrated_name_voice": "[Persona] Migrated '{persona_name}' voice_anchor from config.json to {_VOICE_ANCHOR_FILENAME}",
+  "log.persona.mood_name_group_id": "[Mood] {persona_name}@{group_id}: {p0} (intensity: {p1:.2f}, trigger: {p2})",
+  "log.persona.mood_persona_name_group_id_reset": "[Mood] {persona_name}@{group_id}: mood has been reset",
+  "log.persona.personaconfig_delete_name_config": "[PersonaConfig] Failed to delete '{persona_name}' config file: {e}",
+  "log.persona.personaconfig_deleted_name_config": "[PersonaConfig] Deleted '{persona_name}' config file",
+  "log.persona.personaconfig_updated_name_ai": "[PersonaConfig] Updated '{persona_name}' AI mode: {ai_mode}",
+  "log.persona.personaconfig_updated_name_capability": "[PersonaConfig] Updated '{persona_name}' tool capability packs: {cleaned}",
+  "log.persona.personaconfig_updated_name_enabled": "[PersonaConfig] Updated '{persona_name}' enabled scope: {scope}",
+  "log.persona.personaconfig_updated_name_explicit": "[PersonaConfig] Updated '{persona_name}' explicit tool whitelist: {cleaned}",
+  "log.persona.personaconfig_updated_name_inspection": "[PersonaConfig] Updated '{persona_name}' inspection interval: {inspect_interval} minutes",
+  "log.persona.personaconfig_updated_name_target": "[PersonaConfig] Updated '{persona_name}' target groups: {target_groups}",
+  "log.persona.personaconfig_updated_name_wake": "[PersonaConfig] Updated '{persona_name}' wake keywords: {keywords}",
+  "log.persona.read_cfg_path_skipping": "[Persona] Failed to read {cfg_path}, skipping voice_anchor migration: {e}",
+  "log.persona.read_md_path": "[Persona] Failed to read {md_path}: {e}",
+  "log.persona.read_txt_path": "[Persona] Failed to read {txt_path}: {e}",
+  "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor migration exception, skipping: {e}",
+  "log.persona.write_path": "[Persona] Failed to write back {path}: {e}",
+  "log.persona.write_txt_path_keeping": "[Persona] Failed to write {txt_path}, keeping old field: {e}"
+}

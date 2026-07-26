@@ -1,0 +1,3 @@
+{
+  "log.entity_index.ambiguous_skip": "[EntityIndex] surface {surface!r} 归属歧义 {plugins}，不路由"
+}

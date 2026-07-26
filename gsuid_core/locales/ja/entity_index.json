@@ -1,0 +1,3 @@
+{
+  "log.entity_index.ambiguous_skip": "[EntityIndex] surface {surface!r} は {plugins} の間で曖昧なため、ルーティングしません"
+}

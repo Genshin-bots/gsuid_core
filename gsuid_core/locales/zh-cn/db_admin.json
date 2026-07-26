@@ -1,0 +1,15 @@
+{
+  "log.db_admin.adding_table_name_page_create": "正在将数据表 {table_name}（{page_title}）添加到插件 {plugin_name}",
+  "log.db_admin.admin_count": "共发现 {count} 个管理模型",
+  "log.db_admin.collect_start": "正在收集管理模型...",
+  "log.db_admin.create_record_fail": "创建记录时出错: {error}",
+  "log.db_admin.delete_record_fail": "删除记录时出错: {error}",
+  "log.db_admin.extract_columns_fail": "从模型 {model_name} 提取列信息时出错: {error}",
+  "log.db_admin.get_table_data_fail": "获取数据表数据时出错: {error}",
+  "log.db_admin.import_mount_app_fail": "导入 mount_app 时出错: {error}",
+  "log.db_admin.model_found": "发现 GsAdminModel: {admin_name}，模型为 {model_name}",
+  "log.db_admin.plugin_admins": "正在处理插件 {plugin_name}，包含 {admin_count} 个管理模型",
+  "log.db_admin.plugins_page_fail": "处理 site.plugins_page 时出错: {error}",
+  "log.db_admin.plugins_page_start": "正在处理 site.plugins_page: {plugin_count} 个插件",
+  "log.db_admin.update_record_fail": "更新记录时出错: {error}"
+}

@@ -120,7 +120,7 @@ def register_embedding_provider(entry: EmbeddingProviderEntry) -> None:
     _append_provider_option(entry.name)
     logger.info(
         t(
-            "🧠 [Embedding] 已注册插件嵌入 Provider: {p0} (kind={p1}, plugin={p2})",
+            "log.rag.embedding_registered_plugin_provider",
             p0=entry.name,
             p1=entry.kind,
             p2=entry.plugin or "未知",

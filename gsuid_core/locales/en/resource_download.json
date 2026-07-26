@@ -1,0 +1,7 @@
+{
+  "log.resource_download.connect_error": "Connection error while fetching {url}: {error}",
+  "log.resource_download.http_error": "HTTP error while fetching {url}: {error}",
+  "log.resource_download.request_error": "Request error while fetching {url}: {error}",
+  "log.resource_download.tag_url": "ℹ️ {tag} URL: {url}",
+  "log.resource_download.unsupported_protocol": "Unsupported protocol while fetching {url}: {error}"
+}

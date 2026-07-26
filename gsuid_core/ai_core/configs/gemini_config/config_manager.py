@@ -163,12 +163,10 @@ class GeminiConfigManager(ConfigSetManager):
             for key, value in config_data.items():
                 new_config.set_config(key, value)
 
-            logger.info(
-                t("已将 Gemini 配置文件从 '{old_name}' 重命名为 '{new_name}'", old_name=old_name, new_name=new_name)
-            )
+            logger.info(t("log.ai.gemini_old_name_new", old_name=old_name, new_name=new_name))
             return True, "ok"
         except Exception as e:
-            logger.error(t("重命名 Gemini 配置失败: {e}", e=e))
+            logger.error(t("log.ai.gemini_fail", e=e))
             return False, str(e)
 
 

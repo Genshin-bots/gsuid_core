@@ -64,15 +64,14 @@ async def _ensure_master_favorability(bot_id: str) -> None:
                 await UserFavorability.set_favorability(master_id, bot_id, MASTER_FAVORABILITY_TARGET)
                 logger.info(
                     t(
-                        "🧠 [AI Router] 主人 {master_id} 好感度 {current} 低于下限，"
-                        "已拉升至 {MASTER_FAVORABILITY_TARGET}",
+                        "log.ai.ai_router_master_id_favorability",
                         master_id=master_id,
                         current=current,
                         MASTER_FAVORABILITY_TARGET=MASTER_FAVORABILITY_TARGET,
                     )
                 )
         except Exception as e:
-            logger.debug(t("🧠 [AI Router] 主人好感度初始化失败 ({master_id}): {e}", master_id=master_id, e=e))
+            logger.debug(t("log.ai.ai_router_initialize_master_favorability_fail", master_id=master_id, e=e))
 
 
 def _get_persona_mtime(persona_name: str) -> float:
@@ -104,7 +103,7 @@ async def _maybe_refresh_stable_prompt(session: GsCoreAIAgent, event: Event, per
     session.system_prompt_built_at = time.time()
 
     session.system_prompt = await build_session_system_prompt(event, persona_name)
-    logger.debug(t("🧠 [AI Router] 稳定前缀 TTL 刷新完成: {p0}", p0=session.session_id))
+    logger.debug(t("log.ai.ai_router_stable_prefix_ttl_ok", p0=session.session_id))
 
 
 def _check_persona_changed(session: GsCoreAIAgent, persona_name: str) -> bool:
@@ -118,9 +117,7 @@ def _check_persona_changed(session: GsCoreAIAgent, persona_name: str) -> bool:
     if current_mtime > cached_mtime:
         # Persona 文件已修改，更新缓存
         _persona_mtime_cache[persona_name] = current_mtime
-        logger.info(
-            t("🧠 [AI Router] 检测到 Persona '{persona_name}' 已修改，标记需要热重载", persona_name=persona_name)
-        )
+        logger.info(t("log.ai.ai_router_persona_name_modified_load", persona_name=persona_name))
         return True
 
     return False
@@ -193,7 +190,7 @@ async def _get_or_create_ai_session(
         if persona_name and _check_persona_changed(session, persona_name):
             logger.info(
                 t(
-                    "🧠 [AI Router] 热重载 Session {session_id} 的 Persona '{persona_name}'",
+                    "log.ai.ai_router_hot_reloading_persona_load",
                     session_id=session_id,
                     persona_name=persona_name,
                 )
@@ -213,7 +210,7 @@ async def _get_or_create_ai_session(
     # 创建新 Session
     persona_name = persona_config_manager.get_persona_for_session(session_id)
     if persona_name is None:
-        raise ValueError(t("没有为 session {session_id} 配置 persona", session_id=session_id))
+        raise ValueError(t("log.ai.session_id_persona", session_id=session_id))
 
     # O-3：persona + 群简介 + 慢变稳定前缀（self_model/群画像）→ system_prompt，
     # 装配统一走 context_assembly（评测端点同源）；活跃会话由 _maybe_refresh_stable_prompt 按 TTL 刷新。
@@ -234,7 +231,7 @@ async def _get_or_create_ai_session(
 
     logger.debug(
         t(
-            "🧠 [AI Router] 创建新Session: {session_id}, 使用Persona: {persona_name}",
+            "log.ai.ai_router_created_session_id_create",
             session_id=session_id,
             persona_name=persona_name,
         )

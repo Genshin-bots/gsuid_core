@@ -1,0 +1,19 @@
+{
+  "log.upload.custom_response": "[custom / upload] {response}",
+  "log.upload.custom_upload_delete_implemented": "[custom / upload] delete is not implemented...",
+  "log.upload.custom_upload_event": "[custom / upload] Starting upload...",
+  "log.upload.custom_upload_fail_failed": "[custom / upload] Upload failed!",
+  "log.upload.s3_delete_deletion": "[S3 / delete] Starting deletion...",
+  "log.upload.s3_delete_deletion_succeeded": "[S3 / delete] Deletion succeeded!",
+  "log.upload.s3_upload_ok_succeeded": "[S3 / upload] Upload succeeded!",
+  "log.upload.s3_upload_path_load": "[S3 / upload] PATH: {path}",
+  "log.upload.s3_upload_start_starting": "[S3 / upload] Starting upload...",
+  "log.upload.s3_upload_url_load": "[S3 / upload] URL: {url}",
+  "log.upload.sm_ms_upload_deletion": "[sm.ms / upload] Starting deletion...",
+  "log.upload.sm_ms_upload_event": "[sm.ms / upload] Starting upload...",
+  "log.upload.sm_ms_upload_fail_failed": "[sm.ms / upload] Upload failed!",
+  "log.upload.sm_ms_upload_image_exists": "[sm.ms / upload] Image already exists!",
+  "log.upload.sm_ms_upload_retrieve_image": "[sm.ms / upload] Failed to retrieve image!",
+  "log.upload.smms_delete_response": "[sm.ms / delete] {response}",
+  "log.upload.smms_upload_response": "[sm.ms / upload] {response}"
+}

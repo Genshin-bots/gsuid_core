@@ -343,11 +343,11 @@ class MysApi(SignMysApi):
     ) -> Union[List[MysGame], int]:
         if not cookie:
             cookie = await self.get_ck(mys_id, "OWNER")
-        data = await self.simple_mys_req(
+        data = await self.simple_mys_req_by_region(
             MIHOYO_BBS_PLAYER_INFO,
             is_os,
             {"uid": mys_id},
-            {"Cookie": cookie},
+            cookie=cookie,
             game_name="account",
         )
         if isinstance(data, Dict):

@@ -110,7 +110,7 @@ def parse_provider_config_name(full_name: str) -> tuple[str, str]:
         if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(
                 t(
-                    "🧠 [GsCore][AI] 不支持的 provider 类型: '{provider}'，仅支持 {supported}",
+                    "log.ai.gscore_ai_provider_supported",
                     provider=provider,
                     supported=" / ".join(SUPPORTED_PROVIDERS),
                 )
@@ -153,7 +153,7 @@ THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
 def to_thinking_level(value: str) -> ThinkingLevel:
     """将配置中的 model_effort 字符串转换为 pydantic_ai 的 ThinkingLevel"""
     if value not in THINKING_LEVEL_MAP:
-        logger.warning(t("🧠 [GsCore] 未知的 model_effort 配置: {value}, 已回退为 enable", value=repr(value)))
+        logger.warning(t("log.ai.gscore_effort_config_value_fell", value=repr(value)))
         return True
     return THINKING_LEVEL_MAP[value]
 
@@ -163,9 +163,7 @@ def to_request_method(value: str) -> RequestMethod:
     if value == "responses":
         return "responses"
     if value != "chat_completions":
-        logger.warning(
-            t("🧠 [GsCore] 未知的 request_method 配置: {value}, 已回退为 chat_completions", value=repr(value))
-        )
+        logger.warning(t("log.ai.gscore_request_method_config", value=repr(value)))
     return "chat_completions"
 
 
@@ -188,7 +186,7 @@ def _resolve_continuous_usage(base_url: str, mode: str) -> bool:
     if mode == "incremental":
         return False
     if mode != "auto":
-        logger.warning(t("🧠 [GsCore] 未知的 usage_stats_mode 配置: {mode}, 已回退为 auto", mode=repr(mode)))
+        logger.warning(t("log.ai.gscore_usage_stats_mode_config", mode=repr(mode)))
     if base_url in _detected_cumulative_urls:
         return True
     return any(kw in base_url for kw in _CUMULATIVE_USAGE_URL_KEYWORDS)
@@ -275,10 +273,7 @@ class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
                 _detected_cumulative_urls.add(self._provider_url)
                 logger.warning(
                     t(
-                        "🧠 [GsCore] 探测并确认网关 {provider_url} 流式 usage 为累计语义 "
-                        "(全流 {usage_seen} 个 usage chunk 均符合 prompt 恒定 + completion 单调), "
-                        "已按「取最后值」结算防止 token 统计膨胀。"
-                        "可在该 OpenAI 配置中将 usage_stats_mode 显式设为 cumulative 固化此结果",
+                        "log.ai.gscore_provider_url_usage_seen",
                         provider_url=self._provider_url,
                         usage_seen=usage_seen,
                     )
@@ -288,9 +283,7 @@ class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
             self._usage = shadow_sum
             logger.warning(
                 t(
-                    "🧠 [GsCore] 网关 {provider_url} 出现多个 usage chunk 但不符合累计特征, "
-                    "已按增量语义回退结算 (共 {usage_seen} 个 usage chunk)。"
-                    "若统计仍异常, 请显式设置该配置的 usage_stats_mode",
+                    "log.ai.gscore_provider_url_usage_chunk",
                     provider_url=self._provider_url,
                     usage_seen=usage_seen,
                 )
@@ -321,8 +314,7 @@ def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, Thinking
     continuous_usage = _resolve_continuous_usage(base_url, usage_stats_mode)
     logger.info(
         t(
-            "🧠 [GsCore] 加载 OpenAI 配置: Name: {model_name}, URL: {base_url}, "
-            "Key: ...{key_tail}, 请求方式: {request_method}{usage_suffix}",
+            "log.ai.gscore_openai_name_url_base",
             model_name=model_name,
             base_url=base_url,
             key_tail=api_key[-4:],
@@ -343,7 +335,7 @@ def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, Think
     )
     logger.info(
         t(
-            "🧠 [GsCore] 加载 Anthropic 配置: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+            "log.ai.gscore_anthropic_config_name_url",
             model_name=model_name,
             base_url=base_url,
             p0=api_key[-4:],
@@ -426,7 +418,7 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
 
     logger.info(
         t(
-            "🧠 [GsCore] 加载 Anthropic 模型: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+            "log.ai.gscore_anthropic_name_url_base",
             model_name=model_name,
             base_url=base_url,
             p0=api_key[-4:],
@@ -466,9 +458,7 @@ def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, Thinking
     gconfig = get_gemini_config(config_name)
     api_keys = gconfig.get_config("api_key").data
     if not api_keys or not str(api_keys[0]).strip():
-        raise ValueError(
-            t("🧠 [GsCore] Gemini 配置 {config_name} 未填写 api_key, 请前往网页控制台填写", config_name=config_name)
-        )
+        raise ValueError(t("log.ai.gscore_gemini_config_name_api", config_name=config_name))
     base_url, api_key, model_name, model_effort = (
         gconfig.get_config("base_url").data,
         str(api_keys[0]).strip(),
@@ -477,7 +467,7 @@ def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, Thinking
     )
     logger.info(
         t(
-            "🧠 [GsCore] 加载 Gemini 配置: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+            "log.ai.gscore_gemini_config_name_url",
             model_name=model_name,
             base_url=base_url,
             p0=api_key[-4:],
@@ -504,8 +494,7 @@ def get_gemini_model_by_name(config_name: str) -> "GoogleModel":
     except ImportError as e:
         raise RuntimeError(
             t(
-                "🧠 [GsCore] 使用 Gemini 配置需要安装 google-genai 依赖: "
-                'pip install "pydantic-ai-slim[google]" (原始错误: {e})',
+                "log.ai.gscore_gemini_google_genai_pip",
                 e=e,
             )
         ) from e
@@ -585,7 +574,7 @@ def get_model_by_full_name(full_name: str) -> AnyModel:
 def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfig:
     full_name = get_config_name_for_task(task_level)
     if not full_name:
-        raise ValueError(t("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！"))
+        raise ValueError(t("log.ai.gscore_ai_config_model_file"))
 
     provider, config_name = parse_provider_config_name(full_name)
     return _get_provider_string_config(provider, config_name)
@@ -617,7 +606,7 @@ def get_model_for_task(
     full_name = get_config_name_for_task(task_level)
 
     if not full_name:
-        raise ValueError(t("🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！"))
+        raise ValueError(t("log.ai.gscore_ai_config_model_file"))
 
     return get_model_by_full_name(full_name)
 

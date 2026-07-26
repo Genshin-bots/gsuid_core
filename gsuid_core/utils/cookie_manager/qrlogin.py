@@ -69,19 +69,19 @@ async def refresh(
             code_data["device_id"],
         )
         if isinstance(status_data, int):
-            logger.warning(t("[登录]二维码已过期"))
+            logger.warning(t("log.cookie.login_qr_code_expired"))
             return False, None
         if status_data["status"] == "Created":
             continue
         if status_data["status"] == "Scanned":
             if not scanned:
-                logger.info(t("[登录]二维码已扫描"))
+                logger.info(t("log.cookie.login_qr_code_scanned"))
                 scanned = True
             continue
         if status_data["status"] == "Confirmed":
-            logger.info(t("[登录]二维码已确认"))
+            logger.info(t("log.cookie.login_qr_code_confirmed"))
             break
-        logger.warning(t("[登录]未知二维码状态: {p0}", p0=status_data["status"]))
+        logger.warning(t("log.cookie.login_qr_code_status", p0=status_data["status"]))
         return False, None
     return True, status_data
 
@@ -134,7 +134,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             stoken = tokens[0]["token"]
         mid = user_info["mid"]
         app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
-        logger.info(t("[登录]stoken获取成功"))
+        logger.info(t("log.cookie.stoken_ok"))
 
         ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
         if isinstance(ck, int):
@@ -149,7 +149,7 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             }
         ).output(header="", sep=";")
     else:
-        logger.warning(t("[登录]stoken获取失败"))
+        logger.warning(t("log.cookie.stoken_fail"))
         im = "[登录]stoken获取失败: 二维码已过期"
 
     return await send_msg(im)

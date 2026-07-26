@@ -833,12 +833,7 @@ async def artifact_put(
         file_path_obj = Path(file_path)
         # 错误用法预警：同时传 payload + file_path 时只走 file_path 分支
         if payload:
-            logger.warning(
-                i18n_t(
-                    "📋 [Kanban] artifact_put 同时收到 payload 和 file_path，"
-                    "按 file_path 模式登记真实文件，payload 会被丢弃。"
-                )
-            )
+            logger.warning(i18n_t("log.ai.kanban_artifact_put_payload_file"))
 
     art = await put_artifact(
         payload=payload,
@@ -881,7 +876,7 @@ async def artifact_get(
     if plan_ctx is not None and plan_ctx.root_task_id and art.root_task_id != plan_ctx.root_task_id:
         logger.warning(
             i18n_t(
-                "📋 [Kanban] 拒绝跨树读取 artifact: req_root={p0} art_root={p1}",
+                "log.ai.kanban_rejected_cross_tree",
                 p0=plan_ctx.root_task_id,
                 p1=art.root_task_id,
             )

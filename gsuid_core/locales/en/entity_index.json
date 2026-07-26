@@ -1,0 +1,3 @@
+{
+  "log.entity_index.ambiguous_skip": "[EntityIndex] surface {surface!r} is ambiguous across {plugins}; skipping routing"
+}

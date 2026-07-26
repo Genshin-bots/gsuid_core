@@ -435,12 +435,12 @@ async def set_plugin_mirror(
     # 执行 git remote set-url
     success, msg = await git_set_remote_url(plugin_path, new_url)
     if not success:
-        logger.error(t("[Git镜像] 设置 {plugin_name} remote URL 失败: {msg}", plugin_name=plugin_name, msg=msg))
+        logger.error(t("log.plugin.git_mirror_set_remote_url", plugin_name=plugin_name, msg=msg))
         return False, f"{plugin_name}: 设置失败 - {msg}"
 
     logger.info(
         t(
-            "[Git镜像] {plugin_name}: {current_url} -> {new_url}",
+            "log.plugin.git_mirror_name_url",
             plugin_name=plugin_name,
             current_url=current_url,
             new_url=new_url,

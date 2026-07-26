@@ -22,14 +22,15 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 # from gsuid_core.utils.database.startup import exec_list  # noqa: E402
 
+# 启动横幅：gscore 大号等宽块状字（Unicode block，常见终端可显示）
 ASCII_FONT = r"""
-.------..------..------..------..------..------..------.
-|G.--. ||S.--. ||-.--. ||C.--. ||O.--. ||R.--. ||E.--. |
-| :/\: || :/\: || (\/) || :/\: || :/\: || :(): || (\/) |
-| :\/: || :\/: || :\/: || :\/: || :\/: || ()() || :\/: |
-| '--'G|| '--'S|| '--'-|| '--'C|| '--'O|| '--'R|| '--'E|
-`------'`------'`------'`------'`------'`------'`------'
-"""  # noqa: W605
+   ██████╗ ███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+  ██╔════╝ ██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+  ██║  ███╗███████╗██║     ██║   ██║██████╔╝█████╗
+  ██║   ██║╚════██║██║     ██║   ██║██╔══██╗██╔══╝
+  ╚██████╔╝███████║╚██████╗╚██████╔╝██║  ██║███████╗
+   ╚═════╝ ╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
+"""
 
 
 @dataclass
@@ -160,7 +161,7 @@ async def main():
                         except (ConnectionResetError, ConnectionAbortedError):
                             # Windows ProactorEventLoop: 客户端异常断开时抛出
                             # [WinError 995] 由于线程退出或应用程序请求，已中止 I/O 操作
-                            logger.debug(t("log.core.ws_reset", bot_id=bot_id))
+                            logger.debug(t("log.core.gscore_websocket_connection_reset", bot_id=bot_id))
                             break
                 except CancelledError:
                     pass

@@ -90,7 +90,7 @@ async def _ensure_adhoc_workspace(node_id: str, ev: Optional[Event]):
         # ensure_workspace 不再按 agent_profile 分子目录，传 node_id 仅作历史兼容
         workspace = ensure_workspace(adhoc_root_id, adhoc_task_id, agent_profile=node_id)
     except OSError as e:
-        logger.error(i18n_t("🤖 [CapabilityAgent] 创建 ad-hoc workspace 失败: {e}；放弃绑定（落 FILE_PATH 兜底）", e=e))
+        logger.error(i18n_t("log.ai.cap_create_ad_hoc_workspace", e=e))
         yield None
         return
 
@@ -105,7 +105,7 @@ async def _ensure_adhoc_workspace(node_id: str, ev: Optional[Event]):
     token = bind_plan_context(ctx)
     logger.info(
         i18n_t(
-            "🤖 [CapabilityAgent] 建立 ad-hoc workspace: {workspace} (adhoc_root={adhoc_root_id}, node={node_id})",
+            "log.ai.cap_ad_hoc_workspace_established",
             workspace=workspace,
             adhoc_root_id=adhoc_root_id,
             node_id=node_id,
@@ -176,14 +176,14 @@ async def run_capability_agent(
                 tools = tools + extra
                 logger.info(
                     i18n_t(
-                        "🤖 [CapabilityAgent] task 工具补检索: +{n} 个 (query={q!r} → {names})",
+                        "log.ai.cap_task_backfill_query_names",
                         n=len(extra),
                         q=search_query[:60],
                         names=[t.name for t in extra][:12],
                     )
                 )
     except Exception as e:
-        logger.debug(i18n_t("🤖 [CapabilityAgent] 工具检索失败: {e}", e=e))
+        logger.debug(i18n_t("log.ai.cap_retrieval", e=e))
 
     session_id = f"capagent_{node.node_id}_{session_id_suffix or 'adhoc'}"
 
@@ -202,7 +202,7 @@ async def run_capability_agent(
         )
         logger.info(
             i18n_t(
-                "🤖 [CapabilityAgent] 启动「{p0}」({p1})，工具 {p2} 个，workspace={ws_label}，任务: {p3}...",
+                "log.ai.cap_tools_workspace_ws_label",
                 p0=node.display_name,
                 p1=node.node_id,
                 p2=len(tools),
@@ -220,7 +220,7 @@ async def run_capability_agent(
             )
             return str(result)
         except Exception as e:
-            logger.error(i18n_t("🤖 [CapabilityAgent] 「{p0}」执行失败: {e}", p0=node.node_id, e=e))
+            logger.error(i18n_t("log.ai.cap_agent_fail_execution_failed", p0=node.node_id, e=e))
             return f"{CAPABILITY_AGENT_ERROR_PREFIX}: {e}"
         finally:
             session_logger = agent._session_logger

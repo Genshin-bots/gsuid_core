@@ -1,0 +1,4 @@
+{
+  "log.htmlrender.fontconfig_initialization": "[HTMLRender] fontconfig の初期化に失敗: {e}",
+  "log.htmlrender.fontconfig_initialized": "[HTMLRender] fontconfig の初期化に成功"
+}

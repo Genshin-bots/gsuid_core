@@ -44,7 +44,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         if dropped:
             logger.warning(
                 t(
-                    "🧠 [Embedding] OpenAI 嵌入提供方声明了暂不支持的模态 {p0}，已忽略（当前仅支持 text/image）",
+                    "log.rag.embedding_openai_provider_declared",
                     p0=[m.value for m in dropped],
                 )
             )
@@ -57,7 +57,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
         logger.info(
             t(
-                "🧠 [Embedding] OpenAI 嵌入模型已配置: {model_name}, URL: {base_url}, 维度: {p0}, 模态: {p1}",
+                "log.rag.embedding_openai_configured_name",
                 model_name=model_name,
                 base_url=base_url,
                 p0=self._dim or "(首次调用时推断)",
@@ -93,7 +93,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
         if self._dim == 0:
             self._dim = actual_dim
-            logger.info(t("🧠 [Embedding] 从 API 响应推断嵌入维度: {p0}", p0=self._dim))
+            logger.info(t("log.rag.embedding_inferred_dimension_api", p0=self._dim))
             return
 
         if actual_dim != self._dim:

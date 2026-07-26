@@ -1,0 +1,8 @@
+{
+  "ai.output_language_directive": "Always respond to the user in English, regardless of the language of these instructions.",
+  "cmd.cooldown": "⏳ Command on cooldown, please try again later.",
+  "lang.name": "English",
+  "perm.denied": "❌ You don't have permission to run this command.",
+  "server.bot_connected": "🔌 [Connect] Bot {bot_id} connected",
+  "server.bot_disconnected": "🔌 [Disconnect] Bot {bot_id} disconnected"
+}

@@ -85,7 +85,7 @@ async def invalidate_memory_edge(
             return _err("Edge 不存在")
         edge.invalid_at = datetime.now(timezone.utc)
         await session.commit()
-    logger.info(i18n_t("💻 [AgentDebug] 管理员软删除 Edge: {edge_id}", edge_id=edge_id))
+    logger.info(i18n_t("log.webconsole.agtdbg_admin_soft_deleted_edge", edge_id=edge_id))
     return _ok({"edge_id": edge_id})
 
 

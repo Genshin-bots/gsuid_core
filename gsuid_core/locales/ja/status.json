@@ -1,0 +1,8 @@
+{
+  "log.status.core_status_callback_key_plugin": "[core_status] プラグイン {plugin_name} のステータスコールバック {status_key} がタイムアウト (>35s)",
+  "log.status.core_status_subtask_result_abnormal_fail": "[core_status] サブタスクの結果が異常または空のため、デフォルトにフォールバック: {value}",
+  "log.status.core_status_write_cache": "[core_status] キャッシュへの書き込みに失敗: {e}",
+  "log.status.get_cpu_name_fail": "CPU 名の取得に失敗: {e}",
+  "log.status.get_maximum_network_bandwidth_fail": "最大ネットワーク帯域幅の取得に失敗: {e}",
+  "log.status.plugin_name_error": "プラグイン {plugin_name} のステータス関数の呼び出し中にエラーが発生した: {e}"
+}

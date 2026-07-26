@@ -209,13 +209,13 @@ async def understand_image(
     cache_key = _img_cache_key(image_url)
     cached = _understand_cache_get(cache_key)
     if cached:
-        logger.debug(t("🖼️ [ImageUnderstand] 命中图片理解缓存，跳过重复解析"))
+        logger.debug(t("log.ai.imgund_hit_image_understanding_skip"))
         return cached
 
     # 优先：当前模型原生支持图片时，直接走大模型多模态，无需配置转述模型(MCP)
     native_model = _resolve_native_image_model(task_level)
     if native_model is not None:
-        logger.debug(t("🖼️ [ImageUnderstand] 当前模型原生支持图片，使用大模型多模态能力转述"))
+        logger.debug(t("log.ai.imgund_natively_supports_images"))
         desc = await _understand_image_native(
             image_url,
             prompt,
@@ -254,5 +254,5 @@ async def understand_image(
                 cleanup_tempfile(image_source, "🖼️ [ImageUnderstand]")
 
     # 未知 provider
-    logger.warning(t("🖼️ [ImageUnderstand] 未知的提供方 '{provider}'，仅支持 MCP", provider=provider))
+    logger.warning(t("log.ai.imgund_provider_mcp_supported", provider=provider))
     raise RuntimeError(t("Image Understand 不支持该提供方: {provider}", provider=provider))

@@ -104,7 +104,7 @@ async def start_tag_worker() -> None:
     state = "运行中" if is_tagging_enabled() else "已暂停 (meme_vlm_enable 关闭)"
     logger.info(
         t(
-            "[Meme] 打标 worker 已启动，并发上限: {semaphore_count}，当前状态: {state}",
+            "log.meme.tagging_worker_concurrency_limit",
             semaphore_count=semaphore_count,
             state=state,
         )
@@ -126,7 +126,7 @@ async def stop_tag_worker() -> None:
             await _scanner_task
         except asyncio.CancelledError:
             pass
-    logger.info(t("[Meme] 打标 worker 已停止"))
+    logger.info(t("log.meme.meme_worker_stop_tagging_stopped"))
 
 
 async def enqueue_tag(meme_id: str) -> None:
@@ -140,10 +140,10 @@ async def enqueue_tag(meme_id: str) -> None:
     if not is_tagging_enabled():
         return
     if _tag_queue.full():
-        logger.warning(t("[Meme] 打标队列已满（>{p0}），丢弃: {meme_id}", p0=_tag_queue.maxsize, meme_id=meme_id))
+        logger.warning(t("log.meme.tagging_queue_full_dropping", p0=_tag_queue.maxsize, meme_id=meme_id))
         return
     await _tag_queue.put(meme_id)
-    logger.debug(t("[Meme] 加入打标队列: {meme_id}", meme_id=meme_id))
+    logger.debug(t("log.meme.added_tagging_queue", meme_id=meme_id))
 
 
 async def _tag_worker_loop() -> None:
@@ -159,9 +159,9 @@ async def _tag_worker_loop() -> None:
             # 开关状态切换时打印日志，便于在网页控制台实时启停时观察生效情况
             if enabled != was_enabled:
                 if enabled:
-                    logger.info(t("[Meme] VLM 打标已启用，开始消费打标队列"))
+                    logger.info(t("log.meme.vlm_tagging_enabled_consume"))
                 elif was_enabled is not None:
-                    logger.info(t("[Meme] VLM 打标已关闭，暂停打标队列"))
+                    logger.info(t("log.meme.vlm_tagging_disabled_pausing"))
                 was_enabled = enabled
 
             if not enabled:
@@ -193,7 +193,7 @@ async def _tag_worker_loop() -> None:
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(t("[Meme] 打标 worker 异常: {e}", e=e))
+            logger.error(t("log.meme.meme_worker_exception_tagging", e=e))
             await asyncio.sleep(5)
 
 
@@ -224,14 +224,14 @@ async def _pending_scanner_loop() -> None:
             if pending_records:
                 for record in pending_records:
                     await enqueue_tag(record.meme_id)
-                logger.info(t("[Meme] 定期扫描: 将 {p0} 条 pending 记录加入打标队列", p0=len(pending_records)))
+                logger.info(t("log.meme.periodic_scan_adding_pending", p0=len(pending_records)))
 
             await asyncio.sleep(_PENDING_SCAN_INTERVAL_SEC)
 
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(t("[Meme] pending 扫描异常: {e}", e=e))
+            logger.error(t("log.meme.meme_pending_exception_scan", e=e))
             await asyncio.sleep(60)
 
 
@@ -276,7 +276,7 @@ def _extract_gif_second_frame_sync(image_data: bytes) -> Optional[bytes]:
         img.save(output, format="PNG")
         return output.getvalue()
     except Exception as e:
-        logger.warning(t("[Meme] GIF第二帧提取失败: {e}", e=e))
+        logger.warning(t("log.meme.extract_second_frame_gif", e=e))
         return None
 
 
@@ -293,7 +293,7 @@ async def _tag_single(meme_id: str) -> None:
     """
     record = await AiMemeRecord.get_by_meme_id(meme_id)
     if record is None:
-        logger.warning(t("[Meme] 打标时找不到记录: {meme_id}", meme_id=meme_id))
+        logger.warning(t("log.meme.record_found_tagging", meme_id=meme_id))
         return
 
     # 检查状态，避免重复打标
@@ -303,7 +303,7 @@ async def _tag_single(meme_id: str) -> None:
     # 读取图片文件
     file_path = get_memes_base_path() / record.file_path
     if not file_path.exists():
-        logger.warning(t("[Meme] 图片文件不存在: {file_path}", file_path=file_path))
+        logger.warning(t("log.meme.image_file_exist_path", file_path=file_path))
         await MemeLibrary.mark_tag_failed(meme_id)
         return
 
@@ -329,14 +329,14 @@ async def _tag_single(meme_id: str) -> None:
     # 调用 Agent 进行打标（直接传 ImageUrl，由 _execute_run 自动处理图片能力判断）
     tag_result = await _call_tag_agent(image_b64, effective_mime)
     if tag_result is None:
-        logger.warning(t("[Meme] VLM 打标失败: {meme_id}", meme_id=meme_id))
+        logger.warning(t("log.meme.vlm_tagging_id", meme_id=meme_id))
         await MemeLibrary.mark_tag_failed(meme_id)
         return
 
     # NSFW 检查：rejected 前也写入标签，方便后期人工审核
     nsfw_threshold: float = meme_config.get_config("meme_nsfw_threshold").data
     if tag_result["nsfw_score"] >= nsfw_threshold:
-        logger.info(t("[Meme] NSFW 分数过高，标记为 rejected: {meme_id}", meme_id=meme_id))
+        logger.info(t("log.meme.nsfw_score_high_marked", meme_id=meme_id))
         await MemeLibrary.update_tags(
             meme_id=meme_id,
             description=tag_result["description"],
@@ -349,7 +349,7 @@ async def _tag_single(meme_id: str) -> None:
 
     # 非表情包检查：rejected 前也写入标签，方便后期人工审核
     if not tag_result["is_meme"]:
-        logger.info(t("[Meme] 不是表情包，标记为 rejected: {meme_id}", meme_id=meme_id))
+        logger.info(t("log.meme.marked_rejected_id_meme", meme_id=meme_id))
         await MemeLibrary.update_tags(
             meme_id=meme_id,
             description=tag_result["description"],
@@ -387,7 +387,7 @@ async def _tag_single(meme_id: str) -> None:
                 persona_hint=persona_hint,
             )
             await MemeLibrary.mark_tag_failed(meme_id)
-            logger.warning(t("[Meme] 打标完成但移动文件失败，置为待人工处理: {meme_id}", meme_id=meme_id))
+            logger.warning(t("log.meme.tagging_file_move_set", meme_id=meme_id))
             return
 
     await MemeLibrary.update_tags(
@@ -404,7 +404,7 @@ async def _tag_single(meme_id: str) -> None:
     if record is not None:
         await MemeLibrary.sync_to_qdrant(record)
 
-    logger.info(t("[Meme] 打标完成: {meme_id} -> {target_folder}", meme_id=meme_id, target_folder=target_folder))
+    logger.info(t("log.meme.tagging_id_target", meme_id=meme_id, target_folder=target_folder))
 
 
 async def _call_tag_agent(
@@ -445,13 +445,13 @@ async def _call_tag_agent(
     )
 
     if not result:
-        logger.warning(t("[Meme] Agent 返回空结果"))
+        logger.warning(t("log.meme.meme_agent_returned_empty_result"))
         return None
 
     # 使用 extract_json_from_text 解析
     parsed = extract_json_from_text(result)
     if not isinstance(parsed, dict):
-        logger.warning(t("[Meme] 解析结果不是 dict"))
+        logger.warning(t("log.meme.meme_dict_parsed_result_is_not"))
         return None
 
     # 确保字段类型正确

@@ -70,7 +70,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         self._dim = len(test_vec)
         logger.info(
             t(
-                "🧠 [Embedding] 本地嵌入模型已加载: {model_name}, 维度: {p0}, threads={threads}, batch_size={p1}",
+                "log.rag.embedding_local_name_dimension",
                 model_name=model_name,
                 p0=self._dim,
                 threads=threads,

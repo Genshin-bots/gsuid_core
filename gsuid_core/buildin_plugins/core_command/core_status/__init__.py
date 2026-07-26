@@ -57,10 +57,10 @@ async def _u_clear_and_save_global_val_all():
 
     gv.bot_traffic.update(new_data)
 
-    logger.success(t("[早柚核心] 状态已清空!"))
+    logger.success(t("log.core.gscore_status_cleanup"))
 
     await count_group_user()
-    logger.success(t("[早柚核心] 状态已保存!"))
+    logger.success(t("log.core.gscore_status_saved"))
 
 
 # 每隔10分钟执行一次save_all_global_val，但凌晨0点不执行
@@ -70,7 +70,7 @@ async def _scheduled_save_global_val_all():
 
     await gv.save_all_global_val(0)
     await gv.save_bot_max_qps()
-    logger.success(t("[早柚核心] 状态已同步!"))
+    logger.success(t("log.core.gscore_status_synced"))
 
 
 @sv_core_status.on_fullmatch(
@@ -80,7 +80,7 @@ async def _scheduled_save_global_val_all():
     )
 )
 async def send_core_info_msg(bot: Bot, ev: Event):
-    logger.info(t("开始执行 早柚核心 [信息]"))
+    logger.info(t("log.core.gscore_info_start"))
     await bot.send(await draw_status(ev))
 
 
@@ -91,7 +91,7 @@ async def send_core_status_msg(bot: Bot, ev: Event):
         _day = int(day)
     else:
         _day = None
-    logger.info(t("开始执行 早柚核心 [状态]"))
+    logger.info(t("log.core.gscore_status_start"))
     local_val = await gv.get_global_val(
         ev.real_bot_id,
         ev.bot_self_id,

@@ -1,0 +1,8 @@
+{
+  "log.status.core_status_callback_key_plugin": "[core_status] Status callback {status_key} for plugin {plugin_name} timed out (>35s)",
+  "log.status.core_status_subtask_result_abnormal_fail": "[core_status] Subtask result is abnormal/empty, falling back to default: {value}",
+  "log.status.core_status_write_cache": "[core_status] Failed to write cache: {e}",
+  "log.status.get_cpu_name_fail": "Failed to get CPU name: {e}",
+  "log.status.get_maximum_network_bandwidth_fail": "Failed to get maximum network bandwidth: {e}",
+  "log.status.plugin_name_error": "Error occurred when calling the status function of plugin {plugin_name}: {e}"
+}

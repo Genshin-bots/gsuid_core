@@ -182,7 +182,7 @@ async def embed_texts_with_backoff(
             if current_bs <= 1:
                 logger.warning(
                     t(
-                        "🧠 [{log_tag}] 单条仍触发 413 限流，跳过: index={index}, err={e}",
+                        "log.rag.log_tag_single_item_triggers_skip",
                         log_tag=log_tag,
                         index=index,
                         e=e,
@@ -193,7 +193,7 @@ async def embed_texts_with_backoff(
             new_bs = max(current_bs // 2, 1)
             logger.warning(
                 t(
-                    "🧠 [{log_tag}] 远端拒绝大批量(413)，批大小 {current_bs} -> {new_bs}: {e}",
+                    "log.rag.log_tag_remote_rejected_large",
                     log_tag=log_tag,
                     current_bs=current_bs,
                     new_bs=new_bs,
@@ -206,7 +206,7 @@ async def embed_texts_with_backoff(
         if len(vectors) != len(batch):
             raise RuntimeError(
                 t(
-                    "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}",
+                    "log.rag.log_tag_expected_actual",
                     log_tag=log_tag,
                     p0=len(batch),
                     p1=len(vectors),
@@ -253,7 +253,7 @@ async def upsert_points_with_backoff(
             if current_bs <= 1:
                 logger.warning(
                     t(
-                        "🧠 [{log_tag}] 单条 Point 仍触发 413，跳过: index={index}, err={e}",
+                        "log.rag.log_tag_single_point_triggers_skip",
                         log_tag=log_tag,
                         index=index,
                         e=e,
@@ -264,7 +264,7 @@ async def upsert_points_with_backoff(
             new_bs = max(current_bs // 2, 1)
             logger.warning(
                 t(
-                    "🧠 [{log_tag}] Qdrant 远端拒绝大批量(413)，批大小 {current_bs} -> {new_bs}: {e}",
+                    "log.rag.log_tag_qdrant_remote_rejected",
                     log_tag=log_tag,
                     current_bs=current_bs,
                     new_bs=new_bs,
@@ -291,8 +291,7 @@ def get_dimension() -> int:
             return dim
         logger.warning(
             t(
-                "🧠 [Embedding] 当前嵌入提供方维度未知(0)，回退到默认维度 {DEFAULT_DIMENSION}，"
-                "如使用非标准维度的模型请在嵌入模型配置中手动指定 dimension",
+                "log.rag.embedding_default_dimension",
                 DEFAULT_DIMENSION=DEFAULT_DIMENSION,
             )
         )
@@ -302,16 +301,11 @@ def get_dimension() -> int:
 def get_strict_dimension() -> int:
     """严格获取当前嵌入维度；未知时直接报错，禁止创建错误维度 Collection。"""
     if embedding_provider is None:
-        raise RuntimeError(t("EmbeddingProvider 未初始化，无法确定向量维度"))
+        raise RuntimeError(t("log.rag.embeddingprovider"))
 
     dim = embedding_provider.dimension
     if dim <= 0:
-        raise RuntimeError(
-            t(
-                "当前嵌入模型维度未知，已阻止创建/迁移 Qdrant Collection。"
-                "请检查嵌入模型 API 是否可用，或在 OpenAI 嵌入模型配置中显式设置 dimension。"
-            )
-        )
+        raise RuntimeError(t("log.rag.qdrant_collection_api_openai"))
     return dim
 
 
@@ -322,18 +316,18 @@ async def ensure_embedding_dimension() -> int:
     因此在任何 Collection 创建前主动发起一次最小 embedding 预热。
     """
     if embedding_provider is None:
-        raise RuntimeError(t("EmbeddingProvider 未初始化，无法预热向量维度"))
+        raise RuntimeError(t("log.rag.embeddingprovider_2"))
 
     if embedding_provider.dimension > 0:
         return embedding_provider.dimension
 
-    logger.info(t("🧠 [Embedding] 嵌入维度未知，启动阶段执行一次最小向量预热..."))
+    logger.info(t("log.rag.embedding_dimension_running_minimal"))
     await embedding_provider.embed_single("维度探测")
     dim = embedding_provider.dimension
     if dim <= 0:
-        raise RuntimeError(t("嵌入模型 API 调用后仍无法推断向量维度，请在 OpenAI 嵌入模型配置中显式设置 dimension。"))
+        raise RuntimeError(t("log.rag.api_openai_dimension"))
 
-    logger.info(t("🧠 [Embedding] 启动阶段已解析嵌入维度: {dim}", dim=dim))
+    logger.info(t("log.rag.embedding_dimension_resolved_startup", dim=dim))
     return dim
 
 
@@ -362,9 +356,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
         True 表示成功下载并解压，False 表示失败
     """
     zip_url = f"{base_url}/ai_core/{zip_name}.zip"
-    logger.info(
-        t("🧠 [RAG] 尝试从资源库下载 {zip_name}.zip: {tag} {zip_url}", zip_name=zip_name, tag=tag, zip_url=zip_url)
-    )
+    logger.info(t("log.rag.attempting_download_zip_name", zip_name=zip_name, tag=tag, zip_url=zip_url))
 
     tmp_path = None
     try:
@@ -373,7 +365,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
                 if response.status_code != 200:
                     logger.warning(
                         t(
-                            "🧠 [RAG] 资源库下载 {zip_name}.zip 失败，HTTP状态码: {p0}",
+                            "log.rag.resource_hub_download_zip_3",
                             zip_name=zip_name,
                             p0=response.status_code,
                         )
@@ -382,9 +374,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
 
                 total_size = int(response.headers.get("content-length", 0))
                 if total_size > 0:
-                    logger.info(
-                        t("🧠 [RAG] {zip_name}.zip 文件大小: {p0}", zip_name=zip_name, p0=_format_size(total_size))
-                    )
+                    logger.info(t("log.rag.file_zip_name_size", zip_name=zip_name, p0=_format_size(total_size)))
 
                 # 流式写入临时文件
                 tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
@@ -404,7 +394,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
                                     progress = downloaded / total_size * 100
                                     logger.info(
                                         t(
-                                            "🧠 [RAG] {zip_name}.zip 下载进度: {p0} / {p1} ({progress:.1f}%)",
+                                            "log.rag.zip_name_download_progress",
                                             zip_name=zip_name,
                                             p0=_format_size(downloaded),
                                             p1=_format_size(total_size),
@@ -414,7 +404,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
                                 else:
                                     logger.info(
                                         t(
-                                            "🧠 [RAG] {zip_name}.zip 已下载: {p0}",
+                                            "log.rag.zip_name_downloaded",
                                             zip_name=zip_name,
                                             p0=_format_size(downloaded),
                                         )
@@ -422,12 +412,12 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
                                 last_log_bytes = downloaded
 
                 if downloaded == 0:
-                    logger.warning(t("🧠 [RAG] 资源库下载 {zip_name}.zip 失败，内容为空", zip_name=zip_name))
+                    logger.warning(t("log.rag.resource_hub_download_zip", zip_name=zip_name))
                     return False
 
                 logger.info(
                     t(
-                        "🧠 [RAG] {zip_name}.zip 下载完成: {p0}，开始解压...",
+                        "log.rag.zip_name_download_extraction",
                         zip_name=zip_name,
                         p0=_format_size(downloaded),
                     )
@@ -442,7 +432,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
 
         logger.success(
             t(
-                "🧠 [RAG] 资源库 {zip_name}.zip 解压完成: {tag} -> {target_dir}",
+                "log.rag.resource_hub_zip_name",
                 zip_name=zip_name,
                 tag=tag,
                 target_dir=target_dir,
@@ -451,7 +441,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
         return True
 
     except Exception as e:
-        logger.warning(t("🧠 [RAG] 资源库下载 {zip_name}.zip 失败: {e}", zip_name=zip_name, e=e))
+        logger.warning(t("log.rag.resource_hub_download_zip_2", zip_name=zip_name, e=e))
         return False
     finally:
         # 清理临时文件
@@ -473,10 +463,10 @@ async def _try_download_from_resource_lib() -> bool:
     try:
         tag, base_url = await check_speed()
         if not base_url:
-            logger.warning(t("🧠 [RAG] 资源库测速失败，无法获取可用资源站"))
+            logger.warning(t("log.rag.rag_fail_resource_hub_speed_test"))
             return False
     except Exception as e:
-        logger.warning(t("🧠 [RAG] 资源库测速异常: {e}", e=e))
+        logger.warning(t("log.rag.resource_hub_speed_test", e=e))
         return False
 
     # 下载 models_cache.zip
@@ -513,14 +503,14 @@ def _is_models_cache_valid() -> bool:
     if dir_size < min_size:
         logger.info(
             t(
-                "🧠 [RAG] Embedding模型缓存目录存在但不完整: {p0} < {p1}",
+                "log.rag.embedding_cache_directory_exists",
                 p0=_format_size(dir_size),
                 p1=_format_size(min_size),
             )
         )
         return False
 
-    logger.info(t("🧠 [RAG] 模型缓存已存在，大小: {p0}，跳过下载", p0=_format_size(dir_size)))
+    logger.info(t("log.rag.cache_exists_size_skipping", p0=_format_size(dir_size)))
     return True
 
 
@@ -542,13 +532,13 @@ async def pre_download_models():
         return
 
     # 优先尝试从资源库下载zip包
-    logger.info(t("🧠 [RAG] 优先尝试从资源库下载模型缓存..."))
+    logger.info(t("log.rag.preferring_download_cache_resource"))
     resource_ok = await _try_download_from_resource_lib()
     if resource_ok:
-        logger.success(t("🧠 [RAG] 资源库模型缓存下载完成，跳过HuggingFace下载"))
+        logger.success(t("log.rag.resource_hub_cache_download"))
         return
 
-    logger.info(t("🧠 [RAG] 资源库下载失败，回退到HuggingFace下载..."))
+    logger.info(t("log.rag.resource_hub_download_falling"))
 
     hf_endpoint = _get_hf_endpoint()
     # 设置HF_ENDPOINT环境变量，并同步更新huggingface_hub.constants.ENDPOINT
@@ -557,36 +547,36 @@ async def pre_download_models():
     old_hf_constant = getattr(hf_constants, "ENDPOINT", None)
     os.environ["HF_ENDPOINT"] = hf_endpoint
     hf_constants.ENDPOINT = hf_endpoint.rstrip("/")
-    logger.info(t("🧠 [RAG] HuggingFace 端点已设置: HF_ENDPOINT={p0}", p0=hf_constants.ENDPOINT))
+    logger.info(t("log.rag.huggingface_endpoint_set_hf", p0=hf_constants.ENDPOINT))
 
     try:
         # 下载Embedding模型
-        logger.info(t("🧠 [RAG] 预下载Embedding模型: {EMBEDDING_HF_REPO}", EMBEDDING_HF_REPO=EMBEDDING_HF_REPO))
+        logger.info(t("log.rag.pre_downloading_embedding_hf", EMBEDDING_HF_REPO=EMBEDDING_HF_REPO))
         snapshot_download(
             repo_id=EMBEDDING_HF_REPO,
             cache_dir=str(MODELS_CACHE),
         )
-        logger.info(t("🧠 [RAG] Embedding模型预下载完成"))
+        logger.info(t("log.rag.embedding_pre_download"))
 
         # 下载Sparse模型
-        logger.info(t("🧠 [RAG] 预下载Sparse模型: {SPARSE_HF_REPO}", SPARSE_HF_REPO=SPARSE_HF_REPO))
+        logger.info(t("log.rag.pre_downloading_sparse_hf", SPARSE_HF_REPO=SPARSE_HF_REPO))
         snapshot_download(
             repo_id=SPARSE_HF_REPO,
             cache_dir=str(MODELS_CACHE),
         )
-        logger.info(t("🧠 [RAG] Sparse模型预下载完成"))
+        logger.info(t("log.rag.sparse_pre_download"))
 
         # 下载Reranker模型（仅本地 rerank 模式需要预下载）
         rerank_provider = ai_config.get_config("rerank_provider").data
         if is_enable_rerank() and rerank_provider == "local":
-            logger.info(t("🧠 [RAG] 预下载Reranker模型: {RERANKER_HF_REPO}", RERANKER_HF_REPO=RERANKER_HF_REPO))
+            logger.info(t("log.rag.pre_downloading_reranker_hf", RERANKER_HF_REPO=RERANKER_HF_REPO))
             snapshot_download(
                 repo_id=RERANKER_HF_REPO,
                 cache_dir=str(RERANK_MODELS_CACHE),
             )
-            logger.info(t("🧠 [RAG] Reranker模型预下载完成"))
+            logger.info(t("log.rag.reranker_pre_download"))
     except Exception as e:
-        logger.warning(t("🧠 [RAG] 模型预下载失败，将在使用时尝试加载: {e}", e=e))
+        logger.warning(t("log.rag.pre_download_attempt_load", e=e))
     finally:
         # 恢复原来的HF_ENDPOINT和huggingface_hub常量
         if old_endpoint is not None:
@@ -663,7 +653,7 @@ def _get_sparse_model():
                         local_files_only=True,
                     )
                 except Exception as e:
-                    logger.warning(t("🧠 [Memory] SparseTextEmbedding 初始化失败: {e}", e=e))
+                    logger.warning(t("log.rag.memory_sparsetextembedding_initialization", e=e))
     return _sparse_model
 
 

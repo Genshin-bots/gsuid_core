@@ -1,0 +1,12 @@
+{
+  "log.logger.exception_handler": "[エラー発生] {name}: {error}",
+  "log.logger.trace_end_event": "[TraceEnd] trace_id={trace_id} command={command} duration={duration_ms}ms logs={log_count}",
+  "log.logger.trace_jsonl_archive_id": "[TraceCollector] JSONL アーカイブに失敗しました trace_id={trace_id}: {e}",
+  "log.logger.trace_jsonl_running_write": "[TraceCollector] JSONL running マーカーの書き込みに失敗しました trace_id={trace_id}: {e}",
+  "log.logger.trace_max_traces_sacrificed": "[TraceCollector] 执行中追踪数达上限 {max_traces}，已强制回收 {sacrificed} 条活跃追踪以保证内存上界；通常意味着大量命令异常退出未正常结束追踪，请排查；如属正常高并发可调大 max_traces",
+  "log.logger.trace_scheduled_reclamation_fail": "[TraceCollector] 定期回収で異常が発生しました: {e}",
+  "log.logger.trace_scheduled_reclamation_removed_delete": "[TraceCollector] 定期回収によりゾンビトレース {dropped} 件を削除しました",
+  "log.logger.trace_start_event": "[TraceStart] trace_id={trace_id} command={command} user_id={user_id}",
+  "log.logger.tracecollector_exception": "[TraceCollector] 定时回收异常: {e}",
+  "log.logger.unhandled_exception": "未処理の例外"
+}

@@ -240,12 +240,10 @@ class OpenAIConfigManager(ConfigSetManager):
             if old_name in self._cache:
                 del self._cache[old_name]
 
-            logger.info(
-                t("[OpenAIConfig] 已重命名配置文件: {old_name} -> {new_name}", old_name=old_name, new_name=new_name)
-            )
+            logger.info(t("log.ai.openaiconfig_config_file_renamed", old_name=old_name, new_name=new_name))
             return True, "ok"
         except Exception as e:
-            logger.error(t("[OpenAIConfig] 重命名配置文件失败: {e}", e=e))
+            logger.error(t("log.ai.openaiconfig_rename_config_file", e=e))
             return False, str(e)
 
 

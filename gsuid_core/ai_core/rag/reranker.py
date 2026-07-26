@@ -27,14 +27,14 @@ class LocalRerankerProvider:
     def __init__(self, model_name: str):
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-        logger.info(t("🧠 [Reranker] 正在加载本地Reranker模型: {model_name}", model_name=model_name))
+        logger.info(t("log.rag.reranker_local_name", model_name=model_name))
         self._model = TextCrossEncoder(
             model_name=model_name,
             cache_dir=str(RERANK_MODELS_CACHE),
             threads=2,
             local_files_only=True,
         )
-        logger.info(t("🧠 [Reranker] 本地Reranker模型加载完成"))
+        logger.info(t("log.rag.reranker_local"))
 
     def rerank(self, query: str, documents: list[str]) -> list[float]:
         return [float(score) for score in self._model.rerank(query, documents)]
@@ -47,9 +47,7 @@ class RemoteRerankerProvider:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model_name = model_name
-        logger.info(
-            t("🧠 [Reranker] 远程Reranker已配置: {model_name}, URL: {p0}", model_name=model_name, p0=self._base_url)
-        )
+        logger.info(t("log.rag.reranker_remote_configured_name", model_name=model_name, p0=self._base_url))
 
     def _build_url(self) -> str:
         """构造 rerank endpoint，兼容用户填写 base URL 或完整 /rerank endpoint。"""
@@ -116,7 +114,7 @@ def get_reranker() -> Optional[RerankerProvider]:
         return None
 
     if not is_enable_rerank():
-        logger.info(t("🧠 [Reranker] Rerank功能未启用，将跳过加载Reranker模型"))
+        logger.info(t("log.rag.reranker_rerank_feature_enabled_skip"))
         return None
 
     if _reranker is None:
@@ -137,7 +135,7 @@ def get_reranker() -> Optional[RerankerProvider]:
             else:
                 raise ValueError(t("不支持的 Reranker 提供方: {provider}", provider=provider))
         except Exception as e:
-            logger.exception(t("🧠 [Reranker] 加载Reranker失败: {e}", e=e))
+            logger.exception(t("log.rag.reranker_fail_load_failed", e=e))
             _reranker = None
 
     return _reranker
@@ -160,7 +158,7 @@ async def rerank_results(
 
     reranker = get_reranker()
     if reranker is None:
-        logger.debug(t("🧠 [Reranker] 功能未启用，跳过重排序"))
+        logger.debug(t("log.rag.reranker_feature_enabled_skipping_skip"))
         return results[:top_k]
 
     try:
@@ -178,25 +176,25 @@ async def rerank_results(
                 valid_results.append(r)
 
         if not documents:
-            logger.debug(t("🧠 [Reranker] 无有效文档内容，跳过重排序"))
+            logger.debug(t("log.rag.reranker_valid_document_content_skip"))
             return results[:top_k]
 
-        logger.info(t("🧠 [Reranker] 开始对 {p0} 个结果进行重排序...", p0=len(documents)))
+        logger.info(t("log.rag.reranker_reranking_results", p0=len(documents)))
 
         scores = await asyncio.to_thread(reranker.rerank, query, documents)
         if len(scores) != len(valid_results):
-            logger.warning(t("🧠 [Reranker] 返回分数数量与文档数量不一致，跳过重排序"))
+            logger.warning(t("log.rag.reranker_score_match_document_skip"))
             return results[:top_k]
 
         scored_results = list(zip(scores, valid_results))
         scored_results.sort(key=lambda x: x[0], reverse=True)
         reranked_results = [r for _, r in scored_results[:top_k]]
 
-        logger.info(t("🧠 [Reranker] 重排序完成，返回前 {p0} 个结果", p0=len(reranked_results)))
-        logger.debug(t("🧠 [Reranker] 重排序后的结果: {p0}", p0=[r for r in reranked_results]))
+        logger.info(t("log.rag.reranker_reranking_top_results", p0=len(reranked_results)))
+        logger.debug(t("log.rag.reranker_results_reranking", p0=[r for r in reranked_results]))
 
         return reranked_results
 
     except Exception as e:
-        logger.exception(t("🧠 [Reranker] 重排序失败: {e}，返回原始结果", e=e))
+        logger.exception(t("log.rag.reranker_reranking_original_results", e=e))
         return results[:top_k]

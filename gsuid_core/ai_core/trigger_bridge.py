@@ -407,9 +407,7 @@ def _register_trigger_as_ai_tool(
         try:
             await func(mock_bot, fake_ev)
         except Exception as e:
-            logger.exception(
-                t("🧠 [Trigger→AI] 触发器 [{primary_keyword}] 执行异常: {e}", primary_keyword=primary_keyword, e=e)
-            )
+            logger.exception(t("log.ai.trigger_ai_primary_keyword_fail", primary_keyword=primary_keyword, e=e))
             return f"❌ 执行命令 [{primary_keyword}] 时发生错误: {e}。请尝试其他方式或检查输入参数。"
         finally:
             _AI_CALL_CONTEXT.reset(token)
@@ -517,13 +515,14 @@ def _register_trigger_as_ai_tool(
         _TOOL_REGISTRY["by_trigger"] = {}
 
     _TOOL_REGISTRY["by_trigger"][tool_func_name] = tool_base
+    from gsuid_core.logger import hl_plugin
+
     logger.debug(
         t(
-            "🧠 [Trigger→AI] 触发器 [{primary_keyword}] 的函数 [{tool_func_name}]"
-            " 已注册为 AI 工具 (分类: by_trigger, 插件: {plugin_name})",
+            "log.ai.trigger_ai_func_name_primary",
             primary_keyword=primary_keyword,
             tool_func_name=tool_func_name,
-            plugin_name=plugin_name,
+            plugin_name=hl_plugin(plugin_name),
         )
     )
 

@@ -95,11 +95,11 @@ def _read_brand_config() -> Dict[str, Any]:
             stored = json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         # 配置损坏不阻断启动，回退到默认配置
-        logger.warning(t("[Brand] 读取 brand.json 失败，使用默认配置: {e}", e=e))
+        logger.warning(t("log.webconsole.brand_read_json_default", e=e))
         return dict(DEFAULT_BRAND)
     except Exception as e:
         # 保底：非预期异常也不能让读取崩掉，回退默认
-        logger.exception(t("[Brand] 读取 brand.json 未知错误，使用默认配置: {e}", e=e))
+        logger.exception(t("log.webconsole.brand_fail_reading_json", e=e))
         return dict(DEFAULT_BRAND)
 
     merged: Dict[str, Any] = dict(DEFAULT_BRAND)
@@ -128,11 +128,11 @@ def _write_brand_config(data: Dict[str, Any]) -> bool:
             file.write(json_str.encode("utf-8"))
         return True
     except (OSError, RuntimeError) as e:
-        logger.warning(t("[Brand] 写入 brand.json 失败: {e}", e=e))
+        logger.warning(t("log.webconsole.brand_write_json", e=e))
         return False
     except Exception as e:
         # 保底：序列化/权限等非预期异常也不能让请求 500
-        logger.exception(t("[Brand] 写入 brand.json 未知错误: {e}", e=e))
+        logger.exception(t("log.webconsole.brand_fail_writing_json", e=e))
         return False
 
 
@@ -245,11 +245,11 @@ async def upload_brand_icon(
     try:
         content = await icon.read()
     except OSError as e:
-        logger.warning(t("[Brand] 读取上传 ICON 失败: {e}", e=e))
+        logger.warning(t("log.webconsole.brand_read_uploaded_icon", e=e))
         return {"status": 1, "msg": f"读取上传文件失败: {e}"}
     except Exception as e:
         # 保底：客户端断连等非预期异常也返回错误而非 500
-        logger.exception(t("[Brand] 读取上传 ICON 未知错误: {e}", e=e))
+        logger.exception(t("log.webconsole.brand_fail_reading_uploaded_icon", e=e))
         return {"status": 1, "msg": f"读取上传文件失败: {e}"}
 
     size = len(content)
@@ -276,11 +276,11 @@ async def upload_brand_icon(
                 raise RuntimeError(t("atomic_save 返回 None"))
             file.write(content)
     except (OSError, RuntimeError) as e:
-        logger.warning(t("[Brand] 写入 ICON 失败: {e}", e=e))
+        logger.warning(t("log.webconsole.brand_write_icon", e=e))
         return {"status": 1, "msg": f"保存 ICON 失败: {e}"}
     except Exception as e:
         # 保底：非预期异常也返回错误而非 500
-        logger.exception(t("[Brand] 写入 ICON 未知错误: {e}", e=e))
+        logger.exception(t("log.webconsole.brand_fail_writing_icon", e=e))
         return {"status": 1, "msg": f"保存 ICON 失败: {e}"}
 
     return {
@@ -311,11 +311,11 @@ async def delete_brand_icon(
     try:
         BRAND_ICON_PATH.unlink()
     except OSError as e:
-        logger.warning(t("[Brand] 删除 ICON 失败: {e}", e=e))
+        logger.warning(t("log.webconsole.brand_delete_icon", e=e))
         return {"status": 1, "msg": f"删除 ICON 失败: {e}"}
     except Exception as e:
         # 保底：非预期异常也返回错误而非 500
-        logger.exception(t("[Brand] 删除 ICON 未知错误: {e}", e=e))
+        logger.exception(t("log.webconsole.brand_fail_deleting_icon", e=e))
         return {"status": 1, "msg": f"删除 ICON 失败: {e}"}
 
     return {

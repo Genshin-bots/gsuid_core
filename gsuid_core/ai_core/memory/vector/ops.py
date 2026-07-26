@@ -140,7 +140,7 @@ def _sparse_embed(text: str) -> Optional[SparseVector]:
         if now - _sparse_degrade_last_log > 300:  # 每 5 分钟最多记录一次
             logger.warning(
                 t(
-                    "🧠 [Memory] Sparse Embedding 不可用，已降级 {_sparse_degrade_count} 次",
+                    "log.memory.sparse_embedding_unavailable_degraded",
                     _sparse_degrade_count=_sparse_degrade_count,
                 )
             )
@@ -153,7 +153,7 @@ def _sparse_embed(text: str) -> Optional[SparseVector]:
             values=[float(v) for v in result.values],
         )
     except Exception as e:
-        logger.warning(t("🧠 [Memory] Sparse embedding 失败: {e}", e=e))
+        logger.warning(t("log.memory.fail_sparse_embedding_failed", e=e))
         return None
 
 
@@ -180,7 +180,7 @@ def _sparse_embed_batch(texts: list[str]) -> list[Optional[SparseVector]]:
         if now - _sparse_degrade_last_log > 300:
             logger.warning(
                 t(
-                    "🧠 [Memory] Sparse Embedding 不可用，已降级 {_sparse_degrade_count} 次",
+                    "log.memory.sparse_embedding_unavailable_degraded",
                     _sparse_degrade_count=_sparse_degrade_count,
                 )
             )
@@ -205,14 +205,14 @@ def _sparse_embed_batch(texts: list[str]) -> list[Optional[SparseVector]]:
         if now - _sparse_degrade_last_log > 300:
             logger.warning(
                 t(
-                    "🧠 [Memory] SparseTextEmbedding 不支持批量接口，已降级 {_sparse_degrade_count} 次",
+                    "log.memory.sparsetextembedding_batch_interface_degraded",
                     _sparse_degrade_count=_sparse_degrade_count,
                 )
             )
             _sparse_degrade_last_log = now
         return [_sparse_embed(text) for text in texts]
     except Exception as e:
-        logger.warning(t("🧠 [Memory] Sparse batch embedding 失败: {e}", e=e))
+        logger.warning(t("log.memory.sparse_batch_embedding", e=e))
         return [None] * len(texts)
 
 
@@ -272,7 +272,7 @@ async def upsert_episode_vector(
                 points=[point],
             )
         except Exception as e:
-            logger.error(t("🧠 [Qdrant] Episode 写入失败: {e}", e=e))
+            logger.error(t("log.memory.qdrant_write_episode", e=e))
 
 
 async def upsert_episode_vectors_batch(episodes_data: list[dict]):
@@ -312,7 +312,7 @@ async def upsert_episode_vectors_batch(episodes_data: list[dict]):
                 wait=True,
             )
         except Exception as e:
-            logger.error(t("🧠 [Qdrant] 批量写入 Episode 失败: {e}", e=e))
+            logger.error(t("log.memory.qdrant_batch_write_episode", e=e))
             raise
 
 
@@ -474,7 +474,7 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
                 wait=True,
             )
         except Exception as e:
-            logger.error(t("🧠 [Qdrant] 批量写入 Entity 失败: {e}", e=e))
+            logger.error(t("log.memory.qdrant_batch_write_entity", e=e))
             raise
 
 
@@ -531,7 +531,7 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
                 wait=True,
             )
         except Exception as e:
-            logger.error(t("🧠 [Qdrant] 批量写入 Edge 失败: {e}", e=e))
+            logger.error(t("log.memory.qdrant_batch_write_edge", e=e))
             raise
 
 
@@ -625,7 +625,7 @@ async def _hybrid_search_edges(
                     if er.payload is not None and "name" in er.payload and isinstance(er.payload["name"], str):
                         id_to_name[str(er.id)] = er.payload["name"]
             except Exception as e:
-                logger.warning(t("🧠 [Qdrant] Edge 实体名称批量查询失败: {e}", e=e))
+                logger.warning(t("log.memory.qdrant_batch_query_edge_entity", e=e))
 
     edges: list["Edge"] = []
     for r in results:
@@ -785,7 +785,7 @@ async def search_categorized_neighbors(
             with_vectors=["summary_dense"],
         )
     except Exception as e:
-        logger.warning(t("🧠 [Qdrant] 批量取实体向量失败: {e}", e=e))
+        logger.warning(t("log.memory.qdrant_batch_fetch_entity_fail", e=e))
         return {}
 
     id_to_vector: dict[str, list[float]] = {}
@@ -809,7 +809,7 @@ async def search_categorized_neighbors(
                 with_payload=False,
             )
         except Exception as e:
-            logger.warning(t("🧠 [Qdrant] 实体近邻检索失败 (id={entity_id}): {e}", entity_id=entity_id, e=e))
+            logger.warning(t("log.memory.qdrant_entity_nearest_neighbor_fail", entity_id=entity_id, e=e))
             continue
         pairs = [(str(p.id), p.score) for p in response.points if str(p.id) != entity_id]
         if pairs:
@@ -931,13 +931,13 @@ async def probe_episode_scores(
                 )
                 scores.extend(p.score for p in cold_resp.points)
             except Exception as e:
-                logger.debug(t("🧠 [Qdrant] 熟悉度探针冷集补查失败（忽略，沿用热集分数）: {e}", e=e))
+                logger.debug(t("log.memory.qdrant_familiarity_probe_fallback_fail", e=e))
 
         # 合并后按降序取前 k（两集各自已是降序，merge 后统一截断）
         scores.sort(reverse=True)
         return scores[:k]
     except Exception as e:
-        logger.debug(t("🧠 [Qdrant] 熟悉度探针查询失败: {e}", e=e))
+        logger.debug(t("log.memory.qdrant_familiarity_probe_query", e=e))
         return []
 
 
@@ -990,7 +990,7 @@ async def dense_search_episodes_with_vectors(
             with_vectors=["dense"],
         )
     except Exception as e:
-        logger.debug(t("🧠 [Qdrant] 回忆环 dense 检索失败: {e}", e=e))
+        logger.debug(t("log.memory.qdrant_recall_loop_dense_fail", e=e))
         return []
 
     out: list[CandidatePoint] = []
@@ -1049,7 +1049,7 @@ async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:
                 with_vectors=True,
             )
         except Exception as e:
-            logger.warning(t("🧠 [Qdrant] 取回热 Episode 向量失败（将仅从热集合删除）: {e}", e=e))
+            logger.warning(t("log.memory.qdrant_retrieve_hot_episode_fail", e=e))
 
         # 2) 写入冷集合（best-effort，失败不阻断热集合删除）
         points = [PointStruct(id=r.id, vector=r.vector, payload=r.payload or {}) for r in records if r.vector]
@@ -1058,7 +1058,7 @@ async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:
                 async with _QDRANT_LOCKS[MEMORY_EPISODES_COLD_COLLECTION]:
                     await client.upsert(collection_name=MEMORY_EPISODES_COLD_COLLECTION, points=points)
             except Exception as e:
-                logger.warning(t("🧠 [Qdrant] 写入冷 Episode 集合失败（继续从热集合删除）: {e}", e=e))
+                logger.warning(t("log.memory.qdrant_write_cold_episode_fail", e=e))
 
         # 3) 从热集合删除（这一步成功才算降级生效）
         try:
@@ -1068,7 +1068,7 @@ async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:
             )
             evicted.extend(batch)
         except Exception as e:
-            logger.warning(t("🧠 [Qdrant] 从热 Episode 集合删除失败: {e}", e=e))
+            logger.warning(t("log.memory.qdrant_delete_hot_episode_fail", e=e))
 
     return evicted
 
@@ -1094,7 +1094,7 @@ async def scroll_point_ids(collection_name: str, batch_size: int = 500):
                 with_vectors=False,
             )
         except Exception as e:
-            logger.warning(t("🧠 [Qdrant] scroll {collection_name} 失败: {e}", collection_name=collection_name, e=e))
+            logger.warning(t("log.memory.qdrant_scroll_collection_name", collection_name=collection_name, e=e))
             return
         if records:
             yield [str(r.id) for r in records]
@@ -1119,7 +1119,7 @@ async def delete_points_by_ids(collection_name: str, point_ids: list[str]) -> in
     except Exception as e:
         logger.warning(
             t(
-                "🧠 [Qdrant] 删除 {collection_name} {p0} 个 point 失败: {e}",
+                "log.memory.qdrant_collection_name_delete_fail",
                 collection_name=collection_name,
                 p0=len(point_ids),
                 e=e,

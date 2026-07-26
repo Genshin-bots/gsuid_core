@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
         try:
             await setup_frontend_b()
         except Exception as e:
-            logger.exception(t("💻 [网页控制台] 后台初始化失败: {e}", e=e))
+            logger.exception(t("log.core.web_console_background_initialization_fail", e=e))
 
     asyncio.create_task(_bgsetup_frontend_b())
 
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info(t("[GsCore] 开始关闭流程，设置 shutdown_event..."))
+    logger.info(t("log.core.gscore_shutdown_process_setting_start"))
     shutdown_event.set()
 
     await shutdown_scheduler()

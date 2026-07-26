@@ -1,0 +1,6 @@
+{
+  "log.segment.gscore_matching_md_template_send": "[GsCore] MD模板无匹配！将以正常消息发送...",
+  "log.segment.gscore_md_template_configured_send": "[GsCore] 未配置MD模板！将以正常消息发送...",
+  "log.segment.gscore_send_md_template_sending": "[GsCore] MD模板发送使用模板{p0}",
+  "log.segment.to_markdown_url_messagesegment_image": "[to_markdown] 你传入了URL图片但并未规定图片大小，请在消息列表中额外传入MessageSegment.image_size()!"
+}

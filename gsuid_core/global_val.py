@@ -62,7 +62,7 @@ bot_traffic: BotTraffic = {
 
 
 async def load_bot_max_qps():
-    logger.info(t("🔒️ 开始加载流量统计!"))
+    logger.info(t("log.global_val.start_load"))
     today = datetime.date.today()
     traffic: Optional[Sequence[CoreTraffic]] = await CoreTraffic.select_rows(date=today)
     if traffic:
@@ -73,11 +73,11 @@ async def load_bot_max_qps():
         bot_traffic["max_runtime_func"] = traffic[0].max_runtime_func
         bot_traffic["total_count"] = traffic[0].total_count
         bot_traffic["total_time"] = traffic[0].total_time
-    logger.success(t("🔒️ 流量统计加载完成! {bot_traffic}", bot_traffic=bot_traffic))
+    logger.success(t("log.global_val.bot_traffic_load_done", bot_traffic=bot_traffic))
 
 
 async def save_bot_max_qps():
-    logger.info(t("🔒️ 开始保存流量统计! {bot_traffic}", bot_traffic=bot_traffic))
+    logger.info(t("log.global_val.bot_traffic_start_save", bot_traffic=bot_traffic))
     today = datetime.date.today()
 
     await CoreTraffic.batch_insert_data_with_update(
@@ -96,7 +96,7 @@ async def save_bot_max_qps():
         ["max_qps", "total_count", "total_time", "max_time", "max_runtime", "max_wait_time", "max_runtime_func"],
         ["date"],
     )
-    logger.success(t("🔒️ 流量统计保存完成!"))
+    logger.success(t("log.global_val.save_done"))
 
 
 def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:
@@ -261,7 +261,7 @@ async def get_global_analysis(
 
 async def load_all_global_val():
     today = datetime.date.today()
-    logger.info(t("🔒️ 开始加载全局变量! 今日: {today}", today=today))
+    logger.info(t("log.global_val.today_start_load", today=today))
     summarys: Optional[Sequence[CoreDataSummary]] = await CoreDataSummary.select_rows(date=today)
     logger.debug(t("log.global_val.summarys_debug", summarys=summarys))
     if summarys:
@@ -277,15 +277,15 @@ async def load_all_global_val():
                 platform_val = await trans_database_to_val(summary, datas)
                 bot_val[summary.bot_id][summary.bot_self_id] = platform_val
     logger.debug(t("log.global_val.bot_val_debug", bot_val=bot_val))
-    logger.success(t("🔒️ 全局变量加载完成!"))
+    logger.success(t("log.global_val.load_done"))
 
 
 async def save_all_global_val(day: int = 0):
-    logger.info(t("🔒️ 开始保存全局变量, 参数day = {day}!", day=day))
+    logger.info(t("log.global_val.day_start_save", day=day))
     for bot_id in bot_val:
         for bot_self_id in bot_val[bot_id]:
             await save_global_val(bot_id, bot_self_id, day)
-    logger.success(t("🔒️ 全局变量保存完成!"))
+    logger.success(t("log.global_val.save_done_2"))
 
 
 async def trans_database_to_val(summary: CoreDataSummary, datas: Sequence[CoreDataAnalysis]) -> PlatformVal:
@@ -305,7 +305,7 @@ async def trans_database_to_val(summary: CoreDataSummary, datas: Sequence[CoreDa
 
 async def save_global_val(bot_id: str, bot_self_id: str, day: int = 0):
     if not bot_self_id:
-        logger.warning(t("🔒️ 全局变量保存失败, bot_self_id 为空!"))
+        logger.warning(t("log.global_val.bot_self_id_save_fail"))
         return
 
     local_val = get_platform_val(bot_id, bot_self_id)
@@ -446,10 +446,10 @@ def prepare_models_from_json(
 
 async def trans_global_val():
     if not (global_val_path.exists() and any(global_val_path.iterdir())):
-        logger.info(t("[数据迁移] 无需迁移，路径为空或不存在。"))
+        logger.info(t("log.global_val.datamigration_nothing_migrate_path"))
         return
 
-    logger.info(t("[数据迁移] 开始迁移全局数据！"))
+    logger.info(t("log.global_val.migrate_start"))
 
     # --- 1. Fast file discovery ---
     all_json_paths = [
@@ -463,11 +463,11 @@ async def trans_global_val():
     ]
 
     if not all_json_paths:
-        logger.info(t("[数据迁移] 未找到任何 .json 文件进行迁移。"))
+        logger.info(t("log.global_val.json_migrate"))
         return
 
     total_files = len(all_json_paths)
-    logger.info(t("[数据迁移] 找到 {total_files} 个文件，开始并发处理...", total_files=total_files))
+    logger.info(t("log.global_val.total_files_migrate_start", total_files=total_files))
 
     # --- 2. Concurrent processing and data preparation ---
     all_analysis_models: List[CoreDataAnalysis] = []
@@ -487,7 +487,7 @@ async def trans_global_val():
             local_val = await asyncio.to_thread(json.loads, json_str)
             return prepare_models_from_json(local_val, bot_id, bot_self_id, date_object)
         except Exception as e:
-            logger.error(t("[数据迁移] 处理文件 {file_path} 失败: {e}", file_path=file_path, e=e))
+            logger.error(t("log.global_val.file_path_migrate_fail", file_path=file_path, e=e))
             return ([], [])
 
     tasks = [process_file(p) for p in all_json_paths]
@@ -499,7 +499,7 @@ async def trans_global_val():
 
     logger.success(
         t(
-            "[数据迁移] 文件处理完成. 准备写入 {p0} 条分析数据和 {p1} 条概要数据.",
+            "log.global_val.datamigration_file_processing_preparing_ok",
             p0=len(all_analysis_models),
             p1=len(all_summary_models),
         )
@@ -509,7 +509,7 @@ async def trans_global_val():
     BATCH_SIZE = 6000
 
     # Write CoreDataAnalysis
-    logger.info(t("[数据迁移] 开始写入 CoreDataAnalysis 数据..."))
+    logger.info(t("log.global_val.coredataanalysis_migrate_start_write"))
     analysis_update_key = ["command_count"]
     analysis_index = [
         "data_type",
@@ -527,12 +527,12 @@ async def trans_global_val():
             index_elements=analysis_index,
         )
         logger.success(
-            t("[数据迁移] 写入 {p0} 条分析数据. 进度：{i}/{p1}", p0=len(batch), i=i, p1=len(all_analysis_models))
+            t("log.global_val.datamigration_wrote_analysis_records", p0=len(batch), i=i, p1=len(all_analysis_models))
         )
-    logger.success(t("[数据迁移] CoreDataAnalysis 数据写入完成."))
+    logger.success(t("log.global_val.coredataanalysis_migrate_write_done"))
 
     # Write CoreDataSummary
-    logger.info(t("[数据迁移] 开始写入 CoreDataSummary 数据..."))
+    logger.info(t("log.global_val.coredatasummary_migrate_start_write"))
     summary_update_key = [
         "receive",
         "send",
@@ -550,9 +550,9 @@ async def trans_global_val():
             index_elements=summary_index,
         )
         logger.success(
-            t("[数据迁移] 写入 {p0} 条概要数据. 进度：{i}/{p1}", p0=len(batch), i=i, p1=len(all_summary_models))
+            t("log.global_val.datamigration_wrote_summary_records", p0=len(batch), i=i, p1=len(all_summary_models))
         )
-    logger.success(t("[数据迁移] CoreDataSummary 数据写入完成."))
+    logger.success(t("log.global_val.coredatasummary_migrate_write_done"))
 
     # 转移路径
     if global_backup_path.exists():
@@ -563,12 +563,12 @@ async def trans_global_val():
 
                 shutil.rmtree(global_backup_path)
             else:
-                logger.success(t("[数据迁移] 全局数据迁移完成！"))
+                logger.success(t("log.global_val.migrate_done"))
                 return
         else:
             global_backup_path.unlink()
     global_val_path.rename(global_backup_path)
-    logger.success(t("[数据迁移] 全局数据迁移完成！"))
+    logger.success(t("log.global_val.migrate_done"))
 
 
 async def get_global_val(

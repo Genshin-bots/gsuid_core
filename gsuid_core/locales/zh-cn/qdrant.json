@@ -1,0 +1,5 @@
+{
+  "log.qdrant.get_collection_fail": "[Qdrant] 获取集合 {collection_name} 信息失败，无法确认 payload 索引: {error}",
+  "log.qdrant.keyword_index_created": "[Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}",
+  "log.qdrant.keyword_index_fail": "[Qdrant] 为集合 {collection_name} 创建 keyword 索引 {field} 失败: {error}"
+}

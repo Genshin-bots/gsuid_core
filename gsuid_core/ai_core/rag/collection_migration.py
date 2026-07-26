@@ -71,7 +71,7 @@ async def scroll_all_payloads(collection_name: str) -> list[tuple[Any, dict[str,
             else:
                 logger.warning(
                     t(
-                        "🧠 [Migration] Collection {collection_name} 中 point_id={p0} 的 payload 为 None，已跳过",
+                        "log.rag.migration_payload_point_id_skip",
                         collection_name=collection_name,
                         p0=record.id,
                     )
@@ -101,7 +101,7 @@ async def save_payload_backup(collection_name: str, payloads: list[tuple[Any, di
     backup_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     logger.warning(
         t(
-            "🧠 [Migration] Collection {collection_name} 迁移 payload 已备份到: {backup_path}",
+            "log.rag.migration_collection_name_payload",
             collection_name=collection_name,
             backup_path=backup_path,
         )
@@ -117,7 +117,7 @@ def remove_payload_backup(backup_path: Optional[Path], collection_name: str) -> 
         backup_path.unlink(missing_ok=True)
         logger.info(
             t(
-                "🧠 [Migration] Collection {collection_name} 迁移成功，已删除备份: {backup_path}",
+                "log.rag.migration_collection_name_succeeded",
                 collection_name=collection_name,
                 backup_path=backup_path,
             )
@@ -125,7 +125,7 @@ def remove_payload_backup(backup_path: Optional[Path], collection_name: str) -> 
     except Exception as e:
         logger.warning(
             t(
-                "🧠 [Migration] Collection {collection_name} 迁移备份删除失败，请手动确认: {backup_path}, {e}",
+                "log.rag.migration_collection_name_backup",
                 collection_name=collection_name,
                 backup_path=backup_path,
                 e=e,
@@ -147,9 +147,7 @@ def load_payload_backup(backup_path: Path, collection_name: str) -> list[tuple[A
     try:
         data = json.loads(backup_path.read_text(encoding="utf-8"))
         if data.get("collection_name") != collection_name:
-            logger.warning(
-                t("🧠 [Migration] 备份文件 Collection 不匹配，已忽略: {backup_path}", backup_path=backup_path)
-            )
+            logger.warning(t("log.rag.migration_backup_file_collection_skip", backup_path=backup_path))
             return []
         payloads = data.get("payloads", [])
         if not isinstance(payloads, list):
@@ -163,7 +161,7 @@ def load_payload_backup(backup_path: Path, collection_name: str) -> list[tuple[A
                 result.append((item.get("id"), payload))
         return result
     except Exception as e:
-        logger.warning(t("🧠 [Migration] 读取迁移备份失败，已忽略: {backup_path}, {e}", backup_path=backup_path, e=e))
+        logger.warning(t("log.rag.migration_read_backup_ignore", backup_path=backup_path, e=e))
         return []
 
 
@@ -181,7 +179,7 @@ async def count_collection_points(collection_name: str) -> int:
     except Exception as e:
         logger.warning(
             t(
-                "🧠 [Migration] 统计 Collection {collection_name} point 数量失败: {e}",
+                "log.rag.migration_collection_name_points",
                 collection_name=collection_name,
                 e=e,
             )
@@ -290,7 +288,7 @@ async def force_recreate_collection(
                 except Exception as e:
                     logger.warning(
                         t(
-                            "🧠 [Qdrant] 关闭 Collection {collection_name} 存储句柄失败: {e}",
+                            "log.rag.qdrant_close_collection_name_fail",
                             collection_name=collection_name,
                             e=e,
                         )
@@ -298,7 +296,7 @@ async def force_recreate_collection(
         if await client.collection_exists(collection_name):
             await client.delete_collection(collection_name=collection_name)
         await client.create_collection(**kwargs)
-        logger.info(t("🧠 [Qdrant] 已强制重建本地 Collection: {collection_name}", collection_name=collection_name))
+        logger.info(t("log.rag.qdrant_forced_recreate_local_create", collection_name=collection_name))
         return
 
     recreate = getattr(client, "recreate_collection", None)
@@ -314,19 +312,19 @@ async def force_recreate_collection(
             if "already exists" in str(e).lower() and await client.collection_exists(collection_name):
                 logger.warning(
                     t(
-                        "🧠 [Qdrant] Collection {collection_name} 已被并发重建创建，忽略 409 冲突",
+                        "log.rag.qdrant_collection_name_created_skip",
                         collection_name=collection_name,
                     )
                 )
                 return
             raise
-        logger.info(t("🧠 [Qdrant] 已强制重建 Collection: {collection_name}", collection_name=collection_name))
+        logger.info(t("log.rag.qdrant_forced_recreate_collection_create", collection_name=collection_name))
         return
 
     if await client.collection_exists(collection_name):
         await client.delete_collection(collection_name=collection_name)
     await client.create_collection(**kwargs)
-    logger.info(t("🧠 [Qdrant] 已删除并重建 Collection: {collection_name}", collection_name=collection_name))
+    logger.info(t("log.rag.qdrant_collection_deleted_recreated_delete", collection_name=collection_name))
 
 
 async def ensure_vector_on_disk(collection_name: str, vector_name: Optional[str] = None) -> None:
@@ -344,16 +342,14 @@ async def ensure_vector_on_disk(collection_name: str, vector_name: Optional[str]
             return
 
         diff_key = "" if vector_name in (None, "", "default") else vector_name
-        logger.info(t("🧠 [Qdrant] 迁移集合 {collection_name} 向量到磁盘存储...", collection_name=collection_name))
+        logger.info(t("log.rag.qdrant_migrating_collection_name", collection_name=collection_name))
         await client.update_collection(
             collection_name=collection_name,
             vectors_config={diff_key: VectorParamsDiff(on_disk=True)},
         )
-        logger.info(t("🧠 [Qdrant] 集合 {collection_name} on_disk 迁移完成", collection_name=collection_name))
+        logger.info(t("log.rag.qdrant_collection_name_disk_ok", collection_name=collection_name))
     except Exception as e:
-        logger.warning(
-            t("🧠 [Qdrant] 检查/迁移集合 {collection_name} on_disk 配置失败: {e}", collection_name=collection_name, e=e)
-        )
+        logger.warning(t("log.rag.qdrant_check_migrate_collection_fail", collection_name=collection_name, e=e))
 
 
 async def ensure_payload_indexes(
@@ -426,8 +422,7 @@ async def collection_vector_mismatched(
 
     logger.warning(
         t(
-            "🧠 [Qdrant] Collection {collection_name} 向量维度不匹配"
-            ": actual={actual_size}, expected={expected_size}, vector={p0}",
+            "log.rag.qdrant_collection_name_vector",
             collection_name=collection_name,
             actual_size=actual_size,
             expected_size=expected_size,

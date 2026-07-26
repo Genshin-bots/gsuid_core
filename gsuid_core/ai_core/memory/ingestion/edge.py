@@ -132,7 +132,7 @@ async def extract_and_upsert_edges(
         # §6 残句拦截（摄入侧）：悬空谓语结尾的 fact（"用户X提到"）零信息量，
         # 不入库——与注入侧同判据，源头止血。
         if _DANGLING_FACT_RE.search(fact):
-            logger.debug(t("🧠 [Memory] 摄入拦截残句 fact: {fact}", fact=fact))
+            logger.debug(t("log.memory.ingestion_blocked_sentence_fragment", fact=fact))
             continue
         source_id = entity_name_to_id[source_name] if source_name in entity_name_to_id else None
         target_id = entity_name_to_id[target_name] if target_name in entity_name_to_id else None
@@ -247,7 +247,7 @@ async def extract_and_upsert_edges(
                 continue
             logger.warning(
                 t(
-                    "🧠 [Memory] scope={scope_key} Edge 写入重试 6 次仍失败（database locked），跳过本窗口边",
+                    "log.memory.fail_skip_retry_write_scope_key",
                     scope_key=scope_key,
                 )
             )
@@ -256,7 +256,7 @@ async def extract_and_upsert_edges(
     if merged_count:
         logger.info(
             t(
-                "🧠 [Memory] scope={scope_key} Edge 归并 {merged_count} 条重复事实",
+                "log.memory.scope_key_merged_duplicate",
                 scope_key=scope_key,
                 merged_count=merged_count,
             )

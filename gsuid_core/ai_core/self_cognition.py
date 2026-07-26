@@ -82,7 +82,7 @@ async def add_self_note(
     from gsuid_core.ai_core.state_store import state_mutate
 
     if field not in _FIELDS:
-        logger.warning(i18n_t("🪞 [SelfCognition] 非法 self_model 字段: {field}", field=field))
+        logger.warning(i18n_t("log.ai.selfcog_invalid_self_model_field", field=field))
         return False
     content = (content or "").strip()
     if not content:
@@ -95,7 +95,7 @@ async def add_self_note(
     from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
 
     if field == "preferences_learned" and is_persistent_style_rule(content):
-        logger.warning(i18n_t("🪞 [SelfCognition] 拒绝把持久说话规矩写入偏好（疑似漂移注入）: {p0}", p0=content[:60]))
+        logger.warning(i18n_t("log.ai.selfcog_refused_persist_persistent_inject", p0=content[:60]))
         return False
 
     def _mutate(current: Any) -> Dict[str, List[str]]:
@@ -112,7 +112,7 @@ async def add_self_note(
     await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
     logger.debug(
         i18n_t(
-            "🪞 [SelfCognition] {bot_id} self_model.{field} 追加: {content}",
+            "log.ai.selfcog_bot_id_self_model_field",
             bot_id=bot_id,
             field=field,
             content=content,
@@ -142,7 +142,7 @@ async def overwrite_self_model_field(
     from gsuid_core.ai_core.state_store import state_mutate
 
     if field not in _FIELDS:
-        logger.warning(i18n_t("🪞 [SelfCognition] 非法 self_model 字段: {field}", field=field))
+        logger.warning(i18n_t("log.ai.selfcog_invalid_self_model_field", field=field))
         return False
     cleaned: List[str] = []
     for raw in items:
@@ -159,7 +159,7 @@ async def overwrite_self_model_field(
     await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
     logger.info(
         i18n_t(
-            "🪞 [SelfCognition] {bot_id} self_model.{field} 被整字段覆盖（{p0} 条）",
+            "log.ai.selfcog_bot_id_self_field",
             bot_id=bot_id,
             field=field,
             p0=len(cleaned),
@@ -197,7 +197,7 @@ async def retrieve_self_episodes(bot_id: str, limit: int = 3) -> str:
             )
             rows = list(result.scalars().all())
     except Exception as e:
-        logger.debug(i18n_t("🪞 [SelfCognition] 自我情景记忆检索失败: {e}", e=e))
+        logger.debug(i18n_t("log.ai.selfcog_self_episodic_memory_fail", e=e))
         return ""
 
     if not rows:

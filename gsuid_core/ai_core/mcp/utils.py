@@ -272,7 +272,7 @@ async def save_binary_to_tempfile(
         await f.write(data)
 
     if log_prefix:
-        logger.debug(t("{log_prefix} 已保存数据到临时文件: {temp_path}", log_prefix=log_prefix, temp_path=temp_path))
+        logger.debug(t("log.mcp.log_prefix_temp_path_save", log_prefix=log_prefix, temp_path=temp_path))
 
     return temp_path
 
@@ -305,10 +305,10 @@ def cleanup_tempfile(path: str, log_prefix: str = "") -> None:
     try:
         os.unlink(path)
         if log_prefix:
-            logger.debug(t("{log_prefix} 已删除临时文件: {path}", log_prefix=log_prefix, path=path))
+            logger.debug(t("log.mcp.log_prefix_path_delete", log_prefix=log_prefix, path=path))
     except OSError as e:
         if log_prefix:
-            logger.warning(t("{log_prefix} 删除临时文件失败: {e}", log_prefix=log_prefix, e=e))
+            logger.warning(t("log.mcp.log_prefix_delete_fail", log_prefix=log_prefix, e=e))
 
 
 # ---------------------------------------------------------------------------

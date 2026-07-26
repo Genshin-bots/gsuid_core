@@ -112,7 +112,7 @@ async def exa_search(
     api_key_pool = _get_api_key_pool()
 
     if not api_key_pool:
-        logger.warning(t("🌐 [WebSearch] Exa API Key 未配置，跳过搜索"))
+        logger.warning(t("log.ai.websearch_exa_api_key_configured"))
         return []
 
     if max_results is None:
@@ -138,12 +138,12 @@ async def exa_search(
                 api_key=api_key,
             )
 
-            logger.info(t("🌐 [WebSearch][Exa] 搜索: {query}, 返回 {p0} 条结果", query=query, p0=len(results)))
+            logger.info(t("log.ai.websearch_exa_search_query", query=query, p0=len(results)))
             return results
 
         except Exception:
-            logger.warning(t("🌐 [WebSearch][Exa] api_key ...{p0} 失败，尝试下一个", p0=api_key[-4:]))
+            logger.warning(t("log.ai.websearch_exa_api_key_trying", p0=api_key[-4:]))
             continue
 
-    logger.error(t("🌐 [WebSearch][Exa] 所有 api_key 均失败"))
+    logger.error(t("log.ai.websearch_exa_api_keys"))
     return []
