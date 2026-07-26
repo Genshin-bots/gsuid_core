@@ -277,7 +277,7 @@ class MemeLibrary:
             try:
                 deleted = await AiMemeRecord.delete_by_meme_ids(batch_ids)
             except Exception as e:
-                logger.warning(f"[meme] bulk delete failed, fallback per-id: {e}")
+                logger.warning(t("log.meme.bulk_delete_failed_fallback", e=e))
                 for meme_id in batch_ids:
                     try:
                         ok = await AiMemeRecord.delete_by_meme_id(meme_id)
@@ -294,7 +294,13 @@ class MemeLibrary:
                     # rowcount 无法标出哪些 id；本批均按待清理处理（缺库 id 仅多一次 unlink）
                     cleanup_ids = list(batch_ids)
                     if deleted < len(batch_ids):
-                        logger.warning(f"[meme] bulk delete rowcount={deleted} < batch={len(batch_ids)}")
+                        logger.warning(
+                            t(
+                                "log.meme.bulk_delete_rowcount_short",
+                                deleted=deleted,
+                                batch=len(batch_ids),
+                            )
+                        )
                 else:
                     # rowcount=0：逐条确认，避免把整批虚报为成功
                     for meme_id in batch_ids:
@@ -326,7 +332,7 @@ class MemeLibrary:
                 )
                 for (meme_id, _), res in zip(unlink_jobs, results):
                     if isinstance(res, Exception):
-                        logger.warning(f"[meme] purge unlink failed {meme_id}: {res}")
+                        logger.warning(t("log.meme.purge_unlink_failed", meme_id=meme_id, res=res))
                         failed.append(
                             {
                                 "meme_id": meme_id,
@@ -347,8 +353,13 @@ class MemeLibrary:
                 )
 
         logger.info(
-            f"[meme] purge done status={status or '*'} folder={folder or '*'} "
-            f"success={success_count} failed={len(failed)}"
+            t(
+                "log.meme.purge_done",
+                status=status or "*",
+                folder=folder or "*",
+                success=success_count,
+                failed=len(failed),
+            )
         )
         return success_count, failed
 
@@ -954,7 +965,7 @@ async def _remove_many_from_qdrant(meme_ids: List[str]) -> None:
         )
         return
     except Exception as e:
-        logger.warning(f"[meme] qdrant MatchAny batch delete failed, fallback: {e}")
+        logger.warning(t("log.meme.qdrant_matchany_batch_delete_failed", e=e))
 
     for meme_id in meme_ids:
         try:

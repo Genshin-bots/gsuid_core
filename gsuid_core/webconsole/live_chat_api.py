@@ -30,6 +30,7 @@ from fastapi import Depends
 from pydantic import Field, BaseModel, field_validator
 from boltons.fileutils import atomic_save
 
+from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import (
@@ -244,7 +245,7 @@ async def load_identity() -> Dict[str, Any]:
     try:
         return _normalize_identity(await _read_json(LIVE_CHAT_IDENTITY_PATH))
     except _READ_ERRORS as e:
-        logger.warning("[live-chat] read identity fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_read_identity_fail", e=e))
         return dict(DEFAULT_IDENTITY)
 
 
@@ -253,7 +254,7 @@ async def save_identity(identity: Dict[str, Any]) -> bool:
         await _atomic_write_json(LIVE_CHAT_IDENTITY_PATH, _normalize_identity(identity))
         return True
     except _WRITE_ERRORS as e:
-        logger.warning("[live-chat] save identity fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_save_identity_fail", e=e))
         return False
 
 
@@ -263,7 +264,7 @@ async def load_index() -> Dict[str, Any]:
     try:
         return _normalize_index(await _read_json(LIVE_CHAT_INDEX_PATH))
     except _READ_ERRORS as e:
-        logger.warning("[live-chat] read index fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_read_index_fail", e=e))
         return dict(DEFAULT_INDEX)
 
 
@@ -272,7 +273,7 @@ async def save_index(index: Dict[str, Any]) -> bool:
         await _atomic_write_json(LIVE_CHAT_INDEX_PATH, _normalize_index(index))
         return True
     except _WRITE_ERRORS as e:
-        logger.warning("[live-chat] save index fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_save_index_fail", e=e))
         return False
 
 
@@ -283,7 +284,7 @@ async def load_conversation(conv_id: str) -> Optional[Dict[str, Any]]:
             return None
         return _normalize_conversation(await _read_json(path))
     except _READ_ERRORS as e:
-        logger.warning("[live-chat] read conv %s fail: %s", conv_id, e)
+        logger.warning(t("log.webconsole.live_chat_read_conv_fail", conv_id=conv_id, e=e))
         return None
 
 
@@ -295,7 +296,7 @@ async def save_conversation(conv: Dict[str, Any]) -> bool:
         await _atomic_write_json(_conv_path(normalized["id"]), normalized)
         return True
     except _WRITE_ERRORS as e:
-        logger.warning("[live-chat] save conv fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_save_conv_fail", e=e))
         return False
 
 
@@ -317,7 +318,7 @@ async def delete_conversation(conv_id: str) -> bool:
             await _unlink_path(path)
         return True
     except _READ_ERRORS + _WRITE_ERRORS as e:
-        logger.warning("[live-chat] delete conv fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_delete_conv_fail", e=e))
         return False
 
 
@@ -409,10 +410,10 @@ async def save_live_chat_state(state: Dict[str, Any]) -> bool:
                 try:
                     await _unlink_path(LIVE_CHAT_CONVS_DIR / name)
                 except OSError as e:
-                    logger.warning("[live-chat] unlink orphan %s: %s", name, e)
+                    logger.warning(t("log.webconsole.live_chat_unlink_orphan_fail", name=name, e=e))
         return True
     except _READ_ERRORS + _WRITE_ERRORS as e:
-        logger.warning("[live-chat] save state fail: %s", e)
+        logger.warning(t("log.webconsole.live_chat_save_state_fail", e=e))
         return False
 
 

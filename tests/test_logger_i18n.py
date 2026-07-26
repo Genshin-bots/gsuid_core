@@ -636,8 +636,11 @@ def _placeholder_names(template: str) -> list[str]:
     return [m.group(1) for m in _BRACE_FIELD_RE.finditer(template)]
 
 
-def test_plugin_locales_register_without_touching_framework_dir() -> None:
-    """插件词条只存在于插件目录，由 register 摄入，不得写入框架 locales。"""
+def test_plugin_locales_register_without_touching_framework_dir(tmp_path: Path) -> None:
+    """插件词条只存在于插件目录，由 register 摄入，不得写入框架 locales。
+
+    使用临时插件目录，避免依赖 gitignore 的真实插件（CI 无 GenshinUID 等）。
+    """
     from gsuid_core.i18n import (
         t,
         load_catalogs,
@@ -646,26 +649,35 @@ def test_plugin_locales_register_without_touching_framework_dir() -> None:
         discover_and_register_plugin_locales,
     )
 
-    plugin_root = _SRC / "plugins" / "GenshinUID"
+    plugin_name = "FakePluginUID"
+    plugin_root = tmp_path / plugin_name
     locales = plugin_root / "locales"
-    assert locales.is_dir(), "GenshinUID 应自带 locales/"
-    # 框架 locales 不得出现 genshinuid 专有 key 文件污染（仅运行时合并）
+    sample_key = "log.fakepluginuid.hello"
+    sample_value = "[FakePlugin] hello {name}"
+    for lang in ("zh-cn", "en", "ja"):
+        lang_dir = locales / lang
+        lang_dir.mkdir(parents=True)
+        (lang_dir / "logs.json").write_text(
+            json.dumps({sample_key: sample_value}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    # 框架 locales 不得出现插件专有 key 文件污染（仅运行时合并）
     for lang_dir in _LOCALES.iterdir():
         if not lang_dir.is_dir():
             continue
         for f in lang_dir.glob("*.json"):
             data = json.loads(f.read_text(encoding="utf-8"))
-            bad = [k for k in data if k.startswith("log.genshinuid.")]
+            bad = [k for k in data if k.startswith("log.fakepluginuid.") or k.startswith("log.genshinuid.")]
             assert not bad, f"框架 {f} 不应含插件词条: {bad[:5]}"
 
     load_catalogs()
-    unregister_plugin_locales("GenshinUID")
-    n = discover_and_register_plugin_locales(plugin_root, "GenshinUID")
+    unregister_plugin_locales(plugin_name)
+    n = discover_and_register_plugin_locales(plugin_root, plugin_name)
     assert n > 0
-    assert plugin_locale_key_count("GenshinUID") > 0
-    # 任取插件 key
-    sample_path = locales / "zh-cn" / "logs.json"
-    keys = json.loads(sample_path.read_text(encoding="utf-8"))
-    sample = next(iter(keys))
-    assert t(sample, lang="zh-cn")
-    unregister_plugin_locales("GenshinUID")
+    assert plugin_locale_key_count(plugin_name) > 0
+    # t() 可能为 log.* 装配模块 emoji；确保 key 已解析且占位符生效
+    resolved = t(sample_key, lang="zh-cn", name="world")
+    assert "hello" in resolved and "world" in resolved
+    assert sample_key not in resolved
+    unregister_plugin_locales(plugin_name)
