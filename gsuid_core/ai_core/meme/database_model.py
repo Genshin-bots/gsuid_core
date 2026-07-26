@@ -9,8 +9,9 @@ import json
 from typing import List, Optional, Sequence
 from datetime import datetime, timezone
 
-from sqlmodel import JSON, Field, Column, SQLModel, col, select
+from sqlmodel import JSON, Field, Column, SQLModel, col, delete, select
 from sqlalchemy import String, or_, cast, func
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.utils.database.base_models import with_session
@@ -157,6 +158,39 @@ class AiMemeRecord(SQLModel, table=True):
             return False
         await session.delete(record)
         return True
+
+    @classmethod
+    @with_session
+    async def list_for_purge(
+        cls,
+        session: AsyncSession,
+        status: Optional[str] = None,
+        folder: Optional[str] = None,
+    ) -> Sequence[tuple[str, str]]:
+        """列出待清空记录的 (meme_id, file_path)，供批量删除使用。
+
+        只取主键与路径两列，避免在数万条规模下把整行 JSON 标签加载进内存。
+        """
+        stmt = select(cls.meme_id, cls.file_path)
+        if status:
+            stmt = stmt.where(col(cls.status) == status)
+        if folder:
+            stmt = stmt.where(col(cls.folder) == folder)
+        result = await session.execute(stmt)
+        return result.all()
+
+    @classmethod
+    @with_session
+    async def delete_by_meme_ids(
+        cls,
+        session: AsyncSession,
+        meme_ids: List[str],
+    ) -> int:
+        """按 meme_id 列表批量删除数据库记录，返回删除行数。"""
+        if not meme_ids:
+            return 0
+        result = await session.execute(delete(cls).where(col(cls.meme_id).in_(meme_ids)))
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_session

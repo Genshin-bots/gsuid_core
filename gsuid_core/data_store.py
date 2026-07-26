@@ -77,6 +77,13 @@ DIST_EX_PATH = gs_data_path / "dist"
 # 网页控制台登录会话持久化文件（只存令牌摘要，重启后会话仍有效）
 WEB_SESSIONS_PATH = gs_data_path / "webconsole_sessions.json"
 
+# Live Chat（控制台实时聊天）多文件目录：
+#   identity.json / index.json / conversations/{id}.json
+LIVE_CHAT_DIR = get_res_path("webconsole_live_chat")
+LIVE_CHAT_IDENTITY_PATH = LIVE_CHAT_DIR / "identity.json"
+LIVE_CHAT_INDEX_PATH = LIVE_CHAT_DIR / "index.json"
+LIVE_CHAT_CONVS_DIR = LIVE_CHAT_DIR / "conversations"
+
 # 品牌配置 / Brand
 # - BRAND_DIR: 用户上传 ICON 的存放目录
 # - BRAND_CONFIG_PATH: 品牌信息（title / subtitle）的 JSON 配置

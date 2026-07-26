@@ -122,6 +122,8 @@ def _import_webconsole_apis() -> None:
         version_api,
         database_api,
         dashboard_api,
+        # 控制台 Live Chat 会话持久化
+        live_chat_api,
         scheduler_api,
         git_mirror_api,
         git_update_api,

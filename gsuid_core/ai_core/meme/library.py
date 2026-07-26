@@ -5,8 +5,9 @@ MemeLibrary 负责文件系统操作和数据库操作的封装。
 """
 
 import shutil
+import asyncio
 import hashlib
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Tuple, Optional, Sequence
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -239,6 +240,117 @@ class MemeLibrary:
         await AiMemeRecord.delete_by_meme_id(meme_id)
         logger.info(t("log.meme.meme_id_delete_2", meme_id=meme_id))
         return True
+
+    @staticmethod
+    async def purge_memes(
+        status: Optional[str] = None,
+        folder: Optional[str] = None,
+        batch_size: int = 200,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        """按条件批量清空表情包（DB 权威，再清源文件 + Qdrant）。
+
+        面向数万条：分批删库 → 再删文件 / 向量，避免「有库无文件」。
+
+        Args:
+            status: 可选状态过滤（pending/tagged/manual/pending_manual/rejected）
+            folder: 可选文件夹过滤
+            batch_size: 每批处理条数
+
+        Returns:
+            (DB 成功删除数, 失败项 ``[{"meme_id", "reason"}]``；含清理失败)
+        """
+        rows = await AiMemeRecord.list_for_purge(status=status, folder=folder)
+        if not rows:
+            return 0, []
+
+        base = get_memes_base_path()
+        success_count = 0
+        failed: List[Dict[str, Any]] = []
+        path_map: Dict[str, str] = {meme_id: file_path for meme_id, file_path in rows}
+        total = len(rows)
+
+        for offset in range(0, total, batch_size):
+            batch = rows[offset : offset + batch_size]
+            batch_ids = [meme_id for meme_id, _ in batch]
+            cleanup_ids: List[str] = []
+
+            try:
+                deleted = await AiMemeRecord.delete_by_meme_ids(batch_ids)
+            except Exception as e:
+                logger.warning(f"[meme] bulk delete failed, fallback per-id: {e}")
+                for meme_id in batch_ids:
+                    try:
+                        ok = await AiMemeRecord.delete_by_meme_id(meme_id)
+                        if ok:
+                            success_count += 1
+                            cleanup_ids.append(meme_id)
+                        else:
+                            failed.append({"meme_id": meme_id, "reason": "db delete returned false"})
+                    except Exception as e2:
+                        failed.append({"meme_id": meme_id, "reason": str(e2)})
+            else:
+                if deleted > 0:
+                    success_count += deleted
+                    # rowcount 无法标出哪些 id；本批均按待清理处理（缺库 id 仅多一次 unlink）
+                    cleanup_ids = list(batch_ids)
+                    if deleted < len(batch_ids):
+                        logger.warning(f"[meme] bulk delete rowcount={deleted} < batch={len(batch_ids)}")
+                else:
+                    # rowcount=0：逐条确认，避免把整批虚报为成功
+                    for meme_id in batch_ids:
+                        try:
+                            ok = await AiMemeRecord.delete_by_meme_id(meme_id)
+                            if ok:
+                                success_count += 1
+                                cleanup_ids.append(meme_id)
+                            else:
+                                failed.append({"meme_id": meme_id, "reason": "db delete returned false"})
+                        except Exception as e2:
+                            failed.append({"meme_id": meme_id, "reason": str(e2)})
+
+            if not cleanup_ids:
+                continue
+
+            unlink_jobs: List[Tuple[str, Path]] = []
+            for meme_id in cleanup_ids:
+                if meme_id not in path_map:
+                    continue
+                path = base / path_map[meme_id]
+                if path.exists():
+                    unlink_jobs.append((meme_id, path))
+
+            if unlink_jobs:
+                results = await asyncio.gather(
+                    *[_unlink_file(p) for _, p in unlink_jobs],
+                    return_exceptions=True,
+                )
+                for (meme_id, _), res in zip(unlink_jobs, results):
+                    if isinstance(res, Exception):
+                        logger.warning(f"[meme] purge unlink failed {meme_id}: {res}")
+                        failed.append(
+                            {
+                                "meme_id": meme_id,
+                                "reason": f"file unlink failed (db deleted): {res}",
+                            }
+                        )
+
+            try:
+                await _remove_many_from_qdrant(cleanup_ids)
+            except Exception as e:
+                logger.warning(t("log.meme.meme_qdrant_fail_delete_vector", e=e))
+                sample = cleanup_ids[0]
+                failed.append(
+                    {
+                        "meme_id": sample,
+                        "reason": (f"qdrant delete failed for {len(cleanup_ids)} ids (db deleted): {e}"),
+                    }
+                )
+
+        logger.info(
+            f"[meme] purge done status={status or '*'} folder={folder or '*'} "
+            f"success={success_count} failed={len(failed)}"
+        )
+        return success_count, failed
 
     @staticmethod
     async def update_tags(
@@ -811,3 +923,41 @@ async def _remove_from_qdrant(meme_id: str) -> None:
             ]
         ),
     )
+
+
+async def _remove_many_from_qdrant(meme_ids: List[str]) -> None:
+    """批量从 Qdrant 删除多个 meme_id 的向量。
+
+    优先用 MatchAny 一次删完；客户端不支持时回退为逐条删除。
+    """
+    if not meme_ids:
+        return
+
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None:
+        return
+
+    try:
+        from qdrant_client.models import Filter, MatchAny, FieldCondition
+
+        await client.delete(
+            collection_name=MEME_COLLECTION_NAME,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="meme_id",
+                        match=MatchAny(any=list(meme_ids)),
+                    )
+                ]
+            ),
+        )
+        return
+    except Exception as e:
+        logger.warning(f"[meme] qdrant MatchAny batch delete failed, fallback: {e}")
+
+    for meme_id in meme_ids:
+        try:
+            await _remove_from_qdrant(meme_id)
+        except Exception as e:
+            logger.warning(t("log.meme.meme_qdrant_fail_delete_vector", e=e))

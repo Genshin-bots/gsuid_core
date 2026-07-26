@@ -1,0 +1,19 @@
+{
+  "log.config.config_migration_moved_configuration_item": "[設定移行] 設定項目 [{key}] を {p0} から {p1} に移行した",
+  "log.config.config_name_create": "デフォルト設定を作成した: {config_name}",
+  "log.config.config_name_delete": "設定を削除した: {config_name}",
+  "log.config.config_name_delete_fail": "設定 '{config_name}' の削除に失敗: {e}",
+  "log.config.configuration_file_cannot_parsed": "[設定][{p0}] 修復後も設定ファイルを解析できないため、デフォルト設定にリセット！",
+  "log.config.configuration_file_format_changed": "[設定][{p0}] 設定ファイルの形式が変更されたため、リセット...",
+  "log.config.configuration_file_migrated_path": "[設定][{p0}] 設定ファイルを {old_path} から {new_path} に移行した",
+  "log.config.configuration_file_migration_fail": "[設定][{p0}] 設定ファイルの移行に失敗: {e}",
+  "log.config.configuration_item_key_exist": "[設定][{p0}] 設定項目 {key} は存在せず設定もないため、デフォルト値を返す...",
+  "log.config.configuration_item_key_exist_update": "[設定][{p0}] 設定項目 {key} は存在しないがデフォルト設定が存在するため、更新...",
+  "log.config.incorrect_write_type_configuration": "[設定][{p0}] 設定項目 {key} の書き込み型が不正なため、書き込みを中止...",
+  "log.config.invalid_date_format_value": "[設定][{p0}] 設定項目 {key} の日付形式 '{value}' が不正なため、書き込みを中止...",
+  "log.config.invalid_time_range_format": "[設定][{p0}] 設定項目 {key} の時間範囲形式 '{value}' が不正なため、書き込みを中止...",
+  "log.config.name_type_mismatch": "[設定][{config_name}] 設定項目 {key} の型が一致しない ({p0} -> {p1})、デフォルト値にリセット",
+  "log.config.removed_bypass_field_conform": "[設定][{p0}] GSC 構造に準拠しないバイパスフィールド '{k}' を削除（型: {p1}）",
+  "log.config.target_configuration_file_exists_skip": "[設定][{p0}] 対象の設定ファイルがすでに存在するため、{old_path} からの移行をスキップ",
+  "log.config.write_fail": "設定ファイルの書き込みに失敗！"
+}

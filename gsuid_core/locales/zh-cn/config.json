@@ -1,0 +1,19 @@
+{
+  "log.config.config_migration_moved_configuration_item": "[配置迁移] 已将配置项 [{key}] 从 {p0} 转移至 {p1}",
+  "log.config.config_name_create": "已创建默认配置: {config_name}",
+  "log.config.config_name_delete": "已删除配置: {config_name}",
+  "log.config.config_name_delete_fail": "删除配置 '{config_name}' 失败: {e}",
+  "log.config.configuration_file_cannot_parsed": "[配置][{p0}] 修复后仍无法解析配置文件, 已重置为默认配置!",
+  "log.config.configuration_file_format_changed": "[配置][{p0}] 配置文件格式有变动, 已重置...",
+  "log.config.configuration_file_migrated_path": "[配置][{p0}] 配置文件已从 {old_path} 迁移到 {new_path}",
+  "log.config.configuration_file_migration_fail": "[配置][{p0}] 配置文件迁移失败: {e}",
+  "log.config.configuration_item_key_exist": "[配置][{p0}] 配置项 {key} 不存在也没有配置, 返回默认参数...",
+  "log.config.configuration_item_key_exist_update": "[配置][{p0}] 配置项 {key} 不存在, 但是默认配置存在, 已更新...",
+  "log.config.incorrect_write_type_configuration": "[配置][{p0}] 配置项 {key} 写入类型不正确, 停止写入...",
+  "log.config.invalid_date_format_value": "[配置][{p0}] 配置项 {key} 日期格式非法 '{value}', 停止写入...",
+  "log.config.invalid_time_range_format": "[配置][{p0}] 配置项 {key} 时间范围格式非法 '{value}', 停止写入...",
+  "log.config.name_type_mismatch": "[配置][{config_name}] 配置项 {key} 类型不一致 ({p0} -> {p1}), 已重置为默认值",
+  "log.config.removed_bypass_field_conform": "[配置][{p0}] 移除非 GSC 结构的旁路字段 '{k}' (类型 {p1})",
+  "log.config.target_configuration_file_exists_skip": "[配置][{p0}] 目标配置文件已存在，跳过从 {old_path} 迁移",
+  "log.config.write_fail": "写入配置文件失败!"
+}

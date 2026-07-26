@@ -666,6 +666,8 @@ FodyWeavers.xsd
 config.json
 config.json.bak
 config.bak.json
+# 框架 i18n 词条：locales 下的 config.json 必须入库（CI 静态校验依赖）
+!gsuid_core/locales/**/config.json
 res_data
 GsData.db
 data

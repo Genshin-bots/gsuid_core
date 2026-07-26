@@ -26,7 +26,8 @@
 | POST | `/api/meme/{meme_id}/retag` | 重新触发 VLM 打标 |
 | GET | `/api/meme/stats` | 统计概览（包含 `persona_counts`） |
 | POST | `/api/meme/batch_delete` | 批量删除表情包 |
-| POST | `/api/meme/purge_rejected` | 清除所有已拒绝的表情包 |
+| POST | `/api/meme/purge` | 按条件批量清空（`purge_all` 或 status/folder/人格） |
+| POST | `/api/meme/purge_rejected` | 清除所有已拒绝的表情包（兼容旧前端） |
 | POST | `/api/meme/batch_retag_pending` | 批量重新打标（待手动处理状态） |
 | POST | `/api/meme/export` | 批量导出为 .meme 格式 |
 | POST | `/api/meme/import` | 导入 .meme 格式文件 |
@@ -362,13 +363,90 @@ POST /api/meme/batch_delete
 }
 ```
 
-### 10b. 清除所有已拒绝的表情包
+### 10b. 按条件批量清空表情包
+
+```
+POST /api/meme/purge
+```
+
+面向「数万张 / 几十页」场景：后端按条件一次性清空匹配的表情包（源文件 + 数据库 + Qdrant），无需前端分页勾选。分批处理，适合大批量。
+
+**请求体** (JSON):
+
+```json
+{
+    "confirm": true,
+    "purge_all": false,
+    "status": "tagged",
+    "folder": null,
+    "persona_hint": null
+}
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `confirm` | bool | **是** | 必须为 `true`，防止误触 |
+| `purge_all` | bool | 否 | 为 `true` 时清空库内**全部**；与过滤字段互斥 |
+| `status` | string | 否 | 按状态过滤：`pending` / `tagged` / `manual` / `pending_manual` / `rejected` |
+| `folder` | string | 否 | 按文件夹过滤，如 `common` / `persona_xxx`（与 `persona_hint` 互斥，**folder 优先**） |
+| `persona_hint` | string | 否 | 按人格过滤（底层换算为对应 folder） |
+
+- 全库清空：`confirm=true` 且 `purge_all=true`，不得带过滤字段。
+- 条件清空：`confirm=true` 且至少提供 `status` / `folder` / `persona_hint` 之一。
+- 仅 `confirm=true`、无 `purge_all`、无过滤 → **400 语义**（`status=1`），防止误触全删。
+
+**响应**:
+
+无匹配时：
+
+```json
+{
+    "status": 0,
+    "msg": "没有匹配的表情包",
+    "data": {
+        "purged_count": 0,
+        "failed": []
+    }
+}
+```
+
+全部成功时：
+
+```json
+{
+    "status": 0,
+    "msg": "已清空 1234 个表情包",
+    "data": {
+        "purged_count": 1234,
+        "failed": []
+    }
+}
+```
+
+部分失败时：
+
+```json
+{
+    "status": 1,
+    "msg": "清空完成：成功 1200 个，失败 34 个",
+    "data": {
+        "purged_count": 1200,
+        "failed": [
+            {"meme_id": "xxx", "reason": "..."}
+        ]
+    }
+}
+```
+
+### 10b2. 清除所有已拒绝的表情包
 
 ```
 POST /api/meme/purge_rejected
 ```
 
 一键删除所有状态为 `rejected` 的表情包，包括源文件、数据库记录和 Qdrant 向量索引。无需请求体。
+
+等价于 `POST /api/meme/purge` 且 `{"confirm": true, "status": "rejected"}`（条件清空，不必 `purge_all`）。保留以兼容旧前端。
 
 **响应**:
 

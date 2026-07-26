@@ -40,6 +40,7 @@ GIT_UPDATE: _Tag = [f"{_SYS}/插件/Git 更新"]
 
 # ─────────────────────────── 消息 / 资源 ───────────────────────────
 MESSAGE: _Tag = [f"{_SYS}/消息推送"]
+LIVE_CHAT: _Tag = [f"{_SYS}/实时聊天"]
 ASSETS: _Tag = [f"{_SYS}/资源/图片资源"]
 THEME: _Tag = [f"{_SYS}/资源/主题"]
 BRAND: _Tag = [f"{_SYS}/资源/品牌"]

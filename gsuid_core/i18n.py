@@ -34,8 +34,6 @@ from enum import Enum
 from typing import Set, Dict, List, Tuple, Optional
 from pathlib import Path
 
-from gsuid_core.config import core_config
-
 
 class Lang(str, Enum):
     """框架 i18n 支持的语言；枚举值即 locales 下目录名 / 历史单文件名。"""
@@ -294,6 +292,10 @@ def is_supported(lang: Optional[str]) -> bool:
 
 
 def get_lang() -> str:
+    # 延迟导入：避免 import i18n 时拉起 config（boltons 等运行时依赖），
+    # 使 CI 中仅装 pytest 的静态/轻量 i18n 测试可直接 import。
+    from gsuid_core.config import core_config
+
     lang: str = core_config.get_config("LANGUAGE")
     return lang if lang in _catalogs else DEFAULT_LANG
 

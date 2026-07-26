@@ -1,0 +1,19 @@
+{
+  "log.config.config_migration_moved_configuration_item": "[Config Migration] Moved configuration item [{key}] from {p0} to {p1}",
+  "log.config.config_name_create": "Created default configuration: {config_name}",
+  "log.config.config_name_delete": "Deleted configuration: {config_name}",
+  "log.config.config_name_delete_fail": "Failed to delete configuration '{config_name}': {e}",
+  "log.config.configuration_file_cannot_parsed": "[Config][{p0}] Configuration file still cannot be parsed after repair; reset to default configuration!",
+  "log.config.configuration_file_format_changed": "[Config][{p0}] Configuration file format changed; reset...",
+  "log.config.configuration_file_migrated_path": "[Config][{p0}] Configuration file migrated from {old_path} to {new_path}",
+  "log.config.configuration_file_migration_fail": "[Config][{p0}] Configuration file migration failed: {e}",
+  "log.config.configuration_item_key_exist": "[Config][{p0}] Configuration item {key} does not exist and is not configured; returning the default value...",
+  "log.config.configuration_item_key_exist_update": "[Config][{p0}] Configuration item {key} does not exist, but a default is available; updated...",
+  "log.config.incorrect_write_type_configuration": "[Config][{p0}] Incorrect write type for configuration item {key}; aborting write...",
+  "log.config.invalid_date_format_value": "[Config][{p0}] Invalid date format '{value}' for configuration item {key}; aborting write...",
+  "log.config.invalid_time_range_format": "[Config][{p0}] Invalid time-range format '{value}' for configuration item {key}; aborting write...",
+  "log.config.name_type_mismatch": "[Config][{config_name}] Type mismatch for configuration item {key} ({p0} -> {p1}); reset to default",
+  "log.config.removed_bypass_field_conform": "[Config][{p0}] Removed bypass field '{k}' that does not conform to the GSC structure (type: {p1})",
+  "log.config.target_configuration_file_exists_skip": "[Config][{p0}] Target configuration file already exists; skipping migration from {old_path}",
+  "log.config.write_fail": "Failed to write configuration file!"
+}
