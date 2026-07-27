@@ -37,15 +37,19 @@ SSE_KEEPALIVE_SEC = 15
 
 @dataclass(slots=True)
 class LogRecord:
-    """SSE 缓冲里的一条日志：只留渲染所需的三个字符串。
+    """SSE 缓冲里的一条日志：只留渲染所需字段。
 
     不存 EventDict 本身——那会让缓冲长期持有 Event / 消息列表等原始对象的引用（正是 RSS
     只涨不跌的来源），且字符预算也算不准（渲染后的 gevent 才是真正要推给前端的字节）。
+
+    plugin 单独成字段（不塞进 gevent）：网页控制台会像等级一样渲染为来源 badge。
     """
 
     level: str
     gevent: str
     timestamp: str
+    # 默认值字面量：_CORE_ORIGIN_LABEL 定义在文件后部，dataclass 默认值不能前向引用
+    plugin: str = "SayuCore"
 
 
 log_history: Deque[LogRecord] = deque(maxlen=LOG_HISTORY_MAXLEN)
@@ -893,6 +897,20 @@ def _build_console_renderer() -> ConsoleRenderer:
     )
 
 
+# 写入 SSE gevent 时跳过的键：结构字段走独立列 / 不需要进正文
+_HISTORY_SKIP_KEYS: frozenset = frozenset(
+    {
+        "event",
+        "timestamp",
+        "level",
+        "plugin",  # 独立 SSE 字段 + 控制台 badge
+        "pathname",  # 内部路径，前端不需要
+        "lineno",
+        "func_name",
+    }
+)
+
+
 def log_to_history(
     logger: WrappedLogger,
     method_name: str,
@@ -900,9 +918,12 @@ def log_to_history(
 ) -> EventDict:
     """把当前日志渲染成一条 LogRecord 压入 SSE 缓冲（collect 链专用，不改动 event_dict）。
 
-    event / level / timestamp 三键由 shared_processors 的 add_log_level、TimeStamper 保证存在。
+    event / level / timestamp 三键由 shared_processors 的 add_log_level、TimeStamper 保证存在；
+    plugin 由 add_plugin_origin_processor 写入，经独立字段推给前端控制台。
     """
-    extra = ", ".join(f"{k}={event_dict[k]}" for k in event_dict if k not in ("event", "timestamp", "level"))
+    raw_plugin = event_dict.get("plugin")
+    plugin = _normalize_origin_label(raw_plugin if isinstance(raw_plugin, str) else "")
+    extra = ", ".join(f"{k}={event_dict[k]}" for k in event_dict if k not in _HISTORY_SKIP_KEYS)
     gevent = strip_plugin_marks(str(event_dict["event"]))
     if extra:
         gevent += f"\n{strip_plugin_marks(extra)}"
@@ -912,6 +933,7 @@ def log_to_history(
             level=str(event_dict["level"]),
             gevent=gevent,
             timestamp=str(event_dict["timestamp"]),
+            plugin=plugin,
         )
     )
     return event_dict
@@ -1185,6 +1207,8 @@ async def read_log(
                 "message": record.gevent,
                 "message_type": "html",
                 "timestamp": record.timestamp,
+                # 来源插件（plugins/buildin_plugins 解析或 SayuCore）；前端渲染为 badge
+                "plugin": getattr(record, "plugin", None) or _CORE_ORIGIN_LABEL,
             }
             yield f"id: {ev_id}\ndata: {json.dumps(log_data)}\n\n"
             last_sent = time.monotonic()
