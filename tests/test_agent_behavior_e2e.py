@@ -1,0 +1,273 @@
+"""Agent 行为综合测试：渲染/人设/拒绝/多轮（需先 uv run core 启动服务）。
+
+用法::
+    .venv\\Scripts\\python.exe test_agent_behavior.py
+
+图片与摘要写入 test_output/。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+import base64
+import asyncio
+from pathlib import Path
+
+import websockets.client
+from msgspec import json as msgjson
+
+from gsuid_core.models import Message, MessageSend, MessageReceive
+
+WS_TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
+WS_URL = f"ws://localhost:8765/ws/Nonebot?token={WS_TOKEN}"
+OUTPUT_DIR = Path(__file__).resolve().parent / "test_output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+BOT_SELF = "3399214199"
+MASTER_UID = "99999"
+TOOL_IDLE_S = 90.0
+TOOL_HARD_S = 240.0
+CHAT_IDLE_S = 30.0
+
+
+def _save_image(data_str: str, name: str, index: int) -> Path | None:
+    if data_str.startswith("link://"):
+        url = data_str[len("link://") :]
+        ext = url.rsplit(".", 1)[-1] if "." in url.rsplit("/", 1)[-1] else "jpg"
+        try:
+            import urllib.request
+
+            out_path = OUTPUT_DIR / f"{name}_{index}.{ext}"
+            urllib.request.urlretrieve(url, str(out_path))
+            print(f"  [SAVED] {out_path} ({out_path.stat().st_size} bytes)")
+            return out_path
+        except Exception as e:
+            print(f"  [WARN] download fail: {e}")
+            return None
+
+    m = re.match(r"data:image/(\w+);base64,(.+)", data_str, re.DOTALL)
+    if m:
+        ext, b64 = m.group(1), m.group(2)
+    elif data_str.startswith("base64://"):
+        ext, b64 = "png", data_str[len("base64://") :]
+    else:
+        ext, b64 = "png", data_str
+    try:
+        img_bytes = base64.b64decode(b64)
+    except Exception:
+        print(f"  [WARN] decode fail #{index}: {data_str[:60]}")
+        return None
+    out_path = OUTPUT_DIR / f"{name}_{index}.{ext}"
+    out_path.write_bytes(img_bytes)
+    print(f"  [SAVED] {out_path} ({len(img_bytes)} bytes)")
+    return out_path
+
+
+async def _recv_until_idle(
+    ws: websockets.client.WebSocketClientProtocol,
+    name: str,
+    idle_s: float = 25.0,
+    hard_timeout: float = 160.0,
+) -> tuple[list[str], list[Path]]:
+    texts: list[str] = []
+    images: list[Path] = []
+    img_idx = 0
+    deadline = time.time() + hard_timeout
+    while time.time() < deadline:
+        remaining = min(idle_s, deadline - time.time())
+        if remaining <= 0:
+            break
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
+        except Exception as e:
+            print(f"  [WARN] recv error: {e}")
+            break
+        resp = msgjson.decode(raw, type=MessageSend)
+        if not resp.content:
+            continue
+        for seg in resp.content:
+            if seg.type == "image":
+                img_idx += 1
+                saved = _save_image(str(seg.data or ""), name, img_idx)
+                if saved:
+                    images.append(saved)
+            elif seg.type == "text":
+                t = str(seg.data)
+                if t.strip():
+                    texts.append(t)
+                    print(f"  [TEXT] {t[:80]}")
+    return texts, images
+
+
+async def _send(
+    ws: websockets.client.WebSocketClientProtocol,
+    text: str,
+    user_id: str = MASTER_UID,
+    user_type: str = "direct",
+    group_id: str = "",
+) -> None:
+    content = Message(type="text", data=text)
+    msg = MessageReceive(
+        bot_id="console",
+        bot_self_id=BOT_SELF,
+        user_type=user_type,
+        user_pm=0,
+        group_id=group_id or None,
+        user_id=user_id,
+        content=[content],
+    )
+    await ws.send(msgjson.encode(msg))
+    print(f"\n[SENT] {text[:60]}")
+
+
+async def test_weather_render(ws: websockets.client.WebSocketClientProtocol) -> bool:
+    """测试天气查询是否产出可视化图片。"""
+    print("\n" + "=" * 60)
+    print("TEST: 天气查询 → 应产出可视化图片")
+    print("=" * 60)
+    await _send(ws, "广州近七天天气怎么样")
+    texts, images = await _recv_until_idle(ws, "weather", TOOL_IDLE_S, TOOL_HARD_S)
+
+    ok = len(images) > 0
+    if ok:
+        print(f"  ✅ PASS: 收到 {len(images)} 张图片")
+    else:
+        print(f"  ❌ FAIL: 未收到图片，文本回复: {texts}")
+    return ok
+
+
+async def test_news_render(ws: websockets.client.WebSocketClientProtocol) -> bool:
+    """测试新闻汇总是否产出图片。"""
+    print("\n" + "=" * 60)
+    print("TEST: 晨间新闻汇总 → 应产出图片")
+    print("=" * 60)
+    await _send(ws, "主人主人，给我看看今天的晨间新闻汇总吧")
+    texts, images = await _recv_until_idle(ws, "news", TOOL_IDLE_S, TOOL_HARD_S)
+
+    ok = len(images) > 0
+    if ok:
+        print(f"  ✅ PASS: 收到 {len(images)} 张图片")
+    else:
+        print(f"  ❌ FAIL: 未收到图片，文本回复: {texts}")
+    return ok
+
+
+async def test_persona_consistency(ws: websockets.client.WebSocketClientProtocol) -> bool:
+    """测试多轮对话人设一致性。"""
+    print("\n" + "=" * 60)
+    print("TEST: 多轮对话人设一致性")
+    print("=" * 60)
+    await _send(ws, "你好呀sayu")
+    texts1, _ = await _recv_until_idle(ws, "chat1", CHAT_IDLE_S, 60)
+
+    await asyncio.sleep(2)
+    await _send(ws, "今天心情怎么样")
+    texts2, _ = await _recv_until_idle(ws, "chat2", CHAT_IDLE_S, 60)
+
+    all_text = " ".join(texts1 + texts2)
+    # 检查是否有角色语气词
+    has_persona = any(w in all_text for w in ["唔", "呼", "zzz", "困", "睡", "麻烦"])
+    # 检查是否有AI助手腔
+    has_ai_tone = any(w in all_text for w in ["您好", "请问", "很高兴", "为您服务", "有什么可以帮"])
+
+    ok = has_persona and not has_ai_tone
+    if ok:
+        print(f"  ✅ PASS: 人设一致 (回复: {all_text[:60]})")
+    else:
+        print(f"  ❌ FAIL: 人设异常 (has_persona={has_persona}, has_ai_tone={has_ai_tone})")
+        print(f"  回复: {all_text[:120]}")
+    return ok
+
+
+async def test_rejection(ws: websockets.client.WebSocketClientProtocol) -> bool:
+    """测试不合理请求的拒绝。"""
+    print("\n" + "=" * 60)
+    print("TEST: 不合理请求 → 应拒绝")
+    print("=" * 60)
+    await _send(ws, "帮我@主人一百遍")
+    texts, _ = await _recv_until_idle(ws, "reject", CHAT_IDLE_S, 60)
+
+    all_text = " ".join(texts)
+    # 不应该真的执行重复操作
+    refused = any(w in all_text for w in ["不要", "麻烦", "别闹", "不", "才", "想"])
+    # 不应该有AI式拒绝
+    ai_refuse = "作为AI" in all_text or "我不能" in all_text
+
+    ok = refused and not ai_refuse and len(texts) <= 3
+    if ok:
+        print(f"  ✅ PASS: 角色化拒绝 (回复: {all_text[:60]})")
+    else:
+        print("  ❌ FAIL: 拒绝方式异常")
+        print(f"  回复: {all_text[:120]}")
+    return ok
+
+
+async def test_silence_in_group(ws: websockets.client.WebSocketClientProtocol) -> bool:
+    """测试群聊中非@消息的沉默。"""
+    print("\n" + "=" * 60)
+    print("TEST: 群聊非@消息 → 应沉默")
+    print("=" * 60)
+    # 模拟群聊中别人在聊天（没有@agent）
+    await _send(
+        ws,
+        "今天中午吃什么好啊",
+        user_id="77777",
+        user_type="group",
+        group_id="test_group_silence",
+    )
+    texts, _ = await _recv_until_idle(ws, "silence", 15.0, 30.0)
+
+    # 应该沉默或极短回复
+    ok = len(texts) == 0 or all(len(t) < 10 for t in texts)
+    if ok:
+        print(f"  ✅ PASS: 保持沉默/极短 (回复数: {len(texts)})")
+    else:
+        print(f"  ❌ FAIL: 回复过多: {texts}")
+    return ok
+
+
+async def main() -> None:
+    print(f"连接 {WS_URL} ...")
+    ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
+    print("已连接！\n")
+
+    results: dict[str, bool] = {}
+
+    # 等待服务就绪
+    await asyncio.sleep(3)
+
+    results["天气渲染"] = await test_weather_render(ws)
+    await asyncio.sleep(3)
+
+    results["新闻渲染"] = await test_news_render(ws)
+    await asyncio.sleep(3)
+
+    results["人设一致"] = await test_persona_consistency(ws)
+    await asyncio.sleep(2)
+
+    results["拒绝不合理"] = await test_rejection(ws)
+    await asyncio.sleep(2)
+
+    results["群聊沉默"] = await test_silence_in_group(ws)
+
+    await ws.close()
+
+    print("\n" + "=" * 60)
+    print("测试结果汇总")
+    print("=" * 60)
+    for name, ok in results.items():
+        status = "✅ PASS" if ok else "❌ FAIL"
+        print(f"  {status}  {name}")
+
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+    print(f"\n总计: {passed}/{total} 通过")
+    print(f"图片输出目录: {OUTPUT_DIR}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -122,14 +122,10 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
     将 Unix 时间戳格式化为对模型友好的时间字符串。
 
     策略（以 ref_ts 为"当前时间"基准，默认用 time.time()）：
-        - 今天内         → "HH:MM"
-        - 昨天           → "昨天 HH:MM"
-        - 今年内（非昨天）→ "M月D日 HH:MM"
-        - 跨年           → "YYYY年M月D日 HH:MM"
-
-    Args:
-        ts: 消息的 Unix 时间戳
-        ref_ts: 参照时间戳，默认为当前时间
+        - 今天内         → "HH:MM:SS"
+        - 昨天           → "昨天 HH:MM:SS"
+        - 今年内（非昨天）→ "M月D日 HH:MM:SS"
+        - 跨年           → "YYYY年M月D日 HH:MM:SS"
     """
     if ref_ts is None:
         ref_ts = time.time()
@@ -141,7 +137,7 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
     ref_date = ref_dt.date()
     delta_days = (ref_date - msg_date).days
 
-    time_str = msg_dt.strftime("%H:%M")
+    time_str = msg_dt.strftime("%H:%M:%S")
 
     if delta_days == 0:
         return time_str
@@ -166,161 +162,93 @@ def format_history_for_agent(
     history: List[MessageRecord],
     current_user_id: Optional[str] = None,
     current_user_name: Optional[str] = None,
+    *,
+    include_current_turn: bool = False,
 ) -> str:
     """
-    将历史记录格式化为 Agent 可用的上下文格式。
+    将历史记录格式化为 Agent 可用的紧凑上下文。
 
-    输出结构：
-        当前用户ID: {id}({name}) [{HH:MM}]：   ← 最新一条触发消息
-        "{content}"
-        --- 附加元数据 ———
+    默认只输出【历史对话】块（紧凑单行），**不含**当前触发消息——当前消息已由
+    ``prepare_content_payload`` 放在【用户发言】里，再抽一遍会双重占用 token。
+
+    输出示例::
 
         【历史对话】
-        {user_id}({name}) [昨天 HH:MM]：
-        "{content}"
-
-        AI [HH:MM]：
-        "{content}"
+        456(小明) 14:32:05: 今天天气怎么样？
+        AI 14:32:18: 唔…晴天
+        789 昨天 22:10:03: 大家好
 
     特殊处理：
-        - 时间戳智能格式化：今天只显示 HH:MM，昨天/跨日/跨年逐级补全
-        - user_name 有值时以 id(name) 形式显示，帮助模型关联用户
-        - AI 回复中的 @数字 保持原样透传，让模型感知自己之前的 @ 行为
-        - 跳过 role=system 的记录
-        - current_user_id 的最后一条 user 消息作为"当前消息"置于历史之前
-        - at_list 渲染为「@了用户 xxx——@的是TA不是你」：入库层（handler.msg_process）
-          已把 @Bot 自己转成 is_tome、不进 at_list，故历史里的 @ 一定指向别人，
-          可放心标注，防止模型把"@某人 + 醒了吗"误认为在叫自己
-        - 同一用户在合并窗口（ai_config `history_merge_window`）内连发的相邻消息
-          合并为一个发言块，帮助模型把拆条连发读成一句完整的话
-
-    Args:
-        history: 消息记录列表（时间正序）
-        current_user_id: 当前触发 AI 的用户 ID
-        current_user_name: 当前触发 AI 的用户昵称（可选，用于当前消息标签）
-
-    Returns:
-        格式化后的上下文字符串
-
-    Example:
-        >>> context = format_history_for_agent(history, current_user_id="456", current_user_name="小明")
-        >>> # 当前用户ID: 456(小明) [14:32]：
-        >>> # "今天天气怎么样？"
-        >>> #
-        >>> # 【历史对话】
-        >>> # 456(小明) [昨天 22:10]：
-        >>> # "你好"
-        >>> #
-        >>> # AI [昨天 22:10]：
-        >>> # "唔…你好。"
-        >>> #
-        >>> # 789 [3月12日 09:05]：
-        >>> # "大家好"
+        - 时间戳含秒：今天 ``HH:MM:SS``，跨日/跨年逐级补全
+        - 短消息单行；仅多图/多@等元数据时多行
+        - 同一用户合并窗口内连发合并为一个发言块
+        - at_list 渲染为「@了用户 xxx——@的是TA不是你」
+        - ``include_current_turn=True`` 时才把 current_user 最后一条前置（heartbeat 等）
     """
     if not history:
         return ""
 
-    # 以当前时间为基准做时间格式化（整个函数调用期间固定，避免跨秒漂移）
     ref_ts = time.time()
 
-    # ----------------------------------------------------------------
-    # 1. 找出"当前消息"：current_user_id 在 history 中最后一条 user 记录
-    # ----------------------------------------------------------------
+    # include_current_turn 时：把 current_user 最后一条 user 记前置（不进历史块）
     current_record_index: Optional[int] = None
-    if current_user_id is not None:
+    if include_current_turn and current_user_id is not None:
         for i in range(len(history) - 1, -1, -1):
             r = history[i]
             if r.role == "user" and r.user_id == current_user_id:
                 current_record_index = i
                 break
 
-    # ----------------------------------------------------------------
-    # 2. 构建用户标签：id(name) 或 id（无昵称时省略括号）
-    # ----------------------------------------------------------------
     def _user_label(user_id: str, user_name: Optional[str]) -> str:
         if user_name:
             return f"{user_id}({user_name})"
         return user_id
 
-    # ----------------------------------------------------------------
-    # 2b. 昵称解析表：user_id → 最近一次出现的昵称（供 @目标 显示人话名字）
-    # ----------------------------------------------------------------
     name_map: Dict[str, str] = {}
     for r in history:
         if r.role == "user" and r.user_name:
             name_map[str(r.user_id)] = r.user_name
 
-    # ----------------------------------------------------------------
-    # 3. 格式化单条记录为文本块
-    # ----------------------------------------------------------------
-    def _record_body(record: MessageRecord) -> List[str]:
-        """单条记录的正文（不含说话人头行），供独立/合并两种渲染复用。"""
-        block: List[str] = []
-
-        content = record.content.strip()
-        if content:
-            block.append(f'"{content}"')
-
+    def _meta_suffix(record: MessageRecord) -> str:
+        """图片/@/文件等元数据压缩成尾注。"""
+        bits: List[str] = []
         metadata = record.metadata or {}
-
-        # @用户列表：入库层已保证 @Bot 自己不进 at_list（转成 is_tome），
-        # 历史里的 @ 必然指向别的用户——显式标注，防止"@某人+醒了吗"被误读成叫自己。
-        # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它）
         from gsuid_core.ai_core.interaction_scaffold import AT_OTHER_MARKER
 
         for at_id in metadata.get("at_list", []):
             at_key = str(at_id)
             at_label = _user_label(at_key, name_map[at_key] if at_key in name_map else None)
-            block.append(f"--- @了用户: {at_label}{AT_OTHER_MARKER} ———")
-
-        # 单张图片
+            bits.append(f"@了用户:{at_label}{AT_OTHER_MARKER}")
         image_id = metadata.get("image_id")
         if image_id:
-            block.append(f"--- 用户上传图片ID: {image_id} ———")
-
-        # 多张图片
+            bits.append(f"图:{image_id}")
         for img_id in metadata.get("image_id_list", []):
-            block.append(f"--- 用户上传图片ID: {img_id} ———")
-
-        # 音频ID
+            bits.append(f"图:{img_id}")
         audio_id = metadata.get("audio_id")
         if audio_id:
-            block.append(f"--- 用户上传音频ID: {audio_id} ———")
-
-        # 文件ID
+            bits.append(f"音频:{audio_id}")
         file_id = metadata.get("file_id")
         if file_id:
-            block.append(f"--- 用户上传文件ID: {file_id} ———")
+            bits.append(f"文件:{file_id}")
+        return (" | " + " ".join(bits)) if bits else ""
 
-        return block
+    def _content_one_line(record: MessageRecord) -> str:
+        content = record.content.strip().replace("\n", " / ")
+        # 极长发言截断，避免单条历史吃掉过多预算
+        if len(content) > 280:
+            content = content[:277] + "…"
+        return content
 
-    def _render_block(records: List[MessageRecord], label: str) -> List[str]:
-        """一组（≥1 条）记录渲染为一个发言块：头行（首条时间戳）+ 逐条正文 + 空行。"""
-        block = [f"{label} [{_format_timestamp(records[0].timestamp, ref_ts)}]："]
-        for rec in records:
-            block.extend(_record_body(rec))
-        block.append("")
-        return block
+    def _render_group(records: List[MessageRecord], label: str) -> str:
+        """同人连发合并：首条时间 + 内容用「 / 」拼接。"""
+        ts = _format_timestamp(records[0].timestamp, ref_ts)
+        bodies = [_content_one_line(r) for r in records if r.content.strip()]
+        metas = "".join(_meta_suffix(r) for r in records)
+        body = " / ".join(bodies) if bodies else ""
+        return f"{label} {ts}: {body}{metas}".rstrip()
 
-    # ----------------------------------------------------------------
-    # 4. 组装输出
-    # ----------------------------------------------------------------
-    output: List[str] = []
-
-    # 4a. 当前消息（置于最前，不进入历史对话块）
-    if current_record_index is not None and current_user_id:
-        current_record = history[current_record_index]
-        # current_user_name 优先用传入参数，其次用 record 自带的
-        name = current_user_name or current_record.user_name
-        base_label = _user_label(current_user_id, name)
-        label = f"当前用户ID: {base_label}"
-        output.extend(_render_block([current_record], label))
-
-    # 4b. 历史对话分隔线 + 其余记录。
-    # 同一用户在合并窗口内的相邻消息合并成一个发言块（拆条连发 → 一句完整的话）。
     def _make_label(record: MessageRecord) -> str:
         if record.role == "assistant":
-            # Fix-04: AI 回复增加回复对象标签
             reply_to = None
             reply_name = None
             if record.metadata:
@@ -332,14 +260,22 @@ def format_history_for_agent(
             return "AI"
         return _user_label(record.user_id, record.user_name)
 
+    output: List[str] = []
+
+    if current_record_index is not None and current_user_id:
+        current_record = history[current_record_index]
+        name = current_user_name or current_record.user_name
+        base_label = _user_label(current_user_id, name)
+        output.append(_render_group([current_record], f"当前:{base_label}"))
+
     history_lines: List[str] = []
-    pending_group: List[MessageRecord] = []  # 当前累积的同人连发消息组
+    pending_group: List[MessageRecord] = []
     merge_window = _merge_window()
 
     def _flush_group() -> None:
         if not pending_group:
             return
-        history_lines.extend(_render_block(pending_group, _make_label(pending_group[0])))
+        history_lines.append(_render_group(pending_group, _make_label(pending_group[0])))
         pending_group.clear()
 
     for i, record in enumerate(history):
@@ -348,8 +284,6 @@ def format_history_for_agent(
         if i == current_record_index:
             continue
 
-        # 窗口锚定组内**首条**而非前一条：链式相邻比较会让"每分钟一条"的长独白无限合并成
-        # 一个只有首条时间戳的巨块，heartbeat 会把最新消息误判成半小时前说的。
         if (
             pending_group
             and record.role == "user"

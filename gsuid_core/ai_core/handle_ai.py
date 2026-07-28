@@ -354,8 +354,8 @@ async def handle_ai_chat(
                         user_messages[0] = summarized
                 logger.info(t("log.ai.gscore_summarization_summary_length", p0=len(summarized)))
 
-            # Bug-04修复：时间注入移到摘要之后（无论是否摘要都需要）
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+            # Bug-04修复：时间注入移到摘要之后（无论是否摘要都需要）；含秒便于时序判断
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if isinstance(user_messages, list) and len(user_messages) > 0 and isinstance(user_messages[0], str):
                 user_messages[0] += f"\n【当前时间】{current_time}"
 
@@ -413,9 +413,10 @@ async def handle_ai_chat(
             # 注意：RAG 知识库检索已移除为强制前置步骤（D-11 修复）
             rag_context: str = ""
 
-            # 获取群聊历史记录并格式化为上下文
-            # 获取最近的历史记录（最多30条）
-            raw_history = history_manager.get_history(event, limit=30)
+            # 私聊时 pydantic_ai session.history 已覆盖对话，IM 历史冗余且破坏缓存前缀；
+            # 仅群聊需要注入 IM 历史（其他用户发言不在 model history 中）。
+            _is_private = not event.group_id
+            raw_history = history_manager.get_history(event, limit=30) if not _is_private else []
 
             # 排除最后一条（当前用户刚发的消息），避免与 user_messages 重复
             history = raw_history[:-1] if raw_history else []
@@ -438,17 +439,18 @@ async def handle_ai_chat(
                 combined = sorted(selected_current + selected_other, key=lambda r: r.timestamp)
                 history = combined
 
-            # 格式化历史记录为Agent可用的上下文格式
-            # Bug-05修复: current_user_id 统一 str() 转换，避免类型不一致导致比较失效
+            # 格式化历史：当前发言已在 user_messages，include_current_turn=False 防双重占用
             if history:
                 history_context = format_history_for_agent(
                     history=history,
                     current_user_id=str(event.user_id),
                     current_user_name=event.sender.get("nickname") if event.sender else None,
+                    include_current_turn=False,
                 )
 
                 if history_context:
-                    rag_context = f"【历史对话】\n{history_context}\n"
+                    # format_history 已含【历史对话】标头，勿再包一层
+                    rag_context = history_context
                     logger.debug(t("log.ai.gscore_historical", p0=len(history)))
 
             # 动态上下文统一走 assemble_dynamic_context（评测与生产同源）

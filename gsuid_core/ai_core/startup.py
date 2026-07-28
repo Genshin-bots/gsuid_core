@@ -223,7 +223,9 @@ async def init_ai_core():
 
     logger.debug(t("log.ai.ai_core_heavy_dependency_import", p0=time.time() - import_start))
 
-    # 按依赖顺序依次初始化各子系统，单个失败不影响后续步骤；但 AI Core 只有全部步骤成功才标记 ready。
+    # 按依赖顺序依次初始化；单步失败不阻断后续。
+    # ready 语义：初始化流水线已结束即可接聊（buildin 工具/人设不依赖 RAG 全量同步）。
+    # 若 RAG/Memory 等失败仅降级能力，禁止整站 AI 永久 not-ready（否则 wait_ai_core_ready 恒失败）。
     init_failed = False
     try:
         for name, step in _INIT_STEPS:
@@ -258,7 +260,7 @@ async def init_ai_core():
         else:
             logger.success(t("log.ai.ai_core_initialization_total_ok", p0=time.time() - start))
     finally:
-        _AI_CORE_READY = not init_failed
+        _AI_CORE_READY = True
         _AI_CORE_INITIALIZING = False
         _get_ready_event().set()
 

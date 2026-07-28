@@ -157,23 +157,16 @@ async def assemble_dynamic_context(
     except Exception as e:
         logger.debug(t("log.ai.selfcog_relationship_context_injection", e=e))
 
-    # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
-    # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一段紧凑角色快照。
+    # 口吻锚点：system_prompt 已含完整约束，此处仅钉极简提醒（减少每轮 token）
     if persona_name:
         try:
             from gsuid_core.ai_core.persona import get_voice_anchor
 
             voice_anchor = get_voice_anchor(persona_name)
             if voice_anchor:
-                # 口吻/行为分离：锚点只约束语气——实测"慵懒"会从语气渗漏成行为 （以困/懒为由拒设提醒、
-                context_parts.append(
-                    f"（角色快照：{voice_anchor}。"
-                    "回复约束：①角色台词用碎片化短句，结构化数据放<report>块；"
-                    "②角色台词中禁止表格、编号列表、加粗标题；"
-                    "③查到10分只说3分，剩下的让report块承载；"
-                    "④口吻只决定**怎么说**，不决定**做不做**："
-                    "该回应的回应、该办的事照办，不拿角色性格当拒绝或敷衍的理由）"
-                )
+                # 截断至 60 字以内，避免每轮重复长段口吻描述
+                short_anchor = voice_anchor[:60] + "…" if len(voice_anchor) > 60 else voice_anchor
+                context_parts.append(f"（口吻：{short_anchor}）")
         except Exception as e:
             logger.debug(t("log.ai.contextassembly_persona_tone_anchor_fail", e=e))
 
@@ -198,31 +191,16 @@ async def assemble_dynamic_context(
         guide = f"{memory_guide}" if memory_guide else ""
         context_parts.append(f"{guide}【长期记忆】\n{memory_context_text}")
 
-    # 工具规程分级注入（须在软触发之前；_relean 剥离，不进持久 history）： 闲聊 → LITE（轻工具 + 省略跟进）；
-    try:
-        from gsuid_core.ai_core.persona.prompts import (
-            TOOL_ORCHESTRATION_LITE,
-            TOOL_ORCHESTRATION_CONSTRAINTS,
-        )
-
-        if intent != "闲聊" or prev_turn_used_tools or has_actionable:
-            context_parts.append(TOOL_ORCHESTRATION_CONSTRAINTS.strip())
-        else:
-            context_parts.append(TOOL_ORCHESTRATION_LITE.strip())
-    except Exception as e:
-        logger.debug(t("log.ai.contextassembly_procedure_injection", e=e))
+    # 工具规程已固化进 system_prompt（可缓存）。此处只注入极短模式指示。
+    if intent == "闲聊" and not prev_turn_used_tools and not has_actionable:
+        context_parts.append("（当前偏闲聊。极简回复，≤15字/条，至多2条。口吻回到角色最自然的状态。）")
 
     # 上一轮发出的资料图标题（来自 ModelResponse.metadata，非文本占位符）
     if recent_report_titles:
         titles_str = "、".join(recent_report_titles[-3:])
         context_parts.append(f"（上一轮你发出了资料图：{titles_str}。用户可能追问图片内容。）")
 
-    # 语域隔离：只约束「怎么说」，绝不禁止「做不做」。
-    if intent == "闲聊" and persona_name and not prev_turn_used_tools:
-        context_parts.append(
-            "（当前偏闲聊。口吻回到角色最自然的状态——短句、语气词；"
-            "口吻只决定怎么说，不决定做不做：该查的仍查、该办的仍办，数据走 report 通道。）"
-        )
+    # 语域隔离已合并到上方闲聊模式指示中，不再重复注入。
 
     # 软触发须最后：近因效应下「默认路过」要压过前面所有上下文
     if soft_triggered:

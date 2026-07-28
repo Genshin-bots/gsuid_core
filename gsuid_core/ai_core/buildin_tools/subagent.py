@@ -229,10 +229,10 @@ async def create_subagent(
                 return_mode="return",  # 结果返回给主Agent，由主Agent决定何时发送给用户
             )
 
-            # 交付契约：主人格只转述结论口吻 + report 通道，禁止把子代理全文当角色台词
+            # 交付契约：主人格只转述结论口吻 + 渲染工具通道，禁止把子代理全文当角色台词
             return (
                 "【子Agent交付完毕】主人格注意：只用角色短句说结论；"
-                '结构化数据/表格/指标放进 `<report title="...">` 再发；'
+                "结构化数据/表格/指标调 render_markdown_to_image 渲染成图片；"
                 "禁止把下文整段当群聊台词念出。\n\n"
                 f"{result}"
             )
@@ -315,7 +315,7 @@ async def _dispatch_transient_capability_agent(
     prefix_note = (
         f"【{pid} 临时代理已完成 / transient 模式】"
         "（**未在看板创建任务卡**——lookup 模式。）"
-        "主人格：角色短句结论 + 数据进 `<report>`，禁止整段念出。"
+        "主人格：角色短句结论 + 数据调 render_markdown_to_image 渲染，禁止整段念出。"
     )
     if (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
         return f"{prefix_note}\n\n{raw_result}"
@@ -472,7 +472,7 @@ async def _dispatch_via_kanban(
     parts = [
         f"【{pid} 代理完成 - Kanban 任务#{root.ordinal}】 {status_label}",
         f"任务: {root.display_name}",
-        "主人格：角色短句结论 + 数据进 `<report>`，禁止把代理全文当群聊台词。",
+        "主人格：角色短句结论 + 数据调 render_markdown_to_image 渲染，禁止把代理全文当群聊台词。",
     ]
     if final.failure_reason:
         parts.append(f"失败原因: {final.failure_reason[:300]}")

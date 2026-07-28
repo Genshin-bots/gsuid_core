@@ -106,8 +106,8 @@ from gsuid_core.ai_core.configs.provider_router import (
 _T = TypeVar("_T")
 
 # 历史裁剪低水位比例：超过 max_history 时一次裁到 max_history * 该比例。
-# 裁剪间隔内历史头部字节稳定，provider 前缀缓存可连续命中（§25 方案 2）。
-_HISTORY_TRIM_RATIO = 0.6
+# 比例越高裁剪越温和，保留更多可缓存前缀（0.85 = 仅丢弃 15% 溢出量）。
+_HISTORY_TRIM_RATIO = 0.85
 
 # 父 run 把本次归属 scope 写入此 contextvar，途中 spawn 的嵌套子 agent 自动继承记账： await 的子协程共享 Context
 # create_task 复制创建时 Context，两条 spawn 路径都覆盖。
@@ -311,9 +311,8 @@ def _format_capability_roster() -> str:
 
 # 工具返回后的输出契约：事件驱动（本轮出现过 ToolReturn），不认业务关键词
 _POST_TOOL_OUTPUT_CONTRACT = (
-    "（系统：本轮已有工具返回。开口只保留角色台词；任何表格/JSON/多行指标/长数据"
-    '必须放进 `<report title="标题">...</report>` 制品块——代码块或裸 JSON 不会渲染成图。'
-    "禁止在台词里复述完整数据。）"
+    "（系统：本轮已有工具返回。render_html/markdown_to_image 会自动发图，"
+    "无需再调 send_message_by_ai 发图。台词只留一两句角色化引导，禁止复述数据。）"
 )
 
 
@@ -1841,7 +1840,7 @@ class GsCoreAIAgent:
                                         part.content = (
                                             _summarize_structured_data(part.content)
                                             + "\n（结构数据已折叠。综合分析请 create_subagent；"
-                                            "要点写入 <report>，勿在台词复述原文。）"
+                                            "要点调 render_html/markdown_to_image 渲染，勿在台词复述原文。）"
                                         )
 
                                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
@@ -1896,6 +1895,23 @@ class GsCoreAIAgent:
                         node.model_response.parts = _sanitize_tool_call_artifacts_in_parts(node.model_response.parts)
                         # 规范化工具参数（去重复键）：防退化参数串回放时被网关 400（§12.22 事故 #2）
                         node.model_response.parts = _canonicalize_tool_call_args_in_parts(node.model_response.parts)
+
+                        # 熔断：单次响应工具调用数上限，防弱模型批量幻觉
+                        _MAX_TOOL_CALLS_PER_RESPONSE = 30
+                        _tc_count = sum(1 for p in node.model_response.parts if isinstance(p, ToolCallPart))
+                        if _tc_count > _MAX_TOOL_CALLS_PER_RESPONSE:
+                            logger.warning(
+                                f"工具调用熔断：单次响应 {_tc_count} 次调用，截断至 {_MAX_TOOL_CALLS_PER_RESPONSE}"
+                            )
+                            _kept: list = []
+                            _tc_kept = 0
+                            for _p in node.model_response.parts:
+                                if isinstance(_p, ToolCallPart):
+                                    _tc_kept += 1
+                                    if _tc_kept > _MAX_TOOL_CALLS_PER_RESPONSE:
+                                        continue
+                                _kept.append(_p)
+                            node.model_response.parts = _kept
 
                         # 遍历大模型返回的具体片段 (Parts)
                         # 本轮是否已出现工具调用：用于 suppress_intermediate_text 时判断

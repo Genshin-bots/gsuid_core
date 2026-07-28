@@ -257,6 +257,7 @@ def _sync_render_md(
     allow_refit: bool,
     image_format: str,
     jpeg_quality: int,
+    dark: bool = False,
 ) -> bytes:
     renderer = _ensure_renderer()
     width = max(1, int(max_width))
@@ -271,6 +272,7 @@ def _sync_render_md(
         height=None,
         format=fmt,
         quality=quality,
+        dark=dark,
         css=css,
         renderer=renderer,
         device_pixel_ratio=_dpr_from_dpi(dpi),
@@ -367,6 +369,7 @@ async def render_md_to_bytes(
     allow_refit: bool = True,
     image_format: str = "png",
     jpeg_quality: int = 100,
+    dark: bool = False,
 ) -> bytes:
     """
     将 Markdown 渲染为图片字节数据
@@ -380,6 +383,7 @@ async def render_md_to_bytes(
         allow_refit: 是否允许自适应，默认 True
         image_format: 图片格式，"png" 或 "jpeg"，默认 "png"
         jpeg_quality: JPEG 质量，默认 100
+        dark: 是否使用暗色基底主题，默认 False
 
     Returns:
         PNG 或 JPEG 格式的图片字节数据
@@ -401,6 +405,7 @@ async def render_md_to_bytes(
         allow_refit=allow_refit,
         image_format=image_format,
         jpeg_quality=jpeg_quality,
+        dark=dark,
     )
 
 

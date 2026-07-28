@@ -556,9 +556,12 @@ def _build_relationship_description(
     else:
         speaker = f"用户ID:{user_id}"
 
-    # 主人用户：显著高亮，提示角色以最高信任度对待
+    # 主人：最高信任，但荒诞/骚扰请求仍可角色化拒绝（与 system 不合理请求规则一致）
     if _is_master_user(user_id):
-        return f"【⚡ 你的主人】{speaker} 直接找你说话了。对主人：完全信任，认真对待，有求必应（合规范围内）。"
+        return (
+            f"【⚡ 你的主人】{speaker} 直接找你说话了。"
+            "对主人：最高信任、认真回应；合理请求尽力办，荒诞/骚扰/整蛊仍可角色化拒绝。"
+        )
 
     if favorability is None:
         return f"{speaker} 找你说话了。"
@@ -1081,16 +1084,25 @@ async def _send_report_images(
     bot: Bot,
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """把 report 制品块逐个渲染为中性资料图片发出；渲染失败降级为原文文本。"""
+    """兼容残留 <report> 块：渲染为深色资料图（主路径应走 render_* 工具）。"""
+    from pathlib import Path
+
     from gsuid_core.utils.html_render import render_md_to_bytes
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     max_width: int = ai_config.get_config("markdown_image_max_width").data
+    css_path = str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
     for title, body in reports:
         md = f"# {title}\n\n{body}" if title else body
         md = f"{md}{_report_footer()}"
         try:
-            image_bytes = await render_md_to_bytes(md=md, max_width=int(max_width), image_format="jpeg")
+            image_bytes = await render_md_to_bytes(
+                md=md,
+                css_path=css_path,
+                max_width=int(max_width),
+                image_format="png",
+                dark=False,
+            )
         except Exception as e:
             logger.warning(i18n_t("log.ai.send_chat_result_render_report_artifact_fail", e=e))
             await bot.send(MessageSegment.text(md), extra_metadata=extra_metadata)
@@ -1114,11 +1126,15 @@ async def _try_render_markdown_image(
 
     max_width: int = ai_config.get_config("markdown_image_max_width").data
     try:
+        from pathlib import Path
+
+        css_path = str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
         image_bytes = await render_md_to_bytes(
-            # 未走 <report> 契约的长研报兜底同样带脚注（数据时点 + 免责，§3 合规垫层）
             md=f"{md}{_report_footer()}",
+            css_path=css_path,
             max_width=int(max_width),
-            image_format="jpeg",
+            image_format="png",
+            dark=False,
         )
     except Exception as e:
         logger.warning(i18n_t("log.ai.send_chat_result_render_long_markdown_fail", e=e))
