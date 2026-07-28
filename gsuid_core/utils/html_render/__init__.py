@@ -45,10 +45,51 @@ except ImportError as e:  # pragma: no cover - 引导期依赖缺失
 # 框架内置中文字体（与 PIL core_font 同源）
 _FONT_PATH = Path(__file__).resolve().parent.parent / "fonts" / "MiSans-Bold.ttf"
 _DEFAULT_FONT_NAME = "MiSans"
+_MONO_FONT_NAME = "Mono"
 _GLYPH_CACHE_BYTES = 64 * 1024 * 1024
 
 _renderer: Any = None
 _renderer_ready = False
+
+
+def _find_mono_font() -> Optional[bytes]:
+    """尽力查找一个等宽字体用于代码渲染（找不到返回 None，优雅降级）。
+
+    pytakumi 只使用已注册的字体，系统字体不会自动生效，因此代码块若想要
+    真正的等宽效果，必须显式注册一个等宽字体。这里按「项目内置优先、
+    常见系统字体兜底」的顺序查找，跨 Windows / macOS / Linux。
+    """
+    fonts_dir = Path(__file__).resolve().parent.parent / "fonts"
+    candidates: list[Path] = []
+
+    # 1) 项目内置（任何 *mono* 命名的 ttf/otf）
+    if fonts_dir.is_dir():
+        candidates.extend(sorted(fonts_dir.glob("*[Mm]ono*.ttf")))
+        candidates.extend(sorted(fonts_dir.glob("*[Mm]ono*.otf")))
+
+    # 2) 常见系统等宽字体
+    home = Path.home()
+    candidates += [
+        # Windows
+        Path(r"C:\Windows\Fonts\consola.ttf"),  # Consolas
+        Path(r"C:\Windows\Fonts\cascmono.ttf"),  # Cascadia Mono
+        # macOS
+        Path("/System/Library/Fonts/Menlo.ttc"),
+        Path("/System/Library/Fonts/Monaco.ttf"),
+        # Linux
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf"),
+        home / ".local/share/fonts/DejaVuSansMono.ttf",
+    ]
+
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path.read_bytes()
+        except OSError:
+            continue
+    return None
 
 
 def _ensure_renderer(
@@ -77,6 +118,15 @@ def _ensure_renderer(
         try:
             r.register_font(_FONT_PATH.read_bytes(), name=_DEFAULT_FONT_NAME)
             registered.append(_DEFAULT_FONT_NAME)
+        except Exception as e:
+            logger.exception(t("log.htmlrender.font_register_failed", e=e))
+
+    # 等宽字体（代码块渲染用）；找不到就跳过，代码回退到 MiSans
+    mono_data = _find_mono_font()
+    if mono_data is not None:
+        try:
+            r.register_font(mono_data, name=_MONO_FONT_NAME)
+            registered.append(_MONO_FONT_NAME)
         except Exception as e:
             logger.exception(t("log.htmlrender.font_register_failed", e=e))
 
