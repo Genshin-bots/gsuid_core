@@ -89,7 +89,7 @@ class MysApi(SignMysApi):
 
     async def get_bs_index(self, uid: str) -> Union[int, BsIndex]:
         server_id = self.get_server_id(uid, "gs")
-        ck = await self.get_ck(uid, "OWNER")
+        ck = await self.get_ck(uid, "OWNER", "gs")
         if ck is None:
             return -51
         hk4e_token = await self.get_hk4e_token(uid)
@@ -105,6 +105,7 @@ class MysApi(SignMysApi):
                 "game_biz": "hk4e_cn",
                 "activity_id": 20220301153521,
             },
+            game_name="gs",
         )
         if isinstance(data, Dict):
             return cast(BsIndex, data["data"])
@@ -120,6 +121,7 @@ class MysApi(SignMysApi):
             data={"role_id": uid, "server": server_id},
             ds_q="",
             ds_body={"role_id": uid, "server": server_id},
+            game_name="gs",
         )
         if isinstance(data, Dict):
             if "retcode" in data:
@@ -165,7 +167,7 @@ class MysApi(SignMysApi):
         }
         if active:
             params["active"] = active
-        data = await self.endpoint_request(POETRY_ABYSS, uid, params=params)
+        data = await self.endpoint_request(POETRY_ABYSS, uid, params=params, game_name="gs")
         if isinstance(data, Dict):
             data = cast(PoetryAbyssDatas, data["data"])
         return data
@@ -193,6 +195,7 @@ class MysApi(SignMysApi):
             ds_mode="auto",
             ds_q="",
             ds_body={"role_id": uid, "server": server_id},
+            game_name="gs",
         )
         # endpoint_request 对 OS 才有 PLAYER_CHARACTER_LIST；国服 has_cn=False
         # 调用方应仅在 is_os 时使用。若误调国服会 ValueError。
@@ -207,7 +210,7 @@ class MysApi(SignMysApi):
         mode: Literal["OWNER", "RANDOM"] = "RANDOM",
     ) -> Union[Dict, int]:
         """获取国际服 character/list 原始 data（list 项可能是嵌套 detail）。"""
-        ck = await self.get_ck(uid, mode)
+        ck = await self.get_ck(uid, mode, "gs")
         if ck is None:
             return -51
         return await self._request_character_list(uid, ck)
@@ -242,7 +245,7 @@ class MysApi(SignMysApi):
         server_id = self.get_server_id(uid, "gs")
 
         if ck is None:
-            ck = await self.get_ck(uid)
+            ck = await self.get_ck(uid, "RANDOM", "gs")
             if ck is None:
                 return -51
 
@@ -260,6 +263,7 @@ class MysApi(SignMysApi):
                 cookie=ck,
                 ds_q="",
                 ds_body=body,
+                game_name="gs",
             )
             if isinstance(data, Dict):
                 data = cast(CharDetailData, data["data"])
@@ -291,6 +295,7 @@ class MysApi(SignMysApi):
             data=body,
             ds_q="",
             ds_body=body,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(List[Character], data["data"]["list"])
@@ -329,6 +334,7 @@ class MysApi(SignMysApi):
             data=body,
             ds_q="",
             ds_body=body,
+            game_name="gs",
         )
         if isinstance(raw_data, Dict):
             raw_data = cast(ComputeData, raw_data["data"])
@@ -418,6 +424,7 @@ class MysApi(SignMysApi):
                 "month": str(now_90.month),
                 "day": str(now_90.day),
             },
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(SeasonPostData, data["data"])
@@ -438,6 +445,7 @@ class MysApi(SignMysApi):
             data=body,
             ds_q="",
             ds_body=body,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(HardChallengeData, data["data"])
@@ -454,6 +462,7 @@ class MysApi(SignMysApi):
             data=body,
             ds_q="",
             ds_body=body,
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(CalendarData, data["data"])
@@ -468,6 +477,7 @@ class MysApi(SignMysApi):
             cookie_type="stoken",
             ds_mode="web",
             header={"x-rpc-channel": "miyousheluodi"},
+            game_name="gs",
         )
         if isinstance(data, Dict):
             data = cast(WidgetResin, data["data"])

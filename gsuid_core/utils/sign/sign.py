@@ -206,15 +206,14 @@ async def daily_sign(game_name: str):
     _user_list: Sequence[GsUser] = await GsUser.get_all_user()
     uid_list = []
     user_list: List[GsUser] = []
+    uid_col = GsUser.get_gameid_name(game_name)
+    switch_col = f"{game_name}_sign_switch" if game_name and game_name != "gs" else "sign_switch"
+    if not hasattr(GsUser, switch_col):
+        raise ValueError(f"GsUser 不存在签到开关字段 {switch_col!r} (game_name={game_name!r})")
+
     for user in _user_list:
-        _uid = getattr(
-            user,
-            f"{game_name}_uid" if game_name and game_name != "gs" else "uid",
-        )
-        _switch = getattr(
-            user,
-            (f"{game_name}_sign_switch" if game_name and game_name != "gs" else "sign_switch"),
-        )
+        _uid = getattr(user, uid_col)
+        _switch = getattr(user, switch_col)
         if _switch != "off" and not user.status and _uid:
             uid_list.append(_uid)
             user_list.append(user)
@@ -224,14 +223,8 @@ async def daily_sign(game_name: str):
         tasks.append(
             single_daily_sign(
                 user.bot_id,
-                getattr(
-                    user,
-                    (f"{game_name}_uid" if game_name and game_name != "gs" else "uid"),
-                ),
-                getattr(
-                    user,
-                    (f"{game_name}_sign_switch" if game_name and game_name != "gs" else "sign_switch"),
-                ),
+                getattr(user, uid_col),
+                getattr(user, switch_col),
                 user.user_id,
                 game_name,
                 private_msgs,

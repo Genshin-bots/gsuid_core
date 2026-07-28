@@ -46,7 +46,7 @@ class BBSMysApi(TopupMysApi):
 
     async def get_regtime_data(self, uid: str) -> Union[RegTime, int]:
         hk4e_token = await self.get_hk4e_token(uid)
-        ck_token = await self.get_ck(uid, "OWNER")
+        ck_token = await self.get_ck(uid, "OWNER", "gs")
         params = {
             "game_biz": "hk4e_cn",
             "lang": "zh-cn",
@@ -58,6 +58,7 @@ class BBSMysApi(TopupMysApi):
             uid,
             params,
             {"Cookie": f"{hk4e_token};{ck_token}" if int(uid[0]) <= 5 else {}},
+            game_name="gs",
         )
         if isinstance(data, Dict):
             return cast(RegTime, data["data"])
@@ -66,7 +67,7 @@ class BBSMysApi(TopupMysApi):
 
     async def get_draw_calendar(self, uid: str) -> Union[int, RolesCalendar]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
-        ck = await self.get_ck(uid, "OWNER")
+        ck = await self.get_ck(uid, "OWNER", "gs")
         if ck is None:
             return -51
         hk4e_token = await self.get_hk4e_token(uid)
@@ -80,14 +81,14 @@ class BBSMysApi(TopupMysApi):
             "activity_id": 20220301153521,
             "year": 2023,
         }
-        data = await self._mys_request(CALENDAR.get(), "GET", header, params)
+        data = await self._mys_request(CALENDAR.get(), "GET", header, params, game_name="gs")
         if isinstance(data, Dict):
             return cast(RolesCalendar, data["data"])
         return data
 
     async def post_draw(self, uid: str, role_id: int) -> Union[int, PostDraw, Dict]:
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
-        ck = await self.get_ck(uid, "OWNER")
+        ck = await self.get_ck(uid, "OWNER", "gs")
         if ck is None:
             return -51
         hk4e_token = await self.get_hk4e_token(uid)
@@ -105,6 +106,7 @@ class BBSMysApi(TopupMysApi):
                 "activity_id": 20220301153521,
             },
             {"role_id": role_id},
+            game_name="gs",
         )
         if isinstance(data, Dict):
             return data

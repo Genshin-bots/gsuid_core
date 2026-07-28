@@ -41,6 +41,28 @@ from .tools import (
 _DEAD_CODE = [10035, 5003, 10041, 1034]
 ssl_context = ssl.create_default_context(cafile=certifi.where())
 
+# game_name 中不对应 GsUser 游戏 UID 列的值（如米游社账号维度）
+_NON_GAME_UID_NAMES = frozenset({"account"})
+
+# 验证码 / 风控挑战头，按 game_name 区分
+_CHALLENGE_META: Dict[str, Dict[str, str]] = {
+    "gs": {
+        "x-rpc-challenge_game": "2",
+        "x-rpc-page": "v4.1.5-ys_#ys",
+        "x-rpc-tool-verison": "v4.1.5-ys",
+    },
+    "sr": {
+        "x-rpc-challenge_game": "6",
+        "x-rpc-page": "v1.4.1-rpg_#/rpg",
+        "x-rpc-tool-verison": "v1.4.1-rpg",
+    },
+    "zzz": {
+        "x-rpc-challenge_game": "8",
+        "x-rpc-page": "v1.0.14_#/zzz",
+        "x-rpc-tool-verison": "v1.0.14-zzz",
+    },
+}
+
 
 class BaseMysApi:
     mysVersion = mys_version
@@ -66,7 +88,6 @@ class BaseMysApi:
             "Chrome/111.0.5563.116 Safari/537.36"
         ),
     }
-    is_sr = False
     RECOGNIZE_SERVER = RECOGNIZE_SERVER
     chs = {}
 
@@ -167,9 +188,13 @@ class BaseMysApi:
             is_os = False if len(str(uid)) < 10 else True
         return is_os
 
-    def get_server_id(self, uid: str, game_name: str = "gs") -> str:
+    def get_server_id(
+        self,
+        uid: str,
+        game_name: Optional[str] = "gs",
+    ) -> str:
         server_id = "prod_gf_cn"
-        if game_name == "gs":
+        if game_name == "gs" or game_name is None:
             server_id = self.RECOGNIZE_SERVER.get(str(uid)[0], "cn_gf01")
         elif game_name == "sr":
             server_id = SR_SERVER.get(str(uid)[0], "prod_gf_cn")
@@ -321,7 +346,7 @@ class BaseMysApi:
         cookie: Optional[str] = None,
         cookie_mode: Literal["OWNER", "RANDOM"] = "OWNER",
         cookie_type: Literal["cookie", "stoken"] = "cookie",
-        game_name: str = "gs",
+        game_name: Optional[str] = "gs",
         ds_mode: Literal["auto", "web", "none"] = "auto",
         ds_q: Optional[str] = None,
         ds_body: Optional[Dict[str, Any]] = None,
@@ -369,6 +394,8 @@ class BaseMysApi:
             底层 ``use_proxy`` 仍会随国际服传入，是否真正走代理取决于
             ``_mys_request`` 的实现（当前可能尚未接线）。
         """
+        if game_name is None:
+            game_name = "gs"
         is_os = self.check_os(uid, game_name)
         HEADER = copy.deepcopy(self._HEADER_OS if is_os else self._HEADER)
 
@@ -424,8 +451,7 @@ class BaseMysApi:
 
         无游戏 UID、需显式指定区服时，请用 ``simple_mys_req_by_region``。
         """
-        game = game_name or ("sr" if self.is_sr else "gs")
-        server_id = self.get_server_id(uid, game)
+        server_id = self.get_server_id(uid, game_name)
         req_params = params if params else {"role_id": uid, "server": server_id}
         return await self.endpoint_request(
             endpoint,
@@ -435,7 +461,7 @@ class BaseMysApi:
             header=header or None,
             cookie=cookie,
             cookie_mode="RANDOM",
-            game_name=game,
+            game_name=game_name,
         )
 
     async def simple_mys_req_by_region(
@@ -453,7 +479,6 @@ class BaseMysApi:
         由调用方通过 ``is_os`` 指定国服（``False``）或国际服（``True``），
         并自行提供 Cookie（``cookie`` 或 ``header``）。
         """
-        game = game_name or ("sr" if self.is_sr else "gs")
         HEADER = copy.deepcopy(self._HEADER_OS if is_os else self._HEADER)
         if is_os:
             HEADER["DS"] = generate_os_ds()
@@ -469,7 +494,7 @@ class BaseMysApi:
             header=HEADER,
             params=params,
             use_proxy=is_os,
-            game_name=game,
+            game_name=game_name,
         )
 
     async def _mys_req_get(
@@ -478,6 +503,7 @@ class BaseMysApi:
         is_os: bool,
         params: Dict,
         header: Optional[Dict] = None,
+        game_name: Optional[str] = None,
     ) -> Union[Dict, int]:
         _URL = endpoint.get(is_os)
         if is_os:
@@ -490,7 +516,7 @@ class BaseMysApi:
             HEADER.update(header)
 
         if "Cookie" not in HEADER and "uid" in params:
-            ck = await self.get_ck(params["uid"])
+            ck = await self.get_ck(params["uid"], game_name=game_name)
             if ck is None:
                 return -51
             HEADER["Cookie"] = ck
@@ -500,18 +526,32 @@ class BaseMysApi:
             header=HEADER,
             params=params,
             use_proxy=use_proxy,
+            game_name=game_name,
         )
         return data
 
     @overload
-    async def ck_in_new_device(self, uid: str, app_cookie: str) -> Tuple[str, str, str, str]: ...
+    async def ck_in_new_device(
+        self,
+        uid: str,
+        app_cookie: str,
+        game_name: Optional[str] = None,
+    ) -> Tuple[str, str, str, str]: ...
 
     @overload
     async def ck_in_new_device(
-        self, uid: str, app_cookie: Optional[str] = None
+        self,
+        uid: str,
+        app_cookie: Optional[str] = None,
+        game_name: Optional[str] = None,
     ) -> Optional[Tuple[str, str, str, str]]: ...
 
-    async def ck_in_new_device(self, uid: str, app_cookie: Optional[str] = None):
+    async def ck_in_new_device(
+        self,
+        uid: str,
+        app_cookie: Optional[str] = None,
+        game_name: Optional[str] = None,
+    ):
         data = await GsUser.base_select_data(stoken=app_cookie)
         device_id = self.get_device_id()
         seed_id, seed_time = self.get_seed()
@@ -522,7 +562,7 @@ class BaseMysApi:
             fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
             device_info = "OnePlus/PHK110/OP2020L1"
         if app_cookie is None:
-            app_cookie = await self.get_stoken(uid)
+            app_cookie = await self.get_stoken(uid, game_name)
             if app_cookie is None:
                 return logger.warning(t("log.mys.device_login_flow_fail"))
 
@@ -530,10 +570,8 @@ class BaseMysApi:
             fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
 
         await self.device_login_and_save(device_id, fp, device_info, app_cookie)
-        if await GsUser.user_exists(uid, "sr" if self.is_sr else None):
-            await GsUser.update_data_by_uid_without_bot_id(
-                uid, "sr" if self.is_sr else None, fp=fp, device_id=device_id
-            )
+        if await GsUser.user_exists(uid, game_name):
+            await GsUser.update_data_by_uid_without_bot_id(uid, game_name, fp=fp, device_id=device_id)
         return fp, device_id, seed_id, seed_time
 
     async def _mys_request(
@@ -576,10 +614,15 @@ class BaseMysApi:
                 uid = data["role_id"]
             elif params and "uid" in params:
                 uid = params["uid"]
+            elif data and "uid" in data:
+                # 签到等 POST body 常用 uid 字段
+                uid = data["uid"]
 
             if uid is not None:
                 try:
-                    if game_name == "account":
+                    # game_name=account 表示米游社账号维度，uid 为 mys_id，
+                    # 不能按游戏 UID 列（会拼成 account_uid 导致 AttributeError）
+                    if game_name in _NON_GAME_UID_NAMES:
                         account_id = str(uid)
                         header.setdefault(
                             "x-rpc-device_id",
@@ -589,34 +632,35 @@ class BaseMysApi:
                             "x-rpc-device_fp",
                             self.get_overseas_device_fp(account_id),
                         )
-                    elif "x-rpc-device_fp" not in header or "x-rpc-device_id" not in header:
-                        async with timeout(5):
-                            device_id = await self.get_user_device_id(
-                                uid,
-                                game_name,
-                            )
-                            header["x-rpc-device_fp"] = await self.get_user_fp(
-                                uid,
-                                game_name,
-                            )
-                            if device_id is not None:
-                                header["x-rpc-device_id"] = device_id
+                    else:
+                        if "x-rpc-device_fp" not in header or "x-rpc-device_id" not in header:
+                            async with timeout(5):
+                                device_id = await self.get_user_device_id(
+                                    uid,
+                                    game_name,
+                                )
+                                header["x-rpc-device_fp"] = await self.get_user_fp(
+                                    uid,
+                                    game_name,
+                                )
+                                if device_id is not None:
+                                    header["x-rpc-device_id"] = device_id
 
-                    dfp: Optional[str] = await GsUser.get_user_attr_by_uid(
-                        uid,
-                        "device_info",
-                        "sr" if self.is_sr else game_name,
-                    )
-                    if dfp is not None:
-                        df = dfp.split("/")
-                        header["User-Agent"] = (
-                            "Mozilla/5.0 (Linux; Android 13; "
-                            f"{df[1]} {df[3]} "
-                            "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Version/4.0 Chrome/104.0.5112.97"
-                            "Mobile Safari/537.36 miHoYoBBS/2"
-                            f"{mys_version}"
+                        dfp: Optional[str] = await GsUser.get_user_attr_by_uid(
+                            uid,
+                            "device_info",
+                            game_name,
                         )
+                        if dfp is not None:
+                            df = dfp.split("/")
+                            header["User-Agent"] = (
+                                "Mozilla/5.0 (Linux; Android 13; "
+                                f"{df[1]} {df[3]} "
+                                "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Version/4.0 Chrome/104.0.5112.97"
+                                "Mobile Safari/537.36 miHoYoBBS/2"
+                                f"{mys_version}"
+                            )
                 except asyncio.TimeoutError:
                     logger.warning(t("log.mys.mhy_request_timeout_obtaining_dfp_fail"))
 
@@ -657,9 +701,8 @@ class BaseMysApi:
                 # 做特殊处理
                 if retcode in _DEAD_CODE:
                     if uid:
-                        header["x-rpc-challenge_game"] = "6" if self.is_sr else "2"
-                        header["x-rpc-page"] = "v1.4.1-rpg_#/rpg" if self.is_sr else "v4.1.5-ys_#ys"
-                        header["x-rpc-tool-verison"] = "v1.4.1-rpg" if self.is_sr else "v4.1.5-ys"
+                        challenge_key = game_name if game_name in _CHALLENGE_META else "gs"
+                        header.update(_CHALLENGE_META[challenge_key])
 
                     if pass_config.get_config("MysPass").data:
                         pass_header = copy.deepcopy(header)

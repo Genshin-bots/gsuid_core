@@ -23,6 +23,7 @@ class TopupMysApi(AccountMysApi):
             url=FETCH_GOODS.get(),
             method="POST",
             data=data,
+            game_name="gs",
         )
         if isinstance(resp, int):
             return resp
@@ -36,7 +37,7 @@ class TopupMysApi(AccountMysApi):
     ) -> Union[int, MysOrder]:
         device_id = str(uuid.uuid4())
         HEADER = deepcopy(self._HEADER)
-        ck = await self.get_ck(uid, "OWNER")
+        ck = await self.get_ck(uid, "OWNER", "gs")
         if ck is None:
             return -51
         HEADER["Cookie"] = ck
@@ -77,6 +78,7 @@ class TopupMysApi(AccountMysApi):
             method="POST",
             header=HEADER,
             data=data,
+            game_name="gs",
         )
         if isinstance(resp, int):
             return resp
@@ -84,7 +86,7 @@ class TopupMysApi(AccountMysApi):
 
     async def check_order(self, order: MysOrder, uid: str) -> Union[int, MysOrderCheck]:
         HEADER = deepcopy(self._HEADER)
-        ck = await self.get_ck(uid, "OWNER")
+        ck = await self.get_ck(uid, "OWNER", "gs")
         if ck is None:
             return -51
         HEADER["Cookie"] = ck
@@ -99,6 +101,7 @@ class TopupMysApi(AccountMysApi):
             method="GET",
             header=HEADER,
             params=data,
+            game_name="gs",
         )
         if isinstance(resp, int):
             return resp

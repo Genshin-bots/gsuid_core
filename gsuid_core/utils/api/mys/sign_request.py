@@ -111,6 +111,7 @@ class SignMysApi(BBSMysApi):
             header,
             params,
             base_url=base_url,
+            game_name=game_name,
         )
         if isinstance(data, Dict):
             data = cast(SignList, data["data"])
@@ -144,7 +145,14 @@ class SignMysApi(BBSMysApi):
         else:
             header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
-        data = await self._mys_request(end_point, "GET", header, params, base_url=base_url)
+        data = await self._mys_request(
+            end_point,
+            "GET",
+            header,
+            params,
+            base_url=base_url,
+            game_name=game_name,
+        )
 
         if isinstance(data, Dict):
             data = cast(SignInfo, data["data"])
@@ -179,8 +187,8 @@ class SignMysApi(BBSMysApi):
         else:
             HEADER = deepcopy(self._HEADER)
             HEADER["Cookie"] = ck
-            header["x-rpc-device_id"] = await self.get_user_device_id(uid)
-            header["x-rpc-device_fp"] = await self.get_user_fp(uid)
+            header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
+            header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
             HEADER["x-rpc-client_type"] = "5"
             HEADER["X_Requested_With"] = "com.mihoyo.hyperion"
             HEADER["DS"] = get_web_ds_token(True)
@@ -193,6 +201,7 @@ class SignMysApi(BBSMysApi):
             header=HEADER,
             data=data,
             base_url=base_url,
+            game_name=game_name,
         )
 
         if isinstance(data, Dict):
@@ -201,7 +210,7 @@ class SignMysApi(BBSMysApi):
 
     async def get_award(self, uid) -> Union[MonthlyAward, int]:
         server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
-        ck = await self.get_ck(uid, "OWNER")
+        ck = await self.get_ck(uid, "OWNER", "gs")
         if ck is None:
             return -51
         if int(str(uid)[0]) < 6:
@@ -224,6 +233,7 @@ class SignMysApi(BBSMysApi):
                     "utm_medium": "mys",
                     "utm_campaign": "icon",
                 },
+                game_name="gs",
             )
         else:
             HEADER = deepcopy(self._HEADER_OS)
@@ -242,6 +252,7 @@ class SignMysApi(BBSMysApi):
                     "month": "0",
                 },
                 use_proxy=True,
+                game_name="gs",
             )
         if isinstance(data, Dict):
             data = cast(MonthlyAward, data["data"])

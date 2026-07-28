@@ -444,6 +444,12 @@ class BaseIDModel(SQLModel):
                     假设传入`None`会返回`uid`，而传入`sr`会返回`sr_uid`
                     特殊的, 传入`gs`也会返回`uid`!
 
+                    注意: 仅接受「模型上真实存在的游戏 UID 列」对应短名。
+                    米游社账号维度（``account``）等非游戏 UID 标识不可传入，
+                    否则会在校验阶段抛出 ``ValueError``，避免拼出
+                    ``account_uid`` 后在 ``getattr`` 处变成难排查的
+                    ``AttributeError``。
+
         🚀使用范例:
 
             `await GsUser.get_gameid_name('sr')`
@@ -452,13 +458,22 @@ class BaseIDModel(SQLModel):
 
             🔸`str`: 游戏uid对应列名，默认为`uid`
         """
-        if game_name == "gs":
-            game_name = None
-
-        if game_name:
-            return f"{game_name}_uid"
+        if not game_name or game_name == "gs":
+            col_name = "uid"
         else:
-            return "uid"
+            col_name = f"{game_name}_uid"
+
+        # 入口统一校验：所有 getattr(cls, get_gameid_name(...)) 依赖此保证
+        if not hasattr(cls, col_name):
+            raise ValueError(
+                f"{cls.__name__} 不存在字段 {col_name!r} "
+                f"(game_name={game_name!r})；"
+                f"game_name 只能是模型上真实存在的游戏 UID 列短名"
+                f"（如 None/'gs'/'sr'/'zzz'/'bb'/'bbb'/'wd'），"
+                f"米游社账号维度请用 mys_id 等字段查询，"
+                f"不要传 game_name='account'"
+            )
+        return col_name
 
     @classmethod
     @with_session
@@ -1623,7 +1638,7 @@ class User(BaseModel):
         🚀使用范例:
 
             `await GsUser.get_random_cookie(
-            uid, GsCache, {'region': server}, 'sr' if self.is_sr else None
+            uid, GsCache, {'region': server}, game_name='sr'
         )`
 
         ✅返回值:

@@ -365,7 +365,7 @@ class AccountMysApi(PassMysApi):
             HEADER = deepcopy(self._HEADER)
             HEADER["DS"] = get_web_ds_token(True)
 
-        stoken = await self.get_stoken(uid)
+        stoken = await self.get_stoken(uid, "gs")
         if stoken is None:
             return -51
         HEADER["Cookie"] = stoken
@@ -401,7 +401,7 @@ class AccountMysApi(PassMysApi):
         # 获取e_hk4e_token
         server_id = self.RECOGNIZE_SERVER.get(uid[0])
         header = {
-            "Cookie": await self.get_ck(uid, "OWNER", None),
+            "Cookie": await self.get_ck(uid, "OWNER", "gs"),
             "Content-Type": "application/json;charset=UTF-8",
             "Referer": "https://webstatic.mihoyo.com/",
             "Origin": "https://webstatic.mihoyo.com",
