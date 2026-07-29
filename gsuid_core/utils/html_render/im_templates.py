@@ -43,6 +43,9 @@ __all__ = [
     "notice_card",
     "steps_card",
     "code_card",
+    "weather_card",
+    "news_card",
+    "board_card",
     # 直接渲染为字节
     "render_summary_card",
     "render_ranking_card",
@@ -52,6 +55,9 @@ __all__ = [
     "render_notice_card",
     "render_steps_card",
     "render_code_card",
+    "render_weather_card",
+    "render_news_card",
+    "render_board_card",
 ]
 
 
@@ -664,6 +670,329 @@ pre{{
 
 
 # ─────────────────────────────────────────────
+# 9. 天气/多日卡片 weather_card
+# ─────────────────────────────────────────────
+
+_ICON_TONES = {
+    "雷": ("#9d8cff", "#5b4bb5"),
+    "雨": ("#5b9dd9", "#2a5f9a"),
+    "云": ("#8fa3bf", "#4a5d75"),
+    "晴": ("#e8b45a", "#b07a28"),
+    "热": ("#ef7d6c", "#b04538"),
+    "雪": ("#a8d4f0", "#4a7fa0"),
+    "风": ("#3ec9a7", "#1f8a70"),
+    "雾": ("#9aa7bd", "#5a6578"),
+}
+
+
+def weather_card(
+    title: str,
+    *,
+    meta: str = "",
+    metrics: Sequence[tuple[str, str, str]] = (),
+    days: Sequence[tuple[str, str, str, str, str]] = (),
+    tips: Sequence[tuple[str, str, str]] = (),
+    footer: str = "",
+    accent: str = _BLUE,
+) -> str:
+    """天气/多日预报卡片。
+
+    - ``metrics``: ``(标签, 主值, 副文)``
+    - ``days``: ``(日名, 图标字, 天气文, 高温, 低温)``
+    - ``tips``: ``(图标字, 标题, 说明)``
+    """
+    metric_blocks: list[str] = []
+    accents = (_BLUE, _TEAL, _GOLD, _CORAL, _VIOLET)
+    for i, (lab, val, sub) in enumerate(metrics):
+        top = accents[i % len(accents)]
+        metric_blocks.append(
+            f'<div class="metric" style="border-top-color:{top}">'
+            f'<div class="lab">{_e(lab)}</div>'
+            f'<div class="val">{_e(val)}</div>'
+            f'<div class="sub">{_e(sub)}</div>'
+            f"</div>"
+        )
+    day_blocks: list[str] = []
+    for day, icon, weather, hi, lo in days:
+        c1, c2 = _ICON_TONES[icon] if icon in _ICON_TONES else (_BLUE, "#2a5f9a")
+        day_blocks.append(
+            f'<div class="day">'
+            f'<div class="d">{_e(day)}</div>'
+            f'<div class="ico" style="background:linear-gradient(145deg,{c1},{c2})">{_e(icon[:1] or "·")}</div>'
+            f'<div class="w">{_e(weather)}</div>'
+            f'<div class="t"><span class="hi">{_e(hi)}</span>'
+            f'<span class="lo">/{_e(lo)}</span></div>'
+            f"</div>"
+        )
+    tip_blocks: list[str] = []
+    for icon, tip_title, desc in tips:
+        c1, c2 = _ICON_TONES[icon] if icon in _ICON_TONES else (_GOLD, "#b07a28")
+        tip_blocks.append(
+            f'<div class="tip">'
+            f'<div class="tico" style="background:linear-gradient(145deg,{c1},{c2})">{_e(icon[:1] or "·")}</div>'
+            f'<div class="tmain"><div class="tt">{_e(tip_title)}</div>'
+            f'<div class="td">{_e(desc)}</div></div></div>'
+        )
+
+    meta_html = f'<div class="meta">{_e(meta)}</div>' if meta else ""
+    metrics_html = f'<div class="mgrid">{"".join(metric_blocks)}</div>' if metric_blocks else ""
+    days_html = f'<div class="dgrid">{"".join(day_blocks)}</div>' if day_blocks else ""
+    tips_html = f'<div class="tips">{"".join(tip_blocks)}</div>' if tip_blocks else ""
+    footer_html = f'<div class="footer">{_e(footer)}<div class="spacer"></div></div>' if footer else ""
+    days_head = '<div class="sec">逐日预报</div>' if day_blocks else ""
+    tips_head = '<div class="sec">生活提示</div>' if tip_blocks else ""
+
+    n_metric = max(len(metrics), 1)
+    n_day = max(len(days), 1)
+    # content-box：卡片内容宽固定，避免 flex:1 在 Takumi 下被拉成单列巨卡
+    metric_w = max(120, (CARD_WIDTH - 56 - 12 * (n_metric - 1)) // n_metric - 30)
+    day_w = max(72, (CARD_WIDTH - 56 - 8 * (n_day - 1)) // n_day - 14)
+    style = (
+        _base_css(accent, _TEAL)
+        + f"""
+.card{{padding:28px 28px 24px;}}
+.meta{{font-size:13px;color:{_TEXT_FAINT};margin-top:8px;letter-spacing:0.02em;}}
+.mgrid{{display:flex;gap:12px;margin-top:20px;}}
+.metric{{
+  width:{metric_w}px;background:linear-gradient(160deg,{_SURFACE_ALT},{_SURFACE});
+  border:1px solid {_LINE};border-radius:16px;padding:16px 14px;
+  border-top:3px solid {accent};
+  box-shadow:0 4px 18px rgba(0,0,0,0.28);
+}}
+.lab{{font-size:11px;color:{_TEXT_FAINT};font-weight:700;letter-spacing:0.08em;}}
+.val{{font-size:30px;font-weight:900;color:#fff;margin-top:6px;line-height:1.05;}}
+.sub{{font-size:12px;color:{_TEAL};font-weight:700;margin-top:6px;}}
+.sec{{
+  margin-top:24px;font-size:15px;font-weight:800;color:{_TEXT};
+  border-left:4px solid {accent};padding-left:10px;
+}}
+.dgrid{{display:flex;gap:8px;margin-top:14px;}}
+.day{{
+  width:{day_w}px;background:linear-gradient(180deg,{_SURFACE_ALT},{_SURFACE});
+  border:1px solid {_LINE};border-radius:14px;padding:12px 4px;
+  display:flex;flex-direction:column;align-items:center;
+  box-shadow:0 3px 14px rgba(0,0,0,0.22);
+}}
+.d{{font-size:12px;font-weight:700;color:{_TEXT_DIM};}}
+.ico{{
+  width:34px;height:34px;border-radius:17px;margin-top:8px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:900;color:#0a1220;
+  box-shadow:0 3px 10px rgba(0,0,0,0.35);
+}}
+.w{{font-size:11px;color:{_TEXT_DIM};margin-top:8px;text-align:center;line-height:1.3;}}
+.t{{margin-top:8px;font-size:12px;font-weight:800;}}
+.hi{{color:#fff;}}
+.lo{{color:{_TEXT_FAINT};font-weight:600;}}
+.tips{{margin-top:12px;}}
+.tip{{
+  display:flex;align-items:center;gap:12px;margin-top:10px;
+  background:linear-gradient(135deg,{_SURFACE_ALT},{_SURFACE});
+  border:1px solid {_LINE};border-radius:14px;padding:12px 14px;
+  box-shadow:0 2px 12px rgba(0,0,0,0.2);
+}}
+.tico{{
+  width:38px;height:38px;border-radius:19px;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  font-size:14px;font-weight:900;color:#0a1220;
+}}
+.tmain{{flex:1;}}
+.tt{{font-size:15px;font-weight:700;color:{_TEXT};}}
+.td{{font-size:12px;color:{_TEXT_DIM};margin-top:3px;line-height:1.45;}}
+"""
+    )
+    body = f"""
+<div class="accent-bar"></div>
+<div class="card">
+  <div class="title">{_e(title)}</div>
+  {meta_html}
+  {metrics_html}
+  {days_head}
+  {days_html}
+  {tips_head}
+  {tips_html}
+  {footer_html}
+</div>
+"""
+    return _page(style, body)
+
+
+# ─────────────────────────────────────────────
+# 10. 新闻/要点卡片 news_card
+# ─────────────────────────────────────────────
+
+_TAG_COLORS = {
+    "时政": _BLUE,
+    "科技": _TEAL,
+    "财经": _GOLD,
+    "体育": _VIOLET,
+    "天气": _CORAL,
+    "国际": _BLUE,
+    "国内": _TEAL,
+    "社会": _GOLD,
+    "默认": _BLUE,
+}
+
+
+def news_card(
+    title: str,
+    items: Sequence[tuple[str, str, str, str]],
+    *,
+    meta: str = "",
+    footer: str = "",
+    accent: str = _GOLD,
+) -> str:
+    """新闻/要点列表卡片。
+
+    ``items``: ``(图标字, 标题, 摘要, 标签)``
+    """
+    rows: list[str] = []
+    for icon, it_title, desc, tag in items:
+        tag_c = _TAG_COLORS[tag] if tag in _TAG_COLORS else _TAG_COLORS["默认"]
+        c1, c2 = _ICON_TONES[icon] if icon in _ICON_TONES else (tag_c, "#2a5f9a")
+        tag_html = f'<div class="tag" style="background:{tag_c};color:#0a1220">{_e(tag)}</div>' if tag else ""
+        rows.append(
+            f'<div class="nrow">'
+            f'<div class="nico" style="background:linear-gradient(145deg,{c1},{c2})">{_e((icon or "要")[:1])}</div>'
+            f'<div class="nmain"><div class="nt">{_e(it_title)}</div>'
+            f'<div class="nd">{_e(desc)}</div></div>'
+            f"{tag_html}</div>"
+        )
+    meta_html = f'<div class="meta">{_e(meta)}</div>' if meta else ""
+    footer_html = f'<div class="footer">{_e(footer)}<div class="spacer"></div></div>' if footer else ""
+    style = (
+        _base_css(accent, _CORAL)
+        + f"""
+.card{{padding:28px 28px 24px;}}
+.meta{{font-size:13px;color:{_TEXT_FAINT};margin-top:8px;}}
+.nrow{{
+  display:flex;align-items:center;gap:12px;margin-top:12px;
+  background:linear-gradient(135deg,{_SURFACE_ALT},{_SURFACE});
+  border:1px solid {_LINE};border-radius:14px;padding:14px 14px;
+  box-shadow:0 2px 14px rgba(0,0,0,0.22);
+  width:636px;
+}}
+.nico{{
+  width:42px;height:42px;border-radius:21px;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;font-weight:900;color:#0a1220;
+  box-shadow:0 3px 10px rgba(0,0,0,0.3);
+}}
+.nmain{{width:460px;}}
+.nt{{font-size:15px;font-weight:700;color:{_TEXT};line-height:1.35;}}
+.nd{{font-size:12px;color:{_TEXT_DIM};margin-top:4px;line-height:1.45;}}
+.tag{{
+  width:56px;padding:4px 0;border-radius:999px;text-align:center;
+  font-size:11px;font-weight:800;letter-spacing:0.04em;
+}}
+"""
+    )
+    body = f"""
+<div class="accent-bar"></div>
+<div class="card">
+  <div class="title">{_e(title)}</div>
+  {meta_html}
+  {"".join(rows)}
+  {footer_html}
+</div>
+"""
+    return _page(style, body)
+
+
+# ─────────────────────────────────────────────
+# 11. 综合看板 board_card（持仓/多段数据）
+# ─────────────────────────────────────────────
+
+
+def board_card(
+    title: str,
+    *,
+    meta: str = "",
+    metrics: Sequence[tuple[str, str, str]] = (),
+    sections: Sequence[tuple[str, Sequence[tuple[str, str, str]]]] = (),
+    footer: str = "",
+    accent: str = _TEAL,
+) -> str:
+    """综合看板：顶部指标 + 多分节行表。
+
+    - ``metrics``: ``(标签, 主值, 副文/涨跌)``
+    - ``sections``: ``(节标题, [(左主, 中辅, 右值), ...])``
+    """
+    m_blocks: list[str] = []
+    accents = (_TEAL, _BLUE, _GOLD, _CORAL, _VIOLET)
+    for i, (lab, val, sub) in enumerate(metrics):
+        top = accents[i % len(accents)]
+        sub_c = (
+            _TEAL if str(sub).lstrip().startswith("+") else (_CORAL if str(sub).lstrip().startswith("-") else _TEXT_DIM)
+        )
+        m_blocks.append(
+            f'<div class="metric" style="border-top-color:{top}">'
+            f'<div class="lab">{_e(lab)}</div>'
+            f'<div class="val">{_e(val)}</div>'
+            f'<div class="sub" style="color:{sub_c}">{_e(sub)}</div>'
+            f"</div>"
+        )
+    sec_html: list[str] = []
+    for sec_title, rows in sections:
+        row_html = []
+        for left, mid, right in rows:
+            row_html.append(
+                f'<div class="brow">'
+                f'<div class="bl"><div class="blt">{_e(left)}</div>'
+                f'<div class="blm">{_e(mid)}</div></div>'
+                f'<div class="br">{_e(right)}</div></div>'
+            )
+        sec_html.append(f'<div class="sec">{_e(sec_title)}</div><div class="blist">{"".join(row_html)}</div>')
+    meta_html = f'<div class="meta">{_e(meta)}</div>' if meta else ""
+    metrics_html = f'<div class="mgrid">{"".join(m_blocks)}</div>' if m_blocks else ""
+    footer_html = f'<div class="footer">{_e(footer)}<div class="spacer"></div></div>' if footer else ""
+    n_metric = max(len(metrics), 1)
+    metric_w = max(120, (CARD_WIDTH - 56 - 10 * (n_metric - 1)) // n_metric - 28)
+    style = (
+        _base_css(accent, _BLUE)
+        + f"""
+.card{{padding:28px 28px 24px;}}
+.meta{{font-size:13px;color:{_TEXT_FAINT};margin-top:8px;}}
+.mgrid{{display:flex;gap:10px;margin-top:18px;}}
+.metric{{
+  width:{metric_w}px;background:linear-gradient(160deg,{_SURFACE_ALT},{_SURFACE});
+  border:1px solid {_LINE};border-radius:14px;padding:14px 12px;
+  border-top:3px solid {accent};box-shadow:0 4px 16px rgba(0,0,0,0.25);
+}}
+.lab{{font-size:11px;color:{_TEXT_FAINT};font-weight:700;letter-spacing:0.06em;}}
+.val{{font-size:24px;font-weight:900;color:#fff;margin-top:6px;line-height:1.1;}}
+.sub{{font-size:12px;font-weight:700;margin-top:5px;}}
+.sec{{
+  margin-top:22px;font-size:15px;font-weight:800;color:{_TEXT};
+  border-left:4px solid {accent};padding-left:10px;
+}}
+.blist{{margin-top:10px;}}
+.brow{{
+  display:flex;align-items:center;gap:12px;margin-top:8px;
+  background:linear-gradient(135deg,{_SURFACE_ALT},{_SURFACE});
+  border:1px solid {_LINE};border-radius:12px;padding:12px 14px;
+  width:636px;
+}}
+.bl{{width:480px;}}
+.blt{{font-size:14px;font-weight:700;color:{_TEXT};}}
+.blm{{font-size:12px;color:{_TEXT_DIM};margin-top:2px;}}
+.br{{width:100px;font-size:14px;font-weight:800;color:{accent};text-align:right;}}
+"""
+    )
+    body = f"""
+<div class="accent-bar"></div>
+<div class="card">
+  <div class="title">{_e(title)}</div>
+  {meta_html}
+  {metrics_html}
+  {"".join(sec_html)}
+  {footer_html}
+</div>
+"""
+    return _page(style, body)
+
+
+# ─────────────────────────────────────────────
 # 渲染封装：HTML → 图片字节
 # ─────────────────────────────────────────────
 
@@ -671,9 +1000,11 @@ pre{{
 async def _render(html: str, *, image_format: str = "png", jpeg_quality: int = 92) -> bytes:
     return await render_html_to_bytes(
         html,
-        max_width=float(CARD_WIDTH),
+        max_width=float(CARD_WIDTH) * 2.0,
+        dpi=192.0,
         image_format=image_format,
         jpeg_quality=jpeg_quality,
+        default_font_size=15.0,
     )
 
 
@@ -707,3 +1038,15 @@ async def render_steps_card(*args, **kwargs) -> bytes:
 
 async def render_code_card(*args, **kwargs) -> bytes:
     return await _render(code_card(*args, **kwargs))
+
+
+async def render_weather_card(*args, **kwargs) -> bytes:
+    return await _render(weather_card(*args, **kwargs))
+
+
+async def render_news_card(*args, **kwargs) -> bytes:
+    return await _render(news_card(*args, **kwargs))
+
+
+async def render_board_card(*args, **kwargs) -> bytes:
+    return await _render(board_card(*args, **kwargs))

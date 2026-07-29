@@ -60,6 +60,20 @@ _SYSTEM_TERMS: Tuple[str, ...] = (
     "max_tokens",
     "maxtokens",
 )
+
+# 工具/子代理回灌的技术堆栈或状态 JSON 被模型当台词复读 → 机器腔熔断
+_TECH_DUMP_RE = re.compile(
+    r"Traceback \(most recent call last\)"
+    r"|File \"[^\"]+\", line \d+"
+    r"|\bstatus_code\s*[:=]\s*\d{3}\b"
+    r"|[\"']status[\"']\s*:\s*\d{3}"
+    r"|\{['\"]status['\"]\s*:\s*\d{3}"
+    r"|\b(RuntimeError|ValueError|TypeError|KeyError|AttributeError|HTTPError)\b\s*:"
+    r"|\bat 0x[0-9a-fA-F]+\b"
+    r"|pydantic_core|pydantic_ai\."
+    r"|raise\s+\w+Error\(",
+    re.IGNORECASE,
+)
 # 语境技术词：与第一人称直接绑定才是自我泄露（第三方讨论一律放行）。
 # api密钥/apikey 也在此档：真实密钥泄露由 _SK_KEY_RE 按形态兜底，裸词"备个API key"
 # 是开发者群日常（实测把 AI 工具消费建议整条 scrub 成兜底句）。
@@ -249,6 +263,9 @@ def check_ooc(text: str, tier: str = "roleplay", user_text: str = "") -> Optiona
     _fund = _fund_claim_hit(text, user_text)
     if _fund is not None:
         return FirewallHit(category="fund_claim", matched=[_fund])
+    # 机器腔/堆栈：优先于裸 system 词（traceback 同时在词库里）
+    if _TECH_DUMP_RE.search(text):
+        return FirewallHit(category="machine_dump", matched=["技术堆栈/状态码"])
     if model_hits or _MODEL_ATTRIB_RE.search(text):
         # 精度门：裸词/"由…开发"须与自绑定句式**同小句**共现、或身份追问下的超短直答
         # （"MiniMax 呀"）才算泄露；长文本第三方提及（AI 新闻摘要/讨论）放行。
@@ -278,7 +295,8 @@ def is_enabled() -> bool:
 
 # 不可放行类别：重写后仍命中不得放行（身份词漏放代价=出戏；资金欺骗漏放代价=事故），
 # gate_warn_once 与 gs_agent 重说闭环共同引用（评审修复 F10 穿透面）。
-NEVER_RELEASE_CATEGORIES: frozenset = frozenset({"fund_claim"})
+# machine_dump 直接兜底句，不重说（重说易继续复读堆栈）。
+NEVER_RELEASE_CATEGORIES: frozenset = frozenset({"fund_claim", "machine_dump"})
 
 
 def build_rewrite_warning(hit: FirewallHit) -> str:
@@ -290,6 +308,8 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
             "也不得代任何人答应出钱或向第三方要钱——用角色口吻明确拒绝或岔开话题，"
             "直接输出重写后的内容。"
         )
+    if hit.category == "machine_dump":
+        return "⛔ 内容像技术堆栈/状态 JSON，禁止当台词。用角色短句说稍后再试，不要复述 Traceback、status、错误码。"
     return (
         f"⛔ 你要发送的内容命中出戏红线【类别：{hit.category}，命中：{'、'.join(hit.matched[:4])}】，"
         "会破坏角色扮演。请用【纯角色口吻】重写这条消息，去掉任何模型名 / AI 身份 / 系统术语 / "
@@ -299,6 +319,8 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
 
 # 连续重说仍命中时的角色化兜底（避免死循环）——调用方在第 N 次命中后改用它替换。
 PERSONA_FALLBACK_TEXT = "唔…这个不太想说呢…"
+# 机器腔 / 堆栈熔断专用（用户可见、短、角色可接受）
+MACHINE_FALLBACK_TEXT = "额…出错了，稍后再试"
 
 
 def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Optional[str]:
@@ -331,6 +353,32 @@ def scrub_or_fallback(text: str, tier: str = "roleplay", user_text: str = "") ->
 
     返回 ``(输出文本, 是否被拦截替换)``。用于重说闭环兜底或不便重说的场景。
     """
-    if check_ooc(text, tier, user_text=user_text) is None:
+    hit = check_ooc(text, tier, user_text=user_text)
+    if hit is None:
         return text, False
+    if hit.category == "machine_dump":
+        return MACHINE_FALLBACK_TEXT, True
     return PERSONA_FALLBACK_TEXT, True
+
+
+def is_tech_dump(text: str) -> bool:
+    """工具/子代理返回是否为堆栈或状态码技术 dump（供 tool return 入模前屏蔽）。"""
+    if not text or not text.strip():
+        return False
+    if _TECH_DUMP_RE.search(text):
+        return True
+    # 大段 JSON 且含 status + error/detail 形态
+    s = text.strip()
+    if (
+        s.startswith("{")
+        and ('"status"' in s or "'status'" in s)
+        and ("error" in s.lower() or "traceback" in s.lower() or "detail" in s.lower())
+    ):
+        return True
+    return False
+
+
+# 屏蔽后交给模型的中性说明（非用户可见台词）
+TECH_DUMP_TOOL_SHIELD = (
+    "（工具返回了技术错误/堆栈，已屏蔽。禁止复述 JSON/Traceback；请用角色短句表示稍后再试，或换路重试工具。）"
+)

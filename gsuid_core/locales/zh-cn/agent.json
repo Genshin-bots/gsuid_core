@@ -97,5 +97,8 @@
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] 用户消息: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（当前模型非 gemini）",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 墙钟软预算已超（{p0:.0f}s），注入收敛提示",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}",
+  "log.agent.supersede_cancel_current": "[GsCoreAIAgent] 同 Session 新消息到达，请求取消当前生成",
+  "log.agent.generation_cancelled_supersede": "[GsCoreAIAgent] 生成已取消（被更新消息 supersede）",
+  "log.agent.generation_aborted_no_history": "[GsCoreAIAgent] 已中止：不写入 history，等待后到 run 合并上下文"
 }

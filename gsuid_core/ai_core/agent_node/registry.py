@@ -53,6 +53,23 @@ def list_nodes(include_persona: bool = False) -> List[AgentNode]:
     return nodes
 
 
+def format_capability_roster() -> str:
+    """可委派能力代理清单（供 system_prompt 固化，避免每轮 user 侧重复注入）。"""
+    lines: list[str] = []
+    for node in list_nodes():
+        if node.source == "persona" or node.node_id == "capability_evaluator":
+            continue
+        when = (node.when_to_use or "").strip() or "专业任务"
+        lines.append(f"- `{node.node_id}`（{node.display_name}）：{when}")
+    if not lines:
+        return ""
+    return (
+        "（可用能力代理——B 类组合/分析/推荐任务必须 "
+        '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
+        "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
+    )
+
+
 def resolve_node(hint: str, default: str = "research_agent") -> str:
     """自然语言 hint → node_id（用句柄不用 ID，原 resolve_profile 语义）。
 

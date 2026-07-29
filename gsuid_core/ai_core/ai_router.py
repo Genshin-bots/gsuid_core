@@ -87,17 +87,18 @@ def _get_persona_mtime(persona_name: str) -> float:
     return newest_mtime
 
 
-# 稳定前缀刷新周期（秒）：活跃会话永不空闲回收（IDLE_THRESHOLD 只清不活跃的），
-# 群画像/self_model 会随对话持续演化——按 TTL 原地重建 system_prompt，无须销毁会话。
-_STABLE_PROMPT_TTL = 1800.0
+# system_prompt 会话期内永不 TTL 刷新：最大化 provider 前缀缓存命中率。
+# 群画像/self_model 等慢变上下文在会话销毁重建时自然刷新；persona 文件变更仍走热重载。
+_STABLE_PROMPT_TTL = float("inf")
 
 
 async def _maybe_refresh_stable_prompt(session: GsCoreAIAgent, event: Event, persona_name: str) -> None:
-    """活跃会话的稳定前缀 TTL 刷新：只换 ``session.system_prompt`` 字符串，历史/状态不动。
+    """会话期内保持 system_prompt 字节稳定（cache-first）。
 
-    每次 run 都会用最新 system_prompt 重建 pydantic-ai Agent，故原地换串即可生效；
-    代价是每 TTL 一次 provider 前缀缓存失效，与 provider 缓存 TTL 同量级、可接受。
+    仅当显式配置了有限 TTL 且到期时才刷新；默认 inf = 永不中途改串。
     """
+    if _STABLE_PROMPT_TTL == float("inf"):
+        return
     if time.time() - session.system_prompt_built_at < _STABLE_PROMPT_TTL:
         return
     session.system_prompt_built_at = time.time()

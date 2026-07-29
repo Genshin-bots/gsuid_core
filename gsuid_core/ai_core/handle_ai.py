@@ -416,26 +416,24 @@ async def handle_ai_chat(
             # 私聊时 pydantic_ai session.history 已覆盖对话，IM 历史冗余且破坏缓存前缀；
             # 仅群聊需要注入 IM 历史（其他用户发言不在 model history 中）。
             _is_private = not event.group_id
-            raw_history = history_manager.get_history(event, limit=30) if not _is_private else []
+            # 群聊窗口收紧：靠紧凑格式 + 当前用户优先，而不是堆 30 条散句
+            raw_history = history_manager.get_history(event, limit=20) if not _is_private else []
 
             # 排除最后一条（当前用户刚发的消息），避免与 user_messages 重复
             history = raw_history[:-1] if raw_history else []
 
             # Fix-06: 当前用户优先的历史窗口过滤
-            # 保证当前用户的最近消息一定在窗口内
             if history:
                 current_user_id = str(event.user_id)
-                CURRENT_USER_MIN_RECORDS = 5  # 当前用户至少保留5条
-                MAX_OTHER_RECORDS = 15  # 其他用户最多保留15条
+                CURRENT_USER_MIN_RECORDS = 6
+                MAX_OTHER_RECORDS = 10
 
                 current_user_records = [r for r in history if r.user_id == current_user_id]
                 other_records = [r for r in history if r.user_id != current_user_id]
 
-                # 保留当前用户最近 N 条 + 其他用户最近 M 条，按时间戳重新排序
                 selected_current = current_user_records[-CURRENT_USER_MIN_RECORDS:]
                 selected_other = other_records[-MAX_OTHER_RECORDS:]
 
-                # 合并并按时间排序
                 combined = sorted(selected_current + selected_other, key=lambda r: r.timestamp)
                 history = combined
 

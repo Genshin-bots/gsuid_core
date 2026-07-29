@@ -291,29 +291,41 @@ def _capability_exclusive_tool_names() -> set[str]:
 
 
 def _format_capability_roster() -> str:
-    """把已注册能力代理写成主人格可见的委派清单（node_id 必须可抄进 agent_profile）。"""
-    from gsuid_core.ai_core.agent_node import list_nodes
+    """兼容旧调用点；实现已迁到 agent_node.registry.format_capability_roster。"""
+    from gsuid_core.ai_core.agent_node.registry import format_capability_roster
 
-    lines: list[str] = []
-    for node in list_nodes():
-        if node.source == "persona" or node.node_id == "capability_evaluator":
-            continue
-        when = (node.when_to_use or "").strip() or "专业任务"
-        lines.append(f"- `{node.node_id}`（{node.display_name}）：{when}")
-    if not lines:
-        return ""
-    return (
-        "（可用能力代理——B 类组合/分析/推荐任务必须 "
-        '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
-        "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
-    )
+    return format_capability_roster()
 
 
 # 工具返回后的输出契约：事件驱动（本轮出现过 ToolReturn），不认业务关键词
 _POST_TOOL_OUTPUT_CONTRACT = (
-    "（系统：本轮已有工具返回。render_html/markdown_to_image 会自动发图，"
-    "无需再调 send_message_by_ai 发图。台词只留一两句角色化引导，禁止复述数据。）"
+    "（系统：本轮已有工具返回。若结果含多项数据点，必须 "
+    "render_html_to_image 自写 HTML 出图（也可用 render_card / render_markdown_to_image）；"
+    "渲染工具自动发图，禁止台词复述、禁止 <report> 文本块。台词只留一两句角色化引导。）"
 )
+
+# 工具失败/空结果：强制换路（只看 outcome / 空内容，禁止扫正文关键词）
+_POST_TOOL_FAIL_CONTRACT = (
+    "（系统：本轮工具返回失败或空结果。禁止用角色懒惰结束本轮。"
+    "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
+    "取到多项数据必须 render_html_to_image 出图。只有换路后仍无果才可角色化短句说明。）"
+)
+
+
+def _tool_return_looks_failed(part: ToolReturnPart) -> bool:
+    """结构判据：outcome 非 success，或内容为空。不扫正文业务词。"""
+    if part.outcome != "success":
+        return True
+    content = part.content
+    if content is None:
+        return True
+    if isinstance(content, str) and not content.strip():
+        return True
+    if isinstance(content, (list, tuple, set, dict)) and len(content) == 0:
+        return True
+    if isinstance(content, bytes) and len(content) == 0:
+        return True
+    return False
 
 
 # OOC 修复 5.5：角色锚定消息提取
@@ -425,6 +437,8 @@ class GsCoreAIAgent:
         self.persona_name = persona_name  # 用于热重载检查
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
+        # A: 同 Session 新消息抢答时 set，当前 generation 在节点间隙 abort
+        self._cancel_generation = asyncio.Event()
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
@@ -1298,6 +1312,9 @@ class GsCoreAIAgent:
         # 假完成预检暂扣的文本段：声明完成但至今零工具——iter 后按"动作是否真发生"补发或纠正
         _fab_blocked: list[str] = []
         _thinking_segments: list[str] = []  # 累积本轮模型 thinking 文本，供意图-行为一致性检测
+        # A: 被同 Session 更新消息 supersede 时置位，不写 history、不收尾发
+        _generation_cancelled = False
+        _cancel_ev = self._cancel_generation
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
         if self.max_iterations is not None:
@@ -1573,14 +1590,13 @@ class GsCoreAIAgent:
                     except Exception as e:
                         logger.debug(i18n_t("log.agent.load_contextual_pool", e=e))
 
-                # 第三层：查询工具池——基于 query 的向量搜索。只排除已在保底池的 self / buildin 分类；
-                if qy and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
-                    # L5 上下文增强检索：把最近几轮用户原话拼进检索 query，
+                # 第三层：查询工具池——有 query 就向量搜。intent=闲聊不可靠，不做硬跳过。
+                if qy:
+                    # L5 上下文增强检索：把最近几轮用户原话拼进检索 query
                     search_query = "\n".join([*self._recent_user_texts, qy]) if self._recent_user_texts else qy
                     logger.debug(i18n_t("log.agent.attempting_search_tools_query", search_query=search_query))
 
-                    # 只排除已在保底池的 self/buildin；plugin_dev 等"委派专用"分类由
-                    # 否则"上轮问长离、这轮设提醒"会被上轮实体劫持（跨轮延续归 L3 驻留管）
+                    # 只排除已在保底池的 self/buildin；跨轮实体劫持归 L3 驻留，route_text 用本轮原话
                     extra_tools += await search_tools_with_entity_routing(
                         query=search_query,
                         route_text=qy,
@@ -1642,12 +1658,9 @@ class GsCoreAIAgent:
                             )
                         )
 
-                # 渐进式工具暴露：非闲聊轮注入 find_tools 并标记本轮挂 RetrievableToolset，
-                # 闲聊轮跳过。
-                if ENABLE_PROGRESSIVE_TOOLS and intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
+                # 渐进式工具暴露：常挂 find_tools + RetrievableToolset（含误判闲聊轮）。
+                if ENABLE_PROGRESSIVE_TOOLS:
                     if any(t.name == "find_tools" for t in tools):
-                        # find_tools 已被上游带入（显式传参 / 分类误配等）也必须挂动态
-                        # toolset——否则它加载的工具无人暴露，模型调了也白调（实测踩坑）。
                         _expose_dynamic = True
                     else:
                         ft = find_tool_base("find_tools")
@@ -1692,12 +1705,7 @@ class GsCoreAIAgent:
                 assembled_domains.add(_tb.capability_domain)
         self._last_assembled_domains = assembled_domains
 
-        # 交互主人格：工具池含 create_subagent 时注入**真实**可用画像清单
-        # （近三日日志：模型自造未注册 agent_profile → 0 委派）
-        if self.create_by in _INTERACTIVE_CREATE_BY and "create_subagent" in tool_names:
-            _roster = _format_capability_roster()
-            if _roster:
-                final_user_message = _append_user_text(final_user_message, f"\n\n{_roster}")
+        # 能力代理花名册已固化进 session system_prompt（可缓存），不再每轮塞 user 侧。
 
         # 记录本次传给 AI 的工具列表
         self._session_logger.log_tools_list(tool_names)
@@ -1772,6 +1780,11 @@ class GsCoreAIAgent:
             ) as agent_run:
                 # 遍历每一步 Node
                 async for node in agent_run:
+                    # A: 节点间隙检查抢答取消（后到消息已请求 abort）
+                    if _cancel_ev.is_set():
+                        _generation_cancelled = True
+                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                        break
                     # 1. 发起大模型请求前的处理
                     if isinstance(node, ModelRequestNode):
                         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
@@ -1824,24 +1837,26 @@ class GsCoreAIAgent:
                                             f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
                                         )
 
-                                # 交互主人格：高密度结构数据当轮即折叠，防 JSON 污染角色语域
-                                # （子 Agent / CapabilityAgent 仍看全文）。形态检测，不认工具名。
+                                # 交互主人格：技术 dump / 高密度 JSON 当轮折叠，防机器腔 OOC
                                 if (
                                     self.create_by in _INTERACTIVE_CREATE_BY
                                     and type(part) is ToolReturnPart
                                     and isinstance(part.content, str)
                                 ):
-                                    from gsuid_core.ai_core.utils import (
-                                        _summarize_structured_data,
-                                        _looks_like_structured_data,
-                                    )
-
-                                    if _looks_like_structured_data(part.content):
-                                        part.content = (
-                                            _summarize_structured_data(part.content)
-                                            + "\n（结构数据已折叠。综合分析请 create_subagent；"
-                                            "要点调 render_html/markdown_to_image 渲染，勿在台词复述原文。）"
+                                    if output_firewall.is_tech_dump(part.content):
+                                        part.content = output_firewall.TECH_DUMP_TOOL_SHIELD
+                                    else:
+                                        from gsuid_core.ai_core.utils import (
+                                            _summarize_structured_data,
+                                            _looks_like_structured_data,
                                         )
+
+                                        if _looks_like_structured_data(part.content):
+                                            part.content = (
+                                                _summarize_structured_data(part.content)
+                                                + "\n（结构数据已折叠。综合分析请 create_subagent；"
+                                                "多项数据用 render_html_to_image 出图，勿在台词复述原文。）"
+                                            )
 
                                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
                                 tool_result_str = str(part.content)
@@ -1856,19 +1871,27 @@ class GsCoreAIAgent:
                                 )
                                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
 
-                        # 事件驱动输出契约：本轮已有工具返回 → 钉 report 通道（非业务关键词）
-                        if (
-                            _has_tool_return
-                            and self.create_by in _INTERACTIVE_CREATE_BY
-                            and not any(
-                                isinstance(p, UserPromptPart) and p.content == _POST_TOOL_OUTPUT_CONTRACT
+                        # 事件驱动输出契约：本轮已有工具返回
+                        if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
+                            _any_fail = False
+                            for _p in node.request.parts:
+                                if type(_p) is ToolReturnPart and _tool_return_looks_failed(_p):
+                                    _any_fail = True
+                                    break
+                            _contract = _POST_TOOL_FAIL_CONTRACT if _any_fail else _POST_TOOL_OUTPUT_CONTRACT
+                            if not any(
+                                isinstance(p, UserPromptPart)
+                                and p.content
+                                in (
+                                    _POST_TOOL_OUTPUT_CONTRACT,
+                                    _POST_TOOL_FAIL_CONTRACT,
+                                )
                                 for p in node.request.parts
-                            )
-                        ):
-                            node.request.parts = [
-                                *node.request.parts,
-                                UserPromptPart(content=_POST_TOOL_OUTPUT_CONTRACT),
-                            ]
+                            ):
+                                node.request.parts = [
+                                    *node.request.parts,
+                                    UserPromptPart(content=_contract),
+                                ]
 
                         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
                         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
@@ -1976,6 +1999,19 @@ class GsCoreAIAgent:
                                                 p1=_ooc_hit.matched,
                                             )
                                         )
+                                        # 机器腔直接发兜底句，不进重说闭环（重说易继续复读堆栈）
+                                        if _ooc_hit.category == "machine_dump":
+                                            try:
+                                                await send_chat_result(
+                                                    bot,
+                                                    output_firewall.MACHINE_FALLBACK_TEXT,
+                                                    ev=ev,
+                                                    ooc_check=False,
+                                                )
+                                                self._run_sent_texts.add(output_firewall.MACHINE_FALLBACK_TEXT)
+                                            except Exception as _me:
+                                                logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
+                                            continue
                                         _ooc_blocked.append((_text, _ooc_hit))
                                         continue
                                     # 假完成预检（结构判据：完成声明 + 本轮至今零工具调用）：
@@ -2033,6 +2069,11 @@ class GsCoreAIAgent:
                         logger.debug(i18n_t("log.agent.node_trigger_end"))
                         logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
                         self._session_logger.log_node_transition("End")
+
+            # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成
+            if _generation_cancelled:
+                logger.info(i18n_t("log.agent.generation_aborted_no_history"))
+                return "" if output_type is None else None
 
             # 遍历完成后，直接从 agent_run 中获取最终结果
             result = agent_run.result
@@ -2393,8 +2434,8 @@ class GsCoreAIAgent:
                 突兀回复。仅对 create_by=="Chat" 生效。
             has_active_task: 是否存在需即时介入的 Kanban 任务，透传给状态驱动工具池（L2），
                 决定是否把"长期任务编排 + 产物"能力族补进工具列表。
-            intent: 本轮意图标签（闲聊/工具/问答）。当前工具装配不再据此精简（planning
-                已退出保底池、改由状态驱动 + 向量检索按需召回），保留参数仅作调用方兼容。
+            intent: 本轮意图标签（闲聊/工具/问答）。仅影响「连续无工具强制提醒」豁免与
+                输出风格；**不**再作为向量预装/状态驱动工具池的硬门（分类器会误判闲聊）。
             budget_gate: 本次 run 是否为预算入口。True（巡检 / proactive / 定时等自主调用）
                 时超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，按默认
                 False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
@@ -2405,8 +2446,16 @@ class GsCoreAIAgent:
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
         """
+        # A: 同 Session 新消息入队时，打断正在跑的 generation（合并语义交给后到者：
+        # HistoryManager 已含 A/B 用户句，后到 run 装配完整上下文）。
+        if self.create_by in _INTERACTIVE_CREATE_BY and self._run_lock.locked():
+            self._cancel_generation.set()
+            logger.info(i18n_t("log.agent.supersede_cancel_current"))
+
         async with self._run_lock:
             logger.info(i18n_t("log.agent.acquired_lock"))
+            # 本 generation 独立 cancel 事件；上轮 set 过的不得污染本轮
+            self._cancel_generation = asyncio.Event()
             # O-A 群聊队头阻塞防护：拿到锁时若已排队过久（话题大概率翻篇），丢弃过期回复。
             if (
                 enqueue_ts is not None

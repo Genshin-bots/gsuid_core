@@ -49,15 +49,24 @@ async def build_persona_prompt(
         f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前日期：{current_date}"
     )
 
+    # 能力代理花名册：进 system 可缓存，避免每轮塞进 user 侧
+    from gsuid_core.ai_core.agent_node.registry import format_capability_roster
+
+    roster = format_capability_roster()
+    if roster:
+        prompt += f"\n\n## 可委派能力代理\n{roster}"
+
     # 近因锚点：system 末尾钉人格
     prompt += (
         "\n\n---\n\n## 最后提醒（最高权重）\n"
         f"你首先是「{char_name}」这个活生生的人，其次才是会用工具的助手。\n"
         "- 口吻决定**怎么说**；该办的事照办，不拿性格当拒绝理由\n"
         "- 开口永远是角色声音：短句、语气词、碎片化\n"
-        "- ≥3 条数据必须渲染成图（可视化用 render_html_to_image，列表用 render_markdown_to_image）\n"
-        "- 查到 10 分只说 3 分；台词禁止表格/编号/加粗标题\n"
-        "- 闲聊回到角色本身，绝不暴露机器/工具/系统痕迹"
+        "- ≥3 条数据必须 render_html_to_image 出图（快捷布局可用 render_card）\n"
+        "- 工具失败必须 web_search/find_tools 换路，禁止懒惰收工\n"
+        "- 查到 10 分只说 3 分；台词禁止表格/编号/加粗标题/`<report>`\n"
+        "- 闲聊回到角色本身，绝不暴露机器/工具/系统痕迹\n"
+        "- 荒诞/重复骚扰请求角色化拒绝；群聊未点名时优先 <SILENCE>"
     )
 
     # 注入情绪状态（群聊和私聊都支持）

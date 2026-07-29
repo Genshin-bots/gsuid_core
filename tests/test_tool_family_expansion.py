@@ -1,14 +1,12 @@
 """L4 能力族展开（`expand_tools_to_families`）的公平性与不变量回归测试。
 
 生产事故（2026-07-15）：`异环面板` 能力族有 9 个成员，大于附加工具池上限 8。
-旧实现把它整族展开后直接 `break`，附加池被这一个族独占，鸣潮（XutheringWavesUID）
-的同类面板工具**永远进不了工具列表**——AI 只好把"玄翎秧秧"（鸣潮角色）塞进
-`nte_character`（异环工具）里硬答。
+旧实现把它整族展开后直接 `break`，附加池被这一个族独占。
 
-锁住四条不变量：
-1. 超大族不得独占附加池——其余候选族至少拿到 1 个"兜底席位"（看得见才可能选对）；
-2. 整族不可截断——预算够时整族纳入，保证"能建就能改/删"；
-3. 只增不减——任何场景下新实现产出的工具都是旧实现的超集（不回退已有能力）；
+锁住不变量：
+1. 超大族不得独占附加池——种子兜底席位保证其它候选仍可见；
+2. 整族不可截断——预算够时整族纳入；预算不够则整族跳过（0 或 1 个种子席位）；
+3. **所有族（含排名第一）都受 max_tools 约束**，防超大插件族吃满附加池；
 4. 去重与 exclude_names 永远生效。
 """
 
@@ -156,19 +154,30 @@ def test_oversized_family_starved_others_before_the_fix(registry) -> None:
     assert set(NTE_PANEL) == set(legacy)
 
 
-# ── 2. 不得回退：排名第一的族照旧整族纳入 ──────────────────────────
+# ── 2. 排名第一的族也受预算约束；预算够时仍整族 ───────────────────
 
 
-def test_top_ranked_family_still_expands_whole(registry) -> None:
-    """公平性不能靠截断排名第一的族来实现——它是本轮最匹配的能力，必须完整可用。"""
+def test_top_ranked_oversized_family_does_not_bypass_budget(registry) -> None:
+    """第一族 9 > max 8：不得整族硬塞；种子仍经 seed_seats 保留。"""
     reg = registry({"异环面板": NTE_PANEL, "鸣潮面板": WUWA_PANEL})
     seeds = reg.seeds("nte_character", "get_user_wuwa_char_detail")
 
     out = _names(rag_tools.expand_tools_to_families(seeds, exclude_names=set(), max_tools=8))
 
-    assert set(NTE_PANEL) <= set(out), "排名第一的族被截断了"
-    # 9 个异环 + 1 个鸣潮兜底席位，超预算是刻意的（可见性优先于省 token）
-    assert len(out) == 10
+    assert "nte_character" in out
+    assert "get_user_wuwa_char_detail" in out
+    # 异环不得整族 9 个硬塞进 8 预算（允许种子 + 他族）
+    assert len(set(out) & set(NTE_PANEL)) < len(NTE_PANEL)
+
+
+def test_top_ranked_family_expands_whole_when_budget_allows(registry) -> None:
+    """第一族 ≤ max_tools 时仍整族纳入。"""
+    reg = registry({"鸣潮面板": WUWA_PANEL, "定时任务": SCHED})
+    seeds = reg.seeds("get_user_wuwa_char_detail", "cancel_scheduled_task")
+
+    out = _names(rag_tools.expand_tools_to_families(seeds, exclude_names=set(), max_tools=8))
+
+    assert set(WUWA_PANEL) <= set(out)
 
 
 def test_family_not_truncated_when_budget_allows(registry) -> None:
@@ -193,7 +202,7 @@ def test_no_family_is_truncated_midway(registry) -> None:
         assert len(hit) in (0, 1, len(members)), f"能力族 [{domain}] 被截断成了 {len(hit)}/{len(members)} 个"
 
 
-# ── 3. 只增不减：新实现产出必为旧实现的超集 ────────────────────────
+# ── 3. 种子可见性：不因超大族独占而饿死 ────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -203,20 +212,19 @@ def test_no_family_is_truncated_midway(registry) -> None:
         ({"异环面板": NTE_PANEL, "鸣潮面板": WUWA_PANEL}, ["get_user_wuwa_char_detail", "nte_character"], set(), 8),
         ({"定时任务": SCHED}, ["cancel_scheduled_task"], {"add_once_task", "add_interval_task"}, 8),
         ({"定时任务": SCHED, "鸣潮面板": WUWA_PANEL}, ["cancel_scheduled_task", "get_user_wuwa_uids"], set(), 8),
-        ({"异环面板": NTE_PANEL}, ["nte_box"], set(), 4),
         ({"a": ["t1", "t2", "t3"], "b": ["t4", "t5"], "c": ["t6"]}, ["t1", "t4", "t6"], set(), 8),
         ({"": ["solo_trigger_tool"], "鸣潮面板": WUWA_PANEL}, ["solo_trigger_tool", "get_user_wuwa_uids"], set(), 8),
     ],
 )
-def test_new_expansion_is_a_superset_of_legacy(registry, spec, seed_names, exclude, max_tools) -> None:
-    """核心安全网：无论什么场景，新实现都不会比旧实现少给工具（不隐性削弱召回）。"""
+def test_every_seed_visible_under_budget_policy(registry, spec, seed_names, exclude, max_tools) -> None:
+    """所有种子须可见；旧实现可能被超大族独占饿死次种子。"""
     reg = registry(spec)
     seeds = reg.seeds(*seed_names)
-
-    legacy = set(_names(_legacy_expand(seeds, reg, exclude, max_tools)))
     current = set(_names(rag_tools.expand_tools_to_families(seeds, exclude_names=set(exclude), max_tools=max_tools)))
-
-    assert legacy <= current, f"新实现比旧实现少了这些工具: {legacy - current}"
+    for name in seed_names:
+        if name in exclude:
+            continue
+        assert name in current, f"种子 {name} 不可见"
 
 
 # ── 4. 去重 / exclude / 边界 ────────────────────────────────────────
@@ -270,8 +278,8 @@ def test_seat_fallback_is_bounded_by_seed_seats(registry) -> None:
 
     out = _names(rag_tools.expand_tools_to_families(seeds, exclude_names=set(), max_tools=8, seed_seats=4))
 
-    # 排名第一的族(9) 整族 + 至多 4 个落选种子的兜底席位
-    assert len(out) <= len(NTE_PANEL) + 4
+    # 超大第一族跳过后其它小族 + 至多 seed_seats 个落选种子，不得无限膨胀
+    assert len(out) <= 8 + 4
     assert len(out) == len(set(out))
 
 

@@ -409,16 +409,10 @@ def expand_tools_to_families(
 
     规则：
 
-    - **整族要么全进、要么不进**，避免把一个族截断成半个。排名第一的族即使超出
-      ``max_tools`` 也整族纳入——它是本轮语义最匹配的能力，必须完整可用。
-    - 后续族放不下整族时**跳过**（继续看下一个族），不再中断整个循环，
-      让排在后面的小族仍有机会补齐剩余预算。
+    - **整族要么全进、要么不进**，避免把一个族截断成半个；放不下整族就跳过该族。
+    - **所有族（含排名第一）都受 ``max_tools`` 约束**，防止超大插件族独占附加池。
     - **种子兜底席位**：族展开后仍未进池的**种子**，逐个补进来（至多 ``seed_seats`` 个），
-      宁可小幅超预算。种子是本轮的语义命中，**一个都不该被大族挤掉**：
-      ① 跨族提问（"看看我练度 + 这角色怎么提升"）要同时用到面板族与资料库族的工具，
-      资料库族整族放不下时，它命中的那几个种子必须仍然可用；
-      ② 否则超大族会独占附加池——``异环面板`` 族 9 个成员 > 上限 8，展开后预算耗尽，
-      鸣潮的面板工具永远召不回，AI 只能拿异环工具硬答"玄翎秧秧面板"。
+      宁可小幅超预算，保证语义命中工具仍可用。
     - 跨族去重，并排除 ``exclude_names``（通常是保底池工具名，避免重复）。
       未声明 capability_domain 的工具视为单工具族。
     """
@@ -448,8 +442,8 @@ def expand_tools_to_families(
         new_members = [ft for ft in family_tools if ft.name not in seen]
         if not new_members:
             continue
-        # out 为空 = 排名第一的族：不看预算整族纳入（与旧行为一致，不回退）。
-        if out and len(out) + len(new_members) > max_tools:
+        # 各族一律受 max_tools 约束；超大族由下方 seed_seats 保种子，避免单族吃满附加池。
+        if len(out) + len(new_members) > max_tools:
             continue
         for ft in new_members:
             seen.add(ft.name)

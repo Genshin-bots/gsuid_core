@@ -4,7 +4,7 @@ import random
 import asyncio
 import logging
 import threading
-from typing import Any, Dict, Optional, Protocol, Sequence
+from typing import Any, Dict, Literal, Optional, Protocol, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 from joblib import dump, load
@@ -42,7 +42,8 @@ def _is_ellipsis_followup(text: str) -> bool:
 
 
 class _UserTurnRecord(Protocol):
-    role: str
+    # 与 MessageRecord.role 的 Literal 对齐，避免 Protocol 可变属性不变性冲突
+    role: Literal["user", "assistant", "system"]
     user_id: str
     content: str
 
@@ -902,8 +903,8 @@ class IntentService:
         2. 单句先判为闲聊时，再用拼接兜底一次（ContextJoin）；
         3. 省略式跟进 +（上轮真用过工具 **或** 上文用户句本身是工具/问答）→ 结构升级为工具。
 
-        闲聊意图本身仍允许轻量工具（装配侧 LITE + 保底/驻留），本函数只负责别把
-        「然后呢」这类跟进误判成纯寒暄而砍掉工具/规程。
+        装配侧已不再因 intent=闲聊 砍向量预装；本函数仍尽量减少「然后呢」类跟进
+        被标成纯寒暄，以免输出风格被压成极短句、或连续无工具计数被豁免。
         """
         loop = asyncio.get_running_loop()
         text_s = (text or "").strip()
@@ -947,17 +948,24 @@ class IntentService:
             if result2.get("intent") in ("工具", "问答") and float(result2.get("conf") or 0) >= 0.45:
                 result = _keep_current_text(result2, "ContextJoin")
 
-        # ③ 结构：省略跟进不得当纯寒暄
-        if result.get("intent") == "闲聊" and is_ellipsis:
-            if prev_turn_used_tools:
+        # ③ 结构：省略跟进 / 上轮刚用过工具时，不得当纯寒暄砍工具链
+        if result.get("intent") == "闲聊":
+            if is_ellipsis and prev_turn_used_tools:
                 result = {
                     "text": text,
                     "intent": "工具",
                     "conf": 0.92,
                     "reason": "Structural: ellipsis follow-up after tools",
                 }
-            elif priors:
-                # 上轮 Agent 可能最终只吐了文本（ToolCall 不在最后一条 ModelResponse），
+            elif prev_turn_used_tools and (is_short or is_ellipsis) and float(result.get("conf") or 0) < 0.9:
+                # 上轮真调了工具 + 本轮短句/低置信闲聊：多半是追问，升为工具
+                result = {
+                    "text": text,
+                    "intent": "工具",
+                    "conf": 0.88,
+                    "reason": "Structural: short/ambiguous after tools",
+                }
+            elif is_ellipsis and priors:
                 prior_toolish = False
                 for p in reversed(priors[-3:]):
                     pr = await loop.run_in_executor(self.executor, self._sync_predict, p)

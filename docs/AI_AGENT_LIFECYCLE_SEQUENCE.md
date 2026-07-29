@@ -1,6 +1,6 @@
 # GsCore AI：一条消息的完整生命周期
 
-> 日期：2026-07-24（完整重写 + 时序图补全）
+> 日期：2026-07-29（对齐源码：system 前缀缓存 / 工具池 / 闲聊不砍工具 / 抢答取消 / 机器腔熔断）
 > 主线：**适配器推来一条群聊消息 → 是否进 AI → 读哪些数据 → 激活哪些模块 → 怎么回复 → 什么被沉淀 → 首尾日志**
 > 源码是唯一事实源。改 `handler` / `handle_ai` / `gs_agent` / 装配 / 记忆 / subagent 后请同步本文。
 > 关联：
@@ -192,16 +192,17 @@ sequenceDiagram
 
         HandleAI->>GsAgent: run(by_bot, rag_context, intent)
 
-        Note over GsAgent: ⑨ 工具 L1–L5 + exclusive 剥离<br/>find_tools / roster
+        Note over GsAgent: ⑨ 工具 L1–L5 + exclusive 剥离<br/>find_tools 常挂；roster 在 system<br/>可 supersede 取消
 
         loop LLM 迭代
+            Note over GsAgent: 节点间隙检查 cancel
             GsAgent->>LLM: Agent.iter / ModelRequest
             LLM-->>GsAgent: Thinking / ToolCall / Text
             opt ToolCall
                 GsAgent->>GsAgent: 执行工具（可 create_subagent）
             end
             opt Text 且 by_bot
-                GsAgent->>SendPath: send_chat_result
+                GsAgent->>SendPath: send_chat_result（含 OOC/机器腔门）
                 SendPath->>BotSend: bot.send
                 BotSend->>Adapter: MessageSend
                 Adapter-->>User: 展示文本/图/表情
@@ -345,9 +346,9 @@ sequenceDiagram
 
     HandleAI->>AIRouter: get_ai_session(event)
     AIRouter->>HistoryA: update_session_access
-    alt 注册表命中且 persona 稳定
-        AIRouter->>GsAgent: 可能 refresh 稳定 system_prompt (TTL 1800s)
-    else 新建 / persona 热更
+    alt 注册表命中且 persona 未变
+        Note over AIRouter,GsAgent: system_prompt 会话期内默认永不 TTL 刷新<br/>（_STABLE_PROMPT_TTL=inf，保 provider 前缀缓存）
+    else 新建 / persona 文件热更
         AIRouter->>AIRouter: build_session_system_prompt
         AIRouter->>GsAgent: create_agent(create_by=Chat)
         GsAgent->>SessLog: 开链 / log_system_prompt
@@ -412,14 +413,14 @@ sequenceDiagram
         end
     end
 
-    HandleAI->>HistoryA: get_history(limit=30) 去掉本轮
-    HandleAI->>HistoryA: 当前用户优先窗口 + format_history_for_agent
+    HandleAI->>HistoryA: get_history(limit=20) 去掉本轮（仅群聊）
+    HandleAI->>HistoryA: 当前用户优先 6 + 他人 10 + format_history_for_agent
 
-    HandleAI->>CtxAsm: assemble_dynamic_context
+    HandleAI->>CtxAsm: assemble_dynamic_context（**全部进 user 侧**，不改 system）
     CtxAsm->>Mood: get_mood_description
     CtxAsm->>Rel: 关系行（per-user，禁进共享 system）
     CtxAsm->>PlanCtx: 长任务文案 → has_actionable
-    Note over CtxAsm: 固定顺序：历史→情绪→关系→口吻→自我情景<br/>→任务→记忆→工具规程LITE/全文<br/>→report标题→闲聊口吻→最后软触发NOTE
+    Note over CtxAsm: 顺序：情绪→关系→口吻→历史→自我情景<br/>→记忆(高置信截断)→任务→闲聊风格提示<br/>→report标题→最后软触发NOTE<br/>工具规程已在 system，不进本块
     CtxAsm-->>HandleAI: full_context, has_actionable
 
     HandleAI->>GsAgent: run(user_messages, rag_context=full_context, intent, has_active_task)
@@ -449,11 +450,12 @@ sequenceDiagram
     Note over GsAgent: 交互脚手架 C-1 省略跟进 / C-2 漂移 / C-3 @别人→零工具
 
     GsAgent->>Toolset: 装配
-    Note over Toolset: L1 保底 self+buildin<br/>L2 状态 Kanban/定时/record<br/>L3 驻留族<br/>语境 tags<br/>L4/L5 向量（非闲聊）<br/>剥离 exclusive + roster<br/>find_tools + RetrievableToolset
+    Note over Toolset: L1 保底 self+buildin（含 render_html）<br/>L2 状态 Kanban/定时/record（不因闲聊裁）<br/>L3 驻留族 2 轮<br/>语境 tags≤8<br/>L4/L5 有 query 就向量（闲聊不砍）<br/>剥离 exclusive；roster 在 system<br/>find_tools 常挂 + RetrievableToolset
 
     GsAgent->>SessLog: log_tools_list
 
     loop pydantic-ai Agent.iter
+        Note over GsAgent: 节点间隙：若 _cancel_generation 已 set<br/>→ abort（同 Session 新消息抢答）
         GsAgent->>LLM: ModelRequest（含 message_history）
         LLM-->>GsAgent: parts
 
@@ -468,10 +470,10 @@ sequenceDiagram
                 Plugin-->>GsAgent: ToolReturn
             end
             GsAgent->>SessLog: log_tool_call / log_tool_return
-            Note over GsAgent: 高密度结构返回可当轮折叠<br/>可注入 POST_TOOL 输出契约
+            Note over GsAgent: 技术 dump/高密度 JSON 当轮屏蔽或折叠<br/>注入 POST_TOOL 出图/换路契约
         else TextPart
-            alt SILENCE / 假完成暂扣 / OOC 预检
-                GsAgent->>GsAgent: 跳过发送或重写
+            alt SILENCE / 假完成暂扣 / OOC
+                Note over GsAgent: machine_dump → 直接「额…出错了」<br/>其它 OOC → 重说闭环
             else return_mode=by_bot
                 GsAgent->>SendPath: send_chat_result(text)
                 Note over SendPath: 两通道拆分 → report 出图<br/>&lt;meme:情绪&gt; → 选表情发送<br/>md 净化 / 拆条
@@ -481,7 +483,7 @@ sequenceDiagram
         end
     end
 
-    Note over GsAgent: 收尾：_relean_user_turn / tool 截断 / compact report<br/>history.extend / extract_history / L3 驻留 / token / budget
+    Note over GsAgent: 收尾：_relean_user_turn / tool 截断 / compact report<br/>history.extend / extract_history / L3 驻留 / token / budget<br/>若被 supersede 取消则不写 history
     GsAgent->>SessLog: log_result / token / log_run_end
     GsAgent-->>HandleAI: result
 ```
@@ -824,26 +826,39 @@ history_manager.update_session_access(event)     # 刷新 A 轨活跃时间
 
 registry.get_ai_session(session_id)
   ├─ 命中且 persona 未变
-  │    └─ 可能 _maybe_refresh_stable_prompt（TTL 1800s）
-  │         原地换 system_prompt 字符串，不丢 history
+  │    └─ system_prompt **会话期内默认永不改串**
+  │         _STABLE_PROMPT_TTL = float("inf")
+  │         （最大化 provider 前缀缓存；空闲回收重建时自然刷新）
   └─ 未命中 / persona 文件 mtime 变 / 人名变
        ├─ get_persona_for_session → persona_name
        ├─ build_session_system_prompt(event, persona_name)
-       │    = persona.md + SYSTEM_CONSTRAINTS
-       │    + 群简介
-       │    + 稳定前缀（self_model 自述 + 群画像，无 per-user 关系/mood）
+       │    = 人设 + SYSTEM_CONSTRAINTS + TOOL_ORCHESTRATION_CONSTRAINTS
+       │    + 当前日期（日级，无时分秒）
+       │    + 能力代理花名册 format_capability_roster
+       │    + 群简介 + 慢变 self_model/群画像
+       │    ※ 不含 per-user 关系 / mood / 记忆 / 精确时间
        ├─ create_agent(..., create_by="Chat", persona_name=...)
        │    └─ AISessionLogger 开文件 / 续写 chain
        │    └─ log_system_prompt
        └─ registry.set_ai_session
 ```
 
+### 6.1.1 前缀缓存边界（必读）
+
+| 放哪 | 内容 | 为何 |
+|------|------|------|
+| **system（会话内字节稳定）** | 人设、合规、工具规程、日级日期、roster、群简介、self_model/群画像 | 改串 = 整段 KV 前缀失效 |
+| **user 每轮** | 精确时间、payload、情绪、关系、历史、记忆、任务、软触发 NOTE | 高频变；`_relean` 后不进持久 B 轨 |
+
+**错误示范**：把 mood/关系/记忆写进 system 或每轮改 system → 每轮重算全量前缀缓存。
+**正确**：system 只在建 session / persona 热更时构建；动态一律 `assemble_dynamic_context` → `rag_context` 拼进本轮 user。
+
 ### 6.2 数据
 
 | 数据 | 介质 | 时机 |
 |------|------|------|
 | persona.md / config.json | 磁盘 `data/ai_core/persona/...` | 建 session / 热重载 |
-| self_model / 群画像 | SQL + 缓存 | 稳定前缀 |
+| self_model / 群画像 | SQL + 缓存 | 稳定前缀（建 session 时） |
 | `session.history` | **进程内存** ModelMessage 列表 | 跨轮累积，空闲 30min 回收丢 |
 | session_log 文件 | `data/ai_core/session_logs/*.json` | 创建时打开，增量刷 |
 
@@ -873,8 +888,19 @@ registry.get_ai_session(session_id)
 
 1. 短句/省略跟进 + 有 prior → **ContextPrimary**：拼接 `prior[-3:] + 当前` 再跑分类器
 2. 长句先闲聊 → ContextJoin 再判
-3. 省略 +（上轮工具 **或** 上文用户句工具向）→ Structural 升级为「工具」
-4. 向量问答兜底（低置信闲聊 + 疑问词）
+3. 省略 + 上轮真用过工具 → Structural 升级为「工具」
+4. 上轮用过工具 + 本轮短句/低置信闲聊 → 升为「工具」（防误判砍风格/计数豁免）
+5. 向量问答兜底（低置信闲聊 + 疑问词）
+
+### 7.2.1 intent 对下游的真实影响（2026-07-29）
+
+| 用途 | 是否用 intent |
+|------|----------------|
+| 向量工具预装 / 状态驱动整族 | **否**（分类器会误判闲聊，不得砍工具） |
+| find_tools 渐进暴露 | **否**（常挂） |
+| 连续无工具强制提醒豁免 | **是**（闲聊豁免计数/注入） |
+| user 侧极短风格提示 | **是**（且上轮工具/有任务时不压短） |
+| 记忆寒暄门 | **部分**（短+闲聊+无实体可跳过检索） |
 
 ### 7.3 写
 
@@ -941,29 +967,38 @@ user_messages = prepare_content_payload(event, favorability)
 ### 9.3 群消息历史渲染（读 A 轨）
 
 ```text
-raw = history_manager.get_history(limit=30)
+# 私聊：不注入 IM 历史（pydantic_ai session.history 已覆盖，避免破坏缓存前缀）
+raw = history_manager.get_history(limit=20) if group else []
 history = raw[:-1]                          # 去掉本轮（已在 payload）
-# 当前用户优先窗口：自 5 + 他人 15，按时间排
+# 当前用户优先窗口：自 6 + 他人 10，按时间排
 rag_context = "【历史对话】\n" + format_history_for_agent(...)
 ```
 
 ### 9.4 动态上下文唯一顺序（`assemble_dynamic_context`）
 
-拼进 **user 侧**（进模型；结束后 `_relean` **不进**持久 Agent history）：
+**全部拼进 user 侧**（`rag_context` → 本轮 `final_user_message`）。
+结束后 `_relean_user_turn` 剥掉，**不进**持久 Agent history（B 轨瘦身 + 不污染前缀叙事）。
 
-1. 历史对话块
-2. 情绪 mood
-3. 关系行（per-user，不能进共享 system）
-4. 口吻锚点
-5. 自我情景（回指「你说过」）
-6. 长任务 Kanban 进度文案 → `has_actionable`
-7. 长期记忆块
-8. **工具规程分级**
-   - 闲聊且无上轮工具且无活跃任务 → `TOOL_ORCHESTRATION_LITE`
-   - 否则全文 `TOOL_ORCHESTRATION_CONSTRAINTS`
-9. 上一轮 report 标题提示
-10. 闲聊口吻注
-11. **最后**软触发 `SOFT_TRIGGER_NOTE`（近因）
+当前源码顺序：
+
+1. 情绪 mood（括号包裹）
+2. 关系行（per-user，绝不能进共享 system）
+3. 口吻锚点（极短截断）
+4. 历史对话块（若有）
+5. 自我情景（回指「你说过」时）
+6. 长期记忆·高置信（过长截断；细节靠 `query_user_memory`）
+7. 长任务 Kanban 进度 → `has_actionable`
+8. 闲聊风格提示（仅 intent=闲聊且无上轮工具且无活跃任务；文案允许「办事仍调工具」）
+9. 上一轮资料图标题
+10. **最后**软触发 `SOFT_TRIGGER_NOTE`（近因）
+
+**已移出本块、固化在 system 的：**
+
+- `TOOL_ORCHESTRATION_CONSTRAINTS`（全文工具规程）
+- 能力代理 roster
+- 日级「当前日期」
+
+**精确时间**在 `prepare_content_payload` / user 正文侧（`【当前时间】`），不进 system。
 
 ### 9.5 交给 Agent
 
@@ -985,22 +1020,33 @@ chat_result = await session.run(
 
 > 时序图：**§S.6**（工具五层 + LLM 环）；Subagent 展开见 **§S.7**
 
-### 10.1 锁与过期
+### 10.1 锁与过期 + 消息交错抢答（A）
 
 ```text
-async with self._run_lock:          # 同 Session 串行
-  若 Chat 且排队过久 → 丢弃，return ""
-  refresh_model_if_changed()        # 控制台换模型热切换
+# bot.queue 可并发 create_task（受 semaphore）；同 Session 靠 _run_lock 串行
+
+若 create_by ∈ 交互 且 _run_lock 已被占用:
+    _cancel_generation.set()     # 请求取消当前 generation（抢答）
+    log: 同 Session 新消息到达，请求取消当前生成
+
+async with self._run_lock:
+  self._cancel_generation = Event()   # 本 generation 新事件，互不污染
+  若 Chat 且排队过久 > STALE_CHAT_REQUEST_TTL → 丢弃，return ""
+  refresh_model_if_changed()
+  _execute_run(...)
 ```
 
-日志：`获取到执行锁，开始执行...` / `队列等待 … 超 TTL，丢弃过期请求`。
+**合并语义**：A 在节点间隙看到 cancel → 中止、**不写 history**；B 拿到锁后用 HistoryManager 中已有的 A+B 用户句装配完整上下文再生成。
+（若 A 已 by_bot 发出部分文本，用户可能看到半截 + B 完整回复——取消点在模型节点间隙，无法收回已发送段。）
+
+日志：`获取到执行锁` / `generation_cancelled_supersede` / `generation_aborted_no_history` / `队列等待 … 超 TTL`。
 
 ### 10.2 运行头
 
 ```text
 logger.info ====== Agent 运行开始 ======
 拼接 rag_context → final_user_message
-可选 DS 角色 Marker / 无工具强制提醒
+可选 DS 角色 Marker / 无工具强制提醒（闲聊意图豁免计数）
 交互脚手架 C-1/C-2/C-3（省略跟进 / 漂移 / @别人砍工具）
 session_logger.log_run_start()
 session_logger.log_user_input(final_user_message)
@@ -1010,13 +1056,14 @@ session_logger.log_user_input(final_user_message)
 
 | 层 | 条件 | 内容 |
 |----|------|------|
-| L1 保底 | 每轮 | `self` + `buildin` 分类；persona `tool_names` |
-| L2 状态 | 每轮 | 活跃 Kanban / 定时任务 / record 集合 → 能力族；闲聊裁剪为轻量白名单 |
-| L3 驻留 | 有历史调用 | 近几轮用过的 capability_domain 继续常驻数轮 |
-| 语境 | 有 group | 群画像 tags → 最多 8 个 context 工具 |
-| L4/L5 向量 | **非闲聊** intent | 近文 user 句 + query 检索 + 族展开 |
-| 委派 | 交互主人格 | **剥离**能力代理专属工具；必要时注入 `create_subagent`；user 侧注入可用画像清单 |
-| 渐进 | 非闲聊 | `find_tools` + RetrievableToolset |
+| L1 保底 | 每轮 | `self` + `buildin`（含 `render_html_to_image`）；persona `tool_names` |
+| L2 状态 | 有实体 | 活跃 Kanban / 定时 / record → **整族**（不因 intent=闲聊裁剪） |
+| L3 驻留 | 有历史调用 | capability_domain 常驻 **2** 轮 |
+| 语境 | 有 group | 群画像 tags → 最多 8 个 |
+| L4/L5 向量 | **有 query 即搜** | 近文 + 本轮检索；族展开受 `tool_extra_pool_max`（默认 6）；**闲聊不跳过** |
+| 委派 | 交互主人格 | 剥离 exclusive；必要时注入 `create_subagent`；roster 在 **system** |
+| 渐进 | 每轮可挂 | `find_tools` + RetrievableToolset（常挂，含误判闲聊） |
+| media | 按需 | `render_card` / `render_markdown_to_image`（`资料出图` 族） |
 
 日志例：
 
@@ -1028,25 +1075,35 @@ session_logger.log_user_input(final_user_message)
 session_logger.log_tools_list([...])
 ```
 
-### 10.4 pydantic-ai 迭代环
+### 10.4 pydantic-ai 迭代环 + OOC/机器腔熔断（B）
 
 ```text
 agent.iter(message_history=self.history + 本轮 user)
   loop:
+    若 _cancel_generation.is_set() → break（A 抢答中止）
     ModelRequestNode → 调 LLM（流式）
       parts:
         Thinking  → log_thinking
         ToolCall  → 执行工具 → ToolReturn
                     log_tool_call / log_tool_return
-                    高密度结构返回当轮折叠（防 OOC）
-                    交互主人格可注入 POST_TOOL 输出契约
-        TextPart  → return_mode=by_bot 时 send_chat_result 即时发
-                    log_text_output
+                    交互主人格：
+                      · is_tech_dump → 替换为 TECH_DUMP_TOOL_SHIELD（禁复读堆栈）
+                      · 高密度 JSON → 摘要折叠 + 出图提示
+                    outcome 失败/空 → POST_TOOL_FAIL_CONTRACT（换路）
+                    否则 POST_TOOL_OUTPUT_CONTRACT（多项数据 render_html 出图）
+        TextPart  → return_mode=by_bot 时:
+                    OOC 预检 output_firewall.check_ooc
+                      · machine_dump → 直接发 MACHINE_FALLBACK「额…出错了，稍后再试」
+                      · 其它 → 记入 _ooc_blocked，iter 后重说闭环
+                    假完成预检 / SILENCE / 去重
+                    send_chat_result
 ```
+
+**机器腔判据（形态，非业务词）**：`Traceback`、`File "…", line`、`"status": 5xx`、`status_code`、常见 `*Error:`、内存地址、框架栈特征等（`output_firewall._TECH_DUMP_RE` / `is_tech_dump`）。
 
 **工具执行**可读：插件函数 / MCP / buildin；可写：插件业务 DB、state_store、Kanban、artifact 文件等（视工具）。
 
-**`send_chat_result` 发送链**：错误脱敏 → 剥工具伪影 → **report 两通道**（XML + 内容密度结构块 → 图）→ md 净化 → OOC 门 → 拆条延迟 → `bot.send`。
+**`send_chat_result` 发送链**：错误脱敏 → 剥工具伪影 → **report 两通道** → md 净化 → OOC 门 → 拆条延迟 → `bot.send`。
 
 ### 10.5 日志（⑨）核心串
 
@@ -1195,13 +1252,15 @@ code / plugin_dev 等需要产物与审批的仍走看板。
 
 ---
 
-## 17. 附录 C：成本与意图修法备忘（2026-07-24）
+## 17. 附录 C：成本 / 缓存 / 意图 / 抢答备忘（2026-07-29）
 
-1. **闲聊规程**：user 侧 `TOOL_ORCHESTRATION_LITE`（轻工具 + 省略跟进），非零工具；重规程仅工具/问答/上轮工具/活跃任务。
-2. **意图**：同用户 prior 拼接为主路径；近 6 条助手消息扫 ToolCall；省略结构升级。
-3. **软门**：规则预筛再 LLM。
-4. **Kanban 等待**：文本类 profile 默认 transient；同步上限 60s。
-5. **框架无业务插件域词特判**：意图词表/内置 prompt 不写死具体业务工具名；专域能力由插件 `register_agent_node` + 工具描述召回。
+1. **system 前缀缓存**：会话内 system **不改串**（TTL=inf）；mood/关系/记忆/精确时间只进 user。
+2. **工具规程**：全文在 system；user 侧不再塞 LITE/全文规程块。
+3. **意图**：prior 拼接 + 省略/短句升工具；**装配不因闲聊砍向量/状态族**；闲聊只影响风格提示与无工具计数豁免。
+4. **工具池**：保底约 self+buildin；附加 recall 默认 3、extra max 默认 6；驻留 2 轮；超大族不突破 max。
+5. **抢答（A）**：同 Session 新 run 在锁被占时 set cancel；旧 generation 节点间隙 abort 且不写 history。
+6. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 直接「额…出错了，稍后再试」。
+7. **软门 / Kanban / 无业务特判**：规则预筛；文本 profile 默认可 transient；专域靠插件 node + 工具描述。
 
 ---
 
@@ -1220,7 +1279,7 @@ code / plugin_dev 等需要产物与审批的仍走看板。
 | reactive_gate | 仅 soft | |
 | ai_router / Session | 是 | |
 | context_assembly | 是 | |
-| gs_agent 工具装配 | 是 | 层随 intent 变 |
+| gs_agent 工具装配 | 是 | 层随状态/向量/驻留变；**不**因闲聊硬砍 |
 | LLM provider | 是 | 除非软门沉默/早退 |
 | 插件工具 / MCP | 条件 | 模型点名才执行 |
 | send_chat_result | 条件 | 有可见文本/report |

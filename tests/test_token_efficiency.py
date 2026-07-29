@@ -64,17 +64,17 @@ def test_head_tail_budget_sane() -> None:
 # ─────────────────────────────────────────────
 
 
-def test_tool_assembly_sorted_and_chitchat_skips_vector_pool() -> None:
-    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+def test_tool_assembly_sorted_and_vector_pool_always_on_query() -> None:
+    from pathlib import Path
 
-    src = inspect.getsource(GsCoreAIAgent._execute_run_once)
-    # 保底段与附加段各自排序后拼接（集合不变 → tools 数组字节稳定）
+    # 读源文件避免 import 整条 gs_agent 依赖链（skills 等可选包）
+    src = Path("gsuid_core/ai_core/gs_agent.py").read_text(encoding="utf-8")
     assert "core_tools.sort(key=lambda _t: _t.name)" in src
     assert "deduped_extra.sort(key=lambda _t: _t.name)" in src
-    # 闲聊轮跳过向量检索召回（与渐进暴露豁免同一口径）
     q_idx = src.index("search_tools_with_entity_routing(")
-    gate_block = src[max(0, q_idx - 1500) : q_idx]
-    assert "intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS" in gate_block
+    gate_block = src[max(0, q_idx - 800) : q_idx]
+    assert "if qy:" in gate_block
+    assert "intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS" not in gate_block
 
 
 # ─────────────────────────────────────────────
