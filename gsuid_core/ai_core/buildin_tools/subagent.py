@@ -71,7 +71,7 @@ _TRANSIENT_DEFAULT_PROFILES = frozenset(
 )
 
 
-@ai_tools(category="common", capability_domain="长期任务编排")
+@ai_tools(category="common", capability_domain="长期任务编排", timeout=500.0)
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,

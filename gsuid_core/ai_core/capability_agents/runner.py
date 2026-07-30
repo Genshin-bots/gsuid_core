@@ -199,6 +199,7 @@ async def run_capability_agent(
             session_id=session_id,
             is_subagent=True,
             dynamic_tools=True if has_dynamic_pack(node.tool_packs) else None,
+            wall_clock_budget=420.0,  # 留 80s 余量给外层 500s 硬超时，420s 时注入收敛提示
         )
         logger.info(
             i18n_t(

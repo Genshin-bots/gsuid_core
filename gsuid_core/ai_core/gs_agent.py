@@ -183,7 +183,7 @@ def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Un
 
 
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）
-_INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST")
+_INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST", "CapabilityAgent")
 
 # on_trace 轨迹事件类型：模型推理段 / 工具调用（见 GsCoreAIAgent._emit_trace）
 TraceKind = Literal["thinking", "tool"]
