@@ -8,7 +8,7 @@ HTML渲染工具模块
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, Literal, NoReturn, Optional
 from pathlib import Path
 
 from gsuid_core.i18n import t
@@ -16,7 +16,7 @@ from gsuid_core.logger import logger
 
 try:
     from pytakumi import (
-        Renderer,
+        Renderer as _RendererCls,
         md_to_pic,
         html_to_pic,
         text_to_pic,
@@ -27,20 +27,20 @@ try:
 except ImportError as e:  # pragma: no cover - 引导期依赖缺失
     _PYTAKUMI_AVAILABLE = False
     _IMPORT_ERROR = e
+    _RendererCls = None
     # 引导期依赖缺失提示：早于 i18n 导入，保持纯中文
     print(f"缺少 pytakumi 库，请先安装：pip install pytakumi, {e}")
 
     def _missing_dependency(name: str):
-        def _raise(*args: object, **kwargs: object) -> object:
+        def _raise(*args: object, **kwargs: object) -> NoReturn:
             raise RuntimeError(f"html_render.{name} 调用失败: pytakumi 未安装。请先安装: pip install pytakumi")
 
         return _raise
 
-    html_to_pic = _missing_dependency("html_to_pic")  # type: ignore[assignment]
-    md_to_pic = _missing_dependency("md_to_pic")  # type: ignore[assignment]
-    text_to_pic = _missing_dependency("text_to_pic")  # type: ignore[assignment]
-    Renderer = None  # type: ignore[assignment,misc]
-    set_glyph_cache_max_bytes = _missing_dependency("set_glyph_cache_max_bytes")  # type: ignore[assignment]
+    html_to_pic = _missing_dependency("html_to_pic")
+    md_to_pic = _missing_dependency("md_to_pic")
+    text_to_pic = _missing_dependency("text_to_pic")
+    set_glyph_cache_max_bytes = _missing_dependency("set_glyph_cache_max_bytes")
 
 # 框架内置中文字体（与 PIL core_font 同源）
 _FONT_PATH = Path(__file__).resolve().parent.parent / "fonts" / "MiSans-Bold.ttf"
@@ -100,7 +100,7 @@ def _ensure_renderer(
     """懒加载共享 Renderer，注册 MiSans 等 CJK 字体。"""
     global _renderer, _renderer_ready
 
-    if not _PYTAKUMI_AVAILABLE:
+    if _RendererCls is None:
         raise RuntimeError("html_render 调用失败: pytakumi 未安装。请先安装: pip install pytakumi")
 
     if _renderer_ready and _renderer is not None and not force:
@@ -111,7 +111,7 @@ def _ensure_renderer(
     except Exception:
         pass
 
-    r = Renderer(cache_max_bytes=_GLYPH_CACHE_BYTES)
+    r = _RendererCls(cache_max_bytes=_GLYPH_CACHE_BYTES)
     registered: list[str] = []
 
     if _FONT_PATH.is_file():
@@ -179,11 +179,22 @@ def init_html_fontconfig(
         return False
 
 
-def _resolve_format(image_format: str) -> str:
+_RenderFormat = Literal["png", "jpeg", "webp", "ico", "raw"]
+
+
+def _resolve_format(image_format: str) -> _RenderFormat:
     fmt = (image_format or "png").lower()
     if fmt in {"jpg", "jpeg"}:
         return "jpeg"
-    return fmt
+    if fmt == "png":
+        return "png"
+    if fmt == "webp":
+        return "webp"
+    if fmt == "ico":
+        return "ico"
+    if fmt == "raw":
+        return "raw"
+    return "png"
 
 
 def _dpr_from_dpi(dpi: float | None) -> float | None:
@@ -208,6 +219,20 @@ def _font_families(font_name: str | None) -> list[str]:
     return names
 
 
+def _root_max_width_css(root_max_width: float | None) -> str:
+    """生成根容器 max-width 约束规则。
+
+    pytakumi 的 extract_styles_and_body 会把**设备像素**宽度写进
+    ``.pytakumi-root`` 的内联 ``width``，而 Takumi 的 CSS 布局视口实际为
+    ``width / device_pixel_ratio``。dpr>1 时根容器比可见区域宽 dpr 倍，
+    flex 拉伸/右对齐内容被推进不可见的右半区而裁切。样式表 max-width
+    可以约束内联 width，这里按 CSS 像素宽收口根容器。
+    """
+    if not root_max_width:
+        return ""
+    return f".pytakumi-root{{max-width:{float(root_max_width)}px;}}"
+
+
 def _sync_render_html(
     html: str,
     *,
@@ -220,6 +245,7 @@ def _sync_render_html(
     image_format: str,
     jpeg_quality: int,
     lang: str,
+    root_max_width: float | None = None,
 ) -> bytes:
     renderer = _ensure_renderer()
     width = max(1, int(max_width))
@@ -230,7 +256,11 @@ def _sync_render_html(
         height = max(1, int(device_height))
 
     # 给片段补一点默认字号，避免裸 HTML 字太小
-    css = f"body{{font-size:{float(default_font_size)}px;}}" if default_font_size else None
+    css_parts: list[str] = []
+    if default_font_size:
+        css_parts.append(f"body{{font-size:{float(default_font_size)}px;}}")
+    css_parts.append(_root_max_width_css(root_max_width))
+    css = "".join(css_parts) or None
     fmt = _resolve_format(image_format)
     quality = int(jpeg_quality) if fmt == "jpeg" else None
 
@@ -258,11 +288,16 @@ def _sync_render_md(
     image_format: str,
     jpeg_quality: int,
     dark: bool = False,
+    root_max_width: float | None = None,
 ) -> bytes:
     renderer = _ensure_renderer()
     width = max(1, int(max_width))
     fmt = _resolve_format(image_format)
     quality = int(jpeg_quality) if fmt == "jpeg" else None
+
+    root_css = _root_max_width_css(root_max_width)
+    if root_css:
+        css = f"{css or ''}{root_css}"
 
     # pytakumi 高度默认按内容自适应；allow_refit 仅保留兼容语义
     _ = allow_refit
@@ -325,13 +360,14 @@ async def render_html_to_bytes(
     image_format: str = "png",
     jpeg_quality: int = 100,
     lang: str = "zh",
+    root_max_width: float | None = None,
 ) -> bytes:
     """
     将 HTML 渲染为图片字节数据
 
     Args:
         html: HTML 字符串内容
-        max_width: 最大宽度，默认 800.0
+        max_width: 最大宽度（**设备像素**，dpi>96 时 CSS 布局宽 = max_width/(dpi/96)），默认 800.0
         dpi: 打印分辨率，默认 96.0（映射为 device_pixel_ratio = dpi/96）
         device_height: 设备高度，默认 600.0（allow_refit=False 时生效）
         default_font_size: 默认字体大小，默认 12.0
@@ -340,6 +376,8 @@ async def render_html_to_bytes(
         image_format: 图片格式，"png" 或 "jpeg"，默认 "png"
         jpeg_quality: JPEG 质量，默认 100
         lang: 语言代码，默认 "zh"
+        root_max_width: 根容器 CSS 宽度上限。dpr>1 时必须传（一般等于 CSS 布局宽），
+            否则 pytakumi 会把设备像素宽写进根容器内联 width，右侧内容被裁切
 
     Returns:
         PNG 或 JPEG 格式的图片字节数据
@@ -356,6 +394,7 @@ async def render_html_to_bytes(
         image_format=image_format,
         jpeg_quality=jpeg_quality,
         lang=lang,
+        root_max_width=root_max_width,
     )
 
 
@@ -370,6 +409,7 @@ async def render_md_to_bytes(
     image_format: str = "png",
     jpeg_quality: int = 100,
     dark: bool = False,
+    root_max_width: float | None = None,
 ) -> bytes:
     """
     将 Markdown 渲染为图片字节数据
@@ -378,12 +418,14 @@ async def render_md_to_bytes(
         md: Markdown 字符串内容
         md_path: Markdown 文件路径（与 md 二选一）
         css_path: CSS 文件路径
-        max_width: 最大宽度，默认 500
+        max_width: 最大宽度（**设备像素**，dpi>96 时 CSS 布局宽 = max_width/(dpi/96)），默认 500
         dpi: 打印分辨率，默认 96.0
         allow_refit: 是否允许自适应，默认 True
         image_format: 图片格式，"png" 或 "jpeg"，默认 "png"
         jpeg_quality: JPEG 质量，默认 100
         dark: 是否使用暗色基底主题，默认 False
+        root_max_width: 根容器 CSS 宽度上限。dpr>1 时必须传（一般等于 CSS 布局宽），
+            否则 pytakumi 会把设备像素宽写进根容器内联 width，右侧内容被裁切
 
     Returns:
         PNG 或 JPEG 格式的图片字节数据
@@ -406,6 +448,7 @@ async def render_md_to_bytes(
         image_format=image_format,
         jpeg_quality=jpeg_quality,
         dark=dark,
+        root_max_width=root_max_width,
     )
 
 

@@ -13,16 +13,12 @@
 漂移防线：tests/test_context_assembly.py 以源码级断言锁定两个入口都消费本模块。
 """
 
-import re
 import asyncio
 from typing import List, Tuple, Optional
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-
-# C3-c 自我情景记忆召回触发词：用户回指 Bot 自己曾经的言行（从 handle_ai 移入）
-_SELF_RECALL_RE = re.compile(r"(你之前|你上次|你不是说|你说过|你还记得|你刚才说|你答应)")
 
 # 软触发（免唤醒续聊）的默认偏沉默提示——生产/评测共用同一文案
 SOFT_TRIGGER_NOTE = (
@@ -143,16 +139,15 @@ async def assemble_dynamic_context(
         except Exception as e:
             logger.debug(t("log.ai.mood_fetch_description", e=e))
 
-    # C3-a/c: per-user 关系行（群聊共享 session，不能冻进共享前缀）
-    self_episode_text = ""
+    # C3-a: per-user 关系行（群聊共享 session，不能冻进共享前缀）
+    # 自我情景召回已改为 query_self_episodes 工具（agent 按需主动调用），
+    # 不再用正则触发被动注入。
     try:
-        from gsuid_core.ai_core.self_cognition import retrieve_self_episodes, build_relationship_context
+        from gsuid_core.ai_core.self_cognition import build_relationship_context
 
         relationship_text = build_relationship_context(user_id, favorability)
         if relationship_text:
             context_parts.append(relationship_text)
-        if _SELF_RECALL_RE.search(query):
-            self_episode_text = await retrieve_self_episodes(bot_id)
     except Exception as e:
         logger.debug(t("log.ai.selfcog_relationship_context_injection", e=e))
 
@@ -170,9 +165,6 @@ async def assemble_dynamic_context(
 
     if history_context:
         context_parts.append(history_context)
-
-    if self_episode_text:
-        context_parts.append(self_episode_text)
 
     # 长期记忆：只注入高置信片段；更多细节让 agent 调 query_user_memory
     if memory_context_text:

@@ -120,6 +120,19 @@ h2{{
 }}
 .muted{{color:#8a9bb5;font-size:12px;}}
 .big{{font-size:34px;font-weight:900;color:#fff;line-height:1.05;}}
+.chart{{
+  margin-top:10px;display:flex;flex-direction:column;gap:9px;
+  padding:14px 16px;border-radius:14px;
+  background:linear-gradient(135deg,#162035,#111a2c);
+  border:1px solid rgba(91,157,217,0.1);
+}}
+.crow{{display:flex;align-items:center;gap:10px;}}
+.clab{{width:84px;flex:none;font-size:12px;color:#9aa7bd;text-align:right;}}
+.track{{flex:1;height:16px;border-radius:8px;background:rgba(255,255,255,0.06);overflow:hidden;}}
+.fill{{height:16px;border-radius:8px;background:linear-gradient(90deg,#b04538,#ef7d6c);}}
+.fill.up{{background:linear-gradient(90deg,#1f8a70,#3ec9a7);}}
+.cval{{width:58px;flex:none;font-size:12px;font-weight:800;color:#fca5a5;}}
+.cval.up{{color:#3ec9a7;}}
 </style></head>
 <body>
 {body}
@@ -437,6 +450,7 @@ async def render_card(
             dpi=192.0,
             image_format="png",
             default_font_size=15.0,
+            root_max_width=720.0,
         )
         logger.info(t("log.ai.buildintools_html_rendering_succeeded_ok", p0=len(image_bytes)))
         return await _finish_image(ctx, image_bytes)
@@ -456,12 +470,31 @@ async def render_html_to_image(
     """将自定义 HTML 渲染为高清图片并自动发送。**多数据点出图首选**。
 
     按内容自由设计布局（面板/时间线/对比/看板/资讯流等），模板覆盖不了的场景也能表达。
-    推荐只写 body 片段，系统会套暗色设计系统壳。
+    推荐只写 body 片段，系统会套暗色设计系统壳（视口宽 = max_width，高度自适应）。
 
-    视觉约定：
-    - 可用 class：h1/h2/.meta/.grid/.metric/.day/.row/.tag/.item/.pill/.big/.muted 等
-    - 引擎 content-box（勿设 border-box）；禁止 table / emoji；用 flex + 文字图标
-    - 关键数字大且重；标签小且淡；卡片圆角+阴影
+    ## 壳内 class（直接拿来用，结构必须匹配；**禁止在自己的 <style> 里重定义壳类**，会撞坏布局）
+    - .grid>.metric：指标卡组，metric 内只放 .lab（小标签）/.val（大数字）/.sub（补充说明）
+    - .row：横条信息卡 = .ico.sm（圆形文字图标，1 个字）+ .main（内含 .title/.desc）
+      + 可选 .tag（右侧彩色标签，变体 .green/.gold/.red）
+    - .chart>.crow：条形图行 = .clab（标签）+ .track>.fill（内联 style="width:百分比%"）
+      + .cval（数值）；上涨/正向用 .fill.up 与 .cval.up
+    - .item：纯文字条目卡；.pill：胶囊标签；.bar：渐变分隔条；.ico：圆形文字图标（变体 .ok/.warn/.bad/.news/.cool）
+    - h1/h2/.meta/.big/.muted：标题/元信息/大数字/弱文字；.day 仅供天气日期卡，勿当通用容器
+    - 确需自定义样式时：只用**新**类名（建议 my- 前缀），绝不覆盖壳类
+
+    ## 视觉要求（必须遵守）
+    - ≥3 个可比较的数值（涨跌/占比/排名/进度）→ 必须画 .chart 条形图；绝对值指标用 .metric 卡；禁止纯文字列表凑数
+    - 每条 .row 信息行必须带 .ico.sm 文字图标；涨跌类标签用 .tag.green/.tag.red
+    - 关键数字大且重（.val/.big）；标签小且淡；卡片圆角+阴影
+    - 引擎 content-box（勿设 border-box）；禁止 table/emoji；用 flex 布局
+
+    条形图示例::
+
+        <div class="chart">
+          <div class="crow"><span class="clab">美光</span>
+            <div class="track"><div class="fill" style="width:55%;"></div></div>
+            <span class="cval">-5.5%</span></div>
+        </div>
 
     Args:
         ctx: 工具执行上下文
@@ -484,6 +517,7 @@ async def render_html_to_image(
             dpi=96.0 * _dpr,
             image_format=image_format,
             default_font_size=15.0,
+            root_max_width=float(max_width),
         )
         logger.info(t("log.ai.buildintools_html_rendering_succeeded_ok", p0=len(image_bytes)))
         return await _finish_image(ctx, image_bytes)
@@ -528,6 +562,7 @@ async def render_markdown_to_image(
             dpi=96.0 * _dpr,
             image_format=image_format,
             dark=False,
+            root_max_width=float(max_width),
         )
         logger.info(t("log.ai.buildintools_markdown_rendering_succeeded_ok", p0=len(image_bytes)))
         return await _finish_image(ctx, image_bytes)

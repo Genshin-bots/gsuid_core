@@ -36,29 +36,6 @@ _CONTENT_REJECT_HINTS = ("sensitive", "content policy", "content_policy", "conte
 # 内容审核错误码（如 MiniMax 1026）。按词边界匹配，避免误命中 request-id / 时间戳里的数字。
 _CONTENT_REJECT_CODES = ("1026",)
 
-# 单轮意图-行为不一致检测关键词：thinking 里点名了某工具 / 任务编排意图
-# 却没真正调用——直接顶到阈值，下一轮立刻强制提醒。提到模块级避免每轮重建。
-_INTENT_TRIGGER_KEYWORDS: tuple[str, ...] = (
-    "register_kanban_task",
-    "evaluate_agent_mesh_capability",
-    "create_subagent",
-    "复合多代理任务",
-    "任务树",
-    "创建任务树",
-    "托管",
-    "委派",
-    # 「枚举时间点」思维信号：即便本轮调了 add_once_task，下一轮也强提醒改走
-    # register_kanban_task 的 recurring_trigger 路径。
-    "逐个时间点",
-    "逐一设置",
-    "每个时间点单独",
-    "为每个时间点",
-    "5个时间点",
-    "10个时间点",
-    "cron 的话需要写多个",
-    "需要写多个触发器",
-)
-
 # O-A 群聊队头阻塞防护：交互式回复在 _run_lock 上排队超过此秒数（话题大概率已翻篇）
 # 则丢弃本次回复，避免对早已结束的话题"过期答复"。仅作用于 create_by=="Chat" 的主对话。
 STALE_CHAT_REQUEST_TTL = 8.0

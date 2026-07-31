@@ -660,9 +660,13 @@ async def modify_scheduled_task(
     "把那个任务改成…""定时任务的内容换一下""把时间改到后天""改成明晚8点""把循环次数改成 5 次"。
     只能修改 pending 或 paused 状态的任务。
 
+    重要：task_id 不能凭记忆猜测，必须先调用 list_scheduled_tasks 查到目标任务的
+    真实 task_id 后再传入。如果上一轮对话中 assistant 只说了"设好了"但没给出 ID，
+    那 ID 不在上下文里，必须重新 list 查询。
+
     Args:
         ctx: 工具执行上下文
-        task_id: 任务 ID
+        task_id: 任务 ID（必须来自 list_scheduled_tasks 的返回结果）
         task_prompt: 新的任务描述，不修改则不传
         run_time: 新的执行时间，格式 "YYYY-MM-DD HH:MM:SS"，不修改则不传。必须是未来时间。
             一次性任务=新的触发时间；循环任务=下一次执行的时间（执行间隔保持不变）。
@@ -797,9 +801,12 @@ async def cancel_scheduled_task(
     当用户想停掉、删除、不再需要某个定时任务或提醒时调用此工具，触发场景如
     "取消那个任务""别再提醒我了""删掉定时任务 xxx"。取消后任务不再执行。
 
+    重要：task_id 不能凭记忆猜测，必须先调用 list_scheduled_tasks 查到目标任务的
+    真实 task_id 后再传入。多条任务中只取消用户指定的那一条，其余保留。
+
     Args:
         ctx: 工具执行上下文
-        task_id: 任务 ID
+        task_id: 任务 ID（必须来自 list_scheduled_tasks 的返回结果）
 
     Returns:
         操作结果信息
@@ -854,9 +861,12 @@ async def pause_scheduled_task(
     "先暂停那个任务""这阵子别执行了""暂停循环提醒"。
     仅循环任务支持暂停，一次性任务不支持。
 
+    重要：task_id 不能凭记忆猜测，必须先调用 list_scheduled_tasks 查到目标任务的
+    真实 task_id 后再传入。
+
     Args:
         ctx: 工具执行上下文
-        task_id: 任务 ID
+        task_id: 任务 ID（必须来自 list_scheduled_tasks 的返回结果）
 
     Returns:
         操作结果信息
@@ -910,9 +920,12 @@ async def resume_scheduled_task(
     当用户想让之前暂停的循环任务继续执行时调用此工具，触发场景如
     "恢复那个任务""继续之前的循环提醒""把暂停的任务开起来"。
 
+    重要：task_id 不能凭记忆猜测，必须先调用 list_scheduled_tasks 查到目标任务的
+    真实 task_id 后再传入。
+
     Args:
         ctx: 工具执行上下文
-        task_id: 任务 ID
+        task_id: 任务 ID（必须来自 list_scheduled_tasks 的返回结果）
 
     Returns:
         操作结果信息

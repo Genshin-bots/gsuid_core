@@ -242,3 +242,34 @@ async def update_self_note(
 
     ok = await add_self_note(bot_id, content, field_map[note_type])
     return "✅ 已记入我的自我认知" if ok else "⚠️ 自我认知记录失败"
+
+
+@ai_tools(category="buildin", capability_domain="自我认知")
+async def query_self_episodes(
+    ctx: RunContext[ToolContext],
+    limit: int = 5,
+) -> str:
+    """回忆你自己之前说过、做过的事（自我情景记忆）。
+
+    什么时候用：
+    - 用户回指你曾经的言行（"你之前说的""你上次答应我的""你不是说…吗"）。
+    - 你需要确认自己之前是否承诺/提到过某件事。
+    - 当前上下文里找不到答案，但你隐约记得自己之前有过相关言行。
+
+    和 query_user_memory 的区别：query_user_memory 查的是**用户**的记忆/事实；
+    本工具查的是**你自己**的言行记录（承诺、偏好、反思、情景片段）。
+
+    Args:
+        ctx: 工具执行上下文
+        limit: 返回的最近条目数，默认 5
+
+    Returns:
+        你最近的言行记录；无记录时会说明。
+    """
+    from gsuid_core.ai_core.self_cognition import retrieve_self_episodes
+
+    bot_id = ctx.deps.bot.bot_id if ctx.deps.bot is not None else ""
+    text = await retrieve_self_episodes(bot_id, limit=max(1, min(limit, 10)))
+    if not text:
+        return "（没有找到我之前的言行记录——可能是还没沉淀，或者确实没说过。）"
+    return text

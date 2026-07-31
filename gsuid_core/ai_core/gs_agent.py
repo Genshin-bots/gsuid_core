@@ -44,7 +44,6 @@ from gsuid_core.ai_core.const import (
     _AGENTIC_CREATE_BY,
     _STICKY_FAMILY_TURNS,
     STALE_CHAT_REQUEST_TTL,
-    _INTENT_TRIGGER_KEYWORDS,
     ENABLE_PROGRESSIVE_TOOLS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
@@ -1612,6 +1611,14 @@ class GsCoreAIAgent:
                     max_tools=max_extra_tools,
                 )
 
+                # 召回族也写进 L3 驻留：下一轮并入稳定保底段，工具集随对话收敛，
+                # provider 前缀缓存命中↑、跨轮追问免重检索（§cache 54%→更高）。
+                for _et in deduped_extra:
+                    _etb = find_tool_base(_et.name)
+                    _edom = _etb.capability_domain if _etb is not None else None
+                    if _edom:
+                        self._recent_tool_families[_edom] = _STICKY_FAMILY_TURNS
+
                 # §25(3) 工具序稳定化：两段各自按名排序，
                 core_tools.sort(key=lambda _t: _t.name)
                 deduped_extra.sort(key=lambda _t: _t.name)
@@ -2107,10 +2114,10 @@ class GsCoreAIAgent:
                         self._consecutive_no_tool_rounds = 0
                     else:
                         self._consecutive_no_tool_rounds += 1
-                        # 单轮意图-行为不一致检测：thinking 里点名了某工具 / 长任务
-                        # 编排意图却没真正调用——直接顶到阈值，下一轮立刻强制提醒。
+                        # 意图-行为不一致检测（结构化）：thinking 里提到了本轮
+                        # 已装配的工具名却没真正调用——顶到阈值，下轮强制提醒。
                         thinking_blob = "\n".join(_thinking_segments)
-                        if thinking_blob and any(kw in thinking_blob for kw in _INTENT_TRIGGER_KEYWORDS):
+                        if thinking_blob and tool_names and any(tn in thinking_blob for tn in tool_names):
                             self._consecutive_no_tool_rounds = max(self._consecutive_no_tool_rounds, 2)
                             logger.debug(i18n_t("log.agent.intent_action_mismatch_force"))
 
