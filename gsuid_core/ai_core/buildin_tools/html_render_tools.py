@@ -171,7 +171,7 @@ async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> b
         await bot.send(MessageSegment.image(image_bytes))
         return True
     except Exception as e:
-        logger.debug(f"渲染图片自动发送失败，回退资源注册: {e}")
+        logger.debug(t("log.htmlrender.auto_send_fallback", e=e))
         return False
 
 

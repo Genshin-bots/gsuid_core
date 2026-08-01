@@ -1946,7 +1946,13 @@ class GsCoreAIAgent:
                         ):
                             node.request.parts = [*node.request.parts, UserPromptPart(content=_THRASH_FUSE_NUDGE)]
                             _thrash_fused = True
-                            logger.warning(f"工具空转熔断: {_same_tool_name}×{_same_tool_streak}")
+                            logger.warning(
+                                i18n_t(
+                                    "log.agent.tool_thrash_fuse",
+                                    tool_name=_same_tool_name,
+                                    streak=_same_tool_streak,
+                                )
+                            )
 
                         _has_tool_return = False
                         for part in node.request.parts:
@@ -2068,7 +2074,11 @@ class GsCoreAIAgent:
                         _tc_count = sum(1 for p in node.model_response.parts if isinstance(p, ToolCallPart))
                         if _tc_count > _MAX_TOOL_CALLS_PER_RESPONSE:
                             logger.warning(
-                                f"工具调用熔断：单次响应 {_tc_count} 次调用，截断至 {_MAX_TOOL_CALLS_PER_RESPONSE}"
+                                i18n_t(
+                                    "log.agent.tool_calls_per_response_truncate",
+                                    count=_tc_count,
+                                    limit=_MAX_TOOL_CALLS_PER_RESPONSE,
+                                )
                             )
                             _kept: list = []
                             _tc_kept = 0
@@ -2088,7 +2098,12 @@ class GsCoreAIAgent:
                                 if not (isinstance(_p, ToolCallPart) and _p.tool_name == _same_tool_name)
                             ]
                             if len(_stripped) < len(node.model_response.parts):
-                                logger.warning(f"工具空转截断: 丢弃重复 {_same_tool_name}")
+                                logger.warning(
+                                    i18n_t(
+                                        "log.agent.tool_thrash_strip_duplicate",
+                                        tool_name=_same_tool_name,
+                                    )
+                                )
                                 node.model_response.parts = _stripped
 
                         # 遍历大模型返回的具体片段 (Parts)

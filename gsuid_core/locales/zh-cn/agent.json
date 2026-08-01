@@ -101,5 +101,8 @@
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}",
   "log.agent.supersede_cancel_current": "[GsCoreAIAgent] 同 Session 新消息到达，请求取消当前生成",
   "log.agent.generation_cancelled_supersede": "[GsCoreAIAgent] 生成已取消（被更新消息 supersede）",
-  "log.agent.generation_aborted_no_history": "[GsCoreAIAgent] 已中止：不写入 history，等待后到 run 合并上下文"
+  "log.agent.generation_aborted_no_history": "[GsCoreAIAgent] 已中止：不写入 history，等待后到 run 合并上下文",
+  "log.agent.tool_thrash_fuse": "工具空转熔断: {tool_name}×{streak}",
+  "log.agent.tool_calls_per_response_truncate": "工具调用熔断：单次响应 {count} 次调用，截断至 {limit}",
+  "log.agent.tool_thrash_strip_duplicate": "工具空转截断: 丢弃重复 {tool_name}"
 }

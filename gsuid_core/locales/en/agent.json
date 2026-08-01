@@ -101,5 +101,8 @@
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] Failed to write token usage log: {_le}",
   "log.agent.supersede_cancel_current": "[GsCoreAIAgent] newer message for session, cancel current generation",
   "log.agent.generation_cancelled_supersede": "[GsCoreAIAgent] generation cancelled (superseded)",
-  "log.agent.generation_aborted_no_history": "[GsCoreAIAgent] aborted without history write; next run owns context"
+  "log.agent.generation_aborted_no_history": "[GsCoreAIAgent] aborted without history write; next run owns context",
+  "log.agent.tool_thrash_fuse": "Tool thrash fuse: {tool_name}×{streak}",
+  "log.agent.tool_calls_per_response_truncate": "Tool-call fuse: {count} calls in one response, truncated to {limit}",
+  "log.agent.tool_thrash_strip_duplicate": "Tool thrash strip: dropped duplicate {tool_name}"
 }
