@@ -381,7 +381,7 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
             # v2: profile 已是 TypedDict, 直接用 merge_profile 叠加 OpenAI 专属字段
             return merge_profile(default, OpenAIModelProfile(openai_chat_send_back_thinking_parts=False))
 
-        profile_spec: Callable[[ModelProfile], ModelProfile] = _overlay_send_back_off
+        profile_spec = _overlay_send_back_off
     else:
         # 默认走 identity: 不叠加任何字段, 行为与 send_back_thinking=auto/on 一致
         profile_spec: Callable[[ModelProfile], ModelProfile] = lambda default: default  # noqa: E731

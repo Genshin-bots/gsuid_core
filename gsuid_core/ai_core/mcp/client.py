@@ -206,9 +206,12 @@ class MCPClient:
         )
 
         async with client:
+            # FastMCP 3 默认 raise_on_error=True，会把工具错误直接抛成 ToolError；
+            # 本项目统一用 MCPToolResult.is_error 处理失败路径，故显式关闭。
             result = await client.call_tool(
                 name=tool_name,
                 arguments=arguments or {},
+                raise_on_error=False,
             )
 
         # 将 CallToolResult 转换为统一格式

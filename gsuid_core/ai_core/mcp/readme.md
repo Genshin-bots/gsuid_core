@@ -70,7 +70,7 @@
 
 ### `client.py` — MCP 客户端核心
 
-基于 [fastmcp](https://github.com/jlowin/fastmcp) 实现的 MCP 客户端，支持 **stdio** 和 **sse** 两种传输方式连接 MCP 服务器。
+基于 [fastmcp](https://github.com/PrefectHQ/fastmcp) 实现的 MCP 客户端，支持 **stdio** 和 **sse** 两种传输方式连接 MCP 服务器。
 
 **设计原则:**
 - **无状态模式**: 每次操作独立建立连接，完成后自动断开
