@@ -1,4 +1,4 @@
-"""历史装配紧凑化回归：时间含秒、无双重【历史对话】、默认不含当前轮。"""
+"""历史装配紧凑化回归：时间含秒、无双重 [历史对话]、默认不含当前轮。"""
 
 from __future__ import annotations
 
@@ -29,11 +29,11 @@ def test_compact_single_line_and_one_header() -> None:
         _rec("2", "乙", "天气怎么样", t0 + 30),
     ]
     text = format_history_for_agent(history)
-    assert text.count("【历史对话】") == 1
-    assert "当前:" not in text
-    # 紧凑单行
-    assert "1(甲)" in text and "你好" in text
-    assert "AI " in text and "唔" in text
+    assert text.count("[历史对话]") == 1
+    assert "当前·" not in text
+    # 说话人与本轮统一：名(用户ID:id)；时间在前
+    assert "甲(用户ID:1)" in text and "你好" in text
+    assert "] AI:" in text and "唔" in text
     # 不再用多行引号块
     assert '\n"你好"\n' not in text
 
@@ -45,8 +45,8 @@ def test_include_current_turn_optional() -> None:
         _rec("9", "主", "当前句", t0 + 10),
     ]
     plain = format_history_for_agent(history, current_user_id="9", include_current_turn=False)
-    assert "当前:" not in plain
+    assert "当前·" not in plain
     with_cur = format_history_for_agent(history, current_user_id="9", current_user_name="主", include_current_turn=True)
-    assert "当前:9(主)" in with_cur
+    assert "当前·主(用户ID:9)" in with_cur
     # 当前句不进历史块重复
     assert with_cur.count("当前句") == 1

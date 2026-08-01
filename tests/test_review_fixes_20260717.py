@@ -116,7 +116,7 @@ async def test_clean_report_block_still_rendered(monkeypatch: pytest.MonkeyPatch
 
     rendered: list = []
 
-    async def fake_render(md: str, max_width: int = 0, image_format: str = "jpeg") -> bytes:
+    async def fake_render(md: str = "", **_kwargs: Any) -> bytes:
         rendered.append(md)
         return b"img"
 
@@ -127,8 +127,8 @@ async def test_clean_report_block_still_rendered(monkeypatch: pytest.MonkeyPatch
     await send_chat_result(bot, text, ev=None)
 
     assert any("方案对比" in md for md in rendered)
-    # §3 合规垫层：制品图片带免责脚注
-    assert any("不构成投资" in md for md in rendered)
+    # 制品图片脚注：来源 + 渲染函数溯源
+    assert any("Agent" in md and "render_md_to_bytes" in md for md in rendered)
 
 
 # ─────────────────────────────────────────────

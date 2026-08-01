@@ -120,11 +120,11 @@ async def assemble_dynamic_context(
 
     顺序（与缓存前缀稳定性从高到低排列，改动须两个入口同时生效——这正是抽出本函数的目的）：
     历史对话 → 情绪 → 关系行 → 口吻锚点 → 自我情景 → 长任务 → 长期记忆 → 软触发提示。
-    ``history_context`` 传已带「【历史对话】」标头的成品文本（评测端点历史走
+    ``history_context`` 传已带「[历史对话]」标头的成品文本（评测端点历史走
     agent.history，则传空）；``memory_guide`` 是记忆使用准则（评测端点专用，生产为空）。
     各子项失败一律降级跳过，不影响其余注入。
     """
-    # 装配顺序刻意「短状态 → 历史 → 高置信记忆 → 任务」：把注意力留给【用户发言】。
+    # 装配顺序刻意「短状态 → 历史 → 高置信记忆 → 任务」：把注意力留给 [用户发言]。
     # 决策树/工具规程/口吻主约束已在 system_prompt，此处只放本轮必要动态信息。
     context_parts: List[str] = []
 
@@ -151,14 +151,17 @@ async def assemble_dynamic_context(
     except Exception as e:
         logger.debug(t("log.ai.selfcog_relationship_context_injection", e=e))
 
-    # 口吻锚点：system 已有完整约束；此处极短钉一下防长会话漂移
+    # 口吻锚点：system 已有完整约束；此处钉一下防长会话漂移（过短无效）
+    _VOICE_ANCHOR_MAX = 80
     if persona_name:
         try:
             from gsuid_core.ai_core.persona import get_voice_anchor
 
             voice_anchor = get_voice_anchor(persona_name)
             if voice_anchor:
-                short_anchor = voice_anchor[:36] + "…" if len(voice_anchor) > 36 else voice_anchor
+                short_anchor = (
+                    voice_anchor[:_VOICE_ANCHOR_MAX] + "…" if len(voice_anchor) > _VOICE_ANCHOR_MAX else voice_anchor
+                )
                 context_parts.append(f"（口吻：{short_anchor}）")
         except Exception as e:
             logger.debug(t("log.ai.contextassembly_persona_tone_anchor_fail", e=e))
@@ -172,7 +175,7 @@ async def assemble_dynamic_context(
         if len(mem) > 1200:
             mem = mem[:1197] + "…"
         guide = f"{memory_guide}" if memory_guide else ""
-        context_parts.append(f"{guide}【长期记忆·高置信】\n{mem}\n（需要更多细节请调 query_user_memory）")
+        context_parts.append(f"{guide}[长期记忆·高置信]\n{mem}\n（需要更多细节请调 query_user_memory）")
 
     # C5: 长任务进度（短序号）；他群任务已在 build_task_context 内脱敏
     has_actionable = False
@@ -189,6 +192,10 @@ async def assemble_dynamic_context(
     # 仅风格提示：intent 不可靠，上轮用过工具或有任务时不压短
     if intent == "闲聊" and not prev_turn_used_tools and not has_actionable:
         context_parts.append("（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）")
+
+    # 事务优先级：分类器判定为工具/问答意图时，明确动作优先于人格惰性
+    if intent in ("工具", "问答"):
+        context_parts.append("（本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。）")
 
     if recent_report_titles:
         titles_str = "、".join(recent_report_titles[-3:])

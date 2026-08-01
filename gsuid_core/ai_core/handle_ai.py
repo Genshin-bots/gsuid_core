@@ -260,6 +260,33 @@ async def handle_ai_chat(
             # 步骤 2: 获取 AI Session（意图分类需要上轮是否用过工具）
             session = await get_ai_session(event)
 
+            # TurnGraph 一等公民：结构只算一次，门与装配共用
+            from gsuid_core.ai_core.interaction_scaffold import (
+                CheapGate,
+                build_turn_graph,
+                decide_cheap_gate,
+                has_recent_tool_call,
+                recent_history_texts,
+            )
+
+            _tg_recent = recent_history_texts(session.history)
+            _turn_graph = build_turn_graph(
+                query,
+                persona_name=session.persona_name or "",
+                is_tome=bool(event.is_tome),
+                user_type=str(event.user_type or ("group" if event.group_id else "direct")),
+                primary_speaker=str(event.user_id or ""),
+                recent=_tg_recent,
+                soft_triggered=soft_triggered,
+                recent_tool_call=has_recent_tool_call(session.history),
+                followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
+                ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
+            )
+            _cheap = decide_cheap_gate(_turn_graph, soft_triggered=soft_triggered)
+            if _cheap is CheapGate.SILENCE:
+                logger.info(t("log.ai.gscore_group_open_gate_silence"))
+                return
+
             # 意图：同用户先验 + 近几轮是否真用过工具（勿只看当前句）
             from gsuid_core.ai_core.classifier.mode_classifier import collect_prior_user_turns
 
@@ -289,6 +316,15 @@ async def handle_ai_chat(
             )
             intent = res["intent"]
             logger.debug(t("log.ai.gscore_intent_recognition_result", res=res))
+            # 意图出来后重判 cheap（被 @ 的纯闲聊 → light）
+            _cheap = decide_cheap_gate(
+                _turn_graph,
+                soft_triggered=soft_triggered,
+                intent=str(intent or ""),
+            )
+            if _cheap is CheapGate.SILENCE:
+                logger.info(t("log.ai.gscore_group_open_gate_silence"))
+                return
 
             # 记录意图统计和活跃用户
             statistics_manager.record_intent(intent=intent)
@@ -354,10 +390,10 @@ async def handle_ai_chat(
                         user_messages[0] = summarized
                 logger.info(t("log.ai.gscore_summarization_summary_length", p0=len(summarized)))
 
-            # Bug-04修复：时间注入移到摘要之后（无论是否摘要都需要）；含秒便于时序判断
+            # 时间放在本轮发言块末尾（摘要之后），与正文同段、在 rag 动态上下文之前
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if isinstance(user_messages, list) and len(user_messages) > 0 and isinstance(user_messages[0], str):
-                user_messages[0] += f"\n【当前时间】{current_time}"
+                user_messages[0] += f"\n[当前时间：{current_time}]"
 
             # 步骤 5: 记忆上下文（Memory Retrieval）
             # 基于群组/用户ID检索相关记忆，用于个性化响应
@@ -447,7 +483,7 @@ async def handle_ai_chat(
                 )
 
                 if history_context:
-                    # format_history 已含【历史对话】标头，勿再包一层
+                    # format_history 已含 [历史对话] 标头，勿再包一层
                     rag_context = history_context
                     logger.debug(t("log.ai.gscore_historical", p0=len(history)))
 
@@ -476,6 +512,16 @@ async def handle_ai_chat(
                 recent_report_titles=_recent_report_titles,
                 prev_turn_used_tools=_prev_turn_used_tools,
             )
+            # 活跃任务可能抬档 full（避免 light 丢掉 Kanban）
+            _cheap = decide_cheap_gate(
+                _turn_graph,
+                soft_triggered=soft_triggered,
+                has_active_task=has_actionable,
+                intent=str(intent or ""),
+            )
+            if _cheap is CheapGate.SILENCE:
+                logger.info(t("log.ai.gscore_group_open_gate_silence"))
+                return
 
             # 步骤 7: 调用 Agent 生成回复
             # Agent 会根据对话内容自主决定是否调用 search_knowledge 工具
@@ -488,6 +534,8 @@ async def handle_ai_chat(
                 enqueue_ts=enqueue_ts,  # O-A 队头阻塞防护：锁级别再判一次 TTL
                 intent=intent,  # O-D 意图驱动工具精简
                 has_active_task=has_actionable,  # O-D 是否有需要即时介入的 Kanban 任务
+                turn_graph=_turn_graph,
+                cheap_gate=_cheap,
             )
 
             # 步骤 8: 发送回复。结果只分类一次，步骤 9 的好感度门复用同一判定（评审修复 G3）

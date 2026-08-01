@@ -49,19 +49,20 @@ def test_dynamic_context_ordering_contract() -> None:
             persona_name=None,
             mood_key="test_u",
             favorability=None,
-            history_context="【历史对话】\n小明: 你好",
+            history_context="[历史对话] 旧→新\n小明: 你好",
             memory_context_text="用户喜欢喝美式",
             memory_guide="[guide]\n",
             soft_triggered=True,
         )
     )
     assert has_actionable in (False, True)
-    i_hist = full.find("【历史对话】")
-    i_mem = full.find("【长期记忆】")
+    i_hist = full.find("[历史对话]")
+    i_mem = full.find("[长期记忆")
     i_soft = full.find(SOFT_TRIGGER_NOTE)
-    assert i_hist == 0, "历史必须最前"
-    assert 0 < i_mem < i_soft, "长期记忆须在历史之后、软触发提示之前"
-    assert "[guide]" in full and full.find("[guide]") < i_mem + len("【长期记忆】")
+    # 短状态（关系行等）可在历史前；历史 → 记忆 → 软触发 的相对顺序锁死
+    assert i_hist >= 0 and i_mem > i_hist, "长期记忆须在历史之后"
+    assert i_soft > i_mem, "软触发提示须在记忆之后"
+    assert "[guide]" in full and full.find("[guide]") < i_mem + len("[长期记忆")
     assert full.endswith(SOFT_TRIGGER_NOTE), "软触发提示必须最后"
     print("[OK] 动态上下文顺序契约")
 

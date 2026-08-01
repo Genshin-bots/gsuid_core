@@ -29,6 +29,7 @@
   "log.agent.fakedone_se": "[FakeDoneGate] Failed to re-send withheld text: {_se}",
   "log.agent.fakedone_zero_claim_pending_ok": "[FakeDoneGate] Zero-tool completion claim; withheld pending verification: {p0}",
   "log.agent.find_tools_progressive_exposure": "[GsCoreAIAgent] Injected find_tools; progressive tool exposure enabled for this turn",
+  "log.agent.render_data_nudge_once": "[RenderGate] Structured data returned without render and reply is long; appending one correction re-run",
   "log.agent.firewall_main_output_hit_ooc": "[OutputFirewall] Main output hit OOC red line {p0}: {p1}; switching to regeneration",
   "log.agent.firewall_regeneration_fallback": "[OutputFirewall] Regeneration failed; using in-character fallback: {e}",
   "log.agent.firewall_rewrite_output_hit_non": "[OutputFirewall] Rewrite output still hit a non-releasable category; switched to in-character fallback",

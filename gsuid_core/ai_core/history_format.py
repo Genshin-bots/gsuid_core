@@ -168,22 +168,22 @@ def format_history_for_agent(
     """
     将历史记录格式化为 Agent 可用的紧凑上下文。
 
-    默认只输出【历史对话】块（紧凑单行），**不含**当前触发消息——当前消息已由
-    ``prepare_content_payload`` 放在【用户发言】里，再抽一遍会双重占用 token。
+    默认只输出 ``[历史对话]`` 块（紧凑单行），**不含**当前触发消息——当前消息已由
+    ``prepare_content_payload`` 放在 ``[用户发言]`` 里，再抽一遍会双重占用 token。
 
-    输出示例::
+    输出示例（时间在前、说话人与本轮发言同形 ``名(用户ID:id)``）::
 
-        【历史对话】
-        456(小明) 14:32:05: 今天天气怎么样？
-        AI 14:32:18: 唔…晴天
-        789 昨天 22:10:03: 大家好
+        [历史对话] 旧→新
+        [14:32:05] 小明(用户ID:456): 今天天气怎么样？
+        [14:32:18] AI: 唔…晴天
+        [昨天 22:10:03] 用户ID:789: 大家好
 
     特殊处理：
-        - 时间戳含秒：今天 ``HH:MM:SS``，跨日/跨年逐级补全
-        - 短消息单行；仅多图/多@等元数据时多行
-        - 同一用户合并窗口内连发合并为一个发言块
-        - at_list 渲染为「@了用户 xxx——@的是TA不是你」
-        - ``include_current_turn=True`` 时才把 current_user 最后一条前置（heartbeat 等）
+        - 时间戳含秒：今天 ``HH:MM:SS``，跨日/跨年逐级补全；时间置前便于扫时间线
+        - 说话人标签与 ``prepare_content_payload`` 统一为 ``名(用户ID:id)``
+        - 同人合并窗口内连发合并为一个发言块，正文用「 / 」拼接
+        - at/图/音/文件压成行尾 ``| …``，不另起 ``---`` 大块
+        - ``include_current_turn=True`` 时才把 current_user 最后一条标 ``[当前]`` 前置（heartbeat 等）
     """
     if not history:
         return ""
@@ -200,9 +200,10 @@ def format_history_for_agent(
                 break
 
     def _user_label(user_id: str, user_name: Optional[str]) -> str:
-        if user_name:
-            return f"{user_id}({user_name})"
-        return user_id
+        # 与本轮 [用户发言] 头一致：名(用户ID:id)，避免历史 id(名) / 当前 名(用户ID:id) 双轨
+        if user_name and str(user_name).strip() and str(user_name).strip() != str(user_id):
+            return f"{str(user_name).strip()}(用户ID:{user_id})"
+        return f"用户ID:{user_id}"
 
     name_map: Dict[str, str] = {}
     for r in history:
@@ -210,7 +211,7 @@ def format_history_for_agent(
             name_map[str(r.user_id)] = r.user_name
 
     def _meta_suffix(record: MessageRecord) -> str:
-        """图片/@/文件等元数据压缩成尾注。"""
+        """图片/@/文件等元数据压缩成行尾，避免 --- 分隔块打断时间线阅读。"""
         bits: List[str] = []
         metadata = record.metadata or {}
         from gsuid_core.ai_core.interaction_scaffold import AT_OTHER_MARKER
@@ -218,7 +219,7 @@ def format_history_for_agent(
         for at_id in metadata.get("at_list", []):
             at_key = str(at_id)
             at_label = _user_label(at_key, name_map[at_key] if at_key in name_map else None)
-            bits.append(f"@了用户:{at_label}{AT_OTHER_MARKER}")
+            bits.append(f"@{at_label}{AT_OTHER_MARKER}")
         image_id = metadata.get("image_id")
         if image_id:
             bits.append(f"图:{image_id}")
@@ -239,15 +240,21 @@ def format_history_for_agent(
             content = content[:277] + "…"
         return content
 
-    def _render_group(records: List[MessageRecord], label: str) -> str:
-        """同人连发合并：首条时间 + 内容用「 / 」拼接。"""
+    def _render_group(records: List[MessageRecord], speaker: str) -> str:
+        """同人连发合并：``[时间] 说话人: 正文 | 元数据``。"""
         ts = _format_timestamp(records[0].timestamp, ref_ts)
         bodies = [_content_one_line(r) for r in records if r.content.strip()]
-        metas = "".join(_meta_suffix(r) for r in records)
+        # 元数据按条收集后去重拼接，避免连发多图重复成串
+        meta_bits: List[str] = []
+        for r in records:
+            m = _meta_suffix(r)
+            if m and m not in meta_bits:
+                meta_bits.append(m)
+        metas = "".join(meta_bits)
         body = " / ".join(bodies) if bodies else ""
-        return f"{label} {ts}: {body}{metas}".rstrip()
+        return f"[{ts}] {speaker}: {body}{metas}".rstrip()
 
-    def _make_label(record: MessageRecord) -> str:
+    def _make_speaker(record: MessageRecord) -> str:
         if record.role == "assistant":
             reply_to = None
             reply_name = None
@@ -255,8 +262,7 @@ def format_history_for_agent(
                 reply_to = record.metadata.get("reply_to_user_id")
                 reply_name = record.metadata.get("reply_to_user_name")
             if reply_to:
-                target = f"{reply_to}({reply_name})" if reply_name else reply_to
-                return f"AI→{target}"
+                return f"AI→{_user_label(str(reply_to), reply_name)}"
             return "AI"
         return _user_label(record.user_id, record.user_name)
 
@@ -266,7 +272,7 @@ def format_history_for_agent(
         current_record = history[current_record_index]
         name = current_user_name or current_record.user_name
         base_label = _user_label(current_user_id, name)
-        output.append(_render_group([current_record], f"当前:{base_label}"))
+        output.append(_render_group([current_record], f"当前·{base_label}"))
 
     history_lines: List[str] = []
     pending_group: List[MessageRecord] = []
@@ -275,7 +281,7 @@ def format_history_for_agent(
     def _flush_group() -> None:
         if not pending_group:
             return
-        history_lines.append(_render_group(pending_group, _make_label(pending_group[0])))
+        history_lines.append(_render_group(pending_group, _make_speaker(pending_group[0])))
         pending_group.clear()
 
     for i, record in enumerate(history):
@@ -300,7 +306,7 @@ def format_history_for_agent(
     _flush_group()
 
     if history_lines:
-        output.append("【历史对话】")
+        output.append("[历史对话] 旧→新")
         output.extend(history_lines)
 
     return "\n".join(output)

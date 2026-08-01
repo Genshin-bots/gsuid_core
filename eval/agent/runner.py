@@ -81,6 +81,7 @@ async def _run_warmup_turns(
     case: dict,
     persona: str | None,
     timeout: float,
+    group_id: Optional[str] = None,
 ) -> list[dict[str, str]]:
     """执行 warmup_turns：逐轮发消息并积累模型真实回复为 history。
 
@@ -105,6 +106,7 @@ async def _run_warmup_turns(
             enable_observer=False,
             enable_tools=wt_enable,
             max_history=max_hist,
+            group_id=group_id,
             timeout=timeout,
         )
         wt_text = wt_resp.get("data") if isinstance(wt_resp.get("data"), str) else ""
@@ -130,6 +132,7 @@ async def run_once(
     # 允许 case 传 persona: null 显式关人格（judge/通用助手场景）。
     persona = case["persona"] if "persona" in case else "早柚"
     enable_tools = case.get("enable_tools", True)
+    group_id = _case_group_id(case)
 
     # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测用）
     if case.get("warmup_turns"):
@@ -140,6 +143,7 @@ async def run_once(
             case,
             persona,
             timeout,
+            group_id=group_id,
         )
     else:
         history = case.get("history", [])
@@ -154,6 +158,7 @@ async def run_once(
         enable_observer=False,
         enable_tools=enable_tools,
         max_history=int(case.get("max_history", AGENT_EVAL_MAX_HISTORY)),
+        group_id=group_id,
         timeout=timeout,  # 评测隔离：默认不写记忆
     )
     latency = time.time() - since
@@ -200,11 +205,36 @@ async def run_case(client: httpx.AsyncClient, base_url: str, case: dict, k: int,
 # flush → 一趟扫盘按唯一 user_id 关联。每 run user_id 唯一 → session 文件天然不冲突。
 
 
+def _case_group_id(case: dict) -> Optional[str]:
+    """群聊向用例注入合成 group_id，让端点走群会话语义（沉默/is_tome/多人）。
+
+    case 可显式 ``group_id``；或 targets 含 group-chat/multi-user 时自动生成稳定合成 ID。
+    不含真实群号。
+    """
+    if "group_id" in case:
+        gid = case.get("group_id")
+        return str(gid) if gid else None
+    targets = case.get("targets") or []
+    domain = str(case.get("domain") or "")
+    flags = set(targets) | {domain}
+    if flags & {
+        "group-chat",
+        "multi-user",
+        "multi_user_session",
+        "implicit_addressing",
+        "silence_judgment",
+        "multi_speaker",
+    }:
+        return f"eval_grp_{case.get('id', 'x')}"
+    return None
+
+
 async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
     uid = f"eval_{case['id']}_{run_idx}_{uuid.uuid4().hex[:6]}"
     queued = time.time()
     persona = case["persona"] if "persona" in case else "早柚"
     enable_tools = case.get("enable_tools", True)
+    group_id = _case_group_id(case)
     async with sem:
         # setup（可选）：跨轮 modify/cancel 类用例需要**真实的既有任务**才能被"定位并修改"。
         # 合成 history 里写"已设好"却从未真调工具落库 → 评测里根本无任务可改（假失败）。
@@ -221,6 +251,7 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
                 enable_observer=False,
                 enable_tools=enable_tools,
                 max_history=0,
+                group_id=group_id,
                 timeout=timeout,
             )
         # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测）；
@@ -233,6 +264,7 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
                 case,
                 persona,
                 timeout,
+                group_id=group_id,
             )
         else:
             history = case.get("history", [])
@@ -250,6 +282,7 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
             enable_observer=False,
             enable_tools=enable_tools,
             max_history=int(case.get("max_history", AGENT_EVAL_MAX_HISTORY)),
+            group_id=group_id,
             timeout=timeout,
         )
         latency = time.time() - call_start

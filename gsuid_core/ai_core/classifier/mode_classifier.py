@@ -68,7 +68,12 @@ def collect_prior_user_turns(
         body = content
         if "--- 消息 ---" in body:
             body = body.split("--- 消息 ---", 1)[-1]
-        body = body.split("【当前时间】")[0].strip()
+        # 兼容新旧时间行：【当前时间】xxx / [当前时间：xxx]
+        for _time_sep in ("[当前时间：", "[当前时间:", "【当前时间】"):
+            if _time_sep in body:
+                body = body.split(_time_sep, 1)[0]
+                break
+        body = body.strip()
         if body:
             out.append(body)
     return out[-max_turns:]

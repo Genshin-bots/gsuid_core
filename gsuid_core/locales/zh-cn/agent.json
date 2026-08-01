@@ -29,6 +29,7 @@
   "log.agent.fakedone_se": "[FakeDoneGate] 暂扣文本补发失败: {_se}",
   "log.agent.fakedone_zero_claim_pending_ok": "[FakeDoneGate] 零工具完成声明，暂扣待核: {p0}",
   "log.agent.find_tools_progressive_exposure": "[GsCoreAIAgent] 已注入 find_tools，本轮启用渐进式工具暴露",
+  "log.agent.render_data_nudge_once": "[RenderGate] 结构化数据已返回但未出图且台词偏长，追加纠正重跑一次",
   "log.agent.firewall_main_output_hit_ooc": "[OutputFirewall] 主输出命中出戏红线 {p0}: {p1}，转重说",
   "log.agent.firewall_regeneration_fallback": "[OutputFirewall] 重说生成失败，使用角色化兜底: {e}",
   "log.agent.firewall_rewrite_output_hit_non": "[OutputFirewall] 重写产物仍命中不可放行类别，已改用角色化兜底",

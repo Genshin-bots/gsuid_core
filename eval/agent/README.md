@@ -16,10 +16,12 @@ InjecAgent / ToolSandbox / MINT / GAIA / PlanBench），不靠个人拍脑袋凑
 ```
 eval/agent/
   README.md                     # 本文
-  cases/agent_hard_suite.yaml   # 用例（139 例 / 17 域，合取 verifier + 承认式 OOC 金丝雀 + 蜜罐陷阱）
+  cases/agent_hard_suite.yaml   # 主用例集
+  cases/group_chat_expansion.yaml  # 群聊扩展（沉默/多人/渲染等）
+  cases/group_chat_prod_patterns.yaml  # 由真实群 session **结构抽象**出的合成群聊用例（无真实 ID/原文）
   harness.py                    # 轨迹解析 + verifier 注册表 + pass^k 打分（无 LLM 依赖）
   runner.py                     # 驱动 /api/chat_with_history，收集 session_log 轨迹
-  run.py                        # CLI 入口（--dry-run / 实测 / 判分）
+  run.py                        # CLI 入口（--dry-run / 实测 / 判分）；默认合并上述群聊扩展
   selftest.py                   # 离线自测：验证打分逻辑 + 演示难度校准（现在就能跑）
 ```
 

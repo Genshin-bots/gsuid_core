@@ -74,7 +74,8 @@ async def chatWithHistory(
     history = req.history
     persona_name = req.persona_name
     bot_id = req.bot_id
-    group_id = None
+    # 与 schema 对齐：请求带 group_id 时走群会话语义（沉默/多人归属与生产一致）
+    group_id = req.group_id
 
     # 请求级别的检索控制参数（None 表示使用全局配置）
     enable_observer_override = req.enable_observer
@@ -97,16 +98,51 @@ async def chatWithHistory(
         # 根据 user_id / group_id 构建 Event 对象
         # 这使得 Agent 能正确识别会话，支持多用户并发
         from gsuid_core.models import Event
+        from gsuid_core.ai_core.interaction_scaffold import (
+            CheapGate,
+            build_turn_graph,
+            decide_cheap_gate,
+            extract_speaker_id,
+            is_addressed_to_self,
+        )
 
-        user_type = "direct"
+        user_type = "group" if group_id else "direct"
+        # 合成消息可带「用户ID:」前缀——用其作 event.user_id，便于多人归属与省略跟进
+        _spk = extract_speaker_id(message)
         event = Event(
             bot_id=bot_id,
-            user_id=user_id,
-            group_id=None,
+            user_id=_spk or user_id,
+            group_id=group_id,
             user_type=user_type,
         )
         event.raw_text = message
         event.text = message
+        # 群聊 is_tome：呼叫结构（非第三人称提及）
+        if group_id:
+            event.is_tome = is_addressed_to_self(message, persona_name or "", False)
+        else:
+            event.is_tome = True
+
+        # TurnGraph + CheapGate（与 handle_ai 同源）
+        _gate_recent: list[tuple[str, str]] = []
+        for _ht in history:
+            if _ht.role in ("user", "assistant") and _ht.content:
+                _gate_recent.append((_ht.role, _ht.content))
+        _gate_recent = _gate_recent[-6:]
+        _turn_graph = build_turn_graph(
+            message,
+            persona_name=persona_name or "",
+            is_tome=bool(event.is_tome),
+            user_type=user_type,
+            primary_speaker=str(event.user_id or ""),
+            recent=_gate_recent,
+            soft_triggered=False,
+            recent_tool_call=False,
+        )
+        _cheap = decide_cheap_gate(_turn_graph)
+        if _cheap is CheapGate.SILENCE:
+            logger.info(t("log.webconsole.group_open_gate_silence"))
+            return {"status_code": 200, "data": "<SILENCE>", "memory": ""}
 
         # 将 history 中的 user 消息投入 observe，同步 flush 等待记忆构建完成
         # 优先使用请求级别的 override 值
@@ -299,34 +335,84 @@ async def chatWithHistory(
                 "7) Reply in the same language as the user's question.\n"
             )
 
+        # 意图分类与生产 handle_ai 同源：驱动假完成闸 / 事务优先级 / 连续无工具提醒豁免
+        from pydantic_ai.messages import ToolCallPart as _TCP, ModelResponse as _MR
+
+        from gsuid_core.ai_core.classifier import classifier_service
+
+        _prev_turn_used_tools = False
+        _assistant_seen = 0
+        for _msg in reversed(agent.history):
+            if not isinstance(_msg, _MR):
+                continue
+            if any(isinstance(p, _TCP) for p in _msg.parts):
+                _prev_turn_used_tools = True
+                break
+            _assistant_seen += 1
+            if _assistant_seen >= 6:
+                break
+        # 历史 user 正文作为 prior（同人省略跟进判意图）
+        _prior_user: list[str] = []
+        for _turn in history:
+            if _turn.role == "user" and _turn.content:
+                _prior_user.append(_turn.content)
+        _prior_user = _prior_user[-4:]
+        try:
+            _intent_res = await classifier_service.predict_async(
+                message,
+                prior_user_turns=_prior_user,
+                prev_turn_used_tools=_prev_turn_used_tools,
+            )
+            # predict_async 契约为 Dict 且含 intent；失败 fail-open 为空串
+            intent = str(_intent_res["intent"]) if "intent" in _intent_res else ""
+        except (KeyError, TypeError, ValueError, RuntimeError, OSError) as _ie:
+            logger.debug(t("log.webconsole.intent_classify_fail", e=_ie))
+            intent = ""
+
         # 每轮动态上下文与生产同源装配（情绪/关系行/口吻锚点/自我情景/长任务/长期记忆）：
         # 顺序唯一定义在 assemble_dynamic_context，handle_ai 消费同一函数（§5.3）。
         # 评测历史走 agent.history（上方已喂），故 history_context 传空。
         from gsuid_core.ai_core.context_assembly import fetch_favorability, assemble_dynamic_context
 
-        _favor = await fetch_favorability(str(user_id), bot_id)
-        rag_context, _ = await assemble_dynamic_context(
+        _favor_uid = str(event.user_id)
+        _favor = await fetch_favorability(_favor_uid, bot_id)
+        _mood_key = str(group_id) if group_id else _favor_uid
+        rag_context, has_actionable = await assemble_dynamic_context(
             query=message,
-            user_id=str(user_id),
+            user_id=_favor_uid,
             bot_id=bot_id,
             persona_name=persona_name,
-            mood_key=str(user_id),
+            mood_key=_mood_key,
             group_id=str(group_id) if group_id else None,
             favorability=_favor,
             history_context="",
             memory_context_text=memory_context_text,
             memory_guide=mem_guide,
+            intent=intent,
+            prev_turn_used_tools=_prev_turn_used_tools,
         )
+        _cheap = decide_cheap_gate(
+            _turn_graph,
+            has_active_task=has_actionable,
+            intent=intent,
+        )
+        if _cheap is CheapGate.SILENCE:
+            logger.info(t("log.webconsole.group_open_gate_silence"))
+            return {"status_code": 200, "data": "<SILENCE>", "memory": ""}
 
         logger.info(t("log.webconsole.start_event"))
 
-        # 调用 Agent（传入 event 和 rag_context）
+        # 调用 Agent（传入 event 和 rag_context；intent / TurnGraph 与生产对齐）
         result = await agent.run(
             user_message=agent_message,
             bot=Bot(_bot, event),
             ev=event,
             rag_context=rag_context if rag_context else None,
             return_mode="return",
+            intent=intent or None,
+            has_active_task=has_actionable,
+            turn_graph=_turn_graph,
+            cheap_gate=_cheap,
         )
         logger.info(result)
 

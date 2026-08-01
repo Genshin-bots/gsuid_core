@@ -24,6 +24,8 @@
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
   "log.webconsole.chat_received_user": "[chat_with_history] 收到 user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词",
+  "log.webconsole.group_open_gate_silence": "[chat_with_history] 群聊开口门 → SILENCE",
+  "log.webconsole.intent_classify_fail": "[chat_with_history] 意图分类失败，降级为空: {e}",
   "log.webconsole.config_name_item_write_fail": "[框架配置][{config_name}] 配置项 {item_name} 写入失败",
   "log.webconsole.config_name_key_write_exception": "[框架配置][{config_name}] 配置项 {key} 写入异常: {e}",
   "log.webconsole.config_name_key_write_fail": "[框架配置][{config_name}] 配置项 {key} 写入失败",

@@ -24,6 +24,8 @@
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
   "log.webconsole.chat_received_user": "[chat_with_history] received user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' does not exist; falling back to the general assistant prompt",
+  "log.webconsole.group_open_gate_silence": "[chat_with_history] group open gate → SILENCE",
+  "log.webconsole.intent_classify_fail": "[chat_with_history] intent classification failed; falling back to empty: {e}",
   "log.webconsole.config_name_item_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {item_name}",
   "log.webconsole.config_name_key_write_exception": "[Framework Config][{config_name}] Exception while writing configuration item {key}: {e}",
   "log.webconsole.config_name_key_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {key}",

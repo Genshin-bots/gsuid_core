@@ -456,7 +456,7 @@ async def render_card(
         return await _finish_image(ctx, image_bytes)
     except Exception as e:
         logger.exception(t("log.ai.buildintools_html_rendering", e=e))
-        return f"渲染失败：{str(e)}"
+        return f"渲染失败：{str(e)}。请调整内容后重试渲染工具；仍失败则只对用户说一两句角色短结论，禁止长列表当台词。"
 
 
 # 仅 HTML 进保底：多数据点出图主路径；card/md 走 media 按需召回，避免每轮 3 个 schema
@@ -523,7 +523,12 @@ async def render_html_to_image(
         return await _finish_image(ctx, image_bytes)
     except Exception as e:
         logger.exception(t("log.ai.buildintools_html_rendering", e=e))
-        return f"渲染失败：{str(e)}"
+        # 明确失败协议：禁止模型把「将就文字版长列表」当成功交付
+        return (
+            f"渲染失败：{str(e)}。"
+            "请精简 HTML 后重试 render_html_to_image，或改用更短的 render_card；"
+            "仍失败则只对用户说一两句角色短结论，禁止输出长列表/多条数据当台词。"
+        )
 
 
 @ai_tools(category="media", capability_domain="资料出图")

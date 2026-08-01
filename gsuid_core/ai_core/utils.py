@@ -544,38 +544,27 @@ def _build_relationship_description(
     user_name: Optional[str],
     user_id: str,
 ) -> str:
-    """将好感度转换为有温度的关系描述，而非机械的区间标签。
+    """构建说话者标识（群聊必需）。
 
     群聊场景下整个群共用一个 session，多人轮流发言。因此说话者描述里
     **必须显式带上用户ID**，否则昵称重复或为"我"这类无意义值时，
     Agent 无法区分到底是谁在说话。
+
+    关系级别（熟/不熟）由 assemble_dynamic_context 统一注入，此处不重复，
+    避免同一信息双写浪费 token。主人标记保留（优先级最高，不可省略）。
     """
-    # 说话者标识：始终包含用户ID，昵称仅作辅助
+    # 说话者标识：始终包含用户ID，昵称仅作辅助（与 history 块同一形状，便于模型对齐）
     if user_name and user_name.strip() and user_name.strip() != str(user_id):
         speaker = f"{user_name.strip()}(用户ID:{user_id})"
     else:
         speaker = f"用户ID:{user_id}"
 
-    # 主人：最高信任，但荒诞/骚扰请求仍可角色化拒绝（与 system 不合理请求规则一致）
+    # 主人：只标身份与优先级，不再写「直接…」——是否直连由 is_tome 时注入的
+    # DIRECT_MARKER 单独表达，避免与寻址标记语义叠床架屋。
     if _is_master_user(user_id):
-        return (
-            f"【⚡ 你的主人】{speaker} 直接找你说话了。"
-            "对主人：最高信任、认真回应；合理请求尽力办，荒诞/骚扰/整蛊仍可角色化拒绝。"
-        )
+        return f"[⚡主人] {speaker} 找你说话了。"
 
-    if favorability is None:
-        return f"{speaker} 找你说话了。"
-
-    if favorability < 0:
-        return f"{speaker} 又来了。"
-    elif favorability < 20:
-        return f"{speaker} 来找你了，你们不太熟。"
-    elif favorability < 50:
-        return f"{speaker} 找你说话，见过几次面的那种。"
-    elif favorability < 75:
-        return f"{speaker} 找你了，算是熟人了。"
-    else:
-        return f"{speaker} 找你说话了，你们挺熟的。"
+    return f"{speaker} 找你说话了。"
 
 
 async def prepare_content_payload(
@@ -853,8 +842,8 @@ def _report_block_title(match: "re.Match[str]") -> str:
     return ((match.group(1) or match.group(2)) or "").strip()
 
 
-# 制品图片统一脚注：数据时点提醒 + 免责声明（§3 合规垫层——不依赖任何用户偏好记忆）
-_REPORT_FOOTER_TEMPLATE = "\n\n---\n\n> 🤖 AI 生成资料 · 数据可能滞后 · 仅供参考，不构成投资等任何决策建议 · {ts}"
+# 制品图片统一脚注：标明生成来源与渲染入口，方便溯源（非法律免责声明）
+_REPORT_FOOTER_TEMPLATE = "\n\n---\n\n> 本图由 Agent 自主生成 · ``render_md_to_bytes`` 渲染 · {ts}"
 
 
 def _report_footer() -> str:
@@ -1741,7 +1730,7 @@ def _relean_user_turn(
 ) -> None:
     """把本轮 new_messages 里的用户输入 turn 换成精简版（剥离 rag_context）。
 
-    每轮 ``final_user_message`` 含【历史对话】/记忆/群语境等 rag_context，若原样
+    每轮 ``final_user_message`` 含 [历史对话]/记忆/群语境等 rag_context，若原样
     ``extend`` 进 self.history，会在 max_history 窗口内逐轮累积同类快照——既膨胀
     input，又冲淡缓存。存历史时只保留用户真实发言（当前轮仍给模型看完整上下文）。
     改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动）；``strip_hint_texts``

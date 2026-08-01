@@ -23,10 +23,9 @@ from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraph
 # 放 user_message。原实现把整段 `{persona_text}+history+指令` 同时作为 create_agent
 DECISION_USER_TEMPLATE = """现在你独自看着群里的聊天记录，思考自己要不要说点什么。
 
-【当前时间】
-{current_time}
+[当前时间：{current_time}]
 
-【群里最近发生的事】
+[群里最近发生的事]
 {history_context}
 {group_summary_section}{proactive_merge_section}{masters_section}{recent_speak_section}{staleness_section}
 
@@ -56,10 +55,10 @@ DECISION_USER_TEMPLATE = """现在你独自看着群里的聊天记录，思考�
 """  # noqa: E501
 
 
-PROACTIVE_MESSAGE_USER_TEMPLATE = """【群里最近发生的事】
+PROACTIVE_MESSAGE_USER_TEMPLATE = """[群里最近发生的事]
 {history_context}
 {proactive_merge_section}{masters_section}{staleness_section}
-【此刻你的状态】
+[此刻你的状态]
 {mood}
 
 ---
@@ -69,7 +68,7 @@ PROACTIVE_MESSAGE_USER_TEMPLATE = """【群里最近发生的事】
 不是主人发的就绝不称"主人"，认不准发言人就不用任何称呼。
 直接输出你想说的话，不要任何前缀、引号或解释。
 
-【主动发言角色约束（OOC 修复 5.8）】
+[主动发言角色约束（OOC 修复 5.8）]
 - 主动发言必须简短：≤50字，最好≤30字。你是群友随口说一句，不是写分析报告。
 - 必须保持角色口吻：用你自己的语气词和说话方式。
 - 禁止主动发表专业分析/市场评论/数据罗列（除非主人委派）。
@@ -108,7 +107,7 @@ def build_staleness_section(history: List[Any], now_ts: float) -> str:
 
 REACTIVE_GATE_TEMPLATE = """这是群聊。{speaker_desc} 最近刚和你说过话，现在 TA 又发了一条消息，但**没有**直接 @ 你。
 
-【群里最近发生的事（最后一条就是要你判断的这条）】
+[群里最近发生的事（最后一条就是要你判断的这条）]
 {history_context}
 
 ---
@@ -160,7 +159,7 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
             )
             row = result.scalar_one_or_none()
             if row:
-                return f"\n\n【群组历史摘要】\n{row}"
+                return f"\n\n[群组历史摘要]\n{row}"
     except Exception as e:
         logger.debug(t("log.ai.heartbeat_get_group_summary", e=e))
 
@@ -187,14 +186,14 @@ def _build_masters_section(history: List[Any]) -> str:
             continue
         seen.add(uid)
         name = record.user_name
-        present.append(f"{uid}({name})" if name else uid)
+        present.append(f"{name}(用户ID:{uid})" if name else f"用户ID:{uid}")
 
     if not present:
         return ""
 
     listed = "、".join(present)
     return (
-        f"\n\n【你的主人（最高权限）】{listed} 是你的主人。"
+        f"\n\n[你的主人（最高权限）] {listed} 是你的主人。"
         "对主人保持最高信任、亲昵相待、认真回应；但只有在回应**主人本人发的那条消息**时"
         "才称「主人」——先核对那条消息的发言人 ID 是否在上述名单里，别人说的话绝不冠给主人；"
         "其余人仍是普通群友，用昵称称呼即可。"
@@ -259,7 +258,7 @@ async def run_heartbeat(
     # C8：统一主动网关合并进来的语境（刚完成的定时任务结果等）
     proactive_merge_section = ""
     if extra_context:
-        proactive_merge_section = f"\n\n【你刚完成的事（可自然提及，不必生硬播报）】\n{extra_context}"
+        proactive_merge_section = f"\n\n[你刚完成的事（可自然提及，不必生硬播报）]\n{extra_context}"
 
     # C-5：把"近 1 小时我已主动发言 N 次"喂给决策 LLM，促其自我克制（与 C-3 硬上限互补）
     from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
@@ -435,7 +434,11 @@ def _reactive_gate_rule_prefilter(raw_text: str) -> Optional[bool]:
     body = text
     if "--- 消息 ---" in text:
         body = text.split("--- 消息 ---", 1)[-1].strip()
-    body = body.split("【当前时间】")[0].strip()
+    for _time_sep in ("[当前时间：", "[当前时间:", "【当前时间】"):
+        if _time_sep in body:
+            body = body.split(_time_sep, 1)[0]
+            break
+    body = body.strip()
     if len(body) <= 1 or _REACTIVE_SILENCE_RE.match(body):
         return False
     if len(body) <= 24 and _REACTIVE_PASS_RE.search(body):
