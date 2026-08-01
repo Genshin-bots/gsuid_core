@@ -184,6 +184,7 @@
   "log.ai.gscore_core_initialization_wait": "[GsCore][AI] AI Core の初期化待機がタイムアウトしました。移行未完了のベクトルストアへのアクセスを避けるため、このメッセージをスキップします",
   "log.ai.gscore_effort_config_value_fell": "[GsCore] 不明な model_effort 設定: {value}、enable にフォールバック",
   "log.ai.gscore_empty_content_visible": "[GsCore][AI] 空内容のメッセージ（モデル可視コンテンツがなく、@ もされていません）。先行で静かにスキップします",
+  "log.ai.gscore_group_open_gate_silence": "[GsCore][AI] グループ会話の発言ゲートが SILENCE と判定したため、メイン Agent をスキップします",
   "log.ai.gscore_exceeded_absolute_limit": "[GsCore][AI] テキストが絶対上限を超えました（{raw_text_len} > {ABSOLUTE_MAX_LENGTH}）。ハードトランケートを実行します",
   "log.ai.gscore_gemini_config_name_api": "[GsCore] Gemini 配置 {config_name} 未填写 api_key, 请前往网页控制台填写",
   "log.ai.gscore_gemini_config_name_url": "[GsCore] Gemini 設定を読み込み中: Name: {model_name}, URL: {base_url}, Key: ...{p0}",

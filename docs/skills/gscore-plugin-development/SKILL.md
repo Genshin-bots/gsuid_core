@@ -4,7 +4,7 @@ description: >
   当用户要求"帮我写一个 GsCore 插件"、"给这个插件加功能"、"改造触发器支持 AI"、
   "怎么用 to_ai"、"注册 ai_tools"、"写一个游戏查询插件"、"插件帮助怎么注册"、
   "能力代理/代理画像"、"怎么为触发器添加AI功能"、"几个触发器的差别在哪"、"数据库和配置项怎么添加"
-  "如何把数据库表挂到网页控制台"、"PIL/htmlkit/playwright 哪个用哪个"、
+  "如何把数据库表挂到网页控制台"、"PIL/pytakumi/playwright 哪个用哪个"、
   "插件怎么挂自己的 HTTP 接口"、"插件怎么注册 FastAPI 路由"、
   "怎么扩展 RAG 嵌入后端"、"注册自定义 Embedding Provider"时触发此 SKILL。
   对所有 GsCore Bot 插件开发任务都应优先读取此 SKILL。
@@ -14,7 +14,7 @@ description: >
   on_keyword vs on_regex vs on_message vs on_file）、on_meta 监听平台元事件（进群 / 退群 / 戳一戳
   三种标准事件）、消息收发与撤回（wait_recall / unsend）/ 禁言（ban）、数据库操作并注册到网页控制台
   （site.register_admin / GsAdminModel）、订阅系统（gs_subscribe）、定时任务、配置管理、
-  帮助系统（register_help + get_new_help）、推荐的渲染范式（优先 PIL → htmlkit
+  帮助系统（register_help + get_new_help）、推荐的渲染范式（优先 PIL → pytakumi
   → playwright 兜底）、AI 工具集成（@ai_tools、to_ai、ai_return、create_agent）、
   知识库 / 别名注册、启动钩子、to_ai 批量改造工作流、为插件挂 FastAPI 后端接口、
   嵌入 Provider 注册表（插件扩展 RAG 嵌入后端）。
@@ -37,7 +37,7 @@ description: >
 | 六 | 定时任务与订阅（APScheduler、`gs_subscribe` 全套 API） | [references/06-scheduler-and-subscribe.md](./references/06-scheduler-and-subscribe.md) |
 | 七 | 启动 / 关闭 / Bot 上线钩子（4 类钩子的区别与适用场景） | [references/07-lifecycle-hooks.md](./references/07-lifecycle-hooks.md) |
 | 八 | 帮助系统注册（`register_help`、`get_new_help`、`register_status`） | [references/08-help-system.md](./references/08-help-system.md) |
-| 九 | 图片渲染范式（PIL → htmlkit → playwright 三档） | [references/09-image-rendering.md](./references/09-image-rendering.md) |
+| 九 | 图片渲染范式（PIL → pytakumi → playwright 三档） | [references/09-image-rendering.md](./references/09-image-rendering.md) |
 | 十 | AI 集成：`to_ai` 与 `ai_return`（**优先方案**） | [references/10-ai-to-ai-and-ai-return.md](./references/10-ai-to-ai-and-ai-return.md) |
 | 十一 | AI 集成：`@ai_tools` 装饰器（仅当函数不暴露为用户命令时使用） | [references/11-ai-tools-decorator.md](./references/11-ai-tools-decorator.md) |
 | 十二 | AI 集成：知识库（`ai_entity`）与别名（`ai_alias`）注册 | [references/12-ai-knowledge-and-alias.md](./references/12-ai-knowledge-and-alias.md) |
@@ -60,7 +60,7 @@ description: >
 5. **加定时推送**：看 [六、定时任务与订阅](./references/06-scheduler-and-subscribe.md) 的 `gs_subscribe` 强制规范。
 6. **加启动逻辑**：在 [七、生命周期钩子](./references/07-lifecycle-hooks.md) 选合适的钩子。
 7. **加帮助 / 状态**：看 [八、帮助系统注册](./references/08-help-system.md)。
-8. **画图**：参考 [九、图片渲染范式](./references/09-image-rendering.md) 的"决策口诀"选 PIL / htmlkit / playwright。
+8. **画图**：参考 [九、图片渲染范式](./references/09-image-rendering.md) 的"决策口诀"选 PIL / pytakumi / playwright。
 9. **想被 AI 调用**：
    - 命令同时也是用户命令 → [十、`to_ai` 与 `ai_return`](./references/10-ai-to-ai-and-ai-return.md) **（优先）**
    - 纯数据 / 内部工具 → [十一、`@ai_tools` 装饰器](./references/11-ai-tools-decorator.md)
@@ -85,7 +85,7 @@ description: >
 - **主动推送必须用 `gs_subscribe`**：不要 `for bot in gss.active_bot.items(): await bot.target_send(...)` 硬塞群号。详见 [§6.2](./references/06-scheduler-and-subscribe.md#62-主动推送强制规范)。
 - **数据库 Schema 变更用 `exec_list`**：放在 `on_core_start_before` 阶段执行。详见 [§5.7](./references/05-database.md#57-为已定义的表添加新列)。
 - **唯一允许 `try/except` 的地方**：`_ai_return_xxx()` 辅助函数。详见 [§17.3](./references/17-code-redlines.md#173-ai_return-辅助函数的特殊说明)。
-- **图片渲染优先级**：PIL（首选）→ htmlkit（推荐）→ playwright（兜底）。详见 [§9.1](./references/09-image-rendering.md#91-三档渲染方案优先级从高到低)。
+- **图片渲染优先级**：PIL（首选）→ pytakumi（推荐）→ playwright（兜底）。详见 [§9.1](./references/09-image-rendering.md#91-三档渲染方案优先级从高到低)。
 - **能力代理 prompt 必须拼 `_DELIVERY_BOUNDARY`**：否则画像会绕过主人格直接发消息。详见 [§14.4](./references/14-ai-capability-profile.md#141-画像-prompt-写作要点硬约束)。
 - **`to_ai` 改造三层**：触发器层 `to_ai="..."` + 数据/渲染层 `ai_return()` + 业务画像 `CapabilityAgentProfile`；详见 [§18.1](./references/18-ai-trigger-migration.md#181-背景你要做的事) 与 [§18.3 Step 0.4](./references/18-ai-trigger-migration.md#step-04-判断是否需要注册-capability-agent-画像)。
 - **`ai_return` 注入点 = 数据已拿到 / 图片未生成**：必须在数据层函数里，不能只在触发器层。详见 [§18.3 Step 3](./references/18-ai-trigger-migration.md#step-3逐层分析调用链找出数据层注入-ai_return)。

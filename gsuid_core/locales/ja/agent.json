@@ -29,6 +29,7 @@
   "log.agent.fakedone_se": "[FakeDoneGate] 保留テキストの再送に失敗しました: {_se}",
   "log.agent.fakedone_zero_claim_pending_ok": "[FakeDoneGate] ツールゼロでの完了宣言。検証保留中です: {p0}",
   "log.agent.find_tools_progressive_exposure": "[GsCoreAIAgent] find_tools を注入しました。今回は漸進的なツール公開を有効にします",
+  "log.agent.render_data_nudge_once": "[RenderGate] 構造化データは返ったが未レンダリングかつ台詞が長いため、訂正リランを1回追加します",
   "log.agent.firewall_main_output_hit_ooc": "[OutputFirewall] 主出力がキャラ崩壊のレッドライン {p0} に該当しました: {p1}。再生成に切り替えます",
   "log.agent.firewall_regeneration_fallback": "[OutputFirewall] 再生成に失敗しました。キャラクター風フォールバックを使用します: {e}",
   "log.agent.firewall_rewrite_output_hit_non": "[OutputFirewall] 書き換え後もリリース不可カテゴリに該当しました。キャラクター風フォールバックへ切り替えました",
@@ -97,5 +98,11 @@
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] ユーザーメッセージ: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 動画 {p0} を {p1} 枚のフレームに抽出してメッセージに含めました（現在のモデルは Gemini ではありません）",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 壁時計のソフト予算を超過しました（{p0:.0f} 秒）。収束ヒントを注入します",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}",
+  "log.agent.supersede_cancel_current": "[GsCoreAIAgent] newer message for session, cancel current generation",
+  "log.agent.generation_cancelled_supersede": "[GsCoreAIAgent] generation cancelled (superseded)",
+  "log.agent.generation_aborted_no_history": "[GsCoreAIAgent] aborted without history write; next run owns context",
+  "log.agent.tool_thrash_fuse": "ツール空転ヒューズ: {tool_name}×{streak}",
+  "log.agent.tool_calls_per_response_truncate": "ツール呼び出しヒューズ: 1回の応答で {count} 回呼び出し、{limit} 回に切り詰め",
+  "log.agent.tool_thrash_strip_duplicate": "ツール空転切り捨て: 重複 {tool_name} を破棄"
 }

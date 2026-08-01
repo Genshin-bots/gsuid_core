@@ -47,7 +47,7 @@ def _make_agent(max_history: int) -> Any:
 
 def _turn(i: int) -> list:
     return [
-        ModelRequest(parts=[UserPromptPart(content=f"【用户发言】\n消息{i}")]),
+        ModelRequest(parts=[UserPromptPart(content=f"[用户发言]\n消息{i}")]),
         ModelResponse(parts=[TextPart(content=f"回复{i}")]),
     ]
 

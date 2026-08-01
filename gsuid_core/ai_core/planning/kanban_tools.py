@@ -288,7 +288,7 @@ async def register_kanban_task(
             goal="<任务简称> 最终汇总",
             subtasks=[
                 {"description": "record_list 拉流水 + record_summary 算关键指标 "
-                                "→ render_markdown_to_image 出报告",
+                                "→ render_html_to_image 出报告",
                  "agent_profile": "internal_reporter",
                  "not_before": "<结算时刻 ISO>"},
             ],

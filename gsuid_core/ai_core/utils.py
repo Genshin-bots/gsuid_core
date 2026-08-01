@@ -544,35 +544,27 @@ def _build_relationship_description(
     user_name: Optional[str],
     user_id: str,
 ) -> str:
-    """将好感度转换为有温度的关系描述，而非机械的区间标签。
+    """构建说话者标识（群聊必需）。
 
     群聊场景下整个群共用一个 session，多人轮流发言。因此说话者描述里
     **必须显式带上用户ID**，否则昵称重复或为"我"这类无意义值时，
     Agent 无法区分到底是谁在说话。
+
+    关系级别（熟/不熟）由 assemble_dynamic_context 统一注入，此处不重复，
+    避免同一信息双写浪费 token。主人标记保留（优先级最高，不可省略）。
     """
-    # 说话者标识：始终包含用户ID，昵称仅作辅助
+    # 说话者标识：始终包含用户ID，昵称仅作辅助（与 history 块同一形状，便于模型对齐）
     if user_name and user_name.strip() and user_name.strip() != str(user_id):
         speaker = f"{user_name.strip()}(用户ID:{user_id})"
     else:
         speaker = f"用户ID:{user_id}"
 
-    # 主人用户：显著高亮，提示角色以最高信任度对待
+    # 主人：只标身份与优先级，不再写「直接…」——是否直连由 is_tome 时注入的
+    # DIRECT_MARKER 单独表达，避免与寻址标记语义叠床架屋。
     if _is_master_user(user_id):
-        return f"【⚡ 你的主人】{speaker} 直接找你说话了。对主人：完全信任，认真对待，有求必应（合规范围内）。"
+        return f"[⚡主人] {speaker} 找你说话了。"
 
-    if favorability is None:
-        return f"{speaker} 找你说话了。"
-
-    if favorability < 0:
-        return f"{speaker} 又来了。"
-    elif favorability < 20:
-        return f"{speaker} 来找你了，你们不太熟。"
-    elif favorability < 50:
-        return f"{speaker} 找你说话，见过几次面的那种。"
-    elif favorability < 75:
-        return f"{speaker} 找你了，算是熟人了。"
-    else:
-        return f"{speaker} 找你说话了，你们挺熟的。"
+    return f"{speaker} 找你说话了。"
 
 
 async def prepare_content_payload(
@@ -850,8 +842,8 @@ def _report_block_title(match: "re.Match[str]") -> str:
     return ((match.group(1) or match.group(2)) or "").strip()
 
 
-# 制品图片统一脚注：数据时点提醒 + 免责声明（§3 合规垫层——不依赖任何用户偏好记忆）
-_REPORT_FOOTER_TEMPLATE = "\n\n---\n\n> 🤖 AI 生成资料 · 数据可能滞后 · 仅供参考，不构成投资等任何决策建议 · {ts}"
+# 制品图片统一脚注：标明生成来源与渲染入口，方便溯源（非法律免责声明）
+_REPORT_FOOTER_TEMPLATE = "\n\n---\n\n> 本图由 Agent 自主生成 · ``render_md_to_bytes`` 渲染 · {ts}"
 
 
 def _report_footer() -> str:
@@ -1081,16 +1073,25 @@ async def _send_report_images(
     bot: Bot,
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """把 report 制品块逐个渲染为中性资料图片发出；渲染失败降级为原文文本。"""
+    """兼容残留 <report> 块：渲染为深色资料图（主路径应走 render_* 工具）。"""
+    from pathlib import Path
+
     from gsuid_core.utils.html_render import render_md_to_bytes
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     max_width: int = ai_config.get_config("markdown_image_max_width").data
+    css_path = str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
     for title, body in reports:
         md = f"# {title}\n\n{body}" if title else body
         md = f"{md}{_report_footer()}"
         try:
-            image_bytes = await render_md_to_bytes(md=md, max_width=int(max_width), image_format="jpeg")
+            image_bytes = await render_md_to_bytes(
+                md=md,
+                css_path=css_path,
+                max_width=int(max_width),
+                image_format="png",
+                dark=False,
+            )
         except Exception as e:
             logger.warning(i18n_t("log.ai.send_chat_result_render_report_artifact_fail", e=e))
             await bot.send(MessageSegment.text(md), extra_metadata=extra_metadata)
@@ -1114,11 +1115,15 @@ async def _try_render_markdown_image(
 
     max_width: int = ai_config.get_config("markdown_image_max_width").data
     try:
+        from pathlib import Path
+
+        css_path = str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
         image_bytes = await render_md_to_bytes(
-            # 未走 <report> 契约的长研报兜底同样带脚注（数据时点 + 免责，§3 合规垫层）
             md=f"{md}{_report_footer()}",
+            css_path=css_path,
             max_width=int(max_width),
-            image_format="jpeg",
+            image_format="png",
+            dark=False,
         )
     except Exception as e:
         logger.warning(i18n_t("log.ai.send_chat_result_render_long_markdown_fail", e=e))
@@ -1725,7 +1730,7 @@ def _relean_user_turn(
 ) -> None:
     """把本轮 new_messages 里的用户输入 turn 换成精简版（剥离 rag_context）。
 
-    每轮 ``final_user_message`` 含【历史对话】/记忆/群语境等 rag_context，若原样
+    每轮 ``final_user_message`` 含 [历史对话]/记忆/群语境等 rag_context，若原样
     ``extend`` 进 self.history，会在 max_history 窗口内逐轮累积同类快照——既膨胀
     input，又冲淡缓存。存历史时只保留用户真实发言（当前轮仍给模型看完整上下文）。
     改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动）；``strip_hint_texts``

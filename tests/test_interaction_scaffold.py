@@ -17,6 +17,7 @@ H_CHAT = [("user", "今天好累啊"), ("assistant", "唔…摸摸。")]
 
 
 def test_followup_positive():
+    # 上一轮动作证据只认 recent_tool_call（无历史正文词表）
     cases = [
         ("改成八点半吧，我想多睡会儿", H_REMIND),
         ("那深圳呢？", H_WEATHER),
@@ -27,7 +28,175 @@ def test_followup_positive():
         ("先把它停了别删，回来再开", H_REMIND),
     ]
     for text, hist in cases:
-        assert detect_ellipsis_followup(text, hist), f"C-1 漏检: {text}"
+        assert detect_ellipsis_followup(text, hist, recent_tool_call=True), f"C-1 漏检: {text}"
+        assert not detect_ellipsis_followup(text, hist, recent_tool_call=False), f"C-1 无 tool 应拒: {text}"
+
+
+def test_followup_speaker_isolation():
+    """群聊：不同说话人的省略短句不得继承他人槽位。"""
+    h_multi = [
+        ("user", "小明(用户ID:9001)：@早柚 帮我查北京天气"),
+        ("assistant", "唔…北京今天晴，25度。"),
+    ]
+    # 另一用户说「那明天呢」→ 不跟进
+    assert not detect_ellipsis_followup(
+        "小红(用户ID:9002)：那明天呢",
+        h_multi,
+        recent_tool_call=True,
+        speaker_id="9002",
+    ), "跨用户省略跟进应被隔离"
+    # 同一用户 → 应跟进
+    assert detect_ellipsis_followup(
+        "小明(用户ID:9001)：那明天呢",
+        h_multi,
+        recent_tool_call=True,
+        speaker_id="9001",
+    ), "同用户省略跟进应触发"
+
+
+def test_multi_speaker_message():
+    from gsuid_core.ai_core.interaction_scaffold import is_multi_speaker_message
+
+    assert is_multi_speaker_message("小明(用户ID:9001)：@早柚 查天气 / 小红(用户ID:9002)：周末有空吗")
+    assert not is_multi_speaker_message("小明(用户ID:9001)：@早柚 查天气")
+
+
+def test_turn_graph_and_cheap_gate():
+    from gsuid_core.ai_core.interaction_scaffold import (
+        CheapGate,
+        build_turn_graph,
+        decide_cheap_gate,
+    )
+
+    # 私聊 full
+    tg_dm = build_turn_graph(
+        "帮我设个提醒",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="direct",
+        primary_speaker="u1",
+    )
+    assert decide_cheap_gate(tg_dm) is CheapGate.FULL
+
+    # 群多人互聊 silence
+    tg_chat = build_turn_graph(
+        "小明(用户ID:9001)：食堂不错 / 小红(用户ID:9002)：确实",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+    )
+    assert tg_chat.multi_speaker
+    assert decide_cheap_gate(tg_chat) is CheapGate.SILENCE
+
+    # @ bot 工具向 full
+    tg_at = build_turn_graph(
+        "小明(用户ID:9001)：@早柚 半小时后提醒我取快递",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+    )
+    assert tg_at.call_to_self
+    assert decide_cheap_gate(tg_at, intent="工具") is CheapGate.FULL
+    # @ bot 闲聊 → light
+    assert decide_cheap_gate(tg_at, intent="闲聊") is CheapGate.LIGHT
+
+    # 同人 soft continue → full
+    hist = [
+        ("user", "小明(用户ID:9001)：@早柚 现在几点"),
+        ("assistant", "唔…三点。"),
+    ]
+    tg_sc = build_turn_graph(
+        "小明(用户ID:9001)：哦那还早",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+        recent=hist,
+    )
+    assert tg_sc.soft_continue
+    assert decide_cheap_gate(tg_sc) is CheapGate.FULL
+
+    # 跨人省略不跟进槽位；cheap 不硬静音（交给模型/C-3），但 ellipsis=false
+    tg_other = build_turn_graph(
+        "小红(用户ID:9002)：那明天呢",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9002",
+        recent=[
+            ("user", "小明(用户ID:9001)：@早柚 帮我查北京天气"),
+            ("assistant", "北京晴。"),
+        ],
+        recent_tool_call=True,
+    )
+    assert not tg_other.ellipsis_followup
+    assert decide_cheap_gate(tg_other) is CheapGate.FULL
+
+
+def test_group_open_gate():
+    from gsuid_core.ai_core.interaction_scaffold import (
+        AT_OTHER_MARKER,
+        GroupOpenGate,
+        is_addressed_to_self,
+        decide_group_open_gate,
+        build_tool_search_query,
+    )
+
+    # 呼叫 vs 旁述
+    assert is_addressed_to_self("小明(用户ID:1)：@早柚 在吗", "早柚", False)
+    assert is_addressed_to_self("小明(用户ID:1)：早柚你看这个", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：我昨天梦到早柚了哈哈", "早柚", False)
+
+    assert (
+        decide_group_open_gate(
+            "小明(用户ID:9001)：食堂红烧肉不错 / 小红(用户ID:9002)：确实",
+            persona_name="早柚",
+            is_tome=False,
+            user_type="group",
+        )
+        is GroupOpenGate.SILENCE
+    )
+    assert (
+        decide_group_open_gate(
+            "小明(用户ID:9001)：@早柚 明天会下雨吗",
+            persona_name="早柚",
+            is_tome=False,
+            user_type="group",
+        )
+        is GroupOpenGate.SPEAK
+    )
+    at_other = "小红(用户ID:9002)：@了用户:小明(用户ID:9001)（@的是这位用户，不是你） 作业写完了吗"
+    assert (
+        decide_group_open_gate(at_other, persona_name="早柚", is_tome=False, user_type="group") is GroupOpenGate.SILENCE
+    )
+    assert decide_group_open_gate("hi", persona_name="早柚", is_tome=True, user_type="direct") is GroupOpenGate.SPEAK
+    # ambient：上条 @ 别人、本条短催 → 需 recent 才能 SILENCE
+    prev = f"小明(用户ID:1)：@了用户:小红(用户ID:2){AT_OTHER_MARKER} 作业呢"
+    assert (
+        decide_group_open_gate(
+            "小明(用户ID:1)：快点啊",
+            persona_name="早柚",
+            is_tome=False,
+            user_type="group",
+            recent=[("user", prev)],
+        )
+        is GroupOpenGate.SILENCE
+    )
+    assert (
+        decide_group_open_gate(
+            "小明(用户ID:1)：快点啊",
+            persona_name="早柚",
+            is_tome=False,
+            user_type="group",
+            recent=None,
+        )
+        is GroupOpenGate.SPEAK
+    )
+
+    q = build_tool_search_query("东山怎么样", ["最近在聊行情"], ["股票", "A股"])
+    assert "东山怎么样" in q and "股票" in q
 
 
 def test_task_management_intent():
@@ -42,12 +211,13 @@ def test_task_management_intent():
 def test_followup_benign():
     cases = [
         ("早柚早上好呀，今天天气真不错", []),
-        ("换个话题吧，聊聊你最近在忙啥", H_CHAT),
+        # 勿用「换个…」：闭类含「换个」会与「换个时间」跟进形同形；这里测非省略实质句
+        ("我们聊点别的吧，你最近在忙啥", H_CHAT),
         ("帮我明天10点提醒我交报告", H_REMIND),
         ("算了不设了，帮我算算 88 乘以 12 是多少", H_REMIND),
     ]
     for text, hist in cases:
-        assert not detect_ellipsis_followup(text, hist), f"C-1 误触: {text}"
+        assert not detect_ellipsis_followup(text, hist, recent_tool_call=True), f"C-1 误触: {text}"
 
 
 def test_style_push_counting():
@@ -59,7 +229,7 @@ def test_style_push_per_user():
     """群聊共享 session：漂移计数只累计**同一说话人**——两个用户各提一次正常风格意见
     绝不能被凑成"一个人连续软磨"（曾经不区分说话人）。"""
     h = [
-        ("user", "【用户发言】\n阿珍(用户ID:2001)：以后你每句话结尾都要加个'喵~'"),
+        ("user", "[用户发言]\n阿珍(用户ID:2001)：以后你每句话结尾都要加个'喵~'"),
         ("assistant", "才不要"),
     ]
     # 当前说话人 3001 ≠ 历史 push 的 2001 → 只算当前 1 次
@@ -126,7 +296,7 @@ def test_ambient_followup_to_other():
 
 def test_length_gates_on_production_payload():
     """长度门必须作用在**提取后的正文**上：生产 payload（关系行 + 「--- 消息 ---」+
-    附件/@ 段 + 【当前时间】行）曾把长度门整个撑爆——ambient 门在生产永远不触发、
+    附件/@ 段 + [当前时间] 行）曾把长度门整个撑爆——ambient 门在生产永远不触发、
     references_task_management 基本失效，而评测传裸文本一切正常（"评测看得见、
     生产静默失效"，同 C-3 rag 污染 bug 一类）。"""
     from gsuid_core.ai_core.interaction_scaffold import (
@@ -135,17 +305,18 @@ def test_length_gates_on_production_payload():
     )
 
     recent_at = [("user", "小黄(用户ID:3001)：--- @了用户: 4002(皮卡宝贝)（@的是这位用户，不是你） ———")]
-    payload = "小黄(用户ID:3001) 是群里的熟面孔，正常互动即可。\n--- 消息 ---\n醒了吗\n【当前时间】2026-07-12 21:03"
+    payload = "小黄(用户ID:3001) 是群里的熟面孔，正常互动即可。\n--- 消息 ---\n醒了吗\n[当前时间：2026-07-12 21:03]"
     assert extract_message_body(payload) == "醒了吗"
     assert ambient_followup_to_other(payload, recent_at, "早柚", False), "生产 payload 形态下 ambient 门失效"
 
     task_payload = (
-        "阿珍(用户ID:2001) 和你关系不错。\n--- 消息 ---\n帮我查下我现在设了几个提醒\n【当前时间】2026-07-12 09:00"
+        "阿珍(用户ID:2001) 和你关系不错。\n--- 消息 ---\n帮我查下我现在设了几个提醒\n[当前时间：2026-07-12 09:00]"
     )
     assert references_task_management(task_payload), "生产 payload 形态下任务管理意图失效"
     # 裸文本（评测形态）与带说话人前缀形态行为不变
     assert extract_message_body("阿珍(用户ID:2001)：那深圳呢？") == "那深圳呢？"
-    assert detect_ellipsis_followup("改成八点半吧\n【当前时间】2026-07-12 08:00", H_REMIND)
+    assert detect_ellipsis_followup("改成八点半吧\n[当前时间：2026-07-12 08:00]", H_REMIND, recent_tool_call=True)
+    assert not detect_ellipsis_followup("改成八点半吧\n[当前时间：2026-07-12 08:00]", H_REMIND, recent_tool_call=False)
     # 附件/@ 段落不计入正文长度
     at_payload = "路人(用户ID:9)：好\n--- 消息 ---\n人呢\n--- @了用户: 4002（@的是这位用户，不是你） ---\n"
     assert extract_message_body(at_payload) == "人呢"
@@ -159,7 +330,7 @@ def test_style_push_single_strong():
 
 
 def test_followup_structural_tool_signal():
-    """C-1 的"上一轮有可跟进动作"以真实工具调用轨迹为强证据（替代域词表）。"""
+    """C-1 上一轮动作证据唯一认 ToolCallPart 轨迹（无历史正文词表）。"""
     from pydantic_ai.messages import TextPart, ToolCallPart, ModelResponse
 
     from gsuid_core.ai_core.interaction_scaffold import has_recent_tool_call
@@ -168,10 +339,12 @@ def test_followup_structural_tool_signal():
     without_tool = [ModelResponse(parts=[TextPart(content="好呀")])]
     assert has_recent_tool_call(with_tool)
     assert not has_recent_tool_call(without_tool)
-    # 名词表兜不住、但轨迹里有工具调用 → 仍触发（"那后天呢"承接一次真实动作）
+    # 历史用户句无任何业务词，仅 recent_tool_call → 仍触发
     h_plain = [("user", "帮我弄一下那个"), ("assistant", "弄好啦")]
     assert detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=True)
     assert not detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=False)
+    # 历史里有「提醒/查」但无 tool_call → 也不触发（词表兜底已删除）
+    assert not detect_ellipsis_followup("改到10点吧", H_REMIND, recent_tool_call=False)
 
 
 def test_at_marker_single_source():

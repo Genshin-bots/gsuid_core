@@ -1,4 +1,8 @@
 {
-  "log.htmlrender.fontconfig_initialization": "[HTMLRender] fontconfig 初始化失败: {e}",
-  "log.htmlrender.fontconfig_initialized": "[HTMLRender] fontconfig 初始化成功"
+  "log.htmlrender.fontconfig_initialization": "[HTMLRender] 渲染器初始化失败: {e}",
+  "log.htmlrender.fontconfig_initialized": "[HTMLRender] 渲染器初始化成功",
+  "log.htmlrender.renderer_initialization": "[HTMLRender] 渲染器初始化失败: {e}",
+  "log.htmlrender.renderer_initialized": "[HTMLRender] 渲染器初始化成功，字体: {fonts}",
+  "log.htmlrender.font_register_failed": "[HTMLRender] 字体注册失败: {e}",
+  "log.htmlrender.auto_send_fallback": "渲染图片自动发送失败，回退资源注册: {e}"
 }

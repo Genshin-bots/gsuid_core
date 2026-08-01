@@ -17,8 +17,8 @@ from gsuid_core.ai_core.utils import _relean_user_turn
 
 
 def test_relean_replaces_user_turn_only() -> None:
-    full = "【用户发言】\n娅娅\n\n【历史对话】\n...30条群聊...\n【长期记忆】\n...大段记忆..."
-    lean = "【用户发言】\n娅娅"
+    full = "[用户发言]\n娅娅\n\n[历史对话]\n...30条群聊...\n[长期记忆]\n...大段记忆..."
+    lean = "[用户发言]\n娅娅"
     msgs: list = [
         ModelRequest(parts=[UserPromptPart(content=full)]),
         ModelResponse(parts=[TextPart(content="在呢")]),
@@ -33,8 +33,8 @@ def test_relean_replaces_user_turn_only() -> None:
 
 def test_relean_keeps_tool_roundtrip_intact() -> None:
     # 一轮带工具调用：[user, response(toolcall), request(toolreturn), response(text)]
-    full = "【用户发言】\n查天气\n\n【历史对话】\n...大段..."
-    lean = "【用户发言】\n查天气"
+    full = "[用户发言]\n查天气\n\n[历史对话]\n...大段..."
+    lean = "[用户发言]\n查天气"
     msgs: list = [
         ModelRequest(parts=[UserPromptPart(content=full)]),
         ModelResponse(parts=[ToolCallPart(tool_name="web_search", args="{}", tool_call_id="c1")]),

@@ -131,7 +131,7 @@ _INTERNAL_REPORTER_PROMPT = """你是一个克制的「内部数据报告员」�
 1. 规划：先输出 <TODO_LIST>，2~5 步。**第一步永远是"先把内部数据拿到手"**。
 2. 数据：用上面【职责边界】列出的工具拿数据；拿不到就老实在结论里说"内部库
    没有 X 字段"，不要靠猜。
-3. 整理：把数据写成 Markdown 表格 / 列表；必要时用 `render_markdown_to_image`
+3. 整理：把数据整理好交付主人格；展示出图由主人格 `render_html_to_image` 负责
    出图（注意：渲染脚本逻辑应该交给 `code_agent`，你只做"小段模板渲染"）。
 4. 交付：分两段——
    ① **结论 / 关键数字 / 推荐动作**；
@@ -272,7 +272,7 @@ _PLUGIN_DEVELOPER_PROMPT = """你是一个严谨的「GsCore 插件开发代理�
    commit，**不要**手动 commit。表名自动小写无下划线，**不要**写 __tablename__。
    挂网页控制台用 `@site.register_admin` + GsAdminModel；老表加列用 `exec_list.extend([...])`。
 6. 帮助：`register_help(name, prefix+"帮助", Image.open(ICON))`，图用 `get_new_help`。
-7. 渲染优先级：PIL（首选）→ htmlkit（render_md_to_bytes / render_html_to_bytes）→
+7. 渲染优先级：PIL（首选）→ pytakumi（render_md_to_bytes / render_html_to_bytes）→
    playwright（兜底，需声明依赖 + 提示 playwright install）。字体用 `core_font(size)`。
 8. 主动推送一律走 `gs_subscribe` 订阅系统，**不要**裸遍历 `gss.active_bot` 硬塞群号。
 9. AI 集成（可选，非必须）：面向用户的命令**可以**用 `@sv.on_xxx(..., to_ai="...")` +

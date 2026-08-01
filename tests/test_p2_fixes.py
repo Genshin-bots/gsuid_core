@@ -120,7 +120,7 @@ def test_same_speaker_burst_merged() -> None:
         _record("944722078", "好好", "今天先不喝", t0 + 20),
     ]
     text = format_history_for_agent(history)
-    assert text.count("944722078(好好)") == 1
+    assert text.count("好好(用户ID:944722078)") == 1
 
 
 # ─────────────────────────────────────────────

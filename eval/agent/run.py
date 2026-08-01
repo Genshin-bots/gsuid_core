@@ -127,9 +127,20 @@ def make_judge(base_url: str = "", token: str = "", mode: str = "auto"):
     return env or (make_bot_judge(base_url, token) if base_url else None)
 
 
-def load_cases(path: Path) -> tuple[int, list[dict]]:
+def load_cases(path: Path, extra: list[Path] | None = None) -> tuple[int, list[dict]]:
+    """加载主用例文件，可选合并额外 yaml（如群聊扩展集）。同 id 后者覆盖前者。"""
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return int(doc.get("k", 3)), doc.get("cases", [])
+    k = int(doc.get("k", 3))
+    by_id: dict[str, dict] = {c["id"]: c for c in (doc.get("cases") or []) if "id" in c}
+    for ep in extra or []:
+        if not ep.exists():
+            print(f"[WARN] extra cases not found: {ep}")
+            continue
+        edoc = yaml.safe_load(ep.read_text(encoding="utf-8"))
+        for c in edoc.get("cases") or []:
+            if "id" in c:
+                by_id[c["id"]] = c
+    return k, list(by_id.values())
 
 
 async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
@@ -201,10 +212,16 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cases", default=str(Path(__file__).parent / "cases" / "agent_hard_suite.yaml"))
+    ap.add_argument(
+        "--extra-cases",
+        default="",
+        help="额外用例 yaml，逗号分隔；默认附带 group_chat_expansion.yaml（群聊扩展）",
+    )
+    ap.add_argument("--no-group-expansion", action="store_true", help="不自动合并 group_chat_expansion.yaml")
     ap.add_argument("--base-url", default="http://127.0.0.1:8765")
     ap.add_argument("--token", default=os.getenv("GSUID_LOCAL_TEST_TOKEN", ""))
     ap.add_argument("--k", type=int, default=None, help="覆盖 yaml 里的 k（pass^k）")
-    ap.add_argument("--wait", type=float, default=85.0, help="批量 B 模式：全部 fire 后只等这一次 session_log 落盘秒数")
+    ap.add_argument("--wait", type=float, default=85.0, help="批量 B 模式：全部 fire 后只等一次 session_log 落盘秒数")
     ap.add_argument("--concurrency", type=int, default=3, help="批量并发 run 数（≤3，避免压垮 provider）")
     ap.add_argument("--with-fixtures", action="store_true", help="跑 needs_fixture 用例（需自备 fixture）")
     ap.add_argument("--dry-run", action="store_true", help="不连 core，仅校验用例与规模")
@@ -227,7 +244,18 @@ def main() -> int:
     if args.token:
         os.environ["GSUID_LOCAL_TEST_TOKEN"] = args.token
 
-    k_default, cases = load_cases(Path(args.cases))
+    cases_dir = Path(__file__).parent / "cases"
+    extra_paths: list[Path] = []
+    if not args.no_group_expansion:
+        extra_paths.append(cases_dir / "group_chat_expansion.yaml")
+        # 生产群聊结构抽象出的合成用例（无真实 ID/原文）
+        extra_paths.append(cases_dir / "group_chat_prod_patterns.yaml")
+    if args.extra_cases:
+        for p in args.extra_cases.split(","):
+            p = p.strip()
+            if p:
+                extra_paths.append(Path(p))
+    k_default, cases = load_cases(Path(args.cases), extra=extra_paths)
     k = args.k or k_default
     judge = make_judge(
         base_url=args.base_url, token=args.token or os.getenv("GSUID_LOCAL_TEST_TOKEN", ""), mode=args.judge

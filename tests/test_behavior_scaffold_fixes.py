@@ -67,11 +67,11 @@ def test_templates_carry_staleness_and_addressing() -> None:
 # ─────────────────────────────────────────────
 
 _PROD_AT_OTHER_MESSAGE = (
-    "【用户发言】\n居木(用户ID:994534742) 找你说话，见过几次面的那种。\n"
+    "[用户发言]\n居木(用户ID:994534742) 找你说话，见过几次面的那种。\n"
     "--- 消息 ---\n你怎么看\n"
     "--- 用户发送了图片(未展开, 需要查看内容时调用 read_image(图片ID)) ---\n图片ID: img_8193d73d\n"
     "--- @了用户: 84707179（@的是这位用户，不是你） ---\n"
-    "【当前时间】2026-07-16 13:03"
+    "[当前时间：2026-07-16 13:03]"
 )
 
 
@@ -82,7 +82,7 @@ def test_prod_at_other_message_gated() -> None:
 
 def test_direct_marker_passes_gate() -> None:
     text = (
-        "【用户发言】\n某人\n（直接找你说的）\n--- 消息 ---\n早柚你怎么看\n"
+        "[用户发言]\n某人\n（直接找你说的）\n--- 消息 ---\n早柚你怎么看\n"
         "--- @了用户: 84707179（@的是这位用户，不是你） ---"
     )
     assert addressed_to_someone_else(text, "早柚", is_tome=False) is False
@@ -139,6 +139,7 @@ def test_system_constraints_fund_redline() -> None:
     assert "真实金钱往来" in SYSTEM_CONSTRAINTS
     assert "绝不承诺转账" in SYSTEM_CONSTRAINTS
     assert "不替他人向第三方" in SYSTEM_CONSTRAINTS
+    # 压缩后仍须显式金钱红线（评测/生产共用）
 
 
 # ─────────────────────────────────────────────

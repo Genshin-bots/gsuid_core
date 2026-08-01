@@ -51,11 +51,10 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``query_user_memory``（``database_query.py``）：查询用户多群组记忆 + 好感度（统一照会）
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
-- ``read_image``（``image_reader.py``）：按图片ID（``img_xxx`` / ``res_xxx`` / 直链）
-  取回群聊图片并转述为文字（群聊只给 Agent 图片ID、需看图时再读，保底常驻）
-- ``state_get`` / ``state_set`` / ``state_list``（``state_store/tools.py``）：
-  高频通用持久键值状态（低频的 ``state_delete`` / ``state_append`` 已降为 ``common``，
-  靠"持久状态"能力族按需召回）
+- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（``visible_when`` 有图才露）
+- ``render_html_to_image``（``html_render_tools.py``）：自写 HTML 出图（多数据点主路径）
+- ``state_get`` / ``state_set``（``state_store/tools.py``）：高频持久键值
+  （``state_list`` / ``state_delete`` / ``state_append`` 在 common，按能力族召回）
 
 ### 2.2.1 ``category="planning"`` —— 状态驱动 + 向量检索按需（**非保底**）
 长任务编排 / 产物 / 结构化集合工具。**刻意不进保底池**——这 15 个重型 schema 每轮常驻会
@@ -101,11 +100,14 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``cancel_scheduled_task`` / ``pause_scheduled_task`` / ``resume_scheduled_task``
   （``scheduler.py``）：定时任务停 / 起按需
 
-### 2.4 ``category="media"`` —— 向量检索按需（图文渲染）
+### 2.4 ``category="media"`` —— 向量检索按需（图文渲染次选）
 | 工具 | 来源 | 说明 |
 |---|---|---|
-| ``render_html_to_image`` | ``html_render_tools.py`` | HTML 模板 → 图片（webconsole 复用浏览器） |
+| ``render_card`` | ``html_render_tools.py`` | 结构化 JSON 固定布局 → 图片（快捷次选） |
 | ``render_markdown_to_image`` | ``html_render_tools.py`` | Markdown → 图片 |
+
+> ``render_html_to_image`` 在 **buildin 保底**（多数据点出图主路径），与上表 media 工具
+> 同属 ``capability_domain="资料出图"``，召回/驻留时可整族带出 card/md。
 
 ### 2.5 ``category="default"`` —— 沙盒 / 子 Agent 专用
 ``@ai_tools()`` 不传 category 即落入 ``"default"``。这些工具不在保底池，
@@ -307,8 +309,9 @@ from gsuid_core.ai_core.buildin_tools.plugin_developer import (
     read_plugin_dev_guide,
 )
 
-# HTML渲染工具 - 将HTML/Markdown渲染为图片
+# HTML渲染工具 - 将HTML/Markdown/结构化卡片渲染为图片
 from gsuid_core.ai_core.buildin_tools.html_render_tools import (
+    render_card,
     render_html_to_image,
     render_markdown_to_image,
 )
@@ -423,6 +426,7 @@ __all__ = [
     "record_delete",
     "record_summary",
     # HTML渲染工具
+    "render_card",
     "render_html_to_image",
     "render_markdown_to_image",
     # Kanban 任务编排工具

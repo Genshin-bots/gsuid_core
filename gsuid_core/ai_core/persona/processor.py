@@ -6,7 +6,7 @@
 """
 
 from .mood import get_mood_description
-from .prompts import ROLE_PLAYING_START, SYSTEM_CONSTRAINTS
+from .prompts import ROLE_PLAYING_START, SYSTEM_CONSTRAINTS, TOOL_ORCHESTRATION_CONSTRAINTS
 from .resource import load_persona
 from ..buildin_tools import get_current_date
 
@@ -43,20 +43,23 @@ async def build_persona_prompt(
     # 都能命中 provider 前缀缓存（§优化 O-2）。精确到分的当前时间已由 user_message 侧
     current_date = await get_current_date(format="%Y年%m月%d日")
 
-    # 稳定前缀只放人设 + 合规 LITE（可跨轮缓存）。重型 TOOL_ORCHESTRATION 改由 assemble_dynamic_context 在非闲聊轮注入
-    # user 侧；_relean_user_turn 会剥 rag
-    prompt = f"{ROLE_PLAYING_START}\n{persona_content}\n{SYSTEM_CONSTRAINTS}\n当前日期：{current_date}"
+    # 稳定前缀：人设 + 合规 + 工具编排（全部可跨轮缓存，不再每轮注入 user 侧）
+    prompt = (
+        f"{ROLE_PLAYING_START}\n{persona_content}\n{SYSTEM_CONSTRAINTS}\n"
+        f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前日期：{current_date}"
+    )
 
-    # 近因锚点：system 末尾钉人格（工具规程不在此，避免闲聊稀释）
+    # 能力代理花名册：进 system 可缓存，避免每轮塞进 user 侧
+    from gsuid_core.ai_core.agent_node.registry import format_capability_roster
+
+    roster = format_capability_roster()
+    if roster:
+        prompt += f"\n\n## 可委派能力代理\n{roster}"
+
+    # 近因锚点：一句钉人格 + 履约（细则在 SYSTEM/TOOL，不复读半页）
     prompt += (
-        "\n\n---\n\n## 最后提醒（最高权重）\n"
-        f"你首先是「{char_name}」这个活生生的人，其次才是会用工具的助手。\n"
-        "- 口吻决定**怎么说**；该办的事照办，不拿性格当拒绝理由\n"
-        "- 无论是否调过工具，开口永远是角色的声音\n"
-        "- 短句、语气词、碎片化——这是本能，不是表演\n"
-        "- 结构化数据放 <report> 块，角色台词里禁止表格/编号/加粗标题\n"
-        "- 查到 10 分只说 3 分，剩下的让 report 块承载\n"
-        "- 日常闲聊回到角色本身，绝不暴露任何'机器/工具/系统/模型'的痕迹"
+        f"\n\n---\n你首先是「{char_name}」：口吻是角色；该查/改/设就调工具，懒不得代替履约；"
+        "≥3 条数据 render 出图；未点名优先 <SILENCE>。"
     )
 
     # 注入情绪状态（群聊和私聊都支持）

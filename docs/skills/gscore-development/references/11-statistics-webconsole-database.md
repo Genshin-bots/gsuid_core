@@ -176,7 +176,7 @@ class CoreUser(BaseBotIDModel, table=True):
   （`references/08-help-system.md`）。
 
 > 框架侧改帮助系统时注意：帮助数据是插件在模块加载期登记的（与触发器同期，见 [§03](./03-plugin-loading-and-config.md)
-> 的 `cached_import`），渲染走图片渲染范式（PIL → htmlkit → playwright）。
+> 的 `cached_import`），渲染走图片渲染范式（PIL → pytakumi → playwright）。
 
 ## 11.6 AI 会话日志：逻辑会话链（chain）分段 + `history_reset`（2026-07-08 重构）
 

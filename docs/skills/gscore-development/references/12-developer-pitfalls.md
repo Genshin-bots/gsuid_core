@@ -458,11 +458,11 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
 把过去全靠模型自觉的四件事变成框架层的显式约束/提示。只对**交互式主 Agent**生效
 （`create_by ∈ {Chat, Agent, TEST}`，见 `_INTERACTIVE_CREATE_BY`），子 Agent / 后台链路不碰。
 
-- **C-1 省略式跟进**（`detect_ellipsis_followup`）：当前是短句 + 闭类跟进动词（改成/取消/那X呢）
-  且历史里有可跟进的动作时，注入"先 list 定位再 modify/cancel、别新建重复"的提示。
-  治 `cross_turn_recall`/`planning` 里"改提醒建成新的"。"上一轮有动作"的**强证据是
-  `has_recent_tool_call`（历史里的真实 ToolCallPart 轨迹）**，`_PRIOR_ACTION_RE` 名词表只兜
-  跨 session 场景——名词表**不收数据域词**（天气/股价…），第四轮已把混入的 `天气` 清掉。
+- **C-1 省略式跟进**（`detect_ellipsis_followup`）：当前是短句 + 闭类跟进形（改成/取消/那X呢）
+  **且** `recent_tool_call`（近历史真实 ToolCallPart）时，注入"先 list 定位再 modify/cancel、
+  别新建重复"的提示。治 `cross_turn_recall`/`planning` 里"改提醒建成新的"。
+  **上一轮动作证据只认 tool 轨迹**，禁止扫用户历史正文词表（`_PRIOR_ACTION_RE` 已删除）。
+  群聊串槽隔离：有「用户ID:」锚点时，最近一条 user 须与当前说话人同人。
 - **C-2 会话级漂移预算**（`count_style_pushes`）：统计当前 + 近几轮里"立持久说话规矩"的
   **意图**次数（时间持续量词 ∧ 人设核心宾语，两者必须同时命中）。判据是意图累积、不匹配
   具体措辞——**天然抗 paraphrase**。第四轮两处收敛：① **称呼偏好档摘出**——"以后叫我小王"

@@ -703,3 +703,5 @@ nul
 
 .commandcode
 .zcode
+.probe
+test_output

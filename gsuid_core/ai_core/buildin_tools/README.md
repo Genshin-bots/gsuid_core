@@ -47,7 +47,7 @@ buildin_tools/
 | file_manager.py | pathlib / asyncio | 沙盒文件读写执行 |
 | file_operations.py | shutil / zipfile | artifacts 路径内文件移动/复制/打包 zip |
 | get_time.py | datetime | 日期时间获取 |
-| html_render_tools.py | pyrenderhtml / playwright | HTML/Markdown 渲染为图片 |
+| html_render_tools.py | pytakumi / playwright | HTML/Markdown 渲染为图片 |
 | image_reader.py | ai_core.image_understand + RM | 按图片ID取回图片并转述为文字 |
 | avatar_tools.py | utils.image.image_tools + RM | 按用户ID取头像，注册RM返回图片ID |
 | meme_tools.py | ai_core.meme | 表情包发送/收藏/搜索 |

@@ -448,10 +448,21 @@ class MemoryContext:
             ep_budget = max_chars - used
             if ep_budget > 120:
                 eps = self.episodes
-                # temporal_mode（时间范围/时序问题）：单条内容上限压到 600 字，
-                # 让更多不同时段的片段进入预算（列表序=语义相关性优先，时间补位在尾）。
+                # temporal_mode：单条上限压到 600，让更多时段进入预算
                 ep_cap = 600 if self.temporal_mode else 1000
-                ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content'][:ep_cap]}" for ep in eps]
+                # 去重 + 过滤极短无信息量片段（纯寒暄/单字），统一时间格式
+                ep_lines: list[str] = []
+                seen_content: set[str] = set()
+                for ep in eps:
+                    raw = (ep["content"] or "").strip()
+                    if len(raw) < 4:
+                        continue
+                    key = raw[:80]
+                    if key in seen_content:
+                        continue
+                    seen_content.add(key)
+                    ts = (ep["valid_at"] or "")[:19].replace("T", " ")
+                    ep_lines.append(f"[{ts}] {raw[:ep_cap]}")
                 taken = _take(ep_lines, ep_budget)
                 if taken:
                     parts.append("【相关对话片段】\n" + "\n".join(taken))

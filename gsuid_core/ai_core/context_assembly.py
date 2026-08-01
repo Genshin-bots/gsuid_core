@@ -13,16 +13,12 @@
 漂移防线：tests/test_context_assembly.py 以源码级断言锁定两个入口都消费本模块。
 """
 
-import re
 import asyncio
 from typing import List, Tuple, Optional
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-
-# C3-c 自我情景记忆召回触发词：用户回指 Bot 自己曾经的言行（从 handle_ai 移入）
-_SELF_RECALL_RE = re.compile(r"(你之前|你上次|你不是说|你说过|你还记得|你刚才说|你答应)")
 
 # 软触发（免唤醒续聊）的默认偏沉默提示——生产/评测共用同一文案
 SOFT_TRIGGER_NOTE = (
@@ -124,15 +120,15 @@ async def assemble_dynamic_context(
 
     顺序（与缓存前缀稳定性从高到低排列，改动须两个入口同时生效——这正是抽出本函数的目的）：
     历史对话 → 情绪 → 关系行 → 口吻锚点 → 自我情景 → 长任务 → 长期记忆 → 软触发提示。
-    ``history_context`` 传已带「【历史对话】」标头的成品文本（评测端点历史走
+    ``history_context`` 传已带「[历史对话]」标头的成品文本（评测端点历史走
     agent.history，则传空）；``memory_guide`` 是记忆使用准则（评测端点专用，生产为空）。
     各子项失败一律降级跳过，不影响其余注入。
     """
+    # 装配顺序刻意「短状态 → 历史 → 高置信记忆 → 任务」：把注意力留给 [用户发言]。
+    # 决策树/工具规程/口吻主约束已在 system_prompt，此处只放本轮必要动态信息。
     context_parts: List[str] = []
-    if history_context:
-        context_parts.append(history_context)
 
-    # Prompt-2.5: 用括号包裹情绪状态，暗示这是内心状态而非对话指令
+    # Prompt-2.5: 括号包裹情绪，暗示内心状态而非指令
     if persona_name:
         try:
             from gsuid_core.ai_core.persona.mood import get_mood_description
@@ -143,50 +139,49 @@ async def assemble_dynamic_context(
         except Exception as e:
             logger.debug(t("log.ai.mood_fetch_description", e=e))
 
-    # C3-a/c: per-user 关系行（群聊共享 session，关系随当前对话者变化，不能冻进共享前缀）
-    self_episode_text = ""
+    # C3-a: per-user 关系行（群聊共享 session，不能冻进共享前缀）
+    # 自我情景召回已改为 query_self_episodes 工具（agent 按需主动调用），
+    # 不再用正则触发被动注入。
     try:
-        from gsuid_core.ai_core.self_cognition import retrieve_self_episodes, build_relationship_context
+        from gsuid_core.ai_core.self_cognition import build_relationship_context
 
         relationship_text = build_relationship_context(user_id, favorability)
         if relationship_text:
             context_parts.append(relationship_text)
-        # C3-c: 用户回指 Bot 自己曾经的言行时，召回自我情景记忆
-        if _SELF_RECALL_RE.search(query):
-            self_episode_text = await retrieve_self_episodes(bot_id)
     except Exception as e:
         logger.debug(t("log.ai.selfcog_relationship_context_injection", e=e))
 
-    # 逐轮人格口吻锚点（治理长会话的人格漂移）：人格只在会话创建时固化进
-    # system_prompt，越聊越靠后、注意力越稀释。此处每轮补一段紧凑角色快照。
+    # 口吻锚点：system 已有完整约束；此处钉一下防长会话漂移（过短无效）
+    _VOICE_ANCHOR_MAX = 80
     if persona_name:
         try:
             from gsuid_core.ai_core.persona import get_voice_anchor
 
             voice_anchor = get_voice_anchor(persona_name)
             if voice_anchor:
-                # 口吻/行为分离：锚点只约束语气——实测"慵懒"会从语气渗漏成行为 （以困/懒为由拒设提醒、
-                context_parts.append(
-                    f"（角色快照：{voice_anchor}。"
-                    "回复约束：①角色台词用碎片化短句，结构化数据放<report>块；"
-                    "②角色台词中禁止表格、编号列表、加粗标题；"
-                    "③查到10分只说3分，剩下的让report块承载；"
-                    "④口吻只决定**怎么说**，不决定**做不做**："
-                    "该回应的回应、该办的事照办，不拿角色性格当拒绝或敷衍的理由）"
+                short_anchor = (
+                    voice_anchor[:_VOICE_ANCHOR_MAX] + "…" if len(voice_anchor) > _VOICE_ANCHOR_MAX else voice_anchor
                 )
+                context_parts.append(f"（口吻：{short_anchor}）")
         except Exception as e:
             logger.debug(t("log.ai.contextassembly_persona_tone_anchor_fail", e=e))
 
-    if self_episode_text:
-        context_parts.append(self_episode_text)
+    if history_context:
+        context_parts.append(history_context)
 
-    # C5: 长任务进度动态注入（短序号、无 UUID），让用户可追问"那个任务怎么样了"
+    # 长期记忆：只注入高置信片段；更多细节让 agent 调 query_user_memory
+    if memory_context_text:
+        mem = memory_context_text.strip()
+        if len(mem) > 1200:
+            mem = mem[:1197] + "…"
+        guide = f"{memory_guide}" if memory_guide else ""
+        context_parts.append(f"{guide}[长期记忆·高置信]\n{mem}\n（需要更多细节请调 query_user_memory）")
+
+    # C5: 长任务进度（短序号）；他群任务已在 build_task_context 内脱敏
     has_actionable = False
     try:
         from gsuid_core.ai_core.planning.context import build_task_context, has_actionable_task
 
-        # §24 跨群脱敏：显式 group_id 判群（不借 mood_key 哨兵反推，评审修复 E14）；
-        # has_actionable 同口径过滤，防他群任务在本群挂载 kanban 工具族（评审修复 E15）
         task_context_text = await build_task_context(user_id, current_group_id=group_id)
         has_actionable = await has_actionable_task(user_id, current_group_id=group_id)
         if task_context_text:
@@ -194,37 +189,18 @@ async def assemble_dynamic_context(
     except Exception as e:
         logger.debug(t("log.ai.planning_long_task_context_fail", e=e))
 
-    if memory_context_text:
-        guide = f"{memory_guide}" if memory_guide else ""
-        context_parts.append(f"{guide}【长期记忆】\n{memory_context_text}")
+    # 仅风格提示：intent 不可靠，上轮用过工具或有任务时不压短
+    if intent == "闲聊" and not prev_turn_used_tools and not has_actionable:
+        context_parts.append("（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）")
 
-    # 工具规程分级注入（须在软触发之前；_relean 剥离，不进持久 history）： 闲聊 → LITE（轻工具 + 省略跟进）；
-    try:
-        from gsuid_core.ai_core.persona.prompts import (
-            TOOL_ORCHESTRATION_LITE,
-            TOOL_ORCHESTRATION_CONSTRAINTS,
-        )
+    # 事务优先级：分类器判定为工具/问答意图时，明确动作优先于人格惰性
+    if intent in ("工具", "问答"):
+        context_parts.append("（本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。）")
 
-        if intent != "闲聊" or prev_turn_used_tools or has_actionable:
-            context_parts.append(TOOL_ORCHESTRATION_CONSTRAINTS.strip())
-        else:
-            context_parts.append(TOOL_ORCHESTRATION_LITE.strip())
-    except Exception as e:
-        logger.debug(t("log.ai.contextassembly_procedure_injection", e=e))
-
-    # 上一轮发出的资料图标题（来自 ModelResponse.metadata，非文本占位符）
     if recent_report_titles:
         titles_str = "、".join(recent_report_titles[-3:])
-        context_parts.append(f"（上一轮你发出了资料图：{titles_str}。用户可能追问图片内容。）")
+        context_parts.append(f"（上一轮资料图：{titles_str}）")
 
-    # 语域隔离：只约束「怎么说」，绝不禁止「做不做」。
-    if intent == "闲聊" and persona_name and not prev_turn_used_tools:
-        context_parts.append(
-            "（当前偏闲聊。口吻回到角色最自然的状态——短句、语气词；"
-            "口吻只决定怎么说，不决定做不做：该查的仍查、该办的仍办，数据走 report 通道。）"
-        )
-
-    # 软触发须最后：近因效应下「默认路过」要压过前面所有上下文
     if soft_triggered:
         context_parts.append(SOFT_TRIGGER_NOTE)
 

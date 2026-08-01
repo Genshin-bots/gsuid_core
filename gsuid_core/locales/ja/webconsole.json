@@ -24,6 +24,8 @@
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
   "log.webconsole.chat_received_user": "[chat_with_history] user_id={user_id} を受信しました",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' が存在しないため、汎用アシスタントのプロンプトにフォールバックする",
+  "log.webconsole.group_open_gate_silence": "[chat_with_history] グループ会話の発言ゲート → SILENCE",
+  "log.webconsole.intent_classify_fail": "[chat_with_history] 意図分類に失敗したため空にフォールバック: {e}",
   "log.webconsole.config_name_item_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {item_name} の書き込みに失敗",
   "log.webconsole.config_name_key_write_exception": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込み中に例外が発生: {e}",
   "log.webconsole.config_name_key_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込みに失敗",

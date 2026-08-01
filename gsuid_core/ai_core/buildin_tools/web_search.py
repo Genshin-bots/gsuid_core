@@ -77,4 +77,17 @@ async def web_search_tool(
         query=query,
         max_results=limit,
     )
+    # 空结果时区分「未配置密钥」与「真没搜到」，便于 agent 换路而不是瞎编
+    if not results:
+        provider = str(ai_config.get_config("websearch_provider").data or "")
+        if provider.lower() == "tavily":
+            from gsuid_core.ai_core.configs.ai_config import tavily_config
+
+            keys = tavily_config.get_config("api_key").data
+            empty_keys = not keys or (isinstance(keys, list) and not any(str(k).strip() for k in keys))
+            if empty_keys:
+                return (
+                    "错误：Web 搜索未配置 Tavily API Key，无法联网检索。"
+                    "请改用已有专业查询工具，或如实告知暂时查不到在线资料。"
+                )
     return _format_results_for_model(results)

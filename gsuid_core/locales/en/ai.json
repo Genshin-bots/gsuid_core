@@ -184,6 +184,7 @@
   "log.ai.gscore_core_initialization_wait": "[GsCore][AI] AI Core initialization wait timed out; skipping this message to avoid querying a vector store whose migration is incomplete",
   "log.ai.gscore_effort_config_value_fell": "[GsCore] Unknown model_effort config: {value}, fell back to enable",
   "log.ai.gscore_empty_content_visible": "[GsCore][AI] Empty-content message (no model-visible content and not @-ing me); silently skipping upfront",
+  "log.ai.gscore_group_open_gate_silence": "[GsCore][AI] Group open gate decided SILENCE; skipping main Agent",
   "log.ai.gscore_exceeded_absolute_limit": "[GsCore][AI] Text exceeded absolute limit ({raw_text_len} > {ABSOLUTE_MAX_LENGTH}); applying hard truncation",
   "log.ai.gscore_gemini_config_name_api": "[GsCore] Gemini 配置 {config_name} 未填写 api_key, 请前往网页控制台填写",
   "log.ai.gscore_gemini_config_name_url": "[GsCore] Loading Gemini config: Name: {model_name}, URL: {base_url}, Key: ...{p0}",

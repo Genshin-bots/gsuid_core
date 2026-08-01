@@ -8,12 +8,12 @@
 """
 
 # L3 会话驻留：一个能力族被使用后，继续在随后多少轮里保持常驻（兜底紧邻的追问）。
-_STICKY_FAMILY_TURNS = 3
+_STICKY_FAMILY_TURNS = 2
 
-# 渐进式工具暴露总开关：开启后非闲聊轮额外挂 find_tools + RetrievableToolset，
-# 模型可推理中途按需检索并即时拿到工具；置 False 回退静态装配，闲聊轮恒不挂。
+# 渐进式工具暴露总开关：开启后挂 find_tools + RetrievableToolset，模型可按需拉长尾。
 ENABLE_PROGRESSIVE_TOOLS = True
-# 渐进式工具暴露的意图门：这些意图轮**不**挂 find_tools（高频/无工具需求，省一次潜在往返）。
+# 仅影响「连续无工具强制提醒 / 计数」豁免，**不再**用作向量预装/工具池硬门。
+# 分类器会误判闲聊，工具装配不能因 intent=闲聊 砍召回。
 _PROGRESSIVE_TOOLS_SKIP_INTENTS = ("闲聊",)
 
 # 工具自动装配白名单：仅列表内 create_by 未显式传 tools 时走向量检索装配。
@@ -35,29 +35,6 @@ _RETRYABLE_4XX = frozenset({408, 429})
 _CONTENT_REJECT_HINTS = ("sensitive", "content policy", "content_policy", "content_filter")
 # 内容审核错误码（如 MiniMax 1026）。按词边界匹配，避免误命中 request-id / 时间戳里的数字。
 _CONTENT_REJECT_CODES = ("1026",)
-
-# 单轮意图-行为不一致检测关键词：thinking 里点名了某工具 / 任务编排意图
-# 却没真正调用——直接顶到阈值，下一轮立刻强制提醒。提到模块级避免每轮重建。
-_INTENT_TRIGGER_KEYWORDS: tuple[str, ...] = (
-    "register_kanban_task",
-    "evaluate_agent_mesh_capability",
-    "create_subagent",
-    "复合多代理任务",
-    "任务树",
-    "创建任务树",
-    "托管",
-    "委派",
-    # 「枚举时间点」思维信号：即便本轮调了 add_once_task，下一轮也强提醒改走
-    # register_kanban_task 的 recurring_trigger 路径。
-    "逐个时间点",
-    "逐一设置",
-    "每个时间点单独",
-    "为每个时间点",
-    "5个时间点",
-    "10个时间点",
-    "cron 的话需要写多个",
-    "需要写多个触发器",
-)
 
 # O-A 群聊队头阻塞防护：交互式回复在 _run_lock 上排队超过此秒数（话题大概率已翻篇）
 # 则丢弃本次回复，避免对早已结束的话题"过期答复"。仅作用于 create_by=="Chat" 的主对话。

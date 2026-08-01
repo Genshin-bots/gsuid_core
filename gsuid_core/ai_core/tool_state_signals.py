@@ -33,23 +33,6 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.register import get_tools_by_capability_domain
 from gsuid_core.ai_core.rag.tools import ToolList
 
-# 闲聊模式下的最小状态驱动工具白名单。
-# 原则：只保留"追问状态"所需的查询/轻量操作工具，去掉创建/评估/全量编辑等重型 schema。
-# 创建/修改类需求完全交给 L4 向量检索按需召回，不影响"任务怎么样了"这类闲聊追问。
-_MINIMAL_CHITCHAT_TOOLS: Set[str] = {
-    # 长期任务编排：保留取消和审批回复（用户可能口头说"取消吧""我同意"）
-    "fail_task_tree",
-    "respond_approval",
-    # 产物：只保留查询类
-    "artifact_get",
-    "artifact_list",
-    "artifact_get_recent",
-    # 结构化记录：只保留查询/汇总类
-    "record_get",
-    "record_list",
-    "record_summary",
-}
-
 
 async def _user_has_active_schedules(user_id: str) -> bool:
     """用户是否存在未完成(pending/paused)的定时任务。"""
@@ -125,9 +108,9 @@ async def get_state_driven_family_tools(
         ev: 当前事件，用于确定用户身份。
         exclude_names: 已在保底池中的工具名，避免重复加载。
         has_active_task: 是否存在需即时介入的 Kanban 任务（透传给族判定）。
-        intent: 本轮意图标签。闲聊时只加载轻量追问工具，避免重型 planning schema
-            在寒暄场景下膨胀工具列表。
+        intent: 保留兼容；**不再**因闲聊裁剪——分类器会误判，有实体就必须整族可用。
     """
+    del intent  # 兼容旧调用方；装配不按意图砍状态族
     domains = await get_state_driven_families(ev, has_active_task=has_active_task)
     if not domains:
         return []
@@ -137,9 +120,6 @@ async def get_state_driven_family_tools(
     for dom in domains:
         for tb in get_tools_by_capability_domain(dom):
             if tb.name in seen:
-                continue
-            # 闲聊意图裁剪：只保留白名单内的工具，创建/编排类靠 L4 向量检索按需召回
-            if intent == "闲聊" and tb.name not in _MINIMAL_CHITCHAT_TOOLS:
                 continue
             seen.add(tb.name)
             out.append(tb.tool)

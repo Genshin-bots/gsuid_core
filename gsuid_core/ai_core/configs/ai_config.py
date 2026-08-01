@@ -305,13 +305,13 @@ AI_CONFIG: Dict[str, GSC] = {
     "tool_search_recall": GsIntConfig(
         "工具向量召回种子数",
         "每轮按用户消息向量检索装配工具时召回的种子数(再经能力族展开); 弱模型宜调小避免工具过多分散注意力",
-        4,
-        options=[2, 4, 6, 8, 10],
+        3,
+        options=[2, 3, 4, 6, 8, 10],
     ),
     "tool_extra_pool_max": GsIntConfig(
         "附加工具池上限",
         "每轮在保底工具之外, 附加(语境+向量召回)工具池经能力族展开后的总数上限",
-        8,
+        6,
         options=[4, 6, 8, 12, 16],
     ),
     "tool_context_window": GsIntConfig(
