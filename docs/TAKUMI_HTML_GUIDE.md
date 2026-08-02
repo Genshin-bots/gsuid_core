@@ -128,6 +128,11 @@ img = await render_summary_card(
       font-family: "MiSans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
       color: #e9eef7;
     }
+    /* 暗底标题必须显式浅色，勿只写字号靠继承 */
+    h1, h2, .title, .headline, .section-title {
+      color: #edf4ff;
+      font-weight: 800;
+    }
     .card {
       width: 100%;
       padding: 32px;
@@ -243,31 +248,35 @@ safe = html.escape(user_text, quote=True)
 
 ## 6. 不支持或不要用的能力
 
-### 6.1 不要用 CSS table 布局
+### 6.1 表格：写原生 `<table>` / GFM 表，不要手写 `display:table`
 
-`display:table` / `display:table-row` / `display:table-cell` 不会形成真正表格，实测会退化成块级堆叠。
+布局引擎本身**没有** CSS table 模型（`display:table` / `table-row` / `table-cell` 不会形成真正列对齐）。
 
-不要这样：
+但 **pytakumi 支持表格内容**：
+
+- Markdown：`md_to_pic` / GFM `| ... |` 表会经 `rewrite_tables_for_takumi` 改成 `.md-table` flex 网格
+- HTML：`render_html_to_image` 对原生 `<table>` 同样改写并注入最小 flex 样式
+
+**推荐**（让库改写）：
+
+```html
+<table>
+  <tr><th>名称</th><th>涨跌</th></tr>
+  <tr><td>长江电力</td><td>+5.48%</td></tr>
+</table>
+```
+
+**不要**手写 CSS table 布局：
 
 ```html
 <div style="display:table">
   <div style="display:table-row">
     <div style="display:table-cell">A</div>
-    <div style="display:table-cell">B</div>
   </div>
 </div>
 ```
 
-应该用 flex 行模拟表格：
-
-```html
-<div style="display:flex;flex-direction:column;gap:8px">
-  <div style="display:flex;gap:8px">
-    <div style="flex:1;padding:10px;background:#1b2537;border-radius:8px">A</div>
-    <div style="flex:1;padding:10px;background:#1b2537;border-radius:8px">B</div>
-  </div>
-</div>
-```
+若自己用 flex 画表也可以，与库改写二选一即可。
 
 ### 6.2 不要用 float
 
@@ -321,17 +330,21 @@ safe = html.escape(user_text, quote=True)
 
 `::before` / `::after` 的 `content` 可能渲染，但顺序和排版不稳定。需要前缀、角标、装饰时，用真实 DOM 节点 + flex / absolute。
 
-### 6.5 不要使用外部资源
+### 6.5 不要使用外部资源（脚本 / 样式）
 
 不要依赖：
 
 - `<script>`
 - `<link rel="stylesheet">`
 - `@import`
-- 远程图片 URL
 - 浏览器插件能力
 
-样式写在内联 `style` 属性或 `<style>` 标签中。图片优先使用 data URI。
+样式写在内联 `style` 属性或 `<style>` 标签中。
+
+**图片例外（AI 出图路径）**：经 `render_html_to_image` 时，引擎会在渲染前把
+`<img src>` / CSS `url(...)` 中的 `https://`、`icon:prefix/name`、`img_`、`res_` **自动嵌成
+data URI**，agent **一次写完 HTML 即可**，不必先手动转 data URI。裸调 `render_html_to_bytes`
+（插件代码路径）仍需自行提供 data URI。
 
 ---
 
@@ -437,6 +450,22 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 - 辅助文字 ≥ 12px。
 - 卡片宽度 640~800px。
 - 需要高清可传 `dpi=192`。
+
+### 8.5 修饰色被基类盖掉（class 优先级）
+
+```css
+/* 错：.item .value 特异性更高，.up/.down 永不生效 */
+.item .value { color:#edf4ff; }
+.up { color:#6ee7b7; }
+/* 对 */
+.item .value.up { color:#6ee7b7; }
+.item .value.down { color:#fca5a5; }
+```
+
+### 8.6 语义色不要一页多套
+
+同一页先定 3～4 个语义角色色并贯彻；暗底强调用浅 tint（`#fca5a5` `#6ee7b7` `#fde68a`）。
+正文 / 底栏 / pill 不要各用一套互不相关的红绿金。
 
 ---
 

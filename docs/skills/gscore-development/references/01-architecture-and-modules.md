@@ -52,14 +52,17 @@ gsuid_core/ai_core/
 ├── handle_ai.py         # AI 聊天处理入口 handle_ai_chat（双层长度防护 + 意图 + 记忆 + run）
 ├── ai_router.py         # Session 路由（get_ai_session / Persona 热重载检测）
 ├── session_registry.py  # AISessionRegistry：GsCoreAIAgent 对象注册表 + 空闲清理
-├── gs_agent.py          # GsCoreAIAgent：Agent 实现、工具装配、_prepare_user_message 图片处理
+├── gs_agent.py          # GsCoreAIAgent：工具装配、Agent.iter 环、输出闸接线、收尾重写
+├── output_gate.py       # pre_send_gate：发送前统一编排（尖括号 → OOC）；GateBag 状态
+├── angle_bracket_guard.py  # 非法 <> 检测/文案/sanitize（<br> 非法；协议仅 SILENCE/meme/report）
+├── output_firewall.py   # 出戏词库 + check_ooc / never-release（策略实现，编排见 output_gate）
 ├── register.py          # @ai_tools 装饰器 + _TOOL_REGISTRY 工具注册表 + visible_when + ai_alias/ai_entity
 ├── entity_index.py      # 实体身份索引 surface(正式名/别名)→插件，供 L0 实体路由确定性定插件（见 [§7.3b](./07-tool-registry-and-agent.md)）
 ├── models.py            # ToolContext / ToolBase / 数据模型（含 dynamic_tool_names）
 ├── dynamic_toolset.py   # RetrievableToolset：pydantic-ai 运行时动态工具集（find_tools 闭环）
 ├── trigger_bridge.py    # 触发器→AI 工具桥接（MockBot / ai_return / send_message_by_ai）
 ├── followup_window.py   # 免唤醒续聊软触发窗口（进程内存 + TTL 惰性清理）
-├── utils.py             # extract_json_from_text / send_chat_result / SILENCE_MARKERS …
+├── utils.py             # extract_json_from_text / send_chat_result（呈现层）/ SILENCE_MARKERS …
 ├── self_cognition.py    # 自我认知 self_model 演化层（自述块随 session 进稳定前缀；关系行每轮注入，见 §06）
 ├── interaction_scaffold.py  # 交互脚手架 C-1~C-3：省略跟进/漂移预算/寻址前置门 + extract_message_body（见 §12.22d）
 ├── context_assembly.py  # 上下文装配共享层：session system prompt + 每轮动态注入的唯一定义（生产/评测端点同源，见 §06/§11）
@@ -106,12 +109,19 @@ core.py::websocket_endpoint  ──►  _Bot._process()  ──►  handler.py::
             （插件命令）                  │ 并发信号量 + 双层长度防护
                                           │ 意图分类 + get_ai_session + 记忆检索
                                           ▼
-                                  GsCoreAIAgent.run()  ──► pydantic-ai Agent
+                                  GsCoreAIAgent.run()  ──► pydantic-ai Agent.iter
                                           │ 装配工具（保底池+检索+动态）
-                                          │ LLM 多轮工具调用
+                                          │ LLM 多轮：ToolCall / TextPart
+                                          │ TextPart / send_message_by_ai → pre_send_gate
+                                          │   REWRITE/FUSE → 打回或静默
+                                          │   ALLOW/FALLBACK → send_chat_result（呈现）
                                           ▼
-                                  send_chat_result(Bot)  ──► 回复发出 + observe 入队记忆
+                                  bot.send + observe 入队记忆
 ```
+
+> 输出闸与呈现分层、尖括号熔断、自由 HTML 出图：见 [§7.12–§7.13](./07-tool-registry-and-agent.md)
+> 与 [`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。
+
 
 **两条主动链路**（不由用户消息触发）：
 

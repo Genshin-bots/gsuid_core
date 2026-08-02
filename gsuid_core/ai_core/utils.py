@@ -824,14 +824,12 @@ def _should_render_markdown_image(text: str) -> bool:
     return False
 
 
-# <report> 制品块：persona 台词与"资料内容"两通道分离的输出契约（§1 OOC 制品化）。
-# 块内是中性口吻 markdown，渲染成"资料图片"发出；块外才是角色台词。
+# 遗留 <report> 兼容：协议已废止（主路径应 render_html_to_image）。
+# 仍剥标签并把 body 当制品出图，避免旧会话/漏网模型把字面标签刷进 IM。
 _REPORT_BLOCK_RE = re.compile(
     r"<report(?:\s+title=(?:\"([^\"\n]*)\"|'([^'\n]*)'))?\s*>(.*?)</report\s*>",
     re.S | re.I,
 )
-
-# 孤儿 report 标签（未闭合/嵌套残留）：内容保留走长 markdown 兜底，字面标签串不下发给用户
 _REPORT_TAG_ORPHAN_RE = re.compile(r"</?report(?:\s[^>\n]*)?>", re.I)
 
 # LLM API 错误消息安全网（proactive 等绕过 handle_ai 错误分类的路径兜底）
@@ -1041,19 +1039,18 @@ def _extract_embedded_structured_blocks(
 
 
 def _split_speech_and_artifacts(text: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """发送/入史共用的两通道分离：XML report + 内容形态结构化块。"""
-    speech, xml_blocks = _extract_report_blocks(text)
+    """发送/入史共用的两通道分离：内容形态结构化块 + 遗留 XML report 兼容。
+
+    主契约已是工具出图（``render_html_to_image`` 等）；此处只做呈现层兜底，
+    避免模型把表格/JSON/旧 ``<report>`` 当台词刷屏。
+    """
+    speech, xml_blocks = _extract_legacy_report_blocks(text)
     speech, embedded = _extract_embedded_structured_blocks(speech)
     return speech, embedded + xml_blocks
 
 
-def _extract_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """分离 ``<report>`` 制品块与角色台词正文。
-
-    Returns:
-        (剩余台词文本, [(title, markdown), ...])。未闭合的 report 标签不匹配，
-        内容留在正文里走既有"长 markdown 出图"兜底，不会丢内容。
-    """
+def _extract_legacy_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """遗留：剥 ``<report>`` 标签，body 进制品图通道（协议已废止，仅兼容漏网）。"""
     reports: List[Tuple[str, str]] = []
 
     def _collect(match: "re.Match[str]") -> str:
@@ -1068,12 +1065,19 @@ def _extract_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
     return remaining.strip(), reports
 
 
+# 旧名别名（测试 / 外部若仍 import）
+_extract_report_blocks = _extract_legacy_report_blocks
+
+
 async def _send_report_images(
     reports: List[Tuple[str, str]],
     bot: Bot,
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """兼容残留 <report> 块：渲染为深色资料图（主路径应走 render_* 工具）。"""
+    """制品通道出图：结构化块 / 遗留 report body → markdown 资料图。
+
+    主路径应已由 agent 调 ``render_html_to_image``；此处是呈现层兜底。
+    """
     from pathlib import Path
 
     from gsuid_core.utils.html_render import render_md_to_bytes
@@ -1172,11 +1176,28 @@ async def send_chat_result(
     # 泄漏进正文的资源句柄（res_/img_ 等）：尽量补发所指资源、否则抹除（详见函数）。
     # 放在拆条/出图之前，让文本与出图两条路径都拿到干净正文。
     text = await _resolve_and_deliver_leaked_handles(text, bot, extra_metadata)
-    # 必须在按 \n\n 拆多条之前做：<br> 会让"连发多条短消息"的拆分完全失效
-    text = _normalize_html_linebreaks(text)
-
     # 两通道分离（§1）：数据形态进制品图，剩余才是角色台词。不认包装格式名。
     text, report_blocks = _split_speech_and_artifacts(text)
+
+    # 出站兜底：非法尖括号（含 <br>）须在拆条前处理；主路径应已 gate 打回
+    from gsuid_core.ai_core.angle_bracket_guard import (
+        find_illegal_angle_tags,
+        sanitize_illegal_angle_tags,
+    )
+
+    _ab_leaks = find_illegal_angle_tags(text)
+    if _ab_leaks:
+        logger.warning(
+            "[send_chat_result] sanitize residual tags=%s preview=%r",
+            _ab_leaks[:4],
+            text[:80],
+        )
+        text = sanitize_illegal_angle_tags(text)
+        if not text.strip() and not report_blocks:
+            return
+
+    # <br> 漏网已在 sanitize 落成换行；再统一其它 HTML 换行写法
+    text = _normalize_html_linebreaks(text)
 
     # Trace 日志：记录原始输出
     logger.trace(i18n_t("log.ai.meme_text_raw_output", text=repr(text)))
@@ -1272,7 +1293,7 @@ async def send_chat_result(
 
         await bot.send(segments, extra_metadata=extra_metadata)
 
-    # 台词发完补发资料图（<report> 制品），再发表情包
+    # 台词发完补发资料图（制品通道兜底），再发表情包
     await _send_trailing_artifacts()
 
 
@@ -1747,7 +1768,10 @@ def _relean_user_turn(
                 if not leaned:
                     part.content = lean_content
                     leaned = True
-                elif isinstance(part.content, str) and part.content in strip_hint_texts:
+                elif isinstance(part.content, str) and any(
+                    part.content == h or (bool(h) and part.content.startswith(h)) for h in strip_hint_texts
+                ):
+                    # 精确匹配（墙钟 nudge）或前缀匹配（尖括号守卫长警告）
                     continue
             kept_parts.append(part)
         if len(kept_parts) != len(msg.parts):

@@ -148,41 +148,24 @@ from gsuid_core.ai_core.buildin_tools import (
     add_interval_task,          # 添加循环任务（创建入口，口语化触发）
 
     # --- Buildin 工具 (category="buildin") --- 保底池，无条件全部加载
-    # 主Agent调用时也会加载，直接调用不会拒绝
     search_knowledge,           # 知识库检索
     web_search_tool,            # Web搜索
     web_fetch_tool,             # 网页抓取（转Markdown）
     query_user_memory,          # 查询用户记忆
     get_self_info,              # 获取完整自我认知（身份/能力边界/主人）
-    state_get,                  # 读取通用持久状态
-    state_set,                  # 写入通用持久状态
-    state_delete,               # 删除通用持久状态
-    state_list,                 # 列出通用持久状态键
-    state_append,               # 向列表型持久状态追加元素
+    state_get, state_set, state_delete, state_list, state_append,
+    render_html_to_image,       # 自由 HTML 出图主路径（多数据点）
 
-    # --- Common 工具 (category="common") ---
-    # 不属于保底池，向量检索按需加载，用户明确需要相关功能时才出现
-    search_image,               # 图片检索
-    get_self_persona_info,      # 获取自身Persona资源信息
-    set_user_favorability,      # 设置用户好感度（绝对值）
-    send_meme,                  # 发送表情包
-    collect_meme,               # 收藏表情包
-    search_meme,                # 搜索表情包
-    list_scheduled_tasks,       # 列出所有定时任务（管理类）
-    query_scheduled_task,       # 查询任务详情（管理类）
-    modify_scheduled_task,      # 修改任务（管理类）
-    cancel_scheduled_task,      # 取消任务（管理类）
-    pause_scheduled_task,       # 暂停任务（管理类）
-    resume_scheduled_task,      # 恢复任务（管理类）
-    create_persistent_agent_tool,  # 创建持久化子Agent
-    send_agent_task_tool,       # 向持久化Agent发送任务
-    list_agents_tool,           # 列出所有活跃的持久化Agent
-    stop_agent_tool,            # 停止指定的持久化Agent
+    # --- Common 工具 (category="common") --- 向量检索按需
+    search_image, get_self_persona_info, set_user_favorability,
+    send_meme, collect_meme, search_meme,
+    list_scheduled_tasks, query_scheduled_task, modify_scheduled_task,
+    cancel_scheduled_task, pause_scheduled_task, resume_scheduled_task,
+    create_persistent_agent_tool, send_agent_task_tool, list_agents_tool, stop_agent_tool,
 
-    # --- Media 工具 (category="media") ---
-    # 多媒体渲染工具
-    render_html_to_image,       # 将HTML渲染为图片
-    render_markdown_to_image,   # 将Markdown渲染为图片
+    # --- Media 工具 (category="media") --- 次选出图（按需）
+    render_card,                # 固定 JSON 布局卡片
+    render_markdown_to_image,   # Markdown 出图
 
     # --- Default 工具 (category="default") ---
     # 通过 create_subagent 调用，用于文件操作、代码执行等

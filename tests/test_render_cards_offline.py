@@ -1,4 +1,4 @@
-"""离线验证 render_card 模板与 freehand 设计系统壳。"""
+"""离线验证 render_card 模板与可选 design shell / 自由 HTML。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ async def main() -> None:
     from gsuid_core.utils.html_render import render_html_to_bytes
     from gsuid_core.ai_core.buildin_tools.html_render_tools import (
         _build_card_html,
-        _wrap_html_if_needed,
+        _prepare_free_html,
+        _wrap_with_design_shell,
     )
 
     cases: list[tuple[str, str]] = []
@@ -106,7 +107,8 @@ async def main() -> None:
     )
     cases.append(("card_board.png", board_html))
 
-    freehand = _wrap_html_if_needed(
+    # 可选壳：显式调用，不再是 render_html_to_image 默认行为
+    freehand_shell = _wrap_with_design_shell(
         """
 <h1>广州 · 七日天气</h1>
 <div class="meta">数据时点：2026-07-29</div>
@@ -135,7 +137,26 @@ async def main() -> None:
   <div class="desc">紫外线强，外出做好防晒</div></div></div>
 """
     )
-    cases.append(("card_freehand.png", freehand))
+    cases.append(("card_freehand_shell.png", freehand_shell))
+
+    # 默认路径：自由 HTML + 原生 table（应被 rewrite 为 md-table）
+    free_html = _prepare_free_html(
+        """
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{font-family:"MiSans","Microsoft YaHei",sans-serif;padding:24px;background:#0f172a;color:#e2e8f0;}
+h1{font-size:22px;margin:0 0 12px;} th,td{padding:8px 10px;} .up{color:#34d399;}
+</style></head><body>
+<h1>持仓明细</h1>
+<table>
+  <tr><th>名称</th><th>代码</th><th>浮盈</th></tr>
+  <tr><td>长江电力</td><td>600900</td><td class="up">+5.48%</td></tr>
+  <tr><td>招商银行</td><td>600036</td><td class="up">+5.04%</td></tr>
+</table>
+</body></html>
+"""
+    )
+    cases.append(("card_free_html_table.png", free_html))
+    assert "md-table" in free_html, "native <table> should be rewritten for pytakumi"
 
     for name, html in cases:
         img = await render_html_to_bytes(

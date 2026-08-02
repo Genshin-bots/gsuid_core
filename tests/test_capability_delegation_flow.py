@@ -33,8 +33,9 @@ def test_pool_overlap_empty_on_empty_pool() -> None:
 
 
 def test_post_tool_contract_is_format_not_domain() -> None:
-    """输出契约只谈通道（report），不含股票/金融等业务词。"""
-    assert "<report" in _POST_TOOL_OUTPUT_CONTRACT
+    """输出契约只谈出图工具通道，不含股票/金融等业务词；禁 <report>。"""
+    assert "render_html_to_image" in _POST_TOOL_OUTPUT_CONTRACT
+    assert "禁止 <report>" in _POST_TOOL_OUTPUT_CONTRACT or "禁止" in _POST_TOOL_OUTPUT_CONTRACT
     assert "股票" not in _POST_TOOL_OUTPUT_CONTRACT
     assert "金融" not in _POST_TOOL_OUTPUT_CONTRACT
 

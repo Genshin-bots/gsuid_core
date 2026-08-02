@@ -290,6 +290,14 @@ def _sync_render_md(
     dark: bool = False,
     root_max_width: float | None = None,
 ) -> bytes:
+    """Markdown → 图片。
+
+    不直接依赖旧版 ``md_to_pic`` 的表格行为：先 ``markdown_to_html``，再
+    ``rewrite_tables_for_takumi``（新 pytakumi 或框架内置），最后 ``html_to_pic``。
+    这样 GFM 表在旧版 pytakumi 上也不会塌成一行字。
+    """
+    from gsuid_core.utils.html_render.table_rewrite import rewrite_tables_for_takumi
+
     renderer = _ensure_renderer()
     width = max(1, int(max_width))
     fmt = _resolve_format(image_format)
@@ -301,14 +309,44 @@ def _sync_render_md(
 
     # pytakumi 高度默认按内容自适应；allow_refit 仅保留兼容语义
     _ = allow_refit
-    return md_to_pic(
-        md,
+
+    # 优先：markdown_to_html → rewrite tables → html_to_pic（新旧 pytakumi 表都可画）
+    try:
+        from pytakumi._util import load_template
+        from pytakumi.markdown import markdown_to_html, wrap_markdown_html
+    except ImportError:
+        return md_to_pic(
+            md,
+            width=width,
+            height=None,
+            format=fmt,
+            quality=quality,
+            dark=dark,
+            css=css,
+            renderer=renderer,
+            device_pixel_ratio=_dpr_from_dpi(dpi),
+            font_families=_font_families(None),
+            lang="zh",
+        )
+
+    body_html = rewrite_tables_for_takumi(markdown_to_html(md))
+    html = wrap_markdown_html(body_html)
+    gh_css = load_template("github-markdown-dark.css" if dark else "github-markdown.css")
+    sheets: list[str] = [gh_css]
+    if "md-table" in body_html and ".md-table" not in gh_css:
+        from gsuid_core.utils.html_render.table_rewrite import md_table_flex_css
+
+        # 与 dark 参数对齐，避免亮/暗主题表底与字色反了
+        sheets.append(md_table_flex_css(markdown_body=True, theme="dark" if dark else "light"))
+    if css:
+        sheets.append(css)
+    return html_to_pic(
+        html,
         width=width,
         height=None,
         format=fmt,
         quality=quality,
-        dark=dark,
-        css=css,
+        stylesheets=sheets,
         renderer=renderer,
         device_pixel_ratio=_dpr_from_dpi(dpi),
         font_families=_font_families(None),

@@ -55,21 +55,20 @@ def test_firewall_scrub_fallback():
 
 
 def test_ooc_gate_warn_once_then_release():
-    from gsuid_core.ai_core.output_firewall import gate_warn_once
+    from gsuid_core.ai_core.output_gate import tool_gate_feedback
 
     extra = {"turn_id": "t1"}
-    # 同轮首次命中 → 返回重写警告；第二次仍命中 → None 放行（提醒一次→重说→放行）
-    assert gate_warn_once(extra, "我是 MiMo 模型") is not None
-    assert gate_warn_once(extra, "我是 MiMo 模型") is None
-    # 未命中不占用本轮警告额度
+    # 同轮首次命中 → 返回重写警告；第二次仍命中 → None 放行
+    assert tool_gate_feedback("我是 MiMo 模型", extra) is not None
+    assert tool_gate_feedback("我是 MiMo 模型", extra) is None
     extra2 = {"turn_id": "t2"}
-    assert gate_warn_once(extra2, "正常的一句话") is None
-    assert gate_warn_once(extra2, "我是 MiMo 模型") is not None
-    # 无 turn_id 的后台链路：每次都警告（无法安全去重）
+    assert tool_gate_feedback("正常的一句话", extra2) is None
+    assert tool_gate_feedback("我是 MiMo 模型", extra2) is not None
+    # 无 turn_id：每次都警告
     extra3: dict = {}
-    assert gate_warn_once(extra3, "我是 MiMo 模型") is not None
-    assert gate_warn_once(extra3, "我是 MiMo 模型") is not None
-    print("[OK] gate_warn_once 同轮警告一次后放行；无 turn_id 每次警告")
+    assert tool_gate_feedback("我是 MiMo 模型", extra3) is not None
+    assert tool_gate_feedback("我是 MiMo 模型", extra3) is not None
+    print("[OK] tool_gate_feedback 同轮警告一次后放行；无 turn_id 每次警告")
 
 
 # ============================================================

@@ -28,7 +28,10 @@
 
 | 文件 | 职责 |
 |---|---|
-| `gs_agent.py` | **`GsCoreAIAgent`**：基于 pydantic_ai 的 Agent 主类。封装运行锁、history 截断、工具池组装（三层）、token 统计、出戏防火墙重说闭环、单轮意图-行为一致性检测、UsageLimit 兜底总结、`append_proactive_assistant_turn`（主动消息同步到 history）等。所有 LLM 调用都从这里出去。 |
+| `gs_agent.py` | **`GsCoreAIAgent`**：pydantic-ai Agent 主类。工具装配、`Agent.iter` 环、`pre_send_gate` 接线、收尾 `_resolve_output_gate_after_run`、假完成闸、UsageLimit 兜底等。 |
+| `output_gate.py` | **`pre_send_gate`**：发送前统一编排（尖括号 → OOC）；`GateBag` 状态；`tool_gate_feedback`。 |
+| `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
+| `output_firewall.py` | 出戏词库 + `check_ooc`（策略实现；编排见 `output_gate`）。 |
 | `handle_ai.py` | 用户消息入口（被消息触发器调用）。负责会话匹配、前置规则过滤、`format_history_for_agent` 构造 history_context、调用 `GsCoreAIAgent.run`。 |
 | `ai_router.py` | `get_ai_session` / `get_ai_session_by_id`：根据 Event 找到或创建主用户绑定的 `GsCoreAIAgent`，并触发 Persona 热重载、主人好感度初始化。 |
 | `session_registry.py` | `{session_id → GsCoreAIAgent}` 注册表 + 空闲 session 清理 / logger flush / shutdown。 |
@@ -36,7 +39,7 @@
 | `models.py` | `ToolContext`（包含 `bot / ev / extra / parent_session_id`）、`ToolBase`、`KnowledgeBase` 等 TypedDict。 |
 | `register.py` | `@ai_tools` 装饰器，把工具按 category（`self / buildin / 插件名`）登记到全局工具表。 |
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
-| `utils.py` | `send_chat_result`（解析 @、meme、换行分发）、`SILENCE_MARKERS`、`extract_json_from_text` 等。**`send_chat_result` 支持 `extra_metadata` 透传**，主动消息走它落 metadata。 |
+| `utils.py` | `send_chat_result`（**呈现层**：report/meme/长文出图/拆条/漏网 sanitize）、`SILENCE_MARKERS`、`extract_json_from_text`。合规打回不在此。 |
 | `history_format.py` | `format_history_for_agent`：把 `message_history.MessageRecord` 序列化成 LLM 可读的 `history_context` 文本（被动回复走这条路）。 |
 | `normalize.py` | 文本归一化（去 emoji / 标点等），主要给 RAG / classifier 用。 |
 | `check_func.py` | 通用权限 / 状态检查工具。 |
@@ -194,11 +197,11 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 文件 | 用途 |
 |---|---|
-| `message_sender.py` | `send_message_by_ai`：主动发送文本 / 图片（支持 `img_xxx`/`res_xxx`/http/base64 多源）。**已对接 `ToolContext.parent_session_id`，自动把发出去的文本同步进父 session 历史**。 |
+| `message_sender.py` | `send_message_by_ai`：入口 `tool_gate_feedback`，文本走 `send_chat_result`；支持 `img_xxx`/`res_xxx`/http/base64。 |
 | `subagent.py` | `create_subagent`：让主人格生成单步 Kanban 叶子根任务。 |
 | `scheduler.py` | `add_once_task / add_interval_task / cancel_task / list_my_tasks`：定时任务工具集。 |
 | `meme_tools.py` | 表情包检索 / 触发。 |
-| `html_render_tools.py` | `render_html_to_image / render_markdown_to_image`：可视化产出。 |
+| `html_render_tools.py` | `render_html_to_image`（**buildin 保底**，自由 HTML）；`render_card` / `render_markdown_to_image`（media 按需）。 |
 | `web_search.py / web_fetch.py` | 联网。 |
 | `rag_search.py` | 知识库检索。 |
 | `database_query.py` | 让 LLM 安全查 GsCore 内置表。 |
@@ -326,12 +329,16 @@ User → Trigger → handle_ai
                        ├─ extract_history() 截断 + 孤儿清理
                        ├─ 工具池组装（保底+语境+查询）
                        ├─ pydantic_ai.Agent(...).iter() 多轮
-                       │     ├─ ToolCallPart → log_tool_call
-                       │     ├─ TextPart → 出戏预检 → send_chat_result（被 ev/bot 兜底）
+                       │     ├─ ToolCallPart → 执行；send_message_by_ai 入口 pre_send_gate(tool)
+                       │     ├─ TextPart → pre_send_gate(main) → ALLOW/FALLBACK 才 send_chat_result
                        │     └─ ToolReturnPart → RM 注册 + log_tool_return
-                       ├─ self.history.extend(result.new_messages())
+                       ├─ history.extend；_resolve_output_gate_after_run（尖括号 scrub/补写 + OOC 重说）
                        └─ session_logger.log_run_end + token_usage
 ```
+
+> 完整时序：[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6；
+> 开发导航：[`docs/skills/gscore-development/references/07-tool-registry-and-agent.md`](../../docs/skills/gscore-development/references/07-tool-registry-and-agent.md) §7.12。
+
 
 ### B. 主动回复（统一闭包）
 
@@ -368,7 +375,8 @@ User → Trigger → handle_ai
 ## 相关上层文档
 
 - `docs/LLM.md` — 代码红线（**写代码前先读**）。
-- `docs/skills/gscore-development/SKILL.md` — 框架开发指南（触发链路 / 模块全景 / 已知坑）。
-- `docs/AGENT_MESH_COLLABORATION_PROPOSAL_20260521.md` — Kanban Agent Mesh 设计稿。
-- `plans/proactive_message_session_unification_20260529.md` — 主动消息统一会话/日志方案（**本次改造的源头**）。
+- `docs/AI_AGENT_LIFECYCLE_SEQUENCE.md` — 一条消息完整生命周期（Agent loop / **pre_send_gate** / 呈现层）。
+- `docs/TAKUMI_HTML_GUIDE.md` — HTML 出图 / table rewrite 约束。
+- `docs/skills/gscore-development/SKILL.md` — 框架开发指南（§7 输出闸、§12.22 不变量）。
+- `docs/skills/gscore-ai-core-api/SKILL.md` — 插件侧 AI API（内置工具分类）。
 - `gsuid_core/ai_core/rag/README.md` / `persona/README.md` / `scheduled_task/README.md` / `buildin_tools/README.md` — 各子模块 README。

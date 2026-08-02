@@ -126,9 +126,10 @@ async def main() -> None:
 
     # 1. 天气 HTML
     print("\n[1/4] 渲染天气 HTML...")
-    from gsuid_core.ai_core.buildin_tools.html_render_tools import _wrap_html_if_needed
+    # 可选 design shell（显式）；render_html_to_image 默认已不套壳
+    from gsuid_core.ai_core.buildin_tools.html_render_tools import _wrap_with_design_shell
 
-    weather_full = _wrap_html_if_needed(WEATHER_HTML)
+    weather_full = _wrap_with_design_shell(WEATHER_HTML)
     img = await render_html_to_bytes(weather_full, max_width=720, image_format="png", default_font_size=15.0)
     out = OUTPUT_DIR / "quality_weather.png"
     out.write_bytes(img)
@@ -136,7 +137,7 @@ async def main() -> None:
 
     # 2. 新闻 HTML
     print("\n[2/4] 渲染新闻 HTML...")
-    news_full = _wrap_html_if_needed(NEWS_HTML)
+    news_full = _wrap_with_design_shell(NEWS_HTML)
     img = await render_html_to_bytes(news_full, max_width=720, image_format="png", default_font_size=15.0)
     out = OUTPUT_DIR / "quality_news.png"
     out.write_bytes(img)
@@ -144,7 +145,7 @@ async def main() -> None:
 
     # 3. 股票 HTML
     print("\n[3/4] 渲染股票 HTML...")
-    stock_full = _wrap_html_if_needed(STOCK_HTML)
+    stock_full = _wrap_with_design_shell(STOCK_HTML)
     img = await render_html_to_bytes(stock_full, max_width=720, image_format="png", default_font_size=15.0)
     out = OUTPUT_DIR / "quality_stock.png"
     out.write_bytes(img)

@@ -22,7 +22,6 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Message
-from gsuid_core.ai_core import output_firewall
 from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
@@ -146,12 +145,14 @@ async def send_message_by_ai(
             "（框架会自动发出，并自动处理换行分条 / 长文转图）。本轮请勿再调用本工具。"
         )
 
-    # 出戏防火墙（§D.4）：同轮首次命中 return 警告让模型重写重发；重写后仍命中则放行
-    if text and output_firewall.is_enabled():
+    # 统一输出闸门（尖括号 + OOC …）：打回则 return feedback，放行继续发
+    if text:
+        from gsuid_core.ai_core.output_gate import tool_gate_feedback
+
         _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
-        warning = output_firewall.gate_warn_once(tool_ctx.extra, text, user_text=_ev_text)
-        if warning is not None:
-            return warning
+        _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
+        if _gate_fb is not None:
+            return _gate_fb
 
     # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev
@@ -246,7 +247,7 @@ async def send_message_by_ai(
                     return f"❌ 资源ID: {audio_id} 数据转换失败: {e}"
 
         # 文本走统一 send_chat_result（剥 markdown / 长文转图 / 拆条 / @解析），别裸 bot.send
-        # 把 **加粗** 刷进群；ooc_check=False：入口已 gate_warn_once 过，这里只做归一化。
+        # ooc_check=False：入口已 tool_gate_feedback（pre_send_gate）过，此处只做呈现归一化。
         if text:
             from gsuid_core.ai_core.utils import send_chat_result
 

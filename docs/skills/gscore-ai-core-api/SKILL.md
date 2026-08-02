@@ -72,7 +72,8 @@ description: >
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
-- **AI Core 入口模块统一前缀**：`gsuid_core.ai_core.*`，包括 `register` / `trigger_bridge` / `gs_agent` / `rag` / `mcp` / `image_understand` / `web_search` / `buildin_tools` / `persona` / `memory` / `statistics` / `scheduled_task` / `models` / `agent_node`（统一节点层）/ `capability_agents` / `approval`（统一审批中心）/ `self_cognition` / `handle_ai`。详见 [§1](./references/01-import-cheatsheet.md)。
+- **AI Core 入口模块统一前缀**：`gsuid_core.ai_core.*`，包括 `register` / `trigger_bridge` / `gs_agent` / `output_gate`（发送前统一闸）/ `buildin_tools`（含 **`render_html_to_image` 保底**）/ `rag` / `mcp` / `persona` / `memory` / `agent_node` / `approval` / `handle_ai` 等。详见 [§1](./references/01-import-cheatsheet.md)、[§7](./references/07-builtin-tools.md)。
+- **Agent 发话合规**：插件一般不直接调 `pre_send_gate`；改 `send_message_by_ai` 或新增「模型台词出站」路径时须过 `tool_gate_feedback` / 主循环闸。见 [gscore-development §7.12](../gscore-development/references/07-tool-registry-and-agent.md)。
 - **`@ai_tools` 是入口装饰器**：被装饰的函数**必须是 async**；第一个参数支持三种上下文模式（`RunContext[ToolContext]` 推荐 / `ToolContext` / 无上下文）；参数类型注解为 `Bot` / `Event` 的会被自动注入且**不暴露给 LLM**。详见 [§2.3](./references/02-ai-tools-decorator.md)。
 - **`category` 决定加载方式**：`self` / `buildin` 是**框架保底工具池**（无条件全部加载进主Agent，不受向量搜索影响）；`common` / `media` / `mcp` / 自定义分类是**向量检索按需加载**；`default` 是**子Agent 工具**（需通过 `create_subagent` 调用）。详见 [§3.2](./references/03-tool-categories.md)。
 - **保底池由 category 决定，无硬编码名单**：`get_main_agent_tools()` 把 `self` + `buildin` 两个分类下的全部工具无条件加载；插件若希望某工具成为主 Agent 保底工具，注册时用 `category="buildin"` 即可。详见 [§3.2](./references/03-tool-categories.md)。

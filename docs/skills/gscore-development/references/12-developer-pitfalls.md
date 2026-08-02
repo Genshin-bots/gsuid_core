@@ -328,28 +328,32 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 - 同理，任何"按绝对位置消费有界 deque"的代码都有此陷阱；有界缓冲的消费者一律用**单调序号 + 落后
   截断**，别用下标。
 
-## 12.22 输出安全防线的不变量（出戏防火墙 / 内容守卫，2026-07-08）
+## 12.22 输出安全防线的不变量（统一闸门 / 出戏 / 内容守卫，2026-08）
 
-两个模块：`ai_core/output_firewall.py`（AI 输出侧"出戏"检测）+ `ai_core/content_guard.py`
-（不可信内容包裹 / 伪造工具返回降权）。背景与全部日志实证见
-[`docs/SESSION_LOG_SECURITY_FINDINGS_20260707.md`](../../../SESSION_LOG_SECURITY_FINDINGS_20260707.md)。
-改这两个模块或任何输出/发送链路时，以下不变量**不能破坏**：
+**编排入口**：`ai_core/output_gate.py::pre_send_gate`（尖括号 + OOC 等「能不能发」的唯一短路编排）。
+检测实现分模块：`angle_bracket_guard`（非法 `<>`，含 **`<br>` 非法**）/ `output_firewall`
+（`check_ooc`）/ `content_guard`（不可信包裹）。环内接线在 `gs_agent`（feedback 注入、
+`_resolve_output_gate_after_run`）；呈现在 `send_chat_result`。详见 [§7.12](./07-tool-registry-and-agent.md)、
+[`AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。
 
-### 🔴 核心语义是"提醒一次 → 重说 → 放行"，不是"命中即封禁"
+改输出/发送链路时，以下不变量**不能破坏**：
 
-误杀的代价被设计为"多一次生成"，所以词库可以高召回；一旦把任何路径改成"命中即永久
-拦截/替换"，误杀就会直接吃掉用户可见的回复（历史事故："早餐吃了个豆包"命中 model 词
-`豆包` 被整条替换）。三条路径各自的语义：
+### 🔴 策略分档：不是一律「命中即封禁」
+
+- **尖括号**：同 turn 最多 3 次 REWRITE → FUSE（静默 + scrub）；无「第二次放行」。
+- **OOC 工具路径**：「提醒一次 → 重说 → 放行」（never-release 除外）；误杀代价≈多一次生成。
+- **OOC 主路径**：defer → run 末轻量重写；`machine_dump` → FALLBACK 短句。
+- 勿改成「命中即永久硬替换且无重说」，会复现「早餐吃了个豆包」类事故。
 
 | 路径 | 检测点 | 命中行为 |
 |------|--------|----------|
-| 主输出（`gs_agent` TextPart） | 发送前预检 `check_ooc` | 不发送 → 记入 `_ooc_blocked` → iter 结束后 `_ooc_rewrite_and_send` 用轻量无工具 Agent 带警告重写一次 → 产物经 `send_chat_result(ooc_check=False)` **无检放行**；重写失败才退 `PERSONA_FALLBACK_TEXT`，且 history 中被拦原文换成重写版 |
-| 工具发送（`send_message_by_ai`） | `output_firewall.gate_warn_once(tool_ctx.extra, text)` | 同轮首次命中 return 重写警告（模型重写重发）；**同轮第二次仍命中放行**（`ooc_warned:{turn_id}` 键），防"警告↔重试"死循环 |
-| 无重说通道（proactive / 兜底总结等一切默认走 `send_chat_result` 的） | `send_chat_result` 内末端兜底 | 命中替换为 `PERSONA_FALLBACK_TEXT`（底线：绝不把模型名/AI身份发出去） |
+| 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；OOC defer → `_ooc_rewrite_and_send`；machine_dump → FALLBACK |
+| 工具发送（`send_message_by_ai`） | `tool_gate_feedback`（历史别名 `gate_warn_once`） | OOC 首次警告、再命中非 never-release 放行（`GateBag.ooc_warned_turn_ids`）；尖括号与 never-release 持续打回 |
+| 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `check_ooc` + 尖括号 sanitize | 替换 `PERSONA_FALLBACK_TEXT` / 删非法标签 |
 
-- **`ooc_check=False` 只允许用于重说产物**。新增发送路径时默认让它带检；想跳过检测先想清楚
-  该路径的文本是否已经走过一次反馈闭环。
-- `check_ooc(tier="plain")` 生产**尚无调用方**（预留给将来的非角色扮演出口），别当它已接线。
+- **`ooc_check=False` 只允许用于已过 gate / 重说产物**。新增发送路径默认带检。
+- 状态只写 `extra["output_gate"]` → `GateBag`，勿发明平行计数键。
+- `check_ooc(tier="plain")` 生产尚无调用方，别当它已接线。
 
 ### 🔴 低俗谐音 / 钓鱼识别是 prompt 层防线，不要复活词库
 
@@ -437,10 +441,9 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
   采样参数泄露改用取值形态正则（`temperature.{0,6}[0-2]\.\d`）。`ai_selfref` 类别
   不经过 model_identity 的"绑定自身"精度门，正则本身就要足够精确。
 - **假完成闸（`gs_agent._claims_fake_done`）**：完成声明须带施动锚点（已/帮你/我），
-  按句排除疑问/揣测语气。误触发的真实代价是**双倍 LLM 调用 + by_bot 下用户收到二连
-  "改口"消息**（原文在流式迭代中已发出，闸在 run 末尾才检查）——不是"多一次生成"那么便宜。
-  已知残留：纠正 nudge 会以 user turn 进入共享 history；架构级出路是把该检查并进
-  pre-send 的 output_firewall 管线（见变更审查报告 §5.1），别在现有位置继续加正则域。
+  按句排除疑问/揣测语气。现位于 TextPart 路径上 **`pre_send_gate` 之后**（结构判据，不并入
+  纯文本合规闸）。误触发代价仍可能是纠正重跑；纠正 nudge 进 history 时靠 `_relean` /
+  scrub 剥离。别在现有位置堆业务域词表。
 - 递归/重入护栏**用调用栈参数传递，不要用实例属性**——`GsCoreAIAgent` 是群共享对象，
   实例态会在并发 run 间互相压制（`fake_done_retry` 参数就是这么改出来的）。
 
@@ -643,8 +646,9 @@ group_id=str(event.group_id or event.user_id)   # ← 私聊时 group_id 变成 
 5. Bot：取 `_Bot` 用 `WS_BOT_ID`；需要 `Bot` 的地方没传裸 `_Bot`。
 6. 历史/记忆：截断保留 ToolCall/ToolReturn 配对；记忆改动没踩 D-12~D-19。
 7. 注释：`#` 注释 ≤2 行、每行 ≤88 字，精简直白。
-8. 输出链路：新发送路径默认过出戏防火墙（`ooc_check=False` 仅限重说产物）；框架层文本
-   人格中性；词库加词先过规范化碰撞检查 + 误杀回归用例（§12.22）。
+8. 输出链路：新「打回/熔断」挂 `output_gate.pre_send_gate`，呈现变换挂 `send_chat_result`；
+   `ooc_check=False` 仅限已过 gate / 重说产物；框架层文本人格中性；词库加词先过规范化
+   碰撞 + 误杀回归；尖括号假阳性集（比较式 / 泛型 / 邮箱）与 br 非法一并锁（§12.22 / §7.12）。
 9. 防线改动：注入/出戏/假完成相关的正则或词库改动，坏样本（eval inj_*/adv_*）与好样本
    （良性误杀集）**两个方向都要跑**（§12.22b）；处理用户文本的标注函数保持幂等。
 10. 交互脚手架（§12.22d）：C-1~C-4 只对交互式主 Agent 生效；判据只用结构/语言学范畴、

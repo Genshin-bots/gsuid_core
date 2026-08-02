@@ -271,7 +271,7 @@ from gsuid_core.ai_core.capability_agents.profiles import _DELIVERY_BOUNDARY
 | `move_file` | `file_operations` | 在 artifacts 路径内移动文件（不可覆盖） |
 | `copy_file` | `file_operations` | 在 artifacts 路径内复制文件 |
 | `pack_to_zip` | `file_operations` | 将文件/目录打包为 zip 压缩包 |
-| `render_html_to_image` | `html_render_tools` | HTML 模板渲染为图片 |
+| `render_html_to_image` | `html_render_tools`（**buildin 保底**） | 自由 HTML 出图主路径（不套设计壳；table 自动 rewrite） |
 | `render_markdown_to_image` | `html_render_tools` | Markdown 渲染为图片 |
 | `send_meme` | `meme_tools` | 发送表情包 |
 | `collect_meme` | `meme_tools` | 收藏表情包 |

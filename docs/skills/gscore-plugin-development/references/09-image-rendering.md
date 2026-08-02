@@ -59,7 +59,13 @@ async def render_role_card(uid: str, name: str, data: dict) -> bytes:
 ## 9.3 pytakumi 范式（推荐）
 
 适合一次性、不需要交互的 Markdown 报告 / 简单 HTML 卡片。**框架已封装**，直接 import 用
-（底层是 [pytakumi](https://pypi.org/project/pytakumi/)，无 headless 浏览器）：
+（底层是 [pytakumi](https://pypi.org/project/pytakumi/)，无 headless 浏览器）。
+
+> **AI Agent 出图**：主人格保底工具 `render_html_to_image` 默认**自由 HTML**（完整文档或
+> 自带 `<style>` 的片段，不套框架暗色设计壳）；原生 `<table>` 会改写为 `.md-table` flex；
+> `<img src>` / CSS `url(...)` 的外链、`icon:`、`img_`/`res_` 在渲染前**自动嵌 data URI**
+> （无独立嵌图工具、无业务域特判）。约束见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)。
+> 插件侧直接调 `render_html_to_bytes` 时仍需自行 data URI（自动嵌仅在 AI 工具路径）。
 
 ```python
 from gsuid_core.utils.html_render import (

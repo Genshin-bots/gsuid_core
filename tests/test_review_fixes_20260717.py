@@ -369,14 +369,15 @@ def test_fund_claim_positives_still_hit() -> None:
 
 
 def test_fund_claim_never_released_by_warn_once_gate() -> None:
-    from gsuid_core.ai_core.output_firewall import NEVER_RELEASE_CATEGORIES, gate_warn_once
+    from gsuid_core.ai_core.output_gate import tool_gate_feedback
+    from gsuid_core.ai_core.output_firewall import NEVER_RELEASE_CATEGORIES
 
     assert "fund_claim" in NEVER_RELEASE_CATEGORIES
     extra: dict = {"turn_id": "turn_review_f10"}
     text = "钱已经转过去了"
-    assert gate_warn_once(extra, text) is not None
+    assert tool_gate_feedback(text, extra) is not None
     # 同轮第二次命中：身份类会放行，资金欺骗类必须继续拦
-    assert gate_warn_once(extra, text) is not None
+    assert tool_gate_feedback(text, extra) is not None
 
 
 def test_fund_rewrite_warning_is_category_specific() -> None:

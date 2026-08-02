@@ -38,7 +38,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core import wall_clock, output_firewall, interaction_scaffold
+from gsuid_core.ai_core import wall_clock, output_gate, output_firewall, angle_bracket_guard, interaction_scaffold
 from gsuid_core.ai_core.const import (
     _SKILLS_CREATE_BY,
     _AGENTIC_CREATE_BY,
@@ -215,13 +215,37 @@ _RENDER_DATA_NUDGE = (
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
 
-# 同工具空转熔断：单次 run 内同一工具连续调用达到阈值后注入收敛提示（形状信号，非业务词）
-# 阈值 2：第 3 次起剥掉同名调用，把 total 压在评测/群聊空转预算内。
-_THRASH_SAME_TOOL_LIMIT = 2
+# 同工具空转熔断（形状信号，非业务词）：
+# - **跨轮**计数：同一 ModelResponse 内并行多次同名工具（多 query 检索）只计 1 轮
+# - 阈值 4：连续 ≥4 轮只打同一工具才注入收敛（避免误伤 research 并行 web_search）
+_THRASH_SAME_TOOL_LIMIT = 4
 _THRASH_FUSE_NUDGE = (
-    "（系统校验：你已对同一工具连续重复调用多次，仍无新进展。立即停止重复该工具；"
-    "换另一路径（如 web_search_tool / find_tools）或基于已有结果用角色短句收束，禁止再连打同一工具。）"
+    "（系统校验：你已跨多轮连续只重复同一工具，仍无新进展。立即停止再连打该工具；"
+    "换另一路径（如 find_tools / 其它工具）或基于已有结果交付结论，禁止空转。）"
 )
+
+
+def _update_thrash_streak_for_response(
+    tool_names: Sequence[str],
+    *,
+    prev_name: str,
+    prev_streak: int,
+) -> tuple[str, int]:
+    """根据本 ModelResponse 的工具名列表更新 thrash 状态。
+
+    - 无工具调用：保持原 streak（纯文本轮不重置、也不累加）
+    - 本响应混用多种工具：重置
+    - 本响应仅一种工具（含并行多 call）：同名则 +1 轮，换名则 streak=1
+    """
+    if not tool_names:
+        return prev_name, prev_streak
+    unique = {n for n in tool_names if n}
+    if len(unique) != 1:
+        return "", 0
+    name = next(iter(unique))
+    if name == prev_name:
+        return name, prev_streak + 1
+    return name, 1
 
 
 def _matched_delegation_only_profile(query: str) -> str:
@@ -331,10 +355,19 @@ def _format_capability_roster() -> str:
 
 
 # 工具返回后的输出契约：事件驱动（本轮出现过 ToolReturn），不认业务关键词
+# 主人格 / 评测：多项数据 → 工具出图
 _POST_TOOL_OUTPUT_CONTRACT = (
     "（系统：本轮已有工具返回。若结果含多项数据点，必须 "
     "render_html_to_image 自写 HTML 出图（也可用 render_card / render_markdown_to_image）；"
     "渲染工具自动发图，禁止台词复述、禁止 <report> 文本块。台词只留一两句角色化引导。）"
+)
+
+# 能力代理：只交 Markdown/JSON 事实包；出图归主人格
+_POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
+    "（系统：本轮已有工具返回。你是能力代理——必须把结果整理成 **Markdown 或 JSON 事实包** "
+    "交付主人格（条目/日期/数字/来源/依据），或 artifact_put 持久化。"
+    "有搜索/查询结果时**禁止**只回过程句（如「下面再搜」「停止重复」「然后渲染」）。"
+    "**禁止**调用 render_html_to_image / render_card / render_markdown_to_image（出图由主人格负责）。）"
 )
 
 # 工具失败/空结果：强制换路（只看 outcome / 空内容，禁止扫正文关键词）
@@ -343,6 +376,19 @@ _POST_TOOL_FAIL_CONTRACT = (
     "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
     "取到多项数据必须 render_html_to_image 出图。只有换路后仍无果才可角色化短句说明。）"
 )
+
+_POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
+    "（系统：本轮工具返回失败或空结果。禁止只回过程句结束。"
+    "立刻换路：换 query / 换工具再取数；仍无果则在事实包里明确写「无检索结果：原因=…」。"
+    "禁止 render_html_*（出图归主人格）。）"
+)
+
+
+def _post_tool_contracts_for(create_by: str) -> tuple[str, str]:
+    """主人格推 render；能力代理推事实包交付。"""
+    if create_by == "CapabilityAgent":
+        return _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY, _POST_TOOL_FAIL_CONTRACT_CAPABILITY
+    return _POST_TOOL_OUTPUT_CONTRACT, _POST_TOOL_FAIL_CONTRACT
 
 
 def _tool_return_looks_failed(part: ToolReturnPart) -> bool:
@@ -1181,17 +1227,46 @@ class GsCoreAIAgent:
         # while 至少执行一次循环，正常不可达；兜底也必须闭合 run（评审修复 F6）
         return _fail(f"{ERROR_RESULT_PREFIX}: 未知错误")
 
+    async def _lightweight_text_rewrite(
+        self,
+        rewrite_message: str,
+        *,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """无工具单轮 Agent 重写；失败或 SILENCE 返回空串。"""
+        cap = max_tokens if max_tokens is not None else self.max_tokens
+        if cap is None:
+            cap = 1024
+        try:
+            rewrite_agent = Agent(
+                model=self.model,
+                system_prompt=self.system_prompt or "你是一个智能助手。",
+                model_settings={"max_tokens": cap},
+                tools=[],
+                toolsets=[],
+                retries=0,
+                output_type=str,
+            )
+            rewrite_result = await rewrite_agent.run(
+                rewrite_message,
+                message_history=[],
+                usage_limits=UsageLimits(request_limit=1),
+            )
+            out = str(rewrite_result.output).strip()
+        except Exception as e:
+            logger.warning(i18n_t("log.agent.firewall_regeneration_fallback", e=e))
+            return ""
+        if not out or out in SILENCE_MARKERS:
+            return ""
+        return out
+
     async def _ooc_rewrite_and_send(
         self,
         blocked: List[Tuple[str, output_firewall.FirewallHit]],
         bot: Bot,
         ev: Optional[Event],
     ) -> None:
-        """出戏命中后的重说闭环（§D.4）：无工具轻量 Agent 带警告重写一次，产物直接放行。
-
-        误杀的代价只是多一次生成；重写本身失败才退到 ``PERSONA_FALLBACK_TEXT``。
-        重写后把 history 里被拦的原文换成重写版，防出戏原文被后续轮模仿。
-        """
+        """出戏命中后的重说闭环：轻量重写一次，产物放行；history 脏文替换。"""
         original = "\n\n".join(text for text, _ in blocked)
         first_hit = blocked[0][1]
         rewrite_message = (
@@ -1199,72 +1274,227 @@ class GsCoreAIAgent:
             f"【被拦下的原文】\n{original}\n\n"
             "请保持原意、用你的角色口吻重写这段话，直接输出重写后的内容，不要解释。"
         )
-        rewritten = ""
-        try:
-            _rewrite_agent = Agent(
-                model=self.model,
-                system_prompt=self.system_prompt or "你是一个智能助手。",
-                model_settings={"max_tokens": self.max_tokens},
-                tools=[],
-                toolsets=[],
-                retries=0,
-                output_type=str,
-            )
-            rewrite_result = await _rewrite_agent.run(
-                rewrite_message,
-                message_history=[],
-                usage_limits=UsageLimits(request_limit=1),
-            )
-            rewritten = str(rewrite_result.output).strip()
-        except Exception as e:
-            logger.warning(i18n_t("log.agent.firewall_regeneration_fallback", e=e))
-        if not rewritten or rewritten in SILENCE_MARKERS:
+        rewritten = await self._lightweight_text_rewrite(rewrite_message)
+        if not rewritten:
             rewritten = output_firewall.PERSONA_FALLBACK_TEXT
-        # 不可放行类别（fund_claim 等）：重写产物必须复检，
         if first_hit.category in output_firewall.NEVER_RELEASE_CATEGORIES:
             _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
             _recheck = output_firewall.check_ooc(rewritten, user_text=_user_text)
             if _recheck is not None and _recheck.category in output_firewall.NEVER_RELEASE_CATEGORIES:
                 logger.warning(i18n_t("log.agent.firewall_rewrite_output_hit_non"))
                 rewritten = output_firewall.PERSONA_FALLBACK_TEXT
+        if angle_bracket_guard.has_illegal_angle_tags(rewritten):
+            rewritten = (
+                angle_bracket_guard.sanitize_illegal_angle_tags(rewritten) or output_firewall.PERSONA_FALLBACK_TEXT
+            )
         self._session_logger.log_text_output(rewritten)
         try:
             await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
             self._run_sent_texts.add(rewritten)
         except Exception as e:
             logger.debug(i18n_t("log.agent.agent_event", e=e))
-        blocked_texts = {text for text, _ in blocked}
-        for msg in reversed(self.history):
-            if not isinstance(msg, ModelResponse):
+        self._replace_blocked_text_in_history({text for text, _ in blocked}, rewritten)
+
+    async def _angle_bracket_rewrite_loop(
+        self,
+        original: str,
+        *,
+        attempts_already: int,
+    ) -> Optional[str]:
+        """尖括号：轻量重写直到干净或用尽剩余次数；失败返回 None。"""
+        remaining = max(0, angle_bracket_guard.MAX_RETRIES - attempts_already)
+        current = original
+        token_cap = min(int(self.max_tokens or 1024), 1024)
+        for i in range(remaining):
+            tags = angle_bracket_guard.find_illegal_angle_tags(current)
+            if not tags:
+                return current
+            rewrite_message = angle_bracket_guard.build_rewrite_warning(tags, current)
+            rewritten = await self._lightweight_text_rewrite(
+                rewrite_message,
+                max_tokens=token_cap,
+            )
+            if not rewritten:
                 continue
-            for part in msg.parts:
-                if isinstance(part, TextPart) and part.content.strip() in blocked_texts:
-                    part.content = rewritten
+            if not angle_bracket_guard.has_illegal_angle_tags(rewritten):
+                return rewritten
+            current = rewritten
+            logger.warning(
+                f"[output_gate/angle_bracket] rewrite still dirty "
+                f"attempt {attempts_already + i + 1}/{angle_bracket_guard.MAX_RETRIES} "
+                f"preview={rewritten[:80]!r}"
+            )
+        return None
+
+    def _edit_history_tail(
+        self,
+        *,
+        tail_n: int,
+        drop_user_markers: Sequence[str] = (),
+        drop_text_parts: Optional[set[str]] = None,
+        replace_text_parts: Optional[dict[str, str]] = None,
+    ) -> tuple[int, int]:
+        """历史尾部外科：删带 marker 的 user turn / 丢或替换脏 TextPart。
+
+        闸门 scrub 与假完成 scrub 共用，避免 tail 窗口与匹配规则漂移。
+        """
+        if tail_n <= 0 or not self.history:
+            return 0, 0
+        n = min(tail_n, len(self.history))
+        tail = self.history[-n:]
+        kept: List[ModelMessage] = []
+        removed_nudge = 0
+        removed_blocked = 0
+        drop_set = drop_text_parts if drop_text_parts is not None else set()
+        replace_map = replace_text_parts if replace_text_parts is not None else {}
+        for msg in tail:
+            if (
+                drop_user_markers
+                and isinstance(msg, ModelRequest)
+                and any(
+                    isinstance(p, UserPromptPart)
+                    and isinstance(p.content, str)
+                    and any(m in p.content for m in drop_user_markers)
+                    for p in msg.parts
+                )
+            ):
+                removed_nudge += 1
+                continue
+            if isinstance(msg, ModelResponse) and (drop_set or replace_map):
+                new_parts: List[Any] = []
+                changed = False
+                for p in msg.parts:
+                    if not isinstance(p, TextPart):
+                        new_parts.append(p)
+                        continue
+                    key = p.content.strip()
+                    if key in drop_set:
+                        changed = True
+                        continue
+                    if key in replace_map:
+                        p.content = replace_map[key]
+                        changed = True
+                    new_parts.append(p)
+                if not new_parts:
+                    removed_blocked += 1
+                    continue
+                if changed:
+                    removed_blocked += 1
+                    msg.parts = new_parts
+            kept.append(msg)
+        self.history[-n:] = kept
+        return removed_nudge, removed_blocked
+
+    def _scrub_gate_history(
+        self,
+        blocked_texts: set[str],
+        *,
+        drop_blocked: bool = True,
+    ) -> None:
+        """裁掉闸门 nudge 的 user turn；可选移除被拦脏 TextPart。"""
+        removed_nudge, removed_blocked = self._edit_history_tail(
+            tail_n=12,
+            drop_user_markers=output_gate.GATE_NUDGE_MARKERS,
+            drop_text_parts=blocked_texts if drop_blocked else None,
+        )
+        if removed_nudge or removed_blocked:
+            logger.warning(f"[output_gate] scrubbed history: nudges={removed_nudge} blocked_msgs={removed_blocked}")
+
+    def _replace_blocked_text_in_history(self, blocked: set[str], rewritten: str) -> None:
+        """重写成功：历史脏 TextPart 换成干净版。"""
+        if not blocked:
+            return
+        mapping = {b: rewritten for b in blocked}
+        self._edit_history_tail(tail_n=len(self.history), replace_text_parts=mapping)
+
+    def _ooc_safe_outbound(self, text: str, ev: Optional[Event]) -> str:
+        """angle 收尾产物出站前 OOC 复检（angle 短路可能残留出戏）。"""
+        if not text or not output_firewall.is_enabled():
+            return text
+        user_text = ev.raw_text if ev is not None and ev.raw_text else ""
+        hit = output_firewall.check_ooc(text, user_text=user_text)
+        if hit is None:
+            return text
+        if hit.category == "machine_dump":
+            return output_firewall.MACHINE_FALLBACK_TEXT
+        # never-release 与其它 OOC：收尾单次路径用角色兜底，避免 ooc_check=False 漏放
+        return output_firewall.PERSONA_FALLBACK_TEXT
+
+    async def _resolve_output_gate_after_run(
+        self,
+        context: ToolContext,
+        bot: Optional[Bot],
+        ev: Optional[Event],
+        *,
+        return_mode: str,
+        ooc_blocked: List[Tuple[str, output_firewall.FirewallHit]],
+        ab_abort: bool,
+    ) -> bool:
+        """尖括号收尾 + OOC 重说。返回是否尖括号熔断静默。"""
+        silence_markers = SILENCE_MARKERS
+        clean_sent = [
+            t
+            for t in self._run_sent_texts
+            if t and t not in silence_markers and not angle_bracket_guard.has_illegal_angle_tags(t)
+        ]
+        plan = output_gate.plan_angle_after_run(context.extra, clean_sent=clean_sent)
+        angle_fused = ab_abort or plan.fused
+
+        if plan.fused or ab_abort:
+            logger.warning(
+                f"[output_gate] RUN FUSED after {plan.attempts} bounces — "
+                f"silence, scrub history session={self.session_id}"
+            )
+            self._scrub_gate_history(set(plan.blocked), drop_blocked=True)
+            angle_fused = True
+        elif plan.replace_map:
+            self._edit_history_tail(
+                tail_n=len(self.history),
+                replace_text_parts=plan.replace_map,
+            )
+            self._scrub_gate_history(set(), drop_blocked=False)
+        elif plan.rewrite_original and bot and return_mode in ["always", "by_bot"]:
+            rewritten = await self._angle_bracket_rewrite_loop(
+                plan.rewrite_original,
+                attempts_already=plan.attempts,
+            )
+            if rewritten:
+                rewritten = self._ooc_safe_outbound(rewritten, ev)
+                self._session_logger.log_text_output(rewritten)
+                sent_ok = False
+                try:
+                    await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
+                    self._run_sent_texts.add(rewritten)
+                    sent_ok = True
+                except Exception as abe:
+                    logger.debug(f"[output_gate] angle rewrite send failed: {abe}")
+                # 仅替换本条 rewrite_original，避免多脏文被同一产物覆盖
+                if sent_ok:
+                    self._replace_blocked_text_in_history({plan.rewrite_original}, rewritten)
+                    self._scrub_gate_history(set(), drop_blocked=False)
+            else:
+                logger.warning(
+                    f"[output_gate] RUN FUSED (post-end rewrite exhausted) "
+                    f"session={self.session_id} attempts={plan.attempts} — silence + scrub"
+                )
+                output_gate.set_fused(context.extra, "angle_bracket")
+                self._scrub_gate_history(set(plan.blocked), drop_blocked=True)
+                angle_fused = True
+        elif plan.scrub_nudges:
+            self._scrub_gate_history(set(), drop_blocked=False)
+
+        # 尖括号熔断仍恢复独立 OOC 段（与 angle scrub 正交）
+        if ooc_blocked and bot and return_mode in ["always", "by_bot"] and not plan.skip_ooc_rewrite:
+            await self._ooc_rewrite_and_send(ooc_blocked, bot, ev)
+        return angle_fused
 
     def _scrub_fake_done_history(self, fabricated_texts: set[str]) -> None:
-        """纠正重跑成功后的历史外科（假完成闸收尾）：删掉纠正 nudge 的 user turn 与
-        被暂扣未发出的编造声明，让持久历史 = 原始用户消息 + 纠正后的真实回复——与
-        用户实际所见一致，也防编造话术 /「（系统校验…」句式被后续轮模仿。
-        只扫尾部本轮产物；编造声明按 stripped 文本精确匹配，零误删。
-        """
-        tail = self.history[-8:]
-        kept: List[ModelMessage] = []
-        for msg in tail:
-            if isinstance(msg, ModelRequest) and any(
-                isinstance(p, UserPromptPart) and isinstance(p.content, str) and _FAKE_DONE_NUDGE in p.content
-                for p in msg.parts
-            ):
-                continue
-            if isinstance(msg, ModelResponse):
-                parts = [
-                    p for p in msg.parts if not (isinstance(p, TextPart) and p.content.strip() in fabricated_texts)
-                ]
-                if not parts:
-                    continue
-                if len(parts) != len(msg.parts):
-                    msg.parts = parts
-            kept.append(msg)
-        self.history[-8:] = kept
+        """假完成收尾：删纠正 nudge 与未发出的编造声明（与闸门 scrub 共用编辑器）。"""
+        self._edit_history_tail(
+            tail_n=8,
+            drop_user_markers=(_FAKE_DONE_NUDGE,),
+            drop_text_parts=fabricated_texts,
+        )
 
     async def _execute_run_once(
         self,
@@ -1357,6 +1587,9 @@ class GsCoreAIAgent:
         _wall_nudged = False  # C-4 墙钟软预算：每 run 至多注入一次收敛提示
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         _ooc_blocked: List[Tuple[str, output_firewall.FirewallHit]] = []
+        # 输出闸门：待注入 REWRITE feedback（同 response 可多段合并）；熔断后本轮静默
+        _ab_pending_nudges: List[str] = []
+        _ab_abort = False
         # 假完成预检暂扣的文本段：声明完成但至今零工具——iter 后按"动作是否真发生"补发或纠正
         _fab_blocked: list[str] = []
         # 本轮是否见过结构化工具返回（用于出图履约闸）
@@ -1938,6 +2171,26 @@ class GsCoreAIAgent:
                                 )
                             )
 
+                        # 输出闸门：上一轮 REWRITE feedback（多段已合并）注入下一轮请求
+                        if _ab_pending_nudges:
+                            _nudge_body = output_gate.merge_rewrite_feedbacks(_ab_pending_nudges)
+                            node.request.parts = [
+                                *node.request.parts,
+                                UserPromptPart(content=_nudge_body),
+                            ]
+                            logger.warning("[output_gate] injected rewrite feedback into ModelRequestNode")
+                            _ab_pending_nudges = []
+                        # 熔断提示只注入一次（与 thrash fuse 同形）
+                        if (output_gate.is_fused(context.extra) or _ab_abort) and not output_gate.fuse_already_injected(
+                            context.extra
+                        ):
+                            _ab_abort = True
+                            output_gate.mark_fuse_injected(context.extra)
+                            node.request.parts = [
+                                *node.request.parts,
+                                UserPromptPart(content=angle_bracket_guard.build_fuse_warning()),
+                            ]
+
                         # 同工具空转熔断：连续同名工具 ≥ 阈值后，下一轮模型请求前注入一次收敛提示
                         if (
                             not _thrash_fused
@@ -2021,20 +2274,23 @@ class GsCoreAIAgent:
                                 )
                                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
 
-                        # 事件驱动输出契约：本轮已有工具返回
+                        # 事件驱动输出契约：本轮已有工具返回（主人格出图 / 能力代理事实包）
                         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
                             _any_fail = False
                             for _p in node.request.parts:
                                 if type(_p) is ToolReturnPart and _tool_return_looks_failed(_p):
                                     _any_fail = True
                                     break
-                            _contract = _POST_TOOL_FAIL_CONTRACT if _any_fail else _POST_TOOL_OUTPUT_CONTRACT
+                            _ok_c, _fail_c = _post_tool_contracts_for(self.create_by)
+                            _contract = _fail_c if _any_fail else _ok_c
                             if not any(
                                 isinstance(p, UserPromptPart)
                                 and p.content
                                 in (
                                     _POST_TOOL_OUTPUT_CONTRACT,
                                     _POST_TOOL_FAIL_CONTRACT,
+                                    _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+                                    _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
                                 )
                                 for p in node.request.parts
                             ):
@@ -2109,6 +2365,11 @@ class GsCoreAIAgent:
                         # 遍历大模型返回的具体片段 (Parts)
                         # 本轮是否已出现工具调用：用于 suppress_intermediate_text 时判断
                         _saw_tool_call_this_turn = False
+                        # 同 ModelResponse 多 TextPart：尖括号 attempt 只计 1 次
+                        output_gate.begin_response_batch(context.extra)
+                        _ab_attempt_counted_this_response = False
+                        # thrash：同响应内工具名列表，结束本响应后一次性按「轮」更新 streak
+                        _resp_tool_names: list[str] = []
                         for part in node.model_response.parts:
                             # 拦截到模型即将调用工具
                             if isinstance(part, ToolCallPart):
@@ -2121,12 +2382,7 @@ class GsCoreAIAgent:
                                     )
                                 )
                                 _tool_call_list.append(part.tool_name)
-                                # 同名工具连续计数（跨模型步）；换工具则重置
-                                if part.tool_name == _same_tool_name:
-                                    _same_tool_streak += 1
-                                else:
-                                    _same_tool_name = part.tool_name
-                                    _same_tool_streak = 1
+                                _resp_tool_names.append(part.tool_name)
                                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
                                 self._emit_trace("tool", f"{part.tool_name}|{part.args_as_json_str()}")
 
@@ -2158,37 +2414,49 @@ class GsCoreAIAgent:
                                     # 工具调用前后伴随的文本属于中间步骤碎碎念，不发送给用户，
                                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
                                 elif bot and _text and return_mode in ["always", "by_bot"]:
-                                    # 出戏预检（§D.4）：命中不发送、记入 _ooc_blocked，
-                                    _ooc_hit = (
-                                        output_firewall.check_ooc(
-                                            _text,
-                                            user_text=ev.raw_text if ev is not None and ev.raw_text else "",
-                                        )
-                                        if output_firewall.is_enabled()
-                                        else None
+                                    # 统一输出闸门；同 response 尖括号只计一次 attempt
+                                    _user_raw = ev.raw_text if ev is not None and ev.raw_text else ""
+                                    _count_ab = not _ab_attempt_counted_this_response
+                                    _gr = output_gate.pre_send_gate(
+                                        _text,
+                                        context.extra,
+                                        user_text=_user_raw,
+                                        channel="main",
+                                        count_attempt=_count_ab,
                                     )
-                                    if _ooc_hit is not None:
+                                    if _gr.decision is output_gate.GateDecision.FUSE:
+                                        _ab_abort = True
+                                        _ab_attempt_counted_this_response = True
                                         logger.warning(
-                                            i18n_t(
-                                                "log.agent.firewall_main_output_hit_ooc",
-                                                p0=_ooc_hit.category,
-                                                p1=_ooc_hit.matched,
-                                            )
+                                            f"[output_gate] drop text after fuse policy={_gr.policy} "
+                                            f"preview={_text[:80]!r}"
                                         )
-                                        # 机器腔直接发兜底句，不进重说闭环（重说易继续复读堆栈）
-                                        if _ooc_hit.category == "machine_dump":
-                                            try:
-                                                await send_chat_result(
-                                                    bot,
-                                                    output_firewall.MACHINE_FALLBACK_TEXT,
-                                                    ev=ev,
-                                                    ooc_check=False,
+                                        continue
+                                    if _gr.decision is output_gate.GateDecision.REWRITE:
+                                        if _gr.defer_ooc and _gr.ooc_hit is not None:
+                                            logger.warning(
+                                                i18n_t(
+                                                    "log.agent.firewall_main_output_hit_ooc",
+                                                    p0=_gr.ooc_hit.category,
+                                                    p1=_gr.ooc_hit.matched,
                                                 )
-                                                self._run_sent_texts.add(output_firewall.MACHINE_FALLBACK_TEXT)
-                                            except Exception as _me:
-                                                logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
-                                            continue
-                                        _ooc_blocked.append((_text, _ooc_hit))
+                                            )
+                                            _ooc_blocked.append((_text, _gr.ooc_hit))
+                                        else:
+                                            if _gr.policy == "angle_bracket":
+                                                _ab_attempt_counted_this_response = True
+                                            if _gr.feedback:
+                                                _ab_pending_nudges.append(_gr.feedback)
+                                            if _gr.fused:
+                                                _ab_abort = True
+                                        continue
+                                    if _gr.decision is output_gate.GateDecision.FALLBACK:
+                                        _fb = _gr.send_text or output_firewall.MACHINE_FALLBACK_TEXT
+                                        try:
+                                            await send_chat_result(bot, _fb, ev=ev, ooc_check=False)
+                                            self._run_sent_texts.add(_fb)
+                                        except Exception as _me:
+                                            logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
                                         continue
                                     # 假完成预检（结构判据：完成声明 + 本轮至今零工具调用）：
                                     _fab_gate_on = not fake_done_retry and not _tool_call_list and bool(tool_names)
@@ -2214,6 +2482,13 @@ class GsCoreAIAgent:
                                     _thinking_segments.append(_thinking)
                                 self._session_logger.log_thinking(_thinking)
                                 self._emit_trace("thinking", _thinking)
+
+                        # thrash：本响应只按「轮」计 1 次（并行多 query 不累加）
+                        _same_tool_name, _same_tool_streak = _update_thrash_streak_for_response(
+                            _resp_tool_names,
+                            prev_name=_same_tool_name,
+                            prev_streak=_same_tool_streak,
+                        )
 
                         # 结算本轮模型请求的性能统计： TTFT = 请求发起 → 首个流式 event；
                         _ttft_ms: float = 0.0
@@ -2259,14 +2534,24 @@ class GsCoreAIAgent:
                 # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 rag_context）
                 # 防止 [历史对话]/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
                 _new_msgs = result.new_messages()
-                _relean_user_turn(_new_msgs, _lean_user_message, strip_hint_texts=(_WALL_CLOCK_NUDGE,))
+                _relean_user_turn(
+                    _new_msgs,
+                    _lean_user_message,
+                    strip_hint_texts=(_WALL_CLOCK_NUDGE, *output_gate.GATE_NUDGE_MARKERS),
+                )
                 # 超长工具返回截断为头+尾摘要（§25(5)）：本轮已消费完整返回，历史无需原文
                 _truncate_tool_returns_in_history(_new_msgs)
                 self.history.extend(_new_msgs)
 
-                # 出戏重说闭环（§D.4）：被拦文本用警告提示重写一次，产物直接放行发送
-                if _ooc_blocked and bot and return_mode in ["always", "by_bot"]:
-                    await self._ooc_rewrite_and_send(_ooc_blocked, bot, ev)
+                # 输出闸门收尾：尖括号熔断/补写/scrub；熔断后仍做独立 OOC 重说
+                _ab_abort = await self._resolve_output_gate_after_run(
+                    context,
+                    bot,
+                    ev,
+                    return_mode=return_mode,
+                    ooc_blocked=_ooc_blocked,
+                    ab_abort=_ab_abort or output_gate.is_fused(context.extra),
+                )
 
                 # L3：记录本轮实际调用过的工具所属能力族，使其在随后数轮继续常驻，
                 if _tool_call_list:

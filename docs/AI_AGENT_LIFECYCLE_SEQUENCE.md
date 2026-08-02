@@ -1,12 +1,13 @@
 # GsCore AI：一条消息的完整生命周期
 
-> 日期：2026-07-29（对齐源码：system 前缀缓存 / 工具池 / 闲聊不砍工具 / 抢答取消 / 机器腔熔断）
+> 日期：2026-08-02（对齐源码：system 前缀缓存 / 工具池 / 闲聊不砍工具 / 抢答取消 / **统一输出闸门 `pre_send_gate`** / 尖括号熔断 / `render_html_to_image` 自由 HTML）
 > 主线：**适配器推来一条群聊消息 → 是否进 AI → 读哪些数据 → 激活哪些模块 → 怎么回复 → 什么被沉淀 → 首尾日志**
-> 源码是唯一事实源。改 `handler` / `handle_ai` / `gs_agent` / 装配 / 记忆 / subagent 后请同步本文。
+> 源码是唯一事实源。改 `handler` / `handle_ai` / `gs_agent` / `output_gate` / 装配 / 记忆 / subagent 后请同步本文。
 > 关联：
 > - 开发技能：`docs/skills/gscore-development/references/02-startup-lifecycle.md`、`04-event-trigger-flow.md`、`06-ai-session-and-persona.md`、`07-tool-registry-and-agent.md`、`09-memory-system.md`
 > - 会话日志：`AI_SESSION_LOG_CHAIN_AND_WATERFALL_20260708.md`
 > - 本批行为交接：`AI_CORE_OOC_DELEGATION_UPDATE_20260724.md`
+> - 渲染：`docs/TAKUMI_HTML_GUIDE.md`、`ai_core/buildin_tools/html_render_tools.py`
 
 ---
 
@@ -18,10 +19,11 @@
 | **§1** | 一图总览：单条消息 12 个阶段（文字） |
 | **§S** | **时序图集（Mermaid）**：端到端 + 分阶段 + 记忆/表情 + Subagent/Kanban + 异步沉淀 |
 | **§2–§13** | **按时间顺序逐步走**（读 / 写 / 模块 / 日志） |
+| **§10.4–§10.6** | Agent 环内：**统一输出闸门** / 假完成 / `send_chat_result` 呈现层 |
 | **§14** | 三套历史 / 三类落盘对照 |
 | **§15** | 进程启动与 `init_ai_core`（消息到来之前） |
 | **§16** | 后台链路：Heartbeat / 定时 / Kanban（非本条用户消息） |
-| **§17** | 成本与意图相关修法备忘 |
+| **§17** | 成本 / 意图 / 输出闸 / 渲染备忘 |
 
 **读图约定**：
 
@@ -82,9 +84,9 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 uv run core --po
 ⑧ 装配 user 侧上下文                          [payload / memory / history / assembly]
     ▼
 ⑨ Agent.run：工具五层 + LLM 迭代               [gs_agent]
-    │  工具执行 / report 发送 / session_log
+    │  工具执行 / **pre_send_gate** / send_chat_result / session_log
     ▼
-⑩ 回合收尾：history lean / 好感度 / mood       [gs_agent + handle_ai]
+⑩ 回合收尾：history lean / 闸门收尾重写 / 好感度 / mood
     ▼
 ⑪ 发送路径旁路：Bot 出站 + 助手侧记忆 observe  [bot.send]
     ▼
@@ -116,13 +118,14 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 uv run core --po
 | SoftGate | `heartbeat.decision.run_reactive_gate` | 软触发沉默门 |
 | DualRoute | `memory.retrieval.dual_route` | 双路记忆检索（读） |
 | CtxAsm | `context_assembly` | user 侧动态上下文顺序 |
-| GsAgent | `gs_agent.GsCoreAIAgent` | 工具五层 + LLM 迭代 |
+| GsAgent | `gs_agent.GsCoreAIAgent` | 工具五层 + LLM 迭代 + 出站闸编排 |
 | Toolset | `register` / `dynamic_toolset` / `rag.tools` | 保底/状态/向量/find_tools |
 | LLM | pydantic-ai `Agent.iter` | 模型请求与 tool 循环 |
+| OutGate | `output_gate.pre_send_gate` | **统一发送前闸门**（尖括号 + OOC） |
 | SubAgent | `buildin_tools.subagent.create_subagent` | 通用子代理 / 能力代理入口 |
 | CapRunner | `capability_agents.runner` | 无人格能力节点执行 |
 | Kanban | `planning.kanban` / `kanban_executor` | 任务树、kick、转译推群 |
-| SendPath | `utils.send_chat_result` | 两通道 report / meme 标签 / 出站 |
+| SendPath | `utils.send_chat_result` | 呈现层：report / meme / 出图 / 拆条 / sanitize |
 | BotSend | `bot._Bot.send` | WS 出站 + 助手历史 + 主动会话 observe |
 | SessLog | `session_logger.AISessionLogger` | C 轨事件流（可落盘） |
 | Ingest | `memory.ingestion.worker` | Episode/边/偏好异步 flush |
@@ -202,10 +205,15 @@ sequenceDiagram
                 GsAgent->>GsAgent: 执行工具（可 create_subagent）
             end
             opt Text 且 by_bot
-                GsAgent->>SendPath: send_chat_result（含 OOC/机器腔门）
-                SendPath->>BotSend: bot.send
-                BotSend->>Adapter: MessageSend
-                Adapter-->>User: 展示文本/图/表情
+                GsAgent->>GsAgent: pre_send_gate（尖括号+OOC）
+                alt REWRITE / FUSE / FALLBACK
+                    Note over GsAgent: 打回注入 / 熔断静默 / 发兜底句
+                else ALLOW
+                    GsAgent->>SendPath: send_chat_result（呈现层）
+                    SendPath->>BotSend: bot.send
+                    BotSend->>Adapter: MessageSend
+                    Adapter-->>User: 展示文本/图/表情
+                end
             end
         end
 
@@ -428,7 +436,7 @@ sequenceDiagram
 
 ---
 
-### S.6 阶段 ⑨：Agent 工具五层 + LLM 环 + 发送
+### S.6 阶段 ⑨：Agent 工具五层 + LLM 环 + 输出闸门 + 发送
 
 ```mermaid
 sequenceDiagram
@@ -439,6 +447,7 @@ sequenceDiagram
     participant LLM
     participant Plugin as 插件/MCP/buildin 工具
     participant SubAgent as create_subagent
+    participant OutGate as pre_send_gate
     participant SendPath
     participant BotSend
     participant SessLog as SessLog
@@ -456,6 +465,7 @@ sequenceDiagram
 
     loop pydantic-ai Agent.iter
         Note over GsAgent: 节点间隙：若 _cancel_generation 已 set<br/>→ abort（同 Session 新消息抢答）
+        Note over GsAgent: ModelRequest 前可注入：墙钟/ thrash /<br/>输出闸 REWRITE feedback / FUSE 提示
         GsAgent->>LLM: ModelRequest（含 message_history）
         LLM-->>GsAgent: parts
 
@@ -466,24 +476,38 @@ sequenceDiagram
             alt tool == create_subagent
                 GsAgent->>SubAgent: 见 S.7
                 SubAgent-->>GsAgent: 回执字符串
+            else tool == send_message_by_ai
+                Note over Plugin: tool 入口先 pre_send_gate(channel=tool)<br/>REWRITE/FUSE → return 警告字符串
+                Plugin-->>GsAgent: ToolReturn
             else 普通工具
                 Plugin-->>GsAgent: ToolReturn
             end
             GsAgent->>SessLog: log_tool_call / log_tool_return
             Note over GsAgent: 技术 dump/高密度 JSON 当轮屏蔽或折叠<br/>注入 POST_TOOL 出图/换路契约
         else TextPart
-            alt SILENCE / 假完成暂扣 / OOC
-                Note over GsAgent: machine_dump → 直接「额…出错了」<br/>其它 OOC → 重说闭环
-            else return_mode=by_bot
-                GsAgent->>SendPath: send_chat_result(text)
-                Note over SendPath: 两通道拆分 → report 出图<br/>&lt;meme:情绪&gt; → 选表情发送<br/>md 净化 / 拆条
-                SendPath->>BotSend: bot.send(segments|image)
-            end
             GsAgent->>SessLog: log_text_output
+            alt SILENCE / 去重 / 中间文本抑制 / 假完成暂扣
+                Note over GsAgent: 不进入 OutGate 或暂扣后处理
+            else return_mode=by_bot
+                GsAgent->>OutGate: pre_send_gate(text, extra, channel=main)
+                alt FUSE
+                    Note over OutGate,GsAgent: 熔断：本轮不再发；run 末 scrub 脏历史
+                else REWRITE 且 angle_bracket
+                    Note over GsAgent: 不发送；下一轮 ModelRequest 注入 feedback<br/>同 turn 累计 3 次 → FUSE
+                else REWRITE 且 ooc.defer
+                    Note over GsAgent: 记入 _ooc_blocked；run 末轻量重说
+                else FALLBACK
+                    GsAgent->>SendPath: send_chat_result(兜底句)
+                else ALLOW
+                    GsAgent->>SendPath: send_chat_result(text)
+                    Note over SendPath: 呈现层：report 出图 / meme / md 净化<br/>剥 tool_call 伪影 / 长文出图 / 拆条<br/>尖括号 sanitize 兜底 / 无反馈通道 OOC 替换
+                    SendPath->>BotSend: bot.send(segments|image)
+                end
+            end
         end
     end
 
-    Note over GsAgent: 收尾：_relean_user_turn / tool 截断 / compact report<br/>history.extend / extract_history / L3 驻留 / token / budget<br/>若被 supersede 取消则不写 history
+    Note over GsAgent: 收尾：_relean_user_turn / tool 截断 / compact report<br/>history.extend<br/>尖括号：熔断 scrub / 已恢复替换脏 TextPart / 未恢复补重写<br/>OOC：_ooc_rewrite_and_send（尖括号熔断仍执行，与 angle scrub 正交）<br/>L3 驻留 / token / budget<br/>若 supersede 取消则不写 history
     GsAgent->>SessLog: log_result / token / log_run_end
     GsAgent-->>HandleAI: result
 ```
@@ -644,9 +668,12 @@ flowchart TD
     I --> J[Agent.run]
     J --> K{工具/文本}
     K -->|create_subagent| L[ad-hoc / Kanban]
-    K -->|Text by_bot| M[send_chat_result]
+    K -->|Text by_bot| G0{pre_send_gate}
+    G0 -->|ALLOW/FALLBACK| M[send_chat_result 呈现]
+    G0 -->|REWRITE| J
+    G0 -->|FUSE| O
     M --> N[bot.send + 助手 observe]
-    J --> O[lean history + favor/mood]
+    J --> O[lean history + 闸门收尾 + favor/mood]
     N --> Q[异步 flush]
     O --> Q
 ```
@@ -1063,7 +1090,7 @@ session_logger.log_user_input(final_user_message)
 | L4/L5 向量 | **有 query 即搜** | 近文 + 本轮检索；族展开受 `tool_extra_pool_max`（默认 6）；**闲聊不跳过** |
 | 委派 | 交互主人格 | 剥离 exclusive；必要时注入 `create_subagent`；roster 在 **system** |
 | 渐进 | 每轮可挂 | `find_tools` + RetrievableToolset（常挂，含误判闲聊） |
-| media | 按需 | `render_card` / `render_markdown_to_image`（`资料出图` 族） |
+| media | 按需 | `render_card` / `render_markdown_to_image`（`资料出图` 族）；**多数据点主路径仍是 buildin 的 `render_html_to_image`（自由 HTML）** |
 
 日志例：
 
@@ -1075,37 +1102,104 @@ session_logger.log_user_input(final_user_message)
 session_logger.log_tools_list([...])
 ```
 
-### 10.4 pydantic-ai 迭代环 + OOC/机器腔熔断（B）
+### 10.4 pydantic-ai 迭代环 + 统一输出闸门（B）
+
+> 源码：`gs_agent._execute_run_once` 内 `Agent.iter`；闸门 `output_gate.pre_send_gate`。
 
 ```text
 agent.iter(message_history=self.history + 本轮 user)
   loop:
     若 _cancel_generation.is_set() → break（A 抢答中止）
     ModelRequestNode → 调 LLM（流式）
+      请求前可注入 UserPromptPart：
+        · 墙钟软预算 / 同工具 thrash fuse
+        · 输出闸 REWRITE feedback（上一轮 Text 被打回）
+        · 输出闸 FUSE 提示（熔断后最多注入一次）
       parts:
         Thinking  → log_thinking
         ToolCall  → 执行工具 → ToolReturn
                     log_tool_call / log_tool_return
+                    send_message_by_ai：入口 tool_gate_feedback = pre_send_gate(channel=tool)
+                      · REWRITE/FUSE → 工具 return 警告字符串，不发用户
                     交互主人格：
                       · is_tech_dump → 替换为 TECH_DUMP_TOOL_SHIELD（禁复读堆栈）
                       · 高密度 JSON → 摘要折叠 + 出图提示
                     outcome 失败/空 → POST_TOOL_FAIL_CONTRACT（换路）
                     否则 POST_TOOL_OUTPUT_CONTRACT（多项数据 render_html 出图）
-        TextPart  → return_mode=by_bot 时:
-                    OOC 预检 output_firewall.check_ooc
-                      · machine_dump → 直接发 MACHINE_FALLBACK「额…出错了，稍后再试」
-                      · 其它 → 记入 _ooc_blocked，iter 后重说闭环
-                    假完成预检 / SILENCE / 去重
-                    send_chat_result
+        TextPart  → log_text_output；return_mode=by_bot 时按序：
+                    1) SILENCE / 本轮去重 / 中间文本抑制
+                    2) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
+                    3) 假完成预检（零工具却声称办完）→ 暂扣
+                    4) ALLOW → send_chat_result（呈现层，见 §10.6）
+  End 后收尾（未被 supersede 时）:
+    history.extend(new_messages)；_relean_user_turn（剥墙钟/闸门 nudge 前缀）
+    尖括号策略：熔断 scrub 脏 TextPart+nudge / 已恢复则替换脏文本 / 否则补轻量重写
+    OOC：_ooc_rewrite_and_send（**尖括号熔断仍执行**；与 angle scrub 正交）
 ```
 
 **机器腔判据（形态，非业务词）**：`Traceback`、`File "…", line`、`"status": 5xx`、`status_code`、常见 `*Error:`、内存地址、框架栈特征等（`output_firewall._TECH_DUMP_RE` / `is_tech_dump`）。
 
 **工具执行**可读：插件函数 / MCP / buildin；可写：插件业务 DB、state_store、Kanban、artifact 文件等（视工具）。
 
-**`send_chat_result` 发送链**：错误脱敏 → 剥工具伪影 → **report 两通道** → md 净化 → OOC 门 → 拆条延迟 → `bot.send`。
+### 10.5 统一输出闸门 `pre_send_gate`（内容能不能发）
 
-### 10.5 日志（⑨）核心串
+> 源码：`gsuid_core/ai_core/output_gate.py`。策略检测逻辑仍分模块，**编排只走这一入口**。
+
+| 策略顺序 | 模块 | 命中决策 | 同 turn 行为 |
+|----------|------|----------|--------------|
+| 1 `angle_bracket` | `angle_bracket_guard` | 非法 `<>`（如 `<bubble/>` / **`<br>`**）→ **REWRITE**；同 ModelResponse 多段只计 1 次 attempt；累计 3 次 → **FUSE** | 主路径：下一轮 ModelRequest 注入 feedback（`merge_rewrite_feedbacks`）；工具：return 警告；熔断后本轮静默并 scrub 历史 |
+| 2 `ooc` | `output_firewall.check_ooc` | **machine_dump** 主路径 → **FALLBACK**「额…出错了，稍后再试」；其它主路径 → **REWRITE+defer**（记入 `_ooc_blocked`，run 末轻量重说）；工具路径：提醒一次再命中非 never-release 可放行；资金/机器腔 never-release 持续打回 | 状态仅 `extra["output_gate"]` → **`GateBag`**（`angle_bracket` / `ooc` 的 `PolicyState` + `ooc_warned_turn_ids`） |
+
+**决策枚举** `GateDecision`：`ALLOW` | `REWRITE` | `FALLBACK` | `FUSE`。
+
+**协议标签不触发尖括号闸**（检测前剥掉）：`<SILENCE>`、`<meme:…>`。
+**`<br>` / `<report>` 不是协议**——与其它自造标签一样打回；多项资料出图走
+`render_html_to_image`（呈现层仍兼容剥离遗留 `<report>` body 并出图）。
+
+**假阳性抑制（检测启发式）**：形如 `</?Name…>`；`List<str>` 等 PascalCase 泛型、`a < b > c` 比较、含 `@` 的伪标签跳过。
+
+**环内 API**：`begin_response_batch(extra)`（每个 `CallToolsNode` 处理 TextPart 前）；`count_attempt=` 控制同 response 只计一次；收尾 `plan_angle_after_run` + `gs_agent._resolve_output_gate_after_run`（post-end 失败亦 `set_fused`，与环内 FUSE 一样跳过 OOC 重说）。轻量重写共用 `_lightweight_text_rewrite`。
+
+**不在 `pre_send_gate` 内**（故意分层，见 §10.6 / 主循环其它闸）：
+
+| 类别 | 位置 | 说明 |
+|------|------|------|
+| 假完成 | `gs_agent` TextPart（gate **之后**） | 与「是否调过工具」结构绑定，不是纯文本合规 |
+| SILENCE / 去重 / 中间抑制 | `gs_agent` | 通道与节奏 |
+| 剥 tool_call 伪影 / 私有 token / 资源句柄 | `send_chat_result` | 静默 sanitize，不打回 |
+| report / meme / 长 markdown 出图 / 空行拆条 | `send_chat_result` | **呈现层** |
+| 无反馈通道 OOC 末端替换 | `send_chat_result(ooc_check=True)` | proactive 等：直接换兜底句 |
+| 尖括号 sanitize 兜底 | `send_chat_result` | gate 漏网时删标签；`<br>`→换行 |
+
+后续新增「打回/熔断」类策略：在 `output_gate` 挂 `_eval_*`，**不要**在 `gs_agent` 再手写第二套顺序。开发技能导航：[§7.12](skills/gscore-development/references/07-tool-registry-and-agent.md)、[§12.22](skills/gscore-development/references/12-developer-pitfalls.md)。
+
+### 10.6 `send_chat_result` 呈现链（怎么发到 IM）
+
+> 在 **gate 已 ALLOW（或 FALLBACK 安全句）** 之后调用；不负责策略编排。
+
+```text
+SILENCE 整段 → return
+API 错误字面量 → 角色短句替换
+剥 tool_call 伪影 / 模型私有 token
+资源句柄 resolve 或抹除
+制品两通道兜底：内容形态结构化块 + 遗留 <report> body → 资料图
+（主契约是 agent 调 render_html_to_image，非标签协议）
+非法 <> sanitize 兜底（漏网；``<br>``→换行；``<report>`` 标签删除）
+解析 <meme:情绪>；剥 markdown / *动作*
+若 ooc_check：台词 + report 体再 check_ooc → 替换/丢弃（无重说）
+长 markdown → 整篇出图（失败则降级拆条）
+空行拆条 + 打字延迟 → bot.send
+尾声：report 图 + meme
+```
+
+**`render_html_to_image`（资料出图主路径，2026-08）**：
+
+- **默认自由 HTML**：不自动套暗色设计系统壳；agent 自写完整 HTML/`<style>`。
+- 原生 `<table>`：经 `table_rewrite.rewrite_tables_for_takumi` 改成 `.md-table` flex（Takumi 无 CSS table 模型；新/旧 pytakumi 均兜底）。
+- 可选壳：`_wrap_with_design_shell` 仅测试/显式调用。
+- 次选：`render_card`（固定 JSON 布局）、`render_markdown_to_image` / 长 MD 自动出图。
+
+### 10.7 日志（⑨）核心串
 
 ```text
 🧠 [GsCoreAIAgent] ====== Agent 运行开始 ======
@@ -1123,6 +1217,8 @@ session_log entries（磁盘，可稍后刷）：
 
 `run_start` → `user_input` → `tools_list` → `thinking`* → (`tool_call`/`tool_return`)* → `text_output`* → `result` → `token_usage` → `run_end`
 
+> 注：`text_output` 记录的是模型**原始**台词（可含后被 gate 拦下的 `<bubble/>` 等）；是否真正出站看 gate + `send_chat_result`。熔断/scrub 改的是 **B 轨 `self.history`**，不一定回写 session_log 已落条目。
+
 ---
 
 ## 11. 阶段 ⑩：回合收尾（内存 lean + 业务沉淀）
@@ -1131,15 +1227,18 @@ session_log entries（磁盘，可稍后刷）：
 
 | 动作 | 目的 |
 |------|------|
-| `_relean_user_turn` | 剥 user 侧规程/动态块，**不进**持久 history |
+| `_relean_user_turn` | 剥 user 侧规程/动态块/墙钟与闸门 nudge 前缀，**不进**持久 history |
 | tool return 截断/摘要 | 控 token |
 | report 结构块 compact | 历史里去表，metadata 留 `sent_reports` 标题 |
 | `history.extend(new_messages)` | 更新 B 轨 |
+| **输出闸收尾** `_resolve_output_gate_after_run` | `plan_angle_after_run`：熔断 scrub / `replace_map` 安全替换 / 补重写失败亦 `set_fused`；**尖括号熔断仍** `_ooc_rewrite_and_send`（独立 defer 段） |
 | `extract_history` 安全截断 | ToolCall/Return 配对；可能 `history_reset auto_compact` |
 | L3 驻留：记录本轮调用过的能力族 | 下几轮工具池 |
 | `log_result` / `log_run_end` / token | 观测 |
 | 预算记账 | SQLite ledger |
 | 释放 `_run_lock` | `执行完成，释放锁` |
+
+日志例：`[output_gate] RUN FUSED after N bounces` / `[output_gate/angle_bracket] REWRITE k/3` / OOC firewall 相关 warning。
 
 ### 11.2 `handle_ai_chat` 尾
 
@@ -1252,15 +1351,18 @@ code / plugin_dev 等需要产物与审批的仍走看板。
 
 ---
 
-## 17. 附录 C：成本 / 缓存 / 意图 / 抢答备忘（2026-07-29）
+## 17. 附录 C：成本 / 缓存 / 意图 / 抢答 / 输出闸备忘（2026-08-02）
 
 1. **system 前缀缓存**：会话内 system **不改串**（TTL=inf）；mood/关系/记忆/精确时间只进 user。
 2. **工具规程**：全文在 system；user 侧不再塞 LITE/全文规程块。
 3. **意图**：prior 拼接 + 省略/短句升工具；**装配不因闲聊砍向量/状态族**；闲聊只影响风格提示与无工具计数豁免。
 4. **工具池**：保底约 self+buildin；附加 recall 默认 3、extra max 默认 6；驻留 2 轮；超大族不突破 max。
 5. **抢答（A）**：同 Session 新 run 在锁被占时 set cancel；旧 generation 节点间隙 abort 且不写 history。
-6. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 直接「额…出错了，稍后再试」。
-7. **软门 / Kanban / 无业务特判**：规则预筛；文本 profile 默认可 transient；专域靠插件 node + 工具描述。
+6. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 经 `pre_send_gate` → 主路径 **FALLBACK**「额…出错了，稍后再试」。
+7. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC**；主路径与 `send_message_by_ai` 共用 `ToolContext.extra` 计数；尖括号同 turn **3 次熔断**并 scrub 脏历史/nudge；**不要**在 `gs_agent` 再平行写第二套检测顺序。
+8. **呈现 vs 合规**：`send_chat_result` 只做通道变换与 sanitize 兜底；打回/熔断只在 gate。
+9. **自由 HTML 出图**：`render_html_to_image` 默认不套设计壳；table 走 rewrite；详见 `html_render_tools` / `TAKUMI_HTML_GUIDE`。
+10. **软门 / Kanban / 无业务特判**：规则预筛；文本 profile 默认可 transient；专域靠插件 node + 工具描述。
 
 ---
 
@@ -1282,7 +1384,8 @@ code / plugin_dev 等需要产物与审批的仍走看板。
 | gs_agent 工具装配 | 是 | 层随状态/向量/驻留变；**不**因闲聊硬砍 |
 | LLM provider | 是 | 除非软门沉默/早退 |
 | 插件工具 / MCP | 条件 | 模型点名才执行 |
-| send_chat_result | 条件 | 有可见文本/report |
+| **output_gate / pre_send_gate** | 条件 | by_bot 发台词或 `send_message_by_ai` 时 |
+| send_chat_result | 条件 | gate ALLOW/FALLBACK 后有可见文本/report |
 | session_logger | 是 | 进 run 即 log |
 | mood / favorability | 条件 | 有效互动 |
 | Ingestion flush | 异步 | 非同步在本请求内 |

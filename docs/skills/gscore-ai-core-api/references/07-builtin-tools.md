@@ -68,10 +68,11 @@ async def send_message_by_ai(
 ) -> str
 ```
 
-> **出戏防火墙接入（2026-07-08，§D.4）**：`text` 发送前过
-> `output_firewall.gate_warn_once`——同轮首次命中返回重写警告（AI 据此重写重发）、同轮
-> 第二次仍命中则放行。改造此工具时**不要**破坏这个"提醒一次→重说→放行"语义，
-> 详见 [gscore-development §12.22](../../gscore-development/references/12-developer-pitfalls.md)。
+> **统一输出闸门（2026-08）**：`text` 发送前过 `output_gate.tool_gate_feedback`
+> （= `pre_send_gate(channel="tool")`；历史别名 `gate_warn_once`）——**尖括号**非法标签
+> （含 `<br>` / `<bubble/>`）打回直至熔断；**OOC** 同轮首次警告、再命中非 never-release 放行。
+> 通过后走 `send_chat_result(..., ooc_check=False)` 做呈现归一化。改造时不要绕过闸门，
+> 详见 [gscore-development §7.12 / §12.22](../../gscore-development/references/07-tool-registry-and-agent.md)。
 
 ### `add_once_task` — 添加一次性定时任务
 
@@ -179,6 +180,7 @@ async def resume_scheduled_task(
 ## 7.2 Buildin 工具（`category="buildin"`）—— 框架保底工具池
 
 `buildin` 分类下的工具属于**框架保底工具池**，主Agent 无条件全部加载，不受向量搜索影响。
+含 **`render_html_to_image`**（多数据点出图主路径，见下方 §7.2.1）。
 
 ### `search_knowledge` — 知识库检索
 
@@ -282,6 +284,26 @@ async def state_append(
 | `"global"` | 全局共享数据 |
 
 > 插件可直接复用底层 API（`from gsuid_core.ai_core.state_store import state_get_value, state_set_value, ...`）来构建有状态功能，无需关心存储细节。
+
+### 7.2.1 `render_html_to_image` — 自由 HTML 出图（保底）
+
+```python
+@ai_tools(category="buildin", capability_domain="资料出图")
+async def render_html_to_image(
+    ctx: RunContext[ToolContext],
+    html_content: str,
+    image_format: Literal["png", "jpeg"] = "png",
+    max_width: int = 800,
+) -> str | bytes
+```
+
+- **默认自由 HTML**：不自动套暗色设计壳；agent 自写完整文档或带 `<style>` 的片段。
+- 原生 `<table>`：引擎侧 `rewrite_tables_for_takumi` 改成 flex 网格（Takumi 无 CSS table）。
+- **自动嵌图**（渲染前）：`<img src>` / CSS `url(...)` 中的 `https://`、`icon:prefix/name`、
+  `img_`、`res_` 转 data URI；**无独立嵌图工具**、无业务域特判——写正常 HTML 一次出图。
+- 多数据点 / 列表 / 对比：**首选本工具**，禁止长表当台词。
+- 次选：`render_card` / `render_markdown_to_image`（`category="media"`，向量按需）。
+- 约束与示例：工具 docstring、[`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)。
 
 ---
 
@@ -408,28 +430,21 @@ async def stop_agent_tool(
 
 ## 7.4 Media 工具（`category="media"`）
 
-多媒体渲染工具，主Agent可调用。
+按需向量召回的渲染次选；**多数据点主路径是 buildin 的 `render_html_to_image`（§7.2.1）**。
 
-### `render_html_to_image` — 将HTML渲染为图片
+### `render_card` — 固定 JSON 布局卡片
 
-```python
-@ai_tools(category="media")
-async def render_html_to_image(
-    ctx: RunContext[ToolContext],
-    html: str,                     # HTML 内容
-    width: int = 800,              # 渲染宽度
-) -> str
-```
+结构化 `card_type`（weather / news / board 等）快捷出图；数据不契合时请用自由 HTML。
 
-### `render_markdown_to_image` — 将Markdown渲染为图片
+### `render_markdown_to_image` — 将 Markdown 渲染为图片
 
 ```python
-@ai_tools(category="media")
+@ai_tools(category="media", capability_domain="资料出图")
 async def render_markdown_to_image(
     ctx: RunContext[ToolContext],
-    markdown: str,                 # Markdown 内容
-    width: int = 800,              # 渲染宽度
-) -> str
+    markdown_content: str,
+    ...
+) -> str | bytes
 ```
 
 ---

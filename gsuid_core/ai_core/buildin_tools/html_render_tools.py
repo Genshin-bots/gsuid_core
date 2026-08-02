@@ -4,11 +4,15 @@
 渲染成功后自动通过 bot 发送图片；bot 不可用时回传 bytes 供 agent loop 注册资源。
 """
 
+import re
 import json
+import base64
+import asyncio
 import datetime
-from typing import Any, Literal
+from typing import Any, Tuple, Literal, Optional
 from pathlib import Path
 
+import httpx
 from pydantic_ai import RunContext
 
 from gsuid_core.i18n import t
@@ -17,12 +21,51 @@ from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.html_render import im_templates, render_md_to_bytes, render_html_to_bytes
+from gsuid_core.utils.resource_manager import RM
+
+# 嵌图上限：防 agent 把数 MB 原图塞进 HTML 撑爆上下文
+_EMBED_MAX_BYTES = 450_000
+_EMBED_HTTP_TIMEOUT = 12.0
+_EMBED_USER_AGENT = "GsCore-HTMLEmbed/1.0 (+local-render)"
+# 单次 HTML 自动嵌图：并发与数量上限（通用，不按业务域特判）
+_AUTO_EMBED_MAX_IMAGES = 32
+_AUTO_EMBED_MAX_SIDE = 512
+_AUTO_EMBED_CONCURRENCY = 6
+# Iconify 按需单图标（约 1KB），替代本地 100MB 图标包
+_ICONIFY_SVG_URL = "https://api.iconify.design/{prefix}/{name}.svg"
+_ICON_SOURCE_RE = re.compile(
+    r"^icon:(?P<prefix>[a-z0-9-]+)/(?P<name>[a-z0-9-]+)$",
+    re.IGNORECASE,
+)
+# HTML <img src="...">（属性顺序任意）
+_IMG_SRC_ATTR_RE = re.compile(
+    r'(?P<pre><img\b[^>]*?\bsrc\s*=\s*)(?P<q>["\'])(?P<src>[^"\']+)(?P=q)',
+    re.IGNORECASE | re.DOTALL,
+)
+# CSS url(...)：仅匹配需解析的前缀，避免动 data: / 相对路径 / 字体
+_CSS_URL_RE = re.compile(
+    r"url\(\s*(?P<q>['\"]?)(?P<src>(?:https?://|icon:|img_|res_)[^'\"\)\s]+?)(?P=q)\s*\)",
+    re.IGNORECASE,
+)
+# 解析失败时的 1×1 透明 PNG，避免布局塌成破图占位文字
+_TRANSPARENT_1PX_PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+# Takumi 引擎卫生 CSS：无主题、无业务域；修常见引擎坑
+_TAKUMI_ENGINE_HYGIENE_CSS = """
+/* engine hygiene — not a visual theme */
+img{max-width:100%;height:auto;}
+/* short labels: CJK must not wrap per-glyph in tight chips */
+.tag,.badge,.chip,.pill,.label{white-space:nowrap;word-break:keep-all;}
+"""
 
 _MD_CSS_PATH = str(Path(__file__).resolve().parent.parent.parent / "utils" / "html_render" / "markdown_dark.css")
 
 _FOOTER_TEMPLATE = "\n\n---\n\n> AI 生成资料 · 数据可能滞后 · 仅供参考 · {ts}"
 
-# 暗色可视化壳：自带设计系统 class，agent 写片段时不必手写完整 CSS
+# 可选暗色设计系统壳（仅显式调用 ``_wrap_with_design_shell`` 时使用）。
+# ``render_html_to_image`` 默认**不**套壳——agent 按内容自由写完整 HTML / 自带 <style>。
 _HTML_SHELL = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -150,8 +193,8 @@ def _footer() -> str:
     return _FOOTER_TEMPLATE.format(ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 
-def _wrap_html_if_needed(html_content: str) -> str:
-    """缺完整文档结构时套暗色设计系统壳。"""
+def _wrap_with_design_shell(html_content: str) -> str:
+    """可选：套暗色设计系统壳（离线 demo / 测试用）。``render_html_to_image`` 默认不调用。"""
     html = html_content.strip()
     lower = html[:200].lower()
     if lower.startswith("<!doctype") or lower.startswith("<html"):
@@ -160,6 +203,60 @@ def _wrap_html_if_needed(html_content: str) -> str:
         body=html,
         ts=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
+
+
+# deprecated: 仅旧测试别名，新代码请用 _wrap_with_design_shell
+_wrap_html_if_needed = _wrap_with_design_shell
+
+
+def _inject_style(html: str, css: str) -> str:
+    """把 CSS 注入到已有 <style> / <head>，否则包一层最小文档。"""
+    css_block = f"<style>\n{css}\n</style>"
+    lower = html.lower()
+    style_close = lower.rfind("</style>")
+    if style_close != -1:
+        return html[:style_close] + "\n" + css + "\n" + html[style_close:]
+    head_close = lower.find("</head>")
+    if head_close != -1:
+        return html[:head_close] + css_block + "\n" + html[head_close:]
+    # 片段：前置 style，由 html_to_pic 抽取
+    return f"{css_block}\n{html}"
+
+
+def _rewrite_html_tables(html: str) -> str:
+    """原生 <table> → flex 行（Takumi 无 CSS table；见 ``table_rewrite``）。
+
+    自由 HTML 强制本地改写（保留 td/th class/style）；注入 CSS 按页面主题选择，
+    默认 layout-only，避免深色页套浅色表导致看不清。
+    """
+    if "<table" not in html.lower():
+        return html
+    from gsuid_core.utils.html_render.table_rewrite import (
+        md_table_flex_css,
+        rewrite_tables_for_takumi,
+    )
+
+    # prefer_local：保留 .up/.down 等 agent 写在 td 上的 class
+    rewritten = rewrite_tables_for_takumi(html, prefer_local=True)
+    if "md-table" not in rewritten:
+        return rewritten
+    compact = rewritten.replace(" ", "").replace("\n", "")
+    if ".md-table{" in compact or "md-table{display" in compact:
+        return rewritten
+    # 自由 HTML 一律 layout-only：不写死字色/表底，避免盖掉 body 与 .up/.down
+    return _inject_style(rewritten, md_table_flex_css(theme="layout"))
+
+
+def _prepare_free_html(html_content: str) -> str:
+    """自由 HTML 预处理：不套设计壳；table 改写；注入引擎卫生 CSS（无主题）。"""
+    html = html_content.strip()
+    if not html:
+        return html
+    html = _rewrite_html_tables(html)
+    # 已注入过则跳过（避免重复）
+    if "engine hygiene" not in html:
+        html = _inject_style(html, _TAKUMI_ENGINE_HYGIENE_CSS)
+    return html
 
 
 async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> bool:
@@ -411,7 +508,7 @@ async def render_card(
 ) -> str | bytes:
     """将结构化 JSON 渲染为信息图并自动发送。**快捷次选**（固定布局）。
 
-    多数据点出图**首选** ``render_html_to_image`` 自写布局；仅当数据恰好契合下列形态时
+    多数据点出图**首选** ``render_html_to_image`` **自由自写 HTML**；仅当数据恰好契合下列形态时
     可用本工具省事。card_type 是布局名，不是业务关键词：
     - weather：多日/多指标面板
     - news：要点列表
@@ -459,6 +556,239 @@ async def render_card(
         return f"渲染失败：{str(e)}。请调整内容后重试渲染工具；仍失败则只对用户说一两句角色短结论，禁止长列表当台词。"
 
 
+def _sniff_image_mime(data: bytes) -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    head = data[:200].lstrip().lower()
+    if head.startswith(b"<svg") or b"<svg" in data[:500].lower():
+        return "image/svg+xml"
+    return "image/png"
+
+
+def _bytes_to_data_uri(data: bytes, mime: Optional[str] = None) -> str:
+    m = mime or _sniff_image_mime(data)
+    return f"data:{m};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _shrink_raster_if_needed(data: bytes, *, max_side: int, max_bytes: int) -> bytes:
+    """过大位图缩边 + 再编码；SVG 原样返回。失败则返回原 bytes。"""
+    mime = _sniff_image_mime(data)
+    if mime == "image/svg+xml":
+        return data
+    if len(data) <= max_bytes and max_side <= 0:
+        return data
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        im = Image.open(BytesIO(data))
+        im.load()
+        if max_side > 0 and max(im.size) > max_side:
+            im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        buf = BytesIO()
+        out_fmt = "PNG" if im.mode in ("RGBA", "P") or mime == "image/png" else "JPEG"
+        if out_fmt == "JPEG" and im.mode in ("RGBA", "P"):
+            im = im.convert("RGB")
+        save_kw: dict[str, Any] = {"optimize": True}
+        if out_fmt == "JPEG":
+            save_kw["quality"] = 85
+        im.save(buf, format=out_fmt, **save_kw)
+        out = buf.getvalue()
+        # 仍超限则更激进缩边
+        if len(out) > max_bytes and max_side > 128:
+            return _shrink_raster_if_needed(out, max_side=max(128, max_side // 2), max_bytes=max_bytes)
+        return out
+    except Exception as e:
+        logger.debug(f"[embed_image_for_html] shrink skip: {e}")
+        return data
+
+
+async def _download_url_bytes(url: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """GET 图片 URL。成功 (bytes, None)；失败 (None, 中文错误)。"""
+    try:
+        async with httpx.AsyncClient(
+            timeout=_EMBED_HTTP_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": _EMBED_USER_AGENT},
+        ) as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as e:
+        return None, f"下载失败: {type(e).__name__}: {e}"
+    if resp.status_code >= 400:
+        return None, f"下载失败: HTTP {resp.status_code}"
+    data = resp.content
+    if not data:
+        return None, "下载失败: 空响应"
+    if len(data) > 5_000_000:
+        return None, "下载失败: 文件超过 5MB"
+    ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if ctype and not (
+        ctype.startswith("image/") or ctype in ("application/octet-stream", "binary/octet-stream") or "svg" in ctype
+    ):
+        # 部分 CDN 不给 image/*；靠魔数兜底
+        if _sniff_image_mime(data) == "image/png" and not data.startswith(b"\x89PNG"):
+            # default sniff may false-positive; check for html error page
+            if data.lstrip()[:1] in (b"<", b"{") and b"<svg" not in data[:800].lower():
+                return None, f"下载失败: Content-Type 非图片 ({ctype or 'unknown'})"
+    return data, None
+
+
+async def _resolve_embed_source_bytes(
+    source: str,
+) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """解析嵌图来源 → (bytes, mime_hint, error)。"""
+    raw = (source or "").strip()
+    if not raw:
+        return None, None, "image_source 不能为空"
+
+    # data URI
+    if raw.startswith("data:image/"):
+        try:
+            header, b64 = raw.split(",", 1)
+            mime = header.split(";")[0].split(":", 1)[1]
+            return base64.b64decode(b64), mime, None
+        except Exception as e:
+            return None, None, f"data URI 解析失败: {e}"
+
+    # Iconify 按需单图标：icon:prefix/name
+    m = _ICON_SOURCE_RE.match(raw)
+    if m is not None:
+        prefix = m.group("prefix").lower()
+        name = m.group("name").lower()
+        url = _ICONIFY_SVG_URL.format(prefix=prefix, name=name)
+        data, err = await _download_url_bytes(url)
+        if err is not None:
+            return None, None, f"图标拉取失败 ({prefix}/{name}): {err}"
+        if b"<svg" not in data[:800].lower():
+            return None, None, f"图标拉取失败: 非 SVG 响应 ({prefix}/{name})"
+        return data, "image/svg+xml", None
+
+    # http(s)
+    if raw.startswith("http://") or raw.startswith("https://"):
+        data, err = await _download_url_bytes(raw)
+        if err is not None:
+            return None, None, err
+        assert data is not None
+        return data, _sniff_image_mime(data), None
+
+    # Kanban artifact
+    if raw.startswith("res_"):
+        from gsuid_core.ai_core.buildin_tools.message_sender import _resolve_kanban_artifact
+
+        payload = await _resolve_kanban_artifact(raw)
+        if isinstance(payload, bytes):
+            return payload, _sniff_image_mime(payload), None
+        if isinstance(payload, str):
+            return None, None, f"{raw} 是文本 artifact，不能嵌图；请用图片 URL 或 img_/图片 res_"
+        # fall through to RM
+
+    # RM img_ / 其它
+    try:
+        data = await RM.get(raw)
+    except ValueError as e:
+        if "找不到资源" in str(e):
+            return None, None, f"找不到资源: {raw}"
+        return None, None, f"读取资源失败: {e}"
+    return data, _sniff_image_mime(data), None
+
+
+def _needs_auto_embed(src: str) -> bool:
+    """是否需要在渲染前解析为 data URI（通用前缀，无业务域特判）。"""
+    s = (src or "").strip()
+    if not s or s.startswith("data:"):
+        return False
+    if s.startswith(("http://", "https://", "icon:", "img_", "res_")):
+        return True
+    return False
+
+
+async def _source_to_data_uri(
+    source: str,
+    *,
+    max_side: int = _AUTO_EMBED_MAX_SIDE,
+) -> Tuple[Optional[str], Optional[str]]:
+    """解析来源 → (data_uri, error)。"""
+    data, mime, err = await _resolve_embed_source_bytes(source)
+    if err is not None or data is None:
+        return None, err or "未知错误"
+    data = _shrink_raster_if_needed(data, max_side=max_side, max_bytes=_EMBED_MAX_BYTES)
+    if len(data) > _EMBED_MAX_BYTES and _sniff_image_mime(data) != "image/svg+xml":
+        return None, f"压缩后仍超过 {_EMBED_MAX_BYTES} bytes"
+    mime_final = mime or _sniff_image_mime(data)
+    if mime_final != "image/svg+xml":
+        mime_final = _sniff_image_mime(data)
+    return _bytes_to_data_uri(data, mime_final), None
+
+
+def _collect_auto_embed_sources(html: str) -> list[str]:
+    """收集 HTML 内需自动嵌图的唯一 src（img + CSS url），保序去重。"""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for m in _IMG_SRC_ATTR_RE.finditer(html):
+        src = m.group("src").strip()
+        if _needs_auto_embed(src) and src not in seen:
+            seen.add(src)
+            ordered.append(src)
+    for m in _CSS_URL_RE.finditer(html):
+        src = m.group("src").strip()
+        if _needs_auto_embed(src) and src not in seen:
+            seen.add(src)
+            ordered.append(src)
+    return ordered[:_AUTO_EMBED_MAX_IMAGES]
+
+
+async def _auto_embed_html_images(html: str) -> str:
+    """渲染前：把 ``<img src>`` / ``url(...)`` 中的外链、icon:、img_/res_ 自动换成 data URI。
+
+    **设计意图**：不依赖 agent 再调嵌图工具——写正常 HTML 即可一次出图。
+    解析失败时用 1×1 透明像素占位，不阻断整张渲染。
+    """
+    sources = _collect_auto_embed_sources(html)
+    if not sources:
+        return html
+
+    sem = asyncio.Semaphore(_AUTO_EMBED_CONCURRENCY)
+    resolved: dict[str, str] = {}
+
+    async def _one(src: str) -> None:
+        async with sem:
+            uri, err = await _source_to_data_uri(src)
+            if uri is not None:
+                resolved[src] = uri
+                logger.info(f"[auto_embed] ok src={src[:96]!r} uri_len={len(uri)}")
+            else:
+                resolved[src] = _TRANSPARENT_1PX_PNG
+                logger.warning(f"[auto_embed] fail src={src[:96]!r}: {err}")
+
+    await asyncio.gather(*(_one(s) for s in sources))
+
+    def _repl_img(m: re.Match[str]) -> str:
+        src = m.group("src").strip()
+        if src in resolved:
+            return f"{m.group('pre')}{m.group('q')}{resolved[src]}{m.group('q')}"
+        return m.group(0)
+
+    def _repl_css(m: re.Match[str]) -> str:
+        src = m.group("src").strip()
+        if src in resolved:
+            q = m.group("q") or '"'
+            return f"url({q}{resolved[src]}{q})"
+        return m.group(0)
+
+    out = _IMG_SRC_ATTR_RE.sub(_repl_img, html)
+    out = _CSS_URL_RE.sub(_repl_css, out)
+    return out
+
+
 # 仅 HTML 进保底：多数据点出图主路径；card/md 走 media 按需召回，避免每轮 3 个 schema
 @ai_tools(category="buildin", capability_domain="资料出图")
 async def render_html_to_image(
@@ -469,36 +799,53 @@ async def render_html_to_image(
 ) -> str | bytes:
     """将自定义 HTML 渲染为高清图片并自动发送。**多数据点出图首选**。
 
-    按内容自由设计布局（面板/时间线/对比/看板/资讯流等），模板覆盖不了的场景也能表达。
-    推荐只写 body 片段，系统会套暗色设计系统壳（视口宽 = max_width，高度自适应）。
+    **自由创作，无固定业务模板。** 按用户问题自写 HTML + CSS（主题/配色/布局随内容变），
+    不要套固定「指标卡 + 横条」模板。系统**不会**再自动套暗色设计壳。
 
-    ## 壳内 class（直接拿来用，结构必须匹配；**禁止在自己的 <style> 里重定义壳类**，会撞坏布局）
-    - .grid>.metric：指标卡组，metric 内只放 .lab（小标签）/.val（大数字）/.sub（补充说明）
-    - .row：横条信息卡 = .ico.sm（圆形文字图标，1 个字）+ .main（内含 .title/.desc）
-      + 可选 .tag（右侧彩色标签，变体 .green/.gold/.red）
-    - .chart>.crow：条形图行 = .clab（标签）+ .track>.fill（内联 style="width:百分比%"）
-      + .cval（数值）；上涨/正向用 .fill.up 与 .cval.up
-    - .item：纯文字条目卡；.pill：胶囊标签；.bar：渐变分隔条；.ico：圆形文字图标（变体 .ok/.warn/.bad/.news/.cool）
-    - h1/h2/.meta/.big/.muted：标题/元信息/大数字/弱文字；.day 仅供天气日期卡，勿当通用容器
-    - 确需自定义样式时：只用**新**类名（建议 my- 前缀），绝不覆盖壳类
+    ## 写法
+    - 推荐完整文档：``<!DOCTYPE html><html><head><style>...</style></head><body>...</body></html>``
+    - 也可只写片段 + 内联 ``<style>``；视口宽 = max_width，高度随内容自适应
+    - 中文字体用 ``"MiSans","PingFang SC","Microsoft YaHei",sans-serif``
+    - 布局优先 flex / 基础 grid；可用原生 ``<table>``（引擎侧自动改写为 flex 网格，正常显示）
+    - 多项对比/列表/面板：用表格或自写卡片均可，禁止把长数据念成台词
+    - **暗色主题对比度**：深色背景时，h1/h2/.title/.headline **必须显式** ``color:#edf4ff``
+      （或其它浅色）；禁止标题只写字号不写颜色、禁止暗底深色字；font-weight 用 400~900
+    - **颜色语义**：同一页一套语义色（如 ↑/↓ 各一色）；强调数字用高亮浅色（``#fca5a5`` /
+      ``#6ee7b7`` / ``#fde68a``）。**class 优先级**：``.item .value.up`` 须能盖过 ``.item .value``，
+      禁止基类 ``color`` 盖掉修饰 class；状态色优先单 class
+    - **短标签**（chip/badge）：``white-space:nowrap``；长 tag 与标题分行/flex，勿挤同一行乱折
+    - **插图 / 图标（一次写完即可）**：直接在 HTML 里写，**系统渲染前自动嵌成 data URI**，
+      无需另调工具：
+      - ``<img src="https://...">`` 外链图
+      - ``<img src="icon:mdi/chart-line">`` 按需矢量图标（~1KB，非本地图标包）
+      - ``<img src="img_xxx">`` / ``res_xxx`` 资源池图
+      - CSS ``background-image:url(https://...|icon:...|img_...)`` 同样自动嵌
+      - 已是 ``data:image/...`` 的原样保留
+      禁止用色块汉字冒充 logo；少用 emoji 当图标，需要图就写 ``<img>``。
 
-    ## 视觉要求（必须遵守）
-    - ≥3 个可比较的数值（涨跌/占比/排名/进度）→ 必须画 .chart 条形图；绝对值指标用 .metric 卡；禁止纯文字列表凑数
-    - 每条 .row 信息行必须带 .ico.sm 文字图标；涨跌类标签用 .tag.green/.tag.red
-    - 关键数字大且重（.val/.big）；标签小且淡；卡片圆角+阴影
-    - 引擎 content-box（勿设 border-box）；禁止 table/emoji；用 flex 布局
+    ## 示例（自由布局，勿照抄成唯一模板）::
 
-    条形图示例::
-
-        <div class="chart">
-          <div class="crow"><span class="clab">美光</span>
-            <div class="track"><div class="fill" style="width:55%;"></div></div>
-            <span class="cval">-5.5%</span></div>
+        <!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        body{font-family:"MiSans","Microsoft YaHei",sans-serif;padding:24px;background:#0f172a;color:#e2e8f0;}
+        h1{font-size:22px;margin:0 0 12px;color:#edf4ff;font-weight:800;}
+        .row{display:flex;gap:12px;align-items:center;}
+        .tag{display:inline-block;padding:2px 8px;border-radius:4px;background:#334155;white-space:nowrap;}
+        img.icon{width:28px;height:28px;border-radius:6px;}
+        table{width:100%;border-collapse:collapse;}
+        th,td{padding:8px 10px;border-bottom:1px solid #334155;text-align:left;color:#e2e8f0;}
+        th{color:#94a3b8;font-size:12px;} .up{color:#34d399;}
+        </style></head><body>
+        <div class="row">
+          <img class="icon" src="icon:mdi/chart-line" alt="" />
+          <h1>持仓明细</h1>
         </div>
+        <table><tr><th>名称</th><th>浮盈</th></tr>
+        <tr><td>长江电力</td><td class="up">+5.48%</td></tr></table>
+        </body></html>
 
     Args:
         ctx: 工具执行上下文
-        html_content: body 片段（推荐）或完整 HTML
+        html_content: 完整 HTML 或带样式的片段（按内容自由设计）
         image_format: 默认 png
         max_width: 默认 800
 
@@ -509,7 +856,9 @@ async def render_html_to_image(
         return "渲染失败：HTML内容不能为空"
 
     try:
-        html = _wrap_html_if_needed(html_content)
+        # 先自动嵌图（外链/icon/资源），再 table 改写与引擎卫生 CSS
+        html = await _auto_embed_html_images(html_content)
+        html = _prepare_free_html(html)
         _dpr = 2.0
         image_bytes = await render_html_to_bytes(
             html,

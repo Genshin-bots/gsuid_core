@@ -129,22 +129,86 @@
   word-break: break-all;
 }
 
-/* 表格：flex 行卡片；表头强制高对比（覆盖 github-dark） */
-.markdown-body table {
+/*
+ * 表格：pytakumi 将 GFM/HTML <table> rewrite 为 .md-table flex 行
+ * （见 pytakumi.markdown.rewrite_tables_for_takumi）。必须写 .md-table*，
+ * 只写原生 table/tr/td 选择器会在改写后失效，表格塌成一行字。
+ */
+.markdown-body table,
+.markdown-body .md-table {
   display: flex;
   flex-direction: column;
   width: 100%;
   margin: 18px 0;
-  gap: 8px;
+  border: 1px solid #2f3d56 !important;
+  border-radius: 12px;
+  overflow: hidden;
+  background: transparent !important;
+  gap: 0;
+}
+
+.markdown-body .md-table-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
+  border-top: 1px solid #2f3d56;
+  background: #1a2538 !important;
+}
+
+.markdown-body .md-table-row:first-child {
+  border-top: none;
+}
+
+.markdown-body .md-table-header {
+  background: #5b9dd9 !important;
+  font-weight: 800;
+}
+
+.markdown-body .md-table-row-alt {
+  background: #202c42 !important;
+}
+
+.markdown-body .md-table-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 13px 16px;
+  font-size: 15px;
+  color: #f2f6fc !important;
+  font-weight: 600;
   border: none !important;
   background: transparent !important;
 }
 
+.markdown-body .md-table-th {
+  color: #061018 !important;
+  font-weight: 800;
+  font-size: 14px;
+  background: transparent !important;
+}
+
+.markdown-body .md-table-cell-border {
+  border-right: 1px solid #2f3d56 !important;
+}
+
+.markdown-body .md-table-header .md-table-cell-border {
+  border-right-color: rgba(6, 16, 24, 0.2) !important;
+}
+
+.markdown-body .md-table-cell-left { text-align: left; }
+.markdown-body .md-table-cell-right { text-align: right; }
+.markdown-body .md-table-cell-center { text-align: center; }
+
+.markdown-body .md-table-row:not(.md-table-header) .md-table-cell:first-child {
+  color: #7ec2ff !important;
+  font-weight: 800;
+}
+
+/* 兜底：未改写的原生 table（旧路径） */
 .markdown-body thead,
 .markdown-body tbody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   width: 100%;
   background: transparent !important;
 }
@@ -154,21 +218,11 @@
   flex-direction: row;
   align-items: center;
   width: 100%;
-  border-radius: 12px;
-  overflow: hidden;
   border: none !important;
 }
 
-/* 表头：亮底 + 深字，避免暗主题把 th 涂成近黑 */
-.markdown-body thead tr,
-.markdown-body table > thead > tr {
-  background: #5b9dd9 !important;
-  background-color: #5b9dd9 !important;
-}
-
 .markdown-body th,
-.markdown-body thead th,
-.markdown-body thead tr th {
+.markdown-body thead th {
   flex: 1;
   padding: 14px 16px;
   font-size: 14px;
@@ -177,7 +231,6 @@
   text-align: left;
   border: none !important;
   background: #5b9dd9 !important;
-  background-color: #5b9dd9 !important;
 }
 
 .markdown-body td,

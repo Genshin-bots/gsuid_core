@@ -26,6 +26,7 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
         "state_delete": ToolBase(...),
         "state_list": ToolBase(...),
         "state_append": ToolBase(...),
+        "render_html_to_image": ToolBase(...),  # 多数据点出图主路径（自由 HTML）
     },
     "common": {
         "search_image": ToolBase(...),
@@ -47,8 +48,8 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
         "stop_agent_tool": ToolBase(...),
     },
     "media": {
-        "render_html_to_image": ToolBase(...),
-        "render_markdown_to_image": ToolBase(...),
+        "render_card": ToolBase(...),
+        "render_markdown_to_image": ToolBase(...),  # 次选；HTML 主路径在 buildin
     },
     "default": {
         "execute_shell_command": ToolBase(...),
@@ -97,22 +98,14 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 │  Buildin工具（保底，全部加载）:                       │
 │  - search_knowledge       - web_search_tool          │
 │  - web_fetch_tool         - query_user_memory        │
-│  - get_self_info                                     │
+│  - get_self_info          - render_html_to_image     │
 │  - state_get/set/delete/list/append                  │
 │                                                     │
 │  Common工具（向量检索按需加载）:                      │
-│  - search_image           - get_self_persona_info    │
-│  - set_user_favorability                             │
-│  - send_meme              - collect_meme             │
-│  - search_meme                                      │
-│  - list_scheduled_tasks   - query_scheduled_task     │
-│  - modify_scheduled_task  - cancel_scheduled_task    │
-│  - pause_scheduled_task   - resume_scheduled_task    │
-│  - create_persistent_agent - send_agent_task         │
-│  - list_agents            - stop_agent               │
+│  - search_image / meme / 定时任务管理 / 持久 Agent…   │
 │                                                     │
-│  Media工具:                                          │
-│  - render_html_to_image   - render_markdown_to_image │
+│  Media工具（按需）:                                  │
+│  - render_card            - render_markdown_to_image │
 └─────────────────────────┬───────────────────────────┘
                           │ create_subagent()
                           ▼

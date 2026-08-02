@@ -5,7 +5,8 @@
 
 设计约束（由 pytakumi 引擎能力决定，非浏览器）：
 
-- 布局只用 flexbox（引擎不支持 ``display: table``，表格一律用 flex 行模拟）。
+- 布局优先 flexbox。原生 ``display: table`` 无 CSS table 模型；GFM/HTML
+  ``<table>`` 由 ``rewrite_tables_for_takumi`` 改成 ``.md-table`` flex 行（可用）。
 - 中文必须走注册了 MiSans 的共享 Renderer，因此渲染统一走
   :func:`gsuid_core.utils.html_render.render_html_to_bytes`。
 - 高度全部自适应（``allow_refit=True``），卡片随内容伸缩，适合 IM 竖屏阅读。

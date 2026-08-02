@@ -60,12 +60,12 @@ description: >
 | 四 | 事件处理与触发器流转（`handle_event` 13 步、触发器匹配、命令 vs AI 分流、AI 触发条件、长度/并发防护） | [references/04-event-trigger-flow.md](./references/04-event-trigger-flow.md) |
 | 五 | Bot 三类（`_Bot` 底层 / `Bot` 高层 / `MockBot` AI 代理、连接管理与 5 分钟重连复用、发送队列串行化） | [references/05-bot-classes.md](./references/05-bot-classes.md) |
 | 六 | AI Session 路由与 Persona（`ai_router`、Session ID 设计、`AISessionRegistry`、内存保护、Persona 热重载 + Persona 配置系统） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |
-| 七 | 工具注册表与 Agent 装配（`@ai_tools`/`_TOOL_REGISTRY`、三层工具池、**L0 实体路由**、族展开公平性、Reranker 精排 + `find_tools` 渐进暴露 + `visible_when` 条件隐藏、主/子 Agent、MCP、`install_skill`、**`send_chat_result` 文本归一化链**） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
+| 七 | 工具注册表与 Agent 装配（`@ai_tools`/`_TOOL_REGISTRY`、三层工具池、**L0 实体路由**、族展开、`find_tools`、主/子 Agent、MCP、**统一输出闸 `pre_send_gate`**、**`send_chat_result` 呈现链**、自由 HTML 出图） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
 | 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊软触发、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
 | 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion + **落库可靠性 `idle_flush_seconds`**、分层语义图、偏好记忆 + **注入门控形态**、RF-Mem 双过程、记忆生命周期、多模态摄入） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账 + 批量导入、Dense+BM25 混合检索 + 过滤下推、嵌入 Provider 抽象层） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
-| 十二 | 已知坑与开发注意事项（D-1~D-22 历史缺陷复盘、`extract_json_from_text`、续聊/偏好/多进程/事件循环等踩坑清单、§12.22b~d 输入/输出防线精度面·定时任务 misfire·交互脚手架不变量、**§12.22e 工具召不回的四层坑**、**§12.22f 记忆一条都没存下来**、**§12.22g 两条方法论教训**、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
+| 十二 | 已知坑与开发注意事项（D-1~D-22、**§12.22 统一输出闸 / 出戏 / 尖括号不变量**、§12.22b~g 精度面·脚手架·工具召回·记忆落库、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
 
 ## 推荐阅读顺序（按需跳转）
 
@@ -93,13 +93,16 @@ description: >
 - **配置写入即时持久化 + 多数热重载**：`StringConfig.set_config` 改内存后立即 `write_config` 落盘，大多数 AI 配置"下次消息处理即生效"；`inspect_interval` 是例外（需重启该 persona 的巡检 job，代码已自动 stop+start）。详见 [§03](./references/03-plugin-loading-and-config.md)。
 - **SQLModel 不写 `__tablename__`**：表名 = 类名全小写。数据库方法写在模型类里、用 `@with_session`。Schema 变更走 `on_core_start_before` 的 `exec_list`/`trans_adapter`。详见 [§11](./references/11-statistics-webconsole-database.md)。
 - **上下文装配单源 + 交互脚手架（2026-07-12 起）**：system prompt 与每轮动态注入的唯一装配点是 `ai_core/context_assembly.py`（生产 `handle_ai` 与评测端点同源消费，禁止在入口手工拼接）；`ai_core/interaction_scaffold.py` 是 C-1~C-3 交互脚手架（省略跟进/漂移预算/寻址前置门），判据只许结构/语言学范畴、长度类判定必须过 `extract_message_body`。详见 [§06](./references/06-ai-session-and-persona.md) 6.7 与 [§12](./references/12-developer-pitfalls.md) 12.22d。
+- **统一输出闸门（2026-08）**：`pre_send_gate` 顺序 **尖括号 → OOC**；主路径与 `send_message_by_ai` 共用 `GateBag`；`<br>` / `<bubble/>` 非法；呈现层只做 `send_chat_result`。详见 [§7.12](./references/07-tool-registry-and-agent.md)、[§12.22](./references/12-developer-pitfalls.md)、生命周期文档 §10.4–§10.6。
+- **`render_html_to_image` 在 buildin 保底**：自由 HTML 主路径（不套设计壳）；`render_card` / MD 出图在 media 按需。详见 [§7.13](./references/07-tool-registry-and-agent.md)、[`TAKUMI_HTML_GUIDE.md`](../../TAKUMI_HTML_GUIDE.md)。
 
 ## 关联文档（同仓库其他位置）
 
 - 代码红线与类型规范：仓库根目录 [`docs/LLM.md`](../../LLM.md)（改任何代码前必读）
+- **一条消息完整生命周期（Agent loop 时序）**：[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../AI_AGENT_LIFECYCLE_SEQUENCE.md)
+- Takumi / HTML 出图约束：[`docs/TAKUMI_HTML_GUIDE.md`](../../TAKUMI_HTML_GUIDE.md)
 - 插件开发工作流：[`docs/skills/gscore-plugin-development/SKILL.md`](../gscore-plugin-development/SKILL.md)
 - AI Core API（给插件用）：[`docs/skills/gscore-ai-core-api/SKILL.md`](../gscore-ai-core-api/SKILL.md)
 - 适配器开发：[`docs/skills/gscore-adapter-development/SKILL.md`](../gscore-adapter-development/SKILL.md)
 - 部署运维：[`docs/skills/gscore-deploy/SKILL.md`](../gscore-deploy/SKILL.md)
-- AI 提问/答疑速查：[`docs/AI_QUESTION_FLOW_PLAYBOOK.md`](../../AI_QUESTION_FLOW_PLAYBOOK.md)
 - WebConsole 后端文档：[`gsuid_core/webconsole/docs/`](../../../gsuid_core/webconsole/docs/)

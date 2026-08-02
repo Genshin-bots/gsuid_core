@@ -23,6 +23,7 @@
   生成文件 / 持久化状态的任务都必须保持 transient=False**。
 """
 
+import re
 import asyncio
 from typing import Optional
 
@@ -41,6 +42,84 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 
 # 子Agent最大迭代次数上限，防止死循环
 _SUBAGENT_MAX_ITERATIONS = 3
+
+# 能力代理返回「只有过程句、无事实包」时再催一次交付（避免无限递归）
+_INCOMPLETE_DELIVERY_MARKERS = (
+    "停止重复",
+    "下面再",
+    "再做几次",
+    "然后再",
+    "然后渲染",
+    "先补充",
+    "先检索",
+    "我去翻",
+    "正在搜索",
+    "继续搜索",
+    "稍后",
+    "接下来会",
+    "马上整理",
+)
+_TRANSIENT_PREFIX_RE = re.compile(
+    r"^【[^】]*临时代理已完成[^】]*】[^\n]*\n*",
+    re.MULTILINE,
+)
+
+
+def _strip_transient_wrapper(text: str) -> str:
+    """去掉 create_subagent 返回前缀，便于判空。"""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    return _TRANSIENT_PREFIX_RE.sub("", s).strip()
+
+
+def looks_like_incomplete_subagent_delivery(text: str) -> bool:
+    """能力代理是否只回了过程句 / 空壳，没有可消费的事实包。
+
+    形状判据：过短且无结构，或命中过程口癖且无表格/列表/JSON/多段落。
+    """
+    body = _strip_transient_wrapper(text)
+    if not body:
+        return True
+    # 错误前缀：已是失败语义，主路径另处理，不视为「可再催」的空过程句
+    if body.startswith("⚠️") or "执行失败" in body[:40]:
+        return False
+    has_structure = (
+        "|" in body
+        or "```" in body
+        or body.lstrip().startswith("{")
+        or body.lstrip().startswith("[")
+        or body.count("\n") >= 5
+        or len(re.findall(r"(?m)^\s*[-*•]|\d+[\.、]\s+\S", body)) >= 3
+    )
+    if has_structure and len(body) >= 120:
+        return False
+    if any(m in body for m in _INCOMPLETE_DELIVERY_MARKERS) and not has_structure:
+        return True
+    # 无结构且过短：几乎一定是过程句
+    if not has_structure and len(body) < 160:
+        return True
+    return False
+
+
+def _delivery_followup_task(original_task: str) -> str:
+    """催收事实包：要求基于已检索结果立即交付，禁止过程句与 render。"""
+    ot = (original_task or "").strip()
+    if len(ot) > 1200:
+        ot = ot[:1200] + "…"
+    return (
+        "【交付催收·硬门】上一轮你未交付可消费的事实包（仅过程句或空输出）。\n"
+        f"原任务：\n{ot}\n\n"
+        "要求：基于你**已经检索到的信息**（不要再空转同一工具），**立即**输出完整 "
+        "Markdown 或 JSON 事实包：\n"
+        "① 条目列表（日期、事件、关键数字、为何重要、来源 URL）\n"
+        "② 依据（工具/字段/URL）\n"
+        "③ 可选：主线摘要与风险提示\n"
+        "禁止只说「下面再搜 / 停止重复 / 然后渲染」；"
+        "禁止 render_html_to_image / render_card（出图由主人格负责）；"
+        "长文可用 artifact_put。若确实零数据，写「无检索结果：原因=…」。"
+    )
+
 
 # 全局并发上限信号量：首个子Agent调用时按配置 subagent_max_concurrency 懒创建并缓存。
 # 不在导入期读配置（此时配置可能未就绪）；改并发数需重启——给运行中的信号量改容量不安全。
@@ -313,13 +392,41 @@ async def _dispatch_transient_capability_agent(
         logger.exception(i18n_t("log.ai.subagent_transient_agent_fail", e=e))
         return f"⚠️ {pid} 临时代理执行失败: {type(e).__name__}: {e}"
 
+    # 空/过程句：再与 subagent 对话一次，要求交出事实包（仅 1 次）
+    if looks_like_incomplete_subagent_delivery(raw_result or ""):
+        first_preview = repr((raw_result or "")[:80])
+        logger.warning(
+            f"[create_subagent] incomplete delivery from {pid}, re-query for fact package preview={first_preview}"
+        )
+        first_raw = raw_result
+        try:
+            raw_result = await run_capability_agent(
+                profile_id=pid,
+                task=_delivery_followup_task(task),
+                ev=ev,
+                bot=ctx.deps.bot,
+                session_id_suffix=f"transient_{pid}_retry",
+            )
+        except Exception as e:
+            logger.exception(f"[create_subagent] delivery re-query failed: {e}")
+            raw_result = first_raw
+        if looks_like_incomplete_subagent_delivery(raw_result or ""):
+            logger.warning(f"[create_subagent] {pid} still incomplete after re-query")
+
     prefix_note = (
         f"【{pid} 临时代理已完成 / transient 模式】"
         "（**未在看板创建任务卡**——lookup 模式。）"
-        "主人格：角色短句结论 + 数据用 render_html_to_image 出图，禁止整段念出。"
+        "主人格：角色短句引导 + 事实包用 render_html_to_image 出图，禁止整段念出。"
     )
     if (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
         return f"{prefix_note}\n\n{raw_result}"
+    if looks_like_incomplete_subagent_delivery(raw_result or ""):
+        return (
+            f"{prefix_note}\n\n"
+            f"⚠️ 子代理未交付可用事实包（过程句/空输出）。"
+            f"请主人格改用 web_search_tool 自行补查，或再次 create_subagent 并收紧 task。"
+            f"\n\n【子代理原文】\n{(raw_result or '').strip() or '（空）'}"
+        )
     return f"{prefix_note}\n\n{raw_result}"
 
 

@@ -58,7 +58,8 @@ ETF: 有色金属ETF南方 (512400)
     assert any("MA5" in b or "512400" in b for _, b in blocks)
 
 
-def test_xml_report_still_works() -> None:
+def test_xml_report_legacy_still_extracted() -> None:
+    """协议已废止，呈现层仍剥 body 进制品通道（兼容漏网）。"""
     text = '唔…看完了…\n\n<report title="茅台">| 指标 | 值 |\n|---|---|\n| PE | 30 |</report>'
     speech, blocks = _split_speech_and_artifacts(text)
     assert "看完了" in speech

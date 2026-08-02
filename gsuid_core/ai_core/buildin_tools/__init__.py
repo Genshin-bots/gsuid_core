@@ -310,6 +310,7 @@ from gsuid_core.ai_core.buildin_tools.plugin_developer import (
 )
 
 # HTML渲染工具 - 将HTML/Markdown/结构化卡片渲染为图片
+# （外链/icon/资源图在 render_html_to_image 内自动嵌 data URI，无独立嵌图工具）
 from gsuid_core.ai_core.buildin_tools.html_render_tools import (
     render_card,
     render_html_to_image,

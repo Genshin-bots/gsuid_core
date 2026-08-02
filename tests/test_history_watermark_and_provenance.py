@@ -111,7 +111,8 @@ def test_zero_max_history_clears() -> None:
 # ─────────────────────────────────────────────
 
 
-def test_report_body_replaced_with_placeholder() -> None:
+def test_report_body_stripped_title_in_metadata() -> None:
+    """历史只留台词；标题进 sent_reports metadata（非占位正文）。"""
     md = "| 指标 | 数值 |\n|---|---|\n| 营收 | +12% |"
     msg = ModelResponse(parts=[TextPart(content=f'唔…看这张…\n<report title="XX速览">{md}</report>')])
     replaced = _compact_report_blocks_in_history([msg])
@@ -119,17 +120,19 @@ def test_report_body_replaced_with_placeholder() -> None:
     part = msg.parts[0]
     assert isinstance(part, TextPart)
     assert "营收" not in part.content
-    assert "XX速览" in part.content  # 标题保留，后续轮可引用
-    assert "唔…看这张…" in part.content  # 台词保留
+    assert "唔…看这张…" in part.content
+    assert msg.metadata is not None
+    assert "XX速览" in (msg.metadata.get("sent_reports") or [])
 
 
-def test_untitled_report_gets_generic_placeholder() -> None:
+def test_untitled_report_gets_generic_title_in_metadata() -> None:
     msg = ModelResponse(parts=[TextPart(content="<report>长内容</report>")])
     _compact_report_blocks_in_history([msg])
     part = msg.parts[0]
     assert isinstance(part, TextPart)
-    assert "分析资料" in part.content
     assert "长内容" not in part.content
+    assert msg.metadata is not None
+    assert "分析资料" in (msg.metadata.get("sent_reports") or [])
 
 
 def test_user_requests_untouched() -> None:

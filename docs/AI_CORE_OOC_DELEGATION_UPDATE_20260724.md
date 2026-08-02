@@ -1,13 +1,18 @@
 # GsCore AI Core：OOC 两通道 / 能力委派闭环 / 意图上下文 — 更新与交接
 
-> **日期**：2026-07-24
-> **状态**：工作区未提交改动汇总（以源码为准）
+> **日期**：2026-07-24（**接线层 2026-08 已由 `pre_send_gate` 统一**，见下）
+> **状态**：历史交接；**发送前合规编排以现行源码 + 生命周期文档为准**
 > **读者**：后续继续改 `ai_core` 的开发者 / Agent
 > **关联**：
-> - 生命周期总览：[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](AI_AGENT_LIFECYCLE_SEQUENCE.md)
+> - 生命周期总览（含统一输出闸）：[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6
+> - 开发技能：[`07-tool-registry-and-agent.md` §7.12](skills/gscore-development/references/07-tool-registry-and-agent.md)、[`12-developer-pitfalls.md` §12.22](skills/gscore-development/references/12-developer-pitfalls.md)
 > - 红线：[`docs/LLM.md`](LLM.md)
-> - 开发技能：`docs/skills/gscore-development/`（触发流 / Agent / 工具注册）
 > - 历史评审：`docs/AI_CORE_CHANGE_REVIEW_20260712.md`
+
+> **2026-08 接线变更（读本文前先看）**：主路径 TextPart / `send_message_by_ai` 的发送前检测
+> 已收敛为 `output_gate.pre_send_gate`（顺序：**尖括号 → OOC**）。本文 § 中写的「直接
+> `check_ooc` / `gate_warn_once`」描述的是**策略语义与词库动机**，调用点以 `output_gate` /
+> `tool_gate_feedback` 为准。尖括号熔断、`<br>` 非法、GateBag 状态见生命周期文档。
 
 ---
 

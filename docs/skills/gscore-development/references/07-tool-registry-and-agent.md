@@ -35,9 +35,9 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
 | `self` | **保底**：无条件加载进主 Agent | 好感度增改、`send_message_by_ai`、`create_subagent`、`add_once_task`/`add_interval_task` |
-| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get` |
+| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get`、**`render_html_to_image`（多数据点出图主路径）** |
 | `common` | 向量检索按需 | `search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
-| `media` | 向量检索按需 | `render_html_to_image`、`render_markdown_to_image` |
+| `media` | 向量检索按需 | `render_card`、`render_markdown_to_image`（次选；HTML 主路径在 buildin） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
 | `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`get_current_date` |
@@ -314,15 +314,46 @@ Persona 与能力代理画像统一为 **AgentNode**（`ai_core/agent_node/`）�
 grant / 自动提交审批），不依赖 LLM 自觉。详见
 [`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../AGENT_NODE_UNIFICATION_20260707.md)。
 
-## 7.12 主 Agent 输出链路：出戏防火墙重说闭环（2026-07-08）
+## 7.12 主 Agent 输出链路：统一输出闸门 `pre_send_gate`（2026-08）
 
-`_execute_run_once` 的流式循环对每个 TextPart 发送前做 `output_firewall.check_ooc`
-预检——命中**不发送**、记入 `_ooc_blocked`；iter 结束后 `_ooc_rewrite_and_send` 用轻量
-无工具 Agent（复用"强制总结"模式）带 `build_rewrite_warning` 重写一次，产物经
-`send_chat_result(..., ooc_check=False)` **无检放行**，history 中被拦原文同步替换为重写版。
-`send_chat_result` 自身保留"命中即兜底替换"，只兜 proactive / 兜底总结等无重说通道的
-调用方。语义与不变量（为什么是"提醒一次→重说→放行"而非"命中即封禁"、`ooc_check=False`
-的使用边界、词库加词的碰撞检查）统一见 [§12.22](./12-developer-pitfalls.md)。
+> 端到端时序与决策表见 [`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。
+> 不变量与词库纪律见 [§12.22](./12-developer-pitfalls.md)。
+
+**分层（合规 vs 呈现）**：
+
+| 层 | 模块 | 职责 |
+|----|------|------|
+| **策略检测** | `angle_bracket_guard` / `output_firewall` | 独立可测；不直接发消息 |
+| **编排** | `output_gate.pre_send_gate` | **唯一**「能不能发 / 打回 / 熔断」入口 |
+| **环内接线** | `gs_agent` | TextPart 调 gate；`ModelRequest` 注入 feedback；run 末 `_resolve_output_gate_after_run` |
+| **呈现** | `send_chat_result` | report / meme / 长文出图 / 拆条 / 漏网 sanitize；**不做**策略打回 |
+
+**策略顺序（短路）**：
+
+1. **`angle_bracket`**（`angle_bracket_guard`）：非法尖括号标签（如 `<bubble/>`、**`<br>`**）→
+   `REWRITE`；同 turn 累计 3 次 → `FUSE`（本轮静默 + scrub 脏 history / nudge）。
+   - 协议标签（检测前剥掉，不触发闸）：`<SILENCE>` / `<meme:…>`。
+   - **`<br>` / `<report>` 不是协议**——打回重写；多项数据出图用 `render_html_to_image`
+     （呈现层仍兼容剥离遗留 report body 并出图）。
+   - 同一次 `ModelResponse` 内多 `TextPart`：`begin_response_batch` + `count_attempt=False` →
+     **只计 1 次 attempt**；多段 feedback 用 `merge_rewrite_feedbacks` 合并后注入下一轮请求。
+   - 检测启发式：形如 `</?Name…>`；`List<str>` 等 PascalCase 泛型 / 含 `@` 邮箱跳过，降假阳性。
+2. **`ooc`**（`output_firewall.check_ooc`）：
+   - 主路径：`machine_dump` → `FALLBACK`「额…出错了，稍后再试」；其它 → `REWRITE`+`defer_ooc`
+     （记入 `_ooc_blocked`，run 末 `_ooc_rewrite_and_send` 轻量重写一次）。
+   - 工具路径（`tool_gate_feedback` / 历史名 `gate_warn_once`）：提醒一次 → 再命中非
+     never-release 可放行；资金 / 机器腔 **never-release** 持续打回。
+
+**状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
+
+**run 收尾**（`gs_agent._resolve_output_gate_after_run`）：`plan_angle_after_run` 规划熔断 scrub /
+`replace_map` 安全替换 history（禁止多脏→同一条干净）/ 补轻量重写；补写失败亦 `set_fused`。
+**尖括号熔断不阻断**本轮已 defer 的 OOC 重说（二者正交）。OOC / 尖括号共用
+`_lightweight_text_rewrite`（无工具单轮 Agent）。
+
+**假完成闸**仍在 TextPart 路径、gate **之后**（结构判据：零工具却声称办完），不并入 `pre_send_gate`。
+
+后续新增「打回/熔断」类策略：只在 `output_gate` 挂 `_eval_*`，**不要**在 `gs_agent` 再平行写第二套顺序。
 
 > 原"工具前摇台词"机制（`_FRAMEWORK_PRE_TOOL_EXPRESSIONS` + persona `pre_tool_expressions`）
 > 已整体移除：耗时工具前的告知由 prompt 条款驱动 Agent 自行组织语言，框架不再替 AI 说
@@ -330,20 +361,21 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 
 ## 7.13 `send_chat_result` 的文本归一化链（`ai_core/utils.py`）
 
-**所有**下发给用户的 AI 文本都经 `send_chat_result`。它在发送前按序做：
+**呈现层**：在主路径 / `send_message_by_ai` 已过 `pre_send_gate`（或 proactive 无反馈通道）之后调用。
+**所有**下发给用户的 AI 文本都经此函数。按序大致为：
 
-`_strip_tool_call_artifacts`（工具调用标记残留）→ `_strip_special_control_tokens`（模型私有
-回合/角色 token，如 MiniMax 的 `]<]minimax[>[`）→ **`_resolve_and_deliver_leaked_handles`**（内部资源
-句柄 `res_/img_/...`：补发所指资源 + 抹句柄）→ **`_normalize_html_linebreaks`**（`<br>` → `\n`）
-→ meme 标记解析 → `_strip_persona_markdown`（IM 不渲染 markdown）→ 出戏防火墙兜底 →
-**`_should_render_markdown_image` 判定：结构化长 markdown → 整篇渲染成一张图片下发** →
-（未命中出图时）按 `\n\s*\n`（**空行**）拆成多条消息下发。
+`_strip_tool_call_artifacts` → `_strip_special_control_tokens` →
+**`_resolve_and_deliver_leaked_handles`** → **制品两通道兜底**（结构化块 /
+遗留 report body 出图；主路径应已工具出图）→
+**`angle_bracket_guard` 漏网 sanitize**（非法 `<>` 删除；`<br>`→换行）→
+`_normalize_html_linebreaks` → meme 解析 → `_strip_persona_markdown` →
+（`ooc_check=True` 时）OOC 末端替换 → **长 markdown 整篇出图** → 空行拆条下发。
 
 > 📨 **`send_message_by_ai` 的文本也必须走这条链 + 单轮硬限流**（2026-07-15，对应 session
 > ...914411529 早柚"狂飙 + 刷 markdown"）。此工具原来是**裸 `bot.send(MessageSegment.text)`**，
 > 绕过整条归一化——弱模型把它当**回复通道**一轮连发 3-4 条，`**加粗**` / 研报排版 / emoji 原样
 > 刷进群，且刚加的"长 markdown 出图"对它一次不生效。双修：① 文本改走 `send_chat_result(...,
-> ooc_check=False)`（出戏防火墙已在工具入口 `gate_warn_once` 过一轮，此处只做归一化），媒体
+> ooc_check=False)`（入口已 `tool_gate_feedback` = `pre_send_gate(channel=tool)`，此处只做呈现），媒体
 > 仍 `bot.send`；② 加 `PER_TURN_SEND_MESSAGE_LIMIT`（=2）单轮节流（与 `scheduler.py`
 > `add_once_task` 同构，key=`(session_id, turn_id)`，`gs_agent` finally `clear_turn_send_throttle`），
 > 超限直接拒发并提示"改用正文输出"。回归锁 `tests/test_send_message_by_ai_guard.py`。
@@ -373,14 +405,21 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 > （代码块要可复制，保留文本行为）。OOC 兜底命中时（`clean_text` 已被替换成短兜底文本）也不出图。
 > 阈值 / 宽度 / 开关见 `ai_config`（`OutputRendering` 分组）。回归锁同下。
 
-> 🔴 **`<br>` 归一化必须在按空行拆条之前**（2026-07-15 新增）。模型会用 `<br>` 代替换行——
-> **框架自己的 prompt 里就大量使用尖括号标记**（`<example>` / `<meme: 困>` / `<SILENCE>`），
-> 模型被"这里可以打标记"的语境带偏。危害不止"用户看到字面的 `xxx<br><br>xxx`"：
-> **拆多条消息靠的是空行**，`<br>` 让这个拆分**完全失效**，人格卡里"连发 2-3 条短消息"
-> 退化成一整段带标签的怪文本。归一化后 `<br><br>` → `\n\n` → 正确拆两条，模型原意自然恢复。
+> 🔴 **尖括号协议（2026-08）**。仅 `<SILENCE>` / `<meme:…>` 合法。
+> - **`<br>`**：非法 → gate 打回；sanitize 漏网时落成 `\n`。
+> - **`<report>`**：协议已废止 → gate 打回；主契约是 `render_html_to_image` 出图；
+>   `send_chat_result` 仅兼容剥离遗留 body 并渲染资料图。
+> - 连发短消息用**空行**，不要自造尖括号标签。
 >
-> 代码块 / 行内代码**原样保留**——用户可能正是在问 HTML 标签本身。
-> 回归锁：`tests/test_output_linebreaks_and_preference_gate.py`。
+> 代码块 / 行内代码在 linebreak 归一化路径中**原样保留**（用户可能在问 HTML 本身）。
+> 回归：`tests/test_angle_bracket_guard.py`、`tests/test_output_linebreaks_and_preference_gate.py`。
 
-> 新增任何"模型输出后处理"一律加在这条链里，**不要**在各调用方各写一份——
-> proactive / 兜底总结 / 子 Agent 转述等所有路径都经此函数下发。
+> 🖼️ **`render_html_to_image`（buildin 保底，2026-08）**：多数据点出图**主路径**。默认**自由 HTML**
+> （不自动套暗色设计壳）；原生 `<table>` 经 `utils/html_render/table_rewrite` 改成 `.md-table` flex
+> （Takumi 无 CSS table 模型）。**渲染前自动嵌图**：HTML 内 `<img src>` / CSS `url(...)` 的
+> `https://`、`icon:prefix/name`、`img_`、`res_` 转 data URI（无独立嵌图工具、无业务域特判）。
+> 次选 `render_card` / `render_markdown_to_image`（`media` 按需召回）。
+> 详见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)、工具 docstring。
+
+> 新增任何"模型输出后处理"：**打回/熔断**挂 `output_gate`；**通道变换/sanitize** 挂 `send_chat_result`——
+> **不要**在各调用方各写一份。proactive / 兜底总结 / 子 Agent 转述等所有路径都经呈现链下发。

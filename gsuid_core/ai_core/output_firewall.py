@@ -1,22 +1,22 @@
-"""出戏防火墙：AI 输出侧的强制后处理闸门（§D）。
+"""出戏防火墙策略：OOC 词表 / ``check_ooc`` / 重说文案（§D）。
 
-见 ``docs/SESSION_LOG_SECURITY_FINDINGS_20260707.md`` §D.4。把 system prompt 里的
-"出戏防火墙"从"建议"变成代码强制点——AI 回复下发前过一遍分类词库，命中即建议重说。
+见 ``docs/SESSION_LOG_SECURITY_FINDINGS_20260707.md`` §D.4。
 
-两条输出路径共用本模块：
-- ``send_message_by_ai``（工具，有 return 通道）：命中 → return 警告让模型重发；
-- ``send_chat_result``（主输出路径，无 return）：命中 → 不发该段 + 注入重说反馈。
+职责分层（勿再写回旧「主路径在 send_chat_result 里注入重说」故事）：
+- **策略**：本模块（分类命中、never-release、兜底句、``build_rewrite_warning``）
+- **编排**：``output_gate.pre_send_gate``（尖括号 → OOC；main / tool 决策）
+- **环内接线 / 收尾重说**：``gs_agent``（defer 列表、轻量重写、history scrub）
+- **呈现末端**：``send_chat_result`` 仅在 ``ooc_check=True`` 时做整段替换兜底
 
-**设计核心**：因为是"命中即重说"而非"永久封禁"，词库可激进高召回、宁可偶尔错杀——
-错杀只多生成一次（用户无感），漏杀才是事故。故不追求正则完备。
+工具路径兼容入口：``gate_warn_once`` → ``output_gate.tool_gate_feedback``。
+
+**设计核心**：命中即重说（非永久封禁）→ 词库可高召回；漏杀才是事故。
 """
 
 import re
 from typing import Any, Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
 from gsuid_core.ai_core.content_guard import normalize_for_match
 
 # ── 分类词库 ────────────────────────────────────────────────────────
@@ -324,28 +324,10 @@ MACHINE_FALLBACK_TEXT = "额…出错了，稍后再试"
 
 
 def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Optional[str]:
-    """ "提醒一次→重说→放行"闸门（§D.4）：供有 return 通道的工具路径复用。
+    """工具路径发送前闸门（转发 ``output_gate.tool_gate_feedback``）。"""
+    from gsuid_core.ai_core.output_gate import tool_gate_feedback
 
-    同轮首次命中返回重写警告（模型据此重写重发）；同轮再命中返回 None 放行——
-    防"警告↔重试"死循环，误杀只值一次重写。``extra`` 是 ``ToolContext.extra``
-    （含 gs_agent 每轮写入的 turn_id）；无 turn_id 的后台链路每次都警告。
-    """
-    hit = check_ooc(text, user_text=user_text)
-    if hit is None:
-        return None
-    turn_id = str(extra.get("turn_id", ""))
-    warn_key = f"ooc_warned:{turn_id}"
-    if turn_id and extra.get(warn_key):
-        if hit.category in NEVER_RELEASE_CATEGORIES:
-            # 资金欺骗类不放行：持续要求重写，直到产出不命中的版本（评审修复 F10）
-            logger.warning(t("log.firewall.non_releasable_category_hit", p0=hit.category, p1=hit.matched))
-            return build_rewrite_warning(hit)
-        logger.warning(t("log.firewall.rewrite_hit", p0=hit.category, p1=hit.matched))
-        return None
-    if turn_id:
-        extra[warn_key] = True
-    logger.warning(t("log.firewall.hit_ooc_red_line", p0=hit.category, p1=hit.matched))
-    return build_rewrite_warning(hit)
+    return tool_gate_feedback(text, extra, user_text=user_text)
 
 
 def scrub_or_fallback(text: str, tier: str = "roleplay", user_text: str = "") -> Tuple[str, bool]:
