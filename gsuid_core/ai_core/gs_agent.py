@@ -1320,9 +1320,12 @@ class GsCoreAIAgent:
                 return rewritten
             current = rewritten
             logger.warning(
-                f"[output_gate/angle_bracket] rewrite still dirty "
-                f"attempt {attempts_already + i + 1}/{angle_bracket_guard.MAX_RETRIES} "
-                f"preview={rewritten[:80]!r}"
+                i18n_t(
+                    "log.ai.output_gate_angle_rewrite_still_dirty",
+                    attempt=attempts_already + i + 1,
+                    max_retries=angle_bracket_guard.MAX_RETRIES,
+                    preview=repr(rewritten[:80]),
+                )
             )
         return None
 
@@ -1398,7 +1401,13 @@ class GsCoreAIAgent:
             drop_text_parts=blocked_texts if drop_blocked else None,
         )
         if removed_nudge or removed_blocked:
-            logger.warning(f"[output_gate] scrubbed history: nudges={removed_nudge} blocked_msgs={removed_blocked}")
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_scrubbed_history",
+                    nudges=removed_nudge,
+                    blocked_msgs=removed_blocked,
+                )
+            )
 
     def _replace_blocked_text_in_history(self, blocked: set[str], rewritten: str) -> None:
         """重写成功：历史脏 TextPart 换成干净版。"""
@@ -1442,8 +1451,11 @@ class GsCoreAIAgent:
 
         if plan.fused or ab_abort:
             logger.warning(
-                f"[output_gate] RUN FUSED after {plan.attempts} bounces — "
-                f"silence, scrub history session={self.session_id}"
+                i18n_t(
+                    "log.ai.output_gate_run_fused",
+                    attempts=plan.attempts,
+                    session_id=self.session_id,
+                )
             )
             self._scrub_gate_history(set(plan.blocked), drop_blocked=True)
             angle_fused = True
@@ -1467,15 +1479,18 @@ class GsCoreAIAgent:
                     self._run_sent_texts.add(rewritten)
                     sent_ok = True
                 except Exception as abe:
-                    logger.debug(f"[output_gate] angle rewrite send failed: {abe}")
+                    logger.debug(i18n_t("log.ai.output_gate_angle_rewrite_send_fail", e=abe))
                 # 仅替换本条 rewrite_original，避免多脏文被同一产物覆盖
                 if sent_ok:
                     self._replace_blocked_text_in_history({plan.rewrite_original}, rewritten)
                     self._scrub_gate_history(set(), drop_blocked=False)
             else:
                 logger.warning(
-                    f"[output_gate] RUN FUSED (post-end rewrite exhausted) "
-                    f"session={self.session_id} attempts={plan.attempts} — silence + scrub"
+                    i18n_t(
+                        "log.ai.output_gate_run_fused_post_end",
+                        session_id=self.session_id,
+                        attempts=plan.attempts,
+                    )
                 )
                 output_gate.set_fused(context.extra, "angle_bracket")
                 self._scrub_gate_history(set(plan.blocked), drop_blocked=True)
@@ -2178,7 +2193,7 @@ class GsCoreAIAgent:
                                 *node.request.parts,
                                 UserPromptPart(content=_nudge_body),
                             ]
-                            logger.warning("[output_gate] injected rewrite feedback into ModelRequestNode")
+                            logger.warning(i18n_t("log.ai.output_gate_injected_rewrite_feedback"))
                             _ab_pending_nudges = []
                         # 熔断提示只注入一次（与 thrash fuse 同形）
                         if (output_gate.is_fused(context.extra) or _ab_abort) and not output_gate.fuse_already_injected(
@@ -2428,8 +2443,11 @@ class GsCoreAIAgent:
                                         _ab_abort = True
                                         _ab_attempt_counted_this_response = True
                                         logger.warning(
-                                            f"[output_gate] drop text after fuse policy={_gr.policy} "
-                                            f"preview={_text[:80]!r}"
+                                            i18n_t(
+                                                "log.ai.output_gate_drop_text_after_fuse",
+                                                policy=_gr.policy,
+                                                preview=repr(_text[:80]),
+                                            )
                                         )
                                         continue
                                     if _gr.decision is output_gate.GateDecision.REWRITE:

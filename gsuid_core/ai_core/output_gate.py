@@ -26,6 +26,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 from dataclasses import field, dataclass
 
+from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
 # ── 结果类型 ────────────────────────────────────────────────────────
@@ -205,8 +206,13 @@ def _eval_angle_bracket(
     if attempts >= ab.MAX_RETRIES:
         _set_abort(extra, "angle_bracket")
         logger.warning(
-            f"[output_gate/angle_bracket] FUSE after {attempts} attempts "
-            f"channel={channel} tags={tags[:4]!r} preview={text[:80]!r}"
+            i18n_t(
+                "log.ai.output_gate_angle_bracket_fuse",
+                attempts=attempts,
+                channel=channel,
+                tags=repr(tags[:4]),
+                preview=repr(text[:80]),
+            )
         )
         return GateResult(
             decision=GateDecision.FUSE,
@@ -217,8 +223,14 @@ def _eval_angle_bracket(
         )
 
     logger.warning(
-        f"[output_gate/angle_bracket] REWRITE {attempts}/{ab.MAX_RETRIES} "
-        f"channel={channel} tags={tags[:4]!r} preview={text[:80]!r}"
+        i18n_t(
+            "log.ai.output_gate_angle_bracket_rewrite",
+            attempts=attempts,
+            max_retries=ab.MAX_RETRIES,
+            channel=channel,
+            tags=repr(tags[:4]),
+            preview=repr(text[:80]),
+        )
     )
     return GateResult(
         decision=GateDecision.REWRITE,
@@ -249,7 +261,12 @@ def _eval_ooc(
 
     if hit.category == "machine_dump":
         if channel == "main":
-            logger.warning(f"[output_gate/ooc] FALLBACK machine_dump channel=main preview={text[:80]!r}")
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_ooc_fallback_machine_dump",
+                    preview=repr(text[:80]),
+                )
+            )
             return GateResult(
                 decision=GateDecision.FALLBACK,
                 policy="ooc",
@@ -257,7 +274,7 @@ def _eval_ooc(
                 ooc_hit=hit,
                 detail=hit.category,
             )
-        logger.warning("[output_gate/ooc] REWRITE machine_dump channel=tool")
+        logger.warning(i18n_t("log.ai.output_gate_ooc_rewrite_machine_dump_tool"))
         return GateResult(
             decision=GateDecision.REWRITE,
             policy="ooc",
@@ -267,7 +284,13 @@ def _eval_ooc(
         )
 
     if channel == "main":
-        logger.warning(f"[output_gate/ooc] DEFER category={hit.category} matched={hit.matched[:4]!r}")
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_defer",
+                category=hit.category,
+                matched=repr(hit.matched[:4]),
+            )
+        )
         return GateResult(
             decision=GateDecision.REWRITE,
             policy="ooc",
@@ -284,7 +307,12 @@ def _eval_ooc(
         turn_id = str(extra["turn_id"])
     if turn_id and turn_id in bag.ooc_warned_turn_ids:
         if hit.category in of.NEVER_RELEASE_CATEGORIES:
-            logger.warning(f"[output_gate/ooc] REWRITE never_release category={hit.category}")
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_ooc_rewrite_never_release",
+                    category=hit.category,
+                )
+            )
             return GateResult(
                 decision=GateDecision.REWRITE,
                 policy="ooc",
@@ -292,12 +320,23 @@ def _eval_ooc(
                 ooc_hit=hit,
                 detail=hit.category,
             )
-        logger.warning(f"[output_gate/ooc] ALLOW after one warn category={hit.category}")
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_allow_after_warn",
+                category=hit.category,
+            )
+        )
         return GateResult(decision=GateDecision.ALLOW, policy="ooc", detail="second_pass")
 
     if turn_id:
         bag.ooc_warned_turn_ids.add(turn_id)
-    logger.warning(f"[output_gate/ooc] REWRITE first warn category={hit.category} matched={hit.matched[:4]!r}")
+    logger.warning(
+        i18n_t(
+            "log.ai.output_gate_ooc_rewrite_first_warn",
+            category=hit.category,
+            matched=repr(hit.matched[:4]),
+        )
+    )
     return GateResult(
         decision=GateDecision.REWRITE,
         policy="ooc",
@@ -433,7 +472,7 @@ def pre_send_gate(
         return GateResult(decision=GateDecision.ALLOW)
 
     if channel not in ("main", "tool"):
-        logger.warning(f"[output_gate] unknown channel={channel!r}, use main")
+        logger.warning(i18n_t("log.ai.output_gate_unknown_channel", channel=repr(channel)))
         channel = "main"
 
     bag_extra: Dict[str, Any] = extra if extra is not None else {}

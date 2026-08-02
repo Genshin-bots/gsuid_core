@@ -608,7 +608,7 @@ def _shrink_raster_if_needed(data: bytes, *, max_side: int, max_bytes: int) -> b
             return _shrink_raster_if_needed(out, max_side=max(128, max_side // 2), max_bytes=max_bytes)
         return out
     except Exception as e:
-        logger.debug(f"[embed_image_for_html] shrink skip: {e}")
+        logger.debug(t("log.ai.embed_image_for_html_shrink_skip", e=e))
         return data
 
 
@@ -764,10 +764,10 @@ async def _auto_embed_html_images(html: str) -> str:
             uri, err = await _source_to_data_uri(src)
             if uri is not None:
                 resolved[src] = uri
-                logger.info(f"[auto_embed] ok src={src[:96]!r} uri_len={len(uri)}")
+                logger.info(t("log.ai.auto_embed_ok", src=repr(src[:96]), uri_len=len(uri)))
             else:
                 resolved[src] = _TRANSPARENT_1PX_PNG
-                logger.warning(f"[auto_embed] fail src={src[:96]!r}: {err}")
+                logger.warning(t("log.ai.auto_embed_fail", src=repr(src[:96]), err=err))
 
     await asyncio.gather(*(_one(s) for s in sources))
 

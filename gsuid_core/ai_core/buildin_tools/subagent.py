@@ -396,7 +396,11 @@ async def _dispatch_transient_capability_agent(
     if looks_like_incomplete_subagent_delivery(raw_result or ""):
         first_preview = repr((raw_result or "")[:80])
         logger.warning(
-            f"[create_subagent] incomplete delivery from {pid}, re-query for fact package preview={first_preview}"
+            i18n_t(
+                "log.ai.create_subagent_incomplete_delivery",
+                pid=pid,
+                preview=first_preview,
+            )
         )
         first_raw = raw_result
         try:
@@ -408,10 +412,10 @@ async def _dispatch_transient_capability_agent(
                 session_id_suffix=f"transient_{pid}_retry",
             )
         except Exception as e:
-            logger.exception(f"[create_subagent] delivery re-query failed: {e}")
+            logger.exception(i18n_t("log.ai.create_subagent_delivery_requery_fail", e=e))
             raw_result = first_raw
         if looks_like_incomplete_subagent_delivery(raw_result or ""):
-            logger.warning(f"[create_subagent] {pid} still incomplete after re-query")
+            logger.warning(i18n_t("log.ai.create_subagent_still_incomplete", pid=pid))
 
     prefix_note = (
         f"【{pid} 临时代理已完成 / transient 模式】"

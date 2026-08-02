@@ -1188,9 +1188,11 @@ async def send_chat_result(
     _ab_leaks = find_illegal_angle_tags(text)
     if _ab_leaks:
         logger.warning(
-            "[send_chat_result] sanitize residual tags=%s preview=%r",
-            _ab_leaks[:4],
-            text[:80],
+            i18n_t(
+                "log.ai.send_chat_result_sanitize_residual_tags",
+                tags=_ab_leaks[:4],
+                preview=repr(text[:80]),
+            )
         )
         text = sanitize_illegal_angle_tags(text)
         if not text.strip() and not report_blocks:
