@@ -262,7 +262,10 @@ MCP 服务器（fastmcp，stdio）→ `list_tools()` → 为每个工具动态�
 - **通用调用**：`mcp_tool_caller.call_mcp_tool(mcp_tool_id, arguments)` 不需注册为 AI 工具即可
   调；Web Search / Image Understand 走它。
 - **热重载**：`POST /api/ai/mcp/reload` 清掉已注册 MCP 工具、重读配置、重连重注册，无需重启。
-- **MCP Server**（`mcp/server.py`）：反向把本框架 `to_ai` 触发器对外暴露为 MCP 服务。
+- **MCP Server**（`mcp/server.py`）：反向把 **`_TOOL_REGISTRY` 启动快照**对外暴露；默认挂载
+  主服务 **`/api/mcp`**（Streamable HTTP，与 8765 同端口），或 stdio。鉴权：
+  静态 key 与/或 ``register_mcp_token_verifier`` 插件钩子（**框架不 import 任何插件**；
+  二者均空时为开发用开放模式）。
 
 ## 7.10 运行时 Skill 系统与统一安装链路（`ai_core/skills/`，2026-07）
 

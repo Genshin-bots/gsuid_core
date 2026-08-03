@@ -44,11 +44,11 @@ _CATEGORIES: Dict[str, ApprovalCategory] = {}
 _PENDING_OPERATORS: set[str] = set()
 
 # 「完全访问」豁免名单：user 级 approval 直接放行（master 级永不豁免）。
-# 运行时状态，由前端 / 插件（如画布授权配置）经 set_full_access 维护。
+# 运行时状态，由前端 / 插件经 set_full_access 维护。
 _FULL_ACCESS_USERS: set[str] = set()
 
 # 「完全访问」可插拔解析器：插件可按会话上下文提供更细粒度的判定
-# （如画布按 user × canvas 存储授权模式）。返回 None = 不表态，回落默认名单。
+# （如按 user × 会话键存储授权模式）。返回 None = 不表态，回落默认名单。
 _FULL_ACCESS_RESOLVER: Optional[Callable[[str, Optional[Event]], Optional[bool]]] = None
 
 # tool_call 策略门的一次性放行 grant：(user_id, tool_name) -> 过期时间戳
@@ -80,8 +80,8 @@ def set_full_access(user_id: str, enabled: bool) -> None:
 def set_full_access_resolver(fn: Optional[Callable[[str, Optional[Event]], Optional[bool]]]) -> None:
     """注册「完全访问」解析器（同步、廉价内存判定；返回 None 回落默认名单）。
 
-    供需要比"全局按用户"更细粒度的调用方使用——如画布插件按
-    user × canvas(=ev.group_id) 存储授权模式。传 None 可注销。
+    供需要比"全局按用户"更细粒度的调用方使用——例如插件按
+    user × 会话键（ev.group_id）存储授权模式。传 None 可注销。
     """
     global _FULL_ACCESS_RESOLVER
     _FULL_ACCESS_RESOLVER = fn

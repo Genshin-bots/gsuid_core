@@ -88,7 +88,7 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 | 6 | MCP 工具 | `mcp/startup.py` | 读 `mcp_configs/*.json` → 连 enabled 服务器 → 注册工具到 `_TOOL_REGISTRY["mcp"]`（仅 `register_as_ai_tools=true`） |
 | 7 | Meme | `meme/startup.py` | 建 inbox/common/rejected 目录 → 表情包 collection → 打标 worker |
 | 8 | 统计 | `statistics/startup.py` | `AISessionRegistry` 空闲清理循环 + Heartbeat 巡检 + 当日数据回灌 |
-| 9 | MCP Server | `mcp/server.py` | 把已注册触发器/工具通过 MCP 协议对外暴露（独立 task） |
+| 9 | MCP Server | `mcp/server.py` | 把 `_TOOL_REGISTRY` 整库通过 MCP 暴露：默认 **http 挂载主 app `/api/mcp`（同端口 8765）**；stdio 为独立 task |
 
 > **加新 AI 子系统的正确姿势**：在 `_INIT_STEPS` 里加一步，**不要**自己写 `@on_core_start`。
 > 步骤函数开头读 `ai_config.get_config("enable")`，关闭时 `return`。

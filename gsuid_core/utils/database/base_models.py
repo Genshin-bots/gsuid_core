@@ -114,7 +114,7 @@ async def init_database():
             if _db_type == "sqlite":
                 # ⚠️ SQLAlchemy 2.0 对「文件型」sqlite+aiosqlite 的默认池是
                 # AsyncAdaptedQueuePool(size=5, max_overflow=10, timeout=30)，
-                # 并不是历史文档里写的 NullPool。canvas / 生成任务 / collab 高并发下
+                # 并不是历史文档里写的 NullPool。生成任务 / 协作等业务高并发下
                 # 很容易打满 15 槽 → QueuePool timeout 雪崩(2026-07 线上事故)。
                 # SQLite 单写者本就串行，用 QueuePool 只会让连接在等锁时占着槽。
                 # 显式 NullPool：每次 checkout 新建连接，并发上限交给下方 semaphore。

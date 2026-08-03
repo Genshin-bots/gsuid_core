@@ -361,24 +361,28 @@ AI_CONFIG: Dict[str, GSC] = {
 MCP_SERVER_CONFIG: Dict[str, GSC] = {
     "enable_mcp_server": GsBoolConfig(
         "是否启用MCP Server",
-        "是否将框架的to_ai触发器对外暴露为MCP Server, 启用后外部MCP客户端可通过SSE/stdio协议连接并调用所有触发器工具",
+        "是否将框架全部 @ai_tools（_TOOL_REGISTRY 整库）对外暴露为 MCP Server；"
+        "启用后外部客户端可通过 http(/api/mcp) 或 stdio 调用",
         False,
     ),
     "mcp_server_transport": GsStrConfig(
         "MCP Server传输协议",
-        "指定MCP Server使用的传输协议, sse为HTTP SSE模式(适合远程访问), stdio为标准输入输出模式(适合本地进程间通信)",
-        "sse",
-        options=["sse", "stdio"],
+        "http=挂载到主服务（默认端口 8765）的 mcp_server_path（Streamable HTTP）；"
+        "stdio=标准输入输出（本地子进程）。旧值 sse 视为 http",
+        "http",
+        options=["http", "stdio", "sse"],
     ),
-    "mcp_server_port": GsIntConfig(
-        "MCP Server监听端口",
-        "指定MCP Server SSE模式下的监听端口（监听地址复用框架HOST配置）",
-        8766,
-        options=[8766, 8767, 8768, 9000],
+    "mcp_server_path": GsStrConfig(
+        "MCP Server HTTP 路径",
+        "http 模式下挂载到主 FastAPI 的路径，与主服务 API 同端口不同 endpoint。"
+        "默认 /api/mcp，完整 URL 形如 http://host:8765/api/mcp",
+        "/api/mcp",
+        options=["/api/mcp", "/mcp"],
     ),
     "mcp_server_api_key": GsStrConfig(
-        "MCP Server API密钥",
-        "指定Bearer Token认证密钥, 留空则不启用认证。外部客户端连接时需在请求头中携带 Authorization: Bearer <api_key>",
+        "MCP Server 静态服务钥（可选）",
+        "可选静态 Bearer。插件可经 register_mcp_token_verifier 注入用户态校验；"
+        "key 与校验器均空时为开发用开放模式。客户端: Authorization: Bearer <token>",
         "",
         options=[],
     ),

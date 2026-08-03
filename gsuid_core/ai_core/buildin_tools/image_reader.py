@@ -156,7 +156,7 @@ def _to_tool_image_content(image_url: str, provider: str = "openai") -> list[Ima
     - DataURI（``data:image/…;base64,…`` / 由 ``base64://`` 归一化而来）分两派：
       * **gemini / anthropic** → 解码成 ``BinaryContent``。它们的 ``ImageUrl`` 路径
         会走 ``download_item``，其 SSRF 防护只放行 http/https，DataURI 直接抛
-        「URL protocol "data" is not allowed」把整轮 run 打死（2026-07-17 画布事故）；
+        「URL protocol "data" is not allowed」把整轮 run 打死（2026-07-17 事故）；
         而 ``BinaryContent`` 映射为 Gemini inline_data / Anthropic base64 source，原生支持。
       * **openai 兼容**（如 MiniMax）→ 保持 ``ImageUrl(data:…)``。曾试过 ``BinaryContent``，
         MiniMax 把它当**裸二进制文本**收到、看不成图（2026-07-16：模型自述

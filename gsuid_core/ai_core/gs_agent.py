@@ -526,9 +526,9 @@ class GsCoreAIAgent:
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
-        # 长流程入口（画布编排/Agent编排等，一轮几十次工具调用 + 等人确认）必须放宽，否则永远跑不到终态。
+        # 长流程入口（编排 / 多轮工具 + 等人确认）必须放宽，否则永远跑不到终态。
         self.wall_clock_budget = wall_clock_budget
-        # 轨迹观察者：让宿主（画布/Agent编排前端的"思考过程"折叠块等）看见模型推理与工具调用， 不必去翻 session log。
+        # 轨迹观察者：让宿主前端看见模型推理与工具调用，不必去翻 session log。
         # 契约见 _emit_trace。
         self.on_trace = on_trace
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
@@ -604,8 +604,8 @@ class GsCoreAIAgent:
 
         ``kind="tool"`` 的 text 形如 ``"<工具名>|<参数JSON>"``。
 
-        宿主可据此把"Agent 在想什么、调了什么工具"实时呈现给用户（画布前端的
-        「思考过程」折叠块就是消费方），而不必去翻 session log 文件。
+        宿主可据此把"Agent 在想什么、调了什么工具"实时呈现给用户
+        （例如前端「思考过程」折叠块），而不必去翻 session log 文件。
 
         观察者是**旁路**：任何异常都吞掉并降级为 debug 日志——展示用的钩子
         绝不能把一次真实的 Agent run 带崩。
@@ -2996,7 +2996,7 @@ class GsCoreAIAgent:
                 False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
             suppress_intermediate_text: True 时，本轮中**只要出现过 ToolCallPart**，其前后伴随的
                 文本片段都不会发送给用户，仅保留没有任何工具调用的最终文本回复。
-                用于画布 Agent 等多工具编排场景，避免中间步骤的碎碎念刷屏。
+                用于多工具编排场景，避免中间步骤的碎碎念刷屏。
             turn_graph: 入口构建的 TurnGraph（可选）；缺省时在装配层现场构建。
             cheap_gate: CheapGate 成本档（可选）；驱动 light 零工具 / 群聊瘦保底。
 
@@ -3159,7 +3159,7 @@ def create_agent(
             必须显式放宽，否则会在半途被"停止新工具轮"提示逼停
         on_trace: 轨迹观察者 `on_trace(kind, text)`，kind ∈ {"thinking","tool"}（tool 的 text 为
             `"<工具名>|<参数JSON>"`）。宿主用它把模型推理与工具调用实时呈现给用户
-            （如画布前端的「思考过程」折叠块）。旁路钩子，异常会被吞掉，不影响 run
+            （如前端「思考过程」折叠块）。旁路钩子，异常会被吞掉，不影响 run
 
     Returns:
         PydanticAIAgent 实例

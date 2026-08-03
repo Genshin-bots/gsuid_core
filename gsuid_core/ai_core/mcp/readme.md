@@ -295,22 +295,35 @@ if is_mcp_provider(provider):
 
 ### `server.py` — MCP Server 模块
 
-将框架的 `to_ai` 触发器对外暴露为 MCP 服务。启用后，外部 MCP 客户端（如 Claude Desktop、Cursor 等）可通过 SSE 或 stdio 协议连接到本框架。
+将框架 **`_TOOL_REGISTRY` 整库**（全部 `@ai_tools`）对外暴露为 MCP 服务。
 
-**配置项（MCP Server 独立子配置）:**
-- `enable_mcp_server` — 是否启用 MCP Server（默认 False）
-- `mcp_server_transport` — 传输协议 `"sse"` | `"stdio"`（默认 `"sse"`）
-- `mcp_server_port` — SSE 监听端口（默认 8766）
-- `mcp_server_api_key` — Bearer Token 认证密钥（留空不认证）
+**传输（通用，无业务域耦合）:**
+- **`http`（默认）**：挂载到主 FastAPI **同端口**（默认 8765）的
+  `mcp_server_path`（默认 **`/api/mcp`**），Streamable HTTP。
+- **`stdio`**：进程 stdin/stdout（本地子进程）。
+- 旧配置 `sse` 视为 `http`。
 
-> 上述配置项已从主 AI 配置拆出，单独放在 `MCP_SERVER_CONFIG` 子配置中（持久化为 `data/ai_core/mcp_server_config.json`），调用入口为 `mcp_server_config` (`gsuid_core.ai_core.configs.ai_config`)。
+**鉴权（框架零插件依赖；方向永远是插件 → 框架）:**
+- `Authorization: Bearer <token>`
+- 静态 `mcp_server_api_key`（框架内建）
+- 插件经 ``register_mcp_token_verifier(async fn)`` 注入校验
+- **key 或校验器任一存在即强制鉴权**；均不存在时为开发用开放模式
+- claims 须含 ``user_id``；缺 ``user_pm`` 时按最低权限 ``6`` 写入 Event
+- 静态 key 成功时服务身份 ``user_pm=0``
 
-**核心函数:**
+**配置项（`MCP_SERVER_CONFIG` → `data/ai_core/mcp_server_config.json`）:**
+- `enable_mcp_server` — 默认 False
+- `mcp_server_transport` — `http` | `stdio`（兼容 `sse`→http）
+- `mcp_server_path` — 默认 `/api/mcp`
+- `mcp_server_api_key` — 可选静态服务钥
 
-| 函数 | 说明 |
-|---|------|
-| `get_mcp_server()` | 获取 MCP Server 实例 |
-| `get_mcp_trigger_count()` | 获取已注册的 MCP 触发器数量 |
+**导出规则:**
+- 数据源：启动时刻 `get_registered_tools()` **快照**（热注册不会自动进 MCP 列表）
+- schema：`Tool.function_schema.json_schema`
+- 调用：`RunContext[ToolContext]` + `tool.function`；claims 写入 Event / extra
+
+**核心函数:** `get_mcp_server` / `get_mcp_exported_tool_count` / `get_mcp_trigger_count`
+  / `register_mcp_token_verifier`
 
 ---
 
@@ -354,12 +367,23 @@ if is_mcp_provider(provider):
 
 ```
 Claude Desktop / Cursor / 其他 MCP 客户端
-  │
-  └─ SSE / stdio 连接
-        └─ FastMCP Server (server.py)
-              └─ 调用 _MCP_TRIGGER_REGISTRY 中注册的触发器
-                    └─ 返回结果给外部客户端
+  │  Authorization: Bearer <token 或 api_key>
+  └─ HTTP  http://host:8765/api/mcp   （或 stdio）
+        └─ FastMCP（挂载主 app）
+              └─ _TOOL_REGISTRY 启动快照
+                    └─ tool.function(**args)
 ```
+
+**HTTP 客户端配置示例:**
+
+```toml
+[mcp_servers.gscore]
+url = "http://127.0.0.1:8765/api/mcp"
+http_headers = { Authorization = "Bearer <token>" }
+```
+
+用户态身份（JWT 等）由**插件**通过 `register_mcp_token_verifier` 注入；
+可选会话头：`X-MCP-Group-Id` / `X-MCP-Bot-Id`（写入 Event，无业务语义）。
 
 ## 扩展指南
 

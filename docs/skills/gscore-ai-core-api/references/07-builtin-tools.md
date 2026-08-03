@@ -819,7 +819,7 @@ async def generate_video(ctx: RunContext[ToolContext], prompt: str) -> str:
 
 | API（`gsuid_core.ai_core.approval`） | 用途 |
 |-----|------|
-| `set_full_access(user_id, enabled)` / `is_full_access(user_id)` | 维护「完全访问」豁免（如画布前端的授权配置开关）；只作用于 user 级 |
+| `set_full_access(user_id, enabled)` / `is_full_access(user_id)` | 维护「完全访问」豁免（如宿主前端的授权配置开关）；只作用于 user 级 |
 | `submit(category, title, ev=..., audience=..., ref_key=..., payload=...)` | 提交一条审批 / 交互请求（返回落库行，含 `short_id`） |
 | `resolve(request_ref, approved, resolver_user_id, note, via)` | 裁决（含定位 + 裁决权校验 + 领域回调） |
 | `register_approval_category(name, on_resolve, ttl_seconds)` | 注册自定义审批领域：`on_resolve(row, approved, note) -> str` 承担"批准之后干什么" |
