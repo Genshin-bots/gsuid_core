@@ -1637,11 +1637,12 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
 
 # §25(5) 工具返回入史上限：本轮模型已消费过完整返回，持久历史里只需可引用的摘要。
 # web_search 等大返回原文滚进历史是 run 内 token 近似 O(N²) 的来源。
-_TOOL_RETURN_HISTORY_MAX = 4000
-_TOOL_RETURN_HEAD = 3200
-_TOOL_RETURN_TAIL = 400
+# 入史截断：能力代理轮内看完整返回；入史可略长以免追问丢字段
+_TOOL_RETURN_HISTORY_MAX = 12_000
+_TOOL_RETURN_HEAD = 9_000
+_TOOL_RETURN_TAIL = 1_500
 
-# OOC 修复 5.2：结构化数据工具返回的入史摘要阈值。 高密度结构化 JSON（指标表、列表类 payload 等）即使低于
+# 主人格当轮折叠 JSON 时的摘要上限（仅 Chat/Agent/Plan）
 _PROFESSIONAL_TOOL_SUMMARY_MAX = 300
 
 

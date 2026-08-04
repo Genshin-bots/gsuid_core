@@ -179,9 +179,9 @@ def _get_subagent_semaphore() -> asyncio.Semaphore:
     return _subagent_semaphore
 
 
-# create_subagent(agent_profile=...) 转 Kanban 路径同步等待的超时（秒）
-# 主人格被阻塞；超时后撤销 interactive relay，由执行体完成后推群兜底。
-_KANBAN_INLINE_WAIT_TIMEOUT_SEC = 60.0
+# create_subagent(agent_profile=...) 转 Kanban 同步等待（秒）。
+# 取数/渲染类任务常 >60s；超时后 deferred 回灌，主人格须 <SILENCE> 勿刷进度。
+_KANBAN_INLINE_WAIT_TIMEOUT_SEC = 180.0
 _KANBAN_INLINE_POLL_INTERVAL_SEC = 0.6
 
 # 文本结论类能力代理：默认同步 ad-hoc（transient），不建看板卡、不经调度排队。
@@ -579,7 +579,7 @@ async def _dispatch_via_kanban(
     mark_interactive_relay_root(root.id)
     asyncio.create_task(kick_root(root.id))
 
-    # 同步等待根任务进终态（轮询）
+    # 同步等待根任务进终态（统一预算，不按业务画像特判）
     waited = 0.0
     final: Optional[AIAgentTask] = None
     while waited < _KANBAN_INLINE_WAIT_TIMEOUT_SEC:
@@ -593,9 +593,8 @@ async def _dispatch_via_kanban(
             break
 
     if final is None:
-        # 超时：deferred 唤醒主人格，不走 relay 推群
+        # 超时：deferred 回灌；严禁主人格对群报「还在跑/任务编号/等会儿」
         mark_deferred_main_delivery(root.id)
-        # 边界竞态：终态已落则 claim deferred 本轮 tool_return，否则短回执
         fresh_after = await AIAgentTask.get_by_id(root.id)
         if fresh_after is not None and fresh_after.status in (
             "completed",
@@ -607,18 +606,18 @@ async def _dispatch_via_kanban(
                 final = fresh_after
             else:
                 return (
-                    f"✅ 任务#{root.ordinal} 刚好完成，框架正在把产物回灌给你处理收尾"
-                    f"（task {root.id[:8]}）。请勿重复 create_subagent。"
+                    f"✅ 任务#{root.ordinal} 刚好完成，框架正在回灌产物。"
+                    "请只输出 <SILENCE>，勿向用户说话、勿重复 create_subagent。"
                 )
         else:
             return (
-                f"⏳ 任务仍在执行中（已等待 {int(waited)}s 超时）。\n"
-                f"Kanban 任务: 任务#{root.ordinal}｜{root.display_name}\n"
-                f"任务 id（前 8 位）: {root.id[:8]}\n"
-                "可到 webconsole 看板查看实时进度。\n"
-                "**完成后框架会把产物回灌给你（主人格）再跑一轮**，由你 render 出图/发送——"
-                "不要空等、不要重复 create_subagent；用户催问时用 "
-                "`artifact_get_recent` / `list_my_kanban_tasks` 查进度与产物。"
+                f"⏳ 子任务后台执行中（已同步等 {int(waited)}s，将自动回灌）。"
+                f"task#{root.ordinal} / {root.id[:8]} / {pid}。\n"
+                "**硬门**：本 tool_return 不是终局结论。"
+                "你必须只输出 <SILENCE>（或空），"
+                "**禁止**对用户说「还在写/还没好/等会儿/任务编号/眯一会儿」；"
+                "禁止再 create_subagent 同任务；禁止查进度刷屏。"
+                "框架完成后会注入交付包，那时再短句+出图。"
             )
 
     # 抓 artifact（最新一份用作产物展示）

@@ -56,8 +56,19 @@ _TRANSPARENT_1PX_PNG = (
 _TAKUMI_ENGINE_HYGIENE_CSS = """
 /* engine hygiene — not a visual theme */
 img{max-width:100%;height:auto;}
-/* short labels: CJK must not wrap per-glyph in tight chips */
-.tag,.badge,.chip,.pill,.label{white-space:nowrap;word-break:keep-all;}
+/* chips: box grows with text; content centered in bg; horizontal CJK only */
+.tag,.badge,.chip,.pill,.label{
+  display:inline-block;box-sizing:border-box;
+  padding:2px 8px;line-height:1.35;width:auto;max-width:100%;
+  text-align:center;vertical-align:middle;
+  white-space:nowrap;word-break:keep-all;overflow:visible;
+  writing-mode:horizontal-tb;text-orientation:mixed;
+}
+/* brand/logo: single horizontal run, not stacked glyphs in a square */
+.logo,.brand,.brand-mark,.icon-label{
+  writing-mode:horizontal-tb;white-space:nowrap;word-break:keep-all;
+  text-align:center;
+}
 """
 
 _MD_CSS_PATH = str(Path(__file__).resolve().parent.parent.parent / "utils" / "html_render" / "markdown_dark.css")

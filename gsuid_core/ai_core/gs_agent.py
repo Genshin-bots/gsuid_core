@@ -194,6 +194,8 @@ def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Un
 
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）
 _INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST", "CapabilityAgent")
+# 主会话才折叠 JSON；CapabilityAgent 必须看完整工具返回
+_MAIN_PERSONA_CREATE_BY = frozenset({"Chat", "Agent", "Plan"})
 
 # on_trace 轨迹事件类型：模型推理段 / 工具调用（见 GsCoreAIAgent._emit_trace）
 TraceKind = Literal["thinking", "tool"]
@@ -2238,9 +2240,9 @@ class GsCoreAIAgent:
                                             f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
                                         )
 
-                                # 交互主人格：技术 dump / 高密度 JSON 当轮折叠，防机器腔 OOC
+                                # 仅主人格折叠 JSON（防 OOC）；能力代理必须看完整工具返回
                                 if (
-                                    self.create_by in _INTERACTIVE_CREATE_BY
+                                    self.create_by in _MAIN_PERSONA_CREATE_BY
                                     and type(part) is ToolReturnPart
                                     and isinstance(part.content, str)
                                 ):
@@ -2267,12 +2269,18 @@ class GsCoreAIAgent:
                                                 _blob.count("\n") >= 3 or len(_blob) >= 400
                                             ):
                                                 _saw_structured_return = True
-                                        # create_subagent 回执：事实包→待出图；render 完成→已出图
+                                        # create_subagent：仅「完成交付」才计待出图；超时/静默回执不算
                                         if (part.tool_name or "") == "create_subagent":
                                             _body = part.content
                                             if _RENDER_DONE_RECEIPT_MARK in _body:
                                                 _delegated_render = True
-                                            elif len(_body.strip()) >= 80:
+                                            elif (
+                                                len(_body.strip()) >= 80
+                                                and "仍在执行" not in _body
+                                                and "后台执行" not in _body
+                                                and "自动回灌" not in _body
+                                                and "<SILENCE>" not in _body
+                                            ):
                                                 _saw_structured_return = True
 
                                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str

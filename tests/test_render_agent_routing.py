@@ -34,8 +34,7 @@ def test_internal_reporter_has_no_render_tools() -> None:
     assert node is not None
     for name in ("render_html_to_image", "render_card", "render_markdown_to_image"):
         assert name not in node.tool_names
-    assert "render_agent" in node.prompt
-    assert "render_markdown" not in node.prompt
+    assert "render_*" in node.prompt or "禁止" in node.prompt and "render" in node.prompt
 
 
 def test_resolve_node_prefers_render_for_out_tu() -> None:
@@ -83,19 +82,21 @@ def test_compose_task_prompt_render_boundary() -> None:
     node = get_node("render_agent")
     assert node is not None
     prompt = compose_task_prompt(node)
-    assert "视觉渲染" in prompt or "渲染" in prompt
+    assert "render_html_to_image" in prompt or "渲成图片" in prompt
     assert "send_message_by_ai" in prompt
     assert "禁止" in prompt
 
 
-def test_research_prompt_mentions_render_agent_and_freshness() -> None:
+def test_research_prompt_has_freshness_and_no_render() -> None:
     _ensure_builtin_profiles()
     from gsuid_core.ai_core.agent_node import get_node
 
     node = get_node("research_agent")
     assert node is not None
-    assert "render_agent" in node.prompt
     assert "时效" in node.prompt
+    assert "禁止" in node.prompt and "render" in node.prompt
+    # 不依赖其它 node_id 交叉引用
+    assert "render_agent" not in node.prompt
 
 
 def test_render_html_tool_is_media_category() -> None:

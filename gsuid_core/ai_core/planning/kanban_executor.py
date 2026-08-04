@@ -99,17 +99,26 @@ def _format_subtask_prompt(
 
     is_leaf_root = root.id == child.id
     parts: List[str]
+    # 叶子根常塞完整事实包（create_subagent）；过短上限会裁掉后半段字段
+    _LEAF_GOAL_MAX = 100_000
+    _CHILD_GOAL_MAX = 24_000
+    _ROOT_GOAL_MAX = 4_000
     if is_leaf_root:
+        goal = (
+            child.goal
+            if len(child.goal) <= _LEAF_GOAL_MAX
+            else (child.goal[:_LEAF_GOAL_MAX] + "\n…[任务描述过长已截断；请 artifact_get 上游 res_ 取全文]")
+        )
         parts = [
             "【Kanban 单步任务】你是被任务树调度器派来的专职执行体，请独立完成本任务。",
-            f"任务描述：{child.goal[:1500]}",
+            f"任务描述：{goal}",
             f"分配画像：{child.agent_profile or '（未指定）'}",
         ]
     else:
         parts = [
             "【Kanban 子任务】你是被任务树调度器派来的专职执行体，请独立完成本节点。",
-            f"任务树根目标：{root.goal[:500]}",
-            f"本子任务描述：{child.goal[:1000]}",
+            f"任务树根目标：{root.goal[:_ROOT_GOAL_MAX]}",
+            f"本子任务描述：{child.goal[:_CHILD_GOAL_MAX]}",
             f"分配画像：{child.agent_profile or '（未指定）'}",
         ]
     # 断点续作提示：审批挂起→批准→重新调度后，能力代理 history 为空、会从头重做；
@@ -471,20 +480,22 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
 
     parts = [
         f"【子任务交付·需你亲自完成收尾】任务#{task.ordinal}「{task.display_name}」已完成。",
-        "你是主人格：请用角色短句给结论；结构化数据/长文用 render_html_to_image（或 render_card）出图发送；",
-        "禁止把下方全文当群聊台词念出；禁止把 res_/img_ 句柄写进对用户可见的话。",
-        "文本类产物请 artifact_get / 下方摘要取原文后渲染，不要 read_image。",
+        '你是主人格：角色短句给结论；长文/多数据出图用 create_subagent(agent_profile="render_agent", task=...)；',
+        "**优先** task 只写 res_ 句柄 + 版式要求，再 artifact_get 取全文（勿把万字正文塞进 task）。",
+        "禁止把下方全文当群聊台词念出；禁止把 res_/img_ 句柄写进对用户可见的话；禁止 read_image 读文本 res_。",
     ]
     if art_lines:
         parts.append("产物 artifact:")
         parts.extend(art_lines)
         if primary:
             parts.append(
-                f"💡 主要产物句柄: `{primary}`（图片类可 send_message_by_ai(image_id=)；文本类先取原文再 render 出图）"
+                f"💡 主要产物句柄: `{primary}`"
+                "（图片：send_message_by_ai(image_id=)；"
+                "文本：create_subagent(render_agent) 的 task 引用此 res_ + artifact_get）"
             )
-    excerpt = _artifact_text_excerpt(arts, limit=4000) or (raw_result or "")[:4000]
+    excerpt = _artifact_text_excerpt(arts, limit=12_000) or (raw_result or "")[:12_000]
     if excerpt:
-        parts.append("⬇️ 代理结论/报告摘要（用户还没看到，由你转译+出图）：\n" + excerpt)
+        parts.append("⬇️ 代理结论/报告摘要（用户还没看到；出图请优先用 res_ 句柄）：\n" + excerpt)
     elif task.failure_reason:
         parts.append(f"失败原因: {task.failure_reason[:500]}")
     return "\n".join(parts)

@@ -317,7 +317,7 @@ async def read_image(
         image_id: 图片资源ID。支持消息里出现的 ``img_xxxxxxxx``（用户上传图）、
             ``res_xxxxxxxx``（**仅图片类**能力代理产物，mime 以 image/ 开头）、
             以及 ``http(s)://`` / ``base64://`` / ``data:image/`` 直链。
-            文本类 ``res_``（如 text/markdown 研报）请用 ``artifact_get``，不要本工具。
+            文本类 ``res_``（如 text/markdown）请用 ``artifact_get``，不要本工具。
         question: 可选，你想从图里知道什么（如"图里的文字是什么""这是哪个角色"）。
             传入后描述会聚焦到你关心的点，不传则返回图片的通用客观描述。
 
