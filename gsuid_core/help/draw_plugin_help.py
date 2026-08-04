@@ -46,7 +46,8 @@ def get_icon(name: str, ICON_PATH: Optional[Path]) -> Image.Image:
     if icon is None:
         icon = Image.open(DEFAULT_ICON)
 
-    return icon.resize((36, 36))
+    # PIL 掩码仅接受 RGBA/L 等模式，第三方图标常为 P/RGB
+    return icon.convert("RGBA").resize((36, 36))
 
 
 async def get_help(
@@ -100,7 +101,7 @@ async def get_help(
     button_y = 103  # 80
 
     title = Image.new("RGBA", (w, _h))
-    icon = icon.resize((300, 300))
+    icon = icon.convert("RGBA").resize((300, 300))  # 掩码用途，需 RGBA
 
     title.paste(icon, (cx(w, 300), 89), icon)
     title.paste(badge, (cx(w, 900), 390), badge)

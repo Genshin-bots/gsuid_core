@@ -480,8 +480,7 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
         parts.extend(art_lines)
         if primary:
             parts.append(
-                f"💡 主要产物句柄: `{primary}`"
-                "（图片类可 send_message_by_ai(image_id=)；文本类先取原文再 render 出图）"
+                f"💡 主要产物句柄: `{primary}`（图片类可 send_message_by_ai(image_id=)；文本类先取原文再 render 出图）"
             )
     excerpt = _artifact_text_excerpt(arts, limit=4000) or (raw_result or "")[:4000]
     if excerpt:
@@ -493,7 +492,7 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
 
 async def _relay_fallback_notify(task: AIAgentTask, raw_result: str, reason: str) -> None:
     """session/bot 不可用时降级人格转译推群（有意分支，非异常吞没）。"""
-    logger.warning(f"deferred wake fallback relay task={task.id[:8]} reason={reason}")
+    logger.warning(t("log.ai.kanban_deferred_wake_fallback_relay", task=task.id[:8], reason=reason))
     spoken, relay_log_files = await _persona_relay(task, raw_result)
     if spoken:
         await _notify(
@@ -542,7 +541,7 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
         return_mode="by_bot",
         has_active_task=True,
     )
-    logger.info(f"deferred main delivery done task={task.id[:8]}")
+    logger.info(t("log.ai.kanban_deferred_main_delivery_done", task=task.id[:8]))
 
 
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
@@ -644,9 +643,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             if bot and silent and deferred:
                 await _wake_main_agent_for_delivery(fresh, body)
             elif bot and not silent:
-                spoken, relay_log_files = await _persona_relay(
-                    fresh, body, is_approval_request=True
-                )
+                spoken, relay_log_files = await _persona_relay(fresh, body, is_approval_request=True)
                 if spoken:
                     await _notify(
                         fresh,

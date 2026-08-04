@@ -156,7 +156,8 @@ def _get_new_help(
     footer = footer.convert("RGBA")
     highlight_bg = highlight_bg.convert("RGBA")
 
-    plugin_icon = plugin_icon.resize((128, 128))
+    # PIL 掩码仅接受 RGBA/L 等模式，第三方图标常为 P/RGB
+    plugin_icon = plugin_icon.convert("RGBA").resize((128, 128))
 
     # 准备计算整体帮助图大小
     w, h = 120 + 475 * column, footer.height
@@ -329,6 +330,9 @@ def _get_new_help(
                     icon = Image.open(command["icon"])
             else:
                 icon = find_icon(command_name, icon_path)
+
+            if icon.mode != "RGBA":  # 同 plugin_icon：防御 P/RGB 掩码报错
+                icon = icon.convert("RGBA")
 
             if icon.width > 200:
                 icon = icon.resize((128, 128))

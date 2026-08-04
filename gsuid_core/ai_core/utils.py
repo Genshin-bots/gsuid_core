@@ -684,9 +684,10 @@ async def prepare_content_payload(
             if injected:
                 content_payload.extend(injected)
             else:
-                logger.warning(
-                    i18n_t("log.ai.unable_process_image_id", i=i) + (f" ({inject_err})" if inject_err else "")
-                )
+                if inject_err:
+                    logger.warning(i18n_t("log.ai.unable_process_image_id_err", i=i, e=inject_err))
+                else:
+                    logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
         else:
             logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
 

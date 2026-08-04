@@ -16,6 +16,9 @@ def register_help(
 ):
     if icon is None:
         icon = Image.open(ICON)
+    # 帮助图把图标自身当粘贴掩码，非 RGBA 会抛 bad transparency mask
+    if icon.mode != "RGBA":
+        icon = icon.convert("RGBA")
     plugin_help = {
         "name": name,
         "desc": f"{name}插件帮助功能",
