@@ -26,7 +26,7 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
         "state_delete": ToolBase(...),
         "state_list": ToolBase(...),
         "state_append": ToolBase(...),
-        "render_html_to_image": ToolBase(...),  # 多数据点出图主路径（自由 HTML）
+        # render_html_to_image 已迁 media，由 render_agent 持有（非 buildin 保底）
     },
     "common": {
         "search_image": ToolBase(...),

@@ -74,15 +74,30 @@ def resolve_node(hint: str, default: str = "research_agent") -> str:
     """自然语言 hint → node_id（用句柄不用 ID，原 resolve_profile 语义）。
 
     1. hint 就是已注册 node_id（含 persona 投影）→ 直接返回；
-    2. 命中某注册表节点的 match_keywords → 返回该 node_id（按注册序首个命中）；
+    2. 命中 match_keywords → 取**最长关键词**命中的节点（更具体优先；
+       同分时保留注册序更靠前的节点，与旧「首个命中」一致）；
     3. 都不命中 → 回退 default（default 不存在时回退首个注册节点）。
+
+    例：``分析并出对比表`` 同时命中 research「分析」与 render「对比表」→
+    因「对比表」更长，选 ``render_agent``。
     """
     h = (hint or "").strip().lower()
     if not h:
         return default if default in _NODES else next(iter(_NODES), "")
     if h in _NODES or get_persona_node(h) is not None:
         return h
+    best_id = ""
+    best_score = 0
     for node in _NODES.values():
-        if any(kw.lower() in h for kw in node.match_keywords):
-            return node.node_id
+        for kw in node.match_keywords:
+            k = (kw or "").strip().lower()
+            if not k or k not in h:
+                continue
+            score = len(k)
+            # 严格大于：同分不覆盖，保持注册序优先
+            if score > best_score:
+                best_score = score
+                best_id = node.node_id
+    if best_id:
+        return best_id
     return default if default in _NODES else next(iter(_NODES), "")

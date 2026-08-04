@@ -52,7 +52,6 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
 - ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（``visible_when`` 有图才露）
-- ``render_html_to_image``（``html_render_tools.py``）：自写 HTML 出图（多数据点主路径）
 - ``state_get`` / ``state_set``（``state_store/tools.py``）：高频持久键值
   （``state_list`` / ``state_delete`` / ``state_append`` 在 common，按能力族召回）
 
@@ -100,14 +99,16 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``cancel_scheduled_task`` / ``pause_scheduled_task`` / ``resume_scheduled_task``
   （``scheduler.py``）：定时任务停 / 起按需
 
-### 2.4 ``category="media"`` —— 向量检索按需（图文渲染次选）
+### 2.4 ``category="media"`` —— 资料出图（主人格不保底，归 ``render_agent``）
 | 工具 | 来源 | 说明 |
 |---|---|---|
-| ``render_card`` | ``html_render_tools.py`` | 结构化 JSON 固定布局 → 图片（快捷次选） |
+| ``render_html_to_image`` | ``html_render_tools.py`` | 自写 HTML 出图（多数据点主路径） |
+| ``render_card`` | ``html_render_tools.py`` | 结构化 JSON 固定布局 → 图片 |
 | ``render_markdown_to_image`` | ``html_render_tools.py`` | Markdown → 图片 |
 
-> ``render_html_to_image`` 在 **buildin 保底**（多数据点出图主路径），与上表 media 工具
-> 同属 ``capability_domain="资料出图"``，召回/驻留时可整族带出 card/md。
+> 三者同属 ``capability_domain="资料出图"``，由能力代理 ``render_agent`` 白名单持有；
+> 主人格经 exclusive 剥离后**不应**直调，应
+> ``create_subagent(agent_profile="render_agent", task=事实包)``。
 
 ### 2.5 ``category="default"`` —— 沙盒 / 子 Agent 专用
 ``@ai_tools()`` 不传 category 即落入 ``"default"``。这些工具不在保底池，

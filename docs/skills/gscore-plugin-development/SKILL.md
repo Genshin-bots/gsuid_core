@@ -42,7 +42,7 @@ description: >
 | 十一 | AI 集成：`@ai_tools` 装饰器（仅当函数不暴露为用户命令时使用） | [references/11-ai-tools-decorator.md](./references/11-ai-tools-decorator.md) |
 | 十二 | AI 集成：知识库（`ai_entity`）与别名（`ai_alias`）注册 | [references/12-ai-knowledge-and-alias.md](./references/12-ai-knowledge-and-alias.md) |
 | 十三 | AI 集成：`create_agent`（临时专用 AI Agent） | [references/13-ai-create-agent.md](./references/13-ai-create-agent.md) |
-| 十四 | AI 集成：能力代理画像（`CapabilityAgentProfile`） + 框架自带 `plugin_developer_agent` | [references/14-ai-capability-profile.md](./references/14-ai-capability-profile.md) |
+| 十四 | AI 集成：能力代理（`AgentNode`）Cookbook + `render_agent` / 业务节点（如 stock_report）+ `plugin_developer_agent` | [references/14-ai-capability-profile.md](./references/14-ai-capability-profile.md) |
 | 十五 | 完整插件示例（MyGameUID 端到端） | [references/15-full-plugin-example.md](./references/15-full-plugin-example.md) |
 | 十六 | 常用工具模块速查（`get_res_path` / `send_msg_to_master` / `error_reply` / 限流 / 缓存 / 字体 / `to_thread` / `cache_data` / 批量播报 / 常用 import） | [references/16-common-utilities.md](./references/16-common-utilities.md) |
 | 十七 | 代码规范红线（禁止 try/except 兜底、cast、type:ignore、getattr/dict.get 兜底、同步阻塞函数） | [references/17-code-redlines.md](./references/17-code-redlines.md) |
@@ -86,7 +86,7 @@ description: >
 - **数据库 Schema 变更用 `exec_list`**：放在 `on_core_start_before` 阶段执行。详见 [§5.7](./references/05-database.md#57-为已定义的表添加新列)。
 - **唯一允许 `try/except` 的地方**：`_ai_return_xxx()` 辅助函数。详见 [§17.3](./references/17-code-redlines.md#173-ai_return-辅助函数的特殊说明)。
 - **图片渲染优先级**：PIL（首选）→ pytakumi（推荐）→ playwright（兜底）。详见 [§9.1](./references/09-image-rendering.md#91-三档渲染方案优先级从高到低)。
-- **能力代理 prompt 必须拼 `_DELIVERY_BOUNDARY`**：否则画像会绕过主人格直接发消息。详见 [§14.4](./references/14-ai-capability-profile.md#141-画像-prompt-写作要点硬约束)。
+- **能力代理用 `AgentNode` + `register_agent_node`**：交付边界默认框架叠加；出图派 `render_agent`；业务强制「插件工具 > web」。详见 [§14](./references/14-ai-capability-profile.md)。
 - **`to_ai` 改造三层**：触发器层 `to_ai="..."` + 数据/渲染层 `ai_return()` + 业务画像 `CapabilityAgentProfile`；详见 [§18.1](./references/18-ai-trigger-migration.md#181-背景你要做的事) 与 [§18.3 Step 0.4](./references/18-ai-trigger-migration.md#step-04-判断是否需要注册-capability-agent-画像)。
 - **`ai_return` 注入点 = 数据已拿到 / 图片未生成**：必须在数据层函数里，不能只在触发器层。详见 [§18.3 Step 3](./references/18-ai-trigger-migration.md#step-3逐层分析调用链找出数据层注入-ai_return)。
 - **插件 FastAPI = 共享 app + `Depends(require_auth)`**：从 `gsuid_core.webconsole.app_app import app` 即可挂自己的 `/api/<插件名>/...` 路由；详见 [§19.2](./references/19-fastapi-plugin-api.md#192-最简示例3-行代码加一个-get-接口) 与 [§19.3](./references/19-fastapi-plugin-api.md#193-加鉴权推荐-复用-require_auth)。

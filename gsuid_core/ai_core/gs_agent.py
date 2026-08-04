@@ -101,6 +101,17 @@ from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
     looks_like_provider_failure,
 )
+from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+    POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
+    RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
+    POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
+    POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
+    POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+    POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+    POST_TOOL_OUTPUT_CONTRACT_CAPABILITY as _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    post_tool_contracts_for as _post_tool_contracts_for,
+    tool_call_targets_render_agent as _tool_call_targets_render_agent_core,
+)
 
 _T = TypeVar("_T")
 
@@ -207,10 +218,10 @@ _STRUCTURAL_ZERO_TOOL_NUDGE = (
 )
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
-_RENDER_DATA_NUDGE = (
-    "（系统校验：本轮工具已返回多项/结构化数据，但尚未调用渲染出图工具。"
-    "请立即用 render_html_to_image（或 render_card / render_markdown_to_image）出图，"
-    "台词只留一两句角色引导，禁止把多条数据念成台词；渲染失败也只许短结论，禁止长列表凑数。）"
+_RENDER_DELEGATE_NUDGE = (
+    "（系统校验：本轮工具已返回多项/结构化数据，但尚未委派出图。"
+    '请立即 create_subagent(agent_profile="render_agent", task=完整事实包+版式要求) 出图；'
+    "台词只留一两句角色引导，禁止把多条数据念成台词，禁止主人格自写 HTML 渲染。）"
 )
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
@@ -355,40 +366,16 @@ def _format_capability_roster() -> str:
 
 
 # 工具返回后的输出契约：事件驱动（本轮出现过 ToolReturn），不认业务关键词
-# 主人格 / 评测：多项数据 → 工具出图
-_POST_TOOL_OUTPUT_CONTRACT = (
-    "（系统：本轮已有工具返回。若结果含多项数据点，必须 "
-    "render_html_to_image 自写 HTML 出图（也可用 render_card / render_markdown_to_image）；"
-    "渲染工具自动发图，禁止台词复述、禁止 <report> 文本块。台词只留一两句角色化引导。）"
-)
-
-# 能力代理：只交 Markdown/JSON 事实包；出图归主人格
-_POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
-    "（系统：本轮已有工具返回。你是能力代理——必须把结果整理成 **Markdown 或 JSON 事实包** "
-    "交付主人格（条目/日期/数字/来源/依据），或 artifact_put 持久化。"
-    "有搜索/查询结果时**禁止**只回过程句（如「下面再搜」「停止重复」「然后渲染」）。"
-    "**禁止**调用 render_html_to_image / render_card / render_markdown_to_image（出图由主人格负责）。）"
-)
-
-# 工具失败/空结果：强制换路（只看 outcome / 空内容，禁止扫正文关键词）
-_POST_TOOL_FAIL_CONTRACT = (
-    "（系统：本轮工具返回失败或空结果。禁止用角色懒惰结束本轮。"
-    "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
-    "取到多项数据必须 render_html_to_image 出图。只有换路后仍无果才可角色化短句说明。）"
-)
-
-_POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
-    "（系统：本轮工具返回失败或空结果。禁止只回过程句结束。"
-    "立刻换路：换 query / 换工具再取数；仍无果则在事实包里明确写「无检索结果：原因=…」。"
-    "禁止 render_html_*（出图归主人格）。）"
-)
+# 契约常量见 capability_agents.delegation_contracts
 
 
-def _post_tool_contracts_for(create_by: str) -> tuple[str, str]:
-    """主人格推 render；能力代理推事实包交付。"""
-    if create_by == "CapabilityAgent":
-        return _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY, _POST_TOOL_FAIL_CONTRACT_CAPABILITY
-    return _POST_TOOL_OUTPUT_CONTRACT, _POST_TOOL_FAIL_CONTRACT
+def _tool_call_targets_render_agent(part: ToolCallPart) -> bool:
+    """create_subagent 的 agent_profile 是否解析到 render_agent。"""
+    return _tool_call_targets_render_agent_core(
+        tool_name=part.tool_name,
+        args=part.args_as_dict(),
+        args_json=part.args_as_json_str(),
+    )
 
 
 def _tool_return_looks_failed(part: ToolReturnPart) -> bool:
@@ -509,6 +496,7 @@ class GsCoreAIAgent:
         scope_key: Optional[str] = None,
         wall_clock_budget: Optional[float] = None,
         on_trace: Optional[Callable[[TraceKind, str], None]] = None,
+        capability_node_id: Optional[str] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -534,6 +522,8 @@ class GsCoreAIAgent:
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
 
         self.create_by = create_by
+        # 能力代理 node_id（仅 CapabilityAgent）；契约/日志用，勿靠 session 子串猜
+        self.capability_node_id: str = (capability_node_id or "").strip()
         # 未显式给 session_id 的来源（能力评估 / meme 打标 / 记忆摄入·检索等后台 LLM
         # 调用）自动派生一个一次性 subagent id——这样"所有调用来源都写 session log"
         if session_id is None:
@@ -1609,6 +1599,8 @@ class GsCoreAIAgent:
         _fab_blocked: list[str] = []
         # 本轮是否见过结构化工具返回（用于出图履约闸）
         _saw_structured_return = False
+        # 本轮是否已委派 render_agent（勿把 research 的 create_subagent 当成已出图）
+        _delegated_render = False
         # 同工具空转计数：连续同名工具调用次数；达阈值后注入 thrash fuse（每 run 一次）
         _same_tool_streak = 0
         _same_tool_name = ""
@@ -2265,7 +2257,7 @@ class GsCoreAIAgent:
                                             part.content = (
                                                 _summarize_structured_data(part.content)
                                                 + "\n（结构数据已折叠。综合分析请 create_subagent；"
-                                                "多项数据用 render_html_to_image 出图，勿在台词复述原文。）"
+                                                "多项数据 create_subagent(render_agent) 出图，勿台词复述。）"
                                             )
                                         else:
                                             # 搜索/拉取类：多行或够长 → 视为可出图材料（形状信号，非话题词）
@@ -2274,6 +2266,13 @@ class GsCoreAIAgent:
                                             if any(h in _tn_l for h in _SEARCHISH_TOOL_HINTS) and (
                                                 _blob.count("\n") >= 3 or len(_blob) >= 400
                                             ):
+                                                _saw_structured_return = True
+                                        # create_subagent 回执：事实包→待出图；render 完成→已出图
+                                        if (part.tool_name or "") == "create_subagent":
+                                            _body = part.content
+                                            if _RENDER_DONE_RECEIPT_MARK in _body:
+                                                _delegated_render = True
+                                            elif len(_body.strip()) >= 80:
                                                 _saw_structured_return = True
 
                                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
@@ -2296,7 +2295,11 @@ class GsCoreAIAgent:
                                 if type(_p) is ToolReturnPart and _tool_return_looks_failed(_p):
                                     _any_fail = True
                                     break
-                            _ok_c, _fail_c = _post_tool_contracts_for(self.create_by)
+                            _ok_c, _fail_c = _post_tool_contracts_for(
+                                self.create_by,
+                                session_id=self.session_id or "",
+                                capability_node_id=self.capability_node_id,
+                            )
                             _contract = _fail_c if _any_fail else _ok_c
                             if not any(
                                 isinstance(p, UserPromptPart)
@@ -2306,6 +2309,8 @@ class GsCoreAIAgent:
                                     _POST_TOOL_FAIL_CONTRACT,
                                     _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
                                     _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+                                    _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+                                    _POST_TOOL_FAIL_CONTRACT_RENDER,
                                 )
                                 for p in node.request.parts
                             ):
@@ -2398,6 +2403,8 @@ class GsCoreAIAgent:
                                 )
                                 _tool_call_list.append(part.tool_name)
                                 _resp_tool_names.append(part.tool_name)
+                                if part.tool_name == "create_subagent" and _tool_call_targets_render_agent(part):
+                                    _delegated_render = True
                                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
                                 self._emit_trace("tool", f"{part.tool_name}|{part.args_as_json_str()}")
 
@@ -2770,21 +2777,23 @@ class GsCoreAIAgent:
                         if _prior:
                             self._scrub_fake_done_history({_prior})
 
-                # 结构数据已返回却未出图：仅当池内有渲染工具且台词已偏长（疑似念表）
+                # 结构/事实包已返回却未委派 render：念表或短句收束都 nudge 一次
+                # （research 的 create_subagent 不算已出图；仅 render 委派/工具可豁免）
                 elif (
                     _saw_structured_return
                     and _tool_call_list
+                    and not _delegated_render
                     and not (_RENDER_TOOL_NAMES & set(_tool_call_list))
-                    and bool(_RENDER_TOOL_NAMES & set(tool_names))
                     and result_msg
-                    and len(result_msg.strip()) > 80
+                    and len(result_msg.strip()) > 40
                     and not fake_done_retry
                     and self.create_by in _INTERACTIVE_CREATE_BY
+                    and self.create_by != "CapabilityAgent"
                 ):
                     logger.warning(i18n_t("log.agent.render_data_nudge_once"))
                     try:
                         _rc = await self._execute_run_once(
-                            user_message=_RENDER_DATA_NUDGE,
+                            user_message=_RENDER_DELEGATE_NUDGE,
                             bot=bot,
                             ev=ev,
                             tools=tools,
@@ -3138,6 +3147,7 @@ def create_agent(
     scope_key: Optional[str] = None,
     wall_clock_budget: Optional[float] = None,
     on_trace: Optional[Callable[[str, str], None]] = None,
+    capability_node_id: Optional[str] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -3183,6 +3193,7 @@ def create_agent(
         scope_key=scope_key,
         wall_clock_budget=wall_clock_budget,
         on_trace=on_trace,
+        capability_node_id=capability_node_id,
     )
 
 

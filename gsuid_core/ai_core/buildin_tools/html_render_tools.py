@@ -236,6 +236,10 @@ def _rewrite_html_tables(html: str) -> str:
         rewrite_tables_for_takumi,
     )
 
+    # rowspan/colspan 仅近似：不 raise，留下排障信号
+    if re.search(r"\b(?:rowspan|colspan)\s*=", html, flags=re.I):
+        logger.warning(t("log.ai.buildintools_html_table_rowspan_colspan"))
+
     # prefer_local：保留 .up/.down 等 agent 写在 td 上的 class
     rewritten = rewrite_tables_for_takumi(html, prefer_local=True)
     if "md-table" not in rewritten:
@@ -508,7 +512,7 @@ async def render_card(
 ) -> str | bytes:
     """将结构化 JSON 渲染为信息图并自动发送。**快捷次选**（固定布局）。
 
-    多数据点出图**首选** ``render_html_to_image`` **自由自写 HTML**；仅当数据恰好契合下列形态时
+    多数据点出图**首选** ``render_html_to_image``（经 ``render_agent``）；仅当数据恰好契合下列形态时
     可用本工具省事。card_type 是布局名，不是业务关键词：
     - weather：多日/多指标面板
     - news：要点列表
@@ -666,8 +670,8 @@ async def _resolve_embed_source_bytes(
         name = m.group("name").lower()
         url = _ICONIFY_SVG_URL.format(prefix=prefix, name=name)
         data, err = await _download_url_bytes(url)
-        if err is not None:
-            return None, None, f"图标拉取失败 ({prefix}/{name}): {err}"
+        if err is not None or data is None:
+            return None, None, f"图标拉取失败 ({prefix}/{name}): {err or '空响应'}"
         if b"<svg" not in data[:800].lower():
             return None, None, f"图标拉取失败: 非 SVG 响应 ({prefix}/{name})"
         return data, "image/svg+xml", None
@@ -789,31 +793,33 @@ async def _auto_embed_html_images(html: str) -> str:
     return out
 
 
-# 仅 HTML 进保底：多数据点出图主路径；card/md 走 media 按需召回，避免每轮 3 个 schema
-@ai_tools(category="buildin", capability_domain="资料出图")
+# 与 card/md 同属 media：主人格不保底；由 render_agent 白名单持有
+@ai_tools(category="media", capability_domain="资料出图")
 async def render_html_to_image(
     ctx: RunContext[ToolContext],
     html_content: str,
     image_format: Literal["png", "jpeg"] = "png",
     max_width: int = 800,
 ) -> str | bytes:
-    """将自定义 HTML 渲染为高清图片并自动发送。**多数据点出图首选**。
+    """将自定义 HTML 渲染为高清图片并自动发送。**render_agent 出图主工具**。
 
-    **自由创作，无固定业务模板。** 按用户问题自写 HTML + CSS（主题/配色/布局随内容变），
-    不要套固定「指标卡 + 横条」模板。系统**不会**再自动套暗色设计壳。
+    主人格应 ``create_subagent(agent_profile="render_agent", task=...)`` 委派，勿自行堆 HTML。
+    **自由创作，无固定业务模板。** 按内容自写 HTML + CSS，不要套固定「指标卡 + 横条」。
+    系统**不会**再自动套暗色设计壳。
 
     ## 写法
     - 推荐完整文档：``<!DOCTYPE html><html><head><style>...</style></head><body>...</body></html>``
     - 也可只写片段 + 内联 ``<style>``；视口宽 = max_width，高度随内容自适应
     - 中文字体用 ``"MiSans","PingFang SC","Microsoft YaHei",sans-serif``
-    - 布局优先 flex / 基础 grid；可用原生 ``<table>``（引擎侧自动改写为 flex 网格，正常显示）
+    - 布局优先 flex / 基础 grid；可用原生 ``<table>``（引擎侧自动改写为 flex 网格）
     - 多项对比/列表/面板：用表格或自写卡片均可，禁止把长数据念成台词
     - **暗色主题对比度**：深色背景时，h1/h2/.title/.headline **必须显式** ``color:#edf4ff``
       （或其它浅色）；禁止标题只写字号不写颜色、禁止暗底深色字；font-weight 用 400~900
     - **颜色语义**：同一页一套语义色（如 ↑/↓ 各一色）；强调数字用高亮浅色（``#fca5a5`` /
       ``#6ee7b7`` / ``#fde68a``）。**class 优先级**：``.item .value.up`` 须能盖过 ``.item .value``，
       禁止基类 ``color`` 盖掉修饰 class；状态色优先单 class
-    - **短标签**（chip/badge）：``white-space:nowrap``；长 tag 与标题分行/flex，勿挤同一行乱折
+    - **短标签**（chip/badge）：``display:inline-block;text-align:center;white-space:nowrap``；
+      父行居中用 ``.row{text-align:center}`` 或 ``display:flex;justify-content:center``
     - **插图 / 图标（一次写完即可）**：直接在 HTML 里写，**系统渲染前自动嵌成 data URI**，
       无需另调工具：
       - ``<img src="https://...">`` 外链图
@@ -823,24 +829,36 @@ async def render_html_to_image(
       - 已是 ``data:image/...`` 的原样保留
       禁止用色块汉字冒充 logo；少用 emoji 当图标，需要图就写 ``<img>``。
 
+    ## 表格硬约束（引擎无 CSS table 模型，改写后是 div）
+    - **禁原生 rowspan/colspan**：请展平为单层表（重复行）或用
+      ``im_templates.comparison_card`` / ``board_card``；改写器仅近似占位。
+    - **禁 ``td.xxx`` / ``th.xxx`` 选择器**：改写后节点是 ``div.md-table-cell``，
+      请写 ``.xxx`` 或内联 ``style="text-align:right"``。
+    - **数值列**：``4.33x`` / ``~16.5x`` / ``±`` 等单位请用内联 ``style="text-align:right"``
+      或 class ``right``（不要依赖仅匹配 ``td`` 的选择器）。
+    - **窄列 CJK**：默认可逐字断行；短标签靠卫生 CSS；普通格请 ``word-break:keep-all``，
+      禁止手写 ``农<br>业<br>种<br>植`` 式竖排。
+    - **字号**：正文建议 ≥14px，辅助 ≥12px；勿用 10–11px 全文。
+
     ## 示例（自由布局，勿照抄成唯一模板）::
 
         <!DOCTYPE html><html><head><meta charset="utf-8"><style>
         body{font-family:"MiSans","Microsoft YaHei",sans-serif;padding:24px;background:#0f172a;color:#e2e8f0;}
         h1{font-size:22px;margin:0 0 12px;color:#edf4ff;font-weight:800;}
         .row{display:flex;gap:12px;align-items:center;}
-        .tag{display:inline-block;padding:2px 8px;border-radius:4px;background:#334155;white-space:nowrap;}
+        .tag{display:inline-block;padding:2px 8px;border-radius:4px;background:#334155;
+             white-space:nowrap;text-align:center;}
         img.icon{width:28px;height:28px;border-radius:6px;}
         table{width:100%;border-collapse:collapse;}
         th,td{padding:8px 10px;border-bottom:1px solid #334155;text-align:left;color:#e2e8f0;}
-        th{color:#94a3b8;font-size:12px;} .up{color:#34d399;}
+        th{color:#94a3b8;font-size:12px;} .up{color:#34d399;} .right{text-align:right;color:#fde68a;}
         </style></head><body>
         <div class="row">
           <img class="icon" src="icon:mdi/chart-line" alt="" />
           <h1>持仓明细</h1>
         </div>
-        <table><tr><th>名称</th><th>浮盈</th></tr>
-        <tr><td>长江电力</td><td class="up">+5.48%</td></tr></table>
+        <table><tr><th>名称</th><th class="right">浮盈</th></tr>
+        <tr><td>长江电力</td><td class="up right">+5.48%</td></tr></table>
         </body></html>
 
     Args:
@@ -890,7 +908,7 @@ async def render_markdown_to_image(
 ) -> str | bytes:
     """将 Markdown 渲染为暗色卡片图。纯文字列表/步骤的次选。
 
-    需要自定义布局、指标卡、时间线时优先 ``render_html_to_image``。
+    需要自定义布局、指标卡、时间线时优先 ``render_html_to_image``（``render_agent``）。
     ≥3 条数据点时必须出图；角色台词只留一两句引导。
 
     Args:

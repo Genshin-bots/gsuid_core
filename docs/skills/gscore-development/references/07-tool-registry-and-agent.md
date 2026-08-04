@@ -35,12 +35,12 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
 | `self` | **保底**：无条件加载进主 Agent | 好感度增改、`send_message_by_ai`、`create_subagent`、`add_once_task`/`add_interval_task` |
-| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get`、**`render_html_to_image`（多数据点出图主路径）** |
-| `common` | 向量检索按需 | `search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
-| `media` | 向量检索按需 | `render_card`、`render_markdown_to_image`（次选；HTML 主路径在 buildin） |
+| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get` |
+| `common` | 向量检索按需 | `create_subagent`、`search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
+| `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`（由能力代理 **`render_agent`** 白名单持有；主路径 `create_subagent(agent_profile="render_agent")`） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
-| `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`get_current_date` |
+| `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
 | `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`（见 §7.5） |
 
 > **保底池完全由 category 决定，无硬编码名单**。`get_main_agent_tools()` 把 `self`+`buildin`
@@ -336,8 +336,8 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 1. **`angle_bracket`**（`angle_bracket_guard`）：非法尖括号标签（如 `<bubble/>`、**`<br>`**）→
    `REWRITE`；同 turn 累计 3 次 → `FUSE`（本轮静默 + scrub 脏 history / nudge）。
    - 协议标签（检测前剥掉，不触发闸）：`<SILENCE>` / `<meme:…>`。
-   - **`<br>` / `<report>` 不是协议**——打回重写；多项数据出图用 `render_html_to_image`
-     （呈现层仍兼容剥离遗留 report body 并出图）。
+   - **`<br>` / `<report>` 不是协议**——打回重写；多项数据出图用
+     `create_subagent(render_agent)`（呈现层仍兼容剥离遗留 report body 并出图）。
    - 同一次 `ModelResponse` 内多 `TextPart`：`begin_response_batch` + `count_attempt=False` →
      **只计 1 次 attempt**；多段 feedback 用 `merge_rewrite_feedbacks` 合并后注入下一轮请求。
    - 检测启发式：形如 `</?Name…>`；`List<str>` 等 PascalCase 泛型 / 含 `@` 邮箱跳过，降假阳性。
@@ -410,19 +410,22 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 
 > 🔴 **尖括号协议（2026-08）**。仅 `<SILENCE>` / `<meme:…>` 合法。
 > - **`<br>`**：非法 → gate 打回；sanitize 漏网时落成 `\n`。
-> - **`<report>`**：协议已废止 → gate 打回；主契约是 `render_html_to_image` 出图；
+> - **`<report>`**：协议已废止 → gate 打回；主契约是 `create_subagent(render_agent)` 出图；
 >   `send_chat_result` 仅兼容剥离遗留 body 并渲染资料图。
 > - 连发短消息用**空行**，不要自造尖括号标签。
 >
 > 代码块 / 行内代码在 linebreak 归一化路径中**原样保留**（用户可能在问 HTML 本身）。
 > 回归：`tests/test_angle_bracket_guard.py`、`tests/test_output_linebreaks_and_preference_gate.py`。
 
-> 🖼️ **`render_html_to_image`（buildin 保底，2026-08）**：多数据点出图**主路径**。默认**自由 HTML**
-> （不自动套暗色设计壳）；原生 `<table>` 经 `utils/html_render/table_rewrite` 改成 `.md-table` flex
-> （Takumi 无 CSS table 模型）。**渲染前自动嵌图**：HTML 内 `<img src>` / CSS `url(...)` 的
-> `https://`、`icon:prefix/name`、`img_`、`res_` 转 data URI（无独立嵌图工具、无业务域特判）。
-> 次选 `render_card` / `render_markdown_to_image`（`media` 按需召回）。
-> 详见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)、工具 docstring。
+> 🖼️ **出图委派 `render_agent`（2026-08）**：多数据点出图**主路径**是
+> `create_subagent(agent_profile="render_agent", task=事实包)`，不是主人格保底
+> `render_html_to_image`。渲染工具属 `media` + `capability_domain="资料出图"`，由
+> `render_agent` 白名单持有；交互主人格经 exclusive 剥离后不应直调。
+> 工具侧：默认**自由 HTML**（不自动套暗色设计壳）；原生 `<table>` 经
+> `utils/html_render/table_rewrite` 改成 `.md-table` flex；渲染前自动嵌图
+> （`https://` / `icon:` / `img_` / `res_` → data URI）。
+> 详见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)、
+> `capability_agents/profiles.py` 中 `render_agent`。
 
 > 新增任何"模型输出后处理"：**打回/熔断**挂 `output_gate`；**通道变换/sanitize** 挂 `send_chat_result`——
 > **不要**在各调用方各写一份。proactive / 兜底总结 / 子 Agent 转述等所有路径都经呈现链下发。

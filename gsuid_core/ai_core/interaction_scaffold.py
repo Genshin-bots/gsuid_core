@@ -594,7 +594,7 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "find_tools",
         "read_image",
         "web_search_tool",
-        "render_html_to_image",
+        "create_subagent",  # 含 render_agent / research 委派入口
     }
 )
 

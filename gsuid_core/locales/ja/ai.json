@@ -97,6 +97,8 @@
   "log.ai.buildintools_getting_date_result": "[BuildinTools] 現在日付取得中: {result}",
   "log.ai.buildintools_html_rendering": "[BuildinTools] HTML レンダリング失敗: {e}",
   "log.ai.buildintools_html_rendering_succeeded_ok": "[BuildinTools] HTML レンダリング成功、画像長: {p0} bytes",
+  "log.ai.buildintools_html_table_rowspan_colspan": "[BuildinTools] HTML に rowspan/colspan あり；改写は占位近似のみ。平坦な行または im_templates を推奨",
+
   "log.ai.buildintools_insufficient_permissions": "[BuildinTools] 権限不足: {p0}",
   "log.ai.buildintools_kanban_artifact_image": "[BuildinTools] send_message_by_ai: Kanban artifact {image_id} → 自动注册成 RM 资源 {new_rm_id}",
   "log.ai.buildintools_kanban_artifact_parsing_fail": "[BuildinTools] Kanban アーティファクト解析失敗、RM.get('{image_id}') にフォールバック",

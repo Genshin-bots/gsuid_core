@@ -94,7 +94,7 @@ description: >
 - **SQLModel 不写 `__tablename__`**：表名 = 类名全小写。数据库方法写在模型类里、用 `@with_session`。Schema 变更走 `on_core_start_before` 的 `exec_list`/`trans_adapter`。详见 [§11](./references/11-statistics-webconsole-database.md)。
 - **上下文装配单源 + 交互脚手架（2026-07-12 起）**：system prompt 与每轮动态注入的唯一装配点是 `ai_core/context_assembly.py`（生产 `handle_ai` 与评测端点同源消费，禁止在入口手工拼接）；`ai_core/interaction_scaffold.py` 是 C-1~C-3 交互脚手架（省略跟进/漂移预算/寻址前置门），判据只许结构/语言学范畴、长度类判定必须过 `extract_message_body`。详见 [§06](./references/06-ai-session-and-persona.md) 6.7 与 [§12](./references/12-developer-pitfalls.md) 12.22d。
 - **统一输出闸门（2026-08）**：`pre_send_gate` 顺序 **尖括号 → OOC**；主路径与 `send_message_by_ai` 共用 `GateBag`；`<br>` / `<bubble/>` 非法；呈现层只做 `send_chat_result`。详见 [§7.12](./references/07-tool-registry-and-agent.md)、[§12.22](./references/12-developer-pitfalls.md)、生命周期文档 §10.4–§10.6。
-- **`render_html_to_image` 在 buildin 保底**：自由 HTML 主路径（不套设计壳）；`render_card` / MD 出图在 media 按需。详见 [§7.13](./references/07-tool-registry-and-agent.md)、[`TAKUMI_HTML_GUIDE.md`](../../TAKUMI_HTML_GUIDE.md)。
+- **出图主路径 `render_agent`**：`create_subagent(agent_profile="render_agent")`；`render_*` 在 media，主人格 exclusive 剥离。详见 [§7](./references/07-tool-registry-and-agent.md)、[`TAKUMI_HTML_GUIDE.md`](../../TAKUMI_HTML_GUIDE.md)。
 
 ## 关联文档（同仓库其他位置）
 

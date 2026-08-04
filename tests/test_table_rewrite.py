@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def test_simple_table_to_md_flex() -> None:
     from gsuid_core.utils.html_render.table_rewrite import _rewrite_tables_local
@@ -60,3 +62,75 @@ def test_prefer_local_flag() -> None:
     out = rewrite_tables_for_takumi(html, prefer_local=True)
     assert "up" in out
     assert "md-table" in out
+
+
+def test_rowspan_pads_leading_columns() -> None:
+    """rowspan 后续行应在被占用列前插空 cell，而不是末尾补空。"""
+    from gsuid_core.utils.html_render.table_rewrite import _rewrite_tables_local
+
+    html = """
+    <table>
+      <tr><th>方向</th><th>板块</th><th>逻辑</th></tr>
+      <tr><td rowspan="2" class="bg-red">农业</td><td>北大荒</td><td>洪涝</td></tr>
+      <tr><td>新赛股份</td><td>高温</td></tr>
+    </table>
+    """
+    out = _rewrite_tables_local(html)
+    # 用 cell 文本顺序验证：rowspan 后续行首列为占位
+    assert "农业" in out
+    assert "新赛股份" in out
+    # body 第二行：空占位 | 新赛股份 | 高温 —— 「新赛股份」不得出现在行首 cell
+    body_rows = [r for r in out.split('role="row"') if "新赛股份" in r]
+    assert body_rows, "expected a row containing 新赛股份"
+    cells = re.findall(r'role="cell"[^>]*>(.*?)</div>', body_rows[0], flags=re.S)
+    assert len(cells) == 3
+    assert cells[0].strip() == ""
+    assert "新赛股份" in cells[1]
+    assert "高温" in cells[2]
+    # 占位格继承 rowspan 源格 class（背景连贯）
+    first_cell_open = re.findall(r'<div class="([^"]*)" role="cell"', body_rows[0])
+    assert first_cell_open and "bg-red" in first_cell_open[0]
+
+
+def test_class_right_maps_to_align_and_selector_retarget() -> None:
+    from gsuid_core.utils.html_render.table_rewrite import _rewrite_tables_local
+
+    html = """
+    <html><head><style>
+    td.right{text-align:right;color:#fde68a;font-family:monospace;}
+    </style></head><body>
+    <table>
+      <tr><th>指标</th><th>A</th><th>H</th></tr>
+      <tr><td>PB</td><td class="right">4.33x</td><td class="right">5.82x</td></tr>
+      <tr><td>PE</td><td class="right">~16.5x</td><td class="right">~17.0x</td></tr>
+    </table>
+    </body></html>
+    """
+    out = _rewrite_tables_local(html)
+    assert "md-table-cell-right" in out
+    assert "td.right" not in out
+    assert ".right{" in out or ".right {" in out
+    # 数值启发式也应覆盖 x / ~ 后缀
+    assert out.count("md-table-cell-right") >= 4
+
+
+def test_cell_is_numeric_suffixes() -> None:
+    from gsuid_core.utils.html_render.table_rewrite import _cell_is_numeric
+
+    assert _cell_is_numeric("1.77%")
+    assert _cell_is_numeric("4.33x")
+    assert _cell_is_numeric("~16.5x")
+    assert _cell_is_numeric("+5.5%")
+    assert _cell_is_numeric("-2.8pct")
+    assert _cell_is_numeric("3倍")
+    assert not _cell_is_numeric("农业种植")
+    assert not _cell_is_numeric("")
+
+
+def test_colspan_flex_style() -> None:
+    from gsuid_core.utils.html_render.table_rewrite import _rewrite_tables_local
+
+    html = '<table><tr><td colspan="2">wide</td><td>c</td></tr></table>'
+    out = _rewrite_tables_local(html)
+    assert "flex:2 1 0" in out
+    assert "wide" in out

@@ -42,6 +42,21 @@ from gsuid_core.ai_core.buildin_tools.visibility import context_has_image
 # 90s：部分供应商（如 MiniMax）多模态转述较慢/偶发排队，45s 会在图还没描述完就超时
 _UNDERSTAND_TIMEOUT = 90.0
 
+# 路径/文件名误当 image_id 时的快速拒绝（文本类扩展名）
+_NON_IMAGE_SUFFIXES = (
+    ".md",
+    ".txt",
+    ".json",
+    ".html",
+    ".htm",
+    ".csv",
+    ".py",
+    ".log",
+    ".xml",
+    ".yaml",
+    ".yml",
+)
+
 
 def _sniff_image_mime(data: bytes) -> str | None:
     """按文件头魔数推断图片 MIME；**识别不出返回 None**（禁止默认 image/png）。
@@ -61,6 +76,9 @@ def _sniff_image_mime(data: bytes) -> str | None:
         return "image/webp"
     if data[:2] == b"BM":
         return "image/bmp"
+    head = data.lstrip()[:256].lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
+        return "image/svg+xml"
     return None
 
 
@@ -129,6 +147,11 @@ async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
     if not raw:
         return None, "❌ image_id 不能为空"
 
+    # 明显非图扩展名（路径/文件名误当 image_id）
+    low = raw.lower().split("?", 1)[0]
+    if any(low.endswith(suf) for suf in _NON_IMAGE_SUFFIXES):
+        return None, (f"❌ {raw} 看起来不是图片（文本类扩展名）。请用 artifact_get / 读文件工具，而不是 read_image。")
+
     # 1. data:image / base64:// → 解码后魔数校验
     if raw.startswith(("base64://", "data:image/")):
         data, dec_err = _decode_data_or_base64_uri(raw)
@@ -166,8 +189,7 @@ async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
                 f"❌ 资源 {raw} 是**文本类** artifact（非图片），read_image 不能看它。\n"
                 f"请改用 `artifact_get('{raw}')` 或 `artifact_get_recent` 取原文，"
                 f"再用 `render_html_to_image` 出图。\n"
-                f"--- 原文预览 ---\n"
-                + wrap_untrusted("artifact_text", preview)
+                f"--- 原文预览 ---\n" + wrap_untrusted("artifact_text", preview)
             )
         # payload 为 None：可能前缀写成 res_ 但落在 RM，继续 RM
 
@@ -315,9 +337,7 @@ async def read_image(
 
     # 主模型支持多模态 → 注入会话原生看图（须二次校验，坏内容只回 str）
     if _current_model_supports_image(ctx.deps.parent_session_id):
-        injected, inject_err = _to_tool_image_content(
-            image_url, provider=_current_provider(ctx.deps.parent_session_id)
-        )
+        injected, inject_err = _to_tool_image_content(image_url, provider=_current_provider(ctx.deps.parent_session_id))
         if inject_err:
             return inject_err
         if injected is not None:

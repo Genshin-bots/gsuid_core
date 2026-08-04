@@ -97,6 +97,8 @@
   "log.ai.buildintools_getting_date_result": "[BuildinTools] 获取当前日期: {result}",
   "log.ai.buildintools_html_rendering": "[BuildinTools] HTML渲染失败: {e}",
   "log.ai.buildintools_html_rendering_succeeded_ok": "[BuildinTools] HTML渲染成功，图片长度: {p0} bytes",
+  "log.ai.buildintools_html_table_rowspan_colspan": "[BuildinTools] HTML 含 rowspan/colspan；改写器仅近似占位，建议展平为重复行或 im_templates",
+
   "log.ai.buildintools_insufficient_permissions": "[BuildinTools] 权限不足: {p0}",
   "log.ai.buildintools_kanban_artifact_image": "[BuildinTools] send_message_by_ai: Kanban artifact {image_id} → 自动注册成 RM 资源 {new_rm_id}",
   "log.ai.buildintools_kanban_artifact_parsing_fail": "[BuildinTools] Kanban artifact 解析失败，回退尝试 RM.get('{image_id}')",

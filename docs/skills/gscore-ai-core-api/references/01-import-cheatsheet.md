@@ -154,7 +154,7 @@ from gsuid_core.ai_core.buildin_tools import (
     query_user_memory,          # 查询用户记忆
     get_self_info,              # 获取完整自我认知（身份/能力边界/主人）
     state_get, state_set, state_delete, state_list, state_append,
-    render_html_to_image,       # 自由 HTML 出图主路径（多数据点）
+    render_html_to_image,       # media；主路径经 create_subagent(render_agent)
 
     # --- Common 工具 (category="common") --- 向量检索按需
     search_image, get_self_persona_info, set_user_favorability,

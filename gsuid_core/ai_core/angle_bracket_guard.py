@@ -3,7 +3,7 @@
 模型常自创 ``<bubble/>`` / ``<br>`` 等控制标记。框架协议标签仅：
 ``<SILENCE>`` / ``<meme:…>``。
 ``<br>`` / ``<report>`` **不是**协议——视为非法，须打回重写。
-多项资料出图走 ``render_html_to_image`` 等工具，不靠尖括号标签。
+多项资料出图走 ``create_subagent(render_agent)``，不靠尖括号标签。
 
 检测启发式：形如 XML/HTML 的 ``</?Name …>``；紧贴左侧标识符的泛型
 （``List<str>``）与含 ``@`` 的伪标签（邮箱）跳过，降低假阳性。
@@ -322,8 +322,8 @@ def build_rewrite_warning(tags: Sequence[str], original: str) -> str:
         "原因：用户端 IM **不会**解析你自造的 XML/HTML 控制标记；"
         "字面量会原样显示（例如 ``<bubble/>`` / ``<br>`` / ``<report>``），破坏角色对白。\n"
         "框架只认这些协议标签：``<SILENCE>``（整段沉默）、``<meme:情绪>``（表情）。\n"
-        "多项数据/报告出图请调 ``render_html_to_image``（或 render_card / "
-        "render_markdown_to_image），**禁止** ``<report>`` 文本块。\n"
+        '多项数据/报告出图请 ``create_subagent(agent_profile="render_agent")``，'
+        "**禁止** ``<report>`` 文本块。\n"
         "连发多条短消息请用**空行**分隔，禁止 ``<bubble/>`` / ``<br>`` / 其它自造标签。\n"
         f"【被拦下的原文】\n{preview}\n\n"
         "请保持原意与角色口吻**重新组织发言**，直接输出干净正文，不要解释，不要再带任何 ``<>`` 标签。"

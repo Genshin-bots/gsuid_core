@@ -275,7 +275,7 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "OutputRendering": GsDivider(
         "长文本呈现",
-        "长 markdown 整篇出图, 防止 agent 长研报按空行拆成几十条刷屏群聊",
+        "长 markdown 整篇出图, 防止 agent 长报告按空行拆成几十条刷屏群聊",
         "长文本呈现",
     ),
     "render_long_markdown_as_image": GsBoolConfig(

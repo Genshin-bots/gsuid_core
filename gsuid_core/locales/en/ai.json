@@ -97,6 +97,8 @@
   "log.ai.buildintools_getting_date_result": "[BuildinTools] Getting current date: {result}",
   "log.ai.buildintools_html_rendering": "[BuildinTools] HTML rendering failed: {e}",
   "log.ai.buildintools_html_rendering_succeeded_ok": "[BuildinTools] HTML rendering succeeded, image length: {p0} bytes",
+  "log.ai.buildintools_html_table_rowspan_colspan": "[BuildinTools] HTML has rowspan/colspan; rewriter only approximates pads — prefer flat rows or im_templates",
+
   "log.ai.buildintools_insufficient_permissions": "[BuildinTools] Insufficient permissions: {p0}",
   "log.ai.buildintools_kanban_artifact_image": "[BuildinTools] send_message_by_ai: Kanban artifact {image_id} → 自动注册成 RM 资源 {new_rm_id}",
   "log.ai.buildintools_kanban_artifact_parsing_fail": "[BuildinTools] Kanban artifact parsing failed, falling back to RM.get('{image_id}')",

@@ -142,48 +142,47 @@ async def run_capability_agent(
         return f"⚠️ 能力代理节点不存在: {profile_id}"
 
     tools = _resolve_tools(node)
-    # 始终按 task（+ 可选 tool_query）补一轮向量检索，再经能力族展开。
-    # 旧逻辑：仅当 tool_names 为空或声明了 tool_query 才检索——导致像 internal_reporter
-    # 这种"有静态白名单"的画像被锁死在 state/record，无法获取数据
-    # 新语义：packs + tool_names 是保底；task 相关专业工具作为增补，不因白名单关闭检索。
-    try:
-        from gsuid_core.ai_core.rag.tools import search_tools, expand_tools_to_families
+    # render_agent：只吃白名单渲染工具，禁止 task 向量回填把 web_search 捞进来。
+    # 其余节点：packs + tool_names 为保底，再按 task 检索增补专业工具。
+    if node.node_id != "render_agent":
+        try:
+            from gsuid_core.ai_core.rag.tools import search_tools, expand_tools_to_families
 
-        tq = (node.tool_query or "").strip()
-        task_text = (task or "").strip()
-        if tq and task_text:
-            search_query = f"{tq}\n{task_text}"
-        else:
-            search_query = tq or task_text
+            tq = (node.tool_query or "").strip()
+            task_text = (task or "").strip()
+            if tq and task_text:
+                search_query = f"{tq}\n{task_text}"
+            else:
+                search_query = tq or task_text
 
-        if search_query:
-            recall = int(ai_config.get_config("tool_search_recall").data or 8)
-            max_extra = int(ai_config.get_config("tool_extra_pool_max").data or 8)
-            seeds = await search_tools(
-                query=search_query,
-                limit=max(recall, 8),
-                non_category="self",
-            )
-            # 能力代理禁止再委派，避免递归爆炸
-            seeds = [t for t in seeds if t.name != "create_subagent"]
-            seen = {t.name for t in tools}
-            extra = expand_tools_to_families(
-                seeds,
-                exclude_names=seen,
-                max_tools=max_extra,
-            )
-            if extra:
-                tools = tools + extra
-                logger.info(
-                    i18n_t(
-                        "log.ai.cap_task_backfill_query_names",
-                        n=len(extra),
-                        q=search_query[:60],
-                        names=[t.name for t in extra][:12],
-                    )
+            if search_query:
+                recall = int(ai_config.get_config("tool_search_recall").data or 8)
+                max_extra = int(ai_config.get_config("tool_extra_pool_max").data or 8)
+                seeds = await search_tools(
+                    query=search_query,
+                    limit=max(recall, 8),
+                    non_category="self",
                 )
-    except Exception as e:
-        logger.debug(i18n_t("log.ai.cap_retrieval", e=e))
+                # 能力代理禁止再委派，避免递归爆炸
+                seeds = [t for t in seeds if t.name != "create_subagent"]
+                seen = {t.name for t in tools}
+                extra = expand_tools_to_families(
+                    seeds,
+                    exclude_names=seen,
+                    max_tools=max_extra,
+                )
+                if extra:
+                    tools = tools + extra
+                    logger.info(
+                        i18n_t(
+                            "log.ai.cap_task_backfill_query_names",
+                            n=len(extra),
+                            q=search_query[:60],
+                            names=[t.name for t in extra][:12],
+                        )
+                    )
+        except Exception as e:
+            logger.debug(i18n_t("log.ai.cap_retrieval", e=e))
 
     session_id = f"capagent_{node.node_id}_{session_id_suffix or 'adhoc'}"
 
@@ -200,6 +199,7 @@ async def run_capability_agent(
             is_subagent=True,
             dynamic_tools=True if has_dynamic_pack(node.tool_packs) else None,
             wall_clock_budget=420.0,  # 留 80s 余量给外层 500s 硬超时，420s 时注入收敛提示
+            capability_node_id=node.node_id,
         )
         logger.info(
             i18n_t(

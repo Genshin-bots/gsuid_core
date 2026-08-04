@@ -685,8 +685,7 @@ async def prepare_content_payload(
                 content_payload.extend(injected)
             else:
                 logger.warning(
-                    i18n_t("log.ai.unable_process_image_id", i=i)
-                    + (f" ({inject_err})" if inject_err else "")
+                    i18n_t("log.ai.unable_process_image_id", i=i) + (f" ({inject_err})" if inject_err else "")
                 )
         else:
             logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
@@ -760,7 +759,7 @@ _MD_HEADER_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
 _MD_HR_RE = re.compile(r"(?m)^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
 # markdown 表格行（一行含 ≥3 个竖线，即 ≥2 个单元格）
 _MD_TABLE_ROW_RE = re.compile(r"\|.*\|.*\|")
-# 整行粗体小标题（如 ``**一、技术面**`` / ``**当前价：**``）——agent 研报常用它代替 # 标题
+# 整行粗体小标题（如 ``**一、概况**`` / ``**当前值：**``）——agent 长报告常用它代替 # 标题
 _MD_BOLD_HEADER_RE = re.compile(r"(?m)^\s{0,3}\*\*[^*\n]{1,40}\*\*[：:]?\s*$")
 # 编号列表项（1. / 1、 / 1) 开头）、无序列表项（- / * / • 开头，后须跟空格+内容）
 _MD_NUM_LIST_RE = re.compile(r"(?m)^\s{0,3}\d+[.、)]\s+\S")
@@ -782,7 +781,7 @@ def _should_render_markdown_image(text: str) -> bool:
     """判断一段 AI 输出是否是"结构化长 markdown 文档"，值得整篇渲染成一张图片下发。
 
     动机：``send_chat_result`` 默认按空行（``\\n\\n``）把文本拆成多条消息逐条下发——这本是
-    人格"连发 2-3 条短消息"的能力，但 agent 产出的长研报 / 报告（多标题 + 表格 + 分隔线）
+    人格"连发 2-3 条短消息"的能力，但 agent 产出的长报告（多标题 + 表格 + 分隔线）
     会因此被拆成几十条刷屏，且 IM 不渲染 markdown，用户看到的是满屏字面 ``**`` / ``|``。
 
     判定**刻意保守**，只在"确实是文档"时命中，绝不误伤日常连发短句：
@@ -791,7 +790,7 @@ def _should_render_markdown_image(text: str) -> bool:
       - 且含明确结构信号：**表格** / ≥2 个 ATX 标题 / ≥2 个整行粗体小标题 /
         编号列表≥2 项 / 无序列表≥3 项 /（水平分割线 且 ≥1 个标题）。
     仅靠"多个空行段落"绝不命中——纯口语连发短句没有表格 / 标题 / 列表。
-    （agent 研报常用 ``**粗体小标题** + 编号建议`` 而非 markdown 表格/# 标题，故一并纳入。）
+    （agent 长报告常用 ``**粗体小标题** + 编号建议`` 而非 markdown 表格/# 标题，故一并纳入。）
     代码块**不**触发出图：用户往往要复制代码，保留文本行为（见 ``_has_markdown_table``）。
     """
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -827,7 +826,7 @@ def _should_render_markdown_image(text: str) -> bool:
     return False
 
 
-# 遗留 <report> 兼容：协议已废止（主路径应 render_html_to_image）。
+# 遗留 <report> 兼容：协议已废止（主路径应 create_subagent(render_agent)）。
 # 仍剥标签并把 body 当制品出图，避免旧会话/漏网模型把字面标签刷进 IM。
 _REPORT_BLOCK_RE = re.compile(
     r"<report(?:\s+title=(?:\"([^\"\n]*)\"|'([^'\n]*)'))?\s*>(.*?)</report\s*>",
@@ -1044,7 +1043,7 @@ def _extract_embedded_structured_blocks(
 def _split_speech_and_artifacts(text: str) -> Tuple[str, List[Tuple[str, str]]]:
     """发送/入史共用的两通道分离：内容形态结构化块 + 遗留 XML report 兼容。
 
-    主契约已是工具出图（``render_html_to_image`` 等）；此处只做呈现层兜底，
+    主契约已是委派 ``render_agent`` 出图；此处只做呈现层兜底，
     避免模型把表格/JSON/旧 ``<report>`` 当台词刷屏。
     """
     speech, xml_blocks = _extract_legacy_report_blocks(text)
@@ -1079,7 +1078,7 @@ async def _send_report_images(
 ) -> None:
     """制品通道出图：结构化块 / 遗留 report body → markdown 资料图。
 
-    主路径应已由 agent 调 ``render_html_to_image``；此处是呈现层兜底。
+    主路径应已由 ``render_agent`` 出图；此处是呈现层兜底。
     """
     from pathlib import Path
 

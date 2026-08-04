@@ -1,10 +1,11 @@
 """框架内置能力代理节点（AgentNode 统一版）。
 
-## 内置节点总览（6 个通用 + 1 个内部）
+## 内置节点总览（7 个通用 + 1 个内部）
 
 | node_id | display_name | 定位 |
 |---|---|---|
 | ``research_agent`` | 调研助手 | 外部信息收集 / 综合分析 / 资料汇总（web、知识库、文档） |
+| ``render_agent`` | 视觉渲染 | 把已给定事实包渲成美观 HTML/卡片图（主人格不自渲） |
 | ``code_agent`` | 代码助手 | 沙盒里写代码 / 跑脚本 / 生成图片或报告文件 |
 | ``internal_reporter`` | 内部数据报告员 | 仅查内部库后渲染 markdown 报告 |
 | ``memory_curator`` | 记忆管家 | 用户偏好 / 承诺 / 反思的轻量维护（写 ``update_self_note``） |
@@ -16,12 +17,11 @@
 ## AgentNode 统一后的设计要点
 
 - **交付边界不再写进 prompt**：task-mode 实例化时由 ``compose_task_prompt`` 统一
-  叠加 ``DELIVERY_BOUNDARY``；plugin_developer 用 ``boundary_override`` 覆写裁剪版。
+  叠加 ``DELIVERY_BOUNDARY``；plugin_developer / render_agent 用 ``boundary_override``。
 - **预算不在节点上**：统一走全局配置 ``task_max_iterations`` / ``task_max_tokens``。
-- **工具 = tool_packs + tool_names**：所有内置节点挂 ``task_basics`` 族
-  （原 ``runner._ALWAYS_TOOLS``）；显式白名单继续用 ``tool_names``。
-- ``code_agent`` 不持有 HTML / Markdown 渲染工具（渲染是主人格 /
-  ``internal_reporter`` 的展示层职责，防止拿模板预览图冒充真实产物）。
+- **工具 = tool_packs + tool_names**：多数内置节点挂 ``task_basics``；
+  ``render_agent`` 仅白名单渲染工具（禁 web 回填）。
+- ``code_agent`` 不持有 HTML 模板渲染（那是 ``render_agent``）；code 只产出脚本真文件图。
 
 业务节点由插件注册（``register_agent_node`` 或旧 ``register_capability_agent``
 兼容入口），框架内置不含任何业务域专属节点。
@@ -38,7 +38,7 @@ _RESEARCH_PROMPT = """你是一个严谨、自主的「调研与执行代理」�
 - **不**写代码（交给 `code_agent`）；**不**做内部数据报告（交给 `internal_reporter`）；
   **不**做强专业域决策（实盘 / 医疗 / 法律——见下文红线）。
 - **不**调用 `render_html_to_image` / `render_card` / `render_markdown_to_image`——
-  出图由**主人格**负责。你只交 Markdown / JSON **事实包**。
+  美观出图由主人格再委派 **`render_agent`**。你只交 Markdown / JSON **事实包**。
 
 【工作流】
 1. 规划：先输出 <TODO_LIST>，把任务拆成 2~5 个可执行步骤。
@@ -58,9 +58,16 @@ _RESEARCH_PROMPT = """你是一个严谨、自主的「调研与执行代理」�
    - 事实包结构：
      ① **结论 / 条目列表**（日期、事件、关键数字、市场反应、为何重要、来源 URL）；
      ② **依据**（工具名 / 字段 / URL，可复现）；
-     ③ 可选：主线摘要、风险提示。
+     ③ **数据时点**（页面日期 / 抓取时点 / 报表期；缺则标「时点未知」）；
+     ④ 可选：主线摘要、风险提示。
    - 长文结论请 `artifact_put(payload=...)` 再在正文给短摘要 + 句柄说明。
    - 若确实零数据：明确写「无检索结果：原因=…」，仍须是完整句子/结构，不是过程口癖。
+
+【数据时效自检 · 硬门】
+- 凡数字 / 实时状态 / 「最新」类结论：必须能指回来源与时点。
+- 时点缺失、或明显陈旧（例如相对当前日期 ≥7 天却当「当前值」）：**二次检索**，
+  或在条目上显式写「时效存疑，勿当即时依据」——禁止用过时缓存冒充最新。
+- 自检不过关不得交付「干净最新」口吻的事实包。
 
 【强专业域红线】
 对于医疗诊断、法律意见、实盘交易等高风险专业域任务，若当前工具集**没有该域的专业
@@ -70,6 +77,44 @@ X 域专业数据工具，建议安装对应业务插件后再做决定」，并
 附上即可。这是诚实底线，不要靠 web_search 的标题党凑结论。
 """
 
+_RENDER_BOUNDARY = """【交付边界 · 视觉渲染专职 · 向主人格交付】
+- 你是被主人格派出的**出图执行者**，不持有角色台词通道。
+- **允许**：调用 `render_html_to_image` / `render_card` / `render_markdown_to_image`
+  （工具可直接把图发到会话；bot 不可用时返回资源句柄）。
+- **禁止**：`send_message_by_ai` 发长文/源码/HTML 原文；禁止 `web_search_tool` /
+  再调研；禁止编造 task 里没有的数字。
+- 返回值：1～3 句纯文本摘要（渲了什么、若有句柄则给出）；**禁止**角色扮演与过程口癖。
+"""
+
+_RENDER_PROMPT = """你是一个专注的「视觉渲染代理」。无角色人格，不做角色扮演。
+
+【职责边界】
+- **只**把主人格 / 上游代理**已经给定**的事实包渲成美观图片：
+  对比表、指标卡、时间线、清单、简报封面等。
+- **不**做 web 检索、不补数据、不改写上游结论；缺数据就在摘要里写「缺字段：…」
+  并尽量用已有内容出图，或拒绝空包出图。
+- **不**写 Python/PIL 脚本图（那是 `code_agent`）；**不**做调研（`research_agent`）。
+
+【工作流】
+1. 读 task：抽出标题、条目、数字、来源/时点、版式偏好；若有 `res_` 句柄先
+   `artifact_get` 取正文。
+2. 选工具：默认 `render_html_to_image` 自写完整 HTML；形态极贴模板时才 `render_card`；
+   长文说明可用 `render_markdown_to_image`。
+3. **HTML 硬约束**（引擎无 CSS table 模型）：
+   - 禁 `rowspan`/`colspan`；表用单层行或 flex 卡片。
+   - 禁 `td.xxx`/`th.xxx` 选择器，写 `.xxx` 或内联 style。
+   - 窄列 CJK：`word-break:keep-all`；短标签 `white-space:nowrap`；**禁**手写
+     `农<br>业` 式竖排。
+   - 正文建议 ≥14px；深色底标题必须显式浅色；版式按内容变化，**禁止**每张都抄同一套
+     深色 KPI 模板。
+   - badge：`display:inline-block;text-align:center`；父行居中用 flex 或 text-align。
+4. 调用渲染工具（自动发图或返回句柄）→ 交付短摘要。
+
+【红线】
+- 禁止搜索、禁止 invent 数字、禁止把 HTML/JSON 当最终交付正文。
+- 页脚可标「数据可能滞后 · 仅供参考」；时点来自事实包，不要伪造「刚刚更新」。
+"""
+
 _CODE_PROMPT = """你是一个专注的「代码代理」。你没有角色人格，不做角色扮演。
 
 【职责边界】
@@ -77,9 +122,8 @@ _CODE_PROMPT = """你是一个专注的「代码代理」。你没有角色人�
   用 PIL / matplotlib / 任意第三方库**生成真正的图片或文件文件**。
 - **不**做调研类资料汇总（交给 `research_agent`）；**不**做内部库报告
   （交给 `internal_reporter`）；**不**做时间解析与定时任务管理（交给
-  `scheduler_assistant`）；**不**做 HTML / Markdown 模板渲染——`render_html_to_image`
-  / `render_markdown_to_image` 是主人格手里的"展示层"工具，由主人格决定要不要
-  渲染、怎么渲染，你不持有这两个工具。
+  `scheduler_assistant`）；**不**做 HTML / Markdown **模板渲染出图**——那是
+  `render_agent` 的活；你不持有 `render_html_to_image` / `render_card`。
 - 主人对你的期望是"端到端把任务跑完：写代码 → 跑通 → 把真正的产物文件交付出去"，
   不要只丢一段说明文本回去，更不要拿"HTML 模板预览图"冒充代码实际生成的产物。
 
@@ -138,8 +182,8 @@ _INTERNAL_REPORTER_PROMPT = """你是一个克制的「内部数据报告员」�
 1. 规划：先输出 <TODO_LIST>，2~5 步。**第一步永远是"先把内部数据拿到手"**。
 2. 数据：用上面【职责边界】列出的工具拿数据；拿不到就老实在结论里说"内部库
    没有 X 字段"，不要靠猜。
-3. 整理：把数据整理好交付主人格；展示出图由主人格 `render_html_to_image` 负责
-   出图（注意：渲染脚本逻辑应该交给 `code_agent`，你只做"小段模板渲染"）。
+3. 整理：把数据整理成 Markdown/JSON **事实包**交付主人格；美观多图/对比卡
+   **禁止**自调 render_*，由主人格再委派 `render_agent`。
 4. 交付：分两段——
    ① **结论 / 关键数字 / 推荐动作**；
    ② **依据**：逐条标注"来自哪个工具的哪段字段 / 哪条 record / 哪个任务 id"，
@@ -189,7 +233,7 @@ _SCHEDULER_PROMPT = """你是一个高效的「日程助手」。无角色人格
   `register_kanban_task(recurring_trigger=...)` 路径，由 Kanban 周期模板编排。
 
 【工作流】
-1. 解析：先 `get_current_date` 拿到当前时间，再换算成绝对 / 间隔时间。
+1. 解析：先 `_get_current_date` 拿到当前时间，再换算成绝对 / 间隔时间。
 2. 操作：
    - 一次性提醒 → `add_once_task`
    - 周期提醒 → `add_interval_task`
@@ -386,11 +430,11 @@ _PLUGIN_DEVELOPER_PROMPT = """你是一个严谨的「GsCore 插件开发代理�
 
 
 def register_builtin_profiles() -> None:
-    """注册框架内置的 6 个通用能力代理节点。由 ``init_planning()`` 调用。
+    """注册框架内置的 7 个通用能力代理节点。由 ``init_planning()`` 调用。
 
-    注册顺序刻意保持稳定（research → code → internal_reporter → memory_curator →
-    scheduler_assistant → plugin_developer）——``resolve_node`` 首个命中即返回，
-    plugin_developer 的 "插件" 兜底关键词依赖排在最后。同 node_id 后写覆盖前写。
+    注册顺序：research → **render** → code → internal_reporter → memory_curator →
+    scheduler_assistant → plugin_developer。``resolve_node`` 按最长 keyword 命中；
+    同分保留注册序。plugin_developer 的「插件」兜底排最后。同 node_id 后写覆盖。
     """
     register_agent_node(
         AgentNode(
@@ -406,12 +450,46 @@ def register_builtin_profiles() -> None:
     )
     register_agent_node(
         AgentNode(
+            node_id="render_agent",
+            display_name="视觉渲染",
+            prompt=_RENDER_PROMPT,
+            when_to_use=("把已有事实包/对比表/指标/清单渲成美观图片；主人格不自写 HTML，多项数据出图一律委派本节点"),
+            match_keywords=[
+                "出图",
+                "渲成图",
+                "资料卡",
+                "指标卡",
+                "对比表",
+                "表格图",
+                "HTML卡",
+                "html卡",
+                "视觉渲染",
+                "render_agent",
+                "信息图",
+                "简报图",
+            ],
+            tool_packs=[],  # 禁 task_basics，避免 web 回填
+            tool_names=[
+                "render_html_to_image",
+                "render_card",
+                "render_markdown_to_image",
+                "artifact_get",
+                "artifact_put",
+                "artifact_list",
+                "_get_current_date",
+            ],
+            boundary_override=_RENDER_BOUNDARY,
+            source="builtin",
+        )
+    )
+    register_agent_node(
+        AgentNode(
             node_id="code_agent",
             display_name="代码助手",
             prompt=_CODE_PROMPT,
             when_to_use=(
-                "需要写代码、跑脚本、生成图片 / 报表、调试修复缺陷、对文件做批量处理"
-                "等任务；只要任务最终需要一个『跑出来的产物』，就派给它"
+                "需要写代码、跑脚本、用 PIL/matplotlib 等生成真文件图、调试修复、"
+                "批处理文件；不要把「事实包 HTML 出图」派给它（那是 render_agent）"
             ),
             match_keywords=[
                 "代码",
@@ -425,17 +503,10 @@ def register_builtin_profiles() -> None:
                 "script",
                 "fix",
                 "refactor",
-                # 实测会话 17ae1b38：关键词扩成具体动作，让 resolve_node 更易命中
-                "绘制",
-                "画图",
                 "PIL",
                 "matplotlib",
                 "Pillow",
-                "生成图",
-                "生成图片",
-                "渲染",
                 "导出文件",
-                "导出图片",
                 "运行Python",
                 "跑一下",
                 "执行脚本",
@@ -444,23 +515,16 @@ def register_builtin_profiles() -> None:
                 "批处理",
                 "csv",
                 "json",
-                # v3 · aigc_creator 移除后，海报 / 视觉素材渲染统一并入 code_agent
-                "海报",
-                "封面",
-                "横幅",
-                "banner",
             ],
             tool_packs=[TASK_BASICS_PACK],
             tool_names=[
-                # 文件与命令（Artifact Workspace 沙盒内）
                 "list_directory",
                 "read_file_content",
                 "write_file_content",
                 "diff_file_content",
                 "execute_file",
                 "execute_shell_command",
-                # 时间戳（写日志用）
-                "get_current_date",
+                "_get_current_date",
             ],
             source="builtin",
         )
@@ -474,7 +538,7 @@ def register_builtin_profiles() -> None:
                 "只查框架内部库（用户记忆 / 好感度 / record_* 集合 / 定时任务）后渲染"
                 "Markdown 报告的任务；周报、对比、内部数据结算等。不查 web，"
                 "不跑代码，不维护记忆。"
-                "不含模拟盘/股票持仓盈亏——那些走 papertrade_reporter_agent 等业务画像。"
+                "不含业务插件专属账本/持仓盈亏（那些走对应业务能力代理）。"
             ),
             match_keywords=[
                 "周报",
@@ -492,9 +556,7 @@ def register_builtin_profiles() -> None:
                 "query_user_memory",
                 "query_scheduled_task",
                 "list_scheduled_tasks",
-                # 渲染（只做小段模板渲染，不写脚本）
-                "render_markdown_to_image",
-                "get_current_date",
+                "_get_current_date",
             ],
             source="builtin",
         )
@@ -525,7 +587,7 @@ def register_builtin_profiles() -> None:
             tool_names=[
                 "update_self_note",
                 "query_user_memory",
-                "get_current_date",
+                "_get_current_date",
             ],
             source="builtin",
         )
@@ -564,7 +626,7 @@ def register_builtin_profiles() -> None:
                 "cancel_scheduled_task",
                 "pause_scheduled_task",
                 "resume_scheduled_task",
-                "get_current_date",
+                "_get_current_date",
             ],
             source="builtin",
         )
