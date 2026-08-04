@@ -286,8 +286,9 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
     ``res_id``，下游被调度时由 executor 收集 ``dependency_task_ids`` 对应的
     artifact 注入到提示词。
 
-    访问边界：默认禁止跨 ``root_task_id`` 读取——保证同一任务树的产出不会泄漏
-    给其他用户 / 其他任务树。
+    访问边界：同 ``root_task_id`` 内自由互读；跨树仅当同 owner+session（或
+    scope）且/或当前任务 goal、``input_artifact_ids`` 显式引用该 ``res_``——
+    防止泄漏给其它用户，同时允许 ``create_subagent`` 叶子根之间的调研→渲染接力。
     """
 
     id: str = Field(

@@ -566,6 +566,17 @@ async def _dispatch_via_kanban(
         root_agent_profile=pid,
     )
 
+    # 任务正文里的 res_ 句柄 → input_artifact_ids（调研→渲染跨叶子树交接）
+    from gsuid_core.ai_core.planning.kanban_tools import extract_res_ids
+
+    handoff_ids = extract_res_ids(task)
+    if handoff_ids:
+        await AIAgentTask.update_data_by_data(
+            select_data={"id": root.id},
+            update_data={"input_artifact_ids": handoff_ids},
+        )
+        root.input_artifact_ids = handoff_ids
+
     logger.info(
         i18n_t(
             "log.ai.subagent_convert_kanban_leaf",

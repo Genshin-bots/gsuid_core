@@ -53,6 +53,8 @@ _TRANSPARENT_1PX_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 # Takumi 引擎卫生 CSS：无主题、无业务域；修常见引擎坑
+# 注意：不在此强制 body 背景色（避免盖掉 agent 浅色主题）；透明 PNG 由
+# ``_ensure_opaque_image_bytes`` 在出图后合成实色底。
 _TAKUMI_ENGINE_HYGIENE_CSS = """
 /* engine hygiene — not a visual theme */
 img{max-width:100%;height:auto;}
@@ -70,6 +72,14 @@ img{max-width:100%;height:auto;}
   text-align:center;
 }
 """
+
+# 同一 Kanban 任务内成功出图次数（防 render_agent 连调多次刷屏）
+# key=task_id；进程内即可，任务结束无强清
+_RENDER_EMITTED_TASKS: set[str] = set()
+_RENDER_EMITTED_MAX = 256
+# 透明像素兜底底色：仅当角点采不到不透明像素时使用（优先采样画面已有实色）。
+# 这是管线兜底，不是强制 agent 只能用暗色主题。
+_OPAQUE_FALLBACK_RGB = (15, 23, 42)  # #0f172a
 
 _MD_CSS_PATH = str(Path(__file__).resolve().parent.parent.parent / "utils" / "html_render" / "markdown_dark.css")
 
@@ -274,6 +284,85 @@ def _prepare_free_html(html_content: str) -> str:
     return html
 
 
+def _ensure_opaque_image_bytes(
+    data: bytes,
+    *,
+    fallback_rgb: tuple[int, int, int] = _OPAQUE_FALLBACK_RGB,
+) -> bytes:
+    """把带 alpha 的 PNG 合成到实色底，避免 IM 客户端显示透明/棋盘格。
+
+    已全不透明则原样返回。合成后输出 RGB PNG。
+    """
+    if not data or len(data) < 24:
+        return data
+
+    from io import BytesIO
+
+    from PIL import Image, UnidentifiedImageError
+
+    # 仅兜底解码失败（损坏字节），不吞类型错误
+    try:
+        im = Image.open(BytesIO(data))
+        im.load()
+    except (OSError, UnidentifiedImageError, ValueError) as e:
+        logger.debug("[BuildinTools] opaque flatten skip: %s", e)
+        return data
+
+    # RGB/L 无 alpha；GIF 多为动图，不压平
+    if im.mode in ("RGB", "L") or im.format == "GIF":
+        return data
+
+    has_alpha = im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info)
+    if not has_alpha:
+        return data
+
+    rgba = im.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    mn, mx = alpha.getextrema()
+    if mn == 255 and mx == 255:
+        return data
+
+    # 角点/中心已近似不透明时采样底色，贴近卡片真实主题
+    w, h = rgba.size
+    samples: list[tuple[int, int, int]] = []
+    if w > 0 and h > 0:
+        for xy in (
+            (0, 0),
+            (w - 1, 0),
+            (0, h - 1),
+            (w - 1, h - 1),
+            (w // 2, h // 2),
+        ):
+            px = rgba.getpixel(xy)
+            if isinstance(px, tuple) and len(px) >= 4 and int(px[3]) >= 250:
+                samples.append((int(px[0]), int(px[1]), int(px[2])))
+    if samples:
+        n = len(samples)
+        bg = (
+            sum(c[0] for c in samples) // n,
+            sum(c[1] for c in samples) // n,
+            sum(c[2] for c in samples) // n,
+        )
+    else:
+        bg = fallback_rgb
+    base = Image.new("RGBA", rgba.size, (bg[0], bg[1], bg[2], 255))
+    out = Image.alpha_composite(base, rgba).convert("RGB")
+    buf = BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _mark_render_emitted(task_id: str) -> None:
+    if not task_id:
+        return
+    if len(_RENDER_EMITTED_TASKS) >= _RENDER_EMITTED_MAX:
+        # 半量淘汰，防 set 无限涨
+        for i, k in enumerate(list(_RENDER_EMITTED_TASKS)):
+            if i % 2 == 0:
+                _RENDER_EMITTED_TASKS.discard(k)
+    _RENDER_EMITTED_TASKS.add(task_id)
+
+
 async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> bool:
     """尝试通过 bot 直接发送图片。成功返回 True。"""
     bot = ctx.deps.bot
@@ -288,9 +377,29 @@ async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> b
 
 
 async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str | bytes:
-    """发送成功返回确认串；bot 不可用时回传 bytes，由 agent loop 注册资源 ID。"""
+    """不透明化 → 发送；同一 Kanban 任务默认只成功推送一张（防多段刷屏）。
+
+    bot 不可用时回传 bytes，由 agent loop 注册资源 ID。
+    """
+    from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+    image_bytes = _ensure_opaque_image_bytes(image_bytes)
+
+    plan = get_plan_context()
+    task_id = plan.task_id if plan is not None else ""
+
+    if task_id and task_id in _RENDER_EMITTED_TASKS:
+        return (
+            "⚠️ 本任务已成功出过图，本次未再推送。"
+            "请把全部区块合并进**一张**完整 HTML，只调用一次 render_html_to_image；"
+            "不要按章节拆成多次渲染。用户未明确要求多页时禁止连渲多张。"
+        )
+
     if await _try_send_image(ctx, image_bytes):
+        _mark_render_emitted(task_id)
         return _RENDER_OK.format(kb=len(image_bytes) // 1024)
+    # bot 不可用：仍标记，避免同一任务连续返回多份 bytes 被下游连发
+    _mark_render_emitted(task_id)
     return image_bytes
 
 
@@ -821,13 +930,20 @@ async def render_html_to_image(
     ## 写法
     - 推荐完整文档：``<!DOCTYPE html><html><head><style>...</style></head><body>...</body></html>``
     - 也可只写片段 + 内联 ``<style>``；视口宽 = max_width，高度随内容自适应
+    - **整页不透明背景**（必写）：先选**暗色或浅色**主题，再写 page/text 成套 color；
+      禁止透明/缺省底（会出透明 PNG）。``#0f172a`` 只是暗色示例，不是唯一合法值。
+      - 暗色例：``html,body{{background:#0f172a;color:#e2e8f0;}}`` 且 h1/标题显式浅色
+      - 浅色例：``html,body{{background:#f4f6fa;color:#1a2332;}}`` 且标题深色
+    - **默认整份事实包只渲一张**：多区块写在同一 HTML 里，不要连调本工具多次
     - 中文字体用 ``"MiSans","PingFang SC","Microsoft YaHei",sans-serif``
     - 布局优先 flex / 基础 grid；可用原生 ``<table>``（引擎侧自动改写为 flex 网格）
     - 多项对比/列表/面板：用表格或自写卡片均可，禁止把长数据念成台词
-    - **暗色主题对比度**：深色背景时，h1/h2/.title/.headline **必须显式** ``color:#edf4ff``
-      （或其它浅色）；禁止标题只写字号不写颜色、禁止暗底深色字；font-weight 用 400~900
-    - **颜色语义**：同一页一套语义色（如 ↑/↓ 各一色）；强调数字用高亮浅色（``#fca5a5`` /
-      ``#6ee7b7`` / ``#fde68a``）。**class 优先级**：``.item .value.up`` 须能盖过 ``.item .value``，
+    - **对比度（暗色必看）**：深色页底时，h1/h2/.title/.headline/**正文** **必须显式**浅色
+      （如 ``#edf4ff`` / ``#e2e8f0``）；禁止只写字号不写颜色、禁止暗底深字/默认黑；
+      卡片用略亮的不透明 surface，勿靠全透明层。浅色主题则主文字须足够深。
+      font-weight 用 400~900
+    - **颜色语义**：同一页一套语义色（如 ↑/↓ 各一色）。暗底上强调色用偏亮的绿/红/金；
+      浅底上用略深的语义色。**class 优先级**：``.item .value.up`` 须能盖过 ``.item .value``，
       禁止基类 ``color`` 盖掉修饰 class；状态色优先单 class
     - **短标签**（chip/badge）：``display:inline-block;text-align:center;white-space:nowrap``；
       父行居中用 ``.row{text-align:center}`` 或 ``display:flex;justify-content:center``
@@ -851,11 +967,14 @@ async def render_html_to_image(
       禁止手写 ``农<br>业<br>种<br>植`` 式竖排。
     - **字号**：正文建议 ≥14px，辅助 ≥12px；勿用 10–11px 全文。
 
-    ## 示例（自由布局，勿照抄成唯一模板）::
+    ## 示例（暗色；浅色时把 page/text/title 换成浅色 token 即可，勿当唯一模板）::
 
         <!DOCTYPE html><html><head><meta charset="utf-8"><style>
-        body{font-family:"MiSans","Microsoft YaHei",sans-serif;padding:24px;background:#0f172a;color:#e2e8f0;}
+        /* 暗色 token 示例——可改为浅色：page #f4f6fa / text #1a2332 / title #0b1220 */
+        html,body{font-family:"MiSans","Microsoft YaHei",sans-serif;padding:24px;
+          background:#0f172a;color:#e2e8f0;}
         h1{font-size:22px;margin:0 0 12px;color:#edf4ff;font-weight:800;}
+        .card{background:#1a2438;border-radius:12px;padding:12px;}
         .row{display:flex;gap:12px;align-items:center;}
         .tag{display:inline-block;padding:2px 8px;border-radius:4px;background:#334155;
              white-space:nowrap;text-align:center;}

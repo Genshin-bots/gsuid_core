@@ -25,9 +25,13 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
 )
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER = (
-    "（系统：本轮已有工具返回。你是 render_agent——必须调用 "
-    "render_html_to_image / render_card / render_markdown_to_image 出图；"
-    "禁止只交 HTML 源码或过程句；禁止 web 再检索与编造数字。）"
+    "（系统：本轮已有工具返回。你是 render_agent——"
+    "若尚未成功出图：事实包**尽量全文上图**（数字/表/论据/风险/时点勿删），"
+    "写成**一份**高密度竖长 HTML，只调用一次 render_html_to_image；"
+    "html/body 须不透明实色底（暗色或浅色成套 token，非写死单一色）；"
+    "暗底须浅字；研报级内容禁止压成少字海报。"
+    "若已成功出图：停止再调 render_*，只交 1～3 句摘要。"
+    "禁止为好看删硬信息；禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
 )
 
 POST_TOOL_FAIL_CONTRACT = (

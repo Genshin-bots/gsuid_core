@@ -12,7 +12,9 @@
 
 设计原则：
 - 无 UUID：任务引用走自然语言句柄；artifact 是显式 ``res_xxx`` 句柄。
-- 权限：默认 owner / master 可操作；artifact 跨 root_task_id 严格隔离。
+- 权限：默认 owner / master 可操作；同树 ``artifact_get`` 自由互读；
+  跨树仅允许「同 owner+session/scope」或「当前任务 goal / input_artifact_ids 显式引用」。
+  （``create_subagent`` 叶子根彼此独立 root，调研→渲染接力依赖跨树放行。）
 """
 
 import re
@@ -30,10 +32,13 @@ from gsuid_core.ai_core.register import ai_tools
 
 from . import kanban
 from .models import AIAgentTask, AIAgentArtifact
-from .runtime import get_plan_context
+from .runtime import PlanRunContext, get_plan_context
 from .resolver import resolve_task_ref
 from .workspace import put_artifact
 from ..capability_agents.evaluator import _FUZZY_MIN_OVERLAP
+
+# res_ + 12 hex（与 AIAgentArtifact.id 工厂一致）
+_RES_ID_RE = re.compile(r"res_[0-9a-fA-F]{12}")
 
 _CAP = "长期任务编排"
 
@@ -868,16 +873,25 @@ async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,
 ) -> str:
-    """按 res 句柄取回某 artifact 的内容（同 root_task_id 才允许跨任务读取）。"""
+    """按 res 句柄取回 artifact 内容。
+
+    访问策略：
+    - 同 ``root_task_id``：放行（多步 Kanban 兄弟节点互读）。
+    - 跨树：仅当当前任务显式引用该句柄（goal / ``input_artifact_ids``），
+      或源树与当前任务同 owner 且同 session（否则同 scope）——覆盖
+      ``create_subagent(调研)`` → ``create_subagent(render_agent)`` 接力。
+    - 无 plan 上下文（主人格）：按当前用户是否为源树 owner 校验。
+    """
     plan_ctx = get_plan_context()
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
         return f"⚠️ artifact 不存在: {res_id}"
-    if plan_ctx is not None and plan_ctx.root_task_id and art.root_task_id != plan_ctx.root_task_id:
+    allowed = await _artifact_access_allowed(art=art, plan_ctx=plan_ctx, ctx=ctx)
+    if not allowed:
         logger.warning(
             i18n_t(
                 "log.ai.kanban_rejected_cross_tree",
-                p0=plan_ctx.root_task_id,
+                p0=getattr(plan_ctx, "root_task_id", None) or "-",
                 p1=art.root_task_id,
             )
         )
@@ -942,6 +956,62 @@ async def artifact_get_recent(
 
 
 # helpers
+
+
+def extract_res_ids(text: str) -> List[str]:
+    """从任务描述中抽取 ``res_`` 句柄（去重、保序）。"""
+    if not text:
+        return []
+    return list(dict.fromkeys(_RES_ID_RE.findall(text)))
+
+
+async def _artifact_access_allowed(
+    *,
+    art: AIAgentArtifact,
+    plan_ctx: PlanRunContext | None,
+    ctx: RunContext[ToolContext],
+) -> bool:
+    """判断当前调用方是否可读该 artifact。
+
+    安全边界：不向其它用户的任务树泄密；允许同一主人会话内显式句柄接力。
+    """
+    # —— 主人格 / 无 Kanban 上下文 ——
+    if plan_ctx is None or not plan_ctx.root_task_id:
+        ev = ctx.deps.ev
+        if ev is None:
+            return True
+        source = await AIAgentTask.get_by_id(art.root_task_id)
+        if source is None or not source.owner_user_id:
+            return True
+        return str(ev.user_id) == str(source.owner_user_id)
+
+    # —— 同树 ——
+    if art.root_task_id == plan_ctx.root_task_id:
+        return True
+
+    current = await AIAgentTask.get_by_id(plan_ctx.task_id)
+    if current is None:
+        return False
+
+    # 显式交接：input_artifact_ids 或 goal 正文里写了该 res_
+    inputs = current.input_artifact_ids
+    if isinstance(inputs, list) and art.id in inputs:
+        return True
+    if art.id and art.id in current.goal:
+        return True
+
+    # 同 owner 叶子根接力（create_subagent 连续两次）
+    source = await AIAgentTask.get_by_id(art.root_task_id)
+    if source is None:
+        return False
+    if not current.owner_user_id or current.owner_user_id != source.owner_user_id:
+        return False
+    if current.session_id and source.session_id:
+        return current.session_id == source.session_id
+    if current.scope_key and source.scope_key:
+        return current.scope_key == source.scope_key
+    # 同 owner 且缺少 session/scope 元数据时仍放行（兼容旧行）
+    return True
 
 
 async def _resolve_root_task_id(ctx: RunContext[ToolContext], task_ref_text: str) -> Optional[str]:

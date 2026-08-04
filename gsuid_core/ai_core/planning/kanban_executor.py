@@ -183,12 +183,23 @@ async def _build_resume_hint(child: AIAgentTask) -> str:
 
 
 async def _collect_upstream_artifacts(child: AIAgentTask) -> List[AIAgentArtifact]:
-    """汇总上游子任务的 output_artifact + 全量 workspace_file 列表。"""
-    deps = child.dependency_task_ids if isinstance(child.dependency_task_ids, list) else []
-    if not deps:
-        return []
+    """汇总上游产出：显式 ``input_artifact_ids`` + 依赖子任务登记的 artifact。
+
+    叶子根（``create_subagent``）常在 goal 里带上游 ``res_``；建树时会写入
+    ``input_artifact_ids``，此处一并注入提示，避免仅靠 agent 自觉 ``artifact_get``。
+    """
     bag: List[AIAgentArtifact] = []
     seen: set = set()
+
+    for rid in child.input_artifact_ids if isinstance(child.input_artifact_ids, list) else []:
+        if not rid or rid in seen:
+            continue
+        art = await AIAgentArtifact.get_by_id(str(rid))
+        if art is not None:
+            bag.append(art)
+            seen.add(art.id)
+
+    deps = child.dependency_task_ids if isinstance(child.dependency_task_ids, list) else []
     for dep_id in deps:
         rows = await AIAgentArtifact.list_for_task(dep_id)
         for r in rows:
