@@ -60,6 +60,25 @@ async def _user_has_record_collections(ev: Event) -> bool:
     return bool(keys)
 
 
+async def _user_has_recent_completed_kanban(user_id: str, within_hours: float = 6.0) -> bool:
+    """近 within_hours 内是否有 completed 根任务（完成后仍要能 artifact_get_recent）。"""
+    from datetime import datetime, timedelta
+
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+
+    rows = await AIAgentTask.list_for_owner(str(user_id), only_active=False, root_only=True)
+    if not rows:
+        return False
+    cutoff = datetime.now() - timedelta(hours=within_hours)
+    for t in rows[:20]:
+        if t.status != "completed":
+            continue
+        updated = t.updated_at
+        if updated is not None and updated >= cutoff:
+            return True
+    return False
+
+
 async def get_state_driven_families(ev: Optional[Event], has_active_task: bool = False) -> List[str]:
     """返回应按"持久状态"补进保底池的能力族名列表。
 
@@ -67,6 +86,7 @@ async def get_state_driven_families(ev: Optional[Event], has_active_task: bool =
     - 有活跃(running/waiting_approval) Kanban 任务 → 长期任务编排 + 产物 两族
       （主人格随时可能 fail_task_tree / respond_approval / 追问产物原文，
       即 A-1 要求"随时可调"的 artifact_get_recent）；
+    - 有近 6h 内刚完成的根任务 → 至少挂 产物 族（追问溯源）；
     - 有未完成(pending/paused)的定时任务 → 定时任务 族（改时间 / 取消 / 暂停…）；
     - 名下存在 record:* 结构化集合 → 结构化记录 族（随时可被追问读取 / 汇总）。
 
@@ -83,6 +103,9 @@ async def get_state_driven_families(ev: Optional[Event], has_active_task: bool =
     # 活跃 Kanban 任务：把任务编排族 + 产物族一起带出（A-1 兜底产物追问溯源）
     if has_active_task:
         domains.append("长期任务编排")
+        domains.append("产物")
+    elif await _user_has_recent_completed_kanban(ev.user_id):
+        # 刚完成：编排工具可卸，但产物追问必须仍可用
         domains.append("产物")
 
     # 定时任务：用户有未完成的定时任务 → 带出整个"定时任务"族（含 modify/cancel/pause...）

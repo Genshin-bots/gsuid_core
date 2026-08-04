@@ -270,8 +270,8 @@ def _http_session_overrides() -> Dict[str, str]:
     """从 HTTP 请求头读取框架通用会话覆盖（无业务域语义）。
 
     支持头（均可选）:
-    - ``X-MCP-Group-Id`` → Event.group_id（插件侧会话键）
-    - ``X-MCP-Bot-Id`` → Event.bot_id（插件虚拟 bot 标识）
+    - ``X-MCP-Group-Id`` → Event.group_id（插件侧会话键；画布为 canvas_id#session）
+    - ``X-MCP-Bot-Id`` → Event.bot_id（一般**不必传**；默认见 _build_run_context）
     """
     out: Dict[str, str] = {}
     from fastmcp.server.dependencies import get_http_request
@@ -309,10 +309,10 @@ def _create_mock_event(
     *,
     user_id: str = "mcp_client",
     user_pm: int = _DEFAULT_USER_PM,
-    bot_id: str = "MCP",
+    bot_id: str = "CanvasBackend",
     group_id: str = "",
 ) -> Event:
-    """MCP 调用用的模拟 Event。"""
+    """MCP 调用用的模拟 Event（默认 bot_id 与画布前端 inject 一致）。"""
     ev = Event()
     ev.text = text
     ev.command = command
@@ -321,7 +321,7 @@ def _create_mock_event(
     ev.user_id = user_id
     ev.bot_id = bot_id
     ev.bot_self_id = "MCP_Server"
-    ev.user_type = "direct"
+    ev.user_type = "group" if bot_id == "CanvasBackend" else "direct"
     if group_id:
         ev.group_id = group_id
     return ev
@@ -348,12 +348,14 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
     else:
         user_pm = _DEFAULT_USER_PM
 
+    # 与画布前端 inject 一致：默认 bot_id=CanvasBackend（画布工具 visible_when 依赖它）。
+    # 仅当 Header / claims 显式覆盖时才改（其它插件若共用 MCP 可传 X-MCP-Bot-Id）。
     if "bot_id" in sess:
         bot_id = sess["bot_id"]
     elif "bot_id" in ident:
         bot_id = str(ident["bot_id"])
     else:
-        bot_id = "MCP"
+        bot_id = "CanvasBackend"
 
     if "group_id" in sess:
         group_id = sess["group_id"]
@@ -361,6 +363,7 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
         group_id = str(ident["group_id"])
     else:
         group_id = ""
+    # 未设 group_id 时由插件工具自行解析（如 canvas_open 的 session_bind），框架不 import 插件
 
     fake_ev = _create_mock_event(
         command=tool_name,

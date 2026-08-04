@@ -1873,9 +1873,9 @@ class GsCoreAIAgent:
                 except Exception as e:
                     logger.debug(i18n_t("log.agent.load_state_driven_pool", e=e))
 
-                # C-1 / TurnGraph：任务管理或省略跟进 → 补调度族
+                # C-1：跟进补调度族 + 产物族（追问产物需 artifact_get_recent）
                 if _followup_detected:
-                    for _dom in ("定时任务", "长期任务编排"):
+                    for _dom in ("定时任务", "长期任务编排", "产物"):
                         for _tb in get_tools_by_capability_domain(_dom):
                             if _tb.name not in core_names:
                                 core_names.add(_tb.name)

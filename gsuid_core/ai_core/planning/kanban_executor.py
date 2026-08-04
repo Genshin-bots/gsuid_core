@@ -374,27 +374,175 @@ def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
     return stripped.strip(), True
 
 
-# 交互式 create_subagent 的"执行体静默"登记（leaf-root root_task_id）：主人格亲自转述、执行体不推群， 避免双份播报。
-# 进程内 set 即可；消费/超时兜底的无竞态语义见 references/08 §能力代理。
+# 交互式 create_subagent：主人格转述、执行体不推群（进程内 set，见 §能力代理）。
 _INTERACTIVE_RELAY_ROOTS: set[str] = set()
+# 同步等待已超时：完成后唤醒主人格交付，禁止 _persona_relay 替发（2026-08-04）。
+_DEFERRED_MAIN_DELIVERY_ROOTS: set[str] = set()
 
 
 def mark_interactive_relay_root(root_id: str) -> None:
-    """登记一个"由主人格转述、执行体静默"的交互式 create_subagent 叶子根。"""
+    """登记「主人格转述、执行体静默」的交互式叶子根。"""
     _INTERACTIVE_RELAY_ROOTS.add(root_id)
 
 
 def discard_interactive_relay_root(root_id: str) -> None:
-    """撤销登记（如主人格侧等待超时、决定不再转述 → 执行体恢复自动推群兜底）。"""
+    """撤销 interactive + deferred 登记。"""
     _INTERACTIVE_RELAY_ROOTS.discard(root_id)
+    _DEFERRED_MAIN_DELIVERY_ROOTS.discard(root_id)
+
+
+def mark_deferred_main_delivery(root_id: str) -> None:
+    """超时后保持静默，完成后改走 ``_wake_main_agent_for_delivery``。"""
+    _INTERACTIVE_RELAY_ROOTS.add(root_id)
+    _DEFERRED_MAIN_DELIVERY_ROOTS.add(root_id)
+
+
+def try_claim_deferred_for_inline_return(root_id: str) -> bool:
+    """超时边界：deferred 仍在则 claim 并 True（本轮 tool_return，避免与 wake 双份）。"""
+    if root_id in _DEFERRED_MAIN_DELIVERY_ROOTS:
+        _DEFERRED_MAIN_DELIVERY_ROOTS.discard(root_id)
+        return True
+    return False
 
 
 def _consume_interactive_relay(root_id: str) -> bool:
-    """读即弃：若该 root 登记为"主人格转述"，返回 True 并移除登记（本次消费掉）。"""
+    """读即弃：是否 interactive 静默。"""
     if root_id in _INTERACTIVE_RELAY_ROOTS:
         _INTERACTIVE_RELAY_ROOTS.discard(root_id)
         return True
     return False
+
+
+def _consume_deferred_main_delivery(root_id: str) -> bool:
+    """读即弃：是否需唤醒主人格。"""
+    if root_id in _DEFERRED_MAIN_DELIVERY_ROOTS:
+        _DEFERRED_MAIN_DELIVERY_ROOTS.discard(root_id)
+        return True
+    return False
+
+
+def _artifact_text_excerpt(arts: List[AIAgentArtifact], limit: int = 4000) -> str:
+    """取可读文本摘要：优先 inline，其次落盘 textish mime。"""
+    from pathlib import Path
+
+    for a in arts:
+        if a.payload_inline:
+            text = a.payload_inline.strip()
+            if text:
+                return text[:limit]
+    for a in arts:
+        mime = (a.mime or "").lower()
+        path = a.payload_path
+        if not path:
+            continue
+        textish = (
+            not mime
+            or mime.startswith("text/")
+            or mime in ("application/json", "application/xml")
+            or mime.endswith("+json")
+            or mime.endswith("+xml")
+        )
+        if not textish:
+            continue
+        p = Path(path)
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace").strip()
+        if text:
+            return text[:limit]
+    return ""
+
+
+def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: List[AIAgentArtifact]) -> str:
+    """拼给主人格的交付包（artifact 句柄 + 文本摘要）。"""
+    art_lines: List[str] = []
+    primary = ""
+    for a in arts[:8]:
+        tag = ""
+        if a.payload_path and (a.mime or "").startswith("image/"):
+            tag = "（真实图片，可 send_message_by_ai(image_id=) 直发）"
+            if not primary:
+                primary = a.id
+        elif a.payload_path:
+            tag = "（落盘文件/文本）"
+        art_lines.append(f"  - {a.id} | {a.mime or 'text/plain'} | {a.summary[:80]}{tag}")
+    if not primary and arts:
+        primary = arts[0].id
+
+    parts = [
+        f"【子任务交付·需你亲自完成收尾】任务#{task.ordinal}「{task.display_name}」已完成。",
+        "你是主人格：请用角色短句给结论；结构化数据/长文用 render_html_to_image（或 render_card）出图发送；",
+        "禁止把下方全文当群聊台词念出；禁止把 res_/img_ 句柄写进对用户可见的话。",
+        "文本类产物请 artifact_get / 下方摘要取原文后渲染，不要 read_image。",
+    ]
+    if art_lines:
+        parts.append("产物 artifact:")
+        parts.extend(art_lines)
+        if primary:
+            parts.append(
+                f"💡 主要产物句柄: `{primary}`"
+                "（图片类可 send_message_by_ai(image_id=)；文本类先取原文再 render 出图）"
+            )
+    excerpt = _artifact_text_excerpt(arts, limit=4000) or (raw_result or "")[:4000]
+    if excerpt:
+        parts.append("⬇️ 代理结论/报告摘要（用户还没看到，由你转译+出图）：\n" + excerpt)
+    elif task.failure_reason:
+        parts.append(f"失败原因: {task.failure_reason[:500]}")
+    return "\n".join(parts)
+
+
+async def _relay_fallback_notify(task: AIAgentTask, raw_result: str, reason: str) -> None:
+    """session/bot 不可用时降级人格转译推群（有意分支，非异常吞没）。"""
+    logger.warning(f"deferred wake fallback relay task={task.id[:8]} reason={reason}")
+    spoken, relay_log_files = await _persona_relay(task, raw_result)
+    if spoken:
+        await _notify(
+            task,
+            spoken,
+            trigger_reason=f"deferred_fallback:{task.display_name}",
+            generator_log_files=relay_log_files,
+        )
+
+
+async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> None:
+    """超时后的 deferred 交付：回灌主会话再跑一轮（render/发送归主人格）。
+
+    不 broad-except：失败上抛由 kick_root 记日志；session/bot 缺失走显式 fallback。
+    注意：与用户同 session 抢 ``_run_lock`` 时会 cancel 对方 generation（既有 Chat 语义）。
+    """
+    arts = await AIAgentArtifact.list_for_task(task.id)
+    delivery = _format_delivery_for_main_agent(task, raw_result, arts)
+    ev = _build_event(task)
+    bot = _get_bot(task, ev)
+
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    session_id = (task.session_id or "").strip()
+    session = get_ai_session_registry().get_ai_session(session_id) if session_id else None
+
+    if session is None or bot is None:
+        await _relay_fallback_notify(
+            task,
+            raw_result,
+            reason=f"session={session is not None},bot={bot is not None}",
+        )
+        return
+
+    user_message = (
+        "[系统·子任务异步交付]\n"
+        f"{delivery}\n\n"
+        "（本条是框架在子任务完成后注入的交付通知，不是群友新发言。"
+        "请立即基于上述产物完成出图/发送收尾；不要再 create_subagent 重做同一任务。）"
+    )
+    # has_active_task=True：挂产物/编排工具；任务本身可能已 completed
+    await session.run(
+        user_message=user_message,
+        bot=bot,
+        ev=ev,
+        return_mode="by_bot",
+        has_active_task=True,
+    )
+    logger.info(f"deferred main delivery done task={task.id[:8]}")
 
 
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
@@ -448,8 +596,14 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         except Exception as e:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
             await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
-            # 交互式派发：失败也由主人格据回执转述，执行体不重复推群（消费须在 mark 之后，
-            if not _consume_interactive_relay(root.id):
+            # 交互式派发：失败也由主人格据回执转述；若已 deferred 则唤醒主人格，
+            # 否则非交互式才推群失败通知。
+            silent = _consume_interactive_relay(root.id)
+            deferred = _consume_deferred_main_delivery(root.id)
+            # deferred 必须唤醒，即使 body 为空（产物可能只在 artifact 表）
+            if bot and silent and deferred:
+                await _wake_main_agent_for_delivery(fresh, f"{type(e).__name__}: {e}")
+            elif not silent:
                 await _notify_failure(root, fresh, str(e))
             return
         finally:
@@ -480,15 +634,18 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             CAPABILITY_AGENT_ERROR_PREFIX,
         )
 
-        # 交互式派发：主人格亲自转述、执行体静默。不丢不重的关键是**落终态后**消费（无 await 紧跟
-        # mark）——看到终态就转述→消费 True 静默；超时先 discard→消费 False 兜底推群。
+        # interactive 静默；deferred → 唤醒主人格；否则非交互式 relay 推群
 
-        # 5a) 安装审批：copy_to_plugin_dir 已把任务挂为 waiting_approval，转译审批请求且不落终态
+        # 5a) 安装审批：waiting_approval 不落终态，转译审批请求
         if latest is not None and latest.status == "waiting_approval":
             silent = _consume_interactive_relay(root.id) or no_broadcast
-            if bot and not silent:
+            deferred = _consume_deferred_main_delivery(root.id)
+            body = latest.failure_reason or raw_result
+            if bot and silent and deferred:
+                await _wake_main_agent_for_delivery(fresh, body)
+            elif bot and not silent:
                 spoken, relay_log_files = await _persona_relay(
-                    fresh, latest.failure_reason or raw_result, is_approval_request=True
+                    fresh, body, is_approval_request=True
                 )
                 if spoken:
                     await _notify(
@@ -500,12 +657,18 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         elif (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
             await kanban.mark_subtask_failed(fresh, raw_result[:1000])
             silent = _consume_interactive_relay(root.id) or no_broadcast
-            if not silent:
+            deferred = _consume_deferred_main_delivery(root.id)
+            if bot and silent and deferred:
+                await _wake_main_agent_for_delivery(fresh, raw_result[:1000])
+            elif not silent:
                 await _notify_failure(root, fresh, raw_result[:1000])
         else:
             await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
             silent = _consume_interactive_relay(root.id) or no_broadcast
-            if bot and raw_result and not silent:
+            deferred = _consume_deferred_main_delivery(root.id)
+            if bot and silent and deferred:
+                await _wake_main_agent_for_delivery(fresh, raw_result or "")
+            elif bot and raw_result and not silent:
                 spoken, relay_log_files = await _persona_relay(fresh, raw_result)
                 if spoken:
                     await _notify(

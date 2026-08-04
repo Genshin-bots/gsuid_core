@@ -492,7 +492,8 @@ async def _dispatch_via_kanban(
     from gsuid_core.ai_core.planning.kanban_executor import (
         kick_root,
         mark_interactive_relay_root,
-        discard_interactive_relay_root,
+        mark_deferred_main_delivery,
+        try_claim_deferred_for_inline_return,
     )
 
     scope_key = make_scope_key(
@@ -548,15 +549,34 @@ async def _dispatch_via_kanban(
             break
 
     if final is None:
-        # 主人格侧放弃等待、不会转述了 → 撤销静默登记，让执行体完成时照常推群兜底，
-        discard_interactive_relay_root(root.id)
-        return (
-            f"⏳ 任务仍在执行中（已等待 {int(waited)}s 超时）。\n"
-            f"Kanban 任务: 任务#{root.ordinal}｜{root.display_name}\n"
-            f"任务 id（前 8 位）: {root.id[:8]}\n"
-            "可到 webconsole 看板查看实时进度；事后追问产物用 "
-            "`artifact_get_recent` 即可（已绑定本任务树）。任务完成时会自动推群告知。"
-        )
+        # 超时：deferred 唤醒主人格，不走 relay 推群
+        mark_deferred_main_delivery(root.id)
+        # 边界竞态：终态已落则 claim deferred 本轮 tool_return，否则短回执
+        fresh_after = await AIAgentTask.get_by_id(root.id)
+        if fresh_after is not None and fresh_after.status in (
+            "completed",
+            "failed",
+            "cancelled",
+            "waiting_approval",
+        ):
+            if try_claim_deferred_for_inline_return(root.id):
+                final = fresh_after
+            else:
+                return (
+                    f"✅ 任务#{root.ordinal} 刚好完成，框架正在把产物回灌给你处理收尾"
+                    f"（task {root.id[:8]}）。请勿重复 create_subagent。"
+                )
+        else:
+            return (
+                f"⏳ 任务仍在执行中（已等待 {int(waited)}s 超时）。\n"
+                f"Kanban 任务: 任务#{root.ordinal}｜{root.display_name}\n"
+                f"任务 id（前 8 位）: {root.id[:8]}\n"
+                "可到 webconsole 看板查看实时进度。\n"
+                "**完成后框架会把产物回灌给你（主人格）再跑一轮**，由你 render 出图/发送——"
+                "不要空等、不要重复 create_subagent；用户催问时用 "
+                "`artifact_get_recent` / `list_my_kanban_tasks` 查进度与产物。"
+            )
+
 
     # 抓 artifact（最新一份用作产物展示）
     arts = await AIAgentArtifact.list_for_task(final.id)
@@ -567,7 +587,7 @@ async def _dispatch_via_kanban(
         if a.payload_path and (a.mime or "").startswith("image/"):
             binary_tag = "（真实图片，可 send_message_by_ai(image_id=) 直发）"
         elif a.payload_path:
-            binary_tag = "（落盘文件）"
+            binary_tag = "（落盘文件/文本，文本类请 artifact_get 取原文再 render）"
         art_lines.append(f"  - {a.id} | {a.mime or 'text/plain'} | {a.summary[:80]}{binary_tag}")
         if not primary_handle and a.payload_path and (a.mime or "").startswith("image/"):
             primary_handle = a.id
@@ -585,6 +605,7 @@ async def _dispatch_via_kanban(
         f"【{pid} 代理完成 - Kanban 任务#{root.ordinal}】 {status_label}",
         f"任务: {root.display_name}",
         "主人格：角色短句结论 + 数据用 render_html_to_image 出图，禁止把代理全文当群聊台词。",
+        "文本类 res_ 请 artifact_get 取原文，**不要** read_image。",
     ]
     if final.failure_reason:
         parts.append(f"失败原因: {final.failure_reason[:300]}")
@@ -594,19 +615,16 @@ async def _dispatch_via_kanban(
         if primary_handle:
             parts.append(
                 f"💡 主要产物句柄: `{primary_handle}`"
-                "（如需把图片 / 文件发给用户，调用 send_message_by_ai(image_id=该句柄)——"
+                "（图片类 send_message_by_ai(image_id=)；文本类 artifact_get 后 render——"
                 "**只在参数里用这个句柄，绝不要把 res_/img_ 句柄本身写进给用户看的话里**）"
             )
     else:
         parts.append("（本任务无显式 artifact 登记）")
 
-    # 文本结论：交互式派发下执行体**不再自动推群**，这段结论要由主人格**亲自转述一次**
-    # 给用户（用角色口吻、简明扼要，别照搬）。以下摘要就是你要转述的内容来源。
-    text_excerpt = ""
-    for a in arts:
-        if a.payload_inline:
-            text_excerpt = a.payload_inline[:1200]
-            break
+    # 落盘 text/* 也要读出（大段 markdown 不在 payload_inline）
+    from gsuid_core.ai_core.planning.kanban_executor import _artifact_text_excerpt
+
+    text_excerpt = _artifact_text_excerpt(arts, limit=4000)
     if text_excerpt:
         parts.append(
             "\n⬇️ 下面是代理的结论，请你用角色口吻**转述给用户**（这不是给你自己看的备忘，"

@@ -54,15 +54,36 @@ def clear_turn_send_throttle(session_id: str, turn_id: str) -> None:
     _PER_TURN_SEND_MESSAGE_COUNT.pop((str(session_id), str(turn_id)), None)
 
 
+def _looks_like_image_bytes(data: bytes) -> bool:
+    """按文件头魔数判断是否为常见图片字节（mime 缺失时用）。"""
+    if not data:
+        return False
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if data[:3] == b"\xff\xd8\xff":
+        return True
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return True
+    if data[:2] == b"BM":
+        return True
+    return False
+
+
+def _is_textish_mime(mime: str) -> bool:
+    """mime 是否应按文本解码（非图片落盘）。"""
+    if not mime or mime.startswith("text/"):
+        return True
+    if mime in ("application/json", "application/xml", "application/javascript"):
+        return True
+    return mime.endswith("+json") or mime.endswith("+xml")
+
+
 async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
-    """尝试把一个 ``res_xxx`` 句柄解析成可发送的图片数据。
+    """解析 ``res_xxx``。bytes=仅图片；str=文本/非图片；None=不存在。
 
-    走 ``AIAgentArtifact.get_by_id``——找到 artifact 后：
-    - 优先读 ``payload_path``（落盘 ≥4KB 大工件）→ 返回文件 bytes
-    - 否则读 ``payload_inline``（≤4KB inline 文本）→ 多为代码 / 文本，无法当图片发，
-      返回 None 让上层退回 RM 链路
-
-    找不到 artifact / 读文件失败时返回 None；不抛异常，避免上层 try-except 兜底。
+    2026-08-04：text/markdown 落盘被当图片塞多模态 → MiniMax unknown format 整轮 400。
     """
     if not res_id.startswith("res_"):
         return None
@@ -73,14 +94,29 @@ async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
         return None
+
+    mime = (art.mime or "").lower().strip()
+    is_image_mime = mime.startswith("image/")
+
     if art.payload_path:
         p = Path(art.payload_path)
-        if p.exists():
-            return p.read_bytes()
-        logger.debug(t("log.ai.buildintools_kanban_artifact_res", res_id=res_id, p0=art.payload_path))
-        return None
+        if not p.exists():
+            logger.debug(t("log.ai.buildintools_kanban_artifact_res", res_id=res_id, p0=art.payload_path))
+            return None
+        data = p.read_bytes()
+        # 以魔数为准：只有真图返回 bytes（mime 标 image/* 内容却是 md 时也拒）
+        if _looks_like_image_bytes(data):
+            return data
+        # 非图：textish / 无 mime → 文本；否则标记串（供上层 str 分支拒绝当图）
+        if _is_textish_mime(mime) or is_image_mime:
+            return data.decode("utf-8", errors="replace")
+        return (
+            f"[binary non-image artifact mime={mime or 'unknown'} "
+            f"size={len(data)} path={art.payload_path}]"
+        )
+
     if art.payload_inline:
-        # inline payload 通常是 ≤4KB 文本（代码 / JSON 摘要），不是图片字节
+        # inline 存不了真图，一律当文本
         return art.payload_inline
     return None
 
@@ -201,10 +237,11 @@ async def send_message_by_ai(
                     )
                     media_parts.append(MessageSegment.image(kanban_payload))
                 else:
-                    # inline 文本 artifact：不是图片，提示主人格用 text 参数发
+                    # 文本 / 非图片 artifact（含落盘 markdown）：不能当 image 发
                     return (
-                        f"❌ 资源ID: {image_id} 是 Kanban inline 文本 artifact（非图片字节），"
-                        f"请用 artifact_get({image_id}) 取原文后用 text 参数发送。"
+                        f"❌ 资源ID: {image_id} 是文本类 Kanban artifact（非图片字节），"
+                        f"请用 artifact_get('{image_id}') 取原文后："
+                        f"短文用 text 参数发送，长文/多数据用 render_html_to_image 出图。"
                     )
             else:
                 try:

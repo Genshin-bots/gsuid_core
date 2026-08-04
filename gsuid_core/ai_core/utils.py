@@ -680,11 +680,14 @@ async def prepare_content_payload(
             except Exception as e:
                 logger.warning(i18n_t("log.ai.gscoreai_image_materialization_url_fail", p0=i[:120], e=e))
                 continue
-            injected = _to_tool_image_content(url, provider=provider)
+            injected, inject_err = _to_tool_image_content(url, provider=provider)
             if injected:
                 content_payload.extend(injected)
             else:
-                logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
+                logger.warning(
+                    i18n_t("log.ai.unable_process_image_id", i=i)
+                    + (f" ({inject_err})" if inject_err else "")
+                )
         else:
             logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
 
