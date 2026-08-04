@@ -70,10 +70,10 @@ async def _user_has_recent_completed_kanban(user_id: str, within_hours: float = 
     if not rows:
         return False
     cutoff = datetime.now() - timedelta(hours=within_hours)
-    for t in rows[:20]:
-        if t.status != "completed":
+    for task in rows[:20]:
+        if task.status != "completed":
             continue
-        updated = t.updated_at
+        updated = task.updated_at
         if updated is not None and updated >= cutoff:
             return True
     return False

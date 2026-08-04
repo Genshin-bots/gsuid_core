@@ -30,6 +30,10 @@ SL = SVList()
 config_sv = core_config.get_config("sv")
 config_plugins = plugin_config_store.get_all()
 
+# _check_file/_check_meta/_check_message 匹配时不读 prefix，
+# 前缀展开只会产生 N 份等价副本，导致一次事件执行 N 次
+_PREFIXLESS_TYPES = frozenset({"file", "meta", "message"})
+
 
 def modify_func(func):
     @wraps(func)
@@ -353,7 +357,7 @@ class SV:
                     if type not in self.TL:
                         self.TL[type] = {}
 
-                    if prefix and _pp:
+                    if prefix and _pp and type not in _PREFIXLESS_TYPES:
                         for _p in _pp:
                             _pk = _p + _k
                             self.TL[type][_pk] = Trigger(

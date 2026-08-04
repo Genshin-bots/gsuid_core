@@ -110,10 +110,7 @@ async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
         # 非图：textish / 无 mime → 文本；否则标记串（供上层 str 分支拒绝当图）
         if _is_textish_mime(mime) or is_image_mime:
             return data.decode("utf-8", errors="replace")
-        return (
-            f"[binary non-image artifact mime={mime or 'unknown'} "
-            f"size={len(data)} path={art.payload_path}]"
-        )
+        return f"[binary non-image artifact mime={mime or 'unknown'} size={len(data)} path={art.payload_path}]"
 
     if art.payload_inline:
         # inline 存不了真图，一律当文本

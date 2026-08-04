@@ -46,10 +46,10 @@ from gsuid_core.ai_core.mcp.client import MCPClient, MCPToolInfo, MCPToolResult
 from gsuid_core.ai_core.mcp.server import (
     get_mcp_server,
     get_mcp_trigger_count,
+    clear_mcp_token_verifiers,
     get_mcp_exported_tool_count,
     register_mcp_token_verifier,
     unregister_mcp_token_verifier,
-    clear_mcp_token_verifiers,
 )
 from gsuid_core.ai_core.mcp.startup import (
     unregister_mcp_server,
