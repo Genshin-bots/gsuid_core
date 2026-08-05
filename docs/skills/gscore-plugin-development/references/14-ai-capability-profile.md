@@ -110,8 +110,12 @@ create_subagent(agent_profile="render_agent", task=完整事实包+版式要求)
 | 交付物 | 做法 |
 |--------|------|
 | 短结论事实包 | 正文 Markdown/JSON；长文 `artifact_put` |
-| 群聊长报告 | **出图**（插件 `send_*_report_image` 或派 `render_agent`），禁刷屏念表 |
-| 主人格回执 | 短句转述；句柄用 `send_message_by_ai(image_id=res_…)`，勿把 res_ 写进台词 |
+| 群聊长报告 | 业务节点 **只交 MD 事实包**；主人格再 `create_subagent(render_agent)` 出图；禁刷屏念表 |
+| 主人格回执 | 短句转述；图已由 render 下发则勿重复 send；勿把 res_ 写进台词 |
+
+**出图主权（2026-08 方案 B）**：非 `render_agent` 的能力代理 **禁止**
+`render_*` / `create_subagent` 嵌套 / 插件终局直发出图工具。业务 report 节点
+不要再挂 `send_*_report_image`。
 
 ### ④ `match_keywords` 拆分「短分析」与「长报告」
 
@@ -120,7 +124,7 @@ create_subagent(agent_profile="render_agent", task=完整事实包+版式要求)
 | 节点 | 关键词示例 | 工具差 |
 |------|------------|--------|
 | `stock_agent` | 股票分析、技术面、估值 | 行情/财务/技术 |
-| `stock_report_agent` | **写研报**、研报、深度报告 | 同上 + **出图工具** |
+| `stock_report_agent` | **写研报**、研报、深度报告 | 同上（**无**出图工具；出图归主人格→`render_agent`） |
 
 注册时 **report 节点若关键词更特化，仍可能被更早注册的节点抢走**——`resolve_node` 按
 **注册表顺序**首个 keyword 命中。把特化节点注册在泛化节点附近，并让泛化节点 **不要**
@@ -184,10 +188,10 @@ create_subagent(agent_profile="render_agent", task=事实包)  # 通用美观出
 | node_id | 用途 |
 |---------|------|
 | `stock_agent` | 短分析；工具优先硬门；含 financials/indicators/技术分析等 |
-| `stock_report_agent` | 完整研报；强制取数清单 + **`send_stock_report_image` 出图** |
+| `stock_report_agent` | 完整研报；强制取数清单 + **`artifact_put` Markdown**（出图归主人格→`render_agent`） |
 | `papertrade_*` | 模拟盘专用（研究节点禁止越权记账） |
 
-参考其 prompt 写法：**工具优先级表 → 时效 → 交付/出图 → 红线（模拟盘转交）**。
+参考其 prompt 写法：**工具优先级表 → 时效 → 交付（事实包 only）→ 红线（模拟盘转交）**。
 
 ## 14.6 注册时机与回退
 
@@ -204,13 +208,13 @@ create_subagent(agent_profile="render_agent", task=事实包)  # 通用美观出
 在 `tool_names` 写字符串即可，不必 import。注意日期工具注册名是 **`_get_current_date`**
 （不是 `get_current_date`）。
 
-出图相关（**不要**挂在普通业务节点上抢主路径，除非像 stock 有专用出图工具）：
+出图相关（**不要**挂在普通业务节点上；终局出图只走 `render_agent`）：
 
 | 工具 | category | 谁持有 |
 |------|----------|--------|
 | `render_html_to_image` | media | `render_agent` |
 | `render_card` / `render_markdown_to_image` | media | `render_agent` / 少量 reporter |
-| 插件 `send_*_report_image` | common 等 | 业务 report 节点 |
+| 插件 `send_*_report_image` | common 等 | **兼容遗留**；业务 report 节点**不要**再挂 |
 
 `task_basics` 已含：`artifact_*`、`state_*`、`record_*`、`search_knowledge`、
 `web_search_tool`、`web_fetch_tool`——业务节点**不必**再抄一遍。
@@ -223,8 +227,8 @@ create_subagent(agent_profile="render_agent", task=事实包)  # 通用美观出
 4. **主人格自渲 HTML**：已改为委派 `render_agent`；插件文档勿再写「主人格 render_html」。
 5. **框架混入业务词**：违反通用性；业务词只放插件。
 6. **Skill 代替代理**：无法强制工具序；长流程用 AgentNode。
-7. **交付边界**：默认禁止直发用户；需要发图时用渲染工具或专用出图工具，勿让节点
-   `send_message_by_ai` 念长文。
+7. **交付边界**：默认禁止直发用户；长文出图一律主人格→`render_agent`，勿让业务节点
+   自渲或 `send_message_by_ai` 念长文。
 
 ## 14.9 旧 API import（勿用于新代码）
 

@@ -135,6 +135,7 @@
   "log.ai.cap_skip_invalid_node_file": "[CapabilityAgent] 跳过不合法节点文件: {p0}",
   "log.ai.cap_skip_node_file_missing": "[CapabilityAgent] 跳过缺 id 的节点文件: {p0}",
   "log.ai.cap_task_backfill_query_names": "[CapabilityAgent] task 工具补检索: +{n} 个 (query={q!r} → {names})",
+  "log.ai.cap_stripped_non_render_deny": "[CapabilityAgent] 非 render 节点剥离出图/嵌套委派工具: node={node_id} names={names}",
   "log.ai.cap_tools_workspace_ws_label": "[CapabilityAgent] 启动「{p0}」({p1})，工具 {p2} 个，workspace={ws_label}，任务: {p3}...",
   "log.ai.cap_user_node_deleted_id": "[CapabilityAgent] 已删除用户节点: {node_id}",
   "log.ai.cap_user_nodes_startup": "[CapabilityAgent] 启动加载用户节点: {count} 个",

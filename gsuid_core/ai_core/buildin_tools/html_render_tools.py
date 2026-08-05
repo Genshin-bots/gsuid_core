@@ -305,7 +305,7 @@ def _ensure_opaque_image_bytes(
         im = Image.open(BytesIO(data))
         im.load()
     except (OSError, UnidentifiedImageError, ValueError) as e:
-        logger.debug("[BuildinTools] opaque flatten skip: %s", e)
+        logger.debug(t("log.htmlrender.opaque_flatten_skip", e=e))
         return data
 
     # RGB/L 无 alpha；GIF 多为动图，不压平

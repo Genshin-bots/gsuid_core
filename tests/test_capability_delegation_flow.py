@@ -34,10 +34,65 @@ def test_pool_overlap_empty_on_empty_pool() -> None:
 
 def test_post_tool_contract_is_format_not_domain() -> None:
     """输出契约只谈出图工具通道，不含股票/金融等业务词；禁 <report>。"""
-    assert "render_html_to_image" in _POST_TOOL_OUTPUT_CONTRACT
+    assert "render_agent" in _POST_TOOL_OUTPUT_CONTRACT
+    assert "render_" in _POST_TOOL_OUTPUT_CONTRACT
     assert "禁止 <report>" in _POST_TOOL_OUTPUT_CONTRACT or "禁止" in _POST_TOOL_OUTPUT_CONTRACT
     assert "股票" not in _POST_TOOL_OUTPUT_CONTRACT
     assert "金融" not in _POST_TOOL_OUTPUT_CONTRACT
+
+
+def test_capability_contract_forbids_nested_render_and_create_subagent() -> None:
+    """方案 B：非 render 能力代理契约禁止嵌套委派与自渲。"""
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+        POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    )
+
+    assert "create_subagent" in POST_TOOL_OUTPUT_CONTRACT_CAPABILITY
+    assert "render_html_to_image" in POST_TOOL_OUTPUT_CONTRACT_CAPABILITY
+    assert "render_agent" in POST_TOOL_OUTPUT_CONTRACT_CAPABILITY
+    assert "股票" not in POST_TOOL_OUTPUT_CONTRACT_CAPABILITY
+    assert "create_subagent" in POST_TOOL_FAIL_CONTRACT_CAPABILITY
+
+
+def test_delivery_boundary_forbids_nested_subagent_and_render() -> None:
+    """task-mode 默认交付边界含嵌套委派与 render 禁令。"""
+    from gsuid_core.ai_core.agent_node.models import DELIVERY_BOUNDARY
+
+    assert "create_subagent" in DELIVERY_BOUNDARY
+    assert "render_html_to_image" in DELIVERY_BOUNDARY
+    assert "render_agent" in DELIVERY_BOUNDARY
+
+
+def test_strip_non_render_cap_deny_keeps_render_agent() -> None:
+    """非 render 节点剥离 deny 集合；render_agent 原样保留。"""
+    from gsuid_core.ai_core.capability_agents.runner import (
+        _NON_RENDER_CAP_DENY_TOOLS,
+        _strip_non_render_cap_deny,
+    )
+    from gsuid_core.ai_core.register import find_tool_base
+
+    # 仅用已注册工具构造列表（未注册则跳过）
+    candidate_names = [
+        "artifact_put",
+        "create_subagent",
+        "render_html_to_image",
+        "web_search_tool",
+    ]
+    tools = []
+    for n in candidate_names:
+        tb = find_tool_base(n)
+        if tb is not None:
+            tools.append(tb.tool)
+    if len(tools) < 3:
+        return
+
+    stripped = _strip_non_render_cap_deny(tools, node_id="stock_report_agent")
+    names = {t.name for t in stripped}
+    assert names.isdisjoint(_NON_RENDER_CAP_DENY_TOOLS)
+
+    kept = _strip_non_render_cap_deny(tools, node_id="render_agent")
+    assert {t.name for t in kept} == {t.name for t in tools}
 
 
 def test_exclusive_tools_blocked_from_progressive_path() -> None:

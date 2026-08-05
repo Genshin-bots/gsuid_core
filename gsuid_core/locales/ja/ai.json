@@ -135,6 +135,7 @@
   "log.ai.cap_skip_invalid_node_file": "[CapabilityAgent] 不正なノードファイルをスキップ: {p0}",
   "log.ai.cap_skip_node_file_missing": "[CapabilityAgent] id が欠落したノードファイルをスキップ: {p0}",
   "log.ai.cap_task_backfill_query_names": "[CapabilityAgent] task ツール補完検索: +{n} 個 (query={q!r} → {names})",
+  "log.ai.cap_stripped_non_render_deny": "[CapabilityAgent] 非 render ノードから出図/ネスト委譲ツールを除去: node={node_id} names={names}",
   "log.ai.cap_tools_workspace_ws_label": "[CapabilityAgent] 「{p0}」({p1}) を起動、ツール {p2} 個、workspace={ws_label}、タスク: {p3}...",
   "log.ai.cap_user_node_deleted_id": "[CapabilityAgent] ユーザーノードを削除した: {node_id}",
   "log.ai.cap_user_nodes_startup": "[CapabilityAgent] 起動時に {count} 個のユーザーノードを読み込み",

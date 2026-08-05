@@ -20,7 +20,8 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
     "（系统：本轮已有工具返回。你是能力代理——必须把结果整理成 **Markdown 或 JSON 事实包** "
     "交付主人格（条目/日期/数字/来源/时点/依据），或 artifact_put 持久化。"
     "有搜索/查询结果时**禁止**只回过程句（如「下面再搜」「停止重复」「然后渲染」）。"
-    "**禁止**调用 render_html_to_image / render_card / render_markdown_to_image"
+    "**禁止** create_subagent / render_html_to_image / render_card / "
+    "render_markdown_to_image / 插件终局直发出图工具"
     "（出图由主人格再委派 render_agent）。）"
 )
 
@@ -43,7 +44,7 @@ POST_TOOL_FAIL_CONTRACT = (
 POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
     "（系统：本轮工具返回失败或空结果。禁止只回过程句结束。"
     "立刻换路：换 query / 换工具再取数；仍无果则在事实包里明确写「无检索结果：原因=…」。"
-    "禁止 render_html_*（出图归 render_agent）。）"
+    "禁止 create_subagent / render_html_* / 插件终局直发出图（出图归 render_agent）。）"
 )
 
 POST_TOOL_FAIL_CONTRACT_RENDER = (

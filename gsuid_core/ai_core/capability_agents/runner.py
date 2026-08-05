@@ -45,6 +45,17 @@ from gsuid_core.ai_core.agent_node import (
 # "代理跑挂了"。任何修改都应同时检查所有引用点。
 CAPABILITY_AGENT_ERROR_PREFIX = "⚠️ 能力代理执行失败"
 
+# 非 render 能力代理：task 向量回填/族展开也不得再拿到出图与嵌套委派入口。
+# 出图主权：主人格 → create_subagent(render_agent)；业务节点只交事实包。
+_NON_RENDER_CAP_DENY_TOOLS = frozenset(
+    {
+        "create_subagent",
+        "render_html_to_image",
+        "render_card",
+        "render_markdown_to_image",
+    }
+)
+
 
 def _resolve_tools(node: AgentNode) -> ToolList:
     """按节点装配工具集：能力族（静态 packs）+ 显式白名单，按名从全局注册表取。"""
@@ -54,6 +65,23 @@ def _resolve_tools(node: AgentNode) -> ToolList:
     names: List[str] = list(dict.fromkeys(resolve_pack_tool_names(node.tool_packs) + node.tool_names))
     tools: ToolList = [all_tools[n].tool for n in names if n in all_tools]
     return tools
+
+
+def _strip_non_render_cap_deny(tools: ToolList, *, node_id: str) -> ToolList:
+    """render_agent 保留渲染白名单；其它能力代理剥离嵌套委派与 render_*。"""
+    if node_id == "render_agent":
+        return tools
+    kept = [t for t in tools if t.name not in _NON_RENDER_CAP_DENY_TOOLS]
+    if len(kept) != len(tools):
+        stripped = sorted({t.name for t in tools} - {t.name for t in kept})
+        logger.info(
+            i18n_t(
+                "log.ai.cap_stripped_non_render_deny",
+                node_id=node_id,
+                names=stripped,
+            )
+        )
+    return kept
 
 
 @asynccontextmanager
@@ -163,12 +191,12 @@ async def run_capability_agent(
                     limit=max(recall, 8),
                     non_category="self",
                 )
-                # 能力代理禁止再委派，避免递归爆炸
-                seeds = [t for t in seeds if t.name != "create_subagent"]
+                # 种子与族展开后都会再 strip：避免整族带回 create_subagent/render_*
+                seeds = [t for t in seeds if t.name not in _NON_RENDER_CAP_DENY_TOOLS]
                 seen = {t.name for t in tools}
                 extra = expand_tools_to_families(
                     seeds,
-                    exclude_names=seen,
+                    exclude_names=seen | set(_NON_RENDER_CAP_DENY_TOOLS),
                     max_tools=max_extra,
                 )
                 if extra:
@@ -183,6 +211,8 @@ async def run_capability_agent(
                     )
         except Exception as e:
             logger.debug(i18n_t("log.ai.cap_retrieval", e=e))
+
+    tools = _strip_non_render_cap_deny(tools, node_id=node.node_id)
 
     session_id = f"capagent_{node.node_id}_{session_id_suffix or 'adhoc'}"
 

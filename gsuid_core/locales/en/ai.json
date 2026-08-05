@@ -135,6 +135,7 @@
   "log.ai.cap_skip_invalid_node_file": "[CapabilityAgent] Skipped invalid node file: {p0}",
   "log.ai.cap_skip_node_file_missing": "[CapabilityAgent] Skipped node file missing id: {p0}",
   "log.ai.cap_task_backfill_query_names": "[CapabilityAgent] task tool backfill: +{n} (query={q!r} → {names})",
+  "log.ai.cap_stripped_non_render_deny": "[CapabilityAgent] stripped out-of-scope render/nest tools for non-render node={node_id} names={names}",
   "log.ai.cap_tools_workspace_ws_label": "[CapabilityAgent] Starting \"{p0}\" ({p1}), {p2} tools, workspace={ws_label}, task: {p3}...",
   "log.ai.cap_user_node_deleted_id": "[CapabilityAgent] User node deleted: {node_id}",
   "log.ai.cap_user_nodes_startup": "[CapabilityAgent] Loading {count} user nodes on startup",
