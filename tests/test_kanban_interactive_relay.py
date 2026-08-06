@@ -1,10 +1,8 @@
 """交互式 create_subagent 的"执行体静默"登记语义回归。
 
-背景（session ...644256 双份播报）：交互式 ``create_subagent(agent_profile=...)`` 会同步等
-任务完成、把结论回执给主人格，由主人格转述一次。若 kanban_executor 完成时**又**自动推群，
-同一份结论就被推两遍刷屏。修复：dispatcher 把 leaf-root 登记进
-``_INTERACTIVE_RELAY_ROOTS``，executor 在终态判定处**读即弃**地消费该登记 → 静默；
-主人格侧超时放弃转述时 dispatcher ``discard`` 掉，让 executor 恢复推群兜底。
+交互式 ``create_subagent``：同步等待内把结论回执给主人格；超时则 deferred 回灌主
+session（``_wake_main_agent_for_delivery``），**不再**走 Kanban_Relay 推群。
+``_INTERACTIVE_RELAY_ROOTS`` 消费一次：避免执行体再自动播报导致双份。
 
 这里锁死"消费一次"的核心不变量——它是整个无竞态设计的地基。
 """
@@ -33,8 +31,8 @@ def test_unmarked_root_never_suppresses() -> None:
     assert _consume_interactive_relay("root_never_marked_xyz") is False
 
 
-def test_discard_before_consume_restores_broadcast() -> None:
-    """dispatcher 超时 discard 后，executor 消费不到 → 返回 False → 恢复推群兜底。"""
+def test_discard_before_consume_clears_interactive() -> None:
+    """discard 后 executor 消费不到 interactive 标记（不回退 Relay 推群）。"""
     rid = "root_timeout_discard_002"
     mark_interactive_relay_root(rid)
     discard_interactive_relay_root(rid)

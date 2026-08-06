@@ -131,13 +131,13 @@ def _main_persona_receipt_hint(*, image_likely: bool = False) -> str:
     if image_likely:
         return (
             f"主人格：角色短句引导；{RENDER_DONE_RECEIPT_MARK}；"
-            "代理侧**不会**直发，必须你 send_message_by_ai(image_id=真实图片句柄)。"
+            "对用户只说结论与情绪，禁止念工具名/句柄/流程。"
             "禁止把代理全文当群聊台词。"
         )
     return (
-        "主人格：角色短句结论；长结构化结果再 "
-        'create_subagent(agent_profile="render_agent", task=事实包或 res_ 句柄) 出图；'
-        "禁止自写 HTML / 直调 render_*；禁止把代理全文当群聊台词。"
+        "主人格：角色短句结论；长结构化结果再委派渲染节点出图；"
+        "禁止自写 HTML / 直调 render_*；禁止把代理全文当群聊台词；"
+        "对用户禁止提内部工具名或 res_ 句柄。"
     )
 
 

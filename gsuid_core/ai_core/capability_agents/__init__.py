@@ -18,7 +18,7 @@ AgentNode 统一后，本包 = "task-mode 实例化 + 内置节点定义 + 用�
 
 Hub-and-spoke（星型）：入口节点（persona）编排 + 多个专职执行节点。执行节点
 task-mode 下由 ``compose_task_prompt`` 强制叠加交付边界——只向主人格交付、
-不直接对用户说话；下行播报由 ``kanban_executor._persona_relay`` 转译。
+不直接对用户说话；交互完成回灌主 session（``_wake_main_agent_for_delivery``）。
 
 跨天持久化、崩溃恢复由 ``ai_core.planning`` 三表承担，不引入点对点消息总线。
 """

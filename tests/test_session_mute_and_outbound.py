@@ -52,3 +52,58 @@ def test_delivery_boundary_forbids_all_direct_send() -> None:
     assert "禁止" in DELIVERY_BOUNDARY
     assert "send_message_by_ai" in DELIVERY_BOUNDARY
     assert "直发" in DELIVERY_BOUNDARY
+
+
+def test_ooc_blocks_framework_tool_leak() -> None:
+    from gsuid_core.ai_core.output_firewall import check_ooc
+
+    hit = check_ooc(
+        '唔…没法直接发图给你，这个信息图句柄是 res_abc123def，你那边用 send_message_by_ai(image_id="") 发就行。'
+    )
+    assert hit is not None
+    assert hit.category == "system_term"
+    assert any("框架泄漏" in m or "send_message" in m.lower() for m in hit.matched) or any(
+        "框架泄漏" in m for m in hit.matched
+    )
+
+
+def test_ooc_blocks_relay_meta_speech() -> None:
+    from gsuid_core.ai_core.output_firewall import check_ooc
+
+    hit = check_ooc(
+        "…唔，图渲好了…交给主人格发吧。\n\n"
+        "artifact: （白云机场深度研报信息图）\n"
+        "要点：目标价 9.00-10.10，预期涨幅 +18%~+32%。\n呼，好困"
+    )
+    assert hit is not None
+
+
+def test_sanitize_relay_spoken_strips_meta() -> None:
+    from gsuid_core.ai_core.planning.kanban_executor import _sanitize_relay_spoken
+
+    out = _sanitize_relay_spoken(
+        "…唔，图渲好了…交给主人格发吧。\n\n"
+        "artifact: res_373793dbf002（白云机场深度研报信息图）\n"
+        "要点：目标价 9.00-10.10。\n呼，好困"
+    )
+    assert "send_message_by_ai" not in out
+    assert "主人格" not in out
+    assert "res_" not in out
+    assert "artifact" not in out.lower()
+    assert out  # 非空角色兜底或清洗后短句
+
+
+def test_interactive_and_deferred_flags_independent() -> None:
+    """interactive 静默与 deferred 回灌是两套登记；超时才会 mark_deferred。"""
+    from gsuid_core.ai_core.planning import kanban_executor as ke
+
+    rid = "root_flags_indep_001"
+    ke.discard_interactive_relay_root(rid)
+    ke.mark_interactive_relay_root(rid)
+    assert rid in ke._INTERACTIVE_RELAY_ROOTS
+    assert rid not in ke._DEFERRED_MAIN_DELIVERY_ROOTS
+    ke.mark_deferred_main_delivery(rid)
+    assert rid in ke._DEFERRED_MAIN_DELIVERY_ROOTS
+    assert ke._consume_deferred_main_delivery(rid) is True
+    assert ke._consume_interactive_relay(rid) is True
+    ke.discard_interactive_relay_root(rid)

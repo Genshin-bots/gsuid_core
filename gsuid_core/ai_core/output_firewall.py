@@ -59,6 +59,34 @@ _SYSTEM_TERMS: Tuple[str, ...] = (
     "数据库表",
     "max_tokens",
     "maxtokens",
+    # 框架内部用语（对用户念出即出戏；工具名/句柄见 _FRAMEWORK_LEAK_RE）
+    "主人格",
+    "能力代理",
+    "子代理",
+    "转译",
+)
+
+# 工具 API / 资源句柄 / 编排元话语泄漏到用户台词 → 出戏
+_FRAMEWORK_LEAK_RE = re.compile(
+    r"\bsend_message_by_ai\b"
+    r"|\bcreate_subagent\b"
+    r"|\bartifact_get\b"
+    r"|\bartifact_put\b"
+    r"|\brender_html_to_image\b"
+    r"|\brender_agent\b"
+    r"|\bstock_report_agent\b"
+    r"|\bagent_profile\s*="
+    r"|\bimage_id\s*="
+    r"|\bres_[0-9a-fA-F]{6,}\b"
+    r"|\bimg_[0-9a-fA-F]{6,}\b"
+    r"|交给主人格"
+    r"|主人格发"
+    r"|tool_return"
+    r"|Kanban"
+    r"|artifact\s*:"
+    r"|产物句柄"
+    r"|资源ID\s*:",
+    re.IGNORECASE,
 )
 
 # 工具/子代理回灌的技术堆栈或状态 JSON 被模型当台词复读 → 机器腔熔断
@@ -282,6 +310,9 @@ def check_ooc(text: str, tier: str = "roleplay", user_text: str = "") -> Optiona
         system_hits.append("错误码")
     if _SAMPLING_PARAM_RE.search(text):
         system_hits.append("temperature")
+    _fw = _FRAMEWORK_LEAK_RE.search(text)
+    if _fw is not None:
+        system_hits.append(f"框架泄漏:{_fw.group(0)[:40]}")
     if system_hits:
         return FirewallHit(category="system_term", matched=system_hits)
     return None
@@ -310,6 +341,12 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
         )
     if hit.category == "machine_dump":
         return "⛔ 内容像技术堆栈/状态 JSON，禁止当台词。用角色短句说稍后再试，不要复述 Traceback、status、错误码。"
+    if any("框架泄漏" in m for m in hit.matched):
+        return (
+            "⛔ 内容含内部工具名 / 资源句柄 / 编排元话语（如 send_message_by_ai、res_、"
+            "主人格、artifact），禁止对用户念出。"
+            "请用【纯角色口吻】重写：只说业务结论与情绪，不要提工具、句柄、代理或流程。"
+        )
     return (
         f"⛔ 你要发送的内容命中出戏红线【类别：{hit.category}，命中：{'、'.join(hit.matched[:4])}】，"
         "会破坏角色扮演。请用【纯角色口吻】重写这条消息，去掉任何模型名 / AI 身份 / 系统术语 / "

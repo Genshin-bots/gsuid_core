@@ -177,7 +177,7 @@ def test_receipt_image_likely_not_any_artifact() -> None:
     assert not receipt_image_likely(pid="research_agent", has_image_art=False)
     assert not receipt_image_likely(pid="code_agent", has_image_art=False)
     assert receipt_image_likely(pid="render_agent", has_image_art=True)
-    assert "send_message_by_ai" in RENDER_DONE_RECEIPT_MARK
+    assert "图片" in RENDER_DONE_RECEIPT_MARK or "产物" in RENDER_DONE_RECEIPT_MARK
 
 
 def test_builtin_nodes_use_registered_date_tool_name() -> None:

@@ -155,7 +155,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 ``record_*`` + ``search_knowledge`` + ``web_search_tool`` / ``web_fetch_tool``。
 
 注意：``send_message_by_ai`` 不在此列——能力代理只对主人格交付结果，由
-``kanban_executor._persona_relay`` 用主人格口吻转译后送达，不持有"直接和主人对话"的下行通道。
+交互完成后回灌主 session 由主人格收尾；能力代理不持有对用户直发通道。
 """
 
 # 工具装饰器

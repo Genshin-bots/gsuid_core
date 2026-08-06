@@ -197,12 +197,31 @@ async def emit_proactive_message(
         "proactive_source": source,
         "trigger_reason": trigger_reason,
     }
-    await send_chat_result(bot, message, ev=event, extra_metadata=extra_metadata)
+    # 主动出口也过 OOC：Kanban 转译等旁路不得把工具名/句柄念给用户
+    from gsuid_core.ai_core.output_firewall import (
+        PERSONA_FALLBACK_TEXT,
+        check_ooc,
+        is_enabled,
+    )
+
+    out_msg = message
+    if is_enabled() and out_msg:
+        _hit = check_ooc(out_msg, user_text="")
+        if _hit is not None:
+            logger.warning(
+                t(
+                    "log.ai.firewall_result_hit_ooc_red",
+                    p0=_hit.category,
+                    p1=_hit.matched,
+                )
+            )
+            out_msg = PERSONA_FALLBACK_TEXT
+    await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
 
     # 4) 同步到用户主 session（pydantic_ai 历史 + session_logger）
     await _sync_to_main_session(
         event=event,
-        message=message,
+        message=out_msg,
         source=source,
         trigger_reason=trigger_reason,
         generator_log_files=files,
@@ -212,7 +231,7 @@ async def emit_proactive_message(
     #    source 字段为兼容老 dispatcher 仍只接受 "heartbeat" / "task" 两种字面量，
     #    其它来源（kanban / tool）登记成 "task" 走"对 Heartbeat 抑制 + 不进合并语境"。
     legacy_source: LegacyDispatcherSource = "heartbeat" if source == "heartbeat" else "task"
-    summary: str = message if source == "scheduled_task" else ""
+    summary: str = out_msg if source == "scheduled_task" else ""
     dispatcher.register_send(target_key, legacy_source, summary)
 
     logger.info(

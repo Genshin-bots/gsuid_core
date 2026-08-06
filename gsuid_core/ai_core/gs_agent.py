@@ -1635,8 +1635,11 @@ class GsCoreAIAgent:
         _blocked_exclusive: set[str] = (
             _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
         )
-        # 仅主人格 Chat/Agent 对用户出站；能力代理 / 子 Agent 一律禁止工具直发
-        _allow_outbound = self.create_by in ("Chat", "Agent") and not self.is_subagent
+        # 出站：主人格交互会话；Kanban_Relay 是人格播报专用（非能力代理）。
+        # 能力代理 / 通用 subagent 一律 False——产物只回上游，由主人格或 Relay 发。
+        _allow_outbound = self.create_by == "Kanban_Relay" or (
+            self.create_by in ("Chat", "Agent") and not self.is_subagent
+        )
         _run_extra: dict[str, Any] = {
             "turn_id": turn_id,
             "run_sent_texts": self._run_sent_texts,

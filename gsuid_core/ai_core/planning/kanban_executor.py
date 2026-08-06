@@ -58,6 +58,33 @@ def _sanitize_for_user(text: str) -> str:
     return sanitized.strip()[:600]
 
 
+_RELAY_META_LINE_RE = re.compile(
+    r"(?im)^.*(?:artifact|res_[0-9a-f]{6,}|img_[0-9a-f]{6,}|send_message_by_ai|"
+    r"create_subagent|主人格|句柄|Kanban|tool_return).*$"
+)
+
+
+def _sanitize_relay_spoken(text: str) -> str:
+    """转译产物清洗：去掉内部句柄/工具名/元流程台词，并过 OOC。"""
+    from gsuid_core.ai_core.output_firewall import check_ooc
+
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    cleaned = _RELAY_META_LINE_RE.sub("", raw)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if not cleaned:
+        return "唔…搞定了…呼。"
+    hit = check_ooc(cleaned)
+    if hit is not None:
+        # 再剥一轮框架泄漏后仍脏 → 极短角色兜底，绝不把 API 念给用户
+        cleaned2 = _RELAY_META_LINE_RE.sub("", cleaned).strip()
+        if not cleaned2 or check_ooc(cleaned2) is not None:
+            return "唔…搞定了…图里有…呼。"
+        return cleaned2[:400]
+    return cleaned[:600]
+
+
 def _build_event(task: AIAgentTask) -> Event:
     user_type = task.user_type if task.user_type in _VALID_USER_TYPES else "direct"
     return Event(
@@ -146,13 +173,13 @@ def _format_subtask_prompt(
         "\n- 真实文件落地产物（PNG / PDF / CSV / 二进制等）必须用"
         ' `artifact_put(file_path="workspace 内文件名", summary=...)` 登记；'
         '**不要**用 `artifact_put(payload=\'{"file": "..."}\')` 这种 JSON 元数据冒充文件——'
-        "主人格之后 `send_message_by_ai(image_id=res_xxx)` 时只有真实文件 artifact "
-        "才能被发出去。"
+        "只有真实文件 artifact 才能被上游作为图片/文件发出。"
         '\n- 纯文本结论 / 报告正文：`artifact_put(payload="...", summary="...")`。'
         "\n- 持久化业务数据（签到名单、流水、任务条目等）：用 `record_put` / "
         "`record_append` / `record_update` 写入框架统一的 `record:<集合名>` 集合，"
         "**不要**只塞进 state_set 大 JSON 块或自己写文件——其它子任务读不到。"
-        "\n- 最后简短返回结论（一段话即可），剩下的让主人格自己转译。"
+        "\n- 返回值：一两句**事实结论摘要**（给上游编排用），禁止写「交给主人格/请转译/发图」"
+        "等流程元话语，禁止对用户会话直发。"
         "\n- 若本轮确实没有值得向主人播报的新进展（如决策全为观望/无变化），请在返回"
         f"结论开头单独一行写 {KANBAN_NO_BROADCAST_MARK}——任务照常完成归档，但不推群打扰。"
     )
@@ -273,18 +300,20 @@ async def _persona_relay(
                 lines.append(
                     f"- {a.id} | kind={a.artifact_kind} | mime={a.mime}{payload_hint} | {a.summary[:80]}{star}"
                 )
-            hint: str = ""
+            hint = ""
             if recommended is not None:
                 hint = (
-                    f"\n⭐ 推荐发送：`{recommended.id}`（{recommended.mime}，"
-                    f"主人最可能想要的真实产物文件）。"
-                    "**只发推荐句柄、不要把 inline 文本 artifact 当图片发**——"
-                    "inline 文本 artifact 没有 payload_path，发送会失败。"
+                    f"\n【待发媒体】优先把 `{recommended.id}`（{recommended.mime}）"
+                    "作为图片/文件发出；不要发纯文本预览档。"
                 )
+            # 句柄只给工具参数用；对用户可见台词禁止提 id / 工具名
             artifact_block = (
-                "\n\n【本子任务登记的 artifact 句柄（如有图片 / 文件，"
-                '请直接用 send_message_by_ai(image_id="res_xxx") 把产物发给主人——'
-                "框架会自动从 Kanban artifact 读 payload 并转 RM 发送）】\n" + "\n".join(lines) + hint
+                "\n\n【内部·勿写入对用户台词】可用媒体/文件列表：\n"
+                + "\n".join(lines)
+                + hint
+                + "\n有图片时：用发送工具把图发出，台词只写一两句角色短句（结论/情绪）。"
+                "\n**严禁**在台词里出现：工具名、res_/img_ 句柄、artifact、主人格、"
+                "「交给谁发」、流程说明。"
             )
 
         base: str = await build_persona_prompt(task.persona_name)
@@ -311,16 +340,17 @@ async def _persona_relay(
         ev = _build_event(task)
         if is_approval_request:
             instruction = (
-                f"【Kanban 审批请求转译】你的专职助手开发好了「{task.display_name}」，但装进框架需要主人点头。"
-                "请用你自己的口吻简短转告主人这件事，并**明确请主人回复同意或拒绝**——不要复述代码/细节，也不要替主人做决定。"
+                f"【播报转译·审批】助手完成了「{task.display_name}」，需要主人点头才能继续。"
+                "用你自己的角色口吻简短转告，并请主人同意或拒绝。"
+                "不要复述代码/细节，不要提工具名或内部流程，不要替主人做决定。"
             )
         else:
             instruction = (
-                f"【Kanban 子任务播报转译】你的专职助手刚完成了「{task.display_name}」，执行结果如下。"
-                "请用你自己的口吻、简短地把这条进展转告主人——只点关键结论与下一步动作，"
-                "**不要复述细节、不要把自己当作做出该决定的人**。"
-                "**严禁原样输出任何代码块、文件内容或大段原始数据**（会造成群聊刷屏）；"
-                "如助手产出了代码 / 文件，只需一句话说明做了什么、放在哪，不要把代码贴出来。"
+                f"【播报转译】助手完成了「{task.display_name}」。"
+                "用你自己的角色口吻、一两句把结论告诉用户；"
+                "有图就调用发送工具把图发出去，台词只留角色短句。"
+                "**禁止**：复述大段数据；说「主人格/代理/句柄/artifact/工具名」；"
+                "把内部流程说明念给用户听；原样贴代码或原始报告。"
             )
         spoken: str = await agent.run(
             user_message=f"{instruction}\n---\n{raw_result[:1500]}" + artifact_block,
@@ -329,8 +359,10 @@ async def _persona_relay(
             tools=relay_tools,
             return_mode="return",
         )
-        # 人格转译正常产出直接用；仅"转译为空"的兜底退路对 raw_result 做去代码处理，
-        return spoken.strip() or _sanitize_for_user(raw_result), relay_log_files
+        clean = _sanitize_relay_spoken(spoken)
+        if clean:
+            return clean, relay_log_files
+        return _sanitize_relay_spoken(_sanitize_for_user(raw_result)), relay_log_files
     except Exception as e:
         logger.debug(t("log.ai.kanban_persona_rendition_code_fail", e=e))
         return _sanitize_for_user(raw_result), relay_log_files
@@ -496,39 +528,25 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
         "禁止把下方全文当群聊台词念出；禁止把 res_/img_ 句柄写进对用户可见的话；禁止 read_image 读文本 res_。",
     ]
     if art_lines:
-        parts.append("产物 artifact:")
+        parts.append("产物列表（句柄仅作工具参数，禁止写进对用户台词）：")
         parts.extend(art_lines)
         if primary:
             parts.append(
-                f"💡 主要产物句柄: `{primary}`"
-                "（图片：send_message_by_ai(image_id=)；"
-                "文本：create_subagent(render_agent) 的 task 引用此 res_ + artifact_get）"
+                f"💡 主产物：`{primary}`（图片类：发送工具的 image 参数；文本类：可 artifact_get 后委派渲染）。"
             )
     excerpt = _artifact_text_excerpt(arts, limit=12_000) or (raw_result or "")[:12_000]
     if excerpt:
-        parts.append("⬇️ 代理结论/报告摘要（用户还没看到；出图请优先用 res_ 句柄）：\n" + excerpt)
+        parts.append("⬇️ 结论摘要（用户还没看到；对用户只说角色短句，有图则发图）：\n" + excerpt)
     elif task.failure_reason:
         parts.append(f"失败原因: {task.failure_reason[:500]}")
     return "\n".join(parts)
 
 
-async def _relay_fallback_notify(task: AIAgentTask, raw_result: str, reason: str) -> None:
-    """session/bot 不可用时降级人格转译推群（有意分支，非异常吞没）。"""
-    logger.warning(t("log.ai.kanban_deferred_wake_fallback_relay", task=task.id[:8], reason=reason))
-    spoken, relay_log_files = await _persona_relay(task, raw_result)
-    if spoken:
-        await _notify(
-            task,
-            spoken,
-            trigger_reason=f"deferred_fallback:{task.display_name}",
-            generator_log_files=relay_log_files,
-        )
-
-
 async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> None:
-    """超时后的 deferred 交付：回灌主会话再跑一轮（render/发送归主人格）。
+    """能力代理完成后回灌主 session（等同真人触发一轮主人格）。
 
-    不 broad-except：失败上抛由 kick_root 记日志；session/bot 缺失走显式 fallback。
+    交互式路径**只**走这里，不再 ``_persona_relay``。
+    session 缺失时尝试按 event 重建；仍失败则极简 notify（不跑 Relay LLM）。
     注意：与用户同 session 抢 ``_run_lock`` 时会 cancel 对方 generation（既有 Chat 语义）。
     """
     arts = await AIAgentArtifact.list_for_task(task.id)
@@ -540,26 +558,41 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
 
     session_id = (task.session_id or "").strip()
     session = get_ai_session_registry().get_ai_session(session_id) if session_id else None
+    if session is None and session_id and bot is not None:
+        # 主 session 被回收时按真人入站重建，再跑一轮人格
+        from gsuid_core.ai_core.ai_router import get_ai_session
+
+        session = await get_ai_session(ev)
 
     if session is None or bot is None:
-        await _relay_fallback_notify(
-            task,
-            raw_result,
-            reason=f"session={session is not None},bot={bot is not None}",
+        logger.warning(
+            t(
+                "log.ai.kanban_deferred_wake_fallback_relay",
+                task=task.id[:8],
+                reason=f"session={session is not None},bot={bot is not None}",
+            )
         )
+        # 无主 session 时禁止 Relay 旁路念内部话；极短角色兜底
+        if bot is not None:
+            short = _sanitize_relay_spoken(_sanitize_for_user(raw_result or ""))
+            if short:
+                await _notify(
+                    task,
+                    short,
+                    trigger_reason=f"delivery_no_session:{task.display_name}",
+                )
         return
 
     owner = (task.owner_user_id or "").strip()
-    at_hint = f"收尾台词须 @发起人（`@{owner}`）；" if owner else ""
+    at_hint = f"收尾时 @发起人 `@{owner}`。" if owner else ""
     user_message = (
         "[系统·子任务异步交付]\n"
         f"{delivery}\n\n"
-        "（本条是框架在子任务完成后注入的交付通知，不是群友新发言。"
+        "（框架注入：子任务已完成，请你以主人格身份收尾——"
+        "角色短句 + 有图则用发送工具把图发出；"
         f"{at_hint}"
-        "请立即基于上述产物完成发送收尾；图片用 send_message_by_ai(image_id=真实图片句柄)；"
-        "不要再 create_subagent 重做同一任务。）"
+        "禁止把内部句柄/工具名念给用户；不要重做同一子任务。）"
     )
-    # has_active_task=True：挂产物/编排工具；任务本身可能已 completed
     await session.run(
         user_message=user_message,
         bot=bot,
@@ -568,6 +601,57 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
         has_active_task=True,
     )
     logger.info(t("log.ai.kanban_deferred_main_delivery_done", task=task.id[:8]))
+
+
+async def _finish_capability_delivery(
+    *,
+    root: AIAgentTask,
+    child: AIAgentTask,
+    raw_result: str,
+    bot: Optional[Bot],
+    no_broadcast: bool = False,
+    is_failure: bool = False,
+    is_approval: bool = False,
+) -> None:
+    """能力代理终态统一出口：交互/有主 session → 回灌主人格；否则极简推群。
+
+    **交互路径绝不 ``_persona_relay``**——完成后只 ``_wake_main_agent_for_delivery``。
+    """
+    interactive = _consume_interactive_relay(root.id)
+    deferred = _consume_deferred_main_delivery(root.id)
+
+    if no_broadcast and not deferred:
+        # 交互同步等待中：主人格会自己收 tool_return；非交互无播报则静默
+        return
+
+    # 交互：仅 deferred 时唤醒（同步已完成则主人格已在 create_subagent 内拿到结果）
+    if interactive:
+        if deferred and bot is not None:
+            await _wake_main_agent_for_delivery(child, raw_result)
+        elif deferred and bot is None:
+            logger.warning(t("log.ai.kanban_fail_send_msg_task_failed", p0=child.ordinal))
+        return
+
+    # 非交互但绑定了主 session：同样回灌主人格（像真人触发），不用 Relay
+    sid = (child.session_id or root.session_id or "").strip()
+    if sid and bot is not None and not no_broadcast:
+        await _wake_main_agent_for_delivery(child, raw_result)
+        return
+
+    # 无主 session 的纯后台：失败/审批/结论走 notify，不跑 Kanban_Relay LLM
+    if is_failure:
+        await _notify_failure(root, child, raw_result)
+        return
+    if is_approval or (raw_result and not no_broadcast):
+        short = _sanitize_relay_spoken(_sanitize_for_user(raw_result))
+        if short:
+            await _notify(
+                child,
+                short,
+                trigger_reason=(
+                    f"approval_request:{child.display_name}" if is_approval else f"subtask={child.display_name}"
+                ),
+            )
 
 
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
@@ -621,15 +705,13 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         except Exception as e:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
             await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
-            # 交互式派发：失败也由主人格据回执转述；若已 deferred 则唤醒主人格，
-            # 否则非交互式才推群失败通知。
-            silent = _consume_interactive_relay(root.id)
-            deferred = _consume_deferred_main_delivery(root.id)
-            # deferred 必须唤醒，即使 body 为空（产物可能只在 artifact 表）
-            if bot and silent and deferred:
-                await _wake_main_agent_for_delivery(fresh, f"{type(e).__name__}: {e}")
-            elif not silent:
-                await _notify_failure(root, fresh, str(e))
+            await _finish_capability_delivery(
+                root=root,
+                child=fresh,
+                raw_result=f"{type(e).__name__}: {e}",
+                bot=bot,
+                is_failure=True,
+            )
             return
         finally:
             reset_plan_context(token)
@@ -659,48 +741,30 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             CAPABILITY_AGENT_ERROR_PREFIX,
         )
 
-        # interactive 静默；deferred → 唤醒主人格；否则非交互式 relay 推群
-
-        # 5a) 安装审批：waiting_approval 不落终态，转译审批请求
+        # 交互 / 有主 session → 回灌主人格；绝不 Kanban_Relay
         if latest is not None and latest.status == "waiting_approval":
-            silent = _consume_interactive_relay(root.id) or no_broadcast
-            deferred = _consume_deferred_main_delivery(root.id)
             body = latest.failure_reason or raw_result
-            if bot and silent and deferred:
-                await _wake_main_agent_for_delivery(fresh, body)
-            elif bot and not silent:
-                spoken, relay_log_files = await _persona_relay(fresh, body, is_approval_request=True)
-                if spoken:
-                    await _notify(
-                        fresh,
-                        spoken,
-                        trigger_reason=f"approval_request:{fresh.display_name}",
-                        generator_log_files=relay_log_files,
-                    )
+            await _finish_capability_delivery(
+                root=root,
+                child=fresh,
+                raw_result=body,
+                bot=bot,
+                no_broadcast=no_broadcast,
+                is_approval=True,
+            )
         elif (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
             await kanban.mark_subtask_failed(fresh, raw_result[:1000])
-            silent = _consume_interactive_relay(root.id) or no_broadcast
-            deferred = _consume_deferred_main_delivery(root.id)
-            if bot and silent and deferred:
-                await _wake_main_agent_for_delivery(fresh, raw_result[:1000])
-            elif not silent:
-                await _notify_failure(root, fresh, raw_result[:1000])
+            await _finish_capability_delivery(
+                root=root,
+                child=fresh,
+                raw_result=raw_result[:1000],
+                bot=bot,
+                no_broadcast=no_broadcast,
+                is_failure=True,
+            )
         else:
             await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
-            silent = _consume_interactive_relay(root.id) or no_broadcast
-            deferred = _consume_deferred_main_delivery(root.id)
-            if bot and silent and deferred:
-                await _wake_main_agent_for_delivery(fresh, raw_result or "")
-            elif bot and raw_result and not silent:
-                spoken, relay_log_files = await _persona_relay(fresh, raw_result)
-                if spoken:
-                    await _notify(
-                        fresh,
-                        spoken,
-                        trigger_reason=f"subtask={fresh.display_name}",
-                        generator_log_files=relay_log_files,
-                    )
-            elif bot and no_broadcast:
+            if no_broadcast:
                 logger.debug(
                     t(
                         "log.ai.kanban_subtask_declared_silence",
@@ -708,6 +772,13 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                         KANBAN_NO_BROADCAST_MARK=KANBAN_NO_BROADCAST_MARK,
                     )
                 )
+            await _finish_capability_delivery(
+                root=root,
+                child=fresh,
+                raw_result=raw_result or "",
+                bot=bot,
+                no_broadcast=no_broadcast,
+            )
 
 
 async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) -> None:

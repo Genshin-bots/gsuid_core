@@ -54,7 +54,7 @@ POST_TOOL_FAIL_CONTRACT_RENDER = (
 )
 
 # 与 subagent._main_persona_receipt_hint(image_likely=True) 对齐（仅真实图片 artifact）
-RENDER_DONE_RECEIPT_MARK = "有真实图片 artifact 时用 send_message_by_ai(image_id=) 发送"
+RENDER_DONE_RECEIPT_MARK = "有真实图片产物时用发送工具把图发出（参数里用句柄，勿写入台词）"
 
 
 def is_render_capability_agent(
