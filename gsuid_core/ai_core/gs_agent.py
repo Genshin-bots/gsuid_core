@@ -403,6 +403,15 @@ def _tool_return_looks_failed(part: ToolReturnPart) -> bool:
     return False
 
 
+def _tool_return_is_async_pending(part: ToolReturnPart) -> bool:
+    """异步子任务 ack：非终态，不得触发出图/事实包契约。"""
+    content = part.content
+    if not isinstance(content, str):
+        return False
+    body = content
+    return "后台执行" in body or "自动回灌" in body or "仍在执行" in body
+
+
 # OOC 修复 5.5：角色锚定消息提取
 # 结构化格式特征（markdown 表格、编号列表、加粗标题）——命中即非"在角色内"
 _STRUCTURED_FORMAT_RE = re.compile(
@@ -515,6 +524,8 @@ class GsCoreAIAgent:
         self._run_lock = asyncio.Lock()
         # A: 同 Session 新消息抢答时 set，当前 generation 在节点间隙 abort
         self._cancel_generation = asyncio.Event()
+        # 当前锁内是否在跑框架回灌：与真人消息互不 supersede，只排队
+        self._running_framework: bool = False
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
@@ -1032,6 +1043,7 @@ class GsCoreAIAgent:
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> str: ...
 
     @overload
@@ -1050,6 +1062,7 @@ class GsCoreAIAgent:
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> _T: ...
 
     async def _execute_run(
@@ -1067,6 +1080,7 @@ class GsCoreAIAgent:
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> Union[str, Any]:
         """核心回复请求的瞬时失败重试包装。
 
@@ -1114,6 +1128,7 @@ class GsCoreAIAgent:
                     suppress_intermediate_text=suppress_intermediate_text,
                     turn_graph=turn_graph,
                     cheap_gate=cheap_gate,
+                    is_framework_injection=is_framework_injection,
                 )
             except Exception as e:
                 err_str = str(e)
@@ -1521,6 +1536,7 @@ class GsCoreAIAgent:
         fake_done_retry: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> Union[str, Any]:
         """
         实际执行 Agent 运行的内部方法（单次尝试）
@@ -1644,13 +1660,11 @@ class GsCoreAIAgent:
             "turn_id": turn_id,
             "run_sent_texts": self._run_sent_texts,
         }
-        # 异步交付回灌：强制 @ 任务 owner（ev.user_id 已由 Kanban 填为 owner）
-        if (
-            isinstance(user_message, str)
-            and user_message.lstrip().startswith("[系统·子任务异步交付]")
-            and ev is not None
-            and ev.user_id
-        ):
+        # 框架回灌：强制 @ 任务 owner（ev.user_id 已由 Kanban 填为 owner）
+        _fw_msg = isinstance(user_message, str) and (
+            is_framework_injection or user_message.lstrip().startswith("[框架·")
+        )
+        if _fw_msg and ev is not None and ev.user_id:
             _run_extra["at_user_id"] = str(ev.user_id)
         context = ToolContext(
             bot=bot,
@@ -1671,16 +1685,22 @@ class GsCoreAIAgent:
             # 从 Sequence[UserContent] 中提取纯文本
             last_user_question = "\n".join(item for item in user_message if isinstance(item, str)).strip()
 
-        # 处理用户消息：当传入 Sequence[UserContent] 时，自动处理其中的图片
+        # 处理用户消息：框架注入不加 [用户发言]；真人句才加外壳
         if isinstance(user_message, Sequence) and not isinstance(user_message, str):
             final_user_message = await self._prepare_user_message(list(user_message))
+        elif _fw_msg and isinstance(user_message, str):
+            final_user_message = user_message
         else:
             final_user_message = f"[用户发言]\n{user_message}"
 
-        # history 只存精简 user turn，避免 rag 快照逐轮累积
-        _lean_user_message: Union[str, List[UserContent]] = (
-            list(final_user_message) if isinstance(final_user_message, list) else final_user_message
-        )
+        # history：框架注入的 UserPrompt 整段剥掉（不进 B 轨，避免被当成群友）
+        # 真人轮才 lean 成精简发言
+        if _fw_msg:
+            _lean_user_message: Union[str, List[UserContent]] = ""
+        else:
+            _lean_user_message = (
+                list(final_user_message) if isinstance(final_user_message, list) else final_user_message
+            )
 
         if rag_context:
             final_user_message = _append_user_text(final_user_message, f"\n\n{rag_context}")
@@ -1768,9 +1788,12 @@ class GsCoreAIAgent:
         truncated_msg = _truncate_message_for_log(final_user_message)
         logger.trace(i18n_t("log.agent.user_truncated_msg", truncated_msg=truncated_msg))
 
-        # 记录用户输入到 session logger
+        # session logger：框架注入单独记账，不计入 user_input
         self._session_logger.log_run_start()
-        self._session_logger.log_user_input(final_user_message)
+        if _fw_msg and isinstance(final_user_message, str):
+            self._session_logger.log_system_injection(final_user_message, source="framework")
+        else:
+            self._session_logger.log_user_input(final_user_message)
 
         if tools is None:
             tools = []
@@ -1836,10 +1859,12 @@ class GsCoreAIAgent:
         elif _assemble or self.create_by in _AGENTIC_CREATE_BY:
             if _assemble:
                 qy = ""
-                if isinstance(user_message, str):
-                    qy = user_message
-                elif ev is not None:
-                    qy = ev.raw_text
+                # 框架回灌：交付包不作向量检索 query（避免噪声 + 误装工具）
+                if not _fw_msg:
+                    if isinstance(user_message, str):
+                        qy = user_message
+                    elif ev is not None:
+                        qy = ev.raw_text
 
                 # 第一层：保底池。群聊（含 light）瘦保底；私聊/能力代理仍全量。
                 if _group_slim or _is_light:
@@ -1875,6 +1900,7 @@ class GsCoreAIAgent:
                                 core_tools.append(_tb.tool)
 
                 # 第 1.5 层：状态驱动工具池（L2）
+                _state_pool_names: set[str] = set()
                 try:
                     from gsuid_core.ai_core.tool_state_signals import get_state_driven_family_tools
 
@@ -1884,6 +1910,7 @@ class GsCoreAIAgent:
                     if state_tools:
                         core_tools = core_tools + state_tools
                         core_names.update(t.name for t in state_tools)
+                        _state_pool_names = {t.name for t in state_tools}
                 except Exception as e:
                     logger.debug(i18n_t("log.agent.load_state_driven_pool", e=e))
 
@@ -1911,6 +1938,7 @@ class GsCoreAIAgent:
 
                 # 附加工具池 = 语境工具池 + 查询工具池
                 extra_tools: ToolList = []
+                _ctx_pool_names: set[str] = set()
 
                 # 第二层：语境工具池（群聊瘦模式也保留标签池，上限更紧）
                 ctx_tags: list[str] = []
@@ -1925,6 +1953,7 @@ class GsCoreAIAgent:
                             ctx_tools = get_tools_by_context_tags(ctx_tags, max_count=_ctx_max)
                             if ctx_tools:
                                 extra_tools += ctx_tools
+                                _ctx_pool_names = {t.name for t in ctx_tools}
                                 logger.debug(
                                     i18n_t(
                                         "log.agent.contextual_pool_context_tags",
@@ -2005,9 +2034,12 @@ class GsCoreAIAgent:
                 tools = core_tools + deduped_extra
 
                 # 委派：剥离能力代理专属工具，逼主人格走 create_subagent
+                # 状态/语境池工具不参与 exclusive 剥离，避免只读能力被误卸
                 _did_strip_exclusive = False
                 if self.create_by in _INTERACTIVE_CREATE_BY:
                     _exclusive = _capability_exclusive_tool_names()
+                    _shielded = _ctx_pool_names | _state_pool_names
+                    _exclusive = _exclusive - _shielded
                     if _exclusive:
                         _before = {t.name for t in tools}
                         _stripped = _before & _exclusive
@@ -2263,9 +2295,52 @@ class GsCoreAIAgent:
                                             f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
                                         )
 
-                                # 仅主人格折叠 JSON（防 OOC）；能力代理必须看完整工具返回
+                                # FileOS：主人格先落盘并折叠长文；能力代理旁路落盘保留全文
+                                _fileos_folded = False
+                                _raw_tr = part.content if isinstance(part.content, str) else None
+                                if type(part) is ToolReturnPart and _raw_tr is not None:
+                                    from gsuid_core.ai_core.planning.runtime import get_plan_context
+                                    from gsuid_core.ai_core.planning.tool_output_helper import (
+                                        persist_and_fold_tool_return,
+                                        schedule_persist_tool_return,
+                                    )
+
+                                    _pc = get_plan_context()
+                                    _tid = (_pc.task_id if _pc else "") or ""
+                                    _rid = (_pc.root_task_id if _pc else "") or ""
+                                    if self.create_by in _MAIN_PERSONA_CREATE_BY:
+                                        _is_group = bool(ev is not None and ev.group_id)
+                                        try:
+                                            _folded = await persist_and_fold_tool_return(
+                                                tool_name=part.tool_name or "",
+                                                content=_raw_tr,
+                                                ev=ev,
+                                                session_id=self.session_id or "",
+                                                task_id=_tid,
+                                                root_task_id=_rid,
+                                                is_group=_is_group,
+                                            )
+                                        except Exception as _fileos_e:
+                                            logger.debug(i18n_t("log.ai.tool_output_fold_skip", e=_fileos_e))
+                                            _folded = None
+                                        if _folded is not None:
+                                            part.content = _folded
+                                            _fileos_folded = True
+                                            _saw_structured_return = True
+                                    else:
+                                        schedule_persist_tool_return(
+                                            tool_name=part.tool_name or "",
+                                            content=_raw_tr,
+                                            ev=ev,
+                                            session_id=self.session_id or "",
+                                            task_id=_tid,
+                                            root_task_id=_rid,
+                                        )
+
+                                # 仅主人格折叠 JSON（防 OOC）；已 FileOS 折叠则跳过
                                 if (
-                                    self.create_by in _MAIN_PERSONA_CREATE_BY
+                                    not _fileos_folded
+                                    and self.create_by in _MAIN_PERSONA_CREATE_BY
                                     and type(part) is ToolReturnPart
                                     and isinstance(part.content, str)
                                 ):
@@ -2308,6 +2383,14 @@ class GsCoreAIAgent:
                                                 and "<SILENCE>" not in _body
                                             ):
                                                 _saw_structured_return = True
+                                elif (
+                                    _fileos_folded
+                                    and type(part) is ToolReturnPart
+                                    and (part.tool_name or "") == "create_subagent"
+                                    and isinstance(_raw_tr, str)
+                                    and _RENDER_DONE_RECEIPT_MARK in _raw_tr
+                                ):
+                                    _delegated_render = True
 
                                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
                                 tool_result_str = str(part.content)
@@ -2322,36 +2405,42 @@ class GsCoreAIAgent:
                                 )
                                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
 
-                        # 事件驱动输出契约：本轮已有工具返回（主人格出图 / 能力代理事实包）
+                        # 事件驱动输出契约：仅终态工具返回才注入（异步 ack 不触发）
                         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
                             _any_fail = False
+                            _any_actionable = False
                             for _p in node.request.parts:
-                                if type(_p) is ToolReturnPart and _tool_return_looks_failed(_p):
+                                if type(_p) is not ToolReturnPart:
+                                    continue
+                                if _tool_return_is_async_pending(_p):
+                                    continue
+                                _any_actionable = True
+                                if _tool_return_looks_failed(_p):
                                     _any_fail = True
-                                    break
-                            _ok_c, _fail_c = _post_tool_contracts_for(
-                                self.create_by,
-                                session_id=self.session_id or "",
-                                capability_node_id=self.capability_node_id,
-                            )
-                            _contract = _fail_c if _any_fail else _ok_c
-                            if not any(
-                                isinstance(p, UserPromptPart)
-                                and p.content
-                                in (
-                                    _POST_TOOL_OUTPUT_CONTRACT,
-                                    _POST_TOOL_FAIL_CONTRACT,
-                                    _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
-                                    _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
-                                    _POST_TOOL_OUTPUT_CONTRACT_RENDER,
-                                    _POST_TOOL_FAIL_CONTRACT_RENDER,
+                            if _any_actionable:
+                                _ok_c, _fail_c = _post_tool_contracts_for(
+                                    self.create_by,
+                                    session_id=self.session_id or "",
+                                    capability_node_id=self.capability_node_id,
                                 )
-                                for p in node.request.parts
-                            ):
-                                node.request.parts = [
-                                    *node.request.parts,
-                                    UserPromptPart(content=_contract),
-                                ]
+                                _contract = _fail_c if _any_fail else _ok_c
+                                if not any(
+                                    isinstance(p, UserPromptPart)
+                                    and p.content
+                                    in (
+                                        _POST_TOOL_OUTPUT_CONTRACT,
+                                        _POST_TOOL_FAIL_CONTRACT,
+                                        _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+                                        _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+                                        _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+                                        _POST_TOOL_FAIL_CONTRACT_RENDER,
+                                    )
+                                    for p in node.request.parts
+                                ):
+                                    node.request.parts = [
+                                        *node.request.parts,
+                                        UserPromptPart(content=_contract),
+                                    ]
 
                         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
                         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
@@ -2600,6 +2689,8 @@ class GsCoreAIAgent:
                     _lean_user_message,
                     strip_hint_texts=(_WALL_CLOCK_NUDGE, *output_gate.GATE_NUDGE_MARKERS),
                 )
+                # 框架注入 drop 后可能留下空 ModelRequest，禁止进 B 轨
+                _new_msgs = [m for m in _new_msgs if not (isinstance(m, ModelRequest) and len(m.parts) == 0)]
                 # 超长工具返回截断为头+尾摘要（§25(5)）：本轮已消费完整返回，历史无需原文
                 _truncate_tool_returns_in_history(_new_msgs)
                 self.history.extend(_new_msgs)
@@ -2984,6 +3075,7 @@ class GsCoreAIAgent:
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> str: ...
 
     @overload
@@ -3003,6 +3095,7 @@ class GsCoreAIAgent:
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> _T: ...
 
     async def run(
@@ -3021,6 +3114,7 @@ class GsCoreAIAgent:
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[Any] = None,
         cheap_gate: Optional[Any] = None,
+        is_framework_injection: bool = False,
     ) -> Union[str, Any]:
         """
         运行 Agent 并返回结果
@@ -3051,30 +3145,22 @@ class GsCoreAIAgent:
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
         """
-        # A: 同 Session 新消息入队时，打断正在跑的 generation（合并语义交给后到者：
-        # HistoryManager 已含 A/B 用户句，后到 run 装配完整上下文）。
+        # A: 同 Session 抢答——仅「真人 vs 真人」才 cancel；
+        # 框架回灌与真人互不 supersede（排队等锁），避免交付被闲聊顶掉 / 回灌打断用户。
         if self.create_by in _INTERACTIVE_CREATE_BY and self._run_lock.locked():
-            self._cancel_generation.set()
-            logger.info(i18n_t("log.agent.supersede_cancel_current"))
+            if is_framework_injection or self._running_framework:
+                logger.info(i18n_t("log.agent.supersede_skip_framework_queue"))
+            else:
+                self._cancel_generation.set()
+                logger.info(i18n_t("log.agent.supersede_cancel_current"))
 
         async with self._run_lock:
             logger.info(i18n_t("log.agent.acquired_lock"))
             # 本 generation 独立 cancel 事件；上轮 set 过的不得污染本轮
             self._cancel_generation = asyncio.Event()
-            # O-A 群聊队头阻塞防护：拿到锁时若已排队过久（话题大概率翻篇），丢弃过期回复。
-            if (
-                enqueue_ts is not None
-                and self.create_by == "Chat"
-                and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL
-            ):
-                waited = time.time() - enqueue_ts
-                logger.info(i18n_t("log.agent.queue_wait_waited_exceeded", waited=waited))
-                return "" if output_type is None else None
-            # 模型热切换：网页控制台切换高/低级任务模型后，存活会话在此即时热替换到新模型， 无需 coreclear 重置会话。
-            await self.refresh_model_if_changed()
-
-            async def _do_run():
-                return await self._execute_run(
+            self._running_framework = bool(is_framework_injection)
+            try:
+                return await self._run_under_lock(
                     user_message=user_message,
                     bot=bot,
                     ev=ev,
@@ -3082,93 +3168,141 @@ class GsCoreAIAgent:
                     tools=tools,
                     return_mode=return_mode,
                     output_type=output_type,
+                    enqueue_ts=enqueue_ts,
                     intent=intent,
                     has_active_task=has_active_task,
                     budget_gate=budget_gate,
                     suppress_intermediate_text=suppress_intermediate_text,
                     turn_graph=turn_graph,
                     cheap_gate=cheap_gate,
+                    is_framework_injection=is_framework_injection,
                 )
+            finally:
+                self._running_framework = False
 
-            # 显式绑定固定模型的会话（model_config_name 为 None）不参与 provider 路由
-            if self.model_config_name is None:
-                result = await _do_run()
-                logger.info(i18n_t("log.agent.lock_ok"))
-                return result
+    async def _run_under_lock(
+        self,
+        user_message: Union[str, Sequence[UserContent]],
+        bot: Optional[Bot],
+        ev: Optional[Event],
+        rag_context: Optional[str],
+        tools: Optional[ToolList],
+        return_mode: Literal["always", "return", "by_bot"],
+        output_type: Optional[type],
+        enqueue_ts: Optional[float],
+        intent: Optional[str],
+        has_active_task: bool,
+        budget_gate: bool,
+        suppress_intermediate_text: bool,
+        turn_graph: Optional[Any],
+        cheap_gate: Optional[Any],
+        is_framework_injection: bool,
+    ) -> Union[str, Any]:
+        """已持锁：TTL 校验 + provider 路由 + 真正执行。"""
+        # O-A：队头阻塞过久丢弃（框架回灌不受 TTL）
+        if (
+            not is_framework_injection
+            and enqueue_ts is not None
+            and self.create_by == "Chat"
+            and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL
+        ):
+            waited = time.time() - enqueue_ts
+            logger.info(i18n_t("log.agent.queue_wait_waited_exceeded", waited=waited))
+            return "" if output_type is None else None
+        await self.refresh_model_if_changed()
 
-            # provider 路由：主配置并发满/冷却时切到备用(2nd)配置；请求命中
-            # provider 级故障（限流/连接）时给该配置冷却期并换路重试一次。
-            _primary_cfg = get_config_name_for_task(self.task_level)
-            _secondary_cfg = get_2nd_config_name_for_task(self.task_level)
-            logger.debug(
-                i18n_t(
-                    "log.agent.provider_routing_task_level",
-                    task_level=self.task_level,
-                    primary=_primary_cfg,
-                    secondary=_secondary_cfg or "(未配置)",
-                )
+        async def _do_run() -> Union[str, Any]:
+            return await self._execute_run(
+                user_message=user_message,
+                bot=bot,
+                ev=ev,
+                rag_context=rag_context,
+                tools=tools,
+                return_mode=return_mode,
+                output_type=output_type,
+                intent=intent,
+                has_active_task=has_active_task,
+                budget_gate=budget_gate,
+                suppress_intermediate_text=suppress_intermediate_text,
+                turn_graph=turn_graph,
+                cheap_gate=cheap_gate,
+                is_framework_injection=is_framework_injection,
             )
-            for _attempt in range(2):
-                async with provider_router.slot(self.task_level) as routed_name:
+
+        if self.model_config_name is None:
+            result = await _do_run()
+            logger.info(i18n_t("log.agent.lock_ok"))
+            return result
+
+        _primary_cfg = get_config_name_for_task(self.task_level)
+        _secondary_cfg = get_2nd_config_name_for_task(self.task_level)
+        logger.debug(
+            i18n_t(
+                "log.agent.provider_routing_task_level",
+                task_level=self.task_level,
+                primary=_primary_cfg,
+                secondary=_secondary_cfg or "(未配置)",
+            )
+        )
+        for _attempt in range(2):
+            async with provider_router.slot(self.task_level) as routed_name:
+                logger.debug(
+                    i18n_t(
+                        "log.agent.attempt_routed_config_name",
+                        attempt=_attempt + 1,
+                        routed_name=routed_name,
+                    )
+                )
+                temp_model = None
+                orig_model = self.model
+                if routed_name and routed_name != self.model_config_name:
+                    try:
+                        temp_model = get_model_by_full_name(routed_name)
+                        self.model = temp_model
+                    except Exception as e:
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.backup_config_routed_name",
+                                routed_name=routed_name,
+                                e=e,
+                            )
+                        )
+                        routed_name = self.model_config_name
+                try:
+                    result = await _do_run()
+                    _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
+                    _is_provider_failure = _is_error_str and looks_like_provider_failure(result)
                     logger.debug(
                         i18n_t(
-                            "log.agent.attempt_routed_config_name",
-                            attempt=_attempt + 1,
-                            routed_name=routed_name,
+                            "log.agent.run_str_fail_provider",
+                            is_str=isinstance(result, str),
+                            is_error=_is_error_str,
+                            is_failure=_is_provider_failure,
+                            attempt=_attempt,
                         )
                     )
-                    temp_model = None
-                    orig_model = self.model
-                    if routed_name and routed_name != self.model_config_name:
-                        try:
-                            temp_model = get_model_by_full_name(routed_name)
-                            self.model = temp_model
-                        except Exception as e:
-                            logger.warning(
-                                i18n_t(
-                                    "log.agent.backup_config_routed_name",
-                                    routed_name=routed_name,
-                                    e=e,
-                                )
-                            )
-                            routed_name = self.model_config_name
-                    try:
-                        result = await _do_run()
-                        # 内层重试耗尽后返回错误字符串（非异常）：若为 provider 级故障
-                        # （限流/连接/5xx），标记冷却并换路重试，而非直接返回错误给用户。
-                        _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
-                        _is_provider_failure = _is_error_str and looks_like_provider_failure(result)
-                        logger.debug(
+                    if _attempt == 0 and _is_provider_failure:
+                        provider_router.mark_failure(routed_name or self.model_config_name)
+                        logger.warning(
                             i18n_t(
-                                "log.agent.run_str_fail_provider",
-                                is_str=isinstance(result, str),
-                                is_error=_is_error_str,
-                                is_failure=_is_provider_failure,
-                                attempt=_attempt,
+                                "log.agent.provider_level_inner_retries",
+                                r=result[:200],
                             )
                         )
-                        if _attempt == 0 and _is_provider_failure:
-                            provider_router.mark_failure(routed_name or self.model_config_name)
-                            logger.warning(
-                                i18n_t(
-                                    "log.agent.provider_level_inner_retries",
-                                    r=result[:200],
-                                )
-                            )
-                            continue
-                        provider_router.mark_success(routed_name or self.model_config_name)
-                        logger.info(i18n_t("log.agent.lock_ok"))
-                        return result
-                    except Exception as e:
-                        if _attempt == 0 and looks_like_provider_failure(str(e)):
-                            provider_router.mark_failure(routed_name or self.model_config_name)
-                            logger.warning(i18n_t("log.agent.provider_level_switching_route", e=e))
-                            continue
-                        raise
-                    finally:
-                        if temp_model is not None:
-                            # 备用模型不关底层 client（共享缓存客户端，close 会拖垮全进程会话）
-                            self.model = orig_model
+                        continue
+                    provider_router.mark_success(routed_name or self.model_config_name)
+                    logger.info(i18n_t("log.agent.lock_ok"))
+                    return result
+                except Exception as e:
+                    if _attempt == 0 and looks_like_provider_failure(str(e)):
+                        provider_router.mark_failure(routed_name or self.model_config_name)
+                        logger.warning(i18n_t("log.agent.provider_level_switching_route", e=e))
+                        continue
+                    raise
+                finally:
+                    if temp_model is not None:
+                        self.model = orig_model
+        return "" if output_type is None else None
 
 
 # 工厂函数

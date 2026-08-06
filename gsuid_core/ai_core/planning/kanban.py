@@ -1199,6 +1199,18 @@ async def hard_delete_task_tree(
         await session.execute(delete(AIAgentTask).where(col(AIAgentTask.id).in_(all_task_ids)))
         await session.commit()
 
+    # FileOS 级联：按 root 删 SQL/payload，并清理 Qdrant 悬空点
+    try:
+        from .tool_output_index import delete_tool_output_index
+        from .tool_output_store import AIToolOutputRecord
+
+        _n_fileos, _paths_fileos, fileos_ids = await AIToolOutputRecord.delete_by_root_task_ids(root_ids)
+        stats["fileos_deleted"] = _n_fileos
+        if fileos_ids:
+            await delete_tool_output_index(fileos_ids)
+    except Exception as e:
+        logger.warning(t("log.ai.kanban_hard_delete_task_files", task_id=task_id, e=e))
+
     if delete_files:
         try:
             from .workspace import ARTIFACT_ROOT

@@ -167,6 +167,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "run_end",
         "result",
         "user_input",
+        "system_injection",
         # 模型产出
         "thinking",
         "text_output",
@@ -664,6 +665,11 @@ class AISessionLogger:
         前端无法换行），**又确保 base64 落盘为图片引用**（不依赖 ImageUrl 的 repr 格式）。
         """
         self._add_entry("user_input", {"content": normalize_user_message_to_text(user_message)})
+
+    def log_system_injection(self, content: str, source: str = "kanban_delivery") -> None:
+        """记录框架注入（Kanban 回灌等），不计入 user_input，避免被误认为真人发言。"""
+        norm = normalize_user_message_to_text(content)
+        self._add_entry("system_injection", {"content": norm, "source": source})
 
     def log_thinking(self, content: str) -> None:
         """记录模型思考过程"""

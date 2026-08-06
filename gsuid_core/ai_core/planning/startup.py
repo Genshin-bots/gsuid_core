@@ -25,8 +25,12 @@ async def init_planning() -> None:
         logger.info(t("log.ai.kanban_master_switch_skipping"))
         return
 
-    # 导入即注册 Kanban LLM 工具
+    # 导入即注册 Kanban LLM 工具 + 落盘检索工具
     import gsuid_core.ai_core.planning.kanban_tools  # noqa: F401
+    import gsuid_core.ai_core.planning.handle_resolver  # noqa: F401
+    import gsuid_core.ai_core.planning.tool_output_index  # noqa: F401
+    import gsuid_core.ai_core.planning.tool_output_store  # noqa: F401
+    import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
 
     # 向统一审批中心注册 kanban_subtask 领域（插件安装审批同属此领域）
     _register_kanban_approval_category()
@@ -92,6 +96,22 @@ async def init_planning() -> None:
         _schedule_artifact_ttl_cleanup()
     except Exception as e:
         logger.exception(t("log.ai.kanban_register_artifact_ttl_fail", e=e))
+
+    # FileOS TTL 清理：工具落盘记录同 4:10 清理
+    try:
+        _schedule_tool_output_ttl_cleanup()
+    except Exception as e:
+        logger.exception(t("log.ai.kanban_register_artifact_ttl_fail", e=e))
+
+    # Qdrant 混合索引就绪
+    try:
+        import asyncio as _asyncio
+
+        from gsuid_core.ai_core.planning.tool_output_index import ensure_tool_output_collection
+
+        _asyncio.create_task(ensure_tool_output_collection())
+    except Exception as e:
+        logger.debug(t("log.ai.kanban_register_artifact_ttl_fail", e=e))
 
     logger.info(t("log.ai.kanban_task_orchestration_layer_ok"))
 
@@ -161,6 +181,34 @@ def _schedule_artifact_ttl_cleanup() -> None:
         replace_existing=True,
     )
     logger.info(t("log.ai.kanban_artifact_ttl_cleanup_job"))
+
+
+def _schedule_tool_output_ttl_cleanup() -> None:
+    from gsuid_core.aps import scheduler
+
+    from .tool_output_store import AIToolOutputRecord
+
+    async def _job2() -> None:
+        try:
+            from .tool_output_index import delete_tool_output_index
+
+            n, rids = await AIToolOutputRecord.delete_expired()
+            if rids:
+                await delete_tool_output_index(rids)
+            if n:
+                logger.info(t("log.ai.kanban_daily_ttl_cleanup_deleted", n=n))
+        except Exception as e:
+            logger.exception(t("log.ai.kanban_ttl_cleanup_job", e=e))
+
+    scheduler.add_job(
+        func=_job2,
+        trigger="cron",
+        hour=4,
+        minute=10,
+        id="tool_output_ttl_cleanup",
+        name="ToolOutput TTL 清理（每日 4:10）",
+        replace_existing=True,
+    )
 
 
 async def _recover_zombies_and_kick() -> None:

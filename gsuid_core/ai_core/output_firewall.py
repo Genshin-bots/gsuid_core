@@ -72,6 +72,12 @@ _FRAMEWORK_LEAK_RE = re.compile(
     r"|\bcreate_subagent\b"
     r"|\bartifact_get\b"
     r"|\bartifact_put\b"
+    r"|\bread_handle\b"
+    r"|\bsearch_handles\b"
+    r"|\bsearch_persisted_outputs\b"
+    r"|\blist_persisted_outputs\b"
+    r"|\bgrep_persisted_outputs\b"
+    r"|\bread_persisted_output\b"
     r"|\brender_html_to_image\b"
     r"|\brender_agent\b"
     r"|\bstock_report_agent\b"
@@ -79,13 +85,18 @@ _FRAMEWORK_LEAK_RE = re.compile(
     r"|\bimage_id\s*="
     r"|\bres_[0-9a-fA-F]{6,}\b"
     r"|\bimg_[0-9a-fA-F]{6,}\b"
+    r"|\bto_[0-9a-fA-F]{6,}\b"
+    r"|\bsa_[0-9a-fA-F]{6,}\b"
+    r"|persisted\s+id\s*="
+    r"|\[persisted\s+id="
     r"|交给主人格"
     r"|主人格发"
     r"|tool_return"
     r"|Kanban"
     r"|artifact\s*:"
     r"|产物句柄"
-    r"|资源ID\s*:",
+    r"|资源ID\s*:"
+    r"|框架·任务完成",
     re.IGNORECASE,
 )
 
@@ -343,8 +354,8 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
         return "⛔ 内容像技术堆栈/状态 JSON，禁止当台词。用角色短句说稍后再试，不要复述 Traceback、status、错误码。"
     if any("框架泄漏" in m for m in hit.matched):
         return (
-            "⛔ 内容含内部工具名 / 资源句柄 / 编排元话语（如 send_message_by_ai、res_、"
-            "主人格、artifact），禁止对用户念出。"
+            "⛔ 内容含内部工具名 / 资源句柄 / 编排元话语（如 send_message_by_ai、read_handle、"
+            "res_/to_/sa_、主人格、artifact），禁止对用户念出。"
             "请用【纯角色口吻】重写：只说业务结论与情绪，不要提工具、句柄、代理或流程。"
         )
     return (

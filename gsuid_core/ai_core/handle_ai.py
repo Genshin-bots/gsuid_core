@@ -222,7 +222,7 @@ async def handle_ai_chat(
                 if _is_master:
                     clear_session_mute(event.session_id)
                 else:
-                    logger.info("session mute active, skip ai chat session=%s", event.session_id)
+                    logger.info(t("log.ai.session_mute_active_skip_ai", session=event.session_id))
                     return
 
             # 主动会话：入队触发者原话；被动感知已写过则跳过，防双写

@@ -25,6 +25,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.statistics.models",
     "gsuid_core.ai_core.scheduled_task.models",
     "gsuid_core.ai_core.planning.models",
+    "gsuid_core.ai_core.planning.tool_output_store",
     "gsuid_core.ai_core.command_exec.models",
     "gsuid_core.ai_core.approval.models",
     "gsuid_core.ai_core.budget.models",
@@ -119,6 +120,9 @@ exec_list = [
     "ALTER TABLE aihourlyperformance ADD COLUMN ttft_sample_count INTEGER DEFAULT 0;",
     "ALTER TABLE aihourlyperformance ADD COLUMN tps_sum FLOAT DEFAULT 0.0;",
     "ALTER TABLE aihourlyperformance ADD COLUMN tps_sample_count INTEGER DEFAULT 0;",
+    # FileOS 去重列（旧库幂等补齐）
+    "ALTER TABLE aitooloutputrecord ADD COLUMN content_hash VARCHAR DEFAULT '';",
+    "CREATE INDEX IF NOT EXISTS ix_aitooloutputrecord_content_hash ON aitooloutputrecord (content_hash);",
 ]
 
 

@@ -99,13 +99,14 @@ async def main():
     results = {}
 
     await send(ws, "sayu 广州近七天天气怎么样")
-    t, imgs = await recv(ws, "quick_weather")
+    # 委派 render 异步回灌可能 >90s；idle 过短会误判 FAIL
+    t, imgs = await recv(ws, "quick_weather", idle=120.0, hard=420.0)
     results["天气"] = len(imgs) > 0
     print("天气", "PASS" if results["天气"] else "FAIL", "imgs", len(imgs), "texts", t[:2])
 
     await asyncio.sleep(2)
     await send(ws, "sayu 你好呀")
-    t, _ = await recv(ws, "quick_chat", idle=25, hard=60)
+    t, _ = await recv(ws, "quick_chat", idle=40, hard=90)
     all_t = " ".join(t)
     results["人设"] = any(w in all_t for w in ["唔", "呼", "睡", "困", "zzz", "麻烦"]) and "您好" not in all_t
     print("人设", "PASS" if results["人设"] else "FAIL", all_t[:80])

@@ -872,8 +872,10 @@ async def artifact_put(
 async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,
+    offset: int = 0,
+    limit: int = 12000,
 ) -> str:
-    """按 res 句柄取回 artifact 内容。
+    """按 res 句柄取回 artifact 内容（支持分页以避免大件截断）。
 
     访问策略：
     - 同 ``root_task_id``：放行（多步 Kanban 兄弟节点互读）。
@@ -896,7 +898,7 @@ async def artifact_get(
             )
         )
         return "⚠️ 该 artifact 属于其它任务树，跨树读取被拒绝。"
-    return _format_artifact(art)
+    return _format_artifact(art, offset=offset, limit=limit)
 
 
 @ai_tools(category="planning", capability_domain="产物")
@@ -1031,19 +1033,34 @@ async def _resolve_root_task_id(ctx: RunContext[ToolContext], task_ref_text: str
     return actives[0].id if actives else None
 
 
-def _format_artifact(art: AIAgentArtifact) -> str:
-    head = f"artifact {art.id} | kind={art.artifact_kind} | mime={art.mime}\nsummary: {art.summary}\n"
-    if art.payload_inline:
-        return head + f"payload:\n{art.payload_inline}"
-    if art.payload_path:
-        try:
-            from pathlib import Path
+def _format_artifact(
+    art: AIAgentArtifact,
+    *,
+    offset: int = 0,
+    limit: int = 12000,
+) -> str:
+    """格式化 artifact；与 FileOS 共用分页读协议。"""
+    from gsuid_core.ai_core.planning.tool_output_protocol import (
+        load_payload_text,
+        format_paginated_body,
+    )
 
-            text = Path(art.payload_path).read_text(encoding="utf-8", errors="replace")
-            return head + f"payload:\n{text[:12000]}"
-        except OSError as e:
-            return head + f"⚠️ 读取 artifact 落盘失败: {e}"
-    return head + "（无 inline / 落盘内容）"
+    head = f"artifact {art.id} | kind={art.artifact_kind} | mime={art.mime}\nsummary: {art.summary}\n"
+    text, err = load_payload_text(
+        payload_inline=art.payload_inline,
+        payload_path=art.payload_path or "",
+    )
+    if err:
+        return head + f"⚠️ {err}"
+    if not text:
+        return head + "（无 inline / 落盘内容）"
+    return format_paginated_body(
+        head=head,
+        text=text,
+        offset=offset,
+        limit=limit,
+        read_hint="artifact_get(res_id, offset, limit)",
+    )
 
 
 __all__ = [

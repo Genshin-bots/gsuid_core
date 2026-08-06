@@ -473,82 +473,81 @@ def _consume_deferred_main_delivery(root_id: str) -> bool:
     return False
 
 
-def _artifact_text_excerpt(arts: List[AIAgentArtifact], limit: int = 4000) -> str:
-    """取可读文本摘要：优先 inline，其次落盘 textish mime。"""
-    from pathlib import Path
-
-    for a in arts:
-        if a.payload_inline:
-            text = a.payload_inline.strip()
-            if text:
-                return text[:limit]
-    for a in arts:
-        mime = (a.mime or "").lower()
-        path = a.payload_path
-        if not path:
-            continue
-        textish = (
-            not mime
-            or mime.startswith("text/")
-            or mime in ("application/json", "application/xml")
-            or mime.endswith("+json")
-            or mime.endswith("+xml")
-        )
-        if not textish:
-            continue
-        p = Path(path)
-        if not p.is_file():
-            continue
-        text = p.read_text(encoding="utf-8", errors="replace").strip()
-        if text:
-            return text[:limit]
-    return ""
-
-
 def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: List[AIAgentArtifact]) -> str:
-    """拼给主人格的交付包（artifact 句柄 + 文本摘要）。"""
-    art_lines: List[str] = []
+    """拼给主人格的交付包：与 PersistedHandleCard 同形，禁止全文塞 prompt。"""
+    _ = raw_result
+    from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard
+
+    cards: List[str] = []
     primary = ""
+    primary_is_image = False
     for a in arts[:8]:
-        tag = ""
-        if a.payload_path and (a.mime or "").startswith("image/"):
-            tag = "（真实图片，可 send_message_by_ai(image_id=) 直发）"
-            if not primary:
-                primary = a.id
-        elif a.payload_path:
-            tag = "（落盘文件/文本）"
-        art_lines.append(f"  - {a.id} | {a.mime or 'text/plain'} | {a.summary[:80]}{tag}")
+        mime = a.mime or "text/plain"
+        is_img = bool(mime.startswith("image/"))
+        size = len((a.payload_inline or "").encode("utf-8")) if a.payload_inline else 0
+        card = PersistedHandleCard(
+            id=a.id,
+            kind="image" if is_img else "artifact",
+            mime=mime,
+            summary=(a.summary or "")[:200],
+            size_bytes=size,
+            read_tool="read_handle",
+            long_structured=not is_img,
+        )
+        cards.append(card.format())
+        if is_img and not primary:
+            primary = a.id
+            primary_is_image = True
     if not primary and arts:
         primary = arts[0].id
+        primary_is_image = bool((arts[0].mime or "").startswith("image/"))
 
     parts = [
         f"【子任务交付·需你亲自完成收尾】任务#{task.ordinal}「{task.display_name}」已完成。",
-        '你是主人格：角色短句给结论；长文/多数据出图用 create_subagent(agent_profile="render_agent", task=...)；',
-        "**优先** task 只写 res_ 句柄 + 版式要求，再 artifact_get 取全文（勿把万字正文塞进 task）。",
-        "禁止把下方全文当群聊台词念出；禁止把 res_/img_ 句柄写进对用户可见的话；禁止 read_image 读文本 res_。",
+        "你是主人格：角色短句给结论；有图则 send_message_by_ai(image_id=)；",
+        '长文尚未出图 → create_subagent(agent_profile="render_agent", task=句柄+版式)；',
+        "禁止把句柄写进对用户台词；续读用 read_handle(handle_id, offset, limit)。",
     ]
-    if art_lines:
-        parts.append("产物列表（句柄仅作工具参数，禁止写进对用户台词）：")
-        parts.extend(art_lines)
-        if primary:
-            parts.append(
-                f"💡 主产物：`{primary}`（图片类：发送工具的 image 参数；文本类：可 artifact_get 后委派渲染）。"
-            )
-    excerpt = _artifact_text_excerpt(arts, limit=12_000) or (raw_result or "")[:12_000]
-    if excerpt:
-        parts.append("⬇️ 结论摘要（用户还没看到；对用户只说角色短句，有图则发图）：\n" + excerpt)
+    if cards:
+        parts.append("产物句柄卡：")
+        parts.extend(cards)
+        if primary and primary_is_image:
+            parts.append(f"💡 主图：`{primary}` → send_message_by_ai(image_id=)。")
     elif task.failure_reason:
         parts.append(f"失败原因: {task.failure_reason[:500]}")
     return "\n".join(parts)
 
 
-async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> None:
-    """能力代理完成后回灌主 session（等同真人触发一轮主人格）。
+# 同 session+root 回灌合并：短窗内只保留最新一次，避免连刷
+_delivery_pending: dict[str, tuple[AIAgentTask, str]] = {}
+_delivery_flush_tasks: dict[str, asyncio.Task] = {}
+_DELIVERY_COALESCE_SEC = 0.45
 
-    交互式路径**只**走这里，不再 ``_persona_relay``。
-    session 缺失时尝试按 event 重建；仍失败则极简 notify（不跑 Relay LLM）。
-    注意：与用户同 session 抢 ``_run_lock`` 时会 cancel 对方 generation（既有 Chat 语义）。
-    """
+
+async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> None:
+    """能力代理完成后回灌主 session；同 root 短窗合并为一次。"""
+    key = f"{(task.session_id or '').strip()}|{(task.root_task_id or task.id)}"
+    _delivery_pending[key] = (task, raw_result)
+    existing = _delivery_flush_tasks.get(key)
+    if existing is not None and not existing.done():
+        return
+
+    async def _flush() -> None:
+        try:
+            await asyncio.sleep(_DELIVERY_COALESCE_SEC)
+            item = _delivery_pending.pop(key, None)
+            _delivery_flush_tasks.pop(key, None)
+            if item is not None:
+                await _wake_main_agent_for_delivery_now(item[0], item[1])
+        except Exception as e:
+            logger.debug(t("log.ai.delivery_coalesce_flush_skip", e=e))
+            _delivery_flush_tasks.pop(key, None)
+
+    _delivery_flush_tasks[key] = asyncio.create_task(_flush())
+
+
+async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) -> None:
+    """实际唤醒主人格（合并后单次）。"""
     arts = await AIAgentArtifact.list_for_task(task.id)
     delivery = _format_delivery_for_main_agent(task, raw_result, arts)
     ev = _build_event(task)
@@ -559,7 +558,6 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
     session_id = (task.session_id or "").strip()
     session = get_ai_session_registry().get_ai_session(session_id) if session_id else None
     if session is None and session_id and bot is not None:
-        # 主 session 被回收时按真人入站重建，再跑一轮人格
         from gsuid_core.ai_core.ai_router import get_ai_session
 
         session = await get_ai_session(ev)
@@ -572,7 +570,6 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
                 reason=f"session={session is not None},bot={bot is not None}",
             )
         )
-        # 无主 session 时禁止 Relay 旁路念内部话；极短角色兜底
         if bot is not None:
             short = _sanitize_relay_spoken(_sanitize_for_user(raw_result or ""))
             if short:
@@ -585,8 +582,8 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
 
     owner = (task.owner_user_id or "").strip()
     at_hint = f"收尾时 @发起人 `@{owner}`。" if owner else ""
-    user_message = (
-        "[系统·子任务异步交付]\n"
+    frame_text = (
+        "[框架·任务完成]\n"
         f"{delivery}\n\n"
         "（框架注入：子任务已完成，请你以主人格身份收尾——"
         "角色短句 + 有图则用发送工具把图发出；"
@@ -594,11 +591,12 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
         "禁止把内部句柄/工具名念给用户；不要重做同一子任务。）"
     )
     await session.run(
-        user_message=user_message,
+        user_message=frame_text,
         bot=bot,
         ev=ev,
         return_mode="by_bot",
         has_active_task=True,
+        is_framework_injection=True,
     )
     logger.info(t("log.ai.kanban_deferred_main_delivery_done", task=task.id[:8]))
 
@@ -727,7 +725,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         output_id = latest.output_artifact_id if latest and latest.output_artifact_id else ""
         if not output_id and raw_result:
             art = await put_artifact(
-                payload=raw_result[:12000],
+                payload=raw_result[:120000],
                 summary=f"子任务自动留档：{fresh.display_name}"[:512],
                 mime="text/plain",
                 artifact_kind="output",
@@ -735,6 +733,18 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             )
             if art is not None:
                 output_id = art.id
+        # 子代理终态落盘（FileOS）；I/O 失败不阻断终态
+        from gsuid_core.ai_core.planning.tool_output_helper import persist_subagent_result
+
+        try:
+            await persist_subagent_result(
+                profile=fresh.agent_profile or "",
+                content=raw_result,
+                task=fresh,
+                res_handle=output_id or "",
+            )
+        except Exception as _pe:
+            logger.debug(t("log.ai.persist_subagent_result_skip", e=_pe))
 
         # 5) 落终态
         from gsuid_core.ai_core.capability_agents.runner import (

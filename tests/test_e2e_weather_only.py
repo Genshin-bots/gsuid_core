@@ -1,4 +1,4 @@
-"""单测：天气查询必须出图。"""
+"""单测：天气查询必须出图（长等待，覆盖异步委派）。"""
 
 from __future__ import annotations
 
@@ -55,28 +55,12 @@ def _save(data: str, name: str, idx: int) -> Path | None:
     return p
 
 
-async def main() -> None:
-    print("connect", WS_URL)
-    ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
-    msg = MessageReceive(
-        bot_id="console",
-        bot_self_id="3399214199",
-        user_type="direct",
-        user_pm=0,
-        user_id="99999",
-        content=[Message(type="text", data="sayu 帮我查一下广州近七天天气，要详细预报")],
-        sender={"nickname": "Wuyi测试"},
-    )
-    await ws.send(msgjson.encode(msg))
-    print("[SENT] 广州近七天天气")
-
-    texts: list[str] = []
-    images: list[Path] = []
-    idx = 0
-    end = time.time() + 240
+async def recv(ws, name: str, idle=90.0, hard=420.0):
+    texts, images = [], []
+    idx, end = 0, time.time() + hard
     while time.time() < end:
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=60)
+            raw = await asyncio.wait_for(ws.recv(), timeout=min(idle, end - time.time()))
         except asyncio.TimeoutError:
             break
         resp = msgjson.decode(raw, type=MessageSend)
@@ -85,16 +69,36 @@ async def main() -> None:
         for seg in resp.content:
             if seg.type == "image":
                 idx += 1
-                p = _save(str(seg.data or ""), "e2e_weather_retry", idx)
+                p = _save(str(seg.data or ""), name, idx)
                 if p:
                     images.append(p)
             elif seg.type == "text" and str(seg.data).strip():
                 texts.append(str(seg.data))
-                print(f"  [TEXT] {str(seg.data)[:150]}")
+                print(f"  [TEXT] {str(seg.data)[:160]}")
+    return texts, images
 
+
+async def main() -> None:
+    print("connect", WS_URL)
+    ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
+    msg = MessageReceive(
+        bot_id="console",
+        bot_self_id="3399214199",
+        user_type="direct",
+        user_pm=0,
+        group_id=None,
+        user_id="99999",
+        content=[Message(type="text", data="sayu 广州近七天天气怎么样")],
+        sender={"nickname": "Wuyi测试"},
+    )
+    await ws.send(msgjson.encode(msg))
+    print("\n[SENT] sayu 广州近七天天气怎么样")
+    texts, images = await recv(ws, "weather_only")
     await ws.close()
     ok = len(images) > 0
-    print("\nRESULT:", "PASS" if ok else "FAIL", f"images={len(images)} texts={texts}")
+    print("天气", "PASS" if ok else "FAIL", "imgs", len(images), "texts", texts[:3])
+    if not ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

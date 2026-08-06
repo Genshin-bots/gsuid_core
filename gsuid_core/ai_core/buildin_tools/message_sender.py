@@ -371,11 +371,13 @@ async def set_session_reply_mute(
 
     until = set_session_mute(ev.session_id, float(mins * 60))
     logger.info(
-        "session mute set session=%s minutes=%s reason=%s until=%s",
-        ev.session_id,
-        mins,
-        (reason or "")[:80],
-        until,
+        t(
+            "log.ai.session_mute_set_session",
+            session=ev.session_id,
+            minutes=mins,
+            reason=(reason or "")[:80],
+            until=until,
+        )
     )
     return f"✅ 已设置本会话静默 {mins} 分钟（框架层，到期自动恢复）。"
 

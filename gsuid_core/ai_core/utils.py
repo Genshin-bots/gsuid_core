@@ -1282,7 +1282,7 @@ async def send_chat_result(
             await _send_trailing_artifacts()
             return
 
-    # 按换行分割为多条消息
+    # 按换行分割为多条消息；整次发送仅保留首个 @（框架 force 与正文合并去重）
     blocks = re.split(r"\n\s*\n", clean_text)
     _force_at = (at_user_id or "").strip()
     _at_done = False
@@ -1292,14 +1292,17 @@ async def send_chat_result(
             continue
 
         segments = _parse_at_segments(block)
-        # 任务交付等：首条强制 @ 目标用户（正文已有 @ 同 ID 则不重复）
+        _has_force_in_block = any(s.type == "at" and str(s.data or "") == _force_at for s in segments)
         if _force_at and not _at_done:
-            _has_same = any(
-                getattr(s, "type", None) == "at" and str(getattr(s, "data", "")) == _force_at for s in segments
-            )
-            if not _has_same:
+            if not _has_force_in_block:
                 segments = [MessageSegment.at(_force_at), *segments]
             _at_done = True
+        elif _at_done:
+            # 后续块去掉全部 at，避免刷屏；块若只剩 at 则整块跳过
+            kept = [s for s in segments if s.type != "at"]
+            if not kept:
+                continue
+            segments = kept
 
         # 计算纯文本长度
         plain_text = re.sub(r"@\d+", "", block)
@@ -1775,6 +1778,7 @@ def _relean_user_turn(
     改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动）；``strip_hint_texts``
     是框架 run 中途注入的提示常量（如 C-4 墙钟 nudge，挂在**后续** ModelRequest 上、
     首条替换够不着）——按内容精确匹配从持久历史里剥掉，防提示噪声跨轮累积。
+    框架注入 / 系统校验句同样剥除，不进 B 轨长记。
     """
     leaned = False
     for msg in new_messages:
@@ -1783,6 +1787,8 @@ def _relean_user_turn(
         kept_parts = []
         for part in msg.parts:
             if isinstance(part, UserPromptPart):
+                if isinstance(part.content, str) and _is_framework_prompt_content(part.content):
+                    continue
                 if not leaned:
                     part.content = lean_content
                     leaned = True
@@ -1794,6 +1800,23 @@ def _relean_user_turn(
             kept_parts.append(part)
         if len(kept_parts) != len(msg.parts):
             msg.parts = kept_parts
+
+
+def _is_framework_prompt_content(content: str) -> bool:
+    """框架/校验注入：不得当作真人发言进入 B 轨。"""
+    s = content.lstrip()
+    if s.startswith("[框架·") or s.startswith("[系统·"):
+        return True
+    if s.startswith("（系统校验：") or s.startswith("（系统：") or s.startswith("（系统提示："):
+        return True
+    # 包在 [用户发言] 外壳里的框架句
+    if s.startswith("[用户发言]"):
+        rest = s[len("[用户发言]") :].lstrip()
+        if rest.startswith("[框架·") or rest.startswith("[系统·"):
+            return True
+        if rest.startswith("（系统校验：") or rest.startswith("（系统：") or rest.startswith("（系统提示："):
+            return True
+    return False
 
 
 def _split_embedded_thinking(
