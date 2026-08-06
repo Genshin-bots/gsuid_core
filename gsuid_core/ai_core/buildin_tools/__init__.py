@@ -277,9 +277,11 @@ from gsuid_core.ai_core.buildin_tools.identity_tools import (
     remember_user_alias,
 )
 
-# 消息发送工具 - 主动发送消息
+# 消息发送工具 - 主动发送消息；会话静默
 from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
+    set_session_reply_mute,
+    clear_session_reply_mute,
 )
 
 # 文件操作工具 - artifacts 路径内的文件移动/复制/打包 zip
@@ -346,8 +348,10 @@ __all__ = [
     "web_search_tool",
     # 网页抓取工具
     "web_fetch_tool",
-    # 消息发送工具
+    # 消息发送工具；会话静默
     "send_message_by_ai",
+    "set_session_reply_mute",
+    "clear_session_reply_mute",
     # 命令执行工具
     "execute_shell_command",
     # 命令执行器（主人专属 buildin）

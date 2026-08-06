@@ -1,7 +1,7 @@
 """HTML渲染工具模块
 
 提供将 HTML / Markdown / 结构化卡片渲染为图片的能力，供 AI 调用。
-渲染成功后自动通过 bot 发送图片；bot 不可用时回传 bytes 供 agent loop 注册资源。
+主人格出站权限下可 bot 直发；能力代理仅登记 artifact / 回传 bytes，由主人格发送。
 """
 
 import re
@@ -205,7 +205,11 @@ h2{{
   AI 生成资料 · 数据可能滞后 · 仅供参考 · {ts}</div>
 </body></html>"""
 
-_RENDER_OK = "图片已发送（{kb}KB）。台词只留一两句引导，禁止复述数据。"
+_RENDER_OK_SENT = "图片已发送（{kb}KB）。台词只留一两句引导，禁止复述数据。"
+_RENDER_OK_HANDLE = (
+    "图片已生成（{kb}KB）{handle_part}。"
+    "禁止对用户会话直发；主人格用 send_message_by_ai(image_id=句柄) 发送，台词一两句。"
+)
 
 _CARD_TYPES = frozenset({"weather", "news", "metrics", "ranking", "summary", "steps", "comparison", "board"})
 
@@ -364,7 +368,9 @@ def _mark_render_emitted(task_id: str) -> None:
 
 
 async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> bool:
-    """尝试通过 bot 直接发送图片。成功返回 True。"""
+    """仅主人格出站权限下尝试 bot 直发。能力代理永远 False。"""
+    if not ctx.deps.allow_user_outbound:
+        return False
     bot = ctx.deps.bot
     if bot is None:
         return False
@@ -376,10 +382,43 @@ async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> b
         return False
 
 
-async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str | bytes:
-    """不透明化 → 发送；同一 Kanban 任务默认只成功推送一张（防多段刷屏）。
+async def _register_image_artifact(image_bytes: bytes, *, summary: str = "render output") -> str:
+    """Kanban 上下文：落盘 PNG 并 artifact_put；成功返回 res_ 句柄，否则空串。"""
+    from gsuid_core.ai_core.planning.runtime import get_plan_context
+    from gsuid_core.ai_core.planning.workspace import put_artifact
 
-    bot 不可用时回传 bytes，由 agent loop 注册资源 ID。
+    plan = get_plan_context()
+    if plan is None or not plan.root_task_id:
+        return ""
+    workspace = plan.artifact_workspace
+    if workspace is None:
+        return ""
+    workspace.mkdir(parents=True, exist_ok=True)
+    fname = f"render_{plan.task_id[:8]}.png"
+    path = workspace / fname
+    path.write_bytes(image_bytes)
+    art = await put_artifact(
+        summary=summary[:512],
+        mime="image/png",
+        artifact_kind="output",
+        plan_ctx=plan,
+        file_path=path,
+    )
+    if art is None:
+        return ""
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+
+    await AIAgentTask.update_data_by_data(
+        select_data={"id": plan.task_id},
+        update_data={"output_artifact_id": art.id},
+    )
+    return art.id
+
+
+async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str | bytes:
+    """不透明化 → 主人格可直发；能力代理只登记 artifact / 回传 bytes。
+
+    同一 Kanban 任务默认只成功产出一张（防多段刷屏）。
     """
     from gsuid_core.ai_core.planning.runtime import get_plan_context
 
@@ -390,16 +429,35 @@ async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str
 
     if task_id and task_id in _RENDER_EMITTED_TASKS:
         return (
-            "⚠️ 本任务已成功出过图，本次未再推送。"
+            "⚠️ 本任务已成功出过图，本次未再产出。"
             "请把全部区块合并进**一张**完整 HTML，只调用一次 render_html_to_image；"
             "不要按章节拆成多次渲染。用户未明确要求多页时禁止连渲多张。"
         )
 
+    # 能力代理 / 子 Agent：禁止直发；优先落盘 image artifact 供主人格发送
+    if not ctx.deps.allow_user_outbound:
+        handle = await _register_image_artifact(image_bytes)
+        _mark_render_emitted(task_id)
+        if handle:
+            return _RENDER_OK_HANDLE.format(
+                kb=len(image_bytes) // 1024,
+                handle_part=f"，句柄 `{handle}`",
+            )
+        # 无 plan 上下文：回传 bytes，由 agent loop 注册 img_ 资源
+        return image_bytes
+
     if await _try_send_image(ctx, image_bytes):
         _mark_render_emitted(task_id)
-        return _RENDER_OK.format(kb=len(image_bytes) // 1024)
-    # bot 不可用：仍标记，避免同一任务连续返回多份 bytes 被下游连发
+        # 主人格直发时仍尽量登记 artifact，便于追溯
+        await _register_image_artifact(image_bytes)
+        return _RENDER_OK_SENT.format(kb=len(image_bytes) // 1024)
     _mark_render_emitted(task_id)
+    handle = await _register_image_artifact(image_bytes)
+    if handle:
+        return _RENDER_OK_HANDLE.format(
+            kb=len(image_bytes) // 1024,
+            handle_part=f"，句柄 `{handle}`",
+        )
     return image_bytes
 
 

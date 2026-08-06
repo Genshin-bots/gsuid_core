@@ -39,6 +39,8 @@ def test_post_tool_contract_is_format_not_domain() -> None:
     assert "禁止 <report>" in _POST_TOOL_OUTPUT_CONTRACT or "禁止" in _POST_TOOL_OUTPUT_CONTRACT
     assert "股票" not in _POST_TOOL_OUTPUT_CONTRACT
     assert "金融" not in _POST_TOOL_OUTPUT_CONTRACT
+    # 短结论不应被契约强制出图
+    assert "不要" in _POST_TOOL_OUTPUT_CONTRACT or "不必" in _POST_TOOL_OUTPUT_CONTRACT
 
 
 def test_capability_contract_forbids_nested_render_and_create_subagent() -> None:
@@ -66,11 +68,11 @@ def test_delivery_boundary_forbids_nested_subagent_and_render() -> None:
 
 def test_strip_non_render_cap_deny_keeps_render_agent() -> None:
     """非 render 节点剥离 deny 集合；render_agent 原样保留。"""
+    from gsuid_core.ai_core.register import find_tool_base
     from gsuid_core.ai_core.capability_agents.runner import (
         _NON_RENDER_CAP_DENY_TOOLS,
         _strip_non_render_cap_deny,
     )
-    from gsuid_core.ai_core.register import find_tool_base
 
     # 仅用已注册工具构造列表（未注册则跳过）
     candidate_names = [

@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
-# 主人格：多项数据 → 委派 render_agent（禁止自渲）
+# 主人格：长结构化结果 → 委派 render_agent（禁止自渲）；短结论不必出图
 POST_TOOL_OUTPUT_CONTRACT = (
-    "（系统：本轮已有工具返回。若结果含多项数据点，必须 "
-    'create_subagent(agent_profile="render_agent", task=完整事实包) 出图；'
-    "禁止主人格自写 HTML / 直调 render_*；禁止台词复述、禁止 <report>。"
-    "台词只留一两句角色化引导。）"
+    "（系统：本轮已有工具返回。仅当结果含 **markdown 表 / ≥3 段正文 / 多行对比列表** 时，"
+    '才 create_subagent(agent_profile="render_agent", task=完整事实包或 res_ 句柄) 出图；'
+    "一两句结论或单点数字**不要**出图。禁止主人格自写 HTML / 直调 render_*；"
+    "禁止台词复述、禁止 <report>。台词只留一两句角色化引导。）"
 )
 
 # 能力代理（非 render）：只交 Markdown/JSON 事实包；出图归 render_agent
@@ -30,15 +30,17 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "若尚未成功出图：事实包**尽量全文上图**（数字/表/论据/风险/时点勿删），"
     "写成**一份**高密度竖长 HTML，只调用一次 render_html_to_image；"
     "html/body 须不透明实色底（暗色或浅色成套 token，非写死单一色）；"
-    "暗底须浅字；研报级内容禁止压成少字海报。"
-    "若已成功出图：停止再调 render_*，只交 1～3 句摘要。"
+    "暗底须浅字；长文禁止压成少字海报。"
+    "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
+    "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
     "禁止为好看删硬信息；禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
 )
 
 POST_TOOL_FAIL_CONTRACT = (
     "（系统：本轮工具返回失败或空结果。禁止用角色懒惰结束本轮。"
     "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
-    "取到多项数据后 create_subagent(render_agent) 出图。只有换路后仍无果才可角色化短句说明。）"
+    "仅当结果已是长结构化内容时再 create_subagent(render_agent) 出图。"
+    "只有换路后仍无果才可角色化短句说明。）"
 )
 
 POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
@@ -51,8 +53,8 @@ POST_TOOL_FAIL_CONTRACT_RENDER = (
     "（系统：渲染失败或空结果。精简 HTML 后重试 render_*；仍失败则短摘要说明原因，禁止把长 HTML/数据当交付正文。）"
 )
 
-# 与 subagent._main_persona_receipt_hint(image_likely=True) 对齐
-RENDER_DONE_RECEIPT_MARK = "图若已由渲染工具下发"
+# 与 subagent._main_persona_receipt_hint(image_likely=True) 对齐（仅真实图片 artifact）
+RENDER_DONE_RECEIPT_MARK = "有真实图片 artifact 时用 send_message_by_ai(image_id=) 发送"
 
 
 def is_render_capability_agent(
@@ -73,8 +75,9 @@ def is_render_capability_agent(
 
 
 def receipt_image_likely(*, pid: str, has_image_art: bool) -> bool:
-    """Kanban/transient 回执是否走「图已下发」口吻（非图 artifact 不得触发）。"""
-    return pid == "render_agent" or has_image_art
+    """Kanban/transient 回执是否走「可发图」口吻（必须有 image/* artifact）。"""
+    _ = pid  # 保留关键字兼容；是否可发图只看 has_image_art
+    return has_image_art
 
 
 def tool_call_targets_render_agent(

@@ -166,6 +166,12 @@ async def send_message_by_ai(
         logger.warning(t("log.ai.buildintools_bot_object_empty"))
         return "发送失败：Bot对象不可用"
 
+    if not tool_ctx.allow_user_outbound:
+        return (
+            "发送失败：当前为能力代理/子 Agent，禁止对用户会话直发。"
+            "请把结论与产物登记为 artifact 后返回主人格，由主人格出站。"
+        )
+
     if not text and not image_id and not video_id and not audio_id:
         return "发送失败：text、image_id、video_id 和 audio_id 至少提供一个"
 
@@ -282,6 +288,8 @@ async def send_message_by_ai(
 
         # 文本走统一 send_chat_result（剥 markdown / 长文转图 / 拆条 / @解析），别裸 bot.send
         # ooc_check=False：入口已 tool_gate_feedback（pre_send_gate）过，此处只做呈现归一化。
+        _at_raw = tool_ctx.extra["at_user_id"] if "at_user_id" in tool_ctx.extra else None
+        _at_uid = str(_at_raw) if isinstance(_at_raw, str) and _at_raw else None
         if text:
             from gsuid_core.ai_core.utils import send_chat_result
 
@@ -292,11 +300,15 @@ async def send_message_by_ai(
                 logger.info(t("log.ai.buildintools_skipping_duplicate_run_skip"))
                 text = ""
             else:
-                await send_chat_result(bot, text, ev=ev, ooc_check=False)
+                await send_chat_result(bot, text, ev=ev, ooc_check=False, at_user_id=_at_uid)
                 if isinstance(_sent_registry, set):
                     _sent_registry.add(text.strip())
+                _at_uid = None  # 文本已 @，媒体不再重复
         if media_parts:
-            await bot.send(media_parts if len(media_parts) > 1 else media_parts[0])
+            _out = list(media_parts)
+            if _at_uid:
+                _out = [MessageSegment.at(_at_uid), *_out]
+            await bot.send(_out if len(_out) > 1 else _out[0])
 
         # 计数放在真正发出之后：媒体解析报错的早退不占额度
         if throttle_key is not None:
@@ -332,3 +344,51 @@ async def send_message_by_ai(
     except Exception as e:
         logger.exception(t("log.ai.buildintools_event", e=e))
         return f"发送失败：{str(e)}"
+
+
+@ai_tools(category="self")
+async def set_session_reply_mute(
+    ctx: RunContext[ToolContext],
+    duration_minutes: int = 60,
+    reason: str = "",
+) -> str:
+    """暂停本会话自动应答一段时间（框架静默，非角色扮演）。
+
+    静默期内非主人消息不会进入主 Agent；主人硬触发会自动解除静默。
+    用于用户明确要求「别回消息 / 休息 N 小时」等场景。
+
+    Args:
+        ctx: 工具上下文
+        duration_minutes: 静默分钟数，1～240
+        reason: 可选备注（仅日志）
+    """
+    tool_ctx: ToolContext = ctx.deps
+    ev = tool_ctx.ev
+    if ev is None or not ev.session_id:
+        return "设置失败：无会话信息"
+    mins = max(1, min(int(duration_minutes), 240))
+    from gsuid_core.ai_core.session_mute import set_session_mute
+
+    until = set_session_mute(ev.session_id, float(mins * 60))
+    logger.info(
+        "session mute set session=%s minutes=%s reason=%s until=%s",
+        ev.session_id,
+        mins,
+        (reason or "")[:80],
+        until,
+    )
+    return f"✅ 已设置本会话静默 {mins} 分钟（框架层，到期自动恢复）。"
+
+
+@ai_tools(category="self")
+async def clear_session_reply_mute(ctx: RunContext[ToolContext]) -> str:
+    """立即解除本会话的框架静默窗口。"""
+    tool_ctx: ToolContext = ctx.deps
+    ev = tool_ctx.ev
+    if ev is None or not ev.session_id:
+        return "解除失败：无会话信息"
+    from gsuid_core.ai_core.session_mute import clear_session_mute
+
+    if clear_session_mute(ev.session_id):
+        return "✅ 已解除本会话静默。"
+    return "ℹ️ 当前本会话未处于静默。"

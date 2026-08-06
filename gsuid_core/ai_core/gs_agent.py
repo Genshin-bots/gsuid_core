@@ -221,10 +221,12 @@ _STRUCTURAL_ZERO_TOOL_NUDGE = (
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
 _RENDER_DELEGATE_NUDGE = (
-    "（系统校验：本轮工具已返回多项/结构化数据，但尚未委派出图。"
-    '请立即 create_subagent(agent_profile="render_agent", task=完整事实包+版式要求) 出图；'
-    "台词只留一两句角色引导，禁止把多条数据念成台词，禁止主人格自写 HTML 渲染。）"
+    "（系统校验：本轮工具已返回长结构化结果（表/多段/多行列表），但尚未委派出图。"
+    '请 create_subagent(agent_profile="render_agent", task=完整事实包或 res_ 句柄) 出图；'
+    "单点结论不必出图。台词一两句引导；禁止把长数据念成台词；禁止主人格自写 HTML。）"
 )
+# find_tools 空转阈值更严（同工具连打）
+_FIND_TOOLS_THRASH_LIMIT = 2
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
 
@@ -1633,14 +1635,29 @@ class GsCoreAIAgent:
         _blocked_exclusive: set[str] = (
             _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
         )
+        # 仅主人格 Chat/Agent 对用户出站；能力代理 / 子 Agent 一律禁止工具直发
+        _allow_outbound = self.create_by in ("Chat", "Agent") and not self.is_subagent
+        _run_extra: dict[str, Any] = {
+            "turn_id": turn_id,
+            "run_sent_texts": self._run_sent_texts,
+        }
+        # 异步交付回灌：强制 @ 任务 owner（ev.user_id 已由 Kanban 填为 owner）
+        if (
+            isinstance(user_message, str)
+            and user_message.lstrip().startswith("[系统·子任务异步交付]")
+            and ev is not None
+            and ev.user_id
+        ):
+            _run_extra["at_user_id"] = str(ev.user_id)
         context = ToolContext(
             bot=bot,
             ev=ev,
             # run_sent_texts 同引用透传：send_message_by_ai 等工具内发送路径与主循环
             # 共用同一去重集合，干净历史重试不再重复发送相同文本（评审修复 F14）
-            extra={"turn_id": turn_id, "run_sent_texts": self._run_sent_texts},
+            extra=_run_extra,
             parent_session_id=self.session_id,
             blocked_tool_names=_blocked_exclusive,
+            allow_user_outbound=_allow_outbound,
         )
 
         # 记录原始用户问题，供后续强制总结使用
@@ -2201,9 +2218,12 @@ class GsCoreAIAgent:
                             ]
 
                         # 同工具空转熔断：连续同名工具 ≥ 阈值后，下一轮模型请求前注入一次收敛提示
+                        _thrash_limit = (
+                            _FIND_TOOLS_THRASH_LIMIT if _same_tool_name == "find_tools" else _THRASH_SAME_TOOL_LIMIT
+                        )
                         if (
                             not _thrash_fused
-                            and _same_tool_streak >= _THRASH_SAME_TOOL_LIMIT
+                            and _same_tool_streak >= _thrash_limit
                             and self.create_by in _INTERACTIVE_CREATE_BY
                         ):
                             node.request.parts = [*node.request.parts, UserPromptPart(content=_THRASH_FUSE_NUDGE)]
@@ -2265,8 +2285,11 @@ class GsCoreAIAgent:
                                             # 搜索/拉取类：多行或够长 → 视为可出图材料（形状信号，非话题词）
                                             _tn_l = (part.tool_name or "").lower()
                                             _blob = part.content
+                                            # 长检索材料：表/多段才逼出图，避免单点问答误触发
                                             if any(h in _tn_l for h in _SEARCHISH_TOOL_HINTS) and (
-                                                _blob.count("\n") >= 3 or len(_blob) >= 400
+                                                "|" in _blob
+                                                or _blob.count("\n\n") >= 2
+                                                or (_blob.count("\n") >= 8 and len(_blob) >= 800)
                                             ):
                                                 _saw_structured_return = True
                                         # create_subagent：仅「完成交付」才计待出图；超时/静默回执不算
@@ -2502,7 +2525,9 @@ class GsCoreAIAgent:
                                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的 async context 触发
                                     # athrow/cancel scope
                                     try:
-                                        await send_chat_result(bot, _text, ev=ev)
+                                        _at_uid = context.extra.get("at_user_id")
+                                        _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
+                                        await send_chat_result(bot, _text, ev=ev, at_user_id=_at)
                                         # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
                                         self._run_sent_texts.add(_text)
                                     except Exception as _e:
@@ -2749,12 +2774,15 @@ class GsCoreAIAgent:
                         self._scrub_fake_done_history(_fabricated)
 
                 # 结构假完成：被呼叫/省略续聊 + 池非空 + 零调用 + 非沉默 + 非极短寒暄（无用户话题词）
+                # 闲聊 intent 不二次重跑，避免占满群聊应答配额
                 elif (
                     result_msg
                     and not _tool_call_list
                     and tool_names
                     and not fake_done_retry
                     and self.create_by in _INTERACTIVE_CREATE_BY
+                    and self.create_by != "CapabilityAgent"
+                    and (intent or "") not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
                     and ev is not None
                     and (
                         bool(getattr(ev, "is_tome", False))

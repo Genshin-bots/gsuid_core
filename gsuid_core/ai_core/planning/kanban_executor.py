@@ -549,11 +549,15 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
         )
         return
 
+    owner = (task.owner_user_id or "").strip()
+    at_hint = f"收尾台词须 @发起人（`@{owner}`）；" if owner else ""
     user_message = (
         "[系统·子任务异步交付]\n"
         f"{delivery}\n\n"
         "（本条是框架在子任务完成后注入的交付通知，不是群友新发言。"
-        "请立即基于上述产物完成出图/发送收尾；不要再 create_subagent 重做同一任务。）"
+        f"{at_hint}"
+        "请立即基于上述产物完成发送收尾；图片用 send_message_by_ai(image_id=真实图片句柄)；"
+        "不要再 create_subagent 重做同一任务。）"
     )
     # has_active_task=True：挂产物/编排工具；任务本身可能已 completed
     await session.run(

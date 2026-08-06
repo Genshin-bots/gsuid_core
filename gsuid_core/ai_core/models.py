@@ -28,6 +28,8 @@ class ToolContext:
     dynamic_tool_names: Set[str] = field(default_factory=set)
     # 主人格交互轮：能力代理专属工具名。find_tools / RetrievableToolset 均不得回灌。
     blocked_tool_names: Set[str] = field(default_factory=set)
+    # True：允许工具路径对用户会话出站（主人格）。能力代理 / 子 Agent 恒 False。
+    allow_user_outbound: bool = True
 
 
 class KnowledgeBase(TypedDict):

@@ -20,6 +20,7 @@ from .registry import (
     list_nodes,
     resolve_node,
     register_agent_node,
+    match_capability_node,
     unregister_agent_node,
 )
 from .tool_packs import (
@@ -40,6 +41,7 @@ __all__ = [
     "unregister_agent_node",
     "get_node",
     "list_nodes",
+    "match_capability_node",
     "resolve_node",
     "get_persona_node",
     "list_persona_nodes",

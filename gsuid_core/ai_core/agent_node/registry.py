@@ -70,6 +70,46 @@ def format_capability_roster() -> str:
     )
 
 
+def match_capability_node(hint: str) -> str:
+    """自然语言 hint → node_id；无命中返回空串（不回退默认画像）。
+
+    1. hint 就是已注册 node_id → 直接返回；
+    2. 命中 match_keywords 或 when_to_use / display_name 子串 → 最长关键词优先；
+    3. 都不命中 → ``""``。
+    """
+    h = (hint or "").strip().lower()
+    if not h:
+        return ""
+    if h in _NODES:
+        return h
+    if get_persona_node(h) is not None:
+        return h
+    best_id = ""
+    best_score = 0
+    for node in _NODES.values():
+        if node.source == "persona" or node.node_id == "capability_evaluator":
+            continue
+        for kw in node.match_keywords:
+            k = (kw or "").strip().lower()
+            if not k or k not in h:
+                continue
+            score = len(k)
+            if score > best_score:
+                best_score = score
+                best_id = node.node_id
+        # 弱匹配：when_to_use / display_name / node_id 出现在 hint 中（低于关键词分）
+        weak_blob = f"{node.node_id} {node.display_name} {node.when_to_use}".lower()
+        for token in h.replace("，", " ").replace(",", " ").split():
+            if len(token) < 2:
+                continue
+            if token in weak_blob:
+                score = min(len(token), 8)
+                if score > best_score:
+                    best_score = score
+                    best_id = node.node_id
+    return best_id
+
+
 def resolve_node(hint: str, default: str = "research_agent") -> str:
     """自然语言 hint → node_id（用句柄不用 ID，原 resolve_profile 语义）。
 
@@ -81,23 +121,10 @@ def resolve_node(hint: str, default: str = "research_agent") -> str:
     例：``分析并出对比表`` 同时命中 research「分析」与 render「对比表」→
     因「对比表」更长，选 ``render_agent``。
     """
+    matched = match_capability_node(hint)
+    if matched:
+        return matched
     h = (hint or "").strip().lower()
     if not h:
         return default if default in _NODES else next(iter(_NODES), "")
-    if h in _NODES or get_persona_node(h) is not None:
-        return h
-    best_id = ""
-    best_score = 0
-    for node in _NODES.values():
-        for kw in node.match_keywords:
-            k = (kw or "").strip().lower()
-            if not k or k not in h:
-                continue
-            score = len(k)
-            # 严格大于：同分不覆盖，保持注册序优先
-            if score > best_score:
-                best_score = score
-                best_id = node.node_id
-    if best_id:
-        return best_id
     return default if default in _NODES else next(iter(_NODES), "")

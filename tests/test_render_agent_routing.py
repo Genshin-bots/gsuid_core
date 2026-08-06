@@ -166,17 +166,18 @@ def test_tool_call_targets_render_agent() -> None:
 
 
 def test_receipt_image_likely_not_any_artifact() -> None:
-    """非图 artifact 不得触发「图已下发」口吻。"""
+    """非图 artifact 不得触发「可发图」口吻。"""
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
         RENDER_DONE_RECEIPT_MARK,
         receipt_image_likely,
     )
 
-    assert receipt_image_likely(pid="render_agent", has_image_art=False)
+    assert not receipt_image_likely(pid="render_agent", has_image_art=False)
     assert receipt_image_likely(pid="code_agent", has_image_art=True)
     assert not receipt_image_likely(pid="research_agent", has_image_art=False)
     assert not receipt_image_likely(pid="code_agent", has_image_art=False)
-    assert RENDER_DONE_RECEIPT_MARK == "图若已由渲染工具下发"
+    assert receipt_image_likely(pid="render_agent", has_image_art=True)
+    assert "send_message_by_ai" in RENDER_DONE_RECEIPT_MARK
 
 
 def test_builtin_nodes_use_registered_date_tool_name() -> None:

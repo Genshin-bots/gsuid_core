@@ -130,13 +130,13 @@ def _main_persona_receipt_hint(*, image_likely: bool = False) -> str:
 
     if image_likely:
         return (
-            f"主人格：角色短句引导即可；{RENDER_DONE_RECEIPT_MARK}勿重复 send；"
-            "若仅有 res_/img_ 句柄则 send_message_by_ai(image_id=…)。"
+            f"主人格：角色短句引导；{RENDER_DONE_RECEIPT_MARK}；"
+            "代理侧**不会**直发，必须你 send_message_by_ai(image_id=真实图片句柄)。"
             "禁止把代理全文当群聊台词。"
         )
     return (
-        "主人格：角色短句结论；多项数据/对比表再 "
-        'create_subagent(agent_profile="render_agent", task=事实包) 出图；'
+        "主人格：角色短句结论；长结构化结果再 "
+        'create_subagent(agent_profile="render_agent", task=事实包或 res_ 句柄) 出图；'
         "禁止自写 HTML / 直调 render_*；禁止把代理全文当群聊台词。"
     )
 
@@ -179,10 +179,10 @@ def _get_subagent_semaphore() -> asyncio.Semaphore:
     return _subagent_semaphore
 
 
-# create_subagent(agent_profile=...) 转 Kanban 同步等待（秒）。
-# 取数/渲染类任务常 >60s；超时后 deferred 回灌，主人格须 <SILENCE> 勿刷进度。
-_KANBAN_INLINE_WAIT_TIMEOUT_SEC = 180.0
-_KANBAN_INLINE_POLL_INTERVAL_SEC = 0.6
+# create_subagent(agent_profile=...) 转 Kanban：短等快速完成，否则 deferred 回灌。
+# 短等上限须低于会话 _run_lock 排队 STALE，避免长任务占锁导致群聊应答率塌陷。
+_KANBAN_INLINE_WAIT_TIMEOUT_SEC = 5.0
+_KANBAN_INLINE_POLL_INTERVAL_SEC = 0.5
 
 # 文本结论类能力代理：默认同步 ad-hoc（transient），不建看板卡、不经调度排队。
 # code / plugin_dev 仍默认 Kanban（需要可追溯产物与审批）。
@@ -239,6 +239,19 @@ async def create_subagent(
         if use_transient:
             return await _dispatch_transient_capability_agent(ctx, task, agent_profile)
         return await _dispatch_via_kanban(ctx, task, agent_profile)
+
+    # 未填 profile：用 task 文本匹配已注册能力节点（通用关键词），命中则走专职代理
+    from gsuid_core.ai_core.agent_node import get_node, match_capability_node
+
+    auto_pid = match_capability_node(task)
+    if auto_pid and get_node(auto_pid) is not None:
+        logger.info(
+            i18n_t("log.ai.subagent_convert_kanban_leaf", p0=0, p1=auto_pid[:6], pid=auto_pid, p2=repr(task[:60]))
+        )
+        use_transient = transient or auto_pid in _TRANSIENT_DEFAULT_PROFILES
+        if use_transient:
+            return await _dispatch_transient_capability_agent(ctx, task, auto_pid)
+        return await _dispatch_via_kanban(ctx, task, auto_pid)
 
     logger.info(i18n_t("log.ai.subagent_general_planning_executor_start", p0=task[:50]))
 

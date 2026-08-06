@@ -214,6 +214,17 @@ async def handle_ai_chat(
                 # 提示尽力而为，发送失败也无条件早退，绝不放超额消息进完整 AI 流程。
                 return
 
+            # Session 静默窗口：非主人在 mute 期内直接早退；主人硬触发自动解除
+            from gsuid_core.ai_core.session_mute import is_session_muted, clear_session_mute
+
+            _is_master = int(getattr(event, "user_pm", 6) or 6) <= 0
+            if is_session_muted(event.session_id):
+                if _is_master:
+                    clear_session_mute(event.session_id)
+                else:
+                    logger.info("session mute active, skip ai chat session=%s", event.session_id)
+                    return
+
             # 主动会话：入队触发者原话；被动感知已写过则跳过，防双写
             try:
                 _memory_mode = memory_config.memory_mode

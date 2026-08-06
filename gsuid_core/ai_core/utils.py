@@ -1147,11 +1147,13 @@ async def send_chat_result(
     ev: Event | None = None,
     extra_metadata: Optional[Dict[str, Any]] = None,
     ooc_check: bool = True,
+    at_user_id: str | None = None,
 ) -> None:
     """
     解析并发送聊天结果，支持：
     - 按换行分割多条消息
     - @用户ID 语法 → MessageSegment.at(user_id)
+    - at_user_id：框架强制前置 @（任务交付回灌等，不依赖模型自觉）
     - <meme: 情绪> 标记（可带反引号）→ 触发表情包发送（需传入 ev）
     - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``，最终落到
       ``message_history`` 记录上（如主动消息的 ``proactive=True / source / reason``）
@@ -1282,12 +1284,22 @@ async def send_chat_result(
 
     # 按换行分割为多条消息
     blocks = re.split(r"\n\s*\n", clean_text)
+    _force_at = (at_user_id or "").strip()
+    _at_done = False
 
     for block in blocks:
         if not block.strip():
             continue
 
         segments = _parse_at_segments(block)
+        # 任务交付等：首条强制 @ 目标用户（正文已有 @ 同 ID 则不重复）
+        if _force_at and not _at_done:
+            _has_same = any(
+                getattr(s, "type", None) == "at" and str(getattr(s, "data", "")) == _force_at for s in segments
+            )
+            if not _has_same:
+                segments = [MessageSegment.at(_force_at), *segments]
+            _at_done = True
 
         # 计算纯文本长度
         plain_text = re.sub(r"@\d+", "", block)

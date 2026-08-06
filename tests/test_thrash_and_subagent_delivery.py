@@ -63,7 +63,8 @@ def test_post_tool_contracts_split_persona_vs_capability() -> None:
 
     ok, fail = _post_tool_contracts_for("Chat")
     assert ok is _POST_TOOL_OUTPUT_CONTRACT
-    assert "render_html_to_image" in ok
+    assert "render_agent" in ok
+    assert "render_" in ok or "render_agent" in ok
 
     ok_c, fail_c = _post_tool_contracts_for("CapabilityAgent")
     assert ok_c is _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY
@@ -111,5 +112,5 @@ def test_followup_task_mentions_no_render() -> None:
 
     t = _delivery_followup_task("整理近一周金融新闻")
     assert "事实包" in t
-    assert "render_html" in t
+    assert "render_" in t
     assert "整理近一周" in t

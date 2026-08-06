@@ -133,11 +133,12 @@ _RESEARCH_PROMPT = """你负责外部检索与综合分析，交付可复核的 
 """
 
 _RENDER_BOUNDARY = """【交付边界】
-- 允许：`render_html_to_image` / `render_card` / `render_markdown_to_image`（可直接发图；bot 不可用时返回句柄）。
+- 允许：`render_html_to_image` / `render_card` / `render_markdown_to_image`
+  （成功后**只登记 artifact / 返回句柄**，禁止对用户会话直发）。
 - **默认只出 1 张图**：事实包**尽量全文上图**（分区竖长图），只调用一次渲染工具。
 - 禁止为「好看」删掉数字/表格/依据/风险段；禁止搜索；禁止编造 task/artifact 外数字。
-- 禁止：`send_message_by_ai` 发长文/源码/整页 HTML。
-- 返回值：1～3 句摘要（渲了什么、覆盖了哪些节、缺字段、若有句柄则给出）。
+- 禁止：`send_message_by_ai` 及任何 bot 直发；出站只由主人格完成。
+- 返回值：1～3 句摘要（渲了什么、覆盖了哪些节、缺字段、**必须给出图片 res_ 句柄**）。
 """
 
 _RENDER_PROMPT = """你负责把**已给定**事实包渲成**一张**可阅读的信息图（默认单图交付）。
