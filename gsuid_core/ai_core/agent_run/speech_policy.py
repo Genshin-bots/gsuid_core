@@ -1,6 +1,10 @@
 """主人格出站话术策略：单表面 + 等待/追问/回灌分流。
 
 与业务域词表无关；用 turn 来源、交付态、句式结构判定。
+
+期望阶段（长信息任务）：
+1 接任务可短应 → 2 检索/委派决策不发言 → 3 委派前一句「会比较久」
+→ 4/5/6 子代理静默 → 7 发图后一句收尾。
 """
 
 from __future__ import annotations
@@ -44,11 +48,14 @@ _EMPTY_HANDOFF_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 等待安慰：出图前短句（允许），与空交付相对
+# 等待安慰 / 委派前「会比较久」声明（步骤 3）
 _WAIT_COMFORT_RE = re.compile(
     r"(等(一?下|会|会儿)|稍等|先等|等我|慢点|"
     r"(画|翻|弄|查|整).{0,6}(一下|会儿)|"
-    r"先(翻|画|弄)|马上|很快)",
+    r"先(翻|画|弄)|马上|很快|"
+    r"(比较|有点|会)?(久|慢|费时|花(点|些)?时间)|"
+    r"耐心|等着|先等着|得翻|得查|得弄|翻会儿|查会儿|"
+    r"别急|慢慢|稍后|等等我)",
     re.IGNORECASE,
 )
 
@@ -69,7 +76,7 @@ _OPEN_SOLICIT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 主人格台词里的「报告体」：多标题/多段/表 → 应走 render 而非刷屏
+# 主人格台词里的「长结构体」：多标题/多段/表 → 应走 render 而非刷屏
 _MD_HEADING_RE = re.compile(r"(?m)^#{1,3}\s+\S|^\*{0,2}\*\*[^*\n]{2,48}\*\*")
 
 STATUS_INQUIRY_HINT = (
@@ -87,10 +94,11 @@ _WALL_CLOCK_CLOSE = (
 
 _WALL_CLOCK_PIPELINE = (
     "（系统提示：本轮处理耗时已超预算，但**已有事实包未出图**。"
-    "允许且必须：先一句角色化「等一下/先翻图」→ 立刻 "
+    "允许且必须：立刻 "
     'create_subagent(agent_profile="render_agent", task=事实包或 res_ 句柄) 出图。'
     "禁止新开检索；禁止说「翻完了/卷轴里有/念不动/要哪段再喊我」却不出图；"
-    "后台出图等待中除一句等待安慰外只 <SILENCE>；禁止念内部节点名。）"
+    "若尚未对用户说过等待句，可先一句「等一下…」再委派；"
+    "后台出图中除等待句外只 <SILENCE>；禁止念内部节点名。）"
 )
 
 _RENDER_DELEGATE_NUDGE = (
@@ -102,9 +110,9 @@ _RENDER_DELEGATE_NUDGE = (
     "禁止向用户解释本校验、禁止抱怨、禁止念节点名。"
 )
 
-# 主人格把报告念成台词时的纠正（比通用 render nudge 更硬）
+# 主人格把长结构念成台词时的纠正（比通用 render nudge 更硬）
 _REPORT_SPEECH_NUDGE = (
-    "（系统校验·内部轮）你刚才用多段标题/列表把报告念成了台词，这不允许。"
+    "（系统校验·内部轮）你刚才用多段标题/列表把长信息念成了台词，这不允许。"
     '立即 create_subagent(agent_profile="render_agent", '
     "task=将本轮已查到的要点做成一张信息图)；"
     "本轮对用户只可 <SILENCE> 或发图后一句角色短句；禁止再念表、禁止要不要再查。"
@@ -154,12 +162,14 @@ def looks_like_empty_handoff(text: str) -> bool:
 
 
 def looks_like_wait_comfort(text: str) -> bool:
-    """是否短等待安慰（出图前可发一句）。"""
+    """是否短等待安慰或「会比较久」委派声明（步骤 3，可发一次）。"""
     body = (text or "").strip()
-    if not body or len(body) > 72:
+    if not body or len(body) > 96:
         return False
     # 不得同时是空交付摆烂
     if _EMPTY_HANDOFF_RE.search(body) and not _WAIT_COMFORT_RE.search(body):
+        return False
+    if claims_premature_delivery(body):
         return False
     return bool(_WAIT_COMFORT_RE.search(body))
 
@@ -173,7 +183,7 @@ def has_orchestration_narration(text: str) -> bool:
 
 
 def looks_like_report_speech(text: str) -> bool:
-    """主人格台词是否呈报告/信息图该走的长结构（应出图而非刷屏）。"""
+    """主人格台词是否呈长结构（应出图而非刷屏）。"""
     body = (text or "").strip()
     if len(body) < 80:
         return False
@@ -187,7 +197,7 @@ def looks_like_report_speech(text: str) -> bool:
     pipe_dense = body.count("|") >= 6 and "\n" in body
     if pipe_dense and len(body) >= 120:
         return True
-    # 两个及以上小标题 + 一定长度 → 报告体
+    # 两个及以上小标题 + 一定长度 → 长结构体
     if heads >= 2 and len(body) >= 100:
         return True
     if len(paras) >= 4 and len(body) >= 140:
@@ -299,9 +309,21 @@ def should_block_user_visible_text(
         else "free"
     )
 
-    # 异步出图中：只放行「尚未发过的一句等待安慰」；其余沉默
+    # 图已发出：放行极短角色收尾；仍拦长结构 / 编排词 / 引导追问
+    if image_sent:
+        if has_orchestration_narration(body):
+            return True, "orchestration_leak"
+        if looks_like_report_speech(body):
+            return True, "report_speech"
+        if has_open_solicitation(body) and len(body) > 40:
+            return True, "open_solicit"
+        if len(body) > 120 and not looks_like_wait_comfort(body):
+            return True, "post_image_too_long"
+        return False, "post_image_ok"
+
+    # 异步出图/子任务在途：只放行「尚未发过的一句等待」；其余沉默
     if pending_async or pol == "silence_only":
-        if looks_like_wait_comfort(body) and not wait_comfort_sent and not image_sent:
+        if looks_like_wait_comfort(body) and not wait_comfort_sent:
             return False, "wait_comfort"
         return True, "silence_only_or_async"
 
@@ -321,12 +343,12 @@ def should_block_user_visible_text(
     if (fact_pack_pending or not image_sent) and looks_like_empty_handoff(body) and not image_sent:
         return True, "empty_handoff"
 
-    # 报告体台词：主人格不得用多段标题/列表刷屏（应 render）
+    # 长结构台词：主人格不得用多段标题/列表刷屏（应 render）
     if pol in ("free", "status_ok", "framework_deliver") and looks_like_report_speech(body):
         return True, "report_speech"
 
     if pol == "framework_deliver":
-        # 回灌：未发图前禁止完成腔；发图后允许极短角色句
+        # 回灌：未发图前禁止完成腔；发图后允许极短角色句（image_sent 已在上面处理）
         if not image_sent and len(body) > 40 and not looks_like_wait_comfort(body):
             return True, "deliver_before_send_long"
         return False, "ok"

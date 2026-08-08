@@ -382,6 +382,7 @@
   "log.ai.output_gate_scrubbed_history": "[output_gate] scrubbed history: nudges={nudges} blocked_msgs={blocked_msgs}",
   "log.ai.output_gate_unknown_channel": "[output_gate] unknown channel={channel}, use main",
   "log.ai.persist_subagent_result_skip": "persist_subagent_result skip: {e}",
+  "log.ai.persona_bubbles_clamped": "[GsCoreAIAgent] 人格连发气泡已截断为最多 {p0} 条",
   "log.ai.planning_long_task_context_fail": "[Planning] 长任务上下文注入失败: {e}",
   "log.ai.plugindev_finalize_path_bounds": "[PluginDev] 收尾路径越界，拒绝: dest={dest} staged={staged}",
   "log.ai.plugindev_finalize_update": "[PluginDev] 收尾更新 {p0} 失败: {e}",

@@ -53,6 +53,7 @@ from gsuid_core.ai_core.agent_run.support import (
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    looks_like_wait_comfort,
     looks_like_empty_handoff,
     strip_open_solicitations,
     claims_premature_delivery,
@@ -390,11 +391,25 @@ class SettlePhase(RunOnceHost):
                 if isinstance(_sc, str) and _sc.strip():
                     result_msg = _sc.strip()
 
-            # 出口消毒：异步在途 / 编排泄漏 / 报告体 / 引导追问 → 对外 SILENCE 或短句
+            # 出口消毒：异步在途 / 编排泄漏 / 长结构 / 引导追问 → 对外 SILENCE 或短句
             if self.create_by in ("Chat", "Agent") and result_msg:
                 _rs = result_msg.strip()
-                if st.pending_async_delivery and _rs not in SILENCE_MARKERS:
-                    result_msg = "<SILENCE>"
+                if st.image_sent_this_run:
+                    # 步骤 7：发图后允许短收尾；仍砍编排/长结构/引导追问
+                    if has_orchestration_narration(_rs) or _looks_like_report_speech(_rs):
+                        result_msg = "<SILENCE>"
+                    else:
+                        _stripped = strip_open_solicitations(_rs)
+                        if _stripped != _rs:
+                            result_msg = _stripped if _stripped else "<SILENCE>"
+                        elif len(_rs) > 120:
+                            result_msg = "<SILENCE>"
+                elif st.pending_async_delivery and _rs not in SILENCE_MARKERS:
+                    # 步骤 3：异步在途可保留一句等待声明；其余静默
+                    if looks_like_wait_comfort(_rs) and not st.wait_comfort_sent:
+                        result_msg = _rs
+                    else:
+                        result_msg = "<SILENCE>"
                 elif has_orchestration_narration(_rs):
                     result_msg = "<SILENCE>"
                 elif claims_premature_delivery(_rs) and not st.image_sent_this_run:

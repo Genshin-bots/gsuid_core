@@ -382,6 +382,7 @@
   "log.ai.output_gate_scrubbed_history": "[output_gate] scrubbed history: nudges={nudges} blocked_msgs={blocked_msgs}",
   "log.ai.output_gate_unknown_channel": "[output_gate] unknown channel={channel}, use main",
   "log.ai.persist_subagent_result_skip": "persist_subagent_result skip: {e}",
+  "log.ai.persona_bubbles_clamped": "[GsCoreAIAgent] ペルソナ連投バブルを最大 {p0} 件に制限",
   "log.ai.planning_long_task_context_fail": "[Planning] 長期タスクコンテキストの注入に失敗しました: {e}",
   "log.ai.plugindev_finalize_path_bounds": "[PluginDev] ファイナライズパスが範囲外のため拒否: dest={dest} staged={staged}",
   "log.ai.plugindev_finalize_update": "[PluginDev] ファイナライズ更新 {p0} に失敗: {e}",

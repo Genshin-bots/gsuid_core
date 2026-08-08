@@ -149,8 +149,9 @@ def _main_persona_receipt_hint(*, image_likely: bool = False) -> str:
     return (
         "【工具通道】长结构化结果再 "
         'create_subagent(agent_profile="render_agent", task=事实包或句柄) 出图；'
-        "禁止自写 HTML / 直调 render_*。"
-        "【聊天通道】未发图前勿说「图好了」；等待中只 <SILENCE>；"
+        "禁止自写 HTML / 直调 render_*；出图委派**不要**再对用户说话。"
+        "【聊天通道】委派长任务前须已说一句「得等一会儿」；"
+        "子任务在途除等待句外 <SILENCE>；未发图勿说「图好了」；"
         "禁止把代理全文当台词；禁止对用户提节点名/句柄/「让某某去画」。"
     )
 
@@ -224,15 +225,16 @@ async def create_subagent(
 
     ## 路由（agent_profile 填 node_id，禁止自造名）
     - ``research_agent``：外部检索 / 综合分析 → **只交事实包**（来源+时点）
-    - ``render_agent``：把**已有**事实包渲成美观图（多项数据出图**必走**；主人格禁自渲）
-    - ``code_agent``：写代码 / PIL·脚本真文件产物（不是 HTML 资料卡）
+    - ``render_agent``：把**已有**事实包渲成美观信息图（多项数据出图**必走**；主人格禁自渲）
+    - ``code_agent``：写代码 / PIL·脚本真文件产物（不是 HTML 信息卡）
     - ``internal_reporter`` / ``memory_curator`` / ``scheduler_assistant`` / …
       见本轮 system 能力清单
 
     ## task 写作
-    - 调研：目标 + 范围；交付须含条目/数字/**来源**/**时点**。
+    - 检索综合：目标 + 范围；交付须含条目/数字/**来源**/**时点**。
     - 出图：粘贴完整事实包（或 res_ 句柄）+ 可选版式偏好；写明**禁止再检索**。
     - 禁止把「漂亮出图」派给 research；禁止主人格自己写 HTML 调 render_*。
+    - 长任务：主人格须**先**对用户说一句等待，再调用本工具。
 
     Args:
         ctx: 工具执行上下文

@@ -34,12 +34,15 @@ def test_tool_orchestration_has_delegation_first() -> None:
     assert "DELEGATION_FIRST" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "重任务" in SYSTEM_CONSTRAINTS or "委派" in SYSTEM_CONSTRAINTS
     assert "禁止" in SYSTEM_CONSTRAINTS and "工具名" in SYSTEM_CONSTRAINTS
+    # 七步时序：委派前等待句
+    assert "得等一会儿" in SYSTEM_CONSTRAINTS or "七步" in SYSTEM_CONSTRAINTS
+    assert "等待" in TOOL_ORCHESTRATION_CONSTRAINTS or "得等一会儿" in TOOL_ORCHESTRATION_CONSTRAINTS
 
 
 def test_sayu_persona_analysis_must_delegate() -> None:
     from gsuid_core.ai_core.persona.prompts import sayu_persona_prompt
 
-    assert "委派" in sayu_persona_prompt or "影分身" in sayu_persona_prompt
+    assert "委派" in sayu_persona_prompt or "得等一会儿" in sayu_persona_prompt
     assert "公猫" in sayu_persona_prompt or "不是猫" in sayu_persona_prompt
     assert "吱一声" not in sayu_persona_prompt or "禁止引导" in sayu_persona_prompt
 
@@ -51,7 +54,25 @@ def test_research_prompt_has_depth_checklist() -> None:
     assert "web_fetch" in _RESEARCH_PROMPT
     assert "artifact_put" in _RESEARCH_PROMPT
     assert "web_search" in _RESEARCH_PROMPT
-    assert "现价" in _RESEARCH_PROMPT or "市价" in _RESEARCH_PROMPT
+    # 通用时效表述，禁止把业务域词写进契约
+    assert "当前" in _RESEARCH_PROMPT or "时点" in _RESEARCH_PROMPT
+    assert "专域" in _RESEARCH_PROMPT
+    assert "研报" not in _RESEARCH_PROMPT
+    assert "股票" not in _RESEARCH_PROMPT
+    assert "现价" not in _RESEARCH_PROMPT
+    assert "市价" not in _RESEARCH_PROMPT
+
+
+def test_research_match_keywords_domain_free() -> None:
+    from gsuid_core.ai_core.agent_node import get_node
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+
+    register_builtin_profiles()
+    node = get_node("research_agent")
+    assert node is not None
+    kws = set(node.match_keywords or [])
+    assert "深渊" not in kws
+    assert "调研" in kws or "分析" in kws
 
 
 def test_web_search_results_frame_stale_prices() -> None:
@@ -61,6 +82,8 @@ def test_web_search_results_frame_stale_prices() -> None:
     assert "过时" in text or "滞后" in text
     assert "专域" in text or "API" in text
     assert "<search_results>" in text
+    assert "市价" not in text
+    assert "股票" not in text
 
 
 def test_render_long_md_default_off() -> None:
@@ -73,7 +96,11 @@ def test_render_long_md_default_off() -> None:
 def test_post_tool_still_domain_free() -> None:
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
         POST_TOOL_OUTPUT_CONTRACT,
+        POST_TOOL_OUTPUT_CONTRACT_RENDER,
     )
 
     assert "render_agent" in POST_TOOL_OUTPUT_CONTRACT
     assert "股票" not in POST_TOOL_OUTPUT_CONTRACT
+    assert "游戏" not in POST_TOOL_OUTPUT_CONTRACT_RENDER
+    assert "财经" not in POST_TOOL_OUTPUT_CONTRACT_RENDER
+    assert "天气" not in POST_TOOL_OUTPUT_CONTRACT_RENDER

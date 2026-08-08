@@ -280,3 +280,71 @@ def test_persona_bubble_clamp() -> None:
         blocks = [*head, tail]
     assert len(blocks) == 2
     assert "g" in blocks[-1]
+
+
+def test_long_task_wait_announce_allowed() -> None:
+    """步骤 3：委派前「会比较久」声明应放行（含 async/silence）。"""
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_wait_comfort
+
+    wait = "唔…这事得等一会儿…先翻会儿卷轴…"
+    assert looks_like_wait_comfort(wait)
+    assert not should_block_user_visible_text(
+        "free",
+        wait,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+        wait_comfort_sent=False,
+    )[0]
+    assert not should_block_user_visible_text(
+        "silence_only",
+        wait,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=False,
+    )[0]
+
+
+def test_post_image_closing_speech_allowed() -> None:
+    """步骤 7：发图后短收尾应放行；长结构仍拦。"""
+    close = "呼…弄好了…你看…"
+    # 完成腔在未发图时拦，发图后放行
+    assert claims_premature_delivery(close)
+    assert not should_block_user_visible_text(
+        "silence_only",
+        close,
+        pending_async=False,
+        image_sent=True,
+        has_status_tool=False,
+        tool_calls_so_far=["send_message_by_ai"],
+    )[0]
+    # 发图后仍拦长结构刷屏
+    long_report = (
+        "**第一节**\n" + "细节很多。\n\n" + "**第二节**\n" + "还有一堆。\n\n" + "**第三节**\n" + "继续写。" * 20
+    )
+    blk, why = should_block_user_visible_text(
+        "free",
+        long_report,
+        pending_async=False,
+        image_sent=True,
+        has_status_tool=False,
+        tool_calls_so_far=["send_message_by_ai"],
+    )
+    assert blk and why in ("report_speech", "post_image_too_long")
+
+
+def test_async_blocks_non_wait_until_image() -> None:
+    """子任务在途：非等待句应静默。"""
+    blk, why = should_block_user_visible_text(
+        "silence_only",
+        "我先去睡觉了你自己看吧",
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=True,
+    )
+    assert blk and why == "silence_only_or_async"

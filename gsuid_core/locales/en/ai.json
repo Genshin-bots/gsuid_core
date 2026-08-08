@@ -382,6 +382,7 @@
   "log.ai.output_gate_scrubbed_history": "[output_gate] scrubbed history: nudges={nudges} blocked_msgs={blocked_msgs}",
   "log.ai.output_gate_unknown_channel": "[output_gate] unknown channel={channel}, use main",
   "log.ai.persist_subagent_result_skip": "persist_subagent_result skip: {e}",
+  "log.ai.persona_bubbles_clamped": "[GsCoreAIAgent] Persona chat bubbles clamped to max {p0}",
   "log.ai.planning_long_task_context_fail": "[Planning] Long-task context injection failed: {e}",
   "log.ai.plugindev_finalize_path_bounds": "[PluginDev] Finalize path out of bounds, refusing: dest={dest} staged={staged}",
   "log.ai.plugindev_finalize_update": "[PluginDev] Finalize update {p0} failed: {e}",

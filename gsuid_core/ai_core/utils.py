@@ -1290,7 +1290,7 @@ async def send_chat_result(
         head = blocks[: _PERSONA_MAX_BUBBLES - 1]
         tail = "\n".join(b.strip() for b in blocks[_PERSONA_MAX_BUBBLES - 1 :])
         blocks = [*head, tail]
-        logger.debug("persona bubbles clamped to %s", _PERSONA_MAX_BUBBLES)
+        logger.debug(i18n_t("log.ai.persona_bubbles_clamped", p0=_PERSONA_MAX_BUBBLES))
     _force_at = (at_user_id or "").strip()
     _at_done = False
 

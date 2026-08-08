@@ -428,9 +428,10 @@ class LoopPhase(RunOnceHost):
                     st.has_status_tool_call = True
                 if part.tool_name == "send_message_by_ai":
                     st.image_sent_this_run = True
-                    # 发图后允许一句角色收尾（framework_deliver / free）
-                    if st.speech_policy == "silence_only" and st.fw_msg:
-                        st.speech_policy = "framework_deliver"
+                    # 发图后解除异步静默，允许一句角色收尾（步骤 7）
+                    st.pending_async_delivery = False
+                    if st.speech_policy == "silence_only":
+                        st.speech_policy = "framework_deliver" if st.fw_msg else "free"
                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
                 self._emit_trace("tool", f"{part.tool_name}|{part.args_as_json_str()}")
 
