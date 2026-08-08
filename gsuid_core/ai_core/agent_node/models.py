@@ -25,7 +25,7 @@ DELIVERY_BOUNDARY = """【交付边界 · 子任务向上游交付，绝不直�
 - **禁止**调用 `send_message_by_ai` / `send_meme` / 任何终局 `bot.send` 直发；
   图片渲染工具成功后只登记 artifact / 返回句柄，**不得**推送到用户会话。
 - **禁止** `create_subagent` 再嵌套委派；非渲染节点还禁止 `render_html_to_image` /
-  `render_card` / `render_markdown_to_image`（出图由主人格再委派渲染节点）。
+  `render_card` / `render_markdown_to_image`（出图由主人格再委派 `render_agent`）。
 - 任务过程中若需要让主人决策（高风险动作、缺关键信息），把诉求**写进交付摘要**
   让主人格转告，不要替主人决定，也不要自己拉群通知。
 - Kanban 子任务的唯一可写目录是 Artifact Workspace；越界写入会被框架拒绝并

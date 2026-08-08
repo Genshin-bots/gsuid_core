@@ -165,6 +165,11 @@ async def assemble_dynamic_context(
                 context_parts.append(f"（口吻：{short_anchor}）")
         except Exception as e:
             logger.debug(t("log.ai.contextassembly_persona_tone_anchor_fail", e=e))
+        # 身份锚定：群绰号/历史污染不改变 Name（进 user 侧，不改 system 缓存）
+        context_parts.append(
+            f"（身份：你是「{persona_name}」。自我指称只按角色卡；"
+            "他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）"
+        )
 
     if history_context:
         context_parts.append(history_context)

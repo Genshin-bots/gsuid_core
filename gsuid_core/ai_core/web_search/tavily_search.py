@@ -73,7 +73,7 @@ async def _do_tavily_search(
         search_depth=search_depth,  # type: ignore
         include_answer=True,
         include_raw_content=False,
-        include_images=False,
+        include_images=True,
     )
 
     results = []
@@ -86,6 +86,28 @@ async def _do_tavily_search(
                 "score": item.get("score", 0.0),
             }
         )
+
+    # 配图 URL 单独附在结果尾（供 research → render 嵌进 HTML）；限量防刷 token
+    _img_n = 0
+    for img_url in response.get("images") or []:
+        if _img_n >= 6:
+            break
+        if not isinstance(img_url, str):
+            continue
+        u = img_url.strip()
+        if not u.startswith(("http://", "https://")):
+            continue
+        results.append(
+            {
+                "title": "(配图)",
+                "url": u,
+                "content": "",
+                "score": 0.0,
+                "image_url": u,
+                "kind": "image",
+            }
+        )
+        _img_n += 1
 
     return results
 
@@ -113,7 +135,7 @@ async def _do_tavily_search_with_context(
         search_depth="advanced",  # type: ignore
         include_answer=True,
         include_raw_content=False,
-        include_images=False,
+        include_images=True,
     )
 
     results = []
@@ -126,6 +148,27 @@ async def _do_tavily_search_with_context(
                 "score": item.get("score", 0.0),
             }
         )
+
+    _img_n = 0
+    for img_url in response.get("images") or []:
+        if _img_n >= 6:
+            break
+        if not isinstance(img_url, str):
+            continue
+        u = img_url.strip()
+        if not u.startswith(("http://", "https://")):
+            continue
+        results.append(
+            {
+                "title": "(配图)",
+                "url": u,
+                "content": "",
+                "score": 0.0,
+                "image_url": u,
+                "kind": "image",
+            }
+        )
+        _img_n += 1
 
     answer = response.get("answer")
 

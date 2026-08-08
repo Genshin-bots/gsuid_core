@@ -26,13 +26,16 @@
 
 ## 顶层目录速览
 
-| 文件 | 职责 |
+| 文件 / 目录 | 职责 |
 |---|---|
-| `gs_agent.py` | **`GsCoreAIAgent`**：pydantic-ai Agent 主类。工具装配、`Agent.iter` 环、`pre_send_gate` 接线、收尾 `_resolve_output_gate_after_run`、假完成闸、UsageLimit 兜底等。 |
+| `gs_agent.py` | **`GsCoreAIAgent`**：会话类 + 重试 / history 裁剪 / 闸门收尾 / 工厂。**单次 run 主路径已拆到 `agent_run/`**（见下）。 |
+| `agent_run/` | **单次 `_execute_run_once` 阶段包**（2026-08）：prepare → tools → loop → settle；`speech_policy` 出站话术策略。详见 §`agent_run/`。 |
 | `output_gate.py` | **`pre_send_gate`**：发送前统一编排（尖括号 → OOC）；`GateBag` 状态；`tool_gate_feedback`。 |
 | `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
-| `output_firewall.py` | 出戏词库 + `check_ooc`（策略实现；编排见 `output_gate`）。 |
+| `output_firewall.py` | 出戏词库 + `check_ooc`（策略实现；编排见 `output_gate`）；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
 | `handle_ai.py` | 用户消息入口（被消息触发器调用）。负责会话匹配、前置规则过滤、`format_history_for_agent` 构造 history_context、调用 `GsCoreAIAgent.run`。 |
+| `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
+| `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |
 | `ai_router.py` | `get_ai_session` / `get_ai_session_by_id`：根据 Event 找到或创建主用户绑定的 `GsCoreAIAgent`，并触发 Persona 热重载、主人好感度初始化。 |
 | `session_registry.py` | `{session_id → GsCoreAIAgent}` 注册表 + 空闲 session 清理 / logger flush / shutdown。 |
 | `session_logger.py` | **`AISessionLogger`** —— ai_core **唯一**的会话日志序列化器（所有来源同一条写盘路径）。entry 类型由 `SESSION_ENTRY_TYPES` 白名单固定（`system_prompt / user_input / tool_call / tool_return / text_output / thinking / proactive_emission` 等）；`link_agent` 串联 SubAgent；会话窗口 `SESSION_WINDOW_SECONDS=3600`（相同 session_id 续写 / 超时滚动）；`log_standalone_proactive` 处理主动消息磁盘回退。落 `data/ai_core/session_logs[/subagents]/`。**完整契约见 `docs/AI_SESSION_LOGGING.md`；修改 entry / linked_agents 结构会影响 webconsole 前端**。 |
@@ -41,11 +44,14 @@
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
 | `utils.py` | `send_chat_result`（**呈现层**：report/meme/长文出图/拆条/漏网 sanitize）、`SILENCE_MARKERS`、`extract_json_from_text`。合规打回不在此。 |
 | `history_format.py` | `format_history_for_agent`：把 `message_history.MessageRecord` 序列化成 LLM 可读的 `history_context` 文本（被动回复走这条路）。 |
-| `normalize.py` | 文本归一化（去 emoji / 标点等），主要给 RAG / classifier 用。 |
+| `normalize.py` / `content_guard.py` | 文本归一化与内容安全辅助。 |
 | `check_func.py` | 通用权限 / 状态检查工具。 |
 | `trigger_bridge.py` | 把"主人格 LLM 决定要调一个具体命令"桥接到 GsCore 触发器系统。 |
 | `startup.py` | ai_core 的启动钩子聚合点，被 `gsuid_core.startup` 调用。 |
 | `self_cognition.py` | 自我认知（"你是谁、能做什么"）相关的辅助常量。 |
+| `wall_clock.py` | 墙钟软预算时钟（ask_user 挂起时段可排除）。 |
+| `dynamic_toolset.py` | 渐进式工具暴露（`find_tools` + RetrievableToolset）。 |
+| `tool_state_signals.py` | 工具池状态信号（意图/活跃任务驱动 L2 挂载）。 |
 
 ---
 
@@ -55,9 +61,39 @@
 
 - **运行锁** `_run_lock`：保证同一 `GsCoreAIAgent` 不会被并发 `run`，避免 history 撕裂。
 - **`extract_history()`**：先 `_truncate_history_with_tool_safety`（保留 ToolCall / ToolReturn 配对），再 `_drop_orphan_tool_results`（兜底丢孤儿，防止 pydantic_ai 报 "tool result's tool id not found"）。
-- **三层工具池**：保底（`get_main_agent_tools`）+ 语境（群组画像标签）+ 查询（`search_tools` 向量搜索）。`create_by ∈ {"SubAgent","Chat","Agent","AutoPlanner"}` 才走自动组装；其它来源（如 `Heartbeat_Decision`）传 `tools=[]` 拒绝任何工具。
+- **工具装配 / iter 环**：实现已迁到 `agent_run/`（见下）；本文件保留 re-export 与 `_execute_run` 重试包装。
 - **`append_proactive_assistant_turn(content, source, trigger_reason, generator_log_files=None)`**：把一条主动消息以 assistant-only `ModelResponse(TextPart)` 形式追加进 `self.history`，同步在 `_session_logger` 写一条 `proactive_emission` entry。Heartbeat / ScheduledTask / Kanban / 工具主动 send 全部通过它把"框架外注入的输出"同步进 pydantic_ai 历史，避免主人格"对刚说过的话失忆"。详见 `plans/proactive_message_session_unification_20260529.md` §3.5。
-- **工具前置告知**：框架**不再**播报任何固定"前摇台词"（原 `_FRAMEWORK_PRE_TOOL_EXPRESSIONS` / persona `pre_tool_expressions` 已移除）。耗时工具前的告知由 Agent 依 `TOOL_ORCHESTRATION_CONSTRAINTS` 的"耗时工具处理"条款用自己的话完成（流式 TextPart 先于工具结果发出）。
+- **工具前置告知**：框架**不再**播报任何固定"前摇台词"。耗时工具前的告知由 Agent 依工具规程用自己的话完成。
+
+### `agent_run/` — 单次 run 阶段包（2026-08）
+
+> 详细拆分说明：`docs/AI_AGENT_RUN_REFACTOR_20260808.md`
+> 生命周期：`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md` §10
+
+| 模块 | 职责 |
+|---|---|
+| `orchestrator.py` | `_execute_run_once` 编排：预算闸 → init → prepare → tools → iter/settle → cleanup |
+| `prepare.py` | 预算 / `RunOnceState` 初始化 / user 消息外壳 / 脚手架 hints / **speech_policy 解析** |
+| `tools.py` | 工具五层装配 + exclusive 剥离 + `create_subagent`/`find_tools` 注入 + 构建 pydantic-ai Agent |
+| `loop.py` | `Agent.iter`：墙钟 / thrash / FileOS 折叠 / **可出图候选** / TextPart **话术门闩** / `pre_send_gate` |
+| `settle.py` | history / 输出闸收尾 / 假完成 / **render nudge（双分支含 SILENCE）** / 进度零工具 nudge / UsageLimit |
+| `speech_policy.py` | **单表面出站策略**：`free` / `silence_only` / `status_ok` / `framework_nudge` / `framework_deliver` |
+| `support.py` | 假完成 / thrash / 委派纯函数与常量（无循环依赖） |
+| `state.py` | `RunOnceState` 可变状态袋（含 `speech_policy` / `pending_async_delivery` / `image_sent_this_run`） |
+| `host.py` / `mixin.py` | 宿主协议 + 阶段 mixin 组合到 `GsCoreAIAgent` |
+| `budget_ctx.py` | 预算 scope contextvar |
+
+**话术策略（对外单一表面）**：
+
+| 策略 | 何时 | 对用户 |
+|---|---|---|
+| `silence_only` | 异步 subagent ack / 强制沉默 | 只允许 `<SILENCE>` |
+| `framework_nudge` | 假完成 / 出图纠正注入 | 只工具或 `<SILENCE>`，禁止抱怨对白 |
+| `framework_deliver` | Kanban 任务完成回灌 | 先发图，再至多一句角色短句 |
+| `status_ok` | 有活跃任务且用户追问进度 | **必须先查** list/artifact，再以「我」的口吻说人话 |
+| `free` | 普通用户轮 | 正常；拦截编排元话语（「让 render 出图」）与未交付完成腔 |
+
+改环行为后请同步生命周期 §10 与 `docs/AI_AGENT_RUN_REFACTOR_20260808.md`。
 
 ### `proactive/` — 主动消息统一发送闭包（新）
 
@@ -115,13 +151,14 @@
 |---|---|
 | `kanban.py` | 任务树的数据访问层（CRUD + 状态机），所有 SQL 操作集中在这里。 |
 | `kanban_executor.py` | 并发调度引擎：`execute_ready_tasks` / `kick_root` / `_run_one_task_node` / `_persona_relay`（人格转译）/ `_notify` / `_notify_failure`。**转译 + 失败播报全部走 emitter（source="kanban"）。** |
-| `kanban_tools.py` | 给主人格的 Kanban LLM 工具集：`register_kanban_task`、`respawn_subtask`、`fail_task_tree`、`evaluate_agent_mesh_capability` 等（审批转达统一走 `buildin_tools/approval_tools.py::respond_approval`）。 |
+| `kanban_tools.py` | 给主人格的 Kanban LLM 工具集：`register_kanban_task`、`list_my_kanban_tasks`（含 **user_safe_summary** 人话状态行）、`respawn_subtask`、`fail_task_tree` 等。 |
 | `recurring.py` | 周期任务模板的"to APScheduler"层：`arm` / `disarm` / `_fire_template` / `_fire_subtask_template`，每次到点 clone 一个执行实例并 `kick_root`。 |
 | `models.py` | `AIAgentTask` / `AIAgentArtifact` / `AIAgentTaskLog` 表。 |
 | `runtime.py` | `PlanRunContext` + `bind_plan_context / reset_plan_context`：把任务上下文按 contextvar 串到能力代理。 |
 | `workspace.py` | Artifact Workspace 沙盒（`ensure_workspace / put_artifact / list_artifacts`）。 |
-| `resolver.py` | 工件 ID（`res_xxx`）的解析与 RM 资源桥接。 |
-| `context.py` | 任务树上下文聚合工具，给主人格 prompt 用。 |
+| `resolver.py` / `handle_resolver.py` | 工件 ID（`res_xxx`）解析与 RM 资源桥接。 |
+| `context.py` | 每轮注入「正在推进的事项」摘要（**脱敏**：不注入 agent_profile，附对外人话提示）。 |
+| `tool_output_*.py` | FileOS：工具长输出落盘 / 折叠卡 / 索引 / 协议（主人格防 OOC）。 |
 | `startup.py` | 启动期把数据库里 `armed` 的周期模板重新挂回 APScheduler。 |
 
 ⚠️ Kanban 转译子 Agent **必须**启用 SubAgent 日志（`is_subagent=True`）；早期为避免噪声曾经禁用，但归一到 emitter 后必须保留以供审计——日志路径会通过 `generator_log_files` 挂到主 session 的 `linked_agents`。
@@ -144,10 +181,13 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | 文件 | 职责 |
 |---|---|
 | `registry.py` | **插件兼容层**：旧 `CapabilityAgentProfile` dataclass + `register_capability_agent`（转注册到 agent_node，下个大版本移除）。 |
-| `profiles.py` | 内置节点（`research_agent / code_agent / internal_reporter / memory_curator / scheduler_assistant / plugin_developer_agent`），AgentNode 定义。 |
+| `profiles.py` | 内置节点（`research_agent` / `render_agent` / `code_agent` / `internal_reporter` / `memory_curator` / `scheduler_assistant` / `plugin_developer_agent` 等）。 |
 | `runner.py` | **`run_capability_agent(profile_id, task, ev, bot, session_id_suffix)`**：task-mode 实例化——身份核+交付边界叠加、packs+白名单装配、全局任务档预算（`task_max_iterations/tokens`）、绑 PlanRunContext、写 capability_agent 日志。 |
+| `delegation_contracts.py` | 主人格 / 能力代理 / render 的 **POST_TOOL 契约**（工具通道 vs 聊天通道）与 `tool_call_targets_render_agent`。 |
 | `evaluator.py` | "evaluate_agent_mesh_capability" 工具的实现——告诉主人格当前任务谁能干。 |
 | `persistence.py` | webconsole 用户自建节点落盘 / 加载（v1 旧画像 JSON 自动迁移）。 |
+
+⚠️ **对外单一表面**：C 端只看见主人格台词 + 图；`research_agent` / `render_agent` 等是工具通道标识，禁止进用户可见文本（见 `agent_run/speech_policy.py` + `persona/prompts.py`「对外单一表面 / 进行中任务」）。
 
 ### `memory/` — 记忆系统
 
@@ -185,7 +225,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 |---|---|
 | `persona.py` | `Persona` 主类（懒加载 / 文件路径管理）。 |
 | `processor.py` | **`build_persona_prompt(name, mood_key=None, group_description=None)`**：把 persona md + mood + group_description 组装成 system_prompt。 |
-| `prompts.py` | `ROLE_PLAYING_START / CHARACTER_BUILDING_TEMPLATE` 等模板。 |
+| `prompts.py` | `SYSTEM_CONSTRAINTS` / `TOOL_ORCHESTRATION_*` / 人设模板；含**对外单一表面**与**进行中任务**纪律。 |
 | `resource.py` | `load_persona / extract_compact_persona`（Heartbeat 决策阶段用压缩版 persona 节省 token）。 |
 | `mood.py` | 情绪状态机（per `mood_key` 隔离）。 |
 | `config.py` | `persona_config_manager`：每个 persona 一份 config.json，含 `ai_mode / inspect_interval / scope / target_groups / tool_packs / tool_names` 等。 |
@@ -198,7 +238,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | 文件 | 用途 |
 |---|---|
 | `message_sender.py` | `send_message_by_ai`：入口 `tool_gate_feedback`，文本走 `send_chat_result`；支持 `img_xxx`/`res_xxx`/http/base64。 |
-| `subagent.py` | `create_subagent`：让主人格生成单步 Kanban 叶子根任务。 |
+| `subagent.py` | `create_subagent`：Kanban 叶子 / transient 能力代理；回执分【工具通道】/【聊天通道】；异步 ack 强制主人格 `<SILENCE>`。 |
 | `scheduler.py` | `add_once_task / add_interval_task / cancel_task / list_my_tasks`：定时任务工具集。 |
 | `meme_tools.py` | 表情包检索 / 触发。 |
 | `html_render_tools.py` | `render_html_to_image`（**buildin 保底**，自由 HTML）；`render_card` / `render_markdown_to_image`（media 按需）。 |
@@ -229,10 +269,20 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 文件 | 用途 |
 |---|---|
-| `ai_config.py` | `ai_config` 主开关（`enable / enable_memory / multi_agent_lenth` 等）。 |
-| `models.py` | `get_model_for_task("high" / "low")`：按 `task_level` 路由到不同模型。 |
-| `provider_config_manager.py` | 多 provider 注册表。 |
-| `openai_config/` / `anthropic_config/` | 两套内置 provider。 |
+| `ai_config.py` | `ai_config` 主开关（含 `scaffold_wall_clock_budget` / `suppress_intermediate_text` / 呈现层出图兜底等）。 |
+| `models.py` | `get_model_for_task("high" / "low")`：按 `task_level` 路由；§23 墙钟 HTTP 超时。 |
+| `provider_config_manager.py` / `provider_router.py` | 多 provider 注册与路由。 |
+| `openai_config/` / `anthropic_config/` / `gemini_config/` | 内置 provider 工厂。 |
+
+### `budget/` / `approval/` / `command_exec/` / `multimodal/` / `image_understand/`
+
+| 目录 | 用途 |
+|---|---|
+| `budget/` | 用量预算规则 + `budget_manager` 闸门（交互/自主 scope）。 |
+| `approval/` | 统一审批中心（`AIApprovalRequest` + submit/resolve）。 |
+| `command_exec/` | 主人 shell 审批执行链（policy / runner / audit）。 |
+| `multimodal/` | ASR / 文档 / 视频帧 / Gemini Files 等。 |
+| `image_understand/` | 图片理解入口（可被 run 内嵌调用）。 |
 
 ### `database/` — ai_core 自有 ORM 模型
 

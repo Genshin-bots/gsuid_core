@@ -107,6 +107,33 @@ def test_incomplete_delivery_accepts_fact_package() -> None:
     assert not looks_like_incomplete_subagent_delivery(md)
 
 
+def test_incomplete_delivery_accepts_res_handle_summary() -> None:
+    """artifact 短摘要含 res_ 不得判 incomplete（交付误杀回归）。"""
+    from gsuid_core.ai_core.buildin_tools.subagent import (
+        looks_like_incomplete_subagent_delivery,
+    )
+
+    summary = (
+        "事实包已登记为 **`res_fa2c9a5b1364`**（22,282 字节，text/markdown）。请主persona把句柄转给 render_agent。"
+    )
+    assert not looks_like_incomplete_subagent_delivery(summary)
+    assert not looks_like_incomplete_subagent_delivery(
+        "【research_agent 临时代理已完成 / transient 模式】\n\n" + summary
+    )
+
+
+def test_ooc_scrub_kills_res_handle_but_capability_path_must_not() -> None:
+    """roleplay scrub 会杀 res_；能力代理 return 不得走该路径。"""
+    from gsuid_core.ai_core.output_firewall import check_ooc, scrub_or_fallback
+
+    sample = "事实包已登记为 **`res_fa2c9a5b1364`**，请转 render_agent。"
+    hit = check_ooc(sample)
+    assert hit is not None
+    out, scrubbed = scrub_or_fallback(sample)
+    assert scrubbed is True
+    assert "res_" not in out
+
+
 def test_followup_task_mentions_no_render() -> None:
     from gsuid_core.ai_core.buildin_tools.subagent import _delivery_followup_task
 

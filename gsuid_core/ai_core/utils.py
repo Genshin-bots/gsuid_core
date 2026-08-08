@@ -1282,8 +1282,15 @@ async def send_chat_result(
             await _send_trailing_artifacts()
             return
 
-    # 按换行分割为多条消息；整次发送仅保留首个 @（框架 force 与正文合并去重）
-    blocks = re.split(r"\n\s*\n", clean_text)
+    # 按空行分割为多条消息；人格连发上限 2 条（真人不会刷 5～7 段）
+    # 超出部分并入最后一条，避免 IM 刷屏。
+    _PERSONA_MAX_BUBBLES = 2
+    blocks = [b for b in re.split(r"\n\s*\n", clean_text) if b.strip()]
+    if len(blocks) > _PERSONA_MAX_BUBBLES:
+        head = blocks[: _PERSONA_MAX_BUBBLES - 1]
+        tail = "\n".join(b.strip() for b in blocks[_PERSONA_MAX_BUBBLES - 1 :])
+        blocks = [*head, tail]
+        logger.debug("persona bubbles clamped to %s", _PERSONA_MAX_BUBBLES)
     _force_at = (at_user_id or "").strip()
     _at_done = False
 

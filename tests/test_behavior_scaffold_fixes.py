@@ -156,11 +156,13 @@ def test_no_tool_reminder_exempts_chitchat() -> None:
 
     assert "闲聊" in _PROGRESSIVE_TOOLS_SKIP_INTENTS
 
-    src = inspect.getsource(GsCoreAIAgent._execute_run_once)
-    inject_idx = src.index("已注入连续无工具调用强制提醒")
-    inject_block = src[max(0, inject_idx - 800) : inject_idx]
+    # 注入在 prepare；计数在 settle（均由 _execute_run_once 编排）
+    inject_src = inspect.getsource(GsCoreAIAgent._run_once_prepare_user_message)
+    inject_idx = inject_src.index("forced_nudge_consecutive_turns")
+    inject_block = inject_src[max(0, inject_idx - 800) : inject_idx]
     assert "intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS" in inject_block
 
-    count_idx = src.index("更新连续无工具调用计数")
-    count_block = src[count_idx : count_idx + 400]
+    count_src = inspect.getsource(GsCoreAIAgent._run_once_settle_result)
+    count_idx = count_src.index("更新连续无工具调用计数")
+    count_block = count_src[count_idx : count_idx + 400]
     assert "intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS" in count_block

@@ -181,8 +181,9 @@ def test_compact_runs_after_history_surgery() -> None:
 
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
-    src = inspect.getsource(GsCoreAIAgent._execute_run_once)
-    assert src.index("_ooc_rewrite_and_send") < src.index("_compact_report_blocks_in_history")
+    # 收尾在 _run_once_settle_result：闸门收尾（内含 OOC 重说）先于 report 占位压缩
+    src = inspect.getsource(GsCoreAIAgent._run_once_settle_result)
+    assert src.index("_resolve_output_gate_after_run") < src.index("_compact_report_blocks_in_history")
 
 
 # ─────────────────────────────────────────────

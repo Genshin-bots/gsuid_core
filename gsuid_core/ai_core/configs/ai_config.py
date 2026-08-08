@@ -279,17 +279,17 @@ AI_CONFIG: Dict[str, GSC] = {
         "长文本呈现",
     ),
     "render_long_markdown_as_image": GsBoolConfig(
-        "长markdown整篇出图",
-        "开启后, 结构化的长 markdown 回复(含表格/多标题/代码块)会整篇渲染成一张图片下发, "
-        "替代按空行拆成几十条消息逐条刷屏(IM 也不渲染 markdown)。判定刻意保守, "
-        "不影响人格'连发2-3条短消息'的日常闲聊(纯口语无表格/标题不会命中)",
-        True,
+        "长markdown整篇出图(呈现层兜底)",
+        "仅作**兜底**：主路径应委派 render_agent 出设计图。"
+        "开启后, 仍漏网的结构化长 markdown 会整篇渲成资料图防刷屏；"
+        "默认关闭，避免主人格浅分析被渲成丑图双发。判定刻意保守。",
+        False,
     ),
     "markdown_image_min_chars": GsIntConfig(
         "整篇出图最小字符数",
         "文本短于该字符数一律不出图(仍按空行拆条连发), 避免把简短回复也变成图片",
-        210,
-        options=[150, 210, 300, 500, 800],
+        400,
+        options=[210, 300, 400, 500, 800],
     ),
     "markdown_image_max_width": GsIntConfig(
         "整篇出图最大宽度",

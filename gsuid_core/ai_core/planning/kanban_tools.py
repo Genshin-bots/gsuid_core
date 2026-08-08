@@ -1125,15 +1125,31 @@ async def list_my_kanban_tasks(
     if not roots:
         return f"ℹ️ 过滤后无任务（goal_filter={goal_filter!r}, status={status}）。"
 
-    lines = [f"📋 Kanban 任务树（owner={owner}，{len(roots)} 棵）：", ""]
+    lines = [f"📋 任务树（owner={owner}，{len(roots)} 棵）：", ""]
     lines.append("| # | goal | 状态 | 周期 | 错误 |")
     lines.append("|---|------|------|------|------|")
+    safe_bits: list[str] = []
     for r in roots[:30]:
         trig = (r.recurring_trigger or "-")[:24]
         err = (r.failure_reason or "")[:40]
         lines.append(f"| #{r.ordinal} | {(r.goal or '')[:50]} | {r.status} | {trig} | {err} |")
+        # 聊天通道转述：状态人话，禁止原样念 goal/节点
+        _sc = {
+            "pending": "还没开始",
+            "running": "还在弄、还没好",
+            "paused": "先停着",
+            "waiting_approval": "等你确认",
+            "completed": "弄好了",
+            "failed": "这趟没成",
+            "cancelled": "取消了",
+        }
+        _phrase = _sc[r.status] if r.status in _sc else r.status
+        safe_bits.append(f"事项#{r.ordinal}→{_phrase}")
     if len(roots) > 30:
         lines.append(f"…还有 {len(roots) - 30} 棵未列出。")
+    if safe_bits:
+        lines.append("")
+        lines.append("【user_safe_summary】对用户只转述下列人话（勿念表格/goal/节点名）：" + "；".join(safe_bits))
     return "\n".join(lines)
 
 

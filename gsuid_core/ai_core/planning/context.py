@@ -63,7 +63,7 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
                 visible.append(t)
         tasks = visible
 
-    lines = ["【你正在为对方推进的 Kanban 任务（可被追问，无需 ID）】"]
+    lines = ["【你正在为对方推进的事项（可被追问进度；对用户只说人话，勿念编号/节点名）】"]
     if other_scope_count:
         lines.append(f"（另有 {other_scope_count} 个任务在其他会话推进中——细节不属于本群，被问到也只说这一句）")
     for t in tasks[:_MAX_INJECT]:
@@ -72,7 +72,16 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
         # 周期模板：显式标注"模板态"——主人格看到这种不要 fail 重建
         is_template = bool(t.recurring_trigger)
         kind_label = "周期模板（等 cron 触发）" if is_template else "一次性任务"
-        lines.append(f"任务#{t.ordinal}｜{t.display_name}｜{status_cn}｜{kind_label}｜更新于{upd}")
+        # display_name 可能含内部描述：截断且不暴露 profile
+        _title = (t.display_name or t.goal or "进行中事项")[:40]
+        lines.append(f"事项#{t.ordinal}｜{_title}｜{status_cn}｜{kind_label}｜更新于{upd}")
+        # 用户安全摘要（聊天通道转述用）
+        if t.status in ("running", "pending"):
+            lines.append("  └ 对外可说：还在弄、还没好（勿提内部节点）")
+        elif t.status == "waiting_approval":
+            lines.append("  └ 对外可说：卡在等你确认/点一下")
+        elif t.status == "failed":
+            lines.append("  └ 对外可说：这趟没成/翻砸了（勿念堆栈）")
 
         # 子任务摘要——只取活跃 + 最近完成 + 最近失败各几条，避免太长
         try:
@@ -88,13 +97,12 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
             bucket[ch.status] = bucket.get(ch.status, 0) + 1
         if bucket:
             buckets_text = "、".join(f"{_status_cn(k)}×{v}" for k, v in bucket.items())
-            lines.append(f"  └ 子任务 {len(children)} 个：{buckets_text}")
-        # 列出"running / waiting_approval / failed"个别——主人格最需要知道这几类
+            lines.append(f"  └ 子步骤 {len(children)} 个：{buckets_text}")
+        # 不注入 agent_profile，避免主人格复述 render_agent 等
         salient = [ch for ch in children if ch.status in ("running", "waiting_approval", "failed")][:4]
         for ch in salient:
-            agent = ch.agent_profile or "-"
-            short = (ch.display_name or ch.goal or "")[:30]
-            lines.append(f"     · #{ch.ordinal} [{agent}] {short}｜{_status_cn(ch.status)}")
+            short = (ch.display_name or ch.goal or "步骤")[:30]
+            lines.append(f"     · 步骤#{ch.ordinal} {short}｜{_status_cn(ch.status)}")
     return "\n".join(lines)
 
 

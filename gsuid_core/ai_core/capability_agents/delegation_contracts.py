@@ -9,10 +9,12 @@ from typing import Any
 
 # 主人格：长结构化结果 → 委派 render_agent（禁止自渲）；短结论不必出图
 POST_TOOL_OUTPUT_CONTRACT = (
-    "（系统：本轮已有工具返回。仅当结果含 **markdown 表 / ≥3 段正文 / 多行对比列表** 时，"
-    '才 create_subagent(agent_profile="render_agent", task=完整事实包或 res_ 句柄) 出图；'
-    "一两句结论或单点数字**不要**出图。禁止主人格自写 HTML / 直调 render_*；"
-    "禁止台词复述、禁止 <report>。台词只留一两句角色化引导。）"
+    "（系统：本轮已有工具返回。"
+    "【工具通道】仅当结果含 markdown 表 / ≥3 段正文 / 多行对比列表 时，"
+    'create_subagent(agent_profile="render_agent", task=完整事实包或 res_ 句柄)；'
+    "单点结论不要出图；禁止自写 HTML / 直调 render_* / <report>。"
+    "【聊天通道】后台等待只 <SILENCE>；发图后至多一句角色口吻；"
+    "禁止念节点名/句柄/「让某某出图」；禁止把长数据当台词。）"
 )
 
 # 能力代理（非 render）：只交 Markdown/JSON 事实包；出图归 render_agent
@@ -28,9 +30,10 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
 POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "（系统：本轮已有工具返回。你是 render_agent——"
     "若尚未成功出图：事实包**尽量全文上图**（数字/表/论据/风险/时点勿删），"
-    "写成**一份**高密度竖长 HTML，只调用一次 render_html_to_image；"
-    "html/body 须不透明实色底（暗色或浅色成套 token，非写死单一色）；"
-    "暗底须浅字；长文禁止压成少字海报。"
+    "写成**一份**高密度 HTML（竖/横按内容），只调用一次 render_html_to_image；"
+    "html/body 须不透明实色底；**色板与版式按主题选**（游戏/天气/财经/纪要勿总用同一暗蓝）；"
+    "事实包有 https 配图则用 <img src=该URL>（系统自动下载嵌图），禁止纯文字墙顶替已有图；"
+    "暗底须浅字、浅底须深字；长文禁止压成少字海报。"
     "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
     "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
     "禁止为好看删硬信息；禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"

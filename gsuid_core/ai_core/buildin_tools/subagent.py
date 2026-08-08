@@ -73,16 +73,28 @@ def _strip_transient_wrapper(text: str) -> str:
     return _TRANSIENT_PREFIX_RE.sub("", s).strip()
 
 
+# 已登记产物句柄：有 res_ 即视为可消费交付（勿被 OOC 误杀后再判 incomplete）
+_RES_HANDLE_RE = re.compile(r"\bres_[0-9a-fA-F]{6,}\b")
+_ARTIFACT_REGISTERED_RE = re.compile(
+    r"(已登记\s*artifact|artifact[_\s-]?put|事实包已登记|登记为\s*\*?`?res_)",
+    re.IGNORECASE,
+)
+
+
 def looks_like_incomplete_subagent_delivery(text: str) -> bool:
     """能力代理是否只回了过程句 / 空壳，没有可消费的事实包。
 
     形状判据：过短且无结构，或命中过程口癖且无表格/列表/JSON/多段落。
+    有 res_ 句柄或 artifact 登记声明 → 一律视为完整（深度调研常把正文放 artifact）。
     """
     body = _strip_transient_wrapper(text)
     if not body:
         return True
     # 错误前缀：已是失败语义，主路径另处理，不视为「可再催」的空过程句
     if body.startswith("⚠️") or "执行失败" in body[:40]:
+        return False
+    # 成功交付硬信号：句柄 / 登记声明（优先于过程口癖）
+    if _RES_HANDLE_RE.search(body) or _ARTIFACT_REGISTERED_RE.search(body):
         return False
     has_structure = (
         "|" in body
@@ -130,14 +142,16 @@ def _main_persona_receipt_hint(*, image_likely: bool = False) -> str:
 
     if image_likely:
         return (
-            f"主人格：角色短句引导；{RENDER_DONE_RECEIPT_MARK}；"
-            "对用户只说结论与情绪，禁止念工具名/句柄/流程。"
-            "禁止把代理全文当群聊台词。"
+            f"【工具通道】{RENDER_DONE_RECEIPT_MARK}；"
+            "【聊天通道】发图后至多一句角色口吻；禁止念工具名/句柄/节点名/流程；"
+            "禁止把代理全文当群聊台词；主语永远是你自己。"
         )
     return (
-        "主人格：角色短句结论；长结构化结果再委派渲染节点出图；"
-        "禁止自写 HTML / 直调 render_*；禁止把代理全文当群聊台词；"
-        "对用户禁止提内部工具名或 res_ 句柄。"
+        "【工具通道】长结构化结果再 "
+        'create_subagent(agent_profile="render_agent", task=事实包或句柄) 出图；'
+        "禁止自写 HTML / 直调 render_*。"
+        "【聊天通道】未发图前勿说「图好了」；等待中只 <SILENCE>；"
+        "禁止把代理全文当台词；禁止对用户提节点名/句柄/「让某某去画」。"
     )
 
 
