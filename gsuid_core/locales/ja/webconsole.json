@@ -24,8 +24,6 @@
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
   "log.webconsole.chat_received_user": "[chat_with_history] user_id={user_id} を受信しました",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' が存在しないため、汎用アシスタントのプロンプトにフォールバックする",
-  "log.webconsole.group_open_gate_silence": "[chat_with_history] グループ会話の発言ゲート → SILENCE",
-  "log.webconsole.intent_classify_fail": "[chat_with_history] 意図分類に失敗したため空にフォールバック: {e}",
   "log.webconsole.config_name_item_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {item_name} の書き込みに失敗",
   "log.webconsole.config_name_key_write_exception": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込み中に例外が発生: {e}",
   "log.webconsole.config_name_key_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込みに失敗",
@@ -62,10 +60,12 @@
   "log.webconsole.file_path": "[WebConsole] ファイルの提供を試行: {file_path}",
   "log.webconsole.file_path_mime_type": "[WebConsole] {file_path} の MIME タイプを強制的に {mime_type} に設定",
   "log.webconsole.framework_config_name_writing_fail": "[フレームワーク設定][{config_name}] 設定項目 {item_name} の書き込み中に例外が発生: {e}",
+  "log.webconsole.group_open_gate_silence": "[chat_with_history] グループ会話の発言ゲート → SILENCE",
   "log.webconsole.gscore_exception_chat_history": "[GsCore][chat_with_history] 例外: {e}",
   "log.webconsole.gscore_history_fail_details": "[GsCore][chat_with_history] 例外の詳細:",
   "log.webconsole.gscore_retrieved_long_term": "[GsCore] 長期記憶を取得した: {p0} chars: {p1}...",
   "log.webconsole.index_html_path": "[WebConsole] index.html を返す、パス: {index_path}",
+  "log.webconsole.intent_classify_fail": "[chat_with_history] 意図分類に失敗したため空にフォールバック: {e}",
   "log.webconsole.ip_client_email_fail": "[WebConsole] ログイン失敗: IP={client_ip}, email={email}",
   "log.webconsole.ip_client_error": "[WebConsole] 登録コードが正しくない: IP={client_ip}",
   "log.webconsole.ip_client_retry_after": "[WebConsole] ログインリクエストがレート制限された: IP={client_ip}, {retry_after}s 後に再試行",
@@ -119,5 +119,10 @@
   "msg.webconsole.auth_avatar_upload_success": "アバターのアップロードに成功しました",
   "msg.webconsole.batch_push.all_groups": "すべてのグループ (ALLGROUP)",
   "msg.webconsole.batch_push.all_users": "すべてのユーザー (ALLUSER)",
-  "msg.webconsole.batch_push.success": "送信成功！"
+  "msg.webconsole.batch_push.success": "送信成功！",
+  "msg.webconsole.tool_output.batch_limit": "一括削除は 500 件までです",
+  "msg.webconsole.tool_output.file_not_found": "ディスク上にファイルがありません",
+  "msg.webconsole.tool_output.ids_required": "削除する id リストが必要です",
+  "msg.webconsole.tool_output.no_payload": "ダウンロード可能な本文がありません",
+  "msg.webconsole.tool_output.not_found": "FileOS レコード {record_id} が見つかりません"
 }

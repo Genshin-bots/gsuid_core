@@ -89,36 +89,37 @@ async def read_handle(
     ctx: RunContext[ToolContext],
     handle_id: str,
     offset: int = 0,
-    limit: int = 12000,
+    limit: int = 8000,
 ) -> str:
-    """统一读句柄：to_/sa_/res_/img_ 均可；图片只返回发送提示。"""
+    """统一读句柄：to_/sa_/res_/img_ 均可；图片只返回发送提示。
+
+    长文按 **字符** offset/limit 分页（见返回文首【读窗口】）。
+    续读请把 offset 设为上一页提示的 next（如 got 段末），勿重复 offset=0。
+    """
     resolved = await resolve_handle(handle_id)
     if resolved is None:
         return f"⚠️ 句柄不存在: {handle_id}"
     if not await _handle_access_allowed(resolved, ctx):
         return "⚠️ 无权限读取该句柄。"
-    return format_resolved(resolved, offset=offset, limit=limit)
+    # 防单次过大；与外层 handle_tool_result 协调，分页体不再被二次砍头
+    lim = max(1, min(int(limit), 32000))
+    off = max(0, int(offset))
+    return format_resolved(resolved, offset=off, limit=lim)
 
 
-@ai_tools(category="common", capability_domain="产物")
-async def search_handles(
+async def search_fileos_outputs(
     ctx: RunContext[ToolContext],
     query: str,
     scope: str = "auto",
     limit: int = 8,
+    *,
+    section_header: bool = True,
 ) -> str:
-    """统一搜索：FileOS hybrid+SQL 融合（RRF）。"""
-    return await search_persisted_outputs(ctx, query=query, scope=scope, limit=limit)
+    """FileOS hybrid+SQL 融合检索（**非工具**，供 ``search_knowledge`` 联邦）。
 
-
-@ai_tools(category="common", capability_domain="产物")
-async def search_persisted_outputs(
-    ctx: RunContext[ToolContext],
-    query: str,
-    scope: str = "auto",
-    limit: int = 8,
-) -> str:
-    """混合检索 + SQL 摘要 RRF 融合。"""
+    已下线独立 agent 工具 ``search_persisted_outputs`` / ``search_handles``，
+    避免与 ``search_knowledge`` 双入口选型混乱。
+    """
     owner, scope_key, err = _require_owner(ctx, scope)
     if err:
         return err
@@ -152,8 +153,12 @@ async def search_persisted_outputs(
 
     fused = rrf_fuse([hybrid_ids, sql_ids], limit=limit)
     if not fused:
-        return "ℹ️ 未找到匹配的落盘记录。"
-    lines = [f"📚 融合检索 {len(fused)} 条："]
+        return ""
+    lines: list[str] = []
+    if section_header:
+        lines.append(f"【近期检索落盘】融合命中 {len(fused)} 条（历史工具材料，数字可能过时）：")
+    else:
+        lines.append(f"📚 融合检索 {len(fused)} 条：")
     for rid in fused:
         if rid in sql_map:
             lines.append(_line(sql_map[rid]))
@@ -163,7 +168,7 @@ async def search_persisted_outputs(
             lines.append(f"- {rid} | hybrid | {sm}")
         else:
             lines.append(f"- {rid}")
-    lines.append("用 read_handle(handle_id) 分页取全文。")
+    lines.append("需要全文时用 read_handle(handle_id=…) 分页取。")
     return "\n".join(lines)
 
 
@@ -247,7 +252,7 @@ async def read_persisted_output(
     ctx: RunContext[ToolContext],
     record_id: str,
     offset: int = 0,
-    limit: int = 12000,
+    limit: int = 8000,
 ) -> str:
     """兼容旧名：等价 read_handle。"""
     return await read_handle(ctx, handle_id=record_id, offset=offset, limit=limit)

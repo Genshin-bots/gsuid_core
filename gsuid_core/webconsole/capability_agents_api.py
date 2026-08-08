@@ -88,7 +88,10 @@ async def list_capability_agents(
     _: Dict[str, Any] = Depends(require_auth),
     source: Optional[str] = Query(None, description="按来源筛选：builtin / plugin / user / persona"),
 ) -> Dict[str, Any]:
-    """列出所有节点（含来源标记）。``source=persona`` 时列 persona 投影节点。"""
+    """列出所有节点（含 ``source`` 与 ``plugin`` 来源插件名）。
+
+    ``plugin``：builtin 为 ``core``；plugin 源为插件目录名；user/persona 为空串。
+    """
     from gsuid_core.ai_core.capability_agents.persistence import _node_to_dto
 
     include_persona = source is None or source == "persona"

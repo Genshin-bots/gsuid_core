@@ -873,9 +873,12 @@ async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,
     offset: int = 0,
-    limit: int = 12000,
+    limit: int = 8000,
 ) -> str:
     """按 res 句柄取回 artifact 内容（支持分页以避免大件截断）。
+
+    长文按 **字符** offset/limit 分页；返回文首含【读窗口】与续读 offset。
+    续读请用上一页提示的 next offset，勿一直 offset=0。
 
     访问策略：
     - 同 ``root_task_id``：放行（多步 Kanban 兄弟节点互读）。
@@ -898,7 +901,9 @@ async def artifact_get(
             )
         )
         return "⚠️ 该 artifact 属于其它任务树，跨树读取被拒绝。"
-    return _format_artifact(art, offset=offset, limit=limit)
+    lim = max(1, min(int(limit), 32000))
+    off = max(0, int(offset))
+    return _format_artifact(art, offset=off, limit=lim)
 
 
 @ai_tools(category="planning", capability_domain="产物")
@@ -1037,7 +1042,7 @@ def _format_artifact(
     art: AIAgentArtifact,
     *,
     offset: int = 0,
-    limit: int = 12000,
+    limit: int = 8000,
 ) -> str:
     """格式化 artifact；与 FileOS 共用分页读协议。"""
     from gsuid_core.ai_core.planning.tool_output_protocol import (

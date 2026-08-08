@@ -406,8 +406,11 @@ async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 
     else:
         res_str = str(result)
 
-    # 截断过长的返回值，防止 Token 爆炸
+    # 截断过长返回，防 Token 爆炸。自带【读窗口】分页的读工具禁止再砍头：
+    # 否则续读 offset 丢失；默认读窗 8k 与外层 max_length 错位会跳页丢内容。
     if len(res_str) > max_length:
+        if "【读窗口】" in res_str[:800] or "…[分页 " in res_str or "\n[分页 " in res_str:
+            return res_str
         return res_str[:max_length] + f"\n...[系统截断: 省略后 {len(res_str) - max_length} 字符]"
     return res_str
 

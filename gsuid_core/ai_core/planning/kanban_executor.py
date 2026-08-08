@@ -42,6 +42,37 @@ _VALID_USER_TYPES = ("group", "direct", "channel", "sub_channel")
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 
+def _artifact_text_excerpt(arts: List[AIAgentArtifact], *, limit: int = 4000) -> str:
+    """拼接 text/* artifact 正文摘要（优先 inline，再读 path），供主人格转述。"""
+    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+
+    if limit <= 0 or not arts:
+        return ""
+    chunks: List[str] = []
+    remaining = limit
+    for a in arts:
+        if remaining <= 0:
+            break
+        mime = (a.mime or "text/plain").strip().lower()
+        if mime.startswith("image/"):
+            continue
+        body, err = load_payload_text(
+            payload_inline=a.payload_inline,
+            payload_path=a.payload_path or "",
+        )
+        if err or not body:
+            summary = (a.summary or "").strip()
+            if not summary:
+                continue
+            piece = summary[:remaining]
+        else:
+            piece = body[:remaining]
+        if piece:
+            chunks.append(piece)
+            remaining -= len(piece)
+    return "\n---\n".join(chunks)
+
+
 def _sanitize_for_user(text: str) -> str:
     """剥离面向用户文本里的围栏代码块并限长，用于转译为空 / 转译异常时的兜底返回。
 

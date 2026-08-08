@@ -246,6 +246,30 @@ async def create_subagent(
     - ≥2 能力接力或周期任务 → ``register_kanban_task``。
     - 要事后追溯产物 → 默认 transient=False。
     """
+    # 子代理墙钟不计入主人格 soft budget（research 常 >45s，否则触发禁工具→无法 render）
+    from gsuid_core.ai_core.wall_clock import pause_wall_clock
+
+    async with pause_wall_clock():
+        return await _create_subagent_impl(
+            ctx,
+            task=task,
+            max_tokens=max_tokens,
+            max_iterations=max_iterations,
+            agent_profile=agent_profile,
+            transient=transient,
+        )
+
+
+async def _create_subagent_impl(
+    ctx: RunContext[ToolContext],
+    *,
+    task: str,
+    max_tokens: int,
+    max_iterations: int,
+    agent_profile: str,
+    transient: bool,
+) -> str:
+    """create_subagent 实现体（已在 pause_wall_clock 内）。"""
     # 指定 profile：默认 transient 的走 ad-hoc，其余转 Kanban
     if agent_profile:
         from gsuid_core.ai_core.agent_node import resolve_node

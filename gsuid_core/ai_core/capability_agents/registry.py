@@ -36,6 +36,7 @@ class CapabilityAgentProfile:
 
 
 def _profile_to_node(profile: CapabilityAgentProfile) -> AgentNode:
+    # plugin 名由 register_agent_node 按调用栈推断（plugins/<name>）
     return AgentNode(
         node_id=profile.profile_id,
         display_name=profile.display_name,
@@ -47,6 +48,7 @@ def _profile_to_node(profile: CapabilityAgentProfile) -> AgentNode:
         tool_names=list(profile.tool_names),
         tool_query=profile.tool_query,
         source="plugin",
+        plugin="",
     )
 
 

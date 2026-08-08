@@ -197,8 +197,8 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
    先查花名册/`find_tools` 命中能力节点 → **先**一句等待（「得等一会儿」）→
    `create_subagent(agent_profile=node_id)`；收事实包后再 `render_agent` 出图
    （出图委派不对用户说话）；本轮禁长业务台词、禁主人格自渲 HTML。
-5. **轻任务**：单点事实/是非可直调；**实时数值/状态读数**先 `find_tools` 找专域 API，
-   不要默认 `web_search`；多项/多日/对比出图仍走 render_agent。
+5. **轻任务**：单点事实/是非可直调；**已有资料/历史搜过**先 `search_knowledge`（含落盘历史）；
+   **实时数值**先 `find_tools` 找专域 API，不要默认 `web_search`；多项/多日/对比出图仍走 render_agent。
 6. **改/删/停/暂停**已有提醒：必须先 `list_scheduled_tasks`（或 find_tools 找 list）定位，
    再 modify/cancel/pause；**禁止**凭印象 `add_*` 新建一条、禁止空口说已改好。
 7. 单步提醒 → add_once/interval；多步/长信息交付 → Kanban；追问产物 → `artifact_get_recent`。

@@ -100,6 +100,11 @@ async def list_artifacts(
     }
 
 
+def _is_image_mime(mime: str) -> bool:
+    m = (mime or "").strip().lower()
+    return m.startswith("image/")
+
+
 @app.get("/api/ai/artifacts/{res_id}", summary="详情 + 预览", tags=ARTIFACTS)
 async def get_artifact_detail(
     res_id: str,
@@ -108,14 +113,39 @@ async def get_artifact_detail(
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
         return {"status": 1, "msg": t("msg.webconsole.artifact.not_found", res_id=res_id), "data": None}
+    detail = _artifact_dict(art)
+    mime = (art.mime or "").strip()
+    # 图片：禁止当文本预览（会出 �PNG 乱码）；前端用 raw 端点拉 blob 展示
+    if _is_image_mime(mime):
+        detail["payload_kind"] = "image"
+        detail["payload_preview"] = None
+        detail["raw_url"] = f"/api/ai/artifacts/{res_id}/raw" if art.payload_path else None
+        return {"status": 0, "msg": "ok", "data": detail}
+
     payload_preview: Optional[str] = art.payload_inline
     if not payload_preview and art.payload_path:
-        try:
-            payload_preview = Path(art.payload_path).read_text(encoding="utf-8", errors="replace")[:8000]
-        except OSError:
-            payload_preview = None
-    detail = _artifact_dict(art)
+        p = Path(art.payload_path)
+        # 无 mime 时用魔数防二进制误读
+        if p.exists():
+            try:
+                head = p.read_bytes()[:8]
+                if head.startswith(b"\x89PNG") or head[:3] == b"\xff\xd8\xff" or head[:4] == b"GIF8":
+                    detail["payload_kind"] = "image"
+                    detail["payload_preview"] = None
+                    detail["raw_url"] = f"/api/ai/artifacts/{res_id}/raw"
+                    if not mime:
+                        detail["mime"] = (
+                            "image/png"
+                            if head.startswith(b"\x89PNG")
+                            else ("image/gif" if head[:4] == b"GIF8" else "image/jpeg")
+                        )
+                    return {"status": 0, "msg": "ok", "data": detail}
+                payload_preview = p.read_text(encoding="utf-8", errors="replace")[:8000]
+            except OSError:
+                payload_preview = None
+    detail["payload_kind"] = "text"
     detail["payload_preview"] = payload_preview
+    detail["raw_url"] = f"/api/ai/artifacts/{res_id}/raw" if art.payload_path else None
     return {"status": 0, "msg": "ok", "data": detail}
 
 

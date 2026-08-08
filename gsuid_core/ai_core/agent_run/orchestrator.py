@@ -63,8 +63,7 @@ class OrchestratorPhase(RunOnceHost):
         """
         from gsuid_core.ai_core.statistics import statistics_manager
 
-        # 抑制中间文本的默认值改由 ai_config 决定（网页控制台可改、即时生效，默认 True）；
-        # 保留形参供插件显式覆盖：调用方显式传 True 仍强制抑制，故取两者或值。
+        # 形参默认 False；配置默认 True。任一为 True 则抑制（控制台可改配置）。
         _suppress = suppress_intermediate_text or bool(ai_config.get_config("suppress_intermediate_text").data)
 
         st = RunOnceState(

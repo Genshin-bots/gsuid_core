@@ -26,6 +26,22 @@ _TTL_DAYS = 30
 _FOLD_PRIVATE = 1200
 _FOLD_GROUP = 900
 _NEVER_FOLD_TOOLS = frozenset({"create_subagent"})
+# 只读/回读类：内容已在 artifact/FileOS 真身里，禁止再落一份 tool_output
+_SKIP_PERSIST_TOOLS = frozenset(
+    {
+        "artifact_get",
+        "artifact_get_recent",
+        "artifact_list",
+        "read_handle",
+        "read_persisted_output",
+        "list_persisted_outputs",
+        "grep_persisted_outputs",
+        "search_knowledge",  # 只读联邦检索，不落盘
+        "read_image",  # 句柄读图，非新材料
+        "list_my_kanban_tasks",
+        "list_my_tasks",
+    }
+)
 
 
 def _tool_output_dir() -> Path:
@@ -43,7 +59,10 @@ def fold_threshold(*, is_group: bool = False) -> int:
 
 
 def should_persist_tool_return(tool_name: str, content: str) -> bool:
-    """结构门：过短或异步挂起 ack 不落盘。"""
+    """结构门：过短 / 挂起 ack / 只读回读工具 不落盘。"""
+    tn = (tool_name or "").strip()
+    if tn in _SKIP_PERSIST_TOOLS:
+        return False
     body = (content or "").strip()
     if len(body) < _MIN_PERSIST_CHARS:
         return False

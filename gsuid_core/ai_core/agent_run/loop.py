@@ -460,7 +460,9 @@ class LoopPhase(RunOnceHost):
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                     continue
-                if st.suppress_intermediate_text and _saw_tool_call_this_turn:
+                # suppress 中间碎碎念，但「委派/出图等待句」必须能出站（即使同响应里 Tool 在前）
+                _is_wait_comfort = looks_like_wait_comfort(_text)
+                if st.suppress_intermediate_text and _saw_tool_call_this_turn and not _is_wait_comfort:
                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
                     continue
                 if self.create_by in _MAIN_PERSONA_CREATE_BY:
@@ -488,7 +490,7 @@ class LoopPhase(RunOnceHost):
                             )
                         )
                         continue
-                    if looks_like_wait_comfort(_text):
+                    if _is_wait_comfort:
                         st.wait_comfort_sent = True
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
                     _text = strip_open_solicitations(_text)

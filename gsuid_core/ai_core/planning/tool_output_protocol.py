@@ -23,11 +23,11 @@ class PersistedHandleCard:
     long_structured: bool = True
 
     def format(self) -> str:
-        how = f"read_handle(handle_id={self.id!r}, offset=0, limit=12000)"
+        how = f"read_handle(handle_id={self.id!r}, offset=0, limit=8000)"
         lines = [
             f"[persisted id={self.id} kind={self.kind} mime={self.mime} size={self.size_bytes}]",
             f"summary: {self.summary[:200]}",
-            f"how_to_read: {how}  # 续读增大 offset；禁止把全文念给用户",
+            f"how_to_read: {how}  # 看返回文首【读窗口】再续读 offset；禁止全文念给用户",
         ]
         if self.long_structured:
             lines.append(
@@ -44,26 +44,41 @@ def format_paginated_body(
     head: str,
     text: str,
     offset: int = 0,
-    limit: int = 12000,
+    limit: int = 8000,
     read_hint: str = "",
 ) -> str:
-    """分页切片 + 统一续读提示。"""
+    """分页切片 + 统一续读提示。
+
+    窗口元信息放在 **payload 之前**（勿只放文末）：外层若再截断尾部，
+    模型仍能看到 offset/next，避免误以为永远第一页。
+    """
     total = len(text)
-    off = max(0, offset)
-    lim = max(0, limit)
-    sliced = text[off : off + lim]
-    if total <= len(sliced) and off == 0:
-        return head + f"payload:\n{sliced}"
-    more = off + lim < total
-    hint = ""
-    if more and read_hint:
-        hint = f"，{read_hint} offset={off + lim}"
-    elif more:
-        hint = f"，续读 offset={off + lim}"
-    suffix = f"\n…[分页 {off}-{off + len(sliced)}/{total}{hint}]"
-    if off > 0 and not more:
-        suffix = f"\n[分页 {off}-{off + len(sliced)}/{total}]"
-    return head + f"payload:\n{sliced}{suffix}"
+    off = max(0, int(offset))
+    lim = max(1, int(limit))  # limit=0 无意义，至少 1
+    end = min(total, off + lim)
+    sliced = text[off:end]
+    got = len(sliced)
+    more = end < total
+    next_off = end if more else None
+
+    # 文首窗口条：截断/日志只看开头时也能区分页
+    window = f"【读窗口】offset={off} limit={lim} got={got} total={total}"
+    if more and next_off is not None:
+        if read_hint:
+            window += f"；还有后续 → {read_hint} offset={next_off}"
+        else:
+            window += f"；还有后续 → offset={next_off}"
+    else:
+        window += "；已到文末" if off > 0 or got < total else "；全文已覆盖"
+
+    if total <= got and off == 0:
+        return head + f"{window}\npayload:\n{sliced}"
+
+    suffix = f"\n…[分页 {off}-{end}/{total}"
+    if more and next_off is not None:
+        suffix += f"，续读 offset={next_off}"
+    suffix += "]"
+    return head + f"{window}\npayload:\n{sliced}{suffix}"
 
 
 def load_payload_text(

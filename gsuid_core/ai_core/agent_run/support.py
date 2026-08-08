@@ -17,6 +17,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
     _WALL_CLOCK_CLOSE as _WALL_CLOCK_NUDGE,
     STATUS_INQUIRY_HINT as _STATUS_INQUIRY_HINT,
     _REPORT_SPEECH_NUDGE,
+    _WALL_CLOCK_PIPELINE,
     _RENDER_DELEGATE_NUDGE,
     _STATUS_ZERO_TOOL_NUDGE,
     wall_clock_nudge_for as _wall_clock_nudge_for,

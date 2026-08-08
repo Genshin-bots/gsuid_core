@@ -60,8 +60,16 @@ def test_paginated_body_hint() -> None:
         read_hint="read_handle(handle_id, offset, limit)",
     )
     assert "payload:" in page
+    assert "【读窗口】" in page
+    assert "offset=0" in page
     assert "分页" in page
     assert "read_handle" in page
+    page2 = format_paginated_body(head=head, text=body, offset=50, limit=50)
+    assert "offset=50" in page2
+    # 非周期内容：两页 payload 起点不同
+    p0 = page.split("payload:\n", 1)[1][:20]
+    p1 = page2.split("payload:\n", 1)[1][:20]
+    assert p0 != p1
 
 
 def test_load_payload_inline() -> None:
@@ -103,6 +111,12 @@ def test_should_persist_and_fold_gates() -> None:
     assert should_persist_tool_return("web_search_tool", "x" * 900)
     pending = "⏳ 子任务后台执行中（已同步等 5s，将自动回灌）。" + ("y" * 900)
     assert not should_persist_tool_return("create_subagent", pending)
+    # 只读回读工具：已是 artifact/FileOS 真身，禁止再落 tool_output
+    long_read = "artifact body " * 200
+    assert not should_persist_tool_return("artifact_get", long_read)
+    assert not should_persist_tool_return("artifact_get_recent", long_read)
+    assert not should_persist_tool_return("read_handle", long_read)
+    assert not should_persist_tool_return("read_persisted_output", long_read)
     # create_subagent 永不折叠
     assert not should_fold_for_model("x" * 5000, tool_name="create_subagent")
     assert should_fold_for_model("x" * 1500, tool_name="web_search_tool")

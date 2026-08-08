@@ -24,8 +24,6 @@
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
   "log.webconsole.chat_received_user": "[chat_with_history] 收到 user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词",
-  "log.webconsole.group_open_gate_silence": "[chat_with_history] 群聊开口门 → SILENCE",
-  "log.webconsole.intent_classify_fail": "[chat_with_history] 意图分类失败，降级为空: {e}",
   "log.webconsole.config_name_item_write_fail": "[框架配置][{config_name}] 配置项 {item_name} 写入失败",
   "log.webconsole.config_name_key_write_exception": "[框架配置][{config_name}] 配置项 {key} 写入异常: {e}",
   "log.webconsole.config_name_key_write_fail": "[框架配置][{config_name}] 配置项 {key} 写入失败",
@@ -62,10 +60,12 @@
   "log.webconsole.file_path": "[网页控制台] 尝试提供文件: {file_path}",
   "log.webconsole.file_path_mime_type": "[网页控制台] 强制设置 {file_path} MIME 类型: {mime_type}",
   "log.webconsole.framework_config_name_writing_fail": "[框架配置][{config_name}] 配置项 {item_name} 写入异常: {e}",
+  "log.webconsole.group_open_gate_silence": "[chat_with_history] 群聊开口门 → SILENCE",
   "log.webconsole.gscore_exception_chat_history": "[GsCore][chat_with_history] 异常: {e}",
   "log.webconsole.gscore_history_fail_details": "[GsCore][chat_with_history] 异常详情:",
   "log.webconsole.gscore_retrieved_long_term": "[GsCore] 检索到长期记忆: {p0} chars: {p1}...",
   "log.webconsole.index_html_path": "[网页控制台] 返回 index.html, 路径: {index_path}",
+  "log.webconsole.intent_classify_fail": "[chat_with_history] 意图分类失败，降级为空: {e}",
   "log.webconsole.ip_client_email_fail": "[网页控制台] 登录失败: IP={client_ip}, email={email}",
   "log.webconsole.ip_client_error": "[网页控制台] 注册码错误: IP={client_ip}",
   "log.webconsole.ip_client_retry_after": "[网页控制台] 登录请求被限流: IP={client_ip}, 需等待 {retry_after}s",
@@ -119,5 +119,10 @@
   "msg.webconsole.auth_avatar_upload_success": "头像上传成功",
   "msg.webconsole.batch_push.all_groups": "所有群 (ALLGROUP)",
   "msg.webconsole.batch_push.all_users": "所有用户 (ALLUSER)",
-  "msg.webconsole.batch_push.success": "推送成功！"
+  "msg.webconsole.batch_push.success": "推送成功！",
+  "msg.webconsole.tool_output.batch_limit": "单次批量删除不得超过 500 条",
+  "msg.webconsole.tool_output.file_not_found": "落盘文件不存在",
+  "msg.webconsole.tool_output.ids_required": "请提供要删除的 id 列表",
+  "msg.webconsole.tool_output.no_payload": "无可下载正文",
+  "msg.webconsole.tool_output.not_found": "FileOS 记录 {record_id} 不存在"
 }

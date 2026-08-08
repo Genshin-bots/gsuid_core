@@ -176,9 +176,11 @@ def test_render_candidate_not_volume_only() -> None:
 def test_wall_clock_pipeline_branch() -> None:
     close = wall_clock_nudge_for(need_render_pipeline=False)
     pipe = wall_clock_nudge_for(need_render_pipeline=True)
-    assert "不要再发起任何新的工具调用" in close
+    assert "不要再发起新的工具调用" in close or "不要再发起任何新的工具调用" in close
     assert "render_agent" in pipe
     assert "SILENCE" in pipe
+    # 有事实包时必须硬开 render 例外
+    assert ("禁止" in pipe and "停工具" in pipe) or ("硬例外" in pipe)
 
 
 def test_report_speech_and_solicitation() -> None:

@@ -70,6 +70,8 @@ class AgentNode:
     keywords: List[str] = field(default_factory=list)
     # ── meta ──
     source: NodeSource = "plugin"
+    # 注册来源插件目录名：builtin→"core"；plugin→plugins/<Name>；user/persona→""
+    plugin: str = ""
     version: int = 2
 
 

@@ -44,6 +44,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _WALL_CLOCK_NUDGE,
     _RENDER_TOOL_NAMES,
     _REPORT_SPEECH_NUDGE,
+    _WALL_CLOCK_PIPELINE,
     _INTERACTIVE_CREATE_BY,
     _RENDER_DELEGATE_NUDGE,
     _STATUS_ZERO_TOOL_NUDGE,
@@ -80,7 +81,11 @@ class SettlePhase(RunOnceHost):
             _relean_user_turn(
                 _new_msgs,
                 st.lean_user_message,
-                strip_hint_texts=(_WALL_CLOCK_NUDGE, *output_gate.GATE_NUDGE_MARKERS),
+                strip_hint_texts=(
+                    _WALL_CLOCK_NUDGE,
+                    _WALL_CLOCK_PIPELINE,
+                    *output_gate.GATE_NUDGE_MARKERS,
+                ),
             )
             # 框架注入 drop 后可能留下空 ModelRequest，禁止进 B 轨
             _new_msgs = [m for m in _new_msgs if not (isinstance(m, ModelRequest) and len(m.parts) == 0)]
@@ -208,7 +213,9 @@ class SettlePhase(RunOnceHost):
             self._session_logger.log_run_end()
             self._session_logger.log_result(result_msg, st.tool_call_list)
 
-            # 假完成结算（结构判据收口）。
+            # 假完成结算（结构判据收口）。同轮至多一次纠正重跑，防 status+render 双触发。
+            _settle_correction_ran = False
+
             async def _resend_fab_blocked() -> None:
                 for _bt in st.fab_blocked:
                     if _bt in self._run_sent_texts:
@@ -233,6 +240,7 @@ class SettlePhase(RunOnceHost):
                 # 结构证据：预检暂扣 or 文本宣称完成；不靠 st.intent 标签（误标会误伤闲聊）
                 and (st.fab_blocked or _claims_fake_done(result_msg))
             ):
+                _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
                 try:
                     corrected = await self._execute_run_once(
@@ -280,6 +288,7 @@ class SettlePhase(RunOnceHost):
                 and result_msg.strip() not in SILENCE_MARKERS
                 and len(result_msg.strip()) > 12
             ):
+                _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
                 try:
                     corrected = await self._execute_run_once(
@@ -302,10 +311,40 @@ class SettlePhase(RunOnceHost):
                     if _prior:
                         self._scrub_fake_done_history({_prior})
 
-            # 结构/事实包已返回却未委派 render，或本轮把报告体念成台词 → 纠正出图
-            # 异步在途不再 nudge（等回灌或用户追问）
+            # 进度追问却零工具：纠正重跑去查 kanban/artifact
             elif (
-                (
+                st.status_inquiry
+                and st.has_active_task
+                and not st.tool_call_list
+                and not st.fake_done_retry
+                and result_msg
+                and result_msg.strip() not in SILENCE_MARKERS
+                and self.create_by in ("Chat", "Agent")
+            ):
+                _settle_correction_ran = True
+                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
+                try:
+                    _sc = await self._execute_run_once(
+                        user_message=_STATUS_ZERO_TOOL_NUDGE,
+                        bot=st.bot,
+                        ev=st.ev,
+                        tools=st.tools,
+                        return_mode=st.return_mode,
+                        intent=st.intent,
+                        has_active_task=st.has_active_task,
+                        suppress_intermediate_text=st.suppress_intermediate_text,
+                        fake_done_retry=True,
+                    )
+                except Exception as _se:
+                    logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_se))
+                    _sc = None
+                if isinstance(_sc, str) and _sc.strip():
+                    result_msg = _sc.strip()
+
+            # 事实包已回却未出图 / 报告体被闸拦截 → 独立纠正（不与假完成同轮双触发）
+            if (
+                not _settle_correction_ran
+                and (
                     st.report_speech_blocked
                     or (
                         st.saw_structured_return
@@ -320,6 +359,7 @@ class SettlePhase(RunOnceHost):
                 )
                 and not st.delegated_render
                 and not st.pending_async_delivery
+                and not st.image_sent_this_run
                 and not (_RENDER_TOOL_NAMES & set(st.tool_call_list))
                 and not st.fake_done_retry
                 and self.create_by in _INTERACTIVE_CREATE_BY
@@ -358,38 +398,9 @@ class SettlePhase(RunOnceHost):
                         result_msg = "<SILENCE>"
                     else:
                         result_msg = strip_open_solicitations(_rc_s) or "<SILENCE>"
-                elif st.report_speech_blocked:
-                    # 纠正未产出可见文本：吞掉原报告体出口
+                elif st.report_speech_blocked or _looks_like_report_speech(result_msg or ""):
+                    # 纠正未产出可见文本：吞掉原报告体出口，避免 by_bot 外再刷屏
                     result_msg = "<SILENCE>"
-
-            # 进度追问却零工具：纠正重跑去查 kanban/artifact
-            elif (
-                st.status_inquiry
-                and st.has_active_task
-                and not st.tool_call_list
-                and not st.fake_done_retry
-                and result_msg
-                and result_msg.strip() not in SILENCE_MARKERS
-                and self.create_by in ("Chat", "Agent")
-            ):
-                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                try:
-                    _sc = await self._execute_run_once(
-                        user_message=_STATUS_ZERO_TOOL_NUDGE,
-                        bot=st.bot,
-                        ev=st.ev,
-                        tools=st.tools,
-                        return_mode=st.return_mode,
-                        intent=st.intent,
-                        has_active_task=st.has_active_task,
-                        suppress_intermediate_text=st.suppress_intermediate_text,
-                        fake_done_retry=True,
-                    )
-                except Exception as _se:
-                    logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_se))
-                    _sc = None
-                if isinstance(_sc, str) and _sc.strip():
-                    result_msg = _sc.strip()
 
             # 出口消毒：异步在途 / 编排泄漏 / 长结构 / 引导追问 → 对外 SILENCE 或短句
             if self.create_by in ("Chat", "Agent") and result_msg:

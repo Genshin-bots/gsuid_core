@@ -85,9 +85,12 @@ def test_artifact_format_pagination() -> None:
     )
     page = _format_artifact(art, offset=0, limit=10)  # type: ignore[arg-type]
     assert "abcdefghij" in page
+    assert "【读窗口】" in page
+    assert "offset=0" in page
     assert "分页" in page
     page2 = _format_artifact(art, offset=10, limit=10)  # type: ignore[arg-type]
     assert "klmnopqrst" in page2
+    assert "offset=10" in page2
 
 
 def test_relean_drops_framework_user_parts() -> None:

@@ -6,7 +6,9 @@
 两类节点经 ``get_node`` / ``list_nodes`` 对外呈现为同一张表。
 """
 
+import inspect
 from typing import Dict, List, Optional
+from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -17,12 +19,97 @@ from .persona_proj import get_persona_node, list_persona_nodes
 # node_id -> AgentNode（保持插入序：resolve_node 的关键词命中顺序依赖它）
 _NODES: Dict[str, AgentNode] = {}
 
+# 推断 plugin 时跳过注册栈自身帧（落到真实调用方）
+_PLUGIN_INFER_SKIP_PREFIXES = (
+    "gsuid_core.ai_core.agent_node",
+    "gsuid_core.ai_core.capability_agents.registry",
+    "gsuid_core.ai_core.capability_agents.persistence",
+    "gsuid_core.ai_core.capability_agents.profiles",
+    "gsuid_core.server",
+)
+
+# 插件磁盘根目录名（与 server.PLUGIN_PATH / BUILDIN_PLUGIN_PATH 一致）
+_PLUGIN_DIR_MARKERS = frozenset({"plugins", "buildin_plugins"})
+
+
+def _plugin_name_from_path(path: str) -> str:
+    """从源码路径提取插件目录名：.../plugins/<Name>/... → Name。"""
+    if not path:
+        return ""
+    try:
+        parts = Path(path).resolve().parts
+    except OSError:
+        parts = Path(path).parts
+    for i, part in enumerate(parts):
+        if part not in _PLUGIN_DIR_MARKERS:
+            continue
+        if i + 1 >= len(parts):
+            continue
+        name = parts[i + 1]
+        if name.endswith(".py"):
+            name = name[:-3]
+        if name and not name.startswith("_"):
+            return name
+    return ""
+
+
+def _plugin_name_from_module(mod: str) -> str:
+    """仅当模块路径含 plugins/buildin_plugins 段时取插件名；绝不把 core 当插件。"""
+    if not mod:
+        return ""
+    parts = mod.split(".")
+    for marker in ("plugins", "buildin_plugins"):
+        if marker not in parts:
+            continue
+        i = parts.index(marker)
+        if i + 1 < len(parts) and parts[i + 1]:
+            return parts[i + 1]
+    return ""
+
+
+def _infer_registering_plugin() -> str:
+    """从调用栈推断注册方插件名。
+
+    插件常以 ``SayuStock.xxx`` 顶层包名加载（sys.path 指到 plugins/ 父级），
+    模块名不含 ``plugins`` 段；必须以 **源码路径** 中的 ``plugins/<Name>`` 为准，
+    禁止用 ``_get_plugin_name_from_module`` 把任意 gsuid_core 帧判成 core。
+    """
+    for fr in inspect.stack()[1:24]:
+        mod = str(fr.frame.f_globals["__name__"]) if "__name__" in fr.frame.f_globals else ""
+        if mod and any(mod == p or mod.startswith(p + ".") for p in _PLUGIN_INFER_SKIP_PREFIXES):
+            continue
+        # 1) 路径优先（nest 插件 / 顶层包名加载都能命中）
+        name = _plugin_name_from_path(getattr(fr, "filename", "") or "")
+        if name:
+            return name
+        # 2) 模块路径含 plugins 段时
+        name = _plugin_name_from_module(mod)
+        if name:
+            return name
+    return ""
+
+
+def _fill_plugin_if_empty(node: AgentNode) -> None:
+    """补全 node.plugin：builtin→core；plugin→栈/路径推断；user/persona→空。"""
+    if (node.plugin or "").strip():
+        return
+    if node.source == "builtin":
+        node.plugin = "core"
+        return
+    if node.source == "plugin":
+        inferred = _infer_registering_plugin()
+        node.plugin = inferred if inferred else "unknown"
+        return
+    # user / persona：无宿主插件
+    node.plugin = ""
+
 
 def register_agent_node(node: AgentNode) -> None:
     """注册一个节点。同 node_id 后写覆盖前写（插件可覆盖内置）。"""
     if not node.node_id:
         logger.warning(t("log.ai.agentnode_node_id_empty_ignore"))
         return
+    _fill_plugin_if_empty(node)
     _NODES[node.node_id] = node
     logger.info(t("log.ai.agentnode_registered_node_source", p0=node.node_id, p1=node.display_name, p2=node.source))
 

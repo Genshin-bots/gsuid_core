@@ -19,9 +19,9 @@ from gsuid_core.ai_core.planning.handle_resolver import (
 from gsuid_core.ai_core.planning.tool_output_tools import (
     read_handle,
     _require_owner,
+    search_fileos_outputs,
     grep_persisted_outputs,
     list_persisted_outputs,
-    search_persisted_outputs,
     _tool_output_access_allowed,
 )
 
@@ -97,8 +97,8 @@ def test_tool_output_acl_same_owner_and_scope() -> None:
 
 
 def test_search_without_owner_denied() -> None:
-    with _patch_tool_result():
-        out = _run(search_persisted_outputs(_ctx(user_id=None), query="weather"))
+    # 已下线 agent 工具；内部 search_fileos_outputs 仍 fail-closed
+    out = _run(search_fileos_outputs(_ctx(user_id=None), query="weather"))
     assert "拒绝" in out
 
 
@@ -200,7 +200,7 @@ def test_firewall_covers_fileos_handles_and_tools() -> None:
         "句柄 to_abcdef123456 里有报告",
         "sa_fedcba654321 已落盘",
         "persisted id=to_abcdef123456 size=99",
-        "search_persisted_outputs 查一下",
+        "search_handles 查一下",
         "list_persisted_outputs 最近记录",
     ]
     for text in samples:

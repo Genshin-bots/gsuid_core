@@ -112,7 +112,7 @@ def format_resolved(
     resolved: ResolvedHandle,
     *,
     offset: int = 0,
-    limit: int = 12000,
+    limit: int = 8000,
 ) -> str:
     if resolved.source == "image" or resolved.mime.startswith("image/"):
         return (

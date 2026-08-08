@@ -697,7 +697,16 @@ class AISessionLogger:
         乱码而非干净的图片引用（顺序很关键）。
         """
         content_str: str = externalize_base64_images(str(content))
-        if len(content_str) > 2000:
+        # 分页读工具：日志优先保留【读窗口】行，避免只看头 2k 误判「永远第一页」
+        if "【读窗口】" in content_str and len(content_str) > 2000:
+            win = ""
+            for line in content_str.splitlines():
+                if "【读窗口】" in line:
+                    win = line.strip()
+                    break
+            head = content_str[:1600]
+            content_str = f"{win}\n{head}\n...[截断, 共{len(content_str)}字符]"
+        elif len(content_str) > 2000:
             content_str = content_str[:2000] + f"...[截断, 共{len(content_str)}字符]"
         self._add_entry(
             "tool_return",

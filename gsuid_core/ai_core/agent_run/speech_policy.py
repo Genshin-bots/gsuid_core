@@ -87,18 +87,19 @@ STATUS_INQUIRY_HINT = (
 )
 
 _WALL_CLOCK_CLOSE = (
-    "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复，"
-    "不要再发起任何新的工具调用；信息不全就如实说明现状，绝不编造。"
-    "禁止对用户念内部节点名或编排流程。）"
+    "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复；"
+    "除非是为已有事实包委派 render_agent 出图，否则不要再发起新的工具调用；"
+    "信息不全就如实说明现状，绝不编造。"
+    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。）"
 )
 
 _WALL_CLOCK_PIPELINE = (
-    "（系统提示：本轮处理耗时已超预算，但**已有事实包未出图**。"
-    "允许且必须：立刻 "
-    'create_subagent(agent_profile="render_agent", task=事实包或 res_ 句柄) 出图。'
-    "禁止新开检索；禁止说「翻完了/卷轴里有/念不动/要哪段再喊我」却不出图；"
-    "若尚未对用户说过等待句，可先一句「等一下…」再委派；"
-    "后台出图中除等待句外只 <SILENCE>；禁止念内部节点名。）"
+    "（系统提示：本轮处理耗时已超预算，但**已有事实包未出图**——"
+    "这是硬例外，**禁止**因预算停工具。"
+    "你必须立刻 "
+    'create_subagent(agent_profile="render_agent", task=本轮事实包或 res_ 句柄) 出图；'
+    "禁止新开检索；禁止长文当台词；禁止说「翻完了/卷轴里有/念不动」却不出图；"
+    "可先一句「等一下…」再委派；出图完成前其余 <SILENCE>；禁止念内部节点名。）"
 )
 
 _RENDER_DELEGATE_NUDGE = (
@@ -157,6 +158,11 @@ def looks_like_empty_handoff(text: str) -> bool:
     if not body or body in ("<SILENCE>", "SILENCE"):
         return False
     if looks_like_wait_comfort(body):
+        return False
+    # 长结构正文（多段标题/表）走 report_speech，勿因句尾「先睡了」误判摆烂
+    if looks_like_report_speech(body):
+        return False
+    if len(body) >= 200 and body.count("\n") >= 3:
         return False
     return bool(_EMPTY_HANDOFF_RE.search(body))
 
@@ -437,9 +443,10 @@ def is_status_tool_name(name: str) -> bool:
             "artifact_list",
             "artifact_get",
             "list_persisted_outputs",
-            "search_persisted_outputs",
             "grep_persisted_outputs",
             "read_persisted_output",
+            "search_knowledge",
+            "read_handle",
             "list_my_tasks",
         }
         or "kanban" in n
