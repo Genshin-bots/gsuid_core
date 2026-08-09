@@ -16,7 +16,12 @@ from gsuid_core.ai_core.planning.models import AIAgentTask
 from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
 from gsuid_core.ai_core.planning.tool_output_metrics import fileos_metrics
-from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard
+from gsuid_core.ai_core.planning.tool_output_protocol import (
+    PersistedHandleCard,
+    extract_inline_head,
+    extract_info_summary,
+    looks_like_handle_card,
+)
 from gsuid_core.ai_core.planning.tool_output_sanitize import sanitize_for_persist
 
 _MIN_PERSIST_CHARS = 800
@@ -25,6 +30,9 @@ _TTL_DAYS = 30
 # 自适应折叠：私聊 / 群聊 / 能力代理
 _FOLD_PRIVATE = 1200
 _FOLD_GROUP = 900
+# 折叠卡内嵌要点上限（群聊更紧，控 token）
+_INLINE_HEAD_PRIVATE = 1400
+_INLINE_HEAD_GROUP = 1000
 _NEVER_FOLD_TOOLS = frozenset({"create_subagent"})
 # 只读/回读类：内容已在 artifact/FileOS 真身里，禁止再落一份 tool_output
 _SKIP_PERSIST_TOOLS = frozenset(
@@ -40,6 +48,8 @@ _SKIP_PERSIST_TOOLS = frozenset(
         "read_image",  # 句柄读图，非新材料
         "list_my_kanban_tasks",
         "list_my_tasks",
+        "search_handles",
+        "search_persisted_outputs",
     }
 )
 
@@ -59,11 +69,13 @@ def fold_threshold(*, is_group: bool = False) -> int:
 
 
 def should_persist_tool_return(tool_name: str, content: str) -> bool:
-    """结构门：过短 / 挂起 ack / 只读回读工具 不落盘。"""
+    """结构门：过短 / 挂起 ack / 只读回读工具 / 已是句柄卡 不落盘。"""
     tn = (tool_name or "").strip()
     if tn in _SKIP_PERSIST_TOOLS:
         return False
     body = (content or "").strip()
+    if looks_like_handle_card(body):
+        return False
     if len(body) < _MIN_PERSIST_CHARS:
         return False
     if "后台执行" in body and "自动回灌" in body:
@@ -79,10 +91,14 @@ def should_fold_for_model(
     tool_name: str = "",
     is_group: bool = False,
 ) -> bool:
-    """主人格折叠门：create_subagent 永不折；长度按私聊/群聊阈值。"""
-    if (tool_name or "") in _NEVER_FOLD_TOOLS:
+    """主人格折叠门：create_subagent / 句柄卡 / 只读工具永不折。"""
+    tn = (tool_name or "").strip()
+    if tn in _NEVER_FOLD_TOOLS or tn in _SKIP_PERSIST_TOOLS:
         return False
-    return len((content or "").strip()) >= fold_threshold(is_group=is_group)
+    body = (content or "").strip()
+    if looks_like_handle_card(body):
+        return False
+    return len(body) >= fold_threshold(is_group=is_group)
 
 
 def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str]:
@@ -93,7 +109,12 @@ def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str]:
     return owner, scope
 
 
-def _card_for_record(rec: AIToolOutputRecord, *, long_structured: bool = True) -> PersistedHandleCard:
+def _card_for_record(
+    rec: AIToolOutputRecord,
+    *,
+    long_structured: bool = True,
+    inline_head: str = "",
+) -> PersistedHandleCard:
     mime = "text/markdown" if (rec.payload_path or "").endswith(".md") else "text/plain"
     return PersistedHandleCard(
         id=rec.id,
@@ -103,6 +124,7 @@ def _card_for_record(rec: AIToolOutputRecord, *, long_structured: bool = True) -
         size_bytes=rec.size_bytes,
         read_tool="read_handle",
         long_structured=long_structured,
+        inline_head=inline_head,
     )
 
 
@@ -165,7 +187,7 @@ async def persist_and_fold_tool_return(
     *,
     is_group: bool = False,
 ) -> Optional[str]:
-    """主人格热路径：落盘并返回句柄卡；create_subagent / 过短不折。"""
+    """主人格热路径：落盘并返回「句柄卡 + inline 要点」；只读/过短不折。"""
     tn = tool_name or ""
     if tn in _NEVER_FOLD_TOOLS:
         # 仍可旁路落盘终态长文，但不折叠回执
@@ -201,8 +223,19 @@ async def persist_and_fold_tool_return(
     )
     if card is None:
         return None
+    head_cap = _INLINE_HEAD_GROUP if is_group else _INLINE_HEAD_PRIVATE
+    hybrid = PersistedHandleCard(
+        id=card.id,
+        kind=card.kind,
+        mime=card.mime,
+        summary=card.summary,
+        size_bytes=card.size_bytes,
+        read_tool=card.read_tool,
+        long_structured=card.long_structured,
+        inline_head=extract_inline_head(content, max_chars=head_cap),
+    )
     fileos_metrics.inc_fold()
-    return card.format()
+    return hybrid.format()
 
 
 async def _write_record(
@@ -232,7 +265,7 @@ async def _write_record(
         return _card_for_record(existing)
 
     date_str = datetime.now().strftime("%Y-%m-%d")
-    summary = clean[:512].replace("\n", " ")
+    summary = extract_info_summary(clean, max_len=512)
     rid = f"{rid_prefix}_{uuid.uuid4().hex[:12]}"
     payload_inline: Optional[str] = clean if len(clean) <= _INLINE_MAX else None
     payload_path = ""
@@ -307,7 +340,7 @@ async def _index_chunks_safe(
         "owner_user_id": owner_user_id,
         "tool_name": tool_name,
         "date_str": date_str,
-        "summary": content[:512].replace("\n", " "),
+        "summary": extract_info_summary(content, max_len=512),
     }
     last_err: Exception | None = None
     for attempt in range(retries + 1):

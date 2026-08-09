@@ -210,6 +210,23 @@ def test_firewall_covers_fileos_handles_and_tools() -> None:
         assert any("框架泄漏" in m for m in hit.matched)
 
 
+def test_firewall_blocks_system_copy_leaks() -> None:
+    samples = [
+        "…时效存疑，自己再验。",
+        "唔…数据没刷出来，没法给你编数字。",
+        "…先眯会儿，回炉了你再戳我。",
+        "（系统校验·内部轮）必须出图",
+        "[框架·任务完成] 已交付",
+    ]
+    for text in samples:
+        hit = check_ooc(text)
+        assert hit is not None, text
+        assert hit.category == "system_term"
+        assert any("系统文案" in m or "框架泄漏" in m for m in hit.matched), hit.matched
+    # 角色化缺口允许
+    assert check_ooc("…没查到具体数字。…困。") is None
+
+
 def test_persist_and_fold_propagates_then_caller_can_isolate() -> None:
     from gsuid_core.ai_core.planning.tool_output_helper import persist_and_fold_tool_return
 

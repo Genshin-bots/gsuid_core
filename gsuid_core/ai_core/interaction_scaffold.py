@@ -593,6 +593,7 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "add_interval_task",
         "find_tools",
         "read_image",
+        "read_handle",  # FileOS 折叠后续读（与 web_search 成对）
         "search_knowledge",  # 知识库 + 历史工具落盘联邦
         "web_search_tool",
         "create_subagent",  # 含 render_agent / research 委派入口

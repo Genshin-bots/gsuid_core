@@ -127,7 +127,7 @@ def _delivery_followup_task(original_task: str) -> str:
         "① 条目列表（日期、事件、关键数字、为何重要、来源 URL、**数据时点**）\n"
         "② 依据（工具/字段/URL）\n"
         "③ 可选：主线摘要与风险提示\n"
-        "缺来源或时点须补查或标「时效存疑」；"
+        "缺来源或时点须补查或标「信息可能过时/时点未知」；"
         "禁止只说「下面再搜 / 停止重复 / 然后渲染」；"
         "禁止 render_*（出图由主人格再委派 render_agent）；"
         "长文可用 artifact_put。若确实零数据，写「无检索结果：原因=…」。"
@@ -178,7 +178,8 @@ def _factpack_freshness_note(body: str) -> str:
     if not missing:
         return ""
     return (
-        f"\n⚠ 事实包疑缺{'/'.join(missing)}：出图前可要求 research 补查，或在 render_agent 的 task 里标明「时效存疑」。"
+        f"\n⚠ 事实包疑缺{'/'.join(missing)}：出图前可要求 research 补查，"
+        "或在 render_agent 的 task 里标明「信息可能过时」。"
     )
 
 

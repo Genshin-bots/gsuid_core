@@ -68,6 +68,14 @@ class BotState:
     heartbeats: Dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
     activities: Dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
 
+    # 效率：User Turn / Agent Run（见 statistics.manager.record_agent_run）
+    user_turn_count: int = 0  # 用户回合数（主人格 root 每次成功 settle 记 1）
+    agent_run_count: int = 0  # 代理运行总数（每次 settle 记 token 时 +1）
+    root_agent_run_count: int = 0  # 非嵌套 root run
+    nested_agent_run_count: int = 0  # 嵌套 run（subagent / capability 等）
+    user_turn_agent_run_count: int = 0  # 挂在某用户回合树下的 run 数（含 root）
+    user_turn_tokens: TokenUsage = field(default_factory=TokenUsage)  # 用户回合树内 token 合计
+
     # 记忆系统统计
     memory_observations: int = 0  # 观察入队总数
     memory_ingestions: int = 0  # 摄入完成总数

@@ -54,12 +54,14 @@ from gsuid_core.ai_core.agent_run.support import (
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    looks_like_process_meta,
     looks_like_wait_comfort,
     looks_like_empty_handoff,
     strip_open_solicitations,
     claims_premature_delivery,
     has_orchestration_narration,
 )
+from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
 
 
 class SettlePhase(RunOnceHost):
@@ -149,7 +151,9 @@ class SettlePhase(RunOnceHost):
                 )
 
                 # 小时级性能统计（TTFT/TPS）已在每轮 CallToolsNode 中按请求结算,
-                # 此处只记录 run 级的 Token 汇总
+                # 此处记录 run 级 Token 汇总 + User Turn / Agent Run 效率计数。
+                # 计数在 token 为 0 时仍记（完整 settle 的 run 也算一次），避免漏计分母。
+                _is_nested = bool(self.is_subagent) or (bool(st.user_turn_id) and not st.owns_user_turn)
                 if input_tokens > 0 or output_tokens > 0:
                     statistics_manager.record_token_usage(
                         model_name=st.model_name,
@@ -159,34 +163,43 @@ class SettlePhase(RunOnceHost):
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
                     )
-                    # 预算记账：可归属 scope 的 run 计入对应 Session 额度，无 scope 只进全局
-                    # 统计。独立 try 且先于 session 日志，避免日志抛错把整笔记账一起跳过。
-                    if st.budget_scope is not None:
-                        try:
-                            from gsuid_core.ai_core.budget import budget_manager
-
-                            await budget_manager.record_usage_scope(
-                                st.budget_scope[0],
-                                st.budget_scope[1],
-                                st.budget_scope[2],
-                                self.session_id,
-                                input_tokens,
-                                output_tokens,
-                                cache_read_tokens,
-                                cache_write_tokens,
-                            )
-                        except Exception as _be:
-                            logger.warning(i18n_t("log.agent.budget_fail", _be=_be))
+                statistics_manager.record_agent_run(
+                    owns_user_turn=bool(st.owns_user_turn),
+                    under_user_turn=bool(st.user_turn_id),
+                    is_nested=_is_nested,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                )
+                # 预算记账：可归属 scope 的 run 计入对应 Session 额度，无 scope 只进全局
+                # 统计。独立 try 且先于 session 日志，避免日志抛错把整笔记账一起跳过。
+                if st.budget_scope is not None:
                     try:
-                        self._session_logger.log_token_usage(
+                        from gsuid_core.ai_core.budget import budget_manager
+
+                        await budget_manager.record_usage_scope(
+                            st.budget_scope[0],
+                            st.budget_scope[1],
+                            st.budget_scope[2],
+                            self.session_id,
                             input_tokens,
                             output_tokens,
-                            st.model_name,
                             cache_read_tokens,
                             cache_write_tokens,
                         )
-                    except Exception as _le:
-                        logger.debug(i18n_t("log.agent.write_token_usage_log", _le=_le))
+                    except Exception as _be:
+                        logger.warning(i18n_t("log.agent.budget_fail", _be=_be))
+                try:
+                    self._session_logger.log_token_usage(
+                        input_tokens,
+                        output_tokens,
+                        st.model_name,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                    )
+                except Exception as _le:
+                    logger.debug(i18n_t("log.agent.write_token_usage_log", _le=_le))
             except AttributeError as e:
                 # result 没有 usage 属性（如 pydantic_graph End 节点返回的结果）
                 logger.info(i18n_t("log.agent.access_result_usage", e=e))
@@ -394,6 +407,7 @@ class SettlePhase(RunOnceHost):
                         has_orchestration_narration(_rc_s)
                         or claims_premature_delivery(_rc_s)
                         or _looks_like_report_speech(_rc_s)
+                        or looks_like_process_meta(_rc_s)
                     ):
                         result_msg = "<SILENCE>"
                     else:
@@ -406,8 +420,12 @@ class SettlePhase(RunOnceHost):
             if self.create_by in ("Chat", "Agent") and result_msg:
                 _rs = result_msg.strip()
                 if st.image_sent_this_run:
-                    # 步骤 7：发图后允许短收尾；仍砍编排/长结构/引导追问
-                    if has_orchestration_narration(_rs) or _looks_like_report_speech(_rs):
+                    # 步骤 7：发图后允许短收尾；仍砍编排/长结构/过程元话语/引导追问
+                    if (
+                        has_orchestration_narration(_rs)
+                        or _looks_like_report_speech(_rs)
+                        or looks_like_process_meta(_rs)
+                    ):
                         result_msg = "<SILENCE>"
                     else:
                         _stripped = strip_open_solicitations(_rs)
@@ -421,7 +439,7 @@ class SettlePhase(RunOnceHost):
                         result_msg = _rs
                     else:
                         result_msg = "<SILENCE>"
-                elif has_orchestration_narration(_rs):
+                elif has_orchestration_narration(_rs) or looks_like_process_meta(_rs):
                     result_msg = "<SILENCE>"
                 elif claims_premature_delivery(_rs) and not st.image_sent_this_run:
                     result_msg = "<SILENCE>"
@@ -553,6 +571,10 @@ class SettlePhase(RunOnceHost):
         # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
         if st.budget_scope_token is not None:
             _current_budget_scope.reset(st.budget_scope_token)
+        # 仅 root 主人格绑定了 user_turn contextvar；嵌套 run 不 reset，避免提前清空父树。
+        if st.user_turn_token is not None:
+            reset_user_turn_id(st.user_turn_token)
+            st.user_turn_token = None
         # 同理还原墙钟时钟：嵌套 run 结束后父 run 必须拿回自己的累加器。
         if st.wall_clock_token is not None:
             wall_clock.uninstall_clock(st.wall_clock_token)

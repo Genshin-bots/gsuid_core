@@ -84,7 +84,7 @@ def _line(rec: AIToolOutputRecord) -> str:
     return f"- {rec.id} | {label} | {rec.date_str} | {rec.summary[:80]}"
 
 
-@ai_tools(category="common", capability_domain="产物")
+@ai_tools(category="buildin", capability_domain="产物")
 async def read_handle(
     ctx: RunContext[ToolContext],
     handle_id: str,
@@ -95,6 +95,7 @@ async def read_handle(
 
     长文按 **字符** offset/limit 分页（见返回文首【读窗口】）。
     续读请把 offset 设为上一页提示的 next（如 got 段末），勿重复 offset=0。
+    框架保底工具：折叠后的检索/产物必须用本工具取全文，禁止空口说「只有句柄」。
     """
     resolved = await resolve_handle(handle_id)
     if resolved is None:

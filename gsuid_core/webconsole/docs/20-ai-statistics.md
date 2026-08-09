@@ -100,6 +100,24 @@ GET /api/ai/statistics/summary
             "edges_created": 15,
             "episodes_created": 5
         },
+        "efficiency": {
+            "user_turn_count": 128,
+            "agent_run_count": 341,
+            "root_agent_run_count": 130,
+            "nested_agent_run_count": 211,
+            "user_turn_agent_run_count": 320,
+            "user_turn_input_tokens": 4200000,
+            "user_turn_output_tokens": 980000,
+            "user_turn_cache_read_tokens": 2100000,
+            "user_turn_cache_write_tokens": 80000,
+            "avg_tokens_per_user_turn": 40546.88,
+            "avg_input_tokens_per_user_turn": 32812.5,
+            "avg_output_tokens_per_user_turn": 7656.25,
+            "avg_tokens_per_agent_run": 15200.0,
+            "avg_input_tokens_per_agent_run": 12000.0,
+            "avg_output_tokens_per_agent_run": 3200.0,
+            "avg_agent_runs_per_user_turn": 2.5
+        },
         "active_users": [
             {
                 "group_id": "123456",
@@ -108,6 +126,63 @@ GET /api/ai/statistics/summary
                 "message_count": 100
             }
         ]
+    }
+}
+```
+
+### `efficiency` 字段说明（Token 效率）
+
+体量指标（日总 Token）会随活跃人数变化；**效率**看单次成本是否更省。
+
+| 字段 | 含义 |
+|------|------|
+| `user_turn_count` | **用户回合**数：主人格交互 root 一次完整 `agent.run` 记 1（过软门后真正跑 Agent） |
+| `agent_run_count` | **代理运行**数：任意 settle 的 `agent.run`（主 / AutoPlanner / CapabilityAgent…） |
+| `root_agent_run_count` / `nested_agent_run_count` | 非嵌套 vs 嵌套（`is_subagent` 或挂在父 user_turn 下的非 root） |
+| `user_turn_agent_run_count` | 挂在用户回合树内的 run 数（含 root + 同步嵌套） |
+| `user_turn_*_tokens` | 用户回合树内 token 合计（主+同步子代理；**不含**无 `user_turn_id` 的纯后台） |
+| `avg_tokens_per_user_turn` | `(user_turn_input + user_turn_output) / user_turn_count` — **主 KPI：系统是否更省** |
+| `avg_tokens_per_agent_run` | `(total_input + total_output) / agent_run_count` — 单节点成本 |
+| `avg_agent_runs_per_user_turn` | `user_turn_agent_run_count / user_turn_count` — 委派/拆分强度 |
+
+> 主 session 日志里的单次 `token_usage` **不含**子代理；效率块的 `user_turn_*` 在统计层按 `user_turn_id` 树汇总，与预算 scope 记账独立。
+
+---
+
+## 20.1.1 获取效率指标（独立接口）
+
+```
+GET /api/ai/statistics/efficiency
+```
+
+**Query 参数**:
+- `date`: 日期字符串，格式为 "YYYY-MM-DD"，默认为今天
+
+**说明**: 与 `summary.efficiency` 同源；`data` 额外带 `date` 字段。今日读内存，历史读 `aidailystatistics`。
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "date": "2024-01-15",
+        "user_turn_count": 128,
+        "agent_run_count": 341,
+        "root_agent_run_count": 130,
+        "nested_agent_run_count": 211,
+        "user_turn_agent_run_count": 320,
+        "user_turn_input_tokens": 4200000,
+        "user_turn_output_tokens": 980000,
+        "user_turn_cache_read_tokens": 2100000,
+        "user_turn_cache_write_tokens": 80000,
+        "avg_tokens_per_user_turn": 40546.88,
+        "avg_input_tokens_per_user_turn": 32812.5,
+        "avg_output_tokens_per_user_turn": 7656.25,
+        "avg_tokens_per_agent_run": 15200.0,
+        "avg_input_tokens_per_agent_run": 12000.0,
+        "avg_output_tokens_per_agent_run": 3200.0,
+        "avg_agent_runs_per_user_turn": 2.5
     }
 }
 ```
@@ -176,11 +251,19 @@ GET /api/ai/statistics/daily-token-counts?days=60
       "date": "2026-07-01",
       "input_tokens": 3200000,
       "output_tokens": 410000,
-      "total_tokens": 3610000
+      "total_tokens": 3610000,
+      "user_turn_count": 40,
+      "agent_run_count": 95,
+      "user_turn_agent_run_count": 90,
+      "avg_tokens_per_user_turn": 90250.0,
+      "avg_tokens_per_agent_run": 38000.0,
+      "avg_agent_runs_per_user_turn": 2.25
     }
   ]
 }
 ```
+
+> 效率字段从引入日起有值；历史日未补列前可能为 0。
 
 ---
 
@@ -204,7 +287,10 @@ GET /api/ai/statistics/token-by-range
 
 **字段说明**:
 - `total`: 整个时间段四类 Token 的总量，`total_tokens` = `input + output + cache_read + cache_write`
-- `daily`: 按天的 Token 明细数组（升序），每项含四类 Token 及当日 `total_tokens`，用于趋势图
+- `daily`: 按天的 Token 明细数组（升序），每项含四类 Token、当日 `total_tokens`，以及效率字段
+  `user_turn_count` / `agent_run_count` / `avg_tokens_per_user_turn` / `avg_tokens_per_agent_run` /
+  `avg_agent_runs_per_user_turn`
+- `efficiency`: 区间汇总的效率（回合数/运行数累加，均值按区间合计重算）
 - `by_model`: 跨天聚合的按模型 Token 分布，按 `total_tokens` **降序**排列，用于占比图
 - `days`: `daily` 数组长度（实际聚合天数）
 - 四类 Token 互不重叠：`input_tokens` 为非缓存输入，`cache_read_tokens` / `cache_write_tokens` 为提示词缓存读写，因此可直接相加

@@ -56,11 +56,13 @@ def test_research_prompt_has_depth_checklist() -> None:
     assert "web_search" in _RESEARCH_PROMPT
     # 通用时效表述，禁止把业务域词写进契约
     assert "当前" in _RESEARCH_PROMPT or "时点" in _RESEARCH_PROMPT
-    assert "专域" in _RESEARCH_PROMPT
+    assert "结构化数据" in _RESEARCH_PROMPT or "数据工具" in _RESEARCH_PROMPT
+    assert "专域" not in _RESEARCH_PROMPT
     assert "研报" not in _RESEARCH_PROMPT
     assert "股票" not in _RESEARCH_PROMPT
     assert "现价" not in _RESEARCH_PROMPT
     assert "市价" not in _RESEARCH_PROMPT
+    assert "时效存疑" not in _RESEARCH_PROMPT
 
 
 def test_research_match_keywords_domain_free() -> None:
@@ -80,10 +82,12 @@ def test_web_search_results_frame_stale_prices() -> None:
 
     text = _format_results_for_model([{"title": "gold", "url": "https://example.com", "content": "XAU 3000"}])
     assert "过时" in text or "滞后" in text
-    assert "专域" in text or "API" in text
+    assert "结构化数据" in text or "实时读数" in text
     assert "<search_results>" in text
     assert "市价" not in text
     assert "股票" not in text
+    assert "时效存疑" not in text
+    assert "专域" not in text
 
 
 def test_render_long_md_default_off() -> None:

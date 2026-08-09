@@ -38,13 +38,23 @@ _PREMATURE_DELIVERY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 空交付 / 摆烂：声称有材料却不出图、推给用户「自己看/再喊我」
+# 空交付 / 摆烂：声称**已有材料**却不出图、推给用户「再喊我」（须配合 fact_pack_pending）
 _EMPTY_HANDOFF_RE = re.compile(
     r"(念不(动|完|下)|懒得念|太长了.{0,10}(不|懒|念)|"
     r"卷轴里|记着呢|全(都)?(记|在)(着|里|呢)|细节(全)?在|"
-    r"要哪段|再喊我|自己看|有点印象|"
+    r"要哪段|再喊我|有点印象|"
     r"全记着|都在里面了(?!…?图)|"
     r"先睡了.{0,8}$)",
+    re.IGNORECASE,
+)
+
+# 过程/框架元话语：对用户可见即 OOC（结构通道词，非业务域）
+_PROCESS_META_RE = re.compile(
+    r"(时效存疑|自己再验|数据没刷|没刷出来|没法.{0,8}编数字|"
+    r"回炉了?你再|回炉|系统校验|框架[·・.]任务|产物句柄|"
+    r"long_structured|tool_return|inline_head|"
+    r"how_to_read|persisted\s+id|"
+    r"专域(报价|API)|当前市价|最新读数)",
     re.IGNORECASE,
 )
 
@@ -165,6 +175,14 @@ def looks_like_empty_handoff(text: str) -> bool:
     if len(body) >= 200 and body.count("\n") >= 3:
         return False
     return bool(_EMPTY_HANDOFF_RE.search(body))
+
+
+def looks_like_process_meta(text: str) -> bool:
+    """是否框架/过程元话语（对用户即 OOC）。"""
+    body = (text or "").strip()
+    if not body or body in ("<SILENCE>", "SILENCE"):
+        return False
+    return bool(_PROCESS_META_RE.search(body))
 
 
 def looks_like_wait_comfort(text: str) -> bool:
@@ -342,11 +360,14 @@ def should_block_user_visible_text(
     if has_orchestration_narration(body):
         return True, "orchestration_leak"
 
+    if looks_like_process_meta(body):
+        return True, "process_meta"
+
     if claims_premature_delivery(body) and not image_sent:
         return True, "premature_delivery"
 
-    # 事实包已在手却空交付/摆烂
-    if (fact_pack_pending or not image_sent) and looks_like_empty_handoff(body) and not image_sent:
+    # 仅当真有待出图材料时：空交付/摆烂才拦截并武装纠正
+    if fact_pack_pending and looks_like_empty_handoff(body) and not image_sent:
         return True, "empty_handoff"
 
     # 长结构台词：主人格不得用多段标题/列表刷屏（应 render）
@@ -415,21 +436,26 @@ def content_is_render_candidate(
     if body.count("\n") >= 10 and len(body) >= 1200:
         return True
 
-    # FileOS 折叠卡：仅当 summary 侧仍呈多段/表形态
+    # FileOS 折叠：用原文形态判定；仅「多段/表/事实包」才可出图（检索噪声默认否）
     if fileos_folded:
-        if "long_structured=true" in body and ("|" in body or body.count("\n") >= 4 or "事实包" in body):
-            # 折叠卡本身常无表；有 long_structured 仍可能是噪声网页
-            # 要求 summary 里不是纯导航：至少有数字密度或列表符
-            if re.search(r"\d", body) and len(body) >= 120:
-                return True
+        if "事实包" in body and len(body) >= 80:
+            return True
+        if "|" in body and body.count("\n") >= 3 and len(body) >= 200:
+            return True
+        if body.count("\n\n") >= 3 and len(body) >= 600:
+            return True
+        # 纯检索列表默认不武装 render（单点问答可短回）
+        if any(h in tn for h in ("search", "web_", "fetch", "knowledge")):
+            return False
         return False
 
-    # 搜索类：与旧口径类似但更严
+    # 搜索类：与旧口径类似但更严；单点检索默认不武装出图
     if any(h in tn for h in ("search", "web_", "fetch", "knowledge")):
-        if "|" in body or body.count("\n\n") >= 2:
-            return len(body) >= 400
-        if body.count("\n") >= 12 and len(body) >= 1200:
+        if "|" in body and body.count("\n") >= 4 and len(body) >= 600:
             return True
+        if body.count("\n\n") >= 3 and len(body) >= 1200:
+            return True
+        return False
     return False
 
 

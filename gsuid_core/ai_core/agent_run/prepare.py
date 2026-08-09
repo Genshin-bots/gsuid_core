@@ -41,6 +41,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     resolve_speech_policy,
     looks_like_status_inquiry,
 )
+from gsuid_core.ai_core.agent_run.user_turn_ctx import get_user_turn_id, set_user_turn_id
 
 
 class PreparePhase(RunOnceHost):
@@ -138,9 +139,20 @@ class PreparePhase(RunOnceHost):
         st.wall_acc, st.wall_clock_token = wall_clock.install_clock()
 
         logger.info(i18n_t("log.agent.run_start_started"))
-        # st.turn_id：本轮 run 的唯一标识，写入 ToolContext.extra 供子工具读取（如 scheduler.py 的 add_once_task
-        # 单轮节流计数）。回合结束 finally 清理。
+        # st.turn_id：本轮 Agent Run 的唯一标识（= agent_run_id），写入 ToolContext.extra
+        # 供子工具读取（如 scheduler 单轮节流）。run 结束 finally 清理。
         st.turn_id = uuid.uuid4().hex
+        # 用户回合（User Turn）：仅主人格交互 root 新建；嵌套 run 继承 contextvar。
+        # 与 turn_id/agent_run_id 分离——子代理有自己的 run id，但共享同一 user_turn_id。
+        st.user_turn_token = None
+        st.owns_user_turn = False
+        if self.create_by in ("Chat", "Agent") and not self.is_subagent:
+            st.user_turn_id = st.turn_id
+            st.owns_user_turn = True
+            st.user_turn_token = set_user_turn_id(st.user_turn_id)
+        else:
+            _inherited_ut = get_user_turn_id()
+            st.user_turn_id = _inherited_ut or ""
         # 交互主人格：专属工具从静态池剥离后，同步写入 blocked，堵住 find_tools 回灌
         st.blocked_exclusive = _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
         # 出站：主人格交互会话；Kanban_Relay 是人格播报专用（非能力代理）。
@@ -150,8 +162,11 @@ class PreparePhase(RunOnceHost):
         )
         st.run_extra = {
             "turn_id": st.turn_id,
+            "agent_run_id": st.turn_id,
             "run_sent_texts": self._run_sent_texts,
         }
+        if st.user_turn_id:
+            st.run_extra["user_turn_id"] = st.user_turn_id
         # 框架回灌：强制 @ 任务 owner（st.ev.user_id 已由 Kanban 填为 owner）
         st.fw_msg = isinstance(st.user_message, str) and (
             st.is_framework_injection or st.user_message.lstrip().startswith("[框架·")

@@ -38,6 +38,8 @@ class AIDailyStatistics(BaseIDModel, table=True):
         date: 统计日期 (YYYY-MM-DD)
         total_input_tokens: 总输入 Token 数
         total_output_tokens: 总输出 Token 数
+        user_turn_count / agent_run_count: 用户回合数 / 代理运行数（效率分母）
+        user_turn_*_tokens: 挂在用户回合树内的 token（含同步嵌套）
         avg_latency: 平均响应延迟 (秒)
         p95_latency: P95 响应延迟 (秒)
         intent_chat_count: 闲聊意图次数
@@ -69,6 +71,16 @@ class AIDailyStatistics(BaseIDModel, table=True):
     total_output_tokens: int = Field(default=0, title="总输出Token")
     total_cache_read_tokens: int = Field(default=0, title="总缓存读取Token")
     total_cache_write_tokens: int = Field(default=0, title="总缓存写入Token")
+    # 效率：User Turn / Agent Run
+    user_turn_count: int = Field(default=0, title="用户回合数")
+    agent_run_count: int = Field(default=0, title="代理运行数")
+    root_agent_run_count: int = Field(default=0, title="Root代理运行数")
+    nested_agent_run_count: int = Field(default=0, title="嵌套代理运行数")
+    user_turn_agent_run_count: int = Field(default=0, title="用户回合内代理运行数")
+    user_turn_input_tokens: int = Field(default=0, title="用户回合输入Token")
+    user_turn_output_tokens: int = Field(default=0, title="用户回合输出Token")
+    user_turn_cache_read_tokens: int = Field(default=0, title="用户回合缓存读取Token")
+    user_turn_cache_write_tokens: int = Field(default=0, title="用户回合缓存写入Token")
     avg_latency: float = Field(default=0.0, title="平均延迟(秒)")
     p95_latency: float = Field(default=0.0, title="P95延迟(秒)")
     intent_chat_count: int = Field(default=0, title="闲聊次数")

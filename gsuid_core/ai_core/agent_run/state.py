@@ -79,6 +79,10 @@ class RunOnceState:
     wall_acc: Any | None = None
     wall_clock_token: Any | None = None
     turn_id: str = ""
+    # 用户回合：root 主人格生成并写入 contextvar；嵌套 run 继承。
+    user_turn_id: str = ""
+    owns_user_turn: bool = False
+    user_turn_token: Any | None = None
 
     # 上下文 / 用户消息
     blocked_exclusive: set[str] = field(default_factory=set)

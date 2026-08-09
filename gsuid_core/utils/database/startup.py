@@ -110,6 +110,16 @@ exec_list = [
     # 缓存Token统计：旧库补齐缓存读写Token列（向后兼容）
     "ALTER TABLE aidailystatistics ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aidailystatistics ADD COLUMN total_cache_write_tokens INTEGER DEFAULT 0;",
+    # 效率：User Turn / Agent Run（旧库幂等补列）
+    "ALTER TABLE aidailystatistics ADD COLUMN user_turn_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN agent_run_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN root_agent_run_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN nested_agent_run_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN user_turn_agent_run_count INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN user_turn_input_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN user_turn_output_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN user_turn_cache_read_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aidailystatistics ADD COLUMN user_turn_cache_write_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebytype ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebytype ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",

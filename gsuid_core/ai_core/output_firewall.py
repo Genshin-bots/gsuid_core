@@ -78,8 +78,11 @@ _FRAMEWORK_LEAK_RE = re.compile(
     r"|\blist_persisted_outputs\b"
     r"|\bgrep_persisted_outputs\b"
     r"|\bread_persisted_output\b"
+    r"|\bweb_search_tool\b"
+    r"|\bfind_tools\b"
     r"|\brender_html_to_image\b"
     r"|\brender_agent\b"
+    r"|\bresearch_agent\b"
     r"|\bstock_report_agent\b"
     r"|\bagent_profile\s*="
     r"|\bimage_id\s*="
@@ -92,11 +95,26 @@ _FRAMEWORK_LEAK_RE = re.compile(
     r"|交给主人格"
     r"|主人格发"
     r"|tool_return"
+    r"|long_structured"
+    r"|inline_head"
+    r"|how_to_read"
     r"|Kanban"
     r"|artifact\s*:"
     r"|产物句柄"
     r"|资源ID\s*:"
-    r"|框架·任务完成",
+    r"|框架·任务完成"
+    r"|系统校验",
+    re.IGNORECASE,
+)
+
+# 系统过程文案 / 内部口头禅对用户泄露（gateway 硬拦）
+_SYSTEM_COPY_LEAK_RE = re.compile(
+    r"(时效存疑|自己再验|数据没刷|没刷出来|没法.{0,8}编数字|"
+    r"回炉了?你再|回炉|"
+    r"专域(报价|API)|当前市价|最新读数|"
+    r"（系统提示|（系统校验|\[框架[·・.]|"
+    r"禁止再检索|禁止把句柄|禁止念|"
+    r"create_subagent\(|agent_profile=)",
     re.IGNORECASE,
 )
 
@@ -324,6 +342,9 @@ def check_ooc(text: str, tier: str = "roleplay", user_text: str = "") -> Optiona
     _fw = _FRAMEWORK_LEAK_RE.search(text)
     if _fw is not None:
         system_hits.append(f"框架泄漏:{_fw.group(0)[:40]}")
+    _sc = _SYSTEM_COPY_LEAK_RE.search(text)
+    if _sc is not None:
+        system_hits.append(f"系统文案:{_sc.group(0)[:40]}")
     if system_hits:
         return FirewallHit(category="system_term", matched=system_hits)
     return None
@@ -352,11 +373,12 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
         )
     if hit.category == "machine_dump":
         return "⛔ 内容像技术堆栈/状态 JSON，禁止当台词。用角色短句说稍后再试，不要复述 Traceback、status、错误码。"
-    if any("框架泄漏" in m for m in hit.matched):
+    if any("框架泄漏" in m or "系统文案" in m for m in hit.matched):
         return (
-            "⛔ 内容含内部工具名 / 资源句柄 / 编排元话语（如 send_message_by_ai、read_handle、"
-            "res_/to_/sa_、主人格、artifact），禁止对用户念出。"
-            "请用【纯角色口吻】重写：只说业务结论与情绪，不要提工具、句柄、代理或流程。"
+            "⛔ 内容含内部工具名 / 资源句柄 / 编排或系统文案（如 read_handle、res_/to_、"
+            "系统校验、过程口头禅），禁止对用户念出。"
+            "请用【纯角色口吻】重写：只说结论与情绪；查不到就角色化说没查到，"
+            "不要提工具、句柄、代理、流程或内部提示语。"
         )
     return (
         f"⛔ 你要发送的内容命中出戏红线【类别：{hit.category}，命中：{'、'.join(hit.matched[:4])}】，"

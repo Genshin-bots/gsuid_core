@@ -5,6 +5,8 @@ from __future__ import annotations
 from gsuid_core.ai_core.agent_run.speech_policy import (
     wall_clock_nudge_for,
     resolve_speech_policy,
+    looks_like_process_meta,
+    looks_like_empty_handoff,
     claims_premature_delivery,
     looks_like_status_inquiry,
     content_is_render_candidate,
@@ -171,6 +173,62 @@ def test_render_candidate_not_volume_only() -> None:
         content="[persisted id=to_abc kind=tool_output]\nsummary: 加载中",
         fileos_folded=True,
     )
+
+
+def test_process_meta_and_empty_handoff_gates() -> None:
+    assert looks_like_process_meta("…时效存疑，自己再验。")
+    assert looks_like_process_meta("唔…数据没刷出来，没法给你编数字。")
+    assert looks_like_process_meta("…先眯会儿，回炉了你再戳我。")
+    assert not looks_like_process_meta("…没查到具体数字。…困。")
+
+    # 无事实包：诚实失败允许（不再误武装 render）
+    honest = "唔…翻了好几页，具体数字没翻到。…好困。"
+    blk, why = should_block_user_visible_text(
+        "free",
+        honest,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["web_search_tool"],
+        fact_pack_pending=False,
+    )
+    assert not blk, why
+
+    # 过程元话语始终拦
+    blk2, why2 = should_block_user_visible_text(
+        "free",
+        "…时效存疑，自己再验。",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["web_search_tool"],
+        fact_pack_pending=False,
+    )
+    assert blk2 and why2 == "process_meta"
+
+    # 有事实包 + 摆烂句才 empty_handoff
+    lazy = "卷轴里都记着呢，要哪段再喊我。"
+    assert looks_like_empty_handoff(lazy)
+    blk3, why3 = should_block_user_visible_text(
+        "free",
+        lazy,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["web_search_tool"],
+        fact_pack_pending=True,
+    )
+    assert blk3 and why3 == "empty_handoff"
+    blk4, _ = should_block_user_visible_text(
+        "free",
+        lazy,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["web_search_tool"],
+        fact_pack_pending=False,
+    )
+    assert not blk4
 
 
 def test_wall_clock_pipeline_branch() -> None:

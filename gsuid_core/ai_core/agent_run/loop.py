@@ -480,7 +480,11 @@ class LoopPhase(RunOnceHost):
                         fact_pack_pending=_fact_pending,
                     )
                     if _blk:
-                        if _why in ("report_speech", "empty_handoff", "pre_render_long_speech"):
+                        # 仅「有料却念表/摆烂」武装 render 纠正；过程元话语只拦不武装
+                        if _why in ("report_speech", "pre_render_long_speech"):
+                            st.report_speech_blocked = True
+                            st.saw_structured_return = True
+                        elif _why == "empty_handoff" and _fact_pending:
                             st.report_speech_blocked = True
                             st.saw_structured_return = True
                         logger.info(

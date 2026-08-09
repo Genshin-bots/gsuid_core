@@ -299,8 +299,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 文件 | 用途 |
 |---|---|
-| `manager.py` | `statistics_manager` 单例：`record_trigger / record_heartbeat_decision / record_latency / record_token_usage / record_error`。webconsole 的 `/api/ai/statistics/*` 读这里。 |
-| `models.py / dataclass_models.py` | 计数数据结构。 |
+| `manager.py` | `statistics_manager` 单例：`record_trigger / record_heartbeat_decision / record_latency / record_token_usage / record_agent_run / record_error`。`summary.efficiency` 暴露 User Turn / Agent Run 均值。webconsole `/api/ai/statistics/*` 读这里。 |
+| `models.py / dataclass_models.py` | 计数数据结构（含 `user_turn_*` / `agent_run_*`）。 |
 | `startup.py` | 启动期初始化。 |
 
 ### `classifier/` — 模式分类

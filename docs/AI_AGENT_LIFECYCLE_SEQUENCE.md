@@ -29,7 +29,7 @@
 | **§10.0–§10.8** | Agent 环：`agent_run` 阶段包地图 / 闸门 / 假完成 / 呈现层 / return OOC |
 | **§14** | 三套历史 / 三类落盘对照 |
 | **§15** | 进程启动与 `init_ai_core`（消息到来之前） |
-| **§16** | 后台链路 + **create_subagent 三路径 + 理想研报流水线** |
+| **§16** | 后台链路 + **create_subagent 三路径 + 理想长信息流水线** |
 | **§17** | 成本 / 委派 / 出图 / web 降权备忘（2026-08-08） |
 
 **读图约定**：
@@ -1194,6 +1194,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         · 输出闸 FUSE 提示（熔断后最多注入一次）
       请求侧 ToolReturn 处理：
         · is_tech_dump → TECH_DUMP_TOOL_SHIELD（主人格）
+        · FileOS：主人格长文落盘折叠 → 句柄卡 + inline_head；只读工具/句柄卡永不二次折
         · 高密度 JSON → 摘要折叠（CapabilityAgent 不折叠）
         · post_tool_contracts_for(create_by, capability_node_id=…):
             Chat/Agent → POST_TOOL_OUTPUT：长结构 → create_subagent(render_agent)
@@ -1329,11 +1330,11 @@ session_log entries（磁盘，可稍后刷）：
 2. incomplete 时 **最多催收 1 次**（`_delivery_followup_task`）
 3. 仍 incomplete → 回执标明失败，主人格可 web 换路或重委派
 
-**理想重任务流水线**（研报 / 宏观影响 / 长对比，域无关）：
+**理想重任务流水线**（长信息 / 多跳事实 / 长对比，域无关）：
 
 ```text
 主人格短前摇
-  → create_subagent(research_agent | stock_report_agent | …)  # 专域 API 优先，web 降权
+  → create_subagent(research_agent | 其它能力节点…)  # 结构化数据工具优先，web 降权
   → 事实包 artifact_put → res_
   → create_subagent(render_agent, task=句柄+版式)
   → send_message_by_ai(image_id=) + 一两句角色台词
@@ -1483,15 +1484,15 @@ uv run core
 3. 剥离嵌套 `create_subagent` / 非 render 的 `render_*`
 4. `render_agent`：**禁止** task 向量回填 web_search（只吃渲染白名单）
 
-**取数可信度（提示词 + 工具 docstring，2026-08-08）**：
+**取数可信度（提示词 + 工具 docstring）**：
 
 | 优先级 | 来源 | 用途 |
 |--------|------|------|
-| 1 | 专域 API（行情/报价/财务/账户工具） | 现价、点位、涨跌、指标读数 |
+| 1 | 结构化数据工具 | 实时读数、状态、业务字段 |
 | 2 | `search_knowledge` | 入库资料（非实时） |
-| 3 | `web_search` / `web_fetch` | 事件/政策叙事；**摘要价常过时，禁止当现价** |
+| 3 | `web_search` / `web_fetch` | 事件/叙事；**摘要常过时，禁止当未核对的实时值** |
 
-`web_search_tool` 返回框显式提示：摘要数字可能滞后；实时值须先专域 API。
+`web_search_tool` 返回框极短通用 disclaimer；折叠时 **句柄卡 + inline_head**，全文 `read_handle`（保底）。
 
 ---
 
@@ -1500,16 +1501,17 @@ uv run core
 1. **system 前缀缓存**：会话内 system **不改串**（TTL=inf）；mood/关系/记忆/精确时间/身份锚只进 user。
 2. **工具规程**：`TOOL_ORCHESTRATION` + **DELEGATION_FIRST** 在 system；重任务禁主人格长业务正文。
 3. **意图**：prior 拼接 + 省略/短句升工具；装配不因闲聊砍向量/状态族；intent=工具/问答 → user 侧事务优先级句。
-4. **工具池**：保底 self+buildin；recall 默认 3、extra max 默认 6；驻留 2 轮；exclusive 剥离 + find_tools 不回灌。
+4. **工具池**：保底 self+buildin（含 `read_handle`）；recall 默认 3、extra max 默认 6；驻留 2 轮；exclusive 剥离 + find_tools 不回灌。
 5. **抢答（A）**：同 Session 新 run 在锁被占时 set cancel；旧 generation 节点间隙 abort 且不写 history。
 6. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 经 `pre_send_gate` → FALLBACK。
 7. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC**；尖括号同 turn 3 次熔断；勿在 `agent_run/loop` 平行第二套顺序。
+   另拦框架泄漏 / 系统文案口头禅（过程元话语不对用户）。
 8. **呈现 vs 合规**：`send_chat_result` 只做通道变换；打回/熔断只在 gate。
 9. **出图主路径**：`create_subagent(render_agent)` → 自由 HTML → `res_` 图 → 主人格 `send_message_by_ai`。
    长 markdown 呈现层兜底 **默认关**（`render_long_markdown_as_image=False`）。
 10. **return OOC 分岔**：Capability/subagent **不做** roleplay scrub；incomplete 认 `res_`/artifact 登记。
-11. **web 降权**：专域 API ≫ web 摘要；禁止用搜索旧价冒充现价（research/stock/主人格规程一致）。
-12. **软门 / Kanban / 无业务特判**：规则预筛；文本 profile 默认可 transient；专域靠插件 `register_agent_node` + 工具描述。
+11. **web 降权**：结构化数据工具 ≫ web 摘要；禁止用过时摘要冒充实时读数。
+12. **软门 / Kanban / 无业务特判**：规则预筛；文本 profile 默认可 transient；能力节点靠插件 `register_agent_node` + 工具描述。
 
 ---
 

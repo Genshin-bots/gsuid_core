@@ -403,6 +403,45 @@ async def get_rag_document_stats(
         return {"status": 1, "msg": f"获取 RAG 文档统计失败: {str(e)}", "data": None}
 
 
+@app.get("/api/ai/statistics/efficiency", summary="获取 User Turn / Agent Run 效率指标", tags=AI_STATS)
+async def get_ai_statistics_efficiency(
+    date: Optional[str] = None,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """获取 Token 效率指标（用户回合 / 代理运行计数与均值）。
+
+    口径：
+    - **User Turn（用户回合）**：主人格交互 root 一次完整 ``agent.run``（含同步嵌套子代理）
+    - **Agent Run（代理运行）**：任意一次 settle 的 ``agent.run``（主 / sub / capability）
+    - ``avg_tokens_per_user_turn``：用户回合树内 input+output 之和 / 用户回合数
+      （含同步委派，排除无 user_turn_id 的纯后台 run）
+    - ``avg_tokens_per_agent_run``：全日 input+output / agent_run 数
+    - ``avg_agent_runs_per_user_turn``：用户回合树内 run 数 / 用户回合数
+
+    Query:
+    - ``date``: YYYY-MM-DD，默认今日（内存实时）
+
+    ``data`` 字段见 webconsole docs 20-ai-statistics.md §efficiency。
+    """
+    try:
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+        result = await statistics_manager.get_efficiency(date)
+        if result is None:
+            return {
+                "status": 1,
+                "msg": f"未找到 {date} 日期的效率统计",
+                "data": None,
+            }
+        return {"status": 0, "msg": "ok", "data": {**result, "date": date}}
+    except Exception as e:
+        return {
+            "status": 1,
+            "msg": f"获取效率统计失败: {str(e)}",
+            "data": None,
+        }
+
+
 @app.get("/api/ai/statistics/history", summary="获取历史统计数据", tags=AI_STATS)
 async def get_statistics_history(
     days: int = 7,
