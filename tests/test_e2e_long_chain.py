@@ -100,13 +100,13 @@ async def recv(ws, name: str, idle=100.0, hard=480.0):
 async def send(ws, text: str, user_id: str = "99999"):
     msg = MessageReceive(
         bot_id="console",
-        bot_self_id="3399214199",
+        bot_self_id="900000001",
         user_type="direct",
         user_pm=0,
         group_id=None,
         user_id=user_id,
         content=[Message(type="text", data=text)],
-        sender={"nickname": "Wuyi测试"},
+        sender={"nickname": "测试主人"},
     )
     await ws.send(msgjson.encode(msg))
     print(f"\n[SENT] {text}")

@@ -22,7 +22,8 @@ def test_report_is_illegal_not_protocol() -> None:
     tags = find_illegal_angle_tags('<report title="x">a</report>')
     assert any("report" in t.lower() for t in tags)
     w = build_rewrite_warning(tags, "x")
-    assert "render_html" in w
+    # DELEGATION_FIRST：出图引导走 create_subagent(render_agent)，不再直提 render_html
+    assert "render_agent" in w or "render_html" in w
     # 协议清单只宣传 SILENCE / meme，report 仅出现在禁止说明里
     protocol_section = w.split("框架只认这些协议标签：")[1].split("多项数据")[0]
     assert "<SILENCE>" in protocol_section or "SILENCE" in protocol_section

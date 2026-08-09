@@ -62,16 +62,26 @@ class RunOnceState:
     thinking_segments: list[str] = field(default_factory=list)
     generation_cancelled: bool = False
     cancel_ev: Any | None = None
-    # 出站话术：free / silence_only / status_ok / framework_nudge / framework_deliver
+    # 出站话术：free / silence_only / status_ok / framework_nudge /
+    # framework_deliver / delivered（终局沉默，见 speech_policy）
     speech_policy: str = "free"
     status_inquiry: bool = False
     pending_async_delivery: bool = False
     image_sent_this_run: bool = False
+    # 交付终局：send_message_by_ai 已带台词成功交付 → 本 run 对用户只许 SILENCE。
+    # 由工具回执确认后置位（非工具调用时），防失败回执误入终局。
+    delivered_terminal: bool = False
+    # 终局 SILENCE 指令是否已注入过 ModelRequest（每 run 至多一次）
+    delivered_nudged: bool = False
     has_status_tool_call: bool = False
     # 本轮曾拦截「报告体」台词 → settle 强制 render 纠正
     report_speech_blocked: bool = False
+    # 本轮见过「无时点聚合」工具返回（气候/月均/历史均值）→ 台词禁冒充实时读数
+    saw_timeless_aggregate: bool = False
     # 本轮已发过一句等待安慰（出图前）
     wait_comfort_sent: bool = False
+    # 主通道已成功发送的台词段数（单轮出站配额兜底，见 4.10）
+    main_channel_sends: int = 0
 
     # 时钟 / 限额
     limits: UsageLimits | None = None

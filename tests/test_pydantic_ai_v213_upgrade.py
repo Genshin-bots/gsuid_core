@@ -218,12 +218,12 @@ def test_gs_agent_uses_result_usage_as_property() -> None:
     v1 的 ``result.usage()`` 在 v2 直接抛 ``TypeError``；我们的兼容层 try/except
     TypeError 只兜底"日志不报错"，真正想要的是直接走 v2 写法。
     """
-    import gsuid_core.ai_core.gs_agent as agent_mod
+    import gsuid_core.ai_core.agent_run.settle as settle_mod
 
-    src = inspect.getsource(agent_mod)
+    src = inspect.getsource(settle_mod)
     # 真正读取 token 用的那一行必须是属性访问
     assert "result.usage\n" in src or "result.usage," in src or "result.usage " in src, (
-        "gs_agent 应该用 result.usage 属性访问而非 result.usage()"
+        "settle 应该用 result.usage 属性访问而非 result.usage()"
     )
     # v1 旧写法必须已撤（除注释/字符串外）
     bad_lines = [
@@ -306,22 +306,18 @@ def test_gs_agent_module_imports() -> None:
     检查 gs_agent 通过 ``from pydantic_ai.X import Y`` 公开用到的 v2.13 符号
     都还在，避免某次升级再次撞到删除项。
     """
-    import importlib
+    # agent_run 拆分后各符号分散在 phase 模块使用；此处直接锁 pydantic_ai 源符号
+    # 仍可达，并顺带 import 使用它们的模块，等价于原来的 dir(gs_agent) 检查。
+    from pydantic_ai import Agent
+    from pydantic_ai.agent import CallToolsNode, ModelRequestNode
+    from pydantic_ai.usage import RunUsage, UsageLimits
+    from pydantic_ai.profiles import ModelProfile
 
-    import gsuid_core.ai_core.gs_agent as agent_mod
+    for sym in (Agent, CallToolsNode, ModelRequestNode, RunUsage, UsageLimits, ModelProfile):
+        assert sym is not None
 
-    importlib.reload(agent_mod)
-    # 关键 runtime 符号（按 gs_agent.py 实际 import 的列表）：
-    # Agent / CallToolsNode / ModelRequestNode / RunUsage / UsageLimits / ModelProfile
-    # 注意: ModelSettings / ThinkingLevel 仅在 gs_agent 中用于类型注解,
-    # 不在运行时绑定, dir() 看不到(预期)。
-    expected = (
-        "Agent",
-        "CallToolsNode",
-        "ModelRequestNode",
-        "RunUsage",
-        "UsageLimits",
-        "ModelProfile",
-    )
-    for name in expected:
-        assert name in dir(agent_mod), f"gs_agent 缺失 v2.13 符号: {name}"
+    # 使用这些符号的模块均可干净 import
+    import gsuid_core.ai_core.gs_agent  # noqa: F401
+    import gsuid_core.ai_core.agent_run.loop  # noqa: F401
+    import gsuid_core.ai_core.agent_run.tools  # noqa: F401
+    import gsuid_core.ai_core.agent_run.settle  # noqa: F401

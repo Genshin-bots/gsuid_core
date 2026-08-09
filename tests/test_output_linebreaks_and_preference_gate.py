@@ -181,7 +181,7 @@ def test_code_block_is_kept_as_text_not_rendered(_md_image_cfg) -> None:
 def test_bold_headers_and_numbered_list_render_as_image(_md_image_cfg) -> None:
     """agent 研报常用「整行粗体小标题 / 编号建议」而非表格或 # 标题——也必须命中出图。
 
-    还原 session ...644256 里药明康德那条被拆成 ~8 段的回复（有粗体小标题 + 编号列表，无表格）。
+    还原某研报会话里药明康德那条被拆成 ~8 段的回复（有粗体小标题 + 编号列表，无表格）。
     """
     _md_image_cfg(min_chars=80)
     report = (

@@ -285,6 +285,9 @@ class GsCoreAIAgent(RunOnceMixin):
         self._cancel_generation = asyncio.Event()
         # 当前锁内是否在跑框架回灌：与真人消息互不 supersede，只排队
         self._running_framework: bool = False
+        # 4.7 supersede 交接：本 session 上一次 run 被抢答打断时若有在途子代理委派，
+        # 记一句交接语，下一 run 的 prepare 注入后即清空（Kanban 完成仍走 [框架·任务完成]）。
+        self._pending_delegation_handoff: str = ""
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。

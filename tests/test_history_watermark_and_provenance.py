@@ -36,6 +36,8 @@ def _make_agent(max_history: int) -> Any:
     # 只构造到能测 extract_history 的程度：绕过 __init__（避免模型/工具装配）
     agent: Any = object.__new__(GsCoreAIAgent)
     agent.max_history = max_history
+    # extract_history 的角色锚定分支会读 persona_name（OOC 修复 5.5），绕过 __init__ 须手动补
+    agent.persona_name = None
 
     class _NullLogger:
         def log_history_reset(self, reason: str, detail: str) -> None:
@@ -64,16 +66,19 @@ def test_no_trim_below_watermark() -> None:
 
 
 def test_trim_goes_to_low_watermark_not_max() -> None:
-    """超过 max_history 时一次裁到低水位（0.6x），而非"超 1 裁 1"。"""
+    """超过 max_history 时一次裁到低水位（_HISTORY_TRIM_RATIO），而非"超 1 裁 1"。"""
+    from gsuid_core.ai_core.gs_agent import _HISTORY_TRIM_RATIO
+
     agent = _make_agent(max_history=15)
     history = []
     for i in range(9):
         history.extend(_turn(i))  # 18 条 > 15
     agent.history = list(history)
     agent.extract_history()
-    # 低水位 = int(15*0.6) = 9；工具配对安全截断可能再少 1 条，但绝不该停在 15
-    assert len(agent.history) <= 9
-    assert len(agent.history) >= 7
+    # 低水位 = int(15 * ratio)；工具配对安全截断可能再少 1 条，但绝不该停在 15
+    low = int(15 * _HISTORY_TRIM_RATIO)
+    assert len(agent.history) <= low
+    assert len(agent.history) >= low - 2
     # 保留的是最新消息
     last = agent.history[-1]
     assert isinstance(last, ModelResponse)
@@ -83,19 +88,25 @@ def test_trim_goes_to_low_watermark_not_max() -> None:
 
 def test_trim_interval_gives_stable_prefix() -> None:
     """裁剪后继续追加若干轮都不再触发裁剪——这段窗口内历史头部字节稳定。"""
-    agent = _make_agent(max_history=15)
+    from gsuid_core.ai_core.gs_agent import _HISTORY_TRIM_RATIO
+
+    max_history = 20
+    agent = _make_agent(max_history=max_history)
+    low = int(max_history * _HISTORY_TRIM_RATIO)
     history = []
-    for i in range(9):
+    # 填满到低水位 + 8 条，确保首轮必触发裁剪
+    for i in range((low + 8) // 2):
         history.extend(_turn(i))
     agent.history = list(history)
     agent.extract_history()
+    assert len(agent.history) <= low  # 首轮确实裁了
     stable_head = list(agent.history)
 
-    # 追加 2 轮（+4 条 ≤ 15）：不触发裁剪，头部对象序列不变
-    agent.history.extend(_turn(100))
-    agent.extract_history()
-    agent.history.extend(_turn(101))
-    agent.extract_history()
+    # headroom = max_history - low 条内追加不再触发裁剪，头部对象序列不变
+    headroom_pairs = (max_history - low) // 2
+    for j in range(headroom_pairs):
+        agent.history.extend(_turn(100 + j))
+        agent.extract_history()
     assert agent.history[: len(stable_head)] == stable_head
 
 
@@ -175,8 +186,8 @@ def _group_task(**overrides) -> Any:
     fields = {
         "task_id": "scheduled_task_5cad21ace9f5",
         "task_type": "interval",
-        "user_id": "514971204",  # Synchro 创建
-        "group_id": "914411529",
+        "user_id": "100000002",  # 化名：小北
+        "group_id": "200000001",
         "bot_id": "onebot",
         "task_prompt": "检查巨化股份（600160）当前价格",
         "status": "pending",
@@ -205,18 +216,18 @@ def sched_env(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 @pytest.mark.anyio
 async def test_group_member_sees_others_tasks_with_creator(sched_env: dict) -> None:
-    """§5 事故复现：居木（994534742）问"谁要的提醒"，必须能看到 Synchro 建的群任务。"""
+    """§5 事故复现：阿北（100000003）问"谁要的提醒"，必须能看到小北建的群任务。"""
     from gsuid_core.ai_core.buildin_tools.scheduler import list_scheduled_tasks
 
     sched_env["tasks"] = [_group_task()]
-    ctx = _make_ctx(user_id="994534742", group_id="914411529")
+    ctx = _make_ctx(user_id="100000003", group_id="200000001")
     result = await list_scheduled_tasks(ctx)
 
     # 群聊 = 本群任务 ∪ 提问者自己的任务（自己私聊/它群设的提醒也要能查到，评审修复 F11）
-    assert {"group_id": "914411529"} in sched_env["select_kwargs"]
-    assert {"user_id": "994534742"} in sched_env["select_kwargs"]
+    assert {"group_id": "200000001"} in sched_env["select_kwargs"]
+    assert {"user_id": "100000003"} in sched_env["select_kwargs"]
     assert "scheduled_task_5cad21ace9f5" in result
-    assert "@514971204" in result  # 发起用户以 @ 形态展示（走 at 转换，不裸出 QQ 号）
+    assert "@100000002" in result  # 发起用户以 @ 形态展示（走 at 转换，不裸出 QQ 号）
 
 
 @pytest.mark.anyio
@@ -224,9 +235,9 @@ async def test_private_chat_still_filters_by_user(sched_env: dict) -> None:
     from gsuid_core.ai_core.buildin_tools.scheduler import list_scheduled_tasks
 
     sched_env["tasks"] = []
-    ctx = _make_ctx(user_id="994534742", group_id=None)
+    ctx = _make_ctx(user_id="100000003", group_id=None)
     await list_scheduled_tasks(ctx)
-    assert sched_env["select_kwargs"] == [{"user_id": "994534742"}]
+    assert sched_env["select_kwargs"] == [{"user_id": "100000003"}]
 
 
 @pytest.mark.anyio
@@ -235,10 +246,10 @@ async def test_query_task_readable_by_same_group_member(sched_env: dict) -> None
     from gsuid_core.ai_core.buildin_tools.scheduler import query_scheduled_task
 
     sched_env["tasks"] = [_group_task()]
-    ctx = _make_ctx(user_id="994534742", group_id="914411529")
+    ctx = _make_ctx(user_id="100000003", group_id="200000001")
     result = await query_scheduled_task(ctx, task_id="scheduled_task_5cad21ace9f5")
     assert "无权" not in result
-    assert "514971204" in result
+    assert "100000002" in result
 
 
 @pytest.mark.anyio

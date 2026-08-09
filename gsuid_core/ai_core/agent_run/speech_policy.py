@@ -12,13 +12,22 @@ from __future__ import annotations
 import re
 from typing import Literal, Sequence
 
+from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+    is_timeless_aggregate as _is_timeless_aggregate,
+    fact_pack_is_multi_point as _fact_lines_multi_point,
+)
+
 SpeechPolicy = Literal[
     "free",
     "silence_only",
     "status_ok",
     "framework_nudge",
     "framework_deliver",
+    "delivered",
 ]
+
+# 单轮主通道可见台词上限（兜底；DELIVERED 终局态落地后主要是防多 TextPart 刷屏）
+MAIN_CHANNEL_VISIBLE_LIMIT = 3
 
 # 用户追问进度：疑问/催促闭类（非业务域）
 _STATUS_INQUIRY_RE = re.compile(
@@ -57,6 +66,36 @@ _PROCESS_META_RE = re.compile(
     r"专域(报价|API)|当前市价|最新读数)",
     re.IGNORECASE,
 )
+
+# 交付状态汇报：模型以系统日志口吻向用户播报「任务/发送已完成、无需再说话」。
+# 双信号共现才命中（精度优先）：
+#   A 交付/完成播报 —— (任务|图|消息|产物|结果) × 完成态发送动词；
+#   B 行政化收束 —— 「无需/不必 + 追加/补充/发言/回复」的自我静默判定。
+# 只说「已经发给你啦」（面向用户的自然交付）不命中 B，放行。
+_DELIVERY_REPORT_RE = re.compile(
+    r"(任务|图(片)?|消息|产物|结果|数据)[^。！？\n]{0,8}(已完成|完成|已发送|已发给|已交付|已发出|发送完毕|已经发送|已经完成)"
+    r"|(已|已经)?(发送给|发给|发到)\s*[^\s，。！？]{1,12}",
+    re.IGNORECASE,
+)
+_DELIVERY_META_CLOSE_RE = re.compile(
+    r"(无需|不必|不用|无须)[^。！？\n]{0,6}(追加|补充|再?发言|再?回复|多说|多言|赘述)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_delivery_status_narration(text: str) -> bool:
+    """是否交付状态汇报（系统日志腔对用户播报，OOC）。
+
+    判据 = 交付/完成播报 × 行政化自我静默 同段共现；单一信号不命中，
+    保护「已经发给你啦」这类面向用户的自然交付句。
+    """
+    body = (text or "").strip()
+    if not body or body in ("<SILENCE>", "SILENCE"):
+        return False
+    if _DELIVERY_META_CLOSE_RE.search(body) is None:
+        return False
+    return _DELIVERY_REPORT_RE.search(body) is not None
+
 
 # 等待安慰 / 委派前「会比较久」声明（步骤 3）
 _WAIT_COMFORT_RE = re.compile(
@@ -329,14 +368,21 @@ def should_block_user_visible_text(
             "status_ok",
             "framework_nudge",
             "framework_deliver",
+            "delivered",
         )
         else "free"
     )
+
+    # 交付终局：本 run 已经由发送工具交付完毕，对用户只许 <SILENCE>。
+    if pol == "delivered":
+        return True, "delivered_terminal"
 
     # 图已发出：放行极短角色收尾；仍拦长结构 / 编排词 / 引导追问
     if image_sent:
         if has_orchestration_narration(body):
             return True, "orchestration_leak"
+        if looks_like_delivery_status_narration(body):
+            return True, "delivery_narration"
         if looks_like_report_speech(body):
             return True, "report_speech"
         if has_open_solicitation(body) and len(body) > 40:
@@ -359,6 +405,9 @@ def should_block_user_visible_text(
 
     if has_orchestration_narration(body):
         return True, "orchestration_leak"
+
+    if looks_like_delivery_status_narration(body):
+        return True, "delivery_narration"
 
     if looks_like_process_meta(body):
         return True, "process_meta"
@@ -428,6 +477,16 @@ def content_is_render_candidate(
     if re.search(r"\bres_[0-9a-fA-F]{6,}\b", body) and len(body) >= 40:
         return True
 
+    # 无时点聚合（气候/月均/历史均值）：不武装出图——把「常年均值」渲成图当答案
+    # 正是 P2 编造陷阱，应口头带不确定口径，而非出图坐实（create_subagent 事实包除外）。
+    if _is_timeless_aggregate(body):
+        return False
+
+    # 检索/抓取类：单点问答可短回，只有**多点**结构才值得出图（4.2）
+    _searchish = any(h in tn for h in ("search", "web_", "fetch", "knowledge"))
+    if _searchish and not _fact_lines_multi_point(body):
+        return False
+
     # 真表 / 多段列表
     if "|" in body and body.count("\n") >= 3:
         return True
@@ -445,15 +504,18 @@ def content_is_render_candidate(
         if body.count("\n\n") >= 3 and len(body) >= 600:
             return True
         # 纯检索列表默认不武装 render（单点问答可短回）
-        if any(h in tn for h in ("search", "web_", "fetch", "knowledge")):
+        if _searchish:
             return False
         return False
 
     # 搜索类：与旧口径类似但更严；单点检索默认不武装出图
-    if any(h in tn for h in ("search", "web_", "fetch", "knowledge")):
+    if _searchish:
         if "|" in body and body.count("\n") >= 4 and len(body) >= 600:
             return True
         if body.count("\n\n") >= 3 and len(body) >= 1200:
+            return True
+        # 多点逐行数据行（天气列表 / 新闻清单）：形态达标即武装，不卡绝对长度
+        if len(body) >= 80:
             return True
         return False
     return False

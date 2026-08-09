@@ -345,10 +345,21 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
      **只计 1 次 attempt**；多段 feedback 用 `merge_rewrite_feedbacks` 合并后注入下一轮请求。
    - 检测启发式：形如 `</?Name…>`；`List<str>` 等 PascalCase 泛型 / 含 `@` 邮箱跳过，降假阳性。
 2. **`ooc`**（`output_firewall.check_ooc`）：
-   - 主路径：`machine_dump` → `FALLBACK`「额…出错了，稍后再试」；其它 → `REWRITE`+`defer_ooc`
+   - 主路径：`machine_dump` → `FALLBACK`「额…出错了，稍后再试」；**`delivery_narration`
+     → `FUSE`**（交付已完成，重说无意义，直接静默）；其它 → `REWRITE`+`defer_ooc`
      （记入 `_ooc_blocked`，run 末 `_ooc_rewrite_and_send` 轻量重写一次）。
    - 工具路径（`tool_gate_feedback` / 历史名 `gate_warn_once`）：提醒一次 → 再命中非
      never-release 可放行；资金 / 机器腔 **never-release** 持续打回。
+   - OOC 类目：`model_identity` / `ai_selfref` / `system_term` / `fund_claim` /
+     `machine_dump` / **`delivery_narration`**（2026-08-10，交付状态汇报系统日志腔，
+     `speech_policy.looks_like_delivery_status_narration` 双信号结构检测）。
+
+**DELIVERED 交付终局态（2026-08-10，P0 OOC 根治）**：在 `pre_send_gate` **之前**还有一道
+`speech_policy.should_block_user_visible_text` 话术闸（`agent_run/speech_policy.py`）。
+`send_message_by_ai` **带台词**成功交付后，本 run 置 `speech_policy="delivered"`，对用户只许
+`<SILENCE>`——杜绝「任务已完成，图已发送给…」这类交付后状态汇报 OOC。media-only 交付不置位、
+保留一句收尾额度。状态字段在 `RunOnceState`（`delivered_terminal`），信号来自工具侧
+`extra["delivered_with_speech"]`（结构信号，非文本关键词）。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

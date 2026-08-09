@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # 主人格：长结构化结果 → 委派 render_agent（禁止自渲）；短结论不必出图
@@ -18,6 +19,70 @@ POST_TOOL_OUTPUT_CONTRACT = (
     "其余在途 <SILENCE>；发图后至多一句角色口吻；"
     "禁止念节点名/句柄/「让某某出图」；禁止把长数据当台词。）"
 )
+
+# 交付已完成（send_message_by_ai 带台词成功回执）→ 终局：只许 SILENCE。
+# 取代 POST_TOOL_OUTPUT_CONTRACT——避免交付成功后契约反而提醒模型「再说一句」。
+POST_DELIVERY_SILENCE_CONTRACT = (
+    "（系统：你已通过发送工具完成交付，本轮任务到此终结。"
+    "只输出 <SILENCE>。禁止再输出任何文字——包括「任务已完成 / 图已发送 / "
+    "无需追加发言」这类状态汇报；那是系统日志，不是角色台词。）"
+)
+
+# 时效提醒：本轮工具返回只有无时点聚合（气候/月均/历史均值）时追加，
+# 禁台词冒充实时读数、禁出图当「答案」（4.4）。
+TIMELESS_AGGREGATE_CAVEAT = (
+    "（系统：本轮工具返回只含「气候 / 月均 / 历史均值」这类无当前时点的聚合数据。"
+    "台词禁说成「现在 / 此刻」的读数；用角色口吻说明只是常年大概，"
+    "或如实说没翻到实时数；也禁止把它出图当成实时答案。）"
+)
+
+# send_message_by_ai 成功回执唯一形态（工具协议的一部分，属结构信号非业务词）。
+# loop 侧经 tool_return_is_delivery_success() 消费：交付终局置位 + 终局契约分发。
+DELIVERY_SUCCESS_MARK = "消息已发送给用户"
+
+# 时效形态：返回体自带「均值/气候/历史」口径而无当前时点读数（结构判据，域无关）。
+# 命中 → 失败/低时效契约分支：台词禁与「现在/此刻」共现，禁冒充实时读数。
+# 兼容繁简（气候/氣候、历史/歷史）。
+_TIMELESS_AGGREGATE_RE = re.compile(
+    r"(月均|月度|气候|氣候|常年|历史平均|歷史平均|平均值|多年平均|同期平均|月平均|平均氣溫|平均气温)"
+)
+# 逐日/逐时读数形态（真表 + 日期列）不算低时效聚合
+_DAILY_SERIES_RE = re.compile(r"\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}-\d{2}-\d{2}")
+
+
+def tool_return_is_delivery_success(content: Any) -> bool:
+    """ToolReturn 是否为 send_message_by_ai 的成功交付回执。"""
+    return isinstance(content, str) and DELIVERY_SUCCESS_MARK in content
+
+
+def is_timeless_aggregate(content: str) -> bool:
+    """返回体是否呈「无当前时点的均值/气候聚合」形态（逐日序列除外）。"""
+    body = (content or "").strip()
+    if not body or _TIMELESS_AGGREGATE_RE.search(body) is None:
+        return False
+    return _DAILY_SERIES_RE.search(body) is None
+
+
+def _count_fact_items(body: str) -> int:
+    """事实包条目数（形态计数：表数据行 / 列表项 / 逐行数据行 / 段落）。"""
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    table_rows = [ln for ln in lines if "|" in ln and re.fullmatch(r"\|?[\s:|-]+\|?", ln) is None]
+    if len(table_rows) >= 2:
+        return len(table_rows)
+    bullets = [ln for ln in lines if re.match(r"^\s*(?:[-*•]|\d+[.、)])\s+", ln)]
+    if bullets:
+        return len(bullets)
+    # 逐行数据行（含数字的独立行）：天气列表 / 清单形态
+    data_lines = [ln for ln in lines if re.search(r"\d", ln)]
+    if len(data_lines) >= 3:
+        return len(data_lines)
+    return len([p for p in re.split(r"\n\s*\n", body) if p.strip()])
+
+
+def fact_pack_is_multi_point(content: str, *, threshold: int = 3) -> bool:
+    """事实包是否多点（≥threshold 条目）——单点结论不该武装出图纠正。"""
+    return _count_fact_items((content or "").strip()) >= threshold
+
 
 # 能力代理（非 render）：只交 Markdown/JSON 事实包；出图归 render_agent
 POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (

@@ -17,10 +17,33 @@ import shutil
 import asyncio
 from pathlib import Path
 
+import pytest
 import websockets.client
 from msgspec import json as msgjson
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
+
+# 本文件是需要 `uv run core` 在线服务的端到端脚本（main() 统一编排）；
+# pytest 收集到的 test_* 函数依赖 ws 夹具，服务不在时由夹具 skip，而非报错。
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture
+async def ws():
+    token = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
+    url = f"ws://localhost:8765/ws/Nonebot?token={token}"
+    try:
+        conn = await websockets.client.connect(url, max_size=2**25, open_timeout=5)
+    except OSError:
+        pytest.skip("e2e 服务未启动（先 uv run core），跳过在线行为测试")
+    yield conn
+    await conn.close()
+
 
 WS_TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
 WS_URL = f"ws://localhost:8765/ws/Nonebot?token={WS_TOKEN}"
@@ -29,7 +52,7 @@ ROOT_OUTPUT = Path(__file__).resolve().parent.parent / "test_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 ROOT_OUTPUT.mkdir(parents=True, exist_ok=True)
 
-BOT_SELF = "3399214199"
+BOT_SELF = "900000001"
 MASTER_UID = "99999"
 TOOL_IDLE_S = 90.0
 TOOL_HARD_S = 300.0
@@ -130,7 +153,7 @@ async def _send(
         group_id=group_id or None,
         user_id=user_id,
         content=[content],
-        sender={"nickname": "Wuyi测试" if user_id == MASTER_UID else "路人甲"},
+        sender={"nickname": "测试主人" if user_id == MASTER_UID else "路人甲"},
     )
     await ws.send(msgjson.encode(msg))
     print(f"\n[SENT] {text[:80]}")

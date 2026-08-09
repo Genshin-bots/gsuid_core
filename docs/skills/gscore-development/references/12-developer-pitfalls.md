@@ -342,15 +342,20 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 
 - **尖括号**：同 turn 最多 3 次 REWRITE → FUSE（静默 + scrub）；无「第二次放行」。
 - **OOC 工具路径**：「提醒一次 → 重说 → 放行」（never-release 除外）；误杀代价≈多一次生成。
-- **OOC 主路径**：defer → run 末轻量重写；`machine_dump` → FALLBACK 短句。
+- **OOC 主路径**：defer → run 末轻量重写；`machine_dump` → FALLBACK 短句；
+  **`delivery_narration` → FUSE 静默**（2026-08-10，交付已完成，重说无意义）。
 - 勿改成「命中即永久硬替换且无重说」，会复现「早餐吃了个豆包」类事故。
 
 | 路径 | 检测点 | 命中行为 |
 |------|--------|----------|
-| 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；OOC defer → `_ooc_rewrite_and_send`；machine_dump → FALLBACK |
+| 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；OOC defer → `_ooc_rewrite_and_send`；machine_dump → FALLBACK；delivery_narration → FUSE |
 | 工具发送（`send_message_by_ai`） | `tool_gate_feedback`（历史别名 `gate_warn_once`） | OOC 首次警告、再命中非 never-release 放行（`GateBag.ooc_warned_turn_ids`）；尖括号与 never-release 持续打回 |
 | 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `check_ooc` + 尖括号 sanitize | 替换 `PERSONA_FALLBACK_TEXT` / 删非法标签 |
 
+- **DELIVERED 终局态（2026-08-10）在 gate 之前**：`send_message_by_ai` 带台词成功交付 →
+  本 run `speech_policy="delivered"`，`should_block_user_visible_text` 对非 SILENCE 一律拦
+  （`agent_run/speech_policy.py`）。改交付/发送链路时别破坏"交付后只许 SILENCE"；media-only
+  交付保留一句收尾额度，勿误置终局。
 - **`ooc_check=False` 只允许用于已过 gate / 重说产物**。新增发送路径默认带检。
 - 状态只写 `extra["output_gate"]` → `GateBag`，勿发明平行计数键。
 - `check_ooc(tier="plain")` 生产尚无调用方，别当它已接线。

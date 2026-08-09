@@ -364,6 +364,13 @@ async def run_heartbeat(
         logger.debug(t("log.ai.heartbeat_remaining_silent_mood", mood=mood, event=event))
         return None
 
+    # 可回应钩子门（4.11）：决定开口却给不出具体话头/由头 → 视为无的放矢的梦呓，
+    # 降级沉默（结构判定：context_hook 是决策 JSON 的必填项，空即无钩子）。
+    _hook = context_hook if isinstance(context_hook, str) else ""
+    if not _hook.strip():
+        logger.debug(t("log.ai.heartbeat_no_hook_silent", mood=mood))
+        return None
+
     logger.info(t("log.ai.heartbeat_decided_interject_mood", mood=mood, event=event))
 
     # 阶段二：生成发言 B-1：发言阶段同样把人格放 system_prompt（用完整原文 persona_text）

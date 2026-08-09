@@ -314,6 +314,12 @@ async def send_message_by_ai(
         if throttle_key is not None:
             _PER_TURN_SEND_MESSAGE_COUNT[throttle_key] = _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) + 1
 
+        # 交付终局信号：**台词**已随工具发出（media-only 不算，留一句收尾额度）。
+        # loop 据此把本 run 置为 delivered 终局态——交付后对用户只许 <SILENCE>，
+        # 杜绝「任务已完成…」状态汇报 OOC（结构信号，非文本关键词判定）。
+        if text:
+            tool_ctx.extra["delivered_with_speech"] = True
+
         content_desc = []
         if text:
             content_desc.append("文本")

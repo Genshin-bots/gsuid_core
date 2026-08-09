@@ -44,6 +44,7 @@ class RunOnceHost:
     _recent_tool_families: dict[str, int]
     _recent_user_texts: list[str]
     _last_assembled_domains: set[str]
+    _pending_delegation_handoff: str
 
     # ── GsCoreAIAgent 实现 ──
     def extract_history(self) -> None:

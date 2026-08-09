@@ -13,6 +13,14 @@
 > 已收敛为 `output_gate.pre_send_gate`（顺序：**尖括号 → OOC**）。本文 § 中写的「直接
 > `check_ooc` / `gate_warn_once`」描述的是**策略语义与词库动机**，调用点以 `output_gate` /
 > `tool_gate_feedback` 为准。尖括号熔断、`<br>` 非法、GateBag 状态见生命周期文档。
+>
+> **2026-08-10 增补**：OOC 防线新增两层——
+> ① **DELIVERED 交付终局态**：`send_message_by_ai` 带台词成功交付后，本 run 对用户只许
+> `<SILENCE>`（`speech_policy="delivered"`），根治「任务已完成，图已发送给…」这类交付后
+> 状态汇报 OOC；② **`delivery_narration` 防火墙类目**：未置终局时兜底拦交付状态汇报
+> （主通道 FUSE 静默）。另：出图候选加时效+多点判据、零工具纠正加 SILENCE 自洽出口。
+> 详见 [`AI_SESSION_OOC_ROOTCAUSE_20260810.md`](AI_SESSION_OOC_ROOTCAUSE_20260810.md) 与
+> [`AI_AGENT_LIFECYCLE_SEQUENCE.md`](AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4/§10.5。
 
 ---
 

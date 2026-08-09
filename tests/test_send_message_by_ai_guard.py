@@ -1,4 +1,4 @@
-"""send_message_by_ai 的两条回归锁（对应 session ...914411529 早柚"狂飙 + 刷 markdown"）：
+"""send_message_by_ai 的两条回归锁（对应 session ...200000001 早柚"狂飙 + 刷 markdown"，群号已脱敏）：
 
 1. **文本走 send_chat_result**：send_message_by_ai 发文本时必须经统一归一化链
    （剥 markdown / 长文转图 / 连发拆条），不再裸 bot.send 把 ``**加粗**`` 刷进群。
@@ -49,7 +49,7 @@ def test_text_routes_through_send_chat_result_and_not_raw_send():
 
     with (
         patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
-        patch.object(ms.output_firewall, "is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
     ):
         ctx = _make_ctx(ev, "turn_route", bot)
         result = _run(ms.send_message_by_ai(ctx, text="**【赢家】** 贝莱德 +8%\n- 阿里 +4%"))
@@ -74,7 +74,7 @@ def test_per_turn_throttle_rejects_third_call():
 
     with (
         patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
-        patch.object(ms.output_firewall, "is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
     ):
         ctx = _make_ctx(ev, "turn_spam", bot)
         r1 = _run(ms.send_message_by_ai(ctx, text="第一条"))
@@ -98,7 +98,7 @@ def test_throttle_resets_on_new_turn_and_after_clear():
 
     with (
         patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
-        patch.object(ms.output_firewall, "is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
     ):
         c1 = _make_ctx(ev, "turn_1", bot)
         _run(ms.send_message_by_ai(c1, text="a"))

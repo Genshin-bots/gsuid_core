@@ -1,10 +1,13 @@
 # GsCore Agent 单次 run 拆分：`agent_run` 包（2026-08-08）
 
-> **状态**：已合入工作区源码；行为与拆分前 `_execute_run_once` 单函数版等价
+> **状态**：已合入工作区源码；行为与拆分前 `_execute_run_once` 单函数版等价。
+> **2026-08-10 增补**：在本包上新增 DELIVERED 交付终局态 / 交付状态汇报防火墙 /
+> 出图候选时效判据等（见 §8），拆分结构不变。
 > **读者**：改 `ai_core` Agent 环 / 工具装配 / 出站闸 / 假完成 的开发者与 Agent
 > **红线**：[LLM.md](LLM.md)
 > **生命周期总览**：[AI_AGENT_LIFECYCLE_SEQUENCE.md](AI_AGENT_LIFECYCLE_SEQUENCE.md) §10
-> **关联**：OOC/委派 [AI_CORE_OOC_DELEGATION_UPDATE_20260724.md](AI_CORE_OOC_DELEGATION_UPDATE_20260724.md)
+> **关联**：OOC/委派 [AI_CORE_OOC_DELEGATION_UPDATE_20260724.md](AI_CORE_OOC_DELEGATION_UPDATE_20260724.md)；
+> OOC 根治归因 [AI_SESSION_OOC_ROOTCAUSE_20260810.md](AI_SESSION_OOC_ROOTCAUSE_20260810.md)
 
 ---
 
@@ -184,6 +187,27 @@ uv run pytest \
 | `_current_budget_scope` 定义点 | `agent_run.budget_ctx`（`gs_agent` 仍 re-export） |
 
 **对外** `create_agent` / `GsCoreAIAgent.run` **签名与默认语义不变**。
+
+---
+
+## 8. 2026-08-10 在 `agent_run` 上的增补（OOC 根治批次）
+
+拆分结构不变，仅在既有阶段上叠加以下能力（归因见
+[AI_SESSION_OOC_ROOTCAUSE_20260810.md](AI_SESSION_OOC_ROOTCAUSE_20260810.md)）：
+
+| 位置 | 新增 | 说明 |
+|------|------|------|
+| `state.py` | `delivered_terminal` / `delivered_nudged` / `saw_timeless_aggregate` / `main_channel_sends` | DELIVERED 终局、终局指令是否已注入、低时效聚合标记、主通道出站计数 |
+| `speech_policy.py` | `SpeechPolicy` 加 `"delivered"`；`MAIN_CHANNEL_VISIBLE_LIMIT`；`looks_like_delivery_status_narration`；出图候选时效+多点判据 | 交付后只许 SILENCE；交付状态汇报结构检测 |
+| `loop.py` | ToolReturn 侧读 `extra["delivered_with_speech"]` 置 DELIVERED、注入终局 SILENCE 指令、低时效提醒；TextPart 侧 speech_policy 闸 + 出站配额 | 见生命周期 §10.4 |
+| `settle.py` | 结构零工具纠正加 **SILENCE 自洽出口** | 概念题已答全则不刷屏、不削原答 |
+| `support.py` | `_STRUCTURAL_ZERO_TOOL_NUDGE` 文案增"已答全→SILENCE"分支 | 同上 |
+| `prepare.py` | supersede 交接语注入（`_pending_delegation_handoff`） | 抢答打断在途委派时，后到 run 感知 |
+| `tools.py` | 召回阈值 `tool_recall_threshold` 传入检索 | 低于阈值不装配 |
+| `host.py` / `gs_agent.py` | `_pending_delegation_handoff` 宿主字段 | 交接语暂存 |
+
+**验收**：`tests/test_delivery_terminal_and_firewall_20260810.py`（12 例结构 fixture）+
+既有 `test_speech_policy_20260808.py` / `test_output_gate.py` / `test_benign_fp.py` 全绿。
 
 ---
 

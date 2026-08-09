@@ -61,7 +61,8 @@ def test_finish_image_single_emit_per_task() -> None:
 
     hr._RENDER_EMITTED_TASKS.clear()
     png = _opaque_rgb_png()
-    ctx = cast(RunContext[Any], SimpleNamespace(deps=SimpleNamespace(bot=object())))
+    # _finish_image 读 deps.allow_user_outbound（ToolContext 字段），SimpleNamespace 须补齐
+    ctx = cast(RunContext[Any], SimpleNamespace(deps=SimpleNamespace(bot=object(), allow_user_outbound=True)))
     plan = PlanRunContext(task_id="task_single_1", root_task_id="root_1")
 
     async def _run() -> tuple[str | bytes, str | bytes]:

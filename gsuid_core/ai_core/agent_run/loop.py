@@ -52,6 +52,7 @@ from gsuid_core.ai_core.agent_run.support import (
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    MAIN_CHANNEL_VISIBLE_LIMIT,
     is_status_tool_name,
     looks_like_wait_comfort,
     strip_open_solicitations,
@@ -62,10 +63,13 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
     RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
+    TIMELESS_AGGREGATE_CAVEAT as _TIMELESS_AGGREGATE_CAVEAT,
+    POST_DELIVERY_SILENCE_CONTRACT as _POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY as _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    is_timeless_aggregate as _is_timeless_aggregate,
     post_tool_contracts_for as _post_tool_contracts_for,
 )
 
@@ -98,6 +102,9 @@ class LoopPhase(RunOnceHost):
                 fileos_folded=False,
             ):
                 st.saw_structured_return = True
+            # 无时点聚合（气候/月均）→ 武装时效提醒，禁台词冒充实时读数
+            if _pb and _is_timeless_aggregate(_pb):
+                st.saw_timeless_aggregate = True
 
         # C-4 墙钟软预算：交互式 run 超时后，请求前注入收敛提示（只注入一次），
         _wall_budget = (
@@ -309,30 +316,62 @@ class LoopPhase(RunOnceHost):
                 _any_actionable = True
                 if _tool_return_looks_failed(_p):
                     _any_fail = True
+            # 交付终局：send_message_by_ai 已带台词成功交付（工具侧结构信号）。
+            # media-only 交付不置位——保留一句角色收尾额度（post_image_ok）。
+            _extra_ref = _require_context(st).extra
+            if (
+                "delivered_with_speech" in _extra_ref
+                and bool(_extra_ref["delivered_with_speech"])
+                and not st.delivered_terminal
+            ):
+                st.delivered_terminal = True
+                st.speech_policy = "delivered"
             if _any_actionable:
-                _ok_c, _fail_c = _post_tool_contracts_for(
-                    self.create_by,
-                    session_id=self.session_id or "",
-                    capability_node_id=self.capability_node_id,
-                )
-                _contract = _fail_c if _any_fail else _ok_c
-                if not any(
-                    isinstance(p, UserPromptPart)
-                    and p.content
-                    in (
-                        _POST_TOOL_OUTPUT_CONTRACT,
-                        _POST_TOOL_FAIL_CONTRACT,
-                        _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
-                        _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
-                        _POST_TOOL_OUTPUT_CONTRACT_RENDER,
-                        _POST_TOOL_FAIL_CONTRACT_RENDER,
+                if st.delivered_terminal:
+                    # 交付已完成：不再注入 POST_TOOL 契约（那会提醒模型「再说一句」），
+                    # 只注入一次终局 SILENCE 指令（4.3）
+                    if not st.delivered_nudged and not any(
+                        isinstance(p, UserPromptPart) and p.content == _POST_DELIVERY_SILENCE_CONTRACT
+                        for p in node.request.parts
+                    ):
+                        node.request.parts = [
+                            *node.request.parts,
+                            UserPromptPart(content=_POST_DELIVERY_SILENCE_CONTRACT),
+                        ]
+                        st.delivered_nudged = True
+                else:
+                    _ok_c, _fail_c = _post_tool_contracts_for(
+                        self.create_by,
+                        session_id=self.session_id or "",
+                        capability_node_id=self.capability_node_id,
                     )
-                    for p in node.request.parts
-                ):
-                    node.request.parts = [
-                        *node.request.parts,
-                        UserPromptPart(content=_contract),
-                    ]
+                    _contract = _fail_c if _any_fail else _ok_c
+                    if not any(
+                        isinstance(p, UserPromptPart)
+                        and p.content
+                        in (
+                            _POST_TOOL_OUTPUT_CONTRACT,
+                            _POST_TOOL_FAIL_CONTRACT,
+                            _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+                            _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+                            _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+                            _POST_TOOL_FAIL_CONTRACT_RENDER,
+                        )
+                        for p in node.request.parts
+                    ):
+                        node.request.parts = [
+                            *node.request.parts,
+                            UserPromptPart(content=_contract),
+                        ]
+                    # 时效提醒：本轮只见无时点聚合 → 追加一次（4.4）
+                    if st.saw_timeless_aggregate and not any(
+                        isinstance(p, UserPromptPart) and p.content == _TIMELESS_AGGREGATE_CAVEAT
+                        for p in node.request.parts
+                    ):
+                        node.request.parts = [
+                            *node.request.parts,
+                            UserPromptPart(content=_TIMELESS_AGGREGATE_CAVEAT),
+                        ]
 
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
@@ -554,6 +593,15 @@ class LoopPhase(RunOnceHost):
                         logger.warning(i18n_t("log.agent.fakedone_zero_claim_pending_ok", p0=repr(_text[:40])))
                         st.fab_blocked.append(_text)
                         continue
+                    # 单轮出站配额兜底（4.10）：主通道台词超限即静默，防多 TextPart 刷屏
+                    if st.main_channel_sends >= MAIN_CHANNEL_VISIBLE_LIMIT:
+                        logger.info(
+                            i18n_t(
+                                "log.agent.silent_skipping_text",
+                                _text=f"[main_channel_cap] {_text[:40]}",
+                            )
+                        )
+                        continue
                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的 async st.context 触发
                     # athrow/cancel scope
                     try:
@@ -563,6 +611,7 @@ class LoopPhase(RunOnceHost):
                         await send_chat_result(st.bot, _text, ev=st.ev, at_user_id=_at)
                         # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
                         self._run_sent_texts.add(_text)
+                        st.main_channel_sends += 1
                     except Exception as _e:
                         logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
 
@@ -649,6 +698,13 @@ class LoopPhase(RunOnceHost):
         # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成
         if st.generation_cancelled:
             logger.info(i18n_t("log.agent.generation_aborted_no_history"))
+            # 4.7 supersede 交接：已派发的子代理委派不因打断而丢——产物由 Kanban 完成后
+            # 注入 [框架·任务完成]；这里只留一句交接语，供后到 run 知道自己委派过什么。
+            if "create_subagent" in st.tool_call_list:
+                self._pending_delegation_handoff = (
+                    "（系统提示：你上一轮委派的子任务仍在后台执行，完成时框架会另行回灌产物；"
+                    "此前勿声称已完成或重复委派同一任务。）"
+                )
             return "" if st.output_type is None else None
 
         # 遍历完成后收尾

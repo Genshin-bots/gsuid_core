@@ -113,7 +113,9 @@ core.py::websocket_endpoint  ──►  _Bot._process()  ──►  handler.py::
                                   GsCoreAIAgent.run()  ──► pydantic-ai Agent.iter
                                           │ 装配工具（保底池+检索+动态）
                                           │ LLM 多轮：ToolCall / TextPart
-                                          │ TextPart / send_message_by_ai → pre_send_gate
+                                          │ TextPart / send_message_by_ai → speech_policy 话术闸
+                                          │   （DELIVERED 交付终局只许 SILENCE）
+                                          │   → pre_send_gate（尖括号+OOC）
                                           │   REWRITE/FUSE → 打回或静默
                                           │   ALLOW/FALLBACK → send_chat_result（呈现）
                                           ▼

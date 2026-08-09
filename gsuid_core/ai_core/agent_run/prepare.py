@@ -326,6 +326,11 @@ class PreparePhase(RunOnceHost):
             st.final_user_message = _append_user_text(st.final_user_message, _STATUS_INQUIRY_HINT)
             logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
 
+        # 4.7 supersede 交接：上一 run 被抢答时有在途子代理委派 → 注入一句交接语后清空。
+        if self._pending_delegation_handoff and not st.fw_msg:
+            st.final_user_message = _append_user_text(st.final_user_message, self._pending_delegation_handoff)
+            self._pending_delegation_handoff = ""
+
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(st.final_user_message)
         logger.trace(i18n_t("log.agent.user_truncated_msg", truncated_msg=truncated_msg))

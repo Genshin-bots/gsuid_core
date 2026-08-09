@@ -305,6 +305,12 @@ def check_ooc(text: str, tier: str = "roleplay", user_text: str = "") -> Optiona
     if not text or tier == "plain":
         return None
 
+    # 交付状态汇报（系统日志腔）：优先于词库——形态独立，误杀面由双信号共现约束
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_delivery_status_narration
+
+    if looks_like_delivery_status_narration(text):
+        return FirewallHit(category="delivery_narration", matched=["交付状态汇报"])
+
     norm = normalize_for_match(text)
     extra = _extra_terms()
     model_hits = [w for w in (*_MODEL_TERMS, *extra) if normalize_for_match(w) and normalize_for_match(w) in norm]
@@ -373,6 +379,12 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
         )
     if hit.category == "machine_dump":
         return "⛔ 内容像技术堆栈/状态 JSON，禁止当台词。用角色短句说稍后再试，不要复述 Traceback、status、错误码。"
+    if hit.category == "delivery_narration":
+        return (
+            "⛔ 你在用系统日志口吻向用户播报「任务已完成/图已发送/无需追加发言」。"
+            "交付已经完成，此刻正确的输出是 <SILENCE>；若确需收尾，只用一句角色口吻的短话，"
+            "禁止汇报任务状态、禁止念收件人、禁止自我静默声明。"
+        )
     if any("框架泄漏" in m or "系统文案" in m for m in hit.matched):
         return (
             "⛔ 内容含内部工具名 / 资源句柄 / 编排或系统文案（如 read_handle、res_/to_、"

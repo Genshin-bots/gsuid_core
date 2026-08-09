@@ -320,9 +320,13 @@ class SettlePhase(RunOnceHost):
                     corrected = None
                 if isinstance(corrected, str) and corrected.strip():
                     _prior = result_msg.strip()
-                    result_msg = corrected.strip()
-                    if _prior:
-                        self._scrub_fake_done_history({_prior})
+                    if corrected.strip() in SILENCE_MARKERS:
+                        # 自洽出口：模型确认已凭常识完整作答 → 保留原答与历史，不刷屏
+                        result_msg = "<SILENCE>"
+                    else:
+                        result_msg = corrected.strip()
+                        if _prior:
+                            self._scrub_fake_done_history({_prior})
 
             # 进度追问却零工具：纠正重跑去查 kanban/artifact
             elif (

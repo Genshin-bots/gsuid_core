@@ -135,8 +135,8 @@ def _make_task(**overrides) -> Any:
     fields = {
         "task_id": "scheduled_task_test01",
         "task_type": "once",
-        "user_id": "514971204",
-        "group_id": "914411529",
+        "user_id": "100000002",
+        "group_id": "200000001",
         "bot_self_id": "bot",
         "user_type": "group",
         "WS_BOT_ID": None,

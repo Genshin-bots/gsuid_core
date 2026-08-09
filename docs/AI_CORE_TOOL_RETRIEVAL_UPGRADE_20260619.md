@@ -5,6 +5,15 @@
 >
 > 源码为唯一事实源。本次升级不依赖任何外部设计稿，全部改动均在本文档登记。
 
+> **跟进（2026-08-10）**：工具检索链路再补两项（详见
+> [`AI_SESSION_OOC_ROOTCAUSE_20260810.md`](AI_SESSION_OOC_ROOTCAUSE_20260810.md)）：
+> ① **召回相关度阈值可配**——新增 `ai_config.tool_recall_threshold`（默认 0.38），
+> `agent_run/tools.py` 装配时把阈值传入 `search_tools_with_entity_routing`，低于阈值的工具
+> 不装配（宁可由 `find_tools` 二次发现），减少无关工具混入、稳定请求前缀缓存；
+> ② **能力缺口登记**——`find_tools` 两次"未找到"路径均调用 `_record_capability_gap(need)`
+> 进程内计数，`get_capability_gaps(limit)` 按次数降序返回 top-N，供运维判断"高频被求而缺失"
+> 该装什么插件（纯观测，不进用户可见通道、不做业务特判）。
+
 ---
 
 ## 目录

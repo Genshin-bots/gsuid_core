@@ -66,6 +66,23 @@ def _match_capability_agents_for_need(need: str, *, limit: int = 5) -> list[str]
     return lines
 
 
+# 能力缺口登记（4.5）：find_tools 未命中时计数，供运维按「高频被求而缺失」
+# 决定安装哪些插件/工具。纯进程内计数，不进用户可见通道、不做业务特判。
+_CAPABILITY_GAP_COUNTS: dict[str, int] = {}
+
+
+def _record_capability_gap(need: str) -> None:
+    key = (need or "").strip()[:80]
+    if not key:
+        return
+    _CAPABILITY_GAP_COUNTS[key] = _CAPABILITY_GAP_COUNTS.get(key, 0) + 1
+
+
+def get_capability_gaps(limit: int = 20) -> list[tuple[str, int]]:
+    """按次数降序返回 top-N 能力缺口（need, count），供 webconsole 展示。"""
+    return sorted(_CAPABILITY_GAP_COUNTS.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+
+
 # 不声明 capability_domain（会被 L3 按族驻留带进闲聊轮）；category 必须为 meta：
 # 落入 buildin 等保底分类会让渐进式暴露门控失效、加载的工具无人暴露（实测踩坑）。
 @ai_tools(category="meta")
@@ -95,6 +112,7 @@ async def find_tools(
         # capability_domain 整族纳入，保证"能创建就能改/删"，加载到的工具语义连贯而非零散单点。
         family_tools = await search_tools_by_domain(query=need, domain_limit=3, per_domain_limit=6)
         if not family_tools:
+            _record_capability_gap(need)
             return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
 
         # 检索层不感知 visible_when，须与暴露层同用 prepare_tool_def 预判：隐藏工具若照报
@@ -130,6 +148,7 @@ async def find_tools(
 
         if not loaded_names:
             # 与"检索无命中"同文案：不向模型泄露被隐藏工具的存在，避免诱导换措辞反复检索。
+            _record_capability_gap(need)
             return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
 
         ctx.deps.dynamic_tool_names.update(loaded_names)

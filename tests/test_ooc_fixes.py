@@ -19,6 +19,8 @@ from typing import List
 from pathlib import Path
 from dataclasses import dataclass
 
+import pytest
+
 # Windows GBK 控制台兼容：强制 UTF-8 输出
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -397,6 +399,7 @@ def test_token_savings():
 # ─── HTTP 集成测试 ───────────────────────────────────────────────────────────
 
 
+@pytest.mark.anyio
 async def test_http_integration():
     """通过 HTTP 端点进行多轮对话集成测试"""
     print("\n═══ HTTP 集成测试 ═══")

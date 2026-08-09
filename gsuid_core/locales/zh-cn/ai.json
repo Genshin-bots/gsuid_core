@@ -245,6 +245,7 @@
   "log.ai.heartbeat_persona_name_periodic_start_2": "[Heartbeat] {persona_name} 开始定时巡检...",
   "log.ai.heartbeat_record_decision_statistics": "[Heartbeat] 记录决策统计失败: {e}",
   "log.ai.heartbeat_remaining_silent_mood": "[Heartbeat] 🤫 保持沉默: {mood} ({event})",
+  "log.ai.heartbeat_no_hook_silent": "[Heartbeat] 🤫 决定开口但无具体话头，降级沉默: {mood}",
   "log.ai.heartbeat_session_event_generated_send": "[Heartbeat] 会话 {event} 文本生成为空，放弃发送",
   "log.ai.heartbeat_session_event_persona": "[Heartbeat] 会话 {event} 没有配置 persona",
   "log.ai.heartbeat_session_muted_skipping": "[Heartbeat] 会话 {p0} 处于 AI 禁言状态，跳过巡检",

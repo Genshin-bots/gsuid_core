@@ -415,10 +415,10 @@ def test_handle_ai_error_branch_keeps_sanitized_template() -> None:
 
 
 def test_gs_agent_budget_gate_includes_master_dm() -> None:
-    """gs_agent.py 的预算闸门分支在 ``bot.send`` 后必须追加主人 DM 调用。"""
+    """预算闸门分支（agent_run 拆分后在 prepare.py）在 ``bot.send`` 后必须追加主人 DM 调用。"""
     from pathlib import Path
 
-    src_path = Path(__file__).parent.parent / "gsuid_core" / "ai_core" / "gs_agent.py"
+    src_path = Path(__file__).parent.parent / "gsuid_core" / "ai_core" / "agent_run" / "prepare.py"
     src = src_path.read_text(encoding="utf-8")
 
     # 必须存在 import

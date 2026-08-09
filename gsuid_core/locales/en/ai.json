@@ -245,6 +245,7 @@
   "log.ai.heartbeat_persona_name_periodic_start_2": "[Heartbeat] {persona_name} starting periodic inspection...",
   "log.ai.heartbeat_record_decision_statistics": "[Heartbeat] Failed to record decision statistics: {e}",
   "log.ai.heartbeat_remaining_silent_mood": "[Heartbeat] 🤫 Remaining silent: {mood} ({event})",
+  "log.ai.heartbeat_no_hook_silent": "[Heartbeat] 🤫 Decided to speak but no concrete hook; downgraded to silence: {mood}",
   "log.ai.heartbeat_session_event_generated_send": "[Heartbeat] Session {event} generated empty text; canceling send",
   "log.ai.heartbeat_session_event_persona": "[Heartbeat] Session {event} has no persona configured",
   "log.ai.heartbeat_session_muted_skipping": "[Heartbeat] Session {p0} has AI muted; skipping inspection",

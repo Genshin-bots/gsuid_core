@@ -83,13 +83,13 @@ async def main() -> None:
     ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
     msg = MessageReceive(
         bot_id="console",
-        bot_self_id="3399214199",
+        bot_self_id="900000001",
         user_type="direct",
         user_pm=0,
         group_id=None,
         user_id="99999",
         content=[Message(type="text", data="sayu 广州近七天天气怎么样")],
-        sender={"nickname": "Wuyi测试"},
+        sender={"nickname": "测试主人"},
     )
     await ws.send(msgjson.encode(msg))
     print("\n[SENT] sayu 广州近七天天气怎么样")

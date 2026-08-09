@@ -31,15 +31,15 @@ def test_send_message_by_ai_forbids_fabricated_ids() -> None:
 def test_at_digits_become_at_segment() -> None:
     from gsuid_core.ai_core.utils import _parse_at_segments
 
-    segments = _parse_at_segments("好哦 @444835641 你来看")
+    segments = _parse_at_segments("好哦 @100000001 你来看")
     types = [s.type for s in segments]
     assert "at" in types
     at_seg = segments[types.index("at")]
-    assert at_seg.data == "444835641" or "444835641" in str(at_seg.data)
+    assert at_seg.data == "100000001" or "100000001" in str(at_seg.data)
     # 文本段里不残留裸 ID
     for s in segments:
         if s.type == "text":
-            assert "444835641" not in str(s.data)
+            assert "100000001" not in str(s.data)
 
 
 # ─────────────────────────────────────────────
@@ -87,16 +87,16 @@ def _record(user_id: str, name: str, content: str, ts: float) -> Any:
 
 
 def test_interleaved_speaker_breaks_merge() -> None:
-    """生产场景重放：好好与秋秋交错发言，合并不得吞掉交错顺序。"""
+    """生产场景重放：小禾与蓝蓝交错发言，合并不得吞掉交错顺序。"""
     from gsuid_core.ai_core.history_format import format_history_for_agent
 
     t0 = time.time() - 600
     history = [
-        _record("1904448665", "秋秋", "喝", t0),
-        _record("1904448665", "秋秋", "我陪你", t0 + 5),
-        _record("944722078", "好好", "昨天刚喝", t0 + 60),
-        _record("1904448665", "秋秋", "没事的", t0 + 70),
-        _record("944722078", "好好", "多邻国？", t0 + 80),
+        _record("100000005", "蓝蓝", "喝", t0),
+        _record("100000005", "蓝蓝", "我陪你", t0 + 5),
+        _record("100000004", "小禾", "昨天刚喝", t0 + 60),
+        _record("100000005", "蓝蓝", "没事的", t0 + 70),
+        _record("100000004", "小禾", "多邻国？", t0 + 80),
     ]
     text = format_history_for_agent(history)
     # 所有消息都在
@@ -104,7 +104,7 @@ def test_interleaved_speaker_breaks_merge() -> None:
         assert content in text, content
     # 顺序保持：昨天刚喝 在 没事的 之前，没事的 在 多邻国 之前
     assert text.index("昨天刚喝") < text.index("没事的") < text.index("多邻国？")
-    # "没事的"不得被并进秋秋更早的连发块（它前面隔了好好的插话）：
+    # "没事的"不得被并进蓝蓝更早的连发块（它前面隔了小禾的插话）：
     # 若被并块，其会紧跟"我陪你"出现在同一块内、且先于"昨天刚喝"。
     assert text.index("我陪你") < text.index("昨天刚喝")
 
@@ -115,12 +115,12 @@ def test_same_speaker_burst_merged() -> None:
 
     t0 = time.time() - 600
     history = [
-        _record("944722078", "好好", "多邻国？", t0),
-        _record("944722078", "好好", "算了，明天晚上点个汉堡", t0 + 10),
-        _record("944722078", "好好", "今天先不喝", t0 + 20),
+        _record("100000004", "小禾", "多邻国？", t0),
+        _record("100000004", "小禾", "算了，明天晚上点个汉堡", t0 + 10),
+        _record("100000004", "小禾", "今天先不喝", t0 + 20),
     ]
     text = format_history_for_agent(history)
-    assert text.count("好好(用户ID:944722078)") == 1
+    assert text.count("小禾(用户ID:100000004)") == 1
 
 
 # ─────────────────────────────────────────────
@@ -164,8 +164,8 @@ async def test_other_group_tasks_masked(monkeypatch: pytest.MonkeyPatch) -> None
 
     async def fake_list_for_owner(user_id: str, only_active: bool = True, root_only: bool = True) -> list:
         return [
-            _FakeTask(36, "群666249732 AI模拟盘 周期托管", "666249732"),
-            _FakeTask(37, "本群翻译任务", "681600567"),
+            _FakeTask(36, "群200000002 AI模拟盘 周期托管", "200000002"),
+            _FakeTask(37, "本群翻译任务", "200000003"),
         ]
 
     monkeypatch.setattr(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner)
@@ -175,10 +175,10 @@ async def test_other_group_tasks_masked(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(ctx_mod.kanban_manager, "get_task_tree", fake_get_task_tree)
 
-    text = await ctx_mod.build_task_context("444835641", current_group_id="681600567")
+    text = await ctx_mod.build_task_context("100000001", current_group_id="200000003")
     # 本群任务展开，他群任务只留脱敏计数
     assert "本群翻译任务" in text
-    assert "666249732" not in text
+    assert "200000002" not in text
     assert "模拟盘" not in text
     assert "1 个任务在其他会话" in text
 
@@ -189,7 +189,7 @@ async def test_no_group_id_keeps_full_view(monkeypatch: pytest.MonkeyPatch) -> N
     import gsuid_core.ai_core.planning.context as ctx_mod
 
     async def fake_list_for_owner(user_id: str, only_active: bool = True, root_only: bool = True) -> list:
-        return [_FakeTask(36, "群666249732 AI模拟盘 周期托管", "666249732")]
+        return [_FakeTask(36, "群200000002 AI模拟盘 周期托管", "200000002")]
 
     monkeypatch.setattr(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner)
 
@@ -198,5 +198,5 @@ async def test_no_group_id_keeps_full_view(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(ctx_mod.kanban_manager, "get_task_tree", fake_get_task_tree)
 
-    text = await ctx_mod.build_task_context("444835641", current_group_id=None)
+    text = await ctx_mod.build_task_context("100000001", current_group_id=None)
     assert "模拟盘" in text

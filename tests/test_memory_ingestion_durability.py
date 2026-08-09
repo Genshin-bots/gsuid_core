@@ -35,14 +35,14 @@ def _src(rel: str) -> str:
 def test_private_chat_scope_is_user_global() -> None:
     """observer 的 scope 判据：group_id 为空 → USER_GLOBAL。私聊必须走这一支。"""
     group_id = None
-    speaker_id = "3100542635"
+    speaker_id = "100000006"
 
     scope = make_scope_key(
         ScopeType.GROUP if group_id else ScopeType.USER_GLOBAL,
         group_id if group_id else speaker_id,
     )
 
-    assert scope == "user_global:3100542635"
+    assert scope == "user_global:100000006"
     assert not scope.startswith("group:"), "私聊记忆落进 group scope，偏好记忆将永远为空"
 
 

@@ -351,6 +351,12 @@ AI_CONFIG: Dict[str, GSC] = {
         3,
         options=[1, 2, 3, 5],
     ),
+    "tool_recall_threshold": GsFloatConfig(
+        "工具召回相关度阈值",
+        "工具向量召回的相似度下限; 低于该值的工具不装配(宁可由 find_tools 二次发现), "
+        "调高可减少无关工具混入、稳定请求前缀缓存, 调低可提升召回面",
+        0.38,
+    ),
     "web_search_default_limit": GsIntConfig(
         "Web搜索默认结果数",
         "web_search_tool 未显式指定时返回的搜索结果条数默认值",

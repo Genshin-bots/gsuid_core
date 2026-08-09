@@ -336,17 +336,9 @@ def test_resume_one_shot_kicks_root():
     root = _make_task(ordinal=1, goal="一次性", recurring_trigger=None)
     sub = _make_task(ordinal=1, node_kind="subtask", root_task_id="rt_1")
 
-    created_tasks = []
-
-    def fake_create_task(coro):
-        created_tasks.append(coro)
-        # 关闭 coroutine 避免 warning
-        try:
-            coro.close()
-        except Exception:
-            pass
-        return MagicMock()
-
+    # 注意：@ai_tools 装饰器自身用 asyncio.create_task+wait_for 包工具调用，
+    # 不能再全局 patch asyncio.create_task（会把装饰器的 task 换成 MagicMock 导致 await 崩）。
+    # 改为 patch kick_root：resume 内部 asyncio.create_task(kick_root(...)) 调度的是 mock 协程。
     with (
         patch(
             "gsuid_core.ai_core.planning.kanban_tools._resolve_subtask",
@@ -359,14 +351,16 @@ def test_resume_one_shot_kicks_root():
         patch(
             "gsuid_core.ai_core.planning.models.AIAgentTask",
         ) as mock_task,
+        patch(
+            "gsuid_core.ai_core.planning.kanban_executor.kick_root",
+            AsyncMock(return_value=None),
+        ) as mock_kick,
     ):
         mock_task.update_data_by_data = AsyncMock()
-        # 直接 patch asyncio.create_task（全局 asyncio 模块）
-        with patch("asyncio.create_task", side_effect=fake_create_task):
-            result = _run(resume_my_kanban_tree(ctx, "一次性"))
-            assert "已重新派发一次性" in result
-            mock_task.update_data_by_data.assert_called_once()
-            assert len(created_tasks) == 1
+        result = _run(resume_my_kanban_tree(ctx, "一次性"))
+        assert "已重新派发一次性" in result
+        mock_task.update_data_by_data.assert_called_once()
+        assert mock_kick.call_count == 1
     print("[OK] resume 一次性 → status=pending + kick_root")
 
 

@@ -283,6 +283,34 @@ def _eval_ooc(
             detail=hit.category,
         )
 
+    if hit.category == "delivery_narration":
+        # 交付状态汇报：交付已完成，重说无意义——主通道直接熔断静默；
+        # 工具通道打回，要求改 <SILENCE> 或一句角色短话。
+        if channel == "main":
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_drop_text_after_fuse",
+                    policy="ooc",
+                    preview=repr(text[:80]),
+                )
+            )
+            _set_abort(extra, "ooc")
+            return GateResult(
+                decision=GateDecision.FUSE,
+                policy="ooc",
+                feedback=of.build_rewrite_warning(hit),
+                ooc_hit=hit,
+                fused=True,
+                detail=hit.category,
+            )
+        return GateResult(
+            decision=GateDecision.REWRITE,
+            policy="ooc",
+            feedback=of.build_rewrite_warning(hit),
+            ooc_hit=hit,
+            detail=hit.category,
+        )
+
     if channel == "main":
         logger.warning(
             i18n_t(

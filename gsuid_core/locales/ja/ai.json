@@ -245,6 +245,7 @@
   "log.ai.heartbeat_persona_name_periodic_start_2": "[Heartbeat] {persona_name} が定期巡回を開始する...",
   "log.ai.heartbeat_record_decision_statistics": "[Heartbeat] 判断統計の記録に失敗した: {e}",
   "log.ai.heartbeat_remaining_silent_mood": "[Heartbeat] 🤫 沈黙を維持する: {mood}（{event}）",
+  "log.ai.heartbeat_no_hook_silent": "[Heartbeat] 🤫 発言を決めたが具体的なフックがないため沈黙に格下げ: {mood}",
   "log.ai.heartbeat_session_event_generated_send": "[Heartbeat] セッション {event} の生成テキストが空のため、送信を中止する",
   "log.ai.heartbeat_session_event_persona": "[Heartbeat] セッション {event} に persona が設定されていない",
   "log.ai.heartbeat_session_muted_skipping": "[Heartbeat] セッション {p0} は AI ミュート状態のため、巡回をスキップする",

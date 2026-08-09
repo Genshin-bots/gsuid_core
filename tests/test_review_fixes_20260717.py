@@ -281,7 +281,7 @@ async def test_clean_retry_on_last_attempt_reruns_and_closes(monkeypatch: pytest
 def test_dangling_fact_regex_spares_noun_usage() -> None:
     from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
 
-    positives = ["用户994534742提到", "[小C]提及", "用户A讨论了", "用户B回复了。", "居木说"]
+    positives = ["用户100000003提到", "[小C]提及", "用户A讨论了", "用户B回复了。", "阿北说"]
     negatives = ["用户A积极参与了昨晚的方案讨论", "用户B一直在等主人的回复", "用户C给出了很高的评价"]
     for p in positives:
         assert _DANGLING_FACT_RE.search(p), p
@@ -441,7 +441,7 @@ async def test_private_task_masked_in_group_context(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner)
     monkeypatch.setattr(ctx_mod.kanban_manager, "get_task_tree", fake_get_task_tree)
 
-    in_group = await ctx_mod.build_task_context("u1", current_group_id="914411529")
+    in_group = await ctx_mod.build_task_context("u1", current_group_id="200000001")
     assert "跳槽" not in in_group
     assert "其他会话" in in_group
 
@@ -493,7 +493,8 @@ def test_tool_context_extra_carries_run_registry() -> None:
 
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
-    src = inspect.getsource(GsCoreAIAgent._execute_run_once)
+    # agent_run 拆分后 run_extra（含 run_sent_texts）在 prepare 的 init_state 组装
+    src = inspect.getsource(GsCoreAIAgent._run_once_init_state)
     assert '"run_sent_texts": self._run_sent_texts' in src
 
 

@@ -214,6 +214,7 @@ class ToolsPhase(RunOnceHost):
                 # soft_continue / ellipsis 与呼叫跟进同权：不得因 st.intent=闲聊 跳过检索。
                 _recall_limit = int(ai_config.get_config("tool_search_recall").data)
                 max_extra_tools: int = int(ai_config.get_config("tool_extra_pool_max").data)
+                _recall_threshold = float(ai_config.get_config("tool_recall_threshold").data)
                 _soft_cont = bool(st.tg.soft_continue) if st.tg is not None else False
                 _ellip = bool(st.tg.ellipsis_followup) if st.tg is not None else False
                 _skip_search = st.is_light or (
@@ -248,6 +249,7 @@ class ToolsPhase(RunOnceHost):
                         route_text=qy,
                         limit=_recall_limit,
                         non_category=["self", "buildin"],
+                        threshold=_recall_threshold,
                     )
                     # 补搜索族（瘦保底已含 web_search_tool；再补 fetch/knowledge）
                     if (st.group_slim or st.is_light) and st.intent in ("工具", "问答"):
