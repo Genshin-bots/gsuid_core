@@ -102,7 +102,7 @@ async def read_handle(
         return f"⚠️ 句柄不存在: {handle_id}"
     if not await _handle_access_allowed(resolved, ctx):
         return "⚠️ 无权限读取该句柄。"
-    # 防单次过大；与外层 handle_tool_result 协调，分页体不再被二次砍头
+    # 单次读窗上限；全文靠 offset 续读
     lim = max(1, min(int(limit), 32000))
     off = max(0, int(offset))
     return format_resolved(resolved, offset=off, limit=lim)

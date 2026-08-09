@@ -354,18 +354,16 @@ def extract_json_from_text(raw_text: str) -> dict | list:
     raise ValueError(f"Failed to parse JSON from text: {stripped[:120]!r}")
 
 
-async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 4000) -> str:
-    """
-    序列化工具执行结果, 当函数返回Message对象时调用Bot.send方法发送, 并将序列化后的字符串返回方便AI识别。
+# 病理级硬顶；主人格长文控长走 FileOS，勿在此用 4k 砍刀污染落盘真身
+_TOOL_RESULT_SAFETY_MAX_CHARS = 2_000_000
 
-    Args:
-        bot: Bot 对象
-        result: 工具函数返回的结果
-        max_length: 最大返回长度，超长会被截断
 
-    Returns:
-        序列化的字符串
-    """
+async def handle_tool_result(
+    bot: Optional[Bot],
+    result: Any,
+    max_length: int = _TOOL_RESULT_SAFETY_MAX_CHARS,
+) -> str:
+    """序列化工具返回；Message 会尝试 send。默认仅病理级长度硬顶。"""
     if isinstance(result, Message):
         a = "生成内容成功!"
         if bot is not None:
@@ -406,8 +404,7 @@ async def handle_tool_result(bot: Optional[Bot], result: Any, max_length: int = 
     else:
         res_str = str(result)
 
-    # 截断过长返回，防 Token 爆炸。自带【读窗口】分页的读工具禁止再砍头：
-    # 否则续读 offset 丢失；默认读窗 8k 与外层 max_length 错位会跳页丢内容。
+    # 【读窗口】分页体永不砍，避免 offset 续读丢页
     if len(res_str) > max_length:
         if "【读窗口】" in res_str[:800] or "…[分页 " in res_str or "\n[分页 " in res_str:
             return res_str
