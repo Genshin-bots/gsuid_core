@@ -19,15 +19,17 @@ data/                                ← 运行时数据目录（启动时自动
 │   ├── StarRailUID.json
 │   └── ...
 ├── ai_core/                         ← ④ AI 子系统配置目录
-│   ├── ai_config.json               ←    AI 总开关 / 嵌入 / Rerank / Qdrant / Tavily / 模式 / 白黑名单
+│   ├── ai_config.json               ←    AI 总开关 / 嵌入 / Rerank / Qdrant / 搜索抓取主用与多源策略 / 模式 / 白黑名单
+│   ├── tavily_config.json           ←    Tavily 搜索 Key（默认搜索主用）
+│   ├── jina_config.json             ←    Jina 搜索+抓取 Key（搜索可选；抓取默认主用）
+│   ├── exa_config.json              ←    Exa 搜索 Key
+│   ├── web_fetch_config.json        ←    本机 web_fetch（proxy / UA / 超时）
 │   ├── openai_config.json           ←    OpenAI 兼容模型 profile 列表
 │   ├── anthropic_config.json
 │   ├── gemini_config.json
 │   ├── provider_configs/            ←    各 provider 的 profile（每个 profile 一个文件）
 │   ├── embedding_config/             ←    嵌入 provider 配置
 │   ├── rerank_config/
-│   ├── tavily_config.json
-│   ├── exa_config.json
 │   ├── qdrant_config.json
 │   ├── persona/                      ←    人格目录
 │   ├── knowledge_base/              ←    RAG 知识库（按 plugin / agent 分子目录）
@@ -128,7 +130,7 @@ core.py main()
   └─ init_database()                       # 读 plugins_config.gs_config.database_config
   └─ load_gss()                            # 加载插件，触发各插件的 CONFIG_DEFAULT 初始化
   └─ AI 启动（若 enable=true）
-        └─ 读 ai_config / openai_config / tavily_config / ...
+        └─ 读 ai_config / openai_config / tavily_config / jina_config / web_fetch_config / ...
 ```
 
 完整顺序：[`gscore-development §二、启动时序与生命周期`](../../gscore-development/references/02-startup-lifecycle.md)。

@@ -92,10 +92,41 @@ AI_CONFIG: Dict[str, GSC] = {
         options=["local", "remote"],
     ),
     "websearch_provider": GsStrConfig(
-        "网络搜索服务提供方",
-        "指定网络搜索服务提供方",
+        "网络搜索服务提供方（主用）",
+        "指定网络搜索的主用提供方。多源策略非「无」时，失败会按备用顺序切换到其它已配置源",
         "Tavily",
-        options=["Tavily", "Exa", "MCP"],
+        options=["Tavily", "Jina", "Exa", "MCP"],
+    ),
+    "websearch_lb_strategy": GsStrConfig(
+        "网络搜索多源策略",
+        "无：仅使用主用源；错误切换：主用失败后按备用顺序尝试下一个已配置源；自动分流：在已配置源之间轮询分发请求",
+        "error_switch",
+        options=["none", "error_switch", "auto_balance"],
+    ),
+    "websearch_fallback_order": GsListStrConfig(
+        "网络搜索备用源顺序",
+        "错误切换/自动分流时的候选顺序（不含主用源）。留空则自动收集所有已配置的源（顺序：Tavily → Exa → Jina → MCP）",
+        [],
+        options=["Tavily", "Jina", "Exa", "MCP"],
+    ),
+    "webfetch_provider": GsStrConfig(
+        "网页抓取服务提供方（主用）",
+        "Jina：经 r.jina.ai 读取（API Key 可选）；local：本机直连抓取并转 Markdown。"
+        "多源策略非「无」时，失败会按备用顺序切换",
+        "Jina",
+        options=["Jina", "local"],
+    ),
+    "webfetch_lb_strategy": GsStrConfig(
+        "网页抓取多源策略",
+        "无：仅主用；错误切换：失败后按备用顺序切换；自动分流：候选源轮询",
+        "error_switch",
+        options=["none", "error_switch", "auto_balance"],
+    ),
+    "webfetch_fallback_order": GsListStrConfig(
+        "网页抓取备用源顺序",
+        "错误切换/自动分流时的候选顺序（不含主用）。默认 local",
+        ["local"],
+        options=["Jina", "local"],
     ),
     "image_understand_provider": GsStrConfig(
         "图片理解服务提供方",
@@ -464,6 +495,91 @@ MINIMAX_CONFIG: Dict[str, GSC] = {
         "指定资源提供方式，url 为返回 URL 链接，local 为返回本地文件路径",
         "url",
         options=["url", "local"],
+    ),
+}
+
+# Jina Reader 全家桶：s.jina.ai（搜索）+ r.jina.ai（抓取）共用 API Key
+JINA_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "Jina API密钥",
+        "前往 https://jina.ai 获取。搜索 s.jina.ai 需要 Key；抓取 r.jina.ai 可不填（匿名有额度限制），"
+        "填写后可获得更高请求额度。支持多 Key 池轮询",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "s.jina.ai 每次搜索的最大返回结果数量",
+        10,
+        options=[5, 10, 15, 20],
+    ),
+    "timeout": GsIntConfig(
+        "请求超时(秒)",
+        "调用 s.jina.ai / r.jina.ai 的超时时间",
+        30,
+        options=[10, 15, 20, 30, 45, 60],
+    ),
+    "search_base_url": GsStrConfig(
+        "搜索 API 地址",
+        "Jina 网页搜索端点，默认 https://s.jina.ai",
+        "https://s.jina.ai",
+        options=["https://s.jina.ai"],
+    ),
+    "reader_base_url": GsStrConfig(
+        "抓取 API 地址",
+        "Jina Reader 端点，默认 https://r.jina.ai（请求形式为 {base}/{target_url}）",
+        "https://r.jina.ai",
+        options=["https://r.jina.ai"],
+    ),
+}
+
+# web_fetch_tool 直连抓页配置（proxy / 超时 / UA 等运维向参数）
+_DEFAULT_WEB_FETCH_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+WEB_FETCH_CONFIG: Dict[str, GSC] = {
+    "proxy": GsStrConfig(
+        "HTTP(S) 代理",
+        "网页抓取使用的代理地址，如 http://127.0.0.1:7890 或 http://user:pass@host:port。"
+        "留空则直连（若开启「读取系统代理」则仍可走环境变量 HTTP_PROXY/HTTPS_PROXY）",
+        "",
+        options=[],
+    ),
+    "trust_env": GsBoolConfig(
+        "读取系统代理环境变量",
+        "为 True 时，未单独配置 proxy 时会读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 等环境变量",
+        True,
+    ),
+    "timeout": GsIntConfig(
+        "请求超时(秒)",
+        "单次网页抓取的总超时时间（含连接与读响应），超时返回错误给 Agent",
+        20,
+        options=[5, 10, 15, 20, 30, 45, 60],
+    ),
+    "user_agent": GsStrConfig(
+        "User-Agent",
+        "HTTP 请求的 User-Agent；部分站点会拦截默认爬虫 UA，可改成浏览器标识",
+        _DEFAULT_WEB_FETCH_UA,
+        options=[_DEFAULT_WEB_FETCH_UA],
+    ),
+    "accept_language": GsStrConfig(
+        "Accept-Language",
+        "请求头 Accept-Language，影响部分站点返回语言",
+        "zh-CN,zh;q=0.9,en;q=0.8",
+        options=["zh-CN,zh;q=0.9,en;q=0.8", "en-US,en;q=0.9", "ja,en;q=0.9"],
+    ),
+    "max_download_mb": GsIntConfig(
+        "最大下载体积(MB)",
+        "响应体下载上限（兆字节），防止超大页面占满内存；超出则中止并报错",
+        5,
+        options=[1, 2, 5, 10, 20],
+    ),
+    "max_content_length": GsIntConfig(
+        "Markdown 最大字符数",
+        "返回给 Agent 的 Markdown 正文字符数上限，超出截断",
+        100000,
+        options=[20000, 50000, 100000, 200000],
     ),
 }
 
@@ -881,6 +997,18 @@ exa_config = StringConfig(
     "GsCore AI Exa搜索配置",
     get_res_path("ai_core") / "exa_config.json",
     EXA_CONFIG,
+)
+
+jina_config = StringConfig(
+    "GsCore AI Jina搜索抓取配置",
+    get_res_path("ai_core") / "jina_config.json",
+    JINA_CONFIG,
+)
+
+web_fetch_config = StringConfig(
+    "GsCore AI WebFetch抓取配置",
+    get_res_path("ai_core") / "web_fetch_config.json",
+    WEB_FETCH_CONFIG,
 )
 
 persona_config = StringConfig(

@@ -175,6 +175,17 @@ def _check_websearch_config() -> Dict[str, Any]:
         else:
             result["configured"] = True
             result["note"] = f"已配置 {len([k for k in api_keys if k])} 个 Exa API Key"
+    elif provider == "Jina":
+        from gsuid_core.ai_core.configs.ai_config import jina_config
+
+        api_keys = jina_config.get_config("api_key").data
+        if not api_keys or (isinstance(api_keys, list) and len(api_keys) == 0):
+            result["issues"].append("Jina API Key 未配置（s.jina.ai 搜索需要 Key）")
+        elif isinstance(api_keys, list) and all(not k for k in api_keys):
+            result["issues"].append("Jina API Key 为空")
+        else:
+            result["configured"] = True
+            result["note"] = f"已配置 {len([k for k in api_keys if k])} 个 Jina API Key"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:

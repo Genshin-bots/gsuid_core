@@ -9,16 +9,100 @@ POST /api/BatchPush
 ```json
 {
     "push_text": "<p>推送内容</p><img src='base64,...'/>",
-    "push_tag": "ALLUSER,ALLGROUP,g:123456|bot1,u:654321|bot2",
-    "push_bot": "bot1,bot2"
+    "push_tag": "ALLUSER,ALLGROUP,g:123456|onebot,u:654321|onebot|3399214199",
+    "push_bot": "ws-bot-a,ws-bot-b",
+    "push_bot_self_id": "3399214199"
 }
 ```
 
-**推送目标格式**：
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `push_text` | string | 是 | HTML 正文（解析 `<p>` / `<img>`） |
+| `push_tag` | string | 是 | 逗号分隔的推送目标（见下） |
+| `push_bot` | string | 否 | 逗号分隔的 **WS_BOT_ID**（`gss.active_bot` 的 key）；**空 = 全部 active bot** |
+| `push_bot_self_id` | string | 否 | 逗号分隔的 **bot_self_id**（机器人账号 ID）。tag 未写第三段时回落到此值；空则传空串给适配器（兼容旧行为） |
+
+**推送目标格式（`push_tag`）**：
 - `ALLUSER`: 所有用户
 - `ALLGROUP`: 所有群组
-- `g:群ID|botID`: 指定群
-- `u:用户ID|botID`: 指定用户
+- `g:群ID|平台bot_id`: 指定群（平台维度）
+- `u:用户ID|平台bot_id`: 指定用户（平台维度）
+- `g:群ID|平台bot_id|bot_self_id`: 指定群 + 精确机器人账号
+- `u:用户ID|平台bot_id|bot_self_id`: 指定用户 + 精确机器人账号
+
+**精准控制维度**：
+| 维度 | 字段 | 含义 |
+|------|------|------|
+| 连接 / Bot | `push_bot` | 走哪条 WS 连接（active_bot） |
+| 平台 | tag 中的 `bot_id` 段 | 如 `onebot` / `telegram` |
+| 机器人账号 | `push_bot_self_id` 或 tag 第三段 | 如 QQ 号 `3399214199` |
+| 人 / 群 | tag 中的 `g:` / `u:` / `ALL*` | 发送对象 |
+
+同一平台下有多个 `bot_self_id` 时，务必指定 `push_bot_self_id`（或 tag 第三段），否则适配器无法区分从哪个账号发出。
+
+> **注意**：`push_bot_self_id` 为**多个**值且 `push_tag` 含 `ALLUSER` / `ALLGROUP` 时，会对每个 self_id **各发一遍**（N 倍流量）。生产环境请谨慎。
+
+**实现要点**（`message_api.batch_push`）：
+
+- 每条消息独立拷贝 `base_msg`，避免往共享 list 追加 `group` 段污染后续发送。
+- 目标聚合维度：`platform_bot_id → bot_self_id → [target_id, ...]`。
+- 空 `push_bot` = 遍历全部 `gss.active_bot`。
+
+---
+
+## 10.1.1 拉取可选目标（分页 + 筛选）
+```
+GET /api/BatchPush/targets
+```
+
+**Query**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `bot_id` | string | 按**平台** bot_id 过滤目标（空=全部） |
+| `bot_self_id` | string | 过滤返回的 `bot_self_ids` 子集（目标表本身无此字段） |
+| `kind` | string | `all` / `group` / `user` |
+| `q` | string | 模糊搜索 label / value |
+| `limit` | int | 1–1000，默认 200 |
+| `offset` | int | 页偏移 |
+
+**响应 `data`**：
+```json
+{
+  "bots": [
+    { "bot_id": "ws-xxx", "name": "ws-xxx", "ws_bot_id": "ws-xxx", "connected": true }
+  ],
+  "bot_self_ids": [
+    {
+      "id": "3399214199:onebot",
+      "bot_id": "onebot",
+      "bot_self_id": "3399214199",
+      "label": "3399214199 (onebot)"
+    }
+  ],
+  "items": [
+    { "kind": "group", "bot_id": "onebot", "bot_self_id": "", "label": "onebot · 123", "value": "g:123|onebot" }
+  ],
+  "total": 1,
+  "limit": 200,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+- `bots`：当前 active WS 连接（用于 `push_bot`）
+- `bot_self_ids`：已知机器人账号实例（统计库 + 历史 session），用于 `push_bot_self_id` 选择器
+- `items[].value` 默认为两段格式；前端在提交时可按所选账号追加 `|{bot_self_id}`
+
+**前端 `/batch-push`（gsuid_hub）**：
+
+| 控件 | 对应字段 |
+|------|----------|
+| 目标 Bot（WS） | `push_bot`；「全部」= 空串 → 后端发全部 active |
+| 机器人账号 | `InputWithDropdown`：列表来自 `bot_self_ids`，**可手填**（纯 self_id / `self:platform` / `self (platform)`）→ `push_bot_self_id` |
+| 群/用户多选 | `push_tag`；选中账号时非宏 tag 追加 `\|{bot_self_id}` |
+
+列表为空时仍可手填 self_id；手填仅 self_id 时不按平台筛目标列表。
 
 ---
 

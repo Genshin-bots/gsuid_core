@@ -61,8 +61,10 @@ gsuid_core/                            ← 仓库根
 | `data/plugins_configs/*.json` | 插件配置 | ⭐⭐⭐ |
 | `data/ai_core/ai_config.json` | AI 总开关 | ⭐⭐ |
 | `data/ai_core/provider_configs/*.json` | 模型 profile（含 Key） | ⭐⭐⭐ |
-| `data/ai_core/tavily_config.json` | Tavily Key | ⭐⭐⭐ |
+| `data/ai_core/tavily_config.json` | Tavily Key（默认搜索主用） | ⭐⭐⭐ |
+| `data/ai_core/jina_config.json` | Jina Key（搜索可选主用；抓取可选） | ⭐⭐⭐ |
 | `data/ai_core/exa_config.json` | Exa Key | ⭐⭐⭐ |
+| `data/ai_core/web_fetch_config.json` | 本机抓取 proxy/UA/超时等 | ⭐⭐ |
 | `data/ai_core/qdrant_config.json` | Qdrant 配置 | ⭐⭐ |
 | `data/ai_core/persona/*.json` | 人格 | ⭐⭐ |
 | `data/ai_core/knowledge_base/` | RAG 知识库（按 plugin / agent） | ⭐⭐ |

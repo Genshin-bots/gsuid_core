@@ -13,7 +13,8 @@ from gsuid_core.ai_core.web_fetch import fetch_webpage_as_markdown
 from gsuid_core.ai_core.buildin_tools.visibility import context_has_url
 
 
-@ai_tools(category="buildin", visible_when=context_has_url)
+# 多源 failover 可能串行两次请求，外层包装需覆盖单源超时之和
+@ai_tools(category="buildin", visible_when=context_has_url, timeout=100.0)
 async def web_fetch_tool(
     ctx: RunContext[ToolContext],
     url: str,
@@ -37,7 +38,6 @@ async def web_fetch_tool(
         >>> print(content)
     """
     try:
-        result = await fetch_webpage_as_markdown(url=url)
-        return result
+        return await fetch_webpage_as_markdown(url=url)
     except ValueError as e:
         return f"抓取失败: {e}"

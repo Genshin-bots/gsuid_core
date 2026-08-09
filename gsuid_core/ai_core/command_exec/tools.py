@@ -70,7 +70,13 @@ async def _execute_and_report(ev: Optional[Event], plan: CommandPlan, timeout: i
     return _format_result(plan.raw, result)
 
 
-@ai_tools(category="buildin", check_func=_master_and_enabled, visible_when=_cmd_visible_to_master)
+# 配置 max_timeout 默认上限 600s，外层包装需 ≥ 该上限，避免被默认 60s 误杀。
+@ai_tools(
+    category="buildin",
+    check_func=_master_and_enabled,
+    visible_when=_cmd_visible_to_master,
+    timeout=600.0,
+)
 async def run_command(
     ctx: RunContext[ToolContext],
     command: str,

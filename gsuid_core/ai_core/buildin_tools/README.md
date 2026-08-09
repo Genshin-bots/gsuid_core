@@ -11,8 +11,8 @@
 buildin_tools/
 ├── __init__.py              # 模块导出（Facade接口）
 ├── rag_search.py            # RAG检索工具（引用 ai_core.rag.query_knowledge）
-├── web_search.py            # Web搜索工具（引用 ai_core.web_search.tavily_search）
-├── web_fetch.py             # 网页抓取工具（抓取网页并转 Markdown）
+├── web_search.py            # Web搜索工具（引用 ai_core.web_search.web_search，多源调度）
+├── web_fetch.py             # 网页抓取工具（引用 ai_core.web_fetch，Jina/local 多源）
 ├── message_sender.py        # 消息发送工具
 ├── command_executor.py      # 命令执行工具
 ├── database_query.py        # 数据库查询工具
@@ -38,8 +38,8 @@ buildin_tools/
 | 工具模块 | 底层依赖 | 说明 |
 |---------|---------|------|
 | rag_search.py | ai_core.rag.query_knowledge | 知识库检索封装 |
-| web_search.py | ai_core.web_search.tavily_search | Web搜索封装 |
-| web_fetch.py | httpx | 网页抓取并转 Markdown |
+| web_search.py | `ai_core.web_search.web_search` | Web 搜索封装（Jina/Tavily/Exa/MCP + 多源策略） |
+| web_fetch.py | `ai_core.web_fetch.fetch_webpage_as_markdown` | 网页抓取转 Markdown（Jina Reader / local） |
 | message_sender.py | bot.send() | 独立业务逻辑 |
 | command_executor.py | asyncio.subprocess | 独立业务逻辑（安全检查） |
 | database_query.py | gsuid_core.utils.database.SQLA | 绑定数据查询 |
@@ -109,25 +109,32 @@ results = await search_knowledge_by_category(
 
 ### Web搜索工具 (web_search.py)
 
-#### web_search()
-使用 Tavily API 进行 web 搜索。
+#### `web_search_tool`（Agent 工具）
+统一 Web 搜索：底层走 `ai_core.web_search.web_search`，按配置在 **Tavily（默认主用）/ Jina / Exa / MCP** 间调度。
 
 ```python
-from gsuid_core.ai_core.buildin_tools import web_search
+from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool
+# 或由 Agent 自动调用；插件侧更推荐：
+from gsuid_core.ai_core.web_search import web_search
 
-results = await web_search(
-    query="原神 4.0 更新内容",
-    limit=10
-)
+results = await web_search(query="原神 4.0 更新内容", max_results=10)
 ```
 
-**参数：**
+**参数（工具侧）：**
 - `query`: 搜索查询关键词
-- `limit`: 最大返回结果数量，默认10条
+- `limit`: 最大返回条数；`None` 时用 `web_search_default_limit`
 
-**返回：** 搜索结果列表，每条包含 `title`、`url`、`content`、`score` 字段
+**返回：** 带边界的摘要文本（空结果有明确提示）。结构化列表字段为 `title` / `url` / `content` / `score`。
 
-**底层实现：** 直接引用 `ai_core.web_search.tavily_search`
+**多源策略：** `websearch_lb_strategy` 默认 `error_switch`；Key 失败、抛错或 **空列表** 会切下一已配置源。
+**超时：** `@ai_tools(..., timeout=100.0)`，覆盖串行 failover。
+
+详见 `docs/skills/gscore-ai-core-api/references/11-mcp-image-search-and-meme.md` §11.3。
+
+### 网页抓取工具 (web_fetch.py)
+
+#### `web_fetch_tool`
+默认 **Jina Reader**（Key 可选）+ 备用 **local**；`timeout=100.0`。见 §11.3b。
 
 ---
 

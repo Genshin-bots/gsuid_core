@@ -10,6 +10,7 @@
   "log.webconsole.auth_avatar_upload_fail": "上传头像失败: {error}",
   "log.webconsole.authentication_encryption_key_generated": "[网页控制台] 认证加密密钥已生成 key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.authentication_encryption_key_rotated": "[网页控制台] 认证加密密钥已轮换 key_id={p0} pubkey_fingerprint={fp}",
+  "log.webconsole.batch_push_bot_self_db_fail": "[WebConsole] 汇总 BatchPush bot_self_id 失败(数据库): {e}",
   "log.webconsole.brand_delete_icon": "[Brand] 删除 ICON 失败: {e}",
   "log.webconsole.brand_fail_deleting_icon": "[Brand] 删除 ICON 未知错误: {e}",
   "log.webconsole.brand_fail_reading_json": "[Brand] 读取 brand.json 未知错误，使用默认配置: {e}",

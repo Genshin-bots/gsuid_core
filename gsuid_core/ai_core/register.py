@@ -94,7 +94,7 @@ def ai_tools(
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
-    timeout: Optional[float] = 300.0,
+    timeout: Optional[float] = 60.0,
     approval: Optional[str] = None,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
@@ -121,9 +121,10 @@ def ai_tools(
             必须**廉价且为内存判定**（读 ev/bot/扩展字段即可，切忌每步查库/发网络）。
             与 check_func 的区别：check_func 在"已调用"后拦截执行并回错误文案；
             visible_when 在"是否展示"阶段决定模型能否看到该工具。判定抛异常时默认可见。
-        timeout: 工具调用的最大等待时间（秒），默认 300 秒（5 分钟）。
+        timeout: 工具调用的最大等待时间（秒），默认 60 秒。
             超时后工具返回错误字符串，agent 可继续而不会永久挂起。
             设为 None 表示不限制超时。
+            需长时间等待的工具（如 ask_user / 长命令 / 子代理）应显式声明更大值或 None。
         approval: 可选的强制审批级别（"user" / "master"）。声明后每次调用先过
             统一审批中心策略门：user 级可被「完全访问」豁免（照常留审计记录）、
             master 级永不可豁免；无有效放行 grant 时拦截并自动提交审批请求，
@@ -223,18 +224,38 @@ def ai_tools(
                 else:
                     return await fn(*args, **call_kwargs)
 
-            try:
-                raw_result = await asyncio.wait_for(_call(), timeout=timeout)
-            except asyncio.TimeoutError:
-                timeout_sec = int(timeout) if timeout is not None else 0
-                logger.warning(
-                    t(
-                        "log.register.timeout_sec_aborted",
-                        p0=fn.__name__,
-                        timeout_sec=timeout_sec,
+            # create_task+wait_for：区分工具内部 TimeoutError 与外层包装取消
+            # （直接 wait_for(coro) 会把内部超时误记成包装默认秒数）
+            if timeout is None:
+                raw_result = await _call()
+            else:
+                _task = asyncio.create_task(_call())
+                try:
+                    raw_result = await asyncio.wait_for(_task, timeout=timeout)
+                except asyncio.TimeoutError:
+                    timeout_sec = int(timeout)
+                    if _task.done() and not _task.cancelled():
+                        inner_exc = _task.exception()
+                        logger.warning(
+                            t(
+                                "log.register.tool_inner_timeout",
+                                p0=fn.__name__,
+                                e=inner_exc,
+                            )
+                        )
+                        return (
+                            f"⚠️ 工具 {fn.__name__} 内部超时/失败"
+                            f"（{type(inner_exc).__name__ if inner_exc else 'TimeoutError'}:"
+                            f" {inner_exc}），请稍后重试或换个方式"
+                        )
+                    logger.warning(
+                        t(
+                            "log.register.timeout_sec_aborted",
+                            p0=fn.__name__,
+                            timeout_sec=timeout_sec,
+                        )
                     )
-                )
-                return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
+                    return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
 
             # ToolReturn 原样透传给 pydantic_ai（多模态内容注入会话，如 read_image 直投图片）。
             # 走 handle_tool_result 会被兜底 str() 成 dataclass repr——模型只会看到裸 base64 文本

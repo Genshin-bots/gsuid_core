@@ -123,16 +123,20 @@ from gsuid_core.ai_core.image_understand import (
 
 详见 [§11.2 Image Understand](./11-mcp-image-search-and-meme.md)。
 
-## 1.9 Web Search 统一搜索
+## 1.9 Web Search / Web Fetch
 
 ```python
 from gsuid_core.ai_core.web_search.search import (
-    web_search,              # 统一搜索接口
+    web_search,              # 统一搜索接口（Tavily 默认 + 多源策略）
     web_search_with_context, # 带上下文的搜索接口
+)
+
+from gsuid_core.ai_core.web_fetch import (
+    fetch_webpage_as_markdown,  # 统一抓取（Jina 默认 + local 备用）
 )
 ```
 
-详见 [§11.3 Web Search](./11-mcp-image-search-and-meme.md)。
+详见 [§11.3 Web Search](./11-mcp-image-search-and-meme.md)、[§11.3b Web Fetch](./11-mcp-image-search-and-meme.md)。
 
 ## 1.10 内置工具（按 category 分类）
 

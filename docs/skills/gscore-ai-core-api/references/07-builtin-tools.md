@@ -211,25 +211,32 @@ async def search_knowledge(
 ### `web_search_tool` — Web 搜索
 
 ```python
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", timeout=100.0)
 async def web_search_tool(
     ctx: RunContext[ToolContext],
-    query: str,          # 搜索关键词
-    limit: int = 10,     # 最大结果数
+    query: str,                       # 搜索关键词
+    limit: Optional[int] = None,      # 最大结果数；None 时用 web_search_default_limit
 ) -> str
 ```
 
-> **注意**：支持 Tavily / Exa / MCP 三种搜索提供方，通过 `ai_config.websearch_provider` 配置切换。使用 MCP 时需配置 `mcp_tools_config.websearch_mcp_tool_id`。
+> **注意**：统一走 `web_search()`，默认主用 **Tavily**（需 Key），另支持 Jina（`s.jina.ai`，需 Key）/ Exa / MCP。
+> 调度字段：`websearch_provider` / `websearch_lb_strategy`（默认 `error_switch`）/ `websearch_fallback_order`。
+> **异常或空结果**会在多源策略下切换下一源。工具外层 `timeout=100` 覆盖串行 failover。
+> MCP 时配置 `mcp_tools_config.websearch_mcp_tool_id`。详见 [§11.3](./11-mcp-image-search-and-meme.md)。
 
 ### `web_fetch_tool` — 网页抓取
 
 ```python
-@ai_tools(category="buildin")
+@ai_tools(category="buildin", visible_when=context_has_url, timeout=100.0)
 async def web_fetch_tool(
     ctx: RunContext[ToolContext],
     url: str,            # 要抓取的网页 URL
 ) -> str
 ```
+
+> 默认 **Jina Reader**（`r.jina.ai`，Key 可选）+ 备用 **local** 本机直连；
+> 字段 `webfetch_provider` / `webfetch_lb_strategy` / `webfetch_fallback_order` 与搜索同构。
+> 空正文或抛错会触发换源；外层 `timeout=100`。详见 [§11.3b](./11-mcp-image-search-and-meme.md)。
 
 ### `query_user_memory` — 查询用户记忆
 

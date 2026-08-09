@@ -172,7 +172,7 @@ AI 配置向导 API 用于帮助前端展示 AI 功能配置状态，提供配�
 | `memory.memory_mode` | array | 记忆路径列表（被动感知/主动会话） |
 | `memory.memory_session` | string | 被动感知范围（按人格配置/全部群聊） |
 | `embedding` | object | 嵌入模型配置 |
-| `web_search` | object | Web Search 配置 |
+| `web_search` | object | Web Search 配置；`provider` 为 `Tavily`（默认）/`Jina`/`Exa`/`MCP`，Jina 时校验 `jina_config.api_key` |
 | `missing_configs` | array | 缺失配置项列表 |
 | `missing_configs[].category` | string | 问题分类 |
 | `missing_configs[].item` | string | 问题项名称 |

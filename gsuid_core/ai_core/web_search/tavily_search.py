@@ -200,7 +200,7 @@ async def tavily_search(
 
     if not api_key_pool:
         logger.warning(t("log.ai.websearch_tavily_api_key_skip"))
-        return []
+        raise RuntimeError(t("log.ai.websearch_tavily_api_key_skip"))
 
     if max_results is None:
         max_results = int(tavily_config.get_config("max_results").data or "10")
@@ -208,6 +208,7 @@ async def tavily_search(
     search_depth = tavily_config.get_config("search_depth").data or "advanced"
 
     tried_keys = set()
+    last_err: Exception | None = None
 
     while len(tried_keys) < len(api_key_pool):
         api_key = _select_api_key([k for k in api_key_pool if k not in tried_keys])
@@ -227,12 +228,14 @@ async def tavily_search(
             logger.info(t("log.ai.websearch_tavily_search_query", query=query, p0=len(results)))
             return results
 
-        except Exception:
+        except (RuntimeError, OSError, ValueError, TypeError) as e:
             logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:]))
+            last_err = e
             continue
 
     logger.error(t("log.ai.websearch_tavily_api_keys"))
-    return []
+    # 抛出以便 web_search 多源策略可切换到下一源（额度用尽/鉴权失败）
+    raise RuntimeError(t("log.ai.websearch_tavily_api_keys") + (f": {last_err}" if last_err else ""))
 
 
 async def tavily_search_with_context(
@@ -256,9 +259,10 @@ async def tavily_search_with_context(
 
     if not api_key_pool:
         logger.warning(t("log.ai.websearch_tavily_api_key_skip"))
-        return {"results": [], "answer": None}
+        raise RuntimeError(t("log.ai.websearch_tavily_api_key_skip"))
 
     tried_keys = set()
+    last_err: Exception | None = None
 
     while len(tried_keys) < len(api_key_pool):
         api_key = _select_api_key([k for k in api_key_pool if k not in tried_keys])
@@ -283,9 +287,10 @@ async def tavily_search_with_context(
             )
             return result
 
-        except Exception:
+        except (RuntimeError, OSError, ValueError, TypeError) as e:
             logger.warning(t("log.ai.websearch_tavily_api_key_trying", p0=api_key[-4:]))
+            last_err = e
             continue
 
     logger.error(t("log.ai.websearch_tavily_api_keys"))
-    return {"results": [], "answer": None}
+    raise RuntimeError(t("log.ai.websearch_tavily_api_keys") + (f": {last_err}" if last_err else ""))

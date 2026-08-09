@@ -141,7 +141,20 @@ answer = await understand_image(
 
 ### 11.3.1 概述
 
-提供统一的 Web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / MCP）。
+提供统一的 Web 搜索接口：`web_search()` / `web_search_with_context()`。
+实现位于 `gsuid_core/ai_core/web_search/`：
+
+| 文件 | 用途 |
+|------|------|
+| `search.py` | 顶层调度：主用源 + 多源策略（错误切换 / 自动分流 / 无） |
+| `tavily_search.py` | **Tavily**（默认主用；需 API Key） |
+| `jina_search.py` | **Jina** `https://s.jina.ai`（备选；**搜索需要 API Key**） |
+| `exa_search.py` | Exa |
+| MCP 分支 | `websearch_mcp_tool_id` 指向的 MCP 工具 |
+
+调用方（插件 / 内置 `web_search_tool`）**只应** `from gsuid_core.ai_core.web_search import web_search`，不要直接绑死某一家 SDK。
+
+配置热读（`ai_config.get_config(...)` 每次调用），控制台改完**无需重启 core**。
 
 ### 11.3.2 核心函数
 
@@ -152,21 +165,49 @@ async def web_search(
     query: str,
     max_results: int | None = None,
 ) -> list[dict]
+# 每条: title / url / content / score；部分源可附 image_url / kind=image
 
 async def web_search_with_context(
     query: str,
     max_results: int = 5,
-) -> dict  # {"results": [...], "answer": "..."}
+) -> dict  # {"results": [...], "answer": str | None}  # answer 仅 Tavily 等支持
 ```
 
-### 11.3.3 配置
+失败语义：
 
-| 配置项 | 类型 | 默认值 | 选项 | 说明 |
-|--------|------|--------|------|------|
-| `websearch_provider` | str | `"Tavily"` | `Tavily` / `Exa` / `MCP` | Web 搜索服务提供方 |
-| `mcp_tools_config.websearch_mcp_tool_id` | str | `""` | — | MCP 搜索工具 ID（provider=MCP 时必填） |
+- 各 provider 在 **Key 未配置 / 全部 Key 失败（额度、鉴权）** 时 **抛异常**；
+- 返回 **空列表 `[]`**（或 with_context 且无 results 且无 answer）也视为失败，触发换源；
+- `search.py` 按多源策略捕获后切换下一源。全部失败则返回 `[]`（`with_context` 返回空 results）。
 
-### 11.3.4 使用示例
+内置工具外层：`web_search_tool` 使用 `@ai_tools(..., timeout=100.0)`，覆盖多源串行 failover。
+
+### 11.3.3 配置（`ai_config` / `data/ai_core/ai_config.json`）
+
+| 配置项 | 类型 | 默认值 | 选项 / 说明 |
+|--------|------|--------|-------------|
+| `websearch_provider` | str | **`Tavily`** | 主用：`Tavily` / `Jina` / `Exa` / `MCP` |
+| `websearch_lb_strategy` | str | **`error_switch`** | `none`：仅主用；`error_switch`：主用失败按备用顺序试下一源；`auto_balance`：已配置源间轮询 |
+| `websearch_fallback_order` | list[str] | `[]` | 备用顺序（不含主用）。**空 = 自动收集所有已配置源**（顺序 Tavily → Exa → Jina → MCP） |
+| `mcp_tools_config.websearch_mcp_tool_id` | str | `""` | provider=MCP 时必填，格式 `"{mcp_id} - {tool_name}"` |
+
+各源密钥（独立 StringConfig，热读）：
+
+| 配置名 | 路径 | 要点 |
+|--------|------|------|
+| `GsCore AI Tavily搜索配置` | `tavily_config.json` | `api_key` 池、`max_results`、`search_depth` |
+| `GsCore AI Jina搜索抓取配置` | `jina_config.json` | `api_key` 池（**搜索必填**；抓取可选）、`max_results`、`timeout`、`search_base_url`（默认 `https://s.jina.ai`）、`reader_base_url`（抓取共用） |
+| `GsCore AI Exa搜索配置` | `exa_config.json` | `api_key` 池、`max_results`、`search_type` |
+
+### 11.3.4 多源策略行为
+
+1. **构建链**：主用置首；`none` 时链仅含主用。
+2. **error_switch**：按链顺序调用；某源**抛错**或**空结果**则试下一个；非空成功即返回。
+3. **auto_balance**：在「已配置」源上轮询起点，再按 error_switch 语义失败切换。
+4. **已配置判定**：Tavily/Exa/Jina 有非空 `api_key`；MCP 有有效 `websearch_mcp_tool_id`。
+
+日志关键字：`[WebSearch] 提供方 {provider} 失败`、`已切换到 {provider}`、`全部提供方失败`。
+
+### 11.3.5 使用示例
 
 ```python
 from gsuid_core.ai_core.web_search.search import web_search
@@ -175,6 +216,48 @@ results = await web_search("Python 教程", max_results=5)
 for r in results:
     print(r["title"], r["url"], r["content"])
 ```
+
+---
+
+## 11.3b Web Fetch 网页抓取
+
+### 11.3b.1 概述
+
+`web_fetch_tool` → `gsuid_core.ai_core.web_fetch.fetch_webpage_as_markdown`。
+支持 **Jina Reader**（默认）与 **local** 本机直连，并带与搜索同构的多源策略。
+
+| 提供方 | 端点 / 方式 | API Key |
+|--------|-------------|---------|
+| **Jina**（默认主用） | `https://r.jina.ai/{url}` | **可选**；匿名有额度，填 Key 更高 |
+| **local**（默认备用） | aiohttp 直连 + BS4/markdownify | 无；走 `web_fetch_config` 的 proxy/UA/超时 |
+
+### 11.3b.2 配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `webfetch_provider` | **`Jina`** | 主用：`Jina` / `local` |
+| `webfetch_lb_strategy` | **`error_switch`** | 同搜索：`none` / `error_switch` / `auto_balance` |
+| `webfetch_fallback_order` | **`["local"]`** | 备用顺序；空列表运行时也回落 `["local"]` |
+| `web_fetch_config` | — | local 的 proxy / trust_env / timeout / UA / 体积上限 |
+| `jina_config` | — | 与搜索共用；抓取用 `api_key`（可选）+ `reader_base_url` + `timeout` |
+
+失败语义：提供方**抛错**或返回**空 Markdown** 时，在 `error_switch` / `auto_balance` 下切换下一源。
+
+内置工具外层：`web_fetch_tool` 使用 `@ai_tools(..., timeout=100.0)`。
+
+日志：开始即打
+`[WebFetch] 开始抓取 provider=Jina|local url=... (...)`，
+完成 `[WebFetch][Jina|local] 抓取完成`；失败切换见 `webfetch_provider_fail` / `webfetch_failover_ok`。
+
+### 11.3b.3 使用示例
+
+```python
+from gsuid_core.ai_core.web_fetch import fetch_webpage_as_markdown
+
+md = await fetch_webpage_as_markdown("https://example.com")
+```
+
+插件侧一般通过 Agent 调 `web_fetch_tool(url=...)`，无需直接 import。
 
 ---
 

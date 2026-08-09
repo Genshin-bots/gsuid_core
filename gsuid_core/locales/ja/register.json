@@ -6,5 +6,6 @@
   "log.register.name_visible_check_errored": "[Register] ツール [{_name}] の visible_when 判定で異常が発生しました。可視扱いにフォールバックします: {e}",
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} ツール [{p0}] 特権分類 [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
-  "log.register.timeout_sec_aborted": "[Register] ツール [{p0}] の実行がタイムアウトしました（>{timeout_sec} 秒）。中断しました"
+  "log.register.timeout_sec_aborted": "[Register] ツール [{p0}] の実行がタイムアウトしました（>{timeout_sec} 秒）。中断しました",
+  "log.register.tool_inner_timeout": "[Register] ツール [{p0}] 内部タイムアウト/失敗（ラッパー超時ではない）: {e}"
 }

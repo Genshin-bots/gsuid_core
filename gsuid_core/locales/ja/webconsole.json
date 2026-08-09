@@ -10,6 +10,7 @@
   "log.webconsole.auth_avatar_upload_fail": "アバターのアップロードに失敗しました: {error}",
   "log.webconsole.authentication_encryption_key_generated": "[WebConsole] 認証暗号化キーを生成した key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.authentication_encryption_key_rotated": "[WebConsole] 認証暗号化キーをローテーションした key_id={p0} pubkey_fingerprint={fp}",
+  "log.webconsole.batch_push_bot_self_db_fail": "[WebConsole] BatchPush bot_self_id の集約に失敗(DB): {e}",
   "log.webconsole.brand_delete_icon": "[Brand] ICON の削除に失敗: {e}",
   "log.webconsole.brand_fail_deleting_icon": "[Brand] ICON の削除中に不明なエラーが発生: {e}",
   "log.webconsole.brand_fail_reading_json": "[Brand] brand.json の読み込み中に不明なエラーが発生したため、デフォルト設定を使用する: {e}",

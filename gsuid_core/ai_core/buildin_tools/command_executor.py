@@ -324,7 +324,8 @@ def _get_safe_environment() -> dict:
     return safe_env
 
 
-@ai_tools(check_func=check_pm, visible_when=visible_to_admin)
+# 参数 timeout 最大 300s，外层包装需 ≥ 该上限，否则会被默认 60s 误杀。
+@ai_tools(check_func=check_pm, visible_when=visible_to_admin, timeout=300.0)
 async def execute_shell_command(
     ctx: RunContext[ToolContext],
     command: str,

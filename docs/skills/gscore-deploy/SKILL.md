@@ -5,7 +5,7 @@ description: >
   / 报错"、"Core 配置 WebConsole / 网页控制台"、"连接 NoneBot2 / AstrBot / Koishi 等
   Bot"、"安装 / 更新 / 卸载插件"、"切换 Git 镜像源"、"用 Docker 部署"、"挂载模式 /
   Bundle 模式"、"MySQL 切换"、"配置 WS_TOKEN / TRUSTED_IPS"、"公网部署"、"配置 AI 核心
-  启用 OpenAI 兼容 API / Tavily / 嵌入模型"、"升级 v3 到 v4"、"core 启动报错排查"
+  启用 OpenAI 兼容 API / Tavily 或 Jina 搜索 / 嵌入模型"、"升级 v3 到 v4"、"core 启动报错排查"
   "Docker 内 git 代理配置"、"WebConsole 注册码忘记"、"Core 与 Bot 不在同一台机器上"
   "HTTPS 与 WebConsole 加密握手" 时触发此 SKILL。
 
@@ -18,8 +18,8 @@ description: >
   Git 镜像源 / 自动更新）、Bot 适配器连接清单（NoneBot2 / Hoshino /
   AstrBot / ZeroBot / YunZai / Koishi / XYBotV2 / napcat / gs-core-adapter）、
   数据库配置（SQLite 默认 / MySQL / PostgreSQL / 自定义 URL）、AI 核心部署
-  关键开关与外部服务（OpenAI 兼容 API / 嵌入 / Rerank / Qdrant / Tavily /
-  Exa / MCP）、从 GenshinUID v3 迁移、故障排查清单、目录与路径速查。
+  关键开关与外部服务（OpenAI 兼容 API / 嵌入 / Rerank / Qdrant / Tavily 搜索 /
+  Jina 搜索与抓取 / Exa / MCP）、从 GenshinUID v3 迁移、故障排查清单、目录与路径速查。
 ---
 
 # GsCore 部署者完整指南（核心入口）
@@ -44,7 +44,7 @@ description: >
 | 十 | 链接 Bot 适配器清单（NoneBot2 / Hoshino / AstrBot / ZeroBot / YunZai / Koishi / XYBotV2 / napcat / Java 适配器） | [references/10-bots.md](./references/10-bots.md) |
 | 十一 | 数据库配置（SQLite 默认 / MySQL / PostgreSQL / 自定义 URL / 备份与迁移） | [references/11-database.md](./references/11-database.md) |
 | 十二 | Docker 部署两种模式（挂载模式 mount / 全量模式 bundle）+ .env 配置 + 代理与镜像源 | [references/12-docker.md](./references/12-docker.md) |
-| 十三 | AI 核心部署要点（ai_config / 模型配置 / 嵌入 / Rerank / Qdrant / Tavily / Exa / MCP / 资源消耗） | [references/13-ai.md](./references/13-ai.md) |
+| 十三 | AI 核心部署要点（ai_config / 模型 / 嵌入 / Rerank / Qdrant / **Tavily 默认搜索** / **Jina 抓取** / Exa / MCP / 多源策略） | [references/13-ai.md](./references/13-ai.md) |
 | 十四 | 升级与热更新（Core 自身 / 插件 / 数据迁移 / v3→v4 / 配置文件迁移） | [references/14-upgrade.md](./references/14-upgrade.md) |
 | 十五 | 数据目录与路径速查（`data/` 结构 / 数据库文件 / 日志 / 主题 / 备份 / WebConsole dist） | [references/15-data-layout.md](./references/15-data-layout.md) |
 | 十六 | 故障排查清单（启动失败 / WS 拒连 / WebConsole 拒登 / Docker 代理 / 依赖冲突 / 资源下载 / 风控） | [references/16-troubleshooting.md](./references/16-troubleshooting.md) |
@@ -78,7 +78,7 @@ description: >
 - **数据库默认 SQLite**：路径 `data/GsData.db`；切换 MySQL 需先 `uv pip install aiomysql` 或 `asyncmy`（按驱动选择），然后 WebConsole 里改数据库类型 / 主机 / 端口 / 用户名 / 密码并重启；PostgreSQL 代码已有但文档标注暂不支持。详见 [十一、数据库配置](./references/11-database.md)。
 - **端口 / 监听地址**：`config.json` 的 `HOST` 支持 `localhost`（默认，仅本机可连）/ `0.0.0.0` / `dual` / `none` / `all`，`PORT` 默认 `8765`；命令行可用 `core --host 0.0.0.0 --port 9527` 临时覆盖（不会写回文件）。详见 [三、启动 Core §3.1](./references/03-startup.md#31-命令行参数)。
 - **自动更新三开关**：`AutoUpdateCore`（默认开，凌晨 3:40 拉）、`AutoUpdatePlugins`（默认开，4:10 拉）、`AutoRestartCore`（默认关，4:40 重启）。仅 Core / 插件自动更新，**不会自动重启**（生产环境强烈建议把 `AutoRestartCore` 打开并配合 systemd / Docker `--restart always`）。详见 [六、`core_config.json` §6.3](./references/06-core-config-json.md#63-自动更新与重启策略)。
-- **AI 核心默认关闭**：`ai_config.json` 的 `enable=false`；启用需先在 WebConsole 填模型 provider（OpenAI 兼容）与外部服务 Key（Tavily / Exa）。详见 [十三、AI 核心部署要点](./references/13-ai.md)。
+- **AI 核心默认关闭**：`ai_config.json` 的 `enable=false`；启用需先在 WebConsole 填模型 provider（OpenAI 兼容）。网络搜索默认 **Tavily**（`tavily_config.api_key`）；Jina/Exa 可作主用或备用（Jina 搜索需 Key）；网页抓取默认 Jina Reader（Key 可选）+ local 备用。多源策略默认 `error_switch`（异常/空结果换源）。详见 [十三、AI 核心部署要点](./references/13-ai.md)。
 - **WebConsole 默认自动启动**：无需开关，启动后访问 `http://HOST:PORT/app`，注册码在 `config.json` 的 `REGISTER_CODE` 字段（首次启动随机生成，每个实例都不同）；**只能注册一个管理员账号**。详见 [八、WebConsole §8.2](./references/08-webconsole.md#82-地址--注册码)。
 - **v3 → v4 数据迁移**：v3 数据导出成文件夹后拷贝到 `data/<plugin_name>/` 下，删内部 `config.json`，启动后用 master 账号发 `导入v3数据`。详见 [十四、升级与热更新 §14.2](./references/14-upgrade.md#142-v3-到-v4-数据迁移)。
 - **数据持久化三件套（Docker）**：`/gsuid_core/data`（玩家账号 / DB / 插件配置 / AI 配置 / 主题 / 日志）、`/gsuid_core/gsuid_core/plugins`（插件目录，方便在宿主机直接管理）、`/venv`（命名卷持久化 Python 虚拟环境，跨镜像升级后手动安装的包会丢）。详见 [十二、Docker §12.2](./references/12-docker.md#122-挂载点与持久化)。

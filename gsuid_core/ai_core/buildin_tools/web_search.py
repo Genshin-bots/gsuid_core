@@ -65,7 +65,8 @@ def _format_results_for_model(results: list[dict]) -> str:
     return "\n".join(lines).rstrip()
 
 
-@ai_tools(category="buildin")
+# 多源 failover 可能串行多次检索，外层包装需覆盖单源超时之和
+@ai_tools(category="buildin", timeout=100.0)
 async def web_search_tool(
     ctx: RunContext[ToolContext],
     query: str,

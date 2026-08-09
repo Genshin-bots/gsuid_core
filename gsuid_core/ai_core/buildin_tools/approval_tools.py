@@ -221,7 +221,7 @@ def _coerce_option_strings(options: Any) -> List[str]:
 
 
 # timeout=None:排队等待(前序问题各自 ≤300s)+ 自身等待(≤300s)可能超过默认
-# 300s 的工具包装超时;ask_user 的每一段等待都有自己的上界,不会永久挂起。
+# 60s 的工具包装超时;ask_user 的每一段等待都有自己的上界,不会永久挂起。
 @ai_tools(category="common", capability_domain="审批交互", timeout=None)
 async def ask_user(
     ctx: RunContext[ToolContext],

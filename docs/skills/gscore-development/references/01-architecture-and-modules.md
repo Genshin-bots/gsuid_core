@@ -81,7 +81,8 @@ gsuid_core/ai_core/
 ├── mcp/                 # MCP 工具集成（client/config_manager/server/startup）
 ├── multimodal/          # 多模态（asr/tts/video/document 提取）
 ├── image_understand/    # 统一图片理解接口（MCP / 原生多模态）
-├── web_search/          # 统一 Web 搜索（Tavily/Exa/MCP 三选一）
+├── web_search/          # 统一 Web 搜索（Tavily/Jina/Exa/MCP + 多源策略）
+├── web_fetch/           # 网页抓取（Jina Reader / local + 多源策略）
 ├── meme/                # 表情包模块（采集/打标/检索/发送）
 └── database/            # AI 通用数据库模型
 ```

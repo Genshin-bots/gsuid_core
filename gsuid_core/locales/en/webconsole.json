@@ -10,6 +10,7 @@
   "log.webconsole.auth_avatar_upload_fail": "Failed to upload avatar: {error}",
   "log.webconsole.authentication_encryption_key_generated": "[WebConsole] Authentication encryption key generated key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.authentication_encryption_key_rotated": "[WebConsole] Authentication encryption key rotated key_id={p0} pubkey_fingerprint={fp}",
+  "log.webconsole.batch_push_bot_self_db_fail": "[WebConsole] Failed to collect BatchPush bot_self_ids from DB: {e}",
   "log.webconsole.brand_delete_icon": "[Brand] Failed to delete ICON: {e}",
   "log.webconsole.brand_fail_deleting_icon": "[Brand] Unknown error while deleting ICON: {e}",
   "log.webconsole.brand_fail_reading_json": "[Brand] Unknown error while reading brand.json; using default configuration: {e}",

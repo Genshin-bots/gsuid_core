@@ -208,6 +208,9 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 > `enable` 开关与 `operator_user_ids` 操作员白名单（后者无 ev 时偏隐藏），语义不同不要合并。
 
 **保底池条件隐藏（2026-06-20）**：`visible_when` 已从附加池下沉到**保底池**里的窄场景常驻
+`@ai_tools` 默认 `timeout=60`；`web_search_tool` / `web_fetch_tool` 显式 `100` 以覆盖多源 failover；
+长等待工具用更大值或 `None`（见 `docs/skills/gscore-ai-core-api` §2）。
+
 工具——`buildin_tools/visibility.py` 给 `read_image`（`context_has_image`）与 `web_fetch_tool`
 （`context_has_url`）各挂一个谓词：工具仍属 `buildin` 保底、需要时立即出现，但图片/URL 无关
 轮不下发其 schema，把保底实下发从 14 压到 ~12。两谓词都**连 `ctx.messages` 一起扫**（不只看
