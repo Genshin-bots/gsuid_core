@@ -926,9 +926,11 @@ async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str,
         msg: 操作结果信息
     """
     result = reload_plugin(plugin_name)
+    # 始终带 data 字段：前端 api.post 会解包 data；无 data 时成功路径拿到 undefined，
+    # 再读 result.status 会报 Cannot read properties of undefined (reading 'status')。
     if result.lstrip().startswith("❌"):
-        return {"status": 1, "msg": result}
-    return {"status": 0, "msg": result}
+        return {"status": 1, "msg": result, "data": {"plugin_name": plugin_name, "ok": False}}
+    return {"status": 0, "msg": result, "data": {"plugin_name": plugin_name, "ok": True}}
 
 
 # ===================

@@ -7,7 +7,7 @@ from gsuid_core.sv import SL
 from gsuid_core.gss import gss
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.server import _module_cache
+from gsuid_core.server import GsServer, _module_cache
 
 # 第五步后台启动 Hook 的任务句柄表：① 保留引用防止任务被 GC ② 快速重载时取消上一轮未跑完的
 _plugin_start_tasks: Dict[str, asyncio.Task] = {}
@@ -311,6 +311,24 @@ def reload_plugin(plugin_name: str) -> str:
     logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
 
     # ──────────────────────────────────────────
+    # 第 0 步：先解析磁盘路径（plugins/ 与 buildin_plugins/）
+    # 必须在任何清理之前完成 —— 否则路径解析失败会留下「已卸载、无法恢复」的空壳，
+    # 直到进程重启（core_command 等内置插件此前正中此坑）。
+    # ──────────────────────────────────────────
+    plugin_path = GsServer.resolve_plugin_path(plugin_name)
+    if plugin_path is None:
+        return f"❌ 插件{plugin_name}不存在!"
+
+    # 预检可加载模块列表（不 import）；空列表或错误信息直接返回，不触碰运行时状态
+    module_list = gss.load_plugin(plugin_path)
+    if module_list is None:
+        return f"❌ 未知的插件类型 {plugin_name}"
+    if isinstance(module_list, str):
+        return module_list  # load_plugin 已经返回了错误信息
+    if not module_list:
+        return f"❌ 插件{plugin_name}无可加载模块!"
+
+    # ──────────────────────────────────────────
     # 第一步：收集该插件下所有 SV 和 Plugins 对象
     # ──────────────────────────────────────────
     sv_names_to_del = [sv_name for sv_name, sv in SL.lst.items() if sv.self_plugin_name == plugin_name]
@@ -358,15 +376,8 @@ def reload_plugin(plugin_name: str) -> str:
     _clean_plugin_global_state(plugin_name)
 
     # ──────────────────────────────────────────
-    # 第四步：重新加载
+    # 第四步：重新加载（使用第 0 步已解析的 Path，避免仅查 plugins/ 漏掉内置插件）
     # ──────────────────────────────────────────
-    module_list = gss.load_plugin(plugin_name)
-
-    if module_list is None:
-        return f"❌ 未知的插件类型 {plugin_name}"
-    if isinstance(module_list, str):
-        return module_list  # load_plugin 已经返回了错误信息
-
     for module_name, filepath, _type in module_list:
         try:
             gss.cached_import(module_name, filepath, _type)

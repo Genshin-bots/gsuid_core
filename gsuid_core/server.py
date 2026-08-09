@@ -284,9 +284,30 @@ class GsServer:
                     )
         return module_list
 
+    @staticmethod
+    def resolve_plugin_path(plugin_name: str) -> Optional[Path]:
+        """按插件名解析磁盘路径：先 ``plugins/``，再 ``buildin_plugins/``。
+
+        支持目录插件与单文件插件（如 ``gs_test.py``）。热重载 ``reload_plugin`` 只传
+        字符串名，若不解析 buildin 路径，会先清理 SL/定时任务再因「插件不存在」加载失败，
+        导致 ``core_command`` 等内置插件从列表中消失直至重启。
+        """
+        for base in (PLUGIN_PATH, BUILDIN_PLUGIN_PATH):
+            candidate = base / plugin_name
+            if candidate.exists():
+                return candidate
+            single = base / f"{plugin_name}.py"
+            if single.is_file():
+                return single
+        return None
+
     def load_plugin(self, plugin: Union[str, Path], dev_mode: bool = False):
         if isinstance(plugin, str):
-            plugin = PLUGIN_PATH / plugin
+            resolved = self.resolve_plugin_path(plugin)
+            if resolved is None:
+                logger.warning(t("log.server.plugin_not_exist", plugin_name=plugin))
+                return f"❌ 插件{plugin}不存在!"
+            plugin = resolved
 
         if not plugin.exists():
             logger.warning(t("log.server.plugin_not_exist", plugin_name=plugin.name))
