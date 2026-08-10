@@ -28,6 +28,7 @@ from gsuid_core.ai_core.rag.tools import (
     get_tools_by_context_tags,
     search_tools_with_entity_routing,
 )
+from gsuid_core.ai_core.tool_safety import build_tool_safety_capability
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
@@ -397,6 +398,7 @@ class ToolsPhase(RunOnceHost):
         else:
             _model_settings = None
 
+        # 单工具抛错不炸整轮：SkillNotFound 等 → ⚠️ 回执，模型改道
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
@@ -404,6 +406,7 @@ class ToolsPhase(RunOnceHost):
             model_settings=_model_settings,
             tools=st.tools,
             toolsets=_toolsets,
+            capabilities=[build_tool_safety_capability()],
             retries=3,
             output_type=st.output_type or str,
         )
