@@ -502,6 +502,7 @@
   "log.ai.toolpack_capability_pack_neither": "[ToolPack] 未知能力族: {pack}（既非静态族也非 capability_domain）",
   "log.ai.toolpack_invalid_capability_pack_skip": "[ToolPack] 非法能力族名: {pack_name}，已忽略",
   "log.ai.toolpack_registered_capability_pack_register": "[ToolPack] 注册能力族: {pack_name}（{p0} 个工具）",
+  "log.ai.tool_safety_execute_failed": "[ToolSafety] 工具 {name} 执行失败（{err_type}）: {e}",
   "log.ai.toolset_name_prepare_skipping": "[RetrievableToolset] 工具 {name} prepare 失败，跳过: {e}",
   "log.ai.toolset_step_dynamically_exposed": "[RetrievableToolset] 本步动态暴露 {p0} 个工具: {p1}",
   "log.ai.toolstate_state_driven_supplementary_create": "[ToolState] 状态驱动补充能力族 {domains}，新增 {p0} 个工具",

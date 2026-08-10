@@ -13,6 +13,7 @@ from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.capabilities import Hooks
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 _TOOL_SAFETY_CAP_ID = "gscore-tool-safety"
@@ -42,7 +43,14 @@ async def _on_tool_execute_error(
 ) -> str:
     name = call.tool_name or tool_def.name or "unknown"
     msg = format_tool_execute_error(name, error)
-    logger.warning("[tool_safety] tool=%s err=%s: %s", name, type(error).__name__, error)
+    logger.warning(
+        t(
+            "log.ai.tool_safety_execute_failed",
+            name=name,
+            err_type=type(error).__name__,
+            e=error,
+        )
+    )
     return msg
 
 

@@ -502,6 +502,7 @@
   "log.ai.toolpack_capability_pack_neither": "[ToolPack] 不明な能力パック: {pack}（静的パックでも capability_domain でもない）",
   "log.ai.toolpack_invalid_capability_pack_skip": "[ToolPack] 不正な能力パック名: {pack_name}、スキップした",
   "log.ai.toolpack_registered_capability_pack_register": "[ToolPack] 能力パックを登録: {pack_name}（{p0} 個のツール）",
+  "log.ai.tool_safety_execute_failed": "[ToolSafety] ツール {name} の実行に失敗しました（{err_type}）: {e}",
   "log.ai.toolset_name_prepare_skipping": "[RetrievableToolset] ツール {name} の prepare に失敗しました。スキップします: {e}",
   "log.ai.toolset_step_dynamically_exposed": "[RetrievableToolset] このステップで動的に {p0} 個のツールを公開しました: {p1}",
   "log.ai.toolstate_state_driven_supplementary_create": "[ToolState] 状態駆動の追加能力族 {domains}。{p0} 個のツールを追加しました",

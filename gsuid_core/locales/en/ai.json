@@ -502,6 +502,7 @@
   "log.ai.toolpack_capability_pack_neither": "[ToolPack] Unknown capability pack: {pack} (neither static pack nor capability_domain)",
   "log.ai.toolpack_invalid_capability_pack_skip": "[ToolPack] Invalid capability pack name: {pack_name}, ignored",
   "log.ai.toolpack_registered_capability_pack_register": "[ToolPack] Registered capability pack: {pack_name} ({p0} tools)",
+  "log.ai.tool_safety_execute_failed": "[ToolSafety] Tool {name} failed ({err_type}): {e}",
   "log.ai.toolset_name_prepare_skipping": "[RetrievableToolset] Tool {name} prepare failed; skipping: {e}",
   "log.ai.toolset_step_dynamically_exposed": "[RetrievableToolset] This step dynamically exposed {p0} tools: {p1}",
   "log.ai.toolstate_state_driven_supplementary_create": "[ToolState] State-driven supplementary capability family {domains}; added {p0} tool(s)",
