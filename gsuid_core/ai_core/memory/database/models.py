@@ -109,7 +109,9 @@ class AIMemEpisode(SQLModel, table=True):
             created_at=datetime.now(timezone.utc),
             qdrant_id=episode_id,
         )
-        async with async_maker() as session:
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+        async with db_write_guard(), async_maker() as session:
             session.add(episode)
             await session.commit()
 
@@ -165,7 +167,9 @@ class AIMemEpisode(SQLModel, table=True):
                 )
             )
 
-        async with async_maker() as session:
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+        async with db_write_guard(), async_maker() as session:
             session.add_all(episodes)
             await session.commit()
 
@@ -260,11 +264,17 @@ class AIMemEpisode(SQLModel, table=True):
         return victims
 
     @classmethod
-    @with_session
-    async def mark_archived_by_ids(cls, session: AsyncSession, episode_ids: list[str]) -> int:
+    async def mark_archived_by_ids(cls, episode_ids: list[str]) -> int:
         """把一批 Episode 标记为已归档（冷）。集合式单条 UPDATE。返回受影响行数。"""
         if not episode_ids:
             return 0
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: cls._mark_archived_by_ids_db(episode_ids))
+
+    @classmethod
+    @with_session
+    async def _mark_archived_by_ids_db(cls, session: AsyncSession, episode_ids: list[str]) -> int:
         from sqlalchemy import update as _update
 
         result = await session.execute(_update(cls).where(col(cls.id).in_(episode_ids)).values(is_archived=True))
@@ -314,11 +324,17 @@ class AIMemEpisode(SQLModel, table=True):
         return victims
 
     @classmethod
-    @with_session
-    async def purge_episodes_by_ids(cls, session: AsyncSession, episode_ids: list[str]) -> int:
+    async def purge_episodes_by_ids(cls, episode_ids: list[str]) -> int:
         """物理删除 Episode 并清理其 Episode-Entity 关联表。返回删除行数。"""
         if not episode_ids:
             return 0
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: cls._purge_episodes_by_ids_db(episode_ids))
+
+    @classmethod
+    @with_session
+    async def _purge_episodes_by_ids_db(cls, session: AsyncSession, episode_ids: list[str]) -> int:
         from sqlalchemy import delete as _delete
 
         await session.execute(
@@ -428,6 +444,56 @@ class AIMemEntity(SQLModel, table=True):
         return None
 
     @classmethod
+    async def prefetch_hybrid_name_ids(
+        cls,
+        scope_key: str,
+        entities_data: list[dict],
+    ) -> dict[str, str]:
+        """写锁外：对 SQL 未精确命中的名称做混合检索，返回 {name: entity_id}。
+
+        extract_and_upsert 在锁内只消费此 map + 再做一次精确 SQL，避免持锁做 embed/Qdrant。
+        """
+        from gsuid_core.ai_core.memory.config import memory_config as _mc
+
+        if _mc.eval_mode:
+            return {}
+        all_names = list(
+            {
+                (ed["name"] if "name" in ed else "").strip()
+                for ed in entities_data
+                if (ed["name"] if "name" in ed else "").strip()
+            }
+        )
+        if not all_names:
+            return {}
+        async with async_maker() as session:
+            result = await session.execute(
+                select(cls.name).where(cls.scope_key == scope_key, col(cls.name).in_(all_names))
+            )
+            exact = {row[0] for row in result.all()}
+        unmatched = [n for n in all_names if n not in exact]
+        if not unmatched:
+            return {}
+
+        from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
+
+        async def _hybrid_one(uname: str) -> tuple[str, list]:
+            similar = await _hybrid_search_entities(query=uname, scope_keys=[scope_key], top_k=3)
+            return uname, similar
+
+        search_results = await asyncio.gather(*[_hybrid_one(n) for n in unmatched])
+        hits: dict[str, str] = {}
+        async with async_maker() as session:
+            for uname, similar in search_results:
+                if similar and similar[0]["score"] >= _mc.dedup_similarity_threshold:
+                    sid = similar[0]["id"]
+                    r = await session.execute(select(cls.id).where(cls.id == sid, cls.scope_key == scope_key))
+                    matched_id = r.scalar_one_or_none()
+                    if matched_id:
+                        hits[uname] = matched_id
+        return hits
+
+    @classmethod
     async def extract_and_upsert(
         cls,
         session: AsyncSession,
@@ -435,12 +501,16 @@ class AIMemEntity(SQLModel, table=True):
         entities_data: list[dict],
         episode_id: str,
         speaker_ids: list[str],
+        *,
+        hybrid_name_ids: dict[str, str] | None = None,
     ) -> tuple[dict[str, str], list[dict], int]:
         """
         Returns:
             name_to_id,
             vector_payloads,
             new_entity_count  ← 新建实体数量（仅新建不包含已更新）
+
+        hybrid_name_ids: 写锁外 prefetch 的语义去重结果；传入则锁内不再跑 Qdrant。
         """
 
         name_to_id: dict[str, str] = {}
@@ -470,27 +540,26 @@ class AIMemEntity(SQLModel, table=True):
             result = await session.execute(select(cls).where(cls.scope_key == scope_key, col(cls.name).in_(all_names)))
             existing_map = {e.name: e for e in result.scalars().all()}
 
-        # ── 向量去重阶段：对 SQL 未命中的名称，用混合检索查找语义相似实体 ──
-        # P-01 优化：改为 asyncio.gather 并行执行，避免串行 O(N) 查询延迟
-        # Bug-05 修复：分两阶段执行，避免同一 AsyncSession 并发 SQL 查询
-        # 阶段1：并行 Qdrant 相似度搜索（无 session 共享问题）
-        # 阶段2：串行 SQL 查询确认（避免并发 session 问题）
+        # 向量去重：优先用锁外 prefetch；未传 hybrid_name_ids 时回落锁内检索（兼容直调）。
         unmatched_names = [n for n in all_names if n not in existing_map]
         from gsuid_core.ai_core.memory.config import memory_config as _mc
 
-        # §14 大规模回灌优化：eval_mode 下跳过"阶段2 向量语义去重"，仅保留阶段1 精确名称匹配。
-        # 背景：BEAM-10M 等技术语料的实体极细粒度（API 路径/配置项/价格各成一实体），实测
-        # 阶段2 每个未命中名称都要 embed+Qdrant 混合检索，在窗口化并发下成为主要耗时来源，
-        # 而真正被语义合并的实体仅约 8%（多为大小写变体）。eval 优先吞吐：精确名去重已足够，
-        # 把全量 10 plan 抽取从 ~15-20h 降到可控区间；线上链路（eval_mode=False）行为不变。
         if unmatched_names and _mc.eval_mode:
             unmatched_names = []
 
-        if unmatched_names:
+        if unmatched_names and hybrid_name_ids is not None:
+            for uname in unmatched_names:
+                if uname not in hybrid_name_ids:
+                    continue
+                sid = hybrid_name_ids[uname]
+                r = await session.execute(select(cls).where(cls.id == sid, cls.scope_key == scope_key))
+                matched = r.scalar_one_or_none()
+                if matched:
+                    existing_map[uname] = matched
+        elif unmatched_names:
             from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
 
             async def _hybrid_search_for_name(uname: str) -> tuple[str, list]:
-                """并行查询单个名称的相似实体（仅 Qdrant 搜索）"""
                 similar = await _hybrid_search_entities(
                     query=uname,
                     scope_keys=[scope_key],
@@ -498,14 +567,10 @@ class AIMemEntity(SQLModel, table=True):
                 )
                 return uname, similar
 
-            # 阶段1：并行执行所有 Qdrant 相似度搜索
             search_results = await asyncio.gather(*[_hybrid_search_for_name(n) for n in unmatched_names])
-
-            # 阶段2：串行 SQL 查询确认（避免同一 session 并发执行）
             for uname, similar in search_results:
                 if similar and similar[0]["score"] >= _mc.dedup_similarity_threshold:
                     sid = similar[0]["id"]
-                    # 双重保障：SQL 查询增加 scope_key 条件，防止 Qdrant payload 不一致时跨 scope 匹配
                     r = await session.execute(select(cls).where(cls.id == sid, cls.scope_key == scope_key))
                     matched = r.scalar_one_or_none()
                     if matched:
@@ -643,15 +708,17 @@ class AIMemEntity(SQLModel, table=True):
         return [(row[0], row[1], row[2] or row[0]) for row in result.all()]
 
     @classmethod
-    @with_session
-    async def purge_orphans_by_ids(
-        cls,
-        session: AsyncSession,
-        entity_ids: list[str],
-    ) -> int:
+    async def purge_orphans_by_ids(cls, entity_ids: list[str]) -> int:
         """物理删除孤儿实体并清理其 Episode / Category 关联表。返回删除行数。"""
         if not entity_ids:
             return 0
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: cls._purge_orphans_by_ids_db(entity_ids))
+
+    @classmethod
+    @with_session
+    async def _purge_orphans_by_ids_db(cls, session: AsyncSession, entity_ids: list[str]) -> int:
         from sqlalchemy import delete as _delete
 
         # 先清两张多对多关联表，再删主表，避免悬空外键
@@ -838,11 +905,17 @@ class AIMemEdge(SQLModel, table=True):
         return {row[0]: (row[1], row[2]) for row in result.all()}
 
     @classmethod
-    @with_session
-    async def touch_accessed(cls, session: AsyncSession, edge_ids: list[str]) -> None:
+    async def touch_accessed(cls, edge_ids: list[str]) -> None:
         """把一批 Edge 标记为"刚被检索命中"，刷新 last_accessed（C11 Decay 依据）。"""
         if not edge_ids:
             return
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        await under_db_write(lambda: cls._touch_accessed_db(edge_ids))
+
+    @classmethod
+    @with_session
+    async def _touch_accessed_db(cls, session: AsyncSession, edge_ids: list[str]) -> None:
         from sqlalchemy import update as _update
 
         await session.execute(
@@ -850,10 +923,8 @@ class AIMemEdge(SQLModel, table=True):
         )
 
     @classmethod
-    @with_session
     async def apply_decay(
         cls,
-        session: AsyncSession,
         stale_days: int = 14,
         decay_factor: float = 0.85,
         protect_mention_count: int = 3,
@@ -861,11 +932,27 @@ class AIMemEdge(SQLModel, table=True):
         """时效衰减（C11）：超过 stale_days 未被检索、且非高频提及的有效 Edge，
         ``decay_score *= decay_factor``。返回受影响行数。
 
-        P1-1：因衰减是乘法、各待衰减行系数相同，用**单条集合式 UPDATE**完成
-        （``SET decay_score = coalesce(decay_score, 1.0) * factor WHERE ...``），
-        避免把数万~数十万条边加载进内存再逐行 UPDATE（旧实现是 O(N) 条单行 UPDATE，
-        在大表上极慢且长时间持锁）。coalesce 兜底旧库 NULL；不再在 SQL 里 round，
-        decay_score 仅用于检索加权，全精度浮点无副作用。"""
+        集合式 UPDATE（非逐行）；经 db_write_guard 与热路径写排队，避免维护窗写风暴。
+        """
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(
+            lambda: cls._apply_decay_db(
+                stale_days=stale_days,
+                decay_factor=decay_factor,
+                protect_mention_count=protect_mention_count,
+            )
+        )
+
+    @classmethod
+    @with_session
+    async def _apply_decay_db(
+        cls,
+        session: AsyncSession,
+        stale_days: int = 14,
+        decay_factor: float = 0.85,
+        protect_mention_count: int = 3,
+    ) -> int:
         from sqlalchemy import update as _update
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
@@ -889,11 +976,17 @@ class AIMemEdge(SQLModel, table=True):
         return [row[1] or row[0] for row in result.all()]
 
     @classmethod
-    @with_session
-    async def purge_by_ids(cls, session: AsyncSession, edge_ids: list[str]) -> int:
+    async def purge_by_ids(cls, edge_ids: list[str]) -> int:
         """按 ID 物理删除 Edge（C11 遗忘）。返回删除行数。"""
         if not edge_ids:
             return 0
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: cls._purge_by_ids_db(edge_ids))
+
+    @classmethod
+    @with_session
+    async def _purge_by_ids_db(cls, session: AsyncSession, edge_ids: list[str]) -> int:
         from sqlalchemy import delete as _delete
 
         await session.execute(_delete(cls).where(col(cls.qdrant_id).in_(edge_ids)))
@@ -964,6 +1057,28 @@ class AIMemConflict(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
+    def attach(
+        cls,
+        session: AsyncSession,
+        *,
+        scope_key: str,
+        fact_signature: str,
+        old_edge_id: str,
+        new_edge_id: str,
+        summary: str,
+    ) -> None:
+        """把矛盾行挂到调用方 session（与 edge 写同事务，避免嵌套 with_session 自锁）。"""
+        session.add(
+            cls(
+                scope_key=scope_key,
+                fact_signature=fact_signature[:256],
+                old_edge_id=old_edge_id,
+                new_edge_id=new_edge_id,
+                summary=summary[:2000],
+            )
+        )
+
+    @classmethod
     @with_session
     async def record(
         cls,
@@ -974,14 +1089,14 @@ class AIMemConflict(SQLModel, table=True):
         new_edge_id: str,
         summary: str,
     ) -> None:
-        session.add(
-            cls(
-                scope_key=scope_key,
-                fact_signature=fact_signature[:256],
-                old_edge_id=old_edge_id,
-                new_edge_id=new_edge_id,
-                summary=summary[:2000],
-            )
+        """独立 session 记一条矛盾（供非 edge 批写路径）；edge 批写请用 attach。"""
+        cls.attach(
+            session,
+            scope_key=scope_key,
+            fact_signature=fact_signature,
+            old_edge_id=old_edge_id,
+            new_edge_id=new_edge_id,
+            summary=summary,
         )
 
     @classmethod
@@ -1138,10 +1253,8 @@ class AIMemPreference(SQLModel, table=True):
         return rule.strip().lower().replace(" ", "")[:64]
 
     @classmethod
-    @with_session
     async def upsert(
         cls,
-        session: AsyncSession,
         scope_key: str,
         user_id: Optional[str],
         target_context: str,
@@ -1158,6 +1271,33 @@ class AIMemPreference(SQLModel, table=True):
           以新规则为准（复用 Edge 极性反转思路）。
         - **无等价** → 新建。
         """
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(
+            lambda: cls._upsert_db(
+                scope_key=scope_key,
+                user_id=user_id,
+                target_context=target_context,
+                preference_rule=preference_rule,
+                polarity=polarity,
+                is_correction=is_correction,
+                source_episode_id=source_episode_id,
+            )
+        )
+
+    @classmethod
+    @with_session
+    async def _upsert_db(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        user_id: Optional[str],
+        target_context: str,
+        preference_rule: str,
+        polarity: str,
+        is_correction: bool,
+        source_episode_id: Optional[str] = None,
+    ) -> tuple[str, bool]:
         polarity = "dont" if polarity == "dont" else "do"
         rule = (preference_rule or "").strip()
         if not rule:
@@ -1234,11 +1374,17 @@ class AIMemPreference(SQLModel, table=True):
         return list(result.scalars().all())
 
     @classmethod
-    @with_session
-    async def touch_applied(cls, session: AsyncSession, pref_ids: list[str]) -> None:
+    async def touch_applied(cls, pref_ids: list[str]) -> None:
         """把一批偏好标记为"刚被注入/应用"，刷新 last_applied_at（生命周期保护依据）。"""
         if not pref_ids:
             return
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        await under_db_write(lambda: cls._touch_applied_db(pref_ids))
+
+    @classmethod
+    @with_session
+    async def _touch_applied_db(cls, session: AsyncSession, pref_ids: list[str]) -> None:
         from sqlalchemy import update as _update
 
         await session.execute(
@@ -1268,8 +1414,7 @@ class AIMemPreference(SQLModel, table=True):
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
-    @with_session
-    async def prune_per_context(cls, session: AsyncSession, max_per_context: int) -> int:
+    async def prune_per_context(cls, max_per_context: int) -> int:
         """生命周期裁剪：每个 (scope_key, user_id, target_context) 仅保留 salience 最高的
         max_per_context 条活跃规则，其余**非纠错**规则软停用（纠错类受保护不裁）。返回停用条数。
 
@@ -1277,6 +1422,13 @@ class AIMemPreference(SQLModel, table=True):
         """
         if max_per_context <= 0:
             return 0
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: cls._prune_per_context_db(max_per_context))
+
+    @classmethod
+    @with_session
+    async def _prune_per_context_db(cls, session: AsyncSession, max_per_context: int) -> int:
         result = await session.execute(
             select(cls)
             .where(col(cls.is_active).is_(True))

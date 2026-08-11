@@ -53,9 +53,10 @@ async def _consolidate() -> int:
 
     from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
+    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
     count = 0
-    async with async_maker() as session:
+    async with db_write_guard(), async_maker() as session:
         result = await session.execute(
             select(AIMemEdge.id).where(
                 col(AIMemEdge.mention_count) >= PROTECT_MENTION_COUNT,
@@ -154,8 +155,9 @@ async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
 
         from gsuid_core.utils.database.base_models import async_maker
         from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
-        async with async_maker() as session:
+        async with db_write_guard(), async_maker() as session:
             for scope_key, cnt in scope_counts.items():
                 await session.execute(
                     _update(AIMemHierarchicalGraphMeta)

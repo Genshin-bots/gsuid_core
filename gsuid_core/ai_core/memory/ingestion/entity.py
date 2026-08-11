@@ -42,15 +42,16 @@ async def extract_and_upsert_entities(
     from gsuid_core.ai_core.memory.vector.ops import upsert_entity_vectors_batch
 
     # 乐观重试：同 scope 并发窗口可能撞 UNIQUE(scope_key,name)，回滚重试即可（见上方注释）。
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import eval_write_guard
+    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
     name_to_id: dict[str, str] = {}
     vector_payloads: list[dict] = []
     new_entity_count = 0
     for attempt in range(_ENTITY_UPSERT_MAX_RETRY):
         try:
-            # eval_mode 下用进程内写锁把 SQLite 写事务排队（消除并发忙等/丢窗口）；线上零开销。
-            async with eval_write_guard():
+            # P0：混合检索在写锁外；锁内只做 SQL 精确匹配 + 写事务。
+            hybrid_name_ids = await AIMemEntity.prefetch_hybrid_name_ids(scope_key, entities_data)
+            async with db_write_guard():
                 async with async_maker() as session:
                     name_to_id, vector_payloads, new_entity_count = await AIMemEntity.extract_and_upsert(
                         session,
@@ -58,13 +59,13 @@ async def extract_and_upsert_entities(
                         entities_data,
                         episode_id,
                         speaker_ids,
+                        hybrid_name_ids=hybrid_name_ids,
                     )
                     await session.commit()
             break
         except (IntegrityError, OperationalError) as _e:
             # IntegrityError：同 scope 并发窗口撞 UNIQUE(scope_key,name)，重试即命中既有实体。
-            # OperationalError（"database is locked"）：SQLite 单写者 + 大库 WAL 检查点在高并发
-            # 回灌下偶发写锁超时；重试（busy_timeout 已等 5s）而非跳过，杜绝丢窗口实体（§14）。
+            # OperationalError：尖峰写锁；busy_timeout 后仍失败则退避重试，避免丢窗口实体。
             if attempt < _ENTITY_UPSERT_MAX_RETRY - 1:
                 await asyncio.sleep(0.1 * (attempt + 1))
                 continue

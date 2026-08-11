@@ -1,20 +1,31 @@
-"""评测回灌专用：进程内 SQLite 写串行化锁（§14）。
+"""进程内 SQLite 写串行化锁（记忆热路径 commit 级写）。
 
-背景：SQLite 单写者。§14 窗口化抽取在同一进程内多窗口并发写（entity/edge commit），
-直接并发会撞 SQLite 写锁 → busy_timeout(5s) 忙等 → 大量 5s 级等待成为主要耗时来源。
-用一把进程内 asyncio.Lock 把"快速写事务"显式排队（毫秒级交接），既消除忙等、又消除丢窗口，
-而 LLM 抽取 / 嵌入仍在锁外并发。仅 eval_mode 启用：线上 IngestionWorker 按 scope 串行 flush、
-本就无同进程并发写，锁恒不竞争、行为不变。
+SQLite 单写者：多 scope flush、检索 touch、偏好/生命周期写会互撞。
+规则：① LLM/嵌入/Qdrant 检索在锁外；② 仅短 SQL 写事务持锁（毫秒交接）。
 """
 
 import asyncio
-from contextlib import nullcontext
+from typing import TypeVar
+from collections.abc import Callable, Awaitable
 
-from gsuid_core.ai_core.memory.config import memory_config
-
+# 兼容旧名：历史文档/评测 changelog 仍称 EVAL_DB_WRITE_LOCK
 EVAL_DB_WRITE_LOCK = asyncio.Lock()
+DB_WRITE_LOCK = EVAL_DB_WRITE_LOCK
+
+_T = TypeVar("_T")
 
 
-def eval_write_guard():
-    """eval_mode 下返回写串行化锁，否则返回零开销 nullcontext（async with 两者皆可）。"""
-    return EVAL_DB_WRITE_LOCK if memory_config.eval_mode else nullcontext()
+def eval_write_guard() -> asyncio.Lock:
+    """返回进程内 SQLite 写串行化锁（线上与 eval 共用，async with 即可）。"""
+    return DB_WRITE_LOCK
+
+
+def db_write_guard() -> asyncio.Lock:
+    """eval_write_guard 的语义别名（非 eval 专用）。"""
+    return DB_WRITE_LOCK
+
+
+async def under_db_write(fn: Callable[[], Awaitable[_T]]) -> _T:
+    """在写锁内执行无参协程（供 with_session 写方法外包一层）。"""
+    async with DB_WRITE_LOCK:
+        return await fn()

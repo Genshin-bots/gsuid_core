@@ -180,15 +180,15 @@ async def rebuild_task(scope_key: str) -> None:
 class HierarchicalGraphBuilder:
     """分层语义图增量构建器。
 
-    内部方法直接持有 session，不使用 with_session 装饰器，
-    因为整个重建过程需要在同一个事务内完成，由 rebuild_task 统一 commit/rollback。
+    各写步骤用独立 ``@with_session`` 短事务（LLM/向量在 session 外）；
+    写路径再包 ``db_write_guard``，与记忆热路径共用进程内 SQLite 写队列。
     """
 
     def __init__(self, scope_key: str):
         self.scope_key = scope_key
 
     async def incremental_rebuild(self) -> None:
-        """增量重建主流程（在同一 session/事务内执行）"""
+        """增量重建主流程（多步短事务 + 锁外 LLM/向量）。"""
         total_start = time.time()
 
         # #4 小 scope 整体跳过分层图：实体过少时类目无压缩/大纲收益，
@@ -313,7 +313,9 @@ class HierarchicalGraphBuilder:
                 )
                 # 回滚本层新建的 Category
                 if new_upper:
-                    async with async_maker() as session:
+                    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+                    async with db_write_guard(), async_maker() as session:
                         await self._rollback_new_categories(session, new_upper, layer)
                         await session.commit()
                 # rollback 后 prev_layer 包含已删除的 Category，
@@ -421,18 +423,12 @@ class HierarchicalGraphBuilder:
         parented = {row[0] for row in result.all()}
         return [c for c in categories if c.id not in parented]
 
-    @with_session
     async def _vector_pre_assign(
         self,
-        session: AsyncSession,
         entities: list[AIMemEntity],
         existing_layer1: list[AIMemCategory],
     ) -> list[AIMemEntity]:
-        """#2 向量预分配：把与"已归类近邻"高度相似的新实体直接并入其 Layer-1 Category，
-        跳过 LLM。返回仍需 LLM 分类的残余实体（speaker + 未命中相似近邻者）。
-
-        speaker 一律交 LLM：其归类由 _apply_entity_assignments 的 Speaker 强制逻辑统一处理。
-        """
+        """#2 向量预分配：Qdrant 在写锁外；成员表 insert 走短事务 + db_write_guard。"""
         if not existing_layer1:
             return entities
 
@@ -441,6 +437,7 @@ class HierarchicalGraphBuilder:
             return entities
 
         from gsuid_core.ai_core.memory.vector.ops import search_categorized_neighbors
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
 
         neighbor_map = await search_categorized_neighbors(
             [e.id for e in candidates], self.scope_key, top_k=VECTOR_ASSIGN_TOP_K
@@ -448,7 +445,17 @@ class HierarchicalGraphBuilder:
         if not neighbor_map:
             return entities
 
-        # 批量查"近邻实体 -> 其所属 Layer-1 Category id 集合"，只认本 scope 现有的 Layer-1 类目
+        return await under_db_write(lambda: self._vector_pre_assign_write(entities, existing_layer1, neighbor_map))
+
+    @with_session
+    async def _vector_pre_assign_write(
+        self,
+        session: AsyncSession,
+        entities: list[AIMemEntity],
+        existing_layer1: list[AIMemCategory],
+        neighbor_map: dict,
+    ) -> list[AIMemEntity]:
+        candidates = [e for e in entities if not e.is_speaker]
         neighbor_ids = {nid for pairs in neighbor_map.values() for nid, _ in pairs}
         layer1_ids = {c.id for c in existing_layer1}
         rows = await session.execute(
@@ -471,7 +478,6 @@ class HierarchicalGraphBuilder:
             if entity.id not in neighbor_map:
                 continue
             matched_cats: set[str] = set()
-            # neighbor_map 已按相似度降序：取首个"达阈值且已归类"的近邻，其类目即归属
             for neighbor_id, score in neighbor_map[entity.id]:
                 if score < threshold:
                     break
@@ -727,8 +733,18 @@ class HierarchicalGraphBuilder:
         )
         return fallback_assignments
 
-    @with_session
     async def _apply_entity_assignments(
+        self,
+        assignments: list[dict],
+        layer: int,
+        entities: list[AIMemEntity],
+    ) -> list[AIMemCategory]:
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: self._apply_entity_assignments_tx(assignments, layer, entities))
+
+    @with_session
+    async def _apply_entity_assignments_tx(
         self,
         session: AsyncSession,
         assignments: list[dict],
@@ -856,8 +872,18 @@ class HierarchicalGraphBuilder:
 
         return new_categories
 
-    @with_session
     async def _apply_category_assignments(
+        self,
+        assignments: list[dict],
+        layer: int,
+        child_categories: list[AIMemCategory],
+    ) -> list[AIMemCategory]:
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        return await under_db_write(lambda: self._apply_category_assignments_tx(assignments, layer, child_categories))
+
+    @with_session
+    async def _apply_category_assignments_tx(
         self,
         session: AsyncSession,
         assignments: list[dict],
@@ -930,8 +956,16 @@ class HierarchicalGraphBuilder:
 
         return new_categories
 
-    @with_session
     async def _update_meta(
+        self,
+        valid_prev_layer: Optional[list[AIMemCategory]] = None,
+    ) -> None:
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
+
+        await under_db_write(lambda: self._update_meta_tx(valid_prev_layer=valid_prev_layer))
+
+    @with_session
+    async def _update_meta_tx(
         self,
         session: AsyncSession,
         valid_prev_layer: Optional[list[AIMemCategory]] = None,
@@ -1071,7 +1105,9 @@ class HierarchicalGraphBuilder:
         if not summary:
             return
 
-        async with async_maker() as session:
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+        async with db_write_guard(), async_maker() as session:
             result = await session.execute(
                 select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == self.scope_key)
             )
@@ -1138,9 +1174,10 @@ async def increment_entity_count(scope_key: str, delta: int = 1) -> None:
     """
     if delta <= 0:
         return
-    async with async_maker() as session:
+    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+    async with db_write_guard(), async_maker() as session:
         # 原子更新：使用数据库层 UPDATE SET count = count + delta，防脏写
-        # 先检查 meta 是否存在，存在则原子更新，不存在则创建初始记录
         from sqlalchemy import update as sqlalchemy_update
 
         result = await session.execute(
@@ -1148,14 +1185,12 @@ async def increment_entity_count(scope_key: str, delta: int = 1) -> None:
         )
         meta = result.scalar_one_or_none()
         if meta:
-            # 原子更新：数据库层 count = count + delta，避免 ORM 读取→加→写回的脏写风险
             await session.execute(
                 sqlalchemy_update(AIMemHierarchicalGraphMeta)
                 .where(col(AIMemHierarchicalGraphMeta.scope_key) == scope_key)
                 .values(current_entity_count=AIMemHierarchicalGraphMeta.current_entity_count + delta)
             )
         else:
-            # meta 不存在时创建初始记录，确保 _check_should_rebuild 能读到计数
             meta = AIMemHierarchicalGraphMeta(
                 scope_key=scope_key,
                 current_entity_count=delta,

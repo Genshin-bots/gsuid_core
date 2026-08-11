@@ -68,7 +68,7 @@
 
 | 文件 | 改了什么 | 关键点 / 坑 |
 |---|---|---|
-| `memory/ingestion/eval_write_lock.py`（新增） | 进程内 `asyncio.Lock`（`eval_write_guard()`）：`eval_mode` 下把"快速写事务"显式排队（毫秒级交接），LLM 抽取/嵌入仍在锁外并发；非 eval 返回 `nullcontext()` 零开销 | SQLite 单写者；窗口化并发直接撞写锁 → `busy_timeout(5s)` 忙等成主要耗时。线上按 scope 串行 flush，锁恒不竞争、行为不变 |
+| `memory/ingestion/eval_write_lock.py`（新增） | 进程内 `asyncio.Lock`（`eval_write_guard()` / `db_write_guard()`） | **历史**：初版仅 `eval_mode` 启用。**现状（2026-08）**：线上与 eval **共用**写锁；热路径 Episode/Entity/Edge/Preference/touch/生命周期写均排队；LLM/嵌入/Qdrant 必须在锁外 |
 | `memory/ingestion/entity.py` | `extract_and_upsert_entities` 包**乐观重试**（`IntegrityError` / `OperationalError`，最多 6 次退避）+ `eval_write_guard` | 同 scope 并发窗口撞 `UNIQUE(scope_key,name)` → 回滚重试，下次 `find_existing` SQL 精确命中另一窗口刚提交实体、改走更新分支。旧"按 scope 串行整个 find+写"粗锁把向量去重也串行化、吞吐骤降 ~10x |
 | `memory/ingestion/edge.py` | **英文否定极性**：`_NEGATION_RE_EN`（词边界 `never/not/no/none/without/refuse/deny/stopped/n't`）并入 `_fact_polarity` | BEAM 教训：仅中文标记时英文语料否定全漏检、C11 矛盾引擎从未触发。词边界避免 `note→not`/`knows→no` 误命中 |
 | `memory/ingestion/edge.py` | `extract_and_upsert_edges` 新增 `valid_at` 参数（回放语料真实陈述时间，缺省仍用当前时间）；写入包 `OperationalError` 重试 6 次（每次重置累积态）+ `eval_write_guard` | valid_at 污染修复的写侧 |
@@ -179,12 +179,9 @@ production 文件 `py_compile` 通过**。发现并修复 **3 处缺陷**，另�
 
 ### 低风险观察项（记录，未改）
 
-- **OBS-1 · `edge.py` 重试与 `AIMemConflict.record` 的重复**：写入重试循环内调用的
-  `AIMemConflict.record` 是 `@with_session`（**独立 session 即时提交**），若外层 `session.commit()`
-  抛 `OperationalError` 触发重试，上一轮已提交的 Conflict 行不会回滚 → 重试可能**重复记录同一矛盾
-  摘要**。仅 `eval_mode` 且撞写锁时发生；`get_by_signatures` limit 6、重复摘要无害，注入体验轻微
-  冗余。代码注释"每次重试重置累积态避免重复"仅指 `edges_vector_data/merged_count`，不含已提交的
-  Conflict 行——措辞略过头，但影响可忽略，未改。
+- **OBS-1 · `edge.py` 重试与 `AIMemConflict.record` 的重复**：**已修（2026-08）**。矛盾行改为
+  `AIMemConflict.attach(session, …)` 与 edge 写**同事务**；外层 commit 失败回滚时 Conflict
+  一并回滚，不再半提交重复摘要。独立 `record(@with_session)` 仍保留给非批写路径。
 - **OBS-2 · `ai_memory_api._run_one` 两处 `# type: ignore`**：源于窗口类型声明 `List[List["object"]]`
   的宽松标注（`recs: List[object]` 上取 `.timestamp`）。属评测专用端点的类型洁癖问题、非运行时
   bug；收紧为 `List[List[ObservationRecord]]` 需引入模块级 import（有循环导入风险），权衡后保留

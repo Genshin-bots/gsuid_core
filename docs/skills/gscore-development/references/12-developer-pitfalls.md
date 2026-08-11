@@ -277,8 +277,12 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
   **不走 C6 SELF 轻量路由**，否则半数事实被跳过抽取、探针召回不到。
 - **SQLite 写并发**：窗口化并发多路写会撞 `UNIQUE(scope_key,name)` / `database is locked`。
   `entity.py`/`edge.py` 用**乐观重试**（`IntegrityError`/`OperationalError` 退避 6 次）+
-  `eval_write_lock.eval_write_guard()`（`eval_mode` 下进程内写锁把快速写事务排队，LLM/嵌入仍锁外
-  并发）。线上按 scope 串行 flush、锁恒不竞争，行为不变。
+  进程内 `db_write_guard()` / `under_db_write()`（`eval_write_lock.py`，**线上与 eval 共用**）
+  串行化 commit 级写。**铁律**：LLM / 嵌入 / Qdrant 混合检索必须在写锁外（entity 先
+  `prefetch_hybrid_name_ids` 再锁内 SQL 写；hiergraph 向量预分配同理）。热路径 Episode /
+  Preference / `touch_accessed` / `touch_applied` / 生命周期大写也走同一把锁。Conflict 记
+  录用 `AIMemConflict.attach(session, …)` **同事务**，禁止在未提交 session 内再调
+  `@with_session` 的 `record`（嵌套连接自锁）。
 - **`write_episodes=False`**：对已摄入 Episode 的 scope 只补抽取，避免重复嵌入 6 万+ 条、规避高并发
   重嵌入丢向量。**`trigger_rebuild=true` 仍同步 `await rebuild_task(scope_key)`**（曾被误删致静默
   失效、响应谎报 `rebuild:true`，现已恢复）——rebuild 要在 episodes/实体/边都落库后才看得到最新图。

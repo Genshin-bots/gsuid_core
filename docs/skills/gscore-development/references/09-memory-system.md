@@ -113,15 +113,18 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
 `extract_and_upsert_edges()`（冲突检测）→ user_global 跨群属性 → `check_and_trigger_hierarchical_update()`。
 
 - **Entity 两阶段去重**（`entity.py`）：Phase 1 精确名称匹配；未命中 Phase 2 Qdrant 向量相似，
-  `similarity >= dedup_similarity_threshold(0.92)` 视为同一实体合并。
-- **Edge 冲突检测**（`edge.py`）：向量搜同源同目标已有 Edge，`< edge_conflict_threshold(0.88)`
-  判冲突，旧 Edge `invalid_at = now`。极性判定中英双语（`_NEGATION_MARKERS` + `_NEGATION_RE_EN`
-  词边界匹配），否则英文语料否定全漏检、C11 矛盾引擎从未触发。
+  `similarity >= dedup_similarity_threshold(0.92)` 视为同一实体合并。**Phase 2 在写锁外**
+  `prefetch_hybrid_name_ids`，锁内只 SQL 写（防持锁做 embed）。
+- **Edge 冲突检测**（`edge.py`）：向量搜在 session 外；同 src/tgt 极性相反 → 软删旧边 +
+  `AIMemConflict.attach` **同事务**（勿再 `@with_session` 嵌套）。极性中英双语
+  （`_NEGATION_MARKERS` + `_NEGATION_RE_EN`）。
+- **SQLite 写队列**（`ingestion/eval_write_lock.py`）：`db_write_guard` 串行化 Episode / Entity /
+  Edge / Preference / 检索 touch / 生命周期写；LLM 与向量在锁外。
 
 > 🟡 **大语料回灌 / 图谱评测走的是另一条摄入路径**（`batch_observe` 的 granular Episode + 窗口化
 > 抽取，与上面 `observe→worker` 的 80-turn 聚合**刻意解耦**）。动它前必读
 > [§12.20](./12-developer-pitfalls.md)：巨型 Episode 召回恒空、抽取批次撞子超时丢图谱、valid_at 落成
-> 抽取时刻污染时序、assistant 侧事实别丢、SQLite 并发写乐观重试 + `eval_write_guard` 等坑。
+> 抽取时刻污染时序、assistant 侧事实别丢、SQLite 写串行锁 `db_write_guard`（线上+eval）等坑。
 
 > 🔴 **IngestionWorker 必须跑在主事件循环**（历史缺陷，必读 [§12](./12-developer-pitfalls.md)）。曾
 > 改成独立线程双事件循环（动机"避免 LLM 调用阻塞主循环"是**误判**——LLM 调用是 `await` 的纯
@@ -149,11 +152,12 @@ class MemoryContext:
 ## 9.6 分层语义图（`memory/ingestion/hiergraph.py`）
 
 把大量 Entity 归纳为多层 Category，支撑 System-2 自顶向下遍历。`incremental_rebuild()` 增量构建，
-关键优化（按存量收费 → 按新增收费）：
+**多步短事务**（每步 `@with_session` + `db_write_guard`），**不是**整次 rebuild 一个长事务；
+LLM 分类与向量检索在 session / 写锁外：
 
 - 小 scope 跳过：总 Entity < `MIN_ENTITIES_FOR_HIERGRAPH(30)` → 仅更 Meta 返回（类目对小数据无收益）。
 - 单轮上限：按 `created_at` 取最旧至多 `MAX_ENTITIES_PER_REBUILD(800)` 个，超额续轮（backlog 单调收敛）。
-- 向量预分配：与已归类近邻 `summary_dense` 余弦 ≥ `VECTOR_ASSIGN_THRESHOLD(0.85)` → 直接并入，零 LLM。
+- 向量预分配：Qdrant 近邻在锁外；达阈值后短事务写 `mem_category_entity_members`，零 LLM。
 - Layer-2/3 仅取"尚无父类目"的下层节点喂 LLM（`_filter_unparented`），消除高频复发 token。
 
 ## 9.7 数据库模型（`memory/database/models.py`）

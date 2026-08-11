@@ -278,6 +278,10 @@ HNSW 默认 `m=16 / ef_construct=100`、`indexing_threshold=10000`；**所有 sc
 
 入口 [`memory/ingestion/hiergraph.py`](../gsuid_core/ai_core/memory/ingestion/hiergraph.py) `HierarchicalGraphBuilder.incremental_rebuild()`。
 
+> **事务模型**：重建是**多步短事务**（读/写各开 `@with_session`，写步再包 `db_write_guard`），
+> **不是**整次 rebuild 一个长事务。LLM 分类与 Qdrant 向量预分配在 session/写锁外；
+> 与记忆摄入热路径共用进程内 SQLite 写队列。
+
 ### 5.0 构建消费方与 `hiergraph_build_mode` 门控（成本关键）
 
 分层类目树**只被 System-2 检索消费**（`dual_route` 中 `enable_system2` 门控）；唯一被"非 System-2"路径消费的产物是 `group_summary_cache`（Heartbeat 决策 + 人格群语境）。因此 `incremental_rebuild` 在小 scope 跳过后先判 `hiergraph_build_mode`：
@@ -313,9 +317,8 @@ incremental_rebuild()
  │     └ [单轮上限] 按 created_at 取最旧的至多 800 个，超额留待续轮
  │
  ├ Layer-1 归类
- │     ├ [向量预分配] 与"已归类近邻"summary_dense 余弦 ≥ hiergraph_vector_assign_threshold(0.85)
- │     │     → 直接并入近邻所在 Category（_vector_pre_assign，零 LLM；VECTOR_ASSIGN_TOP_K=5）
- │     └ 残余（speaker + 未命中）才走 LLM（_llm_categorize / _apply_entity_assignments）
+ │     ├ [向量预分配] Qdrant 在写锁外；达阈值后短事务写成员表（_vector_pre_assign，零 LLM）
+ │     └ 残余（speaker + 未命中）才走 LLM（_llm_categorize）；写类目在 _apply_*_tx + 写锁
  │           · speaker 由 M-06 强制归入 "Speaker" Category（Many-to-Many，允许同时归入其他类目）
  │
  ├ Layer-2/3 逐层增量构建
