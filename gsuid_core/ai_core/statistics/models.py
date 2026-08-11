@@ -136,7 +136,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
         end_date: str,
     ) -> List["AIDailyStatistics"]:
         """闭区间 [start_date, end_date] 内全部日聚合行（按 date 升序）。"""
-        stmt = select(cls).where(and_(cls.date >= start_date, cls.date <= end_date)).order_by(cls.date.asc())
+        stmt = select(cls).where(and_(cls.date >= start_date, cls.date <= end_date)).order_by(col(cls.date))
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

@@ -78,8 +78,11 @@ async def _rerank_tool_candidates(
 
     documents: List[str] = []
     for name, obj, _ in candidates:
-        desc = getattr(obj, "description", "") or ""
-        documents.append(f"{name}\n{desc}")
+        if isinstance(obj, ToolBase):
+            documents.append(obj.retrieval_text)
+        else:
+            desc = getattr(obj, "description", "") or ""
+            documents.append(f"{name}\n{desc}")
 
     try:
         scores = await asyncio.to_thread(reranker.rerank, query, documents)
@@ -184,8 +187,13 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
     local_tool_names: Set[str] = set(tools_map.keys())
 
     for tool_name, tool in tools_map.items():
-        # 计算哈希
-        tool_dict = {"name": tool.name, "description": tool.description}
+        # 计算哈希：covers/aliases 也进哈希，声明变化即触发重嵌入
+        tool_dict = {
+            "name": tool.name,
+            "description": tool.description,
+            "covers": tool.covers,
+            "aliases": tool.aliases,
+        }
         current_hash = calculate_hash(tool_dict)
 
         # 检查是否需要更新
@@ -193,12 +201,18 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         is_modified = not is_new and existing_tools[tool_name]["hash"] != current_hash
 
         if is_new or is_modified:
-            # 生成向量：使用 name + description
-            desc_and_name = f"{tool_name}\n{tool.description}"
+            # 生成向量：name + description + covers + aliases（完整检索面）
+            retrieval_text = tool.retrieval_text
 
             # 构建payload
-            payload = {"name": tool.name, "description": tool.description, "_hash": current_hash}
-            pending_items.append((tool_name, payload, desc_and_name))
+            payload = {
+                "name": tool.name,
+                "description": tool.description,
+                "covers": tool.covers,
+                "aliases": tool.aliases,
+                "_hash": current_hash,
+            }
+            pending_items.append((tool_name, payload, retrieval_text))
 
     if pending_items:
         logger.info(i18n_t("log.rag.tools_start_update_tool_need_add", p0=len(pending_items)))

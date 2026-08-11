@@ -1,6 +1,7 @@
 """意图分类：同用户上下文拼接 + 省略式跟进结构升级。"""
 
 import asyncio
+from typing import Literal
 
 from gsuid_core.ai_core.classifier.mode_classifier import (
     IntentService,
@@ -10,8 +11,13 @@ from gsuid_core.ai_core.classifier.mode_classifier import (
 
 
 class _Rec:
-    def __init__(self, role: str, content: str, user_id: str = "u1") -> None:
-        self.role = role
+    def __init__(
+        self,
+        role: Literal["user", "assistant", "system"],
+        content: str,
+        user_id: str = "u1",
+    ) -> None:
+        self.role: Literal["user", "assistant", "system"] = role
         self.content = content
         self.user_id = user_id
 

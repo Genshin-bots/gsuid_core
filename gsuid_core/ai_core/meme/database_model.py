@@ -177,7 +177,12 @@ class AiMemeRecord(SQLModel, table=True):
         if folder:
             stmt = stmt.where(col(cls.folder) == folder)
         result = await session.execute(stmt)
-        return result.all()
+        # Row 不是 tuple[str, str]；显式解包成返回类型，避免 Sequence[Row[...]] 赋值失败
+        rows: list[tuple[str, str]] = []
+        for row in result.all():
+            meme_id, file_path = row[0], row[1]
+            rows.append((str(meme_id), str(file_path)))
+        return rows
 
     @classmethod
     @with_session

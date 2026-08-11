@@ -43,6 +43,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _FAKE_DONE_NUDGE,
     _WALL_CLOCK_NUDGE,
     _RENDER_TOOL_NAMES,
+    _THRASH_FUSE_NUDGE,
     _REPORT_SPEECH_NUDGE,
     _WALL_CLOCK_PIPELINE,
     _INTERACTIVE_CREATE_BY,
@@ -50,6 +51,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _STATUS_ZERO_TOOL_NUDGE,
     _STRUCTURAL_ZERO_TOOL_NUDGE,
     _claims_fake_done,
+    _correction_nudge_markers,
     _looks_like_report_speech,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
@@ -80,13 +82,17 @@ class SettlePhase(RunOnceHost):
             # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 st.rag_context）
             # 防止 [历史对话]/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
             _new_msgs = result.new_messages()
+            # 框架注入只追加到本 run request；落盘前剥掉，不进持久 history（前缀红线）。
+            # （系统：/（系统校验： 亦由 _is_framework_prompt_content 兜底。）
             _relean_user_turn(
                 _new_msgs,
                 st.lean_user_message,
                 strip_hint_texts=(
                     _WALL_CLOCK_NUDGE,
                     _WALL_CLOCK_PIPELINE,
+                    _THRASH_FUSE_NUDGE,
                     *output_gate.GATE_NUDGE_MARKERS,
+                    *_correction_nudge_markers(),
                 ),
             )
             # 框架注入 drop 后可能留下空 ModelRequest，禁止进 B 轨
@@ -321,12 +327,12 @@ class SettlePhase(RunOnceHost):
                 if isinstance(corrected, str) and corrected.strip():
                     _prior = result_msg.strip()
                     if corrected.strip() in SILENCE_MARKERS:
-                        # 自洽出口：模型确认已凭常识完整作答 → 保留原答与历史，不刷屏
+                        # 自洽出口：保留原答不刷屏；仍剥纠正 nudge turn 防上下文污染
                         result_msg = "<SILENCE>"
+                        self._scrub_fake_done_history(set())
                     else:
                         result_msg = corrected.strip()
-                        if _prior:
-                            self._scrub_fake_done_history({_prior})
+                        self._scrub_fake_done_history({_prior} if _prior else set())
 
             # 进度追问却零工具：纠正重跑去查 kanban/artifact
             elif (
@@ -357,6 +363,7 @@ class SettlePhase(RunOnceHost):
                     _sc = None
                 if isinstance(_sc, str) and _sc.strip():
                     result_msg = _sc.strip()
+                    self._scrub_fake_done_history(set())
 
             # 事实包已回却未出图 / 报告体被闸拦截 → 独立纠正（不与假完成同轮双触发）
             if (
@@ -403,6 +410,7 @@ class SettlePhase(RunOnceHost):
                 except Exception as _re:
                     logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_re))
                     _rc = None
+                _orig_report = result_msg.strip() if _looks_like_report_speech(result_msg or "") else ""
                 if isinstance(_rc, str) and _rc.strip():
                     _rc_s = _rc.strip()
                     if _rc_s in SILENCE_MARKERS:
@@ -419,6 +427,11 @@ class SettlePhase(RunOnceHost):
                 elif st.report_speech_blocked or _looks_like_report_speech(result_msg or ""):
                     # 纠正未产出可见文本：吞掉原报告体出口，避免 by_bot 外再刷屏
                     result_msg = "<SILENCE>"
+                # 纠正轮收尾：剥 nudge turn + 被替换的报告体，防污染后续上下文
+                _drop_texts: set[str] = set()
+                if _orig_report and _orig_report != result_msg.strip():
+                    _drop_texts.add(_orig_report)
+                self._scrub_fake_done_history(_drop_texts)
 
             # 出口消毒：异步在途 / 编排泄漏 / 长结构 / 引导追问 → 对外 SILENCE 或短句
             if self.create_by in ("Chat", "Agent") and result_msg:

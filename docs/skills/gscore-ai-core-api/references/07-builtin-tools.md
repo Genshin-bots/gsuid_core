@@ -223,6 +223,10 @@ async def web_search_tool(
 > 调度字段：`websearch_provider` / `websearch_lb_strategy`（默认 `error_switch`）/ `websearch_fallback_order`。
 > **异常或空结果**会在多源策略下切换下一源。工具外层 `timeout=100` 覆盖串行 failover。
 > MCP 时配置 `mcp_tools_config.websearch_mcp_tool_id`。详见 [§11.3](./11-mcp-image-search-and-meme.md)。
+>
+> **时效标记（2026-08）**：返回体带 `[source=web|staleness_risk=high]`。loop 账本据此判断
+> 「本轮只有滞后 web」→ 注入 `WEB_ONLY_STALENESS_CAVEAT`（禁止把网页数字当「此刻」实时读数）。
+> 结构化工具应返回 `[as_of=…]` 挡住误报。
 
 ### `web_fetch_tool` — 网页抓取
 
@@ -237,6 +241,7 @@ async def web_fetch_tool(
 > 默认 **Jina Reader**（`r.jina.ai`，Key 可选）+ 备用 **local** 本机直连；
 > 字段 `webfetch_provider` / `webfetch_lb_strategy` / `webfetch_fallback_order` 与搜索同构。
 > 空正文或抛错会触发换源；外层 `timeout=100`。详见 [§11.3b](./11-mcp-image-search-and-meme.md)。
+> 成功返回同样前缀 `[source=web|staleness_risk=high]\n…`（时效契约同源）。
 
 ### `query_user_memory` — 查询用户记忆
 
@@ -424,7 +429,7 @@ async def stop_agent_tool(
 
 ## 7.4 Media 工具（`category="media"`）—— 资料出图（归 `render_agent`）
 
-三者同属 `capability_domain="资料出图"`。主路径：
+同属 `capability_domain="资料出图"`。主路径：
 
 ```text
 create_subagent(agent_profile="render_agent", task=事实包)
@@ -446,6 +451,25 @@ async def render_html_to_image(
 
 - 默认自由 HTML；原生 `<table>` → `table_rewrite` flex 网格；自动嵌 `https`/`icon:`/`img_`/`res_`。
 - 约束见工具 docstring、[`TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)。
+
+### `render_chart_spec` — 声明式图表 → 内联 SVG（2026-08）
+
+```python
+@ai_tools(category="media", capability_domain="资料出图")
+async def render_chart_spec(
+    ctx: RunContext[ToolContext],
+    type: str,                          # line / bar / hbar / pie
+    data: List[Dict[str, Any]],         # [{label, value}, ...]
+    width: int = 640,
+    height: int = 360,
+    color: str = "",
+    dark: bool = True,
+) -> str
+```
+
+渲染引擎**无 JS**（pytakumi），echarts/canvas 不可用。本工具返回可直接嵌进 HTML 的
+`<svg>…</svg>` 片段，再交给 `render_html_to_image`。`render_agent` 白名单已含本工具；
+≥3 数值点应优先图表而非纯文字表。
 
 ### `render_card` / `render_markdown_to_image`
 
@@ -615,8 +639,8 @@ Persona 与能力代理**同构为一个 `AgentNode` 定义**（`gsuid_core.ai_c
 `capability_evaluator` 仅服务评估，插件勿覆盖。业务节点（如 `stock_agent` /
 `stock_report_agent`）由插件注册。
 
-**`render_agent`**：`tool_packs=[]` + 渲染白名单；runner **禁止** task 向量回填（防 web）。
-主人格多项数据出图委派它，勿自写 HTML。
+**`render_agent`**：`tool_packs=[]` + 渲染白名单（含 **`render_chart_spec`**）；
+runner **禁止** task 向量回填（防 web）。主人格多项数据出图委派它，勿自写 HTML。
 
 ### 7.8.1 插件创建并注册业务节点
 

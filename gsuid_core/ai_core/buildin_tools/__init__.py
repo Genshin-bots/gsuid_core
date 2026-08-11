@@ -205,6 +205,9 @@ from gsuid_core.ai_core.buildin_tools.get_time import (
 # Subagent工具 - 创建子Agent完成特定任务
 from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 
+# 声明式图表原语（方案八）：chart_spec → 内联 SVG，供 render_agent 出真图表
+from gsuid_core.ai_core.buildin_tools.chart_svg import render_chart_spec
+
 # 定时任务工具 - 管理定时/循环任务（增删改查启停）
 from gsuid_core.ai_core.buildin_tools.scheduler import (
     add_once_task,
@@ -433,6 +436,7 @@ __all__ = [
     "record_summary",
     # HTML渲染工具
     "render_card",
+    "render_chart_spec",
     "render_html_to_image",
     "render_markdown_to_image",
     # Kanban 任务编排工具

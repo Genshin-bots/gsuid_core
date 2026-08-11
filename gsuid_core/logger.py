@@ -836,11 +836,14 @@ def ensure_event_emoji_processor(_logger: WrappedLogger, _method_name: str, even
     return event_dict
 
 
-def _format_level_badge(_key: str, value: object) -> str:
+def _format_level_badge(key: str, value: object) -> str:
+    # 参数名须与 structlog ColumnFormatter 协议一致（key/value），勿改成 _key
+    _ = key
     return _render_console_tag(str(value), kind="level", pad_width=_LEVEL_PAD_WIDTH)
 
 
-def _format_plugin_badge(_key: str, value: object) -> str:
+def _format_plugin_badge(key: str, value: object) -> str:
+    _ = key
     return format_origin_badge("" if value is None else str(value))
 
 

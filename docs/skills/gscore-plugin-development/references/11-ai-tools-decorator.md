@@ -105,7 +105,8 @@ async def query_my_data(ev: Event) -> str:
 
 ## 11.4 工具 docstring 规范
 
-AI 工具的 docstring 是 AI 判断"是否调用"以及"如何传参"的依据，**必须清晰**：
+AI 工具的 docstring 是 AI 判断"是否调用"以及"如何传参"的依据，**必须清晰**。
+它与 `covers` / `aliases` 一起构成**完整检索面**（见 §11.5）。
 
 ```python
 @ai_tools(category="common")
@@ -129,3 +130,33 @@ async def search_game_data(
     """
     ...
 ```
+
+## 11.5 `covers` / `aliases`（跨措辞召回，2026-08）
+
+仅靠 docstring 写「函数行为」不够：用户说「现货黄金 K 线」时，若工具只写了
+「搜索股票代码」，向量很难命中。用 **`covers`（数据覆盖面）** 与 **`aliases`（领域同义问法）**
+把检索面补全。
+
+| 参数 | 写什么 | 反例 |
+|------|--------|------|
+| `covers` | 能解析/返回的标的域、数据种类、时效 | 空列表 + 只写 docstring |
+| `aliases` | **带领域前缀**的用户说法 | 裸 `"深渊查询"`（与其它游戏撞车） |
+
+```python
+@ai_tools(
+    category="common",
+    capability_domain="行情数据",
+    covers=[
+        "任意标的K线技术指标：A股/港股/美股/指数/期货/现货贵金属（黄金XAU）/外汇",
+    ],
+    aliases=["金融·K线指标", "金融·技术面"],
+)
+async def stock_indicators(ctx: RunContext[ToolContext], stock_code: str) -> str:
+    """计算标的 K 线技术指标（MA/MACD/RSI…）。标的经代码解析，不止 A 股。"""
+    ...
+```
+
+- 入库文本 = `ToolBase.retrieval_text` = name + docstring + covers + aliases。
+- 能力节点 roster 会聚合所辖工具的 `covers` 写成「数据覆盖」行。
+- 实时行情返回体建议加 `[as_of=…\|source=…]`，避免被当成过时 web 摘要。
+- 完整参数表见 [gscore-ai-core-api §2](../../gscore-ai-core-api/references/02-ai-tools-decorator.md)。

@@ -92,6 +92,18 @@ async def handle(msg): ...
 > 该上限（每行 88 字）比代码 `line-length=120` 更严，是**刻意**的：注释越短越会被读，长注释
 > 会被跳过、且极易随代码改动过期变成误导。用最精确的注释给后续维护者指导，而非长篇大论。
 
+### 1.7 前缀缓存红线（AI 会话）
+
+改 `ai_core` 会话 / Agent loop / history 时**绝对禁止**破坏 provider 前缀缓存：
+
+1. **禁止中途改写 `system_prompt` 字符串**（会话内默认 TTL=inf）。需要系统提醒 → 只向
+   **当前 request 追加 `UserPromptPart`**，落盘前 `_relean` 剥掉（`（系统：` / `（系统校验：` 等）。
+2. **禁止砍 history 头部**（`history[-n:]` 式 compact）。须用 `compact_session_history` /
+   保头裁中段；禁止把锚点消息插回头部。
+3. **动态 per-turn 内容**（mood / 关系 / 记忆 / 精确时间）进 **user 侧**，不进 system。
+
+详见 `gscore-development` §6.7.1 / §12.7。
+
 ---
 
 ## 二、类型提示规范

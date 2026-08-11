@@ -1088,6 +1088,12 @@ async def query_knowledge(
         else None
     )
 
+    # dense 分支余弦门（方案六）：挡跨域低相关条目（金融问题召回游戏词条等）。
+    # 只门 dense 分支，BM25 精确词命中不受影响；RRF 融合分仍不做余弦硬筛。
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    _dense_floor = float(ai_config.get_config("knowledge_recall_threshold").data)
+
     # 混合检索（Dense + Sparse RRF，稀疏不可用自动降级纯 dense，结构异常降级空结果）
     results = await hybrid_query(
         KNOWLEDGE_COLLECTION_NAME,
@@ -1096,6 +1102,7 @@ async def query_knowledge(
         limit=limit,
         dense_using=KNOWLEDGE_DENSE_VECTOR,
         query_filter=search_filter,
+        dense_score_threshold=_dense_floor if _dense_floor > 0 else None,
     )
 
     # Rerank（如果启用）：交叉编码器在融合结果上重打分，与 RRF 互补

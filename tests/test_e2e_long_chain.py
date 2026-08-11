@@ -18,7 +18,7 @@ import shutil
 import asyncio
 from pathlib import Path
 
-import websockets.client
+import websockets
 from msgspec import json as msgjson
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
@@ -149,7 +149,7 @@ def _analyze_session(path: Path) -> dict:
 
 async def main() -> None:
     print("connect", WS_URL)
-    ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
+    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
     results: dict[str, bool] = {}
 
     # ── Turn 1: 天气 → 委派 render ──

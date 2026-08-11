@@ -64,13 +64,18 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
     TIMELESS_AGGREGATE_CAVEAT as _TIMELESS_AGGREGATE_CAVEAT,
+    WEB_ONLY_STALENESS_CAVEAT as _WEB_ONLY_STALENESS_CAVEAT,
     POST_DELIVERY_SILENCE_CONTRACT as _POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY as _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED as _POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
     is_timeless_aggregate as _is_timeless_aggregate,
     post_tool_contracts_for as _post_tool_contracts_for,
+    tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
+    tool_return_is_non_web_data as _tool_return_is_non_web_data,
+    tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
 )
 
 
@@ -105,6 +110,18 @@ class LoopPhase(RunOnceHost):
             # 无时点聚合（气候/月均）→ 武装时效提醒，禁台词冒充实时读数
             if _pb and _is_timeless_aggregate(_pb):
                 st.saw_timeless_aggregate = True
+            # 时效账本：web 滞后 / as_of 新鲜 / 其它成功非 web（挡「只有 web」误报）
+            if _pb and _tool_return_has_web_source_mark(_pb):
+                st.saw_web_source = True
+            if _pb and _tool_return_has_fresh_mark(_pb):
+                st.saw_fresh_data = True
+            elif (
+                _pb
+                and not _tool_return_is_async_pending(_pre)
+                and not _tool_return_looks_failed(_pre)
+                and _tool_return_is_non_web_data(_pb)
+            ):
+                st.saw_non_web_data = True
 
         # C-4 墙钟软预算：交互式 run 超时后，请求前注入收敛提示（只注入一次），
         _wall_budget = (
@@ -346,6 +363,15 @@ class LoopPhase(RunOnceHost):
                         capability_node_id=self.capability_node_id,
                     )
                     _contract = _fail_c if _any_fail else _ok_c
+                    # 前置强化：已确认多点结构且尚未委派出图 → 换成硬门契约，
+                    # 在模型写台词之前锁定「唯一合法下一步 = render_agent」。
+                    if (
+                        not _any_fail
+                        and _contract == _POST_TOOL_OUTPUT_CONTRACT
+                        and st.saw_structured_return
+                        and not st.delegated_render
+                    ):
+                        _contract = _POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED
                     if not any(
                         isinstance(p, UserPromptPart)
                         and p.content
@@ -356,6 +382,7 @@ class LoopPhase(RunOnceHost):
                             _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
                             _POST_TOOL_OUTPUT_CONTRACT_RENDER,
                             _POST_TOOL_FAIL_CONTRACT_RENDER,
+                            _POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
                         )
                         for p in node.request.parts
                     ):
@@ -371,6 +398,20 @@ class LoopPhase(RunOnceHost):
                         node.request.parts = [
                             *node.request.parts,
                             UserPromptPart(content=_TIMELESS_AGGREGATE_CAVEAT),
+                        ]
+                    # 时效账本：真·仅 web（无 as_of、无其它成功非 web 数据）→ 追加一次
+                    if (
+                        st.saw_web_source
+                        and not st.saw_fresh_data
+                        and not st.saw_non_web_data
+                        and not any(
+                            isinstance(p, UserPromptPart) and p.content == _WEB_ONLY_STALENESS_CAVEAT
+                            for p in node.request.parts
+                        )
+                    ):
+                        node.request.parts = [
+                            *node.request.parts,
+                            UserPromptPart(content=_WEB_ONLY_STALENESS_CAVEAT),
                         ]
 
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))

@@ -200,6 +200,15 @@ _RENDER_PROMPT = """你负责把**已给定**事实包渲成**一张**可阅读�
    无需再调下载工具。禁止只用色块/emoji 顶替已有配图 URL。
    无配图 URL 时可用 `icon:mdi/...` 矢量图标补层次，仍避免纯文字墙。
 
+## 图表（数据可视化硬要求）
+渲染引擎无 JS，echarts/canvas 不可用；要画**真图表**用声明式原语工具：
+`render_chart_spec(type, data=[{label, value}, ...])` → 返回 `<svg>…</svg>` 片段，
+直接嵌进 HTML 容器再一起 render_html_to_image。
+- 走势/时间序列（K线要点、价格、气温曲线）→ `type="line"`
+- 类目对比/排行榜 → `type="bar"`（条目多时 `"hbar"`）；占比构成 → `type="pie"`
+- 事实包含数值序列却只排成文字表格 = 未完成可视化；≥3 个数值点优先转图表。
+- 图表与文字混排：svg 放卡片内、配标题与一句解读；禁止整页只有一张裸图。
+
 ## 明暗主题与色板（必选其一；**按内容换皮，禁止每次同款暗蓝长图**）
 硬约束只有一条：**整页不透明 + 文字与底对比足够**。
 `#0f172a` / `#e2e8f0` 只是**暗色示例之一**，**不是默认皮肤**——连续任务应换色相与版式。
@@ -952,6 +961,7 @@ def register_builtin_profiles() -> None:
             tool_packs=[],  # 禁 task_basics，避免 web 回填
             tool_names=[
                 "render_html_to_image",
+                "render_chart_spec",
                 "render_card",
                 "render_markdown_to_image",
                 "artifact_get",

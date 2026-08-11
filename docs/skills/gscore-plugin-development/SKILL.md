@@ -39,7 +39,7 @@ description: >
 | 八 | 帮助系统注册（`register_help`、`get_new_help`、`register_status`） | [references/08-help-system.md](./references/08-help-system.md) |
 | 九 | 图片渲染范式（PIL → pytakumi → playwright 三档） | [references/09-image-rendering.md](./references/09-image-rendering.md) |
 | 十 | AI 集成：`to_ai` 与 `ai_return`（**优先方案**） | [references/10-ai-to-ai-and-ai-return.md](./references/10-ai-to-ai-and-ai-return.md) |
-| 十一 | AI 集成：`@ai_tools` 装饰器（仅当函数不暴露为用户命令时使用） | [references/11-ai-tools-decorator.md](./references/11-ai-tools-decorator.md) |
+| 十一 | AI 集成：`@ai_tools`（含 **covers/aliases**；仅纯 AI 内部工具） | [references/11-ai-tools-decorator.md](./references/11-ai-tools-decorator.md) |
 | 十二 | AI 集成：知识库（`ai_entity`）与别名（`ai_alias`）注册 | [references/12-ai-knowledge-and-alias.md](./references/12-ai-knowledge-and-alias.md) |
 | 十三 | AI 集成：`create_agent`（临时专用 AI Agent） | [references/13-ai-create-agent.md](./references/13-ai-create-agent.md) |
 | 十四 | AI 集成：能力代理（`AgentNode`）Cookbook + `render_agent` / 业务节点（如 stock_report）+ `plugin_developer_agent` | [references/14-ai-capability-profile.md](./references/14-ai-capability-profile.md) |
@@ -81,7 +81,8 @@ description: >
 - **触发器选择**：`on_command`（推荐默认）vs `on_prefix`（强制带参）vs `on_fullmatch`（精确匹配）vs `on_keyword`（污染消息流，慎用）vs `on_regex`（复杂结构）vs `on_file` / `on_message`（特殊）。详见 [§2.2](./references/02-sv-and-triggers.md#22-触发器语义速查)。
 - **监听平台事件用 `on_meta`**：标准元事件**仅三种**——`user_join_group` / `user_exit_group` / `poke`，`data` 字段跨平台统一（适配器侧已归一），可放心监听；其他事件不做适配。触发器内用 `ev.get_meta(key)` 读字段；与命令路径**双向隔离**。详见 [§2.6](./references/02-sv-and-triggers.md#26-on_meta监听平台元事件进群--退群--戳一戳)。
 - **撤回 / 禁言**：`bot.send(..., wait_recall=True)` 返回出站 id 列表（`Optional[List[str]]`），配 `bot.unsend(...)` 撤回；`bot.ban(user_id, group_id, duration)` 禁言（`duration=0` 解禁）。三者 HTTP 模式不支持。详见 [§3.5](./references/03-messaging.md#35-撤回消息wait_recall--unsend与禁言ban)。
-- **`to_ai` vs `@ai_tools` 二选一**：同一函数不可同时用。命令也允许用户直接触发 → `to_ai`；纯 AI 内部工具 → `@ai_tools`。详见 [§10 顶部警告](./references/10-ai-to-ai-and-ai-return.md) 与 [§11 顶部警告](./references/11-ai-tools-decorator.md)。
+- **`to_ai` vs `@ai_tools` 二选一**：同一函数不可同时用。命令也允许用户直接触发 → `to_ai`；纯 AI 内部工具 → `@ai_tools`。详见 [§10](./references/10-ai-to-ai-and-ai-return.md) / [§11](./references/11-ai-tools-decorator.md)。
+- **插件工具要被跨措辞召回**：填 **`covers`（数据域）** + **`aliases`（领域·同义问法）**，勿只靠 docstring。详见 [§11.5](./references/11-ai-tools-decorator.md#115-covers--aliases跨措辞召回2026-08)。
 - **主动推送必须用 `gs_subscribe`**：不要 `for bot in gss.active_bot.items(): await bot.target_send(...)` 硬塞群号。详见 [§6.2](./references/06-scheduler-and-subscribe.md#62-主动推送强制规范)。
 - **数据库 Schema 变更用 `exec_list`**：放在 `on_core_start_before` 阶段执行。详见 [§5.7](./references/05-database.md#57-为已定义的表添加新列)。
 - **唯一允许 `try/except` 的地方**：`_ai_return_xxx()` 辅助函数。详见 [§17.3](./references/17-code-redlines.md#173-ai_return-辅助函数的特殊说明)。

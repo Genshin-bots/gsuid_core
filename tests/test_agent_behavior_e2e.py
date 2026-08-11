@@ -15,11 +15,13 @@ import time
 import base64
 import shutil
 import asyncio
+from typing import Literal
 from pathlib import Path
 
 import pytest
-import websockets.client
+import websockets
 from msgspec import json as msgjson
+from websockets.asyncio.client import ClientConnection
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
 
@@ -38,7 +40,7 @@ async def ws():
     token = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
     url = f"ws://localhost:8765/ws/Nonebot?token={token}"
     try:
-        conn = await websockets.client.connect(url, max_size=2**25, open_timeout=5)
+        conn = await websockets.connect(url, max_size=2**25, open_timeout=5)
     except OSError:
         pytest.skip("e2e 服务未启动（先 uv run core），跳过在线行为测试")
     yield conn
@@ -100,7 +102,7 @@ def _save_image(data_str: str, name: str, index: int) -> Path | None:
 
 
 async def _recv_until_idle(
-    ws: websockets.client.WebSocketClientProtocol,
+    ws: ClientConnection,
     name: str,
     idle_s: float = 25.0,
     hard_timeout: float = 160.0,
@@ -138,10 +140,10 @@ async def _recv_until_idle(
 
 
 async def _send(
-    ws: websockets.client.WebSocketClientProtocol,
+    ws: ClientConnection,
     text: str,
     user_id: str = MASTER_UID,
-    user_type: str = "direct",
+    user_type: Literal["group", "direct", "channel", "sub_channel"] = "direct",
     group_id: str = "",
 ) -> None:
     content = Message(type="text", data=text)
@@ -159,7 +161,7 @@ async def _send(
     print(f"\n[SENT] {text[:80]}")
 
 
-async def test_weather_render(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_weather_render(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 天气查询 → 应产出可视化图片")
     print("=" * 60)
@@ -175,7 +177,7 @@ async def test_weather_render(ws: websockets.client.WebSocketClientProtocol) -> 
     return ok
 
 
-async def test_news_render(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_news_render(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 晨间新闻汇总 → 应产出图片")
     print("=" * 60)
@@ -190,7 +192,7 @@ async def test_news_render(ws: websockets.client.WebSocketClientProtocol) -> boo
     return ok
 
 
-async def test_persona_consistency(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_persona_consistency(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 多轮对话人设一致性")
     print("=" * 60)
@@ -214,7 +216,7 @@ async def test_persona_consistency(ws: websockets.client.WebSocketClientProtocol
     return ok
 
 
-async def test_rejection(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_rejection(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 不合理请求 → 应拒绝")
     print("=" * 60)
@@ -235,7 +237,7 @@ async def test_rejection(ws: websockets.client.WebSocketClientProtocol) -> bool:
     return ok
 
 
-async def test_silence_in_group(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_silence_in_group(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 群聊非@消息 → 应沉默")
     print("=" * 60)
@@ -256,7 +258,7 @@ async def test_silence_in_group(ws: websockets.client.WebSocketClientProtocol) -
     return ok
 
 
-async def test_papertrade_recall(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_papertrade_recall(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 模拟盘情况 → 应召回工具/委派并尽量出图")
     print("=" * 60)
@@ -278,7 +280,7 @@ async def test_papertrade_recall(ws: websockets.client.WebSocketClientProtocol) 
     return ok
 
 
-async def test_stock_query(ws: websockets.client.WebSocketClientProtocol) -> bool:
+async def test_stock_query(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 东山怎么样 → 股票语境分析/出图")
     print("=" * 60)
@@ -300,7 +302,7 @@ async def test_stock_query(ws: websockets.client.WebSocketClientProtocol) -> boo
 
 async def main() -> None:
     print(f"连接 {WS_URL} ...")
-    ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
+    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
     print("已连接！\n")
 
     results: dict[str, bool] = {}

@@ -79,13 +79,22 @@ Session ID 群聊**不含 user_id**（`…:group:{group_id}`），群内共享 S
 `HistoryManager` 群聊时把 `storage_event.user_id` 置空。改 Session 标识时不能破坏这个不变量，
 否则群里每个人又会各聊各的。
 
-## 12.7 历史截断必须保护 ToolCall/ToolReturn 配对
+## 12.7 历史截断：保头 + ToolCall/ToolReturn 配对
 
-`deque(maxlen=40)` 只按条数截断（**隐形 Token 爆炸**：50 条长文可达 25 万字）。`GsCoreAIAgent`
-用 `_truncate_history_with_tool_safety()` 按 Token 安全截断，并保证 `ToolCallPart` 与
-`ToolReturnPart` **始终配对**，否则 pydantic-ai 报 "tool result's tool id not found"（400）。
-另有 `_drop_orphan_tool_results` 自愈兜底（D-? "久聊必崩"）。改历史/截断逻辑时**必须**保留配对
-保护，并把 `RetryPromptPart` 也纳入截断考虑。
+`deque(maxlen=40)` 只按条数截断（**隐形 Token 爆炸**）。`GsCoreAIAgent.extract_history` 走
+**`compact_session_history` → `_truncate_history_keep_prefix`**：**永不丢 `history[0]`**，
+只裁中段、留尾，并保证 `ToolCallPart` / `ToolReturnPart`（及 `RetryPromptPart`）配对；
+否则 pydantic-ai 报 "tool result's tool id not found"（400）。`_drop_orphan_tool_results`
+为自愈兜底。
+
+**前缀红线**：
+
+- 禁止再实现「`history[-n:]` 砍头」式 compact；
+- 禁止 compact 后把角色锚点 **插回头部**（平移前缀 = 整段 cache 失效）；
+- 框架契约 / 纠正 nudge 只 **append** 到本 run request，落盘前 `_relean` 剥掉
+  （`（系统：` / `（系统校验：` / thrash / 墙钟 等）。
+
+旧 API `_truncate_history_with_tool_safety` 仍为「保尾」语义，**主会话勿用**。
 
 ## 12.8 强制总结偏离用户问题（D-20）
 
@@ -521,14 +530,15 @@ gate 误判的代价只能是"本该有工具却没给"，绝不能是"本该沉
 `find_tools` 捞回来的也清一色是异环——**鸣潮工具一个都没进过工具列表**。四层原因叠加，
 每一层单独看都"不致命"，合起来就把一个插件彻底变成了隐形。
 
-**🔴 一、docstring 写错位置 = 注册了一个永远召不回的工具（零运行时症状）**
+**🔴 一、docstring 写错位置 / 检索面过窄 = 永远召不回（零运行时症状）**
 
-工具入库向量的文本是 `f"{name}\n{description}"`（`rag/tools.py`），而 `description`
-**只**来自 docstring。XW 的 5 个面板工具把 docstring 写在了函数体第一条语句
-（`logger.info(...)`）**之后**——那样它只是个普通字符串表达式，`__doc__` 是 `None`，
-向量里只剩一个英文函数名，中文提问永远召不回。**注册成功、日志无异常、调用也正常**，
-唯独检索不到。`@ai_tools` 现已在 docstring 为空时 `logger.warning`，
-`tests/test_ai_tool_docstrings.py` 用 AST 扫全仓兜底。
+入库 / 精排文本是 **`ToolBase.retrieval_text`** = name + docstring + 可选 **covers** +
+可选 **aliases**（`rag/tools.py`）。docstring 写在函数体第一条语句之后 → `__doc__` 为
+`None` → 向量里只剩函数名。**注册成功、调用正常，唯独检索不到。**
+`@ai_tools` 对空 docstring **warning**；插件缺 covers **debug** 审计。
+跨措辞召回还须如实填 `covers`（数据域）与带前缀的 `aliases`。
+`tests/test_ai_tool_docstrings.py` 用 AST 扫 docstring；`test_20260812_framework_fixes`
+覆盖 covers 进 `retrieval_text`。
 
 **🔴 二、插件写 `category="self"` 会被降级，不是保底**
 

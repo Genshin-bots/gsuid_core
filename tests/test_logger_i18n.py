@@ -402,13 +402,11 @@ def _collect_logger_violations(parsed: _ParsedSource) -> Tuple[List[str], int]:
         if state != "translated":
             continue
         for source in _translated_sources(message, scope):
-            is_static_key = (
-                source.args and isinstance(source.args[0], ast.Constant) and isinstance(source.args[0].value, str)
-            )
-            if not is_static_key:
+            key_arg = source.args[0] if source.args else None
+            if not isinstance(key_arg, ast.Constant) or not isinstance(key_arg.value, str):
                 violations.append(f"L{node.lineno}: logger 中的 t() 必须使用静态字符串 key: {ast.unparse(node)}")
                 continue
-            key = source.args[0].value
+            key = key_arg.value
             if not re.match(r"^log\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$", key):
                 violations.append(f"L{node.lineno}: logger t() key 必须为 log.<module>.<semantic>，实际: {key!r}")
     return violations, count

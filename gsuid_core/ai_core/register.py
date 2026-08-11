@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from typing import Dict, List, Tuple, Union, TypeVar, Callable, Optional, Awaitable, cast, overload
+from typing import Dict, List, Tuple, Union, TypeVar, Callable, Optional, Awaitable, cast, overload, get_type_hints
 from pathlib import Path
 
 from pydantic_ai import RunContext, ToolReturn
@@ -11,6 +11,12 @@ from gsuid_core.logger import logger
 from gsuid_core.segment import Message
 from gsuid_core.ai_core.utils import handle_tool_result
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.tool_health import (
+    is_tool_frozen,
+    frozen_tool_message,
+    record_tool_failure,
+    record_tool_success,
+)
 
 from .models import ToolBase, ImageEntity, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase, ManualKnowledgeUpdate
 
@@ -93,6 +99,8 @@ def ai_tools(
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
+    covers: Optional[List[str]] = None,
+    aliases: Optional[List[str]] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
     approval: Optional[str] = None,
@@ -114,6 +122,14 @@ def ai_tools(
         capability_domain: 可选的能力域名称，如 "原神数据"、"网络搜索"。
             声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
             替代生硬的函数名罗列。未声明时按 category 兜底。
+        covers: 可选的数据/能力覆盖面陈述列表，如
+            ["A股/港股/美股/指数/期货/现货贵金属/外汇的报价与K线"]。
+            会拼进向量检索文本（name+docstring+covers+aliases），是工具被跨措辞
+            召回的关键面；能力代理 roster 的「数据覆盖」行也由本字段聚合。
+            插件工具应如实声明能解析什么标的/数据域/时效，而非只写函数行为。
+        aliases: 可选的领域内同义表述列表，**必须带领域前缀**，如
+            ["原神·深渊阵容查询"]；禁止裸写通用词（"深渊查询"），否则与同名
+            能力的其它插件（鸣潮/绝区零）撞车。撞车时由语境标签+语义路由裁决。
         visible_when: 可选的"可见性谓词"（Phase 3 条件隐藏）。签名为
             ``(ctx: RunContext[ToolContext]) -> bool | Awaitable[bool]``。
             返回 False 时，本工具在**该 step**对模型隐藏（schema 都不下发），
@@ -224,6 +240,10 @@ def ai_tools(
                 else:
                     return await fn(*args, **call_kwargs)
 
+            # 工具健康度（方案九）：冻结期内短路执行，直接回不可用文案
+            if is_tool_frozen(fn.__name__):
+                return frozen_tool_message(fn.__name__)
+
             # create_task+wait_for：区分工具内部 TimeoutError 与外层包装取消
             # （直接 wait_for(coro) 会把内部超时误记成包装默认秒数）
             if timeout is None:
@@ -234,6 +254,7 @@ def ai_tools(
                     raw_result = await asyncio.wait_for(_task, timeout=timeout)
                 except asyncio.TimeoutError:
                     timeout_sec = int(timeout)
+                    record_tool_failure(fn.__name__, "timeout")
                     if _task.done() and not _task.cancelled():
                         inner_exc = _task.exception()
                         logger.warning(
@@ -257,6 +278,12 @@ def ai_tools(
                     )
                     return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
 
+            # 健康度记账（方案九）：❌ 开头视为失败信号，其余视为成功（成功清零连败）
+            if isinstance(raw_result, str) and raw_result.startswith("❌"):
+                record_tool_failure(fn.__name__, raw_result)
+            else:
+                record_tool_success(fn.__name__)
+
             # ToolReturn 原样透传给 pydantic_ai（多模态内容注入会话，如 read_image 直投图片）。
             # 走 handle_tool_result 会被兜底 str() 成 dataclass repr——模型只会看到裸 base64 文本
             if isinstance(raw_result, ToolReturn):
@@ -272,8 +299,9 @@ def ai_tools(
         wrapped_tool.__qualname__ = fn.__qualname__
         wrapped_tool.__module__ = fn.__module__  # 确保 typing.get_type_hints 能找到正确的上下文变量
 
-        # 将原函数的注解复制过来，并补上正确的 ctx 注解
-        annotations: Dict[str, object] = getattr(fn, "__annotations__", {}).copy()
+        # 注解必须在**原函数模块**命名空间解析成真实类型再交给 pydantic-ai；留字符串会在
+        # wrapped_tool.__globals__（register 模块）求值，工具签名里的 Any/自定义名将 NameError。
+        annotations: Dict[str, object] = get_type_hints(fn)
         annotations["ctx"] = RunContext[ToolContext]
         for injected_name in injected_params.keys():
             annotations.pop(injected_name, None)
@@ -345,13 +373,24 @@ def ai_tools(
             )
         )
 
-        # docstring 是工具**唯一**的向量检索文本（入库文本 = name + description），
-        # 缺失即等同于"注册了一个永远召不回的工具"，必须吵出来而不是静默注册。
+        # docstring 是向量检索文本的主干（入库文本 = name + description + covers
+        # + aliases），缺失即等同于"注册了一个永远召不回的工具"，必须吵出来。
         tool_description = (wrapped_tool.__doc__ or "").strip()
         if not tool_description:
             logger.warning(
                 t(
                     "log.register.missing_docstring_plugin_name",
+                    p0=fn.__name__,
+                    plugin_name=hl_plugin(plugin_name),
+                )
+            )
+
+        # covers 是跨措辞召回的关键面：插件工具缺 covers 时打 warning 提示补齐，
+        # 让"召不回的工具"从隐性变显性（不阻塞注册）。
+        if not covers and plugin_name != "core":
+            logger.debug(
+                t(
+                    "log.register.missing_covers_plugin_name",
                     p0=fn.__name__,
                     plugin_name=hl_plugin(plugin_name),
                 )
@@ -364,6 +403,8 @@ def ai_tools(
             tool=tool_obj,
             context_tags=context_tags,
             capability_domain=capability_domain,
+            covers=covers,
+            aliases=aliases,
         )
 
         # 根据 category 分类注册工具

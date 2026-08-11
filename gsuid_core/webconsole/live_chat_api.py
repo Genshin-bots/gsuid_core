@@ -136,6 +136,9 @@ def _ensure_dirs() -> None:
 def _atomic_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_save(str(path), text_mode=True, file_perms=None, overwrite=True) as f:
+        # boltons.atomic_save 注解可能为 Optional；None 时不可 dump
+        if f is None:
+            raise RuntimeError(f"atomic_save returned None for {path}")
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 

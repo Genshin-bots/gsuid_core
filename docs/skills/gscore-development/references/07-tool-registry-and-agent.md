@@ -3,8 +3,8 @@
 > **返回主入口**：[`../SKILL.md`](../SKILL.md) · **上一章**：[六、AI Session 路由与 Persona](./06-ai-session-and-persona.md) · **下一章**：[八、主动发言与任务编排](./08-heartbeat-scheduled-planning.md)
 
 本章讲 AI 工具是怎么注册的、主 Agent 每轮怎么决定带哪些工具、子 Agent 和主 Agent 工具集的
-差异，以及 2026-06 工具检索升级（Reranker 精排 + `find_tools` 渐进暴露 + `visible_when`
-条件隐藏）。这是 AI 链路里最容易"越改越乱"的地方，改前务必读完。
+差异，以及工具检索升级（Reranker + `find_tools` + `visible_when` + **covers/aliases 检索面** +
+**节点语义路由**）。这是 AI 链路里最容易"越改越乱"的地方，改前务必读完。
 
 ## 7.1 工具注册表结构（`register.py`）
 
@@ -16,7 +16,14 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
 `@ai_tools` 装饰器把 async 函数包成 pydantic-ai `Tool` 存进对应 category。
 
 ```python
-@ai_tools(category="default", check_func=None, visible_when=None, **check_kwargs)
+@ai_tools(
+    category="default",
+    check_func=None,
+    covers=None,          # 数据覆盖面 → 检索文本
+    aliases=None,         # 领域同义问法（须带领域前缀）
+    visible_when=None,
+    **check_kwargs,
+)
 async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 ```
 
@@ -24,11 +31,17 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 |------|------|
 | `category` | 工具分类，决定加载方式（见 §7.2） |
 | `check_func` | 可选权限校验（同步/异步）。**已调用后**拦截执行并回错误文案 |
+| `covers` | 数据/能力覆盖面列表；进 `ToolBase.retrieval_text` 与节点 roster「数据覆盖」 |
+| `aliases` | 同义问法列表，**须带领域前缀**（如 `原神·深渊阵容`） |
 | `visible_when` | 可选谓词 `(ctx)->bool`。**是否展示**阶段决定模型能否看到该工具（见 §7.6） |
 | `**check_kwargs` | 传给 check_func 的额外参数 |
 
 > **智能参数注入**：`@ai_tools` 自动分析函数签名，把 `RunContext[ToolContext]` / `Event` /
 > `Bot` 类型参数**自动注入、不暴露给 LLM**，并重写 `__signature__` 保证 PydanticAI schema 兼容。
+> 注解在**原函数模块**命名空间用 `get_type_hints` 解析后再交给 pydantic-ai。
+
+> **工具健康度（2026-08）**：包装层对连续 `❌` 开头返回 / 超时记账；达阈值临时冻结执行
+> （schema 仍可见，避免装配抖动）。`⚠️` 软失败**不**记入连败（防业务校验冻死工具）。
 
 ## 7.2 工具分类（category）与加载方式
 
@@ -37,7 +50,7 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | `self` | **保底**：无条件加载进主 Agent | 好感度增改、`send_message_by_ai`、`create_subagent`、`add_once_task`/`add_interval_task` |
 | `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get` |
 | `common` | 向量检索按需 | `create_subagent`、`search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
-| `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`（由能力代理 **`render_agent`** 白名单持有；主路径 `create_subagent(agent_profile="render_agent")`） |
+| `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
 | `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
@@ -85,11 +98,12 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 > 保底池——纯鸣潮 bot 写 `"tool_packs": ["鸣潮面板"]` 即可，零向量检索、零族展开。
 > 群维度则用 `context_tags` + 语境池（L2）。
 
-> ⚠️ **工具能被召回的前提是它有 docstring**。入库向量文本 = `name + "\n" + description`，
-> 而 `description` **只**来自 docstring；docstring 若被写在函数体首条语句之后（如
-> `logger.info(...)` 之后）就只是个普通字符串表达式，`__doc__` 为 `None`，该工具**注册成功
-> 但永远召不回**且零运行时症状。`@ai_tools` 现会对空 docstring 告警，详见
-> [§12.22e](./12-developer-pitfalls.md)。
+> ⚠️ **工具能被召回的前提是完整检索面**。入库 / 精排文本 = **`ToolBase.retrieval_text`**
+> = `name` + docstring（`description`）+ 可选 `covers` + 可选 `aliases`。
+> docstring 若被写在函数体首条语句之后（如 `logger.info(...)` 之后）就只是普通字符串，
+> `__doc__` 为 `None` → **注册成功但永远召不回**且零运行时症状。`@ai_tools` 对空 docstring
+> **warning**、插件缺 `covers` 时 **debug** 审计。详见 [§12.22e](./12-developer-pitfalls.md)
+> 与 [gscore-ai-core-api §2.2.1](../../gscore-ai-core-api/references/02-ai-tools-decorator.md)。
 
 ```python
 def get_main_agent_tools() -> ToolList:
@@ -154,6 +168,10 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
    模型发现缺工具时调用，内部 `search_tools_by_domain` 检索并把命中工具名写进
    `ctx.deps.dynamic_tool_names`，返回简短清单。**不声明 `capability_domain`**（否则被 L3
    sticky 带进随后闲聊轮，破坏"闲聊轮零开销"）。
+   **失败分流（2026-08）**：
+   - 真无命中 → 语义/关键词匹配能力节点，提示 `create_subagent`，**禁止**「据现有能力作答」；
+   - 命中但被 **exclusive** 剥离 → 经 `owning_nodes_of_tools` 明确「该工具归某能力代理」并指路委派；
+   - 全被 `visible_when` 隐藏 → 同样尝试委派兜底，不向模型谎称「没有工具」。
 3. **`RetrievableToolset(AbstractToolset)`**（`dynamic_toolset.py`）——`get_tools(ctx)` 每个 step
    读 `dynamic_tool_names`，逐名 `find_tool_base` + `prepare_tool_def` 解析成可调用工具；用
    `exclude_names`（本轮静态已装配工具名）去重避免跨 toolset 重名冲突。
@@ -233,8 +251,18 @@ search_tools_by_domain(query, domain_limit=3, per_domain_limit=6, recall=12)
 `find_tools` 用它作检索后端。
 
 > `search_tools(rerank=True)` 先粗召回 `_RERANK_RECALL_LIMIT=20` 个，过滤后用交叉编码 Reranker
-> 按「工具名+描述」精排再裁到 `limit`。Reranker 未启用/异常时降级回"按向量分数取前 limit"，
-> 行为与不接 Reranker 完全一致。主装配路径已降 limit（8→4、`MAX_EXTRA_TOOLS` 16→8）。
+> 按 **`retrieval_text`（name+doc+covers+aliases）** 精排再裁到 `limit`。Reranker 未启用/异常时
+> 降级回"按向量分数取前 limit"。主装配路径已降 limit（8→4、`MAX_EXTRA_TOOLS` 16→8）。
+
+## 7.7b 能力节点语义路由 + roster 覆盖面（2026-08）
+
+关键词 `match_keywords` 是快路径，**必有洞**（XAU / 伦敦金 / 纳指…）。
+`agent_node/semantic_routing.py` 在注册表上叠加内存向量：节点检索文本 =
+`node_id + display_name + when_to_use + keywords + 所辖工具 covers`。
+`planning` 启动末 `sync_agent_nodes()`；运行期懒加载补齐。嵌入不可用时回退关键词。
+
+`format_capability_roster()` 每行追加「数据覆盖：…」（由 `aggregate_node_covers` 聚合），
+与真实工具能力同源，避免人维护关键词导致的自述失真。
 
 ## 7.8 触发器桥接工具（`by_trigger`）
 
@@ -435,9 +463,11 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 > `create_subagent(agent_profile="render_agent", task=事实包)`，不是主人格保底
 > `render_html_to_image`。渲染工具属 `media` + `capability_domain="资料出图"`，由
 > `render_agent` 白名单持有；交互主人格经 exclusive 剥离后不应直调。
-> 工具侧：默认**自由 HTML**（不自动套暗色设计壳）；原生 `<table>` 经
-> `utils/html_render/table_rewrite` 改成 `.md-table` flex；渲染前自动嵌图
-> （`https://` / `icon:` / `img_` / `res_` → data URI）。
+> 工具侧：默认**自由 HTML**；原生 `<table>` → flex 网格；自动嵌图。
+> **真图表**：`render_chart_spec(type, data=[{label,value},…])` → 内联 SVG（line/bar/hbar/pie），
+> 嵌进 HTML 再 `render_html_to_image`（渲染引擎无 JS，echarts/canvas 不可用）。
+> 主人格在 `saw_structured_return` 且未委派出图时，loop 注入
+> `POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED`（唯一合法下一步 = `render_agent`）。
 > 详见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)、
 > `capability_agents/profiles.py` 中 `render_agent`。
 

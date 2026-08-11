@@ -74,15 +74,16 @@ class AISessionRegistry:
 | 滑动窗口 | `HistoryManager` | `deque(maxlen=40)` | 每 Session 最多 40 条消息 |
 | Token 上限 | `HistoryManager` | `MAX_HISTORY_TOKENS=160000` | 单 Session Token 超限淘汰最旧 |
 | AI 历史限制 | `AISessionRegistry` | `MAX_AI_HISTORY_LENGTH=30` | AI 对话历史 ≤ 30 条 |
-| Agent 内部截断 | `GsCoreAIAgent` | `max_history=50` | 超过安全截断（含 ToolCall/ToolReturn 配对保护） |
+| Agent 内部截断 | `GsCoreAIAgent` | `agent_max_history` 默认 **30**（可配） | 超水位 **保头裁中段**（`compact_session_history`） |
 | 空闲清理 | `AISessionRegistry` | `IDLE_THRESHOLD=1800`(30min) | 30 分钟不活跃 Session 自动清除 |
 | 定时清理 | `AISessionRegistry` | `CLEANUP_INTERVAL=3600`(1h) | 每小时检查一次 |
 
 > ⚠️ **隐形 Token 爆炸**：`deque(maxlen=40)` 只按**条数**截断。群里 5 个人各发 10 篇 5000 字
-> 长文 = 50 条但 25 万字，瞬间突破 Token 上限。所以 `GsCoreAIAgent` 内部用
-> `_truncate_history_with_tool_safety()` 按 Token 安全截断，并保证 `ToolCallPart` 与
-> `ToolReturnPart` **始终配对**（否则 pydantic-ai 报 "tool result's tool id not found"）。
-> 改历史截断逻辑时**必须**保留这个配对保护（历史缺陷见 [§12](./12-developer-pitfalls.md)）。
+> 长文 = 50 条但 25 万字，瞬间突破 Token 上限。所以 `GsCoreAIAgent.extract_history` 走
+> **`compact_session_history`（保头裁中段 + 工具配对）**——**永不砍 `history[0]`**，只丢中间段、
+> 留近期尾，保证 provider **前缀缓存**头部字节跨 compact 不变。配对保护见
+> `_truncate_history_keep_prefix` / `_drop_orphan_tool_results`。
+> **禁止**再把角色锚点插回头部（会平移前缀）。详见 [§12.7](./12-developer-pitfalls.md)。
 
 ## 6.5 Persona Prompt 热重载（mtime 检测）
 
@@ -165,25 +166,25 @@ RESOURCE_PATH/persona/{persona_name}/
 
 > `voice_anchor` 是逐轮口吻锚点（旁路字段），Persona 启动迁移会处理它。
 
-### 6.7.1 O-3 稳定前缀与 TTL 刷新（2026-07-12 起）
+### 6.7.1 稳定前缀红线与 system 不改串（2026-07 起，2026-08 收紧）
 
 慢变上下文（self_model 自述 + 群画像/词汇映射）建 session 时经 `build_persona_prompt` 的
-`extra_stable_context` 参数固化进 system_prompt（装配入口统一为
-`context_assembly.build_session_system_prompt`），跨轮命中 provider 前缀缓存。关键约束：
+`extra_stable_context` 固化进 system_prompt（`context_assembly.build_session_system_prompt`）。
 
-- **活跃会话永不被 IDLE_THRESHOLD 回收**（它只清不活跃的），稳定前缀会无限期陈旧——
-  由 `ai_router._maybe_refresh_stable_prompt` 在缓存命中分支按 `_STABLE_PROMPT_TTL`
-  （1800s）**原地重建 `session.system_prompt` 字符串**刷新。之所以能原地换：pydantic-ai
-  `Agent` 在每次 `_execute_run_once` 都用 `self.system_prompt` 重建，字符串换了下一轮即生效，
-  **无须销毁会话 / 不丢历史**。刷新时刻记在 `GsCoreAIAgent.system_prompt_built_at`。
-- 改这条链路时别把 per-user 数据（关系/情绪/好感度）塞进稳定前缀——群聊 session 整群共享。
-- **mood 不进 session system prompt**（`build_session_system_prompt` 不传 `mood_key`）：
-  mood 每轮已经 `assemble_dynamic_context` 注入 user 侧，再进 system 是双写且最多滞后一个
-  TTL；更关键的是 mood 常变会让 TTL 刷新必然改串、白白打掉 provider 前缀缓存——不含 mood
-  时画像/自述未变的刷新产出逐字节相同的串，缓存自然保持。`build_persona_prompt` 的
-  `mood_key` 参数仅保留给插件/一次性 prompt 场景。
-- 后续方向：TTL 是兜底，理想是 group_profile/self_model 加版本戳做数据驱动失效
-  （见 `docs/AI_CORE_CHANGE_REVIEW_20260712.md` §5.2）。
+**前缀缓存红线（生产约定）**：
+
+1. **`system_prompt` 会话内默认永不改串**：`ai_router._STABLE_PROMPT_TTL = float("inf")`，
+   `_maybe_refresh_stable_prompt` 直接 return。需要「系统提醒」时只在 **user 侧
+   `UserPromptPart` 追加**，落盘前由 `_relean_user_turn` / `_is_framework_prompt_content` 剥掉。
+2. **`message_history` 保头**：`compact_session_history` 裁中段，禁止砍头、禁止锚点插头。
+3. **动态内容进 user**：mood / 关系 / 记忆 / 精确时间 / 身份锚只进每轮 user 装配。
+4. **persona 文件 mtime 变化** 仍会整会话重建（显式热重载，非每轮改 system）。
+
+历史曾用有限 TTL 原地刷新 system（O-3）；现行默认 **inf = 最大化 cache**。若显式改回有限
+TTL，须接受画像刷新会改串打掉前缀。
+
+- 改这条链路时别把 per-user 数据塞进稳定前缀——群聊 session 整群共享。
+- **mood 不进 session system prompt**（每轮 user 侧注入）。
 
 ### 6.7.2 历史渲染的两条新语义（`history_format.py`，2026-07-12 起）
 

@@ -141,13 +141,24 @@ def list_nodes(include_persona: bool = False) -> List[AgentNode]:
 
 
 def format_capability_roster() -> str:
-    """可委派能力代理清单（供 system_prompt 固化，避免每轮 user 侧重复注入）。"""
+    """可委派能力代理清单（供 system_prompt 固化，避免每轮 user 侧重复注入）。
+
+    每行追加「数据覆盖」——由节点所辖工具的 ``covers`` 声明聚合而来，让 roster
+    与真实工具能力同源（如 stock_agent 的工具声明了现货贵金属/外汇覆盖，清单
+    自然写明可处理 XAU 类标的），杜绝人维护关键词导致的自述失真。
+    """
+    from .semantic_routing import aggregate_node_covers
+
     lines: list[str] = []
     for node in list_nodes():
         if node.source == "persona" or node.node_id == "capability_evaluator":
             continue
         when = (node.when_to_use or "").strip() or "专业任务"
-        lines.append(f"- `{node.node_id}`（{node.display_name}）：{when}")
+        line = f"- `{node.node_id}`（{node.display_name}）：{when}"
+        covers = aggregate_node_covers(node)
+        if covers:
+            line += f"\n  数据覆盖：{'、'.join(covers)}"
+        lines.append(line)
     if not lines:
         return ""
     return (
@@ -155,6 +166,25 @@ def format_capability_roster() -> str:
         '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
         "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
     )
+
+
+def owning_nodes_of_tools(tool_names: List[str]) -> Dict[str, List[str]]:
+    """工具名 → 持有它的节点 node_id 列表（按节点 tool_names 白名单声明）。
+
+    exclusive 剥离后 find_tools 用它回答「该去委派谁」：被剥离的工具归属哪个
+    能力节点，就提示模型 create_subagent 到哪个节点，而不是谎称"没有工具"。
+    """
+    wanted = {n for n in tool_names if n}
+    owners: Dict[str, List[str]] = {}
+    if not wanted:
+        return owners
+    for node in _NODES.values():
+        if node.source == "persona" or node.node_id == "capability_evaluator":
+            continue
+        hit = wanted.intersection(node.tool_names)
+        for tool_name in hit:
+            owners.setdefault(tool_name, []).append(node.node_id)
+    return owners
 
 
 def match_capability_node(hint: str) -> str:

@@ -214,9 +214,11 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "agent_max_history": GsIntConfig(
         "对话历史保留条数",
-        "单会话注入模型的最大历史消息条数, 调大可记住更多上文但更费Token、也更易超出模型上下文",
-        15,
-        options=[10, 15, 20, 30, 50],
+        "单会话注入模型的最大历史消息条数。工具型 run 单轮产生 10+ 条消息, 过小会导致"
+        "几乎每轮触发 compact、provider 前缀缓存反复失效(方案五); 调大可记住更多上文、"
+        "减少 compact, 但更费 Token、也更易超出模型上下文",
+        30,
+        options=[10, 15, 20, 30, 50, 80],
     ),
     "suppress_intermediate_text": GsBoolConfig(
         "抑制中间文本",
@@ -356,6 +358,12 @@ AI_CONFIG: Dict[str, GSC] = {
         "工具向量召回的相似度下限; 低于该值的工具不装配(宁可由 find_tools 二次发现), "
         "调高可减少无关工具混入、稳定请求前缀缓存, 调低可提升召回面",
         0.38,
+    ),
+    "knowledge_recall_threshold": GsFloatConfig(
+        "知识库召回相关度阈值",
+        "知识库混合检索 dense 分支的余弦下限(方案六): 挡住跨域低相关条目(如金融问题召回"
+        "游戏词条)。只作用于 dense 分支, BM25 精确词命中不受影响; 调高更严、调低更宽",
+        0.35,
     ),
     "web_search_default_limit": GsIntConfig(
         "Web搜索默认结果数",

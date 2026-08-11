@@ -17,29 +17,57 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
 
 
-def _match_capability_agents_for_need(need: str, *, limit: int = 5) -> list[str]:
-    """按 need 文本匹配已注册能力代理，返回展示行（通用，无业务特判）。"""
+def _format_node_line(node_id: str) -> Optional[str]:
+    """节点展示行：`node_id`（显示名）：when_to_use；节点不存在返回 None。"""
+    from gsuid_core.ai_core.agent_node import get_node
+
+    node = get_node(node_id)
+    if node is None:
+        return None
+    when = (node.when_to_use or "").strip() or node.display_name
+    return f"- `{node.node_id}`（{node.display_name}）：{when}"
+
+
+async def _capability_agent_lines(need: str, *, limit: int = 5) -> list[str]:
+    """按 need 匹配可委派能力代理，返回展示行（关键词快路径 + 语义兜底）。
+
+    关键词表是枚举式的、必有洞；语义匹配（节点检索空间）兜住枚举之外的表述。
+    两路合并去重，关键词命中排前。
+    """
     from gsuid_core.ai_core.agent_node import list_nodes
     from gsuid_core.ai_core.agent_node.registry import match_capability_node
+    from gsuid_core.ai_core.agent_node.semantic_routing import semantic_match_nodes
 
     need_s = (need or "").strip()
     if not need_s:
         return []
     lines: list[str] = []
     seen: set[str] = set()
-    # 整句最长关键词匹配
+
+    def _push(node_id: str) -> None:
+        if node_id in seen or len(lines) >= limit:
+            return
+        line = _format_node_line(node_id)
+        if line is None:
+            return
+        seen.add(node_id)
+        lines.append(line)
+
+    # 1) 关键词快路径：整句最长关键词命中的主节点
     primary = match_capability_node(need_s)
     if primary:
-        from gsuid_core.ai_core.agent_node import get_node
-
-        node = get_node(primary)
-        if node is not None:
-            when = (node.when_to_use or "").strip() or node.display_name
-            lines.append(f"- `{node.node_id}`（{node.display_name}）：{when}")
-            seen.add(node.node_id)
-    # 再扫注册表弱匹配补全
+        _push(primary)
+    # 2) 语义兜底：关键词没覆盖的说法（跨领域新词）由向量空间接住
+    try:
+        for node_id, _score in await semantic_match_nodes(need_s, limit=limit):
+            _push(node_id)
+    except Exception as e:
+        logger.debug(t("log.ai.find_tools_semantic_route_fail", e=e))
+    # 3) 注册表弱匹配补全（保留原有 token 子串逻辑，覆盖节点自述里的词）
     blob = need_s.lower()
     for node in list_nodes():
+        if len(lines) >= limit:
+            break
         if node.node_id in seen:
             continue
         if node.source == "persona" or node.node_id == "capability_evaluator":
@@ -56,14 +84,14 @@ def _match_capability_agents_for_need(need: str, *, limit: int = 5) -> list[str]
                 if len(token) >= 2 and token in hay:
                     hit = True
                     break
-        if not hit:
-            continue
-        when = (node.when_to_use or "").strip() or node.display_name
-        lines.append(f"- `{node.node_id}`（{node.display_name}）：{when}")
-        seen.add(node.node_id)
-        if len(lines) >= limit:
-            break
+        if hit:
+            _push(node.node_id)
     return lines
+
+
+def _delegation_directive(lines: list[str]) -> str:
+    """把候选节点行组装成委派指引文本。"""
+    return '请用 create_subagent(agent_profile="<node_id>", task=...) 委派给下列能力代理：\n' + "\n".join(lines)
 
 
 # 能力缺口登记（4.5）：find_tools 未命中时计数，供运维按「高频被求而缺失」
@@ -113,7 +141,17 @@ async def find_tools(
         family_tools = await search_tools_by_domain(query=need, domain_limit=3, per_domain_limit=6)
         if not family_tools:
             _record_capability_gap(need)
-            return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
+            # 真无命中：不给"据现有能力作答"的编造许可证；语义层找委派出路。
+            agent_lines = await _capability_agent_lines(need)
+            if agent_lines:
+                return "🔎 未检索到可直接加载的工具，但该能力可能由能力代理持有。\n" + _delegation_directive(
+                    agent_lines
+                )
+            return (
+                f"⚠️ 未检索到与「{need}」相关的工具。可换更具体的能力描述重试一次；"
+                "若确实没有该能力，涉及实时数据/外部事实时如实角色化说明查不到，"
+                "禁止编造数值、禁止用网页摘要冒充实时读数。"
+            )
 
         # 检索层不感知 visible_when，须与暴露层同用 prepare_tool_def 预判：隐藏工具若照报
         # "已加载"，模型按名调用必 Unknown tool 并反复重试（实测踩坑）。静默剔除，仅落日志。
@@ -143,13 +181,43 @@ async def find_tools(
             )
         # 主人格交互轮：能力代理专属工具不得经 find_tools 回灌（与静态池剥离同口径）
         blocked = ctx.deps.blocked_tool_names
+        blocked_hit_names = [n for n in loaded_names if n in blocked] if blocked else []
         if blocked:
             loaded_names = [n for n in loaded_names if n not in blocked]
 
         if not loaded_names:
-            # 与"检索无命中"同文案：不向模型泄露被隐藏工具的存在，避免诱导换措辞反复检索。
             _record_capability_gap(need)
-            return f"⚠️ 没有找到与「{need}」相关的工具，请换个更具体的描述，或直接据现有能力作答。"
+            # 命中但全被 exclusive 剥离：工具真实存在、归能力代理专属——明确指路委派，
+            # 不再谎称"没有找到"（旧同文案把模型推向 web_search 顶替，见 2026-08-11 归因）。
+            if blocked_hit_names:
+                from gsuid_core.ai_core.agent_node.registry import owning_nodes_of_tools
+
+                owners = owning_nodes_of_tools(blocked_hit_names)
+                owner_ids: list[str] = []
+                for ids in owners.values():
+                    for node_id in ids:
+                        if node_id not in owner_ids:
+                            owner_ids.append(node_id)
+                lines = [line for line in map(_format_node_line, owner_ids) if line]
+                if not lines:
+                    lines = await _capability_agent_lines(need)
+                if lines:
+                    return (
+                        "🔒 该类工具为能力代理专属，不在主人格手里直接装配（这是设计，不是缺失）。\n"
+                        + _delegation_directive(lines)
+                        + "\n不要就同一需求重复 find_tools。"
+                    )
+            # 全被 visible_when 隐藏：维持不泄露隐藏工具存在，但给出语义委派兜底。
+            agent_lines = await _capability_agent_lines(need)
+            if agent_lines:
+                return "🔎 未检索到当前场景可直接加载的工具，但该能力可能由能力代理持有。\n" + _delegation_directive(
+                    agent_lines
+                )
+            return (
+                f"⚠️ 未检索到与「{need}」相关的工具。可换更具体的能力描述重试一次；"
+                "若确实没有该能力，涉及实时数据/外部事实时如实角色化说明查不到，"
+                "禁止编造数值、禁止用网页摘要冒充实时读数。"
+            )
 
         ctx.deps.dynamic_tool_names.update(loaded_names)
 
@@ -164,12 +232,9 @@ async def find_tools(
         listing = "\n".join(f"- {name}" for name in loaded_names)
         parts = [f"✅ 已加载以下工具，下一步即可直接调用：\n{listing}"]
         # 通用：同步提示可委派的能力代理（插件注册的 node_id），不特判业务域
-        agent_lines = _match_capability_agents_for_need(need)
+        agent_lines = await _capability_agent_lines(need)
         if agent_lines:
-            parts.append(
-                '若任务适合专职代理，请用 create_subagent(agent_profile="<node_id>", task=...) 委派：\n'
-                + "\n".join(agent_lines)
-            )
+            parts.append("若任务适合专职代理，" + _delegation_directive(agent_lines))
         return "\n".join(parts)
 
     except RuntimeError as e:

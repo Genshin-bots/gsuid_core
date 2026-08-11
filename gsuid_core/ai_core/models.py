@@ -178,6 +178,8 @@ class ToolBase:
     check_func: Any  # 可选的权限检查函数
     context_tags: List[str]  # 语境标签，用于语境工具池自动加载
     capability_domain: Optional[str]  # C3-d 能力域，用于聚合成自然语言能力清单
+    covers: List[str]  # 数据/能力覆盖面陈述，进向量检索文本，供召回与 roster 聚合
+    aliases: List[str]  # 领域内同义表述（须带领域前缀，如「原神·深渊阵容查询」）
 
     def __init__(
         self,
@@ -188,6 +190,8 @@ class ToolBase:
         check_func: Any = None,
         context_tags: Optional[List[str]] = None,
         capability_domain: Optional[str] = None,
+        covers: Optional[List[str]] = None,
+        aliases: Optional[List[str]] = None,
     ):
         self.name = name
         self.description = description
@@ -196,3 +200,19 @@ class ToolBase:
         self.check_func = check_func
         self.context_tags = context_tags or []
         self.capability_domain = capability_domain
+        self.covers = covers or []
+        self.aliases = aliases or []
+
+    @property
+    def retrieval_text(self) -> str:
+        """向量检索入库文本：name + description + covers + aliases。
+
+        docstring 只是「函数行为」，covers/aliases 才承载「数据域 / 同义问法」，
+        四者拼接才是完整检索面（见 plans 2026-08-11 方案一）。
+        """
+        parts: List[str] = [self.name, self.description]
+        if self.covers:
+            parts.append("覆盖：" + "、".join(self.covers))
+        if self.aliases:
+            parts.append("又叫：" + "、".join(self.aliases))
+        return "\n".join(p for p in parts if p.strip())

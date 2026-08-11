@@ -23,28 +23,17 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from gsuid_core.ai_core.utils import _compact_report_blocks_in_history
+from gsuid_core.ai_core.utils import (
+    compact_session_history,
+    _compact_report_blocks_in_history,
+)
+
+# 与 gs_agent._HISTORY_TRIM_RATIO 保持一致（单测不 import 重依赖 gs_agent）
+_HISTORY_TRIM_RATIO = 0.6
 
 # ─────────────────────────────────────────────
-# extract_history 高低水位
+# compact_session_history / 保头裁中段
 # ─────────────────────────────────────────────
-
-
-def _make_agent(max_history: int) -> Any:
-    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-
-    # 只构造到能测 extract_history 的程度：绕过 __init__（避免模型/工具装配）
-    agent: Any = object.__new__(GsCoreAIAgent)
-    agent.max_history = max_history
-    # extract_history 的角色锚定分支会读 persona_name（OOC 修复 5.5），绕过 __init__ 须手动补
-    agent.persona_name = None
-
-    class _NullLogger:
-        def log_history_reset(self, reason: str, detail: str) -> None:
-            self.last = (reason, detail)
-
-    agent._session_logger = _NullLogger()
-    return agent
 
 
 def _turn(i: int) -> list:
@@ -56,65 +45,82 @@ def _turn(i: int) -> list:
 
 def test_no_trim_below_watermark() -> None:
     """未超 max_history 时一条都不动——头部稳定是缓存命中的前提。"""
-    agent = _make_agent(max_history=15)
     history = []
     for i in range(7):
         history.extend(_turn(i))  # 14 条
-    agent.history = list(history)
-    agent.extract_history()
-    assert agent.history == history
+    out, did = compact_session_history(list(history), max_history=15, trim_ratio=_HISTORY_TRIM_RATIO)
+    assert did is False
+    assert out == history
 
 
 def test_trim_goes_to_low_watermark_not_max() -> None:
-    """超过 max_history 时一次裁到低水位（_HISTORY_TRIM_RATIO），而非"超 1 裁 1"。"""
-    from gsuid_core.ai_core.gs_agent import _HISTORY_TRIM_RATIO
-
-    agent = _make_agent(max_history=15)
+    """超过 max_history 时一次裁到低水位；保头裁中段，尾部仍是最新消息。"""
     history = []
     for i in range(9):
         history.extend(_turn(i))  # 18 条 > 15
-    agent.history = list(history)
-    agent.extract_history()
-    # 低水位 = int(15 * ratio)；工具配对安全截断可能再少 1 条，但绝不该停在 15
+    out, did = compact_session_history(list(history), max_history=15, trim_ratio=_HISTORY_TRIM_RATIO)
     low = int(15 * _HISTORY_TRIM_RATIO)
-    assert len(agent.history) <= low
-    assert len(agent.history) >= low - 2
-    # 保留的是最新消息
-    last = agent.history[-1]
+    assert did is True
+    assert len(out) <= low + 2  # 工具配对可能略超
+    assert len(out) < 18
+    # 头部仍是会话最早消息（前缀缓存红线）
+    first = out[0]
+    assert isinstance(first, ModelRequest)
+    assert isinstance(first.parts[0], UserPromptPart)
+    assert first.parts[0].content == "[用户发言]\n消息0"
+    # 尾部仍是最新
+    last = out[-1]
     assert isinstance(last, ModelResponse)
     first_part = last.parts[0]
     assert isinstance(first_part, TextPart) and first_part.content == "回复8"
 
 
+def test_trim_keeps_original_prefix_forever() -> None:
+    """多次 compact 后 history[0] 仍是原始首条——绝不砍头/插锚点。"""
+    max_history = 20
+    low = int(max_history * _HISTORY_TRIM_RATIO)
+    history: list = []
+    for i in range(20):
+        history.extend(_turn(i))
+    original_head = history[0]
+    out, _ = compact_session_history(list(history), max_history=max_history, trim_ratio=_HISTORY_TRIM_RATIO)
+    assert out[0] is original_head
+    assert len(out) <= low + 2
+
+    # 再撑爆水位 compact 一次，头部对象仍不变
+    grown = list(out)
+    for j in range(15):
+        grown.extend(_turn(200 + j))
+    out2, _ = compact_session_history(grown, max_history=max_history, trim_ratio=_HISTORY_TRIM_RATIO)
+    assert out2[0] is original_head
+
+
 def test_trim_interval_gives_stable_prefix() -> None:
     """裁剪后继续追加若干轮都不再触发裁剪——这段窗口内历史头部字节稳定。"""
-    from gsuid_core.ai_core.gs_agent import _HISTORY_TRIM_RATIO
-
     max_history = 20
-    agent = _make_agent(max_history=max_history)
-    low = int(max_history * _HISTORY_TRIM_RATIO)
     history = []
-    # 填满到低水位 + 8 条，确保首轮必触发裁剪
-    for i in range((low + 8) // 2):
+    # 严格超过 max_history（=20 时 10 轮刚好 20 条不触发，需 11 轮）
+    for i in range(11):
         history.extend(_turn(i))
-    agent.history = list(history)
-    agent.extract_history()
-    assert len(agent.history) <= low  # 首轮确实裁了
-    stable_head = list(agent.history)
+    out, did = compact_session_history(list(history), max_history=max_history, trim_ratio=_HISTORY_TRIM_RATIO)
+    assert did is True
+    assert len(out) < len(history)
+    stable_head = list(out)
 
-    # headroom = max_history - low 条内追加不再触发裁剪，头部对象序列不变
-    headroom_pairs = (max_history - low) // 2
+    # headroom 内追加不再触发裁剪，头部对象序列不变
+    headroom_pairs = max(1, (max_history - len(out)) // 2)
+    cur = list(out)
     for j in range(headroom_pairs):
-        agent.history.extend(_turn(100 + j))
-        agent.extract_history()
-    assert agent.history[: len(stable_head)] == stable_head
+        cur.extend(_turn(100 + j))
+        cur, did2 = compact_session_history(cur, max_history=max_history, trim_ratio=_HISTORY_TRIM_RATIO)
+        assert did2 is False
+    assert cur[: len(stable_head)] == stable_head
 
 
 def test_zero_max_history_clears() -> None:
-    agent = _make_agent(max_history=0)
-    agent.history = _turn(1)
-    agent.extract_history()
-    assert agent.history == []
+    out, did = compact_session_history(_turn(1), max_history=0, trim_ratio=_HISTORY_TRIM_RATIO)
+    assert out == []
+    assert did is True
 
 
 # ─────────────────────────────────────────────

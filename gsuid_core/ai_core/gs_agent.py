@@ -44,11 +44,10 @@ from gsuid_core.ai_core.utils import (
     fetch_video_bytes,
     _is_content_rejected,
     materialize_image_url,
-    _drop_orphan_tool_results,
+    compact_session_history,
     _is_retryable_client_error,
     _is_non_retryable_model_error,
     _strip_remote_images_from_history,
-    _truncate_history_with_tool_safety,
 )
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import (
@@ -92,9 +91,9 @@ _ = (
 
 _T = TypeVar("_T")
 
-# 历史裁剪低水位比例：超过 max_history 时一次裁到 max_history * 该比例。
-# 比例越高裁剪越温和，保留更多可缓存前缀（0.85 = 仅丢弃 15% 溢出量）。
-_HISTORY_TRIM_RATIO = 0.85
+# 超过 max_history 时裁到 max_history * 该比例；越低则单次腾出越多、compact 越稀。
+# compact 走 keep_prefix（保头裁中段），绝不砍头部字节——前缀缓存的前提。
+_HISTORY_TRIM_RATIO = 0.6
 
 # 预算 scope + run-once 共享符号（实现在 agent_run；此处 re-export 保持 import 稳定）
 from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
@@ -117,6 +116,7 @@ from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
     TraceKind,
     _append_user_text,
     _claims_fake_done,
+    _correction_nudge_markers,
     _format_capability_roster,
     _tool_return_looks_failed,
     _tool_return_is_async_pending,
@@ -155,6 +155,7 @@ _ = (
     _append_user_text,
     _capability_exclusive_tool_names,
     _claims_fake_done,
+    _correction_nudge_markers,
     _format_capability_roster,
     _matched_delegation_only_profile,
     _pool_overlaps_capability_agent,
@@ -428,48 +429,22 @@ class GsCoreAIAgent(RunOnceMixin):
         self.extract_history()
 
     def extract_history(self):
-        if self.max_history <= 0:
-            self.history = []
-            return
+        """裁剪 message_history：超水位时**保头裁中段**，绝不改写 system_prompt。
 
+        前缀缓存红线：
+        - system_prompt 会话内只建一次、只追加契约到 user 侧（见 loop UserPromptPart）；
+        - history 头部字节跨 compact 不变（``compact_session_history`` / keep_prefix）；
+        - 禁止把角色锚点等消息插回头部（会整体平移前缀）。
+        """
         before: int = len(self.history)
-        truncated: bool = before > self.max_history
-        if truncated:
-            # 高低水位惰性裁剪：超过 max_history 才裁、一次裁到低水位。旧行为"超 1 条裁 1 条"
-            # 让历史头部每轮都变，provider 前缀缓存永不命中（§25 命中率卡 54% 的直接原因）。
-            low_target: int = max(1, int(self.max_history * _HISTORY_TRIM_RATIO))
-
-            # OOC 修复 5.5：compact 时保留 1-2 条"角色锚定消息"（最早的、最符合人设的 assistant 文本回复）。
-            # 早期在角色内的回复被丢弃后，模型失去"我应该是这样
-            _anchor_msgs: list[ModelMessage] = []
-            if self.persona_name:
-                _anchor_msgs = _extract_character_anchors(self.history, count=2)
-
-            self.history = _truncate_history_with_tool_safety(
-                self.history,
-                low_target,
-            )
-
-            # 将锚定消息插回历史头部（截断后的最早消息之前）
-            if _anchor_msgs:
-                # 去重：如果锚定消息已经在截断后的历史中，不重复插入
-                _existing_ids = {id(m) for m in self.history}
-                _to_insert = [m for m in _anchor_msgs if id(m) not in _existing_ids]
-                if _to_insert:
-                    self.history = _to_insert + self.history
-                    logger.debug(
-                        i18n_t(
-                            "log.agent.compact_retained",
-                            p0=len(_to_insert),
-                        )
-                    )
-
-        # 兜底：无论是否截断，都做一次孤儿工具结果清理，确保历史对 API 自洽
-        self.history = _drop_orphan_tool_results(self.history)
+        self.history, did_truncate = compact_session_history(
+            self.history,
+            self.max_history,
+            trim_ratio=_HISTORY_TRIM_RATIO,
+        )
         after: int = len(self.history)
-        # 仅「因超长主动裁剪且确有条目被丢弃」才打 auto_compact（供 webconsole 画独立色块）；
-        # 纯孤儿清理属结构性整理、stateless 模式每轮清空，均不打标以免噪声。
-        if truncated and after < before:
+        # 仅「因超长主动裁剪且确有条目被丢弃」才打 auto_compact（供 webconsole 画独立色块）
+        if did_truncate and after < before:
             self._session_logger.log_history_reset("auto_compact", {"before": before, "after": after})
         logger.debug(i18n_t("log.agent.history_processed_entries", p0=len(self.history)))
 
@@ -1276,10 +1251,14 @@ class GsCoreAIAgent(RunOnceMixin):
         return angle_fused
 
     def _scrub_fake_done_history(self, fabricated_texts: set[str]) -> None:
-        """假完成收尾：删纠正 nudge 与未发出的编造声明（与闸门 scrub 共用编辑器）。"""
+        """假完成收尾：删纠正 nudge 与未发出的编造声明（与闸门 scrub 共用编辑器）。
+
+        纠正 nudge 一律剥掉**全部**系统校验 user turn（不止假完成那条）：
+        它们是框架内部指令，留在 history 会污染上下文并破坏前缀缓存（方案四/五）。
+        """
         self._edit_history_tail(
             tail_n=8,
-            drop_user_markers=(_FAKE_DONE_NUDGE,),
+            drop_user_markers=_correction_nudge_markers(),
             drop_text_parts=fabricated_texts,
         )
 

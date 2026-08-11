@@ -222,10 +222,13 @@ async def send_message_by_ai(
                     except ValueError as e:
                         logger.warning(t("log.ai.buildintools_rm_get_image_id", image_id=image_id, e=e))
                         if "找不到资源" in str(e):
+                            # 交付校验（方案九）：句柄失效给出可执行出路——重委派渲染，
+                            # 而不是死胡同文案让模型卡在原地或谎报已发。
                             return (
-                                f"❌ 找不到资源ID: {image_id}（既不在 Kanban artifact 表，"
-                                f"也不在 RM 临时资源池）。可能 ID 错了 / artifact 已过期 / "
-                                f"代理执行未实际登记 artifact——请确认。"
+                                f"❌ 资源ID: {image_id} 无法解析（artifact 不存在或已过期，"
+                                f"可能是渲染子任务未真正出图）。请重新 "
+                                f'create_subagent(agent_profile="render_agent", task=原事实包) '
+                                f"再委派一次出图；勿再发送该 ID，勿向用户声称已发图。"
                             )
                         return f"❌ 资源ID: {image_id} 数据转换失败: {e}"
                 elif isinstance(kanban_payload, bytes):

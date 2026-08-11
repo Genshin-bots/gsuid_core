@@ -38,6 +38,8 @@ async def web_fetch_tool(
         >>> print(content)
     """
     try:
-        return await fetch_webpage_as_markdown(url=url)
+        content = await fetch_webpage_as_markdown(url=url)
     except ValueError as e:
         return f"抓取失败: {e}"
+    # [source=web] 时效契约标记（方案七）：网页正文是滞后来源，禁当实时读数。
+    return f"[source=web|staleness_risk=high]\n{content}"

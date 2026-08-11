@@ -113,6 +113,15 @@ async def init_planning() -> None:
     except Exception as e:
         logger.debug(t("log.ai.kanban_register_artifact_ttl_fail", e=e))
 
+    # 能力节点语义路由缓存：内置/插件/用户节点此时已全部注册，统一重嵌入。
+    # 失败仅降级为关键词路由，不阻断启动。
+    try:
+        from gsuid_core.ai_core.agent_node.semantic_routing import sync_agent_nodes
+
+        await sync_agent_nodes()
+    except Exception as e:
+        logger.warning(t("log.ai.agentnode_semantic_sync_fail", e=e))
+
     logger.info(t("log.ai.kanban_task_orchestration_layer_ok"))
 
 

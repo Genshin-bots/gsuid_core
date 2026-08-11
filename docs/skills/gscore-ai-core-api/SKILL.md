@@ -43,12 +43,12 @@ description: >
 | 章节 | 主题 | 链接 |
 |------|------|------|
 | 一 | 模块导入速查（工具注册 / 触发器桥接 / Agent / MCP / 嵌入 / Persona / Memory / 内置工具 / RAG 完整 import 块） | [references/01-import-cheatsheet.md](./references/01-import-cheatsheet.md) |
-| 二 | `@ai_tools` 装饰器（函数签名、参数表、四种函数模式、check_func 权限校验、返回值类型） | [references/02-ai-tools-decorator.md](./references/02-ai-tools-decorator.md) |
+| 二 | `@ai_tools` 装饰器（签名、**covers/aliases 检索面**、四种模式、check_func、返回值） | [references/02-ai-tools-decorator.md](./references/02-ai-tools-decorator.md) |
 | 三 | 工具分类系统（`_TOOL_REGISTRY` 内部结构、保底池概念、Agent 调用架构、插件分类建议） | [references/03-tool-categories.md](./references/03-tool-categories.md) |
 | 四 | 触发器 → AI 工具桥接（`to_ai` / `ai_return` / `MockBot` / `send_message_by_ai` / 资源ID RM 机制 / 权限检查） | [references/04-trigger-bridge.md](./references/04-trigger-bridge.md) |
 | 五 | `create_agent` 与 Agent 架构（`create_agent` 签名、`GsCoreAIAgent.run()` 全参数、`get_main_agent_tools`、`handle_ai_chat`） | [references/05-create-agent.md](./references/05-create-agent.md) |
 | 六 | 知识库与别名注册（`ai_entity` / `add_manual_knowledge` 手动知识管理 / `ai_alias` 含 C2 scope / `ai_image` 图片实体） | [references/06-knowledge-and-alias.md](./references/06-knowledge-and-alias.md) |
-| 七 | 内置工具大全（self/buildin/common/media/default 几十个工具签名 + Kanban 任务编排 + Capability Agent 能力代理 + self_model 演化层） | [references/07-builtin-tools.md](./references/07-builtin-tools.md) |
+| 七 | 内置工具大全（含 **render_chart_spec** / web 时效标记 + Kanban + 能力代理 + self_model） | [references/07-builtin-tools.md](./references/07-builtin-tools.md) |
 | 八 | Persona 角色系统 + Memory 记忆系统（Persona 类、build_persona_prompt、`memory_config` / `dual_route_retrieve` / `observe`） | [references/08-persona-and-memory.md](./references/08-persona-and-memory.md) |
 | 九 | Scheduled Task 定时任务（`AIScheduledTask` 数据模型） | [references/09-scheduled-tasks.md](./references/09-scheduled-tasks.md) |
 | 十 | 工具注册表查询 API + 全部类型定义（`get_registered_tools` / `get_all_tools` / `ToolBase` / `ToolContext` / `KnowledgeBase` / `KnowledgePoint` / `ManualKnowledgeBase` / `ImageEntity` / `CheckFunc`） | [references/10-registry-and-types.md](./references/10-registry-and-types.md) |
@@ -75,7 +75,8 @@ description: >
 - **AI Core 入口模块统一前缀**：`gsuid_core.ai_core.*`，包括 `register` / `trigger_bridge` / `gs_agent` / `output_gate` / `buildin_tools` / `rag` / `mcp` / `persona` / `memory` / `agent_node` / `approval` / `handle_ai` 等。详见 [§1](./references/01-import-cheatsheet.md)、[§7](./references/07-builtin-tools.md)。
 - **多项出图**：`create_subagent(agent_profile="render_agent")`；`render_*` 在 **media**，不在主人格 buildin 保底。业务长报告用插件能力代理 + 出图工具（见 [gscore-plugin-development §14](../gscore-plugin-development/references/14-ai-capability-profile.md)）。
 - **Agent 发话合规**：插件一般不直接调 `pre_send_gate`；改 `send_message_by_ai` 或新增「模型台词出站」路径时须过 `tool_gate_feedback` / 主循环闸。见 [gscore-development §7.12](../gscore-development/references/07-tool-registry-and-agent.md)。
-- **`@ai_tools` 是入口装饰器**：被装饰的函数**必须是 async**；第一个参数支持三种上下文模式（`RunContext[ToolContext]` 推荐 / `ToolContext` / 无上下文）；参数类型注解为 `Bot` / `Event` 的会被自动注入且**不暴露给 LLM**。详见 [§2.3](./references/02-ai-tools-decorator.md)。
+- **`@ai_tools` 是入口装饰器**：必须 async；三种上下文模式；`Bot`/`Event` 自动注入不暴露给 LLM。
+  **检索面** = name + docstring + **`covers`** + **`aliases`（须领域前缀）**。详见 [§2](./references/02-ai-tools-decorator.md)。
 - **`category` 决定加载方式**：`self` / `buildin` 是**框架保底工具池**（无条件全部加载进主Agent，不受向量搜索影响）；`common` / `media` / `mcp` / 自定义分类是**向量检索按需加载**；`default` 是**子Agent 工具**（需通过 `create_subagent` 调用）。详见 [§3.2](./references/03-tool-categories.md)。
 - **保底池由 category 决定，无硬编码名单**：`get_main_agent_tools()` 把 `self` + `buildin` 两个分类下的全部工具无条件加载；插件若希望某工具成为主 Agent 保底工具，注册时用 `category="buildin"` 即可。详见 [§3.2](./references/03-tool-categories.md)。
 - **`to_ai` 与 `@ai_tools` 冲突不可共存**：同一函数**只能选其一**。命令同时允许用户直接触发 → `to_ai`（一份代码服务用户命令 + AI 调用）；纯 AI 内部工具 → `@ai_tools`。详见 [§四 顶部警告](./references/04-trigger-bridge.md)。

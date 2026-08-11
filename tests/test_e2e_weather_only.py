@@ -10,7 +10,7 @@ import shutil
 import asyncio
 from pathlib import Path
 
-import websockets.client
+import websockets
 from msgspec import json as msgjson
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
@@ -80,7 +80,7 @@ async def recv(ws, name: str, idle=90.0, hard=420.0):
 
 async def main() -> None:
     print("connect", WS_URL)
-    ws = await websockets.client.connect(WS_URL, max_size=2**25, open_timeout=30)
+    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
     msg = MessageReceive(
         bot_id="console",
         bot_self_id="900000001",

@@ -66,6 +66,19 @@ async def search_knowledge(
             entry["_score"] = point.score
             knowledge_list.append(entry)
 
+    # 相对相关度下限（方案六，域无关）：只保留分数不低于最佳条目 40% 的项，
+    # 挡掉跨域低相关噪声（如金融问题召回游戏词条）。RRF/rerank 分均适用。
+    _RELATIVE_SCORE_FLOOR = 0.4
+    _scores = [e["_score"] for e in knowledge_list if isinstance(e["_score"], (int, float))]
+    if _scores:
+        _top_score = max(_scores)
+        if _top_score > 0:
+            knowledge_list = [
+                e
+                for e in knowledge_list
+                if isinstance(e["_score"], (int, float)) and e["_score"] >= _top_score * _RELATIVE_SCORE_FLOOR
+            ]
+
     if knowledge_list:
         sections.append(
             wrap_untrusted(

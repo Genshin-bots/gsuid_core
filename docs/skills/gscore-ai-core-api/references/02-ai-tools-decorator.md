@@ -15,6 +15,8 @@ def ai_tools(
     check_func: Optional[CheckFunc] = None,
     context_tags: Optional[List[str]] = None,
     capability_domain: Optional[str] = None,
+    covers: Optional[List[str]] = None,
+    aliases: Optional[List[str]] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
     approval: Optional[str] = None,
@@ -29,13 +31,50 @@ def ai_tools(
 | `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"self"` 为主Agent核心工具，`"buildin"` 为内置工具，`"common"` 为通用工具，`"default"` 为子Agent工具。详见 [§3 工具分类系统](./03-tool-categories.md) |
 | `check_func` | `Callable` | `None` | 可选的权限校验函数，签名为 `async def check(ev: Event) -> Tuple[bool, str]` |
 | `context_tags` | `List[str]` | `None` | 语境标签。声明后，框架会在匹配该语境的群聊中通过**语境工具池**自动加载本工具，无需依赖向量搜索命中 |
-| `capability_domain` | `str` | `None` | **（C3-d 新增）** 能力域名称（如 `"原神数据"`）。声明后框架会按 domain 聚合成自然语言能力清单，注入 Bot 的自我认知；未声明时按 `category` 兜底。同时它也是一个可整族挂载的**工具能力族**名（AgentNode 的 `tool_packs` 可按此名整族装配） |
+| `capability_domain` | `str` | `None` | 能力域名称（如 `"原神数据"`）。声明后框架会按 domain 聚合成自然语言能力清单，注入 Bot 的自我认知；未声明时按 `category` 兜底。同时它也是一个可整族挂载的**工具能力族**名（AgentNode 的 `tool_packs` 可按此名整族装配） |
+| `covers` | `List[str]` | `None` | **数据/能力覆盖面**（2026-08）。如 `["A股/港股/美股/指数/期货/现货贵金属/外汇的报价与K线"]`。拼进向量检索文本（`ToolBase.retrieval_text`），是跨措辞召回的关键面；能力节点 roster 的「数据覆盖」行也由本字段聚合。插件工具应如实声明能解析什么标的/数据域/时效 |
+| `aliases` | `List[str]` | `None` | **领域内同义表述**（2026-08）。**必须带领域前缀**，如 `["原神·深渊阵容查询"]`；禁止裸写通用词（`"深渊查询"`），否则与同名能力的其它插件撞车。撞车时由语境标签 + 语义路由裁决 |
 | `visible_when` | `Callable` | `None` | 可见性谓词：每 step 求值，返回 False 时该工具 schema 不下发给模型（源头减噪）。必须是廉价内存判定 |
 | `timeout` | `float` | `60.0` | 工具单次执行超时秒数；超时返回错误字符串，Agent 可继续。需长时间等待的工具应显式声明更大值或 `None`（如 `ask_user` 用 `None`；`web_search_tool` / `web_fetch_tool` 用 `100` 覆盖多源 failover；`run_command` 用 `600`） |
-
-> **超时语义**：外层用 `asyncio.create_task` + `wait_for` 包装。工具内部（如 aiohttp）抛出的 `TimeoutError` 会记为「内部超时」，不会误报成「包装超时超过 N 秒」。
 | `approval` | `str` | `None` | **强制审批级别**（`"user"` / `"master"`）。声明后每次调用先过统一审批中心策略门：无有效放行时自动提交审批并拦截，批准后重新调用即执行——不依赖 LLM 自觉。`"user"` 级可被「完全访问」豁免（照常留审计记录）；`"master"` 级永不可豁免。详见 [§7.10 审批与授权](./07-builtin-tools.md#710-审批与授权统一审批中心) |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
+
+> **超时语义**：外层用 `asyncio.create_task` + `wait_for` 包装。工具内部（如 aiohttp）抛出的 `TimeoutError` 会记为「内部超时」，不会误报成「包装超时超过 N 秒」。
+
+### 2.2.1 检索面：`retrieval_text` = name + docstring + covers + aliases
+
+入库 / 精排文本不再只是 `name + description`：
+
+```text
+{name}
+{description}          ← docstring
+覆盖：{covers…}         ← 可选
+又叫：{aliases…}        ← 可选
+```
+
+- **docstring** 写「函数行为 / 何时调用 / 参数」；
+- **covers** 写「数据域 / 标的范围 / 时效」——解决「黄金 XAU 问不到股票工具」类跨措辞洞；
+- **aliases** 写「用户常说的同义问法」，**必须带领域前缀**。
+
+插件工具缺 `covers` 时注册期打 **debug** 审计（不阻塞注册）；缺 docstring 仍 **warning**。
+`covers`/`aliases` 变更会进哈希并触发重嵌入（`rag/tools.sync_tools`）。
+
+```python
+@ai_tools(
+    category="common",
+    capability_domain="行情数据",
+    covers=[
+        "标的代码解析：A股/港股/美股/指数/期货/现货贵金属（黄金XAU）/外汇",
+    ],
+    aliases=["金融·标的解析"],
+)
+async def search_stock(ctx: RunContext[ToolContext], query: str) -> str:
+    """按名称或代码解析标的规范代码与市场类型。"""
+    ...
+```
+
+实时结构化读数建议在返回体带 **`[as_of=YYYY-MM-DD HH:MM|source=…]`** 或 JSON `"as_of"` 字段，
+供时效账本识别（见 [gscore-development §7](../../gscore-development/references/07-tool-registry-and-agent.md)）。
 
 > **语境工具池**：插件可通过 `context_tags` 声明工具的适用语境，例如：
 > ```python

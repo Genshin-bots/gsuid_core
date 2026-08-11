@@ -1485,12 +1485,109 @@ def _truncate_message_for_log(msg: Any, max_base64_len: int = 100) -> Any:
     return msg
 
 
+def _collect_tool_call_return_ids(messages: Sequence[ModelMessage]) -> tuple[Set[str], Set[str]]:
+    """扫描消息序列，收集 ToolCall / ToolReturn(含 Retry) 的 tool_call_id 集合。"""
+    call_ids: Set[str] = set()
+    return_ids: Set[str] = set()
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    call_ids.add(part.tool_call_id)
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    return_ids.add(part.tool_call_id)
+                elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
+                    return_ids.add(part.tool_call_id)
+    return call_ids, return_ids
+
+
+def _has_orphan_tool_returns(messages: Sequence[ModelMessage]) -> bool:
+    """保留集里是否存在「有 return 无 call」的断裂配对。"""
+    call_ids, return_ids = _collect_tool_call_return_ids(messages)
+    return bool(return_ids - call_ids)
+
+
+def _truncate_history_keep_prefix(
+    history: List[ModelMessage],
+    max_keep: int,
+    *,
+    prefix_ratio: float = 0.35,
+) -> List[ModelMessage]:
+    """前缀稳定截断：永不丢头部，只裁中段，保留近期尾部。
+
+    Provider 前缀缓存依赖 message_history **从左起**字节不变。旧策略
+    ``history[-n:]`` 每轮砍头 → 整段前缀失效。本函数保证
+    ``history[:prefix_n]`` 在历次 compact 间对象序列不变，只丢掉
+    ``prefix_n .. tail_start`` 的中段。
+
+    工具配对：若尾部有孤立 ToolReturn，向左吞并中段直至配对完整；
+    仍无法配对则放弃裁剪、原样返回（安全阀）。
+    """
+    if len(history) <= max_keep:
+        return history
+    if max_keep <= 1:
+        return list(history[-1:])
+
+    prefix_n = max(2, int(max_keep * prefix_ratio))
+    prefix_n = min(prefix_n, max_keep - 1)
+    tail_budget = max_keep - prefix_n
+    tail_start = len(history) - tail_budget
+
+    # 尾段向左扩展以补齐工具 call/return；绝不侵入 prefix（保头）
+    while tail_start > prefix_n:
+        retained = history[:prefix_n] + history[tail_start:]
+        if not _has_orphan_tool_returns(retained):
+            logger.debug(
+                i18n_t(
+                    "log.ai.safe_truncation_history_cutoff",
+                    p0=len(history),
+                    p1=len(retained),
+                    truncate_index=tail_start,
+                )
+            )
+            return retained
+        tail_start -= 1
+
+    # tail 已顶到 prefix：无法在保头前提下安全裁中段
+    if not _has_orphan_tool_returns(history):
+        logger.warning(i18n_t("log.ai.cannot_safely_truncate_history", p0=len(history)))
+    return history
+
+
+def compact_session_history(
+    history: List[ModelMessage],
+    max_history: int,
+    *,
+    trim_ratio: float = 0.6,
+) -> tuple[List[ModelMessage], bool]:
+    """会话 history 高低水位 compact（保头裁中段 + 孤儿清理）。
+
+    Returns:
+        (new_history, did_truncate) — did_truncate 表示因超水位主动丢过中段。
+    """
+    if max_history <= 0:
+        return [], True
+    before = len(history)
+    if before <= max_history:
+        return _drop_orphan_tool_results(history), False
+    low_target = max(1, int(max_history * trim_ratio))
+    trimmed = _truncate_history_keep_prefix(history, low_target)
+    cleaned = _drop_orphan_tool_results(trimmed)
+    return cleaned, len(cleaned) < before
+
+
 def _truncate_history_with_tool_safety(
     history: List[ModelMessage],
     max_history: int,
 ) -> List[ModelMessage]:
     """
     安全截断 history，确保保留的消息中 ToolCallPart 和 ToolReturnPart 完全配对。
+
+    .. deprecated::
+        主会话请用 ``_truncate_history_keep_prefix``（保头裁中段，前缀缓存友好）。
+        本函数仍为「保留尾部」语义，供需要旧行为的调用方。
 
     问题：如果简单地从末尾截断 history，可能导致 ToolReturnPart 被保留
     但其对应的 ToolCallPart 被丢弃（在被截断的前半部分），从而在下一轮请求时出现
@@ -1519,26 +1616,8 @@ def _truncate_history_with_tool_safety(
     while truncate_index > 0:
         truncated = history[truncate_index:]
 
-        # 收集截断结果中所有 ToolCallPart 的 tool_call_id
-        retained_call_ids: Set[str] = set()
-        # 收集截断结果中所有 ToolReturnPart 的 tool_call_id
-        retained_return_ids: Set[str] = set()
-
-        for msg in truncated:
-            if isinstance(msg, ModelResponse):
-                for part in msg.parts:
-                    if isinstance(part, ToolCallPart):
-                        retained_call_ids.add(part.tool_call_id)
-            elif isinstance(msg, ModelRequest):
-                for part in msg.parts:
-                    if isinstance(part, ToolReturnPart):
-                        retained_return_ids.add(part.tool_call_id)
-                    # RetryPromptPart 也是"工具结果型"消息：工具参数校验失败时 由 PydanticAI 生成，
-                    elif isinstance(part, RetryPromptPart) and part.tool_name is not None:
-                        retained_return_ids.add(part.tool_call_id)
-
-        # 找出截断结果中的孤立 return（有 return 但没有对应的 call）
-        orphaned = retained_return_ids - retained_call_ids
+        call_ids, return_ids = _collect_tool_call_return_ids(truncated)
+        orphaned = return_ids - call_ids
 
         if not orphaned:
             # 所有保留的 return 都有对应的 call，截断安全

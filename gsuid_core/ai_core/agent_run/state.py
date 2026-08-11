@@ -78,6 +78,11 @@ class RunOnceState:
     report_speech_blocked: bool = False
     # 本轮见过「无时点聚合」工具返回（气候/月均/历史均值）→ 台词禁冒充实时读数
     saw_timeless_aggregate: bool = False
+    # 时效账本（方案七）：web 滞后 / as_of 新鲜 / 其它成功非 web 返回。
+    # 仅「有 web 且无 as_of 且无非 web 数据」才注入 WEB_ONLY_STALENESS_CAVEAT。
+    saw_web_source: bool = False
+    saw_fresh_data: bool = False
+    saw_non_web_data: bool = False
     # 本轮已发过一句等待安慰（出图前）
     wait_comfort_sent: bool = False
     # 主通道已成功发送的台词段数（单轮出站配额兜底，见 4.10）

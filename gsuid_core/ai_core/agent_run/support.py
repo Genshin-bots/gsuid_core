@@ -96,6 +96,23 @@ _STRUCTURAL_ZERO_TOOL_NUDGE = (
     "禁止假装已经查过或记过。）"
 )
 
+
+def _correction_nudge_markers() -> tuple[str, ...]:
+    """全部 settle 纠正 nudge 文案集合（懒导入 speech_policy 避免环）。
+
+    纠正轮结束后统一从持久 history 剥掉这些 user turn：它们是框架内部指令，
+    累积会污染上下文并破坏 provider 前缀缓存（方案四/五）。
+    """
+
+    return (
+        _FAKE_DONE_NUDGE,
+        _STRUCTURAL_ZERO_TOOL_NUDGE,
+        _RENDER_DELEGATE_NUDGE,
+        _REPORT_SPEECH_NUDGE,
+        _STATUS_ZERO_TOOL_NUDGE,
+    )
+
+
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
 # find_tools 空转阈值更严（同工具连打）
 _FIND_TOOLS_THRASH_LIMIT = 2

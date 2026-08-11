@@ -1525,27 +1525,30 @@ uv run core
 
 ---
 
-## 17. 附录 C：成本 / 委派 / 出图 / 闸门备忘（2026-08-10）
+## 17. 附录 C：成本 / 委派 / 出图 / 闸门备忘（2026-08-10，2026-08-12 增补）
 
 1. **system 前缀缓存**：会话内 system **不改串**（TTL=inf）；mood/关系/记忆/精确时间/身份锚只进 user。
+   系统契约只 **append UserPromptPart**，落盘前 `_relean` 剥掉。history **保头裁中段**
+   （`compact_session_history`），禁止砍头/锚点插头。
 2. **工具规程**：`TOOL_ORCHESTRATION` + **DELEGATION_FIRST** 在 system；重任务禁主人格长业务正文。
 3. **意图**：prior 拼接 + 省略/短句升工具；装配不因闲聊砍向量/状态族；intent=工具/问答 → user 侧事务优先级句。
-4. **工具池**：保底 self+buildin（含 `read_handle`）；recall 默认 3、extra max 默认 6；驻留 2 轮；exclusive 剥离 + find_tools 不回灌。**召回相关度阈值** `tool_recall_threshold`（默认 0.38）可配，低于阈值不装配。
-5. **抢答（A）**：同 Session 新 run 在锁被占时 set cancel；旧 generation 节点间隙 abort 且不写 history；**有在途委派则留交接语**（`_pending_delegation_handoff`），后到 run 注入后即清。
-6. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 经 `pre_send_gate` → FALLBACK。
-7. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC**；尖括号同 turn 3 次熔断；勿在 `agent_run/loop` 平行第二套顺序。
-   另拦框架泄漏 / 系统文案口头禅（过程元话语不对用户）；**`delivery_narration` 交付状态汇报 → FUSE 静默**。
-8. **呈现 vs 合规**：`send_chat_result` 只做通道变换；打回/熔断只在 gate。
-9. **出图主路径**：`create_subagent(render_agent)` → 自由 HTML → `res_` 图 → 主人格 `send_message_by_ai`。
-   长 markdown 呈现层兜底 **默认关**（`render_long_markdown_as_image=False`）。
-   出图候选（`content_is_render_candidate`）加**时效+多点判据**：气候/月均聚合不武装、单点检索不武装、多点才武装。
-10. **return OOC 分岔**：Capability/subagent **不做** roleplay scrub；incomplete 认 `res_`/artifact 登记。
-11. **web 降权**：结构化数据工具 ≫ web 摘要；禁止用过时摘要冒充实时读数。工具只给**无时点聚合**（气候/月均）时追加时效提醒，台词禁说成「现在」读数。
-12. **软门 / Kanban / 无业务特判**：规则预筛；文本 profile 默认可 transient；能力节点靠插件 `register_agent_node` + 工具描述。
-13. **DELIVERED 交付终局（P0，2026-08-10）**：`send_message_by_ai` **带台词**成功交付 → 本 run `speech_policy="delivered"`，对用户只许 `<SILENCE>`；media-only 交付保留一句收尾额度。主通道单轮出站另有 `MAIN_CHANNEL_VISIBLE_LIMIT` 配额兜底。
-14. **能力缺口登记**：`find_tools` 未命中自动计数（`get_capability_gaps`），供运维判断该装什么插件。
-15. **heartbeat 话头门**：决定开口但 `context_hook` 为空（无具体可接话头）→ 降级沉默。
-16. **零工具纠正自洽出口**：结构零工具纠正给模型 `<SILENCE>` 出口——概念题已凭常识答全则不刷屏、不削原答。
+4. **工具池**：保底 self+buildin（含 `read_handle`）；recall 默认 3、extra max 默认 6；驻留 2 轮；exclusive 剥离 + find_tools 不回灌。
+   **召回阈值** `tool_recall_threshold`（0.38）；**知识库 dense** `knowledge_recall_threshold`（0.35）。
+   检索文本 = **name+docstring+covers+aliases**（`ToolBase.retrieval_text`）。
+5. **find_tools 分流**：真无命中 / exclusive 剥离 / visible 隐藏 → 语义节点 + `owning_nodes_of_tools` 指路委派；
+   **禁止**「据现有能力作答」。节点语义路由见 `agent_node/semantic_routing.py`；roster 附 covers。
+6. **抢答（A）**：同 Session 新 run 在锁被占时 set cancel；旧 generation 节点间隙 abort 且不写 history；**有在途委派则留交接语**。
+7. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 经 `pre_send_gate` → FALLBACK。
+8. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC**；勿在 loop 平行第二套顺序。
+9. **呈现 vs 合规**：`send_chat_result` 只做通道变换；打回/熔断只在 gate。
+10. **出图主路径**：`create_subagent(render_agent)` → 自由 HTML / **`render_chart_spec` SVG** → `res_` 图 → `send_message_by_ai`。
+    多点结构且未委派时注入 `POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED`。
+11. **web / 时效**：web 返回 `[source=web|staleness_risk=high]`；结构化带 `[as_of=…]`；仅 web 无 as_of 无实质非 web 数据 → `WEB_ONLY_STALENESS_CAVEAT`。
+    find_tools 的 🔎/🔒/✅ 装配文案**不算** non_web 数据。
+12. **DELIVERED 终局**：带台词成功交付 → `speech_policy="delivered"`，只许 `<SILENCE>`。
+13. **能力缺口登记**：`find_tools` 未命中计数（`get_capability_gaps`）。
+14. **heartbeat 话头门** / **零工具纠正 SILENCE 出口** / **工具健康度**（❌/timeout 连败冻结执行，schema 保留）。
+15. **agent_max_history** 默认 30；trim 低水位 0.6；compact 降频 + 保头。
 
 ---
 
