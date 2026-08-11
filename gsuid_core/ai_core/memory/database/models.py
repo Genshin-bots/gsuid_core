@@ -444,6 +444,15 @@ class AIMemEntity(SQLModel, table=True):
         return None
 
     @classmethod
+    def _normalize_entity_data_names(cls, entities_data: list[dict]) -> None:
+        """与 extract_and_upsert 相同：Speaker 的 user_ 前缀剥成裸 id（就地改 dict）。"""
+        for ed in entities_data:
+            if "is_speaker" in ed or "Speaker" in (ed["tag"] if "tag" in ed else []):
+                name = ed["name"] if "name" in ed else ""
+                if name.startswith("user_"):
+                    ed["name"] = name[len("user_") :]
+
+    @classmethod
     async def prefetch_hybrid_name_ids(
         cls,
         scope_key: str,
@@ -452,11 +461,14 @@ class AIMemEntity(SQLModel, table=True):
         """写锁外：对 SQL 未精确命中的名称做混合检索，返回 {name: entity_id}。
 
         extract_and_upsert 在锁内只消费此 map + 再做一次精确 SQL，避免持锁做 embed/Qdrant。
+        名称归一与写路径一致（先剥 speaker 的 user_），避免 hybrid 键对不上。
         """
         from gsuid_core.ai_core.memory.config import memory_config as _mc
 
         if _mc.eval_mode:
             return {}
+        # 与写路径同一套 name 归一，保证 hybrid_name_ids 的 key 与锁内 all_names 一致
+        cls._normalize_entity_data_names(entities_data)
         all_names = list(
             {
                 (ed["name"] if "name" in ed else "").strip()
@@ -517,12 +529,8 @@ class AIMemEntity(SQLModel, table=True):
         vector_payloads: list[dict] = []
         new_entity_count: int = 0
 
-        for ed in entities_data:
-            if "is_speaker" in ed or "Speaker" in (ed["tag"] if "tag" in ed else []):
-                # 如果 LLM 写的是 user_444835641，统一改成 444835641
-                name = ed["name"] if "name" in ed else ""
-                if name.startswith("user_"):
-                    ed["name"] = name[len("user_") :]
+        # 与 prefetch 共用归一（prefetch 已剥过则幂等）；直调本方法时仍保证行为一致
+        cls._normalize_entity_data_names(entities_data)
 
         # 再补充 speaker（此时 LLM 已有的会被精确匹配去重）
         """
