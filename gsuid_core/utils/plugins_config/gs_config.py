@@ -262,6 +262,7 @@ class StringConfig:
             str(self.CONFIG_PATH),
             text_mode=False,
             overwrite=True,
+            overwrite_part=True,
             file_perms=0o644,
         ) as file:
             if file:

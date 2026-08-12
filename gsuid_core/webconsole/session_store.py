@@ -123,6 +123,7 @@ class SessionStore:
                 str(WEB_SESSIONS_PATH),
                 text_mode=False,
                 overwrite=True,
+                overwrite_part=True,
                 file_perms=0o600,
             ) as f:
                 if f:
