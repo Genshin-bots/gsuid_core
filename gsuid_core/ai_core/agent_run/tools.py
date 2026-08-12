@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings, merge_model_settings
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -42,6 +43,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _matched_delegation_only_profile,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.attribution import resolve_attribution_settings
 
 
 class ToolsPhase(RunOnceHost):
@@ -392,9 +394,21 @@ class ToolsPhase(RunOnceHost):
         from gsuid_core.ai_core.memory.config import memory_config
 
         if self.model:
-            _model_settings = self.model.settings
-            if memory_config.eval_mode and _model_settings:
-                _model_settings["temperature"] = 0.0
+            # 必须拷贝：self.model.settings 是模型对象的共享状态，就地改会污染后续所有 run
+            _base_settings: ModelSettings = self.model.settings.copy() if self.model.settings else ModelSettings()
+            if memory_config.eval_mode:
+                _base_settings["temperature"] = 0.0
+            # 归属透传（默认关闭）：把本次 run 的调用方标识按配置带给上游网关
+            _model_settings: ModelSettings | None = merge_model_settings(
+                _base_settings,
+                resolve_attribution_settings(
+                    config_full_name=self._active_config_name or "",
+                    task_level=self.task_level,
+                    scope=st.budget_scope,
+                    session_id=self.session_id,
+                    create_by=self.create_by,
+                ),
+            )
         else:
             _model_settings = None
 

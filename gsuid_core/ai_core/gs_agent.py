@@ -347,6 +347,9 @@ class GsCoreAIAgent(RunOnceMixin):
             self.model = get_model_for_task(task_level)
             self.model_config_name = get_config_name_for_task(task_level)
             self.model_config_fingerprint = get_model_fingerprint_for_task(task_level)
+        # 本次 run 实际路由到的配置全名：故障切换时会临时指向备用配置，与 model 同步；
+        # 显式传 model 的会话恒为 None（无配置文件可读）。
+        self._active_config_name: Optional[str] = self.model_config_name
 
         # 初始化会话日志记录器：所有 Agent 恒有 logger（session_id 已在上方自动派生
         # 兜底），因此 _session_logger 非 Optional，run() 中不再需要 None 守卫。
@@ -1462,6 +1465,7 @@ class GsCoreAIAgent(RunOnceMixin):
                 )
                 temp_model = None
                 orig_model = self.model
+                orig_active_cfg = self._active_config_name
                 if routed_name and routed_name != self.model_config_name:
                     try:
                         temp_model = get_model_by_full_name(routed_name)
@@ -1475,6 +1479,7 @@ class GsCoreAIAgent(RunOnceMixin):
                             )
                         )
                         routed_name = self.model_config_name
+                self._active_config_name = routed_name or self.model_config_name
                 try:
                     result = await _do_run()
                     _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
@@ -1509,6 +1514,7 @@ class GsCoreAIAgent(RunOnceMixin):
                 finally:
                     if temp_model is not None:
                         self.model = orig_model
+                    self._active_config_name = orig_active_cfg
         return "" if output_type is None else None
 
 

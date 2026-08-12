@@ -462,7 +462,8 @@ Authorization: Bearer <token>
                 "text-embedding-3-large"
             ],
             "model_support": ["text", "image", "audio", "video"],
-            "request_method": ["chat_completions", "responses"]
+            "request_method": ["chat_completions", "responses"],
+            "forward_end_user_id": ["off", "hashed", "raw"]
         }
     }
 }
@@ -471,6 +472,87 @@ Authorization: Bearer <token>
 > **`request_method`（仅 openai provider）**：选择 OpenAI 接口风格。`chat_completions`
 > 走 `/v1/chat/completions`（通用兼容）；`responses` 走 `/v1/responses`（仅 OpenAI 官方及
 > 实现该端点的网关支持）。改动后存活会话下次 run 即热替换，无需 `coreclear`。
+
+> **`forward_end_user_id`（仅 openai provider）**：见下方「终端用户标识透传」。
+
+---
+
+## 终端用户标识透传（`forward_end_user_id`）
+
+OpenAI 协议定义了标准的请求体字段 `user`（end-user ID）：请求带上它，上游网关就能把
+用量、日志与滥用监控按调用方聚合，而不必给每个调用方单独签发密钥。框架把这个字段接到
+了自身的调用归属链路上，逐 provider 配置开关：
+
+| 取值 | 行为 |
+|------|------|
+| `off`（默认） | 不携带 `user` 字段，与不存在该特性完全一致 |
+| `hashed` | 携带 `HMAC-SHA256(salt, 调用方标识)` 的前 32 位十六进制 |
+| `raw` | 携带原始调用方标识 |
+
+配套字段 `end_user_id_salt`（`secret`，WebConsole `/ai-config` 打码展示）是 `hashed`
+模式的盐值。**留空即无密钥摘要**：标识空间小的场景（纯数字账号 / QQ 号）可被枚举反查，
+只起混淆作用；需要抗反查请填一段随机字符串。改动盐值会让此前发出的摘要全部失去对应关系，
+上游按调用方的历史聚合会断裂。
+
+**开关放在 provider 配置文件而不是全局配置**，因为「该不该把调用方标识发给这个上游」是
+逐上游的判断——发给自建网关和发给第三方官方端点显然不是一回事。对外部端点建议保持
+`off` 或至多 `hashed`。
+
+**标识从哪来**：框架既有的调用归属三元组 `(group_id, user_id, bot_id)` 中的 `user_id`。
+交互链路由 `Event` 解析；后台自主调用（巡检 / 主动发言 / 记忆摄入等）经
+`bind_budget_scope` / `set_budget_scope_context` 绑定；嵌套调用沿 contextvar 自动继承。
+真正无归属的调用（如共享素材库打标）不携带该字段，由上游归入匿名桶。
+
+**仅 openai provider 支持**：`user` 是 OpenAI 协议字段，Anthropic / Gemini 没有对等的标准
+字段，这两类配置不提供该开关。
+
+### 鉴权身份 vs 归属标识
+
+自建网关常见两层信息，不要混为一谈：
+
+| 层 | 载体 | 典型用途 |
+|----|------|----------|
+| **鉴权身份** | `Authorization` 请求头（或 profile 里的 `api_key`） | 网关验签、按人限额、SpendLogs 主键 |
+| **归属标识** | 请求体 `user` 字段（由 `forward_end_user_id` 控制） | 日志聚合、滥用监控、与鉴权解耦的观测 |
+
+二者可以一致（`raw` + 用户 JWT 鉴权），也可以分离（服务凭据鉴权 + `raw` 携带真实
+`user_id`）。网关日志里应同时能看到「谁通过了鉴权」与「这次调用归谁」——若只见
+`end_user=1` 而鉴权仍是 `service`，说明归属已透传、逐 run 凭据尚未挂上，需检查解析器
+与 HTTP 入口是否在 `create_task` 边界传递了登录态。
+
+### 服务凭据与逐 run 凭据
+
+profile 里的 `api_key` 是**兜底**：解析器未给出 `extra_headers` 时使用（后台 run、无登录态
+的自主任务等）。对接按人鉴权的自建网关时，这把 key 应是**长期有效的服务凭据**，而不是
+某个人的短期登录 token。
+
+有登录态的交互 run 可由宿主注册的解析器在 `extra_headers` 里附带调用方凭据；`Authorization`
+会覆盖该次请求的 `api_key`，逐 run 生效，模型对象不受污染。解析器只在部分 run 上给出凭据时，
+其余 run 自动落回 profile 里的服务凭据。
+
+### 宿主扩展点
+
+需要把框架内部标识映射为上游认得的主体、或附带自定义请求头时，可注册
+`gsuid_core.ai_core.configs.attribution.register_attribution_resolver`。解析器返回 `None`
+即本次不透传；抛异常会被降级为不透传并打 warning，不会打断一次真实的 run。配置开关仍是
+主闸——`off` 的上游即使注册了解析器也不会收到 `user` 字段。
+
+只想追加请求头、标识仍按配置语义走时，调 `default_end_user_id(req)` 拿默认结果填回
+`CallAttribution.end_user_id`（`raw`/`hashed` 由配置决定，salt 不经过解析器）：
+
+```python
+def resolver(req: AttributionRequest) -> Optional[CallAttribution]:
+    credential = lookup_credential(req.user_id)  # 宿主自己的映射
+    if credential is None:
+        return CallAttribution(end_user_id=default_end_user_id(req))  # 弃权但保留归属
+    return CallAttribution(
+        end_user_id=default_end_user_id(req),
+        extra_headers={"Authorization": f"Bearer {credential}"},
+    )
+```
+
+解析器是同步旁路，别在里面做 I/O。`extra_headers` 只应指向**明确信任的自建网关**；
+对第三方官方端点附带内部凭据等于泄露密钥。
 
 ---
 

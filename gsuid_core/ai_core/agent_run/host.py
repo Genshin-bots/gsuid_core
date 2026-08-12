@@ -26,6 +26,8 @@ class RunOnceHost:
     history: list[Any]
     create_by: str
     model: Any
+    task_level: Literal["high", "low"]
+    _active_config_name: str | None
     system_prompt: str | None
     max_tokens: int | None
     max_iterations: int | None
