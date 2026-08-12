@@ -120,6 +120,7 @@ def _write_brand_config(data: Dict[str, Any]) -> bool:
             str(BRAND_CONFIG_PATH),
             text_mode=False,
             overwrite=True,
+            overwrite_part=True,
             file_perms=0o644,
         ) as file:
             if not file:
@@ -270,6 +271,7 @@ async def upload_brand_icon(
             str(BRAND_ICON_PATH),
             text_mode=False,
             overwrite=True,
+            overwrite_part=True,
             file_perms=0o644,
         ) as file:
             if not file:

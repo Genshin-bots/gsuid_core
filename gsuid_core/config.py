@@ -160,6 +160,7 @@ class CoreConfig:
                     str(CONFIG_PATH),
                     text_mode=False,
                     overwrite=True,
+                    overwrite_part=True,
                     file_perms=0o644,
                 ) as file:
                     if file:
@@ -345,6 +346,7 @@ class PluginConfigStore:
                     str(target),
                     text_mode=False,
                     overwrite=True,
+                    overwrite_part=True,
                     file_perms=0o644,
                 ) as file:
                     if file:
