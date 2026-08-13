@@ -2,7 +2,7 @@
 MCP (Model Context Protocol) 客户端模块
 
 提供通用的 MCP 客户端功能，用于连接和调用 MCP 服务器。
-基于 fastmcp 实现，支持 stdio 和 sse 两种传输方式，异步操作。
+基于 fastmcp 实现，支持 stdio、sse 和 Streamable HTTP 三种传输方式，异步操作。
 
 支持用户通过 WebConsole API 自由添加 MCP 服务器配置，
 框架启动时自动连接 MCP 服务器并将工具注册为 AI 工具。
@@ -18,14 +18,14 @@ Example (stdio):
     >>> tools = await client.list_tools()
     >>> result = await client.call_tool("web_search", {"query": "Python"})
 
-Example (sse):
+Example (streamable_http):
     >>> client = MCPClient(
-    ...     name="知乎搜索",
-    ...     url="https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    ...     name="Example",
+    ...     transport="streamable_http",
+    ...     url="https://example.com/mcp",
     ...     headers={"Authorization": "Bearer your_key"},
     ... )
     >>> tools = await client.list_tools()
-    >>> result = await client.call_tool("zhihu_search", {"query": "RAG"})
 """
 
 from gsuid_core.ai_core.mcp.utils import (
@@ -56,6 +56,16 @@ from gsuid_core.ai_core.mcp.startup import (
     register_all_mcp_tools,
     register_single_mcp_server,
 )
+from gsuid_core.ai_core.mcp.transport import (
+    MCP_TRANSPORT_SSE,
+    MCP_HTTP_TRANSPORTS,
+    MCP_TRANSPORT_STDIO,
+    MCP_TRANSPORT_STREAMABLE_HTTP,
+    detect_mcp_transport,
+    is_http_mcp_transport,
+    resolve_mcp_transport,
+    normalize_mcp_transport,
+)
 from gsuid_core.ai_core.mcp.mcp_presets import MCP_PRESETS
 from gsuid_core.ai_core.mcp.config_manager import (
     MCPConfig,
@@ -74,6 +84,14 @@ __all__ = [
     "MCPToolDefinition",
     "MCPConfigManager",
     "MCP_PRESETS",
+    "MCP_TRANSPORT_STDIO",
+    "MCP_TRANSPORT_SSE",
+    "MCP_TRANSPORT_STREAMABLE_HTTP",
+    "MCP_HTTP_TRANSPORTS",
+    "normalize_mcp_transport",
+    "detect_mcp_transport",
+    "resolve_mcp_transport",
+    "is_http_mcp_transport",
     "mcp_config_manager",
     "parse_mcp_tool_id",
     "format_mcp_tool_id",

@@ -71,7 +71,7 @@ def has_model_visible_content(ev: Event) -> bool:
     """
     if ev.text and ev.text.strip():
         return True
-    return bool(ev.image_id_list or ev.audio_id or ev.audio_id_list or ev.file)
+    return bool(ev.image_id_list or ev.audio_id or ev.audio_id_list or ev.file or ev.node)
 
 
 # 工具调用标记残留正则（弱模型 / 兼容网关把工具调用当普通文本输出）， 详见 _strip_tool_call_artifacts 的 docstring。
@@ -633,6 +633,17 @@ async def prepare_content_payload(
 
             body = annotate_untrusted_message(body)
         text += body
+
+    if ev.reply:
+        text += f"\n--- 引用消息 ---\n{ev.reply}\n"
+
+    if ev.node is not None:
+        from gsuid_core.models import format_node_preview
+
+        preview = format_node_preview(ev.node)
+        text += "\n--- 合并转发 ---\n"
+        if not ev.reply or preview not in str(ev.reply):
+            text += f"{preview}\n"
 
     # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
     if ev.image_id_list:

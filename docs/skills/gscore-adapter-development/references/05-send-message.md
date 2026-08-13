@@ -96,12 +96,17 @@ data == "用户ID"
 ```
 - 通常**仅群聊**有意义，私聊忽略。注意 `at_list` 可能有多个。
 
-### `reply`
+### `reply` / `reply_id`（下发 ≠ 上报）
+
+下发方向要适配器**引用某条已有消息**时，`data` 仍是平台 **msg_id**（和上报的 `reply`=正文不同）：
 
 ```python
 data == "要引用的 msg_id"
 # → 平台的引用回复段
 ```
+
+- core 历史包只发 `reply`；新适配器应同时认 `reply_id`，两者都按 msg_id 落地成引用段。
+- 不要把上行 `reply` 里的引用正文再当成引用 id 发出去。
 
 ### `record` / `video`（语音 / 视频）
 
@@ -210,7 +215,7 @@ MessageSend(
 | `text` | str | 文本段 | 全部 |
 | `image` | `base64://` 或 `link://` | 图片段（双处理）| 全部 |
 | `at` | 用户 ID str | @ 段（仅群） | 多数 |
-| `reply` | msg_id str | 引用段 | 部分 |
+| `reply` / `reply_id` | msg_id str | 引用段（下发按 id） | 部分 |
 | `record` | `base64://` | 语音段 | 部分 |
 | `video` | `base64://` | 视频段 | 部分 |
 | `file` | `名\|内容` | 文件上传 | 部分 |

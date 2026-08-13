@@ -840,7 +840,8 @@ _PLUGIN_DEVELOPER_PROMPT = """你负责端到端编写并热加载 GsCore 插件
   `ev.bot_id`、`ev.bot_self_id`、`ev.user_pm`（权限等级 0=master…6=普通）、
   `ev.is_tome`（是否@了Bot）、`ev.at` / `ev.at_list`、
   `ev.image` / `ev.image_list` / `ev.image_id` / `ev.image_id_list`、
-  `ev.audio_id` / `ev.audio_id_list`、`ev.reply`（回复的消息ID）、
+  `ev.audio_id` / `ev.audio_id_list`、`ev.reply`（引用正文）、`ev.reply_id`、
+  `ev.node`（合并转发段列表）、
   `ev.file` / `ev.file_name` / `ev.file_type`、
   `ev.sender`（发送者信息字典）、`ev.msg_id`、`ev.session_id`（property，会话标识）。
   正则专用：`ev.regex_group`（位置分组，元组）、`ev.regex_dict`（命名分组，字典）。

@@ -64,6 +64,8 @@
   "log.mcp.registering_server_config": "[MCP] 正在注册 MCP 服务器: {p0} ({config_id})",
   "log.mcp.registration_tools_total": "[MCP] {p0} 注册完成，共 {count} 个工具",
   "log.mcp.sse_transport_url": "[MCP][{p0}] 使用 SSE 传输，URL: {p1}",
+  "log.mcp.streamable_http_transport_url": "[MCP][{p0}] 使用 Streamable HTTP 传输，URL: {p1}",
+  "log.mcp.unknown_transport_fallback_stdio": "[MCP][{p0}] 未知传输方式 '{p1}'，回退为 stdio",
   "log.mcp.tool_calling_name_args_call": "[MCP Tool] 调用 {p0}/{tool_name}, 参数: {call_args}",
   "log.mcp.tool_fetched_tools": "[MCP][{p0}] 获取到 {p1} 个工具",
   "log.mcp.tools_registered_total": "[MCP] 所有 MCP 工具注册完成，共注册 {total_registered} 个工具",

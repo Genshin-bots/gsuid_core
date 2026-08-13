@@ -189,11 +189,26 @@ async def _(bot, ev):
     if ev.is_tome():                            # 触发 is_tome
         message.append(Message("at", self_id))
 
+    if ev.reply:                                # reply=正文, reply_id=id, 引用图始终上报
+        message.append(Message("reply_id", str(ev.reply.message_id)))
+        message.append(Message("reply", ev.reply.message.extract_plain_text()))
+        for rseg in ev.reply.message:
+            if rseg.type == "image" and rseg.data:
+                message.append(Message("image", rseg.data["url"]))
+            elif rseg.type == "forward":
+                message[-1] = Message("reply", "[合并转发]\n" + str(message[-1].data))
+                fwd = await bot.call_api("get_forward_msg", id=rseg.data["id"])
+                message.append(Message("node", flatten_forward(fwd)))
+
     for seg in messages:                        # CQ 段 → GsMessage
         if seg.type == "text":  message.append(Message("text", seg.data["text"]))
         elif seg.type == "image": message.append(Message("image", seg.data["url"]))
         elif seg.type == "at":  message.append(Message("at", seg.data["qq"]))
-        elif seg.type == "reply": message.append(Message("reply", seg.data["id"]))
+        elif seg.type == "forward":
+            fwd = await bot.call_api("get_forward_msg", id=seg.data["id"])
+            message.append(Message("node", flatten_forward(fwd)))
+        elif seg.type == "reply":
+            continue
 
     if not message: return
     msg = MessageReceive(
@@ -219,6 +234,8 @@ async def onebot_send(bot, content: List[GsMessage], target_id, target_type):
             if _c.type == "text":   message.append(MessageSegment.text(_c.data))
             elif _c.type == "image": message.append(MessageSegment.image(_c.data.replace("link://", "")))
             elif _c.type == "at":   message.append(MessageSegment.at(_c.data))
+            elif _c.type in ("reply", "reply_id"):
+                message.append(MessageSegment.reply(_c.data))
             elif _c.type == "record": message.append(MessageSegment.record(b64_to_bytes(_c.data)))
             elif _c.type == "video": message.append(MessageSegment.video(b64_to_bytes(_c.data)))
             elif _c.type == "node":

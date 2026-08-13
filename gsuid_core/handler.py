@@ -9,7 +9,16 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message, TaskContext, TraceContext, MessageReceive
+from gsuid_core.models import (
+    NODE_MARK,
+    Event,
+    Message,
+    TaskContext,
+    TraceContext,
+    MessageReceive,
+    format_node_preview,
+    normalize_node_items,
+)
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
 from gsuid_core.subscribe import gs_subscribe
@@ -772,6 +781,10 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.audio_id_list.append(event.audio_id)
         elif _msg.type == "reply":
             event.reply = _msg.data
+        elif _msg.type == "reply_id" and _msg.data is not None:
+            event.reply_id = str(_msg.data)
+        elif _msg.type == "node":
+            event.node = normalize_node_items(_msg.data)
         elif _msg.type == "file" and _msg.data:
             data = _msg.data.split("|")
             event.file_name = data[0]
@@ -791,6 +804,12 @@ async def msg_process(msg: MessageReceive) -> Event:
                     event.group_id = str(_msg.data["group_id"])
         _content.append(_msg)
     event.content = _content
+    if event.node is not None and (event.reply is not None or event.reply_id):
+        preview = format_node_preview(event.node)
+        if not event.reply:
+            event.reply = preview
+        elif NODE_MARK not in str(event.reply):
+            event.reply = f"{NODE_MARK}\n{event.reply}"
     return event
 
 

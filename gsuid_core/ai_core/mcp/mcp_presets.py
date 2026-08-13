@@ -3,9 +3,10 @@ MCP 预设配置
 
 提供常见、知名 MCP 服务提供方的预设配置，方便用户快速添加。
 
-预设配置支持两种传输方式:
+预设配置支持三种传输方式:
 - stdio: 通过 command + args + env_template 启动本地进程
 - sse: 通过 url + headers_template 连接远程 SSE 服务器
+- streamable_http: 通过 url + headers_template 连接远程 Streamable HTTP 服务器
 """
 
 from typing import Any

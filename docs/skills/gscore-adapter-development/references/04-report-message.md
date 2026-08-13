@@ -62,8 +62,8 @@ if await SUPERUSER(bot, ev):    pm = 1
 
 ## 4.4 `content` 各段类型（上报方向 core 能解析的）
 
-`msg_process()` 只识别下列 6 种段，**其余类型会被忽略**（仍原样存进 `event.content`，但不参与
-命令解析）。逐条说明 `data` 该填什么：
+`msg_process()` 会提升 `text` / `at` / `image` / `reply` / `reply_id` / `node` / `record` / `file`
+到 `Event` 字段；其余类型仍原样存进 `event.content`，不参与命令解析。逐条说明 `data` 该填什么：
 
 ### `text` —— 文本（最核心）
 
@@ -100,12 +100,53 @@ Message("image", "base64://....")          # 或 base64
 - 平台给的是 `file_id` 之类间接引用时，**先在适配器侧换成 url 或 base64 再上报**（core 拿不到
   你平台的 file_id）。
 
-### `reply` —— 引用回复
+### `reply` / `reply_id` —— 引用回复
+
+旧约定把被引用消息的 **msg_id** 塞进 `reply`。新约定拆成两段，**成对上报**：
 
 ```python
-Message("reply", "被引用消息的 msg_id")
+Message("reply_id", "被引用消息的 msg_id")
+Message("reply", "被引用消息的纯文本")
 ```
-- 进 `event.reply`。插件可据此取被引用消息。
+
+- **`reply`**：引用正文（纯文本）。core `msg_process()` 把它写进 `event.reply`。
+- **`reply_id`**：被引用消息的平台 id，进 `event.reply_id`。
+- **引用图必须一并上报**为 `image` 段（url 或 base64）。不要再加 `is_reply_img` 之类开关。
+- **引用的是合并转发时**：`reply` 必须以 `[合并转发]` 开头（可再附摘要），并额外上报一段
+  `node`（见下）。core 若发现 `reply`/`reply_id` 与 `node` 同时存在，会保证 `event.reply`
+  带上 `[合并转发]`。
+- **不要**再把 msg_id 填进 `reply`。下发方向的 `reply` 仍是 msg_id，见 [§5.3](./05-send-message.md)。
+
+```python
+# OneBot：ev.reply 带完整被引消息
+if ev.reply:
+    message.append(Message("reply_id", str(ev.reply.message_id)))
+    message.append(Message("reply", ev.reply.message.extract_plain_text()))
+    for seg in ev.reply.message:
+        if seg.type == "image" and seg.data:
+            message.append(Message("image", seg.data["url"]))
+```
+
+### `node` —— 合并转发（上报）
+
+用户**发送**或**引用**合并转发时，都要上报 `node`，`data` 与下发相同：`List[Message]`
+（JSON 里是 `[{"type": "...", "data": "..."}, ...]`），扁平一段，**不要嵌套 node**。
+
+```python
+Message("node", [
+    Message("text", "小助手:"),
+    Message("text", "第一条"),
+    Message("image", "https://.../a.jpg"),
+])
+```
+
+- 进 `event.node`。**不要**把节点正文拼进顶层 `text`，否则会污染命令匹配。
+- 平台只给 forward id 时，适配器先 `get_forward_msg` / 等价 API 展开再上报。
+- **内层还可以再套合并转发**：适配器按深度上限（建议 3）递归展开，扁平进**同一段**
+  `node`；每进入一层先插一条 `text="[合并转发]"`。超深度或环只留标记，不再请求。
+- core 若仍收到嵌套 `type=node`，`normalize_node_items` 会同样展平。
+- 展开失败也至少报 `Message("node", [Message("text", "[合并转发]")])`。
+- 引用合并转发：`reply_id` + `reply="[合并转发]\\n..."` + `node` + 内部图片（`image`）。
 
 ### `record` —— 语音
 
@@ -123,7 +164,7 @@ Message("file", f"{file_name}|{file_base64_or_url}")
 - 内容以 `http`/`https` 开头 → core 标记 `file_type='url'`，否则 `'base64'`。
 - 文件较大时优先传 url（避免 base64 撑爆帧）；小文件可 base64。
 
-> 速记：上报侧真正"有用"的段就是 **text / at / image / reply / record / file**。
+> 速记：上报侧真正"有用"的段就是 **text / at / image / reply / reply_id / node / record / file**。
 > 你想让机器人响应文字命令，至少要有一段 `text`；想触发 @ 才响应的命令，再加一段
 > `at == bot_self_id`。
 

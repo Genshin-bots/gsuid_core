@@ -2,12 +2,12 @@
 MCP 客户端核心模块
 
 提供通用的 MCP 客户端功能，用于连接和调用 MCP 服务器。
-基于 fastmcp 实现，支持通过 stdio 和 sse 两种方式连接 MCP 服务器。
+基于 fastmcp 实现，支持 stdio / sse / Streamable HTTP 三种传输。
 
 设计原则：
 - 每次调用时建立连接、执行操作、断开连接（无状态模式）
 - 支持通过代码配置连接参数（command, args, env）— stdio 模式
-- 支持通过 URL 和请求头连接远程服务器（url, headers）— sse 模式
+- 支持通过 URL 和请求头连接远程服务器（url, headers）— sse / streamable_http
 - 完全异步，兼容项目的 async 架构
 """
 
@@ -15,11 +15,17 @@ from typing import Any, Union
 from dataclasses import field, dataclass
 
 from fastmcp import Client
-from fastmcp.client.transports import SSETransport, StdioTransport
+from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
 
 from mcp.types import TextContent, ImageContent, ResourceLink, EmbeddedResource
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.mcp.transport import (
+    MCP_TRANSPORT_SSE,
+    MCP_TRANSPORT_STDIO,
+    MCP_TRANSPORT_STREAMABLE_HTTP,
+    resolve_mcp_transport,
+)
 
 
 @dataclass
@@ -55,9 +61,10 @@ class MCPClient:
     """
     MCP 客户端
 
-    支持两种传输方式连接 MCP 服务器：
+    支持三种传输方式连接 MCP 服务器：
     - stdio: 通过 command + args + env 启动本地进程
-    - sse: 通过 url + headers 连接远程 SSE 服务器
+    - sse: 通过 url + headers 连接远程 SSE 服务器（旧传输）
+    - streamable_http: 通过 url + headers 连接远程 Streamable HTTP 服务器
 
     每次操作独立建立连接，操作完成后自动断开。
 
@@ -66,8 +73,9 @@ class MCPClient:
         command: 启动命令，如 "uvx", "npx", "python" 等（stdio 模式）
         args: 命令参数列表（stdio 模式）
         env: 环境变量字典（stdio 模式）
-        url: SSE 服务器 URL（sse 模式）
-        headers: HTTP 请求头字典（sse 模式，如 Authorization）
+        url: 远程服务器 URL（sse / streamable_http 模式）
+        headers: HTTP 请求头字典（远程模式，如 Authorization）
+        transport: 显式传输方式；空则按 url / command 推断
 
     Example (stdio):
         >>> client = MCPClient(
@@ -79,45 +87,63 @@ class MCPClient:
         >>> tools = await client.list_tools()
         >>> result = await client.call_tool("web_search", {"query": "Python"})
 
-    Example (sse):
+    Example (streamable_http):
         >>> client = MCPClient(
-        ...     name="知乎搜索",
-        ...     url="https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+        ...     name="Example",
+        ...     transport="streamable_http",
+        ...     url="https://example.com/mcp",
         ...     headers={"Authorization": "Bearer your_key"},
         ... )
         >>> tools = await client.list_tools()
-        >>> result = await client.call_tool("zhihu_search", {"query": "RAG"})
     """
 
     name: str
     command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    url: str = ""  # SSE 服务器 URL
-    headers: dict[str, str] = field(default_factory=dict)  # SSE HTTP 请求头
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    transport: str = ""
 
-    def _detect_transport(self) -> str:
-        """根据 url / command 字段自动推断传输方式"""
-        if self.url and isinstance(self.url, str) and self.url.startswith("http"):
-            return "sse"
-        return "stdio"
+    def _resolve_transport(self) -> str:
+        """显式 transport 优先，否则按 url / command 推断。"""
+        return resolve_mcp_transport(
+            self.transport,
+            url=self.url,
+            command=self.command,
+        )
 
-    def _create_transport(self) -> Union[StdioTransport, SSETransport]:
-        """创建传输层（根据 url / command 自动选择 stdio 或 sse）"""
-        transport_type = self._detect_transport()
+    def _create_transport(
+        self,
+    ) -> Union[StdioTransport, SSETransport, StreamableHttpTransport]:
+        """创建传输层（stdio / sse / streamable_http）。"""
+        transport_type = self._resolve_transport()
 
-        if transport_type == "sse":
+        if transport_type == MCP_TRANSPORT_SSE:
             logger.debug(t("log.mcp.sse_transport_url", p0=self.name, p1=self.url))
             return SSETransport(
                 url=self.url,
                 headers=self.headers if self.headers else None,
             )
-        else:
-            return StdioTransport(
-                command=self.command,
-                args=self.args,
-                env=self.env if self.env else None,
+        if transport_type == MCP_TRANSPORT_STREAMABLE_HTTP:
+            logger.debug(t("log.mcp.streamable_http_transport_url", p0=self.name, p1=self.url))
+            return StreamableHttpTransport(
+                url=self.url,
+                headers=self.headers if self.headers else None,
             )
+        if transport_type != MCP_TRANSPORT_STDIO:
+            logger.warning(
+                t(
+                    "log.mcp.unknown_transport_fallback_stdio",
+                    p0=self.name,
+                    p1=transport_type,
+                )
+            )
+        return StdioTransport(
+            command=self.command,
+            args=self.args,
+            env=self.env if self.env else None,
+        )
 
     @staticmethod
     def _truncate_args(arguments: dict[str, Any] | None, max_len: int = 100) -> dict[str, Any]:

@@ -6,21 +6,25 @@
 
 每个 MCP 配置对应一个 MCP 服务器，配置以 JSON 文件形式存储在 `data/ai_core/mcp_configs/` 目录下。
 
-支持两种传输方式：
+支持三种传输方式：
 - **stdio** — 通过命令行启动本地 MCP 服务器（`command` + `args` + `env`）
-- **sse** — 通过 HTTP/SSE 连接远程 MCP 服务器（`url` + `headers`）
+- **sse** — 通过旧版 HTTP/SSE 连接远程 MCP 服务器（`url` + `headers`）
+- **streamable_http** — 通过 Streamable HTTP 连接远程 MCP 服务器（`url` + `headers`，当前推荐的远程传输）
+
+导入 JSON 时也接受官方别名 `http` / `streamable-http` / `type: "http"`，会归一为 `streamable_http`。
+未显式指定传输时：URL 路径以 `/sse` 结尾 → `sse`；其它 http(s) URL → `streamable_http`；否则 → `stdio`。
 
 **配置字段说明**：
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 是 | MCP 服务器显示名称 |
-| transport | string | 否 | 传输方式：`"stdio"` 或 `"sse"`，默认 `"stdio"`。若未显式设置，会根据 `url` 字段自动推断 |
+| transport | string | 否 | 传输方式：`"stdio"` / `"sse"` / `"streamable_http"`，默认 `"stdio"`。别名 `http`、`streamable-http` 视为 `streamable_http`。未显式设置时按 `url` 推断 |
 | command | string | stdio 模式必填 | 启动命令，如 `uvx`, `npx`, `python` |
 | args | array | 否 | 命令参数列表（stdio 模式），默认 `[]` |
 | env | object | 否 | 环境变量字典（stdio 模式），默认 `{}` |
-| url | string | sse 模式必填 | SSE 服务器 URL，如 `https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse` |
-| headers | object | 否 | HTTP 请求头字典（sse 模式），如 `{"Authorization": "Bearer xxx"}`，默认 `{}` |
+| url | string | 远程模式必填 | 远程 MCP 服务器 URL。SSE 多为 `…/sse`，Streamable HTTP 多为 `…/mcp` |
+| headers | object | 否 | HTTP 请求头字典（远程模式），如 `{"Authorization": "Bearer xxx"}`，默认 `{}` |
 | enabled | boolean | 否 | 是否启用，默认 `true` |
 | register_as_ai_tools | boolean | 否 | 是否将 MCP 工具注册为 AI 工具，默认 `false` |
 | tools | array | 否 | 工具定义列表，默认 `[]` |
@@ -51,22 +55,21 @@
 }
 ```
 
-**配置文件示例 (sse)**：
+**配置文件示例 (streamable_http)**：
 ```json
 {
-    "name": "知乎搜索",
-    "transport": "sse",
-    "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    "name": "Example MCP",
+    "transport": "streamable_http",
+    "url": "https://example.com/mcp",
     "headers": {"Authorization": "Bearer your_access_secret"},
     "enabled": true,
     "register_as_ai_tools": false,
     "tools": [
         {
-            "name": "zhihu_search",
-            "description": "搜索知乎站内内容",
+            "name": "search",
+            "description": "搜索内容",
             "parameters": {
-                "query": {"type": "string", "description": "搜索关键词", "required": true},
-                "count": {"type": "integer", "description": "返回条数 1-10", "required": false}
+                "query": {"type": "string", "description": "搜索关键词", "required": true}
             }
         }
     ]
@@ -196,23 +199,23 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | name | string | 是 | - | MCP 服务器名称，同时用于生成 config_id |
-| transport | string | 否 | `"stdio"` | 传输方式：`"stdio"` 或 `"sse"`，未设置时自动推断 |
+| transport | string | 否 | `"stdio"` | 传输方式：`"stdio"` / `"sse"` / `"streamable_http"`，未设置时自动推断 |
 | command | string | stdio 模式必填 | `""` | 启动命令 |
 | args | array | 否 | `[]` | 命令参数（stdio 模式） |
 | env | object | 否 | `{}` | 环境变量（stdio 模式） |
-| url | string | sse 模式必填 | `""` | SSE 服务器 URL |
-| headers | object | 否 | `{}` | HTTP 请求头（sse 模式，如 `{"Authorization": "Bearer xxx"}`） |
+| url | string | 远程模式必填 | `""` | 远程 MCP 服务器 URL |
+| headers | object | 否 | `{}` | HTTP 请求头（远程模式，如 `{"Authorization": "Bearer xxx"}`） |
 | enabled | boolean | 否 | `true` | 是否启用 |
 | register_as_ai_tools | boolean | 否 | `false` | 是否将 MCP 工具注册为 AI 工具 |
 | tools | array | 否 | `[]` | 工具定义列表，见下方工具定义格式 |
 | tool_permissions | object | 否 | `{}` | 工具权限配置，键为工具名，值为权限等级 |
 
-**SSE 模式创建示例**：
+**Streamable HTTP 模式创建示例**：
 ```json
 {
-    "name": "知乎搜索",
-    "transport": "sse",
-    "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    "name": "Example MCP",
+    "transport": "streamable_http",
+    "url": "https://example.com/mcp",
     "headers": {"Authorization": "Bearer your_access_secret"},
     "enabled": true,
     "register_as_ai_tools": false,
@@ -292,12 +295,12 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 否 | MCP 服务器名称 |
-| transport | string | 否 | 传输方式：`"stdio"` 或 `"sse"` |
+| transport | string | 否 | 传输方式：`"stdio"` / `"sse"` / `"streamable_http"` |
 | command | string | 否 | 启动命令 |
 | args | array | 否 | 命令参数 |
 | env | object | 否 | 环境变量 |
-| url | string | 否 | SSE 服务器 URL |
-| headers | object | 否 | HTTP 请求头（sse 模式） |
+| url | string | 否 | 远程 MCP 服务器 URL |
+| headers | object | 否 | HTTP 请求头（远程模式） |
 | enabled | boolean | 否 | 是否启用 |
 | register_as_ai_tools | boolean | 否 | 是否将 MCP 工具注册为 AI 工具 |
 | tools | array | 否 | 工具定义列表 |
@@ -529,9 +532,9 @@ POST /api/ai/mcp/tools/discover
 ```json
 {
     "name": "TestServer",
-    "command": "uvx",
-    "args": ["test-mcp"],
-    "env": {"API_KEY": "test_key"}
+    "transport": "streamable_http",
+    "url": "https://example.com/mcp",
+    "headers": {"Authorization": "Bearer xxx"}
 }
 ```
 
@@ -539,9 +542,12 @@ POST /api/ai/mcp/tools/discover
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 是 | MCP 服务器名称 |
-| command | string | 是 | 启动命令 |
+| transport | string | 否 | `"stdio"` / `"sse"` / `"streamable_http"`，默认 `"stdio"` |
+| command | string | stdio 模式必填 | 启动命令 |
 | args | array | 否 | 命令参数，默认 `[]` |
 | env | object | 否 | 环境变量，默认 `{}` |
+| url | string | 远程模式必填 | 远程 MCP 服务器 URL |
+| headers | object | 否 | HTTP 请求头 |
 
 **响应**（成功）：
 ```json

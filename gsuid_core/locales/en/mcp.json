@@ -64,6 +64,8 @@
   "log.mcp.registering_server_config": "[MCP] Registering MCP server: {p0} ({config_id})",
   "log.mcp.registration_tools_total": "[MCP] {p0} registration complete, {count} tools total",
   "log.mcp.sse_transport_url": "[MCP][{p0}] Using SSE transport, URL: {p1}",
+  "log.mcp.streamable_http_transport_url": "[MCP][{p0}] Using Streamable HTTP transport, URL: {p1}",
+  "log.mcp.unknown_transport_fallback_stdio": "[MCP][{p0}] Unknown transport '{p1}', falling back to stdio",
   "log.mcp.tool_calling_name_args_call": "[MCP Tool] Calling {p0}/{tool_name}, args: {call_args}",
   "log.mcp.tool_fetched_tools": "[MCP][{p0}] Fetched {p1} tools",
   "log.mcp.tools_registered_total": "[MCP] All MCP tools registered, {total_registered} tools registered in total",

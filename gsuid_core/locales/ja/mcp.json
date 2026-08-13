@@ -64,6 +64,8 @@
   "log.mcp.registering_server_config": "[MCP] MCP サーバーを登録中: {p0} ({config_id})",
   "log.mcp.registration_tools_total": "[MCP] {p0} 登録完了、合計 {count} 個のツール",
   "log.mcp.sse_transport_url": "[MCP][{p0}] SSE トランスポートを使用、URL: {p1}",
+  "log.mcp.streamable_http_transport_url": "[MCP][{p0}] Streamable HTTP トランスポートを使用、URL: {p1}",
+  "log.mcp.unknown_transport_fallback_stdio": "[MCP][{p0}] 未知の転送方式 '{p1}'、stdio にフォールバック",
   "log.mcp.tool_calling_name_args_call": "[MCP Tool] 呼び出し中 {p0}/{tool_name}、引数: {call_args}",
   "log.mcp.tool_fetched_tools": "[MCP][{p0}] {p1} 個のツールを取得",
   "log.mcp.tools_registered_total": "[MCP] すべての MCP ツール登録完了、合計 {total_registered} 個のツールを登録",

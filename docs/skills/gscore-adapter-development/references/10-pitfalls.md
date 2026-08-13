@@ -26,10 +26,12 @@
 - `bot_id == 路由BOT_ID` 且 `content[0].type` 以 `log` 开头的包是**日志回显**，按等级 `print`/`logger`，
   然后 `continue`。**误当普通消息发会在用户群里刷 core 内部日志。** 见 [§5.6](./05-send-message.md)。
 
-## 红线 5：`node` 遍历发送，不要嵌套
+## 红线 5：`node` 双向都要处理，不要嵌套
 
-- `node.data` 是 `List[Message]`，多数平台没有原生合并转发 → **遍历逐条发**。
-- node 内**不允许再嵌 node**。core 侧也可能已按配置把 node 拆好再下发。见 [§5.4](./05-send-message.md)。
+- 下发：`node.data` 是 `List[Message]`，多数平台没有原生合并转发 → **遍历逐条发**。
+- 上报：用户发送或引用合并转发时也要报 `node`（先按 forward id 展开）。引用时 `reply`
+  以 `[合并转发]` 开头。见 [§4.4](./04-report-message.md) / [§5.4](./05-send-message.md)。
+- node 内**不允许再嵌 node**。core 侧下发时也可能已按配置把 node 拆好。
 
 ## 红线 6：`max_size` 必须调大
 
@@ -87,7 +89,14 @@
 - `content` 单段且 `type` 为 `excute_delete_message` / `excute_ban_user` 的包，要在分发**前**短路，
   调平台撤回/禁言 API。误当消息发 → 非 OneBot 平台会**误发一条空消息**。见 [§11.3/§11.4](./11-meta-and-control.md)。
 
-## 红线 17：`echo` 非空必须回执，且 meta 段单独成包
+## 红线 17：引用必须拆 `reply` + `reply_id`，引用图默认上报
+
+- 上报：`reply` = 引用**正文**，`reply_id` = 被引用消息 id。**不要**再把 id 塞进 `reply`。
+- 引用里的图片一律转成 `image` 段上报，不要再用 `is_reply_img` 开关。
+- 下发：`reply` / `reply_id` 都按 **msg_id** 落地成平台引用段（和上报语义不同）。
+  见 [§4.4](./04-report-message.md) / [§5.3](./05-send-message.md)。
+
+## 红线 18：`echo` 非空必须回执，且 meta 段单独成包
 
 - `MessageSend.echo` 非空 ⇒ 发完真实消息**必须**回传 `recall_message_id`（即便没拿到 id 也回 `id=None`）。
   漏回会被 core latch 成"不支持回执"，插件 `wait_recall` 此后直接拿空。
@@ -102,7 +111,7 @@
 - [ ] 上报/下发用同一平台 `bot_id`；含 `:` 的路由判断用完整值
 - [ ] `image` 同时处理 `base64://` 和 `link://`
 - [ ] `log_` 包已特判、不外发
-- [ ] `node` 遍历逐发、不嵌套
+- [ ] `node` 下发遍历逐发、不嵌套；上报会展开合并转发，引用转发带 `[合并转发]` + `node`
 - [ ] 断线重连有退避有限次、复用同一路由 `bot_id`
 - [ ] 上报走队列串行；下发循环单条 `try/except`
 - [ ] `user_pm` 不给 0；`is_tome` 用额外 `at` 段
@@ -113,4 +122,5 @@
 - [ ] 控制包 `excute_delete_message`/`excute_ban_user` 分发前短路、不误发空消息
 - [ ] `echo` 非空必回执（没拿到 id 也回）；meta 段 `meta-` 前缀且单独成包
 - [ ] meta 只上报三种标准事件（`user_join_group`/`user_exit_group`/`poke`），字段名与 §11.1 统一表一致
+- [ ] 引用上报 `reply`=正文、`reply_id`=id，引用图始终作为 `image` 上报；下发 `reply`/`reply_id` 按 msg_id 引用
 </content>

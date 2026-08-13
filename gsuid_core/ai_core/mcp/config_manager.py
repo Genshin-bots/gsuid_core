@@ -4,9 +4,10 @@ MCP 配置管理器模块
 管理用户自定义的 MCP 服务器配置，支持增删改查。
 每个 MCP 配置以独立 JSON 文件存储在 data/ai_core/mcp_configs/ 目录下。
 
-支持两种传输方式:
+支持三种传输方式:
 1. stdio — 通过命令行启动本地 MCP 服务器（command + args + env）
-2. sse  — 通过 HTTP/SSE 连接远程 MCP 服务器（url + headers）
+2. sse — 通过旧版 HTTP/SSE 连接远程 MCP 服务器（url + headers）
+3. streamable_http — 通过 Streamable HTTP 连接远程 MCP 服务器（url + headers）
 
 配置文件格式 (JSON) — stdio 示例:
 {
@@ -29,11 +30,11 @@ MCP 配置管理器模块
     ]
 }
 
-配置文件格式 (JSON) — SSE 示例:
+配置文件格式 (JSON) — Streamable HTTP 示例:
 {
-    "name": "知乎搜索",
-    "transport": "sse",
-    "url": "https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    "name": "Example MCP",
+    "transport": "streamable_http",
+    "url": "https://example.com/mcp",
     "headers": {"Authorization": "Bearer your_access_secret"},
     "enabled": true,
     "register_as_ai_tools": false,
@@ -58,6 +59,11 @@ from dataclasses import field, dataclass
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import MCP_CONFIGS_PATH
+from gsuid_core.ai_core.mcp.transport import (
+    MCP_TRANSPORT_STDIO,
+    is_http_mcp_transport,
+    resolve_mcp_transport,
+)
 
 # 配置 ID 格式分隔符
 MCP_TOOL_ID_SEPARATOR = " - "
@@ -93,21 +99,23 @@ class MCPToolDefinition:
 class MCPConfig:
     """MCP 服务器配置数据类
 
-    支持两种传输方式:
+    支持三种传输方式:
     - stdio: 通过 command + args + env 启动本地进程
-    - sse: 通过 url + headers 连接远程 SSE 服务器
+    - sse: 通过 url + headers 连接远程 SSE 服务器（旧传输）
+    - streamable_http: 通过 url + headers 连接远程 Streamable HTTP 服务器
 
     Attributes:
         name: MCP 服务器名称
-        transport: 传输方式，"stdio" 或 "sse"，默认 "stdio"
+        transport: 传输方式，stdio / sse / streamable_http，默认 "stdio"
             若未显式设置，会根据 url / command 字段自动推断:
-            - url 存在且以 http 开头 → sse
+            - URL 路径以 /sse 结尾 → sse
+            - 其它 http(s) URL → streamable_http
             - 否则 → stdio
         command: 启动命令（stdio 模式必填）
         args: 命令参数（stdio 模式）
         env: 环境变量（stdio 模式）
-        url: SSE 服务器 URL（sse 模式必填，如 https://xxx/sse）
-        headers: HTTP 请求头（sse 模式，如 Authorization 等）
+        url: 远程服务器 URL（sse / streamable_http 模式必填）
+        headers: HTTP 请求头（远程模式，如 Authorization 等）
         enabled: 是否启用
         register_as_ai_tools: 是否将该 MCP 服务器的工具注册为 AI Tools
         tools: 工具列表
@@ -122,28 +130,24 @@ class MCPConfig:
     """
 
     name: str
-    transport: str = "stdio"  # "stdio" 或 "sse"
+    transport: str = MCP_TRANSPORT_STDIO
     command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    url: str = ""  # SSE 模式的服务器 URL
-    headers: dict[str, str] = field(default_factory=dict)  # SSE 模式的 HTTP 请求头
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     register_as_ai_tools: bool = False  # 是否将该 MCP 服务器的工具注册为 AI Tools
     tools: list[MCPToolDefinition] = field(default_factory=list)  # 工具列表
     tool_permissions: dict[str, int] = field(default_factory=dict)
 
-    def _detect_transport(self) -> str:
-        """根据 url / command 字段自动推断传输方式"""
-        if self.url and isinstance(self.url, str) and self.url.startswith("http"):
-            return "sse"
-        return "stdio"
-
     def get_transport(self) -> str:
-        """获取有效的传输方式（自动推断未显式设置的 transport）"""
-        if self.transport and self.transport not in ("auto", ""):
-            return self.transport
-        return self._detect_transport()
+        """获取有效的传输方式（规范化 + 必要时按 url / command 推断）。"""
+        return resolve_mcp_transport(
+            self.transport,
+            url=self.url,
+            command=self.command,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
@@ -155,11 +159,10 @@ class MCPConfig:
             "register_as_ai_tools": self.register_as_ai_tools,
             "tools": [t.to_dict() for t in self.tools],
         }
-        if effective_transport == "sse":
+        if is_http_mcp_transport(effective_transport):
             result["url"] = self.url
             if self.headers:
                 result["headers"] = self.headers
-            # 兼容：保留 command/args/env（可能为空）
             if self.command:
                 result["command"] = self.command
             if self.args:
@@ -167,13 +170,11 @@ class MCPConfig:
             if self.env:
                 result["env"] = self.env
         else:
-            # stdio 模式
             result["command"] = self.command
             if self.args:
                 result["args"] = self.args
             if self.env:
                 result["env"] = self.env
-            # 兼容：保留 url/headers（可能为空）
             if self.url:
                 result["url"] = self.url
             if self.headers:
@@ -186,18 +187,17 @@ class MCPConfig:
     def from_dict(cls, data: dict[str, Any]) -> "MCPConfig":
         """从字典创建配置"""
         tools = [MCPToolDefinition.from_dict(t) for t in data.get("tools", [])]
-        transport = data.get("transport", "")
         url = data.get("url", "")
-        # 自动推断 transport：如果 url 存在且以 http 开头，则推断为 sse
-        if not transport or transport == "auto":
-            if url and isinstance(url, str) and url.startswith("http"):
-                transport = "sse"
-            else:
-                transport = "stdio"
+        command = data.get("command", "")
+        transport = resolve_mcp_transport(
+            data.get("transport", ""),
+            url=url,
+            command=command,
+        )
         return cls(
             name=data["name"],
             transport=transport,
-            command=data.get("command", ""),
+            command=command,
             args=data.get("args", []),
             env=data.get("env", {}),
             url=url,
@@ -437,12 +437,19 @@ class MCPConfigManager:
             return False, f"配置 '{config_id}' 不存在"
 
         current = self._cache[config_id]
+        # to_dict 会省略空的 url/headers，切传输时必须把可写字段补全
         current_dict = current.to_dict()
+        current_dict["command"] = current.command
+        current_dict["args"] = list(current.args)
+        current_dict["env"] = dict(current.env)
+        current_dict["url"] = current.url
+        current_dict["headers"] = dict(current.headers)
+        current_dict["tool_permissions"] = dict(current.tool_permissions)
 
-        # 合并更新
         for key, value in updates.items():
-            if key in current_dict:
-                current_dict[key] = value
+            if key == "config_id":
+                continue
+            current_dict[key] = value
 
         try:
             updated_config = MCPConfig.from_dict(current_dict)

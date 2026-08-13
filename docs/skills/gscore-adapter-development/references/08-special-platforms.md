@@ -138,17 +138,28 @@ if ev.sender.role == "owner": pm = 2
 elif ev.sender.role == "admin": pm = 3
 sender = ev.sender.dict(exclude_none=True)
 sender["avatar"] = f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
-# 引用消息里的图片（可选）：
-if ev.reply and is_reply_img:
+# 引用：reply=正文, reply_id=消息 id, 引用图始终上报（不要再开关 is_reply_img）
+if ev.reply:
+    message.append(Message("reply_id", str(ev.reply.message_id)))
+    message.append(Message("reply", ev.reply.message.extract_plain_text()))
     for seg in ev.reply.message:
         if seg.type == "image" and seg.data:
             message.append(Message("image", seg.data["url"]))
-# 逐段转换 CQ 段 → GsMessage：
+        elif seg.type == "forward":
+            # 引用合并转发：reply 加 [合并转发]，并展开 node
+            message[-1] = Message("reply", "[合并转发]\n" + str(message[-1].data))
+            fwd = await bot.call_api("get_forward_msg", id=seg.data["id"])
+            message.append(Message("node", flatten_forward(fwd)))
+# 逐段转换 CQ 段 → GsMessage（reply 段已由 ev.reply 展开，这里跳过）：
 for seg in messages:
     if seg.type == "text":  message.append(Message("text", seg.data["text"]))
     elif seg.type == "image": message.append(Message("image", seg.data["url"]))
     elif seg.type == "at":  message.append(Message("at", seg.data["qq"]))
-    elif seg.type == "reply": message.append(Message("reply", seg.data["id"]))
+    elif seg.type == "forward":
+        fwd = await bot.call_api("get_forward_msg", id=seg.data["id"])
+        message.append(Message("node", flatten_forward(fwd)))
+    elif seg.type == "reply":
+        continue
 ```
 
 ## 8.6 平台 `bot_id` 命名速查（官方约定）

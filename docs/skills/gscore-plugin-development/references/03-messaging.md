@@ -16,6 +16,9 @@ ev.message         # list：消息段列表
 ev.user_nickname   # str：用户昵称
 ev.file            # bool：是否有文件附件
 ev.file_name       # str | None：文件名
+ev.reply           # str | None：引用正文（纯文本；引用合并转发时以 [合并转发] 开头）
+ev.reply_id        # str | None：被引用消息的平台 id
+ev.node            # list[Message] | None：当前或引用的合并转发内容（扁平段列表）
 ev.regex_dict      # dict：正则命名分组 (?P<name>...)
 ev.regex_group     # tuple：正则位置分组
 ```

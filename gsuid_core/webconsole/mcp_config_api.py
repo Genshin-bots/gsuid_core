@@ -18,6 +18,7 @@ from gsuid_core.ai_core.mcp.startup import (
     register_all_mcp_tools,
     register_single_mcp_server,
 )
+from gsuid_core.ai_core.mcp.transport import MCP_TRANSPORT_STDIO, resolve_mcp_transport
 from gsuid_core.ai_core.mcp.mcp_presets import MCP_PRESETS
 from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition, mcp_config_manager
 from gsuid_core.utils.plugins_config.models import GsStrConfig
@@ -98,12 +99,12 @@ class MCPConfigCreate(BaseModel):
     """MCP 配置创建请求模型"""
 
     name: str
-    transport: str = "stdio"  # "stdio" 或 "sse"
+    transport: str = MCP_TRANSPORT_STDIO
     command: str = ""
     args: List[str] = []
     env: Dict[str, str] = {}
-    url: str = ""  # SSE 服务器 URL
-    headers: Dict[str, str] = {}  # SSE HTTP 请求头
+    url: str = ""
+    headers: Dict[str, str] = {}
     enabled: bool = True
     register_as_ai_tools: bool = False
     tools: List[MCPToolDefinitionModel] = []
@@ -260,7 +261,11 @@ async def create_mcp_config(
 
     config = MCPConfig(
         name=body.name,
-        transport=body.transport,
+        transport=resolve_mcp_transport(
+            body.transport,
+            url=body.url,
+            command=body.command,
+        ),
         command=body.command,
         args=body.args,
         env=body.env,
@@ -509,6 +514,7 @@ async def discover_mcp_tools(
     try:
         client = MCPClient(
             name=config.name,
+            transport=config.get_transport(),
             command=config.command,
             args=config.args,
             env=config.env,
@@ -552,12 +558,12 @@ class MCPDiscoverRequest(BaseModel):
     """MCP 临时配置（仅用于发现工具，不保存）"""
 
     name: str
-    transport: str = "stdio"  # "stdio" 或 "sse"
+    transport: str = MCP_TRANSPORT_STDIO
     command: str = ""
     args: List[str] = []
     env: Dict[str, str] = {}
-    url: str = ""  # SSE 服务器 URL
-    headers: Dict[str, str] = {}  # SSE HTTP 请求头
+    url: str = ""
+    headers: Dict[str, str] = {}
 
 
 @app.post("/api/ai/mcp/tools/discover", summary="从临时配置发现工具", tags=MCP_CONFIG)
@@ -583,6 +589,11 @@ async def discover_tools_from_temp_config(
     try:
         client = MCPClient(
             name=body.name,
+            transport=resolve_mcp_transport(
+                body.transport,
+                url=body.url,
+                command=body.command,
+            ),
             command=body.command,
             args=body.args,
             env=body.env,
@@ -679,28 +690,23 @@ async def import_mcp_from_json(
                 "data": None,
             }
 
-        # 构建 MCPConfig（兼容 stdio 和 sse 两种格式）
         env = server_config.get("env", {})
         args = server_config.get("args", [])
         url = server_config.get("url", server_config.get("sseUrl", ""))
         headers = server_config.get("headers", server_config.get("headersTemplate", {}))
-        transport = server_config.get("transport", "")
+        command = server_config.get("command", "")
+        # 官方格式可能用 type，部分客户端用 transport
+        raw_transport = server_config.get("transport", "") or server_config.get("type", "")
+        transport = resolve_mcp_transport(raw_transport, url=url, command=command)
 
-        # 自动推断 transport：如果 url 存在且以 http 开头，则为 sse
-        if not transport or transport == "auto":
-            if url and isinstance(url, str) and url.startswith("http"):
-                transport = "sse"
-            else:
-                transport = "stdio"
-
-        # 如果没有 tools，先连接服务器发现工具
         tools = []
         try:
             from gsuid_core.ai_core.mcp import MCPClient
 
             client = MCPClient(
                 name=server_name,
-                command=server_config.get("command", ""),
+                transport=transport,
+                command=command,
                 args=args,
                 env=env,
                 url=url,
@@ -722,7 +728,7 @@ async def import_mcp_from_json(
         mcp_config = MCPConfig(
             name=server_name,
             transport=transport,
-            command=server_config.get("command", ""),
+            command=command,
             args=args,
             env=env,
             url=url,

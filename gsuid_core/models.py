@@ -44,6 +44,68 @@ class Message(Struct):
     data: Optional[Any] = None
 
 
+NODE_MARK = "[合并转发]"
+NODE_MAX_DEPTH = 3
+
+
+def _one_node_item(item: object) -> Optional[Message]:
+    if isinstance(item, Message):
+        return item
+    if isinstance(item, dict):
+        msg_type = item["type"] if "type" in item else None
+        msg_data = item["data"] if "data" in item else None
+        return Message(
+            type=str(msg_type) if msg_type is not None else None,
+            data=msg_data,
+        )
+    return None
+
+
+def normalize_node_items(data: object, depth: int = 0) -> List[Message]:
+    """把 node.data 归一成扁平 List[Message]；内层 node 展开，超过深度只留标记."""
+    if not isinstance(data, list):
+        return []
+    items: List[Message] = []
+    for raw in data:
+        item = _one_node_item(raw)
+        if item is None:
+            continue
+        if item.type == "node":
+            items.append(Message("text", NODE_MARK))
+            if depth + 1 < NODE_MAX_DEPTH:
+                items.extend(normalize_node_items(item.data, depth + 1))
+            continue
+        items.append(item)
+    return items
+
+
+def format_node_preview(items: List[Message], depth: int = 0) -> str:
+    """引用/展示用的合并转发摘要，内层 node 继续展开到深度上限."""
+    lines: List[str] = [NODE_MARK]
+    _append_node_preview(lines, items, depth)
+    return "\n".join(lines)
+
+
+def _append_node_preview(lines: List[str], items: List[Message], depth: int) -> None:
+    for item in items:
+        if item.type == "text" and item.data is not None:
+            text = str(item.data).strip()
+            if text:
+                lines.append(text)
+        elif item.type == "image":
+            lines.append("[图片]")
+        elif item.type == "record":
+            lines.append("[语音]")
+        elif item.type == "video":
+            lines.append("[视频]")
+        elif item.type == "file":
+            lines.append("[文件]")
+        elif item.type == "node":
+            lines.append(NODE_MARK)
+            if depth + 1 < NODE_MAX_DEPTH:
+                _append_node_preview(lines, normalize_node_items(item.data), depth + 1)
+
+
 class MessageReceive(Struct):
     bot_id: str = "Bot"
     bot_self_id: str = ""
@@ -74,6 +136,8 @@ class Event(MessageReceive):
     at_list: List[Any] = []
     is_tome: bool = False
     reply: Optional[str] = None
+    reply_id: Optional[str] = None
+    node: Optional[List[Message]] = None
     file_name: Optional[str] = None
     file: Optional[str] = None
     file_type: Optional[Literal["url", "base64"]] = None

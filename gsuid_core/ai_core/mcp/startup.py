@@ -272,6 +272,7 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> int:
     """
     client = MCPClient(
         name=config.name,
+        transport=config.get_transport(),
         command=config.command,
         args=config.args,
         env=config.env,

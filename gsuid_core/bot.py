@@ -105,7 +105,7 @@ def message_list_to_str(messages: list[Message]) -> str:
         elif m.type == "file":
             s.append("[文件]")
         elif m.type == "node":
-            s.append("[节点]")
+            s.append("[合并转发]")
     return "\n".join(s)
 
 

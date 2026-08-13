@@ -31,13 +31,19 @@ from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 @dataclass
 class MCPConfig:
     name: str                                    # 服务器名称
-    command: str                                 # 启动命令（如 "uvx"）
+    transport: str = "stdio"                     # stdio / sse / streamable_http
+    command: str                                 # 启动命令（stdio，如 "uvx"）
     args: list[str] = field(default_factory=list)  # 命令参数
     env: dict[str, str] = field(default_factory=dict)  # 环境变量
+    url: str = ""                                # 远程 URL（sse / streamable_http）
+    headers: dict[str, str] = field(default_factory=dict)  # HTTP 请求头
     enabled: bool = True                         # 是否启用
     register_as_ai_tools: bool = False           # 是否注册为 AI Tools
     tools: list[MCPToolDefinition] = field(default_factory=list)  # 工具列表
 ```
+
+传输：`stdio` 走本地子进程；`sse` 为旧版 HTTP+SSE；`streamable_http` 是当前推荐的远程传输。
+导入配置里的 `http` / `streamable-http` / `type: "http"` 会归一为 `streamable_http`。
 
 ### 11.1.4 MCP 工具 ID 格式
 

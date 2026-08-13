@@ -70,19 +70,20 @@
 
 ### `client.py` — MCP 客户端核心
 
-基于 [fastmcp](https://github.com/PrefectHQ/fastmcp) 实现的 MCP 客户端，支持 **stdio** 和 **sse** 两种传输方式连接 MCP 服务器。
+基于 [fastmcp](https://github.com/PrefectHQ/fastmcp) 实现的 MCP 客户端，支持 **stdio**、**sse** 和 **Streamable HTTP** 三种传输方式连接 MCP 服务器。
 
 **设计原则:**
 - **无状态模式**: 每次操作独立建立连接，完成后自动断开
 - **完全异步**: 兼容项目的 async 架构
-- **双传输模式**: 自动根据 url / command 字段推断使用 stdio 还是 sse
+- **三传输模式**: 显式 `transport` 优先；否则按 url / command 推断
+  （路径以 `/sse` 结尾 → sse，其它 http(s) URL → streamable_http，否则 → stdio）
 - **支持三种内容类型**: TextContent / ImageContent / EmbeddedResource
 
 **核心类:**
 
 | 类 | 说明 |
 |---|------|
-| `MCPClient` | MCP 客户端，支持 stdio（`command`+`args`+`env`）和 sse（`url`+`headers`）两种模式 |
+| `MCPClient` | MCP 客户端：stdio（`command`+`args`+`env`）、sse / streamable_http（`url`+`headers`） |
 | `MCPToolInfo` | 工具信息（name / description / input_schema） |
 | `MCPToolResult` | 调用结果（content 列表 + is_error 标志 + `.text` 属性） |
 
@@ -98,15 +99,16 @@ tools = await client.list_tools()
 result = await client.call_tool("web_search", {"query": "Python"})
 ```
 
-**使用示例 (sse):**
+**使用示例 (streamable_http):**
 ```python
 client = MCPClient(
-    name="知乎搜索",
-    url="https://developer.zhihu.com/api/mcp/zhihu_search/v1/sse",
+    name="Example",
+    transport="streamable_http",
+    url="https://example.com/mcp",
     headers={"Authorization": "Bearer your_access_secret"},
 )
 tools = await client.list_tools()
-result = await client.call_tool("zhihu_search", {"query": "RAG"})
+result = await client.call_tool("search", {"query": "RAG"})
 ```
 
 ---
@@ -249,7 +251,7 @@ if is_mcp_provider(provider):
 
 | 名称 | 说明 |
 |---|------|
-| `MCPConfig` | MCP 服务器配置数据类（name / command / args / env / enabled / tools / tool_permissions） |
+| `MCPConfig` | MCP 服务器配置数据类（name / transport / command / args / env / url / headers / enabled / tools / tool_permissions） |
 | `MCPConfigManager` | 配置管理器，提供 `add_config` / `remove_config` / `get_config` / `list_configs` 等 |
 | `MCPToolDefinition` | 工具定义（name / description / parameters） |
 | `parse_mcp_tool_id(tool_id)` | 解析 `"{mcp_id} - {tool_name}"` 为元组 |

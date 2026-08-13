@@ -80,6 +80,12 @@ description: >
   适配器**两种都必须处理**，否则用户一开转链接就发不出图。详见 [§7.1](./references/07-image-and-media.md) 与 [§10 红线 3](./references/10-pitfalls.md)。
 - **`is_tome` 靠 `at` 段触发**：上报时若把一条 `at` 段的 `data` 填成 `bot_self_id`，core 会判定"@了机器人"
   （`is_tome=True`）；私聊（`direct`）则 core 自动置 `is_tome=True`。详见 [§4.4](./references/04-report-message.md)。
+- **引用拆成 `reply` + `reply_id`**：上报时 `reply` 填引用**正文**，`reply_id` 填被引用消息 id，引用图
+  **始终**作为 `image` 段一并上报（不要再开关 `is_reply_img`）。下发时 `reply` / `reply_id` 都按
+  **msg_id** 落地成平台引用段。详见 [§4.4](./references/04-report-message.md) / [§5.3](./references/05-send-message.md)。
+- **合并转发要上报 `node`**：用户发送或引用转发卡片时，`data` 为扁平 `List[Message]`（与下发同形）。
+  引用转发时 `reply` 以 `[合并转发]` 开头并附带 `node`。不要把节点正文拼进 `text`。
+  详见 [§4.4](./references/04-report-message.md)。
 - **命令前缀处理在两边都有**：core 端会按 `command_start` 削掉前缀；适配器上报前**不要**自作主张删命令前缀
   （除非平台特性需要，如 QQ 官方把 `/` 当指令）。详见 [§4.5](./references/04-report-message.md)。
 - **`log_{LEVEL}` 是日志回显包**：core 想在适配器侧打日志时，发一条 `bot_id == 路由BOT_ID` 且
