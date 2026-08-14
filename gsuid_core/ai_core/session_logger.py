@@ -672,7 +672,19 @@ class AISessionLogger:
         self._add_entry("system_injection", {"content": norm, "source": source})
 
     def log_thinking(self, content: str) -> None:
-        """记录模型思考过程"""
+        """记录模型思考过程。
+
+        同一响应里网关可能同时给出 reasoning 字段和 ``<think>`` 文本；parts
+        层已去重，这里再跳过与上一条完全相同的思考，避免漏网双记。
+        """
+        if self.entries:
+            prev = self.entries[-1]
+            if (
+                prev.get("type") == "thinking"
+                and isinstance(prev.get("data"), dict)
+                and prev["data"].get("content") == content
+            ):
+                return
         self._add_entry("thinking", {"content": content})
 
     def log_tool_call(self, tool_name: str, args: Any, tool_call_id: str) -> None:

@@ -8,29 +8,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# 主人格：长结构化结果 → 委派 render_agent（禁止自渲）；短结论不必出图
+# 主人格：有工具返回后的软提示。出图/再搜/短答由模型自己选，不锁死下一步。
 POST_TOOL_OUTPUT_CONTRACT = (
     "（系统：本轮已有工具返回。"
-    "【工具通道】仅当结果含 markdown 表 / ≥3 段正文 / 多行对比列表 时，"
-    'create_subagent(agent_profile="render_agent", task=完整事实包或 res_ 句柄)；'
-    "单点结论不要出图；禁止自写 HTML / 直调 render_* / <report>；"
-    "委派出图时**不要**对用户说话。"
-    "【聊天通道】若尚未说过等待句且任务仍会较久，可补一句「等一下…」；"
-    "其余在途 <SILENCE>；发图后至多一句角色口吻；"
-    "禁止念节点名/句柄/「让某某出图」；禁止把长数据当台词。）"
+    "长对照/多日清单适合委派 render_agent 出图；一两句能说清就直接答。"
+    "结果不对或不够新，可以换描述再 find_tools，或换 query 再搜。"
+    "不要自写 HTML / 直调 render_* / 输出 <report>；"
+    "委派出图时不必对用户说话；不要把整表当台词念。）"
 )
 
-# 强化版出图契约：已确认本轮工具返回构成多点结构（saw_structured_return）时注入。
-# 与基础版的区别：把「出图」从条件句变成**唯一合法下一步**，堵住模型先念长文再被打回的
-# 事后纠正循环（2026-08-11 归因：单会话 17/25 次纠正与出图契约相关）。
-POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = (
-    "（系统：本轮工具返回已构成多点结构（≥3 条目/表/多段数据）。"
-    '**唯一合法下一步**：create_subagent(agent_profile="render_agent", '
-    "task=完整事实包或 res_ 句柄) 出图。"
-    "禁止先输出任何长正文/标题列表/数据台词——那会被拦截且浪费一轮；"
-    "禁止自写 HTML / 直调 render_* / <report>；委派出图时不要对用户说话，"
-    "图发出后至多一句角色口吻收尾。）"
-)
+# 旧名保留给引用方；语义与基础契约相同，不再把出图写成「唯一合法下一步」。
+POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = POST_TOOL_OUTPUT_CONTRACT
 
 # 交付已完成（send_message_by_ai 带台词成功回执）→ 终局：只许 SILENCE。
 # 取代 POST_TOOL_OUTPUT_CONTRACT——避免交付成功后契约反而提醒模型「再说一句」。
@@ -40,13 +28,8 @@ POST_DELIVERY_SILENCE_CONTRACT = (
     "无需追加发言」这类状态汇报；那是系统日志，不是角色台词。）"
 )
 
-# 时效提醒：本轮工具返回只有无时点聚合（气候/月均/历史均值）时追加，
-# 禁台词冒充实时读数、禁出图当「答案」（4.4）。
-TIMELESS_AGGREGATE_CAVEAT = (
-    "（系统：本轮工具返回只含「气候 / 月均 / 历史均值」这类无当前时点的聚合数据。"
-    "台词禁说成「现在 / 此刻」的读数；用角色口吻说明只是常年大概，"
-    "或如实说没翻到实时数；也禁止把它出图当成实时答案。）"
-)
+# 时效提醒文案保留给测试/调用方；主路径不再往请求里追加（避免和出图提示打架）。
+TIMELESS_AGGREGATE_CAVEAT = "（系统：返回体看起来没有当前时点。别说成「现在/此刻」；不够可以换路再查，短答也可以。）"
 
 # send_message_by_ai 成功回执唯一形态（工具协议的一部分，属结构信号非业务词）。
 # loop 侧经 tool_return_is_delivery_success() 消费：交付终局置位 + 终局契约分发。
@@ -60,11 +43,9 @@ WEB_SOURCE_MARK = "[source=web"
 _FRESH_MARK_RE = re.compile(r"\[as_of=|\"as_of\"\s*:")
 
 WEB_ONLY_STALENESS_CAVEAT = (
-    "（系统：本轮只有 web 检索/抓取来源（信息可能滞后数天～数周），"
-    "没有任何带 [as_of=…] 时点的结构化实时数据。"
-    "涉及价格/点位/数值时：要么不报数，要么明确说出数据来自哪天哪篇资料，"
-    "禁止当成「现在/此刻」的实时读数；实时数值请改用结构化数据工具"
-    "（find_tools/能力代理）重取，取不到就如实说没查到实时数。）"
+    "（系统：本轮只有网页来源，可能滞后。"
+    "报数时带上出处；不够新就换工具或换 query 再查，取不到就如实说。"
+    "结构化数据工具（find_tools / 能力代理）往往更靠谱。）"
 )
 
 # 路由/装配元返回：有结构信号但不是「实质业务数据」。

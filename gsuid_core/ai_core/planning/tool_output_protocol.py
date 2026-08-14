@@ -153,7 +153,7 @@ class PersistedHandleCard:
     summary: str
     size_bytes: int
     read_tool: str = "read_handle"
-    long_structured: bool = True
+    long_structured: bool = False
     inline_head: str = ""
 
     def format(self) -> str:
@@ -165,8 +165,8 @@ class PersistedHandleCard:
         ]
         if self.long_structured:
             lines.append(
-                "long_structured=true → 多项/长文请 create_subagent("
-                'agent_profile="render_agent", task=本id或版式要求) 出图；短结论不必出图'
+                "long_structured=true → 长对照可用 create_subagent("
+                'agent_profile="render_agent", task=本id或版式要求) 出图；短答不必'
             )
         if self.mime.startswith("image/"):
             lines.append("image=true → send_message_by_ai(image_id=本id) 直发，勿 read_handle 当文本")

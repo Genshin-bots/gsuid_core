@@ -134,7 +134,7 @@ class RunOnceState:
     last_event_at: float | None = None
     model_name: str = "unknown"
     provider: str = "unknown"
-    thinking_tags: tuple[str, str] = ("think", "think")
+    thinking_tags: tuple[str, str] = ("<think>", "</think>")
 
 
 def _require_context(st: RunOnceState) -> ToolContext:

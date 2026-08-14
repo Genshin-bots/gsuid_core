@@ -130,13 +130,15 @@ def _absorb_attempt_facts(
 
 
 def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
-    """出处凭据 + 尚未出图。排版失配/暂扣只决定要不要进纠正。"""
+    """只有真把长结构当台词念出来（闸门已拦/暂扣）才进纠正。
+
+    短角色句、承认没实时数、气候常态口头答，一律不纠——不再用「回复 >40 字」。
+    """
     if not st.saw_structured_return or not st.tool_call_list:
         return False
-    body = (result_msg or "").strip()
     if st.presentation_mismatch or st.presentation_withheld:
         return True
-    return bool(body) and (len(body) > 40 or _looks_like_report_speech(body))
+    return _looks_like_report_speech(result_msg or "")
 
 
 def _should_deliver_withheld(

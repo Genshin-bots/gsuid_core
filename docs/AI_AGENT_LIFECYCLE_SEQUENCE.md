@@ -1200,9 +1200,9 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         · is_tech_dump → TECH_DUMP_TOOL_SHIELD（主人格）
         · FileOS：主人格长文落盘折叠 → 句柄卡 + inline_head；只读工具/句柄卡永不二次折
         · 高密度 JSON → 摘要折叠（CapabilityAgent 不折叠）
-        · 无时点聚合（气候/月均）→ saw_timeless_aggregate，追加时效提醒
+        · 无时点聚合 → saw_timeless_aggregate（只记账，不往请求里塞禁令）
         · post_tool_contracts_for(create_by, capability_node_id=…):
-            Chat/Agent → POST_TOOL_OUTPUT：长结构 → create_subagent(render_agent)
+            Chat/Agent → POST_TOOL_OUTPUT：软提示（长对照可出图，短答/换路均可）
             Capability 非 render → 事实包；禁嵌套 create_subagent/render
             render_agent → 单次 render_html_to_image；只登记 artifact
             失败 → 对应 FAIL 契约
@@ -1573,9 +1573,9 @@ uv run core
 8. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC**；勿在 loop 平行第二套顺序。
 9. **呈现 vs 合规**：`send_chat_result` 只做通道变换；打回/熔断只在 gate。
 10. **出图主路径**：`create_subagent(render_agent)` → 自由 HTML / **`render_chart_spec` SVG** → `res_` 图 → `send_message_by_ai`。
-    多点结构且未委派时注入 `POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED`。
-11. **web / 时效**：web 返回 `[source=web|staleness_risk=high]`；结构化带 `[as_of=…]`；仅 web 无 as_of 无实质非 web 数据 → `WEB_ONLY_STALENESS_CAVEAT`。
-    find_tools 的 🔎/🔒/✅ 装配文案**不算** non_web 数据。
+    多点结构只给软提示（`POST_TOOL_OUTPUT_CONTRACT`），**不再**注入「唯一合法下一步出图」。
+11. **web / 时效**：web 返回 `[source=web|staleness_risk=high]`；结构化带 `[as_of=…]`。
+    不再额外叠气候/仅 web 禁令；find_tools 的 🔎/🔒/✅ 装配文案**不算** non_web 数据。
 12. **DELIVERED 终局**：带台词成功交付 → `speech_policy="delivered"`，只许 `<SILENCE>`。
 13. **能力缺口登记**：`find_tools` 未命中计数（`get_capability_gaps`）。
 14. **heartbeat 话头门** / **零工具纠正 SILENCE 出口** / **工具健康度**（❌/timeout 连败冻结执行，schema 保留）。

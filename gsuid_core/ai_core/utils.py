@@ -1941,6 +1941,42 @@ def _is_framework_prompt_content(content: str) -> bool:
     return s.startswith(_LEGACY_FRAMEWORK_PREFIXES)
 
 
+def _normalize_thinking_tags(thinking_tags: tuple[str, str]) -> tuple[str, str]:
+    """把 profile 里的裸标签名补成成对尖括号。
+
+    pydantic_ai 的 ``DEFAULT_THINKING_TAGS`` 是 ``('<think>', '</think>')``；
+    我们曾把缺省写成 ``('think', 'think')``。裸名直接 ``str.find`` 会命中英文
+    思考里的单词 think，把正文拆碎。已是 ``<…>`` / ``</…>`` 的原样返回。
+    """
+    start, end = thinking_tags
+    if start and not start.startswith("<"):
+        start = f"<{start}>"
+    if end and not end.startswith("<"):
+        end = f"</{end}>"
+    return (start, end)
+
+
+def _dedupe_thinking_parts(parts: Sequence[ModelResponsePart]) -> List[ModelResponsePart]:
+    """同一响应里相同思考只留一份（先出现的优先，通常是原生 reasoning 字段）。
+
+    MiniMax 等兼容网关会同时给出 ``reasoning_content``（pydantic_ai 已做成
+    ThinkingPart）和 ``content`` 里再包一层 ``<think>…</think>``。流式路径下
+    标签常不单独成 SSE chunk，补拆后又得到一份相同 ThinkingPart。重复会：
+    session log 双记、history 回放双倍 token、thinking_segments 膨胀。
+    """
+    seen: Set[str] = set()
+    kept: List[ModelResponsePart] = []
+    for part in parts:
+        if isinstance(part, ThinkingPart):
+            key = part.content.strip()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+        kept.append(part)
+    return kept
+
+
 def _split_embedded_thinking(
     parts: Sequence[ModelResponsePart],
     thinking_tags: tuple[str, str],
@@ -1953,8 +1989,10 @@ def _split_embedded_thinking(
     意图-行为一致性检测。这里按完整文本重新拆分，对齐非流式路径
     （openai 模型的 split_content_into_text_and_thinking）的行为。非 TextPart 与不含
     起始标签的 TextPart 原样透传。
+
+    拆完后按内容去重：网关常把同一段思考同时放进 reasoning 字段和 ``<think>`` 文本。
     """
-    start_tag, end_tag = thinking_tags
+    start_tag, end_tag = _normalize_thinking_tags(thinking_tags)
     result: List[ModelResponsePart] = []
     for part in parts:
         if not isinstance(part, TextPart) or start_tag not in part.content:
@@ -1977,7 +2015,7 @@ def _split_embedded_thinking(
             start_index = content.find(start_tag)
         if content:
             result.append(TextPart(content=content))
-    return result
+    return _dedupe_thinking_parts(result)
 
 
 def _canonicalize_tool_call_args_in_parts(

@@ -205,7 +205,7 @@ async def find_tools(
                     return (
                         "🔒 该类工具为能力代理专属，不在主人格手里直接装配（这是设计，不是缺失）。\n"
                         + _delegation_directive(lines)
-                        + "\n不要就同一需求重复 find_tools。"
+                        + "\n对不上需求时可以换描述再找，或改搜网页。"
                     )
             # 全被 visible_when 隐藏：维持不泄露隐藏工具存在，但给出语义委派兜底。
             agent_lines = await _capability_agent_lines(need)
@@ -231,6 +231,7 @@ async def find_tools(
         )
         listing = "\n".join(f"- {name}" for name in loaded_names)
         parts = [f"✅ 已加载以下工具，下一步即可直接调用：\n{listing}"]
+        parts.append("若对不上需求，可换一句描述再 find_tools，或改用网页检索。")
         # 通用：同步提示可委派的能力代理（插件注册的 node_id），不特判业务域
         agent_lines = await _capability_agent_lines(need)
         if agent_lines:

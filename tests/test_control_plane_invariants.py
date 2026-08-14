@@ -384,6 +384,17 @@ def test_inv4_empty_handoff_enters_render_obligation() -> None:
         presentation_withheld=["懒得念，细节都在里面了"],
     )
     assert settle_mod._needs_render_obligation(st, "懒得念，细节都在里面了")
+
+
+def test_short_character_reply_skips_render_obligation() -> None:
+    """轻问题口头短答（气候常态/没查到实时）不因「>40 字」被纠出图。"""
+    st = _mk_state(
+        tool_call_list=["find_tools", "web_search_tool"],
+        saw_structured_return=True,
+    )
+    short = "唔…凌晨翻了下，没找到今天的实时数…\n8月广州常年大概28度上下，白天出门会热…呼。"
+    assert len(short) > 40
+    assert not settle_mod._needs_render_obligation(st, short)
     assert settle_mod._should_deliver_withheld(
         _mk_state(
             bot=_test_bot(),

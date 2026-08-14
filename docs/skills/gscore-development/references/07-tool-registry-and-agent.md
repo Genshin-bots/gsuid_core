@@ -466,8 +466,8 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 > 工具侧：默认**自由 HTML**；原生 `<table>` → flex 网格；自动嵌图。
 > **真图表**：`render_chart_spec(type, data=[{label,value},…])` → 内联 SVG（line/bar/hbar/pie），
 > 嵌进 HTML 再 `render_html_to_image`（渲染引擎无 JS，echarts/canvas 不可用）。
-> 主人格在 `saw_structured_return` 且未委派出图时，loop 注入
-> `POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED`（唯一合法下一步 = `render_agent`）。
+> 主人格在工具返回后只注入软提示 `POST_TOOL_OUTPUT_CONTRACT`（长对照可出图，短答/换路均可），
+> 不再锁死「唯一合法下一步 = render_agent」。
 > 详见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)、
 > `capability_agents/profiles.py` 中 `render_agent`。
 

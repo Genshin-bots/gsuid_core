@@ -109,10 +109,16 @@ def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str]:
     return owner, scope
 
 
+def _searchish_tool(name: str) -> bool:
+    """检索/抓取类：折叠卡不要默认催出图。"""
+    tn = (name or "").lower()
+    return any(h in tn for h in ("search", "web_", "fetch"))
+
+
 def _card_for_record(
     rec: AIToolOutputRecord,
     *,
-    long_structured: bool = True,
+    long_structured: bool = False,
     inline_head: str = "",
 ) -> PersistedHandleCard:
     mime = "text/markdown" if (rec.payload_path or "").endswith(".md") else "text/plain"
@@ -150,6 +156,7 @@ async def persist_tool_return(
         tool_name=tool_name or "",
         profile="",
         res_handle="",
+        long_structured=not _searchish_tool(tool_name),
     )
 
 
@@ -174,6 +181,7 @@ async def persist_subagent_result(
         tool_name="",
         profile=profile or "",
         res_handle=res_handle or "",
+        long_structured=True,
     )
 
 
@@ -250,6 +258,7 @@ async def _write_record(
     tool_name: str,
     profile: str,
     res_handle: str,
+    long_structured: bool = False,
 ) -> Optional[PersistedHandleCard]:
     clean, n_redact = sanitize_for_persist(content)
     chash = content_sha256(clean)
@@ -262,7 +271,7 @@ async def _write_record(
     )
     if existing is not None:
         fileos_metrics.inc_dedup()
-        return _card_for_record(existing)
+        return _card_for_record(existing, long_structured=long_structured)
 
     date_str = datetime.now().strftime("%Y-%m-%d")
     summary = extract_info_summary(clean, max_len=512)
@@ -313,11 +322,11 @@ async def _write_record(
             Path(payload_path).unlink(missing_ok=True)
         if existing2 is not None:
             fileos_metrics.inc_dedup()
-            return _card_for_record(existing2)
+            return _card_for_record(existing2, long_structured=long_structured)
         raise
     fileos_metrics.inc_write(size, redacted=n_redact)
     asyncio.create_task(_index_chunks_safe(rid, clean, scope_key, owner_user_id, tool_name or profile, date_str))
-    return _card_for_record(rec)
+    return _card_for_record(rec, long_structured=long_structured)
 
 
 async def _index_chunks_safe(

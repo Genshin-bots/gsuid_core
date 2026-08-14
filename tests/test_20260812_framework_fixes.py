@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 # ── 方案八：chart_spec → SVG 原语 ──────────────────────────────────────────
 
 
@@ -129,13 +131,27 @@ def test_web_only_caveat_text_actionable() -> None:
 # ── 方案四：强化出图契约 + 纠正 nudge 集合 ────────────────────────────────
 
 
-def test_render_required_contract_locks_next_step() -> None:
+def test_loop_does_not_stack_hard_post_tool_caveats() -> None:
+    """主路径不再往请求里叠「唯一下一步出图 / 气候禁令 / 仅 web 禁令」。"""
+    from gsuid_core.ai_core.agent_run import loop as loop_mod
+
+    src = inspect.getsource(loop_mod.LoopPhase._run_once_on_model_request)
+    assert "POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED" not in src
+    assert "TIMELESS_AGGREGATE_CAVEAT" not in src
+    assert "WEB_ONLY_STALENESS_CAVEAT" not in src
+
+
+def test_render_required_contract_no_longer_locks_next_step() -> None:
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        POST_TOOL_OUTPUT_CONTRACT,
         POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
     )
 
-    assert "唯一合法下一步" in POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED
-    assert "render_agent" in POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED
+    # 出图从硬门改回建议：不再锁死「唯一合法下一步」
+    assert "唯一合法下一步" not in POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED
+    assert POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED == POST_TOOL_OUTPUT_CONTRACT
+    assert "render_agent" in POST_TOOL_OUTPUT_CONTRACT
+    assert "换 query" in POST_TOOL_OUTPUT_CONTRACT or "再搜" in POST_TOOL_OUTPUT_CONTRACT
 
 
 def test_correction_nudge_markers_cover_all_nudges() -> None:

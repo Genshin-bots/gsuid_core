@@ -78,18 +78,14 @@ def status_zero_tool_directive() -> Directive:
 
 
 def render_obligation_directive(*, recited_report: bool, tool_calls: int) -> Directive:
-    """事实包已回却未出图（出处凭据，非排版形状）。"""
-    observation = (
-        "本轮工具返回已构成多点结构，你却把它当台词念了出来，尚未出图。"
-        if recited_report
-        else "本轮工具返回已构成多点结构，尚未出图。"
-    )
+    """真把长结构当台词念出来时，才建议改出图。短答不纠。"""
+    observation = "本轮工具返回里有较长结构，你把它整段念出来了。" if recited_report else "本轮工具返回里有较长结构。"
     return Directive(
         kind="correction",
         reason_code="report_speech" if recited_report else "render_pending",
         observation=(
-            observation + "把要点交给 render_agent 出一张信息图，再用一句角色短句收尾；"
-            "不要把长数据当台词，也不要自己写 HTML。"
+            observation + "一两句能说清就保持原答或申辩；"
+            "只有对照/多日/多项才值得委派 render_agent 出图，不要自己写 HTML。"
         ),
         obligations=(
             Obligation(

@@ -18,6 +18,7 @@ from gsuid_core.ai_core.const import (
     _STICKY_FAMILY_TURNS,
     ENABLE_PROGRESSIVE_TOOLS,
 )
+from gsuid_core.ai_core.utils import _normalize_thinking_tags
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
@@ -436,13 +437,20 @@ class ToolsPhase(RunOnceHost):
         st.model_name = self.model.model_name if self.model else "unknown"
         st.provider = self.model.system if self.model else "unknown"
         # 流式响应下需手动按完整文本重新拆分内嵌 <think> 标签（见 _split_embedded_thinking）。
-        # thinking_tags 取自模型 profile，默认 ('<think>','</think>')。
-        st.thinking_tags = ("think", "think")
+        # thinking_tags 取自模型 profile；缺省与 pydantic_ai DEFAULT_THINKING_TAGS 对齐。
+        # 裸名 ('think','think') 会误伤英文思考里的单词 think，必须先规范化。
+        st.thinking_tags = ("<think>", "</think>")
         if self.model is not None:
             _profile_obj = self.model.profile
             if isinstance(_profile_obj, dict):
                 if "thinking_tags" in _profile_obj:
-                    st.thinking_tags = _profile_obj["thinking_tags"]
+                    _raw_tags = _profile_obj["thinking_tags"]
+                    if (
+                        isinstance(_raw_tags, (tuple, list))
+                        and len(_raw_tags) == 2
+                        and all(isinstance(x, str) for x in _raw_tags)
+                    ):
+                        st.thinking_tags = _normalize_thinking_tags((_raw_tags[0], _raw_tags[1]))
             else:
                 logger.error(
                     i18n_t(
