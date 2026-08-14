@@ -94,7 +94,7 @@
 - 上报：`reply` = 引用**正文**，`reply_id` = 被引用消息 id。**不要**再把 id 塞进 `reply`。
 - 引用里的图片一律转成 `image` 段上报，不要再用 `is_reply_img` 开关。
 - 下发：`reply` / `reply_id` 都按 **msg_id** 落地成平台引用段（和上报语义不同）。
-  见 [§4.4](./04-report-message.md) / [§5.3](./05-send-message.md)。
+  见 [§4.4](./04-report-message.md) / [§5.3](./05-send-message.md)；旧适配器迁移见 [§12](./12-reply-and-node.md)。
 
 ## 红线 18：`echo` 非空必须回执，且 meta 段单独成包
 

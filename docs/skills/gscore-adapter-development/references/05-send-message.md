@@ -107,6 +107,7 @@ data == "要引用的 msg_id"
 
 - core 历史包只发 `reply`；新适配器应同时认 `reply_id`，两者都按 msg_id 落地成引用段。
 - 不要把上行 `reply` 里的引用正文再当成引用 id 发出去。
+- 上报 / 下发语义对照与旧适配器改法见 [§12.5](./12-reply-and-node.md)。
 
 ### `record` / `video`（语音 / 视频）
 

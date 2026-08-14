@@ -464,13 +464,14 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 
 ### 8.4 IM 场景不要写太小的字
 
-聊天窗口里图片会被压缩。建议：
+聊天窗口（QQ）会按气泡宽度缩小整图。2x 栅格已经够清，糊通常是字相对画布太小。
 
-- 正文 ≥ 14px。
-- 标题 ≥ 24px。
-- 辅助文字 ≥ 12px。
-- 卡片宽度 640~800px。
-- 需要高清可传 `dpi=192`。
+- 逻辑宽 **800～1000**（`render_html_to_image` 硬上限 1000）。不要开 1240。
+- 正文 ≥ 16px。
+- 标题 ≥ 22px。
+- 辅助文字 / badge ≥ 13px。
+- 需要高清保持 `dpi=192`（dpr=2）即可，不要靠再加宽。
+- badge 不要写 `box-sizing:border-box` + 极窄 padding（Takumi 会把字画出色块）。
 
 ### 8.5 修饰色被基类盖掉（class 优先级）
 
@@ -578,7 +579,7 @@ async def render_card(title: str, lines: list[str]) -> bytes:
 - [ ] 用户内容是否 HTML 转义？
 - [ ] 是否避免使用 `✗`、`✘`、`▸` 等可能缺字的符号？
 - [ ] 空内容是否有兜底，避免高度为 0？
-- [ ] 字号是否适合 IM 小图阅读？
+- [ ] 逻辑宽是否 ≤1000？正文 ≥16px、badge ≥13px？
 
 ---
 

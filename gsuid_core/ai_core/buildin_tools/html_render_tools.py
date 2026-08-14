@@ -58,12 +58,14 @@ _TRANSPARENT_1PX_PNG = (
 _TAKUMI_ENGINE_HYGIENE_CSS = """
 /* engine hygiene — not a visual theme */
 img{max-width:100%;height:auto;}
-/* chips: only block CJK vertical wrap; do not override display/padding/line-height */
+/* chips: only block CJK vertical wrap; do not override display/padding.
+   不要给 tag 加 border-box，Takumi shrink-to-fit 会把 padding 从字宽里扣掉。 */
 .tag,.badge,.chip,.pill,.label{
-  box-sizing:border-box;
   white-space:nowrap;
   word-break:keep-all;
   writing-mode:horizontal-tb;
+  width:auto;
+  flex-shrink:0;
 }
 /* brand/logo: single horizontal run, not stacked glyphs in a square */
 .logo,.brand,.brand-mark,.icon-label{
@@ -71,6 +73,20 @@ img{max-width:100%;height:auto;}
   text-align:center;
 }
 """
+
+# IM 出图逻辑宽上限（CSS 像素）。再宽 QQ 气泡按宽缩小后正文会糊。
+_LOGICAL_WIDTH_MAX = 1000
+
+
+def _clamp_logical_width(max_width: int) -> int:
+    try:
+        w = int(max_width)
+    except (TypeError, ValueError):
+        return 900
+    if w < 1:
+        return 900
+    return min(w, _LOGICAL_WIDTH_MAX)
+
 
 # 同一 Kanban 任务内成功出图次数（防 render_agent 连调多次刷屏）
 # key=task_id；进程内即可，任务结束无强清
@@ -727,7 +743,7 @@ async def render_card(
             max_width=720.0 * 2.0,
             dpi=192.0,
             image_format="png",
-            default_font_size=15.0,
+            default_font_size=16.0,
             root_max_width=720.0,
         )
         logger.info(t("log.ai.buildintools_html_rendering_succeeded_ok", p0=len(image_bytes)))
@@ -976,7 +992,7 @@ async def render_html_to_image(
     ctx: RunContext[ToolContext],
     html_content: str,
     image_format: Literal["png", "jpeg"] = "png",
-    max_width: int = 800,
+    max_width: int = 900,
 ) -> str | bytes:
     """将自定义 HTML 渲染为高清图片并自动发送。**render_agent 出图主工具**。
 
@@ -986,7 +1002,8 @@ async def render_html_to_image(
 
     ## 写法
     - 推荐完整文档：``<!DOCTYPE html><html><head><style>...</style></head><body>...</body></html>``
-    - 也可只写片段 + 内联 ``<style>``；视口宽 = max_width，高度随内容自适应
+    - 也可只写片段 + 内联 ``<style>``；视口宽 = max_width（**上限 1000**，再大会被夹），高度随内容自适应
+    - **IM 字号**：正文 ≥16px，辅助 ≥13px，badge ≥13px；禁止 10–12px 当正文。QQ 会按气泡宽度缩小整图。
     - **整页不透明背景**（必写）：先选**暗色或浅色**主题，再写 page/text 成套 color；
       禁止透明/缺省底（会出透明 PNG）。``#0f172a`` 只是暗色示例，不是唯一合法值。
       - 暗色例：``html,body{{background:#0f172a;color:#e2e8f0;}}`` 且 h1/标题显式浅色
@@ -1003,10 +1020,10 @@ async def render_html_to_image(
     - **颜色语义**：同一页一套语义色（如 ↑/↓ 各一色）。暗底上强调色用偏亮的绿/红/金；
       浅底上用略深的语义色。**class 优先级**：``.item .value.up`` 须能盖过 ``.item .value``，
       禁止基类 ``color`` 盖掉修饰 class；状态色优先单 class
-    - **短标签**（chip/badge）：用 flex 把字居中进色块（卫生 CSS 只防竖排，不改 display）：
-      ``.badge{display:flex;align-items:center;justify-content:center;padding:3px 10px;line-height:1;}``
+    - **短标签**（chip/badge）：用 flex 把字居中进色块（卫生 CSS 只防竖排，不改 display/padding）：
+      ``.badge{display:flex;align-items:center;justify-content:center;padding:4px 10px;line-height:1;font-size:13px;}``
       父行居中用 ``.row{display:flex;justify-content:center;gap:8px}``。
-      不要靠 ``vertical-align:middle``。
+      不要靠 ``vertical-align:middle``；不要 ``box-sizing:border-box`` + 极窄 padding（字会探出色块）。
     - **表格拆列**：价格与涨跌、数量与单位不要写在同一 ``td``（如 ``13.79亿+19.75%`` 拆两列）。
     - **图表**：≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；禁止纯 CSS 色条冒充图。
     - **插图 / 图标（一次写完即可）**：直接在 HTML 里写，**系统渲染前自动嵌成 data URI**，
@@ -1027,7 +1044,7 @@ async def render_html_to_image(
       或 class ``right``（不要依赖仅匹配 ``td`` 的选择器）。
     - **窄列 CJK**：默认可逐字断行；短标签靠卫生 CSS；普通格请 ``word-break:keep-all``，
       禁止手写 ``农<br>业<br>种<br>植`` 式竖排。
-    - **字号**：正文建议 ≥14px，辅助 ≥12px；勿用 10–11px 全文。
+    - **字号**：正文 ≥16px，辅助 / badge ≥13px；勿用 10–12px 全文。
 
     ## 示例（token 占位，禁止照抄色值；下列两份骨架互不同构）::
 
@@ -1056,7 +1073,7 @@ async def render_html_to_image(
         ctx: 工具执行上下文
         html_content: 完整 HTML 或带样式的片段（按内容自由设计）
         image_format: 默认 png
-        max_width: 默认 800
+        max_width: 默认 900，硬上限 1000（IM 可读；再宽 QQ 缩小后糊）
 
     Returns:
         文本确认，或 bot 不可用时的图片 bytes
@@ -1068,14 +1085,15 @@ async def render_html_to_image(
         # 先自动嵌图（外链/icon/资源），再 table 改写与引擎卫生 CSS
         html = await _auto_embed_html_images(html_content)
         html = _prepare_free_html(html)
+        logical_w = _clamp_logical_width(max_width)
         _dpr = 2.0
         image_bytes = await render_html_to_bytes(
             html,
-            max_width=float(max_width) * _dpr,
+            max_width=float(logical_w) * _dpr,
             dpi=96.0 * _dpr,
             image_format=image_format,
-            default_font_size=15.0,
-            root_max_width=float(max_width),
+            default_font_size=16.0,
+            root_max_width=float(logical_w),
         )
         logger.info(t("log.ai.buildintools_html_rendering_succeeded_ok", p0=len(image_bytes)))
         return await _finish_image(ctx, image_bytes)
@@ -1095,7 +1113,7 @@ async def render_markdown_to_image(
     title: str,
     markdown_content: str,
     image_format: Literal["png", "jpeg"] = "png",
-    max_width: int = 800,
+    max_width: int = 900,
 ) -> str | bytes:
     """将 Markdown 渲染为暗色卡片图。纯文字列表/步骤的次选。
 
@@ -1107,7 +1125,7 @@ async def render_markdown_to_image(
         title: 图片标题
         markdown_content: Markdown 正文（不含一级标题）
         image_format: 默认 png
-        max_width: 默认 800
+        max_width: 默认 900，硬上限 1000
 
     Returns:
         文本确认，或 bot 不可用时的图片 bytes
@@ -1117,15 +1135,16 @@ async def render_markdown_to_image(
 
     try:
         md = f"# {title}\n\n{markdown_content.strip()}{_footer()}"
+        logical_w = _clamp_logical_width(max_width)
         _dpr = 2.0
         image_bytes = await render_md_to_bytes(
             md=md,
             css_path=_MD_CSS_PATH,
-            max_width=int(max_width * _dpr),
+            max_width=int(logical_w * _dpr),
             dpi=96.0 * _dpr,
             image_format=image_format,
             dark=False,
-            root_max_width=float(max_width),
+            root_max_width=float(logical_w),
         )
         logger.info(t("log.ai.buildintools_markdown_rendering_succeeded_ok", p0=len(image_bytes)))
         return await _finish_image(ctx, image_bytes)

@@ -102,7 +102,8 @@ Message("image", "base64://....")          # 或 base64
 
 ### `reply` / `reply_id` —— 引用回复
 
-旧约定把被引用消息的 **msg_id** 塞进 `reply`。新约定拆成两段，**成对上报**：
+旧约定把被引用消息的 **msg_id** 塞进 `reply`。新约定拆成两段，**成对上报**
+（旧适配器怎么改见 [§12](./12-reply-and-node.md)）：
 
 ```python
 Message("reply_id", "被引用消息的 msg_id")
@@ -131,6 +132,7 @@ if ev.reply:
 
 用户**发送**或**引用**合并转发时，都要上报 `node`，`data` 与下发相同：`List[Message]`
 （JSON 里是 `[{"type": "...", "data": "..."}, ...]`），扁平一段，**不要嵌套 node**。
+展开、深度上限、引用摘要与推荐改法见 [§12.4](./12-reply-and-node.md)。
 
 ```python
 Message("node", [

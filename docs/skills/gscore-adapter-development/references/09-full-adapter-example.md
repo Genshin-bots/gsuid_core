@@ -199,6 +199,7 @@ async def _(bot, ev):
                 message[-1] = Message("reply", "[合并转发]\n" + str(message[-1].data))
                 fwd = await bot.call_api("get_forward_msg", id=rseg.data["id"])
                 message.append(Message("node", flatten_forward(fwd)))
+        # 展开深度、环、引用摘要的完整推荐改法见 §12
 
     for seg in messages:                        # CQ 段 → GsMessage
         if seg.type == "text":  message.append(Message("text", seg.data["text"]))

@@ -7,7 +7,9 @@ description: >
   "按钮 / Markdown 怎么适配到我的平台"、"node 合并转发怎么处理"、"双 ID 平台 group_id 怎么拼"、
   "QQ 官方 msg_id / msg_seq 时序问题"、"为什么我的命令前缀被吞了 / 没被识别"、
   "适配器 token 鉴权 / 断线重连怎么写"、"log_ 日志包是什么"、
-  "进退群 / 戳一戳元事件怎么上报"、"wait_recall 回执 / unsend 撤回 / ban 禁言怎么在适配器实现"时触发此 SKILL。
+  "进退群 / 戳一戳元事件怎么上报"、"wait_recall 回执 / unsend 撤回 / ban 禁言怎么在适配器实现"、
+  "reply 和 reply_id 有什么区别"、"引用正文怎么上报"、"合并转发 / node 怎么上报给 core"、
+  "旧适配器怎么改 reply / node"时触发此 SKILL。
   凡是"把某个聊天平台接入 GsCore"或"调试 core 与适配器之间通信"的任务都应优先读取此 SKILL。
 
   为 GsCore（早柚核心 / gsuid-core）机器人框架编写**平台适配器**的完整指南。适配器是运行在
@@ -18,7 +20,8 @@ description: >
   命令前缀处理）、发送消息（core→平台，recv 循环按 bot_id 路由、每种 type 的落地处理）、
   base64:// 与 link:// 双形态图片处理、按钮与 Markdown 跨平台映射、node 合并转发、双 ID 平台
   （villa / heybox）、QQ 官方时序、回调按钮上报、log_ 日志包、元事件上报（user_join_group /
-  user_exit_group / poke 三种标准事件）、echo 撤回回执、撤回 / 禁言控制包、易错点红线清单与端到端完整示例。
+  user_exit_group / poke 三种标准事件）、echo 撤回回执、撤回 / 禁言控制包、
+  引用拆分（reply=正文 / reply_id=id）与合并转发 node 上报的新版本迁移、易错点红线清单与端到端完整示例。
 ---
 
 # GsCore 适配器开发完整指南（核心入口）
@@ -51,6 +54,7 @@ description: >
 | 九 | 端到端完整示例（最小适配器 → OneBot v11 全功能适配器） | [references/09-full-adapter-example.md](./references/09-full-adapter-example.md) |
 | 十 | 易错点与红线清单（二进制帧、bot_id 路由、双形态图片、node、log 包、msg_id 时序…） | [references/10-pitfalls.md](./references/10-pitfalls.md) |
 | 十一 | 元事件上报与控制消息（meta 标准三事件 进群/退群/戳一戳 上报、`echo` 撤回回执、`excute_delete_message` 主动撤回、`excute_ban_user` 禁言） | [references/11-meta-and-control.md](./references/11-meta-and-control.md) |
+| 十二 | 新版本变更：引用拆分与合并转发上报（`reply`=正文 / `reply_id`=id、发送与引用查看 `node`、旧适配器推荐改法） | [references/12-reply-and-node.md](./references/12-reply-and-node.md) |
 
 ## 推荐开发流程（按需跳转）
 
@@ -62,8 +66,9 @@ description: >
 6. **补齐富媒体**：图片走 [七、图片与多媒体](./references/07-image-and-media.md)，按钮/MD 走 [六、按钮与 Markdown](./references/06-buttons-and-markdown.md)。
 7. **处理平台怪癖**：双 ID、QQ 时序、回调按钮等看 [八、特殊平台](./references/08-special-platforms.md)。
 8. **接元事件与撤回/禁言**：要上报进群/退群/戳一戳三种标准元事件、或支持插件 `wait_recall`/`unsend`/`ban`，看 [十一、元事件与控制消息](./references/11-meta-and-control.md)。
-9. **对照完整示例**：随时参考 [九、端到端示例](./references/09-full-adapter-example.md)。
-10. **交付前自查**：逐条过 [十、易错点红线](./references/10-pitfalls.md) 与 [十一、自查清单](./references/11-meta-and-control.md#116-自查清单)。
+9. **升级引用与合并转发**：旧适配器仍把 id 塞进 `reply`、或不报 `node` 时，按 [十二、引用拆分与合并转发](./references/12-reply-and-node.md) 改上报/下发。
+10. **对照完整示例**：随时参考 [九、端到端示例](./references/09-full-adapter-example.md)。
+11. **交付前自查**：逐条过 [十、易错点红线](./references/10-pitfalls.md)、[十一、自查清单](./references/11-meta-and-control.md#116-自查清单) 与 [十二、自查清单](./references/12-reply-and-node.md#129-自查清单)。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
@@ -82,10 +87,11 @@ description: >
   （`is_tome=True`）；私聊（`direct`）则 core 自动置 `is_tome=True`。详见 [§4.4](./references/04-report-message.md)。
 - **引用拆成 `reply` + `reply_id`**：上报时 `reply` 填引用**正文**，`reply_id` 填被引用消息 id，引用图
   **始终**作为 `image` 段一并上报（不要再开关 `is_reply_img`）。下发时 `reply` / `reply_id` 都按
-  **msg_id** 落地成平台引用段。详见 [§4.4](./references/04-report-message.md) / [§5.3](./references/05-send-message.md)。
+  **msg_id** 落地成平台引用段。旧适配器迁移见 [§12](./references/12-reply-and-node.md)，
+  字段细节见 [§4.4](./references/04-report-message.md) / [§5.3](./references/05-send-message.md)。
 - **合并转发要上报 `node`**：用户发送或引用转发卡片时，`data` 为扁平 `List[Message]`（与下发同形）。
   引用转发时 `reply` 以 `[合并转发]` 开头并附带 `node`。不要把节点正文拼进 `text`。
-  详见 [§4.4](./references/04-report-message.md)。
+  展开规则与推荐改法见 [§12.4](./references/12-reply-and-node.md)，字段细节见 [§4.4](./references/04-report-message.md)。
 - **命令前缀处理在两边都有**：core 端会按 `command_start` 削掉前缀；适配器上报前**不要**自作主张删命令前缀
   （除非平台特性需要，如 QQ 官方把 `/` 当指令）。详见 [§4.5](./references/04-report-message.md)。
 - **`log_{LEVEL}` 是日志回显包**：core 想在适配器侧打日志时，发一条 `bot_id == 路由BOT_ID` 且
@@ -115,5 +121,6 @@ description: >
   - 撤回/禁言平台 API 分支：`GenshinUID/GenshinUID/send_utils.py` 的 `del_msg` / `excute_ban_user`
   - 撤回 / 元事件协议契约：`gsuid_core/RECALL_AND_META_EVENTS.md`
   - 最小可运行测试客户端：`gsuid_core/client.py`
+  - 引用拆分 + 合并转发上报参考：`astrbot_plugin_gscore_adapter` 的 `main.py` / `send_utils.py`（见 [§12](./references/12-reply-and-node.md)）
 </content>
 </invoke>

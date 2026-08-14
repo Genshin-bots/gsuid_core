@@ -53,6 +53,8 @@ def test_hygiene_css_does_not_override_badge_box_model() -> None:
 
     assert "white-space:nowrap" in _TAKUMI_ENGINE_HYGIENE_CSS
     assert "word-break:keep-all" in _TAKUMI_ENGINE_HYGIENE_CSS
+    assert "flex-shrink:0" in _TAKUMI_ENGINE_HYGIENE_CSS
+    assert "box-sizing:border-box" not in _TAKUMI_ENGINE_HYGIENE_CSS
     assert "display:inline-block" not in _TAKUMI_ENGINE_HYGIENE_CSS
     assert "padding:2px 8px" not in _TAKUMI_ENGINE_HYGIENE_CSS
     assert "line-height:1.35" not in _TAKUMI_ENGINE_HYGIENE_CSS
@@ -65,6 +67,24 @@ def test_hygiene_css_does_not_override_badge_box_model() -> None:
     assert "display:flex" in out
     assert "padding:8px 16px" in out
     assert "display:inline-block" not in _TAKUMI_ENGINE_HYGIENE_CSS
+
+
+def test_clamp_logical_width_caps_at_1000() -> None:
+    from gsuid_core.ai_core.buildin_tools.html_render_tools import _clamp_logical_width
+
+    assert _clamp_logical_width(800) == 800
+    assert _clamp_logical_width(900) == 900
+    assert _clamp_logical_width(1000) == 1000
+    assert _clamp_logical_width(1240) == 1000
+    assert _clamp_logical_width(0) == 900
+
+
+def test_render_prompt_im_type_scale() -> None:
+    from gsuid_core.ai_core.capability_agents.profiles import _RENDER_PROMPT
+
+    assert "1000" in _RENDER_PROMPT
+    assert "≥16px" in _RENDER_PROMPT
+    assert "≥13px" in _RENDER_PROMPT
 
 
 def test_render_prompt_has_four_recipes_and_vf_weights() -> None:
@@ -101,6 +121,8 @@ def test_render_html_docstring_vf_weights_and_flex_badge() -> None:
     assert "display:flex" in doc
     assert "render_chart_spec" in doc
     assert "禁止照抄色值" in doc
+    assert "上限 1000" in doc
+    assert "≥16px" in doc
 
 
 @pytest.mark.anyio
