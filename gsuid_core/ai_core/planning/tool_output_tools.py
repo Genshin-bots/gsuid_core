@@ -11,6 +11,11 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
+from gsuid_core.ai_core.control.delegation import (
+    load_delegation,
+    format_delegation,
+    is_delegation_handle,
+)
 from gsuid_core.ai_core.planning.handle_resolver import (
     ResolvedHandle,
     resolve_handle,
@@ -91,12 +96,18 @@ async def read_handle(
     offset: int = 0,
     limit: int = 8000,
 ) -> str:
-    """统一读句柄：to_/sa_/res_/img_ 均可；图片只返回发送提示。
+    """统一读句柄：to_/sa_/res_/img_/dlg_ 均可；图片只返回发送提示。
 
     长文按 **字符** offset/limit 分页（见返回文首【读窗口】）。
     续读请把 offset 设为上一页提示的 next（如 got 段末），勿重复 offset=0。
+    ``dlg_`` 是委派句柄，返回该子任务的实时状态与产物（等价 check_delegation）。
     框架保底工具：折叠后的检索/产物必须用本工具取全文，禁止空口说「只有句柄」。
     """
+    if is_delegation_handle(handle_id):
+        deleg = await load_delegation(handle_id)
+        if deleg is None:
+            return f"⚠️ 委派句柄不存在: {handle_id}"
+        return format_delegation(deleg)
     resolved = await resolve_handle(handle_id)
     if resolved is None:
         return f"⚠️ 句柄不存在: {handle_id}"

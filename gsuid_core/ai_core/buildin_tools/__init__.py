@@ -260,6 +260,12 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 
+# 控制面工具 - 查在途委派 / 对框架校验申辩（非用户可见通道）
+from gsuid_core.ai_core.buildin_tools.control_tools import (
+    check_delegation,
+    dispute_directive,
+)
+
 # 统一审批交互工具 - 全框架唯一的审批转达入口 + 审批能力族
 from gsuid_core.ai_core.buildin_tools.approval_tools import (
     ask_user,
@@ -383,6 +389,9 @@ __all__ = [
     "_get_current_date",
     # Subagent工具
     "create_subagent",
+    # 控制面工具
+    "check_delegation",
+    "dispute_directive",
     # 自我信息工具
     "get_self_persona_info",
     "get_self_info",

@@ -262,6 +262,8 @@ def test_report_speech_and_solicitation() -> None:
     assert "要不要" not in cleaned
     assert "命名" in cleaned or "140" in cleaned or "白海豚" in cleaned
 
+    # 报告体只在**真有待出图事实包**时才拦（出处凭据）；
+    # 无事实包的长正文是用户点名要的（作文/代码/翻译），见控制面 INV-1。
     blk, why = should_block_user_visible_text(
         "free",
         typhoon,
@@ -269,8 +271,20 @@ def test_report_speech_and_solicitation() -> None:
         image_sent=False,
         has_status_tool=False,
         tool_calls_so_far=["web_search_tool"],
+        fact_pack_pending=True,
     )
     assert blk and why == "report_speech"
+
+    blk_no_pack, _ = should_block_user_visible_text(
+        "free",
+        typhoon,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+        fact_pack_pending=False,
+    )
+    assert not blk_no_pack
 
 
 def test_empty_handoff_and_wait_comfort() -> None:

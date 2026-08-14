@@ -1,8 +1,12 @@
-"""统一句柄解析：res_ / to_ / sa_ / img_ → 可读载荷。"""
+"""统一句柄解析：res_ / to_ / sa_ / img_ / dlg_ → 可读载荷。
+
+``dlg_`` 是在途委派句柄（见 ``ai_core/control/delegation.py``）：接进本命名空间后，
+模型用已在保底池的 ``read_handle`` 就能查委派状态，无需新增工具（INV-5）。
+"""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
@@ -25,6 +29,26 @@ class ResolvedHandle:
     size_bytes: int
     root_task_id: str = ""
     task_id: str = ""
+
+
+HandleKind = Literal["tool_output", "artifact", "image", "delegation", "unknown"]
+
+_PREFIX_KINDS: tuple[tuple[str, HandleKind], ...] = (
+    ("to_", "tool_output"),
+    ("sa_", "tool_output"),
+    ("res_", "artifact"),
+    ("img_", "image"),
+    ("dlg_", "delegation"),
+)
+
+
+def handle_kind_of(handle_id: str) -> HandleKind:
+    """按前缀判别句柄种类（不查库）。"""
+    hid = (handle_id or "").strip()
+    for prefix, kind in _PREFIX_KINDS:
+        if hid.startswith(prefix):
+            return kind
+    return "unknown"
 
 
 def _mime_for_tool_output(payload_path: str) -> str:
@@ -81,6 +105,10 @@ async def _from_artifact(art: Any) -> ResolvedHandle:
 async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
     hid = (handle_id or "").strip()
     if not hid:
+        return None
+    # dlg_ 是委派状态句柄，不是可读载荷：走 control.delegation.load_delegation，
+    # 这里早退，避免白跑两次 FileOS/artifact 查库。
+    if handle_kind_of(hid) == "delegation":
         return None
     # FileOS
     if hid.startswith("to_") or hid.startswith("sa_"):

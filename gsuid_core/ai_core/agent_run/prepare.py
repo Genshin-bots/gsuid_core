@@ -36,6 +36,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _capability_exclusive_tool_names,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, is_control_envelope
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
     resolve_speech_policy,
@@ -97,6 +98,10 @@ class PreparePhase(RunOnceHost):
         st.tool_call_list = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
         # 同引用暴露给 _execute_run 的干净重试分支：判断失败前是否已有工具副作用（F14）
         self._last_attempt_tool_calls = st.tool_call_list
+        self._last_attempt_delegated_render = False
+        self._last_attempt_image_sent = False
+        self._last_attempt_pending_async = False
+        self._last_attempt_has_status_tool = False
         st.wall_nudged = False  # C-4 墙钟软预算：每 run 至多注入一次收敛提示
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         st.ooc_blocked = []
@@ -122,7 +127,8 @@ class PreparePhase(RunOnceHost):
         st.pending_async_delivery = False
         st.image_sent_this_run = False
         st.has_status_tool_call = False
-        st.report_speech_blocked = False
+        st.presentation_mismatch = False
+        st.presentation_withheld = []
         st.wait_comfort_sent = False
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
@@ -164,12 +170,17 @@ class PreparePhase(RunOnceHost):
             "turn_id": st.turn_id,
             "agent_run_id": st.turn_id,
             "run_sent_texts": self._run_sent_texts,
+            # 同引用透传：纠正轮里 dispute_directive 的申辩要能被外层 settle 读到
+            DISPUTE_EXTRA_KEY: self._run_disputes,
         }
         if st.user_turn_id:
             st.run_extra["user_turn_id"] = st.user_turn_id
-        # 框架回灌：强制 @ 任务 owner（st.ev.user_id 已由 Kanban 填为 owner）
+        # 框架身份由**类型**判定（is_framework_injection / <control> 信封），
+        # 前缀嗅探只作遗留兼容：靠前缀曾漏掉 `（系统校验·内部轮）` 导致控制面穿数据面。
         st.fw_msg = isinstance(st.user_message, str) and (
-            st.is_framework_injection or st.user_message.lstrip().startswith("[框架·")
+            st.is_framework_injection
+            or is_control_envelope(st.user_message)
+            or st.user_message.lstrip().startswith("[框架·")
         )
         if st.fw_msg and st.ev is not None and st.ev.user_id:
             st.run_extra["at_user_id"] = str(st.ev.user_id)
@@ -242,8 +253,10 @@ class PreparePhase(RunOnceHost):
 
         # 连续无工具调用检测：连续两轮只推脱不调工具时注入强制提醒。闲聊类意图豁免（§15）
         # 豁免口径唯一定义在 _PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。
+        # 框架纠正轮不要再粘这条：settle 在启动纠正前已 +1，会污染 <control> 信封。
         if (
-            self.create_by in ["Chat", "Agent"]
+            not st.fw_msg
+            and self.create_by in ["Chat", "Agent"]
             and self._consecutive_no_tool_rounds >= 2
             and st.intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
         ):
@@ -264,7 +277,7 @@ class PreparePhase(RunOnceHost):
         st.followup_detected = False
         st.tg = st.turn_graph
         st.cheap = st.cheap_gate
-        if self.create_by in _INTERACTIVE_CREATE_BY:
+        if self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg:
             _cur_text = st.last_user_question
             _probe = st.ev.raw_text if st.ev is not None and st.ev.raw_text else st.last_user_question
             _is_tome = bool(st.ev.is_tome) if st.ev is not None else False
@@ -325,11 +338,6 @@ class PreparePhase(RunOnceHost):
         if st.status_inquiry and st.has_active_task and self.create_by in ("Chat", "Agent"):
             st.final_user_message = _append_user_text(st.final_user_message, _STATUS_INQUIRY_HINT)
             logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
-
-        # 4.7 supersede 交接：上一 run 被抢答时有在途子代理委派 → 注入一句交接语后清空。
-        if self._pending_delegation_handoff and not st.fw_msg:
-            st.final_user_message = _append_user_text(st.final_user_message, self._pending_delegation_handoff)
-            self._pending_delegation_handoff = ""
 
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(st.final_user_message)

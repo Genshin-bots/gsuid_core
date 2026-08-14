@@ -296,6 +296,30 @@ def _to_tool_image_content(
     return None, f"❌ 无法将 URL 规范为可注入图片: {url[:80]}"
 
 
+# 同 run 内重读同一张图的计数：后端确定性，连读拿到同样字节。缺这个结构信号时，
+# 模型会连读数轮再把「识图抽风」这类基础设施状况说给用户听（生产 OOC）。
+_READ_COUNT_EXTRA_KEY = "read_image_counts"
+_REREAD_HINT_THRESHOLD = 2
+
+_REREAD_EXHAUSTED_NOTE = (
+    "（工具通道·结构提示：本 run 内你已读取这张图 {reads} 次，返回的就是识别后端的全部产出，"
+    "再读不会多出细节。若关键特征确实缺失：如实说认不出来、或请对方补一句线索，"
+    "**不要**继续重读，也**不要**把识别过程/后端状况说给用户听。）"
+)
+
+
+def _bump_read_count(extra: dict[str, object], image_id: str) -> int:
+    """记一次读取并返回本 run 内该图的累计次数。"""
+    bucket = extra[_READ_COUNT_EXTRA_KEY] if _READ_COUNT_EXTRA_KEY in extra else None
+    if not isinstance(bucket, dict):
+        bucket = {}
+        extra[_READ_COUNT_EXTRA_KEY] = bucket
+    prev = bucket[image_id] if image_id in bucket and isinstance(bucket[image_id], int) else 0
+    count = prev + 1
+    bucket[image_id] = count
+    return count
+
+
 @ai_tools(category="buildin", visible_when=context_has_image, timeout=120.0)
 async def read_image(
     ctx: RunContext[ToolContext],
@@ -382,4 +406,8 @@ async def read_image(
     if not description:
         return f"⚠️ 图片 {image_id} 已读取，但未能解析出有效内容。"
     logger.info(t("log.ai.buildintools_read_image_id", image_id=image_id, p0=len(description)))
-    return f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)
+    reads = _bump_read_count(ctx.deps.extra, image_id)
+    body = f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)
+    if reads >= _REREAD_HINT_THRESHOLD:
+        body += "\n" + _REREAD_EXHAUSTED_NOTE.format(reads=reads)
+    return body

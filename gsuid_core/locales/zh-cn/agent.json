@@ -105,5 +105,7 @@
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] 用户消息: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（当前模型非 gemini）",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 墙钟软预算已超（{p0:.0f}s），注入收敛提示",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}",
+  "log.agent.directive_disputed": "[ControlPlane] 模型对框架校验提出申辩，保留原答案：{reason}",
+  "log.agent.directive_obligation_unmet": "[ControlPlane] 义务未履行（{code}），本轮保留原答案"
 }

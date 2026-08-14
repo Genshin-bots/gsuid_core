@@ -7,7 +7,7 @@ from datetime import datetime
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import SILENCE_MARKERS, extract_json_from_text
+from gsuid_core.ai_core.utils import is_silence_marker, extract_json_from_text
 from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
@@ -323,7 +323,7 @@ async def run_heartbeat(
         return None
 
     # 模型输出 <SILENCE> 或 <end_turn> 表示选择不发言，直接跳过
-    if result.strip() in SILENCE_MARKERS:
+    if is_silence_marker(result.strip()):
         logger.debug(t("log.ai.heartbeat_output_silence_remaining"))
         return None
 
@@ -523,7 +523,7 @@ async def run_reactive_gate(
         if not isinstance(result, str):
             logger.debug(t("log.ai.reactivegate_non_str_defaulting", p0=type(result).__name__))
             return False
-        if not result or result.strip() in SILENCE_MARKERS:
+        if not result or is_silence_marker(result.strip()):
             return False
         # 捕获具体异常而非宽 except：模型吐了内容但不是合法 JSON（常因角色扮演"出戏"成台词），
         try:

@@ -24,8 +24,8 @@ from gsuid_core.ai_core import (
     angle_bracket_guard,
 )
 from gsuid_core.ai_core.utils import (
-    SILENCE_MARKERS,
     send_chat_result,
+    is_silence_marker,
     _split_embedded_thinking,
     _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
@@ -534,7 +534,7 @@ class LoopPhase(RunOnceHost):
                     continue
                 logger.debug(i18n_t("log.agent.llm_text", _text=_text))
                 self._session_logger.log_text_output(_text)
-                if _text in SILENCE_MARKERS:
+                if is_silence_marker(_text):
                     logger.info(i18n_t("log.agent.silent_skipping_text", _text=_text))
                     continue
                 if _text in self._run_sent_texts:
@@ -560,13 +560,13 @@ class LoopPhase(RunOnceHost):
                         fact_pack_pending=_fact_pending,
                     )
                     if _blk:
-                        # 仅「有料却念表/摆烂」武装 render 纠正；过程元话语只拦不武装
-                        if _why in ("report_speech", "pre_render_long_speech"):
-                            st.report_speech_blocked = True
-                            st.saw_structured_return = True
-                        elif _why == "empty_handoff" and _fact_pending:
-                            st.report_speech_blocked = True
-                            st.saw_structured_return = True
+                        # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
+                        # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
+                        if _why in ("report_speech", "pre_render_long_speech", "empty_handoff"):
+                            st.presentation_mismatch = True
+                            # 暂扣原文：纠正被申辩/无替代品时由 settle 兜底发出（INV-4）
+                            if _text not in st.presentation_withheld:
+                                st.presentation_withheld.append(_text)
                         logger.info(
                             i18n_t(
                                 "log.agent.silent_skipping_text",
@@ -736,16 +736,10 @@ class LoopPhase(RunOnceHost):
                     logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
                     self._session_logger.log_node_transition("End")
 
-        # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成
+        # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成。
+        # 在途委派不丢：根任务在库里，下轮由 build_task_context 注入，产物经邮箱回灌。
         if st.generation_cancelled:
             logger.info(i18n_t("log.agent.generation_aborted_no_history"))
-            # 4.7 supersede 交接：已派发的子代理委派不因打断而丢——产物由 Kanban 完成后
-            # 注入 [框架·任务完成]；这里只留一句交接语，供后到 run 知道自己委派过什么。
-            if "create_subagent" in st.tool_call_list:
-                self._pending_delegation_handoff = (
-                    "（系统提示：你上一轮委派的子任务仍在后台执行，完成时框架会另行回灌产物；"
-                    "此前勿声称已完成或重复委派同一任务。）"
-                )
             return "" if st.output_type is None else None
 
         # 遍历完成后收尾

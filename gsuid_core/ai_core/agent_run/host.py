@@ -39,14 +39,18 @@ class RunOnceHost:
     capability_node_id: str
     _session_logger: Any
     _run_sent_texts: set[str]
+    _run_disputes: list[str]
     _last_attempt_tool_calls: list[str]
+    _last_attempt_delegated_render: bool
+    _last_attempt_image_sent: bool
+    _last_attempt_pending_async: bool
+    _last_attempt_has_status_tool: bool
     _cancel_generation: Any
     _consecutive_no_tool_rounds: int
     _last_drift_push_count: int
     _recent_tool_families: dict[str, int]
     _recent_user_texts: list[str]
     _last_assembled_domains: set[str]
-    _pending_delegation_handoff: str
 
     # ── GsCoreAIAgent 实现 ──
     def extract_history(self) -> None:

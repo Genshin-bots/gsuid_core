@@ -56,6 +56,23 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
     }
 )
 
+# 协议标记应被**解析**而非字面比较：模型会写 `<SILENCE/>` / `</SILENCE>` 等变体，
+# 字面集合漏掉后整段会被当成普通台词或非法尖括号标签下发（生产已复现）。
+_SILENCE_TOKEN_RE = re.compile(
+    r"^\s*(?:"
+    r"<\s*/?\s*(?:silence|end_turn|no_tool_call)\s*/?\s*>"
+    r"|\[\s*silence\s*\]"
+    r"|silence"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_silence_marker(text: str) -> bool:
+    """整段是否沉默/控制标记（容忍 ``</X>`` / ``<X/>`` / ``[X]`` / 裸名与大小写）。"""
+    return bool(text) and _SILENCE_TOKEN_RE.match(text) is not None
+
+
 # run 失败返回值协议：生产端(gs_agent)与全部消费端(handle_ai/executor/sanitize)引用
 # 同一组常量做前缀/子串判断，文案微调不再让嗅探点静默失效（评审修复 E11）。
 ERROR_RESULT_PREFIX = "执行出错"
@@ -166,8 +183,11 @@ def _strip_special_control_tokens(text: str) -> str:
 
 # 内部资源句柄（纯内部寻址 ID，绝不该进正文；
 # hex）、models.py 出 res_（12 位 hex）。
-_RESOURCE_HANDLE_RE = re.compile(r"`*\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b`*")
-_RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_")
+_RESOURCE_HANDLE_RE = re.compile(
+    r"`*\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b`*"
+    r"|`*\bdlg_[0-9a-fA-F-]{8,}\b`*"
+)
+_RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_", "dlg_")
 
 
 def _strip_resource_handles(text: str) -> str:
@@ -313,7 +333,7 @@ def extract_json_from_text(raw_text: str) -> dict | list:
 
     # 过滤已知的非 JSON 特殊标记（如模型输出的 <SILENCE>）
     stripped = raw_text.strip()
-    if stripped in SILENCE_MARKERS:
+    if is_silence_marker(stripped):
         raise ValueError(f"Special marker '{stripped}' is not valid JSON")
 
     # 上游 agent 出错时会返回 "执行出错: ..." 之类的字符串，这里提前拦截
@@ -1176,7 +1196,7 @@ async def send_chat_result(
 
     # 过滤模型输出的特殊控制标记（如 <end_turn>），避免发送给用户
     _trimmed = text.strip()
-    if _trimmed in SILENCE_MARKERS:
+    if is_silence_marker(_trimmed):
         logger.debug(i18n_t("log.ai.send_chat_result_special_trimmed_skip", _trimmed=repr(_trimmed)))
         return
 
@@ -1899,21 +1919,26 @@ def _relean_user_turn(
             msg.parts = kept_parts
 
 
+# 现役控制面走 <control> 信封（按类型判定身份）；本表只兜遗留文案。
+# 曾漏 `（系统校验·内部轮）`（表里只有全角冒号版），使框架指令穿成 user 发言。
+_LEGACY_FRAMEWORK_PREFIXES: tuple[str, ...] = (
+    "[框架·",
+    "[系统·",
+    "（系统校验",
+    "（系统：",
+    "（系统提示：",
+    "<control",
+)
+
+_USER_SPEECH_SHELL = "[用户发言]"
+
+
 def _is_framework_prompt_content(content: str) -> bool:
     """框架/校验注入：不得当作真人发言进入 B 轨。"""
     s = content.lstrip()
-    if s.startswith("[框架·") or s.startswith("[系统·"):
-        return True
-    if s.startswith("（系统校验：") or s.startswith("（系统：") or s.startswith("（系统提示："):
-        return True
-    # 包在 [用户发言] 外壳里的框架句
-    if s.startswith("[用户发言]"):
-        rest = s[len("[用户发言]") :].lstrip()
-        if rest.startswith("[框架·") or rest.startswith("[系统·"):
-            return True
-        if rest.startswith("（系统校验：") or rest.startswith("（系统：") or rest.startswith("（系统提示："):
-            return True
-    return False
+    if s.startswith(_USER_SPEECH_SHELL):
+        s = s[len(_USER_SPEECH_SHELL) :].lstrip()
+    return s.startswith(_LEGACY_FRAMEWORK_PREFIXES)
 
 
 def _split_embedded_thinking(

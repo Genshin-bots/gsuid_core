@@ -36,12 +36,12 @@ from gsuid_core.ai_core.const import (
     STALE_CHAT_REQUEST_TTL,
 )
 from gsuid_core.ai_core.utils import (
-    SILENCE_MARKERS,
     ERROR_TIMEOUT_TEXT,
     ERROR_RESULT_PREFIX,
     ERROR_CONTENT_REJECTED,
     send_chat_result,
     fetch_video_bytes,
+    is_silence_marker,
     _is_content_rejected,
     materialize_image_url,
     compact_session_history,
@@ -286,9 +286,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._cancel_generation = asyncio.Event()
         # 当前锁内是否在跑框架回灌：与真人消息互不 supersede，只排队
         self._running_framework: bool = False
-        # 4.7 supersede 交接：本 session 上一次 run 被抢答打断时若有在途子代理委派，
-        # 记一句交接语，下一 run 的 prepare 注入后即清空（Kanban 完成仍走 [框架·任务完成]）。
-        self._pending_delegation_handoff: str = ""
+        # 4.7 supersede 交接语已删：在途根任务由 build_task_context 每轮从库注入。
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
@@ -332,8 +330,16 @@ class GsCoreAIAgent(RunOnceMixin):
         self._recent_user_texts: List[str] = []
         # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时 故障重试重发，
         self._run_sent_texts: set[str] = set()
+        # 本用户轮内模型对框架校验的申辩理由（dispute_directive 写，settle 读）。
+        # 与 _run_sent_texts 同样同引用透传进纠正轮，使外层能看到内层的申辩。
+        self._run_disputes: List[str] = []
         # 最近一次 attempt 内已执行的工具名（与 _execute_run_once 的局部列表同引用）：
         self._last_attempt_tool_calls: List[str] = []
+        # 纠正轮是新 RunOnceState；cleanup 把结构事实写到宿主，外层 settle 再并回父 st。
+        self._last_attempt_delegated_render: bool = False
+        self._last_attempt_image_sent: bool = False
+        self._last_attempt_pending_async: bool = False
+        self._last_attempt_has_status_tool: bool = False
         # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
         # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
         self._last_drift_push_count: int = 0
@@ -836,6 +842,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # 跨重试共享、按用户轮次重置：重试重跑 _execute_run_once 不会重发已送达的段；
         # 新一轮 run 则允许合法地再说同样的话。
         self._run_sent_texts = set()
+        self._run_disputes = []
 
         max_attempts: int = ai_config.get_config("agent_max_run_attempts").data
         retry_delay: float = ai_config.get_config("agent_run_retry_delay").data
@@ -1006,7 +1013,7 @@ class GsCoreAIAgent(RunOnceMixin):
         except Exception as e:
             logger.warning(i18n_t("log.agent.firewall_regeneration_fallback", e=e))
             return ""
-        if not out or out in SILENCE_MARKERS:
+        if not out or is_silence_marker(out):
             return ""
         return out
 
@@ -1190,11 +1197,10 @@ class GsCoreAIAgent(RunOnceMixin):
         ab_abort: bool,
     ) -> bool:
         """尖括号收尾 + OOC 重说。返回是否尖括号熔断静默。"""
-        silence_markers = SILENCE_MARKERS
         clean_sent = [
             t
             for t in self._run_sent_texts
-            if t and t not in silence_markers and not angle_bracket_guard.has_illegal_angle_tags(t)
+            if t and not is_silence_marker(t) and not angle_bracket_guard.has_illegal_angle_tags(t)
         ]
         plan = output_gate.plan_angle_after_run(context.extra, clean_sent=clean_sent)
         angle_fused = ab_abort or plan.fused

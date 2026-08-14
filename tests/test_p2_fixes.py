@@ -57,9 +57,9 @@ def test_favorability_skips_silence_and_error_rounds() -> None:
     gate_block = src[max(0, idx - 700) : idx]
     assert "last_run_sent_visible_reply" in gate_block
     assert "_is_error" in gate_block
-    # 分类定义处必须引用协议常量而非魔法串（评审修复 E11）
+    # 分类定义处必须引用协议常量/解析器而非魔法串（评审修复 E11）
     assert "ERROR_RESULT_PREFIX" in src
-    assert "SILENCE_MARKERS" in src
+    assert "is_silence_marker" in src or "SILENCE_MARKERS" in src
 
 
 # ─────────────────────────────────────────────

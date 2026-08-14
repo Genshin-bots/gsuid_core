@@ -419,8 +419,9 @@ def should_block_user_visible_text(
     if fact_pack_pending and looks_like_empty_handoff(body) and not image_sent:
         return True, "empty_handoff"
 
-    # 长结构台词：主人格不得用多段标题/列表刷屏（应 render）
-    if pol in ("free", "status_ok", "framework_deliver") and looks_like_report_speech(body):
+    # 长结构台词：仅当**真有待出图事实包**时才拦（该走 render）。
+    # 无事实包的长文本是用户点名要的正文（作文/代码/翻译），交呈现层，不拦不改。
+    if pol in ("free", "status_ok", "framework_deliver") and fact_pack_pending and looks_like_report_speech(body):
         return True, "report_speech"
 
     if pol == "framework_deliver":

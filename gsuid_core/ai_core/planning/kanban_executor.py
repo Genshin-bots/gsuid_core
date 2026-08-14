@@ -29,6 +29,8 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.proactive import emit_proactive_message
+from gsuid_core.ai_core.control.mailbox import drain_one, post_to_session
+from gsuid_core.ai_core.control.directive import Directive
 
 from . import kanban
 from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact
@@ -549,16 +551,32 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
     return "\n".join(parts)
 
 
-# 同 session+root 回灌合并：短窗内只保留最新一次，避免连刷
+# 回灌合并：payload 按 session|root 存最新，邮箱记「有消息」，flush 控节奏
 _delivery_pending: dict[str, tuple[AIAgentTask, str]] = {}
 _delivery_flush_tasks: dict[str, asyncio.Task] = {}
 _DELIVERY_COALESCE_SEC = 0.45
 
 
 async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> None:
-    """能力代理完成后回灌主 session；同 root 短窗合并为一次。"""
-    key = f"{(task.session_id or '').strip()}|{(task.root_task_id or task.id)}"
+    """能力代理完成后回灌主 session；同 root 短窗合并为一次。
+
+    payload 与「有消息」分开存：邮箱槽位按 (kind, root) 精确消费，绝不用会话级
+    drain 当布尔量——那会把兄弟 root 的待投递一并抽走，后到 flush 就静默丢单。
+    """
+    session_id = (task.session_id or "").strip()
+    root_id = task.root_task_id or task.id
+    key = f"{session_id}|{root_id}"
+    # 同 root 二次完成：payload 覆盖为最新，避免 wake 用过期结果
     _delivery_pending[key] = (task, raw_result)
+    post_to_session(
+        session_id,
+        Directive(
+            kind="delivery",
+            reason_code="kanban_delivery",
+            observation=f"子任务 {task.display_name or root_id} 已结束。",
+        ),
+        merge_key=root_id,
+    )
     existing = _delivery_flush_tasks.get(key)
     if existing is not None and not existing.done():
         return
@@ -566,13 +584,16 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
     async def _flush() -> None:
         try:
             await asyncio.sleep(_DELIVERY_COALESCE_SEC)
-            item = _delivery_pending.pop(key, None)
             _delivery_flush_tasks.pop(key, None)
+            item = _delivery_pending.pop(key, None)
+            # 邮箱只作顾问记录（prepare 尚未 drain）。唤醒只看 payload，避免 AND 闩丢单。
+            drain_one(session_id, "delivery", root_id)
             if item is not None:
                 await _wake_main_agent_for_delivery_now(item[0], item[1])
         except Exception as e:
             logger.debug(t("log.ai.delivery_coalesce_flush_skip", e=e))
             _delivery_flush_tasks.pop(key, None)
+            _delivery_pending.pop(key, None)
 
     _delivery_flush_tasks[key] = asyncio.create_task(_flush())
 

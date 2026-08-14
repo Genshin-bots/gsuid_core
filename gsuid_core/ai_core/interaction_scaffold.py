@@ -597,6 +597,10 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "search_knowledge",  # 知识库 + 历史工具落盘联邦
         "web_search_tool",
         "create_subagent",  # 含 render_agent / research 委派入口
+        # 控制面：纠正信封让模型申辩、超时回执让它查委派。群聊是主战场，
+        # 这两个缺席则模型只能用用户可见文本争辩——正是要消的 OOC。
+        "dispute_directive",
+        "check_delegation",
     }
 )
 

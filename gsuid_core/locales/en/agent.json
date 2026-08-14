@@ -105,5 +105,7 @@
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] User message: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] Video {p0} has been frame-sampled into {p1} images and added to the message (current model is not Gemini)",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] Wall-clock soft budget exceeded ({p0:.0f}s); injecting convergence hint",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] Failed to write token usage log: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] Failed to write token usage log: {_le}",
+  "log.agent.directive_disputed": "[ControlPlane] Model disputed the framework check; keeping original answer: {reason}",
+  "log.agent.directive_obligation_unmet": "[ControlPlane] Obligation unmet ({code}); keeping original answer this turn"
 }

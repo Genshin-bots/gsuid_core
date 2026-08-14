@@ -221,15 +221,14 @@ def test_leaked_res_handle_is_stripped() -> None:
 
 
 def test_all_real_prefixes_are_stripped() -> None:
-    """前缀须与 RM/artifact 实际生成对齐：img_/aud_/vid_（RM）、res_（artifact）。
-
-    锁死回归：曾误写成 rec_/video_（并漏掉 vid_），导致视频句柄漏给用户。
-    """
+    """前缀须与 RM/artifact/委派对齐：img_/aud_/vid_、res_、dlg_（含带连字符 UUID）。"""
     for prefix, raw in (
         ("res_", "看这个 `res_abc123def456` 好吧"),
         ("img_", "图在 img_00ff8821 里"),
         ("aud_", "音频 aud_deadbeef 听"),
         ("vid_", "视频 vid_0a1b2c3d 看"),
+        ("dlg_", "后台任务 dlg_0123456789ab 查一下"),
+        ("dlg_", "后台任务 dlg_550e8400-e29b-41d4-a716-446655440000 查一下"),
     ):
         out = _strip_resource_handles(raw)
         assert prefix not in out, f"漏了前缀 {prefix}: {raw!r} -> {out!r}"

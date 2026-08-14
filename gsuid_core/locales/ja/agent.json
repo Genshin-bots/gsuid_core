@@ -105,5 +105,7 @@
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] ユーザーメッセージ: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 動画 {p0} を {p1} 枚のフレームに抽出してメッセージに含めました（現在のモデルは Gemini ではありません）",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 壁時計のソフト予算を超過しました（{p0:.0f} 秒）。収束ヒントを注入します",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}",
+  "log.agent.directive_disputed": "[ControlPlane] モデルがフレームワーク検証に異議を申し立てたため、元の回答を保持します: {reason}",
+  "log.agent.directive_obligation_unmet": "[ControlPlane] 義務が未履行です（{code}）。今回は元の回答を保持します"
 }

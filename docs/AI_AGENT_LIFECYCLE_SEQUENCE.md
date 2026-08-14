@@ -1234,6 +1234,35 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
     return 路径：见 §10.8（Capability/subagent 跳过 roleplay scrub）
 ```
 
+**控制面收口（2026-08-14）**：settle 的四条纠正（假完成 / 结构零工具 / 进度零工具 /
+出图未委派）不再塞裸文本进 `user_message`，统一走
+`control.corrections.*` → `render_control_envelope()` → **`<control>` 信封**，并传
+`is_framework_injection=True`。三条硬规矩（详见
+[`AI_CONTROL_PLANE_UNIFICATION_20260814.md`](AI_CONTROL_PLANE_UNIFICATION_20260814.md)）：
+
+1. **INV-1 出处 ≠ 排版**：`saw_structured_return` 只能由真实 `ToolReturnPart` 置位；
+   台词呈长结构只记 `presentation_mismatch`，**不得**据此强制工具或销毁内容。
+   报告体拦截因此加了 `fact_pack_pending` 前置——用户点名要的长正文（作文/代码/翻译）一律放行。
+2. **INV-3 纠正非破坏性**：`_corrected_or_original()` —— 纠正沉默或脏输出则**原答案生效**。
+   旧版「纠正判据误报 → 模型选 `<SILENCE>` → 原答被 scrub」是整轮零输出的活锁根因。
+   假完成一条**有意分岔**：原答是编造的完成声明，不能当 fallback，无干净纠正则静默。
+3. **义务轮无空操作出口**：`<control>` 有 `Obligation` 时不提供 `<SILENCE>`；模型认为观察
+   不成立就调 `dispute_directive(reason=…)`，原答照原样交付。义务由
+   `settle._obligations_met()` 按 `RunOnceState` 结构事实校验，不看模型文本。
+
+**INV-4 兜底**：排版闸暂扣过原文、而纠正被申辩或未履行义务时，`settle._deliver_withheld()`
+在 by_bot 的 `return ""` **之前**真把原文发出去——否则整轮零输出。
+`dispute_directive` / `check_delegation` 已进 `SLIM_GROUP_CORE_TOOLS`：群聊是主战场，
+这两个缺席则模型只能用用户可见文本争辩，正是要消的 OOC。
+
+**在途委派（2026-08-14）**：`create_subagent` 回执改印 `dlg_<root_task_id>` 句柄（原印
+`root.id[:8]`，而 `list_persisted_outputs` 是 SQL 等值 → 模型怎么查都是空）。`dlg_` 已接进
+`handle_resolver`，`read_handle` 与 `check_delegation(id, wait_sec=)` 均可消费；内联等待
+与轮询共用 `control.delegation.await_delegation`，5s 只是默认参数。产物按 **root** 取
+（`list_for_root`：多节点树的产物挂在 child 上）。执行体完成先 `mailbox.post_to_session`，
+再由短窗 flush 用 `drain_one(session, "delivery", root)` 精确消费——会话级 drain 会抽走
+兄弟 root 的投递。
+
 **DELIVERED 终局态（2026-08-10，P0 OOC 根治）**：`send_message_by_ai` **带台词**成功交付时
 （工具侧写结构信号 `extra["delivered_with_speech"]`，非文本关键词），loop 把本 run 置为
 `speech_policy="delivered"`：此后对用户只许 `<SILENCE>`，杜绝「任务已完成，图已发送给…」
@@ -1275,6 +1304,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 | 类别 | 位置 | 说明 |
 |------|------|------|
 | 话术态 / DELIVERED 终局 / 交付状态汇报 | `agent_run/speech_policy.should_block_user_visible_text`（gate **之前**） | 交付后只许 SILENCE；发图后拦状态汇报；沉默/进度/回灌分流 |
+| **报告体（长结构台词）** | 同上，但**必须** `fact_pack_pending=True` | 出处凭据；无事实包的长正文是用户要的，不拦（INV-1）；被拦的原文进 `presentation_withheld` 供 INV-4 兜底 |
+| **框架纠正指令** | `control/corrections.py` → `<control>` 信封（settle 发起） | 观察 + 凭据 + 可申辩义务；不进 user 槽/B 轨/工具 query（INV-2） |
 | 假完成 | `agent_run/loop` TextPart（gate **之后**）+ `settle` 结算 | 与「是否调过工具」结构绑定，不是纯文本合规 |
 | SILENCE / 去重 / 中间抑制 / 出站配额 | `agent_run/loop` | 通道与节奏 |
 | 剥 tool_call 伪影 / 私有 token / 资源句柄 | `send_chat_result` | 静默 sanitize，不打回 |

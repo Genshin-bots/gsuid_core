@@ -11,6 +11,7 @@ from typing import List, Union, Literal, Sequence
 from pydantic_ai.messages import UserContent, ToolCallPart, ToolReturnPart
 
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
+from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
 # re-export：settle / prepare / gs_agent 与测试共用
 from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
@@ -98,13 +99,15 @@ _STRUCTURAL_ZERO_TOOL_NUDGE = (
 
 
 def _correction_nudge_markers() -> tuple[str, ...]:
-    """全部 settle 纠正 nudge 文案集合（懒导入 speech_policy 避免环）。
+    """纠正指令在 history 里的识别锚点。
 
     纠正轮结束后统一从持久 history 剥掉这些 user turn：它们是框架内部指令，
     累积会污染上下文并破坏 provider 前缀缓存（方案四/五）。
+    现役纠正统一走 ``<control>`` 信封；其余常量保留仅为兼容尚未迁移的历史条目。
     """
 
     return (
+        f"<{CONTROL_ENVELOPE_TAG}",
         _FAKE_DONE_NUDGE,
         _STRUCTURAL_ZERO_TOOL_NUDGE,
         _RENDER_DELEGATE_NUDGE,

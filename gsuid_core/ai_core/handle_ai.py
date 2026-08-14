@@ -30,9 +30,9 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import (
     NO_RESULT_TEXT,
-    SILENCE_MARKERS,
     ERROR_RESULT_PREFIX,
     send_chat_result,
+    is_silence_marker,
     classify_error_type,
     prepare_content_payload,
     sanitize_error_for_user,
@@ -551,7 +551,7 @@ async def handle_ai_chat(
 
             # 步骤 8: 发送回复。结果只分类一次，步骤 9 的好感度门复用同一判定（评审修复 G3）
             result_text = chat_result if isinstance(chat_result, str) else str(chat_result or "")
-            _is_silence = bool(result_text) and result_text.strip() in SILENCE_MARKERS
+            _is_silence = is_silence_marker(result_text.strip())
             _is_error = result_text.startswith(ERROR_RESULT_PREFIX) or result_text == NO_RESULT_TEXT
             if chat_result:
                 if _is_silence:
