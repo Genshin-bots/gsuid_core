@@ -23,9 +23,12 @@ python -m gsuid_core → asyncio.run(main())
 8. 装 SIGINT/SIGTERM 信号处理（Windows 无 `add_signal_handler`，依赖 uvicorn）
 9. `uvicorn.Server(config).serve()` —— 由 lifespan 在内部跑启动 hook
 
-> **Windows 事件循环策略**：`core.py` 把循环切到 `WindowsSelectorEventLoopPolicy`，规避
-> `ProactorEventLoop` 关 socket 时的 `InvalidStateError`。代价：SelectorEventLoop **不支持
-> 子进程**，`execute_shell_command` / `execute_file` 必须分平台分支（见 [§08](./08-heartbeat-scheduled-planning.md)）。
+> **Windows 事件循环策略**：`core.py` **不设置**任何事件循环策略——它 `asyncio.run(main())`
+> 并在内部 `await server.serve()`，而 uvicorn 的 loop factory 只在 `Server.run()` 里生效。
+> 所以 Windows 上是 Python 默认的 **`ProactorEventLoop`**，`asyncio.create_subprocess_exec`
+> **可用**。Proactor 关 socket 的 `InvalidStateError` 由 `core.py:291-297` 顶层 `except` 兜底。
+> （2026-08-14 更正：此前写「切到 `WindowsSelectorEventLoopPolicy` 故不支持子进程」已过期，
+> 详见 [§12.3](./12-developer-pitfalls.md)。）
 
 ## 2.2 两阶段启动钩子（核心设计）
 

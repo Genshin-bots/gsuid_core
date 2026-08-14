@@ -19,8 +19,8 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.resource import FILE_PATH
 
-# Windows + SelectorEventLoop（见 core.py）不支持 asyncio 子进程；
-# 与 command_executor.py 同源——见同名常量的注释。
+# Windows 分支是历史兜底（宿主已改回 Proactor，asyncio 子进程可用）；
+# 与 command_executor.py 同源——见同名常量的注释与 dev §12.3。
 _IS_WINDOWS = platform.system() == "Windows"
 
 

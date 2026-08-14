@@ -78,7 +78,7 @@ description: >
 ## 关键概念速记（先看这一段再决定读哪一章）
 
 - **单进程事件循环**：Core 是 FastAPI + WebSocket + APScheduler 的**单进程**服务。大量状态（续聊窗口、工具轨迹、认证密钥、Bot 实例、Session 注册表、记忆队列）是**进程内存**，多进程水平扩展会状态不共享。详见 [§12](./references/12-developer-pitfalls.md)。
-- **Windows 事件循环**：`core.py` 切到 `WindowsSelectorEventLoopPolicy` 规避 Proactor 关闭 socket 的 `InvalidStateError`，但 SelectorEventLoop **不支持子进程**——跑 subprocess 的工具必须分平台分支。详见 [§08](./references/08-heartbeat-scheduled-planning.md) 与 [§12](./references/12-developer-pitfalls.md)。
+- **Windows 事件循环**：`core.py` **不设置**事件循环策略，Windows 上跑的是 Python 默认的 **`ProactorEventLoop`**，`asyncio.create_subprocess_exec` **可用**。Proactor 关 socket 的 `InvalidStateError` 改由 `core.py` 顶层 `except` 兜底，不再切 Selector。代码里遗留的「Windows 走同步 `subprocess.run`」分支是历史产物，冗余但无害。**写新代码直接用 asyncio 子进程；要兜底用 `except NotImplementedError` 而不是判平台。**（2026-08-14 更正了此前「切到 SelectorEventLoop 故不支持子进程」的过期描述。）详见 [§12.3](./references/12-developer-pitfalls.md)。
 - **两阶段启动钩子**：`on_core_start_before`（WS 启动**前**阻塞执行，做 DB 迁移/建表/Schema 升级）vs `on_core_start`（WS 启动**后**后台异步，不阻塞连接）。AI 子系统统一收敛到 `ai_core/startup.py::init_ai_core` 一个钩子，按 `_INIT_STEPS` 顺序串行。详见 [§02](./references/02-startup-lifecycle.md)。
 - **AI 总开关贯穿全链路**：`ai_config.get_config("enable").data` 在 `handle_ai` 内**函数级动态读取**（切换无需重启）；每个 `_init_*` 与定时任务执行前都检查总开关；关闭时 `create_core_tables` 跳过建 AI 表。改 AI 模块时**务必保留**这个检查。详见 [§02](./references/02-startup-lifecycle.md)、[§12](./references/12-developer-pitfalls.md)。
 - **命令优先于 AI**：`handle_event` 先匹配 `SL.lst` 触发器，**有命令匹配走触发器、无匹配才落入 AI**。权限不足（`user_pm > sv.pm`）的命令会"不匹配"从而落到 AI（AI 调同名 `to_ai` 工具时会再做一次权限检查）。详见 [§04](./references/04-event-trigger-flow.md)。

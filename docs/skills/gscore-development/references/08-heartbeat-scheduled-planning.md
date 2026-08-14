@@ -187,10 +187,13 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 `finance_agent`）由插件注册（`source` 三态 builtin/plugin/user，用户画像落
 `data/ai_core/capability_agents/<id>.json` 启动自动挂回）。
 
-> 🆕 **Windows subprocess 兼容**：SelectorEventLoop **不支持子进程**（见 [§02](./02-startup-lifecycle.md)），
-> `code_agent` 跑 `execute_shell_command`/`execute_file` 在 Windows 必抛 `NotImplementedError`。
-> 修复 = 两个工具内分平台分支：Windows 走"同步 `subprocess.run` + `asyncio.to_thread`"，POSIX
-> 走原生 `asyncio.create_subprocess_exec`，timeout 转 `asyncio.TimeoutError` 保持上层契约。
+> **Windows subprocess 兼容（2026-08-14 更正）**：此处此前写「SelectorEventLoop 不支持子进程，
+> `code_agent` 跑 `execute_shell_command`/`execute_file` 在 Windows 必抛 `NotImplementedError`」
+> ——**该前提已过期**。`core.py` 现在不设事件循环策略，Windows 跑 `ProactorEventLoop`，
+> asyncio 子进程可用（详见 [§12.3](./12-developer-pitfalls.md)）。
+> 两个工具里仍保留「Windows 走同步 `subprocess.run` + `asyncio.to_thread`」的分支，
+> 现为**冗余兜底**（timeout 仍转 `asyncio.TimeoutError` 保持上层契约），不必删除，
+> 但**新工具不要再照抄这个平台分支**。
 
 ### HITL 人工审批（已收编进统一审批中心，2026-07-07）
 

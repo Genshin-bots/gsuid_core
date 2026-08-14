@@ -96,9 +96,8 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
         stdout_str = stdout.decode("utf-8", errors="replace").strip()
         stderr_str = stderr.decode("utf-8", errors="replace").strip()
     except NotImplementedError:
-        # Windows 下如果主程序使用了不支持子进程的 SelectorEventLoop，
-        # asyncio.create_subprocess_exec 会直接抛出 NotImplementedError。
-        # 这里退化为在线程中执行同步 subprocess.run，避免接口 500 且无需重启进程。
+        # 兜底：宿主若换成不支持子进程的 SelectorEventLoop，asyncio 子进程会抛此错。
+        # 现为 Proactor、通常不触发。退化为线程跑同步 subprocess.run，避免接口 500。
         logger.warning(
             t(
                 "log.plugin.git_async_event_loop_asynchronous",

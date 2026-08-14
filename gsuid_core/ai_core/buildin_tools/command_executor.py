@@ -21,11 +21,8 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.check_func import check_pm
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_admin
 
-# Windows 平台兼容：core.py 强制把事件循环切换为 WindowsSelectorEventLoopPolicy
-# 以规避 ProactorEventLoop 关闭 socket 时的 InvalidStateError。代价是 Selector
-# 事件循环上 `asyncio.create_subprocess_exec` 会抛 NotImplementedError。
-# 解决方案：Windows 上把同步的 `subprocess.run` 派到独立线程 + asyncio.to_thread
-# 等待结果（不阻塞主事件循环）；POSIX 上仍走原生 asyncio 子进程链路。
+# Windows 分支是历史兜底：宿主曾切 SelectorEventLoop（不支持 asyncio 子进程）。
+# 现为 ProactorEventLoop，子进程已可用；分支保留无害，新代码勿照抄。见 dev §12.3。
 _IS_WINDOWS = platform.system() == "Windows"
 
 # 允许执行的安全命令白名单（基础命令）
@@ -447,7 +444,7 @@ async def execute_shell_command(
 
     try:
         if _IS_WINDOWS:
-            # Windows + SelectorEventLoop 不支持 asyncio 子进程，派到线程跑同步版
+            # 历史兜底：现 Proactor 下 asyncio 子进程已可用，此分支仅为稳妥而保留
             stdout_bytes, returncode = await _run_subprocess_in_thread(
                 cmd_list, str(work_path), env, timeout, max_output
             )
@@ -522,10 +519,14 @@ async def _run_subprocess_in_thread(
 ) -> tuple[bytes, int]:
     """Windows 路径：把同步 subprocess.run 派到独立线程，主事件循环不阻塞。
 
-    SelectorEventLoop 不支持 asyncio 子进程，而切回 ProactorEventLoop 又会让
-    WS / FastAPI 在并发关闭时偶发抛 InvalidStateError（见 core.py
-    `_configure_windows_event_loop_policy` 的旁注）。所以 Windows 上选择"同步
-    subprocess + to_thread"——开销可接受、行为与异步版一致。
+    历史原因：宿主曾切 SelectorEventLoop（不支持 asyncio 子进程）以规避 Proactor
+    关 socket 的 InvalidStateError。现在 core.py 不设策略、Windows 跑
+    ProactorEventLoop（该异常改由 core.py 顶层 except 兜底），asyncio 子进程已可用，
+    本函数因此成为**冗余兜底**——行为与异步版一致，故保留不删。
+
+    新增工具请直接用 asyncio.create_subprocess_exec，不要照抄这个平台分支；
+    确需兜底就 except NotImplementedError（对策略变化免疫）。
+    详见 docs/skills/gscore-development/references/12-developer-pitfalls.md §12.3。
     """
 
     def _runner() -> tuple[bytes, int]:

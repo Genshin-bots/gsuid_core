@@ -51,12 +51,45 @@ LLM 调用是 `await` 的纯网络 I/O，等待期间不占用事件循环。双
 InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归主循环 `asyncio.create_task`。
 **任何"把耗时 AI 任务搬去独立线程跑事件循环"的想法都要先验证它不碰这三个共享资源。**
 
-### Windows SelectorEventLoop 不支持子进程
+### Windows 事件循环：现在是 Proactor，子进程可用（2026-08-14 更正）
 
-`core.py` 切到 `WindowsSelectorEventLoopPolicy` 规避 Proactor 关 socket 的 InvalidStateError。
-代价：**SelectorEventLoop 不支持子进程**。任何跑 subprocess 的工具（`execute_shell_command` /
-`execute_file`）必须分平台分支：Windows 走"同步 `subprocess.run` + `asyncio.to_thread`"，POSIX
-走 `asyncio.create_subprocess_exec`，timeout 转 `asyncio.TimeoutError` 保持上层契约。
+> ⚠️ **本节此前写的是「`core.py` 切到 `WindowsSelectorEventLoopPolicy`，所以 Windows 不支持
+> 子进程」。该描述已过期，写新代码不要按它决策。**
+
+**现状**：`core.py` **不设置任何事件循环策略**。它 `asyncio.run(main())` 并在其中
+`await server.serve()`；uvicorn 的 loop factory 只在 `Server.run()` 里生效，走 `serve()`
+不会被套用。因此 Windows 上跑的是 **Python 默认的 `WindowsProactorEventLoopPolicy` →
+`ProactorEventLoop`**（实测 Python 3.12.4 + uvicorn 0.42）。
+
+**结论：`asyncio.create_subprocess_exec` 在 Windows 上可用**（已实测通过）。
+
+那么 Proactor 关 socket 的 `InvalidStateError` 怎么办？改成**顶层兜底吞掉**，不再换策略：
+
+```python
+# core.py:288-297
+if multiprocessing.current_process().name == "MainProcess":
+    try:
+        asyncio.run(main())
+    except (ConnectionResetError, ConnectionAbortedError):
+        # Windows ProactorEventLoop: 客户端异常断开时可能逃逸到顶层
+        pass
+    except asyncio.InvalidStateError:
+        # Windows ProactorEventLoop 已知问题: 连接重置时 set_exception
+        # 可能被调用在已终态的 Future 上，导致 InvalidStateError 逃逸
+        pass
+```
+
+**遗留的平台分支怎么看**：`buildin_tools/command_executor.py`、`buildin_tools/file_manager.py`、
+`utils/plugins_update/git_async.py` 里仍有「Windows 走同步 `subprocess.run` + `to_thread`」的分支。
+它们是这段历史的产物，**现在是冗余但无害的兜底**，不要因为本节更正就去删——
+`git_async.py` 那种 `except NotImplementedError` 回退写法尤其值得保留，它不依赖任何策略假设。
+
+**写新代码的规则**：直接用 `asyncio.create_subprocess_exec`，不必再为 Windows 单开分支。
+若确实要兜底，用 `try/except NotImplementedError` 而**不是** `platform.system() == "Windows"`
+——前者对策略变化免疫，后者会在策略变回来时静默失效（就像本节过期这么久都没人发现）。
+
+**真正仍然成立的约束**：不要为了任何目的把宿主循环**改回 Selector**（会重新弄坏子进程），
+也不要另起线程事件循环（见上一条 IngestionWorker 红线）。
 
 ## 12.4 AI 总开关（D-21）必须贯穿
 
