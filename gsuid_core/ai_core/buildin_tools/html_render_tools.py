@@ -58,13 +58,12 @@ _TRANSPARENT_1PX_PNG = (
 _TAKUMI_ENGINE_HYGIENE_CSS = """
 /* engine hygiene — not a visual theme */
 img{max-width:100%;height:auto;}
-/* chips: box grows with text; content centered in bg; horizontal CJK only */
+/* chips: only block CJK vertical wrap; do not override display/padding/line-height */
 .tag,.badge,.chip,.pill,.label{
-  display:inline-block;box-sizing:border-box;
-  padding:2px 8px;line-height:1.35;width:auto;max-width:100%;
-  text-align:center;vertical-align:middle;
-  white-space:nowrap;word-break:keep-all;overflow:visible;
-  writing-mode:horizontal-tb;text-orientation:mixed;
+  box-sizing:border-box;
+  white-space:nowrap;
+  word-break:keep-all;
+  writing-mode:horizontal-tb;
 }
 /* brand/logo: single horizontal run, not stacked glyphs in a square */
 .logo,.brand,.brand-mark,.icon-label{
@@ -101,9 +100,9 @@ body{{
   color:#edf2fa;line-height:1.5;
   padding:28px 28px 8px;
 }}
-h1{{font-size:26px;font-weight:900;color:#fff;margin:0 0 6px;line-height:1.25;}}
+h1{{font-size:26px;font-weight:700;color:#fff;margin:0 0 6px;line-height:1.25;}}
 h2{{
-  font-size:15px;font-weight:800;color:#e9eef7;margin:22px 0 12px;
+  font-size:15px;font-weight:630;color:#e9eef7;margin:22px 0 12px;
   border-left:4px solid #5b9dd9;padding-left:10px;
 }}
 .meta{{font-size:12px;color:#6b7890;margin-bottom:16px;letter-spacing:0.02em;}}
@@ -115,7 +114,7 @@ h2{{
   box-shadow:0 4px 18px rgba(0,0,0,0.32);
 }}
 .metric .lab,.lab{{font-size:11px;color:#6b7890;font-weight:700;letter-spacing:0.08em;}}
-.metric .val,.val{{font-size:30px;font-weight:900;color:#fff;margin:6px 0 4px;line-height:1.05;}}
+.metric .val,.val{{font-size:30px;font-weight:700;color:#fff;margin:6px 0 4px;line-height:1.05;}}
 .metric .sub,.sub{{font-size:12px;color:#3ec9a7;font-weight:700;}}
 .daygrid,.dgrid{{display:flex;gap:8px;margin-top:8px;}}
 .day{{
@@ -128,7 +127,7 @@ h2{{
 .day .ico,.ico{{
   width:36px;height:36px;border-radius:18px;margin-top:8px;
   display:flex;align-items:center;justify-content:center;
-  font-size:14px;font-weight:900;color:#0a1220;
+  font-size:14px;font-weight:700;color:#0a1220;
   background:linear-gradient(145deg,#5b9dd9,#2a5f9a);
   box-shadow:0 3px 10px rgba(0,0,0,0.35);
 }}
@@ -138,7 +137,7 @@ h2{{
 .ico.sun{{background:linear-gradient(145deg,#e8b45a,#b07a28);}}
 .ico.hot{{background:linear-gradient(145deg,#ef7d6c,#b04538);}}
 .day .w,.w{{font-size:11px;color:#9aa7bd;margin-top:8px;text-align:center;}}
-.day .t .hi,.hi{{color:#fff;font-weight:800;}}
+.day .t .hi,.hi{{color:#fff;font-weight:630;}}
 .day .t .lo,.lo{{color:#6b7890;font-weight:600;}}
 .row{{
   display:flex;align-items:center;gap:14px;margin-top:10px;
@@ -149,7 +148,7 @@ h2{{
 .ico.sm{{
   width:40px;height:40px;border-radius:20px;flex:none;
   display:flex;align-items:center;justify-content:center;
-  font-size:14px;font-weight:900;color:#0a1220;
+  font-size:14px;font-weight:700;color:#0a1220;
   background:linear-gradient(145deg,#5b9dd9,#2a5f9a);
 }}
 .ico.sm.ok{{background:linear-gradient(145deg,#3ec9a7,#1f8a70);}}
@@ -162,7 +161,7 @@ h2{{
 .main .desc,.desc{{font-size:12px;color:#8a9bb5;margin-top:4px;line-height:1.45;}}
 .tag{{
   flex:none;padding:4px 10px;border-radius:999px;
-  font-size:11px;font-weight:800;background:#5b9dd9;color:#0a1220;
+  font-size:11px;font-weight:520;background:#5b9dd9;color:#0a1220;
 }}
 .tag.green{{background:#3ec9a7;}}
 .tag.gold{{background:#e8b45a;}}
@@ -180,10 +179,10 @@ h2{{
 }}
 .pill{{
   display:inline-block;padding:3px 10px;border-radius:999px;
-  font-size:11px;font-weight:800;background:#3ec9a7;color:#0a1220;
+  font-size:11px;font-weight:520;background:#3ec9a7;color:#0a1220;
 }}
 .muted{{color:#8a9bb5;font-size:12px;}}
-.big{{font-size:34px;font-weight:900;color:#fff;line-height:1.05;}}
+.big{{font-size:34px;font-weight:700;color:#fff;line-height:1.05;}}
 .chart{{
   margin-top:10px;display:flex;flex-direction:column;gap:9px;
   padding:14px 16px;border-radius:14px;
@@ -195,7 +194,7 @@ h2{{
 .track{{flex:1;height:16px;border-radius:8px;background:rgba(255,255,255,0.06);overflow:hidden;}}
 .fill{{height:16px;border-radius:8px;background:linear-gradient(90deg,#b04538,#ef7d6c);}}
 .fill.up{{background:linear-gradient(90deg,#1f8a70,#3ec9a7);}}
-.cval{{width:58px;flex:none;font-size:12px;font-weight:800;color:#fca5a5;}}
+.cval{{width:58px;flex:none;font-size:12px;font-weight:630;color:#fca5a5;}}
 .cval.up{{color:#3ec9a7;}}
 </style></head>
 <body>
@@ -999,12 +998,17 @@ async def render_html_to_image(
     - **对比度（暗色必看）**：深色页底时，h1/h2/.title/.headline/**正文** **必须显式**浅色
       （如 ``#edf4ff`` / ``#e2e8f0``）；禁止只写字号不写颜色、禁止暗底深字/默认黑；
       卡片用略亮的不透明 surface，勿靠全透明层。浅色主题则主文字须足够深。
-      font-weight 用 400~900
+      **字重（MiSans VF，轴 150–700）**：正文 330/400，小节/badge 520，标题 630，超大数字 700。
+      写 ``800``/``900`` 会被夹到 700，不会更粗。也可用 ``font-variation-settings:"wght" 330``。
     - **颜色语义**：同一页一套语义色（如 ↑/↓ 各一色）。暗底上强调色用偏亮的绿/红/金；
       浅底上用略深的语义色。**class 优先级**：``.item .value.up`` 须能盖过 ``.item .value``，
       禁止基类 ``color`` 盖掉修饰 class；状态色优先单 class
-    - **短标签**（chip/badge）：``display:inline-block;text-align:center;white-space:nowrap``；
-      父行居中用 ``.row{text-align:center}`` 或 ``display:flex;justify-content:center``
+    - **短标签**（chip/badge）：用 flex 把字居中进色块（卫生 CSS 只防竖排，不改 display）：
+      ``.badge{display:flex;align-items:center;justify-content:center;padding:3px 10px;line-height:1;}``
+      父行居中用 ``.row{display:flex;justify-content:center;gap:8px}``。
+      不要靠 ``vertical-align:middle``。
+    - **表格拆列**：价格与涨跌、数量与单位不要写在同一 ``td``（如 ``13.79亿+19.75%`` 拆两列）。
+    - **图表**：≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；禁止纯 CSS 色条冒充图。
     - **插图 / 图标（一次写完即可）**：直接在 HTML 里写，**系统渲染前自动嵌成 data URI**，
       无需另调工具：
       - ``<img src="https://...">`` 外链图
@@ -1025,29 +1029,28 @@ async def render_html_to_image(
       禁止手写 ``农<br>业<br>种<br>植`` 式竖排。
     - **字号**：正文建议 ≥14px，辅助 ≥12px；勿用 10–11px 全文。
 
-    ## 示例（暗色；浅色时把 page/text/title 换成浅色 token 即可，勿当唯一模板）::
+    ## 示例（token 占位，禁止照抄色值；下列两份骨架互不同构）::
 
+        /* A. 双栏简报（浅色纸感）—— page/surface/text/title 自己填，勿抄 #0f172a */
         <!DOCTYPE html><html><head><meta charset="utf-8"><style>
-        /* 暗色 token 示例——可改为浅色：page #f4f6fa / text #1a2332 / title #0b1220 */
         html,body{font-family:"MiSans","Microsoft YaHei",sans-serif;padding:24px;
-          background:#0f172a;color:#e2e8f0;}
-        h1{font-size:22px;margin:0 0 12px;color:#edf4ff;font-weight:800;}
-        .card{background:#1a2438;border-radius:12px;padding:12px;}
-        .row{display:flex;gap:12px;align-items:center;}
-        .tag{display:inline-block;padding:2px 8px;border-radius:4px;background:#334155;
-             white-space:nowrap;text-align:center;}
-        img.icon{width:28px;height:28px;border-radius:6px;}
-        table{width:100%;border-collapse:collapse;}
-        th,td{padding:8px 10px;border-bottom:1px solid #334155;text-align:left;color:#e2e8f0;}
-        th{color:#94a3b8;font-size:12px;} .up{color:#34d399;} .right{text-align:right;color:#fde68a;}
+          background:<page>;color:<text>;}
+        h1{font-size:22px;margin:0 0 12px;color:<title>;font-weight:630;}
+        .layout{display:flex;gap:16px;align-items:flex-start;}
+        .col-k{width:240px;flex:none;} .col-e{flex:1;}
+        .card{background:<surface>;border-radius:12px;padding:12px;
+          box-shadow:0 1px 4px rgba(0,0,0,0.08);border-top:3px solid <accent>;}
+        .badge{display:flex;align-items:center;justify-content:center;
+          padding:3px 10px;line-height:1;border-radius:999px;font-weight:520;}
+        table{width:100%;} th,td{padding:8px 10px;text-align:left;}
+        .right{text-align:right;} .up{color:<up>;}
         </style></head><body>
-        <div class="row">
-          <img class="icon" src="icon:mdi/chart-line" alt="" />
-          <h1>持仓明细</h1>
-        </div>
-        <table><tr><th>名称</th><th class="right">浮盈</th></tr>
-        <tr><td>长江电力</td><td class="up right">+5.48%</td></tr></table>
+        <h1>结论句</h1>
+        <div class="layout"><div class="col-k"><div class="card">KPI…</div></div>
+        <div class="col-e"><div class="card">表/论据…（价格、涨跌分两列）</div></div></div>
         </body></html>
+
+        /* B. 对比棚 / 时间轴脊：每实体一列色带，或中间轴+左右卡；不要再套编号竖卡 */
 
     Args:
         ctx: 工具执行上下文

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.utils.fonts.fonts import FONT_ORIGIN_PATH as _FONT_PATH
 
 try:
     from pytakumi import (
@@ -42,8 +43,7 @@ except ImportError as e:  # pragma: no cover - 引导期依赖缺失
     text_to_pic = _missing_dependency("text_to_pic")
     set_glyph_cache_max_bytes = _missing_dependency("set_glyph_cache_max_bytes")
 
-# 框架内置中文字体（与 PIL core_font 同源）
-_FONT_PATH = Path(__file__).resolve().parent.parent / "fonts" / "MiSans-Bold.ttf"
+# 框架内置中文 VF（与 PIL core_font 同源）。只注册这一张，勿再挂静态 Bold 抢 700 档。
 _DEFAULT_FONT_NAME = "MiSans"
 _MONO_FONT_NAME = "Mono"
 _GLYPH_CACHE_BYTES = 64 * 1024 * 1024
@@ -116,6 +116,7 @@ def _ensure_renderer(
 
     if _FONT_PATH.is_file():
         try:
+            # 不要传 weight=：会把整张 VF 钉死在单一档，CSS font-weight 失效。
             r.register_font(_FONT_PATH.read_bytes(), name=_DEFAULT_FONT_NAME)
             registered.append(_DEFAULT_FONT_NAME)
         except Exception as e:

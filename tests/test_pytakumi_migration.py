@@ -86,7 +86,7 @@ class TestPytakumiAvailability:
 # 1. Renderer 字体注册
 # ─────────────────────────────────────────────
 
-_FONT_PATH = Path(__file__).resolve().parent.parent / "gsuid_core" / "utils" / "fonts" / "MiSans-Bold.ttf"
+_FONT_PATH = Path(__file__).resolve().parent.parent / "gsuid_core" / "utils" / "fonts" / "MiSansVF.ttf"
 
 
 class TestFontRegistration:
@@ -98,7 +98,7 @@ class TestFontRegistration:
             data = _FONT_PATH.read_bytes()
             r.register_font(data, name="MiSans")
         else:
-            pytest.skip("MiSans-Bold.ttf 不存在")
+            pytest.skip("MiSansVF.ttf 不存在")
 
     def test_register_font_bad_data_raises(self) -> None:
         from pytakumi import Renderer
@@ -117,7 +117,7 @@ class TestFontRegistration:
             data = _FONT_PATH.read_bytes()
             register_fonts(r, [{"data": data, "name": "MiSansDict"}])
         else:
-            pytest.skip("MiSans-Bold.ttf 不存在")
+            pytest.skip("MiSansVF.ttf 不存在")
 
 
 # ─────────────────────────────────────────────

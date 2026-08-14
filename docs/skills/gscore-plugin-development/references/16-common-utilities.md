@@ -123,11 +123,12 @@ async def render_dashboard(uid: str, mode: str) -> bytes:
 ```python
 from gsuid_core.utils.fonts.fonts import core_font
 
-font = core_font(48)        # 拿一个 size=48 的中英文兜底字体
+font = core_font(48)             # size=48，默认字重 630（Bold）
+title = core_font(48, weight=700)  # 可选：150–700
 draw.text((10, 10), "雷电将军", font=font, fill="white")
 ```
 
-**不要 hardcode 字体路径**，`core_font` 内部用框架自带的 `MiSans-Bold.ttf`。
+**不要 hardcode 字体路径**，`core_font` 内部用框架自带的 `MiSansVF.ttf`。
 
 ## 16.7 同步代码异步桥接：`to_thread`
 

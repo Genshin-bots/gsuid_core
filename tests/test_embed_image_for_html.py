@@ -160,6 +160,9 @@ def test_prepare_injects_engine_hygiene() -> None:
     out = _prepare_free_html("<div class='tag'>标签</div>")
     assert "engine hygiene" in out
     assert "white-space:nowrap" in out
+    from gsuid_core.ai_core.buildin_tools.html_render_tools import _TAKUMI_ENGINE_HYGIENE_CSS
+
+    assert "display:inline-block" not in _TAKUMI_ENGINE_HYGIENE_CSS
 
 
 def test_embed_image_tool_not_registered() -> None:
