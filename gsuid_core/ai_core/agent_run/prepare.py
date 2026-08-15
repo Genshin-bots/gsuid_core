@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Sequence
+from typing import Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic_ai.usage import UsageLimits
@@ -46,7 +46,7 @@ from gsuid_core.ai_core.agent_run.user_turn_ctx import get_user_turn_id, set_use
 
 
 class PreparePhase(RunOnceHost):
-    async def _run_once_budget_gate(self, st: RunOnceState) -> Any:
+    async def _run_once_budget_gate(self, st: RunOnceState) -> object:
         """预算闸门：超额返回早退值；放行返回 ``BUDGET_GATE_PASS``。"""
         # ============ 预算闸门 + scope 解析（统一入口）============
         # 仅 st.budget_gate=True 的自主入口在此早退；放行/未启用/豁免均零额外开销。
@@ -163,8 +163,14 @@ class PreparePhase(RunOnceHost):
         st.blocked_exclusive = _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
         # 出站：主人格交互会话；Kanban_Relay 是人格播报专用（非能力代理）。
         # 能力代理 / 通用 subagent 一律 False——产物只回上游，由主人格或 Relay 发。
+        #
+        # ``TEST``（本地评测端点）与 Chat/Agent 同为**交互主人格**——它已在
+        # ``_INTERACTIVE_CREATE_BY`` 里。此处漏掉它会让评测里的主人格拿到
+        # 「当前为能力代理/子 Agent，禁止直发」的回执：模型据此认为自己没有出站权，
+        # 委派出图后交付不出去，直接吐 ``<SILENCE>``（实测把 data_rendering 整域打成 0/4）。
+        # 评测路径与生产路径的行为必须一致，否则基准测的不是生产。
         st.allow_outbound = self.create_by == "Kanban_Relay" or (
-            self.create_by in ("Chat", "Agent") and not self.is_subagent
+            self.create_by in ("Chat", "Agent", "TEST") and not self.is_subagent
         )
         st.run_extra = {
             "turn_id": st.turn_id,

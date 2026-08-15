@@ -93,7 +93,7 @@ async def search_tool_outputs(
     limit: int = 8,
     scope_key: Optional[str] = None,
     owner_user_id: Optional[str] = None,
-) -> List[dict[str, Any]]:
+) -> List[dict[str, object]]:
     from gsuid_core.ai_core.rag.base import client, embedding_model
     from gsuid_core.ai_core.rag.hybrid import hybrid_query
     from gsuid_core.ai_core.rag.sparse import sparse_embed_single
@@ -121,7 +121,7 @@ async def search_tool_outputs(
         sparse_using=TOOL_OUTPUT_SPARSE,
         query_filter=flt,
     )
-    out: List[dict[str, Any]] = []
+    out: List[dict[str, object]] = []
     for p in points:
         pay = dict(p.payload or {})
         pay["_score"] = float(p.score)

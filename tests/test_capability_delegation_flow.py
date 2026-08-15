@@ -33,10 +33,20 @@ def test_pool_overlap_empty_on_empty_pool() -> None:
 
 
 def test_post_tool_contract_is_format_not_domain() -> None:
-    """输出契约只谈出图工具通道，不含股票/金融等业务词；禁 <report>。"""
+    """输出契约只谈出图工具通道，不含股票/金融等业务词；`<report>` 须在禁止句里。
+
+    锁点说明：``<report>`` 块已下线（改为让 agent 自己调出图工具），契约里它只应作为
+    **被禁项**出现。这里锁「禁止语 + <report> 同句」而不是某个具体禁止词，
+    避免措辞从「禁止」改成「不要」时把测试弄红。
+    """
     assert "render_agent" in _POST_TOOL_OUTPUT_CONTRACT
     assert "render_" in _POST_TOOL_OUTPUT_CONTRACT
-    assert "禁止 <report>" in _POST_TOOL_OUTPUT_CONTRACT or "禁止" in _POST_TOOL_OUTPUT_CONTRACT
+    forbid_clause = next(
+        (seg for seg in _POST_TOOL_OUTPUT_CONTRACT.split("；") if "<report>" in seg),
+        "",
+    )
+    assert forbid_clause, "契约必须提到 <report>"
+    assert any(word in forbid_clause for word in ("禁止", "不要", "不许", "勿")), forbid_clause
     assert "股票" not in _POST_TOOL_OUTPUT_CONTRACT
     assert "金融" not in _POST_TOOL_OUTPUT_CONTRACT
     # 短结论不应被契约强制出图

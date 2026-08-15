@@ -33,7 +33,7 @@ _TASK_BASICS_TOOLS: List[str] = [
     "record_append",
     "record_update",
     "record_summary",
-    "search_knowledge",
+    "search_cognition",
     "web_search_tool",
     "web_fetch_tool",
 ]

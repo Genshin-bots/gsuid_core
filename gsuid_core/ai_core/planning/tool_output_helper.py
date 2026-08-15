@@ -5,13 +5,14 @@ from __future__ import annotations
 import uuid
 import asyncio
 import hashlib
-from typing import Optional
+from typing import Any, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
 from gsuid_core.ai_core.planning.models import AIAgentTask
 from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
@@ -44,7 +45,8 @@ _SKIP_PERSIST_TOOLS = frozenset(
         "read_persisted_output",
         "list_persisted_outputs",
         "grep_persisted_outputs",
-        "search_knowledge",  # 只读联邦检索，不落盘
+        "search_cognition",  # 只读联邦检索，不落盘
+        "search_knowledge",  # search_cognition 的兼容别名
         "read_image",  # 句柄读图，非新材料
         "list_my_kanban_tasks",
         "list_my_tasks",
@@ -101,12 +103,18 @@ def should_fold_for_model(
     return len(body) >= fold_threshold(is_group=is_group)
 
 
-def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str]:
+def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str, str]:
+    """返回 ``(owner, fileos_scope, cognition_scope)``。
+
+    两套 scope 口径故意分开：FileOS 自己存裸 ``group_id`` / ``session_id``（历史口径，
+    它的检索也用同一个值）；而认知节点表查的是 ``group:{gid}`` / ``user_global:{uid}``。
+    过去把 FileOS 的裸值直接当节点 scope 写，节点永远匹配不上——表只涨不召回。
+    """
     if ev is None:
-        return "", ""
+        return "", "", ""
     owner = str(ev.user_id or "")
-    scope = str(ev.group_id or ev.session_id or "")
-    return owner, scope
+    fileos_scope = str(ev.group_id or ev.session_id or "")
+    return owner, fileos_scope, scope_key_for_conversation(ev.group_id, owner)
 
 
 def _searchish_tool(name: str) -> bool:
@@ -144,7 +152,7 @@ async def persist_tool_return(
 ) -> Optional[PersistedHandleCard]:
     if not should_persist_tool_return(tool_name, content):
         return None
-    owner, scope = _scope_from_ev(ev)
+    owner, scope, cog_scope = _scope_from_ev(ev)
     return await _write_record(
         rid_prefix="to",
         content=content,
@@ -153,6 +161,7 @@ async def persist_tool_return(
         session_id=session_id or "",
         owner_user_id=owner,
         scope_key=scope,
+        cog_scope_key=cog_scope,
         tool_name=tool_name or "",
         profile="",
         res_handle="",
@@ -178,6 +187,8 @@ async def persist_subagent_result(
         session_id=task.session_id or "",
         owner_user_id=task.owner_user_id or "",
         scope_key=task.scope_key or "",
+        # Kanban 侧的 scope_key 由 make_scope_key 生成，已是认知层口径
+        cog_scope_key=task.scope_key or "",
         tool_name="",
         profile=profile or "",
         res_handle=res_handle or "",
@@ -255,6 +266,7 @@ async def _write_record(
     session_id: str,
     owner_user_id: str,
     scope_key: str,
+    cog_scope_key: str,
     tool_name: str,
     profile: str,
     res_handle: str,
@@ -325,7 +337,9 @@ async def _write_record(
             return _card_for_record(existing2, long_structured=long_structured)
         raise
     fileos_metrics.inc_write(size, redacted=n_redact)
-    asyncio.create_task(_index_chunks_safe(rid, clean, scope_key, owner_user_id, tool_name or profile, date_str))
+    asyncio.create_task(
+        _index_chunks_safe(rid, clean, scope_key, cog_scope_key, owner_user_id, tool_name or profile, date_str)
+    )
     return _card_for_record(rec, long_structured=long_structured)
 
 
@@ -333,6 +347,7 @@ async def _index_chunks_safe(
     rid: str,
     content: str,
     scope_key: str,
+    cog_scope_key: str,
     owner_user_id: str,
     tool_name: str,
     date_str: str,
@@ -356,6 +371,8 @@ async def _index_chunks_safe(
         try:
             await index_tool_output_chunks(chunks, payload=payload)
             fileos_metrics.inc_index(True)
+            # 回流认知层：只登记节点 + 摘要，正文仍住 FileOS（索引层，不是第二份正文）
+            await _distill_to_cognition(rid, payload, cog_scope_key, owner_user_id, tool_name, date_str)
             return
         except Exception as e:
             last_err = e
@@ -363,6 +380,33 @@ async def _index_chunks_safe(
                 await asyncio.sleep(0.3 * (attempt + 1))
     fileos_metrics.inc_index(False)
     logger.debug(t("log.ai.tool_output_index_skip_after_retry", e=last_err))
+
+
+async def _distill_to_cognition(
+    rid: str,
+    payload: dict[str, Any],
+    scope_key: str,
+    owner_user_id: str,
+    tool_name: str,
+    date_str: str,
+) -> None:
+    """FileOS 写入成功后的认知层回流（失败只丢节点，不影响落盘真身）。
+
+    ``scope_key`` 必须**换算成认知层口径**再写：FileOS 自己存的是裸 group_id /
+    session_id，而 ``AICogNode.search`` 查的是 ``group:{gid}`` / ``user_global:{uid}``。
+    直接透传会让每一条 tool_output 节点永远匹配不上，表只涨不召回。
+    """
+    from gsuid_core.ai_core.cognition.distill import distill_tool_output
+
+    summary = str(payload["summary"]) if "summary" in payload else ""
+    await distill_tool_output(
+        record_id=rid,
+        tool_name=tool_name,
+        summary=summary,
+        scope_key=scope_key,
+        owner_user_id=owner_user_id,
+        as_of=date_str,
+    )
 
 
 def schedule_persist_tool_return(

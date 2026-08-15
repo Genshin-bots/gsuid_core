@@ -133,7 +133,8 @@ def _must_call(tr, val, judge):
 @_v("must_call_any")
 def _must_call_any(tr, val, judge):
     hit = [n for n in val if n in tr.called_names]
-    return bool(hit), f"any_of={val} hit={hit}"
+    # 未命中时必须报出实际调了什么，否则「该调没调」和「调错了别的」在报告里长得一样
+    return bool(hit), f"any_of={val} hit={hit} called={tr.called_names}"
 
 
 @_v("must_not_call")

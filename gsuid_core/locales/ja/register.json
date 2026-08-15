@@ -8,5 +8,6 @@
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} ツール [{p0}] 特権分類 [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
   "log.register.timeout_sec_aborted": "[Register] ツール [{p0}] の実行がタイムアウトしました（>{timeout_sec} 秒）。中断しました",
-  "log.register.tool_inner_timeout": "[Register] ツール [{p0}] 内部タイムアウト/失敗（ラッパー超時ではない）: {e}"
+  "log.register.tool_inner_timeout": "[Register] ツール [{p0}] 内部タイムアウト/失敗（ラッパー超時ではない）: {e}",
+  "log.register.unregistered_tool": "ツール {name} をレジストリから削除しました"
 }

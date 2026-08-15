@@ -8,5 +8,6 @@
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} 工具 [{p0}] 特权分类 [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
   "log.register.timeout_sec_aborted": "[Register] 工具 [{p0}] 执行超时（>{timeout_sec}s），已中断",
-  "log.register.tool_inner_timeout": "[Register] 工具 [{p0}] 内部超时/失败（非包装超时）: {e}"
+  "log.register.tool_inner_timeout": "[Register] 工具 [{p0}] 内部超时/失败（非包装超时）: {e}",
+  "log.register.unregistered_tool": "已从注册表移除工具 {name}"
 }

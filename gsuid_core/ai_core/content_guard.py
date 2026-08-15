@@ -14,6 +14,7 @@
 import re
 import base64
 from typing import List, Tuple, Callable
+from dataclasses import dataclass
 
 # 规范化：去掉词内插入的分隔符 / 零宽字符，全角转半角，统一小写——对抗"M i M o"式规避。
 # 谐音 / 拼音变体由各词库显式列出，不在此处折叠。
@@ -217,14 +218,48 @@ def neutralize_encoded_injection(text: str) -> Tuple[str, bool]:
     return out, hit
 
 
-def annotate_untrusted_message(text: str) -> str:
-    """给进入 prompt 的用户消息做安全标注（输入侧）：伪造工具返回降权（§B.3-2）+
-    伪造系统提示降权 + 编码型注入中和（§B.3-3）。
+@dataclass(frozen=True)
+class GuardFlags:
+    """三个探测器的结构化命中标记。
 
+    历史上聚合入口只返回改写后的字符串、把三个 bool 全丢了，导致下游（关系温度
+    结算的负向信号）除侮辱词表外无从判定。本类型是那些标记的唯一对外形态。
+    """
+
+    fake_tool_result: bool = False
+    fake_system_hint: bool = False
+    encoded_injection: bool = False
+
+    @property
+    def any_hit(self) -> bool:
+        return self.fake_tool_result or self.fake_system_hint or self.encoded_injection
+
+    def reasons(self) -> Tuple[str, ...]:
+        """命中项的短码，供日志 / reason code 使用。"""
+        codes: List[str] = []
+        if self.fake_tool_result:
+            codes.append("fake_tool_result")
+        if self.fake_system_hint:
+            codes.append("fake_system_hint")
+        if self.encoded_injection:
+            codes.append("encoded_injection")
+        return tuple(codes)
+
+
+def annotate_untrusted_message_ex(text: str) -> Tuple[str, GuardFlags]:
+    """标注 + **返回结构化命中标记**（聚合入口的完整形态）。
+
+    伪造工具返回降权（§B.3-2）+ 伪造系统提示降权 + 编码型注入中和（§B.3-3）。
     只加标注 / 屏蔽疑似注入载荷，不改正常原意。低俗谐音 / 钓鱼的识别与冷处理交由
     system prompt 合规层（见模块 docstring），此处不再做词库判定。
     """
-    annotated, _ = defuse_fake_tool_result(text)
-    annotated, _ = defuse_fake_system_hint(annotated)
-    annotated, _ = neutralize_encoded_injection(annotated)
+    annotated, hit_tool = defuse_fake_tool_result(text)
+    annotated, hit_sys = defuse_fake_system_hint(annotated)
+    annotated, hit_enc = neutralize_encoded_injection(annotated)
+    return annotated, GuardFlags(hit_tool, hit_sys, hit_enc)
+
+
+def annotate_untrusted_message(text: str) -> str:
+    """只要标注文本时的便捷形态；需要命中标记走 :func:`annotate_untrusted_message_ex`。"""
+    annotated, _ = annotate_untrusted_message_ex(text)
     return annotated

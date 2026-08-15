@@ -348,6 +348,34 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
 
     @classmethod
     @with_session
+    async def search_recent_for_owner(
+        cls,
+        session: AsyncSession,
+        owner_user_id: str,
+        group_id: Optional[str] = None,
+        keyword: str = "",
+        limit: int = 8,
+    ) -> List["AIAgentArtifact"]:
+        """按 owner（可选同群）检索近期产物摘要，供认知层联邦检索。
+
+        artifact 表本身没有 owner 列，归属靠 ``root_task_id`` 关联 ``AIAgentTask``——
+        **过滤下推到 SQL join**，不做「先取全表再内存筛」。无 owner 时返回空
+        （fail-closed，防跨用户泄漏）。
+        """
+        if not owner_user_id:
+            return []
+        owner_tasks = select(col(AIAgentTask.root_task_id)).where(col(AIAgentTask.owner_user_id) == owner_user_id)
+        if group_id:
+            owner_tasks = owner_tasks.where(col(AIAgentTask.group_id) == group_id)
+        stmt = select(cls).where(col(cls.root_task_id).in_(owner_tasks))
+        kw = keyword.strip()
+        if kw:
+            stmt = stmt.where(col(cls.summary).contains(kw))
+        stmt = stmt.order_by(col(cls.created_at).desc()).limit(limit)
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
     async def delete_expired(
         cls,
         session: AsyncSession,

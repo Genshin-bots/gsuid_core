@@ -32,6 +32,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.memory.database.models",
     "gsuid_core.ai_core.memory.ingestion.hiergraph",
     "gsuid_core.ai_core.meme.database_model",
+    "gsuid_core.ai_core.cognition.nodes",
 )
 
 
@@ -133,6 +134,20 @@ exec_list = [
     # FileOS 去重列（旧库幂等补齐）
     "ALTER TABLE aitooloutputrecord ADD COLUMN content_hash VARCHAR DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS ix_aitooloutputrecord_content_hash ON aitooloutputrecord (content_hash);",
+    # 关系温度引擎：可解释性(last_*) + 日预算(daily_*) + 闲置衰减基准。
+    # (user_id,bot_id) 去重与唯一索引在 ai_core/relationship/migration.py（需要日志与顺序）
+    "ALTER TABLE userfavorability ADD COLUMN last_delta INTEGER DEFAULT 0;",
+    "ALTER TABLE userfavorability ADD COLUMN last_reason VARCHAR DEFAULT '';",
+    "ALTER TABLE userfavorability ADD COLUMN last_eval_at INTEGER DEFAULT 0;",
+    "ALTER TABLE userfavorability ADD COLUMN daily_gain INTEGER DEFAULT 0;",
+    "ALTER TABLE userfavorability ADD COLUMN daily_loss INTEGER DEFAULT 0;",
+    "ALTER TABLE userfavorability ADD COLUMN daily_ymd VARCHAR DEFAULT '';",
+    "ALTER TABLE userfavorability ADD COLUMN last_positive_interact_at INTEGER DEFAULT 0;",
+    # 认知节点行级属主：只按 scope_key 过滤会把 owner 级 ACL 降成 group 级
+    # （同群成员能召回别人的任务结论 / 产物摘要）。旧行 owner 为空，
+    # 而 tool_output / artifact 两类在 AICogNode.search 里对空属主 fail-closed。
+    "ALTER TABLE aicognode ADD COLUMN owner_user_id VARCHAR DEFAULT '';",
+    "CREATE INDEX IF NOT EXISTS ix_aicognode_owner_user_id ON aicognode (owner_user_id);",
 ]
 
 

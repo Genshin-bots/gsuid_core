@@ -13,22 +13,21 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.database.models import UserFavorability
-from gsuid_core.ai_core.configs.ai_config import memory_config
+from gsuid_core.ai_core.configs.ai_config import memory_config as memory_config_store
 
 
-@ai_tools(category="buildin")
+@ai_tools(category="common")
 async def query_user_memory(
     ctx: RunContext[ToolContext],
     query: str = "",
     user_id: Optional[str] = None,
     top_k: Optional[int] = None,
 ) -> str:
-    """查询关于某个用户/当前对话的已知信息：相关记忆片段、已沉淀的事实，以及好感度。
+    """【已并入 search_cognition】查某用户的记忆片段 / 事实 / 关系温度。
 
-    什么时候用：
-    - 用户问到过去的事（"上周/上次/之前我们聊过…""我之前说过的那个…"），而当前上下文里
-      没有现成答案时，用本工具按 query 去记忆库里现找，而不是凭空回答"不记得了"。
-    - 想确认"我对某人了解多少 / 关系如何"时。
+    主人格请用 ``search_cognition``（一次覆盖记忆+偏好+知识+落盘+产物）。本工具只覆盖
+    记忆一库，且与自动注入的记忆块是同一套双路检索——再调一次是重复劳动。
+    保留符号供评测 / WebConsole / 插件兼容，已移出主人格保底池。
 
     Args:
         ctx: 工具执行上下文
@@ -38,14 +37,18 @@ async def query_user_memory(
         top_k: 检索召回条数上限，留空(None)时取全局配置 query_tool_top_k。
 
     Returns:
-        合并文本：相关记忆/事实 + 好感度概览。
+        合并文本：相关记忆/事实 + 关系温度概览。
 
     Example:
         >>> await query_user_memory(ctx, query="上周聊过的旅行计划")
         >>> await query_user_memory(ctx)  # 我对当前用户都了解些什么
     """
+    # 两个 memory_config 名字撞车：``configs.ai_config`` 的是配置**存储**（get_config），
+    # ``memory.config`` 的是带属性访问器的**视图**。这里两者都要用，故显式区分。
+    from gsuid_core.ai_core.memory.config import memory_config
+
     if top_k is None:
-        top_k = memory_config.get_config("query_tool_top_k").data
+        top_k = memory_config_store.get_config("query_tool_top_k").data
 
     if top_k is None:
         top_k = 10
@@ -67,12 +70,17 @@ async def query_user_memory(
         mem_ctx = await dual_route_retrieve(
             query=query or "",
             user_id=str(target_id),
-            group_id=str(group_id) if group_id else str(target_id),
+            # 私聊必须 None：回退成 target_id 只会去查一个空的幻影 group:{user_id}，
+            # 召回恒为 0。这条口径必须与 handle_ai 主链路一致。
+            group_id=str(group_id) if group_id else None,
             top_k=top_k,
+            # 必填：函数默认值曾是 True，而生产配置默认关，工具路径一直在偷跑
+            # System-2 图遍历（更贵的一套），没人知道它在跑。
+            enable_system2=memory_config.enable_system2,
         )
         # §7 隐私门：当事人=发起本次查询的说话人；无事件上下文（后台）时 None=默认全拦
         mem_text = mem_ctx.to_prompt_text(
-            max_chars=2000,
+            max_chars=memory_config.memory_inject_max_chars,
             current_speaker_ids={str(ev.user_id)} if ev is not None and ev.user_id else None,
         )
         parts.append(mem_text.strip() if (mem_text and mem_text.strip()) else "（暂无相关记忆/事实）")
@@ -87,18 +95,16 @@ async def query_user_memory(
         logger.warning(t("log.ai.buildintools_memory_retrieval", e=e))
         parts.append("（记忆检索暂不可用）")
 
-    # 2) 好感度（吸收原 query_user_favorability）
+    # 2) 关系温度（吸收原 query_user_favorability）。只报 zone 名，不报分数：
+    # 分数是内部量，模型看见数字就会去「刷分」。memory_count 是死字段，已去掉。
     try:
         # Bot.bot_id 为已声明字段；bot 可能为 None（如后台无事件上下文）时退化为空串
         bot_id = tool_ctx.bot.bot_id if tool_ctx.bot is not None else ""
         fav = await UserFavorability.get_user_favorability(str(target_id), bot_id)
         if fav:
-            parts.append(
-                f"【好感度】{fav.user_name or target_id}：{fav.favorability}"
-                f"（{fav.relationship_level}），已沉淀记忆 {fav.memory_count} 条"
-            )
+            parts.append(f"【关系】{fav.user_name or target_id}：{fav.relationship_level}")
         else:
-            parts.append(f"【好感度】用户 {target_id}：陌生（0）")
+            parts.append(f"【关系】用户 {target_id}：还没打过照面")
     except Exception as e:
         logger.debug(t("log.ai.buildintools_favorability_query", e=e))
 

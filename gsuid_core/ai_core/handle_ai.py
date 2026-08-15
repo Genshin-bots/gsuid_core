@@ -1,25 +1,25 @@
+"""AI 聊天入口：**薄编排器**。
+
+本模块只做编排——并发闸 / TTL / 预算 / Session / 长度防护 / 开口门 / 结算调用 /
+出站分发，以及在固定锚点 ``fire_hooks``。产品能力（记忆、关系温度、情绪、意图分类、
+软触发门、脚手架注入、工具装配）全部是**套件**，挂在 hook 总线上。
+
+``run_interactive_turn`` 是生产 ``handle_ai_chat`` 与评测
+``/api/chat_with_history`` 共用的**唯一一轮编排**。评测只允许在进这个函数之前
+做适配（建 Event / 灌 history / 夹具 View），不许再自己分类、检索或结算。
+
+三条纪律：
+1. 内核函数体里不出现 ``dual_route_retrieve`` / ``update_mood`` / ``classifier_service``
+   这类产品 import——关某个能力靠**槽位不注册**，不靠在内核里写 ``if enable_x``。
+   ``settle_turn`` / ``RelationshipView`` 是冻结写主，留在本模块是有意的。
+2. 每轮动态内容只进 user 侧；``system_prompt`` 会话内绝不改串。
+3. 结算是唯一写主：负信号不受「是否有效互动」限制，早退路径也要结算。
 """
-AI聊天处理模块
 
-处理AI聊天逻辑的独立函数，用于异步队列执行，是全部AI逻辑的入口函数。
-支持三种模式：闲聊模式、工具执行模式、问答模式。
-
-设计原则：
-- Persona一致性：Session创建时设置base persona，之后保持不变
-- 工具按需启用：RAG知识库检索通过主Agent的 search_knowledge 工具按需调用，
-                不再作为强制前置流程（避免无谓延迟和Token浪费）
-- 双层长度防护：ABSOLUTE_MAX_LENGTH 硬截断，MAX_SUMMARY_LENGTH 智能摘要
-- 并发控制：使用全局信号量限制并发AI调用数
-"""
-
-import re
 import time
 import asyncio
-from typing import Tuple, Optional
-from datetime import datetime
-
-from sqlalchemy.exc import SQLAlchemyError
-from pydantic_ai.messages import ToolCallPart, ModelResponse
+from typing import Literal, Optional
+from dataclasses import dataclass
 
 # 导入表情包模块以注册 on_core_shutdown 钩子和 @ai_tools
 import gsuid_core.ai_core.meme.startup  # noqa: F401
@@ -28,102 +28,65 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import (
-    NO_RESULT_TEXT,
-    ERROR_RESULT_PREFIX,
-    send_chat_result,
-    is_silence_marker,
-    classify_error_type,
-    prepare_content_payload,
-    sanitize_error_for_user,
-    has_model_visible_content,
-    notify_master_of_agent_error,
-    notify_master_of_budget_block,
+from gsuid_core.ai_core.hooks import HookDecision, AgentHookPoint, AgentHookContext, fire_hooks
+from gsuid_core.ai_core.utils import prepare_content_payload, has_model_visible_content
+from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL, GsCoreAIAgent
+from gsuid_core.ai_core.ai_router import get_ai_session
+from gsuid_core.ai_core.relationship import RelationshipView, fetch_relationship, collect_priority_speakers
+from gsuid_core.ai_core.content_guard import GuardFlags
+from gsuid_core.ai_core.turn_pipeline import (
+    stale_request,
+    check_budget_gate,
+    deliver_run_result,
+    stamp_current_time,
+    apply_summary_guard,
+    classify_run_result,
+    prev_turn_used_tools,
+    recent_report_titles,
+    build_group_history_block,
+    apply_absolute_length_guard,
+    prior_user_turns_for_intent,
+    prior_turns_from_agent_history,
 )
-from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL
-from gsuid_core.ai_core.ai_router import (
-    get_ai_session,
-)
-from gsuid_core.ai_core.classifier import classifier_service
-from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.persona.mood import update_mood
-from gsuid_core.ai_core.memory.config import memory_config
-from gsuid_core.ai_core.history_format import format_history_for_agent
-from gsuid_core.ai_core.database.models import UserFavorability
-from gsuid_core.ai_core.context_assembly import fetch_favorability, assemble_dynamic_context
+from gsuid_core.ai_core.trigger_bridge import MockBot
+from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
-from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
-
-# 历史记录管理器
-history_manager = get_history_manager()
-
-# 双层长度防护配置
-ABSOLUTE_MAX_LENGTH = 60000  # 绝对上限：超过此长度直接硬截断，防止子Agent Token爆炸
-MAX_SUMMARY_LENGTH = 15000  # 摘要阈值：超过此长度调用子Agent进行智能摘要
+from gsuid_core.ai_core.relationship.engine import settle_turn
+from gsuid_core.ai_core.interaction_scaffold import CheapGate
 
 # AI并发控制配置
 MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
 _ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
 
-# C4 寒暄门控：回指 / 实体 / 任务引用词，命中则强制触发记忆检索
-_FORCE_RETRIEVE_RE = re.compile(
-    r"(之前|上次|上回|那个|那次|昨天|前几天|你说过|你不是说|记不记得|还记得|提到过|任务|计划|进度)"
-)
-# C4 / C3-c：明显情绪词，命中则强制检索（避免错过用户昨日事件背景）
-_EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤心|焦虑|想哭|绝望|委屈|孤独)")
-# 可能含实体的特征（英文词 / 引号内容 / 长串中文）
-_ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
+
+@dataclass
+class InteractiveTurnResult:
+    """``run_interactive_turn`` 的一轮结果。评测入口据此组 HTTP，生产入口据此出站。"""
+
+    result: str
+    result_text: str
+    is_silence: bool
+    is_error: bool
+    intent: str
+    silenced_early: bool
+    hook_ctx: AgentHookContext
+    rel: Optional[RelationshipView]
 
 
-def _should_retrieve_memory(query: str, intent: str, user_id: str) -> bool:
-    """C4 寒暄门控：判断是否需要触发双路记忆检索（纯规则，无 LLM）。
-
-    只有在"短、闲聊、无实体、无情绪、无回指、非任务引用"同时满足时才跳过；
-    主人 / 回指 / 情绪 / 实体一律强制检索，避免漏掉重要背景。
-    """
-    from gsuid_core.ai_core.utils import _is_master_user
-
-    q = query.strip()
-    # 主人：倾向检索
-    if _is_master_user(str(user_id)):
-        return True
-    # 回指 / 任务引用 / 情绪 → 强制检索
-    if _FORCE_RETRIEVE_RE.search(q) or _EMOTION_RETRIEVE_RE.search(q):
-        return True
-    # 仅当短 + 闲聊 + 无实体时跳过双路检索
-    if intent == "闲聊" and len(q) < 12 and not _ENTITY_HINT_RE.search(q):
-        return False
-    return True
-
-
-def _relevant_preference_contexts(query: str) -> list[str]:
-    """选择性偏好注入——按 query 文本匹配本轮可能相关的能力域 / 工具名（叠加 ``general`` 与纠错
-    规则由检索侧永远保留）。返回的集合作为 ``dual_route_retrieve(preference_contexts=...)`` 的
-    过滤依据，避免无关工具规则每轮都注入、挤占预算并分散工具调用注意力。
-
-    说明：这是 handle_ai 侧按 query 文本的**轻量近似**——能力域多为短中文词（如"文件""定时任务"），
-    按子串命中；工具名多为英文，按小写子串命中，覆盖"本轮新意图但工具尚未装配进池"的能力域。
-    调用方会再 **∪ gs_agent 上一轮实际装配工具的能力域**（``session.get_assembled_capability_domains()``，
-    精确"装配后回传"）后一并作为 ``preference_contexts`` 透传。返回空列表是合法的（表示本轮 query
-    未近似匹配到具体能力域，仅纠错 + general 规则、加上回传的装配能力域会注入）。
-    """
-    matched: set[str] = set()
+async def _wait_core_ready() -> bool:
+    """AI 核心未就绪时等待迁移完成，避免迁移期间处理聊天触发旧向量查询。"""
     try:
-        from gsuid_core.ai_core.register import get_registered_tools
+        from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
 
-        q = query.lower()
-        for cat_tools in get_registered_tools().values():
-            for name, tb in cat_tools.items():
-                dom = tb.capability_domain
-                if dom and dom in query:
-                    matched.add(dom)
-                if name and name.lower() in q:
-                    matched.add(name)
+        if is_ai_core_ready():
+            return True
+        logger.info(t("log.ai.gscore_init_done_migrate_msg_ai"))
+        if not await wait_ai_core_ready(timeout=300.0):
+            logger.warning(t("log.ai.gscore_core_initialization_wait"))
+            return False
     except Exception as e:
-        logger.debug(t("log.ai.memory_compute_preference_related_fail", e=e))
-    return list(matched)
+        logger.warning(t("log.ai.gscore_check_core_init", e=e))
+    return True
 
 
 async def handle_ai_chat(
@@ -131,136 +94,49 @@ async def handle_ai_chat(
     event: Event,
     enqueue_ts: Optional[float] = None,
     soft_triggered: bool = False,
-):
-    """
-    处理AI聊天逻辑的独立函数，用于异步队列执行，是全部AI逻辑的入口函数
+) -> None:
+    """被动交互主链路（异步队列执行）。
 
-    工作流程：
-    1. 双层长度防护：
-       - > ABSOLUTE_MAX_LENGTH (60000) → 硬截断，防止子Agent Token爆炸
-       - > MAX_SUMMARY_LENGTH (15000) → 调用 create_subagent 智能摘要
-    2. 意图识别：使用分类器判断用户意图（闲聊/工具/问答）
-    3. 获取 AI Session（含 system_prompt/Persona）
-    4. 准备上下文（历史记录）
-       - RAG知识库检索不再是强制前置流程
-       - 主Agent通过 search_knowledge 工具按需决定是否检索
-    5. 调用 Agent 生成回复
-    6. 发送回复给用户
+    锚点顺序：预算 → H01 → 长度防护 → Session → TurnGraph/开口门 → H02 → H03 分类
+    → 开口门重判 → H04 软门 → payload → H05 检索 → H06/H07 合成 → 开口门终判
+    → ``session.run`` → 出站 → 结算 + H08。
 
     Args:
         bot: Bot对象，用于发送消息
         event: Event事件对象，包含用户输入和相关上下文
+        enqueue_ts: 入队时刻（O-A 队头阻塞防护）
+        soft_triggered: 是否为免唤醒续聊软触发
     """
     if not ai_config.get_config("enable").data:
         logger.debug(t("log.ai.gscore_service_enabled_skipping"))
         return
-
-    try:
-        from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
-
-        if not is_ai_core_ready():
-            logger.info(t("log.ai.gscore_init_done_migrate_msg_ai"))
-            if not await wait_ai_core_ready(timeout=300.0):
-                logger.warning(t("log.ai.gscore_core_initialization_wait"))
-                return
-    except Exception as e:
-        logger.warning(t("log.ai.gscore_check_core_init", e=e))
+    if not await _wait_core_ready():
+        return
 
     async with _ai_semaphore:
-        # O-A 早退：拿到全局并发信号量时若已排队过久（全局过载场景），话题大概率已翻篇， 直接放弃，
-        if enqueue_ts is not None and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL:
-            logger.info(t("log.ai.gscore_queue_wait_exceeded", p0=time.time() - enqueue_ts))
+        if stale_request(enqueue_ts, STALE_CHAT_REQUEST_TTL):
             return
         try:
             query = event.raw_text
-
-            # 预算闸门（被动交互路径·前置短路）：校验 Session Token 额度，超额早退省下后续
-            # 记忆/分类/RAG/主 Agent 开销；豁免(主人/白名单)直接放行，check 异常 fail-open。
-            budget_decision = None
-            try:
-                from gsuid_core.ai_core.budget import budget_manager
-
-                budget_decision = await budget_manager.check_scope(
-                    str(event.group_id) if event.group_id else "",
-                    str(event.user_id),
-                    event.bot_id or "",
-                    event.session_id,
-                )
-            except SQLAlchemyError as e:
-                logger.warning(t("log.ai.gscore_budget_check_db", e=e))
-            except Exception as e:
-                logger.exception(t("log.ai.gscore_budget_check_fail", e=e))
-
-            if budget_decision is not None and not budget_decision.allowed:
-                logger.info(
-                    t(
-                        "log.ai.gscore_budget_exceeded_intercepted",
-                        p0=budget_decision.block_scope_label,
-                        p1=budget_decision.message,
-                    )
-                )
-                if bot is not None:
-                    if budget_decision.notify and budget_decision.message:
-                        try:
-                            await bot.send(budget_decision.message)
-                        except Exception as e:
-                            logger.warning(t("log.ai.gscore_budget_exceeded_notice", e=e))
-                    # 主人告警独立于用户提示：即使 notify=False 也让运维感知拦截事件
-                    await notify_master_of_budget_block(
-                        bot=bot,
-                        ev=event,
-                        decision=budget_decision,
-                    )
-                # 提示尽力而为，发送失败也无条件早退，绝不放超额消息进完整 AI 流程。
+            if not await check_budget_gate(bot, event):
                 return
 
-            # Session 静默窗口：非主人在 mute 期内直接早退；主人硬触发自动解除
-            from gsuid_core.ai_core.session_mute import is_session_muted, clear_session_mute
+            # 本轮 hook Context：一次建好，各点位复用（字段跨点位传递）
+            hook_ctx = AgentHookContext(
+                point=AgentHookPoint.BEFORE_AI_CHAT,
+                ev=event,
+                bot=bot if isinstance(bot, Bot) else None,
+                session_id=event.session_id,
+                create_by="Chat",
+                query=query,
+                soft_triggered=soft_triggered,
+            )
+            # H01：会话静默窗等「整轮不跑」的判定
+            if await fire_hooks(AgentHookPoint.BEFORE_AI_CHAT, hook_ctx) is not HookDecision.CONTINUE:
+                return
 
-            _is_master = int(getattr(event, "user_pm", 6) or 6) <= 0
-            if is_session_muted(event.session_id):
-                if _is_master:
-                    clear_session_mute(event.session_id)
-                else:
-                    logger.info(t("log.ai.session_mute_active_skip_ai", session=event.session_id))
-                    return
-
-            # 主动会话：入队触发者原话；被动感知已写过则跳过，防双写
-            try:
-                _memory_mode = memory_config.memory_mode
-                if (
-                    ai_config.get_config("enable_memory").data
-                    and "主动会话" in _memory_mode
-                    and "被动感知" not in _memory_mode
-                ):
-                    from gsuid_core.ai_core.memory import observe
-
-                    await observe(
-                        content=event.raw_text,
-                        speaker_id=str(event.user_id),
-                        # 私聊 group_id 必须 None，否则会误进 group: scope
-                        group_id=str(event.group_id) if event.group_id else None,
-                        bot_self_id=str(event.bot_self_id),
-                        observer_blacklist=memory_config.observer_blacklist,
-                        message_type="group_msg" if event.group_id else "private_msg",
-                    )
-            except Exception as e:
-                logger.debug(t("log.ai.memory_enqueue_proactive_session_fail", e=e))
-
-            # 步骤 1: 双层长度防护（D-10 修复）
-            raw_text_len = len(query)
-
-            if raw_text_len > ABSOLUTE_MAX_LENGTH:
-                # 第一层：绝对上限，硬截断，防止把超大文本传给子Agent导致Token爆炸
-                logger.warning(
-                    t(
-                        "log.ai.gscore_exceeded_absolute_limit",
-                        raw_text_len=raw_text_len,
-                        ABSOLUTE_MAX_LENGTH=ABSOLUTE_MAX_LENGTH,
-                    )
-                )
-                query = query[:ABSOLUTE_MAX_LENGTH] + "...[文本过长，已自动截断]"
-                event.raw_text = query  # 同步到 event
+            query = apply_absolute_length_guard(event, query)
+            hook_ctx.query = query
 
             # 空内容前置门：无可见内容且未@我则静默（与 payload 同源）
             _is_at_me = bool(event.is_tome) or event.user_type == "direct"
@@ -268,405 +144,279 @@ async def handle_ai_chat(
                 logger.info(t("log.ai.gscore_empty_content_visible"))
                 return
 
-            # 步骤 2: 获取 AI Session（意图分类需要上轮是否用过工具）
             session = await get_ai_session(event)
-
-            # TurnGraph 一等公民：结构只算一次，门与装配共用
-            from gsuid_core.ai_core.interaction_scaffold import (
-                CheapGate,
-                build_turn_graph,
-                decide_cheap_gate,
-                has_recent_tool_call,
-                recent_history_texts,
-            )
-
-            _tg_recent = recent_history_texts(session.history)
-            _turn_graph = build_turn_graph(
-                query,
-                persona_name=session.persona_name or "",
-                is_tome=bool(event.is_tome),
-                user_type=str(event.user_type or ("group" if event.group_id else "direct")),
-                primary_speaker=str(event.user_id or ""),
-                recent=_tg_recent,
-                soft_triggered=soft_triggered,
-                recent_tool_call=has_recent_tool_call(session.history),
-                followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
-                ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
-            )
-            _cheap = decide_cheap_gate(_turn_graph, soft_triggered=soft_triggered)
-            if _cheap is CheapGate.SILENCE:
-                logger.info(t("log.ai.gscore_group_open_gate_silence"))
-                return
-
-            # 意图：同用户先验 + 近几轮是否真用过工具（勿只看当前句）
-            from gsuid_core.ai_core.classifier.mode_classifier import collect_prior_user_turns
-
-            _prev_turn_used_tools = False
-            _assistant_seen = 0
-            for _msg in reversed(session.history):
-                if not isinstance(_msg, ModelResponse):
-                    continue
-                if any(isinstance(p, ToolCallPart) for p in _msg.parts):
-                    _prev_turn_used_tools = True
-                    break
-                _assistant_seen += 1
-                if _assistant_seen >= 6:
-                    break
-
-            _hist_for_intent = history_manager.get_history(event, limit=30)
-            # handler 已把本轮用户句入库，prior 须去掉与 query 相同的末条
-            _prior_user = collect_prior_user_turns(_hist_for_intent, str(event.user_id), max_turns=5)
-            _qstrip = query.strip()
-            if _prior_user and _prior_user[-1].strip() == _qstrip:
-                _prior_user = _prior_user[:-1]
-            _prior_user = _prior_user[-4:]
-            res = await classifier_service.predict_async(
-                query,
-                prior_user_turns=_prior_user,
-                prev_turn_used_tools=_prev_turn_used_tools,
-            )
-            intent = res["intent"]
-            logger.debug(t("log.ai.gscore_intent_recognition_result", res=res))
-            # 意图出来后重判 cheap（被 @ 的纯闲聊 → light）
-            _cheap = decide_cheap_gate(
-                _turn_graph,
-                soft_triggered=soft_triggered,
-                intent=str(intent or ""),
-            )
-            if _cheap is CheapGate.SILENCE:
-                logger.info(t("log.ai.gscore_group_open_gate_silence"))
-                return
-
-            # 记录意图统计和活跃用户
-            statistics_manager.record_intent(intent=intent)
-            statistics_manager.record_activity(
-                group_id=event.group_id or "private",
-                user_id=event.user_id,
-                ai_interaction_count=1,
-                message_count=1,
-            )
-
-            if intent == "闲聊":
-                logger.info(t("log.ai.gscore_ai_chitchat_mode"))
-            elif intent == "工具":
-                logger.info(t("log.ai.gscore_ai_tool_mode"))
-            elif intent == "问答":
-                logger.info(t("log.ai.gscore_ai_mode"))
-
-            # 软触发沉默门：过门后重置 enqueue_ts，避免门耗时被算进过期 TTL
-            if soft_triggered:
-                try:
-                    from gsuid_core.ai_core.heartbeat.decision import run_reactive_gate
-
-                    gate_history = history_manager.get_history(event, limit=15)
-                    if not await run_reactive_gate(event, gate_history, session.persona_name):
-                        logger.info(t("log.ai.gscore_soft_trigger_silent"))
-                        return
-                    logger.info(t("log.ai.gscore_soft_trigger_silent_2"))
-                except Exception as e:
-                    logger.debug(t("log.ai.gscore_soft_trigger_silent_3", e=e))
-                if enqueue_ts is not None:
-                    enqueue_ts = time.time()
-
-            # 步骤 4: 准备用户消息（含好感度注入）
-
-            # 查询当前用户好感度（从外部存储，非模型推断）
-            # Bot.bot_id 是已声明字段；handle_ai 链路 bot 通常非 None
-            bot_id = bot.bot_id if bot is not None else ""
-            favorability = await fetch_favorability(str(event.user_id), bot_id)
-
-            user_messages = await prepare_content_payload(
-                event,
-                favorability=favorability,
-            )
-
-            # 第二层：智能摘要（在安全范围内对长文本进行摘要）
-            # Bug-03修复：摘要时保留上下文头，只替换正文部分
-            if len(event.raw_text) > MAX_SUMMARY_LENGTH:
-                logger.info(t("log.ai.gscore_long_characters_summarization", p0=len(event.raw_text)))
-
-                summarized = await create_subagent(
-                    ctx=None,  # type: ignore
-                    task=f"请总结以下用户输入，保留关键信息：\n\n{event.raw_text}",
-                    max_tokens=18000,
-                )
-                # 保留上下文头（第一个元素），只替换正文部分
-                if isinstance(user_messages, list) and len(user_messages) > 0 and isinstance(user_messages[0], str):
-                    # 提取上下文头（--- 消息 ---\n 之前的部分）
-                    header_end = user_messages[0].find("--- 消息 ---\n")
-                    if header_end != -1:
-                        header = user_messages[0][: header_end + len("--- 消息 ---\n")]
-                        user_messages[0] = header + summarized + "\n[注：原始消息已摘要]"
-                    else:
-                        user_messages[0] = summarized
-                logger.info(t("log.ai.gscore_summarization_summary_length", p0=len(summarized)))
-
-            # 时间放在本轮发言块末尾（摘要之后），与正文同段、在 rag 动态上下文之前
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if isinstance(user_messages, list) and len(user_messages) > 0 and isinstance(user_messages[0], str):
-                user_messages[0] += f"\n[当前时间：{current_time}]"
-
-            # 步骤 5: 记忆上下文（Memory Retrieval）
-            # 基于群组/用户ID检索相关记忆，用于个性化响应
-            memory_context_text = ""
-            is_enable_memory: bool = ai_config.get_config("enable_memory").data
-            if is_enable_memory and memory_config.enable_retrieval:
-                # C4 寒暄门控：纯寒暄（短+闲聊+无实体/情绪/回指）跳过双路检索， 节省向量搜索 + Reranker 开销；
-                if not _should_retrieve_memory(query, intent, str(event.user_id)):
-                    logger.debug(t("log.ai.memory_skip_hit_small_talk_gate"))
-                else:
-                    try:
-                        # 偏好注入是**能力域过滤**不是整轮开关：闲聊轮传空 contexts，检索侧只留
-                        # general/纠错（曾整轮关掉，风格偏好在最该生效的闲聊轮反而被跳过）。
-                        _pref_contexts: list[str] = []
-                        if intent != "闲聊":
-                            # 能力域 = 上轮实际装配工具的域（装配后回传）∪ 本轮 query 子串近似
-                            _ctx_set = set(_relevant_preference_contexts(query))
-                            _ctx_set.update(session.get_assembled_capability_domains())
-                            _pref_contexts = list(_ctx_set)
-                        _pref_inject = True
-                        mem_ctx = await dual_route_retrieve(
-                            query=query,
-                            # 私聊必须 None：dual_route 按「group_id 空 → user_global 是主 scope」
-                            # 设计，回退成 user_id 只会去查一个空的幻影 group:{user_id}
-                            group_id=str(event.group_id) if event.group_id else None,
-                            user_id=str(event.user_id),
-                            top_k=memory_config.retrieval_top_k,
-                            enable_system2=memory_config.enable_system2,
-                            enable_user_global=memory_config.enable_user_global_memory,
-                            inject_preferences=_pref_inject,
-                            preference_contexts=_pref_contexts,
-                        )
-                        # C4 预算优先级：主人相关记忆优先占用注入预算
-                        from gsuid_core.config import core_config
-
-                        masters_set = {str(m) for m in (core_config.get_config("masters") or [])}
-                        memory_context_text = mem_ctx.to_prompt_text(
-                            max_chars=memory_config.memory_inject_max_chars,
-                            priority_speakers=masters_set or None,
-                            # §7 第三方隐私拦截：敏感事实仅当事人在场才注入
-                            current_speaker_ids={str(event.user_id)},
-                        )
-                        logger.debug(t("log.ai.memory_retrieved_context_characters", p0=len(memory_context_text)))
-                        # 上报记忆检索统计
-                        try:
-                            statistics_manager.record_memory_retrieval()
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        logger.warning(t("log.ai.memory_fail_retrieval_failed", e=e))
-
-            # 步骤 6: 历史记录上下文
-            # 注意：RAG 知识库检索已移除为强制前置步骤（D-11 修复）
-            rag_context: str = ""
-
-            # 私聊时 pydantic_ai session.history 已覆盖对话，IM 历史冗余且破坏缓存前缀；
-            # 仅群聊需要注入 IM 历史（其他用户发言不在 model history 中）。
-            _is_private = not event.group_id
-            # 群聊窗口收紧：靠紧凑格式 + 当前用户优先，而不是堆 30 条散句
-            raw_history = history_manager.get_history(event, limit=20) if not _is_private else []
-
-            # 排除最后一条（当前用户刚发的消息），避免与 user_messages 重复
-            history = raw_history[:-1] if raw_history else []
-
-            # Fix-06: 当前用户优先的历史窗口过滤
-            if history:
-                current_user_id = str(event.user_id)
-                CURRENT_USER_MIN_RECORDS = 6
-                MAX_OTHER_RECORDS = 10
-
-                current_user_records = [r for r in history if r.user_id == current_user_id]
-                other_records = [r for r in history if r.user_id != current_user_id]
-
-                selected_current = current_user_records[-CURRENT_USER_MIN_RECORDS:]
-                selected_other = other_records[-MAX_OTHER_RECORDS:]
-
-                combined = sorted(selected_current + selected_other, key=lambda r: r.timestamp)
-                history = combined
-
-            # 格式化历史：当前发言已在 user_messages，include_current_turn=False 防双重占用
-            if history:
-                history_context = format_history_for_agent(
-                    history=history,
-                    current_user_id=str(event.user_id),
-                    current_user_name=event.sender.get("nickname") if event.sender else None,
-                    include_current_turn=False,
-                )
-
-                if history_context:
-                    # format_history 已含 [历史对话] 标头，勿再包一层
-                    rag_context = history_context
-                    logger.debug(t("log.ai.gscore_historical", p0=len(history)))
-
-            # 动态上下文统一走 assemble_dynamic_context（评测与生产同源）
-            _recent_report_titles: Tuple[str, ...] = ()
-            for _msg in reversed(session.history):
-                if isinstance(_msg, ModelResponse):
-                    _meta = _msg.metadata
-                    if _meta and "sent_reports" in _meta:
-                        _recent_report_titles = tuple(_meta["sent_reports"])
-                    break
-
-            mood_key = str(event.group_id) if event.group_id else str(event.user_id)
-            full_context, has_actionable = await assemble_dynamic_context(
-                query=query,
-                user_id=str(event.user_id),
-                bot_id=bot_id,
-                persona_name=session.persona_name,
-                mood_key=mood_key,
-                group_id=str(event.group_id) if event.group_id else None,
-                favorability=favorability,
-                history_context=rag_context,
-                memory_context_text=memory_context_text,
-                soft_triggered=soft_triggered,
-                intent=intent,
-                recent_report_titles=_recent_report_titles,
-                prev_turn_used_tools=_prev_turn_used_tools,
-            )
-            # 活跃任务可能抬档 full（避免 light 丢掉 Kanban）
-            _cheap = decide_cheap_gate(
-                _turn_graph,
-                soft_triggered=soft_triggered,
-                has_active_task=has_actionable,
-                intent=str(intent or ""),
-            )
-            if _cheap is CheapGate.SILENCE:
-                logger.info(t("log.ai.gscore_group_open_gate_silence"))
-                return
-
-            # 步骤 7: 调用 Agent 生成回复
-            # Agent 会根据对话内容自主决定是否调用 search_knowledge 工具
-            chat_result = await session.run(
-                user_message=user_messages,
+            hook_ctx.persona_name = session.persona_name
+            await run_interactive_turn(
                 bot=bot,
-                ev=event,
-                rag_context=full_context,
-                return_mode="by_bot",  # 由 Agent 决定何时通过 bot 发送回复
-                enqueue_ts=enqueue_ts,  # O-A 队头阻塞防护：锁级别再判一次 TTL
-                intent=intent,  # O-D 意图驱动工具精简
-                has_active_task=has_actionable,  # O-D 是否有需要即时介入的 Kanban 任务
-                turn_graph=_turn_graph,
-                cheap_gate=_cheap,
+                event=event,
+                session=session,
+                query=query,
+                hook_ctx=hook_ctx,
+                soft_triggered=soft_triggered,
+                enqueue_ts=enqueue_ts,
+                return_mode="by_bot",
+                deliver=True,
             )
-
-            # 步骤 8: 发送回复。结果只分类一次，步骤 9 的好感度门复用同一判定（评审修复 G3）
-            result_text = chat_result if isinstance(chat_result, str) else str(chat_result or "")
-            _is_silence = is_silence_marker(result_text.strip())
-            _is_error = result_text.startswith(ERROR_RESULT_PREFIX) or result_text == NO_RESULT_TEXT
-            if chat_result:
-                if _is_silence:
-                    logger.info(t("log.ai.gscore_persona_chose_silence"))
-                    # 情绪仍然正常更新，只是不发消息
-                elif _is_error:
-                    # 失败必须让用户可感知，但原始错误串含 provider body 等内部细节，脱敏后发送
-                    logger.warning(t("log.ai.gscore_sanitized_fallback_user", r=result_text[:200]))
-                    user_facing = sanitize_error_for_user(result_text)
-                    try:
-                        await send_chat_result(bot, user_facing, ev=event)
-                    except Exception as e:
-                        logger.warning(t("log.ai.gscore_sanitized_fallback", e=e))
-                    # 与用户通知解耦：即使发送失败也把详情同步给主人，便于排查
-                    await notify_master_of_agent_error(
-                        bot=bot,
-                        ev=event,
-                        error_type=classify_error_type(result_text),
-                        result_text=result_text,
-                        user_facing=user_facing,
-                    )
-                else:
-                    await send_chat_result(bot, chat_result, ev=event)
-                    logger.info(t("log.ai.gscore_ai_intent_reply_sent_mode", intent=intent))
-
-            # 情绪与好感：仅有效互动加分（静默/失败不加）
-            if session.persona_name:
-                mood_key = str(event.group_id) if event.group_id else str(event.user_id)
-                from gsuid_core.ai_core.utils import _is_master_user
-
-                # by_bot 成功时 run 返回空串，用 last_run_sent_visible_reply 判说过话
-                _effective = not _is_error and (
-                    session.last_run_sent_visible_reply or (bool(result_text) and not _is_silence)
-                )
-                if _effective:
-                    await UserFavorability.update_favorability(str(event.user_id), bot.bot_id, 1)
-
-                mood_task = asyncio.create_task(
-                    _update_persona_mood(
-                        persona_name=session.persona_name,
-                        group_id=mood_key,
-                        user_message=query,
-                        is_master=_is_master_user(str(event.user_id)),
-                    )
-                )
-                # 安全获取底层 _Bot 实例，兼容 Bot 和 MockBot
-                # 防止 Bot 继承 _Bot 时 _Bot 分支先匹配导致 underlying 为 Bot 实例
-                underlying: _Bot | None = None
-                if isinstance(bot, Bot):
-                    underlying = bot.bot
-                elif isinstance(bot, _Bot):
-                    underlying = bot
-                elif hasattr(bot, "_real_bot") and isinstance(bot._real_bot, Bot):
-                    underlying = bot._real_bot.bot
-
-                if underlying is not None:
-                    underlying._add_bg_task(mood_task)
-                else:
-                    logger.warning(t("log.ai.gscore_unable_obtain_bot"))
 
         except Exception as e:
             logger.exception(t("log.ai.gscore_ai_exception_chat_error", e=e))
 
 
-async def _update_persona_mood(
-    persona_name: str,
-    group_id: str,
-    user_message: str,
-    is_master: bool = False,
-) -> None:
-    """根据用户消息内容推断情绪事件并更新 Persona 情绪状态
+async def run_interactive_turn(
+    *,
+    bot: Bot,
+    event: Event,
+    session: GsCoreAIAgent,
+    query: str,
+    hook_ctx: AgentHookContext,
+    soft_triggered: bool = False,
+    enqueue_ts: Optional[float] = None,
+    return_mode: Literal["always", "return", "by_bot"] = "by_bot",
+    deliver: bool = True,
+    settle: bool = True,
+    history_context: Optional[str] = None,
+) -> InteractiveTurnResult:
+    """生产与评测共用的一轮编排（H01 之后的分类 / 检索 / 装配 / 结算）。
 
-    使用简单的关键词匹配进行情绪事件检测，避免额外的 LLM 调用。
-
-    Args:
-        persona_name: Persona 名称
-        group_id: 群聊 ID
-        user_message: 用户消息内容
-        is_master: 当前说话者是否为主人。主人发言会带来额外的正面情绪。
+    调用方只负责建 Event / Session / hook_ctx。分类、检索、CheapGate、结算
+    必须走这里，否则评测会变成第三套语义。
     """
-    try:
-        text = user_message.lower()
+    from gsuid_core.ai_core.interaction_scaffold import (
+        build_turn_graph,
+        decide_cheap_gate,
+        has_recent_tool_call,
+        recent_history_texts,
+    )
 
-        # 主人发言：带来温暖情绪（与具体内容关键词命中相独立，优先体现）
-        if is_master:
-            await update_mood(persona_name, group_id, "greeting", 0.35, "主人发言了")
+    bot_id = bot.bot_id if bot is not None else ""
+    hook_ctx.persona_name = session.persona_name
+    hook_ctx.mood_key = str(event.group_id) if event.group_id else str(event.user_id)
+    hook_ctx.query = query
+    hook_ctx.soft_triggered = soft_triggered
 
-        # 赞美关键词
-        praise_keywords = ["可爱", "厉害", "棒", "好强", "喜欢你", "真好", "太帅了", "漂亮", "萌", "赞"]
-        # 争执关键词
-        argument_keywords = ["讨厌", "烦死了", "闭嘴", "滚", "垃圾", "废物", "白痴"]
-        # 伤心事关键词
-        sad_keywords = ["难过", "伤心", "哭了", "不开心", "郁闷", "心痛", "分手"]
-        # 坏消息关键词
-        bad_news_keywords = ["出事了", "出问题了", "报错", "崩了", "挂了", "失败了"]
-        # 友好问候关键词
-        greeting_keywords = ["你好", "早上好", "晚上好", "嗨", "hi", "hello", "在吗"]
-        # 兴奋关键词
-        exciting_keywords = ["太棒了", "太好了", "耶", "开心", "中奖了", "成功了"]
+    turn_graph = build_turn_graph(
+        query,
+        persona_name=session.persona_name or "",
+        is_tome=bool(event.is_tome),
+        user_type=str(event.user_type or ("group" if event.group_id else "direct")),
+        primary_speaker=str(event.user_id or ""),
+        recent=recent_history_texts(session.history),
+        soft_triggered=soft_triggered,
+        recent_tool_call=has_recent_tool_call(session.history),
+        followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
+        ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
+    )
+    # 结构性静音（@了别人 / 多人互聊 / 催别人）：内容不是冲着人格，不结算。
+    cheap = decide_cheap_gate(turn_graph, soft_triggered=soft_triggered)
+    if cheap is CheapGate.SILENCE:
+        logger.info(t("log.ai.gscore_group_open_gate_silence"))
+        return InteractiveTurnResult("", "<SILENCE>", True, False, "", True, hook_ctx, hook_ctx.relationship)
 
-        if any(kw in text for kw in praise_keywords):
-            await update_mood(persona_name, group_id, "praise", 0.3, "用户赞美")
-        elif any(kw in text for kw in argument_keywords):
-            await update_mood(persona_name, group_id, "argument", 0.4, "用户争执")
-        elif any(kw in text for kw in sad_keywords):
-            await update_mood(persona_name, group_id, "sad_news", 0.3, "用户表达伤心")
-        elif any(kw in text for kw in bad_news_keywords):
-            await update_mood(persona_name, group_id, "bad_news", 0.3, "用户报告坏消息")
-        elif any(kw in text for kw in exciting_keywords):
-            await update_mood(persona_name, group_id, "exciting", 0.3, "用户表达兴奋")
-        elif any(kw in text for kw in greeting_keywords):
-            await update_mood(persona_name, group_id, "greeting", 0.2, "用户友好问候")
-        else:
-            # 普通消息，情绪自然衰减（neutral 会降低当前情绪强度）
-            await update_mood(persona_name, group_id, "neutral", 0.05, "")
+    await fire_hooks(AgentHookPoint.AFTER_SESSION, hook_ctx)
+    rel = hook_ctx.relationship
+    if rel is None:
+        rel = await fetch_relationship(str(event.user_id), bot_id)
+        hook_ctx.relationship = rel
 
-    except Exception as e:
-        logger.debug(t("log.ai.mood_fail_update_failed", e=e))
+    prior_turns, hist_records = prior_user_turns_for_intent(event, query)
+    if not prior_turns:
+        prior_turns = prior_turns_from_agent_history(session.history, query)
+    if not hook_ctx.prior_user_turns:
+        hook_ctx.prior_user_turns = prior_turns
+    hook_ctx.prev_turn_used_tools = prev_turn_used_tools(session.history)
+    await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
+    intent = hook_ctx.intent or ""
+
+    cheap = decide_cheap_gate(turn_graph, soft_triggered=soft_triggered, intent=intent, rel=rel)
+    if cheap is CheapGate.SILENCE:
+        logger.info(t("log.ai.gscore_group_open_gate_silence"))
+        if settle:
+            await _settle_silent_turn(event, bot_id, query, intent, rel)
+        return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
+    logger.info(t("log.ai.gscore_ai_intent_mode", intent=intent or "-"))
+
+    if soft_triggered:
+        from gsuid_core.message_history import get_history_manager
+
+        hook_ctx.gate_history = get_history_manager().get_history(event, limit=15)
+        if await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx) is not HookDecision.CONTINUE:
+            return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
+        if not hook_ctx.should_speak:
+            return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
+        if enqueue_ts is not None:
+            enqueue_ts = time.time()
+
+    user_messages, guard_flags = await prepare_content_payload(event)
+    await apply_summary_guard(event, user_messages)
+    stamp_current_time(user_messages)
+
+    hook_ctx.assembled_domains = session.get_assembled_capability_domains()
+    hook_ctx.priority_speakers = await collect_priority_speakers(
+        bot_id=bot_id,
+        group_id=str(event.group_id) if event.group_id else None,
+        history=hist_records,
+    )
+    await fire_hooks(AgentHookPoint.RETRIEVE_CONTEXT, hook_ctx)
+
+    hook_ctx.turn_graph = turn_graph
+    hook_ctx.cheap_gate = cheap.value
+    hook_ctx.recent_report_titles = recent_report_titles(session.history)
+    hist_block = build_group_history_block(event) if history_context is None else history_context
+    full_context, has_actionable = await assemble_dynamic_context(
+        query=query,
+        user_id=str(event.user_id),
+        bot_id=bot_id,
+        persona_name=session.persona_name,
+        mood_key=hook_ctx.mood_key,
+        group_id=str(event.group_id) if event.group_id else None,
+        rel=rel,
+        history_context=hist_block,
+        soft_triggered=soft_triggered,
+        intent=intent,
+        recent_report_titles=hook_ctx.recent_report_titles,
+        prev_turn_used_tools=hook_ctx.prev_turn_used_tools,
+        event=event,
+        bot=bot,
+        hook_ctx=hook_ctx,
+    )
+    cheap = decide_cheap_gate(
+        turn_graph,
+        soft_triggered=soft_triggered,
+        has_active_task=has_actionable,
+        intent=intent,
+        rel=rel,
+    )
+    if cheap is CheapGate.SILENCE:
+        logger.info(t("log.ai.gscore_group_open_gate_silence"))
+        if settle:
+            await _settle_silent_turn(event, bot_id, query, intent, rel)
+        return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
+
+    chat_result = await session.run(
+        user_message=user_messages,
+        bot=bot,
+        ev=event,
+        rag_context=full_context,
+        return_mode=return_mode,
+        enqueue_ts=enqueue_ts,
+        intent=intent,
+        has_active_task=has_actionable,
+        turn_graph=turn_graph,
+        cheap_gate=cheap,
+    )
+
+    result_text, is_silence, is_error = classify_run_result(chat_result)
+    if deliver:
+        await deliver_run_result(
+            bot,
+            event,
+            chat_result,
+            result_text=result_text,
+            is_silence=is_silence,
+            is_error=is_error,
+            intent=intent,
+        )
+
+    if settle and session.persona_name:
+        await _settle_and_fire_after_run(
+            bot=bot,
+            event=event,
+            hook_ctx=hook_ctx,
+            bot_id=bot_id,
+            query=query,
+            intent=intent,
+            rel=rel,
+            cheap=cheap,
+            guard_flags=guard_flags,
+            effective=not is_error and (session.last_run_sent_visible_reply or (bool(result_text) and not is_silence)),
+            is_silence=is_silence,
+            is_error=is_error,
+        )
+    return InteractiveTurnResult(chat_result, result_text, is_silence, is_error, intent, False, hook_ctx, rel)
+
+
+async def _settle_and_fire_after_run(
+    *,
+    bot: Bot,
+    event: Event,
+    hook_ctx: AgentHookContext,
+    bot_id: str,
+    query: str,
+    intent: str,
+    rel: RelationshipView,
+    cheap: CheapGate,
+    guard_flags: GuardFlags | None,
+    effective: bool,
+    is_silence: bool,
+    is_error: bool,
+) -> None:
+    """⑩ 关系温度结算 + H08 收尾套件（mood 更新 / 统计上报共用同一份信号扫描）。"""
+    outcome = await settle_turn(
+        user_id=str(event.user_id),
+        bot_id=bot_id,
+        user_text=query,
+        intent=intent,
+        effective=effective,
+        silenced=is_silence,
+        error=is_error,
+        reached_model=True,
+        is_light=cheap is CheapGate.LIGHT,
+        is_master=rel.is_master,
+        guard_flags=guard_flags,
+    )
+    hook_ctx.point = AgentHookPoint.AFTER_RUN
+    hook_ctx.signals = outcome.signals
+    hook_ctx.settle_outcome = outcome
+    task = asyncio.create_task(fire_hooks(AgentHookPoint.AFTER_RUN, hook_ctx))
+
+    underlying = _underlying_bot(bot)
+    if underlying is not None:
+        underlying._add_bg_task(task)
+    else:
+        logger.warning(t("log.ai.gscore_unable_obtain_bot"))
+
+
+def _underlying_bot(bot: Bot | _Bot | MockBot) -> _Bot | None:
+    """取可挂后台任务的底层 ``_Bot``。先判 ``Bot``，避免 ``Bot`` 继承 ``_Bot`` 时走错支。"""
+    if isinstance(bot, Bot):
+        return bot.bot
+    if isinstance(bot, _Bot):
+        return bot
+    if isinstance(bot, MockBot) and isinstance(bot._real_bot, Bot):
+        return bot._real_bot.bot
+    return None
+
+
+async def _settle_silent_turn(
+    event: Event,
+    bot_id: str,
+    query: str,
+    intent: str,
+    rel: RelationshipView,
+) -> None:
+    """CheapGate 静音早退路径的结算（``reached_model=False``：只放行负信号）。
+
+    不补这一次结算就会出现吸收态：**用户越界 → zone 掉到 cold → 以后未 @ 的越界发言
+    全部走早退 → 再也扣不到分**。闸门应该过滤（只过滤正信号），不该整轮跳过。
+    """
+    from gsuid_core.ai_core.content_guard import GuardFlags, annotate_untrusted_message_ex
+
+    guard = GuardFlags()
+    if ai_config.get_config("content_guard_enable").data and event.text:
+        _, guard = annotate_untrusted_message_ex(event.text.strip())
+    await settle_turn(
+        user_id=str(event.user_id),
+        bot_id=bot_id,
+        user_text=query,
+        intent=intent,
+        effective=False,
+        silenced=True,
+        error=False,
+        reached_model=False,
+        is_master=rel.is_master,
+        guard_flags=guard,
+    )
+
+
+# 情绪更新已迁至 ``kits/mood/kit.py``（H08）：六张关键词表在 relationship/signals.py，
+# mood 与关系温度一次扫描两用，结论不会再各说各话。

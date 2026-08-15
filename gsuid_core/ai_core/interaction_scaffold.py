@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import List, Tuple, Optional, Sequence
+from typing import TYPE_CHECKING, List, Tuple, Optional, Sequence
 from dataclasses import field, dataclass
 
 from pydantic_ai.messages import (
@@ -25,6 +25,9 @@ from pydantic_ai.messages import (
     ModelResponse,
     UserPromptPart,
 )
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.relationship import RelationshipView
 
 # ── 通用：说话人前缀剥离（群聊/评测消息形如「昵称(用户ID:123)：正文」）──
 _SPEAKER_PREFIX_RE = re.compile(r"^[^：:（()）\n]{1,16}\(用户ID:[^)]{1,24}\)[：:]\s*")
@@ -538,11 +541,15 @@ def decide_cheap_gate(
     soft_triggered: bool = False,
     has_active_task: bool = False,
     intent: str = "",
+    rel: Optional["RelationshipView"] = None,
 ) -> CheapGate:
-    """基于 TurnGraph（+可选意图）决定成本档。
+    """基于 TurnGraph（+可选意图 + 关系温度）决定成本档。
 
     - 私聊 → full
     - 开口门/寻址门强负（多人互聊、@别人、ambient 催别人）→ silence
+    - **群聊 + 未 @ + zone ∈ {hostile, cold} → silence**（人设 Presence「低好感仅 @ 才回」
+      终于是门，不是散文）。呼名 / 活跃任务 / 省略跟进 / soft_continue 抬回：
+      履约 > 脾气，且要给「人格被点名但 @ 丢了」留缺口。
     - 被 @ 且分类为闲聊、无任务证据 → light（短回、零工具）
     - 其余（含未 @ 的群消息）→ full，由模型/C-3 决定是否 <SILENCE>
       （硬静音未 @ 会误吞迎新/旁观应回/拆条请求等）
@@ -552,6 +559,18 @@ def decide_cheap_gate(
     if tg.open_gate is GroupOpenGate.SILENCE:
         return CheapGate.SILENCE
     if tg.address_gated:
+        return CheapGate.SILENCE
+    if (
+        rel is not None
+        and rel.is_quiet_zone
+        and not rel.is_master
+        and not tg.is_tome
+        and not tg.call_to_self
+        and not tg.ellipsis_followup
+        and not tg.soft_continue
+        and not tg.needs_task_tools
+        and not has_active_task
+    ):
         return CheapGate.SILENCE
     if (
         tg.call_to_self
@@ -594,7 +613,7 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "find_tools",
         "read_image",
         "read_handle",  # FileOS 折叠后续读（与 web_search 成对）
-        "search_knowledge",  # 知识库 + 历史工具落盘联邦
+        "search_cognition",  # 记忆+偏好+知识+落盘+产物的单一「回想」入口
         "web_search_tool",
         "create_subagent",  # 含 render_agent / research 委派入口
         # 控制面：纠正信封让模型申辩、超时回执让它查委派。群聊是主战场，

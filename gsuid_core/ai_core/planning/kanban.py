@@ -865,7 +865,45 @@ async def refresh_root_status(root_task_id: str) -> Optional[str]:
                 update_data={"status": new_status, "updated_at": now},
             )
             await AIAgentTaskLog.add_log(root.id, "decision", f"根任务状态汇总：{root.status} -> {new_status}")
+            if new_status in ("completed", "failed"):
+                await _distill_root_terminal(root, children, new_status)
         return new_status
+
+
+async def _distill_root_terminal(
+    root: AIAgentTask,
+    children: List[AIAgentTask],
+    status: str,
+) -> None:
+    """根任务终态回流认知层：目标 + 结论摘要 → episode(+fact)，挂 artifact 溯源边。
+
+    动机：能力代理产出的结论过去只在 artifact 表里、30 天 TTL 到期即删，记忆与知识库
+    完全感知不到；用户一个月后追问「上次那个思路」只能靠会话碎片。这里只回流**结论**，
+    整棵任务日志不回流（那是流水，不是认知）。失败只丢节点，不影响任务状态。
+    """
+    try:
+        from gsuid_core.ai_core.planning.models import AIAgentArtifact
+        from gsuid_core.ai_core.cognition.distill import distill_task_terminal
+
+        artifacts = await AIAgentArtifact.list_for_root(root.id)
+        conclusion = " / ".join(a.summary for a in artifacts if a.summary)[:400]
+        if not conclusion:
+            done = [c.display_name or c.goal for c in children if c.status == "completed"]
+            conclusion = "；".join(done)[:400]
+        await distill_task_terminal(
+            root_task_id=root.id,
+            goal=root.goal,
+            status=status,
+            conclusion=conclusion,
+            scope_key=root.scope_key,
+            # 属主必传：scope_key 是 group:{gid}，只按它过滤会让同群任何人
+            # 都能从 search_cognition 召回别人的任务结论与产物摘要
+            owner_user_id=root.owner_user_id or "",
+            artifact_ids=[a.id for a in artifacts],
+            as_of=datetime.now().strftime("%Y-%m-%d"),
+        )
+    except Exception as e:
+        logger.debug(t("log.ai.cognition_distill_task_fail", task=root.id, e=e))
 
 
 # 任务级状态操作：暂停 / 恢复 / 终止（webconsole 与主人格句柄都走这里）

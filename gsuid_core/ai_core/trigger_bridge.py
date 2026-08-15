@@ -69,6 +69,9 @@ def ai_return(text: str) -> None:
 
 
 class MockBot:
+    _real_bot: Bot
+    _ctx: Dict[str, Any]
+
     """
     AI 调用触发器时使用的代理 Bot。
 

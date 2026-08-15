@@ -50,7 +50,7 @@ _RESEARCH_PROMPT = """你负责外部检索与综合分析，交付可复核的 
 | 优先级 | 来源 | 何时用 | 注意 |
 |---|---|---|---|
 | 1 | **结构化数据工具**（读数/账户态/指标） | 实时数值、状态、业务字段 | 可信度远高于 web；必须先调 |
-| 2 | `search_knowledge` | 知识库 + 近期工具落盘历史 | 不能代替实时态；落盘可能过时 |
+| 2 | `search_cognition` | 记忆 + 偏好 + 知识库 + 近期工具落盘 + 任务产物 | 不能代替实时态；落盘可能过时 |
 | 3 | `web_search` / `web_fetch` | 事件/政策/叙事；无数据工具才兜底数字 | 摘要数字常过时，禁止当当前值 |
 | — | 并行 | 多个**不同** query 可并行 | 同 query 空转重试 = 失败 |
 
@@ -572,7 +572,7 @@ _INTERNAL_REPORTER_PROMPT = """你只使用**框架内部库**数据，整理成
 ## 范围
 | 做 | 不做 |
 |---|---|
-| `query_user_memory` | web 搜索 / 抓取 |
+| `search_cognition` | web 搜索 / 抓取 |
 | `record_get` / `record_list` / `record_summary` | 写代码、跑脚本 |
 | `state_get` / `state_list` | 维护记忆写入（除非 task 明确要求且你有工具） |
 | `query_scheduled_task` / `list_scheduled_tasks` | `render_*` 出图 |
@@ -613,7 +613,7 @@ _INTERNAL_REPORTER_PROMPT = """你只使用**框架内部库**数据，整理成
 ④ ⚠ 缺口与口径假设（若有）
 
 ## 红线
-- 不用 `search_knowledge` 常识或 web 标题冒充内部统计。
+- 不用 `search_cognition` 常识或 web 标题冒充内部统计。
 - 医疗/法律/实盘等：无插件专业数据工具时声明未挂载，只交已有内部字段。
 - 不把「印象中用户说过」写成内部库统计。
 
@@ -643,9 +643,9 @@ _MEMORY_CURATOR_PROMPT = """你只做**轻量记忆维护**：用户偏好、主
 ## 范围
 | 做 | 不做 |
 |---|---|
-| `query_user_memory` 查重 | 长篇记忆二次分析报告 |
+| `search_cognition` 查重 | 长篇记忆二次分析报告 |
 | `update_self_note` 写入 | 任务编排 / 多步推理 |
-| 必要时 `search_knowledge` 交叉 | 改人设 / 资源文件 / 系统 prompt |
+| 必要时 `search_cognition(kinds="knowledge")` 交叉 | 改人设 / 资源文件 / 系统 prompt |
 | 一句话交付「记了什么」 | 把猜测当偏好写入 |
 
 ## note_type 映射
@@ -656,7 +656,7 @@ _MEMORY_CURATOR_PROMPT = """你只做**轻量记忆维护**：用户偏好、主
 | 反思 / 复盘 | `reflection` | 「上次打断了用户，应先确认」 |
 
 ## 默认原则
-1. 先查再写：`query_user_memory` → 决定新增 / 合并 / 跳过。
+1. 先查再写：`search_cognition` → 决定新增 / 合并 / 跳过。
 2. 无明确表达 → **不写** self_model 类结论；可在摘要请上游确认。
 3. 同义已存在 → 克制更新，不堆第三条重复。
 4. 内容短：一条一个可执行点；禁止小作文。
@@ -667,7 +667,7 @@ _MEMORY_CURATOR_PROMPT = """你只做**轻量记忆维护**：用户偏好、主
 从 task 抽出「可记忆原子」：偏好 / 承诺 / 反思；剔除掉一次性指令与临时情绪。
 
 ### Step 2：查重
-`query_user_memory`；若已有同类，判断：跳过 / 覆盖更新 / 补充条件。
+`search_cognition`；若已有同类，判断：跳过 / 覆盖更新 / 补充条件。
 
 ### Step 3：写入
 `update_self_note`；`note_type` 正确；正文避免隐私过度展开（够用即可）。
@@ -1064,7 +1064,7 @@ def register_builtin_profiles() -> None:
             ],
             tool_packs=[TASK_BASICS_PACK],
             tool_names=[
-                "query_user_memory",
+                "search_cognition",
                 "query_scheduled_task",
                 "list_scheduled_tasks",
                 "_get_current_date",
@@ -1097,7 +1097,7 @@ def register_builtin_profiles() -> None:
             tool_packs=[TASK_BASICS_PACK],
             tool_names=[
                 "update_self_note",
-                "query_user_memory",
+                "search_cognition",
                 "_get_current_date",
             ],
             source="builtin",

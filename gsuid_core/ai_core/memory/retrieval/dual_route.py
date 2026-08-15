@@ -614,9 +614,10 @@ async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]
 async def dual_route_retrieve(
     query: str,
     user_id: str,
+    *,
+    enable_system2: bool,
     group_id: Optional[str] = None,
     top_k: int = 20,
-    enable_system2: bool = True,
     enable_user_global: bool = True,
     inject_preferences: bool = True,
     preference_contexts: Optional[list[str]] = None,
@@ -625,11 +626,14 @@ async def dual_route_retrieve(
 
     Args:
         query:              用户的原始查询文本
-        group_id:           原始群组 ID（如 "789012"）
+        group_id:           原始群组 ID（如 "789012"）；**私聊必须传 None**，回退成
+            user_id 只会去查一个空的幻影 ``group:{user_id}``，召回恒为 0
         user_id:            触发用户的 ID（可选，用于联合用户全局记忆）
-        session:            SQLAlchemy AsyncSession
         top_k:              最终返回的 Episode 数量上限
-        enable_system2:     是否启用 System-2 全局选择（成本较高）
+        enable_system2:     是否启用 System-2 全局选择（成本较高）。**必填、无默认值**：
+            这里曾是 ``True`` 而生产配置默认关，不传的调用点（工具路径）一直在偷跑一条
+            更贵的图遍历。跨模块边界的语义性参数不许在函数签名里给默认值——
+            需要默认就在唯一的配置层给。
         enable_user_global: 是否联合查询用户跨群画像
         inject_preferences: 是否注入程序性/偏好规则（意图门：纯闲聊轮可传 False 整轮跳过）
         preference_contexts: 选择性注入——本轮相关的能力域/工具名集合。``None`` = 不过滤

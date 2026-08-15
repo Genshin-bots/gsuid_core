@@ -64,6 +64,7 @@ from gsuid_core.ai_core.configs.models import (
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
     looks_like_provider_failure,
@@ -787,8 +788,8 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> str: ...
 
@@ -807,8 +808,8 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> _T: ...
 
@@ -825,8 +826,8 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> Union[str, Any]:
         """核心回复请求的瞬时失败重试包装。
@@ -1288,8 +1289,8 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> str: ...
 
@@ -1309,8 +1310,8 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> _T: ...
 
@@ -1328,10 +1329,10 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool = False,
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
-    ) -> Union[str, Any]:
+    ) -> object:
         """
         运行 Agent 并返回结果
 
@@ -1410,8 +1411,8 @@ class GsCoreAIAgent(RunOnceMixin):
         has_active_task: bool,
         budget_gate: bool,
         suppress_intermediate_text: bool,
-        turn_graph: Optional[Any],
-        cheap_gate: Optional[Any],
+        turn_graph: Optional[TurnGraph],
+        cheap_gate: Optional[CheapGate],
         is_framework_injection: bool,
     ) -> Union[str, Any]:
         """已持锁：TTL 校验 + provider 路由 + 真正执行。"""

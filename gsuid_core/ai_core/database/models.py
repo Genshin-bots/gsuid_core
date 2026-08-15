@@ -11,7 +11,7 @@ from typing import Any, Set, Dict, List, Optional
 from collections.abc import Sequence
 
 from sqlmodel import Field, SQLModel, col, and_, case, delete, select, update
-from sqlalchemy import Text, Column
+from sqlalchemy import Text, Column, UniqueConstraint
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,10 +21,7 @@ from gsuid_core.utils.database.base_models import BaseModel, with_session
 
 
 def _clamp_favor(value: int) -> int:
-    """把好感度钳制到 ai_config 的 favor_floor / favor_ceil（§F.3-1），防越界无限涨跌。
-
-    两项已在 AI_CONFIG 模板注册，get_config 未命中时自动补默认值，无需兜底。
-    """
+    """把分数钳到 favor_floor / favor_ceil。两项已在配置模板注册。"""
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     floor: int = ai_config.get_config("favor_floor").data
@@ -33,54 +30,47 @@ def _clamp_favor(value: int) -> int:
 
 
 class UserFavorability(BaseModel, table=True):
-    """
-    用户好感度表
+    """用户关系温度表（每用户 × 每 bot，**不含 group_id**——关系是对人的，不是对房间的）。
 
-    存储用户与 AI 角色之间的人际关系数据。
-    好感度范围通常为 -100 到 100+，影响角色的对话风格和行为。
+    唯一写入口是 ``relationship.engine.settle_turn``（管理覆盖走 ``apply_admin_set``，
+    模型增量走 ``apply_model_delta``，二者都落到 ``apply_settlement``）。
 
-    Attributes:
-        user_id: 用户ID
-        bot_id: 机器人ID
-        user_name: 用户名
-        favorability: 好感度值 (范围约 -100 到 100+)
-        interaction_count: 交互次数
-        last_interaction_time: 最后交互时间戳
-        memory_count: 记忆条数
-        tags: 用户标签，JSON格式存储
+    ``UniqueConstraint(user_id, bot_id)``：物理主键是自增 id，历史上没有唯一约束，
+    并发首次互动能插出两行同 (user_id,bot_id)，症状是「好感度偶尔回退」。
+    引入 daily_* 日预算后重复行会让配额翻倍失效，所以必须补约束 + 一次去重。
+
+    ``tags`` / ``memory_count`` 为 **deprecated**：代码已停写停读，为兼容多后端不删列。
     """
 
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        UniqueConstraint("user_id", "bot_id", name="ux_userfavorability_user_bot"),
+        {"extend_existing": True},
+    )
 
     user_name: Optional[str] = Field(default="", title="用户名")
     favorability: int = Field(default=0, title="好感度")
-    interaction_count: int = Field(default=0, title="交互次数")
+    interaction_count: int = Field(default=0, title="有效互动次数")
     last_interaction_time: int = Field(default=0, title="最后交互时间戳")
-    memory_count: int = Field(default=0, title="记忆条数")
-    tags: Optional[str] = Field(default="[]", title="用户标签")
+    memory_count: int = Field(default=0, title="记忆条数(deprecated)")
+    tags: Optional[str] = Field(default="[]", title="用户标签(deprecated)")
+    # ── 关系引擎：可解释性 + 预算 ──
+    last_delta: int = Field(default=0, title="上次变更量")
+    last_reason: str = Field(default="", max_length=32, title="上次变更原因码")
+    last_eval_at: int = Field(default=0, title="上次结算时间戳")
+    daily_gain: int = Field(default=0, title="当日已加")
+    daily_loss: int = Field(default=0, title="当日已扣(绝对值)")
+    daily_ymd: str = Field(default="", max_length=10, title="当日日期(YYYY-MM-DD)")
+    last_positive_interact_at: int = Field(default=0, title="最近一次正向互动时间戳")
 
     @property
     def relationship_level(self) -> str:
-        """
-        根据好感度返回关系等级描述
+        """关系等级中文名。**转调 ``relationship.zones``**，不再自划档。
 
-        Returns:
-            关系等级字符串
+        历史上这里、``self_cognition``、人设卡、README 各有一套区间，同一分数四种翻译。
         """
-        if self.favorability < -50:
-            return "厌恶"
-        elif self.favorability < -10:
-            return "冷淡"
-        elif self.favorability < 10:
-            return "陌生"
-        elif self.favorability < 50:
-            return "认识"
-        elif self.favorability < 80:
-            return "熟人"
-        elif self.favorability < 100:
-            return "朋友"
-        else:
-            return "挚友"
+        from gsuid_core.ai_core.relationship.zones import level_name_of
+
+        return level_name_of(self.favorability)
 
     @classmethod
     @with_session
@@ -174,232 +164,29 @@ class UserFavorability(BaseModel, table=True):
         return result
 
     @classmethod
-    async def update_favorability(
-        cls,
-        user_id: str,
-        bot_id: str,
-        delta: int,
-        user_name: str = "",
-    ) -> bool:
-        """
-        更新用户好感度（增量）
-
-        Args:
-            user_id: 用户ID
-            bot_id: 机器人ID
-            delta: 好感度变化值（可为负数）
-            user_name: 用户名（可选）
-
-        Returns:
-            是否更新成功
-        """
-        try:
-            # 确保记录存在
-            record = await cls.get_or_create_user_favorability(user_id, bot_id, user_name)
-
-            # clamp 到配置上下限：防越界无限涨/跌（曾出现主人好感度 107 越过设计上限 100）
-            new_value = _clamp_favor(record.favorability + delta)
-            stmt = (
-                update(cls)
-                .where(
-                    and_(
-                        cls.user_id == user_id,
-                        cls.bot_id == bot_id,
-                    )
-                )
-                .values(
-                    favorability=new_value,
-                    interaction_count=record.interaction_count + 1,
-                    last_interaction_time=int(time.time()),
-                )
-            )
-
-            from gsuid_core.utils.database.base_models import async_maker
-
-            async with async_maker() as session:
-                await session.execute(stmt)
-                await session.commit()
-
-            # debug 级：被动累积每条消息都会调用，info 级会刷屏；
-            # 显式工具路径（favorability_manager）另有自己的 info 结果日志。
-            logger.debug(
-                i18n_t(
-                    "log.ai.userfavorability_updated_user_id_update",
-                    user_id=user_id,
-                    p0=record.favorability,
-                    new_value=new_value,
-                )
-            )
-            return True
-        except Exception as e:
-            logger.exception(i18n_t("log.ai.userfavorability_update_favorability", e=e))
-            return False
-
-    @classmethod
-    async def set_favorability(
-        cls,
-        user_id: str,
-        bot_id: str,
-        value: int,
-        user_name: str = "",
-    ) -> bool:
-        """
-        设置用户好感度（绝对值）
-
-        Args:
-            user_id: 用户ID
-            bot_id: 机器人ID
-            value: 好感度目标值
-            user_name: 用户名（可选）
-
-        Returns:
-            是否设置成功
-        """
-        try:
-            # 确保记录存在
-            record = await cls.get_or_create_user_favorability(user_id, bot_id, user_name)
-
-            clamped = _clamp_favor(value)
-            stmt = (
-                update(cls)
-                .where(
-                    and_(
-                        cls.user_id == user_id,
-                        cls.bot_id == bot_id,
-                    )
-                )
-                .values(
-                    favorability=clamped,
-                    interaction_count=record.interaction_count + 1,
-                    last_interaction_time=int(time.time()),
-                )
-            )
-
-            from gsuid_core.utils.database.base_models import async_maker
-
-            async with async_maker() as session:
-                await session.execute(stmt)
-                await session.commit()
-
-            logger.info(i18n_t("log.ai.userfavorability_set_user_id", user_id=user_id, clamped=clamped))
-            return True
-        except Exception as e:
-            logger.exception(i18n_t("log.ai.userfavorability_set_favorability", e=e))
-            return False
-
-    @classmethod
     @with_session
-    async def update_interaction(
+    async def get_scores_for(
         cls,
         session: AsyncSession,
-        user_id: str,
+        user_ids: List[str],
         bot_id: str,
-    ) -> bool:
+    ) -> Dict[str, int]:
+        """批量取一组用户的分数（``user_id -> favorability``）。
+
+        装配层每轮要判「本 scope 内谁是高好感」，逐个查会打出 N 次往返。
+        缺记录的用户不出现在返回值里（调用方按「未打分」处理）。
         """
-        更新用户交互次数
-
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            bot_id: 机器人ID
-
-        Returns:
-            是否更新成功
-        """
-        try:
-            stmt = select(cls).where(and_(cls.user_id == user_id, cls.bot_id == bot_id))
-            result = await session.execute(stmt)
-            record = result.scalars().first()
-
-            if not record:
-                return False
-
-            stmt = (
-                update(cls)
-                .where(
-                    and_(
-                        cls.user_id == user_id,
-                        cls.bot_id == bot_id,
-                    )
-                )
-                .values(
-                    interaction_count=record.interaction_count + 1,
-                    last_interaction_time=int(time.time()),
-                )
-            )
-            await session.execute(stmt)
-            await session.commit()
-
-            return True
-        except Exception as e:
-            logger.exception(i18n_t("log.ai.userfavorability_update_interaction", e=e))
-            return False
-
-    @classmethod
-    @with_session
-    async def update_memory_count(
-        cls,
-        session: AsyncSession,
-        user_id: str,
-        bot_id: str,
-        count: int,
-    ) -> bool:
-        """
-        更新用户记忆条数
-
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            bot_id: 机器人ID
-            count: 记忆条数
-
-        Returns:
-            是否更新成功
-        """
-        try:
-            stmt = (
-                update(cls)
-                .where(
-                    and_(
-                        cls.user_id == user_id,
-                        cls.bot_id == bot_id,
-                    )
-                )
-                .values(memory_count=count)
-            )
-            await session.execute(stmt)
-            await session.commit()
-
-            return True
-        except Exception as e:
-            logger.exception(i18n_t("log.ai.userfavorability_update_memory_entry", e=e))
-            return False
-
-    @classmethod
-    async def increment_memory_count(
-        cls,
-        user_id: str,
-        bot_id: str,
-    ) -> bool:
-        """
-        增加用户记忆条数
-
-        Args:
-            user_id: 用户ID
-            bot_id: 机器人ID
-
-        Returns:
-            是否更新成功
-        """
-        try:
-            record = await cls.get_user_favorability(user_id, bot_id)
-            if not record:
-                return False
-
-            return await cls.update_memory_count(user_id, bot_id, record.memory_count + 1)
-        except Exception as e:
-            logger.exception(i18n_t("log.ai.userfavorability_increment_memory_entry", e=e))
-            return False
+        if not user_ids:
+            return {}
+        stmt = select(cls).where(and_(col(cls.user_id).in_(list(set(user_ids))), cls.bot_id == bot_id))
+        rows = (await session.execute(stmt)).scalars().all()
+        # 同 (user_id,bot_id) 若存在历史重复行，取分数绝对值最大的那条（与去重迁移同口径）
+        best: Dict[str, int] = {}
+        for row in rows:
+            uid = str(row.user_id)
+            if uid not in best or abs(row.favorability) > abs(best[uid]):
+                best[uid] = row.favorability
+        return best
 
     @classmethod
     @with_session
@@ -457,31 +244,120 @@ class UserFavorability(BaseModel, table=True):
 
     @classmethod
     @with_session
-    async def decay_all_toward_neutral(cls, session: AsyncSession, step: int) -> int:
-        """让所有用户好感度向中性(0)回归一个步长（§F.3-3，每日 job 调用）。
+    async def decay_idle_toward_neutral(
+        cls,
+        session: AsyncSession,
+        step: int,
+        idle_before_ts: int,
+    ) -> int:
+        """让**闲置**用户的关系温度向中性(0)回归一个步长（每日 job 调用）。
 
-        正值降 step、负值升 step、跨 0 直接归 0；``step<=0`` 不衰减。使亲密需要持续正向
-        互动维持，一次性刷分会随时间回落。返回受影响行数（近似，两条 UPDATE 之和）。
+        语义变更：旧实现每天打全表，活跃用户被「每轮 +1」立刻补回，等于只惩罚
+        「聊完就走」的人，对天天水群的人没写。现在只衰减
+        ``last_positive_interact_at < idle_before_ts`` 的行——活跃用户不衰减，
+        也不会因水群而升档。
+
+        正值降 step、负值升 step、跨 0 直接归 0；``step<=0`` 不衰减。
+        返回受影响行数（近似，两条 UPDATE 之和）。
         """
         if step <= 0:
             return 0
+        idle = col(cls.last_positive_interact_at) < idle_before_ts
         # 用 case 表达式（SQLite / PostgreSQL 均可移植；func.max/min 的 2 参标量形态在 PG 上是聚合，会报错）：
         # 正值 favor>step → favor-step，否则(0<favor≤step)归 0；负值对称。跨 0 直接落 0。
         dec = (
             update(cls)
-            .where(col(cls.favorability) > 0)
-            .values(favorability=case((col(cls.favorability) > step, col(cls.favorability) - step), else_=0))
+            .where(and_(col(cls.favorability) > 0, idle))
+            .values(
+                favorability=case((col(cls.favorability) > step, col(cls.favorability) - step), else_=0),
+                last_reason="decay.idle",
+                last_delta=-step,
+            )
         )
         inc = (
             update(cls)
-            .where(col(cls.favorability) < 0)
-            .values(favorability=case((col(cls.favorability) < -step, col(cls.favorability) + step), else_=0))
+            .where(and_(col(cls.favorability) < 0, idle))
+            .values(
+                favorability=case((col(cls.favorability) < -step, col(cls.favorability) + step), else_=0),
+                last_reason="decay.idle",
+                last_delta=step,
+            )
         )
         r1 = await session.execute(dec)
         r2 = await session.execute(inc)
         n1 = r1.rowcount if isinstance(r1, CursorResult) else 0
         n2 = r2.rowcount if isinstance(r2, CursorResult) else 0
         return n1 + n2
+
+    @classmethod
+    @with_session
+    async def dedupe_user_bot_rows(cls, session: AsyncSession) -> int:
+        """合并同 ``(user_id, bot_id)`` 的历史重复行，返回删除的行数。
+
+        保留策略：分数**绝对值最大**的那行（保住已积累的关系强度），
+        其余删除。唯一约束创建前必须先跑，否则建索引会失败。
+        """
+        rows = (await session.execute(select(cls))).scalars().all()
+        keep: Dict[tuple[str, str], "UserFavorability"] = {}
+        victims: List[int] = []
+        for row in rows:
+            key = (str(row.user_id), str(row.bot_id))
+            if key not in keep:
+                keep[key] = row
+                continue
+            best = keep[key]
+            loser, winner = (best, row) if abs(row.favorability) > abs(best.favorability) else (row, best)
+            keep[key] = winner
+            if loser.id is not None:
+                victims.append(loser.id)
+        if not victims:
+            return 0
+        await session.execute(delete(cls).where(col(cls.id).in_(victims)))
+        await session.commit()
+        return len(victims)
+
+    @classmethod
+    @with_session
+    async def apply_settlement(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        bot_id: str,
+        *,
+        new_score: int,
+        delta: int,
+        reason: str,
+        now_ts: int,
+        daily_ymd: str,
+        daily_gain: int,
+        daily_loss: int,
+        bump_interaction: bool,
+        refresh_positive: bool,
+        user_name: str = "",
+    ) -> None:
+        """把一次结算结果落库（引擎的唯一写路径，一次 UPDATE）。
+
+        ``interaction_count`` 只在**有效互动**时 +1：管理侧 set 不再冒充互动，
+        否则「衰减 / 管理设定」和「聊了一句」在计数上分不清。
+        """
+        record = await cls.get_or_create_user_favorability(user_id, bot_id, user_name)
+        values: Dict[str, Any] = {
+            "favorability": new_score,
+            "last_delta": delta,
+            "last_reason": reason,
+            "last_eval_at": now_ts,
+            "daily_ymd": daily_ymd,
+            "daily_gain": daily_gain,
+            "daily_loss": daily_loss,
+        }
+        if bump_interaction:
+            values["interaction_count"] = record.interaction_count + 1
+            values["last_interaction_time"] = now_ts
+        if refresh_positive:
+            values["last_positive_interact_at"] = now_ts
+        stmt = update(cls).where(and_(col(cls.user_id) == user_id, col(cls.bot_id) == bot_id)).values(**values)
+        await session.execute(stmt)
+        await session.commit()
 
 
 # 进程级建表标记：与全局 create_all 的启动时序解耦（RAG 初始化在后台线程，

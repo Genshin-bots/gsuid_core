@@ -1,24 +1,31 @@
 """Agent 上下文装配的共享层（§5.3 装配统一）。
 
-生产入口（handle_ai.handle_ai_chat）与本地评测入口（webconsole.chat_with_history_api）
-此前各自手工复刻"system prompt + 每轮动态注入"的装配片段，O-3 落地后立即漂移过一次
-（评测端点的 system prompt 缺稳定前缀/关系行）。本模块是两个入口共同消费的唯一装配点：
+生产入口与评测入口共用 ``handle_ai.run_interactive_turn``；本模块是那一轮里
+system prompt / 每轮动态块的唯一装配点：
 
 - :func:`build_session_system_prompt`：persona + 群简介 + 稳定前缀（self_model/群画像）
   → session 级 system prompt。ai_router 建会话 / TTL 刷新、评测端点共用。
-- :func:`assemble_dynamic_context`：每轮 user 侧动态注入（历史/情绪/关系行/口吻锚点/
-  自我情景/长任务/长期记忆/软触发提示）的**唯一**顺序定义。
-- :func:`fetch_favorability`：好感度查询的共享降级封装。
+- :func:`assemble_dynamic_context`：每轮 user 侧动态注入的**唯一**顺序定义。块名与顺序
+  来自 ``kits.base.CONTEXT_BLOCK_ORDER``（跨计划冻结接口），各来源只填命名块。
+
+关系温度读入口是 ``relationship.fetch_relationship``（返回 ``RelationshipView``），
+不再是返回裸 int 的 ``fetch_favorability``——那个返回值让每个消费点自己划档。
 
 漂移防线：tests/test_context_assembly.py 以源码级断言锁定两个入口都消费本模块。
 """
 
 import asyncio
-from typing import List, Tuple, Optional
+from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
 
+from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.kits.base import CONTEXT_BLOCK_ORDER
+from gsuid_core.ai_core.relationship import RelationshipView
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.hooks import AgentHookContext
 
 # 软触发（免唤醒续聊）的默认偏沉默提示——生产/评测共用同一文案
 SOFT_TRIGGER_NOTE = (
@@ -27,19 +34,6 @@ SOFT_TRIGGER_NOTE = (
     "若是泛泛感慨、像在跟群里别人说、或换了与你无关的新话题，请直接输出 <SILENCE> 保持沉默。"
     "拿不准时优先沉默，不要为了续上话而硬接。）"
 )
-
-
-async def fetch_favorability(user_id: str, bot_id: str) -> Optional[int]:
-    """好感度查询（外部存储，非模型推断）；失败降级为 None（无注入）。"""
-    try:
-        from gsuid_core.ai_core.database.models import UserFavorability
-
-        user_data = await UserFavorability.get_user_favorability(user_id=user_id, bot_id=bot_id)
-        if user_data:
-            return user_data.favorability
-    except Exception as e:
-        logger.debug(t("log.ai.contextassembly_favorability_query_degrading_fai", e=e))
-    return None
 
 
 async def build_stable_context(event: Event) -> str:
@@ -57,6 +51,7 @@ async def build_stable_context(event: Event) -> str:
     async def _self_model_block() -> str:
         from gsuid_core.ai_core.self_cognition import build_self_cognition_context
 
+        # include_relationship=False：关系是 per-user，群 session 共享稳定前缀
         return await build_self_cognition_context(bot_id=event.bot_id, scope_key=scope_key, include_relationship=False)
 
     async def _group_profile_block() -> str:
@@ -76,6 +71,29 @@ async def build_stable_context(event: Event) -> str:
     return "\n\n".join(parts)
 
 
+async def fire_stable_context_hooks(event: Event) -> str:
+    """建 session 时开火 H29，收集套件贡献的稳定块（self_model / 群画像）。
+
+    这是**唯一**允许写 system 的点位；dispatcher 会硬拒非建 session 阶段的调用。
+    运行中仍然禁止改 system（会打光 provider 前缀缓存）。
+    """
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
+
+    if not should_fire(AgentHookPoint.ON_STABLE_CONTEXT):
+        return ""
+    ctx = AgentHookContext(
+        point=AgentHookPoint.ON_STABLE_CONTEXT,
+        ev=event,
+        session_id=event.session_id,
+        create_by="Chat",
+    )
+    await fire_hooks(AgentHookPoint.ON_STABLE_CONTEXT, ctx, stable_context_phase=True)
+    from gsuid_core.ai_core.kits.base import STABLE_BLOCK_NAMES
+
+    parts = [ctx.blocks[name] for name in sorted(STABLE_BLOCK_NAMES) if name in ctx.blocks and ctx.blocks[name]]
+    return "\n\n".join(parts)
+
+
 async def build_session_system_prompt(event: Event, persona_name: str) -> str:
     """session 级 system prompt 的唯一装配点：persona + 群简介 + 稳定前缀。
 
@@ -91,12 +109,22 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
     group_description = ""
     if event.group_id:
         group_description = await get_group_context(group_id=event.group_id)
-    extra_stable_context = await build_stable_context(event)
+    # 套件（self_cognition / group_profile）走 H29 贡献稳定块；无套件时回落内核实现
+    extra_stable_context = await fire_stable_context_hooks(event) or await build_stable_context(event)
     return await build_persona_prompt(
         persona_name,
         group_description=group_description or None,
         extra_stable_context=extra_stable_context or None,
     )
+
+
+def join_context_blocks(blocks: Dict[str, str]) -> str:
+    """按 ``CONTEXT_BLOCK_ORDER`` 拼装命名块（顺序的**唯一**执行点）。
+
+    未知块名不会出现在这里——写入侧（``AgentHookContext.set_context_block`` /
+    本模块）已按白名单校验，未知名一律拒绝。
+    """
+    return "\n\n".join(blocks[name] for name in CONTEXT_BLOCK_ORDER if name in blocks and blocks[name])
 
 
 async def assemble_dynamic_context(
@@ -107,7 +135,7 @@ async def assemble_dynamic_context(
     persona_name: Optional[str],
     mood_key: str,
     group_id: Optional[str] = None,
-    favorability: Optional[int] = None,
+    rel: Optional[RelationshipView] = None,
     history_context: str = "",
     memory_context_text: str = "",
     memory_guide: str = "",
@@ -115,98 +143,64 @@ async def assemble_dynamic_context(
     intent: str = "",
     recent_report_titles: Tuple[str, ...] = (),
     prev_turn_used_tools: bool = False,
+    event: Optional[Event] = None,
+    bot: Optional[object] = None,
+    hook_ctx: Optional["AgentHookContext"] = None,
 ) -> Tuple[str, bool]:
-    """每轮 user 侧动态注入的唯一顺序定义。返回 ``(full_context, has_actionable_task)``。
+    """每轮 user 侧动态注入的唯一入口。返回 ``(full_context, has_actionable_task)``。
 
-    顺序（与缓存前缀稳定性从高到低排列，改动须两个入口同时生效——这正是抽出本函数的目的）：
-    历史对话 → 情绪 → 关系行 → 口吻锚点 → 自我情景 → 长任务 → 长期记忆 → 软触发提示。
-    ``history_context`` 传已带「[历史对话]」标头的成品文本（评测端点历史走
-    agent.history，则传空）；``memory_guide`` 是记忆使用准则（评测端点专用，生产为空）。
-    各子项失败一律降级跳过，不影响其余注入。
+    自身不再拼产品块：内核只填 ``history``（消息基础设施）与已检索好的 ``memory``
+    文本，其余块由各套件在 H06 ``set_context_block`` 贡献，顺序由
+    ``CONTEXT_BLOCK_ORDER`` 单源定义（情绪 → 关系 → 口吻 → 身份 → 历史 → 记忆 → 任务
+    → 闲聊风格 → 事务优先级 → 资料图标题 → 软触发 → 插件 hint）。
+
+    生产入口与评测入口共用本函数**且共用同一次 fire_hooks**，否则评测端点会变成
+    「有装配没套件」的第三套语义。``hook_ctx`` 允许调用方复用本轮已建好的 Context
+    （携带 H05 检索结果 / TurnGraph / 优先发言者等已填字段）。
     """
-    # 装配顺序刻意「短状态 → 历史 → 高置信记忆 → 任务」：把注意力留给 [用户发言]。
-    # 决策树/工具规程/口吻主约束已在 system_prompt，此处只放本轮必要动态信息。
-    context_parts: List[str] = []
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.compose import compose_dynamic_context
 
-    # Prompt-2.5: 括号包裹情绪，暗示内心状态而非指令
-    if persona_name:
-        try:
-            from gsuid_core.ai_core.persona.mood import get_mood_description
+    ctx = hook_ctx if hook_ctx is not None else AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
+    ctx.point = AgentHookPoint.COMPOSE_CONTEXT
+    if ctx.ev is None and event is not None:
+        ctx.ev = event
+    if isinstance(bot, Bot):
+        ctx.bot = bot
+    ctx.query = query
+    ctx.persona_name = persona_name
+    ctx.mood_key = mood_key
+    ctx.intent = intent or None
+    ctx.relationship = rel
+    ctx.soft_triggered = soft_triggered
+    ctx.prev_turn_used_tools = prev_turn_used_tools
+    ctx.recent_report_titles = recent_report_titles
+    ctx.memory_guide = memory_guide
 
-            mood_desc = await get_mood_description(persona_name, mood_key)
-            if mood_desc:
-                context_parts.append(f"（{mood_desc}。）")
-        except Exception as e:
-            logger.debug(t("log.ai.mood_fetch_description", e=e))
+    # 内核填的两块：history 是消息基础设施；memory 文本由 ⑧ 已检索好（或套件 H05 暂存）
+    if history_context:
+        ctx.blocks["history"] = history_context
+    if memory_context_text and "memory" not in ctx.retrieved:
+        ctx.retrieved["memory"] = memory_context_text.strip()
 
-    # C3-a: per-user 关系行（群聊共享 session，不能冻进共享前缀）
-    # 自我情景召回已改为 query_self_episodes 工具（agent 按需主动调用），
-    # 不再用正则触发被动注入。
-    try:
-        from gsuid_core.ai_core.self_cognition import build_relationship_context
+    _, has_actionable = await compose_dynamic_context(ctx)
+    # 内核补齐无人认领的自有块，然后重拼。**不能**只在结果为空时兜底：
+    # 总线关闭 / 槽位 off 时调用方传进来的记忆文本会被静默丢掉。
+    _ensure_kernel_blocks(ctx)
+    return join_context_blocks(ctx.blocks), has_actionable
 
-        relationship_text = build_relationship_context(user_id, favorability)
-        if relationship_text:
-            context_parts.append(relationship_text)
-    except Exception as e:
-        logger.debug(t("log.ai.selfcog_relationship_context_injection", e=e))
 
-    # 口吻锚点：system 已有完整约束；此处钉一下防长会话漂移（过短无效）
-    _VOICE_ANCHOR_MAX = 80
-    if persona_name:
-        try:
-            from gsuid_core.ai_core.persona import get_voice_anchor
+def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
+    """补齐内核自有块（身份锚 / 记忆正文），已有套件贡献则不覆盖。
 
-            voice_anchor = get_voice_anchor(persona_name)
-            if voice_anchor:
-                short_anchor = (
-                    voice_anchor[:_VOICE_ANCHOR_MAX] + "…" if len(voice_anchor) > _VOICE_ANCHOR_MAX else voice_anchor
-                )
-                context_parts.append(f"（口吻：{short_anchor}）")
-        except Exception as e:
-            logger.debug(t("log.ai.contextassembly_persona_tone_anchor_fail", e=e))
-        # 身份锚定：群绰号/历史污染不改变 Name（进 user 侧，不改 system 缓存）
-        context_parts.append(
-            f"（身份：你是「{persona_name}」。自我指称只按角色卡；"
+    身份锚是密封块（关不掉）；记忆正文由调用方或 H05 提供，渲染成块的格式在这里兜底，
+    保证「总闸关 / memory 槽 off」时不丢调用方已经拿到的文本。
+    """
+    if ctx.persona_name and "identity" not in ctx.blocks:
+        ctx.blocks["identity"] = (
+            f"（身份：你是「{ctx.persona_name}」。自我指称只按角色卡；"
             "他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）"
         )
-
-    if history_context:
-        context_parts.append(history_context)
-
-    # 长期记忆：只注入高置信片段；更多细节让 agent 调 query_user_memory
-    if memory_context_text:
-        mem = memory_context_text.strip()
-        if len(mem) > 1200:
-            mem = mem[:1197] + "…"
-        guide = f"{memory_guide}" if memory_guide else ""
-        context_parts.append(f"{guide}[长期记忆·高置信]\n{mem}\n（需要更多细节请调 query_user_memory）")
-
-    # C5: 长任务进度（短序号）；他群任务已在 build_task_context 内脱敏
-    has_actionable = False
-    try:
-        from gsuid_core.ai_core.planning.context import build_task_context, has_actionable_task
-
-        task_context_text = await build_task_context(user_id, current_group_id=group_id)
-        has_actionable = await has_actionable_task(user_id, current_group_id=group_id)
-        if task_context_text:
-            context_parts.append(task_context_text)
-    except Exception as e:
-        logger.debug(t("log.ai.planning_long_task_context_fail", e=e))
-
-    # 仅风格提示：intent 不可靠，上轮用过工具或有任务时不压短
-    if intent == "闲聊" and not prev_turn_used_tools and not has_actionable:
-        context_parts.append("（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）")
-
-    # 事务优先级：分类器判定为工具/问答意图时，明确动作优先于人格惰性
-    if intent in ("工具", "问答"):
-        context_parts.append("（本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。）")
-
-    if recent_report_titles:
-        titles_str = "、".join(recent_report_titles[-3:])
-        context_parts.append(f"（上一轮资料图：{titles_str}）")
-
-    if soft_triggered:
-        context_parts.append(SOFT_TRIGGER_NOTE)
-
-    return "\n\n".join(context_parts), has_actionable
+    mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
+    if mem and "memory" not in ctx.blocks:
+        ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆·高置信]\n{mem}\n（需要更多细节请调 search_cognition）"

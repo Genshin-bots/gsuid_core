@@ -117,10 +117,18 @@ def _correction_nudge_markers() -> tuple[str, ...]:
 
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
-# find_tools 空转阈值更严（同工具连打）
+# 只读检索类工具的空转阈值更严：它们**没有副作用也没有新信息源**，连打 2 轮就已经是空转。
+# find_tools 与认知检索都属此列（后者收成单一动词后，「换个说法再搜」的成本全压在它身上）。
 _FIND_TOOLS_THRASH_LIMIT = 2
+_READONLY_RETRIEVAL_TOOLS = frozenset({"find_tools", "search_cognition", "search_knowledge", "query_user_memory"})
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
+
+
+def thrash_limit_for(tool_name: str) -> int:
+    """该工具的同名连打熔断阈值。只读检索类更严（2 轮），其余 4 轮。"""
+    return _FIND_TOOLS_THRASH_LIMIT if tool_name in _READONLY_RETRIEVAL_TOOLS else _THRASH_SAME_TOOL_LIMIT
+
 
 # 同工具空转熔断（形状信号，非业务词）：
 # - **跨轮**计数：同一 ModelResponse 内并行多次同名工具（多 query 检索）只计 1 轮

@@ -534,6 +534,7 @@ def is_status_tool_name(name: str) -> bool:
             "list_persisted_outputs",
             "grep_persisted_outputs",
             "read_persisted_output",
+            "search_cognition",
             "search_knowledge",
             "read_handle",
             "list_my_tasks",

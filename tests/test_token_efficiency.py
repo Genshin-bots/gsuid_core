@@ -84,13 +84,20 @@ def test_tool_assembly_sorted_and_vector_pool_always_on_query() -> None:
 
 
 def test_empty_content_pregate_before_intent_classification() -> None:
+    """空内容前置门必须早于意图识别（首个 LLM 开销）。
+
+    锁点变更：分类器已迁进 ``gscore.classifier`` 套件，``handle_ai`` 里只剩
+    ``fire_hooks(AgentHookPoint.CLASSIFY, …)``。锁那个 fire 点而不是具体实现调用。
+    """
     import gsuid_core.ai_core.handle_ai as handle_ai_mod
 
     src = inspect.getsource(handle_ai_mod)
-    # 空内容前置门的日志锚点（i18n key）；门必须早于意图识别（首个 LLM 开销）
+    # 空内容前置门的日志锚点（i18n key）
     gate_idx = src.index("gscore_empty_content_visible")
-    intent_idx = src.index("classifier_service.predict_async")
+    intent_idx = src.index("AgentHookPoint.CLASSIFY")
     assert gate_idx < intent_idx
+    # 内核不许再直接调分类器实现
+    assert "classifier_service.predict_async" not in src
     # @我 的空消息仍放行
     gate_block = src[max(0, gate_idx - 800) : gate_idx]
     assert "_is_at_me" in gate_block

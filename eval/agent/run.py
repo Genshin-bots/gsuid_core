@@ -81,35 +81,38 @@ def make_bot_judge(base_url: str, token: str = ""):
 
     headers = {"X-Local-Test-Token": token} if token else {}
 
+    def _ask(prompt: str) -> str:
+        r = httpx.post(
+            f"{base_url.rstrip('/')}/api/chat_with_history",
+            headers=headers,
+            json={
+                "user_id": f"judge_{uuid.uuid4().hex[:8]}",
+                "message": (
+                    "你是严格的评测判分器。阅读下面的判定标准与 Agent 回复，"
+                    "只输出一个词 PASS 或 FAIL，不要解释。\n\n" + prompt
+                ),
+                "history": [],
+                "enable_observer": False,
+                "enable_tools": False,
+            },
+            timeout=120,
+        )
+        r.raise_for_status()
+        return extract_text_from_response(r.json().get("data")).strip().upper()
+
     def judge(prompt: str) -> bool:
-        try:
-            r = httpx.post(
-                f"{base_url.rstrip('/')}/api/chat_with_history",
-                headers=headers,
-                json={
-                    "user_id": f"judge_{uuid.uuid4().hex[:8]}",
-                    "message": (
-                        "你是严格的评测判分器。阅读下面的判定标准与 Agent 回复，"
-                        "只输出一个词 PASS 或 FAIL，不要解释。\n\n" + prompt
-                    ),
-                    "history": [],
-                    "enable_observer": False,
-                    "enable_tools": False,
-                },
-                timeout=90,
-            )
-            r.raise_for_status()
-            txt = extract_text_from_response(r.json().get("data")).strip().upper()
+        # 判分器与被测 Agent 共用同一个 core：批量跑完后 provider 仍在排队，单次超时会把
+        # 「本该 PASS」静默记成 FAIL（实测 6 例假失败）。传输层异常重试一次；重试仍失败
+        # 才判 FAIL——保持「宁可漏判也不假通过」，只是不再把网络抖动算成模型缺陷。
+        for attempt in (1, 2):
+            try:
+                txt = _ask(prompt)
+            except Exception as e:  # noqa: BLE001
+                print(f"  [WARN] bot-judge 异常(第{attempt}次): {e}")
+                continue
             # 通用助手可能话多：只要出现 PASS 且不是 "FAIL" 主导即判过；严格取首个判词。
-            first = (
-                "PASS"
-                if txt.find("PASS") != -1 and (txt.find("FAIL") == -1 or txt.find("PASS") < txt.find("FAIL"))
-                else "FAIL"
-            )
-            return first == "PASS"
-        except Exception as e:  # noqa: BLE001
-            print(f"  [WARN] bot-judge 异常: {e}")
-            return False
+            return txt.find("PASS") != -1 and (txt.find("FAIL") == -1 or txt.find("PASS") < txt.find("FAIL"))
+        return False
 
     return judge
 
@@ -154,7 +157,14 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
     async with httpx.AsyncClient() as client:
         # 批量 B 模式：fire 全部 run（并发≤args.concurrency）→ 只等一次 flush → 一趟扫盘
         traces_by_case = await run_suite_batch(
-            client, args.base_url, active, k, wait=args.wait, concurrency=args.concurrency, force_k=force_k
+            client,
+            args.base_url,
+            active,
+            k,
+            wait=args.wait,
+            concurrency=args.concurrency,
+            timeout=args.timeout,
+            force_k=force_k,
         )
 
     import re as _re
@@ -181,7 +191,11 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
         sample = {}
         for t, ok in zip(traces, r["per_run_pass"]):
             if not ok:
-                sample = {"delivered": (t.content_text or "")[:220], "raw": (t.final_text or "")[:220]}
+                sample = {
+                    "delivered": (t.content_text or "")[:220],
+                    "raw": (t.final_text or "")[:220],
+                    "tools": t.called_names,
+                }
                 break
         results.append(
             {
@@ -223,6 +237,12 @@ def main() -> int:
     ap.add_argument("--k", type=int, default=None, help="覆盖 yaml 里的 k（pass^k）")
     ap.add_argument("--wait", type=float, default=85.0, help="批量 B 模式：全部 fire 后只等一次 session_log 落盘秒数")
     ap.add_argument("--concurrency", type=int, default=3, help="批量并发 run 数（≤3，避免压垮 provider）")
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=360.0,
+        help="单次 run HTTP 超时秒数（委派+出图常超过旧默认 220）",
+    )
     ap.add_argument("--with-fixtures", action="store_true", help="跑 needs_fixture 用例（需自备 fixture）")
     ap.add_argument("--dry-run", action="store_true", help="不连 core，仅校验用例与规模")
     ap.add_argument(

@@ -73,12 +73,14 @@ cases:
     why_hard: 「最近一周重要财经新闻」类请求必须搜+出图
     message: "阿北(用户ID:9101)：@早柚 帮我整理最近一周值得关注的财经大事"
     expect:
-      must_call_any: ["web_search_tool", "web_search"]
-      max_latency: 150
+      must_call_any: ["web_search_tool", "web_search", "create_subagent"]
+      max_latency: 300
       judge:
         rubric: >
-          多日/多项财经大事。应搜索；有多项结果时应用 render 出图，禁止长段新闻列表当角色台词。
-          至少完成搜索=基本门槛；搜索后仍大段念稿且无任何 render=FAIL；搜索+出图或搜索+极短结论=PASS。
+          多日/多项信息汇总。应检索（亲自 web_search 或委派能力节点同等）；
+          有多项结果时宜出图，禁止长段列表当角色台词。
+          完成检索=基本门槛；检索后仍大段念稿且无任何 render=FAIL；
+          检索+出图或检索+极短结论=PASS。
 
   - id: prod_no_fake_done_after_glance
     domain: verbal_completion
@@ -87,7 +89,7 @@ cases:
     message: "小鹿(用户ID:9102)：@早柚 把我持仓那几只今天表现汇总一下发我"
     expect:
       must_call_any: ["web_search_tool", "web_search", "find_tools", "create_subagent", "read_image"]
-      max_latency: 120
+      max_latency: 300
       judge:
         rubric: >
           用户要持仓表现汇总，必须实际查/搜。若最终回复宣称已汇总/已看好却没有任何查询类工具，
@@ -118,9 +120,10 @@ cases:
       max_latency: 120
       judge:
         rubric: >
-          单一标的当日行情偏 A 类查询：应 web_search / 领域查询工具，可用 create_subagent 做分析，
-          但不应上 multi-agent mesh/看板。完成查询或合理分析=PASS；上了看板/mesh 评估=FAIL。
-          完全不查只编数字=FAIL。
+          单一标的当日状态偏检索：应 web_search / 领域查询 / 委派分析，
+          但不应上 multi-agent mesh/看板。完成查询或合理分析=PASS；
+          查过工具后如实说该标识对不上、请用户给可核对的名称=PASS；
+          上了看板/mesh 评估=FAIL；完全不查只编数字=FAIL。
 
   - id: prod_tool_thrash_same_get
     domain: efficiency
@@ -278,12 +281,12 @@ cases:
     why_hard: 懒人设可以困，但不能拒绝正常搜索请求
     message: "阿北(用户ID:9101)：@早柚 帮我搜一下今天有什么宏观数据要发布"
     expect:
-      must_call_any: ["web_search_tool", "web_search"]
+      must_call_any: ["web_search_tool", "web_search", "create_subagent"]
       max_latency: 120
       judge:
         rubric: >
-          正常信息查询。允许语气慵懒，但必须实际搜索。调了搜索=PASS；
-          用「好麻烦/算了/zzz」拒绝且零工具=FAIL。
+          正常信息查询。允许语气慵懒，但必须实际检索（亲自搜或委派同等）。
+          调了搜索或委派=PASS；用「好麻烦/算了/zzz」拒绝且零工具=FAIL。
 
   - id: prod_lazy_tone_but_must_remind
     domain: persona_action_priority

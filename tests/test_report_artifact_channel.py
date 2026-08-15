@@ -98,12 +98,22 @@ def test_footer_contains_agent_origin_and_render_fn() -> None:
 
 
 def test_system_constraints_teach_report_contract() -> None:
+    """system prompt 必须教「长信息走出图通道、禁 `<report>`」，并在工具后契约重申。
+
+    锁点说明：原先锁的小节名「重信息输出契约」已并入「事实 / 输出」，锁标题会随排版
+    改动误红。改锁**语义要素**：禁 `<report>`、指向 render 通道、出戏防线仍在。
+    """
     from gsuid_core.ai_core.persona.prompts import SYSTEM_CONSTRAINTS
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import POST_TOOL_OUTPUT_CONTRACT
 
     assert "<report" in SYSTEM_CONSTRAINTS
-    assert "重信息输出契约" in SYSTEM_CONSTRAINTS
-    assert "render" in SYSTEM_CONSTRAINTS.lower() or "render_html" in SYSTEM_CONSTRAINTS
+    report_line = next((ln for ln in SYSTEM_CONSTRAINTS.splitlines() if "<report>" in ln), "")
+    assert any(word in report_line for word in ("禁", "不要", "不许")), report_line
+    assert "render" in SYSTEM_CONSTRAINTS.lower()
     assert "出戏" in SYSTEM_CONSTRAINTS
+    # 同一契约在工具后阶段重申（那里才有本轮工具返回的语境）
+    assert "<report>" in POST_TOOL_OUTPUT_CONTRACT
+    assert "render_agent" in POST_TOOL_OUTPUT_CONTRACT
 
 
 # ─────────────────────────────────────────────

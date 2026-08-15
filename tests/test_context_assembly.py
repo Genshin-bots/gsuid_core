@@ -22,15 +22,31 @@ def test_both_entries_consume_shared_assembly() -> None:
     endpoint = _src("gsuid_core/webconsole/chat_with_history_api.py")
     router = _src("gsuid_core/ai_core/ai_router.py")
 
-    for name, src in [("handle_ai", handle_ai), ("chat_with_history_api", endpoint)]:
-        assert "assemble_dynamic_context(" in src, f"{name} 不再消费共享动态装配（漂移回手工复刻）"
+    assert "async def run_interactive_turn(" in handle_ai, "一轮编排必须收在 run_interactive_turn"
+    assert "run_interactive_turn(" in endpoint, "评测入口必须走 run_interactive_turn，不许另开一口"
+    assert "dual_route_retrieve(" not in endpoint, "评测不得自己检索"
+    assert "classifier_service" not in endpoint, "评测不得自己分类"
+    assert "settle_turn(" not in endpoint, "评测不得自己结算"
+    assert "assemble_dynamic_context(" in handle_ai
     for name, src in [("ai_router", router), ("chat_with_history_api", endpoint)]:
         assert "build_session_system_prompt(" in src, f"{name} 不再消费共享 system prompt 装配"
-    # 手工复刻的标志物：装配段特有的**拼接代码**不允许出现在入口文件里（注释提及不算）
     for name, src in [("handle_ai", handle_ai), ("chat_with_history_api", endpoint)]:
         assert 'f"【长期记忆】' not in src and "【长期记忆】\\n" not in src, f"{name} 手工拼接记忆块=装配漂移"
         assert "（口吻锚点：" not in src, f"{name} 手工拼接口吻锚点=装配漂移"
     print("[OK] 双入口消费共享装配（源码级）")
+
+
+def _load_kits_once() -> None:
+    """装载第一方套件（跳过 init_step：本进程没有 DB/RAG）。
+
+    顺序契约是**默认全开**下的行为契约，所以必须真的把套件挂上——只测内核兜底
+    等于把「有装配没套件」的第三套语义当成正确行为。
+    """
+    from gsuid_core.ai_core.kits import occupants_of, load_enabled_kits
+
+    if occupants_of("mood"):
+        return
+    asyncio.run(load_enabled_kits(run_init_steps=False))
 
 
 def test_dynamic_context_ordering_contract() -> None:
@@ -41,6 +57,7 @@ def test_dynamic_context_ordering_contract() -> None:
     """
     from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE, assemble_dynamic_context
 
+    _load_kits_once()
     full, has_actionable = asyncio.run(
         assemble_dynamic_context(
             query="那深圳呢",
@@ -48,7 +65,7 @@ def test_dynamic_context_ordering_contract() -> None:
             bot_id="TEST",
             persona_name=None,
             mood_key="test_u",
-            favorability=None,
+            rel=None,
             history_context="[历史对话] 旧→新\n小明: 你好",
             memory_context_text="用户喜欢喝美式",
             memory_guide="[guide]\n",
@@ -67,7 +84,37 @@ def test_dynamic_context_ordering_contract() -> None:
     print("[OK] 动态上下文顺序契约")
 
 
+def test_block_order_is_single_source() -> None:
+    """块名与顺序的唯一定义在 ``kits.base.CONTEXT_BLOCK_ORDER``，装配层只做拼装。
+
+    A 线的记忆块写 ``memory``、C 线的关系行写 ``relationship`` —— 名字不许各自造，
+    否则跨越数月的三条线会把同一个装配函数改三次、每次都对不上前一次。
+    """
+    from gsuid_core.ai_core.kits.base import CONTEXT_BLOCK_ORDER
+    from gsuid_core.ai_core.context_assembly import join_context_blocks
+
+    assert CONTEXT_BLOCK_ORDER == (
+        "mood",
+        "relationship",
+        "voice_anchor",
+        "identity",
+        "history",
+        "memory",
+        "task",
+        "chitchat_style",
+        "transaction_priority",
+        "report_titles",
+        "soft_trigger",
+        "plugin_hints",
+    )
+    # 乱序写入也按表拼；空块被丢弃；未在表内的块名进不来（写入侧白名单校验）
+    out = join_context_blocks({"memory": "M", "mood": "D", "plugin_hints": "P", "task": ""})
+    assert out == "D\n\nM\n\nP", out
+    print("[OK] 块顺序单源")
+
+
 if __name__ == "__main__":
     test_both_entries_consume_shared_assembly()
     test_dynamic_context_ordering_contract()
+    test_block_order_is_single_source()
     print("\n装配统一防漂移锁全部通过 ✅")

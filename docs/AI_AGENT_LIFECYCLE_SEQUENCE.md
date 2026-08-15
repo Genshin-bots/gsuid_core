@@ -99,12 +99,48 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 uv run core --po
     │  POST_TOOL 分通道 / **pre_send_gate** / send_chat_result
     │  （重任务理想：research→render→短句+图）
     ▼
-⑩ 回合收尾：history lean / 闸门收尾重写 / 好感度 / mood
+⑩ 回合收尾：history lean / 闸门收尾重写 / 关系温度结算 / mood
     ▼
 ⑪ 发送路径旁路：Bot 出站 + 助手侧记忆 observe  [bot.send]
     ▼
-⑫ 异步沉淀：session_log 刷盘 / 记忆 flush / 统计
+⑫ 异步沉淀：session_log 刷盘 / 记忆 flush / 统计 / 认知节点回流
 ```
+
+### 1.1 内核 vs 套件（2026-08-15 起）
+
+上面 12 阶段是**内核编排**。产品能力（记忆 / 关系温度 / 情绪 / 意图分类 / 软门 /
+脚手架注入 / 工具装配 / FileOS 折叠 / 质量纠正）**不再写在阶段函数体里**，而是 18 个
+可替换**套件**，挂在同一张 **31 点位 hook 总线**上：
+
+```text
+handler   ①  ──→ H00 ON_INBOUND                    记忆观察 / 表情观察 / 图片记忆
+handle_ai ④  ──→ H01 BEFORE_AI_CHAT                会话静默窗（abort）
+          ⑤  ──→ H02 AFTER_SESSION                 关系温度 View / 主动会话 observe
+          ⑥  ──→ H03 CLASSIFY                      意图（**由槽位占用者写入**）
+          ⑦  ──→ H04 REACTIVE_GATE                 软触发沉默门（silence）
+          ⑧  ──→ H05 RETRIEVE_CONTEXT              贵检索窗（唯一 15s 长超时）
+              ──→ H06 COMPOSE_CONTEXT              各套件填命名块
+              ──→ H07 AFTER_CONTEXT                第三方追加 hint
+          ⑩  ──→ H08 AFTER_RUN                     mood / 统计上报
+              ──→ H09 ON_AI_ERROR
+agent_run    ──→ H10–H13   prepare（预算后 / ToolContext / user 外壳）
+             ──→ H14/H15/H15b  工具装配 / 钉工具 / 建 Agent 后
+             ──→ H16–H22   iter（模型请求前 / ToolReturn / ToolCall / 出站前后）
+             ──→ H23–H28   settle / 纠正 / usage limit / 取消 / 失败 / cleanup
+建 session   ──→ H29 ON_STABLE_CONTEXT              **唯一**允许写 system 的点位
+```
+
+- 关某个能力 = `kit_slots.<slot> = off` → 套件**不注册** → 自然跳过。
+  内核里没有 `if enable_x`（闸门应该过滤，不该整轮跳过）。
+- 总闸 `agent_hooks_enable=false` → 回落纯内核编排（应急回滚）。
+- 单个 hook 异常 / 超时一律 **fail-open + warning**，**不得**升级成 ABORT_RUN、
+  不得变成人格台词。
+- 详见 [`AI_CORE_THREE_LINE_REFACTOR_20260815.md`](AI_CORE_THREE_LINE_REFACTOR_20260815.md)
+  §6 与 [`skills/gscore-development/references/13-agent-loop-hooks.md`](skills/gscore-development/references/13-agent-loop-hooks.md)。
+
+**留在内核、不许做成可关套件的**：`system_prompt` 稳定、预算闸与记账、exclusive 剥离、
+`pre_send_gate` 唯一入口、保头裁中段、`_relean`、`_run_lock` / 抢答、AI 总开关、
+`content_guard` 输入侧防护、TurnGraph 构建、C-3 寻址门的零工具硬约束。
 
 ---
 
@@ -1008,16 +1044,29 @@ user_messages = prepare_content_payload(event, favorability)
 追加：【当前时间】
 ```
 
-### 9.2 记忆检索（读，不写）
+### 9.2 记忆检索：H05 `RETRIEVE_CONTEXT`（读，不写）
+
+内核**只开窗、不判断**——「要不要检索、检索多深、预算怎么切」全在 `gscore.memory` 套件里：
 
 ```text
-若 enable_memory 且 enable_retrieval：
-  寒暄门控（短+闲聊+无实体）→ 跳过
-  否则 dual_route_retrieve(query, group_id|None, user_id, ...)
-       → memory_context_text（预算截断 + 第三方隐私过滤）
+fire_hooks(RETRIEVE_CONTEXT, ctx)        # 内核唯一动作
+└─ gscore.memory.retrieve（H05，唯一允许的 15s 长超时）
+   ├─ enable_memory / enable_retrieval 检查
+   ├─ 寒暄门控 should_retrieve()（短+闲聊+无实体/情绪/回指 → 跳过；主人恒检索）
+   ├─ 偏好能力域过滤（闲聊轮传**空 list**，不是 None）
+   ├─ cognition.inject_memory_slice(kinds={memory,preference})
+   │     → dual_route_retrieve(..., enable_system2=<配置>)   # 必填，不吃函数默认值
+   │     → to_prompt_text(预算五配额位 + priority_speakers + 第三方隐私门)
+   └─ 可选：探针预取全联邦（`cognition_prefetch_enable`，**默认关**）
 ```
 
-日志：`命中寒暄门控` / `检索到记忆上下文 (N 字符)` / warning 失败。
+关 `memory` 槽 = 套件不注册 = 这一步自然跳过；内核里**没有** `if enable_memory`
+（闸门应该过滤，不该整轮跳过）。
+
+`priority_speakers` = masters ∪ 本 scope 内 `close` 用户（由
+`relationship.collect_priority_speakers` 算出，高好感只是回忆时少被裁掉，不等于主人）。
+
+日志：`命中寒暄门控` / `检索到记忆上下文 (N 字符)` / `[Cognition] 命中 N 条` / warning 失败。
 
 ### 9.3 群消息历史渲染（读 A 轨）
 
@@ -1029,24 +1078,35 @@ history = raw[:-1]                          # 去掉本轮（已在 payload）
 rag_context = "【历史对话】\n" + format_history_for_agent(...)
 ```
 
-### 9.4 动态上下文唯一顺序（`assemble_dynamic_context`）
+### 9.4 动态上下文唯一顺序（`CONTEXT_BLOCK_ORDER` + 合成器）
 
 **全部拼进 user 侧**（`rag_context` → 本轮 `final_user_message`）。
 结束后 `_relean_user_turn` 剥掉，**不进**持久 Agent history（B 轨瘦身 + 不污染前缀叙事）。
 
-当前源码顺序（`context_assembly.py`）：
+自 2026-08-15 起，顺序的唯一定义在 **`kits/base.py::CONTEXT_BLOCK_ORDER`**（跨计划冻结
+接口）。`assemble_dynamic_context` 只做三件事：建 `AgentHookContext` → 开火
+**H06 `COMPOSE_CONTEXT`** / **H07 `AFTER_CONTEXT`** → 按块名表拼装。
+各来源只 `set_context_block(name, text)` **填命名块**，未知块名直接拒绝
+（`HookCapabilityError`），防止有人把块插到身份锚前面。
 
-1. 情绪 mood（括号包裹）
-2. 关系行（per-user，绝不能进共享 system）
-3. 口吻锚点（极短截断）
-4. **身份锚定**（`（身份：你是「{persona_name}」…禁止改物种/性别迎合绰号）`）——防群聊历史把人设拖成别的称呼
-5. 历史对话块（若有）
-6. 长期记忆·高置信（过长截断至约 1200；细节靠 `query_user_memory`）
-7. 长任务 Kanban 进度 → `has_actionable`
-8. 闲聊风格提示（仅 intent=闲聊且无上轮工具且无活跃任务）
-9. **事务优先级**（intent∈{工具, 问答}：优先调工具，困/懒不是跳过理由）
-10. 上一轮资料图标题
-11. **最后**软触发 `SOFT_TRIGGER_NOTE`（近因）
+| # | 块名 | 谁填 |
+|---|------|------|
+| 1 | `mood` | `gscore.mood`（括号包裹，暗示内心状态） |
+| 2 | `relationship` | `gscore.favorability`（per-user，**绝不能进共享 system**） |
+| 3 | `voice_anchor` | `gscore.self_cognition`（口吻锚点 + 当前 zone 的一句口气） |
+| 4 | `identity` | `gscore.identity`（**密封槽**，关不掉）——防群聊历史把人设拖成别的称呼 |
+| 5 | `history` | **内核**（`turn_pipeline.build_group_history_block`；HistoryManager 是消息基础设施） |
+| 6 | `memory` | `gscore.memory`（H05 检索 → H06 注入；预算只有 `memory_inject_max_chars` 一层） |
+| 7 | `task` | `gscore.planning_context`（顺带写 `has_actionable`） |
+| 8 | `chitchat_style` | `gscore.scaffold`（仅 intent=闲聊且无上轮工具且无活跃任务） |
+| 9 | `transaction_priority` | `gscore.scaffold`（intent∈{工具,问答}：优先调工具，困/懒不是跳过理由） |
+| 10 | `report_titles` | `gscore.scaffold`（上一轮资料图标题） |
+| 11 | `soft_trigger` | `gscore.reactive_gate`（`SOFT_TRIGGER_NOTE`，近因） |
+| 12 | `plugin_hints` | 第三方 H07 `append_user_hint` 汇入，**恒在最后** |
+
+> 历史注意：本节旧版写的顺序是「历史对话 → 情绪 → …」，与代码不符（代码里情绪在最前），
+> 已按实际 append 顺序更正。记忆块曾在配置预算之外再被一个 **1200 字面量**硬截一刀，
+> 使 `memory_inject_max_chars` 形同虚设——该字面量已删除。
 
 **已移出本块、固化在 system 的：**
 
@@ -1054,8 +1114,10 @@ rag_context = "【历史对话】\n" + format_history_for_agent(...)
   （含 **DELEGATION_FIRST**、web_search 降权、禁念工具名）
 - 能力代理 roster（`format_capability_roster`）
 - 日级「当前日期」
+- self_model 自述 / 群画像 —— 只在**建 session** 时经 **H29 `ON_STABLE_CONTEXT`** 贡献，
+  写入后冻结。dispatcher 硬拒非建 session 阶段的 H29 调用（运行中改 system 会打光前缀缓存）。
 
-**精确时间**在 `prepare_content_payload` / user 正文侧（`[当前时间：…]`），不进 system。
+**精确时间**在 `turn_pipeline.stamp_current_time` / user 正文侧（`[当前时间：…]`），不进 system。
 
 ### 9.5 交给 Agent
 
@@ -1427,14 +1489,25 @@ session_log entries（磁盘，可稍后刷）：
 
 ### 11.2 `handle_ai_chat` 尾
 
+结果**只分类一次**（`turn_pipeline.classify_run_result`），出站与结算复用同一判定：
+
 | 动作 | 条件 |
 |------|------|
 | `SILENCE` | info「角色选择沉默」——不发（by_bot 可能已发过则依赖 Agent 内） |
-| 错误串 | 脱敏 send + 通知主人 |
+| 错误串 | 脱敏 send + 通知主人（`turn_pipeline.deliver_run_result`） |
 | 成功且仍有字符串 | 再 `send_chat_result`（by_bot 多为空）→ info「回复已发送」 |
-| 好感度 +1 | 有效可见回复 |
-| mood 异步更新 | persona 情绪状态机 |
+| **关系温度结算** | `relationship.engine.settle_turn(reached_model=True, …)`，**唯一写主** |
+| H08 `AFTER_RUN` | mood 更新 / 统计上报，消费结算返回的**同一份**信号扫描结果 |
 | （可选）助手侧 observe | 部分路径；出站主路径在 bot.send |
+
+**每轮无条件 +1 已删除。** 涨分靠规则（当日首次有内容 / 明确照顾），扣分靠规则
+（侮辱 / 越狱 / 设好感命令 / 强迫称谓），都受日预算与高分段递减约束。详见
+[`AI_CORE_THREE_LINE_REFACTOR_20260815.md`](AI_CORE_THREE_LINE_REFACTOR_20260815.md) §4。
+
+> **两处结算调用点**：正常收尾 `reached_model=True`；**CheapGate 静音早退**
+> `reached_model=False`（Engine 内部只放行负信号）。不补第二处就会出现吸收态——
+> 用户越界 → zone 掉到 cold → 以后未 @ 的越界发言全部走早退 → 再也扣不到分。
+> 结构性静音（@了别人 / 多人互聊 / 催别人）**不结算**：那些内容不是冲着人格来的。
 
 ---
 
@@ -1498,15 +1571,28 @@ uv run core
 ### 15.2 T1 `init_ai_core`（后台串行，单步失败不阻断）
 
 1. 导入 handle_ai / buildin_tools
-2. RAG：嵌入 + tools/knowledge Qdrant 同步
-3. Persona 默认/迁移
-4. 审批中心
-5. 定时任务 `reload_pending`
-6. Planning：Kanban + **内置**能力代理节点
-7. Memory：IngestionWorker + memory collections
-8. MCP / Meme / 统计（含 Heartbeat job）
+2. **Agent 套件**：`load_enabled_kits()` 按 `kit_slots.*` 装 18 个第一方套件
+3. RAG：嵌入 + tools/knowledge Qdrant 同步
+4. Persona 默认/迁移
+5. 审批中心
+6. 定时任务 `reload_pending`
+7. Planning：Kanban + **内置**能力代理节点
+8. Memory：IngestionWorker + memory collections
+9. MCP / Meme / 统计（含 Heartbeat job）/ MCP Server / 命令执行
 
 **WS 可连 ≠ AI 就绪**。
+
+**套件为什么排第 2（RAG 之前）**：`AgentKit.register` 只挂 hook（纯注册，重依赖在 hook
+体内懒导入，实测 0.14s），但整条 agent loop 的情绪 / 关系 / 记忆 / **工具装配**都由套件
+接线。这个循环**没有硬超时**——单步只每 60s 打一条「仍在执行中」然后继续等，卡死的步骤
+会无限期挡住它后面的所有步骤。套件排末尾时，Meme 的一次性向量迁移（实测 337s）会让
+hook 总线在整个启动窗口内空转：那段时间里所有请求**零工具、零记忆注入**。
+
+**推论（改这里前必读）**：往 `_INIT_STEPS` 插新步骤时，位置就是可用性决策——便宜且
+关键的放前面，慢且可选的放后面。另外，一个子系统的 bring-up **只能有一个主**：
+套件的 `init_step` 与 `_INIT_STEPS` 条目不可同时指向同一个初始化（否则每次启动跑两遍，
+不报错也不告警）。详见
+`docs/skills/gscore-development/references/02-startup-lifecycle.md` §2.3。
 
 ### 15.3 关闭
 

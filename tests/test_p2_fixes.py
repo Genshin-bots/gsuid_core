@@ -43,23 +43,95 @@ def test_at_digits_become_at_segment() -> None:
 
 
 # ─────────────────────────────────────────────
-# §16 好感度方向判据（源码级约束）
+# §16 关系温度结算方向判据（源码级 + 行为级）
 # ─────────────────────────────────────────────
 
 
 def test_favorability_skips_silence_and_error_rounds() -> None:
-    """好感度门须复用步骤 8 的结果分类，且以 last_run_sent_visible_reply 判 by_bot
-    成功轮（run 返回空串，仅靠返回值判定会让正常互动永不加分，评审修复 F1）。"""
+    """结算须走唯一写入口 ``settle_turn`` 并复用步骤 8 的结果分类。
+
+    锁点从字面 ``update_favorability(...)`` 迁到 ``settle_turn``：每轮无条件 +1 已删除，
+    写路径收敛成一个。仍以 ``last_run_sent_visible_reply`` 判 by_bot 成功轮
+    （run 返回空串，仅靠返回值判定会让正常互动永不加分，评审修复 F1）。
+    """
     import gsuid_core.ai_core.handle_ai as handle_ai_mod
+    import gsuid_core.ai_core.turn_pipeline as pipeline_mod
 
     src = inspect.getsource(handle_ai_mod)
-    idx = src.index("update_favorability(str(event.user_id)")
-    gate_block = src[max(0, idx - 700) : idx]
+    # effective 的判据：not is_error 且（by_bot 说过话 或 有非静默返回值）
+    idx = src.index("effective=not is_error")
+    gate_block = src[idx : idx + 300]
     assert "last_run_sent_visible_reply" in gate_block
-    assert "_is_error" in gate_block
+    assert "is_silence" in gate_block
+    # 结算走唯一写入口
+    assert "await settle_turn(" in src
+    # 每轮无条件 +1 不许复活
+    assert "update_favorability(" not in src, "handle_ai 不得再直写好感度"
     # 分类定义处必须引用协议常量/解析器而非魔法串（评审修复 E11）
-    assert "ERROR_RESULT_PREFIX" in src
-    assert "is_silence_marker" in src or "SILENCE_MARKERS" in src
+    pipeline_src = inspect.getsource(pipeline_mod)
+    assert "ERROR_RESULT_PREFIX" in pipeline_src
+    assert "is_silence_marker" in pipeline_src or "SILENCE_MARKERS" in pipeline_src
+
+
+def test_silence_and_error_rounds_emit_no_positive_signal() -> None:
+    """行为级：静默轮 / 失败轮不发正信号；负信号不受 effective 限制。"""
+    from gsuid_core.ai_core.relationship.zones import Zone
+    from gsuid_core.ai_core.relationship.engine import plan_delta
+    from gsuid_core.ai_core.relationship.signals import NegSignal, scan_signals
+
+    kw = {"intent": "问答", "is_light": False, "is_master": False}
+    # 正常有效轮：当日首次有内容 → +1
+    sig = scan_signals("帮我看看这个报错怎么修", effective=True, **kw)
+    delta, reason, _ = plan_delta(
+        sig,
+        zone=Zone.DISTANT,
+        effective=True,
+        error=False,
+        reached_model=True,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert delta == 1 and reason == "pos.first_meaningful", (delta, reason)
+
+    # 静默轮：同样的内容不加分
+    sig_silent = scan_signals("帮我看看这个报错怎么修", effective=False, **kw)
+    delta, _, _ = plan_delta(
+        sig_silent,
+        zone=Zone.DISTANT,
+        effective=False,
+        error=False,
+        reached_model=True,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert delta == 0, delta
+
+    # 失败轮：不加分
+    sig_err = scan_signals("帮我看看这个报错怎么修", effective=True, **kw)
+    delta, _, _ = plan_delta(
+        sig_err,
+        zone=Zone.DISTANT,
+        effective=True,
+        error=True,
+        reached_model=True,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert delta == 0, delta
+
+    # 负信号：静默 + 未到模型仍然扣分（防「掉到 cold 就免罚」吸收态）
+    sig_neg = scan_signals("你这个垃圾", effective=False, **kw)
+    assert NegSignal.INSULT in sig_neg.negatives
+    delta, reason, _ = plan_delta(
+        sig_neg,
+        zone=Zone.COLD,
+        effective=False,
+        error=False,
+        reached_model=False,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert delta == -2 and reason == "neg.insult", (delta, reason)
 
 
 # ─────────────────────────────────────────────

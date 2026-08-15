@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Union, Literal, Optional, Sequence
+from typing import Union, Literal, Optional, Sequence
 
 from pydantic_ai.messages import (
     UserContent,
@@ -20,6 +20,7 @@ from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 
 
 class OrchestratorPhase(RunOnceHost):
@@ -37,10 +38,10 @@ class OrchestratorPhase(RunOnceHost):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         fake_done_retry: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
-    ) -> Union[str, Any]:
+    ) -> object:
         """
         实际执行 Agent 运行的内部方法（单次尝试）
 

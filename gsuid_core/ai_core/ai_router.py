@@ -13,7 +13,6 @@ import time
 from typing import Optional
 
 from gsuid_core.i18n import t
-from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
@@ -31,47 +30,9 @@ from .context_assembly import build_session_system_prompt
 # Persona 文件的 mtime 缓存，用于检测热重载
 _persona_mtime_cache: dict[str, float] = {}
 
-# 主人好感度已初始化的 (bot_id, master_id) 集合，避免每次会话重复检查数据库
-_master_favorability_checked: set[tuple[str, str]] = set()
-
-# 主人好感度的保底下限与拉升目标值
-MASTER_FAVORABILITY_FLOOR = 90
-MASTER_FAVORABILITY_TARGET = 95
-
-
-async def _ensure_master_favorability(bot_id: str) -> None:
-    """确保所有主人用户处于高好感度模式。
-
-    主人是机器人的最高权限用户，理应始终被角色亲昵、信任地对待。
-    若某个主人的好感度低于保底下限，则自动拉升到目标值。
-    每个 (bot_id, master_id) 组合只检查一次。
-    """
-    from gsuid_core.ai_core.database.models import UserFavorability
-
-    masters = core_config.get_config("masters") or []
-    for master_id in masters:
-        master_id = str(master_id)
-        cache_key = (bot_id, master_id)
-        if cache_key in _master_favorability_checked:
-            continue
-        _master_favorability_checked.add(cache_key)
-        try:
-            record = await UserFavorability.get_user_favorability(master_id, bot_id)
-            current = record.favorability if record else 0
-            if current < MASTER_FAVORABILITY_FLOOR:
-                # set_favorability 第 4 个参数是 user_name（用户昵称），并非操作者标识。
-                # 系统自动初始化时无从得知主人昵称，留空即可，不要误传 master_id。
-                await UserFavorability.set_favorability(master_id, bot_id, MASTER_FAVORABILITY_TARGET)
-                logger.info(
-                    t(
-                        "log.ai.ai_router_master_id_favorability",
-                        master_id=master_id,
-                        current=current,
-                        MASTER_FAVORABILITY_TARGET=MASTER_FAVORABILITY_TARGET,
-                    )
-                )
-        except Exception as e:
-            logger.debug(t("log.ai.ai_router_initialize_master_favorability_fail", master_id=master_id, e=e))
+# 主人权限与关系温度**正交**：不再把主人钉在某个分数上。历史实现用进程级缓存拉分，
+# 日衰减能把主人降到下限以下且重启前拉不回，「主人 = 95」本来就不可靠。
+# 权限归 core_config.masters，温度归真实分数（见 ai_core/relationship）。
 
 
 def _get_persona_mtime(persona_name: str) -> float:
@@ -180,9 +141,6 @@ async def _get_or_create_ai_session(
     history_manager.update_session_access(event)
 
     registry = get_ai_session_registry()
-
-    # 主人好感度初始化：确保主人始终处于高好感度模式
-    await _ensure_master_favorability(event.bot_id)
 
     # 检查是否已存在 AI session
     session = registry.get_ai_session(session_id)

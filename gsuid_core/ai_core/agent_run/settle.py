@@ -173,7 +173,7 @@ def _correction_is_deliverable(text: str) -> bool:
     )
 
 
-def _corrected_or_original(corrected: str | None, *, original: str) -> str:
+def _corrected_or_original(corrected: object, *, original: str) -> str:
     """纠正轮结果收敛（INV-3）。
 
     纠正**只有**产出可交付内容才有权替换原答案；沉默或脏输出一律保留原答案，

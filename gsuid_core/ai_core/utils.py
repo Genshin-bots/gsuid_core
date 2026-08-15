@@ -3,7 +3,7 @@ import re
 import json
 import base64
 import asyncio
-from typing import Any, Set, Dict, List, Tuple, Union, Literal, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Literal, Optional, Protocol, Sequence
 
 import httpx
 from PIL import Image
@@ -36,6 +36,9 @@ from gsuid_core.ai_core.const import (
 )
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.content_guard import GuardFlags
 
 # 表情包标记正则：兼容全角/半角冒号，以及前后任意数量的反引号包裹
 # 例如：<meme: 困>  `<meme：困>`  ``<meme: 开心>``
@@ -560,7 +563,6 @@ def _is_master_user(user_id: str) -> bool:
 
 
 def _build_relationship_description(
-    favorability: Optional[int],
     user_name: Optional[str],
     user_id: str,
 ) -> str:
@@ -570,8 +572,8 @@ def _build_relationship_description(
     **必须显式带上用户ID**，否则昵称重复或为"我"这类无意义值时，
     Agent 无法区分到底是谁在说话。
 
-    关系级别（熟/不熟）由 assemble_dynamic_context 统一注入，此处不重复，
-    避免同一信息双写浪费 token。主人标记保留（优先级最高，不可省略）。
+    关系温度（熟/不熟）由 ``assemble_dynamic_context`` 的 ``relationship`` 块统一注入，
+    此处不重复，避免同一信息双写浪费 token。主人标记保留（权限正交，不可省略）。
     """
     # 说话者标识：始终包含用户ID，昵称仅作辅助（与 history 块同一形状，便于模型对齐）
     if user_name and user_name.strip() and user_name.strip() != str(user_id):
@@ -590,9 +592,7 @@ def _build_relationship_description(
 async def prepare_content_payload(
     ev: Event,
     task_level: Literal["high", "low"] = "high",
-    favorability: Optional[int] = None,
-    favorability_zone: Optional[str] = None,
-) -> Sequence[UserContent]:
+) -> Tuple[Sequence[UserContent], "GuardFlags"]:
     """
     准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
 
@@ -606,12 +606,12 @@ async def prepare_content_payload(
     Args:
         ev: 事件对象
         task_level: 任务级别
-        favorability: 当前用户好感度 (可选)
-        favorability_zone: 好感度区间描述 (可选)
 
     Returns:
-        content payload 列表（惰性模式仅含文本；直接模式可能含 ImageUrl）
+        ``(content payload, 输入守卫命中标记)``。标记透传给 ⑩ 结算判负向信号，
+        不再像历史实现那样把三个探测器的 bool 丢掉。
     """
+    from gsuid_core.ai_core.content_guard import GuardFlags
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     # 惰性图片投喂开关：群聊图片多时, 默认只透传图片ID, 由 AI 按需 read_image 读图,
@@ -625,8 +625,8 @@ async def prepare_content_payload(
     if ev.sender:
         nickname = ev.sender.get("nickname") or ev.sender.get("card") or None
 
-    # 叙事性关系描述（Bug-01 + Prompt-2.2: 替代数字+区间标签）
-    relationship_desc = _build_relationship_description(favorability, nickname, str(ev.user_id))
+    # 说话者标识（群聊共享 session 时必须带 ID）
+    relationship_desc = _build_relationship_description(nickname, str(ev.user_id))
     current_turn_header = f"{relationship_desc}\n"
 
     # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）。
@@ -640,18 +640,17 @@ async def prepare_content_payload(
     current_turn_header += "--- 消息 ---\n"
 
     text = current_turn_header
+    guard_flags = GuardFlags()
     if not ev.text:
         text += "用户没有发送文本内容。"
     else:
         # 输入侧安全标注（§B.3-2）：伪造工具返回降权。只加标注、不改原意；
         # 受 content_guard_enable 开关控制。低俗/钓鱼防线在 system prompt 合规层。
         body = ev.text.strip()
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
         if ai_config.get_config("content_guard_enable").data:
-            from gsuid_core.ai_core.content_guard import annotate_untrusted_message
+            from gsuid_core.ai_core.content_guard import annotate_untrusted_message_ex
 
-            body = annotate_untrusted_message(body)
+            body, guard_flags = annotate_untrusted_message_ex(body)
         text += body
 
     if ev.reply:
@@ -692,7 +691,7 @@ async def prepare_content_payload(
 
     # 惰性模式：图片只以 ID 形式存在（已在上方文本注明），不把本体喂进多模态上下文， 由 AI 调用 read_image 按需读取。
     if lazy_image_read:
-        return content_payload
+        return content_payload, guard_flags
 
     # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
     # 远程 URL（如 QQ 带 rkey 的临时链接）会在短时间内过期；一旦以原始
@@ -722,7 +721,7 @@ async def prepare_content_payload(
         else:
             logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
 
-    return content_payload
+    return content_payload, guard_flags
 
 
 def _looks_like_tool_table(text: str) -> bool:

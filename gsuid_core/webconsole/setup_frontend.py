@@ -154,6 +154,8 @@ def _import_webconsole_apis() -> None:
         artifacts_api,
         image_rag_api,
         workspace_api,
+        # Agent 套件槽位 / Hook 总线 / 关系温度的只读治理
+        agent_kits_api,
         mcp_config_api,
         agent_debug_api,
         state_store_api,

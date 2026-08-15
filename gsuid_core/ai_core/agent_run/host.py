@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Union, Literal, Optional, Sequence
+from typing import Union, Literal, Optional, Sequence
+from asyncio import Event as AsyncEvent
 
-from pydantic_ai.messages import UserContent
+from pydantic_ai.messages import UserContent, ModelMessage
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.ai_core import output_firewall
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import ToolList
+from gsuid_core.ai_core.configs.models import AnyModel
+from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
+from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 
 ReturnMode = Literal["always", "return", "by_bot"]
 
@@ -23,9 +27,9 @@ class RunOnceHost:
     """
 
     # ── 宿主字段（GsCoreAIAgent.__init__）──
-    history: list[Any]
+    history: list[ModelMessage]
     create_by: str
-    model: Any
+    model: AnyModel
     task_level: Literal["high", "low"]
     _active_config_name: str | None
     system_prompt: str | None
@@ -37,7 +41,7 @@ class RunOnceHost:
     dynamic_tools: bool | None
     wall_clock_budget: float | None
     capability_node_id: str
-    _session_logger: Any
+    _session_logger: AISessionLogger
     _run_sent_texts: set[str]
     _run_disputes: list[str]
     _last_attempt_tool_calls: list[str]
@@ -45,7 +49,7 @@ class RunOnceHost:
     _last_attempt_image_sent: bool
     _last_attempt_pending_async: bool
     _last_attempt_has_status_tool: bool
-    _cancel_generation: Any
+    _cancel_generation: AsyncEvent
     _consecutive_no_tool_rounds: int
     _last_drift_push_count: int
     _recent_tool_families: dict[str, int]
@@ -81,7 +85,7 @@ class RunOnceHost:
         raise NotImplementedError
 
     # ── 阶段方法槽（各 Phase mixin 覆盖）──
-    async def _run_once_budget_gate(self, st: RunOnceState) -> Any:
+    async def _run_once_budget_gate(self, st: RunOnceState) -> object:
         raise NotImplementedError
 
     def _run_once_init_state(self, st: RunOnceState) -> None:
@@ -93,22 +97,22 @@ class RunOnceHost:
     async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
         raise NotImplementedError
 
-    def _run_once_build_agent_meta(self, st: RunOnceState) -> Any:
+    def _run_once_build_agent_meta(self, st: RunOnceState) -> object:
         raise NotImplementedError
 
-    async def _run_once_on_model_request(self, st: RunOnceState, node: Any, agent_run: Any) -> None:
+    async def _run_once_on_model_request(self, st: RunOnceState, node: object, agent_run: object) -> None:
         raise NotImplementedError
 
-    async def _run_once_on_call_tools(self, st: RunOnceState, node: Any, statistics_manager: Any) -> None:
+    async def _run_once_on_call_tools(self, st: RunOnceState, node: object, statistics_manager: object) -> None:
         raise NotImplementedError
 
-    async def _run_once_iter_and_settle(self, st: RunOnceState, _agent: Any, statistics_manager: Any) -> Any:
+    async def _run_once_iter_and_settle(self, st: RunOnceState, _agent: object, statistics_manager: object) -> object:
         raise NotImplementedError
 
-    async def _run_once_settle_result(self, st: RunOnceState, agent_run: Any, statistics_manager: Any) -> Any:
+    async def _run_once_settle_result(self, st: RunOnceState, agent_run: object, statistics_manager: object) -> object:
         raise NotImplementedError
 
-    async def _run_once_usage_limit_fallback(self, st: RunOnceState, statistics_manager: Any) -> Any:
+    async def _run_once_usage_limit_fallback(self, st: RunOnceState, statistics_manager: object) -> object:
         raise NotImplementedError
 
     def _run_once_cleanup(self, st: RunOnceState) -> None:
@@ -128,8 +132,8 @@ class RunOnceHost:
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         fake_done_retry: bool = False,
-        turn_graph: Optional[Any] = None,
-        cheap_gate: Optional[Any] = None,
+        turn_graph: Optional[TurnGraph] = None,
+        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
-    ) -> Union[str, Any]:
+    ) -> object:
         raise NotImplementedError

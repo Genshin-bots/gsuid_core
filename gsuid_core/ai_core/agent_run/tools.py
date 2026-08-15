@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import List
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings, merge_model_settings
@@ -47,6 +47,29 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.attribution import resolve_attribution_settings
 
 
+def _kernel_owns_tool_assembly() -> bool:
+    """``tool_assembly`` 槽是否仍由第一方套件占据（= 内核跑五层装配）。
+
+    槽位 ``off`` 或被用户套件占据时返回 False：内核让位，只留调用方传入的工具
+    与自己的 exclusive 收口。总闸关闭时视为内核自管（回落纯内核编排）。
+
+    判据取**配置**而非运行期占用表：占用表是在 ``load_enabled_kits`` 里填的，而它排在
+    ``_INIT_STEPS`` 后段。用占用表会把「套件还没加载完」误读成「用户把槽拆了」，于是
+    在启动窗口内所有请求都退化成零工具（``find_tools`` 一并消失）——实测某个前置
+    init 步骤卡住数分钟时，整轮基准 24 例全部 0 工具调用。「没装好」不等于「不要装」，
+    这个门必须 fail-open。
+    """
+    from gsuid_core.ai_core.kits import resolve_slot_config
+    from gsuid_core.ai_core.hooks import hooks_enabled
+
+    if not hooks_enabled():
+        return True
+    configured = resolve_slot_config("tool_assembly")
+    if not configured:
+        return False
+    return all(kit_id.startswith("gscore.") for kit_id in configured)
+
+
 class ToolsPhase(RunOnceHost):
     async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
@@ -73,6 +96,14 @@ class ToolsPhase(RunOnceHost):
             _assemble = self.dynamic_tools
         else:
             _assemble = self.create_by in _AGENTIC_CREATE_BY and not st.tools
+
+        # tool_assembly 槽为 off（或被用户套件占据）时，内核**不跑**五层自动装配：
+        # 只留调用方传入的工具 + 下方的 exclusive 剥离与委派补全。
+        # 副作用：find_tools 是 meta 分类、由装配层注入，本槽 off 时渐进式工具发现
+        # 一并消失——这是正确行为（用户套件无权声明特权分类）。
+        if _assemble and not _kernel_owns_tool_assembly():
+            logger.info(i18n_t("log.agent.tool_assembly_slot_not_kernel"))
+            _assemble = False
 
         # persona 会话与其 AgentNode 声明同步：packs 去掉 dynamic 即关闭五层自动装配
         # 改为静态解析 packs + st.tool_names（与 task-mode 的 runner 同语义）。
@@ -104,7 +135,7 @@ class ToolsPhase(RunOnceHost):
                 )
 
         if st.addr_gated:
-            # C-3：@别人且未点自己 → 零工具
+            # C-3 寻址门（**内核密封**）：@别人且未点自己 → 零工具，且不打 ASSEMBLE_TOOLS
             st.tools = []
         elif _assemble or self.create_by in _AGENTIC_CREATE_BY:
             if _assemble:
@@ -257,7 +288,7 @@ class ToolsPhase(RunOnceHost):
                     )
                     # 补搜索族（瘦保底已含 web_search_tool；再补 fetch/knowledge）
                     if (st.group_slim or st.is_light) and st.intent in ("工具", "问答"):
-                        for _tn in ("web_fetch_tool", "search_knowledge"):
+                        for _tn in ("web_fetch_tool", "search_cognition"):
                             if _tn in core_names:
                                 continue
                             _tb = find_tool_base(_tn)
@@ -361,6 +392,12 @@ class ToolsPhase(RunOnceHost):
         else:
             logger.debug(i18n_t("log.agent.skip_tool_search_searching_tools"))
 
+        # H14 / H15：工具装配套件与第三方钉工具。两点之后**各剥离一次** exclusive——
+        # H14 后防套件直接装上 render_*，H15 后防第三方 ensure 回来。
+        # addr_gated 时两点都不打（C-3 零工具硬约束）。
+        if not st.addr_gated:
+            await self._fire_tool_hooks(st)
+
         logger.debug(i18n_t("log.agent.tool_list", p0=[tool.name for tool in st.tools]))
 
         # 最终去重（兼容外部直接传入 st.tools 的情况）
@@ -381,7 +418,77 @@ class ToolsPhase(RunOnceHost):
         # 记录本次传给 AI 的工具列表
         self._session_logger.log_tools_list(st.tool_names)
 
-    def _run_once_build_agent_meta(self, st: RunOnceState) -> Any:
+    async def _fire_tool_hooks(self, st: RunOnceState) -> None:
+        """开火 H14（装配套件）与 H15（第三方钉/砍工具），每点之后收口一次。
+
+        收口 = exclusive 再剥离 + 去重。护栏：只认已注册的工具名、拒绝特权分类
+        （``self`` / ``buildin`` / ``meta`` 是核心专用），且不许 drop ``create_subagent``。
+        """
+        from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
+
+        for point in (AgentHookPoint.ASSEMBLE_TOOLS, AgentHookPoint.AFTER_ASSEMBLE_TOOLS):
+            if not should_fire(point):
+                continue
+            ctx = AgentHookContext(
+                point=point,
+                ev=st.ev,
+                bot=st.bot,
+                session_id=self.session_id,
+                persona_name=self.persona_name,
+                create_by=self.create_by,
+                is_subagent=self.is_subagent,
+                addr_gated=st.addr_gated,
+            )
+            await fire_hooks(point, ctx)
+            if ctx.ensured_tools or ctx.dropped_tools:
+                self._apply_tool_mutations(st, ctx.ensured_tools, ctx.dropped_tools)
+                self._reseal_tools(st)
+
+    def _apply_tool_mutations(self, st: RunOnceState, ensured: List[str], dropped: List[str]) -> None:
+        """按 hook 请求增删工具（护栏在此，不在 Context 里）。"""
+        from gsuid_core.ai_core.register import find_tool_base, is_core_only_category
+
+        present = {t.name for t in st.tools}
+        for name in ensured:
+            if name in present:
+                continue
+            tb = find_tool_base(name)
+            if tb is None:
+                logger.warning(i18n_t("log.agent.hook_ensure_unknown_tool", name=name))
+                continue
+            if is_core_only_category(name):
+                logger.warning(i18n_t("log.agent.hook_ensure_privileged_denied", name=name))
+                continue
+            present.add(name)
+            st.tools.append(tb.tool)
+        for name in dropped:
+            if name == "create_subagent":
+                logger.warning(i18n_t("log.agent.hook_drop_delegation_denied", name=name))
+                continue
+            st.tools = [t for t in st.tools if t.name != name]
+
+    def _reseal_tools(self, st: RunOnceState) -> None:
+        """内核收口：主人格交互轮再剥一遍 exclusive，然后去重。
+
+        换套件也逃不掉这一步——不能借 hook 让主人格拿回 ``render_html_to_image``。
+        """
+        if self.create_by in _INTERACTIVE_CREATE_BY:
+            exclusive = _capability_exclusive_tool_names()
+            if exclusive:
+                before = {t.name for t in st.tools}
+                st.tools = [t for t in st.tools if t.name not in exclusive]
+                stripped = before - {t.name for t in st.tools}
+                if stripped:
+                    logger.info(
+                        i18n_t(
+                            "log.agent.main_persona_stripped_capability",
+                            n=len(stripped),
+                            names=sorted(stripped)[:12],
+                        )
+                    )
+        st.tools = list({obj.name: obj for obj in st.tools}.values())
+
+    def _run_once_build_agent_meta(self, st: RunOnceState) -> object:
         """构建 pydantic-ai Agent 与流式统计元数据；返回 Agent 实例。"""
         # 当 return_model 指定时，使用 st.output_type 让 pydantic_ai 强制结构化输出
         # st.output_type 默认为 str（返回文本），指定 Pydantic 模型时强制返回结构化 JSON

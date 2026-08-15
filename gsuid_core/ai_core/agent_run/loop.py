@@ -41,8 +41,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _THRASH_FUSE_NUDGE,
     _INTERACTIVE_CREATE_BY,
     _MAIN_PERSONA_CREATE_BY,
-    _THRASH_SAME_TOOL_LIMIT,
-    _FIND_TOOLS_THRASH_LIMIT,
+    thrash_limit_for,
     _claims_fake_done,
     _wall_clock_nudge_for,
     _tool_return_looks_failed,
@@ -165,7 +164,7 @@ class LoopPhase(RunOnceHost):
             ]
 
         # 同工具空转熔断：连续同名工具 ≥ 阈值后，下一轮模型请求前注入一次收敛提示
-        _thrash_limit = _FIND_TOOLS_THRASH_LIMIT if st.same_tool_name == "find_tools" else _THRASH_SAME_TOOL_LIMIT
+        _thrash_limit = thrash_limit_for(st.same_tool_name)
         if not st.thrash_fused and st.same_tool_streak >= _thrash_limit and self.create_by in _INTERACTIVE_CREATE_BY:
             node.request.parts = [*node.request.parts, UserPromptPart(content=_THRASH_FUSE_NUDGE)]
             st.thrash_fused = True

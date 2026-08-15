@@ -342,8 +342,18 @@ def test_preference_injection_is_not_gated_off_by_chitchat_intent() -> None:
 
 
 def test_chitchat_turn_still_passes_empty_contexts_not_none() -> None:
-    """闲聊轮必须传**空 list**（只留 general/纠错），而不是 None（= 不过滤，全量注入）。"""
-    src = _src("gsuid_core/ai_core/handle_ai.py")
+    """闲聊轮必须传**空 list**（只留 general/纠错），而不是 None（= 不过滤，全量注入）。
 
-    assert "_pref_contexts: list[str] = []" in src, "闲聊轮的 preference_contexts 不是空 list"
-    assert "_pref_inject = True" in src, "偏好注入没有恒开"
+    锁点变更（§9.3 锁跟着代码搬）：
+    - 「恒开」在 ``cognition.facade.inject_memory_slice``（⑧ 与工具路径同一入口）；
+    - 「闲聊传空 list」在 ``kits/memory/kit.py``（H05 的能力域过滤在套件内部）。
+    """
+    kit = _src("gsuid_core/ai_core/kits/memory/kit.py")
+    facade = _src("gsuid_core/ai_core/cognition/facade.py")
+
+    assert "pref_contexts: List[str] = []" in kit, "闲聊轮的 preference_contexts 不是空 list"
+    assert 'if ctx.intent != "闲聊":' in kit, "能力域过滤的意图分支没了"
+    assert "inject_preferences=True" in facade, "偏好注入没有恒开"
+    # 不许再出现「按意图整轮关掉偏好」的写法
+    for src in (kit, facade, _src("gsuid_core/ai_core/handle_ai.py")):
+        assert "inject_preferences=intent" not in src.replace(" ", "")

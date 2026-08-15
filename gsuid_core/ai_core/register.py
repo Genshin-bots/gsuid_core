@@ -424,6 +424,48 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]:
     return _TOOL_REGISTRY
 
 
+def is_core_only_category(tool_name: str) -> bool:
+    """该工具是否属于特权分类（``self`` / ``buildin`` / ``meta``）。
+
+    套件与第三方 hook **不能** ``ensure_tools`` 这三类：它们是核心专用，
+    插件滥用会把保底池撑大、或把已剥离的能力代理工具回灌主人格。
+    """
+    for category in _CORE_ONLY_CATEGORIES:
+        if category in _TOOL_REGISTRY and tool_name in _TOOL_REGISTRY[category]:
+            return True
+    return False
+
+
+def unregister_tool(tool_name: str) -> bool:
+    """从注册表移除一个工具，返回是否真的移除了。
+
+    套件卸载 / 同槽替换时必须调用：``get_main_agent_tools()`` 按当前注册表取
+    ``self+buildin``，不卸就会留下「套件没了、模型还看见空壳工具」。
+    插件热重载同理（``_TOOL_REGISTRY`` 历来不被 reload_plugin 清理）。
+    """
+    removed = False
+    for category_tools in _TOOL_REGISTRY.values():
+        if tool_name in category_tools:
+            del category_tools[tool_name]
+            removed = True
+    if removed:
+        logger.debug(t("log.register.unregistered_tool", name=tool_name))
+    return removed
+
+
+def unregister_tools_of_plugin(plugin_name: str) -> int:
+    """按插件名批量卸工具（热重载）。返回卸掉的数量。"""
+    victims = [
+        name
+        for category_tools in _TOOL_REGISTRY.values()
+        for name, tb in category_tools.items()
+        if tb.plugin == plugin_name
+    ]
+    for name in victims:
+        unregister_tool(name)
+    return len(victims)
+
+
 def get_all_tools() -> Dict[str, ToolBase]:
     """获取所有已注册的工具（平铺结构）"""
     result = {}

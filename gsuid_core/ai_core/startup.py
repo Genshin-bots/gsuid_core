@@ -18,6 +18,10 @@ import time
 import asyncio
 from typing import Optional
 
+# 关系温度表的去重 + 唯一约束迁移。必须在这里 import：它注册的是
+# @on_core_start_before（阻塞阶段），而 core.py 在启动钩子触发前就 import 本模块。
+# 该模块只依赖 server/logger/sqlalchemy.text，不引入重依赖。
+import gsuid_core.ai_core.relationship.migration  # noqa: F401
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
@@ -95,16 +99,26 @@ async def _init_mcp_server():
 
 
 async def _init_favor_decay():
-    """注册好感度每日衰减 job（§F.3-3）：每日 04:20 让好感度向中性回归一步。"""
+    """注册关系温度**闲置**衰减 job：每日 04:20 只衰减久未正向互动的用户。
+
+    语义变更：旧实现每天打全表，活跃用户被「每轮 +1」立刻补回，等于只惩罚
+    「聊完就走」的人。现在活跃用户不衰减，也不会因水群而升档。
+    """
+    import time as _time
+
     from gsuid_core.aps import scheduler
     from gsuid_core.ai_core.database import UserFavorability
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     async def _job() -> None:
-        step = ai_config.get_config("favor_daily_decay").data
+        if not ai_config.get_config("enable").data:
+            return
+        step = int(ai_config.get_config("favor_daily_decay").data)
         if step <= 0:
             return
-        n = await UserFavorability.decay_all_toward_neutral(step)
+        idle_days = int(ai_config.get_config("favor_idle_days").data)
+        idle_before = int(_time.time()) - idle_days * 86400
+        n = await UserFavorability.decay_idle_toward_neutral(step, idle_before)
         if n:
             logger.info(t("log.ai.userfavorability_daily_favorability_decay", n=n, step=step))
 
@@ -114,10 +128,23 @@ async def _init_favor_decay():
         hour=4,
         minute=20,
         id="ai_favorability_daily_decay",
-        name="好感度每日衰减（向中性回归）",
+        name="关系温度闲置衰减",
         replace_existing=True,
     )
     logger.info(t("log.ai.userfavorability_daily_favorability_decay_regist"))
+
+
+async def _init_agent_kits():
+    """按 ``kit_slots.*`` 配置装载 Agent 套件。
+
+    排在**最前**：``AgentKit.register`` 只是挂 hook（纯函数注册，重依赖都在 hook 体内
+    懒导入），却决定了整条 agent loop 有没有情绪 / 关系 / 记忆 / 工具装配。放在末尾时，
+    任何一个前置步骤卡住就会让 hook 总线在整个启动窗口内保持空转——实测 Meme 的一次性
+    向量迁移占用 337 秒，期间基准 24 例全部零工具、零记忆注入。
+    """
+    from gsuid_core.ai_core.kits import load_enabled_kits
+
+    await load_enabled_kits()
 
 
 async def _init_command_exec():
@@ -165,6 +192,8 @@ async def wait_ai_core_ready(timeout: float = 300.0) -> bool:
 # RAG 先初始化 Embedding 模型，Memory / Meme 依赖其结果；
 # MCP Server 依赖 MCP 工具先完成注册。
 _INIT_STEPS = [
+    # 套件最先装：只挂 hook，却决定整条 loop 有没有情绪/关系/记忆/工具装配
+    ("Agent 套件", _init_agent_kits),
     ("RAG", _init_rag),
     ("Persona", _init_persona),
     ("审批中心", _init_approval),
@@ -176,7 +205,6 @@ _INIT_STEPS = [
     ("统计", _init_statistics),
     ("MCP Server", _init_mcp_server),
     ("命令执行", _init_command_exec),
-    ("好感度衰减", _init_favor_decay),
 ]
 
 

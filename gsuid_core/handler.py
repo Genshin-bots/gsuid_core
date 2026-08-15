@@ -269,27 +269,25 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
     ai_scope_banned = is_scope_banned(event.session_id)
 
-    # ====== Meme Observer Hook ======
-    from gsuid_core.ai_core.meme.observer import observe_message_for_memes
-
+    # ====== H00 入站观察扇出（记忆 / 表情 / 图片记忆）======
+    # 只观察，**不挡**命令/AI 分流；要拦 AI 走 H01。失败 fail-open。
     if enable_ai and not ai_scope_banned:
-        meme_task = asyncio.create_task(
-            observe_message_for_memes(event),
-        )
-        ws._add_bg_task(meme_task)
+        from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
 
-    # ====== 文本 / 图片标志位（在文本门控之外预先计算）======
-    # A-3 修复：原先"记历史 + 记忆 observe + submit_image_observation"整段都被
-    # `if event.raw_text and event.raw_text.strip():` 包住，导致 `_has_text` 在块内
-    # 恒为 True，纯图片消息（无文字）永远进不了 `submit_image_observation` 分支——
-    # C9"高价值图片走独立队列异步转述"对纯图片消息形同死代码。现把"图片观察"提到
-    # 文本门控之外：历史记录在有文本或 @ 时写，图片摄入则对纯图片消息也可达。
+        if should_fire(AgentHookPoint.ON_INBOUND):
+            inbound_ctx = AgentHookContext(
+                point=AgentHookPoint.ON_INBOUND,
+                ev=event,
+                session_id=event.session_id,
+                create_by="Chat",
+                query=event.raw_text or "",
+            )
+            ws._add_bg_task(asyncio.create_task(fire_hooks(AgentHookPoint.ON_INBOUND, inbound_ctx)))
+
+    # A-3 修复：图片观察不能被文本门控包住——纯图片消息（无文字）也要能进图片摄入，
+    # 否则「高价值图片走独立队列异步转述」对纯图片消息形同死代码。图片观察现在在 H00
+    # 套件里按 event 自己判，这里只留历史入库的文本门控。
     _has_text = bool(event.raw_text and event.raw_text.strip())
-    # B-5 修复：event.image 通常已是 image_list 最后一项，dict.fromkeys 去重避免
-    # 同一张图被重复提交给 submit_image_observation。
-    _img_urls = list(
-        dict.fromkeys(img for img in ([event.image] + list(event.image_list or [])) if isinstance(img, str) and img)
-    )
 
     # 纯 @ 消息（at 段无文字）也须入历史：否则 @ 目标从历史里凭空消失，
     # AI/Heartbeat 会把紧随其后的「醒了吗」误认为在叫自己（生产实测误判）。
@@ -338,64 +336,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             metadata=metadata,
         )
 
-    # ====== Memory Observer Hook（文本门控之外：文本 OR 图片均可触发）======
-    if enable_ai and not ai_scope_banned and (_has_text or _img_urls):
-        from gsuid_core.ai_core.memory import observe
-        from gsuid_core.ai_core.memory.config import memory_config
-
-        is_enable_memory: bool = ai_config.get_config("enable_memory").data
-        memory_mode: list[str] = memory_config.memory_mode
-        memory_session: str = memory_config.memory_session
-
-        # 基础条件检查：记忆开启、observer开启、包含"被动感知"
-        if is_enable_memory and memory_config.observer_enabled and "被动感知" in memory_mode:
-            should_observe = False
-
-            if memory_session == "全部群聊":
-                # 全部群聊模式：全部记录
-                should_observe = True
-            elif memory_session == "按人格配置":
-                # 按人格配置模式：只记录人格配置范围内的
-                from gsuid_core.ai_core.persona.config import persona_config_manager
-
-                session_id = event.session_id
-                persona_name = persona_config_manager.get_persona_for_session(session_id)
-
-                # get_persona_for_session 返回非 None 说明当前 session 已匹配人格范围
-                if persona_name is not None:
-                    should_observe = True
-
-            if should_observe and _has_text:
-                mem_task = asyncio.create_task(
-                    observe(
-                        content=event.raw_text,
-                        speaker_id=str(event.user_id),
-                        # 私聊必须 None：observer 按 `GROUP if group_id else USER_GLOBAL` 定 scope，
-                        # 回退成 user_id 会把私聊写进 group:，而偏好只存 USER_GLOBAL → 永远存不进去
-                        group_id=str(event.group_id) if event.group_id else None,
-                        bot_self_id=str(event.bot_self_id),
-                        observer_blacklist=memory_config.observer_blacklist,
-                        message_type="group_msg" if event.group_id else "private_msg",
-                    )
-                )
-                ws._add_bg_task(mem_task)
-
-            # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选时才静默读图入记忆，
-            # 避免后台对每张群图都发起一次视觉模型调用（auto_ImageUnderstand_* 日志 + Token）。
-            if should_observe and _img_urls and "图片记忆" in memory_mode:
-                from gsuid_core.ai_core.memory.ingestion.multimodal import (
-                    submit_image_observation,
-                )
-
-                submit_image_observation(
-                    image_urls=_img_urls,
-                    speaker_id=str(event.user_id),
-                    # 私聊传 None（理由同上文的 observe 调用点）
-                    group_id=str(event.group_id) if event.group_id else None,
-                    bot_self_id=str(event.bot_self_id),
-                    observer_blacklist=memory_config.observer_blacklist,
-                    message_type="group_msg" if event.group_id else "private_msg",
-                )
+    # 记忆 / 表情 / 图片记忆的入站观察已迁至 H00（``kits/memory``、``kits/meme``）：
+    # 关 memory 槽就该不观察，观察与检索不该分处两地各判一次开关。
     # ============================================
 
     if event.user_pm == 0:

@@ -158,6 +158,45 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
     except Exception as e:
         logger.warning(i18n_t("log.plugin.gscore_fail_web_routes", plugin_name=plugin_name, e=e))
 
+    # ④ Agent 环 hook + 套件槽 + AI 工具注册表
+    _clean_plugin_agent_state(plugin_name)
+
+
+def _clean_plugin_agent_state(plugin_name: str) -> None:
+    """摘掉插件的 Agent 环 hook、让它占用的槽位回落默认套件、卸掉它注册的 AI 工具。
+
+    ``_TOOL_REGISTRY`` 历来不被热重载清理（靠 re-import 覆盖同名符号侥幸没炸），
+    这是先于套件化存在的缺陷；套件槽引入后不清就会留下旧占用者的空壳工具。
+    """
+    try:
+        from gsuid_core.ai_core.kits import KIT_SLOTS, get_kit, enable_kit, disable_kit, occupants_of
+        from gsuid_core.ai_core.hooks import drop_hooks_for_module
+        from gsuid_core.ai_core.register import unregister_tools_of_plugin
+
+        # 槽位回落：插件套件被卸掉后按配置重新装默认占用者，否则该槽静默变 off
+        for slot in KIT_SLOTS:
+            for kit_id in occupants_of(slot.name):
+                kit = get_kit(kit_id)
+                if kit is None or not kit_id.startswith(f"{plugin_name}."):
+                    continue
+                disable_kit(kit_id)
+                if get_kit(slot.default_kit_id) is not None:
+                    enable_kit(slot.default_kit_id)
+
+        dropped = drop_hooks_for_module(plugin_name)
+        tools = unregister_tools_of_plugin(plugin_name)
+        if dropped or tools:
+            logger.info(
+                i18n_t(
+                    "log.plugin.gscore_cleanup_agent_hooks_tools",
+                    plugin_name=plugin_name,
+                    hooks=dropped,
+                    tools=tools,
+                )
+            )
+    except Exception as e:
+        logger.warning(i18n_t("log.plugin.gscore_fail_agent_hooks", plugin_name=plugin_name, e=e))
+
 
 def _snapshot_plugin_route_anchor(plugin_name: str) -> Optional[int]:
     """记录该插件在 app.router.routes 中最早一条路由的位置, 供重导入后回插用。

@@ -239,6 +239,7 @@ from gsuid_core.ai_core.buildin_tools.meme_tools import (
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
 from gsuid_core.ai_core.buildin_tools.rag_search import (
     search_image,
+    search_cognition,
     search_knowledge,
 )
 
@@ -346,7 +347,8 @@ from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import (
 __all__ = [
     # 工具装饰器
     "ai_tools",
-    # RAG检索工具
+    # 认知检索（主人格唯一「回想」动词）+ RAG 图片检索
+    "search_cognition",
     "search_knowledge",
     "search_image",
     # 图片读取工具（按ID取图转述，保底）

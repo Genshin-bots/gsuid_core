@@ -83,18 +83,38 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 
 | # | 名称 | 实现 | 主要工作 |
 |---|------|------|----------|
-| 1 | RAG | `rag/startup.py::init_all()` | 预下载模型 → 线程内初始化嵌入模型 → 建 tools/knowledge/image collection → 同步工具/知识/图片 |
-| 2 | Persona | `persona/startup.py` | 写默认 Persona「早柚」+ 迁移旧配置 |
-| 3 | 定时任务 | `scheduled_task/startup.py` | `reload_pending_tasks()` 把 DB 中 pending 任务挂回 APScheduler |
-| 4 | 长任务编排 | `planning/startup.py` | 注册 Kanban 工具 + 内置/用户 Capability 画像 + 僵尸子任务恢复 + 每日 04:00 Artifact TTL 清理 |
-| 5 | Memory | `memory/startup.py` | Qdrant collection 检查 → `IngestionWorker` 主循环后台 task → 多模态摄入 worker → 每周记忆生命周期 job |
-| 6 | MCP 工具 | `mcp/startup.py` | 读 `mcp_configs/*.json` → 连 enabled 服务器 → 注册工具到 `_TOOL_REGISTRY["mcp"]`（仅 `register_as_ai_tools=true`） |
-| 7 | Meme | `meme/startup.py` | 建 inbox/common/rejected 目录 → 表情包 collection → 打标 worker |
-| 8 | 统计 | `statistics/startup.py` | `AISessionRegistry` 空闲清理循环 + Heartbeat 巡检 + 当日数据回灌 |
-| 9 | MCP Server | `mcp/server.py` | 把 `_TOOL_REGISTRY` 整库通过 MCP 暴露：默认 **http 挂载主 app `/api/mcp`（同端口 8765）**；stdio 为独立 task |
+| 1 | **Agent 套件** | `kits/__init__.py::load_enabled_kits()` | 按 `kit_slots.*` 装载 18 个第一方套件（**只挂 hook**，重依赖在 hook 体内懒导入，实测 0.14s） |
+| 2 | RAG | `rag/startup.py::init_all()` | 预下载模型 → 线程内初始化嵌入模型 → 建 tools/knowledge/image collection → 同步工具/知识/图片 |
+| 3 | Persona | `persona/startup.py` | 写默认 Persona「早柚」+ 迁移旧配置 |
+| 4 | 审批中心 | `ai_core/approval` | 注册内置审批类别 + 预热 pending |
+| 5 | 定时任务 | `scheduled_task/startup.py` | `reload_pending_tasks()` 把 DB 中 pending 任务挂回 APScheduler |
+| 6 | 长任务编排 | `planning/startup.py` | 注册 Kanban 工具 + 内置/用户 Capability 画像 + 僵尸子任务恢复 + 每日 04:00 Artifact TTL 清理 |
+| 7 | Memory | `memory/startup.py` | Qdrant collection 检查 → `IngestionWorker` 主循环后台 task → 多模态摄入 worker → 每周记忆生命周期 job |
+| 8 | MCP 工具 | `mcp/startup.py` | 读 `mcp_configs/*.json` → 连 enabled 服务器 → 注册工具到 `_TOOL_REGISTRY["mcp"]`（仅 `register_as_ai_tools=true`） |
+| 9 | Meme | `meme/startup.py` | 建 inbox/common/rejected 目录 → 表情包 collection → 打标 worker |
+| 10 | 统计 | `statistics/startup.py` | `AISessionRegistry` 空闲清理循环 + Heartbeat 巡检 + 当日数据回灌 |
+| 11 | MCP Server | `mcp/server.py` | 把 `_TOOL_REGISTRY` 整库通过 MCP 暴露：默认 **http 挂载主 app `/api/mcp`（同端口 8765）**；stdio 为独立 task |
+| 12 | 命令执行 | `command_exec/startup.py` | 主人 shell 执行器 |
+
+> **「Agent 套件」为什么排第一**：`AgentKit.register` 只是挂 hook，却决定了整条 agent
+> loop 有没有情绪 / 关系 / 记忆 / 工具装配。它排在末尾时，**任何一个前置步骤卡住都会让
+> hook 总线在整个启动窗口内空转**——实测 Meme 的一次性向量迁移占用 337 秒，期间整轮
+> 群聊基准 24 例全部零工具调用、零记忆注入。这一步没有 I/O，放最前是安全的。
+
+> **本循环没有硬超时**：单步只是每 60s 打一条 `仍在执行中` 警告，然后继续等。
+> 一个卡死的步骤会无限期挡住它**后面**的所有步骤。因此顺序本身是可用性设计：
+> 便宜且关键的步骤放前面。
 
 > **加新 AI 子系统的正确姿势**：在 `_INIT_STEPS` 里加一步，**不要**自己写 `@on_core_start`。
 > 步骤函数开头读 `ai_config.get_config("enable")`，关闭时 `return`。
+
+> ⚠️ **一个子系统只能有一个初始化主**。套件的 `AgentKit.init_step` 与 `_INIT_STEPS`
+> 条目**不能同时**指向同一个 bring-up：两边都挂不会报错，只会每次启动跑两遍（实测
+> Meme 的 337 秒迁移被跑了两次，并强制重建了两次 Qdrant collection）。
+> 有 `_INIT_STEPS` 条目的子系统，套件侧不要带 `init_step`；套件自有的 job
+> （如关系温度闲置衰减）则反过来只挂在套件侧。
+> `tests/test_agent_kits_slots.py::test_kit_init_steps_do_not_duplicate_core_init_steps`
+> 锁死这一点。
 
 ## 2.4 AI 总开关贯穿初始化
 

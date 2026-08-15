@@ -263,8 +263,23 @@ async def create_subagent(
         )
 
 
+async def summarize_long_input(text: str, *, max_tokens: int = 18000) -> str:
+    """内核长度防护：无工具上下文的摘要委派（不是模型可调的 ``create_subagent``）。"""
+    from gsuid_core.ai_core.wall_clock import pause_wall_clock
+
+    async with pause_wall_clock():
+        return await _create_subagent_impl(
+            None,
+            task=f"请总结以下用户输入，保留关键信息：\n\n{text}",
+            max_tokens=max_tokens,
+            max_iterations=15,
+            agent_profile="",
+            transient=True,
+        )
+
+
 async def _create_subagent_impl(
-    ctx: RunContext[ToolContext],
+    ctx: RunContext[ToolContext] | None,
     *,
     task: str,
     max_tokens: int,
@@ -272,9 +287,9 @@ async def _create_subagent_impl(
     agent_profile: str,
     transient: bool,
 ) -> str:
-    """create_subagent 实现体（已在 pause_wall_clock 内）。"""
-    # 指定 profile：默认 transient 的走 ad-hoc，其余转 Kanban
-    if agent_profile:
+    """create_subagent 实现体（已在 pause_wall_clock 内）。``ctx is None`` 仅内核摘要用。"""
+    # 无 ctx 的内核摘要不走能力路由，避免摘要任务被误派到专域节点。
+    if ctx is not None and agent_profile:
         from gsuid_core.ai_core.agent_node import resolve_node
 
         pid = resolve_node(agent_profile) or agent_profile.strip()
@@ -283,18 +298,18 @@ async def _create_subagent_impl(
             return await _dispatch_transient_capability_agent(ctx, task, agent_profile)
         return await _dispatch_via_kanban(ctx, task, agent_profile)
 
-    # 未填 profile：用 task 文本匹配已注册能力节点（通用关键词），命中则走专职代理
-    from gsuid_core.ai_core.agent_node import get_node, match_capability_node
+    if ctx is not None and not agent_profile:
+        from gsuid_core.ai_core.agent_node import get_node, match_capability_node
 
-    auto_pid = match_capability_node(task)
-    if auto_pid and get_node(auto_pid) is not None:
-        logger.info(
-            i18n_t("log.ai.subagent_convert_kanban_leaf", p0=0, p1=auto_pid[:6], pid=auto_pid, p2=repr(task[:60]))
-        )
-        use_transient = transient or auto_pid in _TRANSIENT_DEFAULT_PROFILES
-        if use_transient:
-            return await _dispatch_transient_capability_agent(ctx, task, auto_pid)
-        return await _dispatch_via_kanban(ctx, task, auto_pid)
+        auto_pid = match_capability_node(task)
+        if auto_pid and get_node(auto_pid) is not None:
+            logger.info(
+                i18n_t("log.ai.subagent_convert_kanban_leaf", p0=0, p1=auto_pid[:6], pid=auto_pid, p2=repr(task[:60]))
+            )
+            use_transient = transient or auto_pid in _TRANSIENT_DEFAULT_PROFILES
+            if use_transient:
+                return await _dispatch_transient_capability_agent(ctx, task, auto_pid)
+            return await _dispatch_via_kanban(ctx, task, auto_pid)
 
     logger.info(i18n_t("log.ai.subagent_general_planning_executor_start", p0=task[:50]))
 
@@ -360,7 +375,7 @@ async def _create_subagent_impl(
         # 建立主 Agent ↔ SubAgent 的关联（双向）。
         # _session_logger / _file_path 都是已声明字段（见 gs_agent.GsCoreAIAgent.__init__
         try:
-            parent_session_id = ctx.deps.ev.session_id if ctx.deps.ev else None
+            parent_session_id = ctx.deps.ev.session_id if ctx is not None and ctx.deps.ev else None
             if parent_session_id:
                 parent_session = _session_registry.get_ai_session(parent_session_id)
                 if parent_session is not None:
@@ -403,8 +418,8 @@ async def _create_subagent_impl(
             # 直接把任务扔给它，它会被 system_prompt 逼着去先列 TODO list
             result = await agent.run(
                 user_message=f"【当前任务】\n{task}\n\n请立即开始你的规划与执行！",
-                bot=ctx.deps.bot,
-                ev=ctx.deps.ev,
+                bot=ctx.deps.bot if ctx is not None else None,
+                ev=ctx.deps.ev if ctx is not None else None,
                 tools=tools,
                 return_mode="return",  # 结果返回给主Agent，由主Agent决定何时发送给用户
             )

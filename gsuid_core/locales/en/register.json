@@ -8,5 +8,6 @@
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} tool [{p0}] privileged category [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
   "log.register.timeout_sec_aborted": "[Register] Tool [{p0}] execution timed out (>{timeout_sec}s), aborted",
-  "log.register.tool_inner_timeout": "[Register] Tool [{p0}] internal timeout/failure (not wrapper timeout): {e}"
+  "log.register.tool_inner_timeout": "[Register] Tool [{p0}] internal timeout/failure (not wrapper timeout): {e}",
+  "log.register.unregistered_tool": "Unregistered tool {name}"
 }

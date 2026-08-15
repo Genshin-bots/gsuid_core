@@ -323,7 +323,6 @@ GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
 # 不在白名单中的 self 分类工具，降级走向量检索（common/media 路径）。
 _SELF_CATEGORY_WHITELIST: Set[str] = {
     "send_message_by_ai",
-    "update_user_favorability",
     "add_once_task",
     "add_interval_task",
 }
