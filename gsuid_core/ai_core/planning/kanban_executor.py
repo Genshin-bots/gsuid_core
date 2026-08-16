@@ -526,6 +526,7 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
             size_bytes=size,
             read_tool="read_handle",
             long_structured=not is_img,
+            speech_expand=False,
         )
         cards.append(card.format())
         if is_img and not primary:
@@ -539,7 +540,9 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
         f"【子任务交付·需你亲自完成收尾】任务#{task.ordinal}「{task.display_name}」已完成。",
         "你是主人格：角色短句给结论；有图则 send_message_by_ai(image_id=)；",
         '长文尚未出图 → create_subagent(agent_profile="render_agent", task=句柄+版式)；',
-        "禁止把句柄写进对用户台词；续读用 read_handle(handle_id, offset, limit)。",
+        "禁止把句柄写进对用户台词。",
+        "禁止为写台词去展开长文——句柄卡 summary 足够一句结论；出图节点自己读全文。",
+        "出图委派发出后本轮只许 <SILENCE> 或一句等待，禁止把事实包数字念成群聊台词。",
     ]
     if cards:
         parts.append("产物句柄卡：")

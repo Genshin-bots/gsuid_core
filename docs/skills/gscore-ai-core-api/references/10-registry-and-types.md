@@ -75,6 +75,7 @@ class KnowledgeBase(TypedDict):
     content: str
     tags: List[str]
     source: str  # "plugin" 或 "manual"
+    entity: str  # 可选，这篇知识归属的正式名
 ```
 
 ## 10.5 `KnowledgePoint`
@@ -94,6 +95,7 @@ class ManualKnowledgeBase(TypedDict):
     content: str
     tags: List[str]
     source: str  # 固定为 "manual"
+    entity: str  # 可选
 ```
 
 ## 10.7 `ImageEntity`

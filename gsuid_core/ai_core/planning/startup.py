@@ -107,9 +107,11 @@ async def init_planning() -> None:
     try:
         import asyncio as _asyncio
 
+        from gsuid_core.ai_core.planning.artifact_index import ensure_artifact_collection
         from gsuid_core.ai_core.planning.tool_output_index import ensure_tool_output_collection
 
         _asyncio.create_task(ensure_tool_output_collection())
+        _asyncio.create_task(ensure_artifact_collection())
     except Exception as e:
         logger.debug(t("log.ai.kanban_register_artifact_ttl_fail", e=e))
 

@@ -29,6 +29,7 @@ from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
+from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
 from . import kanban
 from .models import AIAgentTask, AIAgentArtifact
@@ -868,7 +869,7 @@ async def artifact_put(
     return f"✅ 已登记 artifact: {art.id}（{art.size_bytes} bytes，mime={art.mime}）{binary_hint}"
 
 
-@ai_tools(category="planning", capability_domain="产物")
+@ai_tools(category="planning", capability_domain="产物", visible_when=visible_to_capability_only)
 async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,

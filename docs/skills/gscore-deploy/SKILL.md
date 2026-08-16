@@ -34,7 +34,7 @@ description: >
 |------|------|------|
 | 一 | 环境与依赖（Python 版本 / git / 包管理器 / 平台特性） | [references/01-environment.md](./references/01-environment.md) |
 | 二 | 源码部署安装（克隆 / 四种包管理器安装 / 安装位置） | [references/02-install.md](./references/02-install.md) |
-| 三 | 启动 Core（四种启动命令 / 命令行参数 / systemd / supervisor / Docker 内启动） | [references/03-startup.md](./references/03-startup.md) |
+| 三 | 启动 Core（四种启动命令 / 本地评测 `GSUID_LOCAL_TEST_*` / 命令行参数 / systemd / supervisor / Docker 内启动） | [references/03-startup.md](./references/03-startup.md) |
 | 四 | 配置体系总览（config.json / core_config.json / 插件独立配置文件 / AI 配置文件） | [references/04-config-overview.md](./references/04-config-overview.md) |
 | 五 | `config.json` 字段详解（HOST / PORT / WS_TOKEN / masters / sv / command_start / misfire_grace_time / log 等） | [references/05-config-json.md](./references/05-config-json.md) |
 | 六 | `core_config.json` 字段详解（自动更新 / 自动重启 / 重启命令 / 风控文案 / 转图阈值 / 代理 / 镜像源等） | [references/06-core-config-json.md](./references/06-core-config-json.md) |

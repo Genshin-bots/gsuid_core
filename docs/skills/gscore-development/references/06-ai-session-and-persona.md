@@ -135,16 +135,18 @@ RESOURCE_PATH/persona/{persona_name}/
 > 详见 [`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../AGENT_NODE_UNIFICATION_20260707.md)。
 
 - **ai_mode**：`提及应答` / `定时巡检` / `趣向捕捉(暂不可用)` / `困境救场(暂不可用)`
-- **scope**：`disabled`（不启用）/ `global`（对所有群启用，**全局唯一**）/ `specific`（仅
-  `target_groups`）
+- **scope**：`disabled`（不启用）/ `global`（全部群聊+私聊）/ `global_group`（仅全部群聊）/
+  `global_private`（仅全部私聊）/ `specific`（仅 `target_groups`）
 
 ### Persona 匹配规则（`get_persona_for_session`）
 
 ```
-1. 先找 scope="specific" 且 target_groups 含该 group_id 的 persona
-2. 没有 → 找 scope="global" 的 persona
-3. 没有 → 返回 None（不触发 AI）
-注意：全局只能有一个 scope="global" 的 persona（set_scope 时校验 validate_global_uniqueness）
+1. 会话级 override（若存在且人格仍在）
+2. 先找 scope="specific" 且 target_groups 含该 group_id / user_id 的 persona
+3. 没有 → 回退：优先 scope="global"；否则群聊用 global_group、私聊用 global_private
+4. 没有 → 返回 None（不触发 AI）
+全局互斥：global / global_group / global_private 只能有一个。
+群聊+私聊都要覆盖时用 global。set_scope 时校验 validate_global_uniqueness。
 ```
 
 `PersonaConfigManager` 提供 `set_scope` / `set_target_groups` / `set_ai_mode` /

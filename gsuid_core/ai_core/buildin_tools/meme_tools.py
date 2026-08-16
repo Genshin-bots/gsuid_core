@@ -18,6 +18,7 @@ from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary, _read_file, get_memes_base_path
 from gsuid_core.ai_core.meme.selector import PICK_COOLDOWN, PICK_EXHAUSTED, pick
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
 
 @ai_tools(category="common", capability_domain="表情")
@@ -159,7 +160,7 @@ async def collect_meme(
     return "; ".join(results)
 
 
-@ai_tools(category="common", capability_domain="表情")
+@ai_tools(category="common", capability_domain="表情", visible_when=visible_to_capability_only)
 async def search_meme(
     query: str,
 ) -> str:

@@ -32,7 +32,8 @@ class HeartbeatInspector:
 定时触发 → _inspect_all_sessions_for_persona(persona_name)
   ├── 取 persona 的 scope / target_groups
   ├── 遍历活跃会话 _should_inspect_session()
-  │     scope=disabled→不巡检 / global→全巡检 / specific→仅 target_groups
+  │     disabled→不巡检 / global→全巡检 / global_group→仅群聊 /
+  │     global_private→仅私聊 / specific→仅 target_groups
   └── _pre_check_session() 前置轻量规则过滤（零 LLM）
         ├── 无历史 → 跳过
         ├── 最后消息来自 AI → 跳过

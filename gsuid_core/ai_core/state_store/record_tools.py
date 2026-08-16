@@ -145,6 +145,7 @@ async def record_put(
     except Exception as e:
         logger.exception(t("log.ai.recordstore_record_put", e=e))
         return f"写入失败: {e}"
+    await _remember_record(ctx, real_scope, collection, rid, rec)
     return f"ok rid={rid}"
 
 
@@ -290,6 +291,7 @@ async def record_append(
     except Exception as e:
         logger.exception(t("log.ai.recordstore_record_append", e=e))
         return f"写入失败: {e}"
+    await _remember_record(ctx, real_scope, collection, chosen["rid"], rec)
     return f"ok rid={chosen['rid']}"
 
 
@@ -443,3 +445,39 @@ async def record_summary(
         summary["hit"] = hit
         summary["avg"] = (total / hit) if hit else None
     return json.dumps(summary, ensure_ascii=False)
+
+
+async def _remember_record(
+    ctx: RunContext[ToolContext],
+    record_scope: str,
+    collection: str,
+    rid: str,
+    rec: Dict[str, Any],
+) -> None:
+    """record 真值写完后登记认知节点。"""
+    from datetime import date
+
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+
+    ev = ctx.deps.ev if ctx.deps is not None else None
+    owner = str(ev.user_id) if ev is not None and ev.user_id else ""
+    if record_scope.startswith("user:") and not record_scope.startswith("user_global:"):
+        cog_scope = f"user_global:{record_scope[5:]}"
+    else:
+        cog_scope = record_scope
+    try:
+        await remember(
+            MemoryWrite(
+                kind=CogKind.RECORD,
+                ref=f"{record_scope}:{collection}:{rid}",
+                scope_key=cog_scope,
+                owner_user_id=owner,
+                title=collection,
+                summary=json.dumps(rec, ensure_ascii=False)[:200],
+                as_of=date.today().isoformat(),
+                source="record",
+            )
+        )
+    except Exception as e:
+        logger.debug(t("log.ai.cognition_node_sync_fail", kind="record", ref=rid, e=e))

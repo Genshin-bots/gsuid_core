@@ -163,6 +163,43 @@ def test_tool_call_targets_render_agent() -> None:
         tool_name="web_search_tool",
         args={"query": "x"},
     )
+    assert not tool_call_targets_render_agent(
+        tool_name="create_subagent",
+        args={"task": "查完交给 render_agent 出图", "agent_profile": "research_agent"},
+        args_json='{"task":"查完交给 render_agent 出图","agent_profile":"research_agent"}',
+    )
+
+
+def test_inflight_rolls_back_on_failed_return() -> None:
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        inflight_after_create_subagent_return,
+    )
+
+    pending, delegated, policy, ack = inflight_after_create_subagent_return(
+        failed=True,
+        async_ack=False,
+        render_done=False,
+        ack_seen=False,
+        pending_async=True,
+        delegated_render=True,
+        speech_policy="silence_only",
+        is_framework=False,
+    )
+    assert pending is False and delegated is False and ack is False
+    assert policy == "free"
+
+    pending2, delegated2, policy2, ack2 = inflight_after_create_subagent_return(
+        failed=True,
+        async_ack=False,
+        render_done=False,
+        ack_seen=True,
+        pending_async=True,
+        delegated_render=True,
+        speech_policy="silence_only",
+        is_framework=False,
+    )
+    assert pending2 is True and delegated2 is True and ack2 is True
+    assert policy2 == "silence_only"
 
 
 def test_receipt_image_likely_not_any_artifact() -> None:

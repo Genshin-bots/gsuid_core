@@ -153,3 +153,19 @@ await bot.send(result)
 
 `convert_img` 会按框架配置做"是否转 base64""是否压缩""是否上传 RM"等统一处理，避免不同
 平台适配器对裸 bytes 的兼容问题。
+
+## 9.6 AI 出图路径：`render_chart_spec` + 自由 HTML
+
+插件面板仍走上面的 PIL / pytakumi / playwright 三档。**主人格资料图**不走插件绘图函数，
+而是 `create_subagent(render_agent)` → `render_chart_spec`（声明式 SVG）嵌进
+`render_html_to_image`。渲染引擎无 JS，不要在插件里为「AI 信息图」拉 playwright
+只为画柱状图。
+
+编码约定（与业务域无关）：
+
+- 多实体对比用 `series=[{name, data}]` + 图例，不要把身份写进单柱 label。
+- 有正负含义才 `signed`；升/降色不得同时当系列身份。
+- 缺测点断线，禁止补 0。
+
+详见 [`docs/TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md) §8.5、
+[`docs/skills/gscore-ai-core-api/references/07-builtin-tools.md`](../../gscore-ai-core-api/references/07-builtin-tools.md) `render_chart_spec`。

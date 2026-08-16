@@ -42,6 +42,33 @@ def test_handle_card_has_render_hint() -> None:
     assert "标题A" in text
 
 
+def test_group_fold_card_has_no_inline_head() -> None:
+    from gsuid_core.ai_core.planning.tool_output_helper import fold_card_for_main_prompt
+
+    base = PersistedHandleCard(
+        id="to_grp1",
+        kind="tool_output",
+        mime="text/plain",
+        summary="一句摘要",
+        size_bytes=4000,
+        long_structured=True,
+        inline_head="不该出现在群聊卡里的要点",
+        speech_expand=True,
+    )
+    packed = "要点很多\n" + ("行\n" * 40)
+    group = fold_card_for_main_prompt(base, content=packed, is_group=True)
+    gtxt = group.format()
+    assert "inline_head" not in gtxt
+    assert "不该出现" not in gtxt
+    assert "how_to_read" not in gtxt
+    assert "read_tool=read_handle" in gtxt
+    assert group.speech_expand is False
+    priv = fold_card_for_main_prompt(base, content=packed, is_group=False)
+    ptxt = priv.format()
+    assert "how_to_read" in ptxt
+    assert priv.speech_expand is True
+
+
 def test_image_card_send_hint() -> None:
     card = PersistedHandleCard(
         id="res_img1",
@@ -115,6 +142,8 @@ def test_content_hash_stable() -> None:
 
 def test_should_persist_and_fold_gates() -> None:
     assert not should_persist_tool_return("web_search_tool", "short")
+    assert should_persist_tool_return("web_search_tool", "x" * 40)
+    assert not should_persist_tool_return("plugin_query", "x" * 40)
     assert should_persist_tool_return("web_search_tool", "x" * 900)
     pending = "⏳ 子任务后台执行中（已同步等 5s，将自动回灌）。" + ("y" * 900)
     assert not should_persist_tool_return("create_subagent", pending)
@@ -133,8 +162,8 @@ def test_should_persist_and_fold_gates() -> None:
     assert not should_persist_tool_return("web_search_tool", card_body)
     assert not should_fold_for_model(card_body, tool_name="web_search_tool")
     assert not should_fold_for_model(long_read, tool_name="read_handle")
-    # create_subagent 永不折叠
-    assert not should_fold_for_model("x" * 5000, tool_name="create_subagent")
+    # 长委派回执与其它长文一样折成卡；短 ack 仍不落盘
+    assert should_fold_for_model("x" * 5000, tool_name="create_subagent")
     assert should_fold_for_model("x" * 1500, tool_name="web_search_tool")
     assert fold_threshold(is_group=True) < fold_threshold(is_group=False)
     assert should_fold_for_model("x" * 950, tool_name="web_search_tool", is_group=True)

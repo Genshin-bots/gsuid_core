@@ -212,6 +212,50 @@ async def cognitionNodeDetail(
     return {"status_code": 200, "data": data}
 
 
+@app.get("/api/cognition/articles", summary="预览公共挂文", tags=AGENT_KITS)
+async def cognitionArticlePreview(
+    handle: str = Query(..., description="挂文句柄（kb_plugin: / kb_kbdoc: / to_ / sa_ / res_）"),
+    limit: int = Query(20000, ge=1, le=80000),
+    _user: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    """控制台预览枢纽挂文。网页落盘是 ``to_``，插件/手动/Agent 文是 ``kb_*``。"""
+    from gsuid_core.ai_core.planning.handle_resolver import handle_kind_of, resolve_handle
+    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+
+    hid = (handle or "").strip()
+    if hid.startswith("kbdoc:"):
+        hid = f"kb_kbdoc:{hid[len('kbdoc:') :]}"
+    kind = handle_kind_of(hid)
+    if kind in ("image", "delegation"):
+        return {"status_code": 400, "msg": "该句柄不是可预览的文本文章", "data": None}
+    resolved = await resolve_handle(hid)
+    if resolved is None:
+        return {"status_code": 404, "msg": "文章不存在或句柄已失效", "data": None}
+    if resolved.source == "image" or (resolved.mime or "").startswith("image/"):
+        return {"status_code": 400, "msg": "该挂件是图片，不能当文本预览", "data": None}
+    if resolved.source == "knowledge":
+        text = resolved.payload_inline or ""
+    else:
+        text, err = load_payload_text(
+            payload_inline=resolved.payload_inline,
+            payload_path=resolved.payload_path,
+        )
+        if err:
+            return {"status_code": 500, "msg": err, "data": None}
+    clipped = (text or "")[:limit]
+    return {
+        "status_code": 200,
+        "data": {
+            "handle": hid,
+            "source": resolved.source,
+            "mime": resolved.mime,
+            "text": clipped,
+            "truncated": len(text or "") > limit,
+            "size_bytes": resolved.size_bytes,
+        },
+    }
+
+
 @app.post("/api/cognition/rebuild_mount", summary="重建认知挂载（不碰记忆图）", tags=AGENT_KITS)
 async def cognitionRebuildMount(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
     from gsuid_core.ai_core.cognition.hub import rebuild_cognition_mount

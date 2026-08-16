@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 
 # 主人格：有工具返回后的软提示。出图/再搜/短答由模型自己选，不锁死下一步。
@@ -151,7 +152,10 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "写成**一份**高密度 HTML（竖/横按内容），只调用一次 render_html_to_image；"
     "html/body 须不透明实色底；**先抽四配方之一**（双栏简报/时间轴脊/对比棚/纸感档案），"
     "禁止连续任务抄同一暗色编号竖卡；"
-    "≥3 个可比数值须先 render_chart_spec 嵌 SVG；字重 330–700（勿写 800/900）；"
+    "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
+    "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
+    "禁止把身份拍扁进单柱 label，禁止用升/降色区分系列；"
+    "字重 330–700（勿写 800/900）；"
     "逻辑宽≤1000，正文≥16px、badge≥13px；"
     "事实包有 https 配图则用 <img src=该URL>（系统自动下载嵌图），禁止纯文字墙顶替已有图；"
     "暗底须浅字、浅底须深字；长文禁止压成少字海报。"
@@ -204,6 +208,31 @@ def receipt_image_likely(*, pid: str, has_image_art: bool) -> bool:
     return has_image_art
 
 
+def _agent_profile_from_tool_args(
+    args: dict[str, Any] | str | None,
+    args_json: str,
+) -> str:
+    """只取 agent_profile 字段；task 正文里的节点名不算。"""
+    blob: dict[str, Any] | None = None
+    if isinstance(args, dict):
+        blob = args
+    else:
+        raw = args if isinstance(args, str) and args.strip() else args_json
+        if raw and raw.lstrip()[:1] == "{":
+            try:
+                parsed: Any = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                blob = parsed
+    if blob is None or "agent_profile" not in blob:
+        return ""
+    profile = blob["agent_profile"]
+    if not isinstance(profile, str):
+        return ""
+    return profile.strip()
+
+
 def tool_call_targets_render_agent(
     *,
     tool_name: str,
@@ -213,17 +242,40 @@ def tool_call_targets_render_agent(
     """create_subagent 的 agent_profile 是否解析到 render_agent。"""
     if tool_name != "create_subagent":
         return False
-    raw = args_json or (args if isinstance(args, str) else "")
-    if isinstance(raw, str) and "render_agent" in raw.lower():
-        return True
-    if not isinstance(args, dict) or "agent_profile" not in args:
-        return False
-    profile = args["agent_profile"]
-    if not isinstance(profile, str) or not profile.strip():
+    profile = _agent_profile_from_tool_args(args, args_json)
+    if not profile:
         return False
     from gsuid_core.ai_core.agent_node import resolve_node
 
     return resolve_node(profile) == "render_agent"
+
+
+def inflight_after_create_subagent_return(
+    *,
+    failed: bool,
+    async_ack: bool,
+    render_done: bool,
+    ack_seen: bool,
+    pending_async: bool,
+    delegated_render: bool,
+    speech_policy: str,
+    is_framework: bool,
+) -> tuple[bool, bool, str, bool]:
+    """ToolReturn 后的在途静默。(pending, delegated, policy, ack_seen)。
+
+    ToolCall 可能已抢先静默；失败且尚未 ack 则回滚，避免整轮哑火。
+    """
+    if failed and not ack_seen:
+        policy = speech_policy
+        if speech_policy == "silence_only":
+            policy = "framework_deliver" if is_framework else "free"
+        return False, False, policy, False
+    if render_done:
+        return pending_async, True, speech_policy, True
+    if async_ack:
+        policy = speech_policy if speech_policy == "delivered" else "silence_only"
+        return True, delegated_render, policy, True
+    return pending_async, delegated_render, speech_policy, ack_seen
 
 
 def post_tool_contracts_for(

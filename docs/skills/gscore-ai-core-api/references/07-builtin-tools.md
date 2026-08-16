@@ -175,7 +175,7 @@ async def resume_scheduled_task(
 `buildin` 分类下的工具属于**框架保底工具池**，主Agent 无条件全部加载，不受向量搜索影响。
 **多数据点出图已不在 buildin**：见 §7.4 `media` + 能力代理 `render_agent`。
 
-### `search_cognition` — 回想（记忆 / 偏好 / 知识 / 落盘 / 产物）
+### `search_cognition` — 回想（记忆 / 偏好 / 知识 / 落盘 / 产物 / 近窗 / 记录 / 图片 / 表情）
 
 ```python
 @ai_tools(category="buildin", capability_domain="回想")
@@ -213,7 +213,8 @@ async def read_handle(
 实现在 `planning/tool_output_tools.py`，启动时随 planning 注册，**不是**
 `read_persisted_output` 别名。`to_` / `sa_` / `res_` / `img_` / `dlg_` /
 `kb_plugin` / `kb_kbdoc` 都走这里；落盘属主 ACL 在句柄解析层。
-列举 / grep 落盘仍是按需工具 `list_persisted_outputs` / `grep_persisted_outputs`。
+列举 / grep 落盘、`search_image`、`search_meme`、`artifact_get` 对主人格
+`visible_when=visible_to_capability_only`；主人格深读只留 `read_handle`。
 
 ### `attach_article` — 往公共枢纽挂新文
 
@@ -337,8 +338,10 @@ async def state_append(
 
 ### `search_image` — 图片检索
 
+主人格隐藏（`visible_to_capability_only`）；回想走 `search_cognition(kinds=image)`。
+
 ```python
-@ai_tools(category="common")
+@ai_tools(category="common", visible_when=visible_to_capability_only)
 async def search_image(
     ctx: RunContext[ToolContext],
     query: str,                      # 自然语言查询
@@ -400,8 +403,10 @@ async def collect_meme(
 
 ### `search_meme` — 搜索表情包
 
+主人格隐藏（`visible_to_capability_only`）；回想走 `search_cognition(kinds=meme)`。
+
 ```python
-@ai_tools(category="common")
+@ai_tools(category="common", visible_when=visible_to_capability_only)
 async def search_meme(
     ctx: RunContext[ToolContext],
     query: str,                    # 搜索关键词
@@ -477,24 +482,35 @@ async def render_html_to_image(
 - 默认自由 HTML；原生 `<table>` → `table_rewrite` flex 网格；自动嵌 `https`/`icon:`/`img_`/`res_`。
 - 约束见工具 docstring、[`TAKUMI_HTML_GUIDE.md`](../../../TAKUMI_HTML_GUIDE.md)。
 
-### `render_chart_spec` — 声明式图表 → 内联 SVG（2026-08）
+### `render_chart_spec` — 声明式图表 → 内联 SVG（2026-08，2026-08-16 编码补强）
 
 ```python
 @ai_tools(category="media", capability_domain="资料出图")
 async def render_chart_spec(
     ctx: RunContext[ToolContext],
     type: str,                          # line / bar / hbar / pie
-    data: List[Dict[str, Any]],         # [{label, value}, ...]
+    data: List[Dict[str, Any]] | None = None,   # 单系列 [{label, value}, ...]
+    series: List[Dict[str, Any]] | None = None, # 多系列 [{name, data, color?}, ...]
     width: int = 640,
     height: int = 360,
     color: str = "",
     dark: bool = True,
+    signed: bool = False,               # True：柱色按正负，系列靠分组+图例
+    title: str = "",
+    legend: bool = True,
 ) -> str
 ```
 
 渲染引擎**无 JS**（pytakumi），echarts/canvas 不可用。本工具返回可直接嵌进 HTML 的
 `<svg>…</svg>` 片段，再交给 `render_html_to_image`。`render_agent` 白名单已含本工具；
 ≥3 数值点应优先图表而非纯文字表。
+
+编码硬规则（防信息误解）：
+
+- 多实体 × 多指标：**必须** `series`（每实体一个 `name`）+ 图例。禁止把身份拍扁进单柱 label。
+- `signed` 只表达正负；系列身份不用升/降色。有负值走零轴。
+- 缺测点断线，禁止补 0。一个字段一个值，禁止把分歧来源画成未标注的两根柱。
+- 类目标签保留约 18 字。身份色避开升/降红绿。
 
 ### `render_card` / `render_markdown_to_image`
 

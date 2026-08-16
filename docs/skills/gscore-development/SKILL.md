@@ -60,7 +60,7 @@ description: >
 | 四 | 事件处理与触发器流转（`handle_event` 13 步、触发器匹配、命令 vs AI 分流、AI 触发条件、长度/并发防护） | [references/04-event-trigger-flow.md](./references/04-event-trigger-flow.md) |
 | 五 | Bot 三类（`_Bot` 底层 / `Bot` 高层 / `MockBot` AI 代理、连接管理与 5 分钟重连复用、发送队列串行化） | [references/05-bot-classes.md](./references/05-bot-classes.md) |
 | 六 | AI Session 路由与 Persona（`ai_router`、**前缀缓存红线 / 保头裁中段**、Persona 热重载） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |
-| 七 | 工具注册表与 Agent 装配（`@ai_tools`/`covers`/`aliases`、L0 实体路由、`find_tools` 分流、**节点语义路由**、输出闸、**render_chart_spec**） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
+| 七 | 工具注册表与 Agent 装配（`@ai_tools`/`covers`/`aliases`、L0 实体路由、`find_tools` 分流、**节点语义路由**、输出闸、**render_chart_spec series+图例**、`in_flight_short`） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
 | 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊软触发、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
 | 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem、**§9.14 认知枢纽/公共域挂文**） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账含 agent、启动挂载公共枢纽、Dense+BM25） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |

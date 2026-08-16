@@ -1026,6 +1026,8 @@ async def render_html_to_image(
       不要靠 ``vertical-align:middle``；不要 ``box-sizing:border-box`` + 极窄 padding（字会探出色块）。
     - **表格拆列**：价格与涨跌、数量与单位不要写在同一 ``td``（如 ``13.79亿+19.75%`` 拆两列）。
     - **图表**：≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；禁止纯 CSS 色条冒充图。
+      多实体对比传 ``series``（每实体一个 name）+ 图例；有正负含义才 ``signed``。
+      禁止把身份写进单柱 label，禁止用升/降色区分系列。
     - **插图 / 图标（一次写完即可）**：直接在 HTML 里写，**系统渲染前自动嵌成 data URI**，
       无需另调工具：
       - ``<img src="https://...">`` 外链图

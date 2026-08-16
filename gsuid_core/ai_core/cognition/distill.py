@@ -11,8 +11,9 @@ from typing import List, Optional
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.cognition.nodes import CogEdgeKind, sync_node, link_nodes
+from gsuid_core.ai_core.cognition.nodes import CogEdgeKind, link_nodes
 from gsuid_core.ai_core.cognition.types import CogKind
+from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
 # 值得回流的落盘特征：含数字 / 承诺 / 稳定属性。纯叙事长文不回流（噪声大、价值低）。
 _WORTH_DISTILL_RE = re.compile(r"(\d[\d,.%]*|承诺|约定|结论|方案|配置|阈值|上限|下限|口径)")
@@ -56,16 +57,18 @@ async def distill_tool_output(
     ``persist_title`` 是落盘短标题（网页搜索为 ``query:``），禁止拿工具名去弱挂枢纽。
     """
     short_title = (persist_title or "").strip()
-    node_id = await sync_node(
-        CogKind.TOOL_OUTPUT,
-        record_id,
-        scope_key=scope_key,
-        owner_user_id=owner_user_id,
-        title=short_title or (tool_name or "落盘"),
-        summary=_clip(summary),
-        as_of=as_of,
-        source="tool",
-        handle=record_id,
+    node_id = await remember(
+        MemoryWrite(
+            kind=CogKind.TOOL_OUTPUT,
+            ref=record_id,
+            scope_key=scope_key,
+            owner_user_id=owner_user_id,
+            title=short_title or (tool_name or "落盘"),
+            summary=_clip(summary),
+            as_of=as_of,
+            source="tool",
+            handle=record_id,
+        )
     )
     try:
         from gsuid_core.ai_core.cognition.hub import maybe_attach_web_record
@@ -82,16 +85,17 @@ async def distill_tool_output(
     if node_id is None or not is_worth_distilling(summary):
         return node_id
     fact_ref = f"tool:{record_id}"
-    fact_id = await sync_node(
-        CogKind.FACT,
-        fact_ref,
-        scope_key=scope_key,
-        owner_user_id=owner_user_id,
-        title=_clip(summary)[:60],
-        summary=_clip(summary),
-        as_of=as_of,
-        # self_action：来源是「我做过的事」，不是群友陈述的事实
-        source="self_action",
+    fact_id = await remember(
+        MemoryWrite(
+            kind=CogKind.FACT,
+            ref=fact_ref,
+            scope_key=scope_key,
+            owner_user_id=owner_user_id,
+            title=_clip(summary)[:60],
+            summary=_clip(summary),
+            as_of=as_of,
+            source="self_action",
+        )
     )
     if fact_id is not None:
         await link_nodes(
@@ -123,42 +127,48 @@ async def distill_task_terminal(
     会让同群任何人都能召回别人的任务结论与产物摘要。
     """
     ref = f"task:{root_task_id}"
-    episode_id = await sync_node(
-        CogKind.EPISODE,
-        ref,
-        scope_key=scope_key,
-        owner_user_id=owner_user_id,
-        title=_clip(goal)[:60],
-        summary=_clip(f"[{status}] {goal} → {conclusion}"),
-        as_of=as_of,
-        source="self_action",
+    episode_id = await remember(
+        MemoryWrite(
+            kind=CogKind.EPISODE,
+            ref=ref,
+            scope_key=scope_key,
+            owner_user_id=owner_user_id,
+            title=_clip(goal)[:60],
+            summary=_clip(f"[{status}] {goal} → {conclusion}"),
+            as_of=as_of,
+            source="self_action",
+        )
     )
     if episode_id is None:
         return None
     for res_id in artifact_ids[:5]:
-        await sync_node(
-            CogKind.ARTIFACT,
-            res_id,
-            scope_key=scope_key,
-            owner_user_id=owner_user_id,
-            title="任务产物",
-            summary=_clip(conclusion),
-            as_of=as_of,
-            source="self_action",
-            handle=res_id,
+        await remember(
+            MemoryWrite(
+                kind=CogKind.ARTIFACT,
+                ref=res_id,
+                scope_key=scope_key,
+                owner_user_id=owner_user_id,
+                title="任务产物",
+                summary=_clip(conclusion),
+                as_of=as_of,
+                source="self_action",
+                handle=res_id,
+            )
         )
         await link_nodes((CogKind.EPISODE, ref), (CogKind.ARTIFACT, res_id), CogEdgeKind.DERIVED_FROM)
     if is_worth_distilling(conclusion):
         fact_ref = f"task_fact:{root_task_id}"
-        fact_id = await sync_node(
-            CogKind.FACT,
-            fact_ref,
-            scope_key=scope_key,
-            owner_user_id=owner_user_id,
-            title=_clip(conclusion)[:60],
-            summary=_clip(conclusion),
-            as_of=as_of,
-            source="self_action",
+        fact_id = await remember(
+            MemoryWrite(
+                kind=CogKind.FACT,
+                ref=fact_ref,
+                scope_key=scope_key,
+                owner_user_id=owner_user_id,
+                title=_clip(conclusion)[:60],
+                summary=_clip(conclusion),
+                as_of=as_of,
+                source="self_action",
+            )
         )
         if fact_id is not None:
             await link_nodes((CogKind.FACT, fact_ref), (CogKind.EPISODE, ref), CogEdgeKind.SUPPORTS)
@@ -178,11 +188,13 @@ async def distill_self_note(*, note: str, note_type: str, bot_id: str) -> Option
     # 同一条 note 会算出不同 ref，(kind, ref) 幂等键失效 → 每次重启都堆一份重复节点。
     digest = hashlib.sha1(note.encode("utf-8")).hexdigest()[:16]
     ref = f"self:{bot_id}:{note_type}:{digest}"
-    return await sync_node(
-        CogKind.SELF_NOTE,
-        ref,
-        scope_key=make_scope_key(ScopeType.SELF, bot_id or "default"),
-        title=note_type,
-        summary=_clip(note),
-        source="self_action",
+    return await remember(
+        MemoryWrite(
+            kind=CogKind.SELF_NOTE,
+            ref=ref,
+            scope_key=make_scope_key(ScopeType.SELF, bot_id or "default"),
+            title=note_type,
+            summary=_clip(note),
+            source="self_action",
+        )
     )

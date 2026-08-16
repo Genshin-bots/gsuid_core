@@ -18,6 +18,7 @@ from dataclasses import field, dataclass
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.entity_index import (
+    EntityRef,
     _contains,
     _is_indexable,
     lookup_surface,
@@ -47,6 +48,7 @@ MOUNT_YIELD_EVERY = 200
 ENTITY_PAGE_SIZE = 200
 
 _SEG_SPLIT_RE = re.compile(r"[\s·\-—/|：:]+")
+_SOFT_SEG_SPLIT_RE = re.compile(r"[\s\-—/|：:]+")
 _CHUNK_SEG_TITLE_RE = re.compile(r" - 第\d+段$")
 _CREATE_PUNCT_RE = re.compile(r"[。！？?!；;\n]")
 _CREATE_MAX_LEN = 32
@@ -149,6 +151,71 @@ def title_tokens(text: str) -> List[str]:
     return [tok for tok in _SEG_SPLIT_RE.split(_normalize_surface(text)) if tok]
 
 
+def title_subject_tokens(text: str) -> List[str]:
+    """挂载用标题段：强切（含 ·）与软切（保留 · 在名字里）并集。"""
+    raw = _normalize_surface(text)
+    if not raw:
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+    for pattern in (_SEG_SPLIT_RE, _SOFT_SEG_SPLIT_RE):
+        for tok in pattern.split(raw):
+            if tok and tok not in seen:
+                seen.add(tok)
+                out.append(tok)
+    return out
+
+
+def _ok_mount_formal(name: str) -> bool:
+    """挂载主语门：无句读、有长度上限。CJK 允许单字；ASCII 仍走可索引。"""
+    if not name or _CREATE_PUNCT_RE.search(name):
+        return False
+    if len(name) > _CREATE_MAX_LEN:
+        return False
+    norm = _normalize_surface(name)
+    if not norm:
+        return False
+    if norm.isascii():
+        return _is_indexable(norm) and not norm.isdigit()
+    return len(norm) >= 1
+
+
+def tag_is_mount_subject(title: str, tag: str) -> bool:
+    """文档显式 tag 是标题独立段即可。聊天扫词仍走 tag_is_independent_segment。"""
+    tag_n = _normalize_surface(tag)
+    if not tag_n or _CREATE_PUNCT_RE.search(tag):
+        return False
+    if len(tag) > _CREATE_MAX_LEN:
+        return False
+    if tag_n.isascii() and not _is_indexable(tag_n):
+        return False
+    return tag_n in title_subject_tokens(title)
+
+
+def _canon_for_plugin(ref: Optional[EntityRef], plugin: str) -> Optional[str]:
+    """只取该插件自己的正式名。跨插件同词互不覆盖。"""
+    if ref is None:
+        return None
+    if plugin:
+        return ref.canonical_for(plugin)
+    if ref.is_ambiguous:
+        return None
+    unique = list(dict.fromkeys(ref.canonicals))
+    if len(unique) != 1:
+        return None
+    return unique[0]
+
+
+def _unique_owner_plugin(formal: str) -> Optional[str]:
+    """别名全球只属于一个插件时，枢纽归那个插件。歧义或未注册返回 None。"""
+    ref = lookup_surface(formal)
+    if ref is None or ref.is_ambiguous:
+        return None
+    if len(ref.plugins) != 1:
+        return None
+    return ref.plugins[0]
+
+
 def tag_is_independent_segment(title: str, tag: str) -> bool:
     """tag 必须是 title 的独立段，禁止用短 tag 去配更长合词。"""
     tag_n = _normalize_surface(tag)
@@ -219,6 +286,19 @@ def plugin_from_world_ref(ref: str) -> str:
     return plugin
 
 
+def plugin_article_ref(plugin: str, title: str) -> str:
+    """插件挂文主键：插件名 + 归一化标题。禁止用每次启动可能变的知识点 id。"""
+    plug = (plugin or "unknown").strip() or "unknown"
+    norm = _normalize_surface(title) or (title or "").strip() or "untitled"
+    raw = f"{PLUGIN_REF_PREFIX}{plug}:{norm}"
+    if len(raw) <= 192:
+        return raw
+    digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+    prefix = f"{PLUGIN_REF_PREFIX}{plug}:"
+    keep = max(1, 192 - len(prefix) - 17)
+    return f"{prefix}{norm[:keep]}#{digest}"
+
+
 def env_ref(entity_id: str) -> str:
     return f"{ENV_REF_PREFIX}{entity_id}"
 
@@ -235,37 +315,57 @@ def _mapping_str(data: Mapping[str, Any], key: str) -> str:
     return str(data[key])
 
 
-def resolve_canonical_from_knowledge(title: str, tags: List[str]) -> Optional[str]:
-    """正式名：alias 精确 → tags 最长 alias → tags 独立段回退。失败返回 None。"""
-    title_ref = lookup_surface(title)
-    if title_ref is not None and not title_ref.is_ambiguous and title_ref.canonicals:
-        return title_ref.canonicals[0]
+def resolve_canonical_from_knowledge(
+    title: str,
+    tags: List[str],
+    plugin: str = "",
+    entity: str = "",
+) -> Optional[str]:
+    """正式名：声明 entity → 本插件 alias → 标题段/tag 上的本插件 alias → 标题段 tag。
+
+    不猜分隔符。失败返回 None。
+    """
+    declared = (entity or "").strip()
+    if declared:
+        canon = _canon_for_plugin(lookup_surface(declared), plugin)
+        if canon:
+            return canon
+        if _ok_mount_formal(declared):
+            return declared
+
+    titled = _canon_for_plugin(lookup_surface(title), plugin)
+    if titled:
+        return titled
 
     alias_hits: List[Tuple[int, str]] = []
     seen_alias: set[str] = set()
-    alias_surfaces = [tag for tag in tags if tag_is_independent_segment(title, tag)]
-    alias_surfaces.extend(title_tokens(title))
+    alias_surfaces = [tag for tag in tags if tag_is_mount_subject(title, tag) or tag_is_independent_segment(title, tag)]
+    alias_surfaces.extend(title_subject_tokens(title))
     for surface in alias_surfaces:
         key = _normalize_surface(surface)
         if not key or key in seen_alias:
             continue
         seen_alias.add(key)
-        ref = lookup_surface(surface)
-        if ref is None or ref.is_ambiguous or not ref.canonicals:
+        canon = _canon_for_plugin(lookup_surface(surface), plugin)
+        if not canon:
             continue
-        alias_hits.append((len(key), ref.canonicals[0]))
+        alias_hits.append((len(key), canon))
     if alias_hits:
         alias_hits.sort(key=lambda x: x[0], reverse=True)
         best_len = alias_hits[0][0]
         best = [c for n, c in alias_hits if n == best_len]
-        if len(set(best)) == 1:
-            return best[0]
+        if len(set(best)) != 1:
+            return None
+        return best[0]
 
     seg_hits: List[Tuple[int, str]] = []
     for tag in tags:
-        if not tag_is_independent_segment(title, tag):
+        if not tag_is_mount_subject(title, tag):
             continue
-        seg_hits.append((len(_normalize_surface(tag)), tag.strip()))
+        name = tag.strip()
+        if not _ok_mount_formal(name):
+            continue
+        seg_hits.append((len(_normalize_surface(name)), name))
     if not seg_hits:
         return None
     seg_hits.sort(key=lambda x: x[0], reverse=True)
@@ -329,15 +429,13 @@ async def ensure_public_hub(
     source: str,
     as_of: str = "",
 ) -> Optional[AICogNode]:
-    """先查已有；唯一命中即复用。零命中且过门才建。歧义不合格返回 None。"""
+    """先查已有（本插件或唯一属主）；零命中且过门才建。歧义不合格返回 None。"""
     formal = _alias_formal(name)
     if formal is None:
         return None
-    hubs = await AICogNode.list_world_hubs_by_title(formal)
-    if len(hubs) > 1:
-        return None
-    if len(hubs) == 1:
-        return hubs[0]
+    found = await _find_world_hub(plugin, formal)
+    if found is not None:
+        return found
     if not _may_create_public_hub(formal):
         return None
     return await _ensure_world_hub(plugin, formal, as_of, source)
@@ -410,21 +508,39 @@ def select_attachment(
     return tier[0]
 
 
-async def _ensure_world_hub(plugin: str, formal: str, as_of: str, source: str) -> Optional[AICogNode]:
-    existing = await AICogNode.list_world_hubs_by_title(formal)
-    if existing:
-        hub = existing[0]
-        if plugin_from_world_ref(hub.ref) != plugin:
-            logger.info(i18n_t("log.ai.cognition_hub_merged", title=formal, ref=hub.ref))
-        return hub
-    async with _HUB_CREATE_LOCK:
-        existing = await AICogNode.list_world_hubs_by_title(formal)
-        if existing:
-            hub = existing[0]
-            if plugin_from_world_ref(hub.ref) != plugin:
-                logger.info(i18n_t("log.ai.cognition_hub_merged", title=formal, ref=hub.ref))
+async def _find_world_hub(plugin: str, formal: str) -> Optional[AICogNode]:
+    """优先属主插件的枢纽。未登记且标题全球唯一时复用；歧义同名不拿别人的。"""
+    owner = _unique_owner_plugin(formal)
+    titled = await AICogNode.list_world_hubs_by_title(formal)
+    want = owner or plugin
+    exact = await AICogNode.get(CogKind.ENTITY, make_world_ref(want, formal))
+    if exact is not None:
+        return exact
+    for hub in titled:
+        if plugin_from_world_ref(hub.ref) == want:
             return hub
-        ref = make_world_ref(plugin, formal)
+    if owner:
+        return None
+    surface = lookup_surface(formal)
+    if surface is not None and surface.is_ambiguous:
+        return None
+    if len(titled) == 1:
+        return titled[0]
+    return None
+
+
+async def _ensure_world_hub(plugin: str, formal: str, as_of: str, source: str) -> Optional[AICogNode]:
+    existing = await _find_world_hub(plugin, formal)
+    if existing is not None:
+        return existing
+    owner = _unique_owner_plugin(formal) or plugin
+    async with _HUB_CREATE_LOCK:
+        existing = await _find_world_hub(plugin, formal)
+        if existing is not None:
+            return existing
+        ref = make_world_ref(owner, formal)
+        if owner != plugin:
+            logger.info(i18n_t("log.ai.cognition_hub_merged", title=formal, ref=ref))
         node_id = await AICogNode.upsert(
             kind=CogKind.ENTITY,
             ref=ref,
@@ -489,16 +605,17 @@ async def _mount_plugin_item(item: Mapping[str, Any], stats: MountStats) -> None
         return
     tags = _knowledge_str_list(item["tags"] if "tags" in item else [])
     extra = [_mapping_str(item, k) for k in ("type", "category") if k in item]
-    if _surface_is_ambiguous(title, tags):
+    plugin = _mapping_str(item, "plugin") or "unknown"
+    entity = _mapping_str(item, "entity") if "entity" in item else ""
+    if _surface_is_ambiguous(title, tags, plugin=plugin, entity=entity):
         stats.skipped_ambiguous += 1
         logger.debug(i18n_t("log.ai.cognition_hub_ambiguous", title=title[:80]))
         return
-    formal = resolve_canonical_from_knowledge(title, tags)
+    formal = resolve_canonical_from_knowledge(title, tags, plugin=plugin, entity=entity)
     if formal is None:
         stats.skipped_unresolved += 1
         logger.debug(i18n_t("log.ai.cognition_hub_unresolved", title=title[:80]))
         return
-    plugin = _mapping_str(item, "plugin") or "unknown"
     as_of = _mapping_str(item, "_hash")[:8]
     hub = await _ensure_world_hub(plugin, formal, as_of, source="plugin")
     if hub is None or hub.id is None:
@@ -514,8 +631,8 @@ async def _mount_plugin_item(item: Mapping[str, Any], stats: MountStats) -> None
         as_of=as_of,
         source="plugin",
         writable=False,
-        ref=f"{PLUGIN_REF_PREFIX}{kid}",
-        handle=f"kb_plugin:{kid}",
+        ref=plugin_article_ref(plugin, title),
+        handle=f"kb_plugin:{kid}" if kid else "",
     )
     stats.attachments += 1
 
@@ -529,7 +646,8 @@ async def _mount_agent_doc(
     stats: MountStats,
 ) -> None:
     """Agent 文只挂已有公共枢纽，禁止自己新建 ``world:``。"""
-    formal = formal_from_hub_tag(tags) or resolve_canonical_from_knowledge(title, tags)
+    plugin = str(getattr(first, "plugin", "") or "")
+    formal = formal_from_hub_tag(tags) or resolve_canonical_from_knowledge(title, tags, plugin=plugin)
     if formal is None:
         stats.skipped_unresolved += 1
         logger.debug(i18n_t("log.ai.cognition_hub_unresolved", title=title[:80]))
@@ -571,16 +689,16 @@ async def _mount_manual_doc(doc_id: str, chunks: List[Any], stats: MountStats) -
     if src == "agent":
         await _mount_agent_doc(doc_id, ordered, first, title, tags, stats)
         return
-    if _surface_is_ambiguous(title, tags):
+    plugin = first.plugin or "manual"
+    if _surface_is_ambiguous(title, tags, plugin=plugin):
         stats.skipped_ambiguous += 1
         logger.debug(i18n_t("log.ai.cognition_hub_ambiguous", title=title[:80]))
         return
-    formal = resolve_canonical_from_knowledge(title, tags)
+    formal = resolve_canonical_from_knowledge(title, tags, plugin=plugin)
     if formal is None:
         stats.skipped_unresolved += 1
         logger.debug(i18n_t("log.ai.cognition_hub_unresolved", title=title[:80]))
         return
-    plugin = first.plugin or "manual"
     as_of = (first.content_hash or "")[:8]
     hub = await _ensure_world_hub(plugin, formal, as_of, source=src)
     if hub is None:
@@ -616,14 +734,32 @@ async def _prune_missing_plugin_attachments() -> None:
     from gsuid_core.ai_core.register import _ENTITIES
 
     live = {
-        f"{PLUGIN_REF_PREFIX}{_mapping_str(item, 'id')}"
+        plugin_article_ref(_mapping_str(item, "plugin"), _mapping_str(item, "title"))
         for item in _ENTITIES
-        if isinstance(item, dict) and "title" in item and "id" in item
+        if isinstance(item, dict) and "title" in item
     }
     rows = await AICogAttachment.list_plugin_refs()
     stale_ids = [r.id for r in rows if r.id is not None and r.ref not in live]
     if stale_ids:
         await AICogAttachment.delete_by_ids(stale_ids)
+
+
+async def _dedupe_plugin_attachments() -> int:
+    """同一枢纽上同标题的插件挂文只留最新一条。清掉旧 id 主键留下的膨胀。"""
+    rows = await AICogAttachment.list_plugin_refs()
+    buckets: Dict[Tuple[int, str], List[AICogAttachment]] = {}
+    for row in rows:
+        key = (row.node_id, _normalize_surface(row.title) or row.title)
+        buckets.setdefault(key, []).append(row)
+    stale: List[int] = []
+    for group in buckets.values():
+        if len(group) <= 1:
+            continue
+        group.sort(key=lambda r: (int(r.updated_at or 0), int(r.id or 0)), reverse=True)
+        stale.extend(r.id for r in group[1:] if r.id is not None)
+    if stale:
+        await AICogAttachment.delete_by_ids(stale)
+    return len(stale)
 
 
 async def _prune_empty_world_hubs() -> None:
@@ -670,18 +806,23 @@ async def mount_plugin_and_manual() -> MountStats:
                 await asyncio.sleep(0)
 
     await _prune_missing_plugin_attachments()
+    await _dedupe_plugin_attachments()
     await _prune_empty_world_hubs()
     stats.hubs = len({h.id for h in await AICogNode.list_by_ref_prefixes([WORLD_REF_PREFIX]) if h.id is not None})
     return stats
 
 
-def _surface_is_ambiguous(title: str, tags: List[str]) -> bool:
+def _surface_is_ambiguous(title: str, tags: List[str], plugin: str = "", entity: str = "") -> bool:
+    if resolve_canonical_from_knowledge(title, tags, plugin=plugin, entity=entity):
+        return False
     title_ref = lookup_surface(title)
-    if title_ref is not None and title_ref.is_ambiguous:
+    if title_ref is not None and title_ref.is_ambiguous and not _canon_for_plugin(title_ref, plugin):
         return True
     for tag in tags:
         tag_ref = lookup_surface(tag)
         if tag_ref is None or not tag_ref.is_ambiguous:
+            continue
+        if _canon_for_plugin(tag_ref, plugin):
             continue
         if tag_is_independent_segment(title, tag) or _normalize_surface(tag) == _normalize_surface(title):
             return True
@@ -986,10 +1127,21 @@ async def _hubs_from_hits(hits: List[CognitiveHit], query: str) -> Tuple[List[AI
             for att in await AICogAttachment.find_by_refs(refs):
                 await _add(await AICogNode.get_by_id(att.node_id))
 
-    formal = _formal_from_query(query)
-    if formal:
-        for hub in await AICogNode.list_world_hubs_by_title(formal):
-            await _add(hub)
+    qn = _normalize_surface(query)
+    surface = lookup_surface(qn) if qn else None
+    if surface is not None and surface.bindings:
+        for owner, canon in surface.bindings:
+            if not owner or not canon:
+                continue
+            await _add(await AICogNode.get(CogKind.ENTITY, make_world_ref(owner, canon)))
+            for hub in await AICogNode.list_world_hubs_by_title(canon):
+                if plugin_from_world_ref(hub.ref) == owner:
+                    await _add(hub)
+    else:
+        formal = _formal_from_query(query)
+        if formal:
+            for hub in await AICogNode.list_world_hubs_by_title(formal):
+                await _add(hub)
 
     extra_titles = [h.title for h in hubs[HUB_CARD_CAP:]]
     return hubs[:HUB_CARD_CAP], extra_titles

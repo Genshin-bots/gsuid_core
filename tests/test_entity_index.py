@@ -90,6 +90,9 @@ def test_ambiguous_surface_is_never_routed() -> None:
     ref = lookup_surface("深渊")
     assert ref is not None
     assert ref.is_ambiguous
+    assert ref.canonical_for("GenshinUID") == "深境螺旋"
+    assert ref.canonical_for("XutheringWavesUID") == "逆境深塔"
+    assert ref.canonical_for("OtherPack") is None
     assert plugins_in_text("这期深渊怎么打") == [], "歧义 surface 竟然参与了路由"
 
 

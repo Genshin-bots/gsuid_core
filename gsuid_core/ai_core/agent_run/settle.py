@@ -68,6 +68,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     strip_open_solicitations,
     claims_premature_delivery,
     has_orchestration_narration,
+    looks_like_numeric_recitation,
 )
 from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
 
@@ -348,7 +349,7 @@ class SettlePhase(RunOnceHost):
                 logger.debug(i18n_t("log.agent.current_tool_call_event", p0=", ".join(st.tool_call_list)))
 
             self._session_logger.log_run_end()
-            self._session_logger.log_result(result_msg, st.tool_call_list)
+            # result 在出口消毒后再记，避免 raw 念数被当成已出站。
 
             # 假完成结算（结构判据收口）。同轮至多一次纠正重跑，防 status+render 双触发。
             _settle_correction_ran = False
@@ -578,7 +579,7 @@ class SettlePhase(RunOnceHost):
                             result_msg = _stripped if _stripped else "<SILENCE>"
                         elif len(_rs) > 120:
                             result_msg = "<SILENCE>"
-                elif st.pending_async_delivery and not is_silence_marker(_rs):
+                elif (st.pending_async_delivery or st.delegated_render) and not is_silence_marker(_rs):
                     # 步骤 3：异步在途可保留一句等待声明；其余静默
                     if looks_like_wait_comfort(_rs) and not st.wait_comfort_sent:
                         result_msg = _rs
@@ -589,6 +590,8 @@ class SettlePhase(RunOnceHost):
                 elif claims_premature_delivery(_rs) and not st.image_sent_this_run:
                     result_msg = "<SILENCE>"
                 elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
+                    result_msg = "<SILENCE>"
+                elif st.has_active_task and not st.image_sent_this_run and looks_like_numeric_recitation(_rs):
                     result_msg = "<SILENCE>"
                 elif (
                     _render_obligation
@@ -614,6 +617,7 @@ class SettlePhase(RunOnceHost):
             ):
                 await _deliver_withheld(st, self._run_sent_texts)
 
+            self._session_logger.log_result(result_msg, st.tool_call_list)
             if st.return_mode in ["by_bot"] and st.bot and st.ev:
                 return ""
             # 对用户可见出口才做 roleplay OOC；子代理/能力代理 return 必须保留 res_ 句柄

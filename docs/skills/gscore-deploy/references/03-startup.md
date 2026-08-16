@@ -57,6 +57,27 @@ uv run core --dev
 > | `0.0.0.0` | 监听全部网卡（公网部署必须） |
 > | `all` / `none` / `dual` / 空字符串 | 等价于 `0.0.0.0` |
 
+## 3.1.1 本地评测 / 实机 e2e（不要 `--dev`）
+
+跑 `eval/agent` 或测生产插件行为时，必须加载全部插件，并打开本地测试网关：
+
+```powershell
+$env:GSUID_LOCAL_TEST_MODE="1"
+$env:GSUID_LOCAL_TEST_TOKEN="<与评测相同的 token>"
+$env:PYTHONUTF8="1"
+$env:NO_PROXY="localhost,127.0.0.1"
+uv run core --port 8765
+```
+
+`--dev` 只加载目录名 endswith `-dev` 的插件，普通插件会全部跳过。Windows 必须带
+`NO_PROXY`，否则系统代理会把本机 Qdrant / `chat_with_history` 打成 502。
+
+评测：
+
+```powershell
+python -m eval.agent.run --base-url http://127.0.0.1:8765 --token $env:GSUID_LOCAL_TEST_TOKEN --k 1
+```
+
 ## 3.2 启动日志识别
 
 正常启动会看到类似：

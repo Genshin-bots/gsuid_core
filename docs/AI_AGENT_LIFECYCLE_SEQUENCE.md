@@ -1,12 +1,14 @@
 # GsCore AI：一条消息的完整生命周期
 
-> 日期：**2026-08-10**（对齐源码：system 前缀缓存 / exclusive 委派 / `pre_send_gate` /
+> 日期：**2026-08-16**（对齐源码：system 前缀缓存 / exclusive 委派 / `pre_send_gate` /
 > 能力代理 **return 不做 roleplay OOC scrub** / incomplete 认 `res_` /
 > POST_TOOL 分通道 / **出图主路径 `render_agent`** / 长 MD 兜底默认关 /
 > DELEGATION_FIRST + web_search 降权 / 身份锚定 /
 > **Agent 单次 run 已拆 `ai_core/agent_run/` 阶段包** /
 > **DELIVERED 交付终局态 + `delivery_narration` 防火墙** /
-> 出图候选时效+多点判据 / 能力缺口登记 / 召回阈值可配 / heartbeat 话头门）
+> 出图候选时效+多点判据 / 能力缺口登记 / 召回阈值可配 / heartbeat 话头门 /
+> **出图委派 ToolCall 即在途静默 / 多点读数结构闸 / `in_flight_short` 瘦工具池 /
+> `render_chart_spec` series+图例+零轴**）
 > 主线：**适配器推来一条群聊消息 → 是否进 AI → 读哪些数据 → 激活哪些模块 → 怎么回复 → 什么被沉淀 → 首尾日志**
 > 源码是唯一事实源。改 `handler` / `handle_ai` / `gs_agent` / **`agent_run/*`** / `output_gate` /
 > `output_firewall` / `subagent` / `delegation_contracts` / 装配 / 记忆后请同步本文。
@@ -61,7 +63,7 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
 1. `uv run core` 已 `init_database` + `load_plugins`（`@sv` / `@ai_tools` 进表）
 2. lifespan 里 `init_ai_core` **已完成**（RAG/Persona/Planning/Memory/MCP/统计…）
 3. 适配器已 WS 连上，`bot._process` 在消费 `ws.queue`
-4. 当前群已配 persona（`scope=global` 或 `specific` 含本群）
+4. 当前会话已配 persona（`global` / 群聊 `global_group` / 私聊 `global_private` / `specific` 含本群或本用户）
 
 若 `init_ai_core` 未完成：`handler` 会打 `ai_initializing` / `ai_init_incomplete` 并 **不入队** AI。
 
@@ -486,7 +488,9 @@ sequenceDiagram
     HandleAI->>GsAgent: run(user_messages, rag_context=full_context, intent, has_active_task)
 ```
 
-> **2026-08-16 认知枢纽**：⑧ 每轮自动注入仍只打记忆+偏好（`inject_memory_slice`）。
+> **2026-08-17 Everything is Memory**：统一写契约 `remember(MemoryWrite)`；
+> web 搜索/抓取 ≥40 字同步落 FileOS（当轮可回想）；`search_cognition` 补 History A /
+> record / 图片 / 表情，产物走 SQL+向量。⑧ 每轮自动注入仍只打记忆+偏好。
 > 公共概念的**路径卡 + 选定全文**只出现在工具 `search_cognition` 的回执里，不灌闲聊。
 > 门面 `cognition.facade.search_cognition` 签名不变；展开在 `cognition.hub.expand_hub`
 > （失败 fail-open，独立 i18n `cognition_expand_fail`，不挡联邦命中列表）。
@@ -1270,7 +1274,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         · **交付终局 SILENCE 指令**（DELIVERED 后只注入一次，取代 POST_TOOL）
       请求侧 ToolReturn 处理：
         · is_tech_dump → TECH_DUMP_TOOL_SHIELD（主人格）
-        · FileOS：主人格长文落盘折叠 → 句柄卡 + inline_head；只读工具/句柄卡永不二次折
+        · FileOS：主人格长文落盘折叠 → 句柄卡；群聊无 inline_head；只读工具/句柄卡永不二次折
         · 高密度 JSON → 摘要折叠（CapabilityAgent 不折叠）
         · 无时点聚合 → saw_timeless_aggregate（只记账，不往请求里塞禁令）
         · post_tool_contracts_for(create_by, capability_node_id=…):
@@ -1281,15 +1285,26 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
             **DELIVERED 终局** → 改注入 POST_DELIVERY_SILENCE（禁再注入 POST_TOOL）
     CallToolsNode → _run_once_on_call_tools
       清洗：embedded thinking / tool_call 伪影 / 参数规范化 / thrash 剥重复 call
+      **先扫**本响应是否有 create_subagent(render_agent)：有则立刻
+        delegated_render + pending_async + silence_only
+        （TextPart 可能排在 ToolCall 前，不能等遍历到 call 才静默）
       parts:
         ToolCall  → log_tool_call / on_trace
+                    create_subagent 仅当 agent_profile 解析到 render_agent
+                    才抢先静默（看 profile 字段，不扫 task 正文）
+                    send_message_by_ai → image_sent，解除异步静默
                     （工具本体由 pydantic-ai 执行；send_message_by_ai 入口
                      tool_gate_feedback = pre_send_gate(channel=tool)；
                      带台词成功交付 → extra["delivered_with_speech"]）
+        ToolReturn create_subagent → inflight_after_create_subagent_return：
+                    异步 ack / 完成回执确认在途；失败且未 ack 则回滚抢先静默
         TextPart  → log_text_output；return_mode=by_bot 时按序：
                     1) SILENCE / 本轮去重 / 中间文本抑制
                     2) **speech_policy.should_block**（delivered/silence_only/…
-                       话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报）
+                       话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报；
+                       pending_async 或 render_inflight → 只放行一句等待；
+                       has_active_task + 多点读数密度 → numeric_recitation 丢弃，
+                       不进 presentation_withheld）
                     3) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
                     4) 假完成预检（零工具却声称办完）→ 暂扣（进 RunOnceState.fab_blocked）
                     5) 主通道单轮出站配额（超 MAIN_CHANNEL_VISIBLE_LIMIT 静默）
@@ -1303,6 +1318,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
       OOC：_ooc_rewrite_and_send（**尖括号熔断仍执行**；与 angle scrub 正交）
     假完成 / 结构零工具 / render 未委派 → 可选纠正重跑 _execute_run_once
       （结构零工具纠正带 **SILENCE 自洽出口**：概念题已答全则不刷屏、不削原答）
+    出口消毒后再 log_result（避免 raw 念数被当成已出站）
     return 路径：见 §10.8（Capability/subagent 跳过 roleplay scrub）
 ```
 
@@ -1334,6 +1350,29 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 （`list_for_root`：多节点树的产物挂在 child 上）。执行体完成先 `mailbox.post_to_session`，
 再由短窗 flush 用 `drain_one(session, "delivery", root)` 精确消费——会话级 drain 会抽走
 兄弟 root 的投递。
+
+**出图在途静默（2026-08-16）**：群聊里「先念完整事实包、再 `create_subagent(render_agent)`」
+会把图上的信息误解成气泡正文。修复是**结构通道**，不是业务词表：
+
+1. `create_subagent` 的 `agent_profile` 解析到 `render_agent` 时（只看 profile 字段，
+   **不**扫 `task` 正文里的节点名），在 **ToolCall 当下**置 `delegated_render` +
+   `pending_async_delivery` + `speech_policy=silence_only`。同响应先扫 call 再处理 TextPart。
+2. ToolReturn：异步 ack / 完成回执确认在途（`render_ack_seen`）；失败且未 ack 则回滚静默，
+   避免整轮哑火。`pending_async` 期间不注入 POST_TOOL（那会提醒模型「再说一句」）。
+3. `should_block_user_visible_text(..., render_inflight=, has_active_task=)`：
+   在途台词额度 **一句**（≤96 字）：等待安慰 **或** 短应；清单/多点读数/完成腔不占额度、直接静默。
+   活跃任务下「多点读数密度」拦为 `numeric_recitation`，**不进** `presentation_withheld`。
+   `status_ok` 且已查状态工具时放行进度句。发图后另有一句短收尾额度（与在途额度分开）。
+4. 主人格折叠卡：群聊 **不内嵌 inline_head**（summary + 句柄）；长 `create_subagent` 回执同样折成卡。
+   反问时按需 `read_handle`，默认不当事实总线。交付回灌卡 `speech_expand=False`。
+5. `in_flight_short`：`has_active_task` 且剥壳后真人句 ≤48 字 → 跳过语境标签池与向量检索，
+   `max_extra_tools≤2`，保住 L2 kanban/`check_delegation`。唤醒词只剥「装配壳内 ASCII 直接
+   贴非 ASCII」，不切英文句首词。
+
+**图表编码（2026-08-16）**：`render_chart_spec` 支持 `series=[{name,data}]` 分组柱/多折线 +
+图例；`signed` 只表达正负，系列身份不用升/降色；有负值走零轴；缺测点断线不补 0；类目标签
+保留 18 字。事实包禁止把多源分歧合成「a~b」假区间。详见
+[`TAKUMI_HTML_GUIDE.md`](TAKUMI_HTML_GUIDE.md) §8.5、`chart_svg.py`。
 
 **DELIVERED 终局态（2026-08-10，P0 OOC 根治）**：`send_message_by_ai` **带台词**成功交付时
 （工具侧写结构信号 `extra["delivered_with_speech"]`，非文本关键词），loop 把本 run 置为
@@ -1375,8 +1414,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 
 | 类别 | 位置 | 说明 |
 |------|------|------|
-| 话术态 / DELIVERED 终局 / 交付状态汇报 | `agent_run/speech_policy.should_block_user_visible_text`（gate **之前**） | 交付后只许 SILENCE；发图后拦状态汇报；沉默/进度/回灌分流 |
-| **报告体（长结构台词）** | 同上，但**必须** `fact_pack_pending=True` | 出处凭据；无事实包的长正文是用户要的，不拦（INV-1）；被拦的原文进 `presentation_withheld` 供 INV-4 兜底 |
+| 话术态 / DELIVERED 终局 / 交付状态汇报 | `agent_run/speech_policy.should_block_user_visible_text`（gate **之前**） | 交付后只许 SILENCE；发图后拦状态汇报；沉默/进度/回灌分流；出图在途 / 多点读数密度 |
+| **报告体（长结构台词）** | 同上，但**必须** `fact_pack_pending=True` | 出处凭据；无事实包的长正文是用户要的，不拦（INV-1）；被拦的原文进 `presentation_withheld` 供 INV-4 兜底；**numeric_recitation 不进暂扣** |
 | **框架纠正指令** | `control/corrections.py` → `<control>` 信封（settle 发起） | 观察 + 凭据 + 可申辩义务；不进 user 槽/B 轨/工具 query（INV-2） |
 | 假完成 | `agent_run/loop` TextPart（gate **之后**）+ `settle` 结算 | 与「是否调过工具」结构绑定，不是纯文本合规 |
 | SILENCE / 去重 / 中间抑制 / 出站配额 | `agent_run/loop` | 通道与节奏 |
@@ -1593,7 +1632,8 @@ uv run core
 流水线 `finally` 置 `_AI_CORE_READY = True` **之后**（不 await）：
 `spawn_cognition_mount()` → `asyncio.create_task` 跑：插件 → 手动知识建公共枢纽 →
 **Agent 文回挂已有枢纽**（`tags` 含 `hub:{正式名}`，`writable=true`，启动扫描禁止自己新建 `world:`）→
-环境实体完整匹配连边。失败只 warning，**不得**把 READY 改回 false。
+环境实体完整匹配连边。正式名来自 `entity` / 本插件 alias / 标题段 tag，枢纽按插件隔离；
+跨插件同名各建一颗。没声明主语的索引页仍跳过（debug，不是启动失败）。失败只 warning，**不得**把 READY 改回 false。
 开关 `cognition_mount_enable`（默认 true）。
 **禁止**把挂载放进 `_INIT_STEPS` 或套件 `init_step`。
 `rebuild_cognition_mount` 清挂件 + `world:`/`ent:` 镜像后再跑同一套；**先拍**
@@ -1658,11 +1698,11 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | 2 | `search_cognition` | 入库资料（非实时） |
 | 3 | `web_search` / `web_fetch` | 事件/叙事；**摘要常过时，禁止当未核对的实时值** |
 
-`web_search_tool` 返回框极短通用 disclaimer；折叠时 **句柄卡 + inline_head**，全文 `read_handle`（保底）。
+`web_search_tool` 返回框极短通用 disclaimer；折叠时 **句柄卡**（群聊无 inline_head），全文 `read_handle`（保底）。
 
 ---
 
-## 17. 附录 C：成本 / 委派 / 出图 / 闸门备忘（2026-08-10，2026-08-12 增补）
+## 17. 附录 C：成本 / 委派 / 出图 / 闸门备忘（2026-08-10，2026-08-16 增补）
 
 1. **system 前缀缓存**：会话内 system **不改串**（TTL=inf）；mood/关系/记忆/精确时间/身份锚只进 user。
    系统契约只 **append UserPromptPart**，落盘前 `_relean` 剥掉。history **保头裁中段**
@@ -1680,6 +1720,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 9. **呈现 vs 合规**：`send_chat_result` 只做通道变换；打回/熔断只在 gate。
 10. **出图主路径**：`create_subagent(render_agent)` → 自由 HTML / **`render_chart_spec` SVG** → `res_` 图 → `send_message_by_ai`。
     多点结构只给软提示（`POST_TOOL_OUTPUT_CONTRACT`），**不再**注入「唯一合法下一步出图」。
+    委派 **ToolCall 即静默**；图表必须 `series`+图例，禁止把身份拍扁进 label、禁止升/降色当系列色。
 11. **web / 时效**：web 返回 `[source=web|staleness_risk=high]`；结构化带 `[as_of=…]`。
     不再额外叠气候/仅 web 禁令；find_tools 的 🔎/🔒/✅ 装配文案**不算** non_web 数据。
 12. **DELIVERED 终局**：带台词成功交付 → `speech_policy="delivered"`，只许 `<SILENCE>`。
@@ -1708,7 +1749,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | LLM provider | 是 | 除非软门沉默/早退 |
 | 插件工具 / MCP | 条件 | 模型点名才执行 |
 | **create_subagent / 能力代理** | 条件 | 重任务 / 出图；return 跳过 roleplay scrub |
-| **speech_policy / DELIVERED 终局** | 条件 | by_bot 台词前话术态分流；带台词交付后只许 SILENCE |
+| **speech_policy / DELIVERED 终局** | 条件 | by_bot 台词前话术态分流；带台词交付后只许 SILENCE；出图在途静默；多点读数密度闸 |
 | **output_gate / pre_send_gate** | 条件 | by_bot 发台词或 `send_message_by_ai` 时 |
 | send_chat_result | 条件 | gate ALLOW/FALLBACK 后有可见文本/report |
 | session_logger | 是 | 进 run 即 log（子代理独立 subagents/ 目录） |

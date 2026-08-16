@@ -29,7 +29,7 @@ from gsuid_core.utils.database.base_models import with_session
 # 必须带属主才可见的 kind：它们在联邦里的兄弟后端（FileOS `owner_user_id` 行级过滤、
 # Artifact `search_recent_for_owner`）都是行级 ACL。节点层只按 scope_key 过滤会把这层
 # ACL 悄悄降成 group 级——同群成员就能搜到别人的任务结论与产物摘要。
-OWNER_REQUIRED_KINDS = frozenset({CogKind.TOOL_OUTPUT.value, CogKind.ARTIFACT.value})
+OWNER_REQUIRED_KINDS = frozenset({CogKind.TOOL_OUTPUT.value, CogKind.ARTIFACT.value, CogKind.RECORD.value})
 
 
 class CogEdgeKind(str, Enum):
@@ -506,8 +506,8 @@ async def sync_node(
 ) -> Optional[int]:
     """写入钩子的统一入口（best-effort：失败只丢节点，绝不影响原库写入）。
 
-    实际调用点只有 ``cognition/distill.py`` 的三条蒸馏路径（工具落盘 / Kanban 终态 /
-    自我笔记）。``OWNER_REQUIRED_KINDS`` 的节点缺 ``owner_user_id`` 时会被 upsert 拒绝。
+    调用点走 ``cognition.remember``（落盘 / 任务终态 / 笔记 / record / artifact）。
+    ``OWNER_REQUIRED_KINDS`` 的节点缺 ``owner_user_id`` 时会被 upsert 拒绝。
     """
     try:
         return await AICogNode.upsert(

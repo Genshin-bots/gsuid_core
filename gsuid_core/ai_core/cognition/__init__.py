@@ -8,6 +8,7 @@
 
 - :mod:`types`  ``CogKind`` / ``CogScope`` / ``CognitiveHit`` 契约
 - :mod:`facade` ``search_cognition`` 联邦检索 + 渲染
+- :mod:`remember` 统一写契约（索引层，不搬正文）
 - :mod:`nodes`  认知节点表与跨 kind 边（索引与关系层，正文不搬家）
 """
 
@@ -16,6 +17,7 @@ from gsuid_core.ai_core.cognition.types import (
     ALL_KINDS,
     KIND_LABEL,
     WORK_KINDS,
+    MEDIA_KINDS,
     MEMORY_KINDS,
     KNOWLEDGE_KINDS,
     CogKind,
@@ -23,19 +25,23 @@ from gsuid_core.ai_core.cognition.types import (
     CognitiveHit,
 )
 from gsuid_core.ai_core.cognition.facade import kinds_from_names, search_cognition, render_cognition_block
+from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
 __all__ = [
     "ALL_KINDS",
     "KIND_LABEL",
     "KNOWLEDGE_KINDS",
+    "MEDIA_KINDS",
     "MEMORY_KINDS",
     "WORK_KINDS",
     "CogKind",
     "CogScope",
     "CognitiveHit",
+    "MemoryWrite",
     "expand_hub",
     "kinds_from_names",
     "rebuild_cognition_mount",
+    "remember",
     "render_cognition_block",
     "run_cognition_mount",
     "search_cognition",

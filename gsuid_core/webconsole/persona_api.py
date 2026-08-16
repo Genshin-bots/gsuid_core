@@ -662,8 +662,9 @@ async def update_persona_config(
         data: 更新后的配置对象
 
     注意：
-    - scope 可选值为: "disabled"(不对任何群聊启用), "global"(对所有群/角色启用), "specific"(仅对指定群聊启用)
-    - 全部人格中只能有一个配置为 "global"
+    - scope 可选值: disabled / global / specific / global_group / global_private
+    - global 覆盖群聊+私聊；global_group 仅群聊；global_private 仅私聊
+    - global / global_group / global_private 全局互斥，只能有一个
     """
     # 检查 persona 是否存在
     persona = Persona(persona_name)

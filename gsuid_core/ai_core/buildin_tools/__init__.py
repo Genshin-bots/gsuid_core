@@ -44,7 +44,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 ### 2.2 ``category="buildin"`` —— 主人格 + 能力代理都保底
 "任何任务都可能需要"的基础能力。能力代理经 ``task_basics`` 能力族拿到大部分。
 
-- ``search_cognition``（``rag_search.py``）：回想（记忆 / 偏好 / 知识 / 落盘 / 产物）
+- ``search_cognition``（``rag_search.py``）：回想（记忆 / 偏好 / 知识 / 落盘 / 产物 / 近窗 / 记录 / 图片 / 表情）
 - ``read_handle``（``planning/tool_output_tools.py``）：统一读句柄（已删除 ``read_persisted_output``）
 - ``web_search_tool``（``web_search.py``）：Tavily web 搜索
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
@@ -78,7 +78,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
   派子 Agent 跑即时多步任务（不进 Kanban 任务树）
 - ``evaluate_agent_mesh_capability``（``planning/kanban_tools.py``，
   ``capability_domain="长期任务编排"``）：Kanban 任务树前置评估
-- ``search_image``（``rag_search.py``）：图片资源向量检索
+- ``search_image``（``rag_search.py``）：图片资源向量检索（主人格隐藏，走 ``search_cognition``）
 - ``get_user_avatar``（``avatar_tools.py``）：按用户ID取头像，注册 RM 后返回
   ``img_xxx``（再交给 ``read_image`` 看 / ``send_message_by_ai`` 发）
 - ``update_self_note``（``self_info.py``）：写 self_note

@@ -62,6 +62,18 @@ def visible_to_admin(ctx: RunContext[ToolContext]) -> bool:
     return ev.user_pm == 0
 
 
+def capability_only_from_deps(deps: ToolContext | None) -> bool:
+    """主人格隐藏；无 deps / 能力代理保持可见。"""
+    if deps is None:
+        return True
+    return not deps.allow_user_outbound
+
+
+def visible_to_capability_only(ctx: RunContext[ToolContext]) -> bool:
+    """主人格隐藏；能力代理 / 无 deps 保持可见。深读走 search_cognition + read_handle。"""
+    return capability_only_from_deps(ctx.deps)
+
+
 def context_has_image(ctx: RunContext[ToolContext]) -> bool:
     """``read_image`` 的 visible_when：当前轮或上下文里有图片时才暴露。"""
     ev = ctx.deps.ev if ctx.deps is not None else None

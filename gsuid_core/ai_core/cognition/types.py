@@ -22,6 +22,8 @@ class CogKind(str, Enum):
     ARTIFACT = "artifact"
     SELF_NOTE = "self_note"
     RECORD = "record"
+    IMAGE = "image"
+    MEME = "meme"
 
 
 # 面向模型的中文标签（进 prompt 的那一份）
@@ -35,6 +37,8 @@ KIND_LABEL: Dict[CogKind, str] = {
     CogKind.ARTIFACT: "任务产物",
     CogKind.SELF_NOTE: "自我笔记",
     CogKind.RECORD: "业务记录",
+    CogKind.IMAGE: "图片",
+    CogKind.MEME: "表情",
 }
 
 # ⑧ 每轮自动注入的默认切片：与改造前一致（记忆 + 偏好），延迟不回退。
@@ -42,6 +46,7 @@ KIND_LABEL: Dict[CogKind, str] = {
 MEMORY_KINDS: FrozenSet[CogKind] = frozenset({CogKind.EPISODE, CogKind.ENTITY, CogKind.FACT, CogKind.PREFERENCE})
 KNOWLEDGE_KINDS: FrozenSet[CogKind] = frozenset({CogKind.KNOWLEDGE})
 WORK_KINDS: FrozenSet[CogKind] = frozenset({CogKind.TOOL_OUTPUT, CogKind.ARTIFACT})
+MEDIA_KINDS: FrozenSet[CogKind] = frozenset({CogKind.IMAGE, CogKind.MEME})
 ALL_KINDS: FrozenSet[CogKind] = frozenset(CogKind)
 
 

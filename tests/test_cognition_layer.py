@@ -162,6 +162,10 @@ def test_relative_score_floor_marks_high_confidence() -> None:
         patch("gsuid_core.ai_core.cognition.facade._search_knowledge_backend", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_fileos", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=_empty),
     ):
         hits = _run(search_cognition("q", kinds=MEMORY_KINDS, scope=CogScope(user_id="u1"), limit=10))
@@ -191,6 +195,10 @@ def test_one_backend_failure_only_drops_that_leg() -> None:
         patch("gsuid_core.ai_core.cognition.facade._search_knowledge_backend", new=_ok),
         patch("gsuid_core.ai_core.cognition.facade._search_fileos", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=_empty),
     ):
         hits = _run(search_cognition("q", kinds=ALL_KINDS, scope=CogScope(user_id="u1"), limit=10))

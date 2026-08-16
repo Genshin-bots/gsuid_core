@@ -466,6 +466,18 @@ def unregister_tools_of_plugin(plugin_name: str) -> int:
     return len(victims)
 
 
+def unregister_entities_of_plugin(plugin_name: str) -> int:
+    """热重载前摘掉该插件登记的知识 / 图片，避免 ``_ENTITIES`` 只增不减。"""
+
+    def keep(item: Union[KnowledgePoint, KnowledgeBase, ImageEntity]) -> bool:
+        return not (isinstance(item, dict) and str(item.get("plugin") or "") == plugin_name)
+
+    before = len(_ENTITIES)
+    _ENTITIES[:] = [item for item in _ENTITIES if keep(item)]
+    _IMAGE_ENTITIES[:] = [item for item in _IMAGE_ENTITIES if keep(item)]
+    return before - len(_ENTITIES)
+
+
 def get_all_tools() -> Dict[str, ToolBase]:
     """获取所有已注册的工具（平铺结构）"""
     result = {}
@@ -645,6 +657,13 @@ def ai_entity(entity: Union[KnowledgePoint, KnowledgeBase]):
 
     # 自动添加 source="plugin" 标识，表示来自插件注册
     entity["source"] = "plugin"
+    eid = entity.get("id")
+    if eid:
+        for i, existing in enumerate(_ENTITIES):
+            if isinstance(existing, dict) and existing.get("id") == eid:
+                _ENTITIES[i] = entity
+                logger.trace(t("log.ai_registry.entity_registered_plugin", title=entity["title"]))
+                return
     _ENTITIES.append(entity)
     logger.trace(t("log.ai_registry.entity_registered_plugin", title=entity["title"]))
 

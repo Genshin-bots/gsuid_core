@@ -291,7 +291,11 @@ Observer Hook 检测到图片 → `submit_image_observation` 纯规则过滤（U
 路径卡里的「本群事实」读 `AIMemEdge.get_for_entities(..., 本轮唯一 scope_key)`，禁止跨群。
 
 知识来源（插件 / 手动导入 / 网页搜索 **query** / `attach_article`）**先查已有再过门新建**：
-可索引、别名无歧义、无句读、长度 ≤32。群关系/进度留在记忆边，不升级成公共蓝线。
+可索引、别名无歧义、无句读、长度 ≤32。枢纽键是 `world:{插件}:{正式名}`，**不要按标题全球合并**。
+跨插件同名（两边都登记「深渊」）各建一颗；只有别名全球唯一属主时，其它插件的文才并进那颗。
+正式名来自 `entity` 字段 / 本插件 `ai_alias` / 标题独立段上的 tag，**不猜** `-` `·` 分隔约定。
+文档显式 tag 允许单字 CJK 当挂载主语；聊天扫词与 `lookup_surface` 仍守短词/歧义门。
+合词 tag、没 tag 也没别名的索引页仍跳过。群关系/进度留在记忆边，不升级成公共蓝线。
 网页落盘短标题取 `query:`，整页 SERP 只留规则摘要（FileOS + 挂件），禁止把
 `<search_results>` 或结果正文当公共名词。
 
@@ -301,5 +305,10 @@ Agent 补文落 SQL 时打标签 `hub:{正式名}`，重建挂载只回挂已有
 选定全文只 inline `kb_plugin:` / `kb_kbdoc:`；FileOS `to_` 只出现在路径卡，由
 `read_handle` 做属主 ACL。
 
-回想入口仍是 `search_cognition`；⑧ 每轮注入仍只记忆+偏好。详见
+回想入口仍是 `search_cognition`；⑧ 每轮注入仍只记忆+偏好。
+统一写走 `cognition.remember.MemoryWrite`（落盘 / 任务终态 / 笔记 / record / artifact
+都登记同一份元数据，正文不搬家）。`web_search` / `web_fetch` **先写后读**：≥40 字即
+同步落 FileOS，当轮可被联邦命中。联邦补路还包括 History A 近窗、`record_*`、图片、表情；
+产物摘要有向量索引。主人格不暴露 `list/grep_persisted` / `search_image` / `search_meme` /
+`artifact_get`（深读只留 `read_handle`）。详见
 [`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../AI_AGENT_LIFECYCLE_SEQUENCE.md) §S.5 / §15.2。

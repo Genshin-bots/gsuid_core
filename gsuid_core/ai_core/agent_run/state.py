@@ -91,6 +91,10 @@ class RunOnceState:
     saw_non_web_data: bool = False
     # 本轮已发过一句等待安慰（出图前）
     wait_comfort_sent: bool = False
+    # 有活跃任务且本轮真人句很短：瘦检索/语境池，保住委派查询工具。
+    in_flight_short: bool = False
+    # 出图委派已收到异步 ack / 完成回执；失败回执在未 ack 时回滚抢先静默。
+    render_ack_seen: bool = False
     # 主通道已成功发送的台词段数（单轮出站配额兜底，见 4.10）
     main_channel_sends: int = 0
 

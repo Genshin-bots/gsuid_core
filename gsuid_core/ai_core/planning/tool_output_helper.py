@@ -27,15 +27,15 @@ from gsuid_core.ai_core.planning.tool_output_protocol import (
 from gsuid_core.ai_core.planning.tool_output_sanitize import sanitize_for_persist
 
 _MIN_PERSIST_CHARS = 800
+_MIN_SEARCH_PERSIST_CHARS = 40
+_SEARCH_ERROR_PREFIXES = ("错误：", "错误:", "error:")
 _INLINE_MAX = 4096
 _TTL_DAYS = 30
 # 自适应折叠：私聊 / 群聊 / 能力代理
 _FOLD_PRIVATE = 1200
 _FOLD_GROUP = 900
-# 折叠卡内嵌要点上限（群聊更紧，控 token）
+# 折叠卡内嵌要点上限（仅私聊；群聊主人格只留 summary，不当事实总线）
 _INLINE_HEAD_PRIVATE = 1400
-_INLINE_HEAD_GROUP = 1000
-_NEVER_FOLD_TOOLS = frozenset({"create_subagent"})
 # 只读/回读类：内容已在 artifact/FileOS 真身里，禁止再落一份 tool_output
 _SKIP_PERSIST_TOOLS = frozenset(
     {
@@ -77,11 +77,16 @@ def should_persist_tool_return(tool_name: str, content: str) -> bool:
     body = (content or "").strip()
     if looks_like_handle_card(body):
         return False
-    if len(body) < _MIN_PERSIST_CHARS:
-        return False
     if "后台执行" in body and "自动回灌" in body:
         return False
     if "仍在执行" in body:
+        return False
+    if is_searchish_tool(tn):
+        lowered = body[:24].lower()
+        if any(body.startswith(p) or lowered.startswith(p.lower()) for p in _SEARCH_ERROR_PREFIXES):
+            return False
+        return len(body) >= _MIN_SEARCH_PERSIST_CHARS
+    if len(body) < _MIN_PERSIST_CHARS:
         return False
     return True
 
@@ -92,9 +97,9 @@ def should_fold_for_model(
     tool_name: str = "",
     is_group: bool = False,
 ) -> bool:
-    """主人格折叠门：create_subagent / 句柄卡 / 只读工具永不折。"""
+    """主人格折叠门：句柄卡 / 只读工具 / 过短不折。长委派回执同样折成卡。"""
     tn = (tool_name or "").strip()
-    if tn in _NEVER_FOLD_TOOLS or tn in _SKIP_PERSIST_TOOLS:
+    if tn in _SKIP_PERSIST_TOOLS:
         return False
     body = (content or "").strip()
     if looks_like_handle_card(body):
@@ -116,10 +121,46 @@ def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str, str]:
     return owner, fileos_scope, scope_key_for_conversation(ev.group_id, owner)
 
 
-def _searchish_tool(name: str) -> bool:
-    """检索/抓取类：折叠卡不要默认催出图。"""
+def is_searchish_tool(name: str) -> bool:
+    """检索/抓取类：恒落盘（当轮可回想），折叠卡不默认催出图。"""
     tn = (name or "").lower()
     return any(h in tn for h in ("search", "web_", "fetch"))
+
+
+def _searchish_tool(name: str) -> bool:
+    return is_searchish_tool(name)
+
+
+def fold_card_for_main_prompt(
+    card: PersistedHandleCard,
+    *,
+    content: str,
+    is_group: bool,
+) -> PersistedHandleCard:
+    """群聊：summary + 句柄，无 inline。私聊：可带要点供当面问答。"""
+    if is_group:
+        return PersistedHandleCard(
+            id=card.id,
+            kind=card.kind,
+            mime=card.mime,
+            summary=card.summary,
+            size_bytes=card.size_bytes,
+            read_tool=card.read_tool,
+            long_structured=card.long_structured,
+            inline_head="",
+            speech_expand=False,
+        )
+    return PersistedHandleCard(
+        id=card.id,
+        kind=card.kind,
+        mime=card.mime,
+        summary=card.summary,
+        size_bytes=card.size_bytes,
+        read_tool=card.read_tool,
+        long_structured=card.long_structured,
+        inline_head=extract_inline_head(content, max_chars=_INLINE_HEAD_PRIVATE),
+        speech_expand=True,
+    )
 
 
 def _card_for_record(
@@ -205,12 +246,13 @@ async def persist_and_fold_tool_return(
     *,
     is_group: bool = False,
 ) -> Optional[str]:
-    """主人格热路径：落盘并返回「句柄卡 + inline 要点」；只读/过短不折。"""
+    """主人格热路径：落盘并返回句柄卡；群聊不内嵌要点。"""
     tn = tool_name or ""
-    if tn in _NEVER_FOLD_TOOLS:
-        # 仍可旁路落盘终态长文，但不折叠回执
-        if should_persist_tool_return(tn, content):
-            schedule_persist_tool_return(
+    if not should_persist_tool_return(tn, content):
+        return None
+    if not should_fold_for_model(content, tool_name=tn, is_group=is_group):
+        if is_searchish_tool(tn):
+            await persist_tool_return(
                 tool_name=tn,
                 content=content,
                 ev=ev,
@@ -218,10 +260,7 @@ async def persist_and_fold_tool_return(
                 task_id=task_id,
                 root_task_id=root_task_id,
             )
-        return None
-    if not should_persist_tool_return(tn, content):
-        return None
-    if not should_fold_for_model(content, tool_name=tn, is_group=is_group):
+            return None
         schedule_persist_tool_return(
             tool_name=tn,
             content=content,
@@ -241,19 +280,8 @@ async def persist_and_fold_tool_return(
     )
     if card is None:
         return None
-    head_cap = _INLINE_HEAD_GROUP if is_group else _INLINE_HEAD_PRIVATE
-    hybrid = PersistedHandleCard(
-        id=card.id,
-        kind=card.kind,
-        mime=card.mime,
-        summary=card.summary,
-        size_bytes=card.size_bytes,
-        read_tool=card.read_tool,
-        long_structured=card.long_structured,
-        inline_head=extract_inline_head(content, max_chars=head_cap),
-    )
     fileos_metrics.inc_fold()
-    return hybrid.format()
+    return fold_card_for_main_prompt(card, content=content, is_group=is_group).format()
 
 
 async def _write_record(

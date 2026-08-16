@@ -41,6 +41,7 @@ class KnowledgeBase(TypedDict):
     content: str
     tags: List[str]
     source: NotRequired[str]  # 知识来源: 由框架自动设置, "plugin" 或 "manual"
+    entity: NotRequired[str]  # 这篇知识归属的正式名；挂载优先用，不靠标题切词
 
 
 class KnowledgePoint(KnowledgeBase):
@@ -58,6 +59,7 @@ class ManualKnowledgeBase(TypedDict):
     content: str
     tags: List[str]
     source: str  # 固定为 "manual"
+    entity: NotRequired[str]
 
 
 class ManualKnowledgeUpdate(TypedDict, total=False):

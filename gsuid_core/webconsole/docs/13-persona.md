@@ -551,7 +551,7 @@ Authorization: Bearer <token>
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | ai_mode | array | AI行动模式列表，可选值："提及应答", "定时巡检", "趣向捕捉(暂不可用)", "困境救场(暂不可用)" |
-| scope | string | 启用范围，可选值："disabled"(不对任何群聊启用), "global"(对所有群/角色启用), "specific"(仅对指定群聊启用) |
+| scope | string | 启用范围：`disabled` / `global`（全部群+私聊） / `global_group`（仅全部群聊） / `global_private`（仅全部私聊） / `specific`（仅指定群聊/用户） |
 | target_groups | array | 当 scope 为 "specific" 时，指定该人格对哪些群聊/角色启用 |
 | inspect_interval | integer | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时有效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 唤醒关键词列表，当 ai_mode 包含"提及应答"时有效，消息包含这些关键词也会触发AI响应 |
@@ -602,7 +602,7 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | ai_mode | array | 否 | AI行动模式列表 |
-| scope | string | 否 | 启用范围，可选值："disabled", "global", "specific" |
+| scope | string | 否 | 启用范围：`disabled` / `global` / `specific` / `global_group` / `global_private` |
 | target_groups | array | 否 | 目标群聊/角色列表，当 scope 为 "specific" 时生效 |
 | inspect_interval | integer | 否 | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时生效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 否 | 唤醒关键词列表，当 ai_mode 包含"提及应答"时生效，消息包含这些关键词也会触发AI响应 |
@@ -635,18 +635,19 @@ Content-Type: application/json
 ```json
 {
     "status": 1,
-    "msg": "无法设置为对所有群/角色启用，因为 '其他角色名' 已配置为全局启用",
+    "msg": "无法设置为该启用范围，因为 '其他角色名' 已占用全局范围",
     "data": null
 }
 ```
 
 **⚠️ 重要提示**：
-> **全部人格中只能有一个配置为 "global"（对所有群/角色启用）**。如果尝试将多个角色同时设置为 "global"，后端会返回错误。
+> 全局互斥：`global` / `global_group` / `global_private` 只能有一个。
+> 群聊+私聊都要覆盖时用 `global`。冲突时后端返回错误。
 >
-> 前端在设置 scope 为 "global" 时，应当：
-> 1. 先调用 `GET /api/persona/config/global` 检查是否已有其他角色配置为全局启用
-> 2. 如果存在冲突，提示用户先取消其他角色的全局启用设置
-> 3. 或者提供切换功能，自动将其他角色的 scope 改为 "disabled" 或 "specific"
+> 前端在设置 `global` / `global_group` / `global_private` 时，应当：
+> 1. 对照已有人格的 scope，检查通道是否重叠
+> 2. 如果存在冲突，提示用户先取消冲突人格的对应范围
+> 3. 或者提供切换功能，自动将冲突人格的 scope 改为 `disabled`
 
 ---
 

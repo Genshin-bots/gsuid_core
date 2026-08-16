@@ -37,7 +37,7 @@ description: >
 | 六 | 定时任务与订阅（APScheduler、`gs_subscribe` 全套 API） | [references/06-scheduler-and-subscribe.md](./references/06-scheduler-and-subscribe.md) |
 | 七 | 启动 / 关闭 / Bot 上线钩子（4 类钩子的区别与适用场景） | [references/07-lifecycle-hooks.md](./references/07-lifecycle-hooks.md) |
 | 八 | 帮助系统注册（`register_help`、`get_new_help`、`register_status`） | [references/08-help-system.md](./references/08-help-system.md) |
-| 九 | 图片渲染范式（PIL → pytakumi → playwright 三档） | [references/09-image-rendering.md](./references/09-image-rendering.md) |
+| 九 | 图片渲染范式（PIL → pytakumi → playwright；AI 资料图走 `render_chart_spec`） | [references/09-image-rendering.md](./references/09-image-rendering.md) |
 | 十 | AI 集成：`to_ai` 与 `ai_return`（**优先方案**） | [references/10-ai-to-ai-and-ai-return.md](./references/10-ai-to-ai-and-ai-return.md) |
 | 十一 | AI 集成：`@ai_tools`（含 **covers/aliases**；仅纯 AI 内部工具） | [references/11-ai-tools-decorator.md](./references/11-ai-tools-decorator.md) |
 | 十二 | AI 集成：知识库（`ai_entity`）与别名（`ai_alias`）注册 | [references/12-ai-knowledge-and-alias.md](./references/12-ai-knowledge-and-alias.md) |

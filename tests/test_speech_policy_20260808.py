@@ -60,7 +60,17 @@ def test_speech_block_policies() -> None:
         has_status_tool=False,
         tool_calls_so_far=[],
     )
-    assert blk2 and why2 == "silence_only_or_async"
+    assert not blk2, why2
+    blk2b, why2b = should_block_user_visible_text(
+        "silence_only",
+        "唔…还在画…",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+        wait_comfort_sent=True,
+    )
+    assert blk2b and why2b == "silence_only_or_async"
 
     blk3, _ = should_block_user_visible_text(
         "framework_nudge",

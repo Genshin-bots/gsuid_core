@@ -23,7 +23,8 @@ def ai_entity(entity: Union[KnowledgePoint, KnowledgeBase]) -> None
 | `plugin` | `str` | 是 | 插件名称（在 `plugins/` 下会自动推断） |
 | `title` | `str` | 是 | 知识点标题，用于 RAG 检索 |
 | `content` | `str` | 是 | 知识点内容，支持 Markdown，内容越详细越好 |
-| `tags` | `List[str]` | 是 | 标签列表，用于过滤和检索 |
+| `tags` | `List[str]` | 是 | 标签列表，用于过滤和检索。挂世界枢纽时，**出现在标题独立段里的 tag** 当作这篇的正式名 |
+| `entity` | `str` | 否 | 这篇知识归属的正式名。有则优先于标题/tag 解析，适合标题里没有实体名的篇 |
 | `source` | `str` | 自动 | 固定为 `"plugin"`，系统自动设置 |
 | `_hash` | `str` | 自动 | 内容哈希，系统自动计算，不需传入 |
 
@@ -59,6 +60,7 @@ ai_entity(KnowledgePoint(
 雷电将军在超导、感电等队伍中效果优异。
 """,
     tags=["原神", "雷电将军", "雷神", "角色", "长枪", "雷元素"],
+    entity="雷电将军",
 ))
 ```
 
@@ -66,6 +68,9 @@ ai_entity(KnowledgePoint(
 - 启动时自动同步到向量数据库
 - 内容发生变化时（通过 `_hash` 检测）自动增量更新
 - 在 `plugins/` 目录下注册时 `plugin` 字段会被自动推断
+- 世界枢纽按 `world:{plugin}:{正式名}` 建。跨插件同名（两边都 `ai_alias(..., "深渊")`）各建一颗，
+  不会合成一个「深渊」。聊天里光说「深渊」仍然不路由（漏不可错）；路径卡最多同时亮两颗。
+- 正式名解析不猜 `-` / `·` 分隔。请把实体名放进 `entity` 或 `tags`（且 tag 是标题里的独立段）。
 
 ## 6.2 `add_manual_knowledge` — 手动知识添加
 

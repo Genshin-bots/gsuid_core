@@ -216,6 +216,8 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 ## 12.16 RAG / 知识库的约定
 
 - RAG 检索**不要改回前置强制**，由 `search_cognition` 工具按需调（D-11）。
+  ⑧ 每轮自动注入仍只记忆+偏好；全联邦（落盘 / 近窗 / record / 图片 / 表情）只走工具。
+  主人格不要再暴露 `list/grep_persisted` / `search_image` / `search_meme` / `artifact_get`。
 - 混合检索 score 是 RRF 名次分**非余弦**，不要按"余弦 ≥ 阈值"硬筛；过滤下推到 Qdrant
   `query_filter`，不要客户端二次筛 top-k（D-? / 2026-06-15-G）。
 - 手动知识以 `AIKnowledgeChunk`（SQL）为真值源；长文必须分片（`chunking.py`）避免 512 token
@@ -402,6 +404,13 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
   本 run `speech_policy="delivered"`，`should_block_user_visible_text` 对非 SILENCE 一律拦
   （`agent_run/speech_policy.py`）。改交付/发送链路时别破坏"交付后只许 SILENCE"；media-only
   交付保留一句收尾额度，勿误置终局。
+- **出图委派在途（2026-08-16）**：`create_subagent(render_agent)` 在 **ToolCall** 当下静默，
+  不是等 ToolReturn。只看 `agent_profile` 字段，禁止用 `args_json` 子串匹配（task 里写到
+  出图节点名会误伤检索委派）。失败且未 ack 必须回滚，否则整轮哑火。在途台词额度一句
+  （等待或短应 ≤96 字）；「等待 + 要点清单」同一气泡不占额度。多点读数密度台词
+  **不要**推进 `presentation_withheld`（INV-4 会把念白发出去）。
+- **群聊折叠卡不当事实总线**：`fold_card_for_main_prompt(is_group=True)` 禁止 `inline_head`；
+  长 `create_subagent` 回执与检索长文一样折成句柄卡。反问靠 `read_handle`，不要把全文塞回主历史。
 - **`ooc_check=False` 只允许用于已过 gate / 重说产物**。新增发送路径默认带检。
 - 状态只写 `extra["output_gate"]` → `GateBag`，勿发明平行计数键。
 - `check_ooc(tier="plain")` 生产尚无调用方，别当它已接线。
@@ -786,14 +795,16 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
   禁止 SELECT 其它 `group:` 再内存丢弃。私聊只看见 `user_global:`，看不见任何群边。
   WebConsole `GET /api/cognition/nodes/{id}` 必须走 `node_visible_to`（与 `search` 同一套），
   空 `owner_user_id` 不得泄露 `OWNER_REQUIRED` 节点。
-- **身份**：完整匹配才连；**先查已有枢纽**，同名不建第二颗。
-  知识来源（插件/手动/网页搜索 query/`attach_article`）零命中且过门才建：可索引、无歧义、
-  无句读、长度上限。群聊抽取只连绿线、**禁止**从闲聊新建 `world:`。说话人不连公共层
+- **身份**：完整匹配才连；**先查已有枢纽**。枢纽是 `world:{插件}:{正式名}`。
+  跨插件同名（「深渊」）各建一颗，聊天歧义不猜；只有别名全球唯一属主时才并进那颗。
+  知识来源（插件/手动/网页搜索 query/`attach_article`）零命中且过门才建：可索引、无句读、
+  长度上限。群聊抽取只连绿线、**禁止**从闲聊新建 `world:`。说话人不连公共层
   （摄入与 `scan_entities_to_world` 都跳过 `is_speaker`）。
-  合词（独立段失败）不挂。歧义 surface / 短词 / `skill_doc` / 无 title 图片项跳过。
+  合词（独立段失败）不挂。没 tag / 没本插件 alias / 没 `entity` 字段的标题跳过。
+  `skill_doc` / 无 title 图片项跳过。**不要**为某个游戏写栏目词表或猜 `-` 分隔。
   ASCII 枢纽 title 的 SQL 查找必须 `lower(title)`，只写 `title == norm` 会对不上库内大小写。
-  `lookup_surface` 无歧义命中即该 surface 已是别名，直接用 `canonicals[0]`。
-  禁止用 module plugin 拼第二颗 `world:`。
+  `lookup_surface` 无歧义命中用 `canonicals[0]`；歧义时用 `canonical_for(plugin)`，
+  禁止用「标题相同」跨插件合并。
 - **启动**：挂载在 READY **之后** `create_task`，失败不挡聊天。不要放进 `_INIT_STEPS`。
   重建必须后扫 `source=agent`；启动扫描里 Agent 文只挂已有枢纽，标签 `hub:{正式名}`。
   控制台 rebuild 先拍 Agent/网页挂件再回挂，禁止只删 `world:` 导致运行时枢纽蒸发。
@@ -807,7 +818,9 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
   路径卡本群事实必须 `wrap_untrusted("memory_recall")`。
   控制台 JSONL 导入 `import_manual_knowledge` 成功后必须按 `doc_id` 再挂，不能等下次启动。
   节点列表用 `list_for_nodes` 一次取出，禁止每个节点 `list_for_node`。
-- **写入**：Agent 不能改 plugin/manual；只能覆盖 `source=agent` 且 `kbdoc:` 的篇。
+- **写入**：原库写完后走 `remember(MemoryWrite)` 登记节点，禁止再直接 `sync_node`。
+  `web_search` / `web_fetch` ≥40 字必须**同步**落 FileOS（当轮 `search_cognition` 才能命中）；
+  不要把 live web 塞进联邦检索。Agent 不能改 plugin/manual；只能覆盖 `source=agent` 且 `kbdoc:` 的篇。
   web 可写行换标题新建，禁止把 `to_` 当成 kbdoc 覆盖。
   进度类事实留记忆边，不要写成公共文章。
   落盘弱挂用搜索 query：先查已有枢纽，过门才建；禁止拿工具名 / `<search_results>` 当标题。

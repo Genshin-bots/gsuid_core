@@ -171,7 +171,7 @@ def _clean_plugin_agent_state(plugin_name: str) -> None:
     try:
         from gsuid_core.ai_core.kits import KIT_SLOTS, get_kit, enable_kit, disable_kit, occupants_of
         from gsuid_core.ai_core.hooks import drop_hooks_for_module
-        from gsuid_core.ai_core.register import unregister_tools_of_plugin
+        from gsuid_core.ai_core.register import unregister_tools_of_plugin, unregister_entities_of_plugin
 
         # 槽位回落：插件套件被卸掉后按配置重新装默认占用者，否则该槽静默变 off
         for slot in KIT_SLOTS:
@@ -185,6 +185,7 @@ def _clean_plugin_agent_state(plugin_name: str) -> None:
 
         dropped = drop_hooks_for_module(plugin_name)
         tools = unregister_tools_of_plugin(plugin_name)
+        unregister_entities_of_plugin(plugin_name)
         if dropped or tools:
             logger.info(
                 i18n_t(

@@ -473,7 +473,36 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 - 需要高清保持 `dpi=192`（dpr=2）即可，不要靠再加宽。
 - badge 不要写 `box-sizing:border-box` + 极窄 padding（Takumi 会把字画出色块）。
 
-### 8.5 修饰色被基类盖掉（class 优先级）
+### 8.5 真图表用 `render_chart_spec`，不要 CSS 色条冒充
+
+渲染引擎无 JS。要画对比/走势/占比，先调 `render_chart_spec` 拿 `<svg>` 再嵌进 HTML。
+
+```python
+# 多实体对比：每个实体一个 series.name，不要把身份写进单柱 label
+svg = await render_chart_spec(
+    ctx,
+    type="bar",
+    signed=True,          # 仅当值有正负含义
+    legend=True,
+    title="阶段对比",
+    series=[
+        {"name": "对象甲", "data": [{"label": "近30日", "value": 2.9}, {"label": "近3月", "value": -4.2}]},
+        {"name": "对象乙", "data": [{"label": "近30日", "value": 1.7}, {"label": "近3月", "value": -1.5}]},
+    ],
+)
+```
+
+硬规则：
+
+- 系列身份色 ≠ 升/降色。`signed` 打开时红/绿只表示符号，图例画 `+/−`。
+- 缺测点断线，禁止补 0 造成假下跌。
+- 禁止把两个来源的分歧画成两根未标注的柱；源数据是点值就画点值。
+- 禁止用 `.track` 扁条 / 纯 CSS 色条冒充折线或柱图。
+- 类目名由工具保留（约 18 字），不要在 HTML 里再截成 8 字。
+
+回归：`tests/test_chart_encoding_and_inflight.py`。
+
+### 8.6 修饰色被基类盖掉（class 优先级）
 
 ```css
 /* 错：.item .value 特异性更高，.up/.down 永不生效 */
@@ -484,7 +513,7 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 .item .value.down { color:#fca5a5; }
 ```
 
-### 8.6 语义色不要一页多套
+### 8.7 语义色不要一页多套
 
 同一页先定 3～4 个语义角色色并贯彻；暗底强调用浅 tint（`#fca5a5` `#6ee7b7` `#fde68a`）。
 正文 / 底栏 / pill 不要各用一套互不相关的红绿金。
@@ -579,7 +608,8 @@ async def render_card(title: str, lines: list[str]) -> bytes:
 - [ ] 用户内容是否 HTML 转义？
 - [ ] 是否避免使用 `✗`、`✘`、`▸` 等可能缺字的符号？
 - [ ] 空内容是否有兜底，避免高度为 0？
-- [ ] 逻辑宽是否 ≤1000？正文 ≥16px、badge ≥13px？
+- [ ] ≥3 个可比数值是否先 `render_chart_spec` 再嵌 SVG（禁止 CSS 色条冒充图）？
+- [ ] 多实体对比是否用 `series`+图例，而不是把身份拍扁进 label？
 
 ---
 
@@ -589,6 +619,7 @@ async def render_card(title: str, lines: list[str]) -> bytes:
 - IM 模板：`gsuid_core/utils/html_render/im_templates.py`
 - 迁移回归测试：`tests/test_pytakumi_migration.py`
 - 模板测试：`tests/test_im_templates.py`
+- 图表编码：`tests/test_chart_encoding_and_inflight.py` / `gsuid_core/ai_core/buildin_tools/chart_svg.py`
 
 运行验证：
 

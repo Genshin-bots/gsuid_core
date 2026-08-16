@@ -1,7 +1,7 @@
 """认知检索工具：主人格唯一「回想」动词 + 图片检索。
 
-``search_cognition`` 并行覆盖记忆 / 偏好 / 知识库 / 落盘 / 任务产物。
-深读走 ``read_handle``。
+``search_cognition`` 并行覆盖记忆 / 偏好 / 知识库 / 落盘 / 产物 / 近窗 /
+记录 / 图片 / 表情。深读走 ``read_handle``。
 """
 
 from typing import Dict, Optional, FrozenSet
@@ -20,6 +20,7 @@ from gsuid_core.ai_core.cognition import (
     search_cognition as federated_search,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
+from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 from gsuid_core.ai_core.buildin_tools.cognition_write import attach_article as attach_article
 
 # 本轮已检索过的 query（run 级，存 ToolContext.extra；ToolContext 每轮新建，轮末自然丢弃）
@@ -88,7 +89,8 @@ async def search_cognition(
         ctx: 工具执行上下文
         query: 自然语言查询，如"上周聊过的旅行计划""出图规范"
         kinds: 可选，逗号分隔的类型过滤，缩小范围更准：
-            episode/entity/fact/preference/knowledge/tool_output/artifact。留空=全查。
+            episode/entity/fact/preference/knowledge/tool_output/artifact/
+            record/image/meme。留空=全查（含近窗群聊、业务记录、图片、表情）。
         limit: 返回条数上限，默认 12
 
     Returns:
@@ -136,7 +138,7 @@ async def search_cognition(
     return hits_block if not hits else wrap_untrusted("memory_recall", hits_block)
 
 
-@ai_tools(category="common")
+@ai_tools(category="common", visible_when=visible_to_capability_only)
 async def search_image(
     ctx: RunContext[ToolContext],
     query: str,

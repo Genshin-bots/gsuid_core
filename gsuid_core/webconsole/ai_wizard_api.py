@@ -336,7 +336,11 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
                 if scope == "disabled":
                     scope_desc = "已禁用"
                 elif scope == "global":
-                    scope_desc = "全部群聊"
+                    scope_desc = "全部群聊与私聊"
+                elif scope == "global_group":
+                    scope_desc = "全部群聊（不含私聊）"
+                elif scope == "global_private":
+                    scope_desc = "全部私聊（不含群聊）"
                 else:  # specific
                     if target_groups and len(target_groups) > 0:
                         scope_desc = f"限定 {len(target_groups)} 个群聊"

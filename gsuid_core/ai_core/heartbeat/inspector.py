@@ -22,7 +22,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.persona.config import persona_config_manager
+from gsuid_core.ai_core.persona.config import persona_config_manager, persona_should_inspect_session
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
 
 # 并发控制：最多同时进行 5 个 LLM 调用
@@ -276,22 +276,14 @@ class HeartbeatInspector:
         event: Event,
         scope: str,
         target_groups: List[str],
-        persona_name: str,
+        _persona_name: str,
     ) -> bool:
         """检查是否应该巡检该会话"""
-        group_id: Optional[str] = event.group_id
-
-        # 检查该会话是否匹配 persona 的配置
-        if scope == "disabled":
-            return False
-        elif scope == "global":
-            # 全局启用，所有会话都要巡检
-            return True
-        elif scope == "specific":
-            # 只巡检指定群聊
-            return group_id in target_groups if group_id else False
-
-        return False
+        return persona_should_inspect_session(
+            scope,
+            group_id=event.group_id,
+            target_groups=target_groups,
+        )
 
     async def _inspect_session(self, event: Event, persona_name: str) -> None:
         """处理单个会话的核心逻辑流水线"""

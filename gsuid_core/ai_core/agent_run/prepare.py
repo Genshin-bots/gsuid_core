@@ -39,6 +39,7 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, is_control_envelope
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    spoken_user_body_len,
     resolve_speech_policy,
     looks_like_status_inquiry,
 )
@@ -130,6 +131,8 @@ class PreparePhase(RunOnceHost):
         st.presentation_mismatch = False
         st.presentation_withheld = []
         st.wait_comfort_sent = False
+        st.in_flight_short = False
+        st.render_ack_seen = False
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值
         if self.max_iterations is not None:
@@ -205,6 +208,7 @@ class PreparePhase(RunOnceHost):
             has_active_task=st.has_active_task,
             user_text=_probe_for_policy,
         )
+        st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
         st.context = ToolContext(
             bot=st.bot,
             ev=st.ev,
@@ -344,6 +348,8 @@ class PreparePhase(RunOnceHost):
         if st.status_inquiry and st.has_active_task and self.create_by in ("Chat", "Agent"):
             st.final_user_message = _append_user_text(st.final_user_message, _STATUS_INQUIRY_HINT)
             logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
+        if not st.fw_msg and st.has_active_task:
+            st.in_flight_short = spoken_user_body_len(st.last_user_question) <= 48
 
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(st.final_user_message)

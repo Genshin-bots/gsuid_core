@@ -35,6 +35,7 @@ def test_final_delivery_not_pending() -> None:
 
 def test_should_persist_skips_short_and_pending() -> None:
     assert not should_persist_tool_return("web_search_tool", "ok")
+    assert should_persist_tool_return("web_search_tool", "x" * 40)
     pending = "⏳ 子任务后台执行中（已同步等 5s，将自动回灌）。" + ("x" * 900)
     assert not should_persist_tool_return("create_subagent", pending)
     long_body = "# report\n\n" + ("data line\n" * 100)

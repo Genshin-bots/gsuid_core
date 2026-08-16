@@ -67,6 +67,10 @@ def test_cognition_federates_knowledge_and_fileos() -> None:
             "gsuid_core.ai_core.cognition.facade._search_artifacts",
             new=AsyncMock(return_value=([], {})),
         ),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=AsyncMock(return_value=([], {}))),
         patch(
             "gsuid_core.ai_core.register.handle_tool_result",
             new=AsyncMock(side_effect=lambda bot, raw: raw),
@@ -94,6 +98,10 @@ def test_cognition_empty_is_single_line() -> None:
         ),
         patch("gsuid_core.ai_core.cognition.facade._search_memory", new=AsyncMock(return_value=([], {}))),
         patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=AsyncMock(return_value=([], {}))),
         patch(
             "gsuid_core.ai_core.register.handle_tool_result",
             new=AsyncMock(side_effect=lambda bot, raw: raw),

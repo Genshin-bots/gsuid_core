@@ -3,13 +3,14 @@ Persona 配置管理模块
 
 提供每个 Persona 的独立配置管理，包括：
 - AI 行动模式 (ai_mode)
-- 启用范围 (scope: disabled/global/specific)
+- 启用范围 (scope: disabled/global/specific/global_group/global_private)
 - 目标群聊 (target_groups: 当 scope 为 specific 时使用)
 
-注意：所有 Persona 中只能有一个配置为 "global" (对所有群/角色启用)
+全局范围互斥：``global`` / ``global_group`` / ``global_private`` 三者只能有一个。
+群聊+私聊都要覆盖时用 ``global``，不要拆成两个专属全局人格。
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, FrozenSet
 from pathlib import Path
 
 from gsuid_core.i18n import t
@@ -24,6 +25,47 @@ from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetMan
 
 from ..resource import PERSONA_PATH
 
+PERSONA_SCOPE_VALUES = (
+    "disabled",
+    "global",
+    "specific",
+    "global_group",
+    "global_private",
+)
+GLOBAL_LIKE_SCOPES = frozenset({"global", "global_group", "global_private"})
+
+
+def global_channels_for_scope(scope: str) -> FrozenSet[str]:
+    """该 scope 占用的全局通道：group / private。"""
+    if scope == "global":
+        return frozenset({"group", "private"})
+    if scope == "global_group":
+        return frozenset({"group"})
+    if scope == "global_private":
+        return frozenset({"private"})
+    return frozenset()
+
+
+def scope_covers_session(scope: str, *, is_private: bool) -> bool:
+    """``global*`` 是否覆盖当前会话类型。specific / disabled 恒为 False。"""
+    channel = "private" if is_private else "group"
+    return channel in global_channels_for_scope(scope)
+
+
+def persona_should_inspect_session(
+    scope: str,
+    *,
+    group_id: Optional[str],
+    target_groups: List[str],
+) -> bool:
+    """巡检过滤器：该 persona 的 scope 是否覆盖此会话。"""
+    if scope == "disabled":
+        return False
+    if scope == "specific":
+        return group_id in target_groups if group_id else False
+    return scope_covers_session(scope, is_private=not bool(group_id))
+
+
 # 默认配置项
 DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
     "ai_mode": GsListStrConfig(
@@ -34,10 +76,12 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
     ),
     "scope": GsStrConfig(
         "启用范围",
-        "指定该人格的启用范围: disabled(不对任何群聊启用), "
-        "global(对所有群/角色启用), specific(仅对指定群聊启用)。注意：全部人格中只能有一个配置为 global",
+        "指定该人格的启用范围: disabled(不启用), "
+        "global(对所有群/私聊启用), global_group(仅全部群聊), "
+        "global_private(仅全部私聊), specific(仅指定群聊/用户)。"
+        "global / global_group / global_private 全局互斥，只能有一个",
         "disabled",
-        options=["disabled", "global", "specific"],
+        options=list(PERSONA_SCOPE_VALUES),
     ),
     "target_groups": GsListStrConfig(
         "目标群聊/角色",
@@ -79,7 +123,7 @@ class PersonaConfigManager(ConfigSetManager):
     Persona 配置管理器
 
     继承自 ConfigSetManager，使用 StringConfig 对象进行配置管理。
-    确保全局唯一性约束：只能有一个 Persona 配置为 "global" (对所有群/角色启用)
+    全局范围互斥：global / global_group / global_private 只能有一个。
     """
 
     def __init__(self):
@@ -125,7 +169,10 @@ class PersonaConfigManager(ConfigSetManager):
 
     def get_global_persona(self) -> Optional[str]:
         """
-        获取当前配置为 "global" (对所有群/角色启用) 的 Persona 名称
+        获取当前配置为 "global" (对所有群/私聊启用) 的 Persona 名称
+
+        不含 ``global_group`` / ``global_private``。需要通道回退时用
+        ``get_fallback_persona``。
 
         Returns:
             Persona 名称，如果没有则返回 None
@@ -136,11 +183,34 @@ class PersonaConfigManager(ConfigSetManager):
                 return persona_name
         return None
 
+    def get_fallback_persona(self, *, is_private: bool) -> Optional[str]:
+        """按会话类型取全局回退人格：优先 ``global``，否则通道专属。"""
+        global_persona: Optional[str] = None
+        channel_persona: Optional[str] = None
+        for persona_name, config in self.get_all_configs().items():
+            scope = config.get_config("scope").data
+            if scope == "global":
+                global_persona = persona_name
+            elif scope_covers_session(scope, is_private=is_private):
+                channel_persona = persona_name
+        return global_persona or channel_persona
+
+    def find_conflicting_global_personas(self, persona_name: str, scope: str) -> List[str]:
+        """返回其他已占用任一全局范围（global / global_group / global_private）的人格。"""
+        if scope not in GLOBAL_LIKE_SCOPES:
+            return []
+        conflicts: List[str] = []
+        for other_name, config in self.get_all_configs().items():
+            if other_name == persona_name:
+                continue
+            other_scope = config.get_config("scope").data
+            if other_scope in GLOBAL_LIKE_SCOPES:
+                conflicts.append(other_name)
+        return conflicts
+
     def validate_global_uniqueness(self, persona_name: str, scope: str) -> tuple[bool, Optional[str]]:
         """
-        验证全局唯一性约束
-
-        检查是否可以将指定 persona 设置为 "global"
+        验证全局范围互斥
 
         Args:
             persona_name: 要设置的 Persona 名称
@@ -148,42 +218,34 @@ class PersonaConfigManager(ConfigSetManager):
 
         Returns:
             (是否有效, 冲突的 Persona 名称)
-            - 如果 scope 不是 "global"，总是返回 (True, None)
-            - 如果 scope 是 "global"，检查是否已有其他 Persona 配置为 global
+            disabled/specific 总是 (True, None)
         """
-        # 如果不是设置为 global，不需要检查全局唯一性
-        if scope != "global":
-            return True, None
-
-        # 检查是否已有其他 Persona 配置为 global
-        current_global = self.get_global_persona()
-        if current_global is not None and current_global != persona_name:
-            return False, current_global
-
+        conflicts = self.find_conflicting_global_personas(persona_name, scope)
+        if conflicts:
+            return False, conflicts[0]
         return True, None
 
     def set_scope(self, persona_name: str, scope: str) -> tuple[bool, str]:
         """
         设置 Persona 的启用范围
 
-        会自动处理全局唯一性约束
+        会自动处理全局范围互斥
 
         Args:
             persona_name: Persona 名称
-            scope: 启用范围，可选值为 "disabled", "global", "specific"
+            scope: 启用范围，见 ``PERSONA_SCOPE_VALUES``
 
         Returns:
             (是否成功, 消息)
         """
-        if scope not in ["disabled", "global", "specific"]:
+        if scope not in PERSONA_SCOPE_VALUES:
             return False, f"无效的启用范围: {scope}"
 
         config = self.get_config(persona_name)
 
-        # 验证全局唯一性
         is_valid, conflict_persona = self.validate_global_uniqueness(persona_name, scope)
         if not is_valid:
-            return False, f"无法设置为对所有群/角色启用，因为 '{conflict_persona}' 已配置为全局启用"
+            return False, f"无法设置为该启用范围，因为 '{conflict_persona}' 已占用全局范围"
 
         # 设置配置
         success = config.set_config("scope", scope)
@@ -375,9 +437,10 @@ class PersonaConfigManager(ConfigSetManager):
         - 私聊: "{WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}"
 
         匹配规则：
-        1. 首先查找专门针对该群聊的 Persona（scope 为 specific 且 target_groups 包含该群聊）
-        2. 如果没有找到，查找配置为 "global" 的 Persona
-        3. 如果没有找到，返回 None
+        1. 会话级 override（若存在且人格仍在）
+        2. scope=specific 且 target_groups 含该 group_id / user_id
+        3. 回退：``global``，否则群聊用 ``global_group``、私聊用 ``global_private``
+        4. 没有则返回 None
 
         Args:
             session_id: Session ID
@@ -416,28 +479,17 @@ class PersonaConfigManager(ConfigSetManager):
         except Exception:
             pass
 
-        global_persona: Optional[str] = None
-
         for persona_name, config in self.get_all_configs().items():
             scope = config.get_config("scope").data
             target_groups = config.get_config("target_groups").data
 
-            # 检查是否专门针对该群聊或用户
             if scope == "specific":
                 if group_id and group_id in target_groups:
                     return persona_name
                 if user_id and user_id in target_groups:
                     return persona_name
 
-            # 记录全局启用的 persona
-            if scope == "global":
-                global_persona = persona_name
-
-        # 私聊也使用 global persona
-        if is_private_chat:
-            return global_persona
-
-        return global_persona
+        return self.get_fallback_persona(is_private=is_private_chat)
 
     def get_persona_config_dict(self, persona_name: str) -> Optional[Dict]:
         """

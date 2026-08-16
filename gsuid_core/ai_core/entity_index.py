@@ -40,11 +40,23 @@ class EntityRef:
     surface: str
     canonicals: List[str] = field(default_factory=list)
     plugins: List[str] = field(default_factory=list)
+    # (plugin, canonical) 成对保存：同词在不同插件可指向不同正式名。
+    bindings: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def is_ambiguous(self) -> bool:
         """被多个插件注册 = 无法确定归属，调用方不得据此路由。"""
         return len(self.plugins) > 1
+
+    def canonical_for(self, plugin: str) -> Optional[str]:
+        """这篇知识所属插件把该 surface 映射到的唯一正式名。"""
+        if not plugin:
+            return None
+        hits = [canon for owner, canon in self.bindings if owner == plugin and canon]
+        uniq = list(dict.fromkeys(hits))
+        if len(uniq) != 1:
+            return None
+        return uniq[0]
 
 
 # surface（已归一化）→ EntityRef
@@ -84,6 +96,9 @@ def register_entity_surface(surface: str, canonical: str, plugin: str) -> None:
         _SURFACE_INDEX[key] = ref
         _SCAN_ORDER = None
 
+    pair = (plugin, canonical)
+    if canonical and pair not in ref.bindings:
+        ref.bindings.append(pair)
     if canonical and canonical not in ref.canonicals:
         ref.canonicals.append(canonical)
     if plugin not in ref.plugins:

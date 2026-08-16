@@ -167,7 +167,7 @@ from gsuid_core.ai_core.buildin_tools import (
     # --- Media 工具 (category="media") --- 出图（render_agent 白名单；主人格 exclusive 剥离）
     render_card,                # 固定 JSON 布局卡片
     render_markdown_to_image,   # Markdown 出图
-    render_chart_spec,          # 声明式图表 → 内联 SVG（line/bar/hbar/pie）
+    render_chart_spec,          # 声明式图表 → 内联 SVG（line/bar/hbar/pie；series+图例+signed）
 
     # --- Default 工具 (category="default") ---
     # 通过 create_subagent 调用，用于文件操作、代码执行等

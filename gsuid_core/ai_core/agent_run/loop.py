@@ -57,6 +57,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     strip_open_solicitations,
     content_is_render_candidate,
     should_block_user_visible_text,
+    looks_like_inflight_quota_speech,
 )
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
@@ -72,10 +73,40 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
     tool_return_is_non_web_data as _tool_return_is_non_web_data,
     tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
+    inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
 
 
 class LoopPhase(RunOnceHost):
+    def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
+        """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
+        async_ack = bool(_tool_return_is_async_pending(part) or ("后台执行" in body) or ("自动回灌" in body))
+        pending, delegated, policy, ack = _inflight_after_create_subagent_return(
+            failed=_tool_return_looks_failed(part),
+            async_ack=async_ack,
+            render_done=_RENDER_DONE_RECEIPT_MARK in body,
+            ack_seen=st.render_ack_seen,
+            pending_async=st.pending_async_delivery,
+            delegated_render=st.delegated_render,
+            speech_policy=st.speech_policy,
+            is_framework=st.fw_msg,
+        )
+        st.pending_async_delivery = pending
+        st.delegated_render = delegated
+        st.speech_policy = policy
+        st.render_ack_seen = ack
+        if (
+            not _tool_return_looks_failed(part)
+            and not async_ack
+            and _RENDER_DONE_RECEIPT_MARK not in body
+            and content_is_render_candidate(
+                tool_name="create_subagent",
+                content=body,
+                fileos_folded=False,
+            )
+        ):
+            st.saw_structured_return = True
+
     async def _run_once_on_model_request(
         self,
         st: RunOnceState,
@@ -204,6 +235,8 @@ class LoopPhase(RunOnceHost):
                 if type(part) is ToolReturnPart and _raw_tr is not None:
                     from gsuid_core.ai_core.planning.runtime import get_plan_context
                     from gsuid_core.ai_core.planning.tool_output_helper import (
+                        is_searchish_tool,
+                        persist_tool_return,
                         persist_and_fold_tool_return,
                         schedule_persist_tool_return,
                     )
@@ -236,6 +269,18 @@ class LoopPhase(RunOnceHost):
                                 fileos_folded=True,
                             ):
                                 st.saw_structured_return = True
+                    elif is_searchish_tool(part.tool_name or ""):
+                        try:
+                            await persist_tool_return(
+                                tool_name=part.tool_name or "",
+                                content=_raw_tr,
+                                ev=st.ev,
+                                session_id=self.session_id or "",
+                                task_id=_tid,
+                                root_task_id=_rid,
+                            )
+                        except Exception as _fileos_e:
+                            logger.debug(i18n_t("log.ai.tool_output_persist_skip", e=_fileos_e))
                     else:
                         schedule_persist_tool_return(
                             tool_name=part.tool_name or "",
@@ -280,29 +325,14 @@ class LoopPhase(RunOnceHost):
                             fileos_folded=False,
                         ):
                             st.saw_structured_return = True
-                        # create_subagent：仅「完成交付」才计待出图；超时/静默回执不算
+                        # create_subagent：完成/异步 ack 确认在途；失败回滚抢先静默
                         if (part.tool_name or "") == "create_subagent":
-                            _body = part.content
-                            if _RENDER_DONE_RECEIPT_MARK in _body:
-                                st.delegated_render = True
-                            elif _tool_return_is_async_pending(part):
-                                st.pending_async_delivery = True
-                                st.speech_policy = "silence_only"
-                            elif content_is_render_candidate(
-                                tool_name="create_subagent",
-                                content=_body,
-                                fileos_folded=False,
-                            ):
-                                st.saw_structured_return = True
+                            self._apply_create_subagent_return(st, part, part.content)
                 elif type(part) is ToolReturnPart and (part.tool_name or "") == "create_subagent":
                     _body_raw = (
                         _raw_tr if isinstance(_raw_tr, str) else (part.content if isinstance(part.content, str) else "")
                     )
-                    if _RENDER_DONE_RECEIPT_MARK in _body_raw:
-                        st.delegated_render = True
-                    elif "后台执行" in _body_raw or "自动回灌" in _body_raw:
-                        st.pending_async_delivery = True
-                        st.speech_policy = "silence_only"
+                    self._apply_create_subagent_return(st, part, _body_raw)
 
                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
                 tool_result_str = str(part.content)
@@ -339,6 +369,8 @@ class LoopPhase(RunOnceHost):
             ):
                 st.delivered_terminal = True
                 st.speech_policy = "delivered"
+            if st.pending_async_delivery:
+                _any_actionable = False
             if _any_actionable:
                 if st.delivered_terminal:
                     # 交付已完成：不再注入 POST_TOOL 契约（那会提醒模型「再说一句」），
@@ -446,6 +478,16 @@ class LoopPhase(RunOnceHost):
                 )
                 node.model_response.parts = _stripped
 
+        # 同响应 TextPart 可能排在 ToolCall 前面：先扫出图委派，避免念包抢跑。
+        for _p in node.model_response.parts:
+            if isinstance(_p, ToolCallPart) and _p.tool_name == "create_subagent":
+                if _tool_call_targets_render_agent(_p):
+                    st.delegated_render = True
+                    st.pending_async_delivery = True
+                    if st.speech_policy != "delivered":
+                        st.speech_policy = "silence_only"
+                    break
+
         # 遍历大模型返回的具体片段 (Parts)
         # 本轮是否已出现工具调用：用于 suppress_intermediate_text 时判断
         _saw_tool_call_this_turn = False
@@ -469,6 +511,10 @@ class LoopPhase(RunOnceHost):
                 _resp_tool_names.append(part.tool_name)
                 if part.tool_name == "create_subagent" and _tool_call_targets_render_agent(part):
                     st.delegated_render = True
+                    # 出图委派当下即在途：后续 TextPart 不得把事实包念进群聊。
+                    st.pending_async_delivery = True
+                    if st.speech_policy != "delivered":
+                        st.speech_policy = "silence_only"
                 if is_status_tool_name(part.tool_name):
                     st.has_status_tool_call = True
                 if part.tool_name == "send_message_by_ai":
@@ -523,6 +569,8 @@ class LoopPhase(RunOnceHost):
                         tool_calls_so_far=st.tool_call_list,
                         wait_comfort_sent=st.wait_comfort_sent,
                         fact_pack_pending=_fact_pending,
+                        has_active_task=st.has_active_task,
+                        render_inflight=bool(st.delegated_render and not st.image_sent_this_run),
                     )
                     if _blk:
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
@@ -530,6 +578,7 @@ class LoopPhase(RunOnceHost):
                         if _why in ("report_speech", "pre_render_long_speech", "empty_handoff"):
                             st.presentation_mismatch = True
                             # 暂扣原文：纠正被申辩/无替代品时由 settle 兜底发出（INV-4）
+                            # 多点读数念白不是用户要的正文，丢掉即可，勿进 INV-4 回放。
                             if _text not in st.presentation_withheld:
                                 st.presentation_withheld.append(_text)
                         logger.info(
@@ -539,7 +588,12 @@ class LoopPhase(RunOnceHost):
                             )
                         )
                         continue
-                    if _is_wait_comfort:
+                    _inflight_now = bool(
+                        st.pending_async_delivery
+                        or st.speech_policy == "silence_only"
+                        or (st.delegated_render and not st.image_sent_this_run)
+                    )
+                    if _is_wait_comfort or (_inflight_now and looks_like_inflight_quota_speech(_text)):
                         st.wait_comfort_sent = True
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
                     _text = strip_open_solicitations(_text)

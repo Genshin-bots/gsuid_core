@@ -49,7 +49,7 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 |------|----------|----------|
 | `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、`add_once_task`/`add_interval_task`（另经白名单收敛） |
 | `buildin` | **保底**：无条件加载进主 Agent | `search_cognition`、`web_search_tool`、`web_fetch_tool`、`get_self_info`、`state_set`/`state_get` |
-| `common` | 向量检索按需 | `create_subagent`、`search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
+| `common` | 向量检索按需 | `create_subagent`、`send_meme`/`collect_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
@@ -76,6 +76,11 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | L5 上文增强检索 | `_recent_user_texts` 拼进检索 query | "改成后天吧"借上文召回 |
 
 保底池全保留；语境 + 查询池合并去重后限制附加数量上限（`tool_extra_pool_max`，默认 8）。
+
+> **在途短轮瘦池（2026-08-16）**：`has_active_task` 且剥壳后真人句 ≤48 字时置
+> `RunOnceState.in_flight_short`。装配层跳过语境标签池与向量检索，`max_extra_tools≤2`，
+> 仍保留 L2 状态驱动（kanban / `check_delegation`）。这是通道形态（句长 + 活跃任务），
+> 不是话题词特判。唤醒词只剥装配壳内「ASCII 直接贴非 ASCII」。
 
 > **L4 族展开的公平性（2026-07-15 修）**：`expand_tools_to_families` 曾是**赢家通吃**——
 > 排名第一的族整族展开占满预算后直接 `break`。`异环面板` 族 9 个成员 > 上限 8，于是它独占
@@ -389,6 +394,10 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 保留一句收尾额度。状态字段在 `RunOnceState`（`delivered_terminal`），信号来自工具侧
 `extra["delivered_with_speech"]`（结构信号，非文本关键词）。
 
+**出图在途（2026-08-16）**：`create_subagent` 的 `agent_profile` 解析到 `render_agent` 时
+（只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途台词额度一句
+（等待或短应，≤96 字）；清单/念白不占额度。群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
+
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 
 **run 收尾**（`gs_agent._resolve_output_gate_after_run`）：`plan_angle_after_run` 规划熔断 scrub /
@@ -464,7 +473,9 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 > `render_html_to_image`。渲染工具属 `media` + `capability_domain="资料出图"`，由
 > `render_agent` 白名单持有；交互主人格经 exclusive 剥离后不应直调。
 > 工具侧：默认**自由 HTML**；原生 `<table>` → flex 网格；自动嵌图。
-> **真图表**：`render_chart_spec(type, data=[{label,value},…])` → 内联 SVG（line/bar/hbar/pie），
+> **真图表**：`render_chart_spec(type, data=[{label,value},…] | series=[{name,data}])`
+> → 内联 SVG（line/bar/hbar/pie）。多实体对比必须 `series` + 图例；有正负含义才 `signed`
+> （升/降色只表达符号）。缺测点断线、不补 0；类目标签保留约 18 字。
 > 嵌进 HTML 再 `render_html_to_image`（渲染引擎无 JS，echarts/canvas 不可用）。
 > 主人格在工具返回后只注入软提示 `POST_TOOL_OUTPUT_CONTRACT`（长对照可出图，短答/换路均可），
 > 不再锁死「唯一合法下一步 = render_agent」。

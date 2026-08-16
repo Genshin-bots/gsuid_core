@@ -37,8 +37,10 @@ from gsuid_core.ai_core.cognition.hub import (
     _expand_hub_body,
     select_attachment,
     _mount_plugin_item,
+    plugin_article_ref,
     formal_from_hub_tag,
     render_expand_result,
+    tag_is_mount_subject,
     attach_article_to_hub,
     _may_create_public_hub,
     _sensitive_fact_visible,
@@ -120,8 +122,20 @@ def _att(
     )
 
 
-def _kp(eid: str, plugin: str, title: str, content: str, tags: List[str]) -> KnowledgePoint:
-    return KnowledgePoint(id=eid, plugin=plugin, title=title, content=content, tags=tags, source="plugin")
+def _kp(
+    eid: str,
+    plugin: str,
+    title: str,
+    content: str,
+    tags: List[str],
+    entity: str = "",
+) -> KnowledgePoint:
+    row: KnowledgePoint = KnowledgePoint(
+        id=eid, plugin=plugin, title=title, content=content, tags=tags, source="plugin"
+    )
+    if entity:
+        row["entity"] = entity
+    return row
 
 
 # ── 表与契约 ──
@@ -263,6 +277,33 @@ def test_ambiguous_surface_does_not_resolve() -> None:
     register_entity_surface("Summit", "Summit", "GameA")
     register_entity_surface("Summit", "Summit", "GameB")
     try:
+        assert resolve_canonical_from_knowledge("Summit", []) is None
+        assert resolve_canonical_from_knowledge("Summit", [], plugin="GameA") == "Summit"
+        assert resolve_canonical_from_knowledge("Summit", [], plugin="GameB") == "Summit"
+    finally:
+        clear_entity_index()
+
+
+def test_resolve_uses_declared_tags_and_plugin_alias() -> None:
+    assert tag_is_mount_subject("琴-基础档案", "琴")
+    assert tag_is_mount_subject("奇偶·男性-基础档案", "奇偶·男性")
+    assert tag_is_mount_subject("角色介绍 - 北站", "北站")
+    assert not tag_is_mount_subject("北站木家具", "北站")
+    assert resolve_canonical_from_knowledge("琴-基础档案", []) is None
+    assert resolve_canonical_from_knowledge("琴-基础档案", ["琴"]) == "琴"
+    assert resolve_canonical_from_knowledge("黎明神剑-基础信息", ["黎明神剑"]) == "黎明神剑"
+    assert resolve_canonical_from_knowledge("奇偶·女性-基础档案", ["奇偶·女性"]) == "奇偶·女性"
+    assert resolve_canonical_from_knowledge("原神全角色分类统计汇总", []) is None
+    assert resolve_canonical_from_knowledge("随机备忘", [], entity="琴") == "琴"
+    clear_entity_index()
+    try:
+        register_entity_surface("可莉", "可莉", "GenshinUID")
+        register_entity_surface("可莉", "可莉", "OtherPack")
+        assert resolve_canonical_from_knowledge("可莉-基础档案", ["可莉"], plugin="GenshinUID") == "可莉"
+        from gsuid_core.ai_core.cognition.hub import _surface_is_ambiguous
+
+        assert _surface_is_ambiguous("可莉-基础档案", ["可莉"], plugin="GenshinUID") is False
+        assert resolve_canonical_from_knowledge("可莉", ["可莉"], plugin="GenshinUID") == "可莉"
         assert resolve_canonical_from_knowledge("Summit", []) is None
     finally:
         clear_entity_index()
@@ -457,6 +498,8 @@ class _HubMem:
                     a.summary = str(kwargs["summary"])
                 if "as_of" in kwargs and kwargs["as_of"]:
                     a.as_of = str(kwargs["as_of"])
+                if "handle" in kwargs and kwargs["handle"]:
+                    a.handle = str(kwargs["handle"])
                 return a.id or 0
         aid = 100 + len(self.atts)
         row = _att(
@@ -500,6 +543,15 @@ class _HubMem:
     async def list_for_nodes(self, node_ids: List[int]) -> List[AICogAttachment]:
         want = set(node_ids)
         return [a for a in self.atts if a.node_id in want]
+
+    async def list_plugin_refs(self) -> List[AICogAttachment]:
+        return [a for a in self.atts if a.source == "plugin"]
+
+    async def delete_atts_by_ids(self, att_ids: List[int]) -> int:
+        want = set(att_ids)
+        before = len(self.atts)
+        self.atts = [a for a in self.atts if a.id not in want]
+        return before - len(self.atts)
 
     async def delete_all_atts(self) -> int:
         n = len(self.atts)
@@ -545,6 +597,8 @@ def _mem_patches(mem: _HubMem) -> Iterator[_HubMem]:
         patch("gsuid_core.ai_core.cognition.hub.AICogNode.list_by_ref_prefixes", new=mem.list_by_ref_prefixes),
         patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.list_for_nodes", new=mem.list_for_nodes),
         patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.delete_all", new=mem.delete_all_atts),
+        patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.delete_by_ids", new=mem.delete_atts_by_ids),
+        patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.list_plugin_refs", new=mem.list_plugin_refs),
         patch("gsuid_core.ai_core.cognition.hub.AICogNode.delete_by_ids", new=mem.delete_nodes_by_ids),
         patch("gsuid_core.ai_core.cognition.hub.AICogEdge.delete_involving", new=mem.delete_involving),
         patch("gsuid_core.ai_core.cognition.hub.link_nodes", new=AsyncMock(return_value=True)),
@@ -590,10 +644,60 @@ def test_mount_three_plugin_docs_one_hub() -> None:
         assert len(mem.atts) == 3
         assert {a.slot for a in mem.atts} == {"概要", "细则", "资料"}
         assert all(a.writable is False for a in mem.atts)
+        assert {a.ref for a in mem.atts} == {
+            plugin_article_ref("PlugA", "Alpha·介绍"),
+            plugin_article_ref("PlugA", "Alpha·细则"),
+            plugin_article_ref("PlugA", "Alpha handbook"),
+        }
     finally:
         _ENTITIES.clear()
         _ENTITIES.extend(original)
         clear_entity_index()
+
+
+def test_plugin_remount_new_id_same_title_does_not_duplicate() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    register_entity_surface("alpha", "Alpha", "PlugA")
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    try:
+        _ENTITIES.append(_kp("old-id", "PlugA", "Alpha handbook", "body-1", ["Alpha"]))
+        _run_mount(mem)
+        assert len(mem.atts) == 1
+        first_ref = mem.atts[0].ref
+        _ENTITIES.clear()
+        _ENTITIES.append(_kp("brand-new-id", "PlugA", "Alpha handbook", "body-2", ["Alpha"]))
+        _run_mount(mem)
+        assert len(mem.atts) == 1
+        assert mem.atts[0].ref == first_ref
+        assert mem.atts[0].handle == "kb_plugin:brand-new-id"
+        assert mem.atts[0].summary.startswith("body-2")
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_plugin_duplicate_title_rows_are_collapsed() -> None:
+    from gsuid_core.ai_core.cognition.hub import _dedupe_plugin_attachments
+
+    mem = _HubMem()
+    hub = mem.add_node(_node(nid=1, ref="world:PlugA:Alpha", title="Alpha"))
+    mem.atts.append(
+        _att(aid=1, node_id=1, slot="资料", title="Alpha handbook", ref="plugin:old-1", handle="kb_plugin:old-1")
+    )
+    mem.atts.append(
+        _att(aid=2, node_id=1, slot="资料", title="Alpha handbook", ref="plugin:old-2", handle="kb_plugin:old-2")
+    )
+    with _mem_patches(mem):
+        removed = _run(_dedupe_plugin_attachments())
+    assert removed == 1
+    assert len(mem.atts) == 1
+    assert mem.atts[0].id == 2
+    assert hub.title == "Alpha"
 
 
 def test_tags_fallback_without_alias_builds_hub() -> None:
@@ -634,7 +738,73 @@ def test_compound_word_tag_does_not_build_hub() -> None:
         clear_entity_index()
 
 
-def test_ambiguous_surface_does_not_build_hub() -> None:
+def test_structured_character_pages_mount_to_one_hub() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    _ENTITIES.append(_kp("j1", "GenshinUID", "琴-基础档案", "a", ["琴"]))
+    _ENTITIES.append(_kp("j2", "GenshinUID", "琴-技能与倍率", "b", ["琴"]))
+    try:
+        _run_mount(mem)
+        worlds = [n for n in mem.nodes.values() if n.ref.startswith("world:")]
+        assert len(worlds) == 1
+        assert worlds[0].title == "琴"
+        assert len(mem.atts) == 2
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_structured_ambiguous_alias_still_mounts() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    register_entity_surface("可莉", "可莉", "GenshinUID")
+    register_entity_surface("可莉", "可莉", "OtherPack")
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    _ENTITIES.append(_kp("k1", "GenshinUID", "可莉-基础档案", "a", ["可莉"]))
+    _ENTITIES.append(_kp("k2", "GenshinUID", "可莉-技能与倍率", "b", ["可莉"]))
+    _ENTITIES.append(_kp("k3", "GenshinUID", "可莉-命之座", "c", ["可莉"]))
+    try:
+        _run_mount(mem)
+        worlds = [n for n in mem.nodes.values() if n.ref.startswith("world:")]
+        assert len(worlds) == 1
+        assert worlds[0].title == "可莉"
+        assert len(mem.atts) == 3
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_structured_weapon_and_variant_pages_mount() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    _ENTITIES.append(_kp("w1", "GenshinUID", "黎明神剑-基础信息", "a", ["黎明神剑"]))
+    _ENTITIES.append(_kp("v1", "GenshinUID", "奇偶·男性-基础档案", "b", ["奇偶·男性"]))
+    _ENTITIES.append(_kp("idx", "GenshinUID", "原神全角色分类统计汇总", "c", []))
+    try:
+        _run_mount(mem)
+        titles = sorted(n.title for n in mem.nodes.values() if n.ref.startswith("world:"))
+        assert titles == ["奇偶·男性", "黎明神剑"]
+        assert len(mem.atts) == 2
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_homonym_bare_title_builds_plugin_hub() -> None:
     from gsuid_core.ai_core.register import _ENTITIES
 
     clear_entity_index()
@@ -646,7 +816,51 @@ def test_ambiguous_surface_does_not_build_hub() -> None:
     _ENTITIES.append(_kp("abyss", "GameA", "Summit", "body", []))
     try:
         _run_mount(mem)
-        assert [n for n in mem.nodes.values() if n.ref.startswith("world:")] == []
+        worlds = [n for n in mem.nodes.values() if n.ref.startswith("world:")]
+        assert len(worlds) == 1
+        assert worlds[0].ref == "world:GameA:Summit"
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_homonym_aliases_build_two_hubs() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    register_entity_surface("Summit", "PeakA", "GameA")
+    register_entity_surface("Summit", "PeakB", "GameB")
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    _ENTITIES.append(_kp("a1", "GameA", "Summit notes", "ga", ["Summit"]))
+    _ENTITIES.append(_kp("b1", "GameB", "Summit guide", "gb", ["Summit"]))
+    try:
+        _run_mount(mem)
+        worlds = sorted((n.ref, n.title) for n in mem.nodes.values() if n.ref.startswith("world:"))
+        assert worlds == [("world:GameA:PeakA", "PeakA"), ("world:GameB:PeakB", "PeakB")]
+        assert len(mem.atts) == 2
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_declared_entity_field_mounts_without_title_guess() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    _ENTITIES.append(_kp("n1", "PlugA", "随便一篇备忘", "body", [], entity="Alpha"))
+    try:
+        _run_mount(mem)
+        worlds = [n for n in mem.nodes.values() if n.ref.startswith("world:")]
+        assert len(worlds) == 1
+        assert worlds[0].title == "Alpha"
+        assert worlds[0].ref == "world:PlugA:Alpha"
     finally:
         _ENTITIES.clear()
         _ENTITIES.extend(original)
@@ -1582,17 +1796,15 @@ def test_distill_web_attach_uses_persist_title_not_tool_name() -> None:
     seen: Dict[str, str] = {}
     node_titles: List[str] = []
 
-    async def _sync(*args: Any, **kwargs: Any) -> int:
-        _ = args
-        if "title" in kwargs:
-            node_titles.append(str(kwargs["title"]))
+    async def _remember(write: Any) -> int:
+        node_titles.append(str(write.title))
         return 1
 
     async def _attach(**kwargs: Any) -> None:
         seen["title"] = str(kwargs["title"])
         seen["summary"] = str(kwargs["summary"]) if "summary" in kwargs else ""
 
-    with patch("gsuid_core.ai_core.cognition.distill.sync_node", new=_sync):
+    with patch("gsuid_core.ai_core.cognition.distill.remember", new=_remember):
         with patch("gsuid_core.ai_core.cognition.hub.maybe_attach_web_record", new=_attach):
             _run(
                 distill_tool_output(
@@ -1615,15 +1827,15 @@ def test_distill_non_web_skips_hub_attach() -> None:
 
     called = {"n": 0}
 
-    async def _sync(*args: Any, **kwargs: Any) -> int:
-        _ = (args, kwargs)
+    async def _remember(write: Any) -> int:
+        _ = write
         return 1
 
     async def _attach(**kwargs: Any) -> None:
         _ = kwargs
         called["n"] += 1
 
-    with patch("gsuid_core.ai_core.cognition.distill.sync_node", new=_sync):
+    with patch("gsuid_core.ai_core.cognition.distill.remember", new=_remember):
         with patch("gsuid_core.ai_core.cognition.hub.maybe_attach_web_record", new=_attach):
             _run(
                 distill_tool_output(

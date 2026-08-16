@@ -1,11 +1,11 @@
 """``search_cognition``：认知层的单入口联邦检索。
 
-一个动词覆盖「回想」：并行打 记忆+偏好 / 知识 / 工具落盘 / 任务产物 四路，RRF 融合、
+一个动词覆盖「回想」：并行打 记忆+偏好 / 知识 / 落盘 / 产物 / 近窗 / 记录 / 图片 / 表情，RRF 融合、
 相对分下限、分源标注、**单行空结果**。
 
 不变量（先写死，防「一把梭合成一张表」）：
 1. SQL 仍是各域真值，Qdrant 仍是索引——本模块只读、不搬正文。
-2. 语义类型保留：``CogKind`` 六类互不覆盖。
+2. 语义类型保留：``CogKind`` 各类互不覆盖。
 3. Scope / ACL 不降级：群隔离、私聊 ``group_id=None``、FileOS owner 行级、
    ``skill_doc`` 不对普通用户暴露——**全部下推到各后端**。
 4. D-11 精神保留：本模块是「按需检索」的实现，不是「每轮强制前置 RAG」。
@@ -20,6 +20,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.cognition.types import (
     WORK_KINDS,
+    MEDIA_KINDS,
     MEMORY_KINDS,
     KNOWLEDGE_KINDS,
     CogKind,
@@ -88,6 +89,19 @@ async def search_cognition(
     if CogKind.ARTIFACT in kinds and _artifact_enabled():
         tasks.append(asyncio.create_task(_search_artifacts(query, scope=scope, limit=limit)))
         labels.append("artifact")
+    if CogKind.EPISODE in kinds:
+        tasks.append(asyncio.create_task(_search_history(query, scope=scope, limit=limit)))
+        labels.append("history")
+    if CogKind.RECORD in kinds:
+        tasks.append(asyncio.create_task(_search_records(query, scope=scope, limit=limit)))
+        labels.append("record")
+    if kinds & MEDIA_KINDS:
+        if CogKind.IMAGE in kinds:
+            tasks.append(asyncio.create_task(_search_images(query, scope=scope, limit=limit)))
+            labels.append("image")
+        if CogKind.MEME in kinds:
+            tasks.append(asyncio.create_task(_search_memes(query, scope=scope, limit=limit)))
+            labels.append("meme")
     # 节点是索引层：原库过期后靠它召回蒸馏结论。
     tasks.append(asyncio.create_task(_search_nodes(query, kinds=kinds, scope=scope, limit=limit)))
     labels.append("nodes")
@@ -346,28 +360,94 @@ async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _Backend
 
 async def _search_artifacts(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
     from gsuid_core.ai_core.planning.models import AIAgentArtifact
+    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
 
+    if not scope.user_id:
+        return _EMPTY_RESULT
     rows = await AIAgentArtifact.search_recent_for_owner(
         owner_user_id=scope.user_id,
         group_id=scope.group_id,
         keyword=query,
-        limit=limit,
+        limit=limit * 2,
     )
+    sql_ids = [row.id for row in rows]
+    sql_map = {row.id: row for row in rows}
+    hybrid_ids: List[str] = []
+    hybrid_meta: Dict[str, Dict[str, object]] = {}
+    try:
+        from gsuid_core.ai_core.planning.artifact_index import search_artifacts_hybrid
+
+        raw = await search_artifacts_hybrid(
+            query,
+            owner_user_id=scope.user_id,
+            scope_key=scope.group_id,
+            limit=limit * 2,
+        )
+        for h in raw:
+            rid = str(h["id"]) if "id" in h else ""
+            if rid:
+                hybrid_ids.append(rid)
+                hybrid_meta[rid] = h
+    except Exception as e:
+        logger.debug(t("log.ai.tool_output_hybrid_search_skip", e=e))
+
+    fused = rrf_fuse([hybrid_ids, sql_ids], limit=limit) if hybrid_ids else sql_ids[:limit]
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
-    for row in rows:
-        hits[row.id] = CognitiveHit(
-            kind=CogKind.ARTIFACT,
-            id=row.id,
-            title=row.from_profile or row.artifact_kind,
-            summary=row.summary[:200],
-            score=0.45,
-            as_of=row.created_at.strftime("%Y-%m-%d"),
-            handle=row.id,
-            source="artifact",
-        )
-        ids.append(row.id)
+    for rid in fused:
+        if rid in sql_map:
+            row = sql_map[rid]
+            hits[rid] = CognitiveHit(
+                kind=CogKind.ARTIFACT,
+                id=row.id,
+                title=row.from_profile or row.artifact_kind,
+                summary=row.summary[:200],
+                score=0.55 if rid in hybrid_meta else 0.45,
+                as_of=row.created_at.strftime("%Y-%m-%d"),
+                handle=row.id,
+                source="artifact",
+            )
+        elif rid in hybrid_meta:
+            meta = hybrid_meta[rid]
+            sm = str(meta["summary"]) if "summary" in meta else ""
+            hits[rid] = CognitiveHit(
+                kind=CogKind.ARTIFACT,
+                id=rid,
+                title=str(meta["profile"]) if "profile" in meta else "产物",
+                summary=sm[:200],
+                score=0.5,
+                as_of=str(meta["date_str"]) if "date_str" in meta else "",
+                handle=rid,
+                source="artifact",
+            )
+        else:
+            continue
+        ids.append(rid)
     return ids, hits
+
+
+async def _search_history(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.cognition.extra_backends import search_history
+
+    return await search_history(query, scope=scope, limit=limit)
+
+
+async def _search_records(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.cognition.extra_backends import search_records
+
+    return await search_records(query, scope=scope, limit=limit)
+
+
+async def _search_images(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.cognition.extra_backends import search_images_backend
+
+    return await search_images_backend(query, scope=scope, limit=limit)
+
+
+async def _search_memes(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.cognition.extra_backends import search_memes_backend
+
+    return await search_memes_backend(query, scope=scope, limit=limit)
 
 
 # ── 后端 5：认知节点（跨 kind 蒸馏结论的索引层）──

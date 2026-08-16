@@ -223,7 +223,7 @@ class ToolsPhase(RunOnceHost):
 
                 # 第二层：语境工具池（群聊瘦模式也保留标签池，上限更紧）
                 ctx_tags: list[str] = []
-                if st.ev is not None and st.ev.group_id:
+                if st.ev is not None and st.ev.group_id and not st.in_flight_short:
                     try:
                         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 
@@ -252,14 +252,18 @@ class ToolsPhase(RunOnceHost):
                 _recall_threshold = float(ai_config.get_config("tool_recall_threshold").data)
                 _soft_cont = bool(st.tg.soft_continue) if st.tg is not None else False
                 _ellip = bool(st.tg.ellipsis_followup) if st.tg is not None else False
-                _skip_search = st.is_light or (
-                    st.group_slim
-                    and st.intent == "闲聊"
-                    and not st.followup_detected
-                    and not st.has_active_task
-                    and not st.has_media
-                    and not _ellip
-                    and not _soft_cont
+                _skip_search = (
+                    st.is_light
+                    or st.in_flight_short
+                    or (
+                        st.group_slim
+                        and st.intent == "闲聊"
+                        and not st.followup_detected
+                        and not st.has_active_task
+                        and not st.has_media
+                        and not _ellip
+                        and not _soft_cont
+                    )
                 )
                 if (
                     st.intent == "闲聊"
@@ -269,8 +273,10 @@ class ToolsPhase(RunOnceHost):
                 ):
                     _recall_limit = max(2, _recall_limit // 2)
                     max_extra_tools = max(3, max_extra_tools // 2)
-                if st.group_slim or st.is_light:
+                if st.group_slim or st.is_light or st.in_flight_short:
                     max_extra_tools = min(max_extra_tools, 6)
+                if st.in_flight_short:
+                    max_extra_tools = min(max_extra_tools, 2)
                 if qy and not _skip_search:
                     search_query = interaction_scaffold.build_tool_search_query(
                         qy,

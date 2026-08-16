@@ -268,6 +268,55 @@ class HistoryManager:
 
         return records
 
+    def search_recent_for_cognition(
+        self,
+        *,
+        group_id: Optional[str],
+        user_id: str,
+        bot_id: str = "",
+        query: str,
+        limit: int = 8,
+    ) -> List[tuple[MessageRecord, float]]:
+        """按群/私聊投影近窗，关键词打分。不合并 B/C 轨。"""
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        tokens = [tok for tok in re.findall(r"[^\s，。！？、；：,.!?;:]{2,}", q)]
+        picked: List[tuple[MessageRecord, float]] = []
+        with self._lock:
+            for ev, meta in self._session_metadata.items():
+                bot_meta = str(meta["bot_id"]) if "bot_id" in meta else ev.bot_id
+                if bot_id and bot_meta != bot_id:
+                    continue
+                gid_meta = meta["group_id"] if "group_id" in meta else ev.group_id
+                if group_id:
+                    if str(gid_meta or "") != str(group_id):
+                        continue
+                else:
+                    if gid_meta or ev.group_id:
+                        continue
+                    uid_meta = str(meta["user_id"]) if "user_id" in meta else ev.user_id
+                    if uid_meta != user_id:
+                        continue
+                history = self._histories.get(ev)
+                if history is None:
+                    continue
+                for rec in history:
+                    body = (rec.content or "").lower()
+                    if not body:
+                        continue
+                    if q in body:
+                        score = 1.0
+                    elif tokens:
+                        score = sum(1 for tok in tokens if tok in body) / len(tokens)
+                    else:
+                        score = 0.0
+                    if score <= 0:
+                        continue
+                    picked.append((rec, score))
+        picked.sort(key=lambda item: item[1], reverse=True)
+        return picked[: max(1, limit)]
+
     def get_history_count(self, event: "Event") -> int:
         """获取指定session的历史消息数量"""
         storage_event = self._get_storage_event(event)

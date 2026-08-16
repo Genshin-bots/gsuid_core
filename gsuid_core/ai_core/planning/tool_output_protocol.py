@@ -178,14 +178,19 @@ class PersistedHandleCard:
     read_tool: str = "read_handle"
     long_structured: bool = False
     inline_head: str = ""
+    # False：主人格交付卡，禁止把「去展开全文」写成可执行下一步
+    speech_expand: bool = True
 
     def format(self) -> str:
         how = f"read_handle(handle_id={self.id!r}, offset=0, limit=8000)"
         lines = [
             f"[persisted id={self.id} kind={self.kind} mime={self.mime} size={self.size_bytes}]",
             f"summary: {self.summary[:200]}",
-            f"how_to_read: {how}  # 看返回文首【读窗口】再续读 offset；禁止全文念给用户",
         ]
+        if self.speech_expand:
+            lines.append(f"how_to_read: {how}  # 看返回文首【读窗口】再续读 offset；禁止全文念给用户")
+        else:
+            lines.append(f"read_tool={self.read_tool}  # 专职节点读全文；主人格只用 summary，禁止展开念台词")
         if self.long_structured:
             lines.append(
                 "long_structured=true → 长对照可用 create_subagent("

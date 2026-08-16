@@ -189,6 +189,9 @@ KIT = register_agent_kit(
 3. `self` / `buildin` / `meta` 是特权分类，`ensure_tools` **拒绝**；也不许 drop
    `create_subagent`。
 
+> **在途短轮**：内核 `in_flight_short` 会在 H14 默认装配里跳过语境池/向量检索。换套件时
+> 应继续尊重 `ctx` / extra 里的短轮信号，不要在催进度的短句上灌满 40+ 工具（毁前缀缓存）。
+
 > 本槽 `off` 时 `find_tools` 一并消失（它是 `meta` 分类、由装配层注入，用户套件无权
 > `ensure`）——这是正确行为，验收文案要写明。
 
@@ -201,7 +204,7 @@ KIT = register_agent_kit(
 | **前缀缓存** | `system_prompt` 会话内绝不改串。**H29 是唯一**允许贡献 system 稳定块的点位，且只在建 session / persona 热更时触发，dispatcher 硬拒其余时机 |
 | **zone 只进 user 侧** | 关系是 per-user，群 session 共享前缀。**绝不**把 zone 写进人设卡 / system |
 | **保头裁中段** | 禁止套件改 `history[0]`、禁止 `history[-n:]` 式 compact |
-| **出站双闸顺序** | `speech_policy.should_block` → H20 → `pre_send_gate`，顺序不可换、不可跳、不可被套件替换。`speech_policy=delivered` 挡住后**不打 H20** |
+| **出站双闸顺序** | `speech_policy.should_block` → H20 → `pre_send_gate`，顺序不可换、不可跳、不可被套件替换。`speech_policy=delivered` 挡住后**不打 H20**。出图在途 / 多点读数密度同样走 `should_block`，套件不得把念白改写后放行 |
 | **fail-open 但必须告警** | 单个 hook 异常吞掉 + `logger.warning`。**不得**升级成 `ABORT_RUN`、**不得**变成人格台词 |
 | **不写 Agent 实例态** | 禁止往 `GsCoreAIAgent` 实例写状态（同 session `_run_lock` 下仍有并发）。跨 step 用 `extra_set("plugin.{kit}.…")`，H28 清理 |
 | **统计 / 预算不可套件化** | 预算闸与 token 记账留内核；套件挂 H08/H11/H22 只**上报** |

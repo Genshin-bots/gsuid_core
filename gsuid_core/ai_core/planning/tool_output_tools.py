@@ -16,6 +16,7 @@ from gsuid_core.ai_core.control.delegation import (
     format_delegation,
     is_delegation_handle,
 )
+from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 from gsuid_core.ai_core.planning.handle_resolver import (
     ResolvedHandle,
     resolve_handle,
@@ -187,7 +188,7 @@ async def search_fileos_outputs(
     return "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="产物")
+@ai_tools(category="common", capability_domain="产物", visible_when=visible_to_capability_only)
 async def list_persisted_outputs(
     ctx: RunContext[ToolContext],
     session_id: str = "",
@@ -217,7 +218,7 @@ async def list_persisted_outputs(
     return "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="产物")
+@ai_tools(category="common", capability_domain="产物", visible_when=visible_to_capability_only)
 async def grep_persisted_outputs(
     ctx: RunContext[ToolContext],
     keyword: str,
