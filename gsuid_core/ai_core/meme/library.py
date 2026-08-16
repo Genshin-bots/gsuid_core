@@ -17,6 +17,7 @@ from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
@@ -26,8 +27,8 @@ def get_memes_base_path() -> Path:
 
 
 def get_folder_path(folder: str) -> Path:
-    """获取指定文件夹路径"""
-    return get_memes_base_path() / folder
+    """获取指定文件夹路径（拒绝穿越出 memes 根目录）"""
+    return safe_join(get_memes_base_path(), folder)
 
 
 def compute_meme_id(image_data: bytes) -> str:
@@ -167,16 +168,22 @@ class MemeLibrary:
             return False
 
         base_path = get_memes_base_path()
-        old_path = base_path / record.file_path
+        try:
+            old_path = safe_join(base_path, record.file_path)
+            target_path = get_folder_path(target_folder)
+        except PathEscapeError:
+            return False
 
         # 确保目标文件夹存在
-        target_path = get_folder_path(target_folder)
         target_path.mkdir(parents=True, exist_ok=True)
 
         # 构建新路径
         file_name = Path(record.file_path).name
-        new_relative_path = f"{target_folder}/{file_name}"
-        new_path = base_path / new_relative_path
+        try:
+            new_path = safe_join(target_path, file_name)
+            new_relative_path = str(new_path.relative_to(base_path.resolve())).replace("\\", "/")
+        except (PathEscapeError, ValueError):
+            return False
 
         # 移动文件（源与目标相同则视为已就位）
         if old_path != new_path:
@@ -226,8 +233,11 @@ class MemeLibrary:
             return False
 
         # 删除文件
-        file_path = get_memes_base_path() / record.file_path
-        if file_path.exists():
+        try:
+            file_path = safe_join(get_memes_base_path(), record.file_path)
+        except PathEscapeError:
+            file_path = None
+        if file_path is not None and file_path.exists():
             await _unlink_file(file_path)
 
         # 删除 Qdrant 向量（无条件按 meme_id 过滤删点，兼顾 qdrant_id 缺失的历史数据）

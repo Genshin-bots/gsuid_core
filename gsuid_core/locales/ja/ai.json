@@ -532,6 +532,7 @@
   "log.ai.tool_output_fold_skip": "tool_output fold skip: {e}",
   "log.ai.tool_output_hybrid_search_skip": "tool_output hybrid search skip: {e}",
   "log.ai.tool_output_index_delete_skip": "tool_output index delete skip: {e}",
+  "log.ai.tool_output_index_ensure_fail": "tool_output index ensure skip: {e}",
   "log.ai.tool_output_index_skip_after_retry": "tool_output index skip after retry: {e}",
   "log.ai.tool_output_persist_skip": "tool_output persist skip: {e}",
   "log.ai.tool_safety_execute_failed": "[ToolSafety] ツール {name} の実行に失敗しました（{err_type}）: {e}",

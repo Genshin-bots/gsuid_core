@@ -15,14 +15,16 @@ from typing import Any, Dict
 
 from fastapi import Depends
 
+from gsuid_core.utils.secret_mask import mask_mapping, unmask_against
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.ai_core.configs.models import (
     SUPPORTED_PROVIDERS,
     parse_provider_config_name,
     format_provider_config_name,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.utils.plugins_config.models import GsIntConfig, GsStrConfig, GsListStrConfig
 from gsuid_core.ai_core.configs.gemini_config import (
     get_gemini_config,
     gemini_config_manager as gemini_manager,
@@ -47,12 +49,17 @@ from ._api_tags import PROVIDER_CONFIG
 
 def _string_config_to_dict(config: Any) -> Dict[str, Any]:
     """将 StringConfig 对象转换为字典用于 JSON 序列化"""
-    return {
+    out: Dict[str, Any] = {
         "title": config.title,
         "desc": config.desc,
         "data": config.data,
-        "options": getattr(config, "options", []),
+        "options": [],
     }
+    if isinstance(config, (GsStrConfig, GsListStrConfig, GsIntConfig)):
+        out["options"] = config.options
+        if config.secret:
+            out["secret"] = True
+    return out
 
 
 def _get_manager_and_config(provider: str) -> tuple[Any, Any]:
@@ -239,7 +246,7 @@ async def get_task_config(
                 "name": full_config_name,
                 "provider": provider,
                 "config_name": config_name,
-                "config": config_dict,
+                "config": mask_mapping(config_dict),
             }
 
         return {
@@ -264,7 +271,7 @@ async def get_task_config(
 async def set_task_config(
     task_level: str,
     data: Dict[str, Any],
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     设置高级或低级任务的配置
@@ -346,7 +353,7 @@ async def set_task_config(
 @app.delete("/api/provider_config/task_config/{task_level}", summary="清除任务级别配置", tags=PROVIDER_CONFIG)
 async def clear_task_config(
     task_level: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     清除高级或低级任务的配置（将配置名置空）
@@ -500,7 +507,7 @@ async def get_config_detail(
                 "name": full_name,
                 "provider": provider,
                 "config_name": config_name,
-                "config": config_dict,
+                "config": mask_mapping(config_dict),
             },
         }
     except Exception as e:
@@ -516,7 +523,7 @@ async def create_or_update_config(
     provider: str,
     config_name: str,
     data: Dict[str, Any],
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     创建或更新配置文件
@@ -547,14 +554,13 @@ async def create_or_update_config(
 
         # 只更新模板中存在的字段
         valid_keys = set(manager._config_template.keys())
+
         for key, value in config_data.items():
             if key not in valid_keys:
-                # 跳过不存在的字段
                 continue
-            if isinstance(value, dict) and "data" in value:
-                success = config.set_config(key, value["data"])
-            else:
-                success = config.set_config(key, value)
+            raw = value["data"] if isinstance(value, dict) and "data" in value else value
+            old = config.get_config(key).data if key in config.config else None
+            success = config.set_config(key, unmask_against(raw, old))
 
             if not success:
                 return {
@@ -590,7 +596,7 @@ async def create_or_update_config(
 async def create_default_config(
     provider: str,
     config_name: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     创建使用默认配置的新的配置文件
@@ -636,7 +642,7 @@ async def create_default_config(
 async def delete_config(
     provider: str,
     config_name: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     删除配置文件

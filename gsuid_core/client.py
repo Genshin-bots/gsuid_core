@@ -85,9 +85,14 @@ async def http_test():
     )
 
     async with httpx.AsyncClient(timeout=20) as client:
+        from gsuid_core.config import core_config
+
+        ws_token = str(core_config.get_config("WS_TOKEN") or "")
+        headers = {"X-WS-Token": ws_token} if ws_token else {}
         response = await client.post(
             "http://127.0.0.1:8765/api/send_msg",
             json=msg,
+            headers=headers,
         )
         print(response.text)
         print(response.status_code)

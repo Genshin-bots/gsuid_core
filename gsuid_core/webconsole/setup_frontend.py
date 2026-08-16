@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join
 
 # 常见文件扩展名到 MIME 类型的映射
 MIME_TYPES = {
@@ -38,6 +39,7 @@ MIME_TYPES = {
     # 其他
     ".wasm": "application/wasm",
     ".map": "application/json",
+    ".webmanifest": "application/manifest+json",
 }
 
 
@@ -175,7 +177,7 @@ def _import_webconsole_apis() -> None:
     )
 
 
-async def setup_frontend_b():
+async def setup_frontend_b() -> None:
     """Setup frontend static files and API routes"""
 
     """确保核心数据库表存在"""
@@ -276,33 +278,25 @@ async def setup_frontend_b():
         @router.get("/")
         @router.get("/{path:path}")
         async def serve_frontend(path: str = ""):
-            logger.info(t("log.webconsole.received_request_app_path", path=path))
-
             # 如果路径为空或只有 /，返回 index.html
             if not path or path == "/":
                 index_path = dist_path / "index.html"
-                logger.info(t("log.webconsole.index_html_path", index_path=index_path))
                 if index_path.exists():
                     return FileResponse(index_path, media_type="text/html")
+                return HTMLResponse("Not Found", status_code=404)
 
-            # 尝试作为文件提供
-            file_path = dist_path / path
-            logger.info(t("log.webconsole.file_path", file_path=file_path))
+            # 越界 / 绝对路径 / 盘符：直接 404，禁止回落 SPA（避免探测）
+            try:
+                file_path = safe_join(dist_path, path)
+            except PathEscapeError:
+                return HTMLResponse("Not Found", status_code=404)
+
             if file_path.exists() and file_path.is_file():
-                # 强制设置正确的 MIME 类型
                 mime_type = get_mime_type(file_path)
-                logger.info(
-                    t(
-                        "log.webconsole.file_path_mime_type",
-                        file_path=file_path,
-                        mime_type=mime_type,
-                    )
-                )
                 return FileResponse(file_path, media_type=mime_type)
 
-            # 对于 SPA，返回 index.html 让前端路由处理
+            # 对于 SPA，返回 index.html 让前端路由处理（仅限未越界的虚路径）
             index_path = dist_path / "index.html"
-            logger.info(t("log.webconsole.spa_fallback_index_html"))
             if index_path.exists():
                 return FileResponse(index_path, media_type="text/html")
 

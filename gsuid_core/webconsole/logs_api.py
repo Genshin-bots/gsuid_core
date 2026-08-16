@@ -19,6 +19,7 @@ from gsuid_core.logger import (
     get_all_log_path,
 )
 from gsuid_core.data_store import LOGS_CONFIG_PATH
+from gsuid_core.utils.path_safety import PathEscapeError, parse_iso_date
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -139,13 +140,26 @@ async def get_logs(
         status: 0成功，404日期不存在
         data: 包含 count、rows、page、per_page 的分页对象
     """
-    if start_date and end_date:
+    day: str
+    range_start: str | None = None
+    range_end: str | None = None
+    try:
+        if start_date and end_date:
+            range_start = parse_iso_date(start_date, default_today=False)
+            range_end = parse_iso_date(end_date, default_today=False)
+            day = range_start
+        else:
+            day = parse_iso_date(date, default_today=True)
+    except PathEscapeError:
+        return {"status": 400, "msg": "非法日期", "data": None}
+
+    if range_start is not None and range_end is not None:
         # Multi-date range search
         all_log_files: list[LogEntry] = []
         from datetime import timedelta
 
-        current_date = datetime.strptime(start_date, "%Y-%m-%d")
-        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+        current_date = datetime.strptime(range_start, "%Y-%m-%d")
+        end_date_obj = datetime.strptime(range_end, "%Y-%m-%d")
 
         while current_date <= end_date_obj:
             date_str = current_date.strftime("%Y-%m-%d")
@@ -160,19 +174,13 @@ async def get_logs(
 
         log_files = all_log_files
     else:
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-
-        if date.endswith(".log"):
-            date = date.removesuffix(".log")
-
         history_log_data = HistoryLogData()
-        log_file_path = LOG_PATH / f"{date}.log"
+        log_file_path = LOG_PATH / f"{day}.log"
         if not log_file_path.exists():
             return {"status": 404, "msg": "该日志不存在", "data": None}
         log_files = await history_log_data.get_parse_logs(log_file_path)
         for log in log_files:
-            log["_date"] = date
+            log["_date"] = day
 
     # Filter by level
     if level and level != "all":
@@ -323,6 +331,20 @@ async def get_log_stats(
         status: 0成功
         data: 统计信息
     """
+    try:
+        if start_date and end_date:
+            start_date = parse_iso_date(start_date, default_today=False)
+            end_date = parse_iso_date(end_date, default_today=False)
+            day = start_date
+        else:
+            day = parse_iso_date(date, default_today=True)
+    except PathEscapeError:
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {"total": 0, "total_pages": 0, "per_page": per_page},
+        }
+
     if start_date and end_date:
         # Multi-date range search
         all_log_files: list[LogEntry] = []
@@ -344,16 +366,10 @@ async def get_log_stats(
 
         log_files = all_log_files
     else:
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-
-        if date.endswith(".log"):
-            date = date.removesuffix(".log")
-
         try:
             history_log_data = HistoryLogData()
-            log_files = await history_log_data.get_parse_logs(LOG_PATH / f"{date}.log")
-        except Exception:
+            log_files = await history_log_data.get_parse_logs(LOG_PATH / f"{day}.log")
+        except OSError:
             log_files = []
 
     try:
@@ -479,8 +495,10 @@ async def get_log_context(
     before = min(before, 100)
     after = min(after, 100)
 
-    if date.endswith(".log"):
-        date = date.removesuffix(".log")
+    try:
+        date = parse_iso_date(date, default_today=False)
+    except PathEscapeError:
+        return {"status": 404, "msg": "非法日期", "data": None}
 
     log_file_path = LOG_PATH / f"{date}.log"
     if not log_file_path.exists():

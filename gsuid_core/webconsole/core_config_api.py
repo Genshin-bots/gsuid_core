@@ -8,14 +8,15 @@ from typing import Any, Dict, List
 from fastapi import Depends, Request
 
 from gsuid_core.config import CONFIG_DEFAULT, CONFIG_OPTIONS, core_config
+from gsuid_core.utils.secret_mask import looks_masked, mask_secret_value, is_secret_key_name
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_admin
 
 from ._api_tags import CORE_CONFIG
 
 
 @app.get("/api/core/config", summary="获取核心配置", tags=CORE_CONFIG)
-async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取核心配置
 
@@ -34,17 +35,19 @@ async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(requ
     for key in CONFIG_DEFAULT:
         if key in ["sv"]:
             continue
-        value = config.get(key)
+        value = config[key] if key in config else None
         if value is not None:
             result[key] = value
         else:
             result[key] = CONFIG_DEFAULT[key]
+        if is_secret_key_name(key):
+            result[key] = mask_secret_value(result[key])
 
     return {"status": 0, "msg": "ok", "data": result}
 
 
 @app.get("/api/core/config/options", summary="获取核心配置项的可选值元数据", tags=CORE_CONFIG)
-async def get_core_config_options(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_core_config_options(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """获取核心配置中「枚举类」配置项的控件类型 + 可选值 + 展示标签。
 
     这些项在 config.py 的 CORE_CONFIG 里用 SelectOption 与默认值一处声明（如 LANGUAGE、
@@ -56,7 +59,7 @@ async def get_core_config_options(request: Request, _user: Dict[str, Any] = Depe
 
 
 @app.post("/api/core/config", summary="保存核心配置", tags=CORE_CONFIG)
-async def set_core_config(request: Request, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)):
+async def set_core_config(request: Request, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_admin)):
     """
     保存核心配置
 
@@ -71,10 +74,14 @@ async def set_core_config(request: Request, data: Dict[str, Any], _user: Dict[st
     """
     result = {}
     for i in data:
+        incoming = data[i]
+        # 标量密钥：掩码整段跳过即可（WS_TOKEN 不是 tags 列表）
+        if is_secret_key_name(i) and looks_masked(incoming):
+            continue
         if (i in CONFIG_DEFAULT and isinstance(CONFIG_DEFAULT[i], List)) or i in ["log_output"]:
-            v = data[i].split(",") if isinstance(data[i], str) else data[i]
+            v = incoming.split(",") if isinstance(incoming, str) else incoming
         else:
-            v = data[i]
+            v = incoming
 
         if i in ["log_level", "log_output"]:
             g = i.split("_")

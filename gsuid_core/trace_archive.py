@@ -10,8 +10,9 @@ TRACE_JSONL_PATH = LOG_PATH / "traces"
 
 def _get_jsonl_path(date_str: str | None = None) -> Path:
     """按日期获取 JSONL 路径，格式：logs/traces/YYYY-MM-DD.jsonl"""
-    if date_str is None:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+    from gsuid_core.utils.path_safety import parse_iso_date
+
+    date_str = parse_iso_date(date_str, default_today=True)
     TRACE_JSONL_PATH.mkdir(parents=True, exist_ok=True)
     return TRACE_JSONL_PATH / f"{date_str}.jsonl"
 

@@ -508,11 +508,15 @@ def delete_persona(char_name: str) -> bool:
         True 如果成功删除，False 如果角色不存在
     """
     # 先删除配置文件
+    from gsuid_core.utils.path_safety import PathEscapeError
+
     from .config import persona_config_manager
 
-    persona_config_manager.delete_persona_config(char_name)
-
-    persona = Persona(char_name)
+    try:
+        persona_config_manager.delete_persona_config(char_name)
+        persona = Persona(char_name)
+    except (ValueError, PathEscapeError):
+        return False
     deleted = persona.delete()
     if deleted:
         invalidate_voice_anchor_cache(char_name)

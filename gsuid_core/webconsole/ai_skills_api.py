@@ -11,7 +11,7 @@ from fastapi import Depends
 from pydantic import BaseModel
 
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.ai_core.skills.resource import skills
 from gsuid_core.ai_core.skills.operations import (
     SkillInstallResult,
@@ -149,7 +149,7 @@ async def get_ai_skill_detail(skill_name: str, _: Dict[str, Any] = Depends(requi
 
 
 @app.delete("/api/ai/skills/{skill_name}", summary="删除 AI 技能", tags=AI_SKILLS)
-async def remove_ai_skill(skill_name: str, _: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+async def remove_ai_skill(skill_name: str, _: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     """
     删除指定的 AI 技能（删除整个文件夹）
 
@@ -173,7 +173,7 @@ async def remove_ai_skill(skill_name: str, _: Dict[str, Any] = Depends(require_a
 @app.post("/api/ai/skills/clone", summary="安装 AI 技能（Git 仓库 / 压缩包直链 / SKILL.md 直链）", tags=AI_SKILLS)
 async def clone_ai_skill(
     body: CloneSkillRequest,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> SkillInstallResult:
     """
     从 Git 仓库 / zip 直链 / SKILL.md 直链安装 AI 技能
@@ -186,6 +186,11 @@ async def clone_ai_skill(
         msg: 操作结果信息
         skill_name: 安装后的技能名称（仅成功时返回）
     """
+    from gsuid_core.utils.path_safety import validate_install_source_url
+
+    url_err = validate_install_source_url(body.git_url)
+    if url_err:
+        return {"status": 1, "msg": url_err}
     # git clone / 下载解包是阻塞 IO，放线程池避免卡事件循环
     result = await asyncio.to_thread(install_skill, body.git_url, body.skill_name, body.update)
     return result

@@ -36,6 +36,19 @@ def _auth_headers() -> Dict[str, str]:
     return {"X-Local-Test-Token": _LOCAL_TEST_TOKEN} if _LOCAL_TEST_TOKEN else {}
 
 
+def _send_msg_headers() -> Dict[str, str]:
+    """``/api/send_msg`` 需要 ``X-WS-Token``（与核心 ``WS_TOKEN`` 一致）。"""
+    headers = _auth_headers()
+    token = os.getenv("GSUID_WS_TOKEN") or os.getenv("WS_TOKEN") or ""
+    if not token:
+        from gsuid_core.config import core_config
+
+        token = str(core_config.get_config("WS_TOKEN") or "")
+    if token:
+        headers["X-WS-Token"] = token
+    return headers
+
+
 # ─────────────────────────────────────────────
 # Chat API
 # ─────────────────────────────────────────────
@@ -140,7 +153,7 @@ async def call_send_msg(
     }
 
     try:
-        response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
+        response = await client.post(url, json=payload, headers=_send_msg_headers(), timeout=timeout)
         response.raise_for_status()
         return response.json()
     except httpx.TimeoutException:

@@ -91,7 +91,9 @@ class PersonaConfigManager(ConfigSetManager):
 
     def _get_config_path(self, config_name: str) -> Path:
         """获取指定 persona 的配置文件路径（目录结构）"""
-        return self._base_path / config_name / "config.json"
+        from gsuid_core.utils.path_safety import safe_join
+
+        return safe_join(self._base_path, config_name, "config.json")
 
     def _list_configs(self) -> List[str]:
         """列出所有 Persona 配置"""

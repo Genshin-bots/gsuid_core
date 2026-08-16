@@ -29,6 +29,8 @@ def tool_output_sparse_config() -> dict[str, SparseVectorParams]:
 
 
 async def ensure_tool_output_collection() -> None:
+    from gsuid_core.i18n import t
+    from gsuid_core.logger import logger
     from gsuid_core.ai_core.rag.base import (
         client,
         get_dimension,
@@ -38,26 +40,22 @@ async def ensure_tool_output_collection() -> None:
 
     if client is None:
         return
-    dim = get_strict_dimension() or get_dimension()
     try:
-        await client.get_collection(TOOL_OUTPUT_COLLECTION)
+        exists = await client.collection_exists(TOOL_OUTPUT_COLLECTION)
+        if not exists:
+            dim = get_strict_dimension() or get_dimension()
+            await client.create_collection(
+                collection_name=TOOL_OUTPUT_COLLECTION,
+                vectors_config=tool_output_vectors_config(dim),
+                sparse_vectors_config=tool_output_sparse_config(),
+                on_disk_payload=True,
+            )
         await ensure_payload_indexes(
             collection_name=TOOL_OUTPUT_COLLECTION,
             keyword_fields=["scope_key", "tool_name", "owner_user_id", "date_str", "res_handle"],
         )
-        return
-    except Exception:
-        pass
-    await client.create_collection(
-        collection_name=TOOL_OUTPUT_COLLECTION,
-        vectors_config=tool_output_vectors_config(dim),
-        sparse_vectors_config=tool_output_sparse_config(),
-        on_disk_payload=True,
-    )
-    await ensure_payload_indexes(
-        collection_name=TOOL_OUTPUT_COLLECTION,
-        keyword_fields=["scope_key", "tool_name", "owner_user_id", "date_str", "res_handle"],
-    )
+    except Exception as e:
+        logger.warning(t("log.ai.tool_output_index_ensure_fail", e=e))
 
 
 async def index_tool_output_chunks(

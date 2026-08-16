@@ -10,7 +10,7 @@ from fastapi import Body, Depends, Request
 
 from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_admin
 from gsuid_core.utils.database.admin_api import (
     create_record,
     delete_record,
@@ -26,7 +26,7 @@ from ._api_tags import DATABASE
 
 
 @app.get("/api/database/plugins", summary="获取所有插件数据库", tags=DATABASE)
-async def get_database_plugins(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_database_plugins(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取所有插件及其数据库信息
 
@@ -78,7 +78,7 @@ async def get_database_plugins(request: Request, _user: Dict[str, Any] = Depends
 
 
 @app.get("/api/database/{plugin_id}/tables", summary="获取插件表信息", tags=DATABASE)
-async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取指定插件的数据库表列表
 
@@ -108,7 +108,7 @@ async def get_plugin_tables(plugin_id: str, request: Request, _user: Dict[str, A
 
 
 @app.get("/api/database/table/{table_name}", summary="获取表元数据", tags=DATABASE)
-async def get_table_metadata(table_name: str, request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_table_metadata(table_name: str, request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取数据表元数据
 
@@ -148,7 +148,7 @@ async def get_table_data_api(
     search_columns: str = "",
     filter_columns: str = "",
     filter_values: str = "",
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     获取数据表分页数据
@@ -195,7 +195,7 @@ async def get_table_data_api(
 async def create_record_api(
     table_name: str,
     data: Dict[str, Any] = Body(...),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     创建新记录
@@ -228,7 +228,7 @@ async def update_record_api(
     table_name: str,
     record_id: str,
     data: Dict[str, Any] = Body(...),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     更新记录
@@ -270,7 +270,7 @@ async def update_record_api(
 async def delete_record_api(
     table_name: str,
     record_id: str,
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     删除记录

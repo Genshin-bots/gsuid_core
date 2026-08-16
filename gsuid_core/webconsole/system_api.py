@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 
 from gsuid_core.handler import IS_HANDDLE, set_handle
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 
 from ._api_tags import SYSTEM
 
@@ -68,7 +68,7 @@ async def health_check():
 
 
 @app.post("/api/system/restart", summary="重启核心服务", tags=SYSTEM)
-async def restart_core(_user: Dict[str, Any] = Depends(require_auth)):
+async def restart_core(_user: Dict[str, Any] = Depends(require_admin)):
     """
     重启核心服务
 
@@ -94,7 +94,7 @@ async def restart_core(_user: Dict[str, Any] = Depends(require_auth)):
 
 
 @app.post("/api/system/stop", summary="停止核心服务", tags=SYSTEM)
-async def stop_core(_user: Dict[str, Any] = Depends(require_auth)):
+async def stop_core(_user: Dict[str, Any] = Depends(require_admin)):
     """
     停止核心服务
 
@@ -116,7 +116,7 @@ async def stop_core(_user: Dict[str, Any] = Depends(require_auth)):
 
 
 @app.post("/api/system/resume", summary="恢复核心服务", tags=SYSTEM)
-async def resume_core(_user: Dict[str, Any] = Depends(require_auth)):
+async def resume_core(_user: Dict[str, Any] = Depends(require_admin)):
     """
     恢复核心服务
 

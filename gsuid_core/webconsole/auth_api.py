@@ -7,15 +7,19 @@ import secrets
 from typing import Optional
 from hashlib import sha256
 
+import bcrypt
 import aiofiles
 from fastapi import File, Header, Request, UploadFile
 from sqlmodel import func, select
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import Response
 
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.data_store import gs_data_path
 from gsuid_core.security_manager import get_client_ip, auth_rate_limiter
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import verify_token
 from gsuid_core.webconsole.auth_crypto import (
@@ -32,6 +36,8 @@ from ._api_tags import AUTH
 
 # Avatar storage path
 AVATAR_PATH = gs_data_path / "avatars"
+_AVATAR_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
+_PASSWORD_PREFIX_BCRYPT = "bcrypt$"
 
 # 报文「解密 / 传输层」失败时的提示：与「账户密码错误」刻意区分，给前端良好 UX。
 # 安全性：区分二者不额外泄露状态——加密握手是所有人都能完成的公开步骤，一旦解密成功走到
@@ -96,21 +102,36 @@ def get_register_code() -> str:
     return core_config.get_config("REGISTER_CODE")
 
 
-def hash_password(password: str, salt: Optional[str] = None) -> str:
-    """哈希密码"""
-    if salt is None:
-        salt = secrets.token_hex(16)
+def _legacy_sha256_hash(password: str, salt: str) -> str:
     password_hash = sha256((password + salt).encode()).hexdigest()
     return f"{salt}${password_hash}"
 
 
+def hash_password(password: str, salt: Optional[str] = None) -> str:
+    """哈希密码。新哈希为 bcrypt；``salt`` 仅保留给旧 SHA-256 校验路径。"""
+    if salt is not None:
+        return _legacy_sha256_hash(password, salt)
+    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    return f"{_PASSWORD_PREFIX_BCRYPT}{hashed.decode('ascii')}"
+
+
 def verify_password(password: str, stored_hash: str) -> bool:
     """验证密码（恒定时间比较，避免时序侧信道泄露）"""
+    if not stored_hash:
+        return False
+    if stored_hash.startswith(_PASSWORD_PREFIX_BCRYPT):
+        try:
+            return bcrypt.checkpw(
+                password.encode("utf-8"),
+                stored_hash[len(_PASSWORD_PREFIX_BCRYPT) :].encode("ascii"),
+            )
+        except (ValueError, TypeError):
+            return False
     try:
-        salt, _hash_value = stored_hash.split("$")
+        salt, _hash_value = stored_hash.split("$", 1)
     except (ValueError, AttributeError):
         return False
-    computed = hash_password(password, salt)
+    computed = _legacy_sha256_hash(password, salt)
     return secrets.compare_digest(computed.encode(), stored_hash.encode())
 
 
@@ -221,6 +242,12 @@ async def api_login(request: Request, data: JsonObject):
     if user and verify_password(password, user.password_hash):
         # 登录成功，重置该 IP 的限流状态
         auth_rate_limiter.record_success(rate_key)
+        # 旧 SHA-256 登录成功后升级 bcrypt
+        if not user.password_hash.startswith(_PASSWORD_PREFIX_BCRYPT):
+            try:
+                await WebUser.update_password(email=email, new_password_hash=hash_password(password))
+            except (OSError, SQLAlchemyError) as e:
+                logger.warning(t("log.webconsole.password_rehash_fail", error=e))
         # 创建持久化会话（48h 有效，超出 web_max_sessions 的最旧会话被踢下线）
         token = session_store.create(
             {
@@ -477,11 +504,15 @@ async def upload_avatar(
 
         # Get filename and extension
         avatar_filename = avatar.filename or "avatar.png"
-        ext = avatar_filename.split(".")[-1] if "." in avatar_filename else "png"
+        ext = avatar_filename.split(".")[-1].lower() if "." in avatar_filename else "png"
+        if ext not in _AVATAR_EXTS:
+            return {"status": 1, "msg": "不支持的头像格式，仅允许 png/jpg/jpeg/gif/webp"}
 
         # Generate filename
         filename = f"{user_email.replace('@', '_at_')}.{ext}"
-        file_path = AVATAR_PATH / filename
+        if not is_safe_filename(filename):
+            return {"status": 1, "msg": "非法文件名"}
+        file_path = safe_join(AVATAR_PATH, filename)
 
         # Save file
         content = await avatar.read()
@@ -515,8 +546,11 @@ async def get_avatar(request: Request, filename: str):
     Returns:
         图片文件响应
     """
-    file_path = AVATAR_PATH / filename
-    if not file_path.exists():
+    try:
+        file_path = safe_join(AVATAR_PATH, filename)
+    except PathEscapeError:
+        return {"status": 1, "msg": t("msg.webconsole.auth_avatar_not_found")}
+    if not file_path.exists() or not file_path.is_file():
         return {"status": 1, "msg": t("msg.webconsole.auth_avatar_not_found")}
 
     try:
@@ -525,15 +559,16 @@ async def get_avatar(request: Request, filename: str):
 
         # Determine content type
         ext = filename.split(".")[-1].lower() if "." in filename else "png"
-        content_type = {
+        if ext not in _AVATAR_EXTS:
+            return {"status": 1, "msg": t("msg.webconsole.auth_avatar_not_found")}
+        content_types = {
             "png": "image/png",
             "jpg": "image/jpeg",
             "jpeg": "image/jpeg",
             "gif": "image/gif",
             "webp": "image/webp",
-        }.get(ext, "image/png")
-
-        from fastapi.responses import Response
+        }
+        content_type = content_types[ext]
 
         return Response(content=content, media_type=content_type)
     except Exception as e:

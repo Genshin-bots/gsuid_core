@@ -15,9 +15,11 @@ from sqlalchemy import delete
 from fastapi.responses import FileResponse
 
 from gsuid_core.i18n import t
+from gsuid_core.utils.path_safety import PathEscapeError, ensure_under_any
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.planning.models import AIAgentArtifact
+from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
 from gsuid_core.utils.database.base_models import async_maker
 
 from ._api_tags import ARTIFACTS
@@ -124,9 +126,12 @@ async def get_artifact_detail(
 
     payload_preview: Optional[str] = art.payload_inline
     if not payload_preview and art.payload_path:
-        p = Path(art.payload_path)
+        try:
+            p: Path | None = ensure_under_any(Path(art.payload_path), (ARTIFACT_ROOT,))
+        except PathEscapeError:
+            p = None
         # 无 mime 时用魔数防二进制误读
-        if p.exists():
+        if p is not None and p.exists() and p.is_file():
             try:
                 head = p.read_bytes()[:8]
                 if head.startswith(b"\x89PNG") or head[:3] == b"\xff\xd8\xff" or head[:4] == b"GIF8":
@@ -157,8 +162,11 @@ async def download_artifact_raw(
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None or not art.payload_path:
         return {"status": 1, "msg": t("msg.webconsole.artifact.no_payload_path"), "data": None}
-    p = Path(art.payload_path)
-    if not p.exists():
+    try:
+        p = ensure_under_any(Path(art.payload_path), (ARTIFACT_ROOT,))
+    except PathEscapeError:
+        return {"status": 1, "msg": t("msg.webconsole.artifact.file_not_found"), "data": None}
+    if not p.exists() or not p.is_file():
         return {"status": 1, "msg": t("msg.webconsole.artifact.file_not_found"), "data": None}
     return FileResponse(p, media_type=art.mime or "application/octet-stream")
 
@@ -174,10 +182,10 @@ async def delete_artifact(
     # 文件落盘的尝试删除
     if art.payload_path:
         try:
-            p = Path(art.payload_path)
-            if p.exists():
+            p = ensure_under_any(Path(art.payload_path), (ARTIFACT_ROOT,))
+            if p.exists() and p.is_file():
                 p.unlink()
-        except OSError:
+        except (OSError, PathEscapeError):
             pass
     async with async_maker() as session:
         await session.execute(delete(AIAgentArtifact).where(col(AIAgentArtifact.id) == res_id))

@@ -1,3 +1,4 @@
+import os
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -47,4 +48,10 @@ async def lifespan(app: FastAPI):
     await core_shutdown_execute()
 
 
-app = FastAPI(lifespan=lifespan)
+_ENABLE_OPENAPI = os.getenv("GSUID_ENABLE_OPENAPI", "").lower() in ("1", "true", "yes")
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/docs" if _ENABLE_OPENAPI else None,
+    redoc_url="/redoc" if _ENABLE_OPENAPI else None,
+    openapi_url="/openapi.json" if _ENABLE_OPENAPI else None,
+)

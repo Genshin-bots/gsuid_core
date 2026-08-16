@@ -17,7 +17,7 @@ from fastapi import Depends
 from pydantic import Field, BaseModel
 
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 
 from ._api_tags import AGENT_DEBUG
 
@@ -487,7 +487,7 @@ async def ops_tool_topology(
 
 
 @app.get("/api/ops/config-snapshot", summary="导出配置快照", tags=_OPS)
-async def ops_config_snapshot_export(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
+async def ops_config_snapshot_export(_user: Dict = Depends(require_admin)) -> Dict[str, Any]:
     from gsuid_core.ai_core.persona import list_available_personas
     from gsuid_core.ai_core.memory.config import memory_config
     from gsuid_core.ai_core.persona.config import persona_config_manager
@@ -547,7 +547,7 @@ class ConfigSnapshotImport(BaseModel):
 @app.post("/api/ops/config-snapshot/import", summary="导入配置快照", tags=_OPS)
 async def ops_config_snapshot_import(
     body: ConfigSnapshotImport,
-    _user: Dict = Depends(require_auth),
+    _user: Dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     snap = body.snapshot or {}
     applied: List[str] = []
@@ -615,7 +615,7 @@ class AccessUpdate(BaseModel):
 
 
 @app.put("/api/ops/access", summary="更新 AI 黑白名单", tags=_OPS)
-async def ops_access_put(body: AccessUpdate, _user: Dict = Depends(require_auth)) -> Dict[str, Any]:
+async def ops_access_put(body: AccessUpdate, _user: Dict = Depends(require_admin)) -> Dict[str, Any]:
     if body.black_list is not None:
         _cfg_set("black_list", [x for x in body.black_list if str(x).strip()])
     if body.white_list is not None:
@@ -636,7 +636,7 @@ class SecurityOutputUpdate(BaseModel):
 @app.put("/api/ops/security-output", summary="更新安全与输出策略", tags=_OPS)
 async def ops_security_put(
     body: SecurityOutputUpdate,
-    _user: Dict = Depends(require_auth),
+    _user: Dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     for k, v in (body.values or {}).items():
         if k in _SECURITY_OUTPUT_KEYS:

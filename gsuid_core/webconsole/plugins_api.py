@@ -11,8 +11,13 @@ from fastapi import Body, Query, Depends, Request
 
 from gsuid_core.sv import SL
 from gsuid_core.i18n import t
+from gsuid_core.utils.secret_mask import (
+    unmask_against,
+    mask_secret_value,
+    is_secret_key_name,
+)
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsDivider,
@@ -40,14 +45,41 @@ from ._api_tags import PLUGINS, FRAMEWORK_CONFIG
 def _read_plugin_icon(plugin_name: str) -> Optional[str]:
     """读取插件图标，返回 base64 编码的字符串"""
     icon_base64 = None
-    icon_path = PLUGINS_PATH / plugin_name / "ICON.png"
-    if not icon_path.exists():
-        icon_path = PLUGINS_PATH / plugin_name.lower() / "ICON.png"
-    if icon_path.exists() and icon_path.is_file():
+    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
+
+    icon_path = None
+    if is_safe_filename(plugin_name):
+        try:
+            icon_path = safe_join(PLUGINS_PATH, plugin_name, "ICON.png")
+        except PathEscapeError:
+            icon_path = None
+    if icon_path is None or not icon_path.exists():
+        if is_safe_filename(plugin_name.lower()):
+            try:
+                icon_path = safe_join(PLUGINS_PATH, plugin_name.lower(), "ICON.png")
+            except PathEscapeError:
+                icon_path = None
+        else:
+            icon_path = None
+    if icon_path is not None and icon_path.exists() and icon_path.is_file():
         with open(icon_path, "rb") as f:
             icon_data = f.read()
             icon_base64 = f"data:image/png;base64,{base64.b64encode(icon_data).decode('utf-8')}"
     return icon_base64
+
+
+def _is_secret_gsc(config: GSC) -> bool:
+    if isinstance(config, (GsDivider, GsColorConfig)):
+        return False
+    return bool(config.secret)
+
+
+def _write_config_item(config_obj: Any, key: str, value: Any) -> bool:
+    """写入配置项；掩码回传按元素合并旧密钥，避免 tags 追加失败。"""
+    if key not in config_obj.config_list:
+        return False
+    old = config_obj.config[key].data if key in config_obj.config else None
+    return bool(config_obj.set_config(key, unmask_against(value, old)))
 
 
 def _group_item_values(item: Dict[str, GSC]) -> Dict[str, Any]:
@@ -58,13 +90,15 @@ def _group_item_values(item: Dict[str, GSC]) -> Dict[str, Any]:
             out[key] = [_group_item_values(sub) for sub in field.data]
         elif isinstance(field, GsDivider):
             continue
+        elif _is_secret_gsc(field) or is_secret_key_name(key):
+            out[key] = mask_secret_value(field.data)
         else:
             out[key] = field.data
     return out
 
 
-def _build_config_item(config: GSC) -> Dict[str, Any]:
-    """构建单个配置项的响应数据"""
+def _build_config_item(config: GSC, key: str = "") -> Dict[str, Any]:
+    """构建单个配置项的响应数据。``key`` 用于按字段名识别密钥。"""
     config_type = type(config).__name__.replace("Config", "").lower()
 
     # GsRepeatGroupConfig: template 给字段描述(递归 _build_config_item), value 给各项的值
@@ -75,7 +109,7 @@ def _build_config_item(config: GSC) -> Dict[str, Any]:
             "desc": config.desc,
             "value": [_group_item_values(row) for row in config.data],
             "default": [],
-            "template": {k: _build_config_item(v) for k, v in config.template.items()},
+            "template": {k: _build_config_item(v, k) for k, v in config.template.items()},
         }
 
     # GsDivider 作为前端分割线，data 为可选标题
@@ -106,8 +140,9 @@ def _build_config_item(config: GSC) -> Dict[str, Any]:
     }
 
     # secret: 标记敏感项（前端应渲染为密码框）；GsDivider / GsColorConfig 无该字段
-    if not isinstance(config, (GsDivider, GsColorConfig)) and config.secret:
+    if _is_secret_gsc(config) or is_secret_key_name(key):
         item["secret"] = True
+        item["value"] = mask_secret_value(value)
 
     # options: 仅 GsStrConfig / GsListStrConfig / GsIntConfig 拥有
     if isinstance(config, (GsStrConfig, GsListStrConfig, GsIntConfig)) and config.options:
@@ -304,7 +339,7 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
                 if cfg_name not in config_obj.config:
                     continue
                 config = config_obj.config[cfg_name]
-                item = _build_config_item(config)
+                item = _build_config_item(config, cfg_name)
 
                 group_config[cfg_name] = item
                 # 保持平铺结构兼容旧前端
@@ -451,7 +486,7 @@ async def get_framework_config_detail(
         if key not in config_obj.config:
             continue
         config = config_obj.config[key]
-        item = _build_config_item(config)
+        item = _build_config_item(config, key)
         config_data[key] = item
 
     # 简化显示名称（去掉 GsCore 前缀）
@@ -471,7 +506,7 @@ async def get_framework_config_detail(
 
 @app.post("/api/framework-config/{config_name}", summary="更新框架配置", tags=FRAMEWORK_CONFIG)
 async def update_framework_config(
-    request: Request, config_name: str, data: Dict[str, Any] = Body(...), _user: Dict[str, Any] = Depends(require_auth)
+    request: Request, config_name: str, data: Dict[str, Any] = Body(...), _user: Dict[str, Any] = Depends(require_admin)
 ):
     """
     更新框架配置
@@ -501,7 +536,7 @@ async def update_framework_config(
 
     for key, value in data.items():
         try:
-            result = config_obj.set_config(key, value)
+            result = _write_config_item(config_obj, key, value)
             if result:
                 is_success = True
             else:
@@ -521,7 +556,7 @@ async def update_framework_config_item(
     config_name: str,
     item_name: str,
     value: Any = Body(..., embed=True),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     更新单个框架配置项
@@ -553,7 +588,7 @@ async def update_framework_config_item(
         return {"status": 1, "msg": f"配置项 {item_name} 不存在"}
 
     try:
-        result = config_obj.set_config(item_name, value)
+        result = _write_config_item(config_obj, item_name, value)
         if result:
             return {"status": 0, "msg": "配置项已保存"}
         else:
@@ -611,8 +646,7 @@ async def update_plugin_config(
                 ):
                     # 更新该组的配置项
                     for key, value in group_config.items():
-                        if key in config_obj.config_list:
-                            config_obj.set_config(key, value)
+                        if _write_config_item(config_obj, key, value):
                             is_success = True
     else:
         # 原有的平铺格式处理
@@ -629,15 +663,13 @@ async def update_plugin_config(
                     if key.startswith(prefix):
                         actual_key = key[len(prefix) :]
 
-                    if actual_key in config_obj.config_list:
-                        config_obj.set_config(actual_key, value)
+                    if _write_config_item(config_obj, actual_key, value):
                         is_success = True
 
             # 兼容旧逻辑：如果 config_key 直接匹配 plugin_name
             elif config_key.lower() in [name, name.rstrip("uid")]:
                 for key, value in data.items():
-                    if key in config_obj.config_list:
-                        config_obj.set_config(key, value)
+                    if _write_config_item(config_obj, key, value):
                         is_success = True
 
     if not is_success:
@@ -684,8 +716,9 @@ async def update_plugin_config_item(
         ):
             if item_name in config_obj.config_list:
                 try:
-                    config_obj.set_config(item_name, value)
-                    return {"status": 0, "msg": "配置项已保存"}
+                    if _write_config_item(config_obj, item_name, value):
+                        return {"status": 0, "msg": "配置项已保存"}
+                    return {"status": 1, "msg": "配置项写入失败"}
                 except Exception as e:
                     return {"status": 1, "msg": f"配置项写入异常: {str(e)}"}
 
@@ -912,7 +945,7 @@ async def toggle_plugin(
 
 
 @app.post("/api/plugins/{plugin_name}/reload", summary="重新加载插件", tags=PLUGINS)
-async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     重新加载指定插件
 
@@ -1027,7 +1060,7 @@ async def get_plugin_store_list(request: Request, _user: Dict[str, Any] = Depend
 
 @app.post("/api/plugin-store/install/{plugin_id}", summary="通过插件 ID 安装（插件商店白名单）", tags=PLUGINS)
 async def install_plugin(
-    request: Request, plugin_id: str, repo_url: str = Body(embed=True), _user: Dict[str, Any] = Depends(require_auth)
+    request: Request, plugin_id: str, repo_url: str = Body(embed=True), _user: Dict[str, Any] = Depends(require_admin)
 ):
     """
     从商店安装插件
@@ -1059,7 +1092,7 @@ async def install_plugin(
 async def install_plugin_from_url_api(
     request: Request,
     data: Dict[str, Any] = Body(...),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     从 URL 安装插件（不走插件商店白名单）
@@ -1122,6 +1155,7 @@ async def install_plugin_from_url_api(
         }
     """
     try:
+        from gsuid_core.utils.path_safety import validate_install_source_url
         from gsuid_core.utils.plugins_update._plugins import install_plugin_from_url
 
         url = (data or {}).get("url")
@@ -1129,6 +1163,9 @@ async def install_plugin_from_url_api(
 
         if not isinstance(url, str) or not url.strip():
             return {"status": 1, "msg": "❌ 请提供有效的 git 仓库 URL"}
+        url_err = validate_install_source_url(url.strip())
+        if url_err:
+            return {"status": 1, "msg": f"❌ {url_err}"}
 
         if branch is not None and not isinstance(branch, str):
             return {"status": 1, "msg": "❌ branch 字段必须是字符串"}
@@ -1144,7 +1181,7 @@ async def install_plugin_from_url_api(
 
 
 @app.post("/api/plugin-store/update/{plugin_id}", summary="更新已安装插件", tags=PLUGINS)
-async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     更新已安装的插件
 
@@ -1171,7 +1208,7 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] 
 
 
 @app.delete("/api/plugin-store/uninstall/{plugin_id}", summary="卸载已安装插件", tags=PLUGINS)
-async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     卸载已安装的插件
 
@@ -1185,9 +1222,15 @@ async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict[str, An
         msg: 操作结果信息
     """
     try:
+        from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
         from gsuid_core.utils.plugins_update._plugins import uninstall_plugin
 
-        plugin_path = PLUGINS_PATH / plugin_id
+        if not is_safe_filename(plugin_id):
+            return {"status": 1, "msg": "非法插件名"}
+        try:
+            plugin_path = safe_join(PLUGINS_PATH, plugin_id)
+        except PathEscapeError:
+            return {"status": 1, "msg": "非法插件名"}
         result = await uninstall_plugin(plugin_path)
 
         # 检查结果中是否包含失败标记

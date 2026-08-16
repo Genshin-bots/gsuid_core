@@ -10,7 +10,7 @@ from fastapi import Depends, Request
 
 from gsuid_core.aps import scheduler, _get_trigger_description
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 
 from ._api_tags import SCHEDULER
 
@@ -79,7 +79,7 @@ async def get_scheduler_jobs(request: Request, _user: Dict[str, Any] = Depends(r
 
 
 @app.post("/api/scheduler/jobs/{job_id}/run", summary="手动触发任务", tags=SCHEDULER)
-async def run_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def run_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     手动触发计划任务
 
@@ -105,7 +105,7 @@ async def run_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any]
 
 
 @app.delete("/api/scheduler/jobs/{job_id}", summary="删除任务", tags=SCHEDULER)
-async def delete_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def delete_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     删除计划任务
 
@@ -126,7 +126,7 @@ async def delete_scheduler_job(request: Request, job_id: str, _user: Dict[str, A
 
 
 @app.post("/api/scheduler/jobs/{job_id}/pause", summary="暂停任务", tags=SCHEDULER)
-async def pause_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def pause_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     暂停计划任务
 
@@ -150,7 +150,7 @@ async def pause_scheduler_job(request: Request, job_id: str, _user: Dict[str, An
 
 
 @app.post("/api/scheduler/jobs/{job_id}/resume", summary="恢复任务", tags=SCHEDULER)
-async def resume_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def resume_scheduler_job(request: Request, job_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     恢复已暂停的计划任务
 

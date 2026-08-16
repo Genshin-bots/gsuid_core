@@ -11,9 +11,13 @@ local 还是 remote，都能据此构造出对应方向的源/目标客户端完
 """
 
 import gc
+import os
 import json
 import asyncio
+import ipaddress
 from pathlib import Path
+from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
@@ -52,6 +56,61 @@ def get_remote_connection() -> tuple[str, str | None]:
     url = str(qdrant_config.get_config("url").data or "").strip()
     api_key = str(qdrant_config.get_config("api_key").data or "").strip()
     return url, (api_key or None)
+
+
+def _hostname_from_qdrant_url(url: str) -> str:
+    """从 Qdrant URL 取出 hostname；缺 scheme 时按 http:// 补齐再解析。"""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw and not raw.startswith("//"):
+        raw = f"http://{raw}"
+    return (urlparse(raw).hostname or "").strip().lower()
+
+
+def remote_qdrant_httpx_kwargs(url: str) -> dict[str, bool]:
+    """本地/内网 Qdrant 关闭 httpx 系统代理，公网地址保持 trust_env。
+
+    Windows 开启 Clash 等系统代理时，httpx 会读 WinINET 代理表，却不像浏览器那样
+    对 127.0.0.1 做 bypass。请求被转到 ``127.0.0.1:<mixed-port>`` 后，代理回空 body
+    的 502，表现为「浏览器能打开 Qdrant、Python 客户端全失败」。
+    """
+    host = _hostname_from_qdrant_url(url)
+    if not host:
+        return {}
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+        return {"trust_env": False}
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return {}
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return {"trust_env": False}
+    return {}
+
+
+_LOOPBACK_NO_PROXY = "localhost,127.0.0.1,::1"
+
+
+@contextmanager
+def _temporary_loopback_no_proxy():
+    """构造客户端期间临时写入 NO_PROXY。
+
+    qdrant-client 的版本探测走独立的 ``httpx.get``，不吃 AsyncClient 的 ``trust_env=False``。
+    """
+    keys = ("NO_PROXY", "no_proxy")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            old = saved[k]
+            os.environ[k] = f"{_LOOPBACK_NO_PROXY},{old}" if old and old.strip() else _LOOPBACK_NO_PROXY
+        yield
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
 
 
 def _get_effective_provider(provider: str) -> str:
@@ -98,7 +157,11 @@ def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
         logger.info(t("log.rag.qdrant_remote_service_url", url=url))
         # 默认 5s 在启动高负载窗口会对瞬时调用误报 ReadTimeout，
         # 导致 RAG 步骤判失败、进程"暂不接收 AI 会话"；放宽容忍启动尖峰。
-        return AsyncQdrantClient(url=url, api_key=api_key, timeout=30)
+        httpx_kw = remote_qdrant_httpx_kwargs(url)
+        if httpx_kw.get("trust_env") is False:
+            with _temporary_loopback_no_proxy():
+                return AsyncQdrantClient(url=url, api_key=api_key, timeout=30, **httpx_kw)
+        return AsyncQdrantClient(url=url, api_key=api_key, timeout=30, **httpx_kw)
 
     logger.info(t("log.rag.qdrant_local_embedded_db", LOCAL_QDRANT_DB_PATH=LOCAL_QDRANT_DB_PATH))
     return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))

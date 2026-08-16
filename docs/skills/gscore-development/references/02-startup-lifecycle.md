@@ -176,6 +176,8 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 ### WebSocket 端点要点（`core.py::websocket_endpoint`）
 
 - **IP 访问控制**：被 ban / 不在 `TRUSTED_IPS` 时强制要求 `WS_TOKEN`；失败 `record_failure`。
+- **例外：`bot_id == webconsole_livechat`**：必须持有有效控制台登录会话（query `token`），
+  **不**走核心 `WS_TOKEN`，也**不**因本机 IP 而跳过鉴权。其它适配器 bot 行为不变。
 - **5 分钟重连复用**：`gss.connect()` 内部启 `start_send_worker()`；断开后 `_Bot` 实例保留
   5 分钟以便重连复用（在途消息继续投递），超时才丢弃。详见 [§05](./05-bot-classes.md)。
 - **两个并发协程**：`start()`（`receive_bytes` 带 1s 超时检查 `shutdown_event` → `handle_event`）

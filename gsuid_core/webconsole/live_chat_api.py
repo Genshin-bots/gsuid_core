@@ -10,6 +10,7 @@ conversations/
 ```
 
 端点：
+- GET    /api/live-chat/bootstrap             masters（不含 WS_TOKEN）
 - GET    /api/live-chat/state                 组装完整状态
 - PUT    /api/live-chat/state                 整包拆分写入
 - PUT    /api/live-chat/identity              只写身份
@@ -32,6 +33,7 @@ from boltons.fileutils import atomic_save
 
 from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
+from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.data_store import (
     LIVE_CHAT_DIR,
@@ -423,6 +425,19 @@ async def save_live_chat_state(state: Dict[str, Any]) -> bool:
 # ============================================================
 # Routes
 # ============================================================
+
+
+@app.get("/api/live-chat/bootstrap", summary="Live Chat 启动信息（masters）", tags=LIVE_CHAT)
+async def get_live_chat_bootstrap(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    raw = core_config.get_config("masters")
+    masters: List[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str) and item:
+                masters.append(item)
+    return {"status": 0, "msg": "ok", "data": {"masters": masters}}
 
 
 @app.get("/api/live-chat/state", summary="读取 Live Chat 完整状态", tags=LIVE_CHAT)

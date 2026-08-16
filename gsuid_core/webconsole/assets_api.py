@@ -1,6 +1,7 @@
 """
 Assets APIs
 提供图片上传、预览等资源相关的 RESTful APIs
+只允许操作 ``data/`` 目录内的文件。
 """
 
 import base64
@@ -11,6 +12,8 @@ from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
+from gsuid_core.data_store import gs_data_path
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename, resolve_under_root
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -24,6 +27,11 @@ class UploadRequest(BaseModel):
     target_filename: Optional[str] = None
 
 
+def _resolve_asset_path(raw: str) -> Path:
+    # 前端 CoreConfigPage 把 data 根写成相对名 "data"
+    return resolve_under_root(raw, gs_data_path, aliases=frozenset({".", "data"}))
+
+
 @app.post("/api/assets/upload", summary="上传图片", tags=ASSETS)
 async def upload_asset(
     data: UploadRequest,
@@ -33,14 +41,7 @@ async def upload_asset(
     上传图片并返回本地绝对路径和预览URL
 
     接收 Base64 编码的图片数据并保存到服务器，返回访问路径和预览 URL。
-
-    Args:
-        data: UploadRequest，包含 image(Base64)、filename、upload_to(可选)、target_filename(可选)
-
-    Returns:
-        status: 0成功，1失败
-        data.path: 文件绝对路径
-        data.url: 预览 URL
+    保存位置必须落在 data/ 目录内。
     """
     try:
         # 解析 Base64
@@ -53,29 +54,30 @@ async def upload_asset(
 
         # 确定保存路径
         if data.upload_to:
-            save_dir = Path(data.upload_to)
+            save_dir = _resolve_asset_path(data.upload_to)
         else:
-            from gsuid_core.data_store import gs_data_path
-
             save_dir = gs_data_path / "GsCore" / "uploads"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            save_dir = save_dir.resolve()
 
         if not save_dir.exists():
             save_dir.mkdir(parents=True, exist_ok=True)
 
         # 确定文件名
         if data.target_filename:
-            # 如果指定了目标文件名，则使用它（通常是配置中的 filename + suffix）
-            filename = data.target_filename
+            filename = Path(data.target_filename).name
         else:
-            filename = data.filename
+            filename = Path(data.filename).name
+        if not is_safe_filename(filename):
+            return {"status": 1, "msg": "非法文件名"}
 
-        file_path = save_dir / filename
+        file_path = safe_join(save_dir, filename)
 
         # 保存文件（直接覆盖）
         with open(file_path, "wb") as f:
             f.write(image_data)
 
-        abs_path = str(file_path.absolute())
+        abs_path = str(file_path)
 
         # 对路径进行 base64 编码用于预览
         encoded_path = base64.b64encode(abs_path.encode("utf-8")).decode()
@@ -85,6 +87,8 @@ async def upload_asset(
             "msg": "上传成功",
             "data": {"path": abs_path, "url": f"/api/assets/preview?path={encoded_path}"},
         }
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法路径"}
     except Exception as e:
         return {"status": 1, "msg": f"上传失败: {str(e)}"}
 
@@ -92,20 +96,7 @@ async def upload_asset(
 @app.get("/api/assets/preview", summary="预览图片", tags=ASSETS)
 async def preview_asset(path: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
-    预览本地图片
-
-    通过 Base64 编码的路径访问服务器上的图片文件。
-
-    Args:
-        path: Base64 编码的文件路径
-        _user: 认证用户信息
-
-    Returns:
-        图片文件响应
-
-    Raises:
-        HTTPException 404: 图片不存在
-        HTTPException 400: 预览失败
+    预览本地图片（仅 data/ 目录内）
     """
 
     try:
@@ -127,74 +118,43 @@ async def preview_asset(path: str, _user: Dict[str, Any] = Depends(require_auth)
                         padding = ""
                     real_path_str = base64.b64decode(path + padding).decode("utf-8")
                 except Exception:
-                    # 如果还是失败，尝试直接作为路径处理（兼容非编码路径）
                     real_path_str = path
 
         if "%" in real_path_str:
             real_path_str = urllib.parse.unquote(real_path_str)
 
-        # 兼容相对路径，如果是相对路径，尝试从 data 目录查找
-        real_path = Path(real_path_str)
-        if not real_path.is_absolute():
-            from gsuid_core.data_store import gs_data_path
-
-            # 尝试在 data 目录下查找
-            test_path = gs_data_path / real_path_str
-            if test_path.exists():
-                real_path = test_path
+        real_path = _resolve_asset_path(real_path_str)
 
         if not real_path.exists() or not real_path.is_file():
             raise HTTPException(status_code=404, detail="图片不存在")
 
         return FileResponse(real_path)
+    except PathEscapeError:
+        raise HTTPException(status_code=400, detail="非法路径")
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"预览失败: {str(e)}")
 
 
 @app.delete("/api/assets/delete", summary="删除图片", tags=ASSETS)
 async def delete_asset(path: str, _user: Dict[str, Any] = Depends(require_auth)):
     """
-    删除本地图片
-
-    根据提供的文件路径删除服务器上的图片文件。
-
-    Args:
-        path: URL 解码后的文件路径
-        _user: 认证用户信息
-
-    Returns:
-        status: 0成功，1失败
-        msg: 操作结果信息
+    删除本地图片（仅 data/ 目录内）
     """
     try:
         import urllib.parse
 
-        # URL解码
         real_path_str = urllib.parse.unquote(path)
-
-        real_path = Path(real_path_str)
-
-        # 兼容相对路径，如果是相对路径，尝试从 data 目录查找
-        if not real_path.is_absolute():
-            from gsuid_core.data_store import gs_data_path
-
-            # 尝试在 data 目录下查找
-            test_path = gs_data_path / real_path_str
-            if test_path.exists():
-                real_path = test_path
+        real_path = _resolve_asset_path(real_path_str)
 
         if not real_path.exists() or not real_path.is_file():
             return {"status": 1, "msg": "文件不存在"}
 
-        # 删除文件
         real_path.unlink()
 
         return {"status": 0, "msg": "删除成功"}
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法路径"}
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
         return {"status": 1, "msg": f"删除失败: {str(e)}"}

@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from fastapi import Body, Depends, Request
 
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.utils.plugins_update.api import CORE_PATH, PLUGINS_PATH
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 from gsuid_core.utils.plugins_update.git_mirror import (
@@ -63,7 +63,7 @@ async def get_git_mirror_info(
 async def set_all_mirror(
     request: Request,
     mirror_prefix: str = Body(..., embed=True),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     批量设置所有插件的 Git 镜像源
@@ -126,7 +126,7 @@ async def set_single_plugin_mirror(
     request: Request,
     plugin_name: str,
     mirror_prefix: str = Body(..., embed=True),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     设置单个插件的 Git 镜像源

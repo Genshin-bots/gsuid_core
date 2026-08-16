@@ -11,15 +11,17 @@ import aiofiles
 from fastapi import Depends, Request, Response
 
 from gsuid_core.data_store import backup_path, gs_data_path
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join, confine_to_root, is_safe_filename
+from gsuid_core.utils.secret_mask import looks_masked, mask_mapping
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_admin
 from gsuid_core.utils.backup.backup_core import backup_config, copy_and_rebase_paths
 
 from ._api_tags import BACKUP
 
 
 @app.get("/api/backup/files", summary="获取备份文件列表", tags=BACKUP)
-async def get_backup_files(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_backup_files(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取所有备份文件列表
 
@@ -33,14 +35,10 @@ async def get_backup_files(request: Request, _user: Dict[str, Any] = Depends(req
         status: 0成功
         data: 备份文件列表，每项包含 fileName、downloadUrl、deleteUrl、size、created
     """
-    host = request.headers.get("host")
-    scheme = request.url.scheme
-    base_url = f"{scheme}://{host}"
-
     backup_files = [
         {
             "fileName": i.name,
-            "downloadUrl": f"{base_url}/api/backup/download?file_id={i.name}",
+            "downloadUrl": f"/api/backup/download?file_id={i.name}",
             "deleteUrl": f"/api/backup/{i.name}",
             "size": i.stat().st_size if i.exists() else 0,
             "created": datetime.fromtimestamp(i.stat().st_ctime).isoformat() if i.exists() else None,
@@ -51,7 +49,7 @@ async def get_backup_files(request: Request, _user: Dict[str, Any] = Depends(req
 
 
 @app.post("/api/backup/create", summary="创建备份", tags=BACKUP)
-async def create_backup(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def create_backup(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     创建新的备份文件
 
@@ -73,7 +71,7 @@ async def create_backup(request: Request, _user: Dict[str, Any] = Depends(requir
 
 
 @app.delete("/api/backup/{file_id}", summary="删除备份文件", tags=BACKUP)
-async def delete_backup(request: Request, file_id: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def delete_backup(request: Request, file_id: str, _user: Dict[str, Any] = Depends(require_admin)):
     """
     删除指定的备份文件
 
@@ -86,8 +84,13 @@ async def delete_backup(request: Request, file_id: str, _user: Dict[str, Any] = 
         status: 0成功，1失败
         msg: 操作结果信息
     """
-    _path = Path(backup_path / file_id)
-    if not _path.exists():
+    if not is_safe_filename(file_id) or not file_id.lower().endswith(".zip"):
+        return {"status": 1, "msg": "非法文件名"}
+    try:
+        _path = safe_join(backup_path, file_id)
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法文件名"}
+    if not _path.exists() or not _path.is_file():
         return {"status": 1, "msg": "文件未找到"}
 
     try:
@@ -98,7 +101,7 @@ async def delete_backup(request: Request, file_id: str, _user: Dict[str, Any] = 
 
 
 @app.get("/api/backup/download", summary="下载备份文件", tags=BACKUP)
-async def download_backup(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def download_backup(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     下载备份文件
 
@@ -119,9 +122,13 @@ async def download_backup(request: Request, _user: Dict[str, Any] = Depends(requ
 
     if not file_id:
         return Response("缺少文件标识符", status_code=400)
-
-    _path = Path(backup_path / file_id)
-    if not _path.exists():
+    if not is_safe_filename(file_id) or not file_id.lower().endswith(".zip"):
+        return Response("非法文件名", status_code=400)
+    try:
+        _path = safe_join(backup_path, file_id)
+    except PathEscapeError:
+        return Response("非法文件名", status_code=400)
+    if not _path.exists() or not _path.is_file():
         return Response("文件未找到", status_code=404)
 
     async with aiofiles.open(_path, "rb") as f:
@@ -133,7 +140,7 @@ async def download_backup(request: Request, _user: Dict[str, Any] = Depends(requ
 
 
 @app.get("/api/backup/config", summary="获取备份配置", tags=BACKUP)
-async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取备份配置信息
 
@@ -164,11 +171,11 @@ async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(re
                 relative_paths.append(p)
         raw_config["backup_dir"]["data"] = relative_paths
 
-    return {"status": 0, "msg": "ok", "data": raw_config}
+    return {"status": 0, "msg": "ok", "data": mask_mapping(raw_config)}
 
 
 @app.post("/api/backup/config", summary="保存备份配置", tags=BACKUP)
-async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)):
+async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_admin)):
     """
     保存备份配置信息
 
@@ -196,9 +203,10 @@ async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[
         # 将相对路径转换为绝对路径保存
         absolute_paths = []
         for p in backup_dir:
-            path = Path(p)
-            if not path.is_absolute() or not path.is_relative_to(gs_data_path):
-                path = gs_data_path / path
+            try:
+                path = confine_to_root(str(p), gs_data_path)
+            except PathEscapeError:
+                return {"status": 1, "msg": f"备份目录越界: {p}"}
             absolute_paths.append(str(path))
         backup_config.set_config("backup_dir", absolute_paths)
     if backup_method:
@@ -207,7 +215,7 @@ async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[
         backup_config.set_config("webdav_url", webdav_url)
     if webdav_username:
         backup_config.set_config("webdav_username", webdav_username)
-    if webdav_password:
+    if webdav_password and not looks_masked(webdav_password):
         backup_config.set_config("webdav_password", webdav_password)
 
     backup_config.update_config()
@@ -215,7 +223,7 @@ async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[
 
 
 @app.get("/api/backup/file-tree", summary="获取备份文件树", tags=BACKUP)
-async def get_backup_file_tree(request: Request, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_backup_file_tree(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
     """
     获取文件树用于备份选择
 

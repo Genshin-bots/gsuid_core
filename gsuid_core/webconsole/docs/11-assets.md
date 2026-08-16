@@ -10,7 +10,7 @@ POST /api/assets/upload
 {
     "image": "base64编码数据",
     "filename": "image.jpg",
-    "upload_to": "/path/to/save",
+    "upload_to": "GsCore/bg",
     "target_filename": "custom_name.jpg"
 }
 ```
@@ -27,13 +27,15 @@ POST /api/assets/upload
 }
 ```
 
+保存位置必须落在 `data/` 目录内：相对名 `data` 表示根目录，也可传 `get_res_path()` 下的绝对路径。
+
 ---
 
 ## 11.2 预览图片
 ```
 GET /api/assets/preview?path=base64encoded
 ```
-**可选 token 参数**
+路径必须落在 `data/` 目录内。`<img>` 可用 `?token=`（EventSource 同源限制）；其它请求优先 `Authorization: Bearer`。
 
 ---
 

@@ -20,9 +20,10 @@ from gsuid_core.gss import gss
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.segment import Message, MessageSegment
-from gsuid_core.data_store import image_res
+from gsuid_core.data_store import image_res, gs_data_path
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join, confine_to_root, is_safe_filename
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.utils.database.models import CoreUser, CoreGroup
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
@@ -99,7 +100,7 @@ def _parse_target_token(token: str) -> Optional[_TargetToken]:
 
 
 @app.post("/api/BatchPush", summary="批量推送", tags=MESSAGE)
-async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] = Depends(require_auth)):
+async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] = Depends(require_admin)):
     """
     批量消息推送接口
     支持解析 HTML（提取 <p> 和 <img>），并向特定 Bot 下的
@@ -436,24 +437,29 @@ async def upload_image(
 ):
     """
     通用图片文件上传接口
-    允许向服务器指定的物理路径（UPLOAD_PATH）上传并保存图片文件
+    只允许写入 ``data/`` 目录内。
     """
-    path = Path(UPLOAD_PATH)
+    try:
+        path = confine_to_root(UPLOAD_PATH, gs_data_path)
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法上传路径", "data": None}
     # 利用uuid保存图片
     file_name = file.filename
     if not filename:
         if file_name:
-            file_name = file_name.split(".")[-1]
-            file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_name}"
+            ext = Path(file_name).suffix.lstrip(".") or "jpg"
+            file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
         else:
             file_name = "image.jpg"
     else:
-        if suffix:
-            file_name = f"{filename}.{suffix}"
-        else:
-            file_name = f"{filename}.jpg"
-
-    file_path = path / file_name
+        raw_name = f"{filename}.{suffix}" if suffix else f"{filename}.jpg"
+        file_name = Path(raw_name).name
+    if not is_safe_filename(file_name):
+        return {"status": 1, "msg": "非法文件名", "data": None}
+    try:
+        file_path = safe_join(path, file_name)
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法文件名", "data": None}
     if not file_path.parent.exists():
         file_path.parent.mkdir(parents=True)
     async with aiofiles.open(file_path, "wb") as f:
@@ -473,11 +479,14 @@ async def get_image(
 ):
     """
     通用图片文件读取接口
-    从指定的物理路径（IMAGE_PATH）读取并返回图片流
+    只允许读取 ``data/`` 目录内。
     """
-    path = Path(IMAGE_PATH)
-    file_path = path / f"{filename}.{suffix}"
-    if not file_path.exists():
+    try:
+        path = confine_to_root(IMAGE_PATH, gs_data_path)
+        file_path = safe_join(path, f"{Path(filename).name}.{Path(str(suffix)).name}")
+    except PathEscapeError:
+        return Response(status_code=404)
+    if not file_path.exists() or not file_path.is_file():
         return Response(status_code=404)
 
     # 返回URL
@@ -510,11 +519,17 @@ async def get_resource_image(
     专门用于从机器人的 image_res 缓存目录获取图片返回，
     并且内置了异步定时删除（阅后即焚）功能（基于配置项 is_clean_pic）
     """
-    path = image_res / image_id
+    try:
+        path = safe_join(image_res, image_id)
+    except PathEscapeError:
+        return Response(status_code=404)
     if not path.exists() and "." not in image_id:
-        path = image_res / f"{image_id}.jpg"
+        try:
+            path = safe_join(image_res, f"{image_id}.jpg")
+        except PathEscapeError:
+            return Response(status_code=404)
 
-    if not path.exists():
+    if not path.exists() or not path.is_file():
         return Response(status_code=404)
 
     # 根据实际图片格式返回正确的媒体类型

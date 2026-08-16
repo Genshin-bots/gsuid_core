@@ -8,6 +8,7 @@
   "log.webconsole.approvals_registered": "[Approval] WebAPI /api/ai/approvals/* を登録しました。",
   "log.webconsole.auth_avatar_get_fail": "アバターの取得に失敗しました: {error}",
   "log.webconsole.auth_avatar_upload_fail": "アバターのアップロードに失敗しました: {error}",
+  "log.webconsole.password_rehash_fail": "ログイン後のパスワードハッシュ更新に失敗しました: {error}",
   "log.webconsole.authentication_encryption_key_generated": "[WebConsole] 認証暗号化キーを生成した key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.authentication_encryption_key_rotated": "[WebConsole] 認証暗号化キーをローテーションした key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.batch_push_bot_self_db_fail": "[WebConsole] BatchPush bot_self_id の集約に失敗(DB): {e}",

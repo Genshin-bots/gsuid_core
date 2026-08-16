@@ -14,8 +14,10 @@ from pydantic import Field, BaseModel
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from gsuid_core.i18n import t
+from gsuid_core.utils.path_safety import PathEscapeError, ensure_under_any
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
 from gsuid_core.ai_core.planning.tool_output_index import delete_tool_output_index
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
 from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
@@ -108,9 +110,15 @@ async def get_tool_output_detail(
             "data": None,
         }
     detail = _record_dict(rec)
+    payload_path = rec.payload_path or ""
+    if payload_path:
+        try:
+            payload_path = str(ensure_under_any(Path(payload_path), (ARTIFACT_ROOT,)))
+        except PathEscapeError:
+            payload_path = ""
     body, err = load_payload_text(
         payload_inline=rec.payload_inline,
-        payload_path=rec.payload_path or "",
+        payload_path=payload_path,
     )
     if err:
         body = ""
@@ -134,8 +142,15 @@ async def download_tool_output_raw(
             "data": None,
         }
     if rec.payload_path:
-        p = Path(rec.payload_path)
-        if p.exists():
+        try:
+            p = ensure_under_any(Path(rec.payload_path), (ARTIFACT_ROOT,))
+        except PathEscapeError:
+            return {
+                "status": 1,
+                "msg": t("msg.webconsole.tool_output.file_not_found"),
+                "data": None,
+            }
+        if p.exists() and p.is_file():
             return FileResponse(
                 p,
                 media_type="text/markdown; charset=utf-8",

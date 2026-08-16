@@ -15,6 +15,11 @@ Core 提取 client_host, token
 1. sec_manager.is_banned(client_host)?
    是 → close(1008)，拒绝
   ↓
+1b. bot_id == webconsole_livechat?
+   是 → 必须 `session_store.verify(token)`（控制台登录会话）
+        失败 close(1008)；**不**用核心 WS_TOKEN，本机 IP 也不能跳过
+   否 → 继续适配器鉴权
+  ↓
 2. sec_manager.is_trusted(client_host)?
    是 → 放行，直接进入业务
   ↓

@@ -2,6 +2,7 @@ import os
 import sys
 import signal
 import asyncio
+import secrets
 import argparse
 import multiprocessing
 from typing import Dict
@@ -10,7 +11,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 import uvicorn
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import Header, WebSocket, HTTPException, WebSocketDisconnect
 from msgspec import json as msgjson, to_builtins
 
 from gsuid_core.version import __version__
@@ -109,6 +110,8 @@ async def main():
     if HOST == "all" or HOST == "none" or HOST == "dual" or not HOST:
         HOST = None
 
+    from gsuid_core.webconsole.web_api import LIVECHAT_WS_BOT_ID, livechat_ws_authorized
+
     from .app_life import app
 
     @app.websocket("/ws/{bot_id}")
@@ -124,13 +127,20 @@ async def main():
             await websocket.close(code=1008)  # Policy Violation
             return
 
-        if not sec_manager.is_trusted(client_host):
+        if bot_id == LIVECHAT_WS_BOT_ID:
+            if not livechat_ws_authorized(token):
+                if not sec_manager.is_trusted(client_host):
+                    sec_manager.record_failure(client_host)
+                logger.warning(t("log.core.illegal_access", client_host=client_host, bot_id=bot_id))
+                await websocket.close(code=1008)
+                return
+        elif not sec_manager.is_trusted(client_host):
             if not WS_SECRET_TOKEN:
                 logger.warning(t("log.core.no_ws_token"))
                 await websocket.close(code=1008)
                 return
 
-            if token != WS_SECRET_TOKEN:
+            if not token or not secrets.compare_digest(token, WS_SECRET_TOKEN):
                 sec_manager.record_failure(client_host)
                 logger.warning(t("log.core.illegal_access", client_host=client_host, bot_id=bot_id))
                 count = sec_manager.status[client_host].failed_count
@@ -200,7 +210,18 @@ async def main():
         _bot = _Bot("HTTP")
 
         @app.post("/api/send_msg")
-        async def sendMsg(msg: Dict):
+        async def sendMsg(
+            msg: Dict,
+            x_ws_token: str | None = Header(default=None, alias="X-WS-Token"),
+            authorization: str | None = Header(default=None),
+        ):
+            provided = x_ws_token
+            if not provided and authorization and authorization.startswith("Bearer "):
+                provided = authorization[7:]
+            if not WS_SECRET_TOKEN:
+                raise HTTPException(status_code=401, detail="WS_TOKEN 未配置，拒绝 /api/send_msg")
+            if not provided or not secrets.compare_digest(provided, WS_SECRET_TOKEN):
+                raise HTTPException(status_code=401, detail="未授权")
             data = msgjson.encode(msg)
             MR = msgjson.Decoder(MessageReceive).decode(data)
             result = await handle_event(_bot, MR, True)

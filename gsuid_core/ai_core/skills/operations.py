@@ -6,6 +6,7 @@ Skills 操作模块
 
 import io
 import re
+import sys
 import shutil
 import tarfile
 import zipfile
@@ -13,13 +14,14 @@ import tempfile
 import subprocess
 from typing import List, Tuple, Optional, TypedDict, NotRequired
 from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urljoin, parse_qs, urlparse
 
 import httpx
 from pydantic_ai_skills import SkillsToolset
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.utils.path_safety import validate_install_source_url
 from gsuid_core.ai_core.skills.resource import (
     SKILLS_PATH,
     skills,
@@ -174,6 +176,7 @@ class SkillInstallResult(TypedDict):
 _ZIP_MAGIC = b"PK\x03\x04"
 _GZIP_MAGIC = b"\x1f\x8b"
 _HTTP_TIMEOUT = 60.0
+_MAX_HTTP_REDIRECTS = 5
 _GIT_TIMEOUT = 300
 _GIT_CLONE_DIR = "repo"
 
@@ -227,19 +230,60 @@ def _git_clone(source_url: str, dest: Path) -> Optional[str]:
     return None
 
 
+def _http_get_bytes(source_url: str) -> tuple[bytes | None, str | None]:
+    """逐跳校验安装源，拒绝重定向到回环 / 元数据。"""
+    current = source_url
+    for _ in range(_MAX_HTTP_REDIRECTS):
+        url_err = validate_install_source_url(current)
+        if url_err:
+            return None, url_err
+        resp = httpx.get(current, follow_redirects=False, timeout=_HTTP_TIMEOUT)
+        if resp.is_redirect:
+            if "location" not in resp.headers:
+                return None, "重定向缺少 Location"
+            current = urljoin(current, resp.headers["location"])
+            continue
+        resp.raise_for_status()
+        return resp.content, None
+    return None, "重定向次数过多"
+
+
 def _fetch_http_source(source_url: str, workdir: Path) -> Optional[str]:
     """下载 URL 并按内容识别解包（zip / tar / 单个 SKILL.md）。失败返回错误文案。"""
-    resp = httpx.get(source_url, follow_redirects=True, timeout=_HTTP_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.content
+    data, err = _http_get_bytes(source_url)
+    if err:
+        return err
+    if data is None:
+        return "下载失败"
     if data.startswith(_ZIP_MAGIC):
-        # Python 3.6+ 的 extractall 已剥离盘符 / 绝对路径 / .. 成分
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            zf.extractall(workdir)
+            dest = Path(workdir).resolve()
+            for info in zf.infolist():
+                target = (dest / info.filename).resolve()
+                try:
+                    target.relative_to(dest)
+                except ValueError:
+                    return "压缩包包含越界路径，已拒绝安装"
+            if sys.version_info >= (3, 12):
+                zf.extractall(dest, filter="data")
+            else:
+                zf.extractall(dest)
         return None
     if data.startswith(_GZIP_MAGIC) or data[257:262] == b"ustar":
         with tarfile.open(fileobj=io.BytesIO(data)) as tf:
-            tf.extractall(workdir, filter="data")
+            dest = Path(workdir).resolve()
+            if sys.version_info >= (3, 12):
+                tf.extractall(dest, filter="data")
+            else:
+                for member in tf.getmembers():
+                    if member.issym() or member.islnk():
+                        return "压缩包包含链接，已拒绝安装"
+                    target = (dest / member.name).resolve()
+                    try:
+                        target.relative_to(dest)
+                    except ValueError:
+                        return "压缩包包含越界路径，已拒绝安装"
+                tf.extractall(dest)
         return None
     text = data.decode("utf-8", errors="replace")
     if text.lstrip().startswith("---") and "name:" in text:
@@ -250,6 +294,9 @@ def _fetch_http_source(source_url: str, workdir: Path) -> Optional[str]:
 
 def _acquire_source(source_url: str, workdir: Path) -> Optional[str]:
     """把来源内容落到 workdir。返回 None 表示成功，否则为错误文案。"""
+    url_err = validate_install_source_url(source_url)
+    if url_err:
+        return url_err
     if source_url.endswith(".git") or source_url.startswith("git@"):
         return _git_clone(source_url, workdir / _GIT_CLONE_DIR)
     err = _fetch_http_source(source_url, workdir)

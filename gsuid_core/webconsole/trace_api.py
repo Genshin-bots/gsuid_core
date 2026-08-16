@@ -4,7 +4,6 @@ Trace APIs
 """
 
 from typing import Any, Dict, Optional
-from datetime import datetime
 
 from fastapi import Depends
 
@@ -15,6 +14,7 @@ from gsuid_core.trace_archive import (
     list_traces_from_jsonl,
     get_trace_logs_from_daily_log,
 )
+from gsuid_core.utils.path_safety import PathEscapeError, parse_iso_date
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -35,8 +35,10 @@ async def get_traces(
     - 内存中的 running 覆盖 JSONL 中的同名记录（running 是最新实时状态）
     - 内存中的 completed 不覆盖 JSONL（JSONL 数据更完整）
     """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        date = parse_iso_date(date, default_today=True)
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法日期", "data": []}
 
     # 1. 先放 JSONL 记录（completed 数据更完整）
     merged: Dict[str, Dict[str, Any]] = {}
@@ -93,8 +95,10 @@ async def get_trace_detail(
 
     优先查内存；未命中时通过 trace_id 扫描 daily log 文件提取完整日志。
     """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        date = parse_iso_date(date, default_today=True)
+    except PathEscapeError:
+        return {"status": 1, "msg": "非法日期", "data": None}
 
     # 先查内存（内存只保留正在执行中的追踪，命中即说明该追踪仍在 running）
     memory_logs = trace_collector.get_trace_logs(trace_id)

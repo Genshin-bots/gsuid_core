@@ -366,7 +366,16 @@ async def get_meme_image(
                 media_type="text/plain",
             )
 
-        file_path = get_memes_base_path() / record.file_path
+        from gsuid_core.utils.path_safety import PathEscapeError, safe_join
+
+        try:
+            file_path = safe_join(get_memes_base_path(), record.file_path)
+        except PathEscapeError:
+            return StreamingResponse(
+                io.BytesIO(b"file not found"),
+                status_code=404,
+                media_type="text/plain",
+            )
         image_data = await _read_file(file_path)
         if not image_data:
             return StreamingResponse(
@@ -1006,8 +1015,13 @@ async def export_memes(
             zf.writestr(MEME_METADATA_FILE, json.dumps(metadata, ensure_ascii=False, indent=2))
 
             # files/ - 写入源文件
+            from gsuid_core.utils.path_safety import PathEscapeError, safe_join
+
             for record in records:
-                file_path = base_path / record.file_path
+                try:
+                    file_path = safe_join(base_path, record.file_path)
+                except PathEscapeError:
+                    continue
                 if file_path.exists():
                     file_data = file_path.read_bytes()
                     # ZIP 内路径: files/{meme_id}.{ext}
@@ -1151,13 +1165,25 @@ async def import_memes(
                     # 避免“原导出处为 persona_A、却以 persona_B 导入”的不一致场景。
                     folder = target_folder
 
-                    # 保存文件到目标文件夹
-                    target_folder_path = base_path / folder
+                    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
+
+                    try:
+                        target_folder_path = safe_join(base_path, folder)
+                    except PathEscapeError:
+                        failed_items.append({"meme_id": meme_id, "reason": "非法目标文件夹"})
+                        continue
                     target_folder_path.mkdir(parents=True, exist_ok=True)
 
-                    # 确定文件扩展名
                     ext = Path(file_name).suffix or ".jpg"
-                    target_file_path = target_folder_path / f"{meme_id}{ext}"
+                    dest_name = f"{meme_id}{ext}"
+                    if not is_safe_filename(dest_name):
+                        failed_items.append({"meme_id": meme_id, "reason": "非法文件名"})
+                        continue
+                    try:
+                        target_file_path = safe_join(target_folder_path, dest_name)
+                    except PathEscapeError:
+                        failed_items.append({"meme_id": meme_id, "reason": "非法目标路径"})
+                        continue
                     target_file_path.write_bytes(image_data)
 
                     relative_path = f"{folder}/{meme_id}{ext}"

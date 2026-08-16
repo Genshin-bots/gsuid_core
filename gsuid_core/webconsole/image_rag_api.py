@@ -13,7 +13,9 @@ from pathlib import Path
 from fastapi import File, Form, Depends, UploadFile
 from pydantic import BaseModel
 
+from gsuid_core.data_store import gs_data_path
 from gsuid_core.ai_core.resource import local_embedding_images
+from gsuid_core.utils.path_safety import PathEscapeError, confine_to_root
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.rag.image_rag import (
@@ -243,8 +245,12 @@ async def upload_image(
 
         # 生成唯一文件名
         file_ext = Path(file.filename or "image.png").suffix
+        if file_ext.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            file_ext = ".png"
         unique_filename = f"{uuid.uuid4()}{file_ext}"
-        file_path = local_embedding_images / unique_filename
+        from gsuid_core.utils.path_safety import safe_join
+
+        file_path = safe_join(local_embedding_images, unique_filename)
 
         # 保存文件
         with open(file_path, "wb") as buffer:
@@ -299,6 +305,15 @@ async def create_image_entity(
     try:
         # 生成ID
         entity_id = id or str(uuid.uuid4())
+
+        try:
+            path = str(confine_to_root(path, gs_data_path))
+        except PathEscapeError:
+            return {
+                "status": 1,
+                "msg": "图片路径必须位于 data/ 目录内",
+                "data": None,
+            }
 
         # 解析标签
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]

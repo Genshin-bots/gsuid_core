@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from fastapi import Body, Depends, Request
 
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.utils.plugins_update.git_update import (
     CommitInfo,
     GitStatusInfo,
@@ -239,7 +239,7 @@ async def checkout_plugin_commit(
     request: Request,
     plugin_name: str,
     commit_hash: str = Body(..., embed=True),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     回退插件到指定 commit
@@ -281,7 +281,7 @@ async def checkout_plugin_commit(
 async def force_update_plugin(
     request: Request,
     plugin_name: str,
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     强制更新插件
@@ -330,7 +330,7 @@ async def force_update_plugin(
 async def update_plugin(
     request: Request,
     plugin_name: str,
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     更新单个插件到最新
@@ -378,7 +378,7 @@ async def update_plugin(
 @app.post("/api/git-update/update-all", summary="一键更新全部插件", tags=GIT_UPDATE)
 async def update_all_plugins(
     request: Request,
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     一次性更新全部插件到最新

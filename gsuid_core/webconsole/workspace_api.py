@@ -30,12 +30,15 @@ from ._api_tags import WORKSPACE
 
 def _safe_relpath(workspace: Path, requested: str) -> Path:
     """安全把请求路径解析回 workspace 子树内（防穿越）。"""
-    import os
+    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, confine_to_root
 
-    full = (workspace / os.path.normpath(requested)).resolve()
-    if not str(full).startswith(str(workspace.resolve())):
-        raise PermissionError(t("越界路径"))
-    return full
+    rel = (requested or "").strip()
+    if not rel or rel in {".", "./"}:
+        return workspace.resolve()
+    try:
+        return confine_to_root(rel, workspace) if Path(rel).is_absolute() else safe_join(workspace, rel)
+    except PathEscapeError as e:
+        raise PermissionError(t("越界路径")) from e
 
 
 @app.get("/api/ai/kanban/tasks/{task_id}/workspace/files", summary="列出工作区文件", tags=WORKSPACE)
@@ -105,7 +108,15 @@ async def upload_workspace_file(
     except PermissionError:
         return {"status": 1, "msg": "越界路径", "data": None}
     dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / (upload.filename or "uploaded.bin")
+    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
+
+    raw_name = Path(upload.filename or "uploaded.bin").name
+    if not is_safe_filename(raw_name):
+        return {"status": 1, "msg": "非法文件名", "data": None}
+    try:
+        target = safe_join(dest_dir, raw_name)
+    except PathEscapeError:
+        return {"status": 1, "msg": "越界路径", "data": None}
     contents = await upload.read()
     target.write_bytes(contents)
     arts = await register_workspace_artifacts(

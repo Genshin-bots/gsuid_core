@@ -444,8 +444,9 @@ async def get_theme_presets(
         "status": 0,
         "msg": "ok",
         "data": {
-            "user_presets_path": str(THEME_CONFIGS_PATH),
-            "builtin_presets_path": str(BUILTIN_THEMES_PATH),
+            # 只回目录名，避免登录页接口泄露本机绝对路径
+            "user_presets_path": THEME_CONFIGS_PATH.name,
+            "builtin_presets_path": BUILTIN_THEMES_DIR_NAME,
             "presets": presets,
         },
     }

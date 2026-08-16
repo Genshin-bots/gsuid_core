@@ -5,6 +5,8 @@
 GET /api/core/config
 ```
 
+管理员专用。`WS_TOKEN`、`REGISTER_CODE` 等密钥键返回掩码（空串保持空）。Live Chat 用登录会话连 WS，不读本接口的 `WS_TOKEN`。
+
 **响应**：
 ```json
 {
@@ -14,7 +16,7 @@ GET /api/core/config
         "HOST": "localhost",
         "PORT": "8765",
         "ENABLE_HTTP": false,
-        "WS_TOKEN": "",
+        "WS_TOKEN": "****",
         "masters": [],
         "superusers": [],
         "command_start": [],

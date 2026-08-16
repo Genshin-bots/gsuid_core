@@ -23,7 +23,7 @@ from gsuid_core.ai_core.persona import (
 )
 from gsuid_core.ai_core.gs_agent import build_new_persona
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.persona.models import (
     MAX_FILE_SIZE,
@@ -90,6 +90,12 @@ async def get_persona_detail(persona_name: str, _: Dict[str, Any] = Depends(requ
                 "content": content,
                 "metadata": metadata,
             },
+        }
+    except ValueError:
+        return {
+            "status": 1,
+            "msg": "非法角色名",
+            "data": None,
         }
     except FileNotFoundError:
         return {
@@ -165,7 +171,10 @@ async def get_persona_avatar(persona_name: str, _: Dict[str, Any] = Depends(requ
     Returns:
         头像图片文件，如果不存在则返回404
     """
-    avatar_path = get_persona_avatar_path(persona_name)
+    try:
+        avatar_path = get_persona_avatar_path(persona_name)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="非法角色名")
     if not avatar_path:
         raise HTTPException(status_code=404, detail=f"角色 '{persona_name}' 的头像不存在")
 
@@ -183,7 +192,10 @@ async def get_persona_image(persona_name: str, _: Dict[str, Any] = Depends(requi
     Returns:
         立绘图片文件，如果不存在则返回404
     """
-    image_path = get_persona_image_path(persona_name)
+    try:
+        image_path = get_persona_image_path(persona_name)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="非法角色名")
     if not image_path:
         raise HTTPException(status_code=404, detail=f"角色 '{persona_name}' 的立绘不存在")
 
@@ -201,7 +213,10 @@ async def get_persona_audio(persona_name: str, _: Dict[str, Any] = Depends(requi
     Returns:
         音频文件，如果不存在则返回404
     """
-    audio_path = get_persona_audio_path(persona_name)
+    try:
+        audio_path = get_persona_audio_path(persona_name)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="非法角色名")
     if not audio_path:
         raise HTTPException(status_code=404, detail=f"角色 '{persona_name}' 的音频不存在")
 
@@ -568,7 +583,7 @@ async def add_persona(
 @app.delete("/api/persona/{persona_name}", summary="删除角色", tags=PERSONA)
 async def remove_persona(
     persona_name: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     删除角色

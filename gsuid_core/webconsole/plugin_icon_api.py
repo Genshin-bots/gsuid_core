@@ -6,6 +6,7 @@ Plugin Icon API
 from fastapi import Request
 from fastapi.responses import FileResponse
 
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.utils.plugins_update.api import CORE_PATH, PLUGINS_PATH
 
@@ -46,9 +47,12 @@ async def get_plugin_icon(request: Request, plugin_name: str):
     ]
 
     for name in candidates:
-        if not name:
+        if not name or not is_safe_filename(name):
             continue
-        icon_path = PLUGINS_PATH / name / "ICON.png"
+        try:
+            icon_path = safe_join(PLUGINS_PATH, name, "ICON.png")
+        except PathEscapeError:
+            continue
         if icon_path.exists() and icon_path.is_file():
             return FileResponse(
                 path=str(icon_path),

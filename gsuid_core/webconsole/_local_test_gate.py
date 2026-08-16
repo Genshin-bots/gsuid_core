@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import Header, Request, HTTPException, status
+from fastapi import Query, Header, Request, HTTPException, status
 
 from gsuid_core.webconsole.web_api import require_auth
 
@@ -41,7 +41,7 @@ async def require_local_test(request: Request) -> None:
 def require_auth_or_local_test(
     request: Request,
     authorization: str | None = Header(default=None),
-    token: str | None = None,
+    token: str | None = Query(default=None),
 ):
     """放行条件二选一：① local-test 模式已开（token 若配置则需匹配）；② 携带有效
     web 控制台鉴权。供「评测要用、但生产仍需登录」的销毁/重建端点复用，避免评测客

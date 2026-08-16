@@ -390,17 +390,29 @@ def _resolve_plugin_path(plugin_name: str) -> Optional[Path]:
     Returns:
         插件路径，不存在返回 None
     """
-    if plugin_name.lower() == "gsuid_core":
+    if plugin_name.lower() in {"gsuid_core", "gscore"}:
         return CORE_PATH
 
+    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
+
+    if not is_safe_filename(plugin_name):
+        return None
+
     # 尝试精确匹配
-    plugin_path = PLUGINS_PATH / plugin_name
-    if plugin_path.exists():
+    try:
+        plugin_path = safe_join(PLUGINS_PATH, plugin_name)
+    except PathEscapeError:
+        return None
+    if plugin_path.exists() and plugin_path.is_dir():
         return plugin_path
 
-    # 尝试大小写不敏感匹配
-    for d in PLUGINS_PATH.iterdir():
-        if d.is_dir() and d.name.lower() == plugin_name.lower():
-            return d
+    # 尝试大小写不敏感匹配（仅枚举 plugins 的直接子目录）
+    if PLUGINS_PATH.exists():
+        for d in PLUGINS_PATH.iterdir():
+            if d.is_dir() and d.name.lower() == plugin_name.lower():
+                try:
+                    return safe_join(PLUGINS_PATH, d.name)
+                except PathEscapeError:
+                    return None
 
     return None

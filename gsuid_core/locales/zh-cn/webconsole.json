@@ -8,6 +8,7 @@
   "log.webconsole.approvals_registered": "[Approval] WebAPI /api/ai/approvals/* 已注册。",
   "log.webconsole.auth_avatar_get_fail": "获取头像失败: {error}",
   "log.webconsole.auth_avatar_upload_fail": "上传头像失败: {error}",
+  "log.webconsole.password_rehash_fail": "登录后升级密码哈希失败: {error}",
   "log.webconsole.authentication_encryption_key_generated": "[网页控制台] 认证加密密钥已生成 key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.authentication_encryption_key_rotated": "[网页控制台] 认证加密密钥已轮换 key_id={p0} pubkey_fingerprint={fp}",
   "log.webconsole.batch_push_bot_self_db_fail": "[WebConsole] 汇总 BatchPush bot_self_id 失败(数据库): {e}",

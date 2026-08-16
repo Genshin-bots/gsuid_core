@@ -10,6 +10,7 @@ from pathlib import Path
 import aiofiles
 
 from gsuid_core.i18n import t
+from gsuid_core.utils.path_safety import PathEscapeError, safe_join
 
 from .models import PersonaFiles, PersonaMetadata
 from ..resource import PERSONA_PATH
@@ -36,7 +37,11 @@ class Persona:
             name: 角色名称，也是文件夹名称
         """
         self.name = name
-        self._files = PersonaFiles(persona_dir=PERSONA_PATH / name)
+        try:
+            persona_dir = safe_join(PERSONA_PATH, name)
+        except PathEscapeError as e:
+            raise ValueError(t("Persona '{p0}' 不存在", p0=name)) from e
+        self._files = PersonaFiles(persona_dir=persona_dir)
 
     @property
     def files(self) -> PersonaFiles:
