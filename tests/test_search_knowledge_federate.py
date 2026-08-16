@@ -20,6 +20,22 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+async def _empty_profile_async(scope_key: str) -> dict[str, object]:
+    return {
+        "scope_key": scope_key,
+        "tag_counts": {},
+        "term_mappings": {},
+        "member_alias_ids": {},
+        "member_aliases": {},
+        "last_updated": "",
+    }
+
+
+async def _no_canons(scope_key: str) -> list[str]:
+    _ = scope_key
+    return []
+
+
 def _ctx(user_id: str | None = "u1", group_id: str | None = "g1") -> Any:
     """deps 用**真的** ``ToolContext`` + ``Event``：本轮去重缓存存在 ``ToolContext.extra``
     里，手搓 SimpleNamespace 会漏字段，让工具在测试里因缺 ``extra`` 而假失败。"""
@@ -75,6 +91,9 @@ def test_cognition_federates_knowledge_and_fileos() -> None:
             "gsuid_core.ai_core.register.handle_tool_result",
             new=AsyncMock(side_effect=lambda bot, raw: raw),
         ),
+        patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_empty_profile_async),
+        patch("gsuid_core.ai_core.cognition.nodes.AICogNode.list_world_canons_in_scope", new=_no_canons),
+        patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=AsyncMock(return_value=([], {}))),
     ):
         out = _run(search_cognition(_ctx(), query="测试主题"))
 
@@ -106,6 +125,9 @@ def test_cognition_empty_is_single_line() -> None:
             "gsuid_core.ai_core.register.handle_tool_result",
             new=AsyncMock(side_effect=lambda bot, raw: raw),
         ),
+        patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_empty_profile_async),
+        patch("gsuid_core.ai_core.cognition.nodes.AICogNode.list_world_canons_in_scope", new=_no_canons),
+        patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=AsyncMock(return_value=([], {}))),
     ):
         out = _run(search_cognition(_ctx(), query="空"))
 
@@ -174,8 +196,19 @@ def test_skill_doc_excluded_for_normal_users() -> None:
         captured.update(kwargs)
         return []
 
+    async def _empty_profile(scope_key: str) -> dict[str, object]:
+        return {
+            "scope_key": scope_key,
+            "tag_counts": {},
+            "term_mappings": {},
+            "member_alias_ids": {},
+            "member_aliases": {},
+            "last_updated": "",
+        }
+
     with patch("gsuid_core.ai_core.rag.query_knowledge", new=_fake_query):
-        _run(_search_knowledge_backend("q", scope=CogScope(user_id="u1"), limit=5))
+        with patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_empty_profile):
+            _run(_search_knowledge_backend("q", scope=CogScope(user_id="u1"), limit=5))
     from gsuid_core.ai_core.rag.skills_kb import SKILLS_DOC_SOURCE
 
     assert captured["exclude_sources"] == [SKILLS_DOC_SOURCE]

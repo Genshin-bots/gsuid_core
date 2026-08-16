@@ -249,13 +249,31 @@ async def _search_memory(
 # ── 后端 2：正式知识库（排除开发文档整类）──
 
 
+async def _knowledge_query_for_scope(query: str, scope: CogScope) -> str:
+    """向量 query 可追加本群映射正式名；展开/点名仍用原句。"""
+    from gsuid_core.ai_core.cognition.hub import _fact_scope_key, mapping_formals_in_query
+
+    fact_scope = _fact_scope_key(scope)
+    if not fact_scope:
+        return query
+    from gsuid_core.ai_core.memory.group_profile import get_group_profile
+
+    profile = await get_group_profile(fact_scope)
+    formals = mapping_formals_in_query(query, profile["term_mappings"])
+    extra = [name for name in formals if name not in query]
+    if not extra:
+        return query
+    return f"{query} {' '.join(extra)}"
+
+
 async def _search_knowledge_backend(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
     from gsuid_core.ai_core.rag import query_knowledge
     from gsuid_core.ai_core.rag.skills_kb import SKILLS_DOC_SOURCE
 
     # 过滤下推：skill_doc 整类在服务端排除，不是先搜全球再内存筛
     exclude = None if scope.include_skill_doc else [SKILLS_DOC_SOURCE]
-    points = await query_knowledge(query=query, limit=limit, exclude_sources=exclude)
+    search_q = await _knowledge_query_for_scope(query, scope)
+    points = await query_knowledge(query=search_q, limit=limit, exclude_sources=exclude)
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
     for point in points:
@@ -471,8 +489,9 @@ async def _search_nodes(
     # self_note 写在 self:{bot_id}；漏这一项则写入后永远召不回
     if scope.bot_id:
         scope_keys.append(make_scope_key(ScopeType.SELF, scope.bot_id))
+    search_q = await _knowledge_query_for_scope(query, scope)
     rows = await AICogNode.search(
-        query,
+        search_q,
         scope_keys=scope_keys,
         owner_user_id=scope.user_id,  # 必填：只按 scope_key 会把 ACL 降成 group 级
         kinds=[k.value for k in kinds],
@@ -531,6 +550,7 @@ async def inject_memory_slice(
         max_chars=memory_config.memory_inject_max_chars,
         priority_speakers=priority_speakers or None,
         current_speaker_ids=current_speaker_ids or None,
+        query=query,
     )
 
 

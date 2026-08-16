@@ -347,29 +347,56 @@ def _tool_plugin(tool_name: str) -> str:
     return tool_base.plugin
 
 
+async def _plugins_from_scope_ambiguity(route_text: str, scope_key: str) -> List[str]:
+    """歧义 surface 与本群已连世界枢纽的插件交集恰好 1 个才路由。"""
+    if not route_text or not scope_key:
+        return []
+    from gsuid_core.ai_core.entity_index import find_entities_in_text
+    from gsuid_core.ai_core.cognition.hub import plugin_from_world_ref
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
+
+    ambiguous: set[str] = set()
+    for ref in find_entities_in_text(route_text):
+        if not ref.is_ambiguous:
+            continue
+        for plugin in ref.plugins:
+            if plugin:
+                ambiguous.add(plugin)
+    if not ambiguous:
+        return []
+    canons = await AICogNode.list_world_canons_in_scope(scope_key)
+    scope_plugins = {plugin_from_world_ref(canon) for canon in canons}
+    scope_plugins.discard("")
+    hit = [plugin for plugin in ambiguous if plugin in scope_plugins]
+    uniq = list(dict.fromkeys(hit))
+    if len(uniq) != 1:
+        return []
+    return uniq
+
+
 async def search_tools_with_entity_routing(
     query: str,
     route_text: str,
     limit: int,
     non_category: Union[str, list[str]] = "",
     threshold: float = 0.38,
+    scope_key: str = "",
 ) -> ToolList:
     """两级召回：实体身份**确定性**定插件，向量检索在插件内做细选（L0）。
 
-    「玄翎秧秧属于鸣潮」是**世界知识，不是文本相似度**——嵌入学不会。实测跨插件路由
-    准确率只有 ~50%（`eval/tool_selection`），"tartaglia面板"（原神）能召回一池子异环
-    工具。本函数先查 `entity_index` 拿到确定的插件归属，再把该插件的工具提到种子队列
-    前面，让嵌入只负责"插件内选哪个工具"（scope 从上千缩到几十，它擅长）。
+    先查 `entity_index` 拿到确定的插件归属，再把该插件的工具提到种子队列
+    前面，让嵌入只负责插件内细选。
 
     保守规则：
-    - **没有实体命中 / 命中归属歧义** → 行为与普通 `search_tools` **完全一致**（零影响）；
-    - 只按**当前消息**路由，不吃 L5 拼进来的历史原话——否则"上轮问长离、这轮设提醒"
-      会被上轮的实体劫持（跨轮延续由 L3 会话驻留负责，不该由实体路由兜）；
-    - 至少留 1 个种子名额给通用最佳匹配，实体路由是**加分项**，不接管整个召回。
+    - **没有实体命中 / 歧义且本群不能收成一个插件** → 与普通 `search_tools` 一致；
+    - 只按**当前消息**路由，不吃 L5 拼进来的历史原话；
+    - 至少留 1 个种子名额给通用最佳匹配，实体路由是加分项。
     """
     from gsuid_core.ai_core.entity_index import plugins_in_text
 
     routed = plugins_in_text(route_text)
+    if not routed and scope_key:
+        routed = await _plugins_from_scope_ambiguity(route_text, scope_key)
     if not routed:
         return await search_tools(query=query, limit=limit, non_category=non_category, threshold=threshold)
 

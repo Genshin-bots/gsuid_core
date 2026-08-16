@@ -242,6 +242,30 @@ class AICogNode(SQLModel, table=True):
 
     @classmethod
     @with_session
+    async def list_world_canons_in_scope(cls, session: AsyncSession, scope_key: str) -> List[str]:
+        """本 scope 环境实体已连上的世界枢纽 ref。必须带本轮 scope_key。"""
+        if not scope_key:
+            return []
+        stmt = select(cls.canon).where(
+            and_(
+                col(cls.scope_key) == scope_key,
+                col(cls.kind) == CogKind.ENTITY.value,
+                col(cls.ref).startswith("ent:"),
+                col(cls.canon).startswith("world:"),
+            )
+        )
+        rows = list((await session.execute(stmt)).scalars().all())
+        out: List[str] = []
+        seen: set[str] = set()
+        for raw in rows:
+            if not raw or raw in seen:
+                continue
+            seen.add(raw)
+            out.append(raw)
+        return out
+
+    @classmethod
+    @with_session
     async def list_by_ref_prefixes(cls, session: AsyncSession, prefixes: List[str]) -> List["AICogNode"]:
         if not prefixes:
             return []

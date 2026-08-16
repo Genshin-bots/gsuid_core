@@ -119,6 +119,7 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 > **认知枢纽挂载**（2026-08-16）是刻意的例外：它**不进** `_INIT_STEPS`（否则会拖 READY），
 > 在 `init_ai_core` 的 `finally` 置 READY 之后 `spawn_cognition_mount()` → `create_task`。
 > 顺序：插件 → 手动建枢纽 → agent 文按 `hub:{正式名}` 回挂（启动扫描不新建 `world:`）→ 环境连边。
+> 没主语的索引页只计入 `skipped_unresolved`，不逐条打「无法解析正式名」。
 > 套件也不得再挂一份 `init_step`。开关 `cognition_mount_enable`。见
 > [`AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../AI_AGENT_LIFECYCLE_SEQUENCE.md) §15.2。
 > 实机评测：Windows 必须 `NO_PROXY=localhost,127.0.0.1`，否则系统代理把本机

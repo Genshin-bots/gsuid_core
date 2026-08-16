@@ -643,6 +643,7 @@ def ai_entity(entity: Union[KnowledgePoint, KnowledgeBase]):
         title="角色介绍和详情 - 丝柯克",
         content="角色的详细信息, # 丝柯克 ## 武器类型xx ## 技能 ## 命之座",
         tags=["角色", "丝柯克", "skk", "Genshin"],
+        entity="丝柯克",
         _hash="123456",
     ))
     """

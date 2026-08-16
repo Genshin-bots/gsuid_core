@@ -34,6 +34,7 @@ from gsuid_core.ai_core.cognition.hub import (
     classify_slot,
     _facts_for_hub,
     make_world_ref,
+    _hubs_from_hits,
     _expand_hub_body,
     select_attachment,
     _mount_plugin_item,
@@ -45,6 +46,7 @@ from gsuid_core.ai_core.cognition.hub import (
     _may_create_public_hub,
     _sensitive_fact_visible,
     maybe_attach_web_record,
+    mapping_formals_in_query,
     _is_public_article_handle,
     maybe_link_entity_to_world,
     tag_is_independent_segment,
@@ -158,6 +160,9 @@ def test_expand_hub_and_link_have_no_scope_defaults() -> None:
     for name in ("entity_id", "entity_name", "scope_key"):
         assert link_sig.parameters[name].default is inspect.Parameter.empty
         assert link_sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+    hits_sig = inspect.signature(_hubs_from_hits)
+    assert hits_sig.parameters["scope"].default is inspect.Parameter.empty
+    assert hits_sig.parameters["scope"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_init_steps_do_not_await_mount() -> None:
@@ -309,6 +314,42 @@ def test_resolve_uses_declared_tags_and_plugin_alias() -> None:
         clear_entity_index()
 
 
+def test_prefix_tag_and_same_length_category_tiebreak() -> None:
+    assert tag_is_mount_subject("Alpha/「Codename」-手册", "Alpha/「Codename」")
+    assert not tag_is_mount_subject("北站木家具", "北站")
+    assert resolve_canonical_from_knowledge("北站 手册", ["北站", "手册"]) == "北站"
+    assert resolve_canonical_from_knowledge("Alpha/「Codename」-手册", ["Alpha/「Codename」"]) is None
+    assert (
+        resolve_canonical_from_knowledge(
+            "Alpha/「Codename」-手册",
+            ["Alpha/「Codename」"],
+            entity="Alpha/「Codename」",
+        )
+        == "Alpha/「Codename」"
+    )
+    assert resolve_canonical_from_knowledge("甲/乙-手册", ["甲/乙"]) is None
+    assert mapping_formals_in_query("EastHill 手册", {"EastHill": "AcmeCorp"}) == ["AcmeCorp"]
+    assert mapping_formals_in_query("East 手册", {"EastHill": "AcmeCorp"}) == []
+
+
+def test_alias_survives_plugin_string_mismatch() -> None:
+    clear_entity_index()
+    try:
+        register_entity_surface("Alpha/「Codename」", "Alpha/「Codename」", "PlugA")
+        register_entity_surface("alpha", "Alpha/「Codename」", "PlugA")
+        assert (
+            resolve_canonical_from_knowledge(
+                "Alpha/「Codename」-手册",
+                ["Alpha/「Codename」"],
+                plugin="pluga",
+            )
+            == "Alpha/「Codename」"
+        )
+        assert resolve_canonical_from_knowledge("Alpha-手册", ["Alpha"], plugin="other") == "Alpha/「Codename」"
+    finally:
+        clear_entity_index()
+
+
 def test_short_words_are_not_indexable_segments() -> None:
     assert not tag_is_independent_segment("日·介绍", "日")
     assert not tag_is_independent_segment("xx 介绍", "xx")
@@ -438,6 +479,7 @@ class _HubMem:
         self.atts: List[AICogAttachment] = []
         self.next_id = 1
         self.created_world_refs: List[str] = []
+        self.term_mappings: Dict[str, Dict[str, str]] = {}
 
     def add_node(self, node: AICogNode) -> AICogNode:
         assert node.id is not None
@@ -486,6 +528,33 @@ class _HubMem:
 
     async def list_env_nodes_by_canon(self, canon: str, scope_key: str) -> List[AICogNode]:
         return [n for n in self.nodes.values() if n.canon == canon and n.scope_key == scope_key]
+
+    async def list_world_canons_in_scope(self, scope_key: str) -> List[str]:
+        if not scope_key:
+            return []
+        out: List[str] = []
+        seen: set[str] = set()
+        for n in self.nodes.values():
+            if n.scope_key != scope_key:
+                continue
+            if not n.ref.startswith("ent:") or not n.canon.startswith(WORLD_REF_PREFIX):
+                continue
+            if n.canon in seen:
+                continue
+            seen.add(n.canon)
+            out.append(n.canon)
+        return out
+
+    async def get_group_profile(self, scope_key: str) -> Dict[str, Any]:
+        mappings = self.term_mappings[scope_key] if scope_key in self.term_mappings else {}
+        return {
+            "scope_key": scope_key,
+            "tag_counts": {},
+            "term_mappings": mappings,
+            "member_alias_ids": {},
+            "member_aliases": {},
+            "last_updated": "",
+        }
 
     async def att_upsert(self, **kwargs: Any) -> int:
         node_id = int(kwargs["node_id"])
@@ -583,6 +652,14 @@ def _mem_patches(mem: _HubMem) -> Iterator[_HubMem]:
         patch("gsuid_core.ai_core.cognition.hub.AICogNode.get_by_id", new=mem.get_by_id),
         patch("gsuid_core.ai_core.cognition.hub.AICogNode.list_world_hubs_by_title", new=mem.list_world_hubs_by_title),
         patch("gsuid_core.ai_core.cognition.hub.AICogNode.list_env_nodes_by_canon", new=mem.list_env_nodes_by_canon),
+        patch(
+            "gsuid_core.ai_core.cognition.hub.AICogNode.list_world_canons_in_scope",
+            new=mem.list_world_canons_in_scope,
+        ),
+        patch(
+            "gsuid_core.ai_core.memory.group_profile.get_group_profile",
+            new=mem.get_group_profile,
+        ),
         patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.upsert", new=mem.att_upsert),
         patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.list_for_node", new=mem.list_for_node),
         patch("gsuid_core.ai_core.cognition.hub.AICogAttachment.find_by_refs", new=mem.find_by_refs),
@@ -841,6 +918,25 @@ def test_homonym_aliases_build_two_hubs() -> None:
         worlds = sorted((n.ref, n.title) for n in mem.nodes.values() if n.ref.startswith("world:"))
         assert worlds == [("world:GameA:PeakA", "PeakA"), ("world:GameB:PeakB", "PeakB")]
         assert len(mem.atts) == 2
+    finally:
+        _ENTITIES.clear()
+        _ENTITIES.extend(original)
+        clear_entity_index()
+
+
+def test_same_length_category_tag_mounts_prefix_subject() -> None:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    clear_entity_index()
+    mem = _HubMem()
+    original = list(_ENTITIES)
+    _ENTITIES.clear()
+    _ENTITIES.append(_kp("n1", "PlugA", "北站 手册", "body", ["北站", "手册"]))
+    try:
+        _run_mount(mem)
+        worlds = [n for n in mem.nodes.values() if n.ref.startswith("world:")]
+        assert len(worlds) == 1
+        assert worlds[0].title == "北站"
     finally:
         _ENTITIES.clear()
         _ENTITIES.extend(original)
@@ -1108,6 +1204,126 @@ def test_expand_hub_acl_facts_stay_in_current_scope() -> None:
     assert all("group:B" not in x.text and "零命" not in x.text for x in group_lines)
     assert any("私聊偏好已记下" in x.text for x in private_lines)
     assert all("本群进度" not in x.text for x in private_lines)
+
+
+def _expand_two_peaks(mem: _HubMem, query: str, group_id: str) -> ExpandResult:
+    hit_a = CognitiveHit(kind=CogKind.KNOWLEDGE, id="kb_a", title="PeakA", summary="", score=0.9)
+    hit_b = CognitiveHit(kind=CogKind.KNOWLEDGE, id="kb_b", title="PeakB", summary="", score=0.8)
+    with _mem_patches(mem):
+        with patch("gsuid_core.ai_core.cognition.hub._read_article", new=AsyncMock(return_value="")):
+            with patch("gsuid_core.ai_core.cognition.hub._facts_for_hub", new=AsyncMock(return_value=[])):
+                return _run(
+                    _expand_hub_body(
+                        query,
+                        [hit_a, hit_b],
+                        scope=CogScope(user_id="u1", group_id=group_id),
+                    )
+                )
+
+
+def test_expand_ranks_hub_linked_in_current_scope() -> None:
+    clear_entity_index()
+    register_entity_surface("AbyssPeak", "PeakA", "GameA")
+    register_entity_surface("AbyssPeak", "PeakB", "GameB")
+    mem = _HubMem()
+    mem.add_node(_node(nid=1, ref="world:GameA:PeakA", title="PeakA"))
+    mem.add_node(_node(nid=2, ref="world:GameB:PeakB", title="PeakB"))
+    mem.add_node(
+        _node(
+            nid=3,
+            ref="ent:eA",
+            title="PeakA",
+            scope_key=make_scope_key(ScopeType.GROUP, "GA"),
+            canon="world:GameA:PeakA",
+        )
+    )
+    mem.atts.append(_att(aid=1, node_id=1, slot="资料", title="PeakA手册", ref="plugin:a", handle="kb_plugin:a"))
+    mem.atts.append(_att(aid=2, node_id=2, slot="资料", title="PeakB手册", ref="plugin:b", handle="kb_plugin:b"))
+    out = _expand_two_peaks(mem, "AbyssPeak 手册", "GA")
+    assert [c.title for c in out.cards][0] == "PeakA"
+    assert "PeakB" in ([c.title for c in out.cards] + out.extra_hub_titles)
+    clear_entity_index()
+
+
+def test_expand_does_not_inherit_other_scope_link() -> None:
+    clear_entity_index()
+    register_entity_surface("AbyssPeak", "PeakA", "GameA")
+    register_entity_surface("AbyssPeak", "PeakB", "GameB")
+    mem = _HubMem()
+    mem.add_node(_node(nid=1, ref="world:GameA:PeakA", title="PeakA"))
+    mem.add_node(_node(nid=2, ref="world:GameB:PeakB", title="PeakB"))
+    mem.add_node(
+        _node(
+            nid=3,
+            ref="ent:eA",
+            title="PeakA",
+            scope_key=make_scope_key(ScopeType.GROUP, "GA"),
+            canon="world:GameA:PeakA",
+        )
+    )
+    mem.atts.append(_att(aid=1, node_id=1, slot="资料", title="PeakA手册", ref="plugin:a", handle="kb_plugin:a"))
+    mem.atts.append(_att(aid=2, node_id=2, slot="资料", title="PeakB手册", ref="plugin:b", handle="kb_plugin:b"))
+    out = _expand_two_peaks(mem, "AbyssPeak 手册", "GB")
+    titles = [c.title for c in out.cards]
+    assert set(titles) == {"PeakA", "PeakB"}
+    assert len(titles) == 2
+    clear_entity_index()
+
+
+def test_expand_ranks_hub_from_group_term_mapping() -> None:
+    mem = _HubMem()
+    mem.add_node(_node(nid=1, ref="world:Plug:AcmeCorp", title="AcmeCorp"))
+    mem.add_node(_node(nid=2, ref="world:Plug:NorthStation", title="NorthStation"))
+    mem.atts.append(_att(aid=1, node_id=1, slot="资料", title="AcmeCorp手册", ref="plugin:a", handle="kb_plugin:a"))
+    mem.atts.append(_att(aid=2, node_id=2, slot="资料", title="北站手册", ref="plugin:b", handle="kb_plugin:b"))
+    mem.term_mappings[make_scope_key(ScopeType.GROUP, "ST")] = {"EastHill": "AcmeCorp"}
+    hit_a = CognitiveHit(kind=CogKind.KNOWLEDGE, id="kb_a", title="AcmeCorp", summary="", score=0.5)
+    hit_b = CognitiveHit(kind=CogKind.KNOWLEDGE, id="kb_b", title="NorthStation", summary="", score=0.9)
+    with _mem_patches(mem):
+        with patch("gsuid_core.ai_core.cognition.hub._read_article", new=AsyncMock(return_value="")):
+            with patch("gsuid_core.ai_core.cognition.hub._facts_for_hub", new=AsyncMock(return_value=[])):
+                out = _run(
+                    _expand_hub_body(
+                        "EastHill 怎么样",
+                        [hit_b, hit_a],
+                        scope=CogScope(user_id="u1", group_id="ST"),
+                    )
+                )
+    assert out.cards[0].title == "AcmeCorp"
+
+
+def test_expand_mapping_formal_without_hub_does_not_create() -> None:
+    mem = _HubMem()
+    mem.term_mappings[make_scope_key(ScopeType.GROUP, "ST")] = {"EastHill": "MissingCo"}
+    before = list(mem.created_world_refs)
+    with _mem_patches(mem):
+        with patch("gsuid_core.ai_core.cognition.hub._read_article", new=AsyncMock(return_value="")):
+            with patch("gsuid_core.ai_core.cognition.hub._facts_for_hub", new=AsyncMock(return_value=[])):
+                out = _run(
+                    _expand_hub_body(
+                        "EastHill 怎么样",
+                        [],
+                        scope=CogScope(user_id="u1", group_id="ST"),
+                    )
+                )
+    assert out.cards == []
+    assert mem.created_world_refs == before
+
+
+def test_expand_ambiguous_without_signal_keeps_both_cards() -> None:
+    clear_entity_index()
+    register_entity_surface("AbyssPeak", "PeakA", "GameA")
+    register_entity_surface("AbyssPeak", "PeakB", "GameB")
+    mem = _HubMem()
+    mem.add_node(_node(nid=1, ref="world:GameA:PeakA", title="PeakA"))
+    mem.add_node(_node(nid=2, ref="world:GameB:PeakB", title="PeakB"))
+    mem.atts.append(_att(aid=1, node_id=1, slot="资料", title="PeakA手册", ref="plugin:a", handle="kb_plugin:a"))
+    mem.atts.append(_att(aid=2, node_id=2, slot="资料", title="PeakB手册", ref="plugin:b", handle="kb_plugin:b"))
+    out = _expand_two_peaks(mem, "AbyssPeak 手册", "GZ")
+    titles = [c.title for c in out.cards]
+    assert set(titles) == {"PeakA", "PeakB"}
+    assert len(titles) == 2
+    clear_entity_index()
 
 
 def test_sensitive_fact_skipped_without_speaker() -> None:
@@ -1553,6 +1769,7 @@ def test_no_cognition_hub_domain_keywords_in_production() -> None:
         "战技",
         "天赋",
         "配装",
+        "等等",
     )
     paths = list((root / "cognition").glob("*.py")) + [root / "buildin_tools" / "cognition_write.py"]
     for path in paths:
@@ -1564,6 +1781,13 @@ def test_no_cognition_hub_domain_keywords_in_production() -> None:
 def test_list_world_hubs_by_title_uses_sql_lower() -> None:
     src = inspect.getsource(AICogNode.list_world_hubs_by_title)
     assert "func.lower" in src
+
+
+def test_list_world_canons_in_scope_filters_scope_in_sql() -> None:
+    src = inspect.getsource(AICogNode.list_world_canons_in_scope)
+    assert "col(cls.scope_key) == scope_key" in src
+    assert 'startswith("ent:")' in src
+    assert 'startswith("world:")' in src
 
 
 def test_title_only_query_does_not_select_hub_named_attachment() -> None:

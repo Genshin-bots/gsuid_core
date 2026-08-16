@@ -76,6 +76,8 @@ def test_tool_assembly_sorted_and_vector_pool_always_on_query() -> None:
     gate_block = src[max(0, q_idx - 800) : q_idx]
     assert "if qy" in gate_block
     assert "intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS" not in gate_block
+    call_block = src[q_idx : q_idx + 400]
+    assert "scope_key=ctx_scope_key" in call_block
 
 
 # ─────────────────────────────────────────────

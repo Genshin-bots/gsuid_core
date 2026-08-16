@@ -32,6 +32,20 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+def _empty_group_profile_patch() -> Any:
+    async def _profile(scope_key: str) -> dict[str, object]:
+        return {
+            "scope_key": scope_key,
+            "tag_counts": {},
+            "term_mappings": {},
+            "member_alias_ids": {},
+            "member_aliases": {},
+            "last_updated": "",
+        }
+
+    return patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_profile)
+
+
 def test_kind_taxonomy_is_complete_and_labelled() -> None:
     """六类语义互不覆盖，且每类都有面向模型的中文标签。"""
     assert set(KIND_LABEL) == set(CogKind)
@@ -246,14 +260,15 @@ def test_search_nodes_includes_self_scope_when_bot_id_present() -> None:
         return []
 
     with patch("gsuid_core.ai_core.cognition.nodes.AICogNode.search", new=_fake_search):
-        _run(
-            _search_nodes(
-                "我记过什么",
-                kinds=frozenset({CogKind.SELF_NOTE}),
-                scope=CogScope(user_id="u1", bot_id="botA", group_id="g1"),
-                limit=8,
+        with _empty_group_profile_patch():
+            _run(
+                _search_nodes(
+                    "我记过什么",
+                    kinds=frozenset({CogKind.SELF_NOTE}),
+                    scope=CogScope(user_id="u1", bot_id="botA", group_id="g1"),
+                    limit=8,
+                )
             )
-        )
 
     keys = captured["scope_keys"]
     assert make_scope_key(ScopeType.SELF, "botA") in keys
@@ -280,14 +295,15 @@ def test_search_nodes_omits_self_scope_without_bot_id() -> None:
         return []
 
     with patch("gsuid_core.ai_core.cognition.nodes.AICogNode.search", new=_fake_search):
-        _run(
-            _search_nodes(
-                "q",
-                kinds=ALL_KINDS,
-                scope=CogScope(user_id="u1"),
-                limit=5,
+        with _empty_group_profile_patch():
+            _run(
+                _search_nodes(
+                    "q",
+                    kinds=ALL_KINDS,
+                    scope=CogScope(user_id="u1"),
+                    limit=5,
+                )
             )
-        )
 
     assert all(not key.startswith("self:") for key in captured)
     assert make_scope_key(ScopeType.USER_GLOBAL, "u1") in captured
@@ -407,6 +423,27 @@ def test_chitchat_gate_still_skips_retrieval() -> None:
     assert should_retrieve("那个六字以上的专有名怎么处理", "闲聊", "u1")
 
 
+def test_knowledge_query_appends_group_mapping_formal() -> None:
+    from gsuid_core.ai_core.cognition.facade import _knowledge_query_for_scope
+
+    async def _profile(scope_key: str) -> dict[str, object]:
+        _ = scope_key
+        return {
+            "scope_key": scope_key,
+            "tag_counts": {},
+            "term_mappings": {"EastHill": "AcmeCorp"},
+            "member_alias_ids": {},
+            "member_aliases": {},
+            "last_updated": "",
+        }
+
+    with patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_profile):
+        expanded = _run(_knowledge_query_for_scope("EastHill 怎么样", CogScope(user_id="u1", group_id="ST")))
+        raw = _run(_knowledge_query_for_scope("East 怎么样", CogScope(user_id="u1", group_id="ST")))
+    assert expanded.endswith("AcmeCorp")
+    assert "AcmeCorp" not in raw
+
+
 def test_memory_slice_keeps_the_five_budget_slots() -> None:
     """⑧ 注入必须保留 to_prompt_text 的五个配额位，否则偏好会被事实挤掉。"""
     from gsuid_core.ai_core.cognition.facade import inject_memory_slice
@@ -416,6 +453,7 @@ def test_memory_slice_keeps_the_five_budget_slots() -> None:
     assert "priority_speakers" in src
     assert "current_speaker_ids" in src, "第三方隐私门不能丢"
     assert "memory_inject_max_chars" in src
+    assert "query=query" in src
 
 
 def test_repeat_query_is_short_circuited_within_a_run() -> None:

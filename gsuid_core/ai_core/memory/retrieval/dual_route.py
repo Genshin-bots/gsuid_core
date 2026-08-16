@@ -293,6 +293,7 @@ class MemoryContext:
         max_chars: int = 2000,
         priority_speakers: Optional[set] = None,
         current_speaker_ids: Optional[set] = None,
+        query: str = "",
     ) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本。
 
@@ -430,12 +431,16 @@ class MemoryContext:
 
         # 语义类目摘要（话题大纲）
         if self.categories:
-            cat_budget = int(max_chars * 0.15)
-            sorted_cats = sorted(self.categories, key=lambda c: c["layer"], reverse=True)
-            cat_lines = [f"• [L{c['layer']}] {c['name']}: {(c['summary'] or '')[:100]}" for c in sorted_cats[:6]]
-            taken = _take(cat_lines, cat_budget)
-            if taken:
-                parts.append("【语义类目摘要】\n" + "\n".join(taken))
+            cats = self.categories
+            if query:
+                cats = [c for c in cats if c["name"] and c["name"] in query]
+            if cats:
+                cat_budget = int(max_chars * 0.15)
+                sorted_cats = sorted(cats, key=lambda c: c["layer"], reverse=True)
+                cat_lines = [f"• [L{c['layer']}] {c['name']}: {(c['summary'] or '')[:100]}" for c in sorted_cats[:6]]
+                taken = _take(cat_lines, cat_budget)
+                if taken:
+                    parts.append("【语义类目摘要】\n" + "\n".join(taken))
 
         # 相关对话片段：吃掉前面区块（偏好/事实/类目）用剩的全部预算——纯 episode-RAG
         # （无图谱时，如大语料回灌 / 评测）episodes 是唯一召回源，必须给足空间，否则被
@@ -451,7 +456,8 @@ class MemoryContext:
                 # temporal_mode：单条上限压到 600，让更多时段进入预算
                 ep_cap = 600 if self.temporal_mode else 1000
                 # 去重 + 过滤极短无信息量片段（纯寒暄/单字），统一时间格式
-                ep_lines: list[str] = []
+                dated: list[str] = []
+                undated: list[str] = []
                 seen_content: set[str] = set()
                 for ep in eps:
                     raw = (ep["content"] or "").strip()
@@ -461,9 +467,12 @@ class MemoryContext:
                     if key in seen_content:
                         continue
                     seen_content.add(key)
-                    ts = (ep["valid_at"] or "")[:19].replace("T", " ")
-                    ep_lines.append(f"[{ts}] {raw[:ep_cap]}")
-                taken = _take(ep_lines, ep_budget)
+                    ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
+                    if ts:
+                        dated.append(f"[{ts}] {raw[:ep_cap]}")
+                    else:
+                        undated.append(raw[:ep_cap])
+                taken = _take(dated + undated, ep_budget)
                 if taken:
                     parts.append("【相关对话片段】\n" + "\n".join(taken))
 

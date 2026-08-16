@@ -280,42 +280,22 @@ def expand_query_with_aliases(query: str, term_mappings: Dict[str, str]) -> str:
 
 async def format_context_injection(
     scope_key: str,
-    max_chars: int = 400,
+    max_chars: int = 320,
 ) -> str:
     """生成可注入对话的【当前群聊语境】文本。
 
-    包含主要话题与词汇映射说明，让 Agent 无需自行推理就知道
-    "深渊"在本群指什么、某个外号对应哪个角色。
-
-    Args:
-        scope_key: 群组 scope key
-        max_chars: 最大字符数限制，默认 400，超出则截断词汇映射条目
+    只留本群话题、本群词汇映射、成员称呼。全球多候选别名不进 system。
     """
     profile = await get_group_profile(scope_key)
-    # 直接用已加载的 profile 计算标签，避免 get_context_tags 再查一次同一行（热路径每条消息都走）
     tags = _rank_tags(profile["tag_counts"], top_n=6)
     term_mappings = profile["term_mappings"]
     alias_ids = profile["member_alias_ids"]
 
-    # C2-c/e：并入插件 ai_alias 注册的别名，多候选别名单列为"歧义参考"，
-    # 交由 Agent 按上下文消歧（动态实体链接），不做字符串替换。
-    ambiguous: Dict[str, List[str]] = {}
-    try:
-        from gsuid_core.ai_core.register import get_aliases_for_scope
-
-        for alias, formals in get_aliases_for_scope().items():
-            if len(formals) > 1:
-                ambiguous[alias] = formals
-    except Exception:
-        ambiguous = {}
-
-    if not tags and not term_mappings and not ambiguous and not alias_ids:
+    if not tags and not term_mappings and not alias_ids:
         return ""
 
     lines: List[str] = ["【当前群聊语境】"]
-    # A-4：群成员称呼表——仅用于「认人」（把昵称对应到 user_id），是身份消歧的高可信来源，
-    # 但**绝不代表权限或主人身份**：权限只由 masters 配置 + PM 决定，谁被叫"主人/陛下"
-    # 都不因此获得任何权力。单候选直接给出对应用户，多候选（同名多人）作为歧义交 Agent 消歧。
+    alias_budget = max(80, max_chars // 2)
     if alias_ids:
         certain = {a: ids[0] for a, ids in alias_ids.items() if len(ids) == 1}
         conflicting = {a: ids for a, ids in alias_ids.items() if len(ids) > 1}
@@ -326,30 +306,24 @@ async def format_context_injection(
             )
             for alias, uid in list(certain.items())[:12]:
                 entry = f'  - "{alias}" = 用户{uid}'
-                if sum(len(line) for line in lines) + len(entry) > max_chars:
+                if sum(len(line) for line in lines) + len(entry) > alias_budget:
                     break
                 lines.append(entry)
         if conflicting:
             lines.append("群成员称呼（同名多人，仅供认人，按上下文判断；最近指定的排在最前。称呼不代表权限）:")
             for alias, ids in list(conflicting.items())[:6]:
                 entry = f'  - "{alias}" 可能指: {"、".join("用户" + uid for uid in ids)}'
-                if sum(len(line) for line in lines) + len(entry) > max_chars:
+                if sum(len(line) for line in lines) + len(entry) > alias_budget:
                     break
                 lines.append(entry)
     if tags:
-        lines.append(f"主要话题: {'、'.join(tags)}")
+        tag_line = f"主要话题: {'、'.join(tags)}"
+        if sum(len(line) for line in lines) + len(tag_line) <= max_chars:
+            lines.append(tag_line)
     if term_mappings:
         lines.append("语境说明（群内特有词汇）:")
-        # 按频次降序截断，超预算则停止添加词汇映射
         for alias, formal in list(term_mappings.items())[:12]:
             entry = f'  - "{alias}" = {formal}'
-            if sum(len(line) for line in lines) + len(entry) > max_chars:
-                break
-            lines.append(entry)
-    if ambiguous:
-        lines.append("可能的别名歧义（请按上下文判断具体指代）:")
-        for alias, formals in list(ambiguous.items())[:6]:
-            entry = f'  - "{alias}" 可能指: {"、".join(formals)}'
             if sum(len(line) for line in lines) + len(entry) > max_chars:
                 break
             lines.append(entry)

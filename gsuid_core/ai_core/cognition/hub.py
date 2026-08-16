@@ -22,6 +22,7 @@ from gsuid_core.ai_core.entity_index import (
     _contains,
     _is_indexable,
     lookup_surface,
+    plugins_in_text,
     _normalize_surface,
 )
 from gsuid_core.ai_core.content_guard import wrap_untrusted
@@ -180,8 +181,22 @@ def _ok_mount_formal(name: str) -> bool:
     return len(norm) >= 1
 
 
+def _title_has_prefix_subject(title: str, tag: str) -> bool:
+    """tag 整段等于 title，或 title 以 tag 加分隔符开头。合词后缀不算。"""
+    title_n = _normalize_surface(title)
+    tag_n = _normalize_surface(tag)
+    if not title_n or not tag_n:
+        return False
+    if title_n == tag_n:
+        return True
+    if not title_n.startswith(tag_n):
+        return False
+    rest = title_n[len(tag_n) :]
+    return bool(rest and _SEG_SPLIT_RE.match(rest))
+
+
 def tag_is_mount_subject(title: str, tag: str) -> bool:
-    """文档显式 tag 是标题独立段即可。聊天扫词仍走 tag_is_independent_segment。"""
+    """文档显式 tag 是标题独立段或前缀主语即可。聊天扫词仍走 tag_is_independent_segment。"""
     tag_n = _normalize_surface(tag)
     if not tag_n or _CREATE_PUNCT_RE.search(tag):
         return False
@@ -189,15 +204,27 @@ def tag_is_mount_subject(title: str, tag: str) -> bool:
         return False
     if tag_n.isascii() and not _is_indexable(tag_n):
         return False
-    return tag_n in title_subject_tokens(title)
+    if tag_n in title_subject_tokens(title):
+        return True
+    return _title_has_prefix_subject(title, tag)
 
 
 def _canon_for_plugin(ref: Optional[EntityRef], plugin: str) -> Optional[str]:
-    """只取该插件自己的正式名。跨插件同词互不覆盖。"""
+    """只取该插件自己的正式名。跨插件同词互不覆盖。
+
+    知识 ``plugin`` 与 alias 模块名不一致时：表面只被一个插件登记则仍可用。
+    """
     if ref is None:
         return None
     if plugin:
-        return ref.canonical_for(plugin)
+        hit = ref.canonical_for(plugin)
+        if hit:
+            return hit
+        if not ref.is_ambiguous:
+            unique = list(dict.fromkeys(ref.canonicals))
+            if len(unique) == 1:
+                return unique[0]
+        return None
     if ref.is_ambiguous:
         return None
     unique = list(dict.fromkeys(ref.canonicals))
@@ -323,7 +350,8 @@ def resolve_canonical_from_knowledge(
 ) -> Optional[str]:
     """正式名：声明 entity → 本插件 alias → 标题段/tag 上的本插件 alias → 标题段 tag。
 
-    不猜分隔符。失败返回 None。
+    tag 可以是标题前缀主语。含切词符且不是独立段的未登记 tag 不当正式名。
+    同长多个 tag 取前缀主语。不猜分隔约定。失败返回 None。
     """
     declared = (entity or "").strip()
     if declared:
@@ -359,21 +387,29 @@ def resolve_canonical_from_knowledge(
         return best[0]
 
     seg_hits: List[Tuple[int, str]] = []
+    title_toks = set(title_subject_tokens(title))
     for tag in tags:
         if not tag_is_mount_subject(title, tag):
             continue
         name = tag.strip()
         if not _ok_mount_formal(name):
             continue
-        seg_hits.append((len(_normalize_surface(name)), name))
+        name_n = _normalize_surface(name)
+        # 含切词符且不是标题独立段 → 不是单一主语
+        if _SEG_SPLIT_RE.search(name_n) and name_n not in title_toks:
+            continue
+        seg_hits.append((len(name_n), name))
     if not seg_hits:
         return None
     seg_hits.sort(key=lambda x: x[0], reverse=True)
     best_len = seg_hits[0][0]
     best_tags = [name for n, name in seg_hits if n == best_len]
-    if len(set(_normalize_surface(x) for x in best_tags)) != 1:
-        return None
-    return best_tags[0]
+    if len(set(_normalize_surface(x) for x in best_tags)) == 1:
+        return best_tags[0]
+    prefix = [name for name in best_tags if _title_has_prefix_subject(title, name)]
+    if len(set(_normalize_surface(x) for x in prefix)) == 1:
+        return prefix[0]
+    return None
 
 
 def _formal_from_query(query: str) -> Optional[str]:
@@ -614,7 +650,6 @@ async def _mount_plugin_item(item: Mapping[str, Any], stats: MountStats) -> None
     formal = resolve_canonical_from_knowledge(title, tags, plugin=plugin, entity=entity)
     if formal is None:
         stats.skipped_unresolved += 1
-        logger.debug(i18n_t("log.ai.cognition_hub_unresolved", title=title[:80]))
         return
     as_of = _mapping_str(item, "_hash")[:8]
     hub = await _ensure_world_hub(plugin, formal, as_of, source="plugin")
@@ -650,7 +685,6 @@ async def _mount_agent_doc(
     formal = formal_from_hub_tag(tags) or resolve_canonical_from_knowledge(title, tags, plugin=plugin)
     if formal is None:
         stats.skipped_unresolved += 1
-        logger.debug(i18n_t("log.ai.cognition_hub_unresolved", title=title[:80]))
         return
     hubs = await AICogNode.list_world_hubs_by_title(formal)
     if len(hubs) != 1:
@@ -697,7 +731,6 @@ async def _mount_manual_doc(doc_id: str, chunks: List[Any], stats: MountStats) -
     formal = resolve_canonical_from_knowledge(title, tags, plugin=plugin)
     if formal is None:
         stats.skipped_unresolved += 1
-        logger.debug(i18n_t("log.ai.cognition_hub_unresolved", title=title[:80]))
         return
     as_of = (first.content_hash or "")[:8]
     hub = await _ensure_world_hub(plugin, formal, as_of, source=src)
@@ -1037,6 +1070,71 @@ def _fact_scope_key(scope: CogScope) -> Optional[str]:
     return None
 
 
+def mapping_formals_in_query(query: str, mappings: Mapping[str, str]) -> List[str]:
+    """本群映射里，alias 整句相等或为独立段才算命中。禁止子串。"""
+    qn = _normalize_surface(query)
+    if not qn or not mappings:
+        return []
+    toks = set(title_tokens(query))
+    out: List[str] = []
+    seen: set[str] = set()
+    for alias, formal in mappings.items():
+        alias_n = _normalize_surface(alias)
+        formal_s = (formal or "").strip()
+        if not alias_n or not formal_s:
+            continue
+        if alias_n != qn and alias_n not in toks:
+            continue
+        key = _normalize_surface(formal_s)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(formal_s)
+    return out
+
+
+def _unique_query_plugin(query: str) -> Optional[str]:
+    owners: List[str] = []
+    seen: set[str] = set()
+    for surface in (query, *title_tokens(query)):
+        ref = lookup_surface(surface)
+        if ref is None or ref.is_ambiguous or len(ref.plugins) != 1:
+            continue
+        plugin = ref.plugins[0]
+        if plugin in seen:
+            continue
+        seen.add(plugin)
+        owners.append(plugin)
+    if len(owners) != 1:
+        return None
+    return owners[0]
+
+
+def _rank_hubs_for_scope(
+    hubs: List[AICogNode],
+    query: str,
+    *,
+    canons: set[str],
+    mappings: Mapping[str, str],
+) -> List[AICogNode]:
+    """有本群证据才偏置；全 0 保持 collect 原序。"""
+    if not hubs:
+        return []
+    mapped = {_normalize_surface(name) for name in mapping_formals_in_query(query, mappings)}
+    routed = set(plugins_in_text(query))
+    unique_owner = _unique_query_plugin(query)
+
+    def _score(hub: AICogNode) -> int:
+        s1 = 1 if hub.ref in canons else 0
+        s2 = 1 if _normalize_surface(hub.title) in mapped else 0
+        plugin = plugin_from_world_ref(hub.ref)
+        s3 = 1 if plugin in routed else 0
+        s4 = 1 if (s3 == 0 and unique_owner is not None and plugin == unique_owner) else 0
+        return (s1 << 3) | (s2 << 2) | (s3 << 1) | s4
+
+    return sorted(hubs, key=_score, reverse=True)
+
+
 def _sensitive_fact_visible(fact: str, speaker_id: str) -> bool:
     from gsuid_core.ai_core.memory.retrieval.types import Edge
     from gsuid_core.ai_core.memory.retrieval.dual_route import (
@@ -1088,7 +1186,12 @@ async def _facts_for_hub(hub: AICogNode, scope: CogScope) -> List[FactLine]:
     return lines
 
 
-async def _hubs_from_hits(hits: List[CognitiveHit], query: str) -> Tuple[List[AICogNode], List[str]]:
+async def _hubs_from_hits(
+    hits: List[CognitiveHit],
+    query: str,
+    *,
+    scope: CogScope,
+) -> Tuple[List[AICogNode], List[str]]:
     seen: set[int] = set()
     hubs: List[AICogNode] = []
 
@@ -1127,24 +1230,43 @@ async def _hubs_from_hits(hits: List[CognitiveHit], query: str) -> Tuple[List[AI
             for att in await AICogAttachment.find_by_refs(refs):
                 await _add(await AICogNode.get_by_id(att.node_id))
 
-    qn = _normalize_surface(query)
-    surface = lookup_surface(qn) if qn else None
-    if surface is not None and surface.bindings:
-        for owner, canon in surface.bindings:
+    seen_surface: set[str] = set()
+    for surface_text in (query, *title_tokens(query)):
+        key = _normalize_surface(surface_text)
+        if not key or key in seen_surface:
+            continue
+        seen_surface.add(key)
+        ref = lookup_surface(surface_text)
+        if ref is None or not ref.bindings:
+            continue
+        for owner, canon in ref.bindings:
             if not owner or not canon:
                 continue
             await _add(await AICogNode.get(CogKind.ENTITY, make_world_ref(owner, canon)))
             for hub in await AICogNode.list_world_hubs_by_title(canon):
                 if plugin_from_world_ref(hub.ref) == owner:
                     await _add(hub)
-    else:
-        formal = _formal_from_query(query)
-        if formal:
+
+    fact_scope = _fact_scope_key(scope)
+    mappings: Dict[str, str] = {}
+    canons: set[str] = set()
+    if fact_scope:
+        from gsuid_core.ai_core.memory.group_profile import get_group_profile
+
+        profile = await get_group_profile(fact_scope)
+        mappings = profile["term_mappings"]
+        for formal in mapping_formals_in_query(query, mappings):
             for hub in await AICogNode.list_world_hubs_by_title(formal):
                 await _add(hub)
+        canons = set(await AICogNode.list_world_canons_in_scope(fact_scope))
 
-    extra_titles = [h.title for h in hubs[HUB_CARD_CAP:]]
-    return hubs[:HUB_CARD_CAP], extra_titles
+    formal = _formal_from_query(query)
+    if formal:
+        for hub in await AICogNode.list_world_hubs_by_title(formal):
+            await _add(hub)
+
+    ordered = _rank_hubs_for_scope(hubs, query, canons=canons, mappings=mappings)
+    return ordered[:HUB_CARD_CAP], [h.title for h in ordered[HUB_CARD_CAP:]]
 
 
 def _is_public_article_handle(handle: str) -> bool:
@@ -1188,7 +1310,7 @@ async def expand_hub(query: str, hits: List[CognitiveHit], *, scope: CogScope) -
 
 async def _expand_hub_body(query: str, hits: List[CognitiveHit], *, scope: CogScope) -> ExpandResult:
     result = ExpandResult()
-    hubs, extra = await _hubs_from_hits(hits, query)
+    hubs, extra = await _hubs_from_hits(hits, query, scope=scope)
     result.extra_hub_titles = extra
     selected_att: Optional[AICogAttachment] = None
     for hub in hubs:

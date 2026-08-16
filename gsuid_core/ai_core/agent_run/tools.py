@@ -223,12 +223,14 @@ class ToolsPhase(RunOnceHost):
 
                 # 第二层：语境工具池（群聊瘦模式也保留标签池，上限更紧）
                 ctx_tags: list[str] = []
-                if st.ev is not None and st.ev.group_id and not st.in_flight_short:
-                    try:
-                        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+                ctx_scope_key = ""
+                if st.ev is not None and st.ev.group_id:
+                    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 
-                        scope_key = make_scope_key(ScopeType.GROUP, str(st.ev.group_id))
-                        ctx_tags = await get_scope_context_tags(scope_key)
+                    ctx_scope_key = make_scope_key(ScopeType.GROUP, str(st.ev.group_id))
+                if ctx_scope_key and not st.in_flight_short:
+                    try:
+                        ctx_tags = await get_scope_context_tags(ctx_scope_key)
                         if ctx_tags:
                             _ctx_max = 4 if st.group_slim else 8
                             ctx_tools = get_tools_by_context_tags(ctx_tags, max_count=_ctx_max)
@@ -291,6 +293,7 @@ class ToolsPhase(RunOnceHost):
                         limit=_recall_limit,
                         non_category=["self", "buildin"],
                         threshold=_recall_threshold,
+                        scope_key=ctx_scope_key,
                     )
                     # 补搜索族（瘦保底已含 web_search_tool；再补 fetch/knowledge）
                     if (st.group_slim or st.is_light) and st.intent in ("工具", "问答"):

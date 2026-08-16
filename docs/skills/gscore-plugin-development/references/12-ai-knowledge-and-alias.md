@@ -34,6 +34,7 @@ ai_entity(KnowledgePoint(
     id="myplugin_genshin_shogun",
     plugin="MyPlugin",
     title="雷电将军 - 角色培养建议",
+    entity="雷电将军",
     content="""
 # 雷电将军培养建议
 
@@ -51,6 +52,8 @@ ai_entity(KnowledgePoint(
 ```
 
 **注意**：`id` 字段变化会触发重新索引，`content` 变化会通过 `_hash` 检测自动增量更新。
+世界枢纽按 `entity`（优先）或标题里的独立/前缀 tag 挂文；解析器里已经有主语时请写进
+`entity`，不要指望核心从标题里猜。没有单一主语的条目不要填 `entity`。
 
 ## 12.2 注册别名（`ai_alias`）
 

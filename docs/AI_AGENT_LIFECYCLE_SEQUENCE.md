@@ -1633,7 +1633,7 @@ uv run core
 `spawn_cognition_mount()` → `asyncio.create_task` 跑：插件 → 手动知识建公共枢纽 →
 **Agent 文回挂已有枢纽**（`tags` 含 `hub:{正式名}`，`writable=true`，启动扫描禁止自己新建 `world:`）→
 环境实体完整匹配连边。正式名来自 `entity` / 本插件 alias / 标题段 tag，枢纽按插件隔离；
-跨插件同名各建一颗。没声明主语的索引页仍跳过（debug，不是启动失败）。失败只 warning，**不得**把 READY 改回 false。
+跨插件同名各建一颗。没声明主语的索引页仍跳过（只计入 `skipped_unresolved`，不逐条刷日志）。失败只 warning，**不得**把 READY 改回 false。
 开关 `cognition_mount_enable`（默认 true）。
 **禁止**把挂载放进 `_INIT_STEPS` 或套件 `init_step`。
 `rebuild_cognition_mount` 清挂件 + `world:`/`ent:` 镜像后再跑同一套；**先拍**

@@ -801,7 +801,12 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
   长度上限。群聊抽取只连绿线、**禁止**从闲聊新建 `world:`。说话人不连公共层
   （摄入与 `scan_entities_to_world` 都跳过 `is_speaker`）。
   合词（独立段失败）不挂。没 tag / 没本插件 alias / 没 `entity` 字段的标题跳过。
-  `skill_doc` / 无 title 图片项跳过。**不要**为某个游戏写栏目词表或猜 `-` 分隔。
+  插件写知识时**已经知道主语就填 `entity`**，不要指望核心从「名字-栏目」猜。
+  `skill_doc` / 无 title 图片项跳过。**不要**为某个业务域写栏目词表或猜分隔约定。
+  未登记且含切词符、又不是标题独立段的 tag 不当正式名。索引页跳过只进
+  `skipped_unresolved` 计数，不要每条打一条「无法解析正式名」。
+  展开排序只用本群 `list_world_canons_in_scope`（SQL 必须带本轮 `scope_key`）和本群
+  词汇映射；禁止域词表。全 0 就并列，不得偷选一颗。
   ASCII 枢纽 title 的 SQL 查找必须 `lower(title)`，只写 `title == norm` 会对不上库内大小写。
   `lookup_surface` 无歧义命中用 `canonicals[0]`；歧义时用 `canonical_for(plugin)`，
   禁止用「标题相同」跨插件合并。

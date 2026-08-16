@@ -214,3 +214,38 @@ def test_fact_lines_hard_cap() -> None:
     text = mc.to_prompt_text(max_chars=100000)
     fact_lines = [ln for ln in text.splitlines() if ln.startswith("• ")]
     assert len(fact_lines) <= 12
+
+
+def test_episodes_with_time_come_before_undated() -> None:
+    dated = Episode(
+        id="ep_d",
+        content="有时间的对话片段内容",
+        valid_at="2026-07-15T14:34:00",
+        scope_key="group:1",
+        embedding=[],
+    )
+    undated = Episode(
+        id="ep_u",
+        content="没有时间的对话片段内容",
+        valid_at="",
+        scope_key="group:1",
+        embedding=[],
+    )
+    mc = MemoryContext(episodes=[undated, dated])
+    text = mc.to_prompt_text(max_chars=2000)
+    assert text.index("有时间的对话片段内容") < text.index("没有时间的对话片段内容")
+
+
+def test_categories_only_when_query_overlaps() -> None:
+    from gsuid_core.ai_core.memory.retrieval.types import Category
+
+    cats = [
+        Category(id="c1", name="NorthStation", summary="北站大纲", layer=1),
+        Category(id="c2", name="AcmeCorp", summary="公司大纲", layer=1),
+    ]
+    mc = MemoryContext(categories=cats)
+    missed = mc.to_prompt_text(max_chars=2000, query="EastHill 怎么样")
+    assert "语义类目摘要" not in missed
+    hit = mc.to_prompt_text(max_chars=2000, query="NorthStation 手册")
+    assert "NorthStation" in hit
+    assert "AcmeCorp" not in hit
