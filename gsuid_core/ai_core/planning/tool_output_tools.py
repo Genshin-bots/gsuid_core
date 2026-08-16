@@ -71,6 +71,8 @@ async def _handle_access_allowed(
 ) -> bool:
     if resolved.source == "tool_output":
         return _tool_output_access_allowed(resolved, ctx)
+    if resolved.source == "knowledge":
+        return True
     if resolved.source in {"artifact", "image"}:
         from gsuid_core.ai_core.planning.models import AIAgentArtifact
         from gsuid_core.ai_core.planning.runtime import get_plan_context
@@ -96,11 +98,12 @@ async def read_handle(
     offset: int = 0,
     limit: int = 8000,
 ) -> str:
-    """统一读句柄：to_/sa_/res_/img_/dlg_ 均可；图片只返回发送提示。
+    """统一读句柄：to_/sa_/res_/img_/dlg_/kb_plugin/kb_kbdoc 均可；图片只返回发送提示。
 
     长文按 **字符** offset/limit 分页（见返回文首【读窗口】）。
     续读请把 offset 设为上一页提示的 next（如 got 段末），勿重复 offset=0。
     ``dlg_`` 是委派句柄，返回该子任务的实时状态与产物（等价 check_delegation）。
+    ``kb_plugin`` / ``kb_kbdoc`` 是公共知识全文，无属主校验。
     框架保底工具：折叠后的检索/产物必须用本工具取全文，禁止空口说「只有句柄」。
     """
     if is_delegation_handle(handle_id):
@@ -127,10 +130,10 @@ async def search_fileos_outputs(
     *,
     section_header: bool = True,
 ) -> str:
-    """FileOS hybrid+SQL 融合检索（**非工具**，供 ``search_knowledge`` 联邦）。
+    """FileOS hybrid+SQL 融合检索（**非工具**，供 ``search_cognition`` 联邦）。
 
     已下线独立 agent 工具 ``search_persisted_outputs`` / ``search_handles``，
-    避免与 ``search_knowledge`` 双入口选型混乱。
+    避免与 ``search_cognition`` 双入口选型混乱。
     """
     owner, scope_key, err = _require_owner(ctx, scope)
     if err:
@@ -257,14 +260,3 @@ async def grep_persisted_outputs(
     if not hits:
         return f"ℹ️ 近 {days} 天全文未命中该关键词。"
     return f"🔎 全文命中 {len(hits)} 条（近{days}天）：\n" + "\n".join(hits)
-
-
-@ai_tools(category="common", capability_domain="产物")
-async def read_persisted_output(
-    ctx: RunContext[ToolContext],
-    record_id: str,
-    offset: int = 0,
-    limit: int = 8000,
-) -> str:
-    """兼容旧名：等价 read_handle。"""
-    return await read_handle(ctx, handle_id=record_id, offset=offset, limit=limit)

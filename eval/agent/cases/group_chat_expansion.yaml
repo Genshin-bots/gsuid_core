@@ -291,7 +291,7 @@ cases:
     message: "小明(用户ID:9001)：@早柚 帮我搜一下最近有什么好看的电影"
     expect:
       # 必须真搜/查知识，仅 find_tools 不算
-      must_call_any: ["web_search_tool", "web_search", "search_knowledge", "create_subagent"]
+      must_call_any: ["web_search_tool", "web_search", "search_cognition", "create_subagent"]
       max_latency: 90
       judge:
         rubric: "用户要求搜索电影推荐，这是正当请求。Agent可以用慵懒语气但必须真正检索（亲自搜或委派）。调了搜索/委派=PASS，以'好麻烦/不想搜'为由拒绝或只回空话=FAIL。"

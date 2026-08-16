@@ -212,6 +212,13 @@ def test_fileos_backend_is_fail_closed_without_owner() -> None:
     assert ids == [] and hits == {}
 
 
+def test_fileos_hit_title_prefers_search_query() -> None:
+    from gsuid_core.ai_core.cognition.facade import _fileos_hit_title
+
+    assert _fileos_hit_title("query: AcmeCorp [1] 招股", "web_search_tool") == "AcmeCorp"
+    assert _fileos_hit_title("[1] 招股说明书", "web_search_tool") == "web_search_tool"
+
+
 def test_search_nodes_includes_self_scope_when_bot_id_present() -> None:
     """self_note 写在 self:{bot_id}，检索面必须带上，否则写入后永远召不回。"""
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
@@ -295,10 +302,19 @@ def test_node_table_stores_no_body() -> None:
     from gsuid_core.ai_core.cognition.nodes import AICogNode
 
     fields = set(AICogNode.model_fields)
-    assert {"kind", "ref", "scope_key", "title", "summary", "as_of", "handle", "decay"} <= fields
-    # 绝不能出现正文列
+    assert {"kind", "ref", "scope_key", "title", "summary", "as_of", "handle", "decay", "canon"} <= fields
+    assert "domain" not in fields
     for forbidden in ("content", "body", "payload", "payload_inline", "text"):
         assert forbidden not in fields, f"节点表不许存正文：{forbidden}"
+
+
+def test_attachment_table_stores_no_body() -> None:
+    from gsuid_core.ai_core.cognition.nodes import AICogAttachment
+
+    fields = set(AICogAttachment.model_fields)
+    assert {"node_id", "slot", "title", "summary", "as_of", "source", "writable", "ref", "handle"} <= fields
+    for forbidden in ("content", "body", "payload", "payload_inline", "text"):
+        assert forbidden not in fields, f"挂件表不许存正文：{forbidden}"
 
 
 def _unique_constraint_columns(table_args: Any) -> set:
@@ -317,6 +333,13 @@ def test_node_identity_is_kind_plus_ref() -> None:
 
     names = _unique_constraint_columns(AICogNode.__table_args__)
     assert ("kind", "ref") in names, names
+
+
+def test_attachment_identity_is_node_plus_ref() -> None:
+    from gsuid_core.ai_core.cognition.nodes import AICogAttachment
+
+    names = _unique_constraint_columns(AICogAttachment.__table_args__)
+    assert ("node_id", "ref") in names, names
 
 
 def test_edge_kinds_are_a_minimal_set() -> None:
@@ -395,6 +418,7 @@ def test_repeat_query_is_short_circuited_within_a_run() -> None:
     """
     from types import SimpleNamespace
 
+    from gsuid_core.ai_core.cognition.hub import ExpandResult
     from gsuid_core.ai_core.buildin_tools.rag_search import search_cognition
 
     calls: list[str] = []
@@ -413,6 +437,7 @@ def test_repeat_query_is_short_circuited_within_a_run() -> None:
     with (
         patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_counting_search),
         patch("gsuid_core.ai_core.register.handle_tool_result", new=AsyncMock(side_effect=lambda bot, raw: raw)),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=AsyncMock(return_value=ExpandResult())),
     ):
         first = _run(search_cognition(ctx, query="上周的旅行计划"))
         # 归一化：空白与大小写差异不算新 query
@@ -422,6 +447,8 @@ def test_repeat_query_is_short_circuited_within_a_run() -> None:
     assert len(calls) == 2, calls
     assert "无命中" in first
     assert "本轮已检索过" in second
+    assert "仍无命中" in second
+    assert "含路径卡" not in second
     assert "web_search_tool" in second, "短路回执必须指路到外部检索工具"
     assert "无命中" in third
 
@@ -430,7 +457,7 @@ def test_readonly_retrieval_tools_have_a_stricter_thrash_limit() -> None:
     """只读检索工具没有副作用也没有新信息源，连打 2 轮就是空转。"""
     from gsuid_core.ai_core.agent_run.support import _THRASH_SAME_TOOL_LIMIT, thrash_limit_for
 
-    for name in ("find_tools", "search_cognition", "search_knowledge", "query_user_memory"):
+    for name in ("find_tools", "search_cognition"):
         assert thrash_limit_for(name) == 2, name
     # 有副作用 / 有外部信息源的工具沿用宽阈值（避免误伤 research 并行 web_search）
     assert thrash_limit_for("web_search_tool") == _THRASH_SAME_TOOL_LIMIT

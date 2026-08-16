@@ -22,10 +22,11 @@ def test_format_includes_image_urls() -> None:
             "kind": "image",
         },
     ]
-    text = _format_results_for_model(results)
+    text = _format_results_for_model(results, query="某新闻")
     assert "配图" in text
     assert "https://cdn.example.com/hero.jpg" in text
     assert "某新闻" in text
+    assert "query: 某新闻" in text
     assert "image_url" in text or "嵌图" in text or "配图" in text
 
 

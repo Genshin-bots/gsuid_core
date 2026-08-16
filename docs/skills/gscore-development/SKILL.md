@@ -62,10 +62,10 @@ description: >
 | 六 | AI Session 路由与 Persona（`ai_router`、**前缀缓存红线 / 保头裁中段**、Persona 热重载） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |
 | 七 | 工具注册表与 Agent 装配（`@ai_tools`/`covers`/`aliases`、L0 实体路由、`find_tools` 分流、**节点语义路由**、输出闸、**render_chart_spec**） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
 | 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊软触发、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
-| 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion + **落库可靠性 `idle_flush_seconds`**、分层语义图、偏好记忆 + **注入门控形态**、RF-Mem 双过程、记忆生命周期、多模态摄入） | [references/09-memory-system.md](./references/09-memory-system.md) |
-| 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账 + 批量导入、Dense+BM25 混合检索 + 过滤下推、嵌入 Provider 抽象层） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
+| 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem、**§9.14 认知枢纽/公共域挂文**） | [references/09-memory-system.md](./references/09-memory-system.md) |
+| 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账含 agent、启动挂载公共枢纽、Dense+BM25） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
-| 十二 | 已知坑与开发注意事项（D-1~D-22、**§12.22 统一输出闸 / 出戏 / 尖括号不变量**、§12.22b~g 精度面·脚手架·工具召回·记忆落库、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
+| 十二 | 已知坑与开发注意事项（D-1~D-22、统一输出闸、**§12.24 认知枢纽**、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
 
 ## 推荐阅读顺序（按需跳转）
 

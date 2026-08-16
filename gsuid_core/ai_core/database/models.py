@@ -32,8 +32,7 @@ def _clamp_favor(value: int) -> int:
 class UserFavorability(BaseModel, table=True):
     """用户关系温度表（每用户 × 每 bot，**不含 group_id**——关系是对人的，不是对房间的）。
 
-    唯一写入口是 ``relationship.engine.settle_turn``（管理覆盖走 ``apply_admin_set``，
-    模型增量走 ``apply_model_delta``，二者都落到 ``apply_settlement``）。
+    唯一写入口是 ``relationship.engine.settle_turn``（管理覆盖走 ``apply_admin_set``）。
 
     ``UniqueConstraint(user_id, bot_id)``：物理主键是自增 id，历史上没有唯一约束，
     并发首次互动能插出两行同 (user_id,bot_id)，症状是「好感度偶尔回退」。

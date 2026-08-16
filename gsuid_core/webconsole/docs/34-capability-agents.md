@@ -174,7 +174,7 @@ GET /api/ai/capability-agents/_tools/available
 ```
 
 > 注意：能力代理运行时**还会自动附加** `_ALWAYS_TOOLS`（state_*, task_*,
-> search_knowledge, web_search_tool, web_fetch_tool 等基础工具），不需要在 `tool_names`
+> search_cognition, web_search_tool, web_fetch_tool 等基础工具），不需要在 `tool_names`
 > 里重复列出。前端展示时可在这些"自动挂载"工具旁加个 🔒 标注。
 
 ---

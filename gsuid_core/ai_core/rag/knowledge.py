@@ -618,6 +618,10 @@ async def add_knowledge_document(
             skipped=skipped,
         )
     )
+    if source == "manual":
+        from gsuid_core.ai_core.cognition.hub import mount_one_manual_document
+
+        await mount_one_manual_document(doc_id)
     return {"doc_id": doc_id, "total_chunks": len(rows), "written": written, "skipped": skipped}
 
 
@@ -685,11 +689,21 @@ async def import_manual_knowledge(records: List[dict]) -> Dict[str, Any]:
             skipped=skipped,
         )
     )
+    from gsuid_core.ai_core.cognition.hub import mount_one_manual_document
+
+    seen_docs: set[str] = set()
+    for row in rows:
+        doc_id = row.doc_id or ""
+        src = row.source or "manual"
+        if not doc_id or doc_id in seen_docs or src not in ("manual", "agent"):
+            continue
+        seen_docs.add(doc_id)
+        await mount_one_manual_document(doc_id)
     return {"total": len(rows), "written": written, "skipped": skipped}
 
 
-async def _backfill_qdrant_manual_to_sql(sql_ids: set) -> int:
-    """把仅存在于 Qdrant 的旧手动知识点回填到 SQL 真值源（不重嵌，向量已在）。"""
+async def _backfill_qdrant_source_to_sql(sql_ids: set, source: str) -> int:
+    """把仅存在于 Qdrant 的旧知识点回填到 SQL 真值源（不重嵌，向量已在）。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
@@ -704,7 +718,7 @@ async def _backfill_qdrant_manual_to_sql(sql_ids: set) -> int:
             with_payload=True,
             with_vectors=False,
             offset=next_offset,
-            scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value="manual"))]),
+            scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))]),
         )
         for rec in records:
             if rec.payload is None:
@@ -722,14 +736,18 @@ async def _backfill_qdrant_manual_to_sql(sql_ids: set) -> int:
     return len(backfilled)
 
 
-async def _reembed_missing_sql_chunks() -> int:
+async def _backfill_qdrant_manual_to_sql(sql_ids: set) -> int:
+    return await _backfill_qdrant_source_to_sql(sql_ids, "manual")
+
+
+async def _reembed_missing_sql_chunks_for(source: str) -> int:
     """重嵌入"SQL 有、Qdrant 缺"的分片（换嵌入模型/向量库目录丢失后的恢复）。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return 0
 
-    rows = await AIKnowledgeChunk.iter_all(source="manual")
+    rows = await AIKnowledgeChunk.iter_all(source=source)
     if not rows:
         return 0
 
@@ -767,12 +785,39 @@ async def _reembed_missing_sql_chunks() -> int:
     return 0
 
 
-async def reconcile_manual_knowledge() -> None:
-    """启动对账：把手动知识的 SQL 真值源与 Qdrant 向量对齐。
+async def _reembed_missing_sql_chunks() -> int:
+    return await _reembed_missing_sql_chunks_for("manual")
 
-    - Qdrant 手动点 > SQL 行：回填旧的"仅 Qdrant"手动知识到 SQL（向量已在，不重嵌）。
-    - Qdrant 手动点 < SQL 行：SQL 有而向量缺（换模型/向量库丢失），从 SQL 重嵌入。
+
+async def _reconcile_sql_source(source: str) -> None:
+    from gsuid_core.ai_core.rag.base import client, embedding_model
+
+    if client is None or embedding_model is None:
+        return
+    try:
+        q_count = (
+            await client.count(
+                collection_name=KNOWLEDGE_COLLECTION_NAME,
+                count_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))]),
+            )
+        ).count
+    except Exception as e:
+        logger.debug(i18n_t("log.rag.kb_qdrant_manual_knowledge_fail", e=e))
+        return
+    sql_ids = await AIKnowledgeChunk.id_set(source)
+    if q_count > len(sql_ids):
+        await _backfill_qdrant_source_to_sql(sql_ids, source)
+    elif q_count < len(sql_ids):
+        await _reembed_missing_sql_chunks_for(source)
+
+
+async def reconcile_manual_knowledge() -> None:
+    """启动对账：把手动/Agent 知识的 SQL 真值源与 Qdrant 向量对齐。
+
+    - Qdrant 点 > SQL 行：回填旧的"仅 Qdrant"知识到 SQL（向量已在，不重嵌）。
+    - Qdrant 点 < SQL 行：SQL 有而向量缺（换模型/向量库丢失），从 SQL 重嵌入。
     - 数量一致：视为一致，跳过逐条扫描（避免每次启动的全量探测开销）。
+    启动挂载扫描本身不触发全库重嵌。
     """
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
@@ -780,53 +825,22 @@ async def reconcile_manual_knowledge() -> None:
         return
     try:
         await AIKnowledgeChunk.ensure_table()
-        try:
-            manual_count = (
-                await client.count(
-                    collection_name=KNOWLEDGE_COLLECTION_NAME,
-                    count_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value="manual"))]),
-                )
-            ).count
-        except Exception as e:
-            logger.debug(i18n_t("log.rag.kb_qdrant_manual_knowledge_fail", e=e))
-            return
-
-        sql_ids = await AIKnowledgeChunk.id_set("manual")
-        if manual_count > len(sql_ids):
-            await _backfill_qdrant_manual_to_sql(sql_ids)
-        elif manual_count < len(sql_ids):
-            await _reembed_missing_sql_chunks()
+        for source in ("manual", "agent"):
+            await _reconcile_sql_source(source)
     except Exception as e:
         logger.warning(i18n_t("log.rag.kb_manual_knowledge_reconciliation_fail", e=e))
 
 
-async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
-    """深度对账：**逐条**比对手动知识的 SQL 真值源与 Qdrant 向量（不止比数量）。
-
-    覆盖启动期 ``reconcile_manual_knowledge`` 的"数量相等但内容分叉"盲区：
-    - **Qdrant 有、SQL 无** → 回填 SQL（向量已在，不重嵌）。
-    - **SQL 有、Qdrant 无** → 从 SQL 重嵌入。
-    - **两侧都有但 ``content_hash`` 不一致** → 以 **SQL 为真值源**重嵌入覆盖 Qdrant 点。
-
-    比全量重嵌昂贵（须 scroll 全部 Qdrant 手动点 + 全表读 SQL），故**仅供运维手动触发**
-    （WebConsole `/api/ai/knowledge/reconcile`），不在启动链路自动跑。
-
-    Returns:
-        报告 dict：``{sql_total, qdrant_total, backfilled, reembedded_missing,
-        reembedded_mismatch, reembedded_written, consistent}``。
-    """
+async def _deep_reconcile_one_source(source: str) -> Dict[str, Any]:
+    """逐条对账一个 ``source``（manual / agent）。"""
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
         return {"error": "RAG 未初始化（Qdrant / Embedding 不可用）"}
 
-    await AIKnowledgeChunk.ensure_table()
-
-    # SQL 侧：id -> row
-    sql_rows = await AIKnowledgeChunk.iter_all(source="manual")
+    sql_rows = await AIKnowledgeChunk.iter_all(source=source)
     sql_by_id: Dict[str, AIKnowledgeChunk] = {r.id: r for r in sql_rows}
 
-    # Qdrant 侧：scroll 全量手动点，取 id -> 内容哈希
     qdrant_hash_by_id: Dict[str, str] = {}
     next_offset = None
     while True:
@@ -836,7 +850,7 @@ async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
             with_payload=True,
             with_vectors=False,
             offset=next_offset,
-            scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value="manual"))]),
+            scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))]),
         )
         for rec in records:
             if rec.payload is None:
@@ -850,11 +864,7 @@ async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
 
     sql_ids = set(sql_by_id.keys())
     qdrant_ids = set(qdrant_hash_by_id.keys())
-
-    # ① Qdrant-only → 回填 SQL（复用现成回填，向量已在不重嵌）
-    backfilled = await _backfill_qdrant_manual_to_sql(sql_ids)
-
-    # ② SQL-only → 缺向量，重嵌；③ 两侧都有但 hash 不一致 → 以 SQL 为准重嵌覆盖
+    backfilled = await _backfill_qdrant_source_to_sql(sql_ids, source)
     missing_rows = [sql_by_id[i] for i in (sql_ids - qdrant_ids)]
     mismatch_rows = [
         sql_by_id[i]
@@ -865,19 +875,60 @@ async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
     reembedded_written = 0
     if reembed_rows:
         reembedded_written, _skipped = await _embed_and_upsert_chunks(reembed_rows)
-
-    consistent = backfilled == 0 and not reembed_rows
-    report: Dict[str, Any] = {
+    return {
         "sql_total": len(sql_ids),
         "qdrant_total": len(qdrant_ids),
         "backfilled": backfilled,
         "reembedded_missing": len(missing_rows),
         "reembedded_mismatch": len(mismatch_rows),
         "reembedded_written": reembedded_written,
-        "consistent": consistent,
+        "consistent": backfilled == 0 and not reembed_rows,
     }
-    logger.info(i18n_t("log.rag.kb_deep_reconciliation_report", report=report))
-    return report
+
+
+async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
+    """深度对账：**逐条**比对手动/Agent 知识的 SQL 真值源与 Qdrant 向量。
+
+    覆盖启动期 ``reconcile_manual_knowledge`` 的"数量相等但内容分叉"盲区：
+    - **Qdrant 有、SQL 无** → 回填 SQL（向量已在，不重嵌）。
+    - **SQL 有、Qdrant 无** → 从 SQL 重嵌入。
+    - **两侧都有但 ``content_hash`` 不一致** → 以 **SQL 为真值源**重嵌入覆盖 Qdrant 点。
+
+    比全量重嵌昂贵（须 scroll Qdrant 点 + 全表读 SQL），故**仅供运维手动触发**
+    （WebConsole `/api/ai/knowledge/reconcile`），不在启动链路自动跑。
+
+    Returns:
+        报告 dict：``{sql_total, qdrant_total, backfilled, reembedded_missing,
+        reembedded_mismatch, reembedded_written, consistent}``。
+    """
+    from gsuid_core.ai_core.rag.base import client, embedding_model
+
+    if client is None or embedding_model is None:
+        return {"error": "RAG 未初始化（Qdrant / Embedding 不可用）"}
+
+    await AIKnowledgeChunk.ensure_table()
+    totals: Dict[str, Any] = {
+        "sql_total": 0,
+        "qdrant_total": 0,
+        "backfilled": 0,
+        "reembedded_missing": 0,
+        "reembedded_mismatch": 0,
+        "reembedded_written": 0,
+        "consistent": True,
+    }
+    for source in ("manual", "agent"):
+        part = await _deep_reconcile_one_source(source)
+        if "error" in part:
+            return part
+        totals["sql_total"] += int(part["sql_total"])
+        totals["qdrant_total"] += int(part["qdrant_total"])
+        totals["backfilled"] += int(part["backfilled"])
+        totals["reembedded_missing"] += int(part["reembedded_missing"])
+        totals["reembedded_mismatch"] += int(part["reembedded_mismatch"])
+        totals["reembedded_written"] += int(part["reembedded_written"])
+        totals["consistent"] = bool(totals["consistent"]) and bool(part["consistent"])
+    logger.info(i18n_t("log.rag.kb_deep_reconciliation_report", report=totals))
+    return totals
 
 
 async def sync_knowledge():
@@ -1189,6 +1240,9 @@ async def add_manual_knowledge_to_db(knowledge: Dict[str, Any]) -> bool:
     written, _ = await _embed_and_upsert_chunks([row])
     if written:
         logger.info(i18n_t("log.rag.knowledge_title_manually_add", title=title))
+        from gsuid_core.ai_core.cognition.hub import mount_one_manual_document
+
+        await mount_one_manual_document(row.doc_id)
     return written > 0
 
 

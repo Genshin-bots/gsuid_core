@@ -216,7 +216,7 @@ create_subagent(agent_profile="render_agent", task=事实包)  # 通用美观出
 | `render_card` / `render_markdown_to_image` | media | `render_agent` / 少量 reporter |
 | 插件 `send_*_report_image` | common 等 | **兼容遗留**；业务 report 节点**不要**再挂 |
 
-`task_basics` 已含：`artifact_*`、`state_*`、`record_*`、`search_knowledge`、
+`task_basics` 已含：`artifact_*`、`state_*`、`record_*`、`search_cognition`、
 `web_search_tool`、`web_fetch_tool`——业务节点**不必**再抄一遍。
 
 ## 14.8 常见坑

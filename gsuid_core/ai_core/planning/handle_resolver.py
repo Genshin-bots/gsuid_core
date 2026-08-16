@@ -1,7 +1,8 @@
-"""统一句柄解析：res_ / to_ / sa_ / img_ / dlg_ → 可读载荷。
+"""统一句柄解析：res_ / to_ / sa_ / img_ / dlg_ / kb_plugin / kb_kbdoc → 可读载荷。
 
 ``dlg_`` 是在途委派句柄（见 ``ai_core/control/delegation.py``）：接进本命名空间后，
 模型用已在保底池的 ``read_handle`` 就能查委派状态，无需新增工具（INV-5）。
+``kb_plugin`` 读插件注册表正文；``kb_kbdoc`` 按 doc_id 拼接 SQL 分片。公共知识无 owner。
 """
 
 from __future__ import annotations
@@ -31,9 +32,11 @@ class ResolvedHandle:
     task_id: str = ""
 
 
-HandleKind = Literal["tool_output", "artifact", "image", "delegation", "unknown"]
+HandleKind = Literal["tool_output", "artifact", "image", "delegation", "knowledge", "unknown"]
 
 _PREFIX_KINDS: tuple[tuple[str, HandleKind], ...] = (
+    ("kb_plugin:", "knowledge"),
+    ("kb_kbdoc:", "knowledge"),
     ("to_", "tool_output"),
     ("sa_", "tool_output"),
     ("res_", "artifact"),
@@ -102,14 +105,61 @@ async def _from_artifact(art: Any) -> ResolvedHandle:
     )
 
 
+def _from_knowledge(handle_id: str, text: str) -> ResolvedHandle:
+    return ResolvedHandle(
+        id=handle_id,
+        source="knowledge",
+        mime="text/plain",
+        summary="",
+        owner_user_id="",
+        scope_key="",
+        payload_inline=text,
+        payload_path="",
+        size_bytes=len(text.encode("utf-8")),
+    )
+
+
+def _plugin_article_text(entity_id: str) -> Optional[str]:
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    for item in _ENTITIES:
+        if not isinstance(item, dict) or "id" not in item or "title" not in item:
+            continue
+        if str(item["id"]) != entity_id:
+            continue
+        if "content" not in item:
+            return ""
+        return str(item["content"])
+    return None
+
+
+async def _kbdoc_article_text(doc_id: str) -> Optional[str]:
+    from gsuid_core.ai_core.database.models import AIKnowledgeChunk
+
+    rows, _total = await AIKnowledgeChunk.list_page(source="all", doc_id=doc_id, offset=0, limit=10000)
+    usable = [r for r in rows if r.source in ("manual", "agent")]
+    if not usable:
+        return None
+    usable.sort(key=lambda r: int(r.chunk_index))
+    return "\n".join(r.content for r in usable)
+
+
 async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
     hid = (handle_id or "").strip()
     if not hid:
         return None
-    # dlg_ 是委派状态句柄，不是可读载荷：走 control.delegation.load_delegation，
-    # 这里早退，避免白跑两次 FileOS/artifact 查库。
     if handle_kind_of(hid) == "delegation":
         return None
+    if hid.startswith("kb_plugin:"):
+        text = _plugin_article_text(hid[len("kb_plugin:") :])
+        if text is None:
+            return None
+        return _from_knowledge(hid, text)
+    if hid.startswith("kb_kbdoc:"):
+        text = await _kbdoc_article_text(hid[len("kb_kbdoc:") :])
+        if text is None:
+            return None
+        return _from_knowledge(hid, text)
     # FileOS
     if hid.startswith("to_") or hid.startswith("sa_"):
         rec = await AIToolOutputRecord.get_by_id(hid)
@@ -147,6 +197,17 @@ def format_resolved(
             f"handle {resolved.id} | kind=image | mime={resolved.mime}\n"
             f"summary: {resolved.summary}\n"
             "→ send_message_by_ai(image_id=本id) 直发；禁止当文本全文朗读。"
+        )
+    if resolved.source == "knowledge":
+        text = resolved.payload_inline or ""
+        if not text:
+            return f"handle {resolved.id} | kind=knowledge\n（无内容）"
+        return format_paginated_body(
+            head=f"handle {resolved.id} | kind=knowledge\n",
+            text=text,
+            offset=offset,
+            limit=limit,
+            read_hint="read_handle(handle_id, offset, limit)",
         )
     head = f"handle {resolved.id} | kind={resolved.source} | mime={resolved.mime}\nsummary: {resolved.summary}\n"
     text, err = load_payload_text(

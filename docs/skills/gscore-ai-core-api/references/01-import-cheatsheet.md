@@ -143,25 +143,22 @@ from gsuid_core.ai_core.web_fetch import (
 ```python
 from gsuid_core.ai_core.buildin_tools import (
     # --- Self 工具 (category="self") --- 保底池，无条件全部加载
-    # 只有主Agent能调用，用于核心操作
-    query_user_favorability,    # 查询用户好感度
-    update_user_favorability,   # 更新用户好感度（增量）
-    create_subagent,            # 创建子Agent完成特定任务
+    # 只有主Agent能调用，用于核心操作；self 白名单再收敛到发送/定时创建
     send_message_by_ai,         # 发送消息给用户
     add_once_task,              # 添加一次性定时任务（创建入口，口语化触发）
     add_interval_task,          # 添加循环任务（创建入口，口语化触发）
 
     # --- Buildin 工具 (category="buildin") --- 保底池，无条件全部加载
-    search_knowledge,           # 知识库检索
+    search_cognition,           # 回想（记忆/偏好/知识/落盘/产物）
+    # read_handle 在 planning.tool_output_tools，启动随 planning 注册（非本模块导出）
     web_search_tool,            # Web搜索
     web_fetch_tool,             # 网页抓取（转Markdown）
-    query_user_memory,          # 查询用户记忆
     get_self_info,              # 获取完整自我认知（身份/能力边界/主人）
     state_get, state_set, state_delete, state_list, state_append,
     render_html_to_image,       # media；主路径经 create_subagent(render_agent)
 
     # --- Common 工具 (category="common") --- 向量检索按需
-    search_image, get_self_persona_info, set_user_favorability,
+    search_image, get_self_persona_info, set_user_favorability, create_subagent,
     send_meme, collect_meme, search_meme,
     list_scheduled_tasks, query_scheduled_task, modify_scheduled_task,
     cancel_scheduled_task, pause_scheduled_task, resume_scheduled_task,

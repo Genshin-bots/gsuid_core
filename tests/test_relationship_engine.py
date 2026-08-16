@@ -409,3 +409,6 @@ def test_favor_tool_is_out_of_the_self_fallback_pool() -> None:
     from gsuid_core.ai_core.rag.tools import _SELF_CATEGORY_WHITELIST
 
     assert "update_user_favorability" not in _SELF_CATEGORY_WHITELIST
+    from gsuid_core.ai_core.register import find_tool_base
+
+    assert find_tool_base("update_user_favorability") is None

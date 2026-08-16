@@ -271,3 +271,35 @@ Observer Hook 检测到图片 → `submit_image_observation` 纯规则过滤（U
 
 记忆运行统计集成在 AI Statistics（`record_memory_*`，7 项指标进 `AIDailyStatistics`，见
 [§11](./11-statistics-webconsole-database.md)）。
+
+## 9.14 认知枢纽与公共域（2026-08-16）
+
+记忆图谱（`aimem*`）继续**分群**：同名实体在不同 `scope_key` 永远是两行，禁止跨群 merge。
+世界知识（百科/手册）不进记忆图，活在认知层的**公共枢纽**上：
+
+| 域 | `AICogNode.scope_key` | 放什么 |
+|----|----------------------|--------|
+| 公共 | `""` | `ref=world:{plugin}:{正式名}` 枢纽 + `AICogAttachment` 挂件（正文仍在 `_ENTITIES` / `aichunk` / FileOS） |
+| 环境 | `group:` / `user_global:` | 本 scope 的 Entity 镜像（`ref=ent:{id}`，`canon` 指向世界枢纽） |
+
+环境→世界只在**完整匹配**到恰好一颗已有枢纽时打 `RELATED`（去空白、CJK 原样、ASCII 小写）。
+别名 surface（`lookup_surface` 无歧义命中）直接用正式名再找枢纽；SQL 用 `lower(title)`
+对齐 ASCII 大小写（库内 `NorthStation` 对得上查询 `northstation`）。
+**不是**记忆去重的 0.92 阈值，也不是子串/向量互链。歧义 surface、短词、解析失败都不连。
+群聊抽取**不新建** `world:`；说话人（`is_speaker` / tag Speaker）不拿去连公共层——
+摄入钩子与**启动扫描** `scan_entities_to_world` 都跳过。
+路径卡里的「本群事实」读 `AIMemEdge.get_for_entities(..., 本轮唯一 scope_key)`，禁止跨群。
+
+知识来源（插件 / 手动导入 / 网页搜索 **query** / `attach_article`）**先查已有再过门新建**：
+可索引、别名无歧义、无句读、长度 ≤32。群关系/进度留在记忆边，不升级成公共蓝线。
+网页落盘短标题取 `query:`，整页 SERP 只留规则摘要（FileOS + 挂件），禁止把
+`<search_results>` 或结果正文当公共名词。
+
+Agent 补文落 SQL 时打标签 `hub:{正式名}`，重建挂载只回挂已有枢纽，**启动扫描不**从 agent
+源新建 `world:`（写入当时 `attach_article` / 网页弱挂可以建）。WebConsole 节点详情与
+`search` 同一套属主/scope 可见性（`node_visible_to`）。
+选定全文只 inline `kb_plugin:` / `kb_kbdoc:`；FileOS `to_` 只出现在路径卡，由
+`read_handle` 做属主 ACL。
+
+回想入口仍是 `search_cognition`；⑧ 每轮注入仍只记忆+偏好。详见
+[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../AI_AGENT_LIFECYCLE_SEQUENCE.md) §S.5 / §15.2。

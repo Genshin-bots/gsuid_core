@@ -28,6 +28,20 @@ from ..database.models import AIMemEntity
 _ENTITY_UPSERT_MAX_RETRY = 6
 
 
+def speaker_names_from_entities(entities_data: list[dict]) -> set[str]:
+    """说话人只留在本群，不拿去连公共枢纽。"""
+    names: set[str] = set()
+    for ed in entities_data:
+        if not isinstance(ed, dict) or "name" not in ed:
+            continue
+        raw_tag = ed["tag"] if "tag" in ed else []
+        tags = raw_tag if isinstance(raw_tag, list) else [raw_tag]
+        is_sp = bool(ed["is_speaker"]) if "is_speaker" in ed else False
+        if is_sp or "Speaker" in tags:
+            names.add(str(ed["name"]))
+    return names
+
+
 async def find_existing_entity(scope_key: str, name: str) -> Optional[AIMemEntity]:
     return await AIMemEntity.find_existing(scope_key, name)
 
@@ -78,6 +92,14 @@ async def extract_and_upsert_entities(
                 )
             )
             return {}, 0
+
+    if name_to_id:
+        from gsuid_core.ai_core.cognition.hub import schedule_link_entities
+
+        speaker_names = speaker_names_from_entities(entities_data)
+        to_link = {name: eid for name, eid in name_to_id.items() if name not in speaker_names}
+        if to_link:
+            schedule_link_entities(scope_key, to_link)
 
     # 🔥 批量写 vector（关键点：Qdrant 与 SQL 一致性保障）
     # OPT-04: 加全局超时保护，避免 Qdrant 超时阻塞整个 ingestion worker

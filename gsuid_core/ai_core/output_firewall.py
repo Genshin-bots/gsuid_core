@@ -77,7 +77,6 @@ _FRAMEWORK_LEAK_RE = re.compile(
     r"|\bsearch_persisted_outputs\b"
     r"|\blist_persisted_outputs\b"
     r"|\bgrep_persisted_outputs\b"
-    r"|\bread_persisted_output\b"
     r"|\bweb_search_tool\b"
     r"|\bfind_tools\b"
     r"|\brender_html_to_image\b"

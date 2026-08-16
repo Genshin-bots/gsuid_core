@@ -15,8 +15,7 @@ buildin_tools/
 ├── web_fetch.py             # 网页抓取工具（引用 ai_core.web_fetch，Jina/local 多源）
 ├── message_sender.py        # 消息发送工具
 ├── command_executor.py      # 命令执行工具
-├── database_query.py        # 数据库查询工具
-├── favorability_manager.py  # 好感度管理工具（引用 ai_core.database.AIDAL）
+├── favorability_manager.py  # 好感度管理工具（仅主人绝对值覆盖）
 ├── file_manager.py          # 文件管理工具（沙盒内读写执行文件）
 ├── file_operations.py       # 文件操作工具（artifacts 路径内移动/复制/打包 zip）
 ├── get_time.py              # 日期时间工具
@@ -42,8 +41,7 @@ buildin_tools/
 | web_fetch.py | `ai_core.web_fetch.fetch_webpage_as_markdown` | 网页抓取转 Markdown（Jina Reader / local） |
 | message_sender.py | bot.send() | 独立业务逻辑 |
 | command_executor.py | asyncio.subprocess | 独立业务逻辑（安全检查） |
-| database_query.py | gsuid_core.utils.database.SQLA | 绑定数据查询 |
-| favorability_manager.py | ai_core.database.AIDAL | AI好感度数据访问 |
+| favorability_manager.py | relationship.engine | 仅主人绝对值覆盖；增量由框架结算 |
 | file_manager.py | pathlib / asyncio | 沙盒文件读写执行 |
 | file_operations.py | shutil / zipfile | artifacts 路径内文件移动/复制/打包 zip |
 | get_time.py | datetime | 日期时间获取 |
@@ -60,50 +58,21 @@ buildin_tools/
 
 ### RAG检索工具 (rag_search.py)
 
-#### search_knowledge()
-根据自然语言查询从向量数据库检索匹配的知识条目。
+#### search_cognition()
+主人格唯一「回想」动词：记忆 / 偏好 / 知识库 / 落盘 / 产物一次联邦检索。
 
 ```python
-from gsuid_core.ai_core.buildin_tools import search_knowledge
+from gsuid_core.ai_core.buildin_tools import search_cognition
 
-results = await search_knowledge(
-    query="原神圣瞳位置",
-    limit=10,
-    score_threshold=0.45
-)
+results = await search_cognition(ctx, query="已有资料里的入门说明")
 ```
 
 **参数：**
-- `query`: 自然语言查询描述
-- `limit`: 最大返回结果数量，默认10条
-- `score_threshold`: 相似度分数阈值，默认0.45
+- `query`: 自然语言查询
+- `kinds`: 可选，逗号分隔 kind 过滤；留空=全查
+- `limit`: 最大条数
 
-**返回：** 匹配的知识条目列表，每条包含 `title`、`content`、`category`、`tags`、`_score` 字段
-
----
-
-#### search_knowledge_by_category()
-在指定类别和插件范围内检索知识条目。
-
-```python
-from gsuid_core.ai_core.buildin_tools import search_knowledge_by_category
-
-results = await search_knowledge_by_category(
-    query="角色培养",
-    category="攻略",
-    plugin="Genshin",
-    limit=10
-)
-```
-
-**参数：**
-- `query`: 自然语言查询描述
-- `category`: 知识类别，如"攻略"、"角色介绍"
-- `plugin`: 可选，限定插件来源
-- `limit`: 最大返回结果数量，默认10条
-- `score_threshold`: 相似度分数阈值，默认0.4
-
-**返回：** 匹配的知识条目列表
+旧名 `search_knowledge` 已删除，不要再注册或调用。
 
 ---
 
@@ -270,59 +239,9 @@ result = await execute_shell_command(
 
 ---
 
-### 数据库查询工具 (database_query.py)
-
-#### query_user_favorability()
-查询用户的好感度信息。
-
-```python
-from gsuid_core.ai_core.buildin_tools import query_user_favorability
-
-result = await query_user_favorability(ctx)
-# 或指定用户ID
-result = await query_user_favorability(ctx, user_id="123456")
-```
-
-**参数：**
-- `ctx`: 工具执行上下文
-- `user_id`: 可选，指定用户ID
-
-**返回：** 用户好感度信息字符串，包含好感度值和关系描述
-
-**好感度与关系映射：**
-| 好感度范围 | 关系描述 |
-|------------|----------|
-| < 0 | 厌恶 |
-| 0 | 陌生 |
-| 1-49 | 认识 |
-| 50-79 | 熟人 |
-| 80-99 | 朋友 |
-| >= 100 | 挚友 |
-
----
-
 ### 好感度管理工具 (favorability_manager.py)
 
-#### update_user_favorability()
-增量更新用户好感度。
-
-```python
-from gsuid_core.ai_core.buildin_tools import update_user_favorability
-
-result = await update_user_favorability(ctx, delta=5)
-# delta: 好感度变化值，正数增加，负数减少
-```
-
-**参数：**
-- `ctx`: 工具执行上下文
-- `delta`: 好感度变化值
-- `user_id`: 可选，指定用户ID
-
-**返回：** 操作结果描述字符串
-
-**底层实现：** 直接引用 `ai_core.database.AIDAL`
-
----
+关系温度由框架每轮结算，没有增量工具。群聊记忆请用 `search_cognition`。
 
 #### set_user_favorability()
 设置用户好感度为绝对值。
@@ -366,17 +285,9 @@ await send_text_message(ctx, "检测到你已经在线很久了，注意休息�
 
 ```python
 # AI检索相关知识后整合到回复中
-knowledge = await search_knowledge("角色养成攻略")
+knowledge = await search_cognition(ctx, query="入门说明")
 if knowledge:
     await send_text_message(ctx, f"根据资料：{knowledge[0]['content'][:100]}...")
-```
-
-### AI查询并更新好感度
-
-```python
-# AI根据对话内容调整用户好感度
-await update_user_favorability(ctx, delta=2)  # 对话愉快，增加好感度
-favorability_info = await query_user_favorability(ctx)
 ```
 
 ### AI进行Web搜索

@@ -257,9 +257,9 @@ async def my_tool(ctx: RunContext[ToolContext], param: str) -> str:
 
 ### Q6: RAG 知识库检索的工作方式是什么？
 
-RAG 知识库检索不再作为强制前置流程。`search_knowledge` 工具注册为 `buildin` 分类，主Agent会根据对话内容自主决定是否调用该工具进行知识库检索。
+RAG 知识库检索不再作为强制前置流程。`search_cognition` 工具注册为 `buildin` 分类，主Agent会根据对话内容自主决定是否调用该工具进行回想。
 
-详见 [§7.2 `search_knowledge`](./07-builtin-tools.md)。
+详见 [§7.2 `search_cognition`](./07-builtin-tools.md)。
 
 ---
 

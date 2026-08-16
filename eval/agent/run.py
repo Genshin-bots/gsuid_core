@@ -270,6 +270,7 @@ def main() -> int:
         extra_paths.append(cases_dir / "group_chat_expansion.yaml")
         # 生产群聊结构抽象出的合成用例（无真实 ID/原文）
         extra_paths.append(cases_dir / "group_chat_prod_patterns.yaml")
+        extra_paths.append(cases_dir / "cognition_hub_mixed.yaml")
     if args.extra_cases:
         for p in args.extra_cases.split(","):
             p = p.strip()

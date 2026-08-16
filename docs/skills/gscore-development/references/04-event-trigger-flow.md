@@ -97,7 +97,7 @@ if "提及应答" in ai_mode:
 5. 获取 AI Session：session = await get_ai_session(event)（见 §06）
 6. 记忆检索：dual_route_retrieve() 双路检索（见 §09），拼进 full_context
 7. 历史上下文：format_history_for_agent() 近 30 条 → rag_context = "【历史对话】..."
-   注意：RAG 知识库检索不再前置强制，由主 Agent 的 search_knowledge 工具按需调用
+   注意：RAG 知识库检索不再前置强制，由主 Agent 的 search_cognition 工具按需调用
 8. 调 Agent：chat_result = await session.run(user_message, bot, ev, rag_context)
 9. 发送回复：send_chat_result(bot, chat_result)（支持 @用户ID 解析 + 打字延迟）
 10. 记忆观察：observe() 把 AI 回复入队记忆系统

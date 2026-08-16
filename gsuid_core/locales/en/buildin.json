@@ -1,6 +1,5 @@
 {
   "log.buildin.favor_set": "[BuildinTools] Set user {target_id} favorability to {value} (clamped to range)",
-  "log.buildin.favor_update": "[BuildinTools] Adjusted user {target_id} favorability by {delta:+d} (current: {new_value})",
   "log.buildin.image_reader_datauri_fail": "[BuildinTools] read_image failed to decode DataURI, falling back to text description: {error}",
   "log.buildin.image_reader_provider_fail": "[BuildinTools] read_image failed to detect the main model provider, falling back to openai: {error}",
   "log.buildin.image_reader_support_fail": "[BuildinTools] read_image failed to detect multimodal support, treating it as unsupported: {error}",

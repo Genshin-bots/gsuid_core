@@ -16,7 +16,7 @@
 #   modify_scheduled_task(task_id,...) / cancel_scheduled_task / pause_scheduled_task /
 #   register_kanban_task(goal,subtasks,...)[有死循环bug] / evaluate_agent_mesh_capability /
 #   create_subagent / send_meme(mood,scene) / query_user_memory / get_self_info /
-#   update_user_favorability(delta) / set_user_favorability(value) / search_knowledge /
+#   update_user_favorability(delta) / set_user_favorability(value) / search_cognition /
 #   web_search_tool(query) / web_fetch_tool(url) / find_tools。
 #   execute_shell_command/read_file_content/write_file_content 是 default 类=子Agent专属，
 #   主Agent根本不装配（must_not_call 天然满足，仍作安全网保留）。

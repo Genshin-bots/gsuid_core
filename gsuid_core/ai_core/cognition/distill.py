@@ -43,6 +43,7 @@ async def distill_tool_output(
     scope_key: str,
     owner_user_id: str,
     as_of: str,
+    persist_title: str,
 ) -> Optional[int]:
     """FileOS 落盘成功后登记 ``tool_output`` 节点（+ 值得时补一条 ``fact``）。
 
@@ -51,18 +52,33 @@ async def distill_tool_output(
 
     ``owner_user_id`` 必填：FileOS 真身是行级 owner 过滤的，节点层漏了它就等于
     把同一份数据的 ACL 从 owner 级降到 group 级。
+
+    ``persist_title`` 是落盘短标题（网页搜索为 ``query:``），禁止拿工具名去弱挂枢纽。
     """
+    short_title = (persist_title or "").strip()
     node_id = await sync_node(
         CogKind.TOOL_OUTPUT,
         record_id,
         scope_key=scope_key,
         owner_user_id=owner_user_id,
-        title=tool_name or "落盘",
+        title=short_title or (tool_name or "落盘"),
         summary=_clip(summary),
         as_of=as_of,
         source="tool",
         handle=record_id,
     )
+    try:
+        from gsuid_core.ai_core.cognition.hub import maybe_attach_web_record
+
+        if "web_search" in (tool_name or ""):
+            await maybe_attach_web_record(
+                title=short_title,
+                summary=summary,
+                record_id=record_id,
+                as_of=as_of,
+            )
+    except Exception as e:
+        logger.debug(i18n_t("log.ai.cognition_node_sync_fail", kind="web_attach", ref=record_id, e=e))
     if node_id is None or not is_worth_distilling(summary):
         return node_id
     fact_ref = f"tool:{record_id}"

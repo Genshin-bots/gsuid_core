@@ -44,8 +44,10 @@
 **测生产插件行为不要用 `--dev`**：
 
 ```bash
-# 加载全部插件（含业务插件）
-GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 uv run core --port 8765
+# 加载全部插件（含业务插件）。Windows 必须带 NO_PROXY，否则系统代理会把
+# 本机 Qdrant / chat_with_history 打成 502（curl 通、httpx 失败）。
+GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
+  NO_PROXY=localhost,127.0.0.1 uv run core --port 8765
 
 # --dev 只加载目录名 endswith("-dev") 的插件；普通插件全部跳过
 ```
@@ -483,6 +485,14 @@ sequenceDiagram
 
     HandleAI->>GsAgent: run(user_messages, rag_context=full_context, intent, has_active_task)
 ```
+
+> **2026-08-16 认知枢纽**：⑧ 每轮自动注入仍只打记忆+偏好（`inject_memory_slice`）。
+> 公共概念的**路径卡 + 选定全文**只出现在工具 `search_cognition` 的回执里，不灌闲聊。
+> 门面 `cognition.facade.search_cognition` 签名不变；展开在 `cognition.hub.expand_hub`
+> （失败 fail-open，独立 i18n `cognition_expand_fail`，不挡联邦命中列表）。
+> 只问正式名不附全文（枢纽名本身不是点名）；同 slot 两篇也不附。
+> 选定全文只 inline `kb_plugin:` / `kb_kbdoc:`；`to_` 留在路径卡，走 `read_handle` ACL。
+> 启动挂载见 **§15.2**（READY 之后后台 `create_task`，不进 `_INIT_STEPS`）。
 
 ---
 
@@ -1580,7 +1590,17 @@ uv run core
 8. Memory：IngestionWorker + memory collections
 9. MCP / Meme / 统计（含 Heartbeat job）/ MCP Server / 命令执行
 
-**WS 可连 ≠ AI 就绪**。
+流水线 `finally` 置 `_AI_CORE_READY = True` **之后**（不 await）：
+`spawn_cognition_mount()` → `asyncio.create_task` 跑：插件 → 手动知识建公共枢纽 →
+**Agent 文回挂已有枢纽**（`tags` 含 `hub:{正式名}`，`writable=true`，启动扫描禁止自己新建 `world:`）→
+环境实体完整匹配连边。失败只 warning，**不得**把 READY 改回 false。
+开关 `cognition_mount_enable`（默认 true）。
+**禁止**把挂载放进 `_INIT_STEPS` 或套件 `init_step`。
+`rebuild_cognition_mount` 清挂件 + `world:`/`ent:` 镜像后再跑同一套；**先拍**
+Agent/网页挂件，插件回挂后再 `ensure_public_hub` 回挂，避免控制台重建不可逆丢挂。
+深度对账 `deep_reconcile_manual_knowledge` 覆盖 `manual` **和** `agent`。
+
+**WS 可连 ≠ AI 就绪**。AI 就绪 ≠ 认知挂载完成（挂载窗口内回想退回无路径卡的联邦，聊天可用）。
 
 **套件为什么排第 2（RAG 之前）**：`AgentKit.register` 只挂 hook（纯注册，重依赖在 hook
 体内懒导入，实测 0.14s），但整条 agent loop 的情绪 / 关系 / 记忆 / **工具装配**都由套件
@@ -1635,7 +1655,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | 优先级 | 来源 | 用途 |
 |--------|------|------|
 | 1 | 结构化数据工具 | 实时读数、状态、业务字段 |
-| 2 | `search_knowledge` | 入库资料（非实时） |
+| 2 | `search_cognition` | 入库资料（非实时） |
 | 3 | `web_search` / `web_fetch` | 事件/叙事；**摘要常过时，禁止当未核对的实时值** |
 
 `web_search_tool` 返回框极短通用 disclaimer；折叠时 **句柄卡 + inline_head**，全文 `read_handle`（保底）。

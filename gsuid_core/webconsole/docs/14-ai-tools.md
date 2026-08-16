@@ -7,7 +7,7 @@
 | 分类 | 说明 | 加载方式 |
 |------|------|---------|
 | `self` | 自我调用工具（如 create_subagent） | 主 Agent 默认加载 |
-| `buildin` | 内置工具（如 search_knowledge、send_message、state_*） | 主 Agent 默认加载 |
+| `buildin` | 内置工具（如 search_cognition、send_message、state_*） | 主 Agent 默认加载 |
 | `default` | 默认分类工具 | 按需通过向量检索加载 |
 | `common` | 通用工具 | 按需通过向量检索加载 |
 | `mcp` | MCP 外部工具（用户自定义的 MCP 服务器工具） | 启动时自动注册，按需加载 |
@@ -54,8 +54,8 @@ Authorization: Bearer <token>
     "data": {
         "tools": [
             {
-                "name": "search_knowledge",
-                "description": "检索知识库相关内容...",
+                "name": "search_cognition",
+                "description": "回想记忆、偏好、知识库、落盘与产物...",
                 "plugin": "core",
                 "category": "buildin"
             },
@@ -160,8 +160,8 @@ Authorization: Bearer <token>
     "status": 0,
     "msg": "ok",
     "data": {
-        "name": "search_knowledge",
-        "description": "检索知识库相关内容...",
+        "name": "search_cognition",
+        "description": "回想记忆、偏好、知识库、落盘与产物...",
         "plugin": "core",
         "category": "buildin"
     }

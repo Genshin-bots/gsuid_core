@@ -10,8 +10,14 @@
 历史缺陷 D-11：原 `handle_ai_chat` 在所有意图下强制 RAG 检索拼进上下文——用户只说"你好"也要
 向量化 + 查 Qdrant + 塞无关结果，多 1~2 秒延迟 + 无谓 Token。
 
-**现状**：RAG 检索改为主 Agent 的 `buildin` 工具 `search_knowledge`，由 LLM 自主判断是否调。
-`handle_ai_chat` 的 `rag_context` 只含历史对话上下文，**不再强制检索**。
+**现状**：主人格回想工具是 `search_cognition`，由 LLM 自主判断是否调。
+`handle_ai_chat` 的 `rag_context` 只含历史对话上下文，**不再强制检索**。命中公共枢纽时，
+工具回执带路径卡；问到某一栏且能唯一选定则同一次附全文（≤6000 字，仅 `kb_plugin` / `kb_kbdoc`；
+`to_` 不展开正文）。
+⑧ 闲聊不灌路径卡。
+
+> 改 handle_ai 上下文拼装时不要把 RAG 检索改回前置强制。不要改冻结门面
+> `cognition.facade.search_cognition(query, *, kinds, scope) -> List[CognitiveHit]` 的签名。
 
 > 改 handle_ai 上下文拼装时不要把 RAG 检索改回前置强制。
 
@@ -38,6 +44,23 @@ WebConsole 鉴权接口（`knowledge_base_api.py`）：`/api/ai/knowledge/bulk`�
 
 > ⚠️ **深度对账成本**：`/api/ai/knowledge/reconcile` 需全量 scroll Qdrant + 全表读 SQL + 必要时
 > 批量重嵌，大知识库耗时较长，**仅作运维手动入口（非自动）**。
+
+启动期 `reconcile_manual_knowledge()` 覆盖 `source=manual` **和** `source=agent`（Agent 用
+`attach_article` 新建的文必须能换模型重嵌）。运维深度对账 `deep_reconcile_manual_knowledge`
+同样扫这两源。启动挂载扫描本身**不**触发全库重嵌。
+
+`sync_knowledge()` 把插件 `_ENTITIES` 同步进 Qdrant 之后，`init_ai_core` 在 READY 之后后台
+`spawn_cognition_mount()`：插件 + 手动知识建公共枢纽（`writable=false`）；随后把
+`source=agent` 文按 `hub:{正式名}` 标签挂回已有枢纽（`writable=true`，启动扫描禁止新建
+`world:`）。`attach_article` / 网页搜索 query 在**写入当时**先查已有、过门才建。
+插件正文**不复制**进 `aichunk`；全文句柄 `kb_plugin:{id}` 读注册表。手动/agent 文
+`kb_kbdoc:{doc_id}` 按 `chunk_index` 拼接 SQL。开关 `cognition_mount_enable`。
+控制台 JSONL `import_manual_knowledge` 写入成功后按 `doc_id` 即时挂载，不必等下次启动扫描。
+落盘弱挂枢纽用搜索 `query:`（不是正文首行 `<search_results>`）：先查已有 title，
+没有且过公共名词门则新建再挂；整页结果规则摘要写在 FileOS / 挂件上供下次回想。
+**不要**拿工具名或 SERP 全文去配枢纽 title。
+控制台 `rebuild_cognition_mount` 会先拍 Agent/网页挂件，插件回挂后再按 title 回挂；
+不要改成只删 `world:` / 挂件，否则运行时自建枢纽会蒸发。
 
 ## 10.3 检索过滤下推 + 混合检索（2026-06-15，Bug 修复）
 

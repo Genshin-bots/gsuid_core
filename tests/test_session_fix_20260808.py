@@ -80,10 +80,14 @@ def test_research_match_keywords_domain_free() -> None:
 def test_web_search_results_frame_stale_prices() -> None:
     from gsuid_core.ai_core.buildin_tools.web_search import _format_results_for_model
 
-    text = _format_results_for_model([{"title": "gold", "url": "https://example.com", "content": "XAU 3000"}])
+    text = _format_results_for_model(
+        [{"title": "gold", "url": "https://example.com", "content": "XAU 3000"}],
+        query="gold",
+    )
     assert "过时" in text or "滞后" in text
     assert "结构化数据" in text or "实时读数" in text
     assert "<search_results>" in text
+    assert "query: gold" in text
     assert "市价" not in text
     assert "股票" not in text
     assert "时效存疑" not in text

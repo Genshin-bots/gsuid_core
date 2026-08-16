@@ -494,6 +494,11 @@ AI_CONFIG: Dict[str, GSC] = {
         "问答/回指轮由框架在 H05 预取一次认知检索(闲聊仍 0 检索)。灰度后再开",
         False,
     ),
+    "cognition_mount_enable": GsBoolConfig(
+        "启动后挂载公共枢纽",
+        "READY 之后后台把插件/手动知识挂到公共枢纽, 并把完整匹配的环境实体连上去。关闭则不扫描",
+        True,
+    ),
 }
 
 
@@ -873,12 +878,6 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "指定最终检索数量, 可以提高检索精度但会增加性能开销",
         15,
         options=[5, 10, 15, 20],
-    ),
-    "query_tool_top_k": GsIntConfig(
-        "记忆查询工具召回条数",
-        "query_user_memory 工具(主人格主动查记忆)未显式指定时的检索召回条数",
-        20,
-        options=[10, 15, 20, 30],
     ),
     "memory_inject_max_chars": GsIntConfig(
         "记忆注入字符预算",

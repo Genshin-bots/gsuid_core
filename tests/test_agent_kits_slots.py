@@ -138,14 +138,14 @@ def test_owned_tools_are_unregistered_on_disable(isolated) -> None:
     from gsuid_core.ai_core.register import find_tool_base, get_registered_tools
 
     registry = get_registered_tools()
-    victim = "query_user_memory"
+    victim = "set_user_favorability"
     original = None
     for cat, tools in registry.items():
         if victim in tools:
             original = (cat, tools[victim])
             break
     if original is None:
-        pytest.skip("query_user_memory 未注册（buildin_tools 未导入）")
+        pytest.skip("set_user_favorability 未注册（buildin_tools 未导入）")
 
     kit = register_agent_kit(
         _FakeKit(kit_id="a.mem", slot="memory", display_name="A", owns_tools=(victim,)),
@@ -156,6 +156,20 @@ def test_owned_tools_are_unregistered_on_disable(isolated) -> None:
     assert find_tool_base(victim) is None
     # 复原，避免污染同进程后续测试
     registry[original[0]][victim] = original[1]
+
+
+def test_removed_compat_tools_are_unregistered() -> None:
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    from gsuid_core.ai_core.register import find_tool_base
+
+    for name in (
+        "query_user_memory",
+        "update_user_favorability",
+        "read_persisted_output",
+        "set_session_reply_mute",
+        "clear_session_reply_mute",
+    ):
+        assert find_tool_base(name) is None, name
 
 
 def test_slot_config_resolution_and_off(isolated, monkeypatch) -> None:

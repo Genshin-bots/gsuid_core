@@ -13,7 +13,7 @@
 
 - 与插件知识（``source="plugin"``）/ 手动知识（``source="manual"``）的同步、对账互不干扰
   （``sync_knowledge`` 只清 plugin 来源、``reconcile_manual_knowledge`` 只管 manual 来源）。
-- 通用 ``search_knowledge`` 工具与意图分类器按 ``exclude_sources=["skill_doc"]`` 把**整类**开发
+- 通用 ``search_cognition`` 与意图分类器按 ``exclude_sources=["skill_doc"]`` 把**整类**开发
   文档挡在日常聊天 RAG 之外（一处排除覆盖全部 skill、且对将来新增 skill 自动生效），避免污染。
 - 能力代理用 ``search_skill_docs`` 工具按 ``plugin="skilldoc:<skill>"`` 命名空间过滤检索；
   不限定 skill 时检索全部已挂载 skill。

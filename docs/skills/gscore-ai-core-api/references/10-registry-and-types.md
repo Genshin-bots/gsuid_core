@@ -9,8 +9,8 @@ from gsuid_core.ai_core.register import get_registered_tools, get_all_tools
 # 返回: Dict[str, Dict[str, ToolBase]]
 all_by_category = get_registered_tools()
 # {
-#   "self": {"query_user_favorability": ToolBase(...), ...},
-#   "buildin": {"search_knowledge": ToolBase(...), ...},
+#   "self": {"send_message_by_ai": ToolBase(...), ...},
+#   "buildin": {"search_cognition": ToolBase(...), ...},
 #   "buildin": {"get_self_persona_info": ToolBase(...), ...},
 #   "default": {"execute_shell_command": ToolBase(...), ...},
 # }

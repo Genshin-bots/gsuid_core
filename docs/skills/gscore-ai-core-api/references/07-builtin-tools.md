@@ -10,30 +10,16 @@
 
 只有主Agent能调用，用于核心自我操作。
 
-### `query_user_favorability` — 查询用户好感度
+好感度由框架每轮结算，**没有**增量工具。绝对值覆盖见 §7.3 `set_user_favorability`（仅主人）。
 
-```python
-@ai_tools(category="self")
-async def query_user_favorability(
-    ctx: RunContext[ToolContext],
-    user_id: Optional[str] = None,  # 用户ID，None时查询当前用户
-) -> str
-```
+已删除、不要再找：
 
-### `update_user_favorability` — 更新用户好感度（增量）
-
-```python
-@ai_tools(category="self", capability_domain="用户档案")
-async def update_user_favorability(
-    ctx: RunContext[ToolContext],
-    delta: int,   # 好感度变化量（可为负数），单次钳制到 ±3
-) -> str
-```
-
-> **安全收敛（2026-07-08，§A/§F）**：`user_id` 参数已**移除**——只作用于当前对话者，堵死
-> "注入诱导对第三方加减好感度"。附加约束：单次 `delta` 钳制 ±3；同一轮（turn_id）只生效
-> 一次；DB 层再按 `ai_config.favor_floor/ceil` 钳制总值，且每日 04:20 有向 0 的自然衰减 job。
-> **不要加回 `user_id` 参数**——对他人操作属管理动作，应走 master 专属工具。
+| 旧名 | 替代 |
+|------|------|
+| `query_user_memory` | `search_cognition` |
+| `update_user_favorability` | 框架 `settle_turn`；主人绝对值用 `set_user_favorability` |
+| `read_persisted_output` | 保底 `read_handle` |
+| `set_session_reply_mute` / `clear_session_reply_mute` | 框架套件 `gscore.session_mute`（主人指令），不是 agent 工具 |
 
 ### `create_subagent` — 委派子 Agent / 能力代理
 
@@ -189,24 +175,68 @@ async def resume_scheduled_task(
 `buildin` 分类下的工具属于**框架保底工具池**，主Agent 无条件全部加载，不受向量搜索影响。
 **多数据点出图已不在 buildin**：见 §7.4 `media` + 能力代理 `render_agent`。
 
-### `search_knowledge` — 知识库检索
+### `search_cognition` — 回想（记忆 / 偏好 / 知识 / 落盘 / 产物）
 
 ```python
-@ai_tools(category="buildin")
-async def search_knowledge(
+@ai_tools(category="buildin", capability_domain="回想")
+async def search_cognition(
     ctx: RunContext[ToolContext],
-    query: str,                      # 自然语言查询
-    category: Optional[str] = None,  # 知识类别筛选（可选）
-    plugin: Optional[str] = None,    # 插件来源筛选（可选）
-    limit: int = 10,                 # 最大返回数量
-    score_threshold: float = 0.45,   # 相似度阈值（0~1）
+    query: str,
+    kinds: Optional[str] = None,  # 逗号分隔；留空=全查
+    limit: int = 12,
 ) -> str
 ```
 
-> **不可信内容包裹（2026-07-08，§B.3-1）**：返回内容套 `content_guard.wrap_untrusted("knowledge", ...)`
-> 栅栏（知识库可被第三方插件写入，防间接 Prompt 注入）。`read_image` 的 OCR 描述同理
-> （`source="image_ocr"`，且带 45s 超时 + 一次重试）。**新写返回"外部/用户可控内容"的工具
-> 时应同样包裹**——`wrap_untrusted(source, body)` 的 source 见 `content_guard._UNTRUSTED_HINT`。
+主人格唯一「回想」动词。不查实时外网。命中公共枢纽时回执带**路径卡**（挂件目录 + 本环境事实）；
+问到某一栏且能唯一选定时同一次返回该篇全文（≤6000 字，超出用 `read_handle`）。
+只问正式名、或同一 slot 命中两篇，都只给路径卡不附全文。
+插件/手动文只读。全文句柄：`kb_plugin:{id}` / `kb_kbdoc:{doc_id}`。
+`to_` 落盘只出现在路径卡，不在工具回执里展开正文（属主 ACL 仍走 `read_handle`）。
+门面 `cognition.facade.search_cognition` 仍返回 `List[CognitiveHit]`，展开在工具层。
+展开失败 fail-open（联邦命中列表仍返回）。
+
+> **不可信内容包裹**：命中列表套 `wrap_untrusted("memory_recall", …)`；选定全文另套
+> `knowledge_article`；路径卡里的本群事实同样套 `memory_recall`。同一 query 本轮重入会短路并复述上次摘要；第一次无命中时不得写「含路径卡」。
+
+### `read_handle` — 统一读句柄（全文 / 委派状态）
+
+```python
+@ai_tools(category="buildin", capability_domain="产物")
+async def read_handle(
+    ctx: RunContext[ToolContext],
+    handle_id: str,
+    offset: int = 0,
+    limit: int = 8000,
+) -> str
+```
+
+实现在 `planning/tool_output_tools.py`，启动时随 planning 注册，**不是**
+`read_persisted_output` 别名。`to_` / `sa_` / `res_` / `img_` / `dlg_` /
+`kb_plugin` / `kb_kbdoc` 都走这里；落盘属主 ACL 在句柄解析层。
+列举 / grep 落盘仍是按需工具 `list_persisted_outputs` / `grep_persisted_outputs`。
+
+### `attach_article` — 往公共枢纽挂新文
+
+```python
+@ai_tools(category="buildin", capability_domain="回想")
+async def attach_article(
+    ctx: RunContext[ToolContext],
+    node_query: str,  # 已有正式名则复用；没有且过门则新建
+
+    title: str,
+    content: str,
+    slot: str = "补充",
+) -> str
+```
+
+只允许写公共枢纽。插件/手动篇 `writable=false`，硬拒。
+`node_query` **先查已有**枢纽（别名正式名 / title）；零命中且过公共名词门
+（可索引、无歧义、无句读、长度上限）才新建 `world:agent:…`。
+同标题且 `source=agent` + `kbdoc:` 的可写篇才覆盖；网页落盘（`to_`）即使 `writable=true`
+也必须换标题新建。SQL 分片会打标签 `hub:{正式名}`，以便 `rebuild_cognition_mount`
+后扫 agent 源时回挂——**启动扫描**仍不会从 agent 文新建枢纽。
+账号进度、谁持有、谁的状态是环境事实，禁止写成公共百科。
+`slot` 只表示信息结构：概要 / 细则 / 资料 / 补充。
 
 ### `web_search_tool` — Web 搜索
 
@@ -227,6 +257,11 @@ async def web_search_tool(
 > **时效标记（2026-08）**：返回体带 `[source=web|staleness_risk=high]`。loop 账本据此判断
 > 「本轮只有滞后 web」→ 注入 `WEB_ONLY_STALENESS_CAVEAT`（禁止把网页数字当「此刻」实时读数）。
 > 结构化工具应返回 `[as_of=…]` 挡住误报。
+>
+> **落盘回想（2026-08-16）**：返回体带 `query:` 行。FileOS 短标题用 query（不是
+> `<search_results>`）；整页结果用规则摘要进落盘 `summary`、`tool_output` 节点和枢纽挂件。
+> 下次 `search_cognition` 用原 query 可命中 FileOS / 路径卡。SERP 全文不晋升百科。
+> query 过公共名词门才弱挂 `world:web:…`；长句/句读只留落盘摘要，不建枢纽。
 
 ### `web_fetch_tool` — 网页抓取
 
@@ -242,16 +277,6 @@ async def web_fetch_tool(
 > 字段 `webfetch_provider` / `webfetch_lb_strategy` / `webfetch_fallback_order` 与搜索同构。
 > 空正文或抛错会触发换源；外层 `timeout=100`。详见 [§11.3b](./11-mcp-image-search-and-meme.md)。
 > 成功返回同样前缀 `[source=web|staleness_risk=high]\n…`（时效契约同源）。
-
-### `query_user_memory` — 查询用户记忆
-
-```python
-@ai_tools(category="buildin")
-async def query_user_memory(
-    ctx: RunContext[ToolContext],
-    user_id: Optional[str] = None,  # 用户ID，None时查询当前用户
-) -> str
-```
 
 ### `get_self_info` — 获取完整自我认知
 

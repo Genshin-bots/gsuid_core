@@ -29,8 +29,24 @@ from gsuid_core.ai_core.cognition.types import (
 
 # 一路后端返回的 (排名列表, id→命中) 二元组
 _BackendResult = Tuple[List[str], Dict[str, CognitiveHit]]
-
 _EMPTY_RESULT: _BackendResult = ([], {})
+
+
+def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
+    """回想卡片标题：``query:`` 优先，其次工具名。"""
+    from gsuid_core.ai_core.planning.tool_output_protocol import extract_persist_title
+
+    body = (summary or "").lstrip()
+    if body.lower().startswith("query:"):
+        q = extract_persist_title(body)
+        if q:
+            return q
+    if tool_name:
+        return tool_name
+    if profile:
+        return profile
+    return "落盘"
+
 
 # 融合后至少这么多条无条件可见：渲染层只印高置信行，全被判弱相关时回执会变成
 # 「命中 N」+ 零内容，模型只能重搜或原地编——比不检索更糟。
@@ -295,7 +311,7 @@ async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _Backend
             hit = CognitiveHit(
                 kind=CogKind.TOOL_OUTPUT,
                 id=rid,
-                title=rec.tool_name or rec.profile or "落盘",
+                title=_fileos_hit_title(rec.summary, rec.tool_name or "", rec.profile or ""),
                 summary=rec.summary[:200],
                 score=0.5,
                 as_of=rec.date_str,
@@ -304,11 +320,16 @@ async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _Backend
             )
         elif rid in hybrid_meta:
             meta = hybrid_meta[rid]
+            sm = str(meta["summary"]) if "summary" in meta else ""
+            tn = str(meta["tool_name"]) if "tool_name" in meta else ""
+            indexed_title = str(meta["title"]) if "title" in meta else ""
+            if indexed_title.startswith("<"):
+                indexed_title = ""
             hit = CognitiveHit(
                 kind=CogKind.TOOL_OUTPUT,
                 id=rid,
-                title="落盘",
-                summary=str(meta["summary"])[:200] if "summary" in meta else "",
+                title=indexed_title or _fileos_hit_title(sm, tn),
+                summary=sm[:200],
                 score=0.5,
                 handle=rid,
                 source="fileos",
@@ -436,7 +457,7 @@ async def inject_memory_slice(
 def render_cognition_block(query: str, hits: List[CognitiveHit], *, header: str = "认知检索") -> str:
     """把命中渲染成注入块。**空结果只回一行**。
 
-    历史上 ``search_knowledge`` 空结果要拼「知识库段 + 落盘段 + 过时声明」三大段，
+    历史上空结果要拼「知识库段 + 落盘段 + 过时声明」三大段，
     调错库的代价比不调更高——模型于是宁愿用参数知识糊弄过去。
     """
     if not hits:

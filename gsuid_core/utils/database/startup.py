@@ -148,6 +148,8 @@ exec_list = [
     # 而 tool_output / artifact 两类在 AICogNode.search 里对空属主 fail-closed。
     "ALTER TABLE aicognode ADD COLUMN owner_user_id VARCHAR DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS ix_aicognode_owner_user_id ON aicognode (owner_user_id);",
+    "ALTER TABLE aicognode ADD COLUMN canon VARCHAR DEFAULT '';",
+    "CREATE INDEX IF NOT EXISTS ix_aicognode_canon ON aicognode (canon);",
 ]
 
 

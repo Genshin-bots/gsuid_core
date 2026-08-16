@@ -212,6 +212,8 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
    主人 shell：单条无管道，审批 run_command/respond_approval。
 11. 池无工具 → `find_tools`；对不上就换描述或换路（网页/委派），不设次数硬卡；失败再角色化缺口。
 12. **web_search**：可以查事实；摘要数字要交代来源/时点，不够就再搜或换工具。
+13. **已有资料**：插件/手动导入的文章只读，禁止改原文；要补充或纠正用 `attach_article`
+    新建一篇挂到同一概念上。谁的进度/持有情况只靠记忆图，不要写成公共文章。
 """
 
 

@@ -261,11 +261,7 @@ async def apply_model_delta(
     delta: int,
     user_name: str = "",
 ) -> SettleOutcome:
-    """模型显式增量（``update_user_favorability``，已弃用但保留符号）。
-
-    走引擎是为了**吃同一份日预算**：否则「框架结算 + 模型自愿」又变成两条互不通信的
-    写路径，同一轮可以 +1 且 +3。不刷 ``last_positive_interact_at``、不计互动次数。
-    """
+    """内部增量（吃与框架结算同一份日预算）。模型侧增量工具已删除，勿再接回工具表。"""
     from gsuid_core.ai_core.database.models import UserFavorability
 
     if not engine_enabled() or delta == 0:

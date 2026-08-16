@@ -294,6 +294,6 @@ KIT = register_agent_kit(
         kit_id="gscore.memory",
         slot="memory",
         display_name="长期记忆",
-        owns_tools=("query_user_memory",),
+        owns_tools=(),
     )
 )

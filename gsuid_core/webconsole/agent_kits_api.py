@@ -160,7 +160,12 @@ async def cognitionNodes(
     ``tool_output`` / ``artifact`` 这类必须带属主的节点不可见，运维面板不能成为
     绕过属主过滤的后门。
     """
-    from gsuid_core.ai_core.cognition.nodes import AICogNode, node_to_dict
+    from gsuid_core.ai_core.cognition.nodes import (
+        AICogNode,
+        AICogAttachment,
+        node_to_dict,
+        attachment_to_dict,
+    )
 
     rows = await AICogNode.search(
         keyword,
@@ -168,4 +173,58 @@ async def cognitionNodes(
         owner_user_id=owner_user_id,
         limit=limit,
     )
-    return {"status_code": 200, "data": {"nodes": [node_to_dict(r) for r in rows]}}
+    ids = [row.id for row in rows if row.id is not None]
+    by_node: Dict[int, List[Any]] = {nid: [] for nid in ids}
+    if ids:
+        for att in await AICogAttachment.list_for_nodes(ids):
+            by_node[att.node_id].append(att)
+    nodes = []
+    for row in rows:
+        item = dict(node_to_dict(row))
+        atts = [] if row.id is None else by_node[row.id]
+        item["attachments"] = [attachment_to_dict(a) for a in atts]
+        nodes.append(item)
+    return {"status_code": 200, "data": {"nodes": nodes}}
+
+
+@app.get("/api/cognition/nodes/{node_id}", summary="认知节点详情（含挂件）", tags=AGENT_KITS)
+async def cognitionNodeDetail(
+    node_id: int,
+    owner_user_id: str = Query("", description="属主，留空只看无属主的公共节点"),
+    scope_key: str = Query("", description="可见范围，留空只看公共节点"),
+    _user: Dict = Depends(require_auth),
+) -> Dict[str, Any]:
+    from gsuid_core.ai_core.cognition.nodes import (
+        AICogNode,
+        AICogAttachment,
+        node_to_dict,
+        node_visible_to,
+        attachment_to_dict,
+    )
+
+    node = await AICogNode.get_by_id(node_id)
+    scope_keys = [scope_key] if scope_key else []
+    if node is None or not node_visible_to(node, owner_user_id=owner_user_id, scope_keys=scope_keys):
+        return {"status_code": 404, "data": None}
+    atts = await AICogAttachment.list_for_node(node_id)
+    data = dict(node_to_dict(node))
+    data["attachments"] = [attachment_to_dict(a) for a in atts]
+    return {"status_code": 200, "data": data}
+
+
+@app.post("/api/cognition/rebuild_mount", summary="重建认知挂载（不碰记忆图）", tags=AGENT_KITS)
+async def cognitionRebuildMount(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
+    from gsuid_core.ai_core.cognition.hub import rebuild_cognition_mount
+
+    stats = await rebuild_cognition_mount()
+    return {
+        "status_code": 200,
+        "data": {
+            "hubs": stats.hubs,
+            "attachments": stats.attachments,
+            "linked_env": stats.linked_env,
+            "skipped_ambiguous": stats.skipped_ambiguous,
+            "skipped_unresolved": stats.skipped_unresolved,
+            "last_error": stats.last_error,
+        },
+    }

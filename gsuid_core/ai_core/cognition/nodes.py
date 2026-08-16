@@ -17,7 +17,7 @@ from enum import Enum
 from typing import List, Tuple, Optional, TypedDict
 
 from sqlmodel import Field, SQLModel, col, or_, and_, delete, select
-from sqlalchemy import Text, Column, UniqueConstraint
+from sqlalchemy import Text, Column, UniqueConstraint, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -66,6 +66,7 @@ class AICogNode(SQLModel, table=True):
     as_of: str = Field(default="", max_length=32, title="时点")
     source: str = Field(default="", max_length=32, title="来源(plugin/manual/tool/self_action)")
     handle: str = Field(default="", max_length=64, title="可读全文的句柄")
+    canon: str = Field(default="", index=True, max_length=160, title="世界枢纽ref")
     decay: float = Field(default=1.0, title="时效衰减分")
     created_at: int = Field(default_factory=lambda: int(time.time()), title="创建时间戳")
     updated_at: int = Field(default_factory=lambda: int(time.time()), title="更新时间戳")
@@ -85,6 +86,7 @@ class AICogNode(SQLModel, table=True):
         as_of: str = "",
         source: str = "",
         handle: str = "",
+        canon: str = "",
     ) -> Optional[int]:
         """按 ``(kind, ref)`` 幂等 upsert，返回节点 id。摘要为空时不覆盖已有摘要。"""
         if not ref:
@@ -107,6 +109,7 @@ class AICogNode(SQLModel, table=True):
                 as_of=as_of,
                 source=source,
                 handle=handle,
+                canon=canon,
             )
             session.add(node)
             await session.commit()
@@ -118,6 +121,7 @@ class AICogNode(SQLModel, table=True):
         existing.handle = handle or existing.handle
         existing.scope_key = scope_key or existing.scope_key
         existing.owner_user_id = owner_user_id or existing.owner_user_id
+        existing.canon = canon or existing.canon
         existing.updated_at = now
         await session.commit()
         return existing.id
@@ -151,9 +155,23 @@ class AICogNode(SQLModel, table=True):
           ``tool_output`` / ``artifact`` 这类执行世界节点若没有属主，一律不可见——
           宁可召回不到，也不能把别人的任务结论摘要发出去。
         """
+        from gsuid_core.ai_core.entity_index import _is_indexable, _normalize_surface
+
         conds: List[ColumnElement[bool]] = []
-        if keyword.strip():
-            conds.append(col(cls.summary).contains(keyword.strip()))
+        kw = keyword.strip()
+        exact_rank = case((col(cls.id).is_not(None), 1), else_=1)
+        if kw:
+            norm = _normalize_surface(kw)
+            title_exact = or_(
+                col(cls.title) == kw,
+                col(cls.title) == norm,
+                func.lower(col(cls.title)) == norm,
+            )
+            text_parts: List[ColumnElement[bool]] = [title_exact, col(cls.summary).contains(kw)]
+            if _is_indexable(norm):
+                text_parts.append(col(cls.title).contains(kw))
+            conds.append(or_(*text_parts))
+            exact_rank = case((title_exact, 0), else_=1)
         if kinds:
             conds.append(col(cls.kind).in_(kinds))
         visible = ["", *scope_keys]
@@ -166,8 +184,81 @@ class AICogNode(SQLModel, table=True):
             conds.append(or_(col(cls.owner_user_id) == owner_user_id, public_row))
         else:
             conds.append(public_row)
-        stmt = select(cls).where(and_(*conds)).order_by(col(cls.decay).desc(), col(cls.updated_at).desc()).limit(limit)
+        stmt = (
+            select(cls)
+            .where(and_(*conds))
+            .order_by(exact_rank, col(cls.decay).desc(), col(cls.updated_at).desc())
+            .limit(limit)
+        )
         return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
+    async def get_by_id(cls, session: AsyncSession, node_id: int) -> Optional["AICogNode"]:
+        stmt = select(cls).where(col(cls.id) == node_id)
+        return (await session.execute(stmt)).scalars().first()
+
+    @classmethod
+    @with_session
+    async def list_world_hubs_by_title(cls, session: AsyncSession, title: str) -> List["AICogNode"]:
+        """公共世界枢纽：``scope_key=""`` 且 ``ref`` 以 ``world:`` 开头，title 归一化相等。"""
+        from gsuid_core.ai_core.entity_index import _normalize_surface
+
+        raw = (title or "").strip()
+        if not raw:
+            return []
+        # SQL 侧用 lower 对齐 ASCII 大小写；内存再跑一遍归一化（CJK / 空白）。
+        norm = _normalize_surface(raw)
+        stmt = select(cls).where(
+            and_(
+                col(cls.scope_key) == "",
+                col(cls.kind) == CogKind.ENTITY.value,
+                col(cls.ref).startswith("world:"),
+                or_(col(cls.title) == raw, func.lower(col(cls.title)) == norm),
+            )
+        )
+        rows = list((await session.execute(stmt)).scalars().all())
+        return [n for n in rows if _normalize_surface(n.title) == norm]
+
+    @classmethod
+    @with_session
+    async def list_env_nodes_by_canon(
+        cls,
+        session: AsyncSession,
+        canon: str,
+        scope_key: str,
+    ) -> List["AICogNode"]:
+        if not canon or not scope_key:
+            return []
+        stmt = select(cls).where(
+            and_(
+                col(cls.canon) == canon,
+                col(cls.scope_key) == scope_key,
+                col(cls.kind) == CogKind.ENTITY.value,
+                col(cls.ref).startswith("ent:"),
+            )
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
+    async def list_by_ref_prefixes(cls, session: AsyncSession, prefixes: List[str]) -> List["AICogNode"]:
+        if not prefixes:
+            return []
+        prefix_cond = or_(*[col(cls.ref).startswith(p) for p in prefixes])
+        stmt = select(cls).where(prefix_cond)
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
+    async def delete_by_ids(cls, session: AsyncSession, node_ids: List[int]) -> int:
+        if not node_ids:
+            return 0
+        result = await session.execute(delete(cls).where(col(cls.id).in_(node_ids)))
+        await session.commit()
+        from sqlalchemy.engine import CursorResult
+
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_session
@@ -177,6 +268,157 @@ class AICogNode(SQLModel, table=True):
         from sqlalchemy.engine import CursorResult
 
         return result.rowcount if isinstance(result, CursorResult) else 0
+
+
+class AICogAttachment(SQLModel, table=True):
+    """枢纽挂文索引（表名 ``aicogattachment``）。只存元数据，正文仍在原库。"""
+
+    __table_args__ = (
+        UniqueConstraint("node_id", "ref", name="ux_aicogattachment_node_ref"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    node_id: int = Field(index=True, title="枢纽节点")
+    slot: str = Field(default="资料", max_length=16, title="栏目")
+    title: str = Field(default="", max_length=256, title="标题")
+    summary: str = Field(default="", max_length=200, title="摘要(非正文)")
+    as_of: str = Field(default="", max_length=32, title="时点")
+    source: str = Field(default="", max_length=32, title="来源")
+    writable: bool = Field(default=False, title="可更新")
+    ref: str = Field(default="", index=True, max_length=192, title="原库主键")
+    handle: str = Field(default="", max_length=192, title="句柄")
+    created_at: int = Field(default_factory=lambda: int(time.time()), title="创建时间戳")
+    updated_at: int = Field(default_factory=lambda: int(time.time()), title="更新时间戳")
+
+    @classmethod
+    @with_session
+    async def upsert(
+        cls,
+        session: AsyncSession,
+        *,
+        node_id: int,
+        ref: str,
+        slot: str,
+        title: str,
+        summary: str,
+        as_of: str,
+        source: str,
+        writable: bool,
+        handle: str,
+    ) -> Optional[int]:
+        if not node_id or not ref:
+            return None
+        clipped = (summary or "")[:200]
+        stmt = select(cls).where(and_(col(cls.node_id) == node_id, col(cls.ref) == ref))
+        existing = (await session.execute(stmt)).scalars().first()
+        now = int(time.time())
+        if existing is None:
+            row = cls(
+                node_id=node_id,
+                ref=ref,
+                slot=slot,
+                title=title,
+                summary=clipped,
+                as_of=as_of,
+                source=source,
+                writable=writable,
+                handle=handle,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return row.id
+        existing.slot = slot or existing.slot
+        existing.title = title or existing.title
+        existing.summary = clipped or existing.summary
+        existing.as_of = as_of or existing.as_of
+        existing.source = source or existing.source
+        existing.writable = writable
+        existing.handle = handle or existing.handle
+        existing.updated_at = now
+        await session.commit()
+        return existing.id
+
+    @classmethod
+    @with_session
+    async def list_for_node(cls, session: AsyncSession, node_id: int) -> List["AICogAttachment"]:
+        stmt = select(cls).where(col(cls.node_id) == node_id).order_by(col(cls.slot), col(cls.title))
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
+    async def list_for_nodes(cls, session: AsyncSession, node_ids: List[int]) -> List["AICogAttachment"]:
+        if not node_ids:
+            return []
+        stmt = (
+            select(cls).where(col(cls.node_id).in_(node_ids)).order_by(col(cls.node_id), col(cls.slot), col(cls.title))
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
+    async def find_by_refs(cls, session: AsyncSession, refs: List[str]) -> List["AICogAttachment"]:
+        if not refs:
+            return []
+        stmt = select(cls).where(col(cls.ref).in_(refs))
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_session
+    async def find_writable_by_title(
+        cls,
+        session: AsyncSession,
+        node_id: int,
+        title: str,
+    ) -> Optional["AICogAttachment"]:
+        norm = (title or "").strip().lower()
+        stmt = select(cls).where(
+            and_(
+                col(cls.node_id) == node_id,
+                func.lower(col(cls.title)) == norm,
+                col(cls.writable).is_(True),
+            )
+        )
+        return (await session.execute(stmt)).scalars().first()
+
+    @classmethod
+    @with_session
+    async def find_by_node_and_title(
+        cls,
+        session: AsyncSession,
+        node_id: int,
+        title: str,
+    ) -> Optional["AICogAttachment"]:
+        norm = (title or "").strip().lower()
+        stmt = select(cls).where(and_(col(cls.node_id) == node_id, func.lower(col(cls.title)) == norm))
+        return (await session.execute(stmt)).scalars().first()
+
+    @classmethod
+    @with_session
+    async def delete_by_ids(cls, session: AsyncSession, att_ids: List[int]) -> int:
+        if not att_ids:
+            return 0
+        result = await session.execute(delete(cls).where(col(cls.id).in_(att_ids)))
+        await session.commit()
+        from sqlalchemy.engine import CursorResult
+
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+    @classmethod
+    @with_session
+    async def delete_all(cls, session: AsyncSession) -> int:
+        result = await session.execute(delete(cls))
+        await session.commit()
+        from sqlalchemy.engine import CursorResult
+
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+    @classmethod
+    @with_session
+    async def list_plugin_refs(cls, session: AsyncSession) -> List["AICogAttachment"]:
+        stmt = select(cls).where(col(cls.source) == "plugin")
+        return list((await session.execute(stmt)).scalars().all())
 
 
 class AICogEdge(SQLModel, table=True):
@@ -235,6 +477,19 @@ class AICogEdge(SQLModel, table=True):
         pairs.extend((e.src_id, e.edge_kind) for e in inb.scalars().all())
         return pairs[:limit]
 
+    @classmethod
+    @with_session
+    async def delete_involving(cls, session: AsyncSession, node_ids: List[int]) -> int:
+        if not node_ids:
+            return 0
+        result = await session.execute(
+            delete(cls).where(or_(col(cls.src_id).in_(node_ids), col(cls.dst_id).in_(node_ids)))
+        )
+        await session.commit()
+        from sqlalchemy.engine import CursorResult
+
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
 
 async def sync_node(
     kind: CogKind,
@@ -247,6 +502,7 @@ async def sync_node(
     as_of: str = "",
     source: str = "",
     handle: str = "",
+    canon: str = "",
 ) -> Optional[int]:
     """写入钩子的统一入口（best-effort：失败只丢节点，绝不影响原库写入）。
 
@@ -264,6 +520,7 @@ async def sync_node(
             as_of=as_of,
             source=source,
             handle=handle,
+            canon=canon,
         )
     except Exception as e:
         logger.debug(i18n_t("log.ai.cognition_node_sync_fail", kind=kind.value, ref=ref, e=e))
@@ -299,7 +556,31 @@ class CogNodeDict(TypedDict):
     as_of: str
     source: str
     handle: str
+    canon: str
     decay: float
+
+
+class CogAttachmentDict(TypedDict):
+    id: int | None
+    node_id: int
+    slot: str
+    title: str
+    summary: str
+    as_of: str
+    source: str
+    writable: bool
+    ref: str
+    handle: str
+
+
+def node_visible_to(node: AICogNode, *, owner_user_id: str, scope_keys: List[str]) -> bool:
+    """与 ``AICogNode.search`` 同一套属主 / scope 可见性；对不上就当不存在。"""
+    if node.scope_key not in ("", *scope_keys):
+        return False
+    public_row = node.owner_user_id == "" and node.kind not in OWNER_REQUIRED_KINDS
+    if owner_user_id:
+        return node.owner_user_id == owner_user_id or public_row
+    return public_row
 
 
 def node_to_dict(node: AICogNode) -> CogNodeDict:
@@ -315,5 +596,21 @@ def node_to_dict(node: AICogNode) -> CogNodeDict:
         "as_of": node.as_of,
         "source": node.source,
         "handle": node.handle,
+        "canon": node.canon,
         "decay": node.decay,
+    }
+
+
+def attachment_to_dict(row: AICogAttachment) -> CogAttachmentDict:
+    return {
+        "id": row.id,
+        "node_id": row.node_id,
+        "slot": row.slot,
+        "title": row.title,
+        "summary": row.summary,
+        "as_of": row.as_of,
+        "source": row.source,
+        "writable": row.writable,
+        "ref": row.ref,
+        "handle": row.handle,
     }

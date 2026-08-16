@@ -1,6 +1,5 @@
 {
   "log.buildin.favor_set": "[BuildinTools] ユーザー {target_id} の好感度を {value} に設定しました（範囲内に制限済み）",
-  "log.buildin.favor_update": "[BuildinTools] ユーザー {target_id} の好感度を {delta:+d} 調整しました（現在: {new_value}）",
   "log.buildin.image_reader_datauri_fail": "[BuildinTools] read_image の DataURI デコードに失敗したため、テキスト説明にフォールバックします: {error}",
   "log.buildin.image_reader_provider_fail": "[BuildinTools] read_image でメインモデルの provider を判定できなかったため、openai にフォールバックします: {error}",
   "log.buildin.image_reader_support_fail": "[BuildinTools] read_image でマルチモーダル対応を判定できなかったため、非対応として処理します: {error}",

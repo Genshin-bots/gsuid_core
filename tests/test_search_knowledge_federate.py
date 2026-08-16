@@ -1,9 +1,9 @@
 """认知层联邦检索：分源命中 + 单行空结果 + 无 owner fail-closed。
 
-锁点变更：`search_knowledge` 的「知识库 + FileOS 两段」已升级为 `search_cognition`
+锁点变更：旧工具 `search_knowledge` 的「知识库 + FileOS 两段」已升级为 `search_cognition`
 的四路联邦（记忆+偏好 / 知识 / 落盘 / 产物），检索实现随之从 `rag_search` 搬到
-`cognition.facade`。这里改 patch 目标并把断言从「两个固定段标题」升级为
-「统一命中列表 + kind 标签」，`search_knowledge` 作为兼容别名一并回归。
+`cognition.facade`。断言从「两个固定段标题」升级为「统一命中列表 + kind 标签」。
+兼容别名 `search_knowledge` 已删除，主人格只暴露 `search_cognition`。
 """
 
 from __future__ import annotations
@@ -121,28 +121,12 @@ def test_no_owner_is_fail_closed() -> None:
     assert "无用户上下文" in out
 
 
-def test_search_knowledge_is_compat_alias() -> None:
-    """旧名仍可用（插件兼容），走同一条联邦路径。"""
-    from gsuid_core.ai_core.buildin_tools.rag_search import search_knowledge
+def test_search_knowledge_tool_removed() -> None:
+    import gsuid_core.ai_core.buildin_tools as tools_pkg
+    import gsuid_core.ai_core.buildin_tools.rag_search as rag_search
 
-    with (
-        patch(
-            "gsuid_core.ai_core.rag.query_knowledge",
-            new=AsyncMock(return_value=[_kb_point("kb doc", "stable")]),
-        ),
-        patch(
-            "gsuid_core.ai_core.planning.tool_output_store.AIToolOutputRecord.search",
-            new=AsyncMock(return_value=[]),
-        ),
-        patch("gsuid_core.ai_core.cognition.facade._search_memory", new=AsyncMock(return_value=([], {}))),
-        patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=AsyncMock(return_value=([], {}))),
-        patch(
-            "gsuid_core.ai_core.register.handle_tool_result",
-            new=AsyncMock(side_effect=lambda bot, raw: raw),
-        ),
-    ):
-        out = _run(search_knowledge(_ctx(), query="测试主题"))
-    assert "kb doc" in out or "stable" in out
+    assert not hasattr(rag_search, "search_knowledge")
+    assert "search_knowledge" not in tools_pkg.__all__
 
 
 def test_private_chat_scope_never_falls_back_to_user_id() -> None:

@@ -25,6 +25,6 @@ KIT = register_agent_kit(
         kit_id="gscore.fileos",
         slot="fileos",
         display_name="工具回执落盘",
-        owns_tools=("list_persisted_outputs", "grep_persisted_outputs", "read_persisted_output"),
+        owns_tools=("list_persisted_outputs", "grep_persisted_outputs"),
     )
 )

@@ -21,6 +21,7 @@ from gsuid_core.ai_core.planning.tool_output_protocol import (
     PersistedHandleCard,
     extract_inline_head,
     extract_info_summary,
+    extract_persist_title,
     looks_like_handle_card,
 )
 from gsuid_core.ai_core.planning.tool_output_sanitize import sanitize_for_persist
@@ -42,11 +43,9 @@ _SKIP_PERSIST_TOOLS = frozenset(
         "artifact_get_recent",
         "artifact_list",
         "read_handle",
-        "read_persisted_output",
         "list_persisted_outputs",
         "grep_persisted_outputs",
         "search_cognition",  # 只读联邦检索，不落盘
-        "search_knowledge",  # search_cognition 的兼容别名
         "read_image",  # 句柄读图，非新材料
         "list_my_kanban_tasks",
         "list_my_tasks",
@@ -365,6 +364,7 @@ async def _index_chunks_safe(
         "tool_name": tool_name,
         "date_str": date_str,
         "summary": extract_info_summary(content, max_len=512),
+        "title": extract_persist_title(content),
     }
     last_err: Exception | None = None
     for attempt in range(retries + 1):
@@ -399,6 +399,7 @@ async def _distill_to_cognition(
     from gsuid_core.ai_core.cognition.distill import distill_tool_output
 
     summary = str(payload["summary"]) if "summary" in payload else ""
+    persist_title = str(payload["title"]) if "title" in payload and payload["title"] else ""
     await distill_tool_output(
         record_id=rid,
         tool_name=tool_name,
@@ -406,6 +407,7 @@ async def _distill_to_cognition(
         scope_key=scope_key,
         owner_user_id=owner_user_id,
         as_of=date_str,
+        persist_title=persist_title,
     )
 
 

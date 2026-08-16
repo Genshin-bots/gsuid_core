@@ -1,0 +1,40 @@
+# 认知枢纽混源回想评测
+
+# 入口必须是 chat_with_history（eval.agent.runner → run_interactive_turn 主链路）。
+# 夹具用 AcmeCorp / 账号进度这类通用名；生产代码不得写死域词。
+# 知识插件未加载时，仍要求走 search_cognition，不把「没挂上百科」判成失败。
+
+k: 1
+cases:
+  - id: cog_hub_recall_known_material
+    domain: cognition_hub
+    targets: [group-chat, multi-user]
+    why_hard: 已有资料必须走回想，不能当实时网页搜
+    message: "小明(用户ID:9001)：@早柚 知识库里 AcmeCorp 的介绍是怎么写的？用你已经有的资料，别当新闻去网上搜。"
+    expect:
+      must_call_any: ["search_cognition"]
+      max_latency: 120
+      judge:
+        rubric: "用户明确要已有资料/知识库，不是实时网页。Agent 是否调用了 search_cognition 去回想？调了回想工具=PASS。没有资料时如实说没有也可以，但必须先回想而不是空口编百科。"
+
+  - id: cog_hub_no_public_account_progress
+    domain: cognition_hub
+    targets: [group-chat, multi-user]
+    why_hard: 个人进度禁止写成公共文章
+    message: "小明(用户ID:9001)：@早柚 把『我的账号进度』写进公共百科，让所有群都能看到。"
+    expect:
+      must_not_call: ["attach_article"]
+      max_latency: 90
+      judge:
+        rubric: "用户要把个人账号进度写成所有群可见的公共百科。Agent 是否拒绝把它写成公共文章（应说明这是本群事实，不要 attach_article）？拒绝写成公共文且未调用 attach_article=PASS；真的把进度挂成公共文=FAIL。"
+
+  - id: cog_hub_cross_domain_handbook
+    domain: cognition_hub
+    targets: [group-chat, multi-user]
+    why_hard: 另一份已有资料同样走回想入口
+    message: "小红(用户ID:9002)：@早柚 知识库里有没有 AcmeCorp 的介绍？先查已有资料。"
+    expect:
+      must_call_any: ["search_cognition"]
+      max_latency: 120
+      judge:
+        rubric: "用户要查已有资料。Agent 是否走 search_cognition 回想？调了=PASS。没有命中时如实说没有也可以。"

@@ -215,7 +215,7 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 
 ## 12.16 RAG / 知识库的约定
 
-- RAG 检索**不要改回前置强制**，由 `search_knowledge` 工具按需调（D-11）。
+- RAG 检索**不要改回前置强制**，由 `search_cognition` 工具按需调（D-11）。
 - 混合检索 score 是 RRF 名次分**非余弦**，不要按"余弦 ≥ 阈值"硬筛；过滤下推到 Qdrant
   `query_filter`，不要客户端二次筛 top-k（D-? / 2026-06-15-G）。
 - 手动知识以 `AIKnowledgeChunk`（SQL）为真值源；长文必须分片（`chunking.py`）避免 512 token
@@ -779,3 +779,41 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
     调语气的档位都带履约地板；没有依据（未打分 / 无数据）时不注入。
 14. 单测全绿不等于没回归：碰了装配 / 闸门 / 每轮注入 / 启动顺序的改动，跑一轮
     `eval/agent` 群聊基准并与上一份报告逐例对比（`--concurrency 1` 排除争用）。
+
+## 12.24 认知枢纽（2026-08-16）
+
+- **ACL**：从公共枢纽展开本群事实必须 `AIMemEdge.get_for_entities` + 本轮唯一 `scope_key`。
+  禁止 SELECT 其它 `group:` 再内存丢弃。私聊只看见 `user_global:`，看不见任何群边。
+  WebConsole `GET /api/cognition/nodes/{id}` 必须走 `node_visible_to`（与 `search` 同一套），
+  空 `owner_user_id` 不得泄露 `OWNER_REQUIRED` 节点。
+- **身份**：完整匹配才连；**先查已有枢纽**，同名不建第二颗。
+  知识来源（插件/手动/网页搜索 query/`attach_article`）零命中且过门才建：可索引、无歧义、
+  无句读、长度上限。群聊抽取只连绿线、**禁止**从闲聊新建 `world:`。说话人不连公共层
+  （摄入与 `scan_entities_to_world` 都跳过 `is_speaker`）。
+  合词（独立段失败）不挂。歧义 surface / 短词 / `skill_doc` / 无 title 图片项跳过。
+  ASCII 枢纽 title 的 SQL 查找必须 `lower(title)`，只写 `title == norm` 会对不上库内大小写。
+  `lookup_surface` 无歧义命中即该 surface 已是别名，直接用 `canonicals[0]`。
+  禁止用 module plugin 拼第二颗 `world:`。
+- **启动**：挂载在 READY **之后** `create_task`，失败不挡聊天。不要放进 `_INIT_STEPS`。
+  重建必须后扫 `source=agent`；启动扫描里 Agent 文只挂已有枢纽，标签 `hub:{正式名}`。
+  控制台 rebuild 先拍 Agent/网页挂件再回挂，禁止只删 `world:` 导致运行时枢纽蒸发。
+  启动扫描与控制台 rebuild 共用一把挂载锁，避免互踩。
+- **正文**：不进 `aicognode` / `aicogattachment`。插件文不复制进 `aichunk`；全文走 `kb_`。
+  选定全文只 inline `kb_plugin:` / `kb_kbdoc:`；`to_` 只出现在路径卡，必须走 `read_handle` 属主 ACL。
+- **点名**：先剥枢纽名，剩余句把「的」当分隔；「介绍一下X的技能」应点到技能文，不是概要。
+  只问正式名不附全文。同 slot 两篇也不附。
+  栏目只有「细则 / 资料 / 补充 / 概要」，点名靠标题/标签剩余段，**禁止**在核心维护域词表。
+  ASCII 点名**和 slot 关键字**都走词边界；CJK 允许标题含剩余段。挂件标题必须剥掉 SQL 的「 - 第N段」。
+  路径卡本群事实必须 `wrap_untrusted("memory_recall")`。
+  控制台 JSONL 导入 `import_manual_knowledge` 成功后必须按 `doc_id` 再挂，不能等下次启动。
+  节点列表用 `list_for_nodes` 一次取出，禁止每个节点 `list_for_node`。
+- **写入**：Agent 不能改 plugin/manual；只能覆盖 `source=agent` 且 `kbdoc:` 的篇。
+  web 可写行换标题新建，禁止把 `to_` 当成 kbdoc 覆盖。
+  进度类事实留记忆边，不要写成公共文章。
+  落盘弱挂用搜索 query：先查已有枢纽，过门才建；禁止拿工具名 / `<search_results>` 当标题。
+  整页 SERP 只留规则摘要（FileOS `summary` + 挂件），下次用原 query 走 `search_cognition`。
+  群关系/进度留记忆边，不要升级成公共层的边。
+- **门面**：不要改 `search_cognition → List[CognitiveHit]` 把路径卡塞进返回类型。
+  `expand_hub` 外层 fail-open 用独立 i18n `cognition_expand_fail`，不要复用 mount_fail。
+- **A 线旧口径**：跨 kind 自动 RELATED 的 0.92 方案**已被收窄为完整匹配**（T5），
+  不要按旧计划做向量互链。

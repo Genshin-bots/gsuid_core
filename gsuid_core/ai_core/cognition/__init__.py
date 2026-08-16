@@ -11,6 +11,7 @@
 - :mod:`nodes`  认知节点表与跨 kind 边（索引与关系层，正文不搬家）
 """
 
+from gsuid_core.ai_core.cognition.hub import expand_hub, run_cognition_mount, rebuild_cognition_mount
 from gsuid_core.ai_core.cognition.types import (
     ALL_KINDS,
     KIND_LABEL,
@@ -32,7 +33,10 @@ __all__ = [
     "CogKind",
     "CogScope",
     "CognitiveHit",
+    "expand_hub",
     "kinds_from_names",
+    "rebuild_cognition_mount",
     "render_cognition_block",
+    "run_cognition_mount",
     "search_cognition",
 ]

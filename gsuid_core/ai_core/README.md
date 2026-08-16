@@ -243,8 +243,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `meme_tools.py` | 表情包检索 / 触发。 |
 | `html_render_tools.py` | `render_html_to_image`（**buildin 保底**，自由 HTML）；`render_card` / `render_markdown_to_image`（media 按需）。 |
 | `web_search.py / web_fetch.py` | 联网。 |
-| `rag_search.py` | 知识库检索。 |
-| `database_query.py` | 让 LLM 安全查 GsCore 内置表。 |
+| `rag_search.py` | 知识库检索（`search_cognition`）。 |
 | `file_manager.py / file_operations.py` | 工件落盘 / 读取。 |
 | `command_executor.py` | 桥接到 GsCore 触发器（让 LLM 主动调一条命令）。 |
 | `self_info.py / get_time.py / favorability_manager.py` | 自我认知 / 时间 / 好感度。 |

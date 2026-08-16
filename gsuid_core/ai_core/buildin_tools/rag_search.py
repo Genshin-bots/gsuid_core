@@ -1,7 +1,7 @@
 """认知检索工具：主人格唯一「回想」动词 + 图片检索。
 
 ``search_cognition`` 并行覆盖记忆 / 偏好 / 知识库 / 落盘 / 任务产物。
-深读走 ``read_handle``。``search_knowledge`` 是兼容别名。
+深读走 ``read_handle``。
 """
 
 from typing import Dict, Optional, FrozenSet
@@ -20,6 +20,7 @@ from gsuid_core.ai_core.cognition import (
     search_cognition as federated_search,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
+from gsuid_core.ai_core.buildin_tools.cognition_write import attach_article as attach_article
 
 # 本轮已检索过的 query（run 级，存 ToolContext.extra；ToolContext 每轮新建，轮末自然丢弃）
 _SEEN_QUERIES_KEY = "cognition.seen_queries"
@@ -71,6 +72,10 @@ async def search_cognition(
     **不查实时 / 外部数据**：网页与专域实时信息一律用 `web_search_tool` /
     `web_fetch_tool` / 专域数据工具。本工具查不到外面的东西，换 query 重试也查不到。
 
+    命中公共概念时，回执会带**路径卡**（挂在上面的文章目录 + 本环境事实）。
+    问到某一栏且能唯一选定时，同一次返回该篇全文（≤6000 字，超出用 read_handle）。
+    插件/手动文只读；要补充请用 `attach_article` 新建一篇，不要改只读正文。
+
     什么时候用：
     - 用户问到过去的事（"上周/上次/之前我们聊过…""你说过的那个…"），当前上下文没答案时；
     - 需要"已有材料"（专业知识、说明文档、稳定资料、以前搜过的长文）时；
@@ -87,8 +92,7 @@ async def search_cognition(
         limit: 返回条数上限，默认 12
 
     Returns:
-        统一命中列表：每条带类型标签、摘要、时点，落盘/产物带句柄（read_handle 取全文）。
-        无命中时只回一行。
+        路径卡（若命中枢纽）+ 选定全文 + 统一命中列表。无命中时只回一行。
     """
     selected = kinds_from_names(set(kinds.split(","))) if kinds else ALL_KINDS
     if not selected:
@@ -101,44 +105,35 @@ async def search_cognition(
     seen = _seen_queries(ctx)
     key = _query_key(query, selected)
     if key in seen:
+        prev = seen[key]
+        same = f"结果同上：{prev}" if prev != "无命中" else "仍无命中"
         return (
-            f"（本轮已检索过「{query[:30]}」，结果同上：{seen[key]}。"
+            f"（本轮已检索过「{query[:30]}」，{same}。"
             "认知层是只读的，换说法重搜不会有新结果——"
             "要外部数据请用 web_search_tool，要全文请用 read_handle，或直接据已有信息作答。）"
         )
 
     hits = await federated_search(query, kinds=selected, scope=scope, limit=max(1, min(limit, 30)))
-    seen[key] = f"命中 {len(hits)} 条" if hits else "无命中"
+    from gsuid_core.ai_core.cognition.hub import expand_hub, render_expand_result
+
+    expansion = await expand_hub(query, hits, scope=scope)
     from gsuid_core.ai_core.content_guard import wrap_untrusted
 
-    block = render_cognition_block(query, hits)
-    return block if not hits else wrap_untrusted("memory_recall", block)
-
-
-@ai_tools(category="common")
-async def search_knowledge(
-    ctx: RunContext[ToolContext],
-    query: str,
-    category: Optional[str] = None,
-    plugin: Optional[str] = None,
-    limit: int = 10,
-    score_threshold: float = 0.45,
-) -> str:
-    """【已并入 search_cognition】查已有资料。转调 search_cognition，请直接用后者。
-
-    Args:
-        ctx: 工具执行上下文
-        query: 自然语言查询描述
-        category: 兼容保留（认知检索按 kinds 过滤，不再按知识库类别）
-        plugin: 兼容保留
-        limit: 最大条数
-        score_threshold: 兼容保留（混合检索分非余弦）
-
-    Returns:
-        与 search_cognition 相同的统一命中列表。
-    """
-    _ = (category, plugin, score_threshold)  # 兼容旧调用签名
-    return await search_cognition(ctx, query=query, kinds=None, limit=limit)
+    hits_block = render_cognition_block(query, hits)
+    card = render_expand_result(query, expansion)
+    if not hits and not card:
+        seen[key] = "无命中"
+    elif card and hits:
+        seen[key] = f"命中 {len(hits)} 条，含路径卡"
+    elif card:
+        seen[key] = "路径卡"
+    else:
+        seen[key] = f"命中 {len(hits)} 条"
+    if card and not hits:
+        return card
+    if card:
+        return f"{card}\n\n{wrap_untrusted('memory_recall', hits_block)}"
+    return hits_block if not hits else wrap_untrusted("memory_recall", hits_block)
 
 
 @ai_tools(category="common")

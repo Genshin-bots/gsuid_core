@@ -3,7 +3,7 @@
 好感在 ``handle_ai`` 只剩**一个** ``settle_turn`` 调用点（W1 已收敛），所以本套件很薄：
 H02 读 View 进 ctx、H06 写 ``relationship`` 块、H08 结算、``init_step`` 起闲置衰减 job。
 
-``owns_tools``：关槽或替换时把好感三工具一起卸掉，避免「套件没了、模型还看见空壳工具」。
+``owns_tools``：关槽或替换时把主人管理工具卸掉，避免「套件没了、模型还看见空壳工具」。
 """
 
 from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, on_agent_hook
@@ -58,7 +58,7 @@ KIT = register_agent_kit(
         kit_id="gscore.favorability",
         slot="favorability",
         display_name="关系温度",
-        owns_tools=("update_user_favorability", "set_user_favorability"),
+        owns_tools=("set_user_favorability",),
         init_step=_init_decay_job,
     )
 )

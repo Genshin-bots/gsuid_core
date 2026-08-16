@@ -47,8 +47,8 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
-| `self` | **保底**：无条件加载进主 Agent | 好感度增改、`send_message_by_ai`、`create_subagent`、`add_once_task`/`add_interval_task` |
-| `buildin` | **保底**：无条件加载进主 Agent | `search_knowledge`、`web_search_tool`、`web_fetch_tool`、`query_user_memory`、`get_self_info`、`state_set`/`state_get` |
+| `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、`add_once_task`/`add_interval_task`（另经白名单收敛） |
+| `buildin` | **保底**：无条件加载进主 Agent | `search_cognition`、`web_search_tool`、`web_fetch_tool`、`get_self_info`、`state_set`/`state_get` |
 | `common` | 向量检索按需 | `create_subagent`、`search_image`、`send_meme`/`collect_meme`/`search_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append` |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |

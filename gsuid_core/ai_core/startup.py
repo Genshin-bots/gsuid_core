@@ -291,6 +291,13 @@ async def init_ai_core():
         _AI_CORE_READY = True
         _AI_CORE_INITIALIZING = False
         _get_ready_event().set()
+        # 挂载不进 _INIT_STEPS：READY 之后后台跑，失败不得把就绪改回 false。
+        try:
+            from gsuid_core.ai_core.cognition.hub import spawn_cognition_mount
+
+            spawn_cognition_mount()
+        except Exception as e:
+            logger.warning(t("log.ai.cognition_mount_fail", e=e))
 
 
 @on_core_shutdown(priority=100)

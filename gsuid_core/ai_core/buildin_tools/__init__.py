@@ -11,7 +11,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 - ``get_main_agent_tools()``     → 加载 ``self`` + ``buildin`` 两个分类（**保底池**）；
                                    其中 ``self`` 再经 ``_SELF_CATEGORY_WHITELIST`` 收敛到
-                                   4 个核心工具，防插件滥用 ``category="self"`` 撑大保底池。
+                                   3 个核心工具，防插件滥用 ``category="self"`` 撑大保底池。
 - ``search_tools(query=...)``    → 在 ``planning`` / ``common`` / ``media`` / ``default``
                                    与插件注册的 ``by_trigger`` 等分类里做向量检索按需加载。
 - ``tool_state_signals``         → 按"用户名下持久实体"把 ``planning`` 能力族精确补进工具列表。
@@ -29,26 +29,25 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 ### 2.1 ``category="self"`` —— 仅主人格保底（不会装配进能力代理）
 这些是"只能由主人格直接调用"的工具：副作用强、面向用户。``get_main_agent_tools``
-还会用 ``rag.tools._SELF_CATEGORY_WHITELIST`` 把 self 保底池收敛到这 4 个核心工具
+还会用 ``rag.tools._SELF_CATEGORY_WHITELIST`` 把 self 保底池收敛到这 3 个核心工具
 （防插件滥用 ``category="self"`` 撑大保底池），故下表即当前的 self 白名单全集：
 
 | 工具 | 来源 | 说明 |
 |---|---|---|
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
-| ``update_user_favorability`` | ``favorability_manager.py`` | 增量更新好感度 |
 | ``add_once_task`` | ``scheduler.py`` | 注册一次性定时任务（口语触发，需常驻主人格手边） |
 | ``add_interval_task`` | ``scheduler.py`` | 注册周期定时任务（同上） |
 
-> ``create_subagent`` / ``evaluate_agent_mesh_capability`` 已改为 ``common``、
-> ``query_user_memory`` 已改为 ``buildin``——见下文对应小节。
+> ``create_subagent`` / ``evaluate_agent_mesh_capability`` 为 ``common``。
+> 好感度由框架每轮结算，没有增量工具；绝对值覆盖仅主人 ``set_user_favorability``。
 
 ### 2.2 ``category="buildin"`` —— 主人格 + 能力代理都保底
 "任何任务都可能需要"的基础能力。能力代理经 ``task_basics`` 能力族拿到大部分。
 
-- ``search_knowledge``（``rag_search.py``）：向量检索知识库
+- ``search_cognition``（``rag_search.py``）：回想（记忆 / 偏好 / 知识 / 落盘 / 产物）
+- ``read_handle``（``planning/tool_output_tools.py``）：统一读句柄（已删除 ``read_persisted_output``）
 - ``web_search_tool``（``web_search.py``）：Tavily web 搜索
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
-- ``query_user_memory``（``database_query.py``）：查询用户多群组记忆 + 好感度（统一照会）
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
 - ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（``visible_when`` 有图才露）
@@ -152,7 +151,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 是内置能力节点默认挂载的工具族（节点 ``tool_packs`` 声明，webconsole 可见可卸）：
 
 ``artifact_put`` / ``artifact_get`` / ``artifact_list`` + ``state_*`` +
-``record_*`` + ``search_knowledge`` + ``web_search_tool`` / ``web_fetch_tool``。
+``record_*`` + ``search_cognition`` + ``web_search_tool`` / ``web_fetch_tool``。
 
 注意：``send_message_by_ai`` 不在此列——能力代理只对主人格交付结果，由
 交互完成后回灌主 session 由主人格收尾；能力代理不持有对用户直发通道。
@@ -239,8 +238,8 @@ from gsuid_core.ai_core.buildin_tools.meme_tools import (
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
 from gsuid_core.ai_core.buildin_tools.rag_search import (
     search_image,
+    attach_article,
     search_cognition,
-    search_knowledge,
 )
 
 # Web搜索工具 - 基于Tavily的web搜索
@@ -277,21 +276,14 @@ from gsuid_core.ai_core.buildin_tools.approval_tools import (
     request_master_approval,
 )
 
-# 数据库查询工具 - 查询用户数据（记忆/事实/好感度统一照会）
-from gsuid_core.ai_core.buildin_tools.database_query import (
-    query_user_memory,
-)
-
 # A-4：群成员称呼 / 身份确定性记忆
 from gsuid_core.ai_core.buildin_tools.identity_tools import (
     remember_user_alias,
 )
 
-# 消息发送工具 - 主动发送消息；会话静默
+# 消息发送工具 - 主动发送消息
 from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
-    set_session_reply_mute,
-    clear_session_reply_mute,
 )
 
 # 文件操作工具 - artifacts 路径内的文件移动/复制/打包 zip
@@ -333,7 +325,6 @@ from gsuid_core.ai_core.buildin_tools.html_render_tools import (
 # 好感度管理工具 - 管理用户好感度
 from gsuid_core.ai_core.buildin_tools.favorability_manager import (
     set_user_favorability,
-    update_user_favorability,
 )
 
 # 动态工具发现 - 允许AI搜索和发现可能需要的新工具
@@ -349,8 +340,8 @@ __all__ = [
     "ai_tools",
     # 认知检索（主人格唯一「回想」动词）+ RAG 图片检索
     "search_cognition",
-    "search_knowledge",
     "search_image",
+    "attach_article",
     # 图片读取工具（按ID取图转述，保底）
     "read_image",
     # 用户头像工具（按ID取头像，返回RM图片ID）
@@ -359,10 +350,8 @@ __all__ = [
     "web_search_tool",
     # 网页抓取工具
     "web_fetch_tool",
-    # 消息发送工具；会话静默
+    # 消息发送工具
     "send_message_by_ai",
-    "set_session_reply_mute",
-    "clear_session_reply_mute",
     # 命令执行工具
     "execute_shell_command",
     # 命令执行器（主人专属 buildin）
@@ -375,10 +364,7 @@ __all__ = [
     "ask_user_form",
     "request_user_approval",
     "request_master_approval",
-    # 数据库查询工具
-    "query_user_memory",
-    # 好感度管理工具
-    "update_user_favorability",
+    # 好感度管理工具（仅主人绝对值覆盖；增量由框架结算）
     "set_user_favorability",
     # 群成员称呼 / 身份
     "remember_user_alias",

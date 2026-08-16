@@ -256,8 +256,8 @@ async def query_self_episodes(
     - 你需要确认自己之前是否承诺/提到过某件事。
     - 当前上下文里找不到答案，但你隐约记得自己之前有过相关言行。
 
-    和 query_user_memory 的区别：query_user_memory 查的是**用户**的记忆/事实；
-    本工具查的是**你自己**的言行记录（承诺、偏好、反思、情景片段）。
+    和 search_cognition 的区别：search_cognition 按 query 联邦检索（含本群记忆）；
+    本工具按时间倒序翻 **你自己** 的言行记录（SELF scope 情景片段）。
 
     Args:
         ctx: 工具执行上下文

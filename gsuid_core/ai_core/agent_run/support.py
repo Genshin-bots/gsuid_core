@@ -120,7 +120,7 @@ _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_m
 # 只读检索类工具的空转阈值更严：它们**没有副作用也没有新信息源**，连打 2 轮就已经是空转。
 # find_tools 与认知检索都属此列（后者收成单一动词后，「换个说法再搜」的成本全压在它身上）。
 _FIND_TOOLS_THRASH_LIMIT = 2
-_READONLY_RETRIEVAL_TOOLS = frozenset({"find_tools", "search_cognition", "search_knowledge", "query_user_memory"})
+_READONLY_RETRIEVAL_TOOLS = frozenset({"find_tools", "search_cognition"})
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
 

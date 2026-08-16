@@ -8,18 +8,15 @@
 # 内部结构
 _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
     "self": {
-        "query_user_favorability": ToolBase(...),
-        "update_user_favorability": ToolBase(...),
-        "create_subagent": ToolBase(...),
         "send_message_by_ai": ToolBase(...),
         "add_once_task": ToolBase(...),       # 定时任务"创建"入口，口语化触发
         "add_interval_task": ToolBase(...),   # 定时任务"创建"入口，口语化触发
     },
     "buildin": {
-        "search_knowledge": ToolBase(...),
+        "search_cognition": ToolBase(...),
+        "read_handle": ToolBase(...),  # 统一读句柄；已删除 read_persisted_output
         "web_search_tool": ToolBase(...),
         "web_fetch_tool": ToolBase(...),
-        "query_user_memory": ToolBase(...),
         "get_self_info": ToolBase(...),
         "state_get": ToolBase(...),
         "state_set": ToolBase(...),
@@ -90,15 +87,13 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 │              主Agent (Main Agent)                   │
 │    使用 category="self", "buildin", "common", "media" │
 │                                                     │
-│  Self工具（保底，全部加载）:                          │
-│  - query_user_favorability - update_user_favorability│
-│  - create_subagent        - send_message_by_ai      │
+│  Self工具（保底，全部加载；另经白名单收敛）:            │
+│  - send_message_by_ai                               │
 │  - add_once_task          - add_interval_task        │
 │                                                     │
 │  Buildin工具（保底，全部加载）:                       │
-│  - search_knowledge       - web_search_tool          │
-│  - web_fetch_tool         - query_user_memory        │
-│  - get_self_info          - render_html_to_image     │
+│  - search_cognition       - web_search_tool          │
+│  - web_fetch_tool         - get_self_info            │
 │  - state_get/set/delete/list/append                  │
 │                                                     │
 │  Common工具（向量检索按需加载）:                      │

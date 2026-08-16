@@ -822,6 +822,31 @@ class AIMemEntity(SQLModel, table=True):
         result = await session.execute(select(cls.id, cls.name).where(col(cls.id).in_(entity_ids)))
         return {row[0]: row[1] for row in result.all()}
 
+    @classmethod
+    @with_session
+    async def list_distinct_scope_keys(cls, session: AsyncSession) -> List[str]:
+        result = await session.execute(select(col(cls.scope_key)).distinct())
+        return [row[0] for row in result.all() if row[0]]
+
+    @classmethod
+    @with_session
+    async def list_page_by_scope(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        *,
+        offset: int,
+        limit: int,
+    ) -> List["AIMemEntity"]:
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key)
+            .order_by(col(cls.updated_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
 
 # ─────────────────────────────────────────────
 # Edge：实体间的关系（Base Graph 第三层）
