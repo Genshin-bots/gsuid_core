@@ -555,6 +555,8 @@ class ToolsPhase(RunOnceHost):
 
         # 截断历史记录，避免无限制增长
         self.extract_history()
+        # compact 保头；若首条 user 丢过 marker，补回第一条 user 末尾。
+        self._inject_deepseek_rp_marker(st)
 
         # TTFT/TPS 流式统计：按"每次模型请求"打点，在对应 CallToolsNode 中结算入库。
         # st.req_start 在 ModelRequestNode 发起前记录；_first/st.last_event_at 由

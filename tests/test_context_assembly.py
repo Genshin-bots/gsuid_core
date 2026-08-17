@@ -110,6 +110,17 @@ def test_block_order_is_single_source() -> None:
     # 乱序写入也按表拼；空块被丢弃；未在表内的块名进不来（写入侧白名单校验）
     out = join_context_blocks({"memory": "M", "mood": "D", "plugin_hints": "P", "task": ""})
     assert out == "D\n\nM\n\nP", out
+    cues = join_context_blocks(
+        {
+            "voice_anchor": "（口吻：迷糊）（对这个人的口气：亲昵）",
+            "identity": "（身份：你是「早柚」。）",
+            "history": "[历史对话]",
+        }
+    )
+    assert cues == "（口吻：迷糊）（对这个人的口气：亲昵）（身份：你是「早柚」。）\n\n[历史对话]", cues
+    voice_src = _src("gsuid_core/ai_core/kits/self_cognition/kit.py")
+    assert '"".join(parts)' in voice_src
+    assert '"\\n\\n".join(parts)' not in voice_src
     print("[OK] 块顺序单源")
 
 

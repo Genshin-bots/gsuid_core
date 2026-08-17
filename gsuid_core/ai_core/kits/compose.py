@@ -8,12 +8,12 @@
 from typing import Tuple
 
 from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks
-from gsuid_core.ai_core.kits.base import CONTEXT_BLOCK_ORDER
+from gsuid_core.ai_core.kits.base import join_named_blocks
 
 
 def join_blocks(ctx: AgentHookContext) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装。空块丢弃，未知块名进不来（写入侧已白名单校验）。"""
-    return "\n\n".join(ctx.blocks[name] for name in CONTEXT_BLOCK_ORDER if name in ctx.blocks and ctx.blocks[name])
+    return join_named_blocks(ctx.blocks)
 
 
 async def compose_dynamic_context(ctx: AgentHookContext) -> Tuple[str, bool]:

@@ -123,13 +123,17 @@ class AISessionRegistry:
         Returns:
             清理的Session数量
         """
+        from gsuid_core.ai_core.utils import compact_session_history
+
         cleaned = 0
         for session in self._ai_sessions.values():
             # session.history 是 GsCoreAIAgent 的已声明 List[ModelMessage]，
             # 类型追踪完备，无需 try/except AttributeError 兜底。
             if len(session.history) > self.MAX_AI_HISTORY_LENGTH:
-                session.history = session.history[-self.MAX_AI_HISTORY_LENGTH :]
-                cleaned += 1
+                # 保头裁中段：禁止 history[-n:] 砍掉带 inner_os 的首条 user。
+                session.history, did = compact_session_history(session.history, self.MAX_AI_HISTORY_LENGTH)
+                if did:
+                    cleaned += 1
         return cleaned
 
     # ============== 清理任务管理 ==============

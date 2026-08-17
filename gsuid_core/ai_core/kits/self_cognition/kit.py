@@ -50,7 +50,7 @@ class SelfCognitionKit(AgentKit):
         if ctx.relationship is not None and ctx.relationship.voice:
             parts.append(f"（对这个人的口气：{ctx.relationship.voice}）")
         if parts:
-            ctx.set_context_block("voice_anchor", "\n\n".join(parts))
+            ctx.set_context_block("voice_anchor", "".join(parts))
 
 
 KIT = register_agent_kit(

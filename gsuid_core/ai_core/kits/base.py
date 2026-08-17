@@ -5,7 +5,7 @@
 各套件只填命名块，不得自己拼接顺序——否则第 12 个块会插到身份锚前面。
 """
 
-from typing import Tuple, Callable, Optional, Awaitable, FrozenSet
+from typing import Tuple, Mapping, Callable, Optional, Awaitable, FrozenSet
 from dataclasses import dataclass
 
 # 装配顺序单源。identity / history 归内核填（前者是密封身份锚，后者是消息基础设施）。
@@ -28,11 +28,35 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
 STABLE_BLOCK_NAMES: FrozenSet[str] = frozenset({"self_model", "group_profile"})
 
 _KNOWN_BLOCKS: FrozenSet[str] = frozenset(CONTEXT_BLOCK_ORDER) | STABLE_BLOCK_NAMES
+# 口吻 / 口气 / 身份是同一组角色提示，拼在一起中间不要空行。
+_CUE_BLOCK_CLUSTER: FrozenSet[str] = frozenset({"voice_anchor", "identity"})
 
 
 def is_known_block(name: str) -> bool:
     """块名白名单校验。未知名一律拒绝，防套件私自插块。"""
     return name in _KNOWN_BLOCKS
+
+
+def join_named_blocks(blocks: Mapping[str, str]) -> str:
+    """按 ``CONTEXT_BLOCK_ORDER`` 拼装；口吻/口气/身份连成一段，其余块仍 ``\\n\\n``。"""
+    pieces: list[str] = []
+    cues: list[str] = []
+    for name in CONTEXT_BLOCK_ORDER:
+        if name not in blocks:
+            continue
+        text = blocks[name]
+        if not text:
+            continue
+        if name in _CUE_BLOCK_CLUSTER:
+            cues.append(text)
+            continue
+        if cues:
+            pieces.append("".join(cues))
+            cues = []
+        pieces.append(text)
+    if cues:
+        pieces.append("".join(cues))
+    return "\n\n".join(pieces)
 
 
 # ── 槽位表 ──

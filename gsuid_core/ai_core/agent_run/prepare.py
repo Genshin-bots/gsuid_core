@@ -33,6 +33,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _STATUS_INQUIRY_HINT,
     _INTERACTIVE_CREATE_BY,
     _append_user_text,
+    _ensure_inner_os_on_first_user,
     _capability_exclusive_tool_names,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -252,16 +253,6 @@ class PreparePhase(RunOnceHost):
             st.final_user_message = _append_user_text(st.final_user_message, f"\n\n{st.rag_context}")
             logger.info(i18n_t("log.agent.added_rag_context"))
 
-        # DS 专属角色扮演模式（inner_os）：仅在 Chat 模式首轮 st.user_message 末尾追加
-        if (
-            self.create_by == "Chat"
-            and not self.history
-            and ai_config.get_config("enable_deepseek_rp").data
-            and isinstance(st.final_user_message, str)
-        ):
-            st.final_user_message = f"{st.final_user_message}{INNER_OS_MARKER}"
-            logger.info(i18n_t("log.agent.ds_inject"))
-
         # 连续无工具调用检测：连续两轮只推脱不调工具时注入强制提醒。闲聊类意图豁免（§15）
         # 豁免口径唯一定义在 _PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。
         # 框架纠正轮不要再粘这条：settle 在启动纠正前已 +1，会污染 <control> 信封。
@@ -352,6 +343,9 @@ class PreparePhase(RunOnceHost):
         if not st.fw_msg and st.has_active_task:
             st.in_flight_short = spoken_user_body_len(st.last_user_question) <= 48
 
+        # 先钉一次：本轮 lean 必须带 marker，否则 _relean 会从持久 history 剥掉。
+        self._inject_deepseek_rp_marker(st)
+
         # 截断日志输出中的 base64 数据，避免日志过长
         truncated_msg = _truncate_message_for_log(st.final_user_message)
         logger.trace(i18n_t("log.agent.user_truncated_msg", truncated_msg=truncated_msg))
@@ -365,3 +359,16 @@ class PreparePhase(RunOnceHost):
 
         if st.tools is None:
             st.tools = []
+
+    def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None:
+        if self.create_by != "Chat" or not ai_config.get_config("enable_deepseek_rp").data:
+            return
+        st.final_user_message, st.lean_user_message, where = _ensure_inner_os_on_first_user(
+            self.history,
+            st.final_user_message,
+            st.lean_user_message,
+            INNER_OS_MARKER,
+            is_framework=st.fw_msg,
+        )
+        if where in ("history", "current"):
+            logger.info(i18n_t("log.agent.ds_inject"))

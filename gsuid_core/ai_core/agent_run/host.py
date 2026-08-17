@@ -60,6 +60,9 @@ class RunOnceHost:
     def extract_history(self) -> None:
         raise NotImplementedError
 
+    def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None:
+        raise NotImplementedError
+
     def _emit_trace(self, kind: str, text: str) -> None:
         raise NotImplementedError
 

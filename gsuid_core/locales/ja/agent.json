@@ -23,7 +23,7 @@
   "log.agent.delegation_safeguard_create_subagent": "[GsCoreAIAgent] 委譲保障: create_subagent を注入（deleg={deleg_pid}）",
   "log.agent.directive_disputed": "[ControlPlane] モデルがフレームワーク検証に異議を申し立てたため、元の回答を保持します: {reason}",
   "log.agent.directive_obligation_unmet": "[ControlPlane] 義務が未履行です（{code}）。今回は元の回答を保持します",
-  "log.agent.ds_inject": "[GsCoreAIAgent] DS ロールプレイマーカーを注入しました（最初のチャット）",
+  "log.agent.ds_inject": "[GsCoreAIAgent] DS ロールプレイマーカーを注入しました（最初の user message）",
   "log.agent.fakedone_bot_object_unavailable": "[FakeDoneGate] 保留テキストの再送に失敗しました: Bot オブジェクトが利用できません",
   "log.agent.fakedone_call_action_appending_ok": "[GsCoreAIAgent] ツール呼び出しがゼロなのに動作完了を主張しているため、修正リランを追加します",
   "log.agent.fakedone_claim": "[FakeDoneGate] 完了宣言の後にツール呼び出しがあったため、保留していたテキストを再送します",

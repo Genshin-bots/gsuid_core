@@ -23,7 +23,7 @@
   "log.agent.delegation_safeguard_create_subagent": "[GsCoreAIAgent] 委派保障：注入 create_subagent（deleg={deleg_pid}）",
   "log.agent.directive_disputed": "[ControlPlane] 模型对框架校验提出申辩，保留原答案：{reason}",
   "log.agent.directive_obligation_unmet": "[ControlPlane] 义务未履行（{code}），本轮保留原答案",
-  "log.agent.ds_inject": "[GsCoreAIAgent] 已注入 DS 角色扮演 Marker（首轮 Chat）",
+  "log.agent.ds_inject": "[GsCoreAIAgent] 已注入 DS 角色扮演 Marker（第一条 user message）",
   "log.agent.fakedone_bot_object_unavailable": "[FakeDoneGate] 暂扣文本补发失败：Bot对象不可用",
   "log.agent.fakedone_call_action_appending_ok": "[FakeDoneGate] 零工具调用却声称已完成动作，追加纠正重跑",
   "log.agent.fakedone_claim": "[FakeDoneGate] 完成声明后续有工具调用支撑，补发暂扣文本",

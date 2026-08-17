@@ -23,7 +23,7 @@
   "log.agent.delegation_safeguard_create_subagent": "[GsCoreAIAgent] Delegation safeguard: injecting create_subagent (deleg={deleg_pid})",
   "log.agent.directive_disputed": "[ControlPlane] Model disputed the framework check; keeping original answer: {reason}",
   "log.agent.directive_obligation_unmet": "[ControlPlane] Obligation unmet ({code}); keeping original answer this turn",
-  "log.agent.ds_inject": "[GsCoreAIAgent] Injected DS roleplay marker (first chat turn)",
+  "log.agent.ds_inject": "[GsCoreAIAgent] Injected DS roleplay marker (first user message)",
   "log.agent.fakedone_bot_object_unavailable": "[FakeDoneGate] Failed to re-send withheld text: Bot object unavailable",
   "log.agent.fakedone_call_action_appending_ok": "[FakeDoneGate] No tool call yet claims to have completed the action; appending correction re-run",
   "log.agent.fakedone_claim": "[FakeDoneGate] Completion claim later backed by tool calls; re-sending withheld text",

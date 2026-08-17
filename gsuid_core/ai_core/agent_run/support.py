@@ -6,10 +6,18 @@
 from __future__ import annotations
 
 import re
-from typing import List, Union, Literal, Sequence
+from typing import List, Tuple, Union, Literal, Optional, Sequence
 
-from pydantic_ai.messages import UserContent, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    UserContent,
+    ModelMessage,
+    ModelRequest,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
+from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
@@ -70,6 +78,72 @@ def _append_user_text(message: Union[str, List["UserContent"]], text: str) -> Un
     out = list(message)
     out.append(text)
     return out
+
+
+InnerOsInjectWhere = Literal["history", "current", "already", "skipped"]
+_INNER_OS_NEEDLE = "【角色沉浸要求】"
+UserPromptContent = Union[str, Sequence[UserContent]]
+UserTurnText = Union[str, List[UserContent]]
+
+
+def _user_content_contains(content: UserPromptContent, needle: str) -> bool:
+    if isinstance(content, str):
+        return needle in content
+    return any(isinstance(item, str) and needle in item for item in content)
+
+
+def _user_prompt_is_framework(content: UserPromptContent) -> bool:
+    if isinstance(content, str):
+        return _is_framework_prompt_content(content)
+    texts = [item for item in content if isinstance(item, str)]
+    return bool(texts) and all(_is_framework_prompt_content(item) for item in texts)
+
+
+def _as_user_turn_text(content: UserPromptContent) -> UserTurnText:
+    if isinstance(content, str):
+        return content
+    return list(content)
+
+
+def _first_real_user_prompt_part(history: Sequence[ModelMessage]) -> Optional[UserPromptPart]:
+    for msg in history:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, UserPromptPart):
+                continue
+            if _user_prompt_is_framework(part.content):
+                continue
+            return part
+    return None
+
+
+def _ensure_inner_os_on_first_user(
+    history: Sequence[ModelMessage],
+    current: UserTurnText,
+    lean: UserTurnText,
+    marker: str,
+    *,
+    is_framework: bool,
+) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere]:
+    """把 inner_os marker 永久钉在会话第一条真人 user message 末尾。"""
+    if not marker:
+        return current, lean, "skipped"
+
+    first = _first_real_user_prompt_part(history)
+    if first is not None:
+        if _user_content_contains(first.content, _INNER_OS_NEEDLE):
+            return current, lean, "already"
+        first.content = _append_user_text(_as_user_turn_text(first.content), marker)
+        return current, lean, "history"
+
+    if is_framework:
+        return current, lean, "skipped"
+    if _user_content_contains(current, _INNER_OS_NEEDLE):
+        return current, lean, "already"
+    new_current = _append_user_text(current, marker)
+    new_lean = _append_user_text(lean, marker) if lean else lean
+    return new_current, new_lean, "current"
 
 
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）

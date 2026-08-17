@@ -21,7 +21,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.kits.base import CONTEXT_BLOCK_ORDER
+from gsuid_core.ai_core.kits.base import join_named_blocks
 from gsuid_core.ai_core.relationship import RelationshipView
 
 if TYPE_CHECKING:
@@ -126,12 +126,8 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
 
 
 def join_context_blocks(blocks: Dict[str, str]) -> str:
-    """按 ``CONTEXT_BLOCK_ORDER`` 拼装命名块（顺序的**唯一**执行点）。
-
-    未知块名不会出现在这里——写入侧（``AgentHookContext.set_context_block`` /
-    本模块）已按白名单校验，未知名一律拒绝。
-    """
-    return "\n\n".join(blocks[name] for name in CONTEXT_BLOCK_ORDER if name in blocks and blocks[name])
+    """按 ``CONTEXT_BLOCK_ORDER`` 拼装命名块（顺序的**唯一**执行点）。"""
+    return join_named_blocks(blocks)
 
 
 async def assemble_dynamic_context(
