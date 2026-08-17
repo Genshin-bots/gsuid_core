@@ -82,6 +82,10 @@ class RunOnceState:
     # 被排版闸暂扣、从未出站的台词原文。纠正被申辩或未产出替代品时须真发出去，
     # 否则 by_bot 路径 return "" 会让整轮零输出（INV-4）。
     presentation_withheld: list[str] = field(default_factory=list)
+    # 与 withheld 一一对应的拦因（仅 report_speech / empty_handoff 可武装出图义务）。
+    presentation_withheld_reasons: list[str] = field(default_factory=list)
+    # 本轮已暴露给模型的工具名（装配池 ∪ find_tools），供台词标识符泄漏检测。
+    exposed_tool_names: list[str] = field(default_factory=list)
     # 本轮见过「无时点聚合」工具返回（气候/月均/历史均值）→ 台词禁冒充实时读数
     saw_timeless_aggregate: bool = False
     # 时效账本（方案七）：web 滞后 / as_of 新鲜 / 其它成功非 web 返回。

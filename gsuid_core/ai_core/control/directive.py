@@ -24,6 +24,8 @@ CONTROL_ENVELOPE_TAG = "control"
 # ToolContext.extra 键：本轮申辩理由。定义在此叶子模块，供 prepare 与工具层共用
 # 而不互相 import（prepare → buildin_tools 会绕出循环依赖）。
 DISPUTE_EXTRA_KEY = "directive_disputes"
+# 本 attempt 申辩已成功 → 控制面终局，禁止再调工具 / 对用户说话。
+DISPUTE_CLOSED_KEY = "directive_closed"
 
 # 义务履行的结构事实名（由 settle 从 RunOnceState 派生，非文本判定）
 _SATISFACTION_FACTS = frozenset(

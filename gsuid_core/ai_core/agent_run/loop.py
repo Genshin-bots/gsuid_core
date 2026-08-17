@@ -13,6 +13,8 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
+    NativeToolCallPart,
+    NativeToolReturnPart,
 )
 
 from gsuid_core.i18n import t as i18n_t
@@ -27,6 +29,7 @@ from gsuid_core.ai_core.utils import (
     send_chat_result,
     is_silence_marker,
     _split_embedded_thinking,
+    remainder_after_protocol_tags,
     _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
 )
@@ -50,6 +53,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _update_thrash_streak_for_response,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.agent_run.speech_policy import (
     MAIN_CHANNEL_VISIBLE_LIMIT,
     is_status_tool_name,
@@ -59,10 +63,12 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     should_block_user_visible_text,
     looks_like_inflight_quota_speech,
 )
+from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_name
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
     RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
+    POST_DISPUTE_SILENCE_CONTRACT as _POST_DISPUTE_SILENCE_CONTRACT,
     POST_DELIVERY_SILENCE_CONTRACT as _POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
@@ -120,6 +126,9 @@ class LoopPhase(RunOnceHost):
 
         # 先扫本请求内 ToolReturn 形态，再决定墙钟文案（避免事实包刚返回却注入「禁工具」）
         for _pre in node.request.parts:
+            if isinstance(_pre, NativeToolReturnPart) and is_hosted_web_search_name(_pre.tool_name):
+                st.saw_web_source = True
+                continue
             if type(_pre) is not ToolReturnPart:
                 continue
             _pb = _pre.content if isinstance(_pre.content, str) else ""
@@ -193,6 +202,18 @@ class LoopPhase(RunOnceHost):
                 *node.request.parts,
                 UserPromptPart(content=angle_bracket_guard.build_fuse_warning()),
             ]
+
+        _extra_now = _require_context(st).extra
+        if DISPUTE_CLOSED_KEY in _extra_now and _extra_now[DISPUTE_CLOSED_KEY]:
+            st.speech_policy = "silence_only"
+            if not any(
+                isinstance(p, UserPromptPart) and p.content == _POST_DISPUTE_SILENCE_CONTRACT
+                for p in node.request.parts
+            ):
+                node.request.parts = [
+                    *node.request.parts,
+                    UserPromptPart(content=_POST_DISPUTE_SILENCE_CONTRACT),
+                ]
 
         # 同工具空转熔断：连续同名工具 ≥ 阈值后，下一轮模型请求前注入一次收敛提示
         _thrash_limit = thrash_limit_for(st.same_tool_name)
@@ -537,6 +558,16 @@ class LoopPhase(RunOnceHost):
                 except Exception:
                     pass
 
+            # hosted 工具计入 tool_call_list，避免 settle 判零工具。
+            # 不置 _saw_tool_call_this_turn，否则 suppress 会丢掉同响应里的最终答案。
+            elif isinstance(part, (NativeToolCallPart, NativeToolReturnPart)):
+                if is_hosted_web_search_name(part.tool_name):
+                    st.saw_web_source = True
+                if isinstance(part, NativeToolCallPart):
+                    st.tool_call_list.append(part.tool_name)
+                    self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
+                    self._emit_trace("tool", f"{part.tool_name}|hosted")
+
             # 大模型直接输出文本
             elif isinstance(part, TextPart):
                 _text = part.content.strip()
@@ -548,6 +579,11 @@ class LoopPhase(RunOnceHost):
                 if is_silence_marker(_text):
                     logger.info(i18n_t("log.agent.silent_skipping_text", _text=_text))
                     continue
+                _stripped_protocol = remainder_after_protocol_tags(_text).strip()
+                if _stripped_protocol != _text:
+                    _text = _stripped_protocol
+                    if not _text:
+                        continue
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                     continue
@@ -575,12 +611,13 @@ class LoopPhase(RunOnceHost):
                     if _blk:
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
                         # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
-                        if _why in ("report_speech", "pre_render_long_speech", "empty_handoff"):
+                        if _why in ("report_speech", "empty_handoff"):
                             st.presentation_mismatch = True
                             # 暂扣原文：纠正被申辩/无替代品时由 settle 兜底发出（INV-4）
                             # 多点读数念白不是用户要的正文，丢掉即可，勿进 INV-4 回放。
                             if _text not in st.presentation_withheld:
                                 st.presentation_withheld.append(_text)
+                                st.presentation_withheld_reasons.append(_why)
                         logger.info(
                             i18n_t(
                                 "log.agent.silent_skipping_text",

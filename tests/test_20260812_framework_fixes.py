@@ -222,6 +222,20 @@ def test_find_tools_no_longer_grants_answer_from_knowledge() -> None:
     assert code_lines == [], f"旧文案仍出现在非注释行：{code_lines[:2]}"
 
 
+def test_record_find_tools_round_marks_consecutive_empty_stale() -> None:
+    from typing import Any
+
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import _record_find_tools_round
+
+    extra: dict[str, Any] = {}
+    assert _record_find_tools_round(extra, []) is False
+    assert _record_find_tools_round(extra, []) is True
+    named: dict[str, Any] = {}
+    assert _record_find_tools_round(named, ["a"]) is False
+    assert _record_find_tools_round(named, ["a"]) is True
+    assert _record_find_tools_round(named, ["a", "b"]) is False
+
+
 # ── 方案一：covers 元数据进检索面 ─────────────────────────────────────────
 
 

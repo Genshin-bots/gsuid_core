@@ -78,7 +78,7 @@ def test_unsigned_series_does_not_use_sign_palette_for_identity() -> None:
 
 def test_spoken_body_strips_ascii_wake_prefix() -> None:
     blob = (
-        "[用户发言]\n[⚡主人] Someone(用户ID:1) 找你说话了。\n--- 消息 ---\n"
+        "[用户发言]\n[⚡主人] Someone(用户ID:1)\n--- 消息 ---\n"
         "alpha你还在吗\n[当前时间：2026-08-16 20:25:28]\n（口吻：迷糊）"
     )
     assert spoken_user_body(blob) == "你还在吗"

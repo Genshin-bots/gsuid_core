@@ -36,7 +36,7 @@ SOFT_TRIGGER_NOTE = (
 )
 
 
-async def build_stable_context(event: Event) -> str:
+async def build_stable_context(event: Event, persona_name: str = "") -> str:
     """建 session / TTL 刷新时组装固化进 system_prompt 的慢变上下文（§优化 O-3）。
 
     = self_model 自述块（bot/scope 级，**不含** per-user 关系行）+ 群画像/词汇映射。
@@ -57,9 +57,13 @@ async def build_stable_context(event: Event) -> str:
     async def _group_profile_block() -> str:
         if not event.group_id:
             return ""
-        from gsuid_core.ai_core.memory.group_profile import format_context_injection
+        from gsuid_core.ai_core.memory.group_profile import (
+            collect_persona_surfaces,
+            format_context_injection,
+        )
 
-        return await format_context_injection(scope_key)
+        surfaces = collect_persona_surfaces(persona_name)
+        return await format_context_injection(scope_key, persona_surfaces=surfaces)
 
     results = await asyncio.gather(_self_model_block(), _group_profile_block(), return_exceptions=True)
     for name, r in zip(("self_model 稳定块", "群画像稳定块"), results):
@@ -71,7 +75,7 @@ async def build_stable_context(event: Event) -> str:
     return "\n\n".join(parts)
 
 
-async def fire_stable_context_hooks(event: Event) -> str:
+async def fire_stable_context_hooks(event: Event, persona_name: str = "") -> str:
     """建 session 时开火 H29，收集套件贡献的稳定块（self_model / 群画像）。
 
     这是**唯一**允许写 system 的点位；dispatcher 会硬拒非建 session 阶段的调用。
@@ -85,6 +89,7 @@ async def fire_stable_context_hooks(event: Event) -> str:
         point=AgentHookPoint.ON_STABLE_CONTEXT,
         ev=event,
         session_id=event.session_id,
+        persona_name=persona_name or None,
         create_by="Chat",
     )
     await fire_hooks(AgentHookPoint.ON_STABLE_CONTEXT, ctx, stable_context_phase=True)
@@ -110,7 +115,9 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
     if event.group_id:
         group_description = await get_group_context(group_id=event.group_id)
     # 套件（self_cognition / group_profile）走 H29 贡献稳定块；无套件时回落内核实现
-    extra_stable_context = await fire_stable_context_hooks(event) or await build_stable_context(event)
+    extra_stable_context = await fire_stable_context_hooks(event, persona_name) or await build_stable_context(
+        event, persona_name
+    )
     return await build_persona_prompt(
         persona_name,
         group_description=group_description or None,

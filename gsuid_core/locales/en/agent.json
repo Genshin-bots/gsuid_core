@@ -123,6 +123,7 @@
   "log.agent.tool_count_baseline_extra": "[GsCoreAIAgent] Tool count: {p0} (baseline {p1} + extra {p2})",
   "log.agent.tool_execution_compl_name_result_passed_ok": "[✅ Tool execution complete]: tool_name='{p0}', result passed to agent={tool_result_str}",
   "log.agent.tool_list": "[GsCoreAIAgent] Tool list: {p0}",
+  "log.agent.remote_web_search_attached": "[GsCoreAIAgent] Responses hosted web_search enabled this run; local web_search_tool is not sent to the model",
   "log.agent.tool_thrash_fuse": "Tool thrash fuse: {tool_name}×{streak}",
   "log.agent.tool_thrash_strip_duplicate": "Tool thrash strip: dropped duplicate {tool_name}",
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ Trigger node: CallToolsNode",

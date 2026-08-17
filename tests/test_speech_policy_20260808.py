@@ -25,7 +25,7 @@ def test_status_inquiry_detects_progress_questions() -> None:
 
 def test_status_inquiry_strips_assembled_shell() -> None:
     blob = (
-        "[用户发言]\n[⚡主人] 我找你说话了。\n--- 消息 ---\n图呢\n"
+        "[用户发言]\n[⚡主人] 我\n--- 消息 ---\n图呢\n"
         "[当前时间：2026-08-08 22:00:00]\n"
         "【你正在为对方推进的事项】事项#1｜运行中"
     )
@@ -315,7 +315,7 @@ def test_empty_handoff_and_wait_comfort() -> None:
         tool_calls_so_far=["create_subagent"],
         fact_pack_pending=True,
     )
-    assert blk and why in ("empty_handoff", "premature_delivery", "pre_render_long_speech")
+    assert blk and why in ("empty_handoff", "premature_delivery")
 
     wait = "唔…等一下…画张图…"
     assert looks_like_wait_comfort(wait)

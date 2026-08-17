@@ -161,7 +161,7 @@ def test_ooc_main_defers_with_forced_hit(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         of,
         "check_ooc",
-        lambda text, tier="roleplay", user_text="": _Hit("model_name", ["minimax"]),
+        lambda text, tier="roleplay", user_text="", exposed_tool_names=(): _Hit("model_name", ["minimax"]),
     )
     monkeypatch.setattr(of, "build_rewrite_warning", lambda hit: f"warn:{hit.category}")
 

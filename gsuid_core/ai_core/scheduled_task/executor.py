@@ -147,7 +147,12 @@ async def execute_scheduled_task(task_id: str) -> None:
     #    与旧路径的区别：**任务 prompt 不再被当作 user_message 喂给真用户主
     #    session**——主用户 session 不再被伪 user_input"【定时任务执行】..."污染。
     try:
-        from gsuid_core.ai_core.utils import NO_RESULT_TEXT, SILENCE_MARKERS, ERROR_RESULT_PREFIX
+        from gsuid_core.ai_core.utils import (
+            NO_RESULT_TEXT,
+            SILENCE_MARKERS,
+            ERROR_RESULT_PREFIX,
+            is_silence_marker,
+        )
         from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
         from gsuid_core.ai_core.proactive import emit_proactive_message
         from gsuid_core.ai_core.statistics.manager import statistics_manager
@@ -297,7 +302,9 @@ async def execute_scheduled_task(task_id: str) -> None:
         #    entry）/ C8 网关 register_send。
         result_stripped = str(result).strip() if result else ""
         # 静默闸用包含判定：弱模型常给 <SILENCE> 加附言，整串精确匹配会被穿透（评审修复 E1）
-        if result_stripped and any(m in result_stripped for m in SILENCE_MARKERS):
+        if result_stripped and (
+            is_silence_marker(result_stripped) or any(m in result_stripped for m in SILENCE_MARKERS)
+        ):
             logger.info(t("log.scheduler.sched_task_determined_silent", task_id=task_id))
         elif result_stripped.startswith(ERROR_RESULT_PREFIX) or result_stripped == NO_RESULT_TEXT:
             # 失败结果不得原样播报（原始串含 provider body 等内部细节，评审修复 F5）

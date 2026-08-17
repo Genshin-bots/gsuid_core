@@ -123,6 +123,7 @@
   "log.agent.tool_count_baseline_extra": "[GsCoreAIAgent] ツール数: {p0}（基本 {p1} + 追加 {p2}）",
   "log.agent.tool_execution_compl_name_result_passed_ok": "[✅ ツール実行完了]: ツール名='{p0}'、結果は Agent={tool_result_str} に渡されました",
   "log.agent.tool_list": "[GsCoreAIAgent] ツール一覧: {p0}",
+  "log.agent.remote_web_search_attached": "[GsCoreAIAgent] このラウンドは Responses の hosted web_search を使用し、ローカル web_search_tool はモデルに送りません",
   "log.agent.tool_thrash_fuse": "ツール空転ヒューズ: {tool_name}×{streak}",
   "log.agent.tool_thrash_strip_duplicate": "ツール空転切り捨て: 重複 {tool_name} を破棄",
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ トリガーノード: CallToolsNode",

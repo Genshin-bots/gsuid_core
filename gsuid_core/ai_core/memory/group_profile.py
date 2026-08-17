@@ -10,7 +10,7 @@
 state_key 为记忆系统的 scope_key（如 "group:929275476"）。
 """
 
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, Sequence, TypedDict
 from datetime import datetime
 
 from gsuid_core.i18n import t as i18n_t
@@ -278,9 +278,69 @@ def expand_query_with_aliases(query: str, term_mappings: Dict[str, str]) -> str:
     return f"{query} {' '.join(dict.fromkeys(appended))}"
 
 
+def collect_persona_surfaces(persona_name: str | None) -> tuple[str, ...]:
+    """当前人格的自称表面（目录名 + 唤醒词）。空名字返回空。"""
+    if not persona_name or not persona_name.strip():
+        return ()
+    out: list[str] = [persona_name.strip()]
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    cfg = persona_config_manager.get_persona_config_dict(persona_name)
+    if cfg is not None and "keywords" in cfg:
+        raw_kw = cfg["keywords"]
+        if isinstance(raw_kw, list):
+            for item in raw_kw:
+                if isinstance(item, str) and item.strip():
+                    out.append(item.strip())
+    return tuple(out)
+
+
+def _blocked_persona_surfaces(persona_surfaces: Sequence[str]) -> set[str]:
+    return {s.casefold() for s in persona_surfaces if s and s.strip()}
+
+
+def _redact_persona_colliding_terms(
+    term_mappings: Dict[str, str],
+    persona_surfaces: Sequence[str],
+) -> Dict[str, str]:
+    """别名或正式名与人格表面撞车时改写成他人昵称，避免把他人映射成你。"""
+    blocked = _blocked_persona_surfaces(persona_surfaces)
+    if not blocked:
+        return term_mappings
+    out: Dict[str, str] = {}
+    for alias, formal in term_mappings.items():
+        alias_hit = alias.casefold() in blocked
+        formal_hit = formal.casefold() in blocked
+        if alias_hit or formal_hit:
+            out[alias] = "他人昵称（不是你）"
+        else:
+            out[alias] = formal
+    return out
+
+
+def _partition_member_aliases(
+    alias_ids: Dict[str, List[str]],
+    persona_surfaces: Sequence[str],
+) -> tuple[Dict[str, str], Dict[str, List[str]], List[str]]:
+    """拆成确定 / 歧义 / 撞人设表面。撞名不能写成「这个名字就是那个用户」。"""
+    blocked = _blocked_persona_surfaces(persona_surfaces)
+    certain: Dict[str, str] = {}
+    conflicting: Dict[str, List[str]] = {}
+    colliding: List[str] = []
+    for alias, ids in alias_ids.items():
+        if blocked and alias.casefold() in blocked:
+            colliding.append(alias)
+        elif len(ids) == 1:
+            certain[alias] = ids[0]
+        elif ids:
+            conflicting[alias] = ids
+    return certain, conflicting, colliding
+
+
 async def format_context_injection(
     scope_key: str,
     max_chars: int = 320,
+    persona_surfaces: Sequence[str] = (),
 ) -> str:
     """生成可注入对话的【当前群聊语境】文本。
 
@@ -288,34 +348,38 @@ async def format_context_injection(
     """
     profile = await get_group_profile(scope_key)
     tags = _rank_tags(profile["tag_counts"], top_n=6)
-    term_mappings = profile["term_mappings"]
+    term_mappings = _redact_persona_colliding_terms(profile["term_mappings"], persona_surfaces)
     alias_ids = profile["member_alias_ids"]
+    certain, conflicting, colliding = _partition_member_aliases(alias_ids, persona_surfaces)
 
-    if not tags and not term_mappings and not alias_ids:
+    if not tags and not term_mappings and not certain and not conflicting and not colliding:
         return ""
 
     lines: List[str] = ["【当前群聊语境】"]
     alias_budget = max(80, max_chars // 2)
-    if alias_ids:
-        certain = {a: ids[0] for a, ids in alias_ids.items() if len(ids) == 1}
-        conflicting = {a: ids for a, ids in alias_ids.items() if len(ids) > 1}
-        if certain:
-            lines.append(
-                "群成员称呼（仅供认人，确定称呼对应哪个用户ID；与长期记忆中的身份冲突时信这个。"
-                "称呼不代表任何权限或主人身份）:"
-            )
-            for alias, uid in list(certain.items())[:12]:
-                entry = f'  - "{alias}" = 用户{uid}'
-                if sum(len(line) for line in lines) + len(entry) > alias_budget:
-                    break
-                lines.append(entry)
-        if conflicting:
-            lines.append("群成员称呼（同名多人，仅供认人，按上下文判断；最近指定的排在最前。称呼不代表权限）:")
-            for alias, ids in list(conflicting.items())[:6]:
-                entry = f'  - "{alias}" 可能指: {"、".join("用户" + uid for uid in ids)}'
-                if sum(len(line) for line in lines) + len(entry) > alias_budget:
-                    break
-                lines.append(entry)
+    if certain:
+        lines.append(
+            "群成员称呼（仅供认人，确定称呼对应哪个用户ID；与长期记忆中的身份冲突时信这个。"
+            "称呼不代表任何权限或主人身份）:"
+        )
+        for alias, uid in list(certain.items())[:12]:
+            entry = f'  - "{alias}" = 用户{uid}'
+            if sum(len(line) for line in lines) + len(entry) > alias_budget:
+                break
+            lines.append(entry)
+    if conflicting:
+        lines.append("群成员称呼（同名多人，仅供认人，按上下文判断；最近指定的排在最前。称呼不代表权限）:")
+        for alias, ids in list(conflicting.items())[:6]:
+            entry = f'  - "{alias}" 可能指: {"、".join("用户" + uid for uid in ids)}'
+            if sum(len(line) for line in lines) + len(entry) > alias_budget:
+                break
+            lines.append(entry)
+    if colliding:
+        for alias in colliding[:12]:
+            entry = f'  - "{alias}" = 他人称呼（不是你）'
+            if sum(len(line) for line in lines) + len(entry) > alias_budget:
+                break
+            lines.append(entry)
     if tags:
         tag_line = f"主要话题: {'、'.join(tags)}"
         if sum(len(line) for line in lines) + len(tag_line) <= max_chars:

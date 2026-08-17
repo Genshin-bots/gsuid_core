@@ -130,16 +130,39 @@ def _absorb_attempt_facts(
         st.has_status_tool_call = True
 
 
-def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
-    """只有真把长结构当台词念出来（闸门已拦/暂扣）才进纠正。
+_RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_handoff"})
 
-    短角色句、承认没实时数、气候常态口头答，一律不纠——不再用「回复 >40 字」。
-    """
+
+def _has_unread_attachment(st: RunOnceState) -> bool:
+    """本条是否带未读附件（图/音频/文件）。只看 Event 结构字段。"""
+    ev = st.ev
+    if ev is None:
+        return False
+    if ev.image_id_list or ev.image_id:
+        return True
+    if ev.audio_id_list or ev.audio_id:
+        return True
+    return bool(ev.file)
+
+
+def _zero_tool_needs_correction(st: RunOnceState) -> bool:
+    """零工具纠正只认正证据：未读附件或可继承的上轮工具任务。"""
+    if _has_unread_attachment(st):
+        return True
+    if st.followup_detected:
+        return True
+    return bool(st.tg is not None and st.tg.ellipsis_followup)
+
+
+def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
+    """有出处凭据且台词呈报告体 / 空交付暂扣时才进纠正。mismatch 单独不够。"""
     if not st.saw_structured_return or not st.tool_call_list:
         return False
-    if st.presentation_mismatch or st.presentation_withheld:
+    if _looks_like_report_speech(result_msg or ""):
         return True
-    return _looks_like_report_speech(result_msg or "")
+    if looks_like_empty_handoff(result_msg or ""):
+        return True
+    return any(r in _RENDER_OBLIGATION_REASONS for r in st.presentation_withheld_reasons)
 
 
 def _should_deliver_withheld(
@@ -410,8 +433,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = "<SILENCE>"
                 self._scrub_fake_done_history(_fabricated)
 
-            # 结构假完成：被呼叫/省略续聊 + 池非空 + 零调用 + 非沉默 + 非极短寒暄（无用户话题词）
-            # 闲聊 st.intent 不二次重跑，避免占满群聊应答配额
+            # 结构假完成：未读附件或可继承跟进 + 池非空 + 零调用。无正证据不开。
             elif (
                 result_msg
                 and not st.tool_call_list
@@ -419,16 +441,9 @@ class SettlePhase(RunOnceHost):
                 and not st.fake_done_retry
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
-                and (st.intent or "") not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
                 and st.ev is not None
-                and (
-                    bool(st.ev.is_tome)
-                    or bool(
-                        st.tg is not None and (st.tg.call_to_self or st.tg.soft_continue or st.tg.ellipsis_followup)
-                    )
-                )
+                and _zero_tool_needs_correction(st)
                 and not is_silence_marker(result_msg.strip())
-                and len(result_msg.strip()) > 12
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))

@@ -11,12 +11,16 @@ class GroupProfileKit(AgentKit):
 
     async def stable_block(self, ctx: AgentHookContext) -> None:
         from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
-        from gsuid_core.ai_core.memory.group_profile import format_context_injection
+        from gsuid_core.ai_core.memory.group_profile import (
+            collect_persona_surfaces,
+            format_context_injection,
+        )
 
         if ctx.ev is None or not ctx.group_id:
             return
         scope_key = scope_key_for_conversation(ctx.ev.group_id, ctx.user_id)
-        text = await format_context_injection(scope_key)
+        surfaces = collect_persona_surfaces(ctx.persona_name)
+        text = await format_context_injection(scope_key, persona_surfaces=surfaces)
         if text:
             ctx.set_context_block("group_profile", text)
 

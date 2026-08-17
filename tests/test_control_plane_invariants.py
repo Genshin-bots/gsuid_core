@@ -119,7 +119,7 @@ def test_inv1_long_structure_with_fact_pack_still_routes_to_render() -> None:
         tool_calls_so_far=["web_search_tool"],
         fact_pack_pending=True,
     )
-    assert blocked and why in ("report_speech", "pre_render_long_speech")
+    assert blocked and why == "report_speech"
 
 
 # ── INV-3：纠正非破坏性 ──
@@ -556,10 +556,35 @@ def test_correction_deliverability_rejects_silence_and_dirty() -> None:
 
 
 def test_protocol_silence_variants_are_parsed() -> None:
-    for raw in ("<SILENCE>", "<SILENCE/>", "<SILENCE />", "</SILENCE>", "[SILENCE]", "silence", " <silence/> "):
+    for raw in (
+        "<SILENCE>",
+        "<SILENCE/>",
+        "<SILENCE />",
+        "</SILENCE>",
+        "[SILENCE]",
+        "silence",
+        " <silence/> ",
+        "<silence>\n</silence>",
+        "<SILENCE></SILENCE>",
+        "<silence>  </silence>",
+    ):
         assert is_silence_marker(raw), raw
-    for raw in ("", "在的，少吃辣。", "SILENCE 是什么意思", "<bubble/>"):
+    for raw in (
+        "",
+        "在的，少吃辣。",
+        "SILENCE 是什么意思",
+        "<bubble/>",
+        "哈哈 <SILENCE>",
+        "...",
+        "……",
+        "。",
+        "！",
+        "-",
+        "…",
+    ):
         assert not is_silence_marker(raw), raw
+    assert is_silence_marker("<SILENCE>...")
+    assert is_silence_marker("<silence>……</silence>")
 
 
 def test_protocol_legacy_marker_set_still_parses() -> None:

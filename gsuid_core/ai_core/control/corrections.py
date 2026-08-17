@@ -35,16 +35,14 @@ def fake_done_directive(*, tool_pool_size: int) -> Directive:
 
 
 def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
-    """被直接呼叫 + 工具池非空 + 零调用。"""
+    """未读附件或可继承跟进 + 工具池非空 + 零调用。"""
     return Directive(
         kind="correction",
         reason_code="structural_zero_tool",
         observation=(
-            "本轮你被直接呼叫（或同人省略续聊），工具池非空，但没有调用任何工具就结束了。"
-            "若用户是在让你办事/查询/看图/出图/设安排而尚未办到，现在就调对应工具；"
-            "缺参数时先用上文实体或记忆/查询工具试一次，不要只用澄清收束。"
-            "若你上一条回复已经**完整**解决了用户（纯概念解释或纯寒暄），"
-            "这条观察就不成立——按下面的方式申辩即可，不要重复或补充原答。"
+            "本轮有未处理的附件，或可继承的上轮工具任务，但没有调用任何工具。"
+            "现在调用对应工具；缺参数先用上文实体试一次。"
+            "若附件或跟进并不需要工具，调用 dispute_directive 申辩，不要重复原答。"
         ),
         obligations=(
             Obligation(

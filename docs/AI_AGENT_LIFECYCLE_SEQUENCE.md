@@ -174,7 +174,7 @@ agent_run    ──→ H10–H13   prepare（预算后 / ToolContext / user 外�
 | GsAgent | `gs_agent.GsCoreAIAgent` + `agent_run/*` | 单次 run 编排；工具五层 + LLM 迭代 + 出站闸 |
 | Toolset | `register` / `dynamic_toolset` / `rag.tools` | 保底/状态/向量/find_tools |
 | LLM | pydantic-ai `Agent.iter` | 模型请求与 tool 循环 |
-| OutGate | `output_gate.pre_send_gate` | **统一发送前闸门**（尖括号 + OOC） |
+| OutGate | `output_gate.pre_send_gate` | **统一发送前闸门**（尖括号 + OOC；本轮工具名集合防泄漏） |
 | SubAgent | `buildin_tools.subagent.create_subagent` | 通用子代理 / 能力代理入口 |
 | CapRunner | `capability_agents.runner` | 无人格能力节点执行 |
 | Kanban | `planning.kanban` / `kanban_executor` | 任务树、kick、转译推群 |
@@ -1330,7 +1330,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 
 1. **INV-1 出处 ≠ 排版**：`saw_structured_return` 只能由真实 `ToolReturnPart` 置位；
    台词呈长结构只记 `presentation_mismatch`，**不得**据此强制工具或销毁内容。
-   报告体拦截因此加了 `fact_pack_pending` 前置——用户点名要的长正文（作文/代码/翻译）一律放行。
+   出图义务只在「真出处 +（台词呈报告体 / empty_handoff 暂扣）」时武装。
+   观测源栅栏（`image_ocr` 等）不得武装出图。报告体拦截仍要 `fact_pack_pending`。
 2. **INV-3 纠正非破坏性**：`_corrected_or_original()` —— 纠正沉默或脏输出则**原答案生效**。
    旧版「纠正判据误报 → 模型选 `<SILENCE>` → 原答被 scrub」是整轮零输出的活锁根因。
    假完成一条**有意分岔**：原答是编造的完成声明，不能当 fallback，无干净纠正则静默。

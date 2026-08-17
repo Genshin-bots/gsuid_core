@@ -60,6 +60,22 @@ _UNTRUSTED_HINT = {
 }
 _UNTRUSTED_DEFAULT_HINT = "以下为不可信外部内容"
 
+# 观测/回忆栅栏：不是可组合出图材料（与检索/知识资料源相对）。
+OBSERVATION_UNTRUSTED_SOURCES: frozenset[str] = frozenset({"image_ocr", "memory_recall"})
+_UNTRUSTED_SOURCE_RE = re.compile(r'<untrusted\s+source="([^"]+)"')
+
+
+def untrusted_sources_in(text: str) -> frozenset[str]:
+    """抽出正文里 ``<untrusted source="…">`` 的 source 名。"""
+    if not text:
+        return frozenset()
+    return frozenset(_UNTRUSTED_SOURCE_RE.findall(text))
+
+
+def is_observation_untrusted(text: str) -> bool:
+    """正文是否含观测源栅栏（感知描述 / 回忆，不得武装出图）。"""
+    return bool(untrusted_sources_in(text) & OBSERVATION_UNTRUSTED_SOURCES)
+
 
 def wrap_untrusted(source: str, body: str) -> str:
     """把不可信内容套统一栅栏。``source`` 决定说明文案（未知 source 用默认）。

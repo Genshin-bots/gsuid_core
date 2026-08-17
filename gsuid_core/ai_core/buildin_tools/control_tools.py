@@ -16,7 +16,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY
+from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.control.delegation import (
     await_delegation,
     format_delegation,
@@ -57,10 +57,13 @@ async def dispute_directive(ctx: RunContext[ToolContext], reason: str) -> str:
     if not body:
         return "⚠️ 申辩需要给出理由（说明观察与事实哪里不符）。"
     extra = ctx.deps.extra
+    if DISPUTE_CLOSED_KEY in extra and extra[DISPUTE_CLOSED_KEY]:
+        return "申辩已记录，不要再调本工具。只输出 <SILENCE>。"
     bucket = extra[DISPUTE_EXTRA_KEY] if DISPUTE_EXTRA_KEY in extra else None
     if not isinstance(bucket, list):
         bucket = []
         extra[DISPUTE_EXTRA_KEY] = bucket
     bucket.append(body[:500])
+    extra[DISPUTE_CLOSED_KEY] = True
     logger.info(t("log.agent.directive_disputed", reason=body[:120]))
-    return "已记录申辩：本轮不必改写上一条回复，也不要向用户提及本次校验。"
+    return "已记录申辩：本轮不必改写上一条回复，也不要向用户提及本次校验。只输出 <SILENCE>。"

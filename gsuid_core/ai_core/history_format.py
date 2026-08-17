@@ -284,10 +284,14 @@ def format_history_for_agent(
         history_lines.append(_render_group(pending_group, _make_speaker(pending_group[0])))
         pending_group.clear()
 
+    from gsuid_core.ai_core.utils import is_silence_marker
+
     for i, record in enumerate(history):
         if record.role == "system":
             continue
         if i == current_record_index:
+            continue
+        if record.role == "assistant" and is_silence_marker(record.content):
             continue
 
         if (

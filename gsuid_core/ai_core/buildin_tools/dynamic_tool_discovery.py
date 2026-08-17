@@ -5,7 +5,7 @@
 当AI发现自己缺乏某个能力时，可以调用此工具来发现可用的工具。
 """
 
-from typing import Optional
+from typing import Any, Optional
 from dataclasses import replace
 
 from pydantic_ai import RunContext
@@ -15,6 +15,30 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
+from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+
+FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
+FIND_TOOLS_GAP_NOTE = (
+    "（系统：连续检索未暴露新工具。用角色短句说明做不到；禁止再 find_tools；禁止念工具名或叙述装载过程。）"
+)
+
+
+def _record_find_tools_round(extra: dict[str, Any], loaded: list[str]) -> bool:
+    """记下本轮暴露名。返回 True 表示相对上一轮没有新名字。"""
+    had_prev = FIND_TOOLS_LOADED_KEY in extra
+    prev_raw = extra[FIND_TOOLS_LOADED_KEY] if had_prev else None
+    prev: set[str] = set(prev_raw) if isinstance(prev_raw, list) else set()
+    extra[FIND_TOOLS_LOADED_KEY] = list(loaded)
+    exposed_raw = extra[EXPOSED_TOOLS_EXTRA_KEY] if EXPOSED_TOOLS_EXTRA_KEY in extra else None
+    if isinstance(exposed_raw, list):
+        for n in loaded:
+            if n not in exposed_raw:
+                exposed_raw.append(n)
+    else:
+        extra[EXPOSED_TOOLS_EXTRA_KEY] = list(loaded)
+    if not had_prev:
+        return False
+    return set(loaded) <= prev
 
 
 def _format_node_line(node_id: str) -> Optional[str]:
@@ -126,7 +150,7 @@ async def find_tools(
 
     适用场景示例：
     - 用户的追问语义太短、当前工具列表里找不到合适工具时（如澄清后回了个地名/时间）；
-    - 需要某类专门能力（查询某游戏数据、渲染图片、读写文件、查数据库等）但工具不在列。
+    - 需要某类专门能力（查询外部数据、渲染图片、读写文件、查数据库等）但工具不在列。
 
     Args:
         ctx: 工具执行上下文。
@@ -141,17 +165,18 @@ async def find_tools(
         family_tools = await search_tools_by_domain(query=need, domain_limit=3, per_domain_limit=6)
         if not family_tools:
             _record_capability_gap(need)
+            stale = _record_find_tools_round(ctx.deps.extra, [])
             # 真无命中：不给"据现有能力作答"的编造许可证；语义层找委派出路。
             agent_lines = await _capability_agent_lines(need)
             if agent_lines:
-                return "🔎 未检索到可直接加载的工具，但该能力可能由能力代理持有。\n" + _delegation_directive(
-                    agent_lines
-                )
-            return (
+                msg = "🔎 未检索到可直接加载的工具，但该能力可能由能力代理持有。\n" + _delegation_directive(agent_lines)
+                return f"{msg}\n{FIND_TOOLS_GAP_NOTE}" if stale else msg
+            miss = (
                 f"⚠️ 未检索到与「{need}」相关的工具。可换更具体的能力描述重试一次；"
                 "若确实没有该能力，涉及实时数据/外部事实时如实角色化说明查不到，"
                 "禁止编造数值、禁止用网页摘要冒充实时读数。"
             )
+            return f"{miss}\n{FIND_TOOLS_GAP_NOTE}" if stale else miss
 
         # 检索层不感知 visible_when，须与暴露层同用 prepare_tool_def 预判：隐藏工具若照报
         # "已加载"，模型按名调用必 Unknown tool 并反复重试（实测踩坑）。静默剔除，仅落日志。
@@ -187,6 +212,7 @@ async def find_tools(
 
         if not loaded_names:
             _record_capability_gap(need)
+            stale_empty = _record_find_tools_round(ctx.deps.extra, [])
             # 命中但全被 exclusive 剥离：工具真实存在、归能力代理专属——明确指路委派，
             # 不再谎称"没有找到"（旧同文案把模型推向 web_search 顶替，见 2026-08-11 归因）。
             if blocked_hit_names:
@@ -202,24 +228,28 @@ async def find_tools(
                 if not lines:
                     lines = await _capability_agent_lines(need)
                 if lines:
-                    return (
+                    locked = (
                         "🔒 该类工具为能力代理专属，不在主人格手里直接装配（这是设计，不是缺失）。\n"
                         + _delegation_directive(lines)
                         + "\n对不上需求时可以换描述再找，或改搜网页。"
                     )
+                    return f"{locked}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else locked
             # 全被 visible_when 隐藏：维持不泄露隐藏工具存在，但给出语义委派兜底。
             agent_lines = await _capability_agent_lines(need)
             if agent_lines:
-                return "🔎 未检索到当前场景可直接加载的工具，但该能力可能由能力代理持有。\n" + _delegation_directive(
+                hidden = "🔎 未检索到当前场景可直接加载的工具，但该能力可能由能力代理持有。\n" + _delegation_directive(
                     agent_lines
                 )
-            return (
+                return f"{hidden}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else hidden
+            miss2 = (
                 f"⚠️ 未检索到与「{need}」相关的工具。可换更具体的能力描述重试一次；"
                 "若确实没有该能力，涉及实时数据/外部事实时如实角色化说明查不到，"
                 "禁止编造数值、禁止用网页摘要冒充实时读数。"
             )
+            return f"{miss2}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else miss2
 
         ctx.deps.dynamic_tool_names.update(loaded_names)
+        stale = _record_find_tools_round(ctx.deps.extra, loaded_names)
 
         logger.info(
             t(
@@ -236,6 +266,8 @@ async def find_tools(
         agent_lines = await _capability_agent_lines(need)
         if agent_lines:
             parts.append("若任务适合专职代理，" + _delegation_directive(agent_lines))
+        if stale:
+            parts.append(FIND_TOOLS_GAP_NOTE)
         return "\n".join(parts)
 
     except RuntimeError as e:

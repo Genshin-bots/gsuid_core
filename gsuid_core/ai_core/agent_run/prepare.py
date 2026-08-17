@@ -130,6 +130,7 @@ class PreparePhase(RunOnceHost):
         st.has_status_tool_call = False
         st.presentation_mismatch = False
         st.presentation_withheld = []
+        st.presentation_withheld_reasons = []
         st.wait_comfort_sent = False
         st.in_flight_short = False
         st.render_ack_seen = False

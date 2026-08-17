@@ -147,6 +147,17 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         data="chat_completions",
         options=["chat_completions", "responses"],
     ),
+    "remote_web_search": GsStrConfig(
+        title="远端 Web Search",
+        desc=(
+            "默认开启。请求方式为 responses 时用上游内置 web_search，"
+            "不再把本地 web_search_tool 发给模型；"
+            "chat_completions 无论本开关开或关都走本地 Tavily/Jina/Exa。"
+            "中转的 responses 若不支持 hosted 工具会 400，那时再关掉即可"
+        ),
+        data="on",
+        options=["off", "on"],
+    ),
     "forward_end_user_id": GsStrConfig(
         title="透传终端用户标识",
         desc=(

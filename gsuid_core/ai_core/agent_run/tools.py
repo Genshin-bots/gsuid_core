@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings, merge_model_settings
+from pydantic_ai.capabilities import AbstractCapability
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -45,6 +46,7 @@ from gsuid_core.ai_core.agent_run.support import (
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.attribution import resolve_attribution_settings
+from gsuid_core.ai_core.agent_run.remote_web_search import attach_remote_web_search
 
 
 def _kernel_owns_tool_assembly() -> bool:
@@ -412,6 +414,11 @@ class ToolsPhase(RunOnceHost):
         # 最终去重（兼容外部直接传入 st.tools 的情况）
         st.tools = list({obj.name: obj for obj in st.tools}.values())
         st.tool_names = [t.name for t in st.tools]
+        st.exposed_tool_names = list(st.tool_names)
+        _ctx = _require_context(st)
+        from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+
+        _ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = list(st.tool_names)
 
         # 回填本轮装配工具的能力域，供 handle_ai 偏好注入精确过滤（"装配后回传"）： 把工具名映射回 capability_domain
         # handle_ai 据此只注入本轮可用工具相关的软偏好。
@@ -530,6 +537,10 @@ class ToolsPhase(RunOnceHost):
             _model_settings = None
 
         # 单工具抛错不炸整轮：SkillNotFound 等 → ⚠️ 回执，模型改道
+        _caps: list[AbstractCapability[Any]] = [build_tool_safety_capability()]
+        _remote_web = attach_remote_web_search(st, self._active_config_name)
+        if _remote_web is not None:
+            _caps.append(_remote_web)
         _agent = Agent(
             model=self.model,
             deps_type=ToolContext,
@@ -537,7 +548,7 @@ class ToolsPhase(RunOnceHost):
             model_settings=_model_settings,
             tools=st.tools,
             toolsets=_toolsets,
-            capabilities=[build_tool_safety_capability()],
+            capabilities=_caps,
             retries=3,
             output_type=st.output_type or str,
         )

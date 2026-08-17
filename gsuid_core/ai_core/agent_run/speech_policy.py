@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Literal, Sequence
 
+from gsuid_core.ai_core.utils import is_silence_marker
+from gsuid_core.ai_core.content_guard import is_observation_untrusted
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     is_timeless_aggregate as _is_timeless_aggregate,
     fact_pack_is_multi_point as _fact_lines_multi_point,
@@ -62,8 +64,7 @@ _PROCESS_META_RE = re.compile(
     r"(时效存疑|自己再验|数据没刷|没刷出来|没法.{0,8}编数字|"
     r"回炉了?你再|回炉|系统校验|框架[·・.]任务|产物句柄|"
     r"long_structured|tool_return|inline_head|"
-    r"how_to_read|persisted\s+id|"
-    r"专域(报价|API)|当前市价|最新读数)",
+    r"how_to_read|persisted\s+id)",
     re.IGNORECASE,
 )
 
@@ -90,7 +91,7 @@ def looks_like_delivery_status_narration(text: str) -> bool:
     保护「已经发给你啦」这类面向用户的自然交付句。
     """
     body = (text or "").strip()
-    if not body or body in ("<SILENCE>", "SILENCE"):
+    if not body or is_silence_marker(body):
         return False
     if _DELIVERY_META_CLOSE_RE.search(body) is None:
         return False
@@ -224,7 +225,7 @@ def looks_like_numeric_recitation(text: str) -> bool:
     body = (text or "").strip()
     if len(body) < 80:
         return False
-    if body in ("<SILENCE>", "SILENCE"):
+    if is_silence_marker(body):
         return False
     nums = re.findall(r"(?<![\d.])(?:\d+\.\d+%?|\d{1,3}%|\d{4,})(?![\d.])", body)
     if len(nums) >= 6:
@@ -235,7 +236,7 @@ def looks_like_numeric_recitation(text: str) -> bool:
 def claims_premature_delivery(text: str) -> bool:
     """是否在宣称交付物已就绪（完成态口吻）。"""
     body = (text or "").strip()
-    if not body or body in ("<SILENCE>", "SILENCE"):
+    if not body or is_silence_marker(body):
         return False
     return bool(_PREMATURE_DELIVERY_RE.search(body))
 
@@ -243,7 +244,7 @@ def claims_premature_delivery(text: str) -> bool:
 def looks_like_empty_handoff(text: str) -> bool:
     """是否空交付/摆烂：声称有料却推诿、不出图也不给要点。"""
     body = (text or "").strip()
-    if not body or body in ("<SILENCE>", "SILENCE"):
+    if not body or is_silence_marker(body):
         return False
     if looks_like_wait_comfort(body):
         return False
@@ -258,7 +259,7 @@ def looks_like_empty_handoff(text: str) -> bool:
 def looks_like_process_meta(text: str) -> bool:
     """是否框架/过程元话语（对用户即 OOC）。"""
     body = (text or "").strip()
-    if not body or body in ("<SILENCE>", "SILENCE"):
+    if not body or is_silence_marker(body):
         return False
     return bool(_PROCESS_META_RE.search(body))
 
@@ -309,7 +310,7 @@ def looks_like_report_speech(text: str) -> bool:
     body = (text or "").strip()
     if len(body) < 80:
         return False
-    if body in ("<SILENCE>", "SILENCE"):
+    if is_silence_marker(body):
         return False
     heads = len(_MD_HEADING_RE.findall(body))
     # 行首加粗小标题（**命名规则** 单独成行）
@@ -419,7 +420,7 @@ def should_block_user_visible_text(
     body = (text or "").strip()
     if not body:
         return True, "empty"
-    if body in ("<SILENCE>", "SILENCE", "</SILENCE>"):
+    if is_silence_marker(body):
         return False, "silence"
 
     pol: SpeechPolicy = (
@@ -508,11 +509,6 @@ def should_block_user_visible_text(
                 return True, "status_without_tool"
         return False, "ok"
 
-    # free：事实包待出图时，优先短等待；长完成腔已在上面拦
-    if fact_pack_pending and not image_sent and len(body) > 80 and not looks_like_wait_comfort(body):
-        # 未出图却长篇收束 → 当空交付处理
-        return True, "pre_render_long_speech"
-
     return False, "ok"
 
 
@@ -525,6 +521,8 @@ def content_is_render_candidate(
     """是否可作为「待出图事实包」候选（体积折叠 ≠ 可出图）。"""
     body = (content or "").strip()
     if not body:
+        return False
+    if is_observation_untrusted(body):
         return False
     # 失败/空/加载清单
     if body.startswith("⚠️") or body.startswith("❌"):
@@ -558,12 +556,8 @@ def content_is_render_candidate(
     if _searchish and not _fact_lines_multi_point(body):
         return False
 
-    # 真表 / 多段列表
+    # 真表。长散文不得单独武装（观测说明文误报）。
     if "|" in body and body.count("\n") >= 3:
-        return True
-    if body.count("\n\n") >= 2 and len(body) >= 400:
-        return True
-    if body.count("\n") >= 10 and len(body) >= 1200:
         return True
 
     # FileOS 折叠：用原文形态判定；仅「多段/表/事实包」才可出图（检索噪声默认否）

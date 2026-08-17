@@ -329,24 +329,27 @@ class _Bot:
 
             # 构造 Event 对象用于记录历史（WS_BOT_ID 即 self.bot_id）
             if content and _hist_user_id:
-                ev = Event(
-                    bot_id=bot_id,
-                    bot_self_id=bot_self_id,
-                    user_type=target_type,
-                    group_id=_hist_group_id,
-                    user_id=_hist_user_id,
-                    WS_BOT_ID=self.bot_id,
-                )
-                # 显式 merge：调用方传入的 extra_metadata 覆盖默认推断的 type/image_count
-                if extra_metadata:
-                    metadata.update(extra_metadata)
-                history_manager.add_message(
-                    event=ev,
-                    role="assistant",
-                    content=content,
-                    user_name="AI",
-                    metadata=metadata,
-                )
+                from gsuid_core.ai_core.utils import is_silence_marker
+
+                if not is_silence_marker(content):
+                    ev = Event(
+                        bot_id=bot_id,
+                        bot_self_id=bot_self_id,
+                        user_type=target_type,
+                        group_id=_hist_group_id,
+                        user_id=_hist_user_id,
+                        WS_BOT_ID=self.bot_id,
+                    )
+                    # 显式 merge：调用方传入的 extra_metadata 覆盖默认推断的 type/image_count
+                    if extra_metadata:
+                        metadata.update(extra_metadata)
+                    history_manager.add_message(
+                        event=ev,
+                        role="assistant",
+                        content=content,
+                        user_name="AI",
+                        metadata=metadata,
+                    )
         except Exception as e:
             logger.debug(t("log.bot.record_history_fail", error=e))
 

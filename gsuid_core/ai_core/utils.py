@@ -59,21 +59,50 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
     }
 )
 
-# 协议标记应被**解析**而非字面比较：模型会写 `<SILENCE/>` / `</SILENCE>` 等变体，
-# 字面集合漏掉后整段会被当成普通台词或非法尖括号标签下发（生产已复现）。
-_SILENCE_TOKEN_RE = re.compile(
-    r"^\s*(?:"
+# 协议标签（开/闭/自闭合）。代码块内字面量不剥，避免教学回复被当成沉默。
+_PROTOCOL_TAG_RE = re.compile(
     r"<\s*/?\s*(?:silence|end_turn|no_tool_call)\s*/?\s*>"
-    r"|\[\s*silence\s*\]"
-    r"|silence"
-    r")\s*$",
+    r"|\[\s*silence\s*\]",
     re.IGNORECASE,
 )
+_PROTOCOL_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
+_BARE_SILENCE_RE = re.compile(r"^\s*silence\s*$", re.IGNORECASE)
+_PROTOCOL_EMPTYISH_RE = re.compile(r"^[\s\-–—.,，。！？!?、；;：:\u3000·•…]*$")
+
+
+def remainder_after_protocol_tags(text: str) -> str:
+    """剥掉协议标签，返回剩余台词。代码围栏/行内代码内的字面量保留。"""
+    if not text:
+        return ""
+    held: list[str] = []
+
+    def _hold(m: re.Match[str]) -> str:
+        held.append(m.group(0))
+        return f"\x00{len(held) - 1}\x00"
+
+    protected = _PROTOCOL_CODE_SPAN_RE.sub(_hold, text)
+    stripped = _PROTOCOL_TAG_RE.sub("", protected)
+    for i, chunk in enumerate(held):
+        stripped = stripped.replace(f"\x00{i}\x00", chunk)
+    return stripped
 
 
 def is_silence_marker(text: str) -> bool:
-    """整段是否沉默/控制标记（容忍 ``</X>`` / ``<X/>`` / ``[X]`` / 裸名与大小写）。"""
-    return bool(text) and _SILENCE_TOKEN_RE.match(text) is not None
+    """整段是否沉默：裸 SILENCE、协议标签、或剥标签后只剩空白/标点。
+
+    从未含协议标签的纯标点（…… / ... / 。）是可见台词，不是沉默。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if _BARE_SILENCE_RE.match(raw) is not None:
+        return True
+    leftover = remainder_after_protocol_tags(raw).strip()
+    if leftover == raw:
+        return False
+    if not leftover:
+        return True
+    return _PROTOCOL_EMPTYISH_RE.match(leftover) is not None
 
 
 # run 失败返回值协议：生产端(gs_agent)与全部消费端(handle_ai/executor/sanitize)引用
@@ -584,9 +613,8 @@ def _build_relationship_description(
     # 主人：只标身份与优先级，不再写「直接…」——是否直连由 is_tome 时注入的
     # DIRECT_MARKER 单独表达，避免与寻址标记语义叠床架屋。
     if _is_master_user(user_id):
-        return f"[⚡主人] {speaker} 找你说话了。"
-
-    return f"{speaker} 找你说话了。"
+        return f"[⚡主人] {speaker}"
+    return speaker
 
 
 async def prepare_content_payload(
@@ -1198,6 +1226,10 @@ async def send_chat_result(
     if is_silence_marker(_trimmed):
         logger.debug(i18n_t("log.ai.send_chat_result_special_trimmed_skip", _trimmed=repr(_trimmed)))
         return
+    _speech = remainder_after_protocol_tags(_trimmed).strip()
+    if not _speech:
+        return
+    text = _speech
 
     # 拦截 LLM API 错误消息（429/超时等），角色化替换后下发
     if _ERROR_OUTPUT_RE.search(text):

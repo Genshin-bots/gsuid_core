@@ -255,7 +255,12 @@ def _eval_ooc(
     if not of.is_enabled():
         return None
 
-    hit = of.check_ooc(text, user_text=user_text)
+    names: list[str] = []
+    if of.EXPOSED_TOOLS_EXTRA_KEY in extra:
+        raw_names = extra[of.EXPOSED_TOOLS_EXTRA_KEY]
+        if isinstance(raw_names, (list, tuple, set, frozenset)):
+            names = [str(x) for x in raw_names if str(x)]
+    hit = of.check_ooc(text, user_text=user_text, exposed_tool_names=names)
     if hit is None:
         return None
 
