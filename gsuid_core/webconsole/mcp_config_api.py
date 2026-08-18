@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import Depends
 from pydantic import BaseModel
 
-from gsuid_core.utils.secret_mask import mask_mapping, unmask_against
+from gsuid_core.utils.secret_mask import unmask_against
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth, require_admin
+from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
 from gsuid_core.ai_core.mcp.startup import (
     unregister_mcp_server,
     register_all_mcp_tools,
@@ -130,7 +130,7 @@ class MCPConfigUpdate(BaseModel):
 
 @app.get("/api/ai/mcp/list", summary="获取 MCP 配置列表", tags=MCP_CONFIG)
 async def get_mcp_configs_list(
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin_header),
 ) -> Dict[str, Any]:
     """
     获取所有 MCP 配置列表
@@ -140,13 +140,12 @@ async def get_mcp_configs_list(
         data: MCP 配置列表
     """
     configs = mcp_config_manager.list_configs()
-    masked = [mask_mapping(c) if isinstance(c, dict) else c for c in configs]
     return {
         "status": 0,
         "msg": "ok",
         "data": {
-            "configs": masked,
-            "count": len(masked),
+            "configs": configs,
+            "count": len(configs),
         },
     }
 
@@ -182,7 +181,7 @@ MCP_STATIC_ROUTES = frozenset({"list", "presets", "discover", "import", "reload"
 @app.get("/api/ai/mcp/{config_id}", summary="获取 MCP 配置详情", tags=MCP_CONFIG)
 async def get_mcp_config_detail(
     config_id: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin_header),
 ) -> Dict[str, Any]:
     """
     获取指定 MCP 配置的详细信息
@@ -215,7 +214,7 @@ async def get_mcp_config_detail(
     return {
         "status": 0,
         "msg": "ok",
-        "data": mask_mapping(data),
+        "data": data,
     }
 
 

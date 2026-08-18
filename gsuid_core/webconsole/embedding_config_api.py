@@ -9,9 +9,9 @@ from typing import Any, Dict
 
 from fastapi import Depends
 
-from gsuid_core.utils.secret_mask import mask_mapping, unmask_against
+from gsuid_core.utils.secret_mask import unmask_against
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth, require_admin
+from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
 from gsuid_core.ai_core.configs.ai_config import (
     ai_config,
     local_embedding_config,
@@ -116,7 +116,7 @@ async def set_embedding_provider(data: Dict[str, Any], _: Dict[str, Any] = Depen
 
 
 @app.get("/api/embedding_config/local", summary="获取本地嵌入模型配置", tags=EMBEDDING_CONFIG)
-async def get_local_embedding_config(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+async def get_local_embedding_config(_: Dict[str, Any] = Depends(require_admin_header)) -> Dict[str, Any]:
     """
     获取本地嵌入模型配置
 
@@ -131,7 +131,7 @@ async def get_local_embedding_config(_: Dict[str, Any] = Depends(require_auth)) 
     return {
         "status": 0,
         "msg": "ok",
-        "data": mask_mapping(config_dict),
+        "data": config_dict,
     }
 
 
@@ -162,7 +162,7 @@ async def set_local_embedding_config(
 
 
 @app.get("/api/embedding_config/openai", summary="获取 OpenAI 嵌入模型配置", tags=EMBEDDING_CONFIG)
-async def get_openai_embedding_config(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+async def get_openai_embedding_config(_: Dict[str, Any] = Depends(require_admin_header)) -> Dict[str, Any]:
     """
     获取 OpenAI 嵌入模型配置
 
@@ -177,7 +177,7 @@ async def get_openai_embedding_config(_: Dict[str, Any] = Depends(require_auth))
     return {
         "status": 0,
         "msg": "ok",
-        "data": mask_mapping(config_dict),
+        "data": config_dict,
     }
 
 
@@ -208,7 +208,7 @@ async def set_openai_embedding_config(
 
 
 @app.get("/api/embedding_config/summary", summary="获取嵌入模型配置摘要", tags=EMBEDDING_CONFIG)
-async def get_embedding_config_summary(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+async def get_embedding_config_summary(_: Dict[str, Any] = Depends(require_admin_header)) -> Dict[str, Any]:
     """
     获取嵌入模型配置摘要（一次性获取所有信息）
 
@@ -235,9 +235,9 @@ async def get_embedding_config_summary(_: Dict[str, Any] = Depends(require_auth)
         "data": {
             "provider": provider,
             "available_providers": list_embedding_providers(),
-            "local_config": mask_mapping(local_config),
-            "openai_config": mask_mapping(openai_config_dict),
+            "local_config": local_config,
+            "openai_config": openai_config_dict,
             # 插件注册的 provider（前端未跟进时静默忽略，向后兼容）
-            "extra_providers": mask_mapping(extra),
+            "extra_providers": extra,
         },
     }

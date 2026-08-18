@@ -12,9 +12,9 @@ from fastapi import Depends, Request, Response
 
 from gsuid_core.data_store import backup_path, gs_data_path
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join, confine_to_root, is_safe_filename
-from gsuid_core.utils.secret_mask import looks_masked, mask_mapping
+from gsuid_core.utils.secret_mask import looks_masked
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_admin
+from gsuid_core.webconsole.web_api import require_admin, require_admin_header
 from gsuid_core.utils.backup.backup_core import backup_config, copy_and_rebase_paths
 
 from ._api_tags import BACKUP
@@ -140,7 +140,7 @@ async def download_backup(request: Request, _user: Dict[str, Any] = Depends(requ
 
 
 @app.get("/api/backup/config", summary="获取备份配置", tags=BACKUP)
-async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
+async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(require_admin_header)):
     """
     获取备份配置信息
 
@@ -171,7 +171,7 @@ async def get_backup_config(request: Request, _user: Dict[str, Any] = Depends(re
                 relative_paths.append(p)
         raw_config["backup_dir"]["data"] = relative_paths
 
-    return {"status": 0, "msg": "ok", "data": mask_mapping(raw_config)}
+    return {"status": 0, "msg": "ok", "data": raw_config}
 
 
 @app.post("/api/backup/config", summary="保存备份配置", tags=BACKUP)

@@ -13,11 +13,10 @@ from gsuid_core.sv import SL
 from gsuid_core.i18n import t
 from gsuid_core.utils.secret_mask import (
     unmask_against,
-    mask_secret_value,
     is_secret_key_name,
 )
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth, require_admin
+from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
 from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsDivider,
@@ -90,8 +89,6 @@ def _group_item_values(item: Dict[str, GSC]) -> Dict[str, Any]:
             out[key] = [_group_item_values(sub) for sub in field.data]
         elif isinstance(field, GsDivider):
             continue
-        elif _is_secret_gsc(field) or is_secret_key_name(key):
-            out[key] = mask_secret_value(field.data)
         else:
             out[key] = field.data
     return out
@@ -139,10 +136,9 @@ def _build_config_item(config: GSC, key: str = "") -> Dict[str, Any]:
         "desc": config.desc,
     }
 
-    # secret: 标记敏感项（前端应渲染为密码框）；GsDivider / GsColorConfig 无该字段
+    # secret: 标记敏感项（前端视觉隐藏）；已登录管理员 GET 下发明文。
     if _is_secret_gsc(config) or is_secret_key_name(key):
         item["secret"] = True
-        item["value"] = mask_secret_value(value)
 
     # options: 仅 GsStrConfig / GsListStrConfig / GsIntConfig 拥有
     if isinstance(config, (GsStrConfig, GsListStrConfig, GsIntConfig)) and config.options:
@@ -213,7 +209,9 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
 
 
 @app.get("/api/plugins/{plugin_name}", summary="获取插件详情", tags=PLUGINS)
-async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_auth)):
+async def get_plugin_detail(
+    request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_admin_header)
+):
     """
     获取单个插件的完整信息
 
@@ -456,7 +454,7 @@ async def get_framework_config_list(
 
 @app.get("/api/framework-config/{config_name}", summary="获取框架配置详情", tags=FRAMEWORK_CONFIG)
 async def get_framework_config_detail(
-    request: Request, config_name: str, _user: Dict[str, Any] = Depends(require_auth)
+    request: Request, config_name: str, _user: Dict[str, Any] = Depends(require_admin_header)
 ):
     """
     获取单个框架配置的完整信息
@@ -610,7 +608,7 @@ async def update_framework_config_item(
 
 @app.post("/api/plugins/{plugin_name}", summary="更新插件配置", tags=PLUGINS)
 async def update_plugin_config(
-    request: Request, plugin_name: str, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_auth)
+    request: Request, plugin_name: str, data: Dict[str, Any], _user: Dict[str, Any] = Depends(require_admin)
 ):
     """
     更新插件配置
@@ -685,7 +683,7 @@ async def update_plugin_config_item(
     config_name: str,
     item_name: str,
     value: Any = Body(...),
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: Dict[str, Any] = Depends(require_admin),
 ):
     """
     更新单个插件配置项

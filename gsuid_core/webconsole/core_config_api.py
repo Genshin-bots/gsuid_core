@@ -8,15 +8,15 @@ from typing import Any, Dict, List
 from fastapi import Depends, Request
 
 from gsuid_core.config import CONFIG_DEFAULT, CONFIG_OPTIONS, core_config
-from gsuid_core.utils.secret_mask import looks_masked, mask_secret_value, is_secret_key_name
+from gsuid_core.utils.secret_mask import looks_masked, is_secret_key_name
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_admin
+from gsuid_core.webconsole.web_api import require_admin, require_admin_header
 
 from ._api_tags import CORE_CONFIG
 
 
 @app.get("/api/core/config", summary="获取核心配置", tags=CORE_CONFIG)
-async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
+async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(require_admin_header)):
     """
     获取核心配置
 
@@ -40,8 +40,6 @@ async def get_core_config(request: Request, _user: Dict[str, Any] = Depends(requ
             result[key] = value
         else:
             result[key] = CONFIG_DEFAULT[key]
-        if is_secret_key_name(key):
-            result[key] = mask_secret_value(result[key])
 
     return {"status": 0, "msg": "ok", "data": result}
 

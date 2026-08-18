@@ -15,9 +15,9 @@ from typing import Any, Dict
 
 from fastapi import Depends
 
-from gsuid_core.utils.secret_mask import mask_mapping, unmask_against
+from gsuid_core.utils.secret_mask import unmask_against
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth, require_admin
+from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
 from gsuid_core.ai_core.configs.models import (
     SUPPORTED_PROVIDERS,
     parse_provider_config_name,
@@ -207,7 +207,7 @@ async def get_provider_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[s
 @app.get("/api/provider_config/task_config/{task_level}", summary="获取任务级别配置", tags=PROVIDER_CONFIG)
 async def get_task_config(
     task_level: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin_header),
 ) -> Dict[str, Any]:
     """
     获取高级或低级任务的配置详情
@@ -246,7 +246,7 @@ async def get_task_config(
                 "name": full_config_name,
                 "provider": provider,
                 "config_name": config_name,
-                "config": mask_mapping(config_dict),
+                "config": config_dict,
             }
 
         return {
@@ -466,7 +466,7 @@ async def get_config_options(
 async def get_config_detail(
     provider: str,
     config_name: str,
-    _: Dict[str, Any] = Depends(require_auth),
+    _: Dict[str, Any] = Depends(require_admin_header),
 ) -> Dict[str, Any]:
     """
     获取指定配置的详细信息
@@ -507,7 +507,7 @@ async def get_config_detail(
                 "name": full_name,
                 "provider": provider,
                 "config_name": config_name,
-                "config": mask_mapping(config_dict),
+                "config": config_dict,
             },
         }
     except Exception as e:

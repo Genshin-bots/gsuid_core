@@ -489,7 +489,7 @@ OpenAI 协议定义了标准的请求体字段 `user`（end-user ID）：请求�
 | `hashed` | 携带 `HMAC-SHA256(salt, 调用方标识)` 的前 32 位十六进制 |
 | `raw` | 携带原始调用方标识 |
 
-配套字段 `end_user_id_salt`（`secret`，WebConsole `/ai-config` 打码展示）是 `hashed`
+配套字段 `end_user_id_salt`（`secret`，WebConsole `/ai-config` 默认隐藏、管理员 GET 下发明文）是 `hashed`
 模式的盐值。**留空即无密钥摘要**：标识空间小的场景（纯数字账号 / QQ 号）可被枚举反查，
 只起混淆作用；需要抗反查请填一段随机字符串。改动盐值会让此前发出的摘要全部失去对应关系，
 上游按调用方的历史聚合会断裂。

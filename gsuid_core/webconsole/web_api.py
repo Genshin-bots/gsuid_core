@@ -62,6 +62,22 @@ def require_admin(user_data: SessionRecord = Depends(require_auth)) -> SessionRe
     return user_data
 
 
+def require_auth_header(authorization: str | None = Header(default=None)) -> SessionRecord:
+    """只认 ``Authorization: Bearer``，拒绝 ``?token=``，避免密钥接口把令牌写进 URL/日志/Referer。"""
+    user_data = verify_token(authorization, None)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="未授权，请先登录")
+    return user_data
+
+
+def require_admin_header(authorization: str | None = Header(default=None)) -> SessionRecord:
+    """管理员 + 仅 Bearer。用于回传明文密钥的 GET。"""
+    user_data = require_auth_header(authorization)
+    if session_role(user_data) != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user_data
+
+
 LIVECHAT_WS_BOT_ID = "webconsole_livechat"
 
 

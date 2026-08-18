@@ -154,6 +154,29 @@ def test_mask_mapping_salt_field():
     assert unmask_against(masked, raw)["end_user_id_salt"]["data"] == "random-salt-value"
 
 
+def test_build_config_item_returns_plaintext_secret():
+    from gsuid_core.utils.plugins_config.models import GsStrConfig
+    from gsuid_core.webconsole.plugins_api import _build_config_item
+
+    secret = GsStrConfig(title="k", desc="d", data="sk-abcdefgh", secret=True)
+    item = _build_config_item(secret, "custom_name")
+    assert item["secret"] is True
+    assert item["value"] == "sk-abcdefgh"
+    assert item["default"] == "sk-abcdefgh"
+
+    by_key = GsStrConfig(title="k", desc="d", data="sk-oldkey123", secret=False)
+    keyed = _build_config_item(by_key, "api_key")
+    assert keyed["secret"] is True
+    assert keyed["value"] == "sk-oldkey123"
+    assert keyed["default"] == "sk-oldkey123"
+
+    plain = GsStrConfig(title="m", desc="d", data="gpt-4o", secret=False)
+    shown = _build_config_item(plain, "model")
+    assert "secret" not in shown
+    assert shown["value"] == "gpt-4o"
+    assert shown["default"] == "gpt-4o"
+
+
 def test_is_safe_relpath_rejects_whitespace():
     assert not is_safe_relpath(" foo.txt")
     assert not is_safe_relpath("foo.txt ")
@@ -225,6 +248,20 @@ def test_require_admin_role():
     with pytest.raises(HTTPException) as ei:
         require_admin(user)
     assert ei.value.status_code == 403
+
+
+def test_require_admin_header_rejects_missing_bearer():
+    from fastapi import HTTPException
+
+    from gsuid_core.webconsole.web_api import require_admin_header, require_auth_header
+
+    with pytest.raises(HTTPException) as missing_auth:
+        require_auth_header(None)
+    assert missing_auth.value.status_code == 401
+
+    with pytest.raises(HTTPException) as missing_admin:
+        require_admin_header(None)
+    assert missing_admin.value.status_code == 401
 
 
 def test_livechat_ws_authorized_requires_session():
