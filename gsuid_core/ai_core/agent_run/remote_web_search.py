@@ -1,8 +1,8 @@
-"""Responses 的 hosted web_search：默认开，Chat Completions 永远走本地。
+"""厂商 hosted web_search：OpenAI Responses / Anthropic Messages 默认开。
 
-开关在 OpenAI 配置 ``remote_web_search``（默认 on）。
-``request_method=responses`` 且开关 on 才挂 ``WebSearch``；
-``chat_completions`` 无视开关，本轮只用 ``web_search_tool``。
+开关在对应 provider 配置 ``remote_web_search``（默认 on）。
+OpenAI ``chat_completions`` 无视开关，本轮只用 ``web_search_tool``；
+OpenAI ``responses`` 与 Anthropic Messages 在开关 on 时挂 ``WebSearch``。
 """
 
 from __future__ import annotations
@@ -19,9 +19,12 @@ from gsuid_core.ai_core.configs.models import to_request_method
 from gsuid_core.ai_core.agent_run.state import RunOnceState, _require_context
 from gsuid_core.ai_core.configs.attribution import split_provider_config_name
 from gsuid_core.ai_core.configs.openai_config import get_openai_config
+from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
 
 LOCAL_WEB_SEARCH_TOOL = "web_search_tool"
 HOSTED_WEB_SEARCH_TOOL = "web_search"
+# Anthropic 没有 Chat/Responses 分叉，Messages API 本身就能挂 hosted 工具
+ANTHROPIC_NATIVE_METHOD = "native"
 
 
 def remote_web_search_should_attach(
@@ -30,25 +33,32 @@ def remote_web_search_should_attach(
     request_method: str,
     has_local_web_search: bool,
 ) -> bool:
-    """Chat 永远不挂；Responses 且开关 on 且本轮池子有搜索工具才挂。"""
-    return enabled and request_method == "responses" and has_local_web_search
+    """Chat Completions 永远不挂；其余支持 hosted 的端点看开关和本轮池子。"""
+    return enabled and request_method != "chat_completions" and has_local_web_search
 
 
 def read_remote_web_search_flag(config_full_name: str | None) -> tuple[bool, str]:
-    """读 OpenAI 配置，返回 ``(enabled, request_method)``。
+    """读 provider 配置，返回 ``(enabled, request_method)``。
 
-    非 openai / 空配置名视为开关关、方法为 chat_completions。
+    Anthropic 的第二项固定为 ``native``（Messages API）。
+    非 openai/anthropic 或空配置名视为开关关、方法为 chat_completions。
     旧文件缺 key 时 ``get_config`` 会补模板默认 on。
     """
     if not config_full_name:
         return False, "chat_completions"
     provider, config_name = split_provider_config_name(config_full_name)
-    if provider != "openai" or not config_name:
+    if not config_name:
         return False, "chat_completions"
-    oconfig = get_openai_config(config_name)
-    enabled = str(oconfig.get_config("remote_web_search").data).strip().lower() == "on"
-    method = to_request_method(str(oconfig.get_config("request_method").data))
-    return enabled, method
+    if provider == "openai":
+        oconfig = get_openai_config(config_name)
+        enabled = str(oconfig.get_config("remote_web_search").data).strip().lower() == "on"
+        method = to_request_method(str(oconfig.get_config("request_method").data))
+        return enabled, method
+    if provider == "anthropic":
+        aconfig = get_anthropic_config(config_name)
+        enabled = str(aconfig.get_config("remote_web_search").data).strip().lower() == "on"
+        return enabled, ANTHROPIC_NATIVE_METHOD
+    return False, "chat_completions"
 
 
 def is_hosted_web_search_name(tool_name: str | None) -> bool:

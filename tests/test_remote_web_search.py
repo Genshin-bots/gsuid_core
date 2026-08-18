@@ -15,6 +15,7 @@ from gsuid_core.utils.plugins_config.models import GsStrConfig
 from gsuid_core.ai_core.agent_run.remote_web_search import (
     LOCAL_WEB_SEARCH_TOOL,
     HOSTED_WEB_SEARCH_TOOL,
+    ANTHROPIC_NATIVE_METHOD,
     attach_remote_web_search,
     is_hosted_web_search_name,
     remote_web_search_should_attach,
@@ -52,12 +53,34 @@ def test_chat_completions_ignores_switch() -> None:
     )
 
 
+def test_anthropic_native_attaches_when_on() -> None:
+    assert remote_web_search_should_attach(
+        enabled=True,
+        request_method=ANTHROPIC_NATIVE_METHOD,
+        has_local_web_search=True,
+    )
+    assert not remote_web_search_should_attach(
+        enabled=False,
+        request_method=ANTHROPIC_NATIVE_METHOD,
+        has_local_web_search=True,
+    )
+
+
 def test_template_places_remote_web_search_after_request_method() -> None:
     from gsuid_core.ai_core.configs.openai_config import OPENAI_CONFIG_TEMPLATE
 
     keys = list(OPENAI_CONFIG_TEMPLATE)
     assert keys.index("remote_web_search") == keys.index("request_method") + 1
     cfg = OPENAI_CONFIG_TEMPLATE["remote_web_search"]
+    assert isinstance(cfg, GsStrConfig)
+    assert cfg.data == "on"
+    assert cfg.options == ["off", "on"]
+
+
+def test_anthropic_template_defaults_remote_web_search_on() -> None:
+    from gsuid_core.ai_core.configs.anthropic_config import ANTHROPIC_CONFIG_TEMPLATE
+
+    cfg = ANTHROPIC_CONFIG_TEMPLATE["remote_web_search"]
     assert isinstance(cfg, GsStrConfig)
     assert cfg.data == "on"
     assert cfg.options == ["off", "on"]
@@ -123,6 +146,16 @@ def test_attach_skips_when_flag_off(monkeypatch: Any) -> None:
     st = _make_state([LOCAL_WEB_SEARCH_TOOL])
     assert attach_remote_web_search(st, "openai++official") is None
     assert any(t.name == LOCAL_WEB_SEARCH_TOOL for t in st.tools)
+
+
+def test_attach_anthropic_native(monkeypatch: Any) -> None:
+    from gsuid_core.ai_core.agent_run import remote_web_search as rws
+
+    dummy = Tool(_dummy_search, name=LOCAL_WEB_SEARCH_TOOL)
+    monkeypatch.setattr(rws, "read_remote_web_search_flag", lambda _name: (True, ANTHROPIC_NATIVE_METHOD))
+    monkeypatch.setattr(rws, "find_tool_base", lambda _n: SimpleNamespace(tool=dummy))
+    st = _make_state([LOCAL_WEB_SEARCH_TOOL])
+    assert attach_remote_web_search(st, "anthropic++claude") is not None
 
 
 def test_attach_skips_chat_completions_even_when_on(monkeypatch: Any) -> None:
