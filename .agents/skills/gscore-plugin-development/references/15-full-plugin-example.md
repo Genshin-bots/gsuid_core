@@ -25,6 +25,10 @@
 ├── __init__.py                        # 插件入口（可留空）
 ├── __nest__.py                        # 空文件，标记启用嵌套加载
 ├── pyproject.toml                     # 插件依赖声明
+├── ruff.toml                          # 插件自己的 Ruff（必带，见 §1.7）
+├── .vscode/                           # 独立打开本目录时用（见 §1.7）
+│   ├── extensions.json
+│   └── settings.json
 ├── README.md
 ├── LICENSE
 ├── ICON.png                           # 插件图标（帮助 / webconsole）

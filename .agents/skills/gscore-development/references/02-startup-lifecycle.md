@@ -196,5 +196,7 @@ python -m gsuid_core --dev              # 只加载 name.endswith("-dev") 的插
 python -m gsuid_core --port 8888 --host 0.0.0.0
 ```
 
-`load_plugins()` 里 `if dev_mode and not plugin.name.endswith("-dev"): continue`。开发模式
-插件目录命名为 `my_plugin-dev/`。
+`load_plugins()` 里常规插件仍要求 `name.endswith("-dev")`；**基础设施插件（meta plugin）在
+`--dev` 下也会加载**，否则依赖它们的 `-dev` 业务插件会在 import 期找不到
+`from gscore_mail.api import send`。开发模式业务插件目录命名为 `my_plugin-dev/`。
+未带 `-dev` 后缀的 meta 模块名保持 `plugins.<目录>.*`，不会被改成 `*-dev`。

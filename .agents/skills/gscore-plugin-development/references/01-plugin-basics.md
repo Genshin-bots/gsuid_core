@@ -11,6 +11,12 @@ gsuid_core/plugins/MyPlugin/                 ← 插件根目录（仓库名）
 ├── __init__.py                              ← 外层入口（一般留空）
 ├── __nest__.py                              ← 空文件，标记"嵌套加载"
 ├── pyproject.toml                           ← 插件元数据 + 依赖
+├── ruff.toml                                ← 插件自己的 Ruff（必带）
+├── pyrightconfig.json                       ← 独立打开本目录时给 Pyright
+├── .vscode/                                 ← 独立打开本目录时给 VS Code
+│   ├── extensions.json                      ← 推荐 Python / BasedPyright / Ruff
+│   └── settings.json                        ← format on save + extraPaths
+├── .pre-commit-config.yaml                  ← 可选
 ├── README.md
 ├── LICENSE
 ├── ICON.png                                 ← 插件图标（帮助 / webconsole 展示）
@@ -152,3 +158,163 @@ CU_BG_PATH = MAIN_PATH / "bg"                  # 自定义背景
 for p in (PLAYER_PATH, RESOURCE_PATH, CACHE_PATH, CU_BG_PATH):
     p.mkdir(parents=True, exist_ok=True)
 ```
+
+## 1.6 基础设施插件（meta plugin）
+
+给多个业务插件当库用的能力（发信、对象存储）做成**普通插件**，仍放在 `plugins/`，
+走同一套安装 / 配置 / WebConsole。框架只保证两件事：比常规插件**先加载**，并把
+`<目录名>.api` 挂进 `sys.modules`，别人能按普通 Python 导入。
+
+与 `on_meta`（平台元事件）无关。不要做成 PyPI 包。
+
+### 1.6.1 怎么写一个 meta 插件
+
+1. 目录结构和普通嵌套插件一样（§1.1）。
+2. 在 `pyproject.toml` 加：
+
+```toml
+[tool.gsuid]
+kind = "meta"
+provides = "mail"
+```
+
+`provides` 缺省为目录名，给 `require("mail")` 用；**短 import 用的是目录名**
+（目录叫 `gscore_mail` → `from gscore_mail.api import send`）。
+
+3. 可选：根目录放空文件 `__meta_plugin__.py`，和 `kind = "meta"` 等价。
+4. 对外函数写在内层包的 `api/`，自己加类型注解，和写库一样：
+
+```
+plugins/gscore_mail/
+├── __init__.py
+├── __nest__.py
+├── __meta_plugin__.py          ← 可选
+├── pyproject.toml              ← kind = "meta"
+└── gscore_mail/
+    ├── __init__.py
+    ├── __full__.py
+    └── api/
+        └── __init__.py         ← 对外 API
+```
+
+```python
+# gscore_mail/api/__init__.py
+async def send(*, to: str, subject: str, body: str) -> MailSendResult:
+    ...
+```
+
+不要在 Core 里声明 `MailAPI` / `Protocol`。配置、命令、`@ai_tools` 按普通插件写。
+
+### 1.6.2 普通插件怎么引用
+
+**硬依赖**（没装这个 meta，本插件就不该加载）：模块顶层普通 import。类型就是对方 `api` 里的注解。
+
+```python
+from gscore_mail.api import send
+
+result = await send(to="ops@example.com", subject="告警", body=text)
+```
+
+**软依赖**（没装就跳过，例如「邮箱提醒」回退到群聊）：不要写 `try/except ImportError`，
+也不要把 import 放在模块顶层（否则没装时整包加载失败）。先问框架，再走带类型的 import：
+
+```python
+from gsuid_core.meta_plugins import import_api
+
+if import_api("gscore_mail") is None:
+    return
+from gscore_mail.api import send
+
+result = await send(to="ops@example.com", subject="告警", body=text)
+```
+
+运行时能导入，是因为 meta 加载后框架把 `gscore_mail` / `gscore_mail.api` 挂进了
+`sys.modules`。它不是 site-packages 里的包。编辑器要看到类型，在**自己插件**的
+`pyrightconfig.json` / `.vscode` 加 `extraPaths`，指向 `../gscore_mail`（该插件外层目录）。
+不要改 Core 工作区配置去绑某一个第三方插件。
+
+## 1.7 插件仓库的 Ruff / VS Code 配置
+
+插件是**独立仓库**，作者经常只打开 `plugins/MyPlugin/`，不会加载 Core 根目录的
+`.vscode` / `ruff.toml`。每个插件根目录都要自带一份，否则保存不格式化、import
+解析不到 `gsuid_core`。
+
+对照 `gscore_mail`、`GenshinUID`。
+
+### `ruff.toml`
+
+```toml
+line-length = 120
+target-version = "py311"
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "pyproject.toml",
+    "**/*.toml",
+]
+
+[lint]
+select = ["E", "F", "I", "W"]
+
+[lint.isort]
+combine-as-imports = true
+length-sort = true
+known-first-party = ["gsuid_core", "MyPlugin"]
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+```
+
+`pyproject.toml` 必须从 Ruff 排除：否则会把 TOML 当 Python 扫，`[project]` 报一堆 F821。
+
+### `.vscode/extensions.json`
+
+```json
+{
+  "recommendations": [
+    "ms-python.python",
+    "detachhead.basedpyright",
+    "charliermarsh.ruff"
+  ]
+}
+```
+
+### `.vscode/settings.json`
+
+用 **VS Code 打开本插件目录**（不是 Core 根）才会读到这些：
+
+```json
+{
+  "python.languageServer": "None",
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit",
+      "source.fixAll.ruff": "explicit"
+    }
+  },
+  "basedpyright.analysis.typeCheckingMode": "basic",
+  "basedpyright.analysis.extraPaths": [
+    "${workspaceFolder}/../../../",
+    "${workspaceFolder}/../../../gsuid_core"
+  ]
+}
+```
+
+`extraPaths` 以「本插件是 `gsuid_core/plugins/MyPlugin`」为基准：`../../../` 是 Core
+仓库根，这样才能 `from gsuid_core...`。若本插件引用旁边的 meta 插件，再加
+`"${workspaceFolder}/../gscore_mail"`。
+
+### 可选
+
+- `pyrightconfig.json`：`include` 内层包 + `tests`，`extraPaths` 同上。
+- `.pre-commit-config.yaml`：`ruff` + `ruff-format`，与 Core 一致即可。

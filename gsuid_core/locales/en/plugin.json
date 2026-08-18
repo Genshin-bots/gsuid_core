@@ -1,4 +1,5 @@
 {
+  "log.plugin.uninstall_meta_warn": "Uninstalling meta plugin {plugin_name}; other plugins may depend on it",
   "log.plugin.command_chain_start": "[Detect Startup Tool] Command chain: {command_chain}",
   "log.plugin.command_start": "[Detect Startup Tool] Final command: {command}",
   "log.plugin.event_info": "[刷新插件列表] 列表新增插件 {i}",

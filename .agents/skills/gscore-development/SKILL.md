@@ -56,7 +56,7 @@ description: >
 |------|------|------|
 | 一 | 架构与模块全景（`ai_core/` 目录结构、核心组件关系、消息→AI 的总链路） | [references/01-architecture-and-modules.md](./references/01-architecture-and-modules.md) |
 | 二 | 启动时序与生命周期钩子（`core.py::main`、两阶段 hook、`init_ai_core` 顺序、关闭钩子、AI 总开关、Web 服务启动） | [references/02-startup-lifecycle.md](./references/02-startup-lifecycle.md) |
-| 三 | 插件加载与配置系统（发现/分类/依赖合并安装/`cached_import`、`CoreConfig`/`PluginConfigStore`/`SV` 配置、配置热重载矩阵） | [references/03-plugin-loading-and-config.md](./references/03-plugin-loading-and-config.md) |
+| 三 | 插件加载与配置系统（发现/分类/**meta plugin 两阶段 import**/依赖合并安装/`cached_import`、`CoreConfig`/`PluginConfigStore`/`SV` 配置、配置热重载矩阵） | [references/03-plugin-loading-and-config.md](./references/03-plugin-loading-and-config.md) |
 | 四 | 事件处理与触发器流转（`handle_event` 13 步、触发器匹配、命令 vs AI 分流、AI 触发条件、长度/并发防护） | [references/04-event-trigger-flow.md](./references/04-event-trigger-flow.md) |
 | 五 | Bot 三类（`_Bot` 底层 / `Bot` 高层 / `MockBot` AI 代理、连接管理与 5 分钟重连复用、发送队列串行化） | [references/05-bot-classes.md](./references/05-bot-classes.md) |
 | 六 | AI Session 路由与 Persona（`ai_router`、**前缀缓存红线 / 保头裁中段**、Persona 热重载） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |

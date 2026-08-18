@@ -1,4 +1,5 @@
 {
+  "log.plugin.uninstall_meta_warn": "インフラプラグイン {plugin_name} をアンインストールします。他プラグインが依存している可能性があります",
   "log.plugin.command_chain_start": "[起動ツールの検出] コマンドチェーン: {command_chain}",
   "log.plugin.command_start": "[起動ツールの検出] 最終コマンド: {command}",
   "log.plugin.event_info": "[刷新插件列表] 列表新增插件 {i}",

@@ -155,8 +155,8 @@ def test_mask_mapping_salt_field():
 
 
 def test_build_config_item_returns_plaintext_secret():
-    from gsuid_core.utils.plugins_config.models import GsStrConfig
     from gsuid_core.webconsole.plugins_api import _build_config_item
+    from gsuid_core.utils.plugins_config.models import GsStrConfig
 
     secret = GsStrConfig(title="k", desc="d", data="sk-abcdefgh", secret=True)
     item = _build_config_item(secret, "custom_name")
@@ -253,7 +253,7 @@ def test_require_admin_role():
 def test_require_admin_header_rejects_missing_bearer():
     from fastapi import HTTPException
 
-    from gsuid_core.webconsole.web_api import require_admin_header, require_auth_header
+    from gsuid_core.webconsole.web_api import require_auth_header, require_admin_header
 
     with pytest.raises(HTTPException) as missing_auth:
         require_auth_header(None)

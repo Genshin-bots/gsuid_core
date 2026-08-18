@@ -222,7 +222,14 @@ async def check_plugin_exist(name: str):
 async def uninstall_plugin(path: Path):
     if not path.exists():
         return f"❌ 插件 {path.name} 不存在!"
-    if path.is_dir():
+
+    from gsuid_core.server import read_meta_plugin_info
+    from gsuid_core.meta_plugins import unregister_meta_plugin
+
+    meta_info = read_meta_plugin_info(path)
+    was_dir = path.is_dir()
+    name = path.name
+    if was_dir:
         # Windows下处理被锁定的文件
         def onerror(func, path, exc):
             """处理删除文件时的权限错误"""
@@ -241,20 +248,25 @@ async def uninstall_plugin(path: Path):
 
         try:
             shutil.rmtree(path)
-            return f"✅ 插件目录 {path.name} 删除成功!"
         except PermissionError:
-            # 尝试使用onerror回调处理被锁定的文件
             try:
                 shutil.rmtree(path, onerror=onerror)
                 if path.exists():
-                    # 仍存在则尝试手动删除
                     _try_manual_delete(path)
-                return f"✅ 插件目录 {path.name} 删除成功!"
             except Exception:
-                return f"⚠️ 插件目录 {path.name} 部分文件被锁定,请手动删除或重启后重试!"
+                return f"⚠️ 插件目录 {name} 部分文件被锁定,请手动删除或重启后重试!"
+        if path.exists():
+            return f"⚠️ 插件目录 {name} 部分文件被锁定,请手动删除或重启后重试!"
     else:
         path.unlink()
-        return f"✅ 插件文件 {path.name} 删除成功!"
+
+    warn = ""
+    if meta_info is not None:
+        unregister_meta_plugin(name)
+        logger.warning(t("log.plugin.uninstall_meta_warn", plugin_name=name))
+        warn = f"⚠️ 已卸载基础设施插件 {name}，依赖它的插件下次调用会失败。\n"
+    kind = "目录" if was_dir else "文件"
+    return f"{warn}✅ 插件{kind} {name} 删除成功!"
 
 
 def _try_manual_delete(path: Path):

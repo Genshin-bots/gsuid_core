@@ -1,4 +1,5 @@
 {
+  "log.plugin.uninstall_meta_warn": "正在卸载基础设施插件 {plugin_name}，其他插件可能依赖它",
   "log.plugin.command_chain_start": "[检测启动工具] 命令链: {command_chain}",
   "log.plugin.command_start": "[检测启动工具] 最终命令: {command}",
   "log.plugin.event_info": "[刷新插件列表] 列表新增插件 {i}",

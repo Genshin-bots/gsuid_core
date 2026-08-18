@@ -29,7 +29,7 @@ description: >
 
 | 章节 | 主题 | 链接 |
 |------|------|------|
-| 一 | 插件基础结构（目录、命名、入口三件套、Plugins vs SV、pyproject、资源路径） | [references/01-plugin-basics.md](./references/01-plugin-basics.md) |
+| 一 | 插件基础结构（目录、命名、入口三件套、Plugins vs SV、pyproject、资源路径、**meta plugin**、**ruff / .vscode**） | [references/01-plugin-basics.md](./references/01-plugin-basics.md) |
 | 二 | SV 与触发器（SV 实例、八种触发器语义对比、装饰器通用参数、签名规范） | [references/02-sv-and-triggers.md](./references/02-sv-and-triggers.md) |
 | 三 | 消息收发（Event 属性、bot.send 各种形态、send_option、多步会话） | [references/03-messaging.md](./references/03-messaging.md) |
 | 四 | 配置管理（CONFIG_DEFAULT、StringConfig、所有配置类型） | [references/04-config-management.md](./references/04-config-management.md) |
@@ -77,6 +77,8 @@ description: >
 ## 关键概念速记（先看这一段再决定读哪一章）
 
 - **嵌套加载**：`外层 __init__.py` + `外层 __nest__.py`（空文件） + `内层 __init__.py` 声明 `Plugins(...)` + `内层 __full__.py`（空文件）。详见 [一、插件基础结构 §1.2](./references/01-plugin-basics.md#12-入口三件套)。
+- **基础设施插件（meta plugin）**：`[tool.gsuid] kind = "meta"` + 内层 `api/`。别人硬依赖 `from gscore_mail.api import send`；软依赖先 `import_api("gscore_mail")` 再同样 import。不要 try/except，不要改 Core 去声明对方的类型。详见 [§1.6](./references/01-plugin-basics.md#16-基础设施插件meta-plugin)。
+- **每个插件自带 Ruff / `.vscode`**：插件常被单独打开，读不到 Core 根配置。根目录放 `ruff.toml` + `.vscode/extensions.json` + `.vscode/settings.json`（`extraPaths` 指到 Core 仓库根）。详见 [§1.7](./references/01-plugin-basics.md#17-插件仓库的-ruff--vs-code-配置)。
 - **Plugins vs SV**：插件级 vs 服务模块级；`SV` 自动从调用栈推断归属。详见 [§1.3](./references/01-plugin-basics.md#13-plugins-vs-sv-的层级关系)。
 - **触发器选择**：`on_command`（推荐默认）vs `on_prefix`（强制带参）vs `on_fullmatch`（精确匹配）vs `on_keyword`（污染消息流，慎用）vs `on_regex`（复杂结构）vs `on_file` / `on_message`（特殊）。详见 [§2.2](./references/02-sv-and-triggers.md#22-触发器语义速查)。
 - **监听平台事件用 `on_meta`**：标准元事件**仅三种**——`user_join_group` / `user_exit_group` / `poke`，`data` 字段跨平台统一（适配器侧已归一），可放心监听；其他事件不做适配。触发器内用 `ev.get_meta(key)` 读字段；与命令路径**双向隔离**。详见 [§2.6](./references/02-sv-and-triggers.md#26-on_meta监听平台元事件进群--退群--戳一戳)。

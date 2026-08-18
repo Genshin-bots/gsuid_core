@@ -13,7 +13,8 @@ async def load_plugins(self, dev_mode=False):
     # 把仓库根目录加入 sys.path，让插件能 from gsuid_core ...
     # 阶段一：发现插件 + 收集缺失依赖（不立即 pip）
     # 阶段二：flush_pending_installs() —— 合并所有插件缺失依赖，一次 pip 调用（含镜像源 fallback）
-    # 阶段三：依次 cached_import 模块；模块级 @sv.on_xxx / @ai_tools / ai_entity 在此触发
+    # 阶段三：先 cached_import 基础设施插件（meta）并挂 <目录名>.api 别名，
+    #         再 import 常规插件；模块级 @sv.on_xxx / @ai_tools / ai_entity 在此触发
     # 阶段四：plugin_config_store.save_all() + core_config.lazy_write_config()
 ```
 
@@ -44,6 +45,27 @@ gsuid_core/
 
 判定逻辑在 `load_plugin()`：目录下优先 `__full__.py`（全量）→ `__nest__.py`/`plugin/plugin.py`
 （嵌套）→ `__init__.py`（单包）；非目录则单文件。
+
+### 3.2.1 基础设施插件（meta plugin）
+
+仍在 `plugins/` 里，和普通插件同一套安装 / 配置 / WebConsole。发现期若存在
+`__meta_plugin__.py`，或 `pyproject.toml` 写了 `[tool.gsuid] kind = "meta"`，则：
+
+1. `--dev` 下**仍加载**（不像常规插件那样要求 `-dev` 后缀）
+2. **先于**所有常规插件 `cached_import`
+3. 导入后把 `*.api` 模块登记到 `gsuid_core.meta_plugins`（`provides` 默认目录名，可在
+   `[tool.gsuid] provides = "mail"` 覆盖）
+
+加载后把 `api` 挂到 `sys.modules[<目录名>]` / `sys.modules[<目录名>.api]`。
+这是**运行时别名**，不是把插件装进 site-packages。`--dev` 只给目录名以 `-dev`
+结尾的插件改模块名前缀；未带后缀的 meta 仍用 `plugins.<目录>.<目录>.*`，避免和
+`<目录>-dev` 开发副本抢键。
+
+调用方怎么写见插件开发 §1.6：硬依赖 `from gscore_mail.api import send`；软依赖
+`import_api` 后再同样 import。类型在插件自己的 `api` 上。框架不承载某个插件的
+`Protocol`。`category="meta"` 是 AI 工具特权分类，和基础设施插件无关。
+
+> 详细评估见 [`plans/meta_plugin_loading_feasibility_20260819.md`](../../../plans/meta_plugin_loading_feasibility_20260819.md)。
 
 ## 3.3 依赖管理
 

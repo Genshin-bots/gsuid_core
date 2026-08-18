@@ -11,6 +11,7 @@ from fastapi import Body, Query, Depends, Request
 
 from gsuid_core.sv import SL
 from gsuid_core.i18n import t
+from gsuid_core.meta_plugins import provides_of
 from gsuid_core.utils.secret_mask import (
     unmask_against,
     is_secret_key_name,
@@ -194,6 +195,7 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
     for plugin_name, plugin in SL.plugins.items():
         name = plugin_name.lower()
 
+        provides = provides_of(plugin_name)
         tasks.append(
             {
                 "id": name,
@@ -202,6 +204,8 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
                 "enabled": plugin.enabled,
                 "status": "running",
                 "commit": get_plugin_commit(plugin_name),
+                "kind": "meta" if provides is not None else "plugin",
+                "provides": provides,
             }
         )
 
@@ -316,6 +320,7 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
 
     # 读取插件图标
     icon_base64 = _read_plugin_icon(actual_plugin_name)
+    meta_provides = provides_of(actual_plugin_name)
 
     # Get plugin config if exists - collect all related configs by plugin_name
     plugin_config = {}
@@ -397,6 +402,8 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
             "enabled": plugin.enabled,
             "status": "running",
             "commit": get_plugin_commit(actual_plugin_name),
+            "kind": "meta" if meta_provides is not None else "plugin",
+            "provides": meta_provides,
             "config": plugin_config,
             "config_groups": config_groups,
             "config_names": config_names,
