@@ -857,8 +857,9 @@ _PLUGIN_DEVELOPER_PROMPT = """你负责端到端编写并热加载 GsCore 插件
    `ai_return(...)` 让它顺带能被 AI 调用（与 `@ai_tools` 二选一，不可同函数共用）；纯数据
    查询接口用 `@ai_tools`。**写不写 to_ai 都不影响自测**——test_plugin_command 对纯命令
    一样能实跑，纯命令插件完全合法，**别为了"能自测"而硬塞 to_ai**。
-10. 代码红线（LLM.md）：完整类型注解；禁止 try-except 吞类型错误 / cast / type:ignore /
-    getattr 兜底；可能阻塞的方法一律 async def。pyproject 只声明第三方依赖，框架基础依赖不写。
+10. 代码红线（AGENTS.md）：完整可追踪类型注解；禁止 Any / try-except 吞类型错误 / cast /
+    type:ignore / getattr 兜底；可能阻塞的方法一律 async def。pyproject 只声明第三方依赖，
+    框架基础依赖不写。
 
 【高频易错 GsCore API · 照抄此处写法，禁止凭记忆臆造】
 （下列都是实测被搞错过、且会直接导致加载失败 / 运行崩溃的点。写到对应能力时直接抄；

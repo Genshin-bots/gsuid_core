@@ -13,7 +13,7 @@
 > 源码是唯一事实源。改 `handler` / `handle_ai` / `gs_agent` / **`agent_run/*`** / `output_gate` /
 > `output_firewall` / `subagent` / `delegation_contracts` / 装配 / 记忆后请同步本文。
 > 关联：
-> - 开发技能：`docs/skills/gscore-development/references/02-startup-lifecycle.md`、`04-event-trigger-flow.md`、`06-ai-session-and-persona.md`、`07-tool-registry-and-agent.md`、`09-memory-system.md`
+> - 开发技能：`.agents/skills/gscore-development/references/02-startup-lifecycle.md`、`04-event-trigger-flow.md`、`06-ai-session-and-persona.md`、`07-tool-registry-and-agent.md`、`09-memory-system.md`
 > - 会话日志：`AI_SESSION_LOG_CHAIN_AND_WATERFALL_20260708.md`
 > - 委派/OOC 历史交接：`AI_CORE_OOC_DELEGATION_UPDATE_20260724.md`
 > - **Agent run 拆分**：[`AI_AGENT_RUN_REFACTOR_20260808.md`](AI_AGENT_RUN_REFACTOR_20260808.md)
@@ -872,11 +872,13 @@ logger.info  ai_initializing
 **入队**：
 
 ```python
-ws.queue.put_nowait(TaskContext(
-    coro=handle_ai_chat(Bot(ws, event), event, enqueue_ts=now, soft_triggered=...),
-    name="handle_ai_chat",
-    priority=event.user_pm,
-))
+ws.queue.put_nowait(
+    TaskContext(
+        coro=handle_ai_chat(Bot(ws, event), event, enqueue_ts=now, soft_triggered=...),
+        name="handle_ai_chat",
+        priority=event.user_pm,
+    )
+)
 ```
 
 `bot._process` **串行**消费队列（同 bot 上命令与 AI 互不并发抢同一 send 路径）。
@@ -1138,7 +1140,8 @@ rag_context = "【历史对话】\n" + format_history_for_agent(...)
 ```python
 chat_result = await session.run(
     user_message=user_messages,
-    bot=bot, ev=event,
+    bot=bot,
+    ev=event,
     rag_context=full_context,
     return_mode="by_bot",
     enqueue_ts=enqueue_ts,
@@ -1653,7 +1656,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 关键的放前面，慢且可选的放后面。另外，一个子系统的 bring-up **只能有一个主**：
 套件的 `init_step` 与 `_INIT_STEPS` 条目不可同时指向同一个初始化（否则每次启动跑两遍，
 不报错也不告警）。详见
-`docs/skills/gscore-development/references/02-startup-lifecycle.md` §2.3。
+`.agents/skills/gscore-development/references/02-startup-lifecycle.md` §2.3。
 
 ### 15.3 关闭
 

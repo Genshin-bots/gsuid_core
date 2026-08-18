@@ -1095,7 +1095,7 @@ async def query_knowledge(
         category_filter: 可选，按知识类别过滤
         exclude_plugins: 可选，**排除**这些插件命名空间（must_not，任一命中即排除）。
         exclude_sources: 可选，**排除**这些来源（must_not）。用于把整类保留文档挡在通用检索之外——
-            如 ``["skill_doc"]`` 把 docs/skills 开发文档整类挡在日常聊天 RAG 外，避免污染。
+            如 ``["skill_doc"]`` 把 .agents/skills 开发文档整类挡在日常聊天 RAG 外，避免污染。
 
     Returns:
         匹配的知识点列表

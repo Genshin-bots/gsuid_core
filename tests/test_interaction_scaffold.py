@@ -1,7 +1,7 @@
 """交互脚手架（C-1/C-2/C-3）双向回归：正向要触发、良性绝不触发。
 
 纪律同 tests/test_benign_fp.py：判据只允许结构/语言学范畴，两个方向都必须锁住
-（见 docs/skills/gscore-development §12.22b）。
+（见 .agents/skills/gscore-development §12.22b）。
 """
 
 from gsuid_core.ai_core.interaction_scaffold import (

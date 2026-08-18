@@ -1,0 +1,319 @@
+# 九、记忆系统（Mnemis 双路检索）
+
+> **返回主入口**：[`../SKILL.md`](../SKILL.md) · **上一章**：[八、主动发言与任务编排](./08-heartbeat-scheduled-planning.md) · **下一章**：[十、RAG 知识库与嵌入](./10-rag-knowledge-embedding.md)
+
+记忆系统（`ai_core/memory/`）让 AI"记住"群聊里发生的事。本章覆盖整条链路 + 偏好记忆 +
+RF-Mem 双过程检索 + 生命周期 + 多模态摄入。
+
+## 9.1 设计理念（先建立心智）
+
+- **Observer 与发言决策正交**：AI 读所有消息构建认知，但不因此回复任何一条。**即使 Persona
+  纯静默，记忆仍在后台积累**。
+- **双路检索**：System-1（向量相似度快速匹配）+ System-2（分层图遍历全局选择），合并经
+  Reranker 重排。
+- **Scope Key 隔离**：群组间严格隔离，同时支持用户跨群全局画像。
+- **门控纯规则零 LLM**：摄入质量门控 100% 正则/规则实现，绝不调 LLM。
+
+**核心数据流**：
+
+```
+用户消息 → handler.py（observe 入队）
+        → handle_ai.py（dual_route_retrieve 检索 → 注入上下文）
+        → AI 回复 → handle_ai.py / bot.py（observe 入队）
+        → IngestionWorker 后台消费 → LLM 提取 Entity/Edge → 写 SQLAlchemy + Qdrant → 分层图增量重建
+```
+
+## 9.2 Scope Key 隔离（`memory/scope.py`）
+
+所有记忆节点带 `scope_key`：
+
+| ScopeType | 格式 | 说明 |
+|-----------|------|------|
+| `GROUP` | `group:{group_id}` | 群组级，群内共享 |
+| `USER_GLOBAL` | `user_global:{user_id}` | 用户跨群全局画像 |
+| `USER_IN_GROUP` | `user_in_group:{user_id}@{group_id}` | 用户在特定群的局部档案 |
+| `SELF` | `self:{bot_id}` | Bot 自身情景记忆与自我模型 |
+
+> **`SELF` scope（C6）**：Bot 自身发言（`__assistant_*`）**不混入**群组事实图谱，改路由
+> `self:{bot_id}` 做轻量摄入（仅 Episode、不抽 Entity/Edge），杜绝"Bot 戏言污染群记忆"。
+> 隔离靠 SQL `WHERE scope_key = ?` + Qdrant payload filter。
+
+> **会话默认 scope 用 `scope_key_for_conversation(group_id, user_id)`**（2026-07-12 新增）：
+> "群→`group:` / 私聊→`user_global:`" 的三元式曾在 ai_router/subagent/kanban_tools/observer
+> 各复制一份——摄入与检索两侧映射不一致会让命名空间悄然分裂（群画像"无故消失"且无报错）。
+> 新代码一律调 helper；三处旧复制（subagent/kanban_tools/observer）待统一。
+
+> 🔴 **调用点回退 `group_id` 会直接击穿这套 scope 语义**（2026-07-15 修）。
+> `observe()` / `dual_route_retrieve()` 按 **`GROUP if group_id else USER_GLOBAL`** 分支定 scope，
+> 所以**私聊必须传 `group_id=None`**。而 `handler.py` / `handle_ai.py` 的 **4 个**调用点都写着
+> `group_id=str(event.group_id or event.user_id)`——私聊时 group_id 变成非空的 user_id，
+> 记忆被写进一个谁也不认的幻影 `group:{user_id}`。
+>
+> 下游**全都按"私聊 group_id=None"设计**（`AIMemPreference` 写死「主存 USER_GLOBAL」、
+> `dual_route_retrieve` 注释着「私聊 → user_global 是主 scope」），**只有调用点在回退**——
+> 于是偏好记忆永远为空。四处已统一传 `None`，`tests/test_memory_ingestion_durability.py`
+> 用 AST 锁死该写法不得复活。
+
+## 9.3 Observer 观察者管道（`memory/observer.py`）
+
+通过 `queue.Queue`（**线程安全**，非 `asyncio.Queue`）传递观察记录。
+
+```python
+@dataclass
+class ObservationRecord:
+    raw_content: str; speaker_id: str; group_id: str; scope_key: str
+    timestamp: datetime; message_type: str   # group_msg / private_msg
+    value_tier: str                           # C1：HIGH / LOW
+```
+
+**C1 摄入质量门控**（`_gate()`，100% 纯规则零 LLM）：① 过滤噪声；② 打 `value_tier`。
+
+| 规则 | 说明 |
+|------|------|
+| 自身消息过滤 | `speaker_id == bot_self_id` 不入队 |
+| 黑名单群组 | `group_id in observer_blacklist` 不入队 |
+| 命令回显过滤 | 正则命中"请输入正确/功能名称"等框架报错回显 → 丢 |
+| 注入特征过滤 | "忘记所有指令"/"ignore previous instructions" → 丢 |
+| 复读/刷屏过滤 | 与本 scope 最近 12 条完全相同 → 丢（保留首次） |
+| 重要性分级 | 含姓名自述/称呼偏好/承诺/数字日期 → HIGH；纯寒暄且 <10 字且无实体 → LOW；其余 HIGH |
+
+`value_tier=LOW` 的记录 IngestionWorker 只写 Episode、跳过 Entity/Edge 抽取。
+
+**三个入队点**（分属两条记忆路径 `memory_mode`，注意去重）：
+
+1. `handler.py` 消息入口 —— **被动感知**：记所有群友发言。门控 `"被动感知" in memory_mode`。
+2. `handle_ai.py` 入口 —— **主动会话**：记触发者发言。**去重**：`"主动会话" in memory_mode and
+   "被动感知" not in memory_mode`（否则 ① 已记过会二次写入）。
+3. `bot.py` 发送路径 —— **主动会话**：记 Bot 自身回复。`speaker_id=f"__assistant_{bot_id}__"`，
+   `observe()` 据前缀路由到 SELF scope。
+
+## 9.4 Ingestion 摄入引擎（`memory/ingestion/`）
+
+`IngestionWorker`（`worker.py`）从队列消费，按 `scope_key` 分组缓冲，命中任一出口即 flush。
+**flush 是唯一的落库时机，缓冲区在进程内存里**——出口设计直接决定"崩一次丢多少"。
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `idle_flush_seconds` | 180 | **静默落库**：该 scope 静默这么久即 flush（0=关） |
+| `batch_interval_seconds` | 7200（2h） | 聚合窗口**上限**，刷屏 scope 的兜底出口 |
+| `batch_max_size` | 80 | 单次最大聚合条数 |
+| `llm_semaphore_limit` | 3 | 并发 LLM 上限 |
+
+> 🔴 **落库必须与攒批解耦**（2026-07-15）。旧实现只有「攒满 80 条」「距上次 flush 满 2 小时」
+> 两个出口，于是一段几轮的对话要在**内存里躺两小时**，core 一重启就永久消失。实测生产库里
+> **真实 QQ 流量的 Episode 数为 0**——能持久化的全部来自 webconsole / 评测端点，因为只有
+> `chat_with_history` 与 `batch_observe` 显式调了 `worker.flush_all()`。
+>
+> `idle_flush_seconds` 按**「对话静默」而非固定周期**触发：对话进行中一直有新消息 → 不算静默
+> → 不 flush，**批量抽取效率不受影响**；对话结束 3 分钟后落库，最长在险时间 2h → 3min。
+> 新增任何"先攒后落"的缓冲时先问一句：**进程被 kill -9 会丢多少？** 攒批是为了省 LLM 调用，
+> 不是为了省磁盘。
+
+Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities()`（两阶段去重）→
+`extract_and_upsert_edges()`（冲突检测）→ user_global 跨群属性 → `check_and_trigger_hierarchical_update()`。
+
+- **Entity 两阶段去重**（`entity.py`）：Phase 1 精确名称匹配；未命中 Phase 2 Qdrant 向量相似，
+  `similarity >= dedup_similarity_threshold(0.92)` 视为同一实体合并。**Phase 2 在写锁外**
+  `prefetch_hybrid_name_ids`，锁内只 SQL 写（防持锁做 embed）。
+- **Edge 冲突检测**（`edge.py`）：向量搜在 session 外；同 src/tgt 极性相反 → 软删旧边 +
+  `AIMemConflict.attach` **同事务**（勿再 `@with_session` 嵌套）。极性中英双语
+  （`_NEGATION_MARKERS` + `_NEGATION_RE_EN`）。
+- **SQLite 写队列**（`ingestion/eval_write_lock.py`）：`db_write_guard` 串行化 Episode / Entity /
+  Edge / Preference / 检索 touch / 生命周期写；LLM 与向量在锁外。
+
+> 🟡 **大语料回灌 / 图谱评测走的是另一条摄入路径**（`batch_observe` 的 granular Episode + 窗口化
+> 抽取，与上面 `observe→worker` 的 80-turn 聚合**刻意解耦**）。动它前必读
+> [§12.20](./12-developer-pitfalls.md)：巨型 Episode 召回恒空、抽取批次撞子超时丢图谱、valid_at 落成
+> 抽取时刻污染时序、assistant 侧事实别丢、SQLite 写串行锁 `db_write_guard`（线上+eval）等坑。
+
+> 🔴 **IngestionWorker 必须跑在主事件循环**（历史缺陷，必读 [§12](./12-developer-pitfalls.md)）。曾
+> 改成独立线程双事件循环（动机"避免 LLM 调用阻塞主循环"是**误判**——LLM 调用是 `await` 的纯
+> 网络 I/O，等待期间不占循环）。双循环与主循环共享三个循环亲和资源（pydantic_ai 缓存的
+> `httpx.AsyncClient`、全局 SQLAlchemy 引擎、全局 `AsyncQdrantClient`），批次超时的跨循环取消
+> 击穿主循环 Proactor（WinError 995 → InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已
+> 回归主循环 `asyncio.create_task`（与 ImageUnderstandWorker 同架构）。**不要再尝试独立线程。**
+
+## 9.5 双路检索引擎（`memory/retrieval/`）
+
+- **System-1**（`system1.py`）：对 Episode/Entity/Edge 三个 Qdrant Collection 分别向量搜，
+  **RRF（Reciprocal Rank Fusion）** 融合（`score = Σ 1/(k+rank_i)`, k=60）+ One-hop 邻居扩展。
+- **System-2**（`system2.py`）：从顶层 Category BFS，每层 LLM 判哪些子节点相关、逐层深入到
+  Entity 叶子。多次 LLM 调用，可 `enable_system2=False` 关。
+- **合并 + Reranker**（`dual_route.py`）：`dual_route_retrieve()` 并行跑双路 → 合并去重 →
+  Reranker 重排（三路 episodes/entities/edges `asyncio.gather` 并行）→ `MemoryContext`。
+
+```python
+@dataclass
+class MemoryContext:
+    episodes: list[dict]; entities: list[dict]; edges: list[dict]; retrieval_meta: dict
+    def to_prompt_text(self, max_chars=3000) -> str: ...   # 【已知事实】+【历史对话片段】
+```
+
+## 9.6 分层语义图（`memory/ingestion/hiergraph.py`）
+
+把大量 Entity 归纳为多层 Category，支撑 System-2 自顶向下遍历。`incremental_rebuild()` 增量构建，
+**多步短事务**（每步 `@with_session` + `db_write_guard`），**不是**整次 rebuild 一个长事务；
+LLM 分类与向量检索在 session / 写锁外：
+
+- 小 scope 跳过：总 Entity < `MIN_ENTITIES_FOR_HIERGRAPH(30)` → 仅更 Meta 返回（类目对小数据无收益）。
+- 单轮上限：按 `created_at` 取最旧至多 `MAX_ENTITIES_PER_REBUILD(800)` 个，超额续轮（backlog 单调收敛）。
+- 向量预分配：Qdrant 近邻在锁外；达阈值后短事务写 `mem_category_entity_members`，零 LLM。
+- Layer-2/3 仅取"尚无父类目"的下层节点喂 LLM（`_filter_unparented`），消除高频复发 token。
+
+## 9.7 数据库模型（`memory/database/models.py`）
+
+记忆系统用 `SQLModel, table=True`（**非** `BaseIDModel`），主键 `uuid.uuid4()`。
+
+| 模型 | 表名 | 说明 |
+|------|------|------|
+| `AIMemEpisode` | `aimemepisode` | 原始对话片段 |
+| `AIMemEntity` | `aimementity` | 实体节点（唯一约束 `(scope_key, name)`） |
+| `AIMemEdge` | `aimemedge` | 实体间关系边（`fact`/`valid_at`/`invalid_at`/`decay_score`/`mention_count`/`last_accessed`） |
+| `AIMemCategory` | `aimemcategory` | 分层语义图节点 |
+| `AIMemCategoryEdge` | `aimemcategoryedge` | Category↔Category 层次关联 |
+| `AIMemHierarchicalGraphMeta` | `aimemhierarchicalgraphmeta` | 分层图构建状态（定义在 `hiergraph.py` 而非 models.py） |
+
+关联表：`mem_episode_entity_mentions`、`mem_category_entity_members`。
+
+> ⚠️ **ORM Relationship 用 `lazy='noload'` 显式加载**，不是 `'selectin'`（历史缺陷 D-17：N+1
+> 查询）。向量去重用 `asyncio.gather` 并行而非 O(N) 串行 await（D-15）。
+
+## 9.8 向量存储（`memory/vector/`）
+
+复用 `rag/base.py` 的 Qdrant 客户端 + `embedding_provider`，3 个独立 Collection：
+`memory_episodes` / `memory_entities` / `memory_edges`。用 `client.query_points()`（非弃用的
+`client.search()`）。向量维度随启用嵌入模型动态变化（默认回退 512）。
+
+## 9.9 偏好记忆（Procedural / Preference Memory，2026-06-15，默认开）
+
+与 Episode/Entity/Edge 三层**陈述性**记忆正交，新增 `AIMemPreference` 表（**SQL-only、不写
+向量**），承载"针对 Agent 未来行为的纠正 / 偏好规则"（"以后画图用竖图""按我时区"）。
+
+链路：
+
+- **门控探测**（`observer.py`）：纯规则零 LLM 的 `detect_correction_intent()` 命中纠错意图 →
+  强制 `HIGH` + 即时 flush。
+- **蒸馏门控**：实体抽取 LLM 顺手判 `pref` 布尔位（`prompts/extraction.py` 的
+  `PREFERENCE_FLAG_INSTRUCTION`），命中才跑第二次独立蒸馏 LLM
+  （`worker._extract_and_upsert_preferences`）。
+- **轨迹背景**（`ingestion/tool_trace.py`）：有界 ring buffer 记最近工具调用，供蒸馏把"参数
+  传错了"蒸成带具体参数的规则。
+- **写入**：`AIMemPreference.upsert()`（语义等价强化 / 极性反转软停用 / 新建）。
+- **注入**（`retrieval/dual_route.py`）：检索时 SQL 精确取活跃规则，**置顶强约束**注入。
+- **选择性注入 = 能力域过滤，不是整轮开关**（2026-07-15 修正）：`handle_ai` **恒传**
+  `inject_preferences=True`，靠 `preference_contexts` 控制注什么——非闲聊轮传本轮相关能力域
+  （`_relevant_preference_contexts(query)` 子串近似 **∪** `session.get_assembled_capability_domains()`），
+  **闲聊轮传空 list**。检索侧的过滤恒保留 `is_correction` 与 `target_context == "general"`，
+  于是风格类偏好在闲聊轮照常生效，只有工具行为规则被剔除。
+
+> 🔴 **别再用意图门整轮关闭偏好注入**（本文档曾同时写着"纯闲聊不注入"与"general 永远注入"，
+> 这两句不可能同时成立）。旧代码 `inject_preferences = intent != "闲聊"` 在**上游**就跳过了
+> 偏好查询，检索侧"general 永远保留"的设计**根本没机会执行**；叠加意图分类器把
+> "帮我查一下长离的练度"误判成闲聊（实测 conf=0.8），**偏好几乎从未被参考过**。
+> 而"回复保持简短"这类 `general` 风格偏好，恰恰**最该在闲聊轮生效**。
+> 回归锁：`tests/test_output_linebreaks_and_preference_gate.py`。
+- **生命周期**（`lifecycle/consolidation_worker.py`）：按 salience 裁剪，纠错类受保护。
+- **清空联动**（`clear_ops.py`）：清空用户记忆一并删偏好规则。
+
+**能力域精确化（"装配后回传"）**：`GsCoreAIAgent.run()` 装配工具后把本轮工具的
+`capability_domain` 集合回填 `self._last_assembled_domains`，经
+`get_assembled_capability_domains()` 暴露；`handle_ai` 下一轮检索读回，**只注入"本轮可用工具"
+相关的软偏好**，避免无关规则挤占预算 / 分散工具调用注意力。
+
+> ⚠️ **默认开的成本**：开箱启用工具轨迹记录 + 纠错探测 + 第二次蒸馏 LLM + 置顶强约束注入。
+> 误抽偏好以强约束置顶可能过度约束工具调用（已有 WebConsole 软停用 + salience 裁剪 + 精确能力
+> 域过滤兜底）。`tool_trace` 是进程内存，多实例不共享。
+
+## 9.10 RF-Mem 双过程检索（2026-06-15，**默认关**）
+
+`memory/retrieval/familiarity.py` 接入"回忆-熟悉度双过程理论"：
+
+- **熟悉度探针**（`vector/ops.probe_episode_scores`）：一次纯 dense 查询取真实余弦分，算均分 s̄
+  + 列表熵 H(p)，逐查询决定"检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。
+- **回忆环**（零 LLM 的 KMeans + α-mix 多轮向量深检索）：低熟悉且 System-2 未触发时补召回，把
+  召回 Episode 链**关系投影**成精准 Edge 事实。KMeans 走专用线程池，不阻塞事件循环。
+
+> ⚠️ **默认关的原因**：阈值（`familiarity_theta_*` / `tau`）是论文英文模型经验值，中文本地模型
+> 通常需平移、需离线标定后再放量；回忆环强绑 `qdrant_provider=remote`（本地嵌入式 Qdrant 是
+> O(N) 暴力扫，多轮成倍放大成本）。配置描述已标注"需标定"。
+
+## 9.11 记忆生命周期（C11，`memory/lifecycle/`）
+
+`run_lifecycle_maintenance` 由 APScheduler **每周**触发，纯规则无 LLM：
+
+- **巩固**：`mention_count ≥ 3` 的高频 Edge `decay_score` 回升 1.0。
+- **衰减**：14 天未检索且非高频的 Edge `decay_score *= 0.85`。
+- **遗忘**：`decay_score < 0.1` 的 Edge 物理删除（SQL + Qdrant）。
+- **孤儿实体回收**（遗忘 Edge 后）：非 speaker、无 edge、`updated_at` 超 10 天的孤儿物理删除
+  （SQL + Qdrant + 递减分层图计数，按 500 分块）。
+
+`ingestion/edge.py` 增否定极性矛盾检测：同 src/tgt 高相似但极性相反 → 旧 Edge 软删除 + 记
+`AIMemConflict`，不向 LLM 堆叠新旧矛盾。
+
+## 9.12 多模态摄入（C9，`memory/ingestion/multimodal.py`）
+
+Observer Hook 检测到图片 → `submit_image_observation` 纯规则过滤（URL 去重 + 按 scope 限流）→
+投入独立 `_multimodal_queue`（与文本 `observation_queue` **物理隔离**）→ `ImageUnderstandWorker`
+异步调 `understand_image` 转述 → 以 `[图片理解]` 前缀包装成观察记录推入主 `observe()` 管道。
+**图片风暴不阻塞文本聊天。**
+
+## 9.13 配置项（`memory/config.py`）
+
+全局单例 `memory_config = MemoryConfig()`。要点：`observer_enabled`(True) /
+`observer_blacklist` / `ingestion_enabled`(True) / `enable_retrieval`(True) /
+`enable_system2`(True) / `enable_user_global_memory`(False) / `retrieval_top_k`(10) /
+`dedup_similarity_threshold`(0.92) / `edge_conflict_threshold`(0.88) /
+`idle_flush_seconds`(180，静默落库，见 [§9.4](#94-ingestion-摄入引擎-memoryingestion))。
+
+> ⚠️ **本表是 dataclass 字段默认值，不是配置文件里的值**。`batch_max_size` /
+> `batch_interval_seconds` 等**不在** `data/ai_core/memory_config.json` 里，改默认值要改代码。
+> 这份表历史上与代码漂移过（文档写 1800/30，代码是 7200/80）——**以 `memory/config.py` 为准**。
+
+记忆运行统计集成在 AI Statistics（`record_memory_*`，7 项指标进 `AIDailyStatistics`，见
+[§11](./11-statistics-webconsole-database.md)）。
+
+## 9.14 认知枢纽与公共域（2026-08-16）
+
+记忆图谱（`aimem*`）继续**分群**：同名实体在不同 `scope_key` 永远是两行，禁止跨群 merge。
+世界知识（百科/手册）不进记忆图，活在认知层的**公共枢纽**上：
+
+| 域 | `AICogNode.scope_key` | 放什么 |
+|----|----------------------|--------|
+| 公共 | `""` | `ref=world:{plugin}:{正式名}` 枢纽 + `AICogAttachment` 挂件（正文仍在 `_ENTITIES` / `aichunk` / FileOS） |
+| 环境 | `group:` / `user_global:` | 本 scope 的 Entity 镜像（`ref=ent:{id}`，`canon` 指向世界枢纽） |
+
+环境→世界只在**完整匹配**到恰好一颗已有枢纽时打 `RELATED`（去空白、CJK 原样、ASCII 小写）。
+别名 surface（`lookup_surface` 无歧义命中）直接用正式名再找枢纽；SQL 用 `lower(title)`
+对齐 ASCII 大小写（库内 `NorthStation` 对得上查询 `northstation`）。
+**不是**记忆去重的 0.92 阈值，也不是子串/向量互链。歧义 surface、短词、解析失败都不连。
+群聊抽取**不新建** `world:`；说话人（`is_speaker` / tag Speaker）不拿去连公共层——
+摄入钩子与**启动扫描** `scan_entities_to_world` 都跳过。
+路径卡里的「本群事实」读 `AIMemEdge.get_for_entities(..., 本轮唯一 scope_key)`，禁止跨群。
+
+知识来源（插件 / 手动导入 / 网页搜索 **query** / `attach_article`）**先查已有再过门新建**：
+可索引、别名无歧义、无句读、长度 ≤32。枢纽键是 `world:{插件}:{正式名}`，**不要按标题全球合并**。
+跨插件同名（两边都登记「深渊」）各建一颗；只有别名全球唯一属主时，其它插件的文才并进那颗。
+正式名来自 `entity` 字段 / 本插件 `ai_alias` / 标题独立段或**前缀主语**上的 tag，**不猜**
+「左边是名字、右边是栏目」。未登记且自身含切词符、又不是标题独立段的 tag 不当正式名。
+同长多个 tag 时取标题前缀那一个。知识 `plugin` 字符串和 alias 模块名不一致时，表面只被
+一个插件登记仍可用那份正式名。文档显式 tag 允许单字 CJK 当挂载主语；聊天扫词与
+`lookup_surface` 仍守短词/歧义门。合词 tag、没 tag 也没别名的索引页仍跳过。
+写入继续漏不可错；`search_cognition` 展开路径卡时按本群 env 连边与本群 `term_mappings`
+排序，没有本群证据就两卡并列，不偷选。
+群关系/进度留在记忆边，不升级成公共蓝线。
+网页落盘短标题取 `query:`，整页 SERP 只留规则摘要（FileOS + 挂件），禁止把
+`<search_results>` 或结果正文当公共名词。
+
+Agent 补文落 SQL 时打标签 `hub:{正式名}`，重建挂载只回挂已有枢纽，**启动扫描不**从 agent
+源新建 `world:`（写入当时 `attach_article` / 网页弱挂可以建）。WebConsole 节点详情与
+`search` 同一套属主/scope 可见性（`node_visible_to`）。
+选定全文只 inline `kb_plugin:` / `kb_kbdoc:`；FileOS `to_` 只出现在路径卡，由
+`read_handle` 做属主 ACL。
+
+回想入口仍是 `search_cognition`；⑧ 每轮注入仍只记忆+偏好。
+统一写走 `cognition.remember.MemoryWrite`（落盘 / 任务终态 / 笔记 / record / artifact
+都登记同一份元数据，正文不搬家）。`web_search` / `web_fetch` **先写后读**：≥40 字即
+同步落 FileOS，当轮可被联邦命中。联邦补路还包括 History A 近窗、`record_*`、图片、表情；
+产物摘要有向量索引。主人格不暴露 `list/grep_persisted` / `search_image` / `search_meme` /
+`artifact_get`（深读只留 `read_handle`）。详见
+[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §S.5 / §15.2。

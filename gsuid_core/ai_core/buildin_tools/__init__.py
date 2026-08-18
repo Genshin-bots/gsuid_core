@@ -141,7 +141,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``load_plugin_into_core``：复用 ``reload_plugin`` 把（全新 / 改动后的）插件热加载进框架
 - ``test_plugin_command``：**功能自测**——实跑插件某条命令（MockBot 拦截下发、只回收产出），
   回复主人前确认命令真能跑出预期结果
-- ``search_skill_docs``：**查文档首选**——对启动时挂载进知识库的 docs/skills 全部开发文档做混合检索
+- ``search_skill_docs``：**查文档首选**——对启动时挂载进知识库的 .agents/skills 全部开发文档做混合检索
   （dense+BM25）；可选 ``skill=`` 限定到某一份（如 ``gscore-plugin-development``）
 - ``read_plugin_dev_guide``：确定性阅读 ``gscore-plugin-development`` SKILL（目录 / 整章，亦作 RAG 关闭时的兜底）
 

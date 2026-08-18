@@ -843,7 +843,7 @@ def get_image_entity(entity_id: str) -> Optional[ImageEntity]:
 
 
 def ai_skill(path: Union[str, Path], plugin: Optional[str] = None) -> None:
-    """注册插件 repo 内的 AI Skill 目录（运行时 Skill，非 docs/skills 开发文档）。
+    """注册插件 repo 内的 AI Skill 目录（运行时 Skill，非 .agents/skills 开发文档）。
 
     让插件作者把 Skill 随插件一起放在**自己仓库内**管理，无需手动把 skill 文件夹
     挪进 ``data/ai_core/skills/`` 才能生效。注册的目录下可含一个或多个

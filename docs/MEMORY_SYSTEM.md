@@ -629,7 +629,7 @@ incremental_rebuild()
 7. **重建成本随"新增"而非"存量"增长**：入口过滤 + 向量预分配 + Layer-2/3 增量化 + 单轮上限（800）+ 小 scope 跳过 五项叠加，保证大规模下重建仍可控（一次常规重建 LLM 调用从"几百~几千次"降到"个位数甚至 0"）。
 8. **IngestionWorker 在主事件循环上跑**：LLM `await` 是网络 I/O 不阻塞循环；embedding 走 `vector/ops.py` 独立线程池。**禁止**复活"独立线程 + 双事件循环"架构——WinError 995 → InvalidStateError → run_forever 崩溃 → WS 全线断连。
 9. **分层类目树的唯一消费方是 System-2 检索 + 群摘要缓存**：`hiergraph_build_mode != "始终"` 且 `enable_system2=False` 时，类目树无任何消费方，应跳过整棵 Layer-1/2/3 的 LLM 分类以省 Token。Entity / Edge / Episode 等记忆本体不受任何模式影响。
-10. **类型与异常**（遵循 [`LLM.md`](LLM.md)）：完整类型提示；不用 `cast` / `type: ignore` / `getattr` / `.get` 兜底掩盖类型问题；try-except 仅用于 Qdrant / LLM 等外部 I/O 边界的优雅降级（典型：`extracted["entities"] if "entities" in extracted else []`）。
+10. **类型与异常**（遵循 [`AGENTS.md`](../AGENTS.md)）：完整类型提示；不用 `cast` / `type: ignore` / `getattr` / `.get` 兜底掩盖类型问题；try-except 仅用于 Qdrant / LLM 等外部 I/O 边界的优雅降级（典型：`extracted["entities"] if "entities" in extracted else []`）。
 
 ---
 

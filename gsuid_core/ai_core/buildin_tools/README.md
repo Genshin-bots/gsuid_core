@@ -98,7 +98,7 @@ results = await web_search(query="原神 4.0 更新内容", max_results=10)
 **多源策略：** `websearch_lb_strategy` 默认 `error_switch`；Key 失败、抛错或 **空列表** 会切下一已配置源。
 **超时：** `@ai_tools(..., timeout=100.0)`，覆盖串行 failover。
 
-详见 `docs/skills/gscore-ai-core-api/references/11-mcp-image-search-and-meme.md` §11.3。
+详见 `.agents/skills/gscore-ai-core-api/references/11-mcp-image-search-and-meme.md` §11.3。
 
 ### 网页抓取工具 (web_fetch.py)
 

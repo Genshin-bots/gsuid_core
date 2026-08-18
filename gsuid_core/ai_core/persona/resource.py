@@ -271,7 +271,7 @@ def migrate_voice_anchor_from_config(persona_name: str) -> bool:
     if not isinstance(cfg, dict) or "voice_anchor" not in cfg:
         return False
 
-    # 已确认 "voice_anchor" in cfg，直接访问（LLM.md §1.4：存在性检查后直接访问）
+    # 已确认 "voice_anchor" in cfg，直接访问（AGENTS.md §1.4：存在性检查后直接访问）
     raw = cfg["voice_anchor"]
     wrote_txt = False
 

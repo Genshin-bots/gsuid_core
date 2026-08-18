@@ -1,7 +1,7 @@
 """Agent 环 hook 点位枚举（稳定 ID ``Hxx``，套件与第三方插件共用同一张表）。
 
 编号一经发布不再变更：删点只标 deprecated、不复用编号。新增点位追加到末尾。
-点位与内核锚点的对应关系见 ``docs/skills/gscore-development/references/13-agent-loop-hooks.md``。
+点位与内核锚点的对应关系见 ``.agents/skills/gscore-development/references/13-agent-loop-hooks.md``。
 """
 
 from enum import Enum

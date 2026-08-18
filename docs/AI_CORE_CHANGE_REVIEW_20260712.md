@@ -5,7 +5,7 @@
 > §3 评测结果（最终代码全量复跑）、§4 已知残留、§5 下一步建议。
 >
 > **配套文档**：评测跑法与 Windows 运维配方见 `eval/agent/README.md`；
-> 开发坑位与不变量见 `docs/skills/gscore-development/references/12-developer-pitfalls.md`
+> 开发坑位与不变量见 `.agents/skills/gscore-development/references/12-developer-pitfalls.md`
 > §12.22b~12.22d；会话/装配机制见同目录 `06-ai-session-and-persona.md` §6.7。
 
 ---

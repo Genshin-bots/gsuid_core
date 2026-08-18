@@ -526,7 +526,7 @@ async def _run_subprocess_in_thread(
 
     新增工具请直接用 asyncio.create_subprocess_exec，不要照抄这个平台分支；
     确需兜底就 except NotImplementedError（对策略变化免疫）。
-    详见 docs/skills/gscore-development/references/12-developer-pitfalls.md §12.3。
+    详见 .agents/skills/gscore-development/references/12-developer-pitfalls.md §12.3。
     """
 
     def _runner() -> tuple[bytes, int]:

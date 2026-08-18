@@ -151,6 +151,4 @@ def test_exposed_tool_name_leak_set_membership() -> None:
     assert hit is not None
     assert hit.category == "system_term"
     benign = check_ooc("这条路权限不够呢，换个通道再试。", exposed_tool_names=("install_skill",))
-    assert benign is None or benign.category != "system_term" or not any(
-        "install_skill" in m for m in benign.matched
-    )
+    assert benign is None or benign.category != "system_term" or not any("install_skill" in m for m in benign.matched)

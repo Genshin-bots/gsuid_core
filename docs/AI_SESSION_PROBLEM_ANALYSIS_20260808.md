@@ -3,7 +3,7 @@
 > **读者**：继续改 `ai_core` 的开发者 / Agent
 > **输入**：
 > - 目标基线：`plans/clear type.md`（旧目标，多数仍有效）
-> - 代码风格：`docs/LLM.md`
+> - 代码风格：`AGENTS.md`
 > - 本批改动：`agent_run` 拆分 + prompts / research / web_search / 配置微调
 > - 实测日志：`data/ai_core/session_logs/web_web_web-client-001_private_user_web_01_4a97e94e_20260808_220805.json`
 > - 关联子代理：`subagents/capagent_research_agent_…76cf8b07…`、`capagent_render_agent_…a498fa…a0caedd5…`
@@ -101,9 +101,9 @@
 | research 工具池混入游戏插件工具 | **中** | research log 可见 `send_waves_abyss_info` 等，干扰注意力与 token |
 | `find_tools` 语义召回错域 | **高（旧问题）** | 天气 → NTE；非本批引入，但本批未治 |
 | 中间 TextPart 在 tool 前发送 | **中** | 「图出了」假完成台词可在 create_subagent(render) 之前发出 |
-| LLM.md 红线 | **低~中** | `agent_run` 无 `cast`/`type: ignore`/`getattr`；但 `settle`/`loop` 保留大量 `try/except` 兜底发送/纠正路径（多由旧代码迁入） |
+| AGENTS.md 红线 | **低~中** | `agent_run` 无 `cast`/`type: ignore`/`getattr`；但 `settle`/`loop` 保留大量 `try/except` 兜底发送/纠正路径（多由旧代码迁入） |
 
-### 2.4 LLM.md 风格合规
+### 2.4 AGENTS.md 风格合规
 
 | 红线 | agent_run 现状 |
 |------|----------------|
@@ -113,7 +113,7 @@
 | 完全类型注解 | `RunOnceState` / `RunOnceHost` 方向正确 |
 | 注释 ≤2 行 88 字 | 大体遵守；少量阶段说明略长但仍克制 |
 
-**结论**：拆分**方向符合** LLM.md 的类型化与分层；**并未**借重构把「异常兜底文化」清干净。行为修复不应再堆 try/regex，而应把契约变成**状态机可判定**的阶段。
+**结论**：拆分**方向符合** AGENTS.md 的类型化与分层；**并未**借重构把「异常兜底文化」清干净。行为修复不应再堆 try/regex，而应把契约变成**状态机可判定**的阶段。
 
 ---
 

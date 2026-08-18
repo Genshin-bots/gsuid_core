@@ -271,7 +271,7 @@ async def record_append(
         return f"参数错误: {e}"
 
     # 闭包通过共享 dict 把"最终选定的 rid"带回外部——与本文件 record_delete /
-    # record_update 的 flag 写法一致，避免 type: ignore + getattr 兜底（LLM.md §1.4）。
+    # record_update 的 flag 写法一致，避免 type: ignore + getattr 兜底（AGENTS.md §1.4）。
     chosen: Dict[str, str] = {"rid": uuid.uuid4().hex[:12]}
 
     def _writer(current: Any) -> Dict[str, Any]:

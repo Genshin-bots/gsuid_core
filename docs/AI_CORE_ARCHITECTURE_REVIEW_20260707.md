@@ -233,7 +233,7 @@ webconsole `approvals_api`、Kanban 兼容端点）；**提交方五类全走 `s
 | `is_master` 三处重复实现 | 收敛为 `ai_core.utils._is_master_user` 唯一实现（顺带移除其 try/except 兜底），`approval.center.is_master` / `budget.manager._is_master` 委托之 |
 | `interaction="question"` 列恒空转 | 新增 `center.log_question`：`ask_user` / `ask_user_form` 问答完成后落账（回答→approved、超时→expired，resolved_note=答案），问答与审批共用一条审计链；前端审批页加"澄清问答"标记 |
 | Kanban 兼容端点无票据直连 | 改为"补票再裁"：无票据的 waiting_approval 先 `submit` 一张（title 注明 webconsole 补票）再统一 `resolve_row`，账本不再有暗路；非待审批状态直接拒绝 |
-| `mark_subtask_running` 的 `getattr(result, "rowcount", 0)` | 改 `CursorResult` 类型守卫（LLM.md §3.5.2） |
+| `mark_subtask_running` 的 `getattr(result, "rowcount", 0)` | 改 `CursorResult` 类型守卫（AGENTS.md §3.5.2） |
 
 ### 4.3 遗留注意项
 

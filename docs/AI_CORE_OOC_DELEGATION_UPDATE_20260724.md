@@ -5,8 +5,8 @@
 > **读者**：后续继续改 `ai_core` 的开发者 / Agent
 > **关联**：
 > - 生命周期总览（含统一输出闸）：[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6
-> - 开发技能：[`07-tool-registry-and-agent.md` §7.12](skills/gscore-development/references/07-tool-registry-and-agent.md)、[`12-developer-pitfalls.md` §12.22](skills/gscore-development/references/12-developer-pitfalls.md)
-> - 红线：[`docs/LLM.md`](LLM.md)
+> - 开发技能：[`07-tool-registry-and-agent.md` §7.12](../.agents/skills/gscore-development/references/07-tool-registry-and-agent.md)、[`12-developer-pitfalls.md` §12.22](../.agents/skills/gscore-development/references/12-developer-pitfalls.md)
+> - 红线：[`AGENTS.md`](../AGENTS.md)
 > - 历史评审：`docs/AI_CORE_CHANGE_REVIEW_20260712.md`
 
 > **2026-08 接线变更（读本文前先看）**：主路径 TextPart / `send_message_by_ai` 的发送前检测
@@ -32,7 +32,7 @@
 2. **委派失效**：能力代理专属工具仍可被主人格直调 → `create_subagent` 入池但几乎 0 调用。
 3. **意图误判**：省略跟进（「然后呢」）被当闲聊砍工具；软触发每句都打 LLM 浪费。
 
-并附带：**框架去域词化**（提示/分类不再硬编码股价等业务词）、**统计/控制台**小补丁、**LLM.md 注释规范**清理、单测与 pyright 修复。
+并附带：**框架去域词化**（提示/分类不再硬编码股价等业务词）、**统计/控制台**小补丁、**AGENTS.md 注释规范**清理、单测与 pyright 修复。
 
 ---
 
@@ -59,7 +59,7 @@
 3. **委派是流程强制，不是 prompt 希望**
    静态池剥离 exclusive + `find_tools`/`RetrievableToolset` 禁止回灌 + roster 注入真实 `node_id`。
 
-4. **LLM.md**
+4. **AGENTS.md**
    新代码避免 `getattr`/无注解；`#` 注释 ≤2 行、精简；类型用 `Protocol`/`Sequence`/`isinstance`。
 
 ---
@@ -353,7 +353,7 @@ _KANBAN_INLINE_WAIT_TIMEOUT_SEC = 60.0  # 同步等看板从 180→60
 
 ---
 
-## 10. 主题 H：工程卫生（LLM.md / 类型 / 注释）
+## 10. 主题 H：工程卫生（AGENTS.md / 类型 / 注释）
 
 ### 10.1 注释
 

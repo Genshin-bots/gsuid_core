@@ -599,7 +599,7 @@ async def _hybrid_search_edges(
     results = await _hybrid_search_impl(MEMORY_EDGES_COLLECTION, query, scope_keys, top_k)
 
     # Qdrant payload 字段可能因迁移 / 手工 patch 缺失（即便正常路径全字段写入）。
-    # 按 LLM.md §1.4 显式用 `in` + isinstance 守卫后直接访问，不使用 .get / getattr 兜底，
+    # 按 AGENTS.md §1.4 显式用 `in` + isinstance 守卫后直接访问，不使用 .get / getattr 兜底，
     # 也不使用 `dict[k] if k in d else default` 这类 .get 的同义改写。
     entity_ids: set[str] = set()
     for r in results:
@@ -629,7 +629,7 @@ async def _hybrid_search_edges(
 
     edges: list["Edge"] = []
     for r in results:
-        # 按 LLM.md §1.4：所有 payload 字段显式 `in` + isinstance 守卫后直接访问
+        # 按 AGENTS.md §1.4：所有 payload 字段显式 `in` + isinstance 守卫后直接访问
         source_id: str = ""
         if "source_entity_id" in r and isinstance(r["source_entity_id"], str):
             source_id = r["source_entity_id"]
@@ -652,7 +652,7 @@ async def _hybrid_search_edges(
             value = r["valid_at_ts"]
             if isinstance(value, (int, float)) or value is None:
                 valid_at_ts = value
-        # 按 LLM.md §1.4：dict lookup 也走显式分支，不写 `d[k] if k in d else ""` 兜底
+        # 按 AGENTS.md §1.4：dict lookup 也走显式分支，不写 `d[k] if k in d else ""` 兜底
         source_name: str = ""
         if source_id in id_to_name:
             source_name = id_to_name[source_id]

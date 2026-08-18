@@ -209,9 +209,7 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
 
 
 @app.get("/api/plugins/{plugin_name}", summary="获取插件详情", tags=PLUGINS)
-async def get_plugin_detail(
-    request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_admin_header)
-):
+async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_admin_header)):
     """
     获取单个插件的完整信息
 

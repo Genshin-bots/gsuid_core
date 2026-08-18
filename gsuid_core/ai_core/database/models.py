@@ -428,7 +428,7 @@ class AIKnowledgeChunk(SQLModel, table=True):
             async with engine.begin() as conn:
                 # sqlmodel.pyi 把 ``__tablename__`` 标为 InstrumentedAttribute,
                 # 不被 metadata.tables[str] 接受。SQLModel 自动以小写类名为表名,
-                # 这里显式硬编码, 跳过 stub 噪音, 与 LLM.md §3.1.1 命名前缀一致。
+                # 这里显式硬编码, 跳过 stub 噪音, 与 AGENTS.md §3.1.1 命名前缀一致。
                 await conn.run_sync(
                     cls.metadata.create_all,
                     tables=[cls.metadata.tables["aichunk"]],
@@ -540,7 +540,7 @@ class AIKnowledgeChunk(SQLModel, table=True):
             rows = (await session.execute(select(cls).where(cls.doc_id == doc_id))).scalars().all()
             qids = [r.qdrant_id for r in rows if r.qdrant_id]
             if rows:
-                # LLM.md §3.5.1: 比较表达式一律用 col() 包裹列
+                # AGENTS.md §3.5.1: 比较表达式一律用 col() 包裹列
                 # (delete 是 SQLAlchemy 原生, where() 严格只收 ColumnElement[bool])。
                 await session.execute(delete(cls).where(col(cls.doc_id) == doc_id))
                 await session.commit()

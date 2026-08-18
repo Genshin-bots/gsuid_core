@@ -190,7 +190,7 @@ async def emit_proactive_message(
     # 3) 实际发送（metadata 通过 extra_metadata 透传到 message_history）。
     #    send_chat_result 的发送侧异常不在这里吞——所有调用 emit_proactive_message
     #    的入口（inspector / executor / kanban_executor / message_sender 工具）
-    #    都在更外层有错误捕获并能记录 source 上下文。LLM.md §1.1 禁止在中间层
+    #    都在更外层有错误捕获并能记录 source 上下文。AGENTS.md §1.1 禁止在中间层
     #    用 try/except 兜底。
     extra_metadata: Dict[str, Any] = {
         "proactive": True,

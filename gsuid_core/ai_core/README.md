@@ -8,13 +8,13 @@
 
 ## ⚠️ 必读注意点（动手前先看）
 
-1. **遵守 `docs/LLM.md` 的红线**：禁止 `try/except` 兜底、禁止 `cast()`、禁止 `type: ignore`、禁止 `getattr / dict.get` 兜底。所有红线在本目录代码里都会被实际 review。
+1. **遵守 `AGENTS.md` 的红线**：禁止 `try/except` 兜底、禁止 `cast()`、禁止 `type: ignore`、禁止 `getattr / dict.get` 兜底、禁止 `Any`（运行时变量类型必须可追踪，§1.8）。所有红线在本目录代码里都会被实际 review。
 2. **`Bot` ≠ `_Bot`**（`gsuid_core/bot.py`）：
    - `_Bot` 是底层 WebSocket 实现，**不依赖 Event**，构造为 `_Bot(_id, ws)`。
    - `Bot` 是高层包装，**强依赖 Event**，构造为 `Bot(_bot, ev)`。
    - 本目录所有"对外发送"路径都走 `Bot.send` / `send_chat_result`；想拿底层 `_Bot` 只能从 `gss.active_bot` 里捞。**不要**自己造一个无 `Event` 的 `Bot` 实例。
 3. **完全异步**：所有可能阻塞的方法必须 `async def`；同步 CPU 工作用 `@to_thread`（见 `gsuid_core/pool.py`）。
-4. **数据库**：本目录的所有表都继承 `BaseIDModel / BaseBotIDModel / BaseModel`，所有类方法用 `@with_session`；表名 = 类名全小写无下划线，**禁止** `__tablename__`。详见 `docs/LLM.md` §3。
+4. **数据库**：本目录的所有表都继承 `BaseIDModel / BaseBotIDModel / BaseModel`，所有类方法用 `@with_session`；表名 = 类名全小写无下划线，**禁止** `__tablename__`。详见 `AGENTS.md` §3。
 5. **主动消息（Heartbeat / ScheduledTask / Kanban / 工具主动 send）必须走 `ai_core.proactive.emit_proactive_message`**——不要直接 `bot.send` + 手动 `message_history.add_message` + 手动 `dispatcher.register_send`。详见 §"`proactive/`" 与 `plans/proactive_message_session_unification_20260529.md`。
 6. **会话日志统一在 `AISessionLogger`**（详见 `docs/AI_SESSION_LOGGING.md`）：**所有 `GsCoreAIAgent` 恒有 `_session_logger`**（非 Optional）——不传 `session_id` 的来源（评估 / meme / 记忆 / 图片理解等后台调用）会在 `__init__` 自动派生 `auto_<create_by>_<rand>` 的一次性 subagent id。SubAgent 日志落 `data/ai_core/session_logs/subagents/`，与主 session 物理隔离。**显式 SubAgent 用完仍建议 `agent._session_logger.close()`** 及时落盘（subagent 不跑后台轮询，靠 close/__del__ 落盘）。**相同 session_id 在 1 小时窗口内续写同一文件，超时滚动新文件**（`SESSION_WINDOW_SECONDS`）。
 7. **不要把任务 prompt 当 user_message 喂给主用户 session**（污染 `self.history` 与 `session_logger`，让用户回放历史时看到自己"发"过没发的话）。如果你要让人格执行某项后台任务，请派 SubAgent + emit_proactive_message。
@@ -391,7 +391,7 @@ User → Trigger → handle_ai
 ```
 
 > 完整时序：[`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6；
-> 开发导航：[`docs/skills/gscore-development/references/07-tool-registry-and-agent.md`](../../docs/skills/gscore-development/references/07-tool-registry-and-agent.md) §7.12。
+> 开发导航：[`.agents/skills/gscore-development/references/07-tool-registry-and-agent.md`](../../.agents/skills/gscore-development/references/07-tool-registry-and-agent.md) §7.12。
 
 
 ### B. 主动回复（统一闭包）
@@ -428,9 +428,9 @@ User → Trigger → handle_ai
 
 ## 相关上层文档
 
-- `docs/LLM.md` — 代码红线（**写代码前先读**）。
+- `AGENTS.md` — 代码红线（**写代码前先读**）。
 - `docs/AI_AGENT_LIFECYCLE_SEQUENCE.md` — 一条消息完整生命周期（Agent loop / **pre_send_gate** / 呈现层）。
 - `docs/TAKUMI_HTML_GUIDE.md` — HTML 出图 / table rewrite 约束。
-- `docs/skills/gscore-development/SKILL.md` — 框架开发指南（§7 输出闸、§12.22 不变量）。
-- `docs/skills/gscore-ai-core-api/SKILL.md` — 插件侧 AI API（内置工具分类）。
+- `.agents/skills/gscore-development/SKILL.md` — 框架开发指南（§7 输出闸、§12.22 不变量）。
+- `.agents/skills/gscore-ai-core-api/SKILL.md` — 插件侧 AI API（内置工具分类）。
 - `gsuid_core/ai_core/rag/README.md` / `persona/README.md` / `scheduled_task/README.md` / `buildin_tools/README.md` — 各子模块 README。

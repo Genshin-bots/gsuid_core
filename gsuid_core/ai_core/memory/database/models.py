@@ -278,7 +278,7 @@ class AIMemEpisode(SQLModel, table=True):
         from sqlalchemy import update as _update
 
         result = await session.execute(_update(cls).where(col(cls.id).in_(episode_ids)).values(is_archived=True))
-        # LLM.md §3.5.2: session.execute 静态返回 Result[Any], 无 rowcount;
+        # AGENTS.md §3.5.2: session.execute 静态返回 Result[Any], 无 rowcount;
         # DML 实际返回 CursorResult。用 isinstance 守门取 rowcount, 不依赖 cast。
         return result.rowcount if isinstance(result, CursorResult) else 0
 
@@ -998,7 +998,7 @@ class AIMemEdge(SQLModel, table=True):
             )
             .values(decay_score=func.coalesce(col(cls.decay_score), 1.0) * decay_factor)
         )
-        # LLM.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
+        # AGENTS.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
@@ -1443,7 +1443,7 @@ class AIMemPreference(SQLModel, table=True):
         from sqlalchemy import delete as _delete
 
         result = await session.execute(_delete(cls).where(col(cls.scope_key).in_(scope_keys)))
-        # LLM.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
+        # AGENTS.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod

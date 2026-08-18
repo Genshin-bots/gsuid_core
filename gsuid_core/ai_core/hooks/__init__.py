@@ -1,7 +1,7 @@
 """Agent 环 hook 总线（对外唯一入口）。
 
 插件与第一方套件用同一张点位表、同一套能力票。用法见
-``docs/skills/gscore-development/references/13-agent-loop-hooks.md``::
+``.agents/skills/gscore-development/references/13-agent-loop-hooks.md``::
 
     from gsuid_core.ai_core.hooks import on_agent_hook, AgentHookPoint
 

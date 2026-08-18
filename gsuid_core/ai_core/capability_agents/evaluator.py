@@ -366,7 +366,7 @@ def _build_evaluator_context(
             else "（无显式白名单，按 tool_query 动态检索）"
         )
         lines.append(f"- {p.node_id} | {p.display_name} | {p.when_to_use} | 工具: {tool_summary}")
-    # 能力域：直接读 ToolBase.capability_domain（已在 models.py 定义为属性）， 不再用 getattr 兜底（LLM.md §1.4）
+    # 能力域：直接读 ToolBase.capability_domain（已在 models.py 定义为属性）， 不再用 getattr 兜底（AGENTS.md §1.4）
     from gsuid_core.ai_core.register import get_registered_tools
 
     cat_map = get_registered_tools()

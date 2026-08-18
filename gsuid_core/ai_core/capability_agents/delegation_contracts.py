@@ -30,10 +30,7 @@ POST_DELIVERY_SILENCE_CONTRACT = (
 )
 
 # 申辩成功：控制面结束，与 DELIVERED 对称。
-POST_DISPUTE_SILENCE_CONTRACT = (
-    "（系统：申辩已记录，本轮控制面结束。"
-    "只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
-)
+POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
 
 # 时效提醒文案保留给测试/调用方；主路径不再往请求里追加（避免和出图提示打架）。
 TIMELESS_AGGREGATE_CAVEAT = "（系统：返回体看起来没有当前时点。别说成「现在/此刻」；不够可以换路再查，短答也可以。）"

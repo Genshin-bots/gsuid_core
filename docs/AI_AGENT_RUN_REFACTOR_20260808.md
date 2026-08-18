@@ -4,7 +4,7 @@
 > **2026-08-10 增补**：在本包上新增 DELIVERED 交付终局态 / 交付状态汇报防火墙 /
 > 出图候选时效判据等（见 §8），拆分结构不变。
 > **读者**：改 `ai_core` Agent 环 / 工具装配 / 出站闸 / 假完成 的开发者与 Agent
-> **红线**：[LLM.md](LLM.md)
+> **红线**：[AGENTS.md](../AGENTS.md)
 > **生命周期总览**：[AI_AGENT_LIFECYCLE_SEQUENCE.md](AI_AGENT_LIFECYCLE_SEQUENCE.md) §10
 > **关联**：OOC/委派 [AI_CORE_OOC_DELEGATION_UPDATE_20260724.md](AI_CORE_OOC_DELEGATION_UPDATE_20260724.md)；
 > OOC 根治归因 [AI_SESSION_OOC_ROOTCAUSE_20260810.md](AI_SESSION_OOC_ROOTCAUSE_20260810.md)
@@ -110,7 +110,7 @@ agent_run.*  ──✗──►  gs_agent   （阶段模块不得再 import gs_a
 
 ---
 
-## 3. 类型与工程卫生（对齐 LLM.md）
+## 3. 类型与工程卫生（对齐 AGENTS.md）
 
 | 项 | 做法 |
 |----|------|
