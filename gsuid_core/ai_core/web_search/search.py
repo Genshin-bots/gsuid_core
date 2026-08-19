@@ -1,7 +1,7 @@
 """
 Web Search 公共 API 模块
 
-提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / Jina / MCP）。
+提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / Jina / AnySearch / MCP）。
 支持多源策略：
 - none：仅主用源
 - error_switch：主用失败后按备用顺序切换（默认）
@@ -39,6 +39,7 @@ from .tavily_search import (
     tavily_search,
     tavily_search_with_context,
 )
+from .anysearch_search import anysearch_search, anysearch_search_configured
 
 # 单条 MCP 原始返回兜底透传时的最大字符数，避免一次搜索把上下文吃满
 _MAX_MCP_RAW_CHARS = 4000
@@ -46,8 +47,9 @@ _MAX_MCP_RAW_CHARS = 4000
 _balance_lock = threading.Lock()
 _balance_counter = itertools.count()
 
-# 默认候选顺序（主用源会插到队首）；Tavily 为项目默认主用
-_DEFAULT_PROVIDER_ORDER = ("Tavily", "Exa", "Jina", "MCP")
+# 默认候选顺序（主用源会插到队首）。AnySearch 可匿名，未配置 Key 时仍可用。
+_DEFAULT_PROVIDER = "AnySearch"
+_DEFAULT_PROVIDER_ORDER = ("AnySearch", "Tavily", "Exa", "Jina", "MCP")
 
 
 class ProviderEmptyResultError(RuntimeError):
@@ -55,9 +57,12 @@ class ProviderEmptyResultError(RuntimeError):
 
 
 def _get_provider() -> str:
-    """主用搜索引擎。"""
-    raw = ai_config.get_config("websearch_provider").data or "Tavily"
-    return str(raw).strip() or "Tavily"
+    """主用搜索引擎。未填或主用未就绪（无 Key 等）时落到 AnySearch 匿名额度。"""
+    raw = ai_config.get_config("websearch_provider").data or _DEFAULT_PROVIDER
+    name = str(raw).strip() or _DEFAULT_PROVIDER
+    if _provider_configured(name):
+        return name
+    return _DEFAULT_PROVIDER
 
 
 def _get_lb_strategy() -> str:
@@ -95,6 +100,8 @@ def _provider_configured(provider: str) -> bool:
         return bool(_key_pool(exa_config))
     if name == "Jina":
         return jina_search_configured()
+    if name == "AnySearch":
+        return anysearch_search_configured()
     if is_mcp_provider(name) or name.upper() == "MCP":
         return bool(get_mcp_tool_id_optional("websearch_mcp_tool_id"))
     return False
@@ -235,14 +242,24 @@ async def _invoke_provider(
         results = await jina_search(query=query, max_results=max_results)
         return {"results": results, "answer": None} if with_context else results
 
+    if name == "AnySearch":
+        results = await anysearch_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None} if with_context else results
+
     if is_mcp_provider(name) or name.upper() == "MCP":
         results = await _mcp_search(query=query, max_results=max_results)
         return {"results": results, "answer": None} if with_context else results
 
-    # Tavily 默认
-    if with_context:
-        return await tavily_search_with_context(query=query, max_results=max_results if max_results is not None else 5)
-    return await tavily_search(query=query, max_results=max_results)
+    if name == "Tavily":
+        if with_context:
+            return await tavily_search_with_context(
+                query=query, max_results=max_results if max_results is not None else 5
+            )
+        return await tavily_search(query=query, max_results=max_results)
+
+    # 未识别名字走 AnySearch 匿名保底，避免空配置搜不到
+    results = await anysearch_search(query=query, max_results=max_results)
+    return {"results": results, "answer": None} if with_context else results
 
 
 def _ensure_non_empty_list(results: list[dict]) -> list[dict]:

@@ -152,7 +152,7 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         desc=(
             "默认开启。请求方式为 responses 时用上游内置 web_search，"
             "不再把本地 web_search_tool 发给模型；"
-            "chat_completions 无论本开关开或关都走本地 Tavily/Jina/Exa。"
+            "chat_completions 无论本开关开或关都走本地 Tavily/Jina/Exa/AnySearch。"
             "中转的 responses 若不支持 hosted 工具会 400，那时再关掉即可"
         ),
         data="on",

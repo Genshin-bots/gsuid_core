@@ -97,7 +97,7 @@ ANTHROPIC_CONFIG_TEMPLATE: Dict[str, GSC] = {
         title="远端 Web Search",
         desc=(
             "默认开启。Anthropic Messages API 直接用上游内置 web_search，"
-            "不再把本地 web_search_tool 发给模型；关闭则走本地 Tavily/Jina/Exa。"
+            "不再把本地 web_search_tool 发给模型；关闭则走本地 Tavily/Jina/Exa/AnySearch。"
             "中转若不支持 hosted 工具会 400，那时再关掉即可"
         ),
         data="on",

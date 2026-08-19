@@ -186,6 +186,20 @@ def _check_websearch_config() -> Dict[str, Any]:
         else:
             result["configured"] = True
             result["note"] = f"已配置 {len([k for k in api_keys if k])} 个 Jina API Key"
+    elif provider == "AnySearch":
+        from gsuid_core.ai_core.configs.ai_config import anysearch_config
+
+        api_keys = anysearch_config.get_config("api_key").data
+        keyed = 0
+        if isinstance(api_keys, list):
+            keyed = len([k for k in api_keys if k])
+        elif isinstance(api_keys, str) and api_keys:
+            keyed = 1
+        result["configured"] = True
+        if keyed:
+            result["note"] = f"已配置 {keyed} 个 AnySearch API Key"
+        else:
+            result["note"] = "AnySearch 可用匿名额度（未配置 API Key）"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:
@@ -511,7 +525,7 @@ def _analyze_missing_configs(wizard_data: Dict[str, Any]) -> List[Dict[str, Any]
                 "item": "网络搜索",
                 "severity": "warning",
                 "message": f"网络搜索未配置: {websearch.get('note', '未知错误')}",
-                "recommendation": "配置 Tavily/Exa API Key 或配置 MCP 搜索工具",
+                "recommendation": "配置 Tavily/Jina/Exa/AnySearch API Key 或配置 MCP 搜索工具",
             }
         )
 

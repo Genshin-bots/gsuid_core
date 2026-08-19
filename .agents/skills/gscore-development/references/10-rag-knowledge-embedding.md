@@ -149,6 +149,6 @@ WebConsole API：`/api/embedding_config/*`（provider / local / openai / summary
 | 模块 | 文件 | 说明 |
 |------|------|------|
 | Image Understand | `image_understand/understand.py` | 统一图片理解。模型 `model_support` 含 `image` → 原生多模态转述；否则回退 MCP。**记忆摄入/视频帧/表情包打标等后台路径也调它，不经 `_prepare_user_message` 能力分支，故必须自身优先走原生多模态**，否则未配 MCP 时刷"图片理解失败" |
-| Web Search | `web_search/search.py` | `web_search()` 按 `websearch_provider`（默认 **Tavily**）+ `websearch_lb_strategy` 调度 Tavily/Jina/Exa/MCP；异常或空结果可换源。MiniMax 搜索已迁 MCP |
+| Web Search | `web_search/search.py` | `web_search()` 按 `websearch_provider`（默认 **AnySearch**，可匿名）+ `websearch_lb_strategy` 调度 AnySearch/Tavily/Jina/Exa/MCP；异常或空结果可换源。MiniMax 搜索已迁 MCP |
 | Web Fetch | `web_fetch/__init__.py` | `fetch_webpage_as_markdown`：默认 Jina Reader（Key 可选）+ 备用 local；`webfetch_*` 与搜索同构多源策略 |
 | Meme 表情包 | `meme/` + `buildin_tools/meme_tools.py` | 采集/打标/检索/发送（`send_meme`/`collect_meme`/`search_meme`） |

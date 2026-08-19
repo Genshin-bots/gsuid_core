@@ -344,13 +344,14 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 文件 | 用途 |
 |---|---|
-| `web_search/search.py` | 顶层调度：主用 + 多源策略（`none` / `error_switch` / `auto_balance`）。默认主用 **Tavily**；异常**或空结果**换源。 |
-| `web_search/tavily_search.py` | Tavily（默认主用；Key 失败抛错）。 |
+| `web_search/search.py` | 顶层调度：主用 + 多源策略（`none` / `error_switch` / `auto_balance`）。默认主用 **AnySearch**（可匿名）；异常**或空结果**换源。 |
+| `web_search/tavily_search.py` | Tavily（需 Key；失败抛错）。 |
 | `web_search/jina_search.py` | Jina 搜索 `s.jina.ai`（需 API Key）。 |
 | `web_search/exa_search.py` | Exa；Key 失败抛错以便切换。 |
+| `web_search/anysearch_search.py` | AnySearch `POST /v1/search`（Key 可选，匿名有每日免费额度）。 |
 | `web_fetch/__init__.py` | URL 抓取：默认 **Jina** `r.jina.ai`（Key 可选）+ 备用 **local** 直连；空正文/错误换源。 |
 
-配置：`ai_config` 的 `websearch_*` / `webfetch_*`；`tavily_config.json` / `jina_config.json` / `exa_config.json` / `web_fetch_config.json`。**热读，改配置无需重启。**
+配置：`ai_config` 的 `websearch_*` / `webfetch_*`；`tavily_config.json` / `jina_config.json` / `exa_config.json` / `anysearch_config.json` / `web_fetch_config.json`。**热读，改配置无需重启。**
 内置工具：`web_search_tool` / `web_fetch_tool` 外层 `timeout=100`。控制台：`/ai-config` → 网络搜索服务 / 网页抓取服务。
 
 ---
