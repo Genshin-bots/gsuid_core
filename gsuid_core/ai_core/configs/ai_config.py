@@ -534,7 +534,7 @@ MCP_SERVER_CONFIG: Dict[str, GSC] = {
     ),
 }
 
-# 槽位配置从 KIT_SLOTS 派生: 18 个近似条目手写必然与槽位表漂移。
+# 槽位配置从 KIT_SLOTS 派生: 手写条目必然与槽位表漂移。
 for _slot_spec in KIT_SLOTS:
     _hint = "off=该槽无占用者" + ("(密封槽, 关闭会拆安全面)" if _slot_spec.sealed else "")
     AI_CONFIG[f"kit_slots.{_slot_spec.name}"] = GsStrConfig(
@@ -919,8 +919,8 @@ MEMORY_CONFIG: Dict[str, GSC] = {
     "memory_inject_max_chars": GsIntConfig(
         "记忆注入字符预算",
         "单次注入对话上下文的记忆文本最大字符数, 调大可保留更多历史但更费 Token",
-        2000,
-        options=[1000, 2000, 4000, 8000, 16000],
+        800,
+        options=[400, 800, 1000, 2000, 4000],
     ),
     "enable_system2get": GsBoolConfig(
         "是否启用 System-2",

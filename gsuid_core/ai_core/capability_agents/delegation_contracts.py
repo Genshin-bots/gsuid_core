@@ -76,7 +76,7 @@ def tool_return_is_non_web_data(content: Any) -> bool:
     """成功的非 web **实质数据**：有它则「本轮只有 web」不成立。
 
     as_of 尚未被各结构化工具普遍落地前，不能把「无 as_of」等同于「无结构化数据」；
-    行情/知识等非 web 成功返回应挡住 WEB_ONLY caveat 的误注入。
+    结构化/知识等非 web 成功返回应挡住 WEB_ONLY caveat 的误注入。
     但 find_tools 路由文案（🔎/🔒/已加载）只是装配元信息，不算有数据。
     """
     if not isinstance(content, str):
@@ -171,7 +171,11 @@ POST_TOOL_FAIL_CONTRACT = (
     "（系统：本轮工具返回失败或空结果。禁止用角色懒惰结束本轮。"
     "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
     "仅当结果已是长结构化内容时再 create_subagent(render_agent) 出图。"
-    "只有换路后仍无果才可角色化短句说明。）"
+    "只有换路后仍无果才可角色化短句说明。"
+    "向用户提及失败时禁止使用开发者词汇（工具/配置/服务/接口/报错），"
+    "用角色卡里的世界观转述办不了，不要示范或套用任何固定口癖。"
+    "配置缺失类失败不要解释原因，只说办不了。"
+    "若本轮用网页查清了一个梗，请用 record_meme 固化。）"
 )
 
 POST_TOOL_FAIL_CONTRACT_CAPABILITY = (

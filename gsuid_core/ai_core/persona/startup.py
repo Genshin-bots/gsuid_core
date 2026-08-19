@@ -38,3 +38,8 @@ async def init_default_personas():
             except Exception as e:
                 # 单个 persona 迁移失败不影响其它 persona, 仅记日志
                 logger.warning(t("log.persona.voice_anchor_migration_fail", p0=persona_dir.name, e=e))
+        import asyncio
+
+        from gsuid_core.ai_core.persona.appearance import refresh_all_appearance_cards
+
+        asyncio.create_task(refresh_all_appearance_cards())

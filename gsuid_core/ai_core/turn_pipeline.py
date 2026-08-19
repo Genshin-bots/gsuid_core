@@ -36,8 +36,8 @@ MAX_SUMMARY_LENGTH = 15000
 
 # 群聊历史窗口：靠紧凑格式 + 当前用户优先，而不是堆 30 条散句
 _HISTORY_LIMIT = 20
-_CURRENT_USER_MIN_RECORDS = 6
-_MAX_OTHER_RECORDS = 10
+_CURRENT_USER_MIN_RECORDS = 4
+_MAX_OTHER_RECORDS = 6
 
 
 async def check_budget_gate(bot: Bot, event: Event) -> bool:

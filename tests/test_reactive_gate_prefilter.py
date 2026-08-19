@@ -13,7 +13,8 @@ def test_empty_and_pure_particles_silence() -> None:
 def test_short_followup_passes() -> None:
     assert _reactive_gate_rule_prefilter("你说的那个怎么样了") is True
     assert _reactive_gate_rule_prefilter("改成明天八点") is True
-    assert _reactive_gate_rule_prefilter("早柚还在吗") is True
+    assert _reactive_gate_rule_prefilter("角色甲还在吗", persona_name="角色甲") is True
+    assert _reactive_gate_rule_prefilter("角色甲还在吗") is None
 
 
 def test_ambiguous_goes_to_llm() -> None:

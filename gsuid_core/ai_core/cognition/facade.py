@@ -12,6 +12,7 @@
    自动层只许目录卡 + 句柄，深读仍走 ``read_handle``。
 """
 
+import re
 import asyncio
 from typing import Set, Dict, List, Tuple, FrozenSet
 from dataclasses import replace
@@ -102,6 +103,9 @@ async def search_cognition(
         if CogKind.MEME in kinds:
             tasks.append(asyncio.create_task(_search_memes(query, scope=scope, limit=limit)))
             labels.append("meme")
+    if CogKind.MEME_KNOWLEDGE in kinds:
+        tasks.append(asyncio.create_task(_search_meme_knowledge(query, scope=scope, limit=limit)))
+        labels.append("meme_knowledge")
     # 节点是索引层：原库过期后靠它召回蒸馏结论。
     tasks.append(asyncio.create_task(_search_nodes(query, kinds=kinds, scope=scope, limit=limit)))
     labels.append("nodes")
@@ -171,6 +175,9 @@ async def _search_memory(
         enable_system2=scope.enable_system2,
         enable_user_global=scope.enable_user_global,
         inject_preferences=CogKind.PREFERENCE in kinds,
+        bot_id=scope.bot_id,
+        bot_self_id=scope.bot_self_id,
+        include_self=True,
     )
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
@@ -468,6 +475,12 @@ async def _search_memes(query: str, *, scope: CogScope, limit: int) -> _BackendR
     return await search_memes_backend(query, scope=scope, limit=limit)
 
 
+async def _search_meme_knowledge(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.cognition.extra_backends import search_meme_knowledge_backend
+
+    return await search_meme_knowledge_backend(query, scope=scope, limit=limit)
+
+
 # ── 后端 5：认知节点（跨 kind 蒸馏结论的索引层）──
 
 
@@ -486,9 +499,9 @@ async def _search_nodes(
         scope_keys.append(make_scope_key(ScopeType.GROUP, scope.group_id))
     if scope.user_id:
         scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, scope.user_id))
-    # self_note 写在 self:{bot_id}；漏这一项则写入后永远召不回
-    if scope.bot_id:
-        scope_keys.append(make_scope_key(ScopeType.SELF, scope.bot_id))
+    # self_note / 自身发言写在 self:{bot_self_id}；漏这项则写入后永远召不回
+    if scope.bot_self_id:
+        scope_keys.append(make_scope_key(ScopeType.SELF, scope.bot_self_id))
     search_q = await _knowledge_query_for_scope(query, scope)
     rows = await AICogNode.search(
         search_q,
@@ -514,6 +527,79 @@ async def _search_nodes(
         )
         ids.append(node_id)
     return ids, hits
+
+
+_TOOL_OUTPUT_INJECT_MAX_CHARS = 150
+_TOOL_OUTPUT_INJECT_MAX_HITS = 2
+_TOOL_OUTPUT_SIM_FLOOR = 0.55
+_TOOL_OUTPUT_MAX_AGE_SEC = 24 * 3600
+
+
+def _token_overlap_score(query: str, text: str) -> float:
+    q = {t for t in re.findall(r"[^\s，。！？、；：,.!?;:]{2,}", (query or "").lower())}
+    body = (text or "").lower()
+    if not q or not body:
+        return 0.0
+    hits = sum(1 for tok in q if tok in body)
+    return hits / len(q)
+
+
+async def format_recent_tool_conclusions(query: str, scope: CogScope) -> str:
+    """每轮自动注入的工具结论切片：24h 内 FACT 节点、相似度 ≥0.55、≤2 条 ≤150 字。"""
+    import time as _time
+
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
+
+    if not query.strip() or not scope.user_id:
+        return ""
+    scopes: List[str] = []
+    if scope.group_id:
+        scopes.append(make_scope_key(ScopeType.GROUP, scope.group_id))
+    else:
+        scopes.append(make_scope_key(ScopeType.USER_GLOBAL, scope.user_id))
+    rows = await AICogNode.search(
+        query,
+        scope_keys=scopes,
+        owner_user_id=scope.user_id,
+        kinds=[CogKind.FACT.value],
+        limit=8,
+    )
+    now = int(_time.time())
+    picked: List[CognitiveHit] = []
+    for row in rows:
+        if now - int(row.created_at or 0) > _TOOL_OUTPUT_MAX_AGE_SEC:
+            continue
+        blob = f"{row.title} {row.summary}"
+        score = _token_overlap_score(query, blob)
+        if score < _TOOL_OUTPUT_SIM_FLOOR:
+            continue
+        as_of = row.as_of or ""
+        picked.append(
+            CognitiveHit(
+                kind=CogKind.FACT,
+                id=f"fact_{row.id}",
+                title=row.title or "此前查过",
+                summary=(row.summary or "")[:80],
+                score=score,
+                as_of=as_of,
+                source="tool_fact",
+            )
+        )
+        if len(picked) >= _TOOL_OUTPUT_INJECT_MAX_HITS:
+            break
+    if not picked:
+        return ""
+    lines = ["[此前查过]"]
+    used = 0
+    for hit in picked:
+        stamp = f"as_of {hit.as_of}" if hit.as_of else "as_of 未知"
+        line = f"· [{stamp}] {hit.summary}（详情 search_cognition）"
+        if used + len(line) > _TOOL_OUTPUT_INJECT_MAX_CHARS and lines:
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 async def inject_memory_slice(
@@ -545,13 +631,20 @@ async def inject_memory_slice(
         enable_user_global=scope.enable_user_global,
         inject_preferences=True,
         preference_contexts=preference_contexts,
+        bot_id=scope.bot_id,
+        bot_self_id=scope.bot_self_id,
+        include_self=True,
     )
-    return ctx.to_prompt_text(
+    memory_text = ctx.to_prompt_text(
         max_chars=memory_config.memory_inject_max_chars,
         priority_speakers=priority_speakers or None,
         current_speaker_ids=current_speaker_ids or None,
         query=query,
     )
+    tool_block = await format_recent_tool_conclusions(query, scope)
+    if tool_block:
+        return f"{memory_text}\n\n{tool_block}" if memory_text else tool_block
+    return memory_text
 
 
 def render_cognition_block(query: str, hits: List[CognitiveHit], *, header: str = "认知检索") -> str:

@@ -119,6 +119,8 @@
   "log.agent.text_send_fail_failed": "[GsCoreAIAgent] テキスト送信に失敗しました: {_e}",
   "log.agent.token_usage_input_tokens": "[GsCoreAIAgent] トークン消費: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",
   "log.agent.tool_assembly_slot_not_kernel": "[Tools] tool_assembly スロットが第一党キットではないため、カーネルは5層自動アセンブリをスキップします(find_tools も消えます)",
+  "log.agent.context_block_truncated": "[Context] ブロック {name} 予算超過で {before}→{after} 字に切り詰め",
+  "log.agent.capability_node_missing_when": "[AgentNode] {node} に when_to_use がありません",
   "log.agent.tool_calls_per_response_truncate": "ツール呼び出しヒューズ: 1回の応答で {count} 回呼び出し、{limit} 回に切り詰め",
   "log.agent.tool_count_baseline_extra": "[GsCoreAIAgent] ツール数: {p0}（基本 {p1} + 追加 {p2}）",
   "log.agent.tool_execution_compl_name_result_passed_ok": "[✅ ツール実行完了]: ツール名='{p0}'、結果は Agent={tool_result_str} に渡されました",

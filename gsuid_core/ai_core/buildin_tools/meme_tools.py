@@ -211,3 +211,55 @@ def _get_persona_for_event(ev: Event) -> str:
         return persona_name or "common"
     except Exception:
         return "common"
+
+
+@ai_tools(category="self", capability_domain="群聊黑话")
+async def record_meme(
+    ev: Event,
+    term: str,
+    meaning: str,
+    origin: str = "",
+    usage: str = "",
+) -> str:
+    """把刚搞懂的梗/黑话登记进词典，下次免搜。
+
+    接梗失败或刚用网页查清一个梗后调用。不要把学术名词当梗登记。
+
+    Args:
+        term: 梗名或触发短语。
+        meaning: 语义解释（≤300字）。
+        origin: 出处（可选）。
+        usage: 接法范式（可选）。
+    """
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+    from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
+
+    name = (term or "").strip()
+    gloss = (meaning or "").strip()
+    if not name or not gloss:
+        return "⚠️ term 和 meaning 都不能空。"
+    scope_key = make_scope_key(ScopeType.GROUP, ev.group_id) if ev.group_id else ""
+    row = await AiMemeKnowledge.upsert_term(
+        bot_id=ev.bot_id,
+        term=name,
+        meaning=gloss,
+        origin=origin,
+        usage=usage,
+        scope_key=scope_key,
+        confidence=0.8,
+        source="model",
+    )
+    await remember(
+        MemoryWrite(
+            kind=CogKind.MEME_KNOWLEDGE,
+            ref=str(row.id),
+            scope_key=scope_key or f"self:{ev.bot_id}",
+            owner_user_id=ev.user_id,
+            title=name,
+            summary=gloss[:120],
+            source="model",
+        )
+    )
+    return f"已记住「{name}」。下次群友提到会直接懂。"

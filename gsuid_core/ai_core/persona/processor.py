@@ -39,6 +39,18 @@ async def build_persona_prompt(
         完整的角色扮演prompt字符串
     """
     persona_content = await load_persona(char_name)
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.appearance import load_appearance_line
+
+    appearance = load_appearance_line(char_name)
+    if appearance:
+        persona_content += (
+            f"\n我的样子：{appearance}\n图中角色若与上述形象一致，按角色卡自己决定怎么反应；不要人称混乱。"
+        )
+    pcfg = persona_config_manager.get_config(char_name)
+    soft = int(pcfg.get_config("speech_len_soft").data)
+    hard = int(pcfg.get_config("speech_len_hard").data)
+    persona_content += f"\n台词长度：建议不超过 {soft} 字，硬上限 {hard} 字（用户明确要求详细时除外）。"
     # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定，跨会话 / resume
     # 都能命中 provider 前缀缓存（§优化 O-2）。精确到分的当前时间已由 user_message 侧
     current_date = await get_current_date(format="%Y年%m月%d日")

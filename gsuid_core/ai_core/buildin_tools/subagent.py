@@ -253,7 +253,7 @@ async def create_subagent(
     from gsuid_core.ai_core.wall_clock import pause_wall_clock
 
     async with pause_wall_clock():
-        return await _create_subagent_impl(
+        raw = await _create_subagent_impl(
             ctx,
             task=task,
             max_tokens=max_tokens,
@@ -261,6 +261,29 @@ async def create_subagent(
             agent_profile=agent_profile,
             transient=transient,
         )
+        head = (task or "").strip().split("\n", 1)[0][:80]
+        body = f"（委派原问：{head}）\n{raw}" if head else raw
+        return await _maybe_fold_subagent_receipt(ctx, body)
+
+
+async def _maybe_fold_subagent_receipt(ctx: RunContext[ToolContext], text: str) -> str:
+    """回执 >1500 字落 FileOS 折句柄卡，堵整包回灌。"""
+    if len(text) <= 1500:
+        return text
+    from gsuid_core.ai_core.planning.tool_output_helper import persist_and_fold_tool_return
+
+    ev = ctx.deps.ev if ctx.deps is not None else None
+    session_id = ""
+    if ctx.deps is not None and ctx.deps.parent_session_id:
+        session_id = ctx.deps.parent_session_id
+    card = await persist_and_fold_tool_return(
+        "create_subagent",
+        text,
+        ev,
+        session_id,
+        is_group=bool(ev and ev.group_id),
+    )
+    return card if card else text[:1500] + "\n…[过长已截断，详见句柄]"
 
 
 async def summarize_long_input(text: str, *, max_tokens: int = 18000) -> str:

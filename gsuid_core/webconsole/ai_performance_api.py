@@ -108,3 +108,13 @@ async def get_hourly_performance_range(
             "msg": f"获取范围性能统计失败: {str(e)}",
             "data": None,
         }
+
+
+@app.get("/api/ai/performance/prefix_breaks", summary="前缀缓存失配原因计数", tags=AI_PERF)
+async def get_prefix_break_stats(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    from gsuid_core.ai_core.prefix_probe import get_prefix_break_counts
+
+    counts = get_prefix_break_counts()
+    return {"status": 0, "msg": "ok", "data": counts}

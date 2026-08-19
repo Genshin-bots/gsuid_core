@@ -57,15 +57,27 @@ def test_block_order_is_the_single_source(isolated) -> None:
     """块名表是唯一顺序定义；A 写 memory、C 写 relationship，名字不许各自造。"""
     assert CONTEXT_BLOCK_ORDER.index("mood") < CONTEXT_BLOCK_ORDER.index("relationship")
     assert CONTEXT_BLOCK_ORDER.index("identity") < CONTEXT_BLOCK_ORDER.index("history")
+    assert CONTEXT_BLOCK_ORDER.index("history") < CONTEXT_BLOCK_ORDER.index("group_context")
+    assert CONTEXT_BLOCK_ORDER.index("group_context") < CONTEXT_BLOCK_ORDER.index("memory")
+    assert CONTEXT_BLOCK_ORDER.index("task") < CONTEXT_BLOCK_ORDER.index("plan_hint")
     assert CONTEXT_BLOCK_ORDER.index("history") < CONTEXT_BLOCK_ORDER.index("memory")
     assert CONTEXT_BLOCK_ORDER[-1] == "plugin_hints", "第三方 hint 恒在最后"
-    for name in ("memory", "relationship", "mood", "identity", "history", "plugin_hints"):
+    for name in (
+        "memory",
+        "relationship",
+        "mood",
+        "identity",
+        "history",
+        "group_context",
+        "plan_hint",
+        "plugin_hints",
+    ):
         assert is_known_block(name)
     assert not is_known_block("whatever")
 
 
 def test_slot_table_covers_18_replaceable_units(isolated) -> None:
-    assert len(KIT_SLOTS) == 18
+    assert len(KIT_SLOTS) == 19
     names = {s.name for s in KIT_SLOTS}
     # 槽名不含点号：点号既是槽名一部分又是配置层级分隔符会有解析歧义
     assert all("." not in n for n in names), names

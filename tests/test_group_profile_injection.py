@@ -7,7 +7,10 @@ import inspect
 from typing import Any, Dict
 from unittest.mock import patch
 
-from gsuid_core.ai_core.memory.group_profile import format_context_injection
+from gsuid_core.ai_core.memory.group_profile import (
+    format_context_injection,
+    format_group_term_mappings,
+)
 
 
 def _profile(**kwargs: Any) -> Dict[str, Any]:
@@ -31,15 +34,19 @@ def test_format_context_keeps_group_mappings_and_drops_global_alias_dump() -> No
             member_alias_ids={"小甲": ["u1"]},
         )
 
-    async def _run() -> str:
+    async def _run() -> tuple[str, str]:
         with patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_fake):
-            return await format_context_injection("group:GA")
+            stable = await format_context_injection("group:GA")
+            terms = await format_group_term_mappings("group:GA")
+            return stable, terms
 
-    text = asyncio.run(_run())
-    assert "EastHill" in text
-    assert "AcmeCorp" in text
-    assert "小甲" in text
-    assert "可能的别名歧义" not in text
+    stable, terms = asyncio.run(_run())
+    assert "小甲" in stable
+    assert "EastHill" not in stable
+    assert "EastHill" in terms
+    assert "AcmeCorp" in terms
+    assert "可能的别名歧义" not in stable
+    assert "可能的别名歧义" not in terms
 
 
 def test_format_context_redacts_persona_member_alias_collision() -> None:
@@ -91,6 +98,7 @@ def test_format_context_redacts_persona_surface_collision() -> None:
             return await format_context_injection(
                 "group:GA",
                 persona_surfaces=("PersonaOne", "FrostAlias"),
+                include_term_mappings=True,
             )
 
     text = asyncio.run(_run())

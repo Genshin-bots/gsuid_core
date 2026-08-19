@@ -138,6 +138,32 @@ _BEHAVIOR_DIRECTED_RE = re.compile(
 )
 
 
+# 必须出现「梗/黑话」，避免「意思是/出自」误伤日常句。
+_MEME_EXPLAIN_RE = re.compile(
+    r"(是.{0,16}梗|的梗|梗的意思|.{0,12}是个梗|这是.{0,16}(梗|黑话))",
+)
+_MEME_LEARN_RE = re.compile(
+    r"[「『\"“]([^」』\"”]{2,20})[」』\"”]\s*(?:是|就是)(.+?)(?:的梗|梗)"
+    r"|([^」』\"”\s]{2,12})是(.+?)的梗",
+)
+
+
+def detect_meme_explain_intent(content: str) -> bool:
+    """群友在解释梗/黑话（零 LLM）。命中则 HIGH 快路径便于写入梗词典。"""
+    return bool(_MEME_EXPLAIN_RE.search(content or ""))
+
+
+def parse_meme_explain(content: str) -> tuple[str, str] | None:
+    m = _MEME_LEARN_RE.search(content or "")
+    if m is None:
+        return None
+    term = (m.group(1) or m.group(3) or "").strip()
+    meaning = (m.group(2) or m.group(4) or "").strip()[:300]
+    if len(term) < 2 or len(meaning) < 2:
+        return None
+    return term, meaning
+
+
 def detect_correction_intent(content: str) -> bool:
     """纯规则探测一条消息是否含"纠正/偏好/规则要求"意图（零 LLM，召回预过滤）。
 
@@ -163,6 +189,49 @@ _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+[」』\"”]|[一-�
 
 # 短句寒暄阈值：低于此长度且无任何 HIGH 信号才降级为 LOW
 _LOW_TIER_MAX_LEN = 10
+
+
+def _schedule_meme_knowledge_write(bot_id: str, group_id: str | None, term: str, meaning: str) -> None:
+    """群友解释写入梗词典（后台，不挡 observe）。``bot_id`` 是平台 ID，与检索侧一致。"""
+    if not bot_id:
+        return
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _write() -> None:
+        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+        from gsuid_core.ai_core.cognition.types import CogKind
+        from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+        from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
+
+        scope_key = make_scope_key(ScopeType.GROUP, group_id) if group_id else ""
+        row = await AiMemeKnowledge.upsert_term(
+            bot_id=bot_id or "default",
+            term=term,
+            meaning=meaning,
+            origin="",
+            usage="",
+            scope_key=scope_key,
+            confidence=0.9,
+            source="群友解释",
+        )
+        await remember(
+            MemoryWrite(
+                kind=CogKind.MEME_KNOWLEDGE,
+                ref=str(row.id),
+                scope_key=scope_key or f"self:{bot_id}",
+                owner_user_id="",
+                title=term,
+                summary=meaning[:120],
+                source="群友解释",
+            )
+        )
+
+    loop.create_task(_write())
 
 
 @dataclass
@@ -295,6 +364,7 @@ async def observe(
     timestamp: Optional[datetime] = None,
     *,
     force_scope_key: Optional[str] = None,
+    bot_id: str = "",
 ) -> None:
     """向观察队列投递一条消息记录。
 
@@ -344,6 +414,11 @@ async def observe(
         if memory_config.enable_preference_memory and detect_correction_intent(content):
             is_correction = True
             value_tier = "HIGH"
+        elif detect_meme_explain_intent(content):
+            value_tier = "HIGH"
+            parsed = parse_meme_explain(content)
+            if parsed is not None:
+                _schedule_meme_knowledge_write(bot_id, group_id, parsed[0], parsed[1])
 
     record = ObservationRecord(
         raw_content=content,

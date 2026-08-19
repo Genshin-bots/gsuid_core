@@ -34,8 +34,47 @@ _SELF_MODEL_KEY = "self_model"
 _MAX_ITEMS_PER_FIELD = 20
 # 单条笔记最大字符数
 _MAX_NOTE_CHARS = 200
-# self_model 的合法字段
+# self_model 的合法列表字段
 _FIELDS = ("commitments", "preferences_learned", "recurring_topics", "self_notes")
+_ONTOLOGY_FIELD = "self_ontology"
+
+
+def default_self_ontology() -> str:
+    from gsuid_core.config import core_config
+
+    raw = core_config.get_config("framework_aliases")
+    aliases = [str(a) for a in raw] if isinstance(raw, list) and raw else ["GsCore", "gsuid_core"]
+    names = "、".join(aliases) if aliases else "GsCore、gsuid_core"
+    return (
+        f"- 「{names}」是承载我的宿主框架。"
+        "群友讨论这些名字 = 在讨论我的宿主。可以搭话，"
+        "必须用角色卡里的世界观转述，禁止用开发者口吻介绍架构。\n"
+        "- 「插件」是我可调用的能力；「更新/重启」= 我暂时离线。\n"
+        "- 群里的 bot 统计（DAU/消息量/留存）可能是在统计我这类角色。\n"
+        "- 配置里的 masters = 最高信任关系的人（如何称呼以角色卡为准）。"
+    )
+
+
+async def ensure_self_ontology(bot_id: str) -> str:
+    """框架写入本体知识；空则填默认模板。"""
+    from gsuid_core.ai_core.state_store import state_mutate, state_get_value
+
+    raw = await state_get_value(_self_scope(bot_id), _SELF_MODEL_KEY)
+    if isinstance(raw, dict) and _ONTOLOGY_FIELD in raw:
+        val = raw[_ONTOLOGY_FIELD]
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, list) and val and isinstance(val[0], str) and val[0].strip():
+            return val[0].strip()
+    text = default_self_ontology()
+
+    def _mutate(current: Any) -> Dict[str, object]:
+        model = _self_model_state(current)
+        model[_ONTOLOGY_FIELD] = text
+        return model
+
+    await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
+    return text
 
 
 def _self_scope(bot_id: str) -> str:
@@ -44,7 +83,7 @@ def _self_scope(bot_id: str) -> str:
 
 
 def _normalize_self_model(raw: Any) -> Dict[str, List[str]]:
-    """把 state_store 读出的原始值规整为 self_model 结构。"""
+    """把 state_store 读出的原始值规整为 self_model 列表字段。"""
     model: Dict[str, List[str]] = {f: [] for f in _FIELDS}
     if not isinstance(raw, dict):
         return model
@@ -52,6 +91,19 @@ def _normalize_self_model(raw: Any) -> Dict[str, List[str]]:
         value = raw[field] if field in raw else None
         if isinstance(value, list):
             model[field] = [str(x) for x in value if isinstance(x, str) and x.strip()]
+    return model
+
+
+def _self_model_state(current: Any) -> Dict[str, object]:
+    """读-改-写时保留 self_ontology，避免列表字段 mutate 把本体知识整包抹掉。"""
+    model: Dict[str, object] = dict(_normalize_self_model(current))
+    if not isinstance(current, dict) or _ONTOLOGY_FIELD not in current:
+        return model
+    val = current[_ONTOLOGY_FIELD]
+    if isinstance(val, str) and val.strip():
+        model[_ONTOLOGY_FIELD] = val.strip()
+    elif isinstance(val, list) and val and isinstance(val[0], str) and val[0].strip():
+        model[_ONTOLOGY_FIELD] = val[0].strip()
     return model
 
 
@@ -101,11 +153,11 @@ async def add_self_note(
         logger.warning(i18n_t("log.ai.selfcog_refused_persist_persistent_inject", p0=content[:60]))
         return False
 
-    def _mutate(current: Any) -> Dict[str, List[str]]:
-        model = _normalize_self_model(current)
-        items = model[field]
+    def _mutate(current: Any) -> Dict[str, object]:
+        model = _self_model_state(current)
+        items = list(model[field]) if isinstance(model[field], list) else []
         if content in items:
-            items.remove(content)  # 去重：已存在则移到末尾（视为最新）
+            items.remove(content)
         items.append(content)
         if len(items) > _MAX_ITEMS_PER_FIELD:
             items = items[-_MAX_ITEMS_PER_FIELD:]
@@ -159,8 +211,8 @@ async def overwrite_self_model_field(
             cleaned.append(text)
     cleaned = cleaned[-_MAX_ITEMS_PER_FIELD:]
 
-    def _mutate(current: Any) -> Dict[str, List[str]]:
-        model = _normalize_self_model(current)
+    def _mutate(current: Any) -> Dict[str, object]:
+        model = _self_model_state(current)
         model[field] = cleaned
         return model
 
@@ -301,6 +353,10 @@ async def build_self_cognition_context(
     """
     model = await get_self_model(bot_id)
     lines: List[str] = ["【关于我自己（仅供参考）】"]
+    ontology = await ensure_self_ontology(bot_id)
+    if ontology:
+        lines.append("【我是什么】")
+        lines.append(ontology)
 
     if model["commitments"]:
         lines.append(f"我的承诺: {'；'.join(model['commitments'][-5:])}")

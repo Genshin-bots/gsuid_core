@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import time
-from typing import Any, Sequence
+from typing import Any, List, Sequence
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
 )
 from pydantic_ai.settings import ModelSettings
@@ -29,8 +31,6 @@ from gsuid_core.ai_core.utils import (
     _relean_user_turn,
     is_silence_marker,
     _extract_run_context,
-    _compact_report_blocks_in_history,
-    _truncate_tool_returns_in_history,
 )
 from gsuid_core.ai_core.register import find_tool_base
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
@@ -197,6 +197,38 @@ def _correction_is_deliverable(text: str) -> bool:
     )
 
 
+_DLG_ROOT_RE = re.compile(r"dlg_([0-9a-fA-F-]{8,})")
+
+
+def _dlg_root_of(msg: object) -> str:
+    """UserPromptPart 里的 dlg_ 句柄 root；无则空串。"""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    if not isinstance(msg, ModelRequest):
+        return ""
+    for part in msg.parts:
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+            m = _DLG_ROOT_RE.search(part.content)
+            if m is not None:
+                return m.group(1)
+    return ""
+
+
+def _dedupe_delivery_cards(messages: List[ModelMessage]) -> List[ModelMessage]:
+    """同 root 的 dlg_ 交付包只留最新一条（超时回执 + 事后交付会重复）。"""
+    seen: set[str] = set()
+    kept: List[ModelMessage] = []
+    for msg in reversed(messages):
+        root = _dlg_root_of(msg)
+        if root and root in seen:
+            continue
+        if root:
+            seen.add(root)
+        kept.append(msg)
+    kept.reverse()
+    return kept
+
+
 def _corrected_or_original(corrected: object, *, original: str) -> str:
     """纠正轮结果收敛（INV-3）。
 
@@ -209,6 +241,40 @@ def _corrected_or_original(corrected: object, *, original: str) -> str:
 
 
 class SettlePhase(RunOnceHost):
+    def _record_prefix_break_probe(self, st: RunOnceState, new_msgs: List[ModelMessage]) -> None:
+        """对比上一 run 发送快照与当前 history 头，记 prefix_break_reason。"""
+        from gsuid_core.ai_core.prefix_probe import (
+            PrefixSnapshot,
+            hash_tool_names,
+            history_payloads,
+            hash_system_prompt,
+            record_prefix_break,
+            classify_prefix_break,
+            hash_history_messages,
+        )
+
+        tools_hash = hash_tool_names(st.tool_names)
+        system_hash = hash_system_prompt(self.system_prompt or "")
+        hist_hashes = hash_history_messages(self.history)
+        prev = self._prefix_snapshot
+        reason = classify_prefix_break(
+            prev,
+            history_hashes=hist_hashes,
+            tools_hash=tools_hash,
+            system_hash=system_hash,
+            prev_payloads=prev.payloads if prev is not None else (),
+            curr_payloads=history_payloads(self.history),
+        )
+        record_prefix_break(reason)
+        self._session_logger.log_prefix_break(reason, tools_hash=tools_hash, system_hash=system_hash)
+        combined = list(self.history) + list(new_msgs)
+        self._prefix_snapshot = PrefixSnapshot(
+            history_hashes=hash_history_messages(combined),
+            tools_hash=tools_hash,
+            system_hash=system_hash,
+            payloads=history_payloads(combined),
+        )
+
     async def _run_once_settle_result(
         self,
         st: RunOnceState,
@@ -224,8 +290,7 @@ class SettlePhase(RunOnceHost):
             # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 st.rag_context）
             # 防止 [历史对话]/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
             _new_msgs = result.new_messages()
-            # 框架注入只追加到本 run request；落盘前剥掉，不进持久 history（前缀红线）。
-            # <control> 信封与遗留（系统…）文案由 _is_framework_prompt_content 兜底。
+            # 只剥框架注入；入史 == 最后一次请求所见（前缀缓存）。
             _relean_user_turn(
                 _new_msgs,
                 st.lean_user_message,
@@ -237,10 +302,9 @@ class SettlePhase(RunOnceHost):
                     *_correction_nudge_markers(),
                 ),
             )
-            # 框架注入 drop 后可能留下空 ModelRequest，禁止进 B 轨
             _new_msgs = [m for m in _new_msgs if not (isinstance(m, ModelRequest) and len(m.parts) == 0)]
-            # 超长工具返回截断为头+尾摘要（§25(5)）：本轮已消费完整返回，历史无需原文
-            _truncate_tool_returns_in_history(_new_msgs)
+            _new_msgs = _dedupe_delivery_cards(_new_msgs)
+            self._record_prefix_break_probe(st, _new_msgs)
             self.history.extend(_new_msgs)
 
             # 输出闸门收尾：尖括号熔断/补写/scrub；熔断后仍做独立 OOC 重说
@@ -620,9 +684,6 @@ class SettlePhase(RunOnceHost):
                     _stripped = strip_open_solicitations(_rs)
                     if _stripped != _rs:
                         result_msg = _stripped if _stripped else "<SILENCE>"
-
-            # <report> 制品正文换占位符（§1 漂移固化）。
-            _compact_report_blocks_in_history(_new_msgs, sent_texts=self._run_sent_texts)
 
             # INV-4：暂扣原文在纠正未兑现（或根本没进纠正）且没有替代品时必须发出。
             if _should_deliver_withheld(

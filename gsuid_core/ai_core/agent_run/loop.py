@@ -596,6 +596,15 @@ class LoopPhase(RunOnceHost):
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
                     )
+                    _hard = 0
+                    _detail = False
+                    if self.persona_name:
+                        from gsuid_core.ai_core.persona.config import persona_config_manager
+
+                        _pc = persona_config_manager.get_config(self.persona_name)
+                        _hard = int(_pc.get_config("speech_len_hard").data)
+                        q = st.ev.raw_text if st.ev is not None else ""
+                        _detail = bool(q) and ("详细" in q or "展开" in q or "总结一下" in q)
                     _blk, _why = should_block_user_visible_text(
                         st.speech_policy,
                         _text,
@@ -607,11 +616,13 @@ class LoopPhase(RunOnceHost):
                         fact_pack_pending=_fact_pending,
                         has_active_task=st.has_active_task,
                         render_inflight=bool(st.delegated_render and not st.image_sent_this_run),
+                        speech_len_hard=_hard,
+                        user_asked_detail=_detail,
                     )
                     if _blk:
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
                         # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
-                        if _why in ("report_speech", "empty_handoff"):
+                        if _why in ("report_speech", "empty_handoff", "persona_length_breach"):
                             st.presentation_mismatch = True
                             # 暂扣原文：纠正被申辩/无替代品时由 settle 兜底发出（INV-4）
                             # 多点读数念白不是用户要的正文，丢掉即可，勿进 INV-4 回放。

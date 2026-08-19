@@ -13,8 +13,9 @@ from sqlmodel import JSON, Field, Column, SQLModel, col, delete, select
 from sqlalchemy import String, or_, cast, func
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-from gsuid_core.utils.database.base_models import with_session
+from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session
 
 
 def _escape_like(text: str) -> str:
@@ -643,3 +644,113 @@ class AiMemeRecord(SQLModel, table=True):
         # 按使用次数降序排序
         matched.sort(key=lambda r: r.use_count, reverse=True)
         return matched[:limit]
+
+
+class AiMemeKnowledge(BaseBotIDModel, table=True):
+    """文本梗词典（与图片表情库分离）。表名 aimentemknowledge。"""
+
+    term: str = Field(index=True, max_length=64, title="梗名")
+    meaning: str = Field(default="", max_length=300, title="语义解释")
+    origin: str = Field(default="", max_length=200, title="出处")
+    usage: str = Field(default="", max_length=200, title="接法范式")
+    scope_key: str = Field(default="", index=True, max_length=128, title="空=全网")
+    confidence: float = Field(default=1.0, title="来源置信")
+    source: str = Field(default="", max_length=32, title="群友解释/web_search/model")
+    use_count: int = Field(default=0, title="命中次数")
+    last_hit_at: Optional[datetime] = Field(default=None, title="最后命中")
+
+    @classmethod
+    @with_session
+    async def match_terms(
+        cls,
+        session: AsyncSession,
+        query: str,
+        *,
+        bot_id: str,
+        scope_key: str = "",
+        limit: int = 2,
+    ) -> list["AiMemeKnowledge"]:
+        """精确/前缀匹配触发词。同名多解释取高置信。"""
+        q = (query or "").strip()
+        if not q:
+            return []
+        conds: list[ColumnElement[bool]] = [col(cls.bot_id) == bot_id]
+        if scope_key:
+            conds.append(or_(col(cls.scope_key) == "", col(cls.scope_key) == scope_key))
+        else:
+            conds.append(col(cls.scope_key) == "")
+        stmt = select(cls).where(*conds).order_by(col(cls.confidence).desc(), col(cls.use_count).desc())
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        hits: list[AiMemeKnowledge] = []
+        seen: set[str] = set()
+        for row in rows:
+            term = (row.term or "").strip()
+            if not term or term in seen:
+                continue
+            if term in q or q.startswith(term):
+                hits.append(row)
+                seen.add(term)
+            if len(hits) >= limit:
+                break
+        return hits
+
+    @classmethod
+    @with_session
+    async def upsert_term(
+        cls,
+        session: AsyncSession,
+        *,
+        bot_id: str,
+        term: str,
+        meaning: str,
+        origin: str = "",
+        usage: str = "",
+        scope_key: str = "",
+        confidence: float = 1.0,
+        source: str = "model",
+    ) -> "AiMemeKnowledge":
+        name = (term or "").strip()[:64]
+        meaning_s = (meaning or "").strip()[:300]
+        existing = await session.execute(
+            select(cls).where(
+                col(cls.bot_id) == bot_id,
+                col(cls.term) == name,
+                col(cls.scope_key) == (scope_key or ""),
+            )
+        )
+        row = existing.scalar_one_or_none()
+        if row is None:
+            row = cls(
+                bot_id=bot_id,
+                term=name,
+                meaning=meaning_s,
+                origin=(origin or "")[:200],
+                usage=(usage or "")[:200],
+                scope_key=scope_key or "",
+                confidence=confidence,
+                source=source[:32],
+            )
+            session.add(row)
+            await session.flush()
+            return row
+        if confidence >= row.confidence:
+            row.meaning = meaning_s or row.meaning
+            row.origin = (origin or row.origin)[:200]
+            row.usage = (usage or row.usage)[:200]
+            row.confidence = confidence
+            row.source = source[:32] or row.source
+        await session.flush()
+        return row
+
+    @classmethod
+    @with_session
+    async def bump_hit(cls, session: AsyncSession, knowledge_id: int) -> None:
+        stmt = select(cls).where(col(cls.id) == knowledge_id)
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            return
+        row.use_count = (row.use_count or 0) + 1
+        row.last_hit_at = datetime.now(timezone.utc)
+        await session.flush()

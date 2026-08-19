@@ -1618,6 +1618,37 @@ def _truncate_history_keep_prefix(
     return history
 
 
+def _extractive_middle_summary(dropped: Sequence[ModelMessage]) -> str:
+    """被裁中段的抽取摘要。LLM 蒸馏失败时的摊还重写材料。"""
+    bits: list[str] = []
+    used = 0
+    for msg in dropped:
+        chunk = ""
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, TextPart) and part.content.strip():
+                    chunk = part.content.strip()[:80]
+                    break
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                    body = part.content.strip()
+                    if _is_framework_prompt_content(body):
+                        continue
+                    chunk = body[:80]
+                    break
+        if not chunk:
+            continue
+        bits.append(chunk)
+        used += len(chunk)
+        if used >= 400:
+            break
+    if not bits:
+        return ""
+    body = " / ".join(bits)[:400]
+    return f"（更早对话摘要：{body}）"
+
+
 def compact_session_history(
     history: List[ModelMessage],
     max_history: int,
@@ -1637,6 +1668,17 @@ def compact_session_history(
     low_target = max(1, int(max_history * trim_ratio))
     trimmed = _truncate_history_keep_prefix(history, low_target)
     cleaned = _drop_orphan_tool_results(trimmed)
+    if len(cleaned) < before:
+        kept_ids = {id(m) for m in cleaned}
+        dropped = [m for m in history if id(m) not in kept_ids]
+        summary = _extractive_middle_summary(dropped)
+        if summary:
+            prefix_n = max(2, int(low_target * 0.35))
+            prefix_n = min(prefix_n, max(1, len(cleaned) - 1))
+            summary_msg = ModelRequest(parts=[UserPromptPart(content=summary)])
+            candidate = cleaned[:prefix_n] + [summary_msg] + cleaned[prefix_n:]
+            if not _has_orphan_tool_returns(candidate):
+                cleaned = candidate
     return cleaned, len(cleaned) < before
 
 
@@ -1918,17 +1960,12 @@ def _relean_user_turn(
     lean_content: Union[str, List[UserContent]],
     strip_hint_texts: Tuple[str, ...] = (),
 ) -> None:
-    """把本轮 new_messages 里的用户输入 turn 换成精简版（剥离 rag_context）。
+    """只剥框架注入，入史与最后一次请求所见一致（前缀缓存）。
 
-    每轮 ``final_user_message`` 含 [历史对话]/记忆/群语境等 rag_context，若原样
-    ``extend`` 进 self.history，会在 max_history 窗口内逐轮累积同类快照——既膨胀
-    input，又冲淡缓存。存历史时只保留用户真实发言（当前轮仍给模型看完整上下文）。
-    改第一条 UserPromptPart（工具往返的 ToolReturnPart 不动）；``strip_hint_texts``
-    是框架 run 中途注入的提示常量（如 C-4 墙钟 nudge，挂在**后续** ModelRequest 上、
-    首条替换够不着）——按内容精确匹配从持久历史里剥掉，防提示噪声跨轮累积。
-    框架注入 / 系统校验句同样剥除，不进 B 轨长记。
+    ``lean_content`` 保留签名兼容，不再替换用户 turn。动态块入史由 BLOCK_CHAR_BUDGET
+    与 compact 摊还控制膨胀。
     """
-    leaned = False
+    _ = lean_content
     for msg in new_messages:
         if not isinstance(msg, ModelRequest):
             continue
@@ -1937,13 +1974,9 @@ def _relean_user_turn(
             if isinstance(part, UserPromptPart):
                 if isinstance(part.content, str) and _is_framework_prompt_content(part.content):
                     continue
-                if not leaned:
-                    part.content = lean_content
-                    leaned = True
-                elif isinstance(part.content, str) and any(
+                if isinstance(part.content, str) and any(
                     part.content == h or (bool(h) and part.content.startswith(h)) for h in strip_hint_texts
                 ):
-                    # 精确匹配（墙钟 nudge）或前缀匹配（尖括号守卫长警告）
                     continue
             kept_parts.append(part)
         if len(kept_parts) != len(msg.parts):

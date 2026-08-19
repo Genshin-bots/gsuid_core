@@ -24,6 +24,7 @@ class CogKind(str, Enum):
     RECORD = "record"
     IMAGE = "image"
     MEME = "meme"
+    MEME_KNOWLEDGE = "meme_knowledge"
 
 
 # 面向模型的中文标签（进 prompt 的那一份）
@@ -39,6 +40,7 @@ KIND_LABEL: Dict[CogKind, str] = {
     CogKind.RECORD: "业务记录",
     CogKind.IMAGE: "图片",
     CogKind.MEME: "表情",
+    CogKind.MEME_KNOWLEDGE: "梗知识",
 }
 
 # ⑧ 每轮自动注入的默认切片：与改造前一致（记忆 + 偏好），延迟不回退。
@@ -56,6 +58,8 @@ class CogScope:
 
     user_id: str
     bot_id: str = ""
+    # SELF 记忆用账号 ID，不是平台 ID（onebot 这类会把多账号写成同一个 key）。
+    bot_self_id: str = ""
     # 私聊必须是 None。回退成 user_id 只会去查一个空的幻影 group:{user_id}。
     group_id: Optional[str] = None
     # 开发文档库（source=skill_doc）不对普通用户暴露

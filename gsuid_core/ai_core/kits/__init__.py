@@ -87,6 +87,7 @@ def _import_builtin_kits() -> None:
     from gsuid_core.ai_core.kits.reactive_gate import kit as reactive_gate_kit
     from gsuid_core.ai_core.kits.tool_assembly import kit as tool_assembly_kit
     from gsuid_core.ai_core.kits.self_cognition import kit as self_cognition_kit
+    from gsuid_core.ai_core.kits.decision_distill import kit as decision_distill_kit
     from gsuid_core.ai_core.kits.planning_context import kit as planning_context_kit
 
     for module in (
@@ -97,6 +98,7 @@ def _import_builtin_kits() -> None:
         self_cognition_kit,
         group_profile_kit,
         planning_context_kit,
+        decision_distill_kit,
         classifier_kit,
         reactive_gate_kit,
         scaffold_kit,

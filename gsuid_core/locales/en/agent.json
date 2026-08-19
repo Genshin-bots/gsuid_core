@@ -119,6 +119,8 @@
   "log.agent.text_send_fail_failed": "[GsCoreAIAgent] Text send failed: {_e}",
   "log.agent.token_usage_input_tokens": "[GsCoreAIAgent] Token usage: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",
   "log.agent.tool_assembly_slot_not_kernel": "[Tools] tool_assembly slot is not held by a first-party kit; kernel skips the 5-layer assembly (find_tools disappears too)",
+  "log.agent.context_block_truncated": "[Context] block {name} truncated {before}→{after} chars",
+  "log.agent.capability_node_missing_when": "[AgentNode] {node} missing when_to_use",
   "log.agent.tool_calls_per_response_truncate": "Tool-call fuse: {count} calls in one response, truncated to {limit}",
   "log.agent.tool_count_baseline_extra": "[GsCoreAIAgent] Tool count: {p0} (baseline {p1} + extra {p2})",
   "log.agent.tool_execution_compl_name_result_passed_ok": "[✅ Tool execution complete]: tool_name='{p0}', result passed to agent={tool_result_str}",

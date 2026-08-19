@@ -297,6 +297,9 @@ class _Host(ToolsPhase):
     def extract_history(self) -> None:
         self.extract_history_calls += 1
 
+    def _inject_deepseek_rp_marker(self, st: object) -> None:
+        return None
+
 
 def _build_state(scope: Optional[Tuple[str, str, str]]) -> RunOnceState:
     st = RunOnceState(

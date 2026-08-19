@@ -27,6 +27,7 @@ from gsuid_core.ai_core.planning.tool_output_helper import (
 def test_kind_labels_cover_media_and_record() -> None:
     assert CogKind.IMAGE in ALL_KINDS
     assert CogKind.MEME in ALL_KINDS
+    assert CogKind.MEME_KNOWLEDGE in ALL_KINDS
     assert CogKind.RECORD in ALL_KINDS
     assert MEDIA_KINDS == {CogKind.IMAGE, CogKind.MEME}
     assert set(KIND_LABEL) == set(CogKind)
@@ -96,6 +97,7 @@ def test_search_cognition_dispatches_extra_backends() -> None:
             patch("gsuid_core.ai_core.cognition.facade._search_records", new=_track("record")),
             patch("gsuid_core.ai_core.cognition.facade._search_images", new=_track("image")),
             patch("gsuid_core.ai_core.cognition.facade._search_memes", new=_track("meme")),
+            patch("gsuid_core.ai_core.cognition.facade._search_meme_knowledge", new=_track("meme_knowledge")),
             patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=_empty),
             patch("gsuid_core.ai_core.cognition.facade._artifact_enabled", new=lambda: True),
         ):

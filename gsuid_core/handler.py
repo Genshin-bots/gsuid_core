@@ -626,6 +626,17 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     trigger_type = "followup"
 
             if not should_respond:
+                from gsuid_core.config import core_config
+
+                msg_text = event.raw_text or ""
+                aliases = core_config.get_config("framework_aliases")
+                alias_list = [str(a) for a in aliases] if isinstance(aliases, list) else []
+                if alias_list and any(a and a in msg_text for a in alias_list):
+                    should_respond = True
+                    soft_triggered = True
+                    trigger_type = "followup"
+
+            if not should_respond:
                 return
 
             from gsuid_core.ai_core.startup import is_ai_core_ready, is_ai_core_initializing

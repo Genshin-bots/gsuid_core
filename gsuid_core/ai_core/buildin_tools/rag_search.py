@@ -46,13 +46,21 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
     **私聊 group_id 必须是 None**：回退成 user_id 只会去查一个空的幻影
     ``group:{user_id}``，召回恒为 0。这条口径必须与 handle_ai 主链路一致。
     """
+    from gsuid_core.bot import Bot
+    from gsuid_core.models import Event
     from gsuid_core.ai_core.memory.config import memory_config
 
     ev = ctx.deps.ev
     bot = ctx.deps.bot
+    self_id = ""
+    if isinstance(bot, Bot):
+        self_id = str(bot.bot_self_id)
+    elif isinstance(ev, Event):
+        self_id = str(ev.bot_self_id)
     return CogScope(
         user_id=str(ev.user_id) if ev is not None and ev.user_id else "",
         bot_id=bot.bot_id if bot is not None else "",
+        bot_self_id=self_id,
         group_id=str(ev.group_id) if ev is not None and ev.group_id else None,
         include_skill_doc=include_skill_doc,
         # 语义性开关在唯一的配置层给默认值，不在函数签名里给

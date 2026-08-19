@@ -19,7 +19,8 @@ from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
 FIND_TOOLS_GAP_NOTE = (
-    "（系统：连续检索未暴露新工具。用角色短句说明做不到；禁止再 find_tools；禁止念工具名或叙述装载过程。）"
+    "（系统：连续检索未暴露新工具。可用 capability_map 查看全目录后再决定；"
+    "用角色短句说明做不到；禁止再 find_tools；禁止念工具名或叙述装载过程。）"
 )
 
 
@@ -276,6 +277,60 @@ async def find_tools(
     except Exception as e:
         logger.error(t("log.ai.find_tools_event", e=e))
         return f"⚠️ 工具加载失败: {str(e)}"
+
+
+@ai_tools(category="meta")
+async def capability_map(
+    ctx: RunContext[ToolContext],
+    scope: str = "all",
+    filter: str = "",
+) -> str:
+    """列出我（及可委派代理）的全部能力目录（不含参数细节）。
+
+    每行：工具名 — 覆盖场景一句话，按能力域分组。需要细节再用 find_tools 查具体工具。
+    单次最多 60 行；超出请按 domain/plugin 过滤再查。
+
+    Args:
+        ctx: 工具执行上下文。
+        scope: all / domain / plugin。
+        filter: 按能力域或插件名过滤。
+    """
+    _ = ctx
+    from gsuid_core.ai_core.register import get_all_tools
+
+    tools = get_all_tools()
+    grouped: dict[str, list[str]] = {}
+    needle = (filter or "").strip().lower()
+    for _name, tb in tools.items():
+        if tb is None:
+            continue
+        domain = tb.capability_domain or tb.plugin or "其他"
+        plugin = tb.plugin
+        if scope == "domain" and needle and needle not in domain.lower():
+            continue
+        if scope == "plugin" and needle and needle not in plugin.lower():
+            continue
+        if scope == "all" and needle and needle not in f"{tb.name} {domain} {plugin}".lower():
+            continue
+        cover = ""
+        if tb.covers:
+            cover = tb.covers[0]
+        elif tb.schema_brief:
+            cover = tb.schema_brief.split("。", 1)[0]
+        elif tb.description:
+            cover = tb.description.split("\n", 1)[0][:40]
+        grouped.setdefault(domain, []).append(f"{tb.name}：{cover}")
+    if not grouped:
+        return "目录为空。换 filter 或 scope 再查。"
+    lines: list[str] = []
+    for domain in sorted(grouped):
+        lines.append(f"【{domain}】")
+        lines.extend(f"- {row}" for row in grouped[domain])
+        if len(lines) >= 60:
+            lines = lines[:60]
+            lines.append("（超出 60 行，请用 scope=domain/plugin 加 filter 再查）")
+            break
+    return "\n".join(lines)
 
 
 # @ai_tools(category="buildin")

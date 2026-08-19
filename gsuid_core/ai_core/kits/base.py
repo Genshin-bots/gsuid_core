@@ -8,21 +8,46 @@
 from typing import Tuple, Mapping, Callable, Optional, Awaitable, FrozenSet
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
+from gsuid_core.logger import logger
+
 # 装配顺序单源。identity / history 归内核填（前者是密封身份锚，后者是消息基础设施）。
+# group_context 在 history 之后、memory 之前（群词汇映射移出 system，见 2C）。
+# plan_hint 在 task 之后（袖珍规划前置，见 6D）。
 CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "mood",
     "relationship",
     "voice_anchor",
     "identity",
     "history",
+    "group_context",
     "memory",
     "task",
+    "plan_hint",
     "chitchat_style",
     "transaction_priority",
     "report_titles",
     "soft_trigger",
     "plugin_hints",
 )
+
+# 单轮动态块合计目标 ≤2000 字：join 时按块截断并 warning。
+BLOCK_CHAR_BUDGET: Mapping[str, int] = {
+    "mood": 80,
+    "relationship": 100,
+    "voice_anchor": 100,
+    "identity": 80,
+    "history": 600,
+    "group_context": 200,
+    "memory": 800,
+    "task": 250,
+    "plan_hint": 250,
+    "chitchat_style": 80,
+    "transaction_priority": 80,
+    "report_titles": 80,
+    "soft_trigger": 220,
+    "plugin_hints": 150,
+}
 
 # 建 session 时才允许写的稳定块（H29）。运行中禁止改 system。
 STABLE_BLOCK_NAMES: FrozenSet[str] = frozenset({"self_model", "group_profile"})
@@ -37,6 +62,17 @@ def is_known_block(name: str) -> bool:
     return name in _KNOWN_BLOCKS
 
 
+def _apply_block_budget(name: str, text: str) -> str:
+    """超 per-block 预算则截断。预算表缺名时不截（稳定块不在此表）。"""
+    if name not in BLOCK_CHAR_BUDGET:
+        return text
+    budget = BLOCK_CHAR_BUDGET[name]
+    if len(text) <= budget:
+        return text
+    logger.warning(t("log.agent.context_block_truncated", name=name, before=len(text), after=budget))
+    return text[: max(0, budget - 1)] + "…"
+
+
 def join_named_blocks(blocks: Mapping[str, str]) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装；口吻/口气/身份连成一段，其余块仍 ``\\n\\n``。"""
     pieces: list[str] = []
@@ -47,6 +83,7 @@ def join_named_blocks(blocks: Mapping[str, str]) -> str:
         text = blocks[name]
         if not text:
             continue
+        text = _apply_block_budget(name, text)
         if name in _CUE_BLOCK_CLUSTER:
             cues.append(text)
             continue
@@ -92,6 +129,12 @@ KIT_SLOTS: Tuple[KitSlot, ...] = (
     _slot("scaffold", "gscore.scaffold", "TurnGraph 消费 / CheapGate / 脚手架 hints"),
     _slot("session_mute", "gscore.session_mute", "会话静默窗"),
     _slot("statistics", "gscore.statistics", "统计记账（只上报，不扣减）"),
+    _slot(
+        "decision_distill",
+        "gscore.decision_distill",
+        "thinking 决策蒸馏（H08，可关）",
+        exclusive=False,
+    ),
     _slot("tool_assembly", "gscore.tool_assembly", "五层工具装配 + find_tools"),
     _slot("fileos", "gscore.fileos", "长回执落盘折叠"),
     _slot("post_tool", "gscore.post_tool", "工具后契约注入"),

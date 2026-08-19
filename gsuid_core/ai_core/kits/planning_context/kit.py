@@ -27,6 +27,14 @@ class PlanningContextKit(AgentKit):
         if text:
             # 他群任务已在 build_task_context 内脱敏
             ctx.set_context_block("task", text)
+        from gsuid_core.ai_core.pocket_planner import compose_plan_hint, should_plan_first
+        from gsuid_core.ai_core.capability_agents.evaluator import get_recent_evaluation
+
+        # 近 1h 评估且与本句目标重叠才算延续；有在途任务不等于本句要规划。
+        recent_eval = bool(ctx.user_id and get_recent_evaluation(ctx.user_id, ctx.query) is not None)
+        if should_plan_first(ctx.query, recent_eval=recent_eval):
+            hint = await compose_plan_hint(ctx.query, ctx.user_id)
+            ctx.set_context_block("plan_hint", hint)
 
 
 KIT = register_agent_kit(

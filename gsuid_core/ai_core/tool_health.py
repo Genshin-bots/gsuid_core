@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import time
-from typing import Dict
+from typing import Any, Dict
 from dataclasses import field, dataclass
 
 # 滑窗内连续失败达到该次数即冻结
@@ -77,12 +77,39 @@ def is_tool_frozen(tool_name: str) -> bool:
     return True
 
 
+_FROZEN_CALLS: Dict[str, int] = {}
+
+
 def frozen_tool_message(tool_name: str) -> str:
     """冻结期的统一短路文案（不泄漏内部机制，给模型换路指引）。"""
-    return (
-        f"⚠️ 工具 {tool_name} 近期连续失败，已被临时停用（稍后自动恢复）。"
-        "请换其他工具或 find_tools 找替代；没有替代就如实说明暂时查不到。"
+    return f"⚠️ {tool_name} 已临时停用（连续失败，稍后自动恢复）。请换其他工具；不要再硬调这个工具。"
+
+
+async def frozen_tool_reply(tool_name: str, extra: Dict[str, Any], need: str) -> str:
+    """第 1 次只回停用；第 2 次框架代查替代，无命中则登记缺口并止损。"""
+    n = _FROZEN_CALLS.get(tool_name, 0) + 1
+    _FROZEN_CALLS[tool_name] = n
+    base = frozen_tool_message(tool_name)
+    if n < 2:
+        return base + "可用 find_tools 找替代。"
+    from gsuid_core.ai_core.rag.tools import search_tools_with_entity_routing
+
+    query = (need or tool_name).strip() or tool_name
+    found = await search_tools_with_entity_routing(
+        query=query,
+        route_text=query,
+        limit=4,
+        non_category=["self", "buildin"],
+        threshold=0.2,
+        scope_key="",
     )
+    names = [t.name for t in found if t.name != tool_name][:3]
+    if names:
+        return base + "替代建议：" + "、".join(names) + "。不要再调已停用的工具。"
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import _record_capability_gap
+
+    _record_capability_gap(query)
+    return base + "该能力暂缺，不要再绕、不要再调。"
 
 
 def get_tool_health_snapshot(limit: int = 30) -> list[dict[str, object]]:

@@ -48,6 +48,17 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.attribution import resolve_attribution_settings
 from gsuid_core.ai_core.agent_run.remote_web_search import attach_remote_web_search
 
+_HOT_SLOT_MAX = 4
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a and not b:
+        return 1.0
+    union = a | b
+    if not union:
+        return 1.0
+    return len(a & b) / len(union)
+
 
 def _kernel_owns_tool_assembly() -> bool:
     """``tool_assembly`` 槽是否仍由第一方套件占据（= 内核跑五层装配）。
@@ -73,6 +84,37 @@ def _kernel_owns_tool_assembly() -> bool:
 
 
 class ToolsPhase(RunOnceHost):
+    def _stabilize_session_toolset(
+        self,
+        core: ToolList,
+        extras: ToolList,
+        ctx_tags: list[str],
+    ) -> ToolList:
+        """钉死 L1–L3 保底顺序；每轮向量召回只进尾槽，换话题仍能换召回。"""
+        tags = frozenset(ctx_tags)
+        prev_tags = self._session_toolset_tags or frozenset()
+        rebuild = self._session_toolset_frozen is None or _jaccard(tags, prev_tags) < 0.5
+        if rebuild:
+            self._session_toolset_frozen = [t.name for t in core]
+            self._session_toolset_tags = tags
+            return core + extras
+        frozen = self._session_toolset_frozen
+        if frozen is None:
+            return core + extras
+        frozen_set = set(frozen)
+        base: ToolList = []
+        for name in frozen:
+            tb = find_tool_base(name)
+            if tb is not None:
+                base.append(tb.tool)
+        for t in core:
+            if t.name not in frozen_set:
+                base.append(t)
+                frozen.append(t.name)
+                frozen_set.add(t.name)
+        tail = [t for t in extras if t.name not in frozen_set][:_HOT_SLOT_MAX]
+        return base + tail
+
     async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
         # 渐进式工具暴露是否在本轮生效（仅自动装配 + 非闲聊轮）。决定是否挂 RetrievableToolset。
@@ -325,7 +367,7 @@ class ToolsPhase(RunOnceHost):
                 # §25(3) 工具序稳定化：两段各自按名排序，
                 core_tools.sort(key=lambda _t: _t.name)
                 deduped_extra.sort(key=lambda _t: _t.name)
-                st.tools = core_tools + deduped_extra
+                st.tools = self._stabilize_session_toolset(core_tools, deduped_extra, ctx_tags)
 
                 # 委派：剥离能力代理专属工具，逼主人格走 create_subagent
                 # 状态/语境池工具不参与 exclusive 剥离，避免只读能力被误卸

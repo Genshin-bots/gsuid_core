@@ -96,6 +96,9 @@ class AgentHookContext:
     decision_reason: str = ""
     correction_requested: bool = False
     correction_reason: str = ""
+    thinking_text: str = ""
+    tool_names_called: Tuple[str, ...] = ()
+    result_text: str = ""
     # dispatcher 在调用每个 hook 前写入，用于 hint 归属与日志
     current_kit_id: Optional[str] = None
 
@@ -206,6 +209,12 @@ class AgentHookContext:
         if self.bot is not None:
             return self.bot.bot_id
         return str(self.ev.bot_id) if self.ev is not None else ""
+
+    @property
+    def bot_self_id(self) -> str:
+        if self.bot is not None:
+            return str(self.bot.bot_self_id)
+        return str(self.ev.bot_self_id) if self.ev is not None else ""
 
     def hint_text(self) -> str:
         return "\n".join(self.hints)

@@ -180,6 +180,7 @@ def test_relative_score_floor_marks_high_confidence() -> None:
         patch("gsuid_core.ai_core.cognition.facade._search_records", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_images", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_memes", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_meme_knowledge", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=_empty),
     ):
         hits = _run(search_cognition("q", kinds=MEMORY_KINDS, scope=CogScope(user_id="u1"), limit=10))
@@ -213,6 +214,7 @@ def test_one_backend_failure_only_drops_that_leg() -> None:
         patch("gsuid_core.ai_core.cognition.facade._search_records", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_images", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_memes", new=_empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_meme_knowledge", new=_empty),
         patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=_empty),
     ):
         hits = _run(search_cognition("q", kinds=ALL_KINDS, scope=CogScope(user_id="u1"), limit=10))
@@ -265,19 +267,20 @@ def test_search_nodes_includes_self_scope_when_bot_id_present() -> None:
                 _search_nodes(
                     "我记过什么",
                     kinds=frozenset({CogKind.SELF_NOTE}),
-                    scope=CogScope(user_id="u1", bot_id="botA", group_id="g1"),
+                    scope=CogScope(user_id="u1", bot_id="onebot", bot_self_id="botA", group_id="g1"),
                     limit=8,
                 )
             )
 
     keys = captured["scope_keys"]
     assert make_scope_key(ScopeType.SELF, "botA") in keys
+    assert make_scope_key(ScopeType.SELF, "onebot") not in keys
     assert make_scope_key(ScopeType.GROUP, "g1") in keys
     assert make_scope_key(ScopeType.USER_GLOBAL, "u1") in keys
 
 
 def test_search_nodes_omits_self_scope_without_bot_id() -> None:
-    """bot_id 空时不猜 SELF key——乱拼会把别的 bot 的笔记扫进来。"""
+    """bot_self_id 空时不猜 SELF key——乱拼会把别的 bot 的笔记扫进来。"""
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
     from gsuid_core.ai_core.cognition.facade import _search_nodes
 

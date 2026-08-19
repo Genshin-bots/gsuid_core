@@ -337,18 +337,41 @@ def _partition_member_aliases(
     return certain, conflicting, colliding
 
 
+async def format_group_term_mappings(
+    scope_key: str,
+    max_chars: int = 200,
+    persona_surfaces: Sequence[str] = (),
+) -> str:
+    """群内特有词汇映射（每轮 user 侧）。建群时快照的成员称呼仍走 system。"""
+    profile = await get_group_profile(scope_key)
+    term_mappings = _redact_persona_colliding_terms(profile["term_mappings"], persona_surfaces)
+    if not term_mappings:
+        return ""
+    lines: List[str] = ["【群聊黑话】"]
+    for alias, formal in list(term_mappings.items())[:12]:
+        entry = f'  - "{alias}" = {formal}'
+        if sum(len(line) for line in lines) + len(entry) > max_chars:
+            break
+        lines.append(entry)
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 async def format_context_injection(
     scope_key: str,
     max_chars: int = 320,
     persona_surfaces: Sequence[str] = (),
+    *,
+    include_term_mappings: bool = False,
 ) -> str:
     """生成可注入对话的【当前群聊语境】文本。
 
-    只留本群话题、本群词汇映射、成员称呼。全球多候选别名不进 system。
+    默认只留成员称呼（system 稳定块）。词汇映射走 ``format_group_term_mappings``。
     """
     profile = await get_group_profile(scope_key)
     tags = _rank_tags(profile["tag_counts"], top_n=6)
-    term_mappings = _redact_persona_colliding_terms(profile["term_mappings"], persona_surfaces)
+    term_mappings = (
+        _redact_persona_colliding_terms(profile["term_mappings"], persona_surfaces) if include_term_mappings else {}
+    )
     alias_ids = profile["member_alias_ids"]
     certain, conflicting, colliding = _partition_member_aliases(alias_ids, persona_surfaces)
 

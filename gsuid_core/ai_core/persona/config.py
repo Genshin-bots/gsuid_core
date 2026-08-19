@@ -101,6 +101,18 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    "speech_len_soft": GsIntConfig(
+        "台词软上限（字）",
+        "角色卡渲染的建议台词长度，默认 60",
+        60,
+        options=[30, 45, 60, 80, 100],
+    ),
+    "speech_len_hard": GsIntConfig(
+        "台词硬上限（字）",
+        "超过且用户未要求详细时进纠正轮，默认 150",
+        150,
+        options=[80, 120, 150, 200, 300],
+    ),
     # AgentNode 同构：persona 投影节点的工具装配声明（GSC 模板 append-only 自动升级）
     "tool_packs": GsListStrConfig(
         "工具能力族",

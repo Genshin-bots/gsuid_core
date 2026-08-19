@@ -186,6 +186,8 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "history_reset",
         # 交互模式变化（主动 ↔ 被动），data.mode 区分；data.from 记上一模式
         "mode_change",
+        # 前缀缓存失配探针（每 run 一条，data.reason 见 PrefixBreakReason）
+        "prefix_break",
     }
 )
 
@@ -650,8 +652,16 @@ class AISessionLogger:
             self._roll_to_new_file()
 
     def log_system_prompt(self, system_prompt: str) -> None:
-        """记录系统提示词"""
-        self._add_entry("system_prompt", {"content": system_prompt})
+        """记录系统提示词，并附 sha256 指纹（会话内 system 变化次数的观测口径）。"""
+        digest = hashlib.sha256((system_prompt or "").encode("utf-8")).hexdigest()
+        self._add_entry("system_prompt", {"content": system_prompt, "sha256": digest})
+
+    def log_prefix_break(self, reason: str, *, tools_hash: str = "", system_hash: str = "") -> None:
+        """记录本 run 相对上一 run 的前缀失配类别。"""
+        self._add_entry(
+            "prefix_break",
+            {"reason": reason, "tools_hash": tools_hash, "system_hash": system_hash},
+        )
 
     def log_user_input(self, user_message: Any) -> None:
         """记录用户输入。

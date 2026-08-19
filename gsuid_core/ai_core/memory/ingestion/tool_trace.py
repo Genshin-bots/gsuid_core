@@ -8,12 +8,18 @@
 - gs_agent 在 CallToolsNode 命中工具时（**仅 enable_preference_memory 开启时**）记一笔；
 - 偏好蒸馏（worker._extract_and_upsert_preferences）读取最近若干笔作为背景上下文。
 
-纯内存、零持久化、有界（每用户最多 N 笔 + TTL 过期），关闭偏好记忆时完全不被写入。
+进程内 ring buffer + SQL 落盘（``AIToolTrace``，保留 7 天）。关闭偏好记忆时完全不被写入。
 """
 
 import time
 from typing import Any, NamedTuple
 from collections import deque
+
+from sqlmodel import Field, col, delete, select
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from gsuid_core.utils.database.base_models import BaseModel, with_session
 
 # 每用户保留最近 N 笔工具调用
 _MAX_PER_USER = 8
@@ -41,7 +47,68 @@ class ToolCallRecord(NamedTuple):
 _recent: dict[str, deque[ToolCallRecord]] = {}
 
 
-def record_tool_call(user_id: str, tool_name: str, args: Any) -> None:
+_SQL_TTL_DAYS = 7
+
+
+class AIToolTrace(BaseModel, table=True):
+    """工具调用轨迹落盘（表名 aitooltrace）。"""
+
+    tool_name: str = Field(default="", max_length=80, title="工具名")
+    args_summary: str = Field(default="", max_length=320, title="参数摘要")
+    created_at: int = Field(default=0, index=True, title="调用时间戳")
+
+    @classmethod
+    @with_session
+    async def insert_trace(
+        cls,
+        session: AsyncSession,
+        *,
+        bot_id: str,
+        user_id: str,
+        tool_name: str,
+        args_summary: str,
+        created_at: int,
+    ) -> None:
+        session.add(
+            cls(
+                bot_id=bot_id,
+                user_id=user_id,
+                tool_name=tool_name[:80],
+                args_summary=args_summary[:320],
+                created_at=created_at,
+            )
+        )
+
+    @classmethod
+    @with_session
+    async def recent_for_users(
+        cls,
+        session: AsyncSession,
+        user_ids: list[str],
+        *,
+        since_ts: int,
+        limit: int = 6,
+    ) -> list[str]:
+        if not user_ids:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.user_id).in_(user_ids), col(cls.created_at) >= since_ts)
+            .order_by(col(cls.created_at).desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        return [f"{r.tool_name}(args={r.args_summary})" for r in rows]
+
+    @classmethod
+    @with_session
+    async def purge_older_than(cls, session: AsyncSession, before_ts: int) -> int:
+        result = await session.execute(delete(cls).where(col(cls.created_at) < before_ts))
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+
+def record_tool_call(user_id: str, tool_name: str, args: Any, bot_id: str = "") -> None:
     """记录一笔工具调用（best-effort，绝不抛出）。"""
     if not user_id or not tool_name:
         return
@@ -55,9 +122,32 @@ def record_tool_call(user_id: str, tool_name: str, args: Any) -> None:
                 oldest = next(iter(_recent))
                 del _recent[oldest]
             _recent[user_id] = deque(maxlen=_MAX_PER_USER)
-        _recent[user_id].append(ToolCallRecord(time.time(), tool_name, args_str))
+        now = time.time()
+        _recent[user_id].append(ToolCallRecord(now, tool_name, args_str))
+        if bot_id:
+            _schedule_sql_write(bot_id, user_id, tool_name, args_str, int(now))
     except Exception:
         pass
+
+
+def _schedule_sql_write(bot_id: str, user_id: str, tool_name: str, args_summary: str, created_at: int) -> None:
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _write() -> None:
+        await AIToolTrace.insert_trace(
+            bot_id=bot_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            args_summary=args_summary,
+            created_at=created_at,
+        )
+
+    loop.create_task(_write())
 
 
 def get_recent_tool_calls(user_ids: list[str], limit: int = 6) -> list[str]:
@@ -76,3 +166,9 @@ def get_recent_tool_calls(user_ids: list[str], limit: int = 6) -> list[str]:
                 collected.append((rec.timestamp, f"{rec.tool_name}(args={rec.args_summary})"))
     collected.sort(key=lambda x: x[0], reverse=True)
     return [s for _, s in collected[:limit]]
+
+
+async def get_recent_tool_calls_persisted(user_ids: list[str], limit: int = 6) -> list[str]:
+    """重启后从 SQL 补 ring buffer 的空窗。"""
+    since = int(time.time()) - _SQL_TTL_DAYS * 86400
+    return await AIToolTrace.recent_for_users(user_ids, since_ts=since, limit=limit)

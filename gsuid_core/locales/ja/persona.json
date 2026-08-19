@@ -18,6 +18,7 @@
   "log.persona.read_md_path": "[Persona] {md_path} の読み込みに失敗: {e}",
   "log.persona.read_txt_path": "[Persona] {txt_path} の読み込みに失敗: {e}",
   "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor の移行で例外、スキップ: {e}",
+  "log.persona.appearance_understand_fail": "[Persona] '{p0}' 外見カード生成失敗、スキップ: {e}",
   "log.persona.write_path": "[Persona] {path} への書き戻しに失敗: {e}",
   "log.persona.write_txt_path_keeping": "[Persona] {txt_path} への書き出しに失敗、古いフィールドを保持: {e}"
 }

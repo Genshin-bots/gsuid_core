@@ -318,6 +318,9 @@ async def run_interactive_turn(
         )
 
     if settle and session.persona_name:
+        hook_ctx.tool_names_called = tuple(session._last_attempt_tool_calls)
+        hook_ctx.result_text = result_text[:200]
+        hook_ctx.thinking_text = ""
         await _settle_and_fire_after_run(
             bot=bot,
             event=event,
@@ -367,6 +370,7 @@ async def _settle_and_fire_after_run(
     hook_ctx.point = AgentHookPoint.AFTER_RUN
     hook_ctx.signals = outcome.signals
     hook_ctx.settle_outcome = outcome
+    hook_ctx.result_text = query if not hook_ctx.result_text else hook_ctx.result_text
     task = asyncio.create_task(fire_hooks(AgentHookPoint.AFTER_RUN, hook_ctx))
 
     underlying = _underlying_bot(bot)

@@ -79,6 +79,9 @@ PROACTIVE_MESSAGE_USER_TEMPLATE = """[群里最近发生的事]
 
 # §10 新鲜度门：最后一条人类消息距今超过该分钟数，
 STALE_TOPIC_MINUTES_DEFAULT = 15
+# 可点名窗口：超过则禁止假设对方在场（阈值不进配置，避免运行期漂移）。
+MASTER_ACTIVE_WINDOW_MIN = 30
+ACTIVE_WINDOW_MIN = 30
 
 STALENESS_NOTE_TEMPLATE = (
     "\n\n（注意：群里最后一条消息已经是 {minutes} 分钟前的了，那个话题早就翻篇。"
@@ -160,48 +163,83 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
             )
             row = result.scalar_one_or_none()
             if row:
-                return f"\n\n[群组历史摘要]\n{row}"
+                return (
+                    f"\n\n[群组历史摘要]\n{row}\n"
+                    "（以上摘要来自群友发言的压缩，每条都是有人说过的话，"
+                    "可能是玩笑/文案/反讽，引用前先判断真实性，不要把文案当真实事件。）"
+                )
     except Exception as e:
         logger.debug(t("log.ai.heartbeat_get_group_summary", e=e))
 
     return ""
 
 
-def _build_masters_section(history: List[MessageRecord]) -> str:
-    """列出出现在本群历史里的主人，供巡检以「主人」相称。
-
-    巡检 system_prompt 是裸人格（不含 SYSTEM_CONSTRAINTS 的主人名单），主人身份
-    必须随群况补进 user 侧；只列在场主人，避免塞一串与本群无关的 ID。
-    """
-    masters = {str(m) for m in (core_config.get_config("masters") or [])}
-    if not masters:
-        return ""
-
-    present: List[str] = []
-    seen: set = set()
+def _last_user_seen(history: List[MessageRecord]) -> dict[str, tuple[float, str]]:
+    """user_id → (最后发言 ts, 显示名)。窗口里没出现过的人不收录。"""
+    last: dict[str, tuple[float, str]] = {}
     for record in history:
         if record.role != "user":
             continue
         uid = str(record.user_id)
-        if uid not in masters or uid in seen:
+        if not uid:
             continue
-        seen.add(uid)
-        name = record.user_name
-        present.append(f"{name}(用户ID:{uid})" if name else f"用户ID:{uid}")
+        ts = float(record.timestamp)
+        name = str(record.user_name) if record.user_name else uid
+        if uid not in last or ts >= last[uid][0]:
+            last[uid] = (ts, name)
+    return last
 
-    if not present:
+
+def _pick_recent_speaker_names(
+    last_seen: dict[str, tuple[float, str]],
+    *,
+    limit: int = 8,
+) -> dict[str, str]:
+    """按最后发言时间取最近的人，不是窗口里先出现的人。"""
+    ordered = sorted(last_seen.items(), key=lambda kv: kv[1][0], reverse=True)
+    return {uid: name for uid, (_ts, name) in ordered[:limit]}
+
+
+def _gap_label(gap_min: int, last_ts: float) -> str:
+    if gap_min <= MASTER_ACTIVE_WINDOW_MIN:
+        return f"{gap_min} 分钟前刚发过言"
+    hhmm = time.strftime("%H:%M", time.localtime(last_ts))
+    return f"上次发言是 {hhmm}（{gap_min} 分钟前）——TA 现在很可能不在看群"
+
+
+def _build_masters_section(history: List[MessageRecord], now_ts: float | None = None) -> str:
+    """列出出现在本群历史里的主人，并带最后发言时间（禁止对长时间未发言者点名问候）。"""
+    masters = {str(m) for m in (core_config.get_config("masters") or [])}
+    if not masters:
         return ""
-
-    listed = "、".join(present)
+    now = now_ts if now_ts is not None else time.time()
+    last_seen = _last_user_seen(history)
+    lines: List[str] = []
+    for uid in masters:
+        if uid not in last_seen:
+            lines.append(f"用户ID:{uid} 是你的主人，但 TA 很久没在这窗口里发言——很可能不在看群。")
+            continue
+        ts, name = last_seen[uid]
+        gap_min = int((now - ts) / 60)
+        label = f"{name}(用户ID:{uid})" if name != uid else f"用户ID:{uid}"
+        lines.append(f"{label} 是你的主人，{_gap_label(gap_min, ts)}。")
+    if not lines:
+        return ""
+    listed = "\n".join(f"- {x}" for x in lines)
     return (
-        f"\n\n[你的主人（最高权限）] {listed} 是你的主人。"
-        "对主人保持最高信任、亲昵相待、认真回应；但只有在回应**主人本人发的那条消息**时"
-        "才称「主人」——先核对那条消息的发言人 ID 是否在上述名单里，别人说的话绝不冠给主人；"
-        "其余人仍是普通群友，用昵称称呼即可。"
+        f"\n\n[你的主人（最高权限）]\n{listed}\n"
+        "对主人保持最高信任、亲昵相待；但只有在回应**主人本人发的那条消息**时才称「主人」。"
+        "主人长时间没发言时：禁止向 TA 直接发问或假设 TA 在线，一律不许点名问候；"
+        "想提 TA 用自言自语、口吻以角色卡为准。"
+        "只有主人最近 30 分钟内发过言才可以直接点名关心。"
     )
 
 
-async def _build_zone_section(history: List[MessageRecord], bot_id: str) -> str:
+async def _build_zone_section(
+    history: List[MessageRecord],
+    bot_id: str,
+    now_ts: float | None = None,
+) -> str:
     """在场发言者的关系温度摘要（决策上下文，不进 system）。
 
     压缩人格刻意丢掉了整段 Favorability Logic（决策阶段不需要执行细则），但**档位本身**
@@ -213,15 +251,8 @@ async def _build_zone_section(history: List[MessageRecord], bot_id: str) -> str:
     from gsuid_core.ai_core.relationship import Zone, zone_of, zone_level_name
     from gsuid_core.ai_core.database.models import UserFavorability
 
-    names: dict[str, str] = {}
-    for record in history:
-        if record.role != "user":
-            continue
-        uid = str(record.user_id)
-        if uid and uid not in names:
-            names[uid] = str(record.user_name) if record.user_name else uid
-        if len(names) >= 8:
-            break
+    last_seen = _last_user_seen(history)
+    names = _pick_recent_speaker_names(last_seen, limit=8)
     if not names:
         return ""
     try:
@@ -230,20 +261,32 @@ async def _build_zone_section(history: List[MessageRecord], bot_id: str) -> str:
         logger.debug(t("log.ai.heartbeat_zone_summary_degraded", e=e))
         return ""
 
+    now = now_ts if now_ts is not None else time.time()
     warm: List[str] = []
     cold: List[str] = []
     for uid, score in scores.items():
         zone = zone_of(score)
-        label = f"{names[uid] if uid in names else uid}（{zone_level_name(zone)}）"
+        ts_name = last_seen[uid] if uid in last_seen else None
+        gap_txt = ""
+        active = False
+        if ts_name is not None:
+            gap_min = int((now - ts_name[0]) / 60)
+            gap_txt = f"{gap_min} 分钟前"
+            active = gap_min <= ACTIVE_WINDOW_MIN
+        nick = names[uid] if uid in names else uid
+        label = f"{nick}（{zone_level_name(zone)}，{gap_txt or '很久没发言'}）"
         if zone in (Zone.CLOSE, Zone.FAMILIAR):
-            warm.append(label)
+            if active:
+                warm.append(f"{label}。最近活跃的人可以点名关心、主动接话。")
+            else:
+                warm.append(f"{label}。TA 可能已经离开，不要假设 TA 在场，不要直接对 TA 说话。")
         elif zone in (Zone.HOSTILE, Zone.COLD):
             cold.append(label)
     if not warm and not cold:
         return ""
     lines = ["\n\n[在场的人你有多熟]"]
     if warm:
-        lines.append(f"- 熟：{'、'.join(warm)}。可以点名关心、可以主动接话。")
+        lines.append("- 熟：" + "；".join(warm))
     if cold:
         lines.append(f"- 不熟/有点烦：{'、'.join(cold)}。**不要点名**，也别主动搭话。")
     return "\n".join(lines)
@@ -303,7 +346,10 @@ async def run_heartbeat(
 
     # 在场主人名单：裸人格 system_prompt 不含主人信息，靠这段让巡检认出主人并以「主人」相称
     # 关系温度摘要紧随其后：主人是权限、档位是温度，两者正交
-    masters_section = _build_masters_section(history) + await _build_zone_section(history, event.bot_id or "")
+    now_ts = time.time()
+    masters_section = _build_masters_section(history, now_ts) + await _build_zone_section(
+        history, event.bot_id or "", now_ts
+    )
 
     # C8：统一主动网关合并进来的语境（刚完成的定时任务结果等）
     proactive_merge_section = ""
@@ -470,14 +516,14 @@ _REACTIVE_SILENCE_RE = re.compile(
     r"|^[哈呵嘿嗯啊哦喔噢呜]+[~～。.!！?？…\s]*$"  # 纯语气叠词
     r"|^[。.!！?？…~～]+$"
 )
-# 明显接续：短句里带第二人称/角色称呼/闭类跟进——可零 LLM 放行
+# 明显接续：短句里带第二人称/闭类跟进——可零 LLM 放行。角色名由调用方传入，不写死。
 _REACTIVE_PASS_RE = re.compile(
-    r"(你|早柚|sayu|那[个么]|然后|接着|还有|改成|取消|多少|怎么样|为什么|为啥|啥意思)",
+    r"(你|那[个么]|然后|接着|还有|改成|取消|多少|怎么样|为什么|为啥|啥意思)",
     re.I,
 )
 
 
-def _reactive_gate_rule_prefilter(raw_text: str) -> Optional[bool]:
+def _reactive_gate_rule_prefilter(raw_text: str, persona_name: str = "") -> Optional[bool]:
     """规则预筛：True=放行，False=沉默，None=交 LLM。
 
     只处理高置信形态，避免关键词表膨胀；拿不准返回 None。
@@ -498,8 +544,12 @@ def _reactive_gate_rule_prefilter(raw_text: str) -> Optional[bool]:
     body = body.strip()
     if len(body) <= 1 or _REACTIVE_SILENCE_RE.match(body):
         return False
-    if len(body) <= 24 and _REACTIVE_PASS_RE.search(body):
-        return True
+    if len(body) <= 24:
+        if _REACTIVE_PASS_RE.search(body):
+            return True
+        name = persona_name.strip()
+        if name and name in body:
+            return True
     return None
 
 
@@ -526,7 +576,7 @@ async def run_reactive_gate(
         return True
     # 规则预筛：纯感叹/空话直接沉默；明显接续短句直接放行
     raw = event.raw_text if event.raw_text else (event.text or "")
-    pre = _reactive_gate_rule_prefilter(raw)
+    pre = _reactive_gate_rule_prefilter(raw, persona_name or "")
     if pre is not None:
         logger.debug(t("log.ai.reactivegate_pre_rule_filter", pre=pre))
         return pre

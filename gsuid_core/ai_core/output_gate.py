@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 from dataclasses import field, dataclass
@@ -73,6 +74,7 @@ class PolicyState:
 class GateBag:
     angle_bracket: PolicyState = field(default_factory=PolicyState)
     ooc: PolicyState = field(default_factory=PolicyState)
+    inner_os: PolicyState = field(default_factory=PolicyState)
     ooc_warned_turn_ids: set[str] = field(default_factory=set)
 
 
@@ -94,6 +96,7 @@ def begin_response_batch(extra: Dict[str, Any]) -> None:
     bag = ensure_gate_bag(extra)
     bag.angle_bracket.batch_counted = False
     bag.ooc.batch_counted = False
+    bag.inner_os.batch_counted = False
 
 
 def _policy(bag: GateBag, name: str) -> PolicyState:
@@ -101,6 +104,8 @@ def _policy(bag: GateBag, name: str) -> PolicyState:
         return bag.angle_bracket
     if name == "ooc":
         return bag.ooc
+    if name == "inner_os":
+        return bag.inner_os
     # 未知名勿返回 throwaway：否则 attempts/blocked 静默丢状态
     raise ValueError(f"unknown output_gate policy: {name!r}")
 
@@ -518,6 +523,10 @@ def pre_send_gate(
     if r is not None and r.decision is not GateDecision.ALLOW:
         return r
 
+    r = _eval_inner_os(text, bag_extra, channel=channel, user_text=user_text)
+    if r is not None and r.decision is not GateDecision.ALLOW:
+        return r
+
     return GateResult(decision=GateDecision.ALLOW)
 
 
@@ -540,4 +549,56 @@ def tool_gate_feedback(
 GATE_NUDGE_MARKERS: tuple[str, ...] = (
     "（系统校验：发送内容含非法尖括号标签",
     "⛔ 你要发送的内容命中",
+    "（系统校验：删除（心想：",
 )
+
+# 通道泄漏：长「心想」段（可在句中）。短舞台指示不含该开场。
+_INNER_OS_RE = re.compile(r"（心想[:：].{20,}?）", re.DOTALL)
+
+
+def _strip_inner_os_spans(text: str) -> str:
+    out = _INNER_OS_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+def _eval_inner_os(
+    text: str,
+    extra: Dict[str, Any],
+    *,
+    channel: str,
+    user_text: str = "",
+) -> Optional[GateResult]:
+    body = (text or "").strip()
+    if not body:
+        return None
+    spans = [m.group(0) for m in _INNER_OS_RE.finditer(body) if len(m.group(0)) >= 30]
+    if not spans:
+        return None
+    bag = ensure_gate_bag(extra)
+    bag.inner_os.attempts += 1
+    if body.strip():
+        bag.inner_os.blocked.append(body.strip())
+    attempts = bag.inner_os.attempts
+    if attempts >= 2:
+        rest = _strip_inner_os_spans(body)
+        if not rest:
+            return GateResult(decision=GateDecision.FUSE, policy="inner_os", fused=True, detail="empty_after_strip")
+        r = _eval_angle_bracket(rest, extra, channel=channel, count_attempt=False)
+        if r is not None and r.decision is not GateDecision.ALLOW:
+            return r
+        r = _eval_ooc(rest, extra, user_text=user_text, channel=channel)
+        if r is not None and r.decision is not GateDecision.ALLOW:
+            return r
+        return GateResult(
+            decision=GateDecision.FALLBACK,
+            policy="inner_os",
+            send_text=rest,
+            detail="stripped",
+        )
+    logger.warning(i18n_t("log.ai.output_gate_inner_os_rewrite", preview=repr(body[:80])))
+    return GateResult(
+        decision=GateDecision.REWRITE,
+        policy="inner_os",
+        feedback="（系统校验：删除（心想：…）段落，只保留角色台词）",
+        detail="inner_os",
+    )

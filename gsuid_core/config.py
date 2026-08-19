@@ -67,6 +67,7 @@ CORE_CONFIG: Dict[str, Any] = {
     "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1"],
     "masters": [],
     "superusers": [],
+    "framework_aliases": ["GsCore", "gsuid_core"],
     "REGISTER_CODE": _generate_register_code(),
     # 网页控制台同账号最大并发登录数：1=单点登录（新登录踢掉旧会话），调大可多端同时在线
     "web_max_sessions": 1,
@@ -113,7 +114,7 @@ CONFIG_OPTIONS: Dict[str, SelectOption] = _collect_selects(CORE_CONFIG)
 
 STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN", "REGISTER_CODE", "LANGUAGE"]
 INT_CONFIG = Literal["misfire_grace_time", "web_max_sessions"]
-LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS"]
+LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS", "framework_aliases"]
 DICT_CONFIG = Literal["sv", "log"]
 BOOL_CONFIG = Literal["enable_empty_start", "ENABLE_HTTP", "buffered_user_writes"]
 

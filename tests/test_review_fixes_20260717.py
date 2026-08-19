@@ -176,14 +176,14 @@ def test_compact_report_blocks_respects_sent_gate() -> None:
 
 
 def test_compact_runs_after_history_surgery() -> None:
-    """E4：占位压缩必须在出戏外科（按原文精确匹配）之后执行。"""
+    """入史对齐后不再对已发送 history 做 report 占位压缩（前缀缓存）。"""
     import inspect
 
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
-    # 收尾在 _run_once_settle_result：闸门收尾（内含 OOC 重说）先于 report 占位压缩
     src = inspect.getsource(GsCoreAIAgent._run_once_settle_result)
-    assert src.index("_resolve_output_gate_after_run") < src.index("_compact_report_blocks_in_history")
+    assert "_compact_report_blocks_in_history" not in src
+    assert "_relean_user_turn" in src
 
 
 # ─────────────────────────────────────────────

@@ -16,7 +16,7 @@ from pydantic_ai.messages import (
 from gsuid_core.ai_core.utils import _relean_user_turn
 
 
-def test_relean_replaces_user_turn_only() -> None:
+def test_relean_keeps_sent_user_turn() -> None:
     full = "[用户发言]\n娅娅\n\n[历史对话]\n...30条群聊...\n[长期记忆]\n...大段记忆..."
     lean = "[用户发言]\n娅娅"
     msgs: list = [
@@ -25,10 +25,10 @@ def test_relean_replaces_user_turn_only() -> None:
     ]
     _relean_user_turn(msgs, lean)
     up = msgs[0].parts[0]
-    assert isinstance(up, UserPromptPart) and up.content == lean
+    assert isinstance(up, UserPromptPart) and up.content == full
     asst = msgs[1].parts[0]
     assert isinstance(asst, TextPart) and asst.content == "在呢"
-    print("[OK] user turn 被替换为精简版，assistant turn 不变")
+    print("[OK] user turn 入史保持发送原样，assistant turn 不变")
 
 
 def test_relean_keeps_tool_roundtrip_intact() -> None:
@@ -44,7 +44,7 @@ def test_relean_keeps_tool_roundtrip_intact() -> None:
     _relean_user_turn(msgs, lean)
     # 只有第一条 UserPromptPart 被换，ToolReturnPart 原样保留（配对不破坏）
     up = msgs[0].parts[0]
-    assert isinstance(up, UserPromptPart) and up.content == lean
+    assert isinstance(up, UserPromptPart) and up.content == full
     tr = msgs[2].parts[0]
     assert isinstance(tr, ToolReturnPart) and tr.tool_call_id == "c1" and tr.content == "晴"
     print("[OK] 工具往返（ToolCall/ToolReturn 配对）不受影响")
@@ -60,7 +60,7 @@ def test_relean_handles_no_user_turn() -> None:
 
 
 if __name__ == "__main__":
-    test_relean_replaces_user_turn_only()
+    test_relean_keeps_sent_user_turn()
     test_relean_keeps_tool_roundtrip_intact()
     test_relean_handles_no_user_turn()
     print("ALL OK")

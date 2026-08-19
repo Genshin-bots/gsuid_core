@@ -33,6 +33,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.memory.ingestion.hiergraph",
     "gsuid_core.ai_core.meme.database_model",
     "gsuid_core.ai_core.cognition.nodes",
+    "gsuid_core.ai_core.memory.ingestion.tool_trace",
 )
 
 

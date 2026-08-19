@@ -56,7 +56,7 @@ def test_relean_keeps_marker_when_lean_has_it() -> None:
     _relean_user_turn(msgs, lean)
     up = msgs[0].parts[0]
     assert isinstance(up, UserPromptPart)
-    assert up.content == lean
+    assert up.content == full
     assert MARKER in str(up.content)
 
 

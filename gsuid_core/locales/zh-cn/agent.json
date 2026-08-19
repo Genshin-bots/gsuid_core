@@ -119,6 +119,8 @@
   "log.agent.text_send_fail_failed": "[GsCoreAIAgent] 文本发送失败: {_e}",
   "log.agent.token_usage_input_tokens": "[GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",
   "log.agent.tool_assembly_slot_not_kernel": "[Tools] tool_assembly 槽不由第一方占据, 内核跳过五层自动装配(find_tools 一并消失)",
+  "log.agent.context_block_truncated": "[Context] 块 {name} 超预算截断 {before}→{after} 字",
+  "log.agent.capability_node_missing_when": "[AgentNode] {node} 未声明 when_to_use",
   "log.agent.tool_calls_per_response_truncate": "工具调用熔断：单次响应 {count} 次调用，截断至 {limit}",
   "log.agent.tool_count_baseline_extra": "[GsCoreAIAgent] 工具数量: {p0} (保底 {p1} + 附加 {p2})",
   "log.agent.tool_execution_compl_name_result_passed_ok": "[✅ 工具执行完毕]: 工具名称='{p0}', 结果给到Agent={tool_result_str}",

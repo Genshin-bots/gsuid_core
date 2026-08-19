@@ -39,7 +39,7 @@ class AISessionRegistry:
     """
 
     CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
-    IDLE_THRESHOLD = 1800  # 空闲阈值（秒），默认30分钟
+    IDLE_THRESHOLD = 7200  # 空闲阈值（秒），默认 2 小时（群聊活跃周期以小时计）
     MAX_AI_HISTORY_LENGTH = 30  # AI会话最大历史长度
 
     def __init__(self) -> None:
@@ -237,9 +237,66 @@ class AISessionRegistry:
                     sessions_to_remove.append(session_id)
 
         for session_id in sessions_to_remove:
+            session = self._ai_sessions[session_id]
+            await distill_idle_session(session)
             self.remove_ai_session(session_id)
 
         return len(sessions_to_remove)
+
+
+def parse_session_scope(session_id: str) -> tuple[str, str, str]:
+    """``{ws}:{bot_id}:{bot_self_id}:group|private:{id}`` → (bot_self_id, kind, id)。"""
+    parts = session_id.split(":")
+    if len(parts) >= 5 and parts[3] in ("group", "private"):
+        return parts[2], parts[3], parts[4]
+    return "", "", ""
+
+
+async def distill_idle_session(session: "GsCoreAIAgent") -> None:
+    """GC 前把 B 轨中段抽成摘要写入记忆；失败只 warning，不挡回收。"""
+    from gsuid_core.i18n import t
+    from gsuid_core.logger import logger
+    from gsuid_core.ai_core.utils import _extractive_middle_summary
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.memory.observer import observe
+    from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+
+    if not session.history:
+        return
+    summary = _extractive_middle_summary(session.history)
+    if not summary:
+        return
+    bot_self_id, _kind, _sid = parse_session_scope(session.session_id)
+    bid = bot_self_id or "default"
+    # 只写 SELF：助手摘要进群 scope 会绕开 C6，污染群记忆。
+    scope_key = make_scope_key(ScopeType.SELF, bid)
+    try:
+        await remember(
+            MemoryWrite(
+                kind=CogKind.EPISODE,
+                ref=f"gc_{hash(session.session_id) & 0xFFFFFFFF:x}",
+                scope_key=scope_key,
+                owner_user_id="",
+                title="会话空闲回收摘要",
+                summary=summary[:300],
+                source="session_gc",
+            )
+        )
+    except Exception as e:
+        logger.warning(t("log.ai.session_gc_distill_fail", e=e))
+        return
+    try:
+        await observe(
+            content=f"[会话摘要] {summary[:400]}",
+            speaker_id=f"__assistant_{bid}__",
+            group_id=None,
+            bot_self_id=bid,
+            observer_blacklist=[],
+            message_type="private_msg",
+        )
+    except Exception as e:
+        logger.debug(t("log.ai.session_gc_observe_fail", e=e))
 
 
 # 全局单例实例

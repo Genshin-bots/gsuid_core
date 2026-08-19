@@ -18,6 +18,7 @@
   "log.persona.read_md_path": "[Persona] 读取 {md_path} 失败: {e}",
   "log.persona.read_txt_path": "[Persona] 读取 {txt_path} 失败: {e}",
   "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor 迁移异常, 跳过: {e}",
+  "log.persona.appearance_understand_fail": "[Persona] '{p0}' 形象卡生成失败, 跳过: {e}",
   "log.persona.write_path": "[Persona] 写回 {path} 失败: {e}",
   "log.persona.write_txt_path_keeping": "[Persona] 写出 {txt_path} 失败, 保留旧字段: {e}"
 }

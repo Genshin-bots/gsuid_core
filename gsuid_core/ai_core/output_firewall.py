@@ -357,6 +357,9 @@ def check_ooc(
     # 机器腔/堆栈：优先于裸 system 词（traceback 同时在词库里）
     if _TECH_DUMP_RE.search(text):
         return FirewallHit(category="machine_dump", matched=["技术堆栈/状态码"])
+    _dev = _dev_vocab_hit(text)
+    if _dev is not None:
+        return FirewallHit(category="dev_vocab", matched=[_dev])
     if model_hits or _MODEL_ATTRIB_RE.search(text):
         # 精度门：裸词/"由…开发"须与自绑定句式**同小句**共现、或身份追问下的超短直答
         # （"MiniMax 呀"）才算泄露；长文本第三方提及（AI 新闻摘要/讨论）放行。
@@ -384,7 +387,40 @@ def check_ooc(
         system_hits.append(f"框架泄漏:{_tool_leak}")
     if system_hits:
         return FirewallHit(category="system_term", matched=system_hits)
+    if _objective_framework_intro(text):
+        return FirewallHit(category="system_term", matched=["客观介绍宿主框架"])
     return None
+
+
+_DEV_VOCAB_RE = re.compile(r"(工具(?!人)|接口|配置|服务).{0,12}(没配|没好|失败|报错|不可用|还没|未配置|配好)")
+_DEV_VOCAB_WHITELIST_RE = re.compile(r"(数据口径|统计口径|工具人)")
+_FRAMEWORK_TECH_RE = re.compile(r"(FastAPI|WebSocket|框架|插件系统|Python|SQLAlchemy)")
+_FRAMEWORK_IS_RE = re.compile(r"是(一个)?")
+
+
+def _dev_vocab_hit(text: str) -> Optional[str]:
+    if _DEV_VOCAB_WHITELIST_RE.search(text):
+        return None
+    m = _DEV_VOCAB_RE.search(text)
+    if m is None:
+        return None
+    return m.group(0)[:40]
+
+
+def _framework_alias_list() -> list[str]:
+    from gsuid_core.config import core_config
+
+    raw = core_config.get_config("framework_aliases")
+    if isinstance(raw, list) and raw:
+        return [str(x) for x in raw if str(x).strip()]
+    return ["GsCore", "gsuid_core"]
+
+
+def _objective_framework_intro(text: str) -> bool:
+    """框架名 +「是」+ 技术名词的说明文。角色化转述不含该形态，不命中。"""
+    if not _FRAMEWORK_IS_RE.search(text) or not _FRAMEWORK_TECH_RE.search(text):
+        return False
+    return any(alias in text for alias in _framework_alias_list() if alias)
 
 
 def is_enabled() -> bool:

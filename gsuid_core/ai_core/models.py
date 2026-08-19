@@ -182,6 +182,7 @@ class ToolBase:
     capability_domain: Optional[str]  # C3-d 能力域，用于聚合成自然语言能力清单
     covers: List[str]  # 数据/能力覆盖面陈述，进向量检索文本，供召回与 roster 聚合
     aliases: List[str]  # 领域内同义表述（须带领域前缀，如「原神·深渊阵容查询」）
+    schema_brief: str  # 下发 schema 用简述；检索仍用 description 全文
 
     def __init__(
         self,
@@ -194,6 +195,7 @@ class ToolBase:
         capability_domain: Optional[str] = None,
         covers: Optional[List[str]] = None,
         aliases: Optional[List[str]] = None,
+        schema_brief: str = "",
     ):
         self.name = name
         self.description = description
@@ -204,6 +206,7 @@ class ToolBase:
         self.capability_domain = capability_domain
         self.covers = covers or []
         self.aliases = aliases or []
+        self.schema_brief = schema_brief or description
 
     @property
     def retrieval_text(self) -> str:

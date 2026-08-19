@@ -140,6 +140,7 @@ async def send_message_by_ai(
     **资源 ID 必须来自上下文**：image_id / video_id / audio_id 只能填本轮对话中
     实际出现过的 ID（如 `img_xxxxxxxx`），**禁止自行构造或猜测**——凭空编造的 ID
     必然发送失败（§13 生产实录：编造 32 位 hex ID 被拒）。没有可用资源就只发 text。
+    image_id 是平台资源句柄，不是文件路径；登记产物用 payload 传引用，不要把路径当 image_id。
 
     Args:
         ctx: 工具执行上下文（包含bot和ev对象）

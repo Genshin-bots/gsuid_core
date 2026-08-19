@@ -182,3 +182,34 @@ async def search_memes_backend(query: str, *, scope: CogScope, limit: int) -> _B
         )
         ids.append(hid)
     return ids, hits
+
+
+async def search_meme_knowledge_backend(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    try:
+        from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
+
+        scope_key = f"group:{scope.group_id}" if scope.group_id else ""
+        rows = await AiMemeKnowledge.match_terms(
+            query,
+            bot_id=scope.bot_id or "",
+            scope_key=scope_key,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.debug(t("log.ai.cognition_backend_fail", backend="meme_knowledge", e=e))
+        return _EMPTY
+    ids: List[str] = []
+    hits: Dict[str, CognitiveHit] = {}
+    for row in rows:
+        hid = f"memeknow_{row.id}"
+        meaning = (row.meaning or "")[:120]
+        hits[hid] = CognitiveHit(
+            kind=CogKind.MEME_KNOWLEDGE,
+            id=hid,
+            title=row.term,
+            summary=f"{meaning}（来源：{row.source or '未知'}）",
+            score=min(0.95, 0.5 + row.confidence * 0.4),
+            source="meme_knowledge",
+        )
+        ids.append(hid)
+    return ids, hits

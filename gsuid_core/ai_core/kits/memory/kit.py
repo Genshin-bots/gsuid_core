@@ -90,6 +90,7 @@ def cog_scope_from_ctx(ctx: AgentHookContext) -> "CogScope":
     return CogScope(
         user_id=ctx.user_id,
         bot_id=ctx.bot_id,
+        bot_self_id=ctx.bot_self_id,
         group_id=ctx.group_id,
         enable_system2=enable_system2,
         enable_user_global=memory_config.enable_user_global_memory,
@@ -153,6 +154,7 @@ class MemoryKit(AgentKit):
                 bot_self_id=str(ev.bot_self_id),
                 observer_blacklist=memory_config.observer_blacklist,
                 message_type="group_msg" if ctx.group_id else "private_msg",
+                bot_id=str(ev.bot_id),
             )
         # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆，
         # 避免后台对每张群图都发起一次视觉模型调用（Token + 日志噪声）。
@@ -187,6 +189,7 @@ class MemoryKit(AgentKit):
             bot_self_id=str(ev.bot_self_id),
             observer_blacklist=memory_config.observer_blacklist,
             message_type="group_msg" if ctx.group_id else "private_msg",
+            bot_id=str(ev.bot_id),
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
@@ -269,15 +272,49 @@ class MemoryKit(AgentKit):
         parts: List[str] = []
         text = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
         if text:
+            from datetime import datetime
+
             guide = ctx.memory_guide or ""
-            parts.append(f"{guide}[长期记忆·高置信]\n{text}")
+            stamp = datetime.now().strftime("%H:%M")
+            parts.append(f"{guide}[长期记忆·检索于 {stamp}]\n{text}")
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:
             parts.append(prefetch)
+        meme_block = await self._meme_preinject(ctx)
+        if meme_block:
+            parts.append(meme_block)
         if not parts:
             return
         parts.append("（需要更多细节请调 search_cognition / read_handle）")
         ctx.set_context_block("memory", "\n".join(parts))
+
+    async def _meme_preinject(self, ctx: AgentHookContext) -> str:
+        """装配期梗触发词精确匹配，最多 2 条。"""
+        from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
+
+        if not ctx.query.strip():
+            return ""
+        scope_key = f"group:{ctx.group_id}" if ctx.group_id else ""
+        try:
+            rows = await AiMemeKnowledge.match_terms(
+                ctx.query,
+                bot_id=ctx.bot_id,
+                scope_key=scope_key,
+                limit=2,
+            )
+        except Exception as e:
+            logger.debug(t("log.ai.meme_preinject_skip", e=e))
+            return ""
+        if not rows:
+            return ""
+        lines = ["[群聊黑话]"]
+        for row in rows:
+            meaning = (row.meaning or "")[:80]
+            src = row.source or "未知"
+            lines.append(f'"{row.term}"：{meaning}（来源：{src}）')
+            if row.id is not None:
+                await AiMemeKnowledge.bump_hit(row.id)
+        return "\n".join(lines)
 
     async def trace_tool(self, ctx: AgentHookContext) -> None:
         """工具调用轨迹入记忆（供偏好蒸馏作背景，判「刚纠正完」）。"""
@@ -286,7 +323,8 @@ class MemoryKit(AgentKit):
 
         if not ctx.tool_name or not ctx.user_id or not memory_config.enable_preference_memory:
             return
-        record_tool_call(ctx.user_id, ctx.tool_name, ctx.tool_args)
+        bot_id = ctx.ev.bot_id if ctx.ev is not None else ""
+        record_tool_call(ctx.user_id, ctx.tool_name, ctx.tool_args, bot_id=bot_id)
 
 
 KIT = register_agent_kit(

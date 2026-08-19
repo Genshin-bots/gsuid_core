@@ -206,4 +206,9 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
         )
     mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
     if mem and "memory" not in ctx.blocks:
-        ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆·高置信]\n{mem}\n（需要更多细节请调 search_cognition）"
+        from datetime import datetime
+
+        stamp = datetime.now().strftime("%H:%M")
+        ctx.blocks["memory"] = (
+            f"{ctx.memory_guide}[长期记忆·检索于 {stamp}]\n{mem}\n（需要更多细节请调 search_cognition）"
+        )

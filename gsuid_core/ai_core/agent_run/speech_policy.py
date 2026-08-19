@@ -415,6 +415,8 @@ def should_block_user_visible_text(
     fact_pack_pending: bool = False,
     has_active_task: bool = False,
     render_inflight: bool = False,
+    speech_len_hard: int = 0,
+    user_asked_detail: bool = False,
 ) -> tuple[bool, str]:
     """是否拦截本段对用户可见文本。返回 (block, reason)。"""
     body = (text or "").strip()
@@ -509,6 +511,8 @@ def should_block_user_visible_text(
                 return True, "status_without_tool"
         return False, "ok"
 
+    # 长度只写角色卡。硬拦会吞 by_bot 群聊回复（纠正/INV-4 未接此原因）。
+    _ = (speech_len_hard, user_asked_detail)
     return False, "ok"
 
 

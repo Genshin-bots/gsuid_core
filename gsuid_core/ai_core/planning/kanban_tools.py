@@ -29,7 +29,6 @@ from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
 from . import kanban
 from .models import AIAgentTask, AIAgentArtifact
@@ -37,6 +36,14 @@ from .runtime import PlanRunContext, get_plan_context
 from .resolver import resolve_task_ref
 from .workspace import put_artifact
 from ..capability_agents.evaluator import _FUZZY_MIN_OVERLAP
+
+
+def visible_to_capability_only(ctx: RunContext[ToolContext]) -> bool:
+    """延迟导入，避免 ``kanban_tools`` ↔ ``buildin_tools.__init__`` 环。"""
+    from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only as _impl
+
+    return _impl(ctx)
+
 
 # res_ + 12 hex（与 AIAgentArtifact.id 工厂一致）
 _RES_ID_RE = re.compile(r"res_[0-9a-fA-F]{12}")

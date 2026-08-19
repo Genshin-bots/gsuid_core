@@ -13,12 +13,24 @@ from gsuid_core.ai_core.utils import handle_tool_result
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_health import (
     is_tool_frozen,
-    frozen_tool_message,
     record_tool_failure,
     record_tool_success,
 )
 
 from .models import ToolBase, ImageEntity, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase, ManualKnowledgeUpdate
+
+_PARAM_ERROR_HINTS: Dict[str, str] = {
+    "render_chart_spec": '⚠️ 缺少 data。正确格式：data=[{"label":"A","value":1}, ...]',
+}
+
+
+def _param_error_hint(tool_name: str, raw_result: str) -> str:
+    if tool_name not in _PARAM_ERROR_HINTS:
+        return ""
+    if "缺少" in raw_result or "data" in raw_result.lower() or "格式" in raw_result:
+        return _PARAM_ERROR_HINTS[tool_name]
+    return ""
+
 
 # 工具函数返回契约：str/Message/bytes 经 handle_tool_result 序列化；
 # ToolReturn 原样透传 pydantic_ai（多模态内容注入会话，如 read_image 直投）
@@ -104,6 +116,7 @@ def ai_tools(
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
     approval: Optional[str] = None,
+    brief: str = "",
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -240,9 +253,14 @@ def ai_tools(
                 else:
                     return await fn(*args, **call_kwargs)
 
-            # 工具健康度（方案九）：冻结期内短路执行，直接回不可用文案
+            # 工具健康度（方案九）：冻结期内短路执行；第 2 次附替代名。
             if is_tool_frozen(fn.__name__):
-                return frozen_tool_message(fn.__name__)
+                from gsuid_core.ai_core.tool_health import frozen_tool_reply
+
+                need = ""
+                if ctx.deps.ev is not None:
+                    need = ctx.deps.ev.raw_text or ""
+                return await frozen_tool_reply(fn.__name__, ctx.deps.extra, need)
 
             # create_task+wait_for：区分工具内部 TimeoutError 与外层包装取消
             # （直接 wait_for(coro) 会把内部超时误记成包装默认秒数）
@@ -281,6 +299,9 @@ def ai_tools(
             # 健康度记账（方案九）：❌ 开头视为失败信号，其余视为成功（成功清零连败）
             if isinstance(raw_result, str) and raw_result.startswith("❌"):
                 record_tool_failure(fn.__name__, raw_result)
+                hint = _param_error_hint(fn.__name__, raw_result)
+                if hint:
+                    raw_result = f"{raw_result}\n{hint}"
             else:
                 record_tool_success(fn.__name__)
 
@@ -343,16 +364,26 @@ def ai_tools(
 
             prepare_fn = _prepare
 
-        # 6. 注册工具
-        tool_obj = Tool(wrapped_tool, takes_ctx=True, prepare=prepare_fn)
-
         # 获取插件名称
         plugin_name = _get_plugin_name_from_module(fn.__module__)
+        from gsuid_core.logger import hl_plugin
+        from gsuid_core.ai_core.schema_brief import brief_looks_thin, make_schema_brief
+
+        tool_description = (fn.__doc__ or wrapped_tool.__doc__ or "").strip()
+        schema_brief = make_schema_brief(tool_description, explicit=brief)
+        wrapped_tool.__doc__ = tool_description
+
+        # 6. 注册工具（schema 用 brief；检索用 description 全文）
+        tool_obj = Tool(
+            wrapped_tool,
+            takes_ctx=True,
+            prepare=prepare_fn,
+            description=schema_brief or None,
+        )
 
         # 框架特权分类防护：非核心代码（plugins/ 或未知来源）注册 self/buildin/meta
         # 时重定向到 common（见 _CORE_ONLY_CATEGORIES 注释）。
         reg_category = category
-        from gsuid_core.logger import hl_plugin
 
         if plugin_name != "core" and reg_category in _CORE_ONLY_CATEGORIES:
             logger.warning(
@@ -375,11 +406,19 @@ def ai_tools(
 
         # docstring 是向量检索文本的主干（入库文本 = name + description + covers
         # + aliases），缺失即等同于"注册了一个永远召不回的工具"，必须吵出来。
-        tool_description = (wrapped_tool.__doc__ or "").strip()
         if not tool_description:
             logger.warning(
                 t(
                     "log.register.missing_docstring_plugin_name",
+                    p0=fn.__name__,
+                    plugin_name=hl_plugin(plugin_name),
+                )
+            )
+
+        if schema_brief and brief_looks_thin(schema_brief):
+            logger.warning(
+                t(
+                    "log.register.schema_brief_thin",
                     p0=fn.__name__,
                     plugin_name=hl_plugin(plugin_name),
                 )
@@ -405,6 +444,7 @@ def ai_tools(
             capability_domain=capability_domain,
             covers=covers,
             aliases=aliases,
+            schema_brief=schema_brief,
         )
 
         # 根据 category 分类注册工具

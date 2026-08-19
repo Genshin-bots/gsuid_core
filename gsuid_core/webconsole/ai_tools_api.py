@@ -13,6 +13,7 @@ from gsuid_core.ai_core.register import get_all_tools, find_tool_base, get_regis
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.webconsole._local_test_gate import require_auth_or_local_test
+from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import get_capability_gaps
 
 from ._api_tags import AI_TOOLS
 
@@ -254,3 +255,16 @@ async def dump_entity_index(
         for surface, ref in get_entity_index().items()
     ]
     return {"status": 0, "msg": "ok", "data": {"count": len(entries), "entries": entries}}
+
+
+@app.get("/api/ai/tools/capability_gaps", summary="能力缺口（find_tools 未命中）", tags=AI_TOOLS)
+async def api_capability_gaps(
+    limit: int = 20,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    gaps = get_capability_gaps(limit=max(1, min(limit, 100)))
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": [{"need": need, "count": count} for need, count in gaps],
+    }

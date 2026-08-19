@@ -123,4 +123,4 @@ def test_relean_keeps_real_user_and_strips_nudge() -> None:
     ]
     _relean_user_turn(msgs, lean_content="[用户发言]\n你好")
     assert len(msgs[0].parts) == 1
-    assert msgs[0].parts[0].content == "[用户发言]\n你好"
+    assert msgs[0].parts[0].content == "[用户发言]\n你好\n\n[历史对话] 很长…"

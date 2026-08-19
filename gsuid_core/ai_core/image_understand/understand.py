@@ -174,6 +174,7 @@ async def understand_image(
     prompt: str | None = None,
     task_level: Literal["high", "low"] = "high",
     parent_session_id: Optional[str] = None,
+    persona_name: Optional[str] = None,
 ) -> str:
     """
     统一的图片理解接口
@@ -204,6 +205,12 @@ async def understand_image(
     """
     if not prompt:
         prompt = "请详细描述这张图片的内容，包括主要对象、场景、文字、颜色等信息。"
+        if persona_name:
+            from gsuid_core.ai_core.persona.appearance import load_appearance_line
+
+            appearance = load_appearance_line(persona_name)
+            if appearance:
+                prompt += f" 如果图中出现与以下角色形象高度一致的人物，请特别指出：{appearance}"
 
     # O-C 缓存：同图短期内复用同一段描述（按来源字符串 URL/DataURI 哈希、忽略 prompt，见 N-1）
     cache_key = _img_cache_key(image_url)

@@ -1,6 +1,8 @@
 # GsCore AI：一条消息的完整生命周期
 
-> 日期：**2026-08-16**（对齐源码：system 前缀缓存 / exclusive 委派 / `pre_send_gate` /
+> 日期：**2026-08-20**（对齐源码：入史即发送 / 工具池会话钉死 / 群词汇映射出 system /
+> 心想闸 / 逐人新鲜度 / 梗词典 / self_ontology / capability_map / 前缀失配探针 /
+> 2026-08-16 既有：system 前缀缓存 / exclusive 委派 / `pre_send_gate` /
 > 能力代理 **return 不做 roleplay OOC scrub** / incomplete 认 `res_` /
 > POST_TOOL 分通道 / **出图主路径 `render_agent`** / 长 MD 兜底默认关 /
 > DELEGATION_FIRST + web_search 降权 / 身份锚定 /
@@ -174,7 +176,7 @@ agent_run    ──→ H10–H13   prepare（预算后 / ToolContext / user 外�
 | GsAgent | `gs_agent.GsCoreAIAgent` + `agent_run/*` | 单次 run 编排；工具五层 + LLM 迭代 + 出站闸 |
 | Toolset | `register` / `dynamic_toolset` / `rag.tools` | 保底/状态/向量/find_tools |
 | LLM | pydantic-ai `Agent.iter` | 模型请求与 tool 循环 |
-| OutGate | `output_gate.pre_send_gate` | **统一发送前闸门**（尖括号 + OOC；本轮工具名集合防泄漏） |
+| OutGate | `output_gate.pre_send_gate` | **统一发送前闸门**（尖括号 → OOC → 心想；本轮工具名集合防泄漏） |
 | SubAgent | `buildin_tools.subagent.create_subagent` | 通用子代理 / 能力代理入口 |
 | CapRunner | `capability_agents.runner` | 无人格能力节点执行 |
 | Kanban | `planning.kanban` / `kanban_executor` | 任务树、kick、转译推群 |
@@ -1090,14 +1092,15 @@ fire_hooks(RETRIEVE_CONTEXT, ctx)        # 内核唯一动作
 # 私聊：不注入 IM 历史（pydantic_ai session.history 已覆盖，避免破坏缓存前缀）
 raw = history_manager.get_history(limit=20) if group else []
 history = raw[:-1]                          # 去掉本轮（已在 payload）
-# 当前用户优先窗口：自 6 + 他人 10，按时间排
+# 当前用户优先窗口：自 4 + 他人 6，按时间排
 rag_context = "【历史对话】\n" + format_history_for_agent(...)
 ```
 
 ### 9.4 动态上下文唯一顺序（`CONTEXT_BLOCK_ORDER` + 合成器）
 
 **全部拼进 user 侧**（`rag_context` → 本轮 `final_user_message`）。
-结束后 `_relean_user_turn` 剥掉，**不进**持久 Agent history（B 轨瘦身 + 不污染前缀叙事）。
+结束后 `_relean_user_turn` **只剥框架注入**，动态块入史与最后一次请求所见一致（前缀缓存）。
+膨胀由 `BLOCK_CHAR_BUDGET` + compact 摊还摘要控制。
 
 自 2026-08-15 起，顺序的唯一定义在 **`kits/base.py::CONTEXT_BLOCK_ORDER`**（跨计划冻结
 接口）。`assemble_dynamic_context` 只做三件事：建 `AgentHookContext` → 开火
@@ -1112,13 +1115,15 @@ rag_context = "【历史对话】\n" + format_history_for_agent(...)
 | 3 | `voice_anchor` | `gscore.self_cognition`（口吻锚点 + 当前 zone 的一句口气） |
 | 4 | `identity` | `gscore.identity`（**密封槽**，关不掉）——防群聊历史把人设拖成别的称呼 |
 | 5 | `history` | **内核**（`turn_pipeline.build_group_history_block`；HistoryManager 是消息基础设施） |
-| 6 | `memory` | `gscore.memory`（H05 检索 → H06 注入；预算只有 `memory_inject_max_chars` 一层） |
-| 7 | `task` | `gscore.planning_context`（顺带写 `has_actionable`） |
-| 8 | `chitchat_style` | `gscore.scaffold`（仅 intent=闲聊且无上轮工具且无活跃任务） |
-| 9 | `transaction_priority` | `gscore.scaffold`（intent∈{工具,问答}：优先调工具，困/懒不是跳过理由） |
-| 10 | `report_titles` | `gscore.scaffold`（上一轮资料图标题） |
-| 11 | `soft_trigger` | `gscore.reactive_gate`（`SOFT_TRIGGER_NOTE`，近因） |
-| 12 | `plugin_hints` | 第三方 H07 `append_user_hint` 汇入，**恒在最后** |
+| 6 | `group_context` | `gscore.group_profile`（群词汇映射；成员称呼仍在 system 稳定块） |
+| 7 | `memory` | `gscore.memory`（H05 检索 → H06 注入；预算 `memory_inject_max_chars`=800 + 梗预注入） |
+| 8 | `task` | `gscore.planning_context`（顺带写 `has_actionable`） |
+| 9 | `plan_hint` | `gscore.planning_context`（袖珍规划前置，条件触发） |
+| 10 | `chitchat_style` | `gscore.scaffold`（仅 intent=闲聊且无上轮工具且无活跃任务） |
+| 11 | `transaction_priority` | `gscore.scaffold`（intent∈{工具,问答}：优先调工具，困/懒不是跳过理由） |
+| 12 | `report_titles` | `gscore.scaffold`（上一轮资料图标题） |
+| 13 | `soft_trigger` | `gscore.reactive_gate`（`SOFT_TRIGGER_NOTE`，近因） |
+| 14 | `plugin_hints` | 第三方 H07 `append_user_hint` 汇入，**恒在最后** |
 
 > 历史注意：本节旧版写的顺序是「历史对话 → 情绪 → …」，与代码不符（代码里情绪在最前），
 > 已按实际 append 顺序更正。记忆块曾在配置预算之外再被一个 **1200 字面量**硬截一刀，
@@ -1720,7 +1725,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
    **禁止**「据现有能力作答」。节点语义路由见 `agent_node/semantic_routing.py`；roster 附 covers。
 6. **抢答（A）**：同 Session 新 run 在锁被占时 set cancel；旧 generation 节点间隙 abort 且不写 history；**有在途委派则留交接语**。
 7. **机器腔（B）**：tool return tech dump 屏蔽；输出 `machine_dump` 经 `pre_send_gate` → FALLBACK。
-8. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC**；勿在 loop 平行第二套顺序。
+8. **统一输出闸（C）**：`pre_send_gate` 顺序 **尖括号 → OOC → 心想**；勿在 loop 平行第二套顺序。
 9. **呈现 vs 合规**：`send_chat_result` 只做通道变换；打回/熔断只在 gate。
 10. **出图主路径**：`create_subagent(render_agent)` → 自由 HTML / **`render_chart_spec` SVG** → `res_` 图 → `send_message_by_ai`。
     多点结构只给软提示（`POST_TOOL_OUTPUT_CONTRACT`），**不再**注入「唯一合法下一步出图」。
@@ -1730,7 +1735,12 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 12. **DELIVERED 终局**：带台词成功交付 → `speech_policy="delivered"`，只许 `<SILENCE>`。
 13. **能力缺口登记**：`find_tools` 未命中计数（`get_capability_gaps`）。
 14. **heartbeat 话头门** / **零工具纠正 SILENCE 出口** / **工具健康度**（❌/timeout 连败冻结执行，schema 保留）。
-15. **agent_max_history** 默认 30；trim 低水位 0.6；compact 降频 + 保头。
+15. **agent_max_history** 默认 30；trim 低水位 0.6；compact 降频 + 保头；被裁中段换成抽取摘要（摊还一次前缀失配）。
+16. **入史即发送**：settle 只剥框架注入，不再 lean/二次截断 tool_return。动态块走 `BLOCK_CHAR_BUDGET`。
+17. **工具池会话钉死**：首轮快照 + 尾槽 ≤4；tags Jaccard&lt;0.5 才重建。schema 下发用 `schema_brief`（召回仍全文）。
+18. **空闲 GC**：`IDLE_THRESHOLD` 7200s；回收前把 history 摘要写入记忆（B 轨丢、语义由记忆承接）。
+19. **袖珍 `plan_hint`**：结构信号（并列连词 / 先…再 / 近期评估）触发；选路看花名册与评估缓存，不按业务词分支。
+20. **心想闸**：通道形态（长「心想」段）REWRITE，2 次后剥段落放行；不靠业务关键词。
 
 ---
 

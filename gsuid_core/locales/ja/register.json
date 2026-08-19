@@ -4,6 +4,7 @@
   "log.register.ai_tools_decorator_check": "[Register] @ai_tools デコレータの check_func に問題があります。開発者を確認してください...",
   "log.register.missing_covers_plugin_name": "[Register] [{p0}] covers 覆盖声明なし（{plugin_name}）、跨措辞召回面が狭い、補完推奨",
   "log.register.missing_docstring_plugin_name": "[Register] [{p0}] docstring なし（{plugin_name}）、ほぼ召回不可",
+  "log.register.schema_brief_thin": "[Register] [{p0}] schema brief が薄い（{plugin_name}）、brief を確認してください",
   "log.register.name_visible_check_errored": "[Register] ツール [{_name}] の visible_when 判定で異常が発生しました。可視扱いにフォールバックします: {e}",
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} ツール [{p0}] 特権分類 [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",

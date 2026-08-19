@@ -140,25 +140,42 @@ def list_nodes(include_persona: bool = False) -> List[AgentNode]:
     return nodes
 
 
+_ROSTER_COVER_MAX = 120
+
+
 def format_capability_roster() -> str:
     """可委派能力代理清单（供 system_prompt 固化，避免每轮 user 侧重复注入）。
 
-    每行追加「数据覆盖」——由节点所辖工具的 ``covers`` 声明聚合而来，让 roster
-    与真实工具能力同源（如 stock_agent 的工具声明了现货贵金属/外汇覆盖，清单
-    自然写明可处理 XAU 类标的），杜绝人维护关键词导致的自述失真。
+    同插件节点公共 covers 提到插件行，节点行只写差异；单节点 covers 上限 120 字。
     """
     from .semantic_routing import aggregate_node_covers
 
+    nodes: list[AgentNode] = [n for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"]
+    by_plugin: dict[str, list[AgentNode]] = {}
+    for node in nodes:
+        plugin = (node.plugin or node.source or "core").strip() or "core"
+        by_plugin.setdefault(plugin, []).append(node)
+
     lines: list[str] = []
-    for node in list_nodes():
-        if node.source == "persona" or node.node_id == "capability_evaluator":
-            continue
-        when = (node.when_to_use or "").strip() or "专业任务"
-        line = f"- `{node.node_id}`（{node.display_name}）：{when}"
-        covers = aggregate_node_covers(node)
-        if covers:
-            line += f"\n  数据覆盖：{'、'.join(covers)}"
-        lines.append(line)
+    for plugin, group in by_plugin.items():
+        cover_sets: list[set[str]] = []
+        for node in group:
+            cover_sets.append(set(aggregate_node_covers(node)))
+        shared: set[str] = set.intersection(*cover_sets) if len(cover_sets) > 1 else set()
+        if shared and len(group) > 1:
+            lines.append(f"[{plugin}] 公共覆盖：{_clip_covers(sorted(shared))}")
+        for node in group:
+            when = (node.when_to_use or "").strip()
+            if not when:
+                from gsuid_core.logger import logger
+
+                logger.warning(t("log.agent.capability_node_missing_when", node=node.node_id))
+                when = "专业任务"
+            line = f"- `{node.node_id}`（{node.display_name}）：{when}"
+            covers = [c for c in aggregate_node_covers(node) if c not in shared]
+            if covers:
+                line += f"\n  数据覆盖：{_clip_covers(covers)}"
+            lines.append(line)
     if not lines:
         return ""
     return (
@@ -166,6 +183,13 @@ def format_capability_roster() -> str:
         '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
         "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
     )
+
+
+def _clip_covers(covers: list[str]) -> str:
+    text = "、".join(covers)
+    if len(text) <= _ROSTER_COVER_MAX:
+        return text
+    return text[: _ROSTER_COVER_MAX - 1] + "等"
 
 
 def owning_nodes_of_tools(tool_names: List[str]) -> Dict[str, List[str]]:

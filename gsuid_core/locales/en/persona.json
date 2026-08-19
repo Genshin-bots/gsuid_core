@@ -18,6 +18,7 @@
   "log.persona.read_md_path": "[Persona] Failed to read {md_path}: {e}",
   "log.persona.read_txt_path": "[Persona] Failed to read {txt_path}: {e}",
   "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor migration exception, skipping: {e}",
+  "log.persona.appearance_understand_fail": "[Persona] '{p0}' appearance card failed, skipping: {e}",
   "log.persona.write_path": "[Persona] Failed to write back {path}: {e}",
   "log.persona.write_txt_path_keeping": "[Persona] Failed to write {txt_path}, keeping old field: {e}"
 }

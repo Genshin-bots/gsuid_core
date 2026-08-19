@@ -453,26 +453,37 @@ class MemoryContext:
             ep_budget = max_chars - used
             if ep_budget > 120:
                 eps = self.episodes
+                self_eps = [e for e in eps if (e["scope_key"] or "").startswith("self:")]
+                other_eps = [e for e in eps if not (e["scope_key"] or "").startswith("self:")]
+                # SELF 配额 ≤10%，避免 bot 自己的话淹没群友。
+                self_budget = min(int(max_chars * 0.10), max(0, ep_budget // 5))
+                other_budget = ep_budget - self_budget
                 # temporal_mode：单条上限压到 600，让更多时段进入预算
                 ep_cap = 600 if self.temporal_mode else 1000
-                # 去重 + 过滤极短无信息量片段（纯寒暄/单字），统一时间格式
-                dated: list[str] = []
-                undated: list[str] = []
-                seen_content: set[str] = set()
-                for ep in eps:
-                    raw = (ep["content"] or "").strip()
-                    if len(raw) < 4:
-                        continue
-                    key = raw[:80]
-                    if key in seen_content:
-                        continue
-                    seen_content.add(key)
-                    ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
-                    if ts:
-                        dated.append(f"[{ts}] {raw[:ep_cap]}")
-                    else:
-                        undated.append(raw[:ep_cap])
-                taken = _take(dated + undated, ep_budget)
+
+                def _ep_lines(items: list[Episode], *, self_mark: bool) -> list[str]:
+                    dated: list[str] = []
+                    undated: list[str] = []
+                    seen_content: set[str] = set()
+                    for ep in items:
+                        raw = (ep["content"] or "").strip()
+                        if len(raw) < 4:
+                            continue
+                        key = raw[:80]
+                        if key in seen_content:
+                            continue
+                        seen_content.add(key)
+                        prefix = "[我此前说过] " if self_mark else ""
+                        ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
+                        if ts:
+                            dated.append(f"[{ts}] {prefix}{raw[:ep_cap]}")
+                        else:
+                            undated.append(f"{prefix}{raw[:ep_cap]}")
+                    return dated + undated
+
+                taken_other = _take(_ep_lines(other_eps, self_mark=False), other_budget)
+                taken_self = _take(_ep_lines(self_eps, self_mark=True), self_budget)
+                taken = taken_other + taken_self
                 if taken:
                     parts.append("【相关对话片段】\n" + "\n".join(taken))
 
@@ -630,6 +641,9 @@ async def dual_route_retrieve(
     enable_user_global: bool = True,
     inject_preferences: bool = True,
     preference_contexts: Optional[list[str]] = None,
+    bot_id: str = "",
+    bot_self_id: str = "",
+    include_self: bool = True,
 ) -> MemoryContext:
     """双路检索主入口。在 handle_ai.py 中，AI 准备回复前调用此函数。
 
@@ -687,6 +701,13 @@ async def dual_route_retrieve(
         scope_keys.append(user_scope)
     else:
         user_scope = None
+
+    # SELF 只开读：key 必须是账号 ID（observer C6 写 self:{bot_self_id}）。
+    self_key = bot_self_id.strip()
+    if include_self and self_key:
+        self_scope = make_scope_key(ScopeType.SELF, self_key)
+        if self_scope not in scope_keys:
+            scope_keys.append(self_scope)
 
     # RF-Mem 熟悉度路由（默认关，零影响）：用一次零 LLM 的向量探针的 s̄/熵 逐查询决定
     # "检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。路由只在"低熟悉/高

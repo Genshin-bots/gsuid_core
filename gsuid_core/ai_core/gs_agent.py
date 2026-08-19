@@ -53,6 +53,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import (
     ToolList,
 )
+from gsuid_core.ai_core.prefix_probe import PrefixSnapshot
 from gsuid_core.ai_core.configs.models import (
     AnyModel,
     get_model_for_task,
@@ -276,6 +277,9 @@ class GsCoreAIAgent(RunOnceMixin):
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
         _max_tokens: int = max_tokens if max_tokens is not None else ai_config.get_config("agent_max_tokens").data
         self.history: List[ModelMessage] = []
+        self._prefix_snapshot: Optional["PrefixSnapshot"] = None
+        self._session_toolset_frozen: Optional[List[str]] = None
+        self._session_toolset_tags: Optional[frozenset[str]] = None
         self.max_history = _max_history
         self.system_prompt = system_prompt
         # 稳定前缀构建时刻：ai_router 按 TTL 原地刷新 system_prompt（O-3 慢变上下文防僵化）
@@ -686,7 +690,11 @@ class GsCoreAIAgent(RunOnceMixin):
             descriptions: list[str] = []
             for idx, url in enumerate(image_urls):
                 try:
-                    description = await understand_image(image_url=url, parent_session_id=self.session_id)
+                    description = await understand_image(
+                        image_url=url,
+                        parent_session_id=self.session_id,
+                        persona_name=self.persona_name,
+                    )
                     description = await self._summarize_image_description(description, user_question)
                     descriptions.append(f"图片{idx + 1}: {description}")
                 except Exception as e:

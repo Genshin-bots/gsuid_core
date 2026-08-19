@@ -620,6 +620,8 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         # 这两个缺席则模型只能用用户可见文本争辩——正是要消的 OOC。
         "dispute_directive",
         "check_delegation",
+        "record_meme",
+        "capability_map",
     }
 )
 
