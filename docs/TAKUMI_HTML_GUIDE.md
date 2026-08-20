@@ -476,6 +476,8 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 ### 8.5 真图表用 `render_chart_spec`，不要 CSS 色条冒充
 
 渲染引擎无 JS。要画对比/走势/占比，先调 `render_chart_spec` 拿 `<svg>` 再嵌进 HTML。
+pytakumi **丢弃 SVG `<text>`**；框架在 `render_html_to_image` 前把标注提升为 HTML 覆盖层
+（`rewrite_svg_charts_for_takumi`）。手写 SVG 同样适用。
 
 ```python
 # 多实体对比：每个实体一个 series.name，不要把身份写进单柱 label

@@ -159,6 +159,8 @@ def test_timeless_aggregate_not_render_armed() -> None:
 def test_search_multipoint_armed_single_point_not() -> None:
     # 多点（逐日数据行）→ 武装
     assert content_is_render_candidate(tool_name="web_search_tool", content=_FORECAST, fileos_folded=False)
+    # FileOS 折叠后仍用原文形态：多点检索必须武装，否则主人格只会念数
+    assert content_is_render_candidate(tool_name="web_search_tool", content=_FORECAST, fileos_folded=True)
     # 单点读数 → 不武装
     assert not content_is_render_candidate(
         tool_name="web_search_tool", content="东莞现在 31°C，多云。", fileos_folded=False

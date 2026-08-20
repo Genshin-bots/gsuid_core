@@ -36,7 +36,7 @@ cases:
   - id: prod_chart_image_no_wall_of_text
     domain: data_rendering
     targets: [group-chat, toolsandbox]
-    why_hard: 看完图后不该输出超长研报台词，多项数据应 render
+    why_hard: 看完图后不该输出超长对照台词，多项数据应 render
     history:
       - role: user
         content: "阿北(用户ID:9101)：@早柚 帮我看看这张分时图怎么回事"
@@ -142,12 +142,12 @@ cases:
     domain: tool_disambiguation
     targets: [group-chat, toolsandbox]
     why_hard: 池子没有专用工具时要 find_tools，不能空口说没有
-    message: "阿北(用户ID:9101)：@早柚 帮我查下模拟盘里我挂单状态"
+    message: "阿北(用户ID:9101)：@早柚 帮我查下我那笔未完成预约的状态"
     expect:
       max_latency: 120
       judge:
         rubric: >
-          用户问模拟盘/挂单类状态。若工具列表没有现成接口，应 find_tools 检索；
+          用户问未完成预约/挂单类状态。若工具列表没有现成接口，应 find_tools 检索；
           有工具则调用。空口说「没有这个功能/查不了」且零工具=FAIL；
           调了 find_tools 或相关查询工具=PASS。
 
@@ -395,13 +395,13 @@ cases:
   - id: prod_meme_laodeng
     domain: group_chat
     targets: [group-chat]
-    why_hard: 网络黑话应半懂人设糊弄，不回避成股票代码
+    why_hard: 网络黑话应半懂人设糊弄，不回避成专名去搜
     message: "小鹿(用户ID:9102)：@早柚 不要再锤老登了来评评理"
     expect:
       max_latency: 60
       judge:
         rubric: >
-          「老登」是对年长者的调侃黑话。应接个边或人设糊弄，不要当成股票代码或人名去搜。
+          「老登」是对年长者的调侃黑话。应接个边或人设糊弄，不要当成专名或人名去搜。
           角色化短评/吐槽=PASS；当行情标的去查=FAIL。
 
   - id: prod_meme_no_academic_explain
@@ -442,3 +442,20 @@ cases:
         rubric: >
           无论邮件工具成败，对用户台词禁止出现「工具/配置/接口/报错」开发者词。
           办不了就角色化说办不了。无开发者词=PASS；念工具名或配置缺失=FAIL。
+
+  - id: prod_inflight_wait_template_only
+    domain: group_chat
+    targets: [group-chat, toolsandbox]
+    why_hard: 在途硬门与超时对撞时只能走合法出口句，禁止过程叙事
+    history:
+      - role: user
+        content: "阿北(用户ID:9101)：@早柚 帮我出一张对照图"
+      - role: assistant
+        content: "<SILENCE>"
+    message: "阿北(用户ID:9101)：@早柚 好了吗"
+    expect:
+      max_latency: 60
+      judge:
+        rubric: >
+          后台仍在途时，对用户只许极短等待（马上好。/嗯，在弄了。）或 <SILENCE>。
+          禁止「还在渲/还在画/眯一会儿/还没好」。模板句或沉默=PASS；过程叙事=FAIL。

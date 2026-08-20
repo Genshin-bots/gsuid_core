@@ -107,13 +107,13 @@ def _sanitize_relay_spoken(text: str) -> str:
     cleaned = _RELAY_META_LINE_RE.sub("", raw)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if not cleaned:
-        return "唔…搞定了…呼。"
+        return "搞定了。"
     hit = check_ooc(cleaned)
     if hit is not None:
-        # 再剥一轮框架泄漏后仍脏 → 极短角色兜底，绝不把 API 念给用户
+        # 再剥一轮框架泄漏后仍脏 → 极短中性兜底，绝不把 API 念给用户
         cleaned2 = _RELAY_META_LINE_RE.sub("", cleaned).strip()
         if not cleaned2 or check_ooc(cleaned2) is not None:
-            return "唔…搞定了…图里有…呼。"
+            return "搞定了，图里有。"
         return cleaned2[:400]
     return cleaned[:600]
 
@@ -131,6 +131,7 @@ def _build_event(task: AIAgentTask) -> Event:
         # 还原派活时的权限等级，否则退回 Event 默认 6（非管理员），pm 门控工具
         # （check_pm，如 plugin_dev 全家）会拒绝主人本人派出的子代理。
         user_pm=task.user_pm,
+        WS_BOT_ID=task.WS_BOT_ID,
     )
 
 
@@ -139,9 +140,32 @@ def _get_bot(task: AIAgentTask, ev: Event) -> Optional[Bot]:
 
     if task.WS_BOT_ID and task.WS_BOT_ID in gss.active_bot:
         return Bot(gss.active_bot[task.WS_BOT_ID], ev)
-    for bot_id in gss.active_bot:
-        return Bot(gss.active_bot[bot_id], ev)
     return None
+
+
+def _persona_resource_hint(profile: Optional[str], persona_name: Optional[str]) -> str:
+    """委派人人格资源提示：仅当画像持有 get_self_persona_info 时注入，
+    避免给无该工具的节点留悬空指令；是否拉取由执行体按任务语义判断。"""
+    if not profile or not persona_name:
+        return ""
+    from gsuid_core.ai_core.agent_node import get_node, resolve_pack_tool_names
+
+    node = get_node(profile)
+    if node is None:
+        return ""
+    names = set(resolve_pack_tool_names(node.tool_packs)) | set(node.tool_names)
+    if "get_self_persona_info" not in names:
+        return ""
+    return (
+        f"【委派人人格】{persona_name}\n"
+        f"本任务由人格「{persona_name}」委派。若任务产物需要该角色**本人**的音色或形象"
+        "（如用她的声音合成语音、生成/编辑她本人的图片），先调用：\n"
+        f'- 音色：get_self_persona_info(info_type="audio", persona_name="{persona_name}")\n'
+        f'- 立绘：get_self_persona_info(info_type="image", persona_name="{persona_name}")\n'
+        f'- 头像：get_self_persona_info(info_type="avatar", persona_name="{persona_name}")\n'
+        "返回的资源ID可直接作为 generate_speech 的 audio_id / edit_image 的 image_id。"
+        "任务不涉及该角色本人时（如画风景、查资料）无需调用。"
+    )
 
 
 def _format_subtask_prompt(
@@ -181,6 +205,9 @@ def _format_subtask_prompt(
             f"本子任务描述：{child.goal[:_CHILD_GOAL_MAX]}",
             f"分配画像：{child.agent_profile or '（未指定）'}",
         ]
+    hint = _persona_resource_hint(child.agent_profile, child.persona_name or root.persona_name)
+    if hint:
+        parts.append(hint)
     # 断点续作提示：审批挂起→批准→重新调度后，能力代理 history 为空、会从头重做；
     # 这段提示放在任务描述紧后面（高显著位），让它直接接着上一轮的断点往下做。
     if resume_hint:

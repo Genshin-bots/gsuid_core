@@ -54,7 +54,7 @@ def test_speech_block_policies() -> None:
 
     blk2, why2 = should_block_user_visible_text(
         "silence_only",
-        "唔…还在画…",
+        "马上好。",
         pending_async=False,
         image_sent=False,
         has_status_tool=False,
@@ -63,7 +63,7 @@ def test_speech_block_policies() -> None:
     assert not blk2, why2
     blk2b, why2b = should_block_user_visible_text(
         "silence_only",
-        "唔…还在画…",
+        "马上好。",
         pending_async=False,
         image_sent=False,
         has_status_tool=False,
@@ -317,7 +317,7 @@ def test_empty_handoff_and_wait_comfort() -> None:
     )
     assert blk and why in ("empty_handoff", "premature_delivery")
 
-    wait = "唔…等一下…画张图…"
+    wait = "马上好。"
     assert looks_like_wait_comfort(wait)
     assert not looks_like_empty_handoff(wait)
     assert not should_block_user_visible_text(
@@ -370,7 +370,7 @@ def test_long_task_wait_announce_allowed() -> None:
     """步骤 3：委派前「会比较久」声明应放行（含 async/silence）。"""
     from gsuid_core.ai_core.agent_run.speech_policy import looks_like_wait_comfort
 
-    wait = "唔…这事得等一会儿…先翻会儿卷轴…"
+    wait = "嗯，在弄了。"
     assert looks_like_wait_comfort(wait)
     assert not should_block_user_visible_text(
         "free",

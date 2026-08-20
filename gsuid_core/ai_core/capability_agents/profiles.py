@@ -210,6 +210,7 @@ _RENDER_PROMPT = """你负责把**已给定**事实包渲成**一张**可阅读�
 ## 图表（数据可视化硬要求）
 渲染引擎无 JS，echarts/canvas 不可用；要画**真图表**用声明式原语工具：
 `render_chart_spec` → 返回 `<svg>…</svg>` 片段，嵌进 HTML 再 `render_html_to_image`。
+引擎会把 SVG `<text>` 提升为 HTML 覆盖层；禁止用纯文字墙代替图表。
 
 ### 编码规则（防信息误解，硬）
 - 多实体 × 多指标对比：**必须**传 `series=[{name, data:[{label,value}]}]`，

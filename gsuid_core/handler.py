@@ -38,6 +38,29 @@ from gsuid_core.utils.plugins_config.gs_config import (
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
 
+_SEEN_WS_BRIDGES: Dict[Tuple[str, str], set[str]] = {}
+_WARNED_WS_BRIDGES: set[Tuple[str, str]] = set()
+
+
+def _warn_duplicate_ws_bridge(event: Event) -> None:
+    """同一 bot_self_id + 群出现 ≥2 个 WS_BOT_ID 时告警（双适配器会拆 session）。"""
+    if not event.group_id or not event.bot_self_id or not event.WS_BOT_ID:
+        return
+    key = (str(event.bot_self_id), str(event.group_id))
+    seen = _SEEN_WS_BRIDGES.setdefault(key, set())
+    seen.add(str(event.WS_BOT_ID))
+    if len(seen) < 2 or key in _WARNED_WS_BRIDGES:
+        return
+    _WARNED_WS_BRIDGES.add(key)
+    logger.warning(
+        t(
+            "log.handler.duplicate_ws_bridge",
+            bot_self_id=event.bot_self_id,
+            group_id=event.group_id,
+            ws_ids=",".join(sorted(seen)),
+        )
+    )
+
 
 _command_start: List[str]
 if command_start and enable_empty:
@@ -262,6 +285,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     msg.user_pm = user_pm = await get_user_pml(msg)
     event = await msg_process(msg)
     event.WS_BOT_ID = ws.bot_id
+    _warn_duplicate_ws_bridge(event)
     if show_receive:
         logger.info(t("log.handler.event_received"), event_payload=event)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from typing import List, Literal, Optional, Sequence
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 from pydantic_ai.messages import (
     TextPart,
@@ -32,6 +32,7 @@ class PrefixSnapshot:
     tools_hash: str
     system_hash: str
     payloads: List[str]
+    tool_names: List[str] = field(default_factory=list)
 
 
 def hash_text(text: str) -> str:
@@ -44,6 +45,15 @@ def hash_system_prompt(system_prompt: str) -> str:
 
 def hash_tool_names(names: Sequence[str]) -> str:
     return hash_text("\n".join(names))
+
+
+def tools_diff(prev: Sequence[str], curr: Sequence[str]) -> dict[str, list[str]]:
+    prev_set = set(prev)
+    curr_set = set(curr)
+    return {
+        "added": sorted(curr_set - prev_set),
+        "removed": sorted(prev_set - curr_set),
+    }
 
 
 def _part_payload(part: object) -> str:

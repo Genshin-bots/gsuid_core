@@ -30,8 +30,8 @@ _SEMANTIC_ROUTE_MIN_SCORE = 0.38
 def build_node_retrieval_text(node: AgentNode) -> str:
     """节点检索文本：身份 + 用途 + 关键词 + 所辖工具的数据覆盖面。
 
-    covers 聚合让节点语义面与真实工具能力**同源**——stock_agent 的工具声明了
-    「现货贵金属/外汇」覆盖，节点自然能被「xau K线」命中，无需人维护关键词。
+    covers 聚合让节点语义面与真实工具能力**同源**——插件工具声明了数据覆盖，
+    节点自然能被对应措辞命中，无需框架维护关键词表。
     """
     parts: List[str] = [node.node_id, node.display_name, node.when_to_use]
     if node.match_keywords:

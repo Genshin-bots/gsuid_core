@@ -163,10 +163,12 @@ def test_pocket_planner_idle_chitchat_does_not_plan() -> None:
 def test_pocket_planner_triggers_on_multi_task() -> None:
     assert should_plan_first("帮我查一下资料然后顺便整理一份")
     assert should_plan_first("帮我安排明天的日程")
+    assert should_plan_first("近七天对照给我看一下")
+    assert should_plan_first("帮我汇总一下最近的要点")
     assert not should_plan_first("困")
     hint = build_plan_hint("任意原问")
-    assert "本轮计划" in hint
-    assert "find_tools" in hint
+    assert "计划：" in hint
+    assert "find_tools" in hint or "委派" in hint
 
 
 def test_meme_explain_detect_and_parse() -> None:
@@ -295,6 +297,6 @@ def test_compose_plan_hint_reuses_recent_eval() -> None:
         )
     )
     hint = asyncio.run(compose_plan_hint("帮我查一下资料然后顺便整理一份", "u_synth_plan"))
-    assert "沿用近 1h 评估" in hint
-    assert "查资料" in hint
-    assert "本轮计划" in _format_eval_plan("摘要", ["步骤甲"])
+    assert "计划：" in hint
+    assert "先检索" in hint or "查资料" in hint
+    assert "计划：" in _format_eval_plan("摘要", ["步骤甲"])

@@ -130,7 +130,7 @@ def _absorb_attempt_facts(
         st.has_status_tool_call = True
 
 
-_RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_handoff"})
+_RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_handoff", "numeric_recitation"})
 
 
 def _has_unread_attachment(st: RunOnceState) -> bool:
@@ -161,6 +161,8 @@ def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
     if _looks_like_report_speech(result_msg or ""):
         return True
     if looks_like_empty_handoff(result_msg or ""):
+        return True
+    if looks_like_numeric_recitation(result_msg or ""):
         return True
     return any(r in _RENDER_OBLIGATION_REASONS for r in st.presentation_withheld_reasons)
 
@@ -245,6 +247,7 @@ class SettlePhase(RunOnceHost):
         """对比上一 run 发送快照与当前 history 头，记 prefix_break_reason。"""
         from gsuid_core.ai_core.prefix_probe import (
             PrefixSnapshot,
+            tools_diff as _tools_diff,
             hash_tool_names,
             history_payloads,
             hash_system_prompt,
@@ -265,14 +268,18 @@ class SettlePhase(RunOnceHost):
             prev_payloads=prev.payloads if prev is not None else (),
             curr_payloads=history_payloads(self.history),
         )
+        diff: dict[str, list[str]] | None = None
+        if prev is not None and reason == "tools":
+            diff = _tools_diff(prev.tool_names, st.tool_names)
         record_prefix_break(reason)
-        self._session_logger.log_prefix_break(reason, tools_hash=tools_hash, system_hash=system_hash)
+        self._session_logger.log_prefix_break(reason, tools_hash=tools_hash, system_hash=system_hash, tools_diff=diff)
         combined = list(self.history) + list(new_msgs)
         self._prefix_snapshot = PrefixSnapshot(
             history_hashes=hash_history_messages(combined),
             tools_hash=tools_hash,
             system_hash=system_hash,
             payloads=history_payloads(combined),
+            tool_names=list(st.tool_names),
         )
 
     async def _run_once_settle_result(
@@ -670,7 +677,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = "<SILENCE>"
                 elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
                     result_msg = "<SILENCE>"
-                elif st.has_active_task and not st.image_sent_this_run and looks_like_numeric_recitation(_rs):
+                elif not st.image_sent_this_run and looks_like_numeric_recitation(_rs):
                     result_msg = "<SILENCE>"
                 elif (
                     _render_obligation

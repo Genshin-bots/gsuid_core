@@ -524,7 +524,7 @@ async def search_and_load_image(
         Message 对象（type="image"），如果没有找到或加载失败则返回 None
 
     Example:
-        >>> image = await search_and_load_image("原神角色 胡桃")
+        >>> image = await search_and_load_image("角色立绘")
         >>> if image:
         ...     await bot.send(image)
     """

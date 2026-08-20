@@ -21,6 +21,7 @@ CORE_DATABASE_MODEL_MODULES = (
 
 AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.database.models",
+    "gsuid_core.ai_core.database.outbound",
     "gsuid_core.ai_core.state_store.models",
     "gsuid_core.ai_core.statistics.models",
     "gsuid_core.ai_core.scheduled_task.models",

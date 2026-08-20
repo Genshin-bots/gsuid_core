@@ -52,7 +52,7 @@ _PREMATURE_DELIVERY_RE = re.compile(
 # 空交付 / 摆烂：声称**已有材料**却不出图、推给用户「再喊我」（须配合 fact_pack_pending）
 _EMPTY_HANDOFF_RE = re.compile(
     r"(念不(动|完|下)|懒得念|太长了.{0,10}(不|懒|念)|"
-    r"卷轴里|记着呢|全(都)?(记|在)(着|里|呢)|细节(全)?在|"
+    r"记着呢|全(都)?(记|在)(着|里|呢)|细节(全)?在|"
     r"要哪段|再喊我|有点印象|"
     r"全记着|都在里面了(?!…?图)|"
     r"先睡了.{0,8}$)",
@@ -98,6 +98,10 @@ def looks_like_delivery_status_narration(text: str) -> bool:
     return _DELIVERY_REPORT_RE.search(body) is not None
 
 
+# 在途合法出口：不含过程动词，≤8 字。超时注入与硬门回执同包下发。
+IN_FLIGHT_WAIT_TEMPLATES: tuple[str, ...] = ("马上好。", "嗯，在弄了。")
+_INFLIGHT_PROCESS_VERB_RE = re.compile(r"(还在(渲|画|跑|查)|在渲|查中|还没(画|渲|写)好)")
+
 # 等待安慰 / 委派前「会比较久」声明（步骤 3）
 _WAIT_COMFORT_RE = re.compile(
     r"(等(一?下|会|会儿)|稍等|先等|等我|慢点|"
@@ -140,7 +144,8 @@ _WALL_CLOCK_CLOSE = (
     "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复；"
     "除非是为已有事实包委派 render_agent 出图，否则不要再发起新的工具调用；"
     "信息不全就如实说明现状，绝不编造。"
-    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。）"
+    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
+    "若仍在等待后台：只许输出「马上好。」或「嗯，在弄了。」，禁止自造过程叙事。）"
 )
 
 _WALL_CLOCK_PIPELINE = (
@@ -148,7 +153,7 @@ _WALL_CLOCK_PIPELINE = (
     "这是硬例外，**禁止**因预算停工具。"
     "你必须立刻 "
     'create_subagent(agent_profile="render_agent", task=本轮事实包或 res_ 句柄) 出图；'
-    "禁止新开检索；禁止长文当台词；禁止说「翻完了/卷轴里有/念不动」却不出图；"
+    "禁止新开检索；禁止长文当台词；禁止说「查完了/资料里有/念不动」却不出图；"
     "可先一句「等一下…」再委派；出图完成前其余 <SILENCE>；禁止念内部节点名。）"
 )
 
@@ -220,12 +225,15 @@ def looks_like_status_inquiry(text: str, *, has_active_task: bool) -> bool:
 def looks_like_numeric_recitation(text: str) -> bool:
     """台词是否在念多点读数（应上图，不是群聊气泡）。
 
-    判据是读数密度：小数、百分号、或 ≥4 位有效数字。日期片段与两位数不计。
+    形态：多行含数字的对照表，或高密度小数/百分号。不按业务域词分支。
     """
     body = (text or "").strip()
-    if len(body) < 80:
+    if not body or is_silence_marker(body):
         return False
-    if is_silence_marker(body):
+    n_digits = len(re.findall(r"\d+", body))
+    if _fact_lines_multi_point(body) and n_digits >= 5 and len(body) >= 24:
+        return True
+    if len(body) < 80:
         return False
     nums = re.findall(r"(?<![\d.])(?:\d+\.\d+%?|\d{1,3}%|\d{4,})(?![\d.])", body)
     if len(nums) >= 6:
@@ -264,10 +272,18 @@ def looks_like_process_meta(text: str) -> bool:
     return bool(_PROCESS_META_RE.search(body))
 
 
+def looks_like_wait_template(text: str) -> bool:
+    return (text or "").strip() in IN_FLIGHT_WAIT_TEMPLATES
+
+
 def looks_like_wait_comfort(text: str) -> bool:
     """是否短等待安慰或「会比较久」委派声明（步骤 3，可发一次）。"""
     body = (text or "").strip()
-    if not body or len(body) > 96:
+    if looks_like_wait_template(body):
+        return True
+    if not body or len(body) > 12:
+        return False
+    if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False
     # 不得同时是空交付摆烂
     if _EMPTY_HANDOFF_RE.search(body) and not _WAIT_COMFORT_RE.search(body):
@@ -278,9 +294,13 @@ def looks_like_wait_comfort(text: str) -> bool:
 
 
 def looks_like_inflight_quota_speech(text: str) -> bool:
-    """在途台词额度：一句短等待或短应，不含清单/念白。"""
+    """在途台词额度：模板命中或 ≤12 字，不含过程动词/清单。"""
     body = (text or "").strip()
-    if not body or len(body) > 96:
+    if looks_like_wait_template(body):
+        return True
+    if not body or len(body) > 12:
+        return False
+    if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False
     if looks_like_report_speech(body) or looks_like_numeric_recitation(body):
         return False
@@ -482,9 +502,8 @@ def should_block_user_visible_text(
     if claims_premature_delivery(body) and not image_sent:
         return True, "premature_delivery"
 
-    # 在途长任务：把多点读数念进气泡 = 把图上的信息误解成群聊正文
-    if has_active_task and not image_sent and looks_like_numeric_recitation(body):
-        # 进度追问且已查状态工具：放行短进度，不把时间戳/编号当念白
+    # 多点读数进气泡 = 该走资料图。不要求已有在途任务（首轮对照同样适用）。
+    if not image_sent and looks_like_numeric_recitation(body):
         if not (pol == "status_ok" and has_status_tool):
             return True, "numeric_recitation"
 
@@ -564,17 +583,16 @@ def content_is_render_candidate(
     if "|" in body and body.count("\n") >= 3:
         return True
 
-    # FileOS 折叠：用原文形态判定；仅「多段/表/事实包」才可出图（检索噪声默认否）
+    # FileOS 折叠：用原文形态判定。多点事实行已在上面过门，折叠后仍要武装出图。
     if fileos_folded:
+        if _fact_lines_multi_point(body) and len(body) >= 80:
+            return True
         if "事实包" in body and len(body) >= 80:
             return True
         if "|" in body and body.count("\n") >= 3 and len(body) >= 200:
             return True
         if body.count("\n\n") >= 3 and len(body) >= 600:
             return True
-        # 纯检索列表默认不武装 render（单点问答可短回）
-        if _searchish:
-            return False
         return False
 
     # 搜索类：与旧口径类似但更严；单点检索默认不武装出图

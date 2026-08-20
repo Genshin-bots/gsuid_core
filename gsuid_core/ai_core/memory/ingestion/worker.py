@@ -152,6 +152,12 @@ def _compact_high_records_dialogue(records: list[ObservationRecord]) -> str:
     return "\n".join(f"[{speaker_id}]: {' '.join(contents)}" for speaker_id, contents in turns)
 
 
+class StatedFact(TypedDict):
+    u: str
+    k: str
+    v: str
+
+
 class ExtractedResult(TypedDict):
     """LLM 实体/关系提取的规整结果。
 
@@ -165,6 +171,7 @@ class ExtractedResult(TypedDict):
     # 程序性偏好门控信号：实体抽取 LLM 顺手判定的"本批是否含针对助手未来行为的纠正/偏好"。
     # 取代纯正则硬门控来决定是否触发第二次偏好蒸馏（仅 enable_preference_memory 时有意义）。
     has_preference: bool
+    stated: list[StatedFact]
 
 
 class IngestionWorker:
@@ -791,6 +798,11 @@ async def _extract_and_upsert_from_episode(
     # 自带 try/except → 失败不连累已写入的 entity/edge）。观察期的纠错正则已降级为仅管"强制
     # HIGH 让候选进抽取 + 触发即时 flush 时机"，不再门控本次蒸馏。
     pref_signal = extracted["has_preference"] if "has_preference" in extracted else False
+    await _write_master_stated_facts(
+        extracted["stated"] if "stated" in extracted else [],
+        speaker_ids=speaker_ids,
+        episode_id=episode_id,
+    )
     if memory_config.enable_preference_memory and pref_signal:
         try:
             await _extract_and_upsert_preferences(
@@ -1032,11 +1044,13 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     # 逐片提取（串行，避免 LLM 并发过载）
     all_entities: list[dict] = []
     all_edges: list[dict] = []
+    all_stated: list[StatedFact] = []
     has_preference = False
     for i, chunk in enumerate(chunks):
         result = await _llm_extract_single(chunk, scope_key)
         all_entities.extend(result["entities"])
         all_edges.extend(result["edges"])
+        all_stated.extend(result["stated"] if "stated" in result else [])
         # 任一分片判出偏好信号即视为整批命中（偏好往往集中在某一段对话）
         if "has_preference" in result and result["has_preference"]:
             has_preference = True
@@ -1064,6 +1078,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
         "entities": list(seen_names.values()),
         "edges": list(seen_edges.values()),
         "has_preference": has_preference,
+        "stated": all_stated,
     }
 
 
@@ -1153,8 +1168,19 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
 
         # 程序性偏好门控信号（仅在 system prompt 追加了判定指令时模型才会产出）：取顶层 pref
         has_preference = bool(data["pref"]) if "pref" in data else False
+        stated: list[StatedFact] = []
+        raw_stated = data["stated"] if "stated" in data else None
+        if isinstance(raw_stated, list):
+            for item in raw_stated:
+                if not isinstance(item, dict):
+                    continue
+                uid = item["u"] if "u" in item and isinstance(item["u"], str) else ""
+                kind = item["k"] if "k" in item and isinstance(item["k"], str) else ""
+                value = item["v"] if "v" in item and isinstance(item["v"], str) else ""
+                if uid and value:
+                    stated.append({"u": uid, "k": kind, "v": value})
 
-        return {"entities": entities, "edges": edges, "has_preference": has_preference}
+        return {"entities": entities, "edges": edges, "has_preference": has_preference, "stated": stated}
 
     try:
         # 偏好门控开启时，把"顺手判 pref"指令追加到 system 末尾（不动稳定前缀的实体抽取部分，
@@ -1235,7 +1261,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         except Exception:
             pass
 
-    return {"entities": [], "edges": [], "has_preference": False}
+    return {"entities": [], "edges": [], "has_preference": False, "stated": []}
 
 
 # ─────────────────────────────────────────────
@@ -1274,6 +1300,45 @@ def _build_capability_section() -> str:
         f"工具名：{names_line[:MAX]}\n"
         "</可用能力清单>\n"
     )
+
+
+async def _write_master_stated_facts(
+    stated: list[StatedFact],
+    *,
+    speaker_ids: list[str],
+    episode_id: str,
+) -> None:
+    """主人自我陈述硬写偏好，不经置信度门。旁人陈述忽略。"""
+    if not stated:
+        return
+    from gsuid_core.config import core_config
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+
+    raw_masters = core_config.get_config("masters")
+    masters = {str(x) for x in raw_masters} if isinstance(raw_masters, list) else set()
+    if not masters:
+        return
+    valid = set(speaker_ids)
+    for item in stated:
+        uid = item["u"]
+        kind = item["k"]
+        value = item["v"]
+        if not uid or uid not in masters or uid not in valid:
+            continue
+        body = value.strip()
+        if not body:
+            continue
+        slot = kind.strip() if kind.strip() in ("location", "possession", "preference") else "preference"
+        await AIMemPreference.upsert(
+            scope_key=make_scope_key(ScopeType.USER_GLOBAL, uid),
+            user_id=uid,
+            target_context=slot,
+            preference_rule=body[:200],
+            polarity="do",
+            is_correction=False,
+            source_episode_id=episode_id,
+        )
 
 
 async def _extract_and_upsert_preferences(

@@ -1,6 +1,11 @@
 # GsCore AI：一条消息的完整生命周期
 
-> 日期：**2026-08-20**（对齐源码：入史即发送 / 工具池会话钉死 / 群词汇映射出 system /
+> 日期：**2026-08-21**（对齐源码：SVG 文字 HTML 覆盖层 / OutboundAudit+DeliveryLedger /
+> 引用等值消解 / 工具池删 Jaccard / 族速览折叠 / 计划一行 /
+> FileOS 折叠多点仍武装出图 / 念数纠正走 render / chart_spec 解开 provider 数组包裹 /
+> fire_hooks 复用 Context 切 point / 人格表面不进他人映射 / 句首呼名算点名 /
+> 在途模板句 / 委派人人设资源按需拉取（§16.3）/
+> 2026-08-20：入史即发送 / 工具池会话钉死 / 群词汇映射出 system /
 > 心想闸 / 逐人新鲜度 / 梗词典 / self_ontology / capability_map / 前缀失配探针 /
 > 2026-08-16 既有：system 前缀缓存 / exclusive 委派 / `pre_send_gate` /
 > 能力代理 **return 不做 roleplay OOC scrub** / incomplete 认 `res_` /
@@ -520,12 +525,12 @@ sequenceDiagram
 
     HandleAI->>GsAgent: run(...)
     GsAgent->>GsAgent: async with _run_lock + 二次 TTL
-    GsAgent->>SessLog: log_run_start / log_user_input
+    Note over GsAgent: fire_hooks 复用 Context 时切 point（否则 CLASSIFY 写不进 intent）
 
     Note over GsAgent: 交互脚手架 C-1 省略跟进 / C-2 漂移 / C-3 @别人→零工具
 
     GsAgent->>Toolset: 装配
-    Note over Toolset: L1 保底 self+buildin<br/>L2 状态 Kanban/定时/record（闲聊不砍）<br/>L3 驻留族 2 轮 · 语境 tags≤8<br/>L4/L5 有 query 就向量（闲聊不砍）<br/>剥离 exclusive；roster 在 system<br/>find_tools 常挂 + RetrievableToolset<br/>主人格禁直调专域 exclusive（靠委派）
+    Note over Toolset: L1 保底 self+buildin（会话内只增不重排，无 Jaccard 重建）<br/>L2 状态/跟进/补搜进尾槽，不进 frozen core<br/>L3 驻留族 append 进 core<br/>L4/L5 向量进尾槽；roster+工具族速览在 system<br/>find_tools 常挂；check_delegation 不常挂<br/>主人格禁直调专域 exclusive（靠委派）
 
     GsAgent->>SessLog: log_tools_list
 
@@ -543,7 +548,7 @@ sequenceDiagram
                 GsAgent->>SubAgent: 见 S.7
                 SubAgent-->>GsAgent: 回执字符串（可含 res_ 句柄）
             else tool == send_message_by_ai
-                Note over Plugin: tool 入口先 pre_send_gate(channel=tool)<br/>REWRITE/FUSE → return 警告字符串
+                Note over Plugin: tool 入口先 pre_send_gate(channel=tool)<br/>DeliveryLedger (group,res_id) 原子占位拦二发<br/>REWRITE/FUSE → return 警告字符串
                 Plugin-->>GsAgent: ToolReturn
             else 普通工具
                 Plugin-->>GsAgent: ToolReturn
@@ -573,7 +578,7 @@ sequenceDiagram
         end
     end
 
-    Note over GsAgent: 收尾：_relean_user_turn / tool 截断 / compact 结构块<br/>history.extend<br/>尖括号熔断 scrub / OOC 重说（正交）<br/>return 路径：Capability/subagent 跳过 roleplay scrub<br/>L3 驻留 / token / budget；supersede 不写 history
+    Note over GsAgent: 收尾：_relean 交付帧瘦成一行 / 剥校验注入<br/>prefix_break 记 tools_diff；OutboundAudit 入联邦<br/>尖括号熔断 scrub / OOC 重说（正交）<br/>return 路径：Capability/subagent 跳过 roleplay scrub
     GsAgent->>SessLog: log_result / token / log_run_end
     GsAgent-->>HandleAI: result
 ```
@@ -626,8 +631,8 @@ sequenceDiagram
             alt 按时完成
                 SubTool-->>GsAgent: 结论 + 可追溯句柄
             else 超时
-                SubTool-->>GsAgent: 后台执行中 + SILENCE 硬门
-                Note over SubTool: 完成后框架注入「任务完成」包<br/>主人格短句 + send 图
+                SubTool-->>GsAgent: 后台执行中 + SILENCE 硬门（合法出口：马上好。/嗯，在弄了。）
+                Note over SubTool: 完成后框架注入瘦交付帧入史<br/>_build_event 回填 WS_BOT_ID，禁止任意适配器兜底
             end
         end
     end
@@ -635,7 +640,10 @@ sequenceDiagram
 
 **委派闭环（主人格池）**：交互 `create_by` 剥离能力代理 exclusive 工具 → 模型只能
 `create_subagent(agent_profile=真实 node_id)`；`find_tools` / `RetrievableToolset`
-同步 `blocked_tool_names` 禁止回灌。roster 固化在 **system**（`format_capability_roster`）。
+同步 `blocked_tool_names` 禁止回灌。roster + **工具族速览**固化在 **system**。
+`check_delegation` 不进群聊瘦保底，追问进度时经 `find_tools` 召回。
+`_build_event` 必须回填 `WS_BOT_ID`；`_get_bot` / `_resolve_active_bot` **禁止任意适配器兜底**。
+同 `(group_id, res_id)` 由 `DeliveryLedger` 原子占位，拦跨 session 二发。
 
 **两通道交付（2026-08-08）**：
 
@@ -1276,10 +1284,11 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
     若 _cancel_generation.is_set() → break（A 抢答中止；有在途委派则留交接语 4.7）
     ModelRequestNode → _run_once_on_model_request
       请求前可注入 UserPromptPart：
-        · 墙钟软预算 / 同工具 thrash fuse
+        · 墙钟软预算（合法等待出口：马上好。/嗯，在弄了。）/ 同工具 thrash fuse
         · 输出闸 REWRITE feedback（上一轮 Text 被打回）
         · 输出闸 FUSE 提示（熔断后最多注入一次）
         · **交付终局 SILENCE 指令**（DELIVERED 后只注入一次，取代 POST_TOOL）
+        · 计划一行 / 引用对象 / 口癖配额（user 侧，_relean 剥除或瘦身）
       请求侧 ToolReturn 处理：
         · is_tech_dump → TECH_DUMP_TOOL_SHIELD（主人格）
         · FileOS：主人格长文落盘折叠 → 句柄卡；群聊无 inline_head；只读工具/句柄卡永不二次折
@@ -1311,8 +1320,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
                     2) **speech_policy.should_block**（delivered/silence_only/…
                        话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报；
                        pending_async 或 render_inflight → 只放行一句等待；
-                       has_active_task + 多点读数密度 → numeric_recitation 丢弃，
-                       不进 presentation_withheld）
+                       多点读数密度 → numeric_recitation 丢弃（不进 INV-4），
+                       记原因后 settle 走 render 纠正；FileOS 折叠的多点检索仍武装出图）
                     3) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
                     4) 假完成预检（零工具却声称办完）→ 暂扣（进 RunOnceState.fab_blocked）
                     5) 主通道单轮出站配额（超 MAIN_CHANNEL_VISIBLE_LIMIT 静默）
@@ -1320,7 +1329,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         Thinking  → log_thinking
     End → log_node_transition
   未被 supersede → _run_once_settle_result（settle.py）:
-    history.extend(new_messages)；_relean_user_turn（剥墙钟/闸门 nudge 前缀）
+    history.extend(new_messages)；_relean_user_turn（剥墙钟/闸门 nudge；交付帧瘦成一行）
+    prefix_break 记 tools_diff（added/removed）
     _resolve_output_gate_after_run（gs_agent）：
       尖括号：熔断 scrub / replace_map / 补轻量重写
       OOC：_ooc_rewrite_and_send（**尖括号熔断仍执行**；与 angle scrub 正交）
@@ -1493,7 +1503,7 @@ session_log entries（磁盘，可稍后刷）：
 
 | 条件 | 行为 | 原因 |
 |------|------|------|
-| `is_subagent` 或 `create_by ∈ {CapabilityAgent, AutoPlanner}` | **跳过** `scrub_or_fallback`（roleplay OOC） | 事实包必含 `res_` / `artifact_put` / `render_agent` 等「框架泄漏」形态词；若 scrub 会整段换成「唔…这个不太想说呢…」→ 主人格误判失败 |
+| `is_subagent` 或 `create_by ∈ {CapabilityAgent, AutoPlanner}` | **跳过** `scrub_or_fallback`（roleplay OOC） | 事实包必含 `res_` / `artifact_put` / `render_agent` 等「框架泄漏」形态词；若 scrub 会整段换成中性兜底句 → 主人格误判失败 |
 | 同上 | 仅 `is_tech_dump` → 替换为短错误摘要 | 仍防堆栈回灌 |
 | 其它 Chat 等 return 消费方 | 仍可 scrub | 对用户可见出口保持防火墙 |
 
@@ -1708,6 +1718,21 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | 3 | `web_search` / `web_fetch` | 事件/叙事；**摘要常过时，禁止当未核对的实时值** |
 
 `web_search_tool` 返回框极短通用 disclaimer；折叠时 **句柄卡**（群聊无 inline_head），全文 `read_handle`（保底）。
+
+### 16.3 委派人人设资源按需拉取（2026-08-21）
+
+能力代理无人格，但任务可能涉及委派人人格**本人**的音色/形象（配音、画本人、
+角色照片）。通用机制 = **执行侧按需拉取**，不由主人格按任务类型预塞资源：
+
+1. `_dispatch_via_kanban` 建树时解析父会话 persona 落库 `AIAgentTask.persona_name`；
+2. `kanban_executor._format_subtask_prompt` 注入【委派人人格】块——仅当分配画像
+   持有 `get_self_persona_info` 时（防无该工具的节点出现悬空指令）；
+3. 拉不拉、拉哪个 `info_type`（audio/image/avatar）由执行体按任务语义判断
+   （配音 → audio、画本人 → image、画风景 → 不拉）。
+
+背景：旧 `generate_speech` 契约要求「先 `get_self_persona_info` 取自身音色」，
+但 AIGC 能力代理工具集无该工具，静默降级为 IndexTTS 默认音色——归因见
+`plans/AI_TTS_PERSONA_VOICE_BUG_20260821.md`。
 
 ---
 

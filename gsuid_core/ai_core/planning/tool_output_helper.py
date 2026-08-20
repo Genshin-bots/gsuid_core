@@ -127,6 +127,18 @@ def is_searchish_tool(name: str) -> bool:
     return any(h in tn for h in ("search", "web_", "fetch"))
 
 
+def payload_is_long_structured(content: str) -> bool:
+    """正文形态是多点对照/表，与工具名无关。"""
+    body = (content or "").strip()
+    if len(body) < 80:
+        return False
+    if "|" in body and body.count("\n") >= 3:
+        return True
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import fact_pack_is_multi_point
+
+    return fact_pack_is_multi_point(body)
+
+
 def _searchish_tool(name: str) -> bool:
     return is_searchish_tool(name)
 
@@ -205,7 +217,7 @@ async def persist_tool_return(
         tool_name=tool_name or "",
         profile="",
         res_handle="",
-        long_structured=not _searchish_tool(tool_name),
+        long_structured=(not _searchish_tool(tool_name)) or payload_is_long_structured(content),
     )
 
 

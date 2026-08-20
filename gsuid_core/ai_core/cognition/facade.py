@@ -106,6 +106,9 @@ async def search_cognition(
     if CogKind.MEME_KNOWLEDGE in kinds:
         tasks.append(asyncio.create_task(_search_meme_knowledge(query, scope=scope, limit=limit)))
         labels.append("meme_knowledge")
+    if CogKind.OUTBOUND in kinds:
+        tasks.append(asyncio.create_task(_search_outbound(query, scope=scope, limit=limit)))
+        labels.append("outbound")
     # 节点是索引层：原库过期后靠它召回蒸馏结论。
     tasks.append(asyncio.create_task(_search_nodes(query, kinds=kinds, scope=scope, limit=limit)))
     labels.append("nodes")
@@ -479,6 +482,12 @@ async def _search_meme_knowledge(query: str, *, scope: CogScope, limit: int) -> 
     from gsuid_core.ai_core.cognition.extra_backends import search_meme_knowledge_backend
 
     return await search_meme_knowledge_backend(query, scope=scope, limit=limit)
+
+
+async def _search_outbound(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.cognition.extra_backends import search_outbound
+
+    return await search_outbound(query, scope=scope, limit=limit)
 
 
 # ── 后端 5：认知节点（跨 kind 蒸馏结论的索引层）──

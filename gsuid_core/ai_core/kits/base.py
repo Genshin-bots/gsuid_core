@@ -42,7 +42,7 @@ BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "memory": 800,
     "task": 250,
     "plan_hint": 250,
-    "chitchat_style": 80,
+    "chitchat_style": 160,
     "transaction_priority": 80,
     "report_titles": 80,
     "soft_trigger": 220,

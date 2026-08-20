@@ -318,8 +318,8 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
 GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
 
 # O-B 白名单：只有框架核心 self 工具才允许进入保底池。
-# 插件滥用 category="self" 会导致保底池膨胀（如鸣潮插件把 12+ 个游戏查询工具
-# 全部注册为 self，使闲聊时也常驻）。此处用函数名白名单兜底，不依赖插件自觉。
+# 插件滥用 category="self" 会导致保底池膨胀（把一堆业务查询工具注册为 self，
+# 闲聊时也常驻）。此处用函数名白名单兜底，不依赖插件自觉。
 # 不在白名单中的 self 分类工具，降级走向量检索（common/media 路径）。
 _SELF_CATEGORY_WHITELIST: Set[str] = {
     "send_message_by_ai",
@@ -575,7 +575,7 @@ def get_tools_by_context_tags(tags: List[str], max_count: int = 8) -> ToolList:
     当当前会话语境（群组画像标签）与之匹配时，自动加载该工具集。
 
     Args:
-        tags: 当前会话的语境标签，如 ["原神", "游戏"]
+        tags: 当前会话的语境标签，如 ["游戏", "资讯"]
         max_count: 返回工具数量上限
 
     Returns:

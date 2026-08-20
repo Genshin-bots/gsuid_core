@@ -257,6 +257,9 @@ async def run_interactive_turn(
         history=hist_records,
     )
     await fire_hooks(AgentHookPoint.RETRIEVE_CONTEXT, hook_ctx)
+    # 检索预算最长 15s，超过队头 TTL；检索结束后重新计时，避免刚查完就被当过期丢弃。
+    if enqueue_ts is not None:
+        enqueue_ts = time.time()
 
     hook_ctx.turn_graph = turn_graph
     hook_ctx.cheap_gate = cheap.value

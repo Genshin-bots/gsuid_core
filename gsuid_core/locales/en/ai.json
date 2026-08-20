@@ -611,5 +611,8 @@
   "log.ai.websearch_tavily_api_key_trying": "[WebSearch][Tavily] api_key ...{p0} failed, trying next",
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] All api_keys failed",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] Search with context: {query}, returned {p0} results",
-  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results"
+  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results",
+  "log.ai.outbound_read_skip": "[Outbound] skip ledger read: {e}",
+  "log.ai.outbound_purge_skip": "[Outbound] skip expiry purge: {e}",
+  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] refuse duplicate image {res_id} group={group_id} sent at {ts}"
 }

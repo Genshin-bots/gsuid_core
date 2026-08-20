@@ -42,18 +42,11 @@ LegacyDispatcherSource = Literal["heartbeat", "task"]
 
 
 def _resolve_active_bot(event: Event) -> Optional["_Bot"]:
-    """从 ``gss.active_bot`` 解析底层 ``_Bot``，与 inspector 兜底逻辑同构。
-
-    优先 ``event.WS_BOT_ID``（最准确）；若 active_bot 完全为空则返回 None。
-    """
+    """只按 ``event.WS_BOT_ID`` 解析底层 ``_Bot``；缺失则返回 None。"""
     from gsuid_core.gss import gss
 
     if event.WS_BOT_ID and event.WS_BOT_ID in gss.active_bot:
         return gss.active_bot[event.WS_BOT_ID]
-
-    # 兜底：取任意一个可用 _Bot（与 inspector._get_bot_for_session 同样的最末兜底）
-    if gss.active_bot:
-        return next(iter(gss.active_bot.values()))
     return None
 
 
@@ -217,6 +210,17 @@ async def emit_proactive_message(
             )
             out_msg = PERSONA_FALLBACK_TEXT
     await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
+    from gsuid_core.ai_core.outbound import record_outbound
+
+    await record_outbound(
+        ev=event,
+        session_id=event.session_id or "",
+        text=out_msg,
+        image_id="",
+        topic="",
+        target_user=str(event.user_id) if event.user_id else "",
+        target_name="",
+    )
 
     # 4) 同步到用户主 session（pydantic_ai 历史 + session_logger）
     await _sync_to_main_session(

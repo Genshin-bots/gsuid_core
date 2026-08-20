@@ -12,7 +12,8 @@ async def init_default_personas():
     """
     初始化默认persona
 
-    如果"早柚"persona不存在，则创建它。
+    仓库附带的默认人格卡（产品种子，不是运行时口癖闸，见 AGENTS.md §1.9）。
+    目录里已有任意人格则只补缺这一份默认卡，不改已有卡。
     顺手把旧版本写在 ``config.json`` 里的 ``voice_anchor`` 裸字段搬到独立的
     ``voice_anchor.txt`` —— 必须在 ``_init_statistics`` 阶段
     ``start_heartbeat_inspector`` 触达 ``PersonaConfigManager.get_all_configs()``

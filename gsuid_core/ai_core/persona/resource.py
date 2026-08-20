@@ -22,6 +22,8 @@ from .persona import Persona
 
 # voice_anchor 缓存 {persona_name: str}，避免每轮对话重复读盘
 _voice_anchor_cache: Dict[str, str] = {}
+# Tone Markers 词表缓存；人格 md 变更时随 voice_anchor 一起清
+_tone_marker_cache: Dict[str, Tuple[str, ...]] = {}
 
 # 兜底正则：从 persona.md 抓取最具描述性的一行作为口吻锚点。
 # 优先级：Style (风格) 块 > Tone Markers (语气词) 块 > Identity 行。
@@ -50,6 +52,22 @@ _TONE_INLINE_RE = re.compile(
     re.IGNORECASE,
 )
 _IDENTITY_RE = re.compile(r"Identity\s*:[ \t]*([^\n]+)", re.IGNORECASE)
+
+_TONE_SKIP_LINE_PREFIXES: Tuple[str, ...] = (
+    "配额",
+    "[SLOT:",
+    "如：",
+    "如:",
+    "例：",
+    "例:",
+    "示例",
+)
+_TONE_SKIP_TOKENS = frozenset(
+    {"配额", "后缀", "语气词", "结尾", "条", "至多", "其余", "不带", "上一条", "本条", "禁带"}
+)
+_TONE_SPLIT_RE = re.compile(r"[、，,/|;；\s]+")
+_TONE_PUNCT_ONLY_RE = re.compile(r"^[\s…。.．!！?？~～、,，'\"“”‘’·\-—]+$")
+_TONE_TRAIL_PUNCT = "…。.．!！?？~～、,， "
 
 # compact persona 抽取：心跳决策只需要"我是谁 / 怎么说话 / 何时开口"四要素，
 # 不需要工具协议、好感度梯度、触发例等执行细节。下列正则与上方块/行版本
@@ -139,6 +157,75 @@ def _extract_voice_anchor_from_persona(persona_text: str) -> str:
             return candidate
 
     return ""
+
+
+def extract_tone_markers(persona_text: str) -> Tuple[str, ...]:
+    """从人格卡 ``Tone Markers (语气词)`` 抽出词表。无块则空。
+
+    跳过配额/SLOT/举例行；纯标点（如省略号）不当语气词，避免把句末省略号当口癖。
+    """
+    if not persona_text:
+        return ()
+    block = ""
+    tone_match = _TONE_BLOCK_RE.search(persona_text)
+    if tone_match:
+        block = tone_match.group(2)
+    else:
+        tone_inline = _TONE_INLINE_RE.search(persona_text)
+        if tone_inline:
+            block = tone_inline.group(1)
+    if not block.strip():
+        return ()
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in block.splitlines():
+        line = raw.strip()
+        if not line or "[SLOT:" in line:
+            continue
+        if any(line.startswith(p) for p in _TONE_SKIP_LINE_PREFIXES):
+            continue
+        for tok in _TONE_SPLIT_RE.split(line):
+            t = tok.strip()
+            if not t or t in seen or t in _TONE_SKIP_TOKENS:
+                continue
+            if len(t) > 8 or _TONE_PUNCT_ONLY_RE.match(t):
+                continue
+            seen.add(t)
+            found.append(t)
+    return tuple(found)
+
+
+def reply_ends_with_tone_marker(text: str, markers: Tuple[str, ...]) -> bool:
+    """上一条助手回复是否以该人格语气词收尾（含词后省略号）。"""
+    if not text or not markers:
+        return False
+    tail = text.rstrip()
+    stripped = tail.rstrip(_TONE_TRAIL_PUNCT)
+    ordered = sorted(markers, key=len, reverse=True)
+    for m in ordered:
+        if tail.endswith(m) or stripped.endswith(m):
+            return True
+    return False
+
+
+def get_tone_markers(persona_name: Optional[str]) -> Tuple[str, ...]:
+    """读当前人格卡语气词。无人格/无块 → 空（框架不写死某角色口癖）。"""
+    if not persona_name:
+        return ()
+    if persona_name in _tone_marker_cache:
+        return _tone_marker_cache[persona_name]
+    from ..resource import PERSONA_PATH
+
+    md_path = PERSONA_PATH / persona_name / "persona.md"
+    markers: Tuple[str, ...] = ()
+    if md_path.exists():
+        try:
+            with open(md_path, "r", encoding="utf-8") as f:
+                markers = extract_tone_markers(f.read())
+        except OSError as e:
+            logger.debug(t("log.persona.read_md_path", md_path=md_path, e=e))
+    _tone_marker_cache[persona_name] = markers
+    return markers
 
 
 def extract_compact_persona(persona_text: str) -> str:
@@ -392,8 +479,10 @@ def invalidate_voice_anchor_cache(persona_name: Optional[str] = None) -> None:
     """
     if persona_name is None:
         _voice_anchor_cache.clear()
+        _tone_marker_cache.clear()
         return
     _voice_anchor_cache.pop(persona_name, None)
+    _tone_marker_cache.pop(persona_name, None)
 
 
 async def save_persona(char_name: str, profile_content: str) -> None:

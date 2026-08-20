@@ -243,7 +243,9 @@ class PreparePhase(RunOnceHost):
         # history：框架注入的 UserPrompt 整段剥掉（不进 B 轨，避免被当成群友）
         # 真人轮才 lean 成精简发言
         if st.fw_msg:
-            st.lean_user_message = ""
+            from gsuid_core.ai_core.utils import lean_delivery_frame
+
+            st.lean_user_message = lean_delivery_frame(st.user_message) if isinstance(st.user_message, str) else ""
         else:
             st.lean_user_message = (
                 list(st.final_user_message) if isinstance(st.final_user_message, list) else st.final_user_message

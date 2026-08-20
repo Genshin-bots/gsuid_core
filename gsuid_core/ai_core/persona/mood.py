@@ -10,8 +10,8 @@
 使用方式:
     from gsuid_core.ai_core.persona.mood import get_mood_state, update_mood
 
-    mood = await get_mood_state(persona_name="早柚", group_id="123456")
-    await update_mood(persona_name="早柚", group_id="123456", event_type="praise")
+    mood = await get_mood_state(persona_name="示例人格", group_id="123456")
+    await update_mood(persona_name="示例人格", group_id="123456", event_type="praise")
 """
 
 from __future__ import annotations

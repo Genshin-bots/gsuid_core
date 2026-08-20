@@ -25,7 +25,26 @@ class ScaffoldKit(AgentKit):
         压成寒暄短句。
         """
         if ctx.intent == "闲聊" and not ctx.prev_turn_used_tools and not ctx.has_actionable:
-            ctx.set_context_block("chitchat_style", "（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）")
+            last_had_tick = False
+            history = ctx.gate_history
+            if not history and ctx.ev is not None:
+                from gsuid_core.message_history import get_history_manager
+
+                history = get_history_manager().get_history(ctx.ev, limit=8)
+            from gsuid_core.ai_core.persona.resource import get_tone_markers, reply_ends_with_tone_marker
+
+            markers = get_tone_markers(ctx.persona_name)
+            for rec in reversed(history):
+                if rec.role == "assistant":
+                    last_had_tick = reply_ends_with_tone_marker(rec.content or "", markers)
+                    break
+            quota = "（口癖配额：每3–5条至多1条带语气词结尾；其余条不带。）"
+            if last_had_tick:
+                quota += "上一条已带口癖，本条禁带。"
+            ctx.set_context_block(
+                "chitchat_style",
+                f"（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）{quota}",
+            )
         if ctx.intent in ("工具", "问答"):
             ctx.set_context_block(
                 "transaction_priority",

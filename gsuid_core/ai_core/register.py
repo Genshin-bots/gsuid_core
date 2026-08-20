@@ -79,8 +79,8 @@ _MANUAL_ENTITIES: List[ManualKnowledgeBase] = []  # 手动添加的知识，不�
 _IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片
 # 别名注册表（C2-d 分 scope 防跨域串味）：
 # 结构为 {scope: {别名: [正式名候选, ...]}}。
-# scope 默认 "global"（插件注册的通用别名）；插件可传业务 scope（如 "Genshin"）
-# 隔离同名别名（如"深渊"在不同游戏指代不同对象）。
+# scope 默认 "global"（插件注册的通用别名）；插件可传自己的业务 scope
+# 隔离同名别名（同一俗称在不同插件指不同对象）。
 # 值为 List 以天然支持一对多 / 多候选映射，供动态实体链接按上下文消歧（C2-e）。
 _ALIASES: Dict[str, Dict[str, List[str]]] = {}
 
@@ -130,19 +130,18 @@ def ai_tools(
             self/buildin/meta 为框架特权分类，仅核心代码可用；插件声明时会被
             自动重定向到 common 注册（见 _CORE_ONLY_CATEGORIES）。
         check_func: 可选的权限校验函数
-        context_tags: 可选的语境标签列表，如 ["原神", "游戏"]。
+        context_tags: 可选的语境标签列表，如 ["游戏", "资讯"]。
             声明后，框架会在匹配该语境的群聊中自动加载本工具（语境工具池）。
-        capability_domain: 可选的能力域名称，如 "原神数据"、"网络搜索"。
+        capability_domain: 可选的能力域名称，如 "网络搜索"、插件自定的域名。
             声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
             替代生硬的函数名罗列。未声明时按 category 兜底。
-        covers: 可选的数据/能力覆盖面陈述列表，如
-            ["A股/港股/美股/指数/期货/现货贵金属/外汇的报价与K线"]。
+        covers: 可选的数据/能力覆盖面陈述列表，如 ["某数据域的报价与时间序列"]。
             会拼进向量检索文本（name+docstring+covers+aliases），是工具被跨措辞
             召回的关键面；能力代理 roster 的「数据覆盖」行也由本字段聚合。
             插件工具应如实声明能解析什么标的/数据域/时效，而非只写函数行为。
         aliases: 可选的领域内同义表述列表，**必须带领域前缀**，如
-            ["原神·深渊阵容查询"]；禁止裸写通用词（"深渊查询"），否则与同名
-            能力的其它插件（鸣潮/绝区零）撞车。撞车时由语境标签+语义路由裁决。
+            ["领域A·能力X"]；禁止裸写通用词（"能力X"），否则与同名能力的其它插件
+            撞车。撞车时由语境标签+语义路由裁决。前缀由插件自己声明，不是框架词表。
         visible_when: 可选的"可见性谓词"（Phase 3 条件隐藏）。签名为
             ``(ctx: RunContext[ToolContext]) -> bool | Awaitable[bool]``。
             返回 False 时，本工具在**该 step**对模型隐藏（schema 都不下发），
@@ -535,6 +534,78 @@ def find_tool_base(tool_name: str) -> Optional[ToolBase]:
     return None
 
 
+def _family_bucket(domain: str) -> str:
+    """族名桶：CJK 取前两字，避免同一插件拆出十几族占满速览。"""
+    d = (domain or "").strip()
+    if len(d) >= 2 and "\u4e00" <= d[0] <= "\u9fff":
+        return d[:2]
+    return d
+
+
+def collapse_family_domains(domains: List[str]) -> List[str]:
+    """同前缀 ≥3 个域折成一条索引名（后缀 …）。"""
+    buckets: dict[str, list[str]] = {}
+    for domain in domains:
+        d = (domain or "").strip()
+        if not d:
+            continue
+        buckets.setdefault(_family_bucket(d), []).append(d)
+    titles: list[str] = []
+    for bucket in sorted(buckets):
+        members = sorted(set(buckets[bucket]))
+        if len(members) >= 3:
+            titles.append(f"{bucket}…")
+        else:
+            titles.extend(members)
+    return titles
+
+
+def format_capability_family_overview(*, max_families: int = 30, max_chars: int = 1200) -> str:
+    """按 capability_domain 聚合的工具族速览（建 session 时固化进 system）。"""
+    grouped: dict[str, list[ToolBase]] = {}
+    for tb in get_all_tools().values():
+        domain = tb.capability_domain
+        if not domain:
+            continue
+        grouped.setdefault(domain, []).append(tb)
+    if not grouped:
+        return ""
+    buckets: dict[str, list[str]] = {}
+    for domain in grouped:
+        buckets.setdefault(_family_bucket(domain), []).append(domain)
+    families: list[tuple[str, list[ToolBase]]] = []
+    for bucket in sorted(buckets):
+        members = sorted(set(buckets[bucket]))
+        if len(members) >= 3:
+            tools: list[ToolBase] = []
+            for d in members:
+                tools.extend(grouped[d])
+            families.append((f"{bucket}…", tools))
+        else:
+            for d in members:
+                families.append((d, grouped[d]))
+    lines: list[str] = ["（工具族速览——需要时 find_tools 精确召回：）"]
+    used = len(lines[0])
+    for title, tools in families[: max(1, max_families)]:
+        tools_s = sorted(tools, key=lambda t: t.name)
+        names = "、".join(tb.name for tb in tools_s[:3])
+        cover = ""
+        for tb in tools_s:
+            if tb.covers:
+                cover = tb.covers[0][:24]
+                break
+        line = f"- {title}：{names}"
+        if cover:
+            line += f"（{cover}）"
+        if used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def get_tools_by_capability_domain(domain: str) -> List[ToolBase]:
     """返回声明了同一 capability_domain（能力族）的所有工具。
 
@@ -577,15 +648,15 @@ def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global"):
     Args:
         name:  正式名称
         alias: 单个别名或别名列表
-        scope: 别名作用域，默认 "global"（通用）。插件可传业务 scope（如 "Genshin"）
-               隔离同名别名，避免"深渊"等词在不同游戏间串味。
+        scope: 别名作用域，默认 "global"（通用）。插件可传自己的业务 scope
+               隔离同名别名，避免通用词在不同插件间串味。
 
     调用时, 例如:
 
         from gsuid_core.ai_core.register import ai_alias
 
-        ai_alias("丝柯克", ['skk', '斯柯克'])
-        ai_alias("幽境危战", "深渊", scope="WutheringWaves")
+        ai_alias("正式名", ["别名甲", "别名乙"])
+        ai_alias("能力X", "俗称", scope="PluginA")
     """
     # 检查AI是否启用，未启用则跳过别名注册
     try:
@@ -826,7 +897,7 @@ def ai_image(entity: ImageEntity):
             id: str - 唯一标识符
             plugin: str - 插件名称
             path: str - 图片文件路径（绝对路径或相对路径）
-            tags: List[str] - 图片标签，用于描述图片内容，如 ["胡桃", "原神", "角色"]
+            tags: List[str] - 图片标签，用于描述图片内容，如 ["角色", "立绘"]
             content: str - 详细描述文本，可选
             source: str (自动设置为 "plugin")
 
@@ -836,11 +907,11 @@ def ai_image(entity: ImageEntity):
     from gsuid_core.ai_core.register import ai_image
 
     ai_image(ImageEntity(
-        id="hutao_character",
-        plugin="GenshinUID",
-        path="./resources/characters/hutao.png",
-        tags=["胡桃", "原神", "角色", "火系"],
-        content="胡桃角色立绘图片，往生堂第七十七代堂主",
+        id="char_portrait",
+        plugin="ExamplePlugin",
+        path="./resources/characters/portrait.png",
+        tags=["角色", "立绘"],
+        content="角色立绘图片",
         source="plugin",
         _hash="",
     ))

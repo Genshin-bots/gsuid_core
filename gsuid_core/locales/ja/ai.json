@@ -611,5 +611,8 @@
   "log.ai.websearch_tavily_api_key_trying": "[WebSearch][Tavily] api_key ...{p0} が失敗、次を試す",
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] すべての api_key が失敗",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] コンテキスト付き検索: {query}、{p0} 件の結果を返した",
-  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した"
+  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した",
+  "log.ai.outbound_read_skip": "[Outbound] 台帳読み取りをスキップ: {e}",
+  "log.ai.outbound_purge_skip": "[Outbound] 期限切れ掃除をスキップ: {e}",
+  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] 重複画像 {res_id} を拒否 group={group_id} {ts} 送信済み"
 }

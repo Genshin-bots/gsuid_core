@@ -550,7 +550,7 @@ PERSONA_CONFIG: Dict[str, GSC] = {
         "启用人设服务",
         "指定启用某些人设服务",
         [],
-        options=["早柚"],
+        options=[],
     ),
     "persona_for_session": GsDictConfig(
         "人设服务针对群聊",

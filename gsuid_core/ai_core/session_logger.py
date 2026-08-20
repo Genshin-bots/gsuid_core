@@ -188,6 +188,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "mode_change",
         # 前缀缓存失配探针（每 run 一条，data.reason 见 PrefixBreakReason）
         "prefix_break",
+        "outbound_audit",
     }
 )
 
@@ -656,11 +657,38 @@ class AISessionLogger:
         digest = hashlib.sha256((system_prompt or "").encode("utf-8")).hexdigest()
         self._add_entry("system_prompt", {"content": system_prompt, "sha256": digest})
 
-    def log_prefix_break(self, reason: str, *, tools_hash: str = "", system_hash: str = "") -> None:
+    def log_prefix_break(
+        self,
+        reason: str,
+        *,
+        tools_hash: str = "",
+        system_hash: str = "",
+        tools_diff: dict[str, list[str]] | None = None,
+    ) -> None:
         """记录本 run 相对上一 run 的前缀失配类别。"""
+        data: dict[str, object] = {"reason": reason, "tools_hash": tools_hash, "system_hash": system_hash}
+        if tools_diff is not None:
+            data["tools_diff"] = tools_diff
+        self._add_entry("prefix_break", data)
+
+    def log_outbound_audit(
+        self,
+        *,
+        group_id: str,
+        text: str,
+        image_id: str,
+        topic: str,
+        target_user: str,
+    ) -> None:
         self._add_entry(
-            "prefix_break",
-            {"reason": reason, "tools_hash": tools_hash, "system_hash": system_hash},
+            "outbound_audit",
+            {
+                "group_id": group_id,
+                "text": text[:200],
+                "image_id": image_id,
+                "topic": topic,
+                "target_user": target_user,
+            },
         )
 
     def log_user_input(self, user_message: Any) -> None:

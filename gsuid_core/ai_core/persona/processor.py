@@ -67,6 +67,11 @@ async def build_persona_prompt(
     roster = format_capability_roster()
     if roster:
         prompt += f"\n\n## 可委派能力代理\n{roster}"
+    from gsuid_core.ai_core.register import format_capability_family_overview
+
+    families = format_capability_family_overview()
+    if families:
+        prompt += f"\n\n## 工具族速览\n{families}"
 
     # 近因锚点：一句钉人格 + 履约（细则在 SYSTEM/TOOL，不复读半页）
     prompt += (

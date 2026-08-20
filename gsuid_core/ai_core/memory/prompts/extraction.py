@@ -51,6 +51,11 @@ t 包含 "Speaker"。
 - 群组内的话题、事件、地点、产品等实体，不添加 scope_hint
 - 不确定时，不添加 scope_hint
 
+**主人/用户自我陈述槽**（独立于实体，顶层 `stated`）：
+- 说话人明确陈述自己的地点 / 持有 / 长期偏好时输出
+  `{"u":"<uid>","k":"location|possession|preference","v":"<原话压缩>"}`
+- 仅第一人称自我陈述；旁人转述不要写进 stated。
+
 **输出格式（纯 JSON，不含任何额外文字）**：
 {
   "entities":[
@@ -59,7 +64,8 @@ t 包含 "Speaker"。
   ],
   "edges":[
     {"src": "444835641", "tgt": "户外运动", "f": "喜欢户外运动"}
-  ]
+  ],
+  "stated":[]
 }"""  # noqa: E501
 
 # 程序性/偏好记忆门控信号（仅 enable_preference_memory 开启时由 worker 追加到 system 末尾）：

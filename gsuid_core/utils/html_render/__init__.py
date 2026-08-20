@@ -265,6 +265,9 @@ def _sync_render_html(
     fmt = _resolve_format(image_format)
     quality = int(jpeg_quality) if fmt == "jpeg" else None
 
+    from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
+
+    html = rewrite_svg_charts_for_takumi(html)
     return html_to_pic(
         html,
         width=width,
@@ -330,7 +333,9 @@ def _sync_render_md(
             lang="zh",
         )
 
-    body_html = rewrite_tables_for_takumi(markdown_to_html(md))
+    from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
+
+    body_html = rewrite_svg_charts_for_takumi(rewrite_tables_for_takumi(markdown_to_html(md)))
     html = wrap_markdown_html(body_html)
     gh_css = load_template("github-markdown-dark.css" if dark else "github-markdown.css")
     sheets: list[str] = [gh_css]

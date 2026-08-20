@@ -467,7 +467,7 @@ class AiMemeRecord(SQLModel, table=True):
         返回项按数量降序、数量一致时按 persona_hint 升序：
         [
             {"persona_hint": "common", "count": 300, "folder": "common"},
-            {"persona_hint": "早柚",   "count": 100, "folder": "persona_早柚"},
+            {"persona_hint": "示例人格",   "count": 100, "folder": "persona_示例人格"},
             ...
         ]
 

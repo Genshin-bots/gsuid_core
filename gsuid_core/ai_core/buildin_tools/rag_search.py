@@ -98,7 +98,7 @@ async def search_cognition(
         query: 自然语言查询，如"上周聊过的旅行计划""出图规范"
         kinds: 可选，逗号分隔的类型过滤，缩小范围更准：
             episode/entity/fact/preference/knowledge/tool_output/artifact/
-            record/image/meme。留空=全查（含近窗群聊、业务记录、图片、表情）。
+            record/image/meme/outbound。留空=全查（含近窗群聊、业务记录、图片、表情、出站）。
         limit: 返回条数上限，默认 12
 
     Returns:
@@ -129,7 +129,10 @@ async def search_cognition(
     expansion = await expand_hub(query, hits, scope=scope)
     from gsuid_core.ai_core.content_guard import wrap_untrusted
 
-    hits_block = render_cognition_block(query, hits)
+    trusted = [h for h in hits if h.kind is CogKind.OUTBOUND]
+    others = [h for h in hits if h.kind is not CogKind.OUTBOUND]
+    trusted_block = render_cognition_block(query, trusted, header="出站（可信）") if trusted else ""
+    hits_block = render_cognition_block(query, others)
     card = render_expand_result(query, expansion)
     if not hits and not card:
         seen[key] = "无命中"
@@ -139,11 +142,16 @@ async def search_cognition(
         seen[key] = "路径卡"
     else:
         seen[key] = f"命中 {len(hits)} 条"
-    if card and not hits:
-        return card
+    parts: list[str] = []
     if card:
-        return f"{card}\n\n{wrap_untrusted('memory_recall', hits_block)}"
-    return hits_block if not hits else wrap_untrusted("memory_recall", hits_block)
+        parts.append(card)
+    if trusted_block:
+        parts.append(trusted_block)
+    if others:
+        parts.append(wrap_untrusted("memory_recall", hits_block))
+    elif not trusted and not card:
+        parts.append(hits_block)
+    return "\n\n".join(parts) if parts else hits_block
 
 
 @ai_tools(category="common", visible_when=visible_to_capability_only)

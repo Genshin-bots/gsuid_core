@@ -625,10 +625,13 @@ class LoopPhase(RunOnceHost):
                         if _why in ("report_speech", "empty_handoff", "persona_length_breach"):
                             st.presentation_mismatch = True
                             # 暂扣原文：纠正被申辩/无替代品时由 settle 兜底发出（INV-4）
-                            # 多点读数念白不是用户要的正文，丢掉即可，勿进 INV-4 回放。
                             if _text not in st.presentation_withheld:
                                 st.presentation_withheld.append(_text)
                                 st.presentation_withheld_reasons.append(_why)
+                        elif _why == "numeric_recitation":
+                            # 念数丢掉、不进 INV-4；记原因以便 settle 走 render 纠正。
+                            st.presentation_mismatch = True
+                            st.presentation_withheld_reasons.append(_why)
                         logger.info(
                             i18n_t(
                                 "log.agent.silent_skipping_text",

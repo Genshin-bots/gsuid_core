@@ -307,13 +307,26 @@ class MemoryKit(AgentKit):
             return ""
         if not rows:
             return ""
+        blocked: set[str] = set()
+        if ctx.persona_name:
+            from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+            blocked = {s.casefold() for s in collect_persona_surfaces(ctx.persona_name)}
         lines = ["[群聊黑话]"]
+        hit_ids: list[int] = []
         for row in rows:
+            term = (row.term or "").strip()
+            if term.casefold() in blocked:
+                continue
             meaning = (row.meaning or "")[:80]
             src = row.source or "未知"
-            lines.append(f'"{row.term}"：{meaning}（来源：{src}）')
+            lines.append(f'"{term}"：{meaning}（来源：{src}）')
             if row.id is not None:
-                await AiMemeKnowledge.bump_hit(row.id)
+                hit_ids.append(int(row.id))
+        if len(lines) == 1:
+            return ""
+        for hid in hit_ids:
+            await AiMemeKnowledge.bump_hit(hid)
         return "\n".join(lines)
 
     async def trace_tool(self, ctx: AgentHookContext) -> None:

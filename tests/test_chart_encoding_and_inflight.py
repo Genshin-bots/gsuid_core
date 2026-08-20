@@ -45,6 +45,30 @@ def test_grouped_bar_has_legend_and_full_labels() -> None:
     assert svg.count("<rect") >= 4
 
 
+def test_chart_spec_unwraps_provider_item_wrapper() -> None:
+    svg = chart_spec_to_svg(
+        {
+            "type": "line",
+            "title": "趋势",
+            "series": [
+                {
+                    "name": "高温",
+                    "data": {
+                        "item": [
+                            {"label": "d1", "value": 31},
+                            {"label": "d2", "value": 32},
+                            {"label": "d3", "value": 30},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    assert svg.startswith("<svg")
+    assert "⚠️" not in svg
+    assert "d1" in svg and "d3" in svg
+
+
 def test_hbar_keeps_long_category_label() -> None:
     label = "第一组百分位读数"
     svg = chart_spec_to_svg(

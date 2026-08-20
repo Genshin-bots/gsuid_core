@@ -94,8 +94,8 @@ def test_artifact_format_pagination() -> None:
     assert "offset=10" in page2
 
 
-def test_relean_drops_framework_user_parts() -> None:
-    """框架注入 UserPrompt 不得进 B 轨（避免被当成群友发言）。"""
+def test_relean_leans_delivery_frame() -> None:
+    """交付帧入史瘦成一行，不把长卡当群友发言。"""
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     from gsuid_core.ai_core.utils import _relean_user_turn
@@ -104,8 +104,11 @@ def test_relean_drops_framework_user_parts() -> None:
         ModelRequest(parts=[UserPromptPart(content="[框架·任务完成]\n【子任务交付】任务#1 已完成。\n产物 res_abc")])
     ]
     _relean_user_turn(msgs, lean_content="")
-    # 整段被剥掉 → parts 空
-    assert len(msgs[0].parts) == 0
+    assert len(msgs[0].parts) == 1
+    body = str(msgs[0].parts[0].content)
+    assert "任务#1" in body
+    assert "res_abc" in body
+    assert "【子任务交付】" not in body
 
 
 def test_relean_keeps_real_user_and_strips_nudge() -> None:

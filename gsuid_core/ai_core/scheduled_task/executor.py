@@ -58,7 +58,7 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
 MAX_EXECUTION_LIMIT = 150
 
 # 中性执行者 prompt：任务执行体不注入 persona。生产事故（plans/prod_session_review §4）：
-# persona 的"想说就说"压过任务里的静默条款，价格无事件时仍向群里播报"继续睡zzz"。
+# persona 的"想说就说"压过任务里的静默条款，条件未满足时仍向群里播报闲聊。
 SCHEDULED_TASK_EXECUTOR_PROMPT = (
     "你是定时任务执行器（不是角色扮演）。你收到的任务指令来自用户先前的预约。\n"
     "执行规则（优先级最高，覆盖任何风格要求）：\n"

@@ -49,15 +49,11 @@ from gsuid_core.ai_core.configs.attribution import resolve_attribution_settings
 from gsuid_core.ai_core.agent_run.remote_web_search import attach_remote_web_search
 
 _HOT_SLOT_MAX = 4
+_PROGRESS_TOOL = "check_delegation"
 
 
-def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
-    if not a and not b:
-        return 1.0
-    union = a | b
-    if not union:
-        return 1.0
-    return len(a & b) / len(union)
+def _without_progress_tool(tools: ToolList) -> ToolList:
+    return [t for t in tools if t.name != _PROGRESS_TOOL]
 
 
 def _kernel_owns_tool_assembly() -> bool:
@@ -90,10 +86,9 @@ class ToolsPhase(RunOnceHost):
         extras: ToolList,
         ctx_tags: list[str],
     ) -> ToolList:
-        """钉死 L1–L3 保底顺序；每轮向量召回只进尾槽，换话题仍能换召回。"""
+        """钉死 L1 保底顺序；尾槽按名排序。只允许首轮建核，换话题不重建。"""
         tags = frozenset(ctx_tags)
-        prev_tags = self._session_toolset_tags or frozenset()
-        rebuild = self._session_toolset_frozen is None or _jaccard(tags, prev_tags) < 0.5
+        rebuild = self._session_toolset_frozen is None
         if rebuild:
             self._session_toolset_frozen = [t.name for t in core]
             self._session_toolset_tags = tags
@@ -224,8 +219,9 @@ class ToolsPhase(RunOnceHost):
                                 core_names.add(_tn)
                                 core_tools.append(_tb.tool)
 
-                # 第 1.5 层：状态驱动工具池（L2）
+                # 第 1.5 层：状态驱动工具池（L2）进尾槽，不进 frozen core
                 _state_pool_names: set[str] = set()
+                extra_tools: ToolList = []
                 try:
                     from gsuid_core.ai_core.tool_state_signals import get_state_driven_family_tools
 
@@ -233,27 +229,28 @@ class ToolsPhase(RunOnceHost):
                         st.ev, core_names, has_active_task=st.has_active_task, intent=st.intent
                     )
                     if state_tools:
-                        core_tools = core_tools + state_tools
-                        core_names.update(t.name for t in state_tools)
+                        extra_tools = extra_tools + state_tools
                         _state_pool_names = {t.name for t in state_tools}
                 except Exception as e:
                     logger.debug(i18n_t("log.agent.load_state_driven_pool", e=e))
 
-                # C-1：跟进补调度族 + 产物族（追问产物需 artifact_get_recent）
+                # C-1：跟进补调度族 + 产物族进尾槽
                 if st.followup_detected:
                     for _dom in ("定时任务", "长期任务编排", "产物"):
                         for _tb in get_tools_by_capability_domain(_dom):
                             if _tb.name not in core_names:
-                                core_names.add(_tb.name)
-                                core_tools.append(_tb.tool)
+                                extra_tools.append(_tb.tool)
                     logger.debug(i18n_t("log.agent.scaffold_supplemented_scheduled_task"))
 
-                # 第 1.6 层：会话驻留工具池（L3）
+                # 第 1.6 层：会话驻留工具池（L3）仍 append 进 core（只增不重排）
+                _interactive = self.create_by in _INTERACTIVE_CREATE_BY
                 if self._recent_tool_families:
                     for _dom, _ttl in list(self._recent_tool_families.items()):
                         if _ttl <= 0:
                             continue
                         for _tb in get_tools_by_capability_domain(_dom):
+                            if _interactive and _tb.name == _PROGRESS_TOOL:
+                                continue
                             if _tb.name not in core_names:
                                 core_names.add(_tb.name)
                                 core_tools.append(_tb.tool)
@@ -261,8 +258,13 @@ class ToolsPhase(RunOnceHost):
                         _d: _t - 1 for _d, _t in self._recent_tool_families.items() if _t - 1 > 0
                     }
 
-                # 附加工具池 = 语境工具池 + 查询工具池
-                extra_tools: ToolList = []
+                # 交互主人格：进度查询不常挂，追问时经 find_tools 进尾槽。
+                if _interactive:
+                    core_tools = _without_progress_tool(core_tools)
+                    core_names.discard(_PROGRESS_TOOL)
+                    extra_tools = _without_progress_tool(extra_tools)
+
+                # 附加工具池 = L2/跟进尾槽 + 语境 + 查询
                 _ctx_pool_names: set[str] = set()
 
                 # 第二层：语境工具池（群聊瘦模式也保留标签池，上限更紧）
@@ -339,22 +341,25 @@ class ToolsPhase(RunOnceHost):
                         threshold=_recall_threshold,
                         scope_key=ctx_scope_key,
                     )
-                    # 补搜索族（瘦保底已含 web_search_tool；再补 fetch/knowledge）
+                    # 补搜索族进尾槽（不进 frozen core）
                     if (st.group_slim or st.is_light) and st.intent in ("工具", "问答"):
                         for _tn in ("web_fetch_tool", "search_cognition"):
                             if _tn in core_names:
                                 continue
                             _tb = find_tool_base(_tn)
                             if _tb is not None:
-                                core_names.add(_tn)
-                                core_tools.append(_tb.tool)
+                                extra_tools.append(_tb.tool)
 
                 # 附加池：先按能力族整族展开（L4），再去重/限量。 召回族内任一工具即带出整族（剔除与保底重名/族内重复）
+                if _interactive:
+                    extra_tools = _without_progress_tool(extra_tools)
                 deduped_extra = expand_tools_to_families(
                     extra_tools,
                     exclude_names=core_names,
                     max_tools=max_extra_tools,
                 )
+                if _interactive:
+                    deduped_extra = _without_progress_tool(deduped_extra)
 
                 # 召回族也写进 L3 驻留：下一轮并入稳定保底段，工具集随对话收敛，
                 # provider 前缀缓存命中↑、跨轮追问免重检索（§cache 54%→更高）。
@@ -368,6 +373,8 @@ class ToolsPhase(RunOnceHost):
                 core_tools.sort(key=lambda _t: _t.name)
                 deduped_extra.sort(key=lambda _t: _t.name)
                 st.tools = self._stabilize_session_toolset(core_tools, deduped_extra, ctx_tags)
+                if _interactive:
+                    st.tools = _without_progress_tool(st.tools)
 
                 # 委派：剥离能力代理专属工具，逼主人格走 create_subagent
                 # 状态/语境池工具不参与 exclusive 剥离，避免只读能力被误卸

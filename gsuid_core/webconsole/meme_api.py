@@ -282,7 +282,7 @@ async def get_meme_personas(
     返回按表情包数量降序、人格名升序排列的列表：
     [
         {"persona_hint": "common", "count": 300, "folder": "common"},
-        {"persona_hint": "早柚",   "count": 100, "folder": "persona_早柚"},
+        {"persona_hint": "示例人格",   "count": 100, "folder": "persona_示例人格"},
         ...
     ]
 

@@ -71,8 +71,21 @@ def _clip_label(raw: str, max_n: int = _MAX_LABEL) -> str:
     return _esc(text[: max_n - 1] + "…")
 
 
-def _norm_points(data: Any) -> List[Dict[str, Any]]:
+def _unwrap_xml_array(data: object) -> object:
+    """部分 provider 把 JSON 数组编成 ``{"item": [...]}``。"""
+    cur: object = data
+    for _ in range(2):
+        if isinstance(cur, dict) and "item" in cur:
+            inner = cur["item"]
+            cur = inner if isinstance(inner, list) else [inner]
+        else:
+            break
+    return cur
+
+
+def _norm_points(data: object) -> List[Dict[str, Any]]:
     """把 data 归一成 [{"label": str, "value": float}, ...]。"""
+    data = _unwrap_xml_array(data)
     out: List[Dict[str, Any]] = []
     if not isinstance(data, list):
         return out
@@ -111,7 +124,7 @@ def _bar_fill(*, value: float, series_color: str, signed: bool, dark: bool) -> s
 def _parse_named_series(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
     """归一成 [{name, color, points}, ...]。兼容旧 data 单系列。"""
     named: List[Dict[str, Any]] = []
-    raw_series = spec["series"] if "series" in spec else None
+    raw_series = _unwrap_xml_array(spec["series"] if "series" in spec else None)
     if isinstance(raw_series, list) and raw_series:
         for i, item in enumerate(raw_series):
             if not isinstance(item, dict):

@@ -12,7 +12,10 @@
 """
 
 from gsuid_core.ai_core.database.models import UserFavorability
+from gsuid_core.ai_core.database.outbound import OutboundAudit, DeliveryLedger
 
 __all__ = [
     "UserFavorability",
+    "OutboundAudit",
+    "DeliveryLedger",
 ]

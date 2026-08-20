@@ -293,6 +293,20 @@ class AICogNode(SQLModel, table=True):
 
         return result.rowcount if isinstance(result, CursorResult) else 0
 
+    @classmethod
+    @with_session
+    async def purge_source_before(cls, session: AsyncSession, source: str, *, before_ts: int) -> int:
+        """清掉指定 source 且创建早于 cutoff 的节点（决策备忘 7 天 TTL）。"""
+        if not source:
+            return 0
+        result = await session.execute(
+            delete(cls).where(and_(col(cls.source) == source, col(cls.created_at) < before_ts))
+        )
+        await session.commit()
+        from sqlalchemy.engine import CursorResult
+
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
 
 class AICogAttachment(SQLModel, table=True):
     """枢纽挂文索引（表名 ``aicogattachment``）。只存元数据，正文仍在原库。"""

@@ -303,7 +303,7 @@ def _redact_persona_colliding_terms(
     term_mappings: Dict[str, str],
     persona_surfaces: Sequence[str],
 ) -> Dict[str, str]:
-    """别名或正式名与人格表面撞车时改写成他人昵称，避免把他人映射成你。"""
+    """人格表面不进「他人」映射：省略撞车词，避免把唤醒词写成「不是你」。"""
     blocked = _blocked_persona_surfaces(persona_surfaces)
     if not blocked:
         return term_mappings
@@ -312,9 +312,8 @@ def _redact_persona_colliding_terms(
         alias_hit = alias.casefold() in blocked
         formal_hit = formal.casefold() in blocked
         if alias_hit or formal_hit:
-            out[alias] = "他人昵称（不是你）"
-        else:
-            out[alias] = formal
+            continue
+        out[alias] = formal
     return out
 
 

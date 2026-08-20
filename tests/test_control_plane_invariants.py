@@ -458,7 +458,7 @@ def test_slim_group_pool_carries_control_tools() -> None:
     from gsuid_core.ai_core.interaction_scaffold import SLIM_GROUP_CORE_TOOLS
 
     assert "dispute_directive" in SLIM_GROUP_CORE_TOOLS
-    assert "check_delegation" in SLIM_GROUP_CORE_TOOLS
+    assert "check_delegation" not in SLIM_GROUP_CORE_TOOLS
 
 
 def test_control_tools_are_registered_buildin() -> None:
@@ -467,7 +467,7 @@ def test_control_tools_are_registered_buildin() -> None:
     from gsuid_core.ai_core.register import find_tool_base
 
     for name in ("dispute_directive", "check_delegation"):
-        assert find_tool_base(name) is not None, f"{name} 未注册，slim 池会静默丢掉它"
+        assert find_tool_base(name) is not None, f"{name} 未注册"
 
 
 # ── 邮箱：兄弟 root 不得互相抽走投递 ──

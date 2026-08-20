@@ -147,6 +147,12 @@ def test_group_open_gate():
     # 呼叫 vs 旁述
     assert is_addressed_to_self("小明(用户ID:1)：@早柚 在吗", "早柚", False)
     assert is_addressed_to_self("小明(用户ID:1)：早柚你看这个", "早柚", False)
+    assert is_addressed_to_self(
+        "小明(用户ID:1)：柚柚 帮我看一眼",
+        "早柚",
+        False,
+        extra_names=("柚柚",),
+    )
     assert not is_addressed_to_self("小明(用户ID:1)：我昨天梦到早柚了哈哈", "早柚", False)
 
     assert (
@@ -195,8 +201,8 @@ def test_group_open_gate():
         is GroupOpenGate.SPEAK
     )
 
-    q = build_tool_search_query("东山怎么样", ["最近在聊行情"], ["股票", "A股"])
-    assert "东山怎么样" in q and "股票" in q
+    q = build_tool_search_query("那家店怎么样", ["最近在聊对照资料"], ["信息", "对照"])
+    assert "那家店怎么样" in q and "信息" in q
 
 
 def test_task_management_intent():

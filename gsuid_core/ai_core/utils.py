@@ -683,6 +683,16 @@ async def prepare_content_payload(
 
     if ev.reply:
         text += f"\n--- 引用消息 ---\n{ev.reply}\n"
+        from gsuid_core.ai_core.outbound import resolve_quote
+
+        hit = await resolve_quote(ev)
+        if hit is not None:
+            text += f"{hit.line}\n"
+    from gsuid_core.ai_core.outbound import ownership_hint
+
+    own = await ownership_hint(ev)
+    if own:
+        text += f"{own}\n"
 
     if ev.node is not None:
         from gsuid_core.models import format_node_preview
@@ -1234,7 +1244,7 @@ async def send_chat_result(
     # 拦截 LLM API 错误消息（429/超时等），角色化替换后下发
     if _ERROR_OUTPUT_RE.search(text):
         logger.warning(i18n_t("log.ai.send_chat_result_intercepted_fail", text=text[:100]))
-        text = "唔…脑子转不动了…等下再说…zzz…"
+        text = "脑子转不动了，等下再说。"
 
     # 最终边界守卫：剥离泄漏到文本里的工具调用标记残留（详见 _strip_tool_call_artifacts）
     # MiniMax 的 ]<]minimax[>[，详见
@@ -1955,32 +1965,95 @@ def _compact_report_blocks_in_history(
     return replaced
 
 
+_DELIVERY_INSTR = ("create_subagent", "send_message_by_ai", "禁止", "你是主人格", "长文尚未", "出图委派")
+
+
+def lean_delivery_frame(full: str) -> str:
+    """交付包入史瘦身：任务号 + 句柄 + 主题。不取说明书行。"""
+    s = (full or "").strip()
+    if not s:
+        return ""
+    ordinal = "?"
+    m_ord = re.search(r"任务#(\d+)", s)
+    if m_ord is not None:
+        ordinal = m_ord.group(1)
+    handles = re.findall(r"res_[0-9a-fA-F]{3,}", s)
+    handle = handles[0] if handles else "-"
+    topic = ""
+    m_title = re.search(r"任务#\d+「([^」]+)」", s)
+    if m_title is not None:
+        topic = m_title.group(1).strip()[:40]
+    if not topic:
+        for line in s.splitlines():
+            t = line.strip()
+            if re.match(r"res_[0-9a-fA-F]{3,}\s*\|", t):
+                bits = [p.strip() for p in t.split("|")]
+                if len(bits) >= 3 and bits[-1]:
+                    topic = bits[-1][:40]
+                    break
+    if not topic:
+        for line in s.splitlines():
+            t = line.strip()
+            if not t or t.startswith("[框架") or t.startswith("【子任务"):
+                continue
+            if t.startswith("产物") or t.startswith("💡") or t.startswith("你是主人格"):
+                continue
+            if any(h in t for h in _DELIVERY_INSTR):
+                continue
+            topic = t[:40]
+            break
+    tail = f"，{topic}" if topic else ""
+    return f"[框架·任务完成] 任务#{ordinal} 完成，句柄 {handle}{tail}"
+
+
+def _is_delivery_frame(content: str) -> bool:
+    s = content.lstrip()
+    return s.startswith("[框架·任务完成]") or s.startswith("【子任务交付")
+
+
+def _peel_ephemeral_system_lines(content: str) -> str:
+    """入史前剥引用/归属提示，避免当成用户原话。"""
+    kept: list[str] = []
+    for ln in content.splitlines():
+        s = ln.strip()
+        if s.startswith("（系统：引用对象：") or s.startswith("（系统：归属："):
+            continue
+        kept.append(ln)
+    return "\n".join(kept)
+
+
 def _relean_user_turn(
     new_messages: Sequence[ModelMessage],
     lean_content: Union[str, List[UserContent]],
     strip_hint_texts: Tuple[str, ...] = (),
 ) -> None:
-    """只剥框架注入，入史与最后一次请求所见一致（前缀缓存）。
-
-    ``lean_content`` 保留签名兼容，不再替换用户 turn。动态块入史由 BLOCK_CHAR_BUDGET
-    与 compact 摊还控制膨胀。
-    """
-    _ = lean_content
+    """剥校验注入；交付帧改成一行入史，其它框架块丢弃。"""
     for msg in new_messages:
         if not isinstance(msg, ModelRequest):
             continue
         kept_parts = []
         for part in msg.parts:
-            if isinstance(part, UserPromptPart):
-                if isinstance(part.content, str) and _is_framework_prompt_content(part.content):
+            if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                if _is_framework_prompt_content(part.content):
+                    if _is_delivery_frame(part.content):
+                        lean = (
+                            lean_content
+                            if isinstance(lean_content, str) and lean_content
+                            else lean_delivery_frame(part.content)
+                        )
+                        if lean:
+                            kept_parts.append(UserPromptPart(content=lean))
                     continue
-                if isinstance(part.content, str) and any(
-                    part.content == h or (bool(h) and part.content.startswith(h)) for h in strip_hint_texts
-                ):
+                if any(part.content == h or (bool(h) and part.content.startswith(h)) for h in strip_hint_texts):
+                    continue
+                peeled = _peel_ephemeral_system_lines(part.content)
+                if not peeled.strip():
+                    continue
+                if peeled != part.content:
+                    kept_parts.append(UserPromptPart(content=peeled))
                     continue
             kept_parts.append(part)
-        if len(kept_parts) != len(msg.parts):
-            msg.parts = kept_parts
+        msg.parts = kept_parts
 
 
 # 现役控制面走 <control> 信封（按类型判定身份）；本表只兜遗留文案。

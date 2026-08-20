@@ -285,22 +285,39 @@ def _names_self(text: str, persona_name: str) -> bool:
     return persona_name in body
 
 
-def is_addressed_to_self(message_text: str, persona_name: str, is_tome: bool) -> bool:
+def is_addressed_to_self(
+    message_text: str,
+    persona_name: str,
+    is_tome: bool,
+    *,
+    extra_names: Sequence[str] = (),
+) -> bool:
     """结构判据：消息是否在**呼叫**自己（非旁述提及）。
 
-    框架 is_tome / DIRECT / @名 / 名+呼语 → 呼叫；仅出现名 → 不算。
+    框架 is_tome / DIRECT / @名 / 句首呼名 / 名+呼语 → 呼叫；句中旁述出现名 → 不算。
     """
     if is_tome or DIRECT_MARKER in message_text:
         return True
-    if not persona_name:
+    names: list[str] = []
+    for n in (persona_name, *extra_names):
+        s = (n or "").strip()
+        if s and s not in names:
+            names.append(s)
+    if not names:
         return False
-    if f"@{persona_name}" in message_text:
-        return True
+    for name in names:
+        if f"@{name}" in message_text:
+            return True
     body = extract_message_body(message_text)
     if not body:
         return False
-    pat = _VOCATIVE_AFTER_NAME_TMPL.format(name=re.escape(persona_name))
-    return bool(re.search(pat, body))
+    for name in names:
+        if re.match(rf"{re.escape(name)}(?:\s+|[，,、：:])", body):
+            return True
+        pat = _VOCATIVE_AFTER_NAME_TMPL.format(name=re.escape(name))
+        if re.search(pat, body):
+            return True
+    return False
 
 
 def addressed_to_someone_else(message_text: str, persona_name: str, is_tome: bool) -> bool:
@@ -493,7 +510,12 @@ def build_turn_graph(
     text = message_text or ""
     speakers = list_speaker_ids(text)
     primary = primary_speaker or extract_speaker_id(text) or ""
-    call = is_addressed_to_self(text, persona_name, is_tome)
+    extra: tuple[str, ...] = ()
+    if persona_name:
+        from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+        extra = collect_persona_surfaces(persona_name)
+    call = is_addressed_to_self(text, persona_name, is_tome, extra_names=extra)
     multi = len(speakers) >= 2
     addr = addressed_to_someone_else(text, persona_name, is_tome) or ambient_followup_to_other(
         text, recent_list, persona_name, is_tome, max_len=ambient_max_len
@@ -616,10 +638,8 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "search_cognition",  # 记忆+偏好+知识+落盘+产物的单一「回想」入口
         "web_search_tool",
         "create_subagent",  # 含 render_agent / research 委派入口
-        # 控制面：纠正信封让模型申辩、超时回执让它查委派。群聊是主战场，
-        # 这两个缺席则模型只能用用户可见文本争辩——正是要消的 OOC。
+        # 控制面：纠正信封让模型申辩。check_delegation 不常挂，追问进度时 find_tools 召回。
         "dispute_directive",
-        "check_delegation",
         "record_meme",
         "capability_map",
     }

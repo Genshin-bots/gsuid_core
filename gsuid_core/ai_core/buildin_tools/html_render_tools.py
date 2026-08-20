@@ -297,6 +297,9 @@ def _prepare_free_html(html_content: str) -> str:
     if not html:
         return html
     html = _rewrite_html_tables(html)
+    from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
+
+    html = rewrite_svg_charts_for_takumi(html)
     # 已注入过则跳过（避免重复）
     if "engine hygiene" not in html:
         html = _inject_style(html, _TAKUMI_ENGINE_HYGIENE_CSS)
@@ -1028,6 +1031,7 @@ async def render_html_to_image(
     - **图表**：≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；禁止纯 CSS 色条冒充图。
       多实体对比传 ``series``（每实体一个 name）+ 图例；有正负含义才 ``signed``。
       禁止把身份写进单柱 label，禁止用升/降色区分系列。
+      引擎会把 SVG ``<text>`` 提升为 HTML 覆盖层，手写 SVG 同样适用。
     - **插图 / 图标（一次写完即可）**：直接在 HTML 里写，**系统渲染前自动嵌成 data URI**，
       无需另调工具：
       - ``<img src="https://...">`` 外链图

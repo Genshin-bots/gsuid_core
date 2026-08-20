@@ -15,5 +15,6 @@
   "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command error: keyword={keyword}",
   "log.handler.meta_received": "[Meta Event Received]",
   "log.handler.meta_triggered": "[Meta Event Triggered]",
-  "log.handler.same_msg_cd": "[GsCore][SameMsgCD] Ignoring this message from {user_id}!"
+  "log.handler.same_msg_cd": "[GsCore][SameMsgCD] Ignoring this message from {user_id}!",
+  "log.handler.duplicate_ws_bridge": "[GsCore] Same account {bot_self_id} group {group_id} is bridged by multiple WS adapters ({ws_ids}). Keep one adapter per group."
 }

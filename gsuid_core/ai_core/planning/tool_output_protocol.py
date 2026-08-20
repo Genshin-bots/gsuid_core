@@ -193,14 +193,18 @@ class PersistedHandleCard:
             lines.append(f"read_tool={self.read_tool}  # 专职节点读全文；主人格只用 summary，禁止展开念台词")
         if self.long_structured:
             lines.append(
-                "long_structured=true → 长对照可用 create_subagent("
-                'agent_profile="render_agent", task=本id或版式要求) 出图；短答不必'
+                "long_structured=true → 必须 create_subagent("
+                'agent_profile="render_agent", task=本id或版式要求) 出图；'
+                "台词一两句，禁止把对照表念进气泡"
             )
         if self.mime.startswith("image/"):
             lines.append("image=true → send_message_by_ai(image_id=本id) 直发，勿 read_handle 当文本")
         head = (self.inline_head or "").strip()
         if head:
-            lines.append("inline_head:  # 已含要点，可直接作答；需全文再 read_handle")
+            if self.long_structured:
+                lines.append("inline_head:  # 对照要点，禁止念成台词；委派 render 出图")
+            else:
+                lines.append("inline_head:  # 已含要点；需全文再 read_handle")
             lines.append(head)
         return "\n".join(lines)
 

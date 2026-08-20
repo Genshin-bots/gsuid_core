@@ -455,9 +455,30 @@ class MemoryContext:
                 eps = self.episodes
                 self_eps = [e for e in eps if (e["scope_key"] or "").startswith("self:")]
                 other_eps = [e for e in eps if not (e["scope_key"] or "").startswith("self:")]
-                # SELF 配额 ≤10%，避免 bot 自己的话淹没群友。
+                # SELF 配额 ≤10%；近 2h 的 SELF/出站豁免（续聊消解）。
+                now = datetime.now()
+                recent_self: list[Episode] = []
+                old_self: list[Episode] = []
+                for ep in self_eps:
+                    ts_raw = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
+                    recent = False
+                    if ts_raw:
+                        try:
+                            ts = datetime.strptime(ts_raw, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            try:
+                                ts = datetime.strptime(ts_raw, "%Y-%m-%d %H:%M")
+                            except ValueError:
+                                ts = None
+                        if ts is not None and (now - ts).total_seconds() <= 2 * 3600:
+                            recent = True
+                    if recent:
+                        recent_self.append(ep)
+                    else:
+                        old_self.append(ep)
                 self_budget = min(int(max_chars * 0.10), max(0, ep_budget // 5))
-                other_budget = ep_budget - self_budget
+                recent_budget = min(int(ep_budget * 0.25), 400)
+                other_budget = max(0, ep_budget - self_budget - recent_budget)
                 # temporal_mode：单条上限压到 600，让更多时段进入预算
                 ep_cap = 600 if self.temporal_mode else 1000
 
@@ -482,8 +503,9 @@ class MemoryContext:
                     return dated + undated
 
                 taken_other = _take(_ep_lines(other_eps, self_mark=False), other_budget)
-                taken_self = _take(_ep_lines(self_eps, self_mark=True), self_budget)
-                taken = taken_other + taken_self
+                taken_recent = _take(_ep_lines(recent_self, self_mark=True), recent_budget)
+                taken_self = _take(_ep_lines(old_self, self_mark=True), self_budget)
+                taken = taken_other + taken_recent + taken_self
                 if taken:
                     parts.append("【相关对话片段】\n" + "\n".join(taken))
 

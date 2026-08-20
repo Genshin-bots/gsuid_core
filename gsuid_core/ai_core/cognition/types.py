@@ -25,6 +25,7 @@ class CogKind(str, Enum):
     IMAGE = "image"
     MEME = "meme"
     MEME_KNOWLEDGE = "meme_knowledge"
+    OUTBOUND = "outbound"
 
 
 # 面向模型的中文标签（进 prompt 的那一份）
@@ -41,6 +42,7 @@ KIND_LABEL: Dict[CogKind, str] = {
     CogKind.IMAGE: "图片",
     CogKind.MEME: "表情",
     CogKind.MEME_KNOWLEDGE: "梗知识",
+    CogKind.OUTBOUND: "出站",
 }
 
 # ⑧ 每轮自动注入的默认切片：与改造前一致（记忆 + 偏好），延迟不回退。

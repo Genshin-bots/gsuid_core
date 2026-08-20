@@ -242,11 +242,16 @@ async def find_tools(
                     agent_lines
                 )
                 return f"{hidden}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else hidden
+            from gsuid_core.ai_core.register import format_capability_family_overview
+
+            fam = format_capability_family_overview(max_families=3, max_chars=400)
             miss2 = (
                 f"⚠️ 未检索到与「{need}」相关的工具。可换更具体的能力描述重试一次；"
                 "若确实没有该能力，涉及实时数据/外部事实时如实角色化说明查不到，"
                 "禁止编造数值、禁止用网页摘要冒充实时读数。"
             )
+            if fam:
+                miss2 = f"{miss2}\n{fam}"
             return f"{miss2}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else miss2
 
         ctx.deps.dynamic_tool_names.update(loaded_names)

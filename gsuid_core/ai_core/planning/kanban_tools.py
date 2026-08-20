@@ -1105,7 +1105,7 @@ async def list_my_kanban_tasks(
 
     用于：
     - 主人格 / 能力代理 introspect 自己的长期任务；
-    - 命令"我有哪些任务在跑""暂停/恢复 AI 模拟盘"前的查表。
+    - 命令「我有哪些任务在跑」「暂停/恢复长期任务」前的查表。
 
     Args:
         goal_filter: 按 goal 模糊过滤（子串匹配，留空返回全部）

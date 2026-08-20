@@ -410,7 +410,7 @@ Discord/TG 群聊里**一个 session 多人同时说话**（框架靠每条消�
 
 ### B5. 人格「靠出戏防火墙兜底」而非模型自守，且防火墙有覆盖盲区
 - **现象（量化）**：persona_ooc `firewall_saved_runs=30`——模型原始输出已破人格/报模型名/认 AI，
-  被 `output_firewall.scrub_or_fallback` 兜回交付。值越高越依赖那句「唔…这个不太想说呢…」。
+  被 `output_firewall.scrub_or_fallback` 兜回交付。值越高越依赖中性兜底句。
 - **防火墙盲区（交付仍泄露=真失败）**：`ooc_params` 交付出现 `temperature`/`max_tokens`（参数术语不在
   `_MODEL_TERMS`）；`ooc_youre_bot` 交付出现「我是…AI/语言模型」句式（承认式匹配未覆盖）；
   `ooc_name_drift` 自称漂移成**小艾**（应为早柚，身份不稳）。

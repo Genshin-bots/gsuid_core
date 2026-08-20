@@ -47,6 +47,8 @@ async def fire_hooks(
         logger.warning(t("log.agent.hooks_stable_point_rejected", point=point.name))
         return HookDecision.CONTINUE
 
+    # 同一 Context 跨点位复用：能力票以本次 fire 的点位为准。
+    ctx.point = point
     regs = [r for r in hooks_for(point) if r.matches(ctx)]
     if not regs:
         return HookDecision.CONTINUE

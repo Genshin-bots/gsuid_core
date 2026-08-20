@@ -102,10 +102,10 @@ def test_format_context_redacts_persona_surface_collision() -> None:
             )
 
     text = asyncio.run(_run())
-    assert "他人昵称（不是你）" in text
     assert "AcmeCorp" in text
     assert '"EastHill" = AcmeCorp' in text
-    assert '"FrostAlias" = 他人昵称（不是你）' in text
+    assert "FrostAlias" not in text
+    assert "他人昵称（不是你）" not in text
 
 
 def test_format_context_source_has_no_global_alias_table() -> None:

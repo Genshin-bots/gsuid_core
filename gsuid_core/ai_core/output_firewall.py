@@ -466,9 +466,9 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
     )
 
 
-# 连续重说仍命中时的角色化兜底（避免死循环）——调用方在第 N 次命中后改用它替换。
-PERSONA_FALLBACK_TEXT = "唔…这个不太想说呢…"
-# 机器腔 / 堆栈熔断专用（用户可见、短、角色可接受）
+# 连续重说仍命中时的中性兜底（避免死循环）——禁止抄任何人格口癖（AGENTS.md §1.9）。
+PERSONA_FALLBACK_TEXT = "这个不太想说呢。"
+# 机器腔 / 堆栈熔断专用（用户可见、短、人格中性）
 MACHINE_FALLBACK_TEXT = "额…出错了，稍后再试"
 
 

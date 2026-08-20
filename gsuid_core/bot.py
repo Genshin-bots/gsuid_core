@@ -292,7 +292,9 @@ class _Bot:
             if isinstance(message, str):
                 # 检查是否是 base64 图片
                 if message.startswith("base64://"):
-                    content = "[图片]"
+                    from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+                    content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "base64_image"
                 else:
                     content = message
@@ -318,11 +320,20 @@ class _Bot:
                 content = " ".join(text_parts)
                 if image_count > 0:
                     metadata["image_count"] = image_count
+                    from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+                    label = get_outbound_image_label()
+                    if label:
+                        content = f"{content} {label}".strip() if content else label
+                    elif not content:
+                        content = "[图片]"
             elif isinstance(message, Message):
                 if message.type == "text":
                     content = str(message.data)
                 elif message.type == "image":
-                    content = "[图片]"
+                    from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+                    content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "image"
                 else:
                     content = f"[{message.type}]"

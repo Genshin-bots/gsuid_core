@@ -15,5 +15,6 @@
   "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command で例外: keyword={keyword}",
   "log.handler.meta_received": "[Meta イベント受信]",
   "log.handler.meta_triggered": "[Meta イベント発火]",
-  "log.handler.same_msg_cd": "[GsCore][同一メッセージCD] {user_id} のメッセージを無視します！"
+  "log.handler.same_msg_cd": "[GsCore][同一メッセージCD] {user_id} のメッセージを無視します！",
+  "log.handler.duplicate_ws_bridge": "[GsCore] 同一アカウント {bot_self_id} の群 {group_id} が複数 WS アダプタ（{ws_ids}）でブリッジされています。群ごとにアダプタは一つにしてください。"
 }

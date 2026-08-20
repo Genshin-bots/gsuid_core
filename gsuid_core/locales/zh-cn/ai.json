@@ -611,5 +611,8 @@
   "log.ai.websearch_tavily_api_key_trying": "[WebSearch][Tavily] api_key ...{p0} 失败，尝试下一个",
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] 所有 api_key 均失败",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] 带上下文搜索: {query}, 返回 {p0} 条结果",
-  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果"
+  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果",
+  "log.ai.outbound_read_skip": "[Outbound] 读账本跳过: {e}",
+  "log.ai.outbound_purge_skip": "[Outbound] 过期清理跳过: {e}",
+  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] 拒发重复图 {res_id} group={group_id} 已于 {ts} 发送"
 }

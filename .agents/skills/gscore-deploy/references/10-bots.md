@@ -167,6 +167,12 @@ Core 内部按 `bot_id` 创建独立 `Bot` 实例：
 - 不同平台的事件互不干扰
 - 定时任务可针对单个 Bot 推送
 
+**红线：同一 `bot_self_id` 的同一群禁止双适配器桥接。**
+`session_id` 含 `WS_BOT_ID`，两个适配器连同一个 QQ 群会拆成两套历史/出站口，
+导致同图二发、引用消解失败。Core 检测到同一 `(bot_self_id, group_id)` 出现
+≥2 个 `WS_BOT_ID` 会打 warning。多 Bot 复用 Core 时请按**不同平台或不同账号**拆分，
+不要用 NoneBot2 + 另一条 onebot 同时进同一群。
+
 ## 10.5 适配器选择速查
 
 | 平台 | 首选适配器 |
