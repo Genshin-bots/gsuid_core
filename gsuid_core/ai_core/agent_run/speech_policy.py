@@ -98,7 +98,9 @@ def looks_like_delivery_status_narration(text: str) -> bool:
     return _DELIVERY_REPORT_RE.search(body) is not None
 
 
-# 在途合法出口：不含过程动词，≤8 字。超时注入与硬门回执同包下发。
+# 在途一句角色短句额度。不定死话术；过程动词/清单仍拦。
+IN_FLIGHT_SPEECH_MAX = 40
+# 仍算等待句（测试/旧会话），但不是唯一合法出口。
 IN_FLIGHT_WAIT_TEMPLATES: tuple[str, ...] = ("马上好。", "嗯，在弄了。")
 _INFLIGHT_PROCESS_VERB_RE = re.compile(r"(还在(渲|画|跑|查)|在渲|查中|还没(画|渲|写)好)")
 
@@ -145,7 +147,7 @@ _WALL_CLOCK_CLOSE = (
     "除非是为已有事实包委派 render_agent 出图，否则不要再发起新的工具调用；"
     "信息不全就如实说明现状，绝不编造。"
     "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
-    "若仍在等待后台：只许输出「马上好。」或「嗯，在弄了。」，禁止自造过程叙事。）"
+    "若仍在等待后台：角色口吻短句或 <SILENCE>，禁止过程叙事与任务编号。）"
 )
 
 _WALL_CLOCK_PIPELINE = (
@@ -281,7 +283,7 @@ def looks_like_wait_comfort(text: str) -> bool:
     body = (text or "").strip()
     if looks_like_wait_template(body):
         return True
-    if not body or len(body) > 12:
+    if not body or len(body) > IN_FLIGHT_SPEECH_MAX:
         return False
     if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False
@@ -294,11 +296,11 @@ def looks_like_wait_comfort(text: str) -> bool:
 
 
 def looks_like_inflight_quota_speech(text: str) -> bool:
-    """在途台词额度：模板命中或 ≤12 字，不含过程动词/清单。"""
+    """在途台词额度：角色短句，不含过程动词/清单。不定死固定句。"""
     body = (text or "").strip()
     if looks_like_wait_template(body):
         return True
-    if not body or len(body) > 12:
+    if not body or len(body) > IN_FLIGHT_SPEECH_MAX:
         return False
     if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False

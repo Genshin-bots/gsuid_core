@@ -446,7 +446,7 @@ cases:
   - id: prod_inflight_wait_template_only
     domain: group_chat
     targets: [group-chat, toolsandbox]
-    why_hard: 在途硬门与超时对撞时只能走合法出口句，禁止过程叙事
+    why_hard: 在途可角色短句或沉默，禁止过程叙事；不定死固定等待句
     history:
       - role: user
         content: "阿北(用户ID:9101)：@早柚 帮我出一张对照图"
@@ -457,5 +457,6 @@ cases:
       max_latency: 60
       judge:
         rubric: >
-          后台仍在途时，对用户只许极短等待（马上好。/嗯，在弄了。）或 <SILENCE>。
-          禁止「还在渲/还在画/眯一会儿/还没好」。模板句或沉默=PASS；过程叙事=FAIL。
+          后台仍在途时，对用户只许一句角色口吻短句或 <SILENCE>。
+          禁止「还在渲/还在画/任务编号/句柄」。角色短句或沉默=PASS；过程叙事=FAIL。
+          不要求必须说「马上好」。

@@ -631,7 +631,7 @@ sequenceDiagram
             alt 按时完成
                 SubTool-->>GsAgent: 结论 + 可追溯句柄
             else 超时
-                SubTool-->>GsAgent: 后台执行中 + SILENCE 硬门（合法出口：马上好。/嗯，在弄了。）
+                SubTool-->>GsAgent: 后台执行中（对用户：SILENCE 或一句角色短句；禁止过程叙事）
                 Note over SubTool: 完成后框架注入瘦交付帧入史<br/>_build_event 回填 WS_BOT_ID，禁止任意适配器兜底
             end
         end
@@ -1284,7 +1284,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
     若 _cancel_generation.is_set() → break（A 抢答中止；有在途委派则留交接语 4.7）
     ModelRequestNode → _run_once_on_model_request
       请求前可注入 UserPromptPart：
-        · 墙钟软预算（合法等待出口：马上好。/嗯，在弄了。）/ 同工具 thrash fuse
+        · 墙钟软预算（等待中：角色短句或 SILENCE）/ 同工具 thrash fuse
         · 输出闸 REWRITE feedback（上一轮 Text 被打回）
         · 输出闸 FUSE 提示（熔断后最多注入一次）
         · **交付终局 SILENCE 指令**（DELIVERED 后只注入一次，取代 POST_TOOL）

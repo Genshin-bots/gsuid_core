@@ -54,7 +54,36 @@ def test_wait_templates_are_legal_inflight_exit() -> None:
             wait_comfort_sent=False,
         )
         assert not blk, why
+    # 角色自行发挥的短句也是合法在途出口，不定死「马上好」
+    improv = "唔…等一下嘛"
+    assert looks_like_inflight_quota_speech(improv)
+    blk_i, why_i = should_block_user_visible_text(
+        "silence_only",
+        improv,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=False,
+    )
+    assert not blk_i, why_i
     assert not looks_like_inflight_quota_speech("唔…图还在渲…呼，再眯一小会儿就好")
+
+
+def test_inflight_prompts_do_not_hardgate_fixed_wait_phrases() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "gsuid_core" / "ai_core"
+    files = (
+        root / "agent_run" / "speech_policy.py",
+        root / "buildin_tools" / "subagent.py",
+        root / "persona" / "prompts.py",
+    )
+    for path in files:
+        src = path.read_text(encoding="utf-8")
+        assert "只许输出「马上好" not in src, path.name
+        assert "合法出口「马上好" not in src, path.name
+        assert "在途除「马上好" not in src, path.name
 
 
 def test_lean_delivery_keeps_handle_and_ordinal() -> None:

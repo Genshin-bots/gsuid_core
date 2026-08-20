@@ -726,9 +726,9 @@ async def _dispatch_via_kanban(
             return (
                 f"⏳ 子任务后台执行中（已同步等 {int(waited)}s，将自动回灌）。"
                 f"task#{root.ordinal} / {pid} / 句柄 {delegation_handle(root.id)}\n"
-                "**硬门**：本 tool_return 不是终局结论。"
-                "你必须只输出 <SILENCE>，或合法出口「马上好。」/「嗯，在弄了。」（≤8字）。"
-                "**禁止**对用户说「还在写/还没好/等会儿/任务编号/眯一会儿」及任何过程动词；"
+                "本 tool_return 不是终局结论。"
+                "对用户只可 <SILENCE>，或一句角色口吻短句"
+                "（禁止过程动词、任务编号、句柄、编排词）。"
                 "禁止再 create_subagent 同任务。\n"
                 "完成后自动回灌。用户之后追问进度时，用 find_tools 召回 check_delegation"
                 "（句柄只进工具参数，绝不写进给用户看的台词）。"
