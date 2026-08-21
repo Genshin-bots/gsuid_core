@@ -70,6 +70,30 @@ def test_wait_templates_are_legal_inflight_exit() -> None:
     assert not looks_like_inflight_quota_speech("唔…图还在渲…呼，再眯一小会儿就好")
 
 
+def test_function_tool_detected_even_if_text_part_comes_first() -> None:
+    """同响应任意函数工具都算中间态，不按工具名白名单。"""
+    from pathlib import Path
+
+    from pydantic_ai.messages import TextPart, ToolCallPart, NativeToolCallPart
+
+    from gsuid_core.ai_core.agent_run.loop import _response_has_function_tool_call
+
+    thinking = TextPart(content="让我先查一下再决定怎么回。")
+    for name in ("find_tools", "web_search_tool", "read_handle", "send_message_by_ai"):
+        call = ToolCallPart(tool_name=name, args="{}")
+        assert _response_has_function_tool_call([thinking, call]) is True
+        assert _response_has_function_tool_call([call, thinking]) is True
+    assert _response_has_function_tool_call([thinking]) is False
+    hosted = NativeToolCallPart(tool_name="web_search", args="{}")
+    assert _response_has_function_tool_call([thinking, hosted]) is False
+    src = (Path(__file__).resolve().parent.parent / "gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
+    assert "_saw_tool_call_this_turn = _response_has_function_tool_call" in src
+    helper = src.split("def _response_has_function_tool_call", 1)[1].split("class LoopPhase", 1)[0]
+    assert "find_tools" not in helper
+    assert "create_subagent" not in helper
+    assert "tool_name ==" not in helper
+
+
 def test_inflight_prompts_do_not_hardgate_fixed_wait_phrases() -> None:
     from pathlib import Path
 

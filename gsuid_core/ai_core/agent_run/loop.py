@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Sequence
 
 from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
@@ -81,6 +81,11 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
     inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
+
+
+def _response_has_function_tool_call(parts: Sequence[object]) -> bool:
+    """同响应是否含函数工具（不含 hosted NativeToolCall）。"""
+    return any(isinstance(p, ToolCallPart) and not isinstance(p, NativeToolCallPart) for p in parts)
 
 
 class LoopPhase(RunOnceHost):
@@ -514,8 +519,9 @@ class LoopPhase(RunOnceHost):
                     break
 
         # 遍历大模型返回的具体片段 (Parts)
-        # 本轮是否已出现工具调用：用于 suppress_intermediate_text 时判断
-        _saw_tool_call_this_turn = False
+        # 同响应只要有函数工具，规划/内心 OS 常被弱模型写成 TextPart 且排在 ToolCall 前；
+        # 必须先扫再 suppress，否则中间态会发出去。hosted 搜索仍不置位（见下）。
+        _saw_tool_call_this_turn = _response_has_function_tool_call(node.model_response.parts)
         # 同 ModelResponse 多 TextPart：尖括号 attempt 只计 1 次
         output_gate.begin_response_batch(_require_context(st).extra)
         _ab_attempt_counted_this_response = False
@@ -592,9 +598,9 @@ class LoopPhase(RunOnceHost):
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                     continue
-                # suppress 中间碎碎念，但「委派/出图等待句」必须能出站（即使同响应里 Tool 在前）
-                _is_wait_comfort = looks_like_wait_comfort(_text)
-                if st.suppress_intermediate_text and _saw_tool_call_this_turn and not _is_wait_comfort:
+                # 同响应已有函数工具：规划/内心 OS/等待句都是中间态，一律不出站。
+                # 不按工具名特判。hosted 搜索不置位（答案就在 TextPart）。
+                if st.suppress_intermediate_text and _saw_tool_call_this_turn:
                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
                     continue
                 if self.create_by in _MAIN_PERSONA_CREATE_BY:
@@ -649,6 +655,7 @@ class LoopPhase(RunOnceHost):
                         or st.speech_policy == "silence_only"
                         or (st.delegated_render and not st.image_sent_this_run)
                     )
+                    _is_wait_comfort = looks_like_wait_comfort(_text)
                     if _is_wait_comfort or (_inflight_now and looks_like_inflight_quota_speech(_text)):
                         st.wait_comfort_sent = True
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
