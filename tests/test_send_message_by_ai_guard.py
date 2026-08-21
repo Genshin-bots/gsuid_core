@@ -87,6 +87,33 @@ def test_per_turn_throttle_rejects_third_call():
     print("[OK] 第 3 条被单轮硬限流拒发")
 
 
+def test_cs_caption_dropped_but_image_still_sent() -> None:
+    """客服收尾配图：台词丢掉，图片仍发。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="cs_s", user_id="u1")
+    ms.clear_turn_send_throttle("cs_s", "turn_cs")
+    wrap = "弄好了你自己看吧，细节都在图上。接下来如果还需要其他分析或别的对照，请告诉我一声就行。"
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        ctx = _make_ctx(ev, "turn_cs", bot)
+        result = _run(ms.send_message_by_ai(ctx, text=wrap, image_id="http://example.test/a.png"))
+
+    assert "消息已发送" in result
+    assert bot.send.await_count == 1
+    if scr.await_count:
+        assert scr.await_args is not None
+        sent_text = scr.await_args.args[1]
+        assert "请告诉" not in sent_text
+        assert "如果还需要" not in sent_text
+    print("[OK] 引导追问被剥，图片仍发出")
+
+
 def test_throttle_resets_on_new_turn_and_after_clear():
     from gsuid_core.ai_core.buildin_tools import message_sender as ms
 

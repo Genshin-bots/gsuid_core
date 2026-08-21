@@ -393,14 +393,15 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 `<SILENCE>`——杜绝「任务已完成，图已发送给…」这类交付后状态汇报 OOC。media-only 与
 **等待安慰句**不置位，避免「先应一声再干活」被当成终局。状态字段在 `RunOnceState`
 （`delivered_terminal`），信号来自工具侧 `extra["delivered_with_speech"]`（结构信号）。
+`send_message_by_ai` 的 `text=` 与 TextPart 共用 `should_block`（配图被拦则丢掉台词仍发图）。不是第二条说话人。
 
 **出图在途（2026-08-16）**：`create_subagent` 的 `agent_profile` 解析到 `render_agent` 时
 （只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途默认
-`<SILENCE>`；极短第一人称等待（≤12 字）可一句；清单/念白/第二执行者不占额度。
+`<SILENCE>`。开场接任务应一句必须出站（**不按 12 字**，对齐人格 `speech_len_hard`；
+编排词/过程动词/长结构仍拦）；之后默认静默。清单/念白/第二执行者不占额度。
 群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
 **同响应 TextPart + 函数工具（2026-08-21）**：`suppress_intermediate_text` 先扫整段响应，
-规划/内心 OS 不出站；主人格尚未发过的一句 inflight quota（接任务应）仍出站一次，
-避免用户以为卡住。后续静默不变。不按工具名特判。
+规划/内心 OS 不出站；主人格尚未发过的一句接任务应仍出站一次。后续静默不变。不按工具名特判。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

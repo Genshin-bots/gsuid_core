@@ -18,6 +18,7 @@ from gsuid_core.ai_core.interaction_scaffold import SLIM_GROUP_CORE_TOOLS
 from gsuid_core.ai_core.agent_run.speech_policy import (
     IN_FLIGHT_WAIT_TEMPLATES,
     looks_like_wait_template,
+    looks_like_task_accept_speech,
     should_block_user_visible_text,
     looks_like_inflight_quota_speech,
 )
@@ -70,22 +71,37 @@ def test_wait_templates_are_legal_inflight_exit() -> None:
     assert not looks_like_inflight_quota_speech("唔…图还在渲…呼，再眯一小会儿就好")
 
 
-def test_first_ack_with_tools_keeps_short_quota_not_planning() -> None:
-    """同响应有工具：极短接任务应出站一次；规划句仍压。不按工具名特判。"""
+def test_first_ack_with_tools_keeps_accept_speech_not_planning_dump() -> None:
+    """同响应有工具：接任务应出站一次，不按 12 字；多段规划仍压。不按工具名特判。"""
     from pathlib import Path
 
     from gsuid_core.ai_core.agent_run.loop import _keep_first_ack_with_tools
 
-    short = "唔…又要写报告…好麻烦…"
-    assert looks_like_inflight_quota_speech(short)
-    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=short) is True
-    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=True, text=short) is False
-    assert _keep_first_ack_with_tools(create_by="CapabilityAgent", wait_comfort_sent=False, text=short) is False
-    planning = "让我先查一下再决定怎么回。"
-    assert looks_like_inflight_quota_speech(planning) is False
-    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=planning) is False
+    accept = "唔…上海广州深圳北京四个城市6年的曲线…好麻烦…"
+    assert len(accept) > 12
+    assert looks_like_inflight_quota_speech(accept) is False
+    assert looks_like_task_accept_speech(accept) is True
+    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=accept) is True
+    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=True, text=accept) is False
+    assert _keep_first_ack_with_tools(create_by="CapabilityAgent", wait_comfort_sent=False, text=accept) is False
+    dump = "这是重任务。\n先委派收集事实包。\n回来再出图。"
+    assert looks_like_task_accept_speech(dump) is False
+    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=dump) is False
+    later = "…等数据回来再继续…"
+    assert looks_like_task_accept_speech(later) is True
+    blk, why = should_block_user_visible_text(
+        "silence_only",
+        later,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=True,
+    )
+    assert blk and why == "silence_only_or_async"
     src = (Path(__file__).resolve().parent.parent / "gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
     assert "if not _keep_first_ack_with_tools(" in src
+    assert "looks_like_task_accept_speech" in src
 
 
 def test_function_tool_detected_even_if_text_part_comes_first() -> None:

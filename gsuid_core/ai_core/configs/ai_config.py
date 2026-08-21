@@ -225,8 +225,8 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "suppress_intermediate_text": GsBoolConfig(
         "抑制中间文本",
-        "开启后, 本轮出现过函数工具时其前后规划/内心 OS 不发送给用户; 主人格一句极短接任务应"
-        "仍出站一次。无工具的最终回复照常发送。调用方显式传 True 时仍强制抑制。修改后即时生效",
+        "开启后, 本轮出现过函数工具时其前后规划/内心 OS 不发送给用户; 主人格一句接任务应"
+        "仍出站一次(不按12字)。无工具的最终回复照常发送。调用方显式传 True 时仍强制抑制。修改后即时生效",
         True,
     ),
     "agent_max_run_attempts": GsIntConfig(

@@ -195,11 +195,35 @@ async def send_message_by_ai(
     # 统一输出闸门（尖括号 + OOC …）：打回则 return feedback，放行继续发
     if text:
         from gsuid_core.ai_core.output_gate import tool_gate_feedback
+        from gsuid_core.ai_core.agent_run.speech_policy import (
+            strip_open_solicitations,
+            should_block_user_visible_text,
+        )
 
+        text = strip_open_solicitations(text)
         _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
-        _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
-        if _gate_fb is not None:
-            return _gate_fb
+        if text:
+            _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
+            if _gate_fb is not None:
+                if has_media:
+                    text = ""
+                else:
+                    return _gate_fb
+        if text:
+            _blk, _why = should_block_user_visible_text(
+                pol or "free",
+                text,
+                pending_async=False,
+                image_sent=has_media,
+                has_status_tool=has_st,
+                tool_calls_so_far=["send_message_by_ai"],
+            )
+            if _blk:
+                if has_media:
+                    # 图仍发；被拦的台词不出站（与 TextPart 同一套 should_block）
+                    text = ""
+                else:
+                    return "⚠️ 台词被话术闸拦住。改成角色短句，或只发媒体、不要邀约再问。"
 
     # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev

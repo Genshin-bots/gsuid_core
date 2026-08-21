@@ -9,6 +9,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     spoken_user_body_len,
     looks_like_report_speech,
     looks_like_numeric_recitation,
+    looks_like_task_accept_speech,
     should_block_user_visible_text,
     looks_like_inflight_quota_speech,
 )
@@ -310,6 +311,35 @@ def test_status_ok_with_tool_allows_progress() -> None:
         has_active_task=True,
     )
     assert not blk, why
+
+
+def test_task_accept_speech_not_capped_at_twelve() -> None:
+    """开场接任务应可以超过 12 字；在途第二句仍只一次。"""
+    accept = "唔…四个城市六年的对照曲线…好麻烦…"
+    assert len(accept) > 12
+    assert looks_like_task_accept_speech(accept)
+    blk, why = should_block_user_visible_text(
+        "silence_only",
+        accept,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=False,
+        speech_len_hard=150,
+    )
+    assert not blk, why
+    blk2, why2 = should_block_user_visible_text(
+        "silence_only",
+        accept,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=True,
+        speech_len_hard=150,
+    )
+    assert blk2 and why2 == "silence_only_or_async"
 
 
 def test_inflight_quota_allows_short_ack_once() -> None:

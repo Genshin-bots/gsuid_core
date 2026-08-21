@@ -58,7 +58,7 @@ class OrchestratorPhase(RunOnceHost):
             budget_gate: 本次 run 是否为预算入口。True 时（巡检 / proactive / 定时等自主
                 调用）超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，
                 按默认 False 只记账不二次拦截；在途嵌套子 agent 同样默认 False（只记账）。
-            suppress_intermediate_text: True 时抑制工具前后的规划/OS 文本；主人格一句极短接任务应除外。
+            suppress_intermediate_text: True 时抑制工具前后的规划/OS 文本；主人格一句接任务应除外（不按 12 字）。
             fake_done_retry: 本次是否为假完成闸的纠正重跑（护栏随调用栈传递而非实例状态，
                 避免共享 session 并发 run 间互相压制闸门 / 复位遗漏）。
         """

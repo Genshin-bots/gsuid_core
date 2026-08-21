@@ -98,8 +98,10 @@ def looks_like_delivery_status_narration(text: str) -> bool:
     return _DELIVERY_REPORT_RE.search(body) is not None
 
 
-# 在途极短安慰额度。不定死话术；过程动词/第二执行者/清单仍拦。
+# 在途极短安慰额度（委派后的第二句起）。不定死话术；过程动词/第二执行者/清单仍拦。
 IN_FLIGHT_SPEECH_MAX = 12
+# 开场接任务应：不按 12 字卡。默认对齐人格 speech_len_hard；结构垃圾才拦。
+FIRST_ACK_SPEECH_MAX = 150
 # 仍算等待句（测试/旧会话），但不是唯一合法出口。
 IN_FLIGHT_WAIT_TEMPLATES: tuple[str, ...] = ("马上好。", "嗯，在弄了。")
 _INFLIGHT_PROCESS_VERB_RE = re.compile(r"(还在(渲|画|跑|查)|在渲|查中|还没(画|渲|写)好)")
@@ -130,7 +132,10 @@ _ORCHESTRATION_NARRATION_RE = re.compile(
 _OPEN_SOLICIT_RE = re.compile(
     r"(要不要我|要不要|需不需要|还要我|要我再|要我继续|要我换|要我帮|"
     r"要不要继续|还想知道|还有(什么|哪)|有什么想|需要我|"
-    r"我再(帮|查|搜|找)|我可以再)",
+    r"我再(帮|查|搜|找)|我可以再|"
+    r"如果还需要|若还需要|如还需|接下来如果|"
+    r"请告诉|有其他(需要|问题|想问)|随时(问|叫|找|吩咐)|"
+    r"欢迎继续|需要的话)",
     re.IGNORECASE,
 )
 
@@ -299,12 +304,19 @@ def looks_like_wait_comfort(text: str) -> bool:
     return bool(_WAIT_COMFORT_RE.search(body))
 
 
-def looks_like_inflight_quota_speech(text: str) -> bool:
-    """在途台词额度：极短角色句，不含过程动词/第二执行者/清单。"""
+def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
+    """开场接任务应：一句角色发言，表示接下来去做。
+
+    不按 12 字卡死（会话痨人格会复述任务）。拦的是结构垃圾：编排词、过程动词、
+    长结构/念数、多段规划。max_len≤0 时用 FIRST_ACK_SPEECH_MAX。
+    """
     body = (text or "").strip()
     if looks_like_wait_template(body):
         return True
-    if not body or len(body) > IN_FLIGHT_SPEECH_MAX:
+    if not body or is_silence_marker(body):
+        return False
+    cap = max_len if max_len > 0 else FIRST_ACK_SPEECH_MAX
+    if len(body) > cap:
         return False
     if has_orchestration_narration(body):
         return False
@@ -314,7 +326,9 @@ def looks_like_inflight_quota_speech(text: str) -> bool:
         return False
     if looks_like_empty_handoff(body):
         return False
-    if body.count("\n") >= 3:
+    if looks_like_process_meta(body):
+        return False
+    if body.count("\n") >= 2:
         return False
     if claims_premature_delivery(body) and not looks_like_wait_comfort(body):
         return False
@@ -323,6 +337,11 @@ def looks_like_inflight_quota_speech(text: str) -> bool:
     if len(_MD_HEADING_RE.findall(body)) >= 1:
         return False
     return True
+
+
+def looks_like_inflight_quota_speech(text: str) -> bool:
+    """在途第二句起的极短额度（≤12 字）。开场接任务应走 looks_like_task_accept_speech。"""
+    return looks_like_task_accept_speech(text, max_len=IN_FLIGHT_SPEECH_MAX)
 
 
 def has_orchestration_narration(text: str) -> bool:
@@ -486,9 +505,9 @@ def should_block_user_visible_text(
             return True, "post_image_too_long"
         return False, "post_image_ok"
 
-    # 异步在途：一句短额度（等待或短应）；清单/念白/完成腔不占额度、直接静默
+    # 异步在途：开场接任务应一句（不按 12 字）；其后默认静默。清单/念白/完成腔不占额度。
     if inflight or pol == "silence_only":
-        if looks_like_inflight_quota_speech(body) and not wait_comfort_sent:
+        if not wait_comfort_sent and looks_like_task_accept_speech(body, max_len=speech_len_hard):
             return False, "wait_comfort"
         return True, "silence_only_or_async"
 

@@ -60,8 +60,8 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     looks_like_wait_comfort,
     strip_open_solicitations,
     content_is_render_candidate,
+    looks_like_task_accept_speech,
     should_block_user_visible_text,
-    looks_like_inflight_quota_speech,
 )
 from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_name
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
@@ -93,17 +93,18 @@ def _keep_first_ack_with_tools(
     create_by: str,
     wait_comfort_sent: bool,
     text: str,
+    max_len: int = 0,
 ) -> bool:
-    """同响应有函数工具时，是否放行这一句极短接任务应。
+    """同响应有函数工具时，是否放行开场接任务应。
 
-    规划/内心 OS 仍压；主人格尚未出站过的 inflight quota（≤12 字、无过程动词/
-    第二执行者）出站一次，避免用户以为卡住。不按工具名特判。
+    规划/内心 OS 仍压。主人格尚未出站过的一句角色接任务应出站一次（不按 12 字）。
+    不按工具名特判。
     """
     if create_by not in _MAIN_PERSONA_CREATE_BY:
         return False
     if wait_comfort_sent:
         return False
-    return looks_like_inflight_quota_speech(text)
+    return looks_like_task_accept_speech(text, max_len=max_len)
 
 
 class LoopPhase(RunOnceHost):
@@ -616,13 +617,23 @@ class LoopPhase(RunOnceHost):
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                     continue
-                # 同响应已有函数工具：规划/内心 OS 不出站。主人格一句极短接任务应除外。
+                # 同响应已有函数工具：规划/内心 OS 不出站。主人格一句接任务应除外（不按 12 字）。
                 # 不按工具名特判。hosted 搜索不置位（答案就在 TextPart）。
+                _hard = 0
+                _detail = False
+                if self.create_by in _MAIN_PERSONA_CREATE_BY and self.persona_name:
+                    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+                    _pc = persona_config_manager.get_config(self.persona_name)
+                    _hard = int(_pc.get_config("speech_len_hard").data)
+                    q = st.ev.raw_text if st.ev is not None else ""
+                    _detail = bool(q) and ("详细" in q or "展开" in q or "总结一下" in q)
                 if st.suppress_intermediate_text and _saw_tool_call_this_turn:
                     if not _keep_first_ack_with_tools(
                         create_by=self.create_by,
                         wait_comfort_sent=st.wait_comfort_sent,
                         text=_text,
+                        max_len=_hard,
                     ):
                         logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
                         continue
@@ -630,15 +641,6 @@ class LoopPhase(RunOnceHost):
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
                     )
-                    _hard = 0
-                    _detail = False
-                    if self.persona_name:
-                        from gsuid_core.ai_core.persona.config import persona_config_manager
-
-                        _pc = persona_config_manager.get_config(self.persona_name)
-                        _hard = int(_pc.get_config("speech_len_hard").data)
-                        q = st.ev.raw_text if st.ev is not None else ""
-                        _detail = bool(q) and ("详细" in q or "展开" in q or "总结一下" in q)
                     _blk, _why = should_block_user_visible_text(
                         st.speech_policy,
                         _text,
@@ -679,9 +681,9 @@ class LoopPhase(RunOnceHost):
                         or (st.delegated_render and not st.image_sent_this_run)
                     )
                     _is_wait_comfort = looks_like_wait_comfort(_text)
-                    _quota = looks_like_inflight_quota_speech(_text)
-                    # 在途额度，或同响应工具的接任务应，都占这一次短应。
-                    if _is_wait_comfort or (_quota and (_inflight_now or _saw_tool_call_this_turn)):
+                    _accept = looks_like_task_accept_speech(_text, max_len=_hard)
+                    # 接任务应或在途短应都只占一次，避免再发「等数据回来」。
+                    if _is_wait_comfort or (_accept and (_inflight_now or _saw_tool_call_this_turn)):
                         st.wait_comfort_sent = True
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
                     _text = strip_open_solicitations(_text)

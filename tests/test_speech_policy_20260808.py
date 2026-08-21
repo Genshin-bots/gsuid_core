@@ -404,6 +404,33 @@ def test_long_task_wait_announce_allowed() -> None:
     )[0]
 
 
+def test_post_image_caption_blocks_open_solicit() -> None:
+    """发图配引导追问：与 TextPart 同一套 open_solicit 闸；角色短句仍放行。"""
+    from gsuid_core.ai_core.agent_run.speech_policy import has_open_solicitation
+
+    wrap = "弄好了你自己看吧，细节都在图上。接下来如果还需要其他分析或别的对照，请告诉我一声就行。"
+    assert len(wrap) > 40
+    assert has_open_solicitation(wrap)
+    blk, why = should_block_user_visible_text(
+        "framework_deliver",
+        wrap,
+        pending_async=False,
+        image_sent=True,
+        has_status_tool=False,
+        tool_calls_so_far=["send_message_by_ai"],
+    )
+    assert blk and why == "open_solicit"
+    close = "呼…弄好了…你看…"
+    assert not should_block_user_visible_text(
+        "silence_only",
+        close,
+        pending_async=False,
+        image_sent=True,
+        has_status_tool=False,
+        tool_calls_so_far=["send_message_by_ai"],
+    )[0]
+
+
 def test_post_image_closing_speech_allowed() -> None:
     """步骤 7：发图后短收尾应放行；长结构仍拦。"""
     close = "呼…弄好了…你看…"
