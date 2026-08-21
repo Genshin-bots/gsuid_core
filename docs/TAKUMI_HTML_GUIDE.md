@@ -477,7 +477,8 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 
 渲染引擎无 JS。要画对比/走势/占比，先调 `render_chart_spec` 拿 `<svg>` 再嵌进 HTML。
 pytakumi **丢弃 SVG `<text>`**；框架在 `render_html_to_image` 前把标注提升为 HTML 覆盖层
-（`rewrite_svg_charts_for_takumi`）。手写 SVG 同样适用。
+（`rewrite_svg_charts_for_takumi`），并去掉固定 px 宽高、按卡片栏宽 `width:100%` 缩放，
+避免 2 栏布局里 640/680 宽图撑破白框。手写 SVG 同样适用。
 
 ```python
 # 多实体对比：每个实体一个 series.name，不要把身份写进单柱 label
@@ -502,7 +503,7 @@ svg = await render_chart_spec(
 - 禁止用 `.track` 扁条 / 纯 CSS 色条冒充折线或柱图。
 - 类目名由工具保留（约 18 字），不要在 HTML 里再截成 8 字。
 
-回归：`tests/test_chart_encoding_and_inflight.py`。
+回归：`tests/test_chart_encoding_and_inflight.py`、`tests/test_svg_chart_rewrite.py`。
 
 ### 8.6 修饰色被基类盖掉（class 优先级）
 

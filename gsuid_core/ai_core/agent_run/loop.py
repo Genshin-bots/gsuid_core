@@ -88,6 +88,24 @@ def _response_has_function_tool_call(parts: Sequence[object]) -> bool:
     return any(isinstance(p, ToolCallPart) and not isinstance(p, NativeToolCallPart) for p in parts)
 
 
+def _keep_first_ack_with_tools(
+    *,
+    create_by: str,
+    wait_comfort_sent: bool,
+    text: str,
+) -> bool:
+    """同响应有函数工具时，是否放行这一句极短接任务应。
+
+    规划/内心 OS 仍压；主人格尚未出站过的 inflight quota（≤12 字、无过程动词/
+    第二执行者）出站一次，避免用户以为卡住。不按工具名特判。
+    """
+    if create_by not in _MAIN_PERSONA_CREATE_BY:
+        return False
+    if wait_comfort_sent:
+        return False
+    return looks_like_inflight_quota_speech(text)
+
+
 class LoopPhase(RunOnceHost):
     def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
@@ -598,11 +616,16 @@ class LoopPhase(RunOnceHost):
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                     continue
-                # 同响应已有函数工具：规划/内心 OS/等待句都是中间态，一律不出站。
+                # 同响应已有函数工具：规划/内心 OS 不出站。主人格一句极短接任务应除外。
                 # 不按工具名特判。hosted 搜索不置位（答案就在 TextPart）。
                 if st.suppress_intermediate_text and _saw_tool_call_this_turn:
-                    logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
-                    continue
+                    if not _keep_first_ack_with_tools(
+                        create_by=self.create_by,
+                        wait_comfort_sent=st.wait_comfort_sent,
+                        text=_text,
+                    ):
+                        logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
+                        continue
                 if self.create_by in _MAIN_PERSONA_CREATE_BY:
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
@@ -656,7 +679,9 @@ class LoopPhase(RunOnceHost):
                         or (st.delegated_render and not st.image_sent_this_run)
                     )
                     _is_wait_comfort = looks_like_wait_comfort(_text)
-                    if _is_wait_comfort or (_inflight_now and looks_like_inflight_quota_speech(_text)):
+                    _quota = looks_like_inflight_quota_speech(_text)
+                    # 在途额度，或同响应工具的接任务应，都占这一次短应。
+                    if _is_wait_comfort or (_quota and (_inflight_now or _saw_tool_call_this_turn)):
                         st.wait_comfort_sent = True
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
                     _text = strip_open_solicitations(_text)

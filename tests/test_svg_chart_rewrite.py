@@ -26,11 +26,17 @@ def test_rewrite_lifts_svg_text_to_span() -> None:
     assert _LABEL in out
     assert f">{_LABEL}</text>" not in out.replace(" ", "")
     assert "<rect" in out
+    assert "width:100%" in out
+    assert "width:400px" not in out
+    assert "left:50.00%" in out
 
 
 def test_rewrite_idempotent_when_no_text() -> None:
     svg = '<svg width="10" height="10"><rect x="0" y="0" width="10" height="10" fill="#000"/></svg>'
-    assert rewrite_svg_charts_for_takumi(svg) == svg
+    once = rewrite_svg_charts_for_takumi(svg)
+    assert 'class="svg-wrap"' in once
+    assert 'width="100%"' in once
+    assert rewrite_svg_charts_for_takumi(once) == once
 
 
 def test_rewrite_passthrough_without_svg() -> None:
@@ -47,8 +53,9 @@ def test_rewrite_accumulates_ancestor_translate() -> None:
     )
     out = rewrite_svg_charts_for_takumi(svg)
     assert "NESTLBL" in out
-    assert "left:50.0px" in out
+    assert "left:25.00%" in out
     assert "top:" in out
+    assert "left:50.0px" not in out
 
 
 @pytest.mark.anyio
@@ -82,6 +89,64 @@ html,body{{margin:0;background:#ffffff;}}
     band = im.crop((0, 0, im.width, min(70, im.height)))
     dark = sum(1 for p in band.getdata() if p < 180)
     assert dark > 80, f"标题带深色像素过少 ({dark})，SVG 文字仍可能丢失"
+
+
+@pytest.mark.anyio
+async def test_wide_chart_fits_two_column_card() -> None:
+    """680px 图放进 2 栏卡片不得撑破红框。"""
+    pytakumi = pytest.importorskip("pytakumi")
+    _ = pytakumi
+    import io
+
+    from PIL import Image
+
+    from gsuid_core.utils.html_render import render_html_to_bytes
+
+    wide = (
+        '<svg width="680" height="260" viewBox="0 0 680 260">'
+        '<rect x="0" y="0" width="680" height="260" fill="#e8f0fe"/>'
+        '<rect x="40" y="40" width="600" height="180" fill="#3b82f6"/>'
+        f'<text x="340" y="30" font-size="18" fill="#111111" text-anchor="middle">{_LABEL}</text>'
+        "</svg>"
+    )
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html,body{{margin:0;background:#ffffff;}}
+.page{{width:800px;padding:20px;box-sizing:border-box;}}
+.card{{background:#ffffff;border:4px solid #ef4444;padding:16px;box-sizing:border-box;}}
+.grid{{display:flex;gap:12px;}}
+.cell{{flex:1;background:#f8fafc;}}
+</style></head><body><div class="page"><div class="card">
+<div class="grid"><div class="cell">{wide}</div><div class="cell">{wide}</div></div>
+</div></div></body></html>"""
+    rewritten = rewrite_svg_charts_for_takumi(html)
+    assert "width:680px" not in rewritten
+    assert 'width="100%"' in rewritten
+    data = await render_html_to_bytes(
+        rewritten,
+        max_width=800,
+        dpi=96,
+        default_font_size=16,
+        image_format="png",
+        root_max_width=800,
+    )
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    assert im.size[0] == 800
+    # 右缘应是页底白/卡片红，不能是图表蓝（越框）
+    edge_x = im.size[0] - 3
+    blues = 0
+    for y in range(im.size[1]):
+        pixel = im.getpixel((edge_x, y))
+        if not isinstance(pixel, tuple) or len(pixel) < 3:
+            continue
+        r, g, b = pixel[0], pixel[1], pixel[2]
+        if not isinstance(r, int) or not isinstance(g, int) or not isinstance(b, int):
+            continue
+        if b > 180 and r < 100 and g < 180:
+            blues += 1
+    assert blues < 8, f"右缘出现图表蓝 {blues}px，图表仍越出卡片"
+    out_dir = Path(__file__).resolve().parent / "test_output"
+    out_dir.mkdir(exist_ok=True)
+    (out_dir / "svg_two_col_fit.png").write_bytes(data)
 
 
 @pytest.fixture(params=["asyncio"])

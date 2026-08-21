@@ -398,6 +398,9 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 （只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途默认
 `<SILENCE>`；极短第一人称等待（≤12 字）可一句；清单/念白/第二执行者不占额度。
 群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
+**同响应 TextPart + 函数工具（2026-08-21）**：`suppress_intermediate_text` 先扫整段响应，
+规划/内心 OS 不出站；主人格尚未发过的一句 inflight quota（接任务应）仍出站一次，
+避免用户以为卡住。后续静默不变。不按工具名特判。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

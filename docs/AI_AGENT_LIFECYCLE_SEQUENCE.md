@@ -1382,6 +1382,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
    在途默认 `<SILENCE>`；极短第一人称等待（≤12 字）可一句；清单/多点读数/第二执行者不占额度。
    活跃任务下「多点读数密度」拦为 `numeric_recitation`，**不进** `presentation_withheld`。
    `status_ok` 且已查状态工具时放行进度句。发图后另有一句短收尾额度（与在途额度分开）。
+   同响应若已有函数工具，`suppress_intermediate_text` 仍压规划/OS；主人格一句 inflight quota
+   接任务应除外（只一次），避免长时间任务开场完全静默。
 4. 主人格折叠卡：群聊 **不内嵌 inline_head**（summary + 句柄）；长 `create_subagent` 回执同样折成卡。
    反问时按需 `read_handle`，默认不当事实总线。交付回灌卡 `speech_expand=False`。
 5. `in_flight_short`：`has_active_task` 且剥壳后真人句 ≤48 字 → 跳过语境标签池与向量检索，

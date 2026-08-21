@@ -70,6 +70,24 @@ def test_wait_templates_are_legal_inflight_exit() -> None:
     assert not looks_like_inflight_quota_speech("唔…图还在渲…呼，再眯一小会儿就好")
 
 
+def test_first_ack_with_tools_keeps_short_quota_not_planning() -> None:
+    """同响应有工具：极短接任务应出站一次；规划句仍压。不按工具名特判。"""
+    from pathlib import Path
+
+    from gsuid_core.ai_core.agent_run.loop import _keep_first_ack_with_tools
+
+    short = "唔…又要写报告…好麻烦…"
+    assert looks_like_inflight_quota_speech(short)
+    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=short) is True
+    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=True, text=short) is False
+    assert _keep_first_ack_with_tools(create_by="CapabilityAgent", wait_comfort_sent=False, text=short) is False
+    planning = "让我先查一下再决定怎么回。"
+    assert looks_like_inflight_quota_speech(planning) is False
+    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=planning) is False
+    src = (Path(__file__).resolve().parent.parent / "gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
+    assert "if not _keep_first_ack_with_tools(" in src
+
+
 def test_function_tool_detected_even_if_text_part_comes_first() -> None:
     """同响应任意函数工具都算中间态，不按工具名白名单。"""
     from pathlib import Path

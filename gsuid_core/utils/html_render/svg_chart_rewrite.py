@@ -1,10 +1,12 @@
-"""把内联 SVG 的 ``<text>`` 提升为 HTML 覆盖层，供 pytakumi 绘制。
+"""把内联 SVG 改成随容器宽度缩放，并把 ``<text>`` 提升为 HTML 覆盖层。
 
 Takumi 对内联 ``<svg>`` 只实现形状元素，丢弃全部 ``<text>``。图表标注
-（标题 / 类目 / 图例 / 数值）因此会整页消失。本改写器：
+（标题 / 类目 / 图例 / 数值）因此会整页消失。固定 px 宽还会撑破分栏卡片。
+本改写器：
 
+- 去掉 SVG 固定 px 宽高，保留 viewBox，外层 ``width:100%``；
 - 形状留在 SVG 里；
-- 每个 ``<text>`` 按 x/y/font-size/fill/text-anchor 映射成绝对定位 ``<span>``。
+- 每个 ``<text>`` 按 viewBox 坐标映射成百分比定位 ``<span>``。
 
 只解析 SVG/HTML 结构属性，不按业务域分支。
 """
@@ -22,12 +24,19 @@ _VIEWBOX_RE = re.compile(r"viewBox\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _TRANSLATE_RE = re.compile(r"translate\(\s*([-\d.]+)(?:[,\s]+([-\d.]+))?\s*\)", re.IGNORECASE)
 
 _OVERLAY_CSS = (
-    ".svg-wrap{position:relative;display:block;line-height:0;}"
-    ".svg-wrap>svg{display:block;}"
+    ".svg-wrap{position:relative;display:block;width:100%;max-width:100%;"
+    "min-width:0;line-height:0;overflow:hidden;}"
+    ".svg-wrap>svg{display:block;width:100%;height:auto;max-width:100%;}"
     ".svg-label{position:absolute;line-height:1;white-space:nowrap;"
     'font-family:"MiSans","PingFang SC","Microsoft YaHei",sans-serif;'
     "pointer-events:none;}"
 )
+_WIDTH_HEIGHT_ATTR_RE = re.compile(
+    r"""\s(?:width|height)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
+    re.IGNORECASE,
+)
+_STYLE_ATTR_RE = re.compile(r"""\sstyle\s*=\s*(['"])(.*?)\1""", re.IGNORECASE | re.DOTALL)
+_FLUID_STYLE = "display:block;width:100%;height:auto"
 
 
 def _parse_attrs(attr_blob: str) -> dict[str, str]:
@@ -60,8 +69,10 @@ def _num_attr(attrs: dict[str, str], name: str, default: float) -> float:
 
 
 def _dim_from_open(open_tag: str, name: str) -> float | None:
-    m = re.search(rf"""(?:^|\s){name}\s*=\s*['"]?([\d.]+)""", open_tag, flags=re.I)
+    m = re.search(rf"""(?:^|\s){name}\s*=\s*['"]?([\d.]+)(%|px)?""", open_tag, flags=re.I)
     if m is None:
+        return None
+    if m.group(2) == "%":
         return None
     body = m.group(1)
     if body.count(".") > 1 or not body.replace(".", "").isdigit():
@@ -135,7 +146,13 @@ def _ancestor_translates(svg: str, text_starts: list[int]) -> list[tuple[float, 
     return [found[p] if p in found else (0.0, 0.0) for p in text_starts]
 
 
-def _span_from_text(inner: str, attrs: dict[str, str], extra_xy: tuple[float, float] = (0.0, 0.0)) -> str:
+def _span_from_text(
+    inner: str,
+    attrs: dict[str, str],
+    extra_xy: tuple[float, float] = (0.0, 0.0),
+    *,
+    box: tuple[float, float] = (640.0, 360.0),
+) -> str:
     body = _plain_text(inner)
     if not body:
         return ""
@@ -151,6 +168,13 @@ def _span_from_text(inner: str, attrs: dict[str, str], extra_xy: tuple[float, fl
     y += dy
     # SVG y 是基线；HTML top 是盒顶，上移约 0.8em
     top = y - fs * 0.82
+    bw, bh = box
+    if bw <= 0:
+        bw = 1.0
+    if bh <= 0:
+        bh = 1.0
+    left_pct = x / bw * 100.0
+    top_pct = top / bh * 100.0
     anchor = (attrs["text-anchor"] if "text-anchor" in attrs else "start").strip().lower()
     if anchor == "middle":
         tx = "translate(-50%,0)"
@@ -159,29 +183,59 @@ def _span_from_text(inner: str, attrs: dict[str, str], extra_xy: tuple[float, fl
     else:
         tx = "none"
     weight_css = f"font-weight:{weight};" if weight else ""
-    style = f"left:{x:.1f}px;top:{top:.1f}px;font-size:{fs:.1f}px;color:{fill};transform:{tx};{weight_css}"
+    style = f"left:{left_pct:.2f}%;top:{top_pct:.2f}%;font-size:{fs:.1f}px;color:{fill};transform:{tx};{weight_css}"
     return f'<span class="svg-label" style="{style}">{_esc_html(body)}</span>'
 
 
+def _force_fluid_svg(svg: str, w: float, h: float) -> str:
+    """去掉固定 px 宽高，保留 viewBox，让 SVG 随容器 100% 缩放。"""
+    end = svg.find(">")
+    if end == -1:
+        return svg
+    open_tag = svg[: end + 1]
+    rest = svg[end + 1 :]
+    open_tag = _WIDTH_HEIGHT_ATTR_RE.sub("", open_tag)
+    if _VIEWBOX_RE.search(open_tag) is None:
+        open_tag = re.sub(r"\s*/?>\s*$", f' viewBox="0 0 {w:.0f} {h:.0f}">', open_tag, count=1)
+    if _STYLE_ATTR_RE.search(open_tag) is not None:
+
+        def _merge_style(m: re.Match[str]) -> str:
+            quote = m.group(1)
+            body = m.group(2)
+            compact = body.replace(" ", "")
+            if "width:100%" in compact and "height:auto" in compact:
+                return m.group(0)
+            sep = "" if not body or body.rstrip().endswith(";") else ";"
+            return f"style={quote}{body}{sep}{_FLUID_STYLE}{quote}"
+
+        open_tag = _STYLE_ATTR_RE.sub(_merge_style, open_tag, count=1)
+        extras = ' width="100%"'
+    else:
+        extras = f' width="100%" style="{_FLUID_STYLE}"'
+    open_tag = re.sub(r"\s*/?>\s*$", extras + ">", open_tag, count=1)
+    return open_tag + rest
+
+
 def _rewrite_one_svg(svg: str) -> str:
+    w, h = _svg_size(svg)
     texts = list(_SVG_TEXT_RE.finditer(svg))
     if not texts:
-        return svg
+        if re.search(r"""\swidth\s*=\s*['"]?100%""", svg[:160], flags=re.I):
+            return svg
+        shapes = _force_fluid_svg(svg, w, h)
+        return f'<div class="svg-wrap" style="position:relative;width:100%;max-width:100%">{shapes}</div>'
     offsets = _ancestor_translates(svg, [t.start() for t in texts])
     spans: list[str] = []
     for t, extra in zip(texts, offsets):
-        spans.append(_span_from_text(t.group(2), _parse_attrs(t.group(1)), extra))
-    shapes = _SVG_TEXT_RE.sub("", svg)
-    w, h = _svg_size(svg)
+        spans.append(_span_from_text(t.group(2), _parse_attrs(t.group(1)), extra, box=(w, h)))
+    shapes = _force_fluid_svg(_SVG_TEXT_RE.sub("", svg), w, h)
     overlay = "".join(s for s in spans if s)
-    return f'<div class="svg-wrap" style="position:relative;width:{w:.0f}px;height:{h:.0f}px">{shapes}{overlay}</div>'
+    return f'<div class="svg-wrap" style="position:relative;width:100%;max-width:100%">{shapes}{overlay}</div>'
 
 
 def rewrite_svg_charts_for_takumi(html: str) -> str:
-    """内联 SVG 的 ``<text>`` 提升为 HTML 覆盖层；形状保留。幂等。"""
+    """内联 SVG 随容器宽度缩放；有 ``<text>`` 时提升为 HTML 覆盖层。幂等。"""
     if not html or "<svg" not in html.lower():
-        return html
-    if "<text" not in html.lower():
         return html
     out = _SVG_BLOCK_RE.sub(lambda m: _rewrite_one_svg(m.group(0)), html)
     if "svg-wrap" in out and ".svg-wrap{" not in out.replace(" ", ""):

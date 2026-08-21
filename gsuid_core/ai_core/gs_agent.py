@@ -1365,9 +1365,9 @@ class GsCoreAIAgent(RunOnceMixin):
             budget_gate: 本次 run 是否为预算入口。True（巡检 / proactive / 定时等自主调用）
                 时超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，按默认
                 False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
-            suppress_intermediate_text: True 时，本轮中**只要出现过 ToolCallPart**，其前后伴随的
-                文本片段都不会发送给用户，仅保留没有任何工具调用的最终文本回复。
-                用于多工具编排场景，避免中间步骤的碎碎念刷屏。
+            suppress_intermediate_text: True 时，本轮中**只要出现过函数 ToolCallPart**，其前后
+                伴随的规划/内心 OS 默认不发送。例外：主人格尚未出站过的一句极短接任务应
+                （inflight quota）仍发送一次。无工具的最终回复照常发送。
             turn_graph: 入口构建的 TurnGraph（可选）；缺省时在装配层现场构建。
             cheap_gate: CheapGate 成本档（可选）；驱动 light 零工具 / 群聊瘦保底。
 
