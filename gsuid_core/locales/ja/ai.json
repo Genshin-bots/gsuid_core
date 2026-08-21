@@ -252,6 +252,7 @@
   "log.ai.gscore_summarization_summary_length": "[GsCore][AI] 要約が完了しました。要約長: {p0} 文字",
   "log.ai.gscore_unable_obtain_bot": "[GsCore][AI] _Bot インスタンスを取得できず、mood_task が bg_tasks に登録されていません。Task が孤立する可能性があります",
   "log.ai.gscore_usage_stats_mode_config": "[GsCore] 不明な usage_stats_mode 設定: {mode}、auto にフォールバック",
+  "log.ai.gscoreai_convert_local_image_fail": "[GsCoreAI] ローカル画像の base64 への変換に失敗しました。元のパスにフォールバックします: {e}",
   "log.ai.gscoreai_convert_remote_image_fail": "[GsCoreAI] リモート画像の base64 への変換に失敗しました。元の URL にフォールバックします: {e}",
   "log.ai.gscoreai_image_materialization_url_fail": "[GsCoreAI] 画像マテリアライズに失敗しました（URL の期限切れの可能性）。画像をスキップします: {p0} ({e})",
   "log.ai.gscoreai_remote_image_materialized": "[GsCoreAI] リモート画像を base64 DataURI にマテリアライズしました（{mime}、{p0} バイト）",

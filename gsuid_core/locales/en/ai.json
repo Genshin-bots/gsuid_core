@@ -252,6 +252,7 @@
   "log.ai.gscore_summarization_summary_length": "[GsCore][AI] Summarization complete; summary length: {p0} characters",
   "log.ai.gscore_unable_obtain_bot": "[GsCore][AI] Unable to obtain _Bot instance; mood_task was not registered in bg_tasks, which may orphan the Task",
   "log.ai.gscore_usage_stats_mode_config": "[GsCore] Unknown usage_stats_mode config: {mode}, fell back to auto",
+  "log.ai.gscoreai_convert_local_image_fail": "[GsCoreAI] Failed to convert local image to base64; falling back to original path: {e}",
   "log.ai.gscoreai_convert_remote_image_fail": "[GsCoreAI] Failed to convert remote image to base64; falling back to original URL: {e}",
   "log.ai.gscoreai_image_materialization_url_fail": "[GsCoreAI] Image materialization failed (URL may have expired); skipping image: {p0} ({e})",
   "log.ai.gscoreai_remote_image_materialized": "[GsCoreAI] Remote image materialized as base64 DataURI ({mime}, {p0} bytes)",

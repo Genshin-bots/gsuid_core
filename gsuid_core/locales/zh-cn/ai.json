@@ -252,6 +252,7 @@
   "log.ai.gscore_summarization_summary_length": "[GsCore][AI] 摘要完成，摘要长度: {p0} 字符",
   "log.ai.gscore_unable_obtain_bot": "[GsCore][AI] 无法获取 _Bot 实例，mood_task 未被注册到 bg_tasks，可能导致 Task 游离",
   "log.ai.gscore_usage_stats_mode_config": "[GsCore] 未知的 usage_stats_mode 配置: {mode}, 已回退为 auto",
+  "log.ai.gscoreai_convert_local_image_fail": "[GsCoreAI] 本地图片转 base64 失败，回退原始路径: {e}",
   "log.ai.gscoreai_convert_remote_image_fail": "[GsCoreAI] 远程图片转 base64 失败，回退原始 URL: {e}",
   "log.ai.gscoreai_image_materialization_url_fail": "[GsCoreAI] 图片物化失败（URL 可能已过期），跳过图片: {p0} ({e})",
   "log.ai.gscoreai_remote_image_materialized": "[GsCoreAI] 远程图片已物化为 base64 DataURI ({mime}, {p0} bytes)",

@@ -464,21 +464,32 @@ async def handle_tool_result(
     return res_str
 
 
+def _file_to_data_uri(path: str) -> str:
+    with open(path, "rb") as fh:
+        data = fh.read()
+    mime = _guess_image_mime(path)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def _normalize_image_url(raw: str) -> str:
     """将各种图片格式统一转为可消费的 URL（HTTP 或 DataURI）
 
     Args:
-        raw: 原始图片标识，支持 http/https URL、base64:// 前缀、data:image/ 前缀、裸 base64
+        raw: 原始图片标识，支持 http/https URL、本地文件路径、
+            base64:// 前缀、data:image/ 前缀、裸 base64
 
     Returns:
         标准化的图片 URL
     """
-    if raw.startswith(("http", "https")):
+    if raw.startswith(("http://", "https://")):
         return raw
     if raw.startswith("base64://"):
-        return f"data:image/png;base64,{raw[10:]}"
+        return f"data:image/png;base64,{raw.removeprefix('base64://')}"
     if raw.startswith("data:image/"):
         return raw
+    # 只对带图片后缀的短路径读盘，避免对裸 base64 做 isfile
+    if len(raw) <= 4096 and raw.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")) and os.path.isfile(raw):
+        return _file_to_data_uri(raw)
     return f"data:image/png;base64,{raw}"
 
 
@@ -508,16 +519,23 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
     - http(s) URL：下载 → ``data:<mime>;base64,<...>``；下载失败时回退原 URL
       （不致命，行为不差于改动前）。
       当 ``strict=True`` 时下载失败会抛出异常而非静默回退，供调用方显式处理。
+    - 本地文件路径：读字节 → ``data:<mime>;base64,<...>``；读失败时同上。
     - base64:// / data:image/ / 裸 base64：交给 :func:`_normalize_image_url`
       处理即可，本就不会过期，无需下载。
 
     Args:
         raw: 原始图片标识。
-        strict: 是否严格模式。为 True 时下载失败抛出 RuntimeError，
-                为 False（默认）时下载失败回退原始 URL。
+        strict: 是否严格模式。为 True 时下载/读盘失败抛出 RuntimeError，
+                为 False（默认）时失败回退原始标识。
     """
     if not raw.startswith(("http://", "https://")):
-        return _normalize_image_url(raw)
+        try:
+            return _normalize_image_url(raw)
+        except OSError as e:
+            if strict:
+                raise RuntimeError(i18n_t("本地图片读取失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
+            logger.warning(i18n_t("log.ai.gscoreai_convert_local_image_fail", e=e))
+            return raw
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
