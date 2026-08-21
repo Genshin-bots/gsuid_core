@@ -439,6 +439,10 @@ class LoopPhase(RunOnceHost):
         st.last_event_at = None
         async with node.stream(agent_run.ctx) as request_stream:
             async for _event in request_stream:
+                if st.cancel_ev is not None and st.cancel_ev.is_set():
+                    st.generation_cancelled = True
+                    logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                    break
                 st.last_event_at = time.perf_counter()
                 if st.first_event_at is None:
                     st.first_event_at = st.last_event_at
@@ -538,6 +542,7 @@ class LoopPhase(RunOnceHost):
                         st.speech_policy = "silence_only"
                 if is_status_tool_name(part.tool_name):
                     st.has_status_tool_call = True
+                    _require_context(st).extra["has_status_tool"] = True
                 if part.tool_name == "send_message_by_ai":
                     st.image_sent_this_run = True
                     # 发图后解除异步静默，允许一句角色收尾（步骤 7）
@@ -778,39 +783,45 @@ class LoopPhase(RunOnceHost):
 
         final_user = st.final_user_message
         assert final_user is not None
-        async with _agent.iter(
-            final_user,
-            deps=_require_context(st),
-            message_history=self.history,
-            usage_limits=_require_limits(st),
-        ) as agent_run:
-            # 遍历每一步 Node
-            async for node in agent_run:
-                # A: 节点间隙检查抢答取消（后到消息已请求 abort）
-                if st.cancel_ev is not None and st.cancel_ev.is_set():
-                    st.generation_cancelled = True
-                    logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
-                    break
-                # 1. 发起大模型请求前的处理
-                if isinstance(node, ModelRequestNode):
-                    await self._run_once_on_model_request(st, node, agent_run)
+        self._history_iter_active = True
+        try:
+            async with _agent.iter(
+                final_user,
+                deps=_require_context(st),
+                message_history=self.history,
+                usage_limits=_require_limits(st),
+            ) as agent_run:
+                # 遍历每一步 Node
+                async for node in agent_run:
+                    # A: 节点间隙检查抢答取消（后到消息已请求 abort）
+                    if st.cancel_ev is not None and st.cancel_ev.is_set():
+                        st.generation_cancelled = True
+                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                        break
+                    # 1. 发起大模型请求前的处理
+                    if isinstance(node, ModelRequestNode):
+                        await self._run_once_on_model_request(st, node, agent_run)
+                        if st.generation_cancelled:
+                            break
 
-                # 2. 获取到大模型响应，准备调用工具或者输出文本 这里使用了 isinstance
-                # Pyright 就能明确知道此时 node 是 CallToolsNode 拥有 model_response 属性
-                elif isinstance(node, CallToolsNode):
-                    await self._run_once_on_call_tools(st, node, statistics_manager)
+                    # 2. 获取到大模型响应，准备调用工具或者输出文本 这里使用了 isinstance
+                    # Pyright 就能明确知道此时 node 是 CallToolsNode 拥有 model_response 属性
+                    elif isinstance(node, CallToolsNode):
+                        await self._run_once_on_call_tools(st, node, statistics_manager)
 
-                # 3. 运行结束节点
-                elif isinstance(node, End):
-                    logger.debug(i18n_t("log.agent.node_trigger_end"))
-                    logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
-                    self._session_logger.log_node_transition("End")
+                    # 3. 运行结束节点
+                    elif isinstance(node, End):
+                        logger.debug(i18n_t("log.agent.node_trigger_end"))
+                        logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
+                        self._session_logger.log_node_transition("End")
 
-        # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成。
-        # 在途委派不丢：根任务在库里，下轮由 build_task_context 注入，产物经邮箱回灌。
-        if st.generation_cancelled:
-            logger.info(i18n_t("log.agent.generation_aborted_no_history"))
-            return "" if st.output_type is None else None
+            # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成。
+            # 在途委派不丢：根任务在库里，下轮由 build_task_context 注入，产物经邮箱回灌。
+            if st.generation_cancelled:
+                logger.info(i18n_t("log.agent.generation_aborted_no_history"))
+                return "" if st.output_type is None else None
 
-        # 遍历完成后收尾
-        return await self._run_once_settle_result(st, agent_run, statistics_manager)
+            # 遍历完成后收尾
+            return await self._run_once_settle_result(st, agent_run, statistics_manager)
+        finally:
+            self._history_iter_active = False

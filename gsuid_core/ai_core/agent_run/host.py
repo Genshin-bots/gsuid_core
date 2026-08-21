@@ -50,6 +50,7 @@ class RunOnceHost:
     _last_attempt_pending_async: bool
     _last_attempt_has_status_tool: bool
     _cancel_generation: AsyncEvent
+    _history_iter_active: bool
     _consecutive_no_tool_rounds: int
     _last_drift_push_count: int
     _recent_tool_families: dict[str, int]

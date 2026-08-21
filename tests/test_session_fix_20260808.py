@@ -34,9 +34,11 @@ def test_tool_orchestration_has_delegation_first() -> None:
     assert "DELEGATION_FIRST" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "重任务" in SYSTEM_CONSTRAINTS or "委派" in SYSTEM_CONSTRAINTS
     assert "禁止" in SYSTEM_CONSTRAINTS and "工具名" in SYSTEM_CONSTRAINTS
-    # 长任务仍建议先等一句再委派，但不再写成硬七步
+    # 委派前后默认沉默；文案仍用「等待」指禁止把等待过程说给用户听
     assert "等待" in SYSTEM_CONSTRAINTS
     assert "等待" in TOOL_ORCHESTRATION_CONSTRAINTS
+    assert "先**一句等待" not in SYSTEM_CONSTRAINTS
+    assert "一句等待 →" not in TOOL_ORCHESTRATION_CONSTRAINTS
 
 
 def test_sayu_persona_analysis_must_delegate() -> None:

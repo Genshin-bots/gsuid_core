@@ -569,7 +569,7 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
         '长文尚未出图 → create_subagent(agent_profile="render_agent", task=句柄+版式)；',
         "禁止把句柄写进对用户台词。",
         "禁止为写台词去展开长文——句柄卡 summary 足够一句结论；出图节点自己读全文。",
-        "出图委派发出后本轮只许 <SILENCE> 或一句等待，禁止把事实包数字念成群聊台词。",
+        "出图委派发出后本轮默认 <SILENCE>，禁止把事实包数字念成群聊台词。",
     ]
     if cards:
         parts.append("产物句柄卡：")

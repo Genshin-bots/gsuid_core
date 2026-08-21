@@ -1319,7 +1319,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
                     1) SILENCE / 本轮去重 / 中间文本抑制
                     2) **speech_policy.should_block**（delivered/silence_only/…
                        话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报；
-                       pending_async 或 render_inflight → 只放行一句等待；
+                       pending_async 或 render_inflight → 默认 SILENCE，极短等待可一次；
                        多点读数密度 → numeric_recitation 丢弃（不进 INV-4），
                        记原因后 settle 走 render 纠正；FileOS 折叠的多点检索仍武装出图）
                     3) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
@@ -1379,7 +1379,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 2. ToolReturn：异步 ack / 完成回执确认在途（`render_ack_seen`）；失败且未 ack 则回滚静默，
    避免整轮哑火。`pending_async` 期间不注入 POST_TOOL（那会提醒模型「再说一句」）。
 3. `should_block_user_visible_text(..., render_inflight=, has_active_task=)`：
-   在途台词额度 **一句**（≤96 字）：等待安慰 **或** 短应；清单/多点读数/完成腔不占额度、直接静默。
+   在途默认 `<SILENCE>`；极短第一人称等待（≤12 字）可一句；清单/多点读数/第二执行者不占额度。
    活跃任务下「多点读数密度」拦为 `numeric_recitation`，**不进** `presentation_withheld`。
    `status_ok` 且已查状态工具时放行进度句。发图后另有一句短收尾额度（与在途额度分开）。
 4. 主人格折叠卡：群聊 **不内嵌 inline_head**（summary + 句柄）；长 `create_subagent` 回执同样折成卡。

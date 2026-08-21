@@ -73,6 +73,13 @@ def test_post_tool_contracts_split_persona_vs_capability() -> None:
     assert "render_html_to_image" not in fail_c or "禁止" in fail_c
 
 
+def test_research_agent_not_default_transient() -> None:
+    from gsuid_core.ai_core.buildin_tools.subagent import _TRANSIENT_DEFAULT_PROFILES
+
+    assert "research_agent" not in _TRANSIENT_DEFAULT_PROFILES
+    assert "internal_reporter" in _TRANSIENT_DEFAULT_PROFILES
+
+
 def test_incomplete_delivery_detects_process_only() -> None:
     from gsuid_core.ai_core.buildin_tools.subagent import (
         looks_like_incomplete_subagent_delivery,

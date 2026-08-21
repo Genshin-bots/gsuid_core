@@ -3,8 +3,8 @@
 与业务域词表无关；用 turn 来源、交付态、句式结构判定。
 
 期望阶段（长信息任务）：
-1 接任务可短应 → 2 检索/委派决策不发言 → 3 委派前一句「会比较久」
-→ 4/5/6 子代理静默 → 7 发图后一句收尾。
+1 接任务可短应 → 2 检索/委派决策不发言 → 3 委派前后默认 SILENCE
+→ 4/5/6 子任务静默 → 7 发图后一句收尾。
 """
 
 from __future__ import annotations
@@ -98,26 +98,28 @@ def looks_like_delivery_status_narration(text: str) -> bool:
     return _DELIVERY_REPORT_RE.search(body) is not None
 
 
-# 在途一句角色短句额度。不定死话术；过程动词/清单仍拦。
-IN_FLIGHT_SPEECH_MAX = 40
+# 在途极短安慰额度。不定死话术；过程动词/第二执行者/清单仍拦。
+IN_FLIGHT_SPEECH_MAX = 12
 # 仍算等待句（测试/旧会话），但不是唯一合法出口。
 IN_FLIGHT_WAIT_TEMPLATES: tuple[str, ...] = ("马上好。", "嗯，在弄了。")
 _INFLIGHT_PROCESS_VERB_RE = re.compile(r"(还在(渲|画|跑|查)|在渲|查中|还没(画|渲|写)好)")
 
-# 等待安慰 / 委派前「会比较久」声明（步骤 3）
+# 等待安慰 / 第一人称「这就去办」（不是第二个执行者）
 _WAIT_COMFORT_RE = re.compile(
     r"(等(一?下|会|会儿)|稍等|先等|等我|慢点|"
     r"(画|翻|弄|查|整).{0,6}(一下|会儿)|"
     r"先(翻|画|弄)|马上|很快|"
+    r"这就(去|来)?(翻|弄|查|办|看|整)|"
     r"(比较|有点|会)?(久|慢|费时|花(点|些)?时间)|"
     r"耐心|等着|先等着|得翻|得查|得弄|翻会儿|查会儿|"
     r"别急|慢慢|稍后|等等我)",
     re.IGNORECASE,
 )
 
-# 编排元话语：叙述内部 worker（结构=让 X 去/做 + 拉丁标识）
+# 编排元话语：叙述内部 worker（让/叫/派 + 非自称 + 去；或拉丁节点名）
 _ORCHESTRATION_NARRATION_RE = re.compile(
     r"(让|叫|派)\s*[A-Za-z][A-Za-z0-9_]{2,}\s*(去|来|出|画|渲|跑|执行|处理)|"
+    r"(让|叫|派)\s*(?!我|自己|你)([^\s，。！？、]{1,8})\s*去|"
     r"\b(render_agent|research_agent|create_subagent|agent_profile)\b|"
     r"\brender\b.{0,6}(出|画|渲)|"
     r"(出|画|渲).{0,6}\brender\b",
@@ -147,7 +149,7 @@ _WALL_CLOCK_CLOSE = (
     "除非是为已有事实包委派 render_agent 出图，否则不要再发起新的工具调用；"
     "信息不全就如实说明现状，绝不编造。"
     "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
-    "若仍在等待后台：角色口吻短句或 <SILENCE>，禁止过程叙事与任务编号。）"
+    "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
 )
 
 _WALL_CLOCK_PIPELINE = (
@@ -156,7 +158,7 @@ _WALL_CLOCK_PIPELINE = (
     "你必须立刻 "
     'create_subagent(agent_profile="render_agent", task=本轮事实包或 res_ 句柄) 出图；'
     "禁止新开检索；禁止长文当台词；禁止说「查完了/资料里有/念不动」却不出图；"
-    "可先一句「等一下…」再委派；出图完成前其余 <SILENCE>；禁止念内部节点名。）"
+    "出图完成前其余 <SILENCE>；禁止念内部节点名。）"
 )
 
 _RENDER_DELEGATE_NUDGE = (
@@ -279,11 +281,13 @@ def looks_like_wait_template(text: str) -> bool:
 
 
 def looks_like_wait_comfort(text: str) -> bool:
-    """是否短等待安慰或「会比较久」委派声明（步骤 3，可发一次）。"""
+    """是否极短等待安慰或第一人称「这就去办」（可发一次）。"""
     body = (text or "").strip()
     if looks_like_wait_template(body):
         return True
     if not body or len(body) > IN_FLIGHT_SPEECH_MAX:
+        return False
+    if has_orchestration_narration(body):
         return False
     if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False
@@ -296,11 +300,13 @@ def looks_like_wait_comfort(text: str) -> bool:
 
 
 def looks_like_inflight_quota_speech(text: str) -> bool:
-    """在途台词额度：角色短句，不含过程动词/清单。不定死固定句。"""
+    """在途台词额度：极短角色句，不含过程动词/第二执行者/清单。"""
     body = (text or "").strip()
     if looks_like_wait_template(body):
         return True
     if not body or len(body) > IN_FLIGHT_SPEECH_MAX:
+        return False
+    if has_orchestration_narration(body):
         return False
     if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False
@@ -525,11 +531,9 @@ def should_block_user_visible_text(
         return False, "ok"
 
     if pol == "status_ok":
-        # 追问进度：应先查工具；零工具却报状态 → 拦（由 settle 再 nudge）
-        if not has_status_tool and not tool_calls_so_far and len(body) > 8:
-            # 极短「嗯」类放行价值低；进度句必须有工具
-            if _STATUS_INQUIRY_RE.search(body) or claims_premature_delivery(body) or len(body) > 15:
-                return True, "status_without_tool"
+        # 追问进度：零工具不得对用户报状态/完成（含极短句）
+        if not has_status_tool and not tool_calls_so_far:
+            return True, "status_without_tool"
         return False, "ok"
 
     # 长度只写角色卡。硬拦会吞 by_bot 群聊回复（纠正/INV-4 未接此原因）。
@@ -608,6 +612,18 @@ def content_is_render_candidate(
             return True
         return False
     return False
+
+
+def should_mark_speech_delivered(*, text: str, has_media: bool) -> bool:
+    """send_message 是否置交付终局：媒体配台词，或非等待的纯文本。"""
+    body = (text or "").strip()
+    if has_media:
+        return bool(body)
+    if not body:
+        return False
+    if looks_like_wait_comfort(body):
+        return False
+    return True
 
 
 def is_status_tool_name(name: str) -> bool:

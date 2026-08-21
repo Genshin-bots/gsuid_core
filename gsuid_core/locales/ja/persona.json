@@ -2,6 +2,7 @@
   "log.persona.groupcontext_get_group_name_fail": "[GroupContext] データベースからのグループ名取得に失敗: {e}",
   "log.persona.groupcontext_get_group_profile_fail": "[GroupContext] グループプロファイル概要の取得に失敗: {e}",
   "log.persona.init_skip_ai_master_switch_off": "[Persona] AI 全体スイッチがオフのため、デフォルト Persona の初期化をスキップ",
+  "log.persona.default_card_synced_from_code": "[Persona] コード内のデフォルト人格カードをデータディレクトリへ同期した",
   "log.persona.migrated_name_voice": "[Persona] '{persona_name}' の voice_anchor を config.json から {_VOICE_ANCHOR_FILENAME} へ移行した",
   "log.persona.mood_name_group_id": "[Mood] {persona_name}@{group_id}: {p0}（強度: {p1:.2f}、トリガー: {p2}）",
   "log.persona.mood_persona_name_group_id_reset": "[Mood] {persona_name}@{group_id}: 気分をリセットした",

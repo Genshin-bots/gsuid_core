@@ -2,6 +2,7 @@
   "log.persona.groupcontext_get_group_name_fail": "[GroupContext] 从数据库获取群聊名称失败: {e}",
   "log.persona.groupcontext_get_group_profile_fail": "[GroupContext] 获取群聊画像摘要失败: {e}",
   "log.persona.init_skip_ai_master_switch_off": "[Persona] AI总开关已关闭，跳过默认Persona初始化",
+  "log.persona.default_card_synced_from_code": "[Persona] 已将代码中的默认人格卡同步到数据目录",
   "log.persona.migrated_name_voice": "[Persona] 已将 '{persona_name}' 的 voice_anchor 从 config.json 迁出到 {_VOICE_ANCHOR_FILENAME}",
   "log.persona.mood_name_group_id": "[Mood] {persona_name}@{group_id}: {p0} (强度: {p1:.2f}, 触发: {p2})",
   "log.persona.mood_persona_name_group_id_reset": "[Mood] {persona_name}@{group_id}: 情绪已重置",

@@ -202,11 +202,10 @@ _KANBAN_INLINE_WAIT_TIMEOUT_SEC = 5.0
 # 轮询间隔已收敛到 control.delegation.await_delegation；此处保留常量仅为兼容引用
 _KANBAN_INLINE_POLL_INTERVAL_SEC = 0.5
 
-# 文本结论类能力代理：默认同步 ad-hoc（transient），不建看板卡、不经调度排队。
-# code / plugin_dev 仍默认 Kanban（需要可追溯产物与审批）。
+# 纯 lookup 默认同步 ad-hoc（transient），不建看板卡。
+# 外部检索默认 Kanban：超时可回灌，取消不会把事实包扔掉。
 _TRANSIENT_DEFAULT_PROFILES = frozenset(
     {
-        "research_agent",
         "internal_reporter",
         "memory_curator",
         "scheduler_assistant",
@@ -237,7 +236,7 @@ async def create_subagent(
     - 检索综合：目标 + 范围；交付须含条目/数字/**来源**/**时点**。
     - 出图：粘贴完整事实包（或 res_ 句柄）+ 可选版式偏好；写明**禁止再检索**。
     - 禁止把「漂亮出图」派给 research；禁止主人格自己写 HTML 调 render_*。
-    - 长任务：主人格须**先**对用户说一句等待，再调用本工具。
+    - 委派前后默认不对用户说话；短应走正文或 `<SILENCE>`，不要用本工具报过程。
 
     Args:
         ctx: 工具执行上下文
@@ -727,8 +726,8 @@ async def _dispatch_via_kanban(
                 f"⏳ 子任务后台执行中（已同步等 {int(waited)}s，将自动回灌）。"
                 f"task#{root.ordinal} / {pid} / 句柄 {delegation_handle(root.id)}\n"
                 "本 tool_return 不是终局结论。"
-                "对用户只可 <SILENCE>，或一句角色口吻短句"
-                "（禁止过程动词、任务编号、句柄、编排词）。"
+                "对用户默认 <SILENCE>"
+                "（禁止过程动词、任务编号、句柄、编排词、叙述第二个执行者）。"
                 "禁止再 create_subagent 同任务。\n"
                 "完成后自动回灌。用户之后追问进度时，用 find_tools 召回 check_delegation"
                 "（句柄只进工具参数，绝不写进给用户看的台词）。"

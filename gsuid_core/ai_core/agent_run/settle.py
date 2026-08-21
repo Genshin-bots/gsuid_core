@@ -666,7 +666,7 @@ class SettlePhase(RunOnceHost):
                         elif len(_rs) > 120:
                             result_msg = "<SILENCE>"
                 elif (st.pending_async_delivery or st.delegated_render) and not is_silence_marker(_rs):
-                    # 步骤 3：异步在途可保留一句等待声明；其余静默
+                    # 在途默认静默；极短等待安慰可保留一次
                     if looks_like_wait_comfort(_rs) and not st.wait_comfort_sent:
                         result_msg = _rs
                     else:

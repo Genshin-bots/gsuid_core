@@ -390,13 +390,14 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 **DELIVERED 交付终局态（2026-08-10，P0 OOC 根治）**：在 `pre_send_gate` **之前**还有一道
 `speech_policy.should_block_user_visible_text` 话术闸（`agent_run/speech_policy.py`）。
 `send_message_by_ai` **带台词**成功交付后，本 run 置 `speech_policy="delivered"`，对用户只许
-`<SILENCE>`——杜绝「任务已完成，图已发送给…」这类交付后状态汇报 OOC。media-only 交付不置位、
-保留一句收尾额度。状态字段在 `RunOnceState`（`delivered_terminal`），信号来自工具侧
-`extra["delivered_with_speech"]`（结构信号，非文本关键词）。
+`<SILENCE>`——杜绝「任务已完成，图已发送给…」这类交付后状态汇报 OOC。media-only 与
+**等待安慰句**不置位，避免「先应一声再干活」被当成终局。状态字段在 `RunOnceState`
+（`delivered_terminal`），信号来自工具侧 `extra["delivered_with_speech"]`（结构信号）。
 
 **出图在途（2026-08-16）**：`create_subagent` 的 `agent_profile` 解析到 `render_agent` 时
-（只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途台词额度一句
-（等待或短应，≤96 字）；清单/念白不占额度。群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
+（只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途默认
+`<SILENCE>`；极短第一人称等待（≤12 字）可一句；清单/念白/第二执行者不占额度。
+群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

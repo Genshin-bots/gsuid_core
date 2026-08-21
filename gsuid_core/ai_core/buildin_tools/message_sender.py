@@ -185,6 +185,13 @@ async def send_message_by_ai(
             "（框架会自动发出，并自动处理换行分条 / 长文转图）。本轮请勿再调用本工具。"
         )
 
+    extra = tool_ctx.extra
+    pol = extra["speech_policy"] if "speech_policy" in extra and isinstance(extra["speech_policy"], str) else ""
+    has_st = extra["has_status_tool"] is True if "has_status_tool" in extra else False
+    has_media = bool(image_id or video_id or audio_id)
+    if pol == "status_ok" and not has_st and not has_media:
+        return "⚠️ 用户在追问进度：先 list_my_kanban_tasks / artifact_get_recent 查状态，再发。禁止空口报完成。"
+
     # 统一输出闸门（尖括号 + OOC …）：打回则 return feedback，放行继续发
     if text:
         from gsuid_core.ai_core.output_gate import tool_gate_feedback
@@ -356,11 +363,11 @@ async def send_message_by_ai(
         if throttle_key is not None:
             _PER_TURN_SEND_MESSAGE_COUNT[throttle_key] = _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) + 1
 
-        # 交付终局信号：**台词**已随工具发出（media-only 不算，留一句收尾额度）。
-        # loop 据此把本 run 置为 delivered 终局态——交付后对用户只许 <SILENCE>，
-        # 杜绝「任务已完成…」状态汇报 OOC（结构信号，非文本关键词判定）。
-        if text:
-            tool_ctx.extra["delivered_with_speech"] = True
+        # 交付终局：媒体配台词，或非等待纯文本。等待句不置位，避免掐死本轮工具。
+        from gsuid_core.ai_core.agent_run.speech_policy import should_mark_speech_delivered
+
+        if should_mark_speech_delivered(text=text, has_media=has_media):
+            extra["delivered_with_speech"] = True
 
         content_desc = []
         if text:

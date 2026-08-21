@@ -2,6 +2,7 @@
   "log.persona.groupcontext_get_group_name_fail": "[GroupContext] Failed to get group name from database: {e}",
   "log.persona.groupcontext_get_group_profile_fail": "[GroupContext] Failed to get group profile summary: {e}",
   "log.persona.init_skip_ai_master_switch_off": "[Persona] AI master switch is off, skipping default Persona initialization",
+  "log.persona.default_card_synced_from_code": "[Persona] Synced the bundled default persona card into the data directory",
   "log.persona.migrated_name_voice": "[Persona] Migrated '{persona_name}' voice_anchor from config.json to {_VOICE_ANCHOR_FILENAME}",
   "log.persona.mood_name_group_id": "[Mood] {persona_name}@{group_id}: {p0} (intensity: {p1:.2f}, trigger: {p2})",
   "log.persona.mood_persona_name_group_id_reset": "[Mood] {persona_name}@{group_id}: mood has been reset",

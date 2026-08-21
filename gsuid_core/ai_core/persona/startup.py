@@ -13,7 +13,7 @@ async def init_default_personas():
     初始化默认persona
 
     仓库附带的默认人格卡（产品种子，不是运行时口癖闸，见 AGENTS.md §1.9）。
-    目录里已有任意人格则只补缺这一份默认卡，不改已有卡。
+    缺卡则种子一份；已有默认卡则与代码同步。不改用户的其它人格。
     顺手把旧版本写在 ``config.json`` 里的 ``voice_anchor`` 裸字段搬到独立的
     ``voice_anchor.txt`` —— 必须在 ``_init_statistics`` 阶段
     ``start_heartbeat_inspector`` 触达 ``PersonaConfigManager.get_all_configs()``
@@ -25,7 +25,13 @@ async def init_default_personas():
         return
 
     persona = Persona("早柚")
-    if not persona.exists():
+    seeded = sayu_persona_prompt.strip()
+    if persona.exists():
+        current = (await persona.load_content()).strip()
+        if current != seeded:
+            await persona.save_content(sayu_persona_prompt)
+            logger.info(t("log.persona.default_card_synced_from_code"))
+    else:
         await persona.save_content(sayu_persona_prompt)
 
     # 一次性迁移：扫描所有 persona 目录, 把残留的 voice_anchor 字段搬出 config.json。

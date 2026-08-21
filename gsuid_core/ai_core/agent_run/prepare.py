@@ -183,6 +183,8 @@ class PreparePhase(RunOnceHost):
             "run_sent_texts": self._run_sent_texts,
             # 同引用透传：纠正轮里 dispute_directive 的申辩要能被外层 settle 读到
             DISPUTE_EXTRA_KEY: self._run_disputes,
+            "speech_policy": "free",
+            "has_status_tool": False,
         }
         if st.user_turn_id:
             st.run_extra["user_turn_id"] = st.user_turn_id
@@ -344,6 +346,7 @@ class PreparePhase(RunOnceHost):
             logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
         if not st.fw_msg and st.has_active_task:
             st.in_flight_short = spoken_user_body_len(st.last_user_question) <= 48
+        st.run_extra["speech_policy"] = st.speech_policy
 
         # 先钉一次：本轮 lean 必须带 marker，否则 _relean 会从持久 history 剥掉。
         self._inject_deepseek_rp_marker(st)

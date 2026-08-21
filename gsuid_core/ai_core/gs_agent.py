@@ -291,6 +291,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self._cancel_generation = asyncio.Event()
         # 当前锁内是否在跑框架回灌：与真人消息互不 supersede，只排队
         self._running_framework: bool = False
+        # iter 进行中禁止 compact 换掉 self.history（与 pydantic-ai 共用同一 list）
+        self._history_iter_active: bool = False
         # 4.7 supersede 交接语已删：在途根任务由 build_task_context 每轮从库注入。
         self.max_tokens = _max_tokens
         self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
@@ -424,8 +426,7 @@ class GsCoreAIAgent(RunOnceMixin):
            主 Agent 不会"对自己刚说过的话失忆"。
         2. 同步在 session_logger 记一条 `proactive_emission` entry，前端可按
            source 分桶展示。
-        3. 调用 extract_history()，复用 `_drop_orphan_tool_results` 兜底，
-           防止裸 TextPart 触发 pydantic_ai message_history 自洽性问题。
+        3. 非 iter 中才 compact；iter 内只追加，避免与 pydantic-ai 分叉。
 
         参考：plans/proactive_message_session_unification_20260529.md §3.5
         """
@@ -449,7 +450,10 @@ class GsCoreAIAgent(RunOnceMixin):
         - system_prompt 会话内只建一次、只追加契约到 user 侧（见 loop UserPromptPart）；
         - history 头部字节跨 compact 不变（``compact_session_history`` / keep_prefix）；
         - 禁止把角色锚点等消息插回头部（会整体平移前缀）。
+        iter 中途换 list 会让下一跳 ModelRequest 与缓存分叉，禁止。
         """
+        if self._history_iter_active:
+            return
         before: int = len(self.history)
         self.history, did_truncate = compact_session_history(
             self.history,

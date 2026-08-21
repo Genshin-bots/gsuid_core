@@ -38,6 +38,9 @@ def test_orchestration_and_premature_delivery() -> None:
     assert claims_premature_delivery(leak)
     assert claims_premature_delivery("画好了，你看")
     assert not claims_premature_delivery("唔…还在弄…再等等")
+    assert has_orchestration_narration("让帮手去查一下")
+    assert not has_orchestration_narration("让我去看看")
+    assert not has_orchestration_narration("我自己去办")
 
 
 def test_speech_block_policies() -> None:
@@ -82,7 +85,7 @@ def test_speech_block_policies() -> None:
     )
     assert blk3
 
-    # 进度追问：零工具不得报进度长句
+    # 进度追问：零工具不得报进度（含极短完成句）
     blk4, why4 = should_block_user_visible_text(
         "status_ok",
         "应该快好了吧，你再等一下应该就行了",
@@ -92,6 +95,15 @@ def test_speech_block_policies() -> None:
         tool_calls_so_far=[],
     )
     assert blk4 and why4 == "status_without_tool"
+    blk4s, why4s = should_block_user_visible_text(
+        "status_ok",
+        "做完了…zzz",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+    )
+    assert blk4s and why4s == "status_without_tool"
 
     # 查过工具后允许角色短句
     blk5, _ = should_block_user_visible_text(
