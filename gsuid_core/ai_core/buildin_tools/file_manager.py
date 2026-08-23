@@ -238,7 +238,7 @@ async def execute_file(
     args: Optional[str] = None,
 ) -> str:
     """
-    执行文件
+    加载并执行指定文件
 
     执行 FILE_PATH 目录下的脚本文件（如 .py, .bat, .sh 等）。
 
@@ -414,7 +414,7 @@ async def diff_file_content(
     file_path_2: str,
 ) -> str:
     """
-    对比两个文件的差异
+    查询两个文件的差异
 
     比较 FILE_PATH 目录下两个文件的差异，返回差异详情。
 

@@ -83,7 +83,7 @@ async def run_command(
     timeout: int = 0,
     work_dir: Optional[str] = None,
 ) -> str:
-    """在用户本地终端执行shell命令
+    """在用户本地终端执行并返回 shell 命令结果
 
     在用户本地终端执行shell命令 / 在服务器上执行一条系统命令(仅主人可用,受审批与白名单约束)。
 

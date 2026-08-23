@@ -192,7 +192,7 @@ async def evaluate_agent_mesh_capability(
     ctx: RunContext[ToolContext],
     user_goal: str,
 ) -> str:
-    """调用内部 capability_evaluator，对复合多代理任务做"现有能力是否覆盖"评估。
+    """查询内部能力网格，评估复合多代理任务现有能力是否覆盖。
 
     必须在 register_kanban_task 之前调用。返回结构化 JSON（已字符串化）：
     - covered: bool
@@ -253,7 +253,7 @@ async def register_kanban_task(
     recurring_until: Optional[str] = None,
     confirm_one_shot: bool = False,
 ) -> str:
-    """注册一棵 Kanban 任务树（主任务 + N 个子任务节点）。
+    """创建一棵 Kanban 任务树（主任务 + N 个子任务节点）。
 
     **⚠️ 周期任务请直接传 `recurring_trigger`（cron / interval 两种格式），
     不要枚举 add_once_task —— 后者一定撞 20 个待执行任务硬上限。**
@@ -716,7 +716,7 @@ async def respawn_subtask(
     new_params: Optional[Dict[str, Any]] = None,
     new_agent_profile: Optional[str] = None,
 ) -> str:
-    """复活某个 failed 子任务并重派执行。
+    """加载并重新派发某个 failed 子任务。
 
     Args:
         subtask_ref: 子任务引用句柄；形如 "周报任务#sub2" 或 "#sub2"（默认取最近根任务）。
@@ -757,7 +757,7 @@ async def respawn_subtask(
 
 @ai_tools(category="planning", capability_domain=_CAP)
 async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reason: str) -> str:
-    """主人格明确判断整棵任务树不应继续时调用：根任务 failed + 级联 failed 未完成子任务。
+    """停掉整棵任务树：根任务 failed，并级联 failed 未完成子任务。
 
     Args:
         task_ref_text: 任务自然语言引用（如 "周报任务""第3个"）。
@@ -803,7 +803,7 @@ async def artifact_put(
     artifact_kind: str = "output",
     file_path: str = "",
 ) -> str:
-    """登记一个产出 artifact（仅在 Kanban / ad-hoc 任务执行上下文中有效）。
+    """写入一个产出 artifact（仅在 Kanban / ad-hoc 任务执行上下文中有效）。
 
     自动绑定当前 root_task_id / task_id；返回 res 句柄供下游引用。
 

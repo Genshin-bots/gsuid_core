@@ -332,7 +332,7 @@ async def execute_shell_command(
     max_output: int = MAX_OUTPUT_SIZE,
 ) -> str:
     """
-    执行系统命令（安全增强版）
+    在服务器上执行并返回系统命令结果（安全增强版）
 
     在服务器上执行指定的Shell命令，返回命令输出结果。
     注意：此工具权限较高，会验证使用者是否是管理员。

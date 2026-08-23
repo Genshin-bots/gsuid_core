@@ -63,7 +63,7 @@ async def move_file(
     destination_path: str,
 ) -> str:
     """
-    移动文件
+    改写文件路径（移动）
 
     在 data/ai_core/artifacts 目录内将文件从一个位置移动到另一个位置。
     如果目标路径已存在文件或目录，操作将被拒绝（不允许覆盖）。
@@ -128,7 +128,7 @@ async def copy_file(
     overwrite: bool = False,
 ) -> str:
     """
-    复制文件
+    读取源文件并写入副本
 
     在 data/ai_core/artifacts 目录内将文件从一个位置复制到另一个位置。
 
@@ -192,7 +192,7 @@ async def pack_to_zip(
     zip_path: str,
 ) -> str:
     """
-    打包文件为 zip
+    读取文件并写入 zip 压缩包
 
     将 data/ai_core/artifacts 目录内的一个或多个文件/目录打包成 zip 压缩文件。
     多个源路径用英文逗号分隔。

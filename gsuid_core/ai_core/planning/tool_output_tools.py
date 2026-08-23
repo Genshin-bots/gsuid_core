@@ -226,7 +226,7 @@ async def grep_persisted_outputs(
     limit: int = 20,
     days: int = 7,
 ) -> str:
-    """近 N 天落盘全文 grep（默认 7 天）。"""
+    """检索近 N 天落盘全文（默认 7 天）。"""
     if not keyword.strip():
         return "⚠️ keyword 不能为空。"
     owner, _scope, err = _require_owner(ctx)

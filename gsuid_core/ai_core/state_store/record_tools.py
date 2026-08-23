@@ -304,7 +304,7 @@ async def record_update(
     scope: str = "auto",
 ) -> str:
     """
-    对集合内某条记录做**字段级合并更新**（保留 patch 未提及的字段）。
+    改写集合内某条记录的字段（合并更新，保留 patch 未提及的字段）。
 
     与 ``record_put`` 的区别：
     - ``record_put``：整条 payload 覆盖，patch 没提到的字段会丢。

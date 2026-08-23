@@ -388,7 +388,7 @@ async def validate_plugin(
     plugin_name: str,
 ) -> str:
     """
-    语法自检：对**工作区**里该插件所有 .py 文件做 py_compile，报告语法错误。
+    查询工作区里该插件所有 .py 的语法错误（py_compile）。
 
     在 copy_to_plugin_dir 安装之前调用，提前发现语法错误。注意它只查语法，发现不了
     import 错误或运行时错误——那些要靠 load_plugin_into_core 的返回信息发现。

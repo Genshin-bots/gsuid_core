@@ -52,7 +52,7 @@ async def check_delegation(
 
 @ai_tools(category="buildin", capability_domain="产物")
 async def dispute_directive(ctx: RunContext[ToolContext], reason: str) -> str:
-    """框架内部校验的观察与事实不符时用本工具申辩，而**不要**对用户解释。
+    """当框架内部校验的观察与事实不符时写入申辩，而**不要**对用户解释。
 
     典型场景：校验说「你把长信息念成了台词」但你写的是用户点名要的叙事文/代码；
     或说「已有事实包未出图」但本轮根本没查数。申辩后你上一条回复照原样交付，

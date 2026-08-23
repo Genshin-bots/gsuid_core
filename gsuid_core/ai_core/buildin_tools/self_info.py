@@ -249,7 +249,7 @@ async def query_self_episodes(
     ctx: RunContext[ToolContext],
     limit: int = 5,
 ) -> str:
-    """回忆你自己之前说过、做过的事（自我情景记忆）。
+    """查询你自己之前说过、做过的事（自我情景记忆）。
 
     什么时候用：
     - 用户回指你曾经的言行（"你之前说的""你上次答应我的""你不是说…吗"）。
