@@ -566,19 +566,23 @@ class TestHtmlRenderWrapper:
     def test_font_families(self) -> None:
         from gsuid_core.utils.html_render import _font_families
 
-        # 默认带 MiSans
+        # 默认带 MiSans；emoji 回退脸在后面
         families = _font_families(None)
         assert "MiSans" in families
+        assert "Twemoji Mozilla" in families
+        assert families.index("MiSans") < families.index("Twemoji Mozilla")
 
         # 自定义字体 + MiSans 兜底
         families = _font_families("CustomFont")
         assert "CustomFont" in families
         assert "MiSans" in families
+        assert "Twemoji Mozilla" in families
 
         # 通用族不额外添加
         families = _font_families("sans-serif")
         assert "sans-serif" not in families
         assert "MiSans" in families
+        assert "Twemoji Mozilla" in families
 
     def test_ensure_renderer_singleton(self) -> None:
         import gsuid_core.utils.html_render as hr

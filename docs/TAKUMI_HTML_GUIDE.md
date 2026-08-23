@@ -4,7 +4,7 @@
 >
 > 目标：让 agent 生成的 HTML 能被本项目稳定渲染成适合 IM 发送的图片。
 >
-> 最后验证：2026-08-15，`pytakumi==0.1.0`，Windows + 项目内置 `MiSansVF.ttf`（可变字体，wght 150–700）。
+> 最后验证：2026-08-23，项目内置 `MiSansVF.ttf`（wght 150–700）+ `TwemojiMozilla-colr.woff2`（emoji 回退）。
 
 ---
 
@@ -29,6 +29,7 @@ Takumi / pytakumi 是一个「HTML/CSS → 位图」的离线渲染引擎，适�
 项目中已有共享渲染器，会注册：
 
 - `MiSans`：中文主字体，来自 `gsuid_core/utils/fonts/MiSansVF.ttf`（可变字体；**不要**再注册静态 Bold 同名抢档）。
+- `Twemoji Mozilla`：emoji COLR 回退脸（`TwemojiMozilla-colr.woff2`）。引擎 `font_families` 为 MiSans 再 emoji；**不要** `subset_of` 挂到 MiSans。
 - `Mono`：等宽字体，自动查找 Consolas / Cascadia Mono / Menlo / DejaVu Sans Mono 等；找不到时回退 MiSans。
 
 所以中文内容必须走项目封装，否则可能出现中文豆腐块、缺字或代码不等宽。
@@ -408,21 +409,14 @@ white-space: pre-wrap;
 
 ### 7.4 安全符号
 
-MiSans 对部分符号覆盖不完整。优先使用以下符号：
+MiSans 对部分符号覆盖不完整。优先：
 
 ```text
-✓ ✔ √ ✕ × → ← ↑ ↓ ● ○ ◆ ★ · — ｜
+✓ ✕ × → ← ↑ ↓ ● ○ ◆ ★ · — ｜
 ```
 
-避免使用：
-
-```text
-✗ ✘ ▸
-```
-
-以及大量未验证的 emoji。
-
-项目模板层会把 `✗` / `✘` 归一化成 `✕`，但手写 HTML 时最好直接避免缺字符号。
+`✗` / `✘` / `▸` 在 MiSans 里没有字形；模板层会把 `✗` / `✘` 归一化成 `✕`。
+emoji（☔⚠📌 等）走 `Twemoji Mozilla` 回退脸；图标仍优先 `icon:mdi`。
 
 ---
 

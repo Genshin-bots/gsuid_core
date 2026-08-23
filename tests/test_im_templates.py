@@ -212,6 +212,47 @@ class TestMonoFont:
         assert '"Mono"' in html
 
 
+class TestEmojiFont:
+    def test_bundled_colr_font_exists(self) -> None:
+        import gsuid_core.utils.html_render as hr
+
+        assert hr._BUNDLED_EMOJI_FONT.is_file()
+        data = hr._find_emoji_font()
+        assert data is not None and len(data) > 1000
+
+    def test_emoji_font_registered(self) -> None:
+        import gsuid_core.utils.html_render as hr
+
+        hr._ensure_renderer(force=True)
+        data = hr._find_emoji_font()
+        if data is None:
+            pytest.skip("未找到 emoji COLR 字体")
+        assert hr._EMOJI_FONT_NAME in hr._font_families(None)
+
+    @pytest.mark.anyio
+    async def test_emoji_renders_chromatic_ink(self) -> None:
+        """☔ 走 COLR 回退脸，不应是无彩度的空心方框。"""
+        import io
+
+        from PIL import Image
+
+        import gsuid_core.utils.html_render as hr
+
+        hr._ensure_renderer(force=True)
+        html = (
+            '<div style="padding:20px;background:#eef4fb;color:#1a2332;'
+            'font-family:MiSans,sans-serif;font-size:40px">☔⚠📌你好</div>'
+        )
+        png = await hr.render_html_to_bytes(html, max_width=480, dpi=96)
+        assert png[:8] == PNG_MAGIC
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        chromatic = 0
+        for r, g, b in img.getdata():
+            if max(r, g, b) - min(r, g, b) > 40:
+                chromatic += 1
+        assert chromatic > 80, f"emoji 无彩色墨迹（chroma_pixels={chromatic}），仍是豆腐"
+
+
 # ─────────────────────────────────────────────
 # 真实渲染：8 个异步接口
 # ─────────────────────────────────────────────

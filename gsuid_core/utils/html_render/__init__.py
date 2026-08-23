@@ -43,10 +43,14 @@ except ImportError as e:  # pragma: no cover - 引导期依赖缺失
     text_to_pic = _missing_dependency("text_to_pic")
     set_glyph_cache_max_bytes = _missing_dependency("set_glyph_cache_max_bytes")
 
-# 框架内置中文 VF（与 PIL core_font 同源）。只注册这一张，勿再挂静态 Bold 抢 700 档。
+# 中文主脸（与 PIL core_font 同源）。勿再挂静态 Bold 抢 700 档。
 _DEFAULT_FONT_NAME = "MiSans"
 _MONO_FONT_NAME = "Mono"
+# COLR 回退（Twemoji Mozilla，CC-BY-4.0）。只进 font_families，禁止 subset_of。
+_EMOJI_FONT_NAME = "Twemoji Mozilla"
 _GLYPH_CACHE_BYTES = 64 * 1024 * 1024
+_FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+_BUNDLED_EMOJI_FONT = _FONTS_DIR / "TwemojiMozilla-colr.woff2"
 
 _renderer: Any = None
 _renderer_ready = False
@@ -59,13 +63,12 @@ def _find_mono_font() -> Optional[bytes]:
     真正的等宽效果，必须显式注册一个等宽字体。这里按「项目内置优先、
     常见系统字体兜底」的顺序查找，跨 Windows / macOS / Linux。
     """
-    fonts_dir = Path(__file__).resolve().parent.parent / "fonts"
     candidates: list[Path] = []
 
     # 1) 项目内置（任何 *mono* 命名的 ttf/otf）
-    if fonts_dir.is_dir():
-        candidates.extend(sorted(fonts_dir.glob("*[Mm]ono*.ttf")))
-        candidates.extend(sorted(fonts_dir.glob("*[Mm]ono*.otf")))
+    if _FONTS_DIR.is_dir():
+        candidates.extend(sorted(_FONTS_DIR.glob("*[Mm]ono*.ttf")))
+        candidates.extend(sorted(_FONTS_DIR.glob("*[Mm]ono*.otf")))
 
     # 2) 常见系统等宽字体
     home = Path.home()
@@ -92,12 +95,31 @@ def _find_mono_font() -> Optional[bytes]:
     return None
 
 
+def _find_emoji_font() -> Optional[bytes]:
+    """内置 Twemoji COLR；没有则探系统彩色脸。找不到返回 None。"""
+    candidates: list[Path] = [_BUNDLED_EMOJI_FONT]
+    home = Path.home()
+    candidates += [
+        Path(r"C:\Windows\Fonts\seguiemj.ttf"),
+        Path("/System/Library/Fonts/Apple Color Emoji.ttc"),
+        Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"),
+        home / ".local/share/fonts/NotoColorEmoji.ttf",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path.read_bytes()
+        except OSError:
+            continue
+    return None
+
+
 def _ensure_renderer(
     *,
     extra_fonts: Optional[list[tuple[bytes, str]]] = None,
     force: bool = False,
 ) -> Any:
-    """懒加载共享 Renderer，注册 MiSans 等 CJK 字体。"""
+    """懒加载共享 Renderer，注册 MiSans / Mono / emoji 回退脸。"""
     global _renderer, _renderer_ready
 
     if _RendererCls is None:
@@ -128,6 +150,15 @@ def _ensure_renderer(
         try:
             r.register_font(mono_data, name=_MONO_FONT_NAME)
             registered.append(_MONO_FONT_NAME)
+        except Exception as e:
+            logger.exception(t("log.htmlrender.font_register_failed", e=e))
+
+    # 不要 subset_of="MiSans"：会把 CJK 抢到 emoji 脸上变成豆腐。
+    emoji_data = _find_emoji_font()
+    if emoji_data is not None:
+        try:
+            r.register_font(emoji_data, name=_EMOJI_FONT_NAME)
+            registered.append(_EMOJI_FONT_NAME)
         except Exception as e:
             logger.exception(t("log.htmlrender.font_register_failed", e=e))
 
@@ -211,12 +242,14 @@ def _dpr_from_dpi(dpi: float | None) -> float | None:
 
 
 def _font_families(font_name: str | None) -> list[str]:
-    """默认带上 MiSans，保证中文渲染。"""
+    """MiSans 保中文；emoji 脸放在后面做缺码位回退。"""
     names: list[str] = []
     if font_name and font_name not in {"sans-serif", "serif", "monospace"}:
         names.append(font_name)
     if _DEFAULT_FONT_NAME not in names:
         names.append(_DEFAULT_FONT_NAME)
+    if _EMOJI_FONT_NAME not in names:
+        names.append(_EMOJI_FONT_NAME)
     return names
 
 
