@@ -178,11 +178,17 @@ def format_capability_roster() -> str:
             lines.append(line)
     if not lines:
         return ""
-    return (
+    text = (
         "（可用能力代理——B 类组合/分析/推荐任务必须 "
         '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
         "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
     )
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    cap = int(ai_config.get_config("capability_roster_max").data)
+    if cap > 0 and len(text) > cap:
+        return text[: cap - 1] + "…"
+    return text
 
 
 def _clip_covers(covers: list[str]) -> str:
@@ -251,21 +257,19 @@ def match_capability_node(hint: str) -> str:
     return best_id
 
 
-def resolve_node(hint: str, default: str = "research_agent") -> str:
-    """自然语言 hint → node_id（用句柄不用 ID，原 resolve_profile 语义）。
+def resolve_node(hint: str, default: str = "") -> str:
+    """自然语言 hint → node_id。非空未知不静默落到某个专职节点。
 
     1. hint 就是已注册 node_id（含 persona 投影）→ 直接返回；
-    2. 命中 match_keywords → 取**最长关键词**命中的节点（更具体优先；
-       同分时保留注册序更靠前的节点，与旧「首个命中」一致）；
-    3. 都不命中 → 回退 default（default 不存在时回退首个注册节点）。
-
-    例：``分析并出对比表`` 同时命中 research「分析」与 render「对比表」→
-    因「对比表」更长，选 ``render_agent``。
+    2. 命中 match_keywords → 最长关键词优先；
+    3. 空 hint → default（若已注册）；非空未命中 → 空串。
     """
     matched = match_capability_node(hint)
     if matched:
         return matched
-    h = (hint or "").strip().lower()
+    h = (hint or "").strip()
     if not h:
-        return default if default in _NODES else next(iter(_NODES), "")
-    return default if default in _NODES else next(iter(_NODES), "")
+        if default and default in _NODES:
+            return default
+        return ""
+    return ""

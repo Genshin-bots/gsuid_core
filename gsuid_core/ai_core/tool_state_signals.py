@@ -33,8 +33,11 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.register import get_tools_by_capability_domain
 from gsuid_core.ai_core.rag.tools import ToolList
 
+# 有持久实体才该进池的族：核内种子不闭合同族（避免闲聊/旁观提前挂上变更工具）。
+STATE_DRIVEN_FAMILY_DOMAINS: frozenset[str] = frozenset({"长期任务编排", "产物", "定时任务", "结构化记录"})
 
-async def _user_has_active_schedules(user_id: str) -> bool:
+
+async def user_has_active_schedules(user_id: str) -> bool:
     """用户是否存在未完成(pending/paused)的定时任务。"""
     from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
 
@@ -60,17 +63,23 @@ async def _user_has_record_collections(ev: Event) -> bool:
     return bool(keys)
 
 
-async def _user_has_recent_completed_kanban(user_id: str, within_hours: float = 6.0) -> bool:
-    """近 within_hours 内是否有 completed 根任务（完成后仍要能 artifact_get_recent）。"""
+async def _user_has_recent_completed_kanban(ev: Event, within_hours: float = 6.0) -> bool:
+    """近 within_hours 内本群/本会话是否有 completed 根任务。"""
     from datetime import datetime, timedelta
 
     from gsuid_core.ai_core.planning.models import AIAgentTask
 
-    rows = await AIAgentTask.list_for_owner(str(user_id), only_active=False, root_only=True)
+    rows = await AIAgentTask.list_for_owner(str(ev.user_id), only_active=False, root_only=True)
     if not rows:
         return False
     cutoff = datetime.now() - timedelta(hours=within_hours)
+    gid = str(ev.group_id) if ev.group_id else ""
+    sid = str(ev.session_id) if ev.session_id else ""
     for task in rows[:20]:
+        if gid and str(task.group_id or "") != gid:
+            continue
+        if (not gid) and sid and str(task.session_id or "") and str(task.session_id) != sid:
+            continue
         if task.status != "completed":
             continue
         updated = task.updated_at
@@ -104,12 +113,12 @@ async def get_state_driven_families(ev: Optional[Event], has_active_task: bool =
     if has_active_task:
         domains.append("长期任务编排")
         domains.append("产物")
-    elif await _user_has_recent_completed_kanban(ev.user_id):
+    elif await _user_has_recent_completed_kanban(ev):
         # 刚完成：编排工具可卸，但产物追问必须仍可用
         domains.append("产物")
 
     # 定时任务：用户有未完成的定时任务 → 带出整个"定时任务"族（含 modify/cancel/pause...）
-    if await _user_has_active_schedules(ev.user_id):
+    if await user_has_active_schedules(ev.user_id):
         domains.append("定时任务")
 
     # 结构化集合：名下已有 record:* 集合 → 带出 record 族，供任意后续轮次读取/汇总

@@ -146,8 +146,43 @@ async def search_cognition(
         final = [replace(h, high_confidence=True) if i < _ALWAYS_SHOWN_TOP else h for i, h in enumerate(ordered)]
     else:
         final = ordered
+    final = await _drop_stale_handles(final)
     logger.debug(t("log.ai.cognition_hits", n=len(final), backends=",".join(labels)))
     return final
+
+
+_HANDLE_PREFIXES = ("res_", "aud_", "img_", "to_", "sa_")
+
+
+def _looks_like_resource_handle(text: str) -> bool:
+    body = (text or "").strip()
+    return any(body.startswith(p) for p in _HANDLE_PREFIXES)
+
+
+async def probe_handle_alive(hid: str) -> bool:
+    """本地探活：句柄能 resolve 才算活。"""
+    from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
+
+    if await resolve_handle(hid) is not None:
+        return True
+    if hid.startswith(("img_", "aud_")):
+        from gsuid_core.utils.resource_manager import RM
+
+        got = await RM.get(hid)
+        return got is not None
+    return False
+
+
+async def _drop_stale_handles(hits: List[CognitiveHit]) -> List[CognitiveHit]:
+    kept: List[CognitiveHit] = []
+    for hit in hits:
+        hid = (hit.handle or "").strip()
+        if not hid or not _looks_like_resource_handle(hid):
+            kept.append(hit)
+            continue
+        if await probe_handle_alive(hid):
+            kept.append(hit)
+    return kept
 
 
 def _artifact_enabled() -> bool:

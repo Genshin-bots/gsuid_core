@@ -37,6 +37,7 @@ from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.delegation import await_delegation, delegation_handle
+from gsuid_core.ai_core.buildin_tools.visibility import visible_when_group_recall
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入
 # 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
@@ -213,7 +214,12 @@ _TRANSIENT_DEFAULT_PROFILES = frozenset(
 )
 
 
-@ai_tools(category="common", capability_domain="长期任务编排", timeout=500.0)
+@ai_tools(
+    category="common",
+    capability_domain="长期任务编排",
+    timeout=500.0,
+    visible_when=visible_when_group_recall,
+)
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
@@ -232,7 +238,8 @@ async def create_subagent(
     - ``internal_reporter`` / ``memory_curator`` / ``scheduler_assistant`` / …
       见本轮 system 能力清单
 
-    ## task 写作
+    ## task 合同
+    - 写清意图 + 交付物；执行体身份按当前会话 persona 与 get_self_persona_info，不在此写角色设定。
     - 检索综合：目标 + 范围；交付须含条目/数字/**来源**/**时点**。
     - 出图：粘贴完整事实包（或 res_ 句柄）+ 可选版式偏好；写明**禁止再检索**。
     - 禁止把「漂亮出图」派给 research；禁止主人格自己写 HTML 调 render_*。
@@ -325,7 +332,13 @@ async def _create_subagent_impl(
     if ctx is not None and agent_profile:
         from gsuid_core.ai_core.agent_node import resolve_node
 
-        pid = resolve_node(agent_profile) or agent_profile.strip()
+        pid = resolve_node(agent_profile)
+        if not pid:
+            from gsuid_core.ai_core.agent_node import list_nodes
+
+            ids = [n.node_id for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"][:8]
+            listed = "、".join(ids) if ids else "（花名册为空）"
+            return f"未匹配到能力节点 `{agent_profile.strip()}`。可用 node_id：{listed}"
         use_transient = transient or pid in _TRANSIENT_DEFAULT_PROFILES
         if use_transient:
             return await _dispatch_transient_capability_agent(ctx, task, agent_profile)

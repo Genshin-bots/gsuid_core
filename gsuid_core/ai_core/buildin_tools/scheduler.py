@@ -38,6 +38,10 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
+from gsuid_core.ai_core.buildin_tools.visibility import (
+    visible_when_sched_create,
+    visible_when_sched_mutate,
+)
 
 TZ_SHANGHAI = timezone("Asia/Shanghai")
 
@@ -95,7 +99,7 @@ def _get_execute_scheduled_task():
 # ============ 添加任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_create)
 async def add_once_task(
     ctx: RunContext[ToolContext],
     run_time: str,
@@ -103,6 +107,8 @@ async def add_once_task(
 ) -> str:
     """
     创建一次性定时任务
+
+    本工具只新建。已有条目的查询/修改/暂停/取消须调用同能力族对应工具，禁止再创建一条代替。
 
     在指定时间点执行一次任务。适用于用户说"明天早上6点叫我起床"、"周六晚上8点提醒我开会"等场景。
 
@@ -240,7 +246,7 @@ async def add_once_task(
         return f"⚠️ 添加任务失败: {str(e)}"
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_create)
 async def add_interval_task(
     ctx: RunContext[ToolContext],
     interval_value: int,
@@ -251,6 +257,8 @@ async def add_interval_task(
 ) -> str:
     """
     创建循环定时任务
+
+    本工具只新建。已有条目的查询/修改/暂停/取消须调用同能力族对应工具，禁止再创建一条代替。
 
     按固定间隔重复执行任务。当用户需要定期执行某个任务时调用此工具，
     例如"每半小时提醒我喝水"、"每天早上发天气预报"、"每天下午3点30分查xxx"。
@@ -464,19 +472,18 @@ async def add_interval_task(
 # ============ 查询任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
 async def list_scheduled_tasks(
     ctx: RunContext[ToolContext],
 ) -> str:
     """
-    列出定时任务（群聊=本群全部任务+我自己在别处设的任务，私聊=本人任务）
+    列出当前用户自己的定时任务（不含他人条目）
 
-    当用户想查看、列出定时任务、提醒、循环任务，或想知道某条提醒是谁设置的时
-    调用此工具。触发场景如"我有哪些定时任务""看看我的提醒""任务列表"
-    "这个提醒是谁要的""谁设置的这个任务""这条提醒哪来的"。
+    当用户想查看、列出自己的定时任务、提醒、循环任务时调用此工具。
+    他人条目须凭任务 ID 用 query_scheduled_task 只读查询。
 
     Returns:
-        活跃任务列表（含 ID、发起用户、类型、状态、下次执行时间）；已结束任务只给计数
+        提问者自己的活跃任务列表（含 ID、类型、状态、下次执行时间）；已结束任务只给计数
     """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
@@ -484,13 +491,11 @@ async def list_scheduled_tasks(
         return "⚠️ 无法获取事件信息"
 
     try:
-        # 群聊 = 本群任务（"这提醒谁要的"须能看到别人建的，§5）∪ 提问者自己的全部任务
-        # （私聊/它群建的提醒也必须查得到，评审修复 F11）；私聊 = 本人任务。
+        # 只列提问者自己的任务（含其在它群/私聊设的）；他人条目不进列表。
         own_tasks = await AIScheduledTask.select_rows(user_id=ev.user_id)
-        group_tasks = await AIScheduledTask.select_rows(group_id=ev.group_id) if ev.group_id else []
 
         merged: dict[str, AIScheduledTask] = {}
-        for task_data in [*(group_tasks or []), *(own_tasks or [])]:
+        for task_data in own_tasks or []:
             task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
             merged[task.task_id] = task
 
@@ -645,7 +650,7 @@ async def query_scheduled_task(
 # ============ 修改任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
 async def modify_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -790,7 +795,7 @@ def _reschedule_job_run_time(task: AIScheduledTask, new_dt: datetime) -> None:
 # ============ 删除/取消任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
 async def cancel_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -849,7 +854,7 @@ async def cancel_scheduled_task(
 # ============ 暂停/恢复任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
 async def pause_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -909,7 +914,7 @@ async def pause_scheduled_task(
         return f"⚠️ 暂停任务失败: {str(e)}"
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
 async def resume_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,

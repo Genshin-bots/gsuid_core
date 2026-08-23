@@ -216,10 +216,17 @@ def format_history_for_agent(
         metadata = record.metadata or {}
         from gsuid_core.ai_core.interaction_scaffold import AT_OTHER_MARKER
 
-        for at_id in metadata.get("at_list", []):
-            at_key = str(at_id)
-            at_label = _user_label(at_key, name_map[at_key] if at_key in name_map else None)
-            bits.append(f"@{at_label}{AT_OTHER_MARKER}")
+        at_ids = metadata["at_list"] if "at_list" in metadata else []
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        _at_max = int(ai_config.get_config("group_at_list_max").data)
+        if isinstance(at_ids, list) and _at_max > 0 and len(at_ids) > _at_max:
+            bits.append(f"@×{len(at_ids)}")
+        elif isinstance(at_ids, list):
+            for at_id in at_ids:
+                at_key = str(at_id)
+                at_label = _user_label(at_key, name_map[at_key] if at_key in name_map else None)
+                bits.append(f"@{at_label}{AT_OTHER_MARKER}")
         image_id = metadata.get("image_id")
         if image_id:
             bits.append(f"图:{image_id}")

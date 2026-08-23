@@ -49,6 +49,9 @@ class RunOnceHost:
     _last_attempt_image_sent: bool
     _last_attempt_pending_async: bool
     _last_attempt_has_status_tool: bool
+    _last_attempt_thinking: str
+    _session_toolset_frozen: Optional[list[str]]
+    _session_appended_tools: list[str]
     _cancel_generation: AsyncEvent
     _history_iter_active: bool
     _consecutive_no_tool_rounds: int

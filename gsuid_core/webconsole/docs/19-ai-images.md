@@ -94,6 +94,15 @@ id=hutao_001&plugin=manual&path=C%3A%2F...%2Fa1b2c3d4.png&tags=%E8%83%A1%E6%A1%8
 
 ---
 
+## 19.2b 列出有图片知识的插件名
+```
+GET /api/ai/images/plugins
+```
+
+**响应** `data`: `string[]`（不含 `manual`）。
+
+---
+
 ## 19.3 获取图片列表（分页）
 
 ```
@@ -110,7 +119,8 @@ Authorization: Bearer <token>
 |------|------|------|--------|------|
 | offset | integer | 否 | 0 | 起始偏移量（会被page参数覆盖） |
 | limit | integer | 否 | 20 | 每页数量 |
-| plugin | string | 否 | - | 按插件名过滤 |
+| plugin | string | 否 | - | 按插件名过滤（优先于 source） |
+| source | string | 否 | - | plugin=全部插件图（排除 manual）；manual=仅手动图 |
 | page | integer | 否 | 1 | 页码，从1开始 |
 
 **响应**：

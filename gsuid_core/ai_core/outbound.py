@@ -105,13 +105,19 @@ async def record_outbound(
     sid = session_id or (ev.session_id if ev is not None else "")
     owner = str(ev.user_id) if ev is not None and ev.user_id else target_user
     handles = (image_id or "").strip()
+    topic_s = (topic or "").strip()[:12]
+    if not topic_s:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        n = int(ai_config.get_config("outbound_topic_n").data)
+        topic_s = (text or "").strip().replace("\n", " ")[:n]
     try:
         await OutboundAudit.record(
             session_id=sid,
             group_id=gid,
             text=(text or "").strip(),
             image_handles=handles,
-            topic=(topic or "").strip()[:12],
+            topic=topic_s,
             target_user=target_user,
             target_name=target_name,
             owner_user_id=owner,
@@ -124,7 +130,7 @@ async def record_outbound(
         if not gid.startswith("direct:")
         else make_scope_key(ScopeType.USER_GLOBAL, owner)
     )
-    title = topic or ("图片" if handles else "台词")
+    title = topic_s or ("图片" if handles else "台词")
     summary = (text or title).strip().replace("\n", " ")[:80]
     if handles:
         summary = f"{title} {handles} {summary}".strip()[:80]

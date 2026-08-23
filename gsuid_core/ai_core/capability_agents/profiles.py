@@ -165,7 +165,7 @@ _RESEARCH_PROMPT = """你负责外部检索与综合分析，交付可复核的 
 
 _RENDER_BOUNDARY = """【交付边界】
 - 允许：`render_html_to_image` / `render_card` / `render_markdown_to_image`
-  （成功后**只登记 artifact / 返回句柄**，禁止对用户会话直发）。
+  （`render_*` 成功即已登记产物，无需再 `artifact_put`；禁止对用户会话直发）。
 - **默认只出 1 张图**：事实包**尽量全文上图**（分区竖长图），只调用一次渲染工具。
 - 禁止为「好看」删掉数字/表格/依据/风险段；禁止搜索；禁止编造 task/artifact 外数字。
 - 事实包内的 **https 配图 URL** 可用 `<img src>` 写入 HTML（引擎自动下载嵌图）；
@@ -1006,7 +1006,6 @@ def register_builtin_profiles() -> None:
                 "render_card",
                 "render_markdown_to_image",
                 "artifact_get",
-                "artifact_put",
                 "artifact_list",
                 "_get_current_date",
             ],

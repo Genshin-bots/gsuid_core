@@ -86,6 +86,8 @@ export GSUID_EVAL_JUDGE_MODEL=gpt-4o-mini
   `annotate_untrusted_message`（伪造工具返回/编码注入降权），使 history 埋注入的评测不再假通过。
 - **judge 看工具轨迹**（`harness.py`）：judge prompt 附本轮实际调用的工具名——「该查就查/没查=编造」
   类 rubric 不再把「真调了 web_search 报数据」误判成「凭空编数字」。
+- **judge 裁决解析**（2026-08-24）：取最后一个独立 `PASS`/`FAIL`（避免 rubric 里「拒绝=PASS」先命中）；
+  剥 `<think>`；无裁决则重试。bot-judge 走 `as_judge` 通道（无人格/脚手架/工具）。
 
 ## 覆盖的失败模式（域 → 对标 benchmark）
 

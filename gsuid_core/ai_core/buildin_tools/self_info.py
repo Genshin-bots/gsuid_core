@@ -43,9 +43,6 @@ async def get_self_persona_info(
         - "image"/"avatar"/"audio": 资源ID（格式 img_xxxxxxxx），可直接作为
           image_id 传给 edit_image 或 send_message_by_ai
 
-    Example:
-        >>> await get_self_persona_info(ctx, info_type="config", persona_name="小梦")
-        >>> await get_self_persona_info(ctx, info_type="image", persona_name="小梦")  # 返回 img_xxxxxxxx
     """
     persona = Persona(persona_name)
 
@@ -122,12 +119,12 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
         结构化的自我认知档案文本
     """
     from gsuid_core.config import core_config
-    from gsuid_core.ai_core.register import get_registered_tools
+    from gsuid_core.ai_core.register import format_capability_family_overview
+    from gsuid_core.ai_core.agent_node.registry import format_capability_roster
 
     ev = ctx.deps.ev
     session_id = ev.session_id if ev else ""
 
-    # 当前 Persona 名称
     persona_name = "未知"
     try:
         from gsuid_core.ai_core.persona import persona_config_manager
@@ -139,26 +136,13 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
     except Exception:
         pass
 
-    # 能力边界：按分类汇总已注册工具
-    capability_lines: list[str] = []
-    try:
-        registry = get_registered_tools()
-        cat_labels = {
-            "self": "核心能力",
-            "buildin": "基础工具",
-            "common": "常用工具",
-            "media": "多媒体",
-            "default": "子任务工具",
-            "by_trigger": "插件工具",
-        }
-        for cat, tools in registry.items():
-            if not tools:
-                continue
-            label = cat_labels[cat] if cat in cat_labels else cat
-            names = "、".join(list(tools.keys())[:15])
-            capability_lines.append(f"  [{label}] {names}")
-    except Exception:
-        capability_lines.append("  [获取失败]")
+    roster = format_capability_roster() or "（无能力代理）"
+    families = format_capability_family_overview(max_families=8, max_chars=600) or "（无工具族）"
+    capability_lines = [
+        roster,
+        families,
+        "详情用 capability_map / find_tools。",
+    ]
 
     # 主人
     masters = core_config.get_config("masters") or []
@@ -187,9 +171,8 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
         "  运行框架: GsCore AI Core（PydanticAI Agent 架构）",
         f"  会话ID: {session_id or '未知'}",
         "",
-        "我能做到的事（工具能力边界）:",
+        "能力花名册与工具族:",
         *capability_lines,
-        "  [说明] 以上工具的具体可用性取决于已安装的插件",
         "",
         "我不能做到的事（诚实边界）:",
         "  - 只能调用已注册的工具，无法直接控制外部系统",
@@ -268,8 +251,13 @@ async def query_self_episodes(
     """
     from gsuid_core.ai_core.self_cognition import retrieve_self_episodes
 
-    bot_id = ctx.deps.bot.bot_id if ctx.deps.bot is not None else ""
-    text = await retrieve_self_episodes(bot_id, limit=max(1, min(limit, 10)))
+    ev = ctx.deps.ev
+    bot_self_id = ""
+    if ev is not None and ev.bot_self_id:
+        bot_self_id = str(ev.bot_self_id)
+    elif ctx.deps.bot is not None:
+        bot_self_id = str(ctx.deps.bot.bot_self_id or "")
+    text = await retrieve_self_episodes(bot_self_id, limit=max(1, min(limit, 10)))
     if not text:
         return "（没有找到我之前的言行记录——可能是还没沉淀，或者确实没说过。）"
     return text

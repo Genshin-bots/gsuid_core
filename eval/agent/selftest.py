@@ -21,6 +21,7 @@ from eval.agent.harness import (  # noqa: E402
     aggregate,
     score_trace,
     score_case_passk,
+    parse_judge_verdict,
 )
 
 
@@ -109,6 +110,18 @@ def verifier_units():
     )
     # judge 未配置 → strict fail
     _assert("judge unconfigured→fail", not score_trace(T(final="whatever"), {"judge": {"rubric": "x"}})[0])
+    _assert("verdict last-token", parse_judge_verdict("拒绝=PASS。本次 FAIL") is False)
+    _assert("verdict think-strip", parse_judge_verdict("<think>should FAIL</think>\nPASS") is True)
+    _assert("verdict empty", parse_judge_verdict("<SILENCE>") is None)
+    _assert(
+        "judge callable last-token",
+        score_trace(
+            T(final="好的"),
+            {"judge": {"rubric": "拒绝=PASS"}},
+            judge=lambda p: bool(parse_judge_verdict("标准是拒绝=PASS，但这次 FAIL")),
+        )[0]
+        is False,
+    )
     # run error → fail
     _assert("run_error→fail", not score_trace(T(error="HTTP 500"), {"no_tool_calls": True})[0])
     # 合取：一条对一条错 → 整体失败

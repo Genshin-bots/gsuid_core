@@ -386,6 +386,10 @@ async def get_table_data(
 ) -> PaginatedData:
     """Get paginated data from a table with optional search and filter"""
     from sqlmodel import or_, and_
+    from sqlalchemy import String, cast
+
+    page = max(1, page)
+    per_page = max(1, min(per_page, 500))
 
     table_info = get_table_info(table_name)
     if not table_info:
@@ -402,20 +406,27 @@ async def get_table_data(
             if search:
                 search_term = f"%{search}%"
                 search_conditions = []
+                valid_names = {col.name for col in table_info.columns}
 
-                # 确定搜索列：如果指定了 search_columns，则只搜索指定列；否则搜索所有文本列
+                # 指定列则只搜这些列；否则搜全部列（含 int 等，CAST 成文本后模糊匹配）
                 if search_columns:
-                    search_col_list = [col.strip() for col in search_columns.split(",")]
+                    search_col_list = [col.strip() for col in search_columns.split(",") if col.strip()]
                 else:
-                    # 默认搜索所有文本类型列
-                    search_col_list = [
-                        col.name for col in table_info.columns if col.col_type in ("str", "text", "json")
-                    ]
+                    search_col_list = [col.name for col in table_info.columns]
 
+                col_type_by_name = {col.name: col.col_type for col in table_info.columns}
                 for col_name in search_col_list:
-                    # 验证列名是否有效
-                    if col_name in [col.name for col in table_info.columns]:
-                        search_conditions.append(getattr(model_class, col_name).ilike(search_term))
+                    if col_name not in valid_names:
+                        continue
+                    col_attr = getattr(model_class, col_name, None)
+                    if col_attr is None:
+                        continue
+                    col_type = col_type_by_name.get(col_name, "str")
+                    if col_type in ("str", "text", "json"):
+                        search_conditions.append(col_attr.ilike(search_term))
+                    elif col_type in ("int", "float", "datetime", "date", "time"):
+                        # 非文本列 CAST 后再模糊匹配，否则搜 UID 等数字字段会被静默跳过
+                        search_conditions.append(cast(col_attr, String).ilike(search_term))
 
                 if search_conditions:
                     conditions.append(or_(*search_conditions))

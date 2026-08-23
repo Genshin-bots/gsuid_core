@@ -104,6 +104,7 @@ class PreparePhase(RunOnceHost):
         self._last_attempt_image_sent = False
         self._last_attempt_pending_async = False
         self._last_attempt_has_status_tool = False
+        self._last_attempt_thinking = ""
         st.wall_nudged = False  # C-4 墙钟软预算：每 run 至多注入一次收敛提示
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         st.ooc_blocked = []
@@ -136,7 +137,8 @@ class PreparePhase(RunOnceHost):
         st.in_flight_short = False
         st.render_ack_seen = False
 
-        # 使用自定义迭代次数限制（如果有），否则使用配置默认值
+        # 使用自定义迭代次数限制（如果有），否则使用配置默认值。
+        # 群聊空闲上限在 TurnGraph 建完后再收紧（见下方）。
         if self.max_iterations is not None:
             st.limits = UsageLimits(request_limit=self.max_iterations)
         else:
@@ -311,6 +313,52 @@ class PreparePhase(RunOnceHost):
                 )
             st.addr_gated = bool(st.tg.address_gated)
             st.followup_detected = bool(st.tg.needs_task_tools)
+            from gsuid_core.ai_core.buildin_tools.visibility import (
+                GROUP_RECALL_OK_KEY,
+                SCHED_CREATE_OK_KEY,
+                SCHED_MUTATE_OK_KEY,
+                group_recall_allowed,
+                sched_tool_visibility,
+            )
+
+            st.run_extra[GROUP_RECALL_OK_KEY] = group_recall_allowed(
+                is_group=bool(st.tg.is_group),
+                call_to_self=bool(st.tg.call_to_self),
+                followup_detected=st.followup_detected,
+            )
+            _has_sched = False
+            if st.ev is not None and st.ev.user_id:
+                from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
+
+                _has_sched = await user_has_active_schedules(st.ev.user_id)
+            _manage_form = interaction_scaffold.is_manage_ellipsis_form(st.tg.message_text)
+            _create_ok, _mutate_ok = sched_tool_visibility(
+                is_group=bool(st.tg.is_group),
+                address_gated=st.addr_gated,
+                call_to_self=bool(st.tg.call_to_self),
+                followup_detected=st.followup_detected,
+                has_active_schedules=_has_sched,
+                manage_form=_manage_form,
+            )
+            st.run_extra[SCHED_CREATE_OK_KEY] = _create_ok
+            st.run_extra[SCHED_MUTATE_OK_KEY] = _mutate_ok
+            if self.max_iterations is None and st.limits is not None:
+                from gsuid_core.ai_core.agent_run.tools import group_idle_request_limit
+
+                _idle_raw = ai_config.get_config("group_idle_max_iterations").data
+                _idle_cap = int(_idle_raw) if isinstance(_idle_raw, int) else 2
+                _is_light = st.cheap is interaction_scaffold.CheapGate.LIGHT
+                _capped = group_idle_request_limit(
+                    int(st.limits.request_limit or 0),
+                    is_group=bool(st.tg.is_group),
+                    followup_detected=st.followup_detected,
+                    has_active_task=st.has_active_task,
+                    idle_cap=_idle_cap,
+                    is_light=_is_light,
+                    call_to_self=bool(st.tg.call_to_self),
+                )
+                if _capped != st.limits.request_limit:
+                    st.limits = UsageLimits(request_limit=_capped)
             _hints = interaction_scaffold.scaffold_hints_from_graph(st.tg, cheap=st.cheap)
             # C-2：≥2 且比上轮增加才保留漂移提醒（hints 里可能已有，按计数裁）
             _pushes = st.tg.style_push_count

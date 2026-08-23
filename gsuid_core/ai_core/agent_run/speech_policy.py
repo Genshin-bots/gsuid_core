@@ -28,8 +28,8 @@ SpeechPolicy = Literal[
     "delivered",
 ]
 
-# 单轮主通道可见台词上限（兜底；DELIVERED 终局态落地后主要是防多 TextPart 刷屏）
-MAIN_CHANNEL_VISIBLE_LIMIT = 3
+# 单轮主通道可见台词上限默认（配置 main_channel_visible_limit 覆盖）
+MAIN_CHANNEL_VISIBLE_LIMIT = 2
 
 # 用户追问进度：疑问/催促闭类（非业务域）
 _STATUS_INQUIRY_RE = re.compile(
@@ -273,11 +273,29 @@ def looks_like_empty_handoff(text: str) -> bool:
     return bool(_EMPTY_HANDOFF_RE.search(body))
 
 
+def looks_like_machine_latin(text: str) -> bool:
+    """长句拉丁字母占比过高：机器独白，不是 IM 角色句。纯链接放过。"""
+    body = (text or "").strip()
+    if len(body) < 40:
+        return False
+    low = body.lower()
+    if body.count(" ") < 4 and ("http://" in low or "https://" in low or "/" in body):
+        return False
+    n = 0
+    for ch in body:
+        o = ord(ch)
+        if 65 <= o <= 90 or 97 <= o <= 122:
+            n += 1
+    return n * 5 >= len(body) * 3
+
+
 def looks_like_process_meta(text: str) -> bool:
     """是否框架/过程元话语（对用户即 OOC）。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
         return False
+    if looks_like_machine_latin(body):
+        return True
     return bool(_PROCESS_META_RE.search(body))
 
 
@@ -327,6 +345,8 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
     if looks_like_empty_handoff(body):
         return False
     if looks_like_process_meta(body):
+        return False
+    if looks_like_machine_latin(body):
         return False
     if body.count("\n") >= 2:
         return False

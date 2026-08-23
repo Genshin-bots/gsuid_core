@@ -88,23 +88,18 @@ def _response_has_function_tool_call(parts: Sequence[object]) -> bool:
     return any(isinstance(p, ToolCallPart) and not isinstance(p, NativeToolCallPart) for p in parts)
 
 
-def _keep_first_ack_with_tools(
+def decide_text_outbound_slot(
     *,
-    create_by: str,
-    wait_comfort_sent: bool,
-    text: str,
-    max_len: int = 0,
-) -> bool:
-    """同响应有函数工具时，是否放行开场接任务应。
-
-    规划/内心 OS 仍压。主人格尚未出站过的一句角色接任务应出站一次（不按 12 字）。
-    不按工具名特判。
-    """
-    if create_by not in _MAIN_PERSONA_CREATE_BY:
-        return False
-    if wait_comfort_sent:
-        return False
-    return looks_like_task_accept_speech(text, max_len=max_len)
+    has_fn_tool: bool,
+    tool_bearing_index: int,
+    accept_slot_used: bool,
+) -> str:
+    """按「第几次带函数 ToolCall 的响应」分槽。返回 send_accept / unsent / send_final。"""
+    if has_fn_tool:
+        if tool_bearing_index == 1 and not accept_slot_used:
+            return "send_accept"
+        return "unsent"
+    return "send_final"
 
 
 class LoopPhase(RunOnceHost):
@@ -147,6 +142,10 @@ class LoopPhase(RunOnceHost):
         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
         self._session_logger.log_node_transition("ModelRequestNode")
+        if st.saw_final_response:
+            st.post_final_requests += 1
+            if st.post_final_requests > 1:
+                st.ab_pending_nudges = []
 
         # 先扫本请求内 ToolReturn 形态，再决定墙钟文案（避免事实包刚返回却注入「禁工具」）
         for _pre in node.request.parts:
@@ -436,6 +435,21 @@ class LoopPhase(RunOnceHost):
                         capability_node_id=self.capability_node_id,
                     )
                     _contract = _fail_c if _any_fail else _ok_c
+                    if (
+                        not _any_fail
+                        and st.tool_call_list
+                        and st.tool_call_list[0] == "web_search_tool"
+                        and not st.web_search_delegate_nudged
+                    ):
+                        from gsuid_core.ai_core.agent_node.registry import match_capability_node
+
+                        _nid = match_capability_node(st.last_user_question)
+                        if _nid:
+                            st.web_search_delegate_nudged = True
+                            _contract = (
+                                f"（系统：当前问题已命中能力节点 `{_nid}`，"
+                                f'请 create_subagent(agent_profile="{_nid}", task=...) 委派，不要继续网页检索。）'
+                            )
                     # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
                     # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
                     if not any(
@@ -537,10 +551,12 @@ class LoopPhase(RunOnceHost):
                         st.speech_policy = "silence_only"
                     break
 
-        # 遍历大模型返回的具体片段 (Parts)
-        # 同响应只要有函数工具，规划/内心 OS 常被弱模型写成 TextPart 且排在 ToolCall 前；
-        # 必须先扫再 suppress，否则中间态会发出去。hosted 搜索仍不置位（见下）。
+        # 出站槽：按本 run 第几次「含函数 ToolCall」的响应分。hosted 搜索不当函数工具。
         _saw_tool_call_this_turn = _response_has_function_tool_call(node.model_response.parts)
+        if _saw_tool_call_this_turn:
+            st.tool_bearing_responses += 1
+        _accept_slot_used = False
+        _resp_unsent: list[str] = []
         # 同 ModelResponse 多 TextPart：尖括号 attempt 只计 1 次
         output_gate.begin_response_batch(_require_context(st).extra)
         _ab_attempt_counted_this_response = False
@@ -620,23 +636,26 @@ class LoopPhase(RunOnceHost):
                 # 同响应已有函数工具：规划/内心 OS 不出站。主人格一句接任务应除外（不按 12 字）。
                 # 不按工具名特判。hosted 搜索不置位（答案就在 TextPart）。
                 _hard = 0
-                _detail = False
                 if self.create_by in _MAIN_PERSONA_CREATE_BY and self.persona_name:
                     from gsuid_core.ai_core.persona.config import persona_config_manager
 
                     _pc = persona_config_manager.get_config(self.persona_name)
                     _hard = int(_pc.get_config("speech_len_hard").data)
-                    q = st.ev.raw_text if st.ev is not None else ""
-                    _detail = bool(q) and ("详细" in q or "展开" in q or "总结一下" in q)
-                if st.suppress_intermediate_text and _saw_tool_call_this_turn:
-                    if not _keep_first_ack_with_tools(
-                        create_by=self.create_by,
-                        wait_comfort_sent=st.wait_comfort_sent,
-                        text=_text,
-                        max_len=_hard,
-                    ):
-                        logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
-                        continue
+                _slot = "send_final"
+                if st.suppress_intermediate_text:
+                    _slot = decide_text_outbound_slot(
+                        has_fn_tool=_saw_tool_call_this_turn,
+                        tool_bearing_index=st.tool_bearing_responses,
+                        accept_slot_used=_accept_slot_used,
+                    )
+                if _slot == "unsent":
+                    logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
+                    _resp_unsent.append(_text)
+                    continue
+                if _slot == "send_final":
+                    st.saw_final_response = True
+                if _slot == "send_accept":
+                    _accept_slot_used = True
                 if self.create_by in _MAIN_PERSONA_CREATE_BY:
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
@@ -653,7 +672,7 @@ class LoopPhase(RunOnceHost):
                         has_active_task=st.has_active_task,
                         render_inflight=bool(st.delegated_render and not st.image_sent_this_run),
                         speech_len_hard=_hard,
-                        user_asked_detail=_detail,
+                        user_asked_detail=False,
                     )
                     if _blk:
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
@@ -674,6 +693,8 @@ class LoopPhase(RunOnceHost):
                                 _text=f"[speech_policy={st.speech_policy}/{_why}] {_text[:60]}",
                             )
                         )
+                        if _slot == "send_accept":
+                            _resp_unsent.append(_text)
                         continue
                     _inflight_now = bool(
                         st.pending_async_delivery
@@ -710,6 +731,8 @@ class LoopPhase(RunOnceHost):
                                 preview=repr(_text[:80]),
                             )
                         )
+                        if _slot == "send_accept":
+                            _resp_unsent.append(_text)
                         continue
                     if _gr.decision is output_gate.GateDecision.REWRITE:
                         if _gr.defer_ooc and _gr.ooc_hit is not None:
@@ -728,6 +751,8 @@ class LoopPhase(RunOnceHost):
                                 st.ab_pending_nudges.append(_gr.feedback)
                             if _gr.fused:
                                 st.ab_abort = True
+                        if _slot == "send_accept":
+                            _resp_unsent.append(_text)
                         continue
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
                         _fb = _gr.send_text or output_firewall.MACHINE_FALLBACK_TEXT
@@ -736,21 +761,29 @@ class LoopPhase(RunOnceHost):
                             self._run_sent_texts.add(_fb)
                         except Exception as _me:
                             logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
+                        if _slot == "send_accept":
+                            _resp_unsent.append(_text)
                         continue
                     # 假完成预检（结构判据：完成声明 + 本轮至今零工具调用）：
                     _fab_gate_on = not st.fake_done_retry and not st.tool_call_list and bool(st.tool_names)
                     if _fab_gate_on and _claims_fake_done(_text):
                         logger.warning(i18n_t("log.agent.fakedone_zero_claim_pending_ok", p0=repr(_text[:40])))
                         st.fab_blocked.append(_text)
+                        if _slot == "send_accept":
+                            _resp_unsent.append(_text)
                         continue
                     # 单轮出站配额兜底（4.10）：主通道台词超限即静默，防多 TextPart 刷屏
-                    if st.main_channel_sends >= MAIN_CHANNEL_VISIBLE_LIMIT:
+                    _cap = int(ai_config.get_config("main_channel_visible_limit").data)
+                    if _cap < 1:
+                        _cap = MAIN_CHANNEL_VISIBLE_LIMIT
+                    if st.main_channel_sends >= _cap:
                         logger.info(
                             i18n_t(
                                 "log.agent.silent_skipping_text",
                                 _text=f"[main_channel_cap] {_text[:40]}",
                             )
                         )
+                        _resp_unsent.append(_text)
                         continue
                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的 async st.context 触发
                     # athrow/cancel scope
@@ -772,6 +805,17 @@ class LoopPhase(RunOnceHost):
                     st.thinking_segments.append(_thinking)
                 self._session_logger.log_thinking(_thinking)
                 self._emit_trace("thinking", _thinking)
+
+        if _resp_unsent:
+            st.unsent_texts.extend(_resp_unsent)
+            _unsent_left = list(_resp_unsent)
+            _kept_parts = []
+            for _p in node.model_response.parts:
+                if _unsent_left and isinstance(_p, TextPart) and _p.content.strip() == _unsent_left[0]:
+                    _unsent_left.pop(0)
+                    continue
+                _kept_parts.append(_p)
+            node.model_response.parts = _kept_parts
 
         # thrash：本响应只按「轮」计 1 次（并行多 query 不累加）
         st.same_tool_name, st.same_tool_streak = _update_thrash_streak_for_response(

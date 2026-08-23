@@ -19,6 +19,7 @@ from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.rag.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from gsuid_core.ai_core.rag.knowledge import (
     add_knowledge_document,
+    list_knowledge_plugins,
     import_manual_knowledge,
     search_manual_knowledge,
     delete_knowledge_document,
@@ -89,6 +90,7 @@ async def get_knowledge_base_list(
     source: str = "all",
     page: int = 1,
     doc_id: Optional[str] = None,
+    plugin: Optional[str] = None,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
@@ -100,6 +102,7 @@ async def get_knowledge_base_list(
         source: 来源过滤，默认"all"表示所有知识，"plugin"只查插件添加的，"manual"只查手动添加的
         page: 页码，从1开始，例如page=2表示第二页（offset=20）
         doc_id: 可选，仅列出某篇文档的分片（仅对 source=manual 生效）
+        plugin: 可选，按插件名精确过滤（通常配合 source=plugin）
 
     Returns:
         status: 0成功，1失败
@@ -117,6 +120,7 @@ async def get_knowledge_base_list(
         limit=limit,
         source_filter=source,
         doc_id=doc_id,
+        plugin=plugin,
     )
 
     # 添加page信息到返回结果
@@ -130,11 +134,21 @@ async def get_knowledge_base_list(
     }
 
 
+@app.get("/api/ai/knowledge/plugins", summary="列出有知识的插件名", tags=KNOWLEDGE)
+async def get_knowledge_plugin_names(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """返回插件知识里出现过的 plugin 名，供控制台下拉筛选。须在 /{entity_id} 之前注册。"""
+    names = await list_knowledge_plugins()
+    return {"status": 0, "msg": "ok", "data": names}
+
+
 @app.get("/api/ai/knowledge/search", summary="搜索知识", tags=KNOWLEDGE)
 async def search_knowledge_base(
     query: str,
     limit: int = 10,
     source: str = "all",
+    plugin: Optional[str] = None,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
@@ -144,12 +158,13 @@ async def search_knowledge_base(
         query: 查询文本
         limit: 返回数量限制，默认10
         source: 来源过滤，默认"all"表示所有知识，"plugin"只搜插件添加的，"manual"只搜手动添加的
+        plugin: 可选，按插件名精确过滤
 
     Returns:
         status: 0成功，1失败
         data: 匹配的知识列表
     """
-    results = await search_manual_knowledge(query=query, limit=limit, source_filter=source)
+    results = await search_manual_knowledge(query=query, limit=limit, source_filter=source, plugin=plugin)
 
     return {
         "status": 0,

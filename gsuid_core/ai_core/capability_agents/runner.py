@@ -145,6 +145,40 @@ async def _ensure_adhoc_workspace(node_id: str, ev: Optional[Event]):
         reset_plan_context(token)
 
 
+def _link_capability_loggers(ev: Optional[Event], agent: object, child_session_id: str) -> None:
+    """能力代理与父 session 双向 link_agent。"""
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    if ev is None or not ev.session_id:
+        return
+    if not isinstance(agent, GsCoreAIAgent):
+        return
+    parent = get_ai_session_registry().get_ai_session(ev.session_id)
+    if parent is None:
+        return
+    parent_logger = parent._session_logger
+    sub_logger = agent._session_logger
+    if parent_logger is None or sub_logger is None:
+        return
+    parent_logger.link_agent(
+        agent_session_id=child_session_id,
+        agent_session_uuid=sub_logger.session_uuid,
+        agent_type="sub_agent",
+        persona_name=agent.persona_name,
+        create_by=agent.create_by,
+        log_file=str(sub_logger._file_path),
+    )
+    sub_logger.link_agent(
+        agent_session_id=ev.session_id,
+        agent_session_uuid=parent_logger.session_uuid,
+        agent_type="parent_agent",
+        persona_name=parent.persona_name,
+        create_by=parent.create_by,
+        log_file=str(parent_logger._file_path),
+    )
+
+
 async def run_capability_agent(
     profile_id: str,
     task: str,
@@ -242,6 +276,10 @@ async def run_capability_agent(
             )
         )
         try:
+            from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+            get_ai_session_registry().set_ai_session(session_id, agent)
+            _link_capability_loggers(ev, agent, session_id)
             result = await agent.run(
                 user_message=task,
                 bot=bot,

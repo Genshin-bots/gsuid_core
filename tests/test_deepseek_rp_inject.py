@@ -13,15 +13,11 @@ from pydantic_ai.messages import (
 )
 
 from gsuid_core.ai_core.utils import _relean_user_turn, compact_session_history
+from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER
 from gsuid_core.ai_core.agent_run.support import _ensure_inner_os_on_first_user
 
 _ROOT = Path(__file__).resolve().parent.parent
-MARKER = (
-    "\n\n【角色沉浸要求】在你的思考过程（标签内）中，请遵守以下规则：\n"
-    '1. 请以角色第一人称进行内心独白，用括号包裹内心活动，例如"（心想：……）"或"(内心OS：……)"\n'
-    '2. 用第一人称描写角色的内心感受，例如"我心想""我觉得""我暗自"等\n'
-    "3. 思考内容应沉浸在角色中，通过内心独白分析剧情和规划回复"
-)
+MARKER = INNER_OS_MARKER
 
 
 def _user(text: str) -> ModelRequest:
@@ -60,7 +56,7 @@ def test_relean_keeps_marker_when_lean_has_it() -> None:
     assert MARKER in str(up.content)
 
 
-def test_later_turn_injects_into_first_history_user_not_current() -> None:
+def test_later_turn_appends_to_current_without_mutating_history() -> None:
     history = [
         _user("[用户发言]\n第一句"),
         _asst("回"),
@@ -74,14 +70,12 @@ def test_later_turn_injects_into_first_history_user_not_current() -> None:
         MARKER,
         is_framework=False,
     )
-    assert where == "history"
-    assert new_cur == current
-    assert new_lean == lean
+    assert where == "current"
+    assert isinstance(new_cur, str) and new_cur.endswith(MARKER)
+    assert isinstance(new_lean, str) and new_lean.endswith(MARKER)
     first = history[0].parts[0]
     assert isinstance(first, UserPromptPart)
-    assert isinstance(first.content, str)
-    assert first.content.endswith(MARKER)
-    assert MARKER not in current
+    assert MARKER not in str(first.content)
 
 
 def test_legacy_marker_title_is_treated_as_already_present() -> None:
@@ -135,12 +129,12 @@ def test_skips_framework_history_and_injects_first_real_user() -> None:
         MARKER,
         is_framework=False,
     )
-    assert where == "history"
+    assert where == "current"
     fw = history[0].parts[0]
     real = history[2].parts[0]
     assert isinstance(fw, UserPromptPart) and MARKER not in str(fw.content)
-    assert isinstance(real, UserPromptPart) and str(real.content).endswith(MARKER)
-    assert MARKER not in current
+    assert isinstance(real, UserPromptPart) and MARKER not in str(real.content)
+    assert isinstance(current, str)
 
 
 def test_framework_current_turn_without_history_user_is_skipped() -> None:
@@ -192,8 +186,9 @@ def test_marker_text_matches_official_instruct() -> None:
     prompts = (_ROOT / "gsuid_core/ai_core/persona/prompts.py").read_text(encoding="utf-8")
     assert "INNER_OS_MARKER" in prompts
     assert "<arg_key>" not in prompts
-    assert "思考过程（标签内）" in prompts
     assert "【角色沉浸要求】" in prompts
+    assert "（心想：" not in INNER_OS_MARKER
+    assert "(内心OS" not in INNER_OS_MARKER
 
 
 def test_compact_keeps_marker_on_first_user() -> None:

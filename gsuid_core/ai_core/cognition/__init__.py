@@ -24,7 +24,12 @@ from gsuid_core.ai_core.cognition.types import (
     CogScope,
     CognitiveHit,
 )
-from gsuid_core.ai_core.cognition.facade import kinds_from_names, search_cognition, render_cognition_block
+from gsuid_core.ai_core.cognition.facade import (
+    kinds_from_names,
+    search_cognition,
+    probe_handle_alive,
+    render_cognition_block,
+)
 from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
 __all__ = [
@@ -40,6 +45,7 @@ __all__ = [
     "MemoryWrite",
     "expand_hub",
     "kinds_from_names",
+    "probe_handle_alive",
     "rebuild_cognition_mount",
     "remember",
     "render_cognition_block",

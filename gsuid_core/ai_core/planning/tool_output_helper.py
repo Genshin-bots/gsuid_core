@@ -248,6 +248,30 @@ async def persist_subagent_result(
     )
 
 
+async def _remember_short_tool_fact(tool_name: str, content: str, ev: Optional[Event], session_id: str) -> None:
+    body = (content or "").strip()
+    if not body or looks_like_handle_card(body):
+        return
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+
+    trunc = int(ai_config.get_config("remember_fact_trunc").data)
+    owner, _fileos, cog_scope = _scope_from_ev(ev)
+    digest = content_sha256(body)[:16]
+    await remember(
+        MemoryWrite(
+            kind=CogKind.FACT,
+            ref=f"toolshort:{session_id}:{digest}",
+            scope_key=cog_scope,
+            owner_user_id=owner,
+            title=(tool_name or "工具")[:60],
+            summary=body[:trunc],
+            source="tool",
+        )
+    )
+
+
 async def persist_and_fold_tool_return(
     tool_name: str,
     content: str,
@@ -261,6 +285,7 @@ async def persist_and_fold_tool_return(
     """主人格热路径：落盘并返回句柄卡；群聊不内嵌要点。"""
     tn = tool_name or ""
     if not should_persist_tool_return(tn, content):
+        await _remember_short_tool_fact(tn, content, ev, session_id)
         return None
     if not should_fold_for_model(content, tool_name=tn, is_group=is_group):
         if is_searchish_tool(tn):

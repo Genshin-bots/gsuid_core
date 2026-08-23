@@ -9,8 +9,10 @@ from typing import Any, List, Sequence
 from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.messages import (
+    TextPart,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
 )
 from pydantic_ai.settings import ModelSettings
 
@@ -231,6 +233,29 @@ def _dedupe_delivery_cards(messages: List[ModelMessage]) -> List[ModelMessage]:
     return kept
 
 
+def _drop_unsent_text_from_tail(messages: List[ModelMessage], unsent: Sequence[str]) -> List[ModelMessage]:
+    """从本轮 new_messages 尾部剥掉未出站 TextPart（只动尾）。"""
+    if not unsent:
+        return messages
+    pending = [u.strip() for u in unsent if u.strip()]
+    if not pending:
+        return messages
+    out: List[ModelMessage] = []
+    for msg in reversed(messages):
+        if pending and isinstance(msg, ModelResponse):
+            kept = []
+            for part in reversed(msg.parts):
+                if pending and isinstance(part, TextPart) and part.content.strip() == pending[-1]:
+                    pending.pop()
+                    continue
+                kept.append(part)
+            kept.reverse()
+            msg.parts = kept
+        out.append(msg)
+    out.reverse()
+    return out
+
+
 def _corrected_or_original(corrected: object, *, original: str) -> str:
     """纠正轮结果收敛（INV-3）。
 
@@ -311,8 +336,14 @@ class SettlePhase(RunOnceHost):
             )
             _new_msgs = [m for m in _new_msgs if not (isinstance(m, ModelRequest) and len(m.parts) == 0)]
             _new_msgs = _dedupe_delivery_cards(_new_msgs)
+            _new_msgs = _drop_unsent_text_from_tail(_new_msgs, st.unsent_texts)
             self._record_prefix_break_probe(st, _new_msgs)
             self.history.extend(_new_msgs)
+            _ctx_dyn = st.context
+            if _ctx_dyn is not None:
+                for _dn in _ctx_dyn.dynamic_tool_names:
+                    if _dn and _dn not in self._session_appended_tools:
+                        self._session_appended_tools.append(_dn)
 
             # 输出闸门收尾：尖括号熔断/补写/scrub；熔断后仍做独立 OOC 重说
             st.ab_abort = await self._resolve_output_gate_after_run(
@@ -738,10 +769,16 @@ class SettlePhase(RunOnceHost):
         # 子代理（return 模式，如 Kanban 能力代理 / plugin_developer_agent）： **绝不**直接对用户的 st.bot 说话
         # 也**绝不**把超轮数的中间产物强制总结后回灌
         if st.return_mode == "return":
+            # 出图在途：内部轮数耗尽不对用户念框架错误
+            if st.delegated_render and not st.image_sent_this_run:
+                return "<SILENCE>"
             return (
                 "⚠️ 已达最大思考轮数，未能在限定步数内完成本任务。"
                 "中间产物（如已写入的文件 / artifact）已留在工作区，未回传以避免刷屏。"
             )
+
+        if st.delegated_render and not st.image_sent_this_run:
+            return "<SILENCE>"
 
         # 安抚用户
         if st.bot:
@@ -819,6 +856,11 @@ class SettlePhase(RunOnceHost):
         self._last_attempt_image_sent = st.image_sent_this_run
         self._last_attempt_pending_async = st.pending_async_delivery
         self._last_attempt_has_status_tool = st.has_status_tool_call
+        thinking_blob = "\n".join(s for s in st.thinking_segments if s)
+        from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg
+
+        _think_max = int(_ai_cfg.get_config("thinking_text_max").data)
+        self._last_attempt_thinking = thinking_blob[-_think_max:] if thinking_blob else ""
         # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
         if st.budget_scope_token is not None:
             _current_budget_scope.reset(st.budget_scope_token)

@@ -280,6 +280,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._prefix_snapshot: Optional["PrefixSnapshot"] = None
         self._session_toolset_frozen: Optional[List[str]] = None
         self._session_toolset_tags: Optional[frozenset[str]] = None
+        self._session_appended_tools: List[str] = []
         self.max_history = _max_history
         self.system_prompt = system_prompt
         # 稳定前缀构建时刻：ai_router 按 TTL 原地刷新 system_prompt（O-3 慢变上下文防僵化）
@@ -347,6 +348,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._last_attempt_image_sent: bool = False
         self._last_attempt_pending_async: bool = False
         self._last_attempt_has_status_tool: bool = False
+        self._last_attempt_thinking: str = ""
         # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
         # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
         self._last_drift_push_count: int = 0

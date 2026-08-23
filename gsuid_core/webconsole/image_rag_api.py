@@ -21,12 +21,27 @@ from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.rag.image_rag import (
     search_images,
     get_image_list,
+    list_image_plugins,
     delete_image_from_db,
     add_manual_image_to_db,
     get_image_path_by_query,
 )
 
 from ._api_tags import IMAGE_RAG
+
+
+def _resolve_image_plugin_args(
+    plugin: Optional[str],
+    source: Optional[str],
+) -> tuple[Optional[List[str]], Optional[List[str]]]:
+    """plugin 精确名优先；source=manual → plugin=manual；source=plugin → 排除 manual。"""
+    if plugin:
+        return [plugin], None
+    if source == "manual":
+        return ["manual"], None
+    if source == "plugin":
+        return None, ["manual"]
+    return None, None
 
 
 class ImageSearchRequest(BaseModel):
@@ -47,11 +62,21 @@ class ImageCreateRequest(BaseModel):
     content: str = ""
 
 
+@app.get("/api/ai/images/plugins", summary="列出有图片知识的插件名", tags=IMAGE_RAG)
+async def get_image_plugin_names(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """返回图片知识里出现过的 plugin 名（不含 manual）。"""
+    names = await list_image_plugins()
+    return {"status": 0, "msg": "ok", "data": names}
+
+
 @app.get("/api/ai/images/list", summary="获取图片列表（分页）", tags=IMAGE_RAG)
 async def get_image_rag_list(
     offset: int = 0,
     limit: int = 20,
     plugin: Optional[str] = None,
+    source: Optional[str] = None,
     page: int = 1,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
@@ -62,6 +87,7 @@ async def get_image_rag_list(
         offset: 起始偏移，默认0（会被page参数覆盖）
         limit: 每页数量，默认20
         plugin: 可选，按插件名过滤
+        source: 可选，plugin=全部插件图（排除 manual）；manual=仅手动图。plugin 参数优先
         page: 页码，从1开始，例如page=2表示第二页（offset=20）
 
     Returns:
@@ -72,13 +98,13 @@ async def get_image_rag_list(
     if page > 1:
         offset = (page - 1) * limit
 
-    # 构建插件过滤列表
-    plugin_filter = [plugin] if plugin else None
+    plugin_filter, exclude_plugins = _resolve_image_plugin_args(plugin, source)
 
     result = await get_image_list(
         offset=offset,
         limit=limit,
         plugin_filter=plugin_filter,
+        exclude_plugins=exclude_plugins,
     )
 
     # 添加page信息到返回结果
@@ -97,6 +123,7 @@ async def search_image_rag(
     query: str,
     limit: int = 10,
     plugin: Optional[str] = None,
+    source: Optional[str] = None,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
@@ -108,17 +135,19 @@ async def search_image_rag(
         query: 查询文本（描述想要找的图片内容）
         limit: 返回数量限制，默认10
         plugin: 可选，按插件名过滤
+        source: 可选，plugin=全部插件图（排除 manual）；manual=仅手动图。plugin 参数优先
 
     Returns:
         status: 0成功，1失败
         data: 匹配的图片列表
     """
-    plugin_filter = [plugin] if plugin else None
+    plugin_filter, exclude_plugins = _resolve_image_plugin_args(plugin, source)
 
     results = await search_images(
         query=query,
         limit=limit,
         plugin_filter=plugin_filter,
+        exclude_plugins=exclude_plugins,
     )
 
     # 转换结果为可序列化的格式

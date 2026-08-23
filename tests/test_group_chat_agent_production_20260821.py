@@ -18,7 +18,6 @@ from gsuid_core.ai_core.interaction_scaffold import SLIM_GROUP_CORE_TOOLS
 from gsuid_core.ai_core.agent_run.speech_policy import (
     IN_FLIGHT_WAIT_TEMPLATES,
     looks_like_wait_template,
-    looks_like_task_accept_speech,
     should_block_user_visible_text,
     looks_like_inflight_quota_speech,
 )
@@ -72,23 +71,16 @@ def test_wait_templates_are_legal_inflight_exit() -> None:
 
 
 def test_first_ack_with_tools_keeps_accept_speech_not_planning_dump() -> None:
-    """同响应有工具：接任务应出站一次，不按 12 字；多段规划仍压。不按工具名特判。"""
+    """同响应有工具：第 1 个含 ToolCall 的响应放行一条 TextPart，其后静默。"""
     from pathlib import Path
 
-    from gsuid_core.ai_core.agent_run.loop import _keep_first_ack_with_tools
+    from gsuid_core.ai_core.agent_run.loop import decide_text_outbound_slot
 
-    accept = "唔…上海广州深圳北京四个城市6年的曲线…好麻烦…"
-    assert len(accept) > 12
-    assert looks_like_inflight_quota_speech(accept) is False
-    assert looks_like_task_accept_speech(accept) is True
-    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=accept) is True
-    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=True, text=accept) is False
-    assert _keep_first_ack_with_tools(create_by="CapabilityAgent", wait_comfort_sent=False, text=accept) is False
-    dump = "这是重任务。\n先委派收集事实包。\n回来再出图。"
-    assert looks_like_task_accept_speech(dump) is False
-    assert _keep_first_ack_with_tools(create_by="Chat", wait_comfort_sent=False, text=dump) is False
+    assert decide_text_outbound_slot(has_fn_tool=True, tool_bearing_index=1, accept_slot_used=False) == "send_accept"
+    assert decide_text_outbound_slot(has_fn_tool=True, tool_bearing_index=1, accept_slot_used=True) == "unsent"
+    assert decide_text_outbound_slot(has_fn_tool=True, tool_bearing_index=2, accept_slot_used=False) == "unsent"
+    assert decide_text_outbound_slot(has_fn_tool=False, tool_bearing_index=0, accept_slot_used=False) == "send_final"
     later = "…等数据回来再继续…"
-    assert looks_like_task_accept_speech(later) is True
     blk, why = should_block_user_visible_text(
         "silence_only",
         later,
@@ -100,8 +92,8 @@ def test_first_ack_with_tools_keeps_accept_speech_not_planning_dump() -> None:
     )
     assert blk and why == "silence_only_or_async"
     src = (Path(__file__).resolve().parent.parent / "gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
-    assert "if not _keep_first_ack_with_tools(" in src
-    assert "looks_like_task_accept_speech" in src
+    assert "decide_text_outbound_slot" in src
+    assert "tool_bearing_responses" in src
 
 
 def test_function_tool_detected_even_if_text_part_comes_first() -> None:

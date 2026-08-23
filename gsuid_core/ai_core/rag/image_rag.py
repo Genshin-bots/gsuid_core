@@ -12,6 +12,7 @@ from pathlib import Path
 from qdrant_client.models import (
     Filter,
     Distance,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -403,10 +404,71 @@ async def sync_images():
             )
 
 
+def _image_plugin_filter(
+    plugin_filter: Optional[List[str]] = None,
+    exclude_plugins: Optional[List[str]] = None,
+) -> Optional[Filter]:
+    must: List[Any] = []
+    must_not: List[Any] = []
+    if plugin_filter:
+        must.append(FieldCondition(key="plugin", match=MatchAny(any=list(plugin_filter))))
+    if exclude_plugins:
+        must_not.append(FieldCondition(key="plugin", match=MatchAny(any=list(exclude_plugins))))
+    if not must and not must_not:
+        return None
+    return Filter(must=must or None, must_not=must_not or None)
+
+
+async def list_image_plugins() -> List[str]:
+    """图片知识里出现过的 plugin 名（排除 manual），供控制台筛选下拉。"""
+    names: set[str] = set()
+    from gsuid_core.ai_core.register import _ENTITIES
+
+    for entity in _ENTITIES:
+        if not isinstance(entity, dict) or "path" not in entity:
+            continue
+        plugin = str(entity.get("plugin") or "").strip()
+        if plugin and plugin != "manual":
+            names.add(plugin)
+
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None:
+        return sorted(names)
+
+    try:
+        current_offset = None
+        scroll_filter = Filter(must_not=[FieldCondition(key="plugin", match=MatchValue(value="manual"))])
+        while True:
+            records, next_offset = await client.scroll(
+                collection_name=IMAGE_COLLECTION_NAME,
+                limit=200,
+                offset=current_offset,
+                with_payload=True,
+                with_vectors=False,
+                scroll_filter=scroll_filter,
+            )
+            if not records:
+                break
+            for record in records:
+                payload = record.payload or {}
+                plugin = str(payload.get("plugin") or "").strip()
+                if plugin and plugin != "manual":
+                    names.add(plugin)
+            if next_offset is None:
+                break
+            current_offset = next_offset
+    except Exception as e:
+        logger.debug(i18n_t("log.rag.imagerag_ai_feature_enabled_2") + f" {e}")
+
+    return sorted(names)
+
+
 async def search_images(
     query: str,
     limit: int = 5,
     plugin_filter: Optional[List[str]] = None,
+    exclude_plugins: Optional[List[str]] = None,
 ) -> List[ScoredPoint]:
     """搜索图片
 
@@ -416,6 +478,7 @@ async def search_images(
         query: 查询文本（描述想要找的图片内容）
         limit: 返回结果数量限制
         plugin_filter: 可选，按插件名过滤
+        exclude_plugins: 可选，排除这些插件名（如全量插件图时排除 manual）
 
     Returns:
         匹配的图片列表，包含 path、tags、content 等信息
@@ -433,18 +496,7 @@ async def search_images(
         return []
     query_vector = _vectors[0]
 
-    # 构建过滤条件
-    search_filter = None
-    if plugin_filter:
-        search_filter = Filter(
-            should=[
-                FieldCondition(
-                    key="plugin",
-                    match=MatchValue(value=plugin),
-                )
-                for plugin in plugin_filter
-            ]
-        )
+    search_filter = _image_plugin_filter(plugin_filter, exclude_plugins)
 
     # 执行搜索
     search_result = await client.query_points(
@@ -541,6 +593,7 @@ async def get_image_list(
     offset: int = 0,
     limit: int = 20,
     plugin_filter: Optional[List[str]] = None,
+    exclude_plugins: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """获取图片列表（分页）
 
@@ -548,6 +601,7 @@ async def get_image_list(
         offset: 起始偏移
         limit: 每页数量
         plugin_filter: 可选，按插件名过滤
+        exclude_plugins: 可选，排除这些插件名
 
     Returns:
         包含图片列表和总数的字典
@@ -558,18 +612,7 @@ async def get_image_list(
         logger.warning(i18n_t("log.rag.imagerag_ai_feature_enabled_2"))
         return {"list": [], "total": 0}
 
-    # 构建过滤条件
-    scroll_filter = None
-    if plugin_filter:
-        scroll_filter = Filter(
-            should=[
-                FieldCondition(
-                    key="plugin",
-                    match=MatchValue(value=plugin),
-                )
-                for plugin in plugin_filter
-            ]
-        )
+    scroll_filter = _image_plugin_filter(plugin_filter, exclude_plugins)
 
     # 获取总数
     total = await client.count(

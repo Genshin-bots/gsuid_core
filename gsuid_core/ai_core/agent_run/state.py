@@ -101,6 +101,14 @@ class RunOnceState:
     render_ack_seen: bool = False
     # 主通道已成功发送的台词段数（单轮出站配额兜底，见 4.10）
     main_channel_sends: int = 0
+    # 本 run 已见过几个「含函数 ToolCall」的 ModelResponse（出站槽计数）
+    tool_bearing_responses: int = 0
+    # 本 run 因出站槽丢掉、须从 new_messages 剥掉的 TextPart 正文
+    unsent_texts: list[str] = field(default_factory=list)
+    web_search_delegate_nudged: bool = False
+    # 无函数工具的终局响应已出站；其后最多再接受一轮闸门 rewrite
+    saw_final_response: bool = False
+    post_final_requests: int = 0
 
     # 时钟 / 限额
     limits: UsageLimits | None = None

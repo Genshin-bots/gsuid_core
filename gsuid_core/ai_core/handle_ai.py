@@ -323,7 +323,9 @@ async def run_interactive_turn(
     if settle and session.persona_name:
         hook_ctx.tool_names_called = tuple(session._last_attempt_tool_calls)
         hook_ctx.result_text = result_text[:200]
-        hook_ctx.thinking_text = ""
+        _think_max = int(ai_config.get_config("thinking_text_max").data)
+        _think = session._last_attempt_thinking or ""
+        hook_ctx.thinking_text = _think[-_think_max:] if _think else ""
         await _settle_and_fire_after_run(
             bot=bot,
             event=event,

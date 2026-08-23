@@ -151,6 +151,14 @@ def _history_has_any_speaker_id(recent: List[Tuple[str, str]]) -> bool:
     return any(extract_speaker_id(txt) for r, txt in recent if r == "user")
 
 
+def is_manage_ellipsis_form(current_text: str, *, max_len: int = FOLLOWUP_MAXLEN_DEFAULT) -> bool:
+    """本句是否短省略管理形（闭类改/取消/那X呢 + 长度）。不要求 history 有 ToolCall。"""
+    t = extract_message_body(current_text)
+    if not t or len(t) > max_len:
+        return False
+    return bool(_FOLLOWUP_VERB_RE.search(t) or _FOLLOWUP_THAT_RE.match(t))
+
+
 def detect_ellipsis_followup(
     current_text: str,
     recent: List[Tuple[str, str]],
@@ -165,10 +173,7 @@ def detect_ellipsis_followup(
     2. 近历史有真实工具调用（``recent_tool_call`` / ``has_recent_tool_call``）
     3. 群聊说话人隔离：有 ID 锚点时，最近一条 user 须为同人（防乙继承甲的槽）
     """
-    t = extract_message_body(current_text)
-    if not t or len(t) > max_len or not recent:
-        return False
-    if not (_FOLLOWUP_VERB_RE.search(t) or _FOLLOWUP_THAT_RE.match(t)):
+    if not recent or not is_manage_ellipsis_form(current_text, max_len=max_len):
         return False
     if not recent_tool_call:
         return False
@@ -177,6 +182,27 @@ def detect_ellipsis_followup(
         return True
     last_sid = _last_user_speaker_id(recent)
     return (not last_sid) or last_sid == sid
+
+
+def ellipsis_inherits_other_speaker(
+    current_text: str,
+    recent: List[Tuple[str, str]],
+    persona_name: str,
+    is_tome: bool,
+    *,
+    speaker_id: str = "",
+    max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
+) -> bool:
+    """乙的短省略形、上一轮 user 是别人、且未点名自己 → 不是你的槽。"""
+    if is_tome or is_addressed_to_self(current_text, persona_name, is_tome):
+        return False
+    if not is_manage_ellipsis_form(current_text, max_len=max_len):
+        return False
+    sid = speaker_id or extract_speaker_id(current_text)
+    if not sid or not _history_has_any_speaker_id(recent):
+        return False
+    last_sid = _last_user_speaker_id(recent)
+    return bool(last_sid) and last_sid != sid
 
 
 # 任务管理意图：查/改/删/停 已有的提醒/定时任务/日程——无论是否省略跟进，都需要调度族工具
@@ -356,6 +382,8 @@ def decide_group_open_gate(
         return GroupOpenGate.SILENCE
     if ambient_followup_to_other(message_text, recent_list, persona_name, is_tome):
         return GroupOpenGate.SILENCE
+    if ellipsis_inherits_other_speaker(message_text, recent_list, persona_name, is_tome):
+        return GroupOpenGate.SILENCE
     # 多人同条且无人呼叫你 = 群里互聊
     if is_multi_speaker_message(message_text):
         return GroupOpenGate.SILENCE
@@ -517,8 +545,17 @@ def build_turn_graph(
         extra = collect_persona_surfaces(persona_name)
     call = is_addressed_to_self(text, persona_name, is_tome, extra_names=extra)
     multi = len(speakers) >= 2
-    addr = addressed_to_someone_else(text, persona_name, is_tome) or ambient_followup_to_other(
-        text, recent_list, persona_name, is_tome, max_len=ambient_max_len
+    addr = (
+        addressed_to_someone_else(text, persona_name, is_tome)
+        or ambient_followup_to_other(text, recent_list, persona_name, is_tome, max_len=ambient_max_len)
+        or ellipsis_inherits_other_speaker(
+            text,
+            recent_list,
+            persona_name,
+            is_tome,
+            speaker_id=primary,
+            max_len=followup_max_len,
+        )
     )
     ellipsis = detect_ellipsis_followup(
         text,
@@ -557,6 +594,25 @@ def build_turn_graph(
     )
 
 
+def _same_body_repeat_count(tg: TurnGraph) -> int:
+    """当前说话人在近窗内与本轮相同正文的条数（含本轮）。"""
+    body = extract_message_body(tg.message_text)
+    if not body:
+        return 0
+    n = 1
+    sid = tg.primary_speaker
+    for role, text in reversed(tg.recent):
+        if role != "user":
+            continue
+        if extract_message_body(text) != body:
+            continue
+        last_sid = extract_speaker_id(text)
+        if sid and last_sid and last_sid != sid:
+            continue
+        n += 1
+    return n
+
+
 def decide_cheap_gate(
     tg: TurnGraph,
     *,
@@ -582,6 +638,22 @@ def decide_cheap_gate(
         return CheapGate.SILENCE
     if tg.address_gated:
         return CheapGate.SILENCE
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    _repeat_n = int(ai_config.get_config("group_repeat_body_n").data)
+    if _repeat_n > 1 and _same_body_repeat_count(tg) >= _repeat_n:
+        return CheapGate.SILENCE
+    if bool(ai_config.get_config("group_lurk_mode").data):
+        _master = rel is not None and rel.is_master
+        if (
+            not _master
+            and not tg.is_tome
+            and not tg.call_to_self
+            and not tg.ellipsis_followup
+            and not tg.soft_continue
+            and not has_active_task
+        ):
+            return CheapGate.SILENCE
     if (
         rel is not None
         and rel.is_quiet_zone
@@ -625,8 +697,9 @@ def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
     return hints
 
 
-# 群聊瘦保底：按**通道能力**固定（多模态 / 事实查询 / 出图 / 调度入口），
-# 不按用户话题词扩池。list/modify 等仍靠 needs_task_tools 补域。
+# 群聊瘦保底：按**通道能力**固定（多模态 / 回想 / 出图 / 调度入口 / 发现），
+# 不按用户话题词扩池。外部检索不钉核，问答轮经 extras append。
+# 已有持久实体的同族管理工具由 L2 状态驱动补，不写进瘦核。
 SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
     {
         "send_message_by_ai",
@@ -634,9 +707,8 @@ SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
         "add_interval_task",
         "find_tools",
         "read_image",
-        "read_handle",  # FileOS 折叠后续读（与 web_search 成对）
+        "read_handle",  # FileOS 折叠后续读
         "search_cognition",  # 记忆+偏好+知识+落盘+产物的单一「回想」入口
-        "web_search_tool",
         "create_subagent",  # 含 render_agent / research 委派入口
         # 控制面：纠正信封让模型申辩。check_delegation 不常挂，追问进度时 find_tools 召回。
         "dispute_directive",

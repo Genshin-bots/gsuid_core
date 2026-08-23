@@ -47,7 +47,9 @@ def build_plan_hint(query: str, *, eval_summary: str = "") -> str:
         head = eval_summary.strip().split("\n", 1)[0][:40]
         return _plan_line(head, query, via="")
     if node:
-        return _plan_line(node, query, via=" 委派")
+        return _plan_line(f'create_subagent(agent_profile="{node}")', query, via="")
+    if should_plan_first(query):
+        return _plan_line("capability_map 或 find_tools", query, via="")
     return _plan_line("find_tools 召回", query, via="")
 
 

@@ -972,18 +972,21 @@ class AISessionLogger:
                               "proactive_generator"
             persona_name: 被关联 Agent 的 persona_name
             create_by: 被关联 Agent 的 create_by
-            log_file: 被关联 Agent 的日志文件路径（绝对路径或相对路径）
+            log_file: 被关联 Agent 的日志文件路径（落盘为相对 session_logs/ 的 POSIX）
         """
         if self._closed:
             return
 
+        from gsuid_core.ai_core.session_log_path import relative_session_log_path
+
+        stored = relative_session_log_path(log_file) if log_file else log_file
         link_record: LinkedAgentRecord = {
             "agent_type": agent_type,
             "session_id": agent_session_id,
             "session_uuid": agent_session_uuid,
             "persona_name": persona_name,
             "create_by": create_by,
-            "log_file": log_file,
+            "log_file": stored,
             "linked_at": time.time(),
         }
         self.linked_agents.append(link_record)

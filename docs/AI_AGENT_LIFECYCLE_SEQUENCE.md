@@ -1251,13 +1251,13 @@ session_logger.log_user_input(final_user_message)
 
 | 层 | 条件 | 内容 |
 |----|------|------|
-| L1 保底 | 每轮 | `self` + `buildin`；persona `tool_names` |
-| L2 状态 | 有实体 | 活跃 Kanban / 定时 / record → **整族**（不因 intent=闲聊裁剪） |
-| L3 驻留 | 有历史调用 | capability_domain 常驻 **2** 轮 |
-| 语境 | 有 group | 群画像 tags → 最多 8 个（如 papertrade 只读工具） |
-| L4/L5 向量 | **有 query 即搜** | 近文 + 本轮检索；族展开受 `tool_extra_pool_max`（默认 6）；**闲聊不跳过** |
-| 委派 | 交互主人格 | 剥离 **exclusive**；注入 `create_subagent`；roster 在 **system** |
-| 渐进 | 每轮可挂 | `find_tools` + RetrievableToolset（`blocked_tool_names` 防 exclusive 回灌） |
+| L1 保底 | 每轮 | 群聊瘦核 ∪ 钉核 `find_tools` / `create_subagent` / `capability_map` |
+| L2 状态 | 本群/本会话有持久实体，且群聊已点名/省略跟进（私聊始终） | `get_state_driven_family_tools` 补对应族、剥 exclusive；旁观不加。核内**非状态驱动**域首轮族闭合（跳过定时任务/Kanban/产物/record）。`send_*` extras 不进静态附加池。群聊 extras 不 L4 整族展开 |
+| L3 驻留 | 不写 core | 跨轮靠 `find_tools` 成功后 **append-only**（`session_tool_ceiling` 硬顶，超顶拒新名） |
+| 语境 | 有 group | 群画像 tags → 附加池；**exclusive 永不进主会话**（无 shield） |
+| L4/L5 向量 | 非 in_flight 短轮 | 近文 + 本轮检索；新名字只 append，禁止删除/排序/热槽替换。点名/跟进不因 LIGHT 跳过（瘦核不含 web_search） |
+| 委派 | 交互主人格 | exclusive 集合来自节点注册表；roster 在 **system** |
+| 渐进 | 每轮可挂 | `find_tools` 先节点后向量；RetrievableToolset 防 exclusive 回灌。群聊回想旗 = 点名或任务跟进（**不含** soft_continue）；装配层按旗从快照拿掉 create/mutate/回想名 |
 | 出图 | **主路径** | **`create_subagent(agent_profile="render_agent")`** 自由 HTML → 图句柄；主人格 `send_message_by_ai(image_id=)` |
 | media 直调 | 能力/特例 | `render_html_to_image` 挂在 render_agent 白名单；主人格契约 **禁止自渲** |
 
@@ -1316,16 +1316,19 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         ToolReturn create_subagent → inflight_after_create_subagent_return：
                     异步 ack / 完成回执确认在途；失败且未 ack 则回滚抢先静默
         TextPart  → log_text_output；return_mode=by_bot 时按序：
-                    1) SILENCE / 本轮去重 / 中间文本抑制
+                    0) 出站槽（只看 part 类型 + 本 run 第几次带函数 ToolCall 的响应）：
+                       第 1 次 → 至多一条非空非 SILENCE TextPart（接任务应，仍过闸门；
+                       过不了也消耗名额）；第 2 次及以后 → 全部 TextPart 记 unsent；
+                       无函数 ToolCall → 终局开口。hosted 搜索不当函数工具。
+                    1) SILENCE / 本轮去重
                     2) **speech_policy.should_block**（delivered/silence_only/…
                        话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报；
-                       pending_async 或 render_inflight → 默认 SILENCE，极短等待可一次；
-                       多点读数密度 → numeric_recitation 丢弃（不进 INV-4），
-                       记原因后 settle 走 render 纠正；FileOS 折叠的多点检索仍武装出图）
+                       长结构/念数仍拦。接任务应走同一闸，不再用过程词表）
                     3) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
                     4) 假完成预检（零工具却声称办完）→ 暂扣（进 RunOnceState.fab_blocked）
-                    5) 主通道单轮出站配额（超 MAIN_CHANNEL_VISIBLE_LIMIT 静默）
+                    5) 主通道单轮出站配额（`main_channel_visible_limit`，默认 2）
                     6) ALLOW → send_chat_result（呈现层，见 §10.6）
+                    unsent 从本轮 new_messages 尾部剥掉（不进 B 轨）
         Thinking  → log_thinking
     End → log_node_transition
   未被 supersede → _run_once_settle_result（settle.py）:
@@ -1383,8 +1386,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
    编排词/过程动词/长结构仍拦）；其后静默。清单/多点读数/第二执行者不占额度。
    活跃任务下「多点读数密度」拦为 `numeric_recitation`，**不进** `presentation_withheld`。
    `status_ok` 且已查状态工具时放行进度句。发图后另有一句短收尾额度（与在途额度分开）。
-   同响应若已有函数工具，`suppress_intermediate_text` 仍压规划/OS；主人格一句接任务应除外
-   （只一次），避免长时间任务开场完全静默。
+   出站按「第几次带函数 ToolCall 的响应」分槽：首次可一句接任务（过闸门），其后切工具静默；
+   无 ToolCall 终局开口。内容仍走 `pre_send_gate` / `should_block`，不另写过程词表。
 4. 主人格折叠卡：群聊 **不内嵌 inline_head**（summary + 句柄）；长 `create_subagent` 回执同样折成卡。
    反问时按需 `read_handle`，默认不当事实总线。交付回灌卡 `speech_expand=False`。
 5. `in_flight_short`：`has_active_task` 且剥壳后真人句 ≤48 字 → 跳过语境标签池与向量检索，

@@ -1,4 +1,4 @@
-from typing import List, Type, Union, Optional, Sequence
+from typing import Any, Dict, List, Type, Union, Optional, Sequence
 
 from sqlmodel import Field, Index, col, select, update
 from sqlalchemy import Row, UniqueConstraint, or_, func, delete, distinct
@@ -60,6 +60,7 @@ class Subscribe(BaseModel, table=True):
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
         force_direct: bool = False,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ):
         if force_direct:
             user_type = "direct"
@@ -83,11 +84,21 @@ class Subscribe(BaseModel, table=True):
             "command_start_text": command_start_text,
         }
 
+        if extra_metadata and reply is not None:
+            params["extra_metadata"] = extra_metadata
+
+        async def _dispatch(bot: Bot) -> None:
+            if extra_metadata is not None:
+                assert reply is not None
+                await bot.send(reply, extra_metadata=extra_metadata)
+            else:
+                await bot.send_option(**params)
+
         if self.WS_BOT_ID:
             if self.WS_BOT_ID in gss.active_bot:
                 BOT = gss.active_bot[self.WS_BOT_ID]
                 bot = Bot(BOT, ev)
-                await bot.send_option(**params)
+                await _dispatch(bot)
             else:
                 # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
                 found = False
@@ -108,7 +119,7 @@ class Subscribe(BaseModel, table=True):
                             WS_BOT_ID=ws_bot_id,
                         )
                         bot = Bot(_bot, ev)
-                        await bot.send_option(**params)
+                        await _dispatch(bot)
                         found = True
                         break
                 if not found:
@@ -118,7 +129,7 @@ class Subscribe(BaseModel, table=True):
             for bot_id in gss.active_bot:
                 BOT = gss.active_bot[bot_id]
                 bot = Bot(BOT, ev)
-                await bot.send_option(**params)
+                await _dispatch(bot)
 
 
 class CoreTag(BaseIDModel, table=True):

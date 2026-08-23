@@ -74,6 +74,68 @@ def visible_to_capability_only(ctx: RunContext[ToolContext]) -> bool:
     return capability_only_from_deps(ctx.deps)
 
 
+GROUP_RECALL_OK_KEY = "group_recall_ok"
+SCHED_CREATE_OK_KEY = "sched_create_ok"
+SCHED_MUTATE_OK_KEY = "sched_mutate_ok"
+
+
+def group_recall_allowed(*, is_group: bool, call_to_self: bool, followup_detected: bool) -> bool:
+    """群聊回想/发现工具是否该露。点名或任务跟进才开；不含 soft_continue。"""
+    if not is_group:
+        return True
+    return call_to_self or followup_detected
+
+
+def visible_when_group_recall(ctx: RunContext[ToolContext]) -> bool:
+    """群聊未点名且非任务跟进时隐藏回想。缺旗则偏可见。"""
+    deps = ctx.deps
+    if deps is None:
+        return True
+    extra = deps.extra
+    if GROUP_RECALL_OK_KEY not in extra:
+        return True
+    return bool(extra[GROUP_RECALL_OK_KEY])
+
+
+def sched_tool_visibility(
+    *,
+    is_group: bool,
+    address_gated: bool,
+    call_to_self: bool,
+    followup_detected: bool,
+    has_active_schedules: bool,
+    manage_form: bool = False,
+) -> tuple[bool, bool]:
+    """返回 (新建可见, 变更可见)。管理形藏新建，不要求 history 里有 ToolCall。"""
+    addressed = (not is_group) or ((not address_gated) and (call_to_self or followup_detected))
+    managing = followup_detected or manage_form
+    create_ok = addressed and not managing
+    mutate_ok = (not is_group) or (addressed and (has_active_schedules or managing))
+    return create_ok, mutate_ok
+
+
+def visible_when_sched_create(ctx: RunContext[ToolContext]) -> bool:
+    """跟进已有条目时隐藏新建。缺旗则偏可见。"""
+    deps = ctx.deps
+    if deps is None:
+        return True
+    extra = deps.extra
+    if SCHED_CREATE_OK_KEY not in extra:
+        return True
+    return bool(extra[SCHED_CREATE_OK_KEY])
+
+
+def visible_when_sched_mutate(ctx: RunContext[ToolContext]) -> bool:
+    """群聊未点名或提问者没有本人条目时隐藏变更。缺旗则偏可见。"""
+    deps = ctx.deps
+    if deps is None:
+        return True
+    extra = deps.extra
+    if SCHED_MUTATE_OK_KEY not in extra:
+        return True
+    return bool(extra[SCHED_MUTATE_OK_KEY])
+
+
 def context_has_image(ctx: RunContext[ToolContext]) -> bool:
     """``read_image`` 的 visible_when：当前轮或上下文里有图片时才暴露。"""
     ev = ctx.deps.ev if ctx.deps is not None else None

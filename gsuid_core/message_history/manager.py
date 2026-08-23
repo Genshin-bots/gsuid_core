@@ -171,13 +171,23 @@ class HistoryManager:
         Returns:
             创建的消息记录
         """
+        meta = metadata or {}
+        if "skip_ai_history" in meta and bool(meta["skip_ai_history"]):
+            return MessageRecord(
+                role=role,
+                content=content,
+                user_id=event.user_id,
+                user_name=user_name,
+                user_avatar=user_avatar,
+                metadata=meta,
+            )
         record = MessageRecord(
             role=role,
             content=content,
             user_id=event.user_id,
             user_name=user_name,
             user_avatar=user_avatar,
-            metadata=metadata or {},
+            metadata=meta,
         )
 
         # 估算新消息的 Token 数

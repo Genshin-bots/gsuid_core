@@ -603,6 +603,24 @@ async def _ingest_batch_inner(
     # LOW 价值跳过可避免寒暄复读耗费 LLM 配额。
     is_self_scope = scope_key.startswith("self:")
     high_records = [r for r in records if getattr(r, "value_tier", "HIGH") == "HIGH"]
+    if high_records:
+        from gsuid_core.ai_core.cognition.types import CogKind
+        from gsuid_core.ai_core.configs.ai_config import ai_config as _mem_ai
+        from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+
+        _sum_n = int(_mem_ai.get_config("remember_fact_trunc").data)
+        summary = (dialogue or "").replace("\n", " ").strip()[:_sum_n]
+        if summary:
+            await remember(
+                MemoryWrite(
+                    kind=CogKind.EPISODE,
+                    ref=str(episode.id),
+                    scope_key=scope_key,
+                    title="",
+                    summary=summary,
+                    source="observe",
+                )
+            )
     if is_self_scope or not high_records:
         logger.debug(
             i18n_t(

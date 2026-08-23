@@ -1,6 +1,7 @@
 """前缀缓存失配探针：对比相邻 run 的 history hash 链，标注首个失配类别。
 
-类别：``none`` / ``system`` / ``tools`` / ``user_lean`` / ``tool_return`` / ``history_mid``。
+类别：``none`` / ``session_new`` / ``system`` / ``tools`` / ``system+tools`` /
+``user_lean`` / ``tool_return`` / ``history_mid``。
 只观测、不改请求。结果进 session log 与进程内计数，供缓存治理验收。
 """
 
@@ -19,7 +20,16 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-PrefixBreakReason = Literal["none", "system", "tools", "user_lean", "tool_return", "history_mid"]
+PrefixBreakReason = Literal[
+    "none",
+    "session_new",
+    "system",
+    "tools",
+    "system+tools",
+    "user_lean",
+    "tool_return",
+    "history_mid",
+]
 
 _PREFIX_BREAK_COUNTS: dict[str, int] = {}
 
@@ -112,10 +122,14 @@ def classify_prefix_break(
     curr_payloads: Sequence[str] = (),
 ) -> PrefixBreakReason:
     if prev is None:
-        return "none"
-    if prev.system_hash != system_hash:
+        return "session_new"
+    sys_changed = prev.system_hash != system_hash
+    tools_changed = prev.tools_hash != tools_hash
+    if sys_changed and tools_changed:
+        return "system+tools"
+    if sys_changed:
         return "system"
-    if prev.tools_hash != tools_hash:
+    if tools_changed:
         return "tools"
     n = min(len(prev.history_hashes), len(history_hashes))
     for i in range(n):

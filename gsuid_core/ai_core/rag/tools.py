@@ -325,6 +325,12 @@ _SELF_CATEGORY_WHITELIST: Set[str] = {
     "send_message_by_ai",
     "add_once_task",
     "add_interval_task",
+    "list_scheduled_tasks",
+    "query_scheduled_task",
+    "modify_scheduled_task",
+    "cancel_scheduled_task",
+    "pause_scheduled_task",
+    "resume_scheduled_task",
 }
 
 

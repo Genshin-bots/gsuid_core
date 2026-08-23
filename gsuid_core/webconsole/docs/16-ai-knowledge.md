@@ -2,6 +2,15 @@
 
 > 知识库 API 用于管理手动添加的知识库条目。通过此接口添加的知识不会在框架启动时被插件同步流程检查、修改或删除。
 
+## 16.0 列出有知识的插件名
+```
+GET /api/ai/knowledge/plugins
+```
+
+**响应** `data`: `string[]`，插件知识 payload.plugin 去重（不含 `manual`）。控制台「插件知识」下拉用此列表，保证筛选名与库内字段一致。
+
+---
+
 ## 16.1 获取知识库列表（分页）
 
 ```
@@ -19,6 +28,7 @@ Authorization: Bearer <token>
 | offset | integer | 否 | 0 | 起始偏移量（会被page参数覆盖） |
 | limit | integer | 否 | 20 | 每页数量 |
 | source | string | 否 | all | 来源过滤，"all"表示所有知识，"plugin"只查插件添加的，"manual"只查手动添加的 |
+| plugin | string | 否 | - | 按插件名精确过滤（通常配合 source=plugin） |
 | page | integer | 否 | 1 | 页码，从1开始，例如page=2表示第二页（offset=20） |
 
 **响应**：
@@ -267,6 +277,7 @@ Authorization: Bearer <token>
 | query | string | 是 | - | 查询文本 |
 | limit | integer | 否 | 10 | 返回数量限制 |
 | source | string | 否 | all | 来源过滤，"all"表示所有知识，"plugin"只搜插件添加的，"manual"只搜手动添加的 |
+| plugin | string | 否 | - | 按插件名精确过滤（通常配合 source=plugin） |
 
 **响应**：
 ```json

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 import json
 import uuid
@@ -29,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import yaml  # noqa: E402
 
-from eval.agent.harness import aggregate, score_case_passk  # noqa: E402
+from eval.agent.harness import aggregate, score_case_passk, parse_judge_verdict  # noqa: E402
 
 
 def make_env_judge():
@@ -56,13 +55,9 @@ def make_env_judge():
             timeout=60,
         )
         r.raise_for_status()
-        txt = r.json()["choices"][0]["message"]["content"].strip()
-        # 思考模型（MiniMax-M3 等）content 以 <think>…</think> 开头，startswith 会把一切判 FAIL
-        txt = re.sub(r"<think>.*?</think>", "", txt, flags=re.DOTALL).strip().upper()
-        m = re.findall(r"\b(PASS|FAIL)\b", txt)
-        if m:
-            return m[-1] == "PASS"
-        return txt.startswith("PASS")
+        txt = r.json()["choices"][0]["message"]["content"]
+        v = parse_judge_verdict(str(txt) if txt is not None else "")
+        return bool(v)
 
     return judge
 
@@ -87,31 +82,33 @@ def make_bot_judge(base_url: str, token: str = ""):
             headers=headers,
             json={
                 "user_id": f"judge_{uuid.uuid4().hex[:8]}",
-                "message": (
-                    "你是严格的评测判分器。阅读下面的判定标准与 Agent 回复，"
-                    "只输出一个词 PASS 或 FAIL，不要解释。\n\n" + prompt
-                ),
+                "message": prompt,
                 "history": [],
                 "enable_observer": False,
                 "enable_tools": False,
+                "as_judge": True,
             },
-            timeout=120,
+            timeout=60,
         )
         r.raise_for_status()
-        return extract_text_from_response(r.json().get("data")).strip().upper()
+        return extract_text_from_response(r.json().get("data"))
 
     def judge(prompt: str) -> bool:
-        # 判分器与被测 Agent 共用同一个 core：批量跑完后 provider 仍在排队，单次超时会把
-        # 「本该 PASS」静默记成 FAIL（实测 6 例假失败）。传输层异常重试一次；重试仍失败
-        # 才判 FAIL——保持「宁可漏判也不假通过」，只是不再把网络抖动算成模型缺陷。
-        for attempt in (1, 2):
+        # 判分器与被测 Agent 共用同一个 core。传输层异常 / 无裁决各重试；仍失败才 FAIL。
+        last = ""
+        for attempt in (1, 2, 3):
+            msg = prompt if attempt == 1 else prompt + "\n\n只输出一行：PASS 或 FAIL。"
             try:
-                txt = _ask(prompt)
+                raw = _ask(msg)
             except Exception as e:  # noqa: BLE001
                 print(f"  [WARN] bot-judge 异常(第{attempt}次): {e}")
                 continue
-            # 通用助手可能话多：只要出现 PASS 且不是 "FAIL" 主导即判过；严格取首个判词。
-            return txt.find("PASS") != -1 and (txt.find("FAIL") == -1 or txt.find("PASS") < txt.find("FAIL"))
+            last = str(raw or "")
+            v = parse_judge_verdict(last)
+            if v is not None:
+                return v
+            print(f"  [WARN] bot-judge 无裁决(第{attempt}次): {last[:80]!r}")
+        print(f"  [WARN] bot-judge 放弃: {last[:80]!r}")
         return False
 
     return judge
@@ -197,6 +194,11 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
                     "tools": t.called_names,
                 }
                 break
+        in_tok = sum(t.input_tokens for t in traces)
+        out_tok = sum(t.output_tokens for t in traces)
+        cr_tok = sum(t.cache_read_tokens for t in traces)
+        cw_tok = sum(t.cache_write_tokens for t in traces)
+        case_cache = round(cr_tok / in_tok, 4) if in_tok else 0.0
         results.append(
             {
                 "id": cid,
@@ -209,6 +211,11 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
                 "max_tools": max(tool_counts) if tool_counts else 0,
                 "avg_latency": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
                 "max_latency": round(max(latencies), 1) if latencies else 0.0,
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "cache_read_tokens": cr_tok,
+                "cache_write_tokens": cw_tok,
+                "cache_rate": case_cache,
                 "firewall_saved_runs": fw_saved,
                 "sample": sample,
             }
@@ -216,7 +223,8 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
         mark = "PASS" if r["case_pass"] else "FAIL"
         print(
             f"[{i:>3}/{len(active)}] [{mark}] {cid:30s} per_run={r['per_run_pass']} "
-            f"tools~{results[-1]['avg_tools']} {results[-1]['avg_latency']}s"
+            f"tools~{results[-1]['avg_tools']} {results[-1]['avg_latency']}s "
+            f"in={in_tok} cache={case_cache:.0%}"
         )
         if not r["case_pass"] and r["fail_reasons"]:
             print(f"        ↳ {str(r['fail_reasons'][0])[:160]}")
@@ -328,6 +336,11 @@ def main() -> int:
     print("\n===== 汇总 (pass^k) =====")
     print(f"总通过率: {agg['passed_cases']}/{agg['total_cases']} = {agg['pass_rate'] * 100:.1f}%")
     print(f"平均工具数/例: {agg['avg_tools_per_case']}   平均延迟: {agg['avg_latency_s']}s")
+    print(
+        f"token input={agg.get('input_tokens', 0)}  output={agg.get('output_tokens', 0)}  "
+        f"cache_read={agg.get('cache_read_tokens', 0)}  cache_write={agg.get('cache_write_tokens', 0)}  "
+        f"cache_rate={float(agg.get('cache_rate') or 0) * 100:.1f}%"
+    )
     for d, v in agg["by_domain"].items():
         print(f"  {d:20s} {v['pass']}/{v['total']}  ({v['rate'] * 100:.0f}%)")
     print(f"\n报告已写: {args.out}")

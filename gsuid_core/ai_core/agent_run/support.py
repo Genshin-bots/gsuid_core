@@ -126,16 +126,13 @@ def _ensure_inner_os_on_first_user(
     *,
     is_framework: bool,
 ) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere]:
-    """把 inner_os marker 永久钉在会话第一条真人 user message 末尾。"""
+    """INNER_OS 只往当前 request 追加，禁止改 history[0]。"""
     if not marker:
         return current, lean, "skipped"
 
     first = _first_real_user_prompt_part(history)
-    if first is not None:
-        if _user_content_contains(first.content, _INNER_OS_NEEDLE):
-            return current, lean, "already"
-        first.content = _append_user_text(_as_user_turn_text(first.content), marker)
-        return current, lean, "history"
+    if first is not None and _user_content_contains(first.content, _INNER_OS_NEEDLE):
+        return current, lean, "already"
 
     if is_framework:
         return current, lean, "skipped"

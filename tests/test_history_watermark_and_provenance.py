@@ -9,7 +9,7 @@
 对应修复：
 - ``extract_history``：超过 max_history 才裁、一次裁到低水位（0.6x），裁剪间隔内前缀稳定；
 - ``_compact_report_blocks_in_history``：持久历史中 <report> 正文换占位符（省 token + 切断漂移固化）；
-- ``list_scheduled_tasks`` / ``query_scheduled_task``：群聊按群列出、展示发起用户，同群成员可读。
+- ``list_scheduled_tasks`` 只列提问者自己的任务；``query_scheduled_task`` 同群成员可凭 ID 只读。
 """
 
 from typing import Any, Optional
@@ -214,26 +214,44 @@ def sched_env(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     async def fake_select_rows(**kwargs) -> list:
         env["select_kwargs"].append(kwargs)
-        return env["tasks"]
+        rows = env["tasks"]
+        if "user_id" in kwargs:
+            uid = kwargs["user_id"]
+            return [t for t in rows if t.user_id == uid]
+        if "task_id" in kwargs:
+            tid = kwargs["task_id"]
+            return [t for t in rows if t.task_id == tid]
+        if "group_id" in kwargs:
+            gid = kwargs["group_id"]
+            return [t for t in rows if t.group_id == gid]
+        return rows
 
     monkeypatch.setattr(sched_mod.AIScheduledTask, "select_rows", fake_select_rows)
     return env
 
 
 @pytest.mark.anyio
-async def test_group_member_sees_others_tasks_with_creator(sched_env: dict) -> None:
-    """§5 事故复现：阿北（100000003）问"谁要的提醒"，必须能看到小北建的群任务。"""
+async def test_group_list_does_not_include_others_tasks(sched_env: dict) -> None:
+    """列表不外泄他人任务；凭 ID 的只读走 query_scheduled_task。"""
     from gsuid_core.ai_core.buildin_tools.scheduler import list_scheduled_tasks
 
     sched_env["tasks"] = [_group_task()]
     ctx = _make_ctx(user_id="100000003", group_id="200000001")
     result = await list_scheduled_tasks(ctx)
 
-    # 群聊 = 本群任务 ∪ 提问者自己的任务（自己私聊/它群设的提醒也要能查到，评审修复 F11）
-    assert {"group_id": "200000001"} in sched_env["select_kwargs"]
     assert {"user_id": "100000003"} in sched_env["select_kwargs"]
+    assert not any("group_id" in kw for kw in sched_env["select_kwargs"])
+    assert "scheduled_task_5cad21ace9f5" not in result
+
+
+@pytest.mark.anyio
+async def test_group_list_includes_own_task(sched_env: dict) -> None:
+    from gsuid_core.ai_core.buildin_tools.scheduler import list_scheduled_tasks
+
+    sched_env["tasks"] = [_group_task(user_id="100000003")]
+    ctx = _make_ctx(user_id="100000003", group_id="200000001")
+    result = await list_scheduled_tasks(ctx)
     assert "scheduled_task_5cad21ace9f5" in result
-    assert "@100000002" in result  # 发起用户以 @ 形态展示（走 at 转换，不裸出 QQ 号）
 
 
 @pytest.mark.anyio

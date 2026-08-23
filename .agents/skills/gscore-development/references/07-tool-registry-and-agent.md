@@ -47,9 +47,9 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
-| `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、`add_once_task`/`add_interval_task`（另经白名单收敛） |
+| `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、定时任务整族（白名单拦插件滥用 `self`） |
 | `buildin` | **保底**：无条件加载进主 Agent | `search_cognition`、`web_search_tool`、`web_fetch_tool`、`get_self_info`、`state_set`/`state_get` |
-| `common` | 向量检索按需 | `create_subagent`、`send_meme`/`collect_meme`、定时任务管理类、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
+| `common` | 向量检索按需 | `create_subagent`、`send_meme`/`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
@@ -170,13 +170,12 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
 1. **`ToolContext.dynamic_tool_names: Set[str]`**（`models.py`）——单轮共享集合（`ToolContext`
    每轮新建，作用域天然是"单次 run"，轮末自然丢弃）。
 2. **`find_tools` meta-tool**（`buildin_tools/dynamic_tool_discovery.py`，`category="meta"`）——
-   模型发现缺工具时调用，内部 `search_tools_by_domain` 检索并把命中工具名写进
-   `ctx.deps.dynamic_tool_names`，返回简短清单。**不声明 `capability_domain`**（否则被 L3
-   sticky 带进随后闲聊轮，破坏"闲聊轮零开销"）。
-   **失败分流（2026-08）**：
-   - 真无命中 → 语义/关键词匹配能力节点，提示 `create_subagent`，**禁止**「据现有能力作答」；
-   - 命中但被 **exclusive** 剥离 → 经 `owning_nodes_of_tools` 明确「该工具归某能力代理」并指路委派；
-   - 全被 `visible_when` 隐藏 → 同样尝试委派兜底，不向模型谎称「没有工具」。
+   模型发现缺工具时调用。**不声明 `capability_domain`**。
+   **三段顺序（2026-08-23）**：
+   0. 已加载工具与命中域同族 → 回「直接调用」，且剔除本步 `visible_when` 隐藏名；
+   1. `match_capability_node` / `semantic_match_nodes` 命中 → 只回委派指令，不装 exclusive schema；
+   2. 向量召族；已加载工具的 `covers`/`retrieval_text` 与 need 对不上当 miss，不得「已加载」；
+   3. 仅 blocked hits：所有者须也能被步骤 1 认上，否则中性缺口。回执不推销网页检索。
 3. **`RetrievableToolset(AbstractToolset)`**（`dynamic_toolset.py`）——`get_tools(ctx)` 每个 step
    读 `dynamic_tool_names`，逐名 `find_tool_base` + `prepare_tool_def` 解析成可调用工具；用
    `exclude_names`（本轮静态已装配工具名）去重避免跨 toolset 重名冲突。
@@ -243,6 +242,12 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 
 > ⚠️ **约束**：`prepare` 每 step 对每个工具求值，`visible_when` 谓词**必须廉价、内存判定**，
 > 切忌每步查库/发网络。贵的前置条件走 L2 状态驱动（加载时判一次）。
+
+**群聊回想 / 调度族（2026-08-24）**：`group_recall_ok` = 点名或任务跟进（**不含**
+`soft_continue`，避免旁观同人短句误开 `search_cognition`）。调度新建/变更另用
+`sched_create_ok` / `sched_mutate_ok`（管理形藏新建，不要求 history 有 ToolCall）。
+装配层 `snapshot_tool_allowed` 按旗从本轮快照拿掉对应名；`visible_when` 仍作第二道。
+LIGHT / 误判闲聊**不得**让点名轮跳过向量检索（瘦核已不含 `web_search_tool`）。
 
 ## 7.7 两段式 domain 检索（`search_tools_by_domain`）
 
@@ -400,8 +405,9 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 `<SILENCE>`。开场接任务应一句必须出站（**不按 12 字**，对齐人格 `speech_len_hard`；
 编排词/过程动词/长结构仍拦）；之后默认静默。清单/念白/第二执行者不占额度。
 群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
-**同响应 TextPart + 函数工具（2026-08-21）**：`suppress_intermediate_text` 先扫整段响应，
-规划/内心 OS 不出站；主人格尚未发过的一句接任务应仍出站一次。后续静默不变。不按工具名特判。
+**出站槽（2026-08-23）**：按本 run 第几次带**函数** ToolCall 的响应分槽——首次至多一条 TextPart
+（接任务应，仍过 `pre_send_gate` / `should_block`；过不了也消耗名额），其后切工具静默，
+无 ToolCall 终局开口。hosted 搜索不当函数工具。unsent 从 `new_messages` 尾部剥掉。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

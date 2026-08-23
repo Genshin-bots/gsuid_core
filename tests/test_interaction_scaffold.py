@@ -5,10 +5,13 @@
 """
 
 from gsuid_core.ai_core.interaction_scaffold import (
+    build_turn_graph,
     count_style_pushes,
+    is_manage_ellipsis_form,
     detect_ellipsis_followup,
     addressed_to_someone_else,
     ambient_followup_to_other,
+    ellipsis_inherits_other_speaker,
 )
 
 H_REMIND = [("user", "帮我定个明晚的提醒"), ("assistant", "好嘞，明晚喊你~")]
@@ -52,6 +55,46 @@ def test_followup_speaker_isolation():
         recent_tool_call=True,
         speaker_id="9001",
     ), "同用户省略跟进应触发"
+
+
+def test_manage_ellipsis_form_no_tool_required() -> None:
+    assert is_manage_ellipsis_form("先把它停了别删，回来再开")
+    assert is_manage_ellipsis_form("改回8点")
+    assert is_manage_ellipsis_form("那明天呢")
+    assert not is_manage_ellipsis_form("再设一个每天喝水提醒")
+    assert not is_manage_ellipsis_form("我生日是哪天来着，你还记得吗？")
+    assert not is_manage_ellipsis_form("小明你倒是说句话啊，这方案到底行不行？")
+
+
+def test_ellipsis_inherits_other_speaker_gates_slot() -> None:
+    h_multi = [
+        ("user", "小明(用户ID:9001)：@早柚 帮我查北京天气"),
+        ("assistant", "唔…北京今天晴，25度。"),
+    ]
+    assert ellipsis_inherits_other_speaker(
+        "小红(用户ID:9002)：那明天呢",
+        h_multi,
+        "早柚",
+        False,
+        speaker_id="9002",
+    )
+    assert not ellipsis_inherits_other_speaker(
+        "小明(用户ID:9001)：那明天呢",
+        h_multi,
+        "早柚",
+        False,
+        speaker_id="9001",
+    )
+    tg = build_turn_graph(
+        "小红(用户ID:9002)：那明天呢",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9002",
+        recent=h_multi,
+        recent_tool_call=True,
+    )
+    assert tg.address_gated is True
 
 
 def test_multi_speaker_message():
@@ -118,7 +161,7 @@ def test_turn_graph_and_cheap_gate():
     assert tg_sc.soft_continue
     assert decide_cheap_gate(tg_sc) is CheapGate.FULL
 
-    # 跨人省略不跟进槽位；cheap 不硬静音（交给模型/C-3），但 ellipsis=false
+    # 跨人省略：不是你的槽 → address_gated，cheap 静音
     tg_other = build_turn_graph(
         "小红(用户ID:9002)：那明天呢",
         persona_name="早柚",
@@ -132,7 +175,8 @@ def test_turn_graph_and_cheap_gate():
         recent_tool_call=True,
     )
     assert not tg_other.ellipsis_followup
-    assert decide_cheap_gate(tg_other) is CheapGate.FULL
+    assert tg_other.address_gated
+    assert decide_cheap_gate(tg_other) is CheapGate.SILENCE
 
 
 def test_group_open_gate():

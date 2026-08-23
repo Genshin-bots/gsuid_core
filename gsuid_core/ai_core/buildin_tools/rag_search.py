@@ -20,7 +20,10 @@ from gsuid_core.ai_core.cognition import (
     search_cognition as federated_search,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
-from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
+from gsuid_core.ai_core.buildin_tools.visibility import (
+    visible_when_group_recall,
+    visible_to_capability_only,
+)
 from gsuid_core.ai_core.buildin_tools.cognition_write import attach_article as attach_article
 
 # 本轮已检索过的 query（run 级，存 ToolContext.extra；ToolContext 每轮新建，轮末自然丢弃）
@@ -69,7 +72,7 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
     )
 
 
-@ai_tools(category="buildin", capability_domain="回想")
+@ai_tools(category="buildin", capability_domain="回想", visible_when=visible_when_group_recall)
 async def search_cognition(
     ctx: RunContext[ToolContext],
     query: str,

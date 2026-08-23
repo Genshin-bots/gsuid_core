@@ -202,6 +202,10 @@ def test_process_meta_and_empty_handoff_gates() -> None:
     assert looks_like_process_meta("唔…数据没刷出来，没法给你编数字。")
     assert looks_like_process_meta("…先眯会儿，回炉了你再戳我。")
     assert not looks_like_process_meta("…没查到具体数字。…困。")
+    assert looks_like_process_meta(
+        "The sub-agent is running in the background. I should not narrate the process to the user."
+    )
+    assert not looks_like_process_meta("https://wiki.biligame.com/ys/some-long-page-name-here")
 
     # 无事实包：诚实失败允许（不再误武装 render）
     honest = "唔…翻了好几页，具体数字没翻到。…好困。"

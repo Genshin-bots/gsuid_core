@@ -36,7 +36,6 @@ MAX_SUMMARY_LENGTH = 15000
 
 # 群聊历史窗口：靠紧凑格式 + 当前用户优先，而不是堆 30 条散句
 _HISTORY_LIMIT = 20
-_CURRENT_USER_MIN_RECORDS = 4
 _MAX_OTHER_RECORDS = 6
 
 
@@ -159,11 +158,14 @@ def build_group_history_block(event: Event) -> str:
     if not records:
         return ""
 
-    # 当前用户优先的窗口过滤：他人发言给固定配额，别把窗口全让给刷屏的人
+    # IM 只注入 B 轨没有的他人句：跳过 assistant（已在 session history）
+    records = [r for r in records if r.role != "assistant"]
+    if not records:
+        return ""
+
     current_user_id = str(event.user_id)
-    mine = [r for r in records if r.user_id == current_user_id][-_CURRENT_USER_MIN_RECORDS:]
     others = [r for r in records if r.user_id != current_user_id][-_MAX_OTHER_RECORDS:]
-    selected = sorted(mine + others, key=lambda r: r.timestamp)
+    selected = sorted(others, key=lambda r: r.timestamp)
 
     block = format_history_for_agent(
         history=selected,

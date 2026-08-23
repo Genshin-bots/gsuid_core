@@ -225,9 +225,74 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "suppress_intermediate_text": GsBoolConfig(
         "抑制中间文本",
-        "开启后, 本轮出现过函数工具时其前后规划/内心 OS 不发送给用户; 主人格一句接任务应"
-        "仍出站一次(不按12字)。无工具的最终回复照常发送。调用方显式传 True 时仍强制抑制。修改后即时生效",
+        "开启后按「第几次带函数 ToolCall 的响应」分槽: 首次可一句接任务, 其后切工具静默,"
+        "无 ToolCall 的终局开口。内容仍走已有闸门。调用方显式传 True 时仍强制抑制。修改后即时生效",
         True,
+    ),
+    "session_tool_ceiling": GsIntConfig(
+        "会话工具名硬顶",
+        "主会话工具名列表上限; 超顶拒新名、不 evict。修改后即时生效",
+        24,
+        options=[12, 16, 24, 32, 48],
+    ),
+    "group_session_tool_ceiling": GsIntConfig(
+        "群聊会话工具名硬顶",
+        "群聊瘦核下的工具名上限; 超顶拒新名、不 evict。闲聊保持瘦核, 有持久实体时才 append。修改后即时生效",
+        20,
+        options=[12, 16, 20, 24, 32],
+    ),
+    "group_idle_max_iterations": GsIntConfig(
+        "群聊空闲轮最大思考轮数",
+        "LIGHT 或群聊无跟进且无在途任务时的 request_limit 上限, 防止零工具空转。修改后即时生效",
+        2,
+        options=[2, 3, 4, 6, 9],
+    ),
+    "main_channel_visible_limit": GsIntConfig(
+        "主通道单轮出站上限",
+        "同 run 主通道可见台词段数上限(接任务应 + 终局各占一格)。修改后即时生效",
+        2,
+        options=[1, 2, 3],
+    ),
+    "group_lurk_mode": GsBoolConfig(
+        "群聊未点名默认静默",
+        "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。默认关闭。修改后即时生效",
+        False,
+    ),
+    "group_at_list_max": GsIntConfig(
+        "群聊 at 列表展开上限",
+        "at_list 超过该长度则拒绝扩写点名, 只记条数。修改后即时生效",
+        8,
+        options=[4, 8, 12, 16],
+    ),
+    "group_repeat_body_n": GsIntConfig(
+        "同人短窗同文重复次数",
+        "同一用户短窗内相同正文达到该次数则本轮 SILENCE。修改后即时生效",
+        3,
+        options=[2, 3, 5, 8],
+    ),
+    "thinking_text_max": GsIntConfig(
+        "thinking 蒸馏字数上限",
+        "hook_ctx.thinking_text 取 thinking 尾部的最大字数。修改后即时生效",
+        2000,
+        options=[500, 1000, 2000, 4000],
+    ),
+    "remember_fact_trunc": GsIntConfig(
+        "短工具回执 FACT 截断字数",
+        "未落盘的短工具回执写入 FACT 时的摘要截断长度。修改后即时生效",
+        200,
+        options=[80, 120, 200, 400],
+    ),
+    "outbound_topic_n": GsIntConfig(
+        "出站 topic 缺省字数",
+        "record_outbound 的 topic 为空时, 用可见文本前 N 字。修改后即时生效",
+        12,
+        options=[8, 12, 16, 24],
+    ),
+    "capability_roster_max": GsIntConfig(
+        "能力花名册字数硬帽",
+        "system 里可委派能力清单的最大字数。详情走 capability_map。修改后下次新建会话生效",
+        800,
+        options=[800, 1200, 1800, 2400],
     ),
     "agent_max_run_attempts": GsIntConfig(
         "核心请求重试次数",

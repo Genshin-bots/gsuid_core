@@ -1,7 +1,7 @@
 """``gscore.identity``：身份锚（**密封槽，不可关**）。
 
-群绰号 / 历史污染会把人格带偏物种、性别、名字。这一块进 user 侧（不改 system 缓存），
-且是密封的：关掉它等于拆掉身份防线。
+群绰号 / 历史污染会把人格带偏物种、性别、名字。私聊进 user 侧（不改 system 缓存）；
+群聊身份只留 system，避免双写。密封槽：关掉等于拆掉身份防线。
 """
 
 from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, on_agent_hook
@@ -15,6 +15,8 @@ class IdentityKit(AgentKit):
 
     async def inject(self, ctx: AgentHookContext) -> None:
         if not ctx.persona_name:
+            return
+        if ctx.ev is not None and ctx.ev.group_id:
             return
         ctx.set_context_block(
             "identity",

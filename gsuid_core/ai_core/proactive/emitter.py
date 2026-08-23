@@ -190,25 +190,27 @@ async def emit_proactive_message(
         "proactive_source": source,
         "trigger_reason": trigger_reason,
     }
-    # 主动出口也过 OOC：Kanban 转译等旁路不得把工具名/句柄念给用户
-    from gsuid_core.ai_core.output_firewall import (
-        PERSONA_FALLBACK_TEXT,
-        check_ooc,
-        is_enabled,
-    )
+    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+    from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT
 
     out_msg = message
-    if is_enabled() and out_msg:
-        _hit = check_ooc(out_msg, user_text="")
-        if _hit is not None:
+    if out_msg:
+        _bag: Dict[str, object] = {}
+        _gr = pre_send_gate(out_msg, _bag, user_text="", channel="main")
+        if _gr.decision is GateDecision.FUSE:
+            logger.warning(t("log.ai.firewall_result_hit_ooc_red", p0="fuse", p1="proactive"))
+            return False
+        if _gr.decision is GateDecision.REWRITE:
             logger.warning(
                 t(
                     "log.ai.firewall_result_hit_ooc_red",
-                    p0=_hit.category,
-                    p1=_hit.matched,
+                    p0=_gr.policy,
+                    p1=(_gr.ooc_hit.matched if _gr.ooc_hit is not None else ""),
                 )
             )
             out_msg = PERSONA_FALLBACK_TEXT
+        elif _gr.decision is GateDecision.FALLBACK:
+            out_msg = _gr.send_text or PERSONA_FALLBACK_TEXT
     await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
     from gsuid_core.ai_core.outbound import record_outbound
 

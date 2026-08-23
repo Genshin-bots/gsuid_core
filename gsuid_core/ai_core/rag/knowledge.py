@@ -1316,11 +1316,55 @@ async def delete_manual_knowledge_from_db(entity_id: str) -> bool:
     return True
 
 
+async def list_knowledge_plugins() -> List[str]:
+    """插件知识里出现过的 plugin 名（注册表 + Qdrant），供控制台筛选下拉。"""
+    names: set[str] = set()
+    for entity in _ENTITIES:
+        if not isinstance(entity, dict) or "path" in entity:
+            continue
+        plugin = str(entity.get("plugin") or "").strip()
+        if plugin and plugin != "manual":
+            names.add(plugin)
+
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None:
+        return sorted(names)
+
+    try:
+        current_offset = None
+        scroll_filter = Filter(must=[FieldCondition(key="source", match=MatchValue(value="plugin"))])
+        while True:
+            records, next_offset = await client.scroll(
+                collection_name=KNOWLEDGE_COLLECTION_NAME,
+                limit=200,
+                offset=current_offset,
+                with_payload=True,
+                with_vectors=False,
+                scroll_filter=scroll_filter,
+            )
+            if not records:
+                break
+            for record in records:
+                payload = record.payload or {}
+                plugin = str(payload.get("plugin") or "").strip()
+                if plugin and plugin != "manual":
+                    names.add(plugin)
+            if next_offset is None:
+                break
+            current_offset = next_offset
+    except Exception as e:
+        logger.debug(i18n_t("log.rag.kb_ai_feature_enabled_unable_3") + f" {e}")
+
+    return sorted(names)
+
+
 async def get_manual_knowledge_list(
     offset: int = 0,
     limit: int = 20,
     source_filter: str = "all",
     doc_id: Optional[str] = None,
+    plugin: Optional[str] = None,
 ) -> Dict[str, Any]:
     """获取知识列表（分页）
 
@@ -1329,6 +1373,7 @@ async def get_manual_knowledge_list(
         limit: 每页数量
         source_filter: 来源过滤，默认 "all" 表示所有知识，"manual" 只看手动添加的
         doc_id: 可选，仅列出某篇文档的分片（仅对 manual 生效）
+        plugin: 可选，按 payload.plugin 精确过滤（通常配合 source=plugin）
 
     Returns:
         包含知识列表和总数的字典
@@ -1356,12 +1401,13 @@ async def get_manual_knowledge_list(
         logger.warning(i18n_t("log.rag.kb_ai_feature_enabled_unable_3"))
         return {"list": [], "total": 0}
 
-    # 如果 source_filter 不是 "all"，则按来源过滤
-    count_filter = None
-    scroll_filter = None
+    must_conditions: List[FieldCondition] = []
     if source_filter != "all":
-        count_filter = Filter(must=[FieldCondition(key="source", match=MatchValue(value=source_filter))])
-        scroll_filter = Filter(must=[FieldCondition(key="source", match=MatchValue(value=source_filter))])
+        must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
+    if plugin:
+        must_conditions.append(FieldCondition(key="plugin", match=MatchValue(value=plugin)))
+    count_filter = Filter(must=must_conditions) if must_conditions else None
+    scroll_filter = count_filter
 
     # 获取总数
     total = await client.count(
@@ -1447,6 +1493,7 @@ async def search_manual_knowledge(
     query: str,
     limit: int = 10,
     source_filter: str = "all",
+    plugin: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """搜索知识
 
@@ -1454,6 +1501,7 @@ async def search_manual_knowledge(
         query: 查询文本
         limit: 返回数量限制
         source_filter: 来源过滤，"all"表示所有知识，"plugin"只搜插件添加的，"manual"只搜手动添加的
+        plugin: 可选，按 payload.plugin 精确过滤
 
     Returns:
         匹配的知识列表
@@ -1471,10 +1519,12 @@ async def search_manual_knowledge(
     query_dense = _vectors[0]
     query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
-    # 构建过滤条件
-    search_filter = None
+    must_conditions: List[FieldCondition] = []
     if source_filter != "all":
-        search_filter = Filter(must=[FieldCondition(key="source", match=MatchValue(value=source_filter))])
+        must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
+    if plugin:
+        must_conditions.append(FieldCondition(key="plugin", match=MatchValue(value=plugin)))
+    search_filter = Filter(must=must_conditions) if must_conditions else None
 
     # 混合检索（Dense + Sparse RRF，稀疏不可用自动降级纯 dense，结构异常降级空结果）
     search_points = await hybrid_query(

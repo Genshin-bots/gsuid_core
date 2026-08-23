@@ -129,7 +129,8 @@ async def restart_message():
                 now_time=now_time,
                 duration_msg=duration_msg,
                 version=__version__,
-            )
+            ),
+            extra_metadata={"skip_ai_history": True},
         )
         await Subscribe.delete_row(task_name="[早柚核心] Restart")
     else:

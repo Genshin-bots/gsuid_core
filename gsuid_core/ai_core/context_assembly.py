@@ -199,16 +199,12 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
     身份锚是密封块（关不掉）；记忆正文由调用方或 H05 提供，渲染成块的格式在这里兜底，
     保证「总闸关 / memory 槽 off」时不丢调用方已经拿到的文本。
     """
-    if ctx.persona_name and "identity" not in ctx.blocks:
+    is_group = bool(ctx.ev is not None and ctx.ev.group_id)
+    if ctx.persona_name and "identity" not in ctx.blocks and not is_group:
         ctx.blocks["identity"] = (
             f"（身份：你是「{ctx.persona_name}」。自我指称只按角色卡；"
             "他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）"
         )
     mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
     if mem and "memory" not in ctx.blocks:
-        from datetime import datetime
-
-        stamp = datetime.now().strftime("%H:%M")
-        ctx.blocks["memory"] = (
-            f"{ctx.memory_guide}[长期记忆·检索于 {stamp}]\n{mem}\n（需要更多细节请调 search_cognition）"
-        )
+        ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}\n（需要更多细节请调 search_cognition）"
