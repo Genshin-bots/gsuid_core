@@ -18,6 +18,12 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.content_guard import normalize_for_match
+from gsuid_core.ai_core.persona.settings import (
+    DEFAULT_FALLBACK_OOC,
+    DEFAULT_FALLBACK_MACHINE,
+    get_fallback_ooc,
+    get_fallback_machine,
+)
 
 # ── 分类词库 ────────────────────────────────────────────────────────
 # 规范化后匹配（吃掉"M i M o"式规避）。部署者可经 ai_config.output_firewall_extra_terms 补充。
@@ -467,9 +473,17 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
 
 
 # 连续重说仍命中时的中性兜底（避免死循环）——禁止抄任何人格口癖（AGENTS.md §1.9）。
-PERSONA_FALLBACK_TEXT = "这个不太想说呢。"
-# 机器腔 / 堆栈熔断专用（用户可见、短、人格中性）
-MACHINE_FALLBACK_TEXT = "额…出错了，稍后再试"
+# 默认值与 persona.json 模板同源；运行时按人格读 fallback_ooc / fallback_machine。
+PERSONA_FALLBACK_TEXT = DEFAULT_FALLBACK_OOC
+MACHINE_FALLBACK_TEXT = DEFAULT_FALLBACK_MACHINE
+
+
+def fallback_ooc_text(persona_name: str | None = None) -> str:
+    return get_fallback_ooc(persona_name)
+
+
+def fallback_machine_text(persona_name: str | None = None) -> str:
+    return get_fallback_machine(persona_name)
 
 
 def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Optional[str]:
@@ -479,7 +493,12 @@ def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Opt
     return tool_gate_feedback(text, extra, user_text=user_text)
 
 
-def scrub_or_fallback(text: str, tier: str = "roleplay", user_text: str = "") -> Tuple[str, bool]:
+def scrub_or_fallback(
+    text: str,
+    tier: str = "roleplay",
+    user_text: str = "",
+    persona_name: str | None = None,
+) -> Tuple[str, bool]:
     """无反馈通道路径的末端兜底：命中则整体替换为角色化兜底文本。
 
     返回 ``(输出文本, 是否被拦截替换)``。用于重说闭环兜底或不便重说的场景。
@@ -488,8 +507,8 @@ def scrub_or_fallback(text: str, tier: str = "roleplay", user_text: str = "") ->
     if hit is None:
         return text, False
     if hit.category == "machine_dump":
-        return MACHINE_FALLBACK_TEXT, True
-    return PERSONA_FALLBACK_TEXT, True
+        return fallback_machine_text(persona_name), True
+    return fallback_ooc_text(persona_name), True
 
 
 def is_tech_dump(text: str) -> bool:

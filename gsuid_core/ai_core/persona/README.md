@@ -11,6 +11,8 @@ persona/
 ├── persona.py       # Persona核心类
 ├── processor.py     # 角色提示词组装器
 ├── prompts.py       # 提示词模板定义
+├── config.py        # config.json：启用范围 / 巡检 / 工具
+├── settings.py      # persona.json：称呼与失败短句
 ├── resource.py      # 角色资料持久化（向后兼容的函数接口）
 ├── startup.py       # 初始化默认角色
 └── README.md        # 使用文档
@@ -35,6 +37,8 @@ persona/
 | 文件 | 说明 | 是否必须 |
 |------|------|----------|
 | `persona.md` | 角色自述文件（Markdown格式） | 是 |
+| `config.json` | 启用范围 / 巡检 / 工具装配 | 否（首次读取生成） |
+| `persona.json` | 称呼与失败短句（GSC） | 否（首次读取生成） |
 | `avatar.png` | 角色头像图片 | 否 |
 | `image.png` | 角色立绘图片 | 否 |
 | `audio.mp3` | 角色音频文件 | 否 |

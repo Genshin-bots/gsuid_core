@@ -191,11 +191,15 @@ async def emit_proactive_message(
         "trigger_reason": trigger_reason,
     }
     from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
-    from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT
+    from gsuid_core.ai_core.output_firewall import fallback_ooc_text
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
+    pname = persona_name_from_event(event)
     out_msg = message
     if out_msg:
         _bag: Dict[str, object] = {}
+        if pname:
+            _bag["persona_name"] = pname
         _gr = pre_send_gate(out_msg, _bag, user_text="", channel="main")
         if _gr.decision is GateDecision.FUSE:
             logger.warning(t("log.ai.firewall_result_hit_ooc_red", p0="fuse", p1="proactive"))
@@ -208,9 +212,9 @@ async def emit_proactive_message(
                     p1=(_gr.ooc_hit.matched if _gr.ooc_hit is not None else ""),
                 )
             )
-            out_msg = PERSONA_FALLBACK_TEXT
+            out_msg = fallback_ooc_text(pname)
         elif _gr.decision is GateDecision.FALLBACK:
-            out_msg = _gr.send_text or PERSONA_FALLBACK_TEXT
+            out_msg = _gr.send_text or fallback_ooc_text(pname)
     await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
     from gsuid_core.ai_core.outbound import record_outbound
 

@@ -29,6 +29,7 @@ from gsuid_core.ai_core.utils import (
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.message_history.manager import MessageRecord
+from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
 # 双层长度防护（D-10）：绝对上限硬截断，摘要阈值走子 Agent 智能摘要
 ABSOLUTE_MAX_LENGTH = 60000
@@ -212,7 +213,7 @@ async def deliver_run_result(
         return
     if is_error:
         logger.warning(t("log.ai.gscore_sanitized_fallback_user", r=result_text[:200]))
-        user_facing = sanitize_error_for_user(result_text)
+        user_facing = sanitize_error_for_user(result_text, persona_name_from_event(event))
         try:
             await send_chat_result(bot, user_facing, ev=event)
         except Exception as e:

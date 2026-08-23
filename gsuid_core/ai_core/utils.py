@@ -1317,7 +1317,8 @@ async def send_chat_result(
     # gs_agent 主循环自带"提醒→重说→放行"闭环，重说产物以 ooc_check=False 经过此处。
     _ooc_replaced = False
     if (clean_text or report_blocks) and ooc_check:
-        from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, check_ooc, is_enabled
+        from gsuid_core.ai_core.output_firewall import check_ooc, is_enabled, fallback_ooc_text
+        from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
         if is_enabled():
             # 短答门需要来话上下文：身份追问下的超短直答才算泄露（见 check_ooc docstring）
@@ -1331,7 +1332,7 @@ async def send_chat_result(
                         p1=_hit.matched,
                     )
                 )
-                clean_text = PERSONA_FALLBACK_TEXT
+                clean_text = fallback_ooc_text(persona_name_from_event(ev))
                 _ooc_replaced = True
             # report 块与台词同权过末端防火墙：制品通道不能成为资金红线/出戏红线的 旁路（评审修复 F3），
             if report_blocks:
@@ -2231,22 +2232,24 @@ def _is_retryable_client_error(e: BaseException) -> bool:
     return isinstance(e, ModelHTTPError) and _is_non_retryable_model_error(e) and not _is_content_rejected(e)
 
 
-def sanitize_error_for_user(result_text: str) -> str:
+def sanitize_error_for_user(result_text: str, persona_name: str | None = None) -> str:
     """把 ``执行出错: <内部细节>`` 转成不泄漏内部细节的用户可见短文案。
 
     原始错误串含 provider body / model_name / tool_call_id 等内部信息，直接发进
     群聊既难看又泄漏实现；完整细节已由 log_error 落日志，用户侧只需要知道失败了。
     """
+    from gsuid_core.ai_core.persona.settings import get_persona_setting
+
     if result_text == NO_RESULT_TEXT:
-        return "这条消息我处理失败了，稍后再试一次吧"
+        return get_persona_setting(persona_name, "error_generic")
     if not result_text.startswith(ERROR_RESULT_PREFIX):
         return result_text
     # 文案不得是整行（…）形态：_strip_persona_markdown 会把整行括号当舞台旁白删除（评审修复 F2）
     if ERROR_CONTENT_REJECTED in result_text:
-        return "这条消息触发了内容安全策略，我没法处理"
+        return get_persona_setting(persona_name, "error_content_policy")
     if ERROR_TIMEOUT_TEXT in result_text:
-        return "刚才网络太慢处理超时了，稍后再试试吧"
-    return "这条消息我处理失败了，稍后再试一次吧"
+        return get_persona_setting(persona_name, "error_timeout")
+    return get_persona_setting(persona_name, "error_generic")
 
 
 # Agent 失败类型分类标签 —— 仅供 notify_master_of_agent_error 私聊主人时使用

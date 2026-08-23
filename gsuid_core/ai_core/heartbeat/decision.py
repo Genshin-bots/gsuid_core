@@ -66,13 +66,13 @@ PROACTIVE_MESSAGE_USER_TEMPLATE = """[群里最近发生的事]
 
 你决定开口了。
 称呼必须与消息记录对齐：要回应哪条消息，就看清那条消息的发言人是谁——
-不是主人发的就绝不称"主人"，认不准发言人就不用任何称呼。
+不是主人发的就绝不称"{master_title}"，认不准发言人就不用任何称呼。
 直接输出你想说的话，不要任何前缀、引号或解释。
 
 [主动发言角色约束（OOC 修复 5.8）]
 - 主动发言必须简短：≤50字，最好≤30字。你是群友随口说一句，不是写分析报告。
 - 必须保持角色口吻：用你自己的语气词和说话方式。
-- 禁止主动发表专业分析/市场评论/数据罗列（除非主人委派）。
+- 禁止主动发表专业分析/市场评论/数据罗列（除非{master_title}委派）。
 - 禁止使用表格、编号列表、加粗标题等结构化格式。
 - 默认潜水，非必要不现身：如果只是"想说点什么"但没有明确话头，宁可不说。
 """
@@ -344,7 +344,7 @@ async def run_heartbeat(
     # 获取群组摘要缓存（如果启用）
     group_summary = await _get_group_summary_for_heartbeat(event.group_id or "")
 
-    # 在场主人名单：裸人格 system_prompt 不含主人信息，靠这段让巡检认出主人并以「主人」相称
+    # 在场主人名单：裸人格 system_prompt 不含主人信息，靠这段认出 masters；口头称呼见 persona.json
     # 关系温度摘要紧随其后：主人是权限、档位是温度，两者正交
     now_ts = time.time()
     masters_section = _build_masters_section(history, now_ts) + await _build_zone_section(
@@ -470,12 +470,15 @@ async def run_heartbeat(
     logger.info(t("log.ai.heartbeat_decided_interject_mood", mood=mood, event=event))
 
     # 阶段二：生成发言 B-1：发言阶段同样把人格放 system_prompt（用完整原文 persona_text）
+    from gsuid_core.ai_core.persona.settings import get_master_title
+
     message_user = PROACTIVE_MESSAGE_USER_TEMPLATE.format(
         history_context=history_context,
         mood=mood,
         proactive_merge_section=proactive_merge_section,
         masters_section=masters_section,
         staleness_section=staleness_section,
+        master_title=get_master_title(persona_name),
     )
 
     output_agent: GsCoreAIAgent = create_agent(

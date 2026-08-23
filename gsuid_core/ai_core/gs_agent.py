@@ -1047,18 +1047,17 @@ class GsCoreAIAgent(RunOnceMixin):
             "请保持原意、用你的角色口吻重写这段话，直接输出重写后的内容，不要解释。"
         )
         rewritten = await self._lightweight_text_rewrite(rewrite_message)
+        _ooc_fb = output_firewall.fallback_ooc_text(self.persona_name)
         if not rewritten:
-            rewritten = output_firewall.PERSONA_FALLBACK_TEXT
+            rewritten = _ooc_fb
         if first_hit.category in output_firewall.NEVER_RELEASE_CATEGORIES:
             _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
             _recheck = output_firewall.check_ooc(rewritten, user_text=_user_text)
             if _recheck is not None and _recheck.category in output_firewall.NEVER_RELEASE_CATEGORIES:
                 logger.warning(i18n_t("log.agent.firewall_rewrite_output_hit_non"))
-                rewritten = output_firewall.PERSONA_FALLBACK_TEXT
+                rewritten = _ooc_fb
         if angle_bracket_guard.has_illegal_angle_tags(rewritten):
-            rewritten = (
-                angle_bracket_guard.sanitize_illegal_angle_tags(rewritten) or output_firewall.PERSONA_FALLBACK_TEXT
-            )
+            rewritten = angle_bracket_guard.sanitize_illegal_angle_tags(rewritten) or _ooc_fb
         self._session_logger.log_text_output(rewritten)
         try:
             await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
@@ -1197,9 +1196,9 @@ class GsCoreAIAgent(RunOnceMixin):
         if hit is None:
             return text
         if hit.category == "machine_dump":
-            return output_firewall.MACHINE_FALLBACK_TEXT
+            return output_firewall.fallback_machine_text(self.persona_name)
         # never-release 与其它 OOC：收尾单次路径用角色兜底，避免 ooc_check=False 漏放
-        return output_firewall.PERSONA_FALLBACK_TEXT
+        return output_firewall.fallback_ooc_text(self.persona_name)
 
     async def _resolve_output_gate_after_run(
         self,

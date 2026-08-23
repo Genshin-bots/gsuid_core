@@ -248,6 +248,13 @@ def _eval_angle_bracket(
 # ── 策略：ooc ───────────────────────────────────────────────────────
 
 
+def _persona_from_extra(extra: Dict[str, Any]) -> str | None:
+    if "persona_name" not in extra:
+        return None
+    raw = extra["persona_name"]
+    return raw if isinstance(raw, str) and raw else None
+
+
 def _eval_ooc(
     text: str,
     extra: Dict[str, Any],
@@ -280,7 +287,7 @@ def _eval_ooc(
             return GateResult(
                 decision=GateDecision.FALLBACK,
                 policy="ooc",
-                send_text=of.MACHINE_FALLBACK_TEXT,
+                send_text=of.fallback_machine_text(_persona_from_extra(extra)),
                 ooc_hit=hit,
                 detail=hit.category,
             )

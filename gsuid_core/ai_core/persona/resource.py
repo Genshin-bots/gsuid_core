@@ -584,6 +584,57 @@ def get_persona_audio_path(char_name: str) -> Optional[str]:
     return persona.get_audio_path()
 
 
+def allocate_copy_name(source_name: str, occupied: set[str]) -> str | None:
+    """在源名后追加 2、3、… 直到不与 occupied 冲突；分尽则 None。"""
+    from gsuid_core.utils.path_safety import is_safe_filename
+
+    for n in range(2, 1000):
+        candidate = f"{source_name}{n}"
+        if candidate not in occupied and is_safe_filename(candidate):
+            return candidate
+    return None
+
+
+def copy_persona(source_name: str) -> str:
+    """复制整个人格目录（含 md / 媒体 / config.json / persona.json）。
+
+    新目录名为 ``{源名}2`` 起的第一个空位。副本 ``scope`` 强制 ``disabled``，
+    避免把 global 范围一并复制出去。
+    """
+    import shutil
+
+    from gsuid_core.utils.path_safety import safe_join
+
+    from .config import persona_config_manager
+    from ..resource import PERSONA_PATH
+
+    source = Persona(source_name)
+    if not source.exists():
+        raise ValueError(t("Persona '{p0}' 不存在", p0=source_name))
+
+    occupied: set[str] = set()
+    if PERSONA_PATH.exists():
+        occupied.update(item.name for item in PERSONA_PATH.iterdir() if item.is_dir())
+    dest_name = allocate_copy_name(source_name, occupied)
+    if dest_name is None:
+        raise ValueError(f"无法为角色 '{source_name}' 分配副本名称")
+
+    dest_dir = safe_join(PERSONA_PATH, dest_name)
+    try:
+        shutil.copytree(source.dir_path, dest_dir)
+    except OSError as e:
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir, ignore_errors=True)
+        logger.warning(t("log.persona.persona_copy_fail", persona_name=source_name, e=e))
+        raise ValueError(f"复制角色失败: {e}") from e
+
+    cfg = persona_config_manager.get_config(dest_name)
+    if not cfg.set_config("scope", "disabled"):
+        logger.warning(t("log.persona.persona_copy_scope_fail", persona_name=dest_name))
+    logger.info(t("log.persona.persona_copied", source=source_name, dest=dest_name))
+    return dest_name
+
+
 def delete_persona(char_name: str) -> bool:
     """
     删除角色资料和相关文件
@@ -603,6 +654,9 @@ def delete_persona(char_name: str) -> bool:
 
     try:
         persona_config_manager.delete_persona_config(char_name)
+        from .settings import persona_settings_manager
+
+        persona_settings_manager.drop_cache(char_name)
         persona = Persona(char_name)
     except (ValueError, PathEscapeError):
         return False

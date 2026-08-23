@@ -111,7 +111,8 @@ def _check_persona_changed(session, persona_name) -> bool:
 
 ```
 RESOURCE_PATH/persona/{persona_name}/
-├── config.json          # Persona 配置（不含 introduction）
+├── config.json          # Persona 配置（启用范围 / 巡检 / 工具装配）
+├── persona.json         # 称呼与用户可见短句（GSC，控制台「人格设定」）
 ├── persona.md           # 角色设定（Markdown）
 ├── avatar.png / image.png   # 头像 / 立绘（可选）
 └── audio.{mp3,ogg,wav,m4a,flac}   # 音频（可选，优先级 mp3 > ogg > wav > m4a > flac）
@@ -151,6 +152,24 @@ RESOURCE_PATH/persona/{persona_name}/
 
 `PersonaConfigManager` 提供 `set_scope` / `set_target_groups` / `set_ai_mode` /
 `set_inspect_interval` / `set_keywords` 等方法，全部即时持久化。
+
+### `persona.json`（`persona/settings.py`）
+
+与 `config.json` 分开：这里只放「这个人格怎么叫主人、失败时说什么」。模板
+`DEFAULT_PERSONA_SETTINGS` 是 `Dict[str, GSC]`，WebConsole
+`GET/PUT /api/persona/{name}/settings` 按插件配置同构返回（title/desc/type/value），
+前端 `/persona-config` 的【人格设定】页签三列自适应渲染，加项不用改前端。
+
+运行时用 `get_persona_setting(persona_name, key)` / `get_master_title`；人格不存在或值为空时回退模板默认。`SYSTEM_CONSTRAINTS` 里 `__MASTER_TITLE__` 在 `build_persona_prompt` 时填入。改 `persona.json` 会触达目录 mtime，下一轮会话热重载。
+
+| 键 | 默认 | 用途 |
+|----|------|------|
+| `master_title` | `主人` | 对 `core_config.masters` 的口头称呼 |
+| `error_generic` | `这条消息我处理失败了，稍后再试一次吧` | 执行失败 / 无结果 |
+| `error_timeout` | `刚才网络太慢处理超时了，稍后再试试吧` | 超时 |
+| `error_content_policy` | `这条消息触发了内容安全策略，我没法处理` | 内容安全 |
+| `fallback_ooc` | `这个不太想说呢。` | 出戏拦截兜底 |
+| `fallback_machine` | `额…出错了，稍后再试` | 技术堆栈熔断 |
 
 ### Persona 配置热重载特殊处理
 

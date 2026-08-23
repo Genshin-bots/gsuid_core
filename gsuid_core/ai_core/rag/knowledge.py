@@ -1354,7 +1354,7 @@ async def list_knowledge_plugins() -> List[str]:
                 break
             current_offset = next_offset
     except Exception as e:
-        logger.debug(i18n_t("log.rag.kb_ai_feature_enabled_unable_3") + f" {e}")
+        logger.debug(i18n_t("log.rag.kb_list_plugins_fail", e=e))
 
     return sorted(names)
 

@@ -8,7 +8,17 @@
 from .mood import get_mood_description
 from .prompts import ROLE_PLAYING_START, SYSTEM_CONSTRAINTS, TOOL_ORCHESTRATION_CONSTRAINTS
 from .resource import load_persona
+from .settings import get_master_title
 from ..buildin_tools import get_current_date
+
+
+def _render_system_constraints(char_name: str) -> str:
+    """把主人 ID 列表与口头称呼填进 SYSTEM_CONSTRAINTS。会话创建时调用一次。"""
+    from gsuid_core.config import core_config
+
+    masters = ", ".join(str(m) for m in (core_config.get_config("masters") or []))
+    title = get_master_title(char_name)
+    return SYSTEM_CONSTRAINTS.replace("__MASTERS__", masters).replace("__MASTER_TITLE__", title)
 
 
 async def build_persona_prompt(
@@ -56,8 +66,9 @@ async def build_persona_prompt(
     current_date = await get_current_date(format="%Y年%m月%d日")
 
     # 稳定前缀：人设 + 合规 + 工具编排（全部可跨轮缓存，不再每轮注入 user 侧）
+    constraints = _render_system_constraints(char_name)
     prompt = (
-        f"{ROLE_PLAYING_START}\n{persona_content}\n{SYSTEM_CONSTRAINTS}\n"
+        f"{ROLE_PLAYING_START}\n{persona_content}\n{constraints}\n"
         f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前日期：{current_date}"
     )
 

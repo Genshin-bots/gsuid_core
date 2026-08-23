@@ -459,7 +459,7 @@ async def list_image_plugins() -> List[str]:
                 break
             current_offset = next_offset
     except Exception as e:
-        logger.debug(i18n_t("log.rag.imagerag_ai_feature_enabled_2") + f" {e}")
+        logger.debug(i18n_t("log.rag.imagerag_list_plugins_fail", e=e))
 
     return sorted(names)
 

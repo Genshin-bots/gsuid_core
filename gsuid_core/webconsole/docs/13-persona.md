@@ -488,7 +488,48 @@ Content-Type: application/json
 
 ---
 
-## 13.12 删除角色
+## 13.12 复制角色
+
+```
+POST /api/persona/{persona_name}/copy
+```
+
+**请求头**：
+```
+Authorization: Bearer <token>
+```
+
+**路径参数**：
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| persona_name | string | 源角色名称 |
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "name": "角色名2",
+        "source": "角色名"
+    }
+}
+```
+
+整目录复制（`persona.md`、头像/立绘/音频、`config.json`、`persona.json` 等）。新名称在源名后追加 `2`、`3`、… 直到不冲突。副本的 `scope` 强制为 `disabled`，避免把全局范围一并复制。
+
+**错误响应**（源不存在）：
+```json
+{
+    "status": 1,
+    "msg": "角色 'xxx' 不存在",
+    "data": null
+}
+```
+
+---
+
+## 13.13 删除角色
 
 ```
 DELETE /api/persona/{persona_name}
@@ -517,7 +558,7 @@ Authorization: Bearer <token>
 
 ---
 
-## 13.13 获取角色配置
+## 13.14 获取角色配置
 
 ```
 GET /api/persona/{persona_name}/config
@@ -570,7 +611,7 @@ Authorization: Bearer <token>
 
 ---
 
-## 13.14 更新角色配置
+## 13.15 更新角色配置
 
 ```
 PUT /api/persona/{persona_name}/config
@@ -651,7 +692,7 @@ Content-Type: application/json
 
 ---
 
-## 13.15 获取全局启用的角色
+## 13.16 获取全局启用的角色
 
 ```
 GET /api/persona/config/global
@@ -682,7 +723,7 @@ Authorization: Bearer <token>
 
 ---
 
-## 13.16 获取所有角色配置
+## 13.17 获取所有角色配置
 
 ```
 GET /api/persona/config/all
@@ -716,3 +757,82 @@ Authorization: Bearer <token>
     }
 }
 ```
+
+---
+
+## 13.18 获取人格设定（persona.json）
+
+```
+GET /api/persona/{persona_name}/settings
+```
+
+**请求头**：
+```
+Authorization: Bearer <token>
+```
+
+**路径参数**：
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| persona_name | string | 角色名称 |
+
+**响应**：`data` 为扁平的 GSC 字典（与 `/api/plugins/{name}/config` 同构）。分割线类型为 `gsdivider`。后端加字段时前端无需改代码。
+
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "_AddressDivider": {
+            "type": "gsdivider",
+            "title": "称呼",
+            "desc": "人格对特定对象的口头称呼",
+            "value": "称呼",
+            "default": "称呼"
+        },
+        "master_title": {
+            "type": "gsstr",
+            "title": "对主人的称呼",
+            "desc": "对配置里 masters 用户的口头称呼。提示词、巡检台词都会用这个词，不要用这个称呼叫其他人。",
+            "value": "主人",
+            "default": "主人"
+        },
+        "error_generic": {
+            "type": "gsstr",
+            "title": "处理失败",
+            "desc": "Agent 执行失败或没有有效结果时发给用户的短句。",
+            "value": "这条消息我处理失败了，稍后再试一次吧",
+            "default": "这条消息我处理失败了，稍后再试一次吧"
+        }
+    }
+}
+```
+
+首次读取会在该人格目录写出带默认值的 `persona.json`。
+
+---
+
+## 13.19 更新人格设定（persona.json）
+
+```
+PUT /api/persona/{persona_name}/settings
+```
+
+**请求头**：
+```
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**请求体**：`{ "字段名": "新值" }`。未知键和分割线跳过。也可传完整 PluginConfigItem（取 `value`）。
+
+```json
+{
+    "master_title": "老师",
+    "error_generic": "这条先放一放，回头再试。"
+}
+```
+
+**响应**：与 13.17 相同结构的完整设定字典。
+
+**错误**：角色不存在 / 非字符串值 / 写入失败时 `status=1`。

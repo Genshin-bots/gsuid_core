@@ -47,6 +47,7 @@ from gsuid_core.ai_core.persona.prompts import (
 )
 from gsuid_core.ai_core.persona.startup import init_default_personas
 from gsuid_core.ai_core.persona.resource import (
+    copy_persona,
     load_persona,
     save_persona,
     delete_persona,
@@ -61,6 +62,16 @@ from gsuid_core.ai_core.persona.resource import (
     reply_ends_with_tone_marker,
     invalidate_voice_anchor_cache,
     migrate_voice_anchor_from_config,
+)
+from gsuid_core.ai_core.persona.settings import (
+    DEFAULT_PERSONA_SETTINGS,
+    PersonaSettingsManager,
+    get_fallback_ooc,
+    get_master_title,
+    get_persona_setting,
+    get_fallback_machine,
+    persona_name_from_event,
+    persona_settings_manager,
 )
 from gsuid_core.ai_core.persona.processor import build_persona_prompt
 
@@ -87,6 +98,7 @@ __all__ = [
     "invalidate_voice_anchor_cache",
     "migrate_voice_anchor_from_config",
     "delete_persona",
+    "copy_persona",
     # 提示词模板
     "CHARACTER_BUILDING_TEMPLATE",
     "ROLE_PLAYING_START",
@@ -99,4 +111,12 @@ __all__ = [
     "PersonaConfigManager",
     "persona_config_manager",
     "DEFAULT_PERSONA_CONFIG",
+    "PersonaSettingsManager",
+    "persona_settings_manager",
+    "DEFAULT_PERSONA_SETTINGS",
+    "get_persona_setting",
+    "get_master_title",
+    "get_fallback_ooc",
+    "get_fallback_machine",
+    "persona_name_from_event",
 ]

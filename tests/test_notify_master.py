@@ -409,7 +409,7 @@ def test_handle_ai_error_branch_keeps_sanitized_template() -> None:
     entry = (root / "handle_ai.py").read_text(encoding="utf-8")
 
     # 必须保留：失败分支调用 sanitize_error_for_user 给当前会话
-    assert "sanitize_error_for_user(result_text)" in pipeline
+    assert "sanitize_error_for_user(result_text" in pipeline
     # 失败分支同时通知主人
     assert "notify_master_of_agent_error" in pipeline
     # 预算分支通知主人

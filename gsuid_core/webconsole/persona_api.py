@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from gsuid_core.ai_core.persona import (
     Persona,
+    copy_persona,
     load_persona,
     save_persona,
     delete_persona,
@@ -31,6 +32,12 @@ from gsuid_core.ai_core.persona.models import (
     validate_audio_type,
     validate_image_type,
 )
+from gsuid_core.webconsole.plugins_api import _build_config_item
+from gsuid_core.ai_core.persona.settings import (
+    DEFAULT_PERSONA_SETTINGS,
+    persona_settings_manager,
+)
+from gsuid_core.utils.plugins_config.models import GsDivider
 
 from ._api_tags import PERSONA
 
@@ -580,6 +587,37 @@ async def add_persona(
         }
 
 
+@app.post("/api/persona/{persona_name}/copy", summary="复制角色", tags=PERSONA)
+async def copy_persona_endpoint(
+    persona_name: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """复制整个人格目录。新名称在源名后追加 2/3/…；副本启用范围强制 disabled。"""
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {
+            "status": 1,
+            "msg": f"角色 '{persona_name}' 不存在",
+            "data": None,
+        }
+    try:
+        new_name = copy_persona(persona_name)
+    except ValueError as e:
+        return {
+            "status": 1,
+            "msg": str(e),
+            "data": None,
+        }
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "name": new_name,
+            "source": persona_name,
+        },
+    }
+
+
 @app.delete("/api/persona/{persona_name}", summary="删除角色", tags=PERSONA)
 async def remove_persona(
     persona_name: str,
@@ -818,6 +856,86 @@ async def update_persona_config(
         "status": 0,
         "msg": f"已更新: {', '.join(results)}" if results else "没有更新任何配置",
         "data": updated_config,
+    }
+
+
+def _persona_settings_web_dict(persona_name: str) -> Dict[str, Any]:
+    """把 persona.json 序列化成插件配置同构的 ``PluginConfigItem`` 字典。"""
+    cfg = persona_settings_manager.get_config(persona_name)
+    data: Dict[str, Any] = {}
+    for key in DEFAULT_PERSONA_SETTINGS:
+        data[key] = _build_config_item(cfg.get_config(key), key)
+    return data
+
+
+@app.get("/api/persona/{persona_name}/settings", summary="获取人格设定（persona.json）", tags=PERSONA)
+async def get_persona_settings(
+    persona_name: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """返回称呼 / 失败短句等 GSC 字段（含 title/desc/type/value），前端按插件配置渲染。"""
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {
+            "status": 1,
+            "msg": f"角色 '{persona_name}' 不存在",
+            "data": None,
+        }
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": _persona_settings_web_dict(persona_name),
+    }
+
+
+@app.put("/api/persona/{persona_name}/settings", summary="更新人格设定（persona.json）", tags=PERSONA)
+async def update_persona_settings(
+    persona_name: str,
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """按 key 写入字符串值。未知键 / 分割线跳过。也可传完整 PluginConfigItem（取 value）。"""
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {
+            "status": 1,
+            "msg": f"角色 '{persona_name}' 不存在",
+            "data": None,
+        }
+    if not isinstance(data, dict):
+        return {
+            "status": 1,
+            "msg": "请求体必须是对象",
+            "data": None,
+        }
+    cfg = persona_settings_manager.get_config(persona_name)
+    updated: list[str] = []
+    for key, value in data.items():
+        if key not in DEFAULT_PERSONA_SETTINGS:
+            continue
+        template = DEFAULT_PERSONA_SETTINGS[key]
+        if isinstance(template, GsDivider):
+            continue
+        raw: object = value
+        if isinstance(value, dict) and "value" in value and "type" in value:
+            raw = value["value"]
+        if not isinstance(raw, str):
+            return {
+                "status": 1,
+                "msg": f"{key} 必须是字符串",
+                "data": None,
+            }
+        if not cfg.set_config(key, raw):
+            return {
+                "status": 1,
+                "msg": f"写入失败: {key}",
+                "data": None,
+            }
+        updated.append(key)
+    return {
+        "status": 0,
+        "msg": f"已更新: {', '.join(updated)}" if updated else "没有更新任何配置",
+        "data": _persona_settings_web_dict(persona_name),
     }
 
 

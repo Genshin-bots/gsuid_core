@@ -20,6 +20,8 @@ from gsuid_core.ai_core.persona import (
     get_persona_avatar_path,
     get_persona_audio_path,
     persona_config_manager,
+    get_master_title,
+    get_persona_setting,
 )
 ```
 

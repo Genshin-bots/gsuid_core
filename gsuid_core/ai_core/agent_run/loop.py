@@ -755,7 +755,7 @@ class LoopPhase(RunOnceHost):
                             _resp_unsent.append(_text)
                         continue
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
-                        _fb = _gr.send_text or output_firewall.MACHINE_FALLBACK_TEXT
+                        _fb = _gr.send_text or output_firewall.fallback_machine_text(self.persona_name)
                         try:
                             await send_chat_result(st.bot, _fb, ev=st.ev, ooc_check=False)
                             self._run_sent_texts.add(_fb)

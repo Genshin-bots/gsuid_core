@@ -188,6 +188,8 @@ class PreparePhase(RunOnceHost):
             "speech_policy": "free",
             "has_status_tool": False,
         }
+        if self.persona_name:
+            st.run_extra["persona_name"] = self.persona_name
         if st.user_turn_id:
             st.run_extra["user_turn_id"] = st.user_turn_id
         # 框架身份由**类型**判定（is_framework_injection / <control> 信封），
