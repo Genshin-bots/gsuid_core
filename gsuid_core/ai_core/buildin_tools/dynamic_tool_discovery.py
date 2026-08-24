@@ -15,7 +15,6 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
-from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
 from gsuid_core.ai_core.buildin_tools.visibility import visible_when_group_recall
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
@@ -45,6 +44,8 @@ def _need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) -
 
 def _record_find_tools_round(extra: dict[str, Any], loaded: list[str]) -> bool:
     """记下本轮暴露名。返回 True 表示相对上一轮没有新名字。"""
+    from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+
     had_prev = FIND_TOOLS_LOADED_KEY in extra
     prev_raw = extra[FIND_TOOLS_LOADED_KEY] if had_prev else None
     prev: set[str] = set(prev_raw) if isinstance(prev_raw, list) else set()
@@ -226,6 +227,7 @@ async def find_tools(
     """
     try:
         from gsuid_core.ai_core.register import find_tool_base
+        from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
 
         offered_raw = ctx.deps.extra[EXPOSED_TOOLS_EXTRA_KEY] if EXPOSED_TOOLS_EXTRA_KEY in ctx.deps.extra else None
         offered: list[str] = [n for n in offered_raw if isinstance(n, str)] if isinstance(offered_raw, list) else []
@@ -385,13 +387,13 @@ async def capability_map(
         filter: 按能力域或插件名过滤。
     """
     _ = ctx
-    from gsuid_core.ai_core.register import get_all_tools
+    from gsuid_core.ai_core.register import get_all_tools, main_persona_roster_ok
 
     tools = get_all_tools()
     grouped: dict[str, list[str]] = {}
     needle = (filter or "").strip().lower()
     for _name, tb in tools.items():
-        if tb is None:
+        if tb is None or not main_persona_roster_ok(tb):
             continue
         domain = tb.capability_domain or tb.plugin or "其他"
         plugin = tb.plugin

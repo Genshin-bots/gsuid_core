@@ -250,6 +250,7 @@ def _register_mcp_tool(
         plugin=f"mcp_{client.name}",
         tool=tool_obj,
         check_func=check_func,
+        category=MCP_CATEGORY,
     )
 
     if MCP_CATEGORY not in tool_registry:

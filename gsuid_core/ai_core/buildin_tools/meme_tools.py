@@ -21,7 +21,7 @@ from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
 
-@ai_tools(category="common", capability_domain="表情")
+@ai_tools(category="self")
 async def send_meme(
     ev: Event,
     bot: Bot,

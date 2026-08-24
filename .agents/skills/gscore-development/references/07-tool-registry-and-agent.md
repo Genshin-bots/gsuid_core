@@ -47,9 +47,9 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
-| `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、定时任务整族（白名单拦插件滥用 `self`） |
+| `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、`send_meme`、定时任务整族（白名单拦插件滥用 `self`） |
 | `buildin` | **保底**：无条件加载进主 Agent | `search_cognition`、`web_search_tool`、`web_fetch_tool`、`get_self_info`、`state_set`/`state_get` |
-| `common` | 向量检索按需 | `create_subagent`、`send_meme`/`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
+| `common` | 向量检索按需 | `create_subagent`、`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
@@ -61,6 +61,9 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 >
 > **安全隔离**：`self` 工具仅主 Agent（防子 Agent 直接操作用户数据）；`default` 工具（文件/
 > 系统命令）仅子 Agent。改 category 等于改安全边界，谨慎。
+>
+> 主人格 system 的「工具族速览」(`format_capability_family_overview`) 与 `capability_map`
+> 不列 exclusive / `visible_to_capability_only` / media·plugin_dev·default·meta，避免广告调不到的名字。
 
 ## 7.3 主 Agent 三层工具池（`gs_agent.py::_execute_run`）
 

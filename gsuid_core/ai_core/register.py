@@ -434,6 +434,7 @@ def ai_tools(
                 )
             )
 
+        pred_name = getattr(visible_when, "__name__", "") if visible_when is not None else ""
         tool_base = ToolBase(
             name=fn.__name__,
             description=tool_description,
@@ -444,6 +445,8 @@ def ai_tools(
             covers=covers,
             aliases=aliases,
             schema_brief=schema_brief,
+            category=reg_category,
+            hide_from_main=pred_name == "visible_to_capability_only",
         )
 
         # 根据 category 分类注册工具
@@ -542,6 +545,18 @@ def _family_bucket(domain: str) -> str:
     return d
 
 
+_MAIN_ROSTER_SKIP_CATEGORIES: frozenset[str] = frozenset({"media", "plugin_dev", "default", "meta"})
+
+
+def main_persona_roster_ok(tb: ToolBase) -> bool:
+    """主人格速览 / capability_map 是否列出该工具（调不到的不进花名册）。"""
+    if tb.hide_from_main or tb.category in _MAIN_ROSTER_SKIP_CATEGORIES:
+        return False
+    from gsuid_core.ai_core.agent_run.support import _capability_exclusive_tool_names
+
+    return tb.name not in _capability_exclusive_tool_names()
+
+
 def collapse_family_domains(domains: List[str]) -> List[str]:
     """同前缀 ≥3 个域折成一条索引名（后缀 …）。"""
     buckets: dict[str, list[str]] = {}
@@ -565,7 +580,7 @@ def format_capability_family_overview(*, max_families: int = 30, max_chars: int 
     grouped: dict[str, list[ToolBase]] = {}
     for tb in get_all_tools().values():
         domain = tb.capability_domain
-        if not domain:
+        if not domain or not main_persona_roster_ok(tb):
             continue
         grouped.setdefault(domain, []).append(tb)
     if not grouped:

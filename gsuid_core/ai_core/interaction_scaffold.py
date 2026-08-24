@@ -703,6 +703,7 @@ def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
 SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
     {
         "send_message_by_ai",
+        "send_meme",
         "add_once_task",
         "add_interval_task",
         "find_tools",

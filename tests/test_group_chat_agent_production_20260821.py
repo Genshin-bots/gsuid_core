@@ -27,6 +27,7 @@ def test_slim_core_does_not_always_hang_check_delegation() -> None:
     assert "check_delegation" not in SLIM_GROUP_CORE_TOOLS
     assert "find_tools" in SLIM_GROUP_CORE_TOOLS
     assert "create_subagent" in SLIM_GROUP_CORE_TOOLS
+    assert "send_meme" in SLIM_GROUP_CORE_TOOLS
 
 
 def test_jaccard_rebuild_removed_from_tools_phase() -> None:
@@ -222,6 +223,25 @@ def test_family_overview_is_index_not_catalog() -> None:
     assert "甲乙…" in collapsed
     assert "丙丁" in collapsed
     assert "甲乙一" not in collapsed
+
+
+def test_family_overview_omits_uncallable_tools() -> None:
+    from gsuid_core.ai_core.register import find_tool_base, format_capability_family_overview
+    from gsuid_core.ai_core.buildin_tools.meme_tools import send_meme, search_meme, collect_meme
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+
+    assert search_meme.__name__ == "search_meme"
+    assert collect_meme.__name__ == "collect_meme"
+    assert send_meme.__name__ == "send_meme"
+    register_builtin_profiles()
+    hidden = find_tool_base("search_meme")
+    send = find_tool_base("send_meme")
+    assert hidden is not None and hidden.hide_from_main is True
+    assert send is not None and send.category == "self" and send.capability_domain is None
+    text = format_capability_family_overview(max_families=40, max_chars=8000)
+    assert "search_meme" not in text
+    assert "render_html_to_image" not in text
+    assert "collect_meme" in text
 
 
 def test_quote_match_exact_then_prefix() -> None:

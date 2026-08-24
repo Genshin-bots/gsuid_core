@@ -512,6 +512,7 @@ def _register_trigger_as_ai_tool(
         description=to_ai_doc,
         plugin=plugin_name,
         tool=tool_obj,
+        category="by_trigger",
     )
 
     if "by_trigger" not in _TOOL_REGISTRY:

@@ -353,6 +353,7 @@ def test_slim_group_core_keeps_discovery_not_web_search() -> None:
     assert "find_tools" in SLIM_GROUP_CORE_TOOLS
     assert "create_subagent" in SLIM_GROUP_CORE_TOOLS
     assert "capability_map" in SLIM_GROUP_CORE_TOOLS
+    assert "send_meme" in SLIM_GROUP_CORE_TOOLS
     assert "web_search_tool" not in SLIM_GROUP_CORE_TOOLS
 
 
@@ -415,8 +416,16 @@ def test_complete_kernel_family_skips_exclusive_and_send() -> None:
 
 
 def test_is_group_send_extra_skips_kernel_send() -> None:
-    assert is_group_send_extra("send_meme") is True
+    assert is_group_send_extra("send_meme") is False
     assert is_group_send_extra("send_message_by_ai") is False
+    assert is_group_send_extra("send_other") is True
+
+
+def test_send_meme_kernel_does_not_expand_family() -> None:
+    names = complete_kernel_family_names(["send_meme"], exclusive=set())
+    assert "send_meme" in names
+    assert "collect_meme" not in names
+    assert "search_meme" not in names
 
 
 def test_offered_names_in_hit_domains_same_family() -> None:
@@ -587,6 +596,7 @@ def test_self_whitelist_includes_scheduler_family() -> None:
         "pause_scheduled_task",
         "resume_scheduled_task",
         "query_scheduled_task",
+        "send_meme",
     ):
         assert name in _SELF_CATEGORY_WHITELIST
 

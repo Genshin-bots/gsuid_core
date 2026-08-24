@@ -35,6 +35,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 | 工具 | 来源 | 说明 |
 |---|---|---|
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
+| ``send_meme`` | ``meme_tools.py`` | 按情绪从库里发一张表情包（主人格保底 / 群聊瘦核常驻） |
 | ``add_once_task`` | ``scheduler.py`` | 注册一次性定时任务（口语触发，需常驻主人格手边） |
 | ``add_interval_task`` | ``scheduler.py`` | 注册周期定时任务（同上） |
 
@@ -91,8 +92,8 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``install_skill``（``skill_installer.py``，``capability_domain="技能管理"``）：
   从 git 仓库 / zip 直链 / SKILL.md 直链安装技能到 SKILLS_PATH 并热重载
   （``check_pm`` 限主人 + ``visible_when`` 对非主人隐藏）
-- ``send_meme`` / ``collect_meme`` / ``search_meme``（``meme_tools.py``）：
-  表情包发送 / 收藏 / 检索
+- ``collect_meme`` / ``search_meme``（``meme_tools.py``，``capability_domain="表情"``）：
+  收藏当前消息图片 / 检索表情库（``search_meme`` 对主人格隐藏）
 - ``list_scheduled_tasks`` / ``query_scheduled_task`` / ``modify_scheduled_task``
   （``scheduler.py``）：定时任务管理（只读 / 改）按需
 - ``cancel_scheduled_task`` / ``pause_scheduled_task`` / ``resume_scheduled_task``
